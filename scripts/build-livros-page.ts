@@ -1,12 +1,12 @@
 /**
  * build-livros-page.ts (#1744)
  *
- * Gera a página "Livros sobre IA" da Diar.ia a partir de
+ * Gera a página "Livros sobre IA" da diar.ia.br a partir de
  * `seed/books/livros-ia.json` (curadoria do editor, espelhada da página Beehiiv
  * livros.diaria.workers.dev). Emite um HTML self-contained (dados +
  * filtros client-side inline) servido pelo Worker `livros`.
  *
- * Design editorial Diar.ia (#1936/#1935: DS canônico — Georgia serif, accent
+ * Design editorial diar.ia.br (#1936/#1935: DS canônico — Georgia serif, accent
  * teal #00A0A0, papel #FBFAF6, molduras bege #EBE5D0, texto ink),
  * cards text-focused (sem capa): título com link de afiliado amzn.to, nota da
  * Amazon, badges (idioma/nível/tema), selo de destaque e "para quem é".
@@ -56,9 +56,9 @@ const DEFAULT_OUT = resolve(ROOT, "data/livros/index.html");
 // — sem isso, mudar este domínio no futuro e esquecer o footer causaria
 // exatamente o tipo de drift silencioso que essa issue existe pra eliminar.
 export const PAGE_URL = "https://livros.diar.ia.br/";
-const PAGE_TITLE = "Livros sobre IA · Diar.ia";
+const PAGE_TITLE = "Livros sobre IA · diar.ia.br";
 const PAGE_DESCRIPTION =
-  "Livros sobre inteligência artificial recomendados pela Diar.ia — filtre por idioma, nível e tema, com links diretos para a Amazon.";
+  "Livros sobre inteligência artificial recomendados pela diar.ia.br — filtre por idioma, nível e tema, com links diretos para a Amazon.";
 
 // #1936/#1935: DS canônico (lib/shared/design-tokens.ts) — era ad-hoc (Newsreader +
 // #F5F1E8/#FFFDF8/#1A1A1A). Agora os mesmos tokens da diária/mensal/É IA?/cursos.
@@ -182,13 +182,13 @@ interface SubscribeCtaVariant {
 const CTA_HERO: SubscribeCtaVariant = {
   id: "livros-cta-hero",
   source: "livros-hero",
-  heading: "Gostou da curadoria? Assine a Diar.ia e receba tutoriais e notícias de IA todo dia, sem enrolação.",
+  heading: "Gostou da curadoria? Assine a diar.ia.br e receba tutoriais e notícias de IA todo dia, sem enrolação.",
 };
 
 const CTA_FOOTER: SubscribeCtaVariant = {
   id: "livros-cta-footer",
   source: "livros-footer",
-  heading: "Chegou até aqui? Assine a Diar.ia — 5 minutos por dia com o que importa em IA.",
+  heading: "Chegou até aqui? Assine a diar.ia.br — 5 minutos por dia com o que importa em IA.",
 };
 
 function renderSubscribeCta(v: SubscribeCtaVariant, variantClass: "hero" | "end"): string {
@@ -197,8 +197,8 @@ function renderSubscribeCta(v: SubscribeCtaVariant, variantClass: "hero" | "end"
           <p class="cta-text">${esc(v.heading)}</p>
           <label class="cta-field"><input type="email" name="email" placeholder="seu@email.com" aria-label="E-mail" autocomplete="email" maxlength="254" required></label>
           <div class="cta-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
-          <label class="cta-optin"><input type="checkbox" name="optin" value="on"> Quero receber a Diar.ia — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, seg-sex, direto no e-mail.</label>
-          <button type="submit" class="cta-submit">Assinar a Diar.ia (grátis)</button>
+          <label class="cta-optin"><input type="checkbox" name="optin" value="on"> Quero receber a diar.ia.br — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, seg-sex, direto no e-mail.</label>
+          <button type="submit" class="cta-submit">Assinar a diar.ia.br (grátis)</button>
           <p class="cta-status" role="status" aria-live="polite" hidden></p>
         </form>
       </div>`;
@@ -280,7 +280,7 @@ function renderSubscribeCtaScript(): string {
 }
 
 /**
- * Renderiza a página completa no design editorial Diar.ia. Pure — recebe os
+ * Renderiza a página completa no design editorial diar.ia.br. Pure — recebe os
  * livros, devolve HTML 100% self-contained (Georgia é system font — sem fonte externa).
  */
 export function renderLivrosPage(books: Book[]): string {
@@ -325,12 +325,12 @@ ${renderCuradoriaFooterStyles()}
 <body>
   <header>
     <div class="wrap">
-      <p class="eyebrow">Diar.ia · Curadoria</p>
+      <p class="eyebrow">diar.ia.br · Curadoria</p>
       <hr class="rule">
       <h1>Livros sobre IA<span class="dot" aria-hidden="true">.</span></h1>
       <p class="tagline">5 minutos diários pra se manter atualizado e usar melhor as IAs</p>
       <p class="lede">Uma seleção dos melhores livros sobre inteligência artificial, reunida a partir de mais de 10 listas e ranqueada por um critério subjetivo (prêmios do livro ou do autor) e um objetivo (nota na Amazon). Quando há edição em português, é ela que aparece.</p>
-      <p class="lede">Os links são de afiliado — comprando por eles, você apoia a Diar.ia sem pagar nada a mais.</p>
+      <p class="lede">Os links são de afiliado — comprando por eles, você apoia a diar.ia.br sem pagar nada a mais.</p>
 ${renderSubscribeCta(CTA_HERO, "hero")}
     </div>
   </header>

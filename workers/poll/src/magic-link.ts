@@ -331,7 +331,7 @@ export async function sendMagicLinkEmail(
   const senderEmail = env.BREVO_SENDER_EMAIL;
   if (!apiKey || !senderEmail) return { ok: false, status: 503, reason: "not_configured" };
 
-  const senderName = env.BREVO_SENDER_NAME || "Diar.ia — É IA?";
+  const senderName = env.BREVO_SENDER_NAME || "diar.ia.br — É IA?";
   const greeting = input.name.trim() ? `Oi, ${htmlEscape(input.name.trim())}!` : "Oi!";
   const safeUrl = htmlEscape(input.confirmUrl);
   const body = {

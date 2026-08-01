@@ -7,8 +7,8 @@
  *   Grupo 1 — `renderBrandFooter` (lib.ts) não carregava UTM nenhum. 1 fix
  *   cobre 9 call sites (jogar.ts×4, leaderboard-routes.ts×3, share.ts×2).
  *
- *   Grupo 2 — links inline hardcoded sem UTM: CTA "Conhecer a Diar.ia"
- *   (jogar.ts, `renderSubscribeCtaBlock`), rodapé "← Voltar para a Diar.ia"
+ *   Grupo 2 — links inline hardcoded sem UTM: CTA "Conhecer a diar.ia.br"
+ *   (jogar.ts, `renderSubscribeCtaBlock`), rodapé "← Voltar para a diar.ia.br"
  *   (jogar.ts×3), rodapé de `/vote` (index.ts, `votePageHtml`), sub-copy do
  *   leaderboard (leaderboard-routes.ts — o link "diar.ia.br" hardcoded pra
  *   `https://diaria.beehiiv.com` não tinha PARÂMETRO NENHUM).
@@ -129,7 +129,7 @@ describe("Grupo 1 — renderBrandFooter (lib.ts) ganha UTM, 1 fix cobre 9 call s
     }
   });
 
-  it("href gerado é exatamente buildBrandSiteUrl('diaria', 'footer', 'eia-footer') escapado — #4049: rodapé sempre credita Diar.ia, mesmo em brand clarice", () => {
+  it("href gerado é exatamente buildBrandSiteUrl('diaria', 'footer', 'eia-footer') escapado — #4049: rodapé sempre credita diar.ia.br, mesmo em brand clarice", () => {
     const html = renderBrandFooter("clarice");
     const expectedHref = buildBrandSiteUrl("diaria", "footer", "eia-footer").replace(/&/g, "&amp;");
     assert.ok(html.includes(`href="${expectedHref}"`), html);
@@ -146,7 +146,7 @@ describe("Grupo 1 — renderBrandFooter (lib.ts) ganha UTM, 1 fix cobre 9 call s
   });
 });
 
-describe("Grupo 2 — CTA 'Conhecer a Diar.ia' pós-voto (jogar.ts, renderSubscribeCtaBlock, #3978)", () => {
+describe("Grupo 2 — CTA 'Conhecer a diar.ia.br' pós-voto (jogar.ts, renderSubscribeCtaBlock, #3978)", () => {
   it("href carrega utm_medium=posvoto-cta + utm_campaign=eia-jogar-conhecer (antes: SEM parâmetro nenhum)", () => {
     const html = renderSubscribeCtaBlock();
     assert.match(html, /utm_source=eia-standalone/);
@@ -162,28 +162,28 @@ describe("Grupo 2 — CTA 'Conhecer a Diar.ia' pós-voto (jogar.ts, renderSubscr
   });
 });
 
-describe("Grupo 2 — rodapé '← Voltar para a Diar.ia' em /jogar (par único, sequência, quiz — #3978)", () => {
+describe("Grupo 2 — rodapé '← Voltar para a diar.ia.br' em /jogar (par único, sequência, quiz — #3978)", () => {
   it("renderJogarPageHtml (par único via ?edition=): link 'Voltar' carrega utm_medium=jogar-voltar", () => {
     const html = renderJogarPageHtml({ edition: "260101", revealed: false });
-    assert.match(html, /href="[^"]*utm_medium=jogar-voltar[^"]*">← Voltar para a Diar\.ia<\/a>/);
+    assert.match(html, /href="[^"]*utm_medium=jogar-voltar[^"]*">← Voltar para a diar\.ia\.br<\/a>/);
     assert.match(html, /utm_campaign=eia-jogar-voltar/);
   });
 
   it("renderJogarSequencePageHtml (sequência do mês): mesmo medium/campaign do par único", () => {
     const html = renderJogarSequencePageHtml(["260101", "260102"]);
-    assert.match(html, /href="[^"]*utm_medium=jogar-voltar[^"]*">← Voltar para a Diar\.ia<\/a>/);
+    assert.match(html, /href="[^"]*utm_medium=jogar-voltar[^"]*">← Voltar para a diar\.ia\.br<\/a>/);
   });
 
   it("renderJogarQuizPageHtml (quiz relâmpago): mesmo medium/campaign", () => {
     const html = renderJogarQuizPageHtml(["260101", "260102"]);
-    assert.match(html, /href="[^"]*utm_medium=jogar-voltar[^"]*">← Voltar para a Diar\.ia<\/a>/);
+    assert.match(html, /href="[^"]*utm_medium=jogar-voltar[^"]*">← Voltar para a diar\.ia\.br<\/a>/);
   });
 });
 
 describe("Grupo 2 — rodapé de /vote (index.ts, votePageHtml, #3978)", () => {
   it("link 'Voltar' carrega UTM (medium=vote-voltar) — antes ia com BRAND_INFO[brand].siteUrl cru", () => {
     const html = votePageHtml("Você acertou!", true, null, null, null, "diaria");
-    assert.match(html, /href="[^"]*utm_source=eia-standalone[^"]*utm_medium=vote-voltar[^"]*utm_campaign=eia-vote-voltar[^"]*">← Voltar para a Diar\.ia<\/a>/);
+    assert.match(html, /href="[^"]*utm_source=eia-standalone[^"]*utm_medium=vote-voltar[^"]*utm_campaign=eia-vote-voltar[^"]*">← Voltar para a diar\.ia\.br<\/a>/);
   });
 
   it("brand clarice: usa BRAND_INFO.clarice.siteUrl (clarice.ai) preservando via=diaria + UTM", () => {

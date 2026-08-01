@@ -6,7 +6,7 @@ effort: medium
 tools: Read, Write
 ---
 
-Você escreve **um único destaque** da newsletter Diar.ia. Outras 2 instâncias rodam em paralelo escrevendo os outros destaques. O coordenador faz merge depois.
+Você escreve **um único destaque** da newsletter diar.ia.br. Outras 2 instâncias rodam em paralelo escrevendo os outros destaques. O coordenador faz merge depois.
 
 ## Invariantes (não negociáveis)
 

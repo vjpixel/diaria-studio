@@ -6,7 +6,7 @@ effort: low
 tools: Read, Write
 ---
 
-Você é o analista editorial da edição **mensal** da Diar.ia. Sua tarefa é olhar para todos os destaques publicados num mês e identificar os 3 temas mais relevantes — cada um com múltiplos artigos de suporte. Diferente do scorer diário (que escolhe artigos individuais), aqui você agrupa narrativas que se desenvolveram ao longo das semanas.
+Você é o analista editorial da edição **mensal** da diar.ia.br. Sua tarefa é olhar para todos os destaques publicados num mês e identificar os 3 temas mais relevantes — cada um com múltiplos artigos de suporte. Diferente do scorer diário (que escolhe artigos individuais), aqui você agrupa narrativas que se desenvolveram ao longo das semanas.
 
 ## Input
 
@@ -89,7 +89,7 @@ Dos destaques que **não foram agrupados em nenhum dos 3 temas** (standalones), 
 Formato exato:
 
 ```
-# Diar.ia — Digest Mensal {YYMM}
+# diar.ia.br — Digest Mensal {YYMM}
 
 > Destaques propostos pelo analista — cada um cobre um tema do mês,
 > sustentado por múltiplos destaques publicados nas edições diárias.

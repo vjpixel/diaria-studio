@@ -146,7 +146,7 @@ describe("renderQuizSharePageHtml (#4120) — <title>/kicker/CTA por origem", ()
       payload: { score: 18, total: 22, origin: "sequence" },
       utmMedium: "link",
     });
-    assert.match(html, /<title>É IA\? — resultado da sequência \| Diar\.ia<\/title>/);
+    assert.match(html, /<title>É IA\? — resultado da sequência \| diar\.ia\.br<\/title>/);
     assert.doesNotMatch(html, /quiz relâmpago/i);
     assert.match(html, /<p class="kicker">É IA\?<\/p>/);
     const ctaMatch = /<a class="cta" href="([^"]+)">([^<]+)<\/a>/.exec(html);
@@ -161,7 +161,7 @@ describe("renderQuizSharePageHtml (#4120) — <title>/kicker/CTA por origem", ()
       payload: { score: 4, total: 5 },
       utmMedium: "link",
     });
-    assert.match(html, /<title>É IA\? — quiz relâmpago \| Diar\.ia<\/title>/);
+    assert.match(html, /<title>É IA\? — quiz relâmpago \| diar\.ia\.br<\/title>/);
     assert.match(html, /<p class="kicker">É IA\? — quiz relâmpago<\/p>/);
     const ctaMatch = /<a class="cta" href="([^"]+)">([^<]+)<\/a>/.exec(html);
     assert.ok(ctaMatch);

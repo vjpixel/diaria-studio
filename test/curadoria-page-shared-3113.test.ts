@@ -10,7 +10,7 @@
  *      unificado em 140px nas 2 páginas.
  *   3. `.summary` margin-top: drift 14px (cursos) vs 12px (livros) unificado
  *      em 14px nas 2 páginas.
- *   4. Footer de navegação cruzada (Diar.ia · Cursos · Livros · É IA?),
+ *   4. Footer de navegação cruzada (diar.ia.br · Cursos · Livros · É IA?),
  *      incluindo link de volta pro diar.ia.br — ausente antes do #3113.
  *
  * Cobre tanto o módulo compartilhado isolado quanto os HTMLs gerados pelos 2
@@ -73,18 +73,18 @@ describe("curadoria-page.ts — módulo compartilhado (#3113)", () => {
     assert.match(css, /\.summary \{[^}]*margin: 14px 0 18px;/);
   });
 
-  it("nav cruzada tem as 4 superfícies, Diar.ia primeiro e apontando pro diar.ia.br", () => {
+  it("nav cruzada tem as 4 superfícies, diar.ia.br primeiro e apontando pro diar.ia.br", () => {
     assert.equal(CURADORIA_NAV_LINKS.length, 4);
     assert.deepEqual(
       CURADORIA_NAV_LINKS.map((l) => l.label),
-      ["Diar.ia", "Cursos", "Livros", "É IA?"],
+      ["diar.ia.br", "Cursos", "Livros", "É IA?"],
     );
     assert.equal(CURADORIA_NAV_LINKS[0].url, "https://diar.ia.br");
   });
 
   it("renderCuradoriaFooter monta os 4 links + texto de crédito, escapando HTML", () => {
     const html = renderCuradoriaFooter('diar.ia.br — curadoria de <script>');
-    assert.match(html, /<a href="https:\/\/diar\.ia\.br">Diar\.ia<\/a>/);
+    assert.match(html, /<a href="https:\/\/diar\.ia\.br">diar\.ia\.br<\/a>/);
     // #3698: domínio de marca (era cursos/livros.diaria.workers.dev).
     assert.match(html, /<a href="https:\/\/cursos\.diar\.ia\.br\/">Cursos<\/a>/);
     assert.match(html, /<a href="https:\/\/livros\.diar\.ia\.br\/">Livros<\/a>/);
@@ -100,15 +100,15 @@ describe("curadoria-page.ts — módulo compartilhado (#3113)", () => {
     assert.match(html, /d&#39;ele/);
   });
 
-  // #4051: 2º parâmetro OPCIONAL — query string apensada SÓ ao link "Diar.ia".
-  it("sem diariaUtm (2º parâmetro ausente) — link Diar.ia continua bare, comportamento pré-#4051", () => {
+  // #4051: 2º parâmetro OPCIONAL — query string apensada SÓ ao link "diar.ia.br".
+  it("sem diariaUtm (2º parâmetro ausente) — link diar.ia.br continua bare, comportamento pré-#4051", () => {
     const html = renderCuradoriaFooter("crédito");
-    assert.match(html, /<a href="https:\/\/diar\.ia\.br">Diar\.ia<\/a>/);
+    assert.match(html, /<a href="https:\/\/diar\.ia\.br">diar\.ia\.br<\/a>/);
   });
 
-  it("com diariaUtm — apensa SÓ no link Diar.ia; Cursos/Livros/É IA? continuam sem UTM", () => {
+  it("com diariaUtm — apensa SÓ no link diar.ia.br; Cursos/Livros/É IA? continuam sem UTM", () => {
     const html = renderCuradoriaFooter("crédito", "utm_source=livros&utm_medium=footer-nav");
-    assert.match(html, /<a href="https:\/\/diar\.ia\.br\?utm_source=livros&amp;utm_medium=footer-nav">Diar\.ia<\/a>/);
+    assert.match(html, /<a href="https:\/\/diar\.ia\.br\?utm_source=livros&amp;utm_medium=footer-nav">diar\.ia\.br<\/a>/);
     assert.match(html, /<a href="https:\/\/cursos\.diar\.ia\.br\/">Cursos<\/a>/);
     assert.match(html, /<a href="https:\/\/livros\.diar\.ia\.br\/">Livros<\/a>/);
     assert.match(html, /<a href="https:\/\/eia\.diar\.ia\.br\/leaderboard">É IA\?<\/a>/);
@@ -133,7 +133,7 @@ describe("build-cursos-page.ts adota o módulo compartilhado (#3113)", () => {
   });
 
   it("footer tem nav cruzada com as 4 superfícies + crédito de cursos", () => {
-    assert.match(html, /<footer>.*foot-nav.*Diar\.ia.*Cursos.*Livros.*É IA\?.*<\/footer>/s);
+    assert.match(html, /<footer>.*foot-nav.*diar\.ia\.br.*Cursos.*Livros.*É IA\?.*<\/footer>/s);
     assert.match(html, /diar\.ia\.br — curadoria de cursos sobre IA/);
   });
 });
@@ -155,7 +155,7 @@ describe("build-livros-page.ts adota o módulo compartilhado (#3113)", () => {
   });
 
   it("footer tem nav cruzada com as 4 superfícies + crédito de livros", () => {
-    assert.match(html, /<footer>.*foot-nav.*Diar\.ia.*Cursos.*Livros.*É IA\?.*<\/footer>/s);
+    assert.match(html, /<footer>.*foot-nav.*diar\.ia\.br.*Cursos.*Livros.*É IA\?.*<\/footer>/s);
     assert.match(html, /diar\.ia\.br — curadoria de livros sobre IA/);
   });
 });

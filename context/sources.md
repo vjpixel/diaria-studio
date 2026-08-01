@@ -1,4 +1,4 @@
-# Fontes cadastradas — Diar.ia
+# Fontes cadastradas — diar.ia.br
 
 **Total:** 53 fontes (16 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
 

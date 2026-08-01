@@ -52,7 +52,7 @@ const FONT_SANS = FONTS.sans; // Geist (labels/kickers)
 // (Refs #3104) pra eliminar micro-drifts de token sem motivo funcional.
 // LS_LABEL ("2px") — letter-spacing de labels uppercase (kicker, "O fio
 // condutor", legenda de hero, "Acesse nossas curadorias:", "Clarice ×
-// Diar.ia", "Siga a Clarice × Diar.ia") variava 1px/1.5px/2px na mensal —
+// diar.ia.br", "Siga a Clarice × diar.ia.br") variava 1px/1.5px/2px na mensal —
 // mesmo drift que a diária tinha antes do PR#3182. Canonicalizado no mesmo
 // valor da diária (2px) para paridade visual entre os 2 produtos — nenhum
 // dos usos aqui é ancorado por regex externo (diferente do kicker da diária,
@@ -88,7 +88,7 @@ export function stripBackslashEscapes(s: string): string {
  */
 // #template-branding (260703): na MENSAL, toda ocorrência de `diar.ia.br` vira
 // link pra o cadastro no Beehiiv (a mensal sai pela Brevo pra base da Clarice —
-// o wordmark linkado converte esse público pro Diar.ia). A diária NÃO recebe o
+// o wordmark linkado converte esse público pro diar.ia.br). A diária NÃO recebe o
 // link (já vive no Beehiiv) — por isso o destino entra como argumento aqui, não
 // no applyBrandWordmark compartilhado.
 // #4059: host de marca canônico (o redirect no Cloudflare preserva a query
@@ -114,7 +114,7 @@ export function isOwnedHost(hostname: string): boolean {
  * #2975: assinantes que migram da Clarice News mensal pro Beehiiv chegavam
  * "anônimos" no Acquisition details (Brevo auto-taggeia `utm_source=sendinblue`
  * + `utm_campaign` vazio nos links que ele reenvia) — impossível medir a
- * conversão da migração Clarice→Diar.ia, que é o objetivo de todo o rollout
+ * conversão da migração Clarice→diar.ia.br, que é o objetivo de todo o rollout
  * cold em andamento. Solução: UTM PRÓPRIO em todo link do host de marca
  * do email mensal (`utm_source=clarice`, `utm_medium=email`,
  * `utm_campaign=clarice-{ciclo}`) — sobrescreve/precede o auto-tag do Brevo e
@@ -1022,7 +1022,7 @@ export function renderEia(
   const workerUrl = process.env.POLL_WORKER_URL ?? DIARIA_EIA_URL;
   const edition = eiaEditionFromYymm(yymm);
   // #1905: brand=clarice — votos do É IA? mensal vão pro leaderboard da Clarice
-  // News, isolado do diário (Diar.ia).
+  // News, isolado do diário (diar.ia.br).
   const voteUrlA = `${workerUrl}/vote?email={{ contact.EMAIL }}&amp;edition=${edition}&amp;choice=A&amp;brand=clarice`;
   const voteUrlB = `${workerUrl}/vote?email={{ contact.EMAIL }}&amp;edition=${edition}&amp;choice=B&amp;brand=clarice`;
 
@@ -1152,7 +1152,7 @@ export function parseHeaderChunk(chunk: string): {
 }
 
 /**
- * #2645/#2790: URLs canônicas dos canais sociais da marca Diar.ia, reusadas no
+ * #2645/#2790: URLs canônicas dos canais sociais da marca diar.ia.br, reusadas no
  * rodapé co-brand do shell mensal. As 4 vêm de `canonical-urls.ts`
  * (`DIARIA_{FACEBOOK,LINKEDIN,INSTAGRAM,THREADS}_PAGE_URL`/`_URL`) — fonte
  * única compartilhada com `build-link-ctr.ts`, `stitch-newsletter.ts` e
@@ -1176,11 +1176,11 @@ const SOCIAL_LINKS: ReadonlyArray<{ label: string; url: string }> = [
 const COBRAND_LOGO_URL = "";
 
 /**
- * Header/capa do shell mensal (#2645): co-brand Clarice × Diar.ia. Decisão do
+ * Header/capa do shell mensal (#2645): co-brand Clarice × diar.ia.br. Decisão do
  * editor (Gate 1, `/diaria-develop` 260701, comentário durável em #2645): o
  * mensal é uma parceria Clarice com identidade PRÓPRIA — não uma cópia visual do
  * header da diária. "Clarice" ganha destaque tipográfico (serif DS + teal, mesmo
- * tratamento visual dos títulos de destaque) com "Clarice × Diar.ia" abaixo,
+ * tratamento visual dos títulos de destaque) com "Clarice × diar.ia.br" abaixo,
  * indicando a parceria.
  */
 export function renderCobrandHeader(): string {
@@ -1195,7 +1195,7 @@ export function renderCobrandHeader(): string {
     : `<div style="font-family:${FONT_SERIF};font-size:26px;font-weight:bold;color:${TEAL};line-height:1.2;">Clarice</div>`;
   return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:0 0 28px 0;"><tr><td>
     ${wordmark}
-    <div style="margin:6px 0 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${INK};">Clarice &times; Diar.ia</div>
+    <div style="margin:6px 0 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${INK};">Clarice &times; diar.ia.br</div>
     <div style="border-bottom:1px solid ${BEGE};margin:18px 0 0;line-height:0;font-size:0;">&nbsp;</div>
   </td></tr></table>`;
 }
@@ -1220,7 +1220,7 @@ export function renderSocialFooter(): string {
     renderPillLink(label, url, { fontSize: 12, padding: "10px 18px", background: PAPER }),
   ).join("");
   return `<div style="border-top:1px solid ${BEGE};margin:28px 0 20px 0;line-height:0;font-size:0;">&nbsp;</div>
-  <p style="margin:0 0 12px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${INK};">Siga a Clarice &times; Diar.ia</p>
+  <p style="margin:0 0 12px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${INK};">Siga a Clarice &times; diar.ia.br</p>
   <table role="presentation" align="center" cellpadding="0" cellspacing="0" style="margin:0 auto;"><tr><td style="text-align:center;">${pills}</td></tr></table>`;
 }
 
@@ -1454,7 +1454,7 @@ export function draftToEmail(
       continue;
     }
 
-    // LIVROS: box promovendo a página de curadoria de livros da Diar.ia (bege),
+    // LIVROS: box promovendo a página de curadoria de livros da diar.ia.br (bege),
     // igual ao box de livros da diária. Reusa o box do Clarice com rótulo "Livros".
     if (label === "LIVROS") {
       bodyParts.push(renderClariceBox(chunk, "Livros", livrosImageUrl));

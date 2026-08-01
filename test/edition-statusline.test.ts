@@ -569,7 +569,7 @@ describe("integração disco: edição em curso + rodada overnight simultâneos 
       // #2255: idle bar is ALWAYS present — never empty string
       assert.notEqual(bar, "", "idle: barra NUNCA deve ser string vazia (#2255)");
       assert.ok(bar.includes("████████████"), `idle: barra deve estar cheia: ${bar}`);
-      assert.ok(bar.includes("Diar.ia"), `idle: barra deve ter label Diar.ia: ${bar}`);
+      assert.ok(bar.includes("diar.ia.br"), `idle: barra deve ter label diar.ia.br: ${bar}`);
     } finally {
       rmSync(idleRoot, { recursive: true, force: true });
     }
@@ -609,7 +609,7 @@ describe("renderIdleBar — pure function (#2255)", () => {
     const result = renderIdleBar("260617");
     assert.ok(result.length > 0, `idle bar deve ser não-vazia: ${result}`);
     assert.ok(result.includes("████████████"), `idle bar deve ter barra cheia: ${result}`);
-    assert.ok(result.includes("Diar.ia"), `idle bar deve ter label 'Diar.ia': ${result}`);
+    assert.ok(result.includes("diar.ia.br"), `idle bar deve ter label 'diar.ia.br': ${result}`);
     assert.ok(result.includes("260617"), `idle bar deve incluir edição ID: ${result}`);
     assert.ok(result.includes("pronto"), `idle bar deve incluir 'pronto': ${result}`);
   });
@@ -618,18 +618,18 @@ describe("renderIdleBar — pure function (#2255)", () => {
     const result = renderIdleBar(null);
     assert.ok(result.length > 0, `idle bar deve ser não-vazia para null: ${result}`);
     assert.ok(result.includes("████████████"), `idle bar deve ter barra cheia: ${result}`);
-    assert.ok(result.includes("Diar.ia"), `idle bar deve ter label 'Diar.ia': ${result}`);
+    assert.ok(result.includes("diar.ia.br"), `idle bar deve ter label 'diar.ia.br': ${result}`);
     assert.ok(result.includes("sem rodada ativa"), `idle bar deve incluir 'sem rodada ativa': ${result}`);
   });
 
-  it("formato canônico com edição: '[████████████] Diar.ia · AAMMDD · pronto'", () => {
+  it("formato canônico com edição: '[████████████] diar.ia.br · AAMMDD · pronto'", () => {
     const result = renderIdleBar("260617");
-    assert.match(result, /^\[█{12}\] Diar\.ia · \d{6} · pronto$/);
+    assert.match(result, /^\[█{12}\] diar\.ia\.br · \d{6} · pronto$/);
   });
 
-  it("formato canônico sem edição: '[████████████] Diar.ia · sem rodada ativa'", () => {
+  it("formato canônico sem edição: '[████████████] diar.ia.br · sem rodada ativa'", () => {
     const result = renderIdleBar(null);
-    assert.match(result, /^\[█{12}\] Diar\.ia · sem rodada ativa$/);
+    assert.match(result, /^\[█{12}\] diar\.ia\.br · sem rodada ativa$/);
   });
 
   it("nunca retorna string vazia — nem para null, nem para ID vazio", () => {
@@ -759,7 +759,7 @@ describe("precedência completa: edição > overnight > idle (#2255)", () => {
 
     assert.notEqual(overnightBar, "", "overnight bar deve estar presente");
     assert.equal(bar, overnightBar, "overnight bar deve ter prioridade sobre idle");
-    assert.ok(!bar.includes("Diar.ia"), `idle label não deve aparecer quando overnight ativo: ${bar}`);
+    assert.ok(!bar.includes("diar.ia.br"), `idle label não deve aparecer quando overnight ativo: ${bar}`);
   });
 
   it("idle bar nunca aparece quando edição está ativa", () => {
@@ -888,7 +888,7 @@ describe("renderStatusline — #2618: barra some após edição concluída", () 
     );
     // Deve mostrar idle bar (não suprimir)
     assert.ok(result.includes("["), `idle bar deve aparecer: "${result}"`);
-    assert.ok(result.includes("Diar.ia"), `idle bar deve conter 'Diar.ia': "${result}"`);
+    assert.ok(result.includes("diar.ia.br"), `idle bar deve conter 'diar.ia.br': "${result}"`);
   });
 
   it("edição CONCLUÍDA: renderStatusline é pura — chamadas repetidas produzem mesmo resultado", () => {

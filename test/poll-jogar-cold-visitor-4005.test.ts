@@ -62,7 +62,7 @@ describe("título pra visitante frio (#4005 item 1)", () => {
 
   it("<title> e meta description acompanham a nova copy (sem 'sequência do mês anterior' como enquadramento)", () => {
     const html = renderJogarSequencePageHtml(["260601"]);
-    assert.match(html, /<title>É IA\? — qual imagem foi feita por IA\? \| Diar\.ia<\/title>/);
+    assert.match(html, /<title>É IA\? — qual imagem foi feita por IA\? \| diar\.ia\.br<\/title>/);
   });
 });
 

@@ -92,7 +92,7 @@ describe("#3181/#3183 — 'O fio condutor': ponto teal + label ink, padding 24px
   });
 });
 
-describe("#3183 — 'Acesse nossas curadorias:' e 'Siga a Clarice × Diar.ia': letter-spacing 2px (era 1px)", () => {
+describe("#3183 — 'Acesse nossas curadorias:' e 'Siga a Clarice × diar.ia.br': letter-spacing 2px (era 1px)", () => {
   it("renderEncerramento", () => {
     const body = "Fechamento do mês.\n\n- [Curso X](https://x.example/curso)";
     const html = renderEncerramento(body);
@@ -105,14 +105,14 @@ describe("#3183 — 'Acesse nossas curadorias:' e 'Siga a Clarice × Diar.ia': l
 
   it("renderSocialFooter", () => {
     const html = renderSocialFooter();
-    const m = html.match(/<p style="([^"]+)">Siga a Clarice &times; Diar\.ia<\/p>/);
+    const m = html.match(/<p style="([^"]+)">Siga a Clarice &times; diar\.ia\.br<\/p>/);
     assert.ok(m);
     assert.match(m![1], /letter-spacing:2px/);
     assert.doesNotMatch(m![1], /letter-spacing:1px/);
   });
 });
 
-describe("#3181/#3183 — renderCobrandHeader: wordmark 'Clarice' mantém teal (large text, fora de escopo #3181), line-height 1.2 (#3183); label 'Clarice × Diar.ia' letter-spacing 2px", () => {
+describe("#3181/#3183 — renderCobrandHeader: wordmark 'Clarice' mantém teal (large text, fora de escopo #3181), line-height 1.2 (#3183); label 'Clarice × diar.ia.br' letter-spacing 2px", () => {
   const html = renderCobrandHeader();
 
   it("wordmark continua teal (26px bold — WCAG large text, 3:1, teal passa)", () => {
@@ -128,8 +128,8 @@ describe("#3181/#3183 — renderCobrandHeader: wordmark 'Clarice' mantém teal (
     assert.doesNotMatch(m![1], /line-height:1\.15;/);
   });
 
-  it("'Clarice × Diar.ia': letter-spacing 2px (era 1.5px)", () => {
-    const m = html.match(/<div style="([^"]+)">Clarice &times; Diar\.ia<\/div>/);
+  it("'Clarice × diar.ia.br': letter-spacing 2px (era 1.5px)", () => {
+    const m = html.match(/<div style="([^"]+)">Clarice &times; diar\.ia\.br<\/div>/);
     assert.ok(m);
     assert.match(m![1], /letter-spacing:2px/);
     assert.doesNotMatch(m![1], /letter-spacing:1\.5px/);

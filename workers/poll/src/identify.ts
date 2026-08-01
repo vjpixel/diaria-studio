@@ -447,7 +447,7 @@ async function handleOrphanIdentify(
  *
  * Fluxo: parse → valida → rate-limit → `hasOrphanHistory` decide entre:
  *   (a) SEM histórico órfão → `performIdentifyMerge` direto (comportamento
- *       original da Fase A, sem fricção) → assina a Diar.ia se `optin`
+ *       original da Fase A, sem fricção) → assina a diar.ia.br se `optin`
  *       (best-effort, nunca bloqueia a identificação).
  *   (b) COM histórico órfão (#3996) → `handleOrphanIdentify` — NÃO mergeia
  *       na hora, dispara e-mail de confirmação (link mágico).

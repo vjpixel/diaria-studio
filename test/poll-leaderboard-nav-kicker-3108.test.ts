@@ -147,7 +147,7 @@ describe("#3108 — sub-copy: 2 links SÓ no brand clarice; brand diaria INALTER
 
   it("brand diaria: sub-copy é o texto original + UTM (#3978), sem os 2 links da clarice (regressão contra generalização acidental)", async () => {
     const html = await fetchHtml("/leaderboard");
-    const expected = `<p class="sub">Quem mais acertou esse mês qual imagem foi gerada por IA na <a href="${leaderboardCopyHrefEscaped("diaria")}">Diar.ia</a>.</p>`;
+    const expected = `<p class="sub">Quem mais acertou esse mês qual imagem foi gerada por IA na <a href="${leaderboardCopyHrefEscaped("diaria")}">diar.ia.br</a>.</p>`;
     assert.ok(
       html.includes(expected),
       `sub-copy do brand diaria deve permanecer com o texto original (só ganhando UTM no href, #3978). Esperado:\n${expected}\nRecebido (trecho):\n${html.match(/<p class="sub">.*?<\/p>/s)?.[0]}`,

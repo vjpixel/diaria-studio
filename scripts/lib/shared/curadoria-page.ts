@@ -157,7 +157,7 @@ export interface CuradoriaNavLink {
 }
 
 /**
- * Navegação cruzada entre as 3 superfícies públicas da Diar.ia (#3113 —
+ * Navegação cruzada entre as 3 superfícies públicas da diar.ia.br (#3113 —
  * "nenhuma linka as outras hoje, nem Cursos/Livros linkam de volta pro
  * diar.ia.br"). É IA? aponta pro leaderboard público (`poll` worker) — não há
  * uma homepage estática dedicada à feature, o leaderboard é a superfície
@@ -171,18 +171,18 @@ export interface CuradoriaNavLink {
  * uso real) funciona igual sobre um array readonly.
  */
 export const CURADORIA_NAV_LINKS: readonly CuradoriaNavLink[] = [
-  { label: "Diar.ia", url: "https://diar.ia.br" },
+  { label: "diar.ia.br", url: "https://diar.ia.br" },
   { label: "Cursos", url: "https://cursos.diar.ia.br/" }, // #3698: domínio de marca
   { label: "Livros", url: "https://livros.diar.ia.br/" }, // #3698: domínio de marca
   { label: "É IA?", url: `${DIARIA_EIA_URL}/leaderboard` }, // #3904: domínio de marca (era poll.diaria.workers.dev)
 ];
 
 /**
- * Rodapé comum: nav cruzada (Diar.ia · Cursos · Livros · É IA?) + linha de
+ * Rodapé comum: nav cruzada (diar.ia.br · Cursos · Livros · É IA?) + linha de
  * crédito específica da página (ex: "diar.ia.br — curadoria de cursos sobre IA").
  *
  * `diariaUtm` (#4051): query string (sem `?`, ex: `"utm_source=livros&utm_medium=footer-nav"`)
- * apensada SÓ ao link "Diar.ia" — as outras 3 entradas (Cursos/Livros/É IA?)
+ * apensada SÓ ao link "diar.ia.br" — as outras 3 entradas (Cursos/Livros/É IA?)
  * não são o objeto de medição desta issue e continuam sem UTM. Parâmetro
  * OPCIONAL e passado pelo CALLER (nunca hardcoded aqui) porque
  * `CURADORIA_NAV_LINKS` é um singleton `readonly` compartilhado por
@@ -192,7 +192,7 @@ export const CURADORIA_NAV_LINKS: readonly CuradoriaNavLink[] = [
  */
 export function renderCuradoriaFooter(creditText: string, diariaUtm?: string): string {
   const nav = CURADORIA_NAV_LINKS.map((l) => {
-    const href = l.label === "Diar.ia" && diariaUtm ? `${l.url}?${diariaUtm}` : l.url;
+    const href = l.label === "diar.ia.br" && diariaUtm ? `${l.url}?${diariaUtm}` : l.url;
     return `<a href="${escHtml(href)}">${escHtml(l.label)}</a>`;
   }).join(" · ");
   return `<footer><div class="wrap"><p class="foot-nav">${nav}</p><p class="foot-credit">${escHtml(creditText)}</p></div></footer>`;

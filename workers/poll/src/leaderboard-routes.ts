@@ -325,7 +325,7 @@ export async function invalidateSnapshot(env: Env, slug: string): Promise<void> 
  *   `visible.slice(0, LEADERBOARD_DISPLAY_CAP)`) — não aqui. Capar no write esconderia
  *   votantes além do cap do ranking e quebraria o dense-rank para quem está perto do corte.
  *
- *   Volume esperado: ~50–200 votantes/mês em produção (Diar.ia). O snapshot por
+ *   Volume esperado: ~50–200 votantes/mês em produção (diar.ia.br). O snapshot por
  *   mês (JSON em KV) cresce ~200 bytes/votante → <40KB para 200 votantes, bem
  *   abaixo do limite de 128MB do KV da Cloudflare.
  */
@@ -1048,7 +1048,7 @@ function renderLeaderboardHtml(
   // #4418 §3: faixa de confirmação pós-redirect de /set-name bem-sucedido.
   confirmationBanner: string | null = null,
 ): Response {
-  // #1905: título/copy/link por marca (Diar.ia diário vs Clarice News mensal).
+  // #1905: título/copy/link por marca (diar.ia.br diário vs Clarice News mensal).
   const info = BRAND_INFO[brand];
   // #2006: "Leaderboard de 2026" (ano) vs "Leaderboard de Maio de 2026" (mês).
   const heading = periodKind === "year" ? `Leaderboard de ${year}` : `Leaderboard de ${periodLabel} de ${year}`;
@@ -1806,7 +1806,7 @@ export async function handleArchiveVotePage(
     // QUALQUER brand, mesmo os com `leaderboardPeriod !== "year"` (hoje:
     // diaria/web), que não têm noção de ciclo mensal. Verificado ao vivo pelo
     // revisor: `handleArchiveVotePage("2026", "2605-06", env, "diaria")`
-    // respondia 200, renderizando a página de voto com branding "Diar.ia" mas
+    // respondia 200, renderizando a página de voto com branding "diar.ia.br" mas
     // descrevendo "leaderboard anual" (que a diaria não tem — o período dela
     // é "month"). O caminho inverso (AAMMDD pra brand anual — marcador
     // legado, ver `legacyMonthlyEditionForCycle`) continua aceito de

@@ -1,12 +1,12 @@
 /**
  * build-cursos-page.ts (#1745)
  *
- * Gera a página "Cursos sobre IA" da Diar.ia a partir de
+ * Gera a página "Cursos sobre IA" da diar.ia.br a partir de
  * `seed/courses/cursos-ia.json` (curadoria do editor, derivada do doc de
  * pesquisa "Busca Cursos Gratuitos IA"). Emite um HTML self-contained (dados +
  * filtros client-side inline) servido pelo Worker `cursos`.
  *
- * Espelha `build-livros-page.ts` (#1744) — mesmo design editorial Diar.ia
+ * Espelha `build-livros-page.ts` (#1744) — mesmo design editorial diar.ia.br
  * (#1936/#1935: DS canônico — Georgia serif, accent teal #00A0A0, papel #FBFAF6,
  * molduras bege #EBE5D0, texto ink), cards text-focused — mas com o
  * conjunto completo de filtros: idioma, nível, custo, formato, duração,
@@ -58,9 +58,9 @@ const DEFAULT_OUT = resolve(ROOT, "data/cursos/index.html");
 // — sem isso, mudar este domínio no futuro e esquecer o footer causaria
 // exatamente o tipo de drift silencioso que essa issue existe pra eliminar.
 export const PAGE_URL = "https://cursos.diar.ia.br/";
-const PAGE_TITLE = "Cursos sobre IA · Diar.ia";
+const PAGE_TITLE = "Cursos sobre IA · diar.ia.br";
 const PAGE_DESCRIPTION =
-  "Cursos gratuitos e pagos sobre inteligência artificial, com filtros por idioma, nível, formato, duração e plataforma — curadoria da Diar.ia.";
+  "Cursos gratuitos e pagos sobre inteligência artificial, com filtros por idioma, nível, formato, duração e plataforma — curadoria da diar.ia.br.";
 
 // #1936/#1935: DS canônico (vjpixel/diaria-design via lib/shared/design-tokens.ts).
 // Era ad-hoc (Newsreader + paleta #F5F1E8/#FFFDF8/#1A1A1A divergente do canvas
@@ -271,7 +271,7 @@ function renderFilter(id: string, label: string, opts: Array<{ value: string; la
 }
 
 /**
- * Renderiza a página completa no design editorial Diar.ia. Pure — recebe os
+ * Renderiza a página completa no design editorial diar.ia.br. Pure — recebe os
  * cursos, devolve HTML 100% self-contained (Georgia é system font — sem fonte externa).
  */
 export function renderCursosPage(courses: Course[], mode: CursosRenderMode = "full"): string {
@@ -302,14 +302,14 @@ function renderPageBody(visible: Course[], hiddenCount: number, mode: CursosRend
     mode === "teaser" && hiddenCount > 0
       ? `  <div class="gate-banner">
     <div class="wrap gate-banner-wrap">
-      <p>🔒 Mais ${hiddenCount} ${hiddenCount === 1 ? "curso curado" : "cursos curados"} para assinantes da Diar.ia.</p>
+      <p>🔒 Mais ${hiddenCount} ${hiddenCount === 1 ? "curso curado" : "cursos curados"} para assinantes da diar.ia.br.</p>
       <form id="gate-banner-form" class="gate-banner-form" novalidate>
         <input type="email" id="gate-banner-email" name="email" placeholder="seu@email.com" aria-label="E-mail" autocomplete="email" required>
         <input type="text" name="website" class="gate-banner-hp" tabindex="-1" autocomplete="off" aria-hidden="true">
         <button type="submit" id="gate-banner-submit">Desbloquear</button>
       </form>
       <p class="gate-banner-msg" id="gate-banner-msg" role="status"></p>
-      <p class="gate-banner-alt"><a href="/gate">Ainda não assina a Diar.ia? Cadastre-se aqui →</a></p>
+      <p class="gate-banner-alt"><a href="/gate">Ainda não assina a diar.ia.br? Cadastre-se aqui →</a></p>
     </div>
   </div>
 `
@@ -418,7 +418,7 @@ ${renderCuradoriaFooterStyles()}
 <body>
 ${gateBanner}  <header>
     <div class="wrap">
-      <p class="eyebrow">Diar.ia · Curadoria</p>
+      <p class="eyebrow">diar.ia.br · Curadoria</p>
       <hr class="rule">
       <h1>Cursos sobre IA<span class="dot" aria-hidden="true">.</span></h1>
       <p class="tagline">5 minutos diários pra se manter atualizado e usar melhor as IAs</p>

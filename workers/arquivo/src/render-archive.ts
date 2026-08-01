@@ -29,7 +29,7 @@
  * (link puro, sem form/JS) + rodapé com nav cruzada de volta pra
  * `diar.ia.br` (já presente desde #4265 item 9).
  *
- * Design/SEO (#4265 itens 7/8/9, já implementados): DS canônico da Diar.ia
+ * Design/SEO (#4265 itens 7/8/9, já implementados): DS canônico da diar.ia.br
  * via `scripts/lib/shared/{design-tokens,curadoria-page,seo-meta}.ts` —
  * mesmo padrão de `cursos.diar.ia.br`/`livros.diar.ia.br` (#3698). Zero JS
  * client-side (mantém o requisito original do #4105 de página 100%
@@ -65,9 +65,9 @@ const titlesCache: TitlesCacheMap = titlesCacheRaw as TitlesCacheMap;
 export const PAGE_URL = "https://arquivo.diar.ia.br/";
 /** URL de assinatura (#4265 item 4 — CTA simples, sem form/JS). */
 const SUBSCRIBE_URL = "https://diar.ia.br/subscribe";
-const PAGE_TITLE = "Arquivo — todas as edições da Diar.ia";
+const PAGE_TITLE = "Arquivo — todas as edições da diar.ia.br";
 const PAGE_DESCRIPTION =
-  "Índice de todas as edições publicadas da newsletter Diar.ia, agrupadas por mês.";
+  "Índice de todas as edições publicadas da newsletter diar.ia.br, agrupadas por mês.";
 
 /** CSS específico da listagem (seções por mês + lista de edições) — não
  * coberto por `curadoria-page.ts` (que atende o padrão de grid de cards de
@@ -304,12 +304,12 @@ ${renderCuradoriaFooterStyles()}
 <body>
   <header>
     <div class="wrap">
-      <p class="eyebrow">Diar.ia · Arquivo</p>
+      <p class="eyebrow">diar.ia.br · Arquivo</p>
       <hr class="rule">
       <h1>Arquivo<span class="dot" aria-hidden="true">.</span></h1>
       <p class="tagline">5 minutos diários pra se manter atualizado e usar melhor as IAs</p>
-      <p class="lede">Todas as edições já publicadas da newsletter Diar.ia, agrupadas por mês.</p>
-      <p class="subscribe-cta"><a href="${esc(SUBSCRIBE_URL)}">Assine a Diar.ia →</a></p>
+      <p class="lede">Todas as edições já publicadas da newsletter diar.ia.br, agrupadas por mês.</p>
+      <p class="subscribe-cta"><a href="${esc(SUBSCRIBE_URL)}">Assine a diar.ia.br →</a></p>
     </div>
   </header>
   <main>

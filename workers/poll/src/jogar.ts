@@ -157,7 +157,7 @@ export function buildSubscribeUrl(): string {
  * Pure (#3589, rework do #3518): a "caixa do meio" pós-voto — decisão do
  * editor (review 260716, #3589 item 4): deixa de EMPURRAR assinatura (função
  * redundante com o form inline #3580, que já é a conversão primária) e passa
- * a convidar o visitante a CONHECER o projeto Diar.ia — link pro site
+ * a convidar o visitante a CONHECER o projeto diar.ia.br — link pro site
  * (`BRAND_INFO.web.siteUrl`), NÃO pro subscribe do Beehiiv.
  *
  * `buildSubscribeUrl`/`SUBSCRIBE_UTM_SOURCE` acima NÃO foram removidos por
@@ -182,8 +182,8 @@ export function buildSubscribeUrl(): string {
 //
 // Achado do editor ao jogar a versão deployada (260724): a única identidade
 // de marca na página era textual — o kicker "É IA?" (nome do JOGO, não da
-// Diar.ia) + o rodapé mínimo `renderBrandFooter` (lib.ts, um link de texto
-// puro "Diar.ia"). Faltava a marca VISUAL — o wordmark serif ink+teal que
+// diar.ia.br) + o rodapé mínimo `renderBrandFooter` (lib.ts, um link de texto
+// puro "diar.ia.br"). Faltava a marca VISUAL — o wordmark serif ink+teal que
 // aparece em todo o resto do produto (`data/brand/logo/logo.svg`, cópia
 // local do design system canônico vjpixel/diaria-design).
 //
@@ -207,8 +207,8 @@ export function renderJogarBrandLogoBlock(): string {
 export function renderSubscribeCtaBlock(): string {
   const url = buildBrandSiteUrl(JOGAR_BRAND, "posvoto-cta", "eia-jogar-conhecer");
   return `<div id="jogar-subscribe-cta" class="subscribe-cta" hidden>
-  <p class="subscribe-text">Quer entender o que a Diar.ia faz? Conheça o projeto.</p>
-  <a class="subscribe-btn" href="${htmlEscape(url)}" target="_blank" rel="noopener">Conhecer a Diar.ia</a>
+  <p class="subscribe-text">Quer entender o que a diar.ia.br faz? Conheça o projeto.</p>
+  <a class="subscribe-btn" href="${htmlEscape(url)}" target="_blank" rel="noopener">Conhecer a diar.ia.br</a>
 </div>`;
 }
 
@@ -243,7 +243,7 @@ export function buildQuizSubscribeUrl(): string {
  * Pure (#3579): bloco HTML do CTA de assinatura no resultado final do quiz
  * relâmpago — copy própria do editor (review 260716), distinta do CTA
  * genérico pós-voto de par único (`renderSubscribeCtaBlock`). Enquadra as
- * imagens do quiz como o arquivo de edições passadas da Diar.ia (o jogador
+ * imagens do quiz como o arquivo de edições passadas da diar.ia.br (o jogador
  * acabou de jogar vários pares de edições anteriores em sequência, contexto
  * que o CTA genérico não menciona) e convida pra assinatura. Mesmo `id`/
  * `class`/mecânica `hidden` de `renderSubscribeCtaBlock` — o JS do quiz
@@ -254,8 +254,8 @@ export function buildQuizSubscribeUrl(): string {
 export function renderQuizSubscribeCtaBlock(): string {
   const url = buildQuizSubscribeUrl();
   return `<div id="jogar-subscribe-cta" class="subscribe-cta" hidden>
-  <p class="subscribe-text">Essas imagens são do arquivo de edições passadas da Diar.ia. Quer receber notícias de IA, tutoriais pra usar no dia a dia e um par desses todo dia? Assine a Diar.ia (grátis).</p>
-  <a class="subscribe-btn" href="${htmlEscape(url)}" target="_blank" rel="noopener">Assinar a Diar.ia</a>
+  <p class="subscribe-text">Essas imagens são do arquivo de edições passadas da diar.ia.br. Quer receber notícias de IA, tutoriais pra usar no dia a dia e um par desses todo dia? Assine a diar.ia.br (grátis).</p>
+  <a class="subscribe-btn" href="${htmlEscape(url)}" target="_blank" rel="noopener">Assinar a diar.ia.br</a>
 </div>`;
 }
 
@@ -295,8 +295,8 @@ export function renderInlineSignupFormBlock(hidden: boolean = true): string {
   <label class="signup-field"><span>Nome</span><input type="text" name="name" autocomplete="name" maxlength="100"></label>
   <label class="signup-field"><span>E-mail</span><input type="email" name="email" autocomplete="email" maxlength="254" required></label>
   <div class="signup-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
-  <label class="signup-optin"><input type="checkbox" name="optin" value="on"> Quero receber a Diar.ia — notícias de IA + tutoriais + um par desses todo dia.</label>
-  <button type="submit" class="signup-btn">Assinar a Diar.ia (grátis)</button>
+  <label class="signup-optin"><input type="checkbox" name="optin" value="on"> Quero receber a diar.ia.br — notícias de IA + tutoriais + um par desses todo dia.</label>
+  <button type="submit" class="signup-btn">Assinar a diar.ia.br (grátis)</button>
   <p class="signup-status" role="status" aria-live="polite" hidden></p>
 </form>`;
 }
@@ -361,7 +361,7 @@ export function renderInlineSignupFormStyles(): string {
  *
  * #4036 (item 5): copy do checkbox de opt-in reescrita — "grátis, seg-sex"
  * descrevia preço e frequência de uma coisa que quem chega por
- * compartilhamento nunca ouviu falar (não sabe o que É a Diar.ia). Nova copy
+ * compartilhamento nunca ouviu falar (não sabe o que É a diar.ia.br). Nova copy
  * nomeia o produto (newsletter de IA) + o que entrega + a frequência, na
  * mesma linha da tagline oficial ("5 minutos diários pra se manter
  * atualizado e usar melhor as IAs", #3695) — fonte de verdade do
@@ -372,7 +372,7 @@ export function renderInlineSignupFormStyles(): string {
  * tocado — travado por test/poll-jogar-cta-3518.test.ts (#3589 item 4).
  *
  * #4316: `.signup-note` reescrita — a versão anterior ("Seu e-mail entra no
- * ranking público e sai do modo anônimo. Assinar a Diar.ia é opcional, só se
+ * ranking público e sai do modo anônimo. Assinar a diar.ia.br é opcional, só se
  * você marcar a caixinha.") errava duas vezes. (1) O e-mail nunca é
  * renderizado no leaderboard — só o nome/nickname que a pessoa digita neste
  * form (`hasNickname ? nickname : masked`, leaderboard-routes.ts:136 e mais
@@ -386,11 +386,11 @@ export function renderInlineSignupFormStyles(): string {
  */
 export function renderIdentityFormBlock(): string {
   return `<form id="jogar-identity-form" class="signup-form" hidden novalidate>
-  <p class="signup-text">Quer um par desses todo dia no seu e-mail? Deixe seu nome e e-mail: assine a Diar.ia e entre no ranking.</p>
+  <p class="signup-text">Quer um par desses todo dia no seu e-mail? Deixe seu nome e e-mail: assine a diar.ia.br e entre no ranking.</p>
   <label class="signup-field"><span>Nome ou apelido</span><input type="text" name="name" autocomplete="name" maxlength="100" required></label>
   <label class="signup-field"><span>E-mail</span><input type="email" name="email" autocomplete="email" maxlength="254" required></label>
   <div class="signup-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
-  <label class="signup-optin"><input type="checkbox" name="optin" value="on"> Quero receber a Diar.ia — newsletter gratuita com as novidades de IA e como usar melhor as IAs, 5 minutos por dia, seg-sex.</label>
+  <label class="signup-optin"><input type="checkbox" name="optin" value="on"> Quero receber a diar.ia.br — newsletter gratuita com as novidades de IA e como usar melhor as IAs, 5 minutos por dia, seg-sex.</label>
   <button type="submit" class="signup-btn">Entrar no ranking</button>
   <p class="signup-note">No ranking você aparece pelo nome. O e-mail é usado como seu identificador. Marque a caixinha pra receber a diar.ia.br.</p>
   <p class="signup-status" role="status" aria-live="polite" hidden></p>
@@ -2573,7 +2573,7 @@ export function resolveJogarArchiveYear(rawYear: string | null, now: Date): stri
  */
 export function renderArchiveSubscribeReinforcement(): string {
   const url = buildSubscribeUrl();
-  return `<p class="sub archive-subscribe-reinforcement">Isso chega pronto na sua caixa de entrada todo dia — <a href="${htmlEscape(url)}" target="_blank" rel="noopener">assine a Diar.ia</a>.</p>`;
+  return `<p class="sub archive-subscribe-reinforcement">Isso chega pronto na sua caixa de entrada todo dia — <a href="${htmlEscape(url)}" target="_blank" rel="noopener">assine a diar.ia.br</a>.</p>`;
 }
 
 /**

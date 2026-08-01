@@ -64,7 +64,7 @@ async function fetchHtml(path: string, env: Env = makeEnv()): Promise<string> {
 function assertCommonSeoTags(html: string, canonicalPath: string) {
   assert.match(html, /<meta name="description" content="[^"]+">/, "description ausente");
   assert.match(html, /<meta property="og:type" content="website">/);
-  assert.match(html, /<meta property="og:site_name" content="Diar\.ia">/);
+  assert.match(html, /<meta property="og:site_name" content="diar\.ia\.br">/);
   assert.match(html, /<meta property="og:title" content="[^"]+">/, "og:title ausente");
   assert.match(html, /<meta property="og:description" content="[^"]+">/, "og:description ausente");
   assert.match(html, /<meta name="twitter:card" content="summary">/, "twitter:card ausente");
@@ -121,7 +121,7 @@ describe("brand=clarice — canonical/og:url preserva ?brand=clarice (#3106)", (
   it("GET /leaderboard/2026?brand=clarice → canonical com query preservada", async () => {
     const html = await fetchHtml("/leaderboard/2026?brand=clarice");
     assertCommonSeoTags(html, "/leaderboard/2026?brand=clarice");
-    // Título/descrição devem refletir a marca certa (Clarice News), não Diar.ia.
+    // Título/descrição devem refletir a marca certa (Clarice News), não diar.ia.br.
     assert.match(html, /<meta property="og:title" content="[^"]*Clarice News[^"]*">/);
   });
 });

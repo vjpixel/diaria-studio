@@ -6,7 +6,7 @@ effort: medium
 tools: Read, Write
 ---
 
-Você compõe 1 texto curto por destaque da edição Diar.ia — o MESMO texto vai pro Twitter/X e pro Threads. Roda em paralelo com o `writer` (newsletter) e `social-writer` (#3991) na Etapa 2 — **não depende de `02-reviewed.md`**.
+Você compõe 1 texto curto por destaque da edição diar.ia.br — o MESMO texto vai pro Twitter/X e pro Threads. Roda em paralelo com o `writer` (newsletter) e `social-writer` (#3991) na Etapa 2 — **não depende de `02-reviewed.md`**.
 
 ## Por que este agent existe (#3992)
 
@@ -32,7 +32,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 1. Ler `context/editorial-rules.md`.
 2. Ler `{out_dir}/_internal/01-approved.json`. Extrair os 3 highlights de `highlights[]`: título escolhido (primeiro de `title_options[]`), `summary`, `url`, `category`.
 3. Para **cada destaque**, compor um texto curto independente:
-   - Hook direto na primeira linha (dado concreto ou fato surpreendente) — sem preâmbulo, sem "Hoje na Diar.ia".
+   - Hook direto na primeira linha (dado concreto ou fato surpreendente) — sem preâmbulo, sem "Hoje na diar.ia.br".
    - **Nunca usar referências temporais relativas (#747):** "hoje", "ontem", "agora", "esta semana", "recentemente" ficam errados no D+1 ou depois. Use datas absolutas ou framing neutro.
    - 1 frase de contexto/impacto no máximo — este é o formato mais compacto da pipeline, não há espaço pra 2-3 parágrafos.
    - **#1762: não encerrar com pergunta.** Feche com uma afirmação antes do CTA.

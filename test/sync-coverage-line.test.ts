@@ -91,7 +91,7 @@ describe("countEditorVsAuto (#1323)", () => {
     // 1 newsletter encaminhada = 1 email = X=1
     const { x, y } = countEditorVsAuto(pool, 1);
     assert.equal(x, 1, "1 forward de newsletter = 1 submissão");
-    assert.equal(y, 129, "29 URLs extras + 100 auto = 129 encontradas pela Diar.ia");
+    assert.equal(y, 129, "29 URLs extras + 100 auto = 129 encontradas pela diar.ia.br");
   });
 
   it("#1323: 3 forwards diretos + 1 newsletter forward = X=4", () => {
@@ -117,7 +117,7 @@ describe("countEditorVsAuto (#1323)", () => {
   });
 
   it("#1864: Y subtrai os LINKS do editor (não os e-mails) quando inboxLinkCount é passado", () => {
-    // X = e-mails, Y = links Diar.ia encontrou. Caso 260605: pool 350 links,
+    // X = e-mails, Y = links diar.ia.br encontrou. Caso 260605: pool 350 links,
     // editor enviou 12 e-mails que trouxeram 157 links (3 editor + 154 newsletter).
     const pool = Array.from({ length: 350 }, (_, i) => ({ url: `u${i}` }));
     const { x, y } = countEditorVsAuto(pool, 12, 157);
@@ -412,18 +412,18 @@ Texto.
 
 describe("rewriteCoverageLine", () => {
   it("substitui números corretamente", () => {
-    const md = `Para esta edição, eu (o editor) enviei 5 submissões e a Diar.ia encontrou outros 130 artigos. Selecionamos os 34 mais relevantes para as pessoas que assinam a newsletter.
+    const md = `Para esta edição, eu (o editor) enviei 5 submissões e a diar.ia.br encontrou outros 130 artigos. Selecionamos os 34 mais relevantes para as pessoas que assinam a newsletter.
 
 ---
 
 Resto.`;
     const r = rewriteCoverageLine(md, 13, 125, 12);
     assert.ok(r.changed);
-    assert.match(r.md, /enviei 13 submissões e a Diar\.ia encontrou outros 125 artigos\. Selecionamos os 12/);
+    assert.match(r.md, /enviei 13 submissões e a diar\.ia\.br encontrou outros 125 artigos\. Selecionamos os 12/);
   });
 
   it("também aceita 'cinco' por extenso na linha original", () => {
-    const md = `Para esta edição, eu (o editor) enviei cinco submissões e a Diar.ia encontrou outros 130 artigos. Selecionamos os 34 mais relevantes para as pessoas que assinam a newsletter.
+    const md = `Para esta edição, eu (o editor) enviei cinco submissões e a diar.ia.br encontrou outros 130 artigos. Selecionamos os 34 mais relevantes para as pessoas que assinam a newsletter.
 
 Resto.`;
     const r = rewriteCoverageLine(md, 13, 125, 12);
@@ -432,11 +432,24 @@ Resto.`;
   });
 
   it("no-op quando números já corretos", () => {
-    const md = `Para esta edição, eu (o editor) enviei 13 submissões e a Diar.ia encontrou outros 125 artigos. Selecionamos os 12 mais relevantes para as pessoas que assinam a newsletter.
+    const md = `Para esta edição, eu (o editor) enviei 13 submissões e a diar.ia.br encontrou outros 125 artigos. Selecionamos os 12 mais relevantes para as pessoas que assinam a newsletter.
 
 Resto.`;
     const r = rewriteCoverageLine(md, 13, 125, 12);
     assert.equal(r.changed, false);
+  });
+
+  it("#4424: reconhece a linha ainda com a forma antiga da marca ('Diar.ia') e a substitui pela forma atual", () => {
+    // Uma edição em curso pode ter a linha escrita antes do rebrand — o
+    // regex precisa achá-la mesmo assim, e o output SEMPRE usa a forma nova
+    // daqui pra frente (rewriteCoverageLine não preserva a forma velha).
+    const md = `Para esta edição, eu (o editor) enviei 5 submissões e a Diar.ia encontrou outros 130 artigos. Selecionamos os 34 mais relevantes para as pessoas que assinam a newsletter.
+
+Resto.`;
+    const r = rewriteCoverageLine(md, 13, 125, 12);
+    assert.ok(r.changed);
+    assert.match(r.md, /enviei 13 submissões e a diar\.ia\.br encontrou outros 125 artigos/);
+    assert.doesNotMatch(r.md, /Diar\.ia/);
   });
 
   it("retorna changed: false quando linha ausente", () => {
@@ -457,7 +470,7 @@ intentional_error:
   correct_value: "Anthropic"
 ---
 
-Para esta edição, eu (o editor) enviei 5 submissões e a Diar.ia encontrou outros 130 artigos. Selecionamos os 34 mais relevantes para as pessoas que assinam a newsletter.
+Para esta edição, eu (o editor) enviei 5 submissões e a diar.ia.br encontrou outros 130 artigos. Selecionamos os 34 mais relevantes para as pessoas que assinam a newsletter.
 
 ---
 
@@ -472,13 +485,13 @@ Resto.`;
   it("#1179: tolera vírgula após 'submissões' (Clarice às vezes adiciona)", () => {
     // Caso real edição 260513: Clarice sugeriu "submissões" → "submissões,"
     // e o regex original não tolerava — script falhava silenciosamente.
-    const md = `Para esta edição, eu (o editor) enviei 8 submissões, e a Diar.ia encontrou outros 120 artigos. Selecionamos os 15 mais relevantes para as pessoas que assinam a newsletter.
+    const md = `Para esta edição, eu (o editor) enviei 8 submissões, e a diar.ia.br encontrou outros 120 artigos. Selecionamos os 15 mais relevantes para as pessoas que assinam a newsletter.
 
 Resto.`;
     const r = rewriteCoverageLine(md, 8, 120, 12);
     assert.ok(r.changed, "deve normalizar pra forma canônica (sem vírgula extra)");
     // Resultado canônico: sem vírgula entre "submissões" e "e".
-    assert.match(r.md, /enviei 8 submissões e a Diar\.ia/);
+    assert.match(r.md, /enviei 8 submissões e a diar\.ia\.br/);
     // Número Z atualizado de 15 → 12.
     assert.match(r.md, /Selecionamos os 12 mais relevantes/);
     // Vírgula extra removida.
@@ -494,12 +507,12 @@ intentional_error:
   correct_value: "Anthropic"
 ---
 
-Para esta edição, eu (o editor) enviei 8 submissões, e a Diar.ia encontrou outros 120 artigos. Selecionamos os 15 mais relevantes para as pessoas que assinam a newsletter.
+Para esta edição, eu (o editor) enviei 8 submissões, e a diar.ia.br encontrou outros 120 artigos. Selecionamos os 15 mais relevantes para as pessoas que assinam a newsletter.
 
 Resto.`;
     const r = rewriteCoverageLine(md, 8, 120, 12);
     assert.ok(r.changed);
-    assert.match(r.md, /enviei 8 submissões e a Diar\.ia/);
+    assert.match(r.md, /enviei 8 submissões e a diar\.ia\.br/);
     assert.match(r.md, /Selecionamos os 12 mais relevantes/);
   });
 });
@@ -1027,7 +1040,7 @@ describe("renderCaptureFailedLine / rewriteCoverageLineAsCaptureFailed (#2878)",
   });
 
   it("(a) substitui a linha de cobertura normal pelo aviso quando a captura falhou", () => {
-    const md = `Para esta edição, eu (o editor) enviei 5 submissões e a Diar.ia encontrou outros 130 artigos. Selecionamos os 34 mais relevantes para as pessoas que assinam a newsletter.
+    const md = `Para esta edição, eu (o editor) enviei 5 submissões e a diar.ia.br encontrou outros 130 artigos. Selecionamos os 34 mais relevantes para as pessoas que assinam a newsletter.
 
 Resto.`;
     const r = rewriteCoverageLineAsCaptureFailed(md, "invalid_client");
@@ -1061,7 +1074,7 @@ describe("rewriteCoverageLine — recuperação do aviso capture_failed (#2878)"
 Resto.`;
     const r = rewriteCoverageLine(md, 13, 125, 12);
     assert.ok(r.changed);
-    assert.match(r.md, /enviei 13 submissões e a Diar\.ia encontrou outros 125 artigos/);
+    assert.match(r.md, /enviei 13 submissões e a diar\.ia\.br encontrou outros 125 artigos/);
     assert.doesNotMatch(r.md, /contagem de submissões indisponível/);
   });
 });
@@ -1092,7 +1105,7 @@ describe("regressão #2878 — coverage line não confunde '0 real' com 'captura
     const capture = readCaptureFailedFromMarker(dir);
     assert.equal(capture.failed, true);
 
-    const originalMd = `Para esta edição, eu (o editor) enviei 11 submissões e a Diar.ia encontrou outros 130 artigos. Selecionamos os 34 mais relevantes para as pessoas que assinam a newsletter.
+    const originalMd = `Para esta edição, eu (o editor) enviei 11 submissões e a diar.ia.br encontrou outros 130 artigos. Selecionamos os 34 mais relevantes para as pessoas que assinam a newsletter.
 
 Resto.`;
     const { md, changed } = capture.failed
@@ -1123,7 +1136,7 @@ Resto.`;
     const capture = readCaptureFailedFromMarker(dir);
     assert.equal(capture.failed, false);
 
-    const originalMd = `Para esta edição, eu (o editor) enviei 11 submissões e a Diar.ia encontrou outros 130 artigos. Selecionamos os 34 mais relevantes para as pessoas que assinam a newsletter.
+    const originalMd = `Para esta edição, eu (o editor) enviei 11 submissões e a diar.ia.br encontrou outros 130 artigos. Selecionamos os 34 mais relevantes para as pessoas que assinam a newsletter.
 
 Resto.`;
     const x = readSubmissionsCountFromMarker(dir) ?? 0;
@@ -1133,7 +1146,7 @@ Resto.`;
 
     assert.equal(x, 0);
     assert.ok(changed);
-    assert.match(md, /enviei 0 submissões e a Diar\.ia/);
+    assert.match(md, /enviei 0 submissões e a diar\.ia\.br/);
     assert.doesNotMatch(md, /contagem de submissões indisponível/);
     rmSync(dir, { recursive: true, force: true });
   });

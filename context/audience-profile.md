@@ -1,4 +1,4 @@
-# Perfil de Audiência — Diar.ia
+# Perfil de Audiência — diar.ia.br
 
 **updated_at:** 2026-07-30
 **subscribers ativos:** 549

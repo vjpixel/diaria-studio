@@ -397,7 +397,7 @@ export function renderSharePageHtml(opts: SharePageOptions): string {
     utm_campaign: SHARE_UTM_CAMPAIGN,
   });
   const jogarHref = `/jogar?${jogarParams.toString()}`;
-  const pageTitle = "É IA? — resultado compartilhado | Diar.ia";
+  const pageTitle = "É IA? — resultado compartilhado | diar.ia.br";
   const seoMeta = renderSeoMeta({
     title: pageTitle,
     description: text,
@@ -671,7 +671,7 @@ export function renderQuizSharePageHtml(opts: QuizSharePageOptions): string {
     utm_campaign: QUIZ_SHARE_UTM_CAMPAIGN,
   });
   const jogarHref = `${jogarPath}?${jogarParams.toString()}`;
-  const pageTitle = isSequence ? "É IA? — resultado da sequência | Diar.ia" : "É IA? — quiz relâmpago | Diar.ia";
+  const pageTitle = isSequence ? "É IA? — resultado da sequência | diar.ia.br" : "É IA? — quiz relâmpago | diar.ia.br";
   const kicker = isSequence ? "É IA?" : "É IA? — quiz relâmpago";
   const ctaLabel = isSequence ? "Jogar agora" : "Jogar o quiz";
   const imgAlt = isSequence ? "Card de resultado da sequência do É IA?" : "Card de resultado do quiz relâmpago do É IA?";

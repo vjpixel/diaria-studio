@@ -36,7 +36,7 @@ describe("monthly-render extraído (#1844)", () => {
   it("módulo auto-contido funciona standalone", () => {
     assert.equal(escDirect("a & b < c"), "a &amp; b &lt; c");
     // draftToEmail é puro: draft → { subject, previewText, html }
-    const out = d2eDirect("REMETENTE\nDiar.ia\n", "Assunto X", "2606");
+    const out = d2eDirect("REMETENTE\ndiar.ia.br\n", "Assunto X", "2606");
     assert.equal(out.subject, "Assunto X");
     assert.ok(typeof out.html === "string" && out.html.length > 0);
   });
@@ -73,11 +73,11 @@ describe("monthly-render extraído (#1844)", () => {
   });
 });
 
-describe("wrapEmail — shell de marca co-brand Clarice × Diar.ia (#2645)", () => {
-  it("renderCobrandHeader emite o nome 'Clarice' + indicação de parceria com Diar.ia (textual, sem logo)", () => {
+describe("wrapEmail — shell de marca co-brand Clarice × diar.ia.br (#2645)", () => {
+  it("renderCobrandHeader emite o nome 'Clarice' + indicação de parceria com diar.ia.br (textual, sem logo)", () => {
     const html = renderCobrandHeader();
     assert.ok(html.includes("Clarice"), `nome Clarice ausente no header: ${html}`);
-    assert.ok(/Clarice\s*(&times;|×)\s*Diar\.ia/.test(html), `indicação de parceria Clarice × Diar.ia ausente: ${html}`);
+    assert.ok(/Clarice\s*(&times;|×)\s*diar\.ia\.br/.test(html), `indicação de parceria Clarice × diar.ia.br ausente: ${html}`);
     assert.ok(!html.includes("<img"), "sem asset de logo ainda — header deve ser textual, não <img> (decisão do editor 260701)");
   });
 
@@ -94,8 +94,8 @@ describe("wrapEmail — shell de marca co-brand Clarice × Diar.ia (#2645)", () 
 
   it("wrapEmail NÃO inclui header co-brand nem footer social (removidos a pedido do editor 260703)", () => {
     const { html } = d2eDirect("**ASSUNTO**\nTeste\n**INTRO**\nCorpo do mês.\n", null, "2605");
-    // masthead co-brand ("Clarice × Diar.ia") removido do topo
-    assert.ok(!html.includes("Clarice &times; Diar.ia"), "header co-brand não deve aparecer");
+    // masthead co-brand ("Clarice × diar.ia.br") removido do topo
+    assert.ok(!html.includes("Clarice &times; diar.ia.br"), "header co-brand não deve aparecer");
     // footer social ("Siga a Clarice" + pills) removido do rodapé
     assert.ok(!html.includes("Siga a Clarice"), "heading do footer social não deve aparecer");
     assert.doesNotMatch(html, /Facebook|Instagram|Threads/, "pills sociais do footer não devem aparecer");

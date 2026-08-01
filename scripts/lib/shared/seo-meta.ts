@@ -2,7 +2,7 @@
  * seo-meta.ts (#3106)
  *
  * Bloco <head> de SEO/compartilhamento compartilhado entre as páginas públicas
- * estáticas da Diar.ia geradas por script (`build-cursos-page.ts`,
+ * estáticas da diar.ia.br geradas por script (`build-cursos-page.ts`,
  * `build-livros-page.ts`). Cada página tem title/description próprios;
  * `renderSeoMeta` monta description + Open Graph + Twitter card + canonical +
  * favicon (SVG inline via data-URI — zero asset externo, zero custo).
@@ -33,7 +33,7 @@ export interface SeoMetaOptions {
   description: string;
   /** URL absoluta canônica desta página (http/https). */
   url: string;
-  /** og:site_name. Default "Diar.ia". */
+  /** og:site_name. Default "diar.ia.br". */
   siteName?: string;
   /** og:locale. Default "pt_BR". */
   locale?: string;
@@ -67,7 +67,7 @@ export const FAVICON_DATA_URI =
  * og:image/twitter:image.
  */
 export function renderSeoMeta(opts: SeoMetaOptions): string {
-  const { title, description, url, siteName = "Diar.ia", locale = "pt_BR" } = opts;
+  const { title, description, url, siteName = "diar.ia.br", locale = "pt_BR" } = opts;
   const t = escAttr(title);
   const d = escAttr(description);
   const u = escAttr(url);

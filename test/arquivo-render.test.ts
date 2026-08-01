@@ -153,7 +153,7 @@ describe("buildArchiveHtml (#4105)", () => {
     assert.match(html, /com-hora/);
   });
 
-  it("(#4312) o UTM do link de rodapé pra Diar.ia está catalogado em UTM_EMITTERS", async () => {
+  it("(#4312) o UTM do link de rodapé pra diar.ia.br está catalogado em UTM_EMITTERS", async () => {
     // Regressão: #4299 introduziu o literal solto `utm_source=arquivo&...`
     // direto no call site (violando a regra do próprio utm-registry.ts) e
     // nenhum teste pegou, porque `knownUtmSources()` DERIVA de
@@ -166,7 +166,7 @@ describe("buildArchiveHtml (#4105)", () => {
     );
     const html = buildArchiveHtml([entry("https://diar.ia.br/p/edicao-a", "2026-07-27")]);
     const m = /href="https:\/\/diar\.ia\.br\/?\?(utm_source=[^"]+)"/.exec(html);
-    assert.ok(m, "link 'Diar.ia' do rodapé não tem UTM na URL");
+    assert.ok(m, "link 'diar.ia.br' do rodapé não tem UTM na URL");
     // `escHtml` (aplicado no `href`) escreve `&` como `&amp;` — desfaz antes
     // de parsear a query string.
     const params = new URLSearchParams(m[1].replace(/&amp;/g, "&"));

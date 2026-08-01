@@ -21,9 +21,9 @@
  * A decisão do editor pediu "CTA de link (link no post ou 1º comentário,
  * conforme prática atual do canal)" para o LinkedIn. Mas a prática atual REAL
  * do canal — decidida em #595 (2026-05-08) e reafirmada em #3627 — é que o
- * post principal do LinkedIn NUNCA leva URL nem menção a "Diar.ia"/
- * "diar.ia.br" no corpo: o algoritmo do LinkedIn deprioriza posts com link
- * externo, e essa é a razão original do invariante. As duas frases da decisão
+ * post principal do LinkedIn NUNCA leva URL nem menção a "diar.ia.br" no
+ * corpo: o algoritmo do LinkedIn deprioriza posts com link externo, e essa é
+ * a razão original do invariante. As duas frases da decisão
  * do editor (#3991) são ambíguas entre si nesse ponto — por isso a
  * interpretação abaixo (a ser confirmada pelo editor, ver PR body):
  *
