@@ -497,6 +497,10 @@ export function renderDashboardHtml(
   // #3081: nota diagnóstica de campanhas com naming não reconhecido por
   // NENHUM classificador Clarice — sinaliza sem quebrar o render.
   const unclassifiedNote = renderUnclassifiedCampaignsNote(findUnclassifiedCampaignNames(campaigns));
+  // #4449 item 2: nota diagnóstica IRMÃ, mas pro caso oposto — campanha
+  // `--group` já CLASSIFICADA (warm, só pelo nome) cuja célula A/B/C
+  // esperada não foi extraível da lista (naming da LISTA divergente, #4447).
+  const groupMissingCellNote = renderGroupCampaignsMissingCellNote(findGroupCampaignsMissingCell(campaigns));
   // `activeCycle` segue servindo só o Resumo A/B/C abaixo (naming de campanha,
   // ex: "2605") — `calcCumulativeSent`/`CLARICE_PLAN_TOTAL` (cycle-naming)
   // pararam de alimentar a seção Volume (agora billing-window-based acima),
@@ -1021,6 +1025,7 @@ ${scheduledVisaoGeralSection}
 ${monthlyTotalsSection}
 ${volumeSection}
 ${unclassifiedNote}
+${groupMissingCellNote}
 <section class="phase2-section" id="campaigns-table">
   <h2 class="section-title">Envios</h2>
 ${renderColumnGlossary("envios", ENVIOS_COLUMNS)}
@@ -1872,6 +1877,50 @@ export function parseAbcAudienceCampaign(
   return null;
 }
 
+/**
+ * #4449 item 2: campanhas do fluxo `--group` cujo NOME sinaliza claramente
+ * que deveriam ter célula A/B/C (o `{key}` de "Clarice {yymm} grupo:{key}"
+ * termina em -A/-B/-C, ex: "grupo:d1-sab01-A") mas `parseAbcAudienceCampaign`
+ * não conseguiu extrair a célula (naming da LISTA não reconhecido — typo,
+ * variação de digitação, ou naming futuro diferente do #4447).
+ *
+ * `findUnclassifiedCampaignNames`/`classifyClariceAudience` NÃO pegam esse
+ * caso: `classifyClariceAudience` classifica QUALQUER `Clarice {yymm}
+ * grupo:{key}` como "warm" só pelo nome da CAMPANHA (#4255), sem checar se a
+ * célula foi de fato extraível da lista — uma campanha `--group` com célula
+ * esperada mas sem célula extraída passa por "classificada" e nunca aparece
+ * na nota de "não classificadas", mesmo tendo o MESMO problema estrutural (a
+ * mesma classe de bug que já se repetiu em #3081 → #3128 → #4447).
+ *
+ * Só marca quando o `{key}` termina em -A/-B/-C — sufixo ausente ou diferente
+ * (ex: "-interno", "-extra") é um envio `grupo:` LEGITIMAMENTE sem célula, não
+ * entra aqui (mesmo critério que `parseAbcAudienceCampaign` já usa pro
+ * cross-check `nameCellSuffix`). Exportado pra teste unitário.
+ */
+export function findGroupCampaignsMissingCell(
+  campaigns: Array<Pick<BrevoCampaign, "name"> & { listName?: string }>,
+): string[] {
+  const names: string[] = [];
+  for (const c of campaigns) {
+    if (!/^Clarice \d{4} grupo:/i.test(c.name.trim())) continue; // só o fluxo --group
+    if (!/grupo:[\w-]*-[ABC]$/i.test(c.name)) continue; // sem sinal de célula esperada — nada a reportar
+    if (parseAbcAudienceCampaign(c.name, c.listName)) continue; // célula extraída OK
+    names.push(c.name);
+  }
+  return names;
+}
+
+/**
+ * Renderiza a nota diagnóstica de campanhas `--group` com célula esperada mas
+ * não extraível (#4449 item 2). Mesmo padrão de `renderUnclassifiedCampaignsNote`
+ * (string vazia quando não há nada a reportar). Exportado pra teste unitário.
+ */
+export function renderGroupCampaignsMissingCellNote(names: string[]): string {
+  if (names.length === 0) return "";
+  const plural = names.length === 1 ? "" : "s";
+  return `<p class="section-note"><small>⚠️ ${names.length} campanha${plural} do fluxo --group parece${names.length === 1 ? "" : "m"} ter célula A/B/C no nome mas a célula não foi reconhecida na LISTA de destinatários (confira o naming — ver #4447): ${names.map((n) => escHtml(n)).join(", ")}.</small></p>`;
+}
+
 /** Métricas por célula do Resumo A/B/C por Audiência (#2976) — superset de `CellSummary`. */
 export interface CellSummaryV2 {
   cell: "A" | "B" | "C";
@@ -1956,6 +2005,16 @@ export interface AbcAudienceTable {
   significantClick: boolean;
   /** p-value do z-test líder vs 2ª colocada (null quando não há 2 células amostradas). */
   pValue: number | null;
+  /**
+   * #4449 item 1: dias (YYYY-MM-DD BRT) excluídos da agregação pelo guard
+   * `<3 células` (#3404) que TAMBÉM têm sinal de 3 campanhas do mesmo grupo
+   * no NOME (ver `expectedCellFromCampaignName`) — ou seja, provavelmente não
+   * é uma consolidação real (só 1-2 células enviadas de propósito), e sim uma
+   * campanha que falhou o parse (naming da lista divergente). Vazio quando
+   * nenhum dia excluído bate esse critério — omitido/opcional pra não quebrar
+   * fixtures de teste que constroem `AbcAudienceTable` à mão sem este campo.
+   */
+  suspectedDriftDays?: string[];
 }
 
 function emptyCellV2(cell: "A" | "B" | "C"): CellSummaryV2 {
@@ -1977,6 +2036,37 @@ function emptyCellV2(cell: "A" | "B" | "C"): CellSummaryV2 {
 }
 
 /**
+ * #4449 item 1: extrai a célula A/B/C esperada de um nome de campanha, SEM
+ * depender de `listName` nem de `parseAbcAudienceCampaign` ter conseguido
+ * resolver ciclo+célula — sinal puramente textual usado só pra responder "esta
+ * campanha PARECIA fazer parte de um grupo de teste A/B/C?", independente de
+ * o parse completo ter dado certo. Cobre os 3 naming conhecidos: warm diário
+ * ("... dNN-X"), warm/cold mensal ("... — X: ..." / "... — X · sufixo"), e o
+ * fluxo `--group` (".../grupo:{key}-X"). Usado só pra distinguir "consolidação
+ * real" (poucas campanhas existiram) de "drift de naming" (3 campanhas
+ * pretendiam existir, 1+ falhou o parse completo) no guard `<3` de
+ * `aggregateCellsV2` abaixo — nunca usado pra decidir a AGREGAÇÃO em si (só
+ * `parseAbcAudienceCampaign`, mais estrito, faz isso).
+ *
+ * Limitação conhecida e aceita: o agrupamento por dia em `aggregateCellsV2`
+ * não escopa este sinal por CICLO (campanha que falhou o parse não tem ciclo
+ * resolvível) — em tese, 2 testes A/B/C de ciclos DIFERENTES caindo no mesmo
+ * dia calendário poderiam produzir um falso positivo de drift. Aceito de
+ * propósito: o pior caso é uma nota de alarme a mais pro editor investigar e
+ * descartar (barato, autocorretivo) — o oposto (silenciar um drift real) é o
+ * próprio bug que este item existe pra corrigir.
+ */
+export function expectedCellFromCampaignName(campaignName: string): "A" | "B" | "C" | null {
+  const daily = campaignName.match(/Clarice News \d{4} d\d{2}-([ABC])\b/i);
+  if (daily) return daily[1].toUpperCase() as "A" | "B" | "C";
+  const monthly = campaignName.match(/(?:Clarice News|cold)\s+\d{4}-\d{2}\s*[—–-]\s*([ABC])\b/i);
+  if (monthly) return monthly[1].toUpperCase() as "A" | "B" | "C";
+  const group = campaignName.match(/grupo:[\w-]*-([ABC])$/i);
+  if (group) return group[1].toUpperCase() as "A" | "B" | "C";
+  return null;
+}
+
+/**
  * Agrega uma lista de campanhas JÁ FILTRADA (por audiência/ciclo) em CellSummaryV2[A,B,C].
  *
  * #3404: envios de CONSOLIDAÇÃO (só 1-2 células enviadas num dado dia, sem par
@@ -1987,12 +2077,25 @@ function emptyCellV2(cell: "A" | "B" | "C"): CellSummaryV2 {
  * de `groupMonthlyAbcTests` (scheduledAt‖sentDate →
  * toLocaleDateString("en-CA", {timeZone: "America/Sao_Paulo"})) — e só inclui
  * campanhas de dias com as 3 células representadas.
+ *
+ * #4449 item 1: o guard `<3` acima (pré-existente, #3404/#2976) não distinguia
+ * "dia com <3 campanhas reconhecidas no TOTAL" (consolidação real — comportamento
+ * correto, mantido) de "dia com 3 campanhas do mesmo grupo, mas 1+ falhou o
+ * parse completo" (drift de naming — 1 campanha corrompida derrubava as OUTRAS
+ * 2 que tinham parseado corretamente, sem nenhum sinal visível — confirmado ao
+ * vivo no teste "lista com célula ERRADA... é descartada", PR #4448). Agora
+ * cada dia excluído pelo guard é checado contra `expectedCellFromCampaignName`
+ * (sinal textual, não precisa do parse completo): se ≥3 células distintas
+ * aparecem nos NOMES das campanhas daquele dia mas o parse só resolveu <3, o
+ * dia entra em `driftDays` — ainda EXCLUÍDO da agregação (mesmo default seguro
+ * de antes: dado ausente > dado errado), mas agora com um sinal explícito pro
+ * editor investigar, em vez de ficar indistinguível de consolidação real.
  */
 function aggregateCellsV2(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
   cycle: string,
   audienceFilter: ClariceAudience | "any",
-): CellSummaryV2[] {
+): { cells: CellSummaryV2[]; driftDays: string[] } {
   const acc: Record<"A" | "B" | "C", { sent: number; delivered: number; opens: number; clicks: number; unsub: number; bounces: number; spam: number; count: number }> = {
     A: { sent: 0, delivered: 0, opens: 0, clicks: 0, unsub: 0, bounces: 0, spam: 0, count: 0 },
     B: { sent: 0, delivered: 0, opens: 0, clicks: 0, unsub: 0, bounces: 0, spam: 0, count: 0 },
@@ -2005,23 +2108,38 @@ function aggregateCellsV2(
     dayKey: string;
   }> = [];
   const cellsPerDay = new Map<string, Set<"A" | "B" | "C">>();
+  // #4449 item 1: sinal TEXTUAL (independe de parse completo/listName) de
+  // quantas células distintas foram TENTADAS em cada dia — usado só pra
+  // distinguir drift de consolidação real no guard abaixo.
+  const nameOnlyCellsByDay = new Map<string, Set<"A" | "B" | "C">>();
   for (const c of campaigns) {
-    const parsed = parseAbcAudienceCampaign(c.name, c.listName);
-    if (!parsed || parsed.cycle !== cycle) continue;
     const when = c.scheduledAt ?? c.sentDate;
     if (!when) continue;
     const ms = Date.parse(when);
     if (!Number.isFinite(ms)) continue;
     const dayKey = new Date(ms).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+    const expected = expectedCellFromCampaignName(c.name);
+    if (expected) {
+      if (!nameOnlyCellsByDay.has(dayKey)) nameOnlyCellsByDay.set(dayKey, new Set());
+      nameOnlyCellsByDay.get(dayKey)!.add(expected);
+    }
+    const parsed = parseAbcAudienceCampaign(c.name, c.listName);
+    if (!parsed || parsed.cycle !== cycle) continue;
     const groupKey = `${parsed.audience}|${dayKey}`;
     if (!cellsPerDay.has(groupKey)) cellsPerDay.set(groupKey, new Set());
     cellsPerDay.get(groupKey)!.add(parsed.cell);
     parsedCampaigns.push({ c, cell: parsed.cell, audience: parsed.audience, dayKey });
   }
+  const driftDays = new Set<string>();
   for (const { c, cell, audience, dayKey } of parsedCampaigns) {
     if (audienceFilter !== "any" && audience !== audienceFilter) continue;
     const groupKey = `${audience}|${dayKey}`;
-    if ((cellsPerDay.get(groupKey)?.size ?? 0) < 3) continue; // consolidação — sem par completo A/B/C
+    if ((cellsPerDay.get(groupKey)?.size ?? 0) < 3) {
+      // #4449 item 1: ≥3 células distintas nos NOMES daquele dia, mas o parse
+      // só resolveu <3 → provável drift de naming, não consolidação real.
+      if ((nameOnlyCellsByDay.get(dayKey)?.size ?? 0) >= 3) driftDays.add(dayKey);
+      continue; // consolidação (real) OU drift (sinalizado acima) — ambos ficam fora da agregação
+    }
     const picked = pickStats(c);
     if (!picked) continue;
     const s = picked.stats;
@@ -2037,7 +2155,7 @@ function aggregateCellsV2(
     a.spam += s.complaints ?? 0;
     a.count += 1;
   }
-  return (["A", "B", "C"] as const).map((cell) => {
+  const cells = (["A", "B", "C"] as const).map((cell) => {
     const d = acc[cell];
     if (d.count === 0) return emptyCellV2(cell);
     return {
@@ -2056,9 +2174,11 @@ function aggregateCellsV2(
       spamRate: d.sent > 0 ? (d.spam / d.sent) * 100 : 0,
     };
   });
+  return { cells, driftDays: [...driftDays].sort() };
 }
 
-function buildAbcAudienceTable(cells: CellSummaryV2[]): AbcAudienceTable {
+function buildAbcAudienceTable(result: { cells: CellSummaryV2[]; driftDays: string[] }): AbcAudienceTable {
+  const { cells, driftDays } = result;
   const sampled = cells.filter((c) => c.campaignCount > 0);
 
   function pickLeader(metric: (c: CellSummaryV2) => number): "A" | "B" | "C" | null {
@@ -2086,7 +2206,7 @@ function buildAbcAudienceTable(cells: CellSummaryV2[]): AbcAudienceTable {
     }
   }
 
-  return { cells, leaderOpenRate, leaderClickRate, significantClick, pValue };
+  return { cells, leaderOpenRate, leaderClickRate, significantClick, pValue, suspectedDriftDays: driftDays };
 }
 
 /**
@@ -2107,9 +2227,25 @@ export function aggregateAbcByAudience(
   };
 }
 
+/**
+ * #4449 item 1: nota diagnóstica de dias suspeitos de DRIFT DE NAMING (guard
+ * `<3` de `aggregateCellsV2` excluiu o dia, mas 3 células distintas apareciam
+ * nos NOMES das campanhas daquele dia — ver `expectedCellFromCampaignName`).
+ * Mesmo padrão de `renderUnclassifiedCampaignsNote`/`renderGroupCampaignsMissingCellNote`
+ * (string vazia quando não há nada a reportar). Texto explicitamente distinto
+ * do resto das notas desta tabela — "alarme", não "informação de contexto".
+ */
+function renderAbcDriftNote(driftDays: string[]): string {
+  if (driftDays.length === 0) return "";
+  const plural = driftDays.length === 1 ? "" : "s";
+  const list = driftDays.map((d) => d.split("-").reverse().join("/")).join(", ");
+  return `<p class="section-note"><small>⚠️ ${driftDays.length} dia${plural} com possível DRIFT DE NAMING (${list}): o grupo parece ter tido 3 campanhas, mas 1 ou mais não teve a célula reconhecida — excluído da comparação por segurança (dado ausente é mais seguro que dado errado), mas isso pode NÃO ser consolidação real. Confira o naming da LISTA de destinatários dessas campanhas (ver #4447/#4449).</small></p>`;
+}
+
 /** Renderiza 1 tabela (Agregada/Fria/Quente) do Resumo A/B/C por Audiência. Exportado pra teste unitário. */
 export function renderAbcAudienceTable(title: string, table: AbcAudienceTable): string {
-  const { cells, leaderOpenRate, leaderClickRate, significantClick, pValue } = table;
+  const { cells, leaderOpenRate, leaderClickRate, significantClick, pValue, suspectedDriftDays } = table;
+  const driftNote = renderAbcDriftNote(suspectedDriftDays ?? []);
   if (cells.filter((c) => c.campaignCount > 0).length < 2) {
     // #3127: omite a subseção inteira (sem header nem stub "Sem dados") quando
     // esta audiência especificamente não teve nenhum envio no ciclo — ruído
@@ -2118,7 +2254,9 @@ export function renderAbcAudienceTable(title: string, table: AbcAudienceTable): 
     // #3396: <2 células amostradas (não só ===0) — com só 1 célula (ex: A saiu,
     // B/C ainda não), não há comparação possível ainda; mesmo critério que
     // pickLeader já usa (sampled.length < 2 → null).
-    return "";
+    // #4449 item 1: EXCETO quando há sinal de drift — aí a nota (só ela, sem
+    // tabela/título) ainda sai, pra não mascarar silenciosamente o problema.
+    return driftNote;
   }
   const orderedRows = [...cells].sort((a, b) => {
     if (a.campaignCount === 0 && b.campaignCount === 0) return 0;
@@ -2174,6 +2312,7 @@ export function renderAbcAudienceTable(title: string, table: AbcAudienceTable): 
 
   return `
   <h4 class="subsection-title">${escHtml(title)}</h4>
+  ${driftNote}
   <p class="section-note">${conclusionNote}</p>
   <div class="table-wrap">
   <table>
@@ -2213,11 +2352,32 @@ export function renderAbcAudienceSection(
     result.aggregate.cells.filter((c) => c.campaignCount > 0).length < 2 &&
     result.cold.cells.filter((c) => c.campaignCount > 0).length < 2 &&
     result.warm.cells.filter((c) => c.campaignCount > 0).length < 2;
-  if (allEmpty) return "";
+  // #4449 item 1: driftDays das 3 sub-tabelas, deduplicado — usado só pra
+  // decidir se o wrapper "allEmpty" ainda deve renderizar algo (a nota), nunca
+  // pra reconstruir uma tabela (cada sub-tabela já cuida da sua própria nota).
+  const driftDays = [
+    ...new Set([
+      ...(result.aggregate.suspectedDriftDays ?? []),
+      ...(result.cold.suspectedDriftDays ?? []),
+      ...(result.warm.suspectedDriftDays ?? []),
+    ]),
+  ].sort();
+  if (allEmpty && driftDays.length === 0) return "";
   // #3092: título opaco ("2607-07" não comunica nada de imediato) — sufixo
   // legível do mês/ano de ENVIO quando o formato do ciclo permite derivá-lo.
   const envioLabel = formatCycleEnvioLabel(cycle);
   const cycleTitle = envioLabel ? `${escHtml(cycle)} · ${envioLabel}` : escHtml(cycle);
+  if (allEmpty) {
+    // #4449 item 1: nenhuma sub-tabela tem dado suficiente pra renderizar,
+    // mas há sinal de drift — a seção não pode desaparecer em silêncio (senão
+    // volta a ser indistinguível de "nenhum envio ainda", o próprio sintoma
+    // que este item existe pra corrigir).
+    return `
+<section class="phase2-section" id="abc-audience-${escHtml(cycle)}">
+  <h2 class="section-title">Resumo A/B/C por Audiência (${cycleTitle})</h2>
+  ${renderAbcDriftNote(driftDays)}
+</section>`;
+  }
   return `
 <section class="phase2-section" id="abc-audience-${escHtml(cycle)}">
   <h2 class="section-title">Resumo A/B/C por Audiência (${cycleTitle})</h2>

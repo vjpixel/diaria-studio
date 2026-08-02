@@ -65,6 +65,8 @@ import {
   editionSortKey,
   findUnclassifiedCampaignNames,
   renderUnclassifiedCampaignsNote,
+  findGroupCampaignsMissingCell,
+  renderGroupCampaignsMissingCellNote,
   pct,
   brevoReportLink,
   WEEKDAY_COLUMNS,
@@ -490,6 +492,88 @@ describe("renderUnclassifiedCampaignsNote (#3081)", () => {
     // "Clarice News AAMM dNN-X" — todas reconhecidas por parseClariceCampaignKey.
     const html = renderDashboardHtml(cycle2605Campaigns);
     assert.doesNotMatch(html, /não classificada/);
+  });
+});
+
+// ─── findGroupCampaignsMissingCell / renderGroupCampaignsMissingCellNote (#4449 item 2) ──
+//
+// Nota IRMÃ de findUnclassifiedCampaignNames acima, mas pro caso OPOSTO: uma
+// campanha `--group` já CLASSIFICADA como "warm" só pelo nome (#4255,
+// classifyClariceAudience) — então nunca aparece na nota de "não
+// classificadas" — mas cujo `{key}` termina em -A/-B/-C (sinal de que
+// DEVERIA ter célula) e ainda assim `parseAbcAudienceCampaign` não conseguiu
+// extraí-la da lista (naming da lista divergente, mesma classe de bug do
+// #3081 → #3128 → #4447).
+
+describe("findGroupCampaignsMissingCell (#4449 item 2)", () => {
+  test("campanha --group com célula extraível corretamente → não entra na lista", () => {
+    const campaigns = [
+      { ...makeCampaign(1, "Clarice 2607 grupo:d1-sab01-A", "2026-08-01T09:00:00Z"), listName: "Clarice 2607-08 d1-sab01-A — célula A" },
+    ];
+    assert.deepEqual(findGroupCampaignsMissingCell(campaigns), []);
+  });
+
+  test("campanha --group com sufixo -A mas listName não reconhecido (naming divergente) → entra na lista", () => {
+    const campaigns = [
+      { ...makeCampaign(1, "Clarice 2607 grupo:d1-sab01-A", "2026-08-01T09:00:00Z"), listName: "lista com naming quebrado" },
+    ];
+    assert.deepEqual(findGroupCampaignsMissingCell(campaigns), ["Clarice 2607 grupo:d1-sab01-A"]);
+  });
+
+  test("campanha --group SEM sufixo de célula (ex: '-interno') → não entra na lista (legitimamente sem célula, não é drift)", () => {
+    const campaigns = [
+      { ...makeCampaign(1, "Clarice 2607 grupo:d1-sab01-interno", "2026-08-01T09:00:00Z"), listName: "Clarice 2607-08 d1-sab01-interno" },
+    ];
+    assert.deepEqual(findGroupCampaignsMissingCell(campaigns), []);
+  });
+
+  test("campanha fora do fluxo --group (ex: warm diário) → nunca entra, mesmo sem célula extraível por outro motivo", () => {
+    const campaigns = [makeCampaign(1, "Clarice News 2605 d08 (qua)", "2026-06-15T06:00:00Z")]; // envio único sem célula
+    assert.deepEqual(findGroupCampaignsMissingCell(campaigns), []);
+  });
+
+  test("mistura: só a campanha com naming divergente aparece", () => {
+    const campaigns = [
+      { ...makeCampaign(1, "Clarice 2607 grupo:d1-sab01-A", "2026-08-01T09:00:00Z"), listName: "Clarice 2607-08 d1-sab01-A — célula A" },
+      { ...makeCampaign(2, "Clarice 2607 grupo:d1-sab01-B", "2026-08-01T09:01:00Z"), listName: "naming quebrado" },
+      { ...makeCampaign(3, "Clarice 2607 grupo:d1-sab01-C", "2026-08-01T09:02:00Z"), listName: "Clarice 2607-08 d1-sab01-C — célula C" },
+    ];
+    assert.deepEqual(findGroupCampaignsMissingCell(campaigns), ["Clarice 2607 grupo:d1-sab01-B"]);
+  });
+});
+
+describe("renderGroupCampaignsMissingCellNote (#4449 item 2)", () => {
+  test("lista vazia → string vazia", () => {
+    assert.equal(renderGroupCampaignsMissingCellNote([]), "");
+  });
+
+  test("1 nome → singular", () => {
+    const html = renderGroupCampaignsMissingCellNote(["Clarice 2607 grupo:d1-sab01-B"]);
+    assert.match(html, /1 campanha do fluxo --group parece ter célula/);
+    assert.match(html, /Clarice 2607 grupo:d1-sab01-B/);
+  });
+
+  test("N nomes → plural + todos listados", () => {
+    const html = renderGroupCampaignsMissingCellNote(["Foo grupo:x-A", "Bar grupo:y-B"]);
+    assert.match(html, /2 campanhas do fluxo --group parecem ter célula/);
+    assert.match(html, /Foo grupo:x-A/);
+    assert.match(html, /Bar grupo:y-B/);
+  });
+
+  test("renderDashboardHtml inclui a nota quando há campanha --group com célula não reconhecida", () => {
+    const html = renderDashboardHtml([
+      ...cycle2605Campaigns,
+      { ...makeCampaign(999, "Clarice 2607 grupo:d1-sab01-A", "2026-08-01T09:00:00Z"), listName: "naming quebrado" },
+    ]);
+    assert.match(html, /fluxo --group parece ter célula/);
+  });
+
+  test("renderDashboardHtml NÃO mostra a nota quando a célula --group foi reconhecida normalmente", () => {
+    const html = renderDashboardHtml([
+      ...cycle2605Campaigns,
+      { ...makeCampaign(999, "Clarice 2607 grupo:d1-sab01-A", "2026-08-01T09:00:00Z"), listName: "Clarice 2607-08 d1-sab01-A — célula A" },
+    ]);
+    assert.doesNotMatch(html, /fluxo --group parece/);
   });
 });
 

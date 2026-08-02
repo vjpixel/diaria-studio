@@ -433,15 +433,76 @@ describe("aggregateAbcByAudience — naming '--group' (célula só na LISTA), re
     const b = result.aggregate.cells.find((c) => c.cell === "B")!;
     assert.equal(a.campaignCount, 0, "célula A NÃO deve herdar os 2.980 delivered da campanha 103 (mismatch descartado)");
     assert.equal(b.campaignCount, 0, "célula B também fica sem dado (campanha 103 nunca chega lá)");
-    // Nota: com a campanha 103 descartada, só A e C sobram pro dia 01/08 —
-    // o guard de consolidação pré-existente (#3404, `cellsPerDay < 3`) então
-    // zera TAMBÉM A e C nesse dia (não distingue "typo descartado" de
-    // "consolidação real com só 2 células"). Efeito colateral aceito: dado
-    // AUSENTE é mais seguro que dado ERRADO, mas não é um fix completo — a
-    // distinção entre os dois casos é follow-up (ver #4447 e comentário do
-    // PR #4448).
+    // Com a campanha 103 descartada, só A e C sobram pro dia 01/08 — o guard
+    // de consolidação pré-existente (#3404, `cellsPerDay < 3`) então zera
+    // TAMBÉM A e C nesse dia (não distingue "typo descartado" de "consolidação
+    // real com só 2 células"). Dado AUSENTE continua mais seguro que dado
+    // ERRADO (comportamento inalterado), mas #4449 item 1 fecha o gap que
+    // ficou como follow-up aqui: `suspectedDriftDays` agora sinaliza esse dia
+    // como suspeito (as 3 células apareciam nos NOMES das campanhas — não é
+    // consolidação real, é drift de naming) em vez de ficar indistinguível.
     const c = result.aggregate.cells.find((c) => c.cell === "C")!;
-    assert.equal(c.campaignCount, 0, "efeito colateral do guard <3 pré-existente (#3404) — não é o alvo deste teste, só documentando");
+    assert.equal(c.campaignCount, 0, "efeito colateral do guard <3 pré-existente (#3404) — dado ausente, não corrompido");
+    assert.deepEqual(
+      result.aggregate.suspectedDriftDays,
+      ["2026-08-01"],
+      "#4449 item 1: dia com 3 células nos NOMES mas <3 parseadas → sinalizado como drift, não silenciado",
+    );
+  });
+});
+
+// ─── aggregateAbcByAudience: drift de naming vs consolidação real (#4449 item 1) ──
+
+describe("aggregateAbcByAudience — distingue drift de naming de consolidação real (#4449 item 1)", () => {
+  const cycle = "2607-08";
+
+  test("3 campanhas do mesmo grupo, 1 falha o parse (naming da lista não reconhecido) → suspectedDriftDays aponta o dia, células ficam vazias (dado ausente, não corrompido)", () => {
+    const campaigns = [
+      { ...makeCampaign(200, "Clarice 2607 grupo:d1-sab01-A", "2026-08-01T09:00:00Z", { sent: 3000, delivered: 2977, uniqueViews: 306, uniqueClicks: 101 }), listName: "Clarice 2607-08 d1-sab01-A — célula A" },
+      // #201: naming da lista com um typo NÃO reconhecido por parseAbcAudienceCampaign
+      // (falta o "célula"/"celula") — mas o NOME da campanha ainda denuncia "-B".
+      { ...makeCampaign(201, "Clarice 2607 grupo:d1-sab01-B", "2026-08-01T09:01:00Z", { sent: 3001, delivered: 2980, uniqueViews: 402, uniqueClicks: 28 }), listName: "Clarice 2607-08 d1-sab01-B (typo, sem célula reconhecível)" },
+      { ...makeCampaign(202, "Clarice 2607 grupo:d1-sab01-C", "2026-08-01T09:02:00Z", { sent: 3000, delivered: 2979, uniqueViews: 280, uniqueClicks: 65 }), listName: "Clarice 2607-08 d1-sab01-C — célula C" },
+    ];
+    const result = aggregateAbcByAudience(campaigns, cycle);
+    assert.ok(result.aggregate.cells.every((c) => c.campaignCount === 0), "dia excluído da agregação — dado ausente, nunca corrompido");
+    assert.deepEqual(result.aggregate.suspectedDriftDays, ["2026-08-01"], "drift sinalizado — 3 células nos nomes, só 2 parsearam");
+  });
+
+  test("consolidação REAL (só 1-2 campanhas existiram de propósito, nenhuma falhou parse) → suspectedDriftDays vazio (comportamento pré-existente preservado)", () => {
+    // Mesmo padrão do describe #3404 acima: só a Célula B foi enviada nesse
+    // dia (pós-consolidação) — nenhuma campanha A/C jamais existiu, não é
+    // uma falha de parse.
+    const soloB = [
+      { ...makeCampaign(210, "Clarice 2607 grupo:d5-ter05-B", "2026-08-05T10:00:00Z", { sent: 1200, delivered: 1200, uniqueViews: 400, uniqueClicks: 300 }), listName: "Clarice 2607-08 d5-ter05-B — célula B" },
+    ];
+    const result = aggregateAbcByAudience(soloB, cycle);
+    assert.ok(result.aggregate.cells.every((c) => c.campaignCount === 0));
+    assert.deepEqual(result.aggregate.suspectedDriftDays, [], "sem sinal de 3 células nos nomes — consolidação real, não alarmar");
+  });
+
+  test("renderAbcAudienceTable: sinaliza a nota de drift mesmo quando a tabela não tem dado suficiente pra renderizar (não mascara em silêncio)", () => {
+    const campaigns = [
+      { ...makeCampaign(220, "Clarice 2607 grupo:d1-sab01-A", "2026-08-01T09:00:00Z", { sent: 3000, delivered: 2977, uniqueViews: 306, uniqueClicks: 101 }), listName: "Clarice 2607-08 d1-sab01-A — célula A" },
+      { ...makeCampaign(221, "Clarice 2607 grupo:d1-sab01-B", "2026-08-01T09:01:00Z", { sent: 3001, delivered: 2980, uniqueViews: 402, uniqueClicks: 28 }), listName: "naming quebrado" },
+      { ...makeCampaign(222, "Clarice 2607 grupo:d1-sab01-C", "2026-08-01T09:02:00Z", { sent: 3000, delivered: 2979, uniqueViews: 280, uniqueClicks: 65 }), listName: "Clarice 2607-08 d1-sab01-C — célula C" },
+    ];
+    const result = aggregateAbcByAudience(campaigns, cycle);
+    const html = renderAbcAudienceTable("Agregada (Fria + Quente)", result.aggregate);
+    assert.match(html, /DRIFT DE NAMING/, "nota de drift aparece mesmo sem tabela renderizada (sampled < 2)");
+    assert.match(html, /01\/08\/2026/, "data do dia suspeito aparece na nota");
+  });
+
+  test("renderAbcAudienceSection: quando TODAS as sub-tabelas ficam vazias mas há drift, a seção não desaparece — mostra a nota", () => {
+    const campaigns = [
+      { ...makeCampaign(230, "Clarice 2607 grupo:d1-sab01-A", "2026-08-01T09:00:00Z", { sent: 3000, delivered: 2977, uniqueViews: 306, uniqueClicks: 101 }), listName: "Clarice 2607-08 d1-sab01-A — célula A" },
+      { ...makeCampaign(231, "Clarice 2607 grupo:d1-sab01-B", "2026-08-01T09:01:00Z", { sent: 3001, delivered: 2980, uniqueViews: 402, uniqueClicks: 28 }), listName: "naming quebrado" },
+      { ...makeCampaign(232, "Clarice 2607 grupo:d1-sab01-C", "2026-08-01T09:02:00Z", { sent: 3000, delivered: 2979, uniqueViews: 280, uniqueClicks: 65 }), listName: "Clarice 2607-08 d1-sab01-C — célula C" },
+    ];
+    const result = aggregateAbcByAudience(campaigns, cycle);
+    const html = renderAbcAudienceSection(cycle, result);
+    assert.notEqual(html, "", "seção não pode voltar a ficar em branco quando há drift — era o próprio sintoma do item 1");
+    assert.match(html, /DRIFT DE NAMING/);
   });
 });
 
