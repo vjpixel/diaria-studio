@@ -96,3 +96,20 @@ Fase 1.5).
 
 Seguir as convenções de commit/PR do `CLAUDE.md`. PR abre com `Closes #NNNN` (um
 `closes` por issue do lote). Título com `(#NNNN)` / `(#A, #B, ...)`.
+
+## 10. Nunca `git stash` dentro do worktree (#4459)
+
+`git worktree add` isola a working tree e o índice, mas **não** isola
+`refs/stash` — é uma lista única, compartilhada por TODO o repositório
+(diretório principal + todos os worktrees + qualquer outra sessão/agente
+rodando em paralelo). Rodar `git stash`/`git stash pop`/`git stash apply`
+dentro do worktree de um subagente pode consumir ou misturar a stash de
+OUTRA sessão (incidente 260802: um `pop` trouxe de volta uma stash rotulada
+"leave alone" de uma sessão `/diaria-develop` concorrente — sem sinal de
+erro além de um conflito de merge que por sorte denunciou o problema).
+
+Pra investigar ou reverter estado local **dentro do próprio worktree**, usar
+em vez disso: `git diff`/`git show` (inspecionar sem mexer em nada), `git
+checkout -- <arquivo>` (reverter arquivo específico), ou um commit temporário
+(`git commit --no-verify -m wip` seguido de `git reset --soft HEAD~1` quando
+quiser desfazer) — nenhum desses toca a lista de stash compartilhada.
