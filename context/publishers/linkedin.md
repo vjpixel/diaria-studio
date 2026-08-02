@@ -207,3 +207,84 @@ Além dos textos genéricos (LinkedIn/Facebook/Instagram, #3991), o `03-social.m
 - **Validação de sucesso:** o post aparece no feed/drafts do **perfil pessoal** (oposto do post da página). Registrar em `06-social-published.json` com `subtype: "post_pixel"`, `platform: "linkedin"`, `destaque: "d1"`, `status` resolvido via `resolveLinkedInState`.
 
 Falha do `post_pixel` **não bloqueia** os posts da página — é amplificação opcional. Logar warn e seguir.
+
+## Newsletter LinkedIn (artigo semanal, `/diaria-linkedin-semanal`, #4456)
+
+**Diferente de tudo acima.** As seções 1-8 cobrem o **composer de post
+comum** (Stage 6 social da diária, `03-social.md`, `## d{N}`/`## post_pixel`).
+A newsletter semanal do LinkedIn é uma feature DIFERENTE do produto — um
+**artigo de longa-forma** publicado dentro de uma newsletter nativa do
+LinkedIn (perfil pessoal do editor), que dispara notificação + e-mail aos
+assinantes da newsletter, fora do ranqueamento de feed. Sem API de
+publicação — o output de `/diaria-linkedin-semanal`
+(`data/weekly/{cycle}/ln-{cycle}.html`) é **sempre** colado à mão.
+
+Achados operacionais de publicar a edição #1 à mão (comentários 260802 do
+#4456):
+
+### 1. O artigo só nasce vinculado à newsletter pelo botão DENTRO da página dela
+
+Ir direto em `linkedin.com/article/new/` cria um artigo **individual**,
+desvinculado — e nesse caso o convite automático pra rede (o disparo único
+que justifica o canal) **não dispara**. O caminho correto:
+
+1. Navegar pra `linkedin.com/newsletters/{urn}/` (a página DA newsletter).
+2. Clicar **Write article** a partir DALI.
+3. **Verificar antes de escrever qualquer coisa:** o cabeçalho do editor
+   tem que mostrar o nome da newsletter — se mostrar "Individual article",
+   abortar e recomeçar do passo 1 (não existe forma de "converter" um
+   artigo individual em newsletter depois de criado).
+
+### 2. Texto de link nunca termina em domínio nu
+
+O editor de artigo do LinkedIn auto-linka qualquer menção em texto ao
+domínio `diar.ia.br` (mesmo fora de um link intencional). Quando o RÓTULO
+de um link que você quis inserir termina exatamente no domínio nu (ex:
+texto do link = `"assine em diar.ia.br"`), o editor **parte o link em
+dois**: a parte que sobra clicável perde o `href` original (e portanto o
+UTM) — a auto-linkagem "rouba" o fim do rótulo.
+
+**Regra aplicada mecanicamente por `renderLinkedinWeeklyHtml`
+(`scripts/lib/weekly-linkedin-render.ts`):** todo rótulo de link que este
+módulo gera é um rótulo de AÇÃO, nunca o domínio — "Receba todo dia, é
+grátis →" (CTA do meio, fecha o bloco Use Melhor) e "Assine grátis, é
+rapidinho →" (CTA do fim). `endsInBareDomainLabel()` no mesmo módulo é o
+guard determinístico — se algum dia um rótulo dinâmico (ex: título de
+Use Melhor levantado literal) terminar coincidentemente em algo que
+pareça domínio, o render emite warning em vez de deixar passar em
+silêncio. Menções a "diar.ia.br" em PROSA (fora de um link intencional)
+podem ficar — viram link automático sem UTM pra home, que é tráfego de
+brinde e não atrapalha a medição dos CTAs.
+
+### Nota técnica: colagem programática no corpo (ProseMirror)
+
+O corpo do artigo é um editor ProseMirror (mesma família de tecnologia do
+composer de post comum, seção 4 acima, mas instância separada — específica
+da página de artigo). Setar `innerHTML` diretamente **não registra** no
+estado interno do editor (o próximo keystroke reverte/perde o conteúdo).
+Colagem programática funciona via `ClipboardEvent` com `text/html` no
+`DataTransfer`:
+
+```javascript
+// Via javascript_tool, com o foco já no <div contenteditable> do corpo.
+const html = "<conteúdo de ln-{cycle}.html>";
+const dt = new DataTransfer();
+dt.setData("text/html", html);
+const editorEl = document.querySelector('[contenteditable="true"]');
+editorEl.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+```
+
+Negrito, links, listas e divisores (`<hr>`) sobrevivem ao paste.
+Transformações ESPERADAS na renderização do LinkedIn (não é bug, não
+precisa de correção): `<h2>` vira `<h3>` visualmente; `<hr>` vira `<div>`
+(o separador visual desaparece, mas o parágrafo seguinte começa numa nova
+"seção" do editor). `renderLinkedinWeeklyHtml` usa `<h2>` pros títulos
+numerados e `<hr/>` como separador de bloco de propósito — o objetivo é a
+estrutura semântica sobreviver ao paste, não o tag literal.
+
+Publicação continua **manual por padrão** (colar via UI, revisar
+visualmente, clicar Publish) — a automação acima é referência pra quem for
+implementar o paste assistido via Claude in Chrome no futuro; não é
+executada por `/diaria-linkedin-semanal` nesta versão (a skill entrega o
+artefato e as instruções, ver `.claude/skills/diaria-linkedin-semanal/SKILL.md`
+Passo 6).
