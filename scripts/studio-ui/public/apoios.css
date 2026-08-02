@@ -97,6 +97,18 @@
   font-style: italic;
 }
 
+/* #4437 Entrega 1: "ainda não pagou esse mês" é um ESTADO DE COBRANÇA, não
+   uma faixa de valor — borda tracejada + leve destaque de fundo distingue o
+   card dos 4 níveis de recompensa reais (patrono/mantenedor/apoiador/amigo),
+   que usam .reward-group (borda sólida) sem essa variação. */
+.reward-group-pending {
+  border-style: dashed;
+  background: var(--paper);
+}
+.reward-group-pending .reward-group-title {
+  opacity: 0.85;
+}
+
 .contact-form {
   display: flex;
   flex-wrap: wrap;
@@ -258,6 +270,51 @@
 .vinculo-ok { border-color: var(--status-ok); color: var(--status-ok); }
 .vinculo-falta { border-color: var(--status-warn); color: var(--status-warn); }
 .vinculo-sem-dados { border-style: dashed; opacity: 0.6; }
+
+/* #4437 Entrega 2: valor de apoio explícito no card (campo próprio, não só
+   dentro do status-badge). ".apoio-value-past" (mês anterior/último
+   pagamento conhecido) tem opacidade reduzida — nunca deve ler como o valor
+   do mês corrente. */
+.contact-value {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  margin: 0.15rem 0;
+}
+.apoio-value-past { opacity: 0.75; font-style: italic; }
+
+/* #4437 Entrega 2: badge de nível de recompensa — mesmo tratamento visual de
+   .status-badge/.open-rate-badge/.vinculo-badge, cor por faixa (mesma escala
+   informal usada nas 4 faixas da Visão por grupo). */
+.reward-level-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  white-space: nowrap;
+  font-weight: 600;
+}
+.reward-level-amigo { border-color: var(--status-info); color: var(--status-info); }
+.reward-level-apoiador { border-color: var(--status-ok); color: var(--status-ok); }
+.reward-level-mantenedor { border-color: var(--status-warn); color: var(--status-warn); }
+.reward-level-patrono { background: var(--brand); color: var(--on-ink); border-color: var(--brand); }
+
+/* #4437 Entrega 2: segmentos Beehiiv — "não consultado" (nunca rodou o sync)
+   é visualmente distinto de "consultado, nenhum segmento" (dashed vs sólido
+   opaco), pra nunca ler como "assinante fora da base". */
+.segments-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  white-space: nowrap;
+}
+.segments-ok { border-color: var(--status-info); color: var(--status-info); }
+.segments-vazio { opacity: 0.6; }
+.segments-sem-dados { border-style: dashed; opacity: 0.6; }
 
 .contact-dialog {
   border: 1px solid var(--rule);

@@ -62,6 +62,10 @@ const el = {
 /** Snapshot bruto da última resposta de /api/apoios. */
 let data = { contacts: [], campaign: null, rewardGroups: null, error: null, generatedAt: null };
 
+/** #4437: forma vazia de rewardGroups usada como default client-side —
+ * espelha scripts/studio-ui/studio-apoios.ts::emptyRewardGroupsView. */
+const EMPTY_REWARD_GROUPS = { amigo: [], apoiador: [], mantenedor: [], patrono: [], nao_pagou_ainda: [] };
+
 const filters = { status: "" };
 
 const STATUS_LABEL = {
@@ -74,13 +78,22 @@ const STATUS_LABEL = {
 // #3844 parte 2: rótulo + ordem de exibição (do nível mais alto pro mais
 // baixo — mais fácil bater o olho em quem tem mais recompensa a cumprir).
 // Faixas espelham exatamente scripts/studio-ui/studio-apoios.ts::computeRewardGroup.
-const REWARD_GROUP_ORDER = ["patrono", "mantenedor", "apoiador", "amigo"];
+// #4437 Entrega 1: "nao_pagou_ainda" vai por ÚLTIMO — não é uma faixa de
+// valor, é um estado de cobrança (carência de 1 mês), visualmente distinto
+// dos 4 níveis (ver .reward-group-pending em apoios.css).
+const REWARD_GROUP_ORDER = ["patrono", "mantenedor", "apoiador", "amigo", "nao_pagou_ainda"];
 const REWARD_GROUP_LABEL = {
   patrono: "Patrono (R$50+)",
   mantenedor: "Mantenedor (R$25–49)",
   apoiador: "Apoiador (R$10–24)",
   amigo: "Amigo (R$5–9)",
+  nao_pagou_ainda: "Ainda não pagou esse mês",
 };
+
+// Nome de exibição sem a faixa de valor — usado no badge de nível de
+// recompensa do card de Contatos (#4437 Entrega 2) e na lista do grupo "ainda
+// não pagou esse mês" (mostra o nível que a pessoa TINHA, não uma faixa nova).
+const LEVEL_NAME = { patrono: "Patrono", mantenedor: "Mantenedor", apoiador: "Apoiador", amigo: "Amigo" };
 
 function escapeHtml(s) {
   return String(s)
@@ -159,6 +172,49 @@ function vinculoBadge(vinculo) {
   return '<span class="vinculo-badge vinculo-falta" title="não encontrado como assinante Beehiiv">❌ não é assinante Beehiiv</span>';
 }
 
+// #4437 Entrega 2: valor de apoio explícito no card, campo PRÓPRIO (além do
+// badge de status, que já embute o valor pra "apoiando" — #3844). Pra
+// "apoiando" mostra o valor do mês corrente; pra "apoiou_e_parou" com
+// lastPaidValue mostra o ÚLTIMO pagamento conhecido, rotulado com o mês (nunca
+// confundido com o mês corrente). Sem valor aplicável (nao_apoia/sem_dados/
+// apoiou_e_parou sem histórico de valor) -> "" (nada inventado).
+function apoioValueField(status) {
+  if (status.label === "apoiando" && typeof status.monthlyValue === "number") {
+    return `<span class="apoio-value apoio-value-current">R$${fmtBRL(status.monthlyValue)}/mês</span>`;
+  }
+  if (status.label === "apoiou_e_parou" && typeof status.lastPaidValue === "number") {
+    const month = status.lastPaidMonth ? escapeHtml(status.lastPaidMonth) : "—";
+    return `<span class="apoio-value apoio-value-past" title="último pagamento conhecido, não o mês corrente">R$${fmtBRL(status.lastPaidValue)} (último pagamento: ${month})</span>`;
+  }
+  return "";
+}
+
+// #4437 Entrega 2: badge de nível de recompensa — `rewardLevel` já vem
+// AGREGADO do servidor (computeContactRewardLevel), zero cálculo novo aqui.
+// `null` (nao_apoia/sem_dados/apoiou_e_parou fora da carência) -> "" (nunca
+// um badge inventado).
+function rewardLevelBadge(rewardLevel) {
+  if (!rewardLevel) return "";
+  const name = LEVEL_NAME[rewardLevel] ?? rewardLevel;
+  return `<span class="reward-level-badge reward-level-${escapeHtml(rewardLevel)}">${escapeHtml(name)}</span>`;
+}
+
+// #4437 Entrega 2: segmentos Beehiiv em que o contato está. `segments ===
+// null` significa "nunca consultado" (cache ausente ou nenhum email do
+// contato no cache — pode ser porque scripts/sync-apoio-segments-beehiiv.ts
+// nunca rodou, NÃO que o contato está fora da base) — visualmente distinto de
+// `{ segments: [], ... }` = "consultado, nenhum segmento encontrado".
+function segmentsBadge(segments) {
+  if (!segments) {
+    return '<span class="segments-badge segments-sem-dados" title="nenhum email deste contato foi consultado ainda (sync scripts/sync-apoio-segments-beehiiv.ts pode não ter rodado)">segmentos Beehiiv: não consultado</span>';
+  }
+  if (segments.segments.length === 0) {
+    return '<span class="segments-badge segments-vazio" title="consultado — nenhum segmento Apoio — * encontrado">segmentos Beehiiv: nenhum</span>';
+  }
+  const title = `apoio_nivel na Beehiiv: ${escapeHtml(segments.apoioNivel || "(vazio)")}`;
+  return `<span class="segments-badge segments-ok" title="${title}">${escapeHtml(segments.segments.join(", "))}</span>`;
+}
+
 function renderError() {
   if (data.error) {
     el.error.hidden = false;
@@ -198,25 +254,48 @@ function renderVinculoSummary() {
 // aqui). Grupo vazio ainda aparece (com "0" no contador e uma linha "ninguém
 // neste grupo este mês") — nunca desaparece silenciosamente, mesmo padrão do
 // estado vazio de `renderContacts`.
+// #4437 Entrega 1: item de lista do grupo "ainda não pagou esse mês" — mostra
+// o valor/mês do ÚLTIMO pagamento (lastPaidValue/lastPaidMonth, não
+// monthlyValue — esse contato não pagou o mês corrente) + o nível que a
+// pessoa tinha (c.rewardLevel, já computado no servidor via
+// computeContactRewardLevel — zero cálculo novo aqui).
+function pendingRewardContactItem(c) {
+  const email = c.status?.matchedEmail ?? c.emails[0] ?? "";
+  const value = typeof c.status?.lastPaidValue === "number" ? c.status.lastPaidValue : 0;
+  const levelName = c.rewardLevel ? LEVEL_NAME[c.rewardLevel] ?? c.rewardLevel : null;
+  const monthNote = c.status?.lastPaidMonth ? ` — pagou em ${escapeHtml(c.status.lastPaidMonth)}` : "";
+  const levelNote = levelName ? ` (${escapeHtml(levelName)})` : "";
+  return `<li class="reward-contact">
+    <span class="reward-contact-name">${escapeHtml(c.name)}</span>
+    <span class="reward-contact-email">${escapeHtml(email)}</span>
+    <span class="reward-contact-value">R$${fmtBRL(value)}${levelNote}${monthNote}</span>
+  </li>`;
+}
+
+function rewardContactItem(c) {
+  const email = c.status?.matchedEmail ?? c.emails[0] ?? "";
+  const value = typeof c.status?.monthlyValue === "number" ? c.status.monthlyValue : 0;
+  return `<li class="reward-contact">
+    <span class="reward-contact-name">${escapeHtml(c.name)}</span>
+    <span class="reward-contact-email">${escapeHtml(email)}</span>
+    <span class="reward-contact-value">R$${fmtBRL(value)}</span>
+  </li>`;
+}
+
 function renderRewardGroups() {
-  const groups = data.rewardGroups ?? { amigo: [], apoiador: [], mantenedor: [], patrono: [] };
+  const groups = data.rewardGroups ?? EMPTY_REWARD_GROUPS;
   el.rewardGroups.innerHTML = "";
   for (const key of REWARD_GROUP_ORDER) {
     const contacts = groups[key] ?? [];
+    const isPending = key === "nao_pagou_ainda";
     const group = document.createElement("div");
-    group.className = "reward-group";
+    // #4437: classe extra pra distinguir visualmente o estado de cobrança
+    // (nao_pagou_ainda) dos 4 níveis de recompensa de verdade.
+    group.className = "reward-group" + (isPending ? " reward-group-pending" : "");
+    // Mesma linha "ninguém neste grupo" dos demais grupos — grupo vazio nunca
+    // desaparece silenciosamente, nem o novo.
     const itemsHtml = contacts.length
-      ? contacts
-          .map((c) => {
-            const email = c.status?.matchedEmail ?? c.emails[0] ?? "";
-            const value = typeof c.status?.monthlyValue === "number" ? c.status.monthlyValue : 0;
-            return `<li class="reward-contact">
-              <span class="reward-contact-name">${escapeHtml(c.name)}</span>
-              <span class="reward-contact-email">${escapeHtml(email)}</span>
-              <span class="reward-contact-value">R$${fmtBRL(value)}</span>
-            </li>`;
-          })
-          .join("")
+      ? contacts.map(isPending ? pendingRewardContactItem : rewardContactItem).join("")
       : `<li class="reward-group-empty">Ninguém neste grupo este mês.</li>`;
     group.innerHTML = `
       <h3 class="reward-group-title">
@@ -251,13 +330,19 @@ function renderContacts() {
   for (const c of filtered) {
     const card = document.createElement("div");
     card.className = "contact-card";
+    // #4437 Entrega 2: valor explícito + badge de nível de recompensa +
+    // segmentos Beehiiv, além do status/abertura/vínculo já existentes.
+    const valueField = apoioValueField(c.status);
     card.innerHTML = `
       <div class="contact-card-head">
         <span class="contact-name">${escapeHtml(c.name)}</span>
         ${statusBadge(c.status)}
+        ${rewardLevelBadge(c.rewardLevel)}
         ${openRateBadge(c.openRate)}
         ${vinculoBadge(c.vinculo)}
+        ${segmentsBadge(c.segments)}
       </div>
+      ${valueField ? `<div class="contact-value">${valueField}</div>` : ""}
       <div class="contact-emails">${c.emails.map(escapeHtml).join(", ")}</div>
       ${c.notes ? `<div class="contact-notes">${escapeHtml(c.notes)}</div>` : ""}
       <div class="contact-actions">

@@ -62,8 +62,12 @@
       <p class="hint">
         Quem está em cada nível hoje, pra cumprir a recompensa certa
         (<a href="https://apoia.se/diaria" target="_blank" rel="noopener">campanha apoia.se</a>).
-        Só contatos <strong>apoiando este mês</strong> entram num grupo — quem
-        parou ou está sem dados não aparece aqui.
+        Contatos <strong>apoiando este mês</strong> entram numa das 4 faixas;
+        quem pagou o <strong>mês passado</strong> mas ainda não teve a cobrança
+        deste mês processada aparece em "Ainda não pagou esse mês" (carência de
+        1 mês — a cobrança de cada apoiador cai em dia diferente do mês, isso
+        não é churn). Só quem parou de verdade (2+ meses sem pagar) ou está sem
+        dados não aparece em grupo nenhum.
       </p>
       <div id="reward-groups" class="reward-groups"></div>
     </section>
@@ -89,6 +93,12 @@
              só contatos não confirmados no mês — protege a cota). -->
         <span class="quota-note">"Atualizar" busca e-mails novos e re-checa a apoia.se (cota 5.000 req/mês; só contatos ainda não confirmados no mês).</span>
       </div>
+      <p class="hint">
+        Valor, nível de recompensa e segmentos Beehiiv aparecem no card de cada
+        contato (#4437). "Segmentos: não consultado" significa que o sync
+        (<code>scripts/sync-apoio-segments-beehiiv.ts</code>) ainda não rodou
+        pra este contato — não que ele esteja fora da base.
+      </p>
       <div id="contacts-empty" class="hint" hidden>Nenhum contato ainda.</div>
       <div id="contacts-list" class="contacts-list"></div>
     </section>
