@@ -1080,7 +1080,7 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
   it("renderEiaStandalone wrap em outer table própria (paste-ready)", () => {
     const html = renderEiaStandalone(fixtureComEia);
     // Deve começar com comment header + abrir <table> próprio
-    assert.match(html!, /^<!-- Diar\.ia È IA\? section/);
+    assert.match(html!, /^<!-- diar\.ia\.br È IA\? section/);
     assert.match(html!, /<table role="none"[^>]*>/);
     assert.match(html!, /<\/table>$/);
   });
