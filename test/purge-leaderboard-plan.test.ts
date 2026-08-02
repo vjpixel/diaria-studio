@@ -187,6 +187,82 @@ describe("buildPurgePlan — modo --email resolve identidades ligadas (#4433)", 
   });
 });
 
+describe("buildPurgePlan — agregado seq:{month}:{identity} (#4470)", () => {
+  it("inclui seq:{month}:{email} do alvo direto E da identidade linkada via identify-linked", async () => {
+    const email = "vjpixel+seqteste@gmail.com";
+    const anon = "cccccccc-4444-4abc-9def-000000000004@web.eia.diaria.local";
+    const kv = makeMemoryKv({
+      [`score:${email}`]: JSON.stringify({ total: 10, nickname: null }),
+      [`identify-linked:${email}:${anon}`]: "1",
+      [`score:${anon}`]: JSON.stringify({ total: 30, nickname: null }),
+      // agregado mensal presente pro e-mail direto E pra identidade linkada
+      [`seq:2026-08:${email}`]: JSON.stringify({ "260801": { choice: "A", correct: true } }),
+      [`seq:2026-08:${anon}`]: JSON.stringify({ "260801": { choice: "B", correct: false } }),
+      // outro usuário não deve vazar pro plano
+      [`seq:2026-08:outro@example.com`]: JSON.stringify({ "260801": { choice: "A", correct: true } }),
+    });
+
+    const plan = await buildPurgePlan(kv, "", email, null);
+
+    const emailEntry = plan.plans.find((p) => p.email === email)!;
+    const anonEntry = plan.plans.find((p) => p.email === anon)!;
+
+    assert.deepEqual(emailEntry.seqKeys, [`seq:2026-08:${email}`]);
+    assert.deepEqual(anonEntry.seqKeys, [`seq:2026-08:${anon}`]);
+    // não deve vazar a seq de outro usuário pra nenhuma das duas entries
+    assert.ok(!emailEntry.seqKeys.some((k) => k.includes("outro@example.com")));
+    assert.ok(!anonEntry.seqKeys.some((k) => k.includes("outro@example.com")));
+  });
+
+  it("respeita o prefixo de brand (BP) — seq: de 'web:' não vaza pra plano sem brand", async () => {
+    const email = "teste@example.com";
+    const kv = makeMemoryKv({
+      [`web:score:${email}`]: JSON.stringify({ total: 5, nickname: null }),
+      [`web:seq:2026-08:${email}`]: JSON.stringify({ "260801": { choice: "A", correct: true } }),
+      // mesma chave lógica sem o prefixo de brand — não deveria aparecer no plano "web:"
+      [`seq:2026-08:${email}`]: JSON.stringify({ "260801": { choice: "B", correct: false } }),
+    });
+
+    const plan = await buildPurgePlan(kv, "web:", email, null);
+    const entry = plan.plans.find((p) => p.email === email)!;
+
+    assert.deepEqual(entry.seqKeys, [`web:seq:2026-08:${email}`]);
+  });
+
+  it("sem nenhum seq: presente → seqKeys vazio (nunca lança)", async () => {
+    const email = "sem-seq@example.com";
+    const kv = makeMemoryKv({
+      [`score:${email}`]: JSON.stringify({ total: 1, nickname: null }),
+    });
+
+    const plan = await buildPurgePlan(kv, "", email, null);
+    assert.deepEqual(plan.plans[0].seqKeys, []);
+  });
+
+  it("simulação de execução: deletar as keys do plano remove seq: junto com score:/vote:", async () => {
+    const email = "vjpixel+seqexec@gmail.com";
+    const kv = makeMemoryKv({
+      [`score:${email}`]: JSON.stringify({ total: 10, nickname: null }),
+      [`vote:260801:${email}`]: JSON.stringify({ choice: "A", ts: "2026-08-01T00:00:00Z", correct: true }),
+      [`seq:2026-08:${email}`]: JSON.stringify({ "260801": { choice: "A", correct: true } }),
+    });
+
+    const plan = await buildPurgePlan(kv, "", email, null);
+    const entry = plan.plans[0];
+
+    // simula a execução real (purge-leaderboard.ts --execute): apaga score +
+    // vote + seq da entry, mesmo padrão de loop do script.
+    kv.store.delete(entry.scoreKey);
+    for (const k of entry.voteKeys) kv.store.delete(k);
+    for (const k of entry.seqKeys) kv.store.delete(k);
+
+    assert.equal(kv.store.has(`score:${email}`), false);
+    assert.equal(kv.store.has(`vote:260801:${email}`), false);
+    assert.equal(kv.store.has(`seq:2026-08:${email}`), false);
+    assert.equal(kv.store.size, 0, "nenhuma key deveria sobrar após a purga simulada");
+  });
+});
+
 describe("resolveTargetEmails (baseline, não tocado pelo #4433)", () => {
   it("modo --email: o próprio email é o target, sem scan", async () => {
     const kv = makeMemoryKv({});
