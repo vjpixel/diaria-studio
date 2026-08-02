@@ -132,6 +132,76 @@ export function listNameFor(wave: WaveDef, label: string): string {
   return `Clarice ${label} ${wave.key} — ${wave.desc}`;
 }
 
+/**
+ * #4449 item 3 / #4471: gerador determinístico do nome de LISTA pro braço COM
+ * CÉLULA do fluxo `--group` (teste A/B/C mensal) — irmão de `campaignNameFor`
+ * (`clarice-schedule-group.ts`), mas pro lado da LISTA de destinatários, que é
+ * a ÚNICA fonte de ciclo+célula que `parseAbcAudienceCampaign`
+ * (workers/brevo-dashboard/src/sections-core.ts) consegue ler pra esse fluxo
+ * (#4447) — o nome da CAMPANHA não carrega nem ciclo mensal "AAMM-MM" nem
+ * célula reconhecível.
+ *
+ * Até o #4449 esse formato de nome de lista era digitado à mão pro ciclo
+ * 2607-08 — a MESMA classe de fragilidade que já causou 3 incidentes
+ * (#3081 → #3128 → #4447): uma variação de digitação (typo, acento, ordem)
+ * quebra o parser em silêncio. Este helper elimina a digitação manual da
+ * PARTE que decide célula: `key` precisa terminar em `-A`/`-B`/`-C` (mesmo
+ * sufixo que a CAMPANHA já carrega via `campaignNameFor` — a célula da lista
+ * é sempre DERIVADA desse sufixo, nunca um valor digitado à parte), então o
+ * mismatch que o cross-check de `parseAbcAudienceCampaign` existe pra pegar
+ * fica estruturalmente impossível quando o nome vem daqui.
+ *
+ * O #4449 introduziu este helper mas nunca o LIGOU ao ponto real de criação
+ * da lista (`buildPlan`/`main()` abaixo, que sempre chamava `listNameFor`,
+ * mesmo pro braço com célula) — a fragilidade continuava intacta na prática
+ * (#4471). Mora AQUI (não em `clarice-schedule-group.ts`, onde nasceu) porque
+ * é `clarice-import-waves.ts` quem de fato cria a lista Brevo do fluxo
+ * `--group` (ver `resolveListName`/`buildPlan`/`main` abaixo);
+ * `clarice-schedule-group.ts` só cria CAMPANHAS apontando pra uma lista já
+ * existente, e reimporta este helper daqui pra manter compatibilidade com
+ * quem já usava esse caminho.
+ *
+ * Formato gerado (round-trip testado contra `parseAbcAudienceCampaign` em
+ * test/clarice-import-waves.test.ts): "Clarice {cycle} {key} — célula {X}"
+ * — `cycle` aqui é o ciclo MENSAL completo "AAMM-MM" (ex: "2607-08"), não o
+ * `cycleToYymm` que `campaignNameFor` usa pro nome da campanha (a lista
+ * carrega o ciclo completo — é dela que o parser extrai `cycle`).
+ *
+ * Lança se `key` não terminar em -A/-B/-C — uso incorreto (grupos SEM célula,
+ * ex: sufixo "-interno", não usam este helper; nomeie a lista via `listNameFor`).
+ */
+export function groupCellListNameFor(cycle: string, key: string): string {
+  const m = /-([ABC])$/i.exec(key);
+  if (!m) {
+    throw new Error(
+      `groupCellListNameFor: key "${key}" não termina em -A/-B/-C — não é uma célula de teste A/B/C ` +
+        `(grupos sem célula não usam este helper).`,
+    );
+  }
+  const cell = m[1].toUpperCase();
+  return `Clarice ${cycle} ${key} — célula ${cell}`;
+}
+
+/**
+ * #4471: resolve o nome de lista REAL usado por `buildPlan` — ponto único de
+ * decisão entre os dois formatos coexistentes. Grupos nomeados sem célula
+ * (rampa `W1`/`W2`/..., ou grupos como `engajados`/`ramp-warm`) sempre usam
+ * o formato genérico `listNameFor`. O braço COM CÉLULA do fluxo `--group`
+ * (`wave.key` termina em -A/-B/-C — só alcançável quando `group` está ativo,
+ * já que nenhuma wave/grupo nomeado hoje produz esse sufixo) usa
+ * `groupCellListNameFor`, que é o formato que `parseAbcAudienceCampaign`
+ * exige (ver docstring dela acima). Gate em `group` (não só no sufixo) é
+ * defensivo — mesmo que uma wave da rampa um dia termine coincidentemente em
+ * "-A", ela só entraria neste branch se também estivesse rodando via
+ * `--group`, o que não acontece hoje.
+ */
+export function resolveListName(wave: WaveDef, label: string, cycle: string, group: string | null): string {
+  if (group && /-[ABC]$/i.test(wave.key)) {
+    return groupCellListNameFor(cycle, wave.key);
+  }
+  return listNameFor(wave, label);
+}
+
 /** Conta as linhas de dados (sem header) de um CSV. Usa Papa pra não quebrar
  *  em campos quotados com newline/vírgula embutidos (split ingênuo inflava). */
 export function countRows(csv: string): number {
@@ -315,7 +385,10 @@ export function buildPlan(
     // criado — count reflete só os contatos reais (não conta a linha do editor).
     const csv = ensureEditorCopyRow(normalizeImportCsv(raw));
     const columns = (csv.split(/\r?\n/)[0] ?? "").split(",");
-    plans.push({ wave, listName: listNameFor(wave, label), count: countRows(raw), csv, columns });
+    // #4471: braço com célula do --group usa groupCellListNameFor (formato
+    // exigido por parseAbcAudienceCampaign); tudo mais usa listNameFor — ver
+    // resolveListName acima.
+    plans.push({ wave, listName: resolveListName(wave, label, cycle, group), count: countRows(raw), csv, columns });
   }
   return plans;
 }
