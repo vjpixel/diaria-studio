@@ -115,6 +115,27 @@
  * algo chegou e não foi entendido. Mesmo tratamento pra `drainResult.errors`
  * (threads que falharam ao carregar), que antes deste fix também nunca
  * chegava ao payload do refresh.
+ *
+ * **Grupo "ainda não pagou esse mês" + valor/nível/segmentos no card (#4437):**
+ * a Visão por grupo só listava `status.label === "apoiando"` — quem apoia há
+ * meses mas ainda não teve a cobrança do mês corrente processada
+ * desaparecia da visão (medido em produção 260801, dia 1º: 0 apoiadores).
+ * `computeRewardGroups` ganhou um 5º grupo, `nao_pagou_ainda`: contato
+ * "apoiou_e_parou" cujo `lastPaidMonth` seja EXATAMENTE o mês anterior ao
+ * corrente (carência de 1 mês — reusa `previousMonthKey` de
+ * `sync-apoio-nivel-beehiiv.ts`/#4436, sem reimplementar a lógica de
+ * virada de ano). `deriveContactStatus` agora propaga `lastPaidValue`/
+ * `lastPaidLevel` (valor + nível do último pagamento) pra esse grupo poder
+ * mostrar "o nível que a pessoa tinha", sem chamada de rede nova (o valor já
+ * está no snapshot lido por `readPastMonthSnapshots`). Cada
+ * `ContactWithStatus` também ganhou `rewardLevel` (nível vigente pra badge no
+ * card de Contatos, via `computeContactRewardLevel` — mesmo critério do
+ * grupo, mas por contato) e `segments` (segmentos Beehiiv `Apoio — *`, lidos
+ * fail-soft de `data/apoia-se/beehiiv-segments.json` via `deriveSegments` —
+ * MESMO padrão dos outros 2 caches Beehiiv deste módulo, populado por
+ * `scripts/sync-apoio-segments-beehiiv.ts`). `segments: null` = "nunca
+ * consultado" (cache ausente/sem match), distinto de `{ segments: [], ... }`
+ * = "consultado, nenhum segmento" — nunca confundir com "fora da base".
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
@@ -132,6 +153,7 @@ import {
   type BackerStatus,
   type CheckBackerOptions,
 } from "../lib/apoia-se.ts";
+import { previousMonthKey } from "../lib/apoio-month-key.ts";
 import {
   drainApoiaSeNotifications,
   type ApoioNotification,
@@ -161,6 +183,16 @@ export interface ContactBackerStatus {
   matchedEmail?: string;
   /** Mês (YYYY-MM) do último pagamento encontrado — só quando "apoiou_e_parou". */
   lastPaidMonth?: string;
+  /** #4437: valor pago em `lastPaidMonth` — só quando "apoiou_e_parou".
+   * Alimenta o grupo "ainda não pagou esse mês" (Entrega 1) e o valor
+   * mostrado no card de Contatos pra quem está fora do mês corrente
+   * (Entrega 2), sem precisar de nova consulta (já vem do snapshot lido por
+   * `readPastMonthSnapshots`). */
+  lastPaidValue?: number;
+  /** #4437: nível de recompensa correspondente a `lastPaidValue`, via
+   * `computeRewardGroup` — zero cálculo novo no client. `null`/ausente
+   * quando `lastPaidValue` é indefinido ou abaixo do piso de R$5. */
+  lastPaidLevel?: RewardGroup | null;
 }
 
 export interface CampaignSummary {
@@ -203,6 +235,29 @@ export interface VinculoInfo {
  * API Beehiiv ao vivo. */
 export type VinculoCache = Record<string, VinculoInfo>;
 
+/** Segmentos Beehiiv `Apoio — *` em que um assinante está (#4437 Entrega 2).
+ * Derivado do custom field `apoio_nivel` (mesmo campo de
+ * `sync-apoio-nivel-beehiiv.ts`) — não há endpoint de membership dedicado,
+ * ver `scripts/sync-apoio-segments-beehiiv.ts`, que popula o cache. */
+export interface SegmentsInfo {
+  /** Nomes dos segmentos `Apoio — *` casados (0 ou mais). Array vazio =
+   * "consultado, mas em nenhum segmento" — distinto de `segments: null` no
+   * `ContactWithStatus` (que significa "nunca consultado"). */
+  segments: string[];
+  /** Valor do custom field `apoio_nivel` na Beehiiv no momento da consulta —
+   * `""` quando ausente/vazio. Exposto pra o editor comparar contra o nível
+   * calculado localmente (apoia.se) e notar divergência (sync #4436 nunca
+   * rodou `--push` ao vivo, por exemplo). */
+  apoioNivel: string;
+  checkedAt: string;
+}
+
+/** Cache lido de `data/apoia-se/beehiiv-segments.json` — chaves normalizadas
+ * (lowercase/trim), mesmo tratamento de `normalizeEmailList`. Populado por
+ * `scripts/sync-apoio-segments-beehiiv.ts` (leitura paginada de
+ * `/subscriptions`, nunca escreve na Beehiiv) — o painel só LÊ. */
+export type SegmentsCache = Record<string, SegmentsInfo>;
+
 export interface ContactWithStatus extends ApoioContact {
   status: ContactBackerStatus;
   /** `null` sempre que o cache está ausente/corrompido ou nenhum email do
@@ -212,6 +267,18 @@ export interface ContactWithStatus extends ApoioContact {
    * email do contato aparece no cache (nunca consultado — não confundir com
    * `{ hasVinculo: false, ... }`, que significa "consultado, sem vínculo"). */
   vinculo: VinculoInfo | null;
+  /** #4437 Entrega 2: nível de recompensa pra badge no card de Contatos —
+   * `computeContactRewardLevel(status, currentMonth)`, MESMO critério de
+   * `computeRewardGroups` (mês corrente pra "apoiando", mês anterior DENTRO
+   * DA CARÊNCIA pra "apoiou_e_parou"). `null` quando não há valor aplicável
+   * (nao_apoia/sem_dados/apoiou_e_parou fora da carência) — nunca um badge
+   * inventado. */
+  rewardLevel: RewardGroup | null;
+  /** #4437 Entrega 2: segmentos Beehiiv do contato. `null` = "nunca
+   * consultado" (cache ausente ou nenhum email do contato no cache) —
+   * visualmente distinto de `{ segments: [], ... }` = "consultado, nenhum
+   * segmento". Ver `deriveSegments`. */
+  segments: SegmentsInfo | null;
 }
 
 export interface ApoiosData {
@@ -459,7 +526,17 @@ export function deriveContactStatus(
     for (const email of normalized) {
       const s = snap.statuses[email];
       if (s?.isPaidThisMonth) {
-        return { label: "apoiou_e_parou", lastPaidMonth: snap.month, matchedEmail: email };
+        // #4437: propaga o valor pago naquele mês + o nível correspondente —
+        // alimenta o grupo "ainda não pagou esse mês" (Entrega 1) e o valor/
+        // badge do card de Contatos (Entrega 2), sem chamada de rede nova
+        // (o valor já está no snapshot lido por `readPastMonthSnapshots`).
+        return {
+          label: "apoiou_e_parou",
+          lastPaidMonth: snap.month,
+          matchedEmail: email,
+          lastPaidValue: s.thisMonthPaidValue,
+          lastPaidLevel: computeRewardGroup(s.thisMonthPaidValue),
+        };
       }
     }
   }
@@ -508,6 +585,23 @@ export function deriveVinculo(contact: ApoioContact, cache: VinculoCache): Vincu
     if (!fallback) fallback = info;
   }
   return fallback;
+}
+
+/**
+ * Deriva os segmentos Beehiiv de um contato cruzando TODOS os seus emails
+ * contra o cache (#4437 Entrega 2). Mais simples que `deriveVinculo`/
+ * `deriveOpenRate` (que têm critério de desempate entre múltiplos hits) — não
+ * há um "melhor" match aqui, o primeiro email do contato encontrado no cache
+ * decide. `null` quando NENHUM email do contato aparece no cache (nunca
+ * consultado — não confundir com `{ segments: [], ... }`, que significa
+ * "consultado, nenhum segmento Apoio — * encontrado").
+ */
+export function deriveSegments(contact: ApoioContact, cache: SegmentsCache): SegmentsInfo | null {
+  for (const email of normalizeEmailList(contact.emails)) {
+    const info = cache[email];
+    if (info) return info;
+  }
+  return null;
 }
 
 // ── agregação de campanha (puro) ────────────────────────────────────────
@@ -567,27 +661,64 @@ export interface RewardGroupsView {
   apoiador: ContactWithStatus[];
   mantenedor: ContactWithStatus[];
   patrono: ContactWithStatus[];
+  /** #4437 Entrega 1: "ainda não pagou esse mês" — contato cujo ÚLTIMO
+   * pagamento foi o mês IMEDIATAMENTE anterior ao corrente (carência de 1
+   * mês, mesmo `previousMonthKey` de `sync-apoio-nivel-beehiiv.ts`/#4436).
+   * Distinto de churn real (2+ meses sem pagar, que fica de fora de todo
+   * grupo, igual antes desta issue). NÃO é uma faixa de valor — é um estado
+   * de cobrança, por isso é um array só (não particionado por nível); o
+   * nível que a pessoa tinha vem em `status.lastPaidLevel`/`rewardLevel` de
+   * cada contato. Renderizado por último (`REWARD_GROUP_ORDER` no client). */
+  nao_pagou_ainda: ContactWithStatus[];
 }
 
 export function emptyRewardGroupsView(): RewardGroupsView {
-  return { amigo: [], apoiador: [], mantenedor: [], patrono: [] };
+  return { amigo: [], apoiador: [], mantenedor: [], patrono: [], nao_pagou_ainda: [] };
+}
+
+/**
+ * Pure (#4437 Entrega 2): nível de recompensa "vigente" de um contato pra
+ * fins de badge no card de Contatos — MESMO critério usado por
+ * `computeRewardGroups` pra decidir em qual grupo/se-entra-em-algum-grupo o
+ * contato cai, mas por contato em vez de por bucket (útil pro card
+ * individual, que não pertence a um `RewardGroupsView`). `apoiando` usa o
+ * valor do mês corrente; `apoiou_e_parou` só conta DENTRO da carência de 1
+ * mês (`lastPaidMonth === previousMonthKey(currentMonth)`) — fora da
+ * carência é churn real, sem nível vigente. Qualquer outro label
+ * (`nao_apoia`/`sem_dados`) nunca tem nível — nunca um badge inventado.
+ */
+export function computeContactRewardLevel(status: ContactBackerStatus, currentMonth: string): RewardGroup | null {
+  if (status.label === "apoiando") return computeRewardGroup(status.monthlyValue);
+  if (status.label === "apoiou_e_parou" && status.lastPaidMonth === previousMonthKey(currentMonth)) {
+    return computeRewardGroup(status.lastPaidValue);
+  }
+  return null;
 }
 
 /**
  * Agrega contatos por nível de recompensa do mês corrente pra exibição no
- * painel Apoios (#3844 parte 2). Só contatos com `status.label ===
- * "apoiando"` têm um `monthlyValue` do mês corrente pra derivar um nível —
- * "nao_apoia"/"apoiou_e_parou"/"sem_dados" nunca entram em grupo algum (não
- * há valor pago ESTE mês pra particionar). Um contato com valor abaixo de
- * R$5 (fora do intervalo hoje, mas defensivo) também fica de fora — reflete
- * `computeRewardGroup` retornando `null`.
+ * painel Apoios (#3844 parte 2), mais o grupo "ainda não pagou esse mês"
+ * (#4437 Entrega 1). Contatos "apoiando" entram numa das 4 faixas por
+ * `computeRewardGroup(monthlyValue)`; contatos "apoiou_e_parou" cujo
+ * `lastPaidMonth` seja EXATAMENTE o mês anterior ao corrente entram em
+ * `nao_pagou_ainda` (carência de 1 mês — mais antigo que isso é churn real,
+ * fica de fora de todo grupo, igual antes desta issue). `sem_dados`/
+ * `nao_apoia` nunca entram em grupo algum. Um contato com valor abaixo de
+ * R$5 (fora do intervalo hoje, mas defensivo) também fica de fora da faixa
+ * paga — reflete `computeRewardGroup` retornando `null`.
  */
-export function computeRewardGroups(contacts: ContactWithStatus[]): RewardGroupsView {
+export function computeRewardGroups(contacts: ContactWithStatus[], currentMonth: string): RewardGroupsView {
   const view = emptyRewardGroupsView();
+  const previousMonth = previousMonthKey(currentMonth);
   for (const c of contacts) {
-    if (c.status.label !== "apoiando") continue;
-    const group = computeRewardGroup(c.status.monthlyValue);
-    if (group) view[group].push(c);
+    if (c.status.label === "apoiando") {
+      const group = computeRewardGroup(c.status.monthlyValue);
+      if (group) view[group].push(c);
+      continue;
+    }
+    if (c.status.label === "apoiou_e_parou" && c.status.lastPaidMonth === previousMonth) {
+      view.nao_pagou_ainda.push(c);
+    }
   }
   return view;
 }
@@ -784,6 +915,65 @@ export function loadVinculoCache(rootDir: string): VinculoCache {
   return cache;
 }
 
+// ── I/O: cache de segmentos Beehiiv (leitura fail-soft, #4437 Entrega 2) ─
+
+export function segmentsCachePath(rootDir: string): string {
+  return resolve(rootDir, "data", "apoia-se", "beehiiv-segments.json");
+}
+
+/** Valida o shape de 1 entrada crua do cache — descarta silenciosamente
+ * entradas malformadas (mesmo tratamento defensivo de `sanitizeVinculoEntry`,
+ * o arquivo é populado por um script externo, ver
+ * `scripts/sync-apoio-segments-beehiiv.ts`). */
+function sanitizeSegmentsEntry(raw: unknown): SegmentsInfo | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    !Array.isArray(r.segments) ||
+    !r.segments.every((s) => typeof s === "string") ||
+    typeof r.apoioNivel !== "string" ||
+    typeof r.checkedAt !== "string"
+  ) {
+    return null;
+  }
+  return {
+    segments: r.segments as string[],
+    apoioNivel: r.apoioNivel,
+    checkedAt: r.checkedAt,
+  };
+}
+
+/**
+ * Lê `data/apoia-se/beehiiv-segments.json` (#4437 Entrega 2) — arquivo
+ * LOCAL, gitignored, populado por `scripts/sync-apoio-segments-beehiiv.ts`
+ * (leitura paginada de `/subscriptions`, deriva a pertinência aos 6
+ * segmentos `Apoio — *` a partir do custom field `apoio_nivel` — mesmo
+ * mecanismo dos outros 2 caches Beehiiv deste módulo, #3612/#4273 parte 3).
+ * Fail-soft total: arquivo ausente, JSON corrompido, shape inesperado, ou
+ * entrada individual malformada → nunca lança, na pior hipótese devolve
+ * `{}` (todo contato aparece com `segments: null`). Chaves normalizadas
+ * (lowercase/trim) pra casar direto contra `normalizeEmailList`.
+ */
+export function loadSegmentsCache(rootDir: string): SegmentsCache {
+  const path = segmentsCachePath(rootDir);
+  if (!existsSync(path)) return {};
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf-8"));
+  } catch {
+    return {};
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const cache: SegmentsCache = {};
+  for (const [rawEmail, value] of Object.entries(raw as Record<string, unknown>)) {
+    const email = rawEmail.trim().toLowerCase();
+    if (!email) continue;
+    const entry = sanitizeSegmentsEntry(value);
+    if (entry) cache[email] = entry;
+  }
+  return cache;
+}
+
 // ── I/O: consulta ao vivo do mês corrente (reusa checkBacker) ───────────
 
 export interface FetchCurrentStatusesResult {
@@ -840,18 +1030,25 @@ export interface BuildApoiosDataOptions {
   /** Injetável pra testes — evita I/O de `beehiiv-vinculo.json` real
    * (#4273 parte 3). Default: `loadVinculoCache(rootDir)`. */
   vinculoCache?: VinculoCache;
+  /** Injetável pra testes — evita I/O de `beehiiv-segments.json` real
+   * (#4437 Entrega 2). Default: `loadSegmentsCache(rootDir)`. */
+  segmentsCache?: SegmentsCache;
 }
 
 function toSemDados(
   contacts: ApoioContact[],
   openRateCache: OpenRateCache,
   vinculoCache: VinculoCache,
+  segmentsCache: SegmentsCache,
 ): ContactWithStatus[] {
   return contacts.map((c) => ({
     ...c,
     status: { label: "sem_dados" as const },
     openRate: deriveOpenRate(c, openRateCache),
     vinculo: deriveVinculo(c, vinculoCache),
+    // status é sempre "sem_dados" aqui -> nunca há nível de recompensa vigente.
+    rewardLevel: null,
+    segments: deriveSegments(c, segmentsCache),
   }));
 }
 
@@ -865,6 +1062,10 @@ function toSemDados(
 export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOptions = {}): Promise<ApoiosData> {
   const now = opts.now ?? new Date();
   const generatedAt = now.toISOString();
+  // Pura função de `now` (#4437) — computada cedo pra estar disponível em
+  // TODO caminho de retorno que chega a montar `ContactWithStatus[]`
+  // (`rewardLevel` e o grupo "ainda não pagou esse mês" dependem dela).
+  const currentMonth = competenceMonth(now);
 
   if (!opts.contacts) {
     const dataDirError = checkDataDirAvailable(rootDir);
@@ -880,23 +1081,24 @@ export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOpti
     return { contacts: [], campaign: emptyCampaignSummary(), rewardGroups: emptyRewardGroupsView(), error: (e as Error).message, generatedAt };
   }
 
-  // Taxa de abertura Beehiiv (#3612) e confirmação de vínculo Beehiiv (#4273
-  // parte 3) são sinais INDEPENDENTES do status de apoio apoia.se —
-  // carregados cedo, antes do gate de credenciais abaixo, pra aparecerem em
-  // TODOS os caminhos de retorno (inclusive quando as credenciais apoia.se
-  // estão ausentes).
+  // Taxa de abertura Beehiiv (#3612), confirmação de vínculo Beehiiv (#4273
+  // parte 3) e segmentos Beehiiv (#4437 Entrega 2) são sinais INDEPENDENTES
+  // do status de apoio apoia.se — carregados cedo, antes do gate de
+  // credenciais abaixo, pra aparecerem em TODOS os caminhos de retorno
+  // (inclusive quando as credenciais apoia.se estão ausentes).
   const openRateCache = opts.openRateCache ?? loadOpenRateCache(rootDir);
   const vinculoCache = opts.vinculoCache ?? loadVinculoCache(rootDir);
+  const segmentsCache = opts.segmentsCache ?? loadSegmentsCache(rootDir);
 
   let env: ApoiaSeEnv;
   try {
     env = opts.env ?? readApoiaSeEnv();
   } catch (e) {
-    const withStatus = toSemDados(contacts, openRateCache, vinculoCache);
+    const withStatus = toSemDados(contacts, openRateCache, vinculoCache, segmentsCache);
     return {
       contacts: withStatus,
       campaign: computeCampaignSummary(withStatus),
-      rewardGroups: computeRewardGroups(withStatus),
+      rewardGroups: computeRewardGroups(withStatus, currentMonth),
       error: (e as Error).message,
       generatedAt,
     };
@@ -904,7 +1106,6 @@ export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOpti
 
   const allEmails = contacts.flatMap((c) => c.emails);
   const cacheDir = opts.cacheDir ?? defaultCacheDir(env.campaign);
-  const currentMonth = competenceMonth(now);
 
   const { statuses: currentStatuses, error: fetchError } = await fetchCurrentStatuses(allEmails, {
     env,
@@ -929,20 +1130,25 @@ export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOpti
   const resolvedEmails = new Set(Object.keys(currentStatuses));
 
   const withStatus: ContactWithStatus[] = contacts.map((c) => {
-    const status = deriveContactStatus(c.emails, currentStatuses, pastSnapshots);
+    let status = deriveContactStatus(c.emails, currentStatuses, pastSnapshots);
     if (status.label === "nao_apoia") {
       const hasUnresolvedEmail = normalizeEmailList(c.emails).some((e) => !resolvedEmails.has(e));
-      if (hasUnresolvedEmail) {
-        return { ...c, status: { label: "sem_dados" }, openRate: deriveOpenRate(c, openRateCache), vinculo: deriveVinculo(c, vinculoCache) };
-      }
+      if (hasUnresolvedEmail) status = { label: "sem_dados" };
     }
-    return { ...c, status, openRate: deriveOpenRate(c, openRateCache), vinculo: deriveVinculo(c, vinculoCache) };
+    return {
+      ...c,
+      status,
+      openRate: deriveOpenRate(c, openRateCache),
+      vinculo: deriveVinculo(c, vinculoCache),
+      rewardLevel: computeContactRewardLevel(status, currentMonth),
+      segments: deriveSegments(c, segmentsCache),
+    };
   });
 
   return {
     contacts: withStatus,
     campaign: computeCampaignSummary(withStatus),
-    rewardGroups: computeRewardGroups(withStatus),
+    rewardGroups: computeRewardGroups(withStatus, currentMonth),
     error: fetchError,
     generatedAt,
   };
@@ -969,6 +1175,8 @@ export interface RefreshApoiosDataOptions extends BuildApoiosDataOptions {
 export async function refreshApoiosData(rootDir: string, opts: RefreshApoiosDataOptions = {}): Promise<ApoiosData> {
   const now = opts.now ?? new Date();
   const generatedAt = now.toISOString();
+  // Pura função de `now` (#4437) — ver rationale em `buildApoiosData`.
+  const currentMonth = competenceMonth(now);
 
   if (!opts.contacts) {
     const dataDirError = checkDataDirAvailable(rootDir);
@@ -1046,23 +1254,23 @@ export async function refreshApoiosData(rootDir: string, opts: RefreshApoiosData
 
   const openRateCache = opts.openRateCache ?? loadOpenRateCache(rootDir);
   const vinculoCache = opts.vinculoCache ?? loadVinculoCache(rootDir);
+  const segmentsCache = opts.segmentsCache ?? loadSegmentsCache(rootDir);
 
   let env: ApoiaSeEnv;
   try {
     env = opts.env ?? readApoiaSeEnv();
   } catch (e) {
-    const withStatus = toSemDados(contacts, openRateCache, vinculoCache);
+    const withStatus = toSemDados(contacts, openRateCache, vinculoCache, segmentsCache);
     return {
       contacts: withStatus,
       campaign: computeCampaignSummary(withStatus),
-      rewardGroups: computeRewardGroups(withStatus),
+      rewardGroups: computeRewardGroups(withStatus, currentMonth),
       error: (e as Error).message,
       generatedAt,
     };
   }
 
   const cacheDir = opts.cacheDir ?? defaultCacheDir(env.campaign);
-  const currentMonth = competenceMonth(now);
   const pastSnapshots = readPastMonthSnapshots(cacheDir, currentMonth);
 
   // Fase 1 — SEM rede: lê o cache do mês corrente tal como está (nunca gasta
@@ -1118,20 +1326,25 @@ export async function refreshApoiosData(rootDir: string, opts: RefreshApoiosData
   const resolvedEmails = new Set(Object.keys(currentStatuses));
 
   const withStatus: ContactWithStatus[] = contacts.map((c) => {
-    const status = deriveContactStatus(c.emails, currentStatuses, pastSnapshots);
+    let status = deriveContactStatus(c.emails, currentStatuses, pastSnapshots);
     if (status.label === "nao_apoia") {
       const hasUnresolvedEmail = normalizeEmailList(c.emails).some((e) => !resolvedEmails.has(e));
-      if (hasUnresolvedEmail) {
-        return { ...c, status: { label: "sem_dados" }, openRate: deriveOpenRate(c, openRateCache), vinculo: deriveVinculo(c, vinculoCache) };
-      }
+      if (hasUnresolvedEmail) status = { label: "sem_dados" };
     }
-    return { ...c, status, openRate: deriveOpenRate(c, openRateCache), vinculo: deriveVinculo(c, vinculoCache) };
+    return {
+      ...c,
+      status,
+      openRate: deriveOpenRate(c, openRateCache),
+      vinculo: deriveVinculo(c, vinculoCache),
+      rewardLevel: computeContactRewardLevel(status, currentMonth),
+      segments: deriveSegments(c, segmentsCache),
+    };
   });
 
   return {
     contacts: withStatus,
     campaign: computeCampaignSummary(withStatus),
-    rewardGroups: computeRewardGroups(withStatus),
+    rewardGroups: computeRewardGroups(withStatus, currentMonth),
     // refreshError (falha de credenciais/auth apoia.se) é mais crítico —
     // nunca sobrescrito pelo gmailDrainError (fail-soft, #3859 metade 1).
     error: refreshError ?? gmailDrainError,

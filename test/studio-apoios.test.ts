@@ -37,10 +37,14 @@ import {
   deriveVinculo,
   loadVinculoCache,
   vinculoCachePath,
+  deriveSegments,
+  loadSegmentsCache,
+  segmentsCachePath,
   computeCampaignSummary,
   emptyCampaignSummary,
   computeRewardGroup,
   computeRewardGroups,
+  computeContactRewardLevel,
   emptyRewardGroupsView,
   contactsFilePath,
   checkDataDirAvailable,
@@ -56,10 +60,13 @@ import {
   parseUpdateContactBody,
   type ApoioContact,
   type ContactWithStatus,
+  type ContactBackerStatus,
   type OpenRateInfo,
   type OpenRateCache,
   type VinculoInfo,
   type VinculoCache,
+  type SegmentsInfo,
+  type SegmentsCache,
 } from "../scripts/studio-ui/studio-apoios.ts";
 import type { ApoiaSeEnv, BackerStatus } from "../scripts/lib/apoia-se.ts";
 import type { DrainApoiaSeResult, DrainedPromessa } from "../scripts/lib/apoia-se-gmail-drain.ts";
@@ -229,6 +236,28 @@ describe("deriveContactStatus (#3602)", () => {
     );
     assert.equal(status.label, "apoiou_e_parou");
     assert.equal(status.lastPaidMonth, "2026-06");
+  });
+
+  it("regressão (#4437): apoiou_e_parou também propaga lastPaidValue + lastPaidLevel do mês encontrado", () => {
+    const status = deriveContactStatus(
+      ["a@x.com"],
+      { "a@x.com": { isBacker: true, isPaidThisMonth: false } },
+      [
+        { month: "2026-06", statuses: { "a@x.com": { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 10 } } },
+      ],
+    );
+    assert.equal(status.lastPaidValue, 10);
+    assert.equal(status.lastPaidLevel, "apoiador");
+  });
+
+  it("regressão (#4437): apoiou_e_parou sem thisMonthPaidValue no snapshot -> lastPaidValue/lastPaidLevel undefined/null (nunca lança)", () => {
+    const status = deriveContactStatus(
+      ["a@x.com"],
+      {},
+      [{ month: "2026-06", statuses: { "a@x.com": { isBacker: true, isPaidThisMonth: true } } }],
+    );
+    assert.equal(status.lastPaidValue, undefined);
+    assert.equal(status.lastPaidLevel, null);
   });
 
   it("usa o mês passado MAIS RECENTE quando há múltiplos matches (snapshots ordenados desc)", () => {
@@ -491,6 +520,120 @@ describe("loadVinculoCache (#4273 parte 3)", () => {
   });
 });
 
+// ─── segmentos Beehiiv (#4437 Entrega 2) ────────────────────────────────
+
+function makeSegmentsInfo(overrides: Partial<SegmentsInfo> = {}): SegmentsInfo {
+  return {
+    segments: ["Apoio — Amigo", "Apoio — Todos"],
+    apoioNivel: "amigo",
+    checkedAt: "2026-08-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("deriveSegments (#4437 Entrega 2)", () => {
+  it("cache ausente ({}) -> null em todos os contatos, painel não quebra", () => {
+    const contact = makeContact({ emails: ["fulano@x.com"] });
+    assert.equal(deriveSegments(contact, {}), null);
+  });
+
+  it("1 email do contato bate no cache -> retorna a entrada", () => {
+    const contact = makeContact({ emails: ["fulano@x.com"] });
+    const cache: SegmentsCache = { "fulano@x.com": makeSegmentsInfo({ apoioNivel: "patrono" }) };
+    const result = deriveSegments(contact, cache);
+    assert.equal(result?.apoioNivel, "patrono");
+  });
+
+  it("e-mail SECUNDÁRIO do contato casa o cache (cruza todos os emails)", () => {
+    const contact = makeContact({ emails: ["primeiro@x.com", "segundo@x.com"] });
+    const cache: SegmentsCache = { "segundo@x.com": makeSegmentsInfo({ apoioNivel: "mantenedor" }) };
+    const result = deriveSegments(contact, cache);
+    assert.equal(result?.apoioNivel, "mantenedor");
+  });
+
+  it("contato sem match em nenhum email -> null (nunca consultado)", () => {
+    const contact = makeContact({ emails: ["nao-cadastrado@x.com"] });
+    const cache: SegmentsCache = { "outro@x.com": makeSegmentsInfo() };
+    assert.equal(deriveSegments(contact, cache), null);
+  });
+
+  it("entrada no cache com segments: [] é 'consultado, nenhum segmento' — distinto de null", () => {
+    const contact = makeContact({ emails: ["sem-segmento@x.com"] });
+    const cache: SegmentsCache = {
+      "sem-segmento@x.com": makeSegmentsInfo({ segments: [], apoioNivel: "" }),
+    };
+    const result = deriveSegments(contact, cache);
+    assert.notEqual(result, null);
+    assert.deepEqual(result?.segments, []);
+  });
+});
+
+describe("loadSegmentsCache (#4437 Entrega 2)", () => {
+  let root: string;
+
+  before(() => {
+    root = mkdtempSync(join(tmpdir(), "studio-apoios-segments-"));
+  });
+  after(() => rmSync(root, { recursive: true, force: true }));
+
+  it("arquivo ausente -> {} (sem lançar)", () => {
+    const dir = join(root, "missing");
+    mkdirSync(dir, { recursive: true });
+    assert.deepEqual(loadSegmentsCache(dir), {});
+  });
+
+  it("JSON corrompido -> {} (sem lançar)", () => {
+    const dir = join(root, "corrupted");
+    mkdirSync(join(dir, "data", "apoia-se"), { recursive: true });
+    writeFileSync(segmentsCachePath(dir), "{ nao é json válido");
+    assert.deepEqual(loadSegmentsCache(dir), {});
+  });
+
+  it("array no lugar de objeto -> {} (shape inesperado)", () => {
+    const dir = join(root, "array-shape");
+    mkdirSync(join(dir, "data", "apoia-se"), { recursive: true });
+    writeFileSync(segmentsCachePath(dir), JSON.stringify([1, 2, 3]));
+    assert.deepEqual(loadSegmentsCache(dir), {});
+  });
+
+  it("arquivo válido -> parseia e normaliza chaves (lowercase/trim)", () => {
+    const dir = join(root, "valid");
+    mkdirSync(join(dir, "data", "apoia-se"), { recursive: true });
+    writeFileSync(
+      segmentsCachePath(dir),
+      JSON.stringify({ " Fulano@X.com ": makeSegmentsInfo({ apoioNivel: "apoiador" }) }),
+    );
+    const cache = loadSegmentsCache(dir);
+    assert.equal(cache["fulano@x.com"]?.apoioNivel, "apoiador");
+  });
+
+  it("entrada individual malformada é descartada, resto do cache sobrevive", () => {
+    const dir = join(root, "partial-malformed");
+    mkdirSync(join(dir, "data", "apoia-se"), { recursive: true });
+    writeFileSync(
+      segmentsCachePath(dir),
+      JSON.stringify({
+        "bom@x.com": makeSegmentsInfo({ apoioNivel: "bom" }),
+        "ruim@x.com": { segments: "not-an-array" }, // faltam campos + tipo errado
+      }),
+    );
+    const cache = loadSegmentsCache(dir);
+    assert.equal(cache["bom@x.com"]?.apoioNivel, "bom");
+    assert.equal("ruim@x.com" in cache, false);
+  });
+
+  it("segments: [] é entrada VÁLIDA (não malformada) — 'consultado, nenhum segmento'", () => {
+    const dir = join(root, "valid-empty-segments");
+    mkdirSync(join(dir, "data", "apoia-se"), { recursive: true });
+    writeFileSync(
+      segmentsCachePath(dir),
+      JSON.stringify({ "nenhum@x.com": makeSegmentsInfo({ segments: [], apoioNivel: "" }) }),
+    );
+    const cache = loadSegmentsCache(dir);
+    assert.deepEqual(cache["nenhum@x.com"]?.segments, []);
+  });
+});
+
 // ─── agregação de campanha ──────────────────────────────────────────────
 
 describe("computeCampaignSummary (#3602)", () => {
@@ -568,9 +711,15 @@ describe("computeRewardGroup (#3844 parte 2)", () => {
   });
 });
 
-describe("computeRewardGroups (#3844 parte 2)", () => {
-  it("emptyRewardGroupsView zera as 4 chaves", () => {
-    assert.deepEqual(emptyRewardGroupsView(), { amigo: [], apoiador: [], mantenedor: [], patrono: [] });
+describe("computeRewardGroups (#3844 parte 2, grupo 'ainda não pagou esse mês' #4437 Entrega 1)", () => {
+  it("emptyRewardGroupsView zera as 4 faixas + o grupo 'ainda não pagou esse mês'", () => {
+    assert.deepEqual(emptyRewardGroupsView(), {
+      amigo: [],
+      apoiador: [],
+      mantenedor: [],
+      patrono: [],
+      nao_pagou_ainda: [],
+    });
   });
 
   it("particiona uma lista de ContactWithStatus reproduzindo a distribuição de aceitação da issue (#3844)", () => {
@@ -581,28 +730,95 @@ describe("computeRewardGroups (#3844 parte 2)", () => {
       { ...makeContact({ id: "c4", name: "Apoiador2" }), status: { label: "apoiando", monthlyValue: 10 }, openRate: null },
       { ...makeContact({ id: "c5", name: "Amigo" }), status: { label: "apoiando", monthlyValue: 5 }, openRate: null },
     ];
-    const groups = computeRewardGroups(entries);
+    const groups = computeRewardGroups(entries, "2026-07");
     assert.deepEqual(groups.patrono.map((c) => c.name), ["Patrono"]);
     assert.deepEqual(groups.mantenedor.map((c) => c.name), ["Mantenedor"]);
     assert.deepEqual(groups.apoiador.map((c) => c.name), ["Apoiador1", "Apoiador2"]);
     assert.deepEqual(groups.amigo.map((c) => c.name), ["Amigo"]);
+    assert.deepEqual(groups.nao_pagou_ainda, []);
   });
 
-  it("contato 'nao_apoia'/'apoiou_e_parou'/'sem_dados' nunca cai em nenhum grupo (só apoiando este mês entra)", () => {
+  it("contato 'nao_apoia'/'sem_dados'/'apoiou_e_parou' FORA da carência (2+ meses) nunca cai em nenhum grupo", () => {
     const entries: ContactWithStatus[] = [
       { ...makeContact({ id: "c1", name: "NaoApoia" }), status: { label: "nao_apoia" }, openRate: null },
+      // currentMonth "2026-08" -> mês anterior é "2026-06"; lastPaidMonth "2026-06" está 2 meses
+      // atrás -> churn real, fora da carência.
       { ...makeContact({ id: "c2", name: "Parou" }), status: { label: "apoiou_e_parou", lastPaidMonth: "2026-06" }, openRate: null },
       { ...makeContact({ id: "c3", name: "SemDados" }), status: { label: "sem_dados" }, openRate: null },
     ];
-    const groups = computeRewardGroups(entries);
+    const groups = computeRewardGroups(entries, "2026-08");
     assert.deepEqual(groups, emptyRewardGroupsView());
+  });
+
+  it("#4437: contato 'apoiou_e_parou' cujo lastPaidMonth é EXATAMENTE o mês anterior entra em 'nao_pagou_ainda'", () => {
+    const entries: ContactWithStatus[] = [
+      {
+        ...makeContact({ id: "c1", name: "DentroDaCarencia" }),
+        status: { label: "apoiou_e_parou", lastPaidMonth: "2026-07", lastPaidValue: 25, lastPaidLevel: "mantenedor" },
+        openRate: null,
+      },
+    ];
+    const groups = computeRewardGroups(entries, "2026-08");
+    assert.deepEqual(groups.nao_pagou_ainda.map((c) => c.id), ["c1"]);
+    // Não entra em NENHUMA das 4 faixas — é um estado de cobrança, não um nível.
+    assert.deepEqual(groups.amigo, []);
+    assert.deepEqual(groups.apoiador, []);
+    assert.deepEqual(groups.mantenedor, []);
+    assert.deepEqual(groups.patrono, []);
   });
 
   it("contato 'apoiando' sem monthlyValue (não deveria ocorrer, mas defensivo) não cai em grupo algum", () => {
     const entries: ContactWithStatus[] = [
       { ...makeContact({ id: "c1", name: "SemValor" }), status: { label: "apoiando" }, openRate: null },
     ];
-    assert.deepEqual(computeRewardGroups(entries), emptyRewardGroupsView());
+    assert.deepEqual(computeRewardGroups(entries, "2026-07"), emptyRewardGroupsView());
+  });
+
+  it("virada de ano: currentMonth 'YYYY-01' calcula o mês anterior como 'YYYY-1-12' corretamente", () => {
+    const entries: ContactWithStatus[] = [
+      {
+        ...makeContact({ id: "c1", name: "Dezembro" }),
+        status: { label: "apoiou_e_parou", lastPaidMonth: "2025-12", lastPaidValue: 5, lastPaidLevel: "amigo" },
+        openRate: null,
+      },
+    ];
+    const groups = computeRewardGroups(entries, "2026-01");
+    assert.deepEqual(groups.nao_pagou_ainda.map((c) => c.id), ["c1"]);
+  });
+});
+
+describe("computeContactRewardLevel (#4437 Entrega 2)", () => {
+  function statusOf(overrides: Partial<ContactBackerStatus>): ContactBackerStatus {
+    return { label: "apoiando", ...overrides };
+  }
+
+  it("'apoiando' usa monthlyValue do mês corrente, via computeRewardGroup (fronteiras 5/10/25/50)", () => {
+    assert.equal(computeContactRewardLevel(statusOf({ monthlyValue: 5 }), "2026-07"), "amigo");
+    assert.equal(computeContactRewardLevel(statusOf({ monthlyValue: 10 }), "2026-07"), "apoiador");
+    assert.equal(computeContactRewardLevel(statusOf({ monthlyValue: 25 }), "2026-07"), "mantenedor");
+    assert.equal(computeContactRewardLevel(statusOf({ monthlyValue: 50 }), "2026-07"), "patrono");
+  });
+
+  it("'apoiando' sem monthlyValue -> null (nunca um badge inventado)", () => {
+    assert.equal(computeContactRewardLevel({ label: "apoiando" }, "2026-07"), null);
+  });
+
+  it("'apoiou_e_parou' DENTRO da carência (lastPaidMonth = mês anterior) usa lastPaidValue", () => {
+    const status: ContactBackerStatus = { label: "apoiou_e_parou", lastPaidMonth: "2026-07", lastPaidValue: 25 };
+    assert.equal(computeContactRewardLevel(status, "2026-08"), "mantenedor");
+  });
+
+  it("'apoiou_e_parou' FORA da carência (2+ meses) -> null, mesmo com lastPaidValue presente", () => {
+    const status: ContactBackerStatus = { label: "apoiou_e_parou", lastPaidMonth: "2026-06", lastPaidValue: 25 };
+    assert.equal(computeContactRewardLevel(status, "2026-08"), null);
+  });
+
+  it("'nao_apoia' -> null (sem valor no mês, sem badge)", () => {
+    assert.equal(computeContactRewardLevel({ label: "nao_apoia" }, "2026-07"), null);
+  });
+
+  it("'sem_dados' -> null (sem valor no mês, sem badge)", () => {
+    assert.equal(computeContactRewardLevel({ label: "sem_dados" }, "2026-07"), null);
   });
 });
 
@@ -846,17 +1062,31 @@ describe("buildApoiosData (#3602)", () => {
       assert.equal(byId.c1.monthlyValue, 20);
       assert.equal(byId.c2.label, "apoiou_e_parou");
       assert.equal(byId.c2.lastPaidMonth, "2026-06");
+      // #4437: propagado do snapshot, sem chamada de rede nova.
+      assert.equal(byId.c2.lastPaidValue, 5);
+      assert.equal(byId.c2.lastPaidLevel, "amigo");
       assert.equal(byId.c3.label, "nao_apoia");
       assert.equal(result.campaign.totalContacts, 3);
       assert.equal(result.campaign.totalConverted, 1);
       assert.equal(result.campaign.monthlyValueSum, 20);
       // #3844 parte 2: rewardGroups reusa o MESMO ContactWithStatus[] já
-      // montado acima — c1 (R$20, apoiando) cai em "apoiador"; c2/c3 (não
-      // apoiando este mês) não aparecem em grupo algum.
+      // montado acima — c1 (R$20, apoiando) cai em "apoiador".
       assert.deepEqual(result.rewardGroups.apoiador.map((c) => c.id), ["c1"]);
       assert.deepEqual(result.rewardGroups.amigo, []);
       assert.deepEqual(result.rewardGroups.mantenedor, []);
       assert.deepEqual(result.rewardGroups.patrono, []);
+      // #4437 Entrega 1: FIXED_NOW é 2026-07-16 -> mês anterior é 2026-06 ->
+      // c2 (último pagamento EXATAMENTE em 2026-06) entra em "ainda não pagou
+      // esse mês" em vez de desaparecer (era o bug motivador da issue,
+      // medido em produção no dia 1º: 0 apoiadores na visão).
+      assert.deepEqual(result.rewardGroups.nao_pagou_ainda.map((c) => c.id), ["c2"]);
+      // #4437 Entrega 2: rewardLevel por contato (badge do card) segue o
+      // MESMO critério — c1 (apoiando, R$20) = apoiador; c2 (dentro da
+      // carência, R$5) = amigo; c3 (nao_apoia) = null.
+      const rewardLevelById = Object.fromEntries(result.contacts.map((c) => [c.id, c.rewardLevel]));
+      assert.equal(rewardLevelById.c1, "apoiador");
+      assert.equal(rewardLevelById.c2, "amigo");
+      assert.equal(rewardLevelById.c3, null);
     } finally {
       rmSync(cacheDir, { recursive: true, force: true });
     }

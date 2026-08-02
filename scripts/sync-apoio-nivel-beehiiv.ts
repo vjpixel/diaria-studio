@@ -142,6 +142,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { readApoiaSeEnv, defaultCacheDir, competenceMonth } from "./lib/apoia-se.ts";
+import { previousMonthKey } from "./lib/apoio-month-key.ts";
 import {
   buildApoiosData,
   computeRewardGroup,
@@ -204,22 +205,16 @@ export function maxLevel(a: ApoioNivel | null, b: ApoioNivel | null): ApoioNivel
 }
 
 /**
- * Pure: mês anterior a `monthKey` (formato `YYYY-MM`), com virada de ano
- * (`2026-01` → `2025-12`). Lança em formato inesperado — nunca produz um mês
- * inválido silenciosamente (o resultado alimenta uma busca de carência que,
- * se errada, pode reviver ou matar recompensa indevidamente).
+ * Reexportado (#4437) de `./lib/apoio-month-key.ts` — extraído pra lá porque
+ * `scripts/studio-ui/studio-apoios.ts` (Entrega 1, grupo "ainda não pagou
+ * esse mês") também precisa desta função, e este arquivo já importa DE
+ * `studio-apoios.ts` (`buildApoiosData`/`computeRewardGroup`/
+ * `readPastMonthSnapshots`) — mantê-la aqui criaria um ciclo de módulos ES.
+ * Reexportar preserva o import existente (`test/sync-apoio-nivel-
+ * beehiiv.test.ts` importa `previousMonthKey` deste path). Ver o cabeçalho
+ * de `apoio-month-key.ts` pro rationale completo.
  */
-export function previousMonthKey(monthKey: string): string {
-  const m = /^(\d{4})-(\d{2})$/.exec(monthKey);
-  if (!m) throw new Error(`previousMonthKey: formato inesperado '${monthKey}' (esperado YYYY-MM)`);
-  let year = Number(m[1]);
-  let month = Number(m[2]) - 1;
-  if (month < 1) {
-    month = 12;
-    year -= 1;
-  }
-  return `${year}-${String(month).padStart(2, "0")}`;
-}
+export { previousMonthKey };
 
 /**
  * Pure: nível pago por um contato (qualquer um dos seus e-mails) num

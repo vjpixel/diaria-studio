@@ -31,7 +31,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startStudioServer, type StudioServer } from "../scripts/studio-ui/server.ts";
-import { openRateCachePath, createContact, saveContacts } from "../scripts/studio-ui/studio-apoios.ts";
+import { openRateCachePath, segmentsCachePath, createContact, saveContacts } from "../scripts/studio-ui/studio-apoios.ts";
 
 const ENV_KEYS = ["APOIA_SE_API_KEY", "APOIA_SE_API_SECRET", "APOIA_SE_CAMPAIGN"] as const;
 
@@ -126,10 +126,16 @@ describe("GET /apoios + /api/apoios + CRUD (#3602)", () => {
     assert.match(body.error ?? "", /APOIA_SE_API_KEY/);
   });
 
-  it("GET /api/apoios traz 'rewardGroups' com as 4 chaves de nível, vazias sem contatos (#3844 parte 2)", async () => {
+  it("GET /api/apoios traz 'rewardGroups' com as 4 faixas + o grupo 'ainda não pagou esse mês', vazias sem contatos (#3844 parte 2 / #4437 Entrega 1)", async () => {
     const res = await fetch(new URL("/api/apoios", server.url));
     const body = await res.json();
-    assert.deepEqual(body.rewardGroups, { amigo: [], apoiador: [], mantenedor: [], patrono: [] });
+    assert.deepEqual(body.rewardGroups, {
+      amigo: [],
+      apoiador: [],
+      mantenedor: [],
+      patrono: [],
+      nao_pagou_ainda: [],
+    });
   });
 
   it("serve a página apoios.html com a seção de visão por grupo (#3844 parte 2)", async () => {
@@ -182,6 +188,10 @@ describe("GET /apoios + /api/apoios + CRUD (#3602)", () => {
     assert.equal(body.contacts[0].id, createdId);
     assert.equal(body.contacts[0].status.label, "sem_dados");
     assert.equal(body.contacts[0].openRate, null); // sem cache de open-rate ainda (#3612)
+    // #4437 Entrega 2: sem_dados -> nunca um nível de recompensa inventado; sem
+    // cache de segmentos ainda -> "nunca consultado" (null), não "[]".
+    assert.equal(body.contacts[0].rewardLevel, null);
+    assert.equal(body.contacts[0].segments, null);
     assert.equal(body.campaign.totalContacts, 1);
     assert.equal("circle" in body.contacts[0], false);
   });
@@ -206,6 +216,25 @@ describe("GET /apoios + /api/apoios + CRUD (#3602)", () => {
     const contact = body.contacts.find((c: { id: string }) => c.id === createdId);
     assert.equal(contact.openRate.subscriptionId, "sub-fulano");
     assert.equal(contact.openRate.openRatePct, 75);
+  });
+
+  it("GET /api/apoios reflete o cache de segmentos Beehiiv quando presente (#4437 Entrega 2, fixture mockada — nunca o arquivo real de data/)", async () => {
+    mkdirSync(join(root, "data", "apoia-se"), { recursive: true });
+    writeFileSync(
+      segmentsCachePath(root),
+      JSON.stringify({
+        "fulano@x.com": {
+          segments: ["Apoio — Amigo", "Apoio — Todos"],
+          apoioNivel: "amigo",
+          checkedAt: "2026-08-01T00:00:00.000Z",
+        },
+      }),
+    );
+    const res = await fetch(new URL("/api/apoios", server.url));
+    const body = await res.json();
+    const contact = body.contacts.find((c: { id: string }) => c.id === createdId);
+    assert.deepEqual(contact.segments.segments, ["Apoio — Amigo", "Apoio — Todos"]);
+    assert.equal(contact.segments.apoioNivel, "amigo");
   });
 
   it("PUT /api/apoios/contacts/:id atualiza o contato", async () => {
