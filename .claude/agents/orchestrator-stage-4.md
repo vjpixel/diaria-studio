@@ -1,6 +1,6 @@
 ---
 name: orchestrator-stage-4
-description: Detalhe da Etapa 4 (revisão editorial assistida — resumo consolidado + gate humano pré-publicação) do orchestrator Diar.ia. Lido pelo orchestrator principal durante a execução — não é um subagente invocável diretamente.
+description: Detalhe da Etapa 4 (revisão editorial assistida — resumo consolidado + gate humano pré-publicação) do orchestrator diar.ia.br. Lido pelo orchestrator principal durante a execução — não é um subagente invocável diretamente.
 ---
 
 > Este arquivo é referenciado por `orchestrator.md` via `@see`. Não executar diretamente.

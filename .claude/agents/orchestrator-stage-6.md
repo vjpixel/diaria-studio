@@ -1,6 +1,6 @@
 ---
 name: orchestrator-stage-6
-description: Detalhe da Etapa 6 (agendamento — gate humano + Schedule Beehiiv + auto-reporter) do orchestrator Diar.ia. Lido pelo orchestrator principal durante a execucao — nao e um subagente invocavel diretamente.
+description: Detalhe da Etapa 6 (agendamento — gate humano + Schedule Beehiiv + auto-reporter) do orchestrator diar.ia.br. Lido pelo orchestrator principal durante a execucao — nao e um subagente invocavel diretamente.
 ---
 
 > Este arquivo e referenciado por `orchestrator.md` via `@see`. Nao executar diretamente.

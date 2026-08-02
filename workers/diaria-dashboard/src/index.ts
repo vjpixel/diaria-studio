@@ -1,7 +1,7 @@
 /**
  * diaria-dashboard (#2132)
  *
- * Worker que serve o dashboard de dados operacionais da Diar.ia.
+ * Worker que serve o dashboard de dados operacionais da diar.ia.br.
  * Lê o JSON agregado do KV (populado offline pelo editor via
  * `build-diaria-dashboard-data.ts --push`) e renderiza HTML.
  *
@@ -942,7 +942,7 @@ export function renderStudioSnapshotHtml(snapshot: StudioSnapshot | null, now: D
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Diar.ia Studio — espelho</title>
+<title>diar.ia.br Studio — espelho</title>
 </head>
 <body style="font-family:sans-serif;max-width:640px;margin:40px auto;padding:0 20px">
 <h1>Studio — espelho não inicializado</h1>
@@ -976,7 +976,7 @@ export function renderStudioSnapshotHtml(snapshot: StudioSnapshot | null, now: D
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Diar.ia Studio — espelho</title>
+<title>diar.ia.br Studio — espelho</title>
 <style>
   body { font-family: ${DSF.sans}; max-width: 720px; margin: 30px auto; padding: 0 20px; background: ${DS.paper}; color: ${DS.ink}; }
   h1 { font-size: 1.4rem; margin: 0 0 12px 0; }
@@ -987,7 +987,7 @@ export function renderStudioSnapshotHtml(snapshot: StudioSnapshot | null, now: D
 </style>
 </head>
 <body>
-<h1>Diar.ia Studio — onde parou</h1>
+<h1>diar.ia.br Studio — onde parou</h1>
 ${staleBanner}
 <table>
   <tbody>
@@ -1042,7 +1042,7 @@ export function renderDashboardHtml(data: DashboardData, opts: RenderDashboardOp
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Diar.ia Dashboard Operacional</title>${renderStudioNavHeadAssetsHtml(opts.studioMode === true)}
+<title>diar.ia.br Dashboard Operacional</title>${renderStudioNavHeadAssetsHtml(opts.studioMode === true)}
 <style>
 ${opts.studioMode === true ? "" : `  :root {
     --brand: ${DS.brand};
@@ -1165,7 +1165,7 @@ ${opts.studioMode === true ? "" : `  :root {
 </style>
 </head>
 <body>${renderStudioNavContainerHtml(opts.studioMode === true)}
-<h1>Diar.ia — Dashboard Operacional</h1>
+<h1>diar.ia.br — Dashboard Operacional</h1>
 <p class="sub">Dados locais (último push: ${escHtml(generatedAt)}). Carregado às ${escHtml(now)} BRT.</p>
 
 <!-- #2602: tab state inputs (hidden, CSS-only — mesmo padrão do brevo-dashboard #2542) -->
@@ -1232,7 +1232,7 @@ ${audienceSection}
 </div><!-- /tab-panels -->
 
 <p class="footer">
-  Dashboard Operacional Diar.ia — dados locais via KV push (<code>build-diaria-dashboard-data.ts --push</code>).<br>
+  Dashboard Operacional diar.ia.br — dados locais via KV push (<code>build-diaria-dashboard-data.ts --push</code>).<br>
   Dados brutos em <a href="/api/data" style="color:var(--brand)">/api/data</a>. Schema v${data.schema_version ?? 1}.
 </p>
 <script>
@@ -1428,7 +1428,7 @@ export default {
 
     if (path === "/" || path === "/index.html") {
       if (!data) {
-        const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>Diar.ia Dashboard</title></head><body>
+        const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>diar.ia.br Dashboard</title></head><body>
 <h1>Dashboard não inicializado</h1>
 <p>Rode localmente: <code>npx tsx scripts/build-diaria-dashboard-data.ts --dry-run</code> para verificar, depois <code>--push</code> para publicar os dados.</p>
 </body></html>`;

@@ -1,6 +1,6 @@
 # draft Worker (#1239)
 
-Worker dedicado pra hospedar HTML preview da newsletter Diar.ia.
+Worker dedicado pra hospedar HTML preview da newsletter diar.ia.br.
 
 URL: `https://draft.diaria.workers.dev/{edition}`
 

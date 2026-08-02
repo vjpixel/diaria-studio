@@ -1,6 +1,6 @@
 # workers/cursos (#1745, gate #4052/#4305)
 
-Hosting da página **Cursos sobre IA** da Diar.ia, servida em
+Hosting da página **Cursos sobre IA** da diar.ia.br, servida em
 `https://cursos.diar.ia.br/` (domínio de marca, #3698) — também acessível via
 `https://cursos.diaria.workers.dev/` (mantido por compat de links já enviados
 em edições passadas). Gêmea da `workers/livros` (#1744) no padrão visual, mas

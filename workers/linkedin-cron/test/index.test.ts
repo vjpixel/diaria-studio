@@ -1144,7 +1144,7 @@ describe("#595 fireDueItems: routing por webhook_target", () => {
     const past = new Date(Date.now() - 60_000).toISOString();
     const queueKey = buildQueueKey(past, "uuid-com");
     const entry: QueueEntry = {
-      text: "Diar.ia comment", image_url: null, scheduled_at: past,
+      text: "diar.ia.br comment", image_url: null, scheduled_at: past,
       destaque: "d2", created_at: past, retry_count: 0,
       webhook_target: "diaria", action: "comment", parent_destaque: "d2",
     };
@@ -1469,7 +1469,7 @@ describe("#1168 LinkedInScheduler DO: alarm() dispara webhook e é idempotente",
 
     const past = new Date(Date.now() - 60_000).toISOString();
     const entry: QueueEntry = {
-      text: "Diar.ia comment via alarm", image_url: null, scheduled_at: past,
+      text: "diar.ia.br comment via alarm", image_url: null, scheduled_at: past,
       destaque: "d2", created_at: past, retry_count: 0,
       webhook_target: "diaria", action: "comment", parent_destaque: "d2",
     };

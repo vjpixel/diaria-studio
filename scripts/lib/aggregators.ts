@@ -2,7 +2,7 @@
  * aggregators.ts
  *
  * Fonte única da lista de domínios/caminhos tratados como agregadores ou
- * roundup newsletters. A Diar.ia nunca deve usar URLs destes domínios
+ * roundup newsletters. A diar.ia.br nunca deve usar URLs destes domínios
  * como fonte primária — os subagentes de pesquisa devem extrair a URL
  * canônica do conteúdo original, ou descartar.
  *

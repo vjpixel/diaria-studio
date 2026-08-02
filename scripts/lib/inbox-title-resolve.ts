@@ -37,7 +37,7 @@ export async function fetchTitle(url: string): Promise<string | null> {
   try {
     const res = await fetch(url, {
       headers: {
-        "User-Agent": "Diar.ia/1.0 (https://diar.ia.br; diariaeditor@gmail.com)",
+        "User-Agent": "diar.ia.br/1.0 (https://diar.ia.br; diariaeditor@gmail.com)",
       },
       signal: AbortSignal.timeout(CONFIG.timeouts.fetch),
       redirect: "follow",

@@ -132,7 +132,7 @@ export const LIVROS_INLINE_UTM = {
   footer: { medium: "inline-footer" },
 } as const;
 
-/** Link "Diar.ia" no rodapé de navegação cruzada da página de arquivo
+/** Link "diar.ia.br" no rodapé de navegação cruzada da página de arquivo
  * (`workers/arquivo/src/render-archive.ts`, #4265 item 9) — só source+medium,
  * SEM `utm_campaign` (mesmo padrão do link footer-nav de livros em
  * `build-livros-page.ts:360`, que reusa o `utm_source` de `LIVROS_INLINE_UTM`
@@ -308,7 +308,7 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     medium: JOGAR_POSVOTO_UTM.medium,
     campaignPattern: JOGAR_POSVOTO_UTM.campaign,
     originFile: "workers/poll/src/jogar.ts",
-    description: "Botão 'Assinar a Diar.ia' do CTA pós-voto do jogo standalone (#3518).",
+    description: "Botão 'Assinar a diar.ia.br' do CTA pós-voto do jogo standalone (#3518).",
     status: "ativo",
   },
   {
@@ -394,7 +394,7 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   },
   {
     id: "arquivo-footer-nav",
-    label: "Arquivo — link de rodapé pra Diar.ia",
+    label: "Arquivo — link de rodapé pra diar.ia.br",
     source: ARQUIVO_FOOTER_NAV_UTM.source,
     medium: ARQUIVO_FOOTER_NAV_UTM.medium,
     // #4312: sem utm_campaign de verdade (link de nav, só source+medium) —
@@ -403,7 +403,7 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     campaignPattern: "arquivo-footer-nav",
     originFile: "workers/arquivo/src/render-archive.ts",
     description:
-      'Link "Diar.ia" no rodapé de navegação cruzada da página de arquivo — ' +
+      'Link "diar.ia.br" no rodapé de navegação cruzada da página de arquivo — ' +
       "sem utm_campaign, só source+medium (#4265 item 9, gap fechado no #4312).",
     status: "ativo",
   },
@@ -492,13 +492,13 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   },
   {
     id: "cursos-footer-nav",
-    label: "Cursos — link de rodapé pra Diar.ia",
+    label: "Cursos — link de rodapé pra diar.ia.br",
     source: CURSOS_FOOTER_NAV_UTM.source,
     medium: CURSOS_FOOTER_NAV_UTM.medium,
     campaignPattern: "cursos-footer-nav",
     originFile: "scripts/build-cursos-page.ts",
     description:
-      'Link "Diar.ia" no rodapé de navegação cruzada da página de Cursos — ' +
+      'Link "diar.ia.br" no rodapé de navegação cruzada da página de Cursos — ' +
       "faltava o 2º parâmetro de renderCuradoriaFooter que Livros já tinha desde " +
       "#4051 (assimetria pura, fechada no #4295). Sem utm_campaign de verdade " +
       "(mesmo padrão de arquivo-footer-nav), placeholder só pra satisfazer o schema.",

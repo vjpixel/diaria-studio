@@ -128,7 +128,7 @@ export function formatEditionGateMessage(
 ): string {
   const url = `${baseUrl}/edicao/${edition}`;
   return [
-    `*[Diar.ia Studio] Gate pendente*`,
+    `*[diar.ia.br Studio] Gate pendente*`,
     `Edição \`${edition}\` aguardando aprovação — ${STAGE_GATE_LABEL[stage]}.`,
     url,
   ].join("\n");
@@ -146,7 +146,7 @@ export function formatChatGateMessage(
   const url = `${baseUrl}/`;
   const preview = question ? `\n"${question}"` : "";
   return [
-    `*[Diar.ia Studio] Pergunta pendente no chat*`,
+    `*[diar.ia.br Studio] Pergunta pendente no chat*`,
     `A sessão está esperando uma resposta do editor.${preview}`,
     url,
   ].join("\n");
@@ -351,8 +351,8 @@ export function summarizeChatResult(resultText: string | null): string {
 export function formatChatDoneMessage(event: ChatDoneEvent, baseUrl: string): string {
   const url = `${baseUrl}/`;
   const title = event.data.isError
-    ? "*[Diar.ia Studio] Turno do chat terminou com erro*"
-    : "*[Diar.ia Studio] Tarefa concluída*";
+    ? "*[diar.ia.br Studio] Turno do chat terminou com erro*"
+    : "*[diar.ia.br Studio] Tarefa concluída*";
   const summary = summarizeChatResult(event.data.result);
   return [title, summary, url].join("\n");
 }

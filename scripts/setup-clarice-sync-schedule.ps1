@@ -48,7 +48,7 @@ $RepoRoot   = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 $WrapperPs1 = Join-Path $RepoRoot "scripts\run-clarice-sync-daily.ps1"
 
 $TaskName = "Diaria-Clarice-Sync"
-$TaskDesc = "Diar.ia: sync incremental diario do store Clarice (#2932) - 08:30, --incremental."
+$TaskDesc = "diar.ia.br: sync incremental diario do store Clarice (#2932) - 08:30, --incremental."
 
 if (-not (Test-Path $WrapperPs1)) {
     Write-Error "Wrapper nao encontrado: $WrapperPs1"

@@ -4,7 +4,7 @@
  * Conta submissões do editor no archive da edição. Usado pela linha de
  * cobertura do `01-categorized.md` e do `02-reviewed.md`:
  *
- *   "Para esta edição, eu (o editor) enviei {X} submissões e a Diar.ia
+ *   "Para esta edição, eu (o editor) enviei {X} submissões e a diar.ia.br
  *    encontrou outros {Y} artigos. Selecionamos os {Z} mais relevantes
  *    para as pessoas que assinam a newsletter."
  *
@@ -32,11 +32,11 @@ const DEFAULT_EDITOR_EMAIL = CLARICE_SEED_EMAIL;
  * newsletters) — `total_editor_urls + total_newsletter_urls` do marker
  * `.marker-inject-inbox-urls.json` (escrito pelo inject-inbox-urls).
  *
- * Usado pra calcular Y ("a Diar.ia encontrou outros Y artigos") como
+ * Usado pra calcular Y ("a diar.ia.br encontrou outros Y artigos") como
  * `total_pool_links − inbox_links`. O bug do #1864: Y subtraía a contagem de
- * EMAILS (X) da contagem de LINKS (pool), misturando unidades → "Diar.ia
+ * EMAILS (X) da contagem de LINKS (pool), misturando unidades → "diar.ia.br
  * encontrou" inflado. X conta e-mails (submissões), Y conta links — os links do
- * editor (inbox) são subtraídos do pool pra sobrar só o que a Diar.ia descobriu.
+ * editor (inbox) são subtraídos do pool pra sobrar só o que a diar.ia.br descobriu.
  *
  * Retorna null se o marker ausente/sem os campos (caller faz fallback).
  */
@@ -88,8 +88,8 @@ export function readInjectPoolSizeFromMarker(internalDir: string): number | null
 }
 
 /**
- * Pure (#1864): Y da linha de cobertura ("a Diar.ia encontrou outros Y artigos")
- * = nº de LINKS descobertos pela Diar.ia (fora do canal do editor).
+ * Pure (#1864): Y da linha de cobertura ("a diar.ia.br encontrou outros Y artigos")
+ * = nº de LINKS descobertos pela diar.ia.br (fora do canal do editor).
  *
  * Caminho preferido (STAGE-CONSISTENTE): `rawPoolSize − inboxLinks`, ambos
  * pré-filtro do marker do inject. Fallback (marker ausente): `totalConsidered −

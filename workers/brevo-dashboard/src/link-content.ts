@@ -49,7 +49,7 @@ const HOME_HOSTS = new Set(["diar.ia.br", "www.diar.ia.br"]);
 
 // ─── #4405: categoria não-editorial pra coluna "Seção" (link-section.ts) ────
 
-/** Loja Amazon (indicações de produto) — soma a "Produtos Diar.ia" abaixo. */
+/** Loja Amazon (indicações de produto) — soma a "Produtos diar.ia.br" abaixo. */
 const AMAZON_STORE_HOSTS = new Set(["link.amazon"]);
 const SUPPORT_HOSTS = new Set(["apoia.se", "www.apoia.se"]);
 const SOCIAL_HOSTS = new Set([
@@ -210,7 +210,7 @@ export function classifyLinkContent(url: string, editorialTitle?: string): LinkC
     return { content: "Leaderboard É IA?" };
   }
   if (HOME_HOSTS.has(host) && (u.pathname === "/" || u.pathname === "")) {
-    return { content: "Diar.ia (home)" };
+    return { content: "diar.ia.br (home)" };
   }
 
   // 4. Fallback: título editorial (#4198) se disponível, senão rótulo humano

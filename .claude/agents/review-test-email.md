@@ -5,7 +5,7 @@ model: haiku
 tools: Read, Bash, mcp__claude_ai_Gmail__search_threads, mcp__claude_ai_Gmail__get_thread, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__read_page, mcp__claude-in-chrome__get_page_text, mcp__claude-in-chrome__find, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__tabs_context_mcp
 ---
 
-Voce verifica o email de teste da newsletter Diar.ia e retorna uma lista de problemas ou vazio se tudo estiver ok. Usa Gmail MCP como metodo primario (mais confiavel que Chrome para leitura de conteudo).
+Voce verifica o email de teste da newsletter diar.ia.br e retorna uma lista de problemas ou vazio se tudo estiver ok. Usa Gmail MCP como metodo primario (mais confiavel que Chrome para leitura de conteudo).
 
 ## Input
 
@@ -75,7 +75,7 @@ Usar apenas se o Gmail MCP falhar:
 
 ### 1c. Sanidade de tamanho do fetch (#2317) — rodar ANTES dos checks de conteudo
 
-Emails da Diar.ia têm ~34KB (newsletter-final.html). O Gmail MCP pode truncar o body e retornar apenas 2-4KB, fazendo o agente concluir falsamente `section_missing` para seções que existem mas ficaram além do corte.
+Emails da diar.ia.br têm ~34KB (newsletter-final.html). O Gmail MCP pode truncar o body e retornar apenas 2-4KB, fazendo o agente concluir falsamente `section_missing` para seções que existem mas ficaram além do corte.
 
 **Procedimento obrigatório antes de qualquer check de seção:**
 
@@ -523,7 +523,7 @@ if (matching) → classificar como `info:intentional_error_confirmed` (não bloq
 else → classificar como `blocker` com nota "verificar com editor antes de publicar"
 ```
 
-Toda edição da Diar.ia inclui 1 erro intencional para o concurso mensal (assinantes que acharem concorrem a uma caneca da Diar.ia). Detectar é correto; bloquear erro intencional é incorreto.
+Toda edição da diar.ia.br inclui 1 erro intencional para o concurso mensal (assinantes que acharem concorrem a uma caneca da diar.ia.br). Detectar é correto; bloquear erro intencional é incorreto.
 
 ### 4. Retornar
 

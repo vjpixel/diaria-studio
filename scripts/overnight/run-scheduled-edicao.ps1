@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    Runner agendado da pipeline Diar.ia — roda /diaria-edicao D+1 (Stages 0-3 + pré-render Stage 4).
+    Runner agendado da pipeline diar.ia.br — roda /diaria-edicao D+1 (Stages 0-3 + pré-render Stage 4).
 
     *** STATUS (260711, #3259): dormente — a task "Diaria-Edicao-Diaria" que
     invocava este runner foi desregistrada do Task Scheduler por decisão do

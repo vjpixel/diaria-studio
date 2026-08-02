@@ -17,7 +17,7 @@
  * counter no /vote — não precisa middle step.
  *
  * `--brand clarice` (#2948): busca o leaderboard da Clarice News (mensal) em
- * vez da Diar.ia (diária, default). Mesma convenção de `close-poll.ts` — brand
+ * vez da diar.ia.br (diária, default). Mesma convenção de `close-poll.ts` — brand
  * ausente/"diaria" não anexa `&brand=` na query (compat com o Worker, que já
  * default-a pra "diaria" via `parseBrandParam`).
  *

@@ -2,7 +2,7 @@
  * email-components.ts (#3269)
  *
  * Primeiro componente de HTML genuinamente compartilhado entre os 2 renderers
- * de email da Diar.ia — diário (../newsletter-render-html.ts, Beehiiv) e
+ * de email da diar.ia.br — diário (../newsletter-render-html.ts, Beehiiv) e
  * mensal (../mensal/monthly-render.ts, Brevo/Clarice).
  *
  * Antes deste arquivo, `tealDot()` vivia em newsletter-render-html.ts e o

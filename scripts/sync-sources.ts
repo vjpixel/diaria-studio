@@ -85,7 +85,7 @@ for (const row of data) {
 }
 
 const lines: string[] = [
-  "# Fontes cadastradas — Diar.ia",
+  "# Fontes cadastradas — diar.ia.br",
   "",
   `**Total:** ${data.length} fontes (${data.filter(isUseMelhorSource).length} marcadas Use Melhor). Gerado de \`seed/sources.csv\` via \`npm run sync-sources\`.`,
   "",

@@ -573,7 +573,7 @@ async function main(): Promise<void> {
   // (d) Telegram (opcional — reusa TELEGRAM_BOT_TOKEN do .env.example)
   await sendTelegramAlert(
     [
-      `*[Diar.ia overnight] STALL detectado*`,
+      `*[diar.ia.br overnight] STALL detectado*`,
       `Rodada \`${aammdd}\` sem atividade há *${elapsedMin} min* (limiar: ${thresholdMin} min).`,
       `Fonte: ${lastSource}.`,
       `Verifique a sessão overnight e responda 'retry' pra retomar ou 'abort' pra encerrar.`,

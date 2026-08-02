@@ -26,7 +26,7 @@ export const INSTAGRAM_WEEKLY_CHAR_LIMIT = 2200;
 
 const ARCHIVE_URL = "https://diar.ia.br";
 
-const INTRO_LINE = "Os destaques da semana na Diar.ia:";
+const INTRO_LINE = "Os destaques da semana na diar.ia.br:";
 
 function numberedHeadlines(items: WeeklyD1Item[]): string {
   return items.map((it, i) => `${i + 1}. ${it.title}\n${it.url}`).join("\n\n");
@@ -130,7 +130,7 @@ export function formatThreadsWeekly(items: WeeklyD1Item[]): string {
 export function formatTwitterWeeklyThread(items: WeeklyD1Item[]): string[] {
   if (items.length === 0) return [];
 
-  const intro = `Os destaques da semana na Diar.ia 🧵 (1/${items.length + 1})`;
+  const intro = `Os destaques da semana na diar.ia.br 🧵 (1/${items.length + 1})`;
   const tweets = [intro];
 
   items.forEach((it, i) => {

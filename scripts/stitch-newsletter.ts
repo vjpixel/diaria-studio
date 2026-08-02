@@ -72,7 +72,7 @@ const FIXED_BLOCKS = {
 
 Você presta atenção ao conteúdo gerado por IA que consome? Para ajudar nesse exercício, há pelo menos um pequeno erro em cada edição.
 
-**Responda indicando qual é o erro, ou se não há nenhum, e receba um número para concorrer a uma caneca da Diar.ia, a ser sorteada mês que vem.** Sua resposta deve chegar até mim antes do envio da edição seguinte.`,
+**Responda indicando qual é o erro, ou se não há nenhum, e receba um número para concorrer a uma caneca da diar.ia.br, a ser sorteada mês que vem.** Sua resposta deve chegar até mim antes do envio da edição seguinte.`,
 
   // #3219: cabeçalho da seção — fixo, sem parametrização, sempre o primeiro
   // elemento do bloco PARA ENCERRAR (#3368: o parágrafo de apoio entra
@@ -520,7 +520,7 @@ export function stitchNewsletter(input: StitchInput): string {
   }
 
   const coverageLine = approved.coverage?.line ??
-    "Para esta edição, eu (o editor) enviei N submissões e a Diar.ia encontrou outros M artigos. Selecionamos os Z mais relevantes para as pessoas que assinam a newsletter.";
+    "Para esta edição, eu (o editor) enviei N submissões e a diar.ia.br encontrou outros M artigos. Selecionamos os Z mais relevantes para as pessoas que assinam a newsletter.";
 
   const eiaBlock = readEiaBlock(input.editionDir);
 

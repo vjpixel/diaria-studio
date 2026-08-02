@@ -161,7 +161,7 @@ Escreva um resumo em markdown (destaques: quantos contatos no delta Stripe, quan
 
 ```bash
 npx tsx scripts/register-report.ts --kind clarice-novos --id {KEY} \
-  --title "Diar.ia Clarice novos {AAMMDD} — N contato(s)" \
+  --title "diar.ia.br Clarice novos {AAMMDD} — N contato(s)" \
   --html-path data/clarice-subscribers/novos-reports/{KEY}.md
 ```
 

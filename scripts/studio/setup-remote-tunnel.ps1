@@ -95,7 +95,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $TaskName = "Diaria-Studio-Tunnel"
-$TaskDesc = "Diar.ia Studio: mantém o Cloudflare Tunnel ativo pra acesso remoto (#3560) — roda cloudflared tunnel run no logon."
+$TaskDesc = "diar.ia.br Studio: mantém o Cloudflare Tunnel ativo pra acesso remoto (#3560) — roda cloudflared tunnel run no logon."
 $CloudflaredDir = Join-Path $env:USERPROFILE ".cloudflared"
 $CertPath = Join-Path $CloudflaredDir "cert.pem"
 $ConfigPath = Join-Path $CloudflaredDir "config.yml"

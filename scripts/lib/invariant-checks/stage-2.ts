@@ -160,7 +160,7 @@ function checkSocialPassesLints(editionDir: string): InvariantViolation[] {
     ),
   );
   // #2458: posts do LinkedIn não devem conter CTA de assinatura por e-mail —
-  // substituído por CTA de seguir a página da Diar.ia.
+  // substituído por CTA de seguir a página da diar.ia.br.
   violations.push(
     ...runCheck(
       "lint-social-md.ts",
@@ -170,7 +170,7 @@ function checkSocialPassesLints(editionDir: string): InvariantViolation[] {
       file,
     ),
   );
-  // #2458: post_pixel deve conter link da página da Diar.ia no LinkedIn
+  // #2458: post_pixel deve conter link da página da diar.ia.br no LinkedIn
   // (linkedin.com/company/diar.ia.br) como CTA de follow. #3645: até #3627
   // este check também cobria comment_diaria (CTA de follow nos 3 posts
   // principais) — removido junto com a subseção comment_diaria, que #3627

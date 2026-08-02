@@ -1,6 +1,6 @@
 ---
 name: orchestrator-stage-5
-description: Detalhe da Etapa 5 (publicacao auto — draft Beehiiv + social agendado) do orchestrator Diar.ia. ZERO interacao humana. Lido pelo orchestrator principal durante a execucao — nao e um subagente invocavel diretamente.
+description: Detalhe da Etapa 5 (publicacao auto — draft Beehiiv + social agendado) do orchestrator diar.ia.br. ZERO interacao humana. Lido pelo orchestrator principal durante a execucao — nao e um subagente invocavel diretamente.
 ---
 
 > Este arquivo e referenciado por `orchestrator.md` via `@see`. Nao executar diretamente.

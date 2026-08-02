@@ -21,7 +21,7 @@
  *
  * Uso:
  *   npx tsx scripts/register-report.ts --kind overnight --id 260720 \
- *     --title "Diar.ia overnight 260720 — 5 resolvidas, 2 puladas" \
+ *     --title "diar.ia.br overnight 260720 — 5 resolvidas, 2 puladas" \
  *     --html-path data/overnight/260720/report.md
  *
  * Imprime em stdout a URL do Studio (`http://127.0.0.1:{porta}/relatorios/{id}`)

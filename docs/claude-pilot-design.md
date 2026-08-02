@@ -4,28 +4,28 @@ Versão: draft 2026-05-08 · Owner: Pixel · Status: pre-launch experiment desig
 
 ## Hipótese
 
-Existe demanda suficiente em audiência BR (e talvez global) por uma newsletter dedicada **exclusivamente ao ecossistema Claude / Anthropic** pra justificar um produto separado da Diar.ia (cobertura generalista de IA). Hipótese complementar: uma cobertura focada produz **engajamento qualitativamente diferente** (mais técnica, mais retentiva, mais convertível pra produto B2B Anthropic).
+Existe demanda suficiente em audiência BR (e talvez global) por uma newsletter dedicada **exclusivamente ao ecossistema Claude / Anthropic** pra justificar um produto separado da diar.ia.br (cobertura generalista de IA). Hipótese complementar: uma cobertura focada produz **engajamento qualitativamente diferente** (mais técnica, mais retentiva, mais convertível pra produto B2B Anthropic).
 
 ## Por que testar
 
 Sinais favoráveis observados:
-- Diar.ia tem ~30-40% das edições com algum destaque Anthropic (Claude updates, Agent SDK, MCP, Projects, parcerias)
+- diar.ia.br tem ~30-40% das edições com algum destaque Anthropic (Claude updates, Agent SDK, MCP, Projects, parcerias)
 - LinkedIn comments mais técnicos/longos vêm de leitores Anthropic-curious
-- Comunidade BR de Claude Code (este próprio projeto Diar.ia é um caso) é pequena mas concentrada — pode formar nicho
+- Comunidade BR de Claude Code (este próprio projeto diar.ia.br é um caso) é pequena mas concentrada — pode formar nicho
 
 Sinais contrários:
 - Audiência global Anthropic já tem cobertura em inglês (Anthropic blog, Latent Space, Hacker News)
 - Frequência de news Claude-only pode ser baixa demais pra newsletter diária
-- Cannibalization da Diar.ia geral
+- Cannibalization da diar.ia.br geral
 
 ## Design do experimento
 
 ### Fase 1 — Edição experimental única (1 sprint)
 
 **Formato:**
-- 1 edição especial **"Diar.ia Claude"** publicada como post regular no Beehiiv existente
+- 1 edição especial **"diar.ia.br Claude"** publicada como post regular no Beehiiv existente
 - Mesmo template editorial, scope reduzido: 3 destaques + lançamentos/pesquisas/notícias **só do ecossistema Claude/Anthropic**
-- Subject line claramente marcado: "[Edição especial] Diar.ia Claude — semana em revisão"
+- Subject line claramente marcado: "[Edição especial] diar.ia.br Claude — semana em revisão"
 - Footer pergunta direta: "Quer mais edições assim? Responda este email com 1 frase."
 
 **Quando publicar:**
@@ -55,13 +55,13 @@ Sinais contrários:
 
 **Formato:**
 - **Frequência semanal** (não diária — frequência de news Claude justifica)
-- **Beehiiv publication separada** OU segmento dentro da Diar.ia (decidir Fase 2 baseado em crescimento)
+- **Beehiiv publication separada** OU segmento dentro da diar.ia.br (decidir Fase 2 baseado em crescimento)
 - 5-7 destaques curados/semana
 - Profundidade > frequência — tutorial / review / análise
 
 **Métricas pra coletar (3 meses):**
 - Crescimento orgânico (assinantes/mês)
-- Conversion da audiência Diar.ia regular
+- Conversion da audiência diar.ia.br regular
 - Engagement qualitativo (replies, comments LinkedIn)
 - Sponsorship interest (pode atrair Anthropic / partners B2B)
 
@@ -69,7 +69,7 @@ Sinais contrários:
 
 Após 3 meses, 3 caminhos:
 1. **Spin-off**: produto separado (vigil.ia.br/claude), branding distinto, monetização independente
-2. **Sub-segment Diar.ia**: integrar como tag opcional pros assinantes interessados
+2. **Sub-segment diar.ia.br**: integrar como tag opcional pros assinantes interessados
 3. **Encerrar**: cobertura volta a generalista, lições aplicadas no editorial regular
 
 ## Stack técnica
@@ -85,7 +85,7 @@ Pra Fase 3+ (newsletter regular), expandir:
 
 ## Riscos
 
-- **Cannibalization**: assinantes da Diar.ia podem migrar pro pilot e diminuir audience principal. Mitigação: messaging "complementar, não substitui".
+- **Cannibalization**: assinantes da diar.ia.br podem migrar pro pilot e diminuir audience principal. Mitigação: messaging "complementar, não substitui".
 - **Burnout editorial**: 1 newsletter já é trabalho. 2 dobra. Mitigação: pipeline maduro + reuso do mesmo Stack.
 - **Scope creep**: pilot vira produto antes de validar demanda. Mitigação: critérios Fase 2 explícitos, kill switch claro.
 - **Anthropic relacional**: cobertura crítica (inevitável) pode esfriar relação se virar fonte de hype. Mitigação: voz editorial honesta, não-sycophantic.

@@ -87,7 +87,7 @@ const TECH_COMPANIES = new Set([
   "google", "microsoft", "apple", "amazon", "meta", "nvidia", "intel",
   "openai", "anthropic", "deepmind", "deepseek", "mistral", "xai",
   "perplexity", "cohere", "stability", "midjourney", "runway",
-  // Brazilian companies (high-frequency in Diar.ia)
+  // Brazilian companies (high-frequency in diar.ia.br)
   "nubank", "itau", "bradesco", "santander", "ifood", "rappi",
   "mercadolivre", "mercadopago", "magazineluiza", "via", "shopee",
   "totvs", "vtex", "loft", "creditas", "neon", "picpay", "pagseguro",

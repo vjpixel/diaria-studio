@@ -286,7 +286,7 @@ Com `--bugs` (#3375) ativo, abrir o digest com `Modo: --bugs (só issues com lab
 Salvar o digest completo em `data/develop/{AAMMDD}/report.md` (mesma convenção do overnight, `data/overnight/{AAMMDD}/report.md`). **Registrar na superfície de Relatórios do Studio (#3714, decisão do editor 260720 — substitui o antigo draft de Gmail, não soma a ele):**
 ```bash
 npx tsx scripts/register-report.ts --kind develop --id {AAMMDD} \
-  --title "Diar.ia develop {AAMMDD} — {N} destravadas/mergeadas" \
+  --title "diar.ia.br develop {AAMMDD} — {N} destravadas/mergeadas" \
   --html-path data/develop/{AAMMDD}/report.md
 ```
 File-based (só escreve `data/reports/index.jsonl`) — nunca depende do `npm run studio` estar no ar; o comando imprime a URL em stdout, capturar pro resumo do terminal. **Não criar mais draft via `create_draft` aqui.** Canal primário = terminal, incluindo a linha `Relatório: {URL do Studio}`; fail-soft #738 — falha do registro (raro, é só escrita local) nunca trava a sessão, só avisa que o relatório ficou local.

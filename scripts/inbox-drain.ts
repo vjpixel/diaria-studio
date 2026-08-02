@@ -551,7 +551,7 @@ function appendToInbox(entries: string[]): void {
   if (!existsSync(inboxPath)) {
     writeFileSync(
       inboxPath,
-      "# Inbox Editorial — Diar.ia\n\n<!-- entries abaixo -->\n",
+      "# Inbox Editorial — diar.ia.br\n\n<!-- entries abaixo -->\n",
       "utf8"
     );
   }

@@ -22,7 +22,7 @@ export const SdPromptSchema = z.object({
   /** Texto negativo (artefatos a evitar). */
   negative: z.string().min(10, "negative prompt deve ter ≥10 chars"),
   /**
-   * Dimensões finais da imagem. Diar.ia usa 1600×800 (D1 wide 2:1) ou
+   * Dimensões finais da imagem. diar.ia.br usa 1600×800 (D1 wide 2:1) ou
    * 1024×1024 (D2/D3 nativo Gemini). Outros valores indicam config errada.
    */
   final_width: z.number().int().min(256, "min 256px").max(4096),

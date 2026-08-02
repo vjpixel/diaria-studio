@@ -2,7 +2,7 @@
  * audience-affinity.ts (#2063)
  *
  * Pré-computa deterministicamente a afinidade de um artigo `use_melhor` com o
- * perfil de audiência da Diar.ia (princípio #1111 — determinístico onde der).
+ * perfil de audiência da diar.ia.br (princípio #1111 — determinístico onde der).
  *
  * Fontes de sinal (em ordem de confiabilidade):
  *   1. CTR por categoria de `data/link-ctr-table.csv` via `parseCtrFromCsv`
@@ -108,7 +108,7 @@ export interface AudienceSignals {
 // ─── Normalização de ferramentas ───────────────────────────────────────────────
 
 /**
- * Ferramentas/termos do stack de IA conhecidos pelos readers da Diar.ia.
+ * Ferramentas/termos do stack de IA conhecidos pelos readers da diar.ia.br.
  * Derivados do survey (`audience-raw.json` section "ferramentas") e do
  * CTR histórico. Mantido conservador — falso-positivo em afinidade é
  * menos prejudicial que falso-negativo.

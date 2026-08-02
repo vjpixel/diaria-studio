@@ -306,7 +306,7 @@ export function buildCursosAlarmEmail(evaluation: CursosAlarmEvaluation): { subj
     );
   }
 
-  const subject = `[Diar.ia] Worker cursos: ${subjectBits.join(" + ")}`;
+  const subject = `[diar.ia.br] Worker cursos: ${subjectBits.join(" + ")}`;
   const windowLabel = evaluation.since ? `${evaluation.since} → ${evaluation.until}` : `1ª checagem → ${evaluation.until} (sem baseline anterior)`;
   const header = [`Alarme do worker \`cursos\` — janela avaliada: ${windowLabel}.`, ""];
   const footer = [

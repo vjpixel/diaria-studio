@@ -6,7 +6,7 @@
  * `_internal/intentional-error.json` (#754). Editor fornece os campos (via chat,
  * não mais editando o Drive) após revisar a edição.
  *
- * Convenção editorial Diar.ia: cada edição inclui 1 erro proposital pros
+ * Convenção editorial diar.ia.br: cada edição inclui 1 erro proposital pros
  * assinantes acharem (concurso mensal). Sem declaração, `review-test-email`
  * não consegue distinguir erro intencional de erro real, e o concurso
  * mensal precisa lembrar manualmente o que era cada erro.

@@ -59,7 +59,7 @@ $RepoRoot   = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 $WrapperPs1 = Join-Path $RepoRoot "scripts\run-cursos-error-alarm.ps1"
 
 $TaskName = "Diaria-Cursos-Error-Alarm"
-$TaskDesc = "Diar.ia: alarme de erro do worker cursos (#4320) - a cada 2h."
+$TaskDesc = "diar.ia.br: alarme de erro do worker cursos (#4320) - a cada 2h."
 
 if (-not (Test-Path $WrapperPs1)) {
     Write-Error "Wrapper nao encontrado: $WrapperPs1"

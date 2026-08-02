@@ -60,7 +60,7 @@ $RepoRoot   = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 $WrapperPs1 = Join-Path $RepoRoot "scripts\run-cursos-kv-sync.ps1"
 
 $TaskName = "Diaria-Cursos-Kv-Sync"
-$TaskDesc = "Diar.ia: sync diario do KV CURSOS_SUBSCRIBERS (#4320) - 09:15, full sync."
+$TaskDesc = "diar.ia.br: sync diario do KV CURSOS_SUBSCRIBERS (#4320) - 09:15, full sync."
 
 if (-not (Test-Path $WrapperPs1)) {
     Write-Error "Wrapper nao encontrado: $WrapperPs1"

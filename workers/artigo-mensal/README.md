@@ -1,6 +1,6 @@
 # workers/artigo-mensal
 
-Hosting do artigo mensal público da Diar.ia em `https://artigo.diar.ia.br/{ciclo}`,
+Hosting do artigo mensal público da diar.ia.br em `https://artigo.diar.ia.br/{ciclo}`,
 com paywall dinâmico restrito a apoiadores de R$10/mês ou mais (#3940).
 
 Diferente de `workers/artigos` (#3961, static-only): este worker **tem

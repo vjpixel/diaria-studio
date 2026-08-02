@@ -17,7 +17,7 @@
  */
 
 /**
- * Termos relevantes pro tema da Diar.ia (IA, ML, NLP, agentes, gerativo,
+ * Termos relevantes pro tema da diar.ia.br (IA, ML, NLP, agentes, gerativo,
  * vision, speech, alignment, RAG, etc.). Catalogados em #501, expandidos em
  * #901, mantidos deliberadamente permissivos.
  *

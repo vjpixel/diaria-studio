@@ -31,7 +31,7 @@
  * Flags:
  *   --url URL          hostname público a testar (obrigatório, ou env STUDIO_REMOTE_URL)
  *   --marker STRING    trecho de conteúdo que só aparece na página real do Studio
- *                       autenticado (default: "Diar.ia Studio", o <title> da SPA)
+ *                       autenticado (default: "diar.ia.br Studio", o <title> da SPA)
  *   --timeout-ms N     timeout da requisição (default: 10000)
  *
  * Exit codes:
@@ -61,7 +61,7 @@ export interface HeadersLike {
   get(name: string): string | null;
 }
 
-const DEFAULT_MARKER = "Diar.ia Studio";
+const DEFAULT_MARKER = "diar.ia.br Studio";
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 /**

@@ -651,7 +651,7 @@ export function aggregateClicksBySection(
 
 /** #4405: definição canônica das colunas de "Seções mais clicadas" — mesmo padrão de `AGGREGATED_LINKS_COLUMNS` (#3090). */
 export const SECTION_CLICKS_COLUMNS: Array<{ label: string; tooltip: string }> = [
-  { label: "Seção", tooltip: "Seção editorial (Destaques/Use Melhor/Radar/...) ou categoria de serviço (Enquete É IA?/Clarice/Produtos Diar.ia/Apoio/Redes sociais) — 'Outros' quando nenhuma das duas se aplica (#4405)." },
+  { label: "Seção", tooltip: "Seção editorial (Destaques/Use Melhor/Radar/...) ou categoria de serviço (Enquete É IA?/Clarice/Produtos diar.ia.br/Apoio/Redes sociais) — 'Outros' quando nenhuma das duas se aplica (#4405)." },
   { label: "Cliques", tooltip: "Total de cliques somados de todos os conteúdos desta seção/categoria — mesma base da tabela 'Links mais clicados' abaixo." },
   { label: "%", tooltip: "Participação percentual desta seção no total de cliques do período." },
   { label: "Conteúdos", tooltip: "Quantos conteúdos distintos (linhas da tabela de links abaixo) pertencem a esta seção." },

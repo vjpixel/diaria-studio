@@ -1,5 +1,5 @@
 /**
- * newsletter-styles.ts (#2635) — fonte única do CSS de email Diar.ia: o bloco
+ * newsletter-styles.ts (#2635) — fonte única do CSS de email diar.ia.br: o bloco
  * <style> de cada renderer (diário e mensal) é construído por funções deste módulo.
  *
  * Arquitetura de três níveis (3º nível adicionado em #3104):
@@ -42,7 +42,7 @@
  */
 
 /**
- * Regras CSS base de email Diar.ia: reset de body/img/table.
+ * Regras CSS base de email diar.ia.br: reset de body/img/table.
  *
  * Retorna as regras SEM a tag <style> envolvente; o caller embute no seu bloco.
  *
