@@ -232,6 +232,21 @@ describe("POST /admin/purge-score-do (#4474)", () => {
     assert.ok(!calledIds.includes(`diaria:${email}`), "NUNCA deve tocar a instância diaria:{email} quando brand=clarice foi pedido");
   });
 
+  it("brand='web' resolve a instância web:{email}, NÃO diaria:{email} (#4477 achado 4 — mesma classe de identidade anônima do #4433, {uuid}@web.eia.diaria.local)", async () => {
+    const { ns, calledIds } = makeScoreCounterNs();
+    const env = baseEnv({ SCORE_COUNTER: ns });
+    const email = "a1b2c3d4-e5f6-47a8-9b0c-1d2e3f4a5b6c@web.eia.diaria.local";
+    const sig = await hmacSign("test-admin-secret", `purge-score-do:web:${email}`);
+
+    const res = await callAdminPurge(env, { email, brand: "web", sig });
+    assert.equal(res.status, 200);
+    const data = await res.json() as { ok: boolean; purged: boolean };
+    assert.equal(data.ok, true);
+    assert.equal(data.purged, true);
+    assert.ok(calledIds.includes(`web:${email}`), `deveria resolver a instância web:${email} — chamou: ${calledIds.join(", ")}`);
+    assert.ok(!calledIds.includes(`diaria:${email}`), "NUNCA deve tocar a instância diaria:{email} quando brand=web foi pedido");
+  });
+
   it("sig inválida → 403, DO nunca é chamado", async () => {
     const { ns, calledIds } = makeScoreCounterNs();
     const env = baseEnv({ SCORE_COUNTER: ns });
@@ -253,6 +268,19 @@ describe("POST /admin/purge-score-do (#4474)", () => {
     const env = baseEnv({ SCORE_COUNTER: makeScoreCounterNs().ns });
     const res = await callAdminPurge(env, { email: "no-sig@x.com", brand: "diaria" });
     assert.equal(res.status, 400);
+  });
+
+  it("body não-JSON (parse falha) → 400 { error: 'invalid json body' } (#4477 achado 5)", async () => {
+    const env = baseEnv({ SCORE_COUNTER: makeScoreCounterNs().ns });
+    const req = new Request("https://poll.diaria.workers.dev/admin/purge-score-do", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "isto não é json",
+    });
+    const res = await worker.fetch(req, env, {} as ExecutionContext);
+    assert.equal(res.status, 400);
+    const data = await res.json() as { error?: string };
+    assert.equal(data.error, "invalid json body");
   });
 
   it("SCORE_COUNTER binding ausente → 503 fail-soft, NUNCA lança", async () => {

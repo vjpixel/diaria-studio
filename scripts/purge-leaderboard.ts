@@ -92,6 +92,8 @@ import { buildPurgePlan, type PurgeKvOps } from "./lib/purge-leaderboard-plan.ts
 import { purgeScoreCounterDo } from "./lib/purge-score-counter-do.ts"; // #4474
 import { dohFetch } from "./lib/doh-fetch.ts"; // #4474
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #4474
+import { summarizePurgeDoResults, type PurgeDoStepResult } from "./lib/purge-leaderboard-do-summary.ts"; // #4477 achado 1
+import type { Brand } from "../workers/poll/src/lib.ts"; // #4477 achado 3
 
 // #2265: NAMESPACE_ID do POLL (KV). Auth e acesso ao KV vão pelo WRANGLER (auth
 // global do CLI), não mais pela CF REST API com CLOUDFLARE_API_TOKEN — o token
@@ -150,7 +152,7 @@ if ((targetNickname === null) === (targetEmail === null)) {
 // jogo em /jogar também precisa de purge, ex: token forjado/entrada fantasma).
 // Todas as chaves de KV (score/vote/stats/snapshot/counted) usam o prefixo.
 const BRAND_ARG = flagValue("--brand");
-const BRAND = BRAND_ARG === "clarice" ? "clarice" : BRAND_ARG === "web" ? "web" : "diaria";
+const BRAND: Brand = BRAND_ARG === "clarice" ? "clarice" : BRAND_ARG === "web" ? "web" : "diaria";
 const BP = BRAND === "diaria" ? "" : `${BRAND}:`;
 
 // #4474: HMAC key pro endpoint /admin/purge-score-do (purga do storage
@@ -218,11 +220,19 @@ async function kvDelete(key: string): Promise<void> {
  * imprime em dry-run, sem chamar rede nenhuma. SEMPRE usa o `BRAND` já
  * resolvido pro script inteiro (uma invocação = 1 brand só) — nunca itera
  * sobre os 3 brands.
+ *
+ * #4477 (fleet review #4383, achado 1): retorna `boolean` (sucesso/falha) em
+ * vez de `void` — antes, uma falha aqui só virava um `console.error` isolado
+ * por identidade, sem ser agregada pelo caller. `main()` coleta esse retorno
+ * pra decidir `process.exitCode` no final (ver `summarizePurgeDoResults`).
+ * Dry-run nunca fala com rede — sempre `true` (não há falha real pra
+ * reportar; simular uma falha aqui seria inventar dado que a rede nunca
+ * produziu).
  */
-async function purgeScoreCounterDoStep(email: string): Promise<void> {
+async function purgeScoreCounterDoStep(email: string): Promise<boolean> {
   if (!execute) {
     console.log(`[dry-run] PURGE DO score-counter para ${BRAND}:${email}`);
-    return;
+    return true;
   }
   // ADMIN_SECRET já foi validado (fail-fast acima) antes de qualquer trabalho
   // de rede acontecer — não-nulo aqui por construção.
@@ -232,6 +242,7 @@ async function purgeScoreCounterDoStep(email: string): Promise<void> {
   } else {
     console.error(`  [warn] DO score-counter ${BRAND}:${email} purge falhou (status ${result.status}): ${result.error}`);
   }
+  return result.ok;
 }
 
 interface VoteRecord { choice: "A" | "B"; ts: string; correct: boolean | null }
@@ -301,9 +312,15 @@ async function main(): Promise<void> {
   // (aqui é o único jeito do dry-run sinalizar que o storage do DO também
   // seria tocado).
   console.log(`\n[purge] storage do DO ScoreCounter (${plan.plans.length} identidade(s)):`);
+  // #4477 achado 1: coleta o resultado de CADA identidade (não só imprime)
+  // pra poder agregar falhas parciais no final — ver bloco de erro logo
+  // antes do fim de main().
+  const doStepResults: PurgeDoStepResult[] = [];
   for (const p of plan.plans) {
-    await purgeScoreCounterDoStep(p.email);
+    const ok = await purgeScoreCounterDoStep(p.email);
+    doStepResults.push({ email: p.email, ok });
   }
+  const doSummary = summarizePurgeDoResults(doStepResults);
 
   if (!execute) {
     console.log("\n[purge] DRY-RUN — passe --execute pra apagar de fato.");
@@ -375,6 +392,29 @@ async function main(): Promise<void> {
   }
 
   console.log(`\n[purge] done — ${totalKeys} keys apagadas, ${plan.slugsTouched.length} snapshots invalidados.`);
+
+  // #4477 (fleet review #4383, achado 1): reportado DEPOIS da linha "done" de
+  // sucesso do KV, de propósito — a purga de KV nunca é abortada por causa
+  // disso (filosofia fail-soft preservada). Mas se a purga do storage do DO
+  // falhou pra qualquer identidade, isso precisa ficar CLARO e DISTINTO (via
+  // console.error, não console.log) e setar exit code != 0 — sem isso, o
+  // único consumidor documentado deste script
+  // (.claude/skills/diaria-remover-votos-pixel/SKILL.md) confirma sucesso só
+  // olhando o leaderboard, nunca lendo warnings no meio do output, e o
+  // cenário que o #4474 existe pra fechar (identidade purgada ressuscita
+  // voto) continuaria acontecendo silenciosamente.
+  if (doSummary.shouldFailExitCode) {
+    console.error(
+      `\n[purge] ERRO: a purga do storage do DO ScoreCounter FALHOU para ${doSummary.failures.length} de ` +
+      `${plan.plans.length} identidade(s). O KV foi limpo, mas o storage interno do DO ScoreCounter NÃO — ` +
+      `essas identidades continuam vulneráveis ao cenário do #4474 (voto ressuscitado se votarem de novo no ` +
+      `mesmo mês civil) até uma nova execução bem-sucedida deste script (idempotente — seguro re-rodar).`,
+    );
+    for (const email of doSummary.failures) {
+      console.error(`  [FALHOU] DO score-counter ${BRAND}:${email}`);
+    }
+    process.exitCode = 1;
+  }
 }
 
 main().catch((e) => {

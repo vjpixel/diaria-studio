@@ -127,8 +127,8 @@
  * `updateScoreByMonth`) regrava esse mapa mesclado de volta em
  * `seq:{month}:{identity}` no KV — ressuscitando exatamente o dado que o
  * purge deveria ter apagado. `/purge` fecha o gap: `deleteAll()` sob o mesmo
- * mutex (`blockConcurrencyWhile`) dos demais endpoints, limpando as 3 chaves
- * desta instância (`score`, `month:*`, `seq:*`) de uma vez. Chamado por
+ * mutex (`blockConcurrencyWhile`) dos demais endpoints, limpando as 3 famílias
+ * de chave desta instância (`score`, `month:*`, `seq:*`) de uma vez. Chamado por
  * `POST /admin/purge-score-do` (index.ts), que resolve a instância certa via
  * `idFromName(`${brand}:${email}`)`.
  *

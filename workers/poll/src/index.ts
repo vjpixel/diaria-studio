@@ -811,9 +811,25 @@ async function handleAdminPurgeScoreDo(request: Request, env: Env): Promise<Resp
   const doStub = env.SCORE_COUNTER.get(doId);
   try {
     const doResp = await doStub.fetch("https://internal/purge", { method: "POST" });
-    const doData = await doResp.json().catch(() => ({})) as { ok?: boolean; purged?: boolean };
+    // #4477 (fleet review #4383, achado 2): o catch de parse antes descartava
+    // o erro em silêncio (`.catch(() => ({}))`), o que fazia `doData.error`
+    // ficar sempre ausente e o caller (`purgeScoreCounterDo`) cair no
+    // fallback `HTTP ${status}` — contraditório quando doResp.status=200 mas
+    // o corpo veio corrompido ("falhou (status 200)"). Agora loga (mesmo
+    // padrão estruturado do catch abaixo) e devolve um `error` explícito.
+    let doData: { ok?: boolean; purged?: boolean; error?: string };
+    try {
+      doData = (await doResp.json()) as { ok?: boolean; purged?: boolean };
+    } catch (parseErr) {
+      console.error(JSON.stringify({ event: "admin_purge_score_do_parse_error", brand, email_domain: email.split("@")[1] ?? "unknown", error: String(parseErr) }));
+      doData = { ok: false, error: "do_response_parse_error" };
+    }
 
-    return json({ ok: doResp.ok && doData.ok === true, purged: doData.purged === true }, doResp.status, env);
+    return json(
+      { ok: doResp.ok && doData.ok === true, purged: doData.purged === true, ...(doData.error ? { error: doData.error } : {}) },
+      doResp.status,
+      env,
+    );
   } catch (e) {
     // #4474 self-review: doStub.fetch() pode LANÇAR (timeout de rede, DO
     // indisponível), não só retornar !ok — mesmo padrão de todos os outros
