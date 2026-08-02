@@ -1,7 +1,7 @@
 /**
  * smoke-test.ts
  *
- * Smoke test end-to-end que cobre os 4 stages da pipeline Diar.ia.
+ * Smoke test end-to-end que cobre os 4 stages da pipeline diar.ia.br.
  *
  * Stage 1: dedup → categorize → render → apply-gate-edits (golden compare)
  * Stage 2: linters determinísticos em fixtures canônicas (lint-newsletter-md,

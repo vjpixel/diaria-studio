@@ -57,7 +57,7 @@ $RepoRoot   = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 $WrapperPs1 = Join-Path $RepoRoot "scripts\run-postmaster-spam-sync.ps1"
 
 $TaskName = "Diaria-Postmaster-Spam-Sync"
-$TaskDesc = "Diar.ia: sync automatico do spamRate do Google Postmaster Tools (#4154) - a cada 12h."
+$TaskDesc = "diar.ia.br: sync automatico do spamRate do Google Postmaster Tools (#4154) - a cada 12h."
 
 if (-not (Test-Path $WrapperPs1)) {
     Write-Error "Wrapper nao encontrado: $WrapperPs1"

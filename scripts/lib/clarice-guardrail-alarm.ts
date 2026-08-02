@@ -216,7 +216,7 @@ export function buildGuardrailAlarmEmail(
   thresholds: HealthThresholds = DEFAULT_HEALTH_THRESHOLDS,
 ): { subject: string; body: string } {
   const breaches = describeBreaches(guardrail, thresholds);
-  const subject = `[Diar.ia] Guardrail furado no envio "${campaignName}"`;
+  const subject = `[diar.ia.br] Guardrail furado no envio "${campaignName}"`;
   const lines = [
     `O envio "${campaignName}" fechou com guardrail furado, avaliado ~6h após o disparo:`,
     "",

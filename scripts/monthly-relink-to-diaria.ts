@@ -3,7 +3,7 @@
  * monthly-relink-to-diaria.ts
  *
  * Gera uma VARIANTE do HTML da edição mensal em que os links das MATÉRIAS
- * CITADAS NOS DESTAQUES apontam para a EDIÇÃO DIÁRIA da Diar.ia de onde aquele
+ * CITADAS NOS DESTAQUES apontam para a EDIÇÃO DIÁRIA da diar.ia.br de onde aquele
  * item veio, em vez de apontar direto pro veículo original.
  *
  * Motivação (análise 260726): no ciclo 2606-07 a mensal mandou 253 cliques pra

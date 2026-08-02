@@ -1,7 +1,7 @@
 /**
  * find-current-edition.ts (#583)
  *
- * Detecta edições em curso para um stage da pipeline Diar.ia. Usado pelas
+ * Detecta edições em curso para um stage da pipeline diar.ia.br. Usado pelas
  * skills `/diaria-{2,3,4,5}-*` quando o editor omite o argumento AAMMDD: se há
  * exatamente uma edição com o stage anterior aprovado e o output do stage
  * atual faltando, a skill assume essa edição em vez de perguntar.

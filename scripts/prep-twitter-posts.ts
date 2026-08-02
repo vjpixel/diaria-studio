@@ -196,7 +196,7 @@ export function resolveTwitterImage(
     };
   }
 
-  const altText = `Imagem do destaque ${destaque.toUpperCase()} da edição Diar.ia de ${editionDate}`;
+  const altText = `Imagem do destaque ${destaque.toUpperCase()} da edição diar.ia.br de ${editionDate}`;
   return { imageUrl, altText, reason: null };
 }
 

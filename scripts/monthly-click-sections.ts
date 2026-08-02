@@ -126,7 +126,7 @@ export interface LinkItem {
 
 const LINK_RE = /\[([^\]]*?)\]\((https?:\/\/[^)\s]+)\)/g;
 
-// Infra própria da Diar.ia que aparece em TODA edição (Divulgação/Para
+// Infra própria da diar.ia.br que aparece em TODA edição (Divulgação/Para
 // encerrar — ver `boxes_divulgacao` e `para_encerrar` em platform.config.json,
 // e os snippets rotativos em context/snippets/*-divulgacao.md): apoio,
 // curadoria de livros/cursos, afiliado/vitrine Amazon, referrals fixos da
@@ -147,7 +147,7 @@ function isOwnPromoLink(url: string): boolean {
     const u = new URL(url);
     const host = u.hostname.toLowerCase().replace(/^www\./, "");
     if (OWN_PROMO_HOSTS_RE.test(host)) return true;
-    // Referral fixo da assinatura "Nessa edição da Diar.ia, usei..." (mesmo
+    // Referral fixo da assinatura "Nessa edição da diar.ia.br, usei..." (mesmo
     // texto em toda edição, ver platform.config.json → para_encerrar.slot_a).
     if (host === "clarice.ai" && u.pathname.startsWith("/precos-planos")) return true;
     if (host === "wisprflow.ai") return true;

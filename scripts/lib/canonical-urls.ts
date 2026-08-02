@@ -35,7 +35,7 @@
 import { normalizeTitle } from "./title-similarity.ts";
 
 /**
- * Slug canônico da página da Diar.ia no Facebook (sem `https://`, sem `www.`).
+ * Slug canônico da página da diar.ia.br no Facebook (sem `https://`, sem `www.`).
  * #2695 — single source of truth pra toda referência hardcoded à URL pública
  * do Facebook (footer de templates, comments de credencial, filtros de
  * domínio). Analogous ao `DIARIA_LINKEDIN_PAGE_SLUG` em `lint-social-md.ts`
@@ -48,7 +48,7 @@ export const DIARIA_FACEBOOK_PAGE_SLUG = "facebook.com/diar.ia.br";
 export const DIARIA_FACEBOOK_PAGE_URL = `https://www.${DIARIA_FACEBOOK_PAGE_SLUG}`;
 
 /**
- * Slug canônico da página da Diar.ia no LinkedIn (sem `https://`, sem `www.`).
+ * Slug canônico da página da diar.ia.br no LinkedIn (sem `https://`, sem `www.`).
  * #2790 — movida pra cá (era definida só em `lint-social-md.ts`, #2458/#2695)
  * pra virar fonte única ao lado das demais constantes canônicas de redes
  * sociais; `lint-social-md.ts` reexporta esta constante pra não quebrar os
@@ -62,7 +62,7 @@ export const DIARIA_LINKEDIN_PAGE_SLUG = "linkedin.com/company/diar.ia.br";
 export const DIARIA_LINKEDIN_PAGE_URL = `https://www.${DIARIA_LINKEDIN_PAGE_SLUG}/`;
 
 /**
- * Slug/URL canônicos da página da Diar.ia no Instagram (#2790). Antes desta
+ * Slug/URL canônicos da página da diar.ia.br no Instagram (#2790). Antes desta
  * constante existir, o handle estava hardcoded em paralelo em
  * `monthly-render.ts` (`SOCIAL_LINKS`) e `build-link-ctr.ts` (`ownChannels`)
  * — nenhuma fonte única. Centralizado aqui pro mesmo padrão do
@@ -78,7 +78,7 @@ export const DIARIA_INSTAGRAM_SLUG = "instagram.com/diar.ia.br";
 export const DIARIA_INSTAGRAM_URL = `https://www.${DIARIA_INSTAGRAM_SLUG}`;
 
 /**
- * Slug/URL canônicos da página da Diar.ia no Threads (#2790). Handle
+ * Slug/URL canônicos da página da diar.ia.br no Threads (#2790). Handle
  * `@diar.ia.br` — mesmo referenciado em `.env.example`/`publish-threads.ts`
  * (conta vinculada ao App do Facebook). Só havia 1 cópia hardcoded antes
  * (`monthly-render.ts` `SOCIAL_LINKS`); centralizado aqui por consistência.
@@ -89,7 +89,7 @@ export const DIARIA_THREADS_SLUG = "threads.net/@diar.ia.br";
 export const DIARIA_THREADS_URL = `https://www.${DIARIA_THREADS_SLUG}`;
 
 /**
- * Slug/URL canônicos da página da Diar.ia no X/Twitter (#4413). Handle
+ * Slug/URL canônicos da página da diar.ia.br no X/Twitter (#4413). Handle
  * `@diariabr` — mesmo já usado por `scripts/append-twitter-published.ts`. Sem
  * `www.` (diferente de Facebook/LinkedIn/Instagram/Threads acima) — o X não
  * usa esse subdomínio. Centralizado aqui pra parar de hardcodear

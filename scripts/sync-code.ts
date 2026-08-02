@@ -5,7 +5,7 @@
  * CLI wrapper para `scripts/lib/git-sync.ts`.
  *
  * Sincroniza o checkout local com origin/master antes de iniciar uma edição
- * Diar.ia. Invocado pelo Passo 0 de `.claude/skills/diaria-edicao/SKILL.md`.
+ * diar.ia.br. Invocado pelo Passo 0 de `.claude/skills/diaria-edicao/SKILL.md`.
  *
  * Sempre sai com código 0 (fail-soft) — falhas de sync são warn, nunca
  * bloqueiam a edição. O status é impresso em JSON para o orchestrator logar.

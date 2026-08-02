@@ -53,7 +53,7 @@ $RepoRoot   = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 $WrapperPs1 = Join-Path $RepoRoot "scripts\run-clarice-guardrail-alarm.ps1"
 
 $TaskName = "Diaria-Clarice-Guardrail-Alarm"
-$TaskDesc = "Diar.ia: alarme de guardrail furado do ramp Clarice (#4064) - a cada 4h."
+$TaskDesc = "diar.ia.br: alarme de guardrail furado do ramp Clarice (#4064) - a cada 4h."
 
 if (-not (Test-Path $WrapperPs1)) {
     Write-Error "Wrapper nao encontrado: $WrapperPs1"

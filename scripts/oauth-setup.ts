@@ -135,7 +135,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  console.log("🔐 Google OAuth 2.0 Setup — Diar.ia Studio\n");
+  console.log("🔐 Google OAuth 2.0 Setup — diar.ia.br Studio\n");
   console.log("Abrindo browser para autorização...");
 
   const authUrl = buildAuthUrl(clientId);

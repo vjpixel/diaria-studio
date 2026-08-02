@@ -166,7 +166,7 @@ export function appendToInbox(inboxPath: string, entries: string[]): void {
     mkdirSync(dirname(inboxPath), { recursive: true });
     writeFileSync(
       inboxPath,
-      "# Inbox Editorial — Diar.ia\n\n<!-- entries abaixo -->\n",
+      "# Inbox Editorial — diar.ia.br\n\n<!-- entries abaixo -->\n",
       "utf8",
     );
   }

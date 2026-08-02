@@ -49,7 +49,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 interface CoverageStats {
   /** Submissões do editor (forwards/links diretos) — count of inbox blocks. */
   editor_submitted: number;
-  /** Artigos descobertos pela Diar.ia (researchers + discovery). */
+  /** Artigos descobertos pela diar.ia.br (researchers + discovery). */
   diaria_discovered: number;
   /** Total selecionado para a edição (highlights + buckets aprovados). */
   selected: number;
@@ -355,7 +355,7 @@ function main() {
     approved.radar.length +
     (approved.use_melhor?.length ?? 0) +
     (approved.video?.length ?? 0);
-  // #1864: Y = "a Diar.ia encontrou outros Y artigos" = LINKS do pool MENOS os
+  // #1864: Y = "a diar.ia.br encontrou outros Y artigos" = LINKS do pool MENOS os
   // LINKS que vieram pelo canal do editor (forwards + newsletters). X conta
   // e-mails (submissões), Y conta links — métricas em unidades diferentes.
   //

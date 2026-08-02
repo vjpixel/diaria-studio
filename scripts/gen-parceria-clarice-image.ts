@@ -1,8 +1,8 @@
 /**
  * gen-parceria-clarice-image.ts
  *
- * Gera as imagens de divulgação da parceria Clarice × Diar.ia (posts de
- * anúncio, ver doc "Posts de divulgação — Parceria Clarice × Diar.ia" no
+ * Gera as imagens de divulgação da parceria Clarice × diar.ia.br (posts de
+ * anúncio, ver doc "Posts de divulgação — Parceria Clarice × diar.ia.br" no
  * Drive). Colateral de marketing one-off, não parte do pipeline editorial —
  * mesmo espírito de gen-story-card.ts.
  *

@@ -94,6 +94,11 @@ const PROTECTED_FILES: string[] = [
   "scripts/build-livros-page.ts",
   "scripts/sync-coverage-line.ts",
   "scripts/overnight-statusline.ts",
+  // #4424 rodada seguinte: gap encontrado na Fatia 1 — o prêmio do sorteio
+  // ("caneca da Diar.ia") e o fallback de coverageLine (usado só quando
+  // approved.coverage?.line está ausente) vivem hardcoded aqui, fora de
+  // scripts/lib/, e não estavam cobertos pelo guard original.
+  "scripts/stitch-newsletter.ts",
 ];
 
 /** Diretórios varridos por inteiro (todo .md/.html dentro conta). */

@@ -1,7 +1,7 @@
 /**
  * next-edition-date.ts (#2068)
  *
- * Calcula a data da próxima edição da Diar.ia: D+1 em fuso America/Sao_Paulo.
+ * Calcula a data da próxima edição da diar.ia.br: D+1 em fuso America/Sao_Paulo.
  *
  * Regra editorial (CLAUDE.md): a edição é sempre o dia seguinte à pesquisa.
  * Ex.: pesquisa roda em 2026-04-26 (BRT) → edição é 260427.

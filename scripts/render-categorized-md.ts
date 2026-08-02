@@ -682,7 +682,7 @@ function main() {
     },
   }) + "\n\n";
 
-  const header = `# Diar.ia — Edição ${cli.edition} — Research\n`;
+  const header = `# diar.ia.br — Edição ${cli.edition} — Research\n`;
   const instructions =
     `> Candidatos recomendados pelo scorer:\n` +
     `>   - ⭐ — top do scorer (highlights[]).\n` +

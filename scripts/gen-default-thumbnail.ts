@@ -1,7 +1,7 @@
 /**
  * gen-default-thumbnail.ts
  *
- * Gera o Default Thumbnail Preview da Diar.ia (1200x630) para upload manual
+ * Gera o Default Thumbnail Preview da diar.ia.br (1200x630) para upload manual
  * em Beehiiv Settings → Publication → Default Thumbnail Preview.
  *
  * Design: fundo papel #FBFAF6, acento teal #00A0A0, texto ink #171411.

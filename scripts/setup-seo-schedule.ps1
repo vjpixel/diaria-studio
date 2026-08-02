@@ -48,7 +48,7 @@ $RepoRoot   = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 $WrapperPs1 = Join-Path $RepoRoot "scripts\run-seo-weekly.ps1"
 
 $TaskName = "Diaria-SEO-Weekly"
-$TaskDesc = "Diar.ia: loop de SEO semanal (#4105) - segunda 04:10, cobertura de indexacao + Search Analytics."
+$TaskDesc = "diar.ia.br: loop de SEO semanal (#4105) - segunda 04:10, cobertura de indexacao + Search Analytics."
 
 if (-not (Test-Path $WrapperPs1)) {
     Write-Error "Wrapper nao encontrado: $WrapperPs1"

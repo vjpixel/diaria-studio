@@ -2,7 +2,7 @@
 /**
  * lint-image-prompt.ts (#810)
  *
- * Pre-flight lint pra prompts de imagem da Diar.ia. Roda antes de
+ * Pre-flight lint pra prompts de imagem da diar.ia.br. Roda antes de
  * `image-generate.ts` pra detectar violações da regra editorial
  * (`context/editorial-rules.md`) ANTES de gastar API call:
  *
