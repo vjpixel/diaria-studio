@@ -17,7 +17,7 @@
  * (`beehiiv-sync.ts`):** aquele gate existe pra estabilizar o CTR table (1
  * clique na 1ª hora lê como "100%"). A janela de conteúdo desta skill é
  * SEMPRE recente (a semana que acabou de terminar, publicada na segunda
- * seguinte — os posts têm entre 3 e 7 dias de idade no momento da seleção,
+ * seguinte — os posts têm entre 2 e 6 dias de idade no momento da seleção,
  * exatamente a faixa que o gate de 7 dias EXCLUIRIA). `identifyWeeklyPostsNeedingClicks`
  * abaixo pede enriquecimento pra QUALQUER post da janela com clicks
  * ausentes, sem o corte de idade.

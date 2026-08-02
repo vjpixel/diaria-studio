@@ -77,7 +77,7 @@ Imprime `{cycle, contentWindow, editionsFound, posts_needing_clicks}`.
 **Por que este passo existe:** o gate de estabilização de CTR do pipeline
 diário (`MIN_AGE_DAYS_FOR_CLICKS = 7`, `scripts/lib/shared/ctr-config.ts`)
 NUNCA enriquece posts com menos de 7 dias — e os posts desta janela têm
-entre 3 e 7 dias no momento em que esta skill roda (domingo, semana que
+entre 2 e 6 dias no momento em que esta skill roda (domingo, semana que
 acabou de terminar). Sem este passo explícito, a seleção rodaria com
 clicks zerados pra toda a semana.
 

@@ -126,6 +126,41 @@ describe("renderLinkedinWeeklyHtml — lista do resto da semana", () => {
     const result = renderLinkedinWeeklyHtml(input);
     assert.ok(!/Resto da semana/.test(result.html));
   });
+
+  it("item com título terminando em domínio nu gera warning (#4489 finding 2 — mesmo guard do Use Melhor, faltava aqui)", () => {
+    const input: WeeklyLinkedinRenderInput = {
+      ...BASE_INPUT,
+      restOfWeek: [{ editionDate: "260729", title: "Confira em exemplo.com.br" }],
+    };
+    const result = renderLinkedinWeeklyHtml(input);
+    assert.ok(result.warnings.some((w) => /Resto da semana.*domínio nu/i.test(w)), result.warnings.join(" | "));
+    // literal — não reescreve o título mesmo com o warning (mesma regra do Use Melhor).
+    assert.match(result.html, /Confira em exemplo\.com\.br/);
+  });
+
+  it("item com título normal (rótulo de ação) não gera warning de domínio nu", () => {
+    const result = renderLinkedinWeeklyHtml(BASE_INPUT);
+    assert.ok(!result.warnings.some((w) => /domínio nu/i.test(w)));
+  });
+});
+
+describe("renderLinkedinWeeklyHtml — opening/closing vazios geram warning (#4489 finding 3)", () => {
+  it("opening vazio omite o parágrafo E gera warning (diferente do Use Melhor, opening é sempre obrigatório)", () => {
+    const input: WeeklyLinkedinRenderInput = { ...BASE_INPUT, opening: "" };
+    const result = renderLinkedinWeeklyHtml(input);
+    assert.ok(result.warnings.some((w) => /abertura ausente\/vazia/i.test(w)), result.warnings.join(" | "));
+  });
+
+  it("closing vazio omite o parágrafo E gera warning", () => {
+    const input: WeeklyLinkedinRenderInput = { ...BASE_INPUT, closing: "   " };
+    const result = renderLinkedinWeeklyHtml(input);
+    assert.ok(result.warnings.some((w) => /fecho ausente\/vazio/i.test(w)), result.warnings.join(" | "));
+  });
+
+  it("opening/closing presentes não geram warning nenhum sobre ausência", () => {
+    const result = renderLinkedinWeeklyHtml(BASE_INPUT);
+    assert.ok(!result.warnings.some((w) => /ausente\/vazi[ao]/i.test(w)));
+  });
 });
 
 describe("UTM — contrato do #4456 (item-01/02/03 SAÍRAM)", () => {

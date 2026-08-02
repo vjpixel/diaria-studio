@@ -3,7 +3,7 @@
  *
  * Seleção por clique das matérias da newsletter semanal do LinkedIn —
  * núcleo puro/testável (sem rede, sem disco), reunindo as 3 correções do
- * comentário 260802 (2º/3º) do #4456:
+ * comentário 260802 (2º) do #4456:
  *
  *   1. Ranqueia por TAXA de clique verificado (cliques únicos ÷ aberturas
  *      únicas), não clique bruto — evita comparar edição de fim de mês
@@ -31,6 +31,15 @@ export interface WeeklyRankedCandidate extends WeeklyRawCandidate {
   ratePct: number;
   /** `true` quando o candidato foi excluído por ser link comercial/afiliado/propriedade própria. */
   excluded: boolean;
+  /**
+   * `false` quando o post da edição de origem está AUSENTE do cache local
+   * de cliques do Beehiiv (gap de sync, status≠confirmed, ou publish_date
+   * ausente — ver `matchPostsToWindow`) — nesse caso `opens`/`ratePct` são 0
+   * por FALTA DE DADO, não porque o post genuinamente não teve abertura
+   * (achado #4489 finding 1). `true` = o post foi encontrado no cache
+   * (mesmo que `opens` acabe sendo 0 de verdade nele).
+   */
+  hasClickData: boolean;
 }
 
 /** Pure: monta o `WeeklyRankedCandidate` a partir de um candidato bruto + dados de clique já resolvidos. */
@@ -38,6 +47,7 @@ export function toRankedCandidate(
   raw: WeeklyRawCandidate,
   clicks: { uniqueVerifiedClicks: number; webUniqueClicks: number },
   opens: number,
+  hasClickData: boolean = true,
 ): WeeklyRankedCandidate {
   const total = clicks.uniqueVerifiedClicks + clicks.webUniqueClicks;
   const ratePct = opens > 0 ? (total / opens) * 100 : 0;
@@ -48,6 +58,7 @@ export function toRankedCandidate(
     opens,
     ratePct,
     excluded: isCommercialOrOwnLink(raw.url),
+    hasClickData,
   };
 }
 
@@ -165,10 +176,27 @@ export function selectHeadlines(candidatesIn: WeeklyRankedCandidate[], maxHeadli
         .map((c) => ({ c, score: editorialTiebreakScore(c, selectedCategories) }))
         .sort((x, y) => y.score - x.score || byRateDescThenTitle(x.c, y.c));
       winner = scored[0].c;
-      warnings.push(
-        `Empate por clique entre ${tiedGroup.length} candidatos (dentro do ruído de 1 clique, ` +
-          `${top.ratePct.toFixed(2)}%) — desempate editorial escolheu "${winner.title}"`,
-      );
+      // #4489 finding 1 (item 3): "empate" pode ser genuíno (todos os
+      // candidatos têm dado de clique real e a taxa realmente coincide
+      // dentro do ruído de 1 clique) ou um FALSO empate — 1+ candidato sem
+      // dado de clique (post ausente do cache Beehiiv) caindo em ratePct=0
+      // junto de outro que também deu 0 por acaso/genuinamente. As 2 causas
+      // exigem texto de warning diferente — tratar como "empate" quando na
+      // verdade é "sem dado" esconde do editor que a seleção não competiu
+      // de verdade.
+      const missingData = tiedGroup.filter((c) => !c.hasClickData);
+      if (missingData.length > 0) {
+        warnings.push(
+          `${tiedGroup.length} candidatos com a mesma taxa (${top.ratePct.toFixed(2)}%), mas NÃO é empate genuíno — ` +
+            `${missingData.length} deles sem dado de clique real (edição ${[...new Set(missingData.map((c) => c.editionDate))].join(", ")} ` +
+            `ausente/não confirmada no cache Beehiiv) — desempate editorial escolheu "${winner.title}" sem competição de clique de verdade.`,
+        );
+      } else {
+        warnings.push(
+          `Empate por clique entre ${tiedGroup.length} candidatos (dentro do ruído de 1 clique, ` +
+            `${top.ratePct.toFixed(2)}%) — desempate editorial escolheu "${winner.title}"`,
+        );
+      }
     } else {
       winner = top;
     }

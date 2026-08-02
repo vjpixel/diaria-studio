@@ -10,7 +10,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { extractWeeklyCandidates } from "../scripts/lib/weekly-linkedin-parse.ts";
-import { isCommercialOrOwnLink } from "../scripts/lib/weekly-linkedin-filter.ts";
+import { isCommercialOrOwnLink, hasSuspiciousCommercialLanguage } from "../scripts/lib/weekly-linkedin-filter.ts";
 
 const SAMPLE_MD = `Para esta edição, a diar.ia.br analisou 20 artigos.
 
@@ -148,5 +148,19 @@ describe("isCommercialOrOwnLink", () => {
 
   it("URL ilegível não é excluída por este filtro (fail-open — caller decide o resto)", () => {
     assert.ok(!isCommercialOrOwnLink("não é uma url"));
+  });
+});
+
+describe("hasSuspiciousCommercialLanguage (#4489 finding 5 — heurística de baixa confiança, não bloqueia)", () => {
+  it("detecta vocabulário comercial/patrocinado em domínio NÃO listado na blocklist", () => {
+    assert.ok(hasSuspiciousCommercialLanguage("Prepara IA — curso em parceria com a diar.ia.br"));
+    assert.ok(hasSuspiciousCommercialLanguage("Conteúdo patrocinado por uma empresa de IA"));
+    assert.ok(hasSuspiciousCommercialLanguage("Assine com este cupom de 20% de desconto"));
+    assert.ok(hasSuspiciousCommercialLanguage("Bloco de Divulgação desta edição"));
+  });
+
+  it("matéria editorial normal não dispara o alerta", () => {
+    assert.ok(!hasSuspiciousCommercialLanguage("Itaú corta 500 vagas com automação"));
+    assert.ok(!hasSuspiciousCommercialLanguage("Gemini lança novo modelo multimodal"));
   });
 });

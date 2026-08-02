@@ -72,7 +72,13 @@ export interface WeeklyLinkedinUseMelhorInput {
 
 export interface WeeklyLinkedinRestItem {
   editionDate: string;
-  /** Título do D1 da edição — usado como texto do item + fonte do slug da URL. */
+  /**
+   * Título do D1 da edição — usado como texto do item + fonte do slug da
+   * URL. Decisão implícita não confirmada pelo editor (achado #4489 finding
+   * 8b): nenhum dos 5 comentários da issue #4456 revisita se este item
+   * deveria ter subtítulo de 1 linha além do título — o código hoje
+   * implementa título-só sem isso ter sido uma escolha explícita.
+   */
   title: string;
 }
 
@@ -121,11 +127,25 @@ export interface WeeklyLinkedinRenderResult {
  * Monta o HTML colável. Pure — nenhuma chamada de rede/disco. `input.opening`/
  * `input.closing`/`useMelhor.editorComment` já devem estar humanizados/
  * corrigidos (responsabilidade da skill, não deste módulo).
+ *
+ * Ordem de montagem (opening → headlines → Use Melhor → resto da semana →
+ * closing): decisão implícita não confirmada pelo editor (achado #4489
+ * finding 8b) — difere da ordem do template original da issue (item1→item2→
+ * Use Melhor→item3→lista→fecho) sem que nenhum dos 5 comentários da #4456
+ * tenha revisitado/confirmado essa reordenação explicitamente.
  */
 export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): WeeklyLinkedinRenderResult {
   const warnings: string[] = [];
   const parts: string[] = [];
 
+  // #4489 finding 3: opening/closing são SEMPRE obrigatórios (diferente do
+  // comentário do Use Melhor, que é legitimamente opcional) — `resolveTextArg`
+  // (render-linkedin-weekly.ts) retorna "" em silêncio quando a flag foi
+  // omitida ou o arquivo é ilegível/vazio; sem este warning o parágrafo
+  // simplesmente desaparece do artefato final sem nenhum sinal.
+  if (!input.opening.trim()) {
+    warnings.push("Abertura ausente/vazia — parágrafo de abertura omitido (opening é obrigatório, não opcional como o comentário do Use Melhor).");
+  }
   if (input.opening.trim()) {
     parts.push(`<p>${escapeHtml(input.opening.trim())}</p>`);
   }
@@ -163,6 +183,13 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
     parts.push(`<h3>Resto da semana</h3>`);
     parts.push("<ul>");
     for (const item of input.restOfWeek) {
+      // #4489 finding 2: mesmo guard do bloco Use Melhor (linha ~149) —
+      // faltava aqui, mesma classe de risco (auto-linkagem do LinkedIn parte
+      // o link/UTM quando o rótulo termina em domínio nu). Warn-only, não
+      // reescreve — título de item de lista também é literal.
+      if (endsInBareDomainLabel(item.title)) {
+        warnings.push(`Resto da semana: título "${item.title}" (${item.editionDate}) termina em domínio nu — risco de auto-linkagem partir o link no paste do LinkedIn.`);
+      }
       const listUrl = buildLinkedinWeeklyUrl(deriveEditionUrl(item.title), input.cycle, "lista");
       parts.push(`<li><a href="${escapeHtml(listUrl)}">${escapeHtml(item.title)}</a></li>`);
     }
@@ -170,6 +197,9 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
     parts.push("<hr/>");
   }
 
+  if (!input.closing.trim()) {
+    warnings.push("Fecho ausente/vazio — parágrafo de fecho omitido (closing é obrigatório, não opcional como o comentário do Use Melhor).");
+  }
   if (input.closing.trim()) {
     parts.push(`<p>${escapeHtml(input.closing.trim())}</p>`);
   }

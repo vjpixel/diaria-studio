@@ -7,7 +7,7 @@
  * `newsletter-parse.ts`) em vez de escrever um parser novo (mesmo princípio
  * de `select-weekly-d1.ts`: "nada de parser novo").
  *
- * Comentário 260802 (2º) do #4456 mudou o critério de seleção de "só
+ * Comentário 260802 (1º) do #4456 mudou o critério de seleção de "só
  * manchete" pra "clique verificado da matéria" — candidato legítimo agora
  * pode vir de QUALQUER seção editorial (Destaque, Lançamentos, Radar, Use
  * Melhor), não só do DESTAQUE 1. `parseSections` já filtra pra essas 4

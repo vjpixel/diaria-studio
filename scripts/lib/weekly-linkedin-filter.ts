@@ -88,3 +88,21 @@ export function isCommercialOrOwnLink(url: string): boolean {
   if (isPreferencesOrUnsubscribe(url)) return true;
   return false;
 }
+
+/**
+ * Heurística de baixa confiança (#4489 finding 5, silent-failure-hunter): a
+ * blocklist acima é uma allowlist ESTÁTICA de domínio — um parceiro/afiliado
+ * NOVO, ainda não cadastrado, passa despercebido do mesmo jeito que
+ * `prepara.com.br` (Divulgação, não listado) quase virou destaque por engano
+ * em julho/2026 (ver docstring do arquivo). Esta função NÃO bloqueia — só
+ * sinaliza pra revisão humana no gate (Passo 3 do SKILL.md) quando o
+ * TÍTULO/CORPO de um candidato de clique alto contém vocabulário típico de
+ * conteúdo patrocinado/parceria, mesmo que o domínio não bata em nada da
+ * blocklist.
+ */
+const SUSPICIOUS_COMMERCIAL_RE = /parceria|patrocinad[oa]|divulga[çc][ãa]o|cupom|desconto/i;
+
+/** Pure: `true` quando `text` (título+corpo do candidato) contém vocabulário de conteúdo comercial/patrocinado — sinal de baixa confiança, não exclusão automática. */
+export function hasSuspiciousCommercialLanguage(text: string): boolean {
+  return SUSPICIOUS_COMMERCIAL_RE.test(text);
+}

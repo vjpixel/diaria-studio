@@ -43,10 +43,12 @@ function raw(overrides: Partial<WeeklyRawCandidate> = {}): WeeklyRawCandidate {
 }
 
 /** Constrói um candidato ranqueado direto (sem passar por toRankedCandidate) — atalho pros testes de tiebreak/noise. */
-function ranked(overrides: Partial<WeeklyRawCandidate> & { clicks: number; opens: number; excluded?: boolean }): WeeklyRankedCandidate {
-  const { clicks, opens, excluded, ...rawOverrides } = overrides;
+function ranked(
+  overrides: Partial<WeeklyRawCandidate> & { clicks: number; opens: number; excluded?: boolean; hasClickData?: boolean },
+): WeeklyRankedCandidate {
+  const { clicks, opens, excluded, hasClickData, ...rawOverrides } = overrides;
   const r = raw(rawOverrides);
-  const rc = toRankedCandidate(r, { uniqueVerifiedClicks: clicks, webUniqueClicks: 0 }, opens);
+  const rc = toRankedCandidate(r, { uniqueVerifiedClicks: clicks, webUniqueClicks: 0 }, opens, hasClickData);
   return excluded !== undefined ? { ...rc, excluded } : rc;
 }
 
@@ -64,6 +66,16 @@ describe("toRankedCandidate", () => {
   it("marca excluded=true pra link comercial/próprio", () => {
     const c = toRankedCandidate(raw({ url: "https://livros.diar.ia.br" }), { uniqueVerifiedClicks: 100, webUniqueClicks: 0 }, 200);
     assert.equal(c.excluded, true);
+  });
+
+  it("hasClickData default é true quando omitido (#4489 finding 1)", () => {
+    const c = toRankedCandidate(raw(), { uniqueVerifiedClicks: 4, webUniqueClicks: 0 }, 200);
+    assert.equal(c.hasClickData, true);
+  });
+
+  it("hasClickData=false quando explicitado (post ausente do cache Beehiiv)", () => {
+    const c = toRankedCandidate(raw(), { uniqueVerifiedClicks: 0, webUniqueClicks: 0 }, 0, false);
+    assert.equal(c.hasClickData, false);
   });
 });
 
@@ -148,6 +160,61 @@ describe("withinClickNoise", () => {
     assert.ok(withinClickNoise(a, b)); // ambos ratePct=0 → iguais
     const c = ranked({ url: "https://exemplo.com/c", clicks: 5, opens: 200 });
     assert.ok(!withinClickNoise(a, c));
+  });
+});
+
+describe("selectHeadlines — empate genuíno vs. ausência de dado (#4489 finding 1 item 3)", () => {
+  it("2 candidatos ratePct=0 por AUSÊNCIA de dado (hasClickData=false) — warning NÃO fala em 'empate genuíno'", () => {
+    const gapA = ranked({
+      title: "Matéria da edição sem post no cache A",
+      url: "https://exemplo.com/gap-a",
+      editionDate: "260728",
+      clicks: 0,
+      opens: 0,
+      hasClickData: false,
+    });
+    const gapB = ranked({
+      title: "Matéria da edição sem post no cache B",
+      url: "https://exemplo.com/gap-b",
+      editionDate: "260729",
+      clicks: 0,
+      opens: 0,
+      hasClickData: false,
+    });
+    const result = selectHeadlines([gapA, gapB], 1);
+    assert.equal(result.selected.length, 1);
+    assert.ok(result.warnings.some((w) => /ausência de dado real|não é empate genuíno/i.test(w)), result.warnings.join(" | "));
+    assert.ok(!result.warnings.some((w) => /^Empate por clique/.test(w)), result.warnings.join(" | "));
+    // a mensagem cita a(s) edição(ões) sem dado — não deixa a causa implícita.
+    assert.ok(result.warnings.some((w) => w.includes("260728") || w.includes("260729")));
+  });
+
+  it("2 candidatos com ratePct=0 genuíno (hasClickData=true — post existe mas 0 abertura de verdade) mantém o texto de empate original", () => {
+    const realZeroA = ranked({
+      title: "Post real com zero abertura A",
+      url: "https://exemplo.com/real-zero-a",
+      clicks: 0,
+      opens: 0,
+      hasClickData: true,
+    });
+    const realZeroB = ranked({
+      title: "Post real com zero abertura B",
+      url: "https://exemplo.com/real-zero-b",
+      clicks: 0,
+      opens: 0,
+      hasClickData: true,
+    });
+    const result = selectHeadlines([realZeroA, realZeroB], 1);
+    assert.ok(result.warnings.some((w) => /^Empate por clique/.test(w)), result.warnings.join(" | "));
+    assert.ok(!result.warnings.some((w) => /não é empate genuíno/i.test(w)));
+  });
+
+  it("empate dentro do ruído com dado real (opens>0 nos dois lados) continua usando o texto de empate original", () => {
+    const a = ranked({ url: "https://exemplo.com/a", clicks: 5, opens: 120, hasClickData: true }); // 4.1666%
+    const b = ranked({ url: "https://exemplo.com/b", clicks: 4, opens: 120, hasClickData: true }); // 3.3333%
+    const result = selectHeadlines([a, b], 1);
+    assert.ok(result.warnings.some((w) => /^Empate por clique/.test(w)));
+    assert.ok(!result.warnings.some((w) => /não é empate genuíno/i.test(w)));
   });
 });
 

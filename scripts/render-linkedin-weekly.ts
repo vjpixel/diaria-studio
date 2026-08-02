@@ -45,7 +45,14 @@ interface SelectionJson {
   restOfWeek: Array<{ editionDate: string; title: string }>;
 }
 
-function main() {
+/**
+ * @param rootDirOverride Opcional. Default = raiz do repo. Em testes, passar
+ *   tempdir com `data/weekly/{cycle}/_internal/ln-selection.json` já escrito
+ *   (#4489 finding 4, mesmo padrão de `select-linkedin-weekly.ts main(rootDirOverride)`
+ *   e de `publish-monthly.ts main(monthlyDirOverride)`).
+ */
+export function main(rootDirOverride?: string) {
+  const rootDir = rootDirOverride ?? ROOT;
   const argv = process.argv.slice(2);
   const cycle = getArg(argv, "cycle");
   if (!isValidWeeklyCycle(cycle)) {
@@ -53,7 +60,7 @@ function main() {
     process.exit(2);
   }
 
-  const selectionPath = join(ROOT, weeklyLinkedinRelDir(cycle), "_internal", "ln-selection.json");
+  const selectionPath = join(rootDir, weeklyLinkedinRelDir(cycle), "_internal", "ln-selection.json");
   if (!existsSync(selectionPath)) {
     console.error(`${selectionPath} não existe — rode select-linkedin-weekly.ts --publish-monday AAMMDD primeiro.`);
     process.exit(1);
@@ -82,7 +89,7 @@ function main() {
 
   const result = renderLinkedinWeeklyHtml(input);
 
-  const outDir = join(ROOT, weeklyLinkedinRelDir(cycle));
+  const outDir = join(rootDir, weeklyLinkedinRelDir(cycle));
   mkdirSync(outDir, { recursive: true });
   const htmlPath = join(outDir, `ln-${cycle}.html`);
   const jsonPath = join(outDir, `ln-${cycle}.json`);
