@@ -15,23 +15,31 @@
  * Escrita no KV via `wrangler kv bulk put` (arquivo JSON temporário — muito
  * mais barato que 1 chamada por assinante numa base de dezenas de milhares).
  *
- * #4381: além do `put` das chaves ativas, diffa o conjunto de chaves
- * `subscriber:*` JÁ presentes no KV contra o conjunto ATUAL de ativos e
- * `wrangler kv bulk delete` as que sobraram (assinante que cancelou desde o
- * sync anterior). Antes do #4381, a chave de quem cancelava nunca era
- * removida — antes do #4320 (sync manual, esporádico) isso era um gap
- * pontual; com o sync agendado DIARIAMENTE, virou acúmulo permanente (a
- * pessoa continua passando pelo gate `?email=`/cookie indefinidamente,
- * mitigado só pelo fallback `by_email` da Beehiiv ser a fonte de verdade
- * real — a KV é cache de aceleração, não a única porta). O `kv key list` usa
- * `--prefix "subscriber:"` DE PROPÓSITO: o MESMO namespace `CURSOS_SUBSCRIBERS`
- * também guarda chaves `cooldown:cursos-pending-promo:*` (gate.ts,
- * `shouldRecheckEmailVerification`, #4387/#4390) e `rl:cursos-gate:*`
- * (gate.ts, `checkGateRateLimit`) — sem o prefixo, um `kv key list` sem filtro
- * devolveria TODAS as chaves do namespace e o diff apagaria cooldowns/rate-limits
- * vivos junto (nunca deveriam ser tocados por este script). O diff em si
- * (`diffStaleSubscriberKeys`) é puro e coberto por teste — nunca deleta uma
- * chave que ainda está no conjunto ativo corrente.
+ * #4381: além do `put`, diffa o conjunto de chaves `subscriber:*` JÁ
+ * presentes no KV contra o conjunto ATUAL de ativos e `wrangler kv bulk
+ * delete` as que sobraram (assinante que cancelou desde o sync anterior).
+ * Antes do #4381, a chave de quem cancelava nunca era removida — antes do
+ * #4320 (sync manual, esporádico) isso era um gap pontual; com o sync
+ * agendado DIARIAMENTE, virou acúmulo permanente (a pessoa continua passando
+ * pelo gate `?email=`/cookie indefinidamente, mitigado só pelo fallback
+ * `by_email` da Beehiiv ser a fonte de verdade real — a KV é cache de
+ * aceleração, não a única porta). O `kv key list` usa `--prefix "subscriber:"`
+ * DE PROPÓSITO: o MESMO namespace `CURSOS_SUBSCRIBERS` também guarda chaves
+ * `cooldown:cursos-pending-promo:*` (gate.ts, `shouldRecheckEmailVerification`,
+ * #4387/#4390) e `rl:cursos-gate:*` (gate.ts, `checkGateRateLimit`) — sem o
+ * prefixo, um `kv key list` sem filtro devolveria TODAS as chaves do
+ * namespace e o diff apagaria cooldowns/rate-limits vivos junto (nunca
+ * deveriam ser tocados por este script). O diff em si (`diffStaleSubscriberKeys`)
+ * é puro e coberto por teste — nunca deleta uma chave que ainda está no
+ * conjunto ativo corrente.
+ *
+ * #4442: até aqui, o `put` gravava o conjunto COMPLETO de assinantes ativos
+ * TODO dia (551 escritas/dia numa base onde só ~3/dia de fato mudam) — o
+ * `list` do #4381 já buscava a informação necessária pro diff, só não era
+ * usada pro lado do put. `syncKvKeys` agora roda list→diff→put(só as
+ * novas)→delete — ver a docstring da função pro detalhe da ordem e da
+ * garantia (herdada do #4381) de que uma falha no `put` nunca é seguida de
+ * um `delete`.
  *
  * Uso:
  *   npx tsx scripts/sync-cursos-subscribers-kv.ts                  # full sync
@@ -175,7 +183,12 @@ export async function buildKvBulkEntries(emails: string[]): Promise<KvBulkEntry[
   return [...seen.values()];
 }
 
+/** No-op se `entries` vier vazio (#4442) — mesmo padrão de
+ * `wranglerKvBulkDelete` abaixo: evita criar arquivo temporário e invocar o
+ * wrangler à toa quando não há nada novo pra gravar (dia comum: 0 assinantes
+ * novos desde o sync anterior). */
 function wranglerKvBulkPut(entries: KvBulkEntry[], namespaceId: string, accountId: string): void {
+  if (entries.length === 0) return;
   const tmpDir = mkdtempSync(join(tmpdir(), "cursos-kv-bulk-"));
   const tmpFile = join(tmpDir, "bulk.json");
   try {
@@ -307,13 +320,29 @@ const defaultKvSyncOps: KvSyncOps = {
 };
 
 /**
- * Orquestra put → list → diff → delete NESTA ORDEM FIXA (#4381 self-review
- * finding 1 — caminho de deleção real, precisa de garantia forte, não só
- * "funcionou nos meus testes manuais"): `ops.put` roda primeiro e, se lançar,
- * a exceção propaga direto — `ops.listSubscribers`/`ops.bulkDelete` nunca
- * rodam nesse caso. Só depois do put ter retornado com sucesso é que lista +
- * diffa + deleta. `ops` default (`defaultKvSyncOps`) é a implementação real;
- * o parâmetro só existe pra teste substituir por spies e verificar ordem +
+ * Orquestra list → diff → put(só as novas) → delete(stale) NESTA ORDEM FIXA.
+ *
+ * #4442: antes, `ops.put` recebia o CONJUNTO COMPLETO de assinantes ativos
+ * TODO dia — 551 escritas/dia onde só ~3 de fato mudam (o teto de escrita de
+ * KV do plano grátis do Cloudflare é 1.000/dia por CONTA, compartilhado entre
+ * todos os workers; este sync sozinho consumia 55%). O `list` já rodava
+ * (`ops.listSubscribers`, #4381), mas só alimentava o lado da DELEÇÃO — a
+ * informação necessária pro diff do put já estava sendo buscada, só não
+ * estava sendo usada pra isso. Agora `list` roda PRIMEIRO (leitura, sem
+ * efeito colateral — não enfraquece nenhuma garantia de segurança) pra
+ * computar `toAdd` (só as chaves ausentes do KV) ANTES do put.
+ *
+ * Garantia do #4381 PRESERVADA (self-review finding 1, caminho de deleção
+ * real): `ops.put` continua ANTES de `ops.bulkDelete`, e se lançar, a
+ * exceção propaga direto — `ops.bulkDelete` NUNCA roda nesse caso. O que
+ * mudou é só O QUE o put recebe (`toAdd`, não `entries` inteiro) e que o
+ * `list` — necessário pra calcular esse `toAdd` — agora roda ANTES do put em
+ * vez de depois (não havia como ser diferente: não dá pra saber o que é
+ * "novo" sem primeiro saber o que já existe). `put` vazio (`toAdd.length ===
+ * 0`, dia sem assinante novo — caso comum) é pulado por completo (chamada
+ * nem acontece; `wranglerKvBulkPut` também já é no-op nesse caso, defesa
+ * dupla). `ops` default (`defaultKvSyncOps`) é a implementação real; o
+ * parâmetro só existe pra teste substituir por spies e verificar ordem +
  * argumentos sem `spawnSync` de verdade.
  */
 export function syncKvKeys(
@@ -321,12 +350,15 @@ export function syncKvKeys(
   namespaceId: string,
   accountId: string,
   ops: KvSyncOps = defaultKvSyncOps,
-): { existingKeys: string[]; staleKeys: string[] } {
-  ops.put(entries, namespaceId, accountId);
+): { existingKeys: string[]; staleKeys: string[]; addedKeys: string[] } {
   const existingKeys = ops.listSubscribers(namespaceId, accountId);
+  const existing = new Set(existingKeys);
+  const toAdd = entries.filter((e) => !existing.has(e.key));
   const staleKeys = diffStaleSubscriberKeys(existingKeys, entries);
+
+  if (toAdd.length > 0) ops.put(toAdd, namespaceId, accountId); // lança => delete nunca roda
   ops.bulkDelete(staleKeys, namespaceId, accountId);
-  return { existingKeys, staleKeys };
+  return { existingKeys, staleKeys, addedKeys: toAdd.map((e) => e.key) };
 }
 
 async function main(): Promise<void> {
@@ -366,12 +398,16 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  // #4381: put → list → diff → delete, nesta ordem fixa — ver docstring de
-  // `syncKvKeys` (nunca lista/deleta antes do put confirmar que o conjunto
-  // ativo foi escrito com sucesso; se o put lançar, a exceção propaga direto
-  // e nem chega a listar).
-  const { existingKeys, staleKeys } = syncKvKeys(entries, namespaceId, accountId);
-  process.stderr.write(`[sync-cursos-subscribers-kv] KV atualizado: ${entries.length} entradas ativas.\n`);
+  // #4442 (era #4381 put→list→diff→delete): agora list→diff→put(só as
+  // novas)→delete, nesta ordem fixa — ver docstring de `syncKvKeys`. O put só
+  // recebe as chaves AUSENTES do KV (write-amplification de 551/dia pra ~3/dia
+  // no caso comum); a garantia do #4381 (put antes de delete, put que lança
+  // impede o delete) continua intacta.
+  const { existingKeys, staleKeys, addedKeys } = syncKvKeys(entries, namespaceId, accountId);
+  const skippedCount = entries.length - addedKeys.length;
+  process.stderr.write(
+    `[sync-cursos-subscribers-kv] KV atualizado: ${addedKeys.length} chaves gravadas (novas), ${skippedCount} puladas (sem mudança).\n`,
+  );
   process.stderr.write(
     `[sync-cursos-subscribers-kv] ${existingKeys.length} chaves existentes, ${staleKeys.length} stale (cancelaram) a apagar.\n`,
   );
@@ -383,6 +419,8 @@ async function main(): Promise<void> {
     JSON.stringify({
       subscribers: emails.length,
       kv_entries: entries.length,
+      added: addedKeys.length,
+      skipped: skippedCount,
       stale_deleted: staleKeys.length,
       dry_run: false,
     }),
