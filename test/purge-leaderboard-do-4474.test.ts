@@ -267,6 +267,26 @@ describe("POST /admin/purge-score-do (#4474)", () => {
     assert.ok(data.error, "deve incluir uma mensagem de erro explicando o binding ausente");
   });
 
+  it("doStub.fetch() lança (timeout/DO indisponível) → 502 fail-soft { ok: false, error: 'score_counter_do_unreachable' }, nunca propaga (self-review #4474)", async () => {
+    const throwingNs: DurableObjectNamespace = {
+      idFromName: (name: string): DurableObjectId => ({ name, toString: () => name }) as unknown as DurableObjectId,
+      get: (): DurableObjectStub => ({
+        fetch: async () => {
+          throw new Error("DO unreachable (simulated network timeout)");
+        },
+      }) as unknown as DurableObjectStub,
+    } as unknown as DurableObjectNamespace;
+    const env = baseEnv({ SCORE_COUNTER: throwingNs });
+    const email = "purge-do-throws@x.com";
+    const sig = await hmacSign("test-admin-secret", `purge-score-do:diaria:${email}`);
+
+    const res = await callAdminPurge(env, { email, brand: "diaria", sig });
+    assert.equal(res.status, 502, "doStub.fetch() lançando deve virar 502, não propagar sem captura");
+    const data = await res.json() as { ok: boolean; error?: string };
+    assert.equal(data.ok, false);
+    assert.equal(data.error, "score_counter_do_unreachable");
+  });
+
   it("requiredSecretsForRoute/missingSecretsForRoute exigem ADMIN_SECRET pra esta rota (#1420)", async () => {
     const email = "purge-missing-secret@x.com";
     const env = baseEnv({ SCORE_COUNTER: makeScoreCounterNs().ns, ADMIN_SECRET: "" });

@@ -781,6 +781,9 @@ async function handleAdminEiaMeta(request: Request, env: Env): Promise<Response>
  *
  * `env.SCORE_COUNTER` ausente → 503 fail-soft (nunca lança) — mesmo padrão
  * de `missingSecretsForRoute`, mas aqui é um binding de infra, não um secret.
+ * `doStub.fetch()` LANÇAR (timeout, DO indisponível) também é fail-soft →
+ * 502 `score_counter_do_unreachable`, mesmo padrão dos `doStub.fetch()` de
+ * `vote.ts` (self-review #4474).
  */
 async function handleAdminPurgeScoreDo(request: Request, env: Env): Promise<Response> {
   let body: { email?: unknown; brand?: unknown; sig?: unknown };
@@ -806,10 +809,21 @@ async function handleAdminPurgeScoreDo(request: Request, env: Env): Promise<Resp
 
   const doId = env.SCORE_COUNTER.idFromName(`${brand}:${email}`);
   const doStub = env.SCORE_COUNTER.get(doId);
-  const doResp = await doStub.fetch("https://internal/purge", { method: "POST" });
-  const doData = await doResp.json().catch(() => ({})) as { ok?: boolean; purged?: boolean };
+  try {
+    const doResp = await doStub.fetch("https://internal/purge", { method: "POST" });
+    const doData = await doResp.json().catch(() => ({})) as { ok?: boolean; purged?: boolean };
 
-  return json({ ok: doResp.ok && doData.ok === true, purged: doData.purged === true }, doResp.status, env);
+    return json({ ok: doResp.ok && doData.ok === true, purged: doData.purged === true }, doResp.status, env);
+  } catch (e) {
+    // #4474 self-review: doStub.fetch() pode LANÇAR (timeout de rede, DO
+    // indisponível), não só retornar !ok — mesmo padrão de todos os outros
+    // doStub.fetch() em vote.ts (ex: score_counter_adjust_month_correct_error).
+    // Sem este catch, a exceção propagava sem captura (sem catch-all top-level
+    // neste worker) e o caller recebia erro genérico da Cloudflare em vez do
+    // fail-soft { ok: false, error } que esta rota promete.
+    console.error(JSON.stringify({ event: "admin_purge_score_do_error", brand, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
+    return json({ ok: false, error: "score_counter_do_unreachable" }, 502, env);
+  }
 }
 
 // ── Vote page HTML ────────────────────────────────────────────────────────────
