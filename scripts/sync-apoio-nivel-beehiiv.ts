@@ -1,20 +1,32 @@
 #!/usr/bin/env node
 /**
- * scripts/sync-apoio-tags-beehiiv.ts (#4273 parte 2)
+ * scripts/sync-apoio-nivel-beehiiv.ts (#4273 parte 2, renomeado + carência/guard #4436)
  *
  * Sincroniza o nível de recompensa de apoio (Amigo/Apoiador/Mantenedor/
  * Patrono) do CRM de Apoios (apoia.se) pra Beehiiv, pra permitir segmentação
  * de envio pra apoiadores (agradecimento, conteúdo exclusivo, etc — ver #4273
- * corpo da issue).
+ * corpo da issue). Os 6 segmentos que CONSOMEM esse campo
+ * (`Apoio — {Amigo,Apoiador,Mantenedor,Patrono,Todos,Nenhum}`) são versionados
+ * em `scripts/lib/apoio-segments-canonical.ts` — não neste arquivo.
  *
  * NÃO reimplementa a checagem de apoio: reusa a MESMA maquinaria já testada
  * do painel Apoios (`scripts/studio-ui/studio-apoios.ts`) —
  * `buildApoiosData` (loadContacts + fetchCurrentStatuses/checkBacker +
- * deriveContactStatus, fail-soft em 3 camadas) e `computeRewardGroup` (fonte
- * única do particionamento por valor mensal). Mesmo padrão de
+ * deriveContactStatus, fail-soft em 3 camadas), `computeRewardGroup` (fonte
+ * única do particionamento por valor mensal) e `readPastMonthSnapshots`
+ * (histórico de meses anteriores, sem chamada de rede nova). Mesmo padrão de
  * `scripts/build-apoiador-allowlist.ts` (#3940), que já faz exatamente esse
  * tipo de "desejado × I/O externa" pra outro alvo (KV do worker
  * `artigo-mensal`).
+ *
+ * ## RENOMEADO em #4436 — nome antigo guardava o desenho refutado
+ *
+ * Este arquivo se chamava `sync-apoio-tags-beehiiv.ts`. O nome descrevia o
+ * desenho ORIGINAL da issue #4273 ("tag por assinante"), refutado no mesmo
+ * dia (ver seção abaixo) — o mecanismo real sempre foi um custom field. O
+ * nome antigo sobreviveu ao pivot e virou uma pista falsa pra quem lesse o
+ * repo sem o histórico da issue. `sync-apoio-nivel-beehiiv.ts` descreve o que
+ * o script de fato escreve: o *nível* de apoio, num *custom field*.
  *
  * ## MECANISMO: custom field, não tag (desvio do desenho original da issue)
  *
@@ -66,6 +78,36 @@
  *   `GET /publications/{pub}/subscriptions/by_email/{email}?expand[]=custom_fields`
  *   https://developers.beehiiv.com/api-reference/subscriptions/get-by-email
  *
+ * ## Carência de 1 mês (#4436, decisão do editor 260801)
+ *
+ * `computeRewardGroup` sozinho parte do valor pago NO MÊS CORRENTE
+ * (`isPaidThisMonth`/`thisMonthPaidValue` da apoia.se), que reseta no dia 1º
+ * e só volta conforme a cobrança de cada apoiador entra ao longo do mês. Uma
+ * rodada de `--push` no dia 1º geraria remoção de TODOS os apoiadores até a
+ * cobrança de cada um entrar — "nível de recompensa piscando todo mês".
+ *
+ * Fix: o nível DESEJADO passa a ser o MAIOR entre a faixa paga no mês
+ * corrente e a faixa paga no mês ANTERIOR (`readPastMonthSnapshots`, já
+ * existe, zero chamada de rede nova). Cancelamento real só remove depois de
+ * **2 meses** sem pagamento (mês corrente E anterior ambos sem pagamento) —
+ * comportamento correto pra uma recompensa mensal. Não há janela por DIA do
+ * mês (decisão do editor: `BackerStatus` não guarda data de pagamento, só
+ * "pagou no mês X" — qualquer regra sub-mensal viria do relógio, não do
+ * dado; carência mensal cobre também cobrança recusada/retentada dias
+ * depois, e não trava o `--push` no dia 1). Ver `computeDesiredApoioLevels`,
+ * `previousMonthKey` (cuidado com virada de ano: `2025-12` → `2026-01`).
+ *
+ * ## Guard de blast radius (#4436, decisão do editor 260801 — limiar 30%)
+ *
+ * Independente da carência acima (rede de segurança que vale ter mesmo com
+ * ela): se as remoções calculadas passarem de **30%** de quem tem
+ * `apoio_nivel` setado HOJE na Beehiiv, o `--push` inteiro é recusado (nem
+ * adições, nem remoções são aplicadas) — `shouldBlockRemovals` acima só cobre
+ * `error`/`sem_dados`, nunca "removeu demais por outro motivo" (bug de
+ * cálculo, apoia.se fora do ar respondendo `nao_apoia` em vez de erro, etc).
+ * `--force-blast-radius` é o escape hatch explícito (decisão consciente do
+ * editor, sempre logada). Ver `evaluateBlastRadiusGuard`.
+ *
  * ## Fail-closed em leitura parcial
  *
  * Mesma disciplina de `build-apoiador-allowlist.ts`: se `buildApoiosData`
@@ -84,27 +126,42 @@
  * Só aplica mutação real na Beehiiv com `--push` explícito. Sem `--push`,
  * imprime o diff calculado (quem ganha/perde/troca de nível) e sai.
  *
- * IMPORTANTE (#4273 parte 2 — escopo desta unidade): `--push` NUNCA foi
- * executado nesta sessão contra a Beehiiv real. Validado só via dry-run (leitura
- * real, sem escrita) + testes com fixtures (nenhuma chamada de rede real nos
- * testes).
+ * IMPORTANTE (#4436 — escopo desta unidade): `--push` NUNCA foi executado
+ * nesta sessão contra a Beehiiv real (o guard padrão de publicação do
+ * overnight cobre este script — só a correção dos 6 SEGMENTOS pela UI foi
+ * autorizada ao vivo, não o `--push` deste script). Validado só via dry-run
+ * (leitura real, sem escrita) + testes com fixtures (nenhuma chamada de rede
+ * real nos testes).
  *
  * Uso:
- *   npx tsx scripts/sync-apoio-tags-beehiiv.ts [--push] [--allow-partial]
+ *   npx tsx scripts/sync-apoio-nivel-beehiiv.ts [--push] [--allow-partial] [--force-blast-radius]
  */
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { buildApoiosData, computeRewardGroup, type ContactWithStatus } from "./studio-ui/studio-apoios.ts";
+import { readApoiaSeEnv, defaultCacheDir, competenceMonth } from "./lib/apoia-se.ts";
+import {
+  buildApoiosData,
+  computeRewardGroup,
+  readPastMonthSnapshots,
+  type ContactWithStatus,
+  type MonthSnapshot,
+} from "./studio-ui/studio-apoios.ts";
 import { hasMorePages } from "./sync-cursos-subscribers-kv.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
+const LOG_PREFIX = "[sync-apoio-nivel-beehiiv]";
+
 const RATE_LIMIT_DELAY_MS = 300;
 const MAX_RETRIES = 3;
 const PER_PAGE = 100;
+
+/** Limiar do guard de blast radius — decisão do editor, #4436 comentário
+ * 260801 ("sim, limiar 30%"). Removido daqui pra facilitar achar/mudar. */
+const BLAST_RADIUS_THRESHOLD = 0.3;
 
 /** Nome do custom field na publicação — já criado manualmente pelo editor
  * (ver cabeçalho do módulo). Este script nunca cria o campo, só lê/escreve. */
@@ -113,6 +170,10 @@ export const APOIO_NIVEL_FIELD_NAME = "apoio_nivel";
 export type ApoioNivel = "amigo" | "apoiador" | "mantenedor" | "patrono";
 
 const LEVEL_VALUES: readonly ApoioNivel[] = ["amigo", "apoiador", "mantenedor", "patrono"];
+
+/** Ordinal de faixa — usado só por `maxLevel` pra decidir a carência (#4436).
+ * `null` (sem apoio) é sempre o mínimo. */
+const LEVEL_RANK: Record<ApoioNivel, number> = { amigo: 1, apoiador: 2, mantenedor: 3, patrono: 4 };
 
 function isApoioNivel(v: string): v is ApoioNivel {
   return (LEVEL_VALUES as readonly string[]).includes(v);
@@ -132,7 +193,52 @@ function normalizeEmailList(emails: string[] | undefined | null): string[] {
   return out;
 }
 
-// ── estado DESEJADO (puro, de ContactWithStatus[]) ─────────────────────────
+// ── carência de 1 mês (#4436) — puro ────────────────────────────────────
+
+/** Pure: maior das duas faixas (ou `null` se ambas `null`). Usado pra
+ * combinar o nível do mês corrente com o do mês anterior (carência). */
+export function maxLevel(a: ApoioNivel | null, b: ApoioNivel | null): ApoioNivel | null {
+  const rankA = a ? LEVEL_RANK[a] : 0;
+  const rankB = b ? LEVEL_RANK[b] : 0;
+  return rankA >= rankB ? a : b;
+}
+
+/**
+ * Pure: mês anterior a `monthKey` (formato `YYYY-MM`), com virada de ano
+ * (`2026-01` → `2025-12`). Lança em formato inesperado — nunca produz um mês
+ * inválido silenciosamente (o resultado alimenta uma busca de carência que,
+ * se errada, pode reviver ou matar recompensa indevidamente).
+ */
+export function previousMonthKey(monthKey: string): string {
+  const m = /^(\d{4})-(\d{2})$/.exec(monthKey);
+  if (!m) throw new Error(`previousMonthKey: formato inesperado '${monthKey}' (esperado YYYY-MM)`);
+  let year = Number(m[1]);
+  let month = Number(m[2]) - 1;
+  if (month < 1) {
+    month = 12;
+    year -= 1;
+  }
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+/**
+ * Pure: nível pago por um contato (qualquer um dos seus e-mails) num
+ * snapshot de mês específico — `null` se o snapshot não existe (mês sem
+ * cache, ex: primeiro mês de operação) ou se nenhum e-mail pagou naquele
+ * mês. Mesma regra de "qualquer e-mail que bate" de `deriveContactStatus`.
+ */
+export function levelFromSnapshot(emails: readonly string[], snapshot: MonthSnapshot | undefined): ApoioNivel | null {
+  if (!snapshot) return null;
+  for (const email of emails) {
+    const s = snapshot.statuses[email];
+    if (s?.isPaidThisMonth) {
+      return computeRewardGroup(s.thisMonthPaidValue);
+    }
+  }
+  return null;
+}
+
+// ── estado DESEJADO (puro, de ContactWithStatus[] + histórico) ─────────────
 
 export interface DesiredApoioLevel {
   contactId: string;
@@ -140,7 +246,7 @@ export interface DesiredApoioLevel {
   /** E-mails normalizados (lowercase/trim, dedup) do contato. */
   emails: string[];
   /** Nível desejado, ou `null` se o contato não deve ter valor nenhum (não
-   * apoia / apoiou e parou). */
+   * apoiou nem no mês corrente nem no anterior — carência esgotada). */
   level: ApoioNivel | null;
   /** `true` quando `status.label === "sem_dados"` — nível DESCONHECIDO (falha
    * transiente de checagem), nunca tratado como "sem apoio". */
@@ -149,26 +255,41 @@ export interface DesiredApoioLevel {
 
 /**
  * Pure: computa o nível de recompensa desejado por contato a partir do
- * `ContactWithStatus[]` já resolvido por `buildApoiosData`. Reusa
+ * `ContactWithStatus[]` já resolvido por `buildApoiosData`, aplicando a
+ * carência de 1 mês (#4436): nível desejado = MAIOR faixa entre o mês
+ * corrente e o mês anterior (`pastSnapshots`, saída de
+ * `readPastMonthSnapshots` — zero chamada de rede nova). Reusa
  * `computeRewardGroup` (mesma fonte única de limiar usada pelo painel Apoios
  * e por `build-apoiador-allowlist.ts`) — SEM reimplementar a lógica de
  * faixas. Contatos "sem_dados" são marcados `unresolved: true` com `level:
  * null` (desconhecido, não "sem apoio") — `diffApoioTags` nunca gera ação
- * pra eles.
+ * pra eles, e a carência não se aplica (nível do mês corrente é
+ * desconhecido, não "não pagou").
  */
-export function computeDesiredApoioLevels(contacts: ContactWithStatus[]): DesiredApoioLevel[] {
+export function computeDesiredApoioLevels(
+  contacts: ContactWithStatus[],
+  pastSnapshots: MonthSnapshot[],
+  currentMonth: string,
+): DesiredApoioLevel[] {
+  const previousSnapshot = pastSnapshots.find((s) => s.month === previousMonthKey(currentMonth));
+
   return contacts.map((c) => {
     const unresolved = c.status.label === "sem_dados";
-    let level: ApoioNivel | null = null;
-    if (c.status.label === "apoiando") {
-      level = computeRewardGroup(c.status.monthlyValue);
+    const emails = normalizeEmailList(c.emails);
+
+    if (unresolved) {
+      return { contactId: c.id, contactName: c.name, emails, level: null, unresolved: true };
     }
+
+    const currentLevel = c.status.label === "apoiando" ? computeRewardGroup(c.status.monthlyValue) : null;
+    const previousLevel = levelFromSnapshot(emails, previousSnapshot);
+
     return {
       contactId: c.id,
       contactName: c.name,
-      emails: normalizeEmailList(c.emails),
-      level,
-      unresolved,
+      emails,
+      level: maxLevel(currentLevel, previousLevel),
+      unresolved: false,
     };
   });
 }
@@ -337,7 +458,8 @@ export interface ApoioTagDiffResult {
    * guard de dados parciais). */
   toApply: ApoioTagDiffEntry[];
   /** Remoções (contato parou de apoiar) — sujeito ao guard fail-closed de
-   * dados parciais (`shouldBlockRemovals`). */
+   * dados parciais (`shouldBlockRemovals`) e ao guard de blast radius
+   * (`evaluateBlastRadiusGuard`). */
   toRemove: ApoioTagDiffEntry[];
   /** Já convergido — nenhuma ação necessária (idempotência). */
   unchanged: ApoioTagDiffEntry[];
@@ -425,6 +547,43 @@ export function shouldBlockRemovals(
   return dataError !== null || diff.skippedUnresolved.length > 0;
 }
 
+// ── guard de blast radius (#4436) — puro ────────────────────────────────
+
+export interface BlastRadiusGuardResult {
+  /** `true` = o `--push` inteiro deve ser recusado (nem adições nem
+   * remoções são aplicadas). */
+  blocked: boolean;
+  removalCount: number;
+  /** Quantos assinantes têm `apoio_nivel` setado HOJE na Beehiiv (antes do
+   * push) — denominador do limiar. */
+  currentWithLevelCount: number;
+  /** `removalCount / currentWithLevelCount` — `0` quando o denominador é 0
+   * (não há ninguém com nível hoje, logo não há base pra "% removido"). */
+  ratio: number;
+}
+
+/**
+ * Pure: recusa o `--push` inteiro quando as remoções calculadas excedem
+ * `BLAST_RADIUS_THRESHOLD` (30%, decisão do editor #4436) de quem TEM
+ * `apoio_nivel` setado hoje na Beehiiv — independente do motivo (bug de
+ * cálculo, virada de mês sem a carência ter pego o caso, apoia.se
+ * respondendo `nao_apoia` em massa por instabilidade). Mais amplo que
+ * `shouldBlockRemovals` (que só cobre `error`/`sem_dados`): aqui o critério é
+ * puramente de MAGNITUDE, não de origem do dado. "Passar de" é estrito —
+ * exatamente no limiar (`ratio === threshold`) NÃO bloqueia.
+ * `force` (`--force-blast-radius`) é o escape hatch explícito.
+ */
+export function evaluateBlastRadiusGuard(
+  removalCount: number,
+  current: readonly BeehiivSubscriptionSnapshot[],
+  force: boolean,
+): BlastRadiusGuardResult {
+  const currentWithLevelCount = current.filter((s) => s.apoioNivel !== "").length;
+  const ratio = currentWithLevelCount > 0 ? removalCount / currentWithLevelCount : 0;
+  const blocked = !force && ratio > BLAST_RADIUS_THRESHOLD;
+  return { blocked, removalCount, currentWithLevelCount, ratio };
+}
+
 // ── aplicação (I/O — escrita + verificação por releitura) ──────────────────
 
 /**
@@ -486,7 +645,7 @@ export async function applyApoioTagEntry(
 // ── logging do diff (dry-run e --push) ──────────────────────────────────
 
 function logDiff(diff: ApoioTagDiffResult, removalsBlocked: boolean): void {
-  const log = (msg: string) => process.stderr.write(`[sync-apoio-tags-beehiiv] ${msg}\n`);
+  const log = (msg: string) => process.stderr.write(`${LOG_PREFIX} ${msg}\n`);
 
   log(`${diff.toApply.length} adição(ões)/troca(s) de nível:`);
   for (const e of diff.toApply) {
@@ -522,50 +681,81 @@ function logDiff(diff: ApoioTagDiffResult, removalsBlocked: boolean): void {
   log(`${diff.unchanged.length} já convergido(s) (nenhuma ação).`);
 }
 
+function logBlastRadiusGuard(guard: BlastRadiusGuardResult): void {
+  const log = (msg: string) => process.stderr.write(`${LOG_PREFIX} ${msg}\n`);
+  const pct = (guard.ratio * 100).toFixed(1);
+  log(
+    `guard de blast radius: ${guard.removalCount} remoção(ões) de ${guard.currentWithLevelCount} ` +
+      `com nível hoje (${pct}%, limiar ${(BLAST_RADIUS_THRESHOLD * 100).toFixed(0)}%)` +
+      (guard.blocked ? " — EXCEDIDO." : "."),
+  );
+}
+
 // ── main ─────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   loadProjectEnv(ROOT);
 
-  const { apiKey, publicationId } = loadBeehiivConfig("[sync-apoio-tags-beehiiv]");
+  const { apiKey, publicationId } = loadBeehiivConfig(LOG_PREFIX);
 
   const data = await buildApoiosData(ROOT);
   if (data.error) {
+    process.stderr.write(`${LOG_PREFIX} aviso: buildApoiosData reportou erro (dados podem estar incompletos): ${data.error}\n`);
+  }
+
+  const now = new Date();
+  const currentMonth = competenceMonth(now);
+  let pastSnapshots: MonthSnapshot[] = [];
+  try {
+    const env = readApoiaSeEnv();
+    pastSnapshots = readPastMonthSnapshots(defaultCacheDir(env.campaign), currentMonth);
+  } catch (e) {
     process.stderr.write(
-      `[sync-apoio-tags-beehiiv] aviso: buildApoiosData reportou erro (dados podem estar incompletos): ${data.error}\n`,
+      `${LOG_PREFIX} aviso: não foi possível ler snapshots de meses anteriores (carência de 1 mês ` +
+        `desativada nesta rodada, comportamento cai pro mês corrente só): ${(e as Error).message}\n`,
     );
   }
 
-  const desired = computeDesiredApoioLevels(data.contacts);
+  const desired = computeDesiredApoioLevels(data.contacts, pastSnapshots, currentMonth);
 
-  process.stderr.write("[sync-apoio-tags-beehiiv] buscando estado atual na Beehiiv…\n");
+  process.stderr.write(`${LOG_PREFIX} buscando estado atual na Beehiiv…\n`);
   const current = await fetchCurrentBeehiivState(publicationId, apiKey);
-  process.stderr.write(`[sync-apoio-tags-beehiiv] ${current.length} assinante(s) ativo(s) na Beehiiv.\n`);
+  process.stderr.write(`${LOG_PREFIX} ${current.length} assinante(s) ativo(s) na Beehiiv.\n`);
 
   const diff = diffApoioTags(desired, current);
   const allowPartial = hasFlag(argv, "allow-partial");
-  const removalsBlocked = shouldBlockRemovals(data.error, diff, allowPartial);
+  const removalsBlockedByPartialData = shouldBlockRemovals(data.error, diff, allowPartial);
+  const forceBlastRadius = hasFlag(argv, "force-blast-radius");
+  const blastGuard = evaluateBlastRadiusGuard(diff.toRemove.length, current, forceBlastRadius);
 
-  logDiff(diff, removalsBlocked);
+  logDiff(diff, removalsBlockedByPartialData);
+  logBlastRadiusGuard(blastGuard);
 
   if (!hasFlag(argv, "push")) {
-    process.stderr.write(
-      "[sync-apoio-tags-beehiiv] dry-run (default) — NENHUMA mutação aplicada. Use --push para gravar.\n",
-    );
+    process.stderr.write(`${LOG_PREFIX} dry-run (default) — NENHUMA mutação aplicada. Use --push para gravar.\n`);
     return;
   }
 
-  if (removalsBlocked && diff.toRemove.length > 0) {
+  if (blastGuard.blocked) {
     process.stderr.write(
-      "[sync-apoio-tags-beehiiv] RECUSANDO aplicar as remoções acima (dados parciais/sem_dados) — " +
+      `${LOG_PREFIX} RECUSANDO o --push inteiro (guard de blast radius acima) — nenhuma mutação foi ` +
+        "aplicada, nem adições nem remoções. Confira se é uma virada de mês/instabilidade da apoia.se " +
+        "antes de usar --force-blast-radius (decisão consciente do editor, sempre logada).\n",
+    );
+    process.exit(1);
+  }
+
+  if (removalsBlockedByPartialData && diff.toRemove.length > 0) {
+    process.stderr.write(
+      `${LOG_PREFIX} RECUSANDO aplicar as remoções acima (dados parciais/sem_dados) — ` +
         "uma falha de rede não pode virar remoção em massa de recompensa. Re-tente, ou use " +
         "--allow-partial pra prosseguir mesmo assim (decisão consciente do editor, sempre logada).\n",
     );
   }
 
-  const toApplyNow = [...diff.toApply, ...(removalsBlocked ? [] : diff.toRemove)];
-  process.stderr.write(`[sync-apoio-tags-beehiiv] --push: aplicando ${toApplyNow.length} mutação(ões)…\n`);
+  const toApplyNow = [...diff.toApply, ...(removalsBlockedByPartialData ? [] : diff.toRemove)];
+  process.stderr.write(`${LOG_PREFIX} --push: aplicando ${toApplyNow.length} mutação(ões)…\n`);
 
   let applied = 0;
   let failed = 0;
@@ -575,17 +765,17 @@ async function main(): Promise<void> {
       applied++;
     } catch (e) {
       failed++;
-      process.stderr.write(`[sync-apoio-tags-beehiiv] FALHA em ${entry.email}: ${(e as Error).message}\n`);
+      process.stderr.write(`${LOG_PREFIX} FALHA em ${entry.email}: ${(e as Error).message}\n`);
     }
   }
 
-  process.stderr.write(`[sync-apoio-tags-beehiiv] push concluído: ${applied} aplicada(s), ${failed} falha(s).\n`);
+  process.stderr.write(`${LOG_PREFIX} push concluído: ${applied} aplicada(s), ${failed} falha(s).\n`);
   if (failed > 0) process.exit(1);
 }
 
 if (isMainModule(import.meta.url)) {
   main().catch((e) => {
-    process.stderr.write(`[sync-apoio-tags-beehiiv] erro fatal: ${(e as Error).message}\n`);
+    process.stderr.write(`${LOG_PREFIX} erro fatal: ${(e as Error).message}\n`);
     process.exit(1);
   });
 }
