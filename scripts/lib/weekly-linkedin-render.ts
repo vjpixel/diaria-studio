@@ -128,11 +128,13 @@ export interface WeeklyLinkedinRenderResult {
  * `input.closing`/`useMelhor.editorComment` já devem estar humanizados/
  * corrigidos (responsabilidade da skill, não deste módulo).
  *
- * Ordem de montagem (opening → headlines → Use Melhor → resto da semana →
- * closing): decisão implícita não confirmada pelo editor (achado #4489
- * finding 8b) — difere da ordem do template original da issue (item1→item2→
- * Use Melhor→item3→lista→fecho) sem que nenhum dos 5 comentários da #4456
- * tenha revisitado/confirmado essa reordenação explicitamente.
+ * Ordem de montagem (opening → headline 1 → headline 2 → Use Melhor →
+ * headline 3 → resto da semana → closing) restaura o template original da
+ * issue #4456 — decisão do editor (#4489): o CTA de assinatura que fecha o
+ * bloco Use Melhor é o primeiro convite da edição, e cair no meio (depois de
+ * 2 dos 3 headlines) alcança o leitor engajado que não necessariamente lê a
+ * edição inteira — quem abandona antes do 3º headline nunca veria o CTA se o
+ * bloco viesse só depois de todos os headlines.
  */
 export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): WeeklyLinkedinRenderResult {
   const warnings: string[] = [];
@@ -150,14 +152,21 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
     parts.push(`<p>${escapeHtml(input.opening.trim())}</p>`);
   }
 
-  input.headlines.forEach((h, i) => {
-    parts.push(`<h2>${escapeHtml(numberedTitle(i + 1, h.title))}</h2>`);
+  function pushHeadline(h: WeeklyLinkedinHeadlineInput, n: number): void {
+    parts.push(`<h2>${escapeHtml(numberedTitle(n, h.title))}</h2>`);
     parts.push(paragraphsHtml(h.body));
     if (h.why.trim()) {
       parts.push(`<p><strong>Por que isso importa:</strong> ${escapeHtml(h.why.trim())}</p>`);
     }
     parts.push("<hr/>");
-  });
+  }
+
+  // Caso normal (3 headlines): USE MELHOR entra depois do 2º. Semana
+  // reduzida (#4489): com 2 headlines, ambos entram antes (mesma regra —
+  // "depois do 2º disponível"); com 1, entra logo depois dele (equivalente a
+  // "no fim", já que não sobra headline 3); com 0, entra logo após a abertura.
+  const useMelhorSplitIndex = Math.min(2, input.headlines.length);
+  input.headlines.slice(0, useMelhorSplitIndex).forEach((h, i) => pushHeadline(h, i + 1));
 
   let useMelhorRendered = false;
   const hasComment = !!input.useMelhor?.editorComment?.trim();
@@ -178,6 +187,8 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
     parts.push("<hr/>");
     useMelhorRendered = true;
   }
+
+  input.headlines.slice(useMelhorSplitIndex).forEach((h, i) => pushHeadline(h, useMelhorSplitIndex + i + 1));
 
   if (input.restOfWeek.length > 0) {
     parts.push(`<h3>Resto da semana</h3>`);

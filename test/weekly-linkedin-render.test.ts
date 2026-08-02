@@ -113,6 +113,62 @@ describe("renderLinkedinWeeklyHtml — bloco USE MELHOR exige comentário do edi
   });
 });
 
+describe("renderLinkedinWeeklyHtml — ordem de montagem restaurada ao template original (#4489, decisão do editor)", () => {
+  const THREE_HEADLINES_INPUT: WeeklyLinkedinRenderInput = {
+    ...BASE_INPUT,
+    headlines: [
+      { title: "Headline 1", body: "Corpo 1.", why: "" },
+      { title: "Headline 2", body: "Corpo 2.", why: "" },
+      { title: "Headline 3", body: "Corpo 3.", why: "" },
+    ],
+    useMelhor: {
+      title: "Tutorial Y",
+      url: "https://exemplo.com/tutorial-y",
+      description: "Descrição do tutorial.",
+      editorComment: "Comentário do editor sobre o tutorial.",
+    },
+  };
+
+  it("com 3 manchetes (caso normal): opening → h1 → h2 → USE MELHOR → h3 → resto da semana → closing", () => {
+    const result = renderLinkedinWeeklyHtml(THREE_HEADLINES_INPUT);
+    const idxOpening = result.html.indexOf(BASE_INPUT.opening);
+    const idxH1 = result.html.indexOf("<h2>1. Headline 1</h2>");
+    const idxH2 = result.html.indexOf("<h2>2. Headline 2</h2>");
+    const idxUseMelhor = result.html.indexOf("Use melhor");
+    const idxH3 = result.html.indexOf("<h2>3. Headline 3</h2>");
+    const idxResto = result.html.indexOf("Resto da semana");
+    const idxClosing = result.html.indexOf(BASE_INPUT.closing);
+
+    for (const idx of [idxOpening, idxH1, idxH2, idxUseMelhor, idxH3, idxResto, idxClosing]) {
+      assert.ok(idx >= 0, "todos os blocos devem estar presentes no HTML");
+    }
+    assert.ok(idxOpening < idxH1, "opening antes de h1");
+    assert.ok(idxH1 < idxH2, "h1 antes de h2");
+    assert.ok(idxH2 < idxUseMelhor, "h2 antes do USE MELHOR — CTA do meio alcança quem lê parcial");
+    assert.ok(idxUseMelhor < idxH3, "USE MELHOR antes de h3");
+    assert.ok(idxH3 < idxResto, "h3 antes do resto da semana");
+    assert.ok(idxResto < idxClosing, "resto da semana antes do closing");
+  });
+
+  it("semana reduzida com 2 manchetes: USE MELHOR entra depois da 2ª (mesma regra — não sobra 3ª manchete)", () => {
+    const input: WeeklyLinkedinRenderInput = { ...THREE_HEADLINES_INPUT, headlines: THREE_HEADLINES_INPUT.headlines.slice(0, 2) };
+    const result = renderLinkedinWeeklyHtml(input);
+    const idxH2 = result.html.indexOf("<h2>2. Headline 2</h2>");
+    const idxUseMelhor = result.html.indexOf("Use melhor");
+    assert.ok(idxH2 >= 0 && idxUseMelhor >= 0);
+    assert.ok(idxH2 < idxUseMelhor);
+  });
+
+  it("semana reduzida com 1 manchete: USE MELHOR entra logo depois dela (equivalente a 'no fim')", () => {
+    const input: WeeklyLinkedinRenderInput = { ...THREE_HEADLINES_INPUT, headlines: THREE_HEADLINES_INPUT.headlines.slice(0, 1) };
+    const result = renderLinkedinWeeklyHtml(input);
+    const idxH1 = result.html.indexOf("<h2>1. Headline 1</h2>");
+    const idxUseMelhor = result.html.indexOf("Use melhor");
+    assert.ok(idxH1 >= 0 && idxUseMelhor >= 0);
+    assert.ok(idxH1 < idxUseMelhor);
+  });
+});
+
 describe("renderLinkedinWeeklyHtml — lista do resto da semana", () => {
   it("cada edição não-manchete vira 1 item da lista com link pra edição", () => {
     const result = renderLinkedinWeeklyHtml(BASE_INPUT);
