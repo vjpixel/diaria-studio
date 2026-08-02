@@ -172,13 +172,48 @@ describe("parseAbcAudienceCampaign", () => {
 
   test("#4447: naming '--group' sem 'celula' na lista (ex: envio interno) → null (não participa do A/B/C)", () => {
     assert.equal(
-      parseAbcAudienceCampaign("Clarice 2607 grupo:d1-sab01-interno", "Clarice 2607-08 d2-dom02-interno"),
+      parseAbcAudienceCampaign("Clarice 2607 grupo:d1-sab01-interno", "Clarice 2607-08 d1-sab01-interno"),
       null,
     );
   });
 
   test("#4447: naming '--group' sem listName (chamador legado) → null (sinal só existe na lista)", () => {
     assert.equal(parseAbcAudienceCampaign("Clarice 2607 grupo:d1-sab01-A"), null);
+  });
+
+  // Achado do /code-review (silent-failure-hunter + pr-test-analyzer, PR
+  // #4448): não existe gerador desse formato de nome de lista no repo — foi
+  // digitado à mão. "célula" (com acento) é a grafia CORRETA em PT-BR, usada
+  // em todo o resto deste arquivo (ex: renderAbcAudienceSection); um retype
+  // com acento reproduziria o mesmo bug do #4447 (3ª vez: #3081 → #3128 →
+  // #4447).
+  test("#4447 (review): naming '--group' com 'célula' acentuada na lista também é reconhecido", () => {
+    const parsed = parseAbcAudienceCampaign(
+      "Clarice 2607 grupo:d1-sab01-A",
+      "Clarice 2607-08 d1-sab01-A — célula A",
+    );
+    assert.deepEqual(parsed, { cycle: "2607-08", cell: "A", audience: "warm" });
+  });
+
+  // Achado do /code-review (silent-failure-hunter, PR #4448): o `{key}` da
+  // campanha já carrega a célula redundantemente ("grupo:d1-sab01-A"); uma
+  // lista renomeada errada não deve poder sobrescrever esse sinal em
+  // silêncio — o mismatch precisa virar `null` (não-parseável), nunca uma
+  // célula errada aceita sem aviso.
+  test("#4447 (review): célula da lista diverge do sufixo -A/-B/-C da campanha → null (não confia cegamente na lista)", () => {
+    const parsed = parseAbcAudienceCampaign(
+      "Clarice 2607 grupo:d1-sab01-A",
+      "Clarice 2607-08 d1-sab01-A — celula B", // typo: campanha diz A, lista diz B
+    );
+    assert.equal(parsed, null);
+  });
+
+  test("#4447 (review): sufixo da campanha sem letra A/B/C (ex: 'interno') → sem sinal pra cruzar, segue confiando só na lista", () => {
+    const parsed = parseAbcAudienceCampaign(
+      "Clarice 2607 grupo:d1-sab01-extra",
+      "Clarice 2607-08 d1-sab01-extra — celula B",
+    );
+    assert.deepEqual(parsed, { cycle: "2607-08", cell: "B", audience: "warm" });
   });
 });
 
@@ -346,6 +381,67 @@ describe("aggregateAbcByAudience — naming ambíguo, resolvido via listName (#3
     const aggB = result.aggregate.cells.find((c) => c.cell === "B")!;
     assert.equal(aggB.delivered, 895 + 1490);
     assert.notEqual(warmB.delivered, aggB.delivered, "Quente não pode ficar igual à Agregada — sintoma original do bug");
+  });
+});
+
+// ─── aggregateAbcByAudience: naming '--group' (célula só na LISTA) — #4447 ────
+
+describe("aggregateAbcByAudience — naming '--group' (célula só na LISTA), resolvido via listName (#4447)", () => {
+  const cycle = "2607-08";
+  // Nomes reais confirmados via KV dash:lastgood:campaigns pro ciclo 2607-08
+  // (issue #4447) — mesma disciplina de fixture do bloco #3128 acima.
+  const grupoAbc = [
+    { ...makeCampaign(102, "Clarice 2607 grupo:d1-sab01-A", "2026-08-01T09:00:00Z", { sent: 3000, delivered: 2977, uniqueViews: 306, uniqueClicks: 101 }), listName: "Clarice 2607-08 d1-sab01-A — celula A" },
+    { ...makeCampaign(103, "Clarice 2607 grupo:d1-sab01-B", "2026-08-01T09:01:00Z", { sent: 3001, delivered: 2980, uniqueViews: 402, uniqueClicks: 28 }), listName: "Clarice 2607-08 d1-sab01-B — celula B" },
+    { ...makeCampaign(104, "Clarice 2607 grupo:d1-sab01-C", "2026-08-01T09:02:00Z", { sent: 3000, delivered: 2979, uniqueViews: 280, uniqueClicks: 65 }), listName: "Clarice 2607-08 d1-sab01-C — celula C" },
+  ];
+
+  test("agrega delivered/clicks corretamente por célula a partir do listName (não fica tudo em 1 bucket)", () => {
+    const result = aggregateAbcByAudience(grupoAbc, cycle);
+    const a = result.aggregate.cells.find((c) => c.cell === "A")!;
+    const b = result.aggregate.cells.find((c) => c.cell === "B")!;
+    const c = result.aggregate.cells.find((c) => c.cell === "C")!;
+    assert.equal(a.delivered, 2977);
+    assert.equal(a.clicks, 101);
+    assert.equal(b.delivered, 2980);
+    assert.equal(b.clicks, 28);
+    assert.equal(c.delivered, 2979);
+    assert.equal(c.clicks, 65);
+  });
+
+  test("LÍDER de abertura é B, mas LÍDER de clique é A (divergência real do ciclo 2607-08)", () => {
+    const result = aggregateAbcByAudience(grupoAbc, cycle);
+    assert.equal(result.aggregate.leaderOpenRate, "B");
+    assert.equal(result.aggregate.leaderClickRate, "A");
+  });
+
+  // Achado do /code-review (silent-failure-hunter) do PR #4448: sem
+  // cross-checar a célula da LISTA contra o sufixo -A/-B/-C já presente no
+  // `{key}` da CAMPANHA, uma lista renomeada errada (cópia/cola, typo)
+  // misturaria silenciosamente as métricas da campanha 103 (célula B de
+  // verdade) dentro do bucket da célula A — inflando A e derrubando B sem
+  // nenhum erro visível, o pior tipo de falha (conclusão estatística ERRADA,
+  // não só ausente).
+  test("lista com célula ERRADA (mismatch vs sufixo da campanha) é descartada, não corrompe o bucket de outra célula", () => {
+    const corrupted = [
+      grupoAbc[0],
+      { ...grupoAbc[1], listName: "Clarice 2607-08 d1-sab01-B — celula A" }, // typo: devia ser "celula B"
+      grupoAbc[2],
+    ];
+    const result = aggregateAbcByAudience(corrupted, cycle);
+    const a = result.aggregate.cells.find((c) => c.cell === "A")!;
+    const b = result.aggregate.cells.find((c) => c.cell === "B")!;
+    assert.equal(a.campaignCount, 0, "célula A NÃO deve herdar os 2.980 delivered da campanha 103 (mismatch descartado)");
+    assert.equal(b.campaignCount, 0, "célula B também fica sem dado (campanha 103 nunca chega lá)");
+    // Nota: com a campanha 103 descartada, só A e C sobram pro dia 01/08 —
+    // o guard de consolidação pré-existente (#3404, `cellsPerDay < 3`) então
+    // zera TAMBÉM A e C nesse dia (não distingue "typo descartado" de
+    // "consolidação real com só 2 células"). Efeito colateral aceito: dado
+    // AUSENTE é mais seguro que dado ERRADO, mas não é um fix completo — a
+    // distinção entre os dois casos é follow-up (ver #4447 e comentário do
+    // PR #4448).
+    const c = result.aggregate.cells.find((c) => c.cell === "C")!;
+    assert.equal(c.campaignCount, 0, "efeito colateral do guard <3 pré-existente (#3404) — não é o alvo deste teste, só documentando");
   });
 });
 

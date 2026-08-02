@@ -341,6 +341,11 @@ describe("#2889: teste ABC mensal (naming 'Clarice News AAMM-MM — X')", () => 
     assert.equal(groups[1].campaigns.length, 3);
   });
 
+  // #4447: chave do nome ("d1-sab01") e chave da lista ("d2-dom02") DIVERGEM
+  // de propósito aqui — reproduz o dado REAL da campanha id 111 no KV
+  // dash:lastgood:campaigns (a lista "interno" é compartilhada entre os dias,
+  // não um typo de fixture). Irrelevante pro teste: sem "celula" na lista,
+  // a campanha não entra no A/B/C de qualquer forma.
   test("#4447: campanha '--group' SEM 'celula' na lista (ex: envio interno) não entra no grupo A/B/C", () => {
     const interno = { ...makeCampaign(111, "Clarice 2607 grupo:d1-sab01-interno", "2026-08-01T06:00:00.000-03:00"), scheduledAt: "2026-08-01T06:00:00.000-03:00", listName: "Clarice 2607-08 d2-dom02-interno" };
     assert.equal(groupMonthlyAbcTests([interno]).length, 0);

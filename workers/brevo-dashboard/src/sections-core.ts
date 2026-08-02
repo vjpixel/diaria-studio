@@ -1403,14 +1403,19 @@ export function isPostAbcReset(c: Pick<BrevoCampaign, "scheduledAt">): boolean {
  * #3081 (review): `parseClariceCampaignKey` é tentado primeiro — preserva
  * 100% do comportamento anterior pro caso warm (diário E mensal, idêntico ao
  * código antigo). SÓ quando ele não reconhece o nome, cai pro fallback
- * `parseAbcAudienceCampaign` restrito a `audience === "cold"` — cobre o teste
- * mensal COLD (naming "cold AAMM-MM — X"), tratado como `monthly:true` (sem
- * corte de dia, mesmo tratamento que o mensal warm já recebia). Sem este
- * fallback, `groupMonthlyAbcTests` (que já reconhece cold) formava o grupo
- * mas esta função zerava todas as células dele — a seção "Resumo A/B/C —
- * Mensal" de um ciclo só-cold renderizava vazia (`renderAbcSection` retorna
- * "" quando `every(r => r.campaignCount === 0)`), o mesmo sintoma que o fix
- * do `groupMonthlyAbcTests` deveria ter resolvido (achado no self-review).
+ * `parseAbcAudienceCampaign`, que cobre o teste mensal COLD (naming
+ * "cold AAMM-MM — X") e, desde #4447, o naming do fluxo `--group`
+ * (célula só na LISTA de destinatários) — ambos tratados como `monthly:true`
+ * (sem corte de dia, mesmo tratamento que o mensal warm já recebia). Sem
+ * filtrar por `audience` aqui (restrição removida em #4447): esta função só
+ * precisa de cycle+cell pro bucket por dia — a separação cold/warm é feita à
+ * parte em `aggregateAbcByAudience`, que já recebe `listName`. Sem o
+ * fallback, `groupMonthlyAbcTests` (que já reconhece cold e `--group`)
+ * formava o grupo mas esta função zerava todas as células dele — a seção
+ * "Resumo A/B/C — Mensal" de um ciclo sem nenhuma campanha "Clarice News..."
+ * renderizava vazia (`renderAbcSection` retorna "" quando
+ * `every(r => r.campaignCount === 0)`), o mesmo sintoma reaparecendo a cada
+ * naming novo (#3081 → #4447).
  *
  * #3123: a janela de dias (só relevante pro teste DIÁRIO — o mensal é 1
  * campanha por célula, sem `dayNum`, #2889) é DERIVADA dos dados em vez de
@@ -1786,10 +1791,13 @@ export function classifyClariceAudience(campaignName: string): ClariceAudience |
  * Parseia uma campanha de teste A/B/C (fria OU quente) do naming pra extrair
  * ciclo + célula, independente de audiência. Reusa `parseClariceCampaignKey`
  * pro caso quente (mensal, "Clarice News AAMM-MM — X"); implementa um parser
- * paralelo pro caso frio ("cold AAMM-MM — X" ou "cold AAMM-MM X"). Só campanhas
- * com célula A/B/C explícita participam do Resumo por Audiência — envios
- * únicos (sem A/B/C) são ignorados aqui (mesma convenção do #2360).
- * Exportado pra teste unitário.
+ * paralelo pro caso frio ("cold AAMM-MM — X" ou "cold AAMM-MM X"); e (#4447)
+ * um 3º fallback pro naming do fluxo `--group`, que deriva ciclo+célula da
+ * LISTA de destinatários em vez do nome da campanha — ver bloco de comentário
+ * daquele branch abaixo pro racional completo. Só campanhas com célula A/B/C
+ * explícita participam do Resumo por Audiência — envios únicos (sem A/B/C)
+ * são ignorados aqui (mesma convenção do #2360). Exportado pra teste
+ * unitário.
  *
  * #3128: o NOME DA CAMPANHA nem sempre carrega o sinal de audiência — o
  * editor às vezes reagenda um re-envio pra uma lista fria reusando o MESMO
@@ -1802,9 +1810,13 @@ export function classifyClariceAudience(campaignName: string): ClariceAudience |
  * "cold 2606-07 dom-B" / "2606-07 cold d1" — só o nome da LISTA denuncia que
  * o envio foi pra audiência fria. O nome da lista é portanto o sinal mais
  * confiável quando disponível: se `listName` contém "cold", a campanha é
- * classificada como fria mesmo que o nome da campanha pareça quente. Sem
- * `listName` (chamador não tem a info, ou testes legados), o comportamento
- * cai pro naming-only de antes — retrocompatível.
+ * classificada como fria mesmo que o nome da campanha pareça quente.
+ * IMPORTANTE (diferente do branch `--group` abaixo): aqui `listName` só
+ * resolve AUDIÊNCIA — ciclo+célula sempre vêm do nome da campanha, que já os
+ * carrega. Sem `listName` (chamador não tem a info, ou testes legados), o
+ * comportamento cai pro naming-only de antes — retrocompatível pros casos
+ * quente/frio; o branch `--group` não tem equivalente naming-only (ver nota
+ * nele).
  */
 export function parseAbcAudienceCampaign(
   campaignName: string,
@@ -1823,21 +1835,39 @@ export function parseAbcAudienceCampaign(
   // CAMPANHA como "Clarice {yymm} grupo:{key}" — sem ciclo mensal "AAMM-MM"
   // nem célula num formato reconhecível (o {key}, ex: "d1-sab01-A", é opaco
   // pra este parser). O sinal completo só existe na LISTA de destinatários:
-  // "Clarice {ciclo mensal} {key} — celula {X}" (ex: "Clarice 2607-08
-  // d1-sab01-A — celula A"). Confirmado ao vivo pro ciclo 2607-08 (#4447):
+  // "Clarice {ciclo mensal} {key} — célula {X}" (ex: "Clarice 2607-08
+  // d1-sab01-A — célula A"). Confirmado ao vivo pro ciclo 2607-08 (#4447):
   // sem este fallback, groupMonthlyAbcTests/aggregateAbcByAudience nunca
   // reconheciam essas campanhas — o Resumo A/B/C do ciclo sumia inteiro do
-  // painel. Mesmo racional listName-aware do caso cold acima (#3128), só que
-  // aqui o sinal que falta na campanha é ciclo+célula, não audiência.
+  // painel. Diferente do caso cold acima (#3128), aqui `listName` NÃO é
+  // auxiliar de audiência — é a ÚNICA fonte de ciclo+célula; sem `listName`
+  // não há naming-only equivalente, a campanha retorna null (ver teste
+  // "sem listName → null" abaixo).
+  //
+  // Não há gerador desse formato de nome de lista neste repo (diferente do
+  // nome de CAMPANHA, que `scripts/clarice-schedule-group.ts` produz de forma
+  // determinística) — foi digitado à mão pra este ciclo. `c[eé]lula` aceita
+  // as duas grafias (sem/com acento) de propósito: a #4447 original só
+  // testava a forma sem acento e um retype com "célula" (grafia correta em
+  // PT-BR, usada em todo o resto deste arquivo) reproduziria o MESMO bug —
+  // 3ª ocorrência dessa classe (#3081 → #3128 → #4447), achado no /code-review
+  // deste PR antes do merge.
   const groupList = listName?.match(
-    /Clarice\s+(\d{4}-\d{2})\s+[\w-]+\s*[—–-]\s*celula\s+([ABC])\b/i,
+    /Clarice\s+(\d{4}-\d{2})\s+[\w-]+\s*[—–-]\s*c[eé]lula\s+([ABC])\b/i,
   );
   if (groupList) {
-    return {
-      cycle: groupList[1],
-      cell: groupList[2].toUpperCase() as "A" | "B" | "C",
-      audience: listIsCold ? "cold" : "warm",
-    };
+    const listCell = groupList[2].toUpperCase() as "A" | "B" | "C";
+    // O `{key}` da campanha ("grupo:d1-sab01-A") já carrega a célula
+    // redundantemente no sufixo — cross-checar contra o sinal da LISTA em vez
+    // de confiar cegamente nele (achado do /code-review deste PR). Uma lista
+    // renomeada errada (cópia/cola, erro de digitação) sem esse guard
+    // misturaria as métricas da campanha na célula ERRADA sem nenhum erro
+    // visível — corrompe o vencedor do teste em vez de só sumir com o dado.
+    // Sufixo ausente ou não-A/B/C (ex: "-interno") → sem sinal pra cruzar,
+    // segue confiando só na lista (mesmo comportamento de antes).
+    const nameCellSuffix = campaignName.match(/grupo:[\w-]*-([ABC])$/i);
+    if (nameCellSuffix && nameCellSuffix[1].toUpperCase() !== listCell) return null;
+    return { cycle: groupList[1], cell: listCell, audience: listIsCold ? "cold" : "warm" };
   }
   return null;
 }
