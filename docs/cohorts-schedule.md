@@ -81,3 +81,22 @@ de backup.
 
 `data/clarice-subscribers/cohorts/` guarda `checkpoint.json` (some no sucesso),
 `status.json` e os logs. Mora no OneDrive junto com o resto de `data/`.
+
+## Redesenho v2 em andamento — Fase 1 + Fase 2 feitas, cutover pendente (#4451)
+
+O crawl per-contato acima (v1) tem um limite estrutural: o universo cresceu
+pra ~129k contatos, o que exige ~21,5h de crawl contínuo, mais do que o
+`MAX_RESUME_AGE_H` do checkpoint (18h) tolera — uma rodada que não termina a
+tempo é descartada e recomeça do zero. `scripts/clarice-engagement-cohorts-v2.ts`
+inverte o eixo (export por CAMPANHA via `POST /emailCampaigns/{id}/exportRecipients`
+em vez de `GET /contacts/{id}` por contato), com cache permanente por campanha,
+janela de re-fetch pra campanhas recentes e o gap de blacklist administrativo
+fechado via leitura do store local (`clarice-users.db`, sem custo de API
+adicional). `scripts/compare-cohorts.ts` compara o output das duas coortes
+campo a campo dentro de uma tolerância.
+
+**SEMPRE dry-run** nesta fase — v2 nunca grava no KV nem toca a task agendada
+`DiariaCohortsCrawl` acima. Falta, antes do cutover: rodar v1 e v2 lado a lado
+contra a Brevo real (`BREVO_CLARICE_API_KEY`) e comparar via
+`scripts/compare-cohorts.ts` — só trocar a task pro v2 depois de baterem
+dentro da tolerância. Ver issue #4451 para o plano de execução completo.

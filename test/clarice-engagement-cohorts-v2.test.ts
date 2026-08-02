@@ -1,12 +1,17 @@
 /**
- * clarice-engagement-cohorts-v2.test.ts (#4451 Fase 1)
+ * clarice-engagement-cohorts-v2.test.ts (#4451 Fase 1 + Fase 2)
  *
- * Testes PUROS, sem rede (#633) — cobrem só a Fase 1 do redesenho:
+ * Testes PUROS, sem rede (#633) — cobrem Fase 1 + Fase 2 do redesenho:
  *   - csvRowToFlags: linha do CSV de exportRecipients → flags per-campanha.
  *   - buildCampaignCache / aggregateCampaignCaches: agregação por email,
  *     inclusive across-campaign (2 campanhas diferentes acumulam).
  *   - getOrFetchCampaignCache: cache existente NUNCA dispara novo
- *     exportRecipients (mock do client, assert 0 chamadas).
+ *     exportRecipients (mock do client, assert 0 chamadas) — salvo
+ *     `forceRefresh` (Fase 2), que sempre busca de novo e sobrescreve.
+ *   - isWithinRefetchWindow: campanha recente/antiga/sem sentDate (Fase 2).
+ *   - fetchAdminOptOutEmails / applyAdminOptOuts: gap de blacklist
+ *     administrativo fechado via store local, fail-soft quando ausente
+ *     (Fase 2).
  *   - computeCohorts (import direto de clarice-engagement-cohorts.ts): sem
  *     regressão — mesmo comportamento de hoje, alimentado pelo agregado v2.
  */
@@ -15,7 +20,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   csvRowToFlags,
   normalizeEmail,
@@ -25,11 +30,16 @@ import {
   pollExportUntilDone,
   buildCohortsV2,
   campaignCachePath,
+  isWithinRefetchWindow,
+  fetchAdminOptOutEmails,
+  applyAdminOptOuts,
+  DEFAULT_REFETCH_WINDOW_DAYS,
   type CampaignExportClient,
   type CampaignCache,
   type SentCampaignRef,
 } from "../scripts/clarice-engagement-cohorts-v2.ts";
-import { computeCohorts } from "../scripts/clarice-engagement-cohorts.ts";
+import { computeCohorts, type ContactEngagement } from "../scripts/clarice-engagement-cohorts.ts";
+import { openClariceDb } from "../scripts/lib/clarice-db.ts";
 
 const GEN = "2026-08-02T00:00:00.000Z";
 
@@ -289,6 +299,232 @@ test("getOrFetchCampaignCache: campanha JÁ cacheada NUNCA dispara novo exportRe
     };
     const { fromCache } = await getOrFetchCampaignCache(throwingClient, campaign, { cacheDir: dir });
     assert.equal(fromCache, true);
+  });
+});
+
+// ─── isWithinRefetchWindow (#4451 Fase 2) ──────────────────────────────────
+
+const NOW_MS = Date.parse("2026-08-02T12:00:00.000Z");
+
+test("isWithinRefetchWindow: campanha enviada ontem está DENTRO da janela default (30d)", () => {
+  assert.equal(
+    isWithinRefetchWindow({ sentDate: "2026-08-01T00:00:00.000Z" }, NOW_MS),
+    true,
+  );
+});
+
+test("isWithinRefetchWindow: campanha enviada há 60 dias está FORA da janela default (30d)", () => {
+  assert.equal(
+    isWithinRefetchWindow({ sentDate: "2026-06-03T00:00:00.000Z" }, NOW_MS),
+    false,
+  );
+});
+
+test("isWithinRefetchWindow: exatamente no limite da janela conta como FORA (< estrito)", () => {
+  const exactly30dAgo = new Date(NOW_MS - 30 * 86_400_000).toISOString();
+  assert.equal(isWithinRefetchWindow({ sentDate: exactly30dAgo }, NOW_MS, 30), false);
+});
+
+test("isWithinRefetchWindow: janela customizada é respeitada", () => {
+  const tenDaysAgo = new Date(NOW_MS - 10 * 86_400_000).toISOString();
+  assert.equal(isWithinRefetchWindow({ sentDate: tenDaysAgo }, NOW_MS, 7), false);
+  assert.equal(isWithinRefetchWindow({ sentDate: tenDaysAgo }, NOW_MS, 15), true);
+});
+
+test("isWithinRefetchWindow: sentDate ausente ou inválido → DENTRO por padrão conservador", () => {
+  assert.equal(isWithinRefetchWindow({ sentDate: undefined }, NOW_MS), true);
+  assert.equal(isWithinRefetchWindow({ sentDate: "não é uma data" }, NOW_MS), true);
+});
+
+test("DEFAULT_REFETCH_WINDOW_DAYS é 30 (chute inicial documentado na issue #4451)", () => {
+  assert.equal(DEFAULT_REFETCH_WINDOW_DAYS, 30);
+});
+
+// ─── getOrFetchCampaignCache com forceRefresh (#4451 Fase 2) ──────────────
+
+test("getOrFetchCampaignCache: forceRefresh=true SEMPRE busca de novo, mesmo com cache existente", async () => {
+  await withTmpCacheDir(async (dir) => {
+    const campaign: SentCampaignRef = { id: 50, name: "camp-recente" };
+    const { client: firstClient } = makeMockClient({
+      downloadCsv: async () => "Email_ID,Delivered_Date,Total Opens\na@x.com,2026-07-01,0\n",
+    });
+    // 1ª chamada popula o cache (a@x.com sem abertura).
+    await getOrFetchCampaignCache(firstClient, campaign, { cacheDir: dir, now: () => GEN });
+
+    // 2ª chamada com forceRefresh: mesmo tendo cache, busca de novo — e desta
+    // vez o CSV mostra abertura tardia (engajamento capturado depois do envio).
+    const { client: secondClient, calls } = makeMockClient({
+      downloadCsv: async () => "Email_ID,Delivered_Date,Total Opens\na@x.com,2026-07-01,3\n",
+    });
+    const { cache, fromCache } = await getOrFetchCampaignCache(secondClient, campaign, {
+      cacheDir: dir,
+      forceRefresh: true,
+      now: () => GEN,
+    });
+    assert.equal(fromCache, false);
+    assert.equal(calls.exportRecipients, 1);
+    // Cache em disco foi SOBRESCRITO com o dado novo (abertura tardia).
+    assert.deepEqual(cache.recipients["a@x.com"], { delivered: true, opened: true, bounced: false, unsubscribed: false });
+  });
+});
+
+test("buildCohortsV2: campanha DENTRO da janela é re-exportada mesmo já cacheada; fora da janela usa cache", async () => {
+  await withTmpCacheDir(async (dir) => {
+    const recentSent = new Date(NOW_MS - 5 * 86_400_000).toISOString(); // 5d atrás — dentro da janela 30d
+    const oldSent = new Date(NOW_MS - 200 * 86_400_000).toISOString(); // 200d atrás — fora
+
+    // Pré-popula o cache das 2 campanhas com um estado "antigo" (sem abertura).
+    const { client: seedClient } = makeMockClient({
+      downloadCsv: async () => "Email_ID,Delivered_Date,Total Opens\na@x.com,2026-07-01,0\n",
+    });
+    await getOrFetchCampaignCache(seedClient, { id: 1, name: "recente" }, { cacheDir: dir, now: () => GEN });
+    await getOrFetchCampaignCache(seedClient, { id: 2, name: "antiga" }, { cacheDir: dir, now: () => GEN });
+
+    // Run de produção: a campanha "recente" tem abertura NOVA no export;
+    // a "antiga" teria abertura nova também, mas como está fora da janela,
+    // o cache velho (sem abertura) deve prevalecer.
+    const { client, calls } = makeMockClient({
+      listSentCampaigns: async () => [
+        { id: 1, name: "recente", sentDate: recentSent },
+        { id: 2, name: "antiga", sentDate: oldSent },
+      ],
+      downloadCsv: async () => "Email_ID,Delivered_Date,Total Opens\na@x.com,2026-07-01,5\n",
+    });
+
+    const result = await buildCohortsV2(client, GEN, {
+      cacheDir: dir,
+      nowMs: NOW_MS,
+      includeAdminOptOuts: false,
+    });
+
+    // Só a campanha recente disparou um novo export.
+    assert.equal(calls.exportRecipients, 1);
+    assert.equal(result.campaignsFetched, 1);
+    assert.equal(result.campaignsFromCache, 1);
+  });
+});
+
+// ─── fetchAdminOptOutEmails / applyAdminOptOuts (#4451 Fase 2 — gap de blacklist) ──
+
+test("applyAdminOptOuts: contato já no agregado tem optedOut forçado (OR, nunca reverte)", () => {
+  const aggregate = new Map<string, ContactEngagement>([
+    ["a@x.com", { received: 2, opened: 1, bounced: false, optedOut: false }],
+    ["b@x.com", { received: 1, opened: 0, bounced: false, optedOut: true }],
+  ]);
+  const out = applyAdminOptOuts(aggregate, new Set(["a@x.com"]));
+  assert.deepEqual(out.get("a@x.com"), { received: 2, opened: 1, bounced: false, optedOut: true });
+  assert.deepEqual(out.get("b@x.com"), { received: 1, opened: 0, bounced: false, optedOut: true });
+});
+
+test("applyAdminOptOuts: contato AUSENTE do agregado (nunca apareceu em export) entra como saída pura", () => {
+  const aggregate = new Map<string, ContactEngagement>();
+  const out = applyAdminOptOuts(aggregate, new Set(["nunca-exportado@x.com"]));
+  assert.deepEqual(out.get("nunca-exportado@x.com"), {
+    received: 0,
+    opened: 0,
+    bounced: false,
+    optedOut: true,
+  });
+  // computeCohorts conta esse contato em exits (precedência de saída), mesmo
+  // sem received/opened — a razão de existir deste mecanismo.
+  const cohorts = computeCohorts(Array.from(out.values()), GEN);
+  assert.equal(cohorts.universe, 1);
+  assert.equal(cohorts.exits, 1);
+  assert.equal(cohorts.exitsBreakdown.optedOut, 1);
+});
+
+test("applyAdminOptOuts: não muta o Map original (retorna cópia)", () => {
+  const aggregate = new Map<string, ContactEngagement>([
+    ["a@x.com", { received: 1, opened: 0, bounced: false, optedOut: false }],
+  ]);
+  applyAdminOptOuts(aggregate, new Set(["a@x.com"]));
+  assert.equal(aggregate.get("a@x.com")!.optedOut, false, "original não deve ser mutado");
+});
+
+// ASYNC de propósito (diferente de withTmpCacheDir): o cleanup precisa
+// aguardar o callback resolver ANTES de apagar o diretório — se fosse
+// síncrono como withTmpCacheDir, `finally` rodaria assim que o callback
+// suspendesse no primeiro `await` interno (ex: dentro de buildCohortsV2),
+// apagando o .db ANTES de fetchAdminOptOutEmails chegar a lê-lo (visto
+// falhar ao vivo nesta sessão: available=false por causa da ordem errada).
+async function withTmpDbDir<T>(fn: (dbPath: string) => T | Promise<T>): Promise<T> {
+  const dir = mkdtempSync(join(tmpdir(), "cohorts-v2-db-"));
+  try {
+    return await fn(resolve(dir, "clarice-users.db"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("fetchAdminOptOutEmails: lê email_blacklisted=1 OU unsubscribed=1 do store local", async () => {
+  await withTmpDbDir((dbPath) => {
+    const db = openClariceDb(dbPath);
+    const now = new Date().toISOString();
+    db.exec(
+      `INSERT INTO clarice_users (email, email_blacklisted, unsubscribed, updated_at) VALUES
+        ('blacklisted@x.com', 1, 0, '${now}'),
+        ('UNSUB@X.COM', 0, 1, '${now}'),
+        ('clean@x.com', 0, 0, '${now}')`,
+    );
+    db.close();
+
+    const result = fetchAdminOptOutEmails(dbPath);
+    assert.equal(result.available, true);
+    assert.equal(result.emails.size, 2);
+    assert.ok(result.emails.has("blacklisted@x.com"));
+    assert.ok(result.emails.has("unsub@x.com")); // normalizado (lowercase)
+    assert.ok(!result.emails.has("clean@x.com"));
+  });
+});
+
+test("fetchAdminOptOutEmails: store inexistente → fail-soft, available=false, Set vazio (nunca lança)", () => {
+  const missingPath = resolve(mkdtempSync(join(tmpdir(), "cohorts-v2-missing-")), "não-existe", "clarice-users.db");
+  const result = fetchAdminOptOutEmails(missingPath);
+  assert.equal(result.available, false);
+  assert.equal(result.emails.size, 0);
+  assert.ok(result.unavailableReason && result.unavailableReason.length > 0);
+});
+
+test("buildCohortsV2: aplica opt-outs administrativos do store quando disponível", async () => {
+  await withTmpCacheDir(async (dir) => {
+    await withTmpDbDir(async (dbPath) => {
+      const db = openClariceDb(dbPath);
+      db.exec(
+        `INSERT INTO clarice_users (email, email_blacklisted, unsubscribed, updated_at) VALUES
+          ('nunca-exportado@x.com', 1, 0, '${new Date().toISOString()}')`,
+      );
+      db.close();
+
+      const { client } = makeMockClient({
+        listSentCampaigns: async () => [{ id: 1, name: "camp1", sentDate: GEN }],
+        downloadCsv: async () => "Email_ID,Delivered_Date,Total Opens\na@x.com,2026-07-01,1\n",
+      });
+
+      const result = await buildCohortsV2(client, GEN, { cacheDir: dir, dbPath, nowMs: NOW_MS });
+      assert.equal(result.adminOptOutsAvailable, true);
+      assert.equal(result.adminOptOutsApplied, 1);
+      // universo = a@x.com (opened1) + nunca-exportado@x.com (exit) = 2
+      assert.equal(result.cohorts.universe, 2);
+      assert.equal(result.cohorts.exits, 1);
+    });
+  });
+});
+
+test("buildCohortsV2: --no-admin-optouts (includeAdminOptOuts=false) não toca o store", async () => {
+  await withTmpCacheDir(async (dir) => {
+    const { client } = makeMockClient({
+      listSentCampaigns: async () => [{ id: 1, name: "camp1", sentDate: GEN }],
+      downloadCsv: async () => "Email_ID,Delivered_Date,Total Opens\na@x.com,2026-07-01,1\n",
+    });
+    const result = await buildCohortsV2(client, GEN, {
+      cacheDir: dir,
+      nowMs: NOW_MS,
+      includeAdminOptOuts: false,
+      dbPath: "/path/que/nunca/deveria/ser/lido.db",
+    });
+    assert.equal(result.adminOptOutsAvailable, false);
+    assert.equal(result.adminOptOutsApplied, 0);
+    assert.equal(result.cohorts.universe, 1); // só a@x.com, sem opt-out administrativo
   });
 });
 
