@@ -140,6 +140,46 @@ describe("parseAbcAudienceCampaign", () => {
     const parsed = parseAbcAudienceCampaign("Clarice News 2606-07 — B · dom");
     assert.deepEqual(parsed, { cycle: "2606-07", cell: "B", audience: "warm" });
   });
+
+  // #4447: fluxo `--group` (clarice-schedule-group.ts) nomeia a CAMPANHA
+  // "Clarice {yymm} grupo:{key}" — sem ciclo "AAMM-MM" nem célula
+  // reconhecível. Nomes reais confirmados via KV dash:lastgood:campaigns
+  // pro ciclo 2607-08 (issue #4447):
+  //   id 102: nome "Clarice 2607 grupo:d1-sab01-A" → lista "Clarice 2607-08 d1-sab01-A — celula A"
+  //   id 105: nome "Clarice 2607 grupo:d2-dom02-A" → lista "Clarice 2607-08 d2-dom02-A — celula A"
+  test("#4447: naming '--group' (célula só na lista) é reconhecido via listName", () => {
+    const parsed = parseAbcAudienceCampaign(
+      "Clarice 2607 grupo:d1-sab01-A",
+      "Clarice 2607-08 d1-sab01-A — celula A",
+    );
+    assert.deepEqual(parsed, { cycle: "2607-08", cell: "A", audience: "warm" });
+  });
+
+  test("#4447: naming '--group' funciona pras 3 células (B e C também)", () => {
+    const b = parseAbcAudienceCampaign("Clarice 2607 grupo:d2-dom02-B", "Clarice 2607-08 d2-dom02-B — celula B");
+    assert.deepEqual(b, { cycle: "2607-08", cell: "B", audience: "warm" });
+    const c = parseAbcAudienceCampaign("Clarice 2607 grupo:d1-sab01-C", "Clarice 2607-08 d1-sab01-C — celula C");
+    assert.deepEqual(c, { cycle: "2607-08", cell: "C", audience: "warm" });
+  });
+
+  test("#4447: naming '--group' com lista 'cold' → classificado como fria (mesmo racional do #3128)", () => {
+    const parsed = parseAbcAudienceCampaign(
+      "Clarice 2607 grupo:d1-sab01-A",
+      "cold Clarice 2607-08 d1-sab01-A — celula A",
+    );
+    assert.deepEqual(parsed, { cycle: "2607-08", cell: "A", audience: "cold" });
+  });
+
+  test("#4447: naming '--group' sem 'celula' na lista (ex: envio interno) → null (não participa do A/B/C)", () => {
+    assert.equal(
+      parseAbcAudienceCampaign("Clarice 2607 grupo:d1-sab01-interno", "Clarice 2607-08 d2-dom02-interno"),
+      null,
+    );
+  });
+
+  test("#4447: naming '--group' sem listName (chamador legado) → null (sinal só existe na lista)", () => {
+    assert.equal(parseAbcAudienceCampaign("Clarice 2607 grupo:d1-sab01-A"), null);
+  });
 });
 
 // ─── twoProportionZTest (#2976) ───────────────────────────────────────────────

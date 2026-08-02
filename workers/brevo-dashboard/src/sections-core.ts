@@ -1454,15 +1454,18 @@ export function aggregateAbcSummary(
 
   for (const c of campaigns) {
     const warm = parseClariceCampaignKey(c.name);
-    // #3128 (self-review): NÃO passar c.listName aqui — parseAbcAudienceCampaign
-    // só é chamado quando `warm` já é falsy (mesmo c.name), então o ramo
-    // listName-aware (`if (warm && warm.cell)`, dentro da função) nunca seria
-    // alcançado por este call site; só o regex de nome "cold ..." se aplica.
-    const cold = warm ? null : parseAbcAudienceCampaign(c.name);
+    // #4447: agora QUE passa c.listName — o branch #3128 (cold via listName)
+    // continua inalcançável daqui pelo mesmo motivo de antes (`warm` já
+    // falsy), mas o novo branch `--group` (célula só na LISTA, ver
+    // parseAbcAudienceCampaign) É alcançável e precisa do listName pra
+    // resolver. Sem filtrar por audience: esta função só precisa de
+    // cycle+cell pro bucket por dia — a separação cold/warm é feita à parte
+    // em aggregateAbcByAudience (aggregateCellsV2), que já recebe listName.
+    const fallback = warm ? null : parseAbcAudienceCampaign(c.name, c.listName);
     const parsed =
       warm ??
-      (cold && cold.audience === "cold"
-        ? { cycle: cold.cycle, dayNum: 0, cell: cold.cell as "A" | "B" | "C" | null, monthly: true }
+      (fallback
+        ? { cycle: fallback.cycle, dayNum: 0, cell: fallback.cell as "A" | "B" | "C" | null, monthly: true }
         : null);
     if (!parsed || parsed.cycle !== cycle) continue;
     // #2360: cell=null = envio único (sem sufixo A/B/C) — não participa do A/B/C.
@@ -1815,6 +1818,26 @@ export function parseAbcAudienceCampaign(
   const cold = campaignName.match(/^cold\s+(\d{4}-\d{2})(?:\s*[—–-]\s*|\s+)([ABC])\b/i);
   if (cold) {
     return { cycle: cold[1], cell: cold[2].toUpperCase() as "A" | "B" | "C", audience: "cold" };
+  }
+  // #4447: fluxo `--group` (`scripts/clarice-schedule-group.ts`) nomeia a
+  // CAMPANHA como "Clarice {yymm} grupo:{key}" — sem ciclo mensal "AAMM-MM"
+  // nem célula num formato reconhecível (o {key}, ex: "d1-sab01-A", é opaco
+  // pra este parser). O sinal completo só existe na LISTA de destinatários:
+  // "Clarice {ciclo mensal} {key} — celula {X}" (ex: "Clarice 2607-08
+  // d1-sab01-A — celula A"). Confirmado ao vivo pro ciclo 2607-08 (#4447):
+  // sem este fallback, groupMonthlyAbcTests/aggregateAbcByAudience nunca
+  // reconheciam essas campanhas — o Resumo A/B/C do ciclo sumia inteiro do
+  // painel. Mesmo racional listName-aware do caso cold acima (#3128), só que
+  // aqui o sinal que falta na campanha é ciclo+célula, não audiência.
+  const groupList = listName?.match(
+    /Clarice\s+(\d{4}-\d{2})\s+[\w-]+\s*[—–-]\s*celula\s+([ABC])\b/i,
+  );
+  if (groupList) {
+    return {
+      cycle: groupList[1],
+      cell: groupList[2].toUpperCase() as "A" | "B" | "C",
+      audience: listIsCold ? "cold" : "warm",
+    };
   }
   return null;
 }
