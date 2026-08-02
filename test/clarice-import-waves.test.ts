@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import {
   listNameFor,
+  groupCellListNameFor,
+  resolveListName,
   countRows,
   normalizeImportCsv,
   parseArgs,
@@ -17,6 +19,8 @@ import {
   type GroupListEntry,
 } from "../scripts/clarice-import-waves.ts";
 import { buildSegmentArtifact, type SegmentRow } from "../scripts/clarice-build-segment.ts";
+import { campaignNameFor } from "../scripts/clarice-schedule-group.ts";
+import { parseAbcAudienceCampaign } from "../workers/brevo-dashboard/src/index.ts";
 import { EDITOR_COPY_EMAIL } from "../scripts/lib/editor-copy.ts";
 
 describe("loadWaveDefs (#2656/#2844)", () => {
@@ -119,6 +123,79 @@ describe("listNameFor", () => {
     const w3: WaveDef = { key: "W3", file: "w3-store.csv", desc: "1º envio (T06+)" };
     assert.equal(listNameFor(w1, "Jun/2026"), "Clarice Jun/2026 W1 — re-envio (engajado)");
     assert.equal(listNameFor(w3, "Jun/2026"), "Clarice Jun/2026 W3 — 1º envio (T06+)");
+  });
+});
+
+// #4449 item 3 / #4471: até o #4449, o nome da LISTA do braço COM CÉLULA do
+// fluxo --group era digitado à mão (raiz da mesma classe de bug já vista em
+// #3081 → #3128 → #4447). O #4449 criou `groupCellListNameFor` mas nunca a
+// ligou ao ponto real de criação da lista (`buildPlan`/`main()` deste
+// arquivo, que sempre chamava `listNameFor` incondicionalmente) — #4471
+// fecha o gap via `resolveListName`. Movido de test/clarice-schedule-group.test.ts
+// pra aqui (#4471) — mora junto do código que agora efetivamente a usa.
+describe("groupCellListNameFor (#4449 item 3 — gerador determinístico do nome de LISTA do --group)", () => {
+  it("gera o formato 'Clarice {cycle} {key} — célula {X}' esperado por parseAbcAudienceCampaign", () => {
+    assert.equal(
+      groupCellListNameFor("2607-08", "d1-sab01-A"),
+      "Clarice 2607-08 d1-sab01-A — célula A",
+    );
+  });
+
+  it("célula derivada do sufixo do key pras 3 letras (B e C também)", () => {
+    assert.equal(groupCellListNameFor("2607-08", "d2-dom02-B"), "Clarice 2607-08 d2-dom02-B — célula B");
+    assert.equal(groupCellListNameFor("2607-08", "d1-sab01-C"), "Clarice 2607-08 d1-sab01-C — célula C");
+  });
+
+  it("key sem sufixo -A/-B/-C (ex: grupo sem célula) → lança em vez de gerar nome enganoso", () => {
+    assert.throws(() => groupCellListNameFor("2607-08", "d1-sab01-interno"));
+  });
+
+  it("round-trip isolado (paridade gerador + parser): campaignNameFor + groupCellListNameFor recuperam ciclo/célula corretos via parseAbcAudienceCampaign, pras 3 células", () => {
+    const cycle = "2607-08";
+    for (const cell of ["A", "B", "C"] as const) {
+      const key = `d1-sab01-${cell}`;
+      const campaignName = campaignNameFor(cycle, key);
+      const listName = groupCellListNameFor(cycle, key);
+      const parsed = parseAbcAudienceCampaign(campaignName, listName);
+      assert.deepEqual(
+        parsed,
+        { cycle, cell, audience: "warm" },
+        `round-trip falhou pra célula ${cell}: campaignName="${campaignName}" listName="${listName}"`,
+      );
+    }
+  });
+});
+
+// #4471: `resolveListName` é o ponto de decisão que `buildPlan` de fato
+// chama — testar SÓ `groupCellListNameFor` isolada (acima) não prova que o
+// fluxo real a usa; isso já era verdade antes do #4471 (a função existia e
+// tinha teste, mas `buildPlan` nunca a chamava). Estes testes cobrem
+// `resolveListName` diretamente + (no describe seguinte) o e2e via
+// `buildPlan` inteiro.
+describe("resolveListName (#4471 — ponto de decisão entre os dois formatos, usado por buildPlan)", () => {
+  it("--group + key com célula (-A/-B/-C) → usa groupCellListNameFor", () => {
+    const wave: WaveDef = { key: "d1-sab01-A", file: "d1-sab01-A.csv", desc: "célula A" };
+    assert.equal(
+      resolveListName(wave, "ignorado", "2607-08", "d1-sab01-A"),
+      "Clarice 2607-08 d1-sab01-A — célula A",
+    );
+  });
+
+  it("--group sem célula (ex: engajados) → mantém listNameFor (não regride #2916)", () => {
+    const wave: WaveDef = { key: "engajados", file: "engajados.csv", desc: "Engajados (retenção)" };
+    assert.equal(
+      resolveListName(wave, "Retenção Jun/2026", "2606-07", "engajados"),
+      "Clarice Retenção Jun/2026 engajados — Engajados (retenção)",
+    );
+  });
+
+  it("sem --group (rampa waves/) → mantém listNameFor mesmo que o key coincidisse com sufixo -A/-B/-C (defensivo, gate duplo)", () => {
+    const wave: WaveDef = { key: "W1-A", file: "w1-a.csv", desc: "T1 abriu" };
+    assert.equal(
+      resolveListName(wave, "Jun/2026", "2606-07", null),
+      "Clarice Jun/2026 W1-A — T1 abriu",
+      "group=null nunca deve cair no formato de célula, mesmo com sufixo coincidente",
+    );
   });
 });
 
@@ -236,6 +313,47 @@ describe("buildPlan --group (#2916 — grupos nomeados de #2885 deixam de ser ó
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #4471 — regressão real: o gap descrito na issue era exatamente que
+  // `groupCellListNameFor` tinha teste isolado (round-trip contra
+  // parseAbcAudienceCampaign) mas NUNCA era chamada pelo fluxo real de
+  // criação de lista (`buildPlan`, que sempre usava `listNameFor`,
+  // incompatível com o parser pro braço com célula). Este teste exercita o
+  // caminho INTEIRO — manifest do grupo (mesmo shape que
+  // clarice-build-segment.ts escreveria pra um teste A/B/C ad-hoc) →
+  // buildPlan → listName — e confirma que o nome resultante é o que
+  // parseAbcAudienceCampaign de fato espera, pras 3 células.
+  it("e2e (#4471): buildPlan --group com key de célula (-A/-B/-C) gera listName que parseAbcAudienceCampaign reconhece corretamente", () => {
+    const cycle = "2607-08";
+    for (const cell of ["A", "B", "C"] as const) {
+      const groupKey = `d1-sab01-${cell}`;
+      const dir = mkdtempSync(join(tmpdir(), `abc-cell-e2e-${cell}-`));
+      try {
+        writeFileSync(
+          join(dir, `${groupKey}-manifest.json`),
+          JSON.stringify([{ key: groupKey, file: `${groupKey}.csv`, desc: `célula ${cell}` }]),
+        );
+        writeFileSync(join(dir, `${groupKey}.csv`), "email,NOME\na@x.com,Ana\n");
+
+        const plans = buildPlan("Rótulo ignorado no braço com célula", cycle, dir, groupKey);
+        assert.equal(plans.length, 1);
+        const listName = plans[0].listName;
+
+        // A campanha real (clarice-schedule-group.ts::campaignNameFor) usa o
+        // MESMO groupKey como --key — reproduz aqui o par campanha+lista que
+        // o pipeline real produziria antes de chamar parseAbcAudienceCampaign.
+        const campaignName = campaignNameFor(cycle, groupKey);
+        const parsed = parseAbcAudienceCampaign(campaignName, listName);
+        assert.deepEqual(
+          parsed,
+          { cycle, cell, audience: "warm" },
+          `buildPlan produziu um listName que o parser não reconhece: campaignName="${campaignName}" listName="${listName}"`,
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     }
   });
 });

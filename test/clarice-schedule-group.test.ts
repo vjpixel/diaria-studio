@@ -6,7 +6,6 @@ import { join } from "node:path";
 import {
   resolveGroupListId,
   campaignNameFor,
-  groupCellListNameFor,
   parseSubjectArg,
   checkListIdMismatch,
   buildInvocationSummary,
@@ -14,7 +13,6 @@ import {
 } from "../scripts/clarice-schedule-group.ts";
 import { appendGroupListsRegistry } from "../scripts/clarice-import-waves.ts";
 import { checkEiaGuard, isScheduledStatus, applyVerifyResults } from "../scripts/clarice-schedule-sends.ts";
-import { parseAbcAudienceCampaign } from "../workers/brevo-dashboard/src/index.ts";
 
 /**
  * #3228 — regressão pro gap descrito na issue: o pipeline canônico de
@@ -147,42 +145,13 @@ describe("campaignNameFor (#3228)", () => {
   });
 });
 
-// #4449 item 3: até aqui (#4447/#4448) o nome da LISTA do braço COM CÉLULA do
-// fluxo --group era digitado à mão (raiz da mesma classe de bug já vista em
-// #3081 → #3128 → #4447) — sem gerador nem teste de paridade com o parser
-// (parseAbcAudienceCampaign, workers/brevo-dashboard/src/sections-core.ts).
-describe("groupCellListNameFor (#4449 item 3 — gerador determinístico do nome de LISTA do --group)", () => {
-  it("gera o formato 'Clarice {cycle} {key} — célula {X}' esperado por parseAbcAudienceCampaign", () => {
-    assert.equal(
-      groupCellListNameFor("2607-08", "d1-sab01-A"),
-      "Clarice 2607-08 d1-sab01-A — célula A",
-    );
-  });
-
-  it("célula derivada do sufixo do key pras 3 letras (B e C também)", () => {
-    assert.equal(groupCellListNameFor("2607-08", "d2-dom02-B"), "Clarice 2607-08 d2-dom02-B — célula B");
-    assert.equal(groupCellListNameFor("2607-08", "d1-sab01-C"), "Clarice 2607-08 d1-sab01-C — célula C");
-  });
-
-  it("key sem sufixo -A/-B/-C (ex: grupo sem célula) → lança em vez de gerar nome enganoso", () => {
-    assert.throws(() => groupCellListNameFor("2607-08", "d1-sab01-interno"));
-  });
-
-  it("round-trip (paridade gerador + parser, #4449 item 3): campaignNameFor + groupCellListNameFor recuperam ciclo/célula corretos via parseAbcAudienceCampaign, pras 3 células", () => {
-    const cycle = "2607-08";
-    for (const cell of ["A", "B", "C"] as const) {
-      const key = `d1-sab01-${cell}`;
-      const campaignName = campaignNameFor(cycle, key);
-      const listName = groupCellListNameFor(cycle, key);
-      const parsed = parseAbcAudienceCampaign(campaignName, listName);
-      assert.deepEqual(
-        parsed,
-        { cycle, cell, audience: "warm" },
-        `round-trip falhou pra célula ${cell}: campaignName="${campaignName}" listName="${listName}"`,
-      );
-    }
-  });
-});
+// #4449 item 3 / #4471: `groupCellListNameFor` (o gerador determinístico do
+// nome de LISTA do braço COM CÉLULA do fluxo --group) MOROU aqui, mas moveu
+// pra clarice-import-waves.ts (#4471 — é lá que a lista é de fato criada).
+// Testes movidos pra test/clarice-import-waves.test.ts, junto do round-trip
+// via buildPlan (não só a função isolada). Este arquivo mantém só o que
+// clarice-schedule-group.ts ainda possui: campaignNameFor, resolveGroupListId,
+// etc.
 
 describe("parseSubjectArg (#3228 — mesma forma de clarice-schedule-sends.ts)", () => {
   it("--subject presente → retorna o valor", () => {
