@@ -88,12 +88,24 @@
  * Esta rotina é a via de SCORE. A via de CLIQUE (link de confirmação
  * personalizado, item 3 da issue) roda por fora, num Worker (ver
  * `workers/reativar/`), e ativa a subscription Beehiiv diretamente. As duas
- * vias NUNCA colidem por construção: o passo 1 (auto-confirmação) acima
- * checa o status REAL da Beehiiv antes de avaliar qualquer score — se o
- * clique já promoveu a pessoa, o passo 1 já a marca `promoted_beehiiv` por
- * auto-confirmação e o `continue` pula a avaliação de score inteiramente
- * (a via de score nunca tenta promover de novo quem já foi promovido pela
- * via de clique).
+ * vias não colidem no caso comum: o passo 1 (auto-confirmação) acima checa
+ * o status REAL da Beehiiv antes de avaliar qualquer score — se o clique já
+ * promoveu a pessoa (status `active`), o passo 1 já a marca
+ * `promoted_beehiiv` por auto-confirmação e o `continue` pula a avaliação de
+ * score inteiramente.
+ *
+ * **Ressalva (#4488 review, pr-test-analyzer)**: o passo 1 só reconhece
+ * `active` como confirmado — não `validating` (estado transitório de alguns
+ * segundos entre DELETE+CREATE e a confirmação final, ver
+ * `PROMOTION_VERIFY_RETRY_DELAY_MS`). Existe uma janela estreita (poucos
+ * segundos) em que, se as duas vias avaliarem o MESMO contato nesse
+ * intervalo exato, ambas poderiam disparar DELETE+CREATE concorrentemente.
+ * Ambas as implementações já são auto-suficientes (buscam o id atual via
+ * GET antes de decidir o que deletar, nunca confiam num id armazenado — ver
+ * `promoteBeehiivSubscription`/`activateSubscription`), então o pior caso é
+ * uma criação duplicada/redundante nessa janela estreita, não um crash — mas
+ * não é literalmente "nunca colide". Risco aceito dado o volume baixo e a
+ * janela curta; não verificado ao vivo.
  *
  * ## Promoção pra Beehiiv — DELETE + CREATE, confirmado ao vivo (260802)
  *
@@ -364,63 +376,92 @@ export async function unlinkFromBrevoList(apiKey: string, listId: number, email:
  * registro travado e criar do zero SIM ativa direto (`validating` → `active`
  * em segundos, sem exigir confirmação) — bate com a mudança de fluxo da
  * publicação (cadastro novo não exige mais double opt-in; só registros
- * legados, criados sob o fluxo antigo, ficam presos). `subscriptionId` vem
- * de `contact.beehiiv_subscription_id` (capturado na ingestão,
- * `sync-pending-to-brevo.ts`) — se o DELETE 404 (registro já sumiu por
- * qualquer motivo), segue pro CREATE mesmo assim, idempotente.
+ * legados, criados sob o fluxo antigo, ficam presos).
+ *
+ * #4488 review (3 agentes convergiram independentemente no mesmo achado):
+ * NÃO confia mais num `subscriptionId` armazenado (`contact.beehiiv_subscription_id`,
+ * capturado na ingestão) — busca o id ATUAL via `GET .../subscriptions/by_email`
+ * antes de decidir o que deletar, mesmo padrão de `activateSubscription`
+ * (`workers/reativar/`). Um id armazenado pode ficar obsoleto (ex: uma
+ * tentativa anterior de promoção já deletou+recriou o registro mas a
+ * verificação pós-escrita falhou antes do store ser atualizado — a próxima
+ * tentativa reusaria um id já morto) — e um id vazio/malformado faria a URL
+ * do DELETE cair no endpoint de COLEÇÃO (`/subscriptions/` sem id), que pode
+ * não 404 e passar batido pela tolerância a "já sumiu". Buscar o id fresco
+ * fecha as duas classes de bug de uma vez. Sem registro existente (`null`),
+ * pula direto pro CREATE.
  */
 export async function promoteBeehiivSubscription(
   publicationId: string,
   apiKey: string,
   email: string,
-  subscriptionId: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<void> {
-  const delRes = await fetchImpl(`${beehiivApiBase()}/publications/${publicationId}/subscriptions/${subscriptionId}`, {
-    method: "DELETE",
-    headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+  const base = beehiivApiBase();
+  const authHeaders = { Authorization: `Bearer ${apiKey}`, Accept: "application/json" };
+
+  const getRes = await fetchImpl(`${base}/publications/${publicationId}/subscriptions/by_email/${encodeURIComponent(email)}`, {
+    headers: authHeaders,
   });
-  if (!delRes.ok && delRes.status !== 404) {
-    const text = await delRes.text().catch(() => "");
-    throw new Error(`Beehiiv API DELETE /subscriptions/${subscriptionId} falhou pra ${email} (HTTP ${delRes.status}): ${text}`);
+  let existingId: string | null = null;
+  if (getRes.status === 404) {
+    existingId = null;
+  } else if (!getRes.ok) {
+    throw new Error(`Beehiiv API GET /subscriptions/by_email/${email} falhou (HTTP ${getRes.status})`);
+  } else {
+    const body = await getRes.json().catch((e) => {
+      throw new Error(`Beehiiv API GET /subscriptions/by_email/${email} corpo não-parseável: ${e}`);
+    });
+    existingId = (body as { data?: { id?: string } })?.data?.id || null;
   }
-  const res = await fetchImpl(`${beehiivApiBase()}/publications/${publicationId}/subscriptions`, {
+
+  if (existingId) {
+    const delRes = await fetchImpl(`${base}/publications/${publicationId}/subscriptions/${existingId}`, {
+      method: "DELETE",
+      headers: authHeaders,
+    });
+    if (!delRes.ok && delRes.status !== 404) {
+      const text = await delRes.text().catch(() => "");
+      throw new Error(`Beehiiv API DELETE /subscriptions/${existingId} falhou pra ${email} APÓS localizar o registro (HTTP ${delRes.status}): ${text}`);
+    }
+  }
+
+  const res = await fetchImpl(`${base}/publications/${publicationId}/subscriptions`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
+    headers: { ...authHeaders, "Content-Type": "application/json" },
     body: JSON.stringify({ email, send_welcome_email: false }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`Beehiiv API POST /subscriptions falhou pra ${email} (HTTP ${res.status}): ${text}`);
+    const deleteNote = existingId ? `APÓS deletar ${existingId}` : "sem registro anterior pra deletar";
+    throw new Error(`Beehiiv API POST /subscriptions falhou pra ${email} ${deleteNote} (HTTP ${res.status}): ${text}`);
   }
 }
 
-/**
- * Releitura pós-promoção — `true` SÓ se o status for exatamente `active`.
- * Fail-safe: se ainda pending (double opt-in não confirmado pelo POST) OU
- * qualquer outro status não-`active`, o caller mantém o contato `in_brevo`
- * em vez de cortar a única entrega confirmada (ver disclaimer no cabeçalho).
- *
- * #4476 item 3 — corrigido a partir do teste ao vivo do link de confirmação
- * personalizado: a checagem original (`status !== "pending"`) tratava
- * QUALQUER status diferente de "pending" como confirmado — incluindo
- * `"invalid"`, que o teste ao vivo mostrou ser um resultado REAL e possível
- * de `POST .../subscriptions` com `reactivate_existing:true` (Beehiiv aceita
- * o POST com 201 mesmo quando a validação de e-mail/domínio rejeita o
- * contato, deixando `status:"invalid"` — nem `pending`, nem `active`). Sob a
- * checagem antiga, esse caso seria erroneamente reportado como promoção
- * bem-sucedida. `"active"` explícito é a única semântica correta de
- * "confirmado" — request/response exato documentado no PR do #4476.
- */
 /** Espera antes de 1 releitura, só quando o status vier `"validating"` — ver
  * `CONFIRM_RETRY_DELAY_MS` em `workers/reativar/src/index.ts` (mesmo achado
  * ao vivo 260802, duplicado aqui por serem deployables separados: este
  * script Node não importa do Worker Cloudflare). */
 export const PROMOTION_VERIFY_RETRY_DELAY_MS = 2000;
+
+/**
+ * Releitura pós-promoção — `true` só se o status for `active` (direto, ou
+ * após 1 retry curto quando vier `validating`, ver abaixo). Fail-safe: se
+ * ainda `pending`, `invalid`, ou qualquer outro status não-`active` mesmo
+ * após o retry, o caller mantém o contato `in_brevo` em vez de cortar a
+ * única entrega confirmada (ver disclaimer no cabeçalho).
+ *
+ * Duas correções acumuladas aqui, ambas de testes ao vivo (#4476/#4488):
+ * (1) a checagem original (`status !== "pending"`) tratava QUALQUER status
+ * diferente de "pending" como confirmado — incluindo `"invalid"` (Beehiiv
+ * pode aceitar o POST com 2xx mesmo quando a validação de e-mail/domínio
+ * rejeita o contato) — corrigido pra exigir `"active"` explícito. (2) o
+ * status pode vir `"validating"` (transitório — a Beehiiv processa a
+ * validação de e-mail de forma assíncrona e resolve pra `active` em poucos
+ * segundos, confirmado ao vivo) — sem o retry abaixo, o contato ficaria
+ * preso em `in_brevo` até a PRÓXIMA rodada notar por acidente, mesmo já
+ * estando `active` de fato segundos depois.
+ */
 
 export async function verifyPromotedToBeehiiv(
   publicationId: string,
@@ -614,7 +655,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
       if (!push) continue;
 
       if (evalResult.action === "promote_to_beehiiv") {
-        await promoteBeehiivSubscription(publicationId, beehiivApiKey, contact.email, contact.beehiiv_subscription_id);
+        await promoteBeehiivSubscription(publicationId, beehiivApiKey, contact.email);
         const confirmed = await verifyPromotedToBeehiiv(publicationId, beehiivApiKey, contact.email);
         if (!confirmed) {
           log(`warn: ${contact.email} continua "pending" na Beehiiv após promoção — mantendo in_brevo (fail-safe).`);

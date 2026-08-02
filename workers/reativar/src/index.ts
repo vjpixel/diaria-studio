@@ -151,7 +151,19 @@ export async function activateSubscription(
       console.error(JSON.stringify({ event: "reativar_beehiiv_non_2xx", step: "get", status: getRes.status }));
       return { ok: false, status: getRes.status, reason: "beehiiv_error" };
     } else {
-      const body = (await getRes.json().catch(() => null)) as { data?: { id?: string; status?: string } } | null;
+      // #4488 review (silent-failure-hunter, achado crítico): um 2xx com
+      // corpo malformado/truncado NÃO pode virar "existing:null" em
+      // silêncio — isso pularia o DELETE e recriaria exatamente o bug que
+      // esta PR corrige (POST puro contra um e-mail que já tem registro
+      // Pending travado). Loga e falha explícito, mesmo tratamento dos
+      // outros passos, em vez de `.catch(() => null)`.
+      let body: { data?: { id?: string; status?: string } } | null = null;
+      try {
+        body = (await getRes.json()) as { data?: { id?: string; status?: string } };
+      } catch (e) {
+        console.error(JSON.stringify({ event: "reativar_response_parse_failed", step: "get", status: getRes.status, error: String(e) }));
+        return { ok: false, status: 502, reason: "beehiiv_error" };
+      }
       existing = body?.data?.id ? { id: body.data.id, status: body.data.status ?? "" } : null;
     }
   } catch (e) {
@@ -221,6 +233,11 @@ export async function activateSubscription(
       if (recheck.ok) {
         const body = (await recheck.json().catch(() => null)) as { data?: { status?: string } } | null;
         if (body?.data?.status) beehiivStatus = body.data.status;
+      } else {
+        // #4488 review (silent-failure-hunter): não é uma exceção (não cai
+        // no catch abaixo), mas também não pode passar batido sem log — só
+        // o GET inicial tinha essa disciplina antes.
+        console.warn(JSON.stringify({ event: "reativar_recheck_non_2xx", status: recheck.status }));
       }
     } catch (e) {
       console.warn(JSON.stringify({ event: "reativar_recheck_failed", error: String(e) }));

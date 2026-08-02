@@ -4,7 +4,8 @@
  * Worker `reativar` — link de confirmação personalizado (merge tag
  * `?email={{ contact.EMAIL }}`, sem assinatura HMAC — mesmo padrão do link
  * de voto pós-#1186). Cobre: parse/validação do `?email=`, a chamada de
- * ativação (`reactivate_existing: true`) com fetch mockado, e o handler
+ * ativação (GET by_email → DELETE + CREATE, sem `reactivate_existing` —
+ * mecânica corrigida no #4488, 260802) com fetch mockado, e o handler
  * fim-a-fim.
  */
 
@@ -166,6 +167,46 @@ describe("activateSubscription — DELETE + CREATE, não mais reactivate_existin
     assert.deepEqual(result, { ok: true, status: 201, beehiivStatus: "active" });
     assert.equal(sleptMs, 2000);
     assert.equal(getCalls, 2);
+  });
+
+  it('POST responde status:"validating", releitura AINDA vem "validating" → beehiivStatus fica "validating" (nunca 2º retry, #4488 review pr-test-analyzer)', async () => {
+    let getCalls = 0;
+    const { fetchImpl } = routedFetch({
+      get: () => {
+        getCalls++;
+        // 1ª GET (existência, antes do DELETE/CREATE): "pending". 2ª GET
+        // (releitura pós-retry): AINDA "validating" — não confirmou de vez.
+        return jsonRes(200, { data: { id: "sub_old", status: getCalls === 1 ? "pending" : "validating" } });
+      },
+      post: () => jsonRes(201, { data: { id: "sub_new", status: "validating" } }),
+    });
+    const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
+    const result = await activateSubscription(env, "a@b.com", fetchImpl, async () => {});
+    assert.deepEqual(result, { ok: true, status: 201, beehiivStatus: "validating" });
+    assert.equal(getCalls, 2, "GET inicial + 1 releitura, nunca mais que isso");
+  });
+
+  it('POST responde status:"validating", releitura da retry falha (rede) → beehiivStatus fica "validating" (fail-safe, achado silent-failure-hunter)', async () => {
+    let getCalls = 0;
+    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "POST") return jsonRes(201, { data: { id: "sub_new", status: "validating" } });
+      if (method === "DELETE") return new Response(null, { status: 204 });
+      getCalls++;
+      if (getCalls === 1) return jsonRes(200, { data: { id: "sub_old", status: "pending" } });
+      throw new Error("network down on recheck");
+    }) as typeof fetch;
+    const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
+    const result = await activateSubscription(env, "a@b.com", fetchImpl, async () => {});
+    assert.deepEqual(result, { ok: true, status: 201, beehiivStatus: "validating" });
+  });
+
+  it("GET by_email com corpo 2xx não-parseável → ok:false, beehiivStatus ausente (nunca trata como 'não existe' em silêncio, #4488 review silent-failure-hunter)", async () => {
+    const { fetchImpl, calls } = routedFetch({ get: () => new Response("<html>gateway error</html>", { status: 200 }) });
+    const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
+    const result = await activateSubscription(env, "a@b.com", fetchImpl);
+    assert.deepEqual(result, { ok: false, status: 502, reason: "beehiiv_error" });
+    assert.deepEqual(calls.map((c) => c.method), ["GET"], "nunca chega no DELETE/POST com estado desconhecido");
   });
 
   it('handleConfirm fim-a-fim: status:"validating" → retry → "active" → página de sucesso', async () => {
