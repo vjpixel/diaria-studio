@@ -109,8 +109,9 @@
  *
  * ## Promoção pra Beehiiv — DELETE + CREATE, confirmado ao vivo (260802)
  *
- * `promoteBeehiivSubscription` deleta a subscription Pending travada
- * (`contact.beehiiv_subscription_id`) e cria uma NOVA do zero — não mais
+ * `promoteBeehiivSubscription` busca o id atual via `GET by_email`, deleta
+ * a subscription Pending travada que encontrar (nunca confia num id
+ * armazenado — #4488 review) e cria uma NOVA do zero — não mais
  * `POST {reactivate_existing:true}`. Teste ao vivo (260802, sessão de
  * design com o editor, autorizado explicitamente) contra um contato Pending
  * REAL (não sintético, ao contrário do teste anterior — ver histórico da
