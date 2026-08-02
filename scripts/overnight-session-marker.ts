@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 /**
- * overnight-session-marker.ts (#3322)
+ * overnight-session-marker.ts (#3322, campo `phase` adicionado em #4450)
  *
  * Escreve/remove o marker determinístico que `.claude/hooks/pr-create-review.mjs`
  * (`isOvernightRoundActive`) usa pra detectar uma rodada `/diaria-overnight`
@@ -11,6 +11,28 @@
  * onde `{tag}` é o hostname sanitizado — cada máquina escreve/lê SÓ o próprio
  * arquivo, sem risco de colisão de escrita entre máquinas sincronizadas pelo
  * mesmo junction OneDrive `data/`.
+ *
+ * **Campo `phase` (#4450):** guard MECÂNICO contra o incidente da rodada
+ * 260801/02 — o coordenador disparou um `AskUserQuestion` malformado/placeholder
+ * no meio da Fase 1 (autônoma), violando a Regra 1 (HARD RULE, "zero perguntas
+ * pós-briefing") de `.claude/skills/diaria-overnight/SKILL.md`. Diferente do
+ * #3038 (decisão de raciocínio ruim, corrigida com reforço de prompt), aqui a
+ * chamada em si foi anômala — reforçar o texto da regra não teria evitado uma
+ * tool call que não seguiu nenhum raciocínio identificável. `phase` grava em
+ * qual momento da rodada o coordenador está: `"briefing"` (Fase 0 — perguntar é
+ * permitido e esperado) ou `"autonomous"` (Fase 1 em diante — perguntar é
+ * proibido). `--start` sempre grava `phase: "briefing"` (toda rodada nova
+ * começa no briefing); a skill chama `--phase autonomous` ao concluir a Fase 0
+ * (passo 8, ao entrar na Fase 1) — esse é o gatilho que arma o hook
+ * `.claude/hooks/block-askuserquestion-overnight-autonomous.mjs`, que nega
+ * qualquer `AskUserQuestion` enquanto `phase` for `"autonomous"` neste marker.
+ * O hook duplica a lógica de path (mesmo padrão de `pr-create-review.mjs`) e
+ * consome só leitura — nunca escreve o marker. **Resume (passo 0):** quando
+ * `plan.json` já existe, a skill pula direto pra Fase 1/1.5/2 sem passar pelo
+ * passo 8 — mas o passo 1 (`--start`) ainda roda nesse caminho e reseta
+ * `phase` pra `"briefing"`. O passo 0 re-arma `--phase autonomous`
+ * explicitamente logo depois, então uma rodada retomada nunca fica sem o
+ * guard armado.
  *
  * Deliberadamente NÃO é `data/overnight/{AAMMDD}/plan.json` (documento de progresso
  * do coordenador, schema evoluindo, dono de uma feature não-relacionada — a
@@ -35,15 +57,20 @@
  * independentemente, então uma divergência acidental quebra pelo menos um dos
  * dois test files.
  *
- * Uso (chamado pela skill `/diaria-overnight` — Fase 0 passo 1 e Fase 2 passo 0):
+ * Uso (chamado pela skill `/diaria-overnight` — Fase 0 passo 1, Fase 0 passo 8
+ * e Fase 2 passo 0):
  *   npx tsx scripts/overnight-session-marker.ts --start
+ *   npx tsx scripts/overnight-session-marker.ts --phase autonomous
  *   npx tsx scripts/overnight-session-marker.ts --end
  */
 
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { isMainModule } from "./lib/cli-args.ts";
+
+/** Fases da rodada (#4450) — ver docblock do topo do arquivo. */
+export type OvernightPhase = "briefing" | "autonomous";
 
 /** Sanitiza o hostname pra um nome de arquivo seguro. Nunca lança — string vazia em falha. */
 export function machineTag(): string {
@@ -58,11 +85,23 @@ export function activeSessionPath(repoRoot: string, tag: string = machineTag()):
   return join(repoRoot, "data", "overnight", `.active-session-${tag}.json`);
 }
 
-/** Grava o marker de sessão ativa. Idempotente — sobrescreve `started_at` se já existir. */
+/**
+ * Grava o marker de sessão ativa. Idempotente — sobrescreve `started_at` se já
+ * existir. **Sempre grava `phase: "briefing"` (#4450)** — `--start` roda tanto
+ * numa rodada genuinamente nova (segue pro briefing normal, arma
+ * `--phase autonomous` no passo 8) quanto no Resume de uma rodada existente
+ * (passo 1, sempre executado de novo mesmo quando o passo 0 pula direto pra
+ * Fase 1/1.5/2) — e nos dois casos o valor logo após `--start` É "briefing"
+ * até o passo seguinte decidir o contrário. **Isto NÃO significa que uma
+ * rodada retomada fica desprotegida**: o passo 0 (Resume) re-arma
+ * `--phase autonomous` explicitamente, imediatamente após este `--start`,
+ * exatamente porque `--start` sempre reseta pra "briefing" — os dois passos
+ * são um par deliberado, não uma coincidência de ordem.
+ */
 export function startSession(repoRoot: string, startedAtIso: string): void {
   const path = activeSessionPath(repoRoot);
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify({ started_at: startedAtIso }), "utf8");
+  writeFileSync(path, JSON.stringify({ started_at: startedAtIso, phase: "briefing" }), "utf8");
 }
 
 /** Remove o marker de sessão ativa. Idempotente — no-op se já ausente. */
@@ -71,17 +110,50 @@ export function endSession(repoRoot: string): void {
   if (existsSync(path)) rmSync(path);
 }
 
+/**
+ * Atualiza SÓ o campo `phase` do marker já existente — preserva `started_at`
+ * (e qualquer outro campo futuro) intacto (#4450). Retorna `false`, sem
+ * lançar, quando não há marker pra atualizar: `--start` nunca rodou nesta
+ * rodada, o marker já foi removido por `--end`, ou o JSON está corrompido no
+ * disco — falha graciosa, o caller (CLI abaixo) decide como reportar (aviso +
+ * exit code, nunca stack trace). Retorna `true` em sucesso.
+ */
+export function setPhase(repoRoot: string, phase: OvernightPhase): boolean {
+  const path = activeSessionPath(repoRoot);
+  if (!existsSync(path)) return false;
+  try {
+    const current = JSON.parse(readFileSync(path, "utf8"));
+    writeFileSync(path, JSON.stringify({ ...current, phase }), "utf8");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 if (isMainModule(import.meta.url)) {
   const repoRoot = process.cwd();
   const arg = process.argv[2];
   if (arg === "--start") {
     startSession(repoRoot, new Date().toISOString());
-    process.stdout.write(`overnight session marker: started (${activeSessionPath(repoRoot)})\n`);
+    process.stdout.write(`overnight session marker: started, phase=briefing (${activeSessionPath(repoRoot)})\n`);
   } else if (arg === "--end") {
     endSession(repoRoot);
     process.stdout.write(`overnight session marker: ended (${activeSessionPath(repoRoot)})\n`);
+  } else if (arg === "--phase") {
+    const phase = process.argv[3];
+    if (phase !== "briefing" && phase !== "autonomous") {
+      process.stderr.write("uso: npx tsx scripts/overnight-session-marker.ts --phase <briefing|autonomous>\n");
+      process.exitCode = 1;
+    } else if (setPhase(repoRoot, phase)) {
+      process.stdout.write(`overnight session marker: phase=${phase} (${activeSessionPath(repoRoot)})\n`);
+    } else {
+      process.stderr.write(
+        `overnight session marker: nenhum marker ativo em ${activeSessionPath(repoRoot)} — rode --start antes de --phase\n`,
+      );
+      process.exitCode = 1;
+    }
   } else {
-    process.stderr.write("uso: npx tsx scripts/overnight-session-marker.ts --start | --end\n");
+    process.stderr.write("uso: npx tsx scripts/overnight-session-marker.ts --start | --end | --phase <briefing|autonomous>\n");
     process.exitCode = 1;
   }
 }
