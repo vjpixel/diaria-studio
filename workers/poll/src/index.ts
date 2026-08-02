@@ -313,6 +313,7 @@ export function requiredSecretsForRoute(
   if (path === "/set-name" && method === "GET") return ["POLL_SECRET"];
   if (path === "/admin/correct" && method === "POST") return ["ADMIN_SECRET"];
   if (path === "/admin/eiameta" && method === "POST") return ["ADMIN_SECRET"]; // #3984
+  if (path === "/admin/purge-score-do" && method === "POST") return ["ADMIN_SECRET"]; // #4474
   return [];
 }
 
@@ -756,6 +757,59 @@ async function handleAdminEiaMeta(request: Request, env: Env): Promise<Response>
   await env.POLL.put(`eiameta:${edition}`, JSON.stringify({ description, credit }));
 
   return json({ ok: true, edition }, 200, env);
+}
+
+// ── /admin/purge-score-do ────────────────────────────────────────────────────
+
+/**
+ * #4474: apaga o storage interno do DO `ScoreCounter` de uma identidade —
+ * nenhum endpoint deste worker jamais tocava esse storage; só o KV era
+ * purgado por `scripts/purge-leaderboard.ts` (score, score-by-month, vote,
+ * counted, seq). Sem isso, uma identidade purgada que vote de novo numa
+ * edição do MESMO mês civil já purgado faz `handleUpdateMonth`
+ * (score-counter.ts) ler o storage `seq:{monthSlug}` (nunca apagado) e
+ * ressuscitar votos supostamente apagados de volta pro KV via
+ * `updateScoreByMonth` (vote.ts) — ver rationale completo no header de
+ * score-counter.ts, bloco "Purge".
+ *
+ * JSON body: { email, brand?, sig }. `brand` ausente/inválido cai em
+ * "diaria" (mesmo default de `parseBrandParam`) — o sig é verificado contra
+ * esse valor JÁ NORMALIZADO, então o caller (`purge-leaderboard.ts`) precisa
+ * assinar com o MESMO brand normalizado que já resolveu do seu `--brand`.
+ * `sig` assina `purge-score-do:{brand}:{email}` com `ADMIN_SECRET` (mesmo
+ * padrão HMAC de `handleAdminEiaMeta` acima).
+ *
+ * `env.SCORE_COUNTER` ausente → 503 fail-soft (nunca lança) — mesmo padrão
+ * de `missingSecretsForRoute`, mas aqui é um binding de infra, não um secret.
+ */
+async function handleAdminPurgeScoreDo(request: Request, env: Env): Promise<Response> {
+  let body: { email?: unknown; brand?: unknown; sig?: unknown };
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "invalid json body" }, 400, env);
+  }
+  const email = typeof body.email === "string" ? body.email : "";
+  const brand = parseBrandParam(typeof body.brand === "string" ? body.brand : null);
+  const sig = typeof body.sig === "string" ? body.sig : "";
+
+  if (!email || !sig) {
+    return json({ error: "missing params" }, 400, env);
+  }
+
+  const valid = await hmacVerify(env.ADMIN_SECRET, `purge-score-do:${brand}:${email}`, sig);
+  if (!valid) return json({ error: "invalid signature" }, 403, env);
+
+  if (!env.SCORE_COUNTER) {
+    return json({ ok: false, error: "SCORE_COUNTER binding indisponível" }, 503, env);
+  }
+
+  const doId = env.SCORE_COUNTER.idFromName(`${brand}:${email}`);
+  const doStub = env.SCORE_COUNTER.get(doId);
+  const doResp = await doStub.fetch("https://internal/purge", { method: "POST" });
+  const doData = await doResp.json().catch(() => ({})) as { ok?: boolean; purged?: boolean };
+
+  return json({ ok: doResp.ok && doData.ok === true, purged: doData.purged === true }, doResp.status, env);
 }
 
 // ── Vote page HTML ────────────────────────────────────────────────────────────
@@ -1639,6 +1693,10 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // #3984: `env` CRU (não `bEnv`) — eiameta é brand-independente, mesmo
     // racional de `correct:{edition}` (ver handleAdminEiaMeta acima).
     if (path === "/admin/eiameta" && request.method === "POST") return handleAdminEiaMeta(request, env);
+    // #4474: purge do storage interno do DO ScoreCounter — brand-independente
+    // no sentido de que o body carrega o brand explicitamente (não vem de
+    // ?brand=), mesmo racional de handleAdminEiaMeta acima.
+    if (path === "/admin/purge-score-do" && request.method === "POST") return handleAdminPurgeScoreDo(request, env);
     // #3975: identidade por e-mail no leaderboard do brand web. `bEnv` (não
     // `env` cru) — precisa dos scores BRANDED (`web:score:*`), mesmo padrão
     // de `/vote`/`/set-name`. Client sempre chama com `?brand=web` (ver
@@ -1656,5 +1714,5 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     if (path.startsWith("/img/") && (request.method === "GET" || request.method === "HEAD")) return handleImage(path, env);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 
-    return json({ error: "not found", endpoints: ["/jogar", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/jogar/seq-state", "/jogar/subscribe", "/jogar/gate", "/jogar/gate/verify", "/jogar/gate/subscribe", "/jogar/gate/logout", "/jogar/identify", "/confirm-merge", "/embed", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/admin/eiameta", "/img/{key}"] }, 404, env);
+    return json({ error: "not found", endpoints: ["/jogar", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/jogar/seq-state", "/jogar/subscribe", "/jogar/gate", "/jogar/gate/verify", "/jogar/gate/subscribe", "/jogar/gate/logout", "/jogar/identify", "/confirm-merge", "/embed", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/admin/eiameta", "/admin/purge-score-do", "/img/{key}"] }, 404, env);
 }

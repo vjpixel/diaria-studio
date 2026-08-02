@@ -61,15 +61,37 @@
  *   # Dry-run é o default — só mostra o que seria apagado.
  *   # Pra executar de fato, passar --execute:
  *   npx tsx scripts/purge-leaderboard.ts --email test@example.com --brand clarice --execute
+ *
+ * Variáveis de ambiente (#4474):
+ *   ADMIN_SECRET (ou POLL_ADMIN_SECRET)  HMAC key pro endpoint
+ *     /admin/purge-score-do — necessária SÓ em --execute (dry-run roda sem
+ *     ela, só imprime o plano). Sem ela, --execute falha alto e claro em vez
+ *     de seguir silenciosamente sem purgar o storage do DO ScoreCounter.
+ *   POLL_WORKER_URL   override da URL base do Worker poll (default:
+ *     https://eia.diar.ia.br — ver scripts/lib/canonical-urls.ts).
  */
 
-// #2265: NÃO carregamos dotenv. O .env tem um CLOUDFLARE_API_TOKEN sem permissão
-// de KV; se ele entrar no process.env, o wrangler filho o herda e usa ESSE token
-// (401) em vez da auth OAuth global do CLI. Sem env de auth = wrangler usa OAuth.
+// #2265+#4474: dotenv AGORA é carregado (import "dotenv/config" abaixo) — o
+// risco original (CLOUDFLARE_API_TOKEN sem permissão de KV vazando pro
+// wrangler filho e forçando 401) continua fechado porque `wrangler()`
+// abaixo SEMPRE deleta CLOUDFLARE_API_TOKEN/CLOUDFLARE_ACCOUNT_ID do env do
+// FILHO antes de invocar, incondicionalmente — não importa como essas vars
+// chegaram em `process.env` deste processo (dotenv, shell export,
+// .env.local), o strip acontece do mesmo jeito. dotenv passou a ser
+// necessário porque #4474 introduziu um 2º caminho de auth neste script —
+// ADMIN_SECRET/POLL_ADMIN_SECRET (mesmas vars que `close-poll.ts` já lê do
+// .env) — pra assinar `POST /admin/purge-score-do` e apagar o storage do DO
+// ScoreCounter. Sem dotenv, esse 2º caminho não teria como ler o secret do
+// .env (só de env var já exportada no shell), quebrando --execute pra quem
+// segue o setup documentado no README/CLAUDE.md.
+import "dotenv/config";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { buildPurgePlan, type PurgeKvOps } from "./lib/purge-leaderboard-plan.ts";
+import { purgeScoreCounterDo } from "./lib/purge-score-counter-do.ts"; // #4474
+import { dohFetch } from "./lib/doh-fetch.ts"; // #4474
+import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #4474
 
 // #2265: NAMESPACE_ID do POLL (KV). Auth e acesso ao KV vão pelo WRANGLER (auth
 // global do CLI), não mais pela CF REST API com CLOUDFLARE_API_TOKEN — o token
@@ -131,6 +153,22 @@ const BRAND_ARG = flagValue("--brand");
 const BRAND = BRAND_ARG === "clarice" ? "clarice" : BRAND_ARG === "web" ? "web" : "diaria";
 const BP = BRAND === "diaria" ? "" : `${BRAND}:`;
 
+// #4474: HMAC key pro endpoint /admin/purge-score-do (purga do storage
+// interno do DO ScoreCounter). Mesma variável que close-poll.ts já lê
+// (ADMIN_SECRET canônico, POLL_ADMIN_SECRET como alias usado em alguns
+// ambientes). Ausente é OK em dry-run (só imprime o plano); --execute falha
+// alto e claro logo abaixo, antes de fazer qualquer trabalho de rede.
+const ADMIN_SECRET = process.env.ADMIN_SECRET ?? process.env.POLL_ADMIN_SECRET ?? null;
+const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? DIARIA_EIA_URL;
+
+if (execute && !ADMIN_SECRET) {
+  console.error(
+    "[purge] ADMIN_SECRET (ou POLL_ADMIN_SECRET) não definido — necessário em --execute pra assinar " +
+    "/admin/purge-score-do e apagar o storage do DO ScoreCounter (#4474). Ver .env.",
+  );
+  process.exit(1);
+}
+
 // #2265: helpers via wrangler. `kv key list` já pagina internamente (retorna
 // todas as chaves do prefixo). get/put/delete recebem a chave como arg literal.
 async function kvList(prefix: string): Promise<string[]> {
@@ -169,6 +207,30 @@ async function kvDelete(key: string): Promise<void> {
   } catch (e) {
     // 404 = já apagada; idempotente. Outros erros propagam.
     if (!/not found|404|could not find/i.test(wranglerErrText(e))) throw e;
+  }
+}
+
+/**
+ * #4474: purga o storage interno do DO ScoreCounter da identidade
+ * `{BRAND}:{email}` via `POST /admin/purge-score-do` (ver rationale completo
+ * em `scripts/lib/purge-score-counter-do.ts` e `workers/poll/src/
+ * score-counter.ts`). Mesmo padrão dry-run de `kvPut`/`kvDelete` acima — só
+ * imprime em dry-run, sem chamar rede nenhuma. SEMPRE usa o `BRAND` já
+ * resolvido pro script inteiro (uma invocação = 1 brand só) — nunca itera
+ * sobre os 3 brands.
+ */
+async function purgeScoreCounterDoStep(email: string): Promise<void> {
+  if (!execute) {
+    console.log(`[dry-run] PURGE DO score-counter para ${BRAND}:${email}`);
+    return;
+  }
+  // ADMIN_SECRET já foi validado (fail-fast acima) antes de qualquer trabalho
+  // de rede acontecer — não-nulo aqui por construção.
+  const result = await purgeScoreCounterDo(email, BRAND, ADMIN_SECRET!, POLL_WORKER_URL, dohFetch);
+  if (result.ok) {
+    console.log(`  [del] DO score-counter ${BRAND}:${email} (purged)`);
+  } else {
+    console.error(`  [warn] DO score-counter ${BRAND}:${email} purge falhou (status ${result.status}): ${result.error}`);
   }
 }
 
@@ -229,6 +291,18 @@ async function main(): Promise<void> {
   if (totalKeys === 0) {
     console.log("[purge] nada pra apagar.");
     return;
+  }
+
+  // #4474: purga o storage interno do DO ScoreCounter de CADA identidade do
+  // plano (target + identidades anônimas ligadas via #4433) — sempre sob o
+  // MESMO BRAND já resolvido pro script inteiro (nunca itera os 3 brands).
+  // Roda em AMBOS os modos (dry-run só imprime, execute chama de fato) —
+  // diferente da purga de KV abaixo, que só roda dentro do ramo `execute`
+  // (aqui é o único jeito do dry-run sinalizar que o storage do DO também
+  // seria tocado).
+  console.log(`\n[purge] storage do DO ScoreCounter (${plan.plans.length} identidade(s)):`);
+  for (const p of plan.plans) {
+    await purgeScoreCounterDoStep(p.email);
   }
 
   if (!execute) {

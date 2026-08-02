@@ -114,11 +114,30 @@
  * `/adjust-month-correct` propaga a correção de gabarito pra dentro do
  * agregado (campo opcional `edition` no payload) — ver rationale ali.
  *
+ * ## Purge (#4474)
+ * Nenhum endpoint acima jamais APAGA o storage do DO — `/update-score` e
+ * `/update-month` só incrementam, `/adjust-*` só corrigem `correct` de um
+ * registro já existente. `scripts/purge-leaderboard.ts` apaga o KV inteiro de
+ * uma identidade (score, score-by-month, vote, counted, seq — ver #4443/
+ * #4470) mas nunca tocava ESTE storage, que sobrevive indefinidamente fora do
+ * namespace KV que o purge varre. Cenário de falha concreto: uma identidade
+ * purgada vota de novo numa edição do MESMO mês civil já purgado →
+ * `handleUpdateMonth` lê `seq:{monthSlug}` (nunca purgado, ainda com entries
+ * supostamente apagadas), mescla com o voto novo, e o caller (`vote.ts`,
+ * `updateScoreByMonth`) regrava esse mapa mesclado de volta em
+ * `seq:{month}:{identity}` no KV — ressuscitando exatamente o dado que o
+ * purge deveria ter apagado. `/purge` fecha o gap: `deleteAll()` sob o mesmo
+ * mutex (`blockConcurrencyWhile`) dos demais endpoints, limpando as 3 chaves
+ * desta instância (`score`, `month:*`, `seq:*`) de uma vez. Chamado por
+ * `POST /admin/purge-score-do` (index.ts), que resolve a instância certa via
+ * `idFromName(`${brand}:${email}`)`.
+ *
  * ## Interface
  *   POST /update-score        — body: UpdateScorePayload         → { ok: true; score: ScoreData }
  *   POST /update-month        — body: UpdateMonthPayload         → { ok: true; month: MonthScoreData; seq: SeqMonthMap }
  *   POST /adjust-correct      — body: AdjustScoreCorrectPayload  → { ok: true; adjusted: boolean; score?: ScoreData }
  *   POST /adjust-month-correct — body: AdjustMonthCorrectPayload → { ok: true; adjusted: boolean; month?: MonthScoreData; seq?: SeqMonthMap }
+ *   POST /purge                — sem body                        → { ok: true; purged: true }
  */
 
 import { type Brand, isConsecutiveVotingPeriod } from "./lib";
@@ -272,6 +291,9 @@ export class ScoreCounter {
     }
     if (path === "/adjust-month-correct" && request.method === "POST") {
       return this.handleAdjustMonthCorrect(request);
+    }
+    if (path === "/purge" && request.method === "POST") {
+      return this.handlePurge();
     }
 
     return new Response(JSON.stringify({ error: "method not allowed" }), {
@@ -466,6 +488,22 @@ export class ScoreCounter {
       }
 
       return new Response(JSON.stringify({ ok: true, adjusted: true, month: stored, seq }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+  }
+
+  /**
+   * #4474: apaga TODO o storage desta instância (score global, score mensal
+   * de todos os meses, agregado seq:{monthSlug}) — ver rationale completo no
+   * bloco "Purge" do header do arquivo. Serializado sob o MESMO mutex dos
+   * demais endpoints (evita apagar no meio de um update concorrente).
+   */
+  private async handlePurge(): Promise<Response> {
+    return await this.state.blockConcurrencyWhile(async () => {
+      await this.state.storage.deleteAll();
+      return new Response(JSON.stringify({ ok: true, purged: true }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
