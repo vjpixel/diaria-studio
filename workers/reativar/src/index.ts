@@ -10,14 +10,13 @@
  * `inject-poll-sig.ts` removido — ver CLAUDE.md §Publicação manual requer
  * prep-manual-publish.ts).
  *
- * Rota: GET /?email=X → chama `POST /publications/{id}/subscriptions` da
- * Beehiiv com `{email, reactivate_existing: true, send_welcome_email: false}`
- * (mesmo payload de `promoteBeehiivSubscription`,
- * `scripts/evaluate-brevo-diaria.ts` — mas essa via é acionada por CLIQUE
- * explícito do usuário, não por inferência de score sobre abertura passiva;
- * ver #4476 item 2 — as duas vias de promoção nunca colidem porque
- * `evaluate-brevo-diaria.ts` checa auto-confirmação Beehiiv ANTES de
- * avaliar score).
+ * Rota: GET /?email=X → busca a subscription existente por e-mail, DELETA o
+ * registro Pending travado e CRIA uma nova do zero (mesma mecânica de
+ * `promoteBeehiivSubscription`, `scripts/evaluate-brevo-diaria.ts` — mas
+ * essa via é acionada por CLIQUE explícito do usuário, não por inferência de
+ * score sobre abertura passiva; ver #4476 item 2 — as duas vias de promoção
+ * nunca colidem porque `evaluate-brevo-diaria.ts` checa auto-confirmação
+ * Beehiiv ANTES de avaliar score).
  *
  * ## Sem assinatura HMAC — risco aceito (mesmo perfil do link de /vote)
  *
@@ -30,22 +29,16 @@
  * KV/rate-limit por IP nesta 1ª versão: volume esperado é baixo (o link só
  * chega a quem já recebe o e-mail via Brevo, população cap 300).
  *
- * ## Verificação ao vivo (#4476 item 3, autorizada explicitamente pelo editor)
- * — INCONCLUSIVA pra pergunta central (comment-analyzer, achado pós-merge)
+ * ## Verificação ao vivo (#4476 item 3) — CONFIRMADA em 260802
  *
- * O comportamento REAL de `reactivate_existing: true` contra a API da
- * Beehiiv (ativa direto vs. exige confirmação adicional) foi testado com 2
- * contatos de teste sintéticos (não 1) — ver corpo do PR do #4476 pro
- * request/response exato. Os 2 caíram em `status:"invalid"` (domínio
- * flagado disposable) antes de chegar em `pending`, então a hipótese CENTRAL
- * do item 3 — `reactivate_existing:true` reativa um contato `pending` REAL
- * pra `active`? — NUNCA foi exercitada, nem confirmada nem refutada. O que
- * o teste confirmou de fato: HTTP 2xx no POST não garante `status:"active"`
- * (motivou a checagem explícita em `activateSubscription`/`handleConfirm`
- * abaixo). **Não fazer rollout real sem antes confirmar com 1 e-mail
- * pessoal em modo Pending genuíno** (assinar e não confirmar, depois clicar
- * no link deste Worker) — recomendação registrada no PR, ainda não
- * executada até este comentário.
+ * O teste anterior (2 contatos sintéticos, `@example.com`/`@mailinator.com`)
+ * ficou inconclusivo: os 2 caíram em `status:"invalid"` (domínio disposable)
+ * antes de chegar em `pending`. Um teste seguinte, com 1 contato Pending
+ * REAL (autorizado explicitamente pelo editor), fechou a lacuna:
+ * `reactivate_existing:true` **não mudou o status** (continuou `pending`).
+ * Deletar o registro e criar do zero **ativou direto** (`validating` →
+ * `active` em segundos). Esta versão do Worker já reflete essa mecânica —
+ * `reactivate_existing` foi removido, não é mais usado em lugar nenhum.
  */
 
 export interface Env {
@@ -63,6 +56,15 @@ const CORS_HEADERS = { "Access-Control-Allow-Origin": "*" } as const;
  * `SUBSCRIBE_FETCH_TIMEOUT_MS` em `workers/poll/src/subscribe.ts` (#4438):
  * sem timeout, uma rede instável deixaria o `await` pendurado indefinidamente. */
 export const ACTIVATE_FETCH_TIMEOUT_MS = 8000;
+
+/** Espera antes de 1 releitura, só quando o CREATE responde `status:
+ * "validating"` (#4476, achado ao vivo 260802): estado transitório — a
+ * Beehiiv processa a validação de e-mail de forma assíncrona e resolve pra
+ * `active` em poucos segundos (confirmado ao vivo: releitura ~alguns
+ * segundos depois já mostrava `active`). Sem este retry, `handleConfirm`
+ * mostraria "ainda não confirmado" pra quem na verdade só precisava de mais
+ * 1-2s. Não faz retry pra outros status (ex: `invalid`) — são terminais. */
+export const CONFIRM_RETRY_DELAY_MS = 2000;
 
 // ── validação (pura) ─────────────────────────────────────────────────────
 
@@ -88,43 +90,38 @@ export interface ActivateResult {
   status: number;
   reason?: "not_configured" | "beehiiv_error";
   /**
-   * `data.status` do corpo da resposta da Beehiiv (#4476 self-review, achado
-   * do teste ao vivo): o POST pode responder 2xx (`ok:true` nesta struct)
-   * MESMO quando a subscription não fica `active` — visto ao vivo com
-   * `status:"invalid"` (Beehiiv aceita o POST mas a validação de e-mail
-   * rejeita o contato). `beehiivStatus` deixa essa distinção explícita pro
-   * caller (`handleConfirm`) decidir a página certa em vez de confiar só no
-   * HTTP 2xx.
+   * `data.status` da subscription APÓS o CREATE (ou o status já-`active`
+   * encontrado no GET inicial, se a pessoa clicar 2x — idempotente). `ok:true`
+   * reflete só o HTTP 2xx da última chamada; `beehiivStatus` carrega o estado
+   * REAL, que `handleConfirm` usa pra decidir a página certa — nunca confiar
+   * só no HTTP 2xx (achado do teste ao vivo #4476: POST pode responder 2xx
+   * mesmo quando a subscription não fica `active`, ex: `status:"invalid"`).
    */
   beehiivStatus?: string | null;
 }
 
 /**
- * `POST /publications/{id}/subscriptions` com `reactivate_existing: true` —
- * (re)ativa a subscription existente sem exigir novo double opt-in. `fetchImpl`
- * injetável pra teste — nunca faz rede real nos testes (#633).
+ * DELETE + CREATE — não mais `reactivate_existing` (#4476, mecânica
+ * corrigida a partir do teste ao vivo 260802, ver header do módulo).
+ * `fetchImpl` injetável pra teste — nunca faz rede real nos testes (#633).
  *
- * Duas claims distintas aqui — não confundir (comment-analyzer, achado
- * pós-merge #4476):
- *
- * 1. "Bypassa o double opt-in" — **segundo a documentação pública da
- *    Beehiiv, NÃO verificado ao vivo**. O teste ao vivo do #4476 (2 contatos
- *    sintéticos, ver header do módulo) não exercitou essa transição: os 2
- *    caíram em `status:"invalid"` (domínio disposable) antes de chegar em
- *    `pending`, então `pending → active` via este endpoint nunca foi
- *    observado de fato.
- * 2. "A resposta do POST já inclui `data.status`, sem precisar de uma 2ª
- *    chamada (GET) só pra confirmar" E "HTTP 2xx não garante `status:
- *    active`" — **isto SIM foi confirmado ao vivo** no mesmo teste (achado
- *    real: `status:"invalid"` veio no corpo do POST 201). Por isso `ok:true`
- *    reflete só o HTTP 2xx do POST; `beehiivStatus` carrega o estado REAL da
- *    subscription, que `handleConfirm` usa pra decidir a página de sucesso
- *    vs. "ainda não confirmado" — nunca confiar só no HTTP 2xx.
+ * Passos:
+ * 1. `GET .../subscriptions/by_email/{email}` — se já `active`, idempotente
+ *    (pessoa clicou 2x, ou a via de score já promoveu): retorna sem tocar
+ *    em nada. Se 404 (nunca existiu), pula direto pro passo 3.
+ * 2. Se existe e não é `active`: `DELETE .../subscriptions/{id}` — remove o
+ *    registro Pending travado. 404 aqui (sumiu entre o GET e o DELETE) não é
+ *    erro, só segue.
+ * 3. `POST .../subscriptions {email, send_welcome_email:false}` — cria do
+ *    zero, SEM `reactivate_existing` (não há mais o que reativar). Cadastro
+ *    novo ativa direto, sem double opt-in (mudança de fluxo da publicação) —
+ *    é essa transição que o teste ao vivo confirmou.
  */
 export async function activateSubscription(
   env: Env,
   email: string,
   fetchImpl: typeof fetch = fetch,
+  sleepImpl: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
 ): Promise<ActivateResult> {
   const apiKey = env.BEEHIIV_API_KEY;
   const pubId = env.BEEHIIV_PUBLICATION_ID;
@@ -139,26 +136,66 @@ export async function activateSubscription(
   }
 
   const base = env.BEEHIIV_API_URL ?? "https://api.beehiiv.com/v2";
+  const authHeaders = { Authorization: `Bearer ${apiKey}`, Accept: "application/json" };
+
+  // 1) estado atual (idempotência — já active não precisa de mais nada).
+  let existing: { id: string; status: string } | null = null;
+  try {
+    const getRes = await fetchImpl(`${base}/publications/${pubId}/subscriptions/by_email/${encodeURIComponent(email)}`, {
+      headers: authHeaders,
+      signal: AbortSignal.timeout(ACTIVATE_FETCH_TIMEOUT_MS),
+    });
+    if (getRes.status === 404) {
+      existing = null;
+    } else if (!getRes.ok) {
+      console.error(JSON.stringify({ event: "reativar_beehiiv_non_2xx", step: "get", status: getRes.status }));
+      return { ok: false, status: getRes.status, reason: "beehiiv_error" };
+    } else {
+      const body = (await getRes.json().catch(() => null)) as { data?: { id?: string; status?: string } } | null;
+      existing = body?.data?.id ? { id: body.data.id, status: body.data.status ?? "" } : null;
+    }
+  } catch (e) {
+    console.error(JSON.stringify({ event: "reativar_fetch_failed", step: "get", error: String(e) }));
+    return { ok: false, status: 502, reason: "beehiiv_error" };
+  }
+
+  if (existing?.status === "active") {
+    return { ok: true, status: 200, beehiivStatus: "active" };
+  }
+
+  // 2) deleta o registro travado (se existir e não for active).
+  if (existing) {
+    try {
+      const delRes = await fetchImpl(`${base}/publications/${pubId}/subscriptions/${existing.id}`, {
+        method: "DELETE",
+        headers: authHeaders,
+        signal: AbortSignal.timeout(ACTIVATE_FETCH_TIMEOUT_MS),
+      });
+      if (!delRes.ok && delRes.status !== 404) {
+        console.error(JSON.stringify({ event: "reativar_beehiiv_non_2xx", step: "delete", status: delRes.status }));
+        return { ok: false, status: delRes.status, reason: "beehiiv_error" };
+      }
+    } catch (e) {
+      console.error(JSON.stringify({ event: "reativar_fetch_failed", step: "delete", error: String(e) }));
+      return { ok: false, status: 502, reason: "beehiiv_error" };
+    }
+  }
+
+  // 3) cria do zero.
   let res: Response;
   try {
     res = await fetchImpl(`${base}/publications/${pubId}/subscriptions`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify({ email, reactivate_existing: true, send_welcome_email: false }),
+      headers: { ...authHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({ email, send_welcome_email: false }),
       signal: AbortSignal.timeout(ACTIVATE_FETCH_TIMEOUT_MS),
     });
   } catch (e) {
-    // fetch-failure/timeout (AbortSignal.timeout acima) — engolido antes
-    // desta correção, agora logado estruturado (nunca o email cru).
-    console.error(JSON.stringify({ event: "reativar_fetch_failed", error: String(e) }));
+    console.error(JSON.stringify({ event: "reativar_fetch_failed", step: "create", error: String(e) }));
     return { ok: false, status: 502, reason: "beehiiv_error" };
   }
   if (!res.ok) {
-    console.error(JSON.stringify({ event: "reativar_beehiiv_non_2xx", status: res.status }));
+    console.error(JSON.stringify({ event: "reativar_beehiiv_non_2xx", step: "create", status: res.status }));
     return { ok: false, status: res.status, reason: "beehiiv_error" };
   }
 
@@ -167,12 +204,29 @@ export async function activateSubscription(
     const body = (await res.json()) as { data?: { status?: string } };
     beehiivStatus = body.data?.status ?? null;
   } catch (e) {
-    // corpo não-JSON/vazio — não é motivo pra falhar o HTTP 2xx já confirmado,
-    // só deixa beehiivStatus null (handleConfirm trata como "não confirmado
-    // ainda" via a mesma checagem !== "active") — mas agora logado, pra não
-    // engolir silenciosamente um contrato de resposta que mudou.
-    console.warn(JSON.stringify({ event: "reativar_response_parse_failed", status: res.status, error: String(e) }));
+    console.warn(JSON.stringify({ event: "reativar_response_parse_failed", step: "create", status: res.status, error: String(e) }));
   }
+
+  // Estado transitório — 1 retry curto antes de aceitar como resultado final
+  // (ver `CONFIRM_RETRY_DELAY_MS`). Falha na releitura mantém o
+  // `beehiivStatus` original ("validating") — `handleConfirm` trata como
+  // não-confirmado, fail-safe (nunca mostra sucesso sem confirmar de fato).
+  if (beehiivStatus === "validating") {
+    await sleepImpl(CONFIRM_RETRY_DELAY_MS);
+    try {
+      const recheck = await fetchImpl(`${base}/publications/${pubId}/subscriptions/by_email/${encodeURIComponent(email)}`, {
+        headers: authHeaders,
+        signal: AbortSignal.timeout(ACTIVATE_FETCH_TIMEOUT_MS),
+      });
+      if (recheck.ok) {
+        const body = (await recheck.json().catch(() => null)) as { data?: { status?: string } } | null;
+        if (body?.data?.status) beehiivStatus = body.data.status;
+      }
+    } catch (e) {
+      console.warn(JSON.stringify({ event: "reativar_recheck_failed", error: String(e) }));
+    }
+  }
+
   return { ok: true, status: res.status, beehiivStatus };
 }
 
@@ -243,13 +297,20 @@ function htmlResponse(html: string, status: number): Response {
   });
 }
 
-export async function handleConfirm(url: URL, env: Env, fetchImpl: typeof fetch = fetch): Promise<Response> {
+export async function handleConfirm(
+  url: URL,
+  env: Env,
+  fetchImpl: typeof fetch = fetch,
+  sleepImpl?: (ms: number) => Promise<void>,
+): Promise<Response> {
   const parsed = parseEmailParam(url);
   if (!parsed.ok) {
     const html = parsed.error === "missing_email" ? renderMissingEmailPage() : renderInvalidEmailPage();
     return htmlResponse(html, 400);
   }
-  const result = await activateSubscription(env, parsed.email, fetchImpl);
+  const result = sleepImpl
+    ? await activateSubscription(env, parsed.email, fetchImpl, sleepImpl)
+    : await activateSubscription(env, parsed.email, fetchImpl);
   if (!result.ok) {
     const status = result.reason === "not_configured" ? 503 : 502;
     return htmlResponse(renderErrorPage(), status);

@@ -59,7 +59,24 @@ describe("parseEmailParam — validação pura (#4476 item 3)", () => {
   });
 });
 
-describe("activateSubscription — POST reactivate_existing:true (#4476 item 3)", () => {
+/** Mock roteado por método — GET (by_email) / DELETE / POST (create). */
+function routedFetch(handlers: {
+  get?: () => Response | Promise<Response>;
+  del?: () => Response | Promise<Response>;
+  post?: (body: unknown) => Response | Promise<Response>;
+}): { fetchImpl: typeof fetch; calls: { method: string; url: string }[] } {
+  const calls: { method: string; url: string }[] = [];
+  const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+    const method = init?.method ?? "GET";
+    calls.push({ method, url: String(url) });
+    if (method === "DELETE") return handlers.del ? handlers.del() : new Response(null, { status: 204 });
+    if (method === "POST") return handlers.post ? handlers.post(init?.body ? JSON.parse(init.body as string) : undefined) : jsonRes(200, {});
+    return handlers.get ? handlers.get() : jsonRes(404, {});
+  }) as typeof fetch;
+  return { fetchImpl, calls };
+}
+
+describe("activateSubscription — DELETE + CREATE, não mais reactivate_existing (#4476, mecânica corrigida 260802)", () => {
   it("BEEHIIV_API_KEY/PUBLICATION_ID ausentes → not_configured, 503, sem chamar fetch", async () => {
     let called = false;
     const fetchImpl = (async () => {
@@ -71,57 +88,149 @@ describe("activateSubscription — POST reactivate_existing:true (#4476 item 3)"
     assert.equal(called, false);
   });
 
-  it("sucesso (status active) → POST com o payload exato + beehiivStatus extraído da resposta", async () => {
-    let capturedUrl = "";
-    let capturedBody: unknown;
-    let capturedAuth = "";
-    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
-      capturedUrl = String(url);
-      capturedBody = JSON.parse(init!.body as string);
-      capturedAuth = (init!.headers as Record<string, string>).Authorization;
-      return jsonRes(200, { data: { id: "sub_1", status: "active" } });
-    }) as typeof fetch;
+  it("contato pending existente → GET acha, DELETE remove, POST cria sem reactivate_existing, retorna active", async () => {
+    const { fetchImpl, calls } = routedFetch({
+      get: () => jsonRes(200, { data: { id: "sub_old", status: "pending" } }),
+      post: (body) => {
+        assert.deepEqual(body, { email: "a@b.com", send_welcome_email: false });
+        return jsonRes(201, { data: { id: "sub_new", status: "active" } });
+      },
+    });
     const env: Env = { BEEHIIV_API_KEY: "key123", BEEHIIV_PUBLICATION_ID: "pub_1" };
     const result = await activateSubscription(env, "a@b.com", fetchImpl);
-    assert.deepEqual(result, { ok: true, status: 200, beehiivStatus: "active" });
-    assert.equal(capturedUrl, "https://api.beehiiv.com/v2/publications/pub_1/subscriptions");
-    assert.deepEqual(capturedBody, { email: "a@b.com", reactivate_existing: true, send_welcome_email: false });
-    assert.equal(capturedAuth, "Bearer key123");
+    assert.deepEqual(result, { ok: true, status: 201, beehiivStatus: "active" });
+    assert.deepEqual(
+      calls.map((c) => c.method),
+      ["GET", "DELETE", "POST"],
+    );
+    assert.equal(calls[1].url, "https://api.beehiiv.com/v2/publications/pub_1/subscriptions/sub_old");
   });
 
-  it('#4476 achado do teste ao vivo: POST 2xx mas status:"invalid" → ok:true (HTTP), beehiivStatus:"invalid" (NÃO confirmado)', async () => {
-    const fetchImpl = (async () => jsonRes(201, { data: { id: "sub_1", status: "invalid" } })) as typeof fetch;
+  it("já active (idempotência — clique 2x, ou via de score já promoveu) → retorna active sem DELETE/POST", async () => {
+    const { fetchImpl, calls } = routedFetch({ get: () => jsonRes(200, { data: { id: "sub_1", status: "active" } }) });
+    const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
+    const result = await activateSubscription(env, "a@b.com", fetchImpl);
+    assert.deepEqual(result, { ok: true, status: 200, beehiivStatus: "active" });
+    assert.deepEqual(calls.map((c) => c.method), ["GET"]);
+  });
+
+  it("GET 404 (nunca existiu) → pula DELETE, cria direto", async () => {
+    const { fetchImpl, calls } = routedFetch({
+      get: () => new Response(null, { status: 404 }),
+      post: () => jsonRes(201, { data: { status: "active" } }),
+    });
+    const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
+    const result = await activateSubscription(env, "a@b.com", fetchImpl);
+    assert.deepEqual(result, { ok: true, status: 201, beehiivStatus: "active" });
+    assert.deepEqual(calls.map((c) => c.method), ["GET", "POST"]);
+  });
+
+  it("DELETE 404 (sumiu entre GET e DELETE) → não é erro, segue pro CREATE", async () => {
+    const { fetchImpl } = routedFetch({
+      get: () => jsonRes(200, { data: { id: "sub_old", status: "pending" } }),
+      del: () => new Response(null, { status: 404 }),
+      post: () => jsonRes(201, { data: { status: "active" } }),
+    });
+    const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
+    const result = await activateSubscription(env, "a@b.com", fetchImpl);
+    assert.deepEqual(result, { ok: true, status: 201, beehiivStatus: "active" });
+  });
+
+  it('#4476 achado do teste ao vivo: POST 2xx mas status:"invalid" → ok:true (HTTP), beehiivStatus:"invalid" (NÃO confirmado, sem retry — status terminal)', async () => {
+    const { fetchImpl, calls } = routedFetch({
+      get: () => jsonRes(200, { data: { id: "sub_old", status: "pending" } }),
+      post: () => jsonRes(201, { data: { id: "sub_new", status: "invalid" } }),
+    });
     const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
     const result = await activateSubscription(env, "a@b.com", fetchImpl);
     assert.deepEqual(result, { ok: true, status: 201, beehiivStatus: "invalid" });
+    assert.deepEqual(calls.map((c) => c.method), ["GET", "DELETE", "POST"], "nunca faz releitura extra pra status terminal");
   });
 
-  it("corpo da resposta sem data.status (ou não-JSON) → ok:true, beehiivStatus:null (nunca lança)", async () => {
-    const fetchImpl = (async () => new Response("", { status: 200 })) as typeof fetch;
+  it('POST responde status:"validating" (transitório, achado ao vivo 260802) → 1 retry após espera, releitura "active" → beehiivStatus:"active"', async () => {
+    let getCalls = 0;
+    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "POST") return jsonRes(201, { data: { id: "sub_new", status: "validating" } });
+      if (method === "DELETE") return new Response(null, { status: 204 });
+      getCalls++;
+      // 1ª GET (antes do DELETE/CREATE): "pending". 2ª GET (releitura pós-retry): "active".
+      return jsonRes(200, { data: { id: "sub_old", status: getCalls === 1 ? "pending" : "active" } });
+    }) as typeof fetch;
+    let sleptMs = -1;
+    const sleepImpl = async (ms: number) => {
+      sleptMs = ms;
+    };
+    const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
+    const result = await activateSubscription(env, "a@b.com", fetchImpl, sleepImpl);
+    assert.deepEqual(result, { ok: true, status: 201, beehiivStatus: "active" });
+    assert.equal(sleptMs, 2000);
+    assert.equal(getCalls, 2);
+  });
+
+  it('handleConfirm fim-a-fim: status:"validating" → retry → "active" → página de sucesso', async () => {
+    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "POST") return jsonRes(201, { data: { status: "validating" } });
+      return jsonRes(200, { data: { status: "active" } });
+    }) as typeof fetch;
+    const url = new URL("https://reativar.diaria.workers.dev/?email=a@b.com");
+    const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
+    const res = await handleConfirm(url, env, fetchImpl, async () => {});
+    assert.equal(res.status, 200);
+    assert.equal(await res.text(), renderSuccessPage());
+  });
+
+  it("corpo do CREATE sem data.status (ou não-JSON) → ok:true, beehiivStatus:null (nunca lança)", async () => {
+    const { fetchImpl } = routedFetch({
+      get: () => new Response(null, { status: 404 }),
+      post: () => new Response("", { status: 200 }),
+    });
     const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
     const result = await activateSubscription(env, "a@b.com", fetchImpl);
     assert.deepEqual(result, { ok: true, status: 200, beehiivStatus: null });
   });
 
-  it("BEEHIIV_API_URL override (teste) → usa a base customizada", async () => {
-    let capturedUrl = "";
-    const fetchImpl = (async (url: string | URL) => {
-      capturedUrl = String(url);
-      return jsonRes(200, { data: { status: "active" } });
-    }) as typeof fetch;
+  it("BEEHIIV_API_URL override (teste) → usa a base customizada em todas as chamadas", async () => {
+    const { fetchImpl, calls } = routedFetch({
+      get: () => new Response(null, { status: 404 }),
+      post: () => jsonRes(200, { data: { status: "active" } }),
+    });
     const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1", BEEHIIV_API_URL: "https://mock.local/v2" };
     await activateSubscription(env, "a@b.com", fetchImpl);
-    assert.equal(capturedUrl, "https://mock.local/v2/publications/pub_1/subscriptions");
+    assert.ok(calls.every((c) => c.url.startsWith("https://mock.local/v2")));
   });
 
-  it("Beehiiv responde erro (4xx/5xx) → beehiiv_error, status propagado", async () => {
-    const fetchImpl = (async () => new Response("conflict", { status: 409 })) as typeof fetch;
+  it("Beehiiv responde erro no GET (4xx/5xx) → beehiiv_error, status propagado, nunca chega no DELETE/POST", async () => {
+    const { fetchImpl, calls } = routedFetch({ get: () => new Response("boom", { status: 500 }) });
+    const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
+    const result = await activateSubscription(env, "a@b.com", fetchImpl);
+    assert.deepEqual(result, { ok: false, status: 500, reason: "beehiiv_error" });
+    assert.deepEqual(calls.map((c) => c.method), ["GET"]);
+  });
+
+  it("Beehiiv responde erro no DELETE (não-404) → beehiiv_error, nunca chega no POST", async () => {
+    const { fetchImpl, calls } = routedFetch({
+      get: () => jsonRes(200, { data: { id: "sub_old", status: "pending" } }),
+      del: () => new Response("locked", { status: 423 }),
+    });
+    const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
+    const result = await activateSubscription(env, "a@b.com", fetchImpl);
+    assert.deepEqual(result, { ok: false, status: 423, reason: "beehiiv_error" });
+    assert.deepEqual(calls.map((c) => c.method), ["GET", "DELETE"]);
+  });
+
+  it("Beehiiv responde erro no POST (4xx/5xx) → beehiiv_error, status propagado", async () => {
+    const { fetchImpl } = routedFetch({
+      get: () => new Response(null, { status: 404 }),
+      post: () => new Response("conflict", { status: 409 }),
+    });
     const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
     const result = await activateSubscription(env, "a@b.com", fetchImpl);
     assert.deepEqual(result, { ok: false, status: 409, reason: "beehiiv_error" });
   });
 
-  it("fetch lança (timeout/rede) → beehiiv_error, 502 (nunca propaga a exceção)", async () => {
+  it("fetch lança (timeout/rede) em qualquer passo → beehiiv_error, 502 (nunca propaga a exceção)", async () => {
     const fetchImpl = (async () => {
       throw new Error("network down");
     }) as typeof fetch;
@@ -148,8 +257,11 @@ describe("handleConfirm — fim-a-fim (#4476 item 3)", () => {
     assert.equal(await res.text(), renderInvalidEmailPage());
   });
 
-  it("ativação bem-sucedida (beehiivStatus:active) → 200, página de sucesso", async () => {
-    const fetchImpl = (async () => jsonRes(200, { data: { status: "active" } })) as typeof fetch;
+  it("ativação bem-sucedida (GET 404 → cria → beehiivStatus:active) → 200, página de sucesso", async () => {
+    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      if (init?.method === "POST") return jsonRes(200, { data: { status: "active" } });
+      return new Response(null, { status: 404 });
+    }) as typeof fetch;
     const url = new URL("https://reativar.diaria.workers.dev/?email=a@b.com");
     const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
     const res = await handleConfirm(url, env, fetchImpl);
@@ -158,7 +270,10 @@ describe("handleConfirm — fim-a-fim (#4476 item 3)", () => {
   });
 
   it('#4476 achado do teste ao vivo: POST 2xx mas status:"invalid" → 200 com página "ainda não confirmado" (NUNCA a página de sucesso)', async () => {
-    const fetchImpl = (async () => jsonRes(201, { data: { status: "invalid" } })) as typeof fetch;
+    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      if (init?.method === "POST") return jsonRes(201, { data: { status: "invalid" } });
+      return new Response(null, { status: 404 });
+    }) as typeof fetch;
     const url = new URL("https://reativar.diaria.workers.dev/?email=a@b.com");
     const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
     const res = await handleConfirm(url, env, fetchImpl);
@@ -173,7 +288,7 @@ describe("handleConfirm — fim-a-fim (#4476 item 3)", () => {
     assert.equal(await res.text(), renderErrorPage());
   });
 
-  it("Beehiiv falha → 502, página de erro genérica", async () => {
+  it("Beehiiv falha (GET) → 502, página de erro genérica", async () => {
     const fetchImpl = (async () => new Response("boom", { status: 500 })) as typeof fetch;
     const url = new URL("https://reativar.diaria.workers.dev/?email=a@b.com");
     const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };

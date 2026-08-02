@@ -261,14 +261,36 @@ describe("verifyPromotedToBeehiiv — fail-safe se ainda pending (#4266, corrigi
     assert.equal(await verifyPromotedToBeehiiv("pub_1", "key", "a@b.com", fetchImpl), false);
   });
 
-  it('status "validating" (estado transitório observado no POST inicial, ao vivo #4476) → false', async () => {
-    const fetchImpl = (async () => jsonRes(200, { data: { status: "validating" } })) as typeof fetch;
-    assert.equal(await verifyPromotedToBeehiiv("pub_1", "key", "a@b.com", fetchImpl), false);
-  });
-
   it("404 (subscription sumiu) → false", async () => {
     const fetchImpl = (async () => jsonRes(404, {})) as typeof fetch;
     assert.equal(await verifyPromotedToBeehiiv("pub_1", "key", "a@b.com", fetchImpl), false);
+  });
+
+  it('status "validating" (estado transitório, achado ao vivo 260802) → 1 retry após espera, releitura "active" → true', async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      return jsonRes(200, { data: { status: calls === 1 ? "validating" : "active" } });
+    }) as typeof fetch;
+    let sleptMs = -1;
+    const sleepImpl = async (ms: number) => {
+      sleptMs = ms;
+    };
+    const result = await verifyPromotedToBeehiiv("pub_1", "key", "a@b.com", fetchImpl, sleepImpl);
+    assert.equal(result, true);
+    assert.equal(calls, 2, "GET inicial + 1 releitura após o retry");
+    assert.equal(sleptMs, 2000);
+  });
+
+  it('status "validating" → retry, mas releitura AINDA não confirma → false (nunca 2º retry)', async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      return jsonRes(200, { data: { status: "validating" } });
+    }) as typeof fetch;
+    const result = await verifyPromotedToBeehiiv("pub_1", "key", "a@b.com", fetchImpl, async () => {});
+    assert.equal(result, false);
+    assert.equal(calls, 2, "só 1 retry, nunca fica reesperando indefinidamente");
   });
 });
 
@@ -327,20 +349,59 @@ describe("suppressInBrevo / unlinkFromBrevoList / promoteBeehiivSubscription —
     }
   });
 
-  it("promoteBeehiivSubscription: sucesso faz POST com reactivate_existing:true", async () => {
-    let body: unknown;
-    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
-      body = JSON.parse(init!.body as string);
+  it("promoteBeehiivSubscription: DELETE do subscription_id existente, depois POST sem reactivate_existing (#4476, mecânica corrigida)", async () => {
+    const calls: { method: string; url: string; body?: unknown }[] = [];
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      calls.push({
+        method: init?.method ?? "GET",
+        url: String(url),
+        body: init?.body ? JSON.parse(init.body as string) : undefined,
+      });
+      if (init?.method === "DELETE") return new Response(null, { status: 204 });
       return jsonRes(200, {});
     }) as typeof fetch;
-    await promoteBeehiivSubscription("pub_1", "key", "a@b.com", fetchImpl);
-    assert.deepEqual(body, { email: "a@b.com", reactivate_existing: true, send_welcome_email: false });
+    await promoteBeehiivSubscription("pub_1", "key", "a@b.com", "sub_old", fetchImpl);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0], { method: "DELETE", url: "https://api.beehiiv.com/v2/publications/pub_1/subscriptions/sub_old", body: undefined });
+    assert.deepEqual(calls[1], {
+      method: "POST",
+      url: "https://api.beehiiv.com/v2/publications/pub_1/subscriptions",
+      body: { email: "a@b.com", send_welcome_email: false },
+    });
   });
 
-  it("promoteBeehiivSubscription: !ok lança com status e email na mensagem", async () => {
-    const fetchImpl = (async () => new Response("conflict", { status: 409 })) as typeof fetch;
+  it("promoteBeehiivSubscription: DELETE 404 (registro já sumiu) → segue pro CREATE mesmo assim", async () => {
+    let postCalled = false;
+    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      if (init?.method === "DELETE") return new Response(null, { status: 404 });
+      postCalled = true;
+      return jsonRes(200, {});
+    }) as typeof fetch;
+    await promoteBeehiivSubscription("pub_1", "key", "a@b.com", "sub_sumiu", fetchImpl);
+    assert.equal(postCalled, true);
+  });
+
+  it("promoteBeehiivSubscription: DELETE falha (não-404) → lança, nunca chega no CREATE", async () => {
+    let postCalled = false;
+    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      if (init?.method === "DELETE") return new Response("locked", { status: 423 });
+      postCalled = true;
+      return jsonRes(200, {});
+    }) as typeof fetch;
     await assert.rejects(
-      () => promoteBeehiivSubscription("pub_1", "key", "a@b.com", fetchImpl),
+      () => promoteBeehiivSubscription("pub_1", "key", "a@b.com", "sub_old", fetchImpl),
+      /DELETE.*sub_old.*a@b\.com \(HTTP 423\)/,
+    );
+    assert.equal(postCalled, false);
+  });
+
+  it("promoteBeehiivSubscription: CREATE !ok lança com status e email na mensagem", async () => {
+    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      if (init?.method === "DELETE") return new Response(null, { status: 204 });
+      return new Response("conflict", { status: 409 });
+    }) as typeof fetch;
+    await assert.rejects(
+      () => promoteBeehiivSubscription("pub_1", "key", "a@b.com", "sub_old", fetchImpl),
       /a@b\.com \(HTTP 409\)/,
     );
   });
@@ -752,6 +813,11 @@ describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fix
         // 1ª chamada: auto-confirmação (ainda "pending", cai no caminho de score).
         // 2ª chamada: verifyPromotedToBeehiiv pós-promoção (já "active", confirma).
         return jsonRes(200, { data: { status: selfConfirmCheckCalls === 1 ? "pending" : "active" } });
+      }
+      if (init?.method === "DELETE") {
+        // promoteBeehiivSubscription: deleta o registro pending travado antes
+        // de recriar (#4476, mecânica corrigida — não mais reactivate_existing).
+        return new Response(null, { status: 204 });
       }
       if (u.includes("/publications/pub_1/subscriptions") && init?.method === "POST") {
         return jsonRes(200, {});

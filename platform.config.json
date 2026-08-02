@@ -24,11 +24,11 @@
   "brevo_diaria": {
     "api_key_env": "BREVO_DIARIA_API_KEY",
     "list_id": null,
-    "sender_email": null,
+    "sender_email": "oi@diar.ia.br",
     "sender_name": "diar.ia.br",
     "test_email": "vjpixel@gmail.com",
     "daily_send_cap": 300,
-    "note": "#4266 — conta Brevo PRÓPRIA do editor (free tier, distinta da parceria Clarice em brevo_monthly), canal alternativo pro segmento Pending da Beehiiv (assinantes que nunca confirmaram o double opt-in). list_id/sender_email ficam null até o editor criar a conta/lista e preencher (mesmo padrão de brevo_monthly.sender_email antes do #653) — scripts/sync-pending-to-brevo.ts, scripts/evaluate-brevo-diaria.ts e scripts/publish-daily-brevo.ts abortam com erro explícito se list_id for null fora de --dry-run. daily_send_cap=300 cabe no free tier da Brevo (zero custo recorrente, CLAUDE.md)."
+    "note": "#4266 — conta Brevo PRÓPRIA do editor (free tier, distinta da parceria Clarice em brevo_monthly), canal alternativo pro segmento Pending da Beehiiv (assinantes que nunca confirmaram o double opt-in). sender_email confirmado 260802 (oi@diar.ia.br). list_id continua null até o editor criar a lista na conta e preencher — scripts/sync-pending-to-brevo.ts, scripts/evaluate-brevo-diaria.ts e scripts/publish-daily-brevo.ts abortam com erro explícito se list_id for null fora de --dry-run. daily_send_cap=300 cabe no free tier da Brevo (zero custo recorrente, CLAUDE.md)."
   },
   "inbox": {
     "address": "diariaeditor@gmail.com",
