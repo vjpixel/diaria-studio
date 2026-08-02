@@ -77,6 +77,44 @@ describe("send-edition-report --out (#1579)", () => {
     }
   });
 
+  it("#4478: --no-email não quebra o fluxo --out (HTML + manifest + registro continuam idênticos)", () => {
+    const { root, editionDir } = makeEditionDir();
+    try {
+      writeFileSync(
+        join(editionDir, "_internal", "stage-status.json"),
+        JSON.stringify({
+          edition: "260529",
+          rows: [],
+          generated_at: new Date().toISOString(),
+        }),
+      );
+
+      const htmlAbsPath = join(editionDir, "_internal", "edition-report.html");
+      const r = runCli([
+        "--edition", "260529",
+        "--edition-dir", editionDir,
+        "--out", htmlAbsPath,
+        "--no-email",
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.ok(existsSync(htmlAbsPath), "HTML file should exist mesmo com --no-email");
+
+      const manifestPath = join(editionDir, "_internal", ".edition-report-md5.txt");
+      assert.ok(existsSync(manifestPath), "md5 manifest deve existir mesmo com --no-email (só o e-mail é suprimido)");
+
+      // #3714: registro no Studio (index.jsonl) não é afetado por --no-email —
+      // só o disparo do e-mail é suprimido. studio_report_url no summary JSON
+      // (stderr) continua presente (registro bem-sucedido), não null.
+      assert.match(
+        r.stderr,
+        /"studio_report_url":\s*"http/,
+        "registro no Studio continua acontecendo com --no-email",
+      );
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
+
   it("sem --out → ainda escreve em stdout (back-compat)", () => {
     const { root, editionDir } = makeEditionDir();
     try {

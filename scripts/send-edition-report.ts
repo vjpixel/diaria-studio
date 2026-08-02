@@ -13,8 +13,13 @@
  * o orchestrator repassar o HTML via Gmail MCP `create_draft` — esse call
  * site foi removido de `.claude/agents/orchestrator-stage-6.md` (6b-8).
  *
+ * #4478: `registerReport` dispara um e-mail de notificação (#4475) a cada
+ * registro — mas o Stage 6 chama este script 2× pro mesmo id
+ * (`edicao-{AAMMDD}`, 6b-6 "descartável" + 6b-8 final). `--no-email` suprime
+ * o disparo sem afetar o registro em si (usado só pela chamada 6b-6).
+ *
  * Uso:
- *   npx tsx scripts/send-edition-report.ts --edition 260525 --edition-dir data/editions/260525/
+ *   npx tsx scripts/send-edition-report.ts --edition 260525 --edition-dir data/editions/260525/ [--no-email]
  *
  * Fontes de dados:
  *   1. _internal/stage-status.json — timing por stage
@@ -586,12 +591,22 @@ function toRepoRelativePosix(absPath: string): string {
  * decisão do editor 260720) — este script nunca criou o draft diretamente
  * (isso é `orchestrator-stage-6.md` 6b-8), então aqui só cabia adicionar o
  * registro; a remoção do `create_draft` é no agent prompt.
+ *
+ * **#4478: `notify` propaga pro `registerReport` — default `true` preserva
+ * o comportamento de #4475 (todo registro dispara e-mail).** O Stage 6
+ * chama este script 2× pro MESMO id (`edicao-{AAMMDD}`): 6b-6 gera o HTML só
+ * pra satisfazer o invariante de conclusão do stage ("descartável" no doc do
+ * orchestrator, não é o que o editor lê) e 6b-8 regenera de novo como
+ * ÚLTIMO passo do pipeline. `orchestrator-stage-6.md` 6b-6 passa `notify:
+ * false` (via `--no-email` no CLI) pra não duplicar o e-mail; 6b-8 não passa
+ * nada (default `true`) — é essa chamada que deve notificar o editor.
  */
 export function writeReportFile(
   editionDir: string,
   outPath: string,
   html: string,
   edition?: string,
+  notify = true,
 ): { md5: string; absOut: string; registered: boolean } {
   const absOut = resolve(ROOT, outPath);
   mkdirSync(dirname(absOut), { recursive: true });
@@ -602,12 +617,17 @@ export function writeReportFile(
   writeFileSync(manifestPath, md5 + "\n", "utf8");
   let registered = true;
   if (edition) {
-    const result = registerReport(ROOT, {
-      kind: "edicao",
-      sessionId: edition,
-      title: `Diar.ia — relatório de edição ${edition}`,
-      htmlPath: toRepoRelativePosix(absOut),
-    });
+    const result = registerReport(
+      ROOT,
+      {
+        kind: "edicao",
+        sessionId: edition,
+        title: `Diar.ia — relatório de edição ${edition}`,
+        htmlPath: toRepoRelativePosix(absOut),
+      },
+      undefined,
+      notify,
+    );
     registered = result.ok;
     if (!result.ok) {
       process.stderr.write(`[send-edition-report] warn: registro no Studio falhou (#3714): ${result.error}\n`);
@@ -652,14 +672,19 @@ export function writeEditionReport(
 }
 
 async function main(): Promise<void> {
-  const { values } = parseArgs(process.argv.slice(2));
+  const { values, flags } = parseArgs(process.argv.slice(2));
   const edition = values["edition"];
   const editionDirRaw = values["edition-dir"];
   const outPath = values["out"]; // #1579: opcional, default = stdout
+  // #4478: suprime o e-mail de notificação (#4475) sem afetar o registro no
+  // Studio — usado pela chamada "descartável" 6b-6 do Stage 6 (o HTML gerado
+  // ali existe só pra satisfazer o invariante de conclusão do stage, não é o
+  // que vai pro editor; a chamada final 6b-8 continua sem esta flag).
+  const noEmail = flags.has("no-email");
 
   if (!edition || !editionDirRaw) {
     console.error(
-      "Uso: send-edition-report.ts --edition AAMMDD --edition-dir data/editions/AAMMDD/ [--out _internal/edition-report.html]",
+      "Uso: send-edition-report.ts --edition AAMMDD --edition-dir data/editions/AAMMDD/ [--out _internal/edition-report.html] [--no-email]",
     );
     process.exit(2);
   }
@@ -705,7 +730,7 @@ async function main(): Promise<void> {
   // imprimir no resumo final em vez do antigo draft de Gmail.
   let registered = false;
   if (outPath) {
-    const result = writeReportFile(editionDir, outPath, html, edition);
+    const result = writeReportFile(editionDir, outPath, html, edition, !noEmail);
     registered = result.registered;
     process.stderr.write(`[send-edition-report] wrote ${result.absOut} (md5: ${result.md5.slice(0, 8)})\n`);
   } else {

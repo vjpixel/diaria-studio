@@ -319,6 +319,92 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
     assert.equal(dispatch.skipped, "register-failed");
     assert.equal(calls.length, 0);
   });
+
+  it("#4478: notify=false -> registra normalmente mas NUNCA chama sendMail (nem hasCredentials)", async () => {
+    const r = makeRoot();
+    const hasCredCalls: string[] = [];
+    const { deps, calls } = mockDeps({
+      hasCredentials: (rootDir) => {
+        hasCredCalls.push(rootDir);
+        return true;
+      },
+    });
+
+    const result = registerReport(
+      r,
+      { kind: "edicao", sessionId: "260802", title: "Diar.ia — relatório de edição 260802", htmlPath: "x.html" },
+      deps,
+      false, // notify
+    );
+
+    assert.equal(result.ok, true); // append em index.jsonl continua acontecendo
+    assert.equal(result.entry?.id, "edicao-260802");
+    assert.equal(listReports(r).length, 1);
+
+    const dispatch = await result.emailDispatch;
+    assert.equal(dispatch.sent, false);
+    assert.equal(dispatch.skipped, "notify-disabled");
+    assert.equal(calls.length, 0); // sendMail nunca chamado
+    assert.equal(hasCredCalls.length, 0); // dispatchReportEmail nem chegou a rodar
+  });
+
+  it("#4478: notify=true (default explícito) -> comportamento idêntico a omitir o parâmetro, chama sendMail normalmente", async () => {
+    const r = makeRoot();
+    const { deps, calls } = mockDeps();
+
+    const result = registerReport(
+      r,
+      { kind: "edicao", sessionId: "260802", title: "Diar.ia — relatório de edição 260802", htmlPath: "x.html" },
+      deps,
+      true, // notify explícito
+    );
+
+    const dispatch = await result.emailDispatch;
+    assert.equal(dispatch.sent, true);
+    assert.equal(calls.length, 1);
+  });
+
+  it("#4478: sem passar notify (comportamento pré-existente #4475 preservado) -> continua chamando sendMail", async () => {
+    const r = makeRoot();
+    const { deps, calls } = mockDeps();
+
+    const result = registerReport(
+      r,
+      { kind: "overnight", sessionId: "260802", title: "Diar.ia overnight 260802", htmlPath: "x.md" },
+      deps,
+      // notify omitido -> default true
+    );
+
+    const dispatch = await result.emailDispatch;
+    assert.equal(dispatch.sent, true);
+    assert.equal(calls.length, 1);
+  });
+});
+
+describe("buildReportEmail — prefixo [Diar.ia] não duplica a marca (#4478)", () => {
+  function mkEntry(overrides: Partial<ReportEntry> = {}): ReportEntry {
+    return {
+      id: "edicao-260802",
+      kind: "edicao",
+      sessionId: "260802",
+      title: "Diar.ia — relatório de edição 260802",
+      htmlPath: "x.html",
+      createdAt: new Date().toISOString(),
+      url: "/relatorios/edicao-260802",
+      ...overrides,
+    };
+  }
+
+  it("título já começa com 'Diar.ia' -> subject usa o título cru, sem prefixo duplicado", () => {
+    const { subject } = buildReportEmail(mkEntry());
+    assert.equal(subject, "Diar.ia — relatório de edição 260802");
+    assert.ok(!subject.startsWith("[Diar.ia] Diar.ia"));
+  });
+
+  it("título NÃO começa com 'Diar.ia' -> prefixo [Diar.ia] continua sendo adicionado", () => {
+    const { subject } = buildReportEmail(mkEntry({ title: "Relatório sem prefixo" }));
+    assert.equal(subject, "[Diar.ia] Relatório sem prefixo");
+  });
 });
 
 describe("buildReportEmail / dispatchReportEmail (#4475)", () => {

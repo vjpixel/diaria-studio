@@ -120,9 +120,11 @@ export interface RegisterReportResult {
 export interface ReportEmailDispatchResult {
   sent: boolean;
   /** Motivo de não ter tentado enviar: `no-credentials` (sessão cloud ou
-   * `oauth-setup.ts` nunca rodado) ou `register-failed` (o append em
-   * `index.jsonl` falhou antes do disparo — nada a notificar). */
-  skipped?: "no-credentials" | "register-failed";
+   * `oauth-setup.ts` nunca rodado), `register-failed` (o append em
+   * `index.jsonl` falhou antes do disparo — nada a notificar) ou
+   * `notify-disabled` (caller passou `notify: false` pro `registerReport` —
+   * #4478, ver a chamada "descartável" 6b-6 do Stage 6). */
+  skipped?: "no-credentials" | "register-failed" | "notify-disabled";
   /** Mensagem de erro do envio, quando tentado e falhou (fail-soft — nunca
    * lançado, só reportado aqui). */
   error?: string;
@@ -175,9 +177,15 @@ function resolveReportUrl(entry: ReportEntry): string {
  * o requisito de incluir o resumo sem duplicar lógica de digest aqui — este
  * módulo não conhece a estrutura de `plan.json`/`report.md` por kind, só o
  * texto que o caller já preparou como título.
+ *
+ * **`[Diar.ia]` só é prefixado quando o título ainda não começa com "Diar.ia"
+ * (achado do self-review, #4478).** Todo `entry.title` de kind hoje em uso
+ * (`overnight`/`develop`/`clarice-novos`/`edicao`) já começa com "Diar.ia" —
+ * sem esse guard o subject saía `"[Diar.ia] Diar.ia overnight ..."`,
+ * duplicando a marca.
  */
 export function buildReportEmail(entry: ReportEntry): { subject: string; body: string } {
-  const subject = `[Diar.ia] ${entry.title}`;
+  const subject = entry.title.startsWith("Diar.ia") ? entry.title : `[Diar.ia] ${entry.title}`;
   const body = `${entry.title}\n\n${resolveReportUrl(entry)}\n`;
   return { subject, body };
 }
@@ -189,16 +197,24 @@ export function buildReportEmail(entry: ReportEntry): { subject: string; body: s
  * em stderr; o caller (`registerReport`) já persistiu a entry em
  * `index.jsonl` antes de chamar isto, então o registro em si nunca depende
  * do resultado do e-mail.
+ *
+ * **`deps.hasCredentials` roda DENTRO do `try` (achado do self-review,
+ * #4478).** Defesa em profundidade: com o dep default (`defaultHasCredentials`,
+ * só um `existsSync`) essa checagem nunca lança na prática, mas `ReportEmailDeps`
+ * é um tipo exportado pra injeção — um `hasCredentials` customizado (ex: teste,
+ * ou um dep futuro que valide a credencial de verdade em vez de só checar a
+ * presença do arquivo) que lance é coberto pelo mesmo `catch` de baixo, sem
+ * precisar de um segundo bloco de tratamento.
  */
 export async function dispatchReportEmail(
   rootDir: string,
   entry: ReportEntry,
   deps: ReportEmailDeps = defaultEmailDeps,
 ): Promise<ReportEmailDispatchResult> {
-  if (!deps.hasCredentials(rootDir)) {
-    return { sent: false, skipped: "no-credentials" };
-  }
   try {
+    if (!deps.hasCredentials(rootDir)) {
+      return { sent: false, skipped: "no-credentials" };
+    }
     const to = deps.resolveEditorEmail(resolve(rootDir, "platform.config.json"));
     const { subject, body } = buildReportEmail(entry);
     await deps.sendMail(to, subject, body);
@@ -230,11 +246,27 @@ export async function dispatchReportEmail(
  * promise fica disponível em `result.emailDispatch` pra quem quiser aguardar
  * (testes) mas NUNCA precisa ser aguardada por callers de produção (fail-soft:
  * `dispatchReportEmail` nunca rejeita).
+ *
+ * **#4478: `notify` suprime o disparo do e-mail sem afetar o registro.** O
+ * Stage 6 diário chama `send-edition-report.ts` 2× pro MESMO id
+ * (`edicao-{AAMMDD}`) — 6b-6 gera `edition-report.html` só pra satisfazer
+ * `blockReasonForMarkingStageDone` (o próprio doc descreve essa geração como
+ * "descartável, não é o que vai pro rascunho de e-mail"); 6b-8 regenera e
+ * registra de novo o MESMO id como ÚLTIMO passo do pipeline. Sem supressão,
+ * `dispatchReportEmail` dispararia 1×em 6b-6 e outra em 6b-8 — 2 e-mails por
+ * edição, todo dia. `notify: false` pula o disparo inteiramente (nem chama
+ * `dispatchReportEmail`, então `deps.hasCredentials` nunca roda pra essa
+ * invocação) e resolve `emailDispatch` direto com
+ * `{sent: false, skipped: "notify-disabled"}` — o append em `index.jsonl`
+ * acontece igual, só o e-mail é que não sai. Default `true` preserva o
+ * comportamento anterior (#4475) pra todo caller que não passar nada —
+ * inclusive a chamada final de 6b-8, que deve continuar notificando.
  */
 export function registerReport(
   rootDir: string,
   input: ReportRegistryInput,
   emailDeps: ReportEmailDeps = defaultEmailDeps,
+  notify = true,
 ): RegisterReportResult {
   const id = reportId(input.kind, input.sessionId);
   const createdAt = input.createdAt ?? new Date().toISOString();
@@ -247,7 +279,14 @@ export function registerReport(
   try {
     mkdirSync(resolve(rootDir, REPORTS_DIR), { recursive: true });
     appendFileSync(registryPath(rootDir), JSON.stringify(entry) + "\n", "utf8");
-    return { ok: true, entry, error: null, emailDispatch: dispatchReportEmail(rootDir, entry, emailDeps) };
+    return {
+      ok: true,
+      entry,
+      error: null,
+      emailDispatch: notify
+        ? dispatchReportEmail(rootDir, entry, emailDeps)
+        : Promise.resolve({ sent: false, skipped: "notify-disabled" as const }),
+    };
   } catch (e) {
     return {
       ok: false,
