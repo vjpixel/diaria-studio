@@ -343,8 +343,16 @@ export function isInternalEmail(email: string): boolean {
 
 /**
  * `engajados` (retenção): elegível, com histórico de envio, e engajado
- * (priority_points > 0 — mesmo eixo de `priorityQueue`). Exclui internos
- * (#2809) — abrem por ofício, não é sinal de retenção real. Exclui contas de
+ * (priority_points > 0 — mesmo eixo de `priorityQueue`). NÃO exclui internos
+ * (#4434 — decisão do editor 260801, opção (a): `INTERNAL_EMAILS` passou a
+ * significar só "fora das agregações de exibição", nunca "fora do envio". A
+ * exclusão anterior (#2809) deixava um interno com histórico de envio
+ * (`sends_count > 0`) inalcançável por qualquer grupo nomeado — `ramp-warm`
+ * exige `sends_count = 0` e não o alcança — sumindo da fila pra sempre; caso
+ * real: `felipe@clarice.ai`, top 0,04% da base por `priority_points`, nunca
+ * recebia. `isInternalEmail` continua existindo e é usada onde a exclusão É
+ * sobre exibição — `cohort_stats`/médias em `clarice-db-summary.ts`, via
+ * `NOT_INTERNAL_SQL`, independente deste predicado). Exclui contas de
  * teste do editor (#2895/#2920) — mesmo guard de defesa em profundidade que
  * `segmentFromStore` já aplica; sem ele, um `vjpixel+test*@gmail.com` ainda
  * presente no store (até o próximo rebuild purgar, ver #2911) entraria aqui
@@ -357,7 +365,6 @@ export function isEngajados(
     isSendEligible(r) &&
     (r.sends_count ?? 0) > 0 &&
     (r.priority_points ?? 0) > 0 &&
-    !isInternalEmail(r.email) &&
     !isTestAccount(r.email)
   );
 }
@@ -377,8 +384,9 @@ export function segmentEngajados(rows: StoreRow[]): StoreRow[] {
  * `reativacao`: elegível, com histórico de envio, mas NUNCA abriu
  * (opens_count = 0 — o não-abridor puro, distinto do "decaído" de
  * `priorityQueue` que só olha priority_points ≤ 0, que também inclui quem
- * abriu pouco). Exclui internos (#2809) e contas de teste do editor
- * (#2895/#2920 — mesmo motivo de `isEngajados`).
+ * abriu pouco). NÃO exclui internos (#4434 — mesma decisão/motivo de
+ * `isEngajados` acima). Exclui contas de teste do editor (#2895/#2920 —
+ * mesmo motivo de `isEngajados`).
  */
 export function isReativacao(
   r: Pick<StoreRow, "email" | "send_eligible" | "sends_count" | "opens_count">,
@@ -387,7 +395,6 @@ export function isReativacao(
     isSendEligible(r) &&
     (r.sends_count ?? 0) > 0 &&
     (r.opens_count ?? 0) === 0 &&
-    !isInternalEmail(r.email) &&
     !isTestAccount(r.email)
   );
 }

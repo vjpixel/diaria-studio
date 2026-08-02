@@ -131,12 +131,18 @@ test("buildSegmentArtifact: 1º nome tira vírgula (Azevedo, Ana → Azevedo)", 
   assert.equal(parsed[0].NOME, "Azevedo");
 });
 
-test("buildSegmentArtifact: internos (#2809) nunca aparecem em 'engajados'/'reativacao'", () => {
+test("buildSegmentArtifact: #4434 (reverte #2809) — internos voltam a aparecer em 'engajados'/'reativacao'", () => {
   const rows: SegmentRow[] = INTERNAL_EMAILS.map((email) =>
     row({ email, sends_count: 5, priority_points: 999, opens_count: 0, last_sent_at: "2026-06-01T00:00:00Z" }),
   );
-  assert.equal(buildSegmentArtifact(rows, "engajados", 0).manifestEntry.count, 0);
-  assert.equal(buildSegmentArtifact(rows, "reativacao", 0).manifestEntry.count, 0);
+  // Decisão do editor (260801, opção (a), #4434): `INTERNAL_EMAILS` só exclui
+  // das agregações de exibição (cohort_stats/priority_points médios em
+  // clarice-db-summary.ts), nunca da fila de envio — reverte a exclusão de
+  // `isEngajados`/`isReativacao` introduzida pelo #2809, que deixava um
+  // interno com sends_count>0 (ex: felipe@clarice.ai) inalcançável por
+  // qualquer grupo nomeado.
+  assert.equal(buildSegmentArtifact(rows, "engajados", 0).manifestEntry.count, INTERNAL_EMAILS.length);
+  assert.equal(buildSegmentArtifact(rows, "reativacao", 0).manifestEntry.count, INTERNAL_EMAILS.length);
 });
 
 test("buildSegmentArtifact: --min-score exclui priority_points abaixo do piso ANTES do budget (#2973)", () => {

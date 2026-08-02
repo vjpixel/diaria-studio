@@ -626,7 +626,7 @@ test("isInternalEmail: reconhece os 4 internos (#2809), case/trim-insensível; q
   assert.equal(isInternalEmail("audiencia@x.com"), false);
 });
 
-test("isEngajados: send_eligible=1 AND sends_count>0 AND priority_points>0; exclui internos (#2809)", () => {
+test("isEngajados: send_eligible=1 AND sends_count>0 AND priority_points>0; NÃO exclui internos (#4434, reverte #2809)", () => {
   assert.equal(
     isEngajados({ email: "a@x.com", send_eligible: 1, sends_count: 3, priority_points: 20 }),
     true,
@@ -647,10 +647,15 @@ test("isEngajados: send_eligible=1 AND sends_count>0 AND priority_points>0; excl
     false,
     "priority_points<=0 → fora (decaído, não engajado)",
   );
+  // #4434: decisão do editor (260801, opção (a)) — interno com histórico de
+  // envio e priority_points>0 volta a ENTRAR em engajados. Comportamento
+  // anterior (#2809) excluía e deixava `felipe@clarice.ai` (top 0,04% da base)
+  // inalcançável por qualquer grupo nomeado. `isInternalEmail` segue existindo
+  // pras agregações de exibição (`clarice-db-summary.ts`), não pra elegibilidade.
   assert.equal(
     isEngajados({ email: "VJPIXEL@GMAIL.COM", send_eligible: 1, sends_count: 3, priority_points: 20 }),
-    false,
-    "interno (#2809) → fora mesmo satisfazendo as outras 3 condições",
+    true,
+    "interno (#4434) → ENTRA normalmente, satisfazendo as outras 3 condições",
   );
 });
 
@@ -662,7 +667,6 @@ test("segmentEngajados: ordem priority_points DESC, email ASC desempata", () => 
     row({ email: "fresh@x.com", sends_count: 0, priority_points: 999 }), // firstSend, não engajados
     row({ email: "decay@x.com", sends_count: 2, priority_points: -10 }), // decaído, não engajados
     row({ email: "cut@x.com", sends_count: 2, priority_points: 50, send_eligible: 0 }), // inelegível
-    row({ email: "vjpixel@gmail.com", sends_count: 4, priority_points: 999 }), // interno
   ];
   assert.deepEqual(
     segmentEngajados(rows).map((r) => r.email),
@@ -670,7 +674,18 @@ test("segmentEngajados: ordem priority_points DESC, email ASC desempata", () => 
   );
 });
 
-test("isReativacao: send_eligible=1 AND sends_count>0 AND opens_count=0; exclui internos (#2809)", () => {
+test("#4434: segmentEngajados inclui interno com priority_points alto — entra no TOPO da fila por ordenação normal", () => {
+  const rows: StoreRow[] = [
+    row({ email: "a@x.com", sends_count: 5, priority_points: 20 }),
+    row({ email: "vjpixel@gmail.com", sends_count: 4, priority_points: 999 }), // interno, ex-excluído (#2809)
+  ];
+  assert.deepEqual(
+    segmentEngajados(rows).map((r) => r.email),
+    ["vjpixel@gmail.com", "a@x.com"], // 999 > 20 — interno não é mais descartado nem reordenado à parte
+  );
+});
+
+test("isReativacao: send_eligible=1 AND sends_count>0 AND opens_count=0; NÃO exclui internos (#4434, reverte #2809)", () => {
   assert.equal(
     isReativacao({ email: "a@x.com", send_eligible: 1, sends_count: 3, opens_count: 0 }),
     true,
@@ -692,8 +707,8 @@ test("isReativacao: send_eligible=1 AND sends_count>0 AND opens_count=0; exclui 
   );
   assert.equal(
     isReativacao({ email: "pixel@memelab.com.br", send_eligible: 1, sends_count: 3, opens_count: 0 }),
-    false,
-    "interno (#2809) → fora",
+    true,
+    "interno (#4434) → ENTRA normalmente",
   );
 });
 
