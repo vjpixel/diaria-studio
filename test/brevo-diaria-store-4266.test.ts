@@ -18,6 +18,7 @@ import {
   upsertIngested,
   applyEvaluation,
   applySelfConfirmed,
+  applyNativeUnsubscribe,
   findContact,
   normalizeEmail,
   type BrevoDiariaStore,
@@ -42,7 +43,7 @@ describe("upsertIngested — dedup idempotente (#4266)", () => {
     assert.equal(c.status, "in_brevo");
     assert.equal(c.opens_count, 0);
     assert.equal(c.sends_count, 0);
-    assert.equal(c.last_score, null);
+    assert.equal(c.last_open_rate, null);
     assert.equal(c.added_at, "2026-07-31T00:00:00.000Z");
   });
 
@@ -59,7 +60,7 @@ describe("upsertIngested — dedup idempotente (#4266)", () => {
   });
 });
 
-describe("applyEvaluation — thresholds (#4266)", () => {
+describe("applyEvaluation — thresholds (#4266, formula reescrita no #4476)", () => {
   const base: BrevoDiariaStore = {
     contacts: [
       {
@@ -68,33 +69,33 @@ describe("applyEvaluation — thresholds (#4266)", () => {
         status: "in_brevo",
         opens_count: 0,
         sends_count: 0,
-        last_score: null,
+        last_open_rate: null,
         added_at: "2026-07-01T00:00:00.000Z",
         last_evaluated_at: null,
       },
     ],
   };
 
-  it("score >= 60 (promote_to_beehiiv) → status promoted_beehiiv, promoted_at setado", () => {
+  it("action=promote_to_beehiiv → status promoted_beehiiv, promoted_at setado", () => {
     const out = applyEvaluation(
       base,
       "a@b.com",
-      { opens_count: 3, sends_count: 3, score: 60, action: "promote_to_beehiiv" },
+      { opens_count: 3, sends_count: 3, open_rate: 1, action: "promote_to_beehiiv" },
       "2026-07-31T00:00:00.000Z",
     );
     const c = findContact(out, "a@b.com")!;
     assert.equal(c.status, "promoted_beehiiv");
     assert.equal(c.promoted_at, "2026-07-31T00:00:00.000Z");
     assert.equal(c.resolution_reason, "score_threshold");
-    assert.equal(c.last_score, 60);
+    assert.equal(c.last_open_rate, 1);
     assert.equal(c.opens_count, 3);
   });
 
-  it("score <= -30 (suppress) → status suppressed, suppressed_at setado", () => {
+  it("action=suppress → status suppressed, suppressed_at setado", () => {
     const out = applyEvaluation(
       base,
       "a@b.com",
-      { opens_count: 0, sends_count: 3, score: -30, action: "suppress" },
+      { opens_count: 0, sends_count: 5, open_rate: 0, action: "suppress" },
       "2026-07-31T00:00:00.000Z",
     );
     const c = findContact(out, "a@b.com")!;
@@ -103,16 +104,16 @@ describe("applyEvaluation — thresholds (#4266)", () => {
     assert.equal(c.resolution_reason, "score_threshold");
   });
 
-  it('score no meio ("keep") → permanece in_brevo, contadores atualizados', () => {
+  it('action="keep" (meio da faixa) → permanece in_brevo, contadores atualizados', () => {
     const out = applyEvaluation(
       base,
       "a@b.com",
-      { opens_count: 1, sends_count: 2, score: 10, action: "keep" },
+      { opens_count: 1, sends_count: 2, open_rate: 0.5, action: "keep" },
       "2026-07-31T00:00:00.000Z",
     );
     const c = findContact(out, "a@b.com")!;
     assert.equal(c.status, "in_brevo");
-    assert.equal(c.last_score, 10);
+    assert.equal(c.last_open_rate, 0.5);
     assert.equal(c.last_evaluated_at, "2026-07-31T00:00:00.000Z");
     assert.equal(c.promoted_at, undefined);
     assert.equal(c.suppressed_at, undefined);
@@ -125,7 +126,7 @@ describe("applyEvaluation — thresholds (#4266)", () => {
     const out = applyEvaluation(resolved, "a@b.com", {
       opens_count: 0,
       sends_count: 10,
-      score: -100,
+      open_rate: 0,
       action: "suppress",
     });
     const c = findContact(out, "a@b.com")!;
@@ -137,11 +138,59 @@ describe("applyEvaluation — thresholds (#4266)", () => {
     const out = applyEvaluation(base, "nao-existe@b.com", {
       opens_count: 1,
       sends_count: 1,
-      score: 20,
+      open_rate: 1,
       action: "keep",
     });
     assert.equal(out.contacts.length, 1);
     assert.equal(out.contacts[0].email, "a@b.com");
+  });
+});
+
+describe("applyNativeUnsubscribe — 3ª saída terminal, distinta de suppress (#4476 item 7)", () => {
+  const base: BrevoDiariaStore = {
+    contacts: [
+      {
+        email: "a@b.com",
+        beehiiv_subscription_id: "sub_1",
+        status: "in_brevo",
+        opens_count: 1,
+        sends_count: 3,
+        last_open_rate: 0.33,
+        added_at: "2026-07-01T00:00:00.000Z",
+        last_evaluated_at: "2026-07-20T00:00:00.000Z",
+      },
+    ],
+  };
+
+  it("contato in_brevo descadastrado nativamente → status unsubscribed, motivo native_unsubscribe", () => {
+    const out = applyNativeUnsubscribe(base, "a@b.com", "2026-08-02T00:00:00.000Z");
+    const c = findContact(out, "a@b.com")!;
+    assert.equal(c.status, "unsubscribed");
+    assert.equal(c.unsubscribed_at, "2026-08-02T00:00:00.000Z");
+    assert.equal(c.resolution_reason, "native_unsubscribe");
+  });
+
+  it("distinto de suppressed: mesmo evento base, resolution_reason nunca vira score_threshold", () => {
+    const out = applyNativeUnsubscribe(base, "a@b.com");
+    const c = findContact(out, "a@b.com")!;
+    assert.notEqual(c.resolution_reason, "score_threshold");
+    assert.notEqual(c.status, "suppressed");
+  });
+
+  it("contato já promovido/suprimido NUNCA regride pra unsubscribed", () => {
+    const resolved: BrevoDiariaStore = {
+      contacts: [{ ...base.contacts[0], status: "suppressed", suppressed_at: "2026-07-25T00:00:00.000Z", resolution_reason: "score_threshold" }],
+    };
+    const out = applyNativeUnsubscribe(resolved, "a@b.com");
+    const c = findContact(out, "a@b.com")!;
+    assert.equal(c.status, "suppressed", "não regride pra unsubscribed");
+    assert.equal(c.resolution_reason, "score_threshold");
+  });
+
+  it("email não encontrado → noop", () => {
+    const out = applyNativeUnsubscribe(base, "nao-existe@b.com");
+    assert.equal(out.contacts.length, 1);
+    assert.equal(out.contacts[0].status, "in_brevo");
   });
 });
 
@@ -155,7 +204,7 @@ describe("applySelfConfirmed — fecha o gap de duplicidade (#4266)", () => {
           status: "in_brevo",
           opens_count: 1,
           sends_count: 2,
-          last_score: 10,
+          last_open_rate: 0.5,
           added_at: "2026-07-01T00:00:00.000Z",
           last_evaluated_at: "2026-07-20T00:00:00.000Z",
         },
@@ -177,7 +226,7 @@ describe("applySelfConfirmed — fecha o gap de duplicidade (#4266)", () => {
           status: "suppressed",
           opens_count: 0,
           sends_count: 4,
-          last_score: -40,
+          last_open_rate: 0,
           added_at: "2026-07-01T00:00:00.000Z",
           last_evaluated_at: "2026-07-20T00:00:00.000Z",
           suppressed_at: "2026-07-20T00:00:00.000Z",

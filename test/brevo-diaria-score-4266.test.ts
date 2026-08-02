@@ -1,95 +1,117 @@
 /**
- * test/brevo-diaria-score-4266.test.ts (#4266)
+ * test/brevo-diaria-score-4266.test.ts (#4266, reescrito no #4476 item 1)
  *
- * Fórmula de scoring do canal Brevo próprio do editor (triagem de Pending da
- * Beehiiv) — mesmos fatores abertura/não-abertura do `computePriorityPoints`
- * da Clarice, SEM o bônus `priority_optin` (não aplicável aqui). Cobre os
- * casos exatos de +20/-10 e os dois thresholds (60 / -30), inclusive nas
- * bordas exatas (#633 exige regressão nos limites, não só no "meio" da faixa).
+ * Fórmula de saída (promoção/supressão) do canal Brevo próprio do editor —
+ * taxa de abertura com piso mínimo de amostra, assimétrica entre promoção
+ * (n>=2, taxa>=50%) e supressão (n>=5, taxa<=20%). Cobre as bordas EXATAS
+ * dos dois thresholds e — caso mais importante desta reescrita — os casos
+ * abaixo do piso de amostra que NUNCA agem mesmo com a taxa já batendo o
+ * threshold (#633 exige regressão nos limites, não só no "meio" da faixa).
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  computeBrevoDiariaScore,
+  computeBrevoDiariaOpenRate,
   classifyBrevoDiariaAction,
-  BREVO_DIARIA_PROMOTE_THRESHOLD,
-  BREVO_DIARIA_SUPPRESS_THRESHOLD,
+  BREVO_DIARIA_PROMOTE_MIN_SENDS,
+  BREVO_DIARIA_PROMOTE_MIN_OPEN_RATE,
+  BREVO_DIARIA_SUPPRESS_MIN_SENDS,
+  BREVO_DIARIA_SUPPRESS_MAX_OPEN_RATE,
 } from "../scripts/lib/shared/brevo-diaria-score.ts";
 
-describe("computeBrevoDiariaScore — #4266", () => {
-  it("sem envios → 0 (ponto de partida)", () => {
-    assert.equal(computeBrevoDiariaScore({ opens_count: 0, sends_count: 0 }), 0);
+describe("computeBrevoDiariaOpenRate — #4476", () => {
+  it("sem envios → 0 (nunca divide por zero)", () => {
+    assert.equal(computeBrevoDiariaOpenRate({ opens_count: 0, sends_count: 0 }), 0);
   });
 
-  it("+20 por email aberto (1 enviado, 1 aberto)", () => {
-    assert.equal(computeBrevoDiariaScore({ opens_count: 1, sends_count: 1 }), 20);
+  it("2 enviados, 1 aberto → 0.5", () => {
+    assert.equal(computeBrevoDiariaOpenRate({ opens_count: 1, sends_count: 2 }), 0.5);
   });
 
-  it("-10 por email recebido e não aberto (1 enviado, 0 aberto)", () => {
-    assert.equal(computeBrevoDiariaScore({ opens_count: 0, sends_count: 1 }), -10);
+  it("5 enviados, 1 aberto → 0.2", () => {
+    assert.equal(computeBrevoDiariaOpenRate({ opens_count: 1, sends_count: 5 }), 0.2);
   });
 
-  it("3 aberturas + 2 não-aberturas → 60 - 20 = 40", () => {
-    assert.equal(computeBrevoDiariaScore({ opens_count: 3, sends_count: 5 }), 40);
-  });
-
-  it("NÃO tem bônus priority_optin — só a fatia abertura/não-abertura da fórmula Clarice", () => {
-    // 3 aberturas puras (sends == opens): computePriorityPoints da Clarice
-    // com priority_optin=false daria o mesmo valor (60) — confirma que a
-    // fórmula aqui é a MESMA fatia, sem termo extra.
-    assert.equal(computeBrevoDiariaScore({ opens_count: 3, sends_count: 3 }), 60);
-  });
-
-  it("aditivo, não corte duro: decai mas não trava em 0", () => {
-    assert.equal(computeBrevoDiariaScore({ opens_count: 1, sends_count: 6 }), 20 - 50);
+  it("todos abertos → 1", () => {
+    assert.equal(computeBrevoDiariaOpenRate({ opens_count: 4, sends_count: 4 }), 1);
   });
 });
 
-describe("classifyBrevoDiariaAction — thresholds (#4266)", () => {
-  it(`score == ${BREVO_DIARIA_PROMOTE_THRESHOLD} (borda exata) → promote_to_beehiiv`, () => {
-    assert.equal(classifyBrevoDiariaAction(BREVO_DIARIA_PROMOTE_THRESHOLD), "promote_to_beehiiv");
-  });
-
-  it(`score == ${BREVO_DIARIA_PROMOTE_THRESHOLD - 1} (1 abaixo da borda) → keep`, () => {
-    assert.equal(classifyBrevoDiariaAction(BREVO_DIARIA_PROMOTE_THRESHOLD - 1), "keep");
-  });
-
-  it("score muito acima do threshold de promoção → promote_to_beehiiv", () => {
-    assert.equal(classifyBrevoDiariaAction(200), "promote_to_beehiiv");
-  });
-
-  it(`score == ${BREVO_DIARIA_SUPPRESS_THRESHOLD} (borda exata) → suppress`, () => {
-    assert.equal(classifyBrevoDiariaAction(BREVO_DIARIA_SUPPRESS_THRESHOLD), "suppress");
-  });
-
-  it(`score == ${BREVO_DIARIA_SUPPRESS_THRESHOLD + 1} (1 acima da borda) → keep`, () => {
-    assert.equal(classifyBrevoDiariaAction(BREVO_DIARIA_SUPPRESS_THRESHOLD + 1), "keep");
-  });
-
-  it("score muito abaixo do threshold de supressão → suppress", () => {
-    assert.equal(classifyBrevoDiariaAction(-500), "suppress");
-  });
-
-  it("score 0 (neutro) → keep", () => {
-    assert.equal(classifyBrevoDiariaAction(0), "keep");
-  });
-
-  it("scores computados via computeBrevoDiariaScore casam com os thresholds documentados", () => {
-    // 3 aberturas, 0 não-abertura → 60 → promove
+describe("classifyBrevoDiariaAction — promoção (#4476 item 1)", () => {
+  it(`sends_count=${BREVO_DIARIA_PROMOTE_MIN_SENDS}, openRate=${BREVO_DIARIA_PROMOTE_MIN_OPEN_RATE} (bordas exatas) → promote_to_beehiiv`, () => {
     assert.equal(
-      classifyBrevoDiariaAction(computeBrevoDiariaScore({ opens_count: 3, sends_count: 3 })),
+      classifyBrevoDiariaAction({ opens_count: 1, sends_count: 2 }),
       "promote_to_beehiiv",
+      "2 enviados/1 aberto = 50% exato, piso de amostra 2 exato",
     );
-    // 0 aberturas, 3 não-aberturas → -30 → suprime
+  });
+
+  it("sends_count=1 (1 abaixo do piso), openRate=100% → keep (NÃO promove mesmo com taxa perfeita)", () => {
     assert.equal(
-      classifyBrevoDiariaAction(computeBrevoDiariaScore({ opens_count: 0, sends_count: 3 })),
-      "suppress",
-    );
-    // 1 abertura, 1 não-abertura → 20 - 10 = 10 → mantém
-    assert.equal(
-      classifyBrevoDiariaAction(computeBrevoDiariaScore({ opens_count: 1, sends_count: 2 })),
+      classifyBrevoDiariaAction({ opens_count: 1, sends_count: 1 }),
       "keep",
+      "amostra insuficiente sempre vence, mesmo com taxa acima do threshold",
     );
+  });
+
+  it("sends_count=2, openRate=49% (1 abaixo do threshold) → keep", () => {
+    assert.equal(classifyBrevoDiariaAction({ opens_count: 49, sends_count: 100 }), "keep");
+  });
+
+  it("amostra grande, taxa bem acima do threshold → promote_to_beehiiv", () => {
+    assert.equal(classifyBrevoDiariaAction({ opens_count: 9, sends_count: 10 }), "promote_to_beehiiv");
+  });
+});
+
+describe("classifyBrevoDiariaAction — supressão (#4476 item 1)", () => {
+  it(`sends_count=${BREVO_DIARIA_SUPPRESS_MIN_SENDS}, openRate=${BREVO_DIARIA_SUPPRESS_MAX_OPEN_RATE} (bordas exatas) → suppress`, () => {
+    assert.equal(
+      classifyBrevoDiariaAction({ opens_count: 1, sends_count: 5 }),
+      "suppress",
+      "5 enviados/1 aberto = 20% exato, piso de amostra 5 exato",
+    );
+  });
+
+  it("sends_count=4 (1 abaixo do piso), openRate=0% → keep (NÃO suprime mesmo com taxa péssima)", () => {
+    assert.equal(
+      classifyBrevoDiariaAction({ opens_count: 0, sends_count: 4 }),
+      "keep",
+      "amostra insuficiente sempre vence, mesmo com taxa abaixo do threshold",
+    );
+  });
+
+  it("sends_count=5, openRate=21% (1 acima do threshold) → keep", () => {
+    assert.equal(classifyBrevoDiariaAction({ opens_count: 21, sends_count: 100 }), "keep");
+  });
+
+  it("amostra grande, taxa bem abaixo do threshold → suppress", () => {
+    assert.equal(classifyBrevoDiariaAction({ opens_count: 1, sends_count: 20 }), "suppress");
+  });
+
+  it("nunca aberto, amostra suficiente → suppress (openRate=0%)", () => {
+    assert.equal(classifyBrevoDiariaAction({ opens_count: 0, sends_count: 5 }), "suppress");
+  });
+});
+
+describe("classifyBrevoDiariaAction — meio da faixa e zero atividade (#4476)", () => {
+  it("openRate entre os dois thresholds, amostra suficiente pros dois → keep", () => {
+    assert.equal(classifyBrevoDiariaAction({ opens_count: 3, sends_count: 10 }), "keep"); // 30%
+  });
+
+  it("sem envios (0/0) → keep (nenhum piso de amostra atingido)", () => {
+    assert.equal(classifyBrevoDiariaAction({ opens_count: 0, sends_count: 0 }), "keep");
+  });
+
+  it("promoção e supressão são mutuamente exclusivas — nenhum input classifica como as duas", () => {
+    for (let sends = 0; sends <= 10; sends++) {
+      for (let opens = 0; opens <= sends; opens++) {
+        const input = { opens_count: opens, sends_count: sends };
+        const rate = computeBrevoDiariaOpenRate(input);
+        const isPromote = sends >= BREVO_DIARIA_PROMOTE_MIN_SENDS && rate >= BREVO_DIARIA_PROMOTE_MIN_OPEN_RATE;
+        const isSuppress = sends >= BREVO_DIARIA_SUPPRESS_MIN_SENDS && rate <= BREVO_DIARIA_SUPPRESS_MAX_OPEN_RATE;
+        assert.ok(!(isPromote && isSuppress), `sends=${sends} opens=${opens} não deveria bater os dois thresholds`);
+      }
+    }
   });
 });

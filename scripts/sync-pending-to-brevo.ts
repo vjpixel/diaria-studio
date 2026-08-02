@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * scripts/sync-pending-to-brevo.ts (#4266, item 2a/3 do plano da issue)
+ * scripts/sync-pending-to-brevo.ts (#4266, item 2a/3 do plano da issue;
+ * fila de tamanho fixo + backfill adicionados no #4476 item 5)
  *
  * Triagem de SAÍDA (não envio duplicado aditivo — decisão do editor, sessão
  * /diaria-develop 260731, comentário 260731 da issue #4266): identifica
@@ -10,6 +11,31 @@
  * `platform.config.json`, distinta da conta da parceria Clarice), pra que
  * recebam a diária por esse canal alternativo enquanto continuam pendentes
  * na Beehiiv.
+ *
+ * ## Fila de tamanho fixo + backfill contínuo (#4476 item 5)
+ *
+ * SUBSTITUI o comportamento original (ingeria TODO `computeContactsToIngest`
+ * de uma vez, sem cap): a fila de contatos `in_brevo` nunca excede o cap
+ * free-tier da Brevo (300, `brevo_diaria.daily_send_cap`,
+ * `computeAvailableSlots`). Cada rodada calcula quantos slots estão livres
+ * (cap menos quem hoje ocupa um slot) e ingere só até esse número,
+ * PRIORIZADO pelo score de origem (#4476 item 4, `selectContactsForBackfill`
+ * + `loadOriginScores`, que lê `data/pending-reativacao/pending-scored-computed.csv`
+ * gerado por `scripts/score-pending-origin.ts`). "Backfill CONTÍNUO" é uma
+ * propriedade emergente de rodar este script periodicamente: quando
+ * `evaluate-brevo-diaria.ts` promove/suprime/detecta descadastro nativo de
+ * um contato (mudando seu status pra fora de `in_brevo`), a PRÓXIMA rodada
+ * deste script vê mais slots livres e ingere o próximo da fila — nenhum
+ * mecanismo adicional de "notificação de slot livre" é necessário.
+ *
+ * MillionVerifier (issue #4476 item 8) é DELIBERADAMENTE fora do escopo
+ * deste backfill — a issue resolveu (260802) que a verificação roda em 1
+ * passada em lote sobre os 627 contatos ANTES do primeiro envio, não uma
+ * checagem por-backfill (ver checklist da issue #4476: "1 passada de
+ * MillionVerifier em todos os 627... não por-backfill — item 8"). Este
+ * script não verifica e-mail nenhum — assume que o pool já passou pela
+ * verificação em lote (script separado, ainda não implementado) antes do
+ * primeiro `--push` real.
  *
  * ## Dedup: pelo STORE, não pela Beehiiv (decisão de design)
  *
@@ -52,14 +78,16 @@
  * partir de sessão autônoma). Validado só via testes com fetch mockado.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { hasMorePages } from "./sync-cursos-subscribers-kv.ts";
 import { brevoPost, brevoGet } from "./lib/brevo-client.ts";
+import { DEFAULT_OUTPUT_PATH as ORIGIN_SCORES_CSV_PATH } from "./score-pending-origin.ts";
 import {
   readStore,
   writeStore,
@@ -76,10 +104,20 @@ const PER_PAGE = 100;
 interface BrevoDiariaConfig {
   api_key_env: string;
   list_id: number | null;
+  /** #4476 item 5 — cap free tier Brevo (300), reusado como teto da fila de
+   * contatos ATIVOS (`in_brevo`), não só de envio diário — ver
+   * `computeAvailableSlots`. */
+  daily_send_cap?: number;
 }
 interface PlatformConfig {
   brevo_diaria?: BrevoDiariaConfig;
 }
+
+/** Fallback se `daily_send_cap` não estiver em `platform.config.json` (nunca
+ * deveria faltar — já documentado lá desde #4266 — mas o campo é opcional no
+ * tipo, então um fallback explícito é mais seguro que `undefined` silencioso
+ * chegando em `computeAvailableSlots`). */
+const DEFAULT_QUEUE_CAP = 300;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -178,8 +216,8 @@ export interface PendingToIngestEntry {
 
 /**
  * Pura — quem entre os Pending atuais da Beehiiv AINDA não está no store
- * (por qualquer status: `in_brevo`/`promoted_beehiiv`/`suppressed` contam
- * como "já tratado", nunca re-ingerido).
+ * (por qualquer status: `in_brevo`/`promoted_beehiiv`/`suppressed`/
+ * `unsubscribed` contam como "já tratado", nunca re-ingerido).
  */
 export function computeContactsToIngest(
   pending: BeehiivPendingSubscription[],
@@ -194,6 +232,95 @@ export function computeContactsToIngest(
     out.push({ email: p.email, beehiiv_subscription_id: p.id });
   }
   return out;
+}
+
+// ── fila de tamanho fixo + backfill (#4476 item 5) ──────────────────────────
+
+/**
+ * Pura — quantos slots estão livres na fila (cap free tier Brevo — 300,
+ * reusa `brevo_diaria.daily_send_cap` de `platform.config.json`; o mesmo
+ * valor já documentado ali como "cabe no free tier da Brevo" cobre tanto o
+ * teto de ENVIO diário quanto o teto de CONTATOS ativos simultâneos — são
+ * numericamente o mesmo limite no plano free da Brevo). `currentActiveCount`
+ * é `store.contacts` com `status === "in_brevo"` (quem hoje ocupa um slot —
+ * `promoted_beehiiv`/`suppressed`/`unsubscribed` já liberaram o deles).
+ * Nunca negativo (população acima do cap por transição de config — ex: cap
+ * reduzido depois do fato — não gera backfill negativo, só 0 slots livres).
+ */
+export function computeAvailableSlots(currentActiveCount: number, cap: number): number {
+  return Math.max(0, cap - currentActiveCount);
+}
+
+/**
+ * Pura — seleciona os próximos `availableSlots` candidatos a ingerir,
+ * ORDENADOS pelo score de origem (#4476 item 4, maior primeiro). `scoreByEmail`
+ * vem de `data/pending-reativacao/pending-scored-computed.csv`
+ * (`scripts/score-pending-origin.ts`) — se `null` (arquivo ainda não gerado
+ * nesta máquina), a seleção cai pra ordem original de chegada (paginação da
+ * Beehiiv) — fail-soft: a fila ainda funciona sem o score, só sem
+ * priorização até o arquivo existir. Candidato sem score individual
+ * (email ausente do CSV, ex: cadastro novo que o CSV snapshot não capturou)
+ * ordena por ÚLTIMO entre os que têm score (nunca na frente de um candidato
+ * já pontuado — mais seguro assumir prioridade baixa que alta pra um dado
+ * desconhecido).
+ *
+ * MillionVerifier (item 8 da issue #4476) é DELIBERADAMENTE fora do escopo
+ * desta função — a issue resolveu (260802) que a verificação é 1 passada em
+ * lote sobre os 627 ANTES do primeiro envio, não uma checagem por-backfill
+ * (ver checklist da issue: "não por-backfill — item 8"). Esta seleção não
+ * verifica e-mail nenhum; assume que o pool já passou pela verificação em
+ * lote antes de qualquer backfill rodar.
+ */
+export function selectContactsForBackfill(
+  candidates: PendingToIngestEntry[],
+  availableSlots: number,
+  scoreByEmail: Map<string, number> | null,
+): PendingToIngestEntry[] {
+  if (availableSlots <= 0) return [];
+  const ordered = scoreByEmail
+    ? [...candidates].sort((a, b) => {
+        const sa = scoreByEmail.get(a.email);
+        const sb = scoreByEmail.get(b.email);
+        if (sa === undefined && sb === undefined) return 0;
+        if (sa === undefined) return 1; // a sem score → depois de b
+        if (sb === undefined) return -1; // b sem score → depois de a
+        return sb - sa; // descendente
+      })
+    : candidates; // sem mapa de score — mantém a ordem original (FIFO da paginação Beehiiv)
+  return ordered.slice(0, availableSlots);
+}
+
+/**
+ * I/O — lê o CSV emitido por `scripts/score-pending-origin.ts`
+ * (`email,score,...`) e devolve `email → score`. Fail-soft: arquivo
+ * ausente/malformado → `null` (nunca lança) — a seleção cai pro fallback
+ * FIFO documentado em `selectContactsForBackfill`. Score sozinho não é
+ * suficiente pra bloquear o backfill: a priorização é um refinamento, não um
+ * pré-requisito de funcionamento.
+ */
+export function loadOriginScores(path: string, log: (msg: string) => void = () => {}): Map<string, number> | null {
+  if (!existsSync(path)) {
+    log(`aviso: ${path} não encontrado — backfill sem priorização por score (ordem FIFO). Rode scripts/score-pending-origin.ts pra gerar.`);
+    return null;
+  }
+  try {
+    const csvText = readFileSync(path, "utf8");
+    const parsed = Papa.parse<Record<string, string>>(csvText, { header: true, skipEmptyLines: true });
+    if (parsed.errors.length > 0) {
+      log(`aviso: falha ao parsear ${path} — backfill sem priorização por score. Erros: ${JSON.stringify(parsed.errors.slice(0, 2))}`);
+      return null;
+    }
+    const map = new Map<string, number>();
+    for (const row of parsed.data) {
+      const email = (row.email ?? "").trim().toLowerCase();
+      const score = Number(row.score);
+      if (email && !Number.isNaN(score)) map.set(email, score);
+    }
+    return map;
+  } catch (e) {
+    log(`aviso: erro lendo ${path} — backfill sem priorização por score: ${(e as Error).message}`);
+    return null;
+  }
 }
 
 // ── aplicação (I/O — cria contato na Brevo + verifica por releitura) ───────
@@ -254,10 +381,22 @@ async function main(): Promise<void> {
 
   const store = readStore(DEFAULT_STORE_PATH);
   const toIngest = computeContactsToIngest(pending, store);
-  log(`${toIngest.length} contato(s) novo(s) a ingerir (dedup pelo store — ${store.contacts.length} já tratado(s)).`);
+  log(`${toIngest.length} contato(s) novo(s) elegível(is) (dedup pelo store — ${store.contacts.length} já tratado(s)).`);
+
+  // #4476 item 5 — fila de tamanho fixo: só backfill até o cap, priorizado
+  // pelo score de origem (item 4). Substitui o comportamento antigo de
+  // ingerir TODO o `toIngest` de uma vez (ou abortar se > cap).
+  const cap = brevoDiaria!.daily_send_cap ?? DEFAULT_QUEUE_CAP;
+  const currentActiveCount = store.contacts.filter((c) => c.status === "in_brevo").length;
+  const availableSlots = computeAvailableSlots(currentActiveCount, cap);
+  log(`fila: ${currentActiveCount}/${cap} ocupados, ${availableSlots} slot(s) livre(s) pro backfill.`);
+
+  const scoreByEmail = loadOriginScores(ORIGIN_SCORES_CSV_PATH, log);
+  const selected = selectContactsForBackfill(toIngest, availableSlots, scoreByEmail);
+  log(`${selected.length} contato(s) selecionado(s) pra este backfill (de ${toIngest.length} elegíveis, ordenados por score).`);
 
   if (!push) {
-    for (const c of toIngest) log(`  + ${c.email} (sub ${c.beehiiv_subscription_id})`);
+    for (const c of selected) log(`  + ${c.email} (sub ${c.beehiiv_subscription_id})`);
     log("dry-run (default) — NENHUMA mutação aplicada. Use --push para gravar.");
     return;
   }
@@ -265,7 +404,7 @@ async function main(): Promise<void> {
   let nextStore = store;
   let applied = 0;
   let failed = 0;
-  for (const c of toIngest) {
+  for (const c of selected) {
     try {
       await ingestContactToBrevo(brevoApiKey!, brevoDiaria!.list_id as number, c.email);
       nextStore = upsertIngested(nextStore, c);

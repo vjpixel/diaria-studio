@@ -1,23 +1,26 @@
 /**
- * brevo-diaria-store.ts (#4266)
+ * brevo-diaria-store.ts (#4266, formula/status atualizados no #4476)
  *
  * Store JSON simples (não SQLite — diferente de `clarice-db.ts`) que rastreia
  * o ciclo de vida de cada contato triado do segmento Pending da Beehiiv pro
  * canal Brevo próprio do editor:
  *
- *   beehiiv_pending → (ingestão) → in_brevo → (avaliação de score) →
- *     promoted_beehiiv  (score >= 60, decisão do editor)
- *     OU suppressed     (score <= -30, decisão do editor)
- *     OU permanece in_brevo (score no meio, "keep")
+ *   beehiiv_pending → (ingestão) → in_brevo → (avaliação) →
+ *     promoted_beehiiv  (openRate alto — item 1 do #4476 — OU auto-confirmação)
+ *     OU suppressed     (openRate baixo — item 1 do #4476)
+ *     OU unsubscribed   (descadastro NATIVO na Brevo — item 7 do #4476,
+ *                        distinto de `suppressed`: ação própria da pessoa,
+ *                        não decisão algorítmica por engajamento)
+ *     OU permanece in_brevo ("keep")
  *
  * Arquivo em `data/brevo-diaria/contacts.json` (mesma convenção de
  * `data/clarice-subscribers/`: dado business-sensitive, fora do repo via
  * `.gitignore` blanket de `data/`).
  *
  * Deliberadamente SEM SQLite: volume esperado (segmento Pending da Beehiiv)
- * é pequeno o bastante (cap de 300 envios/dia já é o teto operacional) pra um
- * JSON simples bastar — motivo #2 (junto com o acoplamento node:sqlite) pra
- * não reusar `clarice-db.ts` aqui.
+ * é pequeno o bastante (fila de tamanho fixo, 300 — #4476 item 5 — já é o
+ * teto operacional) pra um JSON simples bastar — motivo #2 (junto com o
+ * acoplamento node:sqlite) pra não reusar `clarice-db.ts` aqui.
  *
  * Toda lógica de transição de estado é PURA (recebe/devolve o array de
  * contatos) — leitura/escrita em disco ficam isoladas em `readStore`/
@@ -35,7 +38,12 @@ export const DEFAULT_STORE_PATH = resolve(ROOT, "data/brevo-diaria/contacts.json
 export type BrevoDiariaContactStatus =
   | "in_brevo"
   | "promoted_beehiiv"
-  | "suppressed";
+  | "suppressed"
+  /** #4476 item 7 — descadastro NATIVO na Brevo (`emailBlacklisted:true`
+   * detectado sem passar por avaliação de score), 3ª saída terminal
+   * distinta de `suppressed` (ação própria da pessoa vs. decisão
+   * algorítmica por engajamento baixo). */
+  | "unsubscribed";
 
 export interface BrevoDiariaContact {
   email: string;
@@ -44,15 +52,22 @@ export interface BrevoDiariaContact {
   status: BrevoDiariaContactStatus;
   opens_count: number;
   sends_count: number;
-  /** Score da última avaliação (`computeBrevoDiariaScore`) — null antes da 1ª avaliação. */
-  last_score: number | null;
+  /** Taxa de abertura (0-1, `opens_count/sends_count`) da última avaliação
+   * (`computeBrevoDiariaOpenRate`, #4476 item 1) — null antes da 1ª
+   * avaliação. Renomeado de `last_score` (#4266) — a fórmula deixou de
+   * produzir um score aditivo único, agora é taxa + piso de amostra (2
+   * variáveis), então o campo persistido também precisa nomear o que
+   * realmente guarda. */
+  last_open_rate: number | null;
   added_at: string; // ISO — quando entrou no store (ingestão)
   last_evaluated_at: string | null; // ISO — última rodada de evaluate-brevo-diaria.ts
   promoted_at?: string; // ISO — quando status virou promoted_beehiiv
   suppressed_at?: string; // ISO — quando status virou suppressed
-  /** Motivo da supressão/promoção — auditoria (#4266 self-review: nunca
-   * silenciar POR QUE um contato saiu do fluxo). */
-  resolution_reason?: "score_threshold" | "self_confirmed_beehiiv";
+  /** ISO — quando status virou unsubscribed (#4476 item 7). */
+  unsubscribed_at?: string;
+  /** Motivo da supressão/promoção/descadastro — auditoria (#4266 self-review:
+   * nunca silenciar POR QUE um contato saiu do fluxo). */
+  resolution_reason?: "score_threshold" | "self_confirmed_beehiiv" | "native_unsubscribe";
 }
 
 export interface BrevoDiariaStore {
@@ -110,7 +125,7 @@ export function upsertIngested(
     status: "in_brevo",
     opens_count: 0,
     sends_count: 0,
-    last_score: null,
+    last_open_rate: null,
     added_at: now,
     last_evaluated_at: null,
   };
@@ -127,7 +142,7 @@ export function upsertIngested(
 export function applyEvaluation(
   store: BrevoDiariaStore,
   email: string,
-  update: { opens_count: number; sends_count: number; score: number; action: BrevoDiariaAction },
+  update: { opens_count: number; sends_count: number; open_rate: number; action: BrevoDiariaAction },
   now: string = new Date().toISOString(),
 ): BrevoDiariaStore {
   const norm = normalizeEmail(email);
@@ -138,7 +153,7 @@ export function applyEvaluation(
         ...c,
         opens_count: update.opens_count,
         sends_count: update.sends_count,
-        last_score: update.score,
+        last_open_rate: update.open_rate,
         last_evaluated_at: now,
       };
       if (update.action === "promote_to_beehiiv") {
@@ -147,7 +162,7 @@ export function applyEvaluation(
       if (update.action === "suppress") {
         return { ...base, status: "suppressed", suppressed_at: now, resolution_reason: "score_threshold" };
       }
-      return base; // "keep" — permanece in_brevo, contadores/score atualizados
+      return base; // "keep" — permanece in_brevo, contadores/taxa atualizados
     }),
   };
 }
@@ -172,6 +187,32 @@ export function applySelfConfirmed(
     contacts: store.contacts.map((c) => {
       if (c.email !== norm || c.status !== "in_brevo") return c;
       return { ...c, status: "promoted_beehiiv", promoted_at: now, resolution_reason: "self_confirmed_beehiiv" };
+    }),
+  };
+}
+
+/**
+ * Pura — marca um contato como DESCADASTRADO NATIVAMENTE na Brevo (#4476
+ * item 7): `emailBlacklisted === true` detectado ANTES de qualquer avaliação
+ * de score (a pessoa clicou no link de opt-out do bloco de intro, a Brevo
+ * processa nativamente, sem passar por `evaluate-brevo-diaria.ts`). Saída
+ * TERMINAL distinta de `applyEvaluation(..., action: "suppress")` — o motivo
+ * é auditável separadamente (`resolution_reason: "native_unsubscribe"`):
+ * "descadastrado por ação própria" não é o mesmo evento que "suprimido por
+ * engajamento baixo", mesmo que ambos liberem o slot da fila (item 5) do
+ * mesmo jeito. Mesmo guard de idempotência dos outros `apply*` — só contatos
+ * `in_brevo` transicionam; um contato já resolvido nunca regride.
+ */
+export function applyNativeUnsubscribe(
+  store: BrevoDiariaStore,
+  email: string,
+  now: string = new Date().toISOString(),
+): BrevoDiariaStore {
+  const norm = normalizeEmail(email);
+  return {
+    contacts: store.contacts.map((c) => {
+      if (c.email !== norm || c.status !== "in_brevo") return c;
+      return { ...c, status: "unsubscribed", unsubscribed_at: now, resolution_reason: "native_unsubscribe" };
     }),
   };
 }

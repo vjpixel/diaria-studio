@@ -1,10 +1,12 @@
 /**
- * test/evaluate-brevo-diaria-4266.test.ts (#4266)
+ * test/evaluate-brevo-diaria-4266.test.ts (#4266, reescrito no #4476 —
+ * fórmula por taxa de abertura + descadastro nativo como 3ª saída terminal)
  *
- * Avaliação periódica dos contatos in_brevo: contadores a partir da
- * estatística de contato da Brevo, veredito puro (score + threshold), e a
- * checagem de auto-confirmação Beehiiv que fecha o gap de duplicidade
- * registrado na própria issue.
+ * Avaliação periódica dos contatos in_brevo: contadores + emailBlacklisted a
+ * partir de UMA leitura só do estado da Brevo, veredito puro (taxa de
+ * abertura + threshold), a checagem de auto-confirmação Beehiiv que fecha o
+ * gap de duplicidade registrado na própria issue #4266, e a checagem de
+ * descadastro nativo (#4476 item 7) que roda ANTES de tudo isso.
  */
 
 import { describe, it } from "node:test";
@@ -12,6 +14,7 @@ import assert from "node:assert/strict";
 import {
   computeCountsFromBrevoStatistics,
   evaluateContact,
+  fetchBrevoContactState,
   fetchBeehiivSubscriptionStatus,
   verifyPromotedToBeehiiv,
   verifySuppressedInBrevo,
@@ -34,7 +37,7 @@ function contact(email: string, overrides: Partial<BrevoDiariaContact> = {}): Br
     status: "in_brevo",
     opens_count: 0,
     sends_count: 0,
-    last_score: null,
+    last_open_rate: null,
     added_at: "2026-07-01T00:00:00.000Z",
     last_evaluated_at: null,
     ...overrides,
@@ -63,23 +66,71 @@ describe("computeCountsFromBrevoStatistics — dedup por campaignId (#4266)", ()
   });
 });
 
-describe("evaluateContact — score + threshold combinados (#4266)", () => {
-  it("3 enviados/3 abertos → score 60 → promote_to_beehiiv", () => {
-    const ev = evaluateContact({ opens_count: 3, sends_count: 3 });
-    assert.equal(ev.score, 60);
+describe("evaluateContact — taxa de abertura + threshold combinados (#4476 item 1)", () => {
+  it("2 enviados/1 aberto → openRate 0.5 → promote_to_beehiiv", () => {
+    const ev = evaluateContact({ opens_count: 1, sends_count: 2 });
+    assert.equal(ev.open_rate, 0.5);
     assert.equal(ev.action, "promote_to_beehiiv");
   });
 
-  it("3 enviados/0 abertos → score -30 → suppress", () => {
-    const ev = evaluateContact({ opens_count: 0, sends_count: 3 });
-    assert.equal(ev.score, -30);
+  it("5 enviados/1 aberto → openRate 0.2 → suppress", () => {
+    const ev = evaluateContact({ opens_count: 1, sends_count: 5 });
+    assert.equal(ev.open_rate, 0.2);
     assert.equal(ev.action, "suppress");
   });
 
-  it("2 enviados/1 aberto → score 10 → keep", () => {
-    const ev = evaluateContact({ opens_count: 1, sends_count: 2 });
-    assert.equal(ev.score, 10);
+  it("3 enviados/1 aberto → openRate 0.33, abaixo do piso de amostra de supressão (n<5) → keep", () => {
+    const ev = evaluateContact({ opens_count: 1, sends_count: 3 });
     assert.equal(ev.action, "keep");
+  });
+});
+
+describe("fetchBrevoContactState — 1 leitura, contadores + emailBlacklisted (#4476 item 7)", () => {
+  const origFetch = globalThis.fetch;
+  function restore() {
+    globalThis.fetch = origFetch;
+  }
+
+  it("extrai contadores E emailBlacklisted:false do mesmo body", async () => {
+    globalThis.fetch = (async () =>
+      jsonRes(200, {
+        statistics: { messagesSent: [{ campaignId: 1 }, { campaignId: 2 }], opened: [{ campaignId: 1 }] },
+      })) as typeof fetch;
+    try {
+      const state = await fetchBrevoContactState("key", "a@b.com");
+      assert.deepEqual(state, { sends_count: 2, opens_count: 1, emailBlacklisted: false });
+    } finally {
+      restore();
+    }
+  });
+
+  it("emailBlacklisted:true no body → refletido no estado", async () => {
+    globalThis.fetch = (async () =>
+      jsonRes(200, { emailBlacklisted: true, statistics: { messagesSent: [], opened: [] } })) as typeof fetch;
+    try {
+      const state = await fetchBrevoContactState("key", "a@b.com");
+      assert.equal(state.emailBlacklisted, true);
+    } finally {
+      restore();
+    }
+  });
+
+  it("404 (contato não encontrado) → lança com mensagem própria (fail loud)", async () => {
+    globalThis.fetch = (async () => jsonRes(404, {})) as typeof fetch;
+    try {
+      await assert.rejects(() => fetchBrevoContactState("key", "a@b.com"), /não foi possível ler estado/);
+    } finally {
+      restore();
+    }
+  });
+
+  it("erro HTTP não-404 (ex: 403) → lança (propaga o fail-loud de brevoGet)", async () => {
+    globalThis.fetch = (async () => jsonRes(403, {})) as typeof fetch;
+    try {
+      await assert.rejects(() => fetchBrevoContactState("key", "a@b.com"), /Brevo GET .* falhou \(403\)/);
+    } finally {
+      restore();
+    }
   });
 });
 
@@ -108,7 +159,7 @@ describe("fetchBeehiivSubscriptionStatus — auto-confirmação (#4266)", () => 
   });
 });
 
-describe("verifyPromotedToBeehiiv — fail-safe se ainda pending (#4266)", () => {
+describe("verifyPromotedToBeehiiv — fail-safe se ainda pending (#4266, corrigido pro caso 'invalid' no #4476 item 3)", () => {
   it("status active → true (promoção confirmada)", async () => {
     const fetchImpl = (async () => jsonRes(200, { data: { status: "active" } })) as typeof fetch;
     assert.equal(await verifyPromotedToBeehiiv("pub_1", "key", "a@b.com", fetchImpl), true);
@@ -116,6 +167,16 @@ describe("verifyPromotedToBeehiiv — fail-safe se ainda pending (#4266)", () =>
 
   it("status ainda pending → false (fail-safe: NÃO confirma promoção)", async () => {
     const fetchImpl = (async () => jsonRes(200, { data: { status: "pending" } })) as typeof fetch;
+    assert.equal(await verifyPromotedToBeehiiv("pub_1", "key", "a@b.com", fetchImpl), false);
+  });
+
+  it('status "invalid" → false (#4476 item 3, achado do teste ao vivo: reactivate_existing:true pode retornar 201 mas deixar status="invalid" — NÃO é confirmação, mesmo não sendo "pending")', async () => {
+    const fetchImpl = (async () => jsonRes(200, { data: { status: "invalid" } })) as typeof fetch;
+    assert.equal(await verifyPromotedToBeehiiv("pub_1", "key", "a@b.com", fetchImpl), false);
+  });
+
+  it('status "validating" (estado transitório observado no POST inicial, ao vivo #4476) → false', async () => {
+    const fetchImpl = (async () => jsonRes(200, { data: { status: "validating" } })) as typeof fetch;
     assert.equal(await verifyPromotedToBeehiiv("pub_1", "key", "a@b.com", fetchImpl), false);
   });
 
@@ -242,13 +303,184 @@ describe("verifySuppressedInBrevo — releitura pós-supressão (#4398 fix 4)", 
   });
 });
 
-describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fixes 1-4)", () => {
+describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0", () => {
   const origFetch = globalThis.fetch;
   function restore() {
     globalThis.fetch = origFetch;
   }
 
-  it("dry-run: falha ao checar status Beehiiv de 1 contato conta em failed, mas os demais são avaliados normalmente", async () => {
+  it("emailBlacklisted:true detectado ANTES de qualquer avaliação de score → unsubscribedNative, nunca kept/suppressed", async () => {
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/contacts/")) return jsonRes(200, { emailBlacklisted: true, statistics: { messagesSent: [], opened: [] } });
+      throw new Error(`fetch inesperado (não deveria checar Beehiiv/self-confirmação): ${u} ${init?.method}`);
+    }) as typeof fetch;
+
+    try {
+      const contacts = [contact("unsub@b.com")];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: false,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: () => {},
+      });
+      assert.equal(result.unsubscribedNative, 1);
+      assert.equal(result.kept, 0);
+      assert.equal(result.suppressed, 0);
+      assert.equal(result.selfConfirmed, 0);
+      assert.equal(result.failed, 0);
+    } finally {
+      restore();
+    }
+  });
+
+  it("push:true → unlinkFromBrevoList chamado e store marca status unsubscribed, motivo native_unsubscribe", async () => {
+    const putCalls: { body: unknown }[] = [];
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (init?.method === "PUT") {
+        putCalls.push({ body: JSON.parse(init.body as string) });
+        return jsonRes(200, {});
+      }
+      if (u.includes("/contacts/")) return jsonRes(200, { emailBlacklisted: true, statistics: { messagesSent: [], opened: [] } });
+      throw new Error(`fetch inesperado: ${u} ${init?.method}`);
+    }) as typeof fetch;
+
+    try {
+      const contacts = [contact("unsub2@b.com")];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: true,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: () => {},
+      });
+      assert.equal(result.unsubscribedNative, 1);
+      assert.deepEqual(putCalls, [{ body: { unlinkListIds: [7] } }]);
+      const c = findContact(result.store, "unsub2@b.com")!;
+      assert.equal(c.status, "unsubscribed");
+      assert.equal(c.resolution_reason, "native_unsubscribe");
+    } finally {
+      restore();
+    }
+  });
+
+  it("emailBlacklisted:false → prossegue normalmente pra auto-confirmação/score (não é uma saída)", async () => {
+    globalThis.fetch = (async (url: string | URL) => {
+      const u = String(url);
+      if (u.includes("subscriptions/by_email/")) return jsonRes(200, { data: { status: "pending" } });
+      if (u.includes("/contacts/")) {
+        return jsonRes(200, {
+          emailBlacklisted: false,
+          statistics: { messagesSent: [{ campaignId: 1 }, { campaignId: 2 }, { campaignId: 3 }], opened: [] },
+        });
+      }
+      throw new Error(`fetch inesperado: ${u}`);
+    }) as typeof fetch;
+
+    try {
+      const contacts = [contact("normal@b.com")];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: false,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: () => {},
+      });
+      assert.equal(result.unsubscribedNative, 0);
+      // 3 enviados/0 abertos → openRate 0, sends_count=3 < piso de supressão (5) → keep
+      assert.equal(result.kept, 1);
+    } finally {
+      restore();
+    }
+  });
+
+  it("sem brevoApiKey (dry-run sem a key configurada) → passo 0 pulado inteiro, nenhuma chamada a /contacts", async () => {
+    let contactsCalls = 0;
+    globalThis.fetch = (async (url: string | URL) => {
+      const u = String(url);
+      if (u.includes("subscriptions/by_email/")) return jsonRes(200, { data: { status: "pending" } });
+      if (u.includes("/contacts/")) {
+        contactsCalls++;
+        return jsonRes(200, {});
+      }
+      throw new Error(`fetch inesperado: ${u}`);
+    }) as typeof fetch;
+
+    try {
+      const contacts = [contact("sem-key@b.com", { opens_count: 1, sends_count: 3 })];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: false,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        // brevoApiKey ausente de propósito
+        listId: 7,
+        log: () => {},
+      });
+      assert.equal(contactsCalls, 0, "sem brevoApiKey, passo 0 nunca chama /contacts");
+      assert.equal(result.unsubscribedNative, 0);
+      // usa contadores do store (1/3 → 33%, abaixo do piso de supressão) → keep
+      assert.equal(result.kept, 1);
+    } finally {
+      restore();
+    }
+  });
+
+  it("falha ao checar estado Brevo (passo 0) → conta failed, NÃO avalia auto-confirmação/score com dado incompleto", async () => {
+    let beehiivCalls = 0;
+    globalThis.fetch = (async (url: string | URL) => {
+      const u = String(url);
+      if (u.includes("subscriptions/by_email/")) {
+        beehiivCalls++;
+        return jsonRes(200, { data: { status: "pending" } });
+      }
+      // 403 (não 500/429) — brevoGet lança IMEDIATAMENTE, sem retry/backoff
+      // (evita o teste esperar segundos reais de sleep entre tentativas).
+      if (u.includes("/contacts/")) return jsonRes(403, {});
+      throw new Error(`fetch inesperado: ${u}`);
+    }) as typeof fetch;
+
+    try {
+      const contacts = [contact("falha-estado@b.com")];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: false,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: () => {},
+      });
+      assert.equal(result.failed, 1);
+      assert.equal(result.kept, 0);
+      assert.equal(result.unsubscribedNative, 0);
+      assert.equal(beehiivCalls, 0, "auto-confirmação nunca chamada — o contato pula pra próxima rodada inteiro");
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fixes 1-4, atualizado #4476)", () => {
+  const origFetch = globalThis.fetch;
+  function restore() {
+    globalThis.fetch = origFetch;
+  }
+
+  it("dry-run sem brevoApiKey: falha ao checar status Beehiiv de 1 contato conta em failed, mas os demais são avaliados normalmente", async () => {
     const logs: string[] = [];
     const log = (m: string) => logs.push(m);
     globalThis.fetch = (async (url: string | URL) => {
@@ -259,9 +491,14 @@ describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fix
     }) as typeof fetch;
 
     try {
+      // #4476: fixtures ajustadas pra "keep" sob a nova fórmula (3 enviados/1
+      // aberto → 33%, abaixo do piso de amostra de supressão) — o teste
+      // continua cobrindo o mesmo cenário original (falha de auto-confirmação
+      // não impede a avaliação de score dos demais), só com valores
+      // compatíveis com a fórmula por taxa.
       const contacts = [
-        contact("falha@b.com", { opens_count: 1, sends_count: 2 }),
-        contact("ok@b.com", { opens_count: 1, sends_count: 2 }),
+        contact("falha@b.com", { opens_count: 1, sends_count: 3 }),
+        contact("ok@b.com", { opens_count: 1, sends_count: 3 }),
       ];
       const result = await runEvaluation({
         contacts,
@@ -273,14 +510,14 @@ describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fix
         log,
       });
       assert.equal(result.failed, 1, "1 falha de checagem contada");
-      assert.equal(result.kept, 2, "ambos avaliados por score mesmo com a falha de auto-confirmação");
+      assert.equal(result.kept, 2, "ambos avaliados por taxa de abertura mesmo com a falha de auto-confirmação");
       assert.ok(logs.some((l) => l.includes("falha ao checar status Beehiiv de falha@b.com")));
     } finally {
       restore();
     }
   });
 
-  it("push: exceção ao buscar contadores de 1 contato NÃO aborta o run — o próximo contato ainda é processado (fix 1)", async () => {
+  it("push: exceção ao checar estado Brevo (passo 0) de 1 contato NÃO aborta o run — o próximo contato ainda é processado", async () => {
     const logs: string[] = [];
     const log = (m: string) => logs.push(m);
     globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
@@ -290,10 +527,11 @@ describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fix
         return new Response("forbidden", { status: 403 }); // brevoGet: 403 lança sem retry
       }
       if (init?.method === undefined && u.includes("/contacts/ok%40b.com")) {
+        // 3 enviados/1 aberto → 33%, abaixo do piso de supressão (n>=5) → keep
         return jsonRes(200, {
           statistics: {
-            messagesSent: [{ campaignId: 1 }, { campaignId: 2 }],
-            opened: [{ campaignId: 1 }, { campaignId: 2 }],
+            messagesSent: [{ campaignId: 1 }, { campaignId: 2 }, { campaignId: 3 }],
+            opened: [{ campaignId: 1 }],
           },
         });
       }
@@ -312,9 +550,9 @@ describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fix
         listId: 7,
         log,
       });
-      assert.equal(result.failed, 1, "só o contato com erro conta como falha");
-      assert.equal(result.kept, 1, "o segundo contato foi processado normalmente (score 40 → keep)");
-      assert.ok(logs.some((l) => l.includes("FALHA em erro@b.com")));
+      assert.equal(result.failed, 1, "só o contato com erro no passo 0 conta como falha");
+      assert.equal(result.kept, 1, "o segundo contato foi processado normalmente (33% → keep)");
+      assert.ok(logs.some((l) => l.includes("falha ao checar estado Brevo de erro@b.com")));
     } finally {
       restore();
     }
@@ -332,8 +570,10 @@ describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fix
       }
       getContactCalls++;
       if (getContactCalls === 1) {
-        // 1ª GET: contadores — score -30 (3 enviados, 0 abertos) → suppress
-        return jsonRes(200, { statistics: { messagesSent: [{ campaignId: 1 }, { campaignId: 2 }, { campaignId: 3 }], opened: [] } });
+        // 1ª GET (passo 0 — descadastro nativo + contadores reusados no passo 2):
+        // 3 enviados, 0 abertos → openRate 0, sends_count=3 < 5 (piso de
+        // supressão)... precisa de >=5 pra suprimir — usar 5 enviados/0 abertos.
+        return jsonRes(200, { statistics: { messagesSent: [{ campaignId: 1 }, { campaignId: 2 }, { campaignId: 3 }, { campaignId: 4 }, { campaignId: 5 }], opened: [] } });
       }
       // 2ª GET: releitura pós-supressão — confirma blacklist + fora da lista
       return jsonRes(200, { emailBlacklisted: true, listIds: [] });
@@ -370,7 +610,7 @@ describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fix
       if (init?.method === "PUT") return jsonRes(200, {});
       getContactCalls++;
       if (getContactCalls === 1) {
-        return jsonRes(200, { statistics: { messagesSent: [{ campaignId: 1 }, { campaignId: 2 }, { campaignId: 3 }], opened: [] } });
+        return jsonRes(200, { statistics: { messagesSent: [{ campaignId: 1 }, { campaignId: 2 }, { campaignId: 3 }, { campaignId: 4 }, { campaignId: 5 }], opened: [] } });
       }
       // releitura NÃO confirma: PUT foi 2xx mas o estado real não mudou (mesma armadilha da Beehiiv, ver disclaimer do módulo)
       return jsonRes(200, { emailBlacklisted: false, listIds: [7] });
@@ -412,7 +652,8 @@ describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fix
       if (init?.method === "PUT") {
         return jsonRes(200, {});
       }
-      // GET /contacts/{email} — contadores: 3 enviados/3 abertos → score 60 → promote
+      // GET /contacts/{email} (passo 0, reusado no passo 2) — 3 enviados/3
+      // abertos → openRate 1.0, sends_count=3 >= 2 → promote
       return jsonRes(200, {
         statistics: {
           messagesSent: [{ campaignId: 1 }, { campaignId: 2 }, { campaignId: 3 }],
