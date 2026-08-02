@@ -8,6 +8,12 @@
 // VALORES de UTM (source/medium/campaign) são renderizados como texto, nunca
 // como campo — o backend também os rejeita (400), então a UI não é a única
 // linha de defesa. Racional completo no header de studio-utms.ts.
+//
+// Ordenação/conversão (#4463): a lógica PURA vive em `utms-sort.js`, separada
+// de propósito pra ser testável sem harness de DOM (mesmo padrão de
+// `revisao-guards.js`).
+
+import { computeConversion, fmtPercent, sortRows } from "./utms-sort.js";
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
@@ -27,6 +33,13 @@ const el = {
 
 let data = { execMode: null, generatedAt: null, cached: false, emitters: [], drift: [] };
 const filters = { status: "" };
+/** Estado de ordenação da tabela de Emissores (#4463) — a 1ª tabela ordenável
+ * do Studio. `column: null` = ordem natural do registry (default). */
+const sort = { column: null, direction: "asc" };
+/** `<th>` (carrega `aria-sort`) e `<button>` (clicável, carrega o indicador
+ * ▲/▼) das 3 colunas ordenáveis — atualizados juntos em `updateSortHeaders`. */
+const sortHeaderCells = document.querySelectorAll("th[data-sort-col]");
+const sortHeaderButtons = document.querySelectorAll("button[data-sort-col]");
 
 function escapeHtml(s) {
   return String(s ?? "")
@@ -60,6 +73,22 @@ function fmtTime(iso) {
  * "0" enganoso viraria falso alarme de "posição morta". */
 function fmtNum(n) {
   return n === null || n === undefined ? "—" : String(n);
+}
+
+function updateSortHeaders() {
+  for (const th of sortHeaderCells) {
+    const col = th.getAttribute("data-sort-col");
+    th.setAttribute(
+      "aria-sort",
+      sort.column !== col ? "none" : sort.direction === "asc" ? "ascending" : "descending",
+    );
+  }
+  for (const btn of sortHeaderButtons) {
+    const col = btn.getAttribute("data-sort-col");
+    const indicator = btn.querySelector(".sort-indicator");
+    if (!indicator) continue;
+    indicator.textContent = sort.column !== col ? "" : sort.direction === "asc" ? "▲" : "▼";
+  }
 }
 
 function statusBadge(status) {
@@ -106,6 +135,7 @@ function renderDrift() {
 function renderEmitters() {
   const all = data.emitters ?? [];
   const filtered = all.filter((e) => !filters.status || e.status === filters.status);
+  const sorted = sortRows(filtered, sort.column, sort.direction);
   el.count.textContent = String(filtered.length);
   if (filtered.length === 0) {
     el.empty.hidden = false;
@@ -114,15 +144,17 @@ function renderEmitters() {
   } else {
     el.empty.hidden = true;
   }
+  updateSortHeaders();
   el.tbody.innerHTML = "";
-  for (const row of filtered) {
+  for (const row of sorted) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
+      <td>${fmtNum(row.clicks)}</td>
+      <td>${fmtNum(row.subscribers)}</td>
+      <td>${fmtPercent(computeConversion(row))}</td>
       <td>${escapeHtml(row.label)}</td>
       <td class="mono"><code>${escapeHtml(row.source)}</code> / <code>${escapeHtml(row.medium)}</code></td>
       <td class="mono">${campaignCell(row)}</td>
-      <td>${fmtNum(row.subscribers)}</td>
-      <td>${fmtNum(row.clicks)}</td>
       <td>${statusBadge(row.status)}</td>
       <td>${descCell(row)}</td>
       <td><button type="button" data-edit-id="${escapeHtml(row.id)}">Editar</button></td>
@@ -192,6 +224,21 @@ el.filterStatus.addEventListener("change", () => {
   filters.status = el.filterStatus.value;
   renderEmitters();
 });
+
+for (const btn of sortHeaderButtons) {
+  btn.addEventListener("click", () => {
+    const col = btn.getAttribute("data-sort-col");
+    if (sort.column === col) {
+      sort.direction = sort.direction === "asc" ? "desc" : "asc";
+    } else {
+      sort.column = col;
+      // 1º clique numa coluna nova começa por "maior primeiro" — é a leitura
+      // mais comum pra achar quem mais converte/clica (#4463).
+      sort.direction = "desc";
+    }
+    renderEmitters();
+  });
+}
 
 el.refreshBtn.addEventListener("click", () => refresh(true));
 

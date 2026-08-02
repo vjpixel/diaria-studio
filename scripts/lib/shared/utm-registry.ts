@@ -517,19 +517,6 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "registry/`/utms` antes desta entry).",
     status: "ativo",
   },
-  {
-    id: "clarice-cta-ab",
-    label: "A/B de CTA da mensal (round CTA-01)",
-    source: MENSAL_UTM_SOURCE,
-    medium: MENSAL_UTM_MEDIUM,
-    campaignPattern: `${MENSAL_UTM_SOURCE}-{ciclo}-{posicao}-cta-{arm}`,
-    originFile: "scripts/clarice-cta-ab-setup.ts",
-    description:
-      "Sufixo de braço A/B composto EM CIMA do sufixo de posição do render (#4040), " +
-      "mais `utm_term` posicional. Round CTA-01 ENCERRADO pelo editor em 260726 (#4059) — " +
-      "o script é artefato histórico de como o round foi montado.",
-    status: "aposentado",
-  },
 ] as const;
 
 /** Busca uma entrada do inventário por id. `undefined` se não existe. @pure */
