@@ -25,6 +25,12 @@
  * 7. Fim-a-fim via `handleVote`: um voto real popula o agregado, e dois
  *    votos concorrentes do MESMO email em edições diferentes não perdem
  *    escrita (mesma classe de regressão do #4169, agora sobre o agregado).
+ * 8. REGRESSÃO (achado #1 do self-review, corrigida a pedido do coordenador
+ *    da rodada overnight antes do merge): uma entry SELF-HEALED (criada por
+ *    `handleJogarSeqState` sem NUNCA passar pelo DO pra aquele mês) precisa
+ *    ser corrigida por `adjustScoreByMonthCorrectOnly` via um caminho
+ *    KV-DIRETO — a versão anterior só corrigia via DO, e uma entry
+ *    self-healed nunca tem o DO rastreando aquela edição.
  */
 
 import { describe, it } from "node:test";
@@ -34,7 +40,7 @@ import {
   parseSeqMonthAggregate,
   SEQ_STATE_SUBREQUEST_BUDGET,
 } from "../workers/poll/src/jogar.ts";
-import { seqStateKvKey } from "../workers/poll/src/lib.ts";
+import { seqStateKvKey, brandKvPrefix } from "../workers/poll/src/lib.ts";
 import { handleVote, adjustScoreByMonthCorrectOnly } from "../workers/poll/src/vote.ts";
 import worker, { brandedNamespace, type Env } from "../workers/poll/src/index.ts";
 import {
@@ -567,5 +573,64 @@ describe("Fim-a-fim: handleVote popula o agregado seq:{month}:{email} (#4443)", 
 
     seq = JSON.parse((await kv.get(`seq:2026-06:${email}`))!);
     assert.equal(seq["260601"], true, "REGRESSÃO: o agregado deve refletir a correção de gabarito, não ficar stale");
+  });
+
+  it("REGRESSÃO (achado #1 do self-review, exigida pelo coordenador): entry SELF-HEALED (DO nunca tocado pro mês) É corrigida por adjustScoreByMonthCorrectOnly via caminho KV-direto", async () => {
+    // Cenário exato: um voto ANTERIOR ao deploy do #4443 já tinha
+    // score-by-month:{month}:{identity} gravado (aqui simulado via seed
+    // direto — nenhum /update-month passou pelo DO pra este mês/identidade).
+    // Depois do deploy, o jogador visita /jogar e handleJogarSeqState
+    // (agregado ausente) cai no fallback e SELF-HEALA seq:{month}:{identity}
+    // DIRETO no KV — sem nunca tocar o DO. Só ENTÃO o editor corrige o
+    // gabarito. Antes do fix, essa entry self-healed nunca era corrigida (o
+    // sync via DO em adjustScoreByMonthCorrectOnly só age quando o DO já
+    // rastreia a edição — não é o caso aqui).
+    const identity = TOKEN;
+    const monthSlug = "2026-06";
+    const webPrefix = brandKvPrefix("web");
+    const seed: Record<string, string> = {
+      // Vote original: escolheu B, gabarito era A → correct:false.
+      [`${webPrefix}vote:260601:${identity}`]: JSON.stringify({ choice: "B", correct: false }),
+      // score-by-month PRÉ-EXISTENTE (simula um voto de antes do #4443 — o DO
+      // nunca processou este mês/identidade, só o KV tem o registro).
+      [`${webPrefix}score-by-month:${monthSlug}:${identity}`]: JSON.stringify({
+        total: 1, correct: 0, last_edition: "260601", nickname: null,
+      }),
+    };
+    const { env, kv } = countingEnv(seed);
+    const { ns: scoreNs } = makeScoreCounterNs(); // presente, mas NUNCA tocado pra este mês/identidade
+
+    // 1. Self-heal via handleJogarSeqState (fallback: agregado ausente) —
+    //    grava web:seq:2026-06:{TOKEN} DIRETO no KV, sem tocar o DO.
+    const beforeCorrect = await seqState(env, ["260601"]);
+    assert.deepEqual(beforeCorrect, [{ edition: "260601", voted: true, correct: false }], "sanity: self-heal resolveu o voto original (errado)");
+
+    // sanity: o self-heal realmente não tocou o DO — o mesmo DO id usado por
+    // adjustScoreByMonthCorrectOnly abaixo (web:{identity}) nunca foi
+    // inicializado (nenhuma chamada a /update-month aconteceu).
+    const doId = scoreNs.idFromName(`web:${identity}`);
+    const doStub = scoreNs.get(doId);
+    const probeResp = await doStub.fetch(new Request("https://internal/adjust-month-correct", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ monthSlug, prevCorrect: false, newCorrect: true, edition: "260601" } satisfies AdjustMonthCorrectPayload),
+    }));
+    const probeBody = await probeResp.json() as { adjusted: boolean; seq?: SeqMonthMap };
+    assert.equal(probeBody.adjusted, false, "sanity: o DO não tem este mês rastreado — adjust é no-op nele");
+    assert.equal(probeBody.seq, undefined, "sanity: sem month: no DO, ele nem chega a olhar pro seq — confirma que o DO não pode ser quem corrige aqui");
+
+    // 2. Editor corrige o gabarito (A → B): o voto B agora vira correto.
+    //    `env.POLL` (countingEnv) é CRU — precisa embrulhar com o prefixo do
+    //    brand aqui, mesmo padrão de `bEnv = brandedEnv(env, brand)` que o
+    //    ROUTER (index.ts) monta antes de chamar esta função em produção.
+    const bEnv = { ...env, POLL: brandedNamespace(kv as unknown as KVNamespace, webPrefix), SCORE_COUNTER: scoreNs } as unknown as Env;
+    await adjustScoreByMonthCorrectOnly(bEnv, identity, "260601", false, true, "web");
+
+    // 3. REGRESSÃO CENTRAL: o agregado self-healed deve refletir a correção,
+    //    mesmo o DO nunca tendo rastreado esta edição.
+    const seqRaw = kv._map.get(`${webPrefix}seq:${monthSlug}:${identity}`);
+    assert.ok(seqRaw, "o agregado self-healed deve continuar existindo");
+    const seq = JSON.parse(seqRaw!);
+    assert.equal(seq["260601"], true, "REGRESSÃO: entry self-healed deve ser corrigida via caminho KV-direto, não só via DO");
   });
 });

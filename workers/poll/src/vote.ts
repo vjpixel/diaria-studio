@@ -1448,15 +1448,45 @@ export async function adjustScoreByMonthCorrectOnly(
   await env.POLL.put(key, JSON.stringify(entry));
   // Invalidação feita pelo caller (handleAdminCorrect) uma vez após o loop — não aqui.
 
+  // #4443 (correção pós-review do coordenador, achado #1 do self-review):
+  // correção KV-DIRETA do agregado seq:{monthSlug}:{email} — espelha
+  // EXATAMENTE o padrão acima pro score-by-month (write incondicional,
+  // independente do resultado do sync via DO logo abaixo). Sem este bloco, a
+  // correção do agregado dependia 100% do DO já ter a edição rastreada
+  // (`storedSeq !== undefined && Object.hasOwn(...)`, ver
+  // `handleAdjustMonthCorrect`, score-counter.ts) — uma entry SELF-HEALED
+  // (criada por `handleJogarSeqState` sem NUNCA passar pelo DO pra este mês,
+  // ex: edição votada antes do deploy do #4443, self-heal populou o KV
+  // direto) ficava stale PRA SEMPRE: a presença do agregado no caminho
+  // rápido de `/jogar/seq-state` suprime pra sempre o fallback que
+  // re-derivaria o valor fresco de `vote:{edition}:{email}` (que ESTE
+  // handler já corrigiu, linha 625 de index.ts). O DO segue sendo
+  // sincronizado logo abaixo — quando ele tem o dado, os dois caminhos
+  // convergem pro mesmo `newCorrect`; quando não tem, este é o único que
+  // corrige.
+  const seqKey = seqStateKvKey(monthSlug, email);
+  const seqRaw = await env.POLL.get(seqKey);
+  if (seqRaw) {
+    const seqParsed = safeParseKv<unknown>(seqRaw, "admin_correct_seq_state_parse_error", edition);
+    if (seqParsed && isValidSeqMonthMap(seqParsed) && Object.hasOwn(seqParsed, edition)) {
+      const correctedSeq: SeqMonthMap = { ...seqParsed, [edition]: newCorrect };
+      try {
+        await env.POLL.put(seqKey, JSON.stringify(correctedSeq));
+      } catch (e) {
+        console.error(JSON.stringify({ event: "seq_state_kv_mirror_failed", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
+      }
+    }
+  }
+
   // #4169: mantém o DO ScoreCounter (mensal) em sincronia — best-effort.
   // #4443: `edition` no payload — corrige `seq[edition]` no MESMO round-trip,
   // se o agregado já conhecer esta edição (ver rationale em
   // `handleAdjustMonthCorrect`, score-counter.ts). `seq` retornado é
   // espelhado no KV (`seq:{monthSlug}:{email}`) pra manter o agregado lido
-  // por `/jogar/seq-state` consistente com o gabarito retificado — sem isso,
-  // um voto já contabilizado no agregado antes do gabarito existir ficaria
-  // com `correct` stale pra sempre, mesmo após handleAdminCorrect corrigir
-  // vote:{edition}:{email} e score-by-month.
+  // por `/jogar/seq-state` consistente com o gabarito retificado — REDUNDANTE
+  // com a correção KV-direta acima quando o DO tem o dado (mesmo valor
+  // reescrito 2x, inofensivo), mas continua sendo a fonte de correção quando
+  // o DO tem estado que o KV ainda não refletia por outro motivo.
   if (env.SCORE_COUNTER) {
     try {
       const doId = env.SCORE_COUNTER.idFromName(`${brand}:${email}`);
