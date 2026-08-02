@@ -1,18 +1,28 @@
 /**
- * test/sync-pending-to-brevo-4266.test.ts (#4266)
+ * test/sync-pending-to-brevo-4266.test.ts (#4266, fila de tamanho fixo +
+ * backfill adicionados no #4476 item 5)
  *
  * Triagem Pending(Beehiiv)→Brevo. Cobre: paginação/reconciliação da leitura
- * Beehiiv, diff puro (dedup pelo store, nunca pela Beehiiv), e a
- * ingestão real (mock de fetch — nunca rede real).
+ * Beehiiv, diff puro (dedup pelo store, nunca pela Beehiiv), a ingestão real
+ * (mock de fetch — nunca rede real), e a seleção da fila de tamanho fixo com
+ * backfill priorizado por score de origem (#4476 item 5).
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import {
   fetchPendingBeehiivSubscriptions,
   computeContactsToIngest,
   ingestContactToBrevo,
+  computeAvailableSlots,
+  selectContactsForBackfill,
+  loadOriginScores,
+  assertMvGuardAcknowledged,
   type BeehiivPendingSubscription,
+  type PendingToIngestEntry,
 } from "../scripts/sync-pending-to-brevo.ts";
 import type { BrevoDiariaStore } from "../scripts/lib/brevo-diaria-store.ts";
 
@@ -88,8 +98,8 @@ describe("computeContactsToIngest — dedup pelo store, nunca pela Beehiiv (#426
     ];
     const store: BrevoDiariaStore = {
       contacts: [
-        { email: "a@b.com", beehiiv_subscription_id: "sub_1", status: "in_brevo", opens_count: 0, sends_count: 0, last_score: null, added_at: "x", last_evaluated_at: null },
-        { email: "b@b.com", beehiiv_subscription_id: "sub_2", status: "promoted_beehiiv", opens_count: 3, sends_count: 3, last_score: 60, added_at: "x", last_evaluated_at: "y", promoted_at: "z" },
+        { email: "a@b.com", beehiiv_subscription_id: "sub_1", status: "in_brevo", opens_count: 0, sends_count: 0, last_open_rate: null, added_at: "x", last_evaluated_at: null },
+        { email: "b@b.com", beehiiv_subscription_id: "sub_2", status: "promoted_beehiiv", opens_count: 3, sends_count: 3, last_open_rate: 1, added_at: "x", last_evaluated_at: "y", promoted_at: "z" },
       ],
     };
     const out = computeContactsToIngest(pending, store);
@@ -152,6 +162,125 @@ describe("ingestContactToBrevo — cria + verifica por releitura (#4266)", () =>
       await assert.rejects(() => ingestContactToBrevo("key", 7, "a@b.com"), /releitura pós-criação falhou/);
     } finally {
       restore();
+    }
+  });
+});
+
+describe("assertMvGuardAcknowledged — guard de MillionVerifier antes de --push (#4476 achado silent-failure-hunter)", () => {
+  it("sem --i-know-this-skips-mv → lança erro explícito nomeando a issue e a flag", () => {
+    assert.throws(() => assertMvGuardAcknowledged([]), /MV batch script ainda não existe.*--i-know-this-skips-mv/s);
+  });
+
+  it("sem a flag mesmo com --push presente → ainda lança (a flag exata é o que importa, não --push)", () => {
+    assert.throws(() => assertMvGuardAcknowledged(["--push"]), /--i-know-this-skips-mv/);
+  });
+
+  it("com --i-know-this-skips-mv → não lança", () => {
+    assert.doesNotThrow(() => assertMvGuardAcknowledged(["--push", "--i-know-this-skips-mv"]));
+  });
+});
+
+describe("computeAvailableSlots — fila de tamanho fixo (#4476 item 5)", () => {
+  it("fila vazia, cap 300 → 300 slots livres", () => {
+    assert.equal(computeAvailableSlots(0, 300), 300);
+  });
+
+  it("fila cheia (300/300) → 0 slots livres", () => {
+    assert.equal(computeAvailableSlots(300, 300), 0);
+  });
+
+  it("fila parcialmente ocupada → cap - ocupados", () => {
+    assert.equal(computeAvailableSlots(280, 300), 20);
+  });
+
+  it("população acima do cap (ex: cap reduzido depois do fato) → 0, nunca negativo", () => {
+    assert.equal(computeAvailableSlots(310, 300), 0);
+  });
+});
+
+describe("selectContactsForBackfill — priorização por score de origem (#4476 item 5)", () => {
+  const candidates: PendingToIngestEntry[] = [
+    { email: "low@b.com", beehiiv_subscription_id: "s1" },
+    { email: "high@b.com", beehiiv_subscription_id: "s2" },
+    { email: "mid@b.com", beehiiv_subscription_id: "s3" },
+  ];
+
+  it("0 slots livres → seleção vazia (fila cheia, sem backfill)", () => {
+    const scores = new Map([["low@b.com", 10], ["high@b.com", 90], ["mid@b.com", 50]]);
+    assert.deepEqual(selectContactsForBackfill(candidates, 0, scores), []);
+  });
+
+  it("com scoreByEmail → ordena DESCENDENTE e corta em availableSlots", () => {
+    const scores = new Map([["low@b.com", 10], ["high@b.com", 90], ["mid@b.com", 50]]);
+    const out = selectContactsForBackfill(candidates, 2, scores);
+    assert.deepEqual(out.map((c) => c.email), ["high@b.com", "mid@b.com"], "os 2 melhores scores, na ordem certa");
+  });
+
+  it("availableSlots >= candidatos → devolve todos, ordenados", () => {
+    const scores = new Map([["low@b.com", 10], ["high@b.com", 90], ["mid@b.com", 50]]);
+    const out = selectContactsForBackfill(candidates, 100, scores);
+    assert.deepEqual(out.map((c) => c.email), ["high@b.com", "mid@b.com", "low@b.com"]);
+  });
+
+  it("scoreByEmail null (arquivo ainda não gerado) → fallback FIFO (ordem original), só corta em availableSlots", () => {
+    const out = selectContactsForBackfill(candidates, 2, null);
+    assert.deepEqual(out.map((c) => c.email), ["low@b.com", "high@b.com"], "ordem original preservada, sem priorização");
+  });
+
+  it("candidato sem score individual (ausente do CSV) ordena por ÚLTIMO, nunca à frente de quem tem score", () => {
+    const scores = new Map([["high@b.com", 90]]); // low@b.com e mid@b.com sem score
+    const out = selectContactsForBackfill(candidates, 3, scores);
+    assert.equal(out[0].email, "high@b.com", "único com score vai primeiro");
+    // os 2 sem score entram depois, em qualquer ordem relativa entre si — o
+    // que importa é nenhum deles vir ANTES do candidato pontuado.
+    assert.deepEqual(new Set(out.slice(1).map((c) => c.email)), new Set(["low@b.com", "mid@b.com"]));
+  });
+});
+
+describe("loadOriginScores — leitura fail-soft do CSV de score-pending-origin.ts (#4476 item 5)", () => {
+  it("arquivo ausente → null (nunca lança), loga aviso", () => {
+    const logs: string[] = [];
+    const result = loadOriginScores(resolve(tmpdir(), "nao-existe-4476-" + Date.now() + ".csv"), (m) => logs.push(m));
+    assert.equal(result, null);
+    assert.ok(logs.some((l) => l.includes("não encontrado")));
+  });
+
+  it("CSV bem-formado → Map email→score", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "origin-scores-"));
+    try {
+      const path = resolve(dir, "scores.csv");
+      writeFileSync(path, "email,origin,score\na@b.com,x,87\nb@b.com,y,17.5\n", "utf8");
+      const result = loadOriginScores(path);
+      assert.ok(result);
+      assert.equal(result!.get("a@b.com"), 87);
+      assert.equal(result!.get("b@b.com"), 17.5);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("email normalizado (lowercase/trim) na leitura", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "origin-scores-"));
+    try {
+      const path = resolve(dir, "scores.csv");
+      writeFileSync(path, "email,origin,score\n  Foo@Bar.COM  ,x,50\n", "utf8");
+      const result = loadOriginScores(path);
+      assert.equal(result!.get("foo@bar.com"), 50);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("linha com score não-numérico → ignorada (não quebra as demais)", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "origin-scores-"));
+    try {
+      const path = resolve(dir, "scores.csv");
+      writeFileSync(path, "email,origin,score\na@b.com,x,abc\nb@b.com,y,10\n", "utf8");
+      const result = loadOriginScores(path);
+      assert.equal(result!.has("a@b.com"), false);
+      assert.equal(result!.get("b@b.com"), 10);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
