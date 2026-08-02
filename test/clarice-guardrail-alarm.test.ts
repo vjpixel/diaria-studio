@@ -2,7 +2,7 @@
  * #4064: alarme de guardrail furado do ramp Clarice (parte 1 — só alarme,
  * sem trava). Cobre a lógica PURA de `scripts/lib/clarice-guardrail-alarm.ts`:
  * adapter pra reuso de `evaluateArmGuardrails` (thresholds.ts, sem
- * reimplementar limiar), janela de 6h, idempotência, e o texto do e-mail
+ * reimplementar limiar), janela de 10h (#4475, eram 6h originalmente), idempotência, e o texto do e-mail
  * (precisa nomear o próximo envio agendado + prazo de suspensão).
  *
  * Caso real reproduzido (#4061): envio 8 do braço B fechou com 11,1% de
@@ -65,7 +65,7 @@ test("evaluateSendGuardrails — reproduz o caso real #4061: 11,1% de abertura (
   assert.ok(Math.abs(result.openRatePct - 11.1) < 0.1);
 });
 
-test("evaluateSendGuardrails — 0% de abertura MADURA (6h) → openBreach=true (#4131 finding 3 — falha total de entrega precisa alarmar)", () => {
+test("evaluateSendGuardrails — 0% de abertura MADURA (10h) → openBreach=true (#4131 finding 3 — falha total de entrega precisa alarmar)", () => {
   const input = mkCampaign({ delivered: 6600, uniqueViews: 0 });
   const result = evaluateSendGuardrails(input);
   assert.equal(result.openRatePct, 0);
@@ -87,12 +87,12 @@ test("evaluateSendGuardrails — envio saudável (tudo dentro dos limites) → a
   assert.equal(result.anyBreach, false);
 });
 
-test("isReadyForEvaluation — fronteira exata de 6h (>=, não >)", () => {
+test("isReadyForEvaluation — fronteira exata de 10h (>=, não >) (#4475, eram 6h originalmente)", () => {
   const sentDate = "2026-07-23T00:00:00.000Z";
-  const exactly6h = new Date(Date.parse(sentDate) + GUARDRAIL_EVAL_WINDOW_MS);
-  const before6h = new Date(Date.parse(sentDate) + GUARDRAIL_EVAL_WINDOW_MS - 1000);
-  assert.equal(isReadyForEvaluation(sentDate, exactly6h), true);
-  assert.equal(isReadyForEvaluation(sentDate, before6h), false);
+  const exactly10h = new Date(Date.parse(sentDate) + GUARDRAIL_EVAL_WINDOW_MS);
+  const before10h = new Date(Date.parse(sentDate) + GUARDRAIL_EVAL_WINDOW_MS - 1000);
+  assert.equal(isReadyForEvaluation(sentDate, exactly10h), true);
+  assert.equal(isReadyForEvaluation(sentDate, before10h), false);
 });
 
 test("isReadyForEvaluation — sentDate não-parseável → false (nunca lança)", () => {

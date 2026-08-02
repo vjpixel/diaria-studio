@@ -2,7 +2,8 @@
 /**
  * clarice-guardrail-alarm.ts (#4064)
  *
- * PARTE 1 (alarme) do ramp Clarice: ~6h após cada envio (`GUARDRAIL_EVAL_WINDOW_MS`,
+ * PARTE 1 (alarme) do ramp Clarice: ~10h após cada envio (`GUARDRAIL_EVAL_WINDOW_MS`
+ * — eram 6h originalmente, ajustado em #4475 —
  * `scripts/lib/clarice-guardrail-alarm.ts`), avalia os guardrails do que
  * acabou de sair (reusando `evaluateArmGuardrails`/`thresholds.ts`, sem
  * reimplementar limiar) e, se houver breach, envia e-mail ao editor via Gmail
@@ -141,7 +142,7 @@ async function main(): Promise<void> {
   );
 
   if (pending.length === 0) {
-    console.log("[clarice-guardrail-alarm] nenhuma campanha nova cruzou a janela de 6h ainda.");
+    console.log("[clarice-guardrail-alarm] nenhuma campanha nova cruzou a janela de 10h ainda.");
     return;
   }
 

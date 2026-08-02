@@ -30,12 +30,24 @@
  * puras o suficiente pra testar sem subir o servidor HTTP — só I/O de
  * arquivo, injetável via `rootDir` (mesmo padrão de `studio-round.ts`/
  * `studio-issues.ts`).
+ *
+ * **#4475: e-mail de notificação leve, não a volta do draft narrativo do
+ * #3714.** O draft removido em #3714 era um e-mail PESADO — narrativa
+ * completa colada via `create_draft` (MCP), que o editor precisava abrir e
+ * ler inteiro. O que `registerReport` dispara agora (`dispatchReportEmail`,
+ * via Gmail API direta — `sendGmailMessage`, mesmo mecanismo do alarme de
+ * guardrail, #4064) é só título + link — um PING pra avisar que um relatório
+ * novo existe, não uma reintrodução do conteúdo duplicado que #3714
+ * eliminou. Decisão do editor em #4475: quer o aviso por e-mail de volta,
+ * mas mantendo o Studio como onde o relatório de fato é lido.
  */
 
 import { existsSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { escHtml } from "../lib/html-escape.ts";
+import { sendGmailMessage, type GmailSendResult } from "../lib/gmail-send.ts";
+import { resolveEditorEmail } from "../lib/inbox-stats.ts";
 
 // #4347: "clarice-novos" — relatório da skill /diaria-clarice-novos (rodada
 // sem gate humano do laço cadastro-novo→envio-imediato, D14).
@@ -86,6 +98,118 @@ export interface RegisterReportResult {
   ok: boolean;
   entry: ReportEntry | null;
   error: string | null;
+  /** Resultado do disparo (best-effort) do e-mail de notificação (#4475) —
+   * nunca rejeita. Callers de produção ignoram (fire-and-forget: o registro
+   * em `index.jsonl` já aconteceu antes deste disparo começar, então uma
+   * falha de e-mail nunca reflete no `ok`/`error` acima); testes podem
+   * `await` pra asserção determinística. */
+  emailDispatch: Promise<ReportEmailDispatchResult>;
+}
+
+// ─── Envio de e-mail de notificação (#4475) ─────────────────────────────────
+//
+// Decisão do editor (#4475): todo relatório registrado no Studio também sai
+// por e-mail (Gmail API direta, mesmo mecanismo do alarme de guardrail —
+// `sendGmailMessage`, nunca MCP, porque callers como `/diaria-overnight`
+// podem rodar sem sessão Claude Code viva no momento do registro). Fail-soft
+// obrigatório: o envio SÓ é tentado depois que o append em `index.jsonl` já
+// terminou (`registerReport` chama `dispatchReportEmail` como último passo do
+// caminho de sucesso), então qualquer falha de rede/token/escopo nunca reflete
+// no resultado do registro em si — só um warning em stderr.
+
+export interface ReportEmailDispatchResult {
+  sent: boolean;
+  /** Motivo de não ter tentado enviar: `no-credentials` (sessão cloud ou
+   * `oauth-setup.ts` nunca rodado) ou `register-failed` (o append em
+   * `index.jsonl` falhou antes do disparo — nada a notificar). */
+  skipped?: "no-credentials" | "register-failed";
+  /** Mensagem de erro do envio, quando tentado e falhou (fail-soft — nunca
+   * lançado, só reportado aqui). */
+  error?: string;
+}
+
+/** Dependências injetáveis do disparo de e-mail — mesmo padrão de
+ * `_fetchImpl` em `sendGmailMessage` (gmail-send.ts), pra tornar
+ * `dispatchReportEmail`/`registerReport` testáveis sem rede real. */
+export interface ReportEmailDeps {
+  sendMail: (to: string, subject: string, body: string) => Promise<GmailSendResult>;
+  resolveEditorEmail: (platformConfigPath: string) => string;
+  /** `true` se há credencial OAuth local capaz de enviar e-mail — default
+   * checa a presença de `{rootDir}/data/.credentials.json` (mesmo sinal
+   * fail-soft de `scripts/lib/exec-mode.ts`: sessão cloud/clone fresco nunca
+   * tem esse arquivo, então o envio é pulado silenciosamente, não tratado
+   * como erro). */
+  hasCredentials: (rootDir: string) => boolean;
+}
+
+function defaultHasCredentials(rootDir: string): boolean {
+  return existsSync(resolve(rootDir, "data", ".credentials.json"));
+}
+
+const defaultEmailDeps: ReportEmailDeps = {
+  sendMail: sendGmailMessage,
+  resolveEditorEmail,
+  hasCredentials: defaultHasCredentials,
+};
+
+/** URL pública do relatório pro link do e-mail — prefere `STUDIO_REMOTE_URL`
+ * (túnel Cloudflare, acessível fora da rede local/mobile, ver
+ * `scripts/studio/verify-remote-tunnel.ts`) quando definida; fallback
+ * `http://127.0.0.1:{STUDIO_PORT ?? 4174}` (mesmo default de
+ * `scripts/register-report.ts`). */
+function resolveReportUrl(entry: ReportEntry): string {
+  const base = (process.env.STUDIO_REMOTE_URL || `http://127.0.0.1:${process.env.STUDIO_PORT ?? "4174"}`).replace(
+    /\/$/,
+    "",
+  );
+  return `${base}${entry.url}`;
+}
+
+/**
+ * Monta o e-mail de notificação — título do relatório + link (#4475).
+ *
+ * **Kinds com resumo curto pronto no próprio título** (overnight/develop —
+ * ex: "Diar.ia overnight 260720 — 5 resolvidas, 2 puladas, 1 finding",
+ * montado por `.claude/skills/diaria-overnight/SKILL.md` Fase 2 passo 3)
+ * já carregam esse resumo em `entry.title`, então título+link no corpo cobre
+ * o requisito de incluir o resumo sem duplicar lógica de digest aqui — este
+ * módulo não conhece a estrutura de `plan.json`/`report.md` por kind, só o
+ * texto que o caller já preparou como título.
+ */
+export function buildReportEmail(entry: ReportEntry): { subject: string; body: string } {
+  const subject = `[Diar.ia] ${entry.title}`;
+  const body = `${entry.title}\n\n${resolveReportUrl(entry)}\n`;
+  return { subject, body };
+}
+
+/**
+ * Dispara (best-effort) o e-mail de notificação de um relatório recém-
+ * registrado. Nunca lança — toda falha (sem credencial, rede, token
+ * expirado/escopo ausente) vira `{sent: false, skipped|error}` e um warning
+ * em stderr; o caller (`registerReport`) já persistiu a entry em
+ * `index.jsonl` antes de chamar isto, então o registro em si nunca depende
+ * do resultado do e-mail.
+ */
+export async function dispatchReportEmail(
+  rootDir: string,
+  entry: ReportEntry,
+  deps: ReportEmailDeps = defaultEmailDeps,
+): Promise<ReportEmailDispatchResult> {
+  if (!deps.hasCredentials(rootDir)) {
+    return { sent: false, skipped: "no-credentials" };
+  }
+  try {
+    const to = deps.resolveEditorEmail(resolve(rootDir, "platform.config.json"));
+    const { subject, body } = buildReportEmail(entry);
+    await deps.sendMail(to, subject, body);
+    return { sent: true };
+  } catch (e) {
+    const message = (e as Error).message;
+    console.warn(
+      `[studio-reports] aviso: envio de e-mail do relatório ${entry.id} falhou (fail-soft, registro em index.jsonl já concluído): ${message}`,
+    );
+    return { sent: false, error: message };
+  }
 }
 
 /**
@@ -100,8 +224,18 @@ export interface RegisterReportResult {
  * O caller (send-edition-report.ts, fechos de overnight/develop) não deve
  * travar o pipeline por causa do registro no Studio; é só observabilidade
  * extra, não um passo crítico.
+ *
+ * **#4475: também dispara e-mail de notificação** (título + link, best-effort,
+ * via `dispatchReportEmail`) depois que o append acima já terminou — a
+ * promise fica disponível em `result.emailDispatch` pra quem quiser aguardar
+ * (testes) mas NUNCA precisa ser aguardada por callers de produção (fail-soft:
+ * `dispatchReportEmail` nunca rejeita).
  */
-export function registerReport(rootDir: string, input: ReportRegistryInput): RegisterReportResult {
+export function registerReport(
+  rootDir: string,
+  input: ReportRegistryInput,
+  emailDeps: ReportEmailDeps = defaultEmailDeps,
+): RegisterReportResult {
   const id = reportId(input.kind, input.sessionId);
   const createdAt = input.createdAt ?? new Date().toISOString();
   const entry: ReportEntry = {
@@ -113,9 +247,14 @@ export function registerReport(rootDir: string, input: ReportRegistryInput): Reg
   try {
     mkdirSync(resolve(rootDir, REPORTS_DIR), { recursive: true });
     appendFileSync(registryPath(rootDir), JSON.stringify(entry) + "\n", "utf8");
-    return { ok: true, entry, error: null };
+    return { ok: true, entry, error: null, emailDispatch: dispatchReportEmail(rootDir, entry, emailDeps) };
   } catch (e) {
-    return { ok: false, entry: null, error: (e as Error).message };
+    return {
+      ok: false,
+      entry: null,
+      error: (e as Error).message,
+      emailDispatch: Promise.resolve({ sent: false, skipped: "register-failed" as const }),
+    };
   }
 }
 
