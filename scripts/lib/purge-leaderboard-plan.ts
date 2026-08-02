@@ -27,6 +27,13 @@ export interface PurgePlanEntry {
   sbmKeys: string[];
   voteKeys: string[];
   countedKeys: string[];
+  /** #4470: chaves `seq:{month}:{identity}` (ver `seqStateKvKey`,
+   * `workers/poll/src/lib.ts`) do agregado mensal introduzido pelo #4443 —
+   * mapa edição→gabarito/resposta usado por `handleJogarSeqState` pra
+   * self-heal. Sem apagar isso junto, um usuário purgado que jogue de novo
+   * ressuscita respostas/gabarito de edições supostamente purgadas a partir
+   * deste agregado stale. */
+  seqKeys: string[];
   /** #4433: presente quando esta entry foi resolvida via `identify-linked`
    * (não por match direto do `--email`/`--nickname`) — lista os e-mails de
    * origem que apontam pra ela, pra o plano deixar claro que esta chave NÃO
@@ -192,8 +199,18 @@ export async function buildPurgePlan(
       sbmKeys: entrySbmKeys,
       voteKeys: [],
       countedKeys: [],
+      seqKeys: [],
       linkedVia: linkedVia.get(email),
     });
+  }
+
+  // #4470: agregado mensal `seq:{month}:{identity}` (#4443) — mesmo padrão de
+  // scan-por-prefixo + filtro por sufixo `:{email}` já usado pra `vote:`
+  // logo abaixo. Cobre também as identidades linkadas via identify-linked,
+  // porque `plans` já inclui essas entries neste ponto (resolvidas acima).
+  const seqKeys = await ops.list(`${bp}seq:`);
+  for (const plan of plans) {
+    plan.seqKeys = seqKeys.filter((k) => k.endsWith(`:${plan.email}`));
   }
 
   const voteKeys = await ops.list(`${bp}vote:`);

@@ -26,6 +26,13 @@
  *                                   conta ser apagado. Derivado deterministicamente
  *                                   da edition de cada `vote:*` encontrado —
  *                                   sem scan adicional)
+ *   - `seq:{month}:{identity}`     (#4470 — agregado mensal edição→gabarito/
+ *                                   resposta introduzido pelo #4443. Sem
+ *                                   apagar isso junto, um usuário purgado que
+ *                                   jogue de novo faz `handleJogarSeqState`
+ *                                   ressuscitar respostas de edições
+ *                                   supostamente purgadas via self-heal a
+ *                                   partir desse agregado stale)
  *   - `stats:{edition}`            (decrementa total/voted_a/voted_b/correct_count
  *                                   pra refletir os votes apagados)
  *   - `leaderboard-snapshot:{slug}` (invalida snapshots dos meses afetados)
@@ -210,7 +217,9 @@ async function main(): Promise<void> {
     for (const k of p.voteKeys) console.log(`    - ${k}`);
     console.log(`  counted (${p.countedKeys.length}):`);
     for (const k of p.countedKeys) console.log(`    - ${k}`);
-    totalKeys += (p.scoreExists ? 1 : 0) + p.sbmKeys.length + p.voteKeys.length + p.countedKeys.length;
+    console.log(`  seq (${p.seqKeys.length}):`);
+    for (const k of p.seqKeys) console.log(`    - ${k}`);
+    totalKeys += (p.scoreExists ? 1 : 0) + p.sbmKeys.length + p.voteKeys.length + p.countedKeys.length + p.seqKeys.length;
   }
   totalKeys += plan.identifyLinkedKeys.length;
 
@@ -271,6 +280,10 @@ async function main(): Promise<void> {
     // TTL de 90 dias) — kvDelete já é 404-safe/idempotente, mesmo tratamento
     // dos demais deletes acima.
     for (const k of p.countedKeys) { await kvDelete(k); console.log(`  [del] ${k}`); }
+    // #4470: agregado seq:{month}:{identity} (#4443) — sem apagar isso junto,
+    // o self-heal de handleJogarSeqState ressuscita respostas/gabarito de
+    // edições supostamente purgadas se essa identidade jogar de novo.
+    for (const k of p.seqKeys) { await kvDelete(k); console.log(`  [del] ${k}`); }
   }
 
   // #4433: chaves identify-linked:{email}:{anonEmail} ficam órfãs depois que
