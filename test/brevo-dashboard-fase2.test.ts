@@ -310,6 +310,60 @@ describe("#2889: teste ABC mensal (naming 'Clarice News AAMM-MM — X')", () => 
     assert.doesNotMatch(sectionHtml, /Dados insuficientes/, "não deve cair no caminho 'sem dados' — há 3 campanhas com stats reais");
   });
 
+  // #4447: bug — campanhas do fluxo `--group` (clarice-schedule-group.ts)
+  // nomeiam a CAMPANHA "Clarice {yymm} grupo:{key}" (sem ciclo "AAMM-MM" nem
+  // célula reconhecível); só a LISTA de destinatários carrega o sinal
+  // completo ("Clarice {ciclo} {key} — celula {X}"). Fixtures = nomes reais
+  // confirmados via KV dash:lastgood:campaigns pro ciclo 2607-08 (issue #4447).
+  const groupAbc = (id: number, key: string, cell: string, when: string, gs: Record<string, number>) => ({
+    ...makeCampaign(id, `Clarice 2607 grupo:${key}`, when, gs),
+    scheduledAt: when,
+    listName: `Clarice 2607-08 ${key} — celula ${cell}`,
+  });
+  const grupoSab = [
+    groupAbc(102, "d1-sab01-A", "A", "2026-08-01T06:00:00.000-03:00", { sent: 2998, delivered: 2977, uniqueViews: 306 }),
+    groupAbc(103, "d1-sab01-B", "B", "2026-08-01T06:00:00.000-03:00", { sent: 3001, delivered: 2980, uniqueViews: 402 }),
+    groupAbc(104, "d1-sab01-C", "C", "2026-08-01T06:00:00.000-03:00", { sent: 3000, delivered: 2979, uniqueViews: 280 }),
+  ];
+  const grupoDom = [
+    groupAbc(105, "d2-dom02-A", "A", "2026-08-02T06:00:00.000-03:00", { sent: 3003, delivered: 2979, uniqueViews: 309 }),
+    groupAbc(106, "d2-dom02-B", "B", "2026-08-02T06:00:00.000-03:00", { sent: 3002, delivered: 2980, uniqueViews: 400 }),
+    groupAbc(107, "d2-dom02-C", "C", "2026-08-02T06:00:00.000-03:00", { sent: 3001, delivered: 2978, uniqueViews: 290 }),
+  ];
+
+  test("#4447: groupMonthlyAbcTests reconhece naming '--group' via listName (2 dias = 2 grupos)", () => {
+    const groups = groupMonthlyAbcTests([...grupoSab, ...grupoDom]);
+    assert.equal(groups.length, 2, "2 testes: 01/08 e 02/08");
+    assert.equal(groups[0].dateKey, "2026-08-02", "mais recente primeiro");
+    assert.equal(groups[0].cycle, "2607-08");
+    assert.equal(groups[0].campaigns.length, 3);
+    assert.equal(groups[1].dateKey, "2026-08-01");
+    assert.equal(groups[1].campaigns.length, 3);
+  });
+
+  // #4447: chave do nome ("d1-sab01") e chave da lista ("d2-dom02") DIVERGEM
+  // de propósito aqui — reproduz o dado REAL da campanha id 111 no KV
+  // dash:lastgood:campaigns (a lista "interno" é compartilhada entre os dias,
+  // não um typo de fixture). Irrelevante pro teste: sem "celula" na lista,
+  // a campanha não entra no A/B/C de qualquer forma.
+  test("#4447: campanha '--group' SEM 'celula' na lista (ex: envio interno) não entra no grupo A/B/C", () => {
+    const interno = { ...makeCampaign(111, "Clarice 2607 grupo:d1-sab01-interno", "2026-08-01T06:00:00.000-03:00"), scheduledAt: "2026-08-01T06:00:00.000-03:00", listName: "Clarice 2607-08 d2-dom02-interno" };
+    assert.equal(groupMonthlyAbcTests([interno]).length, 0);
+  });
+
+  test("#4447: renderDashboardHtml mostra dados reais (não seção vazia) pro naming '--group'", () => {
+    const html = renderDashboardHtml([...grupoSab, ...grupoDom]);
+    assert.match(html, /id="abc-summary-monthly-2607-08-2026-08-02"/, "seção do dia mais recente deve existir");
+    const sectionStart = html.indexOf('id="abc-summary-monthly-2607-08-2026-08-02"');
+    const sectionHtml = html.slice(sectionStart, sectionStart + 3000);
+    assert.match(sectionHtml, /Célula A/);
+    assert.match(sectionHtml, /Célula B/);
+    assert.match(sectionHtml, /Célula C/);
+    assert.doesNotMatch(sectionHtml, /Dados insuficientes/, "não deve cair no caminho 'sem dados' — há 3 campanhas com stats reais");
+    // Resumo A/B/C por Audiência (leitura primária, #2976) também precisa existir.
+    assert.match(html, /id="abc-audience-2607-08"/);
+  });
+
   test("#3081: NÃO agrupa teste A/B/C DIÁRIO (cycle sem hífen, ex: 'Clarice News 2605 d02-A')", () => {
     const daily = [
       makeCampaign(301, "Clarice News 2605 d02-A (qui)", "2026-06-11T06:00:00.000-03:00"),
