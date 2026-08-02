@@ -42,6 +42,12 @@ export function makeMockDoState(): DurableObjectState {
       async delete(key: string): Promise<void> {
         storage.delete(key);
       },
+      // #4474: purge-leaderboard precisa apagar TODO o storage do DO
+      // (ScoreCounter /purge) — mesma semântica do CF real (limpa tudo,
+      // não cancela alarm nenhum aqui porque nenhum destes DOs usa alarm).
+      async deleteAll(): Promise<void> {
+        storage.clear();
+      },
     } as unknown as DurableObjectStorage,
     blockConcurrencyWhile: <T>(fn: () => Promise<T>): Promise<T> => {
       // Encadeia na fila: aguarda a invocação anterior antes de executar fn().
