@@ -100,15 +100,15 @@ describe("#4041 — fronteira de edição (só metadados, nunca valores)", () =>
     try {
       const r = saveUtmMetadata(
         root,
-        "clarice-cta-ab",
+        "cursos-footer-nav",
         { description: "nova descrição", status: "aposentado", note: "round encerrado" },
         () => "2026-07-27T00:00:00.000Z",
       );
       assert.equal(r.ok, true);
       const persisted = loadUtmMetadata(root);
-      assert.equal(persisted["clarice-cta-ab"].description, "nova descrição");
-      assert.equal(persisted["clarice-cta-ab"].status, "aposentado");
-      assert.equal(persisted["clarice-cta-ab"].updatedAt, "2026-07-27T00:00:00.000Z");
+      assert.equal(persisted["cursos-footer-nav"].description, "nova descrição");
+      assert.equal(persisted["cursos-footer-nav"].status, "aposentado");
+      assert.equal(persisted["cursos-footer-nav"].updatedAt, "2026-07-27T00:00:00.000Z");
       assert.ok(readFileSync(utmMetadataPath(root), "utf8").includes("round encerrado"));
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -428,6 +428,22 @@ describe("#4041 — contrato HTTP (/utms e /api/utms)", () => {
     const body = await res.text();
     assert.ok(body.includes('window.STUDIO_PAGE = "utms";'));
     assert.ok(body.includes('src="/utms.js"'));
+  });
+
+  it("#4463: GET /utms.js, /utms-sort.js e /utms.css são servidos normalmente (static-serve)", async () => {
+    const js = await fetch(new URL("/utms.js", server.url));
+    assert.equal(js.status, 200);
+    assert.match(js.headers.get("content-type") ?? "", /javascript/);
+    assert.match(await js.text(), /from "\.\/utms-sort\.js"/);
+
+    const sortJs = await fetch(new URL("/utms-sort.js", server.url));
+    assert.equal(sortJs.status, 200);
+    assert.match(sortJs.headers.get("content-type") ?? "", /javascript/);
+    assert.match(await sortJs.text(), /export function sortRows/);
+
+    const css = await fetch(new URL("/utms.css", server.url));
+    assert.equal(css.status, 200);
+    assert.match(css.headers.get("content-type") ?? "", /css/);
   });
 
   it("GET /api/utms responde 200 mesmo sem credencial (fail-soft)", async () => {

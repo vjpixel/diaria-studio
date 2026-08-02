@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/nav.css" />
   <link rel="stylesheet" href="/triagem.css" />
   <link rel="stylesheet" href="/integracoes.css" />
+  <link rel="stylesheet" href="/utms.css" />
   <link rel="stylesheet" href="/chat-drawer.css" />
 </head>
 <body>
@@ -48,15 +49,6 @@
 
     <section class="panel">
       <div class="panel-header-row">
-        <h2>Drift (<span id="drift-count">0</span>)</h2>
-        <span class="hint">inventário × realidade, nos dois sentidos</span>
-      </div>
-      <div id="drift-empty" class="hint" hidden>Nenhum drift detectado.</div>
-      <ul id="drift-list"></ul>
-    </section>
-
-    <section class="panel">
-      <div class="panel-header-row">
         <h2>Emissores (<span id="utms-count">0</span>)</h2>
         <label class="filter-field">
           <span class="label">Status</span>
@@ -74,11 +66,29 @@
         <table class="triage-table">
           <thead>
             <tr>
+              <th class="sortable" data-sort-col="clicks" aria-sort="none">
+                <button type="button" class="sort-header" data-sort-col="clicks">
+                  Cliques <span class="sort-indicator" aria-hidden="true"></span>
+                </button>
+              </th>
+              <th class="sortable" data-sort-col="subscribers" aria-sort="none">
+                <button type="button" class="sort-header" data-sort-col="subscribers">
+                  Assinantes <span class="sort-indicator" aria-hidden="true"></span>
+                </button>
+              </th>
+              <th class="sortable" data-sort-col="conversion" aria-sort="none">
+                <button
+                  type="button"
+                  class="sort-header"
+                  data-sort-col="conversion"
+                  title="Cliques vem das últimas 20 campanhas Brevo enviadas; Assinantes é contagem all-time do Beehiiv — janelas de tempo diferentes. Sinal direcional, pode passar de 100% em emissores antigos."
+                >
+                  % conversão <span class="sort-indicator" aria-hidden="true"></span>
+                </button>
+              </th>
               <th>Emissor</th>
               <th>source / medium</th>
               <th>campaign</th>
-              <th>Assinantes</th>
-              <th>Cliques</th>
               <th>Status</th>
               <th>Descrição / origem</th>
               <th></th>
@@ -87,6 +97,22 @@
           <tbody id="utms-tbody"></tbody>
         </table>
       </div>
+      <p class="hint">
+        <strong>% conversão</strong> cruza duas janelas de tempo diferentes —
+        <strong>Cliques</strong> é das últimas 20 campanhas Brevo enviadas,
+        <strong>Assinantes</strong> é contagem all-time do Beehiiv. É um sinal
+        direcional, não uma taxa de conversão precisa — pode passar de 100% em
+        emissores antigos com poucas campanhas recentes.
+      </p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header-row">
+        <h2>Drift (<span id="drift-count">0</span>)</h2>
+        <span class="hint">inventário × realidade, nos dois sentidos</span>
+      </div>
+      <div id="drift-empty" class="hint" hidden>Nenhum drift detectado.</div>
+      <ul id="drift-list"></ul>
     </section>
   </main>
 
