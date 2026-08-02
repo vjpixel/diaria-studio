@@ -15,7 +15,7 @@
  * de leitura já documentada na issue). Esta tooling deixa a comparação
  * pronta pra rodar numa sessão supervisionada com credenciais reais:
  *
- *   npx tsx scripts/clarice-engagement-cohorts.ts --dry-run > /tmp/v1.json   # ou --out, ver v1
+ *   npx tsx scripts/clarice-engagement-cohorts.ts --dry-run > /tmp/v1.json
  *   npx tsx scripts/clarice-engagement-cohorts-v2.ts --out /tmp/v2.json
  *   npx tsx scripts/compare-cohorts.ts --a /tmp/v1.json --b /tmp/v2.json
  *
@@ -56,6 +56,13 @@ const FIELDS: Array<[string, (c: EngagementCohorts) => number]> = [
   ["maxReceived", (c) => c.maxReceived],
 ];
 
+/** Resultado agregado de `diffCohorts` — linhas por campo + veredito geral já dobrado num único retorno. */
+export interface CohortsDiff {
+  rows: CohortsDiffField[];
+  /** true se TODOS os campos baterem dentro da tolerância. */
+  allWithinTolerance: boolean;
+}
+
 /**
  * Compara duas `EngagementCohorts` campo a campo. Pura — testável sem I/O.
  * Tolerância = `max(1, round(|a| * toleranceRatio))` — pelo menos 1 unidade,
@@ -66,19 +73,15 @@ export function diffCohorts(
   a: EngagementCohorts,
   b: EngagementCohorts,
   toleranceRatio = 0.02,
-): CohortsDiffField[] {
-  return FIELDS.map(([field, get]) => {
+): CohortsDiff {
+  const rows = FIELDS.map(([field, get]) => {
     const av = get(a);
     const bv = get(b);
     const absDiff = Math.abs(av - bv);
     const tolerance = Math.max(1, Math.round(Math.abs(av) * toleranceRatio));
     return { field, a: av, b: bv, absDiff, tolerance, withinTolerance: absDiff <= tolerance };
   });
-}
-
-/** true se TODOS os campos baterem dentro da tolerância. Pura. */
-export function allWithinTolerance(rows: CohortsDiffField[]): boolean {
-  return rows.every((r) => r.withinTolerance);
+  return { rows, allWithinTolerance: rows.every((r) => r.withinTolerance) };
 }
 
 /** Formata a tabela de diff pra stdout/log (pura — sem console.*). */
@@ -117,12 +120,12 @@ async function main(): Promise<void> {
 
   const a = loadCohorts(aPath);
   const b = loadCohorts(bPath);
-  const rows = diffCohorts(a, b, toleranceRatio);
+  const { rows, allWithinTolerance } = diffCohorts(a, b, toleranceRatio);
 
   console.log(`Comparando ${aPath} (v1) × ${bPath} (v2), tolerância ${toleranceRatio * 100}%:\n`);
   console.log(formatCohortsDiff(rows));
 
-  if (allWithinTolerance(rows)) {
+  if (allWithinTolerance) {
     console.log("\n✅ Todos os campos dentro da tolerância — v2 pode ser considerado equivalente ao v1 nesta amostra.");
   } else {
     console.log(

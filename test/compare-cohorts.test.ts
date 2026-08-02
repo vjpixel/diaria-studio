@@ -9,7 +9,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { diffCohorts, allWithinTolerance, formatCohortsDiff } from "../scripts/compare-cohorts.ts";
+import { diffCohorts, formatCohortsDiff } from "../scripts/compare-cohorts.ts";
 import type { EngagementCohorts } from "../scripts/lib/dashboard-kv-types.ts";
 
 const GEN = "2026-08-02T00:00:00.000Z";
@@ -32,47 +32,56 @@ function makeCohorts(overrides: Partial<EngagementCohorts> = {}): EngagementCoho
 test("diffCohorts: coortes idênticas → todos os campos withinTolerance, absDiff=0", () => {
   const a = makeCohorts();
   const b = makeCohorts();
-  const rows = diffCohorts(a, b);
+  const { rows, allWithinTolerance } = diffCohorts(a, b);
   assert.equal(rows.length, 9);
   for (const r of rows) {
     assert.equal(r.absDiff, 0);
     assert.equal(r.withinTolerance, true);
   }
-  assert.equal(allWithinTolerance(rows), true);
+  assert.equal(allWithinTolerance, true);
 });
 
 test("diffCohorts: diferença pequena (dentro de 2%) ainda passa", () => {
   const a = makeCohorts({ universe: 1000 });
   const b = makeCohorts({ universe: 1015 }); // 1.5% de diferença
-  const rows = diffCohorts(a, b, 0.02);
+  const { rows, allWithinTolerance } = diffCohorts(a, b, 0.02);
   const universeRow = rows.find((r) => r.field === "universe")!;
   assert.equal(universeRow.absDiff, 15);
   assert.equal(universeRow.withinTolerance, true);
-  assert.equal(allWithinTolerance(rows), true);
+  assert.equal(allWithinTolerance, true);
 });
 
 test("diffCohorts: diferença grande (fora de 2%) falha só naquele campo", () => {
   const a = makeCohorts({ universe: 1000, opened1: 200 });
   const b = makeCohorts({ universe: 1200, opened1: 200 }); // 20% de diferença em universe
-  const rows = diffCohorts(a, b, 0.02);
+  const { rows, allWithinTolerance } = diffCohorts(a, b, 0.02);
   const universeRow = rows.find((r) => r.field === "universe")!;
   const opened1Row = rows.find((r) => r.field === "opened1")!;
   assert.equal(universeRow.withinTolerance, false);
   assert.equal(opened1Row.withinTolerance, true);
-  assert.equal(allWithinTolerance(rows), false);
+  assert.equal(allWithinTolerance, false);
 });
 
 test("diffCohorts: tolerância mínima é 1 unidade (campo pequeno não exige bater exato)", () => {
   const a = makeCohorts({ exitsBreakdown: { bounced: 1, optedOut: 30 } });
   const b = makeCohorts({ exitsBreakdown: { bounced: 2, optedOut: 30 } });
-  const rows = diffCohorts(a, b, 0.02); // 2% de 1 arredonda pra 0, mas o piso é 1
+  const { rows } = diffCohorts(a, b, 0.02); // 2% de 1 arredonda pra 0, mas o piso é 1
   const bouncedRow = rows.find((r) => r.field === "exitsBreakdown.bounced")!;
   assert.equal(bouncedRow.tolerance, 1);
   assert.equal(bouncedRow.withinTolerance, true);
 });
 
+test("diffCohorts: campo ausente/undefined de um dos lados falha fechado (withinTolerance:false, nunca lança nem passa silenciosamente)", () => {
+  const a = makeCohorts();
+  const b = { ...makeCohorts(), universe: undefined } as unknown as EngagementCohorts;
+  const { rows, allWithinTolerance } = diffCohorts(a, b);
+  const universeRow = rows.find((r) => r.field === "universe")!;
+  assert.equal(universeRow.withinTolerance, false);
+  assert.equal(allWithinTolerance, false);
+});
+
 test("diffCohorts: cobre os 9 campos documentados (inclusive exitsBreakdown.* e maxReceived)", () => {
-  const rows = diffCohorts(makeCohorts(), makeCohorts());
+  const { rows } = diffCohorts(makeCohorts(), makeCohorts());
   const fields = rows.map((r) => r.field);
   assert.deepEqual(fields, [
     "universe",
@@ -88,7 +97,7 @@ test("diffCohorts: cobre os 9 campos documentados (inclusive exitsBreakdown.* e 
 });
 
 test("formatCohortsDiff: produz 1 linha de header + 1 linha por campo, sem lançar", () => {
-  const rows = diffCohorts(makeCohorts(), makeCohorts({ universe: 1200 }));
+  const { rows } = diffCohorts(makeCohorts(), makeCohorts({ universe: 1200 }));
   const out = formatCohortsDiff(rows);
   const lines = out.split("\n");
   assert.equal(lines.length, 1 + rows.length);

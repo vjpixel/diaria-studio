@@ -1,5 +1,5 @@
 /**
- * clarice-engagement-cohorts-v2.ts (#4451 Fase 1)
+ * clarice-engagement-cohorts-v2.ts (#4451 Fase 1 + Fase 2)
  *
  * Redesenho estrutural de `clarice-engagement-cohorts.ts`: em vez de 1 `GET
  * /contacts/{id}` por CONTATO (hoje ~129k contatos, ~21,5h de crawl, travado
@@ -452,14 +452,17 @@ async function mapWithConcurrency<T, R>(
 
 // ─── Gap de blacklist administrativo — fechado via store local (#4451 Fase 2) ─
 
-export interface AdminOptOutsResult {
-  /** e-mails (normalizados) com email_blacklisted=1 OU unsubscribed=1 no store local. */
-  emails: Set<string>;
-  /** false = store indisponível (sessão cloud sem `data/`, DB ainda não gerado, etc.) — fail-soft. */
-  available: boolean;
-  /** motivo legível quando `available=false`, pra diagnosticar sem lançar. */
-  unavailableReason?: string;
-}
+/**
+ * Union discriminada por `available`: quando `true`, `emails` (normalizados,
+ * com email_blacklisted=1 OU unsubscribed=1 no store local) sempre existe;
+ * quando `false` (store indisponível — sessão cloud sem `data/`, DB ainda não
+ * gerado, etc. — fail-soft), `unavailableReason` sempre existe pra
+ * diagnosticar sem lançar. Narrowing no `available` elimina a leitura direta
+ * de `emails`/`unavailableReason` sem checar o discriminante primeiro.
+ */
+export type AdminOptOutsResult =
+  | { available: true; emails: Set<string> }
+  | { available: false; unavailableReason: string };
 
 /**
  * Lê `email_blacklisted`/`unsubscribed` do store local (`clarice-db.ts`),
@@ -483,7 +486,7 @@ export interface AdminOptOutsResult {
  */
 export function fetchAdminOptOutEmails(dbPath: string = DEFAULT_DB_PATH): AdminOptOutsResult {
   if (!existsSync(dbPath)) {
-    return { emails: new Set(), available: false, unavailableReason: `store não encontrado em ${dbPath}` };
+    return { available: false, unavailableReason: `store não encontrado em ${dbPath}` };
   }
   try {
     const db = openClariceDb(dbPath);
@@ -494,13 +497,12 @@ export function fetchAdminOptOutEmails(dbPath: string = DEFAULT_DB_PATH): AdminO
         )
         .all() as Array<{ email: string }>;
       const emails = new Set(rows.map((r) => normalizeEmail(r.email)).filter((e) => e.length > 0));
-      return { emails, available: true };
+      return { available: true, emails };
     } finally {
       db.close();
     }
   } catch (e) {
     return {
-      emails: new Set(),
       available: false,
       unavailableReason: e instanceof Error ? e.message : String(e),
     };
@@ -542,6 +544,14 @@ export interface BuildCohortsV2Result {
   /** #4451 Fase 2 — false quando o sinal NÃO foi aplicado: store indisponível
    * (fail-soft) OU desligado explicitamente via `--no-admin-optouts`. */
   adminOptOutsAvailable: boolean;
+  /** #4451 Fase 2 — motivo real (`unavailableReason` de `fetchAdminOptOutEmails`)
+   * quando `adminOptOutsAvailable=false` por store indisponível — undefined
+   * quando desligado via `--no-admin-optouts` (não é "indisponível", é opt-out
+   * explícito do operador). Sem isto, o log genérico de `main()` esconde a
+   * causa real (DB corrompido, SQLITE_BUSY por contenção com o sync das
+   * 08:30, erro de permissão) atrás do mesmo aviso do caso esperado
+   * "sessão cloud sem `data/`". */
+  adminOptOutsUnavailableReason?: string;
 }
 
 export async function buildCohortsV2(
@@ -597,12 +607,17 @@ export async function buildCohortsV2(
   let aggregate = aggregateCampaignCaches(caches);
   let adminOptOutsApplied = 0;
   let adminOptOutsAvailable = true;
+  let adminOptOutsUnavailableReason: string | undefined;
   if (opts.includeAdminOptOuts ?? true) {
     const admin = fetchAdminOptOutEmails(opts.dbPath);
     adminOptOutsAvailable = admin.available;
-    if (admin.available && admin.emails.size > 0) {
-      aggregate = applyAdminOptOuts(aggregate, admin.emails);
-      adminOptOutsApplied = admin.emails.size;
+    if (admin.available) {
+      if (admin.emails.size > 0) {
+        aggregate = applyAdminOptOuts(aggregate, admin.emails);
+        adminOptOutsApplied = admin.emails.size;
+      }
+    } else {
+      adminOptOutsUnavailableReason = admin.unavailableReason;
     }
   } else {
     adminOptOutsAvailable = false; // desligado explicitamente — não é "indisponível", mas o campo reporta "não aplicado"
@@ -618,6 +633,7 @@ export async function buildCohortsV2(
     campaignsFailed,
     adminOptOutsApplied,
     adminOptOutsAvailable,
+    adminOptOutsUnavailableReason,
   };
 }
 
@@ -663,7 +679,7 @@ async function main(): Promise<void> {
   console.error(
     result.adminOptOutsAvailable
       ? `📇 Opt-outs administrativos do store local aplicados: ${result.adminOptOutsApplied}.`
-      : `⚠️  Opt-outs administrativos NÃO aplicados (store local indisponível ou --no-admin-optouts).`,
+      : `⚠️  Opt-outs administrativos NÃO aplicados: ${result.adminOptOutsUnavailableReason ?? "--no-admin-optouts"}.`,
   );
   if (result.campaignsFailed.length > 0) {
     console.error("⚠️  Campanhas com falha (não entraram no agregado):");

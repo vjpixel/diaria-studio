@@ -249,10 +249,17 @@ function makeMockClient(overrides: Partial<CampaignExportClient> = {}): {
   return { client, calls };
 }
 
-function withTmpCacheDir<T>(fn: (dir: string) => T): T {
+// ASYNC de propósito (mesmo motivo de withTmpDbDir, ver comentário abaixo): o
+// cleanup precisa aguardar o callback resolver ANTES de apagar o diretório —
+// se fosse síncrono, `finally` rodaria assim que o callback suspendesse no
+// primeiro `await` interno, apagando o dir ANTES das escritas reais
+// acontecerem. Hoje isso só não quebra porque `saveCampaignCache` recria o
+// diretório via `mkdirSync(recursive:true)` antes de escrever — mascarando,
+// não corrigindo.
+async function withTmpCacheDir<T>(fn: (dir: string) => T | Promise<T>): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), "cohorts-v2-cache-"));
   try {
-    return fn(dir);
+    return await fn(dir);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -368,6 +375,53 @@ test("getOrFetchCampaignCache: forceRefresh=true SEMPRE busca de novo, mesmo com
   });
 });
 
+test("getOrFetchCampaignCache: forceRefresh=true com cache VÁLIDO em disco, mas export falha → lança (não cai de volta pro cache velho; documenta o comportamento atual, fallback fica pra Fase 4)", async () => {
+  await withTmpCacheDir(async (dir) => {
+    const campaign: SentCampaignRef = { id: 60, name: "camp-com-cache" };
+    const { client: seedClient } = makeMockClient();
+    // Popula um cache válido em disco.
+    await getOrFetchCampaignCache(seedClient, campaign, { cacheDir: dir, now: () => GEN });
+
+    // forceRefresh=true ignora esse cache válido inteiramente — se o export
+    // falhar, a chamada lança (não há fallback silencioso pro cache antigo).
+    const { client: failingClient } = makeMockClient({
+      exportRecipients: async () => {
+        throw new Error("Brevo 500 simulado no refresh forçado");
+      },
+    });
+    await assert.rejects(
+      () => getOrFetchCampaignCache(failingClient, campaign, { cacheDir: dir, forceRefresh: true, now: () => GEN }),
+      /Brevo 500 simulado/,
+    );
+  });
+});
+
+test("buildCohortsV2: campanha DENTRO da janela com cache válido em disco, cujo refresh forçado falha → some do agregado (sem fallback pro cache velho, comportamento atual)", async () => {
+  await withTmpCacheDir(async (dir) => {
+    const recentSent = new Date(NOW_MS - 5 * 86_400_000).toISOString(); // dentro da janela → forceRefresh
+
+    const { client: seedClient } = makeMockClient({
+      downloadCsv: async () => "Email_ID,Delivered_Date,Total Opens\na@x.com,2026-07-01,1\n",
+    });
+    await getOrFetchCampaignCache(seedClient, { id: 1, name: "camp1" }, { cacheDir: dir, now: () => GEN });
+
+    const { client } = makeMockClient({
+      listSentCampaigns: async () => [{ id: 1, name: "camp1", sentDate: recentSent }],
+      exportRecipients: async () => {
+        throw new Error("Brevo 500 simulado no refresh");
+      },
+    });
+
+    const result = await buildCohortsV2(client, GEN, { cacheDir: dir, nowMs: NOW_MS, includeAdminOptOuts: false });
+
+    assert.equal(result.campaignsFailed.length, 1);
+    assert.equal(result.campaignsFailed[0].campaignId, 1);
+    // A campanha some do agregado inteiramente — o cache válido em disco NÃO
+    // é reaproveitado como fallback quando o refresh forçado falha.
+    assert.equal(result.cohorts.universe, 0);
+  });
+});
+
 test("buildCohortsV2: campanha DENTRO da janela é re-exportada mesmo já cacheada; fora da janela usa cache", async () => {
   await withTmpCacheDir(async (dir) => {
     const recentSent = new Date(NOW_MS - 5 * 86_400_000).toISOString(); // 5d atrás — dentro da janela 30d
@@ -441,12 +495,12 @@ test("applyAdminOptOuts: não muta o Map original (retorna cópia)", () => {
   assert.equal(aggregate.get("a@x.com")!.optedOut, false, "original não deve ser mutado");
 });
 
-// ASYNC de propósito (diferente de withTmpCacheDir): o cleanup precisa
+// ASYNC pelo mesmo motivo de withTmpCacheDir acima: o cleanup precisa
 // aguardar o callback resolver ANTES de apagar o diretório — se fosse
-// síncrono como withTmpCacheDir, `finally` rodaria assim que o callback
-// suspendesse no primeiro `await` interno (ex: dentro de buildCohortsV2),
-// apagando o .db ANTES de fetchAdminOptOutEmails chegar a lê-lo (visto
-// falhar ao vivo nesta sessão: available=false por causa da ordem errada).
+// síncrono, `finally` rodaria assim que o callback suspendesse no primeiro
+// `await` interno (ex: dentro de buildCohortsV2), apagando o .db ANTES de
+// fetchAdminOptOutEmails chegar a lê-lo (visto falhar ao vivo nesta sessão:
+// available=false por causa da ordem errada).
 async function withTmpDbDir<T>(fn: (dbPath: string) => T | Promise<T>): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), "cohorts-v2-db-"));
   try {
@@ -470,6 +524,7 @@ test("fetchAdminOptOutEmails: lê email_blacklisted=1 OU unsubscribed=1 do store
 
     const result = fetchAdminOptOutEmails(dbPath);
     assert.equal(result.available, true);
+    if (!result.available) throw new Error("esperado available=true");
     assert.equal(result.emails.size, 2);
     assert.ok(result.emails.has("blacklisted@x.com"));
     assert.ok(result.emails.has("unsub@x.com")); // normalizado (lowercase)
@@ -477,12 +532,12 @@ test("fetchAdminOptOutEmails: lê email_blacklisted=1 OU unsubscribed=1 do store
   });
 });
 
-test("fetchAdminOptOutEmails: store inexistente → fail-soft, available=false, Set vazio (nunca lança)", () => {
+test("fetchAdminOptOutEmails: store inexistente → fail-soft, available=false (nunca lança)", () => {
   const missingPath = resolve(mkdtempSync(join(tmpdir(), "cohorts-v2-missing-")), "não-existe", "clarice-users.db");
   const result = fetchAdminOptOutEmails(missingPath);
   assert.equal(result.available, false);
-  assert.equal(result.emails.size, 0);
-  assert.ok(result.unavailableReason && result.unavailableReason.length > 0);
+  if (result.available) throw new Error("esperado available=false");
+  assert.ok(result.unavailableReason.length > 0);
 });
 
 test("buildCohortsV2: aplica opt-outs administrativos do store quando disponível", async () => {
@@ -524,7 +579,27 @@ test("buildCohortsV2: --no-admin-optouts (includeAdminOptOuts=false) não toca o
     });
     assert.equal(result.adminOptOutsAvailable, false);
     assert.equal(result.adminOptOutsApplied, 0);
+    assert.equal(result.adminOptOutsUnavailableReason, undefined); // desligado via flag, não "indisponível"
     assert.equal(result.cohorts.universe, 1); // só a@x.com, sem opt-out administrativo
+  });
+});
+
+test("buildCohortsV2: store administrativo indisponível propaga o motivo real (não some atrás de um aviso genérico)", async () => {
+  await withTmpCacheDir(async (dir) => {
+    const { client } = makeMockClient({
+      listSentCampaigns: async () => [{ id: 1, name: "camp1", sentDate: GEN }],
+      downloadCsv: async () => "Email_ID,Delivered_Date,Total Opens\na@x.com,2026-07-01,1\n",
+    });
+    const result = await buildCohortsV2(client, GEN, {
+      cacheDir: dir,
+      nowMs: NOW_MS,
+      dbPath: resolve(dir, "não-existe", "clarice-users.db"), // store ausente, mas SEM --no-admin-optouts
+    });
+    assert.equal(result.adminOptOutsAvailable, false);
+    assert.ok(
+      result.adminOptOutsUnavailableReason && result.adminOptOutsUnavailableReason.includes("store não encontrado"),
+      `esperava motivo real, recebeu: ${result.adminOptOutsUnavailableReason}`,
+    );
   });
 });
 
