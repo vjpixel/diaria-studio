@@ -30,6 +30,16 @@
  *                                   pra refletir os votes apagados)
  *   - `leaderboard-snapshot:{slug}` (invalida snapshots dos meses afetados)
  *
+ * #4433: no modo `--email`, resolve TAMBÉM as identidades anônimas
+ * (`{uuid}@web.eia.diaria.local`, brand `web`) ligadas ao e-mail via
+ * `identify-linked:{email}:{anonEmail}` — o jogo público (`/jogar`) joga a
+ * partida real sob a identidade anônima e só vincula depois; o merge nunca
+ * apaga `score:{anonEmail}`/`vote:{edition}:{anonEmail}`, então purgar só a
+ * casca do e-mail deixava os votos de verdade competindo no leaderboard. Ver
+ * `scripts/lib/purge-leaderboard-plan.ts` (`resolveLinkedAnonymousIdentities`)
+ * pra lógica + rationale completo. As próprias chaves `identify-linked:*` são
+ * apagadas no fim (ficariam órfãs).
+ *
  * Auth (#2265): usa o WRANGLER (auth global do CLI — a mesma do `wrangler deploy`),
  * NÃO mais CLOUDFLARE_API_TOKEN/ACCOUNT_ID (o token avulso dava 401 sem perm de KV).
  * Pré-requisito: `wrangler` logado (`npx wrangler whoami` deve funcionar).
@@ -52,6 +62,7 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { buildPurgePlan, type PurgeKvOps } from "./lib/purge-leaderboard-plan.ts";
 
 // #2265: NAMESPACE_ID do POLL (KV). Auth e acesso ao KV vão pelo WRANGLER (auth
 // global do CLI), não mais pela CF REST API com CLOUDFLARE_API_TOKEN — o token
@@ -157,119 +168,40 @@ async function kvDelete(key: string): Promise<void> {
 interface VoteRecord { choice: "A" | "B"; ts: string; correct: boolean | null }
 interface StatsRecord { total: number; voted_a: number; voted_b: number; correct_count: number }
 
-/**
- * Resolve a lista de emails a purgar a partir do modo selecionado.
- * - Modo --nickname: scan score-by-month:* + score:* por nickname match.
- * - Modo --email: o próprio email é o target (sem scan).
- */
-async function resolveTargetEmails(sbmKeys: string[]): Promise<Set<string>> {
-  const matched = new Set<string>();
-
-  if (targetEmail) {
-    matched.add(targetEmail);
-    return matched;
-  }
-
-  // Modo --nickname: scan score-by-month:* primeiro
-  for (const key of sbmKeys) {
-    const m = key.match(new RegExp(`^${BP}score-by-month:(\\d{4}-\\d{2}):(.+)$`));
-    if (!m) continue;
-    const [, , email] = m;
-    const raw = await kvGet(key);
-    if (!raw) continue;
-    let entry: { nickname?: string | null };
-    try { entry = JSON.parse(raw); } catch { continue; }
-    if ((entry.nickname ?? "").toLowerCase() === targetNickname) {
-      matched.add(email);
-    }
-  }
-
-  // Fallback: nickname pode ter sido seteado sem nenhum vote (entry score:*
-  // sem score-by-month correspondente). Varre score:* também.
-  if (matched.size === 0) {
-    console.log("[purge] sem match em score-by-month:* — escaneando score:* tambem...");
-    const scoreKeys = await kvList(`${BP}score:`);
-    for (const key of scoreKeys) {
-      const email = key.replace(new RegExp(`^${BP}score:`), "");
-      const raw = await kvGet(key);
-      if (!raw) continue;
-      let entry: { nickname?: string | null };
-      try { entry = JSON.parse(raw); } catch { continue; }
-      if ((entry.nickname ?? "").toLowerCase() === targetNickname) {
-        matched.add(email);
-      }
-    }
-  }
-
-  return matched;
-}
+// #4433: implementação real das operações de KV que buildPurgePlan (lib pura,
+// testável sem wrangler) consome via injeção — mesmo padrão de KvSyncOps em
+// sync-cursos-subscribers-kv.ts.
+const kvOps: PurgeKvOps = { list: kvList, get: kvGet };
 
 async function main(): Promise<void> {
   const target = targetEmail ? `email: "${targetEmail}"` : `nickname: "${targetNickname}"`;
   console.log(`[purge] mode: ${execute ? "EXECUTE" : "DRY-RUN"} — target ${target}`);
 
   console.log(`[purge] brand: ${BRAND}${BP ? ` (prefixo "${BP}")` : ""}`);
-  console.log("[purge] listando score-by-month:* keys...");
-  const sbmKeys = await kvList(`${BP}score-by-month:`);
-  console.log(`[purge] ${sbmKeys.length} score-by-month entries no KV`);
+  console.log("[purge] resolvendo plano (score-by-month, identify-linked, vote)...");
 
-  const matchedEmails = await resolveTargetEmails(sbmKeys);
+  // #4433: buildPurgePlan já resolve, num plano único, os e-mails-alvo + as
+  // identidades anônimas ligadas via identify-linked (modo --email) — ver
+  // scripts/lib/purge-leaderboard-plan.ts.
+  const plan = await buildPurgePlan(kvOps, BP, targetEmail, targetNickname);
 
-  if (matchedEmails.size === 0) {
+  if (plan.matchedEmails.length === 0) {
     console.log(`[purge] nada pra apagar — ${target} não existe no KV`);
     return;
   }
 
-  console.log(`[purge] ${matchedEmails.size} email(s) match:`);
-  for (const e of matchedEmails) console.log(`  - ${e}`);
-
-  // Pra cada email, listar todas as keys relacionadas
-  type Plan = { email: string; scoreKey: string; sbmKeys: string[]; voteKeys: string[]; countedKeys: string[]; scoreExists: boolean };
-  const plans: Plan[] = [];
-  const slugsTouched = new Set<string>();
-
-  for (const email of matchedEmails) {
-    const plan: Plan = {
-      email,
-      scoreKey: `${BP}score:${email}`,
-      sbmKeys: sbmKeys.filter((k) => k.endsWith(`:${email}`)),
-      voteKeys: [],
-      countedKeys: [],
-      scoreExists: (await kvGet(`${BP}score:${email}`)) !== null,
-    };
-    plans.push(plan);
-    for (const k of plan.sbmKeys) {
-      const sm = k.match(new RegExp(`^${BP}score-by-month:(\\d{4}-\\d{2}):`));
-      if (sm) slugsTouched.add(sm[1]);
-    }
+  console.log(`[purge] ${plan.matchedEmails.length} email(s) match:`);
+  for (const p of plan.plans) {
+    console.log(`  - ${p.email}${p.linkedVia ? `  (identidade ligada via identify-linked de ${p.linkedVia.join(", ")}, não match direto)` : ""}`);
   }
-
-  console.log("[purge] listando vote:* keys...");
-  const voteKeys = await kvList(`${BP}vote:`);
-  for (const plan of plans) {
-    plan.voteKeys = voteKeys.filter((k) => k.endsWith(`:${plan.email}`));
-  }
-
-  // #3976: guard-keys idempotentes de incremento (counted:{edition}:{email}:
-  // {stats,score,month}, ver handleVote em vote.ts) — nunca eram purgados
-  // antes desta issue, mesmo já sabendo a EDITION de cada vote:* encontrado.
-  // Derivado por slice de string (não regex) — email já validado sem ":" no
-  // charset (#3279), então prefix/suffix bastam pra isolar a edition no meio.
-  const votePrefix = `${BP}vote:`;
-  for (const plan of plans) {
-    const suffix = `:${plan.email}`;
-    for (const vk of plan.voteKeys) {
-      if (!vk.startsWith(votePrefix) || !vk.endsWith(suffix)) continue;
-      const edition = vk.slice(votePrefix.length, vk.length - suffix.length);
-      for (const kind of ["stats", "score", "month"] as const) {
-        plan.countedKeys.push(`${BP}counted:${edition}:${plan.email}:${kind}`);
-      }
-    }
+  if (plan.identifyLinkedKeys.length > 0) {
+    console.log(`[purge] identify-linked keys a apagar no fim (${plan.identifyLinkedKeys.length}):`);
+    for (const k of plan.identifyLinkedKeys) console.log(`    - ${k}`);
   }
 
   // Print plano
   let totalKeys = 0;
-  for (const p of plans) {
+  for (const p of plan.plans) {
     console.log(`\n[plan] ${p.email}`);
     console.log(`  score:        ${p.scoreKey} ${p.scoreExists ? "(exists)" : "(not found)"}`);
     console.log(`  score-by-month (${p.sbmKeys.length}):`);
@@ -280,7 +212,9 @@ async function main(): Promise<void> {
     for (const k of p.countedKeys) console.log(`    - ${k}`);
     totalKeys += (p.scoreExists ? 1 : 0) + p.sbmKeys.length + p.voteKeys.length + p.countedKeys.length;
   }
-  console.log(`\n[purge] snapshots a invalidar: ${[...slugsTouched].join(", ") || "(nenhum)"}`);
+  totalKeys += plan.identifyLinkedKeys.length;
+
+  console.log(`\n[purge] snapshots a invalidar: ${plan.slugsTouched.join(", ") || "(nenhum)"}`);
   console.log(`[purge] total de keys a deletar: ${totalKeys}`);
 
   if (totalKeys === 0) {
@@ -295,8 +229,8 @@ async function main(): Promise<void> {
 
   // Ajustar stats:{edition} antes de deletar (precisa do choice + correct)
   const statsAdjust = new Map<string, { dTotal: number; dA: number; dB: number; dCorrect: number }>();
-  for (const plan of plans) {
-    for (const vk of plan.voteKeys) {
+  for (const p of plan.plans) {
+    for (const vk of p.voteKeys) {
       const m = vk.match(new RegExp(`^${BP}vote:(\\d{6}):`));
       if (!m) continue;
       const edition = m[1];
@@ -329,7 +263,7 @@ async function main(): Promise<void> {
   }
 
   console.log("\n[purge] deletando keys...");
-  for (const p of plans) {
+  for (const p of plan.plans) {
     if (p.scoreExists) { await kvDelete(p.scoreKey); console.log(`  [del] ${p.scoreKey}`); }
     for (const k of p.sbmKeys) { await kvDelete(k); console.log(`  [del] ${k}`); }
     for (const k of p.voteKeys) { await kvDelete(k); console.log(`  [del] ${k}`); }
@@ -339,13 +273,21 @@ async function main(): Promise<void> {
     for (const k of p.countedKeys) { await kvDelete(k); console.log(`  [del] ${k}`); }
   }
 
+  // #4433: chaves identify-linked:{email}:{anonEmail} ficam órfãs depois que
+  // a identidade ligada (e o próprio e-mail) são purgados — apagadas por
+  // último, depois de tudo que elas apontavam já ter sido removido.
+  if (plan.identifyLinkedKeys.length > 0) {
+    console.log("\n[purge] deletando identify-linked keys...");
+    for (const k of plan.identifyLinkedKeys) { await kvDelete(k); console.log(`  [del] ${k}`); }
+  }
+
   console.log("\n[purge] invalidando snapshots...");
-  for (const slug of slugsTouched) {
+  for (const slug of plan.slugsTouched) {
     await kvDelete(`${BP}leaderboard-snapshot:${slug}`);
     console.log(`  [del] ${BP}leaderboard-snapshot:${slug}`);
   }
 
-  console.log(`\n[purge] done — ${totalKeys} keys apagadas, ${slugsTouched.size} snapshots invalidados.`);
+  console.log(`\n[purge] done — ${totalKeys} keys apagadas, ${plan.slugsTouched.length} snapshots invalidados.`);
 }
 
 main().catch((e) => {

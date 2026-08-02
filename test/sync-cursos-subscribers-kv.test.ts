@@ -153,13 +153,15 @@ describe("buildKvBulkEntries (regressão de baseline, não tocado pelo #4381)", 
  *      que `--prefix "subscriber:"` e `--force` estão no comando sem precisar
  *      mockar nada.
  *   2. `syncKvKeys` recebe um `ops` injetável (`put`/`listSubscribers`/`bulkDelete`)
- *      — os testes substituem os 3 por spies e verificam (a) a ORDEM real de
- *      chamada é put → list → delete, nunca list/delete antes do put ter
- *      retornado, (b) `bulkDelete` recebe EXATAMENTE as chaves stale que
- *      `diffStaleSubscriberKeys` computaria a partir do que `listSubscribers`
- *      devolveu — nem a lista completa, nem a lista de ativos — e (c) se
- *      `put` lança, `listSubscribers`/`bulkDelete` NUNCA são chamados (prova
- *      direta de que uma falha no put não pode ser seguida de uma deleção).
+ *      — os testes substituem os 3 por spies e verificam a ORDEM real de
+ *      chamada e os argumentos recebidos por cada operação.
+ *
+ * #4442 mudou a ORDEM: antes era put→list→delete (o put recebia SEMPRE o
+ * conjunto completo); agora é list→put(só as novas)→delete — o `list`
+ * precisa rodar ANTES pra saber quais chaves já existem e podar o `put`.
+ * A garantia crítica do #4381 (put SEMPRE antes de delete; put que lança
+ * impede o delete) foi preservada — só migrou de posição relativa ao list,
+ * nunca ao delete.
  */
 describe("buildKvKeyListCommand / buildKvBulkDeleteCommand (comando puro, #4381 finding 1)", () => {
   it("buildKvKeyListCommand sempre inclui --prefix \"subscriber:\" e --remote, com o namespaceId certo", () => {
@@ -180,7 +182,7 @@ describe("buildKvKeyListCommand / buildKvBulkDeleteCommand (comando puro, #4381 
   });
 });
 
-describe("syncKvKeys: ordem put→list→delete + argumentos corretos (#4381 finding 1)", () => {
+describe("syncKvKeys: ordem list→put→delete + write-amplification (#4442, era put→list→delete no #4381)", () => {
   /** Constrói um `KvSyncOps` de spy: registra a ORDEM de chamada em `calls` e
    * os argumentos recebidos por cada operação, sem nunca tocar spawnSync. */
   function makeSpyOps(overrides: Partial<{
@@ -211,15 +213,50 @@ describe("syncKvKeys: ordem put→list→delete + argumentos corretos (#4381 fin
     return { ops, calls, putArgs, listArgs, deleteArgs };
   }
 
-  it("(a) chama put → list → delete NESTA ORDEM, nunca list/delete antes do put", async () => {
+  it("(a) com chave NOVA: chama list → put → delete NESTA ORDEM (#4442 — list agora roda ANTES do put, pra saber o que é novo)", async () => {
     const ativo = await subscriberKvKey("ativo@example.com");
+    const novo = await subscriberKvKey("novo@example.com");
     const cancelou = await subscriberKvKey("cancelou@example.com");
-    const entries: KvBulkEntry[] = [{ key: ativo, value: "1" }];
+    const entries: KvBulkEntry[] = [{ key: ativo, value: "1" }, { key: novo, value: "1" }];
+    // `ativo` já está no KV; `novo` não — só `novo` deveria disparar o put.
     const { ops, calls } = makeSpyOps({ existingKeys: [ativo, cancelou] });
 
     syncKvKeys(entries, "ns-1", "acc-1", ops);
 
-    assert.deepEqual(calls, ["put", "list", "delete"], `ordem errada: ${JSON.stringify(calls)}`);
+    assert.deepEqual(calls, ["list", "put", "delete"], `ordem errada: ${JSON.stringify(calls)}`);
+  });
+
+  it("#4442 — write-amplification: ops.put recebe SÓ as chaves ausentes do KV (base com 551 existentes + 3 novas ⇒ put com 3, não com 554)", async () => {
+    // Simula a escala real da issue: 551 assinantes já sincronizados, 3 novos
+    // desde o último sync.
+    const existingEmails = Array.from({ length: 551 }, (_, i) => `existente${i}@example.com`);
+    const existingKeys = await Promise.all(existingEmails.map((e) => subscriberKvKey(e)));
+    const newEmails = ["novo1@example.com", "novo2@example.com", "novo3@example.com"];
+    const newKeys = await Promise.all(newEmails.map((e) => subscriberKvKey(e)));
+
+    const entries: KvBulkEntry[] = [...existingKeys, ...newKeys].map((key) => ({ key, value: "1" }));
+    const { ops, putArgs } = makeSpyOps({ existingKeys });
+
+    const result = syncKvKeys(entries, "ns-scale", "acc-scale", ops);
+
+    assert.equal(putArgs.length, 1, "put deveria ter sido chamado exatamente 1 vez");
+    assert.equal(putArgs[0].entries.length, 3, "put deveria receber só as 3 chaves NOVAS, não as 554 do conjunto ativo inteiro");
+    assert.deepEqual(new Set(putArgs[0].entries.map((e) => e.key)), new Set(newKeys));
+    assert.deepEqual(result.addedKeys.sort(), newKeys.sort());
+  });
+
+  it("#4442 — ops.put NÃO é chamado quando não há chave nova (dia comum: 0 assinantes novos)", async () => {
+    const ativo1 = await subscriberKvKey("ativo1@example.com");
+    const ativo2 = await subscriberKvKey("ativo2@example.com");
+    const entries: KvBulkEntry[] = [{ key: ativo1, value: "1" }, { key: ativo2, value: "1" }];
+    // TODAS as entradas já existem no KV — nada novo pra gravar.
+    const { ops, calls, putArgs } = makeSpyOps({ existingKeys: [ativo1, ativo2] });
+
+    const result = syncKvKeys(entries, "ns-noop", "acc-noop", ops);
+
+    assert.equal(putArgs.length, 0, "put não deveria ter sido chamado — nenhuma chave nova");
+    assert.deepEqual(calls, ["list", "delete"], "sem chave nova, a ordem observável vira list → delete direto (put pulado)");
+    assert.deepEqual(result.addedKeys, []);
   });
 
   it("(b) bulkDelete recebe EXATAMENTE as chaves stale computadas por diffStaleSubscriberKeys — nem a lista completa, nem a lista de ativos", async () => {
@@ -242,19 +279,25 @@ describe("syncKvKeys: ordem put→list→delete + argumentos corretos (#4381 fin
     assert.equal(receivedKeys.has(ativo1), false, "NUNCA pode incluir uma chave ainda ativa");
     assert.equal(receivedKeys.has(ativo2), false, "NUNCA pode incluir uma chave ainda ativa");
     // não é a lista completa (4 chaves) nem a lista de ativos (2 chaves) — é
-    // exatamente o diff (2 chaves stale).
+    // exatamente o diff (2 chaves stale). diffStaleSubscriberKeys segue
+    // deletando quem cancelou — nenhuma regressão no lado da deleção (#4442
+    // critério de aceite).
     assert.notEqual(deleteArgs[0].keys.length, existingKeys.length);
     assert.notEqual(new Set(deleteArgs[0].keys), new Set(entries.map((e) => e.key)));
     assert.deepEqual(result.staleKeys.sort(), [cancelou1, cancelou2].sort());
   });
 
-  it("(c) se put lança, listSubscribers/bulkDelete NUNCA são chamados — falha no put não pode ser seguida de uma deleção", async () => {
-    const ativo = await subscriberKvKey("ativo@example.com");
-    const entries: KvBulkEntry[] = [{ key: ativo, value: "1" }];
+  it("(c) se put lança (havia chave nova pra gravar), bulkDelete NUNCA é chamado — falha no put não pode ser seguida de uma deleção", async () => {
+    const novo = await subscriberKvKey("novo@example.com");
+    const entries: KvBulkEntry[] = [{ key: novo, value: "1" }];
+    // `novo` não está em existingKeys — put SERÁ chamado (e vai lançar).
     const { ops, calls } = makeSpyOps({ putThrows: true, existingKeys: ["subscriber:qualquer"] });
 
     assert.throws(() => syncKvKeys(entries, "ns-3", "acc-3", ops), /wrangler kv bulk put falhou/);
-    assert.deepEqual(calls, ["put"], "list/delete não podem ter rodado depois de um put que lançou");
+    // list já rodou (precisa rodar ANTES pra saber que `novo` é novo) — a
+    // garantia do #4381 preservada é sobre DELETE, não sobre LIST: bulkDelete
+    // nunca pode rodar depois de um put que lançou.
+    assert.deepEqual(calls, ["list", "put"], "bulkDelete não pode ter rodado depois de um put que lançou");
   });
 
   it("put e listSubscribers recebem o namespaceId/accountId corretos (não trocados/invertidos)", async () => {
