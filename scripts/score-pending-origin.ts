@@ -72,6 +72,17 @@ const NUMERIC_FIELDS: (keyof PendingOriginMetrics)[] = [
   "invalido_origem_pct",
 ];
 
+/** Subconjunto de `NUMERIC_FIELDS` que são percentuais na escala 0-100
+ * assumida pela fórmula (`dias_desde_cadastro` fica de fora — não é
+ * percentual). Usado só pela checagem de sanidade de escala abaixo. */
+const PERCENT_FIELDS: (keyof PendingOriginMetrics)[] = [
+  "conv_confirmacao_pct",
+  "conv_ativo_pct",
+  "abertura_origem_pct",
+  "clique_origem_pct",
+  "invalido_origem_pct",
+];
+
 /**
  * Pura — converte 1 linha crua do CSV (todos os valores são string, formato
  * padrão de `Papa.parse`) numa linha tipada. Lança em campo numérico
@@ -104,6 +115,31 @@ export function scoreAndSortRows(rows: (PendingOriginInputRow & PendingOriginMet
   return scored.sort((a, b) => b.score - a.score);
 }
 
+/**
+ * Pura — sinal (não bloqueio) de possível divergência de escala nos campos
+ * de percentual (#4476 achado do silent-failure-hunter): `parseInputRow`
+ * só valida "é um número", nunca "está na escala 0-100 assumida pela
+ * fórmula" (`PendingOriginMetrics`). Se o CSV real usar frações 0-1 em vez
+ * de 0-100, todo score sai ~100x menor SEM erro nenhum.
+ *
+ * Heurística: se, entre TODOS os valores >0 observados nos campos de
+ * percentual da amostra, NENHUM ultrapassa 1, é sinal forte de fração 0-1
+ * em vez de 0-100 — uma base legítima em 0-100 com centenas de linhas quase
+ * certamente teria pelo menos 1 valor >1. Amostra vazia ou só zeros → sem
+ * sinal (não há base pra suspeitar de nada).
+ */
+export function detectPercentScaleAnomaly(rows: PendingOriginMetrics[]): boolean {
+  let sawNonZero = false;
+  for (const row of rows) {
+    for (const field of PERCENT_FIELDS) {
+      const v = row[field];
+      if (v > 0) sawNonZero = true;
+      if (v > 1) return false; // pelo menos 1 valor >1 → escala 0-100 normal, sem anomalia
+    }
+  }
+  return sawNonZero;
+}
+
 // ── main ─────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -128,6 +164,18 @@ async function main(): Promise<void> {
 
   const inputRows = parsed.data.map((raw, i) => parseInputRow(raw, i + 2)); // +2: header + 1-index
   log(`${inputRows.length} linha(s) lida(s) de ${inputPath}.`);
+
+  // #4476 achado silent-failure-hunter: sinal, não bloqueio — ver JSDoc de
+  // detectPercentScaleAnomaly. Nunca aborta, só avisa (o operador confere o
+  // CSV antes de confiar na priorização resultante).
+  if (detectPercentScaleAnomaly(inputRows)) {
+    log(
+      "AVISO: todos os campos de percentual observados nesta amostra (conv_confirmacao_pct, " +
+        "conv_ativo_pct, abertura_origem_pct, clique_origem_pct, invalido_origem_pct) caem em [0,1] — " +
+        "possível divergência de escala (a fórmula assume 0-100). Se o CSV real usar frações 0-1, o " +
+        "score sai ~100x menor que o esperado. Confira o cabeçalho/valores do CSV antes de confiar na priorização.",
+    );
+  }
 
   const scored = scoreAndSortRows(inputRows);
   const csvOut = Papa.unparse({

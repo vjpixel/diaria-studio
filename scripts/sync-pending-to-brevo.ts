@@ -37,6 +37,22 @@
  * verificação em lote (script separado, ainda não implementado) antes do
  * primeiro `--push` real.
  *
+ * ## Guard de MV antes de `--push` (#4476 achado do silent-failure-hunter,
+ * self-review pós-merge)
+ *
+ * O parágrafo acima documentava a MV como fora de escopo, mas nada no
+ * código IMPEDIA `--push` de ingerir contatos SEM verificação — diferente do
+ * padrão já estabelecido no projeto pra exatamente este risco (CLAUDE.md:
+ * cohorts não-assinantes exigem MillionVerifier antes do 1º envio, com abort
+ * explícito se não verificado). `assertMvGuardAcknowledged` bloqueia
+ * `--push` com erro explícito a menos que o operador passe
+ * `--i-know-this-skips-mv`, reconhecendo o risco de bounce/reputação de
+ * domínio. Este é o MÍNIMO aceitável, não o guard completo por-contato (que
+ * dependeria de um campo novo tipo `mv_bucket` no store, ainda inexistente —
+ * o script batch de MV em si também ainda não existe, ver item 8 acima) —
+ * documentado como decisão explícita, não descoberto por acidente depois de
+ * um bounce spike.
+ *
  * ## Dedup: pelo STORE, não pela Beehiiv (decisão de design)
  *
  * A issue original ("remove/marca da Beehiiv") deixava em aberto COMO
@@ -70,6 +86,8 @@
  *
  *   npx tsx scripts/sync-pending-to-brevo.ts              # dry-run (default)
  *   npx tsx scripts/sync-pending-to-brevo.ts --push        # aplica (cria contatos na Brevo)
+ *     # --push sozinho ABORTA (guard de MV, ver acima) — precisa também de:
+ *   npx tsx scripts/sync-pending-to-brevo.ts --push --i-know-this-skips-mv
  *
  * Env: BEEHIIV_API_KEY (leitura) + platform.config.json → brevo_diaria.api_key_env (escrita).
  *
@@ -234,14 +252,34 @@ export function computeContactsToIngest(
   return out;
 }
 
+// ── guard de MillionVerifier antes de --push (#4476 achado silent-failure-hunter) ─
+
+/**
+ * Pura — bloqueia `--push` com erro explícito a menos que `argv` contenha
+ * `--i-know-this-skips-mv`. Ver rationale completo no header do módulo
+ * ("Guard de MV antes de --push"). Nunca chamado em dry-run — só quando
+ * `push=true` (`main()` abaixo).
+ */
+export function assertMvGuardAcknowledged(argv: string[]): void {
+  if (hasFlag(argv, "i-know-this-skips-mv")) return;
+  throw new Error(
+    "MV batch script ainda não existe (issue #4476 item 8) — rode a verificação MillionVerifier " +
+      "manualmente sobre o pool ANTES do 1º envio real (bounce de contato não-verificado degrada a " +
+      "reputação do domínio/IP, mesmo risco documentado no CLAUDE.md pra cohorts não-assinantes), ou " +
+      "passe --i-know-this-skips-mv pra confirmar que você está ciente do risco e quer prosseguir mesmo assim.",
+  );
+}
+
 // ── fila de tamanho fixo + backfill (#4476 item 5) ──────────────────────────
 
 /**
- * Pura — quantos slots estão livres na fila (cap free tier Brevo — 300,
- * reusa `brevo_diaria.daily_send_cap` de `platform.config.json`; o mesmo
- * valor já documentado ali como "cabe no free tier da Brevo" cobre tanto o
- * teto de ENVIO diário quanto o teto de CONTATOS ativos simultâneos — são
- * numericamente o mesmo limite no plano free da Brevo). `currentActiveCount`
+ * Pura — quantos slots estão livres na fila (cap 300 — DECISÃO deste
+ * projeto pra este canal, `brevo_diaria.daily_send_cap` em
+ * `platform.config.json`, não um limite inerente da plataforma Brevo; 300
+ * foi escolhido por caber com folga no free tier real, issue #4476 item 5 —
+ * ver `platform.config.json` nota do campo). O mesmo valor cobre tanto o
+ * teto de ENVIO diário quanto o teto de CONTATOS ativos simultâneos, por
+ * escolha deste desenho, não por restrição externa. `currentActiveCount`
  * é `store.contacts` com `status === "in_brevo"` (quem hoje ocupa um slot —
  * `promoted_beehiiv`/`suppressed`/`unsubscribed` já liberaram o deles).
  * Nunca negativo (população acima do cap por transição de config — ex: cap
@@ -355,6 +393,21 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const push = hasFlag(argv, "push");
   const log = (msg: string) => process.stderr.write(`[sync-pending-to-brevo] ${msg}\n`);
+
+  // #4476 achado silent-failure-hunter: guard de MV ANTES de qualquer I/O —
+  // falha rápido, nunca deixa a paginação/backfill rodar pra só então abortar.
+  if (push) {
+    try {
+      assertMvGuardAcknowledged(argv);
+      log(
+        "aviso: --i-know-this-skips-mv confirmado — ingestão SEM verificação MillionVerifier " +
+          "(issue #4476 item 8). Risco de bounce aceito explicitamente pelo operador.",
+      );
+    } catch (e) {
+      log(`ERRO: ${(e as Error).message}`);
+      process.exit(2);
+    }
+  }
 
   const platformConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as PlatformConfig;
   const brevoDiaria = platformConfig.brevo_diaria;

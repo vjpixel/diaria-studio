@@ -13,6 +13,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   computeCountsFromBrevoStatistics,
+  computeMatureCountsFromBrevoStatistics,
   evaluateContact,
   fetchBrevoContactState,
   fetchBeehiivSubscriptionStatus,
@@ -44,6 +45,23 @@ function contact(email: string, overrides: Partial<BrevoDiariaContact> = {}): Br
   };
 }
 
+// ── fixtures de timestamp — janela de maturação de 48h (#4476) ─────────────
+
+const HOUR_MS = 60 * 60 * 1000;
+/** Timestamp ISO `hoursAgo` horas atrás de "agora" (real, `Date.now()`). */
+function hoursAgoIso(hoursAgo: number): string {
+  return new Date(Date.now() - hoursAgo * HOUR_MS).toISOString();
+}
+/** Evento `messagesSent`/`opened` MADURO (bem acima de 48h — 72h, margem
+ * confortável contra timing flake). */
+function matureEvent(campaignId: number) {
+  return { campaignId, date: hoursAgoIso(72) };
+}
+/** Evento `messagesSent`/`opened` IMATURO (1h atrás — bem abaixo de 48h). */
+function freshEvent(campaignId: number) {
+  return { campaignId, date: hoursAgoIso(1) };
+}
+
 describe("computeCountsFromBrevoStatistics — dedup por campaignId (#4266)", () => {
   it("statistics ausente → 0/0", () => {
     assert.deepEqual(computeCountsFromBrevoStatistics(undefined), { sends_count: 0, opens_count: 0 });
@@ -66,22 +84,83 @@ describe("computeCountsFromBrevoStatistics — dedup por campaignId (#4266)", ()
   });
 });
 
-describe("evaluateContact — taxa de abertura + threshold combinados (#4476 item 1)", () => {
-  it("2 enviados/1 aberto → openRate 0.5 → promote_to_beehiiv", () => {
-    const ev = evaluateContact({ opens_count: 1, sends_count: 2 });
+describe("evaluateContact — taxa de abertura + threshold combinados, instant/mature (#4476 item 1)", () => {
+  it("2 enviados/1 aberto (instant) → openRate 0.5 → promote_to_beehiiv", () => {
+    const ev = evaluateContact({ instant: { opens_count: 1, sends_count: 2 }, mature: { opens_count: 1, sends_count: 2 } });
     assert.equal(ev.open_rate, 0.5);
     assert.equal(ev.action, "promote_to_beehiiv");
   });
 
-  it("5 enviados/1 aberto → openRate 0.2 → suppress", () => {
-    const ev = evaluateContact({ opens_count: 1, sends_count: 5 });
+  it("5 enviados/1 aberto (mature) → openRate 0.2 → suppress", () => {
+    const ev = evaluateContact({ instant: { opens_count: 1, sends_count: 5 }, mature: { opens_count: 1, sends_count: 5 } });
     assert.equal(ev.open_rate, 0.2);
     assert.equal(ev.action, "suppress");
   });
 
-  it("3 enviados/1 aberto → openRate 0.33, abaixo do piso de amostra de supressão (n<5) → keep", () => {
-    const ev = evaluateContact({ opens_count: 1, sends_count: 3 });
+  it("4 enviados/1 aberto (mature) → openRate 25%, piso de amostra atingido (n=4>=3) mas taxa acima do threshold (25%>20%) → keep", () => {
+    const ev = evaluateContact({ instant: { opens_count: 1, sends_count: 4 }, mature: { opens_count: 1, sends_count: 4 } });
     assert.equal(ev.action, "keep");
+  });
+
+  it("2 enviados maduros/0 abertos → abaixo do piso de amostra de supressão (n<3) → keep, mesmo com openRate=0%", () => {
+    const ev = evaluateContact({ instant: { opens_count: 0, sends_count: 2 }, mature: { opens_count: 0, sends_count: 2 } });
+    assert.equal(ev.action, "keep");
+  });
+
+  it("`open_rate`/`opens_count`/`sends_count` retornados são SEMPRE os instantâneos, mesmo quando mature difere", () => {
+    const ev = evaluateContact({ instant: { opens_count: 2, sends_count: 10 }, mature: { opens_count: 0, sends_count: 3 } });
+    assert.equal(ev.opens_count, 2, "reporta o instantâneo, não o maduro");
+    assert.equal(ev.sends_count, 10, "reporta o instantâneo, não o maduro");
+    assert.equal(ev.open_rate, 0.2, "20% instantâneo (2/10)");
+    // mature: 0/3 = 0% <= 20%, n=3 >= piso → suprime (o resultado da AÇÃO usa mature, o valor REPORTADO usa instant)
+    assert.equal(ev.action, "suppress");
+  });
+});
+
+describe("computeMatureCountsFromBrevoStatistics — janela de maturação de 48h (#4476, self-review)", () => {
+  it("envio maduro (72h) conta; envio imaturo (1h) NÃO conta pra sends_count", () => {
+    const stats = { messagesSent: [matureEvent(1), freshEvent(2)], opened: [] };
+    assert.deepEqual(computeMatureCountsFromBrevoStatistics(stats), { sends_count: 1, opens_count: 0 });
+  });
+
+  it("envio <48h com opens_count=0 NÃO conta pra avaliação de supressão (teste de regressão explícito do achado #4476)", () => {
+    // 1 único envio, mandado há 1h, ainda não aberto — se contasse como
+    // maduro, entraria como "0/1 = 0%" e (com n>=1... mas piso é 3) não
+    // suprimiria sozinho; o ponto do teste é que NENHUM envio recente entra
+    // na contagem, então sends_count maduro fica 0, não 1.
+    const stats = { messagesSent: [freshEvent(1)], opened: [] };
+    const mature = computeMatureCountsFromBrevoStatistics(stats);
+    assert.equal(mature.sends_count, 0, "envio de 1h não é maduro — excluído da contagem, não contado como 'não aberto'");
+  });
+
+  it("opens_count maduro só conta abertura cujo envio correspondente também é maduro", () => {
+    // campanha 2 foi enviada há 1h (imatura) mas "aberta" no mesmo instante
+    // (cenário raro, mas a invariante deve segurar): não conta em nenhum dos dois.
+    const stats = { messagesSent: [matureEvent(1), freshEvent(2)], opened: [matureEvent(1), freshEvent(2)] };
+    assert.deepEqual(computeMatureCountsFromBrevoStatistics(stats), { sends_count: 1, opens_count: 1 });
+  });
+
+  it("entrada sem timestamp parseável → tratada como IMATURA (fail-safe), nunca conta", () => {
+    const stats = { messagesSent: [{ campaignId: 1 }], opened: [] }; // sem campo de data
+    assert.deepEqual(computeMatureCountsFromBrevoStatistics(stats), { sends_count: 0, opens_count: 0 });
+  });
+
+  it("statistics ausente → 0/0", () => {
+    assert.deepEqual(computeMatureCountsFromBrevoStatistics(undefined), { sends_count: 0, opens_count: 0 });
+  });
+
+  it("`nowMs` injetável — envio de exatamente 48h vira maduro (borda inclusiva `>=`)", () => {
+    const nowMs = Date.parse("2026-08-10T12:00:00.000Z");
+    const sentAt48hAgo = "2026-08-08T12:00:00.000Z"; // exatos 48h antes de nowMs
+    const stats = { messagesSent: [{ campaignId: 1, date: sentAt48hAgo }], opened: [] };
+    assert.equal(computeMatureCountsFromBrevoStatistics(stats, nowMs).sends_count, 1);
+  });
+
+  it("`nowMs` injetável — envio de 47h59min NÃO é maduro (1 minuto abaixo da borda)", () => {
+    const nowMs = Date.parse("2026-08-10T12:00:00.000Z");
+    const sentAt = "2026-08-08T12:01:00.000Z"; // 47h59min antes de nowMs
+    const stats = { messagesSent: [{ campaignId: 1, date: sentAt }], opened: [] };
+    assert.equal(computeMatureCountsFromBrevoStatistics(stats, nowMs).sends_count, 0);
   });
 });
 
@@ -91,14 +170,21 @@ describe("fetchBrevoContactState — 1 leitura, contadores + emailBlacklisted (#
     globalThis.fetch = origFetch;
   }
 
-  it("extrai contadores E emailBlacklisted:false do mesmo body", async () => {
+  it("extrai contadores instantâneos, contadores maduros, E emailBlacklisted:false do mesmo body", async () => {
     globalThis.fetch = (async () =>
       jsonRes(200, {
-        statistics: { messagesSent: [{ campaignId: 1 }, { campaignId: 2 }], opened: [{ campaignId: 1 }] },
+        // 1 e 2 maduros (72h), 3 imaturo (1h) — sends_count instantâneo=3, maduro=2
+        statistics: { messagesSent: [matureEvent(1), matureEvent(2), freshEvent(3)], opened: [matureEvent(1)] },
       })) as typeof fetch;
     try {
       const state = await fetchBrevoContactState("key", "a@b.com");
-      assert.deepEqual(state, { sends_count: 2, opens_count: 1, emailBlacklisted: false });
+      assert.deepEqual(state, {
+        sends_count: 3,
+        opens_count: 1,
+        mature_sends_count: 2,
+        mature_opens_count: 1,
+        emailBlacklisted: false,
+      });
     } finally {
       restore();
     }
@@ -398,7 +484,11 @@ describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0", () => {
         log: () => {},
       });
       assert.equal(result.unsubscribedNative, 0);
-      // 3 enviados/0 abertos → openRate 0, sends_count=3 < piso de supressão (5) → keep
+      // eventos sem timestamp de data → tratados como IMATUROS (fail-safe) →
+      // mature sends_count=0 < piso de supressão (3) → keep. (O foco deste
+      // teste é confirmar que o passo de descadastro nativo não interfere no
+      // fluxo normal — não os detalhes do threshold, cobertos em
+      // `computeMatureCountsFromBrevoStatistics` acima.)
       assert.equal(result.kept, 1);
     } finally {
       restore();
@@ -431,7 +521,9 @@ describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0", () => {
       });
       assert.equal(contactsCalls, 0, "sem brevoApiKey, passo 0 nunca chama /contacts");
       assert.equal(result.unsubscribedNative, 0);
-      // usa contadores do store (1/3 → 33%, abaixo do piso de supressão) → keep
+      // usa contadores do store como fallback (instant=mature, documentado em
+      // runEvaluation): 1/3 = 33%, piso de amostra atingido (n=3) mas taxa
+      // acima do threshold de supressão (20%) → keep
       assert.equal(result.kept, 1);
     } finally {
       restore();
@@ -527,7 +619,10 @@ describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fix
         return new Response("forbidden", { status: 403 }); // brevoGet: 403 lança sem retry
       }
       if (init?.method === undefined && u.includes("/contacts/ok%40b.com")) {
-        // 3 enviados/1 aberto → 33%, abaixo do piso de supressão (n>=5) → keep
+        // 3 enviados/1 aberto → 33%, acima do threshold de supressão (20%) → keep
+        // (eventos sem timestamp de data também seriam imaturos por
+        // fail-safe — mas aqui a taxa em si já não qualifica, então o
+        // resultado é keep por dupla razão, não só a ausência de timestamp).
         return jsonRes(200, {
           statistics: {
             messagesSent: [{ campaignId: 1 }, { campaignId: 2 }, { campaignId: 3 }],
@@ -571,9 +666,14 @@ describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fix
       getContactCalls++;
       if (getContactCalls === 1) {
         // 1ª GET (passo 0 — descadastro nativo + contadores reusados no passo 2):
-        // 3 enviados, 0 abertos → openRate 0, sends_count=3 < 5 (piso de
-        // supressão)... precisa de >=5 pra suprimir — usar 5 enviados/0 abertos.
-        return jsonRes(200, { statistics: { messagesSent: [{ campaignId: 1 }, { campaignId: 2 }, { campaignId: 3 }, { campaignId: 4 }, { campaignId: 5 }], opened: [] } });
+        // 5 enviados MADUROS (>=48h), 0 abertos → openRate 0% <= 20%,
+        // mature sends_count=5 >= piso de supressão (3) → suprime.
+        return jsonRes(200, {
+          statistics: {
+            messagesSent: [matureEvent(1), matureEvent(2), matureEvent(3), matureEvent(4), matureEvent(5)],
+            opened: [],
+          },
+        });
       }
       // 2ª GET: releitura pós-supressão — confirma blacklist + fora da lista
       return jsonRes(200, { emailBlacklisted: true, listIds: [] });
@@ -610,7 +710,14 @@ describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fix
       if (init?.method === "PUT") return jsonRes(200, {});
       getContactCalls++;
       if (getContactCalls === 1) {
-        return jsonRes(200, { statistics: { messagesSent: [{ campaignId: 1 }, { campaignId: 2 }, { campaignId: 3 }, { campaignId: 4 }, { campaignId: 5 }], opened: [] } });
+        // 5 enviados MADUROS (>=48h), 0 abertos → suprime (mesma fixture do
+        // teste "suppress bem-sucedido" acima).
+        return jsonRes(200, {
+          statistics: {
+            messagesSent: [matureEvent(1), matureEvent(2), matureEvent(3), matureEvent(4), matureEvent(5)],
+            opened: [],
+          },
+        });
       }
       // releitura NÃO confirma: PUT foi 2xx mas o estado real não mudou (mesma armadilha da Beehiiv, ver disclaimer do módulo)
       return jsonRes(200, { emailBlacklisted: false, listIds: [7] });

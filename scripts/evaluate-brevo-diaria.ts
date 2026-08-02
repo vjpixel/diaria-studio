@@ -1,17 +1,21 @@
 #!/usr/bin/env node
 /**
  * scripts/evaluate-brevo-diaria.ts (#4266, item 4/5 do plano da issue;
- * fórmula de saída e checagem de descadastro nativo reescritas no #4476)
+ * fórmula de saída e checagem de descadastro nativo reescritas no #4476;
+ * threshold de supressão corrigido pra n>=3 + janela de maturação de 48h
+ * implementada no self-review pós-merge da issue #4476)
  *
  * Avaliação periódica dos contatos `in_brevo` do canal Brevo próprio do
  * editor: recomputa a TAXA de abertura (`computeBrevoDiariaOpenRate`,
  * `scripts/lib/shared/brevo-diaria-score.ts`) e aplica a decisão do editor
  * (issue #4476, item 1 — substitui a fórmula aditiva original do #4266):
  *
- *   sends_count>=2 E openRate>=50% → promove pra Beehiiv (lista confirmada)
- *   sends_count>=5 E openRate<=20% → suprime (para de receber,
- *                  `emailBlacklisted: true` na Brevo — NUNCA deletado,
- *                  mesma semântica de "suprimido, marcado como tal")
+ *   sends_count>=2 E openRate>=50% (INSTANTÂNEO) → promove pra Beehiiv
+ *                  (lista confirmada)
+ *   sends_count>=3 E openRate<=20% (só envios MADUROS, >=48h — ver "Passo
+ *                  2b" abaixo) → suprime (para de receber, `emailBlacklisted:
+ *                  true` na Brevo — NUNCA deletado, mesma semântica de
+ *                  "suprimido, marcado como tal")
  *   caso contrário (inclusive piso de amostra não atingido) → mantém, só
  *                  atualiza contadores/taxa
  *
@@ -25,7 +29,7 @@
  * engajamento baixo) — `applyNativeUnsubscribe` marca o motivo
  * separadamente (`resolution_reason: "native_unsubscribe"`) e libera o slot
  * da fila IMEDIATAMENTE, sem esperar o piso de amostra da supressão
- * algorítmica (n>=5). O MESMO `GET /contacts/{email}` que confirma
+ * algorítmica (n>=3). O MESMO `GET /contacts/{email}` que confirma
  * `emailBlacklisted` já retorna `statistics` — reusado como fonte dos
  * contadores do passo 2 (score), então isto NÃO introduz uma 2ª chamada à
  * Brevo por contato; é estritamente um passo a mais de leitura do MESMO
@@ -43,7 +47,7 @@
  * duas bases"); esta rotina fecha o gap na primeira oportunidade (próxima
  * avaliação), não deixando o duplo envio se perpetuar indefinidamente.
  *
- * ## Passo 2: score (taxa de abertura + piso de amostra)
+ * ## Passo 2: score (taxa de abertura + piso de amostra, 2 variantes)
  *
  * `GET /v3/contacts/{email}` da Brevo retorna `statistics.messagesSent` e
  * `statistics.opened` — arrays com 1 entrada por (campanha × evento). Um
@@ -52,6 +56,32 @@
  * `campaignId` — a fórmula é "quantas campanhas abriu" / "quantas recebeu",
  * não "quantos eventos de abertura", mesmo espírito de `sends_count`/
  * `opens_count` da Clarice (contagem por envio, não por evento bruto).
+ *
+ * ## Passo 2b: janela de maturação de 48h (issue #4476, só pra SUPRESSÃO)
+ *
+ * Cada entrada de `statistics.messagesSent`/`opened` carrega timestamp
+ * próprio (`eventTime`/`messageSentTime`/`date`/`time` — mesmos campos que
+ * `scripts/lib/brevo-stats.ts::latestEventTime` já usa pra popular
+ * `last_sent_at`/`last_open_at` no store da Clarice, confirmados AO VIVO como
+ * preenchidos corretamente pra `messagesSent`/`opened`, ver memória de sessão
+ * 260801 "Cliques do store Clarice: não é sync defasado" — só `clicked`
+ * precisou do fallback aninhado em `links[]`, adicionado no #4429).
+ * `computeMatureCountsFromBrevoStatistics` reusa esse mesmo parsing
+ * (`eventTimestampMs`, exportado de `brevo-stats.ts` nesta correção) pra
+ * filtrar `messagesSent` a só os envios com >=48h de idade (baseado no
+ * timestamp do PRÓPRIO envio, não da abertura) — `opens_count` maduro conta
+ * só aberturas cujo envio correspondente já é maduro. Entrada sem timestamp
+ * parseável é tratada como IMATURA (fail-safe: mais seguro excluir da conta
+ * de supressão um envio de idade desconhecida do que arriscar suprimir com
+ * base em dado que pode não ter tido tempo de ser aberto ainda).
+ *
+ * `classifyBrevoDiariaAction` (`brevo-diaria-score.ts`) recebe os DOIS
+ * conjuntos de contadores (`instant` — todos os envios, avalia promoção;
+ * `mature` — só >=48h, avalia supressão) e nunca mistura um no lugar do
+ * outro. O `open_rate`/`opens_count`/`sends_count` REPORTADOS e persistidos
+ * no store continuam sendo os INSTANTÂNEOS — a janela de maturação é
+ * invisível pro que o editor vê como "taxa atual", só afeta a decisão
+ * interna de supressão.
  *
  * ## Duas vias de promoção em paralelo — clique OU score (#4476 item 2)
  *
@@ -77,12 +107,21 @@
  * de `by_email`) mostrar que o status continua `pending`, o script LOGA um
  * warning explícito e NÃO remove o contato da Brevo (mantém `in_brevo`) —
  * fail-safe: mais vale continuar entregando pelo canal que funciona do que
- * assumir sucesso e cortar a única entrega confirmada. **Ressalva vale só
- * pra esta via (score)** — a via de CLIQUE (item 3) foi testada ao vivo
- * contra a API real (1 contato de teste, ver PR do #4476); esta via de
- * score continua não-verificada porque depende de INFERÊNCIA por abertura
- * passiva, não de ação explícita do usuário — a mesma ressalva original do
- * #4398 permanece.
+ * assumir sucesso e cortar a única entrega confirmada.
+ *
+ * **Esta ressalva vale IGUALMENTE pras duas vias (score E clique) — não é
+ * exclusiva desta.** Correção de um overclaim anterior deste comentário
+ * (comment-analyzer, achado pós-merge #4476): o teste ao vivo do item 3 (2
+ * contatos sintéticos, ver PR do #4476) ficou INCONCLUSIVO pra pergunta
+ * central de `reactivate_existing:true` — os 2 contatos caíram em
+ * `status:"invalid"` (domínio flagado disposable) antes de chegar em
+ * `pending`, então a transição `pending → active` nunca foi de fato
+ * exercida em nenhuma das duas vias. O que o teste confirmou (e vale pras
+ * DUAS vias, porque ambas chamam o mesmo endpoint com o mesmo payload) foi
+ * só que HTTP 2xx no POST não garante `status:"active"` — daí a checagem
+ * explícita em `verifyPromotedToBeehiiv` abaixo. Nem score nem clique têm a
+ * hipótese central confirmada contra um contato Pending genuíno; ver
+ * `workers/reativar/README.md` pro texto fixo dessa ressalva.
  *
  * ## Falha por contato não aborta o run (#4398 review — silent-failure-hunter
  * + code-reviewer + pr-test-analyzer convergiram independentemente)
@@ -122,10 +161,13 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { brevoGet, brevoPut } from "./lib/brevo-client.ts";
+import { eventTimestampMs } from "./lib/brevo-stats.ts";
 import {
   computeBrevoDiariaOpenRate,
   classifyBrevoDiariaAction,
+  BREVO_DIARIA_MATURATION_HOURS,
   type BrevoDiariaAction,
+  type BrevoDiariaRateInput,
 } from "./lib/shared/brevo-diaria-score.ts";
 import {
   readStore,
@@ -165,23 +207,72 @@ function uniqueCampaignIds(events: BrevoStatEvent[] | undefined): number {
   return ids.size;
 }
 
+/** Contadores INSTANTÂNEOS — todos os envios/aberturas, sem filtro de idade.
+ * Único input usado pra avaliar PROMOÇÃO (ver `classifyBrevoDiariaAction`). */
 export function computeCountsFromBrevoStatistics(
   statistics: BrevoContactStatistics | undefined,
-): { sends_count: number; opens_count: number } {
+): BrevoDiariaRateInput {
   return {
     sends_count: uniqueCampaignIds(statistics?.messagesSent),
     opens_count: uniqueCampaignIds(statistics?.opened),
   };
 }
 
+const MATURATION_MS = BREVO_DIARIA_MATURATION_HOURS * 60 * 60 * 1000;
+
 /**
- * I/O — `GET /contacts/{email}` UMA vez, extrai contadores + `emailBlacklisted`
- * (#4476 item 7). Fonte única pro passo 0 (descadastro nativo) E pro passo 2
- * (score) — nunca 2 GETs pro mesmo contato no mesmo run.
+ * Pura — como `computeCountsFromBrevoStatistics`, mas filtra `messagesSent`/
+ * `opened` a só envios MADUROS (>=48h de idade, issue #4476 "Janela de
+ * maturação") — usado EXCLUSIVAMENTE pra avaliar SUPRESSÃO. A maturidade é
+ * decidida pelo timestamp do PRÓPRIO envio (`eventTimestampMs` de uma
+ * entrada de `messagesSent`), não da abertura: um envio de 10 dias atrás
+ * continua maduro mesmo que tenha sido aberto ontem. `opens_count` maduro
+ * conta só aberturas cujo `campaignId` está no conjunto de envios maduros —
+ * nunca uma abertura "solta" sem o envio correspondente já confirmado maduro.
+ *
+ * Entrada sem timestamp parseável (`eventTimestampMs` retorna `null`) é
+ * tratada como IMATURA — fail-safe: mais seguro excluir da conta de
+ * supressão um envio de idade desconhecida do que arriscar contar como
+ * "não abriu" um envio que pode não ter tido tempo de ser aberto ainda.
+ *
+ * `nowMs` injetável pra teste (default `Date.now()` — nunca real em teste,
+ * #633).
+ */
+export function computeMatureCountsFromBrevoStatistics(
+  statistics: BrevoContactStatistics | undefined,
+  nowMs: number = Date.now(),
+): BrevoDiariaRateInput {
+  const sentEvents = Array.isArray(statistics?.messagesSent) ? statistics!.messagesSent! : [];
+  const matureCampaignIds = new Set<unknown>();
+  for (const e of sentEvents) {
+    if (e?.campaignId === undefined) continue;
+    const ts = eventTimestampMs(e);
+    if (ts === null) continue; // timestamp desconhecido → imaturo, fail-safe
+    if (nowMs - ts >= MATURATION_MS) matureCampaignIds.add(e.campaignId);
+  }
+  const openedEvents = Array.isArray(statistics?.opened) ? statistics!.opened! : [];
+  const openedMatureIds = new Set<unknown>();
+  for (const e of openedEvents) {
+    if (e?.campaignId !== undefined && matureCampaignIds.has(e.campaignId)) {
+      openedMatureIds.add(e.campaignId);
+    }
+  }
+  return { sends_count: matureCampaignIds.size, opens_count: openedMatureIds.size };
+}
+
+/**
+ * I/O — `GET /contacts/{email}` UMA vez, extrai contadores (instantâneos E
+ * maduros) + `emailBlacklisted` (#4476 item 7). Fonte única pro passo 0
+ * (descadastro nativo) E pro passo 2 (score) — nunca 2 GETs pro mesmo
+ * contato no mesmo run.
  */
 export interface BrevoContactState {
+  /** Instantâneo — todos os envios, usado pra avaliar/reportar promoção. */
   sends_count: number;
   opens_count: number;
+  /** Maduro (>=48h) — usado EXCLUSIVAMENTE pra avaliar supressão. */
+  mature_sends_count: number;
+  mature_opens_count: number;
   emailBlacklisted: boolean;
 }
 
@@ -191,7 +282,13 @@ export async function fetchBrevoContactState(apiKey: string, email: string): Pro
     throw new Error(`GET /contacts/${email} falhou (HTTP ${res.status}) — não foi possível ler estado.`);
   }
   const counts = computeCountsFromBrevoStatistics(res.body?.statistics);
-  return { ...counts, emailBlacklisted: res.body?.emailBlacklisted === true };
+  const mature = computeMatureCountsFromBrevoStatistics(res.body?.statistics);
+  return {
+    ...counts,
+    mature_sends_count: mature.sends_count,
+    mature_opens_count: mature.opens_count,
+    emailBlacklisted: res.body?.emailBlacklisted === true,
+  };
 }
 
 // ── status Beehiiv atual (auto-confirmação) ────────────────────────────────
@@ -217,16 +314,31 @@ export async function fetchBeehiivSubscriptionStatus(
 
 export interface ContactEvaluation {
   email: string;
+  /** Instantâneos — reportados/persistidos no store (o editor vê a taxa
+   * ATUAL, não a recortada pela janela de maturação). */
   opens_count: number;
   sends_count: number;
   open_rate: number;
   action: BrevoDiariaAction;
 }
 
-/** Pura — combina contadores frescos + fórmula/threshold num veredito só. */
-export function evaluateContact(counts: { opens_count: number; sends_count: number }): Omit<ContactEvaluation, "email"> {
-  const open_rate = computeBrevoDiariaOpenRate(counts);
-  return { ...counts, open_rate, action: classifyBrevoDiariaAction(counts) };
+export interface EvaluateContactCounts {
+  /** Todos os envios, sem filtro de idade — avalia PROMOÇÃO, é o par
+   * reportado/persistido. */
+  instant: BrevoDiariaRateInput;
+  /** Só envios com >=48h de idade — avalia SUPRESSÃO (issue #4476, "Janela
+   * de maturação"). */
+  mature: BrevoDiariaRateInput;
+}
+
+/** Pura — combina contadores frescos (instantâneos + maduros) + fórmula/
+ * threshold num veredito só. `open_rate`/`opens_count`/`sends_count`
+ * retornados são sempre os INSTANTÂNEOS — a janela de maturação afeta só a
+ * decisão interna de supressão (`classifyBrevoDiariaAction`), nunca o que é
+ * reportado/persistido. */
+export function evaluateContact(counts: EvaluateContactCounts): Omit<ContactEvaluation, "email"> {
+  const open_rate = computeBrevoDiariaOpenRate(counts.instant);
+  return { ...counts.instant, open_rate, action: classifyBrevoDiariaAction(counts) };
 }
 
 // ── aplicação (I/O) ─────────────────────────────────────────────────────
@@ -336,6 +448,18 @@ export interface RunEvaluationParams {
   log: (msg: string) => void;
 }
 
+/**
+ * Contadores desta rodada — NÃO são uma partição exaustiva/mutuamente
+ * exclusiva do total de contatos processados, apesar do que os nomes
+ * sugerem (achado opcional #4476, type-design-analyzer): um mesmo contato
+ * pode incrementar `promoted`/`suppressed` E `failed` no mesmo run (ex: a
+ * avaliação decide `promote_to_beehiiv`, incrementa `promoted`, mas a
+ * verificação pós-escrita falha — incrementa `failed` TAMBÉM e reverte pra
+ * `keep` no store; ver o teste "push: suppress cuja releitura NÃO confirma"
+ * em `test/evaluate-brevo-diaria-4266.test.ts`, que confirma
+ * `suppressed===1` E `failed===1` no MESMO resultado). Somar todos os campos
+ * não bate com `contacts.length`.
+ */
 export interface RunEvaluationResult {
   store: BrevoDiariaStore;
   /** #4476 item 7 — descadastro nativo detectado (saída terminal distinta de `suppressed`). */
@@ -420,16 +544,33 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
         continue;
       }
 
-      // 2) taxa de abertura + piso de amostra (#4476 item 1). Reusa
-      // `nativeState` (passo 0) quando disponível — nunca um 2º GET pro
-      // mesmo contato no mesmo run.
-      const counts = nativeState
-        ? { opens_count: nativeState.opens_count, sends_count: nativeState.sends_count }
-        : { opens_count: contact.opens_count, sends_count: contact.sends_count };
+      // 2) taxa de abertura + piso de amostra (#4476 item 1), em 2 variantes
+      // (instantânea pra promoção, madura >=48h pra supressão — #4476
+      // "Janela de maturação"). Reusa `nativeState` (passo 0) quando
+      // disponível — nunca um 2º GET pro mesmo contato no mesmo run.
+      //
+      // Fallback SEM `nativeState` (só ocorre com `brevoApiKey` ausente —
+      // dry-run sem a key configurada; `--push` sempre exige a key, ver
+      // main()): usa os contadores já persistidos no store pros dois papéis
+      // (instant=mature) — limitação DOCUMENTADA e aceita, não um bug: sem
+      // uma leitura fresca da Brevo não há timestamp por evento pra calcular
+      // maturidade de verdade, e este caminho nunca aplica supressão de
+      // qualquer forma (push sempre tem brevoApiKey). Só afeta o PREVIEW de
+      // dry-run sem key configurada.
+      const counts: EvaluateContactCounts = nativeState
+        ? {
+            instant: { opens_count: nativeState.opens_count, sends_count: nativeState.sends_count },
+            mature: { opens_count: nativeState.mature_opens_count, sends_count: nativeState.mature_sends_count },
+          }
+        : {
+            instant: { opens_count: contact.opens_count, sends_count: contact.sends_count },
+            mature: { opens_count: contact.opens_count, sends_count: contact.sends_count },
+          };
       const evalResult = evaluateContact(counts);
       log(
         `${contact.email}: openRate=${(evalResult.open_rate * 100).toFixed(1)}% ` +
-          `(${counts.opens_count} aberto(s)/${counts.sends_count} enviado(s)) → ${evalResult.action}`,
+          `(${counts.instant.opens_count} aberto(s)/${counts.instant.sends_count} enviado(s), ` +
+          `${counts.mature.opens_count}/${counts.mature.sends_count} maduro(s) p/ supressão) → ${evalResult.action}`,
       );
 
       if (evalResult.action === "promote_to_beehiiv") promoted++;
@@ -444,11 +585,11 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
         if (!confirmed) {
           log(`warn: ${contact.email} continua "pending" na Beehiiv após promoção — mantendo in_brevo (fail-safe).`);
           failed++;
-          store = applyEvaluation(store, contact.email, { ...counts, open_rate: evalResult.open_rate, action: "keep" });
+          store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
           continue;
         }
         await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
-        store = applyEvaluation(store, contact.email, { ...counts, open_rate: evalResult.open_rate, action: "promote_to_beehiiv" });
+        store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "promote_to_beehiiv" });
       } else if (evalResult.action === "suppress") {
         await suppressInBrevo(brevoApiKey!, contact.email);
         await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
@@ -456,12 +597,12 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
         if (!suppressConfirmed) {
           log(`warn: ${contact.email} supressão/desvinculação não confirmada na Brevo — mantendo in_brevo (fail-safe).`);
           failed++;
-          store = applyEvaluation(store, contact.email, { ...counts, open_rate: evalResult.open_rate, action: "keep" });
+          store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
           continue;
         }
-        store = applyEvaluation(store, contact.email, { ...counts, open_rate: evalResult.open_rate, action: "suppress" });
+        store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "suppress" });
       } else {
-        store = applyEvaluation(store, contact.email, { ...counts, open_rate: evalResult.open_rate, action: "keep" });
+        store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
       }
     } catch (e) {
       // #4398 review (fix 1): falha transitória de API num contato NUNCA

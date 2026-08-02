@@ -54,6 +54,12 @@ nunca rede real), e as páginas HTML de sucesso/erro.
 
 ## Verificação ao vivo (#4476 item 3)
 
-Testado contra a API real da Beehiiv com 1 e-mail sintético de teste antes
+Testado contra a API real da Beehiiv com 2 e-mails sintéticos de teste antes
 do 1º uso em produção — request/response exatos documentados no PR do
 #4476 (não neste README, pra não desatualizar aqui a cada reteste).
+
+**Resultado: inconclusivo pra pergunta central** (reativa um contato
+`pending` real → `active`?) — os 2 contatos caíram em `status:"invalid"`
+(domínio disposable) antes de chegar em `pending`, então a transição nunca
+foi exercida. Não fazer rollout real sem antes confirmar com 1 e-mail
+pessoal em modo Pending genuíno.

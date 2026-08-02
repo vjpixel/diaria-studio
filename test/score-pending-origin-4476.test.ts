@@ -10,7 +10,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseInputRow, scoreAndSortRows } from "../scripts/score-pending-origin.ts";
+import { parseInputRow, scoreAndSortRows, detectPercentScaleAnomaly } from "../scripts/score-pending-origin.ts";
+import type { PendingOriginMetrics } from "../scripts/lib/shared/pending-origin-score.ts";
 
 describe("parseInputRow — parse defensivo de linha crua (#4476 item 4)", () => {
   it("linha bem-formada → tipada corretamente", () => {
@@ -84,6 +85,57 @@ describe("scoreAndSortRows — fixture de 3 origens, ordenação descendente (#4
     assert.ok(Math.abs(out[0].score - 87) < 1e-9, `score de A deveria ser 87, obtido ${out[0].score}`);
   });
 
+});
+
+describe("detectPercentScaleAnomaly — sinal de divergência de escala (#4476 achado silent-failure-hunter)", () => {
+  function row(overrides: Partial<PendingOriginMetrics> = {}): PendingOriginMetrics {
+    return {
+      conv_confirmacao_pct: 0,
+      conv_ativo_pct: 0,
+      abertura_origem_pct: 0,
+      clique_origem_pct: 0,
+      dias_desde_cadastro: 100, // não é campo de percentual, nunca entra na checagem
+      invalido_origem_pct: 0,
+      ...overrides,
+    };
+  }
+
+  it("escala 0-100 normal (pelo menos 1 valor >1) → sem anomalia", () => {
+    assert.equal(detectPercentScaleAnomaly([row({ conv_confirmacao_pct: 80 }), row({ abertura_origem_pct: 17.9 })]), false);
+  });
+
+  it("todos os campos de percentual >0 caem em [0,1] → anomalia (possível fração em vez de 0-100)", () => {
+    assert.equal(
+      detectPercentScaleAnomaly([row({ conv_confirmacao_pct: 0.8, conv_ativo_pct: 0.6 }), row({ abertura_origem_pct: 0.179 })]),
+      true,
+    );
+  });
+
+  it("amostra toda zerada → sem anomalia (nada pra suspeitar)", () => {
+    assert.equal(detectPercentScaleAnomaly([row(), row()]), false);
+  });
+
+  it("amostra vazia → sem anomalia", () => {
+    assert.equal(detectPercentScaleAnomaly([]), false);
+  });
+
+  it("1 único valor >1 em meio a vários <=1 já desarma o sinal (basta 1 contraexemplo)", () => {
+    assert.equal(
+      detectPercentScaleAnomaly([row({ conv_confirmacao_pct: 0.5 }), row({ conv_ativo_pct: 0.9 }), row({ clique_origem_pct: 5.2 })]),
+      false,
+    );
+  });
+
+  it("dias_desde_cadastro NUNCA entra na checagem (não é percentual) — valor grande não desarma nem aciona o sinal sozinho", () => {
+    assert.equal(detectPercentScaleAnomaly([row({ dias_desde_cadastro: 400, conv_confirmacao_pct: 0.5 })]), true);
+  });
+
+  it("exatamente 1.0 NÃO conta como '>1' — ainda soma pra anomalia (borda inclusiva do [0,1])", () => {
+    assert.equal(detectPercentScaleAnomaly([row({ conv_confirmacao_pct: 1 })]), true);
+  });
+});
+
+describe("scoreAndSortRows — breakdown por linha (#4476 item 4)", () => {
   it("cada linha de saída carrega o breakdown completo (pts_* + penalidade + score)", () => {
     const out = scoreAndSortRows([
       { email: "a@b.com", origin: "x", conv_confirmacao_pct: 100, conv_ativo_pct: 100, abertura_origem_pct: 100, clique_origem_pct: 100, dias_desde_cadastro: 0, invalido_origem_pct: 0 },

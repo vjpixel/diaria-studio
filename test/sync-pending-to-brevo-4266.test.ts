@@ -20,6 +20,7 @@ import {
   computeAvailableSlots,
   selectContactsForBackfill,
   loadOriginScores,
+  assertMvGuardAcknowledged,
   type BeehiivPendingSubscription,
   type PendingToIngestEntry,
 } from "../scripts/sync-pending-to-brevo.ts";
@@ -162,6 +163,20 @@ describe("ingestContactToBrevo — cria + verifica por releitura (#4266)", () =>
     } finally {
       restore();
     }
+  });
+});
+
+describe("assertMvGuardAcknowledged — guard de MillionVerifier antes de --push (#4476 achado silent-failure-hunter)", () => {
+  it("sem --i-know-this-skips-mv → lança erro explícito nomeando a issue e a flag", () => {
+    assert.throws(() => assertMvGuardAcknowledged([]), /MV batch script ainda não existe.*--i-know-this-skips-mv/s);
+  });
+
+  it("sem a flag mesmo com --push presente → ainda lança (a flag exata é o que importa, não --push)", () => {
+    assert.throws(() => assertMvGuardAcknowledged(["--push"]), /--i-know-this-skips-mv/);
+  });
+
+  it("com --i-know-this-skips-mv → não lança", () => {
+    assert.doesNotThrow(() => assertMvGuardAcknowledged(["--push", "--i-know-this-skips-mv"]));
   });
 });
 
