@@ -51,6 +51,7 @@ import {
   BRAND_INFO,
   brandKvPrefix, // #4035: handleJogarSeqState precisa ler a chave vote:* BRANDED (web:vote:*)
   buildBrandSiteUrl, // #3978: href com UTM do funil "É IA?" → site (CTA + footers "Voltar")
+  editionToMonthSlug, // #4443: agrupa as edições pedidas por mês pro agregado seq:{month}:{identity}
   formatEditionDate,
   htmlEscape,
   isValidVoteEmailFormat, // #3595: valida o pseudo-email recebido por /jogar/seq-state
@@ -63,6 +64,7 @@ import {
   renderLightboxMarkup, // #4007: markup do <dialog> de zoom
   renderLightboxStyles, // #4007: CSS do lightbox + badge de lupa
   renderSeoMeta,
+  seqStateKvKey, // #4443: chave do agregado mensal seq:{month}:{identity}
   SUBSCRIBE_UTM_SOURCE, // #3978: fonte única de verdade movida pra lib.ts — reexportada abaixo por back-compat
   todayAammddBrt,
 } from "./lib";
@@ -1425,20 +1427,39 @@ export function formatSeqBatchBreakMessage(correct: number, batchSize: number, r
  * é o mês anterior inteiro, no máximo 31 pares. */
 export const SEQ_STATE_MAX_EDITIONS = 50;
 
-/** #4115: orçamento TOTAL de gets de KV por chamada de `handleJogarSeqState`.
+/** #4443: orçamento TOTAL de gets de KV por chamada de `handleJogarSeqState`.
  *
- * O worker roda no plano PAGO do Cloudflare (upgrade feito pelo editor em
- * 260727) — teto de 1000 subrequests por request, não os 50 do free. Vários
- * comentários espalhados pelo worker ainda citam o teto antigo (`index.ts`
- * no dedup de nickname, o batch=20 de `leaderboard-routes.ts`, e a nota de
- * `new_sqlite_classes` no wrangler.toml): são pré-upgrade, valem como
- * histórico, não como limite atual.
+ * REBAIXADO de volta ao valor free-plan-safe (era 100 = 2×`SEQ_STATE_MAX_EDITIONS`,
+ * dimensionado em 78716d56 assumindo o teto de 1000 subrequests do plano
+ * PAGO). O #4443 introduziu o agregado `seq:{month}:{identity}` justamente
+ * pra permitir voltar ao plano GRÁTIS (teto de 50/request) sem reintroduzir o
+ * estouro que o #4115 já tinha corrigido uma vez — ver rationale completo em
+ * `handleJogarSeqState`.
  *
- * 100 = 2 × `SEQ_STATE_MAX_EDITIONS`, ou seja, cobre o PIOR caso sem nunca
- * truncar: mesmo que nenhuma das 50 edições seja encontrada na 1ª fase, a 2ª
- * reconsulta todas. Continua sendo um limite (o param é público e não
- * autenticado), só que agora sem trade-off de completude. */
-export const SEQ_STATE_SUBREQUEST_BUDGET = SEQ_STATE_MAX_EDITIONS * 2;
+ * 45 é o mesmo valor usado ANTES do upgrade pro plano pago (ca0cd5bc,
+ * #4115) — histórico comprovado: com o caminho de fallback (agregado
+ * ausente) consumindo no máximo `SEQ_STATE_SUBREQUEST_BUDGET` gets no total
+ * (1 get de checagem de agregado por mês + 1ª fase + 2ª fase, todos
+ * compartilhando este MESMO orçamento — ver o loop por mês em
+ * `handleJogarSeqState`), o pior caso fica em 45, com folga de 5 sob o teto
+ * de 50 pros até 2 PUTs de self-heal por grupo de mês (também subrequests).
+ * `SEQ_STATE_MAX_EDITIONS` (50) continua como guarda sanitária do param
+ * público — não precisa mudar: o orçamento truncado é quem garante o
+ * ceiling real, não o teto de edições aceitas.
+ *
+ * Comentários espalhados pelo worker que ainda citam o teto de 50 como
+ * histórico pré-upgrade (`index.ts` no dedup de nickname, o batch=20 de
+ * `leaderboard-routes.ts`, e a nota de `new_sqlite_classes` no
+ * wrangler.toml) foram reconferidos no #4443: o dedup de nickname já usa um
+ * índice O(1) (seguro); `new_sqlite_classes` é plan-agnostic por desenho
+ * (mesma API de storage nos dois planos); o batch=20 de
+ * `computeSnapshotEntries` (leaderboard-routes.ts) é o único que PODE voltar
+ * a ser um limite real — o total de subrequests daquela função escala com o
+ * Nº de votantes do mês (não é limitado pelo batch, só PACEADO por ele), e
+ * já passou de 50 pelo menos uma vez (ver comentário do dedup de nickname,
+ * "já ~60+"). Fora do escopo desta issue (rota `/leaderboard`, não
+ * `/jogar/seq-state`) — reportado como finding separado no PR do #4443. */
+export const SEQ_STATE_SUBREQUEST_BUDGET = 45;
 
 export function parseSeqStateEditionsParam(raw: string | null): string[] {
   if (!raw) return [];
@@ -2336,6 +2357,39 @@ export interface SeqStateResultEntry {
 }
 
 /**
+ * Pure (#4443): parseia com segurança o JSON de um agregado
+ * `seq:{month}:{identity}` (`SeqMonthMap` em score-counter.ts — mapa
+ * `edição -> gabarito`, presença da chave = votou). NUNCA lança.
+ *
+ * Dois níveis de corrupção, duas respostas diferentes (ambas seguras, mas a
+ * segunda é estritamente melhor quando dá pra recuperar):
+ *   - Blob inteiro ilegível (JSON inválido, não-objeto, array) → retorna
+ *     `null`. O caller (`handleJogarSeqState`) trata `null` como "sem
+ *     agregado" e cai no fallback por edição — não arrisca reportar "não
+ *     votado" pro mês inteiro por causa de 1 blob corrompido quando a fonte
+ *     de verdade (`vote:{edition}:{identity}`) continua íntegra.
+ *   - Blob válido com 1 ENTRADA individual de shape inesperado (valor que
+ *     não é `boolean`/`null`) → a entrada é descartada, o resto do mapa
+ *     sobrevive. Essa entrada específica sai como "não votado" (degrada
+ *     silenciosamente só ELA, não o mês inteiro) — mesma disciplina de
+ *     `safeParseKv` (vote.ts): 1 registro corrompido nunca derruba o
+ *     endpoint nem contamina o resto.
+ */
+export function parseSeqMonthAggregate(raw: string): Record<string, boolean | null> | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const result: Record<string, boolean | null> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (v === null || typeof v === "boolean") result[k] = v;
+    }
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Handler `GET /jogar/seq-state?email={pseudo-email}&editions={csv AAMMDD}`
  * (#3595 — skip-and-credit, ver rationale na seção acima). Pra CADA edição
  * pedida, reporta se o TOKEN (pseudo-email anônimo, mesmo formato de
@@ -2431,57 +2485,160 @@ export async function handleJogarSeqState(url: URL, env: Env, request?: Request)
   // rodadas menos a livre, então a 1ª fase abaixo já resolve quase tudo.
   const primaryIdentity = sessionEmail ?? email;
 
-  // #4115 (self-review): duas fases em vez de 2 gets paralelos por edição.
-  //
-  // A 1ª fase resolve todas as edições sob a identidade primária (a sessão,
-  // quando existe — pós-gate ela cobre todas as rodadas jogadas DEPOIS da
-  // sessão ser emitida); a 2ª só reconsulta as que ficaram SEM voto, sob a
-  // secundária. No caso real (jogador identificado que já jogou o mês) a 2ª
-  // fase custa até ROUNDS_NUDGE_INTERVAL - 1 gets (#4253 item 3: nudge só a
-  // partir da 5ª rodada, então até 4 rodadas anônimas podem ficar sob o
-  // token antes da sessão existir — não mais só "1 rodada livre" como no
-  // gate binário pré-#4253).
-  //
-  // A motivação original foi o teto de subrequests — o worker estava no free
-  // plan (50/request) e 2 × mês inteiro (31 pares) = 62 estourava. O upgrade
-  // pro plano pago (260727) elevou o teto pra 1000 e tirou a urgência, mas as
-  // duas fases FICAM: além de baratas, evitam ~30 gets inúteis por chamada no
-  // caminho mais comum. `SEQ_STATE_SUBREQUEST_BUDGET` agora é 2× o teto de
-  // edições, então a 2ª fase nunca trunca — o orçamento é só um limite
-  // superior sanativo (o param é público e não autenticado).
-  const firstPass = await Promise.all(
-    editions.map((edition) => brandedPoll.get(`vote:${edition}:${primaryIdentity}`)),
-  );
-
-  const rawByEdition = new Map<string, string | null>();
-  editions.forEach((edition, i) => rawByEdition.set(edition, firstPass[i]));
-
-  if (secondaryIdentity) {
-    const missing = editions.filter((edition) => rawByEdition.get(edition) === null);
-    const budgetLeft = Math.max(0, SEQ_STATE_SUBREQUEST_BUDGET - editions.length);
-    const toRecheck = missing.slice(0, budgetLeft);
-    const secondPass = await Promise.all(
-      toRecheck.map((edition) => brandedPoll.get(`vote:${edition}:${secondaryIdentity}`)),
-    );
-    toRecheck.forEach((edition, i) => {
-      if (secondPass[i] !== null) rawByEdition.set(edition, secondPass[i]);
-    });
+  // #4443: agrupa as edições pedidas por MÊS — o agregado seq:{month}:{id}
+  // resolve o mês inteiro num get só (por identidade), em vez de 1-2 gets por
+  // EDIÇÃO (design pré-#4443, ainda vivo abaixo como fallback). Sequência
+  // normal cai numa única chave de `editionsByMonth` (o mês anterior
+  // inteiro); só cruza pra 2 chaves quando `editions` atravessa a virada do
+  // mês (raro, mas suportado). `editionToMonthSlug` nunca retorna null aqui —
+  // `parseSeqStateEditionsParam` já filtrou por `AAMMDD_RE`, formato que
+  // `editionToMonthSlug` sempre resolve — o `continue` abaixo é defensivo.
+  const editionsByMonth = new Map<string, string[]>();
+  for (const edition of editions) {
+    const month = editionToMonthSlug(edition);
+    if (!month) continue;
+    const bucket = editionsByMonth.get(month);
+    if (bucket) bucket.push(edition);
+    else editionsByMonth.set(month, [edition]);
   }
 
-  const results: SeqStateResultEntry[] = editions.map((edition): SeqStateResultEntry => {
-    const raw = rawByEdition.get(edition) ?? null;
-    if (!raw) return { edition, voted: false, correct: null };
-    try {
-      const parsed = JSON.parse(raw) as { correct?: boolean | null };
-      const correct = typeof parsed.correct === "boolean" ? parsed.correct : null;
-      return { edition, voted: true, correct };
-    } catch {
-      // Registro corrompido — trata como votado mas sem gabarito conhecido
-      // (mesma disciplina de safeParseKv em vote.ts: nunca derruba o
-      // endpoint por causa de 1 registro malformado).
-      return { edition, voted: true, correct: null };
+  const resultByEdition = new Map<string, SeqStateResultEntry>();
+
+  // #4443: orçamento COMPARTILHADO por TODOS os grupos de mês desta chamada —
+  // generaliza o orçamento do #4115 (que só cobria gets por edição) pra
+  // também cobrir os gets NOVOS de checagem de agregado por mês. Sem um teto
+  // compartilhado, um `editions` adversarial espalhado por muitos meses
+  // distintos multiplicaria gets de agregado sem limite (cada mês, mesmo com
+  // 1 edição só, custa no mínimo 1 get de checagem). Mesmo trade-off já
+  // documentado no #4115: se o orçamento acabar, o resto volta como "não
+  // votado" em vez de estourar o teto de subrequests do Worker.
+  let budgetLeft = SEQ_STATE_SUBREQUEST_BUDGET;
+
+  for (const [month, monthEditions] of editionsByMonth) {
+    if (budgetLeft <= 0) {
+      for (const edition of monthEditions) {
+        resultByEdition.set(edition, { edition, voted: false, correct: null });
+      }
+      continue;
     }
-  });
+
+    budgetLeft -= 1;
+    const primaryRaw = await brandedPoll.get(seqStateKvKey(month, primaryIdentity));
+    const primaryMap = primaryRaw !== null ? parseSeqMonthAggregate(primaryRaw) : null;
+
+    if (primaryMap !== null) {
+      // ── Caminho rápido (#4443): agregado presente e legível ─────────────
+      // Resolve o mês inteiro com, no máximo, mais 1 get (identidade
+      // secundária, quando existe) — ≤4 gets no total pra uma sequência
+      // mensal completa (1-2 meses × até 2 identidades). Um blob CORROMPIDO
+      // (JSON inválido/shape inesperado) faz `parseSeqMonthAggregate`
+      // retornar `null` — cai no fallback abaixo em vez de reportar o mês
+      // inteiro como "não votado" por causa de 1 registro ilegível.
+      let merged: Record<string, boolean | null> = primaryMap;
+      if (secondaryIdentity && budgetLeft > 0) {
+        budgetLeft -= 1;
+        const secondaryRaw = await brandedPoll.get(seqStateKvKey(month, secondaryIdentity));
+        const secondaryMap = secondaryRaw !== null ? parseSeqMonthAggregate(secondaryRaw) : null;
+        if (secondaryMap !== null) {
+          // Primária vence em conflito (mesma prioridade do design de 2
+          // fases abaixo: sessão pós-gate cobre a maioria das rodadas).
+          merged = { ...secondaryMap, ...primaryMap };
+        }
+      }
+      for (const edition of monthEditions) {
+        // Presença da chave (não o valor) decide "votou": `null` é um voto
+        // legítimo sem gabarito ainda conhecido — nunca confundir com "não
+        // votado" (mesma semântica anti-spoiler de `SeqMonthMap`).
+        if (Object.hasOwn(merged, edition)) {
+          resultByEdition.set(edition, { edition, voted: true, correct: merged[edition] });
+        } else {
+          resultByEdition.set(edition, { edition, voted: false, correct: null });
+        }
+      }
+      continue;
+    }
+
+    // ── Fallback (#4115, preservado): agregado AUSENTE pra este mês ───────
+    //
+    // A 1ª fase resolve as edições deste mês sob a identidade primária (a
+    // sessão, quando existe); a 2ª só reconsulta as que ficaram SEM voto,
+    // sob a secundária. Ambas as fases (e a checagem de agregado acima)
+    // consomem do MESMO `budgetLeft` compartilhado — `affordable`/`toRecheck`
+    // truncam pra nunca estourar o orçamento total da chamada.
+    const affordable = monthEditions.slice(0, budgetLeft);
+    for (const edition of monthEditions.slice(budgetLeft)) {
+      resultByEdition.set(edition, { edition, voted: false, correct: null });
+    }
+    budgetLeft -= affordable.length;
+
+    const firstPass = await Promise.all(
+      affordable.map((edition) => brandedPoll.get(`vote:${edition}:${primaryIdentity}`)),
+    );
+    const rawByEdition = new Map<string, string | null>();
+    affordable.forEach((edition, i) => rawByEdition.set(edition, firstPass[i]));
+
+    const foundViaSecondary = new Set<string>();
+    if (secondaryIdentity) {
+      const missing = affordable.filter((edition) => rawByEdition.get(edition) === null);
+      const toRecheck = missing.slice(0, budgetLeft);
+      budgetLeft -= toRecheck.length;
+      const secondPass = await Promise.all(
+        toRecheck.map((edition) => brandedPoll.get(`vote:${edition}:${secondaryIdentity}`)),
+      );
+      toRecheck.forEach((edition, i) => {
+        if (secondPass[i] !== null) {
+          rawByEdition.set(edition, secondPass[i]);
+          foundViaSecondary.add(edition);
+        }
+      });
+    }
+
+    // #4443 (self-heal): monta o agregado desta consulta a partir do que foi
+    // resolvido agora — separado por identidade (a MESMA identidade que
+    // originalmente escreveu cada `vote:` também é a dona do agregado
+    // correspondente, espelhando o write path real em `updateScoreByMonth`,
+    // vote.ts). Grava pra que a PRÓXIMA leitura deste (mês, identidade) caia
+    // no caminho rápido acima — o mês antigo custa o preço velho uma vez só.
+    const primaryUpdates: Record<string, boolean | null> = {};
+    const secondaryUpdates: Record<string, boolean | null> = {};
+    for (const edition of affordable) {
+      const raw = rawByEdition.get(edition) ?? null;
+      if (!raw) {
+        resultByEdition.set(edition, { edition, voted: false, correct: null });
+        continue;
+      }
+      let correct: boolean | null = null;
+      try {
+        const parsed = JSON.parse(raw) as { correct?: boolean | null };
+        correct = typeof parsed.correct === "boolean" ? parsed.correct : null;
+      } catch {
+        // Registro corrompido — trata como votado mas sem gabarito conhecido
+        // (mesma disciplina de safeParseKv em vote.ts: nunca derruba o
+        // endpoint por causa de 1 registro malformado).
+        correct = null;
+      }
+      resultByEdition.set(edition, { edition, voted: true, correct });
+      if (foundViaSecondary.has(edition)) secondaryUpdates[edition] = correct;
+      else primaryUpdates[edition] = correct;
+    }
+
+    // Best-effort/fail-soft: falha na escrita do self-heal nunca derruba a
+    // resposta — a próxima chamada simplesmente repete este fallback.
+    try {
+      if (Object.keys(primaryUpdates).length > 0) {
+        await brandedPoll.put(seqStateKvKey(month, primaryIdentity), JSON.stringify(primaryUpdates));
+      }
+      if (secondaryIdentity && Object.keys(secondaryUpdates).length > 0) {
+        await brandedPoll.put(seqStateKvKey(month, secondaryIdentity), JSON.stringify(secondaryUpdates));
+      }
+    } catch (e) {
+      console.error(JSON.stringify({ event: "seq_state_self_heal_failed", month, error: String(e) }));
+    }
+  }
+
+  const results: SeqStateResultEntry[] = editions.map(
+    (edition): SeqStateResultEntry => resultByEdition.get(edition) ?? { edition, voted: false, correct: null },
+  );
   return new Response(JSON.stringify(results), {
     status: 200,
     headers: {

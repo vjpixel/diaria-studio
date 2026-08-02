@@ -766,6 +766,33 @@ export function brandKvPrefix(brand: Brand): string {
 }
 
 /**
+ * #4443: chave do agregado MENSAL de estado de sequência do "É IA?" —
+ * `seq:{month}:{identity}`. `month` é o slug "YYYY-MM" de
+ * `editionToMonthSlug` (mesma convenção de `score-by-month:{month}:{email}`);
+ * `identity` é o e-mail (real, ou o pseudo-email do token anônimo
+ * `{uuid}@web.eia.diaria.local`) já resolvido pelo caller — a MESMA
+ * identidade usada pra escrever/ler `vote:{edition}:{identity}` (jogar.ts/
+ * vote.ts). Substitui, na leitura comum, até 31-62 gets de KV (1-2 por
+ * edição do mês) por 1 get só — ver rationale completo em
+ * `handleJogarSeqState` (jogar.ts).
+ *
+ * String CRUA (sem prefixo de brand embutido) — mesma convenção de `vote:` e
+ * `score-by-month:` neste worker: quem aplica o prefixo do brand é o
+ * NAMESPACE de KV (`brandedNamespace`/`brandedEnv`, index.ts) no ponto de
+ * acesso, nunca a própria string da chave. É isso que garante "chave
+ * branded, não crua" (#3600/#4035, erro já cometido nas duas direções nesta
+ * mesma classe de chave) — tanto o write path (vote.ts, onde `env.POLL` já é
+ * o `bEnv` embrulhado pelo router) quanto o read path (jogar.ts, onde
+ * `brandedPoll` embrulha manualmente `env.POLL` pro brand fixo `web`, porque
+ * a rota não recebe `?brand=` — ver `handleJogarSeqState`) precisam SEMPRE
+ * chamar esta função através de um KVNamespace já branded, nunca do
+ * `env.POLL` cru.
+ */
+export function seqStateKvKey(month: string, identity: string): string {
+  return `seq:${month}:${identity}`;
+}
+
+/**
  * #3112: variante de `formatEditionDate` ciente de `BRAND_INFO[brand].leaderboardPeriod`.
  *
  * Mesmo racional do #2006 (vote.ts, mensagem "já votou"): pra um brand com
