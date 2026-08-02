@@ -27,7 +27,12 @@
  * `.claude/hooks/block-askuserquestion-overnight-autonomous.mjs`, que nega
  * qualquer `AskUserQuestion` enquanto `phase` for `"autonomous"` neste marker.
  * O hook duplica a lógica de path (mesmo padrão de `pr-create-review.mjs`) e
- * consome só leitura — nunca escreve o marker.
+ * consome só leitura — nunca escreve o marker. **Resume (passo 0):** quando
+ * `plan.json` já existe, a skill pula direto pra Fase 1/1.5/2 sem passar pelo
+ * passo 8 — mas o passo 1 (`--start`) ainda roda nesse caminho e reseta
+ * `phase` pra `"briefing"`. O passo 0 re-arma `--phase autonomous`
+ * explicitamente logo depois, então uma rodada retomada nunca fica sem o
+ * guard armado.
  *
  * Deliberadamente NÃO é `data/overnight/{AAMMDD}/plan.json` (documento de progresso
  * do coordenador, schema evoluindo, dono de uma feature não-relacionada — a
@@ -82,9 +87,16 @@ export function activeSessionPath(repoRoot: string, tag: string = machineTag()):
 
 /**
  * Grava o marker de sessão ativa. Idempotente — sobrescreve `started_at` se já
- * existir. **Sempre grava `phase: "briefing"` (#4450)** — toda invocação de
- * `--start` é o começo de uma rodada nova (ou retomada logo após o resume do
- * passo 0, que ainda precede a Fase 1), nunca um ponto no meio da Fase 1.
+ * existir. **Sempre grava `phase: "briefing"` (#4450)** — `--start` roda tanto
+ * numa rodada genuinamente nova (segue pro briefing normal, arma
+ * `--phase autonomous` no passo 8) quanto no Resume de uma rodada existente
+ * (passo 1, sempre executado de novo mesmo quando o passo 0 pula direto pra
+ * Fase 1/1.5/2) — e nos dois casos o valor logo após `--start` É "briefing"
+ * até o passo seguinte decidir o contrário. **Isto NÃO significa que uma
+ * rodada retomada fica desprotegida**: o passo 0 (Resume) re-arma
+ * `--phase autonomous` explicitamente, imediatamente após este `--start`,
+ * exatamente porque `--start` sempre reseta pra "briefing" — os dois passos
+ * são um par deliberado, não uma coincidência de ordem.
  */
 export function startSession(repoRoot: string, startedAtIso: string): void {
   const path = activeSessionPath(repoRoot);
