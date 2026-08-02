@@ -20,6 +20,6 @@ patronos-bastidores.md).
 
 Obrigado, Patronos
 
-Este espaço é pra reconhecer quem sustenta o nível mais alto de apoio à Diar.ia. Hoje: [nomes dos Patronos ativos] — sem vocês essa curadoria diária não se paga sozinha.
+Este espaço é pra reconhecer quem sustenta o nível mais alto de apoio à diar.ia.br. Hoje: [nomes dos Patronos ativos] — sem vocês essa curadoria diária não se paga sozinha.
 
 Se seu nome deveria estar aqui e não está, responda este e-mail.
