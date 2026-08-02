@@ -246,7 +246,7 @@ export async function verifyPromotedToBeehiiv(
  * dependiam só do PUT não lançar, diferente de `ingestContactToBrevo`/
  * `verifyPromotedToBeehiiv`, que sempre releem antes de confiar no sucesso —
  * precedente documentado: a Beehiiv já aceitou um PATCH com 200 ignorando a
- * escrita silenciosamente, ver `sync-apoio-tags-beehiiv.ts`). Como
+ * escrita silenciosamente, ver `sync-apoio-nivel-beehiiv.ts`). Como
  * `applyEvaluation` move o contato pra um status TERMINAL (`suppressed`) que
  * o loop nunca mais reavalia, uma falha silenciosa aqui seria permanente —
  * `true` só se `emailBlacklisted` estiver confirmado E o contato não constar

@@ -1,12 +1,15 @@
 /**
- * test/sync-apoio-tags-beehiiv.test.ts (#4273 parte 2)
+ * test/sync-apoio-nivel-beehiiv.test.ts (#4273 parte 2, carência/guard #4436)
  *
- * Testa as funções PURAS de `scripts/sync-apoio-tags-beehiiv.ts`:
- * `computeDesiredApoioLevels` (contatos → nível desejado) e `diffApoioTags`
- * (desejado × estado atual da Beehiiv → entra/sai/muda de faixa) +
- * `shouldBlockRemovals` (guard fail-closed). Nenhum teste bate na API real —
- * `current` é sempre uma fixture `BeehiivSubscriptionSnapshot[]` construída à
- * mão, nunca vem de `fetchCurrentBeehiivState`.
+ * Testa as funções PURAS de `scripts/sync-apoio-nivel-beehiiv.ts`:
+ * `computeDesiredApoioLevels` (contatos + histórico → nível desejado, com
+ * carência de 1 mês), `diffApoioTags` (desejado × estado atual da Beehiiv →
+ * entra/sai/muda de faixa), `shouldBlockRemovals` (guard fail-closed de
+ * dados parciais) e `evaluateBlastRadiusGuard` (guard de magnitude de
+ * remoções, #4436). Nenhum teste bate na API real — `current` é sempre uma
+ * fixture `BeehiivSubscriptionSnapshot[]` construída à mão, nunca vem de
+ * `fetchCurrentBeehiivState`; `pastSnapshots` é sempre uma fixture
+ * `MonthSnapshot[]`, nunca vem de `readPastMonthSnapshots` real.
  *
  * Casos obrigatórios (#4273, corpo da issue):
  *   1. Contato com múltiplos e-mails.
@@ -14,6 +17,17 @@
  *   3. Mudança de faixa (troca de valor, nunca acumula duas).
  *   4. Assinante taggeado que parou de apoiar (perde o valor).
  *   5. Apoiador que não é assinante da Beehiiv (ignorado/reportado, sem erro).
+ *
+ * Casos obrigatórios de carência + guard (#4436, corpo da issue):
+ *   6. Pagou no mês corrente-1, não pagou no corrente → MANTÉM (carência).
+ *   7. 2 meses sem pagar → remove.
+ *   8. Troca de faixa → 1 escrita, nunca acumula valor.
+ *   9. Contato com múltiplos e-mails casando mais de uma subscription
+ *      (repetido aqui no contexto da carência — `levelFromSnapshot` cruza
+ *      TODOS os e-mails do contato contra o snapshot do mês anterior).
+ *  10. `sem_dados` nunca gera ação, mesmo com carência disponível.
+ *  11. Guard (b): limiar de remoções atingido → push recusado; no limiar
+ *      EXATO (30%) não bloqueia (só acima).
  *
  * Também testa `applyApoioTagEntry` (achado #2 do review da PR #4307) — a
  * função de escrita+releitura, com `fetchImpl` mockado (nunca rede real). É o
@@ -31,10 +45,19 @@ import {
   shouldBlockRemovals,
   applyApoioTagEntry,
   fetchCurrentBeehiivState,
+  maxLevel,
+  previousMonthKey,
+  levelFromSnapshot,
+  evaluateBlastRadiusGuard,
   type ApoioTagDiffEntry,
   type BeehiivSubscriptionSnapshot,
-} from "../scripts/sync-apoio-tags-beehiiv.ts";
-import type { ContactWithStatus } from "../scripts/studio-ui/studio-apoios.ts";
+} from "../scripts/sync-apoio-nivel-beehiiv.ts";
+import type { ContactWithStatus, MonthSnapshot } from "../scripts/studio-ui/studio-apoios.ts";
+
+/** Mês corrente fixo usado por default nos testes que não exercitam carência
+ * (sem histórico — `pastSnapshots: []`) — qualquer YYYY-MM serve, só precisa
+ * ser um formato válido pra `previousMonthKey` não lançar. */
+const NO_HISTORY_MONTH = "2026-08";
 
 function contact(
   id: string,
@@ -58,52 +81,210 @@ function sub(subscriptionId: string, email: string, apoioNivel = ""): BeehiivSub
   return { subscriptionId, email, apoioNivel };
 }
 
-describe("computeDesiredApoioLevels (#4273)", () => {
+/** Fixture de snapshot de mês passado — `paid` mapeia email → valor pago
+ * naquele mês (`isPaidThisMonth: true`); emails ausentes de `paid` não
+ * aparecem no snapshot (equivalente a "não encontrado"). */
+function monthSnapshot(month: string, paid: Record<string, number>): MonthSnapshot {
+  const statuses: MonthSnapshot["statuses"] = {};
+  for (const [email, value] of Object.entries(paid)) {
+    statuses[email] = { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: value };
+  }
+  return { month, statuses };
+}
+
+describe("computeDesiredApoioLevels (#4273) — sem histórico (pastSnapshots: [])", () => {
   it("apoiando + monthlyValue → nível derivado de computeRewardGroup", () => {
-    const result = computeDesiredApoioLevels([
-      contact("c1", ["mantenedor@x.com"], { label: "apoiando", monthlyValue: 30, matchedEmail: "mantenedor@x.com" }),
-    ]);
+    const result = computeDesiredApoioLevels(
+      [contact("c1", ["mantenedor@x.com"], { label: "apoiando", monthlyValue: 30, matchedEmail: "mantenedor@x.com" })],
+      [],
+      NO_HISTORY_MONTH,
+    );
     assert.equal(result[0].level, "mantenedor");
     assert.equal(result[0].unresolved, false);
   });
 
-  it("nao_apoia → level null, unresolved false (removal candidate, não desconhecido)", () => {
-    const result = computeDesiredApoioLevels([contact("c1", ["x@x.com"], { label: "nao_apoia" })]);
+  it("nao_apoia sem histórico → level null, unresolved false (removal candidate, não desconhecido)", () => {
+    const result = computeDesiredApoioLevels([contact("c1", ["x@x.com"], { label: "nao_apoia" })], [], NO_HISTORY_MONTH);
     assert.equal(result[0].level, null);
     assert.equal(result[0].unresolved, false);
   });
 
-  it("apoiou_e_parou → level null, unresolved false", () => {
-    const result = computeDesiredApoioLevels([
-      contact("c1", ["x@x.com"], { label: "apoiou_e_parou", lastPaidMonth: "2026-05", matchedEmail: "x@x.com" }),
-    ]);
+  it("apoiou_e_parou sem histórico recente → level null, unresolved false", () => {
+    const result = computeDesiredApoioLevels(
+      [contact("c1", ["x@x.com"], { label: "apoiou_e_parou", lastPaidMonth: "2026-05", matchedEmail: "x@x.com" })],
+      [],
+      NO_HISTORY_MONTH,
+    );
     assert.equal(result[0].level, null);
     assert.equal(result[0].unresolved, false);
   });
 
   it("sem_dados → level null, unresolved TRUE (desconhecido, não 'sem apoio')", () => {
-    const result = computeDesiredApoioLevels([contact("c1", ["x@x.com"], { label: "sem_dados" })]);
+    const result = computeDesiredApoioLevels([contact("c1", ["x@x.com"], { label: "sem_dados" })], [], NO_HISTORY_MONTH);
     assert.equal(result[0].level, null);
     assert.equal(result[0].unresolved, true);
   });
 
   it("emails normalizados (lowercase/trim/dedup)", () => {
-    const result = computeDesiredApoioLevels([
-      contact("c1", [" Foo@X.com ", "foo@x.com", "bar@X.COM"], { label: "nao_apoia" }),
-    ]);
+    const result = computeDesiredApoioLevels(
+      [contact("c1", [" Foo@X.com ", "foo@x.com", "bar@X.COM"], { label: "nao_apoia" })],
+      [],
+      NO_HISTORY_MONTH,
+    );
     assert.deepEqual(result[0].emails, ["foo@x.com", "bar@x.com"]);
+  });
+});
+
+// ── carência de 1 mês (#4436) ────────────────────────────────────────────
+
+describe("previousMonthKey (#4436)", () => {
+  it("mês normal: 2026-08 → 2026-07", () => {
+    assert.equal(previousMonthKey("2026-08"), "2026-07");
+  });
+
+  it("virada de ano: 2026-01 → 2025-12", () => {
+    assert.equal(previousMonthKey("2026-01"), "2025-12");
+  });
+
+  it("formato inesperado → lança (nunca produz mês inválido silenciosamente)", () => {
+    assert.throws(() => previousMonthKey("2026/01"));
+    assert.throws(() => previousMonthKey("agosto-2026"));
+  });
+});
+
+describe("maxLevel (#4436)", () => {
+  it("faixa maior vence, em qualquer ordem dos argumentos", () => {
+    assert.equal(maxLevel("apoiador", "mantenedor"), "mantenedor");
+    assert.equal(maxLevel("mantenedor", "apoiador"), "mantenedor");
+  });
+
+  it("null perde pra qualquer faixa real", () => {
+    assert.equal(maxLevel(null, "amigo"), "amigo");
+    assert.equal(maxLevel("amigo", null), "amigo");
+  });
+
+  it("null e null → null", () => {
+    assert.equal(maxLevel(null, null), null);
+  });
+
+  it("mesma faixa → a própria faixa", () => {
+    assert.equal(maxLevel("patrono", "patrono"), "patrono");
+  });
+});
+
+describe("levelFromSnapshot (#4436)", () => {
+  it("snapshot ausente (mês sem cache) → null", () => {
+    assert.equal(levelFromSnapshot(["x@x.com"], undefined), null);
+  });
+
+  it("nenhum email do contato pagou naquele mês → null", () => {
+    const snap = monthSnapshot("2026-07", { "outro@x.com": 20 });
+    assert.equal(levelFromSnapshot(["x@x.com"], snap), null);
+  });
+
+  it("qualquer um dos e-mails do contato pagando → nível derivado (múltiplos e-mails)", () => {
+    const snap = monthSnapshot("2026-07", { "secundario@x.com": 30 });
+    assert.equal(levelFromSnapshot(["principal@x.com", "secundario@x.com"], snap), "mantenedor");
+  });
+});
+
+describe("computeDesiredApoioLevels — carência de 1 mês (#4436, corpo da issue)", () => {
+  it("caso 6: pagou em julho (apoiador), não pagou em agosto → MANTÉM apoiador (carência)", () => {
+    const pastSnapshots = [monthSnapshot("2026-07", { "x@x.com": 15 })];
+    const result = computeDesiredApoioLevels(
+      [contact("c1", ["x@x.com"], { label: "nao_apoia" })],
+      pastSnapshots,
+      "2026-08",
+    );
+    assert.equal(result[0].level, "apoiador");
+    assert.equal(result[0].unresolved, false);
+  });
+
+  it("caso 7: não pagou em julho NEM em agosto → remove (carência esgotada)", () => {
+    const pastSnapshots = [monthSnapshot("2026-07", {})];
+    const result = computeDesiredApoioLevels(
+      [contact("c1", ["x@x.com"], { label: "nao_apoia" })],
+      pastSnapshots,
+      "2026-08",
+    );
+    assert.equal(result[0].level, null);
+  });
+
+  it("caso 7b: pagou em junho mas NÃO em julho (mês imediatamente anterior) → remove — carência é só 1 mês, não 'algum dia no passado'", () => {
+    const pastSnapshots = [monthSnapshot("2026-07", {}), monthSnapshot("2026-06", { "x@x.com": 15 })];
+    const result = computeDesiredApoioLevels(
+      [contact("c1", ["x@x.com"], { label: "nao_apoia" })],
+      pastSnapshots,
+      "2026-08",
+    );
+    assert.equal(result[0].level, null);
+  });
+
+  it("caso 8: troca de faixa — pagou apoiador em julho, paga mantenedor (maior) em agosto → nível do mês corrente vence (maior)", () => {
+    const pastSnapshots = [monthSnapshot("2026-07", { "x@x.com": 15 })];
+    const result = computeDesiredApoioLevels(
+      [contact("c1", ["x@x.com"], { label: "apoiando", monthlyValue: 30, matchedEmail: "x@x.com" })],
+      pastSnapshots,
+      "2026-08",
+    );
+    assert.equal(result[0].level, "mantenedor");
+  });
+
+  it("caso 8b: pagou mantenedor em julho, paga só apoiador (menor) em agosto → carência preserva a MAIOR faixa (mantenedor)", () => {
+    const pastSnapshots = [monthSnapshot("2026-07", { "x@x.com": 30 })];
+    const result = computeDesiredApoioLevels(
+      [contact("c1", ["x@x.com"], { label: "apoiando", monthlyValue: 15, matchedEmail: "x@x.com" })],
+      pastSnapshots,
+      "2026-08",
+    );
+    assert.equal(result[0].level, "mantenedor");
+  });
+
+  it("caso 9: múltiplos e-mails — pagou em julho com o e-mail SECUNDÁRIO → carência casa mesmo assim", () => {
+    const pastSnapshots = [monthSnapshot("2026-07", { "secundario@x.com": 8 })];
+    const result = computeDesiredApoioLevels(
+      [contact("c1", ["principal@x.com", "secundario@x.com"], { label: "nao_apoia" })],
+      pastSnapshots,
+      "2026-08",
+    );
+    assert.equal(result[0].level, "amigo");
+  });
+
+  it("caso 10: sem_dados nunca usa carência — nível fica null/unresolved mesmo com pagamento em julho", () => {
+    const pastSnapshots = [monthSnapshot("2026-07", { "x@x.com": 30 })];
+    const result = computeDesiredApoioLevels(
+      [contact("c1", ["x@x.com"], { label: "sem_dados" })],
+      pastSnapshots,
+      "2026-08",
+    );
+    assert.equal(result[0].level, null);
+    assert.equal(result[0].unresolved, true);
+  });
+
+  it("virada de ano: pagou em dezembro/2025, não paga em janeiro/2026 → mantém (previousMonthKey cobre o rollover)", () => {
+    const pastSnapshots = [monthSnapshot("2025-12", { "x@x.com": 50 })];
+    const result = computeDesiredApoioLevels(
+      [contact("c1", ["x@x.com"], { label: "nao_apoia" })],
+      pastSnapshots,
+      "2026-01",
+    );
+    assert.equal(result[0].level, "patrono");
   });
 });
 
 describe("diffApoioTags — caso 1: contato com múltiplos e-mails (#4273)", () => {
   it("gera 1 entrada de diff por e-mail casado na Beehiiv", () => {
-    const desired = computeDesiredApoioLevels([
-      contact("c1", ["principal@x.com", "secundario@x.com"], {
-        label: "apoiando",
-        monthlyValue: 15,
-        matchedEmail: "principal@x.com",
-      }),
-    ]);
+    const desired = computeDesiredApoioLevels(
+      [
+        contact("c1", ["principal@x.com", "secundario@x.com"], {
+          label: "apoiando",
+          monthlyValue: 15,
+          matchedEmail: "principal@x.com",
+        }),
+      ],
+      [],
+      NO_HISTORY_MONTH,
+    );
     const current: BeehiivSubscriptionSnapshot[] = [
       sub("sub-1", "principal@x.com", ""),
       sub("sub-2", "secundario@x.com", ""),
@@ -118,13 +299,17 @@ describe("diffApoioTags — caso 1: contato com múltiplos e-mails (#4273)", () 
   });
 
   it("só o e-mail que TEM subscription Beehiiv gera diff — o outro fica de fora, sem erro", () => {
-    const desired = computeDesiredApoioLevels([
-      contact("c1", ["principal@x.com", "naobeehiiv@x.com"], {
-        label: "apoiando",
-        monthlyValue: 15,
-        matchedEmail: "principal@x.com",
-      }),
-    ]);
+    const desired = computeDesiredApoioLevels(
+      [
+        contact("c1", ["principal@x.com", "naobeehiiv@x.com"], {
+          label: "apoiando",
+          monthlyValue: 15,
+          matchedEmail: "principal@x.com",
+        }),
+      ],
+      [],
+      NO_HISTORY_MONTH,
+    );
     const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "principal@x.com", "")];
     const diff = diffApoioTags(desired, current);
     assert.equal(diff.toApply.length, 1);
@@ -135,7 +320,7 @@ describe("diffApoioTags — caso 1: contato com múltiplos e-mails (#4273)", () 
 
 describe("diffApoioTags — caso 2: contato sem_dados nunca gera remoção (#4273)", () => {
   it("contato sem_dados TAGGEADO na Beehiiv → nenhuma ação, vai pra skippedUnresolved", () => {
-    const desired = computeDesiredApoioLevels([contact("c1", ["semdados@x.com"], { label: "sem_dados" })]);
+    const desired = computeDesiredApoioLevels([contact("c1", ["semdados@x.com"], { label: "sem_dados" })], [], NO_HISTORY_MONTH);
     const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "semdados@x.com", "apoiador")];
     const diff = diffApoioTags(desired, current);
     assert.equal(diff.toRemove.length, 0);
@@ -145,10 +330,14 @@ describe("diffApoioTags — caso 2: contato sem_dados nunca gera remoção (#427
   });
 
   it("shouldBlockRemovals: true quando há sem_dados, mesmo sem allowPartial", () => {
-    const desired = computeDesiredApoioLevels([
-      contact("ok", ["ok@x.com"], { label: "nao_apoia" }),
-      contact("semdados", ["semdados@x.com"], { label: "sem_dados" }),
-    ]);
+    const desired = computeDesiredApoioLevels(
+      [
+        contact("ok", ["ok@x.com"], { label: "nao_apoia" }),
+        contact("semdados", ["semdados@x.com"], { label: "sem_dados" }),
+      ],
+      [],
+      NO_HISTORY_MONTH,
+    );
     const current: BeehiivSubscriptionSnapshot[] = [
       sub("sub-1", "ok@x.com", "apoiador"),
       sub("sub-2", "semdados@x.com", "mantenedor"),
@@ -159,7 +348,7 @@ describe("diffApoioTags — caso 2: contato sem_dados nunca gera remoção (#427
   });
 
   it("shouldBlockRemovals: true quando data.error setado, mesmo sem sem_dados algum", () => {
-    const desired = computeDesiredApoioLevels([contact("c1", ["x@x.com"], { label: "nao_apoia" })]);
+    const desired = computeDesiredApoioLevels([contact("c1", ["x@x.com"], { label: "nao_apoia" })], [], NO_HISTORY_MONTH);
     const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "x@x.com", "amigo")];
     const diff = diffApoioTags(desired, current);
     assert.equal(diff.skippedUnresolved.length, 0);
@@ -167,7 +356,7 @@ describe("diffApoioTags — caso 2: contato sem_dados nunca gera remoção (#427
   });
 
   it("shouldBlockRemovals: false quando tudo resolvido e sem erro", () => {
-    const desired = computeDesiredApoioLevels([contact("c1", ["x@x.com"], { label: "nao_apoia" })]);
+    const desired = computeDesiredApoioLevels([contact("c1", ["x@x.com"], { label: "nao_apoia" })], [], NO_HISTORY_MONTH);
     const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "x@x.com", "amigo")];
     const diff = diffApoioTags(desired, current);
     assert.equal(shouldBlockRemovals(null, diff, false), false);
@@ -176,9 +365,11 @@ describe("diffApoioTags — caso 2: contato sem_dados nunca gera remoção (#427
 
 describe("diffApoioTags — caso 3: mudança de faixa (troca, nunca acumula) (#4273)", () => {
   it("apoiador → mantenedor: 1 entrada toApply com from/to corretos, nunca 2 valores simultâneos", () => {
-    const desired = computeDesiredApoioLevels([
-      contact("c1", ["sobe@x.com"], { label: "apoiando", monthlyValue: 30, matchedEmail: "sobe@x.com" }),
-    ]);
+    const desired = computeDesiredApoioLevels(
+      [contact("c1", ["sobe@x.com"], { label: "apoiando", monthlyValue: 30, matchedEmail: "sobe@x.com" })],
+      [],
+      NO_HISTORY_MONTH,
+    );
     const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "sobe@x.com", "apoiador")];
     const diff = diffApoioTags(desired, current);
     assert.equal(diff.toApply.length, 1);
@@ -189,9 +380,11 @@ describe("diffApoioTags — caso 3: mudança de faixa (troca, nunca acumula) (#4
   });
 
   it("mesma faixa (sem mudança) → unchanged, nenhuma ação", () => {
-    const desired = computeDesiredApoioLevels([
-      contact("c1", ["estavel@x.com"], { label: "apoiando", monthlyValue: 12, matchedEmail: "estavel@x.com" }),
-    ]);
+    const desired = computeDesiredApoioLevels(
+      [contact("c1", ["estavel@x.com"], { label: "apoiando", monthlyValue: 12, matchedEmail: "estavel@x.com" })],
+      [],
+      NO_HISTORY_MONTH,
+    );
     const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "estavel@x.com", "apoiador")];
     const diff = diffApoioTags(desired, current);
     assert.equal(diff.toApply.length, 0);
@@ -200,9 +393,11 @@ describe("diffApoioTags — caso 3: mudança de faixa (troca, nunca acumula) (#4
   });
 
   it("idempotência: rodar o diff 2x sobre o MESMO estado atual produz o mesmo resultado", () => {
-    const desired = computeDesiredApoioLevels([
-      contact("c1", ["x@x.com"], { label: "apoiando", monthlyValue: 60, matchedEmail: "x@x.com" }),
-    ]);
+    const desired = computeDesiredApoioLevels(
+      [contact("c1", ["x@x.com"], { label: "apoiando", monthlyValue: 60, matchedEmail: "x@x.com" })],
+      [],
+      NO_HISTORY_MONTH,
+    );
     const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "x@x.com", "")];
     const diff1 = diffApoioTags(desired, current);
     const diff2 = diffApoioTags(desired, current);
@@ -217,8 +412,8 @@ describe("diffApoioTags — caso 3: mudança de faixa (troca, nunca acumula) (#4
 });
 
 describe("diffApoioTags — caso 4: assinante taggeado que parou de apoiar (#4273)", () => {
-  it("tinha valor 'patrono', agora nao_apoia → toRemove", () => {
-    const desired = computeDesiredApoioLevels([contact("c1", ["parou@x.com"], { label: "nao_apoia" })]);
+  it("tinha valor 'patrono', agora nao_apoia (sem histórico) → toRemove", () => {
+    const desired = computeDesiredApoioLevels([contact("c1", ["parou@x.com"], { label: "nao_apoia" })], [], NO_HISTORY_MONTH);
     const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "parou@x.com", "patrono")];
     const diff = diffApoioTags(desired, current);
     assert.equal(diff.toRemove.length, 1);
@@ -227,10 +422,12 @@ describe("diffApoioTags — caso 4: assinante taggeado que parou de apoiar (#427
     assert.equal(diff.toApply.length, 0);
   });
 
-  it("apoiou_e_parou (histórico) também gera toRemove se ainda tem valor na Beehiiv", () => {
-    const desired = computeDesiredApoioLevels([
-      contact("c1", ["exapoiador@x.com"], { label: "apoiou_e_parou", lastPaidMonth: "2026-03", matchedEmail: "exapoiador@x.com" }),
-    ]);
+  it("apoiou_e_parou (histórico antigo, fora da carência) também gera toRemove se ainda tem valor na Beehiiv", () => {
+    const desired = computeDesiredApoioLevels(
+      [contact("c1", ["exapoiador@x.com"], { label: "apoiou_e_parou", lastPaidMonth: "2026-03", matchedEmail: "exapoiador@x.com" })],
+      [],
+      NO_HISTORY_MONTH,
+    );
     const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "exapoiador@x.com", "amigo")];
     const diff = diffApoioTags(desired, current);
     assert.equal(diff.toRemove.length, 1);
@@ -238,7 +435,7 @@ describe("diffApoioTags — caso 4: assinante taggeado que parou de apoiar (#427
   });
 
   it("já sem valor + não apoia → unchanged (nada a remover)", () => {
-    const desired = computeDesiredApoioLevels([contact("c1", ["semvalor@x.com"], { label: "nao_apoia" })]);
+    const desired = computeDesiredApoioLevels([contact("c1", ["semvalor@x.com"], { label: "nao_apoia" })], [], NO_HISTORY_MONTH);
     const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "semvalor@x.com", "")];
     const diff = diffApoioTags(desired, current);
     assert.equal(diff.toRemove.length, 0);
@@ -248,9 +445,11 @@ describe("diffApoioTags — caso 4: assinante taggeado que parou de apoiar (#427
 
 describe("diffApoioTags — caso 5: apoiador que não é assinante da Beehiiv (#4273)", () => {
   it("nenhum e-mail do contato casa com nenhuma subscription → notBeehiivSubscriber, sem erro", () => {
-    const desired = computeDesiredApoioLevels([
-      contact("c1", ["naotemconta@x.com"], { label: "apoiando", monthlyValue: 20, matchedEmail: "naotemconta@x.com" }),
-    ]);
+    const desired = computeDesiredApoioLevels(
+      [contact("c1", ["naotemconta@x.com"], { label: "apoiando", monthlyValue: 20, matchedEmail: "naotemconta@x.com" })],
+      [],
+      NO_HISTORY_MONTH,
+    );
     const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "outrapessoa@x.com", "")];
     const diff = diffApoioTags(desired, current);
     assert.equal(diff.notBeehiivSubscriber.length, 1);
@@ -260,10 +459,14 @@ describe("diffApoioTags — caso 5: apoiador que não é assinante da Beehiiv (#
   });
 
   it("estado da Beehiiv vazio (nenhum assinante) → todos os desejados caem em notBeehiivSubscriber", () => {
-    const desired = computeDesiredApoioLevels([
-      contact("c1", ["a@x.com"], { label: "apoiando", monthlyValue: 20, matchedEmail: "a@x.com" }),
-      contact("c2", ["b@x.com"], { label: "nao_apoia" }),
-    ]);
+    const desired = computeDesiredApoioLevels(
+      [
+        contact("c1", ["a@x.com"], { label: "apoiando", monthlyValue: 20, matchedEmail: "a@x.com" }),
+        contact("c2", ["b@x.com"], { label: "nao_apoia" }),
+      ],
+      [],
+      NO_HISTORY_MONTH,
+    );
     const diff = diffApoioTags(desired, []);
     assert.equal(diff.notBeehiivSubscriber.length, 2);
     assert.equal(diff.toApply.length, 0);
@@ -294,13 +497,17 @@ describe("extractApoioNivelValue", () => {
 
 describe("diffApoioTags — mistura completa (regressão de composição)", () => {
   it("cenário combinado: add, remove, change, sem_dados e não-assinante no mesmo diff", () => {
-    const desired = computeDesiredApoioLevels([
-      contact("novo", ["novo@x.com"], { label: "apoiando", monthlyValue: 8, matchedEmail: "novo@x.com" }), // amigo, novo
-      contact("parou", ["parou@x.com"], { label: "nao_apoia" }), // tinha valor, perde
-      contact("sobe", ["sobe@x.com"], { label: "apoiando", monthlyValue: 60, matchedEmail: "sobe@x.com" }), // troca
-      contact("semdados", ["semdados@x.com"], { label: "sem_dados" }), // skip
-      contact("naobeehiiv", ["naobeehiiv@x.com"], { label: "apoiando", monthlyValue: 20, matchedEmail: "naobeehiiv@x.com" }), // sem subscription
-    ]);
+    const desired = computeDesiredApoioLevels(
+      [
+        contact("novo", ["novo@x.com"], { label: "apoiando", monthlyValue: 8, matchedEmail: "novo@x.com" }), // amigo, novo
+        contact("parou", ["parou@x.com"], { label: "nao_apoia" }), // tinha valor, perde
+        contact("sobe", ["sobe@x.com"], { label: "apoiando", monthlyValue: 60, matchedEmail: "sobe@x.com" }), // troca
+        contact("semdados", ["semdados@x.com"], { label: "sem_dados" }), // skip
+        contact("naobeehiiv", ["naobeehiiv@x.com"], { label: "apoiando", monthlyValue: 20, matchedEmail: "naobeehiiv@x.com" }), // sem subscription
+      ],
+      [],
+      NO_HISTORY_MONTH,
+    );
     const current: BeehiivSubscriptionSnapshot[] = [
       sub("s-novo", "novo@x.com", ""),
       sub("s-parou", "parou@x.com", "apoiador"),
@@ -319,6 +526,63 @@ describe("diffApoioTags — mistura completa (regressão de composição)", () =
     const sobeEntry = diff.toApply.find((e) => e.email === "sobe@x.com");
     assert.equal(sobeEntry?.fromLevel, "apoiador");
     assert.equal(sobeEntry?.toLevel, "patrono");
+  });
+});
+
+// ── guard de blast radius (#4436) ────────────────────────────────────────
+
+describe("evaluateBlastRadiusGuard (#4436)", () => {
+  it("abaixo do limiar (20% de 10) → não bloqueia", () => {
+    const current: BeehiivSubscriptionSnapshot[] = [
+      sub("s1", "a@x.com", "amigo"),
+      sub("s2", "b@x.com", "apoiador"),
+      sub("s3", "c@x.com", "mantenedor"),
+      sub("s4", "d@x.com", "patrono"),
+      sub("s5", "e@x.com", "amigo"),
+      sub("s6", "f@x.com", "amigo"),
+      sub("s7", "g@x.com", "amigo"),
+      sub("s8", "h@x.com", "amigo"),
+      sub("s9", "i@x.com", "amigo"),
+      sub("s10", "j@x.com", "amigo"),
+    ];
+    const guard = evaluateBlastRadiusGuard(2, current, false);
+    assert.equal(guard.currentWithLevelCount, 10);
+    assert.equal(guard.ratio, 0.2);
+    assert.equal(guard.blocked, false);
+  });
+
+  it("no limiar EXATO (30% de 10 = 3) → NÃO bloqueia ('passar de' é estrito)", () => {
+    const current: BeehiivSubscriptionSnapshot[] = Array.from({ length: 10 }, (_, i) =>
+      sub(`s${i}`, `u${i}@x.com`, "amigo"),
+    );
+    const guard = evaluateBlastRadiusGuard(3, current, false);
+    assert.equal(guard.ratio, 0.3);
+    assert.equal(guard.blocked, false);
+  });
+
+  it("acima do limiar (40% de 10 = 4) → bloqueia", () => {
+    const current: BeehiivSubscriptionSnapshot[] = Array.from({ length: 10 }, (_, i) =>
+      sub(`s${i}`, `u${i}@x.com`, "amigo"),
+    );
+    const guard = evaluateBlastRadiusGuard(4, current, false);
+    assert.equal(guard.ratio, 0.4);
+    assert.equal(guard.blocked, true);
+  });
+
+  it("acima do limiar mas com force=true → não bloqueia (escape hatch explícito)", () => {
+    const current: BeehiivSubscriptionSnapshot[] = Array.from({ length: 10 }, (_, i) =>
+      sub(`s${i}`, `u${i}@x.com`, "amigo"),
+    );
+    const guard = evaluateBlastRadiusGuard(4, current, true);
+    assert.equal(guard.blocked, false);
+  });
+
+  it("ninguém com nível hoje (denominador 0) → ratio 0, nunca bloqueia por divisão por zero", () => {
+    const current: BeehiivSubscriptionSnapshot[] = [sub("s1", "a@x.com", "")];
+    const guard = evaluateBlastRadiusGuard(0, current, false);
+    assert.equal(guard.currentWithLevelCount, 0);
+    assert.equal(guard.ratio, 0);
+    assert.equal(guard.blocked, false);
   });
 });
 

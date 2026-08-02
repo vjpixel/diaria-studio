@@ -18,7 +18,7 @@
  * outro campo): a API pública da Beehiiv **ignora silenciosamente** escrita
  * de tag por assinante (`PATCH .../subscriptions/{id}` com `{tags:[...]}` →
  * 200, mas a releitura mostra `tags: []` — mesma armadilha documentada em
- * `scripts/sync-apoio-tags-beehiiv.ts`). Um custom field funcionaria (mesmo
+ * `scripts/sync-apoio-nivel-beehiiv.ts`). Um custom field funcionaria (mesmo
  * padrão daquele script), mas exigiria o editor criar o campo manualmente na
  * publicação ANTES desta unidade poder rodar — bloqueio externo desnecessário
  * quando o dedup pode viver inteiramente do lado de cá: `brevo-diaria-store.ts`
@@ -124,7 +124,7 @@ async function beehiivFetch<T>(
 
 /**
  * Pagina `GET /subscriptions?status=pending` — falha ALTO em qualquer !ok
- * (mesma disciplina de `sync-apoio-tags-beehiiv.ts::fetchCurrentBeehiivState`:
+ * (mesma disciplina de `sync-apoio-nivel-beehiiv.ts::fetchCurrentBeehiivState`:
  * este é o recurso PRINCIPAL do script, uma leitura truncada geraria
  * ingestão incompleta silenciosa). Reconciliação anti-truncamento via
  * `total_results`, mesmo padrão.
