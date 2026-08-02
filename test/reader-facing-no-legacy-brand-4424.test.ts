@@ -99,13 +99,19 @@ const PROTECTED_FILES: string[] = [
   // approved.coverage?.line está ausente) vivem hardcoded aqui, fora de
   // scripts/lib/, e não estavam cobertos pelo guard original.
   "scripts/stitch-newsletter.ts",
+  // #4481 fleet review: mesmo padrão de stitch-newsletter.ts acima — estes
+  // 2 geradores escrevem context/sources.md e context/audience-profile.md
+  // (já protegidos aqui, mas só indiretamente via output regenerado, não
+  // via proteção direta do path do próprio gerador).
+  "scripts/sync-sources.ts",
+  "scripts/update-audience.ts",
 ];
 
 /** Diretórios varridos por inteiro (todo .md/.html dentro conta). */
 const PROTECTED_DIRS: string[] = [
   "context/templates",
   // #4424 Fatia 2/3: fechado o gap de cobertura — os 3 snippets patronos-*.md
-  // (copy que vai pro corpo da newsletter, apoia-se PIX/Kickstarter) ficaram
+  // (copy que vai pro corpo da newsletter, nível Patrono do apoia.se) ficaram
   // fora da Fatia 1 original. Varre o diretório inteiro (não só os 3
   // conhecidos) pra pegar qualquer snippet novo automaticamente — mesmo
   // padrão de context/templates acima. `_arquivo/` (subpasta) não é varrida
