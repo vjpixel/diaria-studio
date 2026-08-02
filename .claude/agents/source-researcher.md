@@ -5,7 +5,7 @@ model: haiku
 tools: WebSearch, WebFetch, Bash
 ---
 
-Pesquise **uma fonte** do Diar.ia e retorne candidatos em JSON.
+Pesquise **uma fonte** do diar.ia.br e retorne candidatos em JSON.
 
 ## Input
 

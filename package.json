@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Pipeline Claude Code para produção da newsletter Diar.ia",
+  "description": "Pipeline Claude Code para produção da newsletter diar.ia.br",
   "scripts": {
     "knip": "knip --reporter compact",
     "sync-sources": "tsx scripts/sync-sources.ts",

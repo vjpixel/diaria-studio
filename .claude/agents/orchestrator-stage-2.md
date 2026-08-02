@@ -1,6 +1,6 @@
 ---
 name: orchestrator-stage-2
-description: Detalhe da Etapa 2 (escrita — newsletter + social em paralelo) do orchestrator Diar.ia. Lido pelo orchestrator principal durante a execução — não é um subagente invocável diretamente.
+description: Detalhe da Etapa 2 (escrita — newsletter + social em paralelo) do orchestrator diar.ia.br. Lido pelo orchestrator principal durante a execução — não é um subagente invocável diretamente.
 ---
 
 > Este arquivo é referenciado por `orchestrator.md` via `@see`. Não executar diretamente.
@@ -476,7 +476,7 @@ Exit 1 = re-disparar `social-writer` agent com a violação explicitada no promp
 npx tsx scripts/lint-social-md.ts --check no-trailing-question --md {EDITION_DIR}/03-social.md
 ```
 
-**Lint deixis de newsletter em post pessoal (#2148):** `## post_pixel` é postado na conta PESSOAL do autor — sem contexto de marca. "Esta/essa/nossa newsletter" pressupõe que o leitor está dentro da Diar.ia; inválido num post standalone. Rodar:
+**Lint deixis de newsletter em post pessoal (#2148):** `## post_pixel` é postado na conta PESSOAL do autor — sem contexto de marca. "Esta/essa/nossa newsletter" pressupõe que o leitor está dentro da diar.ia.br; inválido num post standalone. Rodar:
 ```bash
 npx tsx scripts/lint-social-md.ts --check personal-post-no-newsletter-deixis --md {EDITION_DIR}/03-social.md
 ```

@@ -1,6 +1,6 @@
 ---
 name: research-reviewer
-description: Roda no Stage 1 após o passo de revisão de datas (`scripts/research-review-dates.ts`, #1112) e antes do scorer. Responsabilidade única — detectar artigos cujo tema já foi coberto pela Diar.ia nos últimos 7 dias, evitando repetição de temas que a newsletter já noticiou.
+description: Roda no Stage 1 após o passo de revisão de datas (`scripts/research-review-dates.ts`, #1112) e antes do scorer. Responsabilidade única — detectar artigos cujo tema já foi coberto pela diar.ia.br nos últimos 7 dias, evitando repetição de temas que a newsletter já noticiou.
 model: claude-haiku-4-5-20251001
 tools: Bash, Read, Write
 ---
@@ -25,7 +25,7 @@ Você revisa os artigos categorizados antes do scoring, aplicando o filtro de co
 2. Para cada artigo nos 4 buckets (`lancamento`, `radar`, `use_melhor`, `video` — #1629), avaliar semanticamente se o **tema central** do artigo já foi coberto nessas edições recentes:
    - Comparar o `title` (e `summary` se disponível) do artigo com os títulos e resumos das edições recentes.
    - Critério conservador: remover **só** quando o overlap temático for claro e direto (mesma notícia, mesmo produto, mesmo anúncio). Artigos que aprofundam, contradizem ou atualizam um tema coberto devem ser **mantidos**.
-   - Exemplos de remoção: "OpenAI lança GPT-5" quando Diar.ia já cobriu "OpenAI anuncia GPT-5" 3 dias atrás. Exemplo de manutenção: "Críticas ao lançamento do GPT-5" é atualização relevante, não repetição.
+   - Exemplos de remoção: "OpenAI lança GPT-5" quando diar.ia.br já cobriu "OpenAI anuncia GPT-5" 3 dias atrás. Exemplo de manutenção: "Críticas ao lançamento do GPT-5" é atualização relevante, não repetição.
    - **Artigos `editor_submitted` (inbox)** têm prioridade de score mas NÃO têm imunidade ao Filtro 2 (#321). Aplicar o mesmo critério de overlap — com bar levemente mais alta: remover só se 3+ artigos sobre o mesmo tema apareceram na edição anterior (overlap saturado). 1-2 artigos de mesmo tema → manter (angle diferente provável). Overlap exato (mesmo evento, mesma data) → remover independente da contagem.
 3. Marcar artigos removidos com razão (`topic_covered`).
 
