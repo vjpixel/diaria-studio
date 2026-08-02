@@ -235,6 +235,16 @@ export const JOGAR_IDENTIFY_INLINE_UTM = {
   campaign: "eia-jogar-identify-signup",
 } as const;
 
+/** Newsletter semanal do LinkedIn (#4456) — `utm_campaign` traz o ciclo `{YY}w{WW}`
+ * (ex: `ln-26w31`), `utm_content` varia por posição (`lista`/`cta-usemelhor`/`cta-fim`
+ * — `item-01`/`02`/`03` SAÍRAM quando o link por destaque foi removido, comentário
+ * 260802 3º do #4456). Fonte dos valores: `scripts/lib/weekly-linkedin-render.ts`. */
+export const LINKEDIN_WEEKLY_UTM = {
+  source: "linkedin",
+  medium: "newsletter",
+  campaignPattern: "ln-{cycle}",
+} as const;
+
 /** Uma entrada do inventário: um ponto do código que emite UTM. */
 export interface UtmEmitter {
   /** Identificador estável — chave de join com os metadados editáveis da UI. */
@@ -515,6 +525,19 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "Cadastro no banner de gate inline da página de Cursos (#4052) — fold-in " +
       "do drift pré-existente apontado pelo #4295 (literais locais, ausente do " +
       "registry/`/utms` antes desta entry).",
+    status: "ativo",
+  },
+  {
+    id: "linkedin-weekly-newsletter",
+    label: "LinkedIn — newsletter semanal",
+    source: LINKEDIN_WEEKLY_UTM.source,
+    medium: LINKEDIN_WEEKLY_UTM.medium,
+    campaignPattern: LINKEDIN_WEEKLY_UTM.campaignPattern,
+    originFile: "scripts/lib/weekly-linkedin-render.ts",
+    description:
+      "Lista do resto da semana + CTAs de assinatura (meio/fim) da newsletter " +
+      "semanal do LinkedIn (`/diaria-linkedin-semanal`, #4456) — artigo colável " +
+      "manualmente, sem API de publicação. `utm_content` = lista/cta-usemelhor/cta-fim.",
     status: "ativo",
   },
 ] as const;
