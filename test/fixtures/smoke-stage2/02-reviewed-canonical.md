@@ -1,4 +1,4 @@
-Para esta edição, eu (o editor) enviei 5 artigos e a Diar.ia encontrou outros 20. Selecionamos os 3 mais relevantes para as pessoas que assinam a newsletter.
+Para esta edição, eu (o editor) enviei 5 artigos e a diar.ia.br encontrou outros 20. Selecionamos os 3 mais relevantes para as pessoas que assinam a newsletter.
 
 ---
 

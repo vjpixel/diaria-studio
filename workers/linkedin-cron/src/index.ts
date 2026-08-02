@@ -1,7 +1,7 @@
 /**
  * diaria-linkedin-cron — Cloudflare Worker (#TBD)
  *
- * Fila de posts agendados pra Diar.ia. Nasceu exclusivo pro LinkedIn
+ * Fila de posts agendados pra diar.ia.br. Nasceu exclusivo pro LinkedIn
  * (substituindo o agendamento via Make.com Data Store, que não funcionou —
  * ver `feedback_make_searchrecord_mapping_unsolved.md`), e desde #3817
  * também agenda o Instagram — mesmo Worker, mesma fila KV, campo `channel`
