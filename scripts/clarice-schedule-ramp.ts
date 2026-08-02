@@ -415,6 +415,73 @@ export function assertHtmlHasUnsubscribeLink(html: string): void {
   }
 }
 
+/**
+ * Guard preventivo de instrumentação de experimento A/B (#4431): valida TODOS
+ * os braços de um experimento (link de descadastro + estrutura HTML) ANTES de
+ * agendar qualquer campanha.
+ *
+ * Contexto: o experimento CTA-01 (envios 8/9, ciclo 2606-07) teve o braço B
+ * com abertura muito abaixo do braço A (9B: 2,1% vs 9A: 20,3%), com unsub
+ * acompanhando a mesma queda — sinal que parecia instrumentação quebrada
+ * (pixel de abertura ou link de unsub perdido no HTML do braço B). A
+ * investigação completa (#4045/#4061, ver `docs/experiments/cta-ab-mensal-2606-07.md`)
+ * REFUTOU essa hipótese: headers brutos idênticos nos 4 envios (mesmo IP/SPF/
+ * DKIM/DMARC), e o re-fetch ao vivo das 4 campanhas via API (#4431) confirma
+ * `{{unsubscribe}}` presente e a MESMA contagem de `<img>` nos 4 htmlContent.
+ * A causa real foi colocação de caixa (foldering pra Spam/Promoções por
+ * densidade de sinal promocional na copy do braço B + reputação de domínio já
+ * degradada), não perda de instrumentação. Mesmo com a causa raiz sendo
+ * outra, este guard continua valendo pra qualquer round futuro: se um braço
+ * REALMENTE perder o unsub ou ficar estruturalmente divergente do outro
+ * (classe de bug já vista aqui: a Brevo reescreve/remove UTMs no save do HTML
+ * quando o GA tracking está ligado, #3893), este guard pega ANTES do
+ * agendamento — não depois de queimar reputação de envio.
+ *
+ * O pixel de abertura da Brevo é injetado no ENVIO, server-side, fora do
+ * `htmlContent` que este script controla — não existe campo de API pra
+ * verificar isso pré-envio (confirmado ao vivo no #4431: `GET
+ * /emailCampaigns/{id}` não expõe nenhum campo de tracking configurável por
+ * campanha, e o `htmlContent` das 4 campanhas sent não contém nenhum pixel
+ * nosso). O que É verificável e serve de proxy determinístico:
+ *   (a) o link de descadastro que NÓS controlamos está presente em TODOS os
+ *       braços (reusa `assertHtmlHasUnsubscribeLink`);
+ *   (b) o HTML fecha `</body>` corretamente em todos os braços — pré-condição
+ *       estrutural mínima pra qualquer injeção server-side (pixel, footer)
+ *       funcionar;
+ *   (c) todos os braços têm a MESMA contagem de `<img>` — um experimento que
+ *       só muda copy nunca deveria mudar a contagem de imagens; divergência é
+ *       sinal de perda de conteúdo assimétrica entre braços.
+ */
+export function assertExperimentArmsInstrumented(htmlByArm: Record<string, string>): void {
+  const armIds = Object.keys(htmlByArm);
+  if (armIds.length < 2) {
+    throw new Error(`assertExperimentArmsInstrumented: esperava ≥2 braços, recebeu ${armIds.length}.`);
+  }
+  const imgCountByArm: Record<string, number> = {};
+  for (const armId of armIds) {
+    const html = htmlByArm[armId];
+    try {
+      assertHtmlHasUnsubscribeLink(html);
+    } catch (e) {
+      throw new Error(`Braço "${armId}": ${(e as Error).message}`);
+    }
+    if (!/<\/body\s*>/i.test(html)) {
+      throw new Error(
+        `Braço "${armId}": HTML sem tag de fechamento </body> — estrutura incompleta pode quebrar a injeção ` +
+        `do pixel de abertura da Brevo no envio. Abortando antes de agendar.`,
+      );
+    }
+    imgCountByArm[armId] = (html.match(/<img\b/gi) ?? []).length;
+  }
+  const distinctCounts = new Set(Object.values(imgCountByArm));
+  if (distinctCounts.size > 1) {
+    throw new Error(
+      `Braços com contagem de <img> divergente (${JSON.stringify(imgCountByArm)}) — um experimento de copy não ` +
+      `deveria mudar imagens; possível perda de conteúdo assimétrica entre braços. Abortando antes de agendar.`,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Import (#3593 item 3) — poll de contagem pós-import assíncrono
 // ---------------------------------------------------------------------------

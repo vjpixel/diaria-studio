@@ -40,7 +40,7 @@ import { resolve } from "node:path";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { brevoGet, brevoPost, brevoPut, brevoListAllLists } from "./lib/brevo-client.ts";
 import { monthlyDir as resolveMonthlyDir } from "./lib/mensal/monthly-paths.ts";
-import { assertHtmlHasUnsubscribeLink, pollUntilCount } from "./clarice-schedule-ramp.ts";
+import { assertHtmlHasUnsubscribeLink, assertExperimentArmsInstrumented, pollUntilCount } from "./clarice-schedule-ramp.ts";
 import { EDITOR_COPY_EMAIL } from "./lib/editor-copy.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { MENSAL_UTM_SOURCE } from "./lib/shared/utm-registry.ts"; // #4041: registry único
@@ -324,6 +324,9 @@ async function processEnvio(cfg: EnvioCfg, apply: boolean, outDir: string): Prom
   const canonical = readFileSync(resolve(resolveMonthlyDir(CYCLE), "_internal", "cloudflare-preview.html"), "utf8");
   const htmlA = buildVariantHtml(canonical, "a");
   const htmlB = buildVariantHtml(canonical, "b");
+  // #4431: guard preventivo — valida unsub + estrutura em AMBOS os braços
+  // ANTES de qualquer PUT/POST de agendamento (roda em dry-run e apply).
+  assertExperimentArmsInstrumented({ a: htmlA, b: htmlB });
   mkdirSync(outDir, { recursive: true });
   writeFileSync(resolve(outDir, `envio${cfg.envio}-a.html`), htmlA, "utf8");
   writeFileSync(resolve(outDir, `envio${cfg.envio}-b.html`), htmlB, "utf8");
