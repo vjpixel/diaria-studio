@@ -1,4 +1,4 @@
-# ComfyUI Setup — Diar.ia Studio
+# ComfyUI Setup — diar.ia.br Studio
 
 Guia para instalar e configurar o ComfyUI com LoRA Van Gogh impasto para geração das imagens da newsletter.
 
@@ -23,7 +23,7 @@ Requer **Python 3.12** e uma GPU com suporte a CUDA. [Docs oficiais](https://git
 
 ## 2. Baixar um modelo base (SD 1.5)
 
-O workflow da Diar.ia usa SD 1.5 como base. Baixe um dos modelos abaixo e coloque em `ComfyUI/models/checkpoints/`:
+O workflow da diar.ia.br usa SD 1.5 como base. Baixe um dos modelos abaixo e coloque em `ComfyUI/models/checkpoints/`:
 
 - **Recomendado**: [v1-5-pruned-emaonly.safetensors](https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors) (~4GB)
 

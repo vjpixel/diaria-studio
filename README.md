@@ -1,6 +1,6 @@
-# Diar.ia Studio
+# diar.ia.br Studio
 
-Pipeline Claude Code fim-a-fim para produção da newsletter **Diar.ia** — cobertura diária de inteligência artificial em português, publicada em [diar.ia.br](https://diar.ia.br). 7 stages, gates humanos, zero custo recorrente de LLM (roda via OAuth da assinatura Claude).
+Pipeline Claude Code fim-a-fim para produção da newsletter **[diar.ia.br](https://diar.ia.br)** — cobertura diária de inteligência artificial em português. 7 stages, gates humanos, zero custo recorrente de LLM (roda via OAuth da assinatura Claude).
 
 ## Stack
 

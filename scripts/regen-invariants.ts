@@ -120,7 +120,7 @@ export function renderInvariants(
   ];
 
   const lines: string[] = [];
-  lines.push("# Invariantes do projeto Diar.ia");
+  lines.push("# Invariantes do projeto diar.ia.br");
   lines.push("");
   lines.push(
     "_Gerado automaticamente por `scripts/regen-invariants.ts` a partir de issues GitHub com label `convention`. Não editar diretamente — alterações são sobrescritas no próximo run._",

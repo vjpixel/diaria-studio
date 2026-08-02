@@ -1,11 +1,11 @@
 ---
 name: diaria-edicao
-description: Roda a pipeline completa da Diar.ia (5 etapas). Uso — `/diaria-edicao AAMMDD [--no-gates] [--skip canal[,canal...]]`.
+description: Roda a pipeline completa da diar.ia.br (5 etapas). Uso — `/diaria-edicao AAMMDD [--no-gates] [--skip canal[,canal...]]`.
 ---
 
 # /diaria-edicao
 
-Executa a pipeline completa da Diar.ia. **Modo default: pre-gate** (#1523) — Stages 0-3 rodam auto-approve, o gate humano principal é no Stage 4 (Revisão) antes do dispatch dos publishers. Editor revisa HTML preview + social; aprovado → Stage 5 (Publicação) dispara.
+Executa a pipeline completa da diar.ia.br. **Modo default: pre-gate** (#1523) — Stages 0-3 rodam auto-approve, o gate humano principal é no Stage 4 (Revisão) antes do dispatch dos publishers. Editor revisa HTML preview + social; aprovado → Stage 5 (Publicação) dispara.
 
 ## Argumentos
 

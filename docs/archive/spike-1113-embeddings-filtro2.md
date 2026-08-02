@@ -8,7 +8,7 @@
 
 ## Contexto
 
-`research-reviewer` Filtro 2 (após #1112 que extraiu o Filtro 1 pra script) detecta se um artigo da edição atual tem tema já coberto pela Diar.ia nos últimos 7 dias. Implementação atual: Haiku 4.5 pinned compara semanticamente título + summary do artigo com headers de seção de `data/past-editions.md`.
+`research-reviewer` Filtro 2 (após #1112 que extraiu o Filtro 1 pra script) detecta se um artigo da edição atual tem tema já coberto pela diar.ia.br nos últimos 7 dias. Implementação atual: Haiku 4.5 pinned compara semanticamente título + summary do artigo com headers de seção de `data/past-editions.md`.
 
 **Custo atual** (estimado): ~5-15k input tokens + ~2-3k output tokens por edição. Em Haiku 4.5: ~$0.005-0.015 por edição. **Ínfimo** se rodado 1×/dia (~$1-5/ano). Variância entre runs é a dor real, não custo.
 
@@ -76,7 +76,7 @@ Substituir LLM call por:
 1. **Custo atual é baixo**. ~$1-5/ano em Haiku tokens não justifica o esforço.
 2. **Variância entre runs é o problema real**, mas não causou incidente até hoje. Não tem dor pontual pra justificar urgência.
 3. **#344 (embeddings em outras camadas) ainda não avançou**. Se #344 instalar infra de embeddings (modelo escolhido, cache layer), o spike fica trivial — só falta plumbing.
-4. **Sample size de 50 edições não existe ainda** (Diar.ia tem 50+ edições rodadas, mas anotação manual leva tempo).
+4. **Sample size de 50 edições não existe ainda** (diar.ia.br tem 50+ edições rodadas, mas anotação manual leva tempo).
 
 Re-avaliar quando:
 - Custo Haiku do Filtro 2 ultrapassar $20/mês (sinal de escala)

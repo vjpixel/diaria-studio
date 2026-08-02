@@ -5,7 +5,7 @@ description: Roda a Etapa 2 (newsletter + social em paralelo, ambos a partir de 
 
 # /diaria-2-escrita
 
-Executa a Etapa 2 da pipeline Diar.ia: dispara `writer` (newsletter) + `social-writer` (#3991, reverte #3486 — texto único LinkedIn/Facebook/Instagram) + `social-curto` (#3992) **em paralelo**, todos lendo diretamente de `_internal/01-approved.json` — sem dependência sequencial entre newsletter e social. Gate unificado ao final.
+Executa a Etapa 2 da pipeline diar.ia.br: dispara `writer` (newsletter) + `social-writer` (#3991, reverte #3486 — texto único LinkedIn/Facebook/Instagram) + `social-curto` (#3992) **em paralelo**, todos lendo diretamente de `_internal/01-approved.json` — sem dependência sequencial entre newsletter e social. Gate unificado ao final.
 
 Self-contained — você (top-level Claude Code) executa todo o playbook aqui, sem delegar a um orchestrator subagente. (Workaround #207: runtime bloqueia `Agent` dentro de subagentes.)
 

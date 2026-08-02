@@ -11,7 +11,7 @@ Atualiza o perfil de audiência a partir das respostas mais recentes do survey n
 
 1. Ler `platform.config.json` → `beehiiv.publicationId` (formato `pub_<uuid>`). Se ausente, chamar `mcp__ed929847-ab29-43d9-a6ba-60b687b65702__list_publications` e persistir o id.
 2. Chamar `mcp__ed929847-ab29-43d9-a6ba-60b687b65702__list_surveys` com `publication_id = beehiiv.publicationId`.
-3. Identificar a survey principal de perfil da Diar.ia (ou perguntar ao usuário se houver mais de uma).
+3. Identificar a survey principal de perfil da diar.ia.br (ou perguntar ao usuário se houver mais de uma).
 4. Chamar `mcp__ed929847-ab29-43d9-a6ba-60b687b65702__list_survey_responses` com `survey_id` dessa survey, paginando com `per_page = 100` até esgotar.
 5. Salvar respostas brutas em `data/audience-raw.json` (array JSON no formato que `scripts/update-audience.ts` espera — ver comentário no topo do script).
 6. Rodar: `npx tsx scripts/update-audience.ts data/audience-raw.json`.

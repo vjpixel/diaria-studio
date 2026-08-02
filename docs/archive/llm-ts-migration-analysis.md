@@ -4,7 +4,7 @@
 
 ## Resumo executivo
 
-O pipeline Diar.ia roda 20+ agentes LLM distribuídos em 4 etapas. Vários desses agentes executam tarefas cujo núcleo é determinístico (classificação por regra, sync de arquivo, verificação de link) mas foram implementados como LLM por conveniência histórica. Migrar esses agentes para scripts TypeScript reduz custo por edição, elimina variância de output e acelera o pipeline. Os agentes que requerem linguagem natural, julgamento editorial ou navegação de UI devem permanecer como LLM — a diferenciação central é: "pode ser expresso como função pura ou sequência de chamadas de API determinísticas?"
+O pipeline diar.ia.br roda 20+ agentes LLM distribuídos em 4 etapas. Vários desses agentes executam tarefas cujo núcleo é determinístico (classificação por regra, sync de arquivo, verificação de link) mas foram implementados como LLM por conveniência histórica. Migrar esses agentes para scripts TypeScript reduz custo por edição, elimina variância de output e acelera o pipeline. Os agentes que requerem linguagem natural, julgamento editorial ou navegação de UI devem permanecer como LLM — a diferenciação central é: "pode ser expresso como função pura ou sequência de chamadas de API determinísticas?"
 
 ## Candidatos à migração
 

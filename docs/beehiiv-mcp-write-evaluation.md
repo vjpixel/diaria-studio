@@ -13,7 +13,7 @@ retornou:
 
 > `Mcp Write is not available on your current plan. Upgrade your beehiiv subscription to access this feature.`
 
-O plano atual da Diar.ia é o **Launch (gratuito)**. Todas as ferramentas de leitura
+O plano atual da diar.ia.br é o **Launch (gratuito)**. Todas as ferramentas de leitura
 (`get_post`, `list_posts`, `get_post_stats`, etc.) funcionam normalmente. As de
 escrita (`save_post`, `edit_post`, `edit_post_content`, `save_image`) estão
 bloqueadas por plano.
@@ -162,7 +162,7 @@ Chrome ainda precisa abrir, mas so para os 2 passos finais — muito menor footp
 
 ## 5. Recomendacao
 
-**Cenario base:** a Diar.ia esta no plano Launch (gratuito). O upgrade minimo para
+**Cenario base:** a diar.ia.br esta no plano Launch (gratuito). O upgrade minimo para
 MCP Write e o **Scale anual a ~$516/ano**.
 
 **Avaliacao custo/beneficio:**
@@ -179,12 +179,12 @@ A favor do upgrade:
 Contra o upgrade:
 - $516/ano e 10x acima do limiar "zero custo recorrente" do CLAUDE.md
 - O pipeline funciona hoje — o Stage 5 Chrome tem workarounds para todos os bugs
-- O Scale inclui features que a Diar.ia nao precisa (monetizacao, ad network,
+- O Scale inclui features que a diar.ia.br nao precisa (monetizacao, ad network,
   automacoes de email) — nao e upgrade "por necessidade de feature editorial"
 - Alternativa de custo zero: continuar com Chrome (bugs tem workarounds documentados)
 
 **Condicao em que o upgrade valeria:**
-Se a Diar.ia for migrar para o Scale por outra razao (ex.: crescimento de lista
+Se a diar.ia.br for migrar para o Scale por outra razao (ex.: crescimento de lista
 alem de 2.500 assinantes — o Launch grata ate 2.500; a partir dai o upgrade para
 Scale e obrigatorio de qualquer forma), o MCP Write viria "de graca" no novo plano
 e a decisao seria automatica.

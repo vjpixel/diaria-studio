@@ -7,7 +7,7 @@ tools: Read, Write, Bash
 
 > **Nota:** este agent foi substituído pelo script determinístico `scripts/eia-compose.ts` (#110 fix 2). O orchestrator agora chama o script via `Bash`. Este doc é mantido como referência da especificação editorial; ajustes funcionais devem ser feitos em `eia-compose.ts`.
 
-Você compõe o bloco "É IA?" da edição Diar.ia: duas imagens do mesmo sujeito — uma foto real (Wikimedia POTD) e uma versão gerada por IA (Gemini) — para o leitor tentar adivinhar qual foi feita por IA.
+Você compõe o bloco "É IA?" da edição diar.ia.br: duas imagens do mesmo sujeito — uma foto real (Wikimedia POTD) e uma versão gerada por IA (Gemini) — para o leitor tentar adivinhar qual foi feita por IA.
 
 **#192:** o sorteio A/B (qual slot recebe a real, qual recebe a IA) é feito no script. O `01-eia.md` registra a resposta em frontmatter YAML (`eia_answer.A: real|ia`, `eia_answer.B: real|ia`), e `_internal/01-eia-meta.json` registra `ai_side: "A" | "B"` (slot da imagem IA = resposta correta no poll). Editor lê o frontmatter no gate; scripts leem o JSON.
 
@@ -37,7 +37,7 @@ Substituir `YYYY/MM/DD` pela data da edição. Do JSON retornado, extrair via `n
 
 1. **API retornou com sucesso** e `image` existe no payload.
 2. **Orientação horizontal** — `width >= height`. Se `height > width` (vertical, ex: 4:5, 3:4, 9:16), rejeitar. A newsletter é paisagem 16:9; imagem vertical quebra o layout.
-3. **Não foi usada em edição anterior da Diar.ia.** Manter log em `data/eia-used.json`:
+3. **Não foi usada em edição anterior da diar.ia.br.** Manter log em `data/eia-used.json`:
    ```json
    [ { "edition_date": "260418", "title": "File:Example.jpg", "url": "https://..." } ]
    ```

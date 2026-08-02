@@ -5,7 +5,7 @@ description: Roda a Etapa 3 (É IA? + imagens de destaque). Uso — `/diaria-3-i
 
 # /diaria-3-imagens
 
-Dispara a Etapa 3 da edição Diar.ia: coleta o resultado do `eia-composer` (disparado em background na Etapa 1) e gera as 3 imagens de destaque em estilo impasto Van Gogh via Gemini API.
+Dispara a Etapa 3 da edição diar.ia.br: coleta o resultado do `eia-composer` (disparado em background na Etapa 1) e gera as 3 imagens de destaque em estilo impasto Van Gogh via Gemini API.
 
 ## Argumentos
 

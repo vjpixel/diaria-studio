@@ -139,7 +139,7 @@ describe("renderInvariants (#969)", () => {
   it("inclui header + total + fonte de issues", () => {
     const issues = [mkIssue({ number: 1, title: "fix: any" })];
     const md = renderInvariants(issues);
-    assert.match(md, /# Invariantes do projeto Diar\.ia/);
+    assert.match(md, /# Invariantes do projeto diar\.ia\.br/);
     assert.match(md, /Fonte: 1 issue/);
   });
 

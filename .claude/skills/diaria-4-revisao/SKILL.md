@@ -5,7 +5,7 @@ description: Roda a Etapa 4 (revisão editorial assistida — pré-render HTML +
 
 # /diaria-4-revisao
 
-Dispara a Etapa 4 da pipeline Diar.ia: **Revisão editorial assistida**. Monta um resumo consolidado da edição final (destaques + títulos + links verificados + lints + imagens + social preview) e apresenta num gate humano. Aprovado → Etapa 5 (Publicação) pode ser disparada.
+Dispara a Etapa 4 da pipeline diar.ia.br: **Revisão editorial assistida**. Monta um resumo consolidado da edição final (destaques + títulos + links verificados + lints + imagens + social preview) e apresenta num gate humano. Aprovado → Etapa 5 (Publicação) pode ser disparada.
 
 ## Argumentos
 
