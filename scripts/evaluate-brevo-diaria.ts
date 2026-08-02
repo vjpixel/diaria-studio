@@ -88,40 +88,48 @@
  * Esta rotina é a via de SCORE. A via de CLIQUE (link de confirmação
  * personalizado, item 3 da issue) roda por fora, num Worker (ver
  * `workers/reativar/`), e ativa a subscription Beehiiv diretamente. As duas
- * vias NUNCA colidem por construção: o passo 1 (auto-confirmação) acima
- * checa o status REAL da Beehiiv antes de avaliar qualquer score — se o
- * clique já promoveu a pessoa, o passo 1 já a marca `promoted_beehiiv` por
- * auto-confirmação e o `continue` pula a avaliação de score inteiramente
- * (a via de score nunca tenta promover de novo quem já foi promovido pela
- * via de clique).
+ * vias não colidem no caso comum: o passo 1 (auto-confirmação) acima checa
+ * o status REAL da Beehiiv antes de avaliar qualquer score — se o clique já
+ * promoveu a pessoa (status `active`), o passo 1 já a marca
+ * `promoted_beehiiv` por auto-confirmação e o `continue` pula a avaliação de
+ * score inteiramente.
  *
- * ## Promoção pra Beehiiv — ASSUNÇÃO NÃO VERIFICADA AO VIVO (via score)
+ * **Ressalva (#4488 review, pr-test-analyzer)**: o passo 1 só reconhece
+ * `active` como confirmado — não `validating` (estado transitório de alguns
+ * segundos entre DELETE+CREATE e a confirmação final, ver
+ * `PROMOTION_VERIFY_RETRY_DELAY_MS`). Existe uma janela estreita (poucos
+ * segundos) em que, se as duas vias avaliarem o MESMO contato nesse
+ * intervalo exato, ambas poderiam disparar DELETE+CREATE concorrentemente.
+ * Ambas as implementações já são auto-suficientes (buscam o id atual via
+ * GET antes de decidir o que deletar, nunca confiam num id armazenado — ver
+ * `promoteBeehiivSubscription`/`activateSubscription`), então o pior caso é
+ * uma criação duplicada/redundante nessa janela estreita, não um crash — mas
+ * não é literalmente "nunca colide". Risco aceito dado o volume baixo e a
+ * janela curta; não verificado ao vivo.
  *
- * `promoteBeehiivSubscription` chama `POST /publications/{id}/subscriptions`
- * com `{email, reactivate_existing: true, send_welcome_email: false}` — o
- * padrão documentado da API pública da Beehiiv pra (re)criar uma
- * subscription. Como o double opt-in da publicação pode estar HABILITADO
- * (é o motivo do contato estar "Pending" em primeiro lugar), não há garantia
- * de que este POST force o status pra `active` sem uma nova confirmação por
- * email. Se a verificação pós-escrita (`verifyPromotedToBeehiiv`, releitura
- * de `by_email`) mostrar que o status continua `pending`, o script LOGA um
- * warning explícito e NÃO remove o contato da Brevo (mantém `in_brevo`) —
- * fail-safe: mais vale continuar entregando pelo canal que funciona do que
- * assumir sucesso e cortar a única entrega confirmada.
+ * ## Promoção pra Beehiiv — DELETE + CREATE, confirmado ao vivo (260802)
  *
- * **Esta ressalva vale IGUALMENTE pras duas vias (score E clique) — não é
- * exclusiva desta.** Correção de um overclaim anterior deste comentário
- * (comment-analyzer, achado pós-merge #4476): o teste ao vivo do item 3 (2
- * contatos sintéticos, ver PR do #4476) ficou INCONCLUSIVO pra pergunta
- * central de `reactivate_existing:true` — os 2 contatos caíram em
- * `status:"invalid"` (domínio flagado disposable) antes de chegar em
- * `pending`, então a transição `pending → active` nunca foi de fato
- * exercida em nenhuma das duas vias. O que o teste confirmou (e vale pras
- * DUAS vias, porque ambas chamam o mesmo endpoint com o mesmo payload) foi
- * só que HTTP 2xx no POST não garante `status:"active"` — daí a checagem
- * explícita em `verifyPromotedToBeehiiv` abaixo. Nem score nem clique têm a
- * hipótese central confirmada contra um contato Pending genuíno; ver
- * `workers/reativar/README.md` pro texto fixo dessa ressalva.
+ * `promoteBeehiivSubscription` busca o id atual via `GET by_email`, deleta
+ * a subscription Pending travada que encontrar (nunca confia num id
+ * armazenado — #4488 review) e cria uma NOVA do zero — não mais
+ * `POST {reactivate_existing:true}`. Teste ao vivo (260802, sessão de
+ * design com o editor, autorizado explicitamente) contra um contato Pending
+ * REAL (não sintético, ao contrário do teste anterior — ver histórico da
+ * issue #4476): `reactivate_existing:true` **não mudou o status** (ficou
+ * `pending`); deletar o registro e criar do zero **ativou direto**
+ * (`validating` → `active` em segundos, sem exigir confirmação). Isso fecha
+ * a lacuna que o teste anterior (2 contatos sintéticos, caíram em
+ * `status:"invalid"` por domínio disposable) tinha deixado inconclusiva — a
+ * hipótese central agora está confirmada, e é essa a mecânica correta.
+ *
+ * Se a verificação pós-escrita (`verifyPromotedToBeehiiv`, releitura de
+ * `by_email`, exige `status==="active"` explícito) mostrar que não
+ * confirmou, o script LOGA um warning e NÃO remove o contato da Brevo
+ * (mantém `in_brevo`) — fail-safe: mais vale continuar entregando pelo canal
+ * que funciona do que assumir sucesso e cortar a única entrega confirmada.
+ *
+ * **Vale pras duas vias (score E clique, #4476 item 2)** — o Worker
+ * `workers/reativar/` (via clique) usa a mesma mecânica DELETE+CREATE.
  *
  * ## Falha por contato não aborta o run (#4398 review — silent-failure-hunter
  * + code-reviewer + pr-test-analyzer convergiram independentemente)
@@ -361,53 +369,121 @@ export async function unlinkFromBrevoList(apiKey: string, listId: number, email:
   await brevoPut(apiKey, `/contacts/${encodeURIComponent(email)}`, { unlinkListIds: [listId] });
 }
 
-/** (Re)cria a subscription na Beehiiv — ver disclaimer no cabeçalho do módulo. */
+/**
+ * Promove pra Beehiiv via DELETE + CREATE — não mais `reactivate_existing`
+ * (#4476, achado ao vivo 260802): testado contra um contato Pending REAL
+ * (não sintético) — `POST /subscriptions {reactivate_existing:true}` NÃO
+ * ativa um registro legado (status ficou `pending`, sem mudança). Deletar o
+ * registro travado e criar do zero SIM ativa direto (`validating` → `active`
+ * em segundos, sem exigir confirmação) — bate com a mudança de fluxo da
+ * publicação (cadastro novo não exige mais double opt-in; só registros
+ * legados, criados sob o fluxo antigo, ficam presos).
+ *
+ * #4488 review (3 agentes convergiram independentemente no mesmo achado):
+ * NÃO confia mais num `subscriptionId` armazenado (`contact.beehiiv_subscription_id`,
+ * capturado na ingestão) — busca o id ATUAL via `GET .../subscriptions/by_email`
+ * antes de decidir o que deletar, mesmo padrão de `activateSubscription`
+ * (`workers/reativar/`). Um id armazenado pode ficar obsoleto (ex: uma
+ * tentativa anterior de promoção já deletou+recriou o registro mas a
+ * verificação pós-escrita falhou antes do store ser atualizado — a próxima
+ * tentativa reusaria um id já morto) — e um id vazio/malformado faria a URL
+ * do DELETE cair no endpoint de COLEÇÃO (`/subscriptions/` sem id), que pode
+ * não 404 e passar batido pela tolerância a "já sumiu". Buscar o id fresco
+ * fecha as duas classes de bug de uma vez. Sem registro existente (`null`),
+ * pula direto pro CREATE.
+ */
 export async function promoteBeehiivSubscription(
   publicationId: string,
   apiKey: string,
   email: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<void> {
-  const res = await fetchImpl(`${beehiivApiBase()}/publications/${publicationId}/subscriptions`, {
+  const base = beehiivApiBase();
+  const authHeaders = { Authorization: `Bearer ${apiKey}`, Accept: "application/json" };
+
+  const getRes = await fetchImpl(`${base}/publications/${publicationId}/subscriptions/by_email/${encodeURIComponent(email)}`, {
+    headers: authHeaders,
+  });
+  let existingId: string | null = null;
+  if (getRes.status === 404) {
+    existingId = null;
+  } else if (!getRes.ok) {
+    throw new Error(`Beehiiv API GET /subscriptions/by_email/${email} falhou (HTTP ${getRes.status})`);
+  } else {
+    const body = await getRes.json().catch((e) => {
+      throw new Error(`Beehiiv API GET /subscriptions/by_email/${email} corpo não-parseável: ${e}`);
+    });
+    existingId = (body as { data?: { id?: string } })?.data?.id || null;
+  }
+
+  if (existingId) {
+    const delRes = await fetchImpl(`${base}/publications/${publicationId}/subscriptions/${existingId}`, {
+      method: "DELETE",
+      headers: authHeaders,
+    });
+    if (!delRes.ok && delRes.status !== 404) {
+      const text = await delRes.text().catch(() => "");
+      throw new Error(`Beehiiv API DELETE /subscriptions/${existingId} falhou pra ${email} APÓS localizar o registro (HTTP ${delRes.status}): ${text}`);
+    }
+  }
+
+  const res = await fetchImpl(`${base}/publications/${publicationId}/subscriptions`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({ email, reactivate_existing: true, send_welcome_email: false }),
+    headers: { ...authHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ email, send_welcome_email: false }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`Beehiiv API POST /subscriptions falhou pra ${email} (HTTP ${res.status}): ${text}`);
+    const deleteNote = existingId ? `APÓS deletar ${existingId}` : "sem registro anterior pra deletar";
+    throw new Error(`Beehiiv API POST /subscriptions falhou pra ${email} ${deleteNote} (HTTP ${res.status}): ${text}`);
   }
 }
 
+/** Espera antes de 1 releitura, só quando o status vier `"validating"` — ver
+ * `CONFIRM_RETRY_DELAY_MS` em `workers/reativar/src/index.ts` (mesmo achado
+ * ao vivo 260802, duplicado aqui por serem deployables separados: este
+ * script Node não importa do Worker Cloudflare). */
+export const PROMOTION_VERIFY_RETRY_DELAY_MS = 2000;
+
 /**
- * Releitura pós-promoção — `true` SÓ se o status for exatamente `active`.
- * Fail-safe: se ainda pending (double opt-in não confirmado pelo POST) OU
- * qualquer outro status não-`active`, o caller mantém o contato `in_brevo`
- * em vez de cortar a única entrega confirmada (ver disclaimer no cabeçalho).
+ * Releitura pós-promoção — `true` só se o status for `active` (direto, ou
+ * após 1 retry curto quando vier `validating`, ver abaixo). Fail-safe: se
+ * ainda `pending`, `invalid`, ou qualquer outro status não-`active` mesmo
+ * após o retry, o caller mantém o contato `in_brevo` em vez de cortar a
+ * única entrega confirmada (ver disclaimer no cabeçalho).
  *
- * #4476 item 3 — corrigido a partir do teste ao vivo do link de confirmação
- * personalizado: a checagem original (`status !== "pending"`) tratava
- * QUALQUER status diferente de "pending" como confirmado — incluindo
- * `"invalid"`, que o teste ao vivo mostrou ser um resultado REAL e possível
- * de `POST .../subscriptions` com `reactivate_existing:true` (Beehiiv aceita
- * o POST com 201 mesmo quando a validação de e-mail/domínio rejeita o
- * contato, deixando `status:"invalid"` — nem `pending`, nem `active`). Sob a
- * checagem antiga, esse caso seria erroneamente reportado como promoção
- * bem-sucedida. `"active"` explícito é a única semântica correta de
- * "confirmado" — request/response exato documentado no PR do #4476.
+ * Duas correções acumuladas aqui, ambas de testes ao vivo (#4476/#4488):
+ * (1) a checagem original (`status !== "pending"`) tratava QUALQUER status
+ * diferente de "pending" como confirmado — incluindo `"invalid"` (Beehiiv
+ * pode aceitar o POST com 2xx mesmo quando a validação de e-mail/domínio
+ * rejeita o contato) — corrigido pra exigir `"active"` explícito. (2) o
+ * status pode vir `"validating"` (transitório — a Beehiiv processa a
+ * validação de e-mail de forma assíncrona e resolve pra `active` em poucos
+ * segundos, confirmado ao vivo) — sem o retry abaixo, o contato ficaria
+ * preso em `in_brevo` até a PRÓXIMA rodada notar por acidente, mesmo já
+ * estando `active` de fato segundos depois.
  */
+
 export async function verifyPromotedToBeehiiv(
   publicationId: string,
   apiKey: string,
   email: string,
   fetchImpl: typeof fetch = fetch,
+  sleepImpl: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
 ): Promise<boolean> {
   const status = await fetchBeehiivSubscriptionStatus(publicationId, apiKey, email, fetchImpl);
-  return status === "active";
+  if (status === "active") return true;
+  // #4476, achado ao vivo 260802: logo após DELETE+CREATE (promoteBeehiivSubscription),
+  // a subscription pode estar "validating" (transitório, a Beehiiv processa a
+  // validação de e-mail de forma assíncrona) — sem este retry, o contato ficaria
+  // preso em in_brevo até a PRÓXIMA rodada de evaluate-brevo-diaria.ts notar por
+  // acidente, mesmo já estando active de fato segundos depois.
+  if (status === "validating") {
+    await sleepImpl(PROMOTION_VERIFY_RETRY_DELAY_MS);
+    const recheck = await fetchBeehiivSubscriptionStatus(publicationId, apiKey, email, fetchImpl);
+    return recheck === "active";
+  }
+  return false;
 }
 
 /**

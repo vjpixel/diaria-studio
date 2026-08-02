@@ -9,11 +9,13 @@ URL: `https://reativar.diaria.workers.dev/?email={{ contact.EMAIL }}`
 ## Por que existe
 
 Merge tag da Brevo (`{{ contact.EMAIL }}`) já entrega o e-mail — não faz
-sentido pedir pra pessoa digitar de novo. `GET /?email=X` chama
-`POST /publications/{id}/subscriptions` da Beehiiv com
-`reactivate_existing: true`, mesmo padrão de `promoteBeehiivSubscription`
-(`scripts/evaluate-brevo-diaria.ts`), mas acionado por clique explícito, não
-por inferência de score.
+sentido pedir pra pessoa digitar de novo. `GET /?email=X` busca a
+subscription existente (`GET .../subscriptions/by_email`), deleta o
+registro Pending travado se houver, e cria uma subscription nova do zero
+(`POST .../subscriptions`, SEM `reactivate_existing` — ver "Verificação ao
+vivo" abaixo, por que esse mecanismo foi abandonado) — mesmo padrão de
+`promoteBeehiivSubscription` (`scripts/evaluate-brevo-diaria.ts`), mas
+acionado por clique explícito, não por inferência de score.
 
 Sem assinatura HMAC (mesmo padrão do link de voto "É IA?" desde a decisão
 #1186) — ver rationale de risco aceito no header de `src/index.ts`.
@@ -52,14 +54,18 @@ node --import tsx --test test/reativar-worker-4476.test.ts
 Cobre parse/validação do `?email=`, a chamada de ativação (fetch mockado —
 nunca rede real), e as páginas HTML de sucesso/erro.
 
-## Verificação ao vivo (#4476 item 3)
+## Verificação ao vivo (#4476/#4488) — CONFIRMADA em 260802
 
-Testado contra a API real da Beehiiv com 2 e-mails sintéticos de teste antes
-do 1º uso em produção — request/response exatos documentados no PR do
-#4476 (não neste README, pra não desatualizar aqui a cada reteste).
+Dois testes ao vivo contra a API real da Beehiiv — request/response exatos
+documentados nos PRs #4480 e #4488 (não neste README, pra não desatualizar
+aqui a cada reteste):
 
-**Resultado: inconclusivo pra pergunta central** (reativa um contato
-`pending` real → `active`?) — os 2 contatos caíram em `status:"invalid"`
-(domínio disposable) antes de chegar em `pending`, então a transição nunca
-foi exercida. Não fazer rollout real sem antes confirmar com 1 e-mail
-pessoal em modo Pending genuíno.
+1. **2 e-mails sintéticos** (`@example.com`/`@mailinator.com`) — ambos
+   caíram em `status:"invalid"` (domínio disposable) antes de chegar em
+   `pending`, então não exercitaram a transição real. Inconclusivo.
+2. **1 contato Pending REAL** (voluntário, revertido/descadastrado logo
+   depois) — fechou a lacuna: `reactivate_existing:true` **não ativou**
+   (status ficou `pending`, sem mudança). Deletar o registro e criar do
+   zero **ativou direto** (`validating` → `active` em segundos). É essa a
+   mecânica que o Worker usa hoje — `reactivate_existing` foi removido, não
+   é mais usado em lugar nenhum.
