@@ -590,7 +590,7 @@ function lintSocial(md: string): LintReport {
     runCheck("personal-post-deixis", "Sem deixis de newsletter em post pessoal (#2148)", true, () => lintPersonalPostNewsletterDeixis(md)),
     runCheck("no-email-cta-linkedin", "Sem CTA de e-mail no LinkedIn (#2458)", true, () => lintLinkedinEmailCTA(md)),
     runCheck("no-email-cta-instagram", "Sem CTA de e-mail no Instagram (#2486)", true, () => lintInstagramEmailCTA(md)),
-    runCheck("linkedin-page-link", "Link da página da Diar.ia presente (#2458)", true, () => lintLinkedinPageLink(md)),
+    runCheck("linkedin-page-link", "Link da página da diar.ia.br presente (#2458)", true, () => lintLinkedinPageLink(md)),
     runCheck("platform-headers-unicos", "Headers # LinkedIn / # Facebook únicos (#3388)", true, () => lintPlatformHeadersUnique(md)),
     runCheck("no-credential-bio", "Sem frase de credencial/bio auto-referencial (#2494)", true, () => lintCredentialBio(md)),
     // GATE-BLOCKING desde #4352 (era warn-only) — CLI (`lint-social-md.ts`)

@@ -63,7 +63,7 @@ $RepoRoot  = (Resolve-Path (Join-Path $ScriptDir "../..")).Path
 $ServerTs  = Join-Path $RepoRoot "scripts\studio-ui\server.ts"
 
 $TaskName = "Diaria-Studio-Server"
-$TaskDesc = "Diar.ia Studio: mantém o studio-server (npm run studio) no ar pra revisão/edição fora do terminal (#3554) — roda no logon, reinicia se cair."
+$TaskDesc = "diar.ia.br Studio: mantém o studio-server (npm run studio) no ar pra revisão/edição fora do terminal (#3554) — roda no logon, reinicia se cair."
 
 function Write-Step($msg) {
     Write-Output ""

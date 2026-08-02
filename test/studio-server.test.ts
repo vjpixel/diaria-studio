@@ -188,7 +188,7 @@ describe("studio-server (#3555)", () => {
     assert.equal(res.status, 200);
     assert.match(res.headers.get("content-type") ?? "", /text\/html/);
     const body = await res.text();
-    assert.ok(body.includes("Diar.ia Studio"));
+    assert.ok(body.includes("diar.ia.br Studio"));
   });
 
   it("GET /tokens.generated.css serve CSS com custom properties do DS", async () => {

@@ -51,7 +51,7 @@ $RepoRoot     = (Resolve-Path (Join-Path $ScriptDir "../..")).Path
 $WatchdogTs   = Join-Path $RepoRoot "scripts\overnight-watchdog.ts"
 
 $TaskName     = "Diaria-Overnight-Watchdog"
-$TaskDesc     = "Diar.ia: watchdog de stall overnight (#2688) — roda a cada 10 min entre 18:00-09:00."
+$TaskDesc     = "diar.ia.br: watchdog de stall overnight (#2688) — roda a cada 10 min entre 18:00-09:00."
 
 # ---------------------------------------------------------------------------
 # Guard: garantir que o watchdog existe no path derivado

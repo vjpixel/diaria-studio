@@ -798,7 +798,7 @@ async function init() {
     return;
   }
   el.titulo.textContent = aammdd;
-  document.title = `Diar.ia Studio — Revisão ${aammdd}`;
+  document.title = `diar.ia.br Studio — Revisão ${aammdd}`;
   el.backLink.href = `/edicao/${aammdd}`;
 
   // #3886: checkEditionExists() ficava FORA do try/catch de init() (que só

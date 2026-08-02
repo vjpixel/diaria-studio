@@ -57,13 +57,13 @@ describe("classifyLinkContent (#4053)", () => {
     assert.equal(classifyLinkContent("https://livros.diar.ia.br/algum-livro").content, "Curadoria de livros");
     assert.equal(classifyLinkContent("https://cursos.diar.ia.br/curso-x").content, "Cursos");
     assert.equal(classifyLinkContent("https://eia.diar.ia.br/leaderboard/2026?brand=clarice").content, "Leaderboard É IA?");
-    assert.equal(classifyLinkContent("https://diar.ia.br/").content, "Diar.ia (home)");
-    assert.equal(classifyLinkContent("https://diar.ia.br").content, "Diar.ia (home)");
+    assert.equal(classifyLinkContent("https://diar.ia.br/").content, "diar.ia.br (home)");
+    assert.equal(classifyLinkContent("https://diar.ia.br").content, "diar.ia.br (home)");
   });
 
-  test("home com path não-raiz NÃO é 'Diar.ia (home)' (cai no fallback normalizado)", () => {
+  test("home com path não-raiz NÃO é 'diar.ia.br (home)' (cai no fallback normalizado)", () => {
     const r = classifyLinkContent("https://diar.ia.br/edicao/260726");
-    assert.notEqual(r.content, "Diar.ia (home)");
+    assert.notEqual(r.content, "diar.ia.br (home)");
   });
 
   test("fallback: UTM variants da mesma URL colapsam pro mesmo conteúdo normalizado", () => {
@@ -149,7 +149,7 @@ describe("classifyLinkContent com editorialTitle (#4198)", () => {
     assert.equal(clarice.content, "Clarice");
 
     const home = classifyLinkContent("https://diar.ia.br/", "Mais um título ignorado");
-    assert.equal(home.content, "Diar.ia (home)");
+    assert.equal(home.content, "diar.ia.br (home)");
   });
 });
 
