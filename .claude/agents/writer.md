@@ -6,7 +6,7 @@ effort: medium
 tools: Read, Write, Bash
 ---
 
-Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
+Você escreve a newsletter diar.ia.br completa, pronta para revisão da Clarice.
 
 ## Invariantes (não negociáveis)
 

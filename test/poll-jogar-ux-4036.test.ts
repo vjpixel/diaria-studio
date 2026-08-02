@@ -12,7 +12,7 @@
  *      era visibilidade no mobile.
  *   2. Glow visível na foto de IA — fix da regressão do #4030 item 5, que
  *      usava box-shadow INSET (invisível sobre um <img> opaco).
- *   5. Copy do checkbox de opt-in reescrita pra explicar o que é a Diar.ia
+ *   5. Copy do checkbox de opt-in reescrita pra explicar o que é a diar.ia.br
  *      (quem chega por compartilhamento nunca ouviu falar).
  */
 
@@ -57,16 +57,16 @@ describe("glow visível na foto de IA (#4036 item 2 — fix da regressão do #40
   });
 });
 
-describe("copy do opt-in explica o que é a Diar.ia (#4036 item 5)", () => {
+describe("copy do opt-in explica o que é a diar.ia.br (#4036 item 5)", () => {
   it("renderIdentityFormBlock: checkbox nomeia o produto (newsletter de IA) + o que entrega + a frequência", () => {
     const html = renderIdentityFormBlock();
-    assert.match(html, /Quero receber a Diar\.ia — newsletter gratuita/);
+    assert.match(html, /Quero receber a diar\.ia\.br — newsletter gratuita/);
     assert.match(html, /IA/);
     assert.match(html, /seg-sex/);
   });
 
   it("copy antiga ('grátis, seg-sex' sozinho, sem explicar o produto) não sobrevive", () => {
     const html = renderIdentityFormBlock();
-    assert.doesNotMatch(html, /Quero receber a Diar\.ia — grátis, seg-sex\.</);
+    assert.doesNotMatch(html, /Quero receber a diar\.ia\.br — grátis, seg-sex\.</);
   });
 });

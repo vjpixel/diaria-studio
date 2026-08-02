@@ -207,7 +207,7 @@ function jsonWithCookie(data: unknown, status: number, env: Env, setCookie: stri
 export type GateCheckResult = "active" | "not_active";
 
 /**
- * Verifica se `email` é assinante ATIVO da Diar.ia. PRIMÁRIO: `env.SUBSCRIBERS_KV`
+ * Verifica se `email` é assinante ATIVO da diar.ia.br. PRIMÁRIO: `env.SUBSCRIBERS_KV`
  * (mesma população/formato de chave de `CURSOS_SUBSCRIBERS`, #4052). SECUNDÁRIO
  * (só se o binding faltar/"unknown" E os secrets Beehiiv estiverem
  * configurados): `by_email` direto na API — não confirmado ao vivo (mesma nota
@@ -476,12 +476,12 @@ export function renderJogarGatePage(
 </head>
 <body>
 <h1>Quer disputar o ranking?</h1>
-<p class="explain">Com seu e-mail a gente guarda seus acertos e te coloca no ranking público do mês. Já assina a Diar.ia? Entre direto. Continuar jogando sem cadastrar também vale. É só seguir.</p>
+<p class="explain">Com seu e-mail a gente guarda seus acertos e te coloca no ranking público do mês. Já assina a diar.ia.br? Entre direto. Continuar jogando sem cadastrar também vale. É só seguir.</p>
 <form id="gate-form">
   <input type="text" name="website" class="website" tabindex="-1" autocomplete="off">
   <input type="text" name="name" placeholder="Seu nome ou apelido" required>
   <input type="email" name="email" placeholder="seu@email.com" required>
-  <label class="optin"><input type="checkbox" name="optin" value="1"> Quero receber a Diar.ia — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, direto no seu e-mail.</label>
+  <label class="optin"><input type="checkbox" name="optin" value="1"> Quero receber a diar.ia.br — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, direto no seu e-mail.</label>
   <button type="submit">Entrar no ranking</button>
 </form>
 <p id="gate-msg"></p>

@@ -77,25 +77,25 @@ export function renderEmailForm(cycle: string): string {
   const action = `/${encodeURIComponent(cycle)}`;
   const body = `
     <h1>Artigo exclusivo para apoiadores</h1>
-    <p>Este artigo faz parte dos benefícios de quem apoia a Diar.ia com R$10/mês ou mais. Digite o e-mail que você usa para apoiar:</p>
+    <p>Este artigo faz parte dos benefícios de quem apoia a diar.ia.br com R$10/mês ou mais. Digite o e-mail que você usa para apoiar:</p>
     <form method="GET" action="${escHtml(action)}">
       <input type="email" name="email" placeholder="seu@email.com" required />
       <button class="button" type="submit">Acessar artigo</button>
     </form>
-    <p class="muted">Ainda não apoia? <a href="${APOIASE_URL}">Conheça o Apoia.se da Diar.ia</a>.</p>
+    <p class="muted">Ainda não apoia? <a href="${APOIASE_URL}">Conheça o Apoia.se da diar.ia.br</a>.</p>
   `;
-  return shell("Diar.ia — Artigo exclusivo para apoiadores", body);
+  return shell("diar.ia.br — Artigo exclusivo para apoiadores", body);
 }
 
 /** Página exibida quando o e-mail informado NÃO está na allowlist (não-apoiador ou apoio < R$10). */
 export function renderPaywall(): string {
   const body = `
-    <h1>Este artigo é exclusivo para apoiadores da Diar.ia</h1>
+    <h1>Este artigo é exclusivo para apoiadores da diar.ia.br</h1>
     <p>Não encontramos um apoio ativo de R$10/mês ou mais para esse e-mail neste mês. Apoiadores R$10+ têm acesso ao artigo mensal completo.</p>
-    <p><a class="button" href="${APOIASE_URL}">Apoiar a Diar.ia</a></p>
+    <p><a class="button" href="${APOIASE_URL}">Apoiar a diar.ia.br</a></p>
     <p class="muted">Já apoia e acha que isso é um erro? <a href="?">Tente outro e-mail</a>.</p>
   `;
-  return shell("Diar.ia — Conteúdo exclusivo para apoiadores", body);
+  return shell("diar.ia.br — Conteúdo exclusivo para apoiadores", body);
 }
 
 /** Página 404 dedicada — o leitor JÁ provou ser apoiador, mas o ciclo não tem artigo publicado. */
@@ -104,7 +104,7 @@ export function renderCycleNotFound(cycle: string): string {
     <h1>Artigo não encontrado</h1>
     <p>Não há um artigo publicado para o ciclo <strong>${escHtml(cycle)}</strong>.</p>
   `;
-  return shell("Diar.ia — artigo não encontrado", body);
+  return shell("diar.ia.br — artigo não encontrado", body);
 }
 
 /** Página 400 — nenhum ciclo informado no path (`GET /`). */
@@ -113,5 +113,5 @@ export function renderMissingCycle(): string {
     <h1>Ciclo não informado</h1>
     <p>Use o link completo do artigo mensal (ex: <code>/2607-08</code>).</p>
   `;
-  return shell("Diar.ia — ciclo obrigatório", body);
+  return shell("diar.ia.br — ciclo obrigatório", body);
 }

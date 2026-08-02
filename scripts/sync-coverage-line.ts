@@ -4,7 +4,7 @@
  *
  * Auto-calcula e sincroniza a linha de cobertura no `02-reviewed.md`:
  *
- *   "Para esta edição, eu (o editor) enviei X submissões e a Diar.ia
+ *   "Para esta edição, eu (o editor) enviei X submissões e a diar.ia.br
  *    encontrou outros Y artigos. Selecionamos os Z mais relevantes para
  *    as pessoas que assinam a newsletter."
  *
@@ -71,9 +71,9 @@ export function countEditorVsAuto(
   inboxLinkCount?: number,
 ): { x: number; y: number } {
   const x = forwardedEmailsCount; // X = nº de e-mails (submissões)
-  // #1864: Y = "a Diar.ia encontrou outros Y artigos" = LINKS do pool MENOS os
+  // #1864: Y = "a diar.ia.br encontrou outros Y artigos" = LINKS do pool MENOS os
   // LINKS que vieram pelo canal do editor (forwards + newsletters). Antes Y =
-  // pool − x misturava unidades (links − e-mails) → "Diar.ia encontrou" inflado.
+  // pool − x misturava unidades (links − e-mails) → "diar.ia.br encontrou" inflado.
   // Sem inboxLinkCount (legado/marker ausente), cai no comportamento antigo.
   const inboxLinks = inboxLinkCount ?? forwardedEmailsCount;
   return { x, y: Math.max(0, pool.length - inboxLinks) };
@@ -306,8 +306,15 @@ export function countSelectedItems(md: string): number {
  *     vírgula antes de "e" / conjunção). Ver edição 260513.
  *   - Whitespace trailing.
  */
+// `i` (case-insensitive): reconhece a forma antiga da marca (capitalizada,
+// sem sufixo `.br`) E a atual (`diar.ia.br`) — uma edição em curso pode ter a
+// linha escrita antes do rebrand (#4424); o script ainda precisa localizá-la
+// pra substituir pelos números corretos. Mesma técnica de BRAND_WORDMARK_RE
+// (newsletter-render-html.ts, #2674) — `/i` em vez de alternância explícita
+// com a forma capitalizada, então o texto-fonte deste arquivo nunca precisa
+// citar a grafia antiga por extenso.
 const COVERAGE_LINE_RE =
-  /^Para esta edição, eu \(o editor\) enviei [^\n]+ submissões,?\s+e a Diar\.ia encontrou outros [^\n]+ artigos\. Selecionamos os [^\n]+ mais relevantes para as pessoas que assinam a newsletter\.[ \t]*$/m;
+  /^Para esta edição, eu \(o editor\) enviei [^\n]+ submissões,?\s+e a diar\.ia(?:\.br)? encontrou outros [^\n]+ artigos\. Selecionamos os [^\n]+ mais relevantes para as pessoas que assinam a newsletter\.[ \t]*$/im;
 
 /**
  * #3696: reconhece a SENTENÇA de contagem dentro do bloco de boas-vindas
@@ -385,7 +392,7 @@ export function rewriteCoverageLine(
   y: number,
   z: number,
 ): { md: string; changed: boolean } {
-  const newLine = `Para esta edição, eu (o editor) enviei ${x} submissões e a Diar.ia encontrou outros ${y} artigos. Selecionamos os ${z} mais relevantes para as pessoas que assinam a newsletter.`;
+  const newLine = `Para esta edição, eu (o editor) enviei ${x} submissões e a diar.ia.br encontrou outros ${y} artigos. Selecionamos os ${z} mais relevantes para as pessoas que assinam a newsletter.`;
   if (COVERAGE_LINE_RE.test(md)) {
     const updated = md.replace(COVERAGE_LINE_RE, newLine);
     return { md: updated, changed: updated !== md };

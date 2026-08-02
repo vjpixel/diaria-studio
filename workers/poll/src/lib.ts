@@ -690,7 +690,7 @@ export type Brand = "diaria" | "clarice" | "web";
  * (título/copy por período).
  */
 export const BRAND_INFO: Record<Brand, { name: string; siteUrl: string; leaderboardPeriod: "month" | "year"; shortName?: string }> = {
-  diaria: { name: "Diar.ia", siteUrl: "https://diar.ia.br", leaderboardPeriod: "month" },
+  diaria: { name: "diar.ia.br", siteUrl: "https://diar.ia.br", leaderboardPeriod: "month" },
   // #1910: via=diaria é o tracking de afiliado (Rewardful) — todo link da
   // Clarice voltado ao leitor precisa carregar.
   // #2018: leaderboardPeriod: "year" — mensal vota 1×/mês, ranking anual até 12 chances.
@@ -703,7 +703,7 @@ export const BRAND_INFO: Record<Brand, { name: string; siteUrl: string; leaderbo
   // aponta pro site principal (o jogo É a isca de divulgação pra diar.ia.br,
   // não um produto à parte com marca própria) — decisão de design
   // conservadora documentada no PR do #3516.
-  web: { name: "Diar.ia", siteUrl: "https://diar.ia.br", leaderboardPeriod: "month" },
+  web: { name: "diar.ia.br", siteUrl: "https://diar.ia.br", leaderboardPeriod: "month" },
 };
 
 /**
@@ -1300,7 +1300,7 @@ export function renderNicknameFormStyles(): string {
 // visual nenhuma além do `<title>` + o kicker de texto "É IA?" — sem a régua
 // teal (mesmo elemento `<hr class="rule">` de Cursos/Livros) nem rodapé de
 // marca. Estes 2 helpers dão o mínimo de shell editorial consistente com as
-// outras 2 páginas públicas da Diar.ia.
+// outras 2 páginas públicas da diar.ia.br.
 //
 // Duplicado (não importado de scripts/lib/shared/curadoria-page.ts, que tem o
 // equivalente pra Cursos/Livros) pelo mesmo motivo já documentado em
@@ -1326,10 +1326,10 @@ export function renderBrandShellStyles(): string {
  * precisa dar identidade (rodapé não-vazio), não navegação cruzada completa.
  */
 export function renderBrandFooter(brand: Brand): string {
-  // #4049: o jogo "É IA?" é da Diar.ia, não da Clarice — o rodapé de
+  // #4049: o jogo "É IA?" é da diar.ia.br, não da Clarice — o rodapé de
   // identidade de marca em superfícies `clarice` (leaderboard anual/mensal,
   // arquivo, /vote) creditava "Clarice" + linkava clarice.ai, mas quem faz o
-  // jogo é a Diar.ia (a Clarice é só a newsletter que hospeda a distribuição
+  // jogo é a diar.ia.br (a Clarice é só a newsletter que hospeda a distribuição
   // cross-promo, ver sub-copy em leaderboard-routes.ts:742-744, que
   // permanece como está). Override LOCAL AO RODAPÉ: usa o brand "diaria" pra
   // label + href (com o mesmo UTM de footer, #3978) em vez de
@@ -1720,7 +1720,7 @@ export function renderSeoMeta(opts: SeoMetaOptions): string {
 <link rel="canonical" href="${u}">
 <link rel="icon" href="${FAVICON_DATA_URI}">
 <meta property="og:type" content="website">
-<meta property="og:site_name" content="Diar.ia">
+<meta property="og:site_name" content="diar.ia.br">
 <meta property="og:locale" content="pt_BR">
 <meta property="og:title" content="${t}">
 <meta property="og:description" content="${d}">

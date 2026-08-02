@@ -342,7 +342,7 @@ describe("SEO/compartilhamento — meta tags (#3106)", () => {
   });
 
   it("og:title, og:description e og:url presentes", () => {
-    assert.match(html, /<meta property="og:title" content="Cursos sobre IA · Diar\.ia">/);
+    assert.match(html, /<meta property="og:title" content="Cursos sobre IA · diar\.ia\.br">/);
     assert.match(html, /<meta property="og:description" content="[^"]+">/);
     assert.match(html, /<meta property="og:url" content="https:\/\/cursos\.diar\.ia\.br\/">/);
     assert.match(html, /<meta property="og:type" content="website">/);
@@ -379,9 +379,9 @@ describe("footer de navegação — UTM (#4295)", () => {
   // Cursos ficou de fora quando Livros ganhou o 2º parâmetro de
   // renderCuradoriaFooter em #4051 — assimetria pura, fechada aqui. Mesmo
   // padrão de asserção do teste equivalente em build-livros-page.test.ts.
-  it("footer de navegação (Diar.ia) carrega UTM utm_source=cursos&utm_medium=footer-nav", () => {
+  it("footer de navegação (diar.ia.br) carrega UTM utm_source=cursos&utm_medium=footer-nav", () => {
     const html = renderCursosPage([course()]);
-    assert.match(html, /<a href="https:\/\/diar\.ia\.br\?utm_source=cursos&amp;utm_medium=footer-nav">Diar\.ia<\/a>/);
+    assert.match(html, /<a href="https:\/\/diar\.ia\.br\?utm_source=cursos&amp;utm_medium=footer-nav">diar\.ia\.br<\/a>/);
   });
 });
 

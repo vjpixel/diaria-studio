@@ -73,7 +73,7 @@ describe("brand helpers (#1905)", () => {
   });
 
   it("BRAND_INFO tem nome + site das duas marcas", () => {
-    assert.equal(BRAND_INFO.diaria.name, "Diar.ia");
+    assert.equal(BRAND_INFO.diaria.name, "diar.ia.br");
     assert.equal(BRAND_INFO.clarice.name, "Clarice News");
     assert.ok(BRAND_INFO.clarice.siteUrl.startsWith("https://"));
   });
@@ -237,9 +237,9 @@ describe("votePageHtml propaga brand no form de set-name (code-review #1907)", (
     assert.match(html, /\/leaderboard\/2026\?brand=clarice/);
   });
 
-  it("brand=diaria: SEM input hidden brand (back-compat) + título Diar.ia", () => {
+  it("brand=diaria: SEM input hidden brand (back-compat) + título diar.ia.br", () => {
     const html = votePageHtml("ok", true, form, null, "2026-05", "diaria");
     assert.equal(/name="brand"/.test(html), false);
-    assert.match(html, /<title>É IA\? \| Diar\.ia<\/title>/);
+    assert.match(html, /<title>É IA\? \| diar\.ia\.br<\/title>/);
   });
 });

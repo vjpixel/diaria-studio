@@ -895,7 +895,7 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   // #3517 / #4065: card de compartilhamento — TODOS os brands (antes só
   // brand="web"). A premissa original ("diaria/clarice são e-mail
   // assinantes, 'compartilhar meu resultado' não se aplica") estava errada
-  // pros dois: a base clarice NÃO é assinante da Diar.ia — é justamente o
+  // pros dois: a base clarice NÃO é assinante da diar.ia.br — é justamente o
   // público que a parceria existe pra converter (a issue #4065 documenta
   // 101.000 envios do ciclo 2606-07 gerando 13 assinantes e ZERO resgates de
   // cupom, com o jogo terminando em beco sem saída); e diaria, mesmo já

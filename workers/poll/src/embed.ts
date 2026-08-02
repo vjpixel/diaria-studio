@@ -269,7 +269,7 @@ export function renderEmbedPageHtml(opts: EmbedPageOptions): string {
 <div id="embed-already" class="already" hidden></div>
 <div id="embed-subscribe-cta" class="subscribe-cta" hidden>
   <p class="subscribe-text">Gostou? Um par novo desses todo dia na sua caixa de entrada, além das 3 notícias de IA mais importantes. Grátis.</p>
-  <a class="subscribe-btn" href="${htmlEscape(subscribeUrl)}" target="_blank" rel="noopener">Assinar a Diar.ia</a>
+  <a class="subscribe-btn" href="${htmlEscape(subscribeUrl)}" target="_blank" rel="noopener">Assinar a diar.ia.br</a>
 </div>
 
 <p class="widget-footer"><a href="${htmlEscape(jogarUrl)}" target="_blank" rel="noopener">Jogar mais em ${PUBLIC_GAME_DISPLAY_HOST} →</a></p>

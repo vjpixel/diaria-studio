@@ -38,7 +38,7 @@
  *      Encerrada: "{branch}  [████████████] 100%  (N/N)"  (barra em 100%, sempre visível)
  *
  *   4. IDLE — barra presente sem edição, develop nem overnight (#2255):
- *      Sem edição alguma:  "{branch}  [████████████] Diar.ia · sem rodada ativa"
+ *      Sem edição alguma:  "{branch}  [████████████] diar.ia.br · sem rodada ativa"
  *
  *   5. EDIÇÃO CONCLUÍDA sem develop/overnight (#2618): barra SOME — só o branch (ou "" em
  *      detached HEAD). Distinto do idle: "sem rodada ativa" é quando não há edição;
@@ -340,9 +340,9 @@ export function isStaleEditionDoc(doc: StageStatusDoc, now: Date): boolean {
  * To customize idle appearance: change IDLE_BAR_NO_EDITION_LABEL or renderIdleBar().
  * The bar is always full (12 × █) in idle mode — signals "nada em andamento, sistema OK".
  */
-const IDLE_BAR_NO_EDITION_LABEL = "Diar.ia · sem rodada ativa";
-/** Prefix for idle bar when a past edition exists: "Diar.ia · {AAMMDD} · pronto". */
-const IDLE_BAR_EDITION_PREFIX = "Diar.ia";
+const IDLE_BAR_NO_EDITION_LABEL = "diar.ia.br · sem rodada ativa";
+/** Prefix for idle bar when a past edition exists: "diar.ia.br · {AAMMDD} · pronto". */
+const IDLE_BAR_EDITION_PREFIX = "diar.ia.br";
 const IDLE_BAR_EDITION_SUFFIX = "pronto";
 
 // ─── função pura testável ─────────────────────────────────────────────────────
@@ -1076,8 +1076,8 @@ export function readCurrentEditionDoc(
  * @param mostRecentEditionId  AAMMDD da edição mais recente no disco, ou null se nenhuma existe.
  * @returns  String da barra idle (nunca vazia).
  *
- * Formato com edição passada:  "[████████████] Diar.ia · 260617 · pronto"
- * Formato sem edição alguma:   "[████████████] Diar.ia · sem rodada ativa"
+ * Formato com edição passada:  "[████████████] diar.ia.br · 260617 · pronto"
+ * Formato sem edição alguma:   "[████████████] diar.ia.br · sem rodada ativa"
  *
  * A barra é sempre 100% cheia em modo idle — sinaliza "sistema OK, nada em andamento".
  * O label é um único bloco claramente comentado (constantes IDLE_BAR_*) — trivialmente

@@ -1,6 +1,6 @@
 # Playbook: Beehiiv (Etapa 5 — newsletter daily)
 
-Playbook semântico+operacional pra criar a newsletter Diar.ia no Beehiiv como **rascunho** usando o template configurado, e enviar um email de teste. Não publica nem agenda — o editor revisa e dispara manualmente do dashboard.
+Playbook semântico+operacional pra criar a newsletter diar.ia.br no Beehiiv como **rascunho** usando o template configurado, e enviar um email de teste. Não publica nem agenda — o editor revisa e dispara manualmente do dashboard.
 
 ## TLDR (#1327)
 

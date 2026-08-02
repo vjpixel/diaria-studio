@@ -120,7 +120,7 @@ export interface Env {
    * domínio/e-mail verificado na conta Brevo). OPCIONAL — ausente também
    * produz `not_configured` (mesmo guard de BREVO_API_KEY acima). */
   BREVO_SENDER_EMAIL?: string;
-  /** #3996: nome de exibição do remetente. OPCIONAL — default "Diar.ia — É
+  /** #3996: nome de exibição do remetente. OPCIONAL — default "diar.ia.br — É
    * IA?" quando ausente (ver sendMagicLinkEmail). */
   BREVO_SENDER_NAME?: string;
   /** #3116: origin da request atual (`request.headers.get("Origin")`),
@@ -132,7 +132,7 @@ export interface Env {
    * quebrar fixtures de teste existentes que constroem `Env` sem esse campo
    * (nesse caso corsHeaders() trata como request sem Origin). */
   _requestOrigin?: string | null;
-  /** #4054: KV do sync de assinantes ATIVOS da Diar.ia (mesma população de
+  /** #4054: KV do sync de assinantes ATIVOS da diar.ia.br (mesma população de
    * `CURSOS_SUBSCRIBERS`, #4052 — chave `subscriber:{sha256(email)}`, ver
    * `subscriber-verify.ts`). Verificação PRIMÁRIA de "?jogar=" quem chegou por
    * fora já é assinante" (`web-gate.ts`, `checkWebSubscriber`). OPCIONAL — sem
@@ -142,7 +142,7 @@ export interface Env {
    * inline). Criar via `wrangler kv namespace create SUBSCRIBERS_KV` — mesmo
    * sync (`scripts/sync-cursos-subscribers-kv.ts`) pode popular os dois KVs
    * (rodar 2x com bindings diferentes, ou apontar os dois workers pro MESMO
-   * namespace id — a população é idêntica, "assinante ativo da Diar.ia" não
+   * namespace id — a população é idêntica, "assinante ativo da diar.ia.br" não
    * depende de qual worker está perguntando). */
   SUBSCRIBERS_KV?: KVNamespace;
   /** #4054: assina/verifica o cookie de sessão do caminho `/jogar` (brand

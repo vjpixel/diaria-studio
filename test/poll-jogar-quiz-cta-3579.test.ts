@@ -6,9 +6,9 @@
  * pós-voto de par único (`renderSubscribeCtaBlock`/`buildSubscribeUrl`,
  * #3518), o CTA do quiz:
  *   - enquadra as imagens jogadas como o arquivo de edições passadas da
- *     Diar.ia (o quiz sorteia pares de várias edições fechadas, #3520);
+ *     diar.ia.br (o quiz sorteia pares de várias edições fechadas, #3520);
  *   - usa copy própria (texto do editor: "notícias de IA + tutoriais...
- *     assine a Diar.ia (grátis)");
+ *     assine a diar.ia.br (grátis)");
  *   - usa UTM PRÓPRIO (`utm_medium=quiz`, `utm_campaign=eia-quiz-posvoto`) —
  *     distinto do funil de par único (`utm_medium=jogar`), pra medir os dois
  *     funis separadamente (mesma disciplina do #3524/#3521/#3518).
@@ -89,7 +89,7 @@ describe("renderQuizSubscribeCtaBlock (#3579) — bloco HTML do CTA do quiz", ()
     assert.match(html, /rel="noopener"/);
   });
 
-  it("copy enquadra as imagens como o arquivo de edições passadas da Diar.ia", () => {
+  it("copy enquadra as imagens como o arquivo de edições passadas da diar.ia.br", () => {
     const html = renderQuizSubscribeCtaBlock();
     assert.match(html, /arquivo de edições passadas/i);
   });
@@ -102,9 +102,9 @@ describe("renderQuizSubscribeCtaBlock (#3579) — bloco HTML do CTA do quiz", ()
     assert.match(html, /grátis/i);
   });
 
-  it("botão convida a assinar a Diar.ia", () => {
+  it("botão convida a assinar a diar.ia.br", () => {
     const html = renderQuizSubscribeCtaBlock();
-    assert.match(html, /Assinar a Diar\.ia/);
+    assert.match(html, /Assinar a diar\.ia\.br/);
   });
 });
 
@@ -158,6 +158,6 @@ describe("regressão: caixa do par único (/jogar) segue distinta da do quiz —
 
   it("renderJogarPageHtml usa a copy de descoberta do #3589 (não a copy do quiz)", () => {
     const html = renderJogarPageHtml({ edition: "260101", revealed: false });
-    assert.match(html, /Conhecer a Diar\.ia|Conhe(ç|c)a a Diar\.ia/i);
+    assert.match(html, /Conhecer a diar\.ia\.br|Conhe(ç|c)a a diar\.ia\.br/i);
   });
 });

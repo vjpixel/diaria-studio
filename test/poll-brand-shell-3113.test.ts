@@ -75,15 +75,15 @@ describe("#3113 item 5 — renderBrandShellStyles / renderBrandFooter (pure)", (
     assert.match(css, /footer\.brand-footer\s*\{[^}]*border-top:\s*1px solid #EBE5D0/);
   });
 
-  it("renderBrandFooter(diaria) linka pro diar.ia.br (com UTM do funil, #3978) com o label 'Diar.ia'", () => {
+  it("renderBrandFooter(diaria) linka pro diar.ia.br (com UTM do funil, #3978) com o label 'diar.ia.br'", () => {
     const html = renderBrandFooter("diaria");
     assert.match(html, /<footer class="brand-footer">/);
-    assert.ok(html.includes(`<a href="${footerHrefEscaped("diaria")}">Diar.ia</a>`), html);
+    assert.ok(html.includes(`<a href="${footerHrefEscaped("diaria")}">diar.ia.br</a>`), html);
   });
 
-  it("renderBrandFooter(clarice) linka pro diar.ia.br (com UTM do funil, #3978) com o label 'Diar.ia' — #4049: o jogo 'É IA?' é da Diar.ia, não da Clarice", () => {
+  it("renderBrandFooter(clarice) linka pro diar.ia.br (com UTM do funil, #3978) com o label 'diar.ia.br' — #4049: o jogo 'É IA?' é da diar.ia.br, não da Clarice", () => {
     const html = renderBrandFooter("clarice");
-    assert.ok(html.includes(`<a href="${footerHrefEscaped("diaria")}">Diar.ia</a>`), html);
+    assert.ok(html.includes(`<a href="${footerHrefEscaped("diaria")}">diar.ia.br</a>`), html);
     assert.doesNotMatch(html, /clarice\.ai/);
     assert.doesNotMatch(html, />Clarice</);
   });
@@ -100,7 +100,7 @@ describe("#3113 item 5 — /leaderboard e /leaderboard/{YYYY}/arquivo ganham ré
     assert.ok(kickerIdx >= 0 && ruleIdx >= 0 && h1Idx >= 0, "kicker, régua e h1 devem existir");
     assert.ok(kickerIdx < ruleIdx && ruleIdx < h1Idx, "ordem deve ser kicker → régua → h1");
     assert.ok(footerIdx >= 0 && footerIdx < bodyCloseIdx, "rodapé de marca deve existir antes de </body>");
-    assert.ok(html.includes(`<a href="${footerHrefEscaped("diaria")}">Diar.ia</a>`), html);
+    assert.ok(html.includes(`<a href="${footerHrefEscaped("diaria")}">diar.ia.br</a>`), html);
   });
 
   it("GET /leaderboard/{YYYY}/arquivo: mesma régua + rodapé de marca", async () => {
@@ -111,7 +111,7 @@ describe("#3113 item 5 — /leaderboard e /leaderboard/{YYYY}/arquivo ganham ré
 
   it("brand clarice: rodapé de marca usa diar.ia.br (#4049), não clarice.ai", async () => {
     const html = await fetchHtml("/leaderboard/2026?brand=clarice");
-    assert.ok(html.includes(`<a href="${footerHrefEscaped("diaria")}">Diar.ia</a>`), html);
+    assert.ok(html.includes(`<a href="${footerHrefEscaped("diaria")}">diar.ia.br</a>`), html);
   });
 });
 
@@ -130,7 +130,7 @@ describe("#3113 item 11 — renderArchiveVoteHtml ganha kicker + régua + rodap�
   it("brand clarice: rodapé da página de voto do arquivo usa diar.ia.br (#4049)", async () => {
     const res = renderArchiveVoteHtml("260701", "2026", "clarice");
     const html = await res.text();
-    assert.ok(html.includes(`<a href="${footerHrefEscaped("diaria")}">Diar.ia</a>`), html);
+    assert.ok(html.includes(`<a href="${footerHrefEscaped("diaria")}">diar.ia.br</a>`), html);
   });
 
   it("anti-gaming preservado: kicker/régua/rodapé novos não revelam qual imagem é IA (guarda de regressão do #2867)", async () => {

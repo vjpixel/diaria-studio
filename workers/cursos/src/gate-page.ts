@@ -16,7 +16,7 @@ export function renderGatePage(): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Desbloquear cursos completos · Diar.ia</title>
+<title>Desbloquear cursos completos · diar.ia.br</title>
 <meta name="robots" content="noindex">
 <style>
   :root { --teal: #00A0A0; --ink: #171411; --paper: #FBFAF6; --rule: #EBE5D0; }
@@ -40,7 +40,7 @@ export function renderGatePage(): string {
 </head>
 <body>
   <div class="wrap">
-    <h1>Já é assinante da Diar.ia?</h1>
+    <h1>Já é assinante da diar.ia.br?</h1>
     <p>Confirme seu e-mail pra desbloquear os cursos completos. Ainda não assina? O mesmo formulário te cadastra na newsletter.</p>
     <form id="gate-form">
       <label for="email">E-mail</label>
@@ -50,7 +50,7 @@ export function renderGatePage(): string {
       <input type="text" name="website" class="website" tabindex="-1" autocomplete="off">
       <div class="optin" id="optin-row" style="display:none">
         <input type="checkbox" id="optin" name="optin">
-        <label for="optin" style="font-weight:400">Quero receber a Diar.ia (5 minutos diários sobre IA) por e-mail.</label>
+        <label for="optin" style="font-weight:400">Quero receber a diar.ia.br (5 minutos diários sobre IA) por e-mail.</label>
       </div>
       <button type="submit" id="submit-btn">Desbloquear</button>
       <p class="msg" id="msg" role="status"></p>
@@ -78,7 +78,7 @@ export function renderGatePage(): string {
     nameLabel.style.display = '';
     optinRow.style.display = 'flex';
     btn.textContent = 'Assinar e desbloquear';
-    setMsg('Não encontramos assinatura ativa com esse e-mail. Confirme abaixo pra assinar a Diar.ia e desbloquear.', '');
+    setMsg('Não encontramos assinatura ativa com esse e-mail. Confirme abaixo pra assinar a diar.ia.br e desbloquear.', '');
   }
 
   form.addEventListener('submit', function (ev) {

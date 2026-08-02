@@ -1,7 +1,7 @@
 /**
  * workers/draft/src/index.ts (#1239)
  *
- * Worker dedicado pra hospedar HTML preview da newsletter Diar.ia.
+ * Worker dedicado pra hospedar HTML preview da newsletter diar.ia.br.
  * Extraído do Worker `poll` (rotas `/html/{key}` legados).
  *
  * Vantagens vs estar no poll Worker:

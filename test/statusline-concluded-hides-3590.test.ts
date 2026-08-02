@@ -84,12 +84,12 @@ function makeInProgressEditionDoc(edition: string) {
 // ─── (a) overnight concluído sozinho (sem develop/edição) → some ──────────────
 
 // Nota: sem edição alguma no disco (mostRecentEditionId/mostRecentDoc null), o fallback
-// (#2618, Source 5) é o idle bar padrão ("Diar.ia · sem rodada ativa"), não uma string
+// (#2618, Source 5) é o idle bar padrão ("diar.ia.br · sem rodada ativa"), não uma string
 // vazia — string vazia só ocorre quando a edição MAIS RECENTE está encerrada (guard
 // `mostRecentEditionEncerrada`). O ponto testado aqui é que o overnight/develop concluído
 // NÃO aparece mais (nem 100%, nem contagem) — a barra "some" no sentido de ceder pro
 // fallback, exatamente como a issue descreve ("cair pro idle/vazio").
-const IDLE_NO_EDITION = "[████████████] Diar.ia · sem rodada ativa";
+const IDLE_NO_EDITION = "[████████████] diar.ia.br · sem rodada ativa";
 
 describe("renderStatusline — #3590 (a): overnight CONCLUÍDO sozinho (sem develop/edição) → barra some", () => {
   it("repro exato da issue: overnight 260716 17/17 terminal, sem develop/edição → cai pro idle, não trava em 100%", () => {

@@ -1,4 +1,4 @@
-# Invariantes do projeto Diar.ia
+# Invariantes do projeto diar.ia.br
 
 _Gerado automaticamente por `scripts/regen-invariants.ts` a partir de issues GitHub com label `convention`. Não editar diretamente — alterações são sobrescritas no próximo run._
 

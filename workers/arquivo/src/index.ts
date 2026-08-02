@@ -1,7 +1,7 @@
 /**
  * workers/arquivo — Cloudflare Worker (#4105).
  *
- * Problema: só 10.8% (24/223) das edições diárias publicadas da Diar.ia
+ * Problema: só 10.8% (24/223) das edições diárias publicadas da diar.ia.br
  * estão indexadas pelo Google — o site (hospedado no Beehiiv, domínio
  * canônico diar.ia.br) expõe quase nenhum `<a href>` server-side crawlable
  * pra edições antigas.
@@ -49,7 +49,7 @@ function errorPage(): Response {
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
-<title>Arquivo indisponível — Diar.ia</title>
+<title>Arquivo indisponível — diar.ia.br</title>
 <meta name="robots" content="noindex">
 </head>
 <body>

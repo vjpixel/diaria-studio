@@ -8,7 +8,7 @@ tools: Read, Write
 
 > **⚠️ APOSENTADO (#3991, 260724).** Este agent NÃO é mais dispatchado no Stage 2 — o texto de social passou a ser ÚNICO (o mesmo corpo vai para LinkedIn/Facebook/Instagram), gerado por `social-writer` (`.claude/agents/social-writer.md`). Mantido no repo só como referência histórica; o §3b (`post_pixel`) foi replicado no agent novo, que é a fonte canônica daqui em diante. Ver `orchestrator-stage-2.md`.
 
-Você compõe **3 posts principais** de LinkedIn da edição Diar.ia (1 por destaque) + 1 post pessoal standalone. Roda em paralelo com o `writer` (newsletter) e `social-facebook` na Etapa 2 — **não depende de `02-reviewed.md`**.
+Você compõe **3 posts principais** de LinkedIn da edição diar.ia.br (1 por destaque) + 1 post pessoal standalone. Roda em paralelo com o `writer` (newsletter) e `social-facebook` na Etapa 2 — **não depende de `02-reviewed.md`**.
 
 ## Por que só o post principal (#595, aposentado #3627)
 
@@ -41,7 +41,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
    ### 3a. Post principal (`## d{N}`)
 
-   - Hook forte na primeira linha (dado impactante ou pergunta provocativa — não começar com "Hoje na Diar.ia").
+   - Hook forte na primeira linha (dado impactante ou pergunta provocativa — não começar com "Hoje na diar.ia.br").
    - 2–3 parágrafos curtos.
    - "Por que isso importa" pode ser adaptado, mas nunca começar com "Para [audiência],".
    - **Nunca usar referências temporais relativas (#747):** "hoje", "ontem", "agora", "esta semana", "recentemente", "acabou de" ficam errados no dia em que o editor posta (D+1 ou depois). Use datas absolutas ou framing neutro.
@@ -56,7 +56,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
    **⚠️ Não gera subseções (#2453).** A seção termina direto com o corpo do post (+ hashtags + CTA de follow). Zero subseções — em particular, nunca crie um `### comment_pixel` aqui (era o comentário que ia SOB os posts da company page d1/d2/d3, aposentado em #3627).
 
-   - **Voz pessoal/opinião do Pixel.** Primeira pessoa, autor curador que viu algo interessante — não como Diar.ia.
+   - **Voz pessoal/opinião do Pixel.** Primeira pessoa, autor curador que viu algo interessante — não como diar.ia.br.
    - Tom conversacional, **sem pergunta no fim**.
    - Adiciona ângulo concreto que o main post não cobre (observação prática, frame shift, conexão com debate atual). Pode citar implicação técnica / decisão / consequência pra quem lê.
    - **Abrir com `{outros_count}` + `{edition_url}` (#3052):** a primeira linha do post traz os dois placeholders literais — nunca estimados, nunca substituídos manualmente — na voz pessoal do Pixel. Exemplo: `Hoje saíram mais {outros_count} novidades de IA — reuni tudo na edição em {edition_url}. Mas o que me fez parar foi isto:` (ajustar a frase de transição ao ângulo do D1, mantendo os dois placeholders literais e próximos do início). **Resolvidos em Stage 6** via `scripts/resolve-post-pixel.ts` (não em Stage 2, não em Stage 5 — `post_pixel` nunca passa por `publish-linkedin.ts`, ver nota em "Input" acima).
@@ -65,8 +65,8 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
    - Hashtags próprias (1-3).
    - **Incluir link da página** ao final: `Siga a diar.ia.br em linkedin.com/company/diar.ia.br` (sem `https://`, sem ponto final).
    - 600–1300 caracteres (post de LinkedIn, não comentário).
-   - **NUNCA usar "esta/essa/nossa newsletter" nem deixis que pressuponha o leitor na Diar.ia (#2148).** O post vai no feed pessoal do Pixel — leitores de IA, colegas, ex-colegas que talvez nunca tenham ouvido falar da Diar.ia. Pode mencionar que o autor *faz* uma newsletter de IA, mas nunca com framing de "você já está dentro". Errado: "Esta newsletter roda em grande parte com agentes". Certo: "A newsletter de IA que escrevo roda em grande parte com agentes". Validado por `lint-social-md.ts --check personal-post-no-newsletter-deixis`.
-   - **NUNCA abrir/fechar com frase de credencial ou auto-apresentação (#2494).** "Trabalho com IA há alguns anos e faço uma newsletter de IA, a Diar.ia", "como alguém que acompanha o setor", "há anos que trabalho com isso" — essas frases estabelecem autoridade pela bio, não pelo conteúdo. O post pessoal deve fazer o ponto direto, sem se anunciar. Validado por `lint-social-md.ts --check no-credential-bio`.
+   - **NUNCA usar "esta/essa/nossa newsletter" nem deixis que pressuponha o leitor na diar.ia.br (#2148).** O post vai no feed pessoal do Pixel — leitores de IA, colegas, ex-colegas que talvez nunca tenham ouvido falar da diar.ia.br. Pode mencionar que o autor *faz* uma newsletter de IA, mas nunca com framing de "você já está dentro". Errado: "Esta newsletter roda em grande parte com agentes". Certo: "A newsletter de IA que escrevo roda em grande parte com agentes". Validado por `lint-social-md.ts --check personal-post-no-newsletter-deixis`.
+   - **NUNCA abrir/fechar com frase de credencial ou auto-apresentação (#2494).** "Trabalho com IA há alguns anos e faço uma newsletter de IA, a diar.ia.br", "como alguém que acompanha o setor", "há anos que trabalho com isso" — essas frases estabelecem autoridade pela bio, não pelo conteúdo. O post pessoal deve fazer o ponto direto, sem se anunciar. Validado por `lint-social-md.ts --check no-credential-bio`.
    - **⚠️ POSTAGEM MANUAL via Chrome (#1690):** o Make pessoal não existe. Publica-se na sessão LinkedIn logada do Pixel via Claude in Chrome, no MESMO horário do D1 da página (09:00 BRT). Ver `context/publishers/linkedin.md` (guard invertido: confirmar que está postando como vjpixel, abortar se cair na página).
 
 4. Gravar **um arquivo temporário** `{out_dir}/_internal/03-linkedin.tmp.md` com o formato abaixo. As seções principais são delimitadas por `## d1`, `## d2`, `## d3`, `## post_pixel`. O orchestrator fará o merge com o Facebook numa etapa seguinte.

@@ -26,7 +26,7 @@ describe("renderSeoMeta (#3106)", () => {
   it("inclui description, og:title, og:description, og:url, og:type, og:site_name, og:locale", () => {
     assert.match(html, /<meta name="description" content="[^"]+">/);
     assert.match(html, /<meta property="og:type" content="website">/);
-    assert.match(html, /<meta property="og:site_name" content="Diar\.ia">/);
+    assert.match(html, /<meta property="og:site_name" content="diar\.ia\.br">/);
     assert.match(html, /<meta property="og:locale" content="pt_BR">/);
     assert.match(html, /<meta property="og:title" content="Título de Teste">/);
     assert.match(html, /<meta property="og:description" content="[^"]+">/);

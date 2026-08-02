@@ -298,8 +298,8 @@ describe("CTA de assinatura inline — hero + fim de lista (#4051)", () => {
     assert.match(html, /source: form\.getAttribute\("data-source"\) \|\| ""/);
   });
 
-  it("footer de navegação (Diar.ia) carrega UTM utm_source=livros&utm_medium=footer-nav", () => {
-    assert.match(html, /<a href="https:\/\/diar\.ia\.br\?utm_source=livros&amp;utm_medium=footer-nav">Diar\.ia<\/a>/);
+  it("footer de navegação (diar.ia.br) carrega UTM utm_source=livros&utm_medium=footer-nav", () => {
+    assert.match(html, /<a href="https:\/\/diar\.ia\.br\?utm_source=livros&amp;utm_medium=footer-nav">diar\.ia\.br<\/a>/);
   });
 });
 
@@ -313,7 +313,7 @@ describe("SEO/compartilhamento — meta tags (#3106)", () => {
   });
 
   it("og:title, og:description e og:url presentes", () => {
-    assert.match(html, /<meta property="og:title" content="Livros sobre IA · Diar\.ia">/);
+    assert.match(html, /<meta property="og:title" content="Livros sobre IA · diar\.ia\.br">/);
     assert.match(html, /<meta property="og:description" content="[^"]+">/);
     assert.match(html, /<meta property="og:url" content="https:\/\/livros\.diar\.ia\.br\/">/);
     assert.match(html, /<meta property="og:type" content="website">/);
