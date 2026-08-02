@@ -105,11 +105,20 @@
  * pré-deploy deste DO simplesmente não tem cache pra corrigir; o KV (fonte
  * usada por `/stats`-like readers) já foi corrigido de qualquer forma.
  *
+ * ## Agregado de sequência do "É IA?" (#4443)
+ * `/update-month` também mantém `seq:{monthSlug}` — mapa `edição -> gabarito`
+ * usado por `GET /jogar/seq-state` (jogar.ts) pra montar o estado do mês
+ * inteiro num get só, em vez de um get por edição. Mesma transação
+ * serializada de total/correct/last_edition acima — ver `SeqMonthMap` e o
+ * rationale completo no bloco de comentário de `handleUpdateMonth`.
+ * `/adjust-month-correct` propaga a correção de gabarito pra dentro do
+ * agregado (campo opcional `edition` no payload) — ver rationale ali.
+ *
  * ## Interface
  *   POST /update-score        — body: UpdateScorePayload         → { ok: true; score: ScoreData }
- *   POST /update-month        — body: UpdateMonthPayload         → { ok: true; month: MonthScoreData }
+ *   POST /update-month        — body: UpdateMonthPayload         → { ok: true; month: MonthScoreData; seq: SeqMonthMap }
  *   POST /adjust-correct      — body: AdjustScoreCorrectPayload  → { ok: true; adjusted: boolean; score?: ScoreData }
- *   POST /adjust-month-correct — body: AdjustMonthCorrectPayload → { ok: true; adjusted: boolean; month?: MonthScoreData }
+ *   POST /adjust-month-correct — body: AdjustMonthCorrectPayload → { ok: true; adjusted: boolean; month?: MonthScoreData; seq?: SeqMonthMap }
  */
 
 import { type Brand, isConsecutiveVotingPeriod } from "./lib";
@@ -129,6 +138,20 @@ export interface MonthScoreData {
   last_edition: string | null;
   last_vote_ts?: string;
 }
+
+/**
+ * #4443: agregado MENSAL de estado de sequência do "É IA?" — mapa
+ * `edição AAMMDD -> gabarito` para o mês corrente do DO. Presença da chave
+ * significa "votou nesta edição"; AUSÊNCIA significa "não votou" — por isso
+ * `null` (voto registrado antes do gabarito ser conhecido, mesma semântica
+ * anti-spoiler de `SeqStateEntry`/jogar.ts) nunca pode ser confundido com
+ * "não votado": sempre checar presença da chave (`Object.hasOwn`), nunca só o
+ * valor. Serializado na MESMA transação (`blockConcurrencyWhile`) de
+ * `handleUpdateMonth` — fecha, pro agregado, a mesma classe de race do #4169
+ * que motivou este DO (2 votos concorrentes do mesmo e-mail em edições
+ * diferentes do mesmo mês não podem perder a escrita um do outro).
+ */
+export type SeqMonthMap = Record<string, boolean | null>;
 
 function defaultScore(): ScoreData {
   return { total: 0, correct: 0, streak: 0, last_edition: null };
@@ -166,6 +189,19 @@ export function isValidMonthScoreData(data: unknown): data is MonthScoreData {
   );
 }
 
+/**
+ * #4443: mesmo racional de `isValidScoreData` — protege contra um
+ * `seqKvBaseline` malformado virar seed inválido do agregado `seq:{month}`.
+ * Um objeto plano onde todo valor é `boolean` ou `null` (nunca lança pra
+ * shape inesperado — array, string, número, undefined nos valores).
+ */
+export function isValidSeqMonthMap(data: unknown): data is SeqMonthMap {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+  return Object.values(data as Record<string, unknown>).every(
+    (v) => v === null || typeof v === "boolean",
+  );
+}
+
 export interface UpdateScorePayload {
   edition: string;
   correct: boolean | null;
@@ -178,6 +214,13 @@ export interface UpdateMonthPayload {
   monthSlug: string;
   correct: boolean | null;
   kvBaseline?: MonthScoreData | null;
+  /** #4443: baseline do agregado `seq:{monthSlug}:{email}`, usado só quando o
+   * storage do DO pra `seq:{monthSlug}` ainda não existe — mesmo racional de
+   * `kvBaseline` acima (nunca sobrescreve estado real já gravado no DO).
+   * Cobre o caso de um mês self-healed por `handleJogarSeqState` (jogar.ts)
+   * ou populado pelo backfill one-shot (`scripts/backfill-seq-state.ts`)
+   * ANTES deste DO ser tocado por um voto real. */
+  seqKvBaseline?: SeqMonthMap | null;
 }
 
 export interface AdjustScoreCorrectPayload {
@@ -189,6 +232,15 @@ export interface AdjustMonthCorrectPayload {
   monthSlug: string;
   prevCorrect: boolean | null;
   newCorrect: boolean;
+  /** #4443: quando fornecido E o agregado `seq:{monthSlug}` já tem esta
+   * edição como chave, corrige `seq[edition]` pra `newCorrect` na MESMA
+   * transação — mantém o agregado consistente com o gabarito retificado por
+   * `handleAdminCorrect` (index.ts). Opcional: payloads antigos/testes sem
+   * este campo continuam funcionando (skip silencioso, mesmo comportamento
+   * de antes do #4443). Nunca CRIA um agregado novo aqui — sem conhecer as
+   * outras edições do mês, um seed parcial seria pior que nenhum (a próxima
+   * leitura cairia no fallback normal, que já é seguro). */
+  edition?: string;
 }
 
 /**
@@ -277,7 +329,7 @@ export class ScoreCounter {
   private async handleUpdateMonth(request: Request): Promise<Response> {
     return await this.state.blockConcurrencyWhile(async () => {
       const payload = await request.json() as UpdateMonthPayload;
-      const { edition, monthSlug, correct, kvBaseline } = payload;
+      const { edition, monthSlug, correct, kvBaseline, seqKvBaseline } = payload;
       const storageKey = `month:${monthSlug}`;
 
       const stored = await this.state.storage.get<MonthScoreData>(storageKey);
@@ -297,7 +349,26 @@ export class ScoreCounter {
 
       await this.state.storage.put(storageKey, month);
 
-      return new Response(JSON.stringify({ ok: true, month }), {
+      // #4443: agregado de sequência do "É IA?" (`seq:{monthSlug}:{email}`,
+      // mirror feito pelo caller — ver `updateScoreByMonth`, vote.ts) —
+      // atualizado na MESMA transação serializada, fechando pro agregado a
+      // mesma race que este DO já fecha pra total/correct/last_edition
+      // acima (#4169). `seqKvBaseline` só semeia quando o storage do DO pra
+      // este mês NUNCA foi tocado (self-heal/backfill anteriores a este DO).
+      const seqStorageKey = `seq:${monthSlug}`;
+      const storedSeq = await this.state.storage.get<SeqMonthMap>(seqStorageKey);
+      let seq: SeqMonthMap;
+      if (storedSeq !== undefined) {
+        seq = { ...storedSeq };
+      } else if (seqKvBaseline && isValidSeqMonthMap(seqKvBaseline)) {
+        seq = { ...seqKvBaseline };
+      } else {
+        seq = {};
+      }
+      seq[edition] = correct;
+      await this.state.storage.put(seqStorageKey, seq);
+
+      return new Response(JSON.stringify({ ok: true, month, seq }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -352,7 +423,7 @@ export class ScoreCounter {
   private async handleAdjustMonthCorrect(request: Request): Promise<Response> {
     return await this.state.blockConcurrencyWhile(async () => {
       const payload = await request.json() as AdjustMonthCorrectPayload;
-      const { monthSlug, prevCorrect, newCorrect } = payload;
+      const { monthSlug, prevCorrect, newCorrect, edition } = payload;
       const storageKey = `month:${monthSlug}`;
 
       const stored = await this.state.storage.get<MonthScoreData>(storageKey);
@@ -378,7 +449,23 @@ export class ScoreCounter {
 
       await this.state.storage.put(storageKey, stored);
 
-      return new Response(JSON.stringify({ ok: true, adjusted: true, month: stored }), {
+      // #4443: mantém `seq:{monthSlug}` consistente com o gabarito retificado
+      // — só quando `edition` foi informado E a chave já existe no agregado
+      // (nunca cria uma entry nova aqui: sem saber se o jogador de fato votou
+      // nesta edição, inventar `voted: true` seria pior que deixar a próxima
+      // leitura cair no fallback normal, que já resolve corretamente a
+      // partir de `vote:{edition}:{email}`).
+      let seq: SeqMonthMap | undefined;
+      if (edition) {
+        const seqStorageKey = `seq:${monthSlug}`;
+        const storedSeq = await this.state.storage.get<SeqMonthMap>(seqStorageKey);
+        if (storedSeq !== undefined && Object.hasOwn(storedSeq, edition)) {
+          seq = { ...storedSeq, [edition]: newCorrect };
+          await this.state.storage.put(seqStorageKey, seq);
+        }
+      }
+
+      return new Response(JSON.stringify({ ok: true, adjusted: true, month: stored, seq }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });

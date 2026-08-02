@@ -23,6 +23,7 @@ import {
   isAnonymousWebIdentity, // #4011: domínio reservado do brand "web" nunca pode ser aceito fora dele
   resolveVoteIdentityBoxKind, // #4418 §2/§3: decide Caixa A/B/nenhuma a partir de score:{email}
   type SubscribeBoxState, // #4418 §2b
+  seqStateKvKey, // #4443: chave do agregado seq:{month}:{email} (jogar/seq-state)
 } from "./lib";
 import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./index";
 import { upsertOwnEntryInSnapshot, listAllKeys } from "./leaderboard-routes";
@@ -37,8 +38,10 @@ import {
   type UpdateMonthPayload,
   type AdjustScoreCorrectPayload,
   type AdjustMonthCorrectPayload,
+  type SeqMonthMap, // #4443: agregado seq:{month} mantido pelo DO junto do month:{monthSlug}
   isValidScoreData,
   isValidMonthScoreData,
+  isValidSeqMonthMap, // #4443
 } from "./score-counter";
 // #3517 / #4065: share card pós-jogo — todos os brands (ver rationale no
 // header de share.ts sobre por que o payload é {edition, correct}, sem
@@ -1446,6 +1449,14 @@ export async function adjustScoreByMonthCorrectOnly(
   // Invalidação feita pelo caller (handleAdminCorrect) uma vez após o loop — não aqui.
 
   // #4169: mantém o DO ScoreCounter (mensal) em sincronia — best-effort.
+  // #4443: `edition` no payload — corrige `seq[edition]` no MESMO round-trip,
+  // se o agregado já conhecer esta edição (ver rationale em
+  // `handleAdjustMonthCorrect`, score-counter.ts). `seq` retornado é
+  // espelhado no KV (`seq:{monthSlug}:{email}`) pra manter o agregado lido
+  // por `/jogar/seq-state` consistente com o gabarito retificado — sem isso,
+  // um voto já contabilizado no agregado antes do gabarito existir ficaria
+  // com `correct` stale pra sempre, mesmo após handleAdminCorrect corrigir
+  // vote:{edition}:{email} e score-by-month.
   if (env.SCORE_COUNTER) {
     try {
       const doId = env.SCORE_COUNTER.idFromName(`${brand}:${email}`);
@@ -1453,7 +1464,7 @@ export async function adjustScoreByMonthCorrectOnly(
       const doResp = await doStub.fetch("https://internal/adjust-month-correct", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ monthSlug, prevCorrect, newCorrect } satisfies AdjustMonthCorrectPayload),
+        body: JSON.stringify({ monthSlug, prevCorrect, newCorrect, edition } satisfies AdjustMonthCorrectPayload),
       });
       if (!doResp.ok) {
         // #4169 (achado silent-failure-hunter): captura o corpo (diagnóstico
@@ -1462,6 +1473,15 @@ export async function adjustScoreByMonthCorrectOnly(
         // cru) — mesma convenção de vote_dedup_do_error.
         const body = await doResp.text().catch(() => "(unreadable)");
         console.error(JSON.stringify({ event: "score_counter_adjust_month_correct_error", status: doResp.status, body, edition, email_domain: email.split("@")[1] ?? "unknown" }));
+      } else {
+        const { seq } = await doResp.json().catch(() => ({ seq: undefined })) as { seq?: SeqMonthMap };
+        if (seq) {
+          try {
+            await env.POLL.put(seqStateKvKey(monthSlug, email), JSON.stringify(seq));
+          } catch (e) {
+            console.error(JSON.stringify({ event: "seq_state_kv_mirror_failed", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
+          }
+        }
       }
     } catch (e) {
       console.error(JSON.stringify({ event: "score_counter_adjust_month_correct_error", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
@@ -1566,6 +1586,14 @@ export async function adjustScoreCorrectOnly(
  * score-counter.ts) antes de gravar o mirror. Sem o binding (ou em erro do
  * DO), cai no fallback KV — mesma race residual de antes deste fix.
  * `brand` (default "diaria") é necessário pro id do DO (`{brand}:{email}`).
+ *
+ * #4443: também mantém o agregado `seq:{monthSlug}:{email}` (consumido por
+ * `GET /jogar/seq-state`, jogar.ts) — mesmo padrão de mirror KV pós-DO que
+ * `score-by-month` já usa acima: o DO é a fonte serializada (fecha, pro
+ * agregado, a mesma classe de race do #4169), o KV é só o espelho lido pelo
+ * endpoint público. Falha do mirror é logada mas nunca propaga — a próxima
+ * leitura de `/jogar/seq-state` cai no fallback por edição (sempre correto,
+ * só mais caro) até o próximo voto bem-sucedido re-espelhar.
  */
 async function updateScoreByMonth(
   env: Env,
@@ -1590,6 +1618,18 @@ async function updateScoreByMonth(
     nickname: string | null;
     last_vote_ts?: string;
   }>(raw, "update_score_by_month_parse_error", edition);
+
+  // #4443: baseline do agregado seq:{monthSlug}:{email} — lido ANTES do
+  // branch DO/fallback (usado nos dois): semeia o storage do DO na 1ª vez
+  // que ele processa este mês (self-heal/backfill anteriores a este DO), e
+  // é a base do read-modify-write no fallback sem binding. Validado via
+  // `isValidSeqMonthMap` (não confia no shape só porque o parse teve
+  // sucesso — mesma disciplina de `kvBaseline`/`isValidMonthScoreData`
+  // acima).
+  const seqKey = seqStateKvKey(monthSlug, email);
+  const seqRaw = await env.POLL.get(seqKey);
+  const seqParsed = seqRaw ? safeParseKv<unknown>(seqRaw, "update_seq_state_parse_error", edition) : null;
+  const seqBaseline: SeqMonthMap | null = seqParsed && isValidSeqMonthMap(seqParsed) ? seqParsed : null;
 
   // Nickname: resolvido AQUI (fora do DO) — copiado de score:{email} SOMENTE
   // se a entry ainda não tem um. #2190: usa preloadedScoreRaw se disponível
@@ -1618,7 +1658,7 @@ async function updateScoreByMonth(
       const doResp = await doStub.fetch("https://internal/update-month", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ edition, monthSlug, correct, kvBaseline } satisfies UpdateMonthPayload),
+        body: JSON.stringify({ edition, monthSlug, correct, kvBaseline, seqKvBaseline: seqBaseline } satisfies UpdateMonthPayload),
       });
       if (doResp.ok) {
         // #4169 (achado silent-failure-hunter): parse isolado do corpo — o DO
@@ -1631,8 +1671,9 @@ async function updateScoreByMonth(
         // PRÓXIMO voto bem-sucedido deste jogador, que relê o KV como
         // kvBaseline — irrelevante pois o DO já tem estado real).
         let month: MonthScoreData;
+        let seq: SeqMonthMap | undefined;
         try {
-          ({ month } = await doResp.json() as { ok: true; month: MonthScoreData });
+          ({ month, seq } = await doResp.json() as { ok: true; month: MonthScoreData; seq?: SeqMonthMap });
         } catch (e) {
           console.error(JSON.stringify({ event: "score_counter_do_month_parse_error", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
           return;
@@ -1644,6 +1685,18 @@ async function updateScoreByMonth(
           mirrorWritten = true;
         } catch (e) {
           console.error(JSON.stringify({ event: "score_by_month_kv_mirror_failed", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
+        }
+        // #4443: espelha o agregado seq:{monthSlug}:{email} pro KV — leitura
+        // pública de `/jogar/seq-state` (jogar.ts). Best-effort/fail-soft:
+        // falha aqui NUNCA propaga (o DO já persistiu o estado real; só o
+        // cache lido pelo endpoint fica temporariamente stale/ausente, caindo
+        // no fallback por edição até o próximo voto bem-sucedido re-espelhar).
+        if (seq) {
+          try {
+            await env.POLL.put(seqKey, JSON.stringify(seq));
+          } catch (e) {
+            console.error(JSON.stringify({ event: "seq_state_kv_mirror_failed", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
+          }
         }
         // #4169 (achado silent-failure-hunter): só faz upsert no snapshot se o
         // mirror KV foi de fato escrito — senão o snapshot (cache) fica à
@@ -1693,6 +1746,18 @@ async function updateScoreByMonth(
   entry.nickname = nickname;
 
   await env.POLL.put(key, JSON.stringify(entry));
+
+  // #4443: mesmo fallback KV RMW (sem binding DO, ou em erro do DO) pro
+  // agregado seq:{monthSlug}:{email} — ATENÇÃO: mantém a MESMA race
+  // documentada acima pro resto desta função (aceitável só em testes/dev ou
+  // erro do DO; em produção o SCORE_COUNTER binding fecha essa janela).
+  const seqEntry: SeqMonthMap = { ...(seqBaseline ?? {}) };
+  seqEntry[edition] = correct;
+  try {
+    await env.POLL.put(seqKey, JSON.stringify(seqEntry));
+  } catch (e) {
+    console.error(JSON.stringify({ event: "seq_state_kv_mirror_failed", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
+  }
 
   // #2113(b): upsert da própria entry no snapshot pré-computado do mês.
   // KV eventual consistency: `list()` em computeSnapshotEntries pode demorar

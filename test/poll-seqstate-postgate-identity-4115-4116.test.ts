@@ -166,7 +166,17 @@ describe("orçamento de subrequests do seq-state (#4115, achado do self-review)"
   // (teto de 50/request) e isso estourava — quebraria justamente o cenário que
   // o #4115 conserta. O upgrade pro plano pago (260727) subiu o teto pra 1000,
   // mas as duas fases ficam: evitam ~30 gets inúteis por chamada no caminho
-  // mais comum. Estes testes travam esse custo pra não regredir.
+  // mais comum.
+  //
+  // #4443: nenhum destes testes seeda um agregado `seq:{month}:{id}` — todo
+  // mês aqui cai no caminho de FALLBACK (agregado ausente), que agora também
+  // paga 1 get extra de checagem de agregado POR GRUPO DE MÊS antes de
+  // decidir que precisa cair pro desenho por-edição (ver o loop em
+  // `handleJogarSeqState`). Por isso os números abaixo subiram em +1 frente
+  // ao pré-#4443 — o caminho RÁPIDO (agregado presente) é coberto à parte em
+  // test/poll-jogar-seq-state-aggregate-4443.test.ts (≤4 gets). O orçamento
+  // total (`SEQ_STATE_SUBREQUEST_BUDGET`) também voltou de 100 pra 45
+  // (free-plan-safe, #4443) — daí o teto abaixo cair de 62 pra 45.
   function countingEnv(seed: Record<string, string> = {}) {
     let gets = 0;
     const kv = makeMapKV(seed);
@@ -193,10 +203,11 @@ describe("orçamento de subrequests do seq-state (#4115, achado do self-review)"
     const { env, gets } = countingEnv();
     const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL)).split(";")[0];
     await seqState(env, monthEditions, cookie);
-    // Pior caso do desenho antigo seria 62 (31 × 2). Com as duas fases, a
-    // 2ª só reconsulta o que faltou — aqui tudo, mas ainda assim sem duplicar
-    // as que já foram resolvidas.
-    assert.ok(gets() <= 62, `gastou ${gets()} gets`);
+    // Pior caso do desenho antigo (pré-#4115) seria 62 (31 × 2). Com as duas
+    // fases + o orçamento free-plan-safe do #4443 (45), o teto real cai pra
+    // 45: 1 (checagem de agregado, ausente) + 31 (1ª fase) + 13 (2ª fase,
+    // truncada pelo orçamento restante).
+    assert.ok(gets() <= 45, `gastou ${gets()} gets`);
   });
 
   it("caso real (identificado, mês já jogado sob o e-mail real) custa ~1 get a mais que sem sessão", async () => {
@@ -211,16 +222,20 @@ describe("orçamento de subrequests do seq-state (#4115, achado do self-review)"
     const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL)).split(";")[0];
     const state = await seqState(env, monthEditions, cookie);
 
-    // Só a rodada livre precisa da 2ª fase → 31 + 1.
-    assert.equal(gets(), monthEditions.length + 1);
+    // #4443: +1 frente ao pré-#4443 (31 + 1) — a checagem de agregado
+    // (ausente, sem seed de `seq:*` neste teste) custa 1 get antes de cair no
+    // fallback por edição. Só a rodada livre precisa da 2ª fase → 1 + 31 + 1.
+    assert.equal(gets(), monthEditions.length + 2);
     // E o estado sai completo: nenhuma edição reportada como não-votada.
     assert.equal(state.filter((e) => !e.voted).length, 0);
   });
 
-  it("sem sessão não há 2ª fase — 1 get por edição", async () => {
+  it("sem sessão não há 2ª fase — 1 get de agregado + 1 get por edição", async () => {
     const { env, gets } = countingEnv();
     await seqState(env, monthEditions);
-    assert.equal(gets(), monthEditions.length);
+    // #4443: +1 frente ao pré-#4443 (era `monthEditions.length`) — a
+    // checagem de agregado (ausente) precede o fallback por edição.
+    assert.equal(gets(), monthEditions.length + 1);
   });
 });
 

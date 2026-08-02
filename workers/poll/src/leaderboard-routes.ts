@@ -431,6 +431,16 @@ export async function upsertOwnEntryInSnapshot(
  * batchSize=20 escolhido pra ficar dentro do limite subrequest do Worker
  * (free tier 50/req; paid 1000/req). Conservador — pode subir pra 50
  * se necessário.
+ *
+ * #4443 (reconferido — item 8 da issue, não corrigido aqui, fora de escopo):
+ * o batch PACEIA os gets, mas o TOTAL de subrequests desta função escala com
+ * `keys.length` (Nº de votantes do mês), não é limitado pelo batch — um mês
+ * com mais de 50 votantes já estouraria o teto do free plan mesmo com este
+ * batching, se o worker `poll` descer de plano (motivação do #4443/#4442).
+ * O comentário do dedup de nickname em index.ts já registra "~60+" votantes
+ * observados — este limite provavelmente já foi cruzado pelo menos uma vez.
+ * Reportado como finding no PR do #4443 (rota `/leaderboard`, fora do escopo
+ * de `/jogar/seq-state`) — não resolvido aqui.
  */
 const SNAPSHOT_GET_BATCH_SIZE = 20;
 
