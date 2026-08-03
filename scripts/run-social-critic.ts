@@ -130,6 +130,12 @@ export function normalizeSocialCriticResult(raw: unknown, edition: string): Soci
       motivo: f.motivo as string,
     }));
 
+  if (findings.length !== rawFindings.length) {
+    console.warn(
+      `run-social-critic: ${rawFindings.length - findings.length} finding(s) descartado(s) por schema inválido (faltando section/trecho/motivo como string) — ver output bruto do subagente.`,
+    );
+  }
+
   return {
     edition,
     checked_at: typeof obj.checked_at === "string" ? obj.checked_at : new Date().toISOString(),

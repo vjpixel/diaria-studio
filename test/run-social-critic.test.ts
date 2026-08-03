@@ -16,7 +16,7 @@
  *      exit codes, persistência do JSON.
  */
 
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -152,7 +152,15 @@ describe("normalizeSocialCriticResult (#4505 item 3)", () => {
     assert.equal(result.sounds_ai, true, "sounds_ai deve ser derivado de findings.length, não copiado do raw");
   });
 
-  it("filtra findings inválidos (campos faltando ou tipo errado)", () => {
+  it("filtra findings inválidos (campos faltando ou tipo errado) e avisa via console.warn (self-review #4505)", () => {
+    // Failure scenario coberto: se o filtro de schema descartar itens
+    // malformados SEM avisar, um caso em que TODOS os findings vierem
+    // malformados faria sounds_ai=false silenciosamente (a própria rede de
+    // segurança do critic pass falhando calada) — o warn é o que torna
+    // essa perda auditável em vez de invisível.
+    const warnings: string[] = [];
+    mock.method(console, "warn", (...args: unknown[]) => warnings.push(String(args[0])));
+
     const raw = {
       findings: [
         { section: "d1", trecho: "x", motivo: "y" },
@@ -164,6 +172,21 @@ describe("normalizeSocialCriticResult (#4505 item 3)", () => {
     const result = normalizeSocialCriticResult(raw, "260803");
     assert.equal(result.findings.length, 1, "deve filtrar findings inválidos");
     assert.equal(result.findings[0].section, "d1");
+    assert.ok(
+      warnings.some((w) => w.includes("3 finding(s) descartado")),
+      `deve avisar quantos findings foram descartados por schema inválido; avisos: ${JSON.stringify(warnings)}`,
+    );
+  });
+
+  it("não avisa quando todos os findings são válidos", () => {
+    const warnings: string[] = [];
+    mock.method(console, "warn", (...args: unknown[]) => warnings.push(String(args[0])));
+
+    normalizeSocialCriticResult(
+      { findings: [{ section: "d1", trecho: "x", motivo: "y" }] },
+      "260803",
+    );
+    assert.equal(warnings.length, 0, "não deve avisar quando nenhum finding foi descartado");
   });
 
   it("lança erro se raw não é objeto", () => {

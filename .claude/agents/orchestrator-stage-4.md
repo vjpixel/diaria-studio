@@ -668,7 +668,7 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
       ```
    **6.9** — Re-renderizar (`render-social-html.ts`, §4b step 3) e re-servir localmente (mesmo padrão stop-old → `embed-images-base64.ts` → `serve-preview.ts --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url` de §4c.6c) antes de voltar ao gate. O arquivo republicado é sempre o `03-social.md` COMPLETO (seções scoped-humanizadas + seções intactas) — o preview reflete o estado atual inteiro em ambos os fluxos.
 
-7. **Voltar ao §4d** (re-apresentar o resumo consolidado atualizado) — loop até o editor responder `sim` ou `abortar`. `ajustar` pode ser repetido N vezes. Se `03-social.md` foi tocado neste ajuste E `social_critic_pass.enabled === true` (§4c.6d), re-rodar o critic pass sobre o estado atual antes de re-apresentar — o achado de uma rodada anterior pode não valer mais (texto mudou) e um tique novo pode ter entrado justamente por este ajuste.
+7. **Voltar ao §4d** (re-apresentar o resumo consolidado atualizado) — loop até o editor responder `sim` ou `abortar`. `ajustar` pode ser repetido N vezes. Se `03-social.md` foi tocado neste ajuste E `social_critic_pass.enabled === true` (§4c.6d), re-rodar o critic pass sobre o estado atual antes de re-apresentar (mesmos passos de §4c.6d: dispatch do agente `social-critic` + `--input-json`, sobrescrevendo `_internal/social-critic.json`) — o achado de uma rodada anterior pode não valer mais (texto mudou) e um tique novo pode ter entrado justamente por este ajuste.
 
 **Distinção `editar` vs `ajustar`:**
 - `editar`: edição fora do fluxo de chat (local ou via Studio) — adequado para revisões longas, múltiplas seções, ou quando o editor não está no terminal.
