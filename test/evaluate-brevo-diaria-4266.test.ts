@@ -24,6 +24,7 @@ import {
   promoteBeehiivSubscription,
   unsubscribeInBeehiiv,
   verifyUnsubscribedInBeehiiv,
+  PROMOTION_VERIFY_RETRY_DELAY_MS,
   runEvaluation,
 } from "../scripts/evaluate-brevo-diaria.ts";
 import { findContact, type BrevoDiariaContact } from "../scripts/lib/brevo-diaria-store.ts";
@@ -483,14 +484,41 @@ describe("unsubscribeInBeehiiv / verifyUnsubscribedInBeehiiv — propagação do
     assert.equal(await verifyUnsubscribedInBeehiiv("pub_1", "key", "a@b.com", fetchImpl), true);
   });
 
-  it('verifyUnsubscribedInBeehiiv: status ainda "pending" → false (2xx no PUT não é garantia — mesma armadilha do endpoint de tags)', async () => {
+  it('verifyUnsubscribedInBeehiiv: status ainda "pending" mesmo após o retry → false (2xx no PUT não é garantia — mesma armadilha do endpoint de tags)', async () => {
     const fetchImpl = (async () => jsonRes(200, { data: { status: "pending" } })) as typeof fetch;
-    assert.equal(await verifyUnsubscribedInBeehiiv("pub_1", "key", "a@b.com", fetchImpl), false);
+    assert.equal(await verifyUnsubscribedInBeehiiv("pub_1", "key", "a@b.com", fetchImpl, async () => {}), false);
   });
 
-  it("verifyUnsubscribedInBeehiiv: 404 (subscription sumiu) → false", async () => {
+  it("verifyUnsubscribedInBeehiiv: 404 (subscription sumiu) mesmo após o retry → false", async () => {
     const fetchImpl = (async () => jsonRes(404, {})) as typeof fetch;
-    assert.equal(await verifyUnsubscribedInBeehiiv("pub_1", "key", "a@b.com", fetchImpl), false);
+    assert.equal(await verifyUnsubscribedInBeehiiv("pub_1", "key", "a@b.com", fetchImpl, async () => {}), false);
+  });
+
+  it('verifyUnsubscribedInBeehiiv: releitura imediata "pending" (eventual consistency), retry após espera confirma "inactive" → true (#4545 review)', async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      return jsonRes(200, { data: { status: calls === 1 ? "pending" : "inactive" } });
+    }) as typeof fetch;
+    let sleptMs = -1;
+    const sleepImpl = async (ms: number) => {
+      sleptMs = ms;
+    };
+    const result = await verifyUnsubscribedInBeehiiv("pub_1", "key", "a@b.com", fetchImpl, sleepImpl);
+    assert.equal(result, true);
+    assert.equal(calls, 2, "GET inicial + 1 releitura após o retry — retry é INCONDICIONAL, não depende de um status intermediário nomeado");
+    assert.equal(sleptMs, PROMOTION_VERIFY_RETRY_DELAY_MS);
+  });
+
+  it("verifyUnsubscribedInBeehiiv: retry esgotado, releitura AINDA não mostra inactive → false (nunca um 2º retry)", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      return jsonRes(200, { data: { status: "pending" } });
+    }) as typeof fetch;
+    const result = await verifyUnsubscribedInBeehiiv("pub_1", "key", "a@b.com", fetchImpl, async () => {});
+    assert.equal(result, false);
+    assert.equal(calls, 2, "só 1 retry, nunca fica reesperando indefinidamente");
   });
 });
 

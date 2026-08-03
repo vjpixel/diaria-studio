@@ -41,14 +41,14 @@
  * store) — o registro Pending correspondente na Beehiiv nunca era tocado,
  * ficando reativável por engano (clique tardio no CTA de uma edição antiga,
  * ou qualquer ativação em massa futura dos Pending). A moldura original da
- * issue #4538 ("PATCH status vs DELETE") estava baseada num campo que não
- * existe — investigação confirmou (doc pública da API Beehiiv) que o campo
- * certo é `unsubscribe: true` no MESMO endpoint `PUT
+ * issue #4538 (PATCH pra unsubscribed) estava baseada num campo que não
+ * existe — investigação confirmou (doc pública da API Beehiiv,
+ * https://developers.beehiiv.com/api-reference/subscriptions/delete) que o
+ * campo certo é `unsubscribe: true` no MESMO endpoint `PUT
  * .../subscriptions/by_email/{email}` que `sync-apoio-nivel-beehiiv.ts` já
  * usa com sucesso pra `custom_fields` — não existe campo `status` gravável
- * nesse endpoint. A doc também desaconselha DELETE explicitamente
- * ("Recommended Alternative: unsubscribing, since unsubscribing preserves
- * data history while deletion is permanent").
+ * nesse endpoint. A doc também desaconselha DELETE explicitamente: "We
+ * recommend unsubscribing when possible instead of deleting."
  *
  * `unsubscribeInBeehiiv` (PUT) + `verifyUnsubscribedInBeehiiv` (releitura,
  * exige `status==="inactive"` explícito) seguem a MESMA disciplina de
@@ -439,15 +439,31 @@ export async function unsubscribeInBeehiiv(
  * `tags` da Beehiiv, que aceita o PUT e ignora o campo em silêncio — ver
  * `sync-apoio-nivel-beehiiv.ts`). Reusa `fetchBeehiivSubscriptionStatus`
  * (mesmo helper de `verifyPromotedToBeehiiv`/passo 1).
+ *
+ * Retry curto (#4545 review — silent-failure-hunter): se a releitura
+ * imediata não mostrar `"inactive"`, espera `PROMOTION_VERIFY_RETRY_DELAY_MS`
+ * e releê mais uma vez antes de declarar não-confirmado — mesmo racional de
+ * `verifyPromotedToBeehiiv` (eventual consistency da Beehiiv, já documentada
+ * no cabeçalho do módulo). Diferente de `verifyPromotedToBeehiiv`, que só
+ * retenta quando o status intermediário vem nomeado como `"validating"`,
+ * aqui o retry é INCONDICIONAL — esta combinação exata (`unsubscribe:true`
+ * contra um registro Pending) nunca rodou ao vivo antes desta unidade, então
+ * não há confirmação de que produza um status transitório nomeado
+ * equivalente; mais seguro assumir que pode haver atraso e sempre dar 1
+ * segunda chance antes de reportar falha.
  */
 export async function verifyUnsubscribedInBeehiiv(
   publicationId: string,
   apiKey: string,
   email: string,
   fetchImpl: typeof fetch = fetch,
+  sleepImpl: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
 ): Promise<boolean> {
   const status = await fetchBeehiivSubscriptionStatus(publicationId, apiKey, email, fetchImpl);
-  return status === "inactive";
+  if (status === "inactive") return true;
+  await sleepImpl(PROMOTION_VERIFY_RETRY_DELAY_MS);
+  const recheck = await fetchBeehiivSubscriptionStatus(publicationId, apiKey, email, fetchImpl);
+  return recheck === "inactive";
 }
 
 /**

@@ -59,8 +59,19 @@
  * existisse — nunca pior que o comportamento pré-#4538. Fail-open também em
  * erro de rede/HTTP da Brevo (timeout, 4xx/5xx) — um hiccup da Brevo não pode
  * travar TODO o fluxo de confirmação por causa de uma checagem que cobre um
- * edge case raro (população cap 300); loga um warning (`wrangler tail`) em
- * vez de lançar.
+ * edge case raro (população cap 300).
+ *
+ * Severidade do log NÃO é uniforme entre as 3 causas de fail-open (#4545
+ * review — silent-failure-hunter): secret ausente é esperado/documentado
+ * (`console.warn`); erro HTTP não-2xx e exceção de rede são falhas REAIS
+ * (`console.error`) — em especial 401/403, que pode ser credencial
+ * INVÁLIDA/REVOGADA (bug persistente) e não um hiccup transitório, logado com
+ * mensagem própria pra não se perder no bucket genérico. O retorno
+ * (`NativeUnsubscribeCheck`) também distingue os 3 casos de "não consegui
+ * confirmar" (`status: "unknown"`, com `reason`) de "confirmei que NÃO está
+ * pendente" (`status: "confirmed_not_pending"`) — `activateSubscription` só
+ * bloqueia em `"confirmed_pending"`, tudo mais (incluindo `unknown`) segue
+ * (fail-open preservado).
  */
 
 export interface Env {
@@ -118,22 +129,39 @@ export function parseEmailParam(url: URL): ParsedEmailParam {
 // ── guard de descadastro nativo pendente (#4538 item B) ────────────────────
 
 /**
- * `GET /v3/contacts/{email}` na Brevo — `true` se `emailBlacklisted === true`
- * (descadastro NATIVO, ação própria da pessoa — mesmo sinal que
- * `scripts/evaluate-brevo-diaria.ts` passo 0 detecta e propaga pra Beehiiv).
- * Fail-OPEN (retorna `false`) quando `BREVO_DIARIA_API_KEY` está ausente, ou
- * em qualquer erro de rede/HTTP — ver rationale completo no cabeçalho do
- * módulo. `fetchImpl` injetável pra teste, nunca rede real nos testes (#633).
+ * Resultado de `checkNativeUnsubscribePending` (#4545 review —
+ * type-design-analyzer): distingue "confirmei que a pessoa pediu pra sair"
+ * de "não consegui confirmar nada, default seguro é seguir" — os dois
+ * colapsavam no mesmo `false` antes desta correção, obscurecendo qual dos 2
+ * motivos causou o fail-open num log/debug. `unknown.reason` carrega a causa
+ * específica; `activateSubscription` só bloqueia em `"confirmed_pending"`.
+ */
+export type NativeUnsubscribeCheck =
+  | { status: "confirmed_pending" }
+  | { status: "confirmed_not_pending" }
+  | { status: "unknown"; reason: "no_api_key" | "http_error" | "network_error" };
+
+/**
+ * `GET /v3/contacts/{email}` na Brevo — `confirmed_pending` se
+ * `emailBlacklisted === true` (descadastro NATIVO, ação própria da pessoa —
+ * mesmo sinal que `scripts/evaluate-brevo-diaria.ts` passo 0 detecta e
+ * propaga pra Beehiiv). Fail-OPEN (`status: "unknown"`) quando
+ * `BREVO_DIARIA_API_KEY` está ausente, ou em qualquer erro de rede/HTTP — ver
+ * rationale completo no cabeçalho do módulo. `fetchImpl` injetável pra teste,
+ * nunca rede real nos testes (#633).
  */
 export async function checkNativeUnsubscribePending(
   env: Env,
   email: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<boolean> {
+): Promise<NativeUnsubscribeCheck> {
   const apiKey = env.BREVO_DIARIA_API_KEY;
   if (!apiKey) {
+    // Esperado/documentado (secret novo, armamento pendente do editor) —
+    // console.warn, não console.error. Diferente dos branches abaixo, que
+    // são falhas reais.
     console.warn(JSON.stringify({ event: "reativar_brevo_guard_skipped", reason: "BREVO_DIARIA_API_KEY ausente" }));
-    return false;
+    return { status: "unknown", reason: "no_api_key" };
   }
   const base = env.BREVO_API_URL ?? "https://api.brevo.com/v3";
   try {
@@ -141,16 +169,30 @@ export async function checkNativeUnsubscribePending(
       headers: { "api-key": apiKey, Accept: "application/json" },
       signal: AbortSignal.timeout(ACTIVATE_FETCH_TIMEOUT_MS),
     });
-    if (res.status === 404) return false; // contato nunca existiu na Brevo — nada a bloquear
+    if (res.status === 404) return { status: "confirmed_not_pending" }; // contato nunca existiu na Brevo — nada a bloquear
     if (!res.ok) {
-      console.warn(JSON.stringify({ event: "reativar_brevo_guard_non_2xx", status: res.status }));
-      return false; // fail-open — ver cabeçalho do módulo
+      // console.error (não warn) — isto É uma falha real, diferente do caso
+      // "secret ausente" acima. 401/403 especificamente pode ser credencial
+      // INVÁLIDA/REVOGADA (bug persistente), não um hiccup — mensagem
+      // própria pra não se perder no bucket genérico de erro.
+      if (res.status === 401 || res.status === 403) {
+        console.error(
+          JSON.stringify({
+            event: "reativar_brevo_guard_auth_error",
+            status: res.status,
+            hint: "BREVO_DIARIA_API_KEY provavelmente inválida/revogada — não é o mesmo caso de 'não configurada'",
+          }),
+        );
+      } else {
+        console.error(JSON.stringify({ event: "reativar_brevo_guard_non_2xx", status: res.status }));
+      }
+      return { status: "unknown", reason: "http_error" }; // fail-open — ver cabeçalho do módulo
     }
     const body = (await res.json().catch(() => null)) as { emailBlacklisted?: boolean } | null;
-    return body?.emailBlacklisted === true;
+    return body?.emailBlacklisted === true ? { status: "confirmed_pending" } : { status: "confirmed_not_pending" };
   } catch (e) {
-    console.warn(JSON.stringify({ event: "reativar_brevo_guard_failed", error: String(e) }));
-    return false; // fail-open — ver cabeçalho do módulo
+    console.error(JSON.stringify({ event: "reativar_brevo_guard_failed", error: String(e) }));
+    return { status: "unknown", reason: "network_error" }; // fail-open — ver cabeçalho do módulo
   }
 }
 
@@ -248,9 +290,11 @@ export async function activateSubscription(
 
   // 1.5) guard de descadastro nativo pendente (#4538 item B) — SÓ checado
   // quando estamos de fato prestes a fazer DELETE+CREATE (já passou pela
-  // idempotência acima). Fail-open — ver `checkNativeUnsubscribePending`.
-  const nativeUnsubscribePending = await checkNativeUnsubscribePending(env, email, fetchImpl);
-  if (nativeUnsubscribePending) {
+  // idempotência acima). Só bloqueia em "confirmed_pending" — "unknown"
+  // (não consegui checar) segue como fail-open, mesmo tratamento de
+  // "confirmed_not_pending" (ver `checkNativeUnsubscribePending`).
+  const nativeCheck = await checkNativeUnsubscribePending(env, email, fetchImpl);
+  if (nativeCheck.status === "confirmed_pending") {
     console.warn(JSON.stringify({ event: "reativar_blocked_native_unsubscribe_pending" }));
     return { ok: true, status: 200, reason: "native_unsubscribe_pending" };
   }

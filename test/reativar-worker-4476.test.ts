@@ -299,47 +299,59 @@ describe("activateSubscription — DELETE + CREATE, não mais reactivate_existin
 });
 
 describe("checkNativeUnsubscribePending — guard de descadastro nativo (#4538 item B)", () => {
-  it("BREVO_DIARIA_API_KEY ausente → fail-open, false, sem chamar fetch", async () => {
+  it("BREVO_DIARIA_API_KEY ausente → unknown/no_api_key, sem chamar fetch", async () => {
     let called = false;
     const fetchImpl = (async () => {
       called = true;
       return jsonRes(200, { emailBlacklisted: true });
     }) as typeof fetch;
     const result = await checkNativeUnsubscribePending({}, "a@b.com", fetchImpl);
-    assert.equal(result, false);
+    assert.deepEqual(result, { status: "unknown", reason: "no_api_key" });
     assert.equal(called, false, "sem a key, o guard nem tenta chamar a Brevo — fail-open");
   });
 
-  it("emailBlacklisted:true → true (descadastro nativo pendente)", async () => {
+  it("emailBlacklisted:true → confirmed_pending (descadastro nativo pendente)", async () => {
     const fetchImpl = (async () => jsonRes(200, { emailBlacklisted: true })) as typeof fetch;
     const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key" };
-    assert.equal(await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl), true);
+    assert.deepEqual(await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl), { status: "confirmed_pending" });
   });
 
-  it("emailBlacklisted:false → false (nada pendente)", async () => {
+  it("emailBlacklisted:false → confirmed_not_pending (nada pendente)", async () => {
     const fetchImpl = (async () => jsonRes(200, { emailBlacklisted: false })) as typeof fetch;
     const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key" };
-    assert.equal(await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl), false);
+    assert.deepEqual(await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl), { status: "confirmed_not_pending" });
   });
 
-  it("404 (contato nunca existiu na Brevo) → false", async () => {
+  it("404 (contato nunca existiu na Brevo) → confirmed_not_pending", async () => {
     const fetchImpl = (async () => new Response(null, { status: 404 })) as typeof fetch;
     const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key" };
-    assert.equal(await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl), false);
+    assert.deepEqual(await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl), { status: "confirmed_not_pending" });
   });
 
-  it("erro HTTP (5xx) → fail-open, false (nunca lança, nunca bloqueia o fluxo inteiro por um hiccup)", async () => {
+  it("erro HTTP (5xx) → fail-open, unknown/http_error (nunca lança, nunca bloqueia o fluxo inteiro por um hiccup)", async () => {
     const fetchImpl = (async () => new Response("boom", { status: 500 })) as typeof fetch;
     const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key" };
-    assert.equal(await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl), false);
+    assert.deepEqual(await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl), { status: "unknown", reason: "http_error" });
   });
 
-  it("fetch lança (timeout/rede) → fail-open, false (nunca propaga a exceção)", async () => {
+  it("401 (credencial inválida/revogada) → fail-open, unknown/http_error — mesmo bucket de erro HTTP, log distinto (#4545 review)", async () => {
+    const fetchImpl = (async () => new Response("unauthorized", { status: 401 })) as typeof fetch;
+    const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key_revogada" };
+    assert.deepEqual(await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl), { status: "unknown", reason: "http_error" });
+  });
+
+  it("403 (credencial sem permissão) → fail-open, unknown/http_error", async () => {
+    const fetchImpl = (async () => new Response("forbidden", { status: 403 })) as typeof fetch;
+    const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key" };
+    assert.deepEqual(await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl), { status: "unknown", reason: "http_error" });
+  });
+
+  it("fetch lança (timeout/rede) → fail-open, unknown/network_error (nunca propaga a exceção)", async () => {
     const fetchImpl = (async () => {
       throw new Error("network down");
     }) as typeof fetch;
     const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key" };
-    assert.equal(await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl), false);
+    assert.deepEqual(await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl), { status: "unknown", reason: "network_error" });
   });
 
   it("BREVO_API_URL override (teste) → usa a base customizada", async () => {
