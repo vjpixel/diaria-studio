@@ -44,9 +44,12 @@ async function hmacHex(secret: string, message: string): Promise<string> {
 
 /**
  * Token determinístico (24 hex chars) — mesma saída sempre pro mesmo par
- * (secret, email). Email normalizado (lowercase + trim) antes do HMAC, igual
- * ao padrão já usado pelo `sig` de voto (`hmacSign`, workers/poll/src/index.ts)
- * e pelo antigo `generatePollSig` (#1083).
+ * (secret, email). Email normalizado (lowercase + trim) AQUI, antes do HMAC —
+ * `hmacSign` (workers/poll/src/index.ts) em si não normaliza nada, é o
+ * CALLER que precisa normalizar antes de invocá-la; mesmo padrão já usado
+ * pelo `sig` de voto (callers de `hmacSign`) e pelo antigo `generatePollSig`
+ * (#1083). #4512 (correção de comentário, achado comment-analyzer): a versão
+ * anterior atribuía a normalização à própria `hmacSign`.
  */
 export async function computePollToken(secret: string, email: string): Promise<string> {
   const normalized = email.toLowerCase().trim();
@@ -54,8 +57,18 @@ export async function computePollToken(secret: string, email: string): Promise<s
   return full.slice(0, TOKEN_HEX_LEN);
 }
 
-/** Pseudo-email completo (`{token}@vote.eia.diaria.local`) — o valor gravado
- * no custom field Beehiiv `poll_token` e usado na URL de voto do e-mail. */
+/** Pseudo-email completo (`{token}@vote.eia.diaria.local`) — a identidade
+ * final que aparece na URL de voto DEPOIS que a Beehiiv substitui o merge
+ * tag `{{poll_token}}` (template já concatena o domínio,
+ * `newsletter-render-html.ts::renderEIA`). #4512 (correção de comentário —
+ * achado que motivou a correção de `inject-poll-token.ts`, que gravava
+ * exatamente ESTE valor completo no custom field por engano, duplicando o
+ * domínio na URL final): o custom field Beehiiv `poll_token` grava só o
+ * TOKEN CRU (`computePollToken`, sem domínio) — NÃO o valor desta função.
+ * `computePollTokenEmail` não tem caller de produção hoje (só testes, que
+ * simulam/verificam a identidade final pós-substituição) — mantida como
+ * utilidade pura pequena, testada e espelhada, não removida por não ter
+ * custo de manutenção real. */
 export async function computePollTokenEmail(secret: string, email: string): Promise<string> {
   const token = await computePollToken(secret, email);
   return `${token}@${VOTE_TOKEN_DOMAIN}`;

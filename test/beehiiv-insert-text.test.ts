@@ -113,6 +113,27 @@ describe("buildInsertTextJs (#2550)", () => {
     );
   });
 
+  it("#4512 (achado pr-test-analyzer): varredura hasEmail também checa {{poll_token}} — branch novo do #4487 nunca coberto por este arquivo", () => {
+    const snippet = buildInsertTextJs(RAW_URL);
+    // #4487 trocou a URL de voto pro token opaco {{poll_token}} — a varredura
+    // 'hasEmail' passou a checar `n.text.includes('{{poll_token}}') ||
+    // n.text.includes('{{email}}')` (scripts/lib/beehiiv-insert-text.ts:159),
+    // mas nenhum teste até aqui cobria explicitamente o branch novo — só o
+    // legado {{email}} (teste acima). Sem isso, uma regressão que quebrasse
+    // só a checagem de {{poll_token}} (ex: typo, remoção acidental do OR)
+    // passaria batido pela suíte.
+    assert.match(
+      snippet,
+      /\{\{poll_token\}\}/,
+      "snippet deve verificar a presença de {{poll_token}} no doc pós-paste (#4487)",
+    );
+    assert.match(
+      snippet,
+      /n\.text\.includes\('\{\{poll_token\}\}'\)\s*\|\|\s*n\.text\.includes\('\{\{email\}\}'\)/,
+      "a varredura hasEmail deve checar {{poll_token}} OU {{email}} — nem uma sozinha basta (regressão do #4487)",
+    );
+  });
+
   it("SPEC #2550: fragmento com {{email}} é inserido via text literal — merge-tag preservada", () => {
     // Este é o invariante central do #2550:
     // buildInsertTextJs produz um snippet que insere o HTML como TEXT (não como HTML parseado).

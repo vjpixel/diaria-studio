@@ -28,7 +28,13 @@
  *      #4487 — era `{{email}}`/`{{poll_sig}}`) — Beehiiv expande no envio.
  *      `categorizeUrl` casa o padrão genericamente (não um nome de campo
  *      específico), então segue funcionando pra qualquer merge tag futura
- *      sem precisar editar este arquivo.
+ *      sem precisar editar este arquivo. **#4512: só skipado em
+ *      `stage: "draft"`** (HTML de pré-render, onde a tag ainda não foi
+ *      expandida por design). O caller real (`mainCli`, único hoje) sempre
+ *      passa `stage: "delivered"` (e-mail JÁ ENTREGUE) — nesse estágio uma
+ *      tag ainda literal é o DEFEITO que este linter existe pra pegar, não
+ *      skipada: segue pro HEAD normal e vira `link_dead` via o 4xx real do
+ *      guard `isUnsubstitutedMergeTag` (workers/poll/src/vote.ts).
  *    - `non_http`/`tel_mailto`: protocolos não-http
  *    - Artefatos conhecidos de test-send (#3480/#3481/#3482, post-mortem 260716)
  *      — classificados via `classifyKnownArtifact`, sempre `skipped[]` (nunca
@@ -172,17 +178,43 @@ export function decodeRedirectWrapper(url: string): string {
 }
 
 /**
+ * Estágio do conteúdo sendo checado — determina se um merge tag `{{...}}`
+ * ainda literal na URL é esperado (draft) ou é o próprio defeito (delivered).
+ * Ver rationale completo no header de `categorizeUrl` abaixo (#4512).
+ */
+export type LinkTrackingStage = "draft" | "delivered";
+
+/**
  * Categoriza URL pra decisão de skip:
  * - non_http: protocolos não-http (mailto, tel, javascript) — skip silencioso
  * - auth_required: domínios que exigem login (skip + info)
  * - null: deve fazer HEAD
+ *
+ * #4512 (achado silent-failure-hunter, follow-up do #4487): `stage` distingue
+ * DUAS situações que pareciam a mesma coisa mas não são. `stage: "draft"`
+ * (default, preserva comportamento pré-#4512) — HTML de pré-render/worker
+ * ainda NÃO passou pelo envio da Beehiiv, então um merge tag `{{poll_token}}`/
+ * `{{email}}` literal é esperado; um HEAD na URL literal retornaria 4xx
+ * (falso link_dead). Skip determinístico via reason `merge_tag`.
+ * `stage: "delivered"` — conteúdo já FOI entregue (fetchado via Gmail MCP,
+ * `mainCli()`/`review-test-email.md` passo 17); a Beehiiv JÁ deveria ter
+ * substituído todo merge tag no envio real. Uma tag ainda literal aqui É o
+ * defeito que este linter existe pra pegar (ex: custom field `poll_token`
+ * não populado pro assinante de teste antes do 1º envio — ver
+ * `scripts/inject-poll-token.ts`). Por isso NÃO skipa neste estágio: retorna
+ * `null` (URL segue pro HEAD normal) — um GET real em `/vote` com o
+ * parâmetro literal retorna 4xx (`isUnsubstitutedMergeTag`, guard já existente
+ * em `workers/poll/src/vote.ts`), então o HEAD equivalente também recebe
+ * status >=400 e vira `link_dead` (blocker) pela lógica genérica já existente
+ * abaixo — nenhuma lógica extra além de deixar de skipar.
  */
-export function categorizeUrl(url: string): "non_http" | "auth_required" | "merge_tag" | null {
+export function categorizeUrl(url: string, stage: LinkTrackingStage = "draft"): "non_http" | "auth_required" | "merge_tag" | null {
   // #1949: URL com merge tag Beehiiv (`{{email}}`) — a vote URL do É IA? é
   // `?email={{email}}&...`. Beehiiv expande no ENVIO; um HEAD na URL literal
-  // retornaria 4xx (falso link_dead). Skip determinístico.
+  // retornaria 4xx (falso link_dead) — SÓ vale em stage="draft" (ver header
+  // desta função pro rationale completo do #4512).
   // #1186: `{{poll_sig}}` removido — modo merge-tag sem sig HMAC.
-  if (/\{\{[^}]+\}\}/.test(url)) return "merge_tag";
+  if (stage === "draft" && /\{\{[^}]+\}\}/.test(url)) return "merge_tag";
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -325,6 +357,10 @@ export async function checkLinkTracking(
   emailContent: string,
   fetchImpl: typeof fetch = fetch,
   concurrency = DEFAULT_CONCURRENCY,
+  // #4512: default "draft" preserva 100% do comportamento pré-existente
+  // (chamador real hoje, mainCli(), passa "delivered" explicitamente — ver
+  // header de categorizeUrl acima pro rationale completo).
+  stage: LinkTrackingStage = "draft",
 ): Promise<LinkTrackingResult> {
   const rawUrls = extractEmailUrls(emailContent);
   const issues: LinkIssue[] = [];
@@ -348,7 +384,7 @@ export async function checkLinkTracking(
       continue;
     }
 
-    const cat = categorizeUrl(decoded);
+    const cat = categorizeUrl(decoded, stage);
     if (cat === "non_http") {
       skipped.push({ url: decoded, reason: decoded.startsWith("mailto:") ? "tel_mailto" : "non_http" });
       continue;
@@ -440,7 +476,13 @@ async function mainCli(): Promise<number> {
     return 2;
   }
   const content = readFileSync(emailFile, "utf8");
-  const result = await checkLinkTracking(content);
+  // #4512: único caller documentado (`review-test-email.md` passo 17) sempre
+  // aponta pro e-mail JÁ ENTREGUE (`_internal/test-email-{AAMMDD}.txt`,
+  // fetchado via Gmail MCP) — nunca pro HTML de draft/pré-render. Default
+  // "delivered" (override via --stage draft, se algum caller futuro precisar
+  // checar HTML de pré-render onde merge tag não-expandida é esperada).
+  const stage: LinkTrackingStage = values.stage === "draft" ? "draft" : "delivered";
+  const result = await checkLinkTracking(content, fetch, DEFAULT_CONCURRENCY, stage);
   if (values.out) writeFileSync(values.out, JSON.stringify(result, null, 2), "utf8");
   console.log(JSON.stringify(result, null, 2));
 

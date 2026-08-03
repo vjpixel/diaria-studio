@@ -54,6 +54,40 @@ describe("#4487 — handleVote resolve token opaco de voto via KV", () => {
     assert.equal(kv.puts.some((p) => p.key.startsWith("vote:")), false, "nenhum voto deve ser gravado com token não-resolvido");
   });
 
+  it("#4512 (fix pré-merge, achado type-design-analyzer): local-part malformado sob vote.eia.diaria.local (não é hex de 24 chars) → 400, nunca cai no caminho de e-mail normal", async () => {
+    // extractPollToken(email) retorna null tanto pra "fora do domínio
+    // reservado" quanto pra "dentro do domínio mas local-part inválido" — sem
+    // o guard isPollTokenIdentity+!extractPollToken em vote.ts, este segundo
+    // caso caía no fallthrough e seguia como e-mail normal, poluindo
+    // dedup/score/nickname/leaderboard com uma identidade fabricada. Mesmo
+    // padrão de bug já corrigido pro domínio irmão web.eia.diaria.local
+    // (#3976/#4011).
+    const kv = makeTrackedKv();
+    const env = makePollEnv(kv);
+    const res = await worker.fetch(
+      new Request(`https://poll.test/vote?email=algo-invalido@${VOTE_TOKEN_DOMAIN}&edition=${EDITION}&choice=A`),
+      env,
+      {} as ExecutionContext,
+    );
+    assert.equal(res.status, 400, "local-part malformado sob o domínio reservado deve ser rejeitado, não tratado como e-mail normal");
+    assert.equal(
+      kv.puts.some((p) => p.key.startsWith("vote:") || p.key.startsWith("score:")),
+      false,
+      "nenhum voto/score deve ser gravado sob a identidade fabricada",
+    );
+  });
+
+  it("#4512: local-part CURTO DEMAIS (menos de 24 hex chars) sob vote.eia.diaria.local → 400", async () => {
+    const kv = makeTrackedKv();
+    const env = makePollEnv(kv);
+    const res = await worker.fetch(
+      new Request(`https://poll.test/vote?email=abc123@${VOTE_TOKEN_DOMAIN}&edition=${EDITION}&choice=A`),
+      env,
+      {} as ExecutionContext,
+    );
+    assert.equal(res.status, 400, "token curto demais deve ser rejeitado pelo guard, não tratado como e-mail normal");
+  });
+
   it("entrada KV corrompida (valor não é um e-mail válido) → 400, nenhum voto gravado (guard defensivo)", async () => {
     const token = await computePollToken(SECRET, REAL_EMAIL);
     // Simula corrupção: a entrada existe, mas o valor não é um e-mail válido

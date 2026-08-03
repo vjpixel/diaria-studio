@@ -2,10 +2,13 @@
 /**
  * inject-poll-token.ts (#4487)
  *
- * Pré-envio: gera o token opaco por assinante (`computePollTokenEmail`,
- * `scripts/lib/shared/poll-token.ts`), grava 1 custom field permanente
- * `poll_token` via Beehiiv API (o local-part vira `{{poll_token}}` na URL de
- * voto do e-mail diário, `newsletter-render-html.ts::renderEIA`), e grava a
+ * Pré-envio: gera o token opaco por assinante (`computePollToken`,
+ * `scripts/lib/shared/poll-token.ts` — #4512: TOKEN CRU, sem domínio; o
+ * template já concatena `@vote.eia.diaria.local` DEPOIS do merge tag,
+ * gravar o pseudo-email completo aqui duplicaria o domínio na URL final),
+ * grava 1 custom field permanente `poll_token` via Beehiiv API (o valor vira
+ * `{{poll_token}}` na URL de voto do e-mail diário,
+ * `newsletter-render-html.ts::renderEIA`), e grava a
  * entrada reversa `polltoken:{token} -> email` no KV do Worker `poll` (via
  * Cloudflare API, `putTextToWorkerKV`) — é essa entrada que `handleVote`
  * (workers/poll/src/vote.ts) consulta pra resolver o token de volta pro
@@ -52,7 +55,7 @@
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { computePollToken, pollTokenKvKey, VOTE_TOKEN_DOMAIN } from "./lib/shared/poll-token.ts";
+import { computePollToken, pollTokenKvKey } from "./lib/shared/poll-token.ts";
 import { putTextToWorkerKV, type CloudflareKVConfig } from "./lib/cloudflare-kv-upload.ts";
 
 loadProjectEnv(); // #1219 — carrega .env/.env.local antes de ler process.env.
@@ -276,7 +279,7 @@ export async function run(args: {
   for await (const page of iterateActiveSubscriptions(apiOpts)) {
     pageNum++;
     total += page.length;
-    const needsPatch: Array<{ id: string; email: string; token: string; tokenEmail: string }> = [];
+    const needsPatch: Array<{ id: string; email: string; token: string }> = [];
 
     for (const sub of page) {
       if (!sub.email || !sub.email.trim()) {
@@ -292,16 +295,25 @@ export async function run(args: {
         }
       }
       inWindow++;
+      // #4512 (fix pré-merge, achado comment-analyzer): grava SÓ o token cru
+      // (local-part, sem domínio) no custom field — o template de
+      // `newsletter-render-html.ts::renderEIA` já concatena o domínio DEPOIS
+      // do merge tag (`{{poll_token}}@${VOTE_TOKEN_DOMAIN}`). Gravar o
+      // pseudo-email completo aqui (como antes) duplicava o domínio na URL
+      // final (`...@vote.eia.diaria.local@vote.eia.diaria.local`, 2 arrobas),
+      // que falha `isValidVoteEmailFormat` (workers/poll/src/lib.ts) ANTES
+      // até de chegar na resolução do token — quebraria 100% dos votos no
+      // 1º dia pós-envio. Ver test/vote-token-e2e-4512.test.ts pro teste
+      // end-to-end que combina esta escrita com o template.
       const expectedToken = await computePollToken(secret, sub.email);
-      const expectedTokenEmail = `${expectedToken}@${VOTE_TOKEN_DOMAIN}`;
       if (!force) {
         const current = sub.custom_fields?.find((f) => f.name === FIELD_TOKEN)?.value;
-        if (current === expectedTokenEmail) {
+        if (current === expectedToken) {
           skippedAlready++;
           continue;
         }
       }
-      needsPatch.push({ id: sub.id, email: sub.email, token: expectedToken, tokenEmail: expectedTokenEmail });
+      needsPatch.push({ id: sub.id, email: sub.email, token: expectedToken });
     }
 
     if (dryRun) {
@@ -317,7 +329,7 @@ export async function run(args: {
       // URL sem o custom field populado), nunca um custom field publicado
       // sem a entrada reversa correspondente (que faria o link 400 pro leitor).
       await putKv(pollTokenKvKey(item.token), item.email, kvConfig);
-      await patchSubscriberToken(item.id, item.tokenEmail, apiOpts);
+      await patchSubscriberToken(item.id, item.token, apiOpts);
     });
     patched += result.ok;
     failedTotal += result.failed.length;
@@ -388,6 +400,12 @@ async function main(): Promise<void> {
     },
   });
   console.log(JSON.stringify(result, null, 2));
+  // #4512 (achado silent-failure-hunter): sem isto, um batch com milhares de
+  // falhas de PATCH saía com exit 0 — idêntico a uma execução 100%
+  // bem-sucedida pra qualquer wrapper de automação futura checando
+  // $LASTEXITCODE (Task Scheduler, CI). O resumo já é impresso acima
+  // (result.failed) — isto só torna o exit code coerente com ele.
+  process.exitCode = result.failed > 0 ? 1 : 0;
 }
 
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
