@@ -63,6 +63,41 @@ describe("extractInstagramCandidates", () => {
     const md = "DESTAQUE 1 | Notícias\nTítulo sem URL\n\nCorpo sem link.";
     assert.deepEqual(extractInstagramCandidates(md, "260727"), []);
   });
+
+  it("NUNCA extrai itens de RADAR/USE MELHOR, mesmo presentes no markdown (scoping decision — sem card de imagem próprio)", () => {
+    const md = [
+      "DESTAQUE 1 | Notícias",
+      "Título D1",
+      "https://exemplo.com/d1",
+      "",
+      "Corpo do D1.",
+      "",
+      "Por que isso importa:",
+      "Explicação D1.",
+      "",
+      "---",
+      "",
+      "**RADAR**",
+      "",
+      "**[Item de Radar bem clicado](https://exemplo.com/radar-item)**",
+      "Descrição do item de radar.",
+      "",
+      "---",
+      "",
+      "**USE MELHOR**",
+      "",
+      "**[Tutorial de Use Melhor](https://exemplo.com/use-melhor-item)**",
+      "Descrição do tutorial.",
+      "",
+    ].join("\n");
+    const candidates = extractInstagramCandidates(md, "260727");
+    assert.equal(candidates.length, 1, "só o DESTAQUE 1 deveria ser extraído — RADAR/USE MELHOR nunca competem no Instagram");
+    assert.equal(candidates[0].url, "https://exemplo.com/d1");
+    assert.ok(
+      !candidates.some((c) => c.url === "https://exemplo.com/radar-item" || c.url === "https://exemplo.com/use-melhor-item"),
+      "itens de RADAR/USE MELHOR nunca deveriam aparecer nos candidatos",
+    );
+  });
 });
 
 describe("isCommercialOrOwnLink", () => {
