@@ -582,7 +582,7 @@ async function main(): Promise<void> {
       error: "universe 0 — upload abortado",
     });
     // Limpa o checkpoint (#2426 review): senão um run all-404/zero deixaria um
-    // checkpoint "completo" (remainingRefs=[]) que todo run subsequente <18h
+    // checkpoint "completo" (remainingRefs=[]) que todo run subsequente <MAX_RESUME_AGE_H
     // retomaria → recomputa universe=0 → exit(1) de novo, preso até --fresh.
     clearCheckpoint();
     logLine("⚠️  Universo 0 — não gravando no KV (checkpoint limpo; evita sobrescrever dado bom com zeros).");

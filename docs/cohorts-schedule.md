@@ -74,7 +74,9 @@ de backup.
 - **Logs:** `data/clarice-subscribers/cohorts/run.log` (do script) e `task.log`
   (do wrapper).
 - **Rate-limit / interrupção:** o script faz checkpoint incremental; um run
-  interrompido é retomado sem re-gastar GETs no run seguinte (resume se < 18h).
+  interrompido é retomado sem re-gastar GETs no run seguinte (resume se < 30h,
+  `MAX_RESUME_AGE_H` — aumentado de 18h em #4451/260803, o crawl completo leva
+  ~21,5h observadas e o valor antigo expirava o checkpoint antes de terminar).
   Forçar do zero: `--fresh`. Crawl da conta inteira (fallback): `--all`.
 
 ## Estado (data/ é gitignored)
@@ -85,9 +87,10 @@ de backup.
 ## Redesenho v2 em andamento — Fase 1 + Fase 2 feitas, cutover pendente (#4451)
 
 O crawl per-contato acima (v1) tem um limite estrutural: o universo cresceu
-pra ~129k contatos, o que exige ~21,5h de crawl contínuo, mais do que o
-`MAX_RESUME_AGE_H` do checkpoint (18h) tolera — uma rodada que não termina a
-tempo é descartada e recomeça do zero. `scripts/clarice-engagement-cohorts-v2.ts`
+pra ~129k contatos, o que exige ~21,5h de crawl contínuo — próximo do limite
+mesmo com o `MAX_RESUME_AGE_H` do checkpoint aumentado pra 30h (fix de curto
+prazo, #4451/260803; era 18h e expirava o checkpoint antes do crawl terminar).
+`scripts/clarice-engagement-cohorts-v2.ts`
 inverte o eixo (export por CAMPANHA via `POST /emailCampaigns/{id}/exportRecipients`
 em vez de `GET /contacts/{id}` por contato), com cache permanente por campanha,
 janela de re-fetch pra campanhas recentes e o gap de blacklist administrativo
