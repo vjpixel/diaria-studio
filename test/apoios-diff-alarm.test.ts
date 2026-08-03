@@ -117,6 +117,45 @@ describe("buildApoiosDiffAlarmEmail (#4485 item 2)", () => {
     assert.doesNotMatch(body, /Adições\/trocas/);
     assert.match(body, /Remoções/);
   });
+
+  it("sem guardWarnings (omitido) -> corpo não menciona nenhum guard (back-compat)", () => {
+    const input: DiffAlarmInput = { toApply: [], toRemove: [entry("saiu@x.com", "apoiador", null)] };
+    const { body } = buildApoiosDiffAlarmEmail(input);
+    assert.doesNotMatch(body, /dados parciais/);
+    assert.doesNotMatch(body, /blast radius/);
+  });
+
+  it("guardWarnings.partialDataBlocksRemovals -> corpo avisa que dados parciais bloqueariam as remoções", () => {
+    const input: DiffAlarmInput = { toApply: [], toRemove: [entry("saiu@x.com", "apoiador", null)] };
+    const { body } = buildApoiosDiffAlarmEmail(input, {
+      partialDataBlocksRemovals: true,
+      blastRadiusBlocked: false,
+      blastRadiusRatioPct: 0,
+    });
+    assert.match(body, /dados parciais hoje bloqueariam estas remoções/);
+    assert.doesNotMatch(body, /guard de blast radius bloquearia/);
+  });
+
+  it("guardWarnings.blastRadiusBlocked -> corpo avisa com o percentual calculado", () => {
+    const input: DiffAlarmInput = { toApply: [], toRemove: [entry("saiu@x.com", "apoiador", null)] };
+    const { body } = buildApoiosDiffAlarmEmail(input, {
+      partialDataBlocksRemovals: false,
+      blastRadiusBlocked: true,
+      blastRadiusRatioPct: 42.5,
+    });
+    assert.match(body, /guard de blast radius bloquearia o --push inteiro \(42\.5% > 30%/);
+  });
+
+  it("guardWarnings sem toRemove -> nenhum aviso aparece (não há seção de remoções pra anexar)", () => {
+    const input: DiffAlarmInput = { toApply: [entry("novo@x.com", null, "amigo")], toRemove: [] };
+    const { body } = buildApoiosDiffAlarmEmail(input, {
+      partialDataBlocksRemovals: true,
+      blastRadiusBlocked: true,
+      blastRadiusRatioPct: 99,
+    });
+    assert.doesNotMatch(body, /dados parciais/);
+    assert.doesNotMatch(body, /blast radius/);
+  });
 });
 
 describe("loadState / saveState (scripts/apoios-diff-alarm.ts, I/O)", () => {

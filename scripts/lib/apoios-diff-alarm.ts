@@ -88,9 +88,35 @@ export function shouldAlarm(state: ApoiosDiffAlarmState, input: DiffAlarmInput):
   return computeDiffFingerprint(input) !== state.lastAlarmedFingerprint;
 }
 
+/** Self-review finding 5 do PR #4503: o alarme diário calcula `toRemove` sem
+ * checar os 2 guards que um `--push` real (`sync-apoio-nivel-beehiiv.ts`)
+ * aplicaria — `shouldBlockRemovals` (dados parciais/`sem_dados`) e
+ * `evaluateBlastRadiusGuard` (>30% de remoções). Sem isso, o e-mail pode
+ * relatar N remoções "pendentes" que na prática seriam recusadas. Avaliado
+ * SEM os escape hatches (`--allow-partial`/`--force-blast-radius`) — o pior
+ * caso informativo, já que este script nunca sabe se o editor vai usá-los. */
+export interface DiffAlarmGuardWarnings {
+  /** `shouldBlockRemovals(dataError, diff, allowPartial: false)` — `true`
+   * quando um `--push` sem `--allow-partial` recusaria TODAS as remoções
+   * calculadas hoje (dados parciais/`sem_dados`). */
+  partialDataBlocksRemovals: boolean;
+  /** `evaluateBlastRadiusGuard(...).blocked` sem `--force-blast-radius` —
+   * `true` quando o `--push` inteiro (adições E remoções) seria recusado por
+   * magnitude. */
+  blastRadiusBlocked: boolean;
+  /** `evaluateBlastRadiusGuard(...).ratio * 100`, arredondado a 1 casa — só
+   * informativo, usado no texto quando `blastRadiusBlocked`. */
+  blastRadiusRatioPct: number;
+}
+
 /** Pure: monta assunto + corpo do e-mail de alarme — texto puro (mesmo
- * padrão de `scripts/lib/gmail-send.ts`, sem HTML). */
-export function buildApoiosDiffAlarmEmail(input: DiffAlarmInput): { subject: string; body: string } {
+ * padrão de `scripts/lib/gmail-send.ts`, sem HTML). `guardWarnings` é
+ * opcional (#4503 finding 5) — quando omitido, o corpo não menciona os
+ * guards (mesmo texto de antes, back-compat com chamadas existentes). */
+export function buildApoiosDiffAlarmEmail(
+  input: DiffAlarmInput,
+  guardWarnings?: DiffAlarmGuardWarnings,
+): { subject: string; body: string } {
   const subject = `[diar.ia.br] apoio_nivel: ${input.toApply.length} adição(ões)/troca(s), ${input.toRemove.length} remoção(ões) pendente(s)`;
 
   const lines: string[] = [
@@ -111,6 +137,18 @@ export function buildApoiosDiffAlarmEmail(input: DiffAlarmInput): { subject: str
     lines.push(`Remoções (${input.toRemove.length}):`);
     for (const e of input.toRemove) {
       lines.push(`  - ${e.email} (${e.contactName}): ${e.fromLevel} -> (nenhum)`);
+    }
+    if (guardWarnings?.partialDataBlocksRemovals) {
+      lines.push(
+        "  aviso: dados parciais hoje bloqueariam estas remoções num --push real " +
+          "(sem --allow-partial) — ver shouldBlockRemovals no dry-run.",
+      );
+    }
+    if (guardWarnings?.blastRadiusBlocked) {
+      lines.push(
+        `  aviso: guard de blast radius bloquearia o --push inteiro ` +
+          `(${guardWarnings.blastRadiusRatioPct}% > 30%, sem --force-blast-radius).`,
+      );
     }
     lines.push("");
   }

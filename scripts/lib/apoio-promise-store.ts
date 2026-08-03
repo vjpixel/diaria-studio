@@ -8,19 +8,23 @@
  * já sabem drenar promessas e criar um contato PENDENTE a partir delas
  * (`importPendingApoiadoresFromGmail`, #3912) — mas isso só roda dentro de
  * `refreshApoiosData`, usado pelo botão "Atualizar status" do painel Apoios
- * (ação MANUAL do editor). `scripts/sync-apoio-nivel-beehiiv.ts` (a rodada
- * AUTOMATIZADA, inclusive a task diária agendada — #4485 item 2) chama
- * `buildApoiosData`, que nunca drena Gmail — então uma promessa que confirma
- * pagamento SEM que ninguém clique o botão manual nunca é promovida a
- * contato, e a pessoa fica invisível ao sync pra sempre. Caso comprovado:
- * Fabiana, 260802 (#4490) — prometeu R$50 às 21:45, pagamento confirmado na
- * API minutos depois, só descoberta por investigação manual. Precedente:
- * Ivan, 260722 (#3912), mesma classe de problema.
+ * (ação MANUAL do editor). Nem `scripts/sync-apoio-nivel-beehiiv.ts` nem
+ * `scripts/apoios-diff-alarm.ts` (a task diária AGENDADA de verdade —
+ * `Diaria-Apoios-Diff-Alarm`, #4485 item 2) drenavam Gmail antes desta
+ * unidade — então uma promessa que confirma pagamento SEM que ninguém
+ * clique o botão manual nunca era promovida a contato, e a pessoa ficava
+ * invisível ao sync pra sempre. Caso comprovado: Fabiana, 260802 (#4490) —
+ * prometeu R$50 às 21:45, pagamento confirmado na API minutos depois, só
+ * descoberta por investigação manual. Precedente: Ivan, 260722 (#3912),
+ * mesma classe de problema.
  *
  * Fix: este módulo guarda as promessas NUM ARQUIVO PRÓPRIO
  * (`data/apoia-se/{campaign}/pending-promises.jsonl`) e
- * `reconcilePendingPromises` (em `scripts/sync-apoio-nivel-beehiiv.ts`)
- * reconsulta `checkBacker` (forceRefresh) pra cada uma A CADA RODADA do sync
+ * `reconcilePendingPromises` (exportado de
+ * `scripts/sync-apoio-nivel-beehiiv.ts`, chamado tanto de lá quanto de
+ * `scripts/apoios-diff-alarm.ts` desde o self-review finding 1 do PR #4503 —
+ * a task diária real precisa da MESMA reconciliação, não só a invocação
+ * manual) reconsulta `checkBacker` (forceRefresh) pra cada uma A CADA RODADA
  * — se confirmar pagamento no mês corrente, promove a pessoa a contato
  * (mesmo `importNewApoiadoresFromGmail` já usado pro drain de confirmados) e
  * remove a entrada do store (resolvida). Promessa que ainda não converteu

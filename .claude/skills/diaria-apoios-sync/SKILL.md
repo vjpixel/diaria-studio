@@ -62,8 +62,10 @@ alvo de novo. Por isso o passo 1 desta skill sempre confere antes de seguir.
 npx tsx scripts/sync-apoio-nivel-beehiiv.ts
 ```
 
-Sem `--push`, o script só LÊ (apoia.se + Beehiiv) e imprime o diff calculado
-em stderr:
+Sem `--push`, o script nunca escreve na Beehiiv — mas não é 100% sem efeito
+colateral: pode escrever LOCALMENTE (`contacts.jsonl`/`pending-promises.jsonl`,
+ver mecanismos automáticos abaixo) antes de imprimir o diff calculado em
+stderr:
 - adições/trocas de nível (`toApply`)
 - remoções (`toRemove`) — e se estão bloqueadas por dados parciais
 - contatos "sem_dados" pulados (nível desconhecido, nunca "sem apoio")
@@ -129,10 +131,15 @@ valor.
    1º refresh, 2 precisaram de uma 2ª rodada) — é o Passo 4.2 abaixo que
    detecta isso, não assumir sucesso pelo clique.
 2. `mcp__claude_ai_Beehiiv__get_segment` nos 6 de novo → ler `num_members`
-   atual de cada um. Rodar `evaluateSegmentCountGate` (`scripts/lib/apoio-segments-canonical.ts`)
+   atual de cada um. Obter `activeBase` (total de assinantes ativos da
+   publicação) via `mcp__claude_ai_Beehiiv__get_publication_stats` com o
+   mesmo `publication_id` do Passo 1 (`platform.config.json` →
+   `beehiiv.publicationId`) e `time_period: "all_time"` — o campo de
+   assinantes ativos do resumo, não uma janela de tempo curta. Rodar
+   `evaluateSegmentCountGate` (`scripts/lib/apoio-segments-canonical.ts`)
    com `{amigo, apoiador, mantenedor, patrono, todos, nenhum}` lidos +
-   `activeBase` (total de assinantes ativos da publicação) — **gate de
-   verdade**, não estimativa: se `gate.ok === false`, o refresh NÃO pegou em
+   esse `activeBase` — **gate de verdade**, não estimativa: se
+   `gate.ok === false`, o refresh NÃO pegou em
    algum segmento (`tiersMatchTodos: false` → confira Todos e as 4 faixas;
    `totalMatchesActiveBase: false` → confira Nenhum). Repetir o "Refresh
    segment" nos segmentos suspeitos e reler até `gate.ok === true` — nunca
