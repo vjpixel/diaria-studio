@@ -666,6 +666,7 @@ Todos em `data/monthly/{ciclo}/` (ex: `data/monthly/2605-06/`):
 - `_internal/04-fact-check.json` — claims verificados (Etapa 4)
 - `_internal/.step-N-done.json` (N=1..5) — checkpoints de conclusão por etapa, mesmo formato do diário (#2795)
 - `_internal/05-published.json` — campanha Brevo criada (Etapa 5)
+- `_internal/beehiiv-preview.html` — variante Beehiiv pra apoiadores Mantenedor/Patrono (#4482, opcional, fora da sequência 0-5 — ver seção "Envio extra Beehiiv" abaixo)
 
 ## Notas
 
@@ -697,3 +698,77 @@ Este comando grava `data/monthly/$CYCLE/_internal/.close-poll-clarice.json`. Sem
 Para pular a verificação (não recomendado): `clarice-schedule-sends --schedule --skip-eia-guard`.
 
 **Test-loop no fluxo multi-campanha**: usar `clarice-schedule-sends --send-test` antes do `--schedule`. Envia test email das células `d01-A/B/C` (S1) ou `d08` (S2/S3) para `brevo_monthly.test_email`. Disparar `review-test-email` via Agent após (mesmo fluxo da Etapa 5d acima).
+
+---
+
+## Envio extra Beehiiv — apoiadores Mantenedor/Patrono (#4482)
+
+Canal SEPARADO do envio Clarice/Brevo acima — mesmo `draft.md`, audiência e
+plataforma diferentes. **4 decisões do editor + 1 default sem objeção
+(issue #4482, sessão develop 260802b/260803):**
+
+1. **Cadência:** envio EXTRA (não substitui a diária), num dia SEM edição
+   diária pesada.
+2. **Segmento:** só apoiadores dos níveis **Mantenedor** ou **Patrono** —
+   não a base Beehiiv inteira, não reativação de inativos.
+3. **Escopo Clarice:** `APRESENTAÇÃO`, `CLARICE — DIVULGAÇÃO` e
+   `CLARICE — TUTORIAL` são removidas por inteiro, sem substituir por nada —
+   espaço reservado fica vazio.
+4. **Plataforma:** Beehiiv (mesma da diária) — publicação reusa
+   `context/publishers/beehiiv-playbook.md` (Worker-hosted paste), **nunca**
+   `publish-monthly.ts`/`clarice-schedule-sends` (específicos do Brevo).
+5. **Ordem no ciclo** (achado #4510: não perguntado explicitamente — default
+   sugerido pelo coordenador, sem objeção do editor, documentado corretamente
+   no comentário do coordenador na issue #4482, só não aqui até este fix):
+   depois que o conteúdo do mês estiver 100% finalizado/estável (Etapa 4
+   aprovada) — não precisa coincidir com nenhuma onda `{conteúdo}-{envio}`
+   da Clarice.
+
+**Escopo atual (#4482): só o primeiro envio, semi-manual.** Automação
+completa de agendamento recorrente é follow-up — não implementada ainda.
+
+### Renderizar a variante
+
+Reusa as imagens já publicadas pelo pipeline Clarice (Etapa 3/4 —
+`_internal/public-images.json`), sem upload novo:
+
+```bash
+npx tsx scripts/render-monthly-beehiiv.ts --cycle $CYCLE
+```
+
+Grava `data/monthly/$CYCLE/_internal/beehiiv-preview.html` e imprime as
+instruções de publicação manual. A filtragem de conteúdo Clarice-only e o
+perfil de UTM próprio (`utm_source=mensal-beehiiv`, distinto de
+`utm_source=clarice` — nunca misturar as duas atribuições) vivem em
+`scripts/lib/mensal/monthly-beehiiv-render.ts` (`filterDraftForBeehiiv` +
+`draftToEmailBeehiiv`), que reusa o MESMO `draftToEmail` do envio Clarice
+(`scripts/lib/mensal/monthly-render.ts`) — sem duplicar o render HTML.
+
+### Publicar (manual)
+
+1. A técnica de paste (browser + `javascript_tool` inserindo no Custom HTML
+   block do editor Beehiiv) é a mesma do §5 de
+   `context/publishers/beehiiv-playbook.md`. Os 2 scripts de STAGING que o
+   playbook usa pra diária (`upload-html-public.ts --edition AAMMDD` e o
+   fallback `chunk-html-base64.ts --edition-dir ...`) esperam o layout
+   `data/editions/{AAMMDD}/_internal/newsletter-final.html` — não apontam
+   direto pra `data/monthly/{ciclo}/_internal/beehiiv-preview.html` gerado
+   acima. Adaptar o `--edition-dir`/path na hora do envio real (copiar pro
+   nome esperado num scratch dir, ou ajustar o script) fica pro editor/sessão
+   que for publicar de fato — fora do escopo desta unidade (#4482 pede só o
+   render funcionando; automação completa do staging de envio é follow-up).
+2. Compose tab → Title + Subject Line.
+3. Audience tab → selecionar os segmentos **"Apoio — Mantenedor"** e
+   **"Apoio — Patrono"** (`scripts/lib/apoio-segments-canonical.ts`, #4436 —
+   já condicionados no custom field `apoio_nivel`, sincronizado por
+   `scripts/sync-apoio-nivel-beehiiv.ts`; nenhuma lógica de cruzamento nova
+   foi necessária aqui). **Nunca "All subscribers".** Se o seletor de
+   audiência do post não suportar múltiplos segmentos por envio, criar
+   manualmente um segmento combinado pela UI antes (mesmo precedente
+   operacional do #4436 — correção de segmento ao vivo pela UI, confirmar no
+   momento do envio real, não verificado nesta unidade).
+4. Send test email pra confirmar visualmente antes de agendar/publicar.
+5. Confirmar que o dia escolhido não tem edição diária pesada (decisão 1).
+
+Sem gate/checkpoint próprio no esquema `_internal/.step-N-done.json` — este
+envio é opcional e roda fora da sequência 0-5 do ciclo.
