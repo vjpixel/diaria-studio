@@ -724,10 +724,13 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
     medium: EXTERNAL_SURFACE_MEDIUM,
     campaign: buildExternalSurfaceCampaign("instagram"),
     panelUrl: "https://www.instagram.com/diar.ia.br",
-    field: "Editar perfil → Site",
+    field: "app mobile → Editar perfil → Site (NÃO editável na web)",
     description:
       "Link da bio do perfil — a única saída clicável do Instagram, onde o app " +
-      "suprime o Referer. Substitui `instagram-diaria`/`lancamento-2607` (#4525).",
+      "suprime o Referer. Substitui `instagram-diaria`/`lancamento-2607` (#4525). " +
+      "BLOQUEADO na web: o campo Website de `instagram.com/accounts/edit/` vem " +
+      "desabilitado com o aviso 'Editing your links is only available on mobile' " +
+      "(verificado ao vivo em 260803) — só o editor aplica, pelo app.",
     status: "ativo",
   },
   {
@@ -754,8 +757,11 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
     field: "Edit profile → Links → Add link",
     description:
       "Único link clicável do perfil do Threads. Estava VAZIO na varredura do " +
-      "#4525 — aqui a ação não foi taggear, foi criar.",
+      "#4525 — aqui a ação não foi taggear, foi criar. O Threads ACRESCENTA " +
+      "`utm_content=link_in_bio` + um `utm_id` próprio ao redirecionar; os 3 " +
+      "parâmetros nossos sobrevivem intactos (verificado ao vivo).",
     status: "ativo",
+    appliedAt: "2026-08-03",
   },
   {
     id: "perfil-twitter",
@@ -770,6 +776,7 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
       "(`medium=social`/`campaign=profile`) — normalizado pra convenção única; " +
       "a série perdida tinha 4 seguidores de audiência.",
     status: "ativo",
+    appliedAt: "2026-08-03",
   },
   {
     id: "perfil-apoiase",
@@ -782,7 +789,11 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
     description:
       "Ícone de globo da seção 'Redes Sociais' da página de apoio — era " +
       "`https://diar.ia.br` cru (#4525). Único `utm_source` novo do lote, e " +
-      "portanto o que exigia a união em `knownUtmSources()`.",
+      "portanto o que exigia a união em `knownUtmSources()`. BLOQUEADO pela " +
+      "plataforma: o campo aceita o save mas DESCARTA em silêncio qualquer URL " +
+      "com query string — o link some da página pública em vez de dar erro " +
+      "(reproduzido 2× em 260803; o valor cru foi restaurado). Sem UTM aqui " +
+      "enquanto a Apoia.se não aceitar parâmetro.",
     status: "ativo",
   },
 ] as const;
