@@ -5,13 +5,20 @@
  * quanto por guards determinísticos de automação -- `scripts/clarice-check-semaphore.ts`,
  * guard D4 de `/diaria-clarice-novos`) devolvia 502 genérico em ~90% das
  * chamadas numa janela em que `curl` direto pra `api.brevo.com` respondia 200
- * consistentemente. Causa raiz: `buildCampaignsResponse` (index.ts) só tenta
- * o fallback stale (`buildUpstreamErrorCampaignsJsonFallback`, #4251) para
- * `BrevoRateLimitError`/`BrevoUpstreamError` com `isBrevoOutageStatus`
- * (403/5xx estruturado) -- um erro de rede/timeout CRU do `fetch()` nativo
- * pra Brevo (TypeError/AbortError, sem `.status` HTTP porque nenhuma Response
- * chegou a existir) caía direto no 502 genérico, mesmo com um stale bom
- * disponível no KV.
+ * consistentemente. Hipótese mais provável (a issue #4533 é explícita: "não
+ * reproduzido em ambiente de teste" -- o log adicionado por este PR é
+ * justamente o que confirmaria isso em produção): `buildCampaignsResponse`
+ * (index.ts) só tenta o fallback stale (`buildUpstreamErrorCampaignsJsonFallback`,
+ * #4251) para `BrevoRateLimitError`/`BrevoUpstreamError` com
+ * `isBrevoOutageStatus` (403/5xx estruturado) -- um erro de rede/timeout CRU
+ * do `fetch()` nativo pra Brevo (TypeError/AbortError, sem `.status` HTTP
+ * porque nenhuma Response chegou a existir) caía direto no 502 genérico,
+ * mesmo com um stale bom disponível no KV.
+ *
+ * Critério de aceite (do dispatch, "Sugestão de investigação" itens 1-2 da
+ * issue): logar o erro cru antes de decidir 502 vs. fallback; se for erro de
+ * rede/timeout, tratar como equivalente a outage (mesmo fallback stale que
+ * 403/5xx estruturado já usa).
  *
  * Fix: `isNetworkOrTimeoutError` (brevo-api.ts) reconhece essa classe de erro
  * e a rota do catch de `buildCampaignsResponse` passa a tentar o MESMO
@@ -106,6 +113,24 @@ describe("isNetworkOrTimeoutError (#4533)", () => {
   it("Error genérico (ex: bug de render, SyntaxError de JSON malformado) → false", () => {
     assert.strictEqual(isNetworkOrTimeoutError(new Error("qualquer outra coisa")), false);
     assert.strictEqual(isNetworkOrTimeoutError(new SyntaxError("Unexpected token")), false);
+  });
+
+  // Achado CRITICAL do fleet review pré-merge (PR #4540): a versão original
+  // deste guard casava QUALQUER `TypeError`, independente da mensagem --
+  // mascararia bugs de programação sem relação com rede (ex: acesso a
+  // propriedade de `null`/`undefined`, `Response.json()` chamado 2x) como
+  // "erro de rede", servindo o stale silenciosamente (200, zero log). Este
+  // teste documenta o comportamento CORRETO pós-fix: só `TypeError` com
+  // mensagem batendo um padrão conhecido de falha de rede conta.
+  it("TypeError com mensagem NÃO relacionada a rede (bug de programação) → false", () => {
+    assert.strictEqual(
+      isNetworkOrTimeoutError(new TypeError("Cannot read properties of undefined (reading 'x')")),
+      false,
+    );
+    assert.strictEqual(
+      isNetworkOrTimeoutError(new TypeError("Body has already been used")),
+      false,
+    );
   });
 
   it("valor não-Error (string, undefined, objeto cru) → false", () => {

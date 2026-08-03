@@ -1541,26 +1541,59 @@ export function isBrevoOutageStatus(status: number): boolean {
 
 /**
  * #4533: `true` quando `e` é um erro de rede/timeout CRU do `fetch()` nativo
- * pra `api.brevo.com` -- TypeError (runtime lança isso pra falha de
- * conexão/DNS/TLS, ex: "Network connection lost"/"fetch failed") ou
- * AbortError/TimeoutError (timeout via `AbortSignal`/`AbortController`, mesmo
- * `.name` já usado em `workers/linkedin-cron/src/dispatch.ts`). Esta classe de
- * erro NUNCA carrega `.status` HTTP -- nenhuma Response chegou a existir --
- * então por construção não é (nem pode ser) `BrevoUpstreamError`/
- * `BrevoRateLimitError` (que só são lançados DEPOIS de uma resposta HTTP
- * chegar, ver `brevoFetch` abaixo). Antes deste guard, uma falha de
- * rede/timeout intermitente caía direto no 502 genérico de
- * `buildCampaignsResponse` (index.ts) mesmo com um stale bom disponível no
- * KV -- issue #4533: ~90% de 502 no guard determinístico
- * `clarice-check-semaphore.ts` numa janela em que `curl` direto pra este
- * mesmo endpoint respondia 200 o tempo todo. Mesma categoria "não sabemos se
- * é nosso bug, serve o stale se tiver" que `isBrevoOutageStatus` já cobre pra
- * 403/5xx estruturado (#4251).
+ * pra `api.brevo.com` -- TypeError com uma mensagem batendo um padrão
+ * conhecido de falha de rede (`NETWORK_ERROR_MESSAGE_PATTERNS` abaixo -- ex:
+ * "Network connection lost.", confirmada como mensagem real do runtime
+ * Cloudflare Workers; "fetch failed"/"Failed to fetch" são variantes
+ * equivalentes de outros runtimes de fetch) -- ou AbortError/TimeoutError
+ * (timeout via `AbortSignal`/`AbortController`, mesmo `.name` já usado em
+ * `workers/linkedin-cron/src/dispatch.ts`). Esta classe de erro NUNCA carrega
+ * `.status` HTTP -- nenhuma Response chegou a existir -- então por
+ * construção não é (nem pode ser) `BrevoUpstreamError`/`BrevoRateLimitError`
+ * (que só são lançados DEPOIS de uma resposta HTTP chegar, ver `brevoFetch`
+ * abaixo). Antes deste guard, uma falha de rede/timeout intermitente caía
+ * direto no 502 genérico de `buildCampaignsResponse` (index.ts) mesmo com um
+ * stale bom disponível no KV -- issue #4533: ~90% de 502 no guard
+ * determinístico `clarice-check-semaphore.ts` numa janela em que `curl`
+ * direto pra este mesmo endpoint respondia 200 o tempo todo -- consistente
+ * com esta lacuna (não confirmado por log direto até este PR, ver
+ * `console.error` em `buildCampaignsResponse`). Mesma categoria "não sabemos
+ * se é nosso bug, serve o stale se tiver" que `isBrevoOutageStatus` já cobre
+ * pra 403/5xx estruturado (#4251).
+ *
+ * **NÃO casa `TypeError` genérico** (achado CRITICAL do fleet review
+ * pré-merge da PR #4540, confirmado em severidade menor por
+ * `type-design-analyzer`/`code-reviewer`): `TypeError` é a classe de erro JS
+ * mais comum e também cobre bugs de programação sem relação nenhuma com rede
+ * -- `null`/`undefined` inesperado num acesso encadeado (ex: um elemento
+ * `null` dentro do `.map()` de `fetchRecentCampaigns`), `Response.json()`
+ * chamado 2x ("Body has already been used"), etc. Casar QUALQUER `TypeError`
+ * mascararia esses bugs como "erro de rede", servindo o stale silenciosamente
+ * (200, zero log) até o bug ser corrigido por outro motivo ou o KV expirar
+ * (`LASTGOOD_TTL`, até 24h) -- o oposto do racional "não sabemos se é nosso
+ * bug" acima, que só se aplica quando de fato não sabemos. Por isso só
+ * `TypeError` com mensagem batendo um padrão conhecido de falha de rede
+ * conta; qualquer outro `TypeError` cai no 502 genérico (que sempre loga o
+ * erro cru, ver `buildCampaignsResponse`).
+ *
+ * **AbortError/TimeoutError são código morto hoje** -- `brevoFetch` (abaixo)
+ * não usa `AbortSignal`/timeout nenhum, então esses branches nunca disparam
+ * na prática; mantidos por precaução caso um timeout seja adicionado no
+ * futuro (mesmo padrão já usado em `workers/linkedin-cron/src/dispatch.ts`).
+ * Não confundir alcançabilidade teórica com proteção de fato existente.
  */
+const NETWORK_ERROR_MESSAGE_PATTERNS = [
+  /fetch failed/i, // Node/undici (miniflare dev e outros runtimes de fetch) -- mensagem original do #4533
+  /network connection lost/i, // Cloudflare Workers runtime -- confirmada em incidentes reais (community.cloudflare.com)
+  /failed to fetch/i, // fetch() de browser / algumas implementações de Workers -- variante equivalente
+  /the operation was aborted/i, // timeout/abort que eventualmente chega como TypeError em vez de AbortError
+];
+
 export function isNetworkOrTimeoutError(e: unknown): boolean {
   if (!(e instanceof Error)) return false;
   if (e.name === "AbortError" || e.name === "TimeoutError") return true;
-  return e.name === "TypeError";
+  if (e.name !== "TypeError") return false;
+  return NETWORK_ERROR_MESSAGE_PATTERNS.some((re) => re.test(e.message));
 }
 
 // #2337 fix 1: exportado para teste direto do parse de headers de rate-limit
