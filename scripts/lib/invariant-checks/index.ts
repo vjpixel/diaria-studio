@@ -25,8 +25,23 @@ export const ALL_INVARIANT_RULES: InvariantRule[] = [
   ...STAGE_6_RULES,
 ];
 
-export function getRulesForStage(stage: 0 | 1 | 2 | 3 | 4 | 5 | 6): InvariantRule[] {
-  return ALL_INVARIANT_RULES.filter((r) => r.stage === stage);
+/**
+ * #4516: `opts.phase === "pre-dispatch"` exclui regras marcadas
+ * `postDispatchOnly: true` (hoje só 2, no Stage 5 — `social-published-complete`/
+ * `step-5-sentinel-exists`, que só podem passar DEPOIS que o dispatch já
+ * rodou). Sem `opts`/`phase` omitido = comportamento de sempre (todas as
+ * regras do stage, independente de fase) — usado por `§5i` (pós-publicação)
+ * e por qualquer outro stage, nenhum dos quais tem regra marcada hoje.
+ */
+export function getRulesForStage(
+  stage: 0 | 1 | 2 | 3 | 4 | 5 | 6,
+  opts?: { phase?: "pre-dispatch" },
+): InvariantRule[] {
+  const rules = ALL_INVARIANT_RULES.filter((r) => r.stage === stage);
+  if (opts?.phase === "pre-dispatch") {
+    return rules.filter((r) => !r.postDispatchOnly);
+  }
+  return rules;
 }
 
 export type { InvariantRule, InvariantViolation, InvariantSeverity } from "./types.ts";

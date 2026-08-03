@@ -79,9 +79,9 @@ Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter)
   ```
   (mantem `--stage 6` por compat com o config existente — o check valida downstreams do Stage 3/4 vs `02-reviewed.md`). Exit code 0 = ok. Exit code 1 = pausar com a mensagem de re-run de Stage 3/4.
 - Verificar pre-requisitos: `02-reviewed.md`, `01-eia.md`, `01-eia-A.jpg` + `01-eia-B.jpg` (ou legacy `01-eia-real.jpg` + `01-eia-ia.jpg` em edicoes pre-#192), `03-social.md`, `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg`. Se algum faltar, pausar e instruir qual stage re-rodar.
-- **Pre-dispatch invariants (#1007 Fase 1).** Validar que `06-public-images.json` esta populado e env vars criticas (`DIARIA_LINKEDIN_CRON_URL`, `DIARIA_LINKEDIN_CRON_TOKEN`, `FACEBOOK_PAGE_ID`, `FACEBOOK_PAGE_ACCESS_TOKEN`) estao setadas. `INSTAGRAM_BUSINESS_ACCOUNT_ID` + `INSTAGRAM_ACCESS_TOKEN` sao checadas como **warning** (#49 — ausencia pula Instagram, nao bloqueia os demais canais). Falha (error) = abort imediato — evita DLQ recurrence (incident 260508 #999):
+- **Pre-dispatch invariants (#1007 Fase 1).** Validar que `06-public-images.json` esta populado e env vars criticas (`DIARIA_LINKEDIN_CRON_URL`, `DIARIA_LINKEDIN_CRON_TOKEN`, `FACEBOOK_PAGE_ID`, `FACEBOOK_PAGE_ACCESS_TOKEN`) estao setadas. `INSTAGRAM_BUSINESS_ACCOUNT_ID` + `INSTAGRAM_ACCESS_TOKEN` sao checadas como **warning** (#49 — ausencia pula Instagram, nao bloqueia os demais canais). Falha (error) = abort imediato — evita DLQ recurrence (incident 260508 #999). **`--phase pre-dispatch` obrigatorio aqui (#4516)** — sem essa flag, `social-published-complete`/`step-5-sentinel-exists` (regras `postDispatchOnly`, so podem passar DEPOIS que o dispatch ja rodou) retornam `error` SEMPRE neste ponto, mesmo com env vars/imagens 100% corretas, e travariam a Etapa 5 na 1a tentativa se lidas ao pe da letra ("error = abort imediato"):
   ```bash
-  npx tsx scripts/check-invariants.ts --stage 5 --edition-dir {EDITION_DIR}/
+  npx tsx scripts/check-invariants.ts --stage 5 --phase pre-dispatch --edition-dir {EDITION_DIR}/
   ```
   Exit 1 = pausar com violations no stderr. Editor corrige (rodar `upload-images-public.ts` se imagens faltam, configurar env vars) e re-roda.
 
@@ -382,7 +382,7 @@ npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 5
 
 ### 5i. Pos-publicacao invariants (#1007 Fase 1)
 
-Antes de prosseguir pro Stage 6, validar que (a) sentinel `_internal/.step-5-done.json` foi escrito, (b) `_internal/06-social-published.json` tem `posts[]` nao-vazio sem entries `failed`:
+Antes de prosseguir pro Stage 6, validar que (a) sentinel `_internal/.step-5-done.json` foi escrito, (b) `_internal/06-social-published.json` tem `posts[]` nao-vazio sem entries `failed`. **SEM `--phase pre-dispatch` aqui (#4516)** — diferente de §5a, este passo roda DEPOIS do dispatch completo, entao o conjunto completo de 16 regras (incluindo `social-published-complete`/`step-5-sentinel-exists`) e o que se quer validar:
 
 ```bash
 npx tsx scripts/check-invariants.ts --stage 5 --edition-dir {EDITION_DIR}/

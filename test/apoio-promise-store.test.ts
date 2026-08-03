@@ -15,6 +15,7 @@ import {
   loadPendingPromises,
   savePendingPromises,
   mergeNewPromises,
+  mergePendingPromisesPreferRecent,
   type PendingPromise,
 } from "../scripts/lib/apoio-promise-store.ts";
 import type { DrainedPromessa } from "../scripts/lib/apoia-se-gmail-drain.ts";
@@ -69,6 +70,42 @@ describe("loadPendingPromises / savePendingPromises", () => {
     writeFileSync(path, `${JSON.stringify({ name: "Sem email" })}\n`);
     assert.deepEqual(loadPendingPromises(path), []);
   });
+
+  it("#4506 item 4: re-normaliza email (lowercase/trim) na LEITURA, não só no merge", () => {
+    const path = resolve(tmpDir, "pending-promises.jsonl");
+    mkdirSync(tmpDir, { recursive: true });
+    // Entrada gravada manualmente/por código antigo com email não-normalizado.
+    writeFileSync(
+      path,
+      `${JSON.stringify({ name: "Fabiana", email: "  FABIANA@Example.com  ", value: 50, receivedAtIso: "2026-08-02T21:45:00.000Z" })}\n`,
+    );
+    const loaded = loadPendingPromises(path);
+    assert.equal(loaded.length, 1);
+    assert.equal(loaded[0].email, "fabiana@example.com");
+  });
+});
+
+describe("mergePendingPromisesPreferRecent (#4506 item 1/3)", () => {
+  it("mesmo e-mail em ambas as listas — a de receivedAtIso MAIS RECENTE vence, não a da 2ª lista por padrão", () => {
+    const a: PendingPromise[] = [
+      { name: "Fabiana", email: "fabiana@example.com", value: 50, receivedAtIso: "2026-08-02T21:45:00.000Z" },
+    ];
+    const b: PendingPromise[] = [
+      { name: "Fabiana", email: "fabiana@example.com", value: 30, receivedAtIso: "2026-08-01T00:00:00.000Z" },
+    ];
+    // b (2ª lista) é MAIS ANTIGA que a — a deve vencer, provando que a
+    // comparação é por timestamp e não por "quem entrou por último".
+    const merged = mergePendingPromisesPreferRecent(a, b);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].value, 50, "a entrada mais recente (a) deve vencer mesmo estando na 1ª lista");
+  });
+
+  it("une entradas de e-mails diferentes sem perder nenhuma", () => {
+    const a: PendingPromise[] = [{ name: "A", email: "a@x.com", value: 1, receivedAtIso: "2026-08-01T00:00:00.000Z" }];
+    const b: PendingPromise[] = [{ name: "B", email: "b@x.com", value: 2, receivedAtIso: "2026-08-02T00:00:00.000Z" }];
+    const merged = mergePendingPromisesPreferRecent(a, b);
+    assert.deepEqual(merged.map((p) => p.email).sort(), ["a@x.com", "b@x.com"]);
+  });
 });
 
 describe("mergeNewPromises", () => {
@@ -100,5 +137,20 @@ describe("mergeNewPromises", () => {
   it("sem novas promessas — store existente preservado intacto", () => {
     const existing: PendingPromise[] = [{ name: "A", email: "a@x.com", value: 10, receivedAtIso: "2026-08-01T00:00:00.000Z" }];
     assert.deepEqual(mergeNewPromises(existing, []), existing);
+  });
+
+  it("#4506 item 3: quando o drain traz uma entrada MAIS ANTIGA (out-of-order), a existente vence de verdade", () => {
+    // Antes do #4506, mergeNewPromises sempre deixava `drained` vencer
+    // (dependia de ordem de iteração, não de receivedAtIso) — mesmo quando o
+    // drain trazia uma entrada com timestamp MAIS ANTIGO que a já no store.
+    const existing: PendingPromise[] = [
+      { name: "Fabiana", email: "fabiana@example.com", value: 50, receivedAtIso: "2026-08-02T21:45:00.000Z" },
+    ];
+    const drained: DrainedPromessa[] = [
+      { name: "Fabiana", email: "fabiana@example.com", value: 10, receivedAtIso: "2026-07-01T00:00:00.000Z" },
+    ];
+    const merged = mergeNewPromises(existing, drained);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].value, 50, "a entrada existente (mais recente) deve vencer sobre a drenada (mais antiga)");
   });
 });

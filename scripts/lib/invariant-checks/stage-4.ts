@@ -25,6 +25,7 @@ import {
   readBoxDivulgacao2Image,
   readBoxDivulgacao3Image,
   readBoxDivulgacaoAltForSlot,
+  readBoxDivulgacaoRuntimeExcludedForSlot, // #4504
 } from "../newsletter-parse.ts";
 import { checkUseMelhorTempo } from "../lint-checks/use-melhor-tempo.ts";
 import {
@@ -1133,6 +1134,61 @@ function checkBoxDivulgacaoAltMissing(
 }
 
 /**
+ * #4504: mirror de `checkBoxDivulgacaoAltMissing`, pro gap identificado no
+ * fleet review do #4502 — valida que NENHUM slot de `boxes_divulgacao`
+ * (0-3, `platform.config.json`) aponta pra um snippet com `runtime: false`
+ * no header (`readBoxDivulgacaoRuntimeExcludedForSlot`, que usa
+ * `isRuntimeExcluded` de `shared/snippet-header.ts` — movida de
+ * `studio-ui/studio-boxes.ts` nesta mesma issue, item 2, porque este check
+ * roda no pipeline core e não pode importar da camada UI).
+ *
+ * `saveBoxSlots` (Studio UI) já bloqueia essa atribuição no PUT (#4500/
+ * #4502), mas config editado manualmente ou não migrado passa por fora
+ * dessa checagem — este invariant é a defesa em profundidade no PRÓPRIO
+ * pipeline de render, rodando antes do gate humano do Stage 4,
+ * independente da via de edição do config.
+ *
+ * Diferente de `checkBoxDivulgacaoAltMissing` (warning — alt ausente só
+ * degrada acessibilidade), esta regra é **error**: o conteúdo ERRADO seria
+ * injetado verbatim na newsletter — o mesmo cenário que causou o incidente
+ * original do #4500 (`intro-campeoes-sorteio.md` configurado num slot).
+ *
+ * `rootDir` (default: raiz do repo real, via
+ * `readBoxDivulgacaoRuntimeExcludedForSlot`) existe só pra fixture de teste
+ * isolada — o call site real (STAGE_4_RULES) nunca passa override.
+ * `editionDir` não é lido pelo corpo desta função (a config não é
+ * por-edição), mas é mantido na assinatura pra bater o contrato comum de
+ * `InvariantRule.run`.
+ */
+function checkBoxDivulgacaoRuntimeExcluded(
+  editionDir: string,
+  rootDir?: string,
+): InvariantViolation[] {
+  void editionDir; // não lido — checagem é sobre platform.config.json, não sobre a edição
+  const violations: InvariantViolation[] = [];
+  const slots: Array<0 | 1 | 2 | 3> = [0, 1, 2, 3];
+  for (const n of slots) {
+    const excluded = rootDir !== undefined
+      ? readBoxDivulgacaoRuntimeExcludedForSlot(n, rootDir)
+      : readBoxDivulgacaoRuntimeExcludedForSlot(n);
+    if (!excluded) continue;
+    violations.push({
+      rule: "box-divulgacao-runtime-excluded",
+      message:
+        `boxes_divulgacao.slot${n} (platform.config.json) aponta pra um snippet com ` +
+        `\`runtime: false\` no header — esse conteúdo é documentação/referência, não ` +
+        `deveria aparecer na newsletter, mas seria injetado verbatim (mesmo incidente ` +
+        `do #4500). Fix: apontar o slot pra outro snippet, ou remover \`runtime: false\` ` +
+        `do header se o conteúdo passou a ser real.`,
+      source_issue: "#4504",
+      severity: "error",
+      file: "platform.config.json",
+    });
+  }
+  return violations;
+}
+
+/**
  * #4090 item 4 (decisão do editor, 260727): se a edição gerou o card 4:5
  * (`04-d{N}-4x5.jpg` no disco — mandatório desde a decisão 260728, ver
  * `checkCard4x5Exists` em stage-3.ts) mas o upload (`06-public-images.json`)
@@ -1304,6 +1360,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     stage: 4,
     run: checkCard4x5UploadMismatch,
   },
+  {
+    id: "box-divulgacao-runtime-excluded",
+    description: "slot de boxes_divulgacao aponta pra snippet runtime:false — injetaria conteúdo de doc/referência verbatim (#4504)",
+    source_issue: "#4504",
+    stage: 4,
+    run: checkBoxDivulgacaoRuntimeExcluded,
+  },
   // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
   // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem
   // bloquear a Revisão (Stage 4) quando tokens expirados ou não configurados.
@@ -1331,4 +1394,5 @@ export {
   checkCropReviewWarnings,
   checkBoxDivulgacaoAltMissing,
   checkCard4x5UploadMismatch,
+  checkBoxDivulgacaoRuntimeExcluded,
 };

@@ -99,8 +99,10 @@ import {
   extractHeaderRemainder,
   stripHeaderBlock,
   buildContentWithHeader,
-  parseBoxHeaderField,
-} from "../lib/shared/snippet-header.ts"; // #3979/#3981 — helpers genéricos de header compartilhados com o render (newsletter-parse.ts); parseBoxHeaderField reusado pro campo `runtime:` (#4500)
+  isRuntimeExcluded,
+} from "../lib/shared/snippet-header.ts"; // #3979/#3981 — helpers genéricos de header compartilhados com o render (newsletter-parse.ts); isRuntimeExcluded MOVIDA pra cá em #4504 (camada errada — pipeline core também precisa dela e não pode importar de studio-ui/, ver test/lib-boundary.test.ts) — reexportada abaixo por back-compat de import
+
+export { isRuntimeExcluded };
 
 // ── slug / path ──────────────────────────────────────────────────────────
 
@@ -237,19 +239,6 @@ export function parseBoxCategoria(content: string): string | null {
   if (inner === null) return null;
   const line = /^[ \t]*categoria[ \t]*:[ \t]*(.+?)[ \t]*$/im.exec(inner);
   return line ? line[1].trim() : null;
-}
-
-/** `true` se o header de comentário declara `runtime: false` (#4500) — sinal
- * de que o `.md` é documentação/referência (não lido em runtime pelo
- * pipeline, ex: `intro-campeoes-sorteio.md`) e por isso não deve aparecer
- * como opção selecionável no painel Caixas (`listBoxes` filtra por isso).
- * Usa o helper genérico `parseBoxHeaderField` (mesma leitura de `nome:`/
- * `categoria:`, case-insensitive, só o 1º comentário). Comparação
- * case-insensitive do VALOR também (`False`/`FALSE` contam) — qualquer outro
- * valor (`true`, ausente, string arbitrária) não exclui. Nunca lança. */
-export function isRuntimeExcluded(content: string): boolean {
-  const raw = parseBoxHeaderField(content, "runtime");
-  return raw !== null && raw.trim().toLowerCase() === "false";
 }
 
 /** Remove a linha `nome:` do header de comentário (#3933), devolvendo o "body"

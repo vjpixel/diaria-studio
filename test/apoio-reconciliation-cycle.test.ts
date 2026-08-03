@@ -29,9 +29,9 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { runApoioReconciliationCycle } from "../scripts/lib/apoio-reconciliation-cycle.ts";
 import { contactsFilePath } from "../scripts/studio-ui/studio-apoios.ts";
 import { pendingPromisesPath, type PendingPromise } from "../scripts/lib/apoio-promise-store.ts";
@@ -280,5 +280,113 @@ describe("runApoioReconciliationCycle (self-review consolidado do PR #4503)", ()
     assert.equal(result.drainSkipReason, "auth_expired");
     assert.equal(result.authError, null);
     assert.equal(result.warning, null);
+  });
+
+  // ── #4506 item 1: merge-on-write (lockfile + re-read) ──────────────────
+
+  it("#4506 item 1: merge-on-write preserva promessa que outro writer adicionou concorrentemente", async () => {
+    const promisesPath = pendingPromisesPath(rootDir, "diaria");
+    // `drainImpl` roda DEPOIS que este ciclo já leu seu próprio snapshot em
+    // memória (`opts.pendingPromises` abaixo) — usado aqui só como gancho pra
+    // simular um 2º writer (ex: `/diaria-apoios-sync` manual concorrente)
+    // escrevendo no MESMO arquivo enquanto este ciclo ainda está em voo.
+    const drainImpl = async (): Promise<DrainApoiaSeResult> => {
+      mkdirSync(dirname(promisesPath), { recursive: true });
+      writeFileSync(
+        promisesPath,
+        JSON.stringify({
+          name: "Concorrente",
+          email: "concorrente@example.com",
+          value: 15,
+          receivedAtIso: "2026-08-02T20:00:00.000Z",
+        }) + "\n",
+      );
+      return emptyDrain();
+    };
+    const fetchImpl = (async () =>
+      jsonResponse(200, { isBacker: true, isPaidThisMonth: false })) as unknown as typeof fetch;
+
+    const result = await runApoioReconciliationCycle(rootDir, {
+      contacts: [],
+      env: TEST_APOIA_ENV,
+      drainImpl,
+      pendingPromises: [pendingPromise()], // fabiana — já "lida" antes do drainImpl escrever
+      checkOpts: { fetchImpl, limiter: fastLimiter, cacheDir: rootDir, now: new Date("2026-08-02T22:00:00Z") },
+    });
+
+    // A visão EM MEMÓRIA deste ciclo só conhece o que ele mesmo processou.
+    assert.equal(result.remainingPending.length, 1);
+    assert.equal(result.remainingPending[0].email, "fabiana@example.com");
+
+    // Mas o ARQUIVO final (merge-on-write) precisa conter as DUAS — descartar
+    // a promessa do "2º writer" seria exatamente o silent-drop que a issue
+    // #4506 item 1 existe pra fechar.
+    const persisted = readFileSync(promisesPath, "utf-8");
+    assert.match(persisted, /fabiana@example\.com/);
+    assert.match(persisted, /concorrente@example\.com/);
+  });
+
+  it("#4506 item 1: promessa promovida NESTE ciclo não reaparece mesmo se ainda estiver no disco (via merge)", async () => {
+    const promisesPath = pendingPromisesPath(rootDir, "diaria");
+    const drainImpl = async (): Promise<DrainApoiaSeResult> => {
+      // Simula o disco ainda tendo a MESMA promessa que este ciclo está
+      // prestes a promover (cenário: outro processo re-gravou o store sem
+      // saber que a reconciliação já ia confirmar o pagamento).
+      mkdirSync(dirname(promisesPath), { recursive: true });
+      writeFileSync(promisesPath, JSON.stringify(pendingPromise()) + "\n");
+      return emptyDrain();
+    };
+    const fetchImpl = (async () =>
+      jsonResponse(200, { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 50 })) as unknown as typeof fetch;
+
+    const result = await runApoioReconciliationCycle(rootDir, {
+      contacts: [],
+      env: TEST_APOIA_ENV,
+      drainImpl,
+      pendingPromises: [pendingPromise()],
+      checkOpts: { fetchImpl, limiter: fastLimiter, cacheDir: rootDir, now: new Date("2026-08-02T22:00:00Z") },
+    });
+
+    assert.equal(result.promoted.length, 1);
+    const persisted = readFileSync(promisesPath, "utf-8").trim();
+    assert.equal(persisted, "", "promessa promovida não deve sobreviver ao merge final, mesmo reaparecendo no disco");
+  });
+
+  // ── #4506 item 2: staleness ──────────────────────────────────────────────
+
+  it("#4506 item 2: promessa pendente há mais de 90 dias vira `stale` (reportada, não descartada)", async () => {
+    const drainImpl = async (): Promise<DrainApoiaSeResult> => emptyDrain();
+    const fetchImpl = (async () => jsonResponse(200, { isBacker: true, isPaidThisMonth: false })) as unknown as typeof fetch;
+    const oldPromise = pendingPromise({ receivedAtIso: "2026-01-01T00:00:00.000Z" }); // > 90 dias antes de "now"
+
+    const result = await runApoioReconciliationCycle(rootDir, {
+      contacts: [],
+      env: TEST_APOIA_ENV,
+      drainImpl,
+      pendingPromises: [oldPromise],
+      checkOpts: { fetchImpl, limiter: fastLimiter, cacheDir: rootDir, now: new Date("2026-08-02T22:00:00Z") },
+    });
+
+    assert.equal(result.stale.length, 1);
+    assert.equal(result.stale[0].email, "fabiana@example.com");
+    // Nunca descartada — continua em remainingPending (e persistida).
+    assert.equal(result.remainingPending.length, 1);
+    const persisted = readFileSync(pendingPromisesPath(rootDir, "diaria"), "utf-8");
+    assert.match(persisted, /fabiana@example\.com/);
+  });
+
+  it("#4506 item 2: promessa recente (< 90 dias) NÃO vira stale", async () => {
+    const drainImpl = async (): Promise<DrainApoiaSeResult> => emptyDrain();
+    const fetchImpl = (async () => jsonResponse(200, { isBacker: true, isPaidThisMonth: false })) as unknown as typeof fetch;
+
+    const result = await runApoioReconciliationCycle(rootDir, {
+      contacts: [],
+      env: TEST_APOIA_ENV,
+      drainImpl,
+      pendingPromises: [pendingPromise({ receivedAtIso: "2026-08-01T00:00:00.000Z" })],
+      checkOpts: { fetchImpl, limiter: fastLimiter, cacheDir: rootDir, now: new Date("2026-08-02T22:00:00Z") },
+    });
+
+    assert.deepEqual(result.stale, []);
   });
 });

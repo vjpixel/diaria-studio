@@ -22,9 +22,11 @@
  * — drena Gmail, importa notificações de PAGAMENTO CONFIRMADO como contato
  * (achado crítico 1), e reconsulta `reconcilePendingPromises` pra cada
  * promessa pendente do store; se confirmar pagamento, promove a contato
- * ANTES do cálculo. Sem isso, esta task diária (a cadência REAL do #4485
- * item 2) nunca fecharia o loop da causa 4 sozinha — só `/diaria-apoios-sync`
- * rodado manualmente fazia essa reconciliação. Idempotente via o store,
+ * ANTES do cálculo. Sem isso, esta task diária (a cadência PRETENDIDA pelo
+ * #4485 item 2 — registro no Task Scheduler ainda PENDENTE do editor, #4506
+ * item 6, ver CLAUDE.md) nunca fecharia o loop da causa 4 sozinha assim que
+ * armada — só `/diaria-apoios-sync` rodado manualmente fazia essa
+ * reconciliação. Idempotente via o store,
  * fail-soft pra tudo EXCETO `ApoiaSeAuthError` (achado crítico 2) — chave
  * apoia.se rejeitada aborta o alarme (loud, saída não-zero) em vez de
  * "seguindo sem ela".
@@ -107,7 +109,10 @@ async function main(): Promise<void> {
   const { apiKey, publicationId } = loadBeehiivConfig(LOG_PREFIX);
 
   // #4490 causa 4 / self-review consolidado do PR #4503: esta é a task diária
-  // REAL registrada pelo #4485 item 2 (`Diaria-Apoios-Diff-Alarm`) — sem esta
+  // PRETENDIDA pelo #4485 item 2 (`Diaria-Apoios-Diff-Alarm`) — o registro no
+  // Task Scheduler (armar via scripts/setup-apoios-diff-alarm-schedule.ps1) +
+  // 1ª execução ao vivo ainda são ação PENDENTE do editor (#4506 item 6, ver
+  // CLAUDE.md); este script já está pronto pra rodar assim que armado. Sem esta
   // reconciliação, uma promessa que confirma pagamento só é promovida a
   // contato se alguém rodar `/diaria-apoios-sync` manualmente, o que
   // reintroduz a dependência de "alguém lembrar" que a causa 4 deveria
@@ -143,6 +148,13 @@ async function main(): Promise<void> {
   if (cycle.remainingPending.length > 0) {
     console.error(
       `${LOG_PREFIX} ${cycle.remainingPending.length} promessa(s) ainda pendente(s) (sem confirmação de pagamento).`,
+    );
+  }
+  if (cycle.stale.length > 0) {
+    // #4506 item 2: cada uma já foi logada individualmente dentro de
+    // reconcilePendingPromises — este é só o resumo agregado no nível do alarme.
+    console.error(
+      `${LOG_PREFIX} aviso: ${cycle.stale.length} promessa(s) pendente(s) há mais de 90 dias sem confirmar — ver avisos acima.`,
     );
   }
   if (cycle.warning) {

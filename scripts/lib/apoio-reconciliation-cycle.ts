@@ -60,6 +60,7 @@ import {
 import {
   loadPendingPromises,
   mergeNewPromises,
+  mergePendingPromisesPreferRecent,
   pendingPromisesPath,
   savePendingPromises,
   type PendingPromise,
@@ -71,8 +72,23 @@ import {
   saveContacts,
   type ApoioContact,
 } from "../studio-ui/studio-apoios.ts";
+import { withFileLock } from "./file-lock.ts";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
 const LOG_PREFIX = "[apoio-reconciliation-cycle]";
+
+/** #4506 item 2: promessa pendente há mais desse tanto de dias sem confirmar
+ * pagamento é reportada/logada (nunca descartada sozinha do store — sinal
+ * pro editor investigar e-mail errado/desistência, decisão de remover
+ * continua manual). */
+const STALE_PROMISE_THRESHOLD_DAYS = 90;
+
+function isStalePromise(promise: PendingPromise, now: Date): boolean {
+  const receivedMs = new Date(promise.receivedAtIso).getTime();
+  if (Number.isNaN(receivedMs)) return false; // defensivo — timestamp malformado nunca conta como stale
+  return now.getTime() - receivedMs > STALE_PROMISE_THRESHOLD_DAYS * 24 * 60 * 60 * 1000;
+}
 
 // ── reconcilePendingPromises (movido de sync-apoio-nivel-beehiiv.ts, achado crítico 2) ──
 
@@ -82,6 +98,10 @@ export interface ReconcilePromisesResult {
   remainingPromises: PendingPromise[];
   /** Promessas que confirmaram pagamento nesta rodada — já promovidas a contato. */
   promoted: PendingPromise[];
+  /** #4506 item 2: subconjunto de `remainingPromises` com `receivedAtIso` mais
+   * velho que `STALE_PROMISE_THRESHOLD_DAYS` — só reportado/logado, nunca
+   * removido do store sozinho. Sinal de possível e-mail errado/desistência. */
+  stale: PendingPromise[];
 }
 
 /**
@@ -107,6 +127,8 @@ export async function reconcilePendingPromises(
   let currentContacts = contacts;
   const remainingPromises: PendingPromise[] = [];
   const promoted: PendingPromise[] = [];
+  const stale: PendingPromise[] = [];
+  const now = checkOpts.now ?? new Date();
 
   for (const promise of promises) {
     let status: BackerStatus;
@@ -131,10 +153,21 @@ export async function reconcilePendingPromises(
       promoted.push(promise);
     } else {
       remainingPromises.push(promise);
+      // #4506 item 2: promessa que nunca converte é re-consultada pra
+      // sempre sem sinal nenhum pro editor — logar (não descartar) quando
+      // passar do threshold de staleness.
+      if (isStalePromise(promise, now)) {
+        stale.push(promise);
+        process.stderr.write(
+          `${LOG_PREFIX} aviso: promessa de ${promise.name} <${promise.email}> pendente há mais de ` +
+            `${STALE_PROMISE_THRESHOLD_DAYS} dias (recebida em ${promise.receivedAtIso}) sem confirmar pagamento — ` +
+            "possível e-mail errado ou desistência; segue no store, mas vale investigar manualmente.\n",
+        );
+      }
     }
   }
 
-  return { contacts: currentContacts, remainingPromises, promoted };
+  return { contacts: currentContacts, remainingPromises, promoted, stale };
 }
 
 // ── runApoioReconciliationCycle — orquestração (#4490 causa 4) ─────────────
@@ -186,6 +219,12 @@ export interface ApoioReconciliationCycleResult {
    * promovidas nesta rodada, e já persistidos em `contacts.jsonl` quando
    * houve mutação. */
   contacts: ApoioContact[];
+  /** #4506 item 2: subconjunto de `remainingPending` pendente há mais de
+   * `STALE_PROMISE_THRESHOLD_DAYS` — já logado individualmente por
+   * `reconcilePendingPromises`, repassado aqui pro caller poder agregar
+   * num alerta/resumo próprio. `[]` quando a reconciliação nem rodou
+   * (nenhuma promessa pendente, ou `authError`/erro genérico antes de chegar lá). */
+  stale: PendingPromise[];
 }
 
 /**
@@ -212,6 +251,7 @@ export async function runApoioReconciliationCycle(
   let promessasDrained = 0;
   let promoted: PendingPromise[] = [];
   let remainingPending: PendingPromise[] = opts.pendingPromises ?? [];
+  let stale: PendingPromise[] = [];
   let warning: string | null = null;
   let authError: string | null = null;
   let drainSkipped = false;
@@ -263,6 +303,7 @@ export async function runApoioReconciliationCycle(
       contacts = reconciled.contacts;
       promoted = reconciled.promoted;
       remainingPending = reconciled.remainingPromises;
+      stale = reconciled.stale;
     }
   } catch (e) {
     if (e instanceof ApoiaSeAuthError) {
@@ -276,7 +317,49 @@ export async function runApoioReconciliationCycle(
     saveContacts(rootDir, contacts);
   }
   if (promisesPath) {
-    savePendingPromises(promisesPath, remainingPending);
+    // #4506 item 1: 2 writers não-lockados (`/diaria-apoios-sync` manual +
+    // task `Diaria-Apoios-Diff-Alarm`) podiam ler→modificar→escrever o
+    // mesmo `pending-promises.jsonl` em paralelo — `writeFileAtomic` (dentro
+    // de `savePendingPromises`) previne write TORTO (arquivo pela metade),
+    // mas não previne LOST-UPDATE (um writer sobrescreve o outro por
+    // inteiro). Fix de 2 camadas, mesmo padrão de `social-published-store.ts`:
+    // (a) lock real via `withFileLock` serializa o read-modify-write FINAL
+    // entre writers concorrentes; (b) mesmo sob lock, re-ler o disco AGORA
+    // (não confiar só no snapshot lido no início do ciclo, minutos atrás,
+    // antes do drain/reconciliação de rede) e fundir por `receivedAtIso`
+    // (`mergePendingPromisesPreferRecent`) em vez de sobrescrever cego —
+    // preserva uma promessa que outro writer adicionou nesse meio-tempo, e
+    // remove as que ESTE ciclo promoveu mesmo que ainda apareçam no disco.
+    // Lock com timeout (fail-soft, nunca deixa o módulo lançar): se o outro
+    // writer ficar preso, grava sem lock (aceita a janela residual, mais
+    // estreita que antes do #4506) e reporta em `warning`.
+    const finalPromisesPath = promisesPath;
+    const promotedEmails = new Set(promoted.map((p) => p.email));
+    try {
+      // O diretório pode não existir ainda num campaign/máquina novos —
+      // `acquireLock` usa `openSync(..., "wx")`, que lança ENOENT (não só
+      // EEXIST) se o diretório-pai faltar, e o retry loop de `withFileLock`
+      // trataria isso como "outro writer segurando o lock" até estourar o
+      // timeout de 10s à toa. Garantir o diretório ANTES evita essa
+      // degradação silenciosa no 1º run.
+      mkdirSync(dirname(finalPromisesPath), { recursive: true });
+      withFileLock(`${finalPromisesPath}.lock`, () => {
+        const diskNow = loadPendingPromises(finalPromisesPath);
+        const merged = mergePendingPromisesPreferRecent(remainingPending, diskNow).filter(
+          (p) => !promotedEmails.has(p.email),
+        );
+        savePendingPromises(finalPromisesPath, merged);
+      });
+    } catch (e) {
+      // Cobre timeout de lock (outro writer preso) E qualquer falha
+      // inesperada dentro do bloco sob lock (I/O, disco cheio) — em
+      // qualquer caso, fail-soft: grava sem o merge/lock (aceita a janela
+      // residual de lost-update, mais estreita que antes do #4506) em vez
+      // de deixar `runApoioReconciliationCycle` lançar.
+      const lockWarning = `falha ao gravar pending-promises.jsonl sob lock (${(e as Error).message}) — gravado sem lock (janela residual de lost-update).`;
+      warning = warning ? `${warning} | ${lockWarning}` : lockWarning;
+      savePendingPromises(finalPromisesPath, remainingPending);
+    }
   }
 
   return {
@@ -286,6 +369,7 @@ export async function runApoioReconciliationCycle(
     promessasDrained,
     promoted,
     remainingPending,
+    stale,
     warning,
     authError,
     contacts,

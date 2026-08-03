@@ -9,7 +9,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques, buildSubtitle, type Destaque as BaseDestaque } from "../extract-destaques.js";
-import { parseBoxHeaderField } from "./shared/snippet-header.ts"; // #3981 — categoria: do header do snippet
+import { parseBoxHeaderField, isRuntimeExcluded } from "./shared/snippet-header.ts"; // #3981 — categoria: do header do snippet; isRuntimeExcluded #4504 — invariant de runtime:false no render path
 import { parseInlineLink, parseInlineLinkWithTrailing } from "./inline-link.ts"; // #599, #1581
 import { buildPrevResultLine, readPrevPollStats } from "../eia-compose.ts"; // #1707 fallback
 import {
@@ -1745,6 +1745,52 @@ export function readBoxDivulgacaoAltForSlot(
     return alt.replace(/[*#]/g, "").replace(/^-+\s*/, "").trim() || null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * #4504: `true` se o snippet atualmente atribuído ao SLOT em
+ * `boxes_divulgacao.slot{N}` (`platform.config.json`) declara `runtime:
+ * false` no header (`isRuntimeExcluded`, `shared/snippet-header.ts` — movida
+ * de `scripts/studio-ui/studio-boxes.ts` nesta mesma issue porque o pipeline
+ * core não pode importar dessa camada UI, ver `test/lib-boundary.test.ts`).
+ *
+ * `runtime: false` sinaliza que o arquivo é documentação/referência (ex:
+ * `intro-campeoes-sorteio.md`, incidente original #4500), não conteúdo real
+ * — se um slot algum dia apontar pra ele (config editado manualmente, config
+ * antigo não migrado), o texto é injetado verbatim na newsletter.
+ * `saveBoxSlots` (Studio UI) já bloqueia essa atribuição no PUT, mas não
+ * cobre edição direta do `platform.config.json` — este helper alimenta o
+ * invariant check do Stage 4 (`checkBoxDivulgacaoRuntimeExcluded`,
+ * `invariant-checks/stage-4.ts`), a defesa em profundidade no próprio
+ * pipeline de render.
+ *
+ * Mesmo mecanismo de leitura dos irmãos (`readBoxDivulgacaoCategoriaForSlot`/
+ * `readBoxDivulgacaoAltForSlot`): disco, via `platform.config.json >
+ * boxes_divulgacao`. `false` (não excluído) quando: config ausente/
+ * corrompido, `boxes_divulgacao` ausente/malformado, slot vazio, ou arquivo
+ * do snippet não existe — mesmo fail-soft dos irmãos, nunca lança.
+ *
+ * `rootDir` (default: raiz do repo real) existe só pra fixture de teste
+ * isolada — o call site real (STAGE_4_RULES) nunca passa override.
+ */
+export function readBoxDivulgacaoRuntimeExcludedForSlot(
+  slot: 0 | 1 | 2 | 3,
+  rootDir: string = REPO_ROOT_FROM_MODULE,
+): boolean {
+  try {
+    const configPath = resolve(rootDir, "platform.config.json");
+    if (!existsSync(configPath)) return false;
+    const cfg = JSON.parse(readFileSync(configPath, "utf8"));
+    const boxes = cfg?.boxes_divulgacao;
+    if (!boxes || typeof boxes !== "object") return false;
+    const filename = boxes[`slot${slot}`];
+    if (typeof filename !== "string" || !filename) return false;
+    const snippetPath = resolve(rootDir, "context", "snippets", filename);
+    if (!existsSync(snippetPath)) return false;
+    return isRuntimeExcluded(readFileSync(snippetPath, "utf8"));
+  } catch {
+    return false;
   }
 }
 

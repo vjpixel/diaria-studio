@@ -9,8 +9,10 @@
  * (`importPendingApoiadoresFromGmail`, #3912) — mas isso só roda dentro de
  * `refreshApoiosData`, usado pelo botão "Atualizar status" do painel Apoios
  * (ação MANUAL do editor). Nem `scripts/sync-apoio-nivel-beehiiv.ts` nem
- * `scripts/apoios-diff-alarm.ts` (a task diária AGENDADA de verdade —
- * `Diaria-Apoios-Diff-Alarm`, #4485 item 2) drenavam Gmail antes desta
+ * `scripts/apoios-diff-alarm.ts` (a task diária PRETENDIDA pra rodar
+ * automaticamente — `Diaria-Apoios-Diff-Alarm`, #4485 item 2; registro no
+ * Task Scheduler + 1ª execução ao vivo ainda são ação PENDENTE do editor,
+ * #4506 item 6 — ver CLAUDE.md) drenavam Gmail antes desta
  * unidade — então uma promessa que confirma pagamento SEM que ninguém
  * clique o botão manual nunca era promovida a contato, e a pessoa ficava
  * invisível ao sync pra sempre. Caso comprovado: Fabiana, 260802 (#4490) —
@@ -55,7 +57,13 @@ export function pendingPromisesPath(rootDir: string, campaign: string): string {
 }
 
 /** Fail-soft: arquivo ausente ou linha corrompida nunca lança — mesma
- * disciplina do resto do módulo apoia-se (`loadMonthCache`). */
+ * disciplina do resto do módulo apoia-se (`loadMonthCache`). Re-normaliza
+ * `email` (lowercase/trim) na leitura (#4506 item 4) — `mergeNewPromises`
+ * já normaliza no momento da fusão, mas uma entrada gravada por uma versão
+ * anterior do código, ou editada manualmente no disco, podia carregar um
+ * e-mail não-normalizado pra sempre; o invariante documentado no campo
+ * `email` da interface (normalizado, lowercase/trim) precisa valer também
+ * no boundary de LEITURA, não só na escrita via merge. */
 export function loadPendingPromises(path: string): PendingPromise[] {
   if (!existsSync(path)) return [];
   let raw: string;
@@ -76,7 +84,12 @@ export function loadPendingPromises(path: string): PendingPromise[] {
         typeof parsed.value === "number" &&
         typeof parsed.receivedAtIso === "string"
       ) {
-        out.push({ name: parsed.name, email: parsed.email, value: parsed.value, receivedAtIso: parsed.receivedAtIso });
+        out.push({
+          name: parsed.name,
+          email: parsed.email.trim().toLowerCase(),
+          value: parsed.value,
+          receivedAtIso: parsed.receivedAtIso,
+        });
       }
     } catch {
       // linha corrompida — ignora, mesma disciplina fail-soft do resto do módulo.
@@ -92,21 +105,52 @@ export function savePendingPromises(path: string, promises: PendingPromise[]): v
 }
 
 /**
+ * Pure (#4506 item 1/item 3): funde DUAS listas de `PendingPromise` por
+ * e-mail normalizado — pra um mesmo e-mail presente nas duas, a entrada com
+ * `receivedAtIso` MAIS RECENTE vence de verdade (comparação de timestamp,
+ * não ordem de iteração — antes do #4506, `mergeNewPromises` documentava
+ * "mais recente vence" mas só implementava "o processado por último vence",
+ * que coincidia com o timestamp real só enquanto `drained` sempre chegava
+ * cronologicamente depois de `existing`). Entrada com e-mail vazio é
+ * descartada (defensivo). Exportada porque também alimenta o merge
+ * pré-write de `runApoioReconciliationCycle` (item 1 — estreita a janela de
+ * lost-update entre 2 writers concorrentes de `pending-promises.jsonl`,
+ * re-lendo o disco imediatamente antes do write final e fundindo por cima
+ * em vez de sobrescrever cego).
+ */
+export function mergePendingPromisesPreferRecent(
+  a: readonly PendingPromise[],
+  b: readonly PendingPromise[],
+): PendingPromise[] {
+  const byEmail = new Map<string, PendingPromise>();
+  const consider = (list: readonly PendingPromise[]) => {
+    for (const p of list) {
+      const email = p.email.trim().toLowerCase();
+      if (!email) continue;
+      const candidate: PendingPromise = { ...p, email };
+      const current = byEmail.get(email);
+      if (!current || new Date(candidate.receivedAtIso).getTime() >= new Date(current.receivedAtIso).getTime()) {
+        byEmail.set(email, candidate);
+      }
+    }
+  };
+  consider(a);
+  consider(b);
+  return Array.from(byEmail.values());
+}
+
+/**
  * Pure: funde promessas recém-drenadas no store existente — dedup por e-mail
- * normalizado (uma promessa repetida do mesmo e-mail nunca duplica; a mais
- * recente vence). Promessa com e-mail vazio é descartada (defensivo, nunca
+ * normalizado, mais recente por `receivedAtIso` vence (`mergePendingPromisesPreferRecent`,
+ * #4506 item 3). Promessa com e-mail vazio é descartada (defensivo, nunca
  * deveria acontecer — `parsePromessaEmail` já exige e-mail não-vazio).
  */
 export function mergeNewPromises(existing: PendingPromise[], drained: readonly DrainedPromessa[]): PendingPromise[] {
-  const byEmail = new Map<string, PendingPromise>();
-  for (const p of existing) {
-    const email = p.email.trim().toLowerCase();
-    if (email) byEmail.set(email, { ...p, email });
-  }
+  const drainedAsPending: PendingPromise[] = [];
   for (const d of drained) {
     const email = d.email.trim().toLowerCase();
     if (!email) continue;
-    byEmail.set(email, { name: d.name, email, value: d.value, receivedAtIso: d.receivedAtIso });
+    drainedAsPending.push({ name: d.name, email, value: d.value, receivedAtIso: d.receivedAtIso });
   }
-  return Array.from(byEmail.values());
+  return mergePendingPromisesPreferRecent(existing, drainedAsPending);
 }

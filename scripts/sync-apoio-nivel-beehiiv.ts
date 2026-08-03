@@ -697,7 +697,7 @@ function logDiff(diff: ApoioTagDiffResult, removalsBlocked: boolean): void {
       } else {
         log(`  - ${label} (${d.emails.join(", ")}): ${d.candidates.length} candidato(s):`);
         for (const c of d.candidates) {
-          log(`      ? ${c.email} — ${c.reason} (confirmar manualmente, nunca aplicado sozinho)`);
+          log(`      ? ${c.email} — ${c.detail} (confirmar manualmente, nunca aplicado sozinho)`); // #4506: reason virou union curta, detail carrega o texto legível
         }
       }
     }
@@ -779,6 +779,13 @@ async function main(): Promise<void> {
   if (cycle.remainingPending.length > 0) {
     process.stderr.write(
       `${LOG_PREFIX} ${cycle.remainingPending.length} promessa(s) ainda pendente(s) (sem confirmação de pagamento).\n`,
+    );
+  }
+  if (cycle.stale.length > 0) {
+    // #4506 item 2: cada uma já foi logada individualmente dentro de
+    // reconcilePendingPromises — este é só o resumo agregado no nível do sync.
+    process.stderr.write(
+      `${LOG_PREFIX} aviso: ${cycle.stale.length} promessa(s) pendente(s) há mais de 90 dias sem confirmar — ver avisos acima.\n`,
     );
   }
   if (cycle.warning) {

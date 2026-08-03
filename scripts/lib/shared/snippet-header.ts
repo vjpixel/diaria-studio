@@ -47,6 +47,23 @@ export function parseBoxHeaderField(content: string, key: string): string | null
   return m ? m[1].trim() : null;
 }
 
+/** `true` se o header de comentário declara `runtime: false` (#4500, movida
+ * de `scripts/studio-ui/studio-boxes.ts` pra cá em #4504 — a checagem passou
+ * a ser necessária também no pipeline core, `scripts/stitch-newsletter.ts`/
+ * `scripts/lib/newsletter-parse.ts`, que não pode importar de `studio-ui/`
+ * por ser camada UI/server-only, ver `test/lib-boundary.test.ts`) — sinal de
+ * que o `.md` é documentação/referência (não lido em runtime pelo pipeline,
+ * ex: `intro-campeoes-sorteio.md`) e por isso não deve ser selecionável no
+ * painel Caixas (`listBoxes`) nem atribuível a um slot de `boxes_divulgacao`
+ * (`saveBoxSlots`, e o invariant check `box-divulgacao-runtime-excluded` do
+ * Stage 4, #4504). Comparação case-insensitive do VALOR também (`False`/
+ * `FALSE` contam) — qualquer outro valor (`true`, ausente, string
+ * arbitrária) não exclui. Nunca lança. */
+export function isRuntimeExcluded(content: string): boolean {
+  const raw = parseBoxHeaderField(content, "runtime");
+  return raw !== null && raw.trim().toLowerCase() === "false";
+}
+
 /** Header inner MENOS as linhas `{key}:` de `keys` (case-insensitive),
  * trimado — o texto de "notas" que sobra pro editor livre (#3979: painel
  * "Notas", separado dos campos dedicados `nome`/`categoria`). `""` se não

@@ -34,6 +34,14 @@
  * reportado em `automatedSubjectCount` — nunca some em silêncio (mesmo
  * princípio do #4095).
  *
+ * #4509: essa blacklist só bate enquanto a publicação/automação Beehiiv não
+ * for renomeada (#4424 rebrand "Diar.ia" → "diar.ia.br") — no dia em que
+ * isso acontecer, a comparação exata para de bater SEM erro nem log. Fix:
+ * `possibleStaleAutomatedSubjects` (`FilterResult`) sinaliza (nunca exclui)
+ * candidatos cujo assunto "parece" o boas-vindas (`WELCOME_SUBJECT_HINT_RE`
+ * — contém a palavra "bem-vindo", que sobrevive à troca de marca) mas não
+ * bateu a blacklist exata — `main()` emite um warning quando isso acontece.
+ *
  * Uso:
  *   npx tsx scripts/filter-subscriber-replies.ts --in captured-replies.json
  *
@@ -257,6 +265,39 @@ const AUTOMATED_SUBJECTS = [
 const AUTOMATED_SUBJECTS_NORMALIZED = new Set(AUTOMATED_SUBJECTS.map(normalizeSubject));
 
 /**
+ * #4509: sinal ESTRUTURAL de "quase bateu" a blacklist exata acima — o
+ * assunto normalizado contém a palavra "bem-vindo" (sobrevive a uma troca
+ * de MARCA na publicação/automação Beehiiv, ex: #4424 renomeando "Diar.ia"
+ * pra "diar.ia.br" — a saudação de boas-vindas tende a preservar essa
+ * palavra mesmo quando o nome da marca no resto do assunto muda), mas o
+ * texto INTEIRO não bate nenhuma entry de `AUTOMATED_SUBJECTS`.
+ *
+ * NUNCA usado pra EXCLUIR nada — a blacklist exata continua sendo a única
+ * fonte de verdade pra exclusão de `replies[]` (decisão #4324: inferir por
+ * substring arriscaria excluir retorno legítimo, ex: assinante que
+ * literalmente escreve "bem-vindo" numa resposta de verdade). Só alimenta
+ * `possibleStaleAutomatedSubjects` (`FilterResult`) pra o warning em
+ * `main()` — sem isso, o dia em que o rename acontecer (#4424), o filtro do
+ * #4324 pararia de bater 100% em silêncio (achado #4509).
+ */
+const WELCOME_SUBJECT_HINT_RE = /\bbem-?vindo\b/;
+
+/**
+ * #4509: `true` quando o assunto (já normalizado por `normalizeSubject`),
+ * despojado de qualquer pontuação/hífen, ainda contém o fragmento "diaria" —
+ * tanto "Diar.ia" (marca atual) quanto "diar.ia.br" (marca pós-rebrand
+ * #4424) colapsam pra esse mesmo fragmento assim que period/hífen somem.
+ * Usado SÓ pra reduzir falso-positivo do near-miss (evita marcar o
+ * boas-vindas de OUTRA newsletter na mesma caixa pessoal, ex: "Bem-vindo ao
+ * AYA Books", como suspeito — esse assunto não contém "diaria" nenhuma) —
+ * nunca pra excluir replies (`isAutomatedSubject`/`AUTOMATED_SUBJECTS`
+ * continuam a única fonte de exclusão real).
+ */
+function hasOwnBrandFragment(normalizedSubject: string): boolean {
+  return normalizedSubject.replace(/[^a-z0-9]/g, "").includes("diaria");
+}
+
+/**
  * `true` se o assunto (normalizado) casa com um e-mail de automação conhecido
  * da Beehiiv (ex: o boas-vindas). Compara o assunto INTEIRO normalizado —
  * `"Re: Bem-vindo ao AYA Books"` (outra newsletter, mesma caixa) nunca casa
@@ -279,18 +320,39 @@ export interface FilterResult {
    * Reportado agregado pelo consumidor (nunca some em silêncio).
    */
   automatedSubjectCount: number;
+  /** #4509: candidatos (Re: + remetente humano) cujo assunto "parece" ser o
+   * boas-vindas (contém "bem-vindo" E o fragmento de marca "diaria" —
+   * `WELCOME_SUBJECT_HINT_RE` + `hasOwnBrandFragment`) mas NÃO bateu a
+   * blacklist exata de `AUTOMATED_SUBJECTS` — sinal indireto de que o
+   * rename da publicação/automação Beehiiv (#4424) tornou a blacklist
+   * obsoleta. Assuntos brutos (não normalizados), pra o warning de `main()`
+   * mostrar o texto real que precisa virar uma nova entry. `[]` no caso
+   * comum (nenhum near-miss). NUNCA exclui nada de `replies[]` — só
+   * sinaliza.
+   */
+  possibleStaleAutomatedSubjects: string[];
 }
 
 export function filterSubscriberReplies(threads: CapturedReply[]): FilterResult {
   const candidates = threads.filter((t) => looksLikeSubscriberReply({ subject: t.subject, from: t.from }));
   const automatedSubjectCount = candidates.filter((t) => isAutomatedSubject(t.subject)).length;
+  // #4509: near-miss ANTES do filtro final — roda sobre os mesmos candidatos
+  // que alimentam automatedSubjectCount, nunca sobre `replies` (que já
+  // excluiu os automáticos exatos).
+  const possibleStaleAutomatedSubjects = candidates
+    .filter((t) => {
+      if (isAutomatedSubject(t.subject)) return false;
+      const normalized = normalizeSubject(t.subject);
+      return WELCOME_SUBJECT_HINT_RE.test(normalized) && hasOwnBrandFragment(normalized);
+    })
+    .map((t) => t.subject ?? "");
   const replies = candidates
     .filter((t) => !isAutomatedSubject(t.subject))
     .map((t) => ({
       ...t,
       trivial: isTrivialReply(stripQuotedAndSignature(t.body)),
     }));
-  return { total: threads.length, replies, automatedSubjectCount };
+  return { total: threads.length, replies, automatedSubjectCount, possibleStaleAutomatedSubjects };
 }
 
 function main(): void {
@@ -339,6 +401,18 @@ function main(): void {
   if (result.automatedSubjectCount > 0) {
     console.error(
       `  📧 ${result.automatedSubjectCount} resposta(s) ao e-mail de boas-vindas ignorada(s)`,
+    );
+  }
+  // #4509: near-miss — assunto "parece" boas-vindas mas não bateu a
+  // blacklist EXATA. Sinal indireto (não dependente de histórico) de que o
+  // rename do workspace/automação Beehiiv (#4424) pode ter tornado
+  // AUTOMATED_SUBJECTS obsoleta — nunca deixar essa quebra 100% silenciosa.
+  if (result.possibleStaleAutomatedSubjects.length > 0) {
+    console.error(
+      `  ⚠️  AVISO: ${result.possibleStaleAutomatedSubjects.length} resposta(s) com assunto parecido com o ` +
+        "boas-vindas, mas que NÃO bateu a blacklist exata (AUTOMATED_SUBJECTS em filter-subscriber-replies.ts) — " +
+        "possível sinal de que o workspace/automação Beehiiv foi renomeado (#4424) e o filtro do #4324 parou de " +
+        `bater. Assunto(s): ${result.possibleStaleAutomatedSubjects.map((s) => `"${s}"`).join(", ")}`,
     );
   }
 }

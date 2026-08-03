@@ -858,6 +858,10 @@ export const STAGE_5_RULES: InvariantRule[] = [
     description: "06-social-published.json não-vazio, sem failed (#272)",
     source_issue: "#272",
     stage: 5,
+    // #4516: 06-social-published.json só existe DEPOIS que publish-linkedin/
+    // facebook rodam (dispatch do próprio Stage 5) — sempre "error" se
+    // checado em §5a (pre-dispatch), antes de qualquer publicação acontecer.
+    postDispatchOnly: true,
     run: checkSocialPublishedComplete,
   },
   {
@@ -952,6 +956,10 @@ export const STAGE_5_RULES: InvariantRule[] = [
     description: "_internal/.step-5-done.json escrito pelo pipeline-sentinel (#1694)",
     source_issue: "#1694",
     stage: 5,
+    // #4516: o sentinel só é escrito no §5h, ao FIM do Stage 5 — sempre
+    // "error" se checado em §5a (pre-dispatch), antes de qualquer passo
+    // do Stage 5 ter rodado.
+    postDispatchOnly: true,
     run: checkStep5Sentinel,
   },
   {

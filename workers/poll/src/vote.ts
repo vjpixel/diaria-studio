@@ -28,7 +28,9 @@ import {
 import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./index";
 // #4487: resolução do token opaco de voto (e-mail diário, esp="beehiiv") →
 // e-mail real, via lookup KV. Ver header de poll-token.ts pro design completo.
-import { extractPollToken, isPollTokenIdentity, pollTokenKvKey } from "./poll-token";
+// #4518: classifyPollTokenEmail substitui extractPollToken/isPollTokenIdentity
+// neste call site (discriminated union — ver rationale no ponto de uso).
+import { classifyPollTokenEmail, pollTokenKvKey } from "./poll-token";
 import { upsertOwnEntryInSnapshot, listAllKeys } from "./leaderboard-routes";
 import { type StatsCounterData, mergeStatsWithKvFallback } from "./stats-counter";
 // #4169: DO que serializa o read-modify-write de score:{email} (global) e
@@ -285,6 +287,19 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   // #2262: rejeita merge tag NÃO-substituída como email (vira voto-lixo no
   // leaderboard público). Helper testável `isUnsubstitutedMergeTag` em ./lib.
   if (isUnsubstitutedMergeTag(email)) {
+    // #4520: guard existia desde #2262 sem log nenhum — o único sinal era o
+    // IN-BAND HTTP check de `scripts/lint-test-email-link-tracking.ts`
+    // (stage: "delivered", HEAD real em /vote), fora de banda e só rodado
+    // manualmente/no CI de teste de e-mail. `console.log` (não
+    // `console.error`): merge tag não-substituída é tipicamente sintoma de
+    // config/outage do lado da plataforma de envio (test send, preview,
+    // atributo ausente no contato — ver `isUnsubstitutedMergeTag`/lib.ts),
+    // não um bug deste Worker — mesmo nível de `poll_vote_403` logo abaixo,
+    // que já segue essa convenção pro caso irmão "sig ausente/inválido".
+    // `email` aqui NUNCA é um endereço real (é o literal `{{...}}` cru) —
+    // logar o valor (truncado, defensivo) é seguro e mais útil que
+    // `email_domain` pra identificar QUAL merge tag ficou sem substituir.
+    console.log(JSON.stringify({ event: "poll_vote_unsubstituted_merge_tag", edition, raw: email.slice(0, 100) }));
     return voteHtmlResponse(votePageHtml("Link inválido — abra o voto pelo botão no email.", false, null, null, null, brand), 400);
   }
 
@@ -322,33 +337,30 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   // Resto da função (sig, valid_editions, web guard, score/vote/nickname)
   // continua operando sobre `email` REAL a partir daqui — zero mudança de
   // comportamento pra quem já vota há meses (streak/nickname preservados).
-  const pollToken = extractPollToken(email);
-  // #4512 (fix pré-merge, achado type-design-analyzer): `extractPollToken`
-  // retorna `null` tanto pra "não está sob o domínio reservado
-  // vote.eia.diaria.local" quanto pra "está sob o domínio mas o local-part
-  // NÃO é um token hex de 24 chars válido" — sem distinguir os dois casos,
-  // um `if (pollToken)` sozinho deixava o segundo caso cair no fallthrough:
-  // pulava a resolução via KV e seguia pro resto da função com `email` igual
-  // à string literal atacante-controlada `algo-invalido@vote.eia.diaria.local`,
-  // como se fosse um e-mail normal — poluindo dedup/score/nickname/leaderboard
-  // com uma identidade fabricada sob o domínio reservado. MESMO padrão de
-  // bug já corrigido pro domínio irmão `web.eia.diaria.local` (#3976/#4011,
-  // guard `isAnonymousWebIdentity` mais abaixo) — reusa aqui o helper de
-  // construção equivalente, `isPollTokenIdentity` (já exportado e testado
-  // isoladamente em poll-token-4487.test.ts), pra rejeitar ANTES de chegar
-  // no resto da função. Só o domínio `vote.eia.diaria.local` (esp="beehiiv")
-  // é coberto aqui — `isAnonymousWebIdentity`/`isValidWebToken` continuam
-  // cobrindo `web.eia.diaria.local` separadamente, mais abaixo.
-  if (isPollTokenIdentity(email) && !pollToken) {
+  //
+  // #4518: `classifyPollTokenEmail` substitui o par
+  // `extractPollToken`/`isPollTokenIdentity` usado até aqui — aquele par
+  // exigia o caller lembrar de checar "domínio certo mas token malformado"
+  // manualmente (`isPollTokenIdentity(email) && !pollToken`, ver histórico
+  // do #4512 abaixo); a union `{kind: "not-token-domain"|"malformed"|"valid"}`
+  // torna esse branch OBRIGATÓRIO de nomear — `switch`/`if` sobre `.kind` não
+  // compila mais se o caso do meio for ignorado. `extractPollToken`/
+  // `isPollTokenIdentity` continuam exportados (poll-token.ts) por
+  // compatibilidade, só não são mais usados aqui.
+  const classification = classifyPollTokenEmail(email);
+  if (classification.kind === "malformed") {
     // #4512 (fleet review round 2, achado silent-failure-hunter): console.error,
     // não console.log — mesmo nível do evento irmão `poll_vote_token_unresolved`
     // logo abaixo (mesma classe "algo está quebrado sob o domínio reservado do
-    // token de voto", não ruído esperado tipo `poll_vote_403`).
+    // token de voto", não ruído esperado tipo `poll_vote_403`). MESMO padrão de
+    // bug já corrigido pro domínio irmão `web.eia.diaria.local` (#3976/#4011,
+    // guard `isAnonymousWebIdentity` mais abaixo) — só o domínio
+    // `vote.eia.diaria.local` (esp="beehiiv") é coberto aqui.
     console.error(JSON.stringify({ event: "poll_vote_token_malformed", edition, email_domain: email.split("@")[1] ?? "unknown" }));
     return voteHtmlResponse(votePageHtml("Link inválido ou expirado.", false, null, null, null, brand), 400);
   }
-  if (pollToken) {
-    const resolvedEmail = await env.POLL.get(pollTokenKvKey(pollToken));
+  if (classification.kind === "valid") {
+    const resolvedEmail = await env.POLL.get(pollTokenKvKey(classification.token));
     // Guard defensivo (mesma disciplina de safeParseKv/isValidVoteEmailFormat
     // já aplicada a todo dado lido do KV neste arquivo): um valor ausente,
     // vazio, ou corrompido na entrada reversa (nunca deveria acontecer — só o
@@ -360,15 +372,15 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
       // mesmo nível de "algo está quebrado" dos outros eventos deste arquivo
       // (ex: vote_dedup_do_error), não o nível de ruído-esperado de
       // poll_vote_403. Este branch só é alcançado quando `email` JÁ bate a
-      // forma de token válida (`extractPollToken` não-null) mas a entrada
-      // reversa não existe/está corrompida no KV — na prática, o caso real
-      // mais comum é um assinante novo ainda não coberto pelo próximo sync
-      // incremental de `inject-poll-token.ts` (#4512, correção de comentário:
-      // a versão anterior descrevia isto como "todo voto até a 1ª execução
-      // ao vivo", impreciso — um token com custom field vazio/tag não
-      // substituída é rejeitado ANTES, pelos guards de formato/merge-tag
-      // acima, e nunca chega aqui).
-      console.error(JSON.stringify({ event: "poll_vote_token_unresolved", edition, token: pollToken }));
+      // forma de token válida (`classification.kind === "valid"`) mas a
+      // entrada reversa não existe/está corrompida no KV — na prática, o
+      // caso real mais comum é um assinante novo ainda não coberto pelo
+      // próximo sync incremental de `inject-poll-token.ts` (#4512, correção
+      // de comentário: a versão anterior descrevia isto como "todo voto até
+      // a 1ª execução ao vivo", impreciso — um token com custom field
+      // vazio/tag não substituída é rejeitado ANTES, pelos guards de
+      // formato/merge-tag acima, e nunca chega aqui).
+      console.error(JSON.stringify({ event: "poll_vote_token_unresolved", edition, token: classification.token }));
       return voteHtmlResponse(votePageHtml("Link inválido ou expirado.", false, null, null, null, brand), 400);
     }
     email = resolvedEmail.toLowerCase().trim();

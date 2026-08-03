@@ -29,5 +29,18 @@ export interface InvariantRule {
    * - `6` roda pós-agendamento (após Stage 6 Schedule+auto-reporter) (#1694)
    */
   stage: 0 | 1 | 2 | 3 | 4 | 5 | 6;
+  /**
+   * #4516: `true` quando a regra só pode passar DEPOIS que o dispatch do
+   * Stage 5 (newsletter+social) já rodou — o arquivo que ela valida
+   * (`06-social-published.json`, `.step-5-done.json`) é escrito PELO
+   * dispatch em si, não antes. `check-invariants.ts --stage 5 --phase
+   * pre-dispatch` (§5a do orchestrator, antes de qualquer publicação
+   * acontecer) exclui essas regras — rodando-as ali, `severity: error`
+   * dispara SEMPRE, em toda edição, travando a Etapa 5 na 1ª tentativa
+   * (achado #4516). `§5i` (pós-publicação) continua rodando sem `--phase`,
+   * cobrindo o conjunto completo. Ausente/`false` = regra roda em qualquer
+   * fase (comportamento de sempre).
+   */
+  postDispatchOnly?: boolean;
   run: (editionDir: string) => InvariantViolation[];
 }

@@ -20,7 +20,8 @@ describe("findEmailMatchCandidates (#4490 causa 3)", () => {
     assert.equal(candidates.length, 1);
     assert.equal(candidates[0].subscriptionId, "sub-1");
     assert.equal(candidates[0].email, "murilosarno@gmail.com");
-    assert.match(candidates[0].reason, /local-part normalizado/);
+    assert.equal(candidates[0].reason, "local-part");
+    assert.match(candidates[0].detail, /local-part normalizado/);
   });
 
   it("(b) nome do contato aparece no local-part — Vanessa", () => {
@@ -31,7 +32,8 @@ describe("findEmailMatchCandidates (#4490 causa 3)", () => {
     );
     assert.equal(candidates.length, 1);
     assert.equal(candidates[0].email, "vanessaventuracontato@gmail.com");
-    assert.match(candidates[0].reason, /nome do contato aparece no local-part/);
+    assert.equal(candidates[0].reason, "name-in-local-part");
+    assert.match(candidates[0].detail, /nome do contato aparece no local-part/);
   });
 
   it("(c) domínio próprio similar ao nome do contato — Hugo", () => {
@@ -42,7 +44,8 @@ describe("findEmailMatchCandidates (#4490 causa 3)", () => {
     );
     assert.equal(candidates.length, 1);
     assert.equal(candidates[0].email, "behiiv@hugopenna.com");
-    assert.match(candidates[0].reason, /domínio.*parece pessoal/);
+    assert.equal(candidates[0].reason, "own-domain");
+    assert.match(candidates[0].detail, /domínio.*parece pessoal/);
   });
 
   it("(c) domínio público comum (gmail) NUNCA conta como 'domínio próprio', mesmo com nome parecido", () => {
@@ -63,7 +66,8 @@ describe("findEmailMatchCandidates (#4490 causa 3)", () => {
     );
     assert.equal(candidates.length, 1);
     assert.equal(candidates[0].email, "fabartholo@gmail.com");
-    assert.match(candidates[0].reason, /parecido com fbartholo@hotmail\.com/);
+    assert.equal(candidates[0].reason, "typo-variant");
+    assert.match(candidates[0].detail, /parecido com fbartholo@hotmail\.com/);
   });
 
   it("sem match nenhum — nunca inventa candidato", () => {
