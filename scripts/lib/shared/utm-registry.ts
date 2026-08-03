@@ -748,8 +748,10 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
       "suprime o Referer. Substitui `instagram-diaria`/`lancamento-2607` (#4525). " +
       "BLOQUEADO na web: o campo Website de `instagram.com/accounts/edit/` vem " +
       "desabilitado com o aviso 'Editing your links is only available on mobile' " +
-      "(verificado ao vivo em 260803) — só o editor aplica, pelo app.",
+      "(verificado ao vivo em 260803) — só o editor aplica, pelo app, e foi assim " +
+      "que entrou. Conferido pelo href da bio depois.",
     status: "ativo",
+    appliedAt: "2026-08-03",
   },
   {
     id: "perfil-facebook",
