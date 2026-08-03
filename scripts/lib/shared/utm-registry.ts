@@ -740,12 +740,14 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
     medium: EXTERNAL_SURFACE_MEDIUM,
     campaign: buildExternalSurfaceCampaign("facebook"),
     panelUrl: "https://www.facebook.com/diar.ia.br",
-    field: "Sobre → Site",
+    field: "Trocar agora (identidade → Página) → Sobre → Links",
     description:
       "Campo Site da página, exibido na seção Links do perfil. O #4295 supunha " +
       "vazio; a varredura do #4525 achou preenchido com `facebook-diaria`/" +
-      "`lancamento-2607`.",
+      "`lancamento-2607`. Editar exige TROCAR a identidade da sessão pra Página " +
+      "— pelo perfil pessoal a seção Links é read-only.",
     status: "ativo",
+    appliedAt: "2026-08-03",
   },
   {
     id: "perfil-threads",
