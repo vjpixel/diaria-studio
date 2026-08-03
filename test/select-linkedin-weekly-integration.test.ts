@@ -235,6 +235,70 @@ describe("select→render end-to-end (#4489 finding 4) + gap de cache de clique 
   });
 });
 
+describe("#4492: candidato USE MELHOR com maior clique da semana não vira manchete (fim-a-fim)", () => {
+  let root: string;
+  let selectionJson: any;
+
+  before(() => {
+    root = mkTmpRoot();
+    writeEdition(
+      root,
+      "260810",
+      [
+        "**DESTAQUE 1 | 💼 MERCADO**",
+        "",
+        "**[Matéria A](https://exemplo.com/materia-a)**",
+        "",
+        "Corpo da matéria A.",
+        "",
+        "Por que isso importa:",
+        "",
+        "Explicação.",
+        "",
+        "---",
+        "",
+        "**🛠️ USE MELHOR**",
+        "",
+        "**[Tutorial imbatível de clique](https://exemplo.com/tutorial-imbativel)**",
+        "Tutorial de 5 minutos que bombou de clique essa semana.",
+        "",
+      ].join("\n"),
+    );
+    writeCachePost(root, "post_810", {
+      id: "post_810",
+      status: "confirmed",
+      publish_date: epochFor("260810"),
+      stats: {
+        email: { clicks: 60, unique_opens: 200 },
+        clicks: [
+          // Destaque: 1/200 = 0.5%. Use Melhor: 50/200 = 25% — de longe o
+          // maior clique da semana, mas NÃO pode virar manchete (#4492).
+          { url: "https://exemplo.com/materia-a", base_url: "https://exemplo.com/materia-a", email: { unique_verified_clicks: 1 } },
+          { url: "https://exemplo.com/tutorial-imbativel", base_url: "https://exemplo.com/tutorial-imbativel", email: { unique_verified_clicks: 50 } },
+        ],
+      },
+    });
+
+    process.argv = ["node", "select-linkedin-weekly.ts", "--publish-monday", "260817"];
+    selectMain(root);
+    const selectionPath = join(root, "data/weekly/26w33/_internal/ln-selection.json");
+    selectionJson = JSON.parse(readFileSync(selectionPath, "utf8"));
+  });
+
+  after(() => rmSync(root, { recursive: true, force: true }));
+
+  it("manchete é o destaque de mercado (única elegível), não o tutorial de 25% de taxa", () => {
+    assert.deepEqual(
+      (selectionJson.headlines as Array<{ title: string }>).map((h) => h.title),
+      ["Matéria A"],
+    );
+  });
+
+  it("o candidato use_melhor de maior taxa vai pro bloco Use Melhor dedicado, não pra manchete", () => {
+    assert.equal(selectionJson.useMelhor?.title, "Tutorial imbatível de clique");
+  });
+});
+
 describe("finding 7: guard de segunda-feira no CLI", () => {
   before(mockProcessExit);
   after(restoreProcessExit);
@@ -303,6 +367,85 @@ describe("finding 5: heurística de linguagem comercial sinaliza sem bloquear", 
       w.some((x) => /linguagem comercial/i.test(x) && x.includes("Cupom especial em parceria")),
       `warnings: ${JSON.stringify(w)}`,
     );
+  });
+});
+
+describe("#4491: falha PARCIAL de parse — header reconhecido, zero candidatos SÓ daquela seção", () => {
+  let root: string;
+  let selectionJson: any;
+
+  before(() => {
+    root = mkTmpRoot();
+    // RADAR tem header reconhecido mas o item não tem URL nenhuma (formato
+    // mudou) — parseSections ainda inclui a seção (item title-only não é
+    // "vazio" pra ela), mas extractWeeklyCandidates descarta o item por
+    // falta de URL: zero candidatos de RADAR nessa edição. USE MELHOR, na
+    // mesma edição, parseia normalmente — candidates.length total > 0, então
+    // o warning de falha TOTAL (emptyParseEditions) não dispara aqui.
+    writeEdition(
+      root,
+      "260810",
+      [
+        "**DESTAQUE 1 | 💼 MERCADO**",
+        "",
+        "**[Matéria A](https://exemplo.com/materia-a)**",
+        "",
+        "Corpo da matéria A.",
+        "",
+        "Por que isso importa:",
+        "",
+        "Explicação.",
+        "",
+        "---",
+        "",
+        "**📡 RADAR**",
+        "",
+        "Notícia sem link nenhum — formato mudou e o parser não reconhece mais",
+        "",
+        "---",
+        "",
+        "**🛠️ USE MELHOR**",
+        "",
+        "**[Tutorial Y: como usar melhor](https://exemplo.com/tutorial-y)**",
+        "Tutorial de 5 minutos.",
+        "",
+      ].join("\n"),
+    );
+    writeCachePost(root, "post_810", {
+      id: "post_810",
+      status: "confirmed",
+      publish_date: epochFor("260810"),
+      stats: {
+        email: { clicks: 5, unique_opens: 100 },
+        clicks: [
+          { url: "https://exemplo.com/materia-a", base_url: "https://exemplo.com/materia-a", email: { unique_verified_clicks: 3 } },
+          { url: "https://exemplo.com/tutorial-y", base_url: "https://exemplo.com/tutorial-y", email: { unique_verified_clicks: 2 } },
+        ],
+      },
+    });
+
+    process.argv = ["node", "select-linkedin-weekly.ts", "--publish-monday", "260817"];
+    selectMain(root);
+    const selectionPath = join(root, "data/weekly/26w33/_internal/ln-selection.json");
+    selectionJson = JSON.parse(readFileSync(selectionPath, "utf8"));
+  });
+
+  after(() => rmSync(root, { recursive: true, force: true }));
+
+  it("warning específico de seção morta aponta RADAR e a edição 260810 — distinto do warning de falha total", () => {
+    const w = selectionJson.warnings as string[];
+    assert.ok(
+      w.some((x) => /RADAR/.test(x) && x.includes("260810") && /ZERO candidatos extraídos/.test(x) && /header reconhecido/.test(x)),
+      `warnings: ${JSON.stringify(w)}`,
+    );
+    assert.ok(
+      !w.some((x) => /ZERO candidatos extraídos \(seção vazia ou formato não reconhecido pelo parser\) — não competiram por seleção/.test(x)),
+      `warning de falha TOTAL não deveria disparar — candidates.length > 0 (destaque + use melhor): ${JSON.stringify(w)}`,
+    );
+  });
+
+  it("candidatos de USE MELHOR (seção não-quebrada da mesma edição) seguem extraídos normalmente", () => {
+    assert.equal(selectionJson.useMelhor?.title, "Tutorial Y: como usar melhor");
   });
 });
 

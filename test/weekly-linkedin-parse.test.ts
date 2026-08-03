@@ -9,7 +9,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { extractWeeklyCandidates } from "../scripts/lib/weekly-linkedin-parse.ts";
+import { extractWeeklyCandidates, detectDeadSectionHeaders } from "../scripts/lib/weekly-linkedin-parse.ts";
 import { isCommercialOrOwnLink, hasSuspiciousCommercialLanguage } from "../scripts/lib/weekly-linkedin-filter.ts";
 
 const SAMPLE_MD = `Para esta edição, a diar.ia.br analisou 20 artigos.
@@ -116,6 +116,78 @@ describe("extractWeeklyCandidates", () => {
 
   it("edição sem 02-reviewed.md legível não lança — caller decide", () => {
     assert.deepEqual(extractWeeklyCandidates("", "260728"), []);
+  });
+});
+
+describe("detectDeadSectionHeaders (#4491 — falha parcial de parse)", () => {
+  it("seção genuinamente ausente (sem header no markdown) NÃO é reportada como morta", () => {
+    const md = [
+      "**DESTAQUE 1 | 💼 MERCADO**",
+      "",
+      "**[Matéria A](https://exemplo.com/materia-a)**",
+      "",
+      "Corpo.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Explicação.",
+      "",
+    ].join("\n");
+    const candidates = extractWeeklyCandidates(md, "260810");
+    assert.deepEqual(detectDeadSectionHeaders(md, candidates), []);
+  });
+
+  it("header RADAR reconhecido mas item sem URL (formato quebrado) — reporta RADAR como seção morta, mesmo com USE MELHOR parseando normal", () => {
+    const md = [
+      "**DESTAQUE 1 | 💼 MERCADO**",
+      "",
+      "**[Matéria A](https://exemplo.com/materia-a)**",
+      "",
+      "Corpo.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Explicação.",
+      "",
+      "---",
+      "",
+      "**📡 RADAR**",
+      "",
+      "Notícia sem link nenhum — formato mudou e o parser não reconhece mais",
+      "",
+      "---",
+      "",
+      "**🛠️ USE MELHOR**",
+      "",
+      "**[Tutorial Y: como usar melhor](https://exemplo.com/tutorial-y)**",
+      "Tutorial de 5 minutos.",
+      "",
+    ].join("\n");
+    const candidates = extractWeeklyCandidates(md, "260810");
+    // candidates.length > 0 (destaque + use_melhor) — emptyParseEditions (falha
+    // TOTAL) não pegaria este caso; a falha é só da seção RADAR.
+    assert.ok(candidates.length > 0);
+    assert.ok(!candidates.some((c) => c.section === "radar"));
+    assert.deepEqual(detectDeadSectionHeaders(md, candidates), ["RADAR"]);
+  });
+
+  it("todas as seções parseando normal — nenhuma seção morta reportada", () => {
+    const md = [
+      "**📡 RADAR**",
+      "",
+      "**[Notícia real](https://exemplo.com/noticia)**",
+      "Descrição curta.",
+      "",
+      "---",
+      "",
+      "**🛠️ USE MELHOR**",
+      "",
+      "**[Tutorial Y](https://exemplo.com/tutorial-y)**",
+      "Tutorial de 5 minutos.",
+      "",
+    ].join("\n");
+    const candidates = extractWeeklyCandidates(md, "260810");
+    assert.deepEqual(detectDeadSectionHeaders(md, candidates), []);
   });
 });
 

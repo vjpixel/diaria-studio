@@ -17,6 +17,7 @@
 
 import { parseDestaques } from "../extract-destaques.ts";
 import { parseSections } from "./newsletter-parse.ts";
+import { SECTIONS, sectionHeaderRegex } from "./section-naming.ts";
 
 export type WeeklyCandidateKind = "destaque" | "section";
 
@@ -85,4 +86,52 @@ export function extractWeeklyCandidates(md: string, editionDate: string): Weekly
   }
 
   return out;
+}
+
+/**
+ * #4491: mapa `SectionDef.bucket` (fonte única em `section-naming.ts`) →
+ * `WeeklyRawCandidate["section"]` — os nomes divergem em singular/plural
+ * (`lancamento`/`video` vs `lancamentos`/`videos`) porque `normalizeSectionName`
+ * acima deriva do LABEL plural exibido no MD, enquanto `SectionDef.bucket` é o
+ * bucket do categorizer. `destaque`/`outro` ficam de fora de propósito — não
+ * são seções secundárias com header reconhecível por `sectionHeaderRegex`.
+ */
+const BUCKET_TO_WEEKLY_SECTION: Record<string, WeeklyRawCandidate["section"]> = {
+  lancamento: "lancamentos",
+  radar: "radar",
+  use_melhor: "use_melhor",
+  video: "videos",
+};
+
+/**
+ * Pure (#4491): detecta, para UMA edição, headers de seção reconhecíveis
+ * (RADAR/LANÇAMENTOS/USE MELHOR/VÍDEOS) presentes no markdown BRUTO que não
+ * geraram NENHUM candidato extraído (`extractWeeklyCandidates`) — sinal de
+ * regressão no parser (formato de item que `parseSections`/`parseListItems`
+ * não reconhece), distinto de "seção ausente" (sem header no markdown —
+ * editor genuinamente não teve conteúdo pra essa seção nesta edição, ok).
+ *
+ * Cobre o gap que `candidates.length === 0` (falha TOTAL de parse, já
+ * coberto por `emptyParseEditions` em `select-linkedin-weekly.ts`) deixa
+ * passar: se só UMA seção mudar de formato enquanto as outras continuam
+ * parseando, `candidates.length` da edição fica > 0 e nenhum warning
+ * disparava antes — os itens da seção quebrada sumiam da disputa de seleção
+ * em silêncio.
+ *
+ * Retorna os LABELS canônicos (ex: `["RADAR", "USE MELHOR"]`) das seções
+ * "mortas" nessa edição — vazio se não há nenhuma.
+ */
+export function detectDeadSectionHeaders(md: string, candidates: WeeklyRawCandidate[]): string[] {
+  const presentSections = new Set(candidates.filter((c) => c.kind === "section").map((c) => c.section));
+  const dead: string[] = [];
+  for (const def of SECTIONS) {
+    if (def.legacy) continue; // aliases legacy (PESQUISAS/OUTRAS NOTÍCIAS) não emitidos em edições novas — fora de escopo.
+    const weeklySection = BUCKET_TO_WEEKLY_SECTION[def.bucket];
+    if (!weeklySection) continue;
+    const headerFound = sectionHeaderRegex(def.pattern, { flags: "mu" }).test(md);
+    if (headerFound && !presentSections.has(weeklySection)) {
+      dead.push(def.label);
+    }
+  }
+  return dead;
 }

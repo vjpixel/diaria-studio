@@ -146,7 +146,10 @@ export function computeHeadlineCap(editionsFound: number): number {
 export interface WeeklySelectionResult {
   /** Candidatos selecionados como manchete, em ordem de seleção (1ª = D1 do LinkedIn, etc). */
   selected: WeeklyRankedCandidate[];
-  /** TODOS os candidatos elegíveis (não-excluídos), ranqueados — auditoria. */
+  /**
+   * TODOS os candidatos elegíveis PRA MANCHETE (não-excluídos,
+   * não-use_melhor — #4492), ranqueados — auditoria.
+   */
   ranked: WeeklyRankedCandidate[];
   /** Candidatos excluídos (comercial/afiliado/própria) — auditoria. */
   excluded: WeeklyRankedCandidate[];
@@ -156,11 +159,22 @@ export interface WeeklySelectionResult {
 /**
  * Seleciona as manchetes da semana por taxa de clique, com desempate
  * editorial dentro do ruído de 1 clique (ver `withinClickNoise`). Pure.
+ *
+ * #4492: candidatos de `section === "use_melhor"` NUNCA competem por
+ * manchete, mesmo quando têm a maior taxa de clique da semana — ficam
+ * reservados exclusivamente pro bloco Use Melhor dedicado (`selectUseMelhor`,
+ * que roda DEPOIS escolhendo só entre os `use_melhor` restantes). Sem essa
+ * exclusão, o melhor candidato Use Melhor virava manchete e o próprio bloco
+ * Use Melhor caía pra um candidato mais fraco por exclusão — mesmo padrão do
+ * filtro `excluded` (comercial/afiliado/própria) já aplicado abaixo. Trade-off
+ * aceito (decisão da issue): em semanas com poucos candidatos não-use_melhor
+ * de clique real, a manchete #3 pode cair pro desempate editorial — não é
+ * regressão.
  */
 export function selectHeadlines(candidatesIn: WeeklyRankedCandidate[], maxHeadlines: number): WeeklySelectionResult {
   const deduped = dedupeCandidatesByUrl(candidatesIn);
   const excluded = deduped.filter((c) => c.excluded);
-  const eligible = deduped.filter((c) => !c.excluded).sort(byRateDescThenTitle);
+  const eligible = deduped.filter((c) => !c.excluded && c.section !== "use_melhor").sort(byRateDescThenTitle);
 
   const selected: WeeklyRankedCandidate[] = [];
   const selectedCategories = new Set<string>();
