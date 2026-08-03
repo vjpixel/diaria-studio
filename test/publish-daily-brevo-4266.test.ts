@@ -15,6 +15,7 @@ import {
   checkDailySendCap,
   buildDailyBrevoHtml,
   checkBrevoDiariaGuards,
+  checkPollTokenGuards,
   resolvePublicImagesPath,
   stripGreetingAndSupporterBlocks,
 } from "../scripts/publish-daily-brevo.ts";
@@ -163,6 +164,37 @@ describe("checkBrevoDiariaGuards — pré-condições fora de --dry-run (#4404)"
   });
 });
 
+describe("checkPollTokenGuards — credenciais pra injeção do token opaco de voto (#4517)", () => {
+  const valid = {
+    pollSecret: "secret",
+    cloudflareAccountId: "acct",
+    cloudflareWorkersToken: "wtoken",
+  };
+
+  it("tudo presente → ok", () => {
+    assert.deepEqual(checkPollTokenGuards(valid), { ok: true });
+  });
+
+  it("POLL_SECRET ausente → not ok, motivo explica que é pra popular o token opaco de voto", () => {
+    const result = checkPollTokenGuards({ ...valid, pollSecret: undefined });
+    assert.equal(result.ok, false);
+    assert.match((result as { ok: false; reason: string }).reason, /POLL_SECRET não definido/);
+    assert.match((result as { ok: false; reason: string }).reason, /token opaco de voto/);
+  });
+
+  it("CLOUDFLARE_ACCOUNT_ID ausente → not ok", () => {
+    const result = checkPollTokenGuards({ ...valid, cloudflareAccountId: undefined });
+    assert.equal(result.ok, false);
+    assert.match((result as { ok: false; reason: string }).reason, /CLOUDFLARE_ACCOUNT_ID não definido/);
+  });
+
+  it("CLOUDFLARE_WORKERS_TOKEN ausente → not ok", () => {
+    const result = checkPollTokenGuards({ ...valid, cloudflareWorkersToken: undefined });
+    assert.equal(result.ok, false);
+    assert.match((result as { ok: false; reason: string }).reason, /CLOUDFLARE_WORKERS_TOKEN não definido/);
+  });
+});
+
 describe("buildDailyBrevoHtml — guard do bloco de intro obrigatório (#4266 item 5)", () => {
   it("introHtml null → lança (nunca monta sem a explicação de compliance)", () => {
     assert.throws(
@@ -187,7 +219,7 @@ describe("buildDailyBrevoHtml — guard do bloco de intro obrigatório (#4266 it
       },
       "<div>INTRO OBRIGATÓRIA</div>",
     );
-    assert.match(html, /\{\{ contact\.EMAIL \}\}/, "usa merge tag Brevo (esp brevo)");
+    assert.match(html, /\{\{ contact\.POLL_TOKEN \}\}@vote\.eia\.diaria\.local/, "usa merge tag Brevo do token opaco (esp brevo, #4517)");
     assert.match(html, /INTRO OBRIGATÓRIA/, "intro injetada no HTML");
     assert.match(html, /https:\/\/cdn\.example\.com\/d1\.jpg/, "placeholder de imagem substituído");
     assert.deepEqual(unresolvedImages, []);
