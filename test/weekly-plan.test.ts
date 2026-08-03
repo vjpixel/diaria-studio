@@ -17,6 +17,8 @@ import {
   classifySpamSignal,
   resolveSpamSignal,
   POSTMASTER_STALE_MS,
+  POSTMASTER_DATA_STALE_MS,
+  POSTMASTER_MIN_COVERAGE_RATIO,
   computeWeekPlan,
   renderWeeklyPlanTabPanel,
   renderHealthSection,
@@ -767,6 +769,82 @@ test("resolveSpamSignal — leitura DENTRO da janela de 48h continua válida (fr
 test("resolveSpamSignal — spamRatePct não-finito (NaN/Infinity) ou recordedAt não-parseável → indeterminate", () => {
   assert.equal(resolveSpamSignal(mkPostmasterEntry({ spamRatePct: NaN }), NOW).source, "indeterminate");
   assert.equal(resolveSpamSignal(mkPostmasterEntry({ recordedAt: "não-é-data" }), NOW).source, "indeterminate");
+});
+
+// ---------------------------------------------------------------------------
+// #4541 — resolveSpamSignal media frescor por `entry.date` (quando o dado foi
+// MEDIDO), não só por `entry.recordedAt` (quando foi GRAVADO no KV). Bug real
+// observado em 260803: postmaster-spam-sync.ts roda a cada 12h e reescreve a
+// entry mesmo sem dia novo na janela, então `recordedAt` fica sempre fresco
+// mesmo com uma medição de dias atrás — o guard de staleness original (só
+// `recordedAt`) não pegava isso. Segunda causa somada na mesma issue: cobertura
+// baixa da janela (ex: 1/10 dias por erro HTTP transitório) não deveria
+// colorir nada — ver `daysWithData`/`daysProbed`.
+// ---------------------------------------------------------------------------
+
+test("resolveSpamSignal — recordedAt FRESCO mas date de 7 dias atrás → indeterminate, nunca 🟢 falso (#4541, regressão do incidente 260803)", () => {
+  // Reproduz o estado exato do KV no incidente: gravado agora (recordedAt),
+  // mas medindo um dia de 7 dias atrás (date) — a leitura de 27/07 carimbada
+  // como fresca em 03/08.
+  const staleDate = new Date(NOW.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const signal = resolveSpamSignal(
+    mkPostmasterEntry({ spamRatePct: 0, date: staleDate, recordedAt: NOW.toISOString() }),
+    NOW,
+  );
+  assert.deepEqual(signal, { source: "indeterminate", ratePct: null, breach: false });
+});
+
+// `entry.date` é YYYY-MM-DD (dia-calendário, sem hora) — parseado como
+// meia-noite UTC. NOW é meio-dia UTC (2026-07-10T12:00), então o diff real
+// contra uma data N dias-calendário atrás é sempre N dias + 12h (não N dias
+// exatos) — os 2 testes de fronteira abaixo usam dias-calendário inteiros
+// (não offsets de ms convertidos pra string) pra não cair nessa fuzz de
+// truncamento e testar a fronteira real de POSTMASTER_DATA_STALE_MS (5 dias):
+// 4 dias atrás = 4d12h (108h) < 120h → fresco; 5 dias atrás = 5d12h (132h) >
+// 120h → stale.
+test("resolveSpamSignal — date 4 dias-calendário atrás (dentro de POSTMASTER_DATA_STALE_MS) continua válido (fronteira)", () => {
+  assert.equal(POSTMASTER_DATA_STALE_MS, 5 * 24 * 60 * 60 * 1000, "teste assume o limiar de 5 dias documentado — atualizar se mudar");
+  const signal = resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.05, date: "2026-07-06" }), NOW);
+  assert.equal(signal.source, "postmaster");
+});
+
+test("resolveSpamSignal — date 5 dias-calendário atrás (além de POSTMASTER_DATA_STALE_MS) → indeterminate (fronteira)", () => {
+  const signal = resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.05, date: "2026-07-05" }), NOW);
+  assert.equal(signal.source, "indeterminate");
+});
+
+test("resolveSpamSignal — date não-parseável → indeterminate", () => {
+  assert.equal(resolveSpamSignal(mkPostmasterEntry({ date: "não-é-data" }), NOW).source, "indeterminate");
+});
+
+test("resolveSpamSignal — cobertura de 1/10 dias → indeterminate mesmo com date/recordedAt frescos (#4541, 2ª causa: erro HTTP transitório encolhendo a amostra)", () => {
+  const signal = resolveSpamSignal(
+    mkPostmasterEntry({ spamRatePct: 0, daysWithData: 1, daysProbed: 10 }),
+    NOW,
+  );
+  assert.deepEqual(signal, { source: "indeterminate", ratePct: null, breach: false });
+});
+
+test("resolveSpamSignal — cobertura >= POSTMASTER_MIN_COVERAGE_RATIO (ex: 5/10) resolve normalmente", () => {
+  const signal = resolveSpamSignal(
+    mkPostmasterEntry({ spamRatePct: 0.05, daysWithData: 5, daysProbed: 10 }),
+    NOW,
+  );
+  assert.equal(signal.source, "postmaster");
+});
+
+test("resolveSpamSignal — cobertura abaixo do limiar mesmo em fração equivalente (ex: 2/5) → indeterminate", () => {
+  assert.equal(POSTMASTER_MIN_COVERAGE_RATIO, 0.5, "teste assume o limiar de 50% documentado — atualizar se mudar");
+  const signal = resolveSpamSignal(
+    mkPostmasterEntry({ spamRatePct: 0.05, daysWithData: 2, daysProbed: 5 }),
+    NOW,
+  );
+  assert.equal(signal.source, "indeterminate");
+});
+
+test("resolveSpamSignal — sem daysWithData/daysProbed (entry manual ou pré-#4541) NÃO aciona o guard de cobertura", () => {
+  const signal = resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.05, producedBy: "manual" }), NOW);
+  assert.equal(signal.source, "postmaster");
 });
 
 test("renderWeeklyPlanTabPanel — com leitura de Postmaster acima do limite, semáforo geral é vermelho MESMO com tudo mais saudável e complaints da Brevo em zero (#4063 fim-a-fim)", () => {

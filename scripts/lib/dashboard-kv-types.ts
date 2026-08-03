@@ -145,6 +145,10 @@ export interface PostmasterSpamEntry {
   recordedAt: string;
   /** Qual dos dois produtores gravou esta leitura — opcional pra entries pré-#4154 (schema evolution, nunca inferir um valor). */
   producedBy?: PostmasterProducer;
+  /** #4541: quantos dias da janela sondada tiveram leitura válida (200, com ou sem o campo) usada no cálculo da média. Junto com `daysProbed`, permite `resolveSpamSignal` degradar pra `indeterminate` quando a cobertura é baixa demais (ex: 1/10 dias, por erro HTTP nos demais). `undefined` pra entries manuais (1 leitura, não é média de janela) ou pré-#4541. */
+  daysWithData?: number;
+  /** #4541: tamanho da janela sondada (dias-calendário), independente de quantos tiveram leitura válida — ver `daysWithData`. `undefined` no mesmo caso acima. */
+  daysProbed?: number;
 }
 
 /**

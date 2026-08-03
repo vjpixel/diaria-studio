@@ -340,7 +340,9 @@ describe("deriveRampVolumes (#3593 item 1 — recomputa volumes via a MESMA lóg
   it("com leitura FRESCA e boa do Postmaster → semáforo pode escalonar a verde (#4131 finding 4)", () => {
     const now = new Date("2026-07-17T00:00:00Z");
     const campaigns = [campaign({ id: 1, sentDate: "2026-07-10T09:00:00Z" })]; // saúde boa, ver teste acima
-    const freshEntry = { spamRatePct: 0.02, recordedAt: "2026-07-16T12:00:00Z" }; // 12h antes de `now`, bem dentro das 48h
+    // #4541: `date` (medição) precisa estar dentro de POSTMASTER_DATA_STALE_MS
+    // também, não só `recordedAt` (gravação) — mesmo dia de `now`.
+    const freshEntry = { spamRatePct: 0.02, recordedAt: "2026-07-16T12:00:00Z", date: "2026-07-16" }; // 12h antes de `now`, bem dentro das 48h
     const result = deriveRampVolumes(campaigns, now, freshEntry);
     assert.equal(result.ok, true);
     if (!result.ok) throw new Error("unreachable");
@@ -348,11 +350,24 @@ describe("deriveRampVolumes (#3593 item 1 — recomputa volumes via a MESMA lóg
     assert.equal(result.plan.flagged, false);
   });
 
-  it("leitura do Postmaster STALE (>48h) → permanece indeterminate, nunca verde (regressão #4063)", () => {
+  it("leitura do Postmaster STALE (>48h de recordedAt) → permanece indeterminate, nunca verde (regressão #4063)", () => {
     const now = new Date("2026-07-17T00:00:00Z");
     const campaigns = [campaign({ id: 1, sentDate: "2026-07-10T09:00:00Z" })];
-    const staleEntry = { spamRatePct: 0.02, recordedAt: "2026-07-01T00:00:00Z" }; // >48h antes de `now`
+    const staleEntry = { spamRatePct: 0.02, recordedAt: "2026-07-01T00:00:00Z", date: "2026-07-01" }; // >48h antes de `now`
     const result = deriveRampVolumes(campaigns, now, staleEntry);
+    assert.equal(result.ok, true);
+    if (!result.ok) throw new Error("unreachable");
+    assert.equal(result.plan.semaphore, "yellow");
+  });
+
+  // #4541: mesmo com `recordedAt` fresco (gravação recente), uma `date`
+  // (medição) velha demais também degrada pra indeterminate — o bug real do
+  // incidente 260803 que esta issue corrige.
+  it("leitura do Postmaster com recordedAt FRESCO mas date STALE → permanece indeterminate, nunca verde (#4541)", () => {
+    const now = new Date("2026-07-17T00:00:00Z");
+    const campaigns = [campaign({ id: 1, sentDate: "2026-07-10T09:00:00Z" })];
+    const staleDateEntry = { spamRatePct: 0.02, recordedAt: "2026-07-16T23:00:00Z", date: "2026-07-01" }; // recordedAt fresco, date de 16 dias atrás
+    const result = deriveRampVolumes(campaigns, now, staleDateEntry);
     assert.equal(result.ok, true);
     if (!result.ok) throw new Error("unreachable");
     assert.equal(result.plan.semaphore, "yellow");
@@ -376,12 +391,41 @@ describe("fetchPostmasterSpamEntry (#4131 finding 4 — leitura manual do Postma
       new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } })) as unknown as typeof fetch;
   }
 
-  it("entry válida → retorna { spamRatePct, recordedAt }", async () => {
+  it("entry válida → retorna { date, spamRatePct, recordedAt }", async () => {
     const entry = await fetchPostmasterSpamEntry(
       "https://x",
       fakeFetch(200, { entry: { date: "2026-07-27", spamRatePct: 0.9, recordedAt: "2026-07-27T10:00:00.000Z" } }),
     );
-    assert.deepEqual(entry, { spamRatePct: 0.9, recordedAt: "2026-07-27T10:00:00.000Z", producedBy: undefined });
+    assert.deepEqual(entry, {
+      date: "2026-07-27",
+      spamRatePct: 0.9,
+      recordedAt: "2026-07-27T10:00:00.000Z",
+      producedBy: undefined,
+      daysWithData: undefined,
+      daysProbed: undefined,
+    });
+  });
+
+  // #4541: mesma classe de risco documentada acima pra producedBy — sem
+  // repassar `date`/`daysWithData`/`daysProbed`, `resolveSpamSignal` (que
+  // agora exige medição recente, não só gravação recente) trataria toda
+  // leitura vinda deste script como indeterminate pra sempre.
+  it("entry com date/daysWithData/daysProbed preserva os campos (#4541)", async () => {
+    const entry = await fetchPostmasterSpamEntry(
+      "https://x",
+      fakeFetch(200, {
+        entry: {
+          date: "2026-07-27",
+          spamRatePct: 0.9,
+          recordedAt: "2026-07-27T10:00:00.000Z",
+          daysWithData: 3,
+          daysProbed: 10,
+        },
+      }),
+    );
+    assert.equal(entry?.date, "2026-07-27");
+    assert.equal(entry?.daysWithData, 3);
+    assert.equal(entry?.daysProbed, 10);
   });
 
   // #4154, achado do self-review do #4342 (3ª rodada): producedBy é uma 2ª

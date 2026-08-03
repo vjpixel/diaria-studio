@@ -100,14 +100,49 @@ export interface SpamSignal {
 }
 
 /**
- * Além de "campo ausente", uma leitura mais velha que isto é tratada como se
- * não existisse — o Postmaster é lido ~1min antes de CADA envio (cadência
- * diária/poucos dias), então uma leitura de vários dias atrás não é mais
- * representativa do risco do envio de hoje. 48h dá folga (ex: sexta lida,
- * envio de segunda) sem deixar uma leitura de semanas atrás perpetuar um
- * falso "confiável".
+ * Além de "campo ausente", uma GRAVAÇÃO mais velha que isto é tratada como se
+ * não existisse — sinal de que o processo que escreve no KV (sync automático
+ * ou entrada manual) parou de rodar. Continua útil como um segundo guard
+ * (independente do de `POSTMASTER_DATA_STALE_MS` abaixo), mas **não é** o que
+ * garante que o DADO em si é recente — ver #4541: `postmaster-spam-sync.ts`
+ * roda a cada 12h e reescreve a entry mesmo quando a janela sondada não trouxe
+ * nenhum dia novo, então `recordedAt` fica sempre fresco mesmo com uma
+ * MEDIÇÃO (`entry.date`) de dias atrás. Por isso `resolveSpamSignal` abaixo
+ * exige os dois: gravação recente (`recordedAt`, este guard) E medição
+ * recente (`date`, `POSTMASTER_DATA_STALE_MS`).
  */
 export const POSTMASTER_STALE_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * #4541: guard de frescor do DADO MEDIDO (`entry.date`), separado do guard de
+ * frescor da GRAVAÇÃO (`POSTMASTER_STALE_MS`/`recordedAt` acima). É este que
+ * fecha o buraco do #4541 — sem ele, uma medição de dias atrás carimbada como
+ * "gravada agora" passava como 🟢 confiável.
+ *
+ * Folga maior que `POSTMASTER_STALE_MS` (5 dias vs 48h) de propósito: o
+ * Postmaster publica com ~2 dias de atraso (dado de hoje não existe ainda na
+ * API), então uma janela de 48h contada a partir de `date` deixaria o sinal
+ * PERMANENTEMENTE indeterminate mesmo em operação normal. 5 dias dá folga pro
+ * atraso de publicação + fins de semana sem sync (Task Scheduler roda a cada
+ * 12h, então isso não deveria acontecer, mas a folga cobre uma falha de 1-2
+ * ciclos) sem deixar uma medição de semanas atrás perpetuar um falso
+ * "confiável" — mesmo raciocínio do guard original, aplicado ao campo certo.
+ */
+export const POSTMASTER_DATA_STALE_MS = 5 * 24 * 60 * 60 * 1000;
+
+/**
+ * #4541 (2ª causa da issue): cobertura mínima da janela usada pra calcular a
+ * média (`entry.daysWithData` / `entry.daysProbed`, gravados por
+ * `postmaster-spam-sync.ts`). Uma média sobre 1 dia de 10 (ex: os outros 9
+ * caíram em erro HTTP transitório, como no incidente de 260803) não é mais
+ * confiável que "sem dado" — degrada pra `indeterminate` do mesmo jeito que
+ * staleness, em vez de colorir com base em amostra pequena demais. 50% dá
+ * folga a uma falha parcial pontual (ex: 2/10 dias com erro HTTP) sem deixar
+ * uma média de 1-2 dias colorir o semáforo. Campos ausentes (entry manual —
+ * 1 leitura não é "janela" — ou entry pré-#4541) não acionam este guard: só
+ * se aplica quando o produtor de fato declarou a cobertura.
+ */
+export const POSTMASTER_MIN_COVERAGE_RATIO = 0.5;
 
 /**
  * Resolve o sinal de spam que GOVERNA a avaliação de guardrail — nunca o
@@ -120,9 +155,20 @@ export const POSTMASTER_STALE_MS = 48 * 60 * 60 * 1000;
  * `complaints` da Brevo em zero — esta função nem recebe o dado da Brevo,
  * então a garantia é estrutural (não há como o número da Brevo influenciar
  * o resultado).
+ *
+ * #4541: frescor exige AMBOS — gravação recente (`recordedAt`,
+ * `POSTMASTER_STALE_MS`) E medição recente (`date`, `POSTMASTER_DATA_STALE_MS`)
+ * — e, quando a entry declara cobertura, cobertura mínima da janela
+ * (`POSTMASTER_MIN_COVERAGE_RATIO`). Qualquer um falhando → `indeterminate`.
  */
 export function resolveSpamSignal(
-  entry: Pick<PostmasterSpamEntry, "spamRatePct" | "recordedAt" | "producedBy"> | null | undefined,
+  entry:
+    | Pick<
+        PostmasterSpamEntry,
+        "spamRatePct" | "recordedAt" | "producedBy" | "date" | "daysWithData" | "daysProbed"
+      >
+    | null
+    | undefined,
   now: Date = new Date(),
   t: HealthThresholds = DEFAULT_HEALTH_THRESHOLDS,
 ): SpamSignal {
@@ -131,6 +177,18 @@ export function resolveSpamSignal(
   }
   const recordedMs = Date.parse(entry.recordedAt);
   if (!Number.isFinite(recordedMs) || now.getTime() - recordedMs > POSTMASTER_STALE_MS) {
+    return { source: "indeterminate", ratePct: null, breach: false };
+  }
+  const dateMs = Date.parse(entry.date);
+  if (!Number.isFinite(dateMs) || now.getTime() - dateMs > POSTMASTER_DATA_STALE_MS) {
+    return { source: "indeterminate", ratePct: null, breach: false };
+  }
+  if (
+    typeof entry.daysWithData === "number" &&
+    typeof entry.daysProbed === "number" &&
+    entry.daysProbed > 0 &&
+    entry.daysWithData / entry.daysProbed < POSTMASTER_MIN_COVERAGE_RATIO
+  ) {
     return { source: "indeterminate", ratePct: null, breach: false };
   }
   return {

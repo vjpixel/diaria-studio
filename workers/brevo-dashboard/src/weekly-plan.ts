@@ -32,8 +32,16 @@ import { renderScheduledSection } from "./sections-kv.ts";
 // #3078: thresholds extraídos pra módulo compartilhado (sections-core.ts e
 // sections-kv.ts também consomem) — reexportados aqui pra não quebrar
 // consumidores existentes que importam de weekly-plan.ts/index.ts.
-import { DEFAULT_HEALTH_THRESHOLDS, resolveSpamSignal, POSTMASTER_STALE_MS, type HealthThresholds, type SpamSignal } from "./thresholds.ts";
-export { DEFAULT_HEALTH_THRESHOLDS, resolveSpamSignal, POSTMASTER_STALE_MS };
+import {
+  DEFAULT_HEALTH_THRESHOLDS,
+  resolveSpamSignal,
+  POSTMASTER_STALE_MS,
+  POSTMASTER_DATA_STALE_MS,
+  POSTMASTER_MIN_COVERAGE_RATIO,
+  type HealthThresholds,
+  type SpamSignal,
+} from "./thresholds.ts";
+export { DEFAULT_HEALTH_THRESHOLDS, resolveSpamSignal, POSTMASTER_STALE_MS, POSTMASTER_DATA_STALE_MS, POSTMASTER_MIN_COVERAGE_RATIO };
 export type { HealthThresholds, SpamSignal };
 
 /** Janela de maturação — envios mais recentes que isso ficam fora do agregado. */

@@ -112,6 +112,7 @@ test("buildAveragedEntry — média simples do ratio sobre as leituras, spamRate
       { apiDate: "20260728", ratio: 0.02 }, // 2.0%
     ],
     NOW,
+    2,
   );
   assert.equal(entry?.spamRatePct, 1.5); // média = 1.5%
   assert.equal(entry?.date, "2026-07-30"); // dia mais recente da lista
@@ -126,12 +127,29 @@ test("buildAveragedEntry — inclui dias com ratio 0 na média (0% real, não de
       { apiDate: "20260729", ratio: 0 }, // 0.0%
     ],
     NOW,
+    2,
   );
   assert.equal(entry?.spamRatePct, 1.5); // (3.0 + 0.0) / 2
 });
 
 test("buildAveragedEntry — lista vazia retorna null (nunca inventa média de zero elementos)", () => {
-  assert.equal(buildAveragedEntry([], NOW), null);
+  assert.equal(buildAveragedEntry([], NOW, 10), null);
+});
+
+// #4541: daysWithData/daysProbed gravados na entry — base pro guard de
+// cobertura mínima em resolveSpamSignal (workers/brevo-dashboard/src/thresholds.ts).
+test("buildAveragedEntry — grava daysWithData (readings.length) e daysProbed (arg do chamador) na entry (#4541)", () => {
+  const entry = buildAveragedEntry(
+    [
+      { apiDate: "20260730", ratio: 0.01 },
+      { apiDate: "20260729", ratio: 0.02 },
+      { apiDate: "20260728", ratio: 0 },
+    ],
+    NOW,
+    10, // janela pedida era 10 dias, só 3 tiveram leitura válida
+  );
+  assert.equal(entry?.daysWithData, 3);
+  assert.equal(entry?.daysProbed, 10);
 });
 
 // Achado convergente de 2 agentes no self-review do #4345 (silent-failure-hunter
@@ -147,6 +165,7 @@ test("buildAveragedEntry — acha o dia mais recente mesmo com readings fora de 
       { apiDate: "20260725", ratio: 0.01 },
     ],
     NOW,
+    3,
   );
   assert.equal(entry?.date, "2026-07-30");
 });
@@ -168,10 +187,12 @@ test("cenário real 260730: janela de 10 dias com 3 leituras (27/07=0%, 24/07=0.
   assert.equal(httpErrors.length, 0);
   assert.equal(readings.length, 3);
 
-  const entry = buildAveragedEntry(readings, now);
+  const entry = buildAveragedEntry(readings, now, daysChecked);
   assert.equal(entry?.date, "2026-07-27");
   assert.ok(Math.abs((entry?.spamRatePct ?? 0) - 0.5666666666666667) < 1e-9, `esperava ~0.567%, achou ${entry?.spamRatePct}`);
   assert.equal(entry?.producedBy, "auto");
+  assert.equal(entry?.daysWithData, 3);
+  assert.equal(entry?.daysProbed, 10);
 });
 
 // ── parseWindowDaysArg ──
