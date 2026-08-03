@@ -116,12 +116,12 @@ describe("buildInsertTextJs (#2550)", () => {
   it("#4512 (achado pr-test-analyzer): varredura hasEmail também checa {{poll_token}} — branch novo do #4487 nunca coberto por este arquivo", () => {
     const snippet = buildInsertTextJs(RAW_URL);
     // #4487 trocou a URL de voto pro token opaco {{poll_token}} — a varredura
-    // 'hasEmail' passou a checar `n.text.includes('{{poll_token}}') ||
-    // n.text.includes('{{email}}')` (scripts/lib/beehiiv-insert-text.ts:159),
-    // mas nenhum teste até aqui cobria explicitamente o branch novo — só o
-    // legado {{email}} (teste acima). Sem isso, uma regressão que quebrasse
-    // só a checagem de {{poll_token}} (ex: typo, remoção acidental do OR)
-    // passaria batido pela suíte.
+    // 'hasEmail' (scripts/lib/beehiiv-insert-text.ts, dentro de
+    // buildInsertTextJs) passou a checar `n.text.includes('{{poll_token}}')
+    // || n.text.includes('{{email}}')`, mas nenhum teste até aqui cobria
+    // explicitamente o branch novo — só o legado {{email}} (teste acima).
+    // Sem isso, uma regressão que quebrasse só a checagem de {{poll_token}}
+    // (ex: typo, remoção acidental do OR) passaria batido pela suíte.
     assert.match(
       snippet,
       /\{\{poll_token\}\}/,

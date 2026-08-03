@@ -158,4 +158,42 @@ describe("#4486 — posição no corpo da newsletter: ANTES de 'Para encerrar'",
     const idxWhatsapp = html.indexOf("Compartilhar no WhatsApp");
     assert.ok(idxSorteio < idxWhatsapp, "bloco WhatsApp deve vir depois do Sorteio");
   });
+
+  it("#4512 (achado pr-test-analyzer): bloco WhatsApp aparece ENTRE o reveal do ERRO INTENCIONAL e 'Para encerrar' — ordem exigida por context/templates/newsletter.md", () => {
+    // Nenhum teste até aqui exercitava erroIntencional + WhatsApp juntos —
+    // um `parts.push()` fora de ordem (ex: mover o push do WhatsApp pra
+    // ANTES do reveal) passaria batido por todos os testes acima. Este
+    // fixture combina os dois pra travar a ordem documentada.
+    const contentComReveal: NewsletterContent = {
+      ...content,
+      erroIntencional: "Na última edição, disse X mas o correto era Y.",
+    };
+    const html = renderHTML(contentComReveal);
+    const idxReveal = html.indexOf("ERRO INTENCIONAL — reveal");
+    const idxWhatsapp = html.indexOf("Compartilhar no WhatsApp");
+    const idxEncerrar = html.indexOf("Para encerrar");
+    assert.ok(idxReveal !== -1, "reveal do ERRO INTENCIONAL ausente do render completo");
+    assert.ok(idxWhatsapp !== -1, "bloco WhatsApp ausente do render completo");
+    assert.ok(idxEncerrar !== -1, "'Para encerrar' ausente do render completo");
+    assert.ok(
+      idxReveal < idxWhatsapp && idxWhatsapp < idxEncerrar,
+      `ordem esperada reveal < whatsapp < encerrar, achou reveal=${idxReveal} whatsapp=${idxWhatsapp} encerrar=${idxEncerrar}`,
+    );
+  });
+});
+
+describe("#4512 (fleet review round 2, achados comment-analyzer/code-reviewer): titleLine/hookLine do HTML derivam de buildWhatsappShareBlock, não duplicam", () => {
+  it("o hook (2ª linha) do HTML renderizado é EXATAMENTE a 2ª linha do bloco wa.me — não uma cópia manual que pode divergir", () => {
+    const block = buildWhatsappShareBlock(D1_TITLE, buildWhatsappSubscribeUrl(EDITION));
+    const [, hookLine] = block.split("\n\n");
+    const html = renderWhatsappShare([makeD1()], EDITION);
+    assert.ok(html.includes(hookLine), "hook renderizado no HTML deve ser byte-idêntico à 2ª linha de buildWhatsappShareBlock");
+  });
+
+  it("o título (1ª linha) do HTML renderizado é EXATAMENTE a 1ª linha do bloco wa.me", () => {
+    const block = buildWhatsappShareBlock(D1_TITLE, buildWhatsappSubscribeUrl(EDITION));
+    const [titleLine] = block.split("\n\n");
+    const html = renderWhatsappShare([makeD1()], EDITION);
+    assert.ok(html.includes(titleLine), "título renderizado deve ser byte-idêntico à 1ª linha de buildWhatsappShareBlock");
+  });
 });

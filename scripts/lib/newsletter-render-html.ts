@@ -1028,9 +1028,21 @@ export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
   // ver header de `scripts/lib/shared/poll-token.ts` pro design completo. O
   // custom field Beehiiv `poll_token` é populado por `scripts/inject-poll-token.ts`
   // (mesmo mecanismo — mas propósito distinto — do extinto `poll_sig`/
-  // `inject-poll-sig.ts`, #1083, removido em #1186). esp="brevo" (mensal,
-  // Clarice) está FORA do escopo do #4487 — segue com `{{ contact.EMAIL }}`
-  // cru, inalterado.
+  // `inject-poll-sig.ts`, #1083, removido em #1186). esp="brevo" está FORA
+  // do escopo do #4487 — segue com `{{ contact.EMAIL }}` cru, inalterado.
+  // #4512 (fleet review round 2, achado code-reviewer): CORREÇÃO — o único
+  // caller de produção de `esp: "brevo"` HOJE é `scripts/publish-daily-brevo.ts`
+  // (canal `brevo_diaria`/segmento "Pending", #4266 — DIÁRIO, não o digest
+  // MENSAL da Clarice; o mensal tem seu próprio renderer independente,
+  // `scripts/lib/mensal/monthly-render.ts`, que constrói sua própria URL de
+  // voto e nunca chama esta função). `publish-daily-brevo.ts` está
+  // code-complete mas ainda não rodou ao vivo (#4266) — quando rodar, esse
+  // canal vai simultaneamente ganhar o CTA de encaminhamento do WhatsApp
+  // (#4486, convida a encaminhar) E continuar vazando o e-mail cru no link
+  // de voto (o mesmo vetor que o #4487 existe pra fechar) — gap real,
+  // documentado aqui, não corrigido nesta PR (estender a proteção de token
+  // pro esp="brevo" exige decidir se a Brevo tem um mecanismo equivalente a
+  // custom field pré-envio; fora de escopo do #4512, ver issue de follow-up).
   const buildVoteUrl = (choice: "A" | "B") =>
     esp === "brevo"
       ? `${PUBLIC_GAME_BASE_URL}/vote?email={{ contact.EMAIL }}&amp;edition=${eia.edition}&amp;choice=${choice}`
@@ -1377,29 +1389,49 @@ export function buildWhatsappShareLink(block: string): string {
 /**
  * Renderiza o bloco encaminhável por WhatsApp em HTML — mesmo padrão visual
  * "painel" de `renderSorteio`/`renderEIA` (kicker + box bege) — com um botão
- * de compartilhamento abaixo do texto. `block` (texto puro, sem markdown) é
- * escapado via `esc` (nunca `mdInlineToHtml` — não há markdown pra
- * interpretar aqui, é a MESMA string que vai pro `wa.me/?text=`, só que
- * escapada pra HTML). A última linha ("Assine grátis: {url}") ganha um
- * `<a href>` clicável na versão renderizada — o texto puro do `wa.me` mantém
- * a URL como texto normal (o WhatsApp auto-linkifica ao colar).
+ * de compartilhamento abaixo do texto. As 3 linhas visíveis são DERIVADAS de
+ * `block` (`block.split("\n\n")`) — a MESMA string que vai pro `wa.me/?text=`
+ * — e só então escapadas via `esc` (nunca `mdInlineToHtml`, não há markdown
+ * pra interpretar aqui). #4512 (fleet review round 2, achados
+ * comment-analyzer/code-reviewer/pr-test-analyzer, 3 agentes independentes):
+ * a versão anterior REESCREVIA `titleLine`/`hookLine`/o prefixo do CTA como
+ * literais separados, apesar do doc comment já afirmar (incorretamente) que
+ * era "a MESMA string" — dois textos mantidos por convenção em vez de por
+ * derivação divergem cedo ou tarde (o cenário mais provável: um pedido de
+ * ajuste de wording que só edita um dos dois). A última linha do bloco
+ * ("Assine grátis: {url}") ganha um `<a href>` clicável na versão
+ * renderizada — o texto puro do `wa.me` mantém a URL como texto normal (o
+ * WhatsApp auto-linkifica ao colar).
  *
  * `""` quando não há D1 (edição sem destaques — nunca deveria acontecer dado
  * o invariante de 2-3 destaques, `scripts/extract-destaques.ts`, mas
  * defensivo — mesmo padrão graceful dos demais blocos opcionais deste
- * renderer, ex: `content.sorteio?.trim()`).
+ * renderer, ex: `content.sorteio?.trim()`). #4512: loga `console.error` neste
+ * caso (mesmo padrão de `renderErroIntencionalReveal`/#3809, que existe
+ * porque um "nunca deveria acontecer" que falha 100% silencioso publicou uma
+ * edição sem o reveal sem que ninguém percebesse até um leitor reclamar) —
+ * sem isso, a edição sairia sem o único CTA de assinatura autocontido no
+ * CORPO do e-mail (#4487 critério de pronto) e nada logaria a ausência.
  */
 export function renderWhatsappShare(destaques: RenderDestaque[], edition: string): string {
   const d1 = destaques[0];
-  if (!d1) return "";
+  if (!d1) {
+    console.error(JSON.stringify({ event: "whatsapp_share_no_d1", edition }));
+    return "";
+  }
 
   const subscribeUrl = buildWhatsappSubscribeUrl(edition);
   const block = buildWhatsappShareBlock(d1.title, subscribeUrl);
   const shareLink = buildWhatsappShareLink(block);
 
-  const titleLine = `📰 ${d1.title}`;
-  const hookLine = "Isso saiu hoje na diar.ia.br — newsletter diária e gratuita, 5 minutos pra se manter atualizado e usar melhor as IAs.";
-  const ctaHtml = `Assine grátis: <a href="${esc(subscribeUrl)}" style="color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};" target="_blank" rel="noopener noreferrer">${esc(subscribeUrl)}</a>`;
+  // Deriva as 3 linhas visíveis de `block` — única fonte de verdade real
+  // (ver rationale no doc comment acima). `ctaRaw` é "Assine grátis: {url}";
+  // `ctaPrefix` é o texto antes da URL, extraído por comprimento (não regex)
+  // porque `subscribeUrl` já é conhecido exatamente — sem ambiguidade mesmo
+  // se o texto do prefixo mudar no futuro.
+  const [titleLine, hookLine, ctaRaw] = block.split("\n\n");
+  const ctaPrefix = ctaRaw.slice(0, ctaRaw.length - subscribeUrl.length);
+  const ctaHtml = `${esc(ctaPrefix)}<a href="${esc(subscribeUrl)}" style="color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};" target="_blank" rel="noopener noreferrer">${esc(subscribeUrl)}</a>`;
   const innerHtml = [
     bodyP("0", esc(titleLine)),
     bodyP("12px 0 0", esc(hookLine)),

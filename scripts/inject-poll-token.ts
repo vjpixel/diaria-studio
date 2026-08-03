@@ -48,7 +48,10 @@
  *   BEEHIIV_API_KEY          - acesso à API Beehiiv (required)
  *   BEEHIIV_PUBLICATION_ID   - ID da publicação (required)
  *   POLL_SECRET              - HMAC key, mesma usada pelo Worker (required)
- *   CLOUDFLARE_ACCOUNT_ID    - conta Cloudflare (required, default hardcoded em poll-kv config)
+ *   CLOUDFLARE_ACCOUNT_ID    - conta Cloudflare (required — SEM fallback
+ *                              neste script; `main()` aborta se ausente. O
+ *                              default hardcoded existe só em `scripts/lib/poll-kv.ts`,
+ *                              um arquivo DIFERENTE, wrangler-CLI-based)
  *   CLOUDFLARE_WORKERS_TOKEN - token com permissão Workers KV (required)
  */
 
@@ -195,7 +198,14 @@ function subscriberCreatedMs(sub: BeehiivSubscription): number | undefined {
 
 async function patchSubscriberToken(
   subId: string,
-  tokenEmail: string,
+  // #4512 (fleet review round 2, achado type-design-analyzer): parâmetro
+  // ANTES se chamava `tokenEmail` (nome herdado de quando esta função
+  // realmente recebia o pseudo-email completo, o bug pré-fix). Hoje recebe
+  // SÓ o token cru (`item.token`, ver call site) — o nome antigo convidava
+  // uma futura edição "combinando com o nome" (ex: reconcatenar o domínio
+  // aqui) a ressuscitar silenciosamente o bug de domínio duplicado que
+  // `test/vote-token-e2e-4512.test.ts` existe pra travar.
+  token: string,
   opts: ApiOpts,
 ): Promise<void> {
   const base = opts.baseUrl ?? "https://api.beehiiv.com/v2";
@@ -203,7 +213,7 @@ async function patchSubscriberToken(
   await fetchJson(url, opts.apiKey, {
     method: "PATCH",
     body: JSON.stringify({
-      custom_fields: [{ name: FIELD_TOKEN, value: tokenEmail }],
+      custom_fields: [{ name: FIELD_TOKEN, value: token }],
     }),
   });
 }

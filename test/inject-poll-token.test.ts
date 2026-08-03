@@ -12,9 +12,10 @@ import type { CloudflareKVConfig } from "../scripts/lib/cloudflare-kv-upload.ts"
 
 /**
  * Tests pra inject-poll-token.ts (#4487) — sucessor do extinto
- * inject-poll-sig.ts (#1083, removido #1186), adaptado pro novo teste
- * `test/inject-poll-sig.test.ts` (#1175) — mesma cobertura de --since-hours,
- * MAIS a asserção nova: o script grava a entrada reversa
+ * inject-poll-sig.ts (#1083, removido #1186), adaptado do antigo teste
+ * `test/inject-poll-sig.test.ts` (#1175 — também removido junto do script
+ * que testava; não existe mais neste repo) — mesma cobertura de
+ * --since-hours, MAIS a asserção nova: o script grava a entrada reversa
  * `polltoken:{token} -> email` via `putKv` (injetável) além do PATCH na
  * Beehiiv.
  */

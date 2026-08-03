@@ -340,7 +340,11 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   // é coberto aqui — `isAnonymousWebIdentity`/`isValidWebToken` continuam
   // cobrindo `web.eia.diaria.local` separadamente, mais abaixo.
   if (isPollTokenIdentity(email) && !pollToken) {
-    console.log(JSON.stringify({ event: "poll_vote_token_malformed", edition, email_domain: email.split("@")[1] ?? "unknown" }));
+    // #4512 (fleet review round 2, achado silent-failure-hunter): console.error,
+    // não console.log — mesmo nível do evento irmão `poll_vote_token_unresolved`
+    // logo abaixo (mesma classe "algo está quebrado sob o domínio reservado do
+    // token de voto", não ruído esperado tipo `poll_vote_403`).
+    console.error(JSON.stringify({ event: "poll_vote_token_malformed", edition, email_domain: email.split("@")[1] ?? "unknown" }));
     return voteHtmlResponse(votePageHtml("Link inválido ou expirado.", false, null, null, null, brand), 400);
   }
   if (pollToken) {
@@ -353,11 +357,17 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
     // pro resto da função (que montaria chaves KV malformadas a partir dele).
     if (!resolvedEmail || !isValidVoteEmailFormat(resolvedEmail.toLowerCase().trim())) {
       // #4512 (achado silent-failure-hunter): console.error, não console.log —
-      // este é o resultado PADRÃO de todo voto até `inject-poll-token.ts`
-      // rodar ao vivo pela 1ª vez (subscriber sem entrada no KV ainda), o
       // mesmo nível de "algo está quebrado" dos outros eventos deste arquivo
       // (ex: vote_dedup_do_error), não o nível de ruído-esperado de
-      // poll_vote_403.
+      // poll_vote_403. Este branch só é alcançado quando `email` JÁ bate a
+      // forma de token válida (`extractPollToken` não-null) mas a entrada
+      // reversa não existe/está corrompida no KV — na prática, o caso real
+      // mais comum é um assinante novo ainda não coberto pelo próximo sync
+      // incremental de `inject-poll-token.ts` (#4512, correção de comentário:
+      // a versão anterior descrevia isto como "todo voto até a 1ª execução
+      // ao vivo", impreciso — um token com custom field vazio/tag não
+      // substituída é rejeitado ANTES, pelos guards de formato/merge-tag
+      // acima, e nunca chega aqui).
       console.error(JSON.stringify({ event: "poll_vote_token_unresolved", edition, token: pollToken }));
       return voteHtmlResponse(votePageHtml("Link inválido ou expirado.", false, null, null, null, brand), 400);
     }
