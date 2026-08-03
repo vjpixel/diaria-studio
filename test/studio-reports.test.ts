@@ -69,7 +69,7 @@ describe("registerReport / listReports (#3714)", () => {
     const result = registerReport(r, {
       kind: "edicao",
       sessionId: "260720",
-      title: "Diar.ia — relatório de edição 260720",
+      title: "diar.ia.br — relatório de edição 260720",
       htmlPath: "data/editions/260720/_internal/edition-report.html",
     });
     assert.equal(result.ok, true);
@@ -122,21 +122,21 @@ describe("registerReport / listReports (#3714)", () => {
     registerReport(r, {
       kind: "overnight",
       sessionId: "260720",
-      title: "Diar.ia overnight 260720 — 2 resolvidas",
+      title: "diar.ia.br overnight 260720 — 2 resolvidas",
       htmlPath: "data/overnight/260720/report.md",
       createdAt: "2026-07-20T20:00:00.000Z",
     });
     registerReport(r, {
       kind: "overnight",
       sessionId: "260720",
-      title: "Diar.ia overnight 260720 — 5 resolvidas", // regenerado no fim da rodada
+      title: "diar.ia.br overnight 260720 — 5 resolvidas", // regenerado no fim da rodada
       htmlPath: "data/overnight/260720/report.md",
       createdAt: "2026-07-20T23:30:00.000Z",
     });
 
     const reports = listReports(r);
     assert.equal(reports.length, 1); // dedupado por id
-    assert.equal(reports[0].title, "Diar.ia overnight 260720 — 5 resolvidas");
+    assert.equal(reports[0].title, "diar.ia.br overnight 260720 — 5 resolvidas");
 
     // append-only: o arquivo físico tem as 2 linhas, nunca foi truncado.
     const raw = readFileSync(join(r, "data", "reports", "index.jsonl"), "utf8");
@@ -221,7 +221,7 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
       {
         kind: "overnight",
         sessionId: "260720",
-        title: "Diar.ia overnight 260720 — 5 resolvidas, 2 puladas",
+        title: "diar.ia.br overnight 260720 — 5 resolvidas, 2 puladas",
         htmlPath: "data/overnight/260720/report.md",
       },
       deps,
@@ -231,8 +231,8 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
     assert.equal(dispatch.sent, true);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].to, "vjpixel@gmail.com");
-    assert.match(calls[0].subject, /Diar\.ia overnight 260720 — 5 resolvidas, 2 puladas/);
-    assert.match(calls[0].body, /Diar\.ia overnight 260720 — 5 resolvidas, 2 puladas/);
+    assert.match(calls[0].subject, /diar\.ia\.br overnight 260720 — 5 resolvidas, 2 puladas/);
+    assert.match(calls[0].body, /diar\.ia\.br overnight 260720 — 5 resolvidas, 2 puladas/);
     assert.match(calls[0].body, /\/relatorios\/overnight-260720/);
   });
 
@@ -335,7 +335,7 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
 
     const result = registerReport(
       r,
-      { kind: "edicao", sessionId: "260802", title: "Diar.ia — relatório de edição 260802", htmlPath: "x.html" },
+      { kind: "edicao", sessionId: "260802", title: "diar.ia.br — relatório de edição 260802", htmlPath: "x.html" },
       deps,
       false, // notify
     );
@@ -357,7 +357,7 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
 
     const result = registerReport(
       r,
-      { kind: "edicao", sessionId: "260802", title: "Diar.ia — relatório de edição 260802", htmlPath: "x.html" },
+      { kind: "edicao", sessionId: "260802", title: "diar.ia.br — relatório de edição 260802", htmlPath: "x.html" },
       deps,
       true, // notify explícito
     );
@@ -373,7 +373,7 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
 
     const result = registerReport(
       r,
-      { kind: "overnight", sessionId: "260802", title: "Diar.ia overnight 260802", htmlPath: "x.md" },
+      { kind: "overnight", sessionId: "260802", title: "diar.ia.br overnight 260802", htmlPath: "x.md" },
       deps,
       // notify omitido -> default true
     );
@@ -430,13 +430,13 @@ describe("defaultHasCredentials (#4478 achado 1, CRÍTICO — fleet review #4383
   });
 });
 
-describe("buildReportEmail — prefixo [Diar.ia] não duplica a marca (#4478)", () => {
+describe("buildReportEmail — prefixo [diar.ia.br] não duplica a marca (#4478, grafia #4424)", () => {
   function mkEntry(overrides: Partial<ReportEntry> = {}): ReportEntry {
     return {
       id: "edicao-260802",
       kind: "edicao",
       sessionId: "260802",
-      title: "Diar.ia — relatório de edição 260802",
+      title: "diar.ia.br — relatório de edição 260802",
       htmlPath: "x.html",
       createdAt: new Date().toISOString(),
       url: "/relatorios/edicao-260802",
@@ -444,15 +444,15 @@ describe("buildReportEmail — prefixo [Diar.ia] não duplica a marca (#4478)", 
     };
   }
 
-  it("título já começa com 'Diar.ia' -> subject usa o título cru, sem prefixo duplicado", () => {
+  it("título já começa com 'diar.ia.br' -> subject usa o título cru, sem prefixo duplicado", () => {
     const { subject } = buildReportEmail(mkEntry());
-    assert.equal(subject, "Diar.ia — relatório de edição 260802");
-    assert.ok(!subject.startsWith("[Diar.ia] Diar.ia"));
+    assert.equal(subject, "diar.ia.br — relatório de edição 260802");
+    assert.ok(!subject.startsWith("[diar.ia.br] diar.ia.br"));
   });
 
-  it("título NÃO começa com 'Diar.ia' -> prefixo [Diar.ia] continua sendo adicionado", () => {
+  it("título NÃO começa com 'diar.ia.br' -> prefixo [diar.ia.br] continua sendo adicionado", () => {
     const { subject } = buildReportEmail(mkEntry({ title: "Relatório sem prefixo" }));
-    assert.equal(subject, "[Diar.ia] Relatório sem prefixo");
+    assert.equal(subject, "[diar.ia.br] Relatório sem prefixo");
   });
 });
 
@@ -462,7 +462,7 @@ describe("buildReportEmail / dispatchReportEmail (#4475)", () => {
       id: "overnight-260720",
       kind: "overnight",
       sessionId: "260720",
-      title: "Diar.ia overnight 260720 — 5 resolvidas",
+      title: "diar.ia.br overnight 260720 — 5 resolvidas",
       htmlPath: "data/overnight/260720/report.md",
       createdAt: new Date().toISOString(),
       url: "/relatorios/overnight-260720",
@@ -472,8 +472,8 @@ describe("buildReportEmail / dispatchReportEmail (#4475)", () => {
 
   it("buildReportEmail: subject e body carregam o título do relatório + URL", () => {
     const { subject, body } = buildReportEmail(mkEntry());
-    assert.match(subject, /Diar\.ia overnight 260720 — 5 resolvidas/);
-    assert.match(body, /Diar\.ia overnight 260720 — 5 resolvidas/);
+    assert.match(subject, /diar\.ia\.br overnight 260720 — 5 resolvidas/);
+    assert.match(body, /diar\.ia\.br overnight 260720 — 5 resolvidas/);
     assert.match(body, /\/relatorios\/overnight-260720/);
   });
 
