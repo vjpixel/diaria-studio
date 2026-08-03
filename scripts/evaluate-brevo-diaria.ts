@@ -35,6 +35,36 @@
  * Brevo por contato; é estritamente um passo a mais de leitura do MESMO
  * corpo de resposta, feito mais cedo no loop.
  *
+ * ### Propagação pra Beehiiv (#4538) — `unsubscribe:true`, não DELETE nem PATCH status
+ *
+ * Até o #4538, este passo só agia do lado Brevo (unlink da lista + marca o
+ * store) — o registro Pending correspondente na Beehiiv nunca era tocado,
+ * ficando reativável por engano (clique tardio no CTA de uma edição antiga,
+ * ou qualquer ativação em massa futura dos Pending). A moldura original da
+ * issue #4538 (PATCH pra unsubscribed) estava baseada num campo que não
+ * existe — investigação confirmou (doc pública da API Beehiiv,
+ * https://developers.beehiiv.com/api-reference/subscriptions/delete) que o
+ * campo certo é `unsubscribe: true` no MESMO endpoint `PUT
+ * .../subscriptions/by_email/{email}` que `sync-apoio-nivel-beehiiv.ts` já
+ * usa com sucesso pra `custom_fields` — não existe campo `status` gravável
+ * nesse endpoint. A doc também desaconselha DELETE explicitamente: "We
+ * recommend unsubscribing when possible instead of deleting."
+ *
+ * `unsubscribeInBeehiiv` (PUT) + `verifyUnsubscribedInBeehiiv` (releitura,
+ * exige `status==="inactive"` explícito) seguem a MESMA disciplina de
+ * escrita+releitura de `applyApoioTagEntry`/`verifyPromotedToBeehiiv` — a API
+ * já provou (endpoint de `tags`) que aceita PUT com 2xx e ignora o campo em
+ * silêncio. A combinação exata "`unsubscribe:true` contra um registro
+ * Pending" nunca foi testada ao vivo antes desta unidade — a 1ª execução real
+ * em produção (`--push`) É a validação, protegida pelo fail-safe: se a
+ * releitura não confirmar `inactive`, o contato PERMANECE `in_brevo` no store
+ * (nunca marcado `unsubscribed` sem confirmação) — como o descadastro NATIVO
+ * já foi feito na Brevo (isso nunca é revertido, `emailBlacklisted` continua
+ * `true` lá independente do que acontece aqui), a PRÓXIMA rodada detecta o
+ * mesmo `emailBlacklisted:true` de novo e retenta a propagação sozinha, sem
+ * precisar de nenhum estado extra persistido pra saber "isso ainda está
+ * pendente" — a fonte da verdade do retry é a própria Brevo, não o store.
+ *
  * ## Passo 1: auto-confirmação (fecha gap registrado na própria issue #4266)
  *
  * Em seguida, cada contato `in_brevo` tem seu status Beehiiv atual
@@ -370,6 +400,73 @@ export async function unlinkFromBrevoList(apiKey: string, listId: number, email:
 }
 
 /**
+ * Propaga o descadastro NATIVO detectado no passo 0 pra Beehiiv (#4538) —
+ * `PUT .../subscriptions/by_email/{email}` com `{unsubscribe: true}`, o campo
+ * documentado pela API pública (não `status`, que não é gravável nesse
+ * endpoint — ver cabeçalho do módulo pro histórico da investigação). Nunca
+ * DELETE (a doc da Beehiiv desaconselha — remove o histórico do registro).
+ *
+ * Lança em qualquer falha HTTP — o caller (`runEvaluation`) decide o
+ * fail-safe (nunca reverte o descadastro já feito na Brevo; mantém o contato
+ * `in_brevo` e retenta na próxima rodada quando a propagação não é
+ * confirmada, ver `verifyUnsubscribedInBeehiiv`).
+ */
+export async function unsubscribeInBeehiiv(
+  publicationId: string,
+  apiKey: string,
+  email: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const res = await fetchImpl(
+    `${beehiivApiBase()}/publications/${publicationId}/subscriptions/by_email/${encodeURIComponent(email)}`,
+    {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ unsubscribe: true }),
+    },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `Beehiiv API PUT subscriptions/by_email/${email} (unsubscribe:true) falhou (HTTP ${res.status}): ${text}`,
+    );
+  }
+}
+
+/**
+ * Releitura pós-propagação (#4538) — confirma `status === "inactive"`
+ * explicitamente, nunca só o 2xx do PUT (mesma armadilha do endpoint de
+ * `tags` da Beehiiv, que aceita o PUT e ignora o campo em silêncio — ver
+ * `sync-apoio-nivel-beehiiv.ts`). Reusa `fetchBeehiivSubscriptionStatus`
+ * (mesmo helper de `verifyPromotedToBeehiiv`/passo 1).
+ *
+ * Retry curto (#4545 review — silent-failure-hunter): se a releitura
+ * imediata não mostrar `"inactive"`, espera `PROMOTION_VERIFY_RETRY_DELAY_MS`
+ * e releê mais uma vez antes de declarar não-confirmado — mesmo racional de
+ * `verifyPromotedToBeehiiv` (eventual consistency da Beehiiv, já documentada
+ * no cabeçalho do módulo). Diferente de `verifyPromotedToBeehiiv`, que só
+ * retenta quando o status intermediário vem nomeado como `"validating"`,
+ * aqui o retry é INCONDICIONAL — esta combinação exata (`unsubscribe:true`
+ * contra um registro Pending) nunca rodou ao vivo antes desta unidade, então
+ * não há confirmação de que produza um status transitório nomeado
+ * equivalente; mais seguro assumir que pode haver atraso e sempre dar 1
+ * segunda chance antes de reportar falha.
+ */
+export async function verifyUnsubscribedInBeehiiv(
+  publicationId: string,
+  apiKey: string,
+  email: string,
+  fetchImpl: typeof fetch = fetch,
+  sleepImpl: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<boolean> {
+  const status = await fetchBeehiivSubscriptionStatus(publicationId, apiKey, email, fetchImpl);
+  if (status === "inactive") return true;
+  await sleepImpl(PROMOTION_VERIFY_RETRY_DELAY_MS);
+  const recheck = await fetchBeehiivSubscriptionStatus(publicationId, apiKey, email, fetchImpl);
+  return recheck === "inactive";
+}
+
+/**
  * Promove pra Beehiiv via DELETE + CREATE — não mais `reactivate_existing`
  * (#4476, achado ao vivo 260802): testado contra um contato Pending REAL
  * (não sintético) — `POST /subscriptions {reactivate_existing:true}` NÃO
@@ -594,6 +691,31 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           log(`${contact.email}: já descadastrado (emailBlacklisted) na Brevo → saída nativa, libera slot imediatamente.`);
           unsubscribedNative++;
           if (push) {
+            // #4538: propaga o descadastro pra Beehiiv ANTES de tocar no
+            // store/lista Brevo — write+reread, mesma disciplina de
+            // `applyApoioTagEntry`. Fail-safe: se a Beehiiv não confirmar
+            // `inactive`, o contato PERMANECE `in_brevo` (nunca marcado
+            // `unsubscribed` sem confirmação) — o descadastro NATIVO já feito
+            // na Brevo nunca é revertido (não tocamos `emailBlacklisted`
+            // aqui, só lemos), então a PRÓXIMA rodada detecta o mesmo
+            // `emailBlacklisted:true` de novo e retenta sozinha, sem precisar
+            // de estado extra persistido.
+            let beehiivConfirmed = false;
+            try {
+              await unsubscribeInBeehiiv(publicationId, beehiivApiKey, contact.email);
+              beehiivConfirmed = await verifyUnsubscribedInBeehiiv(publicationId, beehiivApiKey, contact.email);
+            } catch (e) {
+              log(`warn: falha ao propagar descadastro nativo de ${contact.email} pra Beehiiv: ${(e as Error).message}`);
+            }
+            if (!beehiivConfirmed) {
+              failed++;
+              log(
+                `warn: ${contact.email} — propagação do descadastro pra Beehiiv NÃO confirmada (releitura não ` +
+                  `mostrou "inactive") — mantendo in_brevo no store (fail-safe: o descadastro já feito na Brevo ` +
+                  "nunca é revertido; retentado na próxima rodada).",
+              );
+              continue;
+            }
             await unlinkFromBrevoList(brevoApiKey, listId, contact.email);
             store = applyNativeUnsubscribe(store, contact.email);
           }

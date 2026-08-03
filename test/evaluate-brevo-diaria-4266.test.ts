@@ -22,6 +22,9 @@ import {
   suppressInBrevo,
   unlinkFromBrevoList,
   promoteBeehiivSubscription,
+  unsubscribeInBeehiiv,
+  verifyUnsubscribedInBeehiiv,
+  PROMOTION_VERIFY_RETRY_DELAY_MS,
   runEvaluation,
 } from "../scripts/evaluate-brevo-diaria.ts";
 import { findContact, type BrevoDiariaContact } from "../scripts/lib/brevo-diaria-store.ts";
@@ -454,6 +457,71 @@ describe("suppressInBrevo / unlinkFromBrevoList / promoteBeehiivSubscription —
   });
 });
 
+describe("unsubscribeInBeehiiv / verifyUnsubscribedInBeehiiv — propagação do descadastro nativo (#4538)", () => {
+  it("unsubscribeInBeehiiv faz PUT unsubscribe:true no endpoint by_email (não status, não DELETE)", async () => {
+    let capturedUrl = "";
+    let capturedBody: unknown;
+    let capturedMethod = "";
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      capturedUrl = String(url);
+      capturedMethod = init?.method ?? "";
+      capturedBody = init?.body ? JSON.parse(init.body as string) : undefined;
+      return jsonRes(200, {});
+    }) as typeof fetch;
+    await unsubscribeInBeehiiv("pub_1", "key", "a@b.com", fetchImpl);
+    assert.equal(capturedMethod, "PUT");
+    assert.equal(capturedUrl, "https://api.beehiiv.com/v2/publications/pub_1/subscriptions/by_email/a%40b.com");
+    assert.deepEqual(capturedBody, { unsubscribe: true });
+  });
+
+  it("unsubscribeInBeehiiv lança se a Beehiiv responder erro (fail loud, nunca silencioso)", async () => {
+    const fetchImpl = (async () => new Response("forbidden", { status: 403 })) as typeof fetch;
+    await assert.rejects(() => unsubscribeInBeehiiv("pub_1", "key", "a@b.com", fetchImpl), /PUT subscriptions\/by_email.*unsubscribe:true.*falhou.*403/);
+  });
+
+  it('verifyUnsubscribedInBeehiiv: status "inactive" → true (confirmado)', async () => {
+    const fetchImpl = (async () => jsonRes(200, { data: { status: "inactive" } })) as typeof fetch;
+    assert.equal(await verifyUnsubscribedInBeehiiv("pub_1", "key", "a@b.com", fetchImpl), true);
+  });
+
+  it('verifyUnsubscribedInBeehiiv: status ainda "pending" mesmo após o retry → false (2xx no PUT não é garantia — mesma armadilha do endpoint de tags)', async () => {
+    const fetchImpl = (async () => jsonRes(200, { data: { status: "pending" } })) as typeof fetch;
+    assert.equal(await verifyUnsubscribedInBeehiiv("pub_1", "key", "a@b.com", fetchImpl, async () => {}), false);
+  });
+
+  it("verifyUnsubscribedInBeehiiv: 404 (subscription sumiu) mesmo após o retry → false", async () => {
+    const fetchImpl = (async () => jsonRes(404, {})) as typeof fetch;
+    assert.equal(await verifyUnsubscribedInBeehiiv("pub_1", "key", "a@b.com", fetchImpl, async () => {}), false);
+  });
+
+  it('verifyUnsubscribedInBeehiiv: releitura imediata "pending" (eventual consistency), retry após espera confirma "inactive" → true (#4545 review)', async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      return jsonRes(200, { data: { status: calls === 1 ? "pending" : "inactive" } });
+    }) as typeof fetch;
+    let sleptMs = -1;
+    const sleepImpl = async (ms: number) => {
+      sleptMs = ms;
+    };
+    const result = await verifyUnsubscribedInBeehiiv("pub_1", "key", "a@b.com", fetchImpl, sleepImpl);
+    assert.equal(result, true);
+    assert.equal(calls, 2, "GET inicial + 1 releitura após o retry — retry é INCONDICIONAL, não depende de um status intermediário nomeado");
+    assert.equal(sleptMs, PROMOTION_VERIFY_RETRY_DELAY_MS);
+  });
+
+  it("verifyUnsubscribedInBeehiiv: retry esgotado, releitura AINDA não mostra inactive → false (nunca um 2º retry)", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      return jsonRes(200, { data: { status: "pending" } });
+    }) as typeof fetch;
+    const result = await verifyUnsubscribedInBeehiiv("pub_1", "key", "a@b.com", fetchImpl, async () => {});
+    assert.equal(result, false);
+    assert.equal(calls, 2, "só 1 retry, nunca fica reesperando indefinidamente");
+  });
+});
+
 describe("verifySuppressedInBrevo — releitura pós-supressão (#4398 fix 4)", () => {
   const origFetch = globalThis.fetch;
   function restore() {
@@ -532,12 +600,22 @@ describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0", () => {
     }
   });
 
-  it("push:true → unlinkFromBrevoList chamado e store marca status unsubscribed, motivo native_unsubscribe", async () => {
-    const putCalls: { body: unknown }[] = [];
+  it("push:true, releitura Beehiiv confirma 'inactive' → PUT unsubscribe:true emitido, unlinkFromBrevoList chamado, store marca status unsubscribed motivo native_unsubscribe (#4538 caso a)", async () => {
+    const putCalls: { url: string; body: unknown }[] = [];
+    let beehiivPutCalled = false;
     globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
       const u = String(url);
+      if (u.includes("api.beehiiv.com") && init?.method === "PUT") {
+        beehiivPutCalled = true;
+        assert.deepEqual(JSON.parse(init.body as string), { unsubscribe: true }, "PUT unsubscribe:true — não status, não DELETE");
+        return jsonRes(200, {});
+      }
+      if (u.includes("api.beehiiv.com") && u.includes("subscriptions/by_email/")) {
+        // releitura pós-propagação — confirma inactive
+        return jsonRes(200, { data: { status: "inactive" } });
+      }
       if (init?.method === "PUT") {
-        putCalls.push({ body: JSON.parse(init.body as string) });
+        putCalls.push({ url: u, body: JSON.parse(init.body as string) });
         return jsonRes(200, {});
       }
       if (u.includes("/contacts/")) return jsonRes(200, { emailBlacklisted: true, statistics: { messagesSent: [], opened: [] } });
@@ -557,10 +635,85 @@ describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0", () => {
         log: () => {},
       });
       assert.equal(result.unsubscribedNative, 1);
-      assert.deepEqual(putCalls, [{ body: { unlinkListIds: [7] } }]);
+      assert.equal(result.failed, 0);
+      assert.equal(beehiivPutCalled, true, "chamada Beehiiv (unsubscribe:true) foi emitida");
+      assert.deepEqual(putCalls, [{ url: putCalls[0]?.url, body: { unlinkListIds: [7] } }]);
       const c = findContact(result.store, "unsub2@b.com")!;
       assert.equal(c.status, "unsubscribed");
       assert.equal(c.resolution_reason, "native_unsubscribe");
+    } finally {
+      restore();
+    }
+  });
+
+  it("push:true, releitura Beehiiv NÃO confirma 'inactive' → contato segue in_brevo no store (nunca marcado unsubscribed sem confirmação), run sai com failed>0, unlinkFromBrevoList NUNCA chamado (#4538 caso b, fail-safe)", async () => {
+    const brevoPutCalls: { body: unknown }[] = [];
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("api.beehiiv.com") && init?.method === "PUT") {
+        // PUT aceito (2xx)...
+        return jsonRes(200, {});
+      }
+      if (u.includes("api.beehiiv.com") && u.includes("subscriptions/by_email/")) {
+        // ...mas a releitura NÃO confirma "inactive" — mesma armadilha do
+        // endpoint de tags, a mutação foi ignorada em silêncio.
+        return jsonRes(200, { data: { status: "pending" } });
+      }
+      if (init?.method === "PUT") {
+        brevoPutCalls.push({ body: JSON.parse(init.body as string) });
+        return jsonRes(200, {});
+      }
+      if (u.includes("/contacts/")) return jsonRes(200, { emailBlacklisted: true, statistics: { messagesSent: [], opened: [] } });
+      throw new Error(`fetch inesperado: ${u} ${init?.method}`);
+    }) as typeof fetch;
+
+    try {
+      const contacts = [contact("unsub3@b.com")];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: true,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: () => {},
+      });
+      assert.equal(result.failed, 1, "verificação não confirmada conta como falha, nunca silenciosa");
+      assert.equal(result.unsubscribedNative, 1, "contado como 'intenção' detectada, mesmo revertido pelo fail-safe (mesmo padrão de promoted/suppressed)");
+      assert.deepEqual(brevoPutCalls, [], "unlinkFromBrevoList NUNCA chamado sem confirmação da Beehiiv");
+      const c = findContact(result.store, "unsub3@b.com")!;
+      assert.equal(c.status, "in_brevo", "NUNCA marcado unsubscribed sem confirmação — segue in_brevo pra retentar na próxima rodada");
+      assert.equal(c.resolution_reason, undefined);
+    } finally {
+      restore();
+    }
+  });
+
+  it("push:true, PUT pra Beehiiv lança (rede/HTTP) → mesmo fail-safe: contato segue in_brevo, failed>0, unlink nunca chamado", async () => {
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("api.beehiiv.com")) return new Response("boom", { status: 500 });
+      if (init?.method === "PUT") throw new Error("unlinkFromBrevoList não deveria ser chamado");
+      if (u.includes("/contacts/")) return jsonRes(200, { emailBlacklisted: true, statistics: { messagesSent: [], opened: [] } });
+      throw new Error(`fetch inesperado: ${u} ${init?.method}`);
+    }) as typeof fetch;
+
+    try {
+      const contacts = [contact("unsub4@b.com")];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: true,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: () => {},
+      });
+      assert.equal(result.failed, 1);
+      const c = findContact(result.store, "unsub4@b.com")!;
+      assert.equal(c.status, "in_brevo");
     } finally {
       restore();
     }
