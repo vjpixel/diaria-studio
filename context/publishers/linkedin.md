@@ -222,18 +222,30 @@ publicação — o output de `/diaria-linkedin-semanal`
 Achados operacionais de publicar a edição #1 à mão (comentários 260802 do
 #4456):
 
-### 1. O artigo só nasce vinculado à newsletter pelo botão DENTRO da página dela
+### 1. Confira o destino no cabeçalho do editor (a regra antiga era mais dura do que a realidade)
 
-Ir direto em `linkedin.com/article/new/` cria um artigo **individual**,
-desvinculado — e nesse caso o convite automático pra rede (o disparo único
-que justifica o canal) **não dispara**. O caminho correto:
+**Corrigido em 260803, verificado ao vivo publicando a edição #1.** A versão
+anterior deste playbook afirmava que entrar por `linkedin.com/article/new/`
+cria um artigo **individual** e mata o convite automático pra rede. Isso
+**não se confirmou**: o editor de artigo hoje traz um seletor "Publish to"
+no próprio cabeçalho (clicando no nome do autor), com as opções
+"Individual article" e o nome da newsletter, e ele já vem com a
+**newsletter marcada** ao entrar por `/article/new/`.
 
-1. Navegar pra `linkedin.com/newsletters/{urn}/` (a página DA newsletter).
-2. Clicar **Write article** a partir DALI.
-3. **Verificar antes de escrever qualquer coisa:** o cabeçalho do editor
-   tem que mostrar o nome da newsletter — se mostrar "Individual article",
-   abortar e recomeçar do passo 1 (não existe forma de "converter" um
-   artigo individual em newsletter depois de criado).
+O que continua valendo é a VERIFICAÇÃO, não o caminho:
+
+1. Preferir `linkedin.com/newsletters/{urn}/` → **Write article** (caminho
+   mais seguro, não depende do default do seletor).
+2. **Antes de escrever qualquer coisa**, conferir o cabeçalho do editor: ele
+   tem que mostrar o nome da newsletter abaixo do nome do autor. Se mostrar
+   "Individual article", abrir o seletor e trocar.
+3. Observado em 260803: uma aba que ficou aberta e recarregou sozinha voltou
+   como "Individual article". O cabeçalho é o único sinal confiável — reler
+   antes de publicar, não só ao abrir.
+
+O URN da newsletter "IA na semana" (perfil pessoal do editor) é
+`7489744978307473408`, ou seja
+`linkedin.com/newsletters/ia-na-semana-7489744978307473408/`.
 
 ### 2. Texto de link nunca termina em domínio nu
 
@@ -282,9 +294,77 @@ precisa de correção): `<h2>` vira `<h3>` visualmente; `<hr>` vira `<div>`
 numerados e `<hr/>` como separador de bloco de propósito — o objetivo é a
 estrutura semântica sobreviver ao paste, não o tag literal.
 
+#### Três armadilhas do paste, todas encontradas ao vivo em 260803
+
+**a) Lista aninhada é ACHATADA, sem separador.** O editor não suporta
+`<ul>` dentro de `<li>`: ele funde tudo num nível só e os itens internos
+saem colados num bloco corrido, sem nada entre eles. Na edição #1 isso
+produziu "Edição de 27/07 Anthropic lança o Claude Opus 5 EUA fiscalizam
+GPT-5.6…", onde não dá pra ver onde um título acaba e o outro começa.
+Correção aplicada em `renderLinkedinWeeklyHtml`: a seção "Edições da
+semana" emite lista **plana**, com os destaques separados por `DESTAQUE_SEPARATOR`
+(" · ") — separador em TEXTO, que sobrevive ao achatamento porque não é
+estrutura.
+
+**b) Link no ÚLTIMO nó colado perde a âncora.** Colar HTML que termina em
+`<p><a …>…</a></p>` deixa o texto e descarta o `href`. Solução: colar com
+um parágrafo vazio de sentinela no fim (`<p>&nbsp;</p>`), para que o link
+nunca seja o último nó.
+
+**c) Âncora que TERMINA em domínio nu tem o href sequestrado.** É a mesma
+regra que `endsInBareDomainLabel` já guardava, mas com uma consequência
+que não estava documentada: dá pra pré-linkar a menção em prosa a
+`diar.ia.br` **e manter a UTM**, desde que a âncora se estenda além do
+domínio. Testado nas duas formas:
+
+    texto "diar.ia.br"                    -> href reescrito pra http://diar.ia.br, UTM perdida
+    texto "diar.ia.br, newsletter de IA"  -> href preservado, UTM intacta
+
+`linkifyWordmark` (mesmo módulo) faz isso automaticamente na primeira
+menção da abertura, estendendo por até 3 palavras e validando com o
+próprio guard; se não der pra estender, não linka em vez de emitir link
+que se anuncia rastreado e não é.
+
+**Cuidado ao inspecionar o resultado:** ler o DOM logo depois do paste
+engana. Numa checagem 1,2s após o `ClipboardEvent` o href aparecia já
+reescrito pelo auto-linkificador, e só depois o ProseMirror reassentava a
+marca do paste. Conclusão errada foi tirada daí em 260803. Espere o
+editor estabilizar (ou recarregue a página) antes de afirmar qualquer
+coisa sobre o que sobreviveu.
+
 Publicação continua **manual por padrão** (colar via UI, revisar
 visualmente, clicar Publish) — a automação acima é referência pra quem for
 implementar o paste assistido via Claude in Chrome no futuro; não é
 executada por `/diaria-linkedin-semanal` nesta versão (a skill entrega o
 artefato e as instruções, ver `.claude/skills/diaria-linkedin-semanal/SKILL.md`
-Passo 6).
+Passo 6). Em 260803 o paste assistido foi executado à mão numa sessão com o
+editor presente, e os achados acima vieram dessa rodada.
+
+### 4. O LinkedIn AGENDA artigo de newsletter (a regra antiga dizia que não)
+
+**Corrigido em 260803.** `.claude/skills/diaria-linkedin-semanal/SKILL.md`
+afirmava que "o LinkedIn não tem API de agendamento de newsletter" e
+concluía daí que não havia gate de agendamento. A premissa da API segue
+verdadeira, mas a conclusão operacional estava errada: **a UI agenda**. O
+diálogo que abre no **Next** traz um ícone de relógio ao lado do botão
+Publish, e o artigo agendado aparece em
+`linkedin.com/article/manage/scheduled/`.
+
+**Consequências práticas, aprendidas no susto:**
+
+- **Agende, não publique na hora.** Na edição #1 o artigo saiu à 1h30 da
+  manhã porque a data estava certa e ninguém olhou a HORA. O envio canônico
+  da diária é 06:00 BRT; o artigo semanal deve seguir a mesma lógica de
+  horário comercial. O custo maior nem é o e-mail (que atinge poucos
+  assinantes no começo) e sim o **post de feed**, que nasce sem engajamento
+  inicial e fica com o alcance suprimido de forma permanente.
+- **Artigo agendado SAI da lista de rascunhos.** Ao agendar, a URL
+  `/article/edit/{id}/` passa a redirecionar pra `/article/new/`, exatamente
+  como faria com um ID inválido. Isso parece perda de trabalho e não é —
+  confira `Manage` → **Scheduled** antes de concluir qualquer coisa. Em
+  260803 essa leitura errada gerou um rascunho duplicado.
+- O diálogo de publicação tem um campo de texto ("Tell your network what
+  this edition of your newsletter is about…") que vira o **post de feed**.
+  É peça editorial separada do corpo do artigo. Em post do LinkedIn **não
+  existe âncora em texto**: link é a URL escrita por extenso, que a
+  plataforma auto-linka.

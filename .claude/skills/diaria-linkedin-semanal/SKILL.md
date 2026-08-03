@@ -1,6 +1,6 @@
 ---
 name: diaria-linkedin-semanal
-description: Newsletter semanal do LinkedIn (perfil pessoal, #4456) — 3 matérias da semana selecionadas por clique verificado + bloco Use Melhor com comentário do editor + lista do resto da semana. Produzida domingo, publicada segunda ~09:30 BRT (artigo colado à mão — LinkedIn não tem API de publicação de newsletter). Uso — `/diaria-linkedin-semanal --publish-monday AAMMDD`.
+description: Newsletter semanal do LinkedIn (perfil pessoal, #4456) — 3 matérias da semana selecionadas por clique verificado + bloco Use Melhor com comentário do editor + "Edições da semana" (link + destaques das 5 edições). Produzida domingo, publicada segunda ~09:30 BRT (artigo colado à mão — LinkedIn não tem API de publicação de newsletter). Uso — `/diaria-linkedin-semanal --publish-monday AAMMDD`.
 disable-model-invocation: true
 ---
 
@@ -9,8 +9,9 @@ disable-model-invocation: true
 Monta o artefato colável da newsletter semanal do LinkedIn (issue #4456):
 3 matérias da semana que acabou (segunda a sexta), selecionadas por **taxa
 de clique verificado** — não pela posição na edição de origem — mais o
-bloco **Use Melhor** (com comentário do editor, obrigatório) e uma lista de
-1 linha por edição das demais.
+bloco **Use Melhor** (com comentário do editor, obrigatório) e a seção
+**Edições da semana** — as 5 edições, cada uma com link + seus até-3
+destaques.
 
 **A spec desta skill mudou várias vezes ao longo do dia 260802 — os
 comentários da issue #4456 têm precedência sobre o corpo original.** Se
@@ -41,6 +42,19 @@ inteira antes — não só o body.
 - **Edição #1 não é mais exceção** (260802, último comentário) — cobre a
   janela normal como qualquer outra. Não tratar a primeira invocação
   desta skill como recorte mensal/moldura de estreia.
+- **Seção final chama "Edições da semana", não "Resto da semana"** (260802,
+  decisão do editor) — e não é mais só as edições que perderam a manchete:
+  lista as edições da semana com D1 parseável (até 5 — pode ser menos em
+  semana curta/feriado), cada uma com link (`deriveEditionUrl` a partir do
+  D1) + os até-3 destaques daquele dia, independente de um deles já ter
+  virado manchete acima. Implementado em `scripts/select-linkedin-weekly.ts`
+  (campo `weeklyEditions` no `ln-selection.json`, populado em
+  `readEdition`/`destaqueTitles`, com guard de colisão de URL derivada — 2
+  D1 que produzem o mesmo slug geram warning explícito) e
+  `scripts/lib/weekly-linkedin-render.ts` (`editionLabel` gera o rótulo
+  "Edição de DD/MM" do link; cada destaque some como sub-item de lista).
+  Resolve o achado #4489 finding 8b (se o item devia ter mais que o
+  título).
 
 ## Argumentos
 
@@ -106,8 +120,9 @@ npx tsx scripts/select-linkedin-weekly.ts --publish-monday {AAMMDD}
 
 Escreve `data/weekly/{cycle}/_internal/ln-selection.json` com: manchetes
 selecionadas (rank + auditoria completa dos candidatos, inclusive
-excluídos por serem comercial/próprio), candidato de Use Melhor, lista do
-resto da semana, e warnings (empates dentro do ruído de 1 clique, edições
+excluídos por serem comercial/próprio), candidato de Use Melhor, Edições
+da semana (`weeklyEditions` — as 5 edições, link + destaques de cada
+uma), e warnings (empates dentro do ruído de 1 clique, edições
 faltando, etc — ver `scripts/lib/weekly-linkedin-select.ts`).
 
 **Semana curta (feriado):** se `editionsFound < 5`, o script já reduz o
@@ -129,7 +144,7 @@ Manchetes selecionadas (por taxa de clique verificado):
 
 Use Melhor: {título ou "nenhum candidato elegível"}
 
-Resto da semana: {N} edições
+Edições da semana: {N} edições (link + destaques cada)
 
 {warnings, se houver — inclusive empates dentro do ruído de 1 clique}
 
@@ -201,18 +216,32 @@ publicação de `context/publishers/linkedin.md` §Newsletter LinkedIn —
 resumo:
 
 1. Ir em `linkedin.com/newsletters/{urn}/` (a página DA newsletter, não
-   o feed pessoal) → clicar **Write article** DALI (não em
-   `/article/new/` direto — senão o artigo nasce desvinculado e o convite
-   automático pra rede não dispara).
+   o feed pessoal) → clicar **Write article** DALI. Caminho preferido por
+   ser o que não depende do default do seletor de destino — mas
+   `/article/new/` **não** desvincula o artigo, ao contrário do que esta
+   linha afirmava até 260803 (ver `context/publishers/linkedin.md` §1, que
+   é a fonte única sobre isso).
 2. Confirmar que o cabeçalho do editor mostra o nome da newsletter, não
-   "Individual article".
+   "Individual article". **Esta é a verificação que importa**, e vale
+   reler antes de publicar, não só ao abrir: em 260803 uma aba que
+   recarregou sozinha voltou como "Individual article".
 3. Colar o conteúdo de `ln-{cycle}.html`.
 4. Revisar visualmente (numeração, sem link nos blocos de manchete, Use
    Melhor com comentário se presente, CTAs no fim).
 5. Publicar.
 
-**Sem gate de agendamento automático** — ver "Reuso do agendamento"
-abaixo pra por quê.
+**SEMPRE agendar, nunca publicar na hora** (corrigido em 260803, ver
+"Reuso do agendamento" abaixo). No diálogo que abre no **Next**, usar o
+ícone de relógio ao lado do botão Publish. A data certa não basta: a HORA
+importa mais que ela, porque o post de feed que acompanha o artigo nasce
+com o alcance definido pelo engajamento da primeira hora. Publicar de
+madrugada queima o alcance daquele post de forma permanente. Horário
+comercial da manhã, na mesma lógica do envio canônico das 06:00 BRT da
+diária.
+
+Depois de agendar, o artigo **sai da lista de rascunhos** e
+`/article/edit/{id}/` passa a redirecionar pra `/article/new/` — isso é
+esperado, não é perda. Conferir em `linkedin.com/article/manage/scheduled/`.
 
 ## Reuso do agendamento — decisão: NÃO reusar `/diaria-6-agendamento`
 
@@ -221,16 +250,19 @@ existe pra agendar o ENVIO da newsletter diária no **Beehiiv** — chama a
 API/UI do Beehiiv via Claude in Chrome (`context/publishers/beehiiv-playbook.md`
 §9-10) e verifica o estado agendado via `scripts/verify-scheduled-post.ts`.
 
-Isso não se aplica aqui: **o LinkedIn não tem API de agendamento de
-newsletter** (só de posts de feed comuns, que é o mecanismo que
-`context/publishers/linkedin.md` §1-8 já cobre pro Stage 6 social da
-diária). O artigo da newsletter do LinkedIn só nasce por ação humana
-direta no editor (`linkedin.com/newsletters/{urn}/` → Write article →
-Publish) — não existe "rascunho agendável programaticamente" nesse fluxo,
-então não há nada mecânico de `/diaria-6-agendamento` (o Schedule
-click-e-verifica do Beehiiv) que faça sentido reusar aqui. O único
-padrão que ESTA skill reusa do Stage 6 é conceitual — gate humano antes
-de considerar a unidade "pronta" — não código.
+Isso não se aplica aqui, mas **não pelo motivo que esta seção dava antes**.
+A versão anterior afirmava que "o LinkedIn não tem agendamento de
+newsletter" e concluía daí que não havia o que agendar. A premissa sobre a
+**API** continua verdadeira; a conclusão operacional estava errada e foi
+corrigida em 260803, ao publicar a edição #1: **a UI agenda** (ícone de
+relógio no diálogo do Next, lista em `/article/manage/scheduled/`).
+
+O que de fato não se reusa é o **código**: o Schedule do Beehiiv é
+click-e-verifica via `scripts/verify-scheduled-post.ts`, contra a API/UI do
+Beehiiv, e não existe equivalente programático aqui — o agendamento do
+LinkedIn é ação humana no editor, sem endpoint oficial que dê pra verificar
+depois. Do Stage 6 esta skill reusa só o padrão conceitual (gate humano
+antes de considerar a unidade "pronta").
 
 ## Sobreposição com `/diaria-instagram-semanal` — mantenha separadas
 

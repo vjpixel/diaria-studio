@@ -42,7 +42,7 @@ interface SelectionJson {
   cycle: string;
   headlines: Array<{ title: string; body: string; why: string }>;
   useMelhor: { title: string; url: string; body: string } | null;
-  restOfWeek: Array<{ editionDate: string; title: string }>;
+  weeklyEditions: Array<{ editionDate: string; url: string; destaques: string[] }>;
 }
 
 /**
@@ -82,7 +82,7 @@ export function main(rootDirOverride?: string) {
           editorComment: useMelhorComment,
         }
       : undefined,
-    restOfWeek: selection.restOfWeek,
+    weeklyEditions: selection.weeklyEditions,
     opening,
     closing,
   };
@@ -101,7 +101,7 @@ export function main(rootDirOverride?: string) {
         cycle,
         useMelhorRendered: result.useMelhorRendered,
         headlinesCount: input.headlines.length,
-        restOfWeekCount: input.restOfWeek.length,
+        weeklyEditionsCount: input.weeklyEditions.length,
         warnings: result.warnings,
         generatedAt: new Date().toISOString(),
       },
