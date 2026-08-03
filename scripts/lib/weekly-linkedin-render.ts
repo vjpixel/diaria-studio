@@ -17,7 +17,10 @@
  *     parte o link em dois e a parte clicável fica sem UTM) — usa sempre
  *     rótulo de ação.
  *   - UTM: `utm_source=linkedin&utm_medium=newsletter&utm_campaign=ln-{cycle}
- *     &utm_content=lista|cta-usemelhor|cta-fim` (item-01/02/03 SAÍRAM).
+ *     &utm_content=cta-abertura|lista|cta-usemelhor|cta-fim` (item-01/02/03
+ *     SAÍRAM; `cta-abertura` ENTROU em 260803). São 3 CTAs de assinatura, um
+ *     por terço da peça, cada um com `utm_content` próprio: sem isso não dá pra
+ *     saber qual posição converte e a decisão de manter/cortar vira palpite.
  */
 
 export const LINKEDIN_WEEKLY_UTM_SOURCE = "linkedin";
@@ -28,7 +31,7 @@ export function linkedinWeeklyCampaign(cycle: string): string {
   return `ln-${cycle}`;
 }
 
-export type LinkedinWeeklyUtmContent = "lista" | "cta-usemelhor" | "cta-fim";
+export type LinkedinWeeklyUtmContent = "mencao-abertura" | "cta-abertura" | "lista" | "cta-usemelhor" | "cta-fim";
 
 /** Pure: monta uma URL com o triplo UTM completo (+ `utm_content`) do contrato do #4456. */
 export function buildLinkedinWeeklyUrl(baseUrl: string, cycle: string, content: LinkedinWeeklyUtmContent): string {
@@ -48,7 +51,48 @@ export function endsInBareDomainLabel(label: string): boolean {
   return /(^|\s)([a-z0-9-]+\.)+[a-z]{2,}\/?$/i.test(label.trim());
 }
 
-const CTA_USEMELHOR_LABEL = "Receba todo dia, é grátis →";
+/**
+ * Chamada do CTA do bloco Use Melhor (decisão do editor 260803, #4456): frase
+ * de contexto + âncora, em vez de link solto. Este é o PRIMEIRO convite de
+ * assinatura da edição (o bloco cai depois do 2º headline — ver docstring de
+ * `renderLinkedinWeeklyHtml`), e um link sem frase não diz ao leitor o que ele
+ * ganha assinando. A frase promete exatamente o que o bloco acima acabou de
+ * entregar, então o convite é verificável pelo próprio conteúdo da peça.
+ *
+ * PLURAL de propósito ("tutoriais e dicas", nunca "um desses"): a seção Use
+ * Melhor da edição diária leva de 1 a 3 itens (semana 26w31: 3, 3, 2, 1, 3),
+ * então o singular subvende o que o assinante recebe de fato. Sem menção a
+ * tempo de leitura (decisão do editor 260803): o que converte aqui é a cadência
+ * diária, não a duração de cada item.
+ *
+ * A âncora é em 1ª pessoa e sem "grátis"/imperativo empilhados de propósito: o
+ * aprendizado do CTA-01 (`docs/experiments/cta-ab-mensal-2606-07.md`) é que
+ * âncora com verbo imperativo + "grátis" + seta concentra sinal promocional e
+ * custa ENTREGA. O "de graça" continua existindo na peça, mas no fecho em prosa,
+ * longe da âncora clicável.
+ */
+/**
+ * Âncora do CTA que fecha a ABERTURA (decisão do editor 260803, #4456). Quem
+ * abandona o artigo depois da 1ª manchete nunca alcança o CTA do Use Melhor
+ * (que só entra depois da 2ª) nem o do fim, então existe um ponto de entrada
+ * acima da dobra.
+ *
+ * Deliberadamente a MAIS sóbria das três: verbo no infinitivo, sem "grátis",
+ * sem seta. É a forma do braço A do CTA-01 (`docs/experiments/cta-ab-mensal-2606-07.md`),
+ * o único que sobreviveu ao teste sem degradar entrega. A densidade promocional
+ * acima da dobra foi o gatilho identificado lá, então os CTAs com mais peso
+ * ficam no meio (`cta-usemelhor`) e no fim (`cta-fim`) da peça.
+ */
+/**
+ * Separador entre os destaques de uma mesma edição na lista "Edições da semana".
+ * Precisa ser TEXTO (não estrutura HTML) porque o editor de artigo do LinkedIn
+ * achata `<ul>` aninhada — ver comentário no laço de `weeklyEditions`.
+ */
+export const DESTAQUE_SEPARATOR = " · ";
+
+const CTA_ABERTURA_LABEL = "Assinar a edição diária";
+const CTA_USEMELHOR_LEAD = "Tutoriais e dicas como este saem em toda edição diária.";
+const CTA_USEMELHOR_LABEL = "Quero receber a edição diária →";
 const CTA_FIM_LABEL = "Assine grátis, é rapidinho →";
 
 export interface WeeklyLinkedinHeadlineInput {
@@ -114,6 +158,51 @@ function paragraphsHtml(text: string): string {
     .join("\n");
 }
 
+/** Wordmark da marca, como aparece em prosa. Base de `linkifyWordmark`. */
+export const WORDMARK = "diar.ia.br";
+
+/** Palavras que a âncora do wordmark estende além do domínio (ver `linkifyWordmark`). */
+const WORDMARK_TRAILING_WORDS = 3;
+
+/**
+ * Pure: transforma a PRIMEIRA menção em prosa a `diar.ia.br` num link com UTM.
+ *
+ * Por que existe: o editor de artigo do LinkedIn auto-linka toda menção ao
+ * domínio mesmo fora de link intencional, e o link que ELE cria aponta pra home
+ * CRUA, sem UTM. É o primeiro clique possível da peça e estava saindo inteiro
+ * da medição. Pré-linkado, o clique passa a ser atribuível.
+ *
+ * Por que a âncora ESTENDE além do domínio (testado ao vivo 260803, editor do
+ * LinkedIn, as duas formas):
+ *
+ *   texto "diar.ia.br"                    -> href REESCRITO pra http://diar.ia.br, UTM perdida
+ *   texto "diar.ia.br, newsletter de IA"  -> href preservado, UTM intacta
+ *
+ * É o mesmo fenômeno que `endsInBareDomainLabel` já guarda pros outros rótulos:
+ * o auto-linkificador só sequestra a âncora quando ela TERMINA no domínio. Daí
+ * estender por algumas palavras resolver.
+ *
+ * Degrada em silêncio seguro: se mesmo estendida a âncora terminar em domínio
+ * (ex: o wordmark é a última coisa do parágrafo), NÃO linka — melhor perder a
+ * atribuição do que emitir um link que se anuncia rastreado e não é. Opera
+ * sobre a saída de `paragraphsHtml` (já escapada), nunca sobre prosa crua.
+ */
+export function linkifyWordmark(paragraphsHtmlOut: string, cycle: string): string {
+  const idx = paragraphsHtmlOut.indexOf(WORDMARK);
+  if (idx < 0) return paragraphsHtmlOut;
+  const after = paragraphsHtmlOut.slice(idx + WORDMARK.length);
+  // estende por até N palavras, parando em qualquer tag (não atravessa parágrafo)
+  const tail = after.match(new RegExp(`^(?:[^<\\s]*\\s+){0,${WORDMARK_TRAILING_WORDS}}[^<\\s]*`))?.[0] ?? "";
+  const label = (WORDMARK + tail).replace(/\s+$/, "");
+  if (endsInBareDomainLabel(label)) return paragraphsHtmlOut;
+  const url = buildLinkedinWeeklyUrl(LINKEDIN_WEEKLY_SUBSCRIBE_BASE_URL, cycle, "mencao-abertura");
+  return (
+    paragraphsHtmlOut.slice(0, idx) +
+    `<a href="${escapeHtml(url)}">${label}</a>` +
+    paragraphsHtmlOut.slice(idx + label.length)
+  );
+}
+
 /** Pure: título numerado — única transformação permitida sobre o título literal (#4456). */
 export function numberedTitle(n: number, title: string): string {
   return `${n}. ${title}`;
@@ -158,8 +247,13 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
   if (!input.opening.trim()) {
     warnings.push("Abertura ausente/vazia — parágrafo de abertura omitido (opening é obrigatório, não opcional como o comentário do Use Melhor).");
   }
+  // Abertura e fecho quebram em parágrafos por linha em branco dupla, igual ao
+  // corpo das manchetes (decisão do editor 260803). Antes iam num <p> único, o
+  // que empilhava 5-6 frases num bloco só e afundava a leitura no LinkedIn.
   if (input.opening.trim()) {
-    parts.push(`<p>${escapeHtml(input.opening.trim())}</p>`);
+    parts.push(linkifyWordmark(paragraphsHtml(input.opening), input.cycle));
+    const ctaAberturaUrl = buildLinkedinWeeklyUrl(LINKEDIN_WEEKLY_SUBSCRIBE_BASE_URL, input.cycle, "cta-abertura");
+    parts.push(`<p><a href="${escapeHtml(ctaAberturaUrl)}">${escapeHtml(CTA_ABERTURA_LABEL)}</a></p>`);
   }
 
   function pushHeadline(h: WeeklyLinkedinHeadlineInput, n: number): void {
@@ -193,6 +287,7 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
     if (um.description.trim()) parts.push(`<p>${escapeHtml(um.description.trim())}</p>`);
     parts.push(`<p><em>${escapeHtml(um.editorComment.trim())}</em></p>`);
     const ctaUseMelhorUrl = buildLinkedinWeeklyUrl(LINKEDIN_WEEKLY_SUBSCRIBE_BASE_URL, input.cycle, "cta-usemelhor");
+    parts.push(`<p>${escapeHtml(CTA_USEMELHOR_LEAD)}</p>`);
     parts.push(`<p><a href="${escapeHtml(ctaUseMelhorUrl)}">${escapeHtml(CTA_USEMELHOR_LABEL)}</a></p>`);
     parts.push("<hr/>");
     useMelhorRendered = true;
@@ -216,15 +311,15 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
         }
       }
       const listUrl = buildLinkedinWeeklyUrl(item.url, input.cycle, "lista");
-      parts.push(`<li><a href="${escapeHtml(listUrl)}">${escapeHtml(editionLabel(item.editionDate))}</a>`);
-      if (item.destaques.length > 0) {
-        parts.push("<ul>");
-        for (const destaque of item.destaques) {
-          parts.push(`<li>${escapeHtml(destaque)}</li>`);
-        }
-        parts.push("</ul>");
-      }
-      parts.push("</li>");
+      // Lista PLANA com separador visível, nunca <ul> aninhada (achado ao vivo
+      // 260803, colando a edição #1): o editor de artigo do LinkedIn não suporta
+      // aninhamento e ACHATA o <ul> interno, colando os 3 destaques num bloco
+      // corrido sem separador nenhum ("...Claude Opus 5 EUA fiscalizam GPT-5.6..."),
+      // onde não dá pra ver onde um título acaba e o outro começa. O separador
+      // sobrevive ao achatamento porque é texto, não estrutura.
+      const destaques = item.destaques.map(escapeHtml).join(DESTAQUE_SEPARATOR);
+      const suffix = destaques ? `: ${destaques}` : "";
+      parts.push(`<li><a href="${escapeHtml(listUrl)}">${escapeHtml(editionLabel(item.editionDate))}</a>${suffix}</li>`);
     }
     parts.push("</ul>");
     parts.push("<hr/>");
@@ -234,7 +329,7 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
     warnings.push("Fecho ausente/vazio — parágrafo de fecho omitido (closing é obrigatório, não opcional como o comentário do Use Melhor).");
   }
   if (input.closing.trim()) {
-    parts.push(`<p>${escapeHtml(input.closing.trim())}</p>`);
+    parts.push(paragraphsHtml(input.closing));
   }
   const ctaFimUrl = buildLinkedinWeeklyUrl(LINKEDIN_WEEKLY_SUBSCRIBE_BASE_URL, input.cycle, "cta-fim");
   parts.push(`<p><a href="${escapeHtml(ctaFimUrl)}">${escapeHtml(CTA_FIM_LABEL)}</a></p>`);

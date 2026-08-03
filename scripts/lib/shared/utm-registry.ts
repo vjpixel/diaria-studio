@@ -274,9 +274,14 @@ export const WHATSAPP_SHARE_UTM = {
 } as const;
 
 /** Newsletter semanal do LinkedIn (#4456) — `utm_campaign` traz o ciclo `{YY}w{WW}`
- * (ex: `ln-26w31`), `utm_content` varia por posição (`lista`/`cta-usemelhor`/`cta-fim`
- * — `item-01`/`02`/`03` SAÍRAM quando o link por destaque foi removido, comentário
- * 260802 3º do #4456). Fonte dos valores: `scripts/lib/weekly-linkedin-render.ts`. */
+ * (ex: `ln-26w31`), `utm_content` varia por posição (`mencao-abertura`/`cta-abertura`/
+ * `lista`/`cta-usemelhor`/`cta-fim` — `item-01`/`02`/`03` SAÍRAM quando o link por
+ * destaque foi removido, comentário 260802 3º do #4456; `cta-abertura` e
+ * `mencao-abertura` ENTRARAM em 260803, o 1º com o 3º CTA de assinatura, o 2º ao
+ * descobrir ao vivo que o LinkedIn auto-linka o wordmark em prosa pra home CRUA
+ * e come a UTM — pré-linkar com âncora estendida além do domínio recupera esse
+ * clique, ver `linkifyWordmark`).
+ * Fonte dos valores: `scripts/lib/weekly-linkedin-render.ts`. */
 export const LINKEDIN_WEEKLY_UTM = {
   source: "linkedin",
   medium: "newsletter",
@@ -599,9 +604,11 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     campaignPattern: LINKEDIN_WEEKLY_UTM.campaignPattern,
     originFile: "scripts/lib/weekly-linkedin-render.ts",
     description:
-      "Lista de Edições da semana + CTAs de assinatura (meio/fim) da newsletter " +
-      "semanal do LinkedIn (`/diaria-linkedin-semanal`, #4456) — artigo colável " +
-      "manualmente, sem API de publicação. `utm_content` = lista/cta-usemelhor/cta-fim.",
+      "Lista de Edições da semana + os 3 CTAs de assinatura (abertura/meio/fim) da " +
+      "newsletter semanal do LinkedIn (`/diaria-linkedin-semanal`, #4456) — artigo " +
+      "colável manualmente, sem API de publicação. `utm_content` = " +
+      "cta-abertura/lista/cta-usemelhor/cta-fim, um por posição, para dar pra medir " +
+      "qual terço da peça converte.",
     status: "ativo",
   },
 ] as const;

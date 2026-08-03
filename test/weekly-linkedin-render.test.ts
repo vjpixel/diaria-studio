@@ -67,8 +67,13 @@ describe("renderLinkedinWeeklyHtml — título literal + numeração, sem link p
   });
 
   it("nenhum bloco de manchete contém <a href> (link por destaque foi removido, #4456)", () => {
+    // A fatia começa na 1ª MANCHETE, não no índice 0: a abertura tem CTA de
+    // assinatura próprio desde 260803, e ele não é "link por destaque" — medir a
+    // partir do 0 transformaria esse invariante num falso positivo.
+    const firstHeadline = result.html.indexOf("<h2>");
     const lastHeadlineEnd = result.html.indexOf("<hr/>", result.html.indexOf("<hr/>") + 1) + "<hr/>".length;
-    const headlinesSegment = result.html.slice(0, lastHeadlineEnd);
+    assert.ok(firstHeadline >= 0 && lastHeadlineEnd > firstHeadline, "fatia de manchetes deve existir");
+    const headlinesSegment = result.html.slice(firstHeadline, lastHeadlineEnd);
     assert.ok(!/<a\s/i.test(headlinesSegment), headlinesSegment);
   });
 });
@@ -109,7 +114,34 @@ describe("renderLinkedinWeeklyHtml — bloco USE MELHOR exige comentário do edi
     assert.match(result.html, /Use melhor/);
     assert.match(result.html, /Effort level no Claude Code/);
     assert.match(result.html, /Testei essa semana e cortei uns 30% do tempo de setup\./);
-    assert.match(result.html, /Receba todo dia, é grátis/);
+    assert.match(result.html, /Quero receber a edição diária/);
+  });
+
+  it("o CTA do Use Melhor é uma CHAMADA (frase + âncora), não um link solto (decisão do editor 260803)", () => {
+    const input: WeeklyLinkedinRenderInput = {
+      ...BASE_INPUT,
+      useMelhor: {
+        title: "Effort level no Claude Code",
+        url: "https://exemplo.com/effort-level",
+        description: "Tutorial de 5 minutos.",
+        editorComment: "Testei essa semana e cortei uns 30% do tempo de setup.",
+      },
+    };
+    const html = renderLinkedinWeeklyHtml(input).html;
+    // A frase de contexto precede a âncora clicável — sem ela o leitor não sabe
+    // o que ganha assinando, que é o ponto do bloco ser o 1º convite da edição.
+    const lead = html.indexOf("Tutoriais e dicas como este saem em toda edição diária");
+    const anchor = html.indexOf("Quero receber a edição diária");
+    assert.ok(lead >= 0, "chamada de contexto deve existir antes da âncora");
+    assert.ok(anchor > lead, "âncora clicável deve vir DEPOIS da frase de chamada");
+    // A seção Use Melhor da diária leva de 1 a 3 itens, então a chamada fala no
+    // PLURAL: "um desses" subvenderia o que o assinante recebe (decisão 260803).
+    assert.ok(!/[Uu]m desses/.test(html), "chamada não pode voltar ao singular");
+    // Aprendizado do CTA-01 (docs/experiments/cta-ab-mensal-2606-07.md): a âncora
+    // do 1º CTA não empilha imperativo + "grátis" + seta.
+    const useMelhorAnchor = [...html.matchAll(/<a[^>]*utm_content=cta-usemelhor[^>]*>([^<]+)<\/a>/g)].map((m) => m[1]);
+    assert.equal(useMelhorAnchor.length, 1);
+    assert.ok(!/grátis|gratis/i.test(useMelhorAnchor[0]), `âncora do Use Melhor não deve carregar "grátis": ${useMelhorAnchor[0]}`);
   });
 });
 
@@ -181,6 +213,31 @@ describe("renderLinkedinWeeklyHtml — Edições da semana (#4456, 260802 — er
     assert.match(result.html, /utm_content=lista/);
   });
 
+  it("a lista é PLANA, com separador de texto entre os destaques (achado ao vivo 260803)", () => {
+    const html = renderLinkedinWeeklyHtml(BASE_INPUT).html;
+    const secao = html.slice(html.indexOf("Edições da semana"));
+    const listaFim = secao.indexOf("</ul>") + "</ul>".length;
+    const lista = secao.slice(0, listaFim);
+    // O editor do LinkedIn achata <ul> aninhada e cola os destaques num bloco
+    // corrido, sem separador — por isso a estrutura tem que ser plana na origem.
+    assert.equal((lista.match(/<ul>/g) ?? []).length, 1, `só pode haver 1 <ul>, sem aninhamento: ${lista}`);
+    assert.ok(lista.includes(" · "), "destaques precisam de separador em TEXTO, que sobrevive ao achatamento");
+    // e os títulos continuam todos presentes, na ordem
+    const item = lista.slice(lista.indexOf("Edição de 29/07"));
+    const d2 = item.indexOf("D2 de terça");
+    const d3 = item.indexOf("D3 de terça");
+    assert.ok(d2 > 0 && d3 > d2, "destaques preservados e em ordem dentro do item");
+  });
+
+  it("edição sem destaque parseável não deixa ': ' órfão depois do link", () => {
+    const input: WeeklyLinkedinRenderInput = {
+      ...BASE_INPUT,
+      weeklyEditions: [{ editionDate: "260729", url: "https://diar.ia.br/p/x", destaques: [] }],
+    };
+    const html = renderLinkedinWeeklyHtml(input).html;
+    assert.ok(!/<\/a>:\s*<\/li>/.test(html), "sem destaques, não pode sobrar dois-pontos solto");
+  });
+
   it("lista vazia não renderiza a seção 'Edições da semana'", () => {
     const input: WeeklyLinkedinRenderInput = { ...BASE_INPUT, weeklyEditions: [] };
     const result = renderLinkedinWeeklyHtml(input);
@@ -223,6 +280,74 @@ describe("renderLinkedinWeeklyHtml — opening/closing vazios geram warning (#44
   });
 });
 
+describe("renderLinkedinWeeklyHtml — abertura e fecho quebram em parágrafos (decisão do editor 260803)", () => {
+  it("linha em branco dupla vira <p> separado, igual ao corpo das manchetes", () => {
+    const input: WeeklyLinkedinRenderInput = {
+      ...BASE_INPUT,
+      opening: "Primeiro parágrafo da abertura.\n\nSegundo parágrafo da abertura.\n\nTerceiro parágrafo da abertura.",
+      closing: "Primeiro parágrafo do fecho.\n\nSegundo parágrafo do fecho.",
+    };
+    const html = renderLinkedinWeeklyHtml(input).html;
+    assert.match(html, /<p>Primeiro parágrafo da abertura\.<\/p>/);
+    assert.match(html, /<p>Segundo parágrafo da abertura\.<\/p>/);
+    assert.match(html, /<p>Terceiro parágrafo da abertura\.<\/p>/);
+    assert.match(html, /<p>Primeiro parágrafo do fecho\.<\/p>/);
+    assert.match(html, /<p>Segundo parágrafo do fecho\.<\/p>/);
+    // regressão: antes do 260803 os 3 parágrafos saíam colados num <p> único,
+    // com os "\n\n" literais preservados dentro dele.
+    assert.ok(!/abertura\.\n\nSegundo/.test(html), "parágrafos não podem sair colados num <p> só");
+  });
+
+  it("a abertura leva um CTA de assinatura logo depois dos parágrafos (decisão do editor 260803)", () => {
+    const html = renderLinkedinWeeklyHtml(BASE_INPUT).html;
+    const idxCtaAbertura = html.indexOf("utm_content=cta-abertura");
+    const idxPrimeiraManchete = html.indexOf("<h2>1.");
+    assert.ok(idxCtaAbertura >= 0, "CTA da abertura deve existir");
+    assert.ok(idxCtaAbertura < idxPrimeiraManchete, "CTA da abertura deve vir ANTES da 1ª manchete");
+    // Aprendizado do CTA-01: acima da dobra a âncora é a mais sóbria das três
+    // (infinitivo, sem "grátis", sem seta). Os empurrões pesados ficam no meio/fim.
+    const anchor = html.match(/<a[^>]*utm_content=cta-abertura[^>]*>([^<]+)<\/a>/)?.[1] ?? "";
+    assert.ok(!/grátis|gratis|→/.test(anchor), `âncora acima da dobra deve ser sóbria: ${anchor}`);
+  });
+
+  it("a 1ª menção ao wordmark vira link com UTM, com âncora ESTENDIDA além do domínio (testado ao vivo 260803)", () => {
+    const input: WeeklyLinkedinRenderInput = {
+      ...BASE_INPUT,
+      opening: "Escrevo a diar.ia.br, newsletter de IA que sai por e-mail.\n\nOutra menção a diar.ia.br aqui.",
+    };
+    const html = renderLinkedinWeeklyHtml(input).html;
+    const anchor = html.match(/<a[^>]*utm_content=mencao-abertura[^>]*>([^<]+)<\/a>/)?.[1] ?? "";
+    assert.ok(anchor.startsWith("diar.ia.br"), `âncora deve começar no wordmark: ${anchor}`);
+    // O ponto do achado: âncora que TERMINA no domínio tem o href sequestrado
+    // pelo auto-linkificador do LinkedIn e perde a UTM. Estendida, sobrevive.
+    assert.ok(!endsInBareDomainLabel(anchor), `âncora não pode terminar em domínio nu: ${anchor}`);
+    assert.equal((html.match(/utm_content=mencao-abertura/g) ?? []).length, 1, "só a PRIMEIRA menção é linkada");
+  });
+
+  it("wordmark no fim do parágrafo NÃO é linkado (degrada em vez de emitir link que perde a UTM)", () => {
+    const input: WeeklyLinkedinRenderInput = { ...BASE_INPUT, opening: "A newsletter se chama diar.ia.br" };
+    const html = renderLinkedinWeeklyHtml(input).html;
+    assert.ok(!/utm_content=mencao-abertura/.test(html), "sem palavra depois do domínio, não linka");
+  });
+
+  it("abertura sem menção ao wordmark não inventa link", () => {
+    const html = renderLinkedinWeeklyHtml({ ...BASE_INPUT, opening: "Abertura sem citar a marca." }).html;
+    assert.ok(!/utm_content=mencao-abertura/.test(html));
+  });
+
+  it("abertura vazia não emite CTA órfão (o link some junto com o parágrafo)", () => {
+    const html = renderLinkedinWeeklyHtml({ ...BASE_INPUT, opening: "" }).html;
+    assert.ok(!/utm_content=cta-abertura/.test(html), "sem abertura não pode sobrar link solto no topo");
+  });
+
+  it("texto de 1 parágrafo continua saindo em 1 <p> (sem regressão pro caso simples)", () => {
+    const input: WeeklyLinkedinRenderInput = { ...BASE_INPUT, opening: "Abertura de um parágrafo só.", closing: "Fecho de um parágrafo só." };
+    const html = renderLinkedinWeeklyHtml(input).html;
+    assert.match(html, /<p>Abertura de um parágrafo só\.<\/p>/);
+    assert.match(html, /<p>Fecho de um parágrafo só\.<\/p>/);
+  });
+});
+
 describe("UTM — contrato do #4456 (item-01/02/03 SAÍRAM)", () => {
   it("linkedinWeeklyCampaign monta ln-{cycle}", () => {
     assert.equal(linkedinWeeklyCampaign("26w31"), "ln-26w31");
@@ -249,10 +374,15 @@ describe("UTM — contrato do #4456 (item-01/02/03 SAÍRAM)", () => {
       },
     };
     const result = renderLinkedinWeeklyHtml(input);
+    assert.match(result.html, /utm_content=cta-abertura/);
     assert.match(result.html, /utm_content=cta-usemelhor/);
     assert.match(result.html, /utm_content=cta-fim/);
     assert.match(result.html, /utm_content=lista/);
     assert.ok(!/item-0[123]/.test(result.html), "item-01/02/03 não deve mais existir (#4456)");
+    // Os 3 CTAs de assinatura precisam de utm_content DISTINTO — sem isso não dá
+    // pra saber qual posição converte (decisão do editor 260803).
+    const ctaContents = [...result.html.matchAll(/utm_content=(cta-[a-z]+)/g)].map((m) => m[1]);
+    assert.equal(new Set(ctaContents).size, 3, `CTAs devem ter utm_content distintos: ${ctaContents.join(", ")}`);
   });
 });
 

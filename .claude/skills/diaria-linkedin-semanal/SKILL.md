@@ -226,8 +226,18 @@ resumo:
    Melhor com comentário se presente, CTAs no fim).
 5. Publicar.
 
-**Sem gate de agendamento automático** — ver "Reuso do agendamento"
-abaixo pra por quê.
+**SEMPRE agendar, nunca publicar na hora** (corrigido em 260803, ver
+"Reuso do agendamento" abaixo). No diálogo que abre no **Next**, usar o
+ícone de relógio ao lado do botão Publish. A data certa não basta: a HORA
+importa mais que ela, porque o post de feed que acompanha o artigo nasce
+com o alcance definido pelo engajamento da primeira hora. Publicar de
+madrugada queima o alcance daquele post de forma permanente. Horário
+comercial da manhã, na mesma lógica do envio canônico das 06:00 BRT da
+diária.
+
+Depois de agendar, o artigo **sai da lista de rascunhos** e
+`/article/edit/{id}/` passa a redirecionar pra `/article/new/` — isso é
+esperado, não é perda. Conferir em `linkedin.com/article/manage/scheduled/`.
 
 ## Reuso do agendamento — decisão: NÃO reusar `/diaria-6-agendamento`
 
@@ -236,16 +246,19 @@ existe pra agendar o ENVIO da newsletter diária no **Beehiiv** — chama a
 API/UI do Beehiiv via Claude in Chrome (`context/publishers/beehiiv-playbook.md`
 §9-10) e verifica o estado agendado via `scripts/verify-scheduled-post.ts`.
 
-Isso não se aplica aqui: **o LinkedIn não tem API de agendamento de
-newsletter** (só de posts de feed comuns, que é o mecanismo que
-`context/publishers/linkedin.md` §1-8 já cobre pro Stage 6 social da
-diária). O artigo da newsletter do LinkedIn só nasce por ação humana
-direta no editor (`linkedin.com/newsletters/{urn}/` → Write article →
-Publish) — não existe "rascunho agendável programaticamente" nesse fluxo,
-então não há nada mecânico de `/diaria-6-agendamento` (o Schedule
-click-e-verifica do Beehiiv) que faça sentido reusar aqui. O único
-padrão que ESTA skill reusa do Stage 6 é conceitual — gate humano antes
-de considerar a unidade "pronta" — não código.
+Isso não se aplica aqui, mas **não pelo motivo que esta seção dava antes**.
+A versão anterior afirmava que "o LinkedIn não tem agendamento de
+newsletter" e concluía daí que não havia o que agendar. A premissa sobre a
+**API** continua verdadeira; a conclusão operacional estava errada e foi
+corrigida em 260803, ao publicar a edição #1: **a UI agenda** (ícone de
+relógio no diálogo do Next, lista em `/article/manage/scheduled/`).
+
+O que de fato não se reusa é o **código**: o Schedule do Beehiiv é
+click-e-verifica via `scripts/verify-scheduled-post.ts`, contra a API/UI do
+Beehiiv, e não existe equivalente programático aqui — o agendamento do
+LinkedIn é ação humana no editor, sem endpoint oficial que dê pra verificar
+depois. Do Stage 6 esta skill reusa só o padrão conceitual (gate humano
+antes de considerar a unidade "pronta").
 
 ## Sobreposição com `/diaria-instagram-semanal` — mantenha separadas
 
