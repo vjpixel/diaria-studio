@@ -1,6 +1,6 @@
 ---
 name: diaria-instagram-semanal
-description: Post semanal do Instagram (#4101, restrito ao Instagram + seleção por clique pelo #4483) — os itens mais clicados da semana (D1/D2/D3, de qualquer edição de segunda a sexta), produzido no sábado e agendado. Só Instagram — nunca vira edição no Beehiiv, nunca dispara e-mail, e não publica em LinkedIn/Facebook/Threads/X (o recap semanal do LinkedIn é `/diaria-linkedin-semanal`, #4456). Uso — `/diaria-instagram-semanal [AAMMDD-do-sabado] [--schedule] [--no-gates]`.
+description: Post semanal do Instagram (#4101, restrito ao Instagram + seleção por clique pelo #4483) — os itens mais clicados da semana (D1/D2/D3 e, desde o #4513, também RADAR/USE MELHOR — card 4:5 gerado sob demanda quando vencem — de qualquer edição de segunda a sexta), produzido no sábado e agendado. Só Instagram — nunca vira edição no Beehiiv, nunca dispara e-mail, e não publica em LinkedIn/Facebook/Threads/X (o recap semanal do LinkedIn é `/diaria-linkedin-semanal`, #4456). Uso — `/diaria-instagram-semanal [AAMMDD-do-sabado] [--schedule] [--no-gates]`.
 disable-model-invocation: true
 ---
 
@@ -26,22 +26,22 @@ atual:
   ranqueamento de feed). Facebook/Threads/X saíram junto — nenhuma decisão
   do editor os resgatou.
 - **Seleção: por taxa de clique verificado, de qualquer posição elegível
-  (D1, D2 ou D3)** — era "os 5 D1, sem ranking por clique, sem re-scoring".
-  Dados reais de julho/2026 mostraram o D1 perdendo pra outro destaque da
-  própria edição com frequência (ver #4483 pra números). **RADAR e USE
-  MELHOR ainda NÃO competem aqui** (diferente da metodologia irmã do
-  LinkedIn, #4456) — o carrossel do Instagram precisa de um card 4:5 com o
-  TÍTULO do destaque já embutido na imagem (`gen-social-card-4x5.ts`), e só
-  D1/D2/D3 têm esse card gerado hoje. **Isto é uma LIMITAÇÃO TÉCNICA
-  ATUAL, não uma decisão de escopo aceita pelo editor** (correção #4511): o
-  comentário de resolução do editor na issue #4483 pediu explicitamente que
-  Radar/Use Melhor competissem no ranking; o editor aceitou a restrição
-  D1/D2/D3 por ora, mas pediu que ficasse documentada como pendência, não
-  como decisão concordada. Ver #4513 (follow-up: gerar card 4:5 pra
-  Radar/Use Melhor, depois remover esta restrição). Ver
+  (D1, D2, D3, RADAR ou USE MELHOR)** — era "os 5 D1, sem ranking por
+  clique, sem re-scoring". Dados reais de julho/2026 mostraram o D1
+  perdendo pra outro destaque da própria edição com frequência (ver #4483
+  pra números). **RADAR e USE MELHOR competem desde o #4513** (briefing do
+  editor 260803) — até então ficavam de fora por uma limitação técnica real:
+  o carrossel do Instagram precisa de um card 4:5 com o TÍTULO já embutido
+  na imagem (`gen-social-card-4x5.ts`), e só D1/D2/D3 tinham esse card
+  PRÉ-gerado no Stage 3 diário. A solução não foi gerar o card
+  preventivamente pra todo item de toda edição (mais caro, a maioria nunca
+  seria usada) — é gerar SOB DEMANDA, só quando um item de RADAR/USE MELHOR
+  de fato vence o ranking semanal, dentro do próprio `publish-weekly-social.ts`
+  (ver `scripts/lib/weekly-instagram-ondemand-card.ts`). Stage 3 da diária
+  (`image-generate.ts`) permanece intocado. Ver
   `scripts/lib/weekly-instagram-select.ts` pro detalhe completo (inclusive
   por que o núcleo de ranking É compartilhado com `weekly-linkedin-select.ts`
-  desde o #4511, mesmo com o pool de candidatos ainda divergindo).
+  desde o #4511).
 - **Produção sexta/sábado, publicação sábado** — inalterado.
 - **Quantidade: continua 5** (comentário 260802 do #4483) — muda a
   DEFINIÇÃO ("os 5 mais clicados", não "1 por edição"), não o número.
@@ -82,10 +82,16 @@ atual:
 - Credenciais (mesmas dos publishers diários): `DIARIA_LINKEDIN_CRON_URL` +
   `DIARIA_LINKEDIN_CRON_TOKEN` (Worker queue — mesmo endpoint usado pelo
   Instagram diário e pelo LinkedIn/Threads, `channel: "instagram"`).
-- Para cada edição candidata a contribuir um item: precisa ter rodado
-  `scripts/upload-images-public.ts` (gera `06-public-images.json` com
-  `d{1,2,3}_4x5`/`d{1,2,3}`) — sem a imagem do destaque específico
-  selecionado, o carrossel inteiro falha (não publica parcial, ver Passo 3).
+- Para cada edição candidata a contribuir um item de DESTAQUE (D1/D2/D3):
+  precisa ter rodado `scripts/upload-images-public.ts` (gera
+  `06-public-images.json` com `d{1,2,3}_4x5`/`d{1,2,3}`) — sem a imagem do
+  destaque específico selecionado, o carrossel inteiro falha (não publica
+  parcial, ver Passo 3). Item de RADAR/USE MELHOR NÃO precisa desse
+  pré-requisito — o card 4:5 é gerado SOB DEMANDA (#4513, ver
+  `scripts/lib/weekly-instagram-ondemand-card.ts`) só se o item vencer o
+  ranking; a mesma regra de "falha o carrossel inteiro em vez de publicar
+  parcial" vale se a geração sob demanda falhar (ex: crédito de API
+  esgotado, fonte de marca ausente na máquina).
 
 ## Passo 1 — Checar se falta enriquecimento de clicks
 
@@ -154,7 +160,9 @@ npx tsx scripts/publish-weekly-social.ts --saturday {AAMMDD-do-sabado} --schedul
 Carrossel: 1 card 4:5 por item selecionado, resolvido pelo destaque/edição
 de origem PRÓPRIOS de cada item (não mais "1 card por dia da semana" — 2
 itens podem vir da mesma edição, e uma edição pode não contribuir nenhum).
-Se QUALQUER item não resolver imagem, o post inteiro falha (nunca publica
+Item de RADAR/USE MELHOR sem card pré-existente tem o card gerado SOB
+DEMANDA nesse momento (#4513). Se QUALQUER item não resolver imagem (falha
+de leitura OU de geração sob demanda), o post inteiro falha (nunca publica
 carrossel parcial).
 
 ## Casos de borda

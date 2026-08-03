@@ -5,7 +5,10 @@
  * Cobre:
  *   - computeWeeklyScheduledAt (pura, baseada em `saturday` — nunca Date.now()).
  *   - resolveDestaqueImageUrl / resolveWeeklyImageUrls (leitura de disco,
- *     paramétrica em `n` — a seleção por clique pode escolher D1, D2 ou D3).
+ *     paramétrica em `n` — a seleção por clique pode escolher D1, D2 ou D3;
+ *     #4513: itens de RADAR/USE MELHOR sem `destaqueNumber` acionam a
+ *     geração sob demanda via `sectionCardGenerator` injetado — NUNCA o
+ *     gerador real, que chamaria API de imagem paga).
  *   - `--manifest-only`: emite o manifest de posts sem clicks, sem escrever
  *     nada em disco e sem calcular seleção.
  *   - Integração: semana sem candidatos válidos → o script encerra ANTES de
@@ -36,6 +39,7 @@ import {
   main,
 } from "../scripts/publish-weekly-social.ts";
 import type { InstagramRankedCandidate } from "../scripts/lib/weekly-instagram-select.ts";
+import { sectionCardCacheKey, type SectionCardGenerator } from "../scripts/lib/weekly-instagram-ondemand-card.ts";
 
 const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -46,6 +50,7 @@ function candidateFixture(
     body: "",
     why: "",
     category: "NOTÍCIAS",
+    kind: "destaque",
     uniqueVerifiedClicks: 0,
     webUniqueClicks: 0,
     opens: 100,
@@ -130,7 +135,7 @@ describe("resolveWeeklyImageUrls (#4146/#4483 — 1 imagem por item, pelo destaq
     });
   }
 
-  it("retorna 1 URL por item, na ordem de `items`, cada uma resolvida pelo destaque/edição PRÓPRIOS do item", () => {
+  it("retorna 1 URL por item, na ordem de `items`, cada uma resolvida pelo destaque/edição PRÓPRIOS do item", async () => {
     const root = mkdtempSync(join(tmpdir(), "diaria-weekly-carousel-"));
     try {
       const spec: { date: string; n: 1 | 2 | 3 }[] = [
@@ -140,7 +145,7 @@ describe("resolveWeeklyImageUrls (#4146/#4483 — 1 imagem por item, pelo destaq
       ];
       makeEditionsWithImages(root, spec);
       const items = spec.map((s) => candidateFixture({ title: `T ${s.date}-d${s.n}`, url: `https://x/${s.date}-${s.n}`, editionDate: s.date, destaqueNumber: s.n }));
-      const result = resolveWeeklyImageUrls(items, root);
+      const result = await resolveWeeklyImageUrls(items, root);
       assert.equal(result.ok, true);
       if (result.ok) {
         assert.deepEqual(result.urls, spec.map((s) => `https://cdn.example.com/${s.date}-d${s.n}.jpg`));
@@ -150,7 +155,7 @@ describe("resolveWeeklyImageUrls (#4146/#4483 — 1 imagem por item, pelo destaq
     }
   });
 
-  it("retorna ok:false apontando edição+destaque que falhou, quando um item não resolve imagem", () => {
+  it("retorna ok:false apontando edição+destaque que falhou, quando um item não resolve imagem", async () => {
     const root = mkdtempSync(join(tmpdir(), "diaria-weekly-carousel-"));
     try {
       const spec: { date: string; n: 1 | 2 | 3 }[] = [
@@ -159,12 +164,148 @@ describe("resolveWeeklyImageUrls (#4146/#4483 — 1 imagem por item, pelo destaq
       ];
       makeEditionsWithImages(root, spec, 1); // 260728/d2 sem imagem
       const items = spec.map((s) => candidateFixture({ title: `T`, url: `https://x/${s.date}`, editionDate: s.date, destaqueNumber: s.n }));
-      const result = resolveWeeklyImageUrls(items, root);
+      const result = await resolveWeeklyImageUrls(items, root);
       assert.equal(result.ok, false);
       if (!result.ok) {
         assert.equal(result.missingEditionDate, "260728");
         assert.equal(result.missingDestaqueNumber, 2);
       }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("resolveWeeklyImageUrls — item de RADAR/USE MELHOR sem destaqueNumber (#4513, card sob demanda)", () => {
+  function sectionCandidateFixture(
+    overrides: Partial<InstagramRankedCandidate> & Pick<InstagramRankedCandidate, "title" | "url" | "editionDate">,
+  ): InstagramRankedCandidate {
+    return {
+      body: "",
+      why: "",
+      category: "RADAR",
+      kind: "section",
+      section: "radar",
+      uniqueVerifiedClicks: 0,
+      webUniqueClicks: 0,
+      opens: 100,
+      ratePct: 0,
+      excluded: false,
+      hasClickData: true,
+      ...overrides,
+    };
+  }
+
+  it("aciona o gerador injetado (nunca o real) e usa a URL retornada no carrossel", async () => {
+    const root = mkdtempSync(join(tmpdir(), "diaria-weekly-carousel-ondemand-"));
+    try {
+      mkdirSync(resolve(root, "260727"), { recursive: true });
+      let calls = 0;
+      const fakeGenerator: SectionCardGenerator = async ({ item, destaqueId }) => {
+        calls++;
+        assert.equal(item.section, "radar");
+        assert.match(destaqueId, /^d9\d+$/);
+        return { url: "https://cdn.example.com/radar-card-sob-demanda.jpg" };
+      };
+      const items = [sectionCandidateFixture({ title: "Item de Radar vencedor", url: "https://exemplo.com/radar-item", editionDate: "260727" })];
+      const result = await resolveWeeklyImageUrls(items, root, { sectionCardGenerator: fakeGenerator });
+      assert.equal(result.ok, true);
+      if (result.ok) assert.deepEqual(result.urls, ["https://cdn.example.com/radar-card-sob-demanda.jpg"]);
+      assert.equal(calls, 1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("item de destaque (D1/D2/D3) NUNCA aciona o gerador sob demanda — só resolve o card pré-gerado", async () => {
+    const root = mkdtempSync(join(tmpdir(), "diaria-weekly-carousel-mixed-"));
+    try {
+      const dir = resolve(root, "260727");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(resolve(dir, "06-public-images.json"), JSON.stringify({ images: { d1: { url: "https://cdn.example.com/260727-d1.jpg" } } }), "utf8");
+
+      let calls = 0;
+      const fakeGenerator: SectionCardGenerator = async () => {
+        calls++;
+        return { url: "https://should-not-be-used.example.com" };
+      };
+      const items = [
+        candidateFixture({ title: "D1 pré-gerado", url: "https://exemplo.com/d1", editionDate: "260727", destaqueNumber: 1 }),
+      ];
+      const result = await resolveWeeklyImageUrls(items, root, { sectionCardGenerator: fakeGenerator });
+      assert.equal(result.ok, true);
+      if (result.ok) assert.deepEqual(result.urls, ["https://cdn.example.com/260727-d1.jpg"]);
+      assert.equal(calls, 0, "destaque D1/D2/D3 nunca deveria acionar a geração sob demanda");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("mistura destaque + item de seção no mesmo carrossel — cada um resolve pelo caminho certo", async () => {
+    const root = mkdtempSync(join(tmpdir(), "diaria-weekly-carousel-mixed2-"));
+    try {
+      const dir = resolve(root, "260727");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(resolve(dir, "06-public-images.json"), JSON.stringify({ images: { d1: { url: "https://cdn.example.com/260727-d1.jpg" } } }), "utf8");
+
+      let calls = 0;
+      const fakeGenerator: SectionCardGenerator = async () => {
+        calls++;
+        return { url: "https://cdn.example.com/use-melhor-card-gerado.jpg" };
+      };
+      const items = [
+        candidateFixture({ title: "D1 pré-gerado", url: "https://exemplo.com/d1", editionDate: "260727", destaqueNumber: 1 }),
+        sectionCandidateFixture({ title: "Tutorial vencedor", url: "https://exemplo.com/use-melhor-item", editionDate: "260727", section: "use_melhor", category: "USE MELHOR" }),
+      ];
+      const result = await resolveWeeklyImageUrls(items, root, { sectionCardGenerator: fakeGenerator });
+      assert.equal(result.ok, true);
+      if (result.ok) {
+        assert.deepEqual(result.urls, ["https://cdn.example.com/260727-d1.jpg", "https://cdn.example.com/use-melhor-card-gerado.jpg"]);
+      }
+      assert.equal(calls, 1, "só o item de seção deveria acionar o gerador — 1 chamada, não 2");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("gerador falha → ok:false com onDemandError, cancela o carrossel inteiro (não publica parcial)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "diaria-weekly-carousel-fail-"));
+    try {
+      mkdirSync(resolve(root, "260727"), { recursive: true });
+      const fakeGenerator: SectionCardGenerator = async () => {
+        throw new Error("falha simulada de geração sob demanda");
+      };
+      const items = [sectionCandidateFixture({ title: "Item que falha", url: "https://exemplo.com/radar-falha", editionDate: "260727" })];
+      const result = await resolveWeeklyImageUrls(items, root, { sectionCardGenerator: fakeGenerator });
+      assert.equal(result.ok, false);
+      if (!result.ok) {
+        assert.equal(result.missingEditionDate, "260727");
+        assert.match(result.onDemandError ?? "", /falha simulada de geração sob demanda/);
+        assert.equal(result.missingDestaqueNumber, undefined);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("cache hit (06-public-images.json já tem o card de seção) — reusa sem chamar o gerador", async () => {
+    const root = mkdtempSync(join(tmpdir(), "diaria-weekly-carousel-cachehit-"));
+    try {
+      const dir = resolve(root, "260727");
+      mkdirSync(dir, { recursive: true });
+      const item = sectionCandidateFixture({ title: "Item já gerado antes", url: "https://exemplo.com/radar-cache", editionDate: "260727" });
+      const cacheKey = sectionCardCacheKey("radar", item.url);
+      writeFileSync(resolve(dir, "06-public-images.json"), JSON.stringify({ images: { [cacheKey]: { url: "https://cdn.example.com/radar-cacheado.jpg" } } }), "utf8");
+
+      let calls = 0;
+      const fakeGenerator: SectionCardGenerator = async () => {
+        calls++;
+        return { url: "https://should-not-be-called.example.com" };
+      };
+      const result = await resolveWeeklyImageUrls([item], root, { sectionCardGenerator: fakeGenerator });
+      assert.equal(result.ok, true);
+      if (result.ok) assert.deepEqual(result.urls, ["https://cdn.example.com/radar-cacheado.jpg"]);
+      assert.equal(calls, 0, "card já cacheado nunca deveria re-gerar");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -388,6 +529,89 @@ describe("main(): dispatch mockado", () => {
       assert.match(capturedBody.text, /1\. D2 muito clicado[\s\S]*2\. D1 pouco clicado/);
       assert.deepEqual(capturedBody.image_urls, ["https://cdn.example.com/271220-d2.jpg", "https://cdn.example.com/271220-d1.jpg"]);
       assert.equal(capturedBody.image_url, null);
+
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      assert.equal(out.posts.find((p: any) => p.platform === "instagram").status, "scheduled");
+    });
+  });
+
+  describe("#4513: item de RADAR vence o ranking semanal — card 4:5 gerado SOB DEMANDA antes da publicação", () => {
+    it("RADAR sem card pré-existente vence D1 por taxa — gerador é acionado 1x (nunca redundante pro D1, que já tem card)", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+
+      const dir = resolve(editionsRoot, "271220");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        resolve(dir, "02-reviewed.md"),
+        [
+          "DESTAQUE 1 | Notícias",
+          "D1 pouco clicado",
+          "https://exemplo.com/d1-baixo",
+          "",
+          "Corpo do D1.",
+          "",
+          "Por que isso importa:",
+          "Explicação D1.",
+          "",
+          "---",
+          "",
+          "**RADAR**",
+          "",
+          "**[Item de Radar vencedor](https://exemplo.com/radar-vencedor)**",
+          "Descrição do item de radar.",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg"); // RADAR nunca tem card pré-existente
+
+      writeCachePost(dataRoot, "post_1220", {
+        id: "post_1220",
+        title: "Edição 271220",
+        status: "confirmed",
+        publish_date: epochFor("271220"),
+        stats: {
+          email: { clicks: 10, unique_opens: 100 },
+          clicks: [
+            { url: "https://exemplo.com/d1-baixo", base_url: "https://exemplo.com/d1-baixo", email: { unique_verified_clicks: 2 } },
+            { url: "https://exemplo.com/radar-vencedor", base_url: "https://exemplo.com/radar-vencedor", email: { unique_verified_clicks: 8 } },
+          ],
+        },
+      });
+
+      let generatorCalls = 0;
+      const fakeGenerator: SectionCardGenerator = async ({ item }) => {
+        generatorCalls++;
+        assert.equal(item.title, "Item de Radar vencedor");
+        assert.equal(item.section, "radar");
+        return { url: "https://cdn.example.com/radar-card-gerado-sob-demanda.jpg" };
+      };
+
+      let capturedBody: any = null;
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          capturedBody = JSON.parse(opts.body as string);
+          return {
+            statusCode: 200,
+            data: JSON.stringify({ queued: true, key: "queue:instagram:1", scheduled_at: "2027-12-25T11:00:00-03:00", destaque: "weekly" }),
+          };
+        });
+
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        { dataRoot, sectionCardGenerator: fakeGenerator },
+      );
+
+      // RADAR (8%) vence D1 (2%) — vem primeiro na caption E no carrossel.
+      assert.match(capturedBody.text, /1\. Item de Radar vencedor[\s\S]*2\. D1 pouco clicado/);
+      assert.deepEqual(capturedBody.image_urls, [
+        "https://cdn.example.com/radar-card-gerado-sob-demanda.jpg",
+        "https://cdn.example.com/271220-d1.jpg",
+      ]);
+      assert.equal(generatorCalls, 1, "gerador sob demanda deveria ser chamado exatamente 1x — nunca redundante pro D1, que já tinha card");
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
       assert.equal(out.posts.find((p: any) => p.platform === "instagram").status, "scheduled");

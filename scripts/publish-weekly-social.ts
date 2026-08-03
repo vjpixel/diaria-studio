@@ -13,11 +13,9 @@
  *      duplicaria o recap com 2 dias de distância. Facebook/Threads/X saíram
  *      de escopo junto (nenhuma decisão do editor os resgatou).
  *   2. Seleção: era "os 5 D1, sem ranking por clique" — agora é "os N mais
- *      clicados da semana, de qualquer posição elegível (D1/D2/D3)". Ver
- *      `scripts/lib/weekly-instagram-select.ts` pra metodologia completa e
- *      pra por que RADAR/USE MELHOR NÃO competem aqui (diferente do
- *      LinkedIn) — o carrossel do Instagram precisa de um card 4:5 com
- *      título embutido, que só existe pra D1/D2/D3.
+ *      clicados da semana, de qualquer posição elegível (D1/D2/D3, e desde
+ *      o #4513 também RADAR/USE MELHOR)". Ver
+ *      `scripts/lib/weekly-instagram-select.ts` pra metodologia completa.
  *
  * Quantidade de itens: a issue deixou em aberto, decisão do editor
  * (comentário 260802 do #4483): continua 5 — muda a DEFINIÇÃO ("os 5 mais
@@ -36,8 +34,12 @@
  * selecionado, na mesma ordem numerada da caption — mas desde o #4483 cada
  * card vem da imagem PRÓPRIA do destaque selecionado (`d{n}_4x5` da edição
  * de origem, `n` = número do destaque), não mais "1 card por dia da
- * semana". Se QUALQUER item não resolver imagem, o post inteiro FALHA (não
- * publica um carrossel parcial) — ver `resolveWeeklyImageUrls` abaixo.
+ * semana". Desde o #4513, um item de RADAR/USE MELHOR (sem card
+ * pré-gerado) tem o card gerado SOB DEMANDA nesse momento — ver
+ * `scripts/lib/weekly-instagram-ondemand-card.ts`. Se QUALQUER item não
+ * resolver imagem (falha de leitura OU de geração sob demanda), o post
+ * inteiro FALHA (não publica um carrossel parcial) — ver
+ * `resolveWeeklyImageUrls` abaixo.
  *
  * `--manifest-only`: só resolve a janela + candidatos + cruza com o cache
  * de cliques pra emitir o manifest de posts que precisam de enriquecimento
@@ -102,6 +104,11 @@ import {
   type BeehiivCachePost,
   type InstagramRankedCandidate,
 } from "./lib/weekly-instagram-select.ts";
+import {
+  resolveOrGenerateSectionCardUrl,
+  defaultSectionCardGenerator,
+  type SectionCardGenerator,
+} from "./lib/weekly-instagram-ondemand-card.ts";
 import { formatInstagramWeekly } from "./lib/format-weekly-social.ts";
 import { appendSocialPosts, readSocialPublished, PostEntry } from "./lib/social-published-store.ts";
 import { postToWorkerQueue } from "./lib/worker-queue-client.ts";
@@ -193,6 +200,22 @@ export function resolveDestaqueImageUrl(editionDir: string, n: 1 | 2 | 3): strin
 }
 
 /**
+ * Resultado de `resolveWeeklyImageUrls` — discriminado por `ok`.
+ * `missingDestaqueNumber` só existe pra falha de destaque D1/D2/D3
+ * pré-gerado; falha de card sob demanda (RADAR/USE MELHOR, #4513) reporta
+ * `onDemandError` em vez disso — os 2 nunca coexistem.
+ */
+export type WeeklyImageResolution =
+  | { ok: true; urls: string[] }
+  | {
+      ok: false;
+      missingEditionDate: string;
+      missingDestaqueNumber?: 1 | 2 | 3;
+      corruptError?: string;
+      onDemandError?: string;
+    };
+
+/**
  * Resolve 1 URL pública por item selecionado (#4146 — carrossel Instagram,
  * redesenhado pelo #4483 pra resolver por destaque/edição de origem de CADA
  * item em vez de 1 por dia da semana). Falha o post inteiro se QUALQUER
@@ -201,23 +224,44 @@ export function resolveDestaqueImageUrl(editionDir: string, n: 1 | 2 | 3): strin
  * item (por edição+destaque) falhou, pra auditoria — `corruptError` presente
  * quando a causa raiz foi JSON corrompido, em vez de chave genuinamente
  * ausente (#4511 fleet review MÉDIO).
+ *
+ * #4513: itens sem `destaqueNumber` (RADAR/USE MELHOR, `kind === "section"`)
+ * não têm card pré-gerado — a URL é resolvida via
+ * `resolveOrGenerateSectionCardUrl` (cache hit em `06-public-images.json`
+ * OU geração sob demanda + upload). `opts.sectionCardGenerator` é seam de
+ * teste (default `defaultSectionCardGenerator`, que chama a API de imagem
+ * de verdade — NUNCA invocado em teste, ver docstring de
+ * `weekly-instagram-ondemand-card.ts`).
  */
-export function resolveWeeklyImageUrls(
+export async function resolveWeeklyImageUrls(
   items: InstagramRankedCandidate[],
   editionsRoot: string,
-):
-  | { ok: true; urls: string[] }
-  | { ok: false; missingEditionDate: string; missingDestaqueNumber: 1 | 2 | 3; corruptError?: string } {
+  opts: { sectionCardGenerator?: SectionCardGenerator } = {},
+): Promise<WeeklyImageResolution> {
+  const sectionCardGenerator = opts.sectionCardGenerator ?? defaultSectionCardGenerator;
   const urls: string[] = [];
   for (const item of items) {
     const dir = resolve(editionsRoot, item.editionDate);
-    const resolved = resolveDestaqueImageDetailed(dir, item.destaqueNumber);
+    if (item.destaqueNumber != null) {
+      const resolved = resolveDestaqueImageDetailed(dir, item.destaqueNumber);
+      if (!resolved.url) {
+        return {
+          ok: false,
+          missingEditionDate: item.editionDate,
+          missingDestaqueNumber: item.destaqueNumber,
+          ...(resolved.corruptError ? { corruptError: resolved.corruptError } : {}),
+        };
+      }
+      urls.push(resolved.url);
+      continue;
+    }
+    // RADAR/USE MELHOR — card 4:5 sob demanda (#4513).
+    const resolved = await resolveOrGenerateSectionCardUrl(item, dir, sectionCardGenerator);
     if (!resolved.url) {
       return {
         ok: false,
         missingEditionDate: item.editionDate,
-        missingDestaqueNumber: item.destaqueNumber,
-        ...(resolved.corruptError ? { corruptError: resolved.corruptError } : {}),
+        onDemandError: resolved.error ?? "geração sob demanda não retornou URL nem erro",
       };
     }
     urls.push(resolved.url);
@@ -248,11 +292,13 @@ function loadBeehiivCache(beehiivPostsDir: string): BeehiivCachePost[] {
  * `dataRoot` é injetável (default `{ROOT}/data`, #4101 finding 7) — permite
  * testes de dispatch redirecionarem `data/weekly/{saturday}/` E
  * `data/beehiiv-cache/posts/` pra um tmpdir em vez de escrever no `data/`
- * real do projeto.
+ * real do projeto. `sectionCardGenerator` (#4513) é a mesma seam pro card
+ * sob demanda de RADAR/USE MELHOR — testes injetam um fake em vez do
+ * gerador real (custo de API paga).
  */
 export async function main(
   argv: string[] = process.argv.slice(2),
-  opts: { dataRoot?: string } = {},
+  opts: { dataRoot?: string; sectionCardGenerator?: SectionCardGenerator } = {},
 ) {
   const dataRoot = opts.dataRoot ?? resolve(ROOT, "data");
   const { flags, values } = parseArgs(argv);
@@ -504,23 +550,34 @@ export async function main(
 
   // Carrossel: 1 imagem por item selecionado (#4146/#4483) — ver
   // resolveWeeklyImageUrls acima; falha o post inteiro se qualquer item não
-  // resolver imagem (não publica carrossel parcial).
-  const resolvedImages = resolveWeeklyImageUrls(items, editionsRoot);
+  // resolver imagem (não publica carrossel parcial). #4513: itens de
+  // RADAR/USE MELHOR sem card pré-gerado passam pela geração sob demanda
+  // (assíncrona) dentro de resolveWeeklyImageUrls.
+  const resolvedImages = await resolveWeeklyImageUrls(items, editionsRoot, {
+    sectionCardGenerator: opts.sectionCardGenerator,
+  });
   if (!resolvedImages.ok) {
     // #4511 fleet review MÉDIO: distingue JSON corrompido (re-rodar
     // upload-images-public.ts NÃO resolve — investigar race de escrita
     // concorrente/corrupção de disco) de chave genuinamente ausente
-    // (re-rodar upload-images-public.ts resolve).
-    const reason = resolvedImages.corruptError
-      ? `public_image_json_corrupt:${resolvedImages.missingEditionDate}:${resolvedImages.corruptError}`
-      : `public_image_url_missing:${resolvedImages.missingEditionDate}:d${resolvedImages.missingDestaqueNumber}`;
+    // (re-rodar upload-images-public.ts resolve). #4513: distingue também
+    // falha de GERAÇÃO SOB DEMANDA (RADAR/USE MELHOR) das duas anteriores
+    // (exclusivas de destaque D1/D2/D3 pré-gerado).
+    const reason = resolvedImages.onDemandError
+      ? `on_demand_card_generation_failed:${resolvedImages.missingEditionDate}:${resolvedImages.onDemandError}`
+      : resolvedImages.corruptError
+        ? `public_image_json_corrupt:${resolvedImages.missingEditionDate}:${resolvedImages.corruptError}`
+        : `public_image_url_missing:${resolvedImages.missingEditionDate}:d${resolvedImages.missingDestaqueNumber}`;
     console.error(
-      resolvedImages.corruptError
-        ? `ERRO instagram/weekly: 06-public-images.json da edição ${resolvedImages.missingEditionDate} ESTÁ CORROMPIDO ` +
-            `(${resolve(editionsRoot, resolvedImages.missingEditionDate)}): ${resolvedImages.corruptError} — re-rodar upload-images-public.ts ` +
-            `NÃO resolve isso; investigue escrita concorrente/corrupção de disco antes. Carrossel de ${items.length} itens cancelado inteiro, não publica parcial.`
-        : `ERRO instagram/weekly: 06-public-images.json ausente/sem d${resolvedImages.missingDestaqueNumber} pra edição ${resolvedImages.missingEditionDate} ` +
-            `(${resolve(editionsRoot, resolvedImages.missingEditionDate)}) — carrossel de ${items.length} itens cancelado inteiro, não publica parcial.`,
+      resolvedImages.onDemandError
+        ? `ERRO instagram/weekly: geração SOB DEMANDA do card 4:5 (item RADAR/USE MELHOR da edição ${resolvedImages.missingEditionDate}) falhou: ` +
+            `${resolvedImages.onDemandError} — carrossel de ${items.length} itens cancelado inteiro, não publica parcial.`
+        : resolvedImages.corruptError
+          ? `ERRO instagram/weekly: 06-public-images.json da edição ${resolvedImages.missingEditionDate} ESTÁ CORROMPIDO ` +
+              `(${resolve(editionsRoot, resolvedImages.missingEditionDate)}): ${resolvedImages.corruptError} — re-rodar upload-images-public.ts ` +
+              `NÃO resolve isso; investigue escrita concorrente/corrupção de disco antes. Carrossel de ${items.length} itens cancelado inteiro, não publica parcial.`
+          : `ERRO instagram/weekly: 06-public-images.json ausente/sem d${resolvedImages.missingDestaqueNumber} pra edição ${resolvedImages.missingEditionDate} ` +
+              `(${resolve(editionsRoot, resolvedImages.missingEditionDate)}) — carrossel de ${items.length} itens cancelado inteiro, não publica parcial.`,
     );
     tagAndAppend({
       platform: "instagram",

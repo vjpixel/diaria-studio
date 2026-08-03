@@ -18,11 +18,14 @@
  *
  * O que NÃO está aqui (fica em cada módulo específico, porque a diferença é
  * REAL): extração de candidatos do markdown (`extractWeeklyCandidates` /
- * `extractInstagramCandidates`), `toRankedCandidate` (o tipo de entrada
- * difere — `WeeklyRawCandidate` tem `kind`/`section`, `InstagramRawCandidate`
- * tem `destaqueNumber`), e `dedupeCandidatesByUrl` (o LinkedIn prioriza
- * `kind:"destaque"` sobre `"section"` na hora de decidir qual cópia manter;
- * o Instagram só tem destaques, não precisa dessa lógica).
+ * `extractInstagramCandidates` — o LinkedIn extrai TODAS as seções
+ * secundárias, o Instagram só RADAR/USE MELHOR além de destaques, #4513),
+ * `toRankedCandidate` (o tipo de entrada ainda difere — `InstagramRawCandidate`
+ * tem `destaqueNumber` opcional, que o `WeeklyRawCandidate` do LinkedIn não
+ * tem), e a resolução/geração de imagem por item (exclusiva do Instagram —
+ * carrossel com card 4:5 por item, ver `weekly-instagram-ondemand-card.ts`).
+ * `dedupeCandidatesByUrl` prioriza `kind:"destaque"` sobre `"section"` nos
+ * DOIS lados desde o #4513 (antes disso o Instagram só tinha destaques).
  *
  * `T extends ClickRankedCandidate` deixa as funções genéricas o bastante pra
  * aceitar tanto `WeeklyRankedCandidate` quanto `InstagramRankedCandidate`
