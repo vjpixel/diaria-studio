@@ -64,6 +64,7 @@ import {
   writeApoiadoresState,
   decidePrepareAction,
   decideMarkSentAction,
+  buildPreparedState,
   type ApoiadoresState,
 } from "./lib/mensal/monthly-apoiadores-state.ts";
 import { APOIO_SEGMENTS_CANONICAL } from "./lib/apoio-segments-canonical.ts";
@@ -93,7 +94,7 @@ async function main(): Promise<void> {
       console.log(`[send-monthly-apoiadores] ${decision.reason}`);
       return;
     }
-    const updated: ApoiadoresState = { ...(state as ApoiadoresState), status: "sent", sentAt: new Date().toISOString() };
+    const updated: ApoiadoresState = { ...decision.state, status: "sent", sentAt: new Date().toISOString() };
     writeApoiadoresState(monthlyDir, updated);
     console.log(`[send-monthly-apoiadores] Registrado: ciclo ${cycle} marcado como ENVIADO em ${updated.sentAt}.`);
     return;
@@ -108,15 +109,13 @@ async function main(): Promise<void> {
 
   const rendered = renderMonthlyBeehiivEmail(cycle);
 
-  const newState: ApoiadoresState = {
+  const newState: ApoiadoresState = buildPreparedState(
     cycle,
-    status: "draft_prepared",
-    preparedAt: new Date().toISOString(),
-    sentAt: state?.sentAt ?? null,
-    htmlPath: rendered.htmlPath,
-    subject: rendered.subject,
-    segments: [...APOIADORES_TARGET_SEGMENT_NAMES],
-  };
+    new Date().toISOString(),
+    rendered.htmlPath,
+    rendered.subject,
+    APOIADORES_TARGET_SEGMENT_NAMES,
+  );
   writeApoiadoresState(monthlyDir, newState);
 
   console.log(

@@ -118,8 +118,41 @@ export function decidePrepareAction(state: ApoiadoresState | null, force: boolea
   return { action: "prepare" };
 }
 
+/**
+ * Pura/testável: monta o `ApoiadoresState` gravado após um `prepare`
+ * bem-sucedido (`renderMonthlyBeehiivEmail` já rodou). Deliberadamente NÃO
+ * recebe o state ANTERIOR — `sentAt` é sempre `null` aqui, nunca herdado.
+ *
+ * #4521 self-review: a 1ª versão deste script fazia `sentAt: state?.sentAt
+ * ?? null` (herdava o `sentAt` do state anterior), o que violava o próprio
+ * contrato de `ApiadoresState.sentAt` ("null enquanto status !== 'sent'")
+ * no caso `--force` sobre um ciclo já `sent`: o registro virava um
+ * `draft_prepared` com uma data de envio antiga carimbada — contraditório, e
+ * perigoso pra qualquer consumidor futuro que checasse `sentAt` em vez de
+ * `status` pra decidir "já foi enviado" (leria "sim" mesmo depois do
+ * `--force` reabrir o ciclo pra uma correção). Extraído como função pura
+ * pra travar esse contrato com teste, em vez de confiar em revisão visual da
+ * linha inline no `main()`.
+ */
+export function buildPreparedState(
+  cycle: string,
+  preparedAt: string,
+  htmlPath: string,
+  subject: string,
+  segments: readonly string[],
+): ApoiadoresState {
+  return { cycle, status: "draft_prepared", preparedAt, sentAt: null, htmlPath, subject, segments: [...segments] };
+}
+
 export type MarkSentDecision =
-  | { action: "mark" }
+  // `state` vai junto no branch "mark" (#4521 self-review) — o caller
+  // (`send-monthly-apoiadores.ts`) precisava de um `state as ApoiadoresState`
+  // pra montar o update, mesmo já tendo checado `decision.action === "mark"`;
+  // TS não correlaciona automaticamente o discriminante de `MarkSentDecision`
+  // com a nulidade do `state` passado como argumento separado. Devolver o
+  // state (não-null, garantido pelo próprio branch) no resultado elimina o
+  // cast no call site.
+  | { action: "mark"; state: ApoiadoresState }
   | { action: "noop"; reason: string }
   | { action: "error"; reason: string };
 
@@ -147,5 +180,5 @@ export function decideMarkSentAction(state: ApoiadoresState | null): MarkSentDec
   if (state.status === "sent") {
     return { action: "noop", reason: `Ciclo ${state.cycle} já estava marcado como enviado em ${state.sentAt} — nada a fazer.` };
   }
-  return { action: "mark" };
+  return { action: "mark", state };
 }

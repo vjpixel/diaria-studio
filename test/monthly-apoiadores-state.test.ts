@@ -21,6 +21,7 @@ import {
   apoiadoresStatePath,
   decidePrepareAction,
   decideMarkSentAction,
+  buildPreparedState,
   type ApoiadoresState,
 } from "../scripts/lib/mensal/monthly-apoiadores-state.ts";
 
@@ -115,7 +116,7 @@ test("decideMarkSentAction: sem preparo prévio -> erro (nada a marcar)", () => 
 });
 
 test("decideMarkSentAction: status draft_prepared -> mark (transição válida)", () => {
-  assert.deepEqual(decideMarkSentAction(PREPARED), { action: "mark" });
+  assert.deepEqual(decideMarkSentAction(PREPARED), { action: "mark", state: PREPARED });
 });
 
 test("decideMarkSentAction: status sent -> noop (idempotente, não é erro rodar --mark-sent 2x)", () => {
@@ -124,4 +125,42 @@ test("decideMarkSentAction: status sent -> noop (idempotente, não é erro rodar
   if (decision.action === "noop") {
     assert.match(decision.reason, /já estava marcado como enviado/);
   }
+});
+
+// ---------------------------------------------------------------------------
+// buildPreparedState (#4521 self-review — regressão do bug de sentAt herdado)
+// ---------------------------------------------------------------------------
+
+test("buildPreparedState: state novo (1ª preparação) -> sentAt null", () => {
+  const s = buildPreparedState("2607-08", "2026-08-03T10:00:00.000Z", "/x/beehiiv-preview.html", "Assunto", [
+    "Apoio — Mantenedor",
+    "Apoio — Patrono",
+  ]);
+  assert.equal(s.status, "draft_prepared");
+  assert.equal(s.sentAt, null);
+});
+
+test("buildPreparedState: NUNCA herda sentAt de um estado anterior sent (regressão do bug de --force)", () => {
+  // Antes do fix, `send-monthly-apoiadores.ts` fazia `sentAt: state?.sentAt ?? null`
+  // -- um --force sobre um ciclo `sent` produzia um `draft_prepared` com uma
+  // data de envio antiga carimbada, violando o contrato "sentAt só não-null
+  // quando status === 'sent'". `buildPreparedState` não recebe o state
+  // anterior NO SEU CONTRATO -- não há como reintroduzir o bug por acidente
+  // aqui (assinatura da função não aceita esse parâmetro).
+  const s = buildPreparedState("2607-08", "2026-08-05T10:00:00.000Z", "/x/beehiiv-preview.html", "Assunto", []);
+  assert.equal(s.sentAt, null);
+});
+
+test("buildPreparedState: preserva htmlPath/subject/segments/preparedAt exatamente como passados", () => {
+  const segments = ["Apoio — Mantenedor", "Apoio — Patrono"];
+  const s = buildPreparedState("2607-08", "2026-08-03T10:00:00.000Z", "/x/y.html", "Assunto X", segments);
+  assert.deepEqual(s, {
+    cycle: "2607-08",
+    status: "draft_prepared",
+    preparedAt: "2026-08-03T10:00:00.000Z",
+    sentAt: null,
+    htmlPath: "/x/y.html",
+    subject: "Assunto X",
+    segments: ["Apoio — Mantenedor", "Apoio — Patrono"],
+  });
 });
