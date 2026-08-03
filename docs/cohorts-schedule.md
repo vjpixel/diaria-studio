@@ -28,7 +28,7 @@ $settings = New-ScheduledTaskSettingsSet `
   -AllowStartIfOnBatteries `
   -DontStopIfGoingOnBatteries `
   -MultipleInstances Queue `
-  -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+  -ExecutionTimeLimit (New-TimeSpan -Hours 0) # 0 = sem limite (#4451/260803, ver racional abaixo)
 Register-ScheduledTask -TaskName 'DiariaCohortsCrawl' -Action $action -Trigger $trigger `
   -Settings $settings `
   -Description 'Crawl diario de coortes de engajamento Clarice -> KV clarice-dashboard (#2426)' -Force
@@ -45,7 +45,7 @@ máquina (timezone BRT = "E. South America Standard Time").
 | `-AllowStartIfOnBatteries` | Não bloqueia o disparo quando o notebook estiver na bateria (o comportamento padrão seria não iniciar). |
 | `-DontStopIfGoingOnBatteries` | Em 260624 o crawl foi morto às 21:07 (`ERROR_PROCESS_ABORTED 0x8007042B`) porque o notebook desplugou; com esta flag, um crawl já iniciado termina mesmo na bateria (~22 min, tradeoff aceito). |
 | `-MultipleInstances Queue` | Substitui `IgnoreNew`; evita o estado "Queued" travado quando um run anterior abortou sem registrar término (instância-fantasma). |
-| `-ExecutionTimeLimit (New-TimeSpan -Hours 1)` | Limita o runtime máximo a 1 hora (folga para o crawl atual de ~22 min com universo de ~21,5k contatos crescendo). |
+| `-ExecutionTimeLimit (New-TimeSpan -Hours 0)` | **Sem limite** (#4451/260803 — mesmo padrão de `scripts/studio/setup-studio-service.ps1`/`setup-remote-tunnel.ps1` para processos de longa duração). O valor antigo (1h) datava de quando o crawl levava ~22 min com universo de ~21,5k contatos (260624/#2555) — ficou stale sem ser reconciliado quando o universo cresceu pra ~129k: o Windows matava o processo em 1h TODA execução, independente de progresso, o que (junto com `startedAt` do checkpoint nunca sendo atualizado em resume) travava o acúmulo em ~2 disparos diários/~12-14k contatos — causa raiz real do crawl parado em ~7.000/129.251 desde 260729, não só o `MAX_RESUME_AGE_H` antigo (18h). Um limite fixo em horas ficaria obsoleto de novo assim que o universo crescesse mais; sem limite, quem governa o runtime é só o checkpoint (`MAX_RESUME_AGE_H`) e a natureza diária da task. |
 
 ## Re-aplicar numa task já registrada
 
@@ -74,8 +74,23 @@ de backup.
 - **Logs:** `data/clarice-subscribers/cohorts/run.log` (do script) e `task.log`
   (do wrapper).
 - **Rate-limit / interrupção:** o script faz checkpoint incremental; um run
-  interrompido é retomado sem re-gastar GETs no run seguinte (resume se < 18h).
-  Forçar do zero: `--fresh`. Crawl da conta inteira (fallback): `--all`.
+  interrompido é retomado sem re-gastar GETs no run seguinte (resume se < 30h
+  desde a ÚLTIMA atividade, `MAX_RESUME_AGE_H` — aumentado de 18h em
+  #4451/260803, o crawl completo leva ~21,5h ESTIMADAS — 129.251 ÷ ~100
+  req/min, nunca mediu de verdade porque nunca completou — e o valor antigo
+  expirava o checkpoint antes de terminar). A margem de 30h é sobre o
+  INTERVALO ENTRE disparos diários da task (1×/dia às 21h), não sobre um
+  crawl contínuo: desde #4451 parte 2, `cp.lastResumedAt` é atualizado a cada
+  resume bem-sucedido (não só na criação do checkpoint), então o progresso
+  sobrevive a N disparos diários consecutivos enquanto o gap entre atividades
+  ficar < 30h — antes disso, um checkpoint só sobrevivia ~2 disparos diários
+  contados desde a tentativa original, bem menos que os ~22 necessários pra
+  completar o crawl em rodadas parciais. Combinado com o
+  `-ExecutionTimeLimit` agora sem limite (ver tabela acima), o caso feliz é
+  um único disparo completar o crawl inteiro numa execução só — o resume
+  multi-dia cobre só os casos em que a máquina cai no meio (sleep/reboot/
+  desligamento). Forçar do zero: `--fresh`. Crawl da conta inteira
+  (fallback): `--all`.
 
 ## Estado (data/ é gitignored)
 
@@ -85,9 +100,15 @@ de backup.
 ## Redesenho v2 em andamento — Fase 1 + Fase 2 feitas, cutover pendente (#4451)
 
 O crawl per-contato acima (v1) tem um limite estrutural: o universo cresceu
-pra ~129k contatos, o que exige ~21,5h de crawl contínuo, mais do que o
-`MAX_RESUME_AGE_H` do checkpoint (18h) tolera — uma rodada que não termina a
-tempo é descartada e recomeça do zero. `scripts/clarice-engagement-cohorts-v2.ts`
+pra ~129k contatos, o que exige ~21,5h ESTIMADAS de crawl contínuo (129.251 ÷
+~100 req/min — nunca mediu de verdade porque o crawl nunca completou com
+sucesso). O fix de curto prazo (#4451/260803) destrava o caso comum sem
+mudar essa realidade estrutural: `-ExecutionTimeLimit` da task deixou de
+matar o processo em 1h (agora sem limite) e `MAX_RESUME_AGE_H` do checkpoint
+subiu de 18h pra 30h, medido desde a ÚLTIMA atividade (`cp.lastResumedAt`,
+atualizado a cada resume — parte 2 do fix) em vez da tentativa original, o
+que permite o progresso sobreviver a vários disparos diários consecutivos
+quando o crawl não completa numa execução só. `scripts/clarice-engagement-cohorts-v2.ts`
 inverte o eixo (export por CAMPANHA via `POST /emailCampaigns/{id}/exportRecipients`
 em vez de `GET /contacts/{id}` por contato), com cache permanente por campanha,
 janela de re-fetch pra campanhas recentes e o gap de blacklist administrativo

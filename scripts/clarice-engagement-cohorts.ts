@@ -75,8 +75,26 @@ export const COHORTS_STATE_DIR = resolve(CLARICE_BASE, "cohorts");
 export const CHECKPOINT_PATH = resolve(COHORTS_STATE_DIR, "checkpoint.json");
 export const STATUS_PATH = resolve(COHORTS_STATE_DIR, "status.json");
 export const LOG_PATH = resolve(COHORTS_STATE_DIR, "run.log");
-/** Idade máxima (h) de um checkpoint para ser retomado; acima disso, recomeça do zero. */
-export const MAX_RESUME_AGE_H = 18;
+/**
+ * Idade máxima (h) de um checkpoint para ser retomado; acima disso, recomeça do zero.
+ *
+ * Fix de curto prazo do #4451 (260803): o crawl completo (~129k contatos a ~100
+ * req/min) leva ~21,5h ESTIMADAS (129.251 ÷ ~100 req/min — o crawl nunca completou
+ * com sucesso pra medir de verdade, trava em ~7.000/129.251 desde 260729), mas o
+ * valor antigo (18h) expirava o checkpoint ANTES do crawl terminar. 30h dá ~40% de
+ * folga sobre essa estimativa (cobre rate-limit/retry sem deixar o checkpoint tão
+ * frouxo a ponto de reusar progresso muito velho/stale). A margem de 30h é sobre o
+ * INTERVALO ENTRE disparos diários da task (`DiariaCohortsCrawl`, 1×/dia às 21h,
+ * ver `docs/cohorts-schedule.md`) — não sobre um crawl contínuo: `shouldResume`
+ * mede a idade a partir de `cp.lastResumedAt` (atualizado a cada resume bem-
+ * sucedido, não só na criação do checkpoint — 2ª parte do fix, #4451), então um
+ * checkpoint sobrevive a N disparos diários consecutivos enquanto o gap entre
+ * ATIVIDADES sucessivas for < 30h, não só entre a tentativa original e agora.
+ * Fix temporário — o redesenho estrutural (export per-campanha em vez de crawl
+ * per-contato, Fases 3/4 pendentes de validação empírica) é o que resolve de vez;
+ * ver #4451.
+ */
+export const MAX_RESUME_AGE_H = 30;
 /** A cada N contatos buscados, persiste o checkpoint (resiliência a rate-limit). */
 const CHECKPOINT_FLUSH_EVERY = 500;
 
@@ -345,7 +363,26 @@ async function fetchAllContactIds(apiKey: string): Promise<ContactRef[]> {
 // ─── Checkpoint + status + logs ──────────────────────────────────────────────
 
 export interface Checkpoint {
+  /** Quando este conjunto de refs foi resolvido pela 1ª vez (nunca reescrito). */
   startedAt: string;
+  /**
+   * Quando este checkpoint foi retomado pela ÚLTIMA vez com sucesso (#4451
+   * parte 2, 260803). Ausente em checkpoints criados na mesma execução (ainda
+   * não passaram por um resume) ou legados (pré-fix) — `shouldResume` cai de
+   * volta pra `startedAt` nesse caso via `??`.
+   *
+   * Sem este campo, `shouldResume` media a idade sempre a partir da tentativa
+   * ORIGINAL (`startedAt`), nunca atualizada em resume — no modelo operacional
+   * real (task `DiariaCohortsCrawl` disparada 1×/dia, `docs/cohorts-schedule.md`,
+   * ~24h de gap entre disparos), isso fazia o checkpoint sobreviver só até o
+   * 2º disparo (dia 1: idade 24h, ainda < MAX_RESUME_AGE_H, resume ok — mas
+   * SEM atualizar startedAt) e expirar no 3º (dia 2: idade 48h medida desde a
+   * criação original, ≥ 30h, descarta e recomeça do zero) — um ciclo de 2 dias
+   * que trava o acúmulo em ~2 execuções de progresso (~12-14k contatos) antes
+   * de cada reset, bem abaixo do necessário pra completar o crawl de ~129k
+   * contatos em rodadas parciais.
+   */
+  lastResumedAt?: string;
   scope: "emailed" | "all";
   refs: ContactRef[];
   /** id → engajamento já buscado (resiliência a rate-limit; resume pula estes). */
@@ -365,7 +402,12 @@ export function shouldResume(
   maxAgeH = MAX_RESUME_AGE_H,
 ): boolean {
   if (!cp || cp.scope !== scope) return false;
-  const started = Date.parse(cp.startedAt);
+  // #4451 parte 2: idade é medida desde a ÚLTIMA atividade (lastResumedAt),
+  // não desde a tentativa original — senão o checkpoint expira após
+  // MAX_RESUME_AGE_H do 1º disparo, mesmo que resumes sucessivos tenham
+  // mantido progresso recente.
+  const anchor = cp.lastResumedAt ?? cp.startedAt;
+  const started = Date.parse(anchor);
   if (isNaN(started)) return false;
   const ageH = (nowMs - started) / 3_600_000;
   return ageH >= 0 && ageH < maxAgeH;
@@ -453,6 +495,12 @@ export async function buildCohorts(
   const done: Record<string, ContactEngagement> = cp?.done ?? {};
   if (cp) {
     refs = cp.refs;
+    // #4451 parte 2: atualiza (e persiste JÁ, antes de qualquer GET) o anchor
+    // de idade a cada resume bem-sucedido — se o processo for morto logo em
+    // seguida (sleep/reboot/kill externo, sem chegar a um flush do loop),
+    // ainda assim o checkpoint em disco reflete a atividade desta tentativa.
+    cp.lastResumedAt = new Date(nowMs).toISOString();
+    saveCheckpoint(cp);
     logLine(`▶️  Retomando checkpoint (${Object.keys(done).length}/${refs.length} já buscados, escopo ${scope}).`);
   } else {
     logLine(`🔎 Resolvendo conjunto (escopo: ${scope})…`);
@@ -570,7 +618,7 @@ async function main(): Promise<void> {
       error: "universe 0 — upload abortado",
     });
     // Limpa o checkpoint (#2426 review): senão um run all-404/zero deixaria um
-    // checkpoint "completo" (remainingRefs=[]) que todo run subsequente <18h
+    // checkpoint "completo" (remainingRefs=[]) que todo run subsequente <MAX_RESUME_AGE_H
     // retomaria → recomputa universe=0 → exit(1) de novo, preso até --fresh.
     clearCheckpoint();
     logLine("⚠️  Universo 0 — não gravando no KV (checkpoint limpo; evita sobrescrever dado bom com zeros).");
