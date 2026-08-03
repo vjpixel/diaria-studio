@@ -125,12 +125,43 @@ export function isOwnedHost(hostname: string): boolean {
  * deste arquivo (renderTextInline é chamado transitivamente por praticamente
  * todas elas). `draftToEmail` é sempre síncrono e single-pass — sem risco de
  * interleaving entre ciclos diferentes.
+ *
+ * #4482: `currentUtmProfile` generaliza esse estado pra suportar uma 2ª
+ * audiência (variante Beehiiv, `utm_source=mensal-beehiiv` em vez de
+ * `clarice`) SEM duplicar `withClariceUtm`/`normalizeKnownUrl`/render* —
+ * `draftToEmail(..., utmProfile)` injeta o profile, que default pro perfil
+ * Clarice (`CLARICE_UTM_PROFILE`) preserva 100% o comportamento anterior pra
+ * todo caller existente (`publish-monthly.ts`, `monthly-preview-cloudflare.ts`,
+ * testes) que não passa o novo argumento.
  */
-let currentMonthlyUtmCiclo: string | null = null;
+export interface MonthlyUtmProfile {
+  /** `utm_source` emitido em todo link do host de marca. */
+  source: string;
+  /** `utm_medium` emitido em todo link do host de marca. */
+  medium: string;
+  /** Compõe o `utm_campaign` a partir do ciclo + posição do link (mesmo
+   * contrato de `buildMensalCampaign`/`buildMensalBeehiivCampaign`,
+   * `scripts/lib/shared/utm-registry.ts`). */
+  buildCampaign: (ciclo: string, posicao: string) => string;
+}
 
-/** Exposto para teste direto de `withClariceUtm`/`normalizeKnownUrl` sem passar por `draftToEmail`. */
-export function setMonthlyUtmCiclo(ciclo: string | null): void {
+/** Perfil DEFAULT — envio Clarice/Brevo (#2975/#4040). Todo caller que não
+ * passa `utmProfile` explicitamente pra `draftToEmail` recebe este. */
+export const CLARICE_UTM_PROFILE: MonthlyUtmProfile = {
+  source: MENSAL_UTM_SOURCE,
+  medium: MENSAL_UTM_MEDIUM,
+  buildCampaign: buildMensalCampaign,
+};
+
+let currentMonthlyUtmCiclo: string | null = null;
+let currentUtmProfile: MonthlyUtmProfile = CLARICE_UTM_PROFILE;
+
+/** Exposto para teste direto de `withClariceUtm`/`normalizeKnownUrl` sem
+ * passar por `draftToEmail`. `profile` (#4482) default = perfil Clarice —
+ * omitir preserva o comportamento histórico desta função. */
+export function setMonthlyUtmCiclo(ciclo: string | null, profile: MonthlyUtmProfile = CLARICE_UTM_PROFILE): void {
   currentMonthlyUtmCiclo = ciclo;
+  currentUtmProfile = profile;
 }
 
 /**
@@ -195,9 +226,9 @@ function withClariceUtm(url: string, posicao: string): string {
     return url; // URL relativa/inválida — não é o link de marca, preserva como está.
   }
   if (!isOwnedHost(parsed.hostname)) return url;
-  parsed.searchParams.set("utm_source", MENSAL_UTM_SOURCE);
-  parsed.searchParams.set("utm_medium", MENSAL_UTM_MEDIUM);
-  parsed.searchParams.set("utm_campaign", buildMensalCampaign(currentMonthlyUtmCiclo, posicao));
+  parsed.searchParams.set("utm_source", currentUtmProfile.source);
+  parsed.searchParams.set("utm_medium", currentUtmProfile.medium);
+  parsed.searchParams.set("utm_campaign", currentUtmProfile.buildCampaign(currentMonthlyUtmCiclo, posicao));
   return parsed.toString();
 }
 
@@ -1355,6 +1386,9 @@ export function splitByLabels(text: string): string[] {
  *
  * @param destaqueImageCaption #2018 — legenda das imagens geradas (ex: "Criada com Gemini",
  *   "Criada com ComfyUI"). Default: "Criada com IA". Lida de platform.config.json pelo caller.
+ * @param utmProfile #4482 — perfil de UTM (source/medium/campaign builder) injetado em todo
+ *   link do host de marca. Default `CLARICE_UTM_PROFILE` (comportamento histórico, #2975/#4040).
+ *   A variante Beehiiv (`scripts/lib/mensal/monthly-beehiiv-render.ts`) passa `BEEHIIV_UTM_PROFILE`.
  */
 export function draftToEmail(
   draft: string,
@@ -1367,6 +1401,7 @@ export function draftToEmail(
   destaqueImageCaption?: string, // #2018: legenda parametrizada do gerador
   livrosImageUrl?: string, // #editor: imagem do box de curadoria de livros
   eiaPrevResultLine?: string | null, // #2709: "Resultado da última edição: X% acertaram" — opt-in, ver renderEia
+  utmProfile: MonthlyUtmProfile = CLARICE_UTM_PROFILE, // #4482: perfil de UTM por audiência
 ): { subject: string; previewText: string; html: string } {
   const text = draft.replace(/\r\n/g, "\n");
   const rawSections = splitByLabels(text);
@@ -1384,7 +1419,7 @@ export function draftToEmail(
   // ciclo `{YYMM-conteúdo}-{MM-envio}` (ex: "2606" → "2606-07") — mesmo formato
   // usado no resto do email (É IA?, polls). `finally` garante reset mesmo em erro,
   // pra não vazar o ciclo dessa chamada pra um `draftToEmail` seguinte no mesmo processo.
-  setMonthlyUtmCiclo(eiaEditionFromYymm(yymm));
+  setMonthlyUtmCiclo(eiaEditionFromYymm(yymm), utmProfile);
   try {
     return draftToEmailBody();
   } finally {

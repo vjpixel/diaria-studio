@@ -41,6 +41,21 @@ export const MENSAL_UTM_SOURCE = "clarice";
 export const MENSAL_UTM_MEDIUM = "email";
 
 /**
+ * `utm_source`/`utm_medium` da variante BEEHIIV do digest mensal (#4482) —
+ * envio EXTRA pra apoiadores Mantenedor/Patrono via Beehiiv (mesma
+ * plataforma da diária), distinto do envio Clarice/Brevo acima. Nunca
+ * reusar `MENSAL_UTM_SOURCE` ("clarice") nesta variante: os dois envios têm
+ * audiência e plataforma diferentes, e misturar a atribuição refaria o
+ * mesmo problema que o #2975 original corrigiu (só que na direção oposta —
+ * cliques do canal Beehiiv contaminando a medição do canal Clarice).
+ * Consumido por `CLARICE_UTM_PROFILE`/`draftToEmail(..., utmProfile)` em
+ * `scripts/lib/mensal/monthly-render.ts` e `BEEHIIV_UTM_PROFILE` em
+ * `scripts/lib/mensal/monthly-beehiiv-render.ts`.
+ */
+export const MENSAL_BEEHIIV_UTM_SOURCE = "mensal-beehiiv";
+export const MENSAL_BEEHIIV_UTM_MEDIUM = "email";
+
+/**
  * Slug de seção usado no sufixo do wordmark (`wordmark-{secao}`): minúsculo,
  * sem acento, `[a-z0-9-]`, ≤32 chars. Nunca lança — entrada vazia/ilegível cai
  * em `geral`, que mantém o funil mensurável em vez de emitir um campaign quebrado.
@@ -72,6 +87,18 @@ export function slugifySecao(raw: string | null | undefined): string {
 export function buildMensalCampaign(ciclo: string, posicao: string): string {
   const p = slugifySecao(posicao);
   return `${MENSAL_UTM_SOURCE}-${ciclo}-${p}`;
+}
+
+/**
+ * Compõe o `utm_campaign` da variante Beehiiv do mensal (#4482):
+ * `mensal-beehiiv-{ciclo}-{posicao}` — mesmo padrão de `buildMensalCampaign`,
+ * `utm_source` distinto.
+ *
+ * @pure
+ */
+export function buildMensalBeehiivCampaign(ciclo: string, posicao: string): string {
+  const p = slugifySecao(posicao);
+  return `${MENSAL_BEEHIIV_UTM_SOURCE}-${ciclo}-${p}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +314,19 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "Todo link pro host de marca no e-mail mensal enviado pela Brevo. " +
       `O sufixo {posicao} vem do vocabulário fechado ${MENSAL_POSICOES.join(" / ")} ` +
       "— `wordmark` ainda ganha a seção corrente como sufixo (#4040).",
+    status: "ativo",
+  },
+  {
+    id: "mensal-beehiiv",
+    label: "Digest mensal (Beehiiv, apoiadores)",
+    source: MENSAL_BEEHIIV_UTM_SOURCE,
+    medium: MENSAL_BEEHIIV_UTM_MEDIUM,
+    campaignPattern: `${MENSAL_BEEHIIV_UTM_SOURCE}-{ciclo}-{posicao}`,
+    originFile: "scripts/lib/mensal/monthly-beehiiv-render.ts",
+    description:
+      "Envio EXTRA do digest mensal pra apoiadores Mantenedor/Patrono via Beehiiv (#4482) — " +
+      "mesmo conteúdo/posições da entrada 'mensal-clarice' acima, `utm_source` distinto pra " +
+      "não misturar a atribuição dos 2 canais (audiência e plataforma diferentes).",
     status: "ativo",
   },
   {
