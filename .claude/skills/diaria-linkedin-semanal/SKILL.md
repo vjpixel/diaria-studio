@@ -42,13 +42,15 @@ inteira antes — não só o body.
 - **Edição #1 não é mais exceção** (260802, último comentário) — cobre a
   janela normal como qualquer outra. Não tratar a primeira invocação
   desta skill como recorte mensal/moldura de estreia.
-- **Seção final chama "Edições da semana", não "Resto da semana"** (260803,
-  decisão do editor no #4456) — e não é mais só as edições que perderam a
-  manchete: lista as **5 edições da semana inteira**, cada uma com link
-  (`deriveEditionUrl` a partir do D1) + os até-3 destaques daquele dia,
-  independente de um deles já ter virado manchete acima. Implementado em
-  `scripts/select-linkedin-weekly.ts` (campo `weeklyEditions` no
-  `ln-selection.json`, populado em `readEdition`/`destaqueTitles`) e
+- **Seção final chama "Edições da semana", não "Resto da semana"** (260802,
+  decisão do editor) — e não é mais só as edições que perderam a manchete:
+  lista as edições da semana com D1 parseável (até 5 — pode ser menos em
+  semana curta/feriado), cada uma com link (`deriveEditionUrl` a partir do
+  D1) + os até-3 destaques daquele dia, independente de um deles já ter
+  virado manchete acima. Implementado em `scripts/select-linkedin-weekly.ts`
+  (campo `weeklyEditions` no `ln-selection.json`, populado em
+  `readEdition`/`destaqueTitles`, com guard de colisão de URL derivada — 2
+  D1 que produzem o mesmo slug geram warning explícito) e
   `scripts/lib/weekly-linkedin-render.ts` (`editionLabel` gera o rótulo
   "Edição de DD/MM" do link; cada destaque some como sub-item de lista).
   Resolve o achado #4489 finding 8b (se o item devia ter mais que o

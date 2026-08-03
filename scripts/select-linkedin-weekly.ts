@@ -11,7 +11,7 @@
  *      (`data/beehiiv-cache/posts/*.json`).
  *   4. Ranqueia por taxa (cliques verificados ÷ aberturas), filtra links
  *      comerciais/próprios, seleciona manchetes + Use Melhor + Edições da
- *      semana (link + destaques das 5 edições).
+ *      semana (link + destaques de cada edição, até 5).
  *   5. Escreve `data/weekly/{cycle}/_internal/ln-selection.json`.
  *
  * **`--manifest-only`**: só resolve a janela + cruza com o cache pra emitir
@@ -172,16 +172,16 @@ export function main(rootDirOverride?: string) {
   const headlineCap = computeHeadlineCap(editionsFound.length);
   const headlineResult = selectHeadlines(ranked, headlineCap);
   const headlineUrls = new Set(headlineResult.selected.map((c) => normalizeUrl(c.url)));
-  const headlineEditionDates = new Set(headlineResult.selected.map((c) => c.editionDate));
 
   const useMelhor = selectUseMelhor(ranked, headlineUrls);
 
-  // #4456 (decisão do editor, 260803): "Edições da semana" lista TODAS as
-  // edições da janela, não só as que perderam a manchete — é o índice da
-  // semana inteira, com link + os até-3 destaques de cada dia, independente
-  // de um deles já ter virado manchete acima. Precisa de d1Title pra derivar
-  // a URL (deriveEditionUrl usa o slug do D1) — sem D1 parseável, a edição
-  // fica de fora (mesmo guard de antes, ver warning `missingD1` abaixo).
+  // #4456 (decisão do editor, 260802): "Edições da semana" lista as
+  // edições da janela com D1 parseável (até 5), não só as que perderam a
+  // manchete — é o índice da semana inteira, com link + os até-3 destaques
+  // de cada dia, independente de um deles já ter virado manchete acima.
+  // Precisa de d1Title pra derivar a URL (deriveEditionUrl usa o slug do
+  // D1) — sem D1 parseável, a edição fica de fora (mesmo guard de antes,
+  // ver warning `missingD1` abaixo).
   const weeklyEditions = editionsFound
     .filter((e) => e.d1Title)
     .map((e) => ({
@@ -220,6 +220,24 @@ export function main(rootDirOverride?: string) {
     warnings.push(
       `${missingD1.length} edição(ões) sem DESTAQUE 1 parseável — não entram na lista "Edições da semana" (sem D1 não dá pra derivar a URL): ${missingD1.map((e) => e.date).join(", ")}`,
     );
+  }
+
+  // #4501 (review PR): `deriveEditionUrl` trunca o slug em 60 caracteres —
+  // 2 D1 com prefixo idêntico (ou D1 idênticos) produzem a MESMA URL sem
+  // nenhum aviso, e o link de uma das edições em "Edições da semana" aponta
+  // pro post ERRADO em silêncio (o rótulo do link, "Edição de DD/MM", segue
+  // correto — só o href fica errado, imperceptível na revisão visual do
+  // gate). Correção de dado, não estilo — sempre checar antes de aprovar.
+  const urlToDates = new Map<string, string[]>();
+  for (const e of weeklyEditions) {
+    urlToDates.set(e.url, [...(urlToDates.get(e.url) ?? []), e.editionDate]);
+  }
+  for (const [url, dates] of urlToDates) {
+    if (dates.length > 1) {
+      warnings.push(
+        `Edições da semana: URL derivada colide entre ${dates.join(" e ")} (slug idêntico "${url}") — pelo menos uma dessas edições vai linkar pro post ERRADO. Confira o slug real de cada post no Beehiiv antes de publicar.`,
+      );
+    }
   }
 
   // #4489 finding 6: `found && candidates.length === 0` é uma falha TOTAL de

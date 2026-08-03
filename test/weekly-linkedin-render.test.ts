@@ -169,7 +169,7 @@ describe("renderLinkedinWeeklyHtml — ordem de montagem restaurada ao template 
   });
 });
 
-describe("renderLinkedinWeeklyHtml — Edições da semana (nome permanente desde #4456, 260803 — era 'Resto da semana')", () => {
+describe("renderLinkedinWeeklyHtml — Edições da semana (#4456, 260802 — era 'Resto da semana')", () => {
   it("cada edição vira 1 item com link pra edição + seus destaques listados", () => {
     const result = renderLinkedinWeeklyHtml(BASE_INPUT);
     assert.match(result.html, /Edição de 29\/07/);

@@ -68,16 +68,18 @@ export interface WeeklyLinkedinUseMelhorInput {
   editorComment: string;
 }
 
-export interface WeeklyLinkedinRestItem {
+export interface WeeklyLinkedinEditionItem {
   editionDate: string;
   /** URL pública da edição (derivada do D1 via `deriveEditionUrl`). */
   url: string;
   /**
    * Títulos dos até-3 destaques da edição, na ordem (D1 primeiro). Decisão
-   * do editor 260803 (#4456) resolve o achado #4489 finding 8b — "Edições
-   * da semana" (nome também decidido nessa data, era "Resto da semana")
-   * lista TODAS as 5 edições da semana com link + seus destaques, não só as
-   * que perderam a disputa de manchete.
+   * do editor 260802 (#4456, registrada em comentário na issue) resolve o
+   * achado #4489 finding 8b — "Edições da semana" (nome também decidido
+   * nessa sessão, era "Resto da semana") lista as edições da janela com D1
+   * parseável — até 5, pode ser menos em semana curta (feriado) ou com
+   * algum D1 ilegível — com link + seus destaques, não só as que perderam
+   * a disputa de manchete.
    */
   destaques: string[];
 }
@@ -87,8 +89,8 @@ export interface WeeklyLinkedinRenderInput {
   /** 1-3 manchetes, na ordem de seleção. */
   headlines: WeeklyLinkedinHeadlineInput[];
   useMelhor?: WeeklyLinkedinUseMelhorInput;
-  /** As 5 edições da semana — link + destaques de cada uma ("Edições da semana", #4456). */
-  weeklyEditions: WeeklyLinkedinRestItem[];
+  /** Edições da semana com D1 parseável (até 5) — link + destaques de cada uma ("Edições da semana", #4456). */
+  weeklyEditions: WeeklyLinkedinEditionItem[];
   /** Abertura — prosa nova, já humanizada/corrigida pela skill (Skill("humanizador") + Clarice). */
   opening: string;
   /** Fecho antes do CTA final — prosa nova, já humanizada/corrigida. */
@@ -202,9 +204,10 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
     parts.push(`<h3>Edições da semana</h3>`);
     parts.push("<ul>");
     for (const item of input.weeklyEditions) {
-      // #4489 finding 2 (mesmo guard do bloco Use Melhor, linha ~149):
-      // destaque em texto puro (não linkado) ainda arrisca auto-linkagem do
-      // LinkedIn se terminar em domínio nu — warn-only, título é literal.
+      // #4489 finding 2 (mesmo guard do bloco Use Melhor — endsInBareDomainLabel
+      // sobre um.title, acima): destaque em texto puro (não linkado) ainda
+      // arrisca auto-linkagem do LinkedIn se terminar em domínio nu —
+      // warn-only, título é literal.
       for (const destaque of item.destaques) {
         if (endsInBareDomainLabel(destaque)) {
           warnings.push(
