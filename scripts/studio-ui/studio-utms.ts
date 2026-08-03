@@ -333,11 +333,20 @@ export function computeDrift(
   for (const [k, v] of Object.entries(campaignCounts)) campaignSeen.set(k.toLowerCase(), v);
   for (const s of extras.externals ?? []) {
     if (s.status === "aposentado" || !s.appliedAt) continue;
-    if (!((campaignSeen.get(s.campaign.toLowerCase()) ?? 0) > 0)) {
+    // `driftKey: "source"` é a exceção das plataformas que truncam a URL e só
+    // deixam passar um parâmetro (Apoia.se): lá o campaign nunca chega, e o
+    // check por campaign acusaria drift eternamente. Só é válido porque o
+    // `utm_source` dessas é exclusivo — travado por teste.
+    const bySource = s.driftKey === "source";
+    const key = bySource ? s.source : s.campaign;
+    const count = bySource
+      ? (seen.get(key.toLowerCase()) ?? 0)
+      : (campaignSeen.get(key.toLowerCase()) ?? 0);
+    if (!(count > 0)) {
       out.push({
         kind: "sem_conversao",
         key: s.id,
-        detail: `${s.label}: utm_campaign="${s.campaign}" não trouxe nenhum assinante desde ${s.appliedAt} — campo não salvou, plataforma removeu a query string, ou o perfil não gera tráfego. Reconferir em ${s.panelUrl}.`,
+        detail: `${s.label}: ${bySource ? "utm_source" : "utm_campaign"}="${key}" não trouxe nenhum assinante desde ${s.appliedAt} — campo não salvou, plataforma removeu a query string, ou o perfil não gera tráfego. Reconferir em ${s.panelUrl}.`,
       });
     }
   }

@@ -97,16 +97,54 @@ describe("#4525 — inventário das superfícies externas", () => {
         "no check de sem_conversao, porque o Beehiiv só devolve campaignCounts PLANO (achado do review do PR #4526)",
     );
     for (const s of EXTERNAL_UTM_SURFACES) {
-      assert.equal(
-        s.campaign,
-        buildExternalSurfaceCampaign(s.source),
-        `${s.id}: utm_campaign digitado à mão em vez de derivado`,
+      const base = buildExternalSurfaceCampaign(s.source);
+      // Aceita a forma nua (`perfil-youtube`) e a com variante
+      // (`perfil-github-studio`), mas nada digitado fora do derivador.
+      assert.ok(
+        s.campaign === base || s.campaign.startsWith(`${base}-`),
+        `${s.id}: utm_campaign "${s.campaign}" digitado à mão em vez de derivado de "${base}"`,
       );
       assert.ok(
         s.campaign.startsWith(`${EXTERNAL_SURFACE_CAMPAIGN_PREFIX}-`),
         `${s.id}: utm_campaign fora do prefixo da convenção`,
       );
     }
+  });
+
+  it("driftKey:'source' só em superfície cujo utm_source é EXCLUSIVo dela", () => {
+    // A exceção existe pra plataforma que trunca a URL (Apoia.se só deixa
+    // passar 1 parâmetro). Se o source fosse compartilhado — com um emissor de
+    // código ou com outra superfície — o check viria positivo pelo tráfego
+    // alheio e não mediria absolutamente nada.
+    const emitterSources = new Set(UTM_EMITTERS.map((e) => e.source.toLowerCase()));
+    for (const s of EXTERNAL_UTM_SURFACES.filter((x) => x.driftKey === "source")) {
+      assert.ok(
+        !emitterSources.has(s.source.toLowerCase()),
+        `${s.id}: driftKey='source' com utm_source="${s.source}" que um emissor de código também emite`,
+      );
+      const outras = EXTERNAL_UTM_SURFACES.filter(
+        (x) => x.id !== s.id && x.source.toLowerCase() === s.source.toLowerCase(),
+      );
+      assert.equal(
+        outras.length,
+        0,
+        `${s.id}: driftKey='source' mas outra superfície externa usa o mesmo utm_source`,
+      );
+    }
+  });
+
+  it("variante mantém campaign distinto quando a plataforma se repete", () => {
+    assert.equal(buildExternalSurfaceCampaign("github", "studio"), "perfil-github-studio");
+    assert.equal(buildExternalSurfaceCampaign("github", "design"), "perfil-github-design");
+    assert.notEqual(
+      buildExternalSurfaceCampaign("github", "studio"),
+      buildExternalSurfaceCampaign("github", "design"),
+    );
+    assert.equal(buildExternalSurfaceCampaign("YouTube"), "perfil-youtube", "normaliza caixa");
+    // Os 2 repos compartilham utm_source de propósito — é o campaign que separa.
+    const gh = EXTERNAL_UTM_SURFACES.filter((s) => s.source === "github");
+    assert.equal(gh.length, 2);
+    assert.equal(new Set(gh.map((s) => s.campaign)).size, 2);
   });
 
   it("nenhum utm_campaign externo colide com padrão de emissor de código", () => {

@@ -658,13 +658,19 @@ export const EXTERNAL_SURFACE_MEDIUM = "bio";
 export const EXTERNAL_SURFACE_CAMPAIGN_PREFIX = "perfil";
 
 /**
- * `utm_campaign` de uma superfície externa: `perfil-{source}`. Derivado, nunca
- * digitado — é o que garante a unicidade de que o drift depende.
+ * `utm_campaign` de uma superfície externa: `perfil-{source}[-{variant}]`.
+ * Derivado, nunca digitado — é o que garante a unicidade de que o drift depende.
+ *
+ * `variant` existe pra quando a MESMA plataforma hospeda mais de uma superfície
+ * (os dois repositórios no GitHub; o perfil da marca e o pessoal no Instagram).
+ * Sem ele, essas superfícies voltariam a compartilhar campaign e a primeira a
+ * converter mascararia as outras — o bug que o review do PR #4526 pegou.
  *
  * @pure
  */
-export function buildExternalSurfaceCampaign(source: string): string {
-  return `${EXTERNAL_SURFACE_CAMPAIGN_PREFIX}-${source.toLowerCase()}`;
+export function buildExternalSurfaceCampaign(source: string, variant?: string): string {
+  const base = `${EXTERNAL_SURFACE_CAMPAIGN_PREFIX}-${source.toLowerCase()}`;
+  return variant ? `${base}-${variant.toLowerCase()}` : base;
 }
 
 /** URL base que toda superfície externa aponta. */
@@ -703,6 +709,18 @@ export interface ExternalUtmSurface {
    * de conversão é ESPERADA, não drift (ver `computeDrift`).
    */
   appliedAt?: string;
+  /**
+   * Qual dimensão o drift observa. `campaign` (default) é a correta em quase
+   * tudo: isola esta superfície mesmo quando o `utm_source` é compartilhado com
+   * o CTA dos posts.
+   *
+   * `source` existe pra plataforma que TRUNCA a URL e só deixa passar um
+   * parâmetro (Apoia.se). Só é legítimo quando o `utm_source` é EXCLUSIVO desta
+   * superfície — se fosse compartilhado, o check viria positivo pelo tráfego
+   * alheio e não mediria nada. `test/utm-externas-4525.test.ts` trava essa
+   * exclusividade.
+   */
+  driftKey?: "campaign" | "source";
 }
 
 /**
@@ -787,16 +805,64 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
     medium: EXTERNAL_SURFACE_MEDIUM,
     campaign: buildExternalSurfaceCampaign("apoiase"),
     panelUrl: "https://apoia.se/diaria",
-    field: "Editar campanha → Redes Sociais → Site",
+    field: "Editar campanha → Identificação → Redes sociais → 1º campo",
     description:
       "Ícone de globo da seção 'Redes Sociais' da página de apoio — era " +
       "`https://diar.ia.br` cru (#4525). Único `utm_source` novo do lote, e " +
-      "portanto o que exigia a união em `knownUtmSources()`. BLOQUEADO pela " +
-      "plataforma: o campo aceita o save mas DESCARTA em silêncio qualquer URL " +
-      "com query string — o link some da página pública em vez de dar erro " +
-      "(reproduzido 2× em 260803; o valor cru foi restaurado). Sem UTM aqui " +
-      "enquanto a Apoia.se não aceitar parâmetro.",
+      "portanto o que exigia a união em `knownUtmSources()`. A plataforma TRUNCA " +
+      "no `&`: a URL de 3 parâmetros é descartada em silêncio (o link some da " +
+      "página em vez de dar erro), mas `?utm_source=apoiase` sozinho salva e " +
+      "persiste. Por isso `driftKey: 'source'` — só o `utm_source` chega, e ele " +
+      "é exclusivo desta superfície, então mede sozinho. Valor ao vivo: " +
+      "`https://diar.ia.br/?utm_source=apoiase`.",
     status: "ativo",
+    appliedAt: "2026-08-03",
+    driftKey: "source",
+  },
+  {
+    id: "perfil-youtube",
+    label: "YouTube — link do canal",
+    source: "youtube",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: buildExternalSurfaceCampaign("youtube"),
+    panelUrl: "https://studio.youtube.com",
+    field: "Personalização → Perfil → Links → URL",
+    description:
+      "Link 'Newsletter' do cabeçalho do canal e da aba Sobre. Apontava pro " +
+      "domínio ANTIGO (`diaria.beehiiv.com`) até 260803 — a varredura do #4059 " +
+      "cobriu o repo, não superfície de plataforma. Salvar exige blur do campo " +
+      "antes do Publicar, senão o botão fica inerte e a edição se perde.",
+    status: "ativo",
+    appliedAt: "2026-08-03",
+  },
+  {
+    id: "perfil-github-studio",
+    label: "GitHub — repo diaria-studio",
+    source: "github",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: buildExternalSurfaceCampaign("github", "studio"),
+    panelUrl: "https://github.com/vjpixel/diaria-studio",
+    field: "gh repo edit --homepage (ou Settings → Website)",
+    description:
+      "Campo Website do repositório público, exibido no topo da sidebar. Estava " +
+      "VAZIO (#4525). Aplicável por CLI — não precisa de browser.",
+    status: "ativo",
+    appliedAt: "2026-08-03",
+  },
+  {
+    id: "perfil-github-design",
+    label: "GitHub — repo diaria-design",
+    source: "github",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: buildExternalSurfaceCampaign("github", "design"),
+    panelUrl: "https://github.com/vjpixel/diaria-design",
+    field: "gh repo edit --homepage (ou Settings → Website)",
+    description:
+      "Idem `perfil-github-studio`, outro repositório. Os dois compartilham " +
+      "`utm_source=github`, e é o sufixo de variante do `utm_campaign` que os " +
+      "mantém mensuráveis em separado.",
+    status: "ativo",
+    appliedAt: "2026-08-03",
   },
 ] as const;
 
