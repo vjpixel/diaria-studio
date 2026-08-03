@@ -341,7 +341,8 @@ describe("deriveRampVolumes (#3593 item 1 — recomputa volumes via a MESMA lóg
     const now = new Date("2026-07-17T00:00:00Z");
     const campaigns = [campaign({ id: 1, sentDate: "2026-07-10T09:00:00Z" })]; // saúde boa, ver teste acima
     // #4541: `date` (medição) precisa estar dentro de POSTMASTER_DATA_STALE_MS
-    // também, não só `recordedAt` (gravação) — mesmo dia de `now`.
+    // também, não só `recordedAt` (gravação) — aqui, 1 dia-calendário antes de
+    // `now`, bem dentro da folga de 5 dias.
     const freshEntry = { spamRatePct: 0.02, recordedAt: "2026-07-16T12:00:00Z", date: "2026-07-16" }; // 12h antes de `now`, bem dentro das 48h
     const result = deriveRampVolumes(campaigns, now, freshEntry);
     assert.equal(result.ok, true);

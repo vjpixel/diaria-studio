@@ -191,9 +191,10 @@ export async function collectSpamReadings(
  * `daysProbed` (#4541) é o tamanho da janela sondada — vem do chamador
  * (`daysChecked` em `main()`), não é recalculado aqui. Junto com
  * `readings.length` (gravado como `daysWithData`), permite `resolveSpamSignal`
- * degradar pra `indeterminate` quando a cobertura é baixa demais (ex: uma
- * média sobre 1 dia de 10 por erro HTTP transitório nos outros 9 — incidente
- * de 260803 que originou a issue).
+ * degradar pra `indeterminate` quando a cobertura é baixa demais (ex:
+ * incidente de 260803 que originou a issue — só 1/10 dias com leitura válida:
+ * 7 dias 404/não publicados ainda (comportamento esperado, ver docstring do
+ * módulo) + 2 dias com erro HTTP transitório).
  */
 export function buildAveragedEntry(
   readings: DayReading[],

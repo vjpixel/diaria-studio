@@ -89,6 +89,25 @@ export function isBounceBreach(
  */
 export type SpamSignalSource = "postmaster" | "indeterminate";
 
+/**
+ * #4544 (achado HIGH do fleet review pré-merge do #4541): as 4 causas de
+ * `source==="indeterminate"` — entry ausente, entry malformada (`spamRatePct`
+ * não-finito), gravação stale (`recordedAt`/`POSTMASTER_STALE_MS`), medição
+ * stale (`date`/`POSTMASTER_DATA_STALE_MS`) e cobertura baixa
+ * (`daysWithData`/`daysProbed`/`POSTMASTER_MIN_COVERAGE_RATIO`) — colapsavam
+ * todas no mesmo `{ source: "indeterminate", ratePct: null, breach: false }`,
+ * indistinguível na UI. O incidente 260803 só foi diagnosticado puxando a
+ * entry crua do KV manualmente; sem este campo, o PRÓXIMO incidente (ex:
+ * cobertura caindo por erro de API, ou `date` stale por outro bug) repete a
+ * mesma arqueologia manual, agora com ainda mais causas candidatas.
+ */
+export type SpamSignalIndeterminateReason =
+  | "missing"
+  | "malformed"
+  | "recorded-stale"
+  | "date-stale"
+  | "low-coverage";
+
 export interface SpamSignal {
   source: SpamSignalSource;
   /** % da leitura do Postmaster usada nesta avaliação — `null` quando `source==="indeterminate"`. */
@@ -97,12 +116,22 @@ export interface SpamSignal {
   breach: boolean;
   /** Qual produtor gravou a leitura (#4154) — `undefined` quando indeterminado ou entry pré-#4154 sem o campo. Só informativo (label da UI), nunca entra na classificação. */
   producedBy?: PostmasterProducer;
+  /**
+   * #4544: qual dos 5 branches de `resolveSpamSignal` produziu
+   * `source==="indeterminate"` — `undefined` quando `source==="postmaster"`
+   * (nunca populado nesse caso). Só informativo (tooltip da UI), nunca entra
+   * em nenhuma decisão de classificação/semáforo.
+   */
+  reason?: SpamSignalIndeterminateReason;
 }
 
 /**
  * Além de "campo ausente", uma GRAVAÇÃO mais velha que isto é tratada como se
  * não existisse — sinal de que o processo que escreve no KV (sync automático
- * ou entrada manual) parou de rodar. Continua útil como um segundo guard
+ * ou entrada manual) parou de rodar, OU rodou mas não teve nenhuma leitura
+ * válida pra gravar (`postmaster-spam-sync.ts` pula a escrita nesse caso —
+ * ver docstring de `main()` lá — então "gravação stale" também cobre "rodou
+ * sem achar dado"). Continua útil como um segundo guard
  * (independente do de `POSTMASTER_DATA_STALE_MS` abaixo), mas **não é** o que
  * garante que o DADO em si é recente — ver #4541: `postmaster-spam-sync.ts`
  * roda a cada 12h e reescreve a entry mesmo quando a janela sondada não trouxe
@@ -133,9 +162,10 @@ export const POSTMASTER_DATA_STALE_MS = 5 * 24 * 60 * 60 * 1000;
 /**
  * #4541 (2ª causa da issue): cobertura mínima da janela usada pra calcular a
  * média (`entry.daysWithData` / `entry.daysProbed`, gravados por
- * `postmaster-spam-sync.ts`). Uma média sobre 1 dia de 10 (ex: os outros 9
- * caíram em erro HTTP transitório, como no incidente de 260803) não é mais
- * confiável que "sem dado" — degrada pra `indeterminate` do mesmo jeito que
+ * `postmaster-spam-sync.ts`). Uma média sobre 1 dia de 10 (ex: incidente de
+ * 260803 — só 1/10 dias com leitura válida: 7 dias 404/não publicados ainda
+ * (comportamento esperado) + 2 dias com erro HTTP transitório, ver #4541) não
+ * é mais confiável que "sem dado" — degrada pra `indeterminate` do mesmo jeito que
  * staleness, em vez de colorir com base em amostra pequena demais. 50% dá
  * folga a uma falha parcial pontual (ex: 2/10 dias com erro HTTP) sem deixar
  * uma média de 1-2 dias colorir o semáforo. Campos ausentes (entry manual —
@@ -160,6 +190,11 @@ export const POSTMASTER_MIN_COVERAGE_RATIO = 0.5;
  * `POSTMASTER_STALE_MS`) E medição recente (`date`, `POSTMASTER_DATA_STALE_MS`)
  * — e, quando a entry declara cobertura, cobertura mínima da janela
  * (`POSTMASTER_MIN_COVERAGE_RATIO`). Qualquer um falhando → `indeterminate`.
+ *
+ * #4544: `SpamSignal.reason` grava QUAL dos 5 branches abaixo produziu o
+ * `indeterminate` (`missing` | `malformed` | `recorded-stale` | `date-stale` |
+ * `low-coverage`) — ver docstring do tipo. Populado em toda saída
+ * `indeterminate`, nunca em `postmaster`.
  */
 export function resolveSpamSignal(
   entry:
@@ -173,15 +208,15 @@ export function resolveSpamSignal(
   t: HealthThresholds = DEFAULT_HEALTH_THRESHOLDS,
 ): SpamSignal {
   if (!entry || !Number.isFinite(entry.spamRatePct)) {
-    return { source: "indeterminate", ratePct: null, breach: false };
+    return { source: "indeterminate", ratePct: null, breach: false, reason: entry ? "malformed" : "missing" };
   }
   const recordedMs = Date.parse(entry.recordedAt);
   if (!Number.isFinite(recordedMs) || now.getTime() - recordedMs > POSTMASTER_STALE_MS) {
-    return { source: "indeterminate", ratePct: null, breach: false };
+    return { source: "indeterminate", ratePct: null, breach: false, reason: "recorded-stale" };
   }
   const dateMs = Date.parse(entry.date);
   if (!Number.isFinite(dateMs) || now.getTime() - dateMs > POSTMASTER_DATA_STALE_MS) {
-    return { source: "indeterminate", ratePct: null, breach: false };
+    return { source: "indeterminate", ratePct: null, breach: false, reason: "date-stale" };
   }
   if (
     typeof entry.daysWithData === "number" &&
@@ -189,7 +224,7 @@ export function resolveSpamSignal(
     entry.daysProbed > 0 &&
     entry.daysWithData / entry.daysProbed < POSTMASTER_MIN_COVERAGE_RATIO
   ) {
-    return { source: "indeterminate", ratePct: null, breach: false };
+    return { source: "indeterminate", ratePct: null, breach: false, reason: "low-coverage" };
   }
   return {
     source: "postmaster",

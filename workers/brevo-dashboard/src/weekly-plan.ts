@@ -40,9 +40,10 @@ import {
   POSTMASTER_MIN_COVERAGE_RATIO,
   type HealthThresholds,
   type SpamSignal,
+  type SpamSignalIndeterminateReason,
 } from "./thresholds.ts";
 export { DEFAULT_HEALTH_THRESHOLDS, resolveSpamSignal, POSTMASTER_STALE_MS, POSTMASTER_DATA_STALE_MS, POSTMASTER_MIN_COVERAGE_RATIO };
-export type { HealthThresholds, SpamSignal };
+export type { HealthThresholds, SpamSignal, SpamSignalIndeterminateReason };
 
 /** Janela de maturação — envios mais recentes que isso ficam fora do agregado. */
 export const MATURATION_MS = 48 * 60 * 60 * 1000;
@@ -526,6 +527,22 @@ function neutralValueStyle(): string {
  * ela subconta o spam real em ~50× (só enxerga feedback loops), então
  * qualquer cor ali seria um veredito falso.
  */
+// #4544 (achado HIGH do fleet review pré-merge do #4541): rótulo humano por
+// `SpamSignalIndeterminateReason`, exposto como `title=` (tooltip, mesmo
+// padrão de `render-links.ts` — ex: `link-section`/`link-variant-count`) na
+// célula "Spam (Postmaster)" quando `source==="indeterminate"`. Antes, as 5
+// causas (entry ausente/malformada, gravação stale, medição stale, cobertura
+// baixa) colapsavam todas no mesmo "— (sem leitura)" — só distinguíveis
+// puxando a entry crua do KV manualmente (foi assim que o incidente 260803
+// foi diagnosticado).
+const SPAM_INDETERMINATE_REASON_LABEL: Record<SpamSignalIndeterminateReason, string> = {
+  missing: "Sem leitura gravada no KV (postmaster:spam).",
+  malformed: "Leitura gravada, mas spamRatePct não é um número válido.",
+  "recorded-stale": `Gravação (recordedAt) mais velha que ${Math.round(POSTMASTER_STALE_MS / (60 * 60 * 1000))}h — o processo que escreve no KV parou de rodar ou não achou dado.`,
+  "date-stale": `Medição (date) mais velha que ${Math.round(POSTMASTER_DATA_STALE_MS / (24 * 60 * 60 * 1000))} dias.`,
+  "low-coverage": `Cobertura da janela sondada abaixo de ${Math.round(POSTMASTER_MIN_COVERAGE_RATIO * 100)}% (daysWithData/daysProbed).`,
+};
+
 function buildMetricRows(health: HealthAggregate, spamSignal: SpamSignal): string {
   const T = DEFAULT_HEALTH_THRESHOLDS;
   // #3081 (achados do code-review low no PR #3166): a checagem de "sem dado"
@@ -576,6 +593,14 @@ function buildMetricRows(health: HealthAggregate, spamSignal: SpamSignal): strin
   const spamPostmasterStyle = spamSignal.source === "postmaster"
     ? `color:${STATUS_COLOR[classifySpamSignal(spamSignal, T)]};font-weight:600`
     : neutralValueStyle();
+  // #4544: tooltip com a causa específica do "— (sem leitura)" — ver
+  // SPAM_INDETERMINATE_REASON_LABEL acima. `spamSignal.reason` só existe
+  // quando `source==="indeterminate"`; sem ele (call site pré-#4544 que ainda
+  // não passa por resolveSpamSignal, ou teste que constrói o objeto à mão),
+  // a célula fica sem `title=` — degrada pro comportamento anterior, nunca quebra.
+  const spamPostmasterTitleAttr = spamSignal.source !== "postmaster" && spamSignal.reason
+    ? ` title="${escHtml(SPAM_INDETERMINATE_REASON_LABEL[spamSignal.reason])}"`
+    : "";
   // #4400: rótulo simplificado pra estático "Spam (Postmaster)" — era
   // "Spam (Postmaster{, automático|, manual} — governa o semáforo)", com
   // sufixo dinâmico por `spamSignal.producedBy` via SPAM_SOURCE_LABEL
@@ -586,7 +611,7 @@ function buildMetricRows(health: HealthAggregate, spamSignal: SpamSignal): strin
   // precisar do dado, só não aparece mais nesta linha da tabela; a docstring
   // acima desta função (e o código logo abaixo) continuam sendo a fonte de
   // verdade de que esta É a linha que governa o semáforo.
-  const spamPostmasterRow = `<tr><td>Spam (Postmaster)</td><td style="${spamPostmasterStyle}">${spamPostmasterValueFmt}</td><td style="opacity:0.7">&lt;${T.spamRate.green}%</td><td style="opacity:0.7">&lt;${T.spamRate.yellow}%</td></tr>`;
+  const spamPostmasterRow = `<tr><td>Spam (Postmaster)</td><td style="${spamPostmasterStyle}"${spamPostmasterTitleAttr}>${spamPostmasterValueFmt}</td><td style="opacity:0.7">&lt;${T.spamRate.green}%</td><td style="opacity:0.7">&lt;${T.spamRate.yellow}%</td></tr>`;
 
   // Ordem: abertura, hard bounce, bounce total, os 2 de spam (Postmaster antes
   // do Brevo — é o que governa), unsub.

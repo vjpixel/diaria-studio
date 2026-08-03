@@ -723,8 +723,29 @@ function mkPostmasterEntry(overrides: Partial<PostmasterSpamEntry> = {}): Postma
 }
 
 test("resolveSpamSignal — sem entrada (null/undefined) → indeterminate, nunca breach (#4063)", () => {
-  assert.deepEqual(resolveSpamSignal(null, NOW), { source: "indeterminate", ratePct: null, breach: false });
-  assert.deepEqual(resolveSpamSignal(undefined, NOW), { source: "indeterminate", ratePct: null, breach: false });
+  assert.deepEqual(resolveSpamSignal(null, NOW), { source: "indeterminate", ratePct: null, breach: false, reason: "missing" });
+  assert.deepEqual(resolveSpamSignal(undefined, NOW), { source: "indeterminate", ratePct: null, breach: false, reason: "missing" });
+});
+
+// #4544 (achado HIGH do fleet review): `reason` distingue as 5 causas de
+// indeterminate — antes todas colapsavam no mesmo objeto, indistinguível na
+// UI (só a entry crua do KV revelava a causa real, como no diagnóstico
+// manual do incidente 260803).
+test("resolveSpamSignal — reason distingue as 5 causas de indeterminate (#4544)", () => {
+  assert.equal(resolveSpamSignal(null, NOW).reason, "missing");
+  assert.equal(resolveSpamSignal(mkPostmasterEntry({ spamRatePct: NaN }), NOW).reason, "malformed");
+  const staleRecordedAt = new Date(NOW.getTime() - POSTMASTER_STALE_MS - 1000).toISOString();
+  assert.equal(resolveSpamSignal(mkPostmasterEntry({ recordedAt: staleRecordedAt }), NOW).reason, "recorded-stale");
+  assert.equal(resolveSpamSignal(mkPostmasterEntry({ recordedAt: "não-é-data" }), NOW).reason, "recorded-stale");
+  const staleDate = new Date(NOW.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  assert.equal(resolveSpamSignal(mkPostmasterEntry({ date: staleDate }), NOW).reason, "date-stale");
+  assert.equal(resolveSpamSignal(mkPostmasterEntry({ date: "não-é-data" }), NOW).reason, "date-stale");
+  assert.equal(
+    resolveSpamSignal(mkPostmasterEntry({ daysWithData: 1, daysProbed: 10 }), NOW).reason,
+    "low-coverage",
+  );
+  // source==="postmaster" nunca popula reason.
+  assert.equal(resolveSpamSignal(mkPostmasterEntry({}), NOW).reason, undefined);
 });
 
 test("resolveSpamSignal — entrada com spamRatePct acima do limite resolve breach=true (#633, regressão exigida pela issue #4063)", () => {
@@ -757,7 +778,7 @@ test("resolveSpamSignal — repassa producedBy pro SpamSignal (#4154, achado do 
 test("resolveSpamSignal — leitura mais velha que POSTMASTER_STALE_MS (48h) volta a ser indeterminate", () => {
   const staleRecordedAt = new Date(NOW.getTime() - POSTMASTER_STALE_MS - 1000).toISOString();
   const signal = resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 5, recordedAt: staleRecordedAt }), NOW);
-  assert.deepEqual(signal, { source: "indeterminate", ratePct: null, breach: false });
+  assert.deepEqual(signal, { source: "indeterminate", ratePct: null, breach: false, reason: "recorded-stale" });
 });
 
 test("resolveSpamSignal — leitura DENTRO da janela de 48h continua válida (fronteira)", () => {
@@ -791,7 +812,7 @@ test("resolveSpamSignal — recordedAt FRESCO mas date de 7 dias atrás → inde
     mkPostmasterEntry({ spamRatePct: 0, date: staleDate, recordedAt: NOW.toISOString() }),
     NOW,
   );
-  assert.deepEqual(signal, { source: "indeterminate", ratePct: null, breach: false });
+  assert.deepEqual(signal, { source: "indeterminate", ratePct: null, breach: false, reason: "date-stale" });
 });
 
 // `entry.date` é YYYY-MM-DD (dia-calendário, sem hora) — parseado como
@@ -822,7 +843,7 @@ test("resolveSpamSignal — cobertura de 1/10 dias → indeterminate mesmo com d
     mkPostmasterEntry({ spamRatePct: 0, daysWithData: 1, daysProbed: 10 }),
     NOW,
   );
-  assert.deepEqual(signal, { source: "indeterminate", ratePct: null, breach: false });
+  assert.deepEqual(signal, { source: "indeterminate", ratePct: null, breach: false, reason: "low-coverage" });
 });
 
 test("resolveSpamSignal — cobertura >= POSTMASTER_MIN_COVERAGE_RATIO (ex: 5/10) resolve normalmente", () => {
@@ -845,6 +866,25 @@ test("resolveSpamSignal — cobertura abaixo do limiar mesmo em fração equival
 test("resolveSpamSignal — sem daysWithData/daysProbed (entry manual ou pré-#4541) NÃO aciona o guard de cobertura", () => {
   const signal = resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.05, producedBy: "manual" }), NOW);
   assert.equal(signal.source, "postmaster");
+});
+
+// #4544 (achado convergente type-design-analyzer + silent-failure-hunter):
+// `daysWithData`/`daysProbed` são optionals INDEPENDENTES — nada no tipo
+// impede uma entry com só um dos dois. Documenta o comportamento ATUAL desse
+// caso assimétrico (produtor corrompido/parcial, nunca deveria acontecer via
+// `buildAveragedEntry`, que sempre grava os dois juntos — mas o tipo não
+// GARANTE isso estruturalmente): o guard de cobertura simplesmente não
+// dispara, igual ao caso "ambos ausentes" — direção ERRADA pra um sistema
+// cujo design é "degradar quando em dúvida" (deveria arguably ser
+// `low-coverage`/indeterminate, não `postmaster`), mas é o comportamento
+// hoje. Se um reshape pra `coverage?: { daysWithData; daysProbed }` (que
+// garantiria o pareamento estruturalmente) acontecer no futuro, este teste
+// deve ser atualizado pra refletir o novo comportamento.
+test("resolveSpamSignal — só daysWithData OU só daysProbed presente (assimétrico) NÃO aciona o guard de cobertura (comportamento atual, #4544)", () => {
+  const onlyWithData = resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.05, daysWithData: 1 }), NOW);
+  assert.equal(onlyWithData.source, "postmaster");
+  const onlyProbed = resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.05, daysProbed: 10 }), NOW);
+  assert.equal(onlyProbed.source, "postmaster");
 });
 
 test("renderWeeklyPlanTabPanel — com leitura de Postmaster acima do limite, semáforo geral é vermelho MESMO com tudo mais saudável e complaints da Brevo em zero (#4063 fim-a-fim)", () => {
@@ -879,6 +919,39 @@ test("renderWeeklyPlanTabPanel — sem leitura de Postmaster, semáforo NUNCA é
   const html = renderWeeklyPlanTabPanel(camps, NOW);
   assert.doesNotMatch(html, /Verde/);
   assert.match(html, /Amarelo/);
+});
+
+// #4544: a célula "— (sem leitura)" ganha um `title=` (tooltip, mesmo padrão
+// de render-links.ts) com a causa ESPECÍFICA do indeterminate — sem isso, as
+// 5 causas eram indistinguíveis na UI (incidente 260803 só foi diagnosticado
+// puxando a entry crua do KV manualmente).
+test("renderWeeklyPlanTabPanel — célula 'sem leitura' carrega title= com a causa específica do indeterminate (#4544)", () => {
+  const camps = [
+    campaignSentHoursAgo(60, { statistics: statsFor({ sent: 3000, delivered: 2990, uniqueViews: 600, complaints: 0 }) }),
+  ];
+  // sem postmasterSpam (default null) → reason "missing".
+  const htmlMissing = renderWeeklyPlanTabPanel(camps, NOW);
+  const rowMissing = htmlMissing.match(/<tr><td>Spam \(Postmaster[\s\S]*?<\/tr>/)?.[0];
+  assert.ok(rowMissing);
+  assert.match(rowMissing!, /title="Sem leitura gravada no KV/);
+
+  // cobertura baixa → reason "low-coverage", texto diferente do "missing".
+  const htmlLowCoverage = renderWeeklyPlanTabPanel(
+    camps,
+    NOW,
+    [],
+    mkPostmasterEntry({ spamRatePct: 0.05, daysWithData: 1, daysProbed: 10 }),
+  );
+  const rowLowCoverage = htmlLowCoverage.match(/<tr><td>Spam \(Postmaster[\s\S]*?<\/tr>/)?.[0];
+  assert.ok(rowLowCoverage);
+  assert.match(rowLowCoverage!, /title="Cobertura da janela/);
+
+  // com leitura CONFIÁVEL (source==="postmaster"), sem title= nenhum — nunca
+  // um tooltip de "causa de indeterminate" numa leitura válida.
+  const htmlOk = renderWeeklyPlanTabPanel(camps, NOW, [], mkPostmasterEntry({ spamRatePct: 0.05 }));
+  const rowOk = htmlOk.match(/<tr><td>Spam \(Postmaster[\s\S]*?<\/tr>/)?.[0];
+  assert.ok(rowOk);
+  assert.doesNotMatch(rowOk!, /title=/);
 });
 
 // #4400: o rótulo virou "Spam (Postmaster)" — ESTÁTICO em 2 sentidos: (1) não
