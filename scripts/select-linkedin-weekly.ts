@@ -10,8 +10,8 @@
  *   3. Cruza com o cache local de cliques do Beehiiv
  *      (`data/beehiiv-cache/posts/*.json`).
  *   4. Ranqueia por taxa (cliques verificados ÷ aberturas), filtra links
- *      comerciais/próprios, seleciona manchetes + Use Melhor + lista do
- *      resto da semana.
+ *      comerciais/próprios, seleciona manchetes + Use Melhor + Edições da
+ *      semana (link + destaques de cada edição, até 5).
  *   5. Escreve `data/weekly/{cycle}/_internal/ln-selection.json`.
  *
  * **`--manifest-only`**: só resolve a janela + cruza com o cache pra emitir
@@ -32,7 +32,8 @@ import { fileURLToPath } from "node:url";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import { resolveWeeklyLinkedinCycle, weeklyLinkedinRelDir, parseAAMMDD } from "./lib/weekly-linkedin-cycle.ts";
-import { extractWeeklyCandidates, type WeeklyRawCandidate } from "./lib/weekly-linkedin-parse.ts";
+import { extractWeeklyCandidates, detectDeadSectionHeaders, type WeeklyRawCandidate } from "./lib/weekly-linkedin-parse.ts";
+import { deriveEditionUrl } from "./lib/edition-url.ts";
 import {
   matchPostsToWindow,
   identifyWeeklyPostsNeedingClicks,
@@ -57,16 +58,33 @@ interface EditionRead {
   date: string;
   found: boolean;
   d1Title?: string;
+  /** Títulos dos destaques (1-3, na ordem) — usado pra montar "Edições da semana" (#4456). */
+  destaqueTitles: string[];
   candidates: WeeklyRawCandidate[];
+  /** #4491: labels de seção (RADAR/LANÇAMENTOS/USE MELHOR/VÍDEOS) com header
+   * reconhecível no markdown bruto mas ZERO candidatos extraídos — falha
+   * PARCIAL de parse, distinta de `candidates.length === 0` (falha total). */
+  deadSections: string[];
 }
 
 function readEdition(date: string, editionsRootDir: string): EditionRead {
   const dir = resolveEditionDir(editionsRootDir, date);
   const mdPath = join(dir, "02-reviewed.md");
-  if (!existsSync(mdPath)) return { date, found: false, candidates: [] };
+  if (!existsSync(mdPath)) return { date, found: false, destaqueTitles: [], candidates: [], deadSections: [] };
   const raw = readFileSync(mdPath, "utf8");
-  const d1 = parseDestaques(raw).find((d) => d.n === 1);
-  return { date, found: true, d1Title: d1?.title, candidates: extractWeeklyCandidates(raw, date) };
+  const destaques = parseDestaques(raw)
+    .filter((d) => d.n >= 1 && d.n <= 3)
+    .sort((a, b) => a.n - b.n);
+  const d1 = destaques.find((d) => d.n === 1);
+  const candidates = extractWeeklyCandidates(raw, date);
+  return {
+    date,
+    found: true,
+    d1Title: d1?.title,
+    destaqueTitles: destaques.map((d) => d.title),
+    candidates,
+    deadSections: detectDeadSectionHeaders(raw, candidates),
+  };
 }
 
 function loadBeehiivCache(beehiivPostsDir: string): BeehiivCachePost[] {
@@ -154,13 +172,23 @@ export function main(rootDirOverride?: string) {
   const headlineCap = computeHeadlineCap(editionsFound.length);
   const headlineResult = selectHeadlines(ranked, headlineCap);
   const headlineUrls = new Set(headlineResult.selected.map((c) => normalizeUrl(c.url)));
-  const headlineEditionDates = new Set(headlineResult.selected.map((c) => c.editionDate));
 
   const useMelhor = selectUseMelhor(ranked, headlineUrls);
 
-  const restOfWeek = editionsFound
-    .filter((e) => !headlineEditionDates.has(e.date) && e.d1Title)
-    .map((e) => ({ editionDate: e.date, title: e.d1Title as string }));
+  // #4456 (decisão do editor, 260802): "Edições da semana" lista as
+  // edições da janela com D1 parseável (até 5), não só as que perderam a
+  // manchete — é o índice da semana inteira, com link + os até-3 destaques
+  // de cada dia, independente de um deles já ter virado manchete acima.
+  // Precisa de d1Title pra derivar a URL (deriveEditionUrl usa o slug do
+  // D1) — sem D1 parseável, a edição fica de fora (mesmo guard de antes,
+  // ver warning `missingD1` abaixo).
+  const weeklyEditions = editionsFound
+    .filter((e) => e.d1Title)
+    .map((e) => ({
+      editionDate: e.date,
+      url: deriveEditionUrl(e.d1Title as string),
+      destaques: e.destaqueTitles,
+    }));
 
   const warnings: string[] = [];
 
@@ -187,11 +215,29 @@ export function main(rootDirOverride?: string) {
       `${manifest.length} post(s) da janela ainda sem clicks enriquecidos no cache — rode beehiiv-clicks-enricher e re-rode este script antes de confiar na seleção.`,
     );
   }
-  const missingD1 = editionsFound.filter((e) => !headlineEditionDates.has(e.date) && !e.d1Title);
+  const missingD1 = editionsFound.filter((e) => !e.d1Title);
   if (missingD1.length > 0) {
     warnings.push(
-      `${missingD1.length} edição(ões) sem DESTAQUE 1 parseável — não entram na lista "resto da semana": ${missingD1.map((e) => e.date).join(", ")}`,
+      `${missingD1.length} edição(ões) sem DESTAQUE 1 parseável — não entram na lista "Edições da semana" (sem D1 não dá pra derivar a URL): ${missingD1.map((e) => e.date).join(", ")}`,
     );
+  }
+
+  // #4501 (review PR): `deriveEditionUrl` trunca o slug em 60 caracteres —
+  // 2 D1 com prefixo idêntico (ou D1 idênticos) produzem a MESMA URL sem
+  // nenhum aviso, e o link de uma das edições em "Edições da semana" aponta
+  // pro post ERRADO em silêncio (o rótulo do link, "Edição de DD/MM", segue
+  // correto — só o href fica errado, imperceptível na revisão visual do
+  // gate). Correção de dado, não estilo — sempre checar antes de aprovar.
+  const urlToDates = new Map<string, string[]>();
+  for (const e of weeklyEditions) {
+    urlToDates.set(e.url, [...(urlToDates.get(e.url) ?? []), e.editionDate]);
+  }
+  for (const [url, dates] of urlToDates) {
+    if (dates.length > 1) {
+      warnings.push(
+        `Edições da semana: URL derivada colide entre ${dates.join(" e ")} (slug idêntico "${url}") — pelo menos uma dessas edições vai linkar pro post ERRADO. Confira o slug real de cada post no Beehiiv antes de publicar.`,
+      );
+    }
   }
 
   // #4489 finding 6: `found && candidates.length === 0` é uma falha TOTAL de
@@ -204,6 +250,22 @@ export function main(rootDirOverride?: string) {
   if (emptyParseEditions.length > 0) {
     warnings.push(
       `${emptyParseEditions.length} edição(ões) com 02-reviewed.md presente mas ZERO candidatos extraídos (seção vazia ou formato não reconhecido pelo parser) — não competiram por seleção: ${emptyParseEditions.map((e) => e.date).join(", ")}`,
+    );
+  }
+
+  // #4491: falha PARCIAL de parse — diferente de emptyParseEditions acima
+  // (que só pega candidates.length===0 pra edição INTEIRA), aqui uma edição
+  // pode ter candidatos de OUTRAS seções (candidates.length > 0 no total) e
+  // ainda assim ter UMA seção específica com header reconhecido no markdown
+  // bruto mas zero candidatos extraídos dela — sinal de regressão no parser
+  // (formato de item não reconhecido), não de seção genuinamente vazia (sem
+  // header). Sem isso, os itens da seção quebrada sumiam da disputa de
+  // seleção sem nenhum sinal, sempre que ao menos uma outra seção da mesma
+  // edição continuasse parseando normalmente.
+  for (const e of editionsFound) {
+    if (e.deadSections.length === 0) continue;
+    warnings.push(
+      `Edição ${e.date}: se${e.deadSections.length > 1 ? "ções" : "ção"} ${e.deadSections.join(", ")} tem header reconhecido no 02-reviewed.md mas ZERO candidatos extraídos — possível regressão no parser (formato de item não reconhecido), não seção genuinamente vazia.`,
     );
   }
 
@@ -238,10 +300,10 @@ export function main(rootDirOverride?: string) {
     editionsFound: editionsFound.map((e) => e.date),
     editionsMissing,
     headlines: headlineResult.selected,
-    headlineCandidatesRanked: headlineResult.ranked,
+    headlineCandidatesRanked: headlineResult.headlineEligible,
     excludedCandidates: headlineResult.excluded,
     useMelhor: useMelhor ?? null,
-    restOfWeek,
+    weeklyEditions,
     postsNeedingClicks: manifest,
     warnings,
     generatedAt: new Date().toISOString(),
@@ -252,7 +314,7 @@ export function main(rootDirOverride?: string) {
   const outPath = join(outDir, "ln-selection.json");
   writeFileSync(outPath, JSON.stringify(output, null, 2), "utf8");
 
-  console.log(`OK: ciclo ${cycle} — ${headlineResult.selected.length} manchete(s), Use Melhor ${useMelhor ? "✓" : "✗"}, ${restOfWeek.length} no resto da semana → ${outPath}`);
+  console.log(`OK: ciclo ${cycle} — ${headlineResult.selected.length} manchete(s), Use Melhor ${useMelhor ? "✓" : "✗"}, ${weeklyEditions.length} em Edições da semana → ${outPath}`);
   for (const h of headlineResult.selected) {
     console.log(`  [${h.ratePct.toFixed(2)}%] ${h.title} (${h.editionDate}, ${h.section})`);
   }

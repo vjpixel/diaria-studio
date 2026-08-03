@@ -171,8 +171,13 @@ function checkLinkedinCronCredsSet(): InvariantViolation[] {
 
 function checkPollSecretsSet(): InvariantViolation[] {
   const violations: InvariantViolation[] = [];
-  // #1186: POLL_SECRET não é mais usado pelo diário (modo merge-tag, sem sig HMAC).
-  // Mantemos o check apenas pra ADMIN_SECRET (close-poll.ts ainda o usa).
+  // #1186: POLL_SECRET não é usado pelas ETAPAS do diário (modo merge-tag, sem
+  // sig HMAC na URL de voto). #4487: POLL_SECRET voltou a ter uso ATIVO, mas
+  // só em `scripts/inject-poll-token.ts` — um script operacional SEPARADO
+  // (não invocado por `/diaria-edicao`/Stage 0, wiring de sync incremental
+  // ainda pendente, ver CLAUDE.md) — pra gerar o token opaco `{{poll_token}}`.
+  // Enquanto esse wiring não existir, Stage 0 não precisa exigir POLL_SECRET.
+  // Mantemos o check aqui apenas pra ADMIN_SECRET (close-poll.ts ainda o usa).
   violations.push(
     ...checkRequiredEnvVar(
       "ADMIN_SECRET",

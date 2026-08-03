@@ -79,6 +79,75 @@ describe("identifyWeeklyPostsNeedingClicks — SEM corte de idade (diferente de 
     ]);
     assert.deepEqual(identifyWeeklyPostsNeedingClicks(posts), []);
   });
+
+  it("post sem stats.email (não só clicks: 0) NÃO entra no manifest", () => {
+    const posts = new Map<string, BeehiivCachePost>([["260731", { id: "post_no_email", status: "confirmed", stats: {} }]]);
+    assert.deepEqual(identifyWeeklyPostsNeedingClicks(posts), []);
+  });
+
+  it('recalibração 260802 (fleet review #4383 achado 1): usa email.verified_clicks como denominador — reproduz post real "Anthropic lança Claude Opus 4.7" (7 linhas, clicks=32, verified=24, soma=9) — completo pelo piso de linhas', () => {
+    const rows = [
+      { url: "a", email: { verified_clicks: 9 } },
+      { url: "b", email: { verified_clicks: 0 } },
+      { url: "c", email: { verified_clicks: 0 } },
+      { url: "d", email: { verified_clicks: 0 } },
+      { url: "e", email: { verified_clicks: 0 } },
+      { url: "f", email: { verified_clicks: 0 } },
+      { url: "g", email: { verified_clicks: 0 } },
+    ];
+    const posts = new Map<string, BeehiivCachePost>([
+      [
+        "260731",
+        {
+          id: "post_real_4383",
+          status: "confirmed",
+          stats: { email: { clicks: 32, verified_clicks: 24 }, clicks: rows },
+        },
+      ],
+    ]);
+    assert.deepEqual(identifyWeeklyPostsNeedingClicks(posts), []);
+  });
+
+  it("#4493: post com cache PARCIAL — 1 linha cobrindo bem menos da metade do agregado — entra no manifest", () => {
+    // Reprodução do achado real (26w31): 5 posts confirmados tinham
+    // exatamente 1 linha em stats.clicks apesar de email.clicks 34-51. O
+    // gate antigo (stats.clicks.length > 0) nunca detectava isso.
+    const posts = new Map<string, BeehiivCachePost>([
+      [
+        "260731",
+        {
+          id: "post_partial",
+          title: "Post parcial",
+          status: "confirmed",
+          stats: {
+            email: { clicks: 38, unique_opens: 134 },
+            clicks: [{ url: "https://exemplo.com/a", email: { verified_clicks: 1 } }],
+          },
+        },
+      ],
+    ]);
+    assert.deepEqual(identifyWeeklyPostsNeedingClicks(posts), [
+      { id: "post_partial", title: "Post parcial", email_clicks: 38 },
+    ]);
+  });
+
+  it("#4493: post com cache saudável (24+ linhas somando perto do agregado) NÃO entra no manifest", () => {
+    const healthyRows = Array.from({ length: 24 }, (_, i) => ({
+      url: `https://exemplo.com/link-${i}`,
+      email: { verified_clicks: 1 },
+    }));
+    const posts = new Map<string, BeehiivCachePost>([
+      [
+        "260731",
+        {
+          id: "post_healthy",
+          status: "confirmed",
+          stats: { email: { clicks: 24, unique_opens: 134 }, clicks: healthyRows }, // soma = 24/24 = 100%
+        },
+      ],
+    ]);
+    assert.deepEqual(identifyWeeklyPostsNeedingClicks(posts), []);
+  });
 });
 
 describe("clickCountsForUrl", () => {

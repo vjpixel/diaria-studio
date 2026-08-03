@@ -141,7 +141,7 @@ describe("#1949 — cortar falso-positivos (merge tags, 403 bot-block, timeout w
     assert.equal(categorizeUrl("https://example.com/p?u=real"), null);
   });
 
-  it("vote URL com {{email}}/{{poll_sig}} é SKIPPED (não vira link_dead)", async () => {
+  it("vote URL com {{email}}/{{poll_sig}} é SKIPPED (não vira link_dead) — stage default 'draft'", async () => {
     const html = '<a href="https://poll.diaria.workers.dev/vote?email={{email}}&sig={{poll_sig}}">vote</a>';
     // fetchStub jamais deve ser chamado pra merge_tag
     let called = false;
@@ -153,6 +153,52 @@ describe("#1949 — cortar falso-positivos (merge tags, 403 bot-block, timeout w
     assert.equal(called, false, "não faz HEAD em URL com merge tag");
     assert.equal(r.issues.length, 0);
     assert.equal(r.skipped.filter((s) => s.reason === "merge_tag").length, 1);
+  });
+
+  it("#4512 (achado silent-failure-hunter): stage='delivered' — {{poll_token}} ainda literal NÃO é skipped, vira link_dead se o HEAD retornar 4xx", async () => {
+    // Simula o e-mail JÁ ENTREGUE (fetchado via Gmail MCP) onde a Beehiiv
+    // deveria ter substituído {{poll_token}} mas não substituiu (custom
+    // field não populado pro assinante de teste). Isso é o próprio defeito
+    // que este linter existe pra pegar — não pode ser mascarado como
+    // merge_tag esperado.
+    const html = '<a href="https://poll.diaria.workers.dev/vote?email={{poll_token}}@vote.eia.diaria.local&edition=260801&choice=A">vote</a>';
+    let called = false;
+    const fetchStub = (): Promise<Response> => {
+      called = true;
+      // Mesmo status que o /vote real retornaria via isUnsubstitutedMergeTag
+      // (workers/poll/src/vote.ts) pra um parâmetro email com merge tag literal.
+      return Promise.resolve(new Response(null, { status: 400 }));
+    };
+    const r = await checkLinkTracking(html, fetchStub as never, undefined, "delivered");
+    assert.equal(called, true, "stage='delivered' deve fazer HEAD real, não skipar por merge_tag");
+    assert.equal(r.skipped.filter((s) => s.reason === "merge_tag").length, 0, "não deve aparecer como merge_tag skip neste estágio");
+    assert.equal(r.issues.length, 1);
+    assert.equal(r.issues[0].type, "link_dead");
+    assert.equal(r.issues[0].severity, "blocker");
+  });
+
+  it("#4512: stage='delivered' — merge tag já substituída (caminho feliz) não é afetada, HEAD normal com 200 → passed", async () => {
+    // Confirma que a mudança não penaliza o caso normal: quando a Beehiiv
+    // JÁ substituiu {{poll_token}} por um token real, a URL não tem mais
+    // chaves {{ }} — segue pelo pipeline normal de sempre, sem relação com
+    // o guard novo.
+    const html = '<a href="https://poll.diaria.workers.dev/vote?email=abc123def456abc123def456@vote.eia.diaria.local&edition=260801&choice=A">vote</a>';
+    const fetchStub = (): Promise<Response> => Promise.resolve(new Response(null, { status: 200 }));
+    const r = await checkLinkTracking(html, fetchStub as never, undefined, "delivered");
+    assert.equal(r.passed, 1);
+    assert.equal(r.issues.length, 0);
+  });
+
+  it("#4512: categorizeUrl(url, 'delivered') retorna null (não 'merge_tag') pra URL com {{...}} literal", () => {
+    assert.equal(
+      categorizeUrl("https://poll.diaria.workers.dev/vote?email={{poll_token}}@vote.eia.diaria.local", "delivered"),
+      null,
+    );
+    // stage default (sem 2º arg) continua 'draft' — comportamento pré-#4512 preservado.
+    assert.equal(
+      categorizeUrl("https://poll.diaria.workers.dev/vote?email={{poll_token}}@vote.eia.diaria.local"),
+      "merge_tag",
+    );
   });
 
   it("403/401 → bot_blocked skip (não link_dead)", async () => {

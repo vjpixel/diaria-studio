@@ -147,12 +147,16 @@ export function buildInsertTextJs(
   editor.view.dispatch(tr.insertText(html, snippetPos + 1));
 
   // Varredura direcionada (#1766): NÃO serializar o doc inteiro (timeout CDP 45s).
+  // #4487: a URL de voto passou a usar o token opaco {{poll_token}} em vez do
+  // e-mail cru {{email}} — 'hasEmail' checa QUALQUER um dos dois (o legado
+  // continua reconhecido, nunca um falso 'merge-tag perdida' se algum caminho
+  // ainda emitir a forma antiga).
   let hasEmail = false;
   let hasPollA = false;
   let hasPollB = false;
   editor.state.doc.descendants((n) => {
     if (n.isText && n.text) {
-      if (n.text.includes('{{email}}'))       hasEmail = true;
+      if (n.text.includes('{{poll_token}}') || n.text.includes('{{email}}')) hasEmail = true;
       if (n.text.includes('{{poll_a_url}}'))  hasPollA = true;
       if (n.text.includes('{{poll_b_url}}'))  hasPollB = true;
     }
@@ -170,11 +174,15 @@ export function buildInsertTextJs(
 }
 
 /**
- * Valida que um fragmento HTML bruto preserva a merge-tag `{{email}}`.
+ * Valida que um fragmento HTML bruto preserva a merge-tag de identidade do
+ * voto — `{{poll_token}}` (#4487: token opaco por assinante, substitui o
+ * `{{email}}` cru que a URL de voto usava até então).
  *
- * Essa tag é obrigatória: a URL de voto do É IA? usa `{{email}}` como identificador
+ * Essa tag é obrigatória: a URL de voto do É IA? usa o token como identificador
  * do assinante. Se o fragmento foi gerado com `--no-wrap` mas a tag sumiu (ex: o
  * renderer substituiu incorretamente), o paste enviaria votos sem identificação.
+ * Aceita `{{email}}` também (forma legada, pré-#4487) — nunca um falso erro se
+ * algum caminho ainda não migrado emitir a forma antiga.
  *
  * @param fragmentHtml Conteúdo HTML bruto do fragmento (saída do Worker).
  * @returns `null` se válido, string de erro se inválido.
@@ -183,9 +191,9 @@ export function verifyFragmentPreserved(fragmentHtml: string): string | null {
   if (!fragmentHtml || fragmentHtml.length === 0) {
     return "[beehiiv-insert-text] fragmento vazio — upload falhou ou URL incorreta";
   }
-  if (!fragmentHtml.includes("{{email}}")) {
+  if (!fragmentHtml.includes("{{poll_token}}") && !fragmentHtml.includes("{{email}}")) {
     return (
-      "[beehiiv-insert-text] merge-tag {{email}} ausente no fragmento — " +
+      "[beehiiv-insert-text] merge-tag de identidade de voto ({{poll_token}}, #4487) ausente no fragmento — " +
       "verifique que upload-html-public.ts foi rodado com --no-wrap e que o " +
       "renderer preservou as merge-tags"
     );

@@ -666,6 +666,7 @@ Todos em `data/monthly/{ciclo}/` (ex: `data/monthly/2605-06/`):
 - `_internal/04-fact-check.json` — claims verificados (Etapa 4)
 - `_internal/.step-N-done.json` (N=1..5) — checkpoints de conclusão por etapa, mesmo formato do diário (#2795)
 - `_internal/05-published.json` — campanha Brevo criada (Etapa 5)
+- `_internal/beehiiv-preview.html` + `_internal/beehiiv-apoiadores-state.json` — variante Beehiiv pra apoiadores Mantenedor/Patrono (#4482, opcional, fora da sequência 0-5 — gerados por `/diaria-mensal-apoiadores`, skill separada desde #4521, ver seção "Envio extra Beehiiv" abaixo)
 
 ## Notas
 
@@ -697,3 +698,36 @@ Este comando grava `data/monthly/$CYCLE/_internal/.close-poll-clarice.json`. Sem
 Para pular a verificação (não recomendado): `clarice-schedule-sends --schedule --skip-eia-guard`.
 
 **Test-loop no fluxo multi-campanha**: usar `clarice-schedule-sends --send-test` antes do `--schedule`. Envia test email das células `d01-A/B/C` (S1) ou `d08` (S2/S3) para `brevo_monthly.test_email`. Disparar `review-test-email` via Agent após (mesmo fluxo da Etapa 5d acima).
+
+---
+
+## Envio extra Beehiiv — apoiadores Mantenedor/Patrono (#4482, skill própria desde #4521)
+
+Canal SEPARADO do envio Clarice/Brevo acima — mesmo `draft.md`, audiência e
+plataforma diferentes. **Migrado pra skill própria, separada de
+`/diaria-mensal`** (#4521, decisão "skill manual separada, não uma etapa
+nova dentro de /diaria-mensal" — o editor decide o timing independente do
+ciclo 0-5 acima):
+
+```
+/diaria-mensal-apoiadores --cycle $CYCLE
+```
+
+Ver `.claude/skills/diaria-mensal-apoiadores/SKILL.md` para o fluxo completo
+(render, idempotência/dedup do envio via
+`scripts/lib/mensal/monthly-apoiadores-state.ts`, e o passo-a-passo de
+publicação manual — incluindo o mecanismo de audiência multi-segmento
+verificado no #4521: a Beehiiv aceita nativamente incluir/excluir até 5
+segmentos combinados por post, então **não é preciso criar um 7º segmento
+combinado** "Mantenedor ou Patrono").
+
+Resumo das decisões de produto (issue #4482, sessão develop 260802b/260803):
+cadência = envio EXTRA num dia sem edição diária pesada; segmento = só
+Mantenedor/Patrono (nunca a base inteira, nunca reativação de inativos);
+seções `CLARICE — *`/`APRESENTAÇÃO` removidas sem substituição (espaço
+reservado fica vazio — decisão mantida pela skill nova, não reaberta);
+plataforma = Beehiiv, reusando `context/publishers/beehiiv-playbook.md`.
+
+Sem gate/checkpoint próprio no esquema `_internal/.step-N-done.json` deste
+arquivo — este envio é opcional e roda fora da sequência 0-5 do ciclo, numa
+skill separada.

@@ -227,21 +227,21 @@ function resolveReportUrl(entry: ReportEntry): string {
  * Monta o e-mail de notificação — título do relatório + link (#4475).
  *
  * **Kinds com resumo curto pronto no próprio título** (overnight/develop —
- * ex: "Diar.ia overnight 260720 — 5 resolvidas, 2 puladas, 1 finding",
+ * ex: "diar.ia.br overnight 260720 — 5 resolvidas, 2 puladas, 1 finding",
  * montado por `.claude/skills/diaria-overnight/SKILL.md` Fase 2 passo 3)
  * já carregam esse resumo em `entry.title`, então título+link no corpo cobre
  * o requisito de incluir o resumo sem duplicar lógica de digest aqui — este
  * módulo não conhece a estrutura de `plan.json`/`report.md` por kind, só o
  * texto que o caller já preparou como título.
  *
- * **`[Diar.ia]` só é prefixado quando o título ainda não começa com "Diar.ia"
- * (achado do self-review, #4478).** Todo `entry.title` de kind hoje em uso
- * (`overnight`/`develop`/`clarice-novos`/`edicao`) já começa com "Diar.ia" —
- * sem esse guard o subject saía `"[Diar.ia] Diar.ia overnight ..."`,
- * duplicando a marca.
+ * **`[diar.ia.br]` só é prefixado quando o título ainda não começa com
+ * "diar.ia.br" (achado do self-review, #4478; grafia atualizada #4424).**
+ * Todo `entry.title` de kind hoje em uso (`overnight`/`develop`/
+ * `clarice-novos`/`edicao`) já começa com "diar.ia.br" — sem esse guard o
+ * subject saía `"[diar.ia.br] diar.ia.br overnight ..."`, duplicando a marca.
  */
 export function buildReportEmail(entry: ReportEntry): { subject: string; body: string } {
-  const subject = entry.title.startsWith("Diar.ia") ? entry.title : `[Diar.ia] ${entry.title}`;
+  const subject = entry.title.startsWith("diar.ia.br") ? entry.title : `[diar.ia.br] ${entry.title}`;
   const body = `${entry.title}\n\n${resolveReportUrl(entry)}\n`;
   return { subject, body };
 }

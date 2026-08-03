@@ -2,10 +2,12 @@
  * test/newsletter-render-html-esp-4266.test.ts (#4266)
  *
  * Cobre a merge tag do link de voto do É IA? por ESP de destino: Beehiiv usa
- * `{{email}}` cru (comportamento legado, inalterado); Brevo usa
- * `{{ contact.EMAIL }}` com `&` escapado como `&amp;` (mesma sintaxe já usada
- * pelo mensal em `lib/mensal/monthly-render.ts`). Sem `esp`/`esp: "beehiiv"`
- * o comportamento é idêntico ao pré-#4266 — regressão coberta abaixo.
+ * o token opaco `{{poll_token}}@vote.eia.diaria.local` (#4487 — era
+ * `{{email}}` cru até então); Brevo usa `{{ contact.EMAIL }}` com `&`
+ * escapado como `&amp;` (mesma sintaxe já usada pelo mensal em
+ * `lib/mensal/monthly-render.ts`, fora do escopo do #4487). Sem
+ * `esp`/`esp: "beehiiv"` o comportamento é idêntico entre si — regressão
+ * coberta abaixo.
  */
 
 import { describe, it } from "node:test";
@@ -20,10 +22,11 @@ const baseEia: EIA = {
 };
 
 describe("renderEIA(eia, esp) — #4266", () => {
-  it("sem esp (default): merge tag Beehiiv {{email}}, & cru", () => {
+  it("sem esp (default): merge tag Beehiiv opaca {{poll_token}}@vote.eia.diaria.local, & cru (#4487)", () => {
     const html = renderEIA(baseEia);
-    assert.match(html, /\{\{email\}\}/);
+    assert.match(html, /\{\{poll_token\}\}@vote\.eia\.diaria\.local/);
     assert.match(html, /&edition=260999&choice=A/);
+    assert.ok(!html.includes("{{email}}"), "e-mail cru não deve mais aparecer na URL de voto (#4487)");
     assert.ok(!html.includes("{{ contact.EMAIL }}"), "não deve conter merge tag Brevo");
   });
 
@@ -77,9 +80,9 @@ describe("renderHTML(content, { esp }) — threading pelos 3 call sites internos
     sections: [],
   };
 
-  it("sem opts.esp: comportamento inalterado (merge tag Beehiiv)", () => {
+  it("sem opts.esp: merge tag Beehiiv opaca (#4487)", () => {
     const html = renderHTML(fixtureComEia);
-    assert.match(html, /\{\{email\}\}/);
+    assert.match(html, /\{\{poll_token\}\}@vote\.eia\.diaria\.local/);
     assert.ok(!html.includes("{{ contact.EMAIL }}"));
   });
 
@@ -118,7 +121,7 @@ describe("renderHTML(content, { esp }) — threading pelos 3 call sites internos
   it("renderEiaStandalone permanece sempre Beehiiv — sem parâmetro esp (paste híbrido é Beehiiv-only)", () => {
     const html = renderEiaStandalone(fixtureComEia);
     assert.ok(html);
-    assert.match(html!, /\{\{email\}\}/);
+    assert.match(html!, /\{\{poll_token\}\}@vote\.eia\.diaria\.local/);
     assert.ok(!html!.includes("{{ contact.EMAIL }}"));
   });
 });

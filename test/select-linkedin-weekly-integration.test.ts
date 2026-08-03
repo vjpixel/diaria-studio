@@ -26,6 +26,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main as selectMain } from "../scripts/select-linkedin-weekly.ts";
 import { main as renderMain } from "../scripts/render-linkedin-weekly.ts";
+import { deriveEditionUrl } from "../scripts/lib/edition-url.ts";
 
 const originalArgv = process.argv;
 const originalExit = process.exit;
@@ -79,7 +80,11 @@ describe("select→render end-to-end (#4489 finding 4) + gap de cache de clique 
     root = mkTmpRoot();
 
     // Edição 260727: post presente e enriquecido no cache Beehiiv — 3
-    // candidatos com clique real (destaque, radar, use melhor).
+    // candidatos com clique real (destaque, radar, use melhor). Tem os 3
+    // destaques (D1-D3) pra exercitar o caminho real de extração
+    // multi-destaque de `readEdition` (achado do pr-test-analyzer na
+    // revisão do #4501 — antes só era exercitado por fixture hand-built em
+    // weekly-linkedin-render.test.ts, nunca pelo parser de verdade).
     writeEdition(
       root,
       "260727",
@@ -93,6 +98,30 @@ describe("select→render end-to-end (#4489 finding 4) + gap de cache de clique 
         "Por que isso importa:",
         "",
         "Explicação de impacto no mercado brasileiro.",
+        "",
+        "---",
+        "",
+        "**DESTAQUE 2 | ⚖️ REGULAÇÃO**",
+        "",
+        "**[Matéria A2: regulação de IA](https://exemplo.com/materia-a2)**",
+        "",
+        "Corpo da matéria A2.",
+        "",
+        "Por que isso importa:",
+        "",
+        "Explicação da matéria A2.",
+        "",
+        "---",
+        "",
+        "**DESTAQUE 3 | 🚀 LANÇAMENTO**",
+        "",
+        "**[Matéria A3: lançamento de feature](https://exemplo.com/materia-a3)**",
+        "",
+        "Corpo da matéria A3.",
+        "",
+        "Por que isso importa:",
+        "",
+        "Explicação da matéria A3.",
         "",
         "---",
         "",
@@ -182,8 +211,27 @@ describe("select→render end-to-end (#4489 finding 4) + gap de cache de clique 
     );
   });
 
-  it("edição gap aparece no 'resto da semana' (perdeu a manchete mas segue listada, com o warning explicando por quê)", () => {
-    assert.deepEqual(selectionJson.restOfWeek, [{ editionDate: "260728", title: "Matéria B: lançamento de modelo novo" }]);
+  it("'Edições da semana' lista TODAS as edições da janela (inclusive as que já viraram manchete acima), com link + destaques (#4456, decisão 260802)", () => {
+    assert.deepEqual(selectionJson.weeklyEditions, [
+      {
+        editionDate: "260727",
+        url: deriveEditionUrl("Matéria A: empregos e automação"),
+        destaques: ["Matéria A: empregos e automação", "Matéria A2: regulação de IA", "Matéria A3: lançamento de feature"],
+      },
+      {
+        editionDate: "260728",
+        url: deriveEditionUrl("Matéria B: lançamento de modelo novo"),
+        destaques: ["Matéria B: lançamento de modelo novo"],
+      },
+    ]);
+  });
+
+  it("extração real de D1-D3 via readEdition/parseDestaques preserva a ordem (D1, D2, D3) — não só a fixture hand-built de weekly-linkedin-render.test.ts (achado do pr-test-analyzer, revisão #4501)", () => {
+    const edicao727 = (selectionJson.weeklyEditions as Array<{ editionDate: string; destaques: string[] }>).find(
+      (e) => e.editionDate === "260727",
+    );
+    assert.equal(edicao727?.destaques.length, 3);
+    assert.deepEqual(edicao727?.destaques, ["Matéria A: empregos e automação", "Matéria A2: regulação de IA", "Matéria A3: lançamento de feature"]);
   });
 
   it("Use Melhor escolhe o único candidato use_melhor (não competiu pela manchete, taxa 1.5%)", () => {
@@ -198,7 +246,7 @@ describe("select→render end-to-end (#4489 finding 4) + gap de cache de clique 
     );
   });
 
-  it("render: JSON boundary sobrevive ao roundtrip real (finding 4) — HTML final contém as 2 manchetes numeradas, Use Melhor e a lista do resto da semana", () => {
+  it("render: JSON boundary sobrevive ao roundtrip real (finding 4) — HTML final contém as 2 manchetes numeradas, Use Melhor e a lista de Edições da semana", () => {
     process.argv = [
       "node",
       "render-linkedin-weekly.ts",
@@ -223,7 +271,7 @@ describe("select→render end-to-end (#4489 finding 4) + gap de cache de clique 
     assert.match(html, /Tutorial X: como usar melhor o Claude Code/);
     assert.match(html, /Testei essa semana e cortou tempo de setup\./);
     assert.match(html, /Matéria B: lançamento de modelo novo/);
-    assert.match(html, /Resto da semana/);
+    assert.match(html, /Edições da semana/);
     assert.match(html, /Essa semana teve empregos, automação e um tutorial novo\./);
     assert.match(html, /É isso que a diar\.ia\.br cobre todo dia, sem enrolação\./);
 
@@ -232,6 +280,70 @@ describe("select→render end-to-end (#4489 finding 4) + gap de cache de clique 
     assert.equal(renderMeta.useMelhorRendered, true);
     // opening/closing foram passados — nenhum warning de ausência (finding 3).
     assert.ok(!(renderMeta.warnings as string[]).some((w: string) => /ausente\/vazi[ao]/i.test(w)));
+  });
+});
+
+describe("#4492: candidato USE MELHOR com maior clique da semana não vira manchete (fim-a-fim)", () => {
+  let root: string;
+  let selectionJson: any;
+
+  before(() => {
+    root = mkTmpRoot();
+    writeEdition(
+      root,
+      "260810",
+      [
+        "**DESTAQUE 1 | 💼 MERCADO**",
+        "",
+        "**[Matéria A](https://exemplo.com/materia-a)**",
+        "",
+        "Corpo da matéria A.",
+        "",
+        "Por que isso importa:",
+        "",
+        "Explicação.",
+        "",
+        "---",
+        "",
+        "**🛠️ USE MELHOR**",
+        "",
+        "**[Tutorial imbatível de clique](https://exemplo.com/tutorial-imbativel)**",
+        "Tutorial de 5 minutos que bombou de clique essa semana.",
+        "",
+      ].join("\n"),
+    );
+    writeCachePost(root, "post_810", {
+      id: "post_810",
+      status: "confirmed",
+      publish_date: epochFor("260810"),
+      stats: {
+        email: { clicks: 60, unique_opens: 200 },
+        clicks: [
+          // Destaque: 1/200 = 0.5%. Use Melhor: 50/200 = 25% — de longe o
+          // maior clique da semana, mas NÃO pode virar manchete (#4492).
+          { url: "https://exemplo.com/materia-a", base_url: "https://exemplo.com/materia-a", email: { unique_verified_clicks: 1 } },
+          { url: "https://exemplo.com/tutorial-imbativel", base_url: "https://exemplo.com/tutorial-imbativel", email: { unique_verified_clicks: 50 } },
+        ],
+      },
+    });
+
+    process.argv = ["node", "select-linkedin-weekly.ts", "--publish-monday", "260817"];
+    selectMain(root);
+    const selectionPath = join(root, "data/weekly/26w33/_internal/ln-selection.json");
+    selectionJson = JSON.parse(readFileSync(selectionPath, "utf8"));
+  });
+
+  after(() => rmSync(root, { recursive: true, force: true }));
+
+  it("manchete é o destaque de mercado (única elegível), não o tutorial de 25% de taxa", () => {
+    assert.deepEqual(
+      (selectionJson.headlines as Array<{ title: string }>).map((h) => h.title),
+      ["Matéria A"],
+    );
+  });
+
+  it("o candidato use_melhor de maior taxa vai pro bloco Use Melhor dedicado, não pra manchete", () => {
+    assert.equal(selectionJson.useMelhor?.title, "Tutorial imbatível de clique");
   });
 });
 
@@ -306,6 +418,85 @@ describe("finding 5: heurística de linguagem comercial sinaliza sem bloquear", 
   });
 });
 
+describe("#4491: falha PARCIAL de parse — header reconhecido, zero candidatos SÓ daquela seção", () => {
+  let root: string;
+  let selectionJson: any;
+
+  before(() => {
+    root = mkTmpRoot();
+    // RADAR tem header reconhecido mas o item não tem URL nenhuma (formato
+    // mudou) — parseSections ainda inclui a seção (item title-only não é
+    // "vazio" pra ela), mas extractWeeklyCandidates descarta o item por
+    // falta de URL: zero candidatos de RADAR nessa edição. USE MELHOR, na
+    // mesma edição, parseia normalmente — candidates.length total > 0, então
+    // o warning de falha TOTAL (emptyParseEditions) não dispara aqui.
+    writeEdition(
+      root,
+      "260810",
+      [
+        "**DESTAQUE 1 | 💼 MERCADO**",
+        "",
+        "**[Matéria A](https://exemplo.com/materia-a)**",
+        "",
+        "Corpo da matéria A.",
+        "",
+        "Por que isso importa:",
+        "",
+        "Explicação.",
+        "",
+        "---",
+        "",
+        "**📡 RADAR**",
+        "",
+        "Notícia sem link nenhum — formato mudou e o parser não reconhece mais",
+        "",
+        "---",
+        "",
+        "**🛠️ USE MELHOR**",
+        "",
+        "**[Tutorial Y: como usar melhor](https://exemplo.com/tutorial-y)**",
+        "Tutorial de 5 minutos.",
+        "",
+      ].join("\n"),
+    );
+    writeCachePost(root, "post_810", {
+      id: "post_810",
+      status: "confirmed",
+      publish_date: epochFor("260810"),
+      stats: {
+        email: { clicks: 5, unique_opens: 100 },
+        clicks: [
+          { url: "https://exemplo.com/materia-a", base_url: "https://exemplo.com/materia-a", email: { unique_verified_clicks: 3 } },
+          { url: "https://exemplo.com/tutorial-y", base_url: "https://exemplo.com/tutorial-y", email: { unique_verified_clicks: 2 } },
+        ],
+      },
+    });
+
+    process.argv = ["node", "select-linkedin-weekly.ts", "--publish-monday", "260817"];
+    selectMain(root);
+    const selectionPath = join(root, "data/weekly/26w33/_internal/ln-selection.json");
+    selectionJson = JSON.parse(readFileSync(selectionPath, "utf8"));
+  });
+
+  after(() => rmSync(root, { recursive: true, force: true }));
+
+  it("warning específico de seção morta aponta RADAR e a edição 260810 — distinto do warning de falha total", () => {
+    const w = selectionJson.warnings as string[];
+    assert.ok(
+      w.some((x) => /RADAR/.test(x) && x.includes("260810") && /ZERO candidatos extraídos/.test(x) && /header reconhecido/.test(x)),
+      `warnings: ${JSON.stringify(w)}`,
+    );
+    assert.ok(
+      !w.some((x) => /ZERO candidatos extraídos \(seção vazia ou formato não reconhecido pelo parser\) — não competiram por seleção/.test(x)),
+      `warning de falha TOTAL não deveria disparar — candidates.length > 0 (destaque + use melhor): ${JSON.stringify(w)}`,
+    );
+  });
+
+  it("candidatos de USE MELHOR (seção não-quebrada da mesma edição) seguem extraídos normalmente", () => {
+    assert.equal(selectionJson.useMelhor?.title, "Tutorial Y: como usar melhor");
+  });
+});
+
 describe("finding 6: falha total de parse (d1Title existe, zero candidatos) gera warning distinto de missingD1", () => {
   let root: string;
   let selectionJson: any;
@@ -341,5 +532,48 @@ describe("finding 6: falha total de parse (d1Title existe, zero candidatos) gera
   it("NÃO é confundido com missingD1 — d1Title existe, então o warning de DESTAQUE 1 não-parseável não deve aparecer", () => {
     const w = selectionJson.warnings as string[];
     assert.ok(!w.some((x) => /sem DESTAQUE 1 parseável/.test(x)), `warnings: ${JSON.stringify(w)}`);
+  });
+});
+
+describe("achado do silent-failure-hunter (revisão #4501): 2 D1 que produzem a MESMA URL derivada geram warning explícito", () => {
+  let root: string;
+  let selectionJson: any;
+
+  before(() => {
+    root = mkTmpRoot();
+    // Mesmo D1 (título idêntico) em 2 edições da semana — seoSlug produz a
+    // MESMA URL derivada pras 2. Sem o guard, uma delas linkaria pro post
+    // ERRADO em "Edições da semana" sem nenhum sinal (o rótulo do link,
+    // "Edição de DD/MM", segue diferente e correto — só o href fica errado).
+    writeEdition(
+      root,
+      "260817",
+      ["**DESTAQUE 1 | 💼 MERCADO**", "", "**[Duas edições, mesmo título](https://exemplo.com/materia-x)**", "", "Corpo X.", ""].join("\n"),
+    );
+    writeEdition(
+      root,
+      "260818",
+      ["**DESTAQUE 1 | 🚀 LANÇAMENTO**", "", "**[Duas edições, mesmo título](https://exemplo.com/materia-y)**", "", "Corpo Y.", ""].join("\n"),
+    );
+
+    process.argv = ["node", "select-linkedin-weekly.ts", "--publish-monday", "260824"];
+    selectMain(root);
+    const selectionPath = join(root, "data/weekly/26w34/_internal/ln-selection.json");
+    selectionJson = JSON.parse(readFileSync(selectionPath, "utf8"));
+  });
+
+  after(() => rmSync(root, { recursive: true, force: true }));
+
+  it("as 2 edições recebem a MESMA URL derivada em weeklyEditions (reprodução do bug)", () => {
+    const urls = (selectionJson.weeklyEditions as Array<{ url: string }>).map((e) => e.url);
+    assert.equal(urls[0], urls[1], `URLs deveriam colidir: ${JSON.stringify(urls)}`);
+  });
+
+  it("gera warning explícito citando as 2 datas e o slug colidido", () => {
+    const w = selectionJson.warnings as string[];
+    assert.ok(
+      w.some((x) => /URL derivada colide entre 260817 e 260818/.test(x) && /post ERRADO/.test(x)),
+      `warnings: ${JSON.stringify(w)}`,
+    );
   });
 });

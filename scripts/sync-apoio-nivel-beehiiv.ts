@@ -143,6 +143,8 @@ import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { readApoiaSeEnv, defaultCacheDir, competenceMonth } from "./lib/apoia-se.ts";
 import { previousMonthKey } from "./lib/apoio-month-key.ts";
+import { findEmailMatchCandidates, type EmailMatchCandidate } from "./lib/apoio-email-heuristics.ts";
+import { runApoioReconciliationCycle } from "./lib/apoio-reconciliation-cycle.ts";
 import {
   buildApoiosData,
   computeRewardGroup,
@@ -448,6 +450,13 @@ export interface ApoioTagDiffEntry {
   toLevel: ApoioNivel | null;
 }
 
+/** #4490 causa 3: apoiador que não casou por e-mail exato, com candidatos
+ * heurísticos (0 ou mais) pra confirmação manual do editor — NUNCA aplicados
+ * sozinhos, ver `scripts/lib/apoio-email-heuristics.ts`. */
+export interface UnmatchedApoiador extends DesiredApoioLevel {
+  candidates: EmailMatchCandidate[];
+}
+
 export interface ApoioTagDiffResult {
   /** Adições + trocas de faixa — sempre seguro aplicar (nunca gated pelo
    * guard de dados parciais). */
@@ -460,9 +469,10 @@ export interface ApoioTagDiffResult {
   unchanged: ApoioTagDiffEntry[];
   /** Contatos "sem_dados" — nenhuma ação gerada, nível desconhecido. */
   skippedUnresolved: DesiredApoioLevel[];
-  /** Apoiadores (ou não-apoiadores) sem NENHUMA subscription Beehiiv casada
-   * por qualquer um dos seus e-mails — não é erro, só reportado. */
-  notBeehiivSubscriber: DesiredApoioLevel[];
+  /** Apoiadores (ou não-apoiadores) que NÃO casaram por e-mail exato contra
+   * nenhuma subscription Beehiiv — não é necessariamente "não assina", pode
+   * assinar com outro endereço (#4490 causa 3, ver `candidates`). */
+  notBeehiivSubscriber: UnmatchedApoiador[];
 }
 
 /**
@@ -473,6 +483,11 @@ export interface ApoioTagDiffResult {
  * (múltiplos e-mails assinados na Beehiiv) — cada uma recebe uma entrada de
  * diff própria, pra que a recompensa alcance a pessoa independente de qual
  * e-mail ela usa pra ler a newsletter.
+ *
+ * Quando NENHUM e-mail conhecido bate exato (#4490 causa 3),
+ * `findEmailMatchCandidates` gera candidatos heurísticos (local-part
+ * normalizado, nome no local-part, domínio próprio, variação/typo) pra
+ * apresentar ao editor — nunca decide um vínculo sozinho.
  */
 export function diffApoioTags(
   desired: DesiredApoioLevel[],
@@ -485,7 +500,7 @@ export function diffApoioTags(
   const toRemove: ApoioTagDiffEntry[] = [];
   const unchanged: ApoioTagDiffEntry[] = [];
   const skippedUnresolved: DesiredApoioLevel[] = [];
-  const notBeehiivSubscriber: DesiredApoioLevel[] = [];
+  const notBeehiivSubscriber: UnmatchedApoiador[] = [];
 
   for (const d of desired) {
     if (d.unresolved) {
@@ -498,7 +513,8 @@ export function diffApoioTags(
       .filter((s): s is BeehiivSubscriptionSnapshot => s !== undefined);
 
     if (matches.length === 0) {
-      notBeehiivSubscriber.push(d);
+      const candidates = findEmailMatchCandidates(d.contactName, d.emails, current);
+      notBeehiivSubscriber.push({ ...d, candidates });
       continue;
     }
 
@@ -667,13 +683,32 @@ function logDiff(diff: ApoioTagDiffResult, removalsBlocked: boolean): void {
   }
 
   if (diff.notBeehiivSubscriber.length > 0) {
+    // #4490 causa 3: texto trocado de "não é erro" (soava conclusivo, e era
+    // falso pra 4 de 5 casos reais) pra uma leitura que não afirma ausência
+    // de vínculo — pode assinar com outro endereço, ver candidatos abaixo.
     log(
-      `${diff.notBeehiivSubscriber.length} apoiador(es)/contato(s) sem nenhuma subscription ` +
-        `Beehiiv casada (não é erro): ${diff.notBeehiivSubscriber.map((d) => d.contactName || d.emails[0]).join(", ")}`,
+      `${diff.notBeehiivSubscriber.length} apoiador(es)/contato(s) NÃO casaram por e-mail exato ` +
+        "com nenhuma subscription Beehiiv (pode assinar com outro endereço — ver candidatos heurísticos):",
     );
+    for (const d of diff.notBeehiivSubscriber) {
+      const label = d.contactName || d.emails[0];
+      if (d.candidates.length === 0) {
+        log(`  - ${label} (${d.emails.join(", ")}): nenhum candidato heurístico`);
+      } else {
+        log(`  - ${label} (${d.emails.join(", ")}): ${d.candidates.length} candidato(s):`);
+        for (const c of d.candidates) {
+          log(`      ? ${c.email} — ${c.reason} (confirmar manualmente, nunca aplicado sozinho)`);
+        }
+      }
+    }
   }
 
   log(`${diff.unchanged.length} já convergido(s) (nenhuma ação).`);
+  // #4485 item 3 (follow-up de #4273): "5 apoiadores pagam e não recebem
+  // nada por e-mail" já sai listado acima (notBeehiivSubscriber) — TODO pro
+  // editor: decidir se isso deveria virar um ALARME (não só um item de
+  // relatório) quando o mesmo contato persiste sem vínculo por várias
+  // rodadas seguidas. Não implementado — é decisão editorial, não técnica.
 }
 
 function logBlastRadiusGuard(guard: BlastRadiusGuardResult): void {
@@ -686,6 +721,23 @@ function logBlastRadiusGuard(guard: BlastRadiusGuardResult): void {
   );
 }
 
+// ── reconciliação de promessas pendentes (#4490 causa 4) ────────────────
+
+/**
+ * Reexportado (self-review consolidado do PR #4503, achados críticos 1/2 e
+ * altos 3/4) de `./lib/apoio-reconciliation-cycle.ts` — extraído pra lá
+ * junto com `runApoioReconciliationCycle` (a orquestração inteira: drena
+ * Gmail → importa notificações confirmadas → funde + reconcilia promessas →
+ * persiste), que este arquivo e `apoios-diff-alarm.ts` agora chamam em vez
+ * de duplicar a sequência. Mantê-la aqui criaria um ciclo de módulos ES
+ * (mesmo motivo do reexport de `previousMonthKey` acima). Reexportar
+ * preserva o import existente (`test/sync-apoio-nivel-beehiiv.test.ts`
+ * importa `reconcilePendingPromises` deste path). Ver o cabeçalho de
+ * `apoio-reconciliation-cycle.ts` pro rationale completo, inclusive o fix do
+ * `catch {}` vazio que engolia `ApoiaSeAuthError` (achado crítico 2).
+ */
+export { reconcilePendingPromises, type ReconcilePromisesResult } from "./lib/apoio-reconciliation-cycle.ts";
+
 // ── main ─────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -693,6 +745,55 @@ async function main(): Promise<void> {
   loadProjectEnv(ROOT);
 
   const { apiKey, publicationId } = loadBeehiivConfig(LOG_PREFIX);
+
+  // #4490 causa 4 / self-review do PR #4503: drena Gmail (apoia.se) → importa
+  // notificações de PAGAMENTO CONFIRMADO como contato (achado crítico 1) →
+  // funde + reconcilia promessas pendentes do store (achado crítico 2) →
+  // persiste o que mudou — sequência extraída (achado alto de duplicação)
+  // pra `runApoioReconciliationCycle`, chamada aqui e em
+  // `apoios-diff-alarm.ts::main()`. Fail-soft pra tudo, EXCETO
+  // `ApoiaSeAuthError` (ver `cycle.authError` abaixo) — buildApoiosData relê
+  // contacts.jsonl do disco a seguir, então qualquer contato
+  // importado/promovido aqui já entra no cálculo do diff.
+  const cycle = await runApoioReconciliationCycle(ROOT);
+  if (cycle.drainSkipped) {
+    process.stderr.write(
+      `${LOG_PREFIX} aviso: drain de promessas (Gmail) pulado (${cycle.drainSkipReason ?? "erro desconhecido"}) — ` +
+        "reconciliação segue só com promessas já no store.\n",
+    );
+  }
+  if (cycle.promessasDrained > 0) {
+    process.stderr.write(`${LOG_PREFIX} ${cycle.promessasDrained} promessa(s) nova(s) drenada(s) do Gmail.\n`);
+  }
+  if (cycle.notificationsImported > 0) {
+    process.stderr.write(
+      `${LOG_PREFIX} ${cycle.notificationsImported} notificação(ões) de pagamento confirmado importada(s) como contato novo.\n`,
+    );
+  }
+  if (cycle.promoted.length > 0) {
+    process.stderr.write(
+      `${LOG_PREFIX} ${cycle.promoted.length} promessa(s) confirmada(s) como pagamento — ` +
+        `promovida(s) a contato: ${cycle.promoted.map((p) => `${p.name} <${p.email}>`).join(", ")}\n`,
+    );
+  }
+  if (cycle.remainingPending.length > 0) {
+    process.stderr.write(
+      `${LOG_PREFIX} ${cycle.remainingPending.length} promessa(s) ainda pendente(s) (sem confirmação de pagamento).\n`,
+    );
+  }
+  if (cycle.warning) {
+    process.stderr.write(`${LOG_PREFIX} aviso: ${cycle.warning}\n`);
+  }
+  if (cycle.authError) {
+    // Achado crítico 2 (PR #4503): chave apoia.se rejeitada é LOUD, nunca
+    // "seguindo sem ela" — sem isso, toda promessa pendente falharia em
+    // silêncio pra sempre, indistinguível de "ainda não pagou".
+    process.stderr.write(
+      `${LOG_PREFIX} ERRO FATAL: chave apoia.se rejeitada durante a reconciliação de promessas pendentes ` +
+        `(${cycle.authError}) — verifique APOIA_SE_API_KEY/APOIA_SE_API_SECRET. Sync abortado antes de tocar a Beehiiv.\n`,
+    );
+    process.exit(1);
+  }
 
   const data = await buildApoiosData(ROOT);
   if (data.error) {

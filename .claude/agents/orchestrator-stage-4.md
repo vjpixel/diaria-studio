@@ -105,7 +105,7 @@ npx tsx scripts/render-halt-banner.ts \
 
 2b. **Servir preview LOCALMENTE via `serve-preview.ts` (#3546 — substitui o Worker Cloudflare no caminho de REVISÃO).** #3420 tinha revertido pra Worker-hosted (`upload-html-public.ts`) porque #3214/Claude Artifacts quebrava por CSP (bloqueia imagem remota, só `data:` URI). #3546 resolve isso sem depender nem do Worker (cota Workers KV, rede) nem do Artifact (CSP): serve o HTML LOCALMENTE (loopback, `http://127.0.0.1:{porta}/...`) com imagens embutidas em `data:` URI via `embed-images-base64.ts` — não há CSP num servidor local próprio, e não há requisição de rede pra imagem nenhuma. **Nunca chamar `upload-html-public.ts` neste passo** — esse script fica reservado ao upload REAL que a Etapa 5 refaz independentemente no dispatch (`context/publishers/beehiiv-playbook.md` §5.2 Fase 3, sobre `newsletter-final.html` intacto, sem a variante embedded).
 
-    Gerar a variante embedded (`newsletter-final.html` fica intacto, com `{{email}}` preservado pro paste real da Etapa 5):
+    Gerar a variante embedded (`newsletter-final.html` fica intacto, com a merge tag de identidade do voto — `{{poll_token}}`, #4487; era `{{email}}` — preservada pro paste real da Etapa 5):
     ```bash
     npx tsx scripts/embed-images-base64.ts \
       --html {EDITION_DIR}/_internal/newsletter-final.html \

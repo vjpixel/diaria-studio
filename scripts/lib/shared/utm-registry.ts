@@ -41,6 +41,21 @@ export const MENSAL_UTM_SOURCE = "clarice";
 export const MENSAL_UTM_MEDIUM = "email";
 
 /**
+ * `utm_source`/`utm_medium` da variante BEEHIIV do digest mensal (#4482) —
+ * envio EXTRA pra apoiadores Mantenedor/Patrono via Beehiiv (mesma
+ * plataforma da diária), distinto do envio Clarice/Brevo acima. Nunca
+ * reusar `MENSAL_UTM_SOURCE` ("clarice") nesta variante: os dois envios têm
+ * audiência e plataforma diferentes, e misturar a atribuição refaria o
+ * mesmo problema que o #2975 original corrigiu (só que na direção oposta —
+ * cliques do canal Beehiiv contaminando a medição do canal Clarice).
+ * Consumido por `CLARICE_UTM_PROFILE`/`draftToEmail(..., utmProfile)` em
+ * `scripts/lib/mensal/monthly-render.ts` e `BEEHIIV_UTM_PROFILE` em
+ * `scripts/lib/mensal/monthly-beehiiv-render.ts`.
+ */
+export const MENSAL_BEEHIIV_UTM_SOURCE = "mensal-beehiiv";
+export const MENSAL_BEEHIIV_UTM_MEDIUM = "email";
+
+/**
  * Slug de seção usado no sufixo do wordmark (`wordmark-{secao}`): minúsculo,
  * sem acento, `[a-z0-9-]`, ≤32 chars. Nunca lança — entrada vazia/ilegível cai
  * em `geral`, que mantém o funil mensurável em vez de emitir um campaign quebrado.
@@ -72,6 +87,18 @@ export function slugifySecao(raw: string | null | undefined): string {
 export function buildMensalCampaign(ciclo: string, posicao: string): string {
   const p = slugifySecao(posicao);
   return `${MENSAL_UTM_SOURCE}-${ciclo}-${p}`;
+}
+
+/**
+ * Compõe o `utm_campaign` da variante Beehiiv do mensal (#4482):
+ * `mensal-beehiiv-{ciclo}-{posicao}` — mesmo padrão de `buildMensalCampaign`,
+ * `utm_source` distinto.
+ *
+ * @pure
+ */
+export function buildMensalBeehiivCampaign(ciclo: string, posicao: string): string {
+  const p = slugifySecao(posicao);
+  return `${MENSAL_BEEHIIV_UTM_SOURCE}-${ciclo}-${p}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,10 +262,26 @@ export const JOGAR_IDENTIFY_INLINE_UTM = {
   campaign: "eia-jogar-identify-signup",
 } as const;
 
+/** Bloco encaminhável por WhatsApp no fim de cada edição diária (#4486) —
+ * `utm_campaign` traz o AAMMDD da edição que gerou o encaminhamento (o
+ * Beehiiv grava a UTM no momento da inscrição, então dá pra atribuir
+ * assinante novo à edição específica). Fonte dos valores:
+ * `scripts/lib/newsletter-render-html.ts::buildWhatsappSubscribeUrl`. */
+export const WHATSAPP_SHARE_UTM = {
+  source: "whatsapp",
+  medium: "share",
+  campaignPattern: "{edition}",
+} as const;
+
 /** Newsletter semanal do LinkedIn (#4456) — `utm_campaign` traz o ciclo `{YY}w{WW}`
- * (ex: `ln-26w31`), `utm_content` varia por posição (`lista`/`cta-usemelhor`/`cta-fim`
- * — `item-01`/`02`/`03` SAÍRAM quando o link por destaque foi removido, comentário
- * 260802 3º do #4456). Fonte dos valores: `scripts/lib/weekly-linkedin-render.ts`. */
+ * (ex: `ln-26w31`), `utm_content` varia por posição (`mencao-abertura`/`cta-abertura`/
+ * `lista`/`cta-usemelhor`/`cta-fim` — `item-01`/`02`/`03` SAÍRAM quando o link por
+ * destaque foi removido, comentário 260802 3º do #4456; `cta-abertura` e
+ * `mencao-abertura` ENTRARAM em 260803, o 1º com o 3º CTA de assinatura, o 2º ao
+ * descobrir ao vivo que o LinkedIn auto-linka o wordmark em prosa pra home CRUA
+ * e come a UTM — pré-linkar com âncora estendida além do domínio recupera esse
+ * clique, ver `linkifyWordmark`).
+ * Fonte dos valores: `scripts/lib/weekly-linkedin-render.ts`. */
 export const LINKEDIN_WEEKLY_UTM = {
   source: "linkedin",
   medium: "newsletter",
@@ -287,6 +330,19 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "Todo link pro host de marca no e-mail mensal enviado pela Brevo. " +
       `O sufixo {posicao} vem do vocabulário fechado ${MENSAL_POSICOES.join(" / ")} ` +
       "— `wordmark` ainda ganha a seção corrente como sufixo (#4040).",
+    status: "ativo",
+  },
+  {
+    id: "mensal-beehiiv",
+    label: "Digest mensal (Beehiiv, apoiadores)",
+    source: MENSAL_BEEHIIV_UTM_SOURCE,
+    medium: MENSAL_BEEHIIV_UTM_MEDIUM,
+    campaignPattern: `${MENSAL_BEEHIIV_UTM_SOURCE}-{ciclo}-{posicao}`,
+    originFile: "scripts/lib/mensal/monthly-beehiiv-render.ts",
+    description:
+      "Envio EXTRA do digest mensal pra apoiadores Mantenedor/Patrono via Beehiiv (#4482) — " +
+      "mesmo conteúdo/posições da entrada 'mensal-clarice' acima, `utm_source` distinto pra " +
+      "não misturar a atribuição dos 2 canais (audiência e plataforma diferentes).",
     status: "ativo",
   },
   {
@@ -528,6 +584,19 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     status: "ativo",
   },
   {
+    id: "whatsapp-share-block",
+    label: "Bloco encaminhável por WhatsApp (e-mail diário)",
+    source: WHATSAPP_SHARE_UTM.source,
+    medium: WHATSAPP_SHARE_UTM.medium,
+    campaignPattern: WHATSAPP_SHARE_UTM.campaignPattern,
+    originFile: "scripts/lib/newsletter-render-html.ts",
+    description:
+      "Link de assinatura dentro do bloco fixo pré-'Para encerrar', pensado " +
+      "pra colar/encaminhar no WhatsApp (#4486) — utm_campaign = AAMMDD da " +
+      "edição que gerou o encaminhamento.",
+    status: "ativo",
+  },
+  {
     id: "linkedin-weekly-newsletter",
     label: "LinkedIn — newsletter semanal",
     source: LINKEDIN_WEEKLY_UTM.source,
@@ -535,9 +604,12 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     campaignPattern: LINKEDIN_WEEKLY_UTM.campaignPattern,
     originFile: "scripts/lib/weekly-linkedin-render.ts",
     description:
-      "Lista do resto da semana + CTAs de assinatura (meio/fim) da newsletter " +
-      "semanal do LinkedIn (`/diaria-linkedin-semanal`, #4456) — artigo colável " +
-      "manualmente, sem API de publicação. `utm_content` = lista/cta-usemelhor/cta-fim.",
+      "Lista de Edições da semana + os 3 CTAs de assinatura (abertura/meio/fim) da " +
+      "newsletter semanal do LinkedIn (`/diaria-linkedin-semanal`, #4456) — artigo " +
+      "colável manualmente, sem API de publicação. `utm_content` = " +
+      "mencao-abertura/cta-abertura/lista/cta-usemelhor/cta-fim, um por posição, para " +
+      "dar pra medir qual terço da peça converte. `mencao-abertura` não é CTA: é o " +
+      "clique no nome da marca em prosa, separado pra não inflar o CTA da abertura.",
     status: "ativo",
   },
 ] as const;

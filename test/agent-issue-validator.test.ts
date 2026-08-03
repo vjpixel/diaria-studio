@@ -96,6 +96,15 @@ describe("isPollSigMissingFalsePositive (#1421, #1186)", () => {
     const r = isPollSigMissingFalsePositive(html);
     assert.equal(r.falsePositive, true);
   });
+
+  it("#4487: HTML com {{poll_token}} (token opaco, forma atual) → FP (merge-tag mode)", () => {
+    const html = '<a href="https://poll.diaria.workers.dev/vote?email={{poll_token}}@vote.eia.diaria.local&edition=260801&choice=A">vote</a>';
+    const r = isPollSigMissingFalsePositive(html);
+    assert.equal(r.falsePositive, true);
+    if (r.falsePositive) {
+      assert.match(r.reason, /poll_token|token opaco/);
+    }
+  });
 });
 
 describe("isVoteEditionMalformedFalsePositive (#1421)", () => {
@@ -130,10 +139,15 @@ describe("#1949 — FPs do novo DS + merge tags", () => {
     );
   });
 
-  it("isMergeTagUnexpandedFalsePositive: SÓ {{email}} em link/formatting (#1186)", () => {
-    // #1186: conjunto fechado agora é só {{email}} (poll_sig removido).
+  it("isMergeTagUnexpandedFalsePositive: {{email}} (legado) e {{poll_token}} (#4487) em link/formatting (#1186)", () => {
+    // #1186: conjunto fechado agora é {{email}}/{{poll_token}} (poll_sig removido).
     assert.equal(
       isMergeTagUnexpandedFalsePositive("email:link_broken: href tem {{email}} não expandido").falsePositive,
+      true,
+    );
+    // #4487: token opaco — a forma ATUAL da merge tag de identidade.
+    assert.equal(
+      isMergeTagUnexpandedFalsePositive("email:link_broken: href tem {{poll_token}} não expandido").falsePositive,
       true,
     );
     // {{poll_sig}} foi removido — issue com poll_sig não é mais FP por este checker.

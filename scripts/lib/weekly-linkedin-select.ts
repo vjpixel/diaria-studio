@@ -15,12 +15,28 @@
  *      menor que "o valor de 1 clique" (1/aberturas, em pontos percentuais),
  *      não desempata por número — cai no critério editorial (ângulo Brasil >
  *      implicação profissional > diversidade de categoria).
+ *
+ * #4511 fleet review IMPORTANTE: o núcleo de ranking/desempate
+ * (`withinClickNoise`, `hasBrazilAngle`, `hasProfessionalImplication`,
+ * `editorialTiebreakScore`, `byRateDescThenTitle`) vive em
+ * `weekly-social-click-rank.ts`, compartilhado com `weekly-instagram-select.ts`
+ * (#4483) — não é mais duplicado byte-a-byte aqui. Reexportados abaixo pra
+ * não quebrar os importadores existentes (`test/weekly-linkedin-select.test.ts`,
+ * `select-linkedin-weekly.ts`).
  */
 
-import { classifyOrigin } from "../build-link-ctr.ts";
 import { isCommercialOrOwnLink } from "./weekly-linkedin-filter.ts";
 import { normalizeUrl } from "./weekly-linkedin-clicks.ts";
 import type { WeeklyRawCandidate } from "./weekly-linkedin-parse.ts";
+import {
+  withinClickNoise,
+  hasBrazilAngle,
+  hasProfessionalImplication,
+  editorialTiebreakScore,
+  byRateDescThenTitle,
+} from "./weekly-social-click-rank.ts";
+
+export { withinClickNoise, hasBrazilAngle, hasProfessionalImplication, editorialTiebreakScore };
 
 export interface WeeklyRankedCandidate extends WeeklyRawCandidate {
   uniqueVerifiedClicks: number;
@@ -83,57 +99,6 @@ export function dedupeCandidatesByUrl(candidates: WeeklyRankedCandidate[]): Week
 }
 
 /**
- * Pure: `true` quando a diferença de taxa entre `a` e `b` é menor que "o
- * valor de 1 clique" — usa o MAIOR incremento-de-1-clique entre os dois
- * (o denominador menor produz o incremento maior; usar o maior dos dois é a
- * leitura generosa/conservadora — nunca subestima o ruído). `opens <= 0` em
- * qualquer lado desativa a banda de ruído (não há como calibrar o incremento
- * de 1 clique sem denominador) — comparação cai pra diferença estrita.
- */
-export function withinClickNoise(a: WeeklyRankedCandidate, b: WeeklyRankedCandidate): boolean {
-  if (a.opens <= 0 || b.opens <= 0) return a.ratePct === b.ratePct;
-  const oneClickPct = Math.max(100 / a.opens, 100 / b.opens);
-  return Math.abs(a.ratePct - b.ratePct) < oneClickPct;
-}
-
-const PROFESSIONAL_IMPLICATION_RE =
-  /emprego|carreira|trabalh|profiss|mercado de trabalho|curr[ií]culo|vaga|contrata[çc][ãa]o|demiss/i;
-
-/** Pure: heurística de "implicação profissional" — palavra-chave em título/categoria/corpo. */
-export function hasProfessionalImplication(c: WeeklyRankedCandidate): boolean {
-  return PROFESSIONAL_IMPLICATION_RE.test(`${c.title} ${c.category} ${c.body}`);
-}
-
-/** Pure: heurística de "ângulo Brasil" — reusa `classifyOrigin` (mesmo classificador do CTR table). */
-export function hasBrazilAngle(c: WeeklyRankedCandidate): boolean {
-  let domain = "";
-  try {
-    domain = new URL(c.url).hostname;
-  } catch {
-    // URL ilegível — domain fica vazio, classifyOrigin decide só pelo texto.
-  }
-  return classifyOrigin(`${c.title} ${c.body} ${c.why} ${c.category}`, domain) === "BR";
-}
-
-/**
- * Pure: score do critério editorial de desempate (#4456: "ângulo Brasil >
- * implicação profissional > diversidade de categoria"). Pesos em ordem
- * lexicográfica estrita (100 > 50 > 10 — nenhuma combinação dos critérios
- * mais fracos supera o mais forte).
- */
-export function editorialTiebreakScore(c: WeeklyRankedCandidate, alreadySelectedCategories: Set<string>): number {
-  let score = 0;
-  if (hasBrazilAngle(c)) score += 100;
-  if (hasProfessionalImplication(c)) score += 50;
-  if (!alreadySelectedCategories.has(c.category.toUpperCase())) score += 10;
-  return score;
-}
-
-function byRateDescThenTitle(a: WeeklyRankedCandidate, b: WeeklyRankedCandidate): number {
-  return b.ratePct - a.ratePct || a.title.localeCompare(b.title);
-}
-
-/**
  * Pure: dado o número de edições encontradas na janela (0-5), quantas
  * manchetes selecionar. "Semana com menos de 3 edições (feriado): reduz o
  * número de itens em vez de puxar da semana anterior" — nunca mais que 3,
@@ -146,8 +111,15 @@ export function computeHeadlineCap(editionsFound: number): number {
 export interface WeeklySelectionResult {
   /** Candidatos selecionados como manchete, em ordem de seleção (1ª = D1 do LinkedIn, etc). */
   selected: WeeklyRankedCandidate[];
-  /** TODOS os candidatos elegíveis (não-excluídos), ranqueados — auditoria. */
-  ranked: WeeklyRankedCandidate[];
+  /**
+   * TODOS os candidatos elegíveis PRA MANCHETE (não-excluídos,
+   * não-use_melhor — #4492), ranqueados — auditoria. Nome distinto do pool
+   * COMPLETO (todas as seções, incluindo use_melhor) usado por
+   * `selectUseMelhor` em `select-linkedin-weekly.ts` — os dois eram chamados
+   * `ranked` até o #4507, risco real de troca acidental (compilaria limpo,
+   * `selectUseMelhor` sempre retornaria `undefined` em silêncio).
+   */
+  headlineEligible: WeeklyRankedCandidate[];
   /** Candidatos excluídos (comercial/afiliado/própria) — auditoria. */
   excluded: WeeklyRankedCandidate[];
   warnings: string[];
@@ -156,11 +128,26 @@ export interface WeeklySelectionResult {
 /**
  * Seleciona as manchetes da semana por taxa de clique, com desempate
  * editorial dentro do ruído de 1 clique (ver `withinClickNoise`). Pure.
+ *
+ * #4492: candidatos de `section === "use_melhor"` NUNCA competem por
+ * manchete, mesmo quando têm a maior taxa de clique da semana — ficam
+ * reservados exclusivamente pro bloco Use Melhor dedicado (`selectUseMelhor`,
+ * que roda DEPOIS escolhendo só entre os `use_melhor` restantes). Sem essa
+ * exclusão, o melhor candidato Use Melhor virava manchete e o próprio bloco
+ * Use Melhor caía pra um candidato mais fraco por exclusão — mesmo padrão do
+ * filtro `excluded` (comercial/afiliado/própria) já aplicado abaixo.
+ * Trade-off desta implementação (ver #4492 — issue documenta o trade-off e
+ * segue ABERTA até este PR fechar via "Closes #4492"; a pergunta de design
+ * mais ampla sobre se USE MELHOR deveria competir por manchete continua sem
+ * decisão formal do editor, que só sinalizou deferência — "mantendo aberto
+ * pra decisão do editor" — não aprovação deste trade-off específico): em
+ * semanas com poucos candidatos não-use_melhor de clique real, a manchete #3
+ * pode cair pro desempate editorial.
  */
 export function selectHeadlines(candidatesIn: WeeklyRankedCandidate[], maxHeadlines: number): WeeklySelectionResult {
   const deduped = dedupeCandidatesByUrl(candidatesIn);
   const excluded = deduped.filter((c) => c.excluded);
-  const eligible = deduped.filter((c) => !c.excluded).sort(byRateDescThenTitle);
+  const eligible = deduped.filter((c) => !c.excluded && c.section !== "use_melhor").sort(byRateDescThenTitle);
 
   const selected: WeeklyRankedCandidate[] = [];
   const selectedCategories = new Set<string>();
@@ -209,10 +196,15 @@ export function selectHeadlines(candidatesIn: WeeklyRankedCandidate[], maxHeadli
     warnings.push(`Semana com ${maxHeadlines} edição(ões) disponível(is) — reduzindo pra ${maxHeadlines} manchete(s) em vez de 3.`);
   }
   if (selected.length < maxHeadlines) {
-    warnings.push(`Só ${selected.length}/${maxHeadlines} candidatos elegíveis encontrados (após exclusão comercial/própria).`);
+    const useMelhorSkipped = deduped.filter((c) => !c.excluded && c.section === "use_melhor").length;
+    const commercialSkipped = excluded.length;
+    warnings.push(
+      `Só ${selected.length}/${maxHeadlines} candidatos elegíveis encontrados ` +
+        `(${commercialSkipped} excluído(s) por comercial/própria, ${useMelhorSkipped} reservado(s) pro bloco Use Melhor).`,
+    );
   }
 
-  return { selected, ranked: eligible, excluded, warnings };
+  return { selected, headlineEligible: eligible, excluded, warnings };
 }
 
 /**

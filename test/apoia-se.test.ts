@@ -9,7 +9,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -22,6 +22,8 @@ import {
   RateLimiter,
   ApoiaSeAuthError,
   ApoiaSeApiError,
+  isCacheEntryStale,
+  CURRENT_MONTH_CACHE_TTL_HOURS,
   type ApoiaSeEnv,
   type BackerStatus,
 } from "../scripts/lib/apoia-se.ts";
@@ -350,7 +352,7 @@ describe("checkBacker", () => {
     assert.equal(calls, 1, "2ª chamada devia ter vindo do cache, sem novo fetch");
   });
 
-  it("cache MISS bate na API e grava o resultado em disco", async () => {
+  it("cache MISS bate na API e grava o resultado em disco (com fetchedAt, #4490)", async () => {
     const fetchImpl = (async () =>
       jsonResponse(200, { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 25 })) as unknown as typeof fetch;
     const now = new Date("2026-07-16T12:00:00Z");
@@ -358,7 +360,11 @@ describe("checkBacker", () => {
     const cachePath = resolve(tmpDir, "2026-07.json");
     assert.equal(existsSync(cachePath), false);
 
-    await checkBacker("miss@example.com", { env: ENV, fetchImpl, cacheDir: tmpDir, now, limiter: fastLimiter });
+    const returned = await checkBacker("miss@example.com", { env: ENV, fetchImpl, cacheDir: tmpDir, now, limiter: fastLimiter });
+
+    // Valor de retorno pro caller nunca inclui fetchedAt — shape público
+    // estável de BackerStatus.
+    assert.deepEqual(returned, { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 25 });
 
     assert.equal(existsSync(cachePath), true);
     const cache = JSON.parse(readFileSync(cachePath, "utf-8"));
@@ -366,6 +372,7 @@ describe("checkBacker", () => {
       isBacker: true,
       isPaidThisMonth: true,
       thisMonthPaidValue: 25,
+      fetchedAt: now.toISOString(),
     });
   });
 
@@ -482,7 +489,12 @@ describe("checkBacker", () => {
     // "ignora a leitura", também precisa persistir o resultado atualizado).
     const cachePath = resolve(tmpDir, "2026-07.json");
     const cache = JSON.parse(readFileSync(cachePath, "utf-8"));
-    assert.deepEqual(cache["late-payer@example.com"], { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 30 });
+    assert.deepEqual(cache["late-payer@example.com"], {
+      isBacker: true,
+      isPaidThisMonth: true,
+      thisMonthPaidValue: 30,
+      fetchedAt: now.toISOString(),
+    });
 
     // Uma chamada seguinte SEM force volta a usar o cache (agora já correto).
     const day16 = await checkBacker("late-payer@example.com", {
@@ -514,22 +526,179 @@ describe("checkBacker", () => {
     assert.equal(calls, 1);
   });
 
+  // ── TTL do cache do mês corrente (#4490 causa 1/2) ──────────────────────
+
+  it("isCacheEntryStale: isPaidThisMonth true NUNCA expira, mesmo com fetchedAt muito antigo", () => {
+    const now = new Date("2026-08-02T12:00:00Z");
+    const veryOld = { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 30, fetchedAt: "2026-08-01T04:15:00Z" };
+    assert.equal(isCacheEntryStale(veryOld, now, 8), false);
+  });
+
+  it("isCacheEntryStale: isPaidThisMonth false expira depois de ttlHours", () => {
+    const now = new Date("2026-08-02T12:15:00Z");
+    // fetchedAt 04:15 do dia 1º -> ~32h de idade, bem além de qualquer TTL razoável.
+    const stale = { isBacker: true, isPaidThisMonth: false, fetchedAt: "2026-08-01T04:15:00Z" };
+    assert.equal(isCacheEntryStale(stale, now, 8), true);
+  });
+
+  it("isCacheEntryStale: isPaidThisMonth false DENTRO da TTL não expira", () => {
+    const now = new Date("2026-08-02T12:00:00Z");
+    const fresh = { isBacker: true, isPaidThisMonth: false, fetchedAt: "2026-08-02T06:00:00Z" }; // 6h atrás
+    assert.equal(isCacheEntryStale(fresh, now, 8), false);
+  });
+
+  it("isCacheEntryStale: sem fetchedAt (legado) é tratado como expirado", () => {
+    const now = new Date("2026-08-02T12:00:00Z");
+    const legacy = { isBacker: true, isPaidThisMonth: false };
+    assert.equal(isCacheEntryStale(legacy, now, 8), true);
+  });
+
+  it("checkBacker: cache HIT com fetchedAt antigo (isPaidThisMonth:false) reconsulta a API (cenário #4490: cache de 01/08 04:15 lido em 02/08)", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      // 1ª (escrita original, dia 1º): ninguém pagou ainda.
+      // 2ª (TTL expirou, dia 2): já pagou.
+      return jsonResponse(200, {
+        isBacker: true,
+        isPaidThisMonth: calls > 1,
+        ...(calls > 1 ? { thisMonthPaidValue: 10 } : {}),
+      });
+    }) as unknown as typeof fetch;
+
+    const written = await checkBacker("nicklanis@example.com", {
+      env: ENV,
+      fetchImpl,
+      cacheDir: tmpDir,
+      limiter: fastLimiter,
+      now: new Date("2026-08-01T04:15:00Z"),
+    });
+    assert.equal(written.isPaidThisMonth, false);
+    assert.equal(calls, 1);
+
+    // Mesmo dia, poucas horas depois, DENTRO da TTL — ainda cache hit.
+    const stillCached = await checkBacker("nicklanis@example.com", {
+      env: ENV,
+      fetchImpl,
+      cacheDir: tmpDir,
+      limiter: fastLimiter,
+      now: new Date("2026-08-01T09:00:00Z"), // ~4h45 depois
+    });
+    assert.equal(stillCached.isPaidThisMonth, false);
+    assert.equal(calls, 1, "dentro da TTL (default 8h) não reconsulta");
+
+    // Dia seguinte — mais de 8h desde o fetchedAt original — TTL expirou,
+    // mesmo mês-competência (agosto), reconsulta automaticamente.
+    const refreshed = await checkBacker("nicklanis@example.com", {
+      env: ENV,
+      fetchImpl,
+      cacheDir: tmpDir,
+      limiter: fastLimiter,
+      now: new Date("2026-08-02T12:00:00Z"),
+    });
+    assert.equal(calls, 2, "TTL expirada reconsulta a API sem precisar de forceRefresh");
+    assert.equal(refreshed.isPaidThisMonth, true);
+    assert.equal(refreshed.thisMonthPaidValue, 10);
+
+    // Confirmado como pago — a partir daqui nunca mais expira por TTL, mesmo
+    // bem mais tarde no mês.
+    const later = await checkBacker("nicklanis@example.com", {
+      env: ENV,
+      fetchImpl,
+      cacheDir: tmpDir,
+      limiter: fastLimiter,
+      now: new Date("2026-08-20T12:00:00Z"),
+    });
+    assert.equal(calls, 2, "isPaidThisMonth:true nunca expira por TTL");
+    assert.equal(later.isPaidThisMonth, true);
+  });
+
+  it("checkBacker: ttlHours customizável (override curto expira mais rápido)", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      return jsonResponse(200, { isBacker: false, isPaidThisMonth: false });
+    }) as unknown as typeof fetch;
+    const t0 = new Date("2026-08-01T00:00:00Z");
+
+    await checkBacker("short-ttl@example.com", { env: ENV, fetchImpl, cacheDir: tmpDir, limiter: fastLimiter, now: t0, ttlHours: 1 });
+    assert.equal(calls, 1);
+
+    // 30min depois, dentro do TTL customizado de 1h — ainda cache hit.
+    await checkBacker("short-ttl@example.com", {
+      env: ENV,
+      fetchImpl,
+      cacheDir: tmpDir,
+      limiter: fastLimiter,
+      now: new Date("2026-08-01T00:30:00Z"),
+      ttlHours: 1,
+    });
+    assert.equal(calls, 1);
+
+    // 2h depois, além do TTL de 1h — reconsulta.
+    await checkBacker("short-ttl@example.com", {
+      env: ENV,
+      fetchImpl,
+      cacheDir: tmpDir,
+      limiter: fastLimiter,
+      now: new Date("2026-08-01T02:00:00Z"),
+      ttlHours: 1,
+    });
+    assert.equal(calls, 2);
+  });
+
+  it("checkBacker: entrada legada sem fetchedAt (pré-#4490) é tratada como expirada e reconsultada", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      return jsonResponse(200, { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 15 });
+    }) as unknown as typeof fetch;
+
+    // Simula um arquivo de cache escrito ANTES desta correção — sem fetchedAt.
+    const cachePath = resolve(tmpDir, "2026-08.json");
+    mkdirSync(tmpDir, { recursive: true });
+    writeFileSync(cachePath, JSON.stringify({ "legado@example.com": { isBacker: true, isPaidThisMonth: false } }));
+
+    const status = await checkBacker("legado@example.com", {
+      env: ENV,
+      fetchImpl,
+      cacheDir: tmpDir,
+      limiter: fastLimiter,
+      now: new Date("2026-08-02T12:00:00Z"),
+    });
+    assert.equal(calls, 1, "entrada sem fetchedAt nunca é assumida fresca — 1 refetch de backfill");
+    assert.equal(status.isPaidThisMonth, true);
+
+    const cache = JSON.parse(readFileSync(cachePath, "utf-8"));
+    assert.ok(cache["legado@example.com"].fetchedAt, "backfill grava fetchedAt pra próximas leituras");
+  });
+
+  it("checkBacker: CURRENT_MONTH_CACHE_TTL_HOURS default é 8", () => {
+    assert.equal(CURRENT_MONTH_CACHE_TTL_HOURS, 8);
+  });
+
   it("readMonthCache lê o arquivo do mês sem rede — arquivo ausente -> {} (fail-soft)", () => {
     assert.deepEqual(readMonthCache(tmpDir, "2026-07"), {});
   });
 
-  it("readMonthCache reflete o que checkBacker gravou, sem gerar nova request", async () => {
+  it("readMonthCache reflete o que checkBacker gravou (inclusive fetchedAt), sem gerar nova request", async () => {
     const fetchImpl = (async () =>
       jsonResponse(200, { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 12 })) as unknown as typeof fetch;
+    const now = new Date("2026-07-16T12:00:00Z");
     await checkBacker("lido@example.com", {
       env: ENV,
       fetchImpl,
       cacheDir: tmpDir,
       limiter: fastLimiter,
-      now: new Date("2026-07-16T12:00:00Z"),
+      now,
     });
     const cache = readMonthCache(tmpDir, "2026-07");
-    assert.deepEqual(cache["lido@example.com"], { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 12 });
+    assert.deepEqual(cache["lido@example.com"], {
+      isBacker: true,
+      isPaidThisMonth: true,
+      thisMonthPaidValue: 12,
+      fetchedAt: now.toISOString(),
+    });
   });
 
   it("envia os headers corretos (x-api-key + authorization Bearer)", async () => {

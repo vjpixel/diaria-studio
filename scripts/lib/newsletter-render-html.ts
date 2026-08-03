@@ -27,8 +27,9 @@ import {
   unescapeMd,
   pickErroIntencionalReveal,
 } from "./newsletter-parse.ts";
-import { EIA_ARCHIVE_UTM } from "./shared/utm-registry.ts"; // #4041: registry único de UTM
+import { EIA_ARCHIVE_UTM, WHATSAPP_SHARE_UTM } from "./shared/utm-registry.ts"; // #4041: registry único de UTM; WHATSAPP_SHARE_UTM #4486
 import { SOCIAL_INVITE } from "./shared/encerramento-snippet.ts"; // #4413: convite social fixo — detecção do CTA box não depende mais só de prefixo hardcoded
+import { VOTE_TOKEN_DOMAIN } from "./shared/poll-token.ts"; // #4487: domínio reservado do token opaco de voto
 import type { AprofundeItem } from "../extract-destaques.ts"; // #3920
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -1053,10 +1054,34 @@ export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
     : "";
 
   // #4266 — ver rationale completo no doc comment de `Esp`, acima.
+  // #4487: esp="beehiiv" (e-mail diário) troca o e-mail cru `{{email}}` pelo
+  // token opaco por assinante `{{poll_token}}@vote.eia.diaria.local` — quem
+  // recebe a edição ENCAMINHADA (WhatsApp/e-mail) não herda mais o e-mail
+  // real do remetente na URL de voto (achado #4487/#4456: "vota no lugar
+  // dele", suja o leaderboard). O Worker resolve o token de volta pro e-mail
+  // real via KV logo no início de `handleVote` (workers/poll/src/vote.ts) —
+  // ver header de `scripts/lib/shared/poll-token.ts` pro design completo. O
+  // custom field Beehiiv `poll_token` é populado por `scripts/inject-poll-token.ts`
+  // (mesmo mecanismo — mas propósito distinto — do extinto `poll_sig`/
+  // `inject-poll-sig.ts`, #1083, removido em #1186). esp="brevo" está FORA
+  // do escopo do #4487 — segue com `{{ contact.EMAIL }}` cru, inalterado.
+  // #4512 (fleet review round 2, achado code-reviewer): CORREÇÃO — o único
+  // caller de produção de `esp: "brevo"` HOJE é `scripts/publish-daily-brevo.ts`
+  // (canal `brevo_diaria`/segmento "Pending", #4266 — DIÁRIO, não o digest
+  // MENSAL da Clarice; o mensal tem seu próprio renderer independente,
+  // `scripts/lib/mensal/monthly-render.ts`, que constrói sua própria URL de
+  // voto e nunca chama esta função). `publish-daily-brevo.ts` está
+  // code-complete mas ainda não rodou ao vivo (#4266) — quando rodar, esse
+  // canal vai simultaneamente ganhar o CTA de encaminhamento do WhatsApp
+  // (#4486, convida a encaminhar) E continuar vazando o e-mail cru no link
+  // de voto (o mesmo vetor que o #4487 existe pra fechar) — gap real,
+  // documentado aqui, não corrigido nesta PR (estender a proteção de token
+  // pro esp="brevo" exige decidir se a Brevo tem um mecanismo equivalente a
+  // custom field pré-envio; fora de escopo do #4512, ver issue de follow-up).
   const buildVoteUrl = (choice: "A" | "B") =>
     esp === "brevo"
       ? `${PUBLIC_GAME_BASE_URL}/vote?email={{ contact.EMAIL }}&amp;edition=${eia.edition}&amp;choice=${choice}`
-      : `${PUBLIC_GAME_BASE_URL}/vote?email={{email}}&edition=${eia.edition}&choice=${choice}`;
+      : `${PUBLIC_GAME_BASE_URL}/vote?email={{poll_token}}@${VOTE_TOKEN_DOMAIN}&edition=${eia.edition}&choice=${choice}`;
   // #2541: imagens A/B empilhadas (1 coluna), A acima de B, em desktop e mobile.
   const eiaChoice = (choice: "A" | "B", imgFile: string, paddingTop?: string) => {
     // #3101: width="480" em pixels (600px container − 32px×2 padding da seção
@@ -1349,6 +1374,122 @@ export function renderSorteio(text: string): string {
 }
 
 /**
+ * #4486: bloco fixo, encaminhável por WhatsApp, presente em TODA edição —
+ * posicionado ANTES de "Para encerrar" (decisão do dispatch #4486/#4487:
+ * depois competiria com o CTA de apoio que já fecha a edição; antes é
+ * conteúdo — perto do que motivou o encaminhamento — não um ask financeiro).
+ *
+ * Texto 100% DERIVADO do D1 do dia, determinístico (TS puro, sem LLM/gate) —
+ * decisão de custo operacional autorizada pela própria issue #4486
+ * ("Geração": "algo simples e genérico" é aceitável quando reduz custo por
+ * edição). Autocontido por construção (#4487 "convite de assinatura visível
+ * sem depender do rodapé" — este bloco DUPLA função: satisfaz esse item do
+ * critério de pronto da #4487 também, por estar no CORPO, não só no rodapé
+ * web): manchete do D1 + 1 frase que explica o que é a diar.ia.br pra quem
+ * nunca assinou + CTA de assinatura com link e UTM.
+ */
+export function buildWhatsappShareBlock(d1Title: string, subscribeUrl: string): string {
+  return [
+    `📰 ${d1Title}`,
+    "Isso saiu hoje na diar.ia.br — newsletter diária e gratuita, 5 minutos pra se manter atualizado e usar melhor as IAs.",
+    `Assine grátis: ${subscribeUrl}`,
+  ].join("\n\n");
+}
+
+/**
+ * URL de assinatura com UTM (#4486) — `new URL()` + `searchParams.set`, mesmo
+ * padrão de `buildFacebookCtaUrl` (social-cta-lines.ts, #4295). `edition`
+ * (AAMMDD) vira `utm_campaign` — permite atribuir assinante novo à edição
+ * específica que gerou o encaminhamento (o Beehiiv grava a UTM no momento da
+ * inscrição, contrato fixado na issue #4486).
+ */
+export function buildWhatsappSubscribeUrl(edition: string): string {
+  const url = new URL("https://diar.ia.br");
+  url.searchParams.set("utm_source", WHATSAPP_SHARE_UTM.source);
+  url.searchParams.set("utm_medium", WHATSAPP_SHARE_UTM.medium);
+  url.searchParams.set("utm_campaign", edition);
+  return url.toString();
+}
+
+/**
+ * Link `wa.me/?text=` com o bloco pré-preenchido (URL-encoded) — abre o
+ * WhatsApp já com o texto pronto, tirando o atrito de copiar/colar (pedido
+ * explícito da issue #4486). `block` tem que ser TEXTO PURO (sem markdown/
+ * HTML) — é literalmente o que o WhatsApp cola na caixa de mensagem.
+ */
+export function buildWhatsappShareLink(block: string): string {
+  return `https://wa.me/?text=${encodeURIComponent(block)}`;
+}
+
+/**
+ * Renderiza o bloco encaminhável por WhatsApp em HTML — mesmo padrão visual
+ * "painel" de `renderSorteio`/`renderEIA` (kicker + box bege) — com um botão
+ * de compartilhamento abaixo do texto. As 3 linhas visíveis são DERIVADAS de
+ * `block` (`block.split("\n\n")`) — a MESMA string que vai pro `wa.me/?text=`
+ * — e só então escapadas via `esc` (nunca `mdInlineToHtml`, não há markdown
+ * pra interpretar aqui). #4512 (fleet review round 2, achados
+ * comment-analyzer/code-reviewer/pr-test-analyzer, 3 agentes independentes):
+ * a versão anterior REESCREVIA `titleLine`/`hookLine`/o prefixo do CTA como
+ * literais separados, apesar do doc comment já afirmar (incorretamente) que
+ * era "a MESMA string" — dois textos mantidos por convenção em vez de por
+ * derivação divergem cedo ou tarde (o cenário mais provável: um pedido de
+ * ajuste de wording que só edita um dos dois). A última linha do bloco
+ * ("Assine grátis: {url}") ganha um `<a href>` clicável na versão
+ * renderizada — o texto puro do `wa.me` mantém a URL como texto normal (o
+ * WhatsApp auto-linkifica ao colar).
+ *
+ * `""` quando não há D1 (edição sem destaques — nunca deveria acontecer dado
+ * o invariante de 2-3 destaques, `scripts/extract-destaques.ts`, mas
+ * defensivo — mesmo padrão graceful dos demais blocos opcionais deste
+ * renderer, ex: `content.sorteio?.trim()`). #4512: loga `console.error` neste
+ * caso (mesmo padrão de `renderErroIntencionalReveal`/#3809, que existe
+ * porque um "nunca deveria acontecer" que falha 100% silencioso publicou uma
+ * edição sem o reveal sem que ninguém percebesse até um leitor reclamar) —
+ * sem isso, a edição sairia sem o único CTA de assinatura autocontido no
+ * CORPO do e-mail (#4487 critério de pronto) e nada logaria a ausência.
+ */
+export function renderWhatsappShare(destaques: RenderDestaque[], edition: string): string {
+  const d1 = destaques[0];
+  if (!d1) {
+    console.error(JSON.stringify({ event: "whatsapp_share_no_d1", edition }));
+    return "";
+  }
+
+  const subscribeUrl = buildWhatsappSubscribeUrl(edition);
+  const block = buildWhatsappShareBlock(d1.title, subscribeUrl);
+  const shareLink = buildWhatsappShareLink(block);
+
+  // Deriva as 3 linhas visíveis de `block` — única fonte de verdade real
+  // (ver rationale no doc comment acima). `ctaRaw` é "Assine grátis: {url}";
+  // `ctaPrefix` é o texto antes da URL, extraído por comprimento (não regex)
+  // porque `subscribeUrl` já é conhecido exatamente — sem ambiguidade mesmo
+  // se o texto do prefixo mudar no futuro.
+  const [titleLine, hookLine, ctaRaw] = block.split("\n\n");
+  const ctaPrefix = ctaRaw.slice(0, ctaRaw.length - subscribeUrl.length);
+  const ctaHtml = `${esc(ctaPrefix)}<a href="${esc(subscribeUrl)}" style="color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};" target="_blank" rel="noopener noreferrer">${esc(subscribeUrl)}</a>`;
+  const innerHtml = [
+    bodyP("0", esc(titleLine)),
+    bodyP("12px 0 0", esc(hookLine)),
+    bodyP("12px 0 0", ctaHtml),
+  ].join("\n      ");
+
+  const buttonStyle = `display:inline-block;margin-top:16px;border:1px solid ${RULE};border-radius:999px;padding:10px 18px;font-family:${FONT_LABEL};font-size:16px;font-weight:bold;color:${TEXT_COLOR};text-decoration:none;`;
+
+  return `<!-- Compartilhe no WhatsApp -->
+<tr><td class="pad" style="padding:${PAD_SECTION};">
+  ${renderKicker("Compartilhe")}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-collapse:separate;border-spacing:0"><tr>
+    <td style="background:${SURFACE};border-radius:12px;padding:24px 28px;">
+      ${innerHtml}
+      <table role="presentation" cellpadding="0" cellspacing="0"><tr><td>
+        <a href="${esc(shareLink)}" style="${buttonStyle}" target="_blank" rel="noopener noreferrer">Compartilhar no WhatsApp →</a>
+      </td></tr></table>
+    </td>
+  </tr></table>
+</td></tr>`;
+}
+
+/**
  * Pure (#1076): renderiza o bloco 🙋🏼‍♀️ PARA ENCERRAR. Lista `- item` no MD
  * vira `<ul><li>...`; resto vira parágrafos.
  */
@@ -1596,6 +1737,12 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   if (content.sorteio?.trim()) parts.push(renderSorteio(content.sorteio));
   // #1279: reveal "Na última edição..." renderiza entre SORTEIO e PARA ENCERRAR
   if (content.erroIntencional) parts.push(renderErroIntencionalReveal(content.erroIntencional));
+  // #4486: bloco encaminhável por WhatsApp — SEMPRE ANTES de "Para encerrar"
+  // (decisão do dispatch #4486/#4487, ver doc comment de renderWhatsappShare).
+  // Fixo/determinístico — não depende de conteúdo do reviewed.md, só do D1 +
+  // edition já disponíveis em `content`.
+  const whatsappShare = renderWhatsappShare(content.destaques, content.eia.edition);
+  if (whatsappShare) parts.push(whatsappShare);
   if (content.encerrar) parts.push(renderEncerrar(content.encerrar));
 
   // #1936/#1945 (DS): container do corpo, máx. 600px (email-safe — Outlook corta

@@ -12,10 +12,14 @@ import {
 } from "../scripts/prep-manual-publish.ts";
 
 /**
- * Tests pra prep-manual-publish.ts (#1047, refatorado #1185, simplificado #1186).
+ * Tests pra prep-manual-publish.ts (#1047, refatorado #1185, simplificado #1186,
+ * merge tag de identidade trocada em #4487).
  *
- * Desde #1186, o design suportado é modo merge-tag: URL de voto com `{{email}}`
- * SEM `&sig={{poll_sig}}`. O check de custom field poll_sig foi removido.
+ * Desde #1186, o design suportado é modo merge-tag: URL de voto SEM
+ * `&sig={{poll_sig}}`. O check de custom field poll_sig foi removido. #4487:
+ * a merge tag de identidade virou `{{poll_token}}` (token opaco por
+ * assinante) — era `{{email}}` cru até então. `checkNewsletterHtml` aceita
+ * as duas formas.
  */
 
 let tmpDir: string;
@@ -37,7 +41,7 @@ describe("checkNewsletterHtml validation (#1186 merge-tag mode)", () => {
     assert.match(result.detail, /não encontrado/);
   });
 
-  it("rejeita HTML sem {{email}} (sem nenhuma merge tag)", () => {
+  it("rejeita HTML sem merge tag de identidade (nem {{poll_token}} nem {{email}})", () => {
     const editionDir = join(tmpDir, "no-tags");
     mkdirSync(join(editionDir, "_internal"), { recursive: true });
     writeFileSync(
@@ -46,17 +50,17 @@ describe("checkNewsletterHtml validation (#1186 merge-tag mode)", () => {
     );
     const result = checkNewsletterHtml(editionDir);
     assert.equal(result.passed, false);
-    assert.match(result.detail, /\{\{email\}\}/);
+    assert.match(result.detail, /\{\{poll_token\}\}/);
   });
 
-  it("aceita HTML com inline URL modo merge-tag ({{email}} sem sig) — #1186", () => {
+  it("aceita HTML com inline URL modo merge-tag do token opaco ({{poll_token}} sem sig) — #4487", () => {
     const editionDir = join(tmpDir, "merge-tag-ok");
     mkdirSync(join(editionDir, "_internal"), { recursive: true });
     writeFileSync(
       resolve(editionDir, "_internal", "newsletter-final.html"),
       `<html><body>
-        <a href="https://poll.diaria.workers.dev/vote?email={{email}}&edition=260519&choice=A">A</a>
-        <a href="https://poll.diaria.workers.dev/vote?email={{email}}&edition=260519&choice=B">B</a>
+        <a href="https://poll.diaria.workers.dev/vote?email={{poll_token}}@vote.eia.diaria.local&edition=260519&choice=A">A</a>
+        <a href="https://poll.diaria.workers.dev/vote?email={{poll_token}}@vote.eia.diaria.local&edition=260519&choice=B">B</a>
       </body></html>`,
     );
     const result = checkNewsletterHtml(editionDir);
@@ -64,8 +68,9 @@ describe("checkNewsletterHtml validation (#1186 merge-tag mode)", () => {
     assert.match(result.detail, /merge-tag/);
   });
 
-  it("aceita HTML com {{email}} mesmo sem {{poll_sig}} — modo merge-tag (#1186)", () => {
-    // Regressão: antes de #1186, precisava de poll_sig. Agora só {{email}} basta.
+  it("aceita HTML com {{email}} legado (pré-#4487) mesmo sem {{poll_sig}} — modo merge-tag (#1186)", () => {
+    // Regressão: antes de #1186, precisava de poll_sig. #4487 trocou {{email}}
+    // por {{poll_token}}, mas o legado continua aceito (nunca um falso erro).
     const editionDir = join(tmpDir, "email-only-ok");
     mkdirSync(join(editionDir, "_internal"), { recursive: true });
     writeFileSync(
@@ -75,10 +80,10 @@ describe("checkNewsletterHtml validation (#1186 merge-tag mode)", () => {
       </body></html>`,
     );
     const result = checkNewsletterHtml(editionDir);
-    assert.equal(result.passed, true, "{{email}} sem poll_sig deve passar (#1186)");
+    assert.equal(result.passed, true, "{{email}} legado sem poll_sig deve passar (#1186/#4487)");
   });
 
-  it("rejeita HTML legacy com poll_a_url/poll_b_url (sem {{email}})", () => {
+  it("rejeita HTML legacy com poll_a_url/poll_b_url (sem merge tag de identidade)", () => {
     const editionDir = join(tmpDir, "legacy");
     mkdirSync(join(editionDir, "_internal"), { recursive: true });
     writeFileSync(
@@ -90,7 +95,7 @@ describe("checkNewsletterHtml validation (#1186 merge-tag mode)", () => {
     );
     const result = checkNewsletterHtml(editionDir);
     assert.equal(result.passed, false);
-    assert.match(result.detail, /\{\{email\}\}/);
+    assert.match(result.detail, /\{\{poll_token\}\}/);
   });
 });
 

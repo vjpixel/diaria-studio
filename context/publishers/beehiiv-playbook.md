@@ -12,7 +12,7 @@ Playbook semântico+operacional pra criar a newsletter diar.ia.br no Beehiiv com
 
 Beehiiv newsletter = 1 comando + 1 paste JS:
 
-1. `npx tsx scripts/upload-html-public.ts --edition AAMMDD --no-wrap` — sobe o fragmento HTML **bruto** pro Worker (sem wrapper de preview, preservando `{{email}}`). **A URL retornada contém hash do conteúdo** (#1494) — ex: `draft.diaria.workers.dev/260527-3415df`. Usar essa URL (não montar manualmente).
+1. `npx tsx scripts/upload-html-public.ts --edition AAMMDD --no-wrap` — sobe o fragmento HTML **bruto** pro Worker (sem wrapper de preview, preservando a merge tag de identidade do voto — `{{poll_token}}`, #4487; era `{{email}}` até então). **A URL retornada contém hash do conteúdo** (#1494) — ex: `draft.diaria.workers.dev/260527-3415df`. Usar essa URL (não montar manualmente).
 2. Single `javascript_tool` no Chrome (`fetch(url)` + `tr.insertText(html, snippetPos+1)`) — ver §5.2 Fase 3. Helper: `buildInsertTextJs(url)` de `scripts/lib/beehiiv-insert-text.ts`.
 
 Resto: Title + Subtitle + cover via Chrome MCP (3-4 calls visuais), depois Send test email.
@@ -554,7 +554,7 @@ Também resetar **Subtitle** se vier com valor da edição anterior (verificar s
 
 **Fase 2 — Upload HTML pro Cloudflare Worker (#1178, #2550)** — **ÚNICO caminho recomendado em runtime (#1327).**
 
-> **Fluxo padrão desde 260625 (#2550):** usar `--no-wrap` para subir o fragmento HTML **bruto** (sem o wrapper de preview). O wrapper adicionado pelo default `upload-html-public.ts` é útil para revisão visual no browser, mas não deve ir para o email enviado. O fragmento bruto preserva `{{email}}` e as merge-tags de poll. Se `--no-wrap` não estiver disponível (versão antiga do script), use o wrapper e remova-o manualmente antes do paste.
+> **Fluxo padrão desde 260625 (#2550):** usar `--no-wrap` para subir o fragmento HTML **bruto** (sem o wrapper de preview). O wrapper adicionado pelo default `upload-html-public.ts` é útil para revisão visual no browser, mas não deve ir para o email enviado. O fragmento bruto preserva `{{poll_token}}` (#4487 — era `{{email}}` até então) e as merge-tags de poll. Se `--no-wrap` não estiver disponível (versão antiga do script), use o wrapper e remova-o manualmente antes do paste.
 >
 > **Nota histórica #2495 (260623) → resolvida em #4196 (260728):** o `fetch()` da Fase 3 ficou pendurado naquela sessão; o auto-fallback desta Fase 2 (que só olha o exit code do `upload-html-public.ts`, um script de shell) não disparava porque a Fase 2 já tinha terminado com exit 0 — o fetch pendurado é um evento da Fase 3, in-page, invisível pra este exit code. Desde #4196, a Fase 3 tem seu próprio timeout (ver abaixo) e não depende mais deste fallback baseado em exit code pra se proteger.
 
@@ -594,9 +594,9 @@ TTL 12h no KV — cobre paste do dia + retries no mesmo turno. Re-rodar sobrescr
 >
 > **Timeout explícito (#4196):** o `fetch()` é envolvido por `AbortController` com timeout de 25s (`DEFAULT_FETCH_TIMEOUT_MS`, `scripts/lib/beehiiv-insert-text.ts`). Se o fetch pendurar — CSP, rede, Worker lento, qualquer causa — o abort produz `{ error: 'fetch_timeout', ... }`, um resultado detectável em vez de uma Promise pendurada pra sempre (o modo de falha real do #2495/260623: não era o CSP em si que quebrava o fluxo, era a ausência de um timeout que tornasse essa falha visível).
 >
-> **Fallback automático, não mais manual:** `classifyInsertResult(result)` roteia QUALQUER falha da Fase 3 — timeout, erro HTTP, exceção de rede, `inserted: false`, merge-tag `{{email}}` ausente — para `"retry_chunked"`. Acionar o fallback chunked base64 (apêndice) automaticamente quando isso acontecer; não é mais necessário escolher manualmente.
+> **Fallback automático, não mais manual:** `classifyInsertResult(result)` roteia QUALQUER falha da Fase 3 — timeout, erro HTTP, exceção de rede, `inserted: false`, merge-tag de identidade do voto (`{{poll_token}}`, #4487; era `{{email}}`) ausente — para `"retry_chunked"`. Acionar o fallback chunked base64 (apêndice) automaticamente quando isso acontecer; não é mais necessário escolher manualmente.
 >
-> **Verificação pós-inserção (#4196):** mesmo quando `classifyInsertResult` retorna `"ok"`, chamar `verifyBodySizePlausible(result.htmlBytes, readLocalFragmentBytes(newsletterFinalHtmlPath))` antes de declarar o paste concluído — um `{{email}}` presente e `inserted: true` não garantem que o corpo inteiro chegou (Worker pode ter servido resposta parcial sem erro HTTP). Se `ok: false`, tratar como falha do paste (acionar fallback chunked) em vez de prosseguir com um corpo truncado.
+> **Verificação pós-inserção (#4196):** mesmo quando `classifyInsertResult` retorna `"ok"`, chamar `verifyBodySizePlausible(result.htmlBytes, readLocalFragmentBytes(newsletterFinalHtmlPath))` antes de declarar o paste concluído — a merge tag presente e `inserted: true` não garantem que o corpo inteiro chegou (Worker pode ter servido resposta parcial sem erro HTTP). Se `ok: false`, tratar como falha do paste (acionar fallback chunked) em vez de prosseguir com um corpo truncado.
 
 Browser baixa HTML direto do Worker e insere no editor TipTap. Single javascript_tool call (~5K tokens vs ~80K do chunked flow).
 
@@ -611,8 +611,9 @@ import {
   readLocalFragmentBytes,
 } from "scripts/lib/beehiiv-insert-text.ts";
 
-// Antes do paste: validar que o fragmento baixado do Worker tem {{email}}
-// (confirma que --no-wrap foi usado e o renderer preservou as merge-tags)
+// Antes do paste: validar que o fragmento baixado do Worker tem {{poll_token}}
+// (#4487, token opaco — era {{email}} até então; confirma que --no-wrap foi
+// usado e o renderer preservou as merge-tags)
 // Nota: verifyFragmentPreserved opera sobre o fragmento BAIXADO — não é necessário
 // baixar previamente; a validação está embutida na varredura pós-paste (hasEmail).
 
@@ -669,10 +670,12 @@ if (action === "ok") {
   editor.view.dispatch(tr.insertText(html, snippetPos + 1));
 
   // Varredura direcionada (#1766): NÃO serializar o doc inteiro (timeout CDP 45s)
+  // #4487: merge tag de identidade virou {{poll_token}} (token opaco) — checa
+  // as duas formas (a atual e o {{email}} legado, pré-#4487).
   let hasEmail = false, hasPollA = false, hasPollB = false;
   editor.state.doc.descendants((n) => {
     if (n.isText && n.text) {
-      if (n.text.includes('{{email}}'))       hasEmail = true;
+      if (n.text.includes('{{poll_token}}') || n.text.includes('{{email}}')) hasEmail = true;
       if (n.text.includes('{{poll_a_url}}'))  hasPollA = true;
       if (n.text.includes('{{poll_b_url}}'))  hasPollB = true;
     }

@@ -119,10 +119,10 @@ por slot).
   (`scripts/lib/shared/snippet-loader.ts`) remove esse comentário
   automaticamente antes do conteúdo entrar no render — o comentário é só
   documentação, nunca vaza pro e-mail final.
-- **Campos de header dedicados: `nome:`, `categoria:`, `alt:`.** Além do texto
-  livre de notas, o header aceita 3 linhas `{key}: {valor}` reconhecidas por
-  `parseBoxHeaderField` (`scripts/lib/shared/snippet-header.ts`), mesmo
-  padrão editável no Studio (`scripts/studio-ui/studio-boxes.ts`):
+- **Campos de header dedicados: `nome:`, `categoria:`, `alt:`, `runtime:`.**
+  Além do texto livre de notas, o header aceita linhas `{key}: {valor}`
+  reconhecidas por `parseBoxHeaderField` (`scripts/lib/shared/snippet-header.ts`),
+  mesmo padrão editável no Studio (`scripts/studio-ui/studio-boxes.ts`):
   - `nome:` (#3933) — nome interno do box, exibido no Studio (nunca vaza
     pro e-mail).
   - `categoria:` (#3981) — rótulo do kicker acima do box na newsletter
@@ -141,7 +141,14 @@ por slot).
     render cai no anchor text do 1º link (comportamento legado,
     retrocompatível) — `check-invariants.ts --stage 4` sinaliza (warning,
     não bloqueia) quando um slot tem imagem sem `alt:` declarado (#4086).
-  Todos os 3 campos são opcionais e independentes — declarar um não exige
+  - `runtime: false` (#4500) — sinaliza que o arquivo é documentação/
+    referência, não uma caixa de verdade (ex: `intro-campeoes-sorteio.md`,
+    ver "Nem todo arquivo é 'vivo' em runtime" abaixo). `listBoxes`
+    (`scripts/studio-ui/studio-boxes.ts`) filtra qualquer `.md` com esse
+    campo — o painel Caixas nunca oferece esses arquivos como opção pros
+    slots 0-3. Ausente ou qualquer valor diferente de `false` (case-
+    insensitive) → arquivo continua listado normalmente.
+  Todos os 4 campos são opcionais e independentes — declarar um não exige
   os outros.
 - **Sem marcador emoji (#3475).** O parse/render decide formato e posição
   100% por estrutura (posição no texto, presença de `---`, contagem de
@@ -158,7 +165,11 @@ por slot).
   sem o título serif 26px destacado (ver comentário do próprio arquivo).
 - **Nem todo arquivo é "vivo" em runtime.** `intro-campeoes-sorteio.md` é
   puramente um template de referência (o gerador é a fonte de verdade
-  executável); os demais 7 são lidos de fato — seja via `boxes_divulgacao`
+  executável) — declara `runtime: false` no header (#4500) pra sumir do
+  painel Caixas do Studio, já que atribuí-lo a um slot não teria efeito
+  nenhum no render real (o box de campeões é hardcoded pra intro por
+  `inject-champions-callout.ts`, nunca lê `boxes_divulgacao`). Os demais 7
+  são lidos de fato — seja via `boxes_divulgacao`
   (livros/clarice/alexa-plus/apoio/recomendação de leitura/indicação de
   ferramenta), ou via leitura fixa fora do slot config
   (encerramento-social-apoio).

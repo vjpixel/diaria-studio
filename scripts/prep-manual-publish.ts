@@ -4,9 +4,13 @@
  * Gate técnico antes de publicação manual no Beehiiv. Valida pré-condições
  * e imprime instruções step-by-step pra paste + publish + close-poll.
  *
- * Desde #1186, a URL de voto usa modo merge-tag (`{{email}}` sem sig HMAC) —
- * `inject-poll-sig.ts` foi removido. As pré-condições agora são:
- *   1. newsletter-final.html existe e tem merge tag `{{email}}`
+ * Desde #1186, a URL de voto usa modo merge-tag (sem sig HMAC) —
+ * `inject-poll-sig.ts` foi removido. #4487: a merge tag de identidade virou
+ * `{{poll_token}}` (token opaco por assinante, populado por
+ * `scripts/inject-poll-token.ts`) — era `{{email}}` cru até então. As
+ * pré-condições agora são:
+ *   1. newsletter-final.html existe e tem a merge tag de identidade do voto
+ *      (`{{poll_token}}`, ou `{{email}}` legado)
  *   2. Worker de poll está respondendo
  *
  * Uso:
@@ -249,21 +253,25 @@ export function checkNewsletterHtml(editionDir: string): Check {
     };
   }
   const html = readFileSync(path, "utf8");
-  // Design atual (#1186): URL inline com merge tag `{{email}}` (modo merge-tag,
-  // sem sig HMAC). Sintaxe Beehiiv: SEM espaços, SEM prefix (docs 2026-05-11).
-  const hasEmailMergeTag = /\{\{email\}\}/.test(html);
-  if (!hasEmailMergeTag) {
+  // Design atual (#1186): URL inline com merge tag de identidade do voto
+  // (modo merge-tag, sem sig HMAC). #4487: a merge tag virou `{{poll_token}}`
+  // (token opaco por assinante) — era `{{email}}` cru até então. Aceita as
+  // duas formas (o legado nunca deveria mais aparecer numa edição nova, mas
+  // não custa continuar reconhecendo). Sintaxe Beehiiv: SEM espaços, SEM
+  // prefix (docs 2026-05-11).
+  const hasVoteIdentityMergeTag = /\{\{poll_token\}\}/.test(html) || /\{\{email\}\}/.test(html);
+  if (!hasVoteIdentityMergeTag) {
     return {
-      name: "newsletter-final.html tem merge tag {{email}}",
+      name: "newsletter-final.html tem merge tag de identidade do voto",
       passed: false,
-      detail: `Design atual requer URL inline com {{email}} (modo merge-tag, #1186). Re-rodar render-newsletter-html.ts.`,
+      detail: `Design atual requer URL inline com {{poll_token}} (modo merge-tag, #1186/#4487). Re-rodar render-newsletter-html.ts.`,
     };
   }
   const sizeKb = Math.round(statSync(path).size / 1024);
   return {
     name: "newsletter-final.html",
     passed: true,
-    detail: `${sizeKb}KB, inline URL com {{email}} (merge-tag mode)`,
+    detail: `${sizeKb}KB, inline URL com merge tag de identidade do voto (merge-tag mode)`,
   };
 }
 

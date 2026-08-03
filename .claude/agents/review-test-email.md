@@ -135,9 +135,24 @@ O conteudo do email (via MCP ou Chrome) contem o resultado final que o leitor ve
 > de registrar qualquer issue, internalize:
 >
 > 1. **Leia o email RENDERIZADO/entregue (Gmail MCP `FULL_CONTENT`)**, não o HTML
->    cru do draft/worker. A **merge tag `{{email}}` é inline POR DESIGN** (#1186,
->    modo merge-tag) e o Beehiiv a expande **no envio**. Vê-la no source NÃO é
->    defeito — **nunca** reportar `{{email}}` não-expandida como blocker.
+>    cru do draft/worker. A **merge tag `{{poll_token}}` é inline POR DESIGN**
+>    (#1186, modo merge-tag; #4487 — token opaco por assinante, era `{{email}}`
+>    cru até então) SÓ no HTML de **draft/pré-render** (worker, antes do envio) —
+>    a Beehiiv ainda não teve a chance de expandir. Vê-la nesse contexto NÃO é
+>    defeito.
+>    **#4512 (correção pós-review — antes deste ajuste esta seção instruía
+>    "nunca reportar", ponto, sem distinguir os dois estágios):** no e-mail
+>    JÁ ENTREGUE (o que você está lendo agora, via Gmail MCP), a Beehiiv
+>    **já deveria ter substituído** `{{poll_token}}`/`{{email}}` por um valor
+>    real — vê-la ainda literal AQUI **é o próprio defeito** (ex: custom field
+>    `poll_token` não populado pro assinante de teste, ver
+>    `scripts/inject-poll-token.ts`), não um falso-positivo a ignorar. Na
+>    prática você não precisa decidir isso manualmente: o check determinístico
+>    do passo 17 (`lint-test-email-link-tracking.ts`, `stage: "delivered"`)
+>    já trata merge tag literal no e-mail entregue como `link_dead` (blocker)
+>    automaticamente — se você mesmo notar `{{poll_token}}` literal no corpo
+>    lido, pode reportar (`email:link_dead: {{poll_token}} não substituída —
+>    ver #4512`), o passo 17 vai confirmar/duplicar independentemente.
 >    **#1186:** `{{poll_sig}}` foi removido da vote URL — ausência de sig= é normal.
 > 2. **Novo design system (#1936):** manchetes em **Georgia serif SEM negrito** e
 >    legenda do É IA? em **sans SEM itálico** são CORRETOS. Réguas/bordas bege
@@ -367,9 +382,18 @@ Em 260519 attempt 2 reportou `status: ok` mas o editor encontrou 3 problemas rea
 npx tsx scripts/lint-test-email-link-tracking.ts \
   --email-file {edition_dir}/_internal/test-email-{AAMMDD}.txt \
   --out {edition_dir}/_internal/lint-link-tracking-{AAMMDD}.json
-# Exit 0 = nenhum BLOCKER (link_timeout/bot_blocked/auth_required/merge_tag não contam, #1949).
+# Exit 0 = nenhum BLOCKER (link_timeout/bot_blocked/auth_required não contam, #1949).
 # Exit 1 = ao menos 1 blocker (link_dead OU link_redirect_chain_long).
 ```
+
+**#4512:** este comando roda com `stage: "delivered"` por default (o e-mail
+apontado por `--email-file` é sempre o JÁ ENTREGUE, nunca draft) — uma merge
+tag `{{poll_token}}`/`{{email}}` ainda literal aqui **não é mais skipada como
+`merge_tag`**: segue pro HEAD normal e vira `link_dead` (blocker) se o
+`/vote` real rejeitar o parâmetro literal (guard `isUnsubstitutedMergeTag`,
+`workers/poll/src/vote.ts`, sempre retorna 4xx pra isso). Antes do #4512
+qualquer `{{...}}` era skipada incondicionalmente — mascarando o cenário real
+de custom field `poll_token` não populado (ver `scripts/inject-poll-token.ts`).
 
 Output JSON: `{ total_urls_extracted, total_urls_checked, issues, skipped, passed }`.
 Cada issue tem `severity: "blocker" | "warning"` (#1949). **Exit 1 só com blocker.**
@@ -380,7 +404,8 @@ Mapear `issues[]` pra strings do output do agent **respeitando o severity**:
 - `type:link_timeout` (severity:**warning**, #1949) → `"info:link_timeout: {url} (>5s, transiente)"` — **WARNING, nunca blocker**. Timeout é transiente (host lento pontual, ex: anthropic.com); não derruba o fix loop.
 
 `skipped[]` (auth_required + non_http + **bot_blocked** + **rate_limited** +
-**merge_tag** + artefatos conhecidos de test-send, #1949/#3480/#3481/#3482/#3941)
+**merge_tag** (#4512: só em HTML de draft, nunca no e-mail entregue checado
+aqui) + artefatos conhecidos de test-send, #1949/#3480/#3481/#3482/#3941/#4512)
 ficam no JSON pra debug mas **NÃO viram issue**:
 - **`bot_blocked` (401/403)**: a página existe pra humanos, só bloqueia HEAD de
   bot (diaria.beehiiv.com/cursos|livros, tecnoblog). **NÃO é link morto** — não
@@ -391,8 +416,15 @@ ficam no JSON pra debug mas **NÃO viram issue**:
   de bot — página existe normalmente pra humanos. **NÃO é link quebrado** —
   não reportar. (Antes de #3941 este status caía no ramo genérico `>=400` e
   virava `link_dead` — era exatamente o falso-positivo do post-mortem.)
-- **`merge_tag`**: URL com `{{email}}` (vote URL do É IA?, #1186 modo merge-tag) —
-  o Beehiiv expande no ENVIO. **NÃO é link quebrado** — não reportar.
+- **`merge_tag`**: URL com `{{poll_token}}` (vote URL do É IA?, #1186 modo
+  merge-tag; #4487 — token opaco, era `{{email}}`) em HTML de **draft/
+  pré-render**, onde a Beehiiv ainda não teve chance de expandir. **NÃO é
+  link quebrado nesse estágio** — não reportar. **#4512:** no e-mail
+  ENTREGUE (o que este passo 17 sempre checa), essa categoria não deveria
+  mais aparecer — uma tag ainda literal aqui vira `link_dead` (blocker) via
+  o caminho normal, não `merge_tag` skip. Se `merge_tag` aparecer no
+  `skipped[]` deste comando, é sinal de regressão no script (deveria estar
+  vazio pra este call site).
 - **`amazon_bot_block` (#3480)**: domínios Amazon (amazon.com, amazon.com.br,
   amzn.to) retornam **404** (não 401/403) pra HEAD de user-agent não-navegador
   — bot-block "silencioso". Página existe normalmente pra humanos. **NÃO é

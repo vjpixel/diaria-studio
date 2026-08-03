@@ -149,8 +149,18 @@ export interface RelinkResult {
   ctaSuffixRemovidos: number;
 }
 
-/** Reescreve o HTML. Pura: não lê nem escreve arquivo. */
-export function buildRelink(htmlIn: string, maps: RelinkMaps, campaignOverride?: string): RelinkResult {
+/**
+ * Reescreve o HTML. Pura: não lê nem escreve arquivo.
+ *
+ * @param sourceOverride #4510 (achado code-reviewer, review pré-merge do
+ *   #4482): `utm_source` do link reescrito — default `"clarice"` (mesmo
+ *   comportamento histórico, preserva todo caller que não passa o
+ *   argumento). Sem isto, `render-monthly-beehiiv.ts` reusava esta função
+ *   com `utm_source=clarice` hardcoded, misatribuindo a maioria dos cliques
+ *   de saída da variante Beehiiv (audiência de apoiadores) ao canal Clarice.
+ *   Mesmo padrão de `campaignOverride`, que já era parametrizável.
+ */
+export function buildRelink(htmlIn: string, maps: RelinkMaps, campaignOverride?: string, sourceOverride?: string): RelinkResult {
   // Extrai SÓ o `clarice-{ciclo}`, descartando qualquer sufixo do primeiro link
   // que aparecer no HTML. Antes casava `[a-z0-9-]+` inteiro, o que funcionava
   // enquanto todo link tinha o mesmo `utm_campaign` puro — mas desde o #4040
@@ -168,6 +178,7 @@ export function buildRelink(htmlIn: string, maps: RelinkMaps, campaignOverride?:
     campaignOverride ??
     (htmlIn.match(/utm_campaign=(clarice-\d{4}-\d{2})/i) ?? [])[1] ??
     "clarice";
+  const source = sourceOverride ?? "clarice"; // #4510
 
   let relinked = 0, servico = 0, naoMapeado = 0;
   const termsUsed = new Set<string>();
@@ -198,7 +209,7 @@ export function buildRelink(htmlIn: string, maps: RelinkMaps, campaignOverride?:
       if (termsUsed.has(term)) term = `${term}-${ed}`;
       termsUsed.add(term);
 
-      const url = `${base}?utm_source=clarice&utm_medium=email&utm_campaign=${campaign}&utm_term=${term}`;
+      const url = `${base}?utm_source=${source}&utm_medium=email&utm_campaign=${campaign}&utm_term=${term}`;
       relinked++;
       log.push(`  ${term.padEnd(46)} ← "${anchor.slice(0, 40)}…"  (ed ${ed})`);
       return `<a ${pre}href="${url.replace(/&/g, "&amp;")}"${post}>${inner}</a>`;
@@ -256,6 +267,7 @@ export function relinkMonthlyEditionHtml(
   monthlyDir: string,
   root: string,
   campaignOverride?: string,
+  sourceOverride?: string, // #4510 — ver docstring de buildRelink
 ): RelinkResult & { ambiguous: { url: string; editions: string[] }[] } {
   const rawPath = resolve(monthlyDir, "_internal/raw-destaques.json");
   if (!existsSync(rawPath)) throw new Error(`não achei ${rawPath}`);
@@ -274,7 +286,7 @@ export function relinkMonthlyEditionHtml(
   const idx = JSON.parse(readFileSync(resolve(root, "data/beehiiv-cache/posts/index.json"), "utf8"));
   const editionUrl = makeEditionUrlResolver(idx, editionToPostId);
 
-  const r = buildRelink(html, { urlToEdition, servicoUrls, editionUrl }, campaignOverride);
+  const r = buildRelink(html, { urlToEdition, servicoUrls, editionUrl }, campaignOverride, sourceOverride);
   return { ...r, ambiguous };
 }
 

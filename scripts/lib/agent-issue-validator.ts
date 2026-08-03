@@ -141,19 +141,25 @@ export function isEncodingDropFalsePositive(
  * Pure: decide se uma issue `email:poll_sig_missing` é falso-positivo.
  *
  * #1186: modo merge-tag — a URL de voto NÃO tem mais `sig=`. O check agora
- * só verifica se a URL de voto tem `{{email}}` (merge-tag suficiente).
+ * só verifica se a URL de voto tem a merge tag de identidade do assinante —
+ * `{{poll_token}}` (#4487: token opaco, substitui `{{email}}` cru na URL de
+ * voto do e-mail diário desde então — ver `newsletter-render-html.ts`). O
+ * check ainda aceita `{{email}}` como sinal válido (arquivos gerados antes
+ * do #4487 mergear, ou um eventual rollback) — nunca um regressão silenciosa
+ * se algum caminho legado continuar emitindo o merge tag antigo.
  * Historicamente verificava `{{poll_sig}}` — esse campo foi removido do diário.
  */
 export function isPollSigMissingFalsePositive(
   htmlLocal: string,
 ): { falsePositive: true; reason: string } | { falsePositive: false } {
   // #1186: sem sig= na URL — mode merge-tag. Issue poll_sig_missing é sempre
-  // falso-positivo agora (a URL sem sig é by-design). Ainda verifica {{email}}
-  // pra confirmar que a vote URL existe.
-  if (htmlLocal.includes("{{email}}")) {
+  // falso-positivo agora (a URL sem sig é by-design). Ainda verifica a merge
+  // tag de identidade (token opaco #4487, ou o {{email}} legado) pra
+  // confirmar que a vote URL existe.
+  if (htmlLocal.includes("{{poll_token}}") || htmlLocal.includes("{{email}}")) {
     return {
       falsePositive: true,
-      reason: "poll_sig_missing falso-positivo: modo merge-tag (#1186) — sig removido, {{email}} presente na vote URL",
+      reason: "poll_sig_missing falso-positivo: modo merge-tag (#1186) — sig removido, merge tag de identidade (token opaco #4487 ou {{email}} legado) presente na vote URL",
     };
   }
   return { falsePositive: false };
@@ -231,24 +237,29 @@ export function isItalicMissingFalsePositive(
 }
 
 /**
- * #1949: reclamação de merge tag inline não expandida é falso-positivo — `{{email}}`
- * é inline POR DESIGN (#1186), o Beehiiv expande no ENVIO.
+ * #1949: reclamação de merge tag inline não expandida é falso-positivo — a
+ * merge tag de identidade de voto (`{{poll_token}}`, #4487; era `{{email}}`
+ * até então) é inline POR DESIGN (#1186), o Beehiiv expande no ENVIO.
  *
- * Code-review: SÓ o CONJUNTO FECHADO `{{email}}`, e SÓ em issues
- * de link/formatting. Um `{{unknown_field}}`/`{{utm_campaign}}` literal num link É
- * bug real (template var vazada) → NÃO dropar. E `email:subject_mismatch` é
- * SEMPRE blocker (#1645) — nunca dropar, mesmo se o subject contiver `{{...}}`.
+ * Code-review: SÓ o CONJUNTO FECHADO `{{poll_token}}`/`{{email}}`, e SÓ em
+ * issues de link/formatting. Um `{{unknown_field}}`/`{{utm_campaign}}` literal
+ * num link É bug real (template var vazada) → NÃO dropar. E
+ * `email:subject_mismatch` é SEMPRE blocker (#1645) — nunca dropar, mesmo se
+ * o subject contiver `{{...}}`.
  *
- * #1186: `{{poll_sig}}` foi removido (modo merge-tag). Mantemos `{{email}}` no set.
+ * #1186: `{{poll_sig}}` foi removido (modo merge-tag). #4487: `{{email}}` deu
+ * lugar a `{{poll_token}}` (token opaco por assinante) na URL de voto do
+ * diário — mantemos os dois no set fechado (o legado nunca deveria mais
+ * aparecer em edições novas, mas não custa continuar reconhecendo).
  */
 export function isMergeTagUnexpandedFalsePositive(
   issue: string,
 ): { falsePositive: true; reason: string } | { falsePositive: false } {
   if (!/^email:(link_|formatting:)/i.test(issue)) return { falsePositive: false };
-  if (/\{\{\s*email\s*\}\}/i.test(issue)) {
+  if (/\{\{\s*(poll_token|email)\s*\}\}/i.test(issue)) {
     return {
       falsePositive: true,
-      reason: "merge tag inline {{email}} expande no envio (#1186)",
+      reason: "merge tag inline de identidade de voto ({{poll_token}} #4487, ou {{email}} legado) expande no envio (#1186)",
     };
   }
   return { falsePositive: false };

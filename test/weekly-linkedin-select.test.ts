@@ -116,6 +116,62 @@ describe("selectHeadlines — matéria mais clicada vence, não a manchete (acha
   });
 });
 
+describe("selectHeadlines — Use Melhor nunca vira manchete (#4492)", () => {
+  it("candidato use_melhor com a MAIOR taxa da semana NÃO é selecionado como manchete, mesmo batendo destaque/radar", () => {
+    const d1 = ranked({ kind: "destaque", section: "destaque", title: "D1", url: "https://exemplo.com/d1", clicks: 1, opens: 200 }); // 0.5%
+    const radar = ranked({ kind: "section", section: "radar", title: "Radar", url: "https://exemplo.com/radar", clicks: 3, opens: 200 }); // 1.5%
+    const useMelhorWinner = ranked({
+      kind: "section",
+      section: "use_melhor",
+      category: "USE MELHOR",
+      title: "Tutorial imbatível de clique",
+      url: "https://exemplo.com/tutorial-imbativel",
+      clicks: 50,
+      opens: 200,
+    }); // 25% — maior taxa da semana, de longe
+    const result = selectHeadlines([d1, radar, useMelhorWinner], 2);
+    assert.deepEqual(
+      result.selected.map((c) => c.url),
+      [radar.url, d1.url],
+    );
+    assert.ok(!result.selected.some((c) => c.url === useMelhorWinner.url));
+  });
+
+  it("candidato use_melhor excluído do pool de manchete continua elegível pro bloco Use Melhor dedicado", () => {
+    const radar = ranked({ kind: "section", section: "radar", title: "Radar", url: "https://exemplo.com/radar", clicks: 3, opens: 200 });
+    const useMelhorWinner = ranked({
+      kind: "section",
+      section: "use_melhor",
+      title: "Tutorial imbatível de clique",
+      url: "https://exemplo.com/tutorial-imbativel",
+      clicks: 50,
+      opens: 200,
+    });
+    const headlineResult = selectHeadlines([radar, useMelhorWinner], 1);
+    const headlineUrls = new Set(headlineResult.selected.map((c) => normalizeUrl(c.url)));
+    const useMelhorPick = selectUseMelhor([radar, useMelhorWinner], headlineUrls);
+    assert.equal(useMelhorPick?.url, useMelhorWinner.url);
+  });
+
+  it("use_melhor não aparece em `headlineEligible` (auditoria do pool de manchete) nem em `selected`", () => {
+    const useMelhorOnly = ranked({ kind: "section", section: "use_melhor", url: "https://exemplo.com/tutorial", clicks: 10, opens: 100 });
+    const result = selectHeadlines([useMelhorOnly], 3);
+    assert.equal(result.selected.length, 0);
+    assert.ok(!result.headlineEligible.some((c) => c.url === useMelhorOnly.url));
+  });
+
+  it("shortfall de manchetes conta separadamente use_melhor reservado vs. exclusão comercial (achado #4507)", () => {
+    const useMelhorOnly = ranked({ kind: "section", section: "use_melhor", url: "https://exemplo.com/tutorial", clicks: 10, opens: 100 });
+    const commercial = ranked({ kind: "section", url: "https://apoia.se/diaria", clicks: 10, opens: 100 });
+    const result = selectHeadlines([useMelhorOnly, commercial], 2);
+    assert.equal(result.selected.length, 0);
+    const shortfallWarning = result.warnings.find((w) => /^Só \d+\/\d+ candidatos elegíveis/.test(w));
+    assert.ok(shortfallWarning, result.warnings.join(" | "));
+    assert.match(shortfallWarning!, /1 exclu[ií]do\(s\) por comercial\/própria/);
+    assert.match(shortfallWarning!, /1 reservado\(s\) pro bloco Use Melhor/);
+  });
+});
+
 describe("selectHeadlines — exclusão comercial/própria", () => {
   it("link comercial com clique altíssimo NUNCA aparece selecionado, mesmo sendo o mais clicado bruto", () => {
     // prepara.com.br (Divulgação, 6 cliques, o MAIS clicado de julho) do comentário do #4456.

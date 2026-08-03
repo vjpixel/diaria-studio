@@ -122,3 +122,63 @@ export function computeSegmentDrift(
 export function allSegmentsConverged(drift: readonly SegmentDriftEntry[]): boolean {
   return drift.every((d) => d.converged);
 }
+
+// ---------------------------------------------------------------------------
+// Gate de num_members pós-refresh (#4485 item 1 — Passo 4 da skill)
+// ---------------------------------------------------------------------------
+//
+// Verificado ao vivo em 260802 (#4485): mudar o VALOR de um custom field
+// (`--push` de `sync-apoio-nivel-beehiiv.ts`) não recalcula os 6 segmentos
+// sozinho — a Beehiiv só reprocessa quando a CONDIÇÃO do segmento é salva.
+// `Apoio — Todos` chegou a mostrar `total: 0` mesmo com 16 assinantes com
+// nível recém-gravado — não era contador defasado, a pertinência real
+// estava vazia. O botão "Refresh segment" (aba Overview) resolve, mas nem
+// sempre pega na 1ª tentativa (4 de 6 pegaram no re-save, 2 precisaram de 2ª
+// tentativa) — por isso o Passo 4 da skill precisa de um GATE de verdade
+// depois do refresh, não só "cliquei e segui em frente".
+
+export interface SegmentMemberCounts {
+  amigo: number;
+  apoiador: number;
+  mantenedor: number;
+  patrono: number;
+  todos: number;
+  nenhum: number;
+}
+
+export interface SegmentCountGateResult {
+  /** `true` quando os 2 checks abaixo baterem — refresh confirmado em TODOS
+   * os 6 segmentos. */
+  ok: boolean;
+  sumOfTiers: number;
+  todos: number;
+  nenhum: number;
+  activeBase: number;
+  /** `amigo + apoiador + mantenedor + patrono === todos`. */
+  tiersMatchTodos: boolean;
+  /** `todos + nenhum === activeBase`. */
+  totalMatchesActiveBase: boolean;
+}
+
+/**
+ * Pure: gate do Passo 4 da skill `/diaria-apoios-sync` (#4485 item 1) —
+ * depois do "Refresh segment" manual em cada um dos 6 segmentos, confirma
+ * que a releitura de `num_members` reconcilia: soma das 4 faixas === Todos,
+ * e Todos + Nenhum === base ativa total. Se qualquer um dos dois checks
+ * falhar, o refresh não pegou em algum segmento — repetir nele antes de
+ * declarar sucesso (nunca aceitar "a tela mostrou que salvou").
+ */
+export function evaluateSegmentCountGate(counts: SegmentMemberCounts, activeBase: number): SegmentCountGateResult {
+  const sumOfTiers = counts.amigo + counts.apoiador + counts.mantenedor + counts.patrono;
+  const tiersMatchTodos = sumOfTiers === counts.todos;
+  const totalMatchesActiveBase = counts.todos + counts.nenhum === activeBase;
+  return {
+    ok: tiersMatchTodos && totalMatchesActiveBase,
+    sumOfTiers,
+    todos: counts.todos,
+    nenhum: counts.nenhum,
+    activeBase,
+    tiersMatchTodos,
+    totalMatchesActiveBase,
+  };
+}
