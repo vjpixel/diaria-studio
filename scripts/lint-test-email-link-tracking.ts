@@ -24,7 +24,11 @@
  *      sempre; página existe normalmente pra humanos. Post-mortem 260723
  *      (#3941): reportado como "link quebrado" quando na verdade era esse
  *      429 conhecido — falso-positivo confirmado.
- *    - `merge_tag`: URL com `{{email}}`/`{{poll_sig}}` — Beehiiv expande no envio
+ *    - `merge_tag`: URL com QUALQUER merge tag `{{...}}` (ex: `{{poll_token}}`,
+ *      #4487 — era `{{email}}`/`{{poll_sig}}`) — Beehiiv expande no envio.
+ *      `categorizeUrl` casa o padrão genericamente (não um nome de campo
+ *      específico), então segue funcionando pra qualquer merge tag futura
+ *      sem precisar editar este arquivo.
  *    - `non_http`/`tel_mailto`: protocolos não-http
  *    - Artefatos conhecidos de test-send (#3480/#3481/#3482, post-mortem 260716)
  *      — classificados via `classifyKnownArtifact`, sempre `skipped[]` (nunca

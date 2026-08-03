@@ -4,7 +4,9 @@
 
 > **#1186 (2026-06-12):** O diário migrou para **modo merge-tag** — a URL de voto usa `{{email}}` sem `&sig=`. `inject-poll-sig.ts` foi removido.
 >
-> **Este runbook ainda é necessário para o ADMIN_SECRET** (usado por `close-poll.ts` via `/admin/correct`). A seção de `inject-poll-sig` (Steps 4 e pós-rotação) ficou histórica. `POLL_SECRET` ainda existe no Worker (o caminho assinado está dormiente), então a rotação periódica é prudente para o Worker, mas `inject-poll-sig.ts` não precisa mais ser rodado.
+> **#4487 (2026-08): `POLL_SECRET` voltou a ter uso ATIVO** — não mais pro caminho assinado dormiente descrito abaixo, mas pra gerar `{{poll_token}}` (token opaco por assinante, substitui `{{email}}` cru na URL de voto do e-mail diário — ver `scripts/lib/shared/poll-token.ts`). **Mesmo assim, rotação NÃO exige re-rodar `scripts/inject-poll-token.ts`**: diferente do extinto `poll_sig`, a resolução token→email do Worker é um lookup KV (`polltoken:{token} -> email`, escrito no momento da injeção), não uma verificação de assinatura ao vivo — links já enviados com tokens computados sob o secret ANTIGO continuam resolvendo normalmente após a rotação, porque a entrada KV correspondente não expira nem depende do secret pra ser lida. Rodar `inject-poll-token.ts --force` após a rotação é opcional (só recomputa/repatcha tokens novos pra frente; não é necessário pra não quebrar nada existente).
+>
+> **Este runbook ainda é necessário para o ADMIN_SECRET** (usado por `close-poll.ts` via `/admin/correct`). A seção de `inject-poll-sig` (Steps 4 e pós-rotação) ficou histórica — não confundir com `inject-poll-token.ts` (#4487), que é outro script, com outro propósito e outra semântica de rotação (ver nota acima). `POLL_SECRET` ainda existe no Worker (o caminho ASSINADO — `sig=` — continua dormiente), então a rotação periódica é prudente para o Worker.
 
 ## Quando rodar
 

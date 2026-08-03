@@ -353,8 +353,16 @@ describe("verifyFragmentPreserved (#2550)", () => {
     const fragmentSemEmail = FRAGMENT_WITH_EMAIL.replace(/\{\{email\}\}/g, "REMOVED");
     const err = verifyFragmentPreserved(fragmentSemEmail);
     assert.ok(err !== null, "deve retornar erro quando {{email}} ausente");
-    assert.match(err!, /\{\{email\}\}/, "mensagem de erro deve mencionar {{email}}");
+    // #4487: a merge tag de identidade virou {{poll_token}} — a mensagem de
+    // erro passou a citar essa forma (a atual), não mais {{email}} (legado).
+    assert.match(err!, /\{\{poll_token\}\}/, "mensagem de erro deve mencionar {{poll_token}}");
     assert.match(err!, /--no-wrap/, "mensagem de erro deve orientar uso do --no-wrap");
+  });
+
+  it("#4487: retorna null para fragmento com {{poll_token}} (token opaco, forma atual)", () => {
+    const fragmentComToken = FRAGMENT_WITH_EMAIL.replace(/\{\{email\}\}/g, "{{poll_token}}@vote.eia.diaria.local");
+    const err = verifyFragmentPreserved(fragmentComToken);
+    assert.equal(err, null, "fragmento com {{poll_token}} deve passar na validação");
   });
 
   it("retorna erro para fragmento vazio", () => {

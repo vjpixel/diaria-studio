@@ -26,6 +26,9 @@ import {
   seqStateKvKey, // #4443: chave do agregado seq:{month}:{email} (jogar/seq-state)
 } from "./lib";
 import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./index";
+// #4487: resolução do token opaco de voto (e-mail diário, esp="beehiiv") →
+// e-mail real, via lookup KV. Ver header de poll-token.ts pro design completo.
+import { extractPollToken, pollTokenKvKey } from "./poll-token";
 import { upsertOwnEntryInSnapshot, listAllKeys } from "./leaderboard-routes";
 import { type StatsCounterData, mergeStatsWithKvFallback } from "./stats-counter";
 // #4169: DO que serializa o read-modify-write de score:{email} (global) e
@@ -297,6 +300,30 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   // testável em lib.ts (isValidVoteEmailFormat/isValidVoteEditionFormat).
   if (!isValidVoteEmailFormat(email) || !isValidVoteEditionFormat(edition)) {
     return voteHtmlResponse(votePageHtml("Link inválido — parâmetros ausentes.", false, null, null, null, brand), 400);
+  }
+
+  // #4487: resolve token opaco → e-mail real ANTES de qualquer lógica de
+  // identidade abaixo (guard do domínio anônimo web, sig, dedup, score,
+  // nickname). O link de voto do e-mail diário (esp="beehiiv") agora carrega
+  // `{{poll_token}}@vote.eia.diaria.local` em vez do e-mail cru
+  // (`newsletter-render-html.ts::buildVoteUrl`) — quem recebe a edição
+  // ENCAMINHADA não herda mais o e-mail do assinante original na URL. O
+  // token é gravado no KV como `polltoken:{token} -> email` pelo script de
+  // injeção (`scripts/inject-poll-token.ts`, popula o custom field Beehiiv
+  // `poll_token` por assinante). Token sem entrada no KV (subscriber novo
+  // ainda não sincronizado, ou POLL_SECRET rotacionado sem re-sync) falha
+  // como link inválido — fail-closed, nunca fail-open pra e-mail arbitrário.
+  // Resto da função (sig, valid_editions, web guard, score/vote/nickname)
+  // continua operando sobre `email` REAL a partir daqui — zero mudança de
+  // comportamento pra quem já vota há meses (streak/nickname preservados).
+  const pollToken = extractPollToken(email);
+  if (pollToken) {
+    const resolvedEmail = await env.POLL.get(pollTokenKvKey(pollToken));
+    if (!resolvedEmail) {
+      console.log(JSON.stringify({ event: "poll_vote_token_unresolved", edition, token: pollToken }));
+      return voteHtmlResponse(votePageHtml("Link inválido ou expirado.", false, null, null, null, brand), 400);
+    }
+    email = resolvedEmail.toLowerCase().trim();
   }
 
   // #4435 (achado pr-test-analyzer do review pré-merge do #4419, espelha o
