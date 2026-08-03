@@ -115,4 +115,23 @@ describe("buildChampionsCallout (#2725)", () => {
   it("pódio vazio → null", () => {
     assert.equal(buildChampionsCallout([], RAFFLE, "junho", "2 de julho"), null);
   });
+
+  it("leaderboardUrl presente → link pro ranking completo logo após o pódio (#4506)", () => {
+    const text = buildChampionsCallout(
+      PODIUM,
+      RAFFLE,
+      "junho",
+      "2 de julho",
+      "https://eia.diar.ia.br/leaderboard",
+    );
+    assert.ok(text);
+    assert.match(text!, /🥉 Joshu\n\n\[Veja o ranking completo\]\(https:\/\/eia\.diar\.ia\.br\/leaderboard\)\n\n\*\*Sorteio\*\*/);
+  });
+
+  it("leaderboardUrl ausente → sem link, comportamento igual ao anterior (fail-open)", () => {
+    const text = buildChampionsCallout(PODIUM, RAFFLE, "junho", "2 de julho");
+    assert.ok(text);
+    assert.ok(!text!.includes("ranking completo"));
+    assert.match(text!, /🥉 Joshu\n\n\*\*Sorteio\*\*/);
+  });
 });

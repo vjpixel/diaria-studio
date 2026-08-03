@@ -99,6 +99,18 @@ Ao comprar por estes links, a diar.ia.br pode receber uma comissão.`;
     assert.match(html, /Conhecer a Alexa\+ e ver as ofertas<\/a>/);
   });
 
+  it("forceCtaPill SEM plainFirstParagraph: 1º parágrafo vira título serif 26px (default, sem regressão)", () => {
+    const html = renderIntroCallout(CALLOUT, "serif", true);
+    assert.match(html, /font-size:26px[^"]*">Equipe sua casa com a Alexa\+/);
+  });
+
+  it("forceCtaPill COM plainFirstParagraph=true: 1º parágrafo renderiza como corpo normal, não título (achado 260803 — box sem linha de título dedicada, ex: intro do segmento Pending Brevo)", () => {
+    const html = renderIntroCallout(CALLOUT, "serif", true, true, true);
+    assert.doesNotMatch(html, /font-size:26px/);
+    assert.match(html, /Equipe sua casa com a Alexa\+/);
+    assert.match(html, PILL_RE, "botão pill continua extraído normalmente");
+  });
+
   it("forceCtaPill NÃO vira pill quando o último parágrafo é rotulado (prateleira)", () => {
     const SHELF = `Equipe sua casa com a Alexa+. Veja os dispositivos:
 

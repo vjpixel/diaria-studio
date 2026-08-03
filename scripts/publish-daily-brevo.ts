@@ -10,12 +10,18 @@
  *
  * Pipeline (tudo já existente, remontado aqui — nenhum novo parser/renderer):
  *   1. `extractContent(editionDir)` (`newsletter-parse.ts`) — mesmo parse do
- *      Stage 4 diário.
+ *      Stage 4 diário, em seguida `stripGreetingAndSupporterBlocks` (achado
+ *      260803) remove a saudação pessoal e o agradecimento a apoiadores —
+ *      ambos presumem relação já estabelecida com quem lê, incompatível com
+ *      o público Pending (nunca confirmou o cadastro); o bloco de intro do
+ *      item 4 abaixo já cobre a explicação necessária.
  *   2. `renderHTML(content, { esp: "brevo", fullDocument: true })` — variante
  *      Brevo já wired desde #4266 item 1 (merge tag `{{ contact.EMAIL }}`).
- *   3. Substituição de imagem via `_internal/06-public-images.json` — MESMO
- *      mapa que o publisher Beehiiv usa (URLs públicas são ESP-agnósticas,
- *      não precisa reupload).
+ *   3. Substituição de imagem via `06-public-images.json` (raiz da edição,
+ *      não `_internal/` — mesma convenção de `publish-linkedin.ts`/
+ *      `publish-instagram.ts`/`render-social-html.ts`) — MESMO mapa que o
+ *      publisher Beehiiv usa (URLs públicas são ESP-agnósticas, não precisa
+ *      reupload).
  *   4. Injeção do bloco de intro OBRIGATÓRIO do segmento Pending
  *      (`brevo-diaria-intro.ts`, #4266 item 5) — recusa publicar sem ele.
  *   5. Cap de envio diário (`brevo_diaria.daily_send_cap`, default 300) —
@@ -71,6 +77,29 @@ interface BrevoDiariaConfig {
 }
 interface PlatformConfig {
   brevo_diaria?: BrevoDiariaConfig;
+}
+
+/** `06-public-images.json` vive na RAIZ da edição (produzido por
+ * `upload-images-public.ts`), nunca em `_internal/` — mesma convenção de
+ * `publish-linkedin.ts`/`publish-instagram.ts`/`render-social-html.ts`. */
+export function resolvePublicImagesPath(editionDir: string): string {
+  return resolve(editionDir, "06-public-images.json");
+}
+
+/**
+ * Pura — remove a saudação pessoal ("Olá! Eu sou o Pixel...", capturada em
+ * `content.coverageLine`/`coverageLineTrailer`) e o agradecimento a
+ * apoiadores (`content.introCallout`) do conteúdo antes do render pro
+ * segmento Pending Brevo (achado 260803, revisão do editor sobre o 1º
+ * rascunho real). Os dois presumem uma relação já estabelecida com quem lê
+ * ("nosso apoiador", tom de continuidade de quem já é assinante confirmado)
+ * que não se aplica a este público — ele nunca confirmou o cadastro. O bloco
+ * de intro do #4266 (`renderPendingIntroHtml`) já cobre "por que você está
+ * recebendo isso"; manter a saudação normal em cima dele duplicava a
+ * explicação com tom incompatível.
+ */
+export function stripGreetingAndSupporterBlocks(content: NewsletterContent): NewsletterContent {
+  return { ...content, coverageLine: null, coverageLineTrailer: null, introCallout: null };
 }
 
 // ── subject/preview (puro) ──────────────────────────────────────────────
@@ -207,9 +236,9 @@ async function main(): Promise<void> {
   }
 
   const editionDir = resolve(ROOT, editionDirArg);
-  const content = extractContent(editionDir);
+  const content = stripGreetingAndSupporterBlocks(extractContent(editionDir));
 
-  const imagesPath = resolve(editionDir, "_internal/06-public-images.json");
+  const imagesPath = resolvePublicImagesPath(editionDir);
   const publicImages: PublicImagesFile = existsSync(imagesPath)
     ? (JSON.parse(readFileSync(imagesPath, "utf8")) as PublicImagesFile)
     : {};

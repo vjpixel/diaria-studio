@@ -68,6 +68,7 @@ interface LeaderboardJson {
 
 interface PlatformConfigShape {
   raffle?: RaffleConfig;
+  poll?: { worker_url?: string };
 }
 
 /** Boundary exata usada por `stitch-newsletter.ts` entre a região de intro
@@ -209,7 +210,17 @@ async function main(): Promise<void> {
     return;
   }
 
-  const calloutInner = buildChampionsCallout(podium, raffle, championsMonthLabel, raffleDate);
+  // Achado 260803: `/leaderboard` (bare) resolve pro mês CORRENTE no momento
+  // em que o leitor clica (`handleLeaderboard` no worker, currentMonthSlugBrt),
+  // não pro mês que este box celebra. O box de campeões é publicado no início
+  // do mês seguinte ("campeões de julho" saindo em agosto) — sem o slug do
+  // mês, o link mudaria de assunto sozinho assim que o mês virasse de novo.
+  // `previousMonthSlug(slug)` já é calculado acima (linha da championsMonthLabel)
+  // no formato YYYY-MM exigido pela rota `/leaderboard/{YYYY-MM}` do worker.
+  const leaderboardUrl = platformConfig?.poll?.worker_url
+    ? `${platformConfig.poll.worker_url}/leaderboard/${previousMonthSlug(slug)}`
+    : undefined;
+  const calloutInner = buildChampionsCallout(podium, raffle, championsMonthLabel, raffleDate, leaderboardUrl);
   if (!calloutInner) {
     console.log(`[inject-champions-callout] pódio incompleto (esperado ranks 1-3 em ${args.leaderboardJson}) — box de campeões requer top-3 completo. No-op.`);
     return;

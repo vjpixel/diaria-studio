@@ -15,8 +15,11 @@ import {
   checkDailySendCap,
   buildDailyBrevoHtml,
   checkBrevoDiariaGuards,
+  resolvePublicImagesPath,
+  stripGreetingAndSupporterBlocks,
 } from "../scripts/publish-daily-brevo.ts";
 import type { NewsletterContent } from "../scripts/lib/newsletter-parse.ts";
+import { resolve } from "node:path";
 
 const baseDestaque = {
   n: 1 as const,
@@ -50,6 +53,40 @@ describe("buildDailyBrevoSubject / buildDailyBrevoPreviewText — #4266", () => 
 
   it("preview text é o subtítulo", () => {
     assert.equal(buildDailyBrevoPreviewText(fixtureContent), "E o que isso muda pra você");
+  });
+});
+
+describe("resolvePublicImagesPath — raiz da edição, não _internal/ (achado 260803)", () => {
+  it("resolve pra 06-public-images.json na raiz da edição", () => {
+    const editionDir = resolve("data/editions/2608/260803");
+    assert.equal(resolvePublicImagesPath(editionDir), resolve(editionDir, "06-public-images.json"));
+  });
+
+  it("nunca aponta pra dentro de _internal/ (regressão: main() apontava lá, deixando toda imagem unresolved mesmo com 06-public-images.json presente e populado)", () => {
+    const editionDir = resolve("data/editions/2608/260803");
+    assert.doesNotMatch(resolvePublicImagesPath(editionDir), /_internal/);
+  });
+});
+
+describe("stripGreetingAndSupporterBlocks — achado 260803 (revisão do editor no 1º rascunho)", () => {
+  it("zera coverageLine, coverageLineTrailer e introCallout (saudação pessoal + agradecimento a apoiadores)", () => {
+    const content = {
+      ...fixtureContent,
+      coverageLine: "Olá! Eu sou o Pixel, editor desta newsletter...",
+      coverageLineTrailer: "algum trailer",
+      introCallout: "**Agradeço à nova apoiadora: **Fulana**...**",
+    } as unknown as NewsletterContent;
+    const stripped = stripGreetingAndSupporterBlocks(content);
+    assert.equal(stripped.coverageLine, null);
+    assert.equal(stripped.coverageLineTrailer, null);
+    assert.equal(stripped.introCallout, null);
+  });
+
+  it("preserva o resto do conteúdo intacto (destaques, eia, título)", () => {
+    const stripped = stripGreetingAndSupporterBlocks(fixtureContent);
+    assert.equal(stripped.title, fixtureContent.title);
+    assert.deepEqual(stripped.destaques, fixtureContent.destaques);
+    assert.deepEqual(stripped.eia, fixtureContent.eia);
   });
 });
 

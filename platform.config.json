@@ -27,8 +27,8 @@
     "sender_email": "oi@diar.ia.br",
     "sender_name": "diar.ia.br",
     "test_email": "vjpixel@gmail.com",
-    "daily_send_cap": 156,
-    "note": "#4266 — conta Brevo PRÓPRIA do editor (free tier, distinta da parceria Clarice em brevo_monthly), canal alternativo pro segmento Pending da Beehiiv (assinantes que nunca confirmaram o double opt-in). sender_email confirmado 260802 (oi@diar.ia.br). list_id=7 criado via API 260802 ('Diária — Reativação Pending', folder 1, vazio no momento da criação). daily_send_cap TEMPORARIAMENTE reduzido pra 156 (260802, item 9 da issue #4476, decisão do editor) — cap de canário manual: só os lotes 1-3 (origens não off-topic) até o editor confirmar bounce/spam limpo no painel Brevo por alguns dias e pedir pra subir de volta pra 300 (cabe no free tier). Circuit breakers automatizados NÃO existem ainda — checagem é manual pelo editor nesse período."
+    "daily_send_cap": 104,
+    "note": "#4266 — conta Brevo PRÓPRIA do editor (free tier, distinta da parceria Clarice em brevo_monthly), canal alternativo pro segmento Pending da Beehiiv (assinantes que nunca confirmaram o double opt-in). sender_email confirmado 260802 (oi@diar.ia.br). list_id=7 criado via API 260802 ('Diária — Reativação Pending', folder 1, vazio no momento da criação). daily_send_cap ajustado pra 104 (260803, item 9 da issue #4476, decisão do editor) — canário do dia 1: top 99 por score entre lote 1-3 + MV-verificado, mais os 5 e-mails editoriais (EDITOR_SEED_EMAILS, sonda de inbox placement por provedor). Corrigido de um cap=156 anterior que, na prática, tinha sido preenchido por seleção pura de score sem filtro de lote — 44 contatos do lote 4 (off-topic) entraram indevidamente e quase nenhum lote-3 elegível ficou de fora; reconciliado ao vivo em 260803 (ver `data/brevo-diaria/contacts.json`). `selectContactsForBackfill` (`sync-pending-to-brevo.ts`) ainda não tem gate por lote — se rodar de novo com cap>99 antes do checkpoint do dia 5, pode reintroduzir lote 4 do mesmo jeito. Circuit breakers automatizados NÃO existem ainda — checagem é manual pelo editor nesse período."
   },
   "inbox": {
     "address": "diariaeditor@gmail.com",

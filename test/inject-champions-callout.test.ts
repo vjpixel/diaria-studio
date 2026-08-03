@@ -237,6 +237,48 @@ describe("main() CLI (#2725 integração)", () => {
     }
   });
 
+  it("link do ranking aponta pro mês do PÓDIO (YYYY-MM), não pro mês corrente (achado 260803 — /leaderboard bare resolve pro mês corrente no worker, mudando de assunto sozinho assim que o mês vira)", () => {
+    const { dir, editionDir, reviewedPath, platformConfig } = setup();
+    try {
+      const leaderboardJson = join(editionDir, "_internal", "04-leaderboard-top1.json");
+      writeFileSync(
+        leaderboardJson,
+        JSON.stringify({
+          podium: [
+            { nickname: "jorgemartinsfilho", rank: 1 },
+            { nickname: "Bruna Quevedo", rank: 2 },
+            { nickname: "Joshu", rank: 3 },
+          ],
+        }),
+      );
+      const pastEditions = join(dir, "past-editions-raw.json");
+      writeFileSync(pastEditions, JSON.stringify([{ published_at: "2026-06-15T09:00:00.000Z" }]));
+
+      const platformConfigWithWorker = join(dir, "platform-with-worker.config.json");
+      writeFileSync(
+        platformConfigWithWorker,
+        JSON.stringify({
+          raffle: { meet_url: "https://meet.google.com/nbs-jcut-ojj", day_of_month: 2, hora_inicio: "13:30", hora_fim: "14:00" },
+          poll: { worker_url: "https://eia.diar.ia.br" },
+        }),
+      );
+
+      runCli([
+        "--edition", "260701", // edição de julho → celebra JUNHO (mês anterior)
+        "--reviewed", reviewedPath,
+        "--leaderboard-json", leaderboardJson,
+        "--past-editions", pastEditions,
+        "--platform-config", platformConfigWithWorker,
+      ]);
+
+      const written = readFileSync(reviewedPath, "utf8");
+      assert.match(written, /\[Veja o ranking completo\]\(https:\/\/eia\.diar\.ia\.br\/leaderboard\/2026-06\)/);
+      assert.doesNotMatch(written, /\/leaderboard\)/, "não deveria sobrar o link bare sem mês");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("edição que NÃO é a 1ª do mês → no-op, 02-reviewed.md inalterado", () => {
     const { dir, editionDir, reviewedPath, platformConfig } = setup();
     try {
