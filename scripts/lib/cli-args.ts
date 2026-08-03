@@ -72,6 +72,54 @@ export function hasFlag(argv: string[], flag: string): boolean {
 }
 
 /**
+ * Atalho tipado — retorna `--key` como inteiro, ou `undefined` quando a flag
+ * está genuinamente AUSENTE. Diferente de `getArg` (que colapsa
+ * ausente/inválido/zero no mesmo sentinela `""`, por design — ver docstring
+ * acima), `getIntArg` LANÇA quando a flag foi passada mas o valor não é um
+ * inteiro válido, em vez de degradar silenciosamente pra um default (#4497).
+ *
+ * Motivação (achado ao vivo #4476/#4496, 260802): `verify-pending-emails-mv.ts`
+ * tinha `getArg(...) !== undefined` (sempre true, `getArg` nunca retorna
+ * undefined) seguido de `Number("") === 0` — uma rodada real que devia
+ * processar 625 e-mails processou 0, sem erro. O fix local virou
+ * `parseLimitArg` naquele arquivo; `getIntArg` generaliza o mesmo padrão
+ * (já validado em produção) pra qualquer flag numérica em qualquer script.
+ *
+ * Regras — usa `parseArgs` (não `getArg`) internamente, porque só `parseArgs`
+ * distingue "ausente" (`undefined`) de "presente com valor inválido/vazio":
+ *   - flag ausente → `undefined` (caller decide o default).
+ *   - `--key` sem valor (fim do argv, ou seguido de outra `--flag`) → lança.
+ *   - `--key=` ou `--key ""` (valor vazio explícito, sintaxe `=` do #4272) → lança.
+ *   - valor não-inteiro (`--key abc`) → lança.
+ *   - valor inteiro abaixo de `opts.min` (default 0 — não-negativo) → lança.
+ *
+ * @param opts.min valor mínimo aceito, inclusive. Default 0. Passe um `min`
+ *   maior (ex: 1) pra flags que não fazem sentido como zero (ex: tamanho de
+ *   lote, top-N).
+ */
+export function getIntArg(argv: string[], key: string, opts: { min?: number } = {}): number | undefined {
+  const min = opts.min ?? 0;
+  const parsed = parseArgs(argv);
+  if (parsed.flags.has(key)) {
+    throw new Error(`--${key} foi passado sem valor (ex: "--${key} 50") — omita a flag pra usar o default.`);
+  }
+  const raw = parsed.values[key];
+  if (raw === undefined) return undefined;
+  if (raw.trim() === "") {
+    throw new Error(
+      `--${key} foi passado com valor vazio (ex: "--${key}=" ou "--${key} ''") — omita a flag pra usar o default, ou passe um inteiro válido.`,
+    );
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min) {
+    throw new Error(
+      `--${key} deve ser um inteiro ${min === 0 ? "não-negativo" : `≥ ${min}`}, recebido "${raw}".`,
+    );
+  }
+  return value;
+}
+
+/**
  * Variante "flat" — retorna Record<string, string> direto (sem separar
  * flags/values/positional). Regra: `--key` seguido de QUALQUER próximo
  * elemento (mesmo que comece com `--`) consome esse elemento como valor;

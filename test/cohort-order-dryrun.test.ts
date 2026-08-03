@@ -149,6 +149,26 @@ test("main: smoke sobre store seedado — imprime relatório sem lançar, store 
   assert.ok(errors.some((e) => /store vazio/.test(e)));
 });
 
+test("main: --top inválido (typo de valor) LANÇA — não vira DEFAULT_TOP silenciosamente (#4497)", async () => {
+  const savedKey = process.env.BREVO_CLARICE_API_KEY;
+  delete process.env.BREVO_CLARICE_API_KEY;
+  const dir = mkdtempSync(resolve(tmpdir(), "cohort-dryrun-top-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, status, tier, created) VALUES ('a@x.com','A','active',1,'2025-01-01T00:00:00Z')",
+  ).run();
+  recomputeDerived(db);
+  db.close();
+
+  try {
+    await assert.rejects(main(["--db", dbPath, "--top", "abc"]), /inteiro/);
+  } finally {
+    if (savedKey === undefined) delete process.env.BREVO_CLARICE_API_KEY;
+    else process.env.BREVO_CLARICE_API_KEY = savedKey;
+  }
+});
+
 // loadStoreRows re-exportado só pra garantir que o script usa a MESMA leitura
 // que segmentFromStore (não uma query duplicada) — smoke leve, não duplica
 // cobertura de test/clarice-segment.test.ts.

@@ -35,6 +35,27 @@ import { main, checkpointPathsForDb } from "../scripts/clarice-sync-brevo.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
 
 // ---------------------------------------------------------------------------
+// main() --limit — REGRESSÃO #4497 (getIntArg substitui Number(getArg(...))||0)
+// ---------------------------------------------------------------------------
+
+test("REGRESSÃO (#4497): main() --limit com valor inválido (typo) LANÇA — não vira '0 = sem limite' silenciosamente", async () => {
+  const origApiKey = process.env.BREVO_CLARICE_API_KEY;
+  process.env.BREVO_CLARICE_API_KEY = "test-key-4497";
+  try {
+    // getIntArg lança ANTES de qualquer acesso a disco/rede (a validação do
+    // --limit acontece antes de openClariceDb/enumerateContacts) — não
+    // precisa de fixture de DB nem mock de fetch pra provar o throw.
+    await assert.rejects(
+      main(["--db", resolve(tmpdir(), "nao-existe-nao-importa.db"), "--limit", "abc"]),
+      /inteiro/,
+    );
+  } finally {
+    if (origApiKey === undefined) delete process.env.BREVO_CLARICE_API_KEY;
+    else process.env.BREVO_CLARICE_API_KEY = origApiKey;
+  }
+});
+
+// ---------------------------------------------------------------------------
 // checkpointPathsForDb — pura
 // ---------------------------------------------------------------------------
 

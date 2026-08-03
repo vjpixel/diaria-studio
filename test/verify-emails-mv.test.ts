@@ -414,10 +414,19 @@ describe("parseArgs", () => {
     assert.equal(a.timeout, 20); // 0 não é >0 → default
   });
 
-  it("--limit 0 é preservado (no-op proposital); inválido vira null", () => {
+  it("--limit 0 é preservado (no-op proposital); ausente vira null", () => {
     assert.equal(parseArgs(["--limit", "0"]).limit, 0);
-    assert.equal(parseArgs(["--limit", "xyz"]).limit, null);
-    assert.equal(parseArgs(["--limit", "-5"]).limit, null);
+    assert.equal(parseArgs([]).limit, null);
+  });
+
+  it("--limit inválido (typo de valor) LANÇA — nunca degrada silenciosamente pra null (#4497)", () => {
+    // Antes de getIntArg: Number("xyz")===NaN e Number("-5")<0 caíam no mesmo
+    // `null` de "ausente" — indistinguível de "sem --limit" (mesma classe do
+    // incidente #4476/#4496, onde isso fez uma rodada real processar 0 e-mails
+    // em vez de 625, sem erro nenhum).
+    assert.throws(() => parseArgs(["--limit", "xyz"]), /inteiro/);
+    assert.throws(() => parseArgs(["--limit", "-5"]), /não-negativo/);
+    assert.throws(() => parseArgs(["--limit="]), /vazio/);
   });
 });
 

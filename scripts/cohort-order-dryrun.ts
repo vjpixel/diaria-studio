@@ -36,7 +36,7 @@ import { writeFileSync } from "node:fs";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import { loadStoreRows, isFirstSend, excludeCommittedToQueuedCampaigns, type StoreRow } from "./lib/clarice-segment.ts";
 import { cohortSendRank } from "./lib/cohorts.ts";
-import { getArg, isMainModule } from "./lib/cli-args.ts";
+import { getArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
 import { fetchCommittedCampaignListIds } from "./lib/brevo-client.ts";
 
 const DEFAULT_TOP = 50;
@@ -180,7 +180,11 @@ ${diffRows}
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
-  const top = Number(getArg(argv, "top")) || DEFAULT_TOP;
+  // getIntArg (#4497, min:1) — ausente vira DEFAULT_TOP; um typo no VALOR
+  // (ex: "--top abc") LANÇA (via main().catch no fim do arquivo) em vez de
+  // colapsar silenciosamente no mesmo default (antes: Number(getArg(...)) ||
+  // DEFAULT_TOP não distinguia "ausente" de "inválido").
+  const top = getIntArg(argv, "top", { min: 1 }) ?? DEFAULT_TOP;
   const out = getArg(argv, "out");
 
   const db = openClariceDb(dbPath);

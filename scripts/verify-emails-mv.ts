@@ -84,7 +84,7 @@ import { clariceCycleDir, ensureDir, parseCycleArg } from "./lib/clarice-paths.t
 import { openClariceDb, DEFAULT_DB_PATH, MV_NEVER_VERIFIED_SQL } from "./lib/clarice-db.ts";
 import { COHORT_ASSINANTES_ATIVOS, isMvExemptCohort } from "./lib/cohorts.ts";
 import { resolveCohortArg } from "./lib/clarice-segment.ts";
-import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 
 // .env.local (precedência) + .env — loader canônico do projeto (#923).
 // Bare `dotenv/config` não carrega .env.local, onde os secrets costumam morar.
@@ -625,15 +625,17 @@ export function parseArgs(argv: string[]): Args {
     const i = argv.indexOf(flag);
     return i >= 0 ? argv[i + 1] : undefined;
   };
-  const rawLimit = get("--limit");
-  const parsedLimit = rawLimit != null ? parseInt(rawLimit, 10) : NaN;
   return {
     cohort: get("--cohort") ?? "ex-assinantes",
     db: get("--db") ?? DEFAULT_DB_PATH,
     concurrency: posInt(get("--concurrency"), 12),
     timeout: posInt(get("--timeout"), 20),
-    // --limit aceita 0 (no-op proposital); só null quando ausente/inválido.
-    limit: Number.isFinite(parsedLimit) && parsedLimit >= 0 ? parsedLimit : null,
+    // --limit aceita 0 (no-op proposital); ausente vira null. Usa getIntArg
+    // (não mais Number(rawLimit) manual) porque LANÇA num typo de valor em
+    // vez de degradar silenciosamente pro mesmo sentinela de "ausente"
+    // (#4497 — mesma classe do incidente #4476/#4496: uma rodada real que
+    // devia processar 625 e-mails processou 0 sem erro).
+    limit: getIntArg(argv, "limit") ?? null,
     single: get("--single") ?? null,
     // #1961: valida formato/semântica do ciclo (igual import-waves); "" se inválido → main aborta limpo.
     cycle: parseCycleArg(argv),

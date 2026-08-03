@@ -133,6 +133,32 @@ test("main: --dry-run sobre store seedado não escreve, imprime summary correto"
   assert.equal(out.seed_email, CLARICE_SEED_EMAIL);
 });
 
+test("main: --wave-size inválido (typo de valor) aborta com erro claro — não vira default 2000 silenciosamente (#4497)", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bws-wavesize-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare("INSERT INTO clarice_users (email, name, status, tier) VALUES ('f@x.com','Fre','active',1)").run();
+  recomputeDerived(db);
+  db.close();
+
+  const errors: string[] = [];
+  const origErr = console.error;
+  const origExit = process.exit;
+  console.error = (...a: unknown[]) => { errors.push(a.join(" ")); };
+  // @ts-expect-error — stub de process.exit pra capturar sem matar o test runner
+  process.exit = (code?: number) => { throw new Error(`exit:${code}`); };
+  try {
+    assert.throws(
+      () => main(["--cycle", "2606-07", "--db", dbPath, "--budget", "10", "--dry-run", "--wave-size", "abc"]),
+      /exit:1/,
+    );
+  } finally {
+    console.error = origErr;
+    process.exit = origExit;
+  }
+  assert.ok(errors.some((e) => /wave-size/.test(e) && /inteiro/.test(e)));
+});
+
 // --- Testes de regressão para seed address (#2683) ---
 
 test("buildWaveArtifacts: seed presente exatamente 1× em TODA wave", () => {
