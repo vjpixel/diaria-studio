@@ -67,7 +67,7 @@ import { fileURLToPath } from "node:url";
 import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { getArg, hasFlag, isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { DEFAULT_OUTPUT_PATH as SCORED_CSV_PATH } from "./score-pending-origin.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -237,6 +237,49 @@ function toCsv(emails: string[]): string {
   return Papa.unparse({ fields: ["email"], data: emails.map((email) => ({ email })) }) + "\n";
 }
 
+/**
+ * Pura — resolve `--limit` como inteiro não-negativo ou `undefined` (flag
+ * ausente = sem limite, processa o pool `todo` inteiro).
+ *
+ * Usa `parseArgs` (não `getArg`) de propósito: `getArg` retorna `""` — nunca
+ * `undefined` — quando a flag está ausente (ver JSDoc em lib/cli-args.ts).
+ * Achado ao vivo 260802: uma rodada real que devia processar 625 e-mails
+ * processou 0 sem erro, porque a validação anterior checava
+ * `getArg(...) !== undefined` (sempre true) e `Number("") === 0` passa a
+ * checagem de inteiro não-negativo. `parseArgs(argv).values["limit"]` é de
+ * fato `undefined` quando a flag não foi passada — só essa distinção
+ * preserva o comportamento default (sem --limit → processa tudo) e ainda
+ * falha alto num typo tipo `--limit fifty` (`Number.isInteger(NaN)` é
+ * false, `NaN < 0` também é false — sem essa checagem explícita o typo
+ * silenciosamente processaria 0, indistinguível de "pool já verificado").
+ *
+ * PR #4496 review (pr-test-analyzer, achado confirmado ao vivo): o fix acima
+ * fecha só a via "flag totalmente ausente" — mas `--limit=` e `--limit ""`
+ * (valor explicitamente VAZIO, sintaxe `=` documentada em lib/cli-args.ts
+ * #4272) produzem `values["limit"] = ""` (não `undefined`), reabrindo o
+ * MESMO bug (`Number("") === 0`) por uma via diferente. E `--limit` sozinho
+ * no fim de argv (sem valor seguinte) é absorvido em `flags`, não em
+ * `values` — silenciosamente equivalente a "ausente" (processa TUDO), o que
+ * é o footgun oposto mas da mesma família (comportamento que ninguém pediu,
+ * perto de um typo em `--limit`). As duas checagens abaixo fecham ambas.
+ */
+export function parseLimitArg(argv: string[]): number | undefined {
+  const parsed = parseArgs(argv);
+  if (parsed.flags.has("limit")) {
+    throw new Error(`--limit foi passado sem valor (ex: "--limit 50") — omita a flag pra processar o pool inteiro.`);
+  }
+  const limitArg = parsed.values["limit"];
+  if (limitArg === undefined) return undefined;
+  if (limitArg.trim() === "") {
+    throw new Error(`--limit foi passado com valor vazio (ex: "--limit=" ou "--limit ''") — omita a flag pra processar o pool inteiro, ou passe um inteiro não-negativo.`);
+  }
+  const limit = Number(limitArg);
+  if (!Number.isInteger(limit) || limit < 0) {
+    throw new Error(`--limit deve ser um inteiro não-negativo, recebido "${limitArg}".`);
+  }
+  return limit;
+}
+
 // ── main ─────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -262,19 +305,12 @@ async function main(): Promise<void> {
   const checkpoint = loadCheckpoint(CHECKPOINT_PATH);
   const todo = allEmails.filter((e) => !(e in checkpoint));
 
-  // #4494 review (silent-failure-hunter): --limit não era validado como
-  // numérico — um typo (ex: --limit fity) virava Number(NaN), e
-  // todo.slice(0, NaN) silenciosamente processa 0 e-mails, indistinguível
-  // do caso legítimo "pool já 100% verificado". Falha alto em vez de
-  // degradar em silêncio.
-  const limitArg = getArg(argv, "limit");
   let limit: number | undefined;
-  if (limitArg !== undefined) {
-    limit = Number(limitArg);
-    if (!Number.isInteger(limit) || limit < 0) {
-      log(`ERRO: --limit deve ser um inteiro não-negativo, recebido "${limitArg}".`);
-      process.exit(2);
-    }
+  try {
+    limit = parseLimitArg(argv);
+  } catch (e) {
+    log(`ERRO: ${(e as Error).message}`);
+    process.exit(2);
   }
   const limited = limit !== undefined ? todo.slice(0, limit) : todo;
   log(`${todo.length} ainda não verificado(s) (skip-forever pelo checkpoint); processando ${limited.length} nesta rodada.`);
