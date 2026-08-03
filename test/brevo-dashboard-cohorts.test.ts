@@ -172,8 +172,12 @@ test("remainingRefs: nada feito → todos pendentes; tudo feito → vazio", () =
 });
 
 const NOW = Date.parse("2026-06-19T12:00:00Z");
-function cp(startedAt: string, scope: "emailed" | "all" = "emailed"): Checkpoint {
-  return { startedAt, scope, refs: [REF(1)], done: {} };
+function cp(
+  startedAt: string,
+  scope: "emailed" | "all" = "emailed",
+  lastResumedAt?: string,
+): Checkpoint {
+  return { startedAt, lastResumedAt, scope, refs: [REF(1)], done: {} };
 }
 
 test("shouldResume: null ou escopo diferente → false", () => {
@@ -195,22 +199,83 @@ test("shouldResume: startedAt inválido ou no futuro → false", () => {
   assert.equal(shouldResume(cp("2026-06-20T12:00:00Z"), NOW, "emailed"), false);
 });
 
-// #4451: o crawl completo (~129k contatos a ~100 req/min) leva ~21,5h observadas.
-// Com MAX_RESUME_AGE_H=18 (valor antigo), um checkpoint dessa idade já tinha
+// #4451: o crawl completo (~129k contatos a ~100 req/min) leva ~21,5h
+// ESTIMADAS (129.251 ÷ ~100 req/min) — o crawl nunca completou com sucesso
+// pra medir de verdade, trava em ~7.000/129.251 desde 2026-07-29. Com
+// MAX_RESUME_AGE_H=18 (valor antigo), um checkpoint dessa idade já tinha
 // expirado — uma rodada que não terminava a tempo era descartada e recomeçava
-// do zero, causa raiz do crawl travado em ~7.000/129.251 desde 2026-07-29.
-const OBSERVED_FULL_CRAWL_HOURS = 21.5;
+// do zero, causa raiz do travamento.
+const ESTIMATED_FULL_CRAWL_HOURS = 21.5;
 
-test("shouldResume: checkpoint na idade do crawl completo observado (~21,5h) ainda é retomado (#4451)", () => {
-  const midCrawl = new Date(NOW - OBSERVED_FULL_CRAWL_HOURS * 3_600_000).toISOString();
+test("shouldResume: checkpoint na idade do crawl completo estimado (~21,5h) ainda é retomado (#4451)", () => {
+  const midCrawl = new Date(NOW - ESTIMATED_FULL_CRAWL_HOURS * 3_600_000).toISOString();
   assert.equal(shouldResume(cp(midCrawl), NOW, "emailed"), true);
 });
 
-test("MAX_RESUME_AGE_H cobre o crawl completo observado (~21,5h) com folga (#4451)", () => {
+test("MAX_RESUME_AGE_H cobre o crawl completo estimado (~21,5h) com folga (#4451)", () => {
   assert.ok(
-    MAX_RESUME_AGE_H > OBSERVED_FULL_CRAWL_HOURS,
-    `MAX_RESUME_AGE_H (${MAX_RESUME_AGE_H}h) precisa ser maior que a duração observada do crawl completo (${OBSERVED_FULL_CRAWL_HOURS}h), senão o checkpoint expira antes do crawl terminar`
+    MAX_RESUME_AGE_H > ESTIMATED_FULL_CRAWL_HOURS,
+    `MAX_RESUME_AGE_H (${MAX_RESUME_AGE_H}h) precisa ser maior que a duração estimada do crawl completo (${ESTIMATED_FULL_CRAWL_HOURS}h), senão o checkpoint expira antes do crawl terminar`
   );
+});
+
+// #4451 parte 2 (260803): a task `DiariaCohortsCrawl` dispara 1×/dia
+// (`docs/cohorts-schedule.md`). Antes deste fix, `cp.startedAt` nunca era
+// atualizado num resume — só no branch de CRIAÇÃO do checkpoint — então
+// `shouldResume` sempre media a idade desde a tentativa ORIGINAL, não desde
+// a última atividade. Com disparos diários (~24h de gap) e MAX_RESUME_AGE_H
+// de 30h, isso limitava o acúmulo de progresso a ~1 disparo de resume (dia 2
+// ainda cabia: 24h < 30h; dia 3 já não: 48h ≥ 30h) — bem menos que os ~22
+// disparos diários necessários pra completar um crawl de ~129k contatos em
+// rodadas parciais. `buildCohorts` agora persiste `cp.lastResumedAt` a cada
+// resume bem-sucedido (ver branch `if (cp)` em `buildCohorts`); estes testes
+// cobrem o mecanismo que faz isso funcionar através de múltiplas lacunas
+// diárias consecutivas.
+const DAILY_GAP_HOURS = 24;
+
+test("shouldResume: 2 lacunas diárias consecutivas (~48h desde o início original) SÓ é resumível se lastResumedAt foi atualizado no resume intermediário (#4451)", () => {
+  // Dia 0: checkpoint criado.
+  const day0 = new Date(NOW - 2 * DAILY_GAP_HOURS * 3_600_000).toISOString();
+  // Dia 1 (24h depois): resume bem-sucedido atualiza lastResumedAt.
+  const day1Resume = new Date(NOW - DAILY_GAP_HOURS * 3_600_000).toISOString();
+  // Dia 2 (agora, NOW): checkpoint teria 48h de idade desde o início original,
+  // mas só 24h desde o último resume.
+  const withLastResumed = cp(day0, "emailed", day1Resume);
+  assert.equal(
+    shouldResume(withLastResumed, NOW, "emailed"),
+    true,
+    "com lastResumedAt atualizado no dia 1, o checkpoint do dia 2 ainda deve ser resumível (24h < 30h desde a última atividade)",
+  );
+
+  // Regressão do bug real: SEM lastResumedAt (comportamento pré-fix, campo
+  // ausente), a idade é medida desde startedAt original — 48h — e o
+  // checkpoint já teria expirado no dia 2 mesmo tendo sido retomado no dia 1.
+  const withoutLastResumed = cp(day0, "emailed");
+  assert.equal(
+    shouldResume(withoutLastResumed, NOW, "emailed"),
+    false,
+    "sem lastResumedAt, 48h desde o início original excede MAX_RESUME_AGE_H (30h) — reproduz o bug do #4451 parte 2",
+  );
+});
+
+test("shouldResume: N lacunas diárias consecutivas seguem resumíveis desde que cada resume atualize lastResumedAt (#4451)", () => {
+  // Simula 5 disparos diários (bem menos que os ~22 necessários pro crawl
+  // completar) — cada um retomando o checkpoint do dia anterior e atualizando
+  // lastResumedAt. O checkpoint nunca deveria expirar nesse cenário, porque o
+  // gap entre atividades sucessivas (24h) sempre fica < MAX_RESUME_AGE_H (30h).
+  let lastResumedAt = new Date(NOW - 5 * DAILY_GAP_HOURS * 3_600_000).toISOString(); // dia 0
+  const startedAt = lastResumedAt;
+  for (let day = 1; day <= 5; day++) {
+    const nowForDay = NOW - (5 - day) * DAILY_GAP_HOURS * 3_600_000;
+    const checkpoint = cp(startedAt, "emailed", lastResumedAt);
+    assert.equal(
+      shouldResume(checkpoint, nowForDay, "emailed"),
+      true,
+      `checkpoint deve ser resumível no dia ${day} (24h desde o resume anterior)`,
+    );
+    // buildCohorts atualizaria lastResumedAt neste ponto, antes do próximo disparo.
+    lastResumedAt = new Date(nowForDay).toISOString();
+  }
 });
 
 const SAMPLE: EngagementCohorts = {
