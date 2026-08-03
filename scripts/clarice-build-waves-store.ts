@@ -47,7 +47,7 @@ import {
   type StoreRow,
 } from "./lib/clarice-segment.ts";
 import { clariceWavesDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
-import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { injectSeed, CLARICE_SEED_EMAIL, CLARICE_SEED_NOME } from "./lib/clarice-seed.ts";
 
 interface BuilderRow extends StoreRow {
@@ -138,7 +138,18 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     );
     process.exit(1);
   }
-  const waveSize = Number(getArg(argv, "wave-size")) || 2000;
+  // getIntArg (#4497, min:1 — wave-size 0 não faz sentido) — ausente vira o
+  // default 2000; um typo no VALOR (ex: "--wave-size abc") LANÇA em vez de
+  // colapsar silenciosamente no mesmo default (antes: Number(getArg(...)) ||
+  // 2000 não distinguia "ausente" de "inválido" — mesma classe do incidente
+  // #4476/#4496).
+  let waveSize: number;
+  try {
+    waveSize = getIntArg(argv, "wave-size", { min: 1 }) ?? 2000;
+  } catch (e) {
+    console.error(`❌ ${(e as Error).message}`);
+    process.exit(1);
+  }
   const dryRun = hasFlag(argv, "dry-run");
 
   // #2817: --cohort restringe a segmentação a uma safra mensal específica.

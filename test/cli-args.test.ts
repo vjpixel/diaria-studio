@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { parseArgs, getArg, hasFlag, parseArgsSimple, isMainModule } from "../scripts/lib/cli-args.ts";
+import { parseArgs, getArg, getIntArg, hasFlag, parseArgsSimple, isMainModule } from "../scripts/lib/cli-args.ts";
 
 describe("parseArgs — pares key-value", () => {
   it("extrai um par --key value", () => {
@@ -144,6 +144,53 @@ describe("hasFlag — atalho booleano", () => {
   it("não confunde valor de par key-value como flag", () => {
     // --mode push: "push" não é flag, é valor de --mode
     assert.equal(hasFlag(["--mode", "push"], "push"), false);
+  });
+});
+
+describe("getIntArg — atalho tipado, ausente ≠ inválido (#4497)", () => {
+  it("retorna undefined quando a flag está genuinamente ausente", () => {
+    assert.equal(getIntArg([], "limit"), undefined);
+    assert.equal(getIntArg(["--other", "1"], "limit"), undefined);
+  });
+
+  it("retorna o inteiro quando o valor é válido", () => {
+    assert.equal(getIntArg(["--limit", "50"], "limit"), 50);
+  });
+
+  it("aceita explicitamente 0 (não é o mesmo sentinela de ausente)", () => {
+    assert.equal(getIntArg(["--limit", "0"], "limit"), 0);
+  });
+
+  it("LANÇA em valor não-inteiro (typo) — nunca degrada silenciosamente pro default", () => {
+    // Bug de origem (#4476/#4496): Number("") === 0 e Number("abc") === NaN
+    // passavam por checagens frouxas e viravam "sem limite"/0 sem erro.
+    assert.throws(() => getIntArg(["--limit", "abc"], "limit"), /inteiro/);
+    assert.throws(() => getIntArg(["--limit", "12.5"], "limit"), /inteiro/);
+  });
+
+  it("LANÇA em negativo quando min=0 (default)", () => {
+    assert.throws(() => getIntArg(["--limit", "-5"], "limit"), /não-negativo/);
+  });
+
+  it("LANÇA em valor abaixo de opts.min explícito", () => {
+    assert.throws(() => getIntArg(["--top", "0"], "top", { min: 1 }), /≥ 1/);
+    assert.equal(getIntArg(["--top", "1"], "top", { min: 1 }), 1);
+  });
+
+  it("LANÇA em --key= (valor vazio explícito, sintaxe #4272)", () => {
+    assert.throws(() => getIntArg(["--limit="], "limit"), /vazio/);
+  });
+
+  it("LANÇA em --key '' (valor vazio via espaço)", () => {
+    assert.throws(() => getIntArg(["--limit", ""], "limit"), /vazio/);
+  });
+
+  it("LANÇA em --key sem valor seguinte (fim do argv — absorvido em flags)", () => {
+    assert.throws(() => getIntArg(["--limit"], "limit"), /sem valor/);
+  });
+
+  it("LANÇA em --key seguido de outra flag (também absorvido em flags)", () => {
+    assert.throws(() => getIntArg(["--limit", "--confirm"], "limit"), /sem valor/);
   });
 });
 

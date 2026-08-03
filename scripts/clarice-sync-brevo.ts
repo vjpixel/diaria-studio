@@ -39,7 +39,7 @@ import {
   recomputeDerived,
   DEFAULT_DB_PATH,
 } from "./lib/clarice-db.ts";
-import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 
 /**
  * #4205: caminho dos 2 arquivos de checkpoint (full + incremental — #2928,
@@ -176,7 +176,12 @@ export async function main(
 
   const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
   const concurrency = Number(getArg(argv, "concurrency")) || 4;
-  const limitArg = Number(getArg(argv, "limit")) || 0;
+  // getIntArg (#4497) — ausente vira 0 ("sem limite", comportamento normal do
+  // sync agendado); um typo no VALOR (ex: "--limit abc") agora LANÇA em vez
+  // de colapsar no mesmo 0 silenciosamente (antes: Number(getArg(...)) || 0
+  // não distinguia "flag ausente" de "valor inválido" — mesma classe do
+  // incidente #4476/#4496).
+  const limitArg = getIntArg(argv, "limit") ?? 0;
   const { checkpoint: CHECKPOINT, checkpointInc: CHECKPOINT_INC } =
     checkpointPathsForDb(dbPath);
 

@@ -86,7 +86,7 @@ import Papa from "papaparse";
 import { brevoGet, brevoPost } from "./lib/brevo-client.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import {
   computeCohorts,
@@ -639,11 +639,17 @@ export async function buildCohortsV2(
 
 // ─── CLI (SEMPRE dry-run — não grava KV, não toca a task agendada) ──────────
 
-async function main(): Promise<void> {
-  const argv = process.argv.slice(2);
+// exportado (#4497) só pra permitir teste direto da validação de --limit sem
+// invocar via CLI real — continua SEMPRE dry-run, nenhuma mudança de comportamento.
+export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const concurrency = Number(getArg(argv, "concurrency") || "2") || 2;
-  const limitArg = getArg(argv, "limit");
-  const limit = limitArg ? Number(limitArg) : undefined;
+  // getIntArg (#4497) — ausente vira undefined ("sem limite", processa todas
+  // as campanhas — script é SEMPRE dry-run, blast radius baixo); um typo no
+  // VALOR (ex: "--limit abc") LANÇA (via main().catch no fim do arquivo) em
+  // vez de colapsar silenciosamente no mesmo undefined (antes: `limitArg ?
+  // Number(limitArg) : undefined` não validava o resultado de Number(), então
+  // "--limit abc" virava NaN e, na prática, "processa tudo" sem aviso).
+  const limit = getIntArg(argv, "limit");
   const outPath = getArg(argv, "out");
   const refetchWindowDays = Number(getArg(argv, "refetch-window-days") || String(DEFAULT_REFETCH_WINDOW_DAYS)) || DEFAULT_REFETCH_WINDOW_DAYS;
   const includeAdminOptOuts = !hasFlag(argv, "no-admin-optouts");

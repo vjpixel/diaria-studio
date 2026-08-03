@@ -34,6 +34,7 @@ import {
   fetchAdminOptOutEmails,
   applyAdminOptOuts,
   DEFAULT_REFETCH_WINDOW_DAYS,
+  main,
   type CampaignExportClient,
   type CampaignCache,
   type SentCampaignRef,
@@ -684,6 +685,12 @@ test("buildCohortsV2: --limit corta a lista de campanhas ANTES de exportar (nunc
     assert.equal(result.campaignsTotal, 1);
     assert.equal(calls.exportRecipients, 1);
   });
+});
+
+test("main: --limit inválido (typo de valor) LANÇA — não vira 'sem limite' silenciosamente (#4497)", async () => {
+  // getIntArg lança ANTES do check de BREVO_CLARICE_API_KEY (não precisa
+  // mockar client/fetch nem definir a key pra provar o throw).
+  await assert.rejects(main(["--limit", "abc"]), /inteiro/);
 });
 
 test("buildCohortsV2: campanha que falha no export não derruba as demais (isolamento de erro)", async () => {
