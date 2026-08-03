@@ -35,7 +35,11 @@ const SECRET_PATTERNS = [
 
 // Patterns que indicam que o script JÁ carrega .env (qualquer um basta)
 const ENV_LOAD_PATTERNS = [
-  /loadProjectEnv\(\)/,
+  // `loadProjectEnv(` (não `\(\)` — vários scripts passam ROOT/rootOverride
+  // explícito, ex: `loadProjectEnv(ROOT)`; publish-daily-brevo.ts #4532
+  // provou que o `\(\)` estrito dava falso-positivo pra esse padrão já
+  // usado em outros scripts, só nunca antes combinado com leitura de secret).
+  /loadProjectEnv\(/,
   /import\s+["']dotenv\/config["']/,
   /dotenvConfig\s*\(/, // call to dotenv config()
 ];

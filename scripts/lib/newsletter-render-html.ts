@@ -196,11 +196,15 @@ const DARK_CANVAS_STYLE_BLOCK = buildDarkCanvasStyleBlock(TEXT_COLOR);
 
 /**
  * #4266 — provedor de destino do envio. Usado só pela merge tag de voto do
- * É IA? (`renderEIA`): Beehiiv usa `{{email}}` cru; Brevo usa
- * `{{ contact.EMAIL }}` com `&` escapado como `&amp;` (mesma sintaxe já usada
- * pelo mensal, `lib/mensal/monthly-render.ts`). Exportado — `render-newsletter-html.ts`
- * importa este tipo em vez de repetir o union literal na validação do CLI,
- * então um 3º ESP futuro só precisa mudar aqui.
+ * É IA? (`renderEIA`): #4517 trouxe paridade total entre os dois — Beehiiv
+ * usa `{{poll_token}}@vote.eia.diaria.local` (token opaco, `&` cru) e Brevo
+ * usa `{{ contact.POLL_TOKEN }}@vote.eia.diaria.local` (mesmo token opaco,
+ * `&` escapado como `&amp;` — mesma sintaxe de merge tag já usada pelo
+ * mensal, `lib/mensal/monthly-render.ts`, que segue com `{{ contact.EMAIL }}`
+ * cru por não estar no escopo do #4487/#4517, ver `monthly-render.ts::renderEia`).
+ * Exportado — `render-newsletter-html.ts` importa este tipo em vez de repetir
+ * o union literal na validação do CLI, então um 3º ESP futuro só precisa
+ * mudar aqui.
  */
 export type Esp = "beehiiv" | "brevo";
 
@@ -1063,24 +1067,31 @@ export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
   // ver header de `scripts/lib/shared/poll-token.ts` pro design completo. O
   // custom field Beehiiv `poll_token` é populado por `scripts/inject-poll-token.ts`
   // (mesmo mecanismo — mas propósito distinto — do extinto `poll_sig`/
-  // `inject-poll-sig.ts`, #1083, removido em #1186). esp="brevo" está FORA
-  // do escopo do #4487 — segue com `{{ contact.EMAIL }}` cru, inalterado.
-  // #4512 (fleet review round 2, achado code-reviewer): CORREÇÃO — o único
-  // caller de produção de `esp: "brevo"` HOJE é `scripts/publish-daily-brevo.ts`
-  // (canal `brevo_diaria`/segmento "Pending", #4266 — DIÁRIO, não o digest
-  // MENSAL da Clarice; o mensal tem seu próprio renderer independente,
-  // `scripts/lib/mensal/monthly-render.ts`, que constrói sua própria URL de
-  // voto e nunca chama esta função). `publish-daily-brevo.ts` está
-  // code-complete mas ainda não rodou ao vivo (#4266) — quando rodar, esse
-  // canal vai simultaneamente ganhar o CTA de encaminhamento do WhatsApp
-  // (#4486, convida a encaminhar) E continuar vazando o e-mail cru no link
-  // de voto (o mesmo vetor que o #4487 existe pra fechar) — gap real,
-  // documentado aqui, não corrigido nesta PR (estender a proteção de token
-  // pro esp="brevo" exige decidir se a Brevo tem um mecanismo equivalente a
-  // custom field pré-envio; fora de escopo do #4512, ver issue de follow-up).
+  // `inject-poll-sig.ts`, #1083, removido em #1186).
+  //
+  // #4512 (fleet review round 2, achado code-reviewer): CORREÇÃO do
+  // comentário original — o único caller de produção de `esp: "brevo"` é
+  // `scripts/publish-daily-brevo.ts` (canal `brevo_diaria`/segmento
+  // "Pending", #4266 — DIÁRIO, não o digest MENSAL da Clarice; o mensal tem
+  // seu próprio renderer independente, `scripts/lib/mensal/monthly-render.ts`,
+  // que constrói sua própria URL de voto e nunca chama esta função).
+  //
+  // #4517: `esp="brevo"` recebeu a MESMA proteção de token opaco —
+  // `{{ contact.POLL_TOKEN }}@vote.eia.diaria.local`, `&` escapado como
+  // `&amp;` (sintaxe de merge tag Brevo, igual ao `{{ contact.EMAIL }}` que
+  // este ramo usava antes). O atributo de contato `POLL_TOKEN` (equivalente
+  // ao custom field Beehiiv `poll_token`) é populado por
+  // `scripts/inject-poll-token-brevo.ts`, chamado INLINE por
+  // `publish-daily-brevo.ts` antes de cada campanha (não uma task agendada
+  // separada — a lista Brevo é capada em `daily_send_cap`, barato o
+  // suficiente pra rodar por envio). O token em si é o MESMO valor
+  // (`computePollToken`, ESP-agnóstico — HMAC do e-mail normalizado) e
+  // resolve pro mesmo assinante via a MESMA entrada KV `polltoken:{token}`,
+  // então um leitor que troca de ESP entre edições (não deveria acontecer,
+  // mas não quebraria nada) manteria o mesmo streak/nickname no leaderboard.
   const buildVoteUrl = (choice: "A" | "B") =>
     esp === "brevo"
-      ? `${PUBLIC_GAME_BASE_URL}/vote?email={{ contact.EMAIL }}&amp;edition=${eia.edition}&amp;choice=${choice}`
+      ? `${PUBLIC_GAME_BASE_URL}/vote?email={{ contact.POLL_TOKEN }}@${VOTE_TOKEN_DOMAIN}&amp;edition=${eia.edition}&amp;choice=${choice}`
       : `${PUBLIC_GAME_BASE_URL}/vote?email={{poll_token}}@${VOTE_TOKEN_DOMAIN}&edition=${eia.edition}&choice=${choice}`;
   // #2541: imagens A/B empilhadas (1 coluna), A acima de B, em desktop e mobile.
   const eiaChoice = (choice: "A" | "B", imgFile: string, paddingTop?: string) => {

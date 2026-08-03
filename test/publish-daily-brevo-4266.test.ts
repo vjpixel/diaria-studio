@@ -15,6 +15,8 @@ import {
   checkDailySendCap,
   buildDailyBrevoHtml,
   checkBrevoDiariaGuards,
+  checkPollTokenGuards,
+  checkContactCountReconciliation,
   resolvePublicImagesPath,
   stripGreetingAndSupporterBlocks,
 } from "../scripts/publish-daily-brevo.ts";
@@ -163,6 +165,68 @@ describe("checkBrevoDiariaGuards — pré-condições fora de --dry-run (#4404)"
   });
 });
 
+describe("checkPollTokenGuards — credenciais pra injeção do token opaco de voto (#4517)", () => {
+  const valid = {
+    pollSecret: "secret",
+    cloudflareAccountId: "acct",
+    cloudflareWorkersToken: "wtoken",
+  };
+
+  it("tudo presente → ok", () => {
+    assert.deepEqual(checkPollTokenGuards(valid), { ok: true });
+  });
+
+  it("POLL_SECRET ausente → not ok, motivo explica que é pra popular o token opaco de voto", () => {
+    const result = checkPollTokenGuards({ ...valid, pollSecret: undefined });
+    assert.equal(result.ok, false);
+    assert.match((result as { ok: false; reason: string }).reason, /POLL_SECRET não definido/);
+    assert.match((result as { ok: false; reason: string }).reason, /token opaco de voto/);
+  });
+
+  it("CLOUDFLARE_ACCOUNT_ID ausente → not ok", () => {
+    const result = checkPollTokenGuards({ ...valid, cloudflareAccountId: undefined });
+    assert.equal(result.ok, false);
+    assert.match((result as { ok: false; reason: string }).reason, /CLOUDFLARE_ACCOUNT_ID não definido/);
+  });
+
+  it("CLOUDFLARE_WORKERS_TOKEN ausente → not ok", () => {
+    const result = checkPollTokenGuards({ ...valid, cloudflareWorkersToken: undefined });
+    assert.equal(result.ok, false);
+    assert.match((result as { ok: false; reason: string }).reason, /CLOUDFLARE_WORKERS_TOKEN não definido/);
+  });
+});
+
+describe("checkContactCountReconciliation — reconciliação enumeração×lista (#4532, achado HIGH)", () => {
+  it("total_contacts igual a listTotalSubscribers → ok", () => {
+    assert.deepEqual(checkContactCountReconciliation(104, 104), { ok: true });
+  });
+
+  it("total_contacts maior que listTotalSubscribers (lista cresceu entre as 2 chamadas) → ok", () => {
+    assert.deepEqual(checkContactCountReconciliation(110, 104), { ok: true });
+  });
+
+  it("total_contacts === 0 mas a lista reporta assinantes → not ok, motivo cita os 2 números e o endpoint", () => {
+    const result = checkContactCountReconciliation(0, 104);
+    assert.equal(result.ok, false);
+    const reason = (result as { ok: false; reason: string }).reason;
+    assert.match(reason, /0 contato\(s\)/);
+    assert.match(reason, /104 assinante\(s\)/);
+    assert.match(reason, /brevoGetList/);
+  });
+
+  it("total_contacts positivo mas abaixo de listTotalSubscribers (enumeração parcial) → not ok", () => {
+    const result = checkContactCountReconciliation(80, 104);
+    assert.equal(result.ok, false);
+    const reason = (result as { ok: false; reason: string }).reason;
+    assert.match(reason, /80 contato\(s\)/);
+    assert.match(reason, /104 assinante\(s\)/);
+  });
+
+  it("ambos 0 (lista genuinamente vazia) → ok, não é divergência", () => {
+    assert.deepEqual(checkContactCountReconciliation(0, 0), { ok: true });
+  });
+});
+
 describe("buildDailyBrevoHtml — guard do bloco de intro obrigatório (#4266 item 5)", () => {
   it("introHtml null → lança (nunca monta sem a explicação de compliance)", () => {
     assert.throws(
@@ -187,7 +251,7 @@ describe("buildDailyBrevoHtml — guard do bloco de intro obrigatório (#4266 it
       },
       "<div>INTRO OBRIGATÓRIA</div>",
     );
-    assert.match(html, /\{\{ contact\.EMAIL \}\}/, "usa merge tag Brevo (esp brevo)");
+    assert.match(html, /\{\{ contact\.POLL_TOKEN \}\}@vote\.eia\.diaria\.local/, "usa merge tag Brevo do token opaco (esp brevo, #4517)");
     assert.match(html, /INTRO OBRIGATÓRIA/, "intro injetada no HTML");
     assert.match(html, /https:\/\/cdn\.example\.com\/d1\.jpg/, "placeholder de imagem substituído");
     assert.deepEqual(unresolvedImages, []);
