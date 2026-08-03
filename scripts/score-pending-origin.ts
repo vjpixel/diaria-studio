@@ -45,11 +45,11 @@
  *     [--output data/pending-reativacao/pending-scored-computed.csv]
  *
  * Falha ALTO (nunca produz output parcial silencioso) se o input não existe,
- * uma linha não tem `email`/`score`/`pts_*` numéricos, ou a soma dos `pts_*`
- * diverge do `score` além da tolerância de arredondamento (±0.5 — o CSV
- * manual tem 1 casa decimal por campo, soma de 6 campos arredondados pode
- * derivar até ~0.3 do valor "verdadeiro"; ±0.5 dá margem sem mascarar erro
- * real).
+ * uma linha não tem `email`/`origem`/`score`/`pts_*` (numéricos, exceto
+ * `origem`), ou a soma dos `pts_*` diverge do `score` além da tolerância de
+ * arredondamento (±0.5 — o CSV manual tem 1 casa decimal por campo, soma de
+ * 6 campos arredondados pode derivar até ~0.3 do valor "verdadeiro"; ±0.5 dá
+ * margem sem mascarar erro real).
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";

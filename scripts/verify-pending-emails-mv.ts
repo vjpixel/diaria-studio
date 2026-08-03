@@ -74,8 +74,14 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const API_BASE = "https://api.millionverifier.com/api/v3";
 const OUT_DIR = resolve(ROOT, "data/pending-reativacao");
 const CHECKPOINT_PATH = resolve(OUT_DIR, ".mv-cache.json");
-/** Consumido por `sync-pending-to-brevo.ts::loadMvVerifiedEmails`. */
+/** Consumidos por `sync-pending-to-brevo.ts` — `MV_VERIFIED_CSV_PATH` pro
+ * filtro de ingestão (`loadMvVerifiedEmails`); os outros 2 só pra medir
+ * COBERTURA (quantos do pool já foram processados, independente do
+ * resultado) — ver `assertMvGuardAcknowledged` (#4494 review, achado
+ * convergente de 4 agentes: "arquivo existe" != "verificação completa"). */
 export const MV_VERIFIED_CSV_PATH = resolve(OUT_DIR, "mv-verified.csv");
+export const MV_REJECTED_CSV_PATH = resolve(OUT_DIR, "mv-rejected.csv");
+export const MV_UNKNOWN_CSV_PATH = resolve(OUT_DIR, "mv-unknown.csv");
 
 export const MV_COST_PER_1000_USD = 1.9;
 export const MV_COST_GUARD_THRESHOLD = 500;
@@ -198,7 +204,10 @@ export async function verifyOne(
   throw new Error(`falha ao verificar ${email} após ${RETRYABLE_DELAYS_MS.length + 1} tentativas: ${String(lastErr)}`);
 }
 
-/** Pura — lê os e-mails do CSV de score (só a coluna `email`, dedup). */
+/** Pura — lê os e-mails do CSV de score (só a coluna `email`, dedup).
+ * `delimiter: ","` explícito — auto-detect do Papa.parse falha em silêncio
+ * quando o CSV de entrada tem só 1 coluna útil (nenhuma vírgula no arquivo);
+ * achado ao vivo 260802, ver #4494. */
 export function readCandidateEmails(csvText: string): string[] {
   const parsed = Papa.parse<Record<string, string>>(csvText, { header: true, skipEmptyLines: true, delimiter: "," });
   const seen = new Set<string>();
@@ -252,8 +261,22 @@ async function main(): Promise<void> {
 
   const checkpoint = loadCheckpoint(CHECKPOINT_PATH);
   const todo = allEmails.filter((e) => !(e in checkpoint));
-  const limit = getArg(argv, "limit");
-  const limited = limit ? todo.slice(0, Number(limit)) : todo;
+
+  // #4494 review (silent-failure-hunter): --limit não era validado como
+  // numérico — um typo (ex: --limit fity) virava Number(NaN), e
+  // todo.slice(0, NaN) silenciosamente processa 0 e-mails, indistinguível
+  // do caso legítimo "pool já 100% verificado". Falha alto em vez de
+  // degradar em silêncio.
+  const limitArg = getArg(argv, "limit");
+  let limit: number | undefined;
+  if (limitArg !== undefined) {
+    limit = Number(limitArg);
+    if (!Number.isInteger(limit) || limit < 0) {
+      log(`ERRO: --limit deve ser um inteiro não-negativo, recebido "${limitArg}".`);
+      process.exit(2);
+    }
+  }
+  const limited = limit !== undefined ? todo.slice(0, limit) : todo;
   log(`${todo.length} ainda não verificado(s) (skip-forever pelo checkpoint); processando ${limited.length} nesta rodada.`);
 
   const guard = checkMvCostGuard(limited.length, hasFlag(argv, "confirm"));
@@ -286,14 +309,19 @@ async function main(): Promise<void> {
   }
 
   // Materializa os 3 buckets a partir do checkpoint COMPLETO (não só desta
-  // rodada) — mesmo racional de `verify-emails-mv.ts` #4071: uma rodada
-  // anterior parcial não deve desaparecer do CSV final.
+  // rodada, nem só do `allEmails` desta invocação) — mesmo racional de
+  // `verify-emails-mv.ts` #4071: uma rodada anterior parcial não deve
+  // desaparecer do CSV final. #4494 review (silent-failure-hunter, achado
+  // ao vivo): a versão anterior iterava `allEmails` (o CSV de INPUT desta
+  // rodada), não `Object.keys(checkpoint)` — um `--input` errado/desatualizado
+  // faria os CSVs de saída ENCOLHEREM silenciosamente, derrubando do
+  // mv-verified.csv gente já verificada em rodada anterior. Iterar o
+  // checkpoint em si é a fonte de verdade real.
   const verifiedEmails: string[] = [];
   const rejectedEmails: string[] = [];
   const unknownEmails: string[] = [];
-  for (const email of allEmails) {
+  for (const email of Object.keys(checkpoint)) {
     const cached = checkpoint[email];
-    if (!cached) continue; // ainda não verificado (não processado nesta nem em rodada anterior)
     const bucket = classifyResult(cached.result);
     if (bucket === "verified") verifiedEmails.push(email);
     else if (bucket === "rejected") rejectedEmails.push(email);
@@ -301,8 +329,8 @@ async function main(): Promise<void> {
   }
 
   writeFileAtomic(MV_VERIFIED_CSV_PATH, toCsv(verifiedEmails));
-  writeFileAtomic(resolve(OUT_DIR, "mv-rejected.csv"), toCsv(rejectedEmails));
-  writeFileAtomic(resolve(OUT_DIR, "mv-unknown.csv"), toCsv(unknownEmails));
+  writeFileAtomic(MV_REJECTED_CSV_PATH, toCsv(rejectedEmails));
+  writeFileAtomic(MV_UNKNOWN_CSV_PATH, toCsv(unknownEmails));
   writeFileAtomic(resolve(OUT_DIR, "mv-error.csv"), toCsv(errorEmails));
 
   log(

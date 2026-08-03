@@ -160,6 +160,20 @@ describe("loadMvVerifiedEmails — leitura fail-soft do CSV de verify-pending-em
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("CSV EXISTE mas está malformado (aspas não fechadas) → null igual 'arquivo ausente' (achado #4494: guard e filtro precisam concordar nesse caso)", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "mv-verified-test-"));
+    try {
+      const path = resolve(dir, "mv-verified.csv");
+      writeFileSync(path, 'email\nfoo@bar.com\n"unterminated');
+      const logs: string[] = [];
+      const result = loadMvVerifiedEmails(path, (m) => logs.push(m));
+      assert.equal(result, null, "corpo malformado nunca vira 'sem filtro silencioso' sem log");
+      assert.ok(logs.some((l) => l.includes("falha ao parsear")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("ingestContactToBrevo — cria + verifica por releitura (#4266)", () => {
@@ -211,21 +225,36 @@ describe("ingestContactToBrevo — cria + verifica por releitura (#4266)", () =>
   });
 });
 
-describe("assertMvGuardAcknowledged — guard de MillionVerifier antes de --push (#4476 achado silent-failure-hunter, revisado quando o script de MV foi implementado)", () => {
-  it("sem --i-know-this-skips-mv e sem mv-verified.csv → lança erro explícito nomeando a issue e a flag", () => {
-    assert.throws(() => assertMvGuardAcknowledged([], false), /verify-pending-emails-mv\.ts.*--i-know-this-skips-mv/s);
+describe("assertMvGuardAcknowledged — guard por COBERTURA, não por 'arquivo existe' (#4494 review: achado convergente de 4 agentes, provado ao vivo contra o repo real)", () => {
+  it("sem --i-know-this-skips-mv e coverage null (nenhuma verificação disponível) → lança erro explícito nomeando a issue e a flag", () => {
+    assert.throws(() => assertMvGuardAcknowledged([], null), /verify-pending-emails-mv\.ts.*--i-know-this-skips-mv/s);
   });
 
   it("sem a flag mesmo com --push presente → ainda lança (a flag exata é o que importa, não --push)", () => {
-    assert.throws(() => assertMvGuardAcknowledged(["--push"], false), /--i-know-this-skips-mv/);
+    assert.throws(() => assertMvGuardAcknowledged(["--push"], null), /--i-know-this-skips-mv/);
   });
 
-  it("com --i-know-this-skips-mv → não lança, mesmo sem mv-verified.csv", () => {
-    assert.doesNotThrow(() => assertMvGuardAcknowledged(["--push", "--i-know-this-skips-mv"], false));
+  it("com --i-know-this-skips-mv → não lança, mesmo com coverage null", () => {
+    assert.doesNotThrow(() => assertMvGuardAcknowledged(["--push", "--i-know-this-skips-mv"], null));
   });
 
-  it("mv-verified.csv existe → não lança, MESMO sem a flag (verificação já rodou, filtro já protege)", () => {
-    assert.doesNotThrow(() => assertMvGuardAcknowledged(["--push"], true));
+  it("cobertura COMPLETA (processedCount >= poolSize > 0) → não lança, MESMO sem a flag", () => {
+    assert.doesNotThrow(() => assertMvGuardAcknowledged(["--push"], { processedCount: 626, poolSize: 626 }));
+  });
+
+  it("cobertura PARCIAL (ex: 2 de 626 — achado ao vivo #4494) → ainda lança, mesmo com o arquivo existindo/parseando bem", () => {
+    assert.throws(
+      () => assertMvGuardAcknowledged(["--push"], { processedCount: 2, poolSize: 626 }),
+      /incompleta.*2 de 626/,
+    );
+  });
+
+  it("processedCount > poolSize (não deveria acontecer, mas não quebra) → passa (>= é inclusivo)", () => {
+    assert.doesNotThrow(() => assertMvGuardAcknowledged(["--push"], { processedCount: 627, poolSize: 626 }));
+  });
+
+  it("poolSize 0 (pool vazio/ilegível) → NUNCA passa sozinho, mesmo com processedCount 0 (evita '0 >= 0' degenerado)", () => {
+    assert.throws(() => assertMvGuardAcknowledged(["--push"], { processedCount: 0, poolSize: 0 }));
   });
 });
 

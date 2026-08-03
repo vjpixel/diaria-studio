@@ -37,16 +37,13 @@
  *   penalidade_bounce (até -12 no pior caso observado) — função de
  *                     invalido_origem_pct da origem
  *
- * ## Assunções de implementação NÃO confirmadas contra a planilha real
- * (#4476 self-review — a issue descreve os PESOS e os 5 fatores + a
- * penalidade com precisão, mas não a fórmula matemática EXATA de
- * normalização/decaimento por trás de cada um; este worktree não tem acesso
- * a `data/pending-reativacao/pending-scored.csv` — junction OneDrive
- * ausente neste ambiente, ver CLAUDE.md #2643 "Label local". Documentado
- * explicitamente pra não confundir "fórmula confirmada pelo editor" com
- * "implementação byte-a-byte validada contra a planilha real" — o editor
- * deve rodar `score-pending-origin.ts` localmente e comparar a distribuição
- * resultante com a planilha antes de confiar na priorização em produção):
+ * ## Assunções de implementação — JÁ VALIDADAS (260802) e CONFIRMADAS ERRADAS
+ * (#4494 review — esta seção descrevia essas assunções como "não
+ * confirmadas", pergunta em aberto; a validação foi feita nesta sessão
+ * (banner no topo do arquivo) e a resposta é negativa — pelo menos 1 das 3
+ * assunções abaixo não bate com o método original desconhecido da planilha.
+ * Mantida como registro histórico de QUAL era a hipótese testada, não como
+ * pergunta pendente):
  *
  * 1. "Normalizada contra a base" (abertura/clique) — implementado como
  *    `min(origem_pct / base_pct, 1) * peso_max`: uma origem que iguala ou

@@ -23,6 +23,7 @@ import {
 } from "../scripts/verify-pending-emails-mv.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import Papa from "papaparse";
 import { resolve } from "node:path";
 
 function jsonRes(status: number, body: unknown): Response {
@@ -94,9 +95,17 @@ describe("readCandidateEmails — parse do CSV de score, dedup (#4476 item 8)", 
     assert.deepEqual(readCandidateEmails(csv), ["a@b.com"]);
   });
 
-  it("CSV de 1 coluna só (achado ao vivo 260802: auto-detect de delimitador falha sem vírgula no arquivo) → parseia certo", () => {
+  it("CSV de 1 coluna só (achado ao vivo 260802) → readCandidateEmails continua correto (não checa .errors, então o dado de saída não muda com/sem delimiter explícito nesse caso)", () => {
     const csv = "email\r\nfoo@bar.com\r\nbaz@qux.com\n";
     assert.deepEqual(readCandidateEmails(csv), ["foo@bar.com", "baz@qux.com"]);
+  });
+
+  it("delimiter:',' explícito evita o erro de auto-detect que Papa.parse reporta pra CSV de 1 coluna (#4494 review pr-test-analyzer: o teste anterior não provava nada — .data sai idêntico com/sem a opção nesse caso, porque o fallback do auto-detect TAMBÉM é vírgula; o sinal real está em .errors, testado aqui diretamente)", () => {
+    const csv = "email\r\nfoo@bar.com\r\nbaz@qux.com\n";
+    const semDelimiter = Papa.parse(csv, { header: true, skipEmptyLines: true });
+    const comDelimiter = Papa.parse(csv, { header: true, skipEmptyLines: true, delimiter: "," });
+    assert.ok(semDelimiter.errors.some((e) => e.code === "UndetectableDelimiter"), "sem delimiter explícito, Papa.parse reporta o erro que motivou o fix");
+    assert.equal(comDelimiter.errors.length, 0, "com delimiter explícito, nenhum erro — é essa checagem que loadMvVerifiedEmails/loadOriginScores/score-pending-origin.ts fazem e que ficaria quebrada sem o fix");
   });
 });
 

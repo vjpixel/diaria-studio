@@ -66,6 +66,21 @@ describe("parseScoredRow — parse defensivo + checagem de consistência (#4476 
       /linha 2 \(a@b\.com\).*soma dos pts_.*diverge/,
     );
   });
+
+  it(`fronteira exata: diff de EXATAMENTE ${SCORE_SUM_TOLERANCE} → NÃO lança (checagem é estritamente >)`, () => {
+    // soma real = 78.7; score = 78.7 - 0.5 = 78.2 → diff exato = 0.5
+    assert.doesNotThrow(() => parseScoredRow(rawRow({ score: "78.2" }), 2));
+  });
+
+  it(`fronteira exata: diff de ${SCORE_SUM_TOLERANCE + 0.01} (1 centésimo acima) → lança`, () => {
+    // soma real = 78.7; score = 78.7 - 0.51 = 78.19
+    assert.throws(() => parseScoredRow(rawRow({ score: "78.19" }), 2), /diverge/);
+  });
+
+  it("direção simétrica: score MAIOR que a soma também lança além da tolerância (Math.abs, não só sum > score)", () => {
+    // soma real = 78.7; score = 78.7 + 10 = 88.7 (score acima da soma, não abaixo)
+    assert.throws(() => parseScoredRow(rawRow({ score: "88.7" }), 2), /diverge/);
+  });
 });
 
 describe("sortByScoreDescending — ordena por score, maior prioridade primeiro (#4476 item 4)", () => {
