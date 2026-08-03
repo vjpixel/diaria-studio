@@ -157,3 +157,29 @@ URL embedada no título (#599): editor poda 2 das 3 opções no gate de Etapa 2,
 - Não incluir texto fora do template.
 - Não adicionar emojis no corpo do texto — apenas o emoji de categoria no header `DESTAQUE N | emoji CATEGORIA` é permitido (#265).
 - Não mencionar "diar.ia.br" dentro do corpo dos destaques (é redundante).
+
+## Bloco encaminhável por WhatsApp (#4486)
+
+Bloco fixo, gerado deterministicamente (TS puro, sem LLM/gate — `renderWhatsappShare` em `scripts/lib/newsletter-render-html.ts`) a partir do D1 do dia + `AAMMDD` da edição. **Nunca aparece em `02-reviewed.md`** — diferente de SORTEIO/PARA ENCERRAR (que SÃO texto literal no markdown, stitchados por `stitch-newsletter.ts`), este bloco é injetado só no HTML final, entre o reveal do ERRO INTENCIONAL e o kicker "Para encerrar". Conteúdo: manchete do D1 + 1 frase que explica o que é a diar.ia.br (autocontido — quem recebe encaminhado nunca assinou) + link de assinatura com UTM (`utm_source=whatsapp&utm_medium=share&utm_campaign={AAMMDD}`) + botão "Compartilhar no WhatsApp" (`wa.me/?text=`, texto pré-preenchido URL-encoded). Editar o texto/wording só pela fonte única (`renderWhatsappShare`/`buildWhatsappShareBlock`) — nunca por edição.
+
+## Auditoria de encaminhamento — classificação de blocos (#4487)
+
+Toda edição pode ser encaminhada (WhatsApp, e-mail) pra quem nunca assinou. Auditoria completa do template com a pergunta "isso faz sentido pra quem nunca leu a diária?" — cada bloco classificado em **autocontido** (funciona sem contexto), **condicional** (só faz sentido em certos canais/públicos) ou **aceito** (fica como está — custo de reescrever > benefício).
+
+| Bloco | Classificação | Nota |
+|---|---|---|
+| Linha de cobertura (intro) | Autocontido | Menciona "diar.ia.br" e a mecânica de curadoria — não pressupõe assinatura prévia. |
+| DESTAQUE 1-3 | Autocontido | Notícia completa, com contexto próprio (parágrafos de abertura/desenvolvimento). |
+| USE MELHOR | Autocontido | Dica de ferramenta, standalone. |
+| **É IA?** — painel de voto | Autocontido | Mecânica do jogo explicada na própria pergunta ("Clique na imagem que foi gerada por IA"). Link de voto usa token opaco por assinante desde #4487 (item 1 do critério de pronto) — quem recebe encaminhado não herda mais a identidade do remetente nem vê o e-mail dele na URL. |
+| **É IA?** — "Resultado da última edição: X% acertaram" | **Aceito** | Referência explícita à edição anterior. Resolver custaria reescrever a mecânica de reveal (#1630/#3220) pra um formato sem histórico — desproporcional pro ganho (linha secundária, 1 frase, não quebra a leitura do resto do painel). |
+| VÍDEOS | Autocontido | Item standalone (título + canal + descrição). |
+| LANÇAMENTOS / RADAR | Autocontido | Itens secundários, cada um com título + descrição própria. |
+| **ERRO INTENCIONAL** ("Na última edição, {prev_narrative}.") | **Aceito** | Depende inteiramente de contexto de edições anteriores (mecânica do concurso, #911/#1079) — inescapável pela própria natureza do jogo. Conteúdo de baixo volume (2 frases) — reescrever pra ser autocontido descaracterizaria a mecânica. |
+| **SORTEIO** (convite ao concurso) | **Aceito** | Mesma mecânica do erro intencional acima — o convite ("responda e concorra") só faz sentido pra quem já recebe a newsletter regularmente. |
+| **Bloco WhatsApp** (#4486, ver seção acima) | Autocontido | Desenhado desde o início pra funcionar sem contexto — cobre a lacuna que o resto do template deixa (ver "convite de assinatura visível sem depender do rodapé" abaixo). |
+| **PARA ENCERRAR** (CTA de apoio, cupons, créditos, convite social) | **Aceito** | Fala com quem já acompanha (CTA de apoio recorrente, cupons de afiliado). Decisão do editor preservada — já era assim antes do #4487, não é regressão introduzida por esta auditoria. |
+
+**Convite de assinatura visível sem depender do rodapé:** resolvido pelo bloco WhatsApp (#4486) — ele mora no CORPO da edição (antes de "Para encerrar"), não só no rodapé da versão web, e sempre contém um link de assinatura. Isso satisfaz esse item do critério de pronto do #4487 sem precisar de um bloco adicional dedicado.
+
+**Itens em aberto (#4487), não resolvidos por esta auditoria — decisão editorial pendente:** (1) cabeçalho de 1 linha explicando o que é a diária pra quem não veio da lista (e se dá pra detectar isso); (2) tratamento diferenciado pra versão web (pra onde o encaminhamento tende a levar); (3) como medir encaminhamento de fato (sem rastro direto — a proxy mais próxima é assinante novo chegando sem UTM numa página de edição específica). Ver comentário em #4487 no GitHub.

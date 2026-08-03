@@ -1024,8 +1024,9 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
   it("renderHTML default: inclui È IA? quando eia.credit não-vazio", () => {
     const html = renderHTML(fixtureComEia);
     assert.match(html, /É IA\?/);
-    // #1186: modo merge-tag — vote URL tem {{email}}, SEM sig HMAC.
-    assert.match(html, /\{\{email\}\}/);
+    // #4487: modo merge-tag — vote URL tem o token opaco {{poll_token}}@vote.eia.diaria.local (era {{email}} cru até #1186→#4487).
+    assert.match(html, /\{\{poll_token\}\}@vote\.eia\.diaria\.local/);
+    assert.ok(!html.includes("{{email}}"), "e-mail cru não deve mais aparecer na URL de voto (#4487)");
     assert.ok(!html.includes("{{poll_sig}}"), "{{poll_sig}} presente — removido em #1186");
     assert.ok(!html.includes("&sig="), "sig= presente — removido em #1186");
   });
@@ -1067,11 +1068,12 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     assert.equal(renderEiaStandalone(fixtureSemEia), null);
   });
 
-  it("renderEiaStandalone retorna HTML com merge tag {{email}} (modo merge-tag #1186)", () => {
+  it("renderEiaStandalone retorna HTML com o token opaco de voto (modo merge-tag #1186, token #4487)", () => {
     const html = renderEiaStandalone(fixtureComEia);
     assert.ok(html, "deve retornar HTML não-null pra eia configurada");
-    // #1186: modo merge-tag — vote URL tem {{email}}, SEM sig HMAC.
-    assert.match(html!, /\{\{email\}\}/);
+    // #4487: modo merge-tag — vote URL tem {{poll_token}}@vote.eia.diaria.local, SEM e-mail cru nem sig HMAC.
+    assert.match(html!, /\{\{poll_token\}\}@vote\.eia\.diaria\.local/);
+    assert.ok(!html!.includes("{{email}}"), "e-mail cru não deve mais aparecer (#4487)");
     assert.ok(!html!.includes("{{poll_sig}}"), "{{poll_sig}} presente — removido em #1186");
     assert.ok(!html!.includes("&sig="), "sig= presente — removido em #1186");
     assert.match(html!, /É IA\?/);
@@ -1178,9 +1180,9 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     assert.match(html, /choice=A.*01-eia-A\.jpg|01-eia-A\.jpg.*choice=A/s, "imagem A com link choice=A ausente");
     // 4. Imagem B com link choice=B está presente
     assert.match(html, /choice=B.*01-eia-B\.jpg|01-eia-B\.jpg.*choice=B/s, "imagem B com link choice=B ausente");
-    // 5. merge tag {{email}} preservada nos dois links de voto
-    const emailMatches = [...html.matchAll(/\{\{email\}\}/g)];
-    assert.ok(emailMatches.length >= 2, `merge tag {{email}} deve aparecer em ambos os links de voto (encontrado ${emailMatches.length}x)`);
+    // 5. merge tag opaca (#4487) preservada nos dois links de voto
+    const tokenMatches = [...html.matchAll(/\{\{poll_token\}\}@vote\.eia\.diaria\.local/g)];
+    assert.ok(tokenMatches.length >= 2, `merge tag do token opaco deve aparecer em ambos os links de voto (encontrado ${tokenMatches.length}x)`);
     // 6. A aparece antes de B no HTML (empilhamento correto: A acima de B)
     const idxA = html.indexOf("01-eia-A.jpg");
     const idxB = html.indexOf("01-eia-B.jpg");
@@ -1196,11 +1198,11 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     assert.ok(html, "standalone deve retornar HTML");
     assert.doesNotMatch(html, /width="50%"/, "largura de 50% não deve existir no standalone");
     assert.doesNotMatch(html, /class="poll-col"/, "classe poll-col não deve existir no standalone");
-    // Ambos os links com {{email}} e choice correto
+    // Ambos os links com o token opaco (#4487) e choice correto
     assert.match(html, /choice=A/);
     assert.match(html, /choice=B/);
-    const emailMatches = [...html.matchAll(/\{\{email\}\}/g)];
-    assert.ok(emailMatches.length >= 2, `{{email}} deve aparecer em ambos os links (encontrado ${emailMatches.length}x)`);
+    const tokenMatches = [...html.matchAll(/\{\{poll_token\}\}@vote\.eia\.diaria\.local/g)];
+    assert.ok(tokenMatches.length >= 2, `token opaco deve aparecer em ambos os links (encontrado ${tokenMatches.length}x)`);
     // A antes de B
     assert.ok(html.indexOf("01-eia-A.jpg") < html.indexOf("01-eia-B.jpg"), "A deve preceder B no standalone");
   });
@@ -1360,10 +1362,14 @@ describe("renderHTML com sorteio + encerrar (#1076)", () => {
   });
 
   it("#2080 bug fix — sorteio só-whitespace não emite box vazio", () => {
-    // guard: content.sorteio?.trim() — whitespace-only não deve renderizar nada
+    // guard: content.sorteio?.trim() — whitespace-only não deve renderizar nada.
+    // #4487: `background:#EBE5D0` (SURFACE) sozinho não é mais um proxy válido
+    // de "nenhum box painel presente" — o bloco WhatsApp (#4486) usa o MESMO
+    // background e é INCONDICIONAL (sempre renderiza, mesmo sem sorteio/È IA?).
+    // O sinal específico e correto continua sendo o comentário `<!-- Sorteio -->`.
     const html = renderHTML(fixt({ sorteio: "   " }));
-    assert.ok(!html.includes("background:#EBE5D0"), "box vazio não deve aparecer");
     assert.ok(!html.includes("<!-- Sorteio -->"), "bloco sorteio não deve ser emitido");
+    assert.ok(html.includes("<!-- Compartilhe no WhatsApp -->"), "bloco WhatsApp (#4486) continua presente independente do sorteio");
   });
 
   it("inclui PARA ENCERRAR com pills no HTML quando presente", () => {
@@ -1418,9 +1424,17 @@ Agora interaja!`,
       /align="center"[^>]*cellpadding="0"[^>]*style="margin:0 auto;"[^]*?cursos\.diar\.ia\.br[^]*?livros\.diar\.ia\.br[^]*?amazon\.com\.br\/shop\/vjpixel/,
       "as 3 pills devem estar na mesma table centralizada",
     );
-    // exatamente 3 pills renderizadas (3 âncoras com o pillStyle, não mais/menos)
-    const pillAnchors = html.match(/border-radius:999px[^>]*>[^<]*<\/a>/g) ?? [];
-    assert.equal(pillAnchors.length, 3, "deveriam existir exatamente 3 pills clicáveis");
+    // exatamente 3 pills renderizadas na table de curadorias (3 âncoras com o
+    // pillStyle, não mais/menos). #4487: `border-radius:999px` sozinho não
+    // escopa mais só as pills de curadoria — o botão "Compartilhar no
+    // WhatsApp" (#4486) usa o MESMO raio (convenção de CTA do DS). Escopar a
+    // contagem à table "Acesse nossas curadorias:" especificamente.
+    const curadoriasIdx = html.indexOf("Acesse nossas curadorias:");
+    assert.ok(curadoriasIdx > -1, "label 'Acesse nossas curadorias:' ausente");
+    const curadoriasTableEnd = html.indexOf("</table>", curadoriasIdx);
+    const curadoriasHtml = html.slice(curadoriasIdx, curadoriasTableEnd);
+    const pillAnchors = curadoriasHtml.match(/border-radius:999px[^>]*>[^<]*<\/a>/g) ?? [];
+    assert.equal(pillAnchors.length, 3, "deveriam existir exatamente 3 pills clicáveis na table de curadorias");
   });
 
   it("#1936: item de pill com conteúdo misto NÃO vaza markdown cru", () => {

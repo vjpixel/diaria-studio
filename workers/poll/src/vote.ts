@@ -26,6 +26,9 @@ import {
   seqStateKvKey, // #4443: chave do agregado seq:{month}:{email} (jogar/seq-state)
 } from "./lib";
 import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./index";
+// #4487: resolução do token opaco de voto (e-mail diário, esp="beehiiv") →
+// e-mail real, via lookup KV. Ver header de poll-token.ts pro design completo.
+import { extractPollToken, isPollTokenIdentity, pollTokenKvKey } from "./poll-token";
 import { upsertOwnEntryInSnapshot, listAllKeys } from "./leaderboard-routes";
 import { type StatsCounterData, mergeStatsWithKvFallback } from "./stats-counter";
 // #4169: DO que serializa o read-modify-write de score:{email} (global) e
@@ -297,6 +300,78 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   // testável em lib.ts (isValidVoteEmailFormat/isValidVoteEditionFormat).
   if (!isValidVoteEmailFormat(email) || !isValidVoteEditionFormat(edition)) {
     return voteHtmlResponse(votePageHtml("Link inválido — parâmetros ausentes.", false, null, null, null, brand), 400);
+  }
+
+  // #4487: resolve token opaco → e-mail real ANTES de qualquer lógica de
+  // identidade abaixo (guard do domínio anônimo web, sig, dedup, score,
+  // nickname). O link de voto do e-mail diário (esp="beehiiv") agora carrega
+  // `{{poll_token}}@vote.eia.diaria.local` em vez do e-mail cru
+  // (`newsletter-render-html.ts::buildVoteUrl`) — quem recebe a edição
+  // ENCAMINHADA não herda mais o e-mail do assinante original na URL. O
+  // token é gravado no KV como `polltoken:{token} -> email` pelo script de
+  // injeção (`scripts/inject-poll-token.ts`, popula o custom field Beehiiv
+  // `poll_token` por assinante). Token sem entrada no KV (subscriber novo
+  // ainda não sincronizado) falha como link inválido — fail-closed, nunca
+  // fail-open pra e-mail arbitrário. #4512 (correção de comentário, achado
+  // comment-analyzer): rotação de POLL_SECRET SOZINHA nunca invalida uma
+  // entrada KV existente — a resolução é um lookup direto
+  // (`polltoken:{token} -> email`), não uma reverificação de assinatura
+  // contra o secret atual. Ver `docs/runbooks/poll-secret-rotation.md`
+  // (nota #4487) — a única causa real de "sem entrada no KV" é assinante
+  // novo ainda não sincronizado.
+  // Resto da função (sig, valid_editions, web guard, score/vote/nickname)
+  // continua operando sobre `email` REAL a partir daqui — zero mudança de
+  // comportamento pra quem já vota há meses (streak/nickname preservados).
+  const pollToken = extractPollToken(email);
+  // #4512 (fix pré-merge, achado type-design-analyzer): `extractPollToken`
+  // retorna `null` tanto pra "não está sob o domínio reservado
+  // vote.eia.diaria.local" quanto pra "está sob o domínio mas o local-part
+  // NÃO é um token hex de 24 chars válido" — sem distinguir os dois casos,
+  // um `if (pollToken)` sozinho deixava o segundo caso cair no fallthrough:
+  // pulava a resolução via KV e seguia pro resto da função com `email` igual
+  // à string literal atacante-controlada `algo-invalido@vote.eia.diaria.local`,
+  // como se fosse um e-mail normal — poluindo dedup/score/nickname/leaderboard
+  // com uma identidade fabricada sob o domínio reservado. MESMO padrão de
+  // bug já corrigido pro domínio irmão `web.eia.diaria.local` (#3976/#4011,
+  // guard `isAnonymousWebIdentity` mais abaixo) — reusa aqui o helper de
+  // construção equivalente, `isPollTokenIdentity` (já exportado e testado
+  // isoladamente em poll-token-4487.test.ts), pra rejeitar ANTES de chegar
+  // no resto da função. Só o domínio `vote.eia.diaria.local` (esp="beehiiv")
+  // é coberto aqui — `isAnonymousWebIdentity`/`isValidWebToken` continuam
+  // cobrindo `web.eia.diaria.local` separadamente, mais abaixo.
+  if (isPollTokenIdentity(email) && !pollToken) {
+    // #4512 (fleet review round 2, achado silent-failure-hunter): console.error,
+    // não console.log — mesmo nível do evento irmão `poll_vote_token_unresolved`
+    // logo abaixo (mesma classe "algo está quebrado sob o domínio reservado do
+    // token de voto", não ruído esperado tipo `poll_vote_403`).
+    console.error(JSON.stringify({ event: "poll_vote_token_malformed", edition, email_domain: email.split("@")[1] ?? "unknown" }));
+    return voteHtmlResponse(votePageHtml("Link inválido ou expirado.", false, null, null, null, brand), 400);
+  }
+  if (pollToken) {
+    const resolvedEmail = await env.POLL.get(pollTokenKvKey(pollToken));
+    // Guard defensivo (mesma disciplina de safeParseKv/isValidVoteEmailFormat
+    // já aplicada a todo dado lido do KV neste arquivo): um valor ausente,
+    // vazio, ou corrompido na entrada reversa (nunca deveria acontecer — só o
+    // script de injeção escreve nela — mas KV é dado externo, não confiar
+    // cegamente) falha como link inválido, nunca propaga um `email` inválido
+    // pro resto da função (que montaria chaves KV malformadas a partir dele).
+    if (!resolvedEmail || !isValidVoteEmailFormat(resolvedEmail.toLowerCase().trim())) {
+      // #4512 (achado silent-failure-hunter): console.error, não console.log —
+      // mesmo nível de "algo está quebrado" dos outros eventos deste arquivo
+      // (ex: vote_dedup_do_error), não o nível de ruído-esperado de
+      // poll_vote_403. Este branch só é alcançado quando `email` JÁ bate a
+      // forma de token válida (`extractPollToken` não-null) mas a entrada
+      // reversa não existe/está corrompida no KV — na prática, o caso real
+      // mais comum é um assinante novo ainda não coberto pelo próximo sync
+      // incremental de `inject-poll-token.ts` (#4512, correção de comentário:
+      // a versão anterior descrevia isto como "todo voto até a 1ª execução
+      // ao vivo", impreciso — um token com custom field vazio/tag não
+      // substituída é rejeitado ANTES, pelos guards de formato/merge-tag
+      // acima, e nunca chega aqui).
+      console.error(JSON.stringify({ event: "poll_vote_token_unresolved", edition, token: pollToken }));
+      return voteHtmlResponse(votePageHtml("Link inválido ou expirado.", false, null, null, null, brand), 400);
+    }
+    email = resolvedEmail.toLowerCase().trim();
   }
 
   // #4435 (achado pr-test-analyzer do review pré-merge do #4419, espelha o

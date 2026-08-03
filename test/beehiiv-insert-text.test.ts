@@ -113,6 +113,27 @@ describe("buildInsertTextJs (#2550)", () => {
     );
   });
 
+  it("#4512 (achado pr-test-analyzer): varredura hasEmail também checa {{poll_token}} — branch novo do #4487 nunca coberto por este arquivo", () => {
+    const snippet = buildInsertTextJs(RAW_URL);
+    // #4487 trocou a URL de voto pro token opaco {{poll_token}} — a varredura
+    // 'hasEmail' (scripts/lib/beehiiv-insert-text.ts, dentro de
+    // buildInsertTextJs) passou a checar `n.text.includes('{{poll_token}}')
+    // || n.text.includes('{{email}}')`, mas nenhum teste até aqui cobria
+    // explicitamente o branch novo — só o legado {{email}} (teste acima).
+    // Sem isso, uma regressão que quebrasse só a checagem de {{poll_token}}
+    // (ex: typo, remoção acidental do OR) passaria batido pela suíte.
+    assert.match(
+      snippet,
+      /\{\{poll_token\}\}/,
+      "snippet deve verificar a presença de {{poll_token}} no doc pós-paste (#4487)",
+    );
+    assert.match(
+      snippet,
+      /n\.text\.includes\('\{\{poll_token\}\}'\)\s*\|\|\s*n\.text\.includes\('\{\{email\}\}'\)/,
+      "a varredura hasEmail deve checar {{poll_token}} OU {{email}} — nem uma sozinha basta (regressão do #4487)",
+    );
+  });
+
   it("SPEC #2550: fragmento com {{email}} é inserido via text literal — merge-tag preservada", () => {
     // Este é o invariante central do #2550:
     // buildInsertTextJs produz um snippet que insere o HTML como TEXT (não como HTML parseado).
@@ -353,8 +374,16 @@ describe("verifyFragmentPreserved (#2550)", () => {
     const fragmentSemEmail = FRAGMENT_WITH_EMAIL.replace(/\{\{email\}\}/g, "REMOVED");
     const err = verifyFragmentPreserved(fragmentSemEmail);
     assert.ok(err !== null, "deve retornar erro quando {{email}} ausente");
-    assert.match(err!, /\{\{email\}\}/, "mensagem de erro deve mencionar {{email}}");
+    // #4487: a merge tag de identidade virou {{poll_token}} — a mensagem de
+    // erro passou a citar essa forma (a atual), não mais {{email}} (legado).
+    assert.match(err!, /\{\{poll_token\}\}/, "mensagem de erro deve mencionar {{poll_token}}");
     assert.match(err!, /--no-wrap/, "mensagem de erro deve orientar uso do --no-wrap");
+  });
+
+  it("#4487: retorna null para fragmento com {{poll_token}} (token opaco, forma atual)", () => {
+    const fragmentComToken = FRAGMENT_WITH_EMAIL.replace(/\{\{email\}\}/g, "{{poll_token}}@vote.eia.diaria.local");
+    const err = verifyFragmentPreserved(fragmentComToken);
+    assert.equal(err, null, "fragmento com {{poll_token}} deve passar na validação");
   });
 
   it("retorna erro para fragmento vazio", () => {

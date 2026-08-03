@@ -262,6 +262,17 @@ export const JOGAR_IDENTIFY_INLINE_UTM = {
   campaign: "eia-jogar-identify-signup",
 } as const;
 
+/** Bloco encaminhável por WhatsApp no fim de cada edição diária (#4486) —
+ * `utm_campaign` traz o AAMMDD da edição que gerou o encaminhamento (o
+ * Beehiiv grava a UTM no momento da inscrição, então dá pra atribuir
+ * assinante novo à edição específica). Fonte dos valores:
+ * `scripts/lib/newsletter-render-html.ts::buildWhatsappSubscribeUrl`. */
+export const WHATSAPP_SHARE_UTM = {
+  source: "whatsapp",
+  medium: "share",
+  campaignPattern: "{edition}",
+} as const;
+
 /** Newsletter semanal do LinkedIn (#4456) — `utm_campaign` traz o ciclo `{YY}w{WW}`
  * (ex: `ln-26w31`), `utm_content` varia por posição (`lista`/`cta-usemelhor`/`cta-fim`
  * — `item-01`/`02`/`03` SAÍRAM quando o link por destaque foi removido, comentário
@@ -565,6 +576,19 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "Cadastro no banner de gate inline da página de Cursos (#4052) — fold-in " +
       "do drift pré-existente apontado pelo #4295 (literais locais, ausente do " +
       "registry/`/utms` antes desta entry).",
+    status: "ativo",
+  },
+  {
+    id: "whatsapp-share-block",
+    label: "Bloco encaminhável por WhatsApp (e-mail diário)",
+    source: WHATSAPP_SHARE_UTM.source,
+    medium: WHATSAPP_SHARE_UTM.medium,
+    campaignPattern: WHATSAPP_SHARE_UTM.campaignPattern,
+    originFile: "scripts/lib/newsletter-render-html.ts",
+    description:
+      "Link de assinatura dentro do bloco fixo pré-'Para encerrar', pensado " +
+      "pra colar/encaminhar no WhatsApp (#4486) — utm_campaign = AAMMDD da " +
+      "edição que gerou o encaminhamento.",
     status: "ativo",
   },
   {
