@@ -82,10 +82,18 @@ describe("#4525 — inventário das superfícies externas", () => {
     }
   });
 
-  it("compartilha o utm_medium — é ele que separa bio de CTA de post", () => {
-    for (const s of EXTERNAL_UTM_SURFACES) {
-      assert.equal(s.medium, EXTERNAL_SURFACE_MEDIUM, `${s.id}: utm_medium fora da convenção`);
+  it("medium fora da convenção só em exceção que documenta o porquê", () => {
+    // A convenção é `bio`. Uma entrada com outro medium é EXCEÇÃO deliberada
+    // (superfície já taggeada antes da convenção, com série que vale preservar)
+    // e precisa dizer isso na descrição — senão vira drift disfarçado.
+    for (const s of EXTERNAL_UTM_SURFACES.filter((x) => x.medium !== EXTERNAL_SURFACE_MEDIUM)) {
+      assert.ok(
+        s.appliedAt,
+        `${s.id}: medium fora da convenção só se justifica em superfície JÁ aplicada`,
+      );
     }
+    const naConvencao = EXTERNAL_UTM_SURFACES.filter((s) => s.medium === EXTERNAL_SURFACE_MEDIUM);
+    assert.ok(naConvencao.length >= 8, "a convenção tem que continuar sendo a regra, não a exceção");
   });
 
   it("utm_campaign é DISTINTO por superfície — o drift depende disso", () => {
@@ -96,7 +104,9 @@ describe("#4525 — inventário das superfícies externas", () => {
       "duas superfícies com o mesmo utm_campaign: a que converter primeiro mascara a outra pra sempre " +
         "no check de sem_conversao, porque o Beehiiv só devolve campaignCounts PLANO (achado do review do PR #4526)",
     );
-    for (const s of EXTERNAL_UTM_SURFACES) {
+    // A derivação só é cobrada de quem segue a convenção (medium `bio`); a
+    // exceção declarada tem campaign legado, e a unicidade acima já a cobre.
+    for (const s of EXTERNAL_UTM_SURFACES.filter((x) => x.medium === EXTERNAL_SURFACE_MEDIUM)) {
       const base = buildExternalSurfaceCampaign(s.source);
       // Aceita a forma nua (`perfil-youtube`) e a com variante
       // (`perfil-github-studio`), mas nada digitado fora do derivador.

@@ -822,6 +822,28 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
     driftKey: "source",
   },
   {
+    id: "perfil-linkedin",
+    label: "LinkedIn — CTA e site da company page",
+    source: "linkedin",
+    // EXCEÇÃO DELIBERADA à convenção `bio`/`perfil-{source}`: esta superfície já
+    // estava taggeada antes de a convenção existir (é dela que o #4295 tirou o
+    // padrão), o LinkedIn é canal com conversão real, e o `campaign` já é único.
+    // Renomear só custaria a série histórica sem ganhar medição nenhuma. O
+    // `medium` fora de `EXTERNAL_SURFACE_MEDIUM` é o marcador visível de que a
+    // entrada é exceção — `test/utm-externas-4525.test.ts` só cobra derivação de
+    // campaign das superfícies que usam o medium da convenção.
+    medium: "organic_social",
+    campaign: "company_page_cta",
+    panelUrl: "https://www.linkedin.com/company/110742958/admin/dashboard/",
+    field: "Editar página → Botão personalizado + Site",
+    description:
+      "O MESMO valor cobre dois pontos da company page: o botão de CTA ('Sign " +
+      "up') e o campo Site da aba Sobre — confirmado ao vivo em 260803, os dois " +
+      "hrefs idênticos. Não foi tocado nesta rodada: já estava correto.",
+    status: "ativo",
+    appliedAt: "2026-07-31",
+  },
+  {
     id: "perfil-youtube",
     label: "YouTube — link do canal",
     source: "youtube",
