@@ -20,8 +20,6 @@
  *     &utm_content=lista|cta-usemelhor|cta-fim` (item-01/02/03 SAÍRAM).
  */
 
-import { deriveEditionUrl } from "./edition-url.ts";
-
 export const LINKEDIN_WEEKLY_UTM_SOURCE = "linkedin";
 export const LINKEDIN_WEEKLY_UTM_MEDIUM = "newsletter";
 
@@ -72,14 +70,16 @@ export interface WeeklyLinkedinUseMelhorInput {
 
 export interface WeeklyLinkedinRestItem {
   editionDate: string;
+  /** URL pública da edição (derivada do D1 via `deriveEditionUrl`). */
+  url: string;
   /**
-   * Título do D1 da edição — usado como texto do item + fonte do slug da
-   * URL. Decisão implícita não confirmada pelo editor (achado #4489 finding
-   * 8b): nenhum dos 5 comentários da issue #4456 revisita se este item
-   * deveria ter subtítulo de 1 linha além do título — o código hoje
-   * implementa título-só sem isso ter sido uma escolha explícita.
+   * Títulos dos até-3 destaques da edição, na ordem (D1 primeiro). Decisão
+   * do editor 260803 (#4456) resolve o achado #4489 finding 8b — "Edições
+   * da semana" (nome também decidido nessa data, era "Resto da semana")
+   * lista TODAS as 5 edições da semana com link + seus destaques, não só as
+   * que perderam a disputa de manchete.
    */
-  title: string;
+  destaques: string[];
 }
 
 export interface WeeklyLinkedinRenderInput {
@@ -87,7 +87,8 @@ export interface WeeklyLinkedinRenderInput {
   /** 1-3 manchetes, na ordem de seleção. */
   headlines: WeeklyLinkedinHeadlineInput[];
   useMelhor?: WeeklyLinkedinUseMelhorInput;
-  restOfWeek: WeeklyLinkedinRestItem[];
+  /** As 5 edições da semana — link + destaques de cada uma ("Edições da semana", #4456). */
+  weeklyEditions: WeeklyLinkedinRestItem[];
   /** Abertura — prosa nova, já humanizada/corrigida pela skill (Skill("humanizador") + Clarice). */
   opening: string;
   /** Fecho antes do CTA final — prosa nova, já humanizada/corrigida. */
@@ -116,6 +117,13 @@ export function numberedTitle(n: number, title: string): string {
   return `${n}. ${title}`;
 }
 
+/** Pure: `AAMMDD` → "Edição de DD/MM" — rótulo de link pra "Edições da semana", nunca termina em domínio nu. */
+export function editionLabel(aammdd: string): string {
+  const dd = aammdd.slice(4, 6);
+  const mm = aammdd.slice(2, 4);
+  return `Edição de ${dd}/${mm}`;
+}
+
 export interface WeeklyLinkedinRenderResult {
   html: string;
   warnings: string[];
@@ -129,7 +137,7 @@ export interface WeeklyLinkedinRenderResult {
  * corrigidos (responsabilidade da skill, não deste módulo).
  *
  * Ordem de montagem (opening → headline 1 → headline 2 → Use Melhor →
- * headline 3 → resto da semana → closing) restaura o template original da
+ * headline 3 → Edições da semana → closing) restaura o template original da
  * issue #4456 — decisão do editor (#4489): o CTA de assinatura que fecha o
  * bloco Use Melhor é o primeiro convite da edição, e cair no meio (depois de
  * 2 dos 3 headlines) alcança o leitor engajado que não necessariamente lê a
@@ -190,19 +198,30 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
 
   input.headlines.slice(useMelhorSplitIndex).forEach((h, i) => pushHeadline(h, useMelhorSplitIndex + i + 1));
 
-  if (input.restOfWeek.length > 0) {
-    parts.push(`<h3>Resto da semana</h3>`);
+  if (input.weeklyEditions.length > 0) {
+    parts.push(`<h3>Edições da semana</h3>`);
     parts.push("<ul>");
-    for (const item of input.restOfWeek) {
-      // #4489 finding 2: mesmo guard do bloco Use Melhor (linha ~149) —
-      // faltava aqui, mesma classe de risco (auto-linkagem do LinkedIn parte
-      // o link/UTM quando o rótulo termina em domínio nu). Warn-only, não
-      // reescreve — título de item de lista também é literal.
-      if (endsInBareDomainLabel(item.title)) {
-        warnings.push(`Resto da semana: título "${item.title}" (${item.editionDate}) termina em domínio nu — risco de auto-linkagem partir o link no paste do LinkedIn.`);
+    for (const item of input.weeklyEditions) {
+      // #4489 finding 2 (mesmo guard do bloco Use Melhor, linha ~149):
+      // destaque em texto puro (não linkado) ainda arrisca auto-linkagem do
+      // LinkedIn se terminar em domínio nu — warn-only, título é literal.
+      for (const destaque of item.destaques) {
+        if (endsInBareDomainLabel(destaque)) {
+          warnings.push(
+            `Edições da semana: destaque "${destaque}" (${item.editionDate}) termina em domínio nu — risco de auto-linkagem partir o link no paste do LinkedIn.`,
+          );
+        }
       }
-      const listUrl = buildLinkedinWeeklyUrl(deriveEditionUrl(item.title), input.cycle, "lista");
-      parts.push(`<li><a href="${escapeHtml(listUrl)}">${escapeHtml(item.title)}</a></li>`);
+      const listUrl = buildLinkedinWeeklyUrl(item.url, input.cycle, "lista");
+      parts.push(`<li><a href="${escapeHtml(listUrl)}">${escapeHtml(editionLabel(item.editionDate))}</a>`);
+      if (item.destaques.length > 0) {
+        parts.push("<ul>");
+        for (const destaque of item.destaques) {
+          parts.push(`<li>${escapeHtml(destaque)}</li>`);
+        }
+        parts.push("</ul>");
+      }
+      parts.push("</li>");
     }
     parts.push("</ul>");
     parts.push("<hr/>");

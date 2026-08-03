@@ -599,7 +599,7 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     campaignPattern: LINKEDIN_WEEKLY_UTM.campaignPattern,
     originFile: "scripts/lib/weekly-linkedin-render.ts",
     description:
-      "Lista do resto da semana + CTAs de assinatura (meio/fim) da newsletter " +
+      "Lista de Edições da semana + CTAs de assinatura (meio/fim) da newsletter " +
       "semanal do LinkedIn (`/diaria-linkedin-semanal`, #4456) — artigo colável " +
       "manualmente, sem API de publicação. `utm_content` = lista/cta-usemelhor/cta-fim.",
     status: "ativo",

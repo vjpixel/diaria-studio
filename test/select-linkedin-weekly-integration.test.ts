@@ -26,6 +26,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main as selectMain } from "../scripts/select-linkedin-weekly.ts";
 import { main as renderMain } from "../scripts/render-linkedin-weekly.ts";
+import { deriveEditionUrl } from "../scripts/lib/edition-url.ts";
 
 const originalArgv = process.argv;
 const originalExit = process.exit;
@@ -182,8 +183,19 @@ describe("select→render end-to-end (#4489 finding 4) + gap de cache de clique 
     );
   });
 
-  it("edição gap aparece no 'resto da semana' (perdeu a manchete mas segue listada, com o warning explicando por quê)", () => {
-    assert.deepEqual(selectionJson.restOfWeek, [{ editionDate: "260728", title: "Matéria B: lançamento de modelo novo" }]);
+  it("'Edições da semana' lista TODAS as edições da janela (inclusive as que já viraram manchete acima), com link + destaques (#4456, decisão 260803)", () => {
+    assert.deepEqual(selectionJson.weeklyEditions, [
+      {
+        editionDate: "260727",
+        url: deriveEditionUrl("Matéria A: empregos e automação"),
+        destaques: ["Matéria A: empregos e automação"],
+      },
+      {
+        editionDate: "260728",
+        url: deriveEditionUrl("Matéria B: lançamento de modelo novo"),
+        destaques: ["Matéria B: lançamento de modelo novo"],
+      },
+    ]);
   });
 
   it("Use Melhor escolhe o único candidato use_melhor (não competiu pela manchete, taxa 1.5%)", () => {
@@ -198,7 +210,7 @@ describe("select→render end-to-end (#4489 finding 4) + gap de cache de clique 
     );
   });
 
-  it("render: JSON boundary sobrevive ao roundtrip real (finding 4) — HTML final contém as 2 manchetes numeradas, Use Melhor e a lista do resto da semana", () => {
+  it("render: JSON boundary sobrevive ao roundtrip real (finding 4) — HTML final contém as 2 manchetes numeradas, Use Melhor e a lista de Edições da semana", () => {
     process.argv = [
       "node",
       "render-linkedin-weekly.ts",
@@ -223,7 +235,7 @@ describe("select→render end-to-end (#4489 finding 4) + gap de cache de clique 
     assert.match(html, /Tutorial X: como usar melhor o Claude Code/);
     assert.match(html, /Testei essa semana e cortou tempo de setup\./);
     assert.match(html, /Matéria B: lançamento de modelo novo/);
-    assert.match(html, /Resto da semana/);
+    assert.match(html, /Edições da semana/);
     assert.match(html, /Essa semana teve empregos, automação e um tutorial novo\./);
     assert.match(html, /É isso que a diar\.ia\.br cobre todo dia, sem enrolação\./);
 

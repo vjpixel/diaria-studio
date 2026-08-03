@@ -31,9 +31,9 @@ const BASE_INPUT: WeeklyLinkedinRenderInput = {
     { title: "Professor flagra 90% da turma colando com IA", body: "Corpo do D2.", why: "" },
   ],
   useMelhor: undefined,
-  restOfWeek: [
-    { editionDate: "260729", title: "Título da edição de terça" },
-    { editionDate: "260730", title: "Título da edição de quarta" },
+  weeklyEditions: [
+    { editionDate: "260729", url: "https://diar.ia.br/p/titulo-da-edicao-de-terca", destaques: ["Título da edição de terça", "D2 de terça", "D3 de terça"] },
+    { editionDate: "260730", url: "https://diar.ia.br/p/titulo-da-edicao-de-quarta", destaques: ["Título da edição de quarta"] },
   ],
   opening: "Essa semana teve empregos, educação e um flagrante de cola com IA.",
   closing: "É isso que a diar.ia.br cobre todo dia, sem enrolação.",
@@ -136,18 +136,18 @@ describe("renderLinkedinWeeklyHtml — ordem de montagem restaurada ao template 
     const idxH2 = result.html.indexOf("<h2>2. Headline 2</h2>");
     const idxUseMelhor = result.html.indexOf("Use melhor");
     const idxH3 = result.html.indexOf("<h2>3. Headline 3</h2>");
-    const idxResto = result.html.indexOf("Resto da semana");
+    const idxEdicoes = result.html.indexOf("Edições da semana");
     const idxClosing = result.html.indexOf(BASE_INPUT.closing);
 
-    for (const idx of [idxOpening, idxH1, idxH2, idxUseMelhor, idxH3, idxResto, idxClosing]) {
+    for (const idx of [idxOpening, idxH1, idxH2, idxUseMelhor, idxH3, idxEdicoes, idxClosing]) {
       assert.ok(idx >= 0, "todos os blocos devem estar presentes no HTML");
     }
     assert.ok(idxOpening < idxH1, "opening antes de h1");
     assert.ok(idxH1 < idxH2, "h1 antes de h2");
     assert.ok(idxH2 < idxUseMelhor, "h2 antes do USE MELHOR — CTA do meio alcança quem lê parcial");
     assert.ok(idxUseMelhor < idxH3, "USE MELHOR antes de h3");
-    assert.ok(idxH3 < idxResto, "h3 antes do resto da semana");
-    assert.ok(idxResto < idxClosing, "resto da semana antes do closing");
+    assert.ok(idxH3 < idxEdicoes, "h3 antes de Edições da semana");
+    assert.ok(idxEdicoes < idxClosing, "Edições da semana antes do closing");
   });
 
   it("semana reduzida com 2 manchetes: USE MELHOR entra depois da 2ª (mesma regra — não sobra 3ª manchete)", () => {
@@ -169,32 +169,36 @@ describe("renderLinkedinWeeklyHtml — ordem de montagem restaurada ao template 
   });
 });
 
-describe("renderLinkedinWeeklyHtml — lista do resto da semana", () => {
-  it("cada edição não-manchete vira 1 item da lista com link pra edição", () => {
+describe("renderLinkedinWeeklyHtml — Edições da semana (nome permanente desde #4456, 260803 — era 'Resto da semana')", () => {
+  it("cada edição vira 1 item com link pra edição + seus destaques listados", () => {
     const result = renderLinkedinWeeklyHtml(BASE_INPUT);
+    assert.match(result.html, /Edição de 29\/07/);
     assert.match(result.html, /Título da edição de terça/);
+    assert.match(result.html, /D2 de terça/);
+    assert.match(result.html, /D3 de terça/);
+    assert.match(result.html, /Edição de 30\/07/);
     assert.match(result.html, /Título da edição de quarta/);
     assert.match(result.html, /utm_content=lista/);
   });
 
-  it("lista vazia não renderiza a seção 'Resto da semana'", () => {
-    const input: WeeklyLinkedinRenderInput = { ...BASE_INPUT, restOfWeek: [] };
+  it("lista vazia não renderiza a seção 'Edições da semana'", () => {
+    const input: WeeklyLinkedinRenderInput = { ...BASE_INPUT, weeklyEditions: [] };
     const result = renderLinkedinWeeklyHtml(input);
-    assert.ok(!/Resto da semana/.test(result.html));
+    assert.ok(!/Edições da semana/.test(result.html));
   });
 
-  it("item com título terminando em domínio nu gera warning (#4489 finding 2 — mesmo guard do Use Melhor, faltava aqui)", () => {
+  it("destaque terminando em domínio nu gera warning (#4489 finding 2 — mesmo guard do Use Melhor, faltava aqui)", () => {
     const input: WeeklyLinkedinRenderInput = {
       ...BASE_INPUT,
-      restOfWeek: [{ editionDate: "260729", title: "Confira em exemplo.com.br" }],
+      weeklyEditions: [{ editionDate: "260729", url: "https://diar.ia.br/p/confira", destaques: ["Confira em exemplo.com.br"] }],
     };
     const result = renderLinkedinWeeklyHtml(input);
-    assert.ok(result.warnings.some((w) => /Resto da semana.*domínio nu/i.test(w)), result.warnings.join(" | "));
+    assert.ok(result.warnings.some((w) => /Edições da semana.*domínio nu/i.test(w)), result.warnings.join(" | "));
     // literal — não reescreve o título mesmo com o warning (mesma regra do Use Melhor).
     assert.match(result.html, /Confira em exemplo\.com\.br/);
   });
 
-  it("item com título normal (rótulo de ação) não gera warning de domínio nu", () => {
+  it("item com destaques normais não gera warning de domínio nu", () => {
     const result = renderLinkedinWeeklyHtml(BASE_INPUT);
     assert.ok(!result.warnings.some((w) => /domínio nu/i.test(w)));
   });

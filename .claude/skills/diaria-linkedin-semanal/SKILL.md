@@ -1,6 +1,6 @@
 ---
 name: diaria-linkedin-semanal
-description: Newsletter semanal do LinkedIn (perfil pessoal, #4456) — 3 matérias da semana selecionadas por clique verificado + bloco Use Melhor com comentário do editor + lista do resto da semana. Produzida domingo, publicada segunda ~09:30 BRT (artigo colado à mão — LinkedIn não tem API de publicação de newsletter). Uso — `/diaria-linkedin-semanal --publish-monday AAMMDD`.
+description: Newsletter semanal do LinkedIn (perfil pessoal, #4456) — 3 matérias da semana selecionadas por clique verificado + bloco Use Melhor com comentário do editor + "Edições da semana" (link + destaques das 5 edições). Produzida domingo, publicada segunda ~09:30 BRT (artigo colado à mão — LinkedIn não tem API de publicação de newsletter). Uso — `/diaria-linkedin-semanal --publish-monday AAMMDD`.
 disable-model-invocation: true
 ---
 
@@ -9,8 +9,9 @@ disable-model-invocation: true
 Monta o artefato colável da newsletter semanal do LinkedIn (issue #4456):
 3 matérias da semana que acabou (segunda a sexta), selecionadas por **taxa
 de clique verificado** — não pela posição na edição de origem — mais o
-bloco **Use Melhor** (com comentário do editor, obrigatório) e uma lista de
-1 linha por edição das demais.
+bloco **Use Melhor** (com comentário do editor, obrigatório) e a seção
+**Edições da semana** — as 5 edições, cada uma com link + seus até-3
+destaques.
 
 **A spec desta skill mudou várias vezes ao longo do dia 260802 — os
 comentários da issue #4456 têm precedência sobre o corpo original.** Se
@@ -41,6 +42,17 @@ inteira antes — não só o body.
 - **Edição #1 não é mais exceção** (260802, último comentário) — cobre a
   janela normal como qualquer outra. Não tratar a primeira invocação
   desta skill como recorte mensal/moldura de estreia.
+- **Seção final chama "Edições da semana", não "Resto da semana"** (260803,
+  decisão do editor no #4456) — e não é mais só as edições que perderam a
+  manchete: lista as **5 edições da semana inteira**, cada uma com link
+  (`deriveEditionUrl` a partir do D1) + os até-3 destaques daquele dia,
+  independente de um deles já ter virado manchete acima. Implementado em
+  `scripts/select-linkedin-weekly.ts` (campo `weeklyEditions` no
+  `ln-selection.json`, populado em `readEdition`/`destaqueTitles`) e
+  `scripts/lib/weekly-linkedin-render.ts` (`editionLabel` gera o rótulo
+  "Edição de DD/MM" do link; cada destaque some como sub-item de lista).
+  Resolve o achado #4489 finding 8b (se o item devia ter mais que o
+  título).
 
 ## Argumentos
 
@@ -106,8 +118,9 @@ npx tsx scripts/select-linkedin-weekly.ts --publish-monday {AAMMDD}
 
 Escreve `data/weekly/{cycle}/_internal/ln-selection.json` com: manchetes
 selecionadas (rank + auditoria completa dos candidatos, inclusive
-excluídos por serem comercial/próprio), candidato de Use Melhor, lista do
-resto da semana, e warnings (empates dentro do ruído de 1 clique, edições
+excluídos por serem comercial/próprio), candidato de Use Melhor, Edições
+da semana (`weeklyEditions` — as 5 edições, link + destaques de cada
+uma), e warnings (empates dentro do ruído de 1 clique, edições
 faltando, etc — ver `scripts/lib/weekly-linkedin-select.ts`).
 
 **Semana curta (feriado):** se `editionsFound < 5`, o script já reduz o
@@ -129,7 +142,7 @@ Manchetes selecionadas (por taxa de clique verificado):
 
 Use Melhor: {título ou "nenhum candidato elegível"}
 
-Resto da semana: {N} edições
+Edições da semana: {N} edições (link + destaques cada)
 
 {warnings, se houver — inclusive empates dentro do ruído de 1 clique}
 
