@@ -47,8 +47,13 @@ describe("#4482 — isClariceOnlySection", () => {
     assert.equal(isClariceOnlySection("CLARICE — TUTORIAL"), true);
   });
 
-  it("CLARICE - com hífen ASCII também é Clarice-only", () => {
-    assert.equal(isClariceOnlySection("CLARICE - DIVULGAÇÃO"), true);
+  // #4510: hífen ASCII NÃO é reconhecido (era código morto até este PR — o
+  // parser real, `isSectionLabel`/`splitByLabels` em monthly-render.ts, só
+  // reconhece em-dash "—", então esta função nunca era chamada com essa
+  // forma via `filterDraftForBeehiiv`). Ver teste de integração abaixo
+  // (`filterDraftForBeehiiv`) que prova o comportamento real ponta a ponta.
+  it("CLARICE - com hífen ASCII NÃO é reconhecida (só a forma canônica em-dash é suportada)", () => {
+    assert.equal(isClariceOnlySection("CLARICE - DIVULGAÇÃO"), false);
   });
 
   it("seções normais (DESTAQUE, RADAR, LABORATÓRIO CLARICE) não são Clarice-only", () => {
@@ -151,6 +156,10 @@ const FULL_DRAFT = [
   "",
   "Passo a passo.",
   "",
+  "**É IA?**",
+  "",
+  "[...]",
+  "",
   "**RADAR**",
   "",
   "[Assine a diária](https://diar.ia.br)",
@@ -195,6 +204,41 @@ describe("#4482 — filterDraftForBeehiiv", () => {
     const twice = filterDraftForBeehiiv(once);
     assert.equal(once, twice);
   });
+
+  // #4510 (achado comment-analyzer, review pré-merge): teste de INTEGRAÇÃO
+  // provando o limite real e documentado de `isClariceOnlySection` — um
+  // header `CLARICE - DIVULGAÇÃO` (hífen ASCII) NUNCA vira boundary de seção
+  // pro parser real (`splitByLabels`/`isSectionLabel`, que só reconhece
+  // em-dash), então o conteúdo Clarice-only é absorvido como corpo da seção
+  // ANTERIOR e vaza inteiro no email Beehiiv. Ponta a ponta via
+  // `filterDraftForBeehiiv`, não a função pura isolada.
+  it("header CLARICE — DIVULGAÇÃO com hífen ASCII vaza (limite documentado, não é boundary pro parser real)", () => {
+    const draftComHifenAscii = [
+      "**DESTAQUE 1 | BRASIL**",
+      "",
+      "Título do destaque",
+      "",
+      "Parágrafo com [link de fonte](https://exemplo.com/artigo).",
+      "",
+      "**CLARICE - DIVULGAÇÃO**",
+      "",
+      "Você se cadastrou na Clarice e por isso recebe também esta oferta exclusiva.",
+      "",
+      "→ [Assine grátis](https://diar.ia.br)",
+      "",
+      "**RADAR**",
+      "",
+      "[Assine a diária](https://diar.ia.br)",
+      "",
+      "Descrição do item do radar.",
+    ].join("\n");
+
+    const filtered = filterDraftForBeehiiv(draftComHifenAscii);
+    // Continua presente — a garantia de `isClariceOnlySection` é limitada à
+    // forma canônica (em-dash); este é o comportamento real, não o desejável.
+    assert.match(filtered, /Você se cadastrou na Clarice/);
+    assert.match(filtered, /Assine grátis/);
+  });
 });
 
 describe("#4482 — draftToEmailBeehiiv", () => {
@@ -229,6 +273,27 @@ describe("#4482 — draftToEmailBeehiiv", () => {
     assert.equal(BEEHIIV_UTM_PROFILE.source, MENSAL_BEEHIIV_UTM_SOURCE);
     assert.equal(BEEHIIV_UTM_PROFILE.medium, MENSAL_BEEHIIV_UTM_MEDIUM);
     assert.equal(BEEHIIV_UTM_PROFILE.buildCampaign("2607-08", "cta"), buildMensalBeehiivCampaign("2607-08", "cta"));
+    assert.equal(BEEHIIV_UTM_PROFILE.pollMergeTag, "{{email}}");
+    assert.equal(BEEHIIV_UTM_PROFILE.pollBrand, "mensal-beehiiv");
+  });
+
+  // #4510 (CRÍTICO 1, silent-failure-hunter): o link de voto do É IA? é
+  // embutido no HTML SÓ quando há imagem (`imageCell`, monthly-render.ts) —
+  // por isso estes 2 testes passam `eiaImageUrlA/B`, diferente dos demais
+  // testes deste describe (que exercitam o draft sem imagem, onde o link de
+  // voto nunca chega a ser renderizado).
+  it("#4510: link de voto do É IA? usa merge tag {{email}} (Beehiiv), nunca {{ contact.EMAIL }} (Brevo)", () => {
+    const { html } = draftToEmailBeehiiv(FULL_DRAFT, "Assunto", "2607", "https://img/a.jpg", "https://img/b.jpg");
+    assert.match(html, /\/vote\?email=\{\{email\}\}&amp;edition=/);
+    assert.doesNotMatch(html, /contact\.EMAIL/);
+  });
+
+  it("#4510: voto e leaderboard do É IA? vão pro brand=mensal-beehiiv, nunca brand=clarice", () => {
+    const { html } = draftToEmailBeehiiv(FULL_DRAFT, "Assunto", "2607", "https://img/a.jpg", "https://img/b.jpg");
+    const plain = html.replace(/&amp;/g, "&");
+    const brands = [...plain.matchAll(/brand=([a-z0-9_-]+)/gi)].map((m) => m[1]);
+    assert.ok(brands.length > 0, "nenhum brand emitido — draft de teste sem seção É IA?/leaderboard?");
+    for (const b of brands) assert.equal(b, "mensal-beehiiv", `brand inesperado: ${b}`);
   });
 });
 
@@ -245,5 +310,14 @@ describe("#4482 — regressão: draftToEmail (Clarice, perfil default) inalterad
     assert.match(html, /se cadastrou na/);
     assert.match(html, /Assine grátis/);
     assert.match(html, /Passo a passo/);
+  });
+
+  it("#4510: É IA? continua usando merge tag {{ contact.EMAIL }} e brand=clarice (perfil default)", () => {
+    const { html } = draftToEmail(FULL_DRAFT, "Assunto", "2607", "https://img/a.jpg", "https://img/b.jpg");
+    assert.match(html, /\/vote\?email=\{\{ contact\.EMAIL \}\}&amp;edition=/);
+    const plain = html.replace(/&amp;/g, "&");
+    const brands = [...plain.matchAll(/brand=([a-z0-9_-]+)/gi)].map((m) => m[1]);
+    assert.ok(brands.length > 0, "nenhum brand emitido — draft de teste sem seção É IA?/leaderboard?");
+    for (const b of brands) assert.equal(b, "clarice", `brand inesperado: ${b}`);
   });
 });

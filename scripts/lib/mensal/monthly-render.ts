@@ -143,6 +143,31 @@ export interface MonthlyUtmProfile {
    * contrato de `buildMensalCampaign`/`buildMensalBeehiivCampaign`,
    * `scripts/lib/shared/utm-registry.ts`). */
   buildCampaign: (ciclo: string, posicao: string) => string;
+  /**
+   * #4510 (achado silent-failure-hunter do review pré-merge do #4482): merge
+   * tag de e-mail usada nos links de voto do "É IA?" (`renderEia`). A Brevo
+   * substitui `{{ contact.EMAIL }}`; o Beehiiv substitui `{{email}}` — mesma
+   * distinção que `newsletter-render-html.ts` já resolve pra newsletter
+   * diária (`platform === "brevo" ? "{{ contact.EMAIL }}" : "{{email}}"`).
+   * `renderEia` hardcodava o formato Brevo mesmo no caminho Beehiiv
+   * (`draftToEmailBeehiiv`), então TODO clique de voto vindo do e-mail
+   * Beehiiv chegava com a string literal `{{ contact.EMAIL }}` — a Beehiiv
+   * não a substitui, e `isValidVoteEmailFormat` (workers/poll) rejeita esse
+   * formato: 100% dos votos quebrados nessa variante.
+   */
+  pollMergeTag: "{{email}}" | "{{ contact.EMAIL }}";
+  /**
+   * #4510: `brand` do leaderboard do "É IA?" (`workers/poll/src/lib.ts`,
+   * `Brand`) pra onde os votos deste perfil vão. Antes `renderEia` hardcodava
+   * `brand=clarice` incondicionalmente — a variante Beehiiv (audiência de
+   * apoiadores, não assinantes Clarice/Brevo) misturava votos no MESMO
+   * leaderboard da Clarice. Cada perfil aponta pro seu próprio `Brand`
+   * (`CLARICE_UTM_PROFILE` → `"clarice"`; `BEEHIIV_UTM_PROFILE`,
+   * `monthly-beehiiv-render.ts` → `"mensal-beehiiv"`, registrado em
+   * `BRAND_INFO` com `leaderboardPeriod: "year"` — OBRIGATÓRIO pra esse
+   * brand aceitar edição em formato de ciclo, ver comentário lá).
+   */
+  pollBrand: string;
 }
 
 /** Perfil DEFAULT — envio Clarice/Brevo (#2975/#4040). Todo caller que não
@@ -151,6 +176,8 @@ export const CLARICE_UTM_PROFILE: MonthlyUtmProfile = {
   source: MENSAL_UTM_SOURCE,
   medium: MENSAL_UTM_MEDIUM,
   buildCampaign: buildMensalCampaign,
+  pollMergeTag: "{{ contact.EMAIL }}", // #4510: comportamento histórico (Brevo), preservado como default.
+  pollBrand: "clarice", // #4510: comportamento histórico, preservado como default.
 };
 
 let currentMonthlyUtmCiclo: string | null = null;
@@ -1026,12 +1053,19 @@ export function parseEiaLegend(eiaMd: string): string {
  * Renders the É IA? section (#465). Layout espelha a diária (#1918): imagens
  * A/B lado a lado, clicáveis (o voto vai no clique da própria imagem — sem
  * botão), empilhando no mobile via `.mob-stack`; frase "Clique na imagem que
- * foi gerada por IA.". Voto vai pro leaderboard `brand=clarice` (#1905).
+ * foi gerada por IA.". Voto vai pro leaderboard `brand={utmProfile.pollBrand}`
+ * (#1905, brand parametrizado desde #4510 — era `brand=clarice` hardcoded).
  * `creditOverride` (#1914): legenda vinda do `01-eia.md` — quando presente,
  * substitui o corpo do chunk (que na mensal é só um placeholder `[...]`).
  * `prevResultLine` (#2709): linha "Resultado da última edição: X% acertaram",
  * espelhando a diária — opt-in (renderiza só quando o caller tiver o dado;
  * ver nota no PR sobre a fonte ainda não estar plugada na mensal).
+ * `utmProfile` (#4510): default `CLARICE_UTM_PROFILE` preserva o
+ * comportamento histórico (merge tag `{{ contact.EMAIL }}` da Brevo,
+ * `brand=clarice`) pra todo caller que não passa o argumento — inclusive
+ * TODOS os testes existentes que chamam `renderEia` direto. A variante
+ * Beehiiv (`draftToEmail(..., BEEHIIV_UTM_PROFILE)`) precisa do formato
+ * `{{email}}` e de um `brand` isolado — ver docstring de `MonthlyUtmProfile`.
  */
 export function renderEia(
   chunk: string,
@@ -1040,6 +1074,7 @@ export function renderEia(
   imageUrlB?: string,
   creditOverride?: string,
   prevResultLine?: string | null,
+  utmProfile: MonthlyUtmProfile = CLARICE_UTM_PROFILE,
 ): string {
   const lines = chunk.split("\n");
   // #1914: prefere a legenda do 01-eia.md; cai pro corpo do chunk só se ela
@@ -1052,10 +1087,12 @@ export function renderEia(
   // só por compat de links de VOTO já enviados em ciclos passados.
   const workerUrl = process.env.POLL_WORKER_URL ?? DIARIA_EIA_URL;
   const edition = eiaEditionFromYymm(yymm);
-  // #1905: brand=clarice — votos do É IA? mensal vão pro leaderboard da Clarice
-  // News, isolado do diário (diar.ia.br).
-  const voteUrlA = `${workerUrl}/vote?email={{ contact.EMAIL }}&amp;edition=${edition}&amp;choice=A&amp;brand=clarice`;
-  const voteUrlB = `${workerUrl}/vote?email={{ contact.EMAIL }}&amp;edition=${edition}&amp;choice=B&amp;brand=clarice`;
+  // #1905/#4510: brand + merge tag vêm do utmProfile — votos do É IA? mensal
+  // vão pro leaderboard do brand do perfil (Clarice News por default,
+  // isolado do diário), com a merge tag de email que a plataforma de envio
+  // dessa audiência de fato substitui (Brevo vs. Beehiiv).
+  const voteUrlA = `${workerUrl}/vote?email=${utmProfile.pollMergeTag}&amp;edition=${edition}&amp;choice=A&amp;brand=${utmProfile.pollBrand}`;
+  const voteUrlB = `${workerUrl}/vote?email=${utmProfile.pollMergeTag}&amp;edition=${edition}&amp;choice=B&amp;brand=${utmProfile.pollBrand}`;
 
   // #1918: imagem clicável (sem botão), lado a lado e empilhando no mobile —
   // espelha o renderEIA da diária. O voto vai no clique da própria imagem.
@@ -1108,7 +1145,7 @@ ${prevResultHtml}
 
     <!-- Leaderboard -->
     <p style="margin:12px 0 0;font-family:${FONT_SANS};font-size:12px;color:${INK};">
-      <a href="${escHtml(normalizeKnownUrl(`${workerUrl}/leaderboard/20${yymm.slice(0, 2)}?brand=clarice`, "leaderboard"))}" style="color:${INK};text-decoration:none;border-bottom:1px solid ${TEAL};">Ver ranking</a>
+      <a href="${escHtml(normalizeKnownUrl(`${workerUrl}/leaderboard/20${yymm.slice(0, 2)}?brand=${utmProfile.pollBrand}`, "leaderboard"))}" style="color:${INK};text-decoration:none;border-bottom:1px solid ${TEAL};">Ver ranking</a>
     </p>
 
   </td></tr>
@@ -1561,7 +1598,10 @@ export function draftToEmail(
     // (#1915 review). Sem isso a seção cai no fallback e o placeholder `[...]`
     // aparece literal no email.
     if (label === "É IA?" || label.startsWith("É IA?")) {
-      bodyParts.push(renderEia(chunk, yymm, eiaImageUrlA, eiaImageUrlB, eiaCredit, eiaPrevResultLine));
+      // #4510: `utmProfile` vem do closure de `draftToEmail` (parâmetro da
+      // função externa) — sem repassar, `renderEia` cairia no default
+      // `CLARICE_UTM_PROFILE` mesmo dentro do render Beehiiv.
+      bodyParts.push(renderEia(chunk, yymm, eiaImageUrlA, eiaImageUrlB, eiaCredit, eiaPrevResultLine, utmProfile));
       continue;
     }
 

@@ -671,12 +671,19 @@ export function classify403Reason(sig: string): Vote403Reason {
  * `clarice` é o digest mensal (Clarice News / Brevo); `web` (#3516, EPIC
  * #3514) é o jogo público standalone em diar.ia.br — visitante anônimo
  * (identidade por token, sem email/assinatura), ranking mensal próprio,
- * mesmos pares de imagem já gerados pela pipeline diária. Cada marca tem
- * ranking, gate de edições e apelidos isolados (mecânica #1905 — um brand
- * novo entra de graça na isolação, ver `brandKvPrefix`/`parseBrandParam`
- * abaixo, derivados de `Object.keys(BRAND_INFO)`).
+ * mesmos pares de imagem já gerados pela pipeline diária; `mensal-beehiiv`
+ * (#4482) é o MESMO digest mensal que `clarice`, mandado por um canal
+ * diferente (Beehiiv, pra apoiadores Mantenedor/Patrono que já são
+ * assinantes da diária) — precisa de isolamento próprio porque misturar os
+ * votos desse envio no leaderboard `clarice` cruzaria 2 audiências
+ * distintas (achado do review pré-merge do #4482/#4510: `renderEia`
+ * mandava TODO voto do digest, veio ele da Clarice ou do Beehiiv, pro mesmo
+ * `brand=clarice`). Cada marca tem ranking, gate de edições e apelidos
+ * isolados (mecânica #1905 — um brand novo entra de graça na isolação, ver
+ * `brandKvPrefix`/`parseBrandParam` abaixo, derivados de
+ * `Object.keys(BRAND_INFO)`).
  */
-export type Brand = "diaria" | "clarice" | "web";
+export type Brand = "diaria" | "clarice" | "web" | "mensal-beehiiv";
 
 /**
  * #2018: leaderboardPeriod — período canônico do leaderboard por brand.
@@ -704,6 +711,18 @@ export const BRAND_INFO: Record<Brand, { name: string; siteUrl: string; leaderbo
   // não um produto à parte com marca própria) — decisão de design
   // conservadora documentada no PR do #3516.
   web: { name: "diar.ia.br", siteUrl: "https://diar.ia.br", leaderboardPeriod: "month" },
+  // #4482/#4510: variante Beehiiv do digest mensal — mesmo conteúdo e mesma
+  // CADÊNCIA de edição (`eiaEditionFromYymm`, ciclo `YYMM-MM`) que `clarice`,
+  // então `leaderboardPeriod: "year"` é OBRIGATÓRIO aqui, não só espelhado —
+  // `vote.ts` REJEITA edição em formato de ciclo pra qualquer brand com
+  // `leaderboardPeriod !== "year"` (#4435: guard `CYCLE_EDITION_RE.test(edition)
+  // && BRAND_INFO[brand].leaderboardPeriod !== "year"` → 400). Sem esta
+  // entrada com "year", todo voto do envio Beehiiv daria link inválido — a
+  // MESMA classe de bug que #4510 corrigiu (100% dos votos quebrados), só
+  // que reintroduzida por um brand mal configurado em vez de hardcoded.
+  // siteUrl aponta pro site principal (não clarice.ai — esta audiência já é
+  // assinante da diária, sem afiliado `?via=diaria` a rastrear).
+  "mensal-beehiiv": { name: "diar.ia.br", siteUrl: "https://diar.ia.br", leaderboardPeriod: "year" },
 };
 
 /**

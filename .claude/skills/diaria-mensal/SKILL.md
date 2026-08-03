@@ -704,8 +704,8 @@ Para pular a verificação (não recomendado): `clarice-schedule-sends --schedul
 ## Envio extra Beehiiv — apoiadores Mantenedor/Patrono (#4482)
 
 Canal SEPARADO do envio Clarice/Brevo acima — mesmo `draft.md`, audiência e
-plataforma diferentes. **5 decisões do editor (issue #4482, resolvidas ao
-vivo na sessão develop 260802b/260803):**
+plataforma diferentes. **4 decisões do editor + 1 default sem objeção
+(issue #4482, sessão develop 260802b/260803):**
 
 1. **Cadência:** envio EXTRA (não substitui a diária), num dia SEM edição
    diária pesada.
@@ -717,9 +717,12 @@ vivo na sessão develop 260802b/260803):**
 4. **Plataforma:** Beehiiv (mesma da diária) — publicação reusa
    `context/publishers/beehiiv-playbook.md` (Worker-hosted paste), **nunca**
    `publish-monthly.ts`/`clarice-schedule-sends` (específicos do Brevo).
-5. **Ordem no ciclo:** depois que o conteúdo do mês estiver 100%
-   finalizado/estável (Etapa 4 aprovada) — não precisa coincidir com nenhuma
-   onda `{conteúdo}-{envio}` da Clarice.
+5. **Ordem no ciclo** (achado #4510: não perguntado explicitamente — default
+   sugerido pelo coordenador, sem objeção do editor, documentado corretamente
+   no comentário do coordenador na issue #4482, só não aqui até este fix):
+   depois que o conteúdo do mês estiver 100% finalizado/estável (Etapa 4
+   aprovada) — não precisa coincidir com nenhuma onda `{conteúdo}-{envio}`
+   da Clarice.
 
 **Escopo atual (#4482): só o primeiro envio, semi-manual.** Automação
 completa de agendamento recorrente é follow-up — não implementada ainda.

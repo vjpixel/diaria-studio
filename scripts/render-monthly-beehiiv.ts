@@ -32,7 +32,7 @@
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { draftToEmailBeehiiv } from "./lib/mensal/monthly-beehiiv-render.ts";
+import { draftToEmailBeehiiv, BEEHIIV_UTM_PROFILE } from "./lib/mensal/monthly-beehiiv-render.ts";
 import { parseEiaLegend, captionForGenerator } from "./lib/mensal/monthly-render.ts";
 import { relinkMonthlyEditionHtml } from "./monthly-relink-to-diaria.ts"; // #4048 (mesmo relink do envio Clarice)
 import { isMainModule } from "./lib/cli-args.ts";
@@ -66,6 +66,28 @@ export function readPublicImages(monthlyDir: string): Record<string, MonthlyPubl
   return manifest.images ?? {};
 }
 
+/**
+ * #4510 (achado silent-failure-hunter, review pré-merge): chaves de imagem
+ * esperadas no manifest — 3 destaques + par A/B do É IA? + capa da
+ * curadoria de livros. Extraídas aqui porque `main()` consome exatamente
+ * estas 6 chaves (`d1`/`d2`/`d3`/`eia_a`/`eia_b`/`livros_promo`) — ver
+ * `missingImageKeys` abaixo.
+ */
+export const EXPECTED_IMAGE_KEYS = ["d1", "d2", "d3", "eia_a", "eia_b", "livros_promo"] as const;
+
+/**
+ * Enumera quais chaves esperadas estão ausentes (sem `url`) no manifest.
+ * Pure. Antes deste fix, `main()` simplesmente deixava a variável
+ * correspondente `undefined` e seguia — a imagem virava caixa cinza
+ * (placeholder) no e-mail final sem sinal nenhum pro operador. Continua
+ * fail-soft (o script não aborta: a Etapa 3/4 do fluxo Clarice pode
+ * legitimamente ainda não ter gerado alguma imagem), só que agora com
+ * warning explícito antes de escrever o HTML — ver call site em `main()`.
+ */
+export function missingImageKeys(images: Record<string, MonthlyPublicImage>): string[] {
+  return EXPECTED_IMAGE_KEYS.filter((k) => !images[k]?.url);
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const cycle = parseMonthlyCycleArg(argv);
@@ -89,6 +111,13 @@ async function main(): Promise<void> {
   const chosenSubject = existsSync(chosenSubjectPath) ? readFileSync(chosenSubjectPath, "utf8").trim() : null;
 
   const images = readPublicImages(monthlyDir);
+  const missingImages = missingImageKeys(images);
+  if (missingImages.length) {
+    console.error(
+      `[render-monthly-beehiiv] aviso: public-images.json sem URL para: ${missingImages.join(", ")} — ` +
+        "essa(s) imagem(ns) sai(em) como placeholder cinza no HTML final (#4510).",
+    );
+  }
   const destaqueImageUrls: Record<number, string> = {};
   for (const n of [1, 2, 3]) {
     const img = images[`d${n}`];
@@ -122,13 +151,25 @@ async function main(): Promise<void> {
 
   // #4048: mesmo pós-processo do envio Clarice — reescreve destaques pra
   // apontar pra edição diária de origem em vez do veículo terceiro.
+  // #4510: `sourceOverride: BEEHIIV_UTM_PROFILE.source` — sem isto, os links
+  // de destaque relinkados saíam com `utm_source=clarice` hardcoded mesmo
+  // nesta variante, misatribuindo a maioria dos cliques de saída ao canal
+  // Clarice em vez do Beehiiv.
   // Fail-soft: sem raw-destaques.json, HTML original segue intacto.
   try {
-    const relinked = relinkMonthlyEditionHtml(html, monthlyDir, ROOT);
+    const relinked = relinkMonthlyEditionHtml(html, monthlyDir, ROOT, undefined, BEEHIIV_UTM_PROFILE.source);
     html = relinked.html;
     console.error(
       `Relink pra edição diária (#4048): ${relinked.relinked} reescritos, ${relinked.servico} mantidos (serviço), ${relinked.naoMapeado} sem mapeamento`,
     );
+    if (relinked.ambiguous.length) {
+      console.error(
+        `aviso: ${relinked.ambiguous.length} URL(s) de destaque aparecem em MAIS DE UMA edição — o relink usou a primeira; confira se é a citada no texto:`,
+      );
+      for (const a of relinked.ambiguous) {
+        console.error(`  ${a.url.slice(0, 80)}  → edições ${a.editions.join(", ")} (usada: ${a.editions[0]})`);
+      }
+    }
   } catch (e) {
     console.error(`warn: relink pra edição diária (#4048) falhou — ${(e as Error).message}`);
   }
