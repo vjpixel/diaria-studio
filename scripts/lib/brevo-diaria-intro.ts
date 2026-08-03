@@ -103,11 +103,22 @@ export function renderPendingIntroHtml(): string | null {
   // `margin:0 auto` (padrão email-safe: atributo pros clientes antigos,
   // margin pros modernos) alinha esta tabela ao mesmo teto/centralização do
   // container real, sem depender de mover o ponto de inserção.
+  //
+  // 4ª quebra (review PR #4522): Outlook desktop IGNORA `max-width` e honra
+  // só o atributo `width` — que aqui é `"100%"` — então SEM o wrapper MSO
+  // abaixo, esta tabela reproduziria em Outlook exatamente a mesma quebra de
+  // largura que a nota #3 corrigiu pros outros clientes. Mesmo padrão
+  // exato do `container`/`innerTable` em newsletter-render-html.ts (#260629b):
+  // conditional comment embrulha numa tabela FIXA de 600 só no Outlook;
+  // clientes modernos ignoram o comentário e usam a tabela `width:100%`/
+  // `max-width:600`.
   return (
     `<!-- #4266 intro Pending Brevo (achado 260803: fora de caixa) -->\n` +
+    `<!--[if mso]><table role="presentation" align="center" width="600" cellpadding="0" cellspacing="0"><tr><td width="600"><![endif]-->\n` +
     `<table role="presentation" class="container" width="100%" cellpadding="0" cellspacing="0" align="center" style="width:100%;max-width:600px;margin:0 auto;background:${PAGE_BG};">\n` +
     parts.join("\n") +
-    `\n</table>`
+    `\n</table>\n` +
+    `<!--[if mso]></td></tr></table><![endif]-->`
   );
 }
 

@@ -45,7 +45,13 @@ describe("renderPendingIntroHtml — #4266", () => {
     const firstTrIdx = html.indexOf("<tr");
     assert.ok(tableOpenIdx !== -1, "deve ter uma <table> própria");
     assert.ok(tableOpenIdx < firstTrIdx, "a <table> deve abrir ANTES do 1º <tr>");
-    assert.match(html, /<\/table>\s*$/, "deve fechar a <table> no final do HTML");
+    assert.match(html, /<\/table>\s*(<!--\[if mso\]><\/td><\/tr><\/table><!\[endif\]-->\s*)?$/, "deve fechar a <table> (e o wrapper MSO, se presente) no final do HTML");
+  });
+
+  it("embrulha num conditional MSO (review PR #4522 — Outlook desktop ignora max-width e honra só o atributo width=\"100%\", reproduzindo a mesma quebra de largura que a nota 3ª rodada corrigiu pros outros clientes; mesmo padrão de newsletter-render-html.ts innerTable/container)", () => {
+    const html = renderPendingIntroHtml()!;
+    assert.match(html, /<!--\[if mso\]><table[^>]*width="600"[^>]*><tr><td width="600"><!\[endif\]-->/);
+    assert.match(html, /<!--\[if mso\]><\/td><\/tr><\/table><!\[endif\]-->/);
   });
 
   it("a <table> própria tem fundo branco EXPLÍCITO (achado 260803, 3ª rodada — dark mode: injectPendingIntro insere na zona 'canvas externo' que darkCanvasMediaRule escurece de propósito; texto ink sobre fundo herdado escuro = invisível; PAGE_BG explícito isola do dark-mode do body, sem reintroduzir cartão visível — mesma cor do container real ao redor)", () => {

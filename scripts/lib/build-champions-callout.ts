@@ -75,12 +75,18 @@ export function raffleDateLabel(editionMonthSlug: string, dayOfMonth: number): s
  * Requer os 3 ranks (1, 2, 3) presentes no `podium` — sem pódio completo não
  * há box (retorna `null`, caller decide logar + pular a injeção, #2725 item 4:
  * "em meses sem o box... não injetar").
+ *
+ * `leaderboardUrl` (#4506, pedido do editor 260803): link pro ranking
+ * completo, logo após o pódio top-3. Opcional/fail-open — omitido quando
+ * `undefined` (ex: `poll.worker_url` ausente em `platform.config.json`),
+ * nunca bloqueia a geração do box por causa dele.
  */
 export function buildChampionsCallout(
   podium: PodiumEntry[],
   raffle: RaffleConfig,
   championsMonthLabel: string,
   raffleDateLabelResolved: string,
+  leaderboardUrl?: string,
 ): string | null {
   const byRank = new Map(podium.map((p) => [p.rank, p.nickname]));
   const first = byRank.get(1);
@@ -91,13 +97,17 @@ export function buildChampionsCallout(
   const horaInicio = formatHourPt(raffle.hora_inicio);
   const horaFim = formatHourPt(raffle.hora_fim);
 
+  const leaderboardLine = leaderboardUrl
+    ? `\n\n[Veja o ranking completo](${leaderboardUrl})`
+    : "";
+
   return `🎉 Os campeões do É IA? em ${championsMonthLabel}:
 
 🥇 ${first}
 
 🥈 ${second}
 
-🥉 ${third}
+🥉 ${third}${leaderboardLine}
 
 **Sorteio**
 
