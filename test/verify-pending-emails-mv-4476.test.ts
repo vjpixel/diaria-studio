@@ -19,6 +19,7 @@ import {
   verifyOne,
   loadCheckpoint,
   saveCheckpoint,
+  parseLimitArg,
   MV_COST_GUARD_THRESHOLD,
 } from "../scripts/verify-pending-emails-mv.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -106,6 +107,33 @@ describe("readCandidateEmails — parse do CSV de score, dedup (#4476 item 8)", 
     const comDelimiter = Papa.parse(csv, { header: true, skipEmptyLines: true, delimiter: "," });
     assert.ok(semDelimiter.errors.some((e) => e.code === "UndetectableDelimiter"), "sem delimiter explícito, Papa.parse reporta o erro que motivou o fix");
     assert.equal(comDelimiter.errors.length, 0, "com delimiter explícito, nenhum erro — é essa checagem que loadMvVerifiedEmails/loadOriginScores/score-pending-origin.ts fazem e que ficaria quebrada sem o fix");
+  });
+});
+
+describe("parseLimitArg — regressão do achado ao vivo 260802: rodada real processou 0 de 625 (#4494 follow-up)", () => {
+  it("--limit AUSENTE → undefined (processa o pool inteiro) — este era o caso que quebrava em produção", () => {
+    assert.equal(parseLimitArg(["--confirm"]), undefined);
+    assert.equal(parseLimitArg([]), undefined);
+  });
+
+  it("--limit 50 → 50", () => {
+    assert.equal(parseLimitArg(["--confirm", "--limit", "50"]), 50);
+  });
+
+  it("--limit 0 explícito → 0 (distinto de ausente — usuário pediu 0 de propósito)", () => {
+    assert.equal(parseLimitArg(["--limit", "0"]), 0);
+  });
+
+  it('--limit não-numérico (typo, ex: "fifty") → lança, nunca degrada pra 0 em silêncio', () => {
+    assert.throws(() => parseLimitArg(["--limit", "fifty"]), /--limit deve ser um inteiro não-negativo.*fifty/);
+  });
+
+  it("--limit negativo → lança", () => {
+    assert.throws(() => parseLimitArg(["--limit", "-5"]), /--limit deve ser um inteiro não-negativo/);
+  });
+
+  it("--limit fracionário → lança (não é inteiro)", () => {
+    assert.throws(() => parseLimitArg(["--limit", "2.5"]), /--limit deve ser um inteiro não-negativo/);
   });
 });
 
