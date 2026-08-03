@@ -5,29 +5,38 @@
  * Formaliza em script committed a priorização por score de ORIGEM da fila
  * de entrada do canal Brevo (segmento Pending da Beehiiv) — até 260802
  * existia só como planilha manual (`data/pending-reativacao/pending-scored.csv`,
- * 627 linhas). A fórmula PURA vive em `lib/shared/pending-origin-score.ts`
- * (testada isoladamente com fixture); este script é só a orquestração I/O:
- * lê o CSV de métricas por contato, aplica a fórmula, ordena por score
- * DESCENDENTE, grava o resultado.
+ * 627 linhas). Este script lê o CSV, ORDENA por score DESCENDENTE, grava o
+ * resultado — não recalcula o score.
  *
- * ## Schema de entrada esperado (#4476 self-review — NÃO confirmado contra
- * o CSV real)
+ * ## Por que PASS-THROUGH e não recálculo (mudança de desenho, 260802)
  *
- * Este worktree não tem acesso a `data/pending-reativacao/pending-scored.csv`
- * (junction OneDrive ausente — ver CLAUDE.md #2643). As colunas abaixo usam
- * os NOMES LITERAIS dos campos como descritos na issue #4476 item 4 — é a
- * melhor informação disponível, mas não foi confirmada byte-a-byte contra o
- * cabeçalho real do CSV. `email` e `origin` são identidade (não entram na
- * fórmula); as demais são as métricas de `PendingOriginMetrics`:
+ * A 1ª versão deste script reimplementava a fórmula (`lib/shared/pending-origin-score.ts`)
+ * a partir das métricas cruas — mas essa reimplementação nunca tinha sido
+ * validada contra o CSV real (o worktree que a escreveu não tinha acesso a
+ * `data/`). Rodada contra os 627 registros reais nesta sessão, a
+ * reimplementação divergiu MATERIALMENTE do score já confirmado pelo editor
+ * na planilha manual: `pts_abertura`/`pts_clique` saturavam no peso máximo
+ * com muito mais frequência (a normalização linear-contra-benchmark não bate
+ * com o método original, desconhecido), `penalidade_bounce` saiu ~10x mais
+ * fraca, e a correlação de RANKING entre os dois caiu pra 0,83 — algumas
+ * linhas mudavam até 514 posições na fila de 627. Isso é grave demais pra
+ * confiar sem entender a causa exata, que não dá pra reconstruir sem a
+ * fórmula original da planilha.
  *
- *   email, origin, conv_confirmacao_pct, conv_ativo_pct, abertura_origem_pct,
- *   clique_origem_pct, dias_desde_cadastro, invalido_origem_pct
+ * Como o pool é ESTÁTICO (o fluxo de cadastro da Beehiiv mudou pra
+ * instant-active — não gera mais contatos Pending novos, #4476 item 8), não
+ * existe necessidade real de RECALCULAR o score pra origens futuras — só
+ * de reproduzir, de forma auditável e versionada, o score que já foi
+ * calculado e confirmado uma vez. Por isso este script agora só LÊ o
+ * `score`/`pts_*` já presentes no CSV manual, valida consistência interna
+ * (soma dos `pts_*` bate com o `score`, dentro de tolerância de
+ * arredondamento) e ordena — mais simples e mais seguro que confiar numa
+ * reimplementação nunca validada.
  *
- * Antes do primeiro uso real, o editor deve confirmar esse cabeçalho contra
- * o CSV real (ou ajustar `parseInputRow` abaixo se os nomes divergirem) e
- * comparar a distribuição de score resultante com a planilha manual
- * original — a fórmula em si já foi confirmada pelo editor (#4476 item 4,
- * "não recalcular"), só o MAPEAMENTO de colunas é uma assunção.
+ * `lib/shared/pending-origin-score.ts` (a fórmula reimplementada) continua
+ * no repo, testada, mas NÃO é mais usada por este script nem por
+ * `sync-pending-to-brevo.ts` — ver aviso no header daquele módulo antes de
+ * reusar em qualquer coisa nova.
  *
  * ## Uso
  *
@@ -35,109 +44,103 @@
  *     [--input data/pending-reativacao/pending-scored.csv]
  *     [--output data/pending-reativacao/pending-scored-computed.csv]
  *
- * Falha ALTO (nunca produz output parcial silencioso) se o input não existe
- * ou uma linha não tem as colunas numéricas esperadas.
+ * Falha ALTO (nunca produz output parcial silencioso) se o input não existe,
+ * uma linha não tem `email`/`score`/`pts_*` numéricos, ou a soma dos `pts_*`
+ * diverge do `score` além da tolerância de arredondamento (±0.5 — o CSV
+ * manual tem 1 casa decimal por campo, soma de 6 campos arredondados pode
+ * derivar até ~0.3 do valor "verdadeiro"; ±0.5 dá margem sem mascarar erro
+ * real).
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import Papa from "papaparse";
-import { getArg } from "./lib/cli-args.ts";
-import { isMainModule } from "./lib/cli-args.ts";
-import {
-  computePendingOriginScore,
-  type PendingOriginMetrics,
-  type PendingOriginScoreBreakdown,
-} from "./lib/shared/pending-origin-score.ts";
+import { getArg, isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export const DEFAULT_INPUT_PATH = resolve(ROOT, "data/pending-reativacao/pending-scored.csv");
 export const DEFAULT_OUTPUT_PATH = resolve(ROOT, "data/pending-reativacao/pending-scored-computed.csv");
 
-export interface PendingOriginInputRow {
+/** Tolerância de arredondamento entre soma dos `pts_*` e o `score` gravado —
+ * ver header do módulo. */
+export const SCORE_SUM_TOLERANCE = 0.5;
+
+export interface PendingOriginScoredRow {
   email: string;
   origin: string;
+  score: number;
+  pts_confirmacao: number;
+  pts_ativo: number;
+  pts_abertura: number;
+  pts_clique: number;
+  pts_recencia: number;
+  penalidade_bounce: number;
 }
 
-export interface PendingOriginScoredRow extends PendingOriginInputRow, PendingOriginScoreBreakdown {}
+const PTS_FIELDS = [
+  "pts_confirmacao",
+  "pts_ativo",
+  "pts_abertura",
+  "pts_clique",
+  "pts_recencia",
+  "penalidade_bounce",
+] as const;
 
-const NUMERIC_FIELDS: (keyof PendingOriginMetrics)[] = [
-  "conv_confirmacao_pct",
-  "conv_ativo_pct",
-  "abertura_origem_pct",
-  "clique_origem_pct",
-  "dias_desde_cadastro",
-  "invalido_origem_pct",
-];
-
-/** Subconjunto de `NUMERIC_FIELDS` que são percentuais na escala 0-100
- * assumida pela fórmula (`dias_desde_cadastro` fica de fora — não é
- * percentual). Usado só pela checagem de sanidade de escala abaixo. */
-const PERCENT_FIELDS: (keyof PendingOriginMetrics)[] = [
-  "conv_confirmacao_pct",
-  "conv_ativo_pct",
-  "abertura_origem_pct",
-  "clique_origem_pct",
-  "invalido_origem_pct",
-];
+function parseNumericField(raw: Record<string, string>, field: string, email: string, rowIndex: number): number {
+  const raw_value = raw[field];
+  const n = Number(raw_value);
+  if (raw_value === undefined || raw_value === "" || Number.isNaN(n)) {
+    throw new Error(`linha ${rowIndex} (${email}): campo "${field}" ausente/não-numérico ("${raw_value}").`);
+  }
+  return n;
+}
 
 /**
- * Pura — converte 1 linha crua do CSV (todos os valores são string, formato
- * padrão de `Papa.parse`) numa linha tipada. Lança em campo numérico
- * ausente/não-numérico ou `email` vazio — fail-loud, nunca silencia uma
- * linha malformada como "score 0".
+ * Pura — parse defensivo de 1 linha crua (todos os valores string, formato
+ * `Papa.parse`) + checagem de consistência interna (soma dos `pts_*` bate
+ * com `score`). Lança em qualquer campo ausente/não-numérico ou
+ * inconsistência — fail-loud, nunca silencia uma linha malformada.
  */
-export function parseInputRow(raw: Record<string, string>, rowIndex: number): PendingOriginInputRow & PendingOriginMetrics {
+export function parseScoredRow(raw: Record<string, string>, rowIndex: number): PendingOriginScoredRow {
   const email = (raw.email ?? "").trim().toLowerCase();
   if (!email) {
     throw new Error(`linha ${rowIndex}: campo "email" ausente/vazio.`);
   }
-  const origin = (raw.origin ?? "").trim();
-  const metrics: Partial<PendingOriginMetrics> = {};
-  for (const field of NUMERIC_FIELDS) {
-    const raw_value = raw[field];
-    const n = Number(raw_value);
-    if (raw_value === undefined || raw_value === "" || Number.isNaN(n)) {
-      throw new Error(`linha ${rowIndex} (${email}): campo "${field}" ausente/não-numérico ("${raw_value}").`);
-    }
-    metrics[field] = n;
+  const origin = (raw.origem ?? "").trim();
+  if (!origin) {
+    throw new Error(`linha ${rowIndex} (${email}): campo "origem" ausente/vazio.`);
   }
-  return { email, origin, ...(metrics as PendingOriginMetrics) };
+  const score = parseNumericField(raw, "score", email, rowIndex);
+  const pts: Record<string, number> = {};
+  for (const field of PTS_FIELDS) {
+    pts[field] = parseNumericField(raw, field, email, rowIndex);
+  }
+  const sum = PTS_FIELDS.reduce((acc, f) => acc + pts[f], 0);
+  if (Math.abs(sum - score) > SCORE_SUM_TOLERANCE) {
+    throw new Error(
+      `linha ${rowIndex} (${email}): soma dos pts_* (${sum.toFixed(2)}) diverge do score gravado ` +
+        `(${score}) além da tolerância de ${SCORE_SUM_TOLERANCE} — dado inconsistente, não ordenar sem investigar.`,
+    );
+  }
+  return {
+    email,
+    origin,
+    score,
+    pts_confirmacao: pts.pts_confirmacao,
+    pts_ativo: pts.pts_ativo,
+    pts_abertura: pts.pts_abertura,
+    pts_clique: pts.pts_clique,
+    pts_recencia: pts.pts_recencia,
+    penalidade_bounce: pts.penalidade_bounce,
+  };
 }
 
-/** Pura — aplica a fórmula a todas as linhas parseadas, ordena por score
- * DESCENDENTE (maior prioridade primeiro — consumido por `sync-pending-to-brevo.ts`
- * pro backfill, #4476 item 5). */
-export function scoreAndSortRows(rows: (PendingOriginInputRow & PendingOriginMetrics)[]): PendingOriginScoredRow[] {
-  const scored = rows.map((r) => ({ email: r.email, origin: r.origin, ...computePendingOriginScore(r) }));
-  return scored.sort((a, b) => b.score - a.score);
-}
-
-/**
- * Pura — sinal (não bloqueio) de possível divergência de escala nos campos
- * de percentual (#4476 achado do silent-failure-hunter): `parseInputRow`
- * só valida "é um número", nunca "está na escala 0-100 assumida pela
- * fórmula" (`PendingOriginMetrics`). Se o CSV real usar frações 0-1 em vez
- * de 0-100, todo score sai ~100x menor SEM erro nenhum.
- *
- * Heurística: se, entre TODOS os valores >0 observados nos campos de
- * percentual da amostra, NENHUM ultrapassa 1, é sinal forte de fração 0-1
- * em vez de 0-100 — uma base legítima em 0-100 com centenas de linhas quase
- * certamente teria pelo menos 1 valor >1. Amostra vazia ou só zeros → sem
- * sinal (não há base pra suspeitar de nada).
- */
-export function detectPercentScaleAnomaly(rows: PendingOriginMetrics[]): boolean {
-  let sawNonZero = false;
-  for (const row of rows) {
-    for (const field of PERCENT_FIELDS) {
-      const v = row[field];
-      if (v > 0) sawNonZero = true;
-      if (v > 1) return false; // pelo menos 1 valor >1 → escala 0-100 normal, sem anomalia
-    }
-  }
-  return sawNonZero;
+/** Pura — ordena por score DESCENDENTE (maior prioridade primeiro —
+ * consumido por `sync-pending-to-brevo.ts` pro backfill, #4476 item 5). */
+export function sortByScoreDescending(rows: PendingOriginScoredRow[]): PendingOriginScoredRow[] {
+  return [...rows].sort((a, b) => b.score - a.score);
 }
 
 // ── main ─────────────────────────────────────────────────────────────────
@@ -156,34 +159,22 @@ async function main(): Promise<void> {
   }
 
   const csvText = readFileSync(inputPath, "utf8");
-  const parsed = Papa.parse<Record<string, string>>(csvText, { header: true, skipEmptyLines: true });
+  const parsed = Papa.parse<Record<string, string>>(csvText, { header: true, skipEmptyLines: true, delimiter: "," });
   if (parsed.errors.length > 0) {
     log(`ERRO: falha ao parsear CSV: ${JSON.stringify(parsed.errors.slice(0, 3))}`);
     process.exit(2);
   }
 
-  const inputRows = parsed.data.map((raw, i) => parseInputRow(raw, i + 2)); // +2: header + 1-index
-  log(`${inputRows.length} linha(s) lida(s) de ${inputPath}.`);
+  const rows = parsed.data.map((raw, i) => parseScoredRow(raw, i + 2)); // +2: header + 1-index
+  log(`${rows.length} linha(s) lida(s) e validada(s) de ${inputPath}.`);
 
-  // #4476 achado silent-failure-hunter: sinal, não bloqueio — ver JSDoc de
-  // detectPercentScaleAnomaly. Nunca aborta, só avisa (o operador confere o
-  // CSV antes de confiar na priorização resultante).
-  if (detectPercentScaleAnomaly(inputRows)) {
-    log(
-      "AVISO: todos os campos de percentual observados nesta amostra (conv_confirmacao_pct, " +
-        "conv_ativo_pct, abertura_origem_pct, clique_origem_pct, invalido_origem_pct) caem em [0,1] — " +
-        "possível divergência de escala (a fórmula assume 0-100). Se o CSV real usar frações 0-1, o " +
-        "score sai ~100x menor que o esperado. Confira o cabeçalho/valores do CSV antes de confiar na priorização.",
-    );
-  }
-
-  const scored = scoreAndSortRows(inputRows);
+  const sorted = sortByScoreDescending(rows);
   const csvOut = Papa.unparse({
     fields: ["email", "origin", "score", "pts_confirmacao", "pts_ativo", "pts_abertura", "pts_clique", "pts_recencia", "penalidade_bounce"],
-    data: scored,
+    data: sorted,
   });
   writeFileSync(outputPath, csvOut + "\n", "utf8");
-  log(`${scored.length} linha(s) escrita(s) em ${outputPath}, ordenadas por score descendente.`);
+  log(`${sorted.length} linha(s) escrita(s) em ${outputPath}, ordenadas por score descendente.`);
 }
 
 if (isMainModule(import.meta.url)) {

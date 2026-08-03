@@ -20,6 +20,7 @@ import {
   computeAvailableSlots,
   selectContactsForBackfill,
   loadOriginScores,
+  loadMvVerifiedEmails,
   assertMvGuardAcknowledged,
   type BeehiivPendingSubscription,
   type PendingToIngestEntry,
@@ -115,6 +116,50 @@ describe("computeContactsToIngest — dedup pelo store, nunca pela Beehiiv (#426
     const out = computeContactsToIngest(pending, { contacts: [] });
     assert.equal(out.length, 1);
   });
+
+  it("com verifiedEmails: filtra pra só quem passou no MillionVerifier (#4476 item 8)", () => {
+    const pending: BeehiivPendingSubscription[] = [
+      { id: "sub_1", email: "verificado@b.com" },
+      { id: "sub_2", email: "rejeitado@b.com" },
+      { id: "sub_3", email: "nunca-verificado@b.com" },
+    ];
+    const verified = new Set(["verificado@b.com"]);
+    const out = computeContactsToIngest(pending, { contacts: [] }, verified);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].email, "verificado@b.com");
+  });
+
+  it("verifiedEmails null (default) → sem filtro de MV, comportamento antigo preservado", () => {
+    const pending: BeehiivPendingSubscription[] = [{ id: "sub_1", email: "a@b.com" }];
+    const out = computeContactsToIngest(pending, { contacts: [] }, null);
+    assert.equal(out.length, 1);
+  });
+});
+
+describe("loadMvVerifiedEmails — leitura fail-soft do CSV de verify-pending-emails-mv.ts (#4476 item 8)", () => {
+  it("arquivo ausente → null (nunca lança), loga aviso", () => {
+    const logs: string[] = [];
+    const result = loadMvVerifiedEmails(resolve(process.cwd(), "data/pending-reativacao/__nao-existe__.csv"), (m) => logs.push(m));
+    assert.equal(result, null);
+    assert.ok(logs.some((l) => l.includes("não encontrado")));
+  });
+
+  it("CSV real de 1 coluna só (formato de mv-verified.csv) → parseia certo, não cai no fallback (achado ao vivo 260802: auto-detect de delimitador falha sem vírgula nenhuma no arquivo)", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "mv-verified-test-"));
+    try {
+      const path = resolve(dir, "mv-verified.csv");
+      // Mesmo formato exato que Papa.unparse produz pra 1 coluna (CRLF nas
+      // primeiras linhas, LF na última — reproduz o arquivo real que causou
+      // "Unable to auto-detect delimiting character" sem delimiter:"," explícito).
+      writeFileSync(path, "email\r\nfoo@bar.com\r\nbaz@qux.com\n");
+      const logs: string[] = [];
+      const result = loadMvVerifiedEmails(path, (m) => logs.push(m));
+      assert.deepEqual(result, new Set(["foo@bar.com", "baz@qux.com"]));
+      assert.equal(logs.length, 0, "não deve logar aviso de falha de parse");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("ingestContactToBrevo — cria + verifica por releitura (#4266)", () => {
@@ -166,17 +211,21 @@ describe("ingestContactToBrevo — cria + verifica por releitura (#4266)", () =>
   });
 });
 
-describe("assertMvGuardAcknowledged — guard de MillionVerifier antes de --push (#4476 achado silent-failure-hunter)", () => {
-  it("sem --i-know-this-skips-mv → lança erro explícito nomeando a issue e a flag", () => {
-    assert.throws(() => assertMvGuardAcknowledged([]), /MV batch script ainda não existe.*--i-know-this-skips-mv/s);
+describe("assertMvGuardAcknowledged — guard de MillionVerifier antes de --push (#4476 achado silent-failure-hunter, revisado quando o script de MV foi implementado)", () => {
+  it("sem --i-know-this-skips-mv e sem mv-verified.csv → lança erro explícito nomeando a issue e a flag", () => {
+    assert.throws(() => assertMvGuardAcknowledged([], false), /verify-pending-emails-mv\.ts.*--i-know-this-skips-mv/s);
   });
 
   it("sem a flag mesmo com --push presente → ainda lança (a flag exata é o que importa, não --push)", () => {
-    assert.throws(() => assertMvGuardAcknowledged(["--push"]), /--i-know-this-skips-mv/);
+    assert.throws(() => assertMvGuardAcknowledged(["--push"], false), /--i-know-this-skips-mv/);
   });
 
-  it("com --i-know-this-skips-mv → não lança", () => {
-    assert.doesNotThrow(() => assertMvGuardAcknowledged(["--push", "--i-know-this-skips-mv"]));
+  it("com --i-know-this-skips-mv → não lança, mesmo sem mv-verified.csv", () => {
+    assert.doesNotThrow(() => assertMvGuardAcknowledged(["--push", "--i-know-this-skips-mv"], false));
+  });
+
+  it("mv-verified.csv existe → não lança, MESMO sem a flag (verificação já rodou, filtro já protege)", () => {
+    assert.doesNotThrow(() => assertMvGuardAcknowledged(["--push"], true));
   });
 });
 

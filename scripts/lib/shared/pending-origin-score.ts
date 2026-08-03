@@ -1,6 +1,19 @@
 /**
  * pending-origin-score.ts (#4476 item 4)
  *
+ * *** NÃO USADO PELO PIPELINE (desde 260802) — ver `scripts/score-pending-origin.ts` ***
+ * Rodada ao vivo contra os 627 registros reais de `pending-scored.csv`, esta
+ * fórmula divergiu MATERIALMENTE do score já confirmado pelo editor na
+ * planilha manual (`pts_abertura`/`pts_clique` saturando no peso máximo com
+ * frequência muito maior que o original; `penalidade_bounce` ~10x mais
+ * fraca; correlação de RANKING de só 0,83 contra o score confirmado —
+ * algumas linhas mudavam até 514 posições de 627). `score-pending-origin.ts`
+ * foi reescrito pra LER o score já confirmado em vez de recalcular via este
+ * módulo. Os testes deste arquivo continuam válidos (a fórmula faz o que diz
+ * que faz — o problema é que "o que diz que faz" não bate com o método
+ * original desconhecido da planilha), mas não use isto num pipeline real sem
+ * antes revalidar contra uma fonte de verdade nova.
+ *
  * Formaliza em código a fórmula de score de ORIGEM que priorizava a fila de
  * entrada do canal Brevo (segmento Pending da Beehiiv) até 260802 só como
  * planilha manual (`data/pending-reativacao/pending-scored.csv`, 627 linhas,

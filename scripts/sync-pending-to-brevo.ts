@@ -28,30 +28,26 @@
  * deste script vê mais slots livres e ingere o próximo da fila — nenhum
  * mecanismo adicional de "notificação de slot livre" é necessário.
  *
- * MillionVerifier (issue #4476 item 8) é DELIBERADAMENTE fora do escopo
- * deste backfill — a issue resolveu (260802) que a verificação roda em 1
- * passada em lote sobre os 627 contatos ANTES do primeiro envio, não uma
- * checagem por-backfill (ver checklist da issue #4476: "1 passada de
- * MillionVerifier em todos os 627... não por-backfill — item 8"). Este
- * script não verifica e-mail nenhum — assume que o pool já passou pela
- * verificação em lote (script separado, ainda não implementado) antes do
- * primeiro `--push` real.
+ * MillionVerifier (issue #4476 item 8) — `scripts/verify-pending-emails-mv.ts`,
+ * implementado 260802. 1 passada em lote sobre o pool inteiro ANTES do
+ * primeiro envio (não por-backfill — decisão da issue #4476, pool estático).
+ * A saída (`data/pending-reativacao/mv-verified.csv`) é consumida AQUI:
+ * `loadMvVerifiedEmails` lê o CSV e `computeContactsToIngest` filtra pra só
+ * quem está no set verificado — quem nunca foi verificado, ou foi
+ * rejeitado/inconclusivo, NUNCA é ingerido, mesmo que apareça na paginação
+ * Pending da Beehiiv.
  *
- * ## Guard de MV antes de `--push` (#4476 achado do silent-failure-hunter,
- * self-review pós-merge)
+ * ## Guard de MV antes de `--push` — agora DERIVADO da existência do CSV
+ * (#4476 achado do silent-failure-hunter, self-review pós-merge; revisado
+ * quando o script de MV foi implementado)
  *
- * O parágrafo acima documentava a MV como fora de escopo, mas nada no
- * código IMPEDIA `--push` de ingerir contatos SEM verificação — diferente do
- * padrão já estabelecido no projeto pra exatamente este risco (CLAUDE.md:
- * cohorts não-assinantes exigem MillionVerifier antes do 1º envio, com abort
- * explícito se não verificado). `assertMvGuardAcknowledged` bloqueia
- * `--push` com erro explícito a menos que o operador passe
- * `--i-know-this-skips-mv`, reconhecendo o risco de bounce/reputação de
- * domínio. Este é o MÍNIMO aceitável, não o guard completo por-contato (que
- * dependeria de um campo novo tipo `mv_bucket` no store, ainda inexistente —
- * o script batch de MV em si também ainda não existe, ver item 8 acima) —
- * documentado como decisão explícita, não descoberto por acidente depois de
- * um bounce spike.
+ * `assertMvGuardAcknowledged` só bloqueia `--push` se `mv-verified.csv`
+ * AINDA NÃO EXISTE (o script de MV nunca rodou) — nesse caso, exige
+ * `--i-know-this-skips-mv` explícito, reconhecendo o risco de bounce/
+ * reputação de domínio. Se o CSV existe (a verificação já rodou pelo menos
+ * uma vez), o guard passa automaticamente — a filtragem por
+ * `computeContactsToIngest` já garante que só e-mails verificados são
+ * ingeridos, então a flag manual deixa de ser necessária.
  *
  * ## Dedup: pelo STORE, não pela Beehiiv (decisão de design)
  *
@@ -86,7 +82,9 @@
  *
  *   npx tsx scripts/sync-pending-to-brevo.ts              # dry-run (default)
  *   npx tsx scripts/sync-pending-to-brevo.ts --push        # aplica (cria contatos na Brevo)
- *     # --push sozinho ABORTA (guard de MV, ver acima) — precisa também de:
+ *     # --push ABORTA se `data/pending-reativacao/mv-verified.csv` não existir
+ *     # (rode scripts/verify-pending-emails-mv.ts primeiro) — OU passe, ciente
+ *     # do risco de bounce, sem MV nenhum:
  *   npx tsx scripts/sync-pending-to-brevo.ts --push --i-know-this-skips-mv
  *
  * Env: BEEHIIV_API_KEY (leitura) + platform.config.json → brevo_diaria.api_key_env (escrita).
@@ -106,6 +104,7 @@ import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { hasMorePages } from "./sync-cursos-subscribers-kv.ts";
 import { brevoPost, brevoGet } from "./lib/brevo-client.ts";
 import { DEFAULT_OUTPUT_PATH as ORIGIN_SCORES_CSV_PATH } from "./score-pending-origin.ts";
+import { MV_VERIFIED_CSV_PATH } from "./verify-pending-emails-mv.ts";
 import {
   readStore,
   writeStore,
@@ -235,38 +234,81 @@ export interface PendingToIngestEntry {
 /**
  * Pura — quem entre os Pending atuais da Beehiiv AINDA não está no store
  * (por qualquer status: `in_brevo`/`promoted_beehiiv`/`suppressed`/
- * `unsubscribed` contam como "já tratado", nunca re-ingerido).
+ * `unsubscribed` contam como "já tratado", nunca re-ingerido) E, se
+ * `verifiedEmails` não for `null`, quem também passou pela verificação
+ * MillionVerifier (`scripts/verify-pending-emails-mv.ts` — issue #4476 item
+ * 8). `verifiedEmails === null` (arquivo `mv-verified.csv` ainda não
+ * existe) → sem filtro de MV, comportamento antigo — o guard de `--push`
+ * (`assertMvGuardAcknowledged`) é quem trava esse caso, não esta função.
  */
 export function computeContactsToIngest(
   pending: BeehiivPendingSubscription[],
   store: BrevoDiariaStore,
+  verifiedEmails: Set<string> | null = null,
 ): PendingToIngestEntry[] {
   const known = new Set(store.contacts.map((c) => c.email));
   const out: PendingToIngestEntry[] = [];
   const seen = new Set<string>();
   for (const p of pending) {
     if (known.has(p.email) || seen.has(p.email)) continue;
+    if (verifiedEmails && !verifiedEmails.has(p.email)) continue;
     seen.add(p.email);
     out.push({ email: p.email, beehiiv_subscription_id: p.id });
   }
   return out;
 }
 
+/**
+ * I/O — lê `data/pending-reativacao/mv-verified.csv`
+ * (`scripts/verify-pending-emails-mv.ts` — issue #4476 item 8) e devolve o
+ * set de e-mails que passaram na verificação MillionVerifier (`result: ok
+ * | catch_all`). Fail-soft: arquivo ausente/malformado → `null` (nunca
+ * lança) — `computeContactsToIngest` interpreta `null` como "sem filtro de
+ * MV disponível ainda" (o guard de `--push` cobre esse caso).
+ */
+export function loadMvVerifiedEmails(path: string, log: (msg: string) => void = () => {}): Set<string> | null {
+  if (!existsSync(path)) {
+    log(`aviso: ${path} não encontrado — nenhum e-mail passou pela verificação MillionVerifier ainda. Rode scripts/verify-pending-emails-mv.ts.`);
+    return null;
+  }
+  try {
+    const csvText = readFileSync(path, "utf8");
+    const parsed = Papa.parse<Record<string, string>>(csvText, { header: true, skipEmptyLines: true, delimiter: "," });
+    if (parsed.errors.length > 0) {
+      log(`aviso: falha ao parsear ${path} — tratando como sem verificação MV. Erros: ${JSON.stringify(parsed.errors.slice(0, 2))}`);
+      return null;
+    }
+    const set = new Set<string>();
+    for (const row of parsed.data) {
+      const email = (row.email ?? "").trim().toLowerCase();
+      if (email) set.add(email);
+    }
+    return set;
+  } catch (e) {
+    log(`aviso: erro lendo ${path} — tratando como sem verificação MV: ${(e as Error).message}`);
+    return null;
+  }
+}
+
 // ── guard de MillionVerifier antes de --push (#4476 achado silent-failure-hunter) ─
 
 /**
- * Pura — bloqueia `--push` com erro explícito a menos que `argv` contenha
- * `--i-know-this-skips-mv`. Ver rationale completo no header do módulo
- * ("Guard de MV antes de --push"). Nunca chamado em dry-run — só quando
- * `push=true` (`main()` abaixo).
+ * Pura — bloqueia `--push` com erro explícito a menos que (a) `argv`
+ * contenha `--i-know-this-skips-mv`, ou (b) `mvVerifiedFileExists` seja
+ * `true` (a verificação já rodou pelo menos 1x — `computeContactsToIngest`
+ * já filtra pra só e-mails verificados, então a flag manual deixa de ser
+ * necessária). Ver rationale completo no header do módulo ("Guard de MV
+ * antes de --push"). Nunca chamado em dry-run — só quando `push=true`
+ * (`main()` abaixo).
  */
-export function assertMvGuardAcknowledged(argv: string[]): void {
-  if (hasFlag(argv, "i-know-this-skips-mv")) return;
+export function assertMvGuardAcknowledged(argv: string[], mvVerifiedFileExists: boolean): void {
+  if (mvVerifiedFileExists || hasFlag(argv, "i-know-this-skips-mv")) return;
   throw new Error(
-    "MV batch script ainda não existe (issue #4476 item 8) — rode a verificação MillionVerifier " +
-      "manualmente sobre o pool ANTES do 1º envio real (bounce de contato não-verificado degrada a " +
-      "reputação do domínio/IP, mesmo risco documentado no CLAUDE.md pra cohorts não-assinantes), ou " +
-      "passe --i-know-this-skips-mv pra confirmar que você está ciente do risco e quer prosseguir mesmo assim.",
+    "Nenhuma verificação MillionVerifier encontrada (issue #4476 item 8) — rode " +
+      "scripts/verify-pending-emails-mv.ts sobre o pool ANTES do 1º envio real (bounce de contato " +
+      "não-verificado degrada a reputação do domínio/IP, mesmo risco documentado no CLAUDE.md pra " +
+      "cohorts não-assinantes), ou passe --i-know-this-skips-mv pra confirmar que você está ciente do " +
+      "risco e quer prosseguir mesmo assim.",
   );
 }
 
@@ -343,7 +385,7 @@ export function loadOriginScores(path: string, log: (msg: string) => void = () =
   }
   try {
     const csvText = readFileSync(path, "utf8");
-    const parsed = Papa.parse<Record<string, string>>(csvText, { header: true, skipEmptyLines: true });
+    const parsed = Papa.parse<Record<string, string>>(csvText, { header: true, skipEmptyLines: true, delimiter: "," });
     if (parsed.errors.length > 0) {
       log(`aviso: falha ao parsear ${path} — backfill sem priorização por score. Erros: ${JSON.stringify(parsed.errors.slice(0, 2))}`);
       return null;
@@ -396,13 +438,16 @@ async function main(): Promise<void> {
 
   // #4476 achado silent-failure-hunter: guard de MV ANTES de qualquer I/O —
   // falha rápido, nunca deixa a paginação/backfill rodar pra só então abortar.
+  const mvVerifiedFileExists = existsSync(MV_VERIFIED_CSV_PATH);
   if (push) {
     try {
-      assertMvGuardAcknowledged(argv);
-      log(
-        "aviso: --i-know-this-skips-mv confirmado — ingestão SEM verificação MillionVerifier " +
-          "(issue #4476 item 8). Risco de bounce aceito explicitamente pelo operador.",
-      );
+      assertMvGuardAcknowledged(argv, mvVerifiedFileExists);
+      if (!mvVerifiedFileExists) {
+        log(
+          "aviso: --i-know-this-skips-mv confirmado — ingestão SEM verificação MillionVerifier " +
+            "(issue #4476 item 8). Risco de bounce aceito explicitamente pelo operador.",
+        );
+      }
     } catch (e) {
       log(`ERRO: ${(e as Error).message}`);
       process.exit(2);
@@ -433,8 +478,13 @@ async function main(): Promise<void> {
   log(`${pending.length} assinante(s) Pending encontrado(s).`);
 
   const store = readStore(DEFAULT_STORE_PATH);
-  const toIngest = computeContactsToIngest(pending, store);
-  log(`${toIngest.length} contato(s) novo(s) elegível(is) (dedup pelo store — ${store.contacts.length} já tratado(s)).`);
+  const verifiedEmails = loadMvVerifiedEmails(MV_VERIFIED_CSV_PATH, log);
+  const toIngest = computeContactsToIngest(pending, store, verifiedEmails);
+  log(
+    `${toIngest.length} contato(s) novo(s) elegível(is) (dedup pelo store — ${store.contacts.length} já tratado(s)` +
+      (verifiedEmails ? `; filtrado por ${verifiedEmails.size} e-mail(s) verificado(s) via MillionVerifier` : "; SEM filtro de MV — arquivo ainda não existe") +
+      `).`,
+  );
 
   // #4476 item 5 — fila de tamanho fixo: só backfill até o cap, priorizado
   // pelo score de origem (item 4). Substitui o comportamento antigo de
