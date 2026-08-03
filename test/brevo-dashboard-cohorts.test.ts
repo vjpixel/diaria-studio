@@ -195,6 +195,24 @@ test("shouldResume: startedAt inválido ou no futuro → false", () => {
   assert.equal(shouldResume(cp("2026-06-20T12:00:00Z"), NOW, "emailed"), false);
 });
 
+// #4451: o crawl completo (~129k contatos a ~100 req/min) leva ~21,5h observadas.
+// Com MAX_RESUME_AGE_H=18 (valor antigo), um checkpoint dessa idade já tinha
+// expirado — uma rodada que não terminava a tempo era descartada e recomeçava
+// do zero, causa raiz do crawl travado em ~7.000/129.251 desde 2026-07-29.
+const OBSERVED_FULL_CRAWL_HOURS = 21.5;
+
+test("shouldResume: checkpoint na idade do crawl completo observado (~21,5h) ainda é retomado (#4451)", () => {
+  const midCrawl = new Date(NOW - OBSERVED_FULL_CRAWL_HOURS * 3_600_000).toISOString();
+  assert.equal(shouldResume(cp(midCrawl), NOW, "emailed"), true);
+});
+
+test("MAX_RESUME_AGE_H cobre o crawl completo observado (~21,5h) com folga (#4451)", () => {
+  assert.ok(
+    MAX_RESUME_AGE_H > OBSERVED_FULL_CRAWL_HOURS,
+    `MAX_RESUME_AGE_H (${MAX_RESUME_AGE_H}h) precisa ser maior que a duração observada do crawl completo (${OBSERVED_FULL_CRAWL_HOURS}h), senão o checkpoint expira antes do crawl terminar`
+  );
+});
+
 const SAMPLE: EngagementCohorts = {
   generatedAt: GEN,
   universe: 1000,
