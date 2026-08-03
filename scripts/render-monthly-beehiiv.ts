@@ -28,6 +28,14 @@
  *
  * Output: data/monthly/{cycle}/_internal/beehiiv-preview.html
  * Stdout: JSON { cycle, yymm, subject, preview_text, html_path }
+ *
+ * #4521: pra rodar isto DENTRO do fluxo com idempotência/dedup (evita
+ * reprocessar uma edição já marcada como enviada pros apoiadores), usar
+ * `scripts/send-monthly-apoiadores.ts --cycle {ciclo}` (skill
+ * `/diaria-mensal-apoiadores`) em vez de chamar este CLI direto — ele reusa
+ * `renderMonthlyBeehiivEmail` (exportada abaixo) internamente. Este arquivo
+ * continua funcionando standalone (só render, sem estado) pra debug/preview
+ * rápido.
  */
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -88,22 +96,32 @@ export function missingImageKeys(images: Record<string, MonthlyPublicImage>): st
   return EXPECTED_IMAGE_KEYS.filter((k) => !images[k]?.url);
 }
 
-async function main(): Promise<void> {
-  const argv = process.argv.slice(2);
-  const cycle = parseMonthlyCycleArg(argv);
-  if (!cycle) {
-    console.error("Uso: render-monthly-beehiiv.ts --cycle YYMM-MM");
-    process.exit(2);
-    return;
-  }
+export interface RenderedMonthlyBeehiivEmail {
+  cycle: string;
+  yymm: string;
+  subject: string;
+  previewText: string;
+  html: string;
+  htmlPath: string;
+}
 
+/**
+ * Núcleo de render, extraído de `main()` (#4521) pra ser reusado por
+ * `scripts/send-monthly-apoiadores.ts` sem duplicar a lógica de
+ * montagem/relink/escrita do HTML. Mesmo comportamento de antes: aborta
+ * (`process.exit`) se `draft.md` ou `public-images.json` estiverem
+ * ausentes — consistente com o resto do CLI mensal (`monthlyDir`/
+ * `readPublicImages`), não converte em exceção porque os dois call sites
+ * (este CLI e o novo `send-monthly-apoiadores.ts`) tratam essas condições
+ * do mesmo jeito (aborto com instrução, nunca fallback silencioso).
+ */
+export function renderMonthlyBeehiivEmail(cycle: string): RenderedMonthlyBeehiivEmail {
   const yymm = cycleToYymm(cycle);
   const monthlyDir = resolveMonthlyDir(cycle);
   const draftPath = resolve(monthlyDir, "draft.md");
   if (!existsSync(draftPath)) {
     console.error(`draft.md não encontrado: ${draftPath}. Rode a Etapa 2 do /diaria-mensal primeiro.`);
     process.exit(1);
-    return;
   }
   const draft = readFileSync(draftPath, "utf8");
 
@@ -179,21 +197,58 @@ async function main(): Promise<void> {
   const htmlPath = resolve(internalDir, "beehiiv-preview.html");
   writeFileSync(htmlPath, html);
 
-  console.log(JSON.stringify({ cycle, yymm, subject, preview_text: previewText, html_path: htmlPath }, null, 2));
+  return { cycle, yymm, subject, previewText, html, htmlPath };
+}
 
-  console.log("\n=== Próximos passos (manual, #4482) ===\n");
+/**
+ * Instruções de publicação manual impressas após o render (#4482, guidance
+ * de audiência atualizada em #4521). Extraída como função nomeada pra ser
+ * reusada por `scripts/send-monthly-apoiadores.ts` sem duplicar o texto.
+ *
+ * Item 3 (#4521): a hipótese "o seletor pode não suportar múltiplos
+ * segmentos" (texto original do #4482) foi verificada via
+ * `mcp__claude_ai_Beehiiv__search_documentation`/`read_documentation`
+ * ("Options on the Audience page of the post flow") — a Beehiiv suporta
+ * nativamente incluir/excluir até 5 segmentos combinados na Audience page de
+ * um mesmo post. **Não é preciso criar um 7º segmento combinado** — a
+ * instrução de "criar segmento combinado pela UI" foi removida por ser
+ * desnecessária, não porque deixou de ser viável.
+ */
+export function printManualPublishInstructions(): void {
+  console.log("\n=== Próximos passos (manual) ===\n");
   console.log("1. Técnica de paste = §5 de context/publishers/beehiiv-playbook.md (browser + javascript_tool no");
   console.log("   Custom HTML block). Os scripts de staging do playbook (upload-html-public.ts/chunk-html-base64.ts)");
   console.log("   esperam data/editions/{AAMMDD}/_internal/newsletter-final.html — adaptar path/--edition-dir pro");
-  console.log("   HTML acima (ou copiar) na hora do envio real; ver SKILL.md diaria-mensal para detalhe.");
+  console.log("   HTML acima (ou copiar) na hora do envio real; ver SKILL.md diaria-mensal-apoiadores para detalhe.");
   console.log("2. Compose tab → Title + Subject Line (sugestão do draft: ver 'subject' acima).");
-  console.log('3. Audience tab → selecionar os segmentos "Apoio — Mantenedor" e "Apoio — Patrono"');
-  console.log('   (NUNCA "All subscribers" — este é o envio EXTRA restrito a apoiadores, decisão 2 do #4482).');
-  console.log("   Se o seletor de audiência do post não suportar múltiplos segmentos por envio, criar");
-  console.log('   manualmente um segmento combinado ("Apoio — Mantenedor ou Patrono") pela UI antes de');
-  console.log("   prosseguir — mesmo precedente operacional do #4436 (correção de segmento ao vivo pela UI).");
+  console.log('3. Audience tab → toggle "Include and exclude segments" → incluir "Apoio — Mantenedor" e');
+  console.log('   "Apoio — Patrono" (NUNCA "All subscribers" — envio EXTRA restrito a apoiadores, decisão 2 do');
+  console.log("   #4482). Confirmado via documentação Beehiiv (#4521): a Audience page aceita até 5 segmentos");
+  console.log("   incluídos/excluídos combinados por post — não é preciso criar um segmento combinado novo.");
   console.log("4. Send test email pra confirmar visualmente antes de agendar/publicar.");
   console.log("5. Escolher um dia SEM edição diária pesada (decisão 1 do #4482) antes de agendar/enviar.");
+  console.log("6. Depois de enviar de verdade, registrar o envio (idempotência, #4521):");
+  console.log("     npx tsx scripts/send-monthly-apoiadores.ts --cycle {ciclo} --mark-sent");
+}
+
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+  const cycle = parseMonthlyCycleArg(argv);
+  if (!cycle) {
+    console.error("Uso: render-monthly-beehiiv.ts --cycle YYMM-MM");
+    process.exit(2);
+    return;
+  }
+
+  const rendered = renderMonthlyBeehiivEmail(cycle);
+  console.log(
+    JSON.stringify(
+      { cycle, yymm: rendered.yymm, subject: rendered.subject, preview_text: rendered.previewText, html_path: rendered.htmlPath },
+      null,
+      2,
+    ),
+  );
+  printManualPublishInstructions();
 }
 
 if (isMainModule(import.meta.url)) {
