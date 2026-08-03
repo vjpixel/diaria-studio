@@ -15,6 +15,12 @@
  *      menor que "o valor de 1 clique" (1/aberturas, em pontos percentuais),
  *      não desempata por número — cai no critério editorial (ângulo Brasil >
  *      implicação profissional > diversidade de categoria).
+ *
+ * #4492 (260802): conteúdo `use_melhor` nunca compete por manchete — mesmo
+ * sendo o de maior taxa da semana, fica reservado ao bloco USE MELHOR
+ * dedicado (`selectUseMelhor`). Decisão do editor depois de um caso real em
+ * que o USE MELHOR de maior clique virou manchete e esvaziou o bloco
+ * dedicado pro próximo candidato disponível (bem mais fraco).
  */
 
 import { classifyOrigin } from "../build-link-ctr.ts";
@@ -161,11 +167,17 @@ export function selectHeadlines(candidatesIn: WeeklyRankedCandidate[], maxHeadli
   const deduped = dedupeCandidatesByUrl(candidatesIn);
   const excluded = deduped.filter((c) => c.excluded);
   const eligible = deduped.filter((c) => !c.excluded).sort(byRateDescThenTitle);
+  // #4492: conteúdo USE MELHOR nunca compete por manchete — reservado
+  // exclusivamente pro bloco dedicado (`selectUseMelhor`). Fica de fora só
+  // do POOL DE SELEÇÃO — `eligible` (retornado como `ranked`, a auditoria
+  // completa) continua incluindo esses candidatos pro editor ver a taxa
+  // deles mesmo não sendo elegíveis a manchete.
+  const headlineEligible = eligible.filter((c) => c.section !== "use_melhor");
 
   const selected: WeeklyRankedCandidate[] = [];
   const selectedCategories = new Set<string>();
   const warnings: string[] = [];
-  let remaining = eligible;
+  let remaining = headlineEligible;
 
   while (selected.length < maxHeadlines && remaining.length > 0) {
     const top = remaining[0];
@@ -209,7 +221,7 @@ export function selectHeadlines(candidatesIn: WeeklyRankedCandidate[], maxHeadli
     warnings.push(`Semana com ${maxHeadlines} edição(ões) disponível(is) — reduzindo pra ${maxHeadlines} manchete(s) em vez de 3.`);
   }
   if (selected.length < maxHeadlines) {
-    warnings.push(`Só ${selected.length}/${maxHeadlines} candidatos elegíveis encontrados (após exclusão comercial/própria).`);
+    warnings.push(`Só ${selected.length}/${maxHeadlines} candidatos elegíveis encontrados (após exclusão comercial/própria e USE MELHOR).`);
   }
 
   return { selected, ranked: eligible, excluded, warnings };

@@ -114,6 +114,30 @@ describe("selectHeadlines — matéria mais clicada vence, não a manchete (acha
     const result = selectHeadlines([d1, d2, radar], 2);
     assert.deepEqual(result.selected.map((c) => c.url), [d2.url, radar.url]);
   });
+
+  it("USE MELHOR nunca vira manchete, mesmo sendo o de maior taxa da semana (#4492)", () => {
+    const useMelhor = ranked({
+      kind: "section",
+      section: "use_melhor",
+      category: "USE MELHOR",
+      title: "Tutorial mais clicado da semana",
+      url: "https://exemplo.com/tutorial",
+      clicks: 10,
+      opens: 200,
+    }); // 5% — maior taxa de todas
+    const radar = ranked({
+      kind: "section",
+      section: "radar",
+      title: "Radar",
+      url: "https://exemplo.com/radar",
+      clicks: 3,
+      opens: 200,
+    }); // 1.5%
+    const result = selectHeadlines([useMelhor, radar], 2);
+    assert.deepEqual(result.selected.map((c) => c.url), [radar.url]);
+    // Continua na auditoria (`ranked`) mesmo fora do pool de seleção.
+    assert.ok(result.ranked.some((c) => c.url === useMelhor.url));
+  });
 });
 
 describe("selectHeadlines — exclusão comercial/própria", () => {
