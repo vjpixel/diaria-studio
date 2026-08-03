@@ -324,10 +324,41 @@ describe("renderLinkedinWeeklyHtml — abertura e fecho quebram em parágrafos (
     assert.equal((html.match(/utm_content=mencao-abertura/g) ?? []).length, 1, "só a PRIMEIRA menção é linkada");
   });
 
-  it("wordmark no fim do parágrafo NÃO é linkado (degrada em vez de emitir link que perde a UTM)", () => {
-    const input: WeeklyLinkedinRenderInput = { ...BASE_INPUT, opening: "A newsletter se chama diar.ia.br" };
-    const html = renderLinkedinWeeklyHtml(input).html;
-    assert.ok(!/utm_content=mencao-abertura/.test(html), "sem palavra depois do domínio, não linka");
+  it("wordmark no fim do parágrafo NÃO é linkado, E gera warning (achados do review do #4501)", () => {
+    // Sem o warning isso degradava em silêncio, contra a convenção do módulo: a
+    // publicação é manual, e `warnings` é o único canal pro editor descobrir
+    // antes de colar que aquele clique vai sair sem atribuição.
+    for (const opening of [
+      "A newsletter se chama diar.ia.br",
+      "A newsletter se chama diar.ia.br.", // com pontuação: o caso que acontece em prosa real
+      "A newsletter se chama diar.ia.br!",
+      "A newsletter se chama diar.ia.br,",
+    ]) {
+      const r = renderLinkedinWeeklyHtml({ ...BASE_INPUT, opening });
+      assert.ok(!/utm_content=mencao-abertura/.test(r.html), `não pode linkar: ${opening}`);
+      assert.ok(
+        r.warnings.some((w) => /menção a diar\.ia\.br não pôde virar link/i.test(w)),
+        `faltou warning para: ${opening} | ${r.warnings.join(" | ")}`,
+      );
+    }
+  });
+
+  it("a âncora NÃO atravessa fronteira de frase (achado do review do #4501)", () => {
+    // Antes o charset da extensão só parava em `<`, então a âncora engolia a
+    // frase seguinte inteira e virava área clicável sobre texto alheio à marca.
+    const r = renderLinkedinWeeklyHtml({ ...BASE_INPUT, opening: "Escrevo a diar.ia.br. Confira quando puder." });
+    assert.ok(!/Confira quando puder[^<]*<\/a>/.test(r.html), `âncora vazou pra frase seguinte: ${r.html.slice(0, 300)}`);
+    // e como o wordmark fecha a frase, o caso vira o warning do teste acima
+    assert.ok(r.warnings.some((w) => /não pôde virar link/i.test(w)));
+  });
+
+  it("wordmark dentro de uma URL colada não é sequestrado (achado do review do #4501)", () => {
+    // `indexOf` cru casava no meio de https://diar.ia.br/p/artigo, gerando HTML
+    // quebrado e um href apontando pra HOME em vez do artigo específico.
+    const opening = "Leia em https://diar.ia.br/p/algum-artigo sobre isso.";
+    const html = renderLinkedinWeeklyHtml({ ...BASE_INPUT, opening }).html;
+    assert.ok(!/utm_content=mencao-abertura/.test(html), "não pode linkar dentro de uma URL");
+    assert.ok(html.includes("https://diar.ia.br/p/algum-artigo"), "a URL original tem que sair intacta");
   });
 
   it("abertura sem menção ao wordmark não inventa link", () => {

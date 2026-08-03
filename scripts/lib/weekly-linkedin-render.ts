@@ -17,10 +17,13 @@
  *     parte o link em dois e a parte clicável fica sem UTM) — usa sempre
  *     rótulo de ação.
  *   - UTM: `utm_source=linkedin&utm_medium=newsletter&utm_campaign=ln-{cycle}
- *     &utm_content=cta-abertura|lista|cta-usemelhor|cta-fim` (item-01/02/03
- *     SAÍRAM; `cta-abertura` ENTROU em 260803). São 3 CTAs de assinatura, um
- *     por terço da peça, cada um com `utm_content` próprio: sem isso não dá pra
- *     saber qual posição converte e a decisão de manter/cortar vira palpite.
+ *     &utm_content=mencao-abertura|cta-abertura|lista|cta-usemelhor|cta-fim`
+ *     (item-01/02/03 SAÍRAM; `cta-abertura` e `mencao-abertura` ENTRARAM em
+ *     260803). São 3 CTAs de assinatura, um por terço da peça, cada um com
+ *     `utm_content` próprio: sem isso não dá pra saber qual posição converte e a
+ *     decisão de manter/cortar vira palpite. `mencao-abertura` é o 4º ponto, e
+ *     não é CTA: é o clique no nome da marca em prosa (ver `linkifyWordmark`),
+ *     separado de propósito pra não inflar o CTA com curiosidade.
  */
 
 export const LINKEDIN_WEEKLY_UTM_SOURCE = "linkedin";
@@ -52,25 +55,12 @@ export function endsInBareDomainLabel(label: string): boolean {
 }
 
 /**
- * Chamada do CTA do bloco Use Melhor (decisão do editor 260803, #4456): frase
- * de contexto + âncora, em vez de link solto. Este é o PRIMEIRO convite de
- * assinatura da edição (o bloco cai depois do 2º headline — ver docstring de
- * `renderLinkedinWeeklyHtml`), e um link sem frase não diz ao leitor o que ele
- * ganha assinando. A frase promete exatamente o que o bloco acima acabou de
- * entregar, então o convite é verificável pelo próprio conteúdo da peça.
- *
- * PLURAL de propósito ("tutoriais e dicas", nunca "um desses"): a seção Use
- * Melhor da edição diária leva de 1 a 3 itens (semana 26w31: 3, 3, 2, 1, 3),
- * então o singular subvende o que o assinante recebe de fato. Sem menção a
- * tempo de leitura (decisão do editor 260803): o que converte aqui é a cadência
- * diária, não a duração de cada item.
- *
- * A âncora é em 1ª pessoa e sem "grátis"/imperativo empilhados de propósito: o
- * aprendizado do CTA-01 (`docs/experiments/cta-ab-mensal-2606-07.md`) é que
- * âncora com verbo imperativo + "grátis" + seta concentra sinal promocional e
- * custa ENTREGA. O "de graça" continua existindo na peça, mas no fecho em prosa,
- * longe da âncora clicável.
+ * Separador entre os destaques de uma mesma edição na lista "Edições da semana".
+ * Precisa ser TEXTO (não estrutura HTML) porque o editor de artigo do LinkedIn
+ * achata `<ul>` aninhada — ver comentário no laço de `weeklyEditions`.
  */
+export const DESTAQUE_SEPARATOR = " · ";
+
 /**
  * Âncora do CTA que fecha a ABERTURA (decisão do editor 260803, #4456). Quem
  * abandona o artigo depois da 1ª manchete nunca alcança o CTA do Use Melhor
@@ -82,17 +72,38 @@ export function endsInBareDomainLabel(label: string): boolean {
  * o único que sobreviveu ao teste sem degradar entrega. A densidade promocional
  * acima da dobra foi o gatilho identificado lá, então os CTAs com mais peso
  * ficam no meio (`cta-usemelhor`) e no fim (`cta-fim`) da peça.
+ *
+ * NÃO reintroduza "grátis"/seta/imperativo aqui — há teste travando isso.
  */
-/**
- * Separador entre os destaques de uma mesma edição na lista "Edições da semana".
- * Precisa ser TEXTO (não estrutura HTML) porque o editor de artigo do LinkedIn
- * achata `<ul>` aninhada — ver comentário no laço de `weeklyEditions`.
- */
-export const DESTAQUE_SEPARATOR = " · ";
-
 const CTA_ABERTURA_LABEL = "Assinar a edição diária";
+
+/**
+ * Chamada do CTA do bloco Use Melhor (decisão do editor 260803, #4456): frase
+ * de contexto + âncora, em vez de link solto. Este é o PRIMEIRO convite de
+ * assinatura da edição (o bloco cai depois do 2º headline — ver docstring de
+ * `renderLinkedinWeeklyHtml`), e um link sem frase não diz ao leitor o que ele
+ * ganha assinando. A frase promete exatamente o que o bloco acima acabou de
+ * entregar, então o convite é verificável pelo próprio conteúdo da peça.
+ *
+ * PLURAL de propósito ("tutoriais e dicas", nunca "um desses"): a seção Use
+ * Melhor da edição diária leva de `STAGE_2_MIN_USE_MELHOR` a
+ * `STAGE_2_MAX_USE_MELHOR` itens (`scripts/lib/apply-stage2-caps.ts`, hoje 2 a 4),
+ * então o singular subvende o que o assinante recebe. Sem menção a tempo de
+ * leitura (decisão do editor 260803): o que converte aqui é a cadência diária,
+ * não a duração de cada item.
+ */
 const CTA_USEMELHOR_LEAD = "Tutoriais e dicas como este saem em toda edição diária.";
+
+/**
+ * Âncora do CTA do meio. 1ª pessoa e sem "grátis"/imperativo empilhados, pelo
+ * mesmo aprendizado do CTA-01 citado em `CTA_ABERTURA_LABEL`. O "de graça"
+ * continua existindo na peça, mas no fecho em prosa, longe da âncora clicável.
+ * Também travado por teste.
+ */
 const CTA_USEMELHOR_LABEL = "Quero receber a edição diária →";
+
+/** Âncora do CTA final. Única das três que carrega "grátis" + seta: está no fim
+ * da peça, longe da dobra, onde a densidade promocional não custa entrega. */
 const CTA_FIM_LABEL = "Assine grátis, é rapidinho →";
 
 export interface WeeklyLinkedinHeadlineInput {
@@ -165,7 +176,34 @@ export const WORDMARK = "diar.ia.br";
 const WORDMARK_TRAILING_WORDS = 3;
 
 /**
- * Pure: transforma a PRIMEIRA menção em prosa a `diar.ia.br` num link com UTM.
+ * Casa o wordmark só quando ele é TOKEN ISOLADO em prosa. Sem isso, o
+ * `indexOf` cru casava dentro de uma URL colada no texto: numa abertura com
+ * `https://diar.ia.br/p/algum-artigo`, a âncora começava no meio da URL e o
+ * `href` resultante apontava pra HOME, trocando em silêncio um link específico
+ * por um genérico (achado do review do #4501).
+ *
+ * Não exige nada depois além de "não é continuação do domínio": pontuação
+ * (`.`/`,`) PODE seguir, e é justamente o caso que precisa chegar no guard de
+ * `linkifyWordmark` pra virar warning, em vez de sumir como "não há menção".
+ */
+const WORDMARK_STANDALONE = /(^|[\s>(])diar\.ia\.br(?![\w/-])/;
+
+export interface LinkifyWordmarkResult {
+  html: string;
+  /**
+   * `true` quando havia menção ao wordmark mas ela NÃO pôde virar link com UTM.
+   * Existe pra o caller emitir warning: sem esse canal, o render não conseguia
+   * distinguir "não há menção" de "há menção e o clique vai sair sem atribuição",
+   * e a segunda some em silêncio numa peça cujo objetivo é medir conversão.
+   */
+  skipped: boolean;
+}
+
+/**
+ * Pure: transforma a primeira menção em prosa a `diar.ia.br` DA ABERTURA num
+ * link com UTM. Escopo deliberado: só `input.opening` passa por aqui — fecho,
+ * corpo das manchetes e descrição do Use Melhor não. Menção ao wordmark neles
+ * segue virando auto-link do LinkedIn pra home, sem atribuição.
  *
  * Por que existe: o editor de artigo do LinkedIn auto-linka toda menção ao
  * domínio mesmo fora de link intencional, e o link que ELE cria aponta pra home
@@ -182,25 +220,38 @@ const WORDMARK_TRAILING_WORDS = 3;
  * o auto-linkificador só sequestra a âncora quando ela TERMINA no domínio. Daí
  * estender por algumas palavras resolver.
  *
- * Degrada em silêncio seguro: se mesmo estendida a âncora terminar em domínio
- * (ex: o wordmark é a última coisa do parágrafo), NÃO linka — melhor perder a
- * atribuição do que emitir um link que se anuncia rastreado e não é. Opera
- * sobre a saída de `paragraphsHtml` (já escapada), nunca sobre prosa crua.
+ * A extensão para em fronteira de FRASE (`.`/`!`/`?`) além de fronteira de tag.
+ * Sem isso a âncora engolia a frase seguinte inteira — `"Escrevo a diar.ia.br.
+ * Confira quando puder."` virava um link cobrindo "diar.ia.br. Confira quando
+ * puder.", texto que não tem relação com a marca e que o leitor não tem como
+ * adivinhar que é clicável (achado do review do #4501). Efeito colateral
+ * desejado: com o wordmark no fim de frase o `tail` fica vazio, o guard dispara
+ * e o caso vira warning em vez de link falsamente rastreado.
  */
-export function linkifyWordmark(paragraphsHtmlOut: string, cycle: string): string {
-  const idx = paragraphsHtmlOut.indexOf(WORDMARK);
-  if (idx < 0) return paragraphsHtmlOut;
+export function linkifyWordmark(paragraphsHtmlOut: string, cycle: string): LinkifyWordmarkResult {
+  const m = WORDMARK_STANDALONE.exec(paragraphsHtmlOut);
+  if (!m) return { html: paragraphsHtmlOut, skipped: false };
+  const idx = m.index + m[1].length;
   const after = paragraphsHtmlOut.slice(idx + WORDMARK.length);
-  // estende por até N palavras, parando em qualquer tag (não atravessa parágrafo)
-  const tail = after.match(new RegExp(`^(?:[^<\\s]*\\s+){0,${WORDMARK_TRAILING_WORDS}}[^<\\s]*`))?.[0] ?? "";
+  // Estende por até N palavras. O charset exclui `<` (não atravessa parágrafo)
+  // E `.!?` (não atravessa frase) — ver docstring.
+  const tail = after.match(new RegExp(`^(?:[^<\\s.!?]*\\s+){0,${WORDMARK_TRAILING_WORDS}}[^<\\s.!?]*`))?.[0] ?? "";
   const label = (WORDMARK + tail).replace(/\s+$/, "");
-  if (endsInBareDomainLabel(label)) return paragraphsHtmlOut;
+  // Checa o guard IGNORANDO pontuação de fecho: `endsInBareDomainLabel` exige
+  // terminar em letra, então "diar.ia.br," passava batido e era linkado, mesmo
+  // sendo o mesmo risco de sequestro do domínio nu (o auto-linkificador ignora
+  // pontuação ao decidir onde a URL termina). Achado do review do #4501.
+  if (endsInBareDomainLabel(label.replace(/[.,;:!?)\]"'»]+$/, ""))) {
+    return { html: paragraphsHtmlOut, skipped: true };
+  }
   const url = buildLinkedinWeeklyUrl(LINKEDIN_WEEKLY_SUBSCRIBE_BASE_URL, cycle, "mencao-abertura");
-  return (
-    paragraphsHtmlOut.slice(0, idx) +
-    `<a href="${escapeHtml(url)}">${label}</a>` +
-    paragraphsHtmlOut.slice(idx + label.length)
-  );
+  return {
+    html:
+      paragraphsHtmlOut.slice(0, idx) +
+      `<a href="${escapeHtml(url)}">${label}</a>` +
+      paragraphsHtmlOut.slice(idx + label.length),
+    skipped: false,
+  };
 }
 
 /** Pure: título numerado — única transformação permitida sobre o título literal (#4456). */
@@ -251,7 +302,19 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
   // corpo das manchetes (decisão do editor 260803). Antes iam num <p> único, o
   // que empilhava 5-6 frases num bloco só e afundava a leitura no LinkedIn.
   if (input.opening.trim()) {
-    parts.push(linkifyWordmark(paragraphsHtml(input.opening), input.cycle));
+    const wordmark = linkifyWordmark(paragraphsHtml(input.opening), input.cycle);
+    parts.push(wordmark.html);
+    if (wordmark.skipped) {
+      // Mesma convenção dos outros guards deste módulo: o que não dá pra
+      // garantir vira warning, nunca degrade silencioso. Aqui é o mais
+      // determinístico dos casos (testado ao vivo), e a publicação é manual —
+      // `warnings` é o único canal pelo qual o editor descobre isso ANTES de colar.
+      warnings.push(
+        `Abertura: a menção a ${WORDMARK} não pôde virar link com UTM (termina a frase, sem palavra depois pra estender a âncora). ` +
+          `Esse clique vai pro auto-link do LinkedIn, que aponta pra home crua e sai da medição. ` +
+          `Se quiser recuperá-lo, reescreva pra que o wordmark não feche a frase.`,
+      );
+    }
     const ctaAberturaUrl = buildLinkedinWeeklyUrl(LINKEDIN_WEEKLY_SUBSCRIBE_BASE_URL, input.cycle, "cta-abertura");
     parts.push(`<p><a href="${escapeHtml(ctaAberturaUrl)}">${escapeHtml(CTA_ABERTURA_LABEL)}</a></p>`);
   }

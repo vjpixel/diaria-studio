@@ -607,8 +607,9 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "Lista de Edições da semana + os 3 CTAs de assinatura (abertura/meio/fim) da " +
       "newsletter semanal do LinkedIn (`/diaria-linkedin-semanal`, #4456) — artigo " +
       "colável manualmente, sem API de publicação. `utm_content` = " +
-      "cta-abertura/lista/cta-usemelhor/cta-fim, um por posição, para dar pra medir " +
-      "qual terço da peça converte.",
+      "mencao-abertura/cta-abertura/lista/cta-usemelhor/cta-fim, um por posição, para " +
+      "dar pra medir qual terço da peça converte. `mencao-abertura` não é CTA: é o " +
+      "clique no nome da marca em prosa, separado pra não inflar o CTA da abertura.",
     status: "ativo",
   },
 ] as const;

@@ -216,11 +216,15 @@ publicação de `context/publishers/linkedin.md` §Newsletter LinkedIn —
 resumo:
 
 1. Ir em `linkedin.com/newsletters/{urn}/` (a página DA newsletter, não
-   o feed pessoal) → clicar **Write article** DALI (não em
-   `/article/new/` direto — senão o artigo nasce desvinculado e o convite
-   automático pra rede não dispara).
+   o feed pessoal) → clicar **Write article** DALI. Caminho preferido por
+   ser o que não depende do default do seletor de destino — mas
+   `/article/new/` **não** desvincula o artigo, ao contrário do que esta
+   linha afirmava até 260803 (ver `context/publishers/linkedin.md` §1, que
+   é a fonte única sobre isso).
 2. Confirmar que o cabeçalho do editor mostra o nome da newsletter, não
-   "Individual article".
+   "Individual article". **Esta é a verificação que importa**, e vale
+   reler antes de publicar, não só ao abrir: em 260803 uma aba que
+   recarregou sozinha voltou como "Individual article".
 3. Colar o conteúdo de `ln-{cycle}.html`.
 4. Revisar visualmente (numeração, sem link nos blocos de manchete, Use
    Melhor com comentário se presente, CTAs no fim).

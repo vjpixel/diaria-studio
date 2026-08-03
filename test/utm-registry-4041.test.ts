@@ -25,6 +25,12 @@ import {
   EIA_ARCHIVE_UTM_CAMPAIGN,
 } from "../scripts/lib/newsletter-render-html.ts";
 import {
+  LINKEDIN_WEEKLY_UTM_SOURCE,
+  LINKEDIN_WEEKLY_UTM_MEDIUM,
+  linkedinWeeklyCampaign,
+  type LinkedinWeeklyUtmContent,
+} from "../scripts/lib/weekly-linkedin-render.ts";
+import {
   SUBSCRIBE_UTM_SOURCE,
   SUBSCRIBE_UTM_MEDIUM,
   SUBSCRIBE_UTM_CAMPAIGN,
@@ -86,6 +92,28 @@ describe("#4041 — emissores derivam do registry (sem literal solto no call sit
     assert.equal(EIA_ARCHIVE_UTM_SOURCE, shared.EIA_ARCHIVE_UTM.source);
     assert.equal(EIA_ARCHIVE_UTM_MEDIUM, shared.EIA_ARCHIVE_UTM.medium);
     assert.equal(EIA_ARCHIVE_UTM_CAMPAIGN, shared.EIA_ARCHIVE_UTM.campaign);
+  });
+
+  it("weekly-linkedin-render (newsletter semanal do LinkedIn) — era o ÚNICO emissor do inventário sem este cross-check", () => {
+    // Achado do review do #4501: `weekly-linkedin-render.ts` declara source/medium
+    // como literais PRÓPRIOS em vez de importar do registry, contrariando o que o
+    // docstring do registry afirma ("os emissores importam daqui"). Coincidiam por
+    // sorte, sem nada amarrando — e este emissor já sofreu drift antes (a saída de
+    // item-01/02/03 exigiu correção manual de prosa em 3 lugares).
+    assert.equal(LINKEDIN_WEEKLY_UTM_SOURCE, shared.LINKEDIN_WEEKLY_UTM.source);
+    assert.equal(LINKEDIN_WEEKLY_UTM_MEDIUM, shared.LINKEDIN_WEEKLY_UTM.medium);
+    assert.equal(linkedinWeeklyCampaign("26w31"), shared.LINKEDIN_WEEKLY_UTM.campaignPattern.replace("{cycle}", "26w31"));
+  });
+
+  it("todo utm_content emitido pela semanal do LinkedIn está descrito no inventário (a description é o que o editor vê na Studio UI)", () => {
+    // A união TS e a prosa do registry não compartilham símbolo — só um teste as
+    // mantém em sincronia. `mencao-abertura` já nasceu faltando nessa lista uma vez.
+    const emitter = shared.findUtmEmitter("linkedin-weekly-newsletter");
+    assert.ok(emitter, "emissor precisa existir no inventário");
+    const contents: LinkedinWeeklyUtmContent[] = ["mencao-abertura", "cta-abertura", "lista", "cta-usemelhor", "cta-fim"];
+    for (const c of contents) {
+      assert.ok(emitter.description.includes(c), `description do inventário não cita utm_content=${c}`);
+    }
   });
 
   it("workers/poll/lib.ts (duplicata deliberada do #3524) usa o MESMO triplo", () => {
