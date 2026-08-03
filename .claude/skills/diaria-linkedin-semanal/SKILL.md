@@ -20,9 +20,10 @@ inteira antes — não só o body.
 ## Decisões do editor já tomadas (não são desta skill pra revisitar)
 
 - **Canal: newsletter nativa do LinkedIn** (perfil pessoal do editor, não a
-  Page) — diferente de `/diaria-semanal` (post de feed multi-canal,
-  sábado, sem ranking por clique). As duas skills seguem **separadas**
-  (ver "Sobreposição" abaixo) — não fundir, não renomear esta.
+  Page) — diferente de `/diaria-instagram-semanal` (post de feed, só
+  Instagram desde #4483, sábado, com ranking por clique restrito a
+  D1/D2/D3). As duas skills seguem **separadas** (ver "Sobreposição"
+  abaixo) — não fundir, não renomear esta.
 - **Seleção: por clique verificado, não por manchete.** A regra antiga
   "só DESTAQUE 1" foi substituída em 260802 — matéria secundária, item de
   Radar ou entrada de Use Melhor são candidatos legítimos quando o clique
@@ -59,9 +60,9 @@ O **ciclo** (`{YY}w{WW}`, ex: `26w31`) é derivado da semana de CONTEÚDO
 
 - As edições da semana (segunda a sexta) precisam ter
   `data/editions/{AAMMDD}/02-reviewed.md` no disco — mesmo risco de
-  retenção documentado em `/diaria-semanal` (se `data/editions/{AAMMDD}/`
-  for arquivado antes de rodar esta skill, essa edição não pode ser
-  recuperada pro cálculo).
+  retenção documentado em `/diaria-instagram-semanal` (se
+  `data/editions/{AAMMDD}/` for arquivado antes de rodar esta skill, essa
+  edição não pode ser recuperada pro cálculo).
 - `data/beehiiv-cache/posts/*.json` — populado por `scripts/beehiiv-sync.ts`
   (roda automaticamente no Stage 0 de cada edição diária). Não precisa
   rodar manualmente, mas o Passo 1 abaixo checa se falta enriquecimento de
@@ -231,20 +232,21 @@ click-e-verifica do Beehiiv) que faça sentido reusar aqui. O único
 padrão que ESTA skill reusa do Stage 6 é conceitual — gate humano antes
 de considerar a unidade "pronta" — não código.
 
-## Sobreposição com `/diaria-semanal` — mantenha separadas
+## Sobreposição com `/diaria-instagram-semanal` — mantenha separadas
 
-| | `/diaria-semanal` | `/diaria-linkedin-semanal` |
+| | `/diaria-instagram-semanal` | `/diaria-linkedin-semanal` |
 |---|---|---|
-| Seleção | os 5 D1, sem ranking por clique | 3 matérias por taxa de clique |
+| Seleção | itens mais clicados (D1/D2/D3; RADAR/USE MELHOR ainda não competem — limitação técnica de asset, não decisão de escopo, ver #4513) | 3 matérias por taxa de clique (D1/D2/D3/RADAR/USE MELHOR) |
 | Cadência | produz sexta, publica sábado | produz domingo, publica segunda |
-| Canal | post social (LinkedIn Page, Facebook, Instagram, Threads, X) | newsletter nativa do LinkedIn (perfil pessoal) |
-| Formato | 5 itens curtos | 3 blocos longos + Use Melhor + lista |
+| Canal | post social (só Instagram, desde #4483) | newsletter nativa do LinkedIn (perfil pessoal) |
+| Formato | 5 itens curtos, carrossel de imagens | 3 blocos longos + Use Melhor + lista |
 | Entrega | feed, ranqueado pelo algoritmo | notificação + e-mail, fora do feed |
 
 Decisão do editor (comentário 260802 do #4456): **produtos diferentes,
-seguem separados.** Há 2 issues duplicadas (#4483/#4484) propondo
-renomear `/diaria-semanal` pra `/diaria-instagram-semanal` — **fora do
-escopo desta skill**, não mexer em `.claude/skills/diaria-semanal/` daqui.
+seguem separados.** `/diaria-semanal` foi renomeada pra
+`/diaria-instagram-semanal` e restrita a Instagram pelo #4483 (260803) —
+`.claude/skills/diaria-instagram-semanal/` é a skill atual, não mexer nela
+daqui.
 
 ## Casos de borda
 

@@ -15,12 +15,28 @@
  *      menor que "o valor de 1 clique" (1/aberturas, em pontos percentuais),
  *      não desempata por número — cai no critério editorial (ângulo Brasil >
  *      implicação profissional > diversidade de categoria).
+ *
+ * #4511 fleet review IMPORTANTE: o núcleo de ranking/desempate
+ * (`withinClickNoise`, `hasBrazilAngle`, `hasProfessionalImplication`,
+ * `editorialTiebreakScore`, `byRateDescThenTitle`) vive em
+ * `weekly-social-click-rank.ts`, compartilhado com `weekly-instagram-select.ts`
+ * (#4483) — não é mais duplicado byte-a-byte aqui. Reexportados abaixo pra
+ * não quebrar os importadores existentes (`test/weekly-linkedin-select.test.ts`,
+ * `select-linkedin-weekly.ts`).
  */
 
-import { classifyOrigin } from "../build-link-ctr.ts";
 import { isCommercialOrOwnLink } from "./weekly-linkedin-filter.ts";
 import { normalizeUrl } from "./weekly-linkedin-clicks.ts";
 import type { WeeklyRawCandidate } from "./weekly-linkedin-parse.ts";
+import {
+  withinClickNoise,
+  hasBrazilAngle,
+  hasProfessionalImplication,
+  editorialTiebreakScore,
+  byRateDescThenTitle,
+} from "./weekly-social-click-rank.ts";
+
+export { withinClickNoise, hasBrazilAngle, hasProfessionalImplication, editorialTiebreakScore };
 
 export interface WeeklyRankedCandidate extends WeeklyRawCandidate {
   uniqueVerifiedClicks: number;
@@ -80,57 +96,6 @@ export function dedupeCandidatesByUrl(candidates: WeeklyRankedCandidate[]): Week
     }
   }
   return [...byUrl.values()];
-}
-
-/**
- * Pure: `true` quando a diferença de taxa entre `a` e `b` é menor que "o
- * valor de 1 clique" — usa o MAIOR incremento-de-1-clique entre os dois
- * (o denominador menor produz o incremento maior; usar o maior dos dois é a
- * leitura generosa/conservadora — nunca subestima o ruído). `opens <= 0` em
- * qualquer lado desativa a banda de ruído (não há como calibrar o incremento
- * de 1 clique sem denominador) — comparação cai pra diferença estrita.
- */
-export function withinClickNoise(a: WeeklyRankedCandidate, b: WeeklyRankedCandidate): boolean {
-  if (a.opens <= 0 || b.opens <= 0) return a.ratePct === b.ratePct;
-  const oneClickPct = Math.max(100 / a.opens, 100 / b.opens);
-  return Math.abs(a.ratePct - b.ratePct) < oneClickPct;
-}
-
-const PROFESSIONAL_IMPLICATION_RE =
-  /emprego|carreira|trabalh|profiss|mercado de trabalho|curr[ií]culo|vaga|contrata[çc][ãa]o|demiss/i;
-
-/** Pure: heurística de "implicação profissional" — palavra-chave em título/categoria/corpo. */
-export function hasProfessionalImplication(c: WeeklyRankedCandidate): boolean {
-  return PROFESSIONAL_IMPLICATION_RE.test(`${c.title} ${c.category} ${c.body}`);
-}
-
-/** Pure: heurística de "ângulo Brasil" — reusa `classifyOrigin` (mesmo classificador do CTR table). */
-export function hasBrazilAngle(c: WeeklyRankedCandidate): boolean {
-  let domain = "";
-  try {
-    domain = new URL(c.url).hostname;
-  } catch {
-    // URL ilegível — domain fica vazio, classifyOrigin decide só pelo texto.
-  }
-  return classifyOrigin(`${c.title} ${c.body} ${c.why} ${c.category}`, domain) === "BR";
-}
-
-/**
- * Pure: score do critério editorial de desempate (#4456: "ângulo Brasil >
- * implicação profissional > diversidade de categoria"). Pesos em ordem
- * lexicográfica estrita (100 > 50 > 10 — nenhuma combinação dos critérios
- * mais fracos supera o mais forte).
- */
-export function editorialTiebreakScore(c: WeeklyRankedCandidate, alreadySelectedCategories: Set<string>): number {
-  let score = 0;
-  if (hasBrazilAngle(c)) score += 100;
-  if (hasProfessionalImplication(c)) score += 50;
-  if (!alreadySelectedCategories.has(c.category.toUpperCase())) score += 10;
-  return score;
-}
-
-function byRateDescThenTitle(a: WeeklyRankedCandidate, b: WeeklyRankedCandidate): number {
-  return b.ratePct - a.ratePct || a.title.localeCompare(b.title);
 }
 
 /**
