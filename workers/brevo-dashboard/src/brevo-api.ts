@@ -1220,11 +1220,17 @@ export async function buildUpstreamErrorFallback(
  * (`X-Dashboard-Stale`/`X-Dashboard-Stale-Since`), nunca no corpo. `null`
  * quando não há stale bom pra servir — o caller degrada pro 502/503 explícito
  * (nunca corpo vazio silencioso).
+ *
+ * `status` aceita o literal `"network_error"` (#4533) além de um status HTTP
+ * numérico -- usado quando o caller capturou um erro de rede/timeout CRU
+ * (`isNetworkOrTimeoutError`), que por definição não tem status HTTP real (a
+ * requisição nunca chegou a receber uma Response). `X-Dashboard-Upstream-Status`
+ * carrega esse literal nesse caso, em vez de inventar um número enganoso.
  */
 export async function buildUpstreamErrorCampaignsJsonFallback(
   env: Pick<Env, "STATS_CACHE">,
   limit: number,
-  status: number,
+  status: number | "network_error",
 ): Promise<Response | null> {
   if (!env.STATS_CACHE) return null;
   const staleCampaignsRaw = (await env.STATS_CACHE
@@ -1531,6 +1537,30 @@ export class BrevoUpstreamError extends Error {
  */
 export function isBrevoOutageStatus(status: number): boolean {
   return status === 403 || status >= 500;
+}
+
+/**
+ * #4533: `true` quando `e` é um erro de rede/timeout CRU do `fetch()` nativo
+ * pra `api.brevo.com` -- TypeError (runtime lança isso pra falha de
+ * conexão/DNS/TLS, ex: "Network connection lost"/"fetch failed") ou
+ * AbortError/TimeoutError (timeout via `AbortSignal`/`AbortController`, mesmo
+ * `.name` já usado em `workers/linkedin-cron/src/dispatch.ts`). Esta classe de
+ * erro NUNCA carrega `.status` HTTP -- nenhuma Response chegou a existir --
+ * então por construção não é (nem pode ser) `BrevoUpstreamError`/
+ * `BrevoRateLimitError` (que só são lançados DEPOIS de uma resposta HTTP
+ * chegar, ver `brevoFetch` abaixo). Antes deste guard, uma falha de
+ * rede/timeout intermitente caía direto no 502 genérico de
+ * `buildCampaignsResponse` (index.ts) mesmo com um stale bom disponível no
+ * KV -- issue #4533: ~90% de 502 no guard determinístico
+ * `clarice-check-semaphore.ts` numa janela em que `curl` direto pra este
+ * mesmo endpoint respondia 200 o tempo todo. Mesma categoria "não sabemos se
+ * é nosso bug, serve o stale se tiver" que `isBrevoOutageStatus` já cobre pra
+ * 403/5xx estruturado (#4251).
+ */
+export function isNetworkOrTimeoutError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  if (e.name === "AbortError" || e.name === "TimeoutError") return true;
+  return e.name === "TypeError";
 }
 
 // #2337 fix 1: exportado para teste direto do parse de headers de rate-limit

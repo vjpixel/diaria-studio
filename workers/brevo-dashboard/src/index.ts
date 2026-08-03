@@ -64,6 +64,7 @@ import {
   BrevoRateLimitError,
   BrevoUpstreamError, // #4251
   isBrevoOutageStatus, // #4251
+  isNetworkOrTimeoutError, // #4533
   buildUpstreamErrorFallback, // #4251
   buildUpstreamErrorCampaignsJsonFallback, // #4251
   upstreamErrorResponse, // #4251
@@ -239,12 +240,38 @@ async function buildCampaignsResponse(
       if (fallback) return fallback;
       return upstreamErrorResponse(e.status, false);
     }
+    // #4533: erro de rede/timeout CRU do fetch() nativo pra api.brevo.com
+    // (TypeError -- falha de conexão/DNS/TLS -- ou AbortError/TimeoutError de
+    // um timeout) NUNCA carrega `.status` HTTP (nenhuma Response chegou a
+    // existir), então nunca é (nem pode ser) BrevoUpstreamError/
+    // BrevoRateLimitError -- antes deste guard caía direto no 502 genérico
+    // abaixo, mesmo com um stale bom disponível no KV. Mesma categoria "não
+    // sabemos se é nosso bug, serve o stale se tiver" que 403/5xx estruturado
+    // já cobre acima (#4251). Ver issue #4533: `clarice-check-semaphore.ts`
+    // (guard D4 de `/diaria-clarice-novos`) via ~90% de 502 nesta rota numa
+    // janela em que `curl` direto pro mesmo endpoint respondia 200 o tempo
+    // todo -- hipótese confirmada é exatamente esta lacuna.
+    if (isNetworkOrTimeoutError(e)) {
+      const fallback = await buildUpstreamErrorCampaignsJsonFallback(env, limit, "network_error");
+      if (fallback) return fallback;
+      // Sem stale bom pra servir: cai no 502 genérico abaixo -- fail-honesto,
+      // não há dado bom pra mascarar a falha (#4533, item 6 do dispatch).
+    }
     // #4187: `e` nem sempre é um Error (fetch nativo/dependência externa pode
     // lançar qualquer valor) -- (e as Error).message em cima de um não-Error
     // é `undefined`, e o `${...}` template literal aceita isso sem lançar
     // (interpola a string "undefined"). Mantido defensivo mesmo assim para
     // consistência com o guard equivalente abaixo (buildDashboardResponse),
     // onde o mesmo padrão ALIMENTA escHtml() e lá sim pode lançar.
+    // #4533: log do erro cru ANTES do 502 -- pedido explícito da issue (passo
+    // 1 da sugestão de investigação) pra diagnosticar em produção qualquer
+    // causa futura que escape dos 2 fallbacks estruturados acima, sem
+    // depender de reproduzir localmente (o incidente original nunca foi
+    // reproduzido fora de produção).
+    console.error(
+      "[#4533] /api/campaigns: sem fallback estruturado pra este erro -- servindo 502:",
+      e instanceof Error ? (e.stack ?? e.message) : String(e),
+    );
     return new Response(`Brevo fetch error: ${e instanceof Error ? e.message : String(e)}`, { status: 502 });
   } finally {
     if (lockAcquired) await releaseRefreshLock(env, path);
