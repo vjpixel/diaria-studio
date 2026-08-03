@@ -85,8 +85,12 @@ function installRouter(opts: {
   attributesExist: boolean;
   contactsPages: Array<Array<{ email?: string; attributes?: Record<string, unknown> }>>;
   putStatus?: number;
+  /** #4532: força a página de offset=0 do endpoint de listagem a responder
+   * com este status HTTP em vez de 200 (ex: 404, 500) — regressão do achado
+   * HIGH abaixo. */
+  listContactsStatus?: number;
 }) {
-  const { attributesExist, contactsPages, putStatus = 204 } = opts;
+  const { attributesExist, contactsPages, putStatus = 204, listContactsStatus } = opts;
   globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
@@ -102,6 +106,9 @@ function installRouter(opts: {
       return jsonRes(201, { name: "POLL_TOKEN" });
     }
     if (method === "GET" && url.pathname === `/v3/contacts/lists/${LIST_ID}/contacts`) {
+      if (listContactsStatus !== undefined && listContactsStatus !== 200) {
+        return jsonRes(listContactsStatus, { message: "erro simulado" });
+      }
       const offset = Number(url.searchParams.get("offset") ?? "0");
       const limit = Number(url.searchParams.get("limit") ?? "50");
       const pageIdx = offset / limit;
@@ -291,6 +298,32 @@ describe("inject-poll-token-brevo.ts run() — #4517", () => {
     assert.equal(written.get(pollTokenKvKey(lastToken)), "last@x.com", "contato da 2ª página também foi patcheado");
   });
 
+  it("#4532 (achado HIGH, silent-failure-hunter): GET /contacts/lists/{id}/contacts retornando 404 LANÇA em vez de tratar como lista vazia (regressão do falso-sucesso silencioso)", async () => {
+    const { putKv } = makeFakePutKv();
+    // brevoGet trata 404 como {status:404, body:{}} não-fatal — desenhado pra
+    // lookup de contato ÚNICO (contato sumiu entre listar e buscar). Antes do
+    // fix #4532, iterateListContacts reusava isso pro endpoint de listagem em
+    // MASSA da lista de produção, e um 404 aqui virava silenciosamente
+    // `total_contacts: 0, failed: 0` — um falso-sucesso que passaria o gate
+    // `injectionResult.failed > 0` em publish-daily-brevo.ts e criaria uma
+    // campanha real sem NENHUM POLL_TOKEN populado.
+    installRouter({ attributesExist: true, contactsPages: [[{ email: "x@x.com", attributes: {} }]], listContactsStatus: 404 });
+
+    await assert.rejects(
+      () =>
+        run({
+          dryRun: false,
+          force: false,
+          apiOpts: { apiKey: API_KEY, listId: LIST_ID },
+          secret: SECRET,
+          kvConfig: KV_CFG,
+          putKv,
+        }),
+      /retornou status 404/,
+      "run() deveria lançar em vez de devolver total_contacts:0 silenciosamente",
+    );
+  });
+
   it("falha do PUT (500): KV já escrito, result.failed incrementa (mesma ordem de garantia do Beehiiv, #4512)", async () => {
     const email = "falha-put@x.com";
     const { written, putKv } = makeFakePutKv();
@@ -309,5 +342,11 @@ describe("inject-poll-token-brevo.ts run() — #4517", () => {
     assert.equal(written.get(pollTokenKvKey(expectedToken)), email, "KV escrito ANTES do PUT, mesmo com falha depois");
     assert.equal(result.failed, 1);
     assert.equal(result.patched, 0);
+    // #4532 (achado type-design): failedContacts expõe QUAL contato falhou e
+    // por quê, não só a contagem — publish-daily-brevo.ts usa isso na
+    // mensagem de abort.
+    assert.equal(result.failedContacts.length, 1);
+    assert.equal(result.failedContacts[0].email, email);
+    assert.match(result.failedContacts[0].error, /500/);
   });
 });

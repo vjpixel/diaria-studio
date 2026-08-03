@@ -38,9 +38,18 @@
  *      `daily_send_cap`, barato o bastante por envio), diferente da Beehiiv
  *      (base inteira, task agendada separada). ABORTA se algum contato
  *      falhar (nunca envia com merge tag sem token resolvido — fail-closed).
+ *      #4532: além de `failed > 0`, reconcilia `total_contacts` enumerados
+ *      contra `listInfo.totalSubscribers` (`checkContactCountReconciliation`)
+ *      — enumerar MENOS contatos que a lista realmente tem (silenciosamente,
+ *      sem nenhum `failed`) também aborta.
  *   7. Cria a campanha Brevo (`POST /emailCampaigns`) — sem `--send-now`/
  *      `--schedule-at`, fica como rascunho na conta Brevo (mesma cautela do
  *      publisher mensal: nunca dispara sozinho).
+ *
+ * Exit codes: 1 uso/erro fatal genérico; 2 guard de `--i-reviewed-the-copy`
+ * ou `brevo_diaria`/config ausente; 3 cap diário excedido; 4 credenciais do
+ * token de voto ausentes; 5 falha ao injetar o token em ≥1 contato; 6
+ * divergência entre a enumeração e `listInfo.totalSubscribers` (#4532).
  *
  * Uso:
  *   npx tsx scripts/publish-daily-brevo.ts <edition-dir> --dry-run
@@ -220,6 +229,39 @@ export function checkPollTokenGuards(params: {
   return { ok: true };
 }
 
+/**
+ * Pura (#4532, achado HIGH do silent-failure-hunter — fleet review pré-merge
+ * do #4532) — reconcilia `injectionResult.total_contacts` (enumeração
+ * paginada de `iterateListContacts`, `inject-poll-token-brevo.ts`) contra
+ * `listInfo.totalSubscribers` (`brevoGetList`, endpoint SEPARADO, já
+ * consultado por `checkDailySendCap`). Defesa em profundidade: mesmo com o
+ * fix em `iterateListContacts` (que agora falha alto em vez de tratar
+ * status != 200 como lista vazia), esta checagem garante que qualquer outra
+ * forma de enumeração incompleta (resposta 200 com corpo truncado/malformado,
+ * regressão futura na paginação) nunca passe silenciosamente pelo gate de
+ * `injectionResult.failed > 0` — enumerar MENOS contatos do que a lista
+ * realmente tem significa que parte da audiência real do envio nunca
+ * recebeu `POLL_TOKEN`, e o script criaria a campanha achando que protegeu
+ * todo mundo.
+ */
+export function checkContactCountReconciliation(
+  totalContacts: number,
+  listTotalSubscribers: number,
+): PreflightGuardCheck {
+  if (totalContacts >= listTotalSubscribers) return { ok: true };
+  const detail =
+    totalContacts === 0
+      ? "a enumeração retornou 0 contato(s)"
+      : `a enumeração retornou apenas ${totalContacts} contato(s)`;
+  return {
+    ok: false,
+    reason:
+      `${detail}, mas a lista Brevo reporta ${listTotalSubscribers} assinante(s) (GET /contacts/lists/{id}, ` +
+      "brevoGetList) — divergência entre a contagem da lista e a enumeração paginada usada pra injetar o token " +
+      "opaco de voto; abortando (nunca envia com parte da audiência sem POLL_TOKEN confirmado, #4532).",
+  };
+}
+
 // ── montagem do HTML final (puro, dado o conteúdo já parseado) ──────────
 
 /**
@@ -248,8 +290,19 @@ export function buildDailyBrevoHtml(
 
 // ── main ─────────────────────────────────────────────────────────────────
 
-async function main(): Promise<void> {
-  loadProjectEnv(ROOT);
+/**
+ * @param rootDirOverride Opcional. Default = raiz do repo. Em testes, passar
+ *   tempdir com fixture controlado (`platform.config.json`, `data/editions/`)
+ *   pra evitar tocar `data/` real — mesmo padrão de
+ *   `select-linkedin-weekly.ts main(rootDirOverride)` (#4489) usado pelo
+ *   teste de integração deste script (#4532, achado CRITICAL do
+ *   pr-test-analyzer: antes `main()` não era exportado e o wiring
+ *   fail-closed completo — guard → injeção → abort ANTES de criar a
+ *   campanha — nunca era exercitado de ponta a ponta por nenhum teste).
+ */
+export async function main(rootDirOverride?: string): Promise<void> {
+  const rootDir = rootDirOverride ?? ROOT;
+  loadProjectEnv(rootDir);
   const argv = process.argv.slice(2);
   const editionDirArg = argv.find((a) => !a.startsWith("--"));
   const dryRun = hasFlag(argv, "dry-run");
@@ -269,7 +322,7 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const platformConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as PlatformConfig;
+  const platformConfig = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as PlatformConfig;
   const brevoDiaria = platformConfig.brevo_diaria;
   const apiKey = brevoDiaria ? process.env[brevoDiaria.api_key_env] : undefined;
   const guardCheck = checkBrevoDiariaGuards({ dryRun, brevoDiaria, apiKey });
@@ -278,7 +331,7 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const editionDir = resolve(ROOT, editionDirArg);
+  const editionDir = resolve(rootDir, editionDirArg);
   const content = stripGreetingAndSupporterBlocks(extractContent(editionDir));
 
   const imagesPath = resolvePublicImagesPath(editionDir);
@@ -340,12 +393,34 @@ async function main(): Promise<void> {
     },
   });
   if (injectionResult.failed > 0) {
+    // #4532 (achado type-design): cita os e-mails que falharam (até 10) em
+    // vez de só a contagem — sem isso o operador tinha que garimpar stderr
+    // manualmente pra saber QUAIS contatos ficaram sem POLL_TOKEN.
+    const preview = injectionResult.failedContacts
+      .slice(0, 10)
+      .map((f) => `${f.email} (${f.error.slice(0, 80)})`)
+      .join("; ");
+    const more = injectionResult.failedContacts.length > 10
+      ? ` … e mais ${injectionResult.failedContacts.length - 10}.`
+      : "";
     log(
       `ERRO: ${injectionResult.failed} contato(s) da lista Brevo falharam ao receber o token opaco de voto (#4517) — ` +
-        "abortando envio (nunca envia com merge tag sem token resolvido, fail-closed).",
+        `abortando envio (nunca envia com merge tag sem token resolvido, fail-closed). Falhas: ${preview}${more}`,
     );
     process.exit(5);
   }
+
+  // #4532 (achado HIGH): reconcilia a enumeração de `injectPollTokenBrevo`
+  // contra a contagem ao vivo da lista (`listInfo`, já obtida acima pro cap
+  // check) — nunca deixa uma enumeração incompleta passar como sucesso só
+  // porque `failed === 0` (0 falhas sobre 0 contatos enumerados também é
+  // "0 falhas").
+  const reconciliation = checkContactCountReconciliation(injectionResult.total_contacts, listInfo.totalSubscribers);
+  if (!reconciliation.ok) {
+    log(`ERRO: ${(reconciliation as { ok: false; reason: string }).reason}`);
+    process.exit(6);
+  }
+
   log(
     `tokens de voto (#4517): ${injectionResult.patched} patcheado(s), ` +
       `${injectionResult.skipped_already_correct} já corretos, ${injectionResult.total_contacts} contato(s) na lista.`,

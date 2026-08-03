@@ -21,11 +21,12 @@
  * Diferença de design vs. `inject-poll-token.ts` (Beehiiv): lá o escopo é a
  * base INTEIRA (milhares de assinantes), então faz sentido rodar como task
  * agendada separada, incremental via `--since-hours`. Aqui o escopo é SEMPRE
- * 1 lista Brevo específica (`brevo_diaria.list_id`), hoje capada em
- * `daily_send_cap` (≤300 contatos, #4266) — barato o bastante pra
- * `publish-daily-brevo.ts` chamar `run()` INLINE antes de criar cada
- * campanha, garantindo token fresco pra quem vai receber o envio sem
- * depender de nenhuma task agendada (nunca esquecida, nunca defasada).
+ * 1 lista Brevo específica (`brevo_diaria.list_id`), capada em
+ * `brevo_diaria.daily_send_cap` (config — hoje bem abaixo do fallback de
+ * código de 300, #4266) — barato o bastante pra `publish-daily-brevo.ts`
+ * chamar `run()` INLINE antes de criar cada campanha, garantindo token
+ * fresco pra quem vai receber o envio sem depender de nenhuma task agendada
+ * (nunca esquecida, nunca defasada).
  *
  * Uso standalone (debug/backfill manual):
  *   npx tsx scripts/inject-poll-token-brevo.ts --list-id 7
@@ -105,15 +106,49 @@ async function ensureContactAttribute(apiKey: string): Promise<void> {
   console.error(`[inject-poll-token-brevo] criado atributo de contato "${ATTR_NAME}"`);
 }
 
-/** Contatos da lista, paginados (limit=50) — `GET /v3/contacts/lists/{listId}/contacts`. */
+/**
+ * Contatos da lista, paginados — `GET /v3/contacts/lists/{listId}/contacts`.
+ *
+ * `limit=50` (não os 500 usados em `clarice-cta-ab-setup.ts`/
+ * `clarice-engagement-cohorts.ts` pro mesmo endpoint) é intencional aqui:
+ * esta lista é sempre pequena (capada em `brevo_diaria.daily_send_cap`, hoje
+ * bem abaixo do fallback de 300 — ver cabeçalho do módulo), então o número
+ * de páginas nunca é o gargalo; manter 50 evita re-tocar os testes de
+ * paginação já escritos contra esse valor (#4517) sem nenhum ganho real de
+ * latência nesta escala.
+ *
+ * #4532 (achado HIGH do silent-failure-hunter, fleet review pré-merge do
+ * #4532): `brevoGet` trata QUALQUER 404 como resultado vazio não-fatal
+ * (`{status:404, body:{}}`) — desenhado pra lookup de contato ÚNICO, onde
+ * "sumiu entre listar e buscar" é esperado (ex:
+ * `clarice-engagement-cohorts.ts::fetchListMembers`, que trata 404 nesse
+ * MESMO endpoint como "lista apagada — pula", uma decisão de negócio
+ * deliberada pra um job que itera VÁRIAS listas). Aqui o endpoint é a
+ * listagem em MASSA da ÚNICA lista de produção deste canal
+ * (`brevo_diaria.list_id`) — se ela responder 404 (list_id mudou, permissão
+ * revogada, outage transitório da Brevo), NÃO significa "lista vazia":
+ * significa que algo está errado, e silenciar isso faria `run()` devolver
+ * `total_contacts: 0, failed: 0` — um falso-sucesso que passa o gate
+ * `injectionResult.failed > 0` em `publish-daily-brevo.ts` e cria uma
+ * campanha real sem NENHUM contato com `POLL_TOKEN` populado (o mesmo
+ * vazamento que #4487/#4517 existem pra fechar). Mesmo padrão de
+ * `clarice-cta-ab-setup.ts::fetchListEmails`, que já falha alto pro mesmo
+ * endpoint em vez de reusar `brevoGet` como se fosse lookup single-contato.
+ */
 async function* iterateListContacts(opts: ApiOpts): AsyncGenerator<BrevoContact[]> {
   const limit = 50;
   let offset = 0;
   for (;;) {
-    const { body } = await brevoGet(
+    const { status, body } = await brevoGet(
       opts.apiKey,
       `/contacts/lists/${opts.listId}/contacts?limit=${limit}&offset=${offset}`,
     );
+    if (status !== 200) {
+      throw new Error(
+        `GET /contacts/lists/${opts.listId}/contacts (offset=${offset}) retornou status ${status} — ` +
+          "abortando enumeração (nunca trata resposta não-200 como lista vazia neste endpoint, #4532).",
+      );
+    }
     const contacts = (body as BrevoContactsPage).contacts ?? [];
     yield contacts;
     if (contacts.length < limit) break;
@@ -157,6 +192,16 @@ export interface RunResult {
   skipped_already_correct: number;
   skipped_no_email: number;
   failed: number;
+  /**
+   * #4532 (achado type-design, fleet review pré-merge do #4532):
+   * `processBatch` sabe QUAL contato falhou e por quê (`{item, error}`) mas
+   * isso era colapsado num `failed: number` antes de sair de `run()` — quem
+   * chama (ex: `publish-daily-brevo.ts` no abort de exit(5)) só conseguia
+   * dizer "N contatos falharam", obrigando o operador a garimpar stderr
+   * manualmente pra saber QUAIS. Exposto aqui pra a mensagem de abort citar
+   * os e-mails diretamente.
+   */
+  failedContacts: Array<{ email: string; error: string }>;
   dry_run: boolean;
 }
 
@@ -182,6 +227,7 @@ export async function run(args: {
   let skippedAlready = 0;
   let skippedNoEmail = 0;
   let failedTotal = 0;
+  const failedContacts: Array<{ email: string; error: string }> = [];
 
   for await (const page of iterateListContacts(apiOpts)) {
     total += page.length;
@@ -221,6 +267,7 @@ export async function run(args: {
     patched += result.ok;
     failedTotal += result.failed.length;
     for (const f of result.failed) {
+      failedContacts.push({ email: f.item.email, error: f.error });
       console.error(`[inject-poll-token-brevo] FAIL ${f.item.email}: ${f.error.slice(0, 200)}`);
     }
   }
@@ -231,6 +278,7 @@ export async function run(args: {
     skipped_already_correct: skippedAlready,
     skipped_no_email: skippedNoEmail,
     failed: failedTotal,
+    failedContacts,
     dry_run: dryRun,
   };
 }

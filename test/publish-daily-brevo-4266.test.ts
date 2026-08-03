@@ -16,6 +16,7 @@ import {
   buildDailyBrevoHtml,
   checkBrevoDiariaGuards,
   checkPollTokenGuards,
+  checkContactCountReconciliation,
   resolvePublicImagesPath,
   stripGreetingAndSupporterBlocks,
 } from "../scripts/publish-daily-brevo.ts";
@@ -192,6 +193,37 @@ describe("checkPollTokenGuards — credenciais pra injeção do token opaco de v
     const result = checkPollTokenGuards({ ...valid, cloudflareWorkersToken: undefined });
     assert.equal(result.ok, false);
     assert.match((result as { ok: false; reason: string }).reason, /CLOUDFLARE_WORKERS_TOKEN não definido/);
+  });
+});
+
+describe("checkContactCountReconciliation — reconciliação enumeração×lista (#4532, achado HIGH)", () => {
+  it("total_contacts igual a listTotalSubscribers → ok", () => {
+    assert.deepEqual(checkContactCountReconciliation(104, 104), { ok: true });
+  });
+
+  it("total_contacts maior que listTotalSubscribers (lista cresceu entre as 2 chamadas) → ok", () => {
+    assert.deepEqual(checkContactCountReconciliation(110, 104), { ok: true });
+  });
+
+  it("total_contacts === 0 mas a lista reporta assinantes → not ok, motivo cita os 2 números e o endpoint", () => {
+    const result = checkContactCountReconciliation(0, 104);
+    assert.equal(result.ok, false);
+    const reason = (result as { ok: false; reason: string }).reason;
+    assert.match(reason, /0 contato\(s\)/);
+    assert.match(reason, /104 assinante\(s\)/);
+    assert.match(reason, /brevoGetList/);
+  });
+
+  it("total_contacts positivo mas abaixo de listTotalSubscribers (enumeração parcial) → not ok", () => {
+    const result = checkContactCountReconciliation(80, 104);
+    assert.equal(result.ok, false);
+    const reason = (result as { ok: false; reason: string }).reason;
+    assert.match(reason, /80 contato\(s\)/);
+    assert.match(reason, /104 assinante\(s\)/);
+  });
+
+  it("ambos 0 (lista genuinamente vazia) → ok, não é divergência", () => {
+    assert.deepEqual(checkContactCountReconciliation(0, 0), { ok: true });
   });
 });
 
