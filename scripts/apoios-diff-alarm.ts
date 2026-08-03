@@ -15,15 +15,19 @@
  * quando o conteúdo muda ou depois de ter sido resolvido e reaparecer (ver
  * docstring do módulo pura).
  *
- * **Reconciliação de promessas pendentes (#4490 causa 4, self-review finding
- * 1 do PR #4503):** antes de computar o diff, roda o MESMO bloco de
- * `scripts/sync-apoio-nivel-beehiiv.ts::main()` — drena promessas novas do
- * Gmail + reconsulta `reconcilePendingPromises` pra cada promessa pendente do
- * store; se confirmar pagamento, promove a contato ANTES do cálculo. Sem
- * isso, esta task diária (a cadência REAL do #4485 item 2) nunca fecharia o
- * loop da causa 4 sozinha — só `/diaria-apoios-sync` rodado manualmente
- * fazia essa reconciliação. Idempotente via o store, fail-soft (falha vira
- * aviso, nunca aborta o alarme).
+ * **Reconciliação de promessas pendentes (#4490 causa 4; extraída pra
+ * `runApoioReconciliationCycle` no self-review consolidado do PR #4503):**
+ * antes de computar o diff, roda a MESMA sequência de
+ * `scripts/sync-apoio-nivel-beehiiv.ts::main()` (`scripts/lib/apoio-reconciliation-cycle.ts`)
+ * — drena Gmail, importa notificações de PAGAMENTO CONFIRMADO como contato
+ * (achado crítico 1), e reconsulta `reconcilePendingPromises` pra cada
+ * promessa pendente do store; se confirmar pagamento, promove a contato
+ * ANTES do cálculo. Sem isso, esta task diária (a cadência REAL do #4485
+ * item 2) nunca fecharia o loop da causa 4 sozinha — só `/diaria-apoios-sync`
+ * rodado manualmente fazia essa reconciliação. Idempotente via o store,
+ * fail-soft pra tudo EXCETO `ApoiaSeAuthError` (achado crítico 2) — chave
+ * apoia.se rejeitada aborta o alarme (loud, saída não-zero) em vez de
+ * "seguindo sem ela".
  *
  * Uso:
  *   npx tsx scripts/apoios-diff-alarm.ts [--dry-run] [--to email@x.com]
@@ -51,25 +55,12 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { readApoiaSeEnv, defaultCacheDir, competenceMonth } from "./lib/apoia-se.ts";
-import {
-  pendingPromisesPath,
-  loadPendingPromises,
-  savePendingPromises,
-  mergeNewPromises,
-} from "./lib/apoio-promise-store.ts";
-import { drainApoiaSeNotifications } from "./lib/apoia-se-gmail-drain.ts";
-import {
-  buildApoiosData,
-  readPastMonthSnapshots,
-  loadContacts,
-  saveContacts,
-  type MonthSnapshot,
-} from "./studio-ui/studio-apoios.ts";
+import { runApoioReconciliationCycle } from "./lib/apoio-reconciliation-cycle.ts";
+import { buildApoiosData, readPastMonthSnapshots, type MonthSnapshot } from "./studio-ui/studio-apoios.ts";
 import {
   computeDesiredApoioLevels,
   diffApoioTags,
   fetchCurrentBeehiivState,
-  reconcilePendingPromises,
   shouldBlockRemovals,
   evaluateBlastRadiusGuard,
 } from "./sync-apoio-nivel-beehiiv.ts";
@@ -115,60 +106,59 @@ async function main(): Promise<void> {
 
   const { apiKey, publicationId } = loadBeehiivConfig(LOG_PREFIX);
 
-  // #4490 causa 4 / self-review finding 1 do PR #4503: esta é a task diária
+  // #4490 causa 4 / self-review consolidado do PR #4503: esta é a task diária
   // REAL registrada pelo #4485 item 2 (`Diaria-Apoios-Diff-Alarm`) — sem esta
   // reconciliação, uma promessa que confirma pagamento só é promovida a
   // contato se alguém rodar `/diaria-apoios-sync` manualmente, o que
   // reintroduz a dependência de "alguém lembrar" que a causa 4 deveria
-  // eliminar. Mesmo bloco de `sync-apoio-nivel-beehiiv.ts::main()` — drena
-  // promessas novas do Gmail + reconsulta as pendentes do store ANTES do
+  // eliminar. Mesma sequência de `sync-apoio-nivel-beehiiv.ts::main()`
+  // (extraída pra `runApoioReconciliationCycle` — achado alto de duplicação
+  // do self-review) — drena Gmail, importa notificações CONFIRMADAS (achado
+  // crítico 1) e reconcilia promessas pendentes (achado crítico 2) ANTES do
   // resto do cálculo (buildApoiosData relê contacts.jsonl do disco a seguir,
-  // então um contato promovido aqui já entra no diff computado abaixo).
-  // Fail-soft total — qualquer falha (credenciais apoia.se ausentes, Gmail
-  // indisponível, erro de I/O) vira aviso e a rodada segue sem reconciliação
-  // de promessas, nunca aborta o alarme por causa dela.
-  try {
-    const apoiaEnv = readApoiaSeEnv();
-    const promisesPath = pendingPromisesPath(ROOT, apoiaEnv.campaign);
-    let pending = loadPendingPromises(promisesPath);
-
-    const drainResult = await drainApoiaSeNotifications(ROOT);
-    if (drainResult.skipped) {
-      console.error(
-        `${LOG_PREFIX} aviso: drain de promessas (Gmail) pulado (${drainResult.reason ?? "erro desconhecido"}) — ` +
-          "reconciliação segue só com promessas já no store.",
-      );
-    } else if (drainResult.promessas && drainResult.promessas.length > 0) {
-      pending = mergeNewPromises(pending, drainResult.promessas);
-      console.error(`${LOG_PREFIX} ${drainResult.promessas.length} promessa(s) nova(s) drenada(s) do Gmail.`);
-    }
-
-    if (pending.length > 0) {
-      const contactsBeforeReconcile = loadContacts(ROOT);
-      const reconciled = await reconcilePendingPromises(contactsBeforeReconcile, pending, {
-        env: apoiaEnv,
-        cacheDir: defaultCacheDir(apoiaEnv.campaign),
-      });
-      if (reconciled.promoted.length > 0) {
-        saveContacts(ROOT, reconciled.contacts);
-        console.error(
-          `${LOG_PREFIX} ${reconciled.promoted.length} promessa(s) confirmada(s) como pagamento — ` +
-            `promovida(s) a contato: ${reconciled.promoted.map((p) => `${p.name} <${p.email}>`).join(", ")}`,
-        );
-      }
-      savePendingPromises(promisesPath, reconciled.remainingPromises);
-      if (reconciled.remainingPromises.length > 0) {
-        console.error(
-          `${LOG_PREFIX} ${reconciled.remainingPromises.length} promessa(s) ainda pendente(s) (sem confirmação de pagamento).`,
-        );
-      }
-    } else {
-      savePendingPromises(promisesPath, pending);
-    }
-  } catch (e) {
+  // então qualquer contato importado/promovido aqui já entra no diff
+  // computado abaixo). Fail-soft pra tudo, EXCETO `ApoiaSeAuthError` (ver
+  // `cycle.authError` abaixo).
+  const cycle = await runApoioReconciliationCycle(ROOT);
+  if (cycle.drainSkipped) {
     console.error(
-      `${LOG_PREFIX} aviso: reconciliação de promessas pendentes falhou (${(e as Error).message}) — seguindo sem ela.`,
+      `${LOG_PREFIX} aviso: drain de promessas (Gmail) pulado (${cycle.drainSkipReason ?? "erro desconhecido"}) — ` +
+        "reconciliação segue só com promessas já no store.",
     );
+  }
+  if (cycle.promessasDrained > 0) {
+    console.error(`${LOG_PREFIX} ${cycle.promessasDrained} promessa(s) nova(s) drenada(s) do Gmail.`);
+  }
+  if (cycle.notificationsImported > 0) {
+    console.error(
+      `${LOG_PREFIX} ${cycle.notificationsImported} notificação(ões) de pagamento confirmado importada(s) como contato novo.`,
+    );
+  }
+  if (cycle.promoted.length > 0) {
+    console.error(
+      `${LOG_PREFIX} ${cycle.promoted.length} promessa(s) confirmada(s) como pagamento — ` +
+        `promovida(s) a contato: ${cycle.promoted.map((p) => `${p.name} <${p.email}>`).join(", ")}`,
+    );
+  }
+  if (cycle.remainingPending.length > 0) {
+    console.error(
+      `${LOG_PREFIX} ${cycle.remainingPending.length} promessa(s) ainda pendente(s) (sem confirmação de pagamento).`,
+    );
+  }
+  if (cycle.warning) {
+    console.error(`${LOG_PREFIX} aviso: ${cycle.warning}`);
+  }
+  if (cycle.authError) {
+    // Achado crítico 2 (PR #4503): chave apoia.se rejeitada é LOUD, nunca
+    // "seguindo sem ela" — sem isso, toda promessa pendente falharia em
+    // silêncio pra sempre, indistinguível de "ainda não pagou". Aborta ANTES
+    // de computar/enviar o diff (com a credencial quebrada, `buildApoiosData`
+    // também erraria pra todo contato — não há diff confiável pra alarmar).
+    console.error(
+      `${LOG_PREFIX} ERRO FATAL: chave apoia.se rejeitada durante a reconciliação de promessas pendentes ` +
+        `(${cycle.authError}) — verifique APOIA_SE_API_KEY/APOIA_SE_API_SECRET. Alarme abortado sem enviar e-mail.`,
+    );
+    process.exit(1);
   }
 
   const data = await buildApoiosData(ROOT);

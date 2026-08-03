@@ -58,7 +58,7 @@ import {
 } from "../scripts/sync-apoio-nivel-beehiiv.ts";
 import type { ContactWithStatus, MonthSnapshot } from "../scripts/studio-ui/studio-apoios.ts";
 import type { PendingPromise } from "../scripts/lib/apoio-promise-store.ts";
-import { RateLimiter } from "../scripts/lib/apoia-se.ts";
+import { RateLimiter, ApoiaSeAuthError } from "../scripts/lib/apoia-se.ts";
 
 const TEST_APOIA_ENV = { apiKey: "test-key", apiSecret: "test-secret", campaign: "diaria" };
 // Limiter "rápido" — evita o throttle real de 200ms/chamada do singleton
@@ -899,6 +899,24 @@ describe("reconcilePendingPromises (#4490 causa 4)", () => {
 
     assert.deepEqual(result.promoted, []);
     assert.equal(result.remainingPromises.length, 1);
+  });
+
+  it("achado crítico 2 (PR #4503): ApoiaSeAuthError PROPAGA (throw) em vez de manter a promessa pendente em silêncio", async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ message: "chave inválida" }), { status: 401 })) as unknown as typeof fetch;
+
+    await assert.rejects(
+      () =>
+        reconcilePendingPromises([], [pendingPromise()], {
+          env: TEST_APOIA_ENV,
+          cacheDir: tmpDir,
+          fetchImpl,
+          limiter: fastPromiseLimiter,
+          now: new Date("2026-08-02T22:00:00Z"),
+        }),
+      (e: unknown) => e instanceof ApoiaSeAuthError,
+      "chave apoia.se rejeitada (401) deve propagar como ApoiaSeAuthError, nunca ser engolida",
+    );
   });
 
   it("sempre usa forceRefresh (ignora qualquer cache HIT do mês corrente) — promessa recém-confirmada não fica presa num false cacheado", async () => {

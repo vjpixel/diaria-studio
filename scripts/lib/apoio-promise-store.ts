@@ -20,15 +20,16 @@
  *
  * Fix: este módulo guarda as promessas NUM ARQUIVO PRÓPRIO
  * (`data/apoia-se/{campaign}/pending-promises.jsonl`) e
- * `reconcilePendingPromises` (exportado de
- * `scripts/sync-apoio-nivel-beehiiv.ts`, chamado tanto de lá quanto de
- * `scripts/apoios-diff-alarm.ts` desde o self-review finding 1 do PR #4503 —
- * a task diária real precisa da MESMA reconciliação, não só a invocação
- * manual) reconsulta `checkBacker` (forceRefresh) pra cada uma A CADA RODADA
- * — se confirmar pagamento no mês corrente, promove a pessoa a contato
- * (mesmo `importNewApoiadoresFromGmail` já usado pro drain de confirmados) e
- * remove a entrada do store (resolvida). Promessa que ainda não converteu
- * continua no store pra próxima rodada.
+ * `reconcilePendingPromises` (`scripts/lib/apoio-reconciliation-cycle.ts`,
+ * reexportada de `scripts/sync-apoio-nivel-beehiiv.ts` — movida pra lá no
+ * self-review consolidado do PR #4503 junto com `runApoioReconciliationCycle`,
+ * a orquestração inteira chamada tanto de `sync-apoio-nivel-beehiiv.ts`
+ * quanto de `scripts/apoios-diff-alarm.ts` — a task diária real precisa da
+ * MESMA reconciliação, não só a invocação manual) reconsulta `checkBacker`
+ * (forceRefresh) pra cada uma A CADA RODADA — se confirmar pagamento no mês
+ * corrente, promove a pessoa a contato (mesmo `importNewApoiadoresFromGmail`
+ * já usado pro drain de confirmados) e remove a entrada do store (resolvida).
+ * Promessa que ainda não converteu continua no store pra próxima rodada.
  *
  * Deliberadamente PARALELO ao mecanismo de `importPendingApoiadoresFromGmail`
  * (não o substitui) — aquele cria um contato PENDENTE imediato pro editor ver
