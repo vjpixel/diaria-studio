@@ -153,11 +153,22 @@ describe("selectHeadlines — Use Melhor nunca vira manchete (#4492)", () => {
     assert.equal(useMelhorPick?.url, useMelhorWinner.url);
   });
 
-  it("use_melhor não aparece em `ranked` (auditoria do pool de manchete) nem em `selected`", () => {
+  it("use_melhor não aparece em `headlineEligible` (auditoria do pool de manchete) nem em `selected`", () => {
     const useMelhorOnly = ranked({ kind: "section", section: "use_melhor", url: "https://exemplo.com/tutorial", clicks: 10, opens: 100 });
     const result = selectHeadlines([useMelhorOnly], 3);
     assert.equal(result.selected.length, 0);
-    assert.ok(!result.ranked.some((c) => c.url === useMelhorOnly.url));
+    assert.ok(!result.headlineEligible.some((c) => c.url === useMelhorOnly.url));
+  });
+
+  it("shortfall de manchetes conta separadamente use_melhor reservado vs. exclusão comercial (achado #4507)", () => {
+    const useMelhorOnly = ranked({ kind: "section", section: "use_melhor", url: "https://exemplo.com/tutorial", clicks: 10, opens: 100 });
+    const commercial = ranked({ kind: "section", url: "https://apoia.se/diaria", clicks: 10, opens: 100 });
+    const result = selectHeadlines([useMelhorOnly, commercial], 2);
+    assert.equal(result.selected.length, 0);
+    const shortfallWarning = result.warnings.find((w) => /^Só \d+\/\d+ candidatos elegíveis/.test(w));
+    assert.ok(shortfallWarning, result.warnings.join(" | "));
+    assert.match(shortfallWarning!, /1 exclu[ií]do\(s\) por comercial\/própria/);
+    assert.match(shortfallWarning!, /1 reservado\(s\) pro bloco Use Melhor/);
   });
 });
 

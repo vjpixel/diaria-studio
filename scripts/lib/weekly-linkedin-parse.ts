@@ -17,7 +17,7 @@
 
 import { parseDestaques } from "../extract-destaques.ts";
 import { parseSections } from "./newsletter-parse.ts";
-import { SECTIONS, sectionHeaderRegex } from "./section-naming.ts";
+import { SECTIONS, sectionHeaderRegex, type SectionBucket } from "./section-naming.ts";
 
 export type WeeklyCandidateKind = "destaque" | "section";
 
@@ -96,7 +96,7 @@ export function extractWeeklyCandidates(md: string, editionDate: string): Weekly
  * bucket do categorizer. `destaque`/`outro` ficam de fora de propósito — não
  * são seções secundárias com header reconhecível por `sectionHeaderRegex`.
  */
-const BUCKET_TO_WEEKLY_SECTION: Record<string, WeeklyRawCandidate["section"]> = {
+const BUCKET_TO_WEEKLY_SECTION: Record<SectionBucket, WeeklyRawCandidate["section"]> = {
   lancamento: "lancamentos",
   radar: "radar",
   use_melhor: "use_melhor",
@@ -127,7 +127,6 @@ export function detectDeadSectionHeaders(md: string, candidates: WeeklyRawCandid
   for (const def of SECTIONS) {
     if (def.legacy) continue; // aliases legacy (PESQUISAS/OUTRAS NOTÍCIAS) não emitidos em edições novas — fora de escopo.
     const weeklySection = BUCKET_TO_WEEKLY_SECTION[def.bucket];
-    if (!weeklySection) continue;
     const headerFound = sectionHeaderRegex(def.pattern, { flags: "mu" }).test(md);
     if (headerFound && !presentSections.has(weeklySection)) {
       dead.push(def.label);

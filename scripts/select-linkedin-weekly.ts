@@ -259,7 +259,7 @@ export function main(rootDirOverride?: string) {
     editionsFound: editionsFound.map((e) => e.date),
     editionsMissing,
     headlines: headlineResult.selected,
-    headlineCandidatesRanked: headlineResult.ranked,
+    headlineCandidatesRanked: headlineResult.headlineEligible,
     excludedCandidates: headlineResult.excluded,
     useMelhor: useMelhor ?? null,
     restOfWeek,
