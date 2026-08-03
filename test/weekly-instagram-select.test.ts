@@ -20,6 +20,7 @@ import {
   uniqueOpensOf,
   toRankedCandidate,
   selectInstagramWeekly,
+  dedupeCandidatesByUrl,
   isCommercialOrOwnLink,
   hasSuspiciousCommercialLanguage,
   withinClickNoise,
@@ -57,6 +58,7 @@ describe("extractInstagramCandidates", () => {
       [1, 2, 3],
     );
     assert.ok(candidates.every((c) => c.editionDate === "260727"));
+    assert.ok(candidates.every((c) => c.kind === "destaque"));
   });
 
   it("pula destaque sem URL, sem lançar", () => {
@@ -64,7 +66,7 @@ describe("extractInstagramCandidates", () => {
     assert.deepEqual(extractInstagramCandidates(md, "260727"), []);
   });
 
-  it("NUNCA extrai itens de RADAR/USE MELHOR, mesmo presentes no markdown (limitação técnica atual — sem card 4:5 próprio, não decisão de escopo — ver #4513)", () => {
+  it("extrai itens de RADAR/USE MELHOR além dos destaques (#4513 — card 4:5 gerado sob demanda quando vencem o ranking)", () => {
     const md = [
       "DESTAQUE 1 | Notícias",
       "Título D1",
@@ -91,12 +93,87 @@ describe("extractInstagramCandidates", () => {
       "",
     ].join("\n");
     const candidates = extractInstagramCandidates(md, "260727");
-    assert.equal(candidates.length, 1, "só o DESTAQUE 1 deveria ser extraído — RADAR/USE MELHOR nunca competem no Instagram");
-    assert.equal(candidates[0].url, "https://exemplo.com/d1");
-    assert.ok(
-      !candidates.some((c) => c.url === "https://exemplo.com/radar-item" || c.url === "https://exemplo.com/use-melhor-item"),
-      "itens de RADAR/USE MELHOR nunca deveriam aparecer nos candidatos",
-    );
+    assert.equal(candidates.length, 3, "destaque + item de radar + item de use melhor");
+
+    const destaque = candidates.find((c) => c.url === "https://exemplo.com/d1")!;
+    assert.equal(destaque.kind, "destaque");
+    assert.equal(destaque.destaqueNumber, 1);
+    assert.equal(destaque.section, undefined);
+
+    const radar = candidates.find((c) => c.url === "https://exemplo.com/radar-item")!;
+    assert.ok(radar, "item de RADAR deveria ser extraído");
+    assert.equal(radar.kind, "section");
+    assert.equal(radar.section, "radar");
+    assert.equal(radar.destaqueNumber, undefined, "item de seção nunca tem destaqueNumber — resolve card sob demanda");
+    assert.equal(radar.title, "Item de Radar bem clicado");
+    assert.match(radar.body, /Descrição do item de radar/);
+
+    const useMelhor = candidates.find((c) => c.url === "https://exemplo.com/use-melhor-item")!;
+    assert.ok(useMelhor, "item de USE MELHOR deveria ser extraído");
+    assert.equal(useMelhor.kind, "section");
+    assert.equal(useMelhor.section, "use_melhor");
+    assert.equal(useMelhor.destaqueNumber, undefined);
+  });
+
+  it("NUNCA extrai itens de LANÇAMENTOS/VÍDEOS (fora do escopo do #4513 — só RADAR/USE MELHOR competem além de destaques)", () => {
+    const md = [
+      "DESTAQUE 1 | Notícias",
+      "Título D1",
+      "https://exemplo.com/d1",
+      "",
+      "Corpo do D1.",
+      "",
+      "Por que isso importa:",
+      "Explicação D1.",
+      "",
+      "---",
+      "",
+      "**LANÇAMENTOS**",
+      "",
+      "**[Lançamento X](https://exemplo.com/lancamento-x)**",
+      "Descrição do lançamento.",
+      "",
+      "---",
+      "",
+      "**VÍDEOS**",
+      "",
+      "**[Vídeo Y](https://exemplo.com/video-y)**",
+      "Descrição do vídeo.",
+      "",
+    ].join("\n");
+    const candidates = extractInstagramCandidates(md, "260727");
+    assert.equal(candidates.length, 1, "só o destaque — LANÇAMENTOS/VÍDEOS nunca competem no Instagram");
+    assert.ok(!candidates.some((c) => c.url === "https://exemplo.com/lancamento-x" || c.url === "https://exemplo.com/video-y"));
+  });
+});
+
+describe("dedupeCandidatesByUrl (#4513)", () => {
+  function rankedForDedup(
+    overrides: Partial<InstagramRankedCandidate> & Pick<InstagramRankedCandidate, "title" | "url" | "editionDate" | "kind">,
+  ): InstagramRankedCandidate {
+    return {
+      body: "",
+      why: "",
+      category: "NOTÍCIAS",
+      uniqueVerifiedClicks: 0,
+      webUniqueClicks: 0,
+      opens: 100,
+      ratePct: 0,
+      excluded: false,
+      hasClickData: true,
+      ...overrides,
+    };
+  }
+
+  it("mesma URL como destaque E como item de seção — prioriza kind:destaque (corpo completo)", () => {
+    const candidates: InstagramRankedCandidate[] = [
+      rankedForDedup({ title: "Versão de seção", url: "https://exemplo.com/x", editionDate: "260727", kind: "section", section: "radar" }),
+      rankedForDedup({ title: "Versão de destaque", url: "https://exemplo.com/x", editionDate: "260727", kind: "destaque", destaqueNumber: 1 }),
+    ];
+    const result = dedupeCandidatesByUrl(candidates);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].title, "Versão de destaque");
+    assert.equal(result[0].kind, "destaque");
   });
 });
 
@@ -124,6 +201,7 @@ function rankedFixture(
     body: "",
     why: "",
     category: "NOTÍCIAS",
+    kind: "destaque",
     uniqueVerifiedClicks: 0,
     webUniqueClicks: 0,
     opens: 100,
@@ -261,7 +339,7 @@ describe("cache de cliques Beehiiv — matchPostsToWindow / clickCountsForUrl / 
 
 describe("toRankedCandidate", () => {
   it("computa ratePct = (verified+web)/opens*100, marca excluded via isCommercialOrOwnLink", () => {
-    const raw = { editionDate: "260727", url: "https://exemplo.com/materia", title: "T", body: "", why: "", destaqueNumber: 1 as const, category: "NOTÍCIAS" };
+    const raw = { editionDate: "260727", url: "https://exemplo.com/materia", title: "T", body: "", why: "", destaqueNumber: 1 as const, category: "NOTÍCIAS", kind: "destaque" as const };
     const ranked = toRankedCandidate(raw, { uniqueVerifiedClicks: 4, webUniqueClicks: 1 }, 100, true);
     assert.equal(ranked.ratePct, 5);
     assert.equal(ranked.excluded, false);
@@ -272,7 +350,7 @@ describe("toRankedCandidate", () => {
   });
 
   it("ratePct é 0 quando opens é 0 (nunca divide por zero)", () => {
-    const raw = { editionDate: "260727", url: "https://exemplo.com/materia", title: "T", body: "", why: "", destaqueNumber: 1 as const, category: "NOTÍCIAS" };
+    const raw = { editionDate: "260727", url: "https://exemplo.com/materia", title: "T", body: "", why: "", destaqueNumber: 1 as const, category: "NOTÍCIAS", kind: "destaque" as const };
     const ranked = toRankedCandidate(raw, { uniqueVerifiedClicks: 4, webUniqueClicks: 0 }, 0, true);
     assert.equal(ranked.ratePct, 0);
   });

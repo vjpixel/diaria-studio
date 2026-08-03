@@ -26,36 +26,45 @@
  * acoplaria este PR ao estado de merge daqueles. Com esses PRs já mergeados
  * a duplicação deixou de ter justificativa. O que continua SEPARADO por
  * diferença real de escopo (não movido pro módulo compartilhado):
- * `extractInstagramCandidates` (parser específico — só destaques, nunca
- * seções), `toRankedCandidate` (o tipo de entrada difere —
- * `InstagramRawCandidate` tem `destaqueNumber`; `WeeklyRawCandidate` do
- * LinkedIn tem `kind`/`section`), e `dedupeCandidatesByUrl` (o LinkedIn
- * prioriza `kind:"destaque"` sobre `"section"`; aqui só existe destaque).
+ * `extractInstagramCandidates` (parser específico — extrai `destaqueNumber`,
+ * que o LinkedIn não precisa; o LinkedIn extrai TODAS as seções secundárias
+ * — LANÇAMENTOS/VÍDEOS inclusos —, aqui só RADAR/USE MELHOR competem, #4513),
+ * `toRankedCandidate` (o tipo de entrada ainda difere — `InstagramRawCandidate`
+ * tem `destaqueNumber` opcional; `WeeklyRawCandidate` do LinkedIn não tem esse
+ * campo), e `resolveWeeklyImageUrls`/geração sob demanda (exclusivo do
+ * Instagram — o LinkedIn não usa cards de imagem por item).
  *
- * **Por que o pool de candidatos é só DESTAQUE (D1/D2/D3), nunca
- * RADAR/USE MELHOR** (diferente do LinkedIn, que inclui as 4 seções): o
- * post semanal do Instagram é um CARROSSEL de imagens — 1 card 4:5 por
- * item selecionado, com o TÍTULO do destaque já EMBUTIDO na imagem
- * (`gen-social-card-4x5.ts`, ver `scripts/upload-images-public.ts`). Só
- * D1/D2/D3 têm esse card gerado (`imageSpecsFor` no upload script);
- * RADAR/USE MELHOR nunca tiveram imagem própria. Se um item de RADAR/USE
- * MELHOR vencesse o ranking, não haveria card correto pra mostrar — usar o
- * card do D1 da mesma edição como substituto mostraria o TÍTULO ERRADO
- * (do D1, não da matéria selecionada) embutido na imagem, o que é pior que
- * excluir o candidato.
+ * **Pool de candidatos inclui RADAR/USE MELHOR desde o #4513** (além de
+ * DESTAQUE D1/D2/D3) — reusa o MESMO padrão de extração que
+ * `weekly-linkedin-parse.ts::extractWeeklyCandidates` já usa pro canal
+ * irmão do LinkedIn: `parseDestaques` pros destaques + `parseSections` pras
+ * seções secundárias (só RADAR/USE MELHOR aqui — LANÇAMENTOS/VÍDEOS ficam
+ * de fora, mesmo escopo pedido pelo editor na issue #4483/#4513).
  *
- * **Isto é uma LIMITAÇÃO TÉCNICA ATUAL, não uma decisão de escopo aceita
- * pelo editor** (correção #4511 — a versão anterior desta docstring dizia
- * "registrado como scoping decision", o que não reflete o que o editor de
- * fato decidiu): o comentário de resolução do editor na issue #4483 pediu
- * EXPLICITAMENTE que Radar/Use Melhor competissem no ranking. O editor
- * aceitou a restrição D1/D2/D3 por ora, mas pediu que isso ficasse
- * documentado como limitação PENDENTE, não como decisão concordada. Ver
- * #4513 (issue de follow-up: gerar card 4:5 pra Radar/Use Melhor, depois
- * remover esta restrição).
+ * Até o #4513, o pool era restrito a D1/D2/D3 por uma razão técnica real: o
+ * post semanal do Instagram é um CARROSSEL de imagens — 1 card 4:5 por item
+ * selecionado, com o TÍTULO já EMBUTIDO na imagem
+ * (`gen-social-card-4x5.ts`) — e só D1/D2/D3 tinham esse card PRÉ-gerado no
+ * Stage 3 diário (`imageSpecsFor` em `upload-images-public.ts`). RADAR/USE
+ * MELHOR nunca tiveram card próprio, e usar o card do D1 como substituto
+ * mostraria o TÍTULO ERRADO embutido na imagem — pior que excluir o
+ * candidato.
+ *
+ * **Decisão do editor (briefing 260803, #4513): gerar o card 4:5 SOB
+ * DEMANDA** — só quando um item de RADAR/USE MELHOR de fato vence o
+ * ranking semanal, nunca preventivamente pra todo item de toda edição
+ * diária (mais caro, geraria imagem que a maioria nunca usa). A geração sob
+ * demanda vive em `weekly-instagram-ondemand-card.ts`, invocada por
+ * `publish-weekly-social.ts::resolveWeeklyImageUrls` quando o item
+ * selecionado não tem `destaqueNumber` (== veio de seção, não de destaque).
+ * Stage 3 da diária (`image-generate.ts`) permanece intocado — a geração
+ * sob demanda roda no fluxo SEMANAL, reusando a MESMA pipeline de
+ * compositing (`generateCard`) e upload (`uploadImageToWorkerKV`) que
+ * D1/D2/D3 já usam.
  */
 
 import { parseDestaques } from "../extract-destaques.ts";
+import { parseSections } from "./newsletter-parse.ts";
 import {
   isCommercialOrOwnLink,
   hasSuspiciousCommercialLanguage,
@@ -68,26 +77,43 @@ import {
 
 export { isCommercialOrOwnLink, hasSuspiciousCommercialLanguage, withinClickNoise, hasBrazilAngle, hasProfessionalImplication, editorialTiebreakScore };
 
-// ─── Extração de candidatos (só destaques — ver docstring do arquivo) ─────
+// ─── Extração de candidatos (destaques + RADAR/USE MELHOR — #4513) ────────
+
+/** "destaque" = D1/D2/D3 com card 4:5 pré-gerado no Stage 3 diário. "section" = RADAR/USE MELHOR, card 4:5 gerado SOB DEMANDA (#4513). */
+export type InstagramCandidateKind = "destaque" | "section";
 
 export interface InstagramRawCandidate {
   /** AAMMDD da edição de origem. */
   editionDate: string;
   url: string;
-  /** Título do destaque (literal — nunca reescrito na seleção/montagem). */
+  /** Título do destaque/item (literal — nunca reescrito na seleção/montagem). */
   title: string;
+  /** Corpo do destaque OU descrição de 1 linha (item de seção). */
   body: string;
+  /** "Por que isso importa" — só destaques têm; "" para itens de seção. */
   why: string;
-  /** 1, 2 ou 3 — usado pra resolver a imagem 4:5 (`d{n}_4x5`) da edição de origem. */
-  destaqueNumber: 1 | 2 | 3;
-  /** Categoria do destaque (`DESTAQUE N | categoria`) — usada na diversidade de desempate. */
+  /** 1, 2 ou 3 quando `kind === "destaque"` — usado pra resolver a imagem 4:5 (`d{n}_4x5`) PRÉ-gerada da edição de origem. `undefined` quando `kind === "section"` (card gerado sob demanda, ver `weekly-instagram-ondemand-card.ts`). */
+  destaqueNumber?: 1 | 2 | 3;
+  /** Categoria do destaque (`DESTAQUE N | categoria`) OU nome da seção (RADAR/USE MELHOR) — usada na diversidade de desempate e no card gerado sob demanda. */
   category: string;
+  kind: InstagramCandidateKind;
+  /** Nome da seção normalizado — só presente quando `kind === "section"`. */
+  section?: "radar" | "use_melhor";
+}
+
+function normalizeInstagramSectionName(name: string): "radar" | "use_melhor" | null {
+  const n = name.toUpperCase();
+  if (n === "RADAR") return "radar";
+  if (n === "USE MELHOR") return "use_melhor";
+  return null; // LANÇAMENTOS/VÍDEOS/etc nunca competem aqui — fora do escopo do #4513
 }
 
 /**
- * Pure: extrai os candidatos elegíveis (só DESTAQUE 1/2/3 com URL
- * não-vazia) do `02-reviewed.md` de UMA edição. Reusa `parseDestaques`
- * (mesmo parser do Stage 2/4/5 diários) — nada de parser novo (#172).
+ * Pure: extrai os candidatos elegíveis do `02-reviewed.md` de UMA edição —
+ * DESTAQUE 1/2/3 (via `parseDestaques`, mesmo parser do Stage 2/4/5 diários)
+ * + itens de RADAR/USE MELHOR (via `parseSections`, mesmo parser reusado
+ * por `weekly-linkedin-parse.ts::extractWeeklyCandidates` pro canal irmão
+ * do LinkedIn) — nada de parser novo (#172). Itens sem URL são descartados.
  */
 export function extractInstagramCandidates(md: string, editionDate: string): InstagramRawCandidate[] {
   const out: InstagramRawCandidate[] = [];
@@ -101,7 +127,25 @@ export function extractInstagramCandidates(md: string, editionDate: string): Ins
       why: d.why,
       destaqueNumber: d.n,
       category: d.category,
+      kind: "destaque",
     });
+  }
+  for (const section of parseSections(md)) {
+    const norm = normalizeInstagramSectionName(section.name);
+    if (!norm) continue;
+    for (const item of section.items) {
+      if (!item.url) continue;
+      out.push({
+        editionDate,
+        url: item.url,
+        title: item.title,
+        body: item.description,
+        why: "",
+        category: section.name,
+        kind: "section",
+        section: norm,
+      });
+    }
   }
   return out;
 }
@@ -289,12 +333,21 @@ export function toRankedCandidate(
   };
 }
 
-/** Pure: dedup por URL normalizada — mantém a primeira ocorrência. */
+/**
+ * Pure: dedup por URL normalizada — quando a mesma matéria aparece tanto
+ * como DESTAQUE quanto em RADAR/USE MELHOR (raro, mas o parser não impede),
+ * mantém `kind: "destaque"` (corpo completo + card 4:5 já pré-gerado) sobre
+ * `"section"` (mesmo critério de `weekly-linkedin-select.ts::dedupeCandidatesByUrl`,
+ * #4513). Fora esse caso, mantém a primeira ocorrência.
+ */
 export function dedupeCandidatesByUrl(candidates: InstagramRankedCandidate[]): InstagramRankedCandidate[] {
   const byUrl = new Map<string, InstagramRankedCandidate>();
   for (const c of candidates) {
     const key = normalizeUrl(c.url);
-    if (!byUrl.has(key)) byUrl.set(key, c);
+    const existing = byUrl.get(key);
+    if (!existing || (existing.kind === "section" && c.kind === "destaque")) {
+      byUrl.set(key, c);
+    }
   }
   return [...byUrl.values()];
 }
