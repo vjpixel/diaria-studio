@@ -55,10 +55,13 @@ import { loadProjectEnv } from "../lib/env-loader.ts";
 import { detectExecMode, type ExecMode } from "../lib/exec-mode.ts";
 import {
   UTM_EMITTERS,
+  EXTERNAL_UTM_SURFACES,
+  buildExternalSurfaceUrl,
   knownUtmSources,
   campaignPatternToRegExp,
   type UtmEmitter,
   type UtmEmitterStatus,
+  type ExternalUtmSurface,
 } from "../lib/shared/utm-registry.ts";
 import { fetchAndAggregate } from "../count-subscriptions-by-utm.ts";
 import { resolveBeehiivConfig } from "../lib/beehiiv-config.ts";
@@ -289,9 +292,17 @@ export interface DriftFinding {
  * @param sourceCounts  assinantes por `utm_source` (Beehiiv)
  * @pure
  */
+export interface ComputeDriftExtras {
+  /** Superfícies externas (#4525) — checadas por `utm_campaign`, ver abaixo. */
+  externals?: ReadonlyArray<ExternalUtmSurface>;
+  /** Assinantes por `utm_campaign` (Beehiiv). */
+  campaignCounts?: Record<string, number>;
+}
+
 export function computeDrift(
   emitters: ReadonlyArray<UtmEmitter>,
   sourceCounts: Record<string, number>,
+  extras: ComputeDriftExtras = {},
 ): DriftFinding[] {
   const out: DriftFinding[] = [];
   const seen = new Map<string, number>();
@@ -306,6 +317,36 @@ export function computeDrift(
         kind: "sem_conversao",
         key: e.id,
         detail: `${e.label}: utm_source="${e.source}" não trouxe nenhum assinante — link quebrado, posição morta, ou UTM dropado no caminho.`,
+      });
+    }
+  }
+
+  // Sentido 1b: superfície externa APLICADA que não converteu (#4525). Checada
+  // por `utm_campaign`, não por `utm_source`: `twitter`/`facebook`/`threads`
+  // são compartilhados com emissores de código (o CTA do post), então o sinal
+  // por source já viria positivo por causa deles e esconderia justamente o que
+  // interessa aqui — se o CAMPO do perfil salvou e sobreviveu à normalização de
+  // URL da plataforma. Superfície sem `appliedAt` é pulada: não converter antes
+  // de ser aplicada é o estado correto, não drift.
+  const campaignCounts = extras.campaignCounts ?? {};
+  const campaignSeen = new Map<string, number>();
+  for (const [k, v] of Object.entries(campaignCounts)) campaignSeen.set(k.toLowerCase(), v);
+  for (const s of extras.externals ?? []) {
+    if (s.status === "aposentado" || !s.appliedAt) continue;
+    // `driftKey: "source"` é a exceção das plataformas que truncam a URL e só
+    // deixam passar um parâmetro (Apoia.se): lá o campaign nunca chega, e o
+    // check por campaign acusaria drift eternamente. Só é válido porque o
+    // `utm_source` dessas é exclusivo — travado por teste.
+    const bySource = s.driftKey === "source";
+    const key = bySource ? s.source : s.campaign;
+    const count = bySource
+      ? (seen.get(key.toLowerCase()) ?? 0)
+      : (campaignSeen.get(key.toLowerCase()) ?? 0);
+    if (!(count > 0)) {
+      out.push({
+        kind: "sem_conversao",
+        key: s.id,
+        detail: `${s.label}: ${bySource ? "utm_source" : "utm_campaign"}="${key}" não trouxe nenhum assinante desde ${s.appliedAt} — campo não salvou, plataforma removeu a query string, ou o perfil não gera tráfego. Reconferir em ${s.panelUrl}.`,
       });
     }
   }
@@ -354,11 +395,29 @@ export interface UtmEmitterRow extends UtmEmitter {
   clicks: number | null;
 }
 
+/**
+ * Linha de superfície externa (#4525). Mesmas colunas de conversão da tabela de
+ * emissores — o valor da página é poder comparar bio × post × e-mail lado a
+ * lado — mais o runbook (`panelUrl`/`field`) e a URL pronta pra colar.
+ */
+export interface ExternalSurfaceRow extends ExternalUtmSurface {
+  /** URL exata a colar no painel, derivada do registry (nunca digitada). */
+  url: string;
+  /** Assinantes com este `utm_source` (Beehiiv). `null` quando o fetch falhou. */
+  subscribers: number | null;
+  /** Assinantes com este `utm_campaign` — o sinal específico desta superfície. */
+  campaignSubscribers: number | null;
+  /** Cliques (Brevo) da campanha. `null` sem dados. */
+  clicks: number | null;
+}
+
 export interface UtmsSnapshot {
   execMode: ExecMode;
   generatedAt: string;
   cached: boolean;
   emitters: UtmEmitterRow[];
+  /** Superfícies de bio/perfil preenchidas à mão (#4525). */
+  externalSurfaces: ExternalSurfaceRow[];
   drift: DriftFinding[];
   totals: { subscribers: number | null; campaignsRead: number };
   beehiivError?: string;
@@ -461,12 +520,29 @@ export async function buildUtmsData(
     };
   });
 
+  const externalSurfaces: ExternalSurfaceRow[] = EXTERNAL_UTM_SURFACES.map((s) => {
+    const campaignKey = s.campaign.toLowerCase();
+    return {
+      ...s,
+      url: buildExternalSurfaceUrl(s),
+      subscribers: beehiivError ? null : (sourceCounts[s.source.toLowerCase()] ?? 0),
+      campaignSubscribers: beehiivError ? null : (campaignCounts[campaignKey] ?? 0),
+      clicks: clicks.error ? null : (clicks.clicksByCampaign[campaignKey] ?? 0),
+    };
+  });
+
   const data: UtmsSnapshot = {
     execMode: detectExecMode({ projectRoot: rootDir }),
     generatedAt: new Date(nowMs).toISOString(),
     cached: false,
     emitters,
-    drift: beehiivError ? [] : computeDrift(emittersBase, sourceCounts),
+    externalSurfaces,
+    drift: beehiivError
+      ? []
+      : computeDrift(emittersBase, sourceCounts, {
+          externals: EXTERNAL_UTM_SURFACES,
+          campaignCounts,
+        }),
     totals: { subscribers: totalSubscribers, campaignsRead: clicks.campaignsRead },
     beehiivError,
     brevoError: clicks.error,

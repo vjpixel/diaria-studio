@@ -619,16 +619,326 @@ export function findUtmEmitter(id: string): UtmEmitter | undefined {
   return UTM_EMITTERS.find((e) => e.id === id);
 }
 
+// ---------------------------------------------------------------------------
+// SUPERFÍCIES EXTERNAS (#4525) — o link não nasce de código, nasce de um campo
+// de perfil que uma pessoa preenche no painel da plataforma.
+// ---------------------------------------------------------------------------
+
 /**
- * `utm_source` distintos que o CÓDIGO emite hoje, normalizados (lowercase).
- * Usado pelo detector de drift da página `/utms`: um `utm_source` que aparece
- * no Beehiiv e NÃO está aqui é origem não-catalogada ou auto-tag de plataforma
- * (`sendinblue`, o problema original do #2975).
+ * `utm_medium` de toda superfície externa. Existe pra separar o link PARADO no
+ * perfil (permanente) do CTA do post do dia, que usa `organic_social` com o
+ * MESMO `utm_source` — sem essa distinção as duas conversões colapsam na mesma
+ * linha do `/utms`, que é a classe de erro do #4125 item 4.
+ */
+export const EXTERNAL_SURFACE_MEDIUM = "bio";
+
+/**
+ * Prefixo do `utm_campaign` das superfícies externas. O valor final é
+ * `perfil-{source}` — **um por superfície**, via `buildExternalSurfaceCampaign`.
+ *
+ * A 1ª versão desta fatia usava um `utm_campaign` ÚNICO (`perfil`) pras cinco,
+ * argumentando que a pergunta respondida é a mesma em todas. Estava errado, e
+ * de um jeito silencioso: o drift de superfície externa é checado por campaign
+ * (ver `computeDrift`), e o Beehiiv só devolve duas agregações PLANAS —
+ * `counts` por `utm_source` e `campaignCounts` por `utm_campaign`, sem
+ * dimensão de `utm_medium` e sem cruzamento (`aggregateByUtmSource` /
+ * `aggregateByUtmCampaign` em `scripts/count-subscriptions-by-utm.ts`). Com o
+ * campaign compartilhado, bastava UMA das cinco converter pra que
+ * `campaignCounts["perfil"] > 0` mascarasse as outras quatro pra sempre — um
+ * link de bio que a plataforma quebrasse depois de aplicado nunca mais seria
+ * flagrado. Achado no review do PR #4526.
+ *
+ * O `utm_source` sozinho também não resolve: `facebook`/`twitter`/`threads` são
+ * compartilhados com o CTA dos posts (`FACEBOOK_CTA_UTM`, `TWITTER_EDITION_UTM`,
+ * `THREADS_EDITION_UTM`), então o sinal por source vem positivo pelo tráfego do
+ * post mesmo com a bio morta. Sobra o campaign — daí a redundância aparente
+ * entre `utm_source=instagram` e `utm_campaign=perfil-instagram` ser deliberada,
+ * não descuido.
+ */
+export const EXTERNAL_SURFACE_CAMPAIGN_PREFIX = "perfil";
+
+/**
+ * `utm_campaign` de uma superfície externa: `perfil-{source}[-{variant}]`.
+ * Derivado, nunca digitado — é o que garante a unicidade de que o drift depende.
+ *
+ * `variant` existe pra quando a MESMA plataforma hospeda mais de uma superfície
+ * (os dois repositórios no GitHub; o perfil da marca e o pessoal no Instagram).
+ * Sem ele, essas superfícies voltariam a compartilhar campaign e a primeira a
+ * converter mascararia as outras — o bug que o review do PR #4526 pegou.
+ *
+ * @pure
+ */
+export function buildExternalSurfaceCampaign(source: string, variant?: string): string {
+  const base = `${EXTERNAL_SURFACE_CAMPAIGN_PREFIX}-${source.toLowerCase()}`;
+  return variant ? `${base}-${variant.toLowerCase()}` : base;
+}
+
+/** URL base que toda superfície externa aponta. */
+export const EXTERNAL_SURFACE_BASE_URL = "https://diar.ia.br/";
+
+/**
+ * Uma superfície EXTERNA: campo de bio/site num painel de terceiro, preenchido
+ * à mão. Deliberadamente NÃO é um `UtmEmitter` — aquele tipo exige
+ * `originFile` (path do repo, travado por `test/utm-registry-4041.test.ts`), e
+ * aqui não existe arquivo de origem. Forçar a entrada lá faria o inventário
+ * mentir sobre onde o valor nasce.
+ */
+export interface ExternalUtmSurface {
+  /** Identificador estável — mesma função do `id` de `UtmEmitter`. */
+  id: string;
+  /** Rótulo humano curto. */
+  label: string;
+  /** `utm_source` — nome NU da plataforma (ver nota de `instagram-diaria` abaixo). */
+  source: string;
+  /** `utm_medium` — sempre `EXTERNAL_SURFACE_MEDIUM`. */
+  medium: string;
+  /** `utm_campaign` — `perfil-{source}`, sempre via `buildExternalSurfaceCampaign`.
+   * ÚNICO por superfície: é a única dimensão que o Beehiiv devolve capaz de
+   * isolar esta bio (ver o comentário de `EXTERNAL_SURFACE_CAMPAIGN_PREFIX`). */
+  campaign: string;
+  /** URL do painel onde ESTE campo se edita (o runbook da Fase 3/reconferência). */
+  panelUrl: string;
+  /** Onde exatamente no painel — o campo tem nome diferente em cada plataforma. */
+  field: string;
+  /** Descrição da posição do link do ponto de vista do leitor. */
+  description: string;
+  status: UtmEmitterStatus;
+  /**
+   * Data (YYYY-MM-DD) em que o valor foi de fato aplicado no painel. AUSENTE =
+   * declarado aqui mas ainda não aplicado ao vivo — e nesse estado a ausência
+   * de conversão é ESPERADA, não drift (ver `computeDrift`).
+   */
+  appliedAt?: string;
+  /**
+   * Qual dimensão o drift observa. `campaign` (default) é a correta em quase
+   * tudo: isola esta superfície mesmo quando o `utm_source` é compartilhado com
+   * o CTA dos posts.
+   *
+   * `source` existe pra plataforma que TRUNCA a URL e só deixa passar um
+   * parâmetro (Apoia.se). Só é legítimo quando o `utm_source` é EXCLUSIVO desta
+   * superfície — se fosse compartilhado, o check viria positivo pelo tráfego
+   * alheio e não mediria nada. `test/utm-externas-4525.test.ts` trava essa
+   * exclusividade.
+   */
+  driftKey?: "campaign" | "source";
+}
+
+/**
+ * Inventário das superfícies externas (varredura ao vivo de 260803, #4525).
+ *
+ * Antes desta lista, as 5 estavam invisíveis pro `/utms` e para o detector de
+ * drift — e a varredura achou três convenções incompatíveis vivas ao mesmo
+ * tempo: `utm_source=instagram-diaria`/`facebook-diaria` (sufixo que fatia o
+ * mesmo canal em duas linhas que nunca somam), `utm_campaign=lancamento-2607`
+ * (campanha encerrada em ago/2026, atribuindo cadastro novo a ela pra sempre) e
+ * `utm_campaign=profile` só no X. A unificação aqui é o que torna as 5
+ * comparáveis entre si e contra os emissores de código.
+ */
+export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
+  {
+    id: "perfil-instagram",
+    label: "Instagram — link da bio",
+    source: "instagram",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: buildExternalSurfaceCampaign("instagram"),
+    panelUrl: "https://www.instagram.com/diar.ia.br",
+    field: "app mobile → Editar perfil → Site (NÃO editável na web)",
+    description:
+      "Link da bio do perfil — a única saída clicável do Instagram, onde o app " +
+      "suprime o Referer. Substitui `instagram-diaria`/`lancamento-2607` (#4525). " +
+      "BLOQUEADO na web: o campo Website de `instagram.com/accounts/edit/` vem " +
+      "desabilitado com o aviso 'Editing your links is only available on mobile' " +
+      "(verificado ao vivo em 260803) — só o editor aplica, pelo app, e foi assim " +
+      "que entrou. Conferido pelo href da bio depois.",
+    status: "ativo",
+    appliedAt: "2026-08-03",
+  },
+  {
+    id: "perfil-facebook",
+    label: "Facebook — campo Site da página",
+    source: "facebook",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: buildExternalSurfaceCampaign("facebook"),
+    panelUrl: "https://www.facebook.com/diar.ia.br",
+    field: "Trocar agora (identidade → Página) → Sobre → Links",
+    description:
+      "Campo Site da página, exibido na seção Links do perfil. O #4295 supunha " +
+      "vazio; a varredura do #4525 achou preenchido com `facebook-diaria`/" +
+      "`lancamento-2607`. Editar exige TROCAR a identidade da sessão pra Página " +
+      "— pelo perfil pessoal a seção Links é read-only.",
+    status: "ativo",
+    appliedAt: "2026-08-03",
+  },
+  {
+    id: "perfil-threads",
+    label: "Threads — link da bio",
+    source: "threads",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: buildExternalSurfaceCampaign("threads"),
+    panelUrl: "https://www.threads.com/@diar.ia.br",
+    field: "Edit profile → Links → Add link",
+    description:
+      "Único link clicável do perfil do Threads. Estava VAZIO na varredura do " +
+      "#4525 — aqui a ação não foi taggear, foi criar. O Threads ACRESCENTA " +
+      "`utm_content=link_in_bio` + um `utm_id` próprio ao redirecionar; os 3 " +
+      "parâmetros nossos sobrevivem intactos (verificado ao vivo).",
+    status: "ativo",
+    appliedAt: "2026-08-03",
+  },
+  {
+    id: "perfil-twitter",
+    label: "X — campo Website do perfil",
+    source: "twitter",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: buildExternalSurfaceCampaign("twitter"),
+    panelUrl: "https://x.com/settings/profile",
+    field: "Edit profile → Website",
+    description:
+      "Campo Website do perfil. Já tinha UTM antes do #4525 " +
+      "(`medium=social`/`campaign=profile`) — normalizado pra convenção única; " +
+      "a série perdida tinha 4 seguidores de audiência.",
+    status: "ativo",
+    appliedAt: "2026-08-03",
+  },
+  {
+    id: "perfil-apoiase",
+    label: "Apoia.se — site da campanha",
+    source: "apoiase",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: buildExternalSurfaceCampaign("apoiase"),
+    panelUrl: "https://apoia.se/diaria",
+    field: "Editar campanha → Identificação → Redes sociais → 1º campo",
+    description:
+      "Ícone de globo da seção 'Redes Sociais' da página de apoio — era " +
+      "`https://diar.ia.br` cru (#4525). Único `utm_source` novo do lote, e " +
+      "portanto o que exigia a união em `knownUtmSources()`. A plataforma TRUNCA " +
+      "no `&`: a URL de 3 parâmetros é descartada em silêncio (o link some da " +
+      "página em vez de dar erro), mas `?utm_source=apoiase` sozinho salva e " +
+      "persiste. Por isso `driftKey: 'source'` — só o `utm_source` chega, e ele " +
+      "é exclusivo desta superfície, então mede sozinho. Valor ao vivo: " +
+      "`https://diar.ia.br/?utm_source=apoiase`.",
+    status: "ativo",
+    appliedAt: "2026-08-03",
+    driftKey: "source",
+  },
+  {
+    id: "perfil-linkedin",
+    label: "LinkedIn — CTA e site da company page",
+    source: "linkedin",
+    // EXCEÇÃO DELIBERADA à convenção `bio`/`perfil-{source}`: esta superfície já
+    // estava taggeada antes de a convenção existir (é dela que o #4295 tirou o
+    // padrão), o LinkedIn é canal com conversão real, e o `campaign` já é único.
+    // Renomear só custaria a série histórica sem ganhar medição nenhuma. O
+    // `medium` fora de `EXTERNAL_SURFACE_MEDIUM` é o marcador visível de que a
+    // entrada é exceção — `test/utm-externas-4525.test.ts` só cobra derivação de
+    // campaign das superfícies que usam o medium da convenção.
+    medium: "organic_social",
+    campaign: "company_page_cta",
+    panelUrl: "https://www.linkedin.com/company/110742958/admin/dashboard/",
+    field: "Editar página → Botão personalizado + Site",
+    description:
+      "O MESMO valor cobre dois pontos da company page: o botão de CTA ('Sign " +
+      "up') e o campo Site da aba Sobre — confirmado ao vivo em 260803, os dois " +
+      "hrefs idênticos. Não foi tocado nesta rodada: já estava correto.",
+    status: "ativo",
+    appliedAt: "2026-07-31",
+  },
+  {
+    id: "perfil-youtube",
+    label: "YouTube — link do canal",
+    source: "youtube",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: buildExternalSurfaceCampaign("youtube"),
+    panelUrl: "https://studio.youtube.com",
+    field: "Personalização → Perfil → Links → URL",
+    description:
+      "Link 'Newsletter' do cabeçalho do canal e da aba Sobre. Apontava pro " +
+      "domínio ANTIGO (`diaria.beehiiv.com`) até 260803 — a varredura do #4059 " +
+      "cobriu o repo, não superfície de plataforma. Salvar exige blur do campo " +
+      "antes do Publicar, senão o botão fica inerte e a edição se perde.",
+    status: "ativo",
+    appliedAt: "2026-08-03",
+  },
+  {
+    id: "perfil-github-studio",
+    label: "GitHub — repo diaria-studio",
+    source: "github",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: buildExternalSurfaceCampaign("github", "studio"),
+    panelUrl: "https://github.com/vjpixel/diaria-studio",
+    field: "gh repo edit --homepage (ou Settings → Website)",
+    description:
+      "Campo Website do repositório público, exibido no topo da sidebar. Estava " +
+      "VAZIO (#4525). Aplicável por CLI — não precisa de browser.",
+    status: "ativo",
+    appliedAt: "2026-08-03",
+  },
+  {
+    id: "perfil-github-design",
+    label: "GitHub — repo diaria-design",
+    source: "github",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: buildExternalSurfaceCampaign("github", "design"),
+    panelUrl: "https://github.com/vjpixel/diaria-design",
+    field: "gh repo edit --homepage (ou Settings → Website)",
+    description:
+      "Idem `perfil-github-studio`, outro repositório. Os dois compartilham " +
+      "`utm_source=github`, e é o sufixo de variante do `utm_campaign` que os " +
+      "mantém mensuráveis em separado.",
+    status: "ativo",
+    appliedAt: "2026-08-03",
+  },
+] as const;
+
+/** Busca uma superfície externa por id. `undefined` se não existe. @pure */
+export function findExternalUtmSurface(id: string): ExternalUtmSurface | undefined {
+  return EXTERNAL_UTM_SURFACES.find((s) => s.id === id);
+}
+
+/**
+ * Monta a URL exata a colar no painel da plataforma. `new URL` +
+ * `searchParams.set` (nunca concatenação) pela mesma razão documentada em
+ * `buildBrandSiteUrl` (`workers/poll/src/lib.ts`) e exigida pelo #4295.
+ *
+ * É esta função — não um valor copiado à mão — que a Fase 3 do #4525 usa e que
+ * `docs/utm-superficies-externas.md` reproduz, pra que painel e registry não
+ * possam divergir por erro de digitação.
+ *
+ * @pure
+ */
+export function buildExternalSurfaceUrl(
+  surface: ExternalUtmSurface,
+  baseUrl: string = EXTERNAL_SURFACE_BASE_URL,
+): string {
+  const url = new URL(baseUrl);
+  url.searchParams.set("utm_source", surface.source);
+  url.searchParams.set("utm_medium", surface.medium);
+  url.searchParams.set("utm_campaign", surface.campaign);
+  return url.toString();
+}
+
+/**
+ * `utm_source` distintos que o projeto emite hoje, normalizados (lowercase) —
+ * pelo CÓDIGO (`UTM_EMITTERS`) **e** pelas superfícies externas preenchidas à
+ * mão (`EXTERNAL_UTM_SURFACES`, #4525). Usado pelo detector de drift da página
+ * `/utms`: um `utm_source` que aparece no Beehiiv e NÃO está aqui é origem não
+ * catalogada ou auto-tag de plataforma (`sendinblue`, o problema original do
+ * #2975).
+ *
+ * As duas listas entram juntas de propósito: `apoiase` só existe do lado
+ * externo, e sem a união ele seria acusado de "não catalogado" no exato momento
+ * em que passasse a converter — o mesmo falso positivo que o #4312 corrigiu, na
+ * direção oposta.
  *
  * @pure
  */
 export function knownUtmSources(): string[] {
-  return [...new Set(UTM_EMITTERS.map((e) => e.source.toLowerCase()))].sort();
+  return [
+    ...new Set([
+      ...UTM_EMITTERS.map((e) => e.source.toLowerCase()),
+      ...EXTERNAL_UTM_SURFACES.map((s) => s.source.toLowerCase()),
+    ]),
+  ].sort();
 }
 
 /**

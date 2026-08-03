@@ -29,9 +29,18 @@ const el = {
   driftList: document.getElementById("drift-list"),
   driftCount: document.getElementById("drift-count"),
   driftEmpty: document.getElementById("drift-empty"),
+  externalTbody: document.getElementById("external-tbody"),
+  externalCount: document.getElementById("external-count"),
 };
 
-let data = { execMode: null, generatedAt: null, cached: false, emitters: [], drift: [] };
+let data = {
+  execMode: null,
+  generatedAt: null,
+  cached: false,
+  emitters: [],
+  externalSurfaces: [],
+  drift: [],
+};
 const filters = { status: "" };
 /** Estado de ordenação da tabela de Emissores (#4463) — a 1ª tabela ordenável
  * do Studio. `column: null` = ordem natural do registry (default). */
@@ -163,6 +172,27 @@ function renderEmitters() {
   }
 }
 
+/** Superfícies externas (#4525) — read-only por natureza: o valor não muda por
+ * aqui nem por PR, muda quando alguém cola a URL no painel da plataforma. Por
+ * isso a tabela mostra a URL pronta e o caminho do campo, sem botão de editar. */
+function renderExternalSurfaces() {
+  const rows = data.externalSurfaces ?? [];
+  el.externalCount.textContent = String(rows.length);
+  el.externalTbody.innerHTML = "";
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${fmtNum(row.clicks)}</td>
+      <td>${fmtNum(row.campaignSubscribers)}</td>
+      <td>${escapeHtml(row.label)}<div class="hint">${escapeHtml(row.description)}</div></td>
+      <td class="mono"><code>${escapeHtml(row.source)}</code> / <code>${escapeHtml(row.medium)}</code> / <code>${escapeHtml(row.campaign)}</code><div class="hint"><code>${escapeHtml(row.url)}</code></div></td>
+      <td>${row.appliedAt ? escapeHtml(row.appliedAt) : '<span class="hint">pendente</span>'}</td>
+      <td><a href="${escapeHtml(row.panelUrl)}" target="_blank" rel="noreferrer noopener">painel</a><div class="hint">${escapeHtml(row.field)}</div></td>
+    `;
+    el.externalTbody.appendChild(tr);
+  }
+}
+
 /** Edição inline via prompt — só os 3 campos editoriais. Deliberadamente sem
  * formulário pra source/medium/campaign: eles não são editáveis por aqui. */
 async function editRow(id) {
@@ -211,6 +241,7 @@ async function refresh(forceRefresh) {
     el.execModeValue.textContent = data.execMode ? `ambiente: ${data.execMode}` : "—";
     renderDrift();
     renderEmitters();
+    renderExternalSurfaces();
     setFetchStatus("ok", `${(data.emitters ?? []).length} emissor(es)${data.cached ? " (cache)" : ""}`);
     el.lastUpdated.textContent = data.generatedAt ? `gerado em ${fmtTime(data.generatedAt)}` : "";
   } catch (e) {

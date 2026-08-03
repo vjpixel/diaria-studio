@@ -108,6 +108,36 @@
 
     <section class="panel">
       <div class="panel-header-row">
+        <h2>Superfícies externas (<span id="external-count">0</span>)</h2>
+        <span class="hint">bio/site de perfil — preenchidas à mão, não por código</span>
+      </div>
+      <div class="table-scroll">
+        <table class="triage-table">
+          <thead>
+            <tr>
+              <th>Cliques</th>
+              <th>Assinantes (campanha)</th>
+              <th>Superfície</th>
+              <th>source / medium / campaign</th>
+              <th>Aplicado em</th>
+              <th>Onde se edita</th>
+            </tr>
+          </thead>
+          <tbody id="external-tbody"></tbody>
+        </table>
+      </div>
+      <p class="hint">
+        Estas linhas não têm arquivo de origem: o valor vive num campo de perfil
+        de plataforma. A coluna <strong>Assinantes (campanha)</strong> conta por
+        <code>utm_campaign</code>, não por <code>utm_source</code> — os sources
+        são compartilhados com o CTA dos posts, e só o campaign isola o link
+        parado no perfil. <strong>Aplicado em</strong> vazio significa valor
+        declarado aqui mas ainda não colado no painel (#4525).
+      </p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header-row">
         <h2>Drift (<span id="drift-count">0</span>)</h2>
         <span class="hint">inventário × realidade, nos dois sentidos</span>
       </div>
