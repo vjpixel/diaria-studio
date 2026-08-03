@@ -429,6 +429,33 @@ Exit code handling — **GATE-BLOCKING**, mesmo padrão que `check-humanizer-soc
 
 **Comportamento em `auto_approve = true` (`--no-gates`):** executar normalmente (aplica as correções, grava `_internal/fact-check-autofix.json`, re-renderiza/republica newsletter e social se aplicável); o gate é pulado.
 
+**4c.6d — Critic pass social opcional (#4505 item 3):**
+
+Passo OPCIONAL — só roda quando `platform.config.json` → `social_critic_pass.enabled === true` (default `false`). Fecha a lacuna que os tic-lints determinísticos de §4c.2b/§4c.6c não cobrem: eles pegam só 2 padrões via regex; este passo faz 1 leitura holística do catálogo inteiro de tiques da skill `humanizador` sobre o `03-social.md` JÁ FINAL (depois do autofix de §4c.6b/6c e de qualquer correção estrutural).
+
+```bash
+npx tsx scripts/run-social-critic.ts --edition-dir {EDITION_DIR}/
+```
+Exit code handling:
+- `2` → desabilitado (default) — pular inteiramente, sem log de erro nem menção no gate.
+- `1` → `03-social.md` ausente (não deveria acontecer nesta altura) — logar warn, pular.
+- `0` → stdout traz `{edition, social_path, out_path}`. Dispatchar o subagente:
+  ```
+  Agent("social-critic", {
+    social_path: "{EDITION_DIR}/03-social.md",
+    edition: "{AAMMDD}",
+    out_path: "{EDITION_DIR}/_internal/social-critic.json"
+  })
+  ```
+  Após o subagente gravar o resultado, formatar e persistir:
+  ```bash
+  npx tsx scripts/run-social-critic.ts --edition-dir {EDITION_DIR}/ \
+    --input-json <path-do-output-do-subagente>
+  ```
+  Capturar stdout (`━━━ CRITIC PASS SOCIAL`) → `{social_critic_block}`, incluído no gate logo após `{fact_check_block}` (§4d). **Sempre exit 0 — warning-only, nunca bloqueia** (mesmo racional do `image-crop-reviewer`, #3951): findings viram `⚠️` informativo, decisão de re-humanizar fica com o editor.
+
+**Comportamento em `auto_approve = true` (`--no-gates`):** roda normalmente se habilitado (mesmo custo, sem apresentação visual); nunca bloqueia o fluxo — coerente com "opcional" da issue #4505.
+
 **4c.7 — Recomendação de boxes de divulgação (#4354):**
 
 Rodar `scripts/box-click-report.ts` — ranking orientado por dados de qual box de divulgação (`context/snippets/*.md`, slots 0–3 via `platform.config.json` → `boxes_divulgacao`) performou melhor em cliques nas últimas edições, apoio à decisão de troca de slot no gate:
@@ -488,6 +515,8 @@ Facebook  D3  "{hook_d3_facebook}"
 
 {fact_check_block}
 
+{social_critic_block}
+
 ━━━ BOXES DE DIVULGAÇÃO ━━━━━━━━━━━━
 
 {box_click_report_block}
@@ -507,6 +536,7 @@ Regras de apresentação:
 - `{verify_verdict}` = `✅ acessível` / `⚠️ inacessível` / `⏱ timeout`.
 - `{violations_block}` = uma linha por violation com ❌ (crítico) ou ⚠️ (warning) + mensagem.
 - `{fact_check_block}` = saída do `formatGateSummary` de `scripts/run-fact-checker.ts --input-json` (§4c.6). Se fact-checker falhou ou `fact-check.json` não existe: `⚠️ Fact-check indisponível — verificar manualmente antes de publicar.` **Nunca bloquear o gate por ausência/indisponibilidade do fact-check** (exit 1) — decisão final é sempre do editor. **Exceção (#4361):** claims `NOT_FOUND_IN_SOURCE` não-superlativos SÃO gate-blocking (exit 2 de `--check-blocking`, ver §4c.6) — o gate não deve nem ser montado enquanto esses claims não forem resolvidos (ver ação em §4c.6).
+- `{social_critic_block}` = stdout de `scripts/run-social-critic.ts --input-json` (§4c.6d) — só presente quando `social_critic_pass.enabled === true`; string vazia (linha omitida) quando desabilitado (exit 2) ou indisponível. Nunca bloqueia o gate.
 - `{box_click_report_block}` = stdout de `scripts/box-click-report.ts` (§4c.7) — nunca bloqueia o gate (ver tratamento de exit code em §4c.7).
 - Títulos dos posts sociais: primeira linha não-vazia de cada post no `03-social.md` (o "hook").
 - Se pré-render falhou em algum passo (newsletter HTML, social HTML), indicar `⚠️ preview indisponível` com motivo.
@@ -628,14 +658,17 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
       npx tsx scripts/lint-social-md.ts --check relative-time --md {EDITION_DIR}/03-social.md
       npx tsx scripts/lint-social-md.ts --check linkedin-schema --md {EDITION_DIR}/03-social.md
       npx tsx scripts/lint-social-md.ts --check platform-headers-unicos --md {EDITION_DIR}/03-social.md
+      npx tsx scripts/lint-social-md.ts --check no-antithesis-reveal --md {EDITION_DIR}/03-social.md
+      npx tsx scripts/lint-social-md.ts --check no-trailing-editorial-hook --md {EDITION_DIR}/03-social.md
       ```
+      **(#4505 item 2 — mesmos tic-lints GATE-BLOCKING de §4c.2b/§4c.6c, agora também no loop "ajustar"):** o passo 6 acima já re-humanizou a(s) seção(ões) tocada(s), mas re-humanizar não garante que o tique sumiu — pode sobreviver ou ser reintroduzido pela própria correção mecânica que disparou o ajuste (achado #4505, recorrência ao vivo 260803: correção de travessão→pontuação reintroduziu antítese-revelação 3× seguidas na mesma sessão, cada uma só notada porque o editor pediu "passa o humanizador de novo" de novo — sem este passo, nada automatizava a re-checagem). Exit 1 em qualquer um dos dois = **GATE-BLOCKING**: NÃO voltar ao gate ainda. Ação: reescrever a frase cirurgicamente (`Edit` com `old_string` mínimo, #495) ou re-invocar a Skill humanizador só na seção acusada, depois re-rodar o lint até exit 0, antes de seguir pro passo 6.8.
    **6.8** — Re-rodar check para confirmar exit 0 antes de voltar ao gate:
       ```bash
       npx tsx scripts/check-humanizer-social.ts --check --edition-dir {EDITION_DIR}/
       ```
    **6.9** — Re-renderizar (`render-social-html.ts`, §4b step 3) e re-servir localmente (mesmo padrão stop-old → `embed-images-base64.ts` → `serve-preview.ts --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url` de §4c.6c) antes de voltar ao gate. O arquivo republicado é sempre o `03-social.md` COMPLETO (seções scoped-humanizadas + seções intactas) — o preview reflete o estado atual inteiro em ambos os fluxos.
 
-7. **Voltar ao §4d** (re-apresentar o resumo consolidado atualizado) — loop até o editor responder `sim` ou `abortar`. `ajustar` pode ser repetido N vezes.
+7. **Voltar ao §4d** (re-apresentar o resumo consolidado atualizado) — loop até o editor responder `sim` ou `abortar`. `ajustar` pode ser repetido N vezes. Se `03-social.md` foi tocado neste ajuste E `social_critic_pass.enabled === true` (§4c.6d), re-rodar o critic pass sobre o estado atual antes de re-apresentar — o achado de uma rodada anterior pode não valer mais (texto mudou) e um tique novo pode ter entrado justamente por este ajuste.
 
 **Distinção `editar` vs `ajustar`:**
 - `editar`: edição fora do fluxo de chat (local ou via Studio) — adequado para revisões longas, múltiplas seções, ou quando o editor não está no terminal.

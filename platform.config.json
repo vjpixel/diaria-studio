@@ -82,6 +82,10 @@
     "slot_b": null
   },
   "drive_sync": false,
+  "social_critic_pass": {
+    "enabled": false,
+    "note": "#4505 item 3 — critic pass opcional (subagente social-critic) sobre 03-social.md final no Stage 4, antes do gate humano. Default desligado (custo extra de Sonnet por edição); ativar setando enabled:true. Ver scripts/run-social-critic.ts e .claude/agents/social-critic.md."
+  },
   "logging": {
     "path": "data/run-log.jsonl"
   },

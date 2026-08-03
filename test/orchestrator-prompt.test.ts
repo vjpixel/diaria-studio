@@ -174,7 +174,19 @@ describe("orchestrator-prompt (#634)", () => {
       // apresentação do `{box_click_report_block}`). Já condensado (de ~22
       // linhas brutas pra 15) antes de bumpar. Teto bumped de 674→690 com
       // headroom pequeno pra cobrir os dois PRs combinados.
-      "orchestrator-stage-4.md": 690,
+      // #4505 itens 2/3: +~32 linhas — item 2 (re-auditoria sistemática)
+      // acrescenta as 2 chamadas GATE-BLOCKING de no-antithesis-reveal/
+      // no-trailing-editorial-hook no passo 6.7 do loop "ajustar" (§4d.1),
+      // fechando a lacuna que a recorrência ao vivo 260803 expôs (essas 2
+      // chamadas já rodavam em §4c.2b/§4c.6c, mas não no loop de ajuste
+      // inline); item 3 (critic pass opcional) acrescenta a nova §4c.6d
+      // (dispatch condicional do subagente `social-critic` via
+      // `run-social-critic.ts`, gated por `platform.config.json` →
+      // `social_critic_pass.enabled`) + `{social_critic_block}` no template
+      // do gate + nota no passo 7 do loop "ajustar" pra re-rodar quando
+      // habilitado. Arquivo tinha 690 linhas (teto já saturado pelo #4354).
+      // Teto bumped de 690→735 com headroom pequeno (era 721 medido pós-#4505).
+      "orchestrator-stage-4.md": 735,
       "orchestrator-stage-5.md": 455,
     };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
@@ -696,5 +708,141 @@ describe("#4258 item 3: §3a-bis (humanizador+Clarice na descrição do É IA?) 
     assert.ok(!/exit `2`/i.test(step4Text), "#4281: passo 4 não deve mais documentar um exit 2 benigno pra apply-eia-description.ts");
     assert.ok(!/sem abortar/i.test(step4Text), "#4281: passo 4 não deve mais ter caminho 'sem abortar' — todo erro é halt banner");
     assert.ok(/halt banner/i.test(step4Text), "#4281: passo 4 precisa manter o halt banner pra qualquer erro");
+  });
+});
+
+describe("#4505 item 2: re-auditoria sistemática dos tic-lints no loop 'ajustar' (§4d.1 passo 6.7)", () => {
+  // A #4352 promoveu no-antithesis-reveal/no-trailing-editorial-hook pra
+  // GATE-BLOCKING e os chamou incondicionalmente em §4c.2b + de novo em
+  // §4c.6c (pós autofix de fact-check) — mas o loop "ajustar" (§4d.1, edição
+  // inline no chat) tinha seu PRÓPRIO conjunto de re-lints no passo 6.7 que
+  // não incluía os 2 tic-lints. Recorrência ao vivo na edição 260803 (#4505):
+  // uma correção mecânica de travessão→pontuação aplicada via "ajustar"
+  // reintroduziu antítese-revelação 3x seguidas na mesma sessão, cada uma só
+  // pega porque o EDITOR notou e pediu "passa o humanizador de novo" — sem
+  // re-auditoria automática no passo 6.7, nada fechava esse loop sozinho.
+  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+  const section4d1 = stage4.slice(stage4.indexOf("### 4d.1"));
+
+  function step67Text(): string {
+    const step67Idx = section4d1.indexOf("**6.7**");
+    const step68Idx = section4d1.indexOf("**6.8**");
+    assert.ok(step67Idx !== -1 && step68Idx !== -1, "§4d.1 precisa ter os passos 6.7 e 6.8");
+    return section4d1.slice(step67Idx, step68Idx);
+  }
+
+  it("passo 6.7 roda no-antithesis-reveal E no-trailing-editorial-hook sobre 03-social.md", () => {
+    const step67 = step67Text();
+    assert.ok(
+      step67.includes("--check no-antithesis-reveal --md {EDITION_DIR}/03-social.md"),
+      "#4505 item 2: passo 6.7 precisa re-rodar no-antithesis-reveal — mesmo tic-lint GATE-BLOCKING de §4c.2b/§4c.6c, agora também no loop 'ajustar'",
+    );
+    assert.ok(
+      step67.includes("--check no-trailing-editorial-hook --md {EDITION_DIR}/03-social.md"),
+      "#4505 item 2: passo 6.7 precisa re-rodar no-trailing-editorial-hook — mesmo tic-lint GATE-BLOCKING de §4c.2b/§4c.6c, agora também no loop 'ajustar'",
+    );
+  });
+
+  it("passo 6.7 documenta os 2 tic-lints como GATE-BLOCKING (não apenas informativo)", () => {
+    const step67 = step67Text();
+    const ticLintsIdx = step67.indexOf("no-trailing-editorial-hook --md {EDITION_DIR}/03-social.md");
+    assert.ok(ticLintsIdx !== -1);
+    const afterTicLints = step67.slice(ticLintsIdx);
+    assert.ok(
+      /\*\*GATE-BLOCKING\*\*/.test(afterTicLints),
+      "#4505 item 2: a re-auditoria dos tic-lints no passo 6.7 precisa ser GATE-BLOCKING, não apenas um warning — senão o loop 'ajustar' reabre exatamente a lacuna que a recorrência ao vivo 260803 expôs",
+    );
+    assert.ok(
+      /4505/.test(afterTicLints),
+      "passo 6.7 deve referenciar #4505 — rastreabilidade do porquê da re-auditoria explícita aqui",
+    );
+  });
+
+  it("os 2 tic-lints do passo 6.7 vêm ANTES do passo 6.8 (re-confirmação do sentinel)", () => {
+    const step67Idx = section4d1.indexOf("**6.7**");
+    const ticLintIdx = section4d1.indexOf("--check no-antithesis-reveal --md {EDITION_DIR}/03-social.md", step67Idx);
+    const step68Idx = section4d1.indexOf("**6.8**");
+    assert.ok(step67Idx !== -1 && ticLintIdx !== -1 && step68Idx !== -1);
+    assert.ok(
+      step67Idx < ticLintIdx && ticLintIdx < step68Idx,
+      "#4505 item 2: os tic-lints devem rodar DENTRO do passo 6.7, antes do passo 6.8 voltar ao gate",
+    );
+  });
+});
+
+describe("#4505 item 3: critic pass social opcional (§4c.6d)", () => {
+  // Item 3 da issue #4505 — um subagente dedicado, OPCIONAL (flag em
+  // platform.config.json), que faz 1 leitura holística final perguntando
+  // "isso ainda soa como IA?" (passos 6-7 do rubric de 9 passos da skill
+  // humanizador) sobre 03-social.md já com todas as correções mecânicas
+  // aplicadas — cobre tiques que os 2 tic-lints determinísticos (regex) não
+  // reconhecem.
+  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+  const section4c6d = stage4.slice(stage4.indexOf("**4c.6d"), stage4.indexOf("**4c.7"));
+
+  it("§4c.6d existe e referencia o flag opt-in social_critic_pass.enabled", () => {
+    assert.ok(section4c6d.length > 0, "§4c.6d não encontrada em orchestrator-stage-4.md");
+    assert.ok(
+      section4c6d.includes("social_critic_pass.enabled"),
+      "§4c.6d precisa checar platform.config.json → social_critic_pass.enabled (opt-in, #4505 item 3)",
+    );
+    assert.ok(
+      /default `false`/.test(section4c6d) || /default.*false/.test(section4c6d),
+      "§4c.6d precisa deixar explícito que o default é desligado (custo extra por edição)",
+    );
+  });
+
+  it("§4c.6d dispatcha run-social-critic.ts em modo descoberta e trata exit 2 como skip (não erro)", () => {
+    assert.ok(section4c6d.includes("run-social-critic.ts --edition-dir"), "§4c.6d precisa chamar run-social-critic.ts");
+    assert.ok(
+      /`2`.*desabilitado/.test(section4c6d) || /desabilitado.*pular/i.test(section4c6d),
+      "§4c.6d precisa tratar exit 2 (desabilitado) como skip silencioso, nunca como falha",
+    );
+  });
+
+  it("§4c.6d dispatcha o subagente social-critic via Agent tool", () => {
+    assert.ok(
+      section4c6d.includes('Agent("social-critic"'),
+      "§4c.6d precisa dispatchar Agent(\"social-critic\", {...})",
+    );
+  });
+
+  it("§4c.6d é warning-only — nunca bloqueia o gate", () => {
+    assert.ok(
+      /nunca bloqueia/i.test(section4c6d),
+      "§4c.6d precisa deixar explícito que o critic pass é warning-only (não-bloqueante), análogo ao image-crop-reviewer #3951",
+    );
+  });
+
+  it("o template do gate (§4d) referencia {social_critic_block} logo após {fact_check_block}", () => {
+    const gateTemplateIdx = stage4.indexOf("{fact_check_block}");
+    const boxesIdx = stage4.indexOf("━━━ BOXES DE DIVULGAÇÃO");
+    assert.ok(gateTemplateIdx !== -1 && boxesIdx !== -1);
+    const between = stage4.slice(gateTemplateIdx, boxesIdx);
+    assert.ok(
+      between.includes("{social_critic_block}"),
+      "o template do gate precisa incluir {social_critic_block} entre {fact_check_block} e a seção de BOXES DE DIVULGAÇÃO",
+    );
+  });
+
+  it("'Regras de apresentação' documenta {social_critic_block} (presente só quando habilitado)", () => {
+    const regrasIdx = stage4.indexOf("Regras de apresentação:");
+    assert.ok(regrasIdx !== -1);
+    const regrasSection = stage4.slice(regrasIdx, regrasIdx + 2000);
+    assert.ok(
+      regrasSection.includes("{social_critic_block}"),
+      "'Regras de apresentação' precisa documentar a regra de {social_critic_block}",
+    );
+  });
+
+  it("o passo 7 do loop 'ajustar' (§4d.1) menciona re-rodar o critic pass quando habilitado", () => {
+    const section4d1 = stage4.slice(stage4.indexOf("### 4d.1"));
+    const step7Idx = section4d1.indexOf("7. **Voltar ao §4d**");
+    assert.ok(step7Idx !== -1, "§4d.1 precisa ter o passo 7 (voltar ao gate)");
+    const step7Text = section4d1.slice(step7Idx, step7Idx + 600);
+    assert.ok(
+      /social_critic_pass\.enabled/.test(step7Text),
+      "#4505 item 3: passo 7 do loop 'ajustar' precisa mencionar que o critic pass é re-rodado quando social_critic_pass.enabled — um ajuste pode reintroduzir um tique que uma rodada anterior não tinha",
+    );
   });
 });
