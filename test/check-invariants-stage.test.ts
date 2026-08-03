@@ -2576,4 +2576,17 @@ describe("CLI --stage N", () => {
       rmSync(fixture, { recursive: true, force: true });
     }
   });
+
+  it("#4516 self-review: --phase com valor não reconhecido avisa em stderr e roda o conjunto completo (silent-failure guard)", () => {
+    const fixture = makeFixtureEdition();
+    try {
+      const r = runCli(["--stage", "5", "--phase", "pre-dispach", "--edition-dir", fixture]);
+      assert.match(r.stderr, /--phase "pre-dispach" não reconhecido/);
+      const out = JSON.parse(r.stdout);
+      assert.ok(out.rules_run.includes("social-published-complete"), `rules_run: ${JSON.stringify(out.rules_run)}`);
+      assert.ok(out.rules_run.includes("step-5-sentinel-exists"), `rules_run: ${JSON.stringify(out.rules_run)}`);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
 });

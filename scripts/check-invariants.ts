@@ -343,6 +343,11 @@ async function main(): Promise<void> {
   // qualquer publicação, sempre retorna error). Qualquer outro valor de
   // --phase (ou ausente) roda o conjunto completo, comportamento de sempre.
   const phaseRaw = getArg(argv, "phase") || undefined;
+  if (phaseRaw !== undefined && phaseRaw !== "pre-dispatch") {
+    console.warn(
+      `check-invariants: --phase "${phaseRaw}" não reconhecido (esperado "pre-dispatch") — rodando o conjunto completo de regras, sem filtro de fase.`,
+    );
+  }
   const phase = phaseRaw === "pre-dispatch" ? ("pre-dispatch" as const) : undefined;
 
   if (!isStatic && !editionDir && stage === undefined) {
