@@ -47,6 +47,35 @@
  * justamente pra não estourar o teto mensal reconsultando quem não tem como
  * mudar de status dentro do mesmo mês-competência. Ver
  * `scripts/studio-ui/studio-apoios.ts::refreshApoiosData` pro caller.
+ *
+ * **TTL do cache do mês CORRENTE (#4490 causa 1 e 2):** o force-refresh acima
+ * exige alguém clicar o botão — sem isso, o cache do mês corrente era tratado
+ * como definitivo pra sempre (`checkBacker` só reconsultava em cache MISS).
+ * Medido ao vivo em 260802: `2026-08.json` foi escrito às 04:15 do dia 1º com
+ * TODOS os 22 contatos `isPaidThisMonth: false` (ninguém tinha pago ainda) —
+ * toda execução do dia 02 leu esse arquivo achando "ninguém pagou em agosto",
+ * enquanto 19 dos 22 já tinham pago de verdade. Fix: cada entrada do cache
+ * ganha um `fetchedAt` (ISO, gravado por `checkBacker` no momento do fetch) e
+ * um cache HIT com `isPaidThisMonth: false` expira depois de
+ * `CURRENT_MONTH_CACHE_TTL_HOURS` (default 8h) — vira MISS e reconsulta a
+ * API. Entradas com `isPaidThisMonth: true` NUNCA expiram por TTL (a doc
+ * garante estabilidade intra-mês depois de confirmado o pagamento — expirar
+ * essas gastaria request à toa). Entrada SEM `fetchedAt` (gravada antes desta
+ * correção, ou por qualquer escrita direta no arquivo que não passou por
+ * `checkBacker`) é tratada como expirada — 1 refetch de backfill, nunca
+ * assumida fresca por default. `fetchedAt` NUNCA é devolvido no objeto de
+ * retorno pro caller (só persistido no arquivo de cache) — mantém o shape de
+ * `BackerStatus` estável pra quem consome o valor.
+ *
+ * A mesma TTL fecha também a causa 2 da issue (#4490): um snapshot de mês
+ * corrente incompleto perto da virada (dia 28-31) vira "mês passado"
+ * congelado e irrecuperável (a API só responde pelo mês corrente). Como
+ * qualquer invocação do sync (inclusive o dry-run diário agendado, #4485
+ * item 2) reconsulta entradas não-pagas com mais de `CURRENT_MONTH_CACHE_TTL_HOURS`
+ * de idade, uma rodada diária mantém o snapshot do mês corrente atualizado
+ * até a virada — nenhum mecanismo adicional de "refresh perto do dia 28"
+ * é necessário além de (a) esta TTL e (b) a task rodar todo dia (inclusive
+ * fins de mês).
  */
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -134,6 +163,10 @@ function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
+/** Default da TTL do cache do mês corrente (#4490 causa 1/2) — ver rationale
+ * completo no cabeçalho do módulo. Tunável via `CheckBackerOptions.ttlHours`. */
+export const CURRENT_MONTH_CACHE_TTL_HOURS = 8;
+
 // ---------------------------------------------------------------------------
 // Rate limiter — ≤5 req/s (espaça o INÍCIO de cada chamada)
 // ---------------------------------------------------------------------------
@@ -219,7 +252,39 @@ export function defaultCacheDir(campaign: string): string {
   return resolve(REPO_ROOT, "data", "apoia-se", campaign);
 }
 
-type MonthCache = Record<string, BackerStatus>;
+/** Shape persistido em disco — igual a `BackerStatus` mais `fetchedAt`
+ * (#4490 causa 1). `fetchedAt` NUNCA é exposto no valor de retorno de
+ * `checkBacker` pro caller — só vive no arquivo de cache. */
+type CachedBackerStatus = BackerStatus & { fetchedAt?: string };
+
+type MonthCache = Record<string, CachedBackerStatus>;
+
+/** Pure: remove `fetchedAt` de uma entrada de cache antes de devolvê-la ao
+ * caller — mantém `BackerStatus` como o shape público estável (#4490). */
+function toPublicStatus(entry: CachedBackerStatus): BackerStatus {
+  const status: BackerStatus = { isBacker: entry.isBacker, isPaidThisMonth: entry.isPaidThisMonth };
+  if (typeof entry.thisMonthPaidValue === "number") status.thisMonthPaidValue = entry.thisMonthPaidValue;
+  return status;
+}
+
+/**
+ * Pure (#4490 causa 1/2): `true` se uma entrada de cache do mês CORRENTE
+ * deve ser tratada como MISS apesar de existir em disco.
+ *
+ * - `isPaidThisMonth: true` NUNCA expira (doc: status estável intra-mês
+ *   depois de confirmado o pagamento — expirar gastaria request à toa).
+ * - Sem `fetchedAt` (legado, ou escrita que não passou por `checkBacker`):
+ *   tratada como expirada — 1 refetch de backfill, nunca assumida fresca.
+ * - Caso contrário: expira quando `now - fetchedAt > ttlHours`.
+ */
+export function isCacheEntryStale(entry: BackerStatus & { fetchedAt?: string }, now: Date, ttlHours: number): boolean {
+  if (entry.isPaidThisMonth) return false;
+  if (!entry.fetchedAt) return true;
+  const fetchedAtMs = Date.parse(entry.fetchedAt);
+  if (Number.isNaN(fetchedAtMs)) return true;
+  const ageMs = now.getTime() - fetchedAtMs;
+  return ageMs > ttlHours * 60 * 60 * 1000;
+}
 
 function loadMonthCache(path: string): MonthCache {
   if (!existsSync(path)) return {};
@@ -331,12 +396,20 @@ export interface CheckBackerOptions {
    *  contatos ainda não confirmados como pagantes (ver doc do módulo acima).
    *  Default `false` (comportamento normal: cache HIT nunca bate na API). */
   forceRefresh?: boolean;
+  /** (#4490 causa 1/2) TTL, em horas, pra um cache HIT do mês corrente com
+   *  `isPaidThisMonth: false` — depois desse tempo, HIT vira MISS e reconsulta
+   *  a API (ver `isCacheEntryStale`/cabeçalho do módulo). Default
+   *  `CURRENT_MONTH_CACHE_TTL_HOURS`. Injetável pra testar virada de TTL
+   *  deterministicamente. */
+  ttlHours?: number;
 }
 
 /**
  * Verifica se `email` é apoiador pagante da campanha no mês corrente.
  * Consulta o cache do mês-competência (BRT) antes de bater na API; em cache
- * miss, faz o fetch (respeitando o rate limiter) e grava o resultado.
+ * miss (ou HIT expirado pela TTL do mês corrente — #4490 causa 1/2, ver
+ * cabeçalho do módulo), faz o fetch (respeitando o rate limiter) e grava o
+ * resultado com um `fetchedAt` fresco.
  */
 export async function checkBacker(
   email: string,
@@ -352,16 +425,19 @@ export async function checkBacker(
   const month = competenceMonth(now);
   const cacheDir = opts.cacheDir ?? defaultCacheDir(env.campaign);
   const cachePath = resolve(cacheDir, `${month}.json`);
+  const ttlHours = opts.ttlHours ?? CURRENT_MONTH_CACHE_TTL_HOURS;
 
   const cache = loadMonthCache(cachePath);
   const cached = cache[normalized];
-  if (cached && !opts.forceRefresh) return cached;
+  if (cached && !opts.forceRefresh && !isCacheEntryStale(cached, now, ttlHours)) {
+    return toPublicStatus(cached);
+  }
 
   const fetchImpl = opts.fetchImpl ?? fetch;
   const limiter = opts.limiter ?? getDefaultLimiter();
   const status = await fetchBackerStatus(normalized, env, fetchImpl, limiter);
 
-  cache[normalized] = status;
+  cache[normalized] = { ...status, fetchedAt: now.toISOString() };
   mkdirSync(cacheDir, { recursive: true });
   saveMonthCache(cachePath, cache);
 
