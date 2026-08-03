@@ -37,13 +37,34 @@ npx wrangler secret put BEEHIIV_API_KEY
 npx wrangler secret put BEEHIIV_PUBLICATION_ID
 # → mesmo valor de platform.config.json → beehiiv.publicationId
 
+# 1b. Secret opcional (#4538 item B) — guard de descadastro nativo pendente.
+# Sem ela, o guard é pulado (fail-open, mesmo comportamento pré-#4538).
+npx wrangler secret put BREVO_DIARIA_API_KEY
+# → mesmo valor do env var apontado por platform.config.json →
+#   brevo_diaria.api_key_env (BREVO_DIARIA_API_KEY)
+
 # 2. Deploy
 npx wrangler deploy
 # → confirma URL no output: https://reativar.diaria.workers.dev
 ```
 
 Sem KV namespace — o Worker não guarda estado (cada request é uma chamada
-stateless à API da Beehiiv).
+stateless à API da Beehiiv/Brevo).
+
+## Guard de descadastro nativo pendente (#4538 item B)
+
+Antes do DELETE+CREATE, o Worker consulta `GET /v3/contacts/{email}` na
+Brevo — se a pessoa já se descadastrou nativamente do canal Brevo próprio
+(`emailBlacklisted: true`, o mesmo sinal que
+`scripts/evaluate-brevo-diaria.ts` passo 0 detecta e propaga pra Beehiiv,
+issue #4538), o clique NÃO reativa automaticamente: renderiza uma página
+explicando a situação e apontando pro cadastro normal (opt-in explícito) em
+`diar.ia.br`. Fecha o cenário "clique tardio numa edição antiga reativa
+quem já disse não, em silêncio".
+
+Fail-open sem `BREVO_DIARIA_API_KEY` configurada, ou em qualquer erro de
+rede/HTTP da Brevo — nunca trava o fluxo de confirmação inteiro por causa
+de uma checagem que cobre um edge case raro (população cap 300).
 
 ## Tests
 

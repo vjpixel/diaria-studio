@@ -39,6 +39,28 @@
  * Deletar o registro e criar do zero **ativou direto** (`validating` →
  * `active` em segundos). Esta versão do Worker já reflete essa mecânica —
  * `reactivate_existing` foi removido, não é mais usado em lugar nenhum.
+ *
+ * ## Guard de descadastro nativo pendente (#4538 item B)
+ *
+ * Antes do DELETE+CREATE, `checkNativeUnsubscribePending` consulta
+ * `GET /v3/contacts/{email}` na Brevo — se `emailBlacklisted === true` (a
+ * pessoa clicou no link de opt-out nativo do bloco de intro, ver
+ * `context/snippets/brevo-diaria-pending-intro.md`, ou já foi propagado por
+ * `scripts/evaluate-brevo-diaria.ts` passo 0), o clique em `?email=` NÃO
+ * ativa direto — renderiza `renderNativeUnsubscribePage` explicando a
+ * situação e oferecendo o cadastro normal como opt-in explícito. Fecha o
+ * cenário 1 da issue #4538: clique tardio no CTA de uma edição antiga
+ * reativando quem já disse não, em silêncio.
+ *
+ * Fail-OPEN quando `BREVO_DIARIA_API_KEY` está ausente (secret novo — mesmo
+ * padrão de "1ª execução/armamento pendente do editor" já usado pros outros
+ * secrets operacionais introduzidos sem sessão live, ver #4320/#4382): a
+ * checagem é pulada e `activateSubscription` roda como se este guard não
+ * existisse — nunca pior que o comportamento pré-#4538. Fail-open também em
+ * erro de rede/HTTP da Brevo (timeout, 4xx/5xx) — um hiccup da Brevo não pode
+ * travar TODO o fluxo de confirmação por causa de uma checagem que cobre um
+ * edge case raro (população cap 300); loga um warning (`wrangler tail`) em
+ * vez de lançar.
  */
 
 export interface Env {
@@ -48,6 +70,16 @@ export interface Env {
   BEEHIIV_PUBLICATION_ID?: string;
   /** Override só pra teste (mock server local) — default `https://api.beehiiv.com/v2`. */
   BEEHIIV_API_URL?: string;
+  /**
+   * Secret — `wrangler secret put BREVO_DIARIA_API_KEY` (#4538 item B).
+   * Mesma key de `platform.config.json` → `brevo_diaria.api_key_env`
+   * (`BREVO_DIARIA_API_KEY`). OPCIONAL: sem ela, o guard de descadastro
+   * nativo pendente (`checkNativeUnsubscribePending`) é pulado (fail-open —
+   * ver cabeçalho do módulo), nunca 503.
+   */
+  BREVO_DIARIA_API_KEY?: string;
+  /** Override só pra teste (mock server local) — default `https://api.brevo.com/v3`. */
+  BREVO_API_URL?: string;
 }
 
 const CORS_HEADERS = { "Access-Control-Allow-Origin": "*" } as const;
@@ -83,12 +115,51 @@ export function parseEmailParam(url: URL): ParsedEmailParam {
   return { ok: true, email };
 }
 
+// ── guard de descadastro nativo pendente (#4538 item B) ────────────────────
+
+/**
+ * `GET /v3/contacts/{email}` na Brevo — `true` se `emailBlacklisted === true`
+ * (descadastro NATIVO, ação própria da pessoa — mesmo sinal que
+ * `scripts/evaluate-brevo-diaria.ts` passo 0 detecta e propaga pra Beehiiv).
+ * Fail-OPEN (retorna `false`) quando `BREVO_DIARIA_API_KEY` está ausente, ou
+ * em qualquer erro de rede/HTTP — ver rationale completo no cabeçalho do
+ * módulo. `fetchImpl` injetável pra teste, nunca rede real nos testes (#633).
+ */
+export async function checkNativeUnsubscribePending(
+  env: Env,
+  email: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<boolean> {
+  const apiKey = env.BREVO_DIARIA_API_KEY;
+  if (!apiKey) {
+    console.warn(JSON.stringify({ event: "reativar_brevo_guard_skipped", reason: "BREVO_DIARIA_API_KEY ausente" }));
+    return false;
+  }
+  const base = env.BREVO_API_URL ?? "https://api.brevo.com/v3";
+  try {
+    const res = await fetchImpl(`${base}/contacts/${encodeURIComponent(email)}`, {
+      headers: { "api-key": apiKey, Accept: "application/json" },
+      signal: AbortSignal.timeout(ACTIVATE_FETCH_TIMEOUT_MS),
+    });
+    if (res.status === 404) return false; // contato nunca existiu na Brevo — nada a bloquear
+    if (!res.ok) {
+      console.warn(JSON.stringify({ event: "reativar_brevo_guard_non_2xx", status: res.status }));
+      return false; // fail-open — ver cabeçalho do módulo
+    }
+    const body = (await res.json().catch(() => null)) as { emailBlacklisted?: boolean } | null;
+    return body?.emailBlacklisted === true;
+  } catch (e) {
+    console.warn(JSON.stringify({ event: "reativar_brevo_guard_failed", error: String(e) }));
+    return false; // fail-open — ver cabeçalho do módulo
+  }
+}
+
 // ── ativação (I/O) ───────────────────────────────────────────────────────
 
 export interface ActivateResult {
   ok: boolean;
   status: number;
-  reason?: "not_configured" | "beehiiv_error";
+  reason?: "not_configured" | "beehiiv_error" | "native_unsubscribe_pending";
   /**
    * `data.status` da subscription APÓS o CREATE (ou o status já-`active`
    * encontrado no GET inicial, se a pessoa clicar 2x — idempotente). `ok:true`
@@ -173,6 +244,15 @@ export async function activateSubscription(
 
   if (existing?.status === "active") {
     return { ok: true, status: 200, beehiivStatus: "active" };
+  }
+
+  // 1.5) guard de descadastro nativo pendente (#4538 item B) — SÓ checado
+  // quando estamos de fato prestes a fazer DELETE+CREATE (já passou pela
+  // idempotência acima). Fail-open — ver `checkNativeUnsubscribePending`.
+  const nativeUnsubscribePending = await checkNativeUnsubscribePending(env, email, fetchImpl);
+  if (nativeUnsubscribePending) {
+    console.warn(JSON.stringify({ event: "reativar_blocked_native_unsubscribe_pending" }));
+    return { ok: true, status: 200, reason: "native_unsubscribe_pending" };
   }
 
   // 2) deleta o registro travado (se existir e não for active).
@@ -305,6 +385,20 @@ export function renderNotConfirmedPage(): string {
   );
 }
 
+/**
+ * #4538 item B — a pessoa pediu pra sair (descadastro nativo detectado via
+ * `checkNativeUnsubscribePending`) e este link de confirmação NÃO reativa
+ * automaticamente. Oferece o cadastro normal como opt-in explícito, em vez
+ * de assumir que o clique (numa edição antiga, possivelmente esquecida na
+ * caixa de entrada) ainda reflete a vontade atual da pessoa.
+ */
+export function renderNativeUnsubscribePage(): string {
+  return page(
+    "Você pediu pra sair",
+    `<h1>Você pediu pra sair</h1><p>Identificamos que você se descadastrou da diária recentemente. Por isso não reativamos automaticamente por este link. Se foi engano ou você mudou de ideia, cadastre-se de novo em <a href="https://diar.ia.br">diar.ia.br</a>.</p>`,
+  );
+}
+
 // ── handler ────────────────────────────────────────────────────────────
 
 function htmlResponse(html: string, status: number): Response {
@@ -331,6 +425,12 @@ export async function handleConfirm(
   if (!result.ok) {
     const status = result.reason === "not_configured" ? 503 : 502;
     return htmlResponse(renderErrorPage(), status);
+  }
+  // #4538 item B — descadastro nativo pendente: NÃO é a página de sucesso
+  // nem a genérica "ainda não confirmado" (que sugere tentar de novo) —
+  // página própria explicando a situação.
+  if (result.reason === "native_unsubscribe_pending") {
+    return htmlResponse(renderNativeUnsubscribePage(), 200);
   }
   // #4476 self-review (achado do teste ao vivo): HTTP 2xx no POST não é
   // garantia de `active` — só `beehiivStatus === "active"` conta como

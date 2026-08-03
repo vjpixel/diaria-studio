@@ -15,11 +15,13 @@ import {
   parseEmailParam,
   activateSubscription,
   handleConfirm,
+  checkNativeUnsubscribePending,
   renderSuccessPage,
   renderMissingEmailPage,
   renderInvalidEmailPage,
   renderErrorPage,
   renderNotConfirmedPage,
+  renderNativeUnsubscribePage,
   type Env,
 } from "../workers/reativar/src/index.ts";
 
@@ -293,6 +295,142 @@ describe("activateSubscription — DELETE + CREATE, não mais reactivate_existin
     const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
     const result = await activateSubscription(env, "a@b.com", fetchImpl);
     assert.deepEqual(result, { ok: false, status: 502, reason: "beehiiv_error" });
+  });
+});
+
+describe("checkNativeUnsubscribePending — guard de descadastro nativo (#4538 item B)", () => {
+  it("BREVO_DIARIA_API_KEY ausente → fail-open, false, sem chamar fetch", async () => {
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return jsonRes(200, { emailBlacklisted: true });
+    }) as typeof fetch;
+    const result = await checkNativeUnsubscribePending({}, "a@b.com", fetchImpl);
+    assert.equal(result, false);
+    assert.equal(called, false, "sem a key, o guard nem tenta chamar a Brevo — fail-open");
+  });
+
+  it("emailBlacklisted:true → true (descadastro nativo pendente)", async () => {
+    const fetchImpl = (async () => jsonRes(200, { emailBlacklisted: true })) as typeof fetch;
+    const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key" };
+    assert.equal(await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl), true);
+  });
+
+  it("emailBlacklisted:false → false (nada pendente)", async () => {
+    const fetchImpl = (async () => jsonRes(200, { emailBlacklisted: false })) as typeof fetch;
+    const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key" };
+    assert.equal(await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl), false);
+  });
+
+  it("404 (contato nunca existiu na Brevo) → false", async () => {
+    const fetchImpl = (async () => new Response(null, { status: 404 })) as typeof fetch;
+    const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key" };
+    assert.equal(await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl), false);
+  });
+
+  it("erro HTTP (5xx) → fail-open, false (nunca lança, nunca bloqueia o fluxo inteiro por um hiccup)", async () => {
+    const fetchImpl = (async () => new Response("boom", { status: 500 })) as typeof fetch;
+    const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key" };
+    assert.equal(await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl), false);
+  });
+
+  it("fetch lança (timeout/rede) → fail-open, false (nunca propaga a exceção)", async () => {
+    const fetchImpl = (async () => {
+      throw new Error("network down");
+    }) as typeof fetch;
+    const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key" };
+    assert.equal(await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl), false);
+  });
+
+  it("BREVO_API_URL override (teste) → usa a base customizada", async () => {
+    let capturedUrl = "";
+    const fetchImpl = (async (url: string | URL) => {
+      capturedUrl = String(url);
+      return jsonRes(200, { emailBlacklisted: false });
+    }) as typeof fetch;
+    const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key", BREVO_API_URL: "https://mock.local/v3" };
+    await checkNativeUnsubscribePending(env, "a@b.com", fetchImpl);
+    assert.ok(capturedUrl.startsWith("https://mock.local/v3"));
+  });
+});
+
+describe("activateSubscription — guard de descadastro nativo pendente (#4538 item B, teste de regressão obrigatório caso c)", () => {
+  it("contato blacklisted na Brevo → NUNCA chama DELETE/CREATE na Beehiiv, retorna reason native_unsubscribe_pending", async () => {
+    const beehiivCalls: { method: string; url: string }[] = [];
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      if (u.includes("api.brevo.com")) {
+        return jsonRes(200, { emailBlacklisted: true });
+      }
+      beehiivCalls.push({ method, url: u });
+      if (method === "DELETE") throw new Error("DELETE NUNCA deveria ser chamado — contato pediu pra sair");
+      if (method === "POST") throw new Error("POST (CREATE) NUNCA deveria ser chamado — contato pediu pra sair");
+      // GET inicial (existência) — registro Pending travado, não-active.
+      return jsonRes(200, { data: { id: "sub_old", status: "pending" } });
+    }) as typeof fetch;
+    const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1", BREVO_DIARIA_API_KEY: "brevo_key" };
+    const result = await activateSubscription(env, "a@b.com", fetchImpl);
+    assert.deepEqual(result, { ok: true, status: 200, reason: "native_unsubscribe_pending" });
+    assert.deepEqual(beehiivCalls.map((c) => c.method), ["GET"], "só o GET de existência — nunca DELETE nem POST");
+  });
+
+  it("contato JÁ active na Beehiiv (idempotência) tem prioridade sobre o guard — nunca chama a Brevo", async () => {
+    let brevoCalled = false;
+    const fetchImpl = (async (url: string | URL) => {
+      const u = String(url);
+      if (u.includes("api.brevo.com")) {
+        brevoCalled = true;
+        return jsonRes(200, { emailBlacklisted: true });
+      }
+      return jsonRes(200, { data: { id: "sub_1", status: "active" } });
+    }) as typeof fetch;
+    const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1", BREVO_DIARIA_API_KEY: "brevo_key" };
+    const result = await activateSubscription(env, "a@b.com", fetchImpl);
+    assert.deepEqual(result, { ok: true, status: 200, beehiivStatus: "active" });
+    assert.equal(brevoCalled, false, "já active — nem precisa checar o guard");
+  });
+
+  it("contato NÃO blacklisted → guard não bloqueia, DELETE+CREATE prosseguem normalmente", async () => {
+    const { fetchImpl: routedBeehiiv, calls } = routedFetch({
+      get: () => jsonRes(200, { data: { id: "sub_old", status: "pending" } }),
+      post: () => jsonRes(201, { data: { id: "sub_new", status: "active" } }),
+    });
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("api.brevo.com")) return jsonRes(200, { emailBlacklisted: false });
+      return routedBeehiiv(url, init);
+    }) as typeof fetch;
+    const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1", BREVO_DIARIA_API_KEY: "brevo_key" };
+    const result = await activateSubscription(env, "a@b.com", fetchImpl);
+    assert.deepEqual(result, { ok: true, status: 201, beehiivStatus: "active" });
+    assert.deepEqual(calls.map((c) => c.method), ["GET", "DELETE", "POST"]);
+  });
+
+  it("BREVO_DIARIA_API_KEY ausente (fail-open) → guard pulado, DELETE+CREATE prosseguem normalmente (nunca pior que o comportamento pré-#4538)", async () => {
+    const { fetchImpl, calls } = routedFetch({
+      get: () => jsonRes(200, { data: { id: "sub_old", status: "pending" } }),
+      post: () => jsonRes(201, { data: { id: "sub_new", status: "active" } }),
+    });
+    const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" }; // sem BREVO_DIARIA_API_KEY
+    const result = await activateSubscription(env, "a@b.com", fetchImpl);
+    assert.deepEqual(result, { ok: true, status: 201, beehiivStatus: "active" });
+    assert.deepEqual(calls.map((c) => c.method), ["GET", "DELETE", "POST"]);
+  });
+});
+
+describe("handleConfirm — guard de descadastro nativo pendente (#4538 item B)", () => {
+  it("contato blacklisted → 200, página própria de 'você pediu pra sair' (nunca a de sucesso nem a genérica)", async () => {
+    const fetchImpl = (async (url: string | URL) => {
+      const u = String(url);
+      if (u.includes("api.brevo.com")) return jsonRes(200, { emailBlacklisted: true });
+      return jsonRes(200, { data: { id: "sub_old", status: "pending" } });
+    }) as typeof fetch;
+    const url = new URL("https://reativar.diaria.workers.dev/?email=a@b.com");
+    const env: Env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1", BREVO_DIARIA_API_KEY: "brevo_key" };
+    const res = await handleConfirm(url, env, fetchImpl);
+    assert.equal(res.status, 200);
+    assert.equal(await res.text(), renderNativeUnsubscribePage());
   });
 });
 
