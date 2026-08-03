@@ -31,26 +31,68 @@ Atualizado 260802: cadastro na Beehiiv não tem mais confirmação por e-mail
 (mudança de fluxo do editor) — reescrito pra não presumir que existe um passo
 de "confirmação" pendente no sentido antigo; o CTA agora aponta pro mesmo
 formulário de cadastro, que hoje já ativa na hora ao ser resubmetido. Frase de
-descadastro (parágrafo 4) inspirada no fechamento de
+descadastro (parágrafo final) inspirada no fechamento de
 context/templates/newsletter-monthly.md:23 ("Você está recebendo esse e-mail
 porque se cadastrou na Clarice... pode se [descadastrar aqui]({{
 unsubscribe }})") — mesma merge tag `{{ unsubscribe }}` da Brevo, mesmo ESP.
 
-*** APROVADA pelo editor em 260802. ***
+Atualizado 260803 (revisão do editor após ver o rascunho real na Brevo):
+(1) removida a linha de título — não agrega, vai direto ao corpo; (2) removida
+a menção a "Beehiiv" — irrelevante pro leitor, ele não sabe nem precisa saber
+qual ESP está por trás; (3) removida a duplicação — a frase "você se inscreveu
+na diária da diar.ia.br" aparecia 2x (1x no corpo, 1x depois do botão); agora
+aparece só 1x, no corpo, antes do botão; (4) o parágrafo pós-CTA ficou só com
+o disclosure de descadastro (sem repetir a narrativa de inscrição), pra que o
+botão funcione como o fechamento natural do bloco, com só uma linha de
+compliance abaixo dele — não dá pra remover essa linha inteiramente porque o
+mecanismo de CTA pill (`afterCtaParas`) e o enquadramento de consentimento do
+bloco (ver acima) dependem de um disclosure de opt-out explícito ali.
+
+Atualizado 260803 (3ª rodada): corpo dividido em 3 parágrafos curtos (era 1
+parágrafo corrido) + passada de humanizador (removeu 1 travessão usado como
+conector lógico, `newsletter-final.md → "confirmado — por isso" → "confirmado.
+Por isso,"`) + passada de Clarice via `mcp__clarice__correct_text` (6
+sugestões, todas aplicadas: "chegou a ser"→"foi", "tem"→"há",
+"de novo que já fica"→"novamente para que...fique", "mandamos"→"enviamos",
+"pra"→"para que", "perder"→"perca" — nenhuma toca marca/identificador/merge
+tag, todas de formalização pura).
+
+*** Copy revisada APROVADA pelo editor em 260803 (substitui a aprovação
+anterior — texto mudou, formato continua o mesmo: título ausente agora É a
+forma esperada, não uma omissão). ***
 `scripts/publish-daily-brevo.ts` continua exigindo a flag
 `--i-reviewed-the-copy` pra rodar fora de `--dry-run` — isso é um lembrete
-mecânico, não um gate de aprovação pendente (a aprovação em si já
-aconteceu). Pendência real que sobrevive à aprovação: a URL do CTA abaixo
-ainda aponta pro formulário de cadastro genérico — precisa virar o link
-personalizado (`?email={{ contact.EMAIL }}`) quando a página de confirmação
-do #4476 item 3 existir. Se o texto mudar de novo depois disso, reavaliar
-se precisa de nova aprovação explícita.
+mecânico, não um gate de aprovação pendente.
+
+Atualizado 260803 (4ª rodada): CTA trocado do formulário de cadastro
+genérico (`https://diar.ia.br/?...`) pro link personalizado do
+`workers/reativar` (#4476 item 3) — `?email={{ contact.EMAIL }}`, 1 clique,
+sem redigitar o e-mail. Worker implantado e verificado ao vivo em 260803
+(secrets configurados, `wrangler deploy`, checado com e-mail ausente/inválido
+— nunca tocou a Beehiiv nesse teste). Justificativa pra não usar o formulário
+genérico: `reactivate_existing:true` (o que o formulário aciona por baixo)
+**não ativa** registros Pending legados — confirmado ao vivo no #4476/#4488
+com 1 contato real, status ficou travado em `pending`. O worker faz
+DELETE+CREATE, que ativa direto (`validating` → `active` em segundos).
+
+Atualizado 260803 (5ª rodada, pedido do editor): reordenado + reescrito pra
+resolver uma confusão real — a versão anterior abria dizendo "seu cadastro
+nunca foi confirmado" antes de explicar que a pessoa JÁ está recebendo o
+e-mail, o que lia como contradição pra quem tinha o e-mail aberto na tela.
+Agora o 1º parágrafo valida a recepção ANTES de explicar o status pendente.
+Trocado "cadastro"/"Fazer meu cadastro de novo" por "inscrição"/"Confirmar
+minha inscrição" — "cadastro" soa como algo que não existe ainda; "inscrição"
+reconhece que a pessoa já fez algo, só falta confirmar. Ficou mais preciso
+tecnicamente também: com o link do worker (item acima), o clique realmente
+CONFIRMA via API, não é mais um reenvio de formulário.
 -->
 
-Por que você está recebendo este e-mail
+Você está recebendo esta edição porque se inscreveu na diária da diar.ia.br, mas sua inscrição ainda não foi confirmada no nosso sistema oficial.
 
-Você se inscreveu na diária da diar.ia.br, mas seu cadastro nunca chegou a ser confirmado — por isso, hoje, você não recebe as edições pela Beehiiv. O processo mudou desde então: não tem mais confirmação por e-mail, então basta se inscrever de novo que já fica ativo na hora. Enquanto isso não acontece, mandamos a edição por aqui, pra você não perder o conteúdo.
+O processo de confirmação mudou: agora é só 1 clique, sem precisar digitar o e-mail de novo.
 
-→ [Fazer meu cadastro de novo](https://diar.ia.br/?utm_source=brevo_pending)
+Enquanto isso não acontece, continuamos enviando a edição por aqui, para que você não perca o conteúdo.
 
-Você está recebendo esse e-mail porque se inscreveu na diária da diar.ia.br e o cadastro ficou pendente. Caso não queira mais receber, pode se [descadastrar aqui]({{ unsubscribe }}).
+→ [Confirmar minha inscrição](https://reativar.diaria.workers.dev/?email={{ contact.EMAIL }})
+
+Se não quiser mais receber, pode se [descadastrar aqui]({{ unsubscribe }}).

@@ -46,7 +46,7 @@ const SURFACE = COLORS.paperAlt; // --paper-alt #EBE5D0 (boxes/callouts/É IA? �
 // #1945: fundo EXTERNO do e-mail branco (sem as faixas bege laterais ao redor
 // do container). Antes usava SURFACE (#EBE5D0), que aparecia como bandas bege
 // à esquerda/direita em telas largas. Os painéis de contraste seguem SURFACE.
-const PAGE_BG = "#FFFFFF"; // #1945 (era SURFACE #EBE5D0 no wrapper externo)
+export const PAGE_BG = "#FFFFFF"; // #1945 (era SURFACE #EBE5D0 no wrapper externo)
 const TEAL = COLORS.brand; // --brand #00A0A0 (accent: underline/links/CTA/kicker/régua)
 const TEXT_COLOR = COLORS.ink; // --ink #171411 (todo o texto)
 const RULE = COLORS.rule; // --rule #EBE5D0 (hairline bege sob nomes de seção + bordas dos boxes contorno)
@@ -408,7 +408,7 @@ export function renderCoverage(text: string): string {
  * introCallout (callout posicionado no meio do bloco de boas-vindas, não no
  * fim). Renderiza logo após o callout, antes do 1º destaque.
  */
-function renderCoverageTrailer(text: string): string {
+export function renderCoverageTrailer(text: string): string {
   const paras = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
   // #3725: ver nota equivalente em renderCoverage acima.
   // #3737: idem — ambos os branches usam tokenizeInline(p, escText, inlineLinkHtml)
@@ -421,6 +421,24 @@ function renderCoverageTrailer(text: string): string {
 <tr><td class="pad" style="padding:12px 32px 0;">
   ${inner}
 </td></tr>`;
+}
+
+/**
+ * Botão pill CENTRALIZADO, SEM a caixa/cartão bege ao redor (achado 260803,
+ * bloco de intro do segmento Pending Brevo) — mesmo visual do botão usado
+ * dentro de `renderIntroCallout`/`renderMidCallout` (bg papel, borda bege,
+ * radius 999px, Geist bold 16px), mas com o padding de PÁGINA (`class="pad"`,
+ * 32px/12px mobile) em vez do padding interno de card (20px), pra sentar
+ * solto no fluxo do e-mail entre 2 parágrafos de corpo — sem depender de
+ * `shouldForceCtaPill`/box de divulgação, que sempre envolve o conteúdo
+ * inteiro (texto + botão) numa `<table>` com fundo.
+ */
+export function renderBarePillButton(url: string, label: string): string {
+  const safeHref = esc(url);
+  const safeLabel = esc(label);
+  return `<tr><td class="pad" style="padding:16px 32px 0;text-align:center;">` +
+    `<a href="${safeHref}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;">${safeLabel}</a>` +
+    `</td></tr>`;
 }
 
 /**
@@ -526,6 +544,7 @@ export function renderIntroCallout(
   titleStyle: "serif" | "body" = "serif",
   forceCtaPill = false,
   bold = true,
+  plainFirstParagraph = false,
 ): string {
   // #1938: split em parágrafos (`\n\n`). Callout de 1 parágrafo (intro/sorteio)
   // mantém o comportamento antigo (negrito, emoji preservado). Bloco
@@ -581,7 +600,7 @@ export function renderIntroCallout(
     // #260701 review: estilo do header body-size (título + sub-cabeçalho) num só
     // lugar — evita divergência silenciosa entre os 2 usos (cf. lbStyle em renderEIA).
     const bodyHeadingStyle = `font-family:${FONT_HEADING};font-weight:600;font-size:16px;line-height:1.4;color:${TEXT_COLOR};`;
-    const titleHtml = agradecimento
+    const titleHtml = agradecimento || plainFirstParagraph
       ? renderBoxParagraph(title, "0")
       : titleStyle === "body"
       ? `<p style="margin:0 0 10px;${bodyHeadingStyle}">${processInlineLinks(title)}</p>`
@@ -763,20 +782,28 @@ export function findMarkdownLinks(
  *     (um box pode ter um parágrafo de disclosure DEPOIS do CTA, #2996).
  * Sem o sinal estrutural, um box novo cai no formato bold-line/mid-callout.
  */
+/** Um parágrafo é "só CTA" quando, após tirar o prefixo `→ `/`Acesse ` e o(s)
+ * link(s) markdown, não sobra nada além de pontuação/espaço — ex: `→ [Fazer
+ * meu cadastro de novo](url)`. Extraído de `shouldForceCtaPill` (#4266,
+ * achado 260803) pra ser reusável por `brevo-diaria-intro.ts`, que precisa
+ * localizar o parágrafo CTA sem passar pelo resto do pipeline de box de
+ * divulgação (texto fora de caixa, botão bare — ver `renderBarePillButton`). */
+export function isCtaOnlyParagraph(p: string): boolean {
+  const stripped = p.replace(/^(?:→\s*|Acesse\s+)/u, "").trim();
+  const links = findMarkdownLinks(stripped);
+  if (links.length === 0) return false;
+  let rem = stripped;
+  for (let k = links.length - 1; k >= 0; k--) {
+    rem = rem.slice(0, links[k].start) + rem.slice(links[k].end);
+  }
+  return rem.replace(/[·•|,.!?…\s→]/gu, "").trim() === "";
+}
+
 function shouldForceCtaPill(box: string): boolean {
   if (findMarkdownLinks(box).length >= 2) return true;
   const paras = box.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
   if (paras.length <= 1) return false;
-  return paras.some((p) => {
-    const stripped = p.replace(/^(?:→\s*|Acesse\s+)/u, "").trim();
-    const links = findMarkdownLinks(stripped);
-    if (links.length === 0) return false;
-    let rem = stripped;
-    for (let k = links.length - 1; k >= 0; k--) {
-      rem = rem.slice(0, links[k].start) + rem.slice(links[k].end);
-    }
-    return rem.replace(/[·•|,.!?…\s→]/gu, "").trim() === "";
-  });
+  return paras.some(isCtaOnlyParagraph);
 }
 
 /**
@@ -801,6 +828,7 @@ export function renderBoxDivulgacao(
   forceImage = false,
   portrait = false,
   altOverride: string | null = null,
+  plainFirstParagraph = false,
 ): string {
   // `forceImage`: imagem ATRIBUÍDA explicitamente ao slot pelo editor
   // (`box_slot{N}_image`) vence o caminho pill-only, que ignora `imageUrl`.
@@ -813,7 +841,14 @@ export function renderBoxDivulgacao(
     return renderMidCallout(box, imageUrl, bold, portrait, !portrait, altOverride);
   }
   if (shouldForceCtaPill(box)) {
-    return renderIntroCallout(box, "serif", true, bold);
+    // `plainFirstParagraph`: mesmo tratamento do box de agradecimento a
+    // apoiadores (`isAgradecimentoBox`) — 1º parágrafo é prosa corrida, não
+    // um título de divulgação de verdade. Diferente daquele caso (detectado
+    // por padrão de texto "Agradeço..."), aqui é o CALLER que sabe que o box
+    // não tem título (#4266 — intro do segmento Pending Brevo, achado 260803:
+    // sem isso, o 1º parágrafo do corpo virava título serif 26px por
+    // default de `renderIntroCallout` pra todo box `forceCtaPill`).
+    return renderIntroCallout(box, "serif", true, bold, plainFirstParagraph);
   }
   // #4086 fix: altOverride tinha que sobreviver também neste caminho (imagem
   // NÃO explícita — ex: livros_promo auto-atribuída ao box de livros). Antes,

@@ -7,13 +7,20 @@
  * topo do e-mail explicar por que a pessoa está recebendo (ela NÃO é
  * assinante confirmada — só se inscreveu e nunca completou o double opt-in).
  *
- * Reusa a MESMA convenção de formato/render dos boxes de divulgação normais
- * (`renderBoxDivulgacao`, `scripts/lib/newsletter-render-html.ts` —
- * título sem marcador + 1 parágrafo + CTA isolado `→ [texto](url)` que
- * `shouldForceCtaPill` transforma em botão pill) — não reimplementa nenhum
- * HTML novo. O texto vem de `context/snippets/brevo-diaria-pending-intro.md`,
+ * NÃO usa mais a caixa/cartão bege dos boxes de divulgação normais (achado
+ * 260803, pedido do editor no 1º rascunho real: "tira o texto dessa caixa").
+ * Composição manual a partir de peças já existentes em
+ * `newsletter-render-html.ts`: `renderCoverage` (parágrafo de corpo, mesmo
+ * estilo tipográfico da antiga saudação "Olá! Eu sou o Pixel...", sem fundo)
+ * → `renderBarePillButton` (botão pill solto, sem caixa ao redor) →
+ * `renderCoverageTrailer` (parágrafo de disclosure/descadastro, mesmo estilo
+ * sem fundo). O texto vem de `context/snippets/brevo-diaria-pending-intro.md`,
  * mesma convenção de todo bloco em `context/snippets/` (comentário HTML de
- * header + corpo, lido via `readSnippetFile`).
+ * header + corpo, lido via `readSnippetFile`) — formato: N parágrafos de
+ * corpo, 1 parágrafo CTA isolado (`→ [texto](url)`, detectado via
+ * `isCtaOnlyParagraph`), N parágrafos de disclosure. Sem `shouldForceCtaPill`/
+ * `renderBoxDivulgacao` — aquele caminho sempre envolve tudo (texto + botão)
+ * numa `<table>` com fundo, que é exatamente o que não queremos aqui.
  *
  * O CONTEÚDO desse snippet ainda é RASCUNHO (ver o próprio arquivo) — o
  * editor precisa aprovar a cópia final antes do primeiro envio real. Este
@@ -23,19 +30,85 @@
  */
 
 import { readSnippetFile } from "./shared/snippet-loader.ts";
-import { renderBoxDivulgacao } from "./newsletter-render-html.ts";
+import {
+  renderCoverage,
+  renderCoverageTrailer,
+  renderBarePillButton,
+  isCtaOnlyParagraph,
+  findMarkdownLinks,
+  PAGE_BG,
+} from "./newsletter-render-html.ts";
 
 export const PENDING_INTRO_SNIPPET_FILENAME = "brevo-diaria-pending-intro.md";
 
 /**
  * Lê + renderiza o bloco de intro. `null` se o snippet não existir/estiver
  * vazio — caller (`publish-daily-brevo.ts`) trata isso como bloqueio (o
- * envio pro segmento Pending NUNCA pode sair sem esta explicação).
+ * envio pro segmento Pending NUNCA pode sair sem esta explicação). Lança se
+ * o snippet existir mas não tiver um parágrafo CTA isolado reconhecível —
+ * mais seguro que publicar sem botão de cadastro.
  */
 export function renderPendingIntroHtml(): string | null {
   const box = readSnippetFile(PENDING_INTRO_SNIPPET_FILENAME);
   if (!box) return null;
-  return renderBoxDivulgacao(box, null, false);
+
+  const paras = box.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const ctaIdx = paras.findIndex(isCtaOnlyParagraph);
+  if (ctaIdx === -1) {
+    throw new Error(
+      `renderPendingIntroHtml: ${PENDING_INTRO_SNIPPET_FILENAME} não tem parágrafo CTA isolado (→ [texto](url)) — bloco sem botão de cadastro é inseguro pro segmento Pending.`,
+    );
+  }
+  const links = findMarkdownLinks(paras[ctaIdx]);
+  const cta = links[0]; // isCtaOnlyParagraph já garante >= 1 link
+
+  const bodyParas = paras.slice(0, ctaIdx);
+  const disclosureParas = paras.slice(ctaIdx + 1);
+
+  const parts: string[] = [];
+  if (bodyParas.length > 0) parts.push(renderCoverage(bodyParas.join("\n\n")));
+  parts.push(renderBarePillButton(cta.url, cta.label));
+  if (disclosureParas.length > 0) parts.push(renderCoverageTrailer(disclosureParas.join("\n\n")));
+
+  // #4266/achado 260803 (2ª rodada): as peças acima retornam `<tr><td>` SEM
+  // `<table>` próprio (mesma convenção de `renderCoverage`/`renderCoverageTrailer`,
+  // pensada pra colar direto no meio do `container` de `renderHTML`). Mas
+  // `injectPendingIntro` insere ANTES do `<table class="ds-canvas">` que
+  // `renderHTML(fullDocument:true)` abre — ou seja, fora do container de
+  // 600px, na zona "canvas externo" que `darkCanvasMediaRule` (#2645/#3104,
+  // `newsletter-styles.ts`) escurece de propósito em dark mode (`body,
+  // .ds-canvas { background:${PAGE_BG} → ink }`). Duas quebras distintas
+  // aconteceram em sequência ao tirar a caixa:
+  //   1ª (`<tr>` órfão, sem tabela própria) — texto sumia, botão flutuava
+  //      sobre o masthead. Corrigido envolvendo numa `<table>` própria.
+  //   2ª (só descoberta DEPOIS da 1ª correção, testando o rascunho real): a
+  //      `<table>` própria não tinha fundo explícito — em dark mode ela
+  //      herdava o fundo escuro do `body` (zona que É PRA escurecer), e o
+  //      texto (cor ink fixa, igual em claro/escuro por design — ver escopo
+  //      de `buildDarkCanvasStyleBlock`) ficava ink-sobre-ink, invisível. O
+  //      box antigo nunca teve esse problema por acidente: seu cartão bege
+  //      tinha fundo PRÓPRIO opaco, isolado do fundo do body de qualquer jeito.
+  // Fundo explícito PAGE_BG (branco, o mesmo do container real) resolve as
+  // duas sem reintroduzir cartão visível — mesma cor do que já está ao redor,
+  // não lê como caixa, só protege o texto do dark-mode do canvas externo.
+  //
+  // 3ª quebra (achado 260803, pós-envio agendado): `width="100%"` sem teto
+  // vira 100% do CLIENTE DE E-MAIL inteiro (não dos 600px do container real)
+  // porque esta `<table>` está fora do `.ds-canvas`, na mesma zona "canvas
+  // externo" da nota acima — o container de verdade só fica estreito porque
+  // tem `class="container"` + `max-width:600px` (ver newsletter-render-html.ts,
+  // `innerTable`). Linha ficava larga demais em clientes desktop largos.
+  // `class="container"` (reusa a mesma media query mobile já existente,
+  // `.container { width:100% !important; }`) + `max-width:600px` + `align`/
+  // `margin:0 auto` (padrão email-safe: atributo pros clientes antigos,
+  // margin pros modernos) alinha esta tabela ao mesmo teto/centralização do
+  // container real, sem depender de mover o ponto de inserção.
+  return (
+    `<!-- #4266 intro Pending Brevo (achado 260803: fora de caixa) -->\n` +
+    `<table role="presentation" class="container" width="100%" cellpadding="0" cellspacing="0" align="center" style="width:100%;max-width:600px;margin:0 auto;background:${PAGE_BG};">\n` +
+    parts.join("\n") +
+    `\n</table>`
+  );
 }
 
 /**
