@@ -54,6 +54,22 @@ describe("#4487 — handleVote resolve token opaco de voto via KV", () => {
     assert.equal(kv.puts.some((p) => p.key.startsWith("vote:")), false, "nenhum voto deve ser gravado com token não-resolvido");
   });
 
+  it("entrada KV corrompida (valor não é um e-mail válido) → 400, nenhum voto gravado (guard defensivo)", async () => {
+    const token = await computePollToken(SECRET, REAL_EMAIL);
+    // Simula corrupção: a entrada existe, mas o valor não é um e-mail válido
+    // (nunca deveria acontecer — só o script de injeção escreve nela — mas
+    // KV é dado externo, o guard não deve confiar cegamente).
+    const kv = makeTrackedKv({ [pollTokenKvKey(token)]: "não-é-um-email" });
+    const env = makePollEnv(kv);
+    const res = await worker.fetch(
+      new Request(`https://poll.test/vote?email=${token}@${VOTE_TOKEN_DOMAIN}&edition=${EDITION}&choice=A`),
+      env,
+      {} as ExecutionContext,
+    );
+    assert.equal(res.status, 400, "entrada KV corrompida deve falhar fail-closed");
+    assert.equal(kv.puts.some((p) => p.key.startsWith("vote:")), false, "nenhum voto deve ser gravado com entrada KV corrompida");
+  });
+
   it("e-mail cru continua funcionando normalmente (regressão — não quebra quem ainda não foi migrado / esp brevo)", async () => {
     const kv = makeTrackedKv();
     const env = makePollEnv(kv);

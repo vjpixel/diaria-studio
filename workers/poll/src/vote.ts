@@ -319,7 +319,13 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   const pollToken = extractPollToken(email);
   if (pollToken) {
     const resolvedEmail = await env.POLL.get(pollTokenKvKey(pollToken));
-    if (!resolvedEmail) {
+    // Guard defensivo (mesma disciplina de safeParseKv/isValidVoteEmailFormat
+    // já aplicada a todo dado lido do KV neste arquivo): um valor ausente,
+    // vazio, ou corrompido na entrada reversa (nunca deveria acontecer — só o
+    // script de injeção escreve nela — mas KV é dado externo, não confiar
+    // cegamente) falha como link inválido, nunca propaga um `email` inválido
+    // pro resto da função (que montaria chaves KV malformadas a partir dele).
+    if (!resolvedEmail || !isValidVoteEmailFormat(resolvedEmail.toLowerCase().trim())) {
       console.log(JSON.stringify({ event: "poll_vote_token_unresolved", edition, token: pollToken }));
       return voteHtmlResponse(votePageHtml("Link inválido ou expirado.", false, null, null, null, brand), 400);
     }
