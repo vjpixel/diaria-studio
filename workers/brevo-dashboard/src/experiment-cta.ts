@@ -362,7 +362,7 @@ export interface ArmGuardrailOptions {
    * humanos revisando minutos após o envio. Reusar essa função tal como está
    * pro alarme de envio único (#4064, `evaluateSendGuardrails` em
    * `clarice-guardrail-alarm.ts`) herdaria o blind spot num contexto onde ele
-   * INVERTE o propósito da feature: o alarme roda ~6h após o envio
+   * INVERTE o propósito da feature: o alarme roda ~10h após o envio
    * (`GUARDRAIL_EVAL_WINDOW_MS`), quando o dado já maturou — nesse ponto, 0%
    * de abertura é o cenário MAIS catastrófico (falha total de entrega), não
    * "ainda propagando", e o guard original faria justo esse caso nunca

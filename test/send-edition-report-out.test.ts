@@ -54,11 +54,19 @@ describe("send-edition-report --out (#1579)", () => {
       );
 
       const htmlAbsPath = join(editionDir, "_internal", "edition-report.html");
+      // #4478 achado 1 (defesa em profundidade, fleet review #4383): --no-email
+      // aqui explicitamente — este teste roda a CLI real via spawnSync, então
+      // sem a flag um `npm test` local numa máquina com data/.credentials.json
+      // configurado bateria no Gmail REAL (o fix sistêmico em
+      // defaultHasCredentials/studio-reports.ts já cobre o caso geral, mas
+      // este caller específico também ganha a flag explícita, nunca só uma
+      // camada).
       const r = runCli(
         [
           "--edition", "260529",
           "--edition-dir", editionDir,
           "--out", htmlAbsPath,
+          "--no-email",
         ],
       );
       assert.equal(r.status, 0, r.stderr);

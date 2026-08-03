@@ -21,11 +21,13 @@ import {
   renderMarkdownToHtml,
   buildReportEmail,
   dispatchReportEmail,
+  defaultHasCredentials,
   reportId,
   isReportKind,
   type ReportEntry,
   type ReportEmailDeps,
 } from "../scripts/studio-ui/studio-reports.ts";
+import { CREDENTIALS_PATH_TEST_OVERRIDE_ENV } from "../scripts/google-auth.ts"; // #4478 achado 1
 
 let root: string | null = null;
 
@@ -300,6 +302,7 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
     assert.equal(dispatch.skipped, "no-credentials");
   });
 
+
   it("registro falha (mkdir impossível) -> emailDispatch resolve sem tentar enviar", async () => {
     const r = makeRoot();
     // Mesmo truque do teste de fail-soft acima (linha ~175): arquivo no lugar
@@ -378,6 +381,52 @@ describe("registerReport — e-mail de notificação (#4475)", () => {
     const dispatch = await result.emailDispatch;
     assert.equal(dispatch.sent, true);
     assert.equal(calls.length, 1);
+  });
+});
+
+describe("defaultHasCredentials (#4478 achado 1, CRÍTICO — fleet review #4383)", () => {
+  // Testado DIRETO (função pura, sem passar por dispatchReportEmail/
+  // registerReport) — evita qualquer risco de acionar defaultEmailDeps.sendMail
+  // de verdade (que faria uma chamada de rede real à Gmail API se
+  // hasCredentials retornasse true com os deps default).
+  function withOverride(path: string | undefined, fn: () => void): void {
+    const prev = process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+    if (path === undefined) delete process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+    else process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = path;
+    try {
+      fn();
+    } finally {
+      if (prev === undefined) delete process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+      else process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = prev;
+    }
+  }
+
+  it("sem override -> reflete existsSync(rootDir/data/.credentials.json) (ausente numa raiz de teste fresca)", () => {
+    const r = makeRoot();
+    withOverride(undefined, () => {
+      assert.equal(defaultHasCredentials(r), false);
+    });
+  });
+
+  it("com DIARIA_TEST_CREDENTIALS_PATH apontando pra um path que EXISTE -> true, independente do rootDir passado", () => {
+    const r = makeRoot();
+    const overrideDir = mkdtempSync(join(tmpdir(), "studio-reports-creds-override-"));
+    const overridePath = join(overrideDir, "fake-override-creds.json");
+    writeFileSync(overridePath, JSON.stringify({ fake: true }), "utf8");
+    try {
+      withOverride(overridePath, () => {
+        assert.equal(defaultHasCredentials(r), true);
+      });
+    } finally {
+      rmSync(overrideDir, { recursive: true, force: true });
+    }
+  });
+
+  it("com DIARIA_TEST_CREDENTIALS_PATH apontando pra um path que NÃO existe -> false — o override VETA a checagem, nunca cai de volta pro rootDir/data/.credentials.json real (cenário do bug: send-edition-report.ts passa o ROOT real do repo, não o rootDir fake de teste)", () => {
+    const r = makeRoot();
+    withOverride(join(r, "nonexistent-override.json"), () => {
+      assert.equal(defaultHasCredentials(r), false);
+    });
   });
 });
 

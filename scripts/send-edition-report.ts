@@ -642,11 +642,21 @@ export function writeReportFile(
  * edição foi publicada manualmente / Stage 4 interrompido (o relatório é o
  * último passo do Stage 4 e era pulado nesses casos — caso 260608).
  * Retorna o md5 do HTML escrito. Lança se o editionDir não existir.
+ *
+ * **#4478 achado 1 (defesa em profundidade): `notify` propaga pro
+ * `writeReportFile`/`registerReport`, default `true`** — preserva o
+ * comportamento existente pra todo caller que não passar nada (inclusive
+ * `refresh-dedup.ts::ensureEditionReport`, que roda em produção e deve
+ * continuar notificando o editor). Testes que exercitam este caminho com um
+ * `rootDir`/`editionDir` fake podem passar `notify: false` explicitamente
+ * pra nunca depender só do fix sistêmico de `defaultHasCredentials`
+ * (`scripts/studio-ui/studio-reports.ts`).
  */
 export function writeEditionReport(
   edition: string,
   editionDir: string,
   outPath: string,
+  notify = true,
 ): { md5: string; outPath: string; registered: boolean } {
   if (!existsSync(editionDir)) {
     throw new Error(`edition dir não encontrado: ${editionDir}`);
@@ -667,7 +677,7 @@ export function writeEditionReport(
     loadSocialPreviewUrl(editionDir),
     loadNewsletterUrl(editionDir), // #3466
   );
-  const { md5, absOut, registered } = writeReportFile(editionDir, outPath, html, edition);
+  const { md5, absOut, registered } = writeReportFile(editionDir, outPath, html, edition, notify);
   return { md5, outPath: absOut, registered };
 }
 

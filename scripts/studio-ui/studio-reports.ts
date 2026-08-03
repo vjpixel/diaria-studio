@@ -48,6 +48,7 @@ import { randomUUID } from "node:crypto";
 import { escHtml } from "../lib/html-escape.ts";
 import { sendGmailMessage, type GmailSendResult } from "../lib/gmail-send.ts";
 import { resolveEditorEmail } from "../lib/inbox-stats.ts";
+import { gFetch, CREDENTIALS_PATH_TEST_OVERRIDE_ENV } from "../google-auth.ts"; // #4478 achados 1/2
 
 // #4347: "clarice-novos" — relatório da skill /diaria-clarice-novos (rodada
 // sem gate humano do laço cadastro-novo→envio-imediato, D14).
@@ -117,18 +118,25 @@ export interface RegisterReportResult {
 // caminho de sucesso), então qualquer falha de rede/token/escopo nunca reflete
 // no resultado do registro em si — só um warning em stderr.
 
-export interface ReportEmailDispatchResult {
-  sent: boolean;
-  /** Motivo de não ter tentado enviar: `no-credentials` (sessão cloud ou
-   * `oauth-setup.ts` nunca rodado), `register-failed` (o append em
-   * `index.jsonl` falhou antes do disparo — nada a notificar) ou
-   * `notify-disabled` (caller passou `notify: false` pro `registerReport` —
-   * #4478, ver a chamada "descartável" 6b-6 do Stage 6). */
-  skipped?: "no-credentials" | "register-failed" | "notify-disabled";
-  /** Mensagem de erro do envio, quando tentado e falhou (fail-soft — nunca
-   * lançado, só reportado aqui). */
-  error?: string;
-}
+/**
+ * Resultado do disparo de e-mail de notificação — union discriminada por
+ * `sent` (#4478, achado type-design-analyzer do fleet review #4383: a
+ * interface flat anterior — `{sent: boolean, skipped?, error?}` — permitia o
+ * estado impossível `{sent: true, error: "x"}`, já que "enviado" e "erro"
+ * nunca coexistem de verdade). 3 formas possíveis:
+ *  - `{sent: true}` — enviado com sucesso.
+ *  - `{sent: false, skipped: ...}` — nunca tentado: `no-credentials` (sessão
+ *    cloud ou `oauth-setup.ts` nunca rodado), `register-failed` (o append em
+ *    `index.jsonl` falhou antes do disparo — nada a notificar) ou
+ *    `notify-disabled` (caller passou `notify: false` pro `registerReport` —
+ *    #4478, ver a chamada "descartável" 6b-6 do Stage 6).
+ *  - `{sent: false, error: ...}` — tentado e falhou (rede, token, escopo —
+ *    fail-soft, nunca lançado, só reportado aqui).
+ */
+export type ReportEmailDispatchResult =
+  | { sent: true }
+  | { sent: false; skipped: "no-credentials" | "register-failed" | "notify-disabled" }
+  | { sent: false; error: string };
 
 /** Dependências injetáveis do disparo de e-mail — mesmo padrão de
  * `_fetchImpl` em `sendGmailMessage` (gmail-send.ts), pra tornar
@@ -144,12 +152,60 @@ export interface ReportEmailDeps {
   hasCredentials: (rootDir: string) => boolean;
 }
 
-function defaultHasCredentials(rootDir: string): boolean {
-  return existsSync(resolve(rootDir, "data", ".credentials.json"));
+/**
+ * #4478 achado 1 (fleet review #4383, CRÍTICO): respeita
+ * `DIARIA_TEST_CREDENTIALS_PATH` (`CREDENTIALS_PATH_TEST_OVERRIDE_ENV`,
+ * `scripts/google-auth.ts`) quando definida — mesmo override que já protege
+ * `data/.credentials.json` REAL em `getAccessToken`/`gFetch` desde o #4344.
+ * Sem isso, um caller que passa o `rootDir` REAL do repo em vez do `rootDir`
+ * fake de teste (exatamente o que `send-edition-report.ts`/`writeReportFile`
+ * fazem — `ROOT` é sempre calculado a partir do path do próprio script,
+ * nunca do `--edition-dir` de teste) faz `defaultHasCredentials` checar o
+ * `data/.credentials.json` de VERDADE da máquina. 2 testes pré-existentes
+ * (`test/send-edition-report-out.test.ts`, `test/ensure-edition-report-1950.test.ts`)
+ * bateriam no Gmail real rodando `npm test` localmente numa máquina com
+ * credenciais configuradas — mesma classe de incidente do #4344, dessa vez
+ * no caminho de e-mail em vez do Drive. Este fix é defesa SISTÊMICA —
+ * protege qualquer caller futuro que esqueça de passar
+ * `--no-email`/`notify: false`, não só os 2 identificados agora (que também
+ * ganharam a flag explícita — defesa em profundidade, ver os 2 arquivos
+ * citados acima).
+ *
+ * Exportado (só pra teste direto, sem passar por `dispatchReportEmail`/
+ * `registerReport` — evita qualquer risco de acionar `defaultEmailDeps.sendMail`
+ * de verdade num teste, ver `test/studio-reports.test.ts`).
+ */
+export function defaultHasCredentials(rootDir: string): boolean {
+  const override = process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+  return existsSync(override || resolve(rootDir, "data", ".credentials.json"));
+}
+
+/**
+ * #4478 achado 2 (silent-failure-hunter, MEDIUM-HIGH): timeout curto pro
+ * fetch fire-and-forget do e-mail de notificação. `gFetch`/`authedFetch`
+ * (`scripts/google-auth.ts`) chamam `fetch()` puro, sem `AbortController` —
+ * e `runMain` (`scripts/lib/exit-handler.ts`) NÃO chama `process.exit()` no
+ * caminho de sucesso, então o processo Node fica vivo até o event loop
+ * esvaziar, inclusive um fetch pendurado. Como `send-edition-report.ts --out
+ * ...` é uma chamada BLOQUEANTE do orchestrator (Stage 6, passos 6b-6/6b-8),
+ * um travamento de rede/DNS durante o envio "fire-and-forget" travaria a
+ * invocação inteira bem além do limite de 60s do CLAUDE.md (#738). Poucos
+ * segundos bastam pra uma notificação leve (título + link) — não precisa do
+ * timeout mais longo (25s) do fetch in-page do Beehiiv (#4196), que espera
+ * um payload bem maior.
+ */
+const NOTIFY_EMAIL_TIMEOUT_MS = 8_000;
+
+function sendMailWithTimeout(to: string, subject: string, body: string): Promise<GmailSendResult> {
+  return sendGmailMessage(to, subject, body, (url: string, options: RequestInit = {}) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), NOTIFY_EMAIL_TIMEOUT_MS);
+    return gFetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timeoutId));
+  });
 }
 
 const defaultEmailDeps: ReportEmailDeps = {
-  sendMail: sendGmailMessage,
+  sendMail: sendMailWithTimeout,
   resolveEditorEmail,
   hasCredentials: defaultHasCredentials,
 };
@@ -213,6 +269,15 @@ export async function dispatchReportEmail(
 ): Promise<ReportEmailDispatchResult> {
   try {
     if (!deps.hasCredentials(rootDir)) {
+      // #4478 achado 4 (silent-failure-hunter, MEDIUM): antes 100% silencioso.
+      // Em sessão cloud isto é esperado/documentado — mas se as credenciais
+      // sumirem numa sessão LOCAL (arquivo corrompido/movido), toda
+      // notificação parava de sair pra sempre sem nenhum rastro. Nível baixo
+      // (não é warning de verdade — a função não é hot-path, roda 1x por
+      // registro).
+      console.warn(
+        `[studio-reports] info: e-mail de notificação do relatório ${entry.id} pulado — sem credencial OAuth em ${rootDir} (esperado em sessão cloud; se isto aparecer numa sessão LOCAL, as credenciais podem ter sumido/corrompido — ver npx tsx scripts/oauth-setup.ts).`,
+      );
       return { sent: false, skipped: "no-credentials" };
     }
     const to = deps.resolveEditorEmail(resolve(rootDir, "platform.config.json"));
@@ -220,10 +285,18 @@ export async function dispatchReportEmail(
     await deps.sendMail(to, subject, body);
     return { sent: true };
   } catch (e) {
-    const message = (e as Error).message;
+    // #4478 achado 3 (silent-failure-hunter, MEDIUM): padrão já estabelecido
+    // em `scripts/lib/exit-handler.ts::runMain` — antes, `(e as Error).message`
+    // fazia uma falha de rede esperada e um bug de código novo (throw de um
+    // valor não-Error) gerarem o MESMO log "fail-soft, ignore", sem stack
+    // trace pra diferenciar os dois casos.
+    const message = e instanceof Error ? e.message : String(e);
     console.warn(
       `[studio-reports] aviso: envio de e-mail do relatório ${entry.id} falhou (fail-soft, registro em index.jsonl já concluído): ${message}`,
     );
+    if (e instanceof Error && e.stack) {
+      console.warn(e.stack);
+    }
     return { sent: false, error: message };
   }
 }
@@ -285,14 +358,14 @@ export function registerReport(
       error: null,
       emailDispatch: notify
         ? dispatchReportEmail(rootDir, entry, emailDeps)
-        : Promise.resolve({ sent: false, skipped: "notify-disabled" as const }),
+        : Promise.resolve<ReportEmailDispatchResult>({ sent: false, skipped: "notify-disabled" }),
     };
   } catch (e) {
     return {
       ok: false,
       entry: null,
       error: (e as Error).message,
-      emailDispatch: Promise.resolve({ sent: false, skipped: "register-failed" as const }),
+      emailDispatch: Promise.resolve<ReportEmailDispatchResult>({ sent: false, skipped: "register-failed" }),
     };
   }
 }
