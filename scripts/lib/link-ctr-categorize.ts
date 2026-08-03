@@ -541,7 +541,7 @@ export function categorize(url: string, anchor = '', sectionTitle = '', postTitl
     host === 'news.lmarena.ai' ||
     // #3145: empresas/ferramentas de IA nativas comuns em cobertura de IA —
     // auditoria de código (sem acesso a dados reais de produção nesta sessão),
-    // lacuna óbvia contra o volume de lançamentos que a Diar.ia cobre.
+    // lacuna óbvia contra o volume de lançamentos que a diar.ia.br cobre.
     host === 'groq.com' ||
     host === 'character.ai' ||
     host === 'you.com' ||

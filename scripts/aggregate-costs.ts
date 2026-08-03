@@ -332,7 +332,7 @@ export function formatSummary(editions: EditionCost[], generatedAt: Date = new D
     .sort((a, b) => b.totals.costUsd - a.totals.costUsd)
     .slice(0, 5);
 
-  return `# Cost Summary — Diar.ia
+  return `# Cost Summary — diar.ia.br
 
 Gerado em ${generatedAt.toISOString()}
 Edições agregadas: ${editions.length}

@@ -8,8 +8,11 @@
  * workers públicos, `context/templates/`, `context/publishers/`, os agentes de
  * escrita/copy, e os módulos `scripts/lib/` que geram esse texto). Fatias 2
  * (superfície do editor: Studio, dashboards) e 3 (interno: comentários soltos,
- * docs, CLAUDE.md) ficam pra rodadas futuras — este guard cobre só a Fatia 1,
- * gate de repo mesmo lugar dos outros gates transversais (`knip-clean.test.ts`,
+ * docs, CLAUDE.md) foram feitas numa rodada seguinte (sem guard próprio —
+ * mecânico, baixo risco de regressão). `context/snippets/` (copy patronos-*
+ * que vai pro corpo da newsletter, gap que ficou fora da Fatia 1 original)
+ * entrou na cobertura deste guard junto com essa rodada. Gate de repo mesmo
+ * lugar dos outros gates transversais (`knip-clean.test.ts`,
  * `lib-boundary.test.ts`).
  *
  * Escopo estático (grep de conteúdo, não comportamental): a lista de arquivos
@@ -91,10 +94,30 @@ const PROTECTED_FILES: string[] = [
   "scripts/build-livros-page.ts",
   "scripts/sync-coverage-line.ts",
   "scripts/overnight-statusline.ts",
+  // #4424 rodada seguinte: gap encontrado na Fatia 1 — o prêmio do sorteio
+  // ("caneca da Diar.ia") e o fallback de coverageLine (usado só quando
+  // approved.coverage?.line está ausente) vivem hardcoded aqui, fora de
+  // scripts/lib/, e não estavam cobertos pelo guard original.
+  "scripts/stitch-newsletter.ts",
+  // #4481 fleet review: mesmo padrão de stitch-newsletter.ts acima — estes
+  // 2 geradores escrevem context/sources.md e context/audience-profile.md
+  // (já protegidos aqui, mas só indiretamente via output regenerado, não
+  // via proteção direta do path do próprio gerador).
+  "scripts/sync-sources.ts",
+  "scripts/update-audience.ts",
 ];
 
 /** Diretórios varridos por inteiro (todo .md/.html dentro conta). */
-const PROTECTED_DIRS: string[] = ["context/templates"];
+const PROTECTED_DIRS: string[] = [
+  "context/templates",
+  // #4424 Fatia 2/3: fechado o gap de cobertura — os 3 snippets patronos-*.md
+  // (copy que vai pro corpo da newsletter, nível Patrono do apoia.se) ficaram
+  // fora da Fatia 1 original. Varre o diretório inteiro (não só os 3
+  // conhecidos) pra pegar qualquer snippet novo automaticamente — mesmo
+  // padrão de context/templates acima. `_arquivo/` (subpasta) não é varrida
+  // porque filesUnder só lê arquivos de 1º nível, não subdiretórios.
+  "context/snippets",
+];
 
 /**
  * `context/publishers/` varrido por inteiro MENOS os arquivos que referenciam
@@ -157,12 +180,14 @@ describe("Fatia 1 (#4424) — sem a grafia antiga 'Diar.ia' na superfície do le
     assert.deepEqual(v, [], `Grafia antiga da marca encontrada:\n  ${v.join("\n  ")}`);
   });
 
-  it("context/templates/ (varrido por inteiro)", () => {
-    const files = PROTECTED_DIRS.flatMap((d) => filesUnder(d, mdOrHtmlOrTs));
-    assert.ok(files.length > 0, "sanity: context/templates/ deve ter pelo menos 1 arquivo .md");
-    const v = collectViolations(files);
-    assert.deepEqual(v, [], `Grafia antiga da marca encontrada:\n  ${v.join("\n  ")}`);
-  });
+  for (const dir of PROTECTED_DIRS) {
+    it(`${dir}/ (varrido por inteiro)`, () => {
+      const files = filesUnder(dir, mdOrHtmlOrTs);
+      assert.ok(files.length > 0, `sanity: ${dir}/ deve ter pelo menos 1 arquivo .md`);
+      const v = collectViolations(files);
+      assert.deepEqual(v, [], `Grafia antiga da marca encontrada:\n  ${v.join("\n  ")}`);
+    });
+  }
 
   it("context/publishers/ (varrido por inteiro, exceto linkedin.md/facebook.md/beehiiv-playbook.md — nome de ativo externo, ver header do módulo)", () => {
     const files = filesUnder(PUBLISHERS_DIR, mdOrHtmlOrTs).filter(

@@ -99,6 +99,27 @@ export function latestEventTime(events: unknown): string | null {
 }
 
 /**
+ * Timestamp (epoch ms) de UMA entrada de evento (`messagesSent`/`opened`/...),
+ * ou `null` se nenhum campo de tempo reconhecido está presente (#4476 —
+ * janela de maturação de 48h da avaliação de supressão do canal Brevo próprio,
+ * `scripts/evaluate-brevo-diaria.ts`). Reusa a mesma heurística de campo de
+ * `latestEventTime` (`timestampsOf`/`rawTimeField`, `TIME_FIELDS` acima) —
+ * pega o mais recente entre os candidatos da própria entrada (ou, se aninhado
+ * como em `clicked`, de `links[]`). Não duplica a lista de campos de tempo:
+ * único ponto de verdade pra "que campo é timestamp" nas 2 chamadoras
+ * (parseBrevoContact aqui, computeMatureCountsFromBrevoStatistics lá).
+ */
+export function eventTimestampMs(entry: unknown): number | null {
+  if (!entry || typeof entry !== "object") return null;
+  let bestMs = -Infinity;
+  for (const raw of timestampsOf(entry as Record<string, unknown>)) {
+    const ms = typeof raw === "number" ? raw : new Date(raw).getTime();
+    if (Number.isFinite(ms) && ms > bestMs) bestMs = ms;
+  }
+  return Number.isFinite(bestMs) ? bestMs : null;
+}
+
+/**
  * Parseia um contato Brevo v3 completo (identidade + statistics) nas colunas
  * Brevo do store. Tolerante a campos ausentes: contato sem `statistics` vira
  * tudo-zero (não lança).

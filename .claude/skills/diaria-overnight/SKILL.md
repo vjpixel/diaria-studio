@@ -391,7 +391,7 @@ Triagem dos findings:
 3. **Registrar o relatório na superfície de Relatórios do Studio (#3714, decisão do editor 260720 — substitui o antigo draft de Gmail, não soma a ele):**
    ```bash
    npx tsx scripts/register-report.ts --kind overnight --id {AAMMDD} \
-     --title "Diar.ia overnight {AAMMDD} — {X} resolvidas, {Y} puladas, {Z} findings" \
+     --title "diar.ia.br overnight {AAMMDD} — {X} resolvidas, {Y} puladas, {Z} findings" \
      --html-path data/overnight/{AAMMDD}/report.md
    ```
    (mesmo título usado historicamente no assunto do e-mail — omitir `{Z} findings` se o review não rodou; acrescentar `+ hotfix` se houve). **File-based, nunca uma chamada HTTP** — o comando só escreve em `data/reports/index.jsonl`; funciona igual com o Studio (`npm run studio`) parado ou no ar, e o relatório aparece em `/relatorios` na próxima vez que a página carregar/pollar. O comando imprime a URL em stdout — capturar pro resumo do terminal (passo 5). **Não criar mais draft via `create_draft` aqui** — esse call site foi removido.

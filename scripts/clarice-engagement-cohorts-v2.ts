@@ -1,5 +1,5 @@
 /**
- * clarice-engagement-cohorts-v2.ts (#4451 Fase 1)
+ * clarice-engagement-cohorts-v2.ts (#4451 Fase 1 + Fase 2)
  *
  * Redesenho estrutural de `clarice-engagement-cohorts.ts`: em vez de 1 `GET
  * /contacts/{id}` por CONTATO (hoje ~129k contatos, ~21,5h de crawl, travado
@@ -13,43 +13,54 @@
  * d01-C", 116 destinatários): completou em ~4s. Ver issue #4451 pro achado
  * completo, o mapeamento de campos e os riscos em aberto.
  *
- * ESCOPO DESTE ARQUIVO — só a Fase 1 do plano de execução da issue:
- *   1. Backfill completo por campanha + cache local permanente. ← AQUI
- *   2. Comparar output de computeCohorts() do v2 contra o v1 (empírico).
- *   3. Trocar a task agendada `DiariaCohortsCrawl` pro script novo.
- *   4. Aposentar v1 (mantido como fallback documentado por um tempo).
- * Fases 2-4 são follow-up (recomendado via `/diaria-develop`, supervisionado
- * — precisam de validação empírica que este script sozinho não produz).
+ * ESCOPO DESTE ARQUIVO:
+ *   1. Backfill completo por campanha + cache local permanente. (Fase 1, #4457)
+ *   2. Janela de re-fetch de campanhas recentes + fechamento do gap de
+ *      blacklist administrativo via store local. ← AQUI (Fase 2, #4451)
+ *   3. Comparar output de computeCohorts() do v2 contra o v1 (empírico) —
+ *      tooling pronta em `scripts/compare-cohorts.ts`, mas a EXECUÇÃO ao
+ *      vivo (rodar v1 --dry-run e v2 lado a lado contra a Brevo real) fica
+ *      pendente — precisa de sessão com `BREVO_CLARICE_API_KEY` e tempo pro
+ *      v1 (ainda ~21h de crawl) completar, ou pelo menos uma amostra
+ *      representativa. Não executado nesta sessão (guard de dispatch: sem
+ *      chamada de rede à Brevo além de leitura documentada).
+ *   4. Trocar a task agendada `DiariaCohortsCrawl` pro script novo + aposentar
+ *      v1 — SÓ depois do passo 3 bater. Não feito.
+ * Fases 3-4 continuam follow-up, agora com a tooling de comparação pronta
+ * (`scripts/compare-cohorts.ts`) — falta só a RODADA empírica supervisionada.
  *
  * `computeCohorts()` (de clarice-engagement-cohorts.ts) NÃO MUDA — só a
  * ORIGEM do `ContactEngagement` por e-mail muda (per-campanha em vez de
  * per-contato). v1 não é tocado por este arquivo.
  *
- * SEMPRE DRY-RUN NESTA FASE: este script NUNCA escreve no KV do worker
+ * SEMPRE DRY-RUN: este script NUNCA escreve no KV do worker
  * `clarice-dashboard` nem troca a task agendada `DiariaCohortsCrawl` — só
  * produz output local (stdout + opcionalmente `--out arquivo.json`) pro
- * editor inspecionar. Cutover real é Fase 3, fora deste arquivo.
+ * editor inspecionar. Cutover real é Fase 4, fora deste arquivo.
  *
- * CACHE "SKIP FOREVER" (mesma semântica de `scripts/verify-emails-mv.ts`):
- * campanha já cacheada em `data/clarice-subscribers/cohorts/campaign-cache/
- * {campaignId}.json` NUNCA é re-exportada nesta fase — campanha enviada é
- * imutável em CONTEÚDO, mesmo que o engajamento (abertura/clique) ainda
- * acumule por um tempo depois do envio.
+ * CACHE "SKIP FOREVER" COM JANELA DE RE-FETCH (#4451 Fase 2): campanha fora
+ * da janela de re-fetch (`--refetch-window-days`, default 30 — chute inicial
+ * da issue, não validado empiricamente ainda) usa o cache permanente em
+ * `data/clarice-subscribers/cohorts/campaign-cache/{campaignId}.json` sem
+ * nunca re-exportar — campanha enviada é imutável em CONTEÚDO. Campanha
+ * DENTRO da janela (enviada há menos de N dias) é SEMPRE re-exportada a cada
+ * run, mesmo se já tiver cache — captura engajamento tardio (aberturas que
+ * ainda acontecem depois do envio) sem re-processar a história inteira. Uma
+ * campanha sem `sentDate` (ou com data inválida) é tratada como DENTRO da
+ * janela por padrão conservador (nunca assume cache permanente sem saber a
+ * idade real).
  *
- * TODO (#4451 Fase 2 — NÃO implementado aqui, precisa validação empírica
- * antes de escrever código): janela de re-fetch de N dias (chute inicial: 30)
- * pra campanhas recentes, capturando engajamento tardio sem re-exportar a
- * história inteira. Até lá, o cache é 100% permanente — inclusive campanhas
- * enviadas ontem. Validar comparando `uniqueViews` do mesmo `campaignId` em
- * snapshots de idades diferentes antes de implementar.
- *
- * GAP CONHECIDO (documentado, não resolvido nesta fase): blacklist
- * administrativo sem evento de `Unsubscribe_Date` em NENHUMA campanha
- * específica não aparece em nenhum export — só o crawl per-contato (v1, via
- * `emailBlacklisted`) capturava esse sinal. Ver tabela de mapeamento de
- * campos na issue #4451. Fase 2/3 precisa de uma chamada complementar
- * (paginar contatos com filtro de blacklist, ou reusar o que
- * `clarice-sync-brevo.ts` já traz do store) antes do cutover.
+ * GAP DE BLACKLIST ADMINISTRATIVO — FECHADO via store local (#4451 Fase 2):
+ * blacklist/unsub que não aparece em NENHUM export de campanha (ex:
+ * descadastro fora do contexto de uma campanha específica, ou supressão
+ * administrativa) não tem como ser capturado só com `exportRecipients` — mas
+ * `clarice-sync-brevo.ts` já sincroniza `email_blacklisted`/`unsubscribed`
+ * pra `data/clarice-subscribers/clarice-users.db` diariamente (08:30 BRT, ver
+ * CLAUDE.md), então lemos ESSE store local em vez de fazer uma chamada nova à
+ * Brevo (zero custo de API adicional). `fetchAdminOptOutEmails` é FAIL-SOFT:
+ * se o store não existir (sessão cloud sem junction `data/`, ou task de sync
+ * ainda não rodou), loga aviso e segue sem esse sinal em vez de abortar —
+ * mesma postura de `exec-mode.ts`/`studio-chat-enabled.ts`.
  *
  * THROTTLING: a Brevo não documenta rate limit específico pra
  * `exportRecipients`/`processes` (diferente de `/v3/contacts/*`, 10 req/s
@@ -60,11 +71,13 @@
  *   BREVO_CLARICE_API_KEY  obrigatório
  *
  * Uso CLI (sempre dry-run, nunca grava KV nem toca a task agendada):
- *   npx tsx scripts/clarice-engagement-cohorts-v2.ts [--concurrency N] [--limit N] [--out arquivo.json]
+ *   npx tsx scripts/clarice-engagement-cohorts-v2.ts [--concurrency N] [--limit N] [--out arquivo.json] [--refetch-window-days N] [--no-admin-optouts]
  *
- *   --concurrency  campanhas processadas em paralelo (default 2 — throttling conservador).
- *   --limit        processa só as N campanhas mais recentes (útil pra validar sem rodar a história inteira).
- *   --out          além do stdout, grava o JSON de coortes neste path.
+ *   --concurrency        campanhas processadas em paralelo (default 2 — throttling conservador).
+ *   --limit               processa só as N campanhas mais recentes (útil pra validar sem rodar a história inteira).
+ *   --out                 além do stdout, grava o JSON de coortes neste path.
+ *   --refetch-window-days janela (dias) de campanhas recentes sempre re-exportadas (default 30).
+ *   --no-admin-optouts    desliga o merge do gap de blacklist administrativo via store local.
  */
 
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
@@ -73,7 +86,8 @@ import Papa from "papaparse";
 import { brevoGet, brevoPost } from "./lib/brevo-client.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { getArg, isMainModule } from "./lib/cli-args.ts";
+import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import {
   computeCohorts,
   COHORTS_STATE_DIR,
@@ -82,6 +96,9 @@ import {
 } from "./clarice-engagement-cohorts.ts";
 
 loadProjectEnv();
+
+/** Janela default (dias) de campanhas "recentes" sempre re-exportadas (#4451 Fase 2). */
+export const DEFAULT_REFETCH_WINDOW_DAYS = 30;
 
 /** Cache permanente por campanha — irmão de checkpoint.json/status.json do v1. */
 export const CAMPAIGN_CACHE_DIR = resolve(COHORTS_STATE_DIR, "campaign-cache");
@@ -340,7 +357,31 @@ export async function pollExportUntilDone(
   throw new Error(`Processo ${processId} não completou após ${maxAttempts} tentativas de poll.`);
 }
 
-// ─── Busca ou usa cache (skip-forever) ──────────────────────────────────────
+// ─── Janela de re-fetch (#4451 Fase 2) ───────────────────────────────────────
+
+/**
+ * Campanha DENTRO da janela (enviada há menos de `windowDays`) é sempre
+ * re-exportada, mesmo com cache existente — captura engajamento tardio (uma
+ * abertura que acontece dias depois do envio). Fora da janela, o cache
+ * permanente ("skip forever") vale.
+ *
+ * Sem `sentDate` confiável (ausente ou data inválida), trata como DENTRO da
+ * janela por padrão conservador: nunca assume cache permanente pra uma
+ * campanha cuja idade não sabemos calcular. Pura — testável sem rede.
+ */
+export function isWithinRefetchWindow(
+  campaign: Pick<SentCampaignRef, "sentDate">,
+  nowMs: number,
+  windowDays: number = DEFAULT_REFETCH_WINDOW_DAYS,
+): boolean {
+  if (!campaign.sentDate) return true;
+  const sentMs = Date.parse(campaign.sentDate);
+  if (Number.isNaN(sentMs)) return true;
+  const ageDays = (nowMs - sentMs) / 86_400_000;
+  return ageDays < windowDays; // negativo (data futura, relógio divergente) também conta como "dentro"
+}
+
+// ─── Busca ou usa cache (skip-forever + janela de re-fetch) ─────────────────
 
 export interface CampaignFetchResult {
   cache: CampaignCache;
@@ -349,19 +390,24 @@ export interface CampaignFetchResult {
 
 /**
  * Cache "skip forever" (#4451 Fase 1 — mesma semântica do MillionVerifier,
- * `scripts/verify-emails-mv.ts`): campanha já cacheada NUNCA dispara novo
- * `exportRecipients` nesta fase. TODO Fase 2: janela de re-fetch pra
- * campanhas recentes (ver comentário de topo do arquivo) — até lá, mesmo uma
- * campanha enviada ontem usa o cache assim que existir.
+ * `scripts/verify-emails-mv.ts`) COM janela de re-fetch (Fase 2): campanha
+ * cacheada só é reaproveitada sem nova chamada se `forceRefresh` for falso.
+ * O chamador (`buildCohortsV2`) decide `forceRefresh` via
+ * `isWithinRefetchWindow` — este helper não conhece `sentDate`, só executa a
+ * decisão. Uma campanha re-exportada tem seu cache SOBRESCRITO (não faz
+ * OR-merge com o cache antigo — o export novo é sempre a fonte de verdade
+ * mais atual daquela campanha).
  */
 export async function getOrFetchCampaignCache(
   client: CampaignExportClient,
   campaign: SentCampaignRef,
-  opts: { cacheDir?: string; poll?: PollOptions; now?: () => string } = {},
+  opts: { cacheDir?: string; poll?: PollOptions; now?: () => string; forceRefresh?: boolean } = {},
 ): Promise<CampaignFetchResult> {
   const cacheDir = opts.cacheDir ?? CAMPAIGN_CACHE_DIR;
-  const cached = loadCampaignCache(campaign.id, cacheDir);
-  if (cached) return { cache: cached, fromCache: true };
+  if (!opts.forceRefresh) {
+    const cached = loadCampaignCache(campaign.id, cacheDir);
+    if (cached) return { cache: cached, fromCache: true };
+  }
 
   const { processId } = await client.exportRecipients(campaign.id);
   const exportUrl = await pollExportUntilDone(client, processId, opts.poll);
@@ -404,6 +450,87 @@ async function mapWithConcurrency<T, R>(
   return out;
 }
 
+// ─── Gap de blacklist administrativo — fechado via store local (#4451 Fase 2) ─
+
+/**
+ * Union discriminada por `available`: quando `true`, `emails` (normalizados,
+ * com email_blacklisted=1 OU unsubscribed=1 no store local) sempre existe;
+ * quando `false` (store indisponível — sessão cloud sem `data/`, DB ainda não
+ * gerado, etc. — fail-soft), `unavailableReason` sempre existe pra
+ * diagnosticar sem lançar. Narrowing no `available` elimina a leitura direta
+ * de `emails`/`unavailableReason` sem checar o discriminante primeiro.
+ */
+export type AdminOptOutsResult =
+  | { available: true; emails: Set<string> }
+  | { available: false; unavailableReason: string };
+
+/**
+ * Lê `email_blacklisted`/`unsubscribed` do store local (`clarice-db.ts`),
+ * sincronizado diariamente de Brevo por `clarice-sync-brevo.ts` (08:30 BRT).
+ * Fecha o gap documentado na issue #4451 (blacklist administrativo sem evento
+ * de unsub em NENHUMA campanha específica) sem custo de chamada nova à Brevo.
+ *
+ * FAIL-SOFT (mesma postura de `exec-mode.ts`/`studio-chat-enabled.ts`): store
+ * ausente ou inacessível NUNCA lança — retorna `available: false` e o
+ * chamador decide como reagir (logar aviso, seguir sem o sinal). O universo
+ * de coortes não deve depender de um recurso `local` pra rodar.
+ *
+ * RISCO DE ESCOPO A VALIDAR na comparação empírica (#4451 item 6): esta
+ * função lê o store INTEIRO (`clarice_users`), sem filtrar por "já recebeu
+ * e-mail" — mais amplo que o escopo do v1 (`fetchEmailedContactIds`, membros
+ * de listas de campanhas ENVIADAS). Um contato blacklisted/unsub no store mas
+ * que nunca foi membro de nenhuma lista enviada pode entrar em `exits` no v2
+ * sem equivalente no v1 — provável fonte de divergência pequena e
+ * EXPLICÁVEL na comparação via `scripts/compare-cohorts.ts` (não
+ * necessariamente um bug: é dado administrativo mais completo, não ruído).
+ */
+export function fetchAdminOptOutEmails(dbPath: string = DEFAULT_DB_PATH): AdminOptOutsResult {
+  if (!existsSync(dbPath)) {
+    return { available: false, unavailableReason: `store não encontrado em ${dbPath}` };
+  }
+  try {
+    const db = openClariceDb(dbPath);
+    try {
+      const rows = db
+        .prepare(
+          "SELECT email FROM clarice_users WHERE email_blacklisted = 1 OR unsubscribed = 1",
+        )
+        .all() as Array<{ email: string }>;
+      const emails = new Set(rows.map((r) => normalizeEmail(r.email)).filter((e) => e.length > 0));
+      return { available: true, emails };
+    } finally {
+      db.close();
+    }
+  } catch (e) {
+    return {
+      available: false,
+      unavailableReason: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
+/**
+ * Aplica o sinal de opt-out administrativo sobre o agregado por-campanha
+ * (pura — testável sem DB/rede). Contato já presente no agregado (apareceu em
+ * algum export) tem `optedOut` forçado a `true` (OR, nunca reverte um
+ * `optedOut` já verdadeiro). Contato AUSENTE do agregado (nunca apareceu em
+ * nenhum export de campanha — o próprio gap que este mecanismo fecha) entra
+ * como entrada nova com `received:0, opened:0, bounced:false, optedOut:true`
+ * — `computeCohorts` o conta em `exits` mesmo sem `received`/`opened`
+ * (precedência de saída, ver `clarice-engagement-cohorts.ts`).
+ */
+export function applyAdminOptOuts(
+  aggregate: Map<string, ContactEngagement>,
+  optOutEmails: Set<string>,
+): Map<string, ContactEngagement> {
+  const out = new Map(aggregate);
+  for (const email of optOutEmails) {
+    const prev = out.get(email);
+    out.set(email, prev ? { ...prev, optedOut: true } : { received: 0, opened: 0, bounced: false, optedOut: true });
+  }
+  return out;
+}
+
 // ─── Orquestração fim-a-fim ──────────────────────────────────────────────────
 
 export interface BuildCohortsV2Result {
@@ -412,19 +539,51 @@ export interface BuildCohortsV2Result {
   campaignsFromCache: number;
   campaignsFetched: number;
   campaignsFailed: { campaignId: number; campaignName: string; error: string }[];
+  /** #4451 Fase 2 — nº de e-mails do store local aplicados como opt-out administrativo. */
+  adminOptOutsApplied: number;
+  /** #4451 Fase 2 — false quando o sinal NÃO foi aplicado: store indisponível
+   * (fail-soft) OU desligado explicitamente via `--no-admin-optouts`. */
+  adminOptOutsAvailable: boolean;
+  /** #4451 Fase 2 — motivo real (`unavailableReason` de `fetchAdminOptOutEmails`)
+   * quando `adminOptOutsAvailable=false` por store indisponível — undefined
+   * quando desligado via `--no-admin-optouts` (não é "indisponível", é opt-out
+   * explícito do operador). Sem isto, o log genérico de `main()` esconde a
+   * causa real (DB corrompido, SQLITE_BUSY por contenção com o sync das
+   * 08:30, erro de permissão) atrás do mesmo aviso do caso esperado
+   * "sessão cloud sem `data/`". */
+  adminOptOutsUnavailableReason?: string;
 }
 
 export async function buildCohortsV2(
   client: CampaignExportClient,
   generatedAt: string,
-  opts: { concurrency?: number; limit?: number; cacheDir?: string; poll?: PollOptions } = {},
+  opts: {
+    concurrency?: number;
+    limit?: number;
+    cacheDir?: string;
+    poll?: PollOptions;
+    /** default DEFAULT_REFETCH_WINDOW_DAYS (30) — ver isWithinRefetchWindow. */
+    refetchWindowDays?: number;
+    /** injeção de "agora" pra determinismo em teste; default Date.now(). */
+    nowMs?: number;
+    /** default true — desligar via --no-admin-optouts (ou opts.includeAdminOptOuts=false em teste). */
+    includeAdminOptOuts?: boolean;
+    /** injeção pra teste — default DEFAULT_DB_PATH. */
+    dbPath?: string;
+  } = {},
 ): Promise<BuildCohortsV2Result> {
   const concurrency = opts.concurrency ?? 2; // throttling conservador (#4451 — rate limit não documentado)
+  const nowMs = opts.nowMs ?? Date.now();
+  const refetchWindowDays = opts.refetchWindowDays ?? DEFAULT_REFETCH_WINDOW_DAYS;
   let campaigns = await client.listSentCampaigns();
   if (opts.limit && opts.limit > 0) campaigns = campaigns.slice(0, opts.limit);
 
   const results = await mapWithConcurrency(campaigns, concurrency, (c) =>
-    getOrFetchCampaignCache(client, c, { cacheDir: opts.cacheDir, poll: opts.poll }),
+    getOrFetchCampaignCache(client, c, {
+      cacheDir: opts.cacheDir,
+      poll: opts.poll,
+      forceRefresh: isWithinRefetchWindow(c, nowMs, refetchWindowDays),
+    }),
   );
 
   const caches: CampaignCache[] = [];
@@ -445,7 +604,25 @@ export async function buildCohortsV2(
     else campaignsFetched++;
   });
 
-  const aggregate = aggregateCampaignCaches(caches);
+  let aggregate = aggregateCampaignCaches(caches);
+  let adminOptOutsApplied = 0;
+  let adminOptOutsAvailable = true;
+  let adminOptOutsUnavailableReason: string | undefined;
+  if (opts.includeAdminOptOuts ?? true) {
+    const admin = fetchAdminOptOutEmails(opts.dbPath);
+    adminOptOutsAvailable = admin.available;
+    if (admin.available) {
+      if (admin.emails.size > 0) {
+        aggregate = applyAdminOptOuts(aggregate, admin.emails);
+        adminOptOutsApplied = admin.emails.size;
+      }
+    } else {
+      adminOptOutsUnavailableReason = admin.unavailableReason;
+    }
+  } else {
+    adminOptOutsAvailable = false; // desligado explicitamente — não é "indisponível", mas o campo reporta "não aplicado"
+  }
+
   const cohorts = computeCohorts(Array.from(aggregate.values()), generatedAt);
 
   return {
@@ -454,6 +631,9 @@ export async function buildCohortsV2(
     campaignsFromCache,
     campaignsFetched,
     campaignsFailed,
+    adminOptOutsApplied,
+    adminOptOutsAvailable,
+    adminOptOutsUnavailableReason,
   };
 }
 
@@ -465,6 +645,8 @@ async function main(): Promise<void> {
   const limitArg = getArg(argv, "limit");
   const limit = limitArg ? Number(limitArg) : undefined;
   const outPath = getArg(argv, "out");
+  const refetchWindowDays = Number(getArg(argv, "refetch-window-days") || String(DEFAULT_REFETCH_WINDOW_DAYS)) || DEFAULT_REFETCH_WINDOW_DAYS;
+  const includeAdminOptOuts = !hasFlag(argv, "no-admin-optouts");
 
   const apiKey = process.env.BREVO_CLARICE_API_KEY;
   if (!apiKey) {
@@ -473,20 +655,31 @@ async function main(): Promise<void> {
   }
 
   console.error(
-    `🚧 v2 (Fase 1, #4451) — SEMPRE dry-run: não grava KV, não altera a task agendada DiariaCohortsCrawl.`,
+    `🚧 v2 (#4451 Fase 2) — SEMPRE dry-run: não grava KV, não altera a task agendada DiariaCohortsCrawl.`,
   );
   console.error(
-    `🔎 Backfill por campanha (concorrência ${concurrency}${limit ? `, limit ${limit}` : ""})…`,
+    `🔎 Backfill por campanha (concorrência ${concurrency}${limit ? `, limit ${limit}` : ""}, ` +
+      `janela de re-fetch ${refetchWindowDays}d${includeAdminOptOuts ? "" : ", sem opt-outs administrativos"})…`,
   );
 
   const generatedAt = new Date().toISOString();
   const client = makeRealCampaignExportClient(apiKey);
 
-  const result = await buildCohortsV2(client, generatedAt, { concurrency, limit });
+  const result = await buildCohortsV2(client, generatedAt, {
+    concurrency,
+    limit,
+    refetchWindowDays,
+    includeAdminOptOuts,
+  });
 
   console.error(
     `\n✅ v2 (dry-run): universo ${result.cohorts.universe} — campanhas: ${result.campaignsTotal} ` +
       `(cache: ${result.campaignsFromCache}, novas: ${result.campaignsFetched}, falhas: ${result.campaignsFailed.length}).`,
+  );
+  console.error(
+    result.adminOptOutsAvailable
+      ? `📇 Opt-outs administrativos do store local aplicados: ${result.adminOptOutsApplied}.`
+      : `⚠️  Opt-outs administrativos NÃO aplicados: ${result.adminOptOutsUnavailableReason ?? "--no-admin-optouts"}.`,
   );
   if (result.campaignsFailed.length > 0) {
     console.error("⚠️  Campanhas com falha (não entraram no agregado):");

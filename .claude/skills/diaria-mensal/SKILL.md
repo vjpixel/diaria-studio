@@ -1,11 +1,11 @@
 ---
 name: diaria-mensal
-description: Gera o digest mensal da Diar.ia agrupando os destaques publicados nas edições do mês em 3 narrativas temáticas (com Brasil garantido) + Use Melhor (3 tutoriais mais clicados) + Radar (7 links mais clicados). Uso — `/diaria-mensal --cycle YYMM-MM [--no-gate]` ou legado `/diaria-mensal YYMM`. Etapas 0-5, espelhando a numeração/semântica da diária (#2795) — 0 Preflight, 1 Coleta/Análise, 2 Escrita, 3 Imagens, 4 Revisão consolidada (gate humano, #2793), 5 Publicação Brevo. Gate ao final de cada etapa 1-5.
+description: Gera o digest mensal da diar.ia.br agrupando os destaques publicados nas edições do mês em 3 narrativas temáticas (com Brasil garantido) + Use Melhor (3 tutoriais mais clicados) + Radar (7 links mais clicados). Uso — `/diaria-mensal --cycle YYMM-MM [--no-gate]` ou legado `/diaria-mensal YYMM`. Etapas 0-5, espelhando a numeração/semântica da diária (#2795) — 0 Preflight, 1 Coleta/Análise, 2 Escrita, 3 Imagens, 4 Revisão consolidada (gate humano, #2793), 5 Publicação Brevo. Gate ao final de cada etapa 1-5.
 ---
 
 # /diaria-mensal
 
-Produz uma edição **mensal** da Diar.ia consolidando os destaques publicados nas edições diárias do mês escolhido.
+Produz uma edição **mensal** da diar.ia.br consolidando os destaques publicados nas edições diárias do mês escolhido.
 
 ## Argumentos
 
@@ -240,7 +240,7 @@ node -e "
   if (m) require('fs').writeFileSync('$MONTHLY_DIR/_internal/02-chosen-subject.txt', m[1].trim());
 "
 ```
-Isso salva o texto completo (ex: `Diar.ia | Abril 2026 — 30 milhões de empregos em risco`), não só o número. Qualquer reescrita posterior restaura exatamente essa linha no ASSUNTO.
+Isso salva o texto completo (ex: `diar.ia.br | Abril 2026 — 30 milhões de empregos em risco`), não só o número. Qualquer reescrita posterior restaura exatamente essa linha no ASSUNTO.
 
 **Invariante do ASSUNTO:** qualquer passo posterior que modifique `draft.md` (humanizador, Clarice, ajustes de formato) deve usar `Edit` (substituição pontual), nunca `Write` (overwrite completo). Se `Write` for inevitável, ler `02-chosen-subject.txt` antes e restaurar o ASSUNTO correto imediatamente após. O ASSUNTO escolhido pelo editor nunca pode ser sobrescrito silenciosamente.
 
@@ -472,7 +472,7 @@ Sem `social_path`/`approved_json_path` (não existem no mensal — o fact-checke
 Apresentar ao editor:
 
 ```
-📋 Revisão consolidada — Diar.ia Mensal {YYMM}
+📋 Revisão consolidada — diar.ia.br Mensal {YYMM}
 
 🌐 Preview completo (local): {preview_url}
 

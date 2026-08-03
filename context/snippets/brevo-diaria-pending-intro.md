@@ -20,22 +20,37 @@ se quiser continuar. Por isso este bloco:
 Formato (mesma convenção de context/snippets/diaria-recomendacao-clarice.md):
 (1) linha de título, sem marcador nem link; (2) 1 parágrafo de corpo; (3) CTA
 sozinho como `→ [texto](url)` — shouldForceCtaPill (newsletter-render-html.ts)
-detecta e vira botão pill centralizado. Renderizado via
+detecta e vira botão pill centralizado; (4) parágrafo de disclosure de
+descadastro, na linha logo após o CTA — renderiza como corpo normal ABAIXO do
+botão (mesmo mecanismo do disclosure de comissão/afiliado, #2996
+`afterCtaParas`), não como um 2º botão. Renderizado via
 renderBoxDivulgacao(box, null, false) — bold=false, mesmo estilo do bloco
 Clarice mensal (texto plano, sem `**...**` embrulhando o bloco).
 
-*** RASCUNHO — NÃO ENVIADO À PRODUÇÃO. ***
-A cópia abaixo é um placeholder honesto (não fabrica confirmação nem usa
-linguagem de "parabéns por ser assinante"), mas o texto final e o link de CTA
-precisam de aprovação explícita do editor antes do primeiro envio real —
-`scripts/publish-daily-brevo.ts` recusa rodar sem `--i-reviewed-the-copy`
-justamente por isso (ver comentário no próprio script). Ajustar a URL do CTA
-pra apontar pro formulário/página de confirmação real da Beehiiv antes de
-aprovar.
+Atualizado 260802: cadastro na Beehiiv não tem mais confirmação por e-mail
+(mudança de fluxo do editor) — reescrito pra não presumir que existe um passo
+de "confirmação" pendente no sentido antigo; o CTA agora aponta pro mesmo
+formulário de cadastro, que hoje já ativa na hora ao ser resubmetido. Frase de
+descadastro (parágrafo 4) inspirada no fechamento de
+context/templates/newsletter-monthly.md:23 ("Você está recebendo esse e-mail
+porque se cadastrou na Clarice... pode se [descadastrar aqui]({{
+unsubscribe }})") — mesma merge tag `{{ unsubscribe }}` da Brevo, mesmo ESP.
+
+*** APROVADA pelo editor em 260802. ***
+`scripts/publish-daily-brevo.ts` continua exigindo a flag
+`--i-reviewed-the-copy` pra rodar fora de `--dry-run` — isso é um lembrete
+mecânico, não um gate de aprovação pendente (a aprovação em si já
+aconteceu). Pendência real que sobrevive à aprovação: a URL do CTA abaixo
+ainda aponta pro formulário de cadastro genérico — precisa virar o link
+personalizado (`?email={{ contact.EMAIL }}`) quando a página de confirmação
+do #4476 item 3 existir. Se o texto mudar de novo depois disso, reavaliar
+se precisa de nova aprovação explícita.
 -->
 
 Por que você está recebendo este e-mail
 
-Você se inscreveu na diária da diar.ia.br, mas ainda não confirmou seu cadastro — por isso, hoje, você não recebe as edições pela Beehiiv. Enquanto isso, mandamos a edição por aqui, pra você não perder o conteúdo. Se preferir parar de receber por este canal, é só usar o link de descadastro no rodapé.
+Você se inscreveu na diária da diar.ia.br, mas seu cadastro nunca chegou a ser confirmado — por isso, hoje, você não recebe as edições pela Beehiiv. O processo mudou desde então: não tem mais confirmação por e-mail, então basta se inscrever de novo que já fica ativo na hora. Enquanto isso não acontece, mandamos a edição por aqui, pra você não perder o conteúdo.
 
-→ [Confirmar meu cadastro na diária](https://diar.ia.br/?utm_source=brevo_pending)
+→ [Fazer meu cadastro de novo](https://diar.ia.br/?utm_source=brevo_pending)
+
+Você está recebendo esse e-mail porque se inscreveu na diária da diar.ia.br e o cadastro ficou pendente. Caso não queira mais receber, pode se [descadastrar aqui]({{ unsubscribe }}).

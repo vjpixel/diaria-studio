@@ -123,7 +123,7 @@ export async function expandAggregatorLinks(url: string): Promise<string[]> {
     const res = await fetch(url, {
       headers: {
         "User-Agent":
-          "Diar.ia/1.0 (https://diar.ia.br; diariaeditor@gmail.com)",
+          "diar.ia.br/1.0 (https://diar.ia.br; diariaeditor@gmail.com)",
       },
       signal: AbortSignal.timeout(CONFIG.timeouts.fetch),
     });

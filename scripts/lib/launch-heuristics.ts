@@ -124,7 +124,7 @@ const PESQUISA_DOMAINS = new Set([
 // ---------------------------------------------------------------------------
 
 /**
- * Termos relevantes para o tema da Diar.ia (IA, ML, NLP).
+ * Termos relevantes para o tema da diar.ia.br (IA, ML, NLP).
  * Re-export de `scripts/lib/ai-relevance.ts` (#642) — `ARXIV_RELEVANT_TERMS`
  * mantido como alias deprecated pra compat com callers existentes.
  *
@@ -1424,7 +1424,7 @@ export function categorize(article: Article): Category {
   // 1. Pesquisa tem prioridade sobre lancamento quando o caminho é de paper
   if (PESQUISA_DOMAINS.has(host)) {
     // #501: arXiv retorna muitos papers off-topic. Filtrar por termos relevantes
-    // ao tema da Diar.ia antes de classificar como pesquisa. Papers sem match
+    // ao tema da diar.ia.br antes de classificar como pesquisa. Papers sem match
     // vão para "noticias" — o scorer vai penalizá-los por falta de contexto de IA
     // e eles dificilmente chegam ao gate editorial.
     if (!isArxivRelevant(article)) {

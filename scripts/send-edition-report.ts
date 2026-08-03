@@ -446,7 +446,7 @@ export function renderHtmlReport(
   </style>
 </head>
 <body>
-  <h1>Diar.ia &mdash; Report edicao ${escapeHtml(edition)}</h1>
+  <h1>diar.ia.br &mdash; Report edicao ${escapeHtml(edition)}</h1>
 
   <div>
     <span class="metric"><strong>Edicao:</strong> ${escapeHtml(edition)}</span>
@@ -622,7 +622,7 @@ export function writeReportFile(
       {
         kind: "edicao",
         sessionId: edition,
-        title: `Diar.ia — relatório de edição ${edition}`,
+        title: `diar.ia.br — relatório de edição ${edition}`,
         htmlPath: toRepoRelativePosix(absOut),
       },
       undefined,

@@ -138,7 +138,7 @@ function pushLogEvents(events) {
 
 function renderHeader(detail) {
   el.titulo.textContent = detail.edition;
-  document.title = `Diar.ia Studio — Edição ${detail.edition}`;
+  document.title = `diar.ia.br Studio — Edição ${detail.edition}`;
   el.stage.textContent = detail.found ? `${detail.stageLabel} (${detail.currentStage})` : "—";
   // #3559: link direto pro painel de revisão de conteúdo desta edição.
   if (el.reviewLink) {

@@ -45,7 +45,7 @@ const fixtureContent = {
 
 describe("buildDailyBrevoSubject / buildDailyBrevoPreviewText — #4266", () => {
   it("assunto deriva do título do D1", () => {
-    assert.equal(buildDailyBrevoSubject(fixtureContent), "Diar.ia — Modelos se replicam sozinhos");
+    assert.equal(buildDailyBrevoSubject(fixtureContent), "diar.ia.br — Modelos se replicam sozinhos");
   });
 
   it("preview text é o subtítulo", () => {
@@ -75,7 +75,7 @@ describe("checkBrevoDiariaGuards — pré-condições fora de --dry-run (#4404)"
     api_key_env: "BREVO_DIARIA_API_KEY",
     list_id: 42,
     sender_email: "editor@diar.ia.br",
-    sender_name: "Diar.ia",
+    sender_name: "diar.ia.br",
     daily_send_cap: 300,
   };
 

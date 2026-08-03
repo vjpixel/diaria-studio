@@ -2,7 +2,7 @@
 
 Versão: draft 2026-05-08 · Owner: Pixel · Status: living document
 
-Vigil.ia.br é a organização guarda-chuva da Diar.ia (newsletter diária de IA), do testbed Clarice/Kit (digest mensal de pesquisa em IA com Clarice Menezes), e potenciais futuros produtos editoriais focados em IA. O Lean Canvas abaixo aplica o framework Ash Maurya — 9 blocos pensados pra capturar a hipótese central do negócio em 1 página.
+Vigil.ia.br é a organização guarda-chuva da diar.ia.br (newsletter diária de IA), do testbed Clarice/Kit (digest mensal de pesquisa em IA com Clarice Menezes), e potenciais futuros produtos editoriais focados em IA. O Lean Canvas abaixo aplica o framework Ash Maurya — 9 blocos pensados pra capturar a hipótese central do negócio em 1 página.
 
 ---
 
@@ -45,7 +45,7 @@ Subtexto:
 - Qualidade de produção: imagens, layout, voz consistente
 
 ### High-level concept
-"O Filter for AI" — leitor confia que se não saiu na Diar.ia, não precisava saber.
+"O Filter for AI" — leitor confia que se não saiu na diar.ia.br, não precisava saber.
 
 ---
 
@@ -53,7 +53,7 @@ Subtexto:
 
 3 produtos no roadmap (em ordem de maturidade):
 
-1. **Diar.ia (newsletter diária)** — em produção, ~12 destaques curados/dia, 3 com profundidade editorial. Stack: Beehiiv (migrando pra Kit), pipeline TS automatizado com Claude Code.
+1. **diar.ia.br (newsletter diária)** — em produção, ~12 destaques curados/dia, 3 com profundidade editorial. Stack: Beehiiv (migrando pra Kit), pipeline TS automatizado com Claude Code.
 
 2. **Digest mensal Clarice** — em desenvolvimento (parceria), foco em pesquisa científica em IA. Diferente formato: long-form vs snippet, profundidade > frequência.
 
@@ -70,7 +70,7 @@ Stack comum:
 ## 5. Channels
 
 Em uso:
-- **LinkedIn** (3 posts/dia da Diar.ia + comentário Pixel pessoal pós-#595)
+- **LinkedIn** (3 posts/dia da diar.ia.br + comentário Pixel pessoal pós-#595)
 - **Facebook** (3 posts/dia)
 - **Email direto** (Beehiiv, ~migrating Kit)
 
@@ -95,7 +95,7 @@ Hipóteses pra teste (em ordem de risco/retorno):
 
 2. **Assinatura premium** (medium risk, medium retorno): tier paid com (a) edição matinal antecipada, (b) acesso a histórico searchable, (c) mensagens diretas Pixel. Modelo Stratechery / Ben Thompson.
 
-3. **Membership orga (Vigil.ia.br)** (low risk, escalável): Vigil.ia.br oferece 3+ produtos editoriais sob membership única (Diar.ia + Clarice digest + Claude pilot + futuros). Tipo Substack-bundle.
+3. **Membership orga (Vigil.ia.br)** (low risk, escalável): Vigil.ia.br oferece 3+ produtos editoriais sob membership única (diar.ia.br + Clarice digest + Claude pilot + futuros). Tipo Substack-bundle.
 
 4. **Eventos paid** (medium risk, sazonal): meetups BR de IA com assinantes premium, workshops corporativos.
 
@@ -166,7 +166,7 @@ Coisas NÃO unfair (riscos):
 2. **Decidir Beehiiv → Kit migration** (deadline 2026-06-01) ou postpone formal.
 3. **Testar #60 Claude pilot** como experimento de scope/audience.
 4. **Preparar pitch de patrocínio** (light) pra 2-3 empresas BR de IA.
-5. **Setup vigil.ia.br homepage** apontando pra Diar.ia + Clarice digest.
+5. **Setup vigil.ia.br homepage** apontando pra diar.ia.br + Clarice digest.
 
 ---
 

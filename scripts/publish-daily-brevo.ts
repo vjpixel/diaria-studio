@@ -79,11 +79,11 @@ interface PlatformConfig {
  * Pura — assunto derivado do título do D1 (não há um "ASSUNTO" dedicado no
  * template diário, diferente do mensal — a diária usa metadados manuais na
  * UI do Beehiiv, CLAUDE.md §Publicadores). Formato escolhido:
- * "Diar.ia — {título do D1}". Decisão de design (não veio da issue) — o
+ * "diar.ia.br — {título do D1}". Decisão de design (não veio da issue) — o
  * editor pode ajustar depois via `--subject-override` sem mudar código.
  */
 export function buildDailyBrevoSubject(content: Pick<NewsletterContent, "title">): string {
-  return `Diar.ia — ${content.title}`;
+  return `diar.ia.br — ${content.title}`;
 }
 
 /** Pura — preview text a partir do subtítulo (mesmo campo usado como "por
@@ -243,7 +243,7 @@ async function main(): Promise<void> {
   }
 
   const campaignResp = (await brevoPost(apiKey!, "/emailCampaigns", {
-    name: `Diar.ia diária — ${new Date().toISOString().slice(0, 16)}`,
+    name: `diar.ia.br diária — ${new Date().toISOString().slice(0, 16)}`,
     subject,
     previewText,
     sender: { name: brevoDiaria!.sender_name, email: brevoDiaria!.sender_email },

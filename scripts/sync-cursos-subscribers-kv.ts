@@ -2,7 +2,7 @@
  * sync-cursos-subscribers-kv.ts (#4052)
  *
  * Popula o KV `CURSOS_SUBSCRIBERS` (worker `cursos`) com uma chave
- * `subscriber:{sha256(email)}` → `"1"` por assinante ATIVO da Diar.ia — a
+ * `subscriber:{sha256(email)}` → `"1"` por assinante ATIVO da diar.ia.br — a
  * fonte PRIMÁRIA de verificação do gate (`workers/cursos/src/gate.ts`
  * `verifySubscriberViaKv`), decisão do #4052 porque o endpoint direto
  * `by_email` da Beehiiv não pôde ser confirmado ao vivo neste ambiente (sem

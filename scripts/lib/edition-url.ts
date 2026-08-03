@@ -27,7 +27,7 @@
 
 import { seoSlug } from "./slug.ts";
 
-/** Base URL pública da Diar.ia no Beehiiv. Não inclui trailing slash. */
+/** Base URL pública da diar.ia.br no Beehiiv. Não inclui trailing slash. */
 export const BEEHIIV_BASE_URL = "https://diar.ia.br";
 
 /**

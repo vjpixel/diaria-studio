@@ -1,0 +1,13 @@
+name = "reativar"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# Secrets — OPCIONAIS (sem eles o endpoint responde 503 "not_configured",
+# nunca lança/500). Setar via:
+#   cd workers/reativar && npx wrangler secret put BEEHIIV_API_KEY
+#   cd workers/reativar && npx wrangler secret put BEEHIIV_PUBLICATION_ID
+# Mesmo valor de BEEHIIV_API_KEY já usado pelos scripts do repo
+# (scripts/lib/beehiiv-config.ts) — publicationId é o mesmo de
+# platform.config.json → beehiiv.publicationId.

@@ -30,18 +30,18 @@ describe("classifyResponse (#3560)", () => {
       302,
       headers({ Location: "https://diaria.cloudflareaccess.com/cdn-cgi/access/login/studio.diar.ia.br" }),
       "",
-      "Diar.ia Studio",
+      "diar.ia.br Studio",
     );
     assert.equal(result.state, "blocked");
   });
 
   it("classifica 401 como blocked", () => {
-    const result = classifyResponse(401, headers(), "", "Diar.ia Studio");
+    const result = classifyResponse(401, headers(), "", "diar.ia.br Studio");
     assert.equal(result.state, "blocked");
   });
 
   it("classifica 403 como blocked", () => {
-    const result = classifyResponse(403, headers(), "", "Diar.ia Studio");
+    const result = classifyResponse(403, headers(), "", "diar.ia.br Studio");
     assert.equal(result.state, "blocked");
   });
 
@@ -50,7 +50,7 @@ describe("classifyResponse (#3560)", () => {
       200,
       headers(),
       "<html><body>Faça login via Cloudflare Access — insira seu e-mail</body></html>",
-      "Diar.ia Studio",
+      "diar.ia.br Studio",
     );
     assert.equal(result.state, "blocked");
   });
@@ -59,29 +59,29 @@ describe("classifyResponse (#3560)", () => {
     const result = classifyResponse(
       200,
       headers(),
-      "<html><head><title>Diar.ia Studio</title></head><body>Edição corrente</body></html>",
-      "Diar.ia Studio",
+      "<html><head><title>diar.ia.br Studio</title></head><body>Edição corrente</body></html>",
+      "diar.ia.br Studio",
     );
     assert.equal(result.state, "leaked");
   });
 
   it("marcador é case-insensitive", () => {
-    const result = classifyResponse(200, headers(), "<title>DIAR.IA STUDIO</title>", "Diar.ia Studio");
+    const result = classifyResponse(200, headers(), "<title>DIAR.IA.BR STUDIO</title>", "diar.ia.br Studio");
     assert.equal(result.state, "leaked");
   });
 
   it("classifica 200 sem marcador reconhecido e sem sinal de Access como unknown (falha por segurança)", () => {
-    const result = classifyResponse(200, headers(), "<html><body>algo inesperado</body></html>", "Diar.ia Studio");
+    const result = classifyResponse(200, headers(), "<html><body>algo inesperado</body></html>", "diar.ia.br Studio");
     assert.equal(result.state, "unknown");
   });
 
   it("redirect 302 para outro host (não Access) não é lido como blocked", () => {
-    const result = classifyResponse(302, headers({ Location: "https://example.com/other" }), "", "Diar.ia Studio");
+    const result = classifyResponse(302, headers({ Location: "https://example.com/other" }), "", "diar.ia.br Studio");
     assert.notEqual(result.state, "blocked");
   });
 
   it("500 sem corpo reconhecido é unknown, não blocked nem leaked", () => {
-    const result = classifyResponse(500, headers(), "", "Diar.ia Studio");
+    const result = classifyResponse(500, headers(), "", "diar.ia.br Studio");
     assert.equal(result.state, "unknown");
   });
 });
@@ -100,7 +100,7 @@ describe("checkRemoteTunnel (#3560) — com fetchFn mockado", () => {
 
   it("detecta vazamento fim-a-fim quando o fetch retorna o Studio real sem auth", async () => {
     const fetchFn = (async () =>
-      new Response("<title>Diar.ia Studio</title><div id=timeline></div>", { status: 200 })) as unknown as typeof fetch;
+      new Response("<title>diar.ia.br Studio</title><div id=timeline></div>", { status: 200 })) as unknown as typeof fetch;
 
     const result = await checkRemoteTunnel("https://studio.diar.ia.br", { fetchFn });
     assert.equal(result.state, "leaked");

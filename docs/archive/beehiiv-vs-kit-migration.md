@@ -1,6 +1,6 @@
 # Beehiiv → Kit: comparativo + spike técnico (arquivado)
 
-> **Status: PAUSADA INDEFINIDAMENTE.** Decisão do editor (briefing 2026-06-13): a migração Beehiiv → Kit está pausada sem previsão. Todas as issues relacionadas (#463, #464, #466, #467, #471, #472, #473) foram marcadas `on-hold` e saem dos briefings overnight/develop até serem reativadas — remover o label `on-hold` quando a parceria/conta Kit avançar. O testbed que motivou o hold original (digest mensal Clarice em Kit, #471-473) não avançou; a Clarice migrou de fato para **Brevo** (ver `docs/clarice-unified-db.md` e memory `clarice-store-2647`), não Kit. As issues técnicas #463/#464/#466/#467 (Kit pra Diar.ia diária) seguem abertas mas bloqueadas — não trabalhar nelas sem reativação explícita do editor.
+> **Status: PAUSADA INDEFINIDAMENTE.** Decisão do editor (briefing 2026-06-13): a migração Beehiiv → Kit está pausada sem previsão. Todas as issues relacionadas (#463, #464, #466, #467, #471, #472, #473) foram marcadas `on-hold` e saem dos briefings overnight/develop até serem reativadas — remover o label `on-hold` quando a parceria/conta Kit avançar. O testbed que motivou o hold original (digest mensal Clarice em Kit, #471-473) não avançou; a Clarice migrou de fato para **Brevo** (ver `docs/clarice-unified-db.md` e memory `clarice-store-2647`), não Kit. As issues técnicas #463/#464/#466/#467 (Kit pra diar.ia.br diária) seguem abertas mas bloqueadas — não trabalhar nelas sem reativação explícita do editor.
 >
 > Este doc consolida os 2 documentos originais (`beehiiv-vs-kit-comparison.md` — pesquisa pública de mercado — e `beehiiv-to-kit-migration-spike.md` — spike técnico de inventário/esforço), preservando análise e racional. Números/preços coletados em abril-maio/2026; reverificar antes de qualquer decisão de compra caso a migração seja retomada.
 
@@ -8,7 +8,7 @@
 
 ## Parte 1 — Comparativo de mercado (Beehiiv vs Kit vs Substack)
 
-Pesquisa pública pra acelerar a Fase 0 da issue #84 (decisão de migração da Diar.ia). **Não substitui** validação prática (free trial Kit + envio experimental).
+Pesquisa pública pra acelerar a Fase 0 da issue #84 (decisão de migração da diar.ia.br). **Não substitui** validação prática (free trial Kit + envio experimental).
 
 ### Tabela resumo
 
@@ -32,13 +32,13 @@ Pesquisa pública pra acelerar a Fase 0 da issue #84 (decisão de migração da 
 | **Custom domain** | Incluso | Incluso | $50 one-time fee |
 | **Discovery/network** | Limitado | Limitado | **Forte** — Substack Notes + recommendations cross-publication são canal de growth real |
 
-### Implicações pro pipeline Diar.ia
+### Implicações pro pipeline diar.ia.br
 
-1. **Custom HTML (#74)** — Kit livre em todos os planos; Beehiiv só em Scale/Max; Substack indisponível. Pra Diar.ia (Max hoje), Custom HTML continua coberto.
+1. **Custom HTML (#74)** — Kit livre em todos os planos; Beehiiv só em Scale/Max; Substack indisponível. Pra diar.ia.br (Max hoje), Custom HTML continua coberto.
 2. **API + MCP** — Beehiiv tem REST API + MCP em uso (`scripts/refresh-dedup.ts` via REST direto, audience update via MCP). Kit tem API completa sem MCP oficial — migrar = ~50-100 linhas de HTTP/auth. Substack não tem API oficial — pipeline não funcionaria sem reverse-engineer + cookie auth, risco alto pra automação editorial.
-3. **Modelo de receita** — Beehiiv/Kit: subscription mensal (Diar.ia paga zero hoje, Beehiiv Launch free). Substack: zero mensal mas 10% revenue cut se virar paid — ponto de virada ~$680/mês de receita paid vs Beehiiv Max.
+3. **Modelo de receita** — Beehiiv/Kit: subscription mensal (diar.ia.br paga zero hoje, Beehiiv Launch free). Substack: zero mensal mas 10% revenue cut se virar paid — ponto de virada ~$680/mês de receita paid vs Beehiiv Max.
 4. **Polls / surveys (#107)** — Beehiiv tem polls inline (incl. Trivia) com aggregate stats via API. Kit foca em forms/sequences, menos natural pro caso de uso É IA?. Substack tem polls sem export API estruturado.
-5. **Discovery network** — Substack tem vantagem real aqui (recommendation engine cross-publication), mas fortemente US-centric — utilidade incerta pra Diar.ia (foco editorial brasileiro).
+5. **Discovery network** — Substack tem vantagem real aqui (recommendation engine cross-publication), mas fortemente US-centric — utilidade incerta pra diar.ia.br (foco editorial brasileiro).
 6. **Migração de dados** — Beehiiv → Kit/Substack: subscribers via CSV, edições passadas perdidas. Beehiiv → Substack: import nativo de subscribers, mas Custom HTML não migra.
 
 ### Trade-offs principais
@@ -56,9 +56,9 @@ Pesquisa pública pra acelerar a Fase 0 da issue #84 (decisão de migração da 
 | Pricing por subs encarece | Custom HTML inexistente — perda de feature | API não expõe poll responses individuais |
 | Sem MCP oficial confirmado | 10% revenue cut se virar paid | |
 
-### Beehiiv: o que cada plano dá pra Diar.ia
+### Beehiiv: o que cada plano dá pra diar.ia.br
 
-Diar.ia estava no **Max ($109/mo)** na época da pesquisa. Comparativo dos 3 tiers pelo que a pipeline usa:
+diar.ia.br estava no **Max ($109/mo)** na época da pesquisa. Comparativo dos 3 tiers pelo que a pipeline usa:
 
 | Feature usada na pipeline | Launch (free) | Scale ($49/mo) | Max ($109/mo) |
 |---|---|---|---|
@@ -73,7 +73,7 @@ Diar.ia estava no **Max ($109/mo)** na época da pesquisa. Comparativo dos 3 tie
 
 ### Recomendação da pesquisa (maio/2026, antes do hold)
 
-**Não migrar imediatamente por trigger de custo** — o trigger original da #84 (custom HTML como upgrade caro) não existia mais no momento da pesquisa (Beehiiv tem custom HTML grátis em Scale). Substack não recomendado (falta de API oficial mata a automação editorial). Reconsiderar se: Diar.ia ultrapassar 10k subs, Beehiiv API quebrar/mudar contrato, ou feature crítica nova só aparecer em outra plataforma.
+**Não migrar imediatamente por trigger de custo** — o trigger original da #84 (custom HTML como upgrade caro) não existia mais no momento da pesquisa (Beehiiv tem custom HTML grátis em Scale). Substack não recomendado (falta de API oficial mata a automação editorial). Reconsiderar se: diar.ia.br ultrapassar 10k subs, Beehiiv API quebrar/mudar contrato, ou feature crítica nova só aparecer em outra plataforma.
 
 **Fontes**: [Beehiiv Pricing](https://www.beehiiv.com/pricing) · [Beehiiv custom HTML](https://product.beehiiv.com/p/introducing-custom-html-blocks-richtext-welcome-emails-additional-headers-support-center) · [Kit Pricing](https://kit.com/pricing) · [Kit custom HTML template](https://help.kit.com/en/articles/2810363-creating-a-custom-html-email-template) · [Substack pricing](https://support.substack.com/hc/en-us/articles/360037607131-How-much-does-Substack-cost) · [Substack Developer API](https://support.substack.com/hc/en-us/articles/45099095296916-Substack-Developer-API) · [Beehiiv polls CSV export](https://www.beehiiv.com/support/article/13063381953303-How-to-export-poll-data)
 
@@ -81,7 +81,7 @@ Diar.ia estava no **Max ($109/mo)** na época da pesquisa. Comparativo dos 3 tie
 
 ## Parte 2 — Spike técnico: inventário e esforço de migração (#461)
 
-Sequência original decidida em 2026-05-08 (Pixel): "A migração da Diar.ia para o Kit só vai ocorrer depois de termos o Kit no mensal com a Clarice." Essa sequência **não se concretizou como planejado** — a Clarice adotou Brevo, não Kit, pro digest mensal (ver Status acima). O inventário técnico abaixo permanece válido como checklist caso a migração seja retomada no futuro.
+Sequência original decidida em 2026-05-08 (Pixel): "A migração da diar.ia.br para o Kit só vai ocorrer depois de termos o Kit no mensal com a Clarice." Essa sequência **não se concretizou como planejado** — a Clarice adotou Brevo, não Kit, pro digest mensal (ver Status acima). O inventário técnico abaixo permanece válido como checklist caso a migração seja retomada no futuro.
 
 ### 1. Inventário Beehiiv (pontos de contato)
 

@@ -1,7 +1,7 @@
 /**
  * subscriber-verify.ts (#4052)
  *
- * Verificação "é assinante ativo da Diar.ia?" — genérica, extraída pra
+ * Verificação "é assinante ativo da diar.ia.br?" — genérica, extraída pra
  * `lib/shared/` (briefing #4054 do coordenador) pra ser reusada por
  * `workers/cursos` (#4052, primeiro consumidor) e `workers/poll` (#4054,
  * futuro — "É IA? diário: e-mail obrigatório no caminho de fora") sem

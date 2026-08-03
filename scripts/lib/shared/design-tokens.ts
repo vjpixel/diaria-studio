@@ -1,5 +1,5 @@
 /**
- * design-tokens.ts (#1936) — tokens canônicos do design system Diar.ia.
+ * design-tokens.ts (#1936) — tokens canônicos do design system diar.ia.br.
  *
  * Espelho fiel de github.com/vjpixel/diaria-design/tokens/{colors,fonts,typography}.css
  * (a FONTE DA VERDADE da marca). Os renderers de email (diária via

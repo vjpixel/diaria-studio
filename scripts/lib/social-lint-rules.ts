@@ -82,7 +82,7 @@ export interface PlatformHeaderUniqueResult {
  * exatamente 1 seção por plataforma antes do parse.
  *
  * Este lint conta LINHAS que batem EXATAMENTE com `# LinkedIn`, `# Facebook`
- * ou `# Social` (linha inteira, não substring solta — "Siga a Diar.ia no
+ * ou `# Social` (linha inteira, não substring solta — "Siga a diar.ia.br no
  * LinkedIn em..." não conta) e falha se qualquer uma delas aparecer mais de
  * 1 vez. `# Social` (#3991) é o header único que substitui `# LinkedIn`/
  * `# Facebook`/`# Instagram` no formato novo — checado pelo mesmo motivo:
@@ -671,7 +671,7 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
  */
 // #2458 fix (self-review): cobertura ampliada — verbos de assinatura ancorados a
 // e-mail/newsletter, aceitando variantes que o agente plausivelmente emite
-// ("assine a Diar.ia", "assinar a newsletter", "cadastre-se por email", "e-mail"
+// ("assine a diar.ia.br", "assinar a newsletter", "cadastre-se por email", "e-mail"
 // com ou sem hífen). Ancorado em intenção de assinatura pra evitar falso-positivo
 // em menções casuais a e-mail.
 // #2489: simplificado pra evitar quantificadores aninhados `(a\s+)?(nossa\s+)?`
@@ -827,7 +827,7 @@ export function lintInstagramEmailCTA(md: string): LinkedinEmailCtaResult {
 }
 
 /**
- * URL canônica da página da Diar.ia no LinkedIn (sem https://, sem ponto final).
+ * URL canônica da página da diar.ia.br no LinkedIn (sem https://, sem ponto final).
  * #2458 — usada pro lint (determinístico, sem ler config em runtime).
  * `platform.config.json#...diaria_linkedin_page_url` espelha este valor
  * para o fluxo de publish; o teste de drift em lint-social-md.test.ts garante que
@@ -850,7 +850,7 @@ export interface LinkedinPageLinkResult {
 }
 
 /**
- * #2458: Valida que o link da página da Diar.ia no LinkedIn está presente em:
+ * #2458: Valida que o link da página da diar.ia.br no LinkedIn está presente em:
  *   - O `## post_pixel` (CTA de follow no post pessoal)
  *
  * O link aceito: `linkedin.com/company/diar.ia.br` (sem https://, sem ponto).
@@ -891,7 +891,7 @@ export function lintLinkedinPageLink(md: string): LinkedinPageLinkResult {
         section: "post_pixel",
         // #2489: usar a const canônica nas msgs de erro (consistência com comment_diaria)
         detail:
-          `post_pixel: link da página da Diar.ia no LinkedIn ausente. ` +
+          `post_pixel: link da página da diar.ia.br no LinkedIn ausente. ` +
           `Adicionar "${DIARIA_LINKEDIN_PAGE_SLUG}" ao final do post (#2458).`,
       });
     }
@@ -1475,7 +1475,7 @@ export function lintTrailingQuestion(md: string): TrailingQuestionResult {
  * post standalone no feed pessoal.
  *
  * Detecta as frases-âncora em `## post_pixel` e `### comment_pixel` dentro da
- * seção LinkedIn. NÃO flaga nos posts principais `## d{N}` da Diar.ia (esses
+ * seção LinkedIn. NÃO flaga nos posts principais `## d{N}` da diar.ia.br (esses
  * são de marca, onde a deixis é OK).
  */
 export interface PersonalPostDeixisMatch {
@@ -1490,7 +1490,7 @@ export interface PersonalPostDeixisResult {
   matches: PersonalPostDeixisMatch[];
 }
 
-// Âncoras de deixis que pressupõem o leitor na Diar.ia.
+// Âncoras de deixis que pressupõem o leitor na diar.ia.br.
 // Formas femininas: "esta newsletter", "essa newsletter", "nossa newsletter",
 //                  "esta edição",     "essa edição",     "nossa edição".
 // Formas masculinas: "este boletim", "esse boletim", "nosso boletim".

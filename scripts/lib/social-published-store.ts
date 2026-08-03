@@ -23,7 +23,7 @@ import { acquireLock, releaseLock } from "./file-lock.ts";
 /**
  * Subtipo do post dentro de um destaque. Default `"main"` (post principal).
  * LinkedIn (#595) tem subtipos auxiliares: `comment_diaria` (T+3min, CTA + URL,
- * conta Diar.ia) e `comment_pixel` (T+8min, opinião pessoal, conta vjpixel).
+ * conta diar.ia.br) e `comment_pixel` (T+8min, opinião pessoal, conta vjpixel).
  * Facebook usa só `main`.
  */
 export type PostSubtype = "main" | "comment_diaria" | "comment_pixel" | "post_pixel";

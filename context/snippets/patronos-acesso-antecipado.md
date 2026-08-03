@@ -5,7 +5,7 @@ Caixa da VARIANTE PATRONOS (#4275) — ver docstring completa em
 patronos-bastidores.md (mesmo mecanismo, `boxes_divulgacao_patronos`).
 
 Conteúdo: destaca o benefício de acesso antecipado a novos
-projetos/recursos da Diar.ia, específico do nível Patrono. Atualizar quando
+projetos/recursos da diar.ia.br, específico do nível Patrono. Atualizar quando
 houver um projeto concreto em teste — o texto abaixo é o estado default
 (sem projeto específico em teste no momento).
 

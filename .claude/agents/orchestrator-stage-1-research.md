@@ -1,6 +1,6 @@
 ---
 name: orchestrator-stage-1-research
-description: Stage 1 do orchestrator Diar.ia — pesquisa (inbox drain, RSS, researchers, discovery, dedup, categorize, score, render, gate). Lido pelo orchestrator principal. @see orchestrator-stage-0-preflight.md (Stage 0).
+description: Stage 1 do orchestrator diar.ia.br — pesquisa (inbox drain, RSS, researchers, discovery, dedup, categorize, score, render, gate). Lido pelo orchestrator principal. @see orchestrator-stage-0-preflight.md (Stage 0).
 ---
 
 > Este arquivo é referenciado por `orchestrator.md` via `@see`. Não executar diretamente.

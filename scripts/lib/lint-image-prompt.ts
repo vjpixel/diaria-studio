@@ -50,7 +50,7 @@ export interface TriggerIssue {
 }
 
 /**
- * Lista de patterns proibidos em qualquer prompt de imagem da Diar.ia.
+ * Lista de patterns proibidos em qualquer prompt de imagem da diar.ia.br.
  * Ordem estável pra output determinístico nos testes.
  *
  * Patterns são intencionalmente generosos — preferimos false-positive

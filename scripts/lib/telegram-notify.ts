@@ -136,7 +136,7 @@ export async function sendTelegramNotification(
  */
 export function formatHaltNotifyMessage(stage: string, reason: string, action: string): string {
   return [
-    `*[Diar.ia] 🛑 PIPELINE PAROU*`,
+    `*[diar.ia.br] 🛑 PIPELINE PAROU*`,
     `STAGE: ${stage}`,
     `MOTIVO: ${reason}`,
     `AÇÃO: ${action}`,

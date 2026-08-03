@@ -3,7 +3,7 @@
  * render-erro-intencional.ts (#911)
  *
  * Concurso "Ache o erro" — cada edição declara 1 erro intencional pros
- * assinantes acharem (sorteio mensal premia com uma caneca da Diar.ia). Pra fechar o
+ * assinantes acharem (sorteio mensal premia com uma caneca da diar.ia.br). Pra fechar o
  * loop:
  *
  *   1. Edição N revela o gabarito do erro da edição N-1 (com nome do
@@ -173,7 +173,7 @@ export function extractRawCurrentNarrative(md: string): string | null {
   // #1099: quando o MD tem o header `**ERRO INTENCIONAL**`, ancorar busca
   // dentro do bloco. Caso contrário, busca global (back-compat com testes
   // que passam só a linha solta). Em ambos os casos, vírgula obrigatória
-  // após "edição" pra evitar matchar "Nessa edição da Diar.ia, usei..."
+  // após "edição" pra evitar matchar "Nessa edição da diar.ia.br, usei..."
   // do bloco PARA ENCERRAR (incident 260512).
   let block = md;
   const headerIdx = md.indexOf("**ERRO INTENCIONAL**");
@@ -188,7 +188,7 @@ export function extractRawCurrentNarrative(md: string): string | null {
   }
 
   // Formato novo (#1079): narrativa livre. Vírgula é obrigatória após
-  // "edição" — evita match em "Nessa edição da Diar.ia" do PARA ENCERRAR (#1099).
+  // "edição" — evita match em "Nessa edição da diar.ia.br" do PARA ENCERRAR (#1099).
   const narrativeRe = /Nessa\s+edi[çc][ãa]o,\s+([^\n]+?)\.\s*(?:\n|$)/i;
   const nm = block.match(narrativeRe);
   if (!nm) return null;

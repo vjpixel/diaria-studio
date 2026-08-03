@@ -194,8 +194,8 @@ describe("stitchNewsletter (#1463)", () => {
       // RADAR deve incluir items das duas categorias (radar + radar)
       assert.match(result, /https:\/\/p\.com\/1/);
       assert.match(result, /https:\/\/n\.com\/1/);
-      // #1702: prêmio do sorteio é caneca da Diar.ia, não livro.
-      assert.match(result, /uma caneca da Diar\.ia/);
+      // #1702: prêmio do sorteio é caneca da diar.ia.br, não livro.
+      assert.match(result, /uma caneca da diar\.ia\.br/);
       assert.doesNotMatch(result, /livro sobre IA/);
       assert.doesNotMatch(result, /sorteio mensal de livros/);
     } finally {

@@ -66,7 +66,7 @@ export function generateTokensContent(colors: typeof COLORS, fonts: typeof FONTS
  * ds-tokens.generated.ts — GERADO AUTOMATICAMENTE. NÃO EDITAR.
  *
  * Gerado por scripts/generate-worker-tokens.ts (#2107) a partir de
- * scripts/lib/shared/design-tokens.ts (fonte canônica do DS Diar.ia).
+ * scripts/lib/shared/design-tokens.ts (fonte canônica do DS diar.ia.br).
  *
  * Para atualizar tokens: editar scripts/lib/shared/design-tokens.ts e rodar:
  *   npx tsx scripts/generate-worker-tokens.ts

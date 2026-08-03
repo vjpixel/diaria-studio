@@ -172,7 +172,7 @@ export function renderReport(stats: StageStats[], generatedAt: Date = new Date()
   const totalOpen = stats.reduce((sum, s) => sum + s.open, 0);
   const totalRecurrence = stats.reduce((sum, s) => sum + s.recurrence_count, 0);
   const lines: string[] = [];
-  lines.push(`# Bug Heatmap — Diar.ia`);
+  lines.push(`# Bug Heatmap — diar.ia.br`);
   lines.push("");
   lines.push(`**Gerado em**: ${generatedAt.toISOString()}`);
   lines.push(`**Total de bugs analisados**: ${totalBugs} (${totalOpen} open)`);

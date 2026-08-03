@@ -326,7 +326,7 @@ function main(): void {
     console.log(JSON.stringify(result, null, 2));
     if (!result.ok) {
       console.error(
-        `\n❌ ${result.errors.length} seção(ões) sem link da página da Diar.ia no LinkedIn (#2458):`,
+        `\n❌ ${result.errors.length} seção(ões) sem link da página da diar.ia.br no LinkedIn (#2458):`,
       );
       for (const e of result.errors) {
         console.error(`  [${e.section}${e.destaque ? `/${e.destaque}` : ""}]: ${e.detail}`);

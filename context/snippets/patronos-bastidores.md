@@ -24,7 +24,7 @@ variante Patronos trata todos os seus slots como boxes planos (ver
 slot 0 padrão (agradecimento-apoiadores.md).
 -->
 
-Bastidores da Diar.ia
+Bastidores da diar.ia.br
 
 Você é Patrono, então aqui vai uma nota que não entra na edição padrão: essa semana testei um novo fluxo de curadoria pra achar histórias fora do radar de quem só olha as redes — ainda em ajuste, mas já rendeu destaques recentes que não teriam aparecido do jeito antigo.
 

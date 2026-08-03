@@ -331,7 +331,7 @@ function main() {
   }
 
   const lines: string[] = [
-    "# Perfil de Audiência — Diar.ia",
+    "# Perfil de Audiência — diar.ia.br",
     "",
     `**updated_at:** ${today}`,
     ...(subscribers > 0 ? [`**subscribers ativos:** ${subscribers}`] : []),

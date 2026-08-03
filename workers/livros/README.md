@@ -1,6 +1,6 @@
 # workers/livros (#1744)
 
-Hosting da página piloto **Livros sobre IA** da Diar.ia. Worker de *static
+Hosting da página piloto **Livros sobre IA** da diar.ia.br. Worker de *static
 assets* (sem script) servindo um único HTML em
 `https://livros.diar.ia.br/` (domínio de marca, #3698) — também acessível via
 `https://livros.diaria.workers.dev/` (mantido por compat de links já

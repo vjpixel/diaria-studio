@@ -1,6 +1,6 @@
 ---
 name: orchestrator-stage-3
-description: Detalhe da Etapa 3 (imagens — É IA? coleta + destaques) do orchestrator Diar.ia. Lido pelo orchestrator principal durante a execução — não é um subagente invocável diretamente.
+description: Detalhe da Etapa 3 (imagens — É IA? coleta + destaques) do orchestrator diar.ia.br. Lido pelo orchestrator principal durante a execução — não é um subagente invocável diretamente.
 ---
 
 > Este arquivo é referenciado por `orchestrator.md` via `@see`. Não executar diretamente.

@@ -1,7 +1,7 @@
 {
   "name": "diaria-dashboard",
   "private": true,
-  "description": "Worker que serve o dashboard de dados operacionais da Diar.ia",
+  "description": "Worker que serve o dashboard de dados operacionais da diar.ia.br",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "dev": "wrangler dev",

@@ -73,7 +73,7 @@ export function resolveBeehiivState(
   return publishMs > now.getTime() ? "scheduled" : "published";
 }
 
-// ─── LinkedIn (formato local Diar.ia, não API LinkedIn) ────────────────────
+// ─── LinkedIn (formato local diar.ia.br, não API LinkedIn) ────────────────────
 
 export interface LinkedInPostLike {
   /** Status local (escrito por publish-linkedin.ts): "draft" | "scheduled" | "published" | "failed". */
@@ -114,7 +114,7 @@ export function resolveLinkedInState(
   return "unknown";
 }
 
-// ─── Facebook (formato local Diar.ia, mesmo shape que LinkedIn) ────────────
+// ─── Facebook (formato local diar.ia.br, mesmo shape que LinkedIn) ────────────
 
 export interface FacebookPostLike {
   status?: string;
@@ -132,7 +132,7 @@ export function resolveFacebookState(
   return resolveLinkedInState(post, now);
 }
 
-// ─── Threads (formato local Diar.ia) ──────────────────────────────────────────
+// ─── Threads (formato local diar.ia.br) ──────────────────────────────────────────
 
 export interface ThreadsPostLike {
   /** Status local (escrito por publish-threads.ts): "published" | "failed". */

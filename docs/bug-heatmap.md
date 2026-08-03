@@ -1,4 +1,4 @@
-# Bug Heatmap — Diar.ia
+# Bug Heatmap — diar.ia.br
 
 **Gerado em**: 2026-07-31T11:56:32.379Z
 **Total de bugs analisados**: 1005 (8 open)

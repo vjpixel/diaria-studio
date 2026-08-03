@@ -50,7 +50,7 @@ criação de assinatura. Padrão apoia.se — **nunca** hardcodar no código.
 |------|----------|------------|
 | `BREVO_API_KEY` | `POST /jogar/identify` (caminho com histórico órfão) | **opcional** — sem ela, `sendMagicLinkEmail` retorna `not_configured`; o merge fica **pendente indefinidamente** até o secret ser configurado (fail-closed do lado do merge — nunca mergeia sem confirmação, mesmo sem secret) |
 | `BREVO_SENDER_EMAIL` (var) | idem | **opcional** — precisa ser um e-mail/domínio verificado na conta Brevo; ausente = mesmo `not_configured` acima |
-| `BREVO_SENDER_NAME` (var) | idem | **opcional** — default `"Diar.ia — É IA?"` quando ausente |
+| `BREVO_SENDER_NAME` (var) | idem | **opcional** — default `"diar.ia.br — É IA?"` quando ausente |
 
 Quando um jogador se identifica (`POST /jogar/identify`) com um e-mail que
 **já tem histórico de ranking sob outro device/token** (nunca confirmado
@@ -104,7 +104,7 @@ openssl rand -hex 32 | npx wrangler secret put COOKIE_HMAC_SECRET
 # (mesma decisão de design; worker/domínio diferentes, não precisa ser único)
 npx wrangler kv namespace create SUBSCRIBERS_KV
 # colar o id retornado em workers/poll/wrangler.toml, seção [[kv_namespaces]]
-# a população é a MESMA de CURSOS_SUBSCRIBERS (assinante ativo da Diar.ia) —
+# a população é a MESMA de CURSOS_SUBSCRIBERS (assinante ativo da diar.ia.br) —
 # pode rodar scripts/sync-cursos-subscribers-kv.ts apontando pra este
 # binding também, ou usar o MESMO namespace id nos dois workers
 ```

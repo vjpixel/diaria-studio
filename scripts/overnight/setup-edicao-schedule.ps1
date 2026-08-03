@@ -55,7 +55,7 @@ $RepoRoot   = (Resolve-Path (Join-Path $ScriptDir "../..")).Path
 $RunnerPath = Join-Path $ScriptDir "run-scheduled-edicao.ps1"
 
 $TaskName   = "Diaria-Edicao-Diaria"
-$TaskDesc   = "Diar.ia: roda /diaria-edicao D+1 de dom-qui 14:00 BRT (Stages 0-3 + pre-render)."
+$TaskDesc   = "diar.ia.br: roda /diaria-edicao D+1 de dom-qui 14:00 BRT (Stages 0-3 + pre-render)."
 
 # ---------------------------------------------------------------------------
 # Guard: garantir que o runner existe no path derivado

@@ -22,7 +22,7 @@ export type { LinkSectionName, LinkSectionMap };
 export const NON_EDITORIAL_LINK_SECTION_LABELS: Record<NonEditorialLinkCategory, string> = {
   "eia-poll": "Enquete É IA?",
   "clarice-parceiro": "Clarice (parceiro)",
-  "produtos-diaria": "Produtos Diar.ia",
+  "produtos-diaria": "Produtos diar.ia.br",
   apoio: "Apoio",
   "redes-sociais": "Redes sociais",
 };
@@ -266,4 +266,4 @@ export function normalizeLinkSectionMap(raw: unknown): LinkSectionMap | null {
  * campanha (`renderLinksSection`) — evita duas cópias do mesmo texto. */
 export const LINK_SECTION_COLUMN_LABEL = "Seção";
 export const LINK_SECTION_COLUMN_TOOLTIP =
-  "Seção editorial do digest MENSAL onde este conteúdo apareceu (Destaques/Use Melhor/Radar nos ciclos atuais; Lançamentos/Pesquisas/Outras Notícias nos ciclos legados 2603-04/2604-05), a partir do prioritized.md do ciclo de envio (#4184). Links de serviço/CTA do e-mail (enquete É IA?, Clarice, produtos Diar.ia, apoio, redes sociais) recebem uma categoria própria (#4405); qualquer outro cai em \"Outros\" — a coluna nunca fica em branco.";
+  "Seção editorial do digest MENSAL onde este conteúdo apareceu (Destaques/Use Melhor/Radar nos ciclos atuais; Lançamentos/Pesquisas/Outras Notícias nos ciclos legados 2603-04/2604-05), a partir do prioritized.md do ciclo de envio (#4184). Links de serviço/CTA do e-mail (enquete É IA?, Clarice, produtos diar.ia.br, apoio, redes sociais) recebem uma categoria própria (#4405); qualquer outro cai em \"Outros\" — a coluna nunca fica em branco.";

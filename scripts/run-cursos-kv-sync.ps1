@@ -5,7 +5,7 @@
 .DESCRIPTION
     Roda `npx tsx scripts/sync-cursos-subscribers-kv.ts` no repo root e loga a
     saida (UTF-8) em data/cursos-subscribers/.kv-sync.log. O script popula
-    `subscriber:{sha256(email)}` -> "1" pra cada assinante ATIVO da Diar.ia --
+    `subscriber:{sha256(email)}` -> "1" pra cada assinante ATIVO da diar.ia.br --
     fonte PRIMARIA de verificacao do gate `?email=` (workers/cursos/src/gate.ts).
 
     O script `sync-cursos-subscribers-kv.ts` (#4052) ja existia mas rodou
