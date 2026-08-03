@@ -28,11 +28,14 @@
  * nenhuma com os slots) declara `runtime: false` no header pra sumir de
  * `listBoxes` — mesmo efeito de exclusão do `README_FILENAME`, mas via campo
  * de conteúdo em vez de nome de arquivo fixo. Escopo DELIBERADAMENTE estreito
- * (opção 1 da issue, não a 2): só a LISTAGEM filtra; `readBox`/`saveBox`
- * continuam funcionando pra esses arquivos se chamados diretamente (edição
- * fora da UI do painel Caixas), e `saveBoxSlots` não valida esse campo — um
- * slot já atribuído a um arquivo `runtime: false` por fora da UI não é
- * rejeitado no save, só deixa de aparecer como opção na lista.
+ * (opção 1 da issue, não a 2): só a LISTAGEM filtra por padrão; `readBox`/
+ * `saveBox` continuam funcionando pra esses arquivos se chamados diretamente
+ * (edição fora da UI do painel Caixas). `saveBoxSlots`, porém, VALIDA esse
+ * campo dentro da Guard 1 (fleet review pré-merge da #4500 apontou o gap: o
+ * dropdown escondia esses arquivos, mas o endpoint de escrita ainda aceitava
+ * um POST direto atribuindo um deles a um slot) — um slot apontando pra um
+ * arquivo `runtime: false` é rejeitado no save com o mesmo shape de erro
+ * `invalid: true` dos demais casos da Guard 1.
  *
  * **Slug válido** = casa `/^[a-z0-9-]+\.md$/` (sem barra, sem `..`, sem
  * maiúscula — a checagem por regex já impede traversal por construção, já
@@ -676,7 +679,9 @@ function normalizeSlotValue(v: string | undefined | null): string {
 /** Escreve a atribuição dos 3 slots de divulgação em `platform.config.json`
  * (#3937). Guards, na ordem em que são checados:
  *   1. cada slot não-vazio precisa ser uma caixa VIVA existente em
- *      `context/snippets/` (não arquivada, não inexistente) — senão o
+ *      `context/snippets/` (não arquivada, não inexistente) E não pode
+ *      declarar `runtime: false` no header (#4500 — documentação/referência,
+ *      não uma caixa de verdade, ex: `intro-campeoes-sorteio.md`) — senão o
  *      `stitch-newsletter` quebraria a montagem da edição;
  *   2. a mesma caixa não pode ocupar 2 slots ao mesmo tempo (injetaria a
  *      mesma divulgação 2× na mesma edição);
@@ -706,13 +711,26 @@ export function saveBoxSlots(
     slot3: normalizeSlotValue(input.slot3),
   };
 
-  // Guard 1: cada slot não-vazio precisa ser uma caixa VIVA existente.
+  // Guard 1: cada slot não-vazio precisa ser uma caixa VIVA existente E não
+  // pode ser `runtime: false` (#4500 — documentação/referência, não uma
+  // caixa de verdade; sem isso, o endpoint de escrita aceitaria por baixo do
+  // pano um arquivo que `listBoxes` já esconde do dropdown por decisão de
+  // produto).
   for (const key of SLOT_KEYS) {
     const slug = values[key];
-    if (slug && (!isValidBoxSlug(slug) || !existsSync(boxFilePath(rootDir, slug)))) {
+    if (!slug) continue;
+    if (!isValidBoxSlug(slug) || !existsSync(boxFilePath(rootDir, slug))) {
       return {
         ok: false,
         error: `a caixa "${slug}" (${key}) não existe em context/snippets/ (ou está arquivada) — atribuição rejeitada`,
+        modifiedAt: null,
+        invalid: true,
+      };
+    }
+    if (isRuntimeExcluded(readFileSync(boxFilePath(rootDir, slug), "utf8"))) {
+      return {
+        ok: false,
+        error: `a caixa "${slug}" (${key}) é documentação/referência (runtime: false), não pode ser atribuída a um slot`,
         modifiedAt: null,
         invalid: true,
       };

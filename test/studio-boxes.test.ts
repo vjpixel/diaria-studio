@@ -1022,6 +1022,10 @@ describe("saveBoxSlots (#3937, pure; slot0 #4290)", () => {
     writeFileSync(join(root, "context", "snippets", "b.md"), "# B");
     writeFileSync(join(root, "context", "snippets", "c.md"), "# C");
     writeFileSync(join(root, "context", "snippets", "z.md"), "# Z");
+    writeFileSync(
+      join(root, "context", "snippets", "runtime-excluded.md"),
+      "<!--\nruntime: false\n-->\n\n# Documentação, não é uma caixa de verdade",
+    );
     mkdirSync(join(root, "context", "snippets", "_arquivo"), { recursive: true });
     writeFileSync(join(root, "context", "snippets", "_arquivo", "arquivada.md"), "# Arquivada");
   });
@@ -1106,6 +1110,20 @@ describe("saveBoxSlots (#3937, pure; slot0 #4290)", () => {
     assert.equal(result.invalid, true);
     assert.match(result.error ?? "", /slot0/);
     assert.equal(readFileSync(join(root, "platform.config.json"), "utf8"), before);
+  });
+
+  it("guard 1 (#4500): rejeita caixa runtime: false, não escreve — fecha o gap apontado pelo fleet review da PR #4502", () => {
+    const before = readFileSync(join(root, "platform.config.json"), "utf8");
+    const result = saveBoxSlots(root, { slot0: "", slot1: "runtime-excluded.md", slot2: "", slot3: "" });
+    assert.equal(result.ok, false);
+    assert.equal(result.invalid, true);
+    assert.match(result.error ?? "", /runtime-excluded\.md/);
+    assert.match(result.error ?? "", /runtime: false/);
+    assert.equal(
+      readFileSync(join(root, "platform.config.json"), "utf8"),
+      before,
+      "não deve escrever quando o slug aponta pra um arquivo runtime: false",
+    );
   });
 
   it("guard 2: rejeita a MESMA caixa em 2 slots, não escreve", () => {
