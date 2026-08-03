@@ -252,10 +252,27 @@ function toCsv(emails: string[]): string {
  * falha alto num typo tipo `--limit fifty` (`Number.isInteger(NaN)` é
  * false, `NaN < 0` também é false — sem essa checagem explícita o typo
  * silenciosamente processaria 0, indistinguível de "pool já verificado").
+ *
+ * PR #4496 review (pr-test-analyzer, achado confirmado ao vivo): o fix acima
+ * fecha só a via "flag totalmente ausente" — mas `--limit=` e `--limit ""`
+ * (valor explicitamente VAZIO, sintaxe `=` documentada em lib/cli-args.ts
+ * #4272) produzem `values["limit"] = ""` (não `undefined`), reabrindo o
+ * MESMO bug (`Number("") === 0`) por uma via diferente. E `--limit` sozinho
+ * no fim de argv (sem valor seguinte) é absorvido em `flags`, não em
+ * `values` — silenciosamente equivalente a "ausente" (processa TUDO), o que
+ * é o footgun oposto mas da mesma família (comportamento que ninguém pediu,
+ * perto de um typo em `--limit`). As duas checagens abaixo fecham ambas.
  */
 export function parseLimitArg(argv: string[]): number | undefined {
-  const limitArg = parseArgs(argv).values["limit"];
+  const parsed = parseArgs(argv);
+  if (parsed.flags.has("limit")) {
+    throw new Error(`--limit foi passado sem valor (ex: "--limit 50") — omita a flag pra processar o pool inteiro.`);
+  }
+  const limitArg = parsed.values["limit"];
   if (limitArg === undefined) return undefined;
+  if (limitArg.trim() === "") {
+    throw new Error(`--limit foi passado com valor vazio (ex: "--limit=" ou "--limit ''") — omita a flag pra processar o pool inteiro, ou passe um inteiro não-negativo.`);
+  }
   const limit = Number(limitArg);
   if (!Number.isInteger(limit) || limit < 0) {
     throw new Error(`--limit deve ser um inteiro não-negativo, recebido "${limitArg}".`);

@@ -135,6 +135,26 @@ describe("parseLimitArg — regressão do achado ao vivo 260802: rodada real pro
   it("--limit fracionário → lança (não é inteiro)", () => {
     assert.throws(() => parseLimitArg(["--limit", "2.5"]), /--limit deve ser um inteiro não-negativo/);
   });
+
+  it('--limit= (valor explícito VAZIO via sintaxe "=") → lança, NÃO reabre o bug original via outra via (PR #4496 review, achado confirmado ao vivo: "--limit=" produzia 0 silenciosamente antes deste fix)', () => {
+    assert.throws(() => parseLimitArg(["--limit="]), /valor vazio/);
+  });
+
+  it('--limit "" (valor explícito VAZIO via espaço) → lança, mesma proteção da sintaxe "="', () => {
+    assert.throws(() => parseLimitArg(["--limit", ""]), /valor vazio/);
+  });
+
+  it('--limit "   " (só espaço) → lança (trim reduz a vazio, mesmo caso que "")', () => {
+    assert.throws(() => parseLimitArg(["--limit", "   "]), /valor vazio/);
+  });
+
+  it("--limit sozinho no fim de argv (sem valor seguinte) → lança, não vira \"ausente\" (que processaria o pool inteiro sem querer)", () => {
+    assert.throws(() => parseLimitArg(["--confirm", "--limit"]), /sem valor/);
+  });
+
+  it("--limit seguido de outra flag (--limit --confirm) → mesmo caso: parseArgs absorve como flag booleana, sem valor → lança", () => {
+    assert.throws(() => parseLimitArg(["--limit", "--confirm"]), /sem valor/);
+  });
 });
 
 describe("verifyOne — chamada HTTP com retry em erro transitório (#4476 item 8, fetch mockado)", () => {
