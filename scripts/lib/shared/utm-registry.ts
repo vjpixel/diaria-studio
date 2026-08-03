@@ -619,16 +619,194 @@ export function findUtmEmitter(id: string): UtmEmitter | undefined {
   return UTM_EMITTERS.find((e) => e.id === id);
 }
 
+// ---------------------------------------------------------------------------
+// SUPERFÍCIES EXTERNAS (#4525) — o link não nasce de código, nasce de um campo
+// de perfil que uma pessoa preenche no painel da plataforma.
+// ---------------------------------------------------------------------------
+
 /**
- * `utm_source` distintos que o CÓDIGO emite hoje, normalizados (lowercase).
- * Usado pelo detector de drift da página `/utms`: um `utm_source` que aparece
- * no Beehiiv e NÃO está aqui é origem não-catalogada ou auto-tag de plataforma
- * (`sendinblue`, o problema original do #2975).
+ * `utm_medium` de toda superfície externa. Existe pra separar o link PARADO no
+ * perfil (permanente) do CTA do post do dia, que usa `organic_social` com o
+ * MESMO `utm_source` — sem essa distinção as duas conversões colapsam na mesma
+ * linha do `/utms`, que é a classe de erro do #4125 item 4.
+ */
+export const EXTERNAL_SURFACE_MEDIUM = "bio";
+
+/**
+ * `utm_campaign` de toda superfície externa — um só, de propósito: a pergunta
+ * que essas entradas respondem ("quanto o link do perfil converte?") é a mesma
+ * em todas, e um campaign por plataforma só fragmentaria a leitura (o
+ * `utm_source` já separa por canal).
+ */
+export const EXTERNAL_SURFACE_CAMPAIGN = "perfil";
+
+/** URL base que toda superfície externa aponta. */
+export const EXTERNAL_SURFACE_BASE_URL = "https://diar.ia.br/";
+
+/**
+ * Uma superfície EXTERNA: campo de bio/site num painel de terceiro, preenchido
+ * à mão. Deliberadamente NÃO é um `UtmEmitter` — aquele tipo exige
+ * `originFile` (path do repo, travado por `test/utm-registry-4041.test.ts`), e
+ * aqui não existe arquivo de origem. Forçar a entrada lá faria o inventário
+ * mentir sobre onde o valor nasce.
+ */
+export interface ExternalUtmSurface {
+  /** Identificador estável — mesma função do `id` de `UtmEmitter`. */
+  id: string;
+  /** Rótulo humano curto. */
+  label: string;
+  /** `utm_source` — nome NU da plataforma (ver nota de `instagram-diaria` abaixo). */
+  source: string;
+  /** `utm_medium` — sempre `EXTERNAL_SURFACE_MEDIUM`. */
+  medium: string;
+  /** `utm_campaign` — sempre `EXTERNAL_SURFACE_CAMPAIGN`. */
+  campaign: string;
+  /** URL do painel onde ESTE campo se edita (o runbook da Fase 3/reconferência). */
+  panelUrl: string;
+  /** Onde exatamente no painel — o campo tem nome diferente em cada plataforma. */
+  field: string;
+  /** Descrição da posição do link do ponto de vista do leitor. */
+  description: string;
+  status: UtmEmitterStatus;
+  /**
+   * Data (YYYY-MM-DD) em que o valor foi de fato aplicado no painel. AUSENTE =
+   * declarado aqui mas ainda não aplicado ao vivo — e nesse estado a ausência
+   * de conversão é ESPERADA, não drift (ver `computeDrift`).
+   */
+  appliedAt?: string;
+}
+
+/**
+ * Inventário das superfícies externas (varredura ao vivo de 260803, #4525).
+ *
+ * Antes desta lista, as 5 estavam invisíveis pro `/utms` e para o detector de
+ * drift — e a varredura achou três convenções incompatíveis vivas ao mesmo
+ * tempo: `utm_source=instagram-diaria`/`facebook-diaria` (sufixo que fatia o
+ * mesmo canal em duas linhas que nunca somam), `utm_campaign=lancamento-2607`
+ * (campanha encerrada em ago/2026, atribuindo cadastro novo a ela pra sempre) e
+ * `utm_campaign=profile` só no X. A unificação aqui é o que torna as 5
+ * comparáveis entre si e contra os emissores de código.
+ */
+export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
+  {
+    id: "perfil-instagram",
+    label: "Instagram — link da bio",
+    source: "instagram",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: EXTERNAL_SURFACE_CAMPAIGN,
+    panelUrl: "https://www.instagram.com/diar.ia.br",
+    field: "Editar perfil → Site",
+    description:
+      "Link da bio do perfil — a única saída clicável do Instagram, onde o app " +
+      "suprime o Referer. Substitui `instagram-diaria`/`lancamento-2607` (#4525).",
+    status: "ativo",
+  },
+  {
+    id: "perfil-facebook",
+    label: "Facebook — campo Site da página",
+    source: "facebook",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: EXTERNAL_SURFACE_CAMPAIGN,
+    panelUrl: "https://www.facebook.com/diar.ia.br",
+    field: "Sobre → Site",
+    description:
+      "Campo Site da página, exibido na seção Links do perfil. O #4295 supunha " +
+      "vazio; a varredura do #4525 achou preenchido com `facebook-diaria`/" +
+      "`lancamento-2607`.",
+    status: "ativo",
+  },
+  {
+    id: "perfil-threads",
+    label: "Threads — link da bio",
+    source: "threads",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: EXTERNAL_SURFACE_CAMPAIGN,
+    panelUrl: "https://www.threads.com/@diar.ia.br",
+    field: "Edit profile → Links → Add link",
+    description:
+      "Único link clicável do perfil do Threads. Estava VAZIO na varredura do " +
+      "#4525 — aqui a ação não foi taggear, foi criar.",
+    status: "ativo",
+  },
+  {
+    id: "perfil-twitter",
+    label: "X — campo Website do perfil",
+    source: "twitter",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: EXTERNAL_SURFACE_CAMPAIGN,
+    panelUrl: "https://x.com/settings/profile",
+    field: "Edit profile → Website",
+    description:
+      "Campo Website do perfil. Já tinha UTM antes do #4525 " +
+      "(`medium=social`/`campaign=profile`) — normalizado pra convenção única; " +
+      "a série perdida tinha 4 seguidores de audiência.",
+    status: "ativo",
+  },
+  {
+    id: "perfil-apoiase",
+    label: "Apoia.se — site da campanha",
+    source: "apoiase",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: EXTERNAL_SURFACE_CAMPAIGN,
+    panelUrl: "https://apoia.se/diaria",
+    field: "Editar campanha → Redes Sociais → Site",
+    description:
+      "Ícone de globo da seção 'Redes Sociais' da página de apoio — era " +
+      "`https://diar.ia.br` cru (#4525). Único `utm_source` novo do lote, e " +
+      "portanto o que exigia a união em `knownUtmSources()`.",
+    status: "ativo",
+  },
+] as const;
+
+/** Busca uma superfície externa por id. `undefined` se não existe. @pure */
+export function findExternalUtmSurface(id: string): ExternalUtmSurface | undefined {
+  return EXTERNAL_UTM_SURFACES.find((s) => s.id === id);
+}
+
+/**
+ * Monta a URL exata a colar no painel da plataforma. `new URL` +
+ * `searchParams.set` (nunca concatenação) pela mesma razão documentada em
+ * `buildBrandSiteUrl` (`workers/poll/src/lib.ts`) e exigida pelo #4295.
+ *
+ * É esta função — não um valor copiado à mão — que a Fase 3 do #4525 usa e que
+ * `docs/utm-superficies-externas.md` reproduz, pra que painel e registry não
+ * possam divergir por erro de digitação.
+ *
+ * @pure
+ */
+export function buildExternalSurfaceUrl(
+  surface: ExternalUtmSurface,
+  baseUrl: string = EXTERNAL_SURFACE_BASE_URL,
+): string {
+  const url = new URL(baseUrl);
+  url.searchParams.set("utm_source", surface.source);
+  url.searchParams.set("utm_medium", surface.medium);
+  url.searchParams.set("utm_campaign", surface.campaign);
+  return url.toString();
+}
+
+/**
+ * `utm_source` distintos que o projeto emite hoje, normalizados (lowercase) —
+ * pelo CÓDIGO (`UTM_EMITTERS`) **e** pelas superfícies externas preenchidas à
+ * mão (`EXTERNAL_UTM_SURFACES`, #4525). Usado pelo detector de drift da página
+ * `/utms`: um `utm_source` que aparece no Beehiiv e NÃO está aqui é origem não
+ * catalogada ou auto-tag de plataforma (`sendinblue`, o problema original do
+ * #2975).
+ *
+ * As duas listas entram juntas de propósito: `apoiase` só existe do lado
+ * externo, e sem a união ele seria acusado de "não catalogado" no exato momento
+ * em que passasse a converter — o mesmo falso positivo que o #4312 corrigiu, na
+ * direção oposta.
  *
  * @pure
  */
 export function knownUtmSources(): string[] {
-  return [...new Set(UTM_EMITTERS.map((e) => e.source.toLowerCase()))].sort();
+  return [
+    ...new Set([
+      ...UTM_EMITTERS.map((e) => e.source.toLowerCase()),
+      ...EXTERNAL_UTM_SURFACES.map((s) => s.source.toLowerCase()),
+    ]),
+  ].sort();
 }
 
 /**
