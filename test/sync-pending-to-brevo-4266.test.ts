@@ -20,6 +20,7 @@ import {
   computeAvailableSlots,
   selectContactsForBackfill,
   loadOriginScores,
+  loadMvVerifiedEmails,
   assertMvGuardAcknowledged,
   type BeehiivPendingSubscription,
   type PendingToIngestEntry,
@@ -115,6 +116,64 @@ describe("computeContactsToIngest — dedup pelo store, nunca pela Beehiiv (#426
     const out = computeContactsToIngest(pending, { contacts: [] });
     assert.equal(out.length, 1);
   });
+
+  it("com verifiedEmails: filtra pra só quem passou no MillionVerifier (#4476 item 8)", () => {
+    const pending: BeehiivPendingSubscription[] = [
+      { id: "sub_1", email: "verificado@b.com" },
+      { id: "sub_2", email: "rejeitado@b.com" },
+      { id: "sub_3", email: "nunca-verificado@b.com" },
+    ];
+    const verified = new Set(["verificado@b.com"]);
+    const out = computeContactsToIngest(pending, { contacts: [] }, verified);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].email, "verificado@b.com");
+  });
+
+  it("verifiedEmails null (default) → sem filtro de MV, comportamento antigo preservado", () => {
+    const pending: BeehiivPendingSubscription[] = [{ id: "sub_1", email: "a@b.com" }];
+    const out = computeContactsToIngest(pending, { contacts: [] }, null);
+    assert.equal(out.length, 1);
+  });
+});
+
+describe("loadMvVerifiedEmails — leitura fail-soft do CSV de verify-pending-emails-mv.ts (#4476 item 8)", () => {
+  it("arquivo ausente → null (nunca lança), loga aviso", () => {
+    const logs: string[] = [];
+    const result = loadMvVerifiedEmails(resolve(process.cwd(), "data/pending-reativacao/__nao-existe__.csv"), (m) => logs.push(m));
+    assert.equal(result, null);
+    assert.ok(logs.some((l) => l.includes("não encontrado")));
+  });
+
+  it("CSV real de 1 coluna só (formato de mv-verified.csv) → parseia certo, não cai no fallback (achado ao vivo 260802: auto-detect de delimitador falha sem vírgula nenhuma no arquivo)", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "mv-verified-test-"));
+    try {
+      const path = resolve(dir, "mv-verified.csv");
+      // Mesmo formato exato que Papa.unparse produz pra 1 coluna (CRLF nas
+      // primeiras linhas, LF na última — reproduz o arquivo real que causou
+      // "Unable to auto-detect delimiting character" sem delimiter:"," explícito).
+      writeFileSync(path, "email\r\nfoo@bar.com\r\nbaz@qux.com\n");
+      const logs: string[] = [];
+      const result = loadMvVerifiedEmails(path, (m) => logs.push(m));
+      assert.deepEqual(result, new Set(["foo@bar.com", "baz@qux.com"]));
+      assert.equal(logs.length, 0, "não deve logar aviso de falha de parse");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("CSV EXISTE mas está malformado (aspas não fechadas) → null igual 'arquivo ausente' (achado #4494: guard e filtro precisam concordar nesse caso)", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "mv-verified-test-"));
+    try {
+      const path = resolve(dir, "mv-verified.csv");
+      writeFileSync(path, 'email\nfoo@bar.com\n"unterminated');
+      const logs: string[] = [];
+      const result = loadMvVerifiedEmails(path, (m) => logs.push(m));
+      assert.equal(result, null, "corpo malformado nunca vira 'sem filtro silencioso' sem log");
+      assert.ok(logs.some((l) => l.includes("falha ao parsear")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("ingestContactToBrevo — cria + verifica por releitura (#4266)", () => {
@@ -166,17 +225,36 @@ describe("ingestContactToBrevo — cria + verifica por releitura (#4266)", () =>
   });
 });
 
-describe("assertMvGuardAcknowledged — guard de MillionVerifier antes de --push (#4476 achado silent-failure-hunter)", () => {
-  it("sem --i-know-this-skips-mv → lança erro explícito nomeando a issue e a flag", () => {
-    assert.throws(() => assertMvGuardAcknowledged([]), /MV batch script ainda não existe.*--i-know-this-skips-mv/s);
+describe("assertMvGuardAcknowledged — guard por COBERTURA, não por 'arquivo existe' (#4494 review: achado convergente de 4 agentes, provado ao vivo contra o repo real)", () => {
+  it("sem --i-know-this-skips-mv e coverage null (nenhuma verificação disponível) → lança erro explícito nomeando a issue e a flag", () => {
+    assert.throws(() => assertMvGuardAcknowledged([], null), /verify-pending-emails-mv\.ts.*--i-know-this-skips-mv/s);
   });
 
   it("sem a flag mesmo com --push presente → ainda lança (a flag exata é o que importa, não --push)", () => {
-    assert.throws(() => assertMvGuardAcknowledged(["--push"]), /--i-know-this-skips-mv/);
+    assert.throws(() => assertMvGuardAcknowledged(["--push"], null), /--i-know-this-skips-mv/);
   });
 
-  it("com --i-know-this-skips-mv → não lança", () => {
-    assert.doesNotThrow(() => assertMvGuardAcknowledged(["--push", "--i-know-this-skips-mv"]));
+  it("com --i-know-this-skips-mv → não lança, mesmo com coverage null", () => {
+    assert.doesNotThrow(() => assertMvGuardAcknowledged(["--push", "--i-know-this-skips-mv"], null));
+  });
+
+  it("cobertura COMPLETA (processedCount >= poolSize > 0) → não lança, MESMO sem a flag", () => {
+    assert.doesNotThrow(() => assertMvGuardAcknowledged(["--push"], { processedCount: 626, poolSize: 626 }));
+  });
+
+  it("cobertura PARCIAL (ex: 2 de 626 — achado ao vivo #4494) → ainda lança, mesmo com o arquivo existindo/parseando bem", () => {
+    assert.throws(
+      () => assertMvGuardAcknowledged(["--push"], { processedCount: 2, poolSize: 626 }),
+      /incompleta.*2 de 626/,
+    );
+  });
+
+  it("processedCount > poolSize (não deveria acontecer, mas não quebra) → passa (>= é inclusivo)", () => {
+    assert.doesNotThrow(() => assertMvGuardAcknowledged(["--push"], { processedCount: 627, poolSize: 626 }));
+  });
+
+  it("poolSize 0 (pool vazio/ilegível) → NUNCA passa sozinho, mesmo com processedCount 0 (evita '0 >= 0' degenerado)", () => {
+    assert.throws(() => assertMvGuardAcknowledged(["--push"], { processedCount: 0, poolSize: 0 }));
   });
 });
 
