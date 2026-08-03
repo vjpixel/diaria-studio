@@ -16,6 +16,7 @@ import assert from "node:assert/strict";
 
 import * as shared from "../scripts/lib/shared/poll-token.ts";
 import * as mirror from "../workers/poll/src/poll-token.ts";
+import type { PollToken } from "../scripts/lib/shared/poll-token.ts";
 
 describe("#4487 — espelho de poll-token.ts não pode driftar", () => {
   it("VOTE_TOKEN_DOMAIN idêntico entre shared/ e o espelho", () => {
@@ -35,12 +36,25 @@ describe("#4487 — espelho de poll-token.ts não pode driftar", () => {
   });
 
   it("pollTokenKvKey / isValidPollTokenFormat / isPollTokenIdentity / extractPollToken — mesma saída pros dois lados", async () => {
-    assert.equal(mirror.pollTokenKvKey("abc"), shared.pollTokenKvKey("abc"));
+    // #4518: pollTokenKvKey agora exige PollToken (branded) — cast explícito,
+    // este teste é sobre o PREFIXO da chave, não sobre validade de forma.
+    assert.equal(mirror.pollTokenKvKey("abc" as PollToken), shared.pollTokenKvKey("abc" as PollToken));
     const token = await shared.computePollToken("s3cr3t", "leitor@example.com");
     assert.equal(mirror.isValidPollTokenFormat(token), shared.isValidPollTokenFormat(token));
     const tokenEmail = `${token}@${shared.VOTE_TOKEN_DOMAIN}`;
     assert.equal(mirror.isPollTokenIdentity(tokenEmail), shared.isPollTokenIdentity(tokenEmail));
     assert.equal(mirror.extractPollToken(tokenEmail), shared.extractPollToken(tokenEmail));
+  });
+
+  it("#4518: classifyPollTokenEmail — mesma saída pros dois lados (not-token-domain/malformed/valid)", async () => {
+    assert.deepEqual(mirror.classifyPollTokenEmail("leitor@example.com"), shared.classifyPollTokenEmail("leitor@example.com"));
+    assert.deepEqual(
+      mirror.classifyPollTokenEmail(`nao-e-hex@${shared.VOTE_TOKEN_DOMAIN}`),
+      shared.classifyPollTokenEmail(`nao-e-hex@${shared.VOTE_TOKEN_DOMAIN}`),
+    );
+    const token = await shared.computePollToken("s3cr3t", "leitor@example.com");
+    const tokenEmail = `${token}@${shared.VOTE_TOKEN_DOMAIN}`;
+    assert.deepEqual(mirror.classifyPollTokenEmail(tokenEmail), shared.classifyPollTokenEmail(tokenEmail));
   });
 
   it("cross-implementação: token gerado pelo shared é reconhecido/extraído pelo espelho e vice-versa", async () => {

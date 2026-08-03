@@ -398,3 +398,44 @@ describe("filterSubscriberReplies — exclusão de automação (#4324)", () => {
     assert.equal(automatedSubjectCount, 0);
   });
 });
+
+// ── #4509: near-miss (possibleStaleAutomatedSubjects) ──────────────────────
+
+describe("filterSubscriberReplies — near-miss de boas-vindas pós-rename (#4509)", () => {
+  it("assunto 'bem-vindo' + marca renomeada (diar.ia.br) que NÃO bate a blacklist exata vira near-miss", () => {
+    const threads = [
+      { thread_id: "1", subject: "Re: Bem-vindo(a) à diar.ia.br!", from: "leitor@x.com", body: "oi" },
+    ];
+    const { automatedSubjectCount, possibleStaleAutomatedSubjects, replies } = filterSubscriberReplies(threads);
+    assert.equal(automatedSubjectCount, 0, "não bate a blacklist EXATA (marca mudou)");
+    assert.equal(possibleStaleAutomatedSubjects.length, 1, "mas deveria acender o sinal de near-miss");
+    assert.equal(possibleStaleAutomatedSubjects[0], "Re: Bem-vindo(a) à diar.ia.br!");
+    // Near-miss é só um WARNING — nunca exclui a reply de verdade.
+    assert.equal(replies.length, 1, "near-miss não deve excluir a reply de replies[]");
+  });
+
+  it("boas-vindas de OUTRA newsletter na mesma caixa (AYA Books) NÃO vira near-miss (sem fragmento de marca)", () => {
+    const threads = [
+      { thread_id: "1", subject: "Re: Bem-vindo ao AYA Books", from: "leitor@x.com", body: "Legal, obrigado!" },
+    ];
+    const { possibleStaleAutomatedSubjects } = filterSubscriberReplies(threads);
+    assert.deepEqual(possibleStaleAutomatedSubjects, []);
+  });
+
+  it("assunto que já bate a blacklist EXATA não duplica como near-miss", () => {
+    const threads = [
+      { thread_id: "1", subject: "Re: Bem-vindo(a) à Diar.ia!", from: "leitor@x.com", body: "oi" },
+    ];
+    const { automatedSubjectCount, possibleStaleAutomatedSubjects } = filterSubscriberReplies(threads);
+    assert.equal(automatedSubjectCount, 1);
+    assert.deepEqual(possibleStaleAutomatedSubjects, [], "já excluído pela blacklist exata — não é 'near-miss'");
+  });
+
+  it("reply de edição normal (sem 'bem-vindo' no assunto) nunca vira near-miss", () => {
+    const threads = [
+      { thread_id: "1", subject: "Re: Diar.ia — 27/07", from: "leitor@x.com", body: "Gostei da edição!" },
+    ];
+    const { possibleStaleAutomatedSubjects } = filterSubscriberReplies(threads);
+    assert.deepEqual(possibleStaleAutomatedSubjects, []);
+  });
+});

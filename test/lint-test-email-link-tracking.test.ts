@@ -1,5 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   extractEmailUrls,
   decodeRedirectWrapper,
@@ -7,6 +12,8 @@ import {
   checkLinkTracking,
   classifyKnownArtifact,
 } from "../scripts/lint-test-email-link-tracking.ts";
+
+const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 describe("extractEmailUrls (#1248)", () => {
   it("extrai hrefs de HTML", () => {
@@ -345,5 +352,90 @@ describe("checkLinkTracking — allowlist de artefatos de test-send não mascara
     assert.equal(r.issues[0].url, "https://real-dead-link.example.com/gone");
     assert.equal(r.skipped.filter((s) => s.reason === "amazon_bot_block").length, 1);
     assert.equal(r.skipped.filter((s) => s.reason === "font_degradation").length, 1);
+  });
+});
+
+// ── #4520: mainCli() --stage via argv (CLI e2e, sem teste até aqui) ────────
+//
+// checkLinkTracking(html, fetch, concurrency, stage) e categorizeUrl(url,
+// stage) já são bem testados diretamente com o argumento explícito acima —
+// mas nada até o #4520 invocava o PROCESSO de verdade pra confirmar que
+// `--stage draft` no argv de fato chega em `stage: "draft"` dentro de
+// mainCli() (`values.stage === "draft" ? "draft" : "delivered"`). Um typo no
+// nome da flag ou na ternária passaria batido pela suíte anterior.
+//
+// Fixture: uma única URL com merge tag literal (`{{ subscriber.email }}`) —
+// só em stage="draft" ela é SKIPADA (reason "merge_tag", sem HEAD real); em
+// qualquer outro valor (incluindo o default "delivered") ela vai pra fila de
+// HEAD. `LINK_TRACKING_TIMEOUT_MS` baixo limita o tempo de qualquer tentativa
+// de rede real a um domínio .invalid (RFC 2606, nunca resolve) — determinístico
+// e rápido, sem depender de rede de verdade pra passar.
+describe("#4520 — mainCli() --stage via argv (CLI e2e)", () => {
+  const SCRIPT = join(PROJECT_ROOT, "scripts", "lint-test-email-link-tracking.ts");
+  // #4520: merge tag SEM espaço (`{{poll_token}}`, forma real usada pelo
+  // diário — ver poll-token.ts) — com espaço (`{{ subscriber.email }}`,
+  // sintaxe Brevo), `extractEmailUrls` produziria uma 2ª URL truncada via o
+  // regex de "URL nua" (que para no 1º espaço), diferente da capturada pelo
+  // regex de href — 2 entradas no Set em vez de 1, poluindo a asserção de
+  // total_urls_checked sem relação nenhuma com o que este teste quer provar
+  // (threading do argv `--stage`).
+  const MERGE_TAG_HTML = '<a href="http://example.invalid/vote?email={{poll_token}}&edition=260801&choice=A">votar</a>';
+
+  function makeEmailFile(html: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "lint-link-tracking-cli-"));
+    const path = join(dir, "email.html");
+    writeFileSync(path, html, "utf8");
+    return path;
+  }
+
+  function runCli(args: string[], envOverrides: Record<string, string> = {}) {
+    return spawnSync(process.execPath, ["--import", "tsx", SCRIPT, ...args], {
+      cwd: PROJECT_ROOT,
+      encoding: "utf8",
+      env: { ...process.env, LINK_TRACKING_TIMEOUT_MS: "200", ...envOverrides },
+    });
+  }
+
+  it("--stage draft: merge tag literal é SKIPADA (reason merge_tag), zero URLs vão pra fila de HEAD", () => {
+    const emailFile = makeEmailFile(MERGE_TAG_HTML);
+    try {
+      const r = runCli(["--email-file", emailFile, "--stage", "draft"]);
+      assert.equal(r.status, 0, `esperava exit 0 (sem blockers): ${r.stderr}`);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.total_urls_checked, 0, "merge tag em stage=draft não deve ir pra fila de HEAD");
+      assert.ok(
+        out.skipped.some((s: { reason: string }) => s.reason === "merge_tag"),
+        `esperava skip com reason "merge_tag": ${JSON.stringify(out.skipped)}`,
+      );
+    } finally {
+      rmSync(dirname(emailFile), { recursive: true, force: true });
+    }
+  });
+
+  it("SEM --stage (default): resolve pra 'delivered' — merge tag NÃO é skipada, vai pra fila de HEAD", () => {
+    const emailFile = makeEmailFile(MERGE_TAG_HTML);
+    try {
+      const r = runCli(["--email-file", emailFile]);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.total_urls_checked, 1, "sem --stage, default deve ser 'delivered' — URL vai pra fila de HEAD, não é skipada");
+      assert.ok(
+        !out.skipped.some((s: { reason: string }) => s.reason === "merge_tag"),
+        `default NÃO deveria skipar como merge_tag: ${JSON.stringify(out.skipped)}`,
+      );
+    } finally {
+      rmSync(dirname(emailFile), { recursive: true, force: true });
+    }
+  });
+
+  it("--stage delivered (explícito): mesmo comportamento do default — confirma a ternária pros 2 valores não-'draft'", () => {
+    const emailFile = makeEmailFile(MERGE_TAG_HTML);
+    try {
+      const r = runCli(["--email-file", emailFile, "--stage", "delivered"]);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.total_urls_checked, 1);
+      assert.ok(!out.skipped.some((s: { reason: string }) => s.reason === "merge_tag"));
+    } finally {
+      rmSync(dirname(emailFile), { recursive: true, force: true });
+    }
   });
 });

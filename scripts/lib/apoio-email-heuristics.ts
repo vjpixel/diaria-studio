@@ -37,10 +37,22 @@
  *       fbartholo vs fabartholo).
  */
 
+/** #4506 item 5: as 4 heurísticas (a-d, ver cabeçalho do módulo) só geram uma
+ * dessas 4 categorias fixas — narrow de `string` livre pra union dá
+ * exhaustiveness check de graça pra um futuro consumidor (ex: painel do
+ * Studio listando candidatos por categoria). O texto legível pro editor
+ * (que antes vivia dentro de `reason`) foi pro campo `detail`, separado. */
+export type EmailMatchReason = "local-part" | "name-in-local-part" | "own-domain" | "typo-variant";
+
 export interface EmailMatchCandidate {
   subscriptionId: string;
   email: string;
-  reason: string;
+  /** Categoria fixa da heurística que gerou o candidato (#4506 item 5). */
+  reason: EmailMatchReason;
+  /** Texto legível pro editor confirmar manualmente — pode embutir dado
+   * dinâmico (ex: o e-mail conhecido que bateu por variação/typo), o que
+   * `reason` sozinho (union fixa) não comporta. */
+  detail: string;
 }
 
 interface CurrentSubscription {
@@ -168,7 +180,8 @@ export function findEmailMatchCandidates(
       candidates.push({
         subscriptionId: sub.subscriptionId,
         email: sub.email,
-        reason: "local-part normalizado (sem pontuação/case) igual a um e-mail já conhecido do contato",
+        reason: "local-part",
+        detail: "local-part normalizado (sem pontuação/case) igual a um e-mail já conhecido do contato",
       });
       continue;
     }
@@ -178,7 +191,8 @@ export function findEmailMatchCandidates(
       candidates.push({
         subscriptionId: sub.subscriptionId,
         email: sub.email,
-        reason: "nome do contato aparece no local-part do e-mail Beehiiv",
+        reason: "name-in-local-part",
+        detail: "nome do contato aparece no local-part do e-mail Beehiiv",
       });
       continue;
     }
@@ -192,7 +206,8 @@ export function findEmailMatchCandidates(
         candidates.push({
           subscriptionId: sub.subscriptionId,
           email: sub.email,
-          reason: "domínio do e-mail Beehiiv parece pessoal e é similar ao nome do contato",
+          reason: "own-domain",
+          detail: "domínio do e-mail Beehiiv parece pessoal e é similar ao nome do contato",
         });
         continue;
       }
@@ -211,7 +226,8 @@ export function findEmailMatchCandidates(
       candidates.push({
         subscriptionId: sub.subscriptionId,
         email: sub.email,
-        reason: `local-part parecido com ${matchedKnown} (possível variação/typo)`,
+        reason: "typo-variant",
+        detail: `local-part parecido com ${matchedKnown} (possível variação/typo)`,
       });
     }
   }

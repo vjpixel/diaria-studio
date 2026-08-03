@@ -58,7 +58,7 @@
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { computePollToken, pollTokenKvKey } from "./lib/shared/poll-token.ts";
+import { computePollToken, pollTokenKvKey, type PollToken } from "./lib/shared/poll-token.ts";
 import { putTextToWorkerKV, type CloudflareKVConfig } from "./lib/cloudflare-kv-upload.ts";
 
 loadProjectEnv(); // #1219 — carrega .env/.env.local antes de ler process.env.
@@ -204,8 +204,11 @@ async function patchSubscriberToken(
   // SÓ o token cru (`item.token`, ver call site) — o nome antigo convidava
   // uma futura edição "combinando com o nome" (ex: reconcatenar o domínio
   // aqui) a ressuscitar silenciosamente o bug de domínio duplicado que
-  // `test/vote-token-e2e-4512.test.ts` existe pra travar.
-  token: string,
+  // `test/vote-token-e2e-4512.test.ts` existe pra travar. #4518: tipado como
+  // `PollToken` (branded), não `string` cru — torna esse mesmo bug (passar
+  // o pseudo-email completo, `computePollTokenEmail`, aqui por engano) um
+  // erro de COMPILAÇÃO, reforçando a defesa que o comentário acima já documenta.
+  token: PollToken,
   opts: ApiOpts,
 ): Promise<void> {
   const base = opts.baseUrl ?? "https://api.beehiiv.com/v2";
@@ -289,7 +292,7 @@ export async function run(args: {
   for await (const page of iterateActiveSubscriptions(apiOpts)) {
     pageNum++;
     total += page.length;
-    const needsPatch: Array<{ id: string; email: string; token: string }> = [];
+    const needsPatch: Array<{ id: string; email: string; token: PollToken }> = [];
 
     for (const sub of page) {
       if (!sub.email || !sub.email.trim()) {

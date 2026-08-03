@@ -128,6 +128,53 @@ describe("#4486 — renderWhatsappShare (HTML)", () => {
     const html = renderWhatsappShare([makeD1()], EDITION);
     assert.match(html, new RegExp(`utm_source=whatsapp.*utm_medium=share.*utm_campaign=${EDITION}|utm_campaign=${EDITION}.*utm_medium=share.*utm_source=whatsapp`));
   });
+
+  // #4519 (achado pr-test-analyzer, PR #4512, gap de baixa prioridade): o
+  // título do D1 nunca foi testado com caracteres especiais no caminho HTML
+  // — buildWhatsappShareLink já cobre URL-encoding (linha 104), mas
+  // renderWhatsappShare tem seu próprio caminho de escaping (esc()) que
+  // nenhum teste exercitava com &/aspas/<tag>.
+  it("#4519: título do D1 com caracteres especiais (&, aspas, <tag>) é escapado — não vaza HTML nem quebra o href adjacente", () => {
+    const dangerousTitle = 'Título com & "aspas" e <tag>';
+    const html = renderWhatsappShare([makeD1({ title: dangerousTitle })], EDITION);
+    assert.ok(!html.includes("<tag>"), "título não deve vazar como tag HTML crua");
+    assert.ok(html.includes("&lt;tag&gt;"), "< e > do título devem virar entidades HTML");
+    assert.ok(html.includes("&amp;"), "& do título deve virar &amp;");
+    assert.ok(html.includes("&quot;"), "aspas do título devem virar &quot;");
+    // O bloco tem 2 <a href> por desenho — o link de assinatura embutido no
+    // texto (diar.ia.br) e o botão "Compartilhar no WhatsApp →" (wa.me) — nenhum
+    // dos dois deve ser contaminado pelo conteúdo do título.
+    const hrefMatches = html.match(/<a href="([^"]*)"/g) ?? [];
+    assert.equal(hrefMatches.length, 2, `esperava exatamente 2 <a href> (assinatura + botão wa.me), achou ${hrefMatches.length}`);
+    assert.ok(
+      hrefMatches.some((h) => /^<a href="https:\/\/diar\.ia\.br/.test(h)),
+      "href do link de assinatura não deve ser contaminado pelo título",
+    );
+    assert.ok(
+      hrefMatches.some((h) => /^<a href="https:\/\/wa\.me\/\?text=/.test(h)),
+      "href do botão wa.me deve continuar apontando pro compartilhamento",
+    );
+  });
+
+  // #4519: nenhum teste até aqui passava um array REALISTA de 2-3 destaques —
+  // `destaques[0]` é uma linha de implementação (risco baixo), mas o
+  // invariante "sempre D1, nunca os outros" era só incidental (só D1 no
+  // array em todo teste).
+  it("#4519: array com [D1, D2, D3] — só o título do D1 aparece no bloco, nunca D2/D3", () => {
+    const d2Title = "Título do destaque 2 — nunca deveria aparecer no bloco WhatsApp";
+    const d3Title = "Título do destaque 3 — idem";
+    const html = renderWhatsappShare(
+      [
+        makeD1(),
+        makeD1({ n: 2, title: d2Title, url: "https://example.com/d2" }),
+        makeD1({ n: 3, title: d3Title, url: "https://example.com/d3" }),
+      ],
+      EDITION,
+    );
+    assert.ok(html.includes(D1_TITLE), "título do D1 deve aparecer no bloco");
+    assert.ok(!html.includes(d2Title), "título do D2 nunca deve aparecer no bloco WhatsApp");
+    assert.ok(!html.includes(d3Title), "título do D3 nunca deve aparecer no bloco WhatsApp");
+  });
 });
 
 describe("#4486 — posição no corpo da newsletter: ANTES de 'Para encerrar'", () => {

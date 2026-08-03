@@ -128,6 +128,49 @@ describe("invariant-checks registry (#1007)", () => {
     assert.equal(entry!.stage, 4);
     assert.equal(entry!.source_issue, "#3951");
   });
+
+  // --- #4516: --phase pre-dispatch exclui regras postDispatchOnly (Stage 5) ---
+
+  it("#4516: social-published-complete e step-5-sentinel-exists são postDispatchOnly", () => {
+    const socialPublished = getRulesForStage(5).find((r) => r.id === "social-published-complete");
+    const step5Sentinel = getRulesForStage(5).find((r) => r.id === "step-5-sentinel-exists");
+    assert.ok(socialPublished !== undefined);
+    assert.ok(step5Sentinel !== undefined);
+    assert.equal(socialPublished!.postDispatchOnly, true);
+    assert.equal(step5Sentinel!.postDispatchOnly, true);
+  });
+
+  it("#4516: getRulesForStage(5, { phase: 'pre-dispatch' }) exclui as 2 regras postDispatchOnly", () => {
+    const preDispatch = getRulesForStage(5, { phase: "pre-dispatch" });
+    const ids = preDispatch.map((r) => r.id);
+    assert.ok(!ids.includes("social-published-complete"), `não deveria incluir social-published-complete: ${ids}`);
+    assert.ok(!ids.includes("step-5-sentinel-exists"), `não deveria incluir step-5-sentinel-exists: ${ids}`);
+    // As demais regras do stage 5 continuam presentes (ex: env vars, sentinel do Stage 4).
+    assert.ok(ids.includes("step-4-sentinel-exists"));
+    assert.ok(ids.includes("facebook-token-set"));
+  });
+
+  it("#4516: getRulesForStage(5) sem opts (ou com opts vazio) continua retornando o conjunto COMPLETO — comportamento de sempre pro §5i", () => {
+    const full = getRulesForStage(5);
+    const fullExplicit = getRulesForStage(5, {});
+    const ids = full.map((r) => r.id);
+    const idsExplicit = fullExplicit.map((r) => r.id);
+    assert.ok(ids.includes("social-published-complete"));
+    assert.ok(ids.includes("step-5-sentinel-exists"));
+    assert.deepEqual(idsExplicit.sort(), ids.sort(), "opts={} deve se comportar igual a omitir opts");
+  });
+
+  it("#4516: --phase pre-dispatch não afeta outros stages (nenhuma regra marcada postDispatchOnly fora do Stage 5)", () => {
+    for (const stage of [0, 1, 2, 3, 4, 6] as const) {
+      const full = getRulesForStage(stage);
+      const preDispatch = getRulesForStage(stage, { phase: "pre-dispatch" });
+      assert.equal(
+        preDispatch.length,
+        full.length,
+        `Stage ${stage}: --phase pre-dispatch não deveria remover nenhuma regra (nenhuma é postDispatchOnly fora do Stage 5)`,
+      );
+    }
+  });
 });
 
 describe("Stage 0 invariants", () => {
@@ -2501,6 +2544,49 @@ describe("CLI --stage N", () => {
       assert.ok(out.rules_run.includes("beehiiv-key-set"));
     } finally {
       rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  // --- #4516: --stage 5 --phase pre-dispatch (CLI e2e) ---
+
+  it("#4516: --stage 5 --phase pre-dispatch nunca roda social-published-complete/step-5-sentinel-exists, mesmo com edição vazia", () => {
+    const fixture = makeFixtureEdition();
+    try {
+      const r = runCli(["--stage", "5", "--phase", "pre-dispatch", "--edition-dir", fixture]);
+      const out = JSON.parse(r.stdout);
+      assert.ok(!out.rules_run.includes("social-published-complete"), `rules_run: ${JSON.stringify(out.rules_run)}`);
+      assert.ok(!out.rules_run.includes("step-5-sentinel-exists"), `rules_run: ${JSON.stringify(out.rules_run)}`);
+      // Nenhuma violation com esses rule ids (as 2 sempre-error do achado #4516).
+      const violationRuleIds = out.violations.map((v: { rule: string }) => v.rule);
+      assert.ok(!violationRuleIds.includes("social-published-exists"));
+      assert.ok(!violationRuleIds.includes("step-5-sentinel-exists"));
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it("#4516: --stage 5 SEM --phase continua rodando o conjunto completo (comportamento de §5i, inalterado)", () => {
+    const fixture = makeFixtureEdition();
+    try {
+      const r = runCli(["--stage", "5", "--edition-dir", fixture]);
+      const out = JSON.parse(r.stdout);
+      assert.ok(out.rules_run.includes("social-published-complete"), `rules_run: ${JSON.stringify(out.rules_run)}`);
+      assert.ok(out.rules_run.includes("step-5-sentinel-exists"), `rules_run: ${JSON.stringify(out.rules_run)}`);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it("#4516 self-review: --phase com valor não reconhecido avisa em stderr e roda o conjunto completo (silent-failure guard)", () => {
+    const fixture = makeFixtureEdition();
+    try {
+      const r = runCli(["--stage", "5", "--phase", "pre-dispach", "--edition-dir", fixture]);
+      assert.match(r.stderr, /--phase "pre-dispach" não reconhecido/);
+      const out = JSON.parse(r.stdout);
+      assert.ok(out.rules_run.includes("social-published-complete"), `rules_run: ${JSON.stringify(out.rules_run)}`);
+      assert.ok(out.rules_run.includes("step-5-sentinel-exists"), `rules_run: ${JSON.stringify(out.rules_run)}`);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
     }
   });
 });

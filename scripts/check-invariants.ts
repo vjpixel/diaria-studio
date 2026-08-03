@@ -17,6 +17,12 @@
  *   npx tsx scripts/check-invariants.ts --stage 1 --edition-dir data/editions/260508
  *   npx tsx scripts/check-invariants.ts --stage 0  # Stage 0 = global, sem editionDir
  *
+ *   # Stage 5 pré-dispatch (§5a, #4516): exclui regras que só passam DEPOIS
+ *   # do dispatch (social-published-complete/step-5-sentinel-exists) — sem
+ *   # isso, rodar o comando ANTES de qualquer publicação sempre retorna
+ *   # essas 2 como "error", mesmo com env vars/imagens 100% corretas.
+ *   npx tsx scripts/check-invariants.ts --stage 5 --phase pre-dispatch --edition-dir data/editions/260508
+ *
  *   # Modo static (rodado em CI ou pre-commit; valida regras estruturais):
  *   npx tsx scripts/check-invariants.ts --static
  *
@@ -331,6 +337,18 @@ async function main(): Promise<void> {
     typeof stageRaw === "string" && /^[0-6]$/.test(stageRaw)
       ? (Number(stageRaw) as 0 | 1 | 2 | 3 | 4 | 5 | 6)
       : undefined;
+  // #4516: --phase pre-dispatch exclui regras postDispatchOnly (hoje só no
+  // Stage 5 — social-published-complete/step-5-sentinel-exists, que só
+  // podem passar DEPOIS que o dispatch já rodou; checá-las em §5a, antes de
+  // qualquer publicação, sempre retorna error). Qualquer outro valor de
+  // --phase (ou ausente) roda o conjunto completo, comportamento de sempre.
+  const phaseRaw = getArg(argv, "phase") || undefined;
+  if (phaseRaw !== undefined && phaseRaw !== "pre-dispatch") {
+    console.warn(
+      `check-invariants: --phase "${phaseRaw}" não reconhecido (esperado "pre-dispatch") — rodando o conjunto completo de regras, sem filtro de fase.`,
+    );
+  }
+  const phase = phaseRaw === "pre-dispatch" ? ("pre-dispatch" as const) : undefined;
 
   if (!isStatic && !editionDir && stage === undefined) {
     console.error(
@@ -353,7 +371,7 @@ async function main(): Promise<void> {
       process.exit(2);
     }
     const editionDirAbs = editionDir ? resolve(ROOT, editionDir) : "";
-    for (const rule of getRulesForStage(stage)) {
+    for (const rule of getRulesForStage(stage, { phase })) {
       if (onlyRule && rule.id !== onlyRule) continue;
       rulesRun.push(rule.id);
       const ruleViolations: InvariantViolation[] = rule.run(editionDirAbs);
