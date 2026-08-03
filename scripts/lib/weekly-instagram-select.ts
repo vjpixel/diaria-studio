@@ -17,15 +17,20 @@
  *      editorial (ângulo Brasil > implicação profissional > diversidade de
  *      categoria).
  *
- * **Por que este arquivo NÃO importa de `weekly-linkedin-*.ts`:** aqueles
- * módulos são de OUTRA skill (`/diaria-linkedin-semanal`, #4456), com
- * múltiplos PRs abertos em paralelo no momento em que este arquivo foi
- * escrito (#4507, #4501, #4495) — importar de lá acoplaria este PR ao
- * estado de merge daqueles, que podem renomear/remover exports a qualquer
- * momento. A duplicação da lógica pura (pequena, testável) é a mesma
- * escolha já registrada em `weekly-linkedin-clicks.ts` para o tipo
- * `WeeklyPostNeedingClicks` ("duplicado aqui de propósito... pra este
- * módulo não puxar os efeitos colaterais de módulo de beehiiv-sync.ts").
+ * O núcleo de ranking/blocklist (itens 1-3 acima) vive em
+ * `weekly-social-click-rank.ts` (#4511 fleet review IMPORTANTE), reusado
+ * também por `weekly-linkedin-select.ts`. Até o #4511, essas funções viviam
+ * duplicadas byte-a-byte nos 2 lados — justificativa original: no momento em
+ * que este arquivo foi escrito havia PRs concorrentes abertos tocando
+ * `weekly-linkedin-select.ts` (#4507, #4501, #4495), e importar de lá
+ * acoplaria este PR ao estado de merge daqueles. Com esses PRs já mergeados
+ * a duplicação deixou de ter justificativa. O que continua SEPARADO por
+ * diferença real de escopo (não movido pro módulo compartilhado):
+ * `extractInstagramCandidates` (parser específico — só destaques, nunca
+ * seções), `toRankedCandidate` (o tipo de entrada difere —
+ * `InstagramRawCandidate` tem `destaqueNumber`; `WeeklyRawCandidate` do
+ * LinkedIn tem `kind`/`section`), e `dedupeCandidatesByUrl` (o LinkedIn
+ * prioriza `kind:"destaque"` sobre `"section"`; aqui só existe destaque).
  *
  * **Por que o pool de candidatos é só DESTAQUE (D1/D2/D3), nunca
  * RADAR/USE MELHOR** (diferente do LinkedIn, que inclui as 4 seções): o
@@ -37,19 +42,31 @@
  * MELHOR vencesse o ranking, não haveria card correto pra mostrar — usar o
  * card do D1 da mesma edição como substituto mostraria o TÍTULO ERRADO
  * (do D1, não da matéria selecionada) embutido na imagem, o que é pior que
- * excluir o candidato. Registrado como scoping decision no PR de #4483 —
- * se o editor quiser RADAR/USE MELHOR competindo aqui também, precisa
- * primeiro gerar card 4:5 pra esses itens (fora do escopo desta issue).
+ * excluir o candidato.
+ *
+ * **Isto é uma LIMITAÇÃO TÉCNICA ATUAL, não uma decisão de escopo aceita
+ * pelo editor** (correção #4511 — a versão anterior desta docstring dizia
+ * "registrado como scoping decision", o que não reflete o que o editor de
+ * fato decidiu): o comentário de resolução do editor na issue #4483 pediu
+ * EXPLICITAMENTE que Radar/Use Melhor competissem no ranking. O editor
+ * aceitou a restrição D1/D2/D3 por ora, mas pediu que isso ficasse
+ * documentado como limitação PENDENTE, não como decisão concordada. Ver
+ * #4513 (issue de follow-up: gerar card 4:5 pra Radar/Use Melhor, depois
+ * remover esta restrição).
  */
 
-import { classifyOrigin } from "../build-link-ctr.ts";
 import { parseDestaques } from "../extract-destaques.ts";
 import {
-  DIARIA_APOIASE_URL,
-  DIARIA_CURSOS_URL,
-  DIARIA_LIVROS_URL,
-  DIARIA_EIA_URL,
-} from "./canonical-urls.ts";
+  isCommercialOrOwnLink,
+  hasSuspiciousCommercialLanguage,
+  withinClickNoise,
+  hasBrazilAngle,
+  hasProfessionalImplication,
+  editorialTiebreakScore,
+  byRateDescThenTitle,
+} from "./weekly-social-click-rank.ts";
+
+export { isCommercialOrOwnLink, hasSuspiciousCommercialLanguage, withinClickNoise, hasBrazilAngle, hasProfessionalImplication, editorialTiebreakScore };
 
 // ─── Extração de candidatos (só destaques — ver docstring do arquivo) ─────
 
@@ -229,71 +246,8 @@ export function uniqueOpensOf(post: BeehiivCachePost | undefined): number {
 
 // ─── Exclusão de links comerciais/próprios ─────────────────────────────────
 //
-// Mesma lista de domínios que `weekly-linkedin-filter.ts` usa (issue #4483:
-// "Excluir do cálculo: blocos de Divulgação e parcerias comerciais,
-// afiliados (Amazon, Wispr Flow, Clarice, Beehiiv), apoia.se, propriedades
-// próprias (cursos., livros., eia., diar.ia.br), links de preferências e
-// descadastro"). Duplicado aqui em vez de importado — ver docstring do
-// arquivo. Se a blocklist mudar num lado, precisa ser replicada no outro
-// manualmente até as duas skills convergirem numa lib compartilhada.
-
-function hostOf(url: string): string | null {
-  try {
-    return new URL(url).hostname.toLowerCase().replace(/^www\./, "");
-  } catch {
-    return null;
-  }
-}
-
-function hostOfConst(u: string): string {
-  return hostOf(u) ?? "";
-}
-
-const OWN_PROPERTY_HOSTS = new Set<string>([
-  hostOfConst(DIARIA_CURSOS_URL),
-  hostOfConst(DIARIA_LIVROS_URL),
-  hostOfConst(DIARIA_EIA_URL),
-  hostOfConst(DIARIA_APOIASE_URL),
-  "cursos.diaria.workers.dev",
-  "livros.diaria.workers.dev",
-  "poll.diaria.workers.dev",
-]);
-
-const AFFILIATE_HOST_PATTERNS: RegExp[] = [
-  /(^|\.)amazon\.com\.br$/i,
-  /^amzn\.to$/i,
-  /^link\.amazon$/i,
-  /(^|\.)wisprflow\.ai$/i,
-  /(^|\.)wispr\.(ai|flow)$/i,
-  /(^|\.)clarice\.ai$/i,
-  /(^|\.)beehiiv\.com$/i,
-];
-
-function isPreferencesOrUnsubscribe(url: string): boolean {
-  return /unsubscribe|preferences|beehiivstatus\.com/i.test(url);
-}
-
-function isBareOwnDomain(host: string): boolean {
-  return host === "diar.ia.br" || host === "diaria.beehiiv.com";
-}
-
-/** Pure: `true` quando `url` é comercial/afiliado/propriedade própria/preferências — nunca conta como matéria. */
-export function isCommercialOrOwnLink(url: string): boolean {
-  const host = hostOf(url);
-  if (!host) return false;
-  if (isBareOwnDomain(host)) return true;
-  if (OWN_PROPERTY_HOSTS.has(host)) return true;
-  if (AFFILIATE_HOST_PATTERNS.some((re) => re.test(host))) return true;
-  if (isPreferencesOrUnsubscribe(url)) return true;
-  return false;
-}
-
-const SUSPICIOUS_COMMERCIAL_RE = /parceria|patrocinad[oa]|divulga[çc][ãa]o|cupom|desconto/i;
-
-/** Pure: heurística de baixa confiança — sinaliza pro gate humano, nunca bloqueia. */
-export function hasSuspiciousCommercialLanguage(text: string): boolean {
-  return SUSPICIOUS_COMMERCIAL_RE.test(text);
-}
+// `isCommercialOrOwnLink`/`hasSuspiciousCommercialLanguage` importados de
+// `weekly-social-click-rank.ts` — ver docstring do arquivo (#4511).
 
 // ─── Ranking + seleção ──────────────────────────────────────────────────────
 
@@ -345,49 +299,9 @@ export function dedupeCandidatesByUrl(candidates: InstagramRankedCandidate[]): I
   return [...byUrl.values()];
 }
 
-/**
- * Pure: `true` quando a diferença de taxa entre `a` e `b` é menor que "o
- * valor de 1 clique" — usa o MAIOR incremento-de-1-clique entre os dois
- * (leitura generosa/conservadora — nunca subestima o ruído). `opens <= 0`
- * em qualquer lado desativa a banda de ruído.
- */
-export function withinClickNoise(a: InstagramRankedCandidate, b: InstagramRankedCandidate): boolean {
-  if (a.opens <= 0 || b.opens <= 0) return a.ratePct === b.ratePct;
-  const oneClickPct = Math.max(100 / a.opens, 100 / b.opens);
-  return Math.abs(a.ratePct - b.ratePct) < oneClickPct;
-}
-
-const PROFESSIONAL_IMPLICATION_RE =
-  /emprego|carreira|trabalh|profiss|mercado de trabalho|curr[ií]culo|vaga|contrata[çc][ãa]o|demiss/i;
-
-/** Pure: heurística de "implicação profissional" — palavra-chave em título/categoria/corpo. */
-export function hasProfessionalImplication(c: InstagramRankedCandidate): boolean {
-  return PROFESSIONAL_IMPLICATION_RE.test(`${c.title} ${c.category} ${c.body}`);
-}
-
-/** Pure: heurística de "ângulo Brasil" — reusa `classifyOrigin` (mesmo classificador do CTR table). */
-export function hasBrazilAngle(c: InstagramRankedCandidate): boolean {
-  let domain = "";
-  try {
-    domain = new URL(c.url).hostname;
-  } catch {
-    // URL ilegível — domain fica vazio, classifyOrigin decide só pelo texto.
-  }
-  return classifyOrigin(`${c.title} ${c.body} ${c.why} ${c.category}`, domain) === "BR";
-}
-
-/** Pure: score do critério editorial de desempate (ângulo Brasil > implicação profissional > diversidade de categoria). */
-export function editorialTiebreakScore(c: InstagramRankedCandidate, alreadySelectedCategories: Set<string>): number {
-  let score = 0;
-  if (hasBrazilAngle(c)) score += 100;
-  if (hasProfessionalImplication(c)) score += 50;
-  if (!alreadySelectedCategories.has(c.category.toUpperCase())) score += 10;
-  return score;
-}
-
-function byRateDescThenTitle(a: InstagramRankedCandidate, b: InstagramRankedCandidate): number {
-  return b.ratePct - a.ratePct || a.title.localeCompare(b.title);
-}
+// `withinClickNoise`, `hasProfessionalImplication`, `hasBrazilAngle`,
+// `editorialTiebreakScore`, `byRateDescThenTitle` importados de
+// `weekly-social-click-rank.ts` — ver docstring do arquivo (#4511).
 
 export interface InstagramSelectionResult {
   /** Candidatos selecionados, em ordem de seleção (1ª posição do carrossel primeiro). */

@@ -236,7 +236,7 @@ de considerar a unidade "pronta" — não código.
 
 | | `/diaria-instagram-semanal` | `/diaria-linkedin-semanal` |
 |---|---|---|
-| Seleção | itens mais clicados (D1/D2/D3, RADAR/USE MELHOR não competem — sem imagem própria) | 3 matérias por taxa de clique (D1/D2/D3/RADAR/USE MELHOR) |
+| Seleção | itens mais clicados (D1/D2/D3; RADAR/USE MELHOR ainda não competem — limitação técnica de asset, não decisão de escopo, ver #4513) | 3 matérias por taxa de clique (D1/D2/D3/RADAR/USE MELHOR) |
 | Cadência | produz sexta, publica sábado | produz domingo, publica segunda |
 | Canal | post social (só Instagram, desde #4483) | newsletter nativa do LinkedIn (perfil pessoal) |
 | Formato | 5 itens curtos, carrossel de imagens | 3 blocos longos + Use Melhor + lista |

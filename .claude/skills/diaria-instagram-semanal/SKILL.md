@@ -29,12 +29,19 @@ atual:
   (D1, D2 ou D3)** — era "os 5 D1, sem ranking por clique, sem re-scoring".
   Dados reais de julho/2026 mostraram o D1 perdendo pra outro destaque da
   própria edição com frequência (ver #4483 pra números). **RADAR e USE
-  MELHOR NÃO competem aqui** (diferente da metodologia irmã do LinkedIn,
-  #4456) — o carrossel do Instagram precisa de um card 4:5 com o TÍTULO do
-  destaque já embutido na imagem (`gen-social-card-4x5.ts`), e só D1/D2/D3
-  têm esse card gerado. Ver `scripts/lib/weekly-instagram-select.ts` pro
-  detalhe completo (inclusive por que isso não é código compartilhado com
-  `weekly-linkedin-select.ts`).
+  MELHOR ainda NÃO competem aqui** (diferente da metodologia irmã do
+  LinkedIn, #4456) — o carrossel do Instagram precisa de um card 4:5 com o
+  TÍTULO do destaque já embutido na imagem (`gen-social-card-4x5.ts`), e só
+  D1/D2/D3 têm esse card gerado hoje. **Isto é uma LIMITAÇÃO TÉCNICA
+  ATUAL, não uma decisão de escopo aceita pelo editor** (correção #4511): o
+  comentário de resolução do editor na issue #4483 pediu explicitamente que
+  Radar/Use Melhor competissem no ranking; o editor aceitou a restrição
+  D1/D2/D3 por ora, mas pediu que ficasse documentada como pendência, não
+  como decisão concordada. Ver #4513 (follow-up: gerar card 4:5 pra
+  Radar/Use Melhor, depois remover esta restrição). Ver
+  `scripts/lib/weekly-instagram-select.ts` pro detalhe completo (inclusive
+  por que o núcleo de ranking É compartilhado com `weekly-linkedin-select.ts`
+  desde o #4511, mesmo com o pool de candidatos ainda divergindo).
 - **Produção sexta/sábado, publicação sábado** — inalterado.
 - **Quantidade: continua 5** (comentário 260802 do #4483) — muda a
   DEFINIÇÃO ("os 5 mais clicados", não "1 por edição"), não o número.
@@ -164,6 +171,15 @@ carrossel parcial).
   demais) — o banner de erro já lista o motivo mais provável.
 - **Nenhum candidato na semana**: nenhum publisher é chamado; reporte isso
   ao editor em vez de publicar um post vazio.
+- **Dado de clique incompleto (#4511)**: se alguma edição da janela estiver
+  ausente do cache local OU algum post ainda não tiver sido enriquecido por
+  link (sintoma exato do Passo 1 — por isso ele existe), o script aborta com
+  um aviso alto a menos que `--force-incomplete-click-data` seja passado
+  explicitamente. Isso é diferente de "seleção materialmente incompleta"
+  acima: aqui o PROBLEMA é confiabilidade do dado (post não-enriquecido
+  entra no ranking com `ratePct: 0`, indistinguível de zero cliques de
+  verdade), não a QUANTIDADE de itens selecionados. Resolva rodando o Passo
+  1 de novo antes de recorrer à flag.
 - **Empate dentro do ruído de 1 clique**: o script já resolve via critério
   editorial (ângulo Brasil > implicação profissional > diversidade de
   categoria) e registra em warnings — mostre esse warning ao editor no gate

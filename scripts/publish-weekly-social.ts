@@ -56,7 +56,8 @@
  * Uso:
  *   npx tsx scripts/publish-weekly-social.ts --saturday 260801 [--schedule]
  *     [--editions-root data/editions] [--time 11:00]
- *     [--no-skip-existing] [--force-incomplete-week] [--manifest-only]
+ *     [--no-skip-existing] [--force-incomplete-week]
+ *     [--force-incomplete-click-data] [--manifest-only]
  *
  * `--saturday` é OBRIGATÓRIO e explícito (mesmo invariante de CLAUDE.md pras
  * skills `/diaria-*`: nunca inferir data de `today()`).
@@ -66,6 +67,17 @@
  * na semana e/ou muita exclusão comercial), o script imprime um aviso
  * impossível de ignorar e ABORTA — a menos que esta flag seja passada,
  * confirmando que a semana curta é legítima (feriado etc.).
+ *
+ * `--force-incomplete-click-data` (#4511 fleet review ALTO): se alguma
+ * edição da janela estiver ausente do cache local de cliques OU algum post
+ * da janela ainda não tiver sido enriquecido por link (`stats.clicks`
+ * vazio apesar de `email.clicks>0`), o script imprime um aviso impossível
+ * de ignorar e ABORTA — a menos que esta flag seja passada. Sem este gate,
+ * um post não-enriquecido entra no ranking com `ratePct: 0` E
+ * `hasClickData: true`, indistinguível de "genuinamente zero cliques" — a
+ * seleção por clique silenciosamente deixa de competir de verdade pra esses
+ * itens. Rode `--manifest-only` + `beehiiv-clicks-enricher` (Passo 1 do
+ * SKILL.md) antes de recorrer à flag.
  *
  * Output: appends em `data/weekly/{saturday}/06-weekly-published.json`.
  */
@@ -141,22 +153,43 @@ export function computeWeeklyScheduledAt(opts: {
 }
 
 /**
- * Lê a URL pública 4x5 (fallback 1x1) do destaque `n` de uma edição, pro
- * card do carrossel. Diferente do `resolvePublicImageUrl` pré-#4483 (que só
- * sabia ler D1), esta versão é paramétrica em `n` porque a seleção por
- * clique pode escolher D1, D2 OU D3 de uma mesma edição.
+ * Variante detalhada de `resolveDestaqueImageUrl` (#4511 fleet review MÉDIO,
+ * silent-failure-hunter): diferencia "JSON corrompido" de "chave/arquivo
+ * genuinamente ausente" — o `catch { return null }` original tratava os dois
+ * casos como idênticos, e a mensagem downstream ("ausente/sem d{n}") engana
+ * o operador no cenário de corrupção (ele re-roda `upload-images-public.ts`
+ * achando que resolve; o problema real pode ser uma race de escrita
+ * concorrente, que re-rodar não conserta).
  */
-export function resolveDestaqueImageUrl(editionDir: string, n: 1 | 2 | 3): string | null {
+function resolveDestaqueImageDetailed(
+  editionDir: string,
+  n: 1 | 2 | 3,
+): { url: string | null; corruptError?: string } {
   const publicImagesPath = resolve(editionDir, "06-public-images.json");
-  if (!existsSync(publicImagesPath)) return null;
+  if (!existsSync(publicImagesPath)) return { url: null };
   try {
     const data = JSON.parse(readFileSync(publicImagesPath, "utf8")) as {
       images?: Record<string, { url?: string }>;
     };
-    return data.images?.[`d${n}_4x5`]?.url ?? data.images?.[`d${n}`]?.url ?? null;
-  } catch {
-    return null;
+    return { url: data.images?.[`d${n}_4x5`]?.url ?? data.images?.[`d${n}`]?.url ?? null };
+  } catch (e: any) {
+    return { url: null, corruptError: e.message };
   }
+}
+
+/**
+ * Lê a URL pública 4x5 (fallback 1x1) do destaque `n` de uma edição, pro
+ * card do carrossel. Diferente do `resolvePublicImageUrl` pré-#4483 (que só
+ * sabia ler D1), esta versão é paramétrica em `n` porque a seleção por
+ * clique pode escolher D1, D2 OU D3 de uma mesma edição.
+ *
+ * Wrapper fino sobre `resolveDestaqueImageDetailed` — mantém a assinatura
+ * `string | null` pros callers que não precisam diferenciar corrupt vs.
+ * missing (ex: chamada direta em teste). `resolveWeeklyImageUrls` abaixo usa
+ * a variante detalhada pra poder distinguir a causa no `reason` reportado.
+ */
+export function resolveDestaqueImageUrl(editionDir: string, n: 1 | 2 | 3): string | null {
+  return resolveDestaqueImageDetailed(editionDir, n).url;
 }
 
 /**
@@ -165,18 +198,29 @@ export function resolveDestaqueImageUrl(editionDir: string, n: 1 | 2 | 3): strin
  * item em vez de 1 por dia da semana). Falha o post inteiro se QUALQUER
  * item não resolver imagem (mesmo racional do #4153: carrossel incompleto é
  * pior que não publicar, porque o texto promete N itens). Retorna qual
- * item (por edição+destaque) falhou, pra auditoria.
+ * item (por edição+destaque) falhou, pra auditoria — `corruptError` presente
+ * quando a causa raiz foi JSON corrompido, em vez de chave genuinamente
+ * ausente (#4511 fleet review MÉDIO).
  */
 export function resolveWeeklyImageUrls(
   items: InstagramRankedCandidate[],
   editionsRoot: string,
-): { ok: true; urls: string[] } | { ok: false; missingEditionDate: string; missingDestaqueNumber: 1 | 2 | 3 } {
+):
+  | { ok: true; urls: string[] }
+  | { ok: false; missingEditionDate: string; missingDestaqueNumber: 1 | 2 | 3; corruptError?: string } {
   const urls: string[] = [];
   for (const item of items) {
     const dir = resolve(editionsRoot, item.editionDate);
-    const url = resolveDestaqueImageUrl(dir, item.destaqueNumber);
-    if (!url) return { ok: false, missingEditionDate: item.editionDate, missingDestaqueNumber: item.destaqueNumber };
-    urls.push(url);
+    const resolved = resolveDestaqueImageDetailed(dir, item.destaqueNumber);
+    if (!resolved.url) {
+      return {
+        ok: false,
+        missingEditionDate: item.editionDate,
+        missingDestaqueNumber: item.destaqueNumber,
+        ...(resolved.corruptError ? { corruptError: resolved.corruptError } : {}),
+      };
+    }
+    urls.push(resolved.url);
   }
   return { ok: true, urls };
 }
@@ -187,10 +231,14 @@ function loadBeehiivCache(beehiivPostsDir: string): BeehiivCachePost[] {
   const out: BeehiivCachePost[] = [];
   for (const f of readdirSync(beehiivPostsDir)) {
     if (f === "index.json" || !f.endsWith(".json")) continue;
+    const filePath = resolve(beehiivPostsDir, f);
     try {
-      out.push(JSON.parse(readFileSync(resolve(beehiivPostsDir, f), "utf8")));
-    } catch {
-      // cache corrompido — ignora (mesmo comportamento de monthly-click-sections.ts / select-linkedin-weekly.ts)
+      out.push(JSON.parse(readFileSync(filePath, "utf8")));
+    } catch (e: any) {
+      // cache corrompido — ignora (mesmo comportamento de monthly-click-sections.ts / select-linkedin-weekly.ts),
+      // mas nomeia o arquivo específico (#4511 fleet review MÉDIO) — sem isso, um cache
+      // corrompido some em silêncio e o operador não sabe qual arquivo investigar.
+      console.warn(`[publish-weekly-social] SKIP cache corrompido: ${filePath} — ${e.message}`);
     }
   }
   return out;
@@ -229,6 +277,10 @@ export async function main(
   const doSchedule = flags.has("schedule");
   const skipExisting = !flags.has("no-skip-existing");
   const forceIncompleteWeek = flags.has("force-incomplete-week"); // herdado do #4101 finding 6
+  // #4511 fleet review ALTO: confirmação explícita pra prosseguir com dado
+  // de clique incompleto (post ausente do cache OU não-enriquecido por
+  // link) — ver gate abaixo, logo após montar `warnings`.
+  const forceIncompleteClickData = flags.has("force-incomplete-click-data");
   const manifestOnly = flags.has("manifest-only");
 
   const { year, month, day } = parseEditionDate(saturday);
@@ -309,6 +361,50 @@ export async function main(
     warnings.push(
       `"${c.title}" (${c.editionDate}) contém linguagem comercial (parceria/patrocinado/divulgação/cupom/desconto) apesar de não estar na blocklist de domínio — confira antes de aprovar.`,
     );
+  }
+
+  // #4511 fleet review ALTO (silent-failure-hunter): dado de clique
+  // NÃO-enriquecido é indistinguível de "genuinamente zero cliques" —
+  // `toRankedCandidate` marca `hasClickData:true` baseado em "o post existe
+  // no cache local" (`windowPosts.has(...)`), não em "o clique POR LINK foi
+  // de fato enriquecido" (`stats.clicks` preenchido). Um post presente mas
+  // não-enriquecido entra no ranking com `ratePct: 0` E `hasClickData: true`
+  // — igual a um post que genuinamente teve zero cliques. Os warnings acima
+  // (`editionsMissingClickData`/`manifest`) documentavam isso mas nunca
+  // bloqueavam — só `WEEKLY_MIN_ITEMS` (contagem) tinha `process.exit(1)` —
+  // e em `--no-gates` ninguém via o warning antes do `--schedule` disparar.
+  // Mesmo rigor (banner + exit(1) a menos de flag explícita) do bloco
+  // WEEKLY_MIN_ITEMS logo abaixo.
+  if (editionsMissingClickData.length > 0 || manifest.length > 0) {
+    const banner = [
+      "",
+      "=".repeat(72),
+      `ATENÇÃO: dado de clique INCOMPLETO para o post semanal de ${saturday}.`,
+      ...(editionsMissingClickData.length > 0
+        ? [`${editionsMissingClickData.length} edição(ões) sem post confirmado no cache Beehiiv: ${editionsMissingClickData.join(", ")}.`]
+        : []),
+      ...(manifest.length > 0
+        ? [
+            `${manifest.length} post(s) da janela ainda sem clicks enriquecidos por link (stats.clicks vazio, ` +
+              `apesar de email.clicks>0): ${manifest.map((m) => m.title || m.id).join(", ")}.`,
+          ]
+        : []),
+      "",
+      "Candidatos dessas edições entram no ranking com ratePct=0 e hasClickData=true —",
+      "indistinguível de 'genuinamente zero cliques'. A seleção por clique NÃO está",
+      "competindo de verdade pra esses itens.",
+      "",
+      forceIncompleteClickData
+        ? "--force-incomplete-click-data presente: prosseguindo mesmo assim (confirmação explícita do editor)."
+        : "Rode --manifest-only, dispatche beehiiv-clicks-enricher (Passo 1 do SKILL.md), e re-rode antes de confiar na seleção. Se esta incompletude for aceitável (edição genuinamente ainda não confirmada, etc.), rode de novo com --force-incomplete-click-data para confirmar e publicar assim mesmo. Sem a flag, o script aborta.",
+      "=".repeat(72),
+      "",
+    ].join("\n");
+    console.error(banner);
+    if (!forceIncompleteClickData) {
+      process.exit(1);
+      return;
+    }
   }
 
   // #4101 self-review finding 6 (semântica ajustada pelo #4483 — ver
@@ -411,9 +507,20 @@ export async function main(
   // resolver imagem (não publica carrossel parcial).
   const resolvedImages = resolveWeeklyImageUrls(items, editionsRoot);
   if (!resolvedImages.ok) {
+    // #4511 fleet review MÉDIO: distingue JSON corrompido (re-rodar
+    // upload-images-public.ts NÃO resolve — investigar race de escrita
+    // concorrente/corrupção de disco) de chave genuinamente ausente
+    // (re-rodar upload-images-public.ts resolve).
+    const reason = resolvedImages.corruptError
+      ? `public_image_json_corrupt:${resolvedImages.missingEditionDate}:${resolvedImages.corruptError}`
+      : `public_image_url_missing:${resolvedImages.missingEditionDate}:d${resolvedImages.missingDestaqueNumber}`;
     console.error(
-      `ERRO instagram/weekly: 06-public-images.json ausente/sem d${resolvedImages.missingDestaqueNumber} pra edição ${resolvedImages.missingEditionDate} ` +
-        `(${resolve(editionsRoot, resolvedImages.missingEditionDate)}) — carrossel de ${items.length} itens cancelado inteiro, não publica parcial.`,
+      resolvedImages.corruptError
+        ? `ERRO instagram/weekly: 06-public-images.json da edição ${resolvedImages.missingEditionDate} ESTÁ CORROMPIDO ` +
+            `(${resolve(editionsRoot, resolvedImages.missingEditionDate)}): ${resolvedImages.corruptError} — re-rodar upload-images-public.ts ` +
+            `NÃO resolve isso; investigue escrita concorrente/corrupção de disco antes. Carrossel de ${items.length} itens cancelado inteiro, não publica parcial.`
+        : `ERRO instagram/weekly: 06-public-images.json ausente/sem d${resolvedImages.missingDestaqueNumber} pra edição ${resolvedImages.missingEditionDate} ` +
+            `(${resolve(editionsRoot, resolvedImages.missingEditionDate)}) — carrossel de ${items.length} itens cancelado inteiro, não publica parcial.`,
     );
     tagAndAppend({
       platform: "instagram",
@@ -421,13 +528,25 @@ export async function main(
       url: null,
       status: "failed",
       scheduled_at: null,
-      reason: `public_image_url_missing:${resolvedImages.missingEditionDate}:d${resolvedImages.missingDestaqueNumber}`,
+      reason,
     });
     return;
   }
 
+  // #4511 fleet review CRÍTICO (silent-failure-hunter): o bookkeeping de
+  // SUCESSO (`tagAndAppend` com status:"scheduled") vive num try/catch
+  // SEPARADO do publish em si. `postToWorkerQueue` falhando é uma falha REAL
+  // de publish (nada foi agendado) — `status:"failed"` é correto. Mas
+  // `tagAndAppend`/`appendSocialPosts` pode lançar por conta própria (lock,
+  // disco cheio, JSON corrompido) DEPOIS do post já ter sido agendado com
+  // sucesso no Worker — nesse caso rotular como "failed" seria FALSO (o post
+  // real não falhou) e escondería do editor que o Instagram já tem o
+  // carrossel na fila. Pior: sem a entrada `status:"scheduled"` em disco, o
+  // guard `skipExisting` (acima) não detecta o sucesso anterior, e um re-run
+  // bem-intencionado agenda um SEGUNDO carrossel duplicado na conta real.
+  let response: { key: string };
   try {
-    const response = await postToWorkerQueue(workerUrl, workerToken, {
+    response = await postToWorkerQueue(workerUrl, workerToken, {
       text: caption,
       image_url: null,
       image_urls: resolvedImages.urls,
@@ -435,11 +554,32 @@ export async function main(
       destaque: "weekly",
       channel: "instagram",
     });
-    tagAndAppend({ platform: "instagram", destaque: "weekly", url: null, status: "scheduled", scheduled_at: scheduledAt, worker_queue_key: response.key });
-    console.log(`OK instagram/weekly — scheduled at ${scheduledAt} (worker_queue_key=${response.key})`);
   } catch (e: any) {
     console.error(`FAILED instagram/weekly: ${e.message}`);
     tagAndAppend({ platform: "instagram", destaque: "weekly", url: null, status: "failed", scheduled_at: null, reason: e.message });
+    console.log(`\n[publish-weekly-social] out_path: ${publishedPath}`);
+    return;
+  }
+
+  console.log(`OK instagram/weekly — scheduled at ${scheduledAt} (worker_queue_key=${response.key})`);
+  try {
+    tagAndAppend({
+      platform: "instagram",
+      destaque: "weekly",
+      url: null,
+      status: "scheduled",
+      scheduled_at: scheduledAt,
+      worker_queue_key: response.key,
+    });
+  } catch (e: any) {
+    // NUNCA mascarar como falha de publish — o post JÁ está agendado no
+    // Worker. Propaga como erro FATAL (não mascarado) pra garantir que o
+    // operador veja isso e não simplesmente re-rode o script.
+    console.error(
+      `\nSCHEDULED mas falhou ao persistir localmente (worker_queue_key=${response.key}): ${e.message} — ` +
+        `NÃO re-rode, isso duplicaria o post.`,
+    );
+    throw e;
   }
 
   console.log(`\n[publish-weekly-social] out_path: ${publishedPath}`);

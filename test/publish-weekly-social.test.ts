@@ -410,7 +410,13 @@ describe("main(): dispatch mockado", () => {
       };
       try {
         await expectMockedExit(
-          () => main(["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule"], { dataRoot }),
+          // #4511 fleet review ALTO: nenhuma edição desta janela tem post no
+          // cache Beehiiv, então o gate de dado de clique incompleto
+          // dispararia ANTES do gate de MIN_ITEMS que este teste quer
+          // exercitar isoladamente — `--force-incomplete-click-data` passa
+          // por aquele gate (banner ainda impresso, sem exit) pra chegar no
+          // gate de contagem sem `--force-incomplete-week`.
+          () => main(["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-click-data"], { dataRoot }),
           1,
         );
       } finally {
@@ -434,7 +440,10 @@ describe("main(): dispatch mockado", () => {
         .reply(200, { queued: true, key: "queue:instagram:1", scheduled_at: "2027-12-25T11:00:00-03:00", destaque: "weekly" }, { headers: { "content-type": "application/json" } });
 
       await main(
-        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        // #4511: sem cache Beehiiv pra 271220 → também precisa de
+        // --force-incomplete-click-data (teste foca no gate de MIN_ITEMS,
+        // não no de dado de clique).
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
         { dataRoot },
       );
 
@@ -455,7 +464,9 @@ describe("main(): dispatch mockado", () => {
       // disableNetConnect() garante que qualquer fetch não-mockado lança —
       // nenhum interceptor registrado de propósito.
       await main(
-        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        // #4511: sem cache Beehiiv pra nenhuma das 2 edições → precisa de
+        // --force-incomplete-click-data pra chegar na checagem de imagem.
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
         { dataRoot },
       );
 
@@ -485,7 +496,8 @@ describe("main(): dispatch mockado", () => {
       });
 
       await main(
-        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        // #4511: sem cache Beehiiv pra 271220 → precisa de --force-incomplete-click-data.
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
         { dataRoot },
       );
 
@@ -507,7 +519,9 @@ describe("main(): dispatch mockado", () => {
       await expectMockedExit(
         () =>
           main(
-            ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+            // #4511: sem cache Beehiiv pra 191230 → precisa de --force-incomplete-click-data
+            // pra chegar na validação de scheduled_at, que é o que este teste cobre.
+            ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
             { dataRoot },
           ),
         1,
@@ -529,13 +543,182 @@ describe("main(): dispatch mockado", () => {
       process.env.DIARIA_LINKEDIN_CRON_TOKEN = "";
 
       await main(
-        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        // #4511: sem cache Beehiiv pra 271220 → precisa de --force-incomplete-click-data.
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
         { dataRoot },
       );
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
       assert.equal(out.posts.find((p: any) => p.platform === "instagram").status, "failed");
       assert.equal(out.posts.find((p: any) => p.platform === "instagram").reason, "worker_not_configured");
+    });
+  });
+
+  describe("gate de dado de clique incompleto (#4511 fleet review ALTO)", () => {
+    it("edição sem post no cache Beehiiv → aborta com banner específico, nenhuma chamada de rede", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dirA = setupEdition(editionsRoot, "271220", [
+        { n: 1, title: "D1", url: "https://exemplo.com/d1" },
+        { n: 2, title: "D2", url: "https://exemplo.com/d2" },
+        { n: 3, title: "D3", url: "https://exemplo.com/d3" },
+      ]);
+      addImageFixture(dirA, 1, "https://cdn.example.com/271220-d1.jpg");
+      addImageFixture(dirA, 2, "https://cdn.example.com/271220-d2.jpg");
+      addImageFixture(dirA, 3, "https://cdn.example.com/271220-d3.jpg");
+      // Nenhum writeCachePost — a edição fica ausente do cache Beehiiv.
+
+      let captured = "";
+      const originalError = console.error;
+      console.error = (...args: unknown[]) => {
+        captured += args.map(String).join(" ") + "\n";
+      };
+      try {
+        await expectMockedExit(
+          () =>
+            main(
+              ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+              { dataRoot },
+            ),
+          1,
+        );
+      } finally {
+        console.error = originalError;
+      }
+      assert.match(captured, /dado de clique INCOMPLETO/);
+      assert.match(captured, /edição\(ões\) sem post confirmado no cache Beehiiv: 271220/);
+      assert.match(captured, /--force-incomplete-click-data/);
+      assert.equal(existsSync(resolve(dataRoot, "weekly")), false);
+    });
+
+    it("post da janela sem clicks enriquecidos (manifest não-vazio) → também bloqueia", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dirA = setupEdition(editionsRoot, "271220", [
+        { n: 1, title: "D1", url: "https://exemplo.com/d1" },
+        { n: 2, title: "D2", url: "https://exemplo.com/d2" },
+        { n: 3, title: "D3", url: "https://exemplo.com/d3" },
+      ]);
+      addImageFixture(dirA, 1, "https://cdn.example.com/271220-d1.jpg");
+      addImageFixture(dirA, 2, "https://cdn.example.com/271220-d2.jpg");
+      addImageFixture(dirA, 3, "https://cdn.example.com/271220-d3.jpg");
+      // Post presente no cache, mas email.clicks>0 com stats.clicks vazio —
+      // sintoma exato de "não-enriquecido" (identifyInstagramPostsNeedingClicks).
+      writeCachePost(dataRoot, "post_1220", {
+        id: "post_1220",
+        title: "Edição 271220",
+        status: "confirmed",
+        publish_date: epochFor("271220"),
+        stats: { email: { clicks: 5, unique_opens: 100 }, clicks: [] },
+      });
+
+      await expectMockedExit(
+        () =>
+          main(
+            ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+            { dataRoot },
+          ),
+        1,
+      );
+      assert.equal(existsSync(resolve(dataRoot, "weekly")), false);
+    });
+
+    it("--force-incomplete-click-data: prossegue mesmo com dado incompleto", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dirA = setupEdition(editionsRoot, "271220", [
+        { n: 1, title: "D1", url: "https://exemplo.com/d1" },
+        { n: 2, title: "D2", url: "https://exemplo.com/d2" },
+        { n: 3, title: "D3", url: "https://exemplo.com/d3" },
+      ]);
+      addImageFixture(dirA, 1, "https://cdn.example.com/271220-d1.jpg");
+      addImageFixture(dirA, 2, "https://cdn.example.com/271220-d2.jpg");
+      addImageFixture(dirA, 3, "https://cdn.example.com/271220-d3.jpg");
+      // Nenhum writeCachePost — a edição fica ausente do cache Beehiiv.
+
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply(200, { queued: true, key: "queue:instagram:1", scheduled_at: "2027-12-25T11:00:00-03:00", destaque: "weekly" }, { headers: { "content-type": "application/json" } });
+
+      await main(
+        [
+          "--saturday",
+          saturdayStr,
+          "--editions-root",
+          editionsRoot,
+          "--schedule",
+          "--force-incomplete-week",
+          "--force-incomplete-click-data",
+        ],
+        { dataRoot },
+      );
+
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      assert.equal(out.posts.find((p: any) => p.platform === "instagram").status, "scheduled");
+    });
+  });
+
+  describe("bookkeeping de sucesso separado do publish (#4511 fleet review CRÍTICO)", () => {
+    it("postToWorkerQueue COM SUCESSO + persistência local falhando → erro FATAL propaga, NUNCA rotulado status:failed", async () => {
+      // Regressão: antes do #4511, `tagAndAppend({status:"scheduled"})` vivia
+      // no MESMO try do `postToWorkerQueue` — se a persistência local
+      // lançasse DEPOIS do post já ter sido agendado com sucesso no Worker,
+      // o erro caía no catch de FALHA DE PUBLISH, que rotulava
+      // `status:"failed"` (mentiroso — o post real foi agendado) e tentava
+      // gravar de novo (mesmo erro, agora sem catch → "Fatal error"). Sem a
+      // entrada `status:"scheduled"` em disco, um re-run bem-intencionado
+      // agendaria um SEGUNDO carrossel duplicado na conta real.
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      writeCachePost(dataRoot, "post_1220", {
+        id: "post_1220",
+        title: "Edição 271220",
+        status: "confirmed",
+        publish_date: epochFor("271220"),
+        stats: {
+          email: { clicks: 1, unique_opens: 100 },
+          clicks: [{ url: "https://exemplo.com/unico", base_url: "https://exemplo.com/unico", email: { unique_verified_clicks: 1 } }],
+        },
+      });
+
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply(200, { queued: true, key: "queue:instagram:1", scheduled_at: "2027-12-25T11:00:00-03:00", destaque: "weekly" }, { headers: { "content-type": "application/json" } });
+
+      // Simula falha de persistência local PÓS-sucesso: `06-weekly-published.json`
+      // é um DIRETÓRIO em vez de arquivo — `appendSocialPosts` lança EISDIR
+      // ao tentar ler/escrever nele, DEPOIS do Worker já ter confirmado o
+      // agendamento (mockado acima). `--no-skip-existing` evita que o guard
+      // de skip-existing tropece nesse mesmo path ANTES da chamada de rede
+      // (o que testaria o cenário errado).
+      const weeklyDir = resolve(dataRoot, "weekly", saturdayStr);
+      mkdirSync(resolve(weeklyDir, "06-weekly-published.json"), { recursive: true });
+
+      let captured = "";
+      const originalError = console.error;
+      console.error = (...args: unknown[]) => {
+        captured += args.map(String).join(" ") + "\n";
+      };
+      try {
+        await assert.rejects(
+          () =>
+            main(
+              ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--no-skip-existing", "--force-incomplete-week"],
+              { dataRoot },
+            ),
+          /EISDIR/,
+          "falha de persistência PÓS-sucesso deveria propagar como erro FATAL (não ser engolida/mascarada)",
+        );
+      } finally {
+        console.error = originalError;
+      }
+      assert.match(captured, /SCHEDULED mas falhou ao persistir localmente/);
+      assert.match(captured, /NÃO re-rode, isso duplicaria o post/);
+      assert.doesNotMatch(captured, /FAILED instagram\/weekly/, "NUNCA deveria cair no branch de falha de publish — o publish teve sucesso");
     });
   });
 });

@@ -64,7 +64,7 @@ describe("extractInstagramCandidates", () => {
     assert.deepEqual(extractInstagramCandidates(md, "260727"), []);
   });
 
-  it("NUNCA extrai itens de RADAR/USE MELHOR, mesmo presentes no markdown (scoping decision — sem card de imagem próprio)", () => {
+  it("NUNCA extrai itens de RADAR/USE MELHOR, mesmo presentes no markdown (limitação técnica atual — sem card 4:5 próprio, não decisão de escopo — ver #4513)", () => {
     const md = [
       "DESTAQUE 1 | Notícias",
       "Título D1",
