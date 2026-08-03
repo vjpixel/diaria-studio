@@ -323,8 +323,15 @@ export function autoStampPublishedJson(
  * já detectamos a publicação (auto-stamp #978), geramos o relatório se faltar.
  * Idempotente (só gera se ausente) e best-effort (falha vira warning, nunca
  * quebra o refresh-dedup). Retorna true quando gerou.
+ *
+ * **#4478: `notify` propaga pro `writeEditionReport` (default `true`,
+ * preserva o comportamento existente — a chamada de produção em `main()`,
+ * abaixo, não passa nada).** Testes que exercitam este caminho podem passar
+ * `notify: false` como defesa em profundidade (ver
+ * `defaultHasCredentials` em `scripts/studio-ui/studio-reports.ts` pro fix
+ * sistêmico equivalente).
  */
-export function ensureEditionReport(editionsRoot: string, post: Post): boolean {
+export function ensureEditionReport(editionsRoot: string, post: Post, notify = true): boolean {
   const edition = publishedAtToEditionDir(post.published_at);
   if (!edition) return false;
   const dirPath = resolve(editionsRoot, edition);
@@ -332,7 +339,7 @@ export function ensureEditionReport(editionsRoot: string, post: Post): boolean {
   const reportPath = resolve(dirPath, "_internal", "edition-report.html");
   if (existsSync(reportPath)) return false; // já existe — não re-gera
   try {
-    const { registered } = writeEditionReport(edition, dirPath, reportPath);
+    const { registered } = writeEditionReport(edition, dirPath, reportPath, notify);
     if (!registered) {
       process.stderr.write(
         `[refresh-dedup] warn: edition-report de ${edition} escrito, mas registro no Studio falhou (#3714) — ver warn de send-edition-report acima\n`,

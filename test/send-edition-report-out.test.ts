@@ -54,11 +54,19 @@ describe("send-edition-report --out (#1579)", () => {
       );
 
       const htmlAbsPath = join(editionDir, "_internal", "edition-report.html");
+      // #4478 achado 1 (defesa em profundidade, fleet review #4383): --no-email
+      // aqui explicitamente — este teste roda a CLI real via spawnSync, então
+      // sem a flag um `npm test` local numa máquina com data/.credentials.json
+      // configurado bateria no Gmail REAL (o fix sistêmico em
+      // defaultHasCredentials/studio-reports.ts já cobre o caso geral, mas
+      // este caller específico também ganha a flag explícita, nunca só uma
+      // camada).
       const r = runCli(
         [
           "--edition", "260529",
           "--edition-dir", editionDir,
           "--out", htmlAbsPath,
+          "--no-email",
         ],
       );
       assert.equal(r.status, 0, r.stderr);
@@ -72,6 +80,44 @@ describe("send-edition-report --out (#1579)", () => {
       const manifestMd5 = readFileSync(manifestPath, "utf8").trim();
       const computedMd5 = createHash("md5").update(html).digest("hex");
       assert.equal(manifestMd5, computedMd5, "manifest md5 should match HTML md5");
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
+
+  it("#4478: --no-email não quebra o fluxo --out (HTML + manifest + registro continuam idênticos)", () => {
+    const { root, editionDir } = makeEditionDir();
+    try {
+      writeFileSync(
+        join(editionDir, "_internal", "stage-status.json"),
+        JSON.stringify({
+          edition: "260529",
+          rows: [],
+          generated_at: new Date().toISOString(),
+        }),
+      );
+
+      const htmlAbsPath = join(editionDir, "_internal", "edition-report.html");
+      const r = runCli([
+        "--edition", "260529",
+        "--edition-dir", editionDir,
+        "--out", htmlAbsPath,
+        "--no-email",
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.ok(existsSync(htmlAbsPath), "HTML file should exist mesmo com --no-email");
+
+      const manifestPath = join(editionDir, "_internal", ".edition-report-md5.txt");
+      assert.ok(existsSync(manifestPath), "md5 manifest deve existir mesmo com --no-email (só o e-mail é suprimido)");
+
+      // #3714: registro no Studio (index.jsonl) não é afetado por --no-email —
+      // só o disparo do e-mail é suprimido. studio_report_url no summary JSON
+      // (stderr) continua presente (registro bem-sucedido), não null.
+      assert.match(
+        r.stderr,
+        /"studio_report_url":\s*"http/,
+        "registro no Studio continua acontecendo com --no-email",
+      );
     } finally {
       rmSync(root, { recursive: true });
     }

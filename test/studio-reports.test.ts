@@ -19,10 +19,15 @@ import {
   getReportById,
   resolveReportHtml,
   renderMarkdownToHtml,
+  buildReportEmail,
+  dispatchReportEmail,
+  defaultHasCredentials,
   reportId,
   isReportKind,
   type ReportEntry,
+  type ReportEmailDeps,
 } from "../scripts/studio-ui/studio-reports.ts";
+import { CREDENTIALS_PATH_TEST_OVERRIDE_ENV } from "../scripts/google-auth.ts"; // #4478 achado 1
 
 let root: string | null = null;
 
@@ -184,6 +189,320 @@ describe("registerReport / listReports (#3714)", () => {
     });
     assert.equal(result?.ok, false);
     assert.ok(result?.error);
+  });
+});
+
+describe("registerReport — e-mail de notificação (#4475)", () => {
+  interface MockCall {
+    to: string;
+    subject: string;
+    body: string;
+  }
+
+  function mockDeps(overrides: Partial<ReportEmailDeps> = {}): { deps: ReportEmailDeps; calls: MockCall[] } {
+    const calls: MockCall[] = [];
+    const deps: ReportEmailDeps = {
+      sendMail: async (to, subject, body) => {
+        calls.push({ to, subject, body });
+        return { id: "msg-1", threadId: "thread-1" };
+      },
+      resolveEditorEmail: () => "vjpixel@gmail.com",
+      hasCredentials: () => true,
+      ...overrides,
+    };
+    return { deps, calls };
+  }
+
+  it("com credencial disponível -> chama sendMail com subject/body corretos (título + link)", async () => {
+    const r = makeRoot();
+    const { deps, calls } = mockDeps();
+    const result = registerReport(
+      r,
+      {
+        kind: "overnight",
+        sessionId: "260720",
+        title: "Diar.ia overnight 260720 — 5 resolvidas, 2 puladas",
+        htmlPath: "data/overnight/260720/report.md",
+      },
+      deps,
+    );
+
+    const dispatch = await result.emailDispatch;
+    assert.equal(dispatch.sent, true);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].to, "vjpixel@gmail.com");
+    assert.match(calls[0].subject, /Diar\.ia overnight 260720 — 5 resolvidas, 2 puladas/);
+    assert.match(calls[0].body, /Diar\.ia overnight 260720 — 5 resolvidas, 2 puladas/);
+    assert.match(calls[0].body, /\/relatorios\/overnight-260720/);
+  });
+
+  it("falha simulada no envio (rede/token) não impede a escrita em index.jsonl", async () => {
+    const r = makeRoot();
+    let attempts = 0;
+    const deps: ReportEmailDeps = {
+      sendMail: async () => {
+        attempts++;
+        throw new Error("Gmail API users.messages.send falhou (401): token expirado");
+      },
+      resolveEditorEmail: () => "vjpixel@gmail.com",
+      hasCredentials: () => true,
+    };
+
+    const result = registerReport(
+      r,
+      { kind: "develop", sessionId: "260802", title: "Develop 260802", htmlPath: "x.md" },
+      deps,
+    );
+
+    // O registro em si (append no index.jsonl) já aconteceu ANTES do envio
+    // ser tentado — nunca reflete falha de e-mail.
+    assert.equal(result.ok, true);
+    assert.equal(result.entry?.id, "develop-260802");
+
+    const dispatch = await result.emailDispatch;
+    assert.equal(dispatch.sent, false);
+    assert.match(dispatch.error ?? "", /token expirado/);
+    assert.equal(attempts, 1); // tentativa de fato ocorreu
+
+    const reports = listReports(r);
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].id, "develop-260802");
+  });
+
+  it("ausência de credencial (sessão cloud) -> sem tentativa de envio, sem erro", async () => {
+    const r = makeRoot();
+    const { deps, calls } = mockDeps({ hasCredentials: () => false });
+
+    const result = registerReport(
+      r,
+      { kind: "edicao", sessionId: "260802", title: "Edição 260802", htmlPath: "x.html" },
+      deps,
+    );
+
+    assert.equal(result.ok, true); // registro não depende de credencial de e-mail
+    const dispatch = await result.emailDispatch;
+    assert.equal(dispatch.sent, false);
+    assert.equal(dispatch.skipped, "no-credentials");
+    assert.equal(dispatch.error, undefined);
+    assert.equal(calls.length, 0); // sendMail nunca chamado
+  });
+
+  it("emailDeps default (sem override): rootDir de teste sem data/.credentials.json -> pula silenciosamente, mesmo padrão de sessão cloud", async () => {
+    const r = makeRoot();
+    const result = registerReport(r, {
+      kind: "edicao",
+      sessionId: "260802",
+      title: "Edição 260802",
+      htmlPath: "x.html",
+    });
+
+    assert.equal(result.ok, true);
+    const dispatch = await result.emailDispatch;
+    assert.equal(dispatch.sent, false);
+    assert.equal(dispatch.skipped, "no-credentials");
+  });
+
+
+  it("registro falha (mkdir impossível) -> emailDispatch resolve sem tentar enviar", async () => {
+    const r = makeRoot();
+    // Mesmo truque do teste de fail-soft acima (linha ~175): arquivo no lugar
+    // do diretório `data` força mkdirSync a falhar.
+    writeFileSync(join(r, "data"), "não é um diretório");
+    const { deps, calls } = mockDeps();
+
+    const result = registerReport(
+      r,
+      { kind: "edicao", sessionId: "260802", title: "x", htmlPath: "x.html" },
+      deps,
+    );
+
+    assert.equal(result.ok, false);
+    const dispatch = await result.emailDispatch;
+    assert.equal(dispatch.sent, false);
+    assert.equal(dispatch.skipped, "register-failed");
+    assert.equal(calls.length, 0);
+  });
+
+  it("#4478: notify=false -> registra normalmente mas NUNCA chama sendMail (nem hasCredentials)", async () => {
+    const r = makeRoot();
+    const hasCredCalls: string[] = [];
+    const { deps, calls } = mockDeps({
+      hasCredentials: (rootDir) => {
+        hasCredCalls.push(rootDir);
+        return true;
+      },
+    });
+
+    const result = registerReport(
+      r,
+      { kind: "edicao", sessionId: "260802", title: "Diar.ia — relatório de edição 260802", htmlPath: "x.html" },
+      deps,
+      false, // notify
+    );
+
+    assert.equal(result.ok, true); // append em index.jsonl continua acontecendo
+    assert.equal(result.entry?.id, "edicao-260802");
+    assert.equal(listReports(r).length, 1);
+
+    const dispatch = await result.emailDispatch;
+    assert.equal(dispatch.sent, false);
+    assert.equal(dispatch.skipped, "notify-disabled");
+    assert.equal(calls.length, 0); // sendMail nunca chamado
+    assert.equal(hasCredCalls.length, 0); // dispatchReportEmail nem chegou a rodar
+  });
+
+  it("#4478: notify=true (default explícito) -> comportamento idêntico a omitir o parâmetro, chama sendMail normalmente", async () => {
+    const r = makeRoot();
+    const { deps, calls } = mockDeps();
+
+    const result = registerReport(
+      r,
+      { kind: "edicao", sessionId: "260802", title: "Diar.ia — relatório de edição 260802", htmlPath: "x.html" },
+      deps,
+      true, // notify explícito
+    );
+
+    const dispatch = await result.emailDispatch;
+    assert.equal(dispatch.sent, true);
+    assert.equal(calls.length, 1);
+  });
+
+  it("#4478: sem passar notify (comportamento pré-existente #4475 preservado) -> continua chamando sendMail", async () => {
+    const r = makeRoot();
+    const { deps, calls } = mockDeps();
+
+    const result = registerReport(
+      r,
+      { kind: "overnight", sessionId: "260802", title: "Diar.ia overnight 260802", htmlPath: "x.md" },
+      deps,
+      // notify omitido -> default true
+    );
+
+    const dispatch = await result.emailDispatch;
+    assert.equal(dispatch.sent, true);
+    assert.equal(calls.length, 1);
+  });
+});
+
+describe("defaultHasCredentials (#4478 achado 1, CRÍTICO — fleet review #4383)", () => {
+  // Testado DIRETO (função pura, sem passar por dispatchReportEmail/
+  // registerReport) — evita qualquer risco de acionar defaultEmailDeps.sendMail
+  // de verdade (que faria uma chamada de rede real à Gmail API se
+  // hasCredentials retornasse true com os deps default).
+  function withOverride(path: string | undefined, fn: () => void): void {
+    const prev = process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+    if (path === undefined) delete process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+    else process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = path;
+    try {
+      fn();
+    } finally {
+      if (prev === undefined) delete process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+      else process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = prev;
+    }
+  }
+
+  it("sem override -> reflete existsSync(rootDir/data/.credentials.json) (ausente numa raiz de teste fresca)", () => {
+    const r = makeRoot();
+    withOverride(undefined, () => {
+      assert.equal(defaultHasCredentials(r), false);
+    });
+  });
+
+  it("com DIARIA_TEST_CREDENTIALS_PATH apontando pra um path que EXISTE -> true, independente do rootDir passado", () => {
+    const r = makeRoot();
+    const overrideDir = mkdtempSync(join(tmpdir(), "studio-reports-creds-override-"));
+    const overridePath = join(overrideDir, "fake-override-creds.json");
+    writeFileSync(overridePath, JSON.stringify({ fake: true }), "utf8");
+    try {
+      withOverride(overridePath, () => {
+        assert.equal(defaultHasCredentials(r), true);
+      });
+    } finally {
+      rmSync(overrideDir, { recursive: true, force: true });
+    }
+  });
+
+  it("com DIARIA_TEST_CREDENTIALS_PATH apontando pra um path que NÃO existe -> false — o override VETA a checagem, nunca cai de volta pro rootDir/data/.credentials.json real (cenário do bug: send-edition-report.ts passa o ROOT real do repo, não o rootDir fake de teste)", () => {
+    const r = makeRoot();
+    withOverride(join(r, "nonexistent-override.json"), () => {
+      assert.equal(defaultHasCredentials(r), false);
+    });
+  });
+});
+
+describe("buildReportEmail — prefixo [Diar.ia] não duplica a marca (#4478)", () => {
+  function mkEntry(overrides: Partial<ReportEntry> = {}): ReportEntry {
+    return {
+      id: "edicao-260802",
+      kind: "edicao",
+      sessionId: "260802",
+      title: "Diar.ia — relatório de edição 260802",
+      htmlPath: "x.html",
+      createdAt: new Date().toISOString(),
+      url: "/relatorios/edicao-260802",
+      ...overrides,
+    };
+  }
+
+  it("título já começa com 'Diar.ia' -> subject usa o título cru, sem prefixo duplicado", () => {
+    const { subject } = buildReportEmail(mkEntry());
+    assert.equal(subject, "Diar.ia — relatório de edição 260802");
+    assert.ok(!subject.startsWith("[Diar.ia] Diar.ia"));
+  });
+
+  it("título NÃO começa com 'Diar.ia' -> prefixo [Diar.ia] continua sendo adicionado", () => {
+    const { subject } = buildReportEmail(mkEntry({ title: "Relatório sem prefixo" }));
+    assert.equal(subject, "[Diar.ia] Relatório sem prefixo");
+  });
+});
+
+describe("buildReportEmail / dispatchReportEmail (#4475)", () => {
+  function mkEntry(overrides: Partial<ReportEntry> = {}): ReportEntry {
+    return {
+      id: "overnight-260720",
+      kind: "overnight",
+      sessionId: "260720",
+      title: "Diar.ia overnight 260720 — 5 resolvidas",
+      htmlPath: "data/overnight/260720/report.md",
+      createdAt: new Date().toISOString(),
+      url: "/relatorios/overnight-260720",
+      ...overrides,
+    };
+  }
+
+  it("buildReportEmail: subject e body carregam o título do relatório + URL", () => {
+    const { subject, body } = buildReportEmail(mkEntry());
+    assert.match(subject, /Diar\.ia overnight 260720 — 5 resolvidas/);
+    assert.match(body, /Diar\.ia overnight 260720 — 5 resolvidas/);
+    assert.match(body, /\/relatorios\/overnight-260720/);
+  });
+
+  it("buildReportEmail respeita STUDIO_REMOTE_URL quando definida (link acessível fora da rede local)", () => {
+    const prevRemote = process.env.STUDIO_REMOTE_URL;
+    process.env.STUDIO_REMOTE_URL = "https://studio.diar.ia.br";
+    try {
+      const { body } = buildReportEmail(mkEntry({ id: "edicao-260802", url: "/relatorios/edicao-260802" }));
+      assert.match(body, /https:\/\/studio\.diar\.ia\.br\/relatorios\/edicao-260802/);
+    } finally {
+      if (prevRemote === undefined) delete process.env.STUDIO_REMOTE_URL;
+      else process.env.STUDIO_REMOTE_URL = prevRemote;
+    }
+  });
+
+  it("dispatchReportEmail: chamado direto (fora de registerReport) também respeita hasCredentials/sendMail injetados", async () => {
+    const calls: Array<{ to: string }> = [];
+    const deps: ReportEmailDeps = {
+      sendMail: async (to) => {
+        calls.push({ to });
+        return { id: "m1", threadId: "t1" };
+      },
+      resolveEditorEmail: () => "editor@example.com",
+      hasCredentials: () => true,
+    };
+    const result = await dispatchReportEmail(makeRoot(), mkEntry(), deps);
+    assert.equal(result.sent, true);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].to, "editor@example.com");
   });
 });
 

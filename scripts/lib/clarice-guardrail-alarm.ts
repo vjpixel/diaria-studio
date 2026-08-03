@@ -12,9 +12,10 @@
  * (campanha agendada na Brevo é IMUTÁVEL — não deleta/desagenda via API
  * depois de "scheduled").
  *
- * Decisão do editor (260727): job roda ~6h após CADA envio (`GUARDRAIL_EVAL_WINDOW_MS`
- * — abertura já estabilizou, ~18h de folga antes do envio seguinte, que sai
- * 06:00 BRT no dia seguinte). Reusa `evaluateArmGuardrails`/`thresholds.ts`
+ * Decisão do editor (260727, janela ajustada pra 10h em #4475): job roda
+ * ~10h após CADA envio (`GUARDRAIL_EVAL_WINDOW_MS` — abertura já estabilizou,
+ * folga antes do envio seguinte, que sai 06:00 BRT no dia seguinte). Reusa
+ * `evaluateArmGuardrails`/`thresholds.ts`
  * (workers/brevo-dashboard/src/experiment-cta.ts) SEM reimplementar limiar —
  * `armMetricsFromCampaign` só adapta o shape de UMA campanha (não um
  * experimento A/B) pro formato `ArmMetrics` que essa função já espera.
@@ -30,8 +31,10 @@ import {
 } from "../../workers/brevo-dashboard/src/experiment-cta.ts";
 import { DEFAULT_HEALTH_THRESHOLDS, type HealthThresholds } from "../../workers/brevo-dashboard/src/thresholds.ts";
 
-/** Janela de espera pós-envio antes de avaliar guardrails (decisão do editor, 260727). */
-export const GUARDRAIL_EVAL_WINDOW_MS = 6 * 60 * 60 * 1000;
+/** Janela de espera pós-envio antes de avaliar guardrails (decisão do editor,
+ * 260727 — 6h originais, ajustada pra 10h em #4475 pra dar mais folga de
+ * estabilização da abertura antes da avaliação). */
+export const GUARDRAIL_EVAL_WINDOW_MS = 10 * 60 * 60 * 1000;
 
 // ─── Adapter: 1 campanha → ArmMetrics (reuso de evaluateArmGuardrails) ──────
 
@@ -78,10 +81,10 @@ export function armMetricsFromCampaign(input: CampaignGuardrailInput): ArmMetric
  * `evaluateArmGuardrails`/`thresholds.ts`.
  *
  * #4131 finding 3: `treatZeroAsBreach: true` — este alarme só avalia campanhas
- * que já cruzaram `GUARDRAIL_EVAL_WINDOW_MS` (~6h pós-envio, ver
+ * que já cruzaram `GUARDRAIL_EVAL_WINDOW_MS` (~10h pós-envio, #4475, ver
  * `isReadyForEvaluation`), então o guard `openRatePct > 0` do path original
  * de `evaluateArmGuardrails` (pensado pra dashboard, dado ainda propagando
- * minutos após o envio) não se aplica aqui — aos 6h, 0% de abertura é falha
+ * minutos após o envio) não se aplica aqui — aos 10h, 0% de abertura é falha
  * real de entrega, o cenário mais catastrófico, e precisa disparar o alarme.
  */
 export function evaluateSendGuardrails(
@@ -93,7 +96,7 @@ export function evaluateSendGuardrails(
 
 // ─── Janela de avaliação + idempotência ─────────────────────────────────────
 
-/** `true` quando `now - sentDate >= windowMs` (default: 6h, decisão do editor). */
+/** `true` quando `now - sentDate >= windowMs` (default: 10h, decisão do editor, #4475). */
 export function isReadyForEvaluation(
   sentDateIso: string,
   now: Date,
@@ -115,7 +118,7 @@ export function emptyGuardrailAlarmState(): GuardrailAlarmState {
 
 /**
  * Filtra, dentre as campanhas ENVIADAS, quais estão prontas pra avaliação
- * (cruzaram a janela de 6h) E ainda não foram avaliadas (idempotência — sem
+ * (cruzaram a janela de 10h, #4475) E ainda não foram avaliadas (idempotência — sem
  * isso, cada execução do job re-alarmaria a mesma campanha indefinidamente).
  */
 export function pickCampaignsPendingEvaluation<T extends { id: number | string; sentDate: string }>(
@@ -218,7 +221,7 @@ export function buildGuardrailAlarmEmail(
   const breaches = describeBreaches(guardrail, thresholds);
   const subject = `[diar.ia.br] Guardrail furado no envio "${campaignName}"`;
   const lines = [
-    `O envio "${campaignName}" fechou com guardrail furado, avaliado ~6h após o disparo:`,
+    `O envio "${campaignName}" fechou com guardrail furado, avaliado ~10h após o disparo:`,
     "",
     ...breaches.map((b) => `- ${b}`),
     "",

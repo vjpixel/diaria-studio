@@ -36,7 +36,15 @@ describe("ensureEditionReport (#1950)", () => {
     const root = tmpRoot();
     const dir = join(root, "260608");
     mkdirSync(join(dir, "_internal"), { recursive: true });
-    const gen = ensureEditionReport(root, post("2026-06-08T09:00:00Z"));
+    // #4478 achado 1 (defesa em profundidade, fleet review #4383): notify:false
+    // explícito — este teste chama ensureEditionReport/writeEditionReport
+    // in-process (sem passar por CLI/--no-email), e `writeReportFile` registra
+    // via `registerReport(ROOT, ...)` usando o `ROOT` REAL do script (nunca o
+    // `root` fake deste teste) — sem a flag, um `npm test` local numa máquina
+    // com data/.credentials.json configurado bateria no Gmail real (o fix
+    // sistêmico em defaultHasCredentials/studio-reports.ts já cobre o caso
+    // geral, mas este caller específico também ganha a flag explícita).
+    const gen = ensureEditionReport(root, post("2026-06-08T09:00:00Z"), false);
     assert.equal(gen, true);
     assert.ok(existsSync(join(dir, "_internal", "edition-report.html")));
     // manifest md5 também escrito (#1579)

@@ -9,7 +9,7 @@
     #4064 fica implementado e testado mas nunca dispara sozinho (achado
     "finding 1" do self-review do PR #4131).
 
-    Cadencia: a avaliacao roda ~6h apos CADA envio (GUARDRAIL_EVAL_WINDOW_MS
+    Cadencia: a avaliacao roda ~10h apos CADA envio (GUARDRAIL_EVAL_WINDOW_MS
     em scripts/lib/clarice-guardrail-alarm.ts), e os envios saem 06:00 BRT.
     Uma execucao diaria as 12:00 BRT ja cobriria o caso, mas 4 em 4h e mais
     robusto contra maquina desligada/execucao perdida -- a idempotencia
@@ -133,7 +133,7 @@ Write-Output ""
 Write-Output "Configuracao:"
 Write-Output "  Wrapper : $WrapperPs1"
 Write-Output "  Repo    : $RepoRoot"
-Write-Output "  Cadencia: a cada 4h (envios saem 06:00 BRT, avaliacao ~6h depois)"
+Write-Output "  Cadencia: a cada 4h (envios saem 06:00 BRT, avaliacao ~10h depois)"
 Write-Output "  Log     : data\clarice-subscribers\.guardrail-alarm.log"
 Write-Output ""
 Write-Output "Verificar: Get-ScheduledTask -TaskName '$TaskName' | Get-ScheduledTaskInfo"

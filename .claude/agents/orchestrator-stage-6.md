@@ -352,13 +352,18 @@ Se ha sinais, disparar agent `auto-reporter` via `Agent` com `edition_dir` e `re
 presente antes de aceitar `--status done` (ver 6b-7). Como o Stage 6 ainda esta `running`
 neste ponto, a linha do stage 6 na propria tabela do report sai sem duracao medida — este
 arquivo e descartavel, **nao e o que vai pro rascunho de e-mail** (isso so acontece em
-6b-8, depois do timer fechar):
+6b-8, depois do timer fechar). **`--no-email` (#4478) e obrigatorio aqui** — sem essa
+flag, `registerReport` (chamado de dentro de `writeReportFile`) dispara o e-mail de
+notificacao (#4475) tambem nesta chamada "descartavel", duplicando o aviso que 6b-8 ja
+manda no fim do pipeline (2 e-mails por edicao, todo dia). A flag so suprime o disparo de
+e-mail — o registro em `index.jsonl` acontece normalmente:
 
 ```bash
 npx tsx scripts/send-edition-report.ts \
   --edition {AAMMDD} \
   --edition-dir {EDITION_DIR}/ \
-  --out {EDITION_DIR}/_internal/edition-report.html
+  --out {EDITION_DIR}/_internal/edition-report.html \
+  --no-email
 ```
 
 ### 6b-7. Marcar Stage 6 `done` (#2800) — fecha o timer da edicao
@@ -409,7 +414,13 @@ imprime o summary JSON em stderr com o campo `studio_report_url`. Ler esse campo
 usar essa URL no "Resumo final" (abaixo) como o link do relatório — **NÃO criar mais draft
 via `mcp__claude_ai_Gmail__create_draft` aqui** (o invariante #1579 antigo — enviar
 `edition-report.html` LITERAL via Gmail — foi removido junto com o call site; o arquivo
-REGENERADO nesta etapa agora só alimenta o registro no Studio, não um e-mail).
+REGENERADO nesta etapa agora só alimenta o registro no Studio, não o antigo draft narrativo
+de e-mail — ver a nota #4478 logo abaixo sobre o novo aviso leve de notificação, #4475).
+
+**Sem `--no-email` aqui, de proposito (#4478).** Esta e a chamada final do pipeline — o
+comando SEM a flag dispara o e-mail de notificacao (#4475) normalmente, avisando o editor
+que o relatorio da edicao esta pronto. So a chamada "descartavel" de 6b-6 suprime (ver
+nota la).
 
 **Falha nao bloqueia** — logar warn e seguir (o registro no Studio já é fail-soft por
 construção; esta nota cobre falha do próprio `send-edition-report.ts`, ex: edition-dir
