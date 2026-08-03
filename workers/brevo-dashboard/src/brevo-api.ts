@@ -893,6 +893,11 @@ export function normalizeEiaEngagement(raw: unknown): EiaEngagementSummary | nul
  * Rampa virou estático) — mas `GET /api/postmaster-spam` continua expondo o
  * campo pra outros consumidores (ex: `scripts/clarice-schedule-ramp.ts`), e
  * sem esta linha ele voltaria a ser descartado silenciosamente pra todos eles.
+ *
+ * `daysWithData`/`daysProbed` (#4541): mesma classe de risco — omitir a
+ * cópia aqui derrubaria silenciosamente o guard de cobertura mínima de
+ * `resolveSpamSignal` pra todo mundo que lê via `GET /api/postmaster-spam`
+ * (`scripts/clarice-schedule-ramp.ts`), mesmo que o KV tenha os campos.
  */
 export function normalizePostmasterSpamEntry(raw: unknown): PostmasterSpamEntry | null {
   if (!raw || typeof raw !== "object") return null;
@@ -904,6 +909,8 @@ export function normalizePostmasterSpamEntry(raw: unknown): PostmasterSpamEntry 
     spamRatePct: s.spamRatePct,
     recordedAt: s.recordedAt,
     producedBy: s.producedBy === "manual" || s.producedBy === "auto" ? s.producedBy : undefined,
+    daysWithData: typeof s.daysWithData === "number" && Number.isFinite(s.daysWithData) ? s.daysWithData : undefined,
+    daysProbed: typeof s.daysProbed === "number" && Number.isFinite(s.daysProbed) ? s.daysProbed : undefined,
   };
 }
 

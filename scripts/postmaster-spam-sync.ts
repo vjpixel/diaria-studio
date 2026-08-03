@@ -187,8 +187,20 @@ export async function collectSpamReadings(
  * type-design-analyzer): um refactor futuro que paralelize/reordene
  * `readings` corromperia `date` em silêncio (a média continuaria certa —
  * soma/contagem é comutativa — só `date` apontaria pro dia errado).
+ *
+ * `daysProbed` (#4541) é o tamanho da janela sondada — vem do chamador
+ * (`daysChecked` em `main()`), não é recalculado aqui. Junto com
+ * `readings.length` (gravado como `daysWithData`), permite `resolveSpamSignal`
+ * degradar pra `indeterminate` quando a cobertura é baixa demais (ex:
+ * incidente de 260803 que originou a issue — só 1/10 dias com leitura válida:
+ * 7 dias 404/não publicados ainda (comportamento esperado, ver docstring do
+ * módulo) + 2 dias com erro HTTP transitório).
  */
-export function buildAveragedEntry(readings: DayReading[], now: Date): PostmasterSpamEntry | null {
+export function buildAveragedEntry(
+  readings: DayReading[],
+  now: Date,
+  daysProbed: number,
+): PostmasterSpamEntry | null {
   if (readings.length === 0) return null;
   const avgRatio = readings.reduce((sum, r) => sum + r.ratio, 0) / readings.length;
   const mostRecent = readings.reduce((latest, r) => (r.apiDate > latest.apiDate ? r : latest), readings[0]);
@@ -197,6 +209,8 @@ export function buildAveragedEntry(readings: DayReading[], now: Date): Postmaste
     spamRatePct: avgRatio * 100,
     recordedAt: now.toISOString(),
     producedBy: "auto",
+    daysWithData: readings.length,
+    daysProbed,
   };
 }
 
@@ -265,7 +279,7 @@ async function main(): Promise<void> {
     );
   }
 
-  const entry = buildAveragedEntry(readings, now);
+  const entry = buildAveragedEntry(readings, now, daysChecked);
 
   if (!entry) {
     // Achado do self-review do #4345 (silent-failure-hunter): esta branch

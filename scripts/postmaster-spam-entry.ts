@@ -34,9 +34,15 @@
  *                  (Google Search Console → "Postmaster Tools" → clarice.ai →
  *                  Reclamações de spam). Ex: 1.02 para 1,02%.
  *   --date YYYY-MM-DD  opcional. Dia a que a leitura se refere (default: hoje,
- *                  data local). Informativo — quem decide a validade da
- *                  leitura é `recordedAt` (sempre "agora"), via
- *                  `POSTMASTER_STALE_MS` em thresholds.ts (48h).
+ *                  data local). NÃO é só informativo (#4541): a validade da
+ *                  leitura é decidida por DOIS guards em thresholds.ts —
+ *                  `recordedAt` (sempre "agora" neste script) via
+ *                  `POSTMASTER_STALE_MS` (48h) E este `--date` via
+ *                  `POSTMASTER_DATA_STALE_MS` (5 dias). Um `--date` de mais de
+ *                  5 dias atrás vira `indeterminate` mesmo com `recordedAt`
+ *                  fresco — relevante pra quem usa este fallback manual
+ *                  durante uma indisponibilidade da API pra registrar a
+ *                  leitura de um dia passado do painel.
  *   --dry-run      computa e imprime o JSON, mas NÃO grava no KV.
  *
  * Env:

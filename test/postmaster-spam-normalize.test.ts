@@ -64,3 +64,45 @@ describe("normalizePostmasterSpamEntry — producedBy passa pelo boundary do KV 
     );
   });
 });
+
+// #4544 (achado code-reviewer, confidence 84): `daysWithData`/`daysProbed`
+// (#4541) são a MESMA classe de risco que `producedBy` acima — omitir a
+// cópia em `normalizePostmasterSpamEntry` derrubaria silenciosamente o guard
+// de cobertura mínima de `resolveSpamSignal` pra todo mundo que lê via
+// `GET /api/postmaster-spam` (ex: `scripts/clarice-schedule-ramp.ts`), mesmo
+// que o KV tenha os campos. Espelha os casos de `producedBy` acima.
+describe("normalizePostmasterSpamEntry — daysWithData/daysProbed passam pelo boundary do KV (#4541, #4544)", () => {
+  it("daysWithData/daysProbed presentes e numéricos são preservados", () => {
+    const entry = normalizePostmasterSpamEntry({
+      date: "2026-07-30",
+      spamRatePct: 0.05,
+      recordedAt: "2026-07-30T09:00:00.000Z",
+      daysWithData: 3,
+      daysProbed: 10,
+    });
+    assert.equal(entry?.daysWithData, 3);
+    assert.equal(entry?.daysProbed, 10);
+  });
+
+  it("daysWithData/daysProbed ausentes (entry manual ou pré-#4541) viram undefined, nunca inferidos", () => {
+    const entry = normalizePostmasterSpamEntry({
+      date: "2026-07-30",
+      spamRatePct: 0.05,
+      recordedAt: "2026-07-30T09:00:00.000Z",
+    });
+    assert.equal(entry?.daysWithData, undefined);
+    assert.equal(entry?.daysProbed, undefined);
+  });
+
+  it("daysWithData/daysProbed não-numéricos (payload corrompido) não são confiados cegamente", () => {
+    const entry = normalizePostmasterSpamEntry({
+      date: "2026-07-30",
+      spamRatePct: 0.05,
+      recordedAt: "2026-07-30T09:00:00.000Z",
+      daysWithData: "três",
+      daysProbed: NaN,
+    });
+    assert.equal(entry?.daysWithData, undefined);
+    assert.equal(entry?.daysProbed, undefined);
+  });
+});

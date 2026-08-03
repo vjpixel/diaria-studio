@@ -61,3 +61,60 @@ test("checkSemaphore: GET 2xx bem-formado mas sem envio maduro -> indeterminate/
   assert.equal(result.ok, true);
   assert.equal(result.semaphore, "indeterminate");
 });
+
+// ---------------------------------------------------------------------------
+// #4544 (achado pr-test-analyzer): este arquivo cobre o guard D4 — mesmo
+// subsistema do #4541 (recordedAt fresco não é suficiente pra confiar numa
+// leitura do Postmaster, `date` também precisa estar fresco) — e um
+// consumidor real de produção (`/diaria-clarice-novos`) — mas não tinha
+// nenhum caso exercitando o path de spam do Postmaster de ponta a ponta
+// (parecia cair sempre no `.catch(() => null)` de `fetchPostmasterSpamEntry`
+// dentro de `checkSemaphore`). Reproduz o cenário exato do incidente 260803
+// através de `checkSemaphore`, confirmando que o guard trata a leitura como
+// indeterminate/não-confiável (semáforo nunca escalona a verde às cegas),
+// não como se fosse dado fresco só porque `recordedAt` é recente.
+// ---------------------------------------------------------------------------
+
+test("checkSemaphore: recordedAt fresco mas date stale (#4541) -> semáforo trata leitura como indeterminate, nunca confia nela cegamente", async () => {
+  const now = new Date();
+  const matureSentDate = new Date(now.getTime() - 72 * 60 * 60 * 1000).toISOString(); // >48h maduro
+  const staleDate = new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10); // 10 dias atrás, além de POSTMASTER_DATA_STALE_MS (5d)
+  const healthyCampaign = {
+    name: "cold 4541-test",
+    subject: "x",
+    status: "sent",
+    sentDate: matureSentDate,
+    scheduledAt: null,
+    createdAt: matureSentDate,
+    recipients: { lists: [1] },
+    statistics: {
+      globalStats: {
+        sent: 1000, delivered: 990, hardBounces: 2, softBounces: 1, uniqueViews: 300, viewed: 300,
+        trackableViews: 300, uniqueClicks: 50, clickers: 40, unsubscriptions: 1, complaints: 0, appleMppOpens: 10,
+      },
+    },
+  };
+  const fetchImpl = (async (url: string | URL) => {
+    const u = String(url);
+    if (u.includes("/api/campaigns")) {
+      return new Response(JSON.stringify([healthyCampaign]), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (u.includes("/api/postmaster-spam")) {
+      // Reproduz o estado exato do incidente 260803: gravado AGORA
+      // (recordedAt), mas medindo um dia de 10 dias atrás (date).
+      return new Response(
+        JSON.stringify({ entry: { spamRatePct: 0.02, recordedAt: now.toISOString(), date: staleDate } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+
+  const result = await checkSemaphore("https://fake-dashboard", 50, fetchImpl);
+  assert.equal(result.ok, true);
+  // saúde boa em tudo (campanha saudável) + spam indeterminate (date stale)
+  // → o teto é "yellow" (mantém volume, nunca escalona à cegas) — se o guard
+  // tivesse voltado a confiar em `recordedAt` fresco sozinho, isto teria
+  // resolvido "green" (spamRatePct=0,02% é bem abaixo do breaker).
+  assert.equal(result.semaphore, "yellow");
+});
