@@ -64,6 +64,7 @@ import {
   BrevoRateLimitError,
   BrevoUpstreamError, // #4251
   isBrevoOutageStatus, // #4251
+  isNetworkOrTimeoutError, // #4533
   buildUpstreamErrorFallback, // #4251
   buildUpstreamErrorCampaignsJsonFallback, // #4251
   upstreamErrorResponse, // #4251
@@ -239,12 +240,51 @@ async function buildCampaignsResponse(
       if (fallback) return fallback;
       return upstreamErrorResponse(e.status, false);
     }
+    // #4533: erro de rede/timeout CRU do fetch() nativo pra api.brevo.com
+    // (TypeError com mensagem de rede conhecida -- falha de conexão/DNS/TLS
+    // -- ou AbortError/TimeoutError de um timeout) NUNCA carrega `.status`
+    // HTTP (nenhuma Response chegou a existir), então nunca é (nem pode ser)
+    // BrevoUpstreamError/BrevoRateLimitError -- antes deste guard caía
+    // direto no 502 genérico abaixo, mesmo com um stale bom disponível no
+    // KV. Mesma categoria "não sabemos se é nosso bug, serve o stale se
+    // tiver" que 403/5xx estruturado já cobre acima (#4251). Ver issue
+    // #4533: `clarice-check-semaphore.ts` (guard D4 de
+    // `/diaria-clarice-novos`) viu ~90% de 502 nesta rota numa janela em que
+    // `curl` direto pro mesmo endpoint respondia 200 o tempo todo --
+    // consistente com esta lacuna (não confirmado por log direto ainda -- ver
+    // console.error abaixo, adicionado por este PR pra confirmar em
+    // produção).
+    if (isNetworkOrTimeoutError(e)) {
+      // Achado do fleet review pré-merge (PR #4540, CRITICAL): logar SEMPRE
+      // que este guard disparar, com ou sem stale disponível -- antes, o log
+      // só rodava no caminho SEM fallback (mais raro). No caminho comum
+      // (stale disponível), a request voltava 200 silenciosamente, então um
+      // bug de programação sem relação com rede que por acaso lançasse
+      // TypeError (mascarado por engano como "erro de rede" se
+      // `isNetworkOrTimeoutError` não fosse estreito -- ver docstring dela)
+      // ficaria com ZERO log até o KV expirar (`LASTGOOD_TTL`, até 24h) ou o
+      // bug ser corrigido por outro motivo.
+      console.error(
+        "[#4533] /api/campaigns: erro de rede/timeout no fetch pra Brevo:",
+        e instanceof Error ? (e.stack ?? e.message) : String(e),
+      );
+      const fallback = await buildUpstreamErrorCampaignsJsonFallback(env, limit, "network_error");
+      if (fallback) return fallback;
+      // Sem stale bom pra servir: cai no 502 genérico abaixo -- fail-honesto,
+      // não há dado bom pra mascarar a falha. Critério de aceite (#4533,
+      // "Sugestão de investigação" itens 1-2): logar o erro cru + servir o
+      // fallback stale quando disponível; sem stale, nunca inventar dado.
+    }
     // #4187: `e` nem sempre é um Error (fetch nativo/dependência externa pode
     // lançar qualquer valor) -- (e as Error).message em cima de um não-Error
     // é `undefined`, e o `${...}` template literal aceita isso sem lançar
     // (interpola a string "undefined"). Mantido defensivo mesmo assim para
     // consistência com o guard equivalente abaixo (buildDashboardResponse),
     // onde o mesmo padrão ALIMENTA escHtml() e lá sim pode lançar.
+    console.error(
+      "[#4533] /api/campaigns: sem fallback estruturado pra este erro -- servindo 502:",
+      e instanceof Error ? (e.stack ?? e.message) : String(e),
+    );
     return new Response(`Brevo fetch error: ${e instanceof Error ? e.message : String(e)}`, { status: 502 });
   } finally {
     if (lockAcquired) await releaseRefreshLock(env, path);
