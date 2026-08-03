@@ -146,8 +146,15 @@ export function computeHeadlineCap(editionsFound: number): number {
 export interface WeeklySelectionResult {
   /** Candidatos selecionados como manchete, em ordem de seleção (1ª = D1 do LinkedIn, etc). */
   selected: WeeklyRankedCandidate[];
-  /** TODOS os candidatos elegíveis (não-excluídos), ranqueados — auditoria. */
-  ranked: WeeklyRankedCandidate[];
+  /**
+   * TODOS os candidatos elegíveis PRA MANCHETE (não-excluídos,
+   * não-use_melhor — #4492), ranqueados — auditoria. Nome distinto do pool
+   * COMPLETO (todas as seções, incluindo use_melhor) usado por
+   * `selectUseMelhor` em `select-linkedin-weekly.ts` — os dois eram chamados
+   * `ranked` até o #4507, risco real de troca acidental (compilaria limpo,
+   * `selectUseMelhor` sempre retornaria `undefined` em silêncio).
+   */
+  headlineEligible: WeeklyRankedCandidate[];
   /** Candidatos excluídos (comercial/afiliado/própria) — auditoria. */
   excluded: WeeklyRankedCandidate[];
   warnings: string[];
@@ -156,11 +163,26 @@ export interface WeeklySelectionResult {
 /**
  * Seleciona as manchetes da semana por taxa de clique, com desempate
  * editorial dentro do ruído de 1 clique (ver `withinClickNoise`). Pure.
+ *
+ * #4492: candidatos de `section === "use_melhor"` NUNCA competem por
+ * manchete, mesmo quando têm a maior taxa de clique da semana — ficam
+ * reservados exclusivamente pro bloco Use Melhor dedicado (`selectUseMelhor`,
+ * que roda DEPOIS escolhendo só entre os `use_melhor` restantes). Sem essa
+ * exclusão, o melhor candidato Use Melhor virava manchete e o próprio bloco
+ * Use Melhor caía pra um candidato mais fraco por exclusão — mesmo padrão do
+ * filtro `excluded` (comercial/afiliado/própria) já aplicado abaixo.
+ * Trade-off desta implementação (ver #4492 — issue documenta o trade-off e
+ * segue ABERTA até este PR fechar via "Closes #4492"; a pergunta de design
+ * mais ampla sobre se USE MELHOR deveria competir por manchete continua sem
+ * decisão formal do editor, que só sinalizou deferência — "mantendo aberto
+ * pra decisão do editor" — não aprovação deste trade-off específico): em
+ * semanas com poucos candidatos não-use_melhor de clique real, a manchete #3
+ * pode cair pro desempate editorial.
  */
 export function selectHeadlines(candidatesIn: WeeklyRankedCandidate[], maxHeadlines: number): WeeklySelectionResult {
   const deduped = dedupeCandidatesByUrl(candidatesIn);
   const excluded = deduped.filter((c) => c.excluded);
-  const eligible = deduped.filter((c) => !c.excluded).sort(byRateDescThenTitle);
+  const eligible = deduped.filter((c) => !c.excluded && c.section !== "use_melhor").sort(byRateDescThenTitle);
 
   const selected: WeeklyRankedCandidate[] = [];
   const selectedCategories = new Set<string>();
@@ -209,10 +231,15 @@ export function selectHeadlines(candidatesIn: WeeklyRankedCandidate[], maxHeadli
     warnings.push(`Semana com ${maxHeadlines} edição(ões) disponível(is) — reduzindo pra ${maxHeadlines} manchete(s) em vez de 3.`);
   }
   if (selected.length < maxHeadlines) {
-    warnings.push(`Só ${selected.length}/${maxHeadlines} candidatos elegíveis encontrados (após exclusão comercial/própria).`);
+    const useMelhorSkipped = deduped.filter((c) => !c.excluded && c.section === "use_melhor").length;
+    const commercialSkipped = excluded.length;
+    warnings.push(
+      `Só ${selected.length}/${maxHeadlines} candidatos elegíveis encontrados ` +
+        `(${commercialSkipped} excluído(s) por comercial/própria, ${useMelhorSkipped} reservado(s) pro bloco Use Melhor).`,
+    );
   }
 
-  return { selected, ranked: eligible, excluded, warnings };
+  return { selected, headlineEligible: eligible, excluded, warnings };
 }
 
 /**

@@ -217,3 +217,22 @@ describe("Fatia 1 (#4424) — sem a grafia antiga 'Diar.ia' na superfície do le
     }
   });
 });
+
+/**
+ * Fatia 2 (superfície do editor) — sem guard próprio dedicado (ver header do
+ * módulo: "mecânico, baixo risco de regressão"). Essa suposição furou uma vez:
+ * `scripts/studio-ui/studio-reports.ts` reintroduziu "Diar.ia" (subject de
+ * e-mail pro editor) via PR #4478, mergeado DEPOIS da Fatia 2/3 (#4481) já ter
+ * fechado o diretório inteiro. Protege pontualmente o arquivo que já
+ * regrediu — não um guard de diretório inteiro (baixo volume, resto da Fatia
+ * 2 permanece coberto só pela disciplina mecânica, ver `PROTECTED_DIRS`
+ * acima pro padrão equivalente na Fatia 1 caso o volume justifique escalar).
+ */
+const FATIA_2_PROTECTED_FILES: string[] = ["scripts/studio-ui/studio-reports.ts"];
+
+describe("Fatia 2 (#4424) — regressão pontual pós-merge (#4478, e-mail de relatório pro editor)", () => {
+  it("scripts/studio-ui/studio-reports.ts não reintroduz 'Diar.ia' (achado 260803, ver buildReportEmail)", () => {
+    const v = collectViolations(FATIA_2_PROTECTED_FILES);
+    assert.deepEqual(v, [], `Grafia antiga da marca encontrada:\n  ${v.join("\n  ")}`);
+  });
+});

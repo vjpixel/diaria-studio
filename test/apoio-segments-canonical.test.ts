@@ -21,6 +21,8 @@ import {
   isSegmentConverged,
   computeSegmentDrift,
   allSegmentsConverged,
+  evaluateSegmentCountGate,
+  type SegmentMemberCounts,
 } from "../scripts/lib/apoio-segments-canonical.ts";
 
 describe("APOIO_SEGMENTS_CANONICAL (#4436)", () => {
@@ -149,5 +151,52 @@ describe("computeSegmentDrift + allSegmentsConverged (#4436)", () => {
     const drift = computeSegmentDrift([]); // nenhum segmento ao vivo
     assert.equal(drift.length, 6);
     assert.ok(drift.every((d) => d.converged === false && d.live === null));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// evaluateSegmentCountGate (#4485 item 1 — gate do Passo 4)
+// ---------------------------------------------------------------------------
+
+describe("evaluateSegmentCountGate (#4485 item 1)", () => {
+  const CONVERGED: SegmentMemberCounts = { amigo: 3, apoiador: 8, mantenedor: 4, patrono: 1, todos: 16, nenhum: 546 };
+
+  it("estado real confirmado em 260802 (#4485): soma bate, base bate → ok", () => {
+    const gate = evaluateSegmentCountGate(CONVERGED, 562);
+    assert.equal(gate.ok, true);
+    assert.equal(gate.sumOfTiers, 16);
+    assert.equal(gate.tiersMatchTodos, true);
+    assert.equal(gate.totalMatchesActiveBase, true);
+  });
+
+  it("soma das 4 faixas ≠ Todos (refresh não pegou num segmento de faixa ou no Todos) → ok:false", () => {
+    // Todos ficou em 15 (refresh não pegou), mas as 4 faixas somam 16.
+    const counts: SegmentMemberCounts = { ...CONVERGED, todos: 15 };
+    const gate = evaluateSegmentCountGate(counts, 561);
+    assert.equal(gate.ok, false);
+    assert.equal(gate.tiersMatchTodos, false);
+  });
+
+  it("Todos + Nenhum ≠ base ativa (refresh não pegou no Nenhum) → ok:false", () => {
+    // Nenhum ficou desatualizado (545 em vez de 546) mesmo com as faixas ok.
+    const counts: SegmentMemberCounts = { ...CONVERGED, nenhum: 545 };
+    const gate = evaluateSegmentCountGate(counts, 562);
+    assert.equal(gate.ok, false);
+    assert.equal(gate.tiersMatchTodos, true);
+    assert.equal(gate.totalMatchesActiveBase, false);
+  });
+
+  it("ambos os checks falham simultaneamente → ok:false, os 2 flags reportam false", () => {
+    const counts: SegmentMemberCounts = { amigo: 3, apoiador: 8, mantenedor: 4, patrono: 1, todos: 10, nenhum: 500 };
+    const gate = evaluateSegmentCountGate(counts, 562);
+    assert.equal(gate.ok, false);
+    assert.equal(gate.tiersMatchTodos, false);
+    assert.equal(gate.totalMatchesActiveBase, false);
+  });
+
+  it("todos zerados (base ativa 0) → soma bate trivialmente, ok:true", () => {
+    const counts: SegmentMemberCounts = { amigo: 0, apoiador: 0, mantenedor: 0, patrono: 0, todos: 0, nenhum: 0 };
+    const gate = evaluateSegmentCountGate(counts, 0);
+    assert.equal(gate.ok, true);
   });
 });

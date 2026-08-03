@@ -32,7 +32,7 @@ import { fileURLToPath } from "node:url";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import { resolveWeeklyLinkedinCycle, weeklyLinkedinRelDir, parseAAMMDD } from "./lib/weekly-linkedin-cycle.ts";
-import { extractWeeklyCandidates, type WeeklyRawCandidate } from "./lib/weekly-linkedin-parse.ts";
+import { extractWeeklyCandidates, detectDeadSectionHeaders, type WeeklyRawCandidate } from "./lib/weekly-linkedin-parse.ts";
 import {
   matchPostsToWindow,
   identifyWeeklyPostsNeedingClicks,
@@ -58,15 +58,20 @@ interface EditionRead {
   found: boolean;
   d1Title?: string;
   candidates: WeeklyRawCandidate[];
+  /** #4491: labels de seção (RADAR/LANÇAMENTOS/USE MELHOR/VÍDEOS) com header
+   * reconhecível no markdown bruto mas ZERO candidatos extraídos — falha
+   * PARCIAL de parse, distinta de `candidates.length === 0` (falha total). */
+  deadSections: string[];
 }
 
 function readEdition(date: string, editionsRootDir: string): EditionRead {
   const dir = resolveEditionDir(editionsRootDir, date);
   const mdPath = join(dir, "02-reviewed.md");
-  if (!existsSync(mdPath)) return { date, found: false, candidates: [] };
+  if (!existsSync(mdPath)) return { date, found: false, candidates: [], deadSections: [] };
   const raw = readFileSync(mdPath, "utf8");
   const d1 = parseDestaques(raw).find((d) => d.n === 1);
-  return { date, found: true, d1Title: d1?.title, candidates: extractWeeklyCandidates(raw, date) };
+  const candidates = extractWeeklyCandidates(raw, date);
+  return { date, found: true, d1Title: d1?.title, candidates, deadSections: detectDeadSectionHeaders(raw, candidates) };
 }
 
 function loadBeehiivCache(beehiivPostsDir: string): BeehiivCachePost[] {
@@ -207,6 +212,22 @@ export function main(rootDirOverride?: string) {
     );
   }
 
+  // #4491: falha PARCIAL de parse — diferente de emptyParseEditions acima
+  // (que só pega candidates.length===0 pra edição INTEIRA), aqui uma edição
+  // pode ter candidatos de OUTRAS seções (candidates.length > 0 no total) e
+  // ainda assim ter UMA seção específica com header reconhecido no markdown
+  // bruto mas zero candidatos extraídos dela — sinal de regressão no parser
+  // (formato de item não reconhecido), não de seção genuinamente vazia (sem
+  // header). Sem isso, os itens da seção quebrada sumiam da disputa de
+  // seleção sem nenhum sinal, sempre que ao menos uma outra seção da mesma
+  // edição continuasse parseando normalmente.
+  for (const e of editionsFound) {
+    if (e.deadSections.length === 0) continue;
+    warnings.push(
+      `Edição ${e.date}: se${e.deadSections.length > 1 ? "ções" : "ção"} ${e.deadSections.join(", ")} tem header reconhecido no 02-reviewed.md mas ZERO candidatos extraídos — possível regressão no parser (formato de item não reconhecido), não seção genuinamente vazia.`,
+    );
+  }
+
   // #4489 finding 2 (finding 1 item 2): `editionsMissing` já era computado
   // (linha abaixo, no output) mas NUNCA empurrado pro array `warnings` —
   // mesmo tratamento que `missingD1` já recebe.
@@ -238,7 +259,7 @@ export function main(rootDirOverride?: string) {
     editionsFound: editionsFound.map((e) => e.date),
     editionsMissing,
     headlines: headlineResult.selected,
-    headlineCandidatesRanked: headlineResult.ranked,
+    headlineCandidatesRanked: headlineResult.headlineEligible,
     excludedCandidates: headlineResult.excluded,
     useMelhor: useMelhor ?? null,
     restOfWeek,

@@ -36,8 +36,11 @@
  * armadilha que a issue #4273 documentou pra `tags`), então precisa de
  * cobertura direta, não só inferida via `diffApoioTags`.
  */
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   computeDesiredApoioLevels,
   diffApoioTags,
@@ -49,10 +52,32 @@ import {
   previousMonthKey,
   levelFromSnapshot,
   evaluateBlastRadiusGuard,
+  reconcilePendingPromises,
   type ApoioTagDiffEntry,
   type BeehiivSubscriptionSnapshot,
 } from "../scripts/sync-apoio-nivel-beehiiv.ts";
 import type { ContactWithStatus, MonthSnapshot } from "../scripts/studio-ui/studio-apoios.ts";
+import type { PendingPromise } from "../scripts/lib/apoio-promise-store.ts";
+import { RateLimiter, ApoiaSeAuthError } from "../scripts/lib/apoia-se.ts";
+
+const TEST_APOIA_ENV = { apiKey: "test-key", apiSecret: "test-secret", campaign: "diaria" };
+// Limiter "rápido" — evita o throttle real de 200ms/chamada do singleton
+// default do módulo apoia-se (mesmo padrão de `test/apoia-se.test.ts`).
+const fastPromiseLimiter = new RateLimiter({ maxPerSecond: 1000 });
+
+function jsonResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
+function pendingPromise(overrides: Partial<PendingPromise> = {}): PendingPromise {
+  return {
+    name: "Fabiana",
+    email: "fabiana@example.com",
+    value: 50,
+    receivedAtIso: "2026-08-02T21:45:00.000Z",
+    ...overrides,
+  };
+}
 
 /** Mês corrente fixo usado por default nos testes que não exercitam carência
  * (sem histórico — `pastSnapshots: []`) — qualquer YYYY-MM serve, só precisa
@@ -472,6 +497,34 @@ describe("diffApoioTags — caso 5: apoiador que não é assinante da Beehiiv (#
     assert.equal(diff.toApply.length, 0);
     assert.equal(diff.toRemove.length, 0);
   });
+
+  // #4490 causa 3: candidatos heurísticos quando não casa por e-mail exato.
+  it("gera candidato heurístico (local-part normalizado) quando o e-mail Beehiiv difere só por pontuação", () => {
+    const c = contact("murilo", ["murilo.sarno@online.uscs.edu.br"], {
+      label: "apoiando",
+      monthlyValue: 20,
+      matchedEmail: "murilo.sarno@online.uscs.edu.br",
+    });
+    c.name = "Murilo";
+    const desired = computeDesiredApoioLevels([c], [], NO_HISTORY_MONTH);
+    const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "murilosarno@gmail.com", "")];
+    const diff = diffApoioTags(desired, current);
+    assert.equal(diff.notBeehiivSubscriber.length, 1);
+    assert.equal(diff.notBeehiivSubscriber[0].candidates.length, 1);
+    assert.equal(diff.notBeehiivSubscriber[0].candidates[0].email, "murilosarno@gmail.com");
+    // Nunca vira ação automática — só reportado.
+    assert.equal(diff.toApply.length, 0);
+  });
+
+  it("sem candidato heurístico algum → candidates: []", () => {
+    const c = contact("zeca", ["zeca@x.com"], { label: "apoiando", monthlyValue: 20, matchedEmail: "zeca@x.com" });
+    c.name = "Zeca";
+    const desired = computeDesiredApoioLevels([c], [], NO_HISTORY_MONTH);
+    const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "completamentediferente@outro.com", "")];
+    const diff = diffApoioTags(desired, current);
+    assert.equal(diff.notBeehiivSubscriber.length, 1);
+    assert.deepEqual(diff.notBeehiivSubscriber[0].candidates, []);
+  });
 });
 
 describe("extractApoioNivelValue", () => {
@@ -777,5 +830,166 @@ describe("fetchCurrentBeehiivState (#4317)", () => {
       result.map((r) => r.email).sort(),
       ["a@x.com", "b@x.com"],
     );
+  });
+});
+
+// ── reconcilePendingPromises (#4490 causa 4) ─────────────────────────────
+//
+// Cenário motivador da issue: Fabiana prometeu R$50, o pagamento já estava
+// confirmado na API minutos depois — sem reconciliação automática, ela nunca
+// entraria no CRM. `checkBacker` é sempre exercitado com `fetchImpl` mockado
+// e `cacheDir` isolado em tmpdir — nunca rede real.
+
+describe("reconcilePendingPromises (#4490 causa 4)", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "apoio-promise-reconcile-"));
+  });
+  afterEach(() => rmSync(tmpDir, { recursive: true, force: true }));
+
+  it("promessa que virou pagamento é promovida a contato e sai do store de pendentes", async () => {
+    const fetchImpl = (async () =>
+      jsonResponse(200, { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 50 })) as unknown as typeof fetch;
+
+    const result = await reconcilePendingPromises([], [pendingPromise()], {
+      env: TEST_APOIA_ENV,
+      cacheDir: tmpDir,
+      fetchImpl,
+      limiter: fastPromiseLimiter,
+      now: new Date("2026-08-02T22:00:00Z"),
+    });
+
+    assert.equal(result.promoted.length, 1);
+    assert.equal(result.promoted[0].email, "fabiana@example.com");
+    assert.deepEqual(result.remainingPromises, []);
+    assert.equal(result.contacts.length, 1);
+    assert.equal(result.contacts[0].emails[0], "fabiana@example.com");
+    assert.equal(result.contacts[0].name, "Fabiana");
+    assert.match(result.contacts[0].notes, /apoia\.se/);
+  });
+
+  it("promessa ainda não confirmada permanece pendente (nenhum contato criado)", async () => {
+    const fetchImpl = (async () => jsonResponse(200, { isBacker: true, isPaidThisMonth: false })) as unknown as typeof fetch;
+
+    const result = await reconcilePendingPromises([], [pendingPromise()], {
+      env: TEST_APOIA_ENV,
+      cacheDir: tmpDir,
+      fetchImpl,
+      limiter: fastPromiseLimiter,
+      now: new Date("2026-08-02T22:00:00Z"),
+    });
+
+    assert.deepEqual(result.promoted, []);
+    assert.equal(result.remainingPromises.length, 1);
+    assert.equal(result.remainingPromises[0].email, "fabiana@example.com");
+    assert.deepEqual(result.contacts, []);
+  });
+
+  it("falha pontual (rede/API) mantém a promessa pendente pra próxima rodada, nunca a descarta", async () => {
+    const fetchImpl = (async () => new Response("boom", { status: 500 })) as unknown as typeof fetch;
+
+    const result = await reconcilePendingPromises([], [pendingPromise()], {
+      env: TEST_APOIA_ENV,
+      cacheDir: tmpDir,
+      fetchImpl,
+      limiter: fastPromiseLimiter,
+      now: new Date("2026-08-02T22:00:00Z"),
+    });
+
+    assert.deepEqual(result.promoted, []);
+    assert.equal(result.remainingPromises.length, 1);
+  });
+
+  it("achado crítico 2 (PR #4503): ApoiaSeAuthError PROPAGA (throw) em vez de manter a promessa pendente em silêncio", async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ message: "chave inválida" }), { status: 401 })) as unknown as typeof fetch;
+
+    await assert.rejects(
+      () =>
+        reconcilePendingPromises([], [pendingPromise()], {
+          env: TEST_APOIA_ENV,
+          cacheDir: tmpDir,
+          fetchImpl,
+          limiter: fastPromiseLimiter,
+          now: new Date("2026-08-02T22:00:00Z"),
+        }),
+      (e: unknown) => e instanceof ApoiaSeAuthError,
+      "chave apoia.se rejeitada (401) deve propagar como ApoiaSeAuthError, nunca ser engolida",
+    );
+  });
+
+  it("sempre usa forceRefresh (ignora qualquer cache HIT do mês corrente) — promessa recém-confirmada não fica presa num false cacheado", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      // 1ª chamada (fora da reconciliação, simulando um check anterior no
+      // mesmo dia): ainda não tinha pago. 2ª chamada (dentro da
+      // reconciliação, forceRefresh): já confirmou.
+      return jsonResponse(200, { isBacker: true, isPaidThisMonth: calls > 1, ...(calls > 1 ? { thisMonthPaidValue: 50 } : {}) });
+    }) as unknown as typeof fetch;
+    const now = new Date("2026-08-02T22:00:00Z");
+
+    // Popula o cache do mês corrente com um "false" ANTES da reconciliação
+    // (ex: `buildApoiosData` já rodou nesta mesma invocação do script).
+    const { checkBacker } = await import("../scripts/lib/apoia-se.ts");
+    await checkBacker("fabiana@example.com", { env: TEST_APOIA_ENV, cacheDir: tmpDir, fetchImpl, now, limiter: fastPromiseLimiter });
+    assert.equal(calls, 1);
+
+    const result = await reconcilePendingPromises([], [pendingPromise()], {
+      env: TEST_APOIA_ENV,
+      cacheDir: tmpDir,
+      fetchImpl,
+      limiter: fastPromiseLimiter,
+      now,
+    });
+
+    assert.equal(calls, 2, "reconciliação sempre força refresh, nunca confia no cache HIT do mês corrente");
+    assert.equal(result.promoted.length, 1);
+  });
+
+  it("promessa não duplica contato já existente (dedup por e-mail, mesma disciplina de importNewApoiadoresFromGmail)", async () => {
+    const fetchImpl = (async () =>
+      jsonResponse(200, { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 50 })) as unknown as typeof fetch;
+    const existingContact = contact("existing", ["fabiana@example.com"], { label: "nao_apoia" });
+
+    const result = await reconcilePendingPromises([existingContact], [pendingPromise()], {
+      env: TEST_APOIA_ENV,
+      cacheDir: tmpDir,
+      fetchImpl,
+      limiter: fastPromiseLimiter,
+      now: new Date("2026-08-02T22:00:00Z"),
+    });
+
+    // Promovida (a promessa converteu) mas NÃO duplica o contato existente.
+    assert.equal(result.promoted.length, 1);
+    assert.equal(result.contacts.length, 1);
+  });
+
+  it("múltiplas promessas — mistura de confirmada/pendente/erro no mesmo lote", async () => {
+    const fetchImpl = (async (url: string | URL) => {
+      const u = String(url);
+      if (u.includes("confirmada")) return jsonResponse(200, { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 10 });
+      if (u.includes("pendente")) return jsonResponse(200, { isBacker: true, isPaidThisMonth: false });
+      return new Response("boom", { status: 500 }); // "erro@..."
+    }) as unknown as typeof fetch;
+
+    const promises = [
+      pendingPromise({ email: "confirmada@x.com", name: "Confirmada" }),
+      pendingPromise({ email: "pendente@x.com", name: "Pendente" }),
+      pendingPromise({ email: "erro@x.com", name: "Erro" }),
+    ];
+
+    const result = await reconcilePendingPromises([], promises, {
+      env: TEST_APOIA_ENV,
+      cacheDir: tmpDir,
+      fetchImpl,
+      limiter: fastPromiseLimiter,
+      now: new Date("2026-08-02T22:00:00Z"),
+    });
+
+    assert.deepEqual(result.promoted.map((p) => p.email).sort(), ["confirmada@x.com"]);
+    assert.deepEqual(result.remainingPromises.map((p) => p.email).sort(), ["erro@x.com", "pendente@x.com"]);
+    assert.equal(result.contacts.length, 1);
   });
 });
