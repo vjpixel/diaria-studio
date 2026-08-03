@@ -48,10 +48,40 @@ describe("identifyPostsNeedingClicks", () => {
     assert.equal(got.length, 1);
   });
 
-  it("exclui post com clicks já enriquecidos", () => {
+  it("exclui post com clicks já enriquecidos (soma por-link bate o agregado)", () => {
     const got = identifyPostsNeedingClicks([
       { id: "p_done", status: "confirmed", publish_date: tenDaysAgo,
-        stats: { email: { clicks: 10 }, clicks: [{ url: "x" }] } },
+        stats: { email: { clicks: 10 }, clicks: [{ url: "x", email: { verified_clicks: 10 } }] } },
+    ], NOW);
+    assert.equal(got.length, 0);
+  });
+
+  it("#4493: inclui post com cache PARCIAL — 1 linha cobrindo bem menos da metade do agregado", () => {
+    // Reprodução do achado real (26w31): stats.clicks com 1 linha só, mas
+    // email.clicks agregado de 34-51 — o gate antigo (length > 0) tratava
+    // isso como "já enriquecido" e nunca corrigia.
+    const got = identifyPostsNeedingClicks([
+      {
+        id: "p_partial", status: "confirmed", publish_date: tenDaysAgo,
+        stats: { email: { clicks: 40 }, clicks: [{ url: "x", email: { verified_clicks: 1 } }] },
+      },
+    ], NOW);
+    assert.equal(got.length, 1, "cache com 1 linha cobrindo 2,5% do agregado precisa re-fetch");
+    assert.equal(got[0].id, "p_partial");
+  });
+
+  it("#4493: NÃO re-busca post com cache saudável (24+ linhas somando perto do agregado)", () => {
+    // Evita regressão de custo — cache saudável real não deve voltar pro
+    // manifest de enrichment a cada sync incremental.
+    const healthyRows = Array.from({ length: 24 }, (_, i) => ({
+      url: `https://exemplo.com/link-${i}`,
+      email: { verified_clicks: 2 },
+    }));
+    const got = identifyPostsNeedingClicks([
+      {
+        id: "p_healthy", status: "confirmed", publish_date: tenDaysAgo,
+        stats: { email: { clicks: 50 }, clicks: healthyRows }, // soma = 48/50 = 96%
+      },
     ], NOW);
     assert.equal(got.length, 0);
   });

@@ -47,6 +47,7 @@ import { fileURLToPath } from "node:url";
 import { parseListPostsResponse } from "./lib/schemas/beehiiv.ts";
 import { loadBeehiivConfig, type BeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { MIN_AGE_DAYS_FOR_CLICKS } from "./lib/shared/ctr-config.ts";
+import { isClickCacheComplete, type ClickCacheRow } from "./lib/shared/click-cache-completeness.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -212,7 +213,11 @@ interface PostDetailResponse {
  *   1. Status confirmed
  *   2. Publicados há > MIN_AGE_DAYS_FOR_CLICKS dias (mesmo cutoff do build-link-ctr)
  *   3. Aggregate `email.clicks > 0` (vale a pena buscar)
- *   4. `stats.clicks` vazio no cache local (ainda não foi enriquecido)
+ *   4. `stats.clicks` INCOMPLETO no cache local — `isClickCacheComplete`
+ *      (`scripts/lib/shared/click-cache-completeness.ts`, #4493): antes disto
+ *      o gate era só `stats.clicks.length > 0`, que tratava qualquer
+ *      contagem ≥1 como "já enriquecido" e nunca corrigia cache parcial
+ *      (ex: 1 linha só, de um post que deveria ter 10-40).
  *
  * Ordena por publish_date desc (mais recentes primeiro — orchestrator
  * processa em ordem de relevância) e respeita o budget passado.
@@ -223,7 +228,7 @@ export function identifyPostsNeedingClicks(
     title?: string;
     status?: string;
     publish_date?: number | null;
-    stats?: { email?: { clicks?: number }; clicks?: unknown[] };
+    stats?: { email?: { clicks?: number }; clicks?: ClickCacheRow[] };
   }>,
   now: Date = new Date(),
   budget: number = Number.POSITIVE_INFINITY,
@@ -235,7 +240,7 @@ export function identifyPostsNeedingClicks(
     if (!p.publish_date || p.publish_date * 1000 > cutoffMs) continue;
     const emailClicks = p.stats?.email?.clicks ?? 0;
     if (emailClicks <= 0) continue;
-    if ((p.stats?.clicks?.length ?? 0) > 0) continue;
+    if (isClickCacheComplete(emailClicks, p.stats?.clicks)) continue;
     eligible.push({
       id: p.id,
       title: p.title ?? "",
@@ -434,7 +439,7 @@ export async function syncBeehiiv(opts: SyncOpts): Promise<SyncResult> {
       title?: string;
       status?: string;
       publish_date?: number | null;
-      stats?: { email?: { clicks?: number }; clicks?: unknown[] };
+      stats?: { email?: { clicks?: number }; clicks?: ClickCacheRow[] };
     }> = [];
     for (const f of readdirSync(POSTS_DIR)) {
       if (f === "index.json" || !f.endsWith(".json")) continue;

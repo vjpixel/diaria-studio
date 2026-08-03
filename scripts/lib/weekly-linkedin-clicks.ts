@@ -21,7 +21,16 @@
  * exatamente a faixa que o gate de 7 dias EXCLUIRIA). `identifyWeeklyPostsNeedingClicks`
  * abaixo pede enriquecimento pra QUALQUER post da janela com clicks
  * ausentes, sem o corte de idade.
+ *
+ * **Gate de completude compartilhado (#4493):** o critério "cache já tem
+ * clicks suficientes" usa `isClickCacheComplete`
+ * (`scripts/lib/shared/click-cache-completeness.ts`) — mesmo helper que
+ * `identifyPostsNeedingClicks` (`beehiiv-sync.ts`) usa. Esse módulo shared
+ * não tem imports com efeito colateral (nada de `dotenv/config`), então
+ * importá-lo daqui não reintroduz o acoplamento que a nota acima evita.
  */
+
+import { isClickCacheComplete } from "./shared/click-cache-completeness.ts";
 
 /**
  * Um item do manifest de posts que precisam de enriquecimento via MCP —
@@ -92,11 +101,13 @@ export function matchPostsToWindow(
 
 /**
  * Pure: posts da janela (já resolvidos por `matchPostsToWindow`) que ainda
- * precisam de enriquecimento de clicks — `email.clicks > 0` mas
- * `stats.clicks` vazio no cache. SEM corte de idade (ver docstring do
- * arquivo) — diferente de `identifyPostsNeedingClicks` de `beehiiv-sync.ts`.
- * Formato de saída idêntico ao `PostNeedingClicks` de lá, pro mesmo caller
- * (dispatch do agent `beehiiv-clicks-enricher`) funcionar sem adaptação.
+ * precisam de enriquecimento de clicks — `email.clicks > 0` mas `stats.clicks`
+ * INCOMPLETO no cache (`isClickCacheComplete`, #4493 — antes disto era só
+ * "vazio", que deixava cache parcial de 1 linha nunca corrigido). SEM corte
+ * de idade (ver docstring do arquivo) — diferente de `identifyPostsNeedingClicks`
+ * de `beehiiv-sync.ts`. Formato de saída idêntico ao `PostNeedingClicks` de
+ * lá, pro mesmo caller (dispatch do agent `beehiiv-clicks-enricher`)
+ * funcionar sem adaptação.
  */
 export function identifyWeeklyPostsNeedingClicks(
   windowPosts: Map<string, BeehiivCachePost>,
@@ -104,8 +115,7 @@ export function identifyWeeklyPostsNeedingClicks(
   const out: WeeklyPostNeedingClicks[] = [];
   for (const post of windowPosts.values()) {
     const emailClicks = post.stats?.email?.clicks ?? 0;
-    const hasClicks = (post.stats?.clicks?.length ?? 0) > 0;
-    if (emailClicks > 0 && !hasClicks) {
+    if (emailClicks > 0 && !isClickCacheComplete(emailClicks, post.stats?.clicks)) {
       out.push({ id: post.id, title: post.title ?? "", email_clicks: emailClicks });
     }
   }
