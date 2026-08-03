@@ -21,6 +21,19 @@
  * `GET` (lista) quanto pro `readBox`/`saveBox` (rejeitado explicitamente,
  * mesmo que alguém tente `PUT /api/boxes/README.md` direto).
  *
+ * **`runtime: false` (#4500)** — mesma convenção de header de `nome:`/
+ * `categoria:`: um `.md` de `context/snippets/` que é documentação/referência
+ * (nunca lido em runtime pelo pipeline — ex: `intro-campeoes-sorteio.md`, cuja
+ * caixa real é hardcoded/gerada por `build-champions-callout.ts`, sem ligação
+ * nenhuma com os slots) declara `runtime: false` no header pra sumir de
+ * `listBoxes` — mesmo efeito de exclusão do `README_FILENAME`, mas via campo
+ * de conteúdo em vez de nome de arquivo fixo. Escopo DELIBERADAMENTE estreito
+ * (opção 1 da issue, não a 2): só a LISTAGEM filtra; `readBox`/`saveBox`
+ * continuam funcionando pra esses arquivos se chamados diretamente (edição
+ * fora da UI do painel Caixas), e `saveBoxSlots` não valida esse campo — um
+ * slot já atribuído a um arquivo `runtime: false` por fora da UI não é
+ * rejeitado no save, só deixa de aparecer como opção na lista.
+ *
  * **Slug válido** = casa `/^[a-z0-9-]+\.md$/` (sem barra, sem `..`, sem
  * maiúscula — a checagem por regex já impede traversal por construção, já
  * que nenhum caractere de separador de path é aceito) E existe como arquivo
@@ -83,7 +96,8 @@ import {
   extractHeaderRemainder,
   stripHeaderBlock,
   buildContentWithHeader,
-} from "../lib/shared/snippet-header.ts"; // #3979/#3981 — helpers genéricos de header compartilhados com o render (newsletter-parse.ts)
+  parseBoxHeaderField,
+} from "../lib/shared/snippet-header.ts"; // #3979/#3981 — helpers genéricos de header compartilhados com o render (newsletter-parse.ts); parseBoxHeaderField reusado pro campo `runtime:` (#4500)
 
 // ── slug / path ──────────────────────────────────────────────────────────
 
@@ -220,6 +234,19 @@ export function parseBoxCategoria(content: string): string | null {
   if (inner === null) return null;
   const line = /^[ \t]*categoria[ \t]*:[ \t]*(.+?)[ \t]*$/im.exec(inner);
   return line ? line[1].trim() : null;
+}
+
+/** `true` se o header de comentário declara `runtime: false` (#4500) — sinal
+ * de que o `.md` é documentação/referência (não lido em runtime pelo
+ * pipeline, ex: `intro-campeoes-sorteio.md`) e por isso não deve aparecer
+ * como opção selecionável no painel Caixas (`listBoxes` filtra por isso).
+ * Usa o helper genérico `parseBoxHeaderField` (mesma leitura de `nome:`/
+ * `categoria:`, case-insensitive, só o 1º comentário). Comparação
+ * case-insensitive do VALOR também (`False`/`FALSE` contam) — qualquer outro
+ * valor (`true`, ausente, string arbitrária) não exclui. Nunca lança. */
+export function isRuntimeExcluded(content: string): boolean {
+  const raw = parseBoxHeaderField(content, "runtime");
+  return raw !== null && raw.trim().toLowerCase() === "false";
 }
 
 /** Remove a linha `nome:` do header de comentário (#3933), devolvendo o "body"
@@ -968,8 +995,10 @@ export interface BoxListEntry {
   dirtyVsGit: boolean;
 }
 
-/** Lista dinâmica de `context/snippets/*.md`, excluindo `README.md` —
- * ordenada por slug (ordem estável e previsível pra UI/testes). Diretório
+/** Lista dinâmica de `context/snippets/*.md`, excluindo `README.md` e
+ * qualquer arquivo com `runtime: false` no header (#4500 — documentação/
+ * referência que não é uma caixa de verdade, ex: `intro-campeoes-sorteio.md`)
+ * — ordenada por slug (ordem estável e previsível pra UI/testes). Diretório
  * ausente (clone fresco sem `context/snippets/`, ou `rootDir` de teste sem
  * essa pasta) -> `[]`, nunca lança. */
 export function listBoxes(rootDir: string): BoxListEntry[] {
@@ -984,11 +1013,13 @@ export function listBoxes(rootDir: string): BoxListEntry[] {
     .map((entry) => entry.name)
     .sort();
 
-  return filenames.map((filename) => {
+  const entries: BoxListEntry[] = [];
+  for (const filename of filenames) {
     const filePath = resolve(dir, filename);
     const content = readFileSync(filePath, "utf8");
+    if (isRuntimeExcluded(content)) continue; // #4500
     const mtimeIso = statSync(filePath).mtime.toISOString();
-    return {
+    entries.push({
       slug: filename,
       title: resolveBoxDisplayName(content, filename),
       nome: parseBoxNome(content),
@@ -998,8 +1029,9 @@ export function listBoxes(rootDir: string): BoxListEntry[] {
       slot: slots[filename] ?? null,
       slotPatronos: slotsPatronos[filename] ?? null,
       dirtyVsGit: checkDirtyVsGit(rootDir, filename),
-    };
-  });
+    });
+  }
+  return entries;
 }
 
 // ── leitura de 1 caixa ───────────────────────────────────────────────────

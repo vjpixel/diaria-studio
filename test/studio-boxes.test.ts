@@ -30,6 +30,7 @@ import {
   readBoxSlotAssignments,
   checkDirtyVsGit,
   listBoxes,
+  isRuntimeExcluded,
   readBox,
   saveBox,
   boxFilePath,
@@ -254,6 +255,85 @@ describe("listBoxes (#3924)", () => {
     const apoio = boxes.find((b) => b.slug === "apoio-divulgacao.md")!;
     assert.equal(apoio.title, "Apoio");
     assert.equal(apoio.slot, null); // não atribuído a nenhum slot no fixture
+  });
+});
+
+// #4500: header `runtime: false` exclui um .md de `listBoxes` — mesmo efeito
+// de exclusão do README.md, mas via campo de conteúdo (não nome de arquivo
+// fixo). Cobre o achado da issue: intro-campeoes-sorteio.md é documentação de
+// formato, nunca lido em runtime pelo pipeline, mas aparecia como opção
+// selecionável no painel Caixas sem efeito nenhum no render real.
+describe("isRuntimeExcluded (#4500)", () => {
+  it("runtime: false no header -> true", () => {
+    assert.equal(isRuntimeExcluded("<!--\nruntime: false\n-->\n\nConteúdo."), true);
+  });
+
+  it("runtime: False / FALSE (case-insensitive) -> true", () => {
+    assert.equal(isRuntimeExcluded("<!--\nruntime: False\n-->\n\nConteúdo."), true);
+    assert.equal(isRuntimeExcluded("<!--\nruntime: FALSE\n-->\n\nConteúdo."), true);
+  });
+
+  it("runtime: true -> false (continua incluído)", () => {
+    assert.equal(isRuntimeExcluded("<!--\nruntime: true\n-->\n\nConteúdo."), false);
+  });
+
+  it("campo runtime ausente -> false (continua incluído)", () => {
+    assert.equal(isRuntimeExcluded("<!--\nnome: Caixa normal\n-->\n\nConteúdo."), false);
+    assert.equal(isRuntimeExcluded("# Sem header nenhum\n\nConteúdo."), false);
+  });
+
+  it("valor arbitrário diferente de 'false' -> false (continua incluído)", () => {
+    assert.equal(isRuntimeExcluded("<!--\nruntime: sempre\n-->\n\nConteúdo."), false);
+  });
+});
+
+describe("listBoxes exclui runtime: false (#4500)", () => {
+  let root: string;
+
+  before(() => {
+    root = mkdtempSync(join(tmpdir(), "studio-boxes-runtime-false-"));
+    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    writeFileSync(
+      join(root, "context", "snippets", "so-documentacao.md"),
+      "<!--\nnome: Template de referência\nruntime: false\nNão é lido em runtime.\n-->\n\n# Placeholder {foo}\n",
+    );
+    writeFileSync(
+      join(root, "context", "snippets", "caixa-normal.md"),
+      "<!--\nnome: Caixa normal\n-->\n\n# Caixa de verdade\n\nConteúdo.",
+    );
+    writeFileSync(
+      join(root, "context", "snippets", "caixa-runtime-true.md"),
+      "<!--\nruntime: true\n-->\n\n# Também vale\n",
+    );
+  });
+
+  after(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("fixture com runtime: false NÃO aparece na lista", () => {
+    const slugs = listBoxes(root).map((b) => b.slug);
+    assert.ok(!slugs.includes("so-documentacao.md"));
+  });
+
+  it("fixture sem o campo (ou com runtime: true) continua na lista normalmente — não regride caixas válidas", () => {
+    const slugs = listBoxes(root).map((b) => b.slug);
+    assert.ok(slugs.includes("caixa-normal.md"));
+    assert.ok(slugs.includes("caixa-runtime-true.md"));
+  });
+
+  it("total listado reflete só as 2 caixas vivas do fixture (a 3ª foi filtrada)", () => {
+    assert.deepEqual(listBoxes(root).map((b) => b.slug).sort(), ["caixa-normal.md", "caixa-runtime-true.md"]);
+  });
+});
+
+describe("listBoxes: intro-campeoes-sorteio.md real some da listagem (#4500)", () => {
+  it("arquivo real do repo declara runtime: false e não aparece em listBoxes(REPO_ROOT)", () => {
+    const slugs = listBoxes(REPO_ROOT).map((b) => b.slug);
+    assert.ok(
+      !slugs.includes("intro-campeoes-sorteio.md"),
+      "intro-campeoes-sorteio.md deveria sumir da listagem — é documentação de formato, não uma caixa de verdade (#4500)",
+    );
   });
 });
 
