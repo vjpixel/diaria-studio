@@ -93,6 +93,57 @@ describe("identifyPostsNeedingClicks", () => {
     assert.equal(got.length, 0);
   });
 
+  it("exclui post sem stats.email (não só clicks: 0)", () => {
+    const got = identifyPostsNeedingClicks([
+      { id: "p_no_email", status: "confirmed", publish_date: tenDaysAgo, stats: { clicks: [] } },
+    ], NOW);
+    assert.equal(got.length, 0);
+  });
+
+  it("recalibração 260802 (fleet review #4383 achado 1): usa email.verified_clicks como denominador, não o bruto — reproduz post real \"Anthropic lança Claude Opus 4.7\" (7 linhas, clicks=32, verified=24, soma=9)", () => {
+    const rows = [
+      { url: "a", email: { verified_clicks: 9 } },
+      { url: "b", email: { verified_clicks: 0 } },
+      { url: "c", email: { verified_clicks: 0 } },
+      { url: "d", email: { verified_clicks: 0 } },
+      { url: "e", email: { verified_clicks: 0 } },
+      { url: "f", email: { verified_clicks: 0 } },
+      { url: "g", email: { verified_clicks: 0 } },
+    ];
+    const got = identifyPostsNeedingClicks([
+      {
+        id: "p_real_4383",
+        status: "confirmed",
+        publish_date: tenDaysAgo,
+        stats: { email: { clicks: 32, verified_clicks: 24 }, clicks: rows },
+      },
+    ], NOW);
+    assert.equal(
+      got.length,
+      0,
+      "7 linhas >= piso de 6 — completo mesmo com denominador verified (9/24=0,375) ainda abaixo de 50%",
+    );
+  });
+
+  it("recalibração 260802: denominador verified sozinho já resolve quando rows < piso — reproduz post real \"Brasil regula IA eleitoral\" (5 linhas, clicks=21, verified=16, soma=10)", () => {
+    const rows = [
+      { url: "a", email: { verified_clicks: 10 } },
+      { url: "b", email: { verified_clicks: 0 } },
+      { url: "c", email: { verified_clicks: 0 } },
+      { url: "d", email: { verified_clicks: 0 } },
+      { url: "e", email: { verified_clicks: 0 } },
+    ];
+    const got = identifyPostsNeedingClicks([
+      {
+        id: "p_real_verified_only",
+        status: "confirmed",
+        publish_date: tenDaysAgo,
+        stats: { email: { clicks: 21, verified_clicks: 16 }, clicks: rows },
+      },
+    ], NOW);
+    assert.equal(got.length, 0, "5 linhas < piso, mas 10/16=0,625 >= 50% com denominador verified — sem o troco de denominador (10/21=0,476) ficaria falso-positivo");
+  });
+
   it("ordena por publish_date desc + respeita budget", () => {
     const fifteenDaysAgo = Math.floor((NOW.getTime() - 15 * 24 * 60 * 60 * 1000) / 1000);
     const got = identifyPostsNeedingClicks([

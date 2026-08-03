@@ -20,7 +20,7 @@
  * seguinte — os posts têm entre 2 e 6 dias de idade no momento da seleção,
  * exatamente a faixa que o gate de 7 dias EXCLUIRIA). `identifyWeeklyPostsNeedingClicks`
  * abaixo pede enriquecimento pra QUALQUER post da janela com clicks
- * ausentes, sem o corte de idade.
+ * incompletos (ver `isClickCacheComplete`), sem o corte de idade.
  *
  * **Gate de completude compartilhado (#4493):** o critério "cache já tem
  * clicks suficientes" usa `isClickCacheComplete`
@@ -30,7 +30,7 @@
  * importá-lo daqui não reintroduz o acoplamento que a nota acima evita.
  */
 
-import { isClickCacheComplete } from "./shared/click-cache-completeness.ts";
+import { isClickCacheComplete, type ClickCacheRow } from "./shared/click-cache-completeness.ts";
 
 /**
  * Um item do manifest de posts que precisam de enriquecimento via MCP —
@@ -48,13 +48,16 @@ export interface WeeklyPostNeedingClicks {
   email_clicks: number;
 }
 
-/** Linha de click do cache pós-enriquecimento (shape `LegacyClick` de `apply-mcp-clicks.ts`). */
-export interface CachedClickRow {
-  url: string;
-  base_url?: string;
-  email?: { unique_verified_clicks?: number; verified_clicks?: number };
-  web?: { total_unique_clicked?: number };
-}
+/**
+ * Linha de click do cache pós-enriquecimento (shape `LegacyClick` de
+ * `apply-mcp-clicks.ts`) — alias de `ClickCacheRow` (fonte de verdade real
+ * persistida em `click-cache-completeness.ts`) + os campos de identificação
+ * de URL que só este módulo usa (`clickCountsForUrl`). Antes deste módulo
+ * declarava um `CachedClickRow` independente com `web` mais estreito (só
+ * `total_unique_clicked`, sem `total_clicked`) — drift real já detectado
+ * contra `ClickCacheRow` (fleet review #4383 achado 5, 260802).
+ */
+export type CachedClickRow = ClickCacheRow & { url: string; base_url?: string };
 
 /** Shape mínimo do cache `data/beehiiv-cache/posts/{id}.json` usado aqui. */
 export interface BeehiivCachePost {
@@ -63,7 +66,7 @@ export interface BeehiivCachePost {
   status?: string;
   publish_date?: number | null; // epoch seconds
   stats?: {
-    email?: { clicks?: number; unique_opens?: number };
+    email?: { clicks?: number; unique_opens?: number; verified_clicks?: number; unique_verified_clicks?: number };
     clicks?: CachedClickRow[];
   };
 }
@@ -103,11 +106,12 @@ export function matchPostsToWindow(
  * Pure: posts da janela (já resolvidos por `matchPostsToWindow`) que ainda
  * precisam de enriquecimento de clicks — `email.clicks > 0` mas `stats.clicks`
  * INCOMPLETO no cache (`isClickCacheComplete`, #4493 — antes disto era só
- * "vazio", que deixava cache parcial de 1 linha nunca corrigido). SEM corte
- * de idade (ver docstring do arquivo) — diferente de `identifyPostsNeedingClicks`
- * de `beehiiv-sync.ts`. Formato de saída idêntico ao `PostNeedingClicks` de
- * lá, pro mesmo caller (dispatch do agent `beehiiv-clicks-enricher`)
- * funcionar sem adaptação.
+ * "vazio", que deixava cache parcial de 1 linha nunca corrigido; recalibrado
+ * em 260802, fleet review #4383 achado 1, ver docstring de
+ * `click-cache-completeness.ts`). SEM corte de idade (ver docstring do
+ * arquivo) — diferente de `identifyPostsNeedingClicks` de `beehiiv-sync.ts`.
+ * Formato de saída idêntico ao `PostNeedingClicks` de lá, pro mesmo caller
+ * (dispatch do agent `beehiiv-clicks-enricher`) funcionar sem adaptação.
  */
 export function identifyWeeklyPostsNeedingClicks(
   windowPosts: Map<string, BeehiivCachePost>,
@@ -115,7 +119,12 @@ export function identifyWeeklyPostsNeedingClicks(
   const out: WeeklyPostNeedingClicks[] = [];
   for (const post of windowPosts.values()) {
     const emailClicks = post.stats?.email?.clicks ?? 0;
-    if (emailClicks > 0 && !isClickCacheComplete(emailClicks, post.stats?.clicks)) {
+    if (emailClicks <= 0) continue;
+    // Denominador preferindo verified (mesma metodologia bot-filtered do
+    // numerador em sumCachedClicks) — fallback pro bruto se ausente (#4493).
+    const completenessDenominator =
+      post.stats?.email?.verified_clicks ?? post.stats?.email?.unique_verified_clicks ?? emailClicks;
+    if (!isClickCacheComplete(completenessDenominator, post.stats?.clicks)) {
       out.push({ id: post.id, title: post.title ?? "", email_clicks: emailClicks });
     }
   }

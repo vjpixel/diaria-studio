@@ -88,10 +88,10 @@ export interface SyncResult {
   dry_run: boolean;
   /**
    * Posts publicados há > MIN_AGE_DAYS_FOR_CLICKS dias, com aggregate
-   * `email.clicks > 0` mas `stats.clicks` vazio no cache. Orchestrator
-   * top-level deve enriquecê-los via MCP `list_post_clicks` + pipe pra
-   * `apply-mcp-clicks.ts`. Cap em CLICKS_FETCH_BUDGET pra evitar bursts
-   * grandes em runs incrementais.
+   * `email.clicks > 0` mas `stats.clicks` incompleto no cache (ver
+   * `isClickCacheComplete`). Orchestrator top-level deve enriquecê-los via
+   * MCP `list_post_clicks` + pipe pra `apply-mcp-clicks.ts`. Cap em
+   * CLICKS_FETCH_BUDGET pra evitar bursts grandes em runs incrementais.
    */
   posts_needing_clicks: PostNeedingClicks[];
 }
@@ -217,7 +217,12 @@ interface PostDetailResponse {
  *      (`scripts/lib/shared/click-cache-completeness.ts`, #4493): antes disto
  *      o gate era só `stats.clicks.length > 0`, que tratava qualquer
  *      contagem ≥1 como "já enriquecido" e nunca corrigia cache parcial
- *      (ex: 1 linha só, de um post que deveria ter 10-40).
+ *      (ex: 1 linha só, de um post que deveria ter 10-40). Recalibrado em
+ *      260802 (fleet review #4383 achado 1): o denominador da razão de
+ *      completude passou de `email.clicks` bruto pra
+ *      `email.verified_clicks`/`unique_verified_clicks` (fallback bruto se
+ *      ausente) + piso de `rows.length >= 6` — validado contra os 226 posts
+ *      confirmados reais, ver docstring de `click-cache-completeness.ts`.
  *
  * Ordena por publish_date desc (mais recentes primeiro — orchestrator
  * processa em ordem de relevância) e respeita o budget passado.
@@ -228,7 +233,10 @@ export function identifyPostsNeedingClicks(
     title?: string;
     status?: string;
     publish_date?: number | null;
-    stats?: { email?: { clicks?: number }; clicks?: ClickCacheRow[] };
+    stats?: {
+      email?: { clicks?: number; verified_clicks?: number; unique_verified_clicks?: number };
+      clicks?: ClickCacheRow[];
+    };
   }>,
   now: Date = new Date(),
   budget: number = Number.POSITIVE_INFINITY,
@@ -240,7 +248,11 @@ export function identifyPostsNeedingClicks(
     if (!p.publish_date || p.publish_date * 1000 > cutoffMs) continue;
     const emailClicks = p.stats?.email?.clicks ?? 0;
     if (emailClicks <= 0) continue;
-    if (isClickCacheComplete(emailClicks, p.stats?.clicks)) continue;
+    // Denominador da razão prefere verified (mesma metodologia bot-filtered
+    // do numerador em sumCachedClicks) — fallback pro bruto só quando o
+    // cache não tem o campo verified (#4493, ver click-cache-completeness.ts).
+    const completenessDenominator = p.stats?.email?.verified_clicks ?? p.stats?.email?.unique_verified_clicks ?? emailClicks;
+    if (isClickCacheComplete(completenessDenominator, p.stats?.clicks)) continue;
     eligible.push({
       id: p.id,
       title: p.title ?? "",
@@ -439,7 +451,10 @@ export async function syncBeehiiv(opts: SyncOpts): Promise<SyncResult> {
       title?: string;
       status?: string;
       publish_date?: number | null;
-      stats?: { email?: { clicks?: number }; clicks?: ClickCacheRow[] };
+      stats?: {
+        email?: { clicks?: number; verified_clicks?: number; unique_verified_clicks?: number };
+        clicks?: ClickCacheRow[];
+      };
     }> = [];
     for (const f of readdirSync(POSTS_DIR)) {
       if (f === "index.json" || !f.endsWith(".json")) continue;
