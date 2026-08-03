@@ -75,8 +75,20 @@ export const COHORTS_STATE_DIR = resolve(CLARICE_BASE, "cohorts");
 export const CHECKPOINT_PATH = resolve(COHORTS_STATE_DIR, "checkpoint.json");
 export const STATUS_PATH = resolve(COHORTS_STATE_DIR, "status.json");
 export const LOG_PATH = resolve(COHORTS_STATE_DIR, "run.log");
-/** Idade máxima (h) de um checkpoint para ser retomado; acima disso, recomeça do zero. */
-export const MAX_RESUME_AGE_H = 18;
+/**
+ * Idade máxima (h) de um checkpoint para ser retomado; acima disso, recomeça do zero.
+ *
+ * Fix de curto prazo do #4451 (260803): o crawl completo (~129k contatos a ~100
+ * req/min) leva ~21,5h observadas, mas o valor antigo (18h) expirava o checkpoint
+ * ANTES do crawl terminar — uma rodada que não completava a tempo era descartada e
+ * recomeçava do zero, causa raiz do crawl travado em ~7.000/129.251 desde 260729.
+ * 30h dá ~40% de folga sobre as ~21,5h observadas (cobre rate-limit/retry sem deixar
+ * o checkpoint tão frouxo a ponto de reusar progresso muito velho/stale). Fix
+ * temporário — o redesenho estrutural (export per-campanha em vez de crawl
+ * per-contato, Fases 3/4 pendentes de validação empírica) é o que resolve de vez;
+ * ver #4451.
+ */
+export const MAX_RESUME_AGE_H = 30;
 /** A cada N contatos buscados, persiste o checkpoint (resiliência a rate-limit). */
 const CHECKPOINT_FLUSH_EVERY = 500;
 
