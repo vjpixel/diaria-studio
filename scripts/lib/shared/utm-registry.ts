@@ -633,12 +633,39 @@ export function findUtmEmitter(id: string): UtmEmitter | undefined {
 export const EXTERNAL_SURFACE_MEDIUM = "bio";
 
 /**
- * `utm_campaign` de toda superfície externa — um só, de propósito: a pergunta
- * que essas entradas respondem ("quanto o link do perfil converte?") é a mesma
- * em todas, e um campaign por plataforma só fragmentaria a leitura (o
- * `utm_source` já separa por canal).
+ * Prefixo do `utm_campaign` das superfícies externas. O valor final é
+ * `perfil-{source}` — **um por superfície**, via `buildExternalSurfaceCampaign`.
+ *
+ * A 1ª versão desta fatia usava um `utm_campaign` ÚNICO (`perfil`) pras cinco,
+ * argumentando que a pergunta respondida é a mesma em todas. Estava errado, e
+ * de um jeito silencioso: o drift de superfície externa é checado por campaign
+ * (ver `computeDrift`), e o Beehiiv só devolve duas agregações PLANAS —
+ * `counts` por `utm_source` e `campaignCounts` por `utm_campaign`, sem
+ * dimensão de `utm_medium` e sem cruzamento (`aggregateByUtmSource` /
+ * `aggregateByUtmCampaign` em `scripts/count-subscriptions-by-utm.ts`). Com o
+ * campaign compartilhado, bastava UMA das cinco converter pra que
+ * `campaignCounts["perfil"] > 0` mascarasse as outras quatro pra sempre — um
+ * link de bio que a plataforma quebrasse depois de aplicado nunca mais seria
+ * flagrado. Achado no review do PR #4526.
+ *
+ * O `utm_source` sozinho também não resolve: `facebook`/`twitter`/`threads` são
+ * compartilhados com o CTA dos posts (`FACEBOOK_CTA_UTM`, `TWITTER_EDITION_UTM`,
+ * `THREADS_EDITION_UTM`), então o sinal por source vem positivo pelo tráfego do
+ * post mesmo com a bio morta. Sobra o campaign — daí a redundância aparente
+ * entre `utm_source=instagram` e `utm_campaign=perfil-instagram` ser deliberada,
+ * não descuido.
  */
-export const EXTERNAL_SURFACE_CAMPAIGN = "perfil";
+export const EXTERNAL_SURFACE_CAMPAIGN_PREFIX = "perfil";
+
+/**
+ * `utm_campaign` de uma superfície externa: `perfil-{source}`. Derivado, nunca
+ * digitado — é o que garante a unicidade de que o drift depende.
+ *
+ * @pure
+ */
+export function buildExternalSurfaceCampaign(source: string): string {
+  return `${EXTERNAL_SURFACE_CAMPAIGN_PREFIX}-${source.toLowerCase()}`;
+}
 
 /** URL base que toda superfície externa aponta. */
 export const EXTERNAL_SURFACE_BASE_URL = "https://diar.ia.br/";
@@ -659,7 +686,9 @@ export interface ExternalUtmSurface {
   source: string;
   /** `utm_medium` — sempre `EXTERNAL_SURFACE_MEDIUM`. */
   medium: string;
-  /** `utm_campaign` — sempre `EXTERNAL_SURFACE_CAMPAIGN`. */
+  /** `utm_campaign` — `perfil-{source}`, sempre via `buildExternalSurfaceCampaign`.
+   * ÚNICO por superfície: é a única dimensão que o Beehiiv devolve capaz de
+   * isolar esta bio (ver o comentário de `EXTERNAL_SURFACE_CAMPAIGN_PREFIX`). */
   campaign: string;
   /** URL do painel onde ESTE campo se edita (o runbook da Fase 3/reconferência). */
   panelUrl: string;
@@ -693,7 +722,7 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
     label: "Instagram — link da bio",
     source: "instagram",
     medium: EXTERNAL_SURFACE_MEDIUM,
-    campaign: EXTERNAL_SURFACE_CAMPAIGN,
+    campaign: buildExternalSurfaceCampaign("instagram"),
     panelUrl: "https://www.instagram.com/diar.ia.br",
     field: "Editar perfil → Site",
     description:
@@ -706,7 +735,7 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
     label: "Facebook — campo Site da página",
     source: "facebook",
     medium: EXTERNAL_SURFACE_MEDIUM,
-    campaign: EXTERNAL_SURFACE_CAMPAIGN,
+    campaign: buildExternalSurfaceCampaign("facebook"),
     panelUrl: "https://www.facebook.com/diar.ia.br",
     field: "Sobre → Site",
     description:
@@ -720,7 +749,7 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
     label: "Threads — link da bio",
     source: "threads",
     medium: EXTERNAL_SURFACE_MEDIUM,
-    campaign: EXTERNAL_SURFACE_CAMPAIGN,
+    campaign: buildExternalSurfaceCampaign("threads"),
     panelUrl: "https://www.threads.com/@diar.ia.br",
     field: "Edit profile → Links → Add link",
     description:
@@ -733,7 +762,7 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
     label: "X — campo Website do perfil",
     source: "twitter",
     medium: EXTERNAL_SURFACE_MEDIUM,
-    campaign: EXTERNAL_SURFACE_CAMPAIGN,
+    campaign: buildExternalSurfaceCampaign("twitter"),
     panelUrl: "https://x.com/settings/profile",
     field: "Edit profile → Website",
     description:
@@ -747,7 +776,7 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
     label: "Apoia.se — site da campanha",
     source: "apoiase",
     medium: EXTERNAL_SURFACE_MEDIUM,
-    campaign: EXTERNAL_SURFACE_CAMPAIGN,
+    campaign: buildExternalSurfaceCampaign("apoiase"),
     panelUrl: "https://apoia.se/diaria",
     field: "Editar campanha → Redes Sociais → Site",
     description:

@@ -27,10 +27,11 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   EXTERNAL_SURFACE_BASE_URL,
-  EXTERNAL_SURFACE_CAMPAIGN,
+  EXTERNAL_SURFACE_CAMPAIGN_PREFIX,
   EXTERNAL_SURFACE_MEDIUM,
   EXTERNAL_UTM_SURFACES,
   UTM_EMITTERS,
+  buildExternalSurfaceCampaign,
   buildExternalSurfaceUrl,
   findExternalUtmSurface,
   knownUtmSources,
@@ -81,10 +82,42 @@ describe("#4525 — inventário das superfícies externas", () => {
     }
   });
 
-  it("usa medium e campaign únicos — a leitura da página depende disso", () => {
+  it("compartilha o utm_medium — é ele que separa bio de CTA de post", () => {
     for (const s of EXTERNAL_UTM_SURFACES) {
       assert.equal(s.medium, EXTERNAL_SURFACE_MEDIUM, `${s.id}: utm_medium fora da convenção`);
-      assert.equal(s.campaign, EXTERNAL_SURFACE_CAMPAIGN, `${s.id}: utm_campaign fora da convenção`);
+    }
+  });
+
+  it("utm_campaign é DISTINTO por superfície — o drift depende disso", () => {
+    const campaigns = EXTERNAL_UTM_SURFACES.map((s) => s.campaign);
+    assert.equal(
+      new Set(campaigns).size,
+      campaigns.length,
+      "duas superfícies com o mesmo utm_campaign: a que converter primeiro mascara a outra pra sempre " +
+        "no check de sem_conversao, porque o Beehiiv só devolve campaignCounts PLANO (achado do review do PR #4526)",
+    );
+    for (const s of EXTERNAL_UTM_SURFACES) {
+      assert.equal(
+        s.campaign,
+        buildExternalSurfaceCampaign(s.source),
+        `${s.id}: utm_campaign digitado à mão em vez de derivado`,
+      );
+      assert.ok(
+        s.campaign.startsWith(`${EXTERNAL_SURFACE_CAMPAIGN_PREFIX}-`),
+        `${s.id}: utm_campaign fora do prefixo da convenção`,
+      );
+    }
+  });
+
+  it("nenhum utm_campaign externo colide com padrão de emissor de código", () => {
+    // `perfil-facebook` não pode casar `post-cta` nem vice-versa: as duas
+    // conversões vivem no mesmo utm_source e só o campaign as separa.
+    const externas = new Set(EXTERNAL_UTM_SURFACES.map((s) => s.campaign));
+    for (const e of UTM_EMITTERS) {
+      assert.ok(
+        !externas.has(e.campaignPattern),
+        `emissor "${e.id}" usa o mesmo utm_campaign de uma superfície externa`,
+      );
     }
   });
 
@@ -153,7 +186,7 @@ describe("#4525 — buildExternalSurfaceUrl", () => {
     label: "T",
     source: "threads",
     medium: EXTERNAL_SURFACE_MEDIUM,
-    campaign: EXTERNAL_SURFACE_CAMPAIGN,
+    campaign: buildExternalSurfaceCampaign("threads"),
     panelUrl: "https://example.test",
     field: "campo",
     description: "d",
@@ -165,7 +198,7 @@ describe("#4525 — buildExternalSurfaceUrl", () => {
     assert.equal(url.origin + url.pathname, "https://diar.ia.br/");
     assert.equal(url.searchParams.get("utm_source"), "threads");
     assert.equal(url.searchParams.get("utm_medium"), "bio");
-    assert.equal(url.searchParams.get("utm_campaign"), "perfil");
+    assert.equal(url.searchParams.get("utm_campaign"), "perfil-threads");
   });
 
   it("não duplica parâmetro quando a base já traz query", () => {
@@ -195,7 +228,7 @@ describe("#4525 — drift de superfície externa", () => {
     label: "X — bio",
     source: "twitter",
     medium: EXTERNAL_SURFACE_MEDIUM,
-    campaign: EXTERNAL_SURFACE_CAMPAIGN,
+    campaign: buildExternalSurfaceCampaign("twitter"),
     panelUrl: "https://x.com/settings/profile",
     field: "Website",
     description: "d",
@@ -212,8 +245,44 @@ describe("#4525 — drift de superfície externa", () => {
   });
 
   it("aplicada e convertendo não vira drift", () => {
-    const findings = computeDrift([], {}, { externals: [applied], campaignCounts: { perfil: 3 } });
+    const findings = computeDrift(
+      [],
+      {},
+      { externals: [applied], campaignCounts: { "perfil-twitter": 3 } },
+    );
     assert.equal(findings.find((x) => x.key === "perfil-x"), undefined);
+  });
+
+  it("uma superfície convertendo NÃO mascara outra morta (review do PR #4526)", () => {
+    // O bug que o campaign compartilhado criava: bastava a de maior tráfego
+    // converter pra que TODAS as outras ficassem invisíveis pro drift, pra
+    // sempre — inclusive uma bio que a plataforma quebrasse depois de aplicada.
+    const instagram: ExternalUtmSurface = {
+      ...applied,
+      id: "perfil-instagram",
+      label: "Instagram — bio",
+      source: "instagram",
+      campaign: buildExternalSurfaceCampaign("instagram"),
+      panelUrl: "https://www.instagram.com/diar.ia.br",
+    };
+    const findings = computeDrift(
+      [],
+      {},
+      {
+        externals: [instagram, applied],
+        // Instagram converteu; a bio do X, aplicada no mesmo dia, não.
+        campaignCounts: { "perfil-instagram": 12 },
+      },
+    );
+    assert.equal(
+      findings.find((x) => x.key === "perfil-instagram"),
+      undefined,
+      "a que converteu não devia virar drift",
+    );
+    assert.ok(
+      findings.some((x) => x.key === "perfil-x" && x.kind === "sem_conversao"),
+      "a que NÃO converteu tem que virar drift mesmo com outra superfície convertendo",
+    );
   });
 
   it("AINDA NÃO aplicada nunca vira drift — não converter é o estado correto", () => {
@@ -258,16 +327,28 @@ describe("#4525 — snapshot de /api/utms", () => {
     clearUtmsCache();
     const data = await buildUtmsData(tempRoot(), {
       env: {},
-      fetchSubscriptions: fakeSubscriptions({ instagram: 7, apoiase: 2 }, { perfil: 9 }),
+      fetchSubscriptions: fakeSubscriptions(
+        { instagram: 7, apoiase: 2 },
+        { "perfil-instagram": 5, "perfil-apoiase": 2 },
+      ),
       fetchClicks: noClicks as never,
     });
     assert.equal(data.externalSurfaces.length, EXTERNAL_UTM_SURFACES.length);
     const ig = data.externalSurfaces.find((s) => s.id === "perfil-instagram");
     assert.ok(ig);
-    assert.equal(ig.subscribers, 7);
-    assert.equal(ig.campaignSubscribers, 9, "campanha compartilhada por todas as superfícies");
-    assert.match(ig.url, /utm_source=instagram&utm_medium=bio&utm_campaign=perfil/);
+    assert.equal(ig.subscribers, 7, "por utm_source");
+    assert.equal(ig.campaignSubscribers, 5, "por utm_campaign — o sinal desta superfície só");
+    assert.match(ig.url, /utm_source=instagram&utm_medium=bio&utm_campaign=perfil-instagram/);
     assert.equal(ig.clicks, 0);
+
+    // A leitura por campanha NÃO pode vazar entre superfícies.
+    const threads = data.externalSurfaces.find((s) => s.id === "perfil-threads");
+    assert.ok(threads);
+    assert.equal(
+      threads.campaignSubscribers,
+      0,
+      "Threads não converteu — não pode herdar a contagem do Instagram",
+    );
   });
 
   it("Beehiiv fora do ar não derruba a seção — vira null, não exceção", async () => {
