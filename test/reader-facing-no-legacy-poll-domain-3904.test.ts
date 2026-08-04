@@ -62,7 +62,7 @@ describe("reader-facing NÃO emite o domínio legado do worker poll (#3904)", ()
 
   it("newsletter diária: renderEIA (link de VOTO) não emite o domínio legado", () => {
     const html = renderEIA(EIA_FIXTURE);
-    assert.ok(html.includes("{{poll_token}}@vote.eia.diaria.local"), "sanity: vote link deve existir (merge-tag do token opaco, #4487)");
+    assert.ok(html.includes("email={{email}}&edition="), "sanity: vote link deve existir (merge-tag de e-mail cru, #4581)");
     assert.ok(!html.includes(LEGACY_DOMAIN), `renderEIA emitiu ${LEGACY_DOMAIN} — regressão de #3904`);
     assert.ok(html.includes(DIARIA_EIA_URL), "renderEIA deveria emitir o domínio de marca");
   });

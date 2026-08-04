@@ -1024,9 +1024,19 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
   it("renderHTML default: inclui È IA? quando eia.credit não-vazio", () => {
     const html = renderHTML(fixtureComEia);
     assert.match(html, /É IA\?/);
-    // #4487: modo merge-tag — vote URL tem o token opaco {{poll_token}}@vote.eia.diaria.local (era {{email}} cru até #1186→#4487).
-    assert.match(html, /\{\{poll_token\}\}@vote\.eia\.diaria\.local/);
-    assert.ok(!html.includes("{{email}}"), "e-mail cru não deve mais aparecer na URL de voto (#4487)");
+    // #4581: modo merge-tag com e-mail CRU `{{email}}` — o token opaco do #4487
+    // foi revertido neste ramo (decisão do editor: o É IA? não dá prêmio, então
+    // votar no lugar de outra pessoa não causa dano; ver comentário em
+    // newsletter-render-html.ts::buildVoteUrl).
+    assert.match(html, /\{\{email\}\}/);
+    assert.ok(
+      !html.includes("{{poll_token}}"),
+      "token opaco não deve mais aparecer no ramo Beehiiv (#4581 reverteu o #4487)",
+    );
+    assert.ok(
+      !html.includes("@vote.eia.diaria.local"),
+      "domínio do pseudo-e-mail do token não deve sobrar sem o token (produziria 2 arrobas)",
+    );
     assert.ok(!html.includes("{{poll_sig}}"), "{{poll_sig}} presente — removido em #1186");
     assert.ok(!html.includes("&sig="), "sig= presente — removido em #1186");
   });
@@ -1068,12 +1078,19 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     assert.equal(renderEiaStandalone(fixtureSemEia), null);
   });
 
-  it("renderEiaStandalone retorna HTML com o token opaco de voto (modo merge-tag #1186, token #4487)", () => {
+  it("renderEiaStandalone retorna HTML com o e-mail cru de voto (modo merge-tag #1186, revertido #4581)", () => {
     const html = renderEiaStandalone(fixtureComEia);
     assert.ok(html, "deve retornar HTML não-null pra eia configurada");
-    // #4487: modo merge-tag — vote URL tem {{poll_token}}@vote.eia.diaria.local, SEM e-mail cru nem sig HMAC.
-    assert.match(html!, /\{\{poll_token\}\}@vote\.eia\.diaria\.local/);
-    assert.ok(!html!.includes("{{email}}"), "e-mail cru não deve mais aparecer (#4487)");
+    // #4581: modo merge-tag — vote URL tem {{email}} cru, SEM token opaco nem sig HMAC.
+    assert.match(html!, /\{\{email\}\}/);
+    assert.ok(
+      !html!.includes("{{poll_token}}"),
+      "token opaco não deve mais aparecer no ramo Beehiiv (#4581 reverteu o #4487)",
+    );
+    assert.ok(
+      !html!.includes("@vote.eia.diaria.local"),
+      "domínio do pseudo-e-mail do token não deve sobrar sem o token",
+    );
     assert.ok(!html!.includes("{{poll_sig}}"), "{{poll_sig}} presente — removido em #1186");
     assert.ok(!html!.includes("&sig="), "sig= presente — removido em #1186");
     assert.match(html!, /É IA\?/);
@@ -1180,9 +1197,9 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     assert.match(html, /choice=A.*01-eia-A\.jpg|01-eia-A\.jpg.*choice=A/s, "imagem A com link choice=A ausente");
     // 4. Imagem B com link choice=B está presente
     assert.match(html, /choice=B.*01-eia-B\.jpg|01-eia-B\.jpg.*choice=B/s, "imagem B com link choice=B ausente");
-    // 5. merge tag opaca (#4487) preservada nos dois links de voto
-    const tokenMatches = [...html.matchAll(/\{\{poll_token\}\}@vote\.eia\.diaria\.local/g)];
-    assert.ok(tokenMatches.length >= 2, `merge tag do token opaco deve aparecer em ambos os links de voto (encontrado ${tokenMatches.length}x)`);
+    // 5. merge tag de e-mail cru (#4581) preservada nos dois links de voto
+    const tagMatches = [...html.matchAll(/email=\{\{email\}\}&edition=/g)];
+    assert.ok(tagMatches.length >= 2, `merge tag {{email}} deve aparecer em ambos os links de voto (encontrado ${tagMatches.length}x)`);
     // 6. A aparece antes de B no HTML (empilhamento correto: A acima de B)
     const idxA = html.indexOf("01-eia-A.jpg");
     const idxB = html.indexOf("01-eia-B.jpg");
@@ -1198,11 +1215,11 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     assert.ok(html, "standalone deve retornar HTML");
     assert.doesNotMatch(html, /width="50%"/, "largura de 50% não deve existir no standalone");
     assert.doesNotMatch(html, /class="poll-col"/, "classe poll-col não deve existir no standalone");
-    // Ambos os links com o token opaco (#4487) e choice correto
+    // Ambos os links com a merge tag de e-mail cru (#4581) e choice correto
     assert.match(html, /choice=A/);
     assert.match(html, /choice=B/);
-    const tokenMatches = [...html.matchAll(/\{\{poll_token\}\}@vote\.eia\.diaria\.local/g)];
-    assert.ok(tokenMatches.length >= 2, `token opaco deve aparecer em ambos os links (encontrado ${tokenMatches.length}x)`);
+    const tagMatches = [...html.matchAll(/email=\{\{email\}\}&edition=/g)];
+    assert.ok(tagMatches.length >= 2, `{{email}} deve aparecer em ambos os links (encontrado ${tagMatches.length}x)`);
     // A antes de B
     assert.ok(html.indexOf("01-eia-A.jpg") < html.indexOf("01-eia-B.jpg"), "A deve preceder B no standalone");
   });

@@ -17,9 +17,9 @@
  * --format json: outputs structured JSON with all parsed sections
  * --out: write to file instead of stdout
  * --esp beehiiv|brevo: merge tag do link de voto do É IA? (#4266). Default
- *   beehiiv (`{{poll_token}}@vote.eia.diaria.local`, token opaco #4487).
- *   brevo usa `{{ contact.POLL_TOKEN }}@vote.eia.diaria.local` (mesmo token
- *   opaco, paridade #4517) — só relevante pro modo --format html sem --split
+ *   beehiiv (`{{email}}` cru — o token opaco do #4487 foi revertido neste
+ *   ramo pelo #4581). brevo usa `{{ contact.POLL_TOKEN }}@vote.eia.diaria.local`
+ *   (token opaco, ainda vivo lá, #4517) — só relevante pro modo --format html sem --split
  *   (É IA? standalone/split fica sempre Beehiiv).
  *
  * Image references use {{IMG:filename}} placeholders. The publish agent

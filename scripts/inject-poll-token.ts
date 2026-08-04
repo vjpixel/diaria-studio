@@ -382,6 +382,31 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // #4581 (260804) — GUARD DE ÓRFÃO. O consumidor deste script era a merge tag
+  // `{{poll_token}}` no ramo `esp="beehiiv"` de `newsletter-render-html.ts::
+  // buildVoteUrl`. Esse ramo voltou ao `{{email}}` cru por decisão do editor
+  // (o É IA? não distribui prêmio), então o custom field que este script
+  // popula não é lido por ninguém no e-mail diário. Sem este guard, rodar o
+  // script gasta ~565 PATCHes na Beehiiv + escritas no KV, imprime um resumo
+  // de sucesso e sai com exit 0 — trabalho desperdiçado reportando sucesso,
+  // que é exatamente a classe de falha silenciosa que o repo trata como bug.
+  //
+  // Não removemos o script porque (a) o token segue vivo no canal Brevo via
+  // o irmão `inject-poll-token-brevo.ts`, e (b) se o É IA? um dia valer
+  // prêmio, a decisão se inverte e este caminho volta. `--force-orphan`
+  // existe pra esse cenário e pra debug — nunca como rotina.
+  if (!flags.has("force-orphan")) {
+    console.error(
+      "[inject-poll-token] ÓRFÃO desde o #4581 (260804): o e-mail diário usa {{email}} cru,\n" +
+        "  não {{poll_token}} — o custom field que este script popula não é lido por ninguém\n" +
+        "  no canal Beehiiv. Rodar assim mesmo gastaria centenas de PATCHes à toa.\n" +
+        "  O canal Brevo NÃO é afetado: use scripts/inject-poll-token-brevo.ts (roda inline\n" +
+        "  em publish-daily-brevo.ts, não precisa de invocação manual).\n" +
+        "  Se você sabe o que está fazendo, repita com --force-orphan. Contexto: #4581.",
+    );
+    process.exit(1);
+  }
+
   const apiKey = process.env.BEEHIIV_API_KEY;
   const publicationId = process.env.BEEHIIV_PUBLICATION_ID;
   const secret = process.env.POLL_SECRET;

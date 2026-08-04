@@ -1,9 +1,20 @@
 /**
  * poll-token.ts (#4487)
  *
- * Token opaco por assinante pro link de voto do quiz "É IA?" no e-mail
- * (esp="beehiiv", modo merge-tag). Substitui o e-mail cru na URL de voto
- * (`/vote?email={{email}}&edition=...&choice=...`) — achado #4487/#4456:
+ * Token opaco por assinante pro link de voto do quiz "É IA?" no e-mail.
+ *
+ * **ESCOPO ATUAL (#4581, 260804): só o canal BREVO (`brevo_diaria`).** O
+ * mecanismo nasceu pro Beehiiv (esp="beehiiv") e ganhou paridade no Brevo em
+ * #4517, mas o ramo Beehiiv voltou ao `{{email}}` cru — decisão do editor: o
+ * É IA? não distribui prêmio, então votar no lugar de outra pessoa não causa
+ * dano, e o token dependia de um custom field que nunca chegou a ser populado.
+ * Quem popula o token hoje é `scripts/inject-poll-token-brevo.ts` (inline em
+ * `publish-daily-brevo.ts`); o irmão `scripts/inject-poll-token.ts` (Beehiiv)
+ * ficou órfão e aborta por padrão. Ver `newsletter-render-html.ts::buildVoteUrl`.
+ *
+ * O que o token resolve (e que hoje vale só pro Brevo) — substitui o e-mail
+ * cru na URL de voto (`/vote?email={{email}}&edition=...&choice=...`), achado
+ * #4487/#4456:
  * quem recebe a edição ENCAMINHADA (WhatsApp/e-mail) herda o link do
  * remetente e, ao clicar, vota EM NOME DELE (mesmo e-mail na URL), sujando
  * o leaderboard e vazando o e-mail real do assinante pra quem quer que
@@ -49,6 +60,12 @@
  *    token→email é um lookup direto, não uma reverificação de assinatura
  *    contra o secret atual (ver `docs/runbooks/poll-secret-rotation.md`,
  *    nota #4487).
+ *
+ * Nota (#4581, 260804): os itens 1-4 acima narram o mecanismo tal como
+ * desenhado originalmente pro Beehiiv (`inject-poll-token.ts`, custom field
+ * `poll_token`) — hoje o único caminho vivo é o Brevo
+ * (`inject-poll-token-brevo.ts`, atributo de contato `POLL_TOKEN`); ver
+ * escopo atual no topo deste arquivo.
  *
  * Domínio reservado `VOTE_TOKEN_DOMAIN`: o token vira o local-part de um
  * pseudo-email (`{token}@vote.eia.diaria.local`), reaproveitando o parser
@@ -193,8 +210,13 @@ export function extractPollToken(email: string): PollToken | null {
  * compilava mesmo ignorando silenciosamente esse caso — foi exatamente o bug
  * #4512, corrigido ali por convenção de uso correto, não por construção).
  *
- * - `"not-token-domain"` — `email` não está sob `VOTE_TOKEN_DOMAIN` (caso
- *   comum: e-mail real de assinante, brand ≠ diário/beehiiv).
+ * - `"not-token-domain"` — `email` não está sob `VOTE_TOKEN_DOMAIN`: é um
+ *   e-mail real de assinante, tratado direto sem lookup. **Desde o #4581 este
+ *   é o caminho DOMINANTE de `brand="diaria"`**, não um caso de borda — o
+ *   canal Beehiiv (volume grande) voltou ao `{{email}}` cru e só o Brevo
+ *   (`brevo_diaria`, minoritário) ainda manda token. Os dois chegam pela MESMA
+ *   rota (`handleVote`), então a união segue discriminando de verdade — só
+ *   numa proporção bem mais assimétrica do que quando foi desenhada.
  * - `"malformed"` — está sob o domínio reservado, mas o local-part NÃO é um
  *   token hex de `TOKEN_HEX_LEN` chars válido (identidade fabricada/
  *   corrompida — sinal de algo quebrado, nunca esperado no fluxo normal).

@@ -109,10 +109,14 @@ describe("renderEIA NÃO embute mais o link do arquivo no rodapé do painel — 
     assert.match(html, /\/leaderboard"/);
   });
 
-  it("regressão: painel É IA? continua em modo merge-tag, agora com o token opaco (#1186, token #4487)", () => {
+  it("regressão: painel É IA? continua em modo merge-tag, de volta ao e-mail cru (#1186, revertido #4581)", () => {
     const html = renderEIA(baseEia);
-    assert.match(html, /\{\{poll_token\}\}@vote\.eia\.diaria\.local/);
-    assert.ok(!html.includes("{{email}}"), "e-mail cru não deve mais aparecer (#4487)");
+    assert.match(html, /email=\{\{email\}\}&edition=/);
+    assert.ok(
+      !html.includes("{{poll_token}}"),
+      "token opaco não deve mais aparecer no ramo Beehiiv (#4581 reverteu o #4487)",
+    );
+    assert.ok(!html.includes("@vote.eia.diaria.local"), "domínio do pseudo-e-mail não deve sobrar sem o token");
     assert.ok(!html.includes("&sig="), "sig= não deve reaparecer");
   });
 

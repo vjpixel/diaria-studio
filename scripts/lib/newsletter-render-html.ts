@@ -197,12 +197,23 @@ const DARK_CANVAS_STYLE_BLOCK = buildDarkCanvasStyleBlock(TEXT_COLOR);
 
 /**
  * #4266 — provedor de destino do envio. Usado só pela merge tag de voto do
- * É IA? (`renderEIA`): #4517 trouxe paridade total entre os dois — Beehiiv
- * usa `{{poll_token}}@vote.eia.diaria.local` (token opaco, `&` cru) e Brevo
- * usa `{{ contact.POLL_TOKEN }}@vote.eia.diaria.local` (mesmo token opaco,
- * `&` escapado como `&amp;` — mesma sintaxe de merge tag já usada pelo
- * mensal, `lib/mensal/monthly-render.ts`, que segue com `{{ contact.EMAIL }}`
- * cru por não estar no escopo do #4487/#4517, ver `monthly-render.ts::renderEia`).
+ * É IA? (`renderEIA`). **Os dois ramos NÃO são simétricos desde o #4581**:
+ * Beehiiv usa `{{email}}` cru, `&` cru (voltou ao e-mail direto — o É IA? não
+ * distribui prêmio, ver `buildVoteUrl`); Brevo usa
+ * `{{ contact.POLL_TOKEN }}@vote.eia.diaria.local` (token opaco, `&` escapado
+ * como `&amp;` — mesma sintaxe de merge tag já usada pelo mensal,
+ * `lib/mensal/monthly-render.ts`, que segue com `{{ contact.EMAIL }}` cru por
+ * não estar no escopo do #4487/#4517, ver `monthly-render.ts::renderEia`).
+ *
+ * Ou seja: `esp` hoje carrega DOIS eixos — sintaxe do ESP **e** modelo de
+ * identidade do votante (direto vs. resolvido por lookup no KV). Eram o mesmo
+ * eixo entre o #4517 e o #4581. Se um 3º ESP entrar, vale separar os dois em
+ * vez de esticar o ternário de `buildVoteUrl` — ver #4581.
+ *
+ * Cuidado ao editar `buildVoteUrl`: o sufixo `@vote.eia.diaria.local` só pode
+ * acompanhar um TOKEN. Colado atrás de `{{email}}` (que já vira um e-mail
+ * completo) produz 2 arrobas e derruba todo voto — é o bug do #4512, coberto
+ * hoje por `test/vote-token-e2e-4512.test.ts`.
  * Exportado — `render-newsletter-html.ts` importa este tipo em vez de repetir
  * o union literal na validação do CLI, então um 3º ESP futuro só precisa
  * mudar aqui.
@@ -1059,16 +1070,22 @@ export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
     : "";
 
   // #4266 — ver rationale completo no doc comment de `Esp`, acima.
-  // #4487: esp="beehiiv" (e-mail diário) troca o e-mail cru `{{email}}` pelo
+  // #4487 (HISTÓRICO — REVERTIDO pelo #4581 neste ramo, ver bloco abaixo):
+  // esp="beehiiv" (e-mail diário) trocava o e-mail cru `{{email}}` pelo
   // token opaco por assinante `{{poll_token}}@vote.eia.diaria.local` — quem
-  // recebe a edição ENCAMINHADA (WhatsApp/e-mail) não herda mais o e-mail
+  // recebia a edição ENCAMINHADA (WhatsApp/e-mail) não herdava o e-mail
   // real do remetente na URL de voto (achado #4487/#4456: "vota no lugar
-  // dele", suja o leaderboard). O Worker resolve o token de volta pro e-mail
+  // dele", suja o leaderboard). O Worker resolvia o token de volta pro e-mail
   // real via KV logo no início de `handleVote` (workers/poll/src/vote.ts) —
   // ver header de `scripts/lib/shared/poll-token.ts` pro design completo. O
-  // custom field Beehiiv `poll_token` é populado por `scripts/inject-poll-token.ts`
+  // custom field Beehiiv `poll_token` era populado por `scripts/inject-poll-token.ts`
   // (mesmo mecanismo — mas propósito distinto — do extinto `poll_sig`/
   // `inject-poll-sig.ts`, #1083, removido em #1186).
+  //
+  // **Este parágrafo descreve o passado do ramo BEEHIIV.** O mecanismo segue
+  // vivo e em produção no ramo BREVO (#4517, logo abaixo) — é só o canal
+  // Beehiiv que voltou ao e-mail cru. Ver o bloco #4581 antes do
+  // `buildVoteUrl` para o porquê.
   //
   // #4512 (fleet review round 2, achado code-reviewer): CORREÇÃO do
   // comentário original — o único caller de produção de `esp: "brevo"` é
@@ -1090,10 +1107,38 @@ export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
   // resolve pro mesmo assinante via a MESMA entrada KV `polltoken:{token}`,
   // então um leitor que troca de ESP entre edições (não deveria acontecer,
   // mas não quebraria nada) manteria o mesmo streak/nickname no leaderboard.
+  // #4581 (260804): o ramo `esp="beehiiv"` VOLTOU ao e-mail cru `{{email}}`,
+  // desfazendo o #4487 para este canal. Decisão do editor, tomada ao vivo no
+  // Stage 5 da edição 260804, com a razão explícita: **o É IA? não distribui
+  // prêmio**, então alguém votar no lugar de outra pessoa não causa dano —
+  // não há aposta, só ranking de diversão. O custo do token, em compensação,
+  // era real: `{{poll_token}}` depende de um custom field populado por
+  // assinante (`scripts/inject-poll-token.ts`), que nunca chegou a rodar ao
+  // vivo; com o campo inexistente a Beehiiv marca "Invalid merge tag" e TODA a
+  // base vota com a mesma identidade degenerada — quebra pior do que o
+  // vazamento que o token evitava.
+  //
+  // NÃO reintroduzir o token aqui sem decisão nova do editor: o trade-off já
+  // foi pesado e o lado "sem prêmio" é o que manda. Se um dia o É IA? passar
+  // a valer prêmio de verdade, a conversa muda e aí sim vale reabrir.
+  //
+  // O ramo `esp="brevo"` (#4517) fica INTACTO de propósito: lá o atributo
+  // `POLL_TOKEN` é populado INLINE por `publish-daily-brevo.ts` antes de cada
+  // campanha, então o mecanismo funciona de fato e não tem pendência
+  // operacional. Unificar os dois ramos é decisão separada — ver #4581.
+  //
+  // Nota: sem o token, o sufixo `@${VOTE_TOKEN_DOMAIN}` NÃO pode sobrar neste
+  // ramo — produziria `fulano@gmail.com@vote.eia.diaria.local` (2 arrobas),
+  // rejeitado por `isValidVoteEmailFormat` antes de chegar no handleVote.
+  //
+  // O Worker aceita os dois formatos sem mudança: `classifyPollTokenEmail`
+  // devolve `not-token-domain` pra e-mail cru e o `handleVote` segue pelo
+  // caminho pré-#4487 (`workers/poll/src/vote.ts`), preservando
+  // streak/nickname de quem já vota há meses.
   const buildVoteUrl = (choice: "A" | "B") =>
     esp === "brevo"
       ? `${PUBLIC_GAME_BASE_URL}/vote?email={{ contact.POLL_TOKEN }}@${VOTE_TOKEN_DOMAIN}&amp;edition=${eia.edition}&amp;choice=${choice}`
-      : `${PUBLIC_GAME_BASE_URL}/vote?email={{poll_token}}@${VOTE_TOKEN_DOMAIN}&edition=${eia.edition}&choice=${choice}`;
+      : `${PUBLIC_GAME_BASE_URL}/vote?email={{email}}&edition=${eia.edition}&choice=${choice}`;
   // #2541: imagens A/B empilhadas (1 coluna), A acima de B, em desktop e mobile.
   const eiaChoice = (choice: "A" | "B", imgFile: string, paddingTop?: string) => {
     // #3101: width="480" em pixels (600px container − 32px×2 padding da seção
