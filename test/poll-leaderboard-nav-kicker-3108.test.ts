@@ -135,14 +135,21 @@ describe("#3108 — navegação (arquivo + anual) ANTES da tabela; #3615 restrin
   });
 });
 
-describe("#3108 — sub-copy: 2 links SÓ no brand clarice; brand diaria INALTERADO", () => {
-  it("brand clarice: sub-copy com 2 links (diar.ia.br com UTM, Clarice → clarice.ai com UTM, #3978)", async () => {
+describe("#3108/#4569 — sub-copy: 1 link (diar.ia.br) no brand clarice desde #4569; brand diaria INALTERADO", () => {
+  it("brand clarice (#4569, 260804): sub-copy tem só o link diar.ia.br (com UTM) + 'newsletter mensal' em texto plano — SEM link/nome pra Clarice", async () => {
     const html = await fetchHtml("/leaderboard/2026?brand=clarice");
-    const expected = `<p class="sub">Quem mais acertou este ano qual imagem foi gerada pela <a href="${leaderboardCopyHrefEscaped("diaria")}">diar.ia.br</a> na newsletter da <a href="${leaderboardCopyHrefEscaped("clarice")}">Clarice</a>.</p>`;
+    const expected = `<p class="sub">Quem mais acertou este ano qual imagem foi gerada pela <a href="${leaderboardCopyHrefEscaped("diaria")}">diar.ia.br</a> na newsletter mensal.</p>`;
     assert.ok(
       html.includes(expected),
-      `sub-copy da clarice deve ter os 2 links exatos (com UTM): diar.ia.br e Clarice→clarice.ai (shortName, não 'Clarice News' inteiro). Esperado:\n${expected}\nRecebido (trecho):\n${html.match(/<p class="sub">.*?<\/p>/s)?.[0]}`,
+      `sub-copy da clarice deve ter só o link diar.ia.br + "newsletter mensal" em texto plano (#4569). Esperado:\n${expected}\nRecebido (trecho):\n${html.match(/<p class="sub">.*?<\/p>/s)?.[0]}`,
     );
+  });
+
+  it("brand clarice (#4569): sub-copy NÃO emite mais clarice.ai nem o href de brandHref (2º link removido)", async () => {
+    const html = await fetchHtml("/leaderboard/2026?brand=clarice");
+    const subCopy = html.match(/<p class="sub">.*?<\/p>/s)?.[0] ?? "";
+    assert.doesNotMatch(subCopy, /clarice\.ai/, "o 2º link (brandHref → clarice.ai) não deve mais aparecer nesta sub-copy específica");
+    assert.doesNotMatch(subCopy, /newsletter da/, "a frase 'newsletter da X' foi substituída por 'newsletter mensal'");
   });
 
   it("brand diaria: sub-copy é o texto original + UTM (#3978), sem os 2 links da clarice (regressão contra generalização acidental)", async () => {

@@ -1165,8 +1165,15 @@ function renderLeaderboardHtml(
   // função (que é "clarice" nesse ramo).
   const diariaHref = buildBrandSiteUrl("diaria", "leaderboard-copy", "eia-leaderboard-copy");
   const brandHref = buildBrandSiteUrl(brand, "leaderboard-copy", "eia-leaderboard-copy");
+  // #4569 (260804, pedido do editor): o envio Beehiiv apoiadores passou a
+  // usar `pollBrand: "clarice"` (#4521), compartilhando este leaderboard com
+  // 2 audiências (Clarice/Brevo + Beehiiv apoiadores) — "da Clarice" com link
+  // pra clarice.ai deixou de descrever a única audiência real. Troca por
+  // "mensal" (texto plano, sem link) — descreve a newsletter mensal em si,
+  // não uma marca específica. O 1º link (diariaHref → diar.ia.br) fica
+  // intacto; só o 2º (brandHref → clarice.ai) sai desta sub-copy.
   const subCopy = brand === "clarice"
-    ? `<p class="sub">Quem mais acertou ${periodNoun} qual imagem foi gerada pela <a href="${htmlEscape(diariaHref)}">diar.ia.br</a> na newsletter da <a href="${htmlEscape(brandHref)}">${info.shortName ?? info.name}</a>.</p>`
+    ? `<p class="sub">Quem mais acertou ${periodNoun} qual imagem foi gerada pela <a href="${htmlEscape(diariaHref)}">diar.ia.br</a> na newsletter mensal.</p>`
     : `<p class="sub">Quem mais acertou ${periodNoun} qual imagem foi gerada por IA na <a href="${htmlEscape(brandHref)}">${info.name}</a>.</p>`;
   // #3615: link do arquivo só pra clarice — mesmo gate já aplicado à página
   // de voto (votePageHtml, index.ts) pelo #3578. Diária não tem mais acesso

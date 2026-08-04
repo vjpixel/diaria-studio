@@ -72,7 +72,24 @@
  * pendente" (`status: "confirmed_not_pending"`) — `activateSubscription` só
  * bloqueia em `"confirmed_pending"`, tudo mais (incluindo `unknown`) segue
  * (fail-open preservado).
+ *
+ * ## Contadores de alarme durável (#4551)
+ *
+ * Cada um dos 3 motivos de fail-open acima incrementa um contador cumulativo
+ * no KV opcional `REATIVAR_ALARM` (ver `scripts/lib/shared/reativar-alarm-counters.ts`
+ * pras chaves + rationale completo) — mesmo padrão de `Diaria-Cursos-Error-Alarm`
+ * (#4320/#4382): sem isso, o único sinal de uma `BREVO_DIARIA_API_KEY`
+ * revogada ou de erro persistente da Brevo era `console.error`/`console.warn`
+ * em `wrangler tail`, que ninguém olha ativamente. **Só o mecanismo de
+ * contagem está implementado nesta unidade** — o binding `REATIVAR_ALARM`
+ * ainda não foi criado (`wrangler kv namespace create REATIVAR_ALARM`, ver
+ * `wrangler.toml`), e a task agendada de leitura/alarme por e-mail (mesmo
+ * papel de `scripts/cursos-error-alarm.ts`) fica pendente do editor, mesma
+ * disciplina já normalizada em CLAUDE.md pros #4320/#4382/#4490/#4534. Até
+ * lá, `incrementReativarAlarmCounter` é NO-OP fail-soft (binding ausente).
  */
+
+import { REATIVAR_ALARM_COUNTER_KEYS, incrementReativarAlarmCounter } from "../../../scripts/lib/shared/reativar-alarm-counters.ts";
 
 export interface Env {
   /** Secret — `wrangler secret put BEEHIIV_API_KEY`. Sem ela, 503 amigável. */
@@ -91,6 +108,15 @@ export interface Env {
   BREVO_DIARIA_API_KEY?: string;
   /** Override só pra teste (mock server local) — default `https://api.brevo.com/v3`. */
   BREVO_API_URL?: string;
+  /**
+   * Binding OPCIONAL (#4551) — `wrangler kv namespace create REATIVAR_ALARM`,
+   * ainda NÃO criado (ação pendente do editor, mesmo padrão dos #4320/#4382).
+   * Sem ele, `incrementReativarAlarmCounter` é pulado (fail-soft) — mesmo
+   * padrão de `SUBSCRIBERS_KV` opcional em `workers/poll/wrangler.toml`
+   * (#3399/#4054): nunca quebra o fluxo principal por causa de um binding de
+   * OBSERVABILIDADE ausente. Ver `scripts/lib/shared/reativar-alarm-counters.ts`.
+   */
+  REATIVAR_ALARM?: KVNamespace;
 }
 
 const CORS_HEADERS = { "Access-Control-Allow-Origin": "*" } as const;
@@ -161,6 +187,7 @@ export async function checkNativeUnsubscribePending(
     // console.warn, não console.error. Diferente dos branches abaixo, que
     // são falhas reais.
     console.warn(JSON.stringify({ event: "reativar_brevo_guard_skipped", reason: "BREVO_DIARIA_API_KEY ausente" }));
+    await incrementReativarAlarmCounter(env.REATIVAR_ALARM, REATIVAR_ALARM_COUNTER_KEYS.noApiKey);
     return { status: "unknown", reason: "no_api_key" };
   }
   const base = env.BREVO_API_URL ?? "https://api.brevo.com/v3";
@@ -183,15 +210,18 @@ export async function checkNativeUnsubscribePending(
             hint: "BREVO_DIARIA_API_KEY provavelmente inválida/revogada — não é o mesmo caso de 'não configurada'",
           }),
         );
+        await incrementReativarAlarmCounter(env.REATIVAR_ALARM, REATIVAR_ALARM_COUNTER_KEYS.httpErrorAuthDenied);
       } else {
         console.error(JSON.stringify({ event: "reativar_brevo_guard_non_2xx", status: res.status }));
       }
+      await incrementReativarAlarmCounter(env.REATIVAR_ALARM, REATIVAR_ALARM_COUNTER_KEYS.httpError);
       return { status: "unknown", reason: "http_error" }; // fail-open — ver cabeçalho do módulo
     }
     const body = (await res.json().catch(() => null)) as { emailBlacklisted?: boolean } | null;
     return body?.emailBlacklisted === true ? { status: "confirmed_pending" } : { status: "confirmed_not_pending" };
   } catch (e) {
     console.error(JSON.stringify({ event: "reativar_brevo_guard_failed", error: String(e) }));
+    await incrementReativarAlarmCounter(env.REATIVAR_ALARM, REATIVAR_ALARM_COUNTER_KEYS.networkError);
     return { status: "unknown", reason: "network_error" }; // fail-open — ver cabeçalho do módulo
   }
 }

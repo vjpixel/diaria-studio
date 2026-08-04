@@ -49,7 +49,8 @@
  * Exit codes: 1 uso/erro fatal genérico; 2 guard de `--i-reviewed-the-copy`
  * ou `brevo_diaria`/config ausente; 3 cap diário excedido; 4 credenciais do
  * token de voto ausentes; 5 falha ao injetar o token em ≥1 contato; 6
- * divergência entre a enumeração e `listInfo.totalSubscribers` (#4532).
+ * divergência entre a enumeração e `listInfo.totalSubscribers` (#4532); 7
+ * assunto vazio/em branco (`content.title` ausente, #4588).
  *
  * Uso:
  *   npx tsx scripts/publish-daily-brevo.ts <edition-dir> --dry-run
@@ -140,6 +141,28 @@ export function buildDailyBrevoSubject(content: Pick<NewsletterContent, "title">
  * que isso importa" resumido nas outras plataformas de publicação). */
 export function buildDailyBrevoPreviewText(content: Pick<NewsletterContent, "subtitle">): string {
   return content.subtitle;
+}
+
+export type SubjectPresenceCheck = { ok: true } | { ok: false; reason: string };
+
+/**
+ * Pura — guard contra assunto vazio/em branco (#4588, achado do
+ * silent-failure-hunter no fleet review da PR #4586). `buildDailyBrevoSubject`
+ * virou um passthrough puro de `content.title` (era `` `diar.ia.br — ${title}` ``
+ * — mesmo com título vazio, o prefixo garantia um assunto não-vazio, um sinal
+ * fraco mas visível; decisão do editor 260804 removeu o prefixo). Sem este
+ * guard, um `content.title` vazio por defeito upstream (parse malformado de
+ * `02-reviewed.md`, edição manual via Studio que apaga o título sem quebrar
+ * o parser de contagem de destaques) chegava até `POST /emailCampaigns` sem
+ * nenhum sinal — a campanha sempre sai como RASCUNHO (nunca agenda/envia
+ * sozinha), então o blast radius é baixo, mas hoje só um humano abrindo o
+ * rascunho na Brevo notaria.
+ */
+export function checkSubjectNotEmpty(subject: string): SubjectPresenceCheck {
+  if (subject.trim() === "") {
+    return { ok: false, reason: "assunto vazio (content.title em branco)" };
+  }
+  return { ok: true };
 }
 
 // ── cap de envio (puro) ──────────────────────────────────────────────────
@@ -348,6 +371,14 @@ export async function main(rootDirOverride?: string): Promise<void> {
 
   const subject = buildDailyBrevoSubject(content);
   const previewText = buildDailyBrevoPreviewText(content);
+
+  // #4588: checado ANTES do branch `--dry-run` de propósito — o editor deve
+  // ver o erro já no dry-run, não só quando for de fato criar a campanha.
+  const subjectCheck = checkSubjectNotEmpty(subject);
+  if (!subjectCheck.ok) {
+    log(`ERRO: ${subjectCheck.reason} — abortando antes de criar a campanha. Verifique ${editionDir}/02-reviewed.md.`);
+    process.exit(7);
+  }
 
   if (dryRun) {
     const internalDir = resolve(editionDir, "_internal");

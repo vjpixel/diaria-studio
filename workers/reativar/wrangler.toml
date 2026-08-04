@@ -19,3 +19,20 @@ workers_dev = true
 #   cd workers/reativar && npx wrangler secret put BREVO_DIARIA_API_KEY
 # AÇÃO PENDENTE DO EDITOR — não armada nesta unidade (worktree isolado, sem
 # Cloudflare/Brevo credentials ao vivo, mesmo padrão dos #4320/#4382).
+
+# REATIVAR_ALARM — binding KV OPCIONAL (#4551), NÃO declarado aqui de
+# propósito (mesmo racional de `SUBSCRIBERS_KV` em workers/poll/wrangler.toml
+# #3399/#4054: um `[[kv_namespaces]]` com id placeholder quebraria
+# `wrangler deploy` antes do namespace existir de verdade). Sem o binding,
+# `incrementReativarAlarmCounter` (scripts/lib/shared/reativar-alarm-counters.ts)
+# é NO-OP fail-soft — o guard de descadastro nativo continua funcionando
+# normalmente, só sem os contadores de alarme. Pra ativar:
+#   1. wrangler kv namespace create REATIVAR_ALARM
+#   2. Adicionar aqui:
+#        [[kv_namespaces]]
+#        binding = "REATIVAR_ALARM"
+#        id = "<id retornado pelo passo 1>"
+#   3. Implementar e agendar um leitor de alarme (mesmo papel de
+#      scripts/cursos-error-alarm.ts) — NÃO implementado nesta unidade, ver
+#      issue #4551 (só o mecanismo de contagem entrou no PR).
+# AÇÃO PENDENTE DO EDITOR — mesmo padrão dos #4320/#4382/#4490/#4534.
