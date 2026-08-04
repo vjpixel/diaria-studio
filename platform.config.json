@@ -32,10 +32,10 @@
   },
   "brevo_apoiadores": {
     "api_key_env": "BREVO_DIARIA_API_KEY",
-    "list_id": null,
+    "list_id": 8,
     "sender_email": "oi@diar.ia.br",
     "sender_name": "diar.ia.br",
-    "note": "#4572/#4593 — lista Brevo dedicada aos apoiadores Mantenedor/Patrono, alvo de scripts/sync-apoio-nivel-brevo.ts (audiência) e scripts/publish-monthly-apoiadores-brevo.ts (Passo 2 da skill /diaria-mensal-apoiadores, cria a campanha). Migrou de segmento Beehiiv pra lista Brevo (plano Launch/free bloqueia 'Include and exclude segments' na Beehiiv, confirmado ao vivo 260804). Mesma conta Brevo de brevo_diaria (api_key_env + sender compartilhados) — lista PRÓPRIA, distinta. list_id ainda null: a lista precisa ser criada na Brevo antes do 1º envio real — ação pendente do editor, mesma disciplina do #4320/#4382/#4490/#4534 (worktree isolado, sem credencial Brevo real nesta sessão). Sem list_id, publish-monthly-apoiadores-brevo.ts aborta com erro explícito fora de --dry-run (nunca tenta criar a campanha com lista inexistente)."
+    "note": "#4572/#4593 — lista Brevo dedicada aos apoiadores Mantenedor/Patrono, alvo de scripts/sync-apoio-nivel-brevo.ts (audiência) e scripts/publish-monthly-apoiadores-brevo.ts (Passo 2 da skill /diaria-mensal-apoiadores, cria a campanha). Migrou de segmento Beehiiv pra lista Brevo (plano Launch/free bloqueia 'Include and exclude segments' na Beehiiv, confirmado ao vivo 260804). Mesma conta Brevo de brevo_diaria (api_key_env + sender compartilhados) — lista PRÓPRIA, distinta. list_id=8 confirmado via API pelo coordenador da sessão develop 260804 (fora deste worktree, usando o .env do editor — este worktree isolado não tem a credencial): GET /v3/contacts/lists retornou nome 'Apoio — Mantenedor + Patrono (mensal, one-off 2607-08)', folderId 1, totalSubscribers 0 (vazia — scripts/sync-apoio-nivel-brevo.ts --push é quem popula, ainda não rodado). Nenhuma escrita real (--push, criação de campanha) rodou nesta sessão — só a leitura de confirmação. O nome com sufixo de ciclo ('one-off 2607-08') sugere criação ad-hoc pro 1º envio — antes do 2º envio mensal, o editor precisa decidir se vira uma lista PERMANENTE (sem sufixo de ciclo, reusada todo mês) ou se cada ciclo ganha lista própria; não decidido nesta sessão, ver #4572."
   },
   "inbox": {
     "address": "diariaeditor@gmail.com",

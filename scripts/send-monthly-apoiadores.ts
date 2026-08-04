@@ -65,6 +65,7 @@ import {
   decidePrepareAction,
   decideMarkSentAction,
   buildPreparedState,
+  buildSentState,
   type ApoiadoresState,
 } from "./lib/mensal/monthly-apoiadores-state.ts";
 import { APOIO_SEGMENTS_CANONICAL } from "./lib/apoio-segments-canonical.ts";
@@ -94,7 +95,11 @@ async function main(): Promise<void> {
       console.log(`[send-monthly-apoiadores] ${decision.reason}`);
       return;
     }
-    const updated: ApoiadoresState = { ...decision.state, status: "sent", sentAt: new Date().toISOString() };
+    // #4572/#4593 self-review: extraído pra buildSentState (pura, testada em
+    // monthly-apoiadores-state.test.ts) em vez de montar o objeto ad hoc aqui
+    // — preserva brevoCampaignId (e qualquer campo futuro) por construção,
+    // não por disciplina de manter o spread atualizado a cada novo campo.
+    const updated: ApoiadoresState = buildSentState(decision.state, new Date().toISOString());
     writeApoiadoresState(monthlyDir, updated);
     console.log(`[send-monthly-apoiadores] Registrado: ciclo ${cycle} marcado como ENVIADO em ${updated.sentAt}.`);
     return;
@@ -115,6 +120,11 @@ async function main(): Promise<void> {
     rendered.htmlPath,
     rendered.subject,
     APOIADORES_TARGET_SEGMENT_NAMES,
+    // #4572/#4593: preserva o brevoCampaignId de um Passo 2 já rodado — este
+    // Passo 1 (fluxo Beehiiv legado) não pode apagar o registro de que já
+    // existe uma campanha Brevo criada pro ciclo (ver docstring de
+    // buildPreparedState).
+    state?.brevoCampaignId ?? null,
   );
   writeApoiadoresState(monthlyDir, newState);
 
