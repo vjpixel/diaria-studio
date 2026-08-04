@@ -56,6 +56,24 @@ export const MENSAL_BEEHIIV_UTM_SOURCE = "mensal-beehiiv";
 export const MENSAL_BEEHIIV_UTM_MEDIUM = "email";
 
 /**
+ * `utm_source`/`utm_medium` da variante BREVO do envio extra pra apoiadores
+ * (#4593, follow-up do #4572/#4482). O envio extra migrou de canal — Beehiiv
+ * bloqueia "Include and exclude segments" (audiência multi-segmento) atrás do
+ * plano Scale, workspace é Launch/free (confirmado ao vivo 260804, #4572) —
+ * mas a audiência (só Mantenedor/Patrono) e o conteúdo (mesmo `draft.md`)
+ * continuam os mesmos do #4482, só a plataforma de envio muda de Beehiiv pra
+ * Brevo. UTM PRÓPRIO, nunca `MENSAL_UTM_SOURCE` ("clarice") nem
+ * `MENSAL_BEEHIIV_UTM_SOURCE` ("mensal-beehiiv", que nunca chegou a ser usado
+ * ao vivo — o envio Beehiiv nunca saiu do estágio de draft órfão, #4572): os
+ * 3 são audiência/canal distintos e misturar a atribuição refaria o mesmo
+ * problema que o #2975 original corrigiu.
+ * Consumido por `APOIADORES_BREVO_UTM_PROFILE` em
+ * `scripts/lib/mensal/monthly-apoiadores-brevo-render.ts`.
+ */
+export const MENSAL_APOIADORES_BREVO_UTM_SOURCE = "mensal-apoiadores-brevo";
+export const MENSAL_APOIADORES_BREVO_UTM_MEDIUM = "email";
+
+/**
  * Slug de seção usado no sufixo do wordmark (`wordmark-{secao}`): minúsculo,
  * sem acento, `[a-z0-9-]`, ≤32 chars. Nunca lança — entrada vazia/ilegível cai
  * em `geral`, que mantém o funil mensurável em vez de emitir um campaign quebrado.
@@ -99,6 +117,18 @@ export function buildMensalCampaign(ciclo: string, posicao: string): string {
 export function buildMensalBeehiivCampaign(ciclo: string, posicao: string): string {
   const p = slugifySecao(posicao);
   return `${MENSAL_BEEHIIV_UTM_SOURCE}-${ciclo}-${p}`;
+}
+
+/**
+ * Compõe o `utm_campaign` da variante Brevo do envio extra pra apoiadores
+ * (#4593): `mensal-apoiadores-brevo-{ciclo}-{posicao}` — mesmo padrão de
+ * `buildMensalCampaign`/`buildMensalBeehiivCampaign`, `utm_source` distinto.
+ *
+ * @pure
+ */
+export function buildMensalApoiadoresBrevoCampaign(ciclo: string, posicao: string): string {
+  const p = slugifySecao(posicao);
+  return `${MENSAL_APOIADORES_BREVO_UTM_SOURCE}-${ciclo}-${p}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -485,7 +515,25 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     description:
       "Envio EXTRA do digest mensal pra apoiadores Mantenedor/Patrono via Beehiiv (#4482) — " +
       "mesmo conteúdo/posições da entrada 'mensal-clarice' acima, `utm_source` distinto pra " +
-      "não misturar a atribuição dos 2 canais (audiência e plataforma diferentes).",
+      "não misturar a atribuição dos 2 canais (audiência e plataforma diferentes). " +
+      "SUPERSEDIDO pelo canal Brevo ('mensal-apoiadores-brevo' abaixo, #4572/#4593) — este " +
+      "envio nunca saiu do estágio de draft órfão na Beehiiv (plano Launch/free bloqueia " +
+      "\"Include and exclude segments\"), mantido no registry só por histórico/rastreabilidade.",
+    status: "aposentado",
+  },
+  {
+    id: "mensal-apoiadores-brevo",
+    label: "Digest mensal (Brevo, apoiadores)",
+    source: MENSAL_APOIADORES_BREVO_UTM_SOURCE,
+    medium: MENSAL_APOIADORES_BREVO_UTM_MEDIUM,
+    campaignPattern: `${MENSAL_APOIADORES_BREVO_UTM_SOURCE}-{ciclo}-{posicao}`,
+    originFile: "scripts/lib/mensal/monthly-apoiadores-brevo-render.ts",
+    description:
+      "Envio EXTRA do digest mensal pra apoiadores Mantenedor/Patrono via Brevo (#4572/#4593) — " +
+      "sucessor do canal Beehiiv ('mensal-beehiiv' acima, aposentado sem nunca ter enviado ao " +
+      "vivo): mesmo conteúdo/posições/audiência do #4482, canal trocado por bloqueio de plano da " +
+      "Beehiiv. `utm_source` próprio pra não misturar atribuição com 'mensal-clarice' " +
+      "(assinantes Clarice reais) nem com o 'mensal-beehiiv' aposentado.",
     status: "ativo",
   },
   {

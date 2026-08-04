@@ -33,7 +33,9 @@
   "brevo_apoiadores": {
     "api_key_env": "BREVO_DIARIA_API_KEY",
     "list_id": null,
-    "note": "#4572 — lista Brevo dedicada aos apoiadores Mantenedor/Patrono, alvo de scripts/sync-apoio-nivel-brevo.ts. Audiência real da skill /diaria-mensal-apoiadores, que migrou de segmento Beehiiv pra lista Brevo (plano Launch/free bloqueia 'Include and exclude segments' na Beehiiv, confirmado ao vivo 260804). Mesma conta Brevo de brevo_diaria (api_key_env compartilhado) — lista PRÓPRIA, distinta. list_id ainda null: a lista precisa ser criada na Brevo antes do 1º --push — ação pendente do editor, mesma disciplina do #4320/#4382/#4490/#4534 (worktree isolado, sem credencial Brevo real nesta sessão)."
+    "sender_email": "oi@diar.ia.br",
+    "sender_name": "diar.ia.br",
+    "note": "#4572/#4593 — lista Brevo dedicada aos apoiadores Mantenedor/Patrono, alvo de scripts/sync-apoio-nivel-brevo.ts (audiência) e scripts/publish-monthly-apoiadores-brevo.ts (Passo 2 da skill /diaria-mensal-apoiadores, cria a campanha). Migrou de segmento Beehiiv pra lista Brevo (plano Launch/free bloqueia 'Include and exclude segments' na Beehiiv, confirmado ao vivo 260804). Mesma conta Brevo de brevo_diaria (api_key_env + sender compartilhados) — lista PRÓPRIA, distinta. list_id ainda null: a lista precisa ser criada na Brevo antes do 1º envio real — ação pendente do editor, mesma disciplina do #4320/#4382/#4490/#4534 (worktree isolado, sem credencial Brevo real nesta sessão). Sem list_id, publish-monthly-apoiadores-brevo.ts aborta com erro explícito fora de --dry-run (nunca tenta criar a campanha com lista inexistente)."
   },
   "inbox": {
     "address": "diariaeditor@gmail.com",
