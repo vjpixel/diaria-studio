@@ -35,7 +35,7 @@ import { json } from "./index";
 // medium/campaign PRÓPRIOS abaixo distinguem o cadastro inline do CTA-link e
 // do quiz.
 import { isValidVoteEmailFormat, SUBSCRIBE_UTM_SOURCE } from "./lib";
-import { JOGAR_GATE_INLINE_UTM, JOGAR_IDENTIFY_INLINE_UTM, JOGAR_INLINE_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041, #4054, #4125 item 4
+import { JOGAR_GATE_INLINE_UTM, JOGAR_IDENTIFY_INLINE_UTM, JOGAR_INLINE_UTM, JOGAR_POSTWEB_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041, #4054, #4125 item 4, #4578
 
 /** UTM próprio do cadastro inline (#3580) — `utm_source` continua
  * `eia-standalone` (convenção de medição), medium/campaign distintos pra medir
@@ -75,8 +75,17 @@ export const INLINE_SUBSCRIBE_UTM_CAMPAIGN = JOGAR_INLINE_UTM.campaign;
  * argumento e caía no default `jogar` — colidindo com o form standalone do
  * #3580 (que só sobrevive em `/jogar/quiz`), tornando as duas conversões
  * indistinguíveis na atribuição.
+ *
+ * #4578: `"jogar-postweb"` — cadastro na CAIXA UNIFICADA DO GATE revelada no
+ * pós-voto de `/jogar?from=post-web` (visitante redirecionado de `/vote` na
+ * versão web de um post, merge tag nunca resolvida ali — ver rationale em
+ * `vote.ts`). Mesmo endpoint/mecanismo de `"jogar-gate"` acima
+ * (`POST /jogar/gate/subscribe`, `handleJogarGateSubscribe`, web-gate.ts) —
+ * `handleJogarGateSubscribe` lê `source` do corpo do POST (default
+ * `"jogar-gate"`, back-compat com a tela de gate por rodada que não manda
+ * esse campo) pra distinguir os dois pontos de entrada na atribuição.
  */
-export type SubscribeSource = "jogar" | "livros-hero" | "livros-footer" | "vote-clarice" | "jogar-gate" | "jogar-identify";
+export type SubscribeSource = "jogar" | "livros-hero" | "livros-footer" | "vote-clarice" | "jogar-gate" | "jogar-identify" | "jogar-postweb";
 
 /**
  * #4530 Parte B: `referringSite` promovido a campo do triplo — antes disto
@@ -148,6 +157,15 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     medium: JOGAR_IDENTIFY_INLINE_UTM.medium,
     campaign: JOGAR_IDENTIFY_INLINE_UTM.campaign,
     referringSite: "jogar-identify-inline",
+  },
+  // #4578: caixa unificada do gate no pós-voto de /jogar?from=post-web —
+  // mesmo endpoint de "jogar-gate" (POST /jogar/gate/subscribe), source
+  // distinto pra não misturar os 2 pontos de entrada na atribuição.
+  "jogar-postweb": {
+    source: JOGAR_POSTWEB_UTM.source,
+    medium: JOGAR_POSTWEB_UTM.medium,
+    campaign: JOGAR_POSTWEB_UTM.campaign,
+    referringSite: "jogar-postweb-gate",
   },
 };
 

@@ -111,6 +111,10 @@ import {
   readWebSession,
   readWebSessionEmail,
   renderJogarGatePage,
+  // #4578: caixa unificada do gate no pós-voto de /jogar?from=post-web —
+  // ver rationale completo em web-gate.ts.
+  renderJogarGateBoxBlock,
+  jogarGateBoxScript,
 } from "./web-gate";
 import { parseCookieHeader } from "./session-cookie";
 
@@ -637,6 +641,15 @@ export interface JogarPageOptions {
   edition: string;
   /** true quando `correct:{edition}` já existe no KV compartilhado (poll fechado). */
   revealed: boolean;
+  /** #4578: true quando a request chegou via `/jogar?...&from=post-web` — o
+   * redirect de `/vote` (vote.ts) pra quem clicou no botão de voto na versão
+   * WEB de um post (merge tag nunca resolvida ali). Troca o form de
+   * identidade padrão (#3975) pela CAIXA UNIFICADA do gate
+   * (`renderJogarGateBoxBlock`/`jogarGateBoxScript`, web-gate.ts) no
+   * pós-voto — mesmo CTA-link (#3518) continua como fallback secundário nos
+   * dois casos. Default `false` (comportamento pré-#4578 100% intacto para
+   * quem chega sem esse parâmetro). */
+  postWeb?: boolean;
 }
 
 /**
@@ -653,7 +666,7 @@ export interface JogarPageOptions {
  * form nem revela a resposta antes do clique.
  */
 export function renderJogarPageHtml(opts: JogarPageOptions): string {
-  const { edition, revealed } = opts;
+  const { edition, revealed, postWeb = false } = opts;
   const info = BRAND_INFO[JOGAR_BRAND];
   const imgA = `/img/img-${htmlEscape(edition)}-01-eia-A.jpg`;
   const imgB = `/img/img-${htmlEscape(edition)}-01-eia-B.jpg`;
@@ -696,7 +709,7 @@ ${seoMeta}
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
   .already { margin: 24px auto; padding: 16px 18px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; font-size: 0.95rem; }
   .scroll-hint { display: none; }
-  #jogar-form[hidden], #jogar-already[hidden], #jogar-result-slot[hidden], #jogar-subscribe-cta[hidden], #jogar-identity-form[hidden], #jogar-identified-note[hidden], #jogar-checking[hidden] { display: none; }
+  #jogar-form[hidden], #jogar-already[hidden], #jogar-result-slot[hidden], #jogar-subscribe-cta[hidden], #jogar-identity-form[hidden], #jogar-identified-note[hidden], #jogar-checking[hidden], #jogar-gate-box[hidden], #jogar-gate-box-note[hidden] { display: none; }
   /* #3983: "Conferindo…" — feedback imediato entre o clique e a resposta do
      /vote (fast-path do backend responde em dezenas de ms, mas a indicação
      visual evita a sensação de travamento em conexões mais lentas). */
@@ -786,8 +799,12 @@ ${renderJogarBrandLogoBlock()}
      (uma superfície de conversão só: ranking primeiro, assinatura como
      opção no mesmo gesto — ver rationale em identify.ts). Revelado via JS
      junto com o resultado (mesma disciplina anti-spoiler). Vem ANTES do
-     CTA-link (fallback #3518). -->
-${renderIdentityFormBlock()}
+     CTA-link (fallback #3518).
+     #4578: quem chegou via /jogar?...&from=post-web (redirect de /vote, ver
+     web-gate.ts) vê a CAIXA UNIFICADA do gate (#jogar-gate-box) no lugar
+     deste form — o script de reveal abaixo resolve qual id observar a
+     partir de postWeb, o resto da lógica não muda. -->
+${postWeb ? renderJogarGateBoxBlock() : renderIdentityFormBlock()}
 <!-- #3518: CTA de assinatura — estático (SEM dado de servidor, ao contrário
      do result-slot/share-card), revelado via JS junto com o resultado (voto
      novo OU repetido, ver script abaixo). Nunca antes do voto (mesma
@@ -898,7 +915,11 @@ ${renderBrandFooter(JOGAR_BRAND)}
   // caminhos (voto novo e já-votou). Se o jogador já está identificado
   // (identityFormScript já escondeu o form e mostrou a nota "jogando como"),
   // o re-sync silencioso mantém o score em dia sem reabrir nada.
-  var identityForm = document.getElementById("jogar-identity-form");
+  // #4578: quem chegou via ?from=post-web vê a caixa unificada do gate
+  // (#jogar-gate-box, web-gate.ts) NO LUGAR deste form — id resolvido
+  // server-side pra que o resto deste bloco (reveal/hide/sync, idêntico nos
+  // 2 casos) não precise saber qual dos dois foi renderizado.
+  var identityForm = document.getElementById(${JSON.stringify(postWeb ? "jogar-gate-box" : "jogar-identity-form")});
   // #3975: identityFormScript já escondeu o form + mostrou "jogando como
   // {email}" no load da página SE o jogador já está identificado — não
   // reabrir o form nesse caso, só disparar o re-sync silencioso (sync() é
@@ -1020,7 +1041,7 @@ ${renderBrandFooter(JOGAR_BRAND)}
 })();
 </script>
 ${shareButtonScript("#jogar-result-slot")}
-${identityFormScript()}
+${postWeb ? jogarGateBoxScript() : identityFormScript()}
 ${renderLightboxMarkup()}
 ${lightboxScript()}
 </body>
@@ -2316,7 +2337,12 @@ export async function handleJogarPage(url: URL, env: Env, request?: Request): Pr
   if (explicitEdition && AAMMDD_RE.test(explicitEdition)) {
     const edition = explicitEdition;
     const correctRaw = await env.POLL.get(`correct:${edition}`);
-    return new Response(renderJogarPageHtml({ edition, revealed: correctRaw !== null }), {
+    // #4578: sinaliza a origem "redirect de /vote na versão web de um post"
+    // (guard #2262 em vote.ts, merge tag nunca resolvida fora do envio real)
+    // — troca o form de identidade padrão pela caixa unificada do gate no
+    // pós-voto (ver JogarPageOptions/renderJogarPageHtml acima).
+    const postWeb = url.searchParams.get("from") === "post-web";
+    return new Response(renderJogarPageHtml({ edition, revealed: correctRaw !== null, postWeb }), {
       headers: {
         "Content-Type": "text/html;charset=utf-8",
         // #4109 (self-review): skip_gate=1 é um bypass de UMA navegação —
