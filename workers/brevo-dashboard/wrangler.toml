@@ -4,7 +4,12 @@ compatibility_date = "2026-01-01"
 workers_dev = true
 
 # Secrets (via `wrangler secret put`):
-#   BREVO_API_KEY   → API key da conta Brevo da Clarice (xkeysib-...)
+#   BREVO_API_KEY         → API key da conta Brevo da Clarice (xkeysib-...)
+#   BREVO_DIARIA_API_KEY  → API key da conta Brevo PRÓPRIA do editor (canal
+#                     `brevo_diaria`, #4266/#4476/#4515) — conta SEPARADA da
+#                     Clarice. Opcional: ausente → aba "brevo_diaria" fica
+#                     oculta (fail-soft, nunca quebra o resto do dashboard).
+#                     Setup: wrangler secret put BREVO_DIARIA_API_KEY
 #   STRIPE_API_KEY  → chave restrita Stripe (read-only: Coupons/Customers/
 #                     Invoices/Subscriptions/Charges = Read). Necessária para
 #                     a tab de cupons (#2718). Nunca committed.
