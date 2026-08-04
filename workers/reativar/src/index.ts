@@ -533,7 +533,7 @@ export async function unlinkReativarFromBrevoList(
   }
   const base = env.BREVO_API_URL ?? "https://api.brevo.com/v3";
   try {
-    await unlinkFromBrevoListShared(apiKey, listId, email, fetchImpl, base);
+    await unlinkFromBrevoListShared(apiKey, listId, email, fetchImpl, base, ACTIVATE_FETCH_TIMEOUT_MS);
   } catch (e) {
     // Falha REAL da Brevo (HTTP não-2xx ou exceção de rede) — console.error,
     // mesmo padrão de `reativar_beehiiv_non_2xx`/`reativar_fetch_failed`

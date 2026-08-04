@@ -479,15 +479,19 @@ describe("unlinkReativarFromBrevoList — desvincula da lista Brevo no clique (#
   });
 
   it("configurado → PUT /contacts/{email} com unlinkListIds:[listId]", async () => {
-    let call: { url: string; body: unknown } | undefined;
+    let call: { url: string; body: unknown; signal: unknown } | undefined;
     const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
-      call = { url: String(url), body: JSON.parse(init!.body as string) };
+      call = { url: String(url), body: JSON.parse(init!.body as string), signal: init?.signal };
       return jsonRes(200, {});
     }) as typeof fetch;
     const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key", BREVO_DIARIA_LIST_ID: "7" };
     await unlinkReativarFromBrevoList(env, "a@b.com", fetchImpl);
     assert.equal(call?.url, "https://api.brevo.com/v3/contacts/a%40b.com");
     assert.deepEqual(call?.body, { unlinkListIds: [7] });
+    assert.ok(
+      call?.signal instanceof AbortSignal,
+      "fetch precisa de um AbortSignal (timeout) — achado do self-review #4535, sem isso um stall de rede pendura a página de confirmação",
+    );
   });
 
   it("falha HTTP da Brevo → engolida (fail-soft), log estruturado, NUNCA lança", async () => {

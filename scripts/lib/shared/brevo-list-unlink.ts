@@ -11,6 +11,12 @@
  * nasce pra dar ao Worker `reativar` (#4535) a mesma chamada sem duplicar o
  * literal do endpoint/corpo em 2 lugares que podem divergir sem querer.
  *
+ * `timeoutMs` é opcional (sem default próprio, nunca aplica timeout se
+ * omitido) — o caller decide se quer um teto (o Worker `reativar` sempre
+ * passa `ACTIVATE_FETCH_TIMEOUT_MS`, mesmo timeout dos outros fetches do
+ * módulo; sem isso, uma rede instável deixaria o `await` pendurado
+ * indefinidamente, achado do self-review do #4535).
+ *
  * Lança em qualquer falha HTTP (fail loud) — o caller decide o fail-soft
  * (ver `unlinkReativarFromBrevoList`, `workers/reativar/src/index.ts`). O
  * erro lançado (`BrevoUnlinkError`) NUNCA embute o e-mail nem o corpo da
@@ -33,11 +39,13 @@ export async function unlinkFromBrevoListShared(
   email: string,
   fetchImpl: typeof fetch = fetch,
   apiBase: string = "https://api.brevo.com/v3",
+  timeoutMs?: number,
 ): Promise<void> {
   const res = await fetchImpl(`${apiBase}/contacts/${encodeURIComponent(email)}`, {
     method: "PUT",
     headers: { "api-key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ unlinkListIds: [listId] }),
+    ...(timeoutMs !== undefined ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
   });
   if (!res.ok) {
     await res.text().catch(() => ""); // drena o corpo (pode conter o e-mail ecoado) — nunca incluído no erro.
