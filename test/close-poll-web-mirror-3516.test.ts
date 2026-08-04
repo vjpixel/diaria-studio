@@ -81,7 +81,18 @@ function startMockPollWorker(
       }
       if (url.pathname === "/stats") {
         res.writeHead(200);
-        res.end(JSON.stringify({ correct_answer: expectedAnswer }));
+        // #4566: total/voted_a/voted_b/correct_count agora são validados
+        // como `number` (guard MEDIUM, close-poll.ts) antes de montar
+        // CorrectCountSanityInput — tanto no check da diária quanto na
+        // releitura pós-mirror (#4566 HIGH). 1 voto no lado certo, sem
+        // divergência, pra nunca disparar nenhum dos dois guards à toa.
+        res.end(JSON.stringify({
+          correct_answer: expectedAnswer,
+          total: 1,
+          voted_a: expectedAnswer === "A" ? 1 : 0,
+          voted_b: expectedAnswer === "B" ? 1 : 0,
+          correct_count: 1,
+        }));
         return;
       }
       res.writeHead(404);

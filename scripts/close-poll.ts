@@ -205,6 +205,57 @@ export function checkCorrectCountSanity(input: CorrectCountSanityInput): Correct
   };
 }
 
+/** Campos numéricos de `/stats` já validados como `number` de verdade. */
+export interface StatsNumericFields {
+  total: number;
+  votedA: number;
+  votedB: number;
+  correctCount: number;
+}
+
+/**
+ * #4566 (review fleet, achado MEDIUM): valida que os 4 campos numéricos que
+ * `/stats` devolve pós-correção (`total`, `voted_a`, `voted_b`,
+ * `correct_count`) são de fato `number` antes de virarem input de
+ * `checkCorrectCountSanity`. Ausência ou tipo errado indica regressão de
+ * schema no Worker — sem este guard, todos cairiam em `?? 0`, `matches`
+ * bateria sempre 0 === 0 e `checkCorrectCountSanity` nunca acusaria nada:
+ * a MESMA classe de "fallback que mascara o problema real" que #4563 existe
+ * pra eliminar, só que um nível abaixo (o CAMINHO que popula o input a
+ * partir do JSON de rede, não o guard em si — o tipo de
+ * `CorrectCountSanityInput` já exige `number`, nunca `number|undefined`).
+ *
+ * Pure, testável sem rede/spawn — `main()` usa isto tanto no sanity check
+ * principal (FATAL se inválido) quanto na releitura pós-mirror --brand web
+ * (fail-soft, só warning — ver #4566 achado HIGH).
+ */
+export function validateStatsNumericFields(stats: {
+  total?: unknown;
+  voted_a?: unknown;
+  voted_b?: unknown;
+  correct_count?: unknown;
+}): { ok: true; fields: StatsNumericFields } | { ok: false; message: string } {
+  if (
+    typeof stats.total !== "number" ||
+    typeof stats.voted_a !== "number" ||
+    typeof stats.voted_b !== "number" ||
+    typeof stats.correct_count !== "number"
+  ) {
+    return {
+      ok: false,
+      message:
+        `resposta /stats malformada — total/voted_a/voted_b/correct_count ausente(s) ou de tipo inválido ` +
+        `(total=${JSON.stringify(stats.total)}, voted_a=${JSON.stringify(stats.voted_a)}, ` +
+        `voted_b=${JSON.stringify(stats.voted_b)}, correct_count=${JSON.stringify(stats.correct_count)}). ` +
+        `Worker pode ter regressão de schema — ver #4566.`,
+    };
+  }
+  return {
+    ok: true,
+    fields: { total: stats.total, votedA: stats.voted_a, votedB: stats.voted_b, correctCount: stats.correct_count },
+  };
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const { values } = parseCliArgs(args); // #535: fix indexOf+1 bug
@@ -323,15 +374,23 @@ async function main(): Promise<void> {
 
   // #4563: o check acima só confirma que o GABARITO foi gravado — não que o
   // CRÉDITO (correct_count) foi de fato aplicado aos votos já registrados.
-  // `?? 0` nos campos ausentes: mocks de teste/versões antigas do Worker que
-  // só devolvem `correct_answer` (sem total/voted_a/voted_b/correct_count)
-  // resultam em esperado=0 e atual=0 — nunca disparam este guard à toa.
+  //
+  // #4566 (review fleet, achado MEDIUM): `validateStatsNumericFields` (pure,
+  // acima) garante que os 4 campos são `number` de verdade — sem isso,
+  // campos ausentes/malformados cairiam silenciosamente em `?? 0` e
+  // mascarariam uma regressão de schema do Worker. FATAL, não silencioso.
+  const statsFields = validateStatsNumericFields(stats);
+  if (!statsFields.ok) {
+    console.error(`[close-poll] FATAL: ${statsFields.message}`);
+    process.exit(1);
+  }
+
   const correctCountSanity = checkCorrectCountSanity({
     answer,
-    totalVotes: stats.total ?? 0,
-    votedA: stats.voted_a ?? 0,
-    votedB: stats.voted_b ?? 0,
-    correctCountFromStats: stats.correct_count ?? 0,
+    totalVotes: statsFields.fields.total,
+    votedA: statsFields.fields.votedA,
+    votedB: statsFields.fields.votedB,
+    correctCountFromStats: statsFields.fields.correctCount,
     updatedVotes: data.updated_votes ?? 0,
   });
   if (!correctCountSanity.ok) {
@@ -373,9 +432,12 @@ async function main(): Promise<void> {
           brand: "clarice",
           updated_votes: data.updated_votes ?? 0,
           closed_at: new Date().toISOString(),
-          // #4563: expected_correct_count/correct_count_from_stats registrados
-          // pra auditoria — sanity check pós-correção já validou que batem
-          // (senão o script teria saído com FATAL acima).
+          // #4563: expected_correct_count/correct_count registrados pra
+          // auditoria (correct_count é o valor JÁ CORRIGIDO lido de /stats —
+          // não confundir com correctCountFromStats, nome interno camelCase
+          // do parâmetro de CorrectCountSanityInput) — sanity check
+          // pós-correção já validou que batem (senão o script teria saído
+          // com FATAL acima).
           sanity_check: {
             correct_answer: stats.correct_answer,
             correct_count: stats.correct_count ?? 0,
@@ -434,11 +496,54 @@ async function main(): Promise<void> {
       const webSig = adminSig(secret, "web", edition, answer);
       const webUrl = `${POLL_WORKER_URL}/admin/correct?edition=${edition}&answer=${answer}&sig=${webSig}&brand=web`;
       const webRes = await dohFetch(webUrl, { method: "POST" });
-      const webData = await webRes.json().catch(() => ({})) as { ok?: boolean };
+      const webData = await webRes.json().catch(() => ({})) as { ok?: boolean; updated_votes?: number };
       if (!webRes.ok || !webData.ok) {
         console.error(`[close-poll] aviso (#3516): mirror --brand web falhou (status ${webRes.status}) para edition=${edition} — não bloqueia close-poll da diária.`);
       } else {
         console.error(`[close-poll] gabarito espelhado pro brand=web (edition=${edition}) — #3516.`);
+
+        // #4566 (review fleet, achado HIGH): o /admin/correct acima só
+        // confirma que o GABARITO do brand `web` foi gravado — StatsCounter
+        // é instanciado por `{brand}:{edition}`, então o DO do brand `web` é
+        // uma instância TOTALMENTE separada da diária, e um resultado limpo
+        // lá em cima não garante nada sobre o mirror. Mesma classe de bug do
+        // #4563 (`ok:true` sem o CRÉDITO ter sido de fato aplicado), agora
+        // reproduzível aqui. Relê `/stats?brand=web` e roda o MESMO guard
+        // puro (`checkCorrectCountSanity`) — mas fail-soft (aviso em stderr,
+        // NUNCA FATAL/exit): o close-poll da diária já terminou com sucesso
+        // neste ponto, e o mirror inteiro é best-effort por natureza (#3516)
+        // — um mismatch aqui não deve derrubar o processo, só alertar.
+        try {
+          const webStatsSigQ = `&sig=${statsSig(secret, "web", edition)}`;
+          const webStatsRes = await dohFetch(`${POLL_WORKER_URL}/stats?edition=${edition}&brand=web${webStatsSigQ}`);
+          const webStats = await webStatsRes.json().catch(() => ({})) as {
+            total?: number;
+            voted_a?: number;
+            voted_b?: number;
+            correct_count?: number;
+          };
+          const webStatsFields = webStatsRes.ok ? validateStatsNumericFields(webStats) : { ok: false as const, message: `status ${webStatsRes.status}` };
+          if (!webStatsFields.ok) {
+            console.error(
+              `[close-poll] aviso (#4566): não foi possível validar o crédito do mirror --brand web (resposta ` +
+                `/stats malformada ou indisponível para edition=${edition}: ${webStatsFields.message}).`,
+            );
+          } else {
+            const webSanity = checkCorrectCountSanity({
+              answer,
+              totalVotes: webStatsFields.fields.total,
+              votedA: webStatsFields.fields.votedA,
+              votedB: webStatsFields.fields.votedB,
+              correctCountFromStats: webStatsFields.fields.correctCount,
+              updatedVotes: webData.updated_votes ?? 0,
+            });
+            if (!webSanity.ok) {
+              console.error(`[close-poll] aviso (#4566): mirror --brand web reportou ok:true mas o crédito diverge — ${webSanity.message}`);
+            }
+          }
+        } catch (e) {
+          console.error(`[close-poll] aviso (#4566): validação pós-mirror --brand web lançou exceção para edition=${edition}: ${(e as Error).message} — não bloqueia close-poll.`);
+        }
       }
     } catch (e) {
       console.error(`[close-poll] aviso (#3516): mirror --brand web lançou exceção para edition=${edition}: ${(e as Error).message} — não bloqueia close-poll.`);

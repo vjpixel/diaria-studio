@@ -76,7 +76,16 @@ function startMockPollWorker(
       }
       if (url.pathname === "/stats") {
         res.writeHead(200);
-        res.end(JSON.stringify({ correct_answer: expectedAnswer }));
+        // #4566: total/voted_a/voted_b/correct_count agora são validados
+        // como `number` antes de montar CorrectCountSanityInput — mock
+        // precisa devolvê-los (1 voto no lado certo, sem divergência).
+        res.end(JSON.stringify({
+          correct_answer: expectedAnswer,
+          total: 1,
+          voted_a: expectedAnswer === "A" ? 1 : 0,
+          voted_b: expectedAnswer === "B" ? 1 : 0,
+          correct_count: 1,
+        }));
         return;
       }
       res.writeHead(404);
