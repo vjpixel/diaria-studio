@@ -395,21 +395,23 @@ async function buildDashboardResponse(request: Request, env: Env, isFresh: boole
     // parseClariceCampaignKey) têm prioritized.md/mapa de seção — campanhas
     // diárias não entram aqui e caem no fallback "—" sem custo extra.
     const monthlyCycles = collectMonthlyLinkCycles([...campaigns, ...scheduled]);
-    const [linkSectionsByCycle, linkTitlesByCycle] = await Promise.all([
-      readLinkSectionsByCycle(env, monthlyCycles),
-      readLinkTitlesByCycle(env, monthlyCycles), // #4198
-    ]);
-    // #4515: aba brevo_diaria — canal Brevo SEPARADO da Clarice, secret
-    // opcional (BREVO_DIARIA_API_KEY ausente → `null`, aba oculta).
+    // #4515: aba brevo_diaria (canal Brevo SEPARADO da Clarice) roda em
+    // PARALELO com as 2 leituras de link-section acima — nenhuma depende do
+    // resultado das outras, e serializar adicionaria latência a TODO load do
+    // dashboard principal da Clarice só por causa de uma aba secundária.
     // `fetchBrevoDiariaTabData` já é fail-soft por construção (nunca lança —
     // ver docstring em brevo-diaria.ts); o `.catch` aqui é defesa em
     // profundidade (mesmo padrão do resto desta função) — uma falha
     // inesperada neste canal SECUNDÁRIO nunca pode derrubar o dashboard
     // principal da Clarice.
-    const brevoDiaria = await fetchBrevoDiariaTabData(env, isFresh).catch((e) => {
-      console.error("[#4515] brevo_diaria tab: falha inesperada fora do fail-soft interno:", e instanceof Error ? e.message : e);
-      return null;
-    });
+    const [linkSectionsByCycle, linkTitlesByCycle, brevoDiaria] = await Promise.all([
+      readLinkSectionsByCycle(env, monthlyCycles),
+      readLinkTitlesByCycle(env, monthlyCycles), // #4198
+      fetchBrevoDiariaTabData(env, isFresh).catch((e) => {
+        console.error("[#4515] brevo_diaria tab: falha inesperada fora do fail-soft interno:", e instanceof Error ? e.message : e);
+        return null;
+      }),
+    ]);
     const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, planCredits, dataGeneratedAt, campaignsWindowLimit, postmasterSpam, { linkSectionsByCycle, linkTitlesByCycle, brevoDiaria });
     const response = new Response(html, {
       headers: {
