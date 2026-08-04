@@ -25,7 +25,7 @@ const PODIUM: PodiumEntry[] = [
 
 const RAFFLE: RaffleConfig = {
   meet_url: "https://meet.google.com/nbs-jcut-ojj",
-  day_of_month: 2,
+  sorteio_do_mes: { mes: "2026-07", dia: 2 },
   hora_inicio: "13:30",
   hora_fim: "14:00",
 };

@@ -25,9 +25,16 @@
  * em #2727, ainda sem lint dedicado). Skip é a opção segura.
  *
  * Graceful (mesmo padrão de fetch-leaderboard-top1.ts): qualquer pré-condição
- * ausente (não é 1ª edição do mês, leaderboard.json ausente/vazio, pódio
+ * AUSENTE (não é 1ª edição do mês, leaderboard.json ausente/vazio, pódio
  * incompleto, bloco `raffle` ausente em platform.config.json) é um NO-OP —
  * loga o motivo e sai 0. Nunca bloqueia o pipeline.
+ *
+ * #4583: exceção deliberada — `raffle.sorteio_do_mes.mes` PRESENTE mas
+ * divergente do mês da edição corrente NÃO é tratado como no-op gracioso.
+ * O dia do sorteio muda todo mês (não existe "dia fixo"); se o campo não foi
+ * atualizado, renderizar o `dia` herdado do mês anterior publicaria uma data
+ * errada em silêncio pra base inteira — pior que abortar. Mesma severidade
+ * do `02-reviewed.md` ausente abaixo (fatal, exit 1).
  *
  * Uso:
  *   npx tsx scripts/inject-champions-callout.ts --edition AAMMDD [--edition-dir path] \
@@ -36,7 +43,9 @@
  *
  * Exit codes:
  *   0  sucesso — injetado, OU no-op gracioso (motivo no stdout)
- *   1  02-reviewed.md ausente (fatal — Stage 2 deveria ter escrito) ou I/O error inesperado
+ *   1  fatal — 02-reviewed.md ausente (Stage 2 deveria ter escrito),
+ *      raffle.sorteio_do_mes.mes divergente do mês da edição corrente (#4583),
+ *      ou I/O error inesperado
  *   2  arg inválido
  */
 
@@ -203,8 +212,22 @@ async function main(): Promise<void> {
     return;
   }
 
+  // #4583: o dia do sorteio muda todo mês — não existe "dia fixo". Diferente
+  // das precondições graciosas acima (dado FALTANTE — no-op silencioso é
+  // seguro), aqui o dado está PRESENTE mas pode estar STALE (herdado do mês
+  // anterior): publicar a data errada pra base inteira é pior que abortar.
+  // Fatal, mesma severidade/exit code do "02-reviewed.md ausente" abaixo —
+  // nunca renderiza silenciosamente um `dia` que não é deste mês.
+  if (raffle.sorteio_do_mes?.mes !== slug) {
+    console.error(
+      `[inject-champions-callout] FATAL: raffle.sorteio_do_mes.mes ("${raffle.sorteio_do_mes?.mes ?? "ausente"}") não bate com o mês da edição corrente ("${slug}") em ${args.platformConfig}. ` +
+      `Peça ao editor o dia do sorteio de ${slug} e atualize platform.config.json → raffle.sorteio_do_mes para { "mes": "${slug}", "dia": N } antes de rodar de novo.`,
+    );
+    process.exit(1);
+  }
+
   const championsMonthLabel = monthLabelFromSlug(previousMonthSlug(slug));
-  const raffleDate = raffleDateLabel(slug, raffle.day_of_month);
+  const raffleDate = raffleDateLabel(slug, raffle.sorteio_do_mes.dia);
   if (!championsMonthLabel || !raffleDate) {
     console.log("[inject-champions-callout] falha ao resolver label de mês/data — no-op (fail-safe).");
     return;

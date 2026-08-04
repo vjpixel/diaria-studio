@@ -47,11 +47,11 @@
     "enabled": true
   },
   "raffle": {
-    "meet_url": "https://meet.google.com/nbs-jcut-ojj",
-    "day_of_month": 2,
-    "hora_inicio": "13:30",
-    "hora_fim": "14:00",
-    "note": "Sorteio ao vivo do erro intencional, dia {day_of_month} do mês da EDIÇÃO corrente (não o mês celebrado pelo pódio). Sala Meet fixa. Usado por scripts/inject-champions-callout.ts (#2725) na 1ª edição do mês."
+    "meet_url": "https://meet.google.com/ztv-opzp-nfw",
+    "sorteio_do_mes": { "mes": "2026-08", "dia": 6 },
+    "hora_inicio": "19:00",
+    "hora_fim": "19:30",
+    "note": "Sorteio ao vivo do erro intencional, dia {sorteio_do_mes.dia} do mês da EDIÇÃO corrente {sorteio_do_mes.mes} (não o mês celebrado pelo pódio). Sala Meet fixa (troca só quando o editor avisar). #4583 (260804): day_of_month fixo virou sorteio_do_mes {mes, dia} — não existe 'dia fixo do sorteio', muda todo mês. scripts/inject-champions-callout.ts (#2725) ABORTA (exit 1) na 1ª edição do mês se sorteio_do_mes.mes != mês da edição corrente, em vez de renderizar em silêncio o dia herdado do mês anterior — pede o dia do sorteio daquele mês. Atualizar sorteio_do_mes ANTES da 1ª edição de cada mês."
   },
   "draft": {
     "worker_url": "https://draft.diaria.workers.dev",
