@@ -177,7 +177,7 @@ async function inspectUrl(site: string, url: string): Promise<IndexStatus> {
     if (!res.ok) {
       const body = (await res.text()).slice(0, 200);
       if (res.status === 403) {
-        return { url, error: `403 — '${site}' não verificada no GSC ou scope webmasters.readonly ausente (rode oauth-setup.ts). ${body}` };
+        return { url, error: `403 — '${site}' não verificada no GSC ou scope webmasters ausente (rode oauth-setup.ts). ${body}` };
       }
       if (res.status === 429) return { url, error: `429 — quota da URL Inspection API estourada (2.000/dia). ${body}` };
       return { url, error: `${res.status}: ${body}` };

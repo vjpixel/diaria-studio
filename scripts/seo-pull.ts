@@ -5,7 +5,7 @@
  * grátis) por página/query e identifica oportunidades: páginas com impressão mas
  * CTR baixo (oportunidade de meta/título) e queries rankeando posição 5-15
  * (quase-primeira-página). Reusa o OAuth Google existente (gFetch) + o scope
- * `webmasters.readonly` (adicionado em oauth-setup.ts).
+ * `webmasters` (adicionado em oauth-setup.ts; era `.readonly` até o #4546).
  *
  * **Pré-req (feito em 260727, #4089):** `diar.ia.br` verificado como propriedade
  * **Domínio** (`sc-domain:diar.ia.br`) via TXT no Cloudflare, e a Google Search
@@ -136,7 +136,7 @@ async function pullGsc(site: string, startDate: string, endDate: string): Promis
         // mensagem mandava verificar propriedade/scope, nenhum dos dois sendo
         // o problema. O corpo distingue: "has not been used in project" = (c);
         // "does not have sufficient permission for site" = (a).
-        `GSC 403 — três causas possíveis: (a) '${site}' não verificado no Search Console, ou esta conta não é usuária dele; (b) scope ausente → re-rode 'npx tsx scripts/oauth-setup.ts' (webmasters.readonly, #1989); (c) a Google Search Console API está desabilitada no projeto GCP → habilite em console.cloud.google.com/apis/library/searchconsole.googleapis.com. Body: ${body.slice(0, 200)}`,
+        `GSC 403 — três causas possíveis: (a) '${site}' não verificado no Search Console, ou esta conta não é usuária dele; (b) scope ausente → re-rode 'npx tsx scripts/oauth-setup.ts' (webmasters, #1989/#4546); (c) a Google Search Console API está desabilitada no projeto GCP → habilite em console.cloud.google.com/apis/library/searchconsole.googleapis.com. Body: ${body.slice(0, 200)}`,
       );
     }
     throw new Error(`GSC ${res.status}: ${body.slice(0, 200)}`);
