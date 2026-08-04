@@ -264,7 +264,7 @@ export function checkNewsletterHtml(editionDir: string): Check {
     return {
       name: "newsletter-final.html tem merge tag de identidade do voto",
       passed: false,
-      detail: `Design atual requer URL inline com {{poll_token}} (modo merge-tag, #1186/#4487). Re-rodar render-newsletter-html.ts.`,
+      detail: `Design atual requer URL de voto inline com {{email}} (modo merge-tag, #1186/#4581 — o {{poll_token}} do #4487 foi revertido no ramo Beehiiv e só é aceito aqui por compatibilidade). Re-rodar render-newsletter-html.ts.`,
     };
   }
   const sizeKb = Math.round(statSync(path).size / 1024);

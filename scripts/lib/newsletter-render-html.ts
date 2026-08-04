@@ -197,12 +197,23 @@ const DARK_CANVAS_STYLE_BLOCK = buildDarkCanvasStyleBlock(TEXT_COLOR);
 
 /**
  * #4266 — provedor de destino do envio. Usado só pela merge tag de voto do
- * É IA? (`renderEIA`): #4517 trouxe paridade total entre os dois — Beehiiv
- * usa `{{poll_token}}@vote.eia.diaria.local` (token opaco, `&` cru) e Brevo
- * usa `{{ contact.POLL_TOKEN }}@vote.eia.diaria.local` (mesmo token opaco,
- * `&` escapado como `&amp;` — mesma sintaxe de merge tag já usada pelo
- * mensal, `lib/mensal/monthly-render.ts`, que segue com `{{ contact.EMAIL }}`
- * cru por não estar no escopo do #4487/#4517, ver `monthly-render.ts::renderEia`).
+ * É IA? (`renderEIA`). **Os dois ramos NÃO são simétricos desde o #4581**:
+ * Beehiiv usa `{{email}}` cru, `&` cru (voltou ao e-mail direto — o É IA? não
+ * distribui prêmio, ver `buildVoteUrl`); Brevo usa
+ * `{{ contact.POLL_TOKEN }}@vote.eia.diaria.local` (token opaco, `&` escapado
+ * como `&amp;` — mesma sintaxe de merge tag já usada pelo mensal,
+ * `lib/mensal/monthly-render.ts`, que segue com `{{ contact.EMAIL }}` cru por
+ * não estar no escopo do #4487/#4517, ver `monthly-render.ts::renderEia`).
+ *
+ * Ou seja: `esp` hoje carrega DOIS eixos — sintaxe do ESP **e** modelo de
+ * identidade do votante (direto vs. resolvido por lookup no KV). Eram o mesmo
+ * eixo entre o #4517 e o #4581. Se um 3º ESP entrar, vale separar os dois em
+ * vez de esticar o ternário de `buildVoteUrl` — ver #4581.
+ *
+ * Cuidado ao editar `buildVoteUrl`: o sufixo `@vote.eia.diaria.local` só pode
+ * acompanhar um TOKEN. Colado atrás de `{{email}}` (que já vira um e-mail
+ * completo) produz 2 arrobas e derruba todo voto — é o bug do #4512, coberto
+ * hoje por `test/vote-token-e2e-4512.test.ts`.
  * Exportado — `render-newsletter-html.ts` importa este tipo em vez de repetir
  * o union literal na validação do CLI, então um 3º ESP futuro só precisa
  * mudar aqui.
@@ -1059,16 +1070,22 @@ export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
     : "";
 
   // #4266 — ver rationale completo no doc comment de `Esp`, acima.
-  // #4487: esp="beehiiv" (e-mail diário) troca o e-mail cru `{{email}}` pelo
+  // #4487 (HISTÓRICO — REVERTIDO pelo #4581 neste ramo, ver bloco abaixo):
+  // esp="beehiiv" (e-mail diário) trocava o e-mail cru `{{email}}` pelo
   // token opaco por assinante `{{poll_token}}@vote.eia.diaria.local` — quem
-  // recebe a edição ENCAMINHADA (WhatsApp/e-mail) não herda mais o e-mail
+  // recebia a edição ENCAMINHADA (WhatsApp/e-mail) não herdava o e-mail
   // real do remetente na URL de voto (achado #4487/#4456: "vota no lugar
-  // dele", suja o leaderboard). O Worker resolve o token de volta pro e-mail
+  // dele", suja o leaderboard). O Worker resolvia o token de volta pro e-mail
   // real via KV logo no início de `handleVote` (workers/poll/src/vote.ts) —
   // ver header de `scripts/lib/shared/poll-token.ts` pro design completo. O
-  // custom field Beehiiv `poll_token` é populado por `scripts/inject-poll-token.ts`
+  // custom field Beehiiv `poll_token` era populado por `scripts/inject-poll-token.ts`
   // (mesmo mecanismo — mas propósito distinto — do extinto `poll_sig`/
   // `inject-poll-sig.ts`, #1083, removido em #1186).
+  //
+  // **Este parágrafo descreve o passado do ramo BEEHIIV.** O mecanismo segue
+  // vivo e em produção no ramo BREVO (#4517, logo abaixo) — é só o canal
+  // Beehiiv que voltou ao e-mail cru. Ver o bloco #4581 antes do
+  // `buildVoteUrl` para o porquê.
   //
   // #4512 (fleet review round 2, achado code-reviewer): CORREÇÃO do
   // comentário original — o único caller de produção de `esp: "brevo"` é

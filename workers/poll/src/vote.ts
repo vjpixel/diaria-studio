@@ -26,8 +26,10 @@ import {
   seqStateKvKey, // #4443: chave do agregado seq:{month}:{email} (jogar/seq-state)
 } from "./lib";
 import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./index";
-// #4487: resolução do token opaco de voto (e-mail diário, esp="beehiiv") →
-// e-mail real, via lookup KV. Ver header de poll-token.ts pro design completo.
+// #4487: resolução do token opaco de voto → e-mail real, via lookup KV.
+// #4581: hoje só o canal BREVO (`brevo_diaria`) manda token — o e-mail diário
+// da Beehiiv voltou ao `{{email}}` cru e cai em `not-token-domain`, que é o
+// caminho DOMINANTE deste handler. Ver header de poll-token.ts pro design.
 // #4518: classifyPollTokenEmail substitui extractPollToken/isPollTokenIdentity
 // neste call site (discriminated union — ver rationale no ponto de uso).
 import { classifyPollTokenEmail, pollTokenKvKey } from "./poll-token";
@@ -319,10 +321,20 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
 
   // #4487: resolve token opaco → e-mail real ANTES de qualquer lógica de
   // identidade abaixo (guard do domínio anônimo web, sig, dedup, score,
-  // nickname). O link de voto do e-mail diário (esp="beehiiv") agora carrega
-  // `{{poll_token}}@vote.eia.diaria.local` em vez do e-mail cru
-  // (`newsletter-render-html.ts::buildVoteUrl`) — quem recebe a edição
-  // ENCAMINHADA não herda mais o e-mail do assinante original na URL. O
+  // nickname).
+  //
+  // #4581 (260804) — QUEM AINDA MANDA TOKEN: só o canal Brevo
+  // (`brevo_diaria`, esp="brevo"). O e-mail diário da Beehiiv carregava
+  // `{{poll_token}}@vote.eia.diaria.local` entre o #4487 e o #4581, e voltou
+  // ao `{{email}}` cru (`newsletter-render-html.ts::buildVoteUrl` — o É IA?
+  // não distribui prêmio). Na prática isso inverteu as proporções deste
+  // handler: `not-token-domain` (e-mail cru, passa direto) é hoje o caminho
+  // COMUM, e o ramo `valid` abaixo atende a minoria vinda do Brevo. Se você
+  // está debugando "voto rejeitado" num envio da Beehiiv, o problema NÃO
+  // está na resolução de token — ela nem é alcançada.
+  //
+  // O que o token protegia (e ainda protege, no Brevo): quem recebe a edição
+  // ENCAMINHADA não herda o e-mail do assinante original na URL. O
   // token é gravado no KV como `polltoken:{token} -> email` pelo script de
   // injeção (`scripts/inject-poll-token.ts`, popula o custom field Beehiiv
   // `poll_token` por assinante). Token sem entrada no KV (subscriber novo
