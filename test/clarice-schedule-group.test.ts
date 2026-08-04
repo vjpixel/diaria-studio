@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   resolveGroupListId,
+  resolveListIndexArg,
   campaignNameFor,
   parseSubjectArg,
   checkListIdMismatch,
@@ -36,22 +37,24 @@ import { checkEiaGuard, isScheduledStatus, applyVerifyResults } from "../scripts
  */
 
 describe("resolveGroupListId (#3228 — resolve listId do registro de --group --execute)", () => {
-  it("1 lista registrada → resolve ela", () => {
+  it("1 lista registrada → resolve ela (key não importa, sem ambiguidade)", () => {
     const dir = mkdtempSync(join(tmpdir(), "resolve-group-single-"));
     try {
       appendGroupListsRegistry(dir, "2606-07", "ramp-warm", [
-        { listId: 69, listName: "Clarice Ramp Jul/2026 ramp-warm", count: 6403, importedAt: "2026-07-10T12:00:00.000Z" },
+        { key: "ramp-warm", listId: 69, listName: "Clarice Ramp Jul/2026 ramp-warm", count: 6403, importedAt: "2026-07-10T12:00:00.000Z" },
       ]);
-      const resolved = resolveGroupListId(dir, "ramp-warm");
+      const resolved = resolveGroupListId(dir, "ramp-warm", "ramp-warm");
       assert.deepEqual(resolved, { listId: 69, listName: "Clarice Ramp Jul/2026 ramp-warm" });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("múltiplas listas (3 budgets do mesmo grupo, caso real 260710 #69/#70/#71) → default é a ÚLTIMA", () => {
-    const dir = mkdtempSync(join(tmpdir(), "resolve-group-multi-"));
+  it("compat retroativa #4576: registro LEGADO (nenhuma entrada carrega `key`, formato pré-#4576) — múltiplas listas, sem --list-index → default continua a ÚLTIMA", () => {
+    const dir = mkdtempSync(join(tmpdir(), "resolve-group-legacy-"));
     try {
+      // Simula um registro gravado ANTES do #4576 — `appendGroupListsRegistry`
+      // já aceitava (e ainda aceita, `key` é opcional) entradas sem `key`.
       appendGroupListsRegistry(dir, "2606-07", "ramp-warm", [
         { listId: 69, listName: "lista 1", count: 6403, importedAt: "2026-07-10T12:00:00.000Z" },
       ]);
@@ -62,21 +65,94 @@ describe("resolveGroupListId (#3228 — resolve listId do registro de --group --
         { listId: 71, listName: "lista 3", count: 7748, importedAt: "2026-07-10T14:00:00.000Z" },
       ]);
 
-      assert.deepEqual(resolveGroupListId(dir, "ramp-warm"), { listId: 71, listName: "lista 3" });
+      // `key` passada aqui é irrelevante: nenhuma entrada do registro carrega
+      // `key`, então a resolução cai no comportamento antigo (default = última).
+      assert.deepEqual(resolveGroupListId(dir, "ramp-warm", "irrelevante"), { listId: 71, listName: "lista 3" });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("--list-index explícito escolhe uma entrada específica (não a última)", () => {
+  it("regressão #4576: registro NOVO (3 listas, cada uma com `key`, caso real d4-ter04 A/B/C 260804) — --key resolve a lista CERTA, não a última", () => {
+    const dir = mkdtempSync(join(tmpdir(), "resolve-group-abc-"));
+    try {
+      appendGroupListsRegistry(dir, "2607-08", "d4-ter04", [
+        { key: "d4-ter04-A", listId: 98, listName: "Clarice 2607-08 d4-ter04-A — célula A", count: 103, importedAt: "2026-08-04T12:00:00.000Z" },
+        { key: "d4-ter04-B", listId: 99, listName: "Clarice 2607-08 d4-ter04-B — célula B", count: 103, importedAt: "2026-08-04T12:00:00.000Z" },
+        { key: "d4-ter04-C", listId: 100, listName: "Clarice 2607-08 d4-ter04-C — célula C", count: 101, importedAt: "2026-08-04T12:00:00.000Z" },
+      ]);
+
+      // Antes do #4576, as 3 keys resolviam TODAS pro listId=100 (célula C,
+      // a última do registro) — exatamente o defeito relatado na issue.
+      assert.deepEqual(resolveGroupListId(dir, "d4-ter04", "d4-ter04-A"), {
+        listId: 98,
+        listName: "Clarice 2607-08 d4-ter04-A — célula A",
+      });
+      assert.deepEqual(resolveGroupListId(dir, "d4-ter04", "d4-ter04-B"), {
+        listId: 99,
+        listName: "Clarice 2607-08 d4-ter04-B — célula B",
+      });
+      assert.deepEqual(resolveGroupListId(dir, "d4-ter04", "d4-ter04-C"), {
+        listId: 100,
+        listName: "Clarice 2607-08 d4-ter04-C — célula C",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("self-review #4576: grupo SEM célula re-rodado (mesma `key` em todas as entradas, ex: ramp-warm com 3 budgets) → casar por key ainda resolve a MAIS RECENTE, não a primeira", () => {
+    // clarice-build-segment.ts grava wave.key === group pra TODA entrada de
+    // um grupo sem célula (ramp-warm/engajados/...) — re-rodar o mesmo grupo
+    // com budgets diferentes produz várias entradas com a MESMA key. Um
+    // match por `find` pegaria a PRIMEIRA (regressão do "default = última"
+    // que já era correto pra esse caso, cenário real 260710 #69/#70/#71) —
+    // por isso resolveGroupListId usa `filter` + última ocorrência.
+    const dir = mkdtempSync(join(tmpdir(), "resolve-group-samekey-"));
+    try {
+      appendGroupListsRegistry(dir, "2606-07", "ramp-warm", [
+        { key: "ramp-warm", listId: 69, listName: "lista 1", count: 6403, importedAt: "2026-07-10T12:00:00.000Z" },
+      ]);
+      appendGroupListsRegistry(dir, "2606-07", "ramp-warm", [
+        { key: "ramp-warm", listId: 70, listName: "lista 2", count: 7043, importedAt: "2026-07-10T13:00:00.000Z" },
+      ]);
+      appendGroupListsRegistry(dir, "2606-07", "ramp-warm", [
+        { key: "ramp-warm", listId: 71, listName: "lista 3", count: 7748, importedAt: "2026-07-10T14:00:00.000Z" },
+      ]);
+
+      assert.deepEqual(resolveGroupListId(dir, "ramp-warm", "ramp-warm"), { listId: 71, listName: "lista 3" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("regressão #4576: --key sem match entre listas do formato NOVO (todas com `key`) → ABORTA, não cai na última", () => {
+    const dir = mkdtempSync(join(tmpdir(), "resolve-group-abc-nomatch-"));
+    try {
+      appendGroupListsRegistry(dir, "2607-08", "d4-ter04", [
+        { key: "d4-ter04-A", listId: 98, listName: "célula A", count: 103, importedAt: "2026-08-04T12:00:00.000Z" },
+        { key: "d4-ter04-B", listId: 99, listName: "célula B", count: 103, importedAt: "2026-08-04T12:00:00.000Z" },
+        { key: "d4-ter04-C", listId: 100, listName: "célula C", count: 101, importedAt: "2026-08-04T12:00:00.000Z" },
+      ]);
+      assert.throws(
+        () => resolveGroupListId(dir, "d4-ter04", "d4-ter04-typo"),
+        /--key 'd4-ter04-typo' não corresponde a nenhuma lista/,
+      );
+      assert.throws(() => resolveGroupListId(dir, "d4-ter04", "d4-ter04-typo"), /--list-index/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--list-index explícito escolhe uma entrada específica (não a última, e ignora --key)", () => {
     const dir = mkdtempSync(join(tmpdir(), "resolve-group-index-"));
     try {
       appendGroupListsRegistry(dir, "2606-07", "ramp-warm", [
-        { listId: 69, listName: "lista 1", count: 6403, importedAt: "2026-07-10T12:00:00.000Z" },
-        { listId: 70, listName: "lista 2", count: 7043, importedAt: "2026-07-10T13:00:00.000Z" },
+        { key: "w1", listId: 69, listName: "lista 1", count: 6403, importedAt: "2026-07-10T12:00:00.000Z" },
+        { key: "w2", listId: 70, listName: "lista 2", count: 7043, importedAt: "2026-07-10T13:00:00.000Z" },
       ]);
-      assert.deepEqual(resolveGroupListId(dir, "ramp-warm", 0), { listId: 69, listName: "lista 1" });
-      assert.deepEqual(resolveGroupListId(dir, "ramp-warm", 1), { listId: 70, listName: "lista 2" });
+      assert.deepEqual(resolveGroupListId(dir, "ramp-warm", "w2", 0), { listId: 69, listName: "lista 1" });
+      assert.deepEqual(resolveGroupListId(dir, "ramp-warm", "w1", 1), { listId: 70, listName: "lista 2" });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -88,7 +164,7 @@ describe("resolveGroupListId (#3228 — resolve listId do registro de --group --
       appendGroupListsRegistry(dir, "2606-07", "ramp-warm", [
         { listId: 69, listName: "lista 1", count: 6403, importedAt: "2026-07-10T12:00:00.000Z" },
       ]);
-      assert.throws(() => resolveGroupListId(dir, "ramp-warm", 5), /--list-index 5 fora do range.*0\.\.0/);
+      assert.throws(() => resolveGroupListId(dir, "ramp-warm", "ramp-warm", 5), /--list-index 5 fora do range.*0\.\.0/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -98,10 +174,10 @@ describe("resolveGroupListId (#3228 — resolve listId do registro de --group --
     const dir = mkdtempSync(join(tmpdir(), "resolve-group-missing-"));
     try {
       assert.throws(
-        () => resolveGroupListId(dir, "engajados"),
+        () => resolveGroupListId(dir, "engajados", "engajados"),
         /registro de listas do grupo 'engajados' não encontrado/,
       );
-      assert.throws(() => resolveGroupListId(dir, "engajados"), /clarice-import-waves\.ts.*--group engajados.*--execute/);
+      assert.throws(() => resolveGroupListId(dir, "engajados", "engajados"), /clarice-import-waves\.ts.*--group engajados.*--execute/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -111,7 +187,7 @@ describe("resolveGroupListId (#3228 — resolve listId do registro de --group --
     const dir = mkdtempSync(join(tmpdir(), "resolve-group-corrupt-"));
     try {
       writeFileSync(join(dir, "engajados-lists.json"), "{ not json", "utf8");
-      assert.throws(() => resolveGroupListId(dir, "engajados"), /corrompido \(JSON inválido\)/);
+      assert.throws(() => resolveGroupListId(dir, "engajados", "engajados"), /corrompido \(JSON inválido\)/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -125,10 +201,45 @@ describe("resolveGroupListId (#3228 — resolve listId do registro de --group --
         JSON.stringify({ cycle: "2606-07", group: "engajados", lists: [] }),
         "utf8",
       );
-      assert.throws(() => resolveGroupListId(dir, "engajados"), /está vazio/);
+      assert.throws(() => resolveGroupListId(dir, "engajados", "engajados"), /está vazio/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("resolveListIndexArg (#4576 — --list-index migrado pra getIntArg, sem valor ABORTA em vez de virar default)", () => {
+  it("--list-index ausente → { listIndex: undefined } (comportamento normal, sem index explícito)", () => {
+    assert.deepEqual(resolveListIndexArg(["--cycle", "2606-07", "--group", "ramp-warm"]), { listIndex: undefined });
+  });
+
+  it("--list-index com valor válido → { listIndex: N }", () => {
+    assert.deepEqual(resolveListIndexArg(["--list-index", "2"]), { listIndex: 2 });
+    assert.deepEqual(resolveListIndexArg(["--list-index", "0"]), { listIndex: 0 });
+  });
+
+  it("regressão #4576 (agravante da issue): --list-index no FIM do argv (sem valor) → erro, NÃO undefined/default silencioso", () => {
+    const result = resolveListIndexArg(["--cycle", "2606-07", "--group", "ramp-warm", "--list-index"]);
+    assert.ok("error" in result, "esperava { error }, não { listIndex }");
+    if (!("error" in result)) throw new Error("unreachable");
+    assert.match(result.error, /sem valor/);
+  });
+
+  it("regressão #4576: --list-index seguido de outra --flag (sem valor) → erro, NÃO undefined/default silencioso", () => {
+    const result = resolveListIndexArg(["--list-index", "--create"]);
+    assert.ok("error" in result, "esperava { error }, não { listIndex }");
+    if (!("error" in result)) throw new Error("unreachable");
+    assert.match(result.error, /sem valor/);
+  });
+
+  it("--list-index inválido (não-inteiro) → erro", () => {
+    const result = resolveListIndexArg(["--list-index", "abc"]);
+    assert.ok("error" in result);
+  });
+
+  it("--list-index negativo → erro (min: 0)", () => {
+    const result = resolveListIndexArg(["--list-index", "-1"]);
+    assert.ok("error" in result);
   });
 });
 

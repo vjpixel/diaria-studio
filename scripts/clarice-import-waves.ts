@@ -260,6 +260,19 @@ const fetchExistingLists = brevoListAllLists;
 // sem exigir que o editor copie o listId manualmente do stdout.
 
 export interface GroupListEntry {
+  /**
+   * #4576 — chave da campanha/wave que gerou esta lista (`wave.key`, o mesmo
+   * valor que resolve `listName` via `groupCellListNameFor`/`listNameFor`).
+   * Sem isso, `resolveGroupListId` (clarice-schedule-group.ts) não tinha
+   * como distinguir MÚLTIPLAS listas do mesmo grupo/ciclo — um teste A/B/C
+   * com 3 listas resolvia sempre a ÚLTIMA, ignorando `--key`. OPCIONAL na
+   * leitura: registros gravados ANTES desta correção não têm este campo, e
+   * `resolveGroupListId` preserva o comportamento antigo (default = última)
+   * quando NENHUMA entrada do registro o carrega — compatibilidade
+   * retroativa de formato de dado, não removível. Toda entrada NOVA
+   * (`appendGroupListsRegistry`, chamada por `main()` abaixo) sempre grava.
+   */
+  key?: string;
   listId: number;
   listName: string;
   count: number;
@@ -484,7 +497,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       clariceSegmentsDir(args.cycle),
       args.cycle,
       args.group,
-      results.map((r, i) => ({ listId: r.listId, listName: plans[i].listName, count: r.count, importedAt: now })),
+      // #4576: `key: r.wave` — `results.push({ wave: p.wave.key, ... })` acima
+      // já grava o `wave.key` original em `r.wave`; propagar pro registro é o
+      // que permite `resolveGroupListId` casar `--key` contra a lista certa
+      // quando o grupo tem múltiplas (ex: teste A/B/C com 3 keys/3 listas).
+      results.map((r, i) => ({ key: r.wave, listId: r.listId, listName: plans[i].listName, count: r.count, importedAt: now })),
     );
     console.error(
       `📝 registrado em ${groupListsRegistryPath(clariceSegmentsDir(args.cycle), args.group)} — ${results.length} lista(s) do grupo '${args.group}'.`,
