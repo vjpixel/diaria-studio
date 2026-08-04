@@ -8,12 +8,14 @@
  * /diaria-develop 260802 (issue #4476, "O que muda em relação ao #4398" item
  * 1). SUBSTITUI a fórmula aditiva original (#4266, +20 abertura/-10
  * não-abertura, sem piso de amostra) por TAXA de abertura com piso mínimo de
- * amostra, assimétrico entre as duas direções:
+ * amostra:
  *
- *   Promoção:  sends_count >= 2 E openRate >= 50% — contadores INSTANTÂNEOS
+ *   Promoção:  sends_count >= 3 E openRate >= 50% — contadores INSTANTÂNEOS
  *              (todos os envios, sem filtro de idade). Reage na hora —
  *              abertura já é evidência consumada, não há "ainda pode
- *              acontecer".
+ *              acontecer". Piso de amostra revisado de `n>=2` pra `n>=3`
+ *              (decisão do editor, sessão 260804) — 1/2=50% já promovia com
+ *              uma amostra rasa demais.
  *   Supressão: sends_count >= 3 E openRate <= 20% — contadores MADUROS
  *              (só envios com >=48h de idade, ver "Janela de maturação"
  *              abaixo). Errar suprimindo é caro/quase irreversível, então
@@ -21,14 +23,17 @@
  *              que já teve tempo de virar sinal real).
  *   Entre os dois (ou piso de amostra não atingido): mantém (`keep`).
  *
- * ## Por que assimétrico (piso 2 pra promover, 3 pra suprimir)
+ * ## Pisos de amostra agora iguais (n>=3 pros dois lados, 260804)
  *
- * Errar promovendo é barato (a pessoa só não abre os e-mails "oficiais"
- * depois, mesmo custo de qualquer assinante inativo); errar suprimindo é
- * caro e quase irreversível (descarta de vez alguém que só teve azar
- * pontual — ex: 1 email perdido no meio de 2 recebidos não deveria
- * sentenciar ninguém). Por isso supressão exige mais evidência (n>=3) que
- * promoção (n>=2).
+ * Até 260804 o piso de promoção era `n>=2` (menor que o de supressão,
+ * `n>=3`) — a assimetria original vinha do racional "errar promovendo é
+ * barato (a pessoa só não abre os e-mails 'oficiais' depois); errar
+ * suprimindo é caro e quase irreversível (descarta de vez alguém que só
+ * teve azar pontual)". Decisão do editor (sessão 260804) igualou os dois
+ * pisos em `n>=3` — a diferença de risco entre as duas direções continua
+ * existindo (por isso a supressão ainda usa contadores MADUROS, com janela
+ * de 48h, e a promoção não), mas o piso de AMOSTRA deixou de ser o lugar
+ * onde essa assimetria se expressa.
  *
  * ## Por que 20% é o piso de supressão
  *
@@ -90,10 +95,11 @@ export interface BrevoDiariaRateInput {
 }
 
 /** Piso de amostra + threshold de PROMOÇÃO — inclusivos nos dois lados
- * (`sends_count >= 2` E `openRate >= 0.5`, texto literal da decisão #4476).
+ * (`sends_count >= 3` E `openRate >= 0.5`; piso revisado de `n>=2` pra
+ * `n>=3` na sessão 260804 — ver "Pisos de amostra agora iguais" acima).
  * Avaliado contra contadores INSTANTÂNEOS (`instant`) — sem janela de
  * maturação. */
-export const BREVO_DIARIA_PROMOTE_MIN_SENDS = 2;
+export const BREVO_DIARIA_PROMOTE_MIN_SENDS = 3;
 export const BREVO_DIARIA_PROMOTE_MIN_OPEN_RATE = 0.5;
 
 /** Piso de amostra + threshold de SUPRESSÃO — inclusivos nos dois lados
