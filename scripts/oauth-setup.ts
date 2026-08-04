@@ -23,7 +23,8 @@
  *   - https://www.googleapis.com/auth/gmail.readonly (Gmail somente leitura)
  *   - https://www.googleapis.com/auth/gmail.labels (criar labels)
  *   - https://www.googleapis.com/auth/gmail.modify (criar labels)
- *   - https://www.googleapis.com/auth/webmasters.readonly (#1989: GSC / seo-pull)
+ *   - https://www.googleapis.com/auth/webmasters (#1989 leitura: GSC / seo-pull;
+ *     #4546 escrita: submeter sitemap dos subdomínios de curadoria)
  *   - https://www.googleapis.com/auth/postmaster.readonly (#4063: Gmail Postmaster
  *     Tools — spamRate diário que alimenta o circuit breaker de spam da Rampa)
  *   - https://www.googleapis.com/auth/gmail.send (#4064: alarme de guardrail
@@ -53,7 +54,15 @@ const SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.labels",
   "https://www.googleapis.com/auth/gmail.modify", // para criar labels
-  "https://www.googleapis.com/auth/webmasters.readonly", // #1989: GSC Search Analytics (seo-pull)
+  // #1989 (leitura): GSC Search Analytics + URL Inspection — `seo-pull.ts` e
+  // `seo-index-check.ts`. #4546 (escrita): submeter os sitemaps próprios dos
+  // Workers de curadoria via `PUT /sites/{site}/sitemaps/{feedpath}`, que o
+  // `.readonly` recusa. O scope SEM sufixo é superset do `.readonly`, então
+  // substitui em vez de somar — manter os dois só duplicaria o consentimento.
+  // Trocar isto EXIGE re-rodar `oauth-setup.ts` e reaprovar no browser: o
+  // token existente em `data/.credentials.json` foi emitido com o scope antigo
+  // e não ganha escrita sozinho (falha só na hora do PUT, com 403).
+  "https://www.googleapis.com/auth/webmasters",
   // #4063/#4154: Gmail Postmaster Tools. A Brevo só enxerga reclamações de
   // FBL e subconta o spam em ~50× (73% da base é Gmail, e o "marcar como
   // spam" do Gmail não passa por FBL). O breaker de spam da Rampa lê o

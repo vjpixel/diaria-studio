@@ -17,7 +17,7 @@
 
 .NOTES
     Issue: #4105 (loop de SEO: #1896; seo-pull: #1989).
-    Requer: junction data/ + data/.credentials.json com scope webmasters.readonly.
+    Requer: junction data/ + data/.credentials.json com scope webmasters.
 #>
 param(
     # Overrides usados pelo teste de regressao (sem credencial nem junction).
