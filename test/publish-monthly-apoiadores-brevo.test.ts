@@ -570,6 +570,69 @@ describe("#4572/#4593 self-review — silent-failure hardening", () => {
     }
   });
 
+  it("#4572 develop fleet review: mark-sent concorrente durante a criação da campanha — main() aborta SEM sobrescrever o state 'sent'", async () => {
+    // Simula a janela TOCTOU: existingState (lido no início de main()) ainda
+    // não é 'sent', mas por quando a criação da campanha (fetch) já
+    // "terminou", outra invocação (send-monthly-apoiadores.ts --mark-sent)
+    // já gravou status: "sent" — deps.readState() é chamado 2x em main(): a
+    // 1ª leitura (existingState, ainda draft_prepared) e a 2ª leitura
+    // (freshState, já 'sent') logo antes do writeState final.
+    const root = mkTmpRoot();
+    try {
+      writePlatformConfig(root, { list_id: 42, sender_email: "oi@diar.ia.br" });
+      process.env.TEST_APOIADORES_KEY_4593 = "fake_key";
+      process.argv = ["node", "publish-monthly-apoiadores-brevo.ts", "--cycle", "2607-08"];
+      mockProcessExit();
+
+      const initialState: ApoiadoresState = {
+        cycle: "2607-08",
+        status: "draft_prepared",
+        preparedAt: "2026-08-04T09:00:00.000Z",
+        sentAt: null,
+        htmlPath: "/x/apoiadores-brevo-preview.html",
+        subject: "Assunto anterior",
+        segments: [],
+        brevoCampaignId: null,
+      };
+      const concurrentlyMarkedSentState: ApoiadoresState = {
+        ...initialState,
+        status: "sent",
+        sentAt: "2026-08-04T09:15:00.000Z",
+      };
+
+      let readStateCalls = 0;
+      const readStateSequence = (): ApoiadoresState | null => {
+        readStateCalls += 1;
+        return readStateCalls === 1 ? initialState : concurrentlyMarkedSentState;
+      };
+
+      let fetchCalled = false;
+      globalThis.fetch = (async () => { fetchCalled = true; return jsonRes(201, { id: 4242 }); }) as typeof fetch;
+
+      let writeStateCalled = false;
+      const stderr = await captureStderrAsync(async () => {
+        await assert.rejects(
+          () => main(root, {
+            renderEmail: () => FAKE_RENDERED,
+            readState: readStateSequence,
+            writeState: () => { writeStateCalled = true; },
+          }),
+          /race de idempotência/,
+        );
+      });
+
+      assert.equal(fetchCalled, true, "a campanha Brevo já tinha sido criada quando a corrida foi detectada");
+      assert.equal(writeStateCalled, false, "writeState NUNCA deveria ser chamado — não sobrescrever o status 'sent' concorrente");
+      assert.equal(readStateCalls, 2, "readState deveria ter sido chamado 2x: leitura inicial + re-check antes do writeState");
+      assert.match(stderr, /ERRO CRÍTICO/);
+      assert.match(stderr, /4242/, "a mensagem crítica deveria nomear o campaign.id já criado");
+      assert.match(stderr, /concorrente/i);
+    } finally {
+      delete process.env.TEST_APOIADORES_KEY_4593;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("--force sobre brevoCampaignId existente: loga aviso nomeando o id da campanha anterior (órfã na Brevo)", async () => {
     const root = mkTmpRoot();
     try {

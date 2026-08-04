@@ -27,9 +27,9 @@
  *      diária de origem), a partir do MESMO `draft.md` que a skill já usa.
  *   2. Guards de pré-condição (`checkApoiadoresBrevoGuards`) fora de
  *      `--dry-run`: `brevo_apoiadores` configurado, `list_id` NÃO-null
- *      (confirmado ao vivo em 260804, `list_id = 8` — ver PRÉ-REQUISITO
- *      REAL abaixo pro que ainda falta), `sender_email` preenchido, API key
- *      no ambiente.
+ *      (`list_id = 8`, confirmado via API pelo coordenador da sessão develop
+ *      260804 — ver PRÉ-REQUISITO REAL abaixo pro que ainda falta), `sender_email`
+ *      preenchido, API key no ambiente.
  *   3. Cria a campanha Brevo (`POST /emailCampaigns`) — SEM `--send-now`/
  *      `--schedule-at`: fica como RASCUNHO na conta Brevo, mesma cautela do
  *      publisher mensal legado (`publish-monthly.ts`) e do publisher diário
@@ -56,6 +56,19 @@
  * toca o state (nem lê nem grava) — só o Passo 2 real cria/consulta o
  * registro.
  *
+ * **Janela TOCTOU entre a leitura inicial e o `writeState` final (#4572
+ * develop, fleet review):** `existingState` é lido ANTES da chamada de rede
+ * que cria a campanha — se `send-monthly-apoiadores.ts --mark-sent` (Passo 3)
+ * gravar `status: "sent"` nesse intervalo, um `writeState` cego sobrescreveria
+ * esse "sent" de volta pra "draft_prepared". `main()` re-lê o state
+ * IMEDIATAMENTE antes do `writeState` final e ABORTA (sem sobrescrever) se
+ * detectar essa transição concorrente — ver comentário no call site. Não é um
+ * lock de verdade (não impede a 2ª invocação de também criar uma campanha
+ * Brevo se a corrida for na direção oposta — 2 Passo 2 simultâneos —, cenário
+ * já coberto pelo guard `brevoCampaignId` normal quando não é literalmente
+ * simultâneo), mas fecha a janela que os revisores apontaram, adequado ao
+ * perfil de uso real (CLI manual de baixa frequência).
+ *
  * Uso:
  *   npx tsx scripts/publish-monthly-apoiadores-brevo.ts --cycle 2607-08 --dry-run
  *   npx tsx scripts/publish-monthly-apoiadores-brevo.ts --cycle 2607-08
@@ -68,10 +81,14 @@
  *
  * PRÉ-REQUISITO REAL (parcialmente resolvido, #4572 develop 260804):
  * `platform.config.json` → `brevo_apoiadores.list_id` era `null` até esta
- * unidade — confirmado ao vivo via `GET /v3/contacts/lists` = `8` (lista
- * "Apoio — Mantenedor + Patrono (mensal, one-off 2607-08)", `totalSubscribers:
- * 0` — a lista EXISTE mas está VAZIA, porque `scripts/sync-apoio-nivel-brevo.ts
- * --push` (quem a popula) ainda não rodou contra a Brevo real). `list_id`
+ * unidade — confirmado via API pelo COORDENADOR da sessão develop (processo
+ * fora deste worktree isolado, usando o `.env` do editor — este worktree
+ * nunca teve a credencial Brevo real): `GET /v3/contacts/lists` retornou
+ * `8` (lista "Apoio — Mantenedor + Patrono (mensal, one-off 2607-08)",
+ * `totalSubscribers: 0` — a lista EXISTE mas está VAZIA, porque
+ * `scripts/sync-apoio-nivel-brevo.ts --push` (quem a popula) ainda não
+ * rodou contra a Brevo real). Nenhuma escrita real (`--push`, criação de
+ * campanha) rodou nesta sessão — só essa leitura de confirmação. `list_id`
  * ausente/`null` continua abortando de forma clara (exit 2) — esse caminho
  * só é alcançável hoje via edição manual do config, não é mais o estado
  * padrão do repo.
@@ -308,6 +325,33 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresBrevoDeps =
     `campanha criada: id=${campaign.id} (rascunho — schedule/send é ação manual separada no painel Brevo, ` +
       "mesma cautela de publish-daily-brevo.ts/publish-monthly.ts).",
   );
+
+  // #4572 develop fleet review (2 revisores convergiram) — TOCTOU: `existingState`
+  // foi lido ANTES da chamada de rede que acabou de criar a campanha acima. Se
+  // outra invocação concorrente (`send-monthly-apoiadores.ts --mark-sent`, Passo 3)
+  // gravou `status: "sent"` nesse meio-tempo, o `writeState` abaixo sobrescreveria
+  // esse "sent" de volta pra "draft_prepared" silenciosamente — perdendo o registro
+  // de que o editor já confirmou o envio. Re-lê o state IMEDIATAMENTE antes de
+  // escrever (mesma técnica de re-check-antes-de-commit, não um lock de verdade —
+  // adequado pro perfil de uso: CLI manual de baixa frequência, não serviço
+  // concorrente) e aborta se mudou pra "sent" desde a leitura original. Só trata
+  // como corrida NOVA se o `existingState` original não já era "sent" — se fosse
+  // (só alcançável via --force), `freshState` vai bater igual e não há nada de
+  // novo a proteger.
+  const freshState = deps.readState(dir);
+  if (freshState?.status === "sent" && existingState?.status !== "sent") {
+    log(
+      `ERRO CRÍTICO: a campanha Brevo id=${campaign.id} FOI CRIADA com sucesso, mas o ciclo ${cycle} foi ` +
+        `marcado como ENVIADO (--mark-sent, em ${freshState.sentAt}) por outra invocação concorrente ENQUANTO ` +
+        "esta chamada estava criando a campanha. NÃO sobrescrevendo o state 'sent' de volta pra 'draft_prepared' " +
+        `— confira o painel Brevo (Campaigns → Drafts) e decida manualmente se a campanha id=${campaign.id} deve ` +
+        "ser excluída ou mantida.",
+    );
+    throw new Error(
+      `race de idempotência detectado: ciclo ${cycle} marcado 'sent' concorrentemente enquanto a campanha Brevo ` +
+        `id=${campaign.id} era criada — state NÃO foi sobrescrito.`,
+    );
+  }
 
   // #4572/#4593 — grava o brevoCampaignId de volta no state, fechando o laço
   // de idempotência: a próxima invocação pra este ciclo verá `decidePublishBrevoAction`

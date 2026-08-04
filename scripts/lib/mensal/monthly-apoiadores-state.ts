@@ -10,11 +10,21 @@
  *
  * ## Por que não existe um estado "sent" automático
  *
- * `send-monthly-apoiadores.ts` (a skill que consome este módulo) NUNCA chama
- * a API de escrita da Beehiiv (guard de publicação, #4521 "Restrições
- * invioláveis" + regra 1 de `context/overnight-dispatch-rules.md`) — o envio
- * real continua manual (Custom HTML paste + Audience tab + Schedule, mesmo
- * fluxo do #4482). Por isso o ciclo de vida tem 2 estados, não 1:
+ * Este módulo hoje serve DOIS consumidores com disciplina de escrita
+ * diferente — não generalizar a frase abaixo pro módulo inteiro:
+ *
+ *   - `send-monthly-apoiadores.ts` (Passo 1/3) NUNCA chama a API de escrita
+ *     de nenhum ESP (guard de publicação, #4521 "Restrições invioláveis" +
+ *     regra 1 de `context/overnight-dispatch-rules.md`) — o envio real
+ *     continua manual (Custom HTML paste + Audience tab + Schedule, mesmo
+ *     fluxo do #4482).
+ *   - `publish-monthly-apoiadores-brevo.ts` (Passo 2, #4572/#4593) chama a
+ *     API de escrita da Brevo DE VERDADE (`POST /emailCampaigns`) pra criar
+ *     a campanha — sempre como RASCUNHO, nunca agenda/envia sozinho. Este
+ *     módulo é quem dá a idempotência dessa escrita (`brevoCampaignId`
+ *     abaixo), justamente porque ela é real.
+ *
+ * Por isso o ciclo de vida tem 2 estados, não 1:
  *
  *   1. `draft_prepared` — HTML renderizado localmente (`renderMonthlyBeehiivEmail`),
  *      NADA foi enviado ainda. Rodar de novo nesse estado é seguro/idempotente
@@ -65,7 +75,7 @@ export interface ApoiadoresState {
   /** Path absoluto do HTML gerado (`_internal/beehiiv-preview.html`). */
   htmlPath: string;
   subject: string;
-  /** Nomes dos segmentos Beehiiv usados como audiência (auditoria — não reconstrói do zero em cada leitura). */
+  /** Nomes dos segmentos/listas do ESP usados como audiência (auditoria — não reconstrói do zero em cada leitura; legado do fluxo Beehiiv original, hoje também usado pela lista Brevo dedicada). */
   segments: string[];
   /**
    * Id da campanha Brevo real criada por `scripts/publish-monthly-apoiadores-brevo.ts`
@@ -103,8 +113,9 @@ export function readApoiadoresState(monthlyDir: string): ApoiadoresState | null 
   const warn = (reason: string) =>
     process.stderr.write(
       `[monthly-apoiadores-state] AVISO: ${path} existe mas ${reason} — tratando como "nunca preparado" ` +
-        "(fail-soft), mas isso pode mascarar um brevoCampaignId já gravado. Confira o arquivo manualmente antes " +
-        "de rodar o Passo 2 de novo.\n",
+        "(fail-soft), mas isso pode mascarar um brevoCampaignId ou status 'sent' já gravado. Confira o arquivo " +
+        "manualmente antes de rodar de novo qualquer um dos 3 scripts que leem este state — " +
+        "send-monthly-apoiadores.ts (Passo 1/3) ou publish-monthly-apoiadores-brevo.ts (Passo 2).\n",
     );
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<ApoiadoresState>;
@@ -233,7 +244,8 @@ export type MarkSentDecision =
 
 /**
  * Pura/testável: decide o efeito de `--mark-sent` (confirmação manual do
- * editor de que o envio real já aconteceu pela UI da Beehiiv).
+ * editor de que o envio real já aconteceu pela UI do ESP — Beehiiv
+ * originalmente; hoje Brevo, #4572/#4593. O campo é channel-agnostic).
  *
  *   - Sem estado (`prepare` nunca rodou) → erro: não há o que marcar como
  *     enviado, e marcar sem um `htmlPath`/`subject` reais deixaria o estado
@@ -248,8 +260,8 @@ export function decideMarkSentAction(state: ApoiadoresState | null): MarkSentDec
       action: "error",
       reason:
         "Nenhum draft preparado ainda pra este ciclo. Rode sem --mark-sent primeiro " +
-        "(gera o HTML e grava o estado 'draft_prepared'), depois de enviar de verdade pela UI da Beehiiv, " +
-        "rode de novo com --mark-sent.",
+        "(gera o HTML e grava o estado 'draft_prepared'), depois de enviar de verdade pela UI do ESP " +
+        "(Beehiiv originalmente; hoje Brevo, #4572/#4593), rode de novo com --mark-sent.",
     };
   }
   if (state.status === "sent") {

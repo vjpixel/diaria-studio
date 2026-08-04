@@ -15,10 +15,14 @@ description: Envia a edição mensal (data/monthly/{ciclo}/draft.md) por e-mail 
 > em vez do paste manual no Beehiiv. Esta unidade (260804) resolveu os dois
 > pontos que o #4593 tinha deixado em aberto:
 >
->   1. `platform.config.json` → `brevo_apoiadores.list_id` confirmado ao vivo
->      via `GET /v3/contacts/lists` = **8** ("Apoio — Mantenedor + Patrono
->      (mensal, one-off 2607-08)", folderId 1, `totalSubscribers: 0` — vazia
->      até o 1º `sync-apoio-nivel-brevo.ts --push`, ainda não rodado ao vivo).
+>   1. `platform.config.json` → `brevo_apoiadores.list_id` confirmado via API
+>      pelo COORDENADOR da sessão develop 260804 (processo fora deste worktree
+>      isolado, usando o `.env` real do editor — este worktree nunca teve a
+>      credencial Brevo) — `GET /v3/contacts/lists` retornou **8** ("Apoio —
+>      Mantenedor + Patrono (mensal, one-off 2607-08)", folderId 1,
+>      `totalSubscribers: 0` — vazia até o 1º `sync-apoio-nivel-brevo.ts
+>      --push`, ainda não rodado). Nenhuma escrita real rodou nesta sessão —
+>      só essa leitura de confirmação.
 >      **O nome com sufixo de ciclo sugere criação ad-hoc pro 1º envio** — antes
 >      do 2º envio mensal, decidir com o editor se vira lista PERMANENTE (sem
 >      sufixo, reusada todo mês) ou se cada ciclo ganha lista própria; não
@@ -38,9 +42,11 @@ description: Envia a edição mensal (data/monthly/{ciclo}/draft.md) por e-mail 
 >
 > **Ainda pendente (fora do escopo desta unidade):** o 1º `--push` real de
 > `sync-apoio-nivel-brevo.ts` (populam a lista 8) e a 1ª criação de campanha
-> real via `publish-monthly-apoiadores-brevo.ts` — nenhum dos dois rodou
-> contra a Brevo real ainda (worktree isolado, sem credencial Brevo ao vivo,
-> mesma disciplina do #4320/#4382/#4490/#4534). Ação do editor.
+> real via `publish-monthly-apoiadores-brevo.ts` — nenhuma ESCRITA rodou
+> contra a Brevo real ainda (este worktree isolado nunca teve a credencial
+> Brevo — só o coordenador da sessão develop, fora daqui, fez a leitura de
+> confirmação do `list_id` acima), mesma disciplina do #4320/#4382/#4490/#4534.
+> Ação do editor.
 
 Entrega o "artigo especial do mês" já anunciado como recompensa Mantenedor/
 Patrono (`context/snippets/agradecimento-apoiadores.md`) — hoje só existe como
@@ -76,10 +82,14 @@ independente do timing do envio canônico Clarice do mês.
   no docstring de `scripts/lib/mensal/monthly-apoiadores-brevo-render.ts`).
   Deixou 2 pontos em aberto: `list_id` ainda `null` e o "Gap conhecido" de
   idempotência (ver Passo 3).
-- **#4572 develop** (esta unidade, 260804): confirma `list_id = 8` ao vivo
-  (`GET /v3/contacts/lists`) e fecha o guard de idempotência Passo 1 ↔ Passo 2
-  (`decidePublishBrevoAction`/`buildApoiadoresBrevoPublishedState` em
-  `monthly-apoiadores-state.ts`) — ver banner de STATUS acima.
+- **#4572 develop** (esta unidade, 260804 — a issue #4572 original foi
+  REABERTA depois do merge #4592 especificamente pra cobrir os 2 pontos que o
+  #4593 deixou em aberto acima; não é uma issue nova com número reciclado):
+  confirma `list_id = 8` via API pelo coordenador da sessão develop
+  (`GET /v3/contacts/lists`, fora deste worktree isolado) e fecha o guard de
+  idempotência Passo 1 ↔ Passo 2 (`decidePublishBrevoAction`/
+  `buildApoiadoresBrevoPublishedState` em `monthly-apoiadores-state.ts`) —
+  ver banner de STATUS acima.
 
 **Conteúdo: mantém a decisão já tomada no #4482, não a reabre.** A issue
 #4521 sugeriu reusar os snippets Patronos da diária
@@ -232,11 +242,13 @@ agenda/envia sozinha), e dedup automático entre Passo 1 (estado) e Passo 2
 (campanha real) — fechado nesta unidade (#4572 develop, 260804, ver
 "Idempotência" no Passo 2 e "Gap conhecido" no Passo 3 acima).
 
-O que NÃO está feito ainda: `list_id = 8` confirmado, mas a lista está VAZIA
-(`sync-apoio-nivel-brevo.ts --push` nunca rodou ao vivo) e nenhuma campanha
-Brevo real foi criada por `publish-monthly-apoiadores-brevo.ts` fora de
-`--dry-run` — ambos exigem credencial Brevo real, ausente nesta sessão (mesma
-disciplina dos #4320/#4382/#4490/#4534/#4572). Ação do editor: (1) rodar
+O que NÃO está feito ainda: `list_id = 8` confirmado (leitura, feita pelo
+coordenador da sessão develop fora deste worktree — ver banner de STATUS),
+mas a lista está VAZIA (`sync-apoio-nivel-brevo.ts --push` nunca rodou) e
+nenhuma campanha Brevo real foi criada por `publish-monthly-apoiadores-brevo.ts`
+fora de `--dry-run` — ambas são ESCRITAS reais e exigem credencial Brevo,
+ausente neste worktree isolado (mesma disciplina dos #4320/#4382/#4490/#4534/#4572).
+Ação do editor: (1) rodar
 `sync-apoio-nivel-brevo.ts --push` pra popular a lista 8; (2) decidir se essa
 lista vira permanente (sem sufixo de ciclo no nome) antes do 2º envio mensal
 (ver banner de STATUS); (3) rodar o Passo 2 real e confirmar visualmente
