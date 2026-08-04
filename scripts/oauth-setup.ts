@@ -49,6 +49,11 @@ const CREDENTIALS_PATH = resolve(ROOT, "data", ".credentials.json");
 const REDIRECT_PORT = 8765;
 const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/oauth/callback`;
 
+// A invariante "postmaster.domain SOMA ao postmaster.readonly, nunca
+// substitui" é travada por `test/oauth-scopes-4539.test.ts`, que lê ESTE
+// ARQUIVO COMO TEXTO em vez de importar `SCOPES`. Importar não é opção:
+// `main()` roda incondicionalmente no fim do módulo, então um import abriria
+// o browser e subiria o servidor da porta 8765 dentro do CI.
 const SCOPES = [
   "https://www.googleapis.com/auth/drive",
   "https://www.googleapis.com/auth/gmail.readonly",
