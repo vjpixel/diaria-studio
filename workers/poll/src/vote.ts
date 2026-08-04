@@ -2277,7 +2277,21 @@ export async function getSummedEditionStats(
   edition: string,
   rawEnv: Env = env,
 ): Promise<{ stats: StatsCounterData; correctRaw: string | null }> {
-  const legacyEdition = legacyMonthlyEditionForCycle(edition);
+  // #4563: `legacyMonthlyEditionForCycle` valida só a FORMA do `edition`
+  // (`YYMM-MM`), nunca o brand — sem este guard, um `edition` em formato de
+  // ciclo consultado sob um brand `leaderboardPeriod !== "year"` (ex:
+  // `diaria`/`web`, que não têm conceito de ciclo mensal) faz
+  // `legacyMonthlyEditionForCycle` apontar pra um AAMMDD que é uma edição
+  // DIÁRIA REAL (não um marcador legado) — somando stats de uma edição
+  // completamente alheia. Achado ao vivo (#4563): `/stats?edition=2607-08`
+  // sem `&brand=` (default "diaria") somou os stats da edição diária real
+  // `260731`, produzindo `correct_count`/`total` que não correspondem a
+  // NENHUM voto do ciclo `2607-08` de fato. Mesmo guard que a direção
+  // INVERSA (`cycleForLegacyMonthlyEdition`) já aplica no call site
+  // (`handleEditions` abaixo, `normalizeLegacy = leaderboardPeriod === "year"`).
+  const legacyEdition = BRAND_INFO[brand].leaderboardPeriod === "year"
+    ? legacyMonthlyEditionForCycle(edition)
+    : null;
 
   const [primary, legacy] = await Promise.all([
     fetchEditionStatsAndCorrect(env, brand, edition, rawEnv),

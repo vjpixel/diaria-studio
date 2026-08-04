@@ -49,7 +49,7 @@ import {
   legacyMonthlyEditionForCycle,
   editionToMonthSlug,
 } from "../workers/poll/src/lib.ts";
-import { sumStatsCounterData, handleStats } from "../workers/poll/src/vote.ts";
+import { sumStatsCounterData, handleStats, getSummedEditionStats } from "../workers/poll/src/vote.ts";
 import type { StatsCounterData } from "../workers/poll/src/stats-counter.ts";
 import type { Env } from "../workers/poll/src/index.ts";
 import worker from "../workers/poll/src/index.ts";
@@ -261,6 +261,13 @@ describe("handleStats: /stats?edition={ciclo} também acha votos sob a chave AAM
   });
 
   it("direct import handleStats (sem router) também aplica o fallback — mesma cobertura via chamada direta", async () => {
+    // #4563: brand precisa ter `leaderboardPeriod === "year"` pro fallback
+    // legado disparar (ver getSummedEditionStats) — "clarice" no lugar do
+    // "diaria" original, que era incidental (o guard de brand não existia
+    // ainda quando este teste foi escrito). Chave KV continua SEM prefixo
+    // de brand — a chamada é direta a handleStats, sem passar pelo
+    // brandedEnv que o router normalmente aplicaria (fetchEditionStatsAndCorrect
+    // lê `env.POLL` como veio, não prefixa sozinho).
     const kv = makeTrackedKv({
       "stats:260531": JSON.stringify({ total: 9, voted_a: 4, voted_b: 5, correct_count: 4 }),
     });
@@ -271,12 +278,91 @@ describe("handleStats: /stats?edition={ciclo} também acha votos sob a chave AAM
       ALLOWED_ORIGINS: "*",
     };
     const url = new URL("https://poll.diaria.workers.dev/stats?edition=2605-06");
-    const res = await handleStats(url, env, "diaria");
+    const res = await handleStats(url, env, "clarice");
     const body = await res.json() as { total: number };
-    // Nota: aqui `env` NÃO está embrulhado por brand (chamada direta a
-    // handleStats, não via router) — as chaves batem sem prefixo, como
-    // qualquer outra edition normal. Confirma que o fallback funciona
-    // independente do brand ser resolvido pelo router ou pelo caller.
     assert.equal(body.total, 9);
+  });
+});
+
+// ── 4. #4563: fallback legado só se aplica a brands com ciclo mensal ───────
+//
+// BUG (achado ao vivo, comentário do #4563, 2026-08-04): `getSummedEditionStats`
+// chamava `legacyMonthlyEditionForCycle(edition)` incondicionalmente — a
+// função só valida a FORMA do `edition` (`YYMM-MM`), nunca o brand. Pra um
+// brand com `leaderboardPeriod !== "year"` (ex: "diaria"/"web", que não têm
+// conceito de ciclo mensal), um `edition` em formato de ciclo aponta pro
+// AAMMDD do último dia do mês de CONTEÚDO — que pra esses brands é uma
+// EDIÇÃO DIÁRIA REAL, não um marcador legado. `/stats?edition=2607-08` (sem
+// `&brand=`, default "diaria") somava os stats da edição diária real
+// `260731` — populações completamente alheias uma à outra, produzindo
+// `total`/`voted_a`/`voted_b`/`correct_count` que não correspondem a NENHUM
+// voto do ciclo `2607-08`.
+//
+// FIX: `getSummedEditionStats` só computa `legacyEdition` quando
+// `BRAND_INFO[brand].leaderboardPeriod === "year"` — mesmo guard que a
+// direção INVERSA (`cycleForLegacyMonthlyEdition`) já tinha no seu único
+// call site (`handleEditions`, `normalizeLegacy = leaderboardPeriod === "year"`).
+describe("getSummedEditionStats: fallback legado só se aplica a brand com leaderboardPeriod=year (#4563)", () => {
+  it("REGRESSÃO EXATA: /stats?edition=2606-07 sem brand não devolve os números de 260630", async () => {
+    // 260630 é uma edição DIÁRIA real (não relacionada ao ciclo 2606-07) —
+    // tem stats próprios que NUNCA deveriam vazar pra uma consulta de ciclo
+    // sob o brand default "diaria".
+    const kv = makeTrackedKv({
+      "stats:260630": JSON.stringify({ total: 9, voted_a: 4, voted_b: 5, correct_count: 4 }),
+      // "stats:2606-07" propositalmente AUSENTE — brand "diaria" não tem
+      // conceito de ciclo mensal, então nunca existiria essa chave de fato.
+    });
+    const env: Env = {
+      POLL: kv as unknown as KVNamespace,
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+
+    const res = await worker.fetch(
+      new Request("https://poll.diaria.workers.dev/stats?edition=2606-07"),
+      env,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json() as { total: number; voted_a: number; voted_b: number; correct_count: number };
+    assert.equal(body.total, 0, "ANTES do fix isso devolvia 9 — os stats da edição diária 260630 vazavam pro ciclo");
+    assert.equal(body.voted_a, 0);
+    assert.equal(body.voted_b, 0);
+    assert.equal(body.correct_count, 0);
+  });
+
+  it("getSummedEditionStats: brand leaderboardPeriod=month (diaria) NUNCA soma a chave legada, mesmo que ela exista", async () => {
+    const kv = makeTrackedKv({
+      "stats:2607-08": JSON.stringify({ total: 3, voted_a: 1, voted_b: 2, correct_count: 1 }),
+      "stats:260731": JSON.stringify({ total: 14, voted_a: 10, voted_b: 4, correct_count: 10 }), // edição diária real
+    });
+    const env: Env = {
+      POLL: kv as unknown as KVNamespace,
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+
+    const { stats } = await getSummedEditionStats(env, "diaria", "2607-08");
+    assert.deepEqual(stats, { total: 3, voted_a: 1, voted_b: 2, correct_count: 1 }, "só a chave primária, sem somar 260731");
+  });
+
+  it("getSummedEditionStats: brand leaderboardPeriod=year (clarice) continua somando a chave legada normalmente", async () => {
+    // Chamada direta a getSummedEditionStats (sem router/brandedEnv) — as
+    // chaves batem sem prefixo, mesmo racional do teste "direct import
+    // handleStats" acima.
+    const kv = makeTrackedKv({
+      "stats:2607-08": JSON.stringify({ total: 3, voted_a: 1, voted_b: 2, correct_count: 1 }),
+      "stats:260731": JSON.stringify({ total: 2, voted_a: 1, voted_b: 1, correct_count: 1 }),
+    });
+    const env: Env = {
+      POLL: kv as unknown as KVNamespace,
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+
+    const { stats } = await getSummedEditionStats(env, "clarice", "2607-08");
+    assert.deepEqual(stats, { total: 5, voted_a: 2, voted_b: 3, correct_count: 2 }, "soma normalmente pra brand com ciclo mensal");
   });
 });
