@@ -49,6 +49,11 @@ const CREDENTIALS_PATH = resolve(ROOT, "data", ".credentials.json");
 const REDIRECT_PORT = 8765;
 const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/oauth/callback`;
 
+// A invariante "postmaster.domain SOMA ao postmaster.readonly, nunca
+// substitui" é travada por `test/oauth-scopes-4539.test.ts`, que lê ESTE
+// ARQUIVO COMO TEXTO em vez de importar `SCOPES`. Importar não é opção:
+// `main()` roda incondicionalmente no fim do módulo, então um import abriria
+// o browser e subiria o servidor da porta 8765 dentro do CI.
 const SCOPES = [
   "https://www.googleapis.com/auth/drive",
   "https://www.googleapis.com/auth/gmail.readonly",
@@ -72,6 +77,22 @@ const SCOPES = [
   // coisas são independentes; faltar uma dá 403 SERVICE_DISABLED mesmo com o
   // scope concedido (achado #4154, 260730).
   "https://www.googleapis.com/auth/postmaster.readonly",
+  // #4539: registrar um domínio novo no Postmaster (`domains.create`) exige a
+  // API **v2** — a v1 que `postmaster-spam-sync.ts` usa é read-only
+  // (`domains.get`/`domains.list`/`trafficStats`) e não tem método de criação.
+  // A v2 pede `.../auth/postmaster` OU `.../auth/postmaster.domain`; usamos o
+  // segundo (mais estreito — gestão de domínio, sem abrir o resto).
+  //
+  // SOMA ao `.readonly` acima, não substitui: diferente do par
+  // `webmasters`/`webmasters.readonly` (bloco anterior), aqui os dois scopes
+  // são eixos DIFERENTES (gestão de domínio vs. leitura de trafficStats), não
+  // superset/subset — remover o `.readonly` quebraria o sync diário de
+  // spamRate que alimenta o breaker da Rampa.
+  //
+  // Mesma armadilha do #4546 anotada no bloco `webmasters`: o token já emitido
+  // em `data/.credentials.json` NÃO ganha este scope sozinho — sem re-rodar
+  // este script e reaprovar no browser, a falha só aparece no POST, com 403.
+  "https://www.googleapis.com/auth/postmaster.domain",
   // #4064: enviar o e-mail de alarme de guardrail furado do ramp Clarice
   // (`scripts/clarice-guardrail-alarm.ts`) via Gmail API direta — rodando fora
   // de uma sessão Claude Code (Task Scheduler), sem MCP Gmail disponível.
