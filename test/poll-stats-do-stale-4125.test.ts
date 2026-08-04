@@ -16,9 +16,15 @@
  * FIX: `stats-do-stale:{edition}` (KV, branded) marca "DO desatualizado
  * aqui" quando `/adjust-correct` falha, e é limpo quando uma correção
  * subsequente tem sucesso. `mergeStatsWithKvFallback` ganha um 3º parâmetro
- * `correctCountStale` — quando true, usa `correct_count` do KV mesmo com
- * `total` empatado (preservando total/voted_a/voted_b do DO, que continuam
- * corretos — só o `/adjust-correct` falhou, não os increments normais).
+ * `correctCountStale` — quando true, usa o `kvStats` INTEIRO (não só
+ * `correct_count`; ver #4563 abaixo, que muda semântica). Original (pré-#4563):
+ * só `correct_count` vinha do KV, preservando total/voted_a/voted_b do DO —
+ * válido quando a reconciliação de gabarito só recalculava correct_count.
+ * Desde #4563, `handleAdminCorrect` também reconcilia total/voted_a/voted_b
+ * a partir dos registros `vote:{edition}:*`, então um DO stale pode estar
+ * errado nesses 3 campos também, não só em correct_count — daí o KV inteiro
+ * substituir o DO quando `correctCountStale` está setado. Cobertura completa
+ * dessa mudança de semântica: test/close-poll-stats-full-reconcile-4563.test.ts.
  */
 
 import { describe, it } from "node:test";
@@ -37,12 +43,12 @@ describe("mergeStatsWithKvFallback — correctCountStale (#4125 item 2)", () => 
     assert.equal(result.correct_count, 0, "sem o sinal de staleness, o empate de total continua preferindo o DO");
   });
 
-  it("total empatado + correctCountStale=true: usa correct_count do KV, preserva total/voted_a/voted_b do DO", () => {
+  it("total empatado + correctCountStale=true: usa correct_count do KV (#4563: hoje devolve o kvStats INTEIRO — este fixture tem total/voted_a/voted_b idênticos entre DO e KV, então não distingue as duas semânticas; ver test/close-poll-stats-full-reconcile-4563.test.ts pro fixture que prova a diferença)", () => {
     const doStats: StatsCounterData = { total: 3, voted_a: 2, voted_b: 1, correct_count: 0 };
     const kvStats: StatsCounterData = { total: 3, voted_a: 2, voted_b: 1, correct_count: 2 };
     const result = mergeStatsWithKvFallback(doStats, kvStats, true);
     assert.equal(result.correct_count, 2, "REGRESSÃO #4125 item 2: correct_count deve vir do KV quando o DO está marcado stale");
-    assert.equal(result.total, 3, "total continua do DO (increments normais não são afetados pela falha do adjust-correct)");
+    assert.equal(result.total, 3);
     assert.equal(result.voted_a, 2);
     assert.equal(result.voted_b, 1);
   });
