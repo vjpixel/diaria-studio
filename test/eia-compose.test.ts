@@ -24,6 +24,8 @@ import {
   translateToPtBR,
   resolveTranslatedSentence,
   resolveSubjectWikipediaUrl,
+  buildSdPrompt,
+  resolveSdPromptDescription,
 } from "../scripts/eia-compose.ts";
 import { withFetchSpy } from "./_helpers/with-fetch-spy.ts";
 
@@ -1428,17 +1430,23 @@ describe("buildCreditLine — #4618: topônimos não vazam em EN quando a Wikime
 });
 
 describe("eia-compose.ts (source guard) — #4618: fix de raiz não regride silenciosamente", () => {
-  it("fetchPotd pede a feed no locale pt (não mais en)", () => {
+  it("fetchPotd pede a feed no locale pt por padrão (não mais en)", () => {
     // Guard de configuração: a troca de locale é o fix primário (a Wikimedia
     // passa a servir a description já traduzida nativamente). Sem este
-    // guard, um revert acidental de volta pra `/wikipedia/en/featured/`
-    // reintroduziria o vazamento de topônimos em EN sem nenhum teste falhar
-    // (buildCreditLine sozinho não pega isso — ele só reage ao que recebe).
+    // guard, um revert acidental de volta pro DEFAULT `en` reintroduziria o
+    // vazamento de topônimos em EN sem nenhum teste falhar (buildCreditLine
+    // sozinho não pega isso — ele só reage ao que recebe).
+    //
+    // #4620: `fetchPotd` ganhou um 3º parâmetro `locale` (usado por
+    // `resolveSdPromptDescription` pra buscar a versão EN sob demanda) — a
+    // URL virou interpolação de template, então o guard passou a checar o
+    // DEFAULT do parâmetro em vez do literal da URL antiga.
     const src = readFileSync(resolve(import.meta.dirname, "../scripts/eia-compose.ts"), "utf8");
-    assert.match(src, /feed\/v1\/wikipedia\/pt\/featured/);
-    assert.ok(
-      !src.includes("feed/v1/wikipedia/en/featured"),
-      "fetchPotd não deve mais pedir a feed no locale en como primário",
+    assert.match(src, /wikipedia\/\$\{locale\}\/featured/, "URL de fetchPotd deve ser parametrizada por locale");
+    assert.match(
+      src,
+      /locale: "pt" \| "en" = "pt"/,
+      "default do parâmetro locale deve continuar 'pt' — revert acidental pra 'en' quebraria este guard",
     );
   });
 
@@ -1725,6 +1733,99 @@ describe("translateToPtBR — prompt real enviado ao Gemini (#4618)", () => {
         if (originalKey !== undefined) process.env.GEMINI_API_KEY = originalKey;
       }
       assert.deepEqual(calls, [], "sem API key, translateToPtBR nunca deve chamar fetch");
+    });
+  });
+});
+
+describe("buildSdPrompt (#4620 — antes recebia WikimediaImage inteiro, agora recebe o texto já resolvido)", () => {
+  it("texto curto: aparece no positive + sufixo de estilo; negative/dimensões fixas", () => {
+    const result = buildSdPrompt("A quiet harbor at dawn.");
+    assert.match(result.positive, /^A quiet harbor at dawn\./);
+    assert.match(result.positive, /documentary photograph, natural light, candid composition, photorealistic$/);
+    assert.ok(result.negative.length > 0);
+    assert.equal(result.final_width, 800);
+    assert.equal(result.final_height, 450);
+  });
+
+  it("texto >500 chars é truncado ANTES do sufixo de estilo", () => {
+    const longText = "x".repeat(600);
+    const result = buildSdPrompt(longText);
+    const suffix = ", documentary photograph, natural light, candid composition, photorealistic";
+    assert.equal(result.positive, "x".repeat(500) + suffix);
+  });
+
+  it("remove HTML do texto de entrada", () => {
+    const result = buildSdPrompt("<p>Roma <b>antiga</b>.</p>");
+    assert.ok(!result.positive.includes("<"), "não deve sobrar tag HTML no prompt");
+    assert.match(result.positive, /^Roma antiga/);
+  });
+
+  it("texto vazio: só o sufixo de estilo sobra, não lança", () => {
+    const result = buildSdPrompt("");
+    assert.match(result.positive, /^, documentary photograph/);
+  });
+});
+
+describe("resolveSdPromptDescription (#4620 — só busca EN quando genuinamente precisa)", () => {
+  const ptImage = { description: { text: "Roma fica no rio Tibre.", lang: "pt" } };
+  const enNativeImage = { description: { text: "Rome is on the Tiber.", lang: "en" } };
+
+  it("image_generator=gemini + description pt → retorna o texto pt, ZERO fetch (custo do caminho ativo hoje)", async () => {
+    const fetchEn = async () => {
+      throw new Error("não deveria ser chamado");
+    };
+    const result = await resolveSdPromptDescription("gemini", ptImage, "2026-08-04", fetchEn);
+    assert.equal(result, "Roma fica no rio Tibre.");
+  });
+
+  it("image_generator=comfyui + description já nativa em EN (isPtDescription=false) → retorna o texto EN, ZERO fetch", async () => {
+    const fetchEn = async () => {
+      throw new Error("não deveria ser chamado");
+    };
+    const result = await resolveSdPromptDescription("comfyui", enNativeImage, "2026-08-04", fetchEn);
+    assert.equal(result, "Rome is on the Tiber.");
+  });
+
+  it("image_generator=comfyui + description pt → busca EN da MESMA data e usa o texto EN retornado", async () => {
+    let calledWithIso: string | null = null;
+    const fetchEn = async (iso: string) => {
+      calledWithIso = iso;
+      return { description: { text: "Rome is on the Tiber.", lang: "en" } };
+    };
+    const result = await resolveSdPromptDescription("comfyui", ptImage, "2026-08-04", fetchEn);
+    assert.equal(result, "Rome is on the Tiber.");
+    assert.equal(calledWithIso, "2026-08-04");
+  });
+
+  it("image_generator=cloudflare + description pt + fetch EN falha → fail-soft, cai de volta pro texto pt (nunca lança)", async () => {
+    const fetchEn = async () => {
+      throw new Error("Wikimedia indisponível");
+    };
+    const result = await resolveSdPromptDescription("cloudflare", ptImage, "2026-08-04", fetchEn);
+    assert.equal(result, "Roma fica no rio Tibre.");
+  });
+
+  it("image_generator=comfyui + description pt + fetch EN retorna sem description.text → fail-soft, cai pro texto pt", async () => {
+    const fetchEn = async () => ({ description: { lang: "en" } });
+    const result = await resolveSdPromptDescription("comfyui", ptImage, "2026-08-04", fetchEn);
+    assert.equal(result, "Roma fica no rio Tibre.");
+  });
+
+  it("image_generator=comfyui + description pt + fetch EN retorna null → fail-soft, cai pro texto pt", async () => {
+    const fetchEn = async () => null;
+    const result = await resolveSdPromptDescription("comfyui", ptImage, "2026-08-04", fetchEn);
+    assert.equal(result, "Roma fica no rio Tibre.");
+  });
+
+  it("default fetchEn (sem injeção): pede a feed real no locale en pra mesma data (#4620)", async () => {
+    await withFetchSpy(async (calls) => {
+      // withFetchSpy sempre lança na chamada interceptada — cai no fail-soft,
+      // a asserção relevante é a URL efetivamente pedida (mesmo padrão do
+      // guard de fetchPotd/locale pt já usado pro #4618 mais acima).
+      const result = await resolveSdPromptDescription("comfyui", ptImage, "2026-08-04");
+      assert.equal(result, "Roma fica no rio Tibre.", "fail-soft cai pro texto pt quando o fetch real falha no teste");
+      assert.equal(calls.length, 1);
+      assert.match(calls[0], /\/wikipedia\/en\/featured\/2026\/08\/04/);
     });
   });
 });

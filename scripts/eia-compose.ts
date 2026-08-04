@@ -373,18 +373,22 @@ export function firstSentence(text: string): string {
   return text.trim();
 }
 
-async function fetchPotd(iso: string, retryOnRateLimit = 3): Promise<WikimediaImage | null> {
+async function fetchPotd(
+  iso: string,
+  retryOnRateLimit = 3,
+  locale: "pt" | "en" = "pt",
+): Promise<WikimediaImage | null> {
   const [yyyy, mm, dd] = iso.split("-");
-  // #4618: locale `pt` (era `en`) — mesmo endpoint, mesma imagem POTD (title,
-  // image/thumbnail source, artist, credit, license idênticos; confirmado ao
-  // vivo comparando as duas respostas pra várias datas), mas a Wikimedia serve
-  // a `description` já traduzida nativamente (com links pra pt.wikipedia.org
-  // de fábrica) quando existe versão pt — elimina a necessidade de traduzir
-  // por conta própria no caso comum. Caso real #4618 (edição 260804): pedir
-  // em `en` e tentar traduzir depois via Gemini deixava topônimos (Rome,
-  // Tiber, Vatican City) vazando em inglês porque o prompt de tradução
-  // instruía "manter nomes próprios em inglês" — a Wikimedia, ao contrário,
-  // já entrega "Roma", "rio Tibre", "Cidade do Vaticano" prontos.
+  // #4618: locale `pt` como DEFAULT (era `en`) — mesmo endpoint, mesma imagem
+  // POTD (title, image/thumbnail source, artist, credit, license idênticos;
+  // confirmado ao vivo comparando as duas respostas pra várias datas), mas a
+  // Wikimedia serve a `description` já traduzida nativamente (com links pra
+  // pt.wikipedia.org de fábrica) quando existe versão pt — elimina a
+  // necessidade de traduzir por conta própria no caso comum. Caso real #4618
+  // (edição 260804): pedir em `en` e tentar traduzir depois via Gemini deixava
+  // topônimos (Rome, Tiber, Vatican City) vazando em inglês porque o prompt de
+  // tradução instruía "manter nomes próprios em inglês" — a Wikimedia, ao
+  // contrário, já entrega "Roma", "rio Tibre", "Cidade do Vaticano" prontos.
   //
   // Cobertura do `pt` NÃO é uma garantia formal da API — é uma observação
   // empírica (amostragem manual de ~10 datas espalhadas pelo ano, sempre
@@ -393,7 +397,11 @@ async function fetchPotd(iso: string, retryOnRateLimit = 3): Promise<WikimediaIm
   // fica verificável contra `data/run-log.jsonl`/stderr real em vez de só
   // "nunca observado" — se o fallback começar a disparar com frequência,
   // aparece lá.
-  const url = `https://api.wikimedia.org/feed/v1/wikipedia/pt/featured/${yyyy}/${mm}/${dd}`;
+  //
+  // `locale: "en"` explícito (#4620): usado só por `resolveSdPromptDescription`
+  // pra buscar a description ORIGINAL em inglês da MESMA data, quando o prompt
+  // de geração de imagem precisa de texto em EN (backends comfyui/cloudflare).
+  const url = `https://api.wikimedia.org/feed/v1/wikipedia/${locale}/featured/${yyyy}/${mm}/${dd}`;
   const res = await fetch(url, {
     headers: { "User-Agent": "diaria-studio/1.0 (diariaeditor@gmail.com)" },
   });
@@ -403,7 +411,7 @@ async function fetchPotd(iso: string, retryOnRateLimit = 3): Promise<WikimediaIm
     const retryAfter = parseInt(res.headers.get("retry-after") ?? "2", 10);
     const delaySec = Number.isFinite(retryAfter) ? retryAfter : Math.pow(2, 4 - retryOnRateLimit);
     await new Promise((r) => setTimeout(r, delaySec * 1000));
-    return fetchPotd(iso, retryOnRateLimit - 1);
+    return fetchPotd(iso, retryOnRateLimit - 1, locale);
   }
   if (!res.ok) return null;
   const data = (await res.json()) as WikimediaResponse;
@@ -1048,13 +1056,45 @@ export function buildCreditLine(
   return `${sentenceMd} — ${artistMd} / ${licenseMd}.`;
 }
 
-function buildSdPrompt(image: WikimediaImage): {
+/**
+ * #4620: decide qual texto alimenta `buildSdPrompt()` — `image.description.text`
+ * (pt-BR nativo desde #4618) é seguro pro Gemini (`gemini-image.js`, multilíngue),
+ * mas degradaria silenciosamente a fidelidade de `comfyui-run.js`/`cloudflare-image.js`
+ * (o texto vai direto pro `CLIPTextEncode`, modelo treinado majoritariamente em EN).
+ * Só paga o custo de uma 2ª chamada à Wikimedia (mesma data, locale `en`) quando
+ * genuinamente precisa: `imageGenerator !== "gemini"` E a description já veio
+ * nativa em pt (`isPtDescription`). Fail-soft — se a chamada EN falhar ou vier
+ * sem `description.text`, cai de volta pro texto existente (nunca bloqueia a
+ * composição da edição por causa disto), mas avisa em stderr.
+ */
+export async function resolveSdPromptDescription(
+  imageGenerator: string,
+  image: WikimediaImage,
+  imageDate: string,
+  fetchEn: (iso: string) => Promise<WikimediaImage | null> = (iso) => fetchPotd(iso, 3, "en"),
+): Promise<string> {
+  const fallbackText = image.description?.text ?? "";
+  if (imageGenerator === "gemini" || !isPtDescription(image)) {
+    return fallbackText;
+  }
+  const enImage = await fetchEn(imageDate).catch(() => null);
+  if (enImage?.description?.text) {
+    return enImage.description.text;
+  }
+  process.stderr.write(
+    `[eia-compose] warn: image_generator="${imageGenerator}" (!= gemini) e description é pt, mas o fetch EN de ` +
+      "fallback falhou/veio vazio — prompt SD seguirá em pt-BR (#4620), pode degradar fidelidade do backend Stable Diffusion.\n",
+  );
+  return fallbackText;
+}
+
+export function buildSdPrompt(descriptionText: string): {
   positive: string;
   negative: string;
   final_width: number;
   final_height: number;
 } {
-  const description = stripHtml(image.description?.text ?? "");
+  const description = stripHtml(descriptionText);
   // Trim para prompt razoável (~500 chars)
   const positive =
     (description.length > 500 ? description.slice(0, 500) : description) +
@@ -1270,30 +1310,19 @@ async function main(): Promise<void> {
   // scripts/image-generate.ts. Antes hardcodava gemini-image.js, o que fazia
   // eai falhar quando Gemini estava unavailable mesmo com cloudflare/comfyui ativos.
   //
-  // #4618 ATENÇÃO (achado do review consolidado, code-reviewer): `buildSdPrompt`
-  // usa `image.description.text` como positive prompt — antes desta issue,
-  // esse texto era SEMPRE inglês (fetchPotd pedia a feed `en`); desde a troca
-  // pra locale `pt`, no caminho comum (`sourceIsPt`) esse texto vem em
-  // português. `gemini-image.js` (backend ATIVO hoje, `image_generator:
-  // "gemini"` no platform.config.json) é um LLM multilíngue — lida bem com
-  // prompt em pt. MAS `comfyui-run.js`/`cloudflare-image.js` (backends
-  // alternativos suportados, ver docs/comfyui-setup.md) alimentam esse texto
-  // direto num `CLIPTextEncode`/modelo Stable Diffusion — treinados quase
-  // exclusivamente em legendas EM INGLÊS; prompt em pt degradaria a fidelidade
-  // da imagem gerada SILENCIOSAMENTE (sem erro, sem teste que pegue isso) se
-  // o editor trocar `image_generator` pra "comfyui"/"cloudflare". Risco latente,
-  // não ativo — não corrigido nesta PR (exigiria decidir se vale reintroduzir
-  // uma 2ª chamada à feed `en` só pra este prompt, com o custo de latência
-  // que isso adiciona); documentado aqui pra não ser redescoberto como
-  // regressão silenciosa mais tarde. Ver PR #4619 pro contexto completo.
-  const sdPrompt = buildSdPrompt(image);
-  const sdPromptPath = resolve(internalDir, "01-eia-sd-prompt.json");
-  writeFileSync(sdPromptPath, JSON.stringify(sdPrompt, null, 2));
-  const iaPath = resolve(outDir, iaFilename);
+  // #4620: qual texto vira o prompt positivo (pt nativo vs. refetch EN) é
+  // decidido por `resolveSdPromptDescription` — ver docstring lá (fecha o
+  // risco documentado no #4618/PR #4619 de prompt pt-BR vazando pra
+  // comfyui/cloudflare).
   const platformCfg = JSON.parse(
     readFileSync(resolve(ROOT, "platform.config.json"), "utf8"),
   );
   const imageGenerator = (platformCfg.image_generator ?? "gemini") as string;
+  const sdDescriptionText = await resolveSdPromptDescription(imageGenerator, image, imageDate);
+  const sdPrompt = buildSdPrompt(sdDescriptionText);
+  const sdPromptPath = resolve(internalDir, "01-eia-sd-prompt.json");
+  writeFileSync(sdPromptPath, JSON.stringify(sdPrompt, null, 2));
+  const iaPath = resolve(outDir, iaFilename);
   const imageScriptName =
     imageGenerator === "comfyui" ? "scripts/comfyui-run.js" :
     imageGenerator === "cloudflare" ? "scripts/cloudflare-image.js" :
