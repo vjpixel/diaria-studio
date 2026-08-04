@@ -34,6 +34,7 @@ import {
   extractCommonsUserUrl,
   extractFirstHref,
   isOwnWorkOnlyCredit,
+  resolveSubjectWikipediaUrl,
 } from "../scripts/eia-compose.ts";
 
 function stripHtml(html: string): string {
@@ -80,11 +81,25 @@ const IMAGE_2: FakeImage = {
 };
 
 /**
- * Simula exatamente os passos de `main()` (eia-compose.ts, ~L1034-L1070)
- * que escrevem `01-eia.md` e `_internal/01-eia-meta.json` a partir de um
- * `image` recém-buscado. Sem I/O de rede, sem geração de imagem — só a
- * montagem de crédito + escrita dos 2 arquivos, que é exatamente a parte
- * apontada pela issue como potencialmente stale.
+ * Simula os passos de `main()` (eia-compose.ts) que escrevem `01-eia.md` e
+ * `_internal/01-eia-meta.json` a partir de um `image` recém-buscado. Sem
+ * I/O de rede, sem geração de imagem — só a montagem de crédito + escrita
+ * dos 2 arquivos, que é a parte apontada pela issue #2987 como
+ * potencialmente stale.
+ *
+ * #4619 item 4 (achado do review consolidado, pr-test-analyzer): esta
+ * simulação NÃO é mais exata desde o #4618 — `main()` real hoje decide
+ * `subject_wikipedia_url` via `sourceIsPt`/`pickSubjectWikipediaLink`/
+ * `subjectEnUrl`/`ptWikipediaUrl` (ver `resolveSubjectWikipediaUrl`), não
+ * mais só `extractFirstWikipediaUrl`. Os fixtures abaixo (`IMAGE_1`/
+ * `IMAGE_2`/`IMAGE_3`) não têm `description.lang`, então em `main()` real
+ * cairiam no ramo fallback (`!sourceIsPt`) — mas esta função não mocka a
+ * chamada de rede `findPtWikipediaUrl`/`getPtLabel` (a regressão de
+ * staleness que este arquivo cobre não depende dela), então simula só até
+ * o ponto onde `ptWikipediaUrl` ficaria `null` (rede não tentada) e o
+ * resultado cai pro `subjectEnUrl` extraído direto do html — reusa
+ * `resolveSubjectWikipediaUrl` (mesma função que `main()` chama) pra esse
+ * último passo, em vez de reimplementar o fallback chain aqui.
  */
 function composeAndWrite(outDir: string, image: FakeImage, rand: number): void {
   const internalDir = join(outDir, "_internal");
@@ -106,7 +121,8 @@ function composeAndWrite(outDir: string, image: FakeImage, rand: number): void {
     extractCommonsUserUrl(image.artist?.html) ??
     extractFirstHref(image.artist?.html) ??
     null;
-  const subjectWikipediaUrl = extractFirstWikipediaUrl(image.description?.html, image.title);
+  const subjectEnUrl = extractFirstWikipediaUrl(image.description?.html, image.title);
+  const subjectWikipediaUrl = resolveSubjectWikipediaUrl(null, subjectEnUrl, subjectEnUrl);
   const meta = {
     edition: "260706",
     ai_side: sides.aiSide,

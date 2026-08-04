@@ -1,8 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   findEligiblePotd,
   chooseSides,
@@ -20,7 +20,12 @@ import {
   tokenizeImageTitle,
   readUsedTitles,
   isOwnWorkOnlyCredit,
+  isPtDescription,
+  translateToPtBR,
+  resolveTranslatedSentence,
+  resolveSubjectWikipediaUrl,
 } from "../scripts/eia-compose.ts";
+import { withFetchSpy } from "./_helpers/with-fetch-spy.ts";
 
 interface MockImage {
   title?: string;
@@ -1337,5 +1342,389 @@ describe("readUsedTitles excludeEdition (#1417)", () => {
     const titles = readUsedTitles(undefined, [corruptPath, validPath]);
     assert.ok(titles.has("file:valid.jpg"));
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("pickSubjectWikipediaLink — aceita pt.wikipedia.org (#4618)", () => {
+  it("extrai link pt.wikipedia.org quando description.html já vem nativa em pt", () => {
+    // #4618: desde que fetchPotd passou a pedir a feed em locale `pt`, a
+    // Wikimedia devolve description.html com links pra pt.wikipedia.org
+    // (antes só en.wikipedia.org era reconhecido pelo regex).
+    const html =
+      '<a href="https://pt.wikipedia.org/wiki/Foo">Foo</a> bla bla.';
+    assert.deepEqual(pickSubjectWikipediaLink(html), {
+      url: "https://pt.wikipedia.org/wiki/Foo",
+      text: "Foo",
+    });
+  });
+
+  it("continua aceitando en.wikipedia.org (fallback path quando description.lang !== pt)", () => {
+    const html = '<a href="https://en.wikipedia.org/wiki/Foo">Foo</a> bla bla.';
+    assert.deepEqual(pickSubjectWikipediaLink(html), {
+      url: "https://en.wikipedia.org/wiki/Foo",
+      text: "Foo",
+    });
+  });
+
+  it("ranking por title match funciona igual com links pt.wikipedia.org", () => {
+    // Confirma que a heurística de scoring (title match, #284) não dependia
+    // implicitamente do domínio en.wikipedia.org — só o SUBJECT_STOP_WORDS
+    // (#301) é inerentemente inglês (não penaliza termos em pt), então este
+    // teste usa title-match puro em vez de reusar o cenário "Pilot boat".
+    const html =
+      '<a href="https://pt.wikipedia.org/wiki/Barco">Barco</a> perto de ' +
+      '<a href="https://pt.wikipedia.org/wiki/Landsort">Landsort</a>.';
+    const title = "File:Landsort_April_2012.jpg";
+    const result = pickSubjectWikipediaLink(html, title);
+    assert.equal(result?.url, "https://pt.wikipedia.org/wiki/Landsort");
+  });
+});
+
+describe("buildCreditLine — #4618: topônimos não vazam em EN quando a Wikimedia serve description nativa em pt", () => {
+  it("caso real (edição 260804, issue #4618): Rome/Tiber/Vatican City saem como Roma/rio Tibre/Cidade do Vaticano, sem tradução nenhuma", () => {
+    // Fixture = resposta REAL da Wikimedia feed API pra
+    // https://api.wikimedia.org/feed/v1/wikipedia/pt/featured/2026/08/04 —
+    // mesma POTD do bug relatado na issue (File:Rom (IT), Brücke „Ponte
+    // Vittorio Emanuele II“ ...), capturada ao vivo durante a investigação
+    // desta correção. Antes (#4618), eia-compose.ts pedia a description em
+    // EN e tentava traduzir via Gemini com um prompt que instruía "manter
+    // nomes próprios em inglês" — Rome/Tiber/Vatican City (topônimos, mas
+    // também "nomes próprios" no sentido amplo) vazavam intactos. Buscar a
+    // description já em pt elimina a tradução inteira nesse caso comum.
+    const image = {
+      title: 'File:Rom (IT), Brücke „Ponte Vittorio Emanuele II“ -- 2024 -- 0732.jpg',
+      description: {
+        html:
+          '<a rel="mw:WikiLink/Interwiki" href="https://pt.wikipedia.org/wiki/Ponte%20Vittorio%20Emanuele%20II" title="pt:Ponte Vittorio Emanuele II" class="extiw">Ponte Vittorio Emanuele II</a>, com 108 metros de extensão, conecta o centro histórico de Roma — a leste do <a rel="mw:WikiLink/Interwiki" href="https://pt.wikipedia.org/wiki/rio%20Tibre" title="pt:rio Tibre" class="extiw">rio Tibre</a> — à <a rel="mw:WikiLink/Interwiki" href="https://pt.wikipedia.org/wiki/Vaticano" title="pt:Vaticano" class="extiw">Cidade do Vaticano</a>.',
+        text:
+          "Ponte Vittorio Emanuele II, com 108 metros de extensão, conecta o centro histórico de Roma — a leste do rio Tibre — à Cidade do Vaticano.",
+        lang: "pt",
+      },
+      artist: {
+        html:
+          '<bdi><a href="//commons.wikimedia.org/wiki/User:A._%C3%96ztas" title="User:A. Öztas">Anil Öztas</a></bdi>',
+        text: "Anil Öztas",
+      },
+      license: { type: "CC BY 4.0", url: "https://creativecommons.org/licenses/by/4.0" },
+    };
+    // Sem passar opts (ptLabel/ptWikipediaUrl/translatedSentence) — exatamente
+    // como main() chama quando `sourceIsPt` é true (#4618): buildCreditLine
+    // cai no fallback interno (`subj` recomputado de description.html), que
+    // já é suficiente porque a description em si já está em pt.
+    const credit = buildCreditLine(image as never);
+    assert.match(credit, /Roma/, `credit deve conter "Roma": ${credit}`);
+    assert.match(credit, /rio Tibre/, `credit deve conter "rio Tibre": ${credit}`);
+    assert.match(credit, /Cidade do Vaticano/, `credit deve conter "Cidade do Vaticano": ${credit}`);
+    assert.ok(!credit.includes("Rome"), `credit não deve conter "Rome" (vazamento EN): ${credit}`);
+    assert.ok(!credit.includes("Tiber"), `credit não deve conter "Tiber" (vazamento EN): ${credit}`);
+    assert.ok(!credit.includes("Vatican City"), `credit não deve conter "Vatican City" (vazamento EN): ${credit}`);
+    // Subject principal linkado direto pra pt.wikipedia.org, sem precisar de
+    // ptLabel/ptWikipediaUrl explícitos (mecanismo do #337/#480 fica ocioso).
+    assert.match(
+      credit,
+      /\[Ponte Vittorio Emanuele II\]\(https:\/\/pt\.wikipedia\.org\/wiki\/Ponte%20Vittorio%20Emanuele%20II\)/,
+    );
+  });
+});
+
+describe("eia-compose.ts (source guard) — #4618: fix de raiz não regride silenciosamente", () => {
+  it("fetchPotd pede a feed no locale pt (não mais en)", () => {
+    // Guard de configuração: a troca de locale é o fix primário (a Wikimedia
+    // passa a servir a description já traduzida nativamente). Sem este
+    // guard, um revert acidental de volta pra `/wikipedia/en/featured/`
+    // reintroduziria o vazamento de topônimos em EN sem nenhum teste falhar
+    // (buildCreditLine sozinho não pega isso — ele só reage ao que recebe).
+    const src = readFileSync(resolve(import.meta.dirname, "../scripts/eia-compose.ts"), "utf8");
+    assert.match(src, /feed\/v1\/wikipedia\/pt\/featured/);
+    assert.ok(
+      !src.includes("feed/v1/wikipedia/en/featured"),
+      "fetchPotd não deve mais pedir a feed no locale en como primário",
+    );
+  });
+
+  it("prompt de tradução (fallback) não instrui mais 'manter nomes próprios em inglês' de forma ampla", () => {
+    // #4618 causa raiz: a instrução antiga ("mantendo nomes próprios,
+    // científicos e siglas em inglês") fazia o Gemini preservar topônimos —
+    // tecnicamente nomes próprios — intactos em inglês. Esse prompt só roda
+    // no fallback raro agora (description.lang !== "pt"), mas continua
+    // sendo corrigido pra não repetir o mesmo bug nesse caminho.
+    const src = readFileSync(resolve(import.meta.dirname, "../scripts/eia-compose.ts"), "utf8");
+    assert.ok(
+      !src.includes("mantendo nomes próprios, nomes científicos e siglas em inglês"),
+      "prompt de tradução não deve mais instruir manter TODOS os nomes próprios (incl. topônimos) em inglês",
+    );
+    assert.match(
+      src,
+      /Traduza topônimos e nomes de lugares/,
+      "prompt de tradução deve instruir explicitamente a tradução de topônimos",
+    );
+  });
+});
+
+describe("isPtDescription (#4618)", () => {
+  it("lang='pt' → true", () => {
+    assert.equal(isPtDescription({ description: { lang: "pt" } }), true);
+  });
+
+  it("lang='en' → false (fallback esperado, sem warn)", () => {
+    assert.equal(isPtDescription({ description: { lang: "en" } }), false);
+  });
+
+  it("lang ausente (campo description ausente ou sem lang) → false", () => {
+    assert.equal(isPtDescription({}), false);
+    assert.equal(isPtDescription({ description: {} }), false);
+  });
+
+  it("lang inesperado (ex: 'pt-BR', formato que a Wikimedia poderia adotar) → false + warn em stderr", () => {
+    // Achado do review consolidado (type-design-analyzer): `lang` é lido via
+    // comparação frágil contra a literal "pt" — este teste trava que um
+    // valor fora do conjunto esperado {"pt","en",ausente} pelo menos EMITE
+    // um sinal observável em vez de degradar silenciosamente.
+    const originalWrite = process.stderr.write;
+    let captured = "";
+    process.stderr.write = ((chunk: string) => {
+      captured += chunk;
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      const result = isPtDescription({ description: { lang: "pt-BR" } });
+      assert.equal(result, false);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    assert.match(captured, /lang="pt-BR"/);
+  });
+
+  it("lang ausente MAS description.html contém link pt.wikipedia.org → false + warn de shape drift (#4619 item 1)", () => {
+    // Achado do review consolidado sobre a PR #4619 (silent-failure-hunter):
+    // `lang` ausente hoje é tratado igual a "sem versão pt" (fallback
+    // silencioso, esperado). Mas se a Wikimedia mantivesse a resposta em pt
+    // e só renomeasse/removesse o campo `lang`, description.html continuaria
+    // apontando pra pt.wikipedia.org — esse teste confirma que esse
+    // cenário específico pelo menos emite um warning observável, mesmo sem
+    // mudar o retorno (false, main() ainda cai no fallback).
+    const originalWrite = process.stderr.write;
+    let captured = "";
+    process.stderr.write = ((chunk: string) => {
+      captured += chunk;
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      const result = isPtDescription({
+        description: { html: '<a href="https://pt.wikipedia.org/wiki/Landsort">Landsort</a>' },
+      });
+      assert.equal(result, false);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    assert.match(captured, /shape drift/);
+    assert.match(captured, /pt\.wikipedia\.org/);
+  });
+
+  it("lang ausente e description.html sem link pt.wikipedia.org → false, sem warn de shape drift", () => {
+    // Contraprova do teste acima: html ausente, vazio, ou só com link
+    // en.wikipedia.org não deve disparar o warning de shape drift — é
+    // exatamente o caminho "sem versão pt" normal, já coberto sem warn
+    // pelo teste "lang ausente ... → false" logo acima.
+    const originalWrite = process.stderr.write;
+    let captured = "";
+    process.stderr.write = ((chunk: string) => {
+      captured += chunk;
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      assert.equal(isPtDescription({}), false);
+      assert.equal(
+        isPtDescription({
+          description: { html: '<a href="https://en.wikipedia.org/wiki/Landsort">Landsort</a>' },
+        }),
+        false,
+      );
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    assert.doesNotMatch(captured, /shape drift/);
+  });
+});
+
+describe("resolveTranslatedSentence — gate central do #4618 não gasta Gemini quando já é pt (#4619 item 2)", () => {
+  it("sourceIsPt=true → nunca chama translateToPtBR (zero fetch)", async () => {
+    await withFetchSpy(async (calls) => {
+      const result = await resolveTranslatedSentence(true, "Rome is on the Tiber.");
+      assert.equal(result, null);
+      assert.deepEqual(calls, [], "sourceIsPt=true não deve fazer nenhuma chamada externa");
+    });
+  });
+
+  it("sourceIsPt=false → chama translateToPtBR (fetch acontece)", async () => {
+    // withFetchSpy sempre lança na chamada interceptada — a asserção
+    // relevante é que a chamada FOI feita (calls.length===1), não o
+    // resultado (que fica null pelo fallback silencioso de translateToPtBR,
+    // já coberto por outro teste). Mesmo padrão usado pro guard de
+    // fetchPotd acima.
+    const originalKey = process.env.GEMINI_API_KEY;
+    process.env.GEMINI_API_KEY = "test-key-synthetic";
+    try {
+      await withFetchSpy(async (calls) => {
+        const result = await resolveTranslatedSentence(false, "Rome is on the Tiber.");
+        assert.equal(result, null, "fetch mockado lança, então cai no fallback silencioso EN");
+        assert.equal(calls.length, 1, "sourceIsPt=false deve chamar translateToPtBR exatamente 1 vez");
+      });
+    } finally {
+      if (originalKey === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = originalKey;
+    }
+  });
+});
+
+describe("resolveSubjectWikipediaUrl (#4619 item 3)", () => {
+  it("pt nativo (sourceIsPt): ptWikipediaUrl e subjectEnUrl null → usa subjUrl direto", () => {
+    const result = resolveSubjectWikipediaUrl(null, null, "https://pt.wikipedia.org/wiki/Landsort");
+    assert.equal(result, "https://pt.wikipedia.org/wiki/Landsort");
+  });
+
+  it("fallback com tradução pt bem-sucedida: ptWikipediaUrl tem prioridade sobre subjectEnUrl/subjUrl", () => {
+    const result = resolveSubjectWikipediaUrl(
+      "https://pt.wikipedia.org/wiki/Sapo-escavador",
+      "https://en.wikipedia.org/wiki/Burrowing_frog",
+      "https://en.wikipedia.org/wiki/Burrowing_frog",
+    );
+    assert.equal(result, "https://pt.wikipedia.org/wiki/Sapo-escavador");
+  });
+
+  it("fallback sem tradução (langlink pt não encontrado): cai pro subjectEnUrl", () => {
+    const result = resolveSubjectWikipediaUrl(
+      null,
+      "https://en.wikipedia.org/wiki/Burrowing_frog",
+      "https://en.wikipedia.org/wiki/Burrowing_frog",
+    );
+    assert.equal(result, "https://en.wikipedia.org/wiki/Burrowing_frog");
+  });
+
+  it("nenhum candidato disponível → null", () => {
+    assert.equal(resolveSubjectWikipediaUrl(null, null, undefined), null);
+    assert.equal(resolveSubjectWikipediaUrl(null, null, null), null);
+  });
+});
+
+describe("pickSubjectWikipediaLink — stop words em pt (#4618)", () => {
+  it("stop word pt 'ponte' penaliza link genérico; subject específico em pt vence", () => {
+    // Espelha o teste EN existente ("Bridge" vs "Venice") — confirma que a
+    // lista pt adicionada em #4618 realmente participa do scoring, não só
+    // existe no Set sem efeito (SUBJECT_STOP_WORDS era 100% inglês antes;
+    // agora que pt é o locale PRIMÁRIO de description.html, essa cobertura
+    // deixou de ser cosmética).
+    const html =
+      '<a href="https://pt.wikipedia.org/wiki/Ponte">Ponte</a> em ' +
+      '<a href="https://pt.wikipedia.org/wiki/Veneza">Veneza</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://pt.wikipedia.org/wiki/Veneza");
+  });
+
+  it("stop word pt 'árvore' penaliza link genérico; subject específico vence", () => {
+    const html =
+      '<a href="https://pt.wikipedia.org/wiki/%C3%81rvore">Árvore</a> na ' +
+      '<a href="https://pt.wikipedia.org/wiki/Amaz%C3%B4nia">Amazônia</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://pt.wikipedia.org/wiki/Amaz%C3%B4nia");
+  });
+});
+
+describe("pickSubjectWikipediaLink — domínios mistos en+pt na mesma description (#4618)", () => {
+  it("html com links en.wikipedia.org E pt.wikipedia.org: title-match decide, sem preferência de domínio (comportamento documentado)", () => {
+    // Achado do review consolidado (pr-test-analyzer): pickSubjectWikipediaLink
+    // é uma função PURA sobre html/title — não sabe se o caller espera pt ou
+    // en (isso é decidido por `sourceIsPt` em main(), fora desta função).
+    // Quando a description mistura domínios (cenário hipotético: fallback
+    // raro onde parte dos links residuais ainda aponta pra en.wikipedia.org),
+    // o scoring decide só por title-match/stop-words/proper-noun, IGUAL
+    // trataria dois links do mesmo domínio — não há bônus/penalidade por
+    // domínio. Este teste documenta esse comportamento atual (intencional,
+    // não um bug) em vez de deixá-lo implícito/não-testado.
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Generic">Generic</a> perto de ' +
+      '<a href="https://pt.wikipedia.org/wiki/Landsort">Landsort</a>.';
+    const title = "File:Landsort_April_2012.jpg";
+    const result = pickSubjectWikipediaLink(html, title);
+    assert.equal(result?.url, "https://pt.wikipedia.org/wiki/Landsort");
+  });
+});
+
+describe("fetchPotd (via findEligiblePotd com fetcher default) — #4618: URL real pede locale pt", () => {
+  it("a chamada fetch real (não mockada por injeção) pede /wikipedia/pt/featured/, nunca /en/", async () => {
+    // Complementa o guard de source-text (grep no arquivo) com um teste
+    // COMPORTAMENTAL de verdade: intercepta o `globalThis.fetch` real e
+    // confirma a URL que o código efetivamente monta e chama — não seria
+    // enganado por um refactor que movesse a URL pra uma constante, por
+    // exemplo (achado do review consolidado, pr-test-analyzer).
+    //
+    // `withFetchSpy` sempre lança na chamada interceptada (não devolve uma
+    // resposta mockada) — fetchPotd/findEligiblePotd não têm try/catch
+    // próprio ao redor do fetch, então o erro propaga como rejection; a
+    // asserção relevante é sobre a URL CAPTURADA antes do throw, não sobre
+    // o resultado da promise.
+    await withFetchSpy(async (calls) => {
+      await assert.rejects(() => findEligiblePotd("2026-08-04", new Set(), 1));
+      assert.equal(calls.length, 1, "exatamente 1 chamada fetch (sem fetcher injetado)");
+      assert.match(calls[0], /\/wikipedia\/pt\/featured\/2026\/08\/04/);
+      assert.ok(
+        !calls[0].includes("/wikipedia/en/featured/"),
+        `URL não deve mais pedir o locale en: ${calls[0]}`,
+      );
+    });
+  });
+});
+
+describe("translateToPtBR — prompt real enviado ao Gemini (#4618)", () => {
+  it("corpo da requisição instrui traduzir topônimos e contém o texto de entrada; resposta mockada é retornada", async () => {
+    // Comportamental (não source-grep): mocka `globalThis.fetch` capturando
+    // URL + body, devolve uma resposta Gemini sintética, e confirma tanto o
+    // PROMPT ENVIADO quanto o parsing do retorno — cobre exatamente o texto
+    // que chega no modelo, não só uma string solta em algum lugar do arquivo.
+    const originalFetch = globalThis.fetch;
+    const originalKey = process.env.GEMINI_API_KEY;
+    process.env.GEMINI_API_KEY = "test-key-synthetic";
+    let capturedUrl: string | null = null;
+    let capturedBody: string | null = null;
+    globalThis.fetch = (async (input: unknown, init?: unknown) => {
+      capturedUrl = String(input);
+      capturedBody = (init as { body?: string } | undefined)?.body ?? null;
+      return new Response(
+        JSON.stringify({
+          candidates: [{ content: { parts: [{ text: "Roma fica no Tibre." }] } }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch;
+    try {
+      const result = await translateToPtBR("Rome is on the Tiber.");
+      assert.equal(result, "Roma fica no Tibre.");
+      assert.ok(capturedUrl?.includes("generativelanguage.googleapis.com"), `URL inesperada: ${capturedUrl}`);
+      assert.ok(capturedBody, "corpo da requisição deveria ter sido capturado");
+      assert.match(capturedBody!, /Traduza topônimos e nomes de lugares/);
+      assert.match(capturedBody!, /Rome is on the Tiber\./);
+      assert.ok(
+        !capturedBody!.includes("mantendo nomes próprios, nomes científicos e siglas em inglês"),
+        "prompt enviado não deve conter a instrução antiga (root cause do #4618)",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalKey === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = originalKey;
+    }
+  });
+
+  it("sem GEMINI_API_KEY → null, sem chamada externa (fallback pra EN preservado)", async () => {
+    await withFetchSpy(async (calls) => {
+      const originalKey = process.env.GEMINI_API_KEY;
+      delete process.env.GEMINI_API_KEY;
+      try {
+        const result = await translateToPtBR("Rome is on the Tiber.");
+        assert.equal(result, null);
+      } finally {
+        if (originalKey !== undefined) process.env.GEMINI_API_KEY = originalKey;
+      }
+      assert.deepEqual(calls, [], "sem API key, translateToPtBR nunca deve chamar fetch");
+    });
   });
 });
