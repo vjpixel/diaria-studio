@@ -185,6 +185,9 @@ function pageUrl(slug: string): string {
  * `geo-faq.ts` (bloco de FAQ, reusado tal qual). */
 function renderHubBodyStyles(): string {
   return `  main { padding: 40px 0 64px; }
+  .hub-sections { max-width: 720px; }
+  .hub-sections-heading { font-family: Georgia, 'Times New Roman', serif; font-size: 15px; font-weight: 700;
+    letter-spacing: 0.08em; text-transform: uppercase; color: var(--teal); margin: 0 0 24px; }
   .hub-section { margin: 0 0 40px; max-width: 720px; }
   .hub-section h2 { font-family: Georgia, 'Times New Roman', serif; font-size: 24px; font-weight: 700;
     line-height: 1.28; margin: 0 0 14px; color: var(--ink); }
@@ -268,14 +271,26 @@ export function renderHubPage(hub: HubContent): string {
   const url = pageUrl(hub.slug);
   const pageTitle = `${hub.title} — cobertura da diar.ia.br`;
 
-  const sectionsHtml = hub.sections
-    .map(
-      (s) => `    <article class="hub-section">
-      <h2>${esc(s.heading)}</h2>
-${s.paragraphs.map((p) => `      <p>${renderParagraphInline(p)}</p>`).join("\n")}
-    </article>`,
-    )
-    .join("\n");
+  // Achado do editor (260804): sem um rótulo próprio, as sections (H2 já em
+  // formato de pergunta, issue #4558 item 2) ficam indistinguíveis do bloco
+  // "Perguntas frequentes" logo abaixo — as duas leem como "pergunta seguida
+  // de resposta" na sequência da página, mas só uma tem nome. O kicker
+  // "Cobertura completa" (mesmo estilo visual de `.hub-sources h2`/
+  // `.geo-faq-heading` — pequeno, versalete, teal) marca a diferença: aqui é
+  // a síntese longa (issue Parte A, "leitura que só existe porque alguém
+  // acompanhou por meses"); "Perguntas frequentes" abaixo é o bloco curto
+  // que vira dado estruturado FAQPage (issue Parte B item 3).
+  const sectionsHtml = `    <section class="hub-sections" aria-labelledby="cobertura-heading">
+      <h2 class="hub-sections-heading" id="cobertura-heading">Cobertura completa</h2>
+${hub.sections
+  .map(
+    (s) => `      <article class="hub-section">
+        <h2>${esc(s.heading)}</h2>
+${s.paragraphs.map((p) => `        <p>${renderParagraphInline(p)}</p>`).join("\n")}
+      </article>`,
+  )
+  .join("\n")}
+    </section>`;
 
   const sourcesHtml = `    <section class="hub-sources" aria-labelledby="fontes-heading">
       <h2 id="fontes-heading">Edições da diar.ia.br citadas nesta página</h2>
