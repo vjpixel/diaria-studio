@@ -93,6 +93,12 @@
  * Estado em `{ciclo}/ramp/ramp-summary.json` (idempotência: --build-audience
  * recusa reescrever se o manifest já existe; --import/--create/--schedule
  * pulam waves já processadas, mesmo padrão de clarice-schedule-sends.ts).
+ *
+ * `--data-root DIR` (#4612): OPCIONAL, uso interno de teste — mesmo padrão de
+ * `--data-root` em clarice-build-segment.ts/verify-emails-mv.ts (#4207).
+ * Sobrepõe `CLARICE_BASE` (a raiz REAL, junction pro OneDrive) só nesta
+ * invocação, permitindo `main()` escrever `ramp-manifest.json`/`ramp-summary.json`/
+ * os CSVs de wave sob um tmpdir isolado em vez do disco de produção.
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
@@ -139,6 +145,16 @@ export const DASHBOARD_WORKER_CLAMP = 50;
 export interface DashboardStaleInfo {
   kind: string;
   upstreamStatus: string;
+  /**
+   * #4612: timestamp ISO real de quando o cache servido foi gerado
+   * (`X-Dashboard-Stale-Since`, emitido por `buildUpstreamErrorCampaignsJsonFallback`
+   * quando o KV `dash:lastgood:campaigns` tem `generatedAt`). AUSENTE em
+   * `kind: "inflight-coalesced"` (não é cache de KV, é coalescing de request
+   * concorrente — não existe "geração" a datar) e em qualquer resposta stale
+   * mais antiga que não tinha o header ainda. Quando ausente, o único teto
+   * conhecido é o pessimista `LASTGOOD_TTL` (24h) — ver `describeStaleAge`.
+   */
+  since?: string;
 }
 
 /**
@@ -149,10 +165,13 @@ export interface DashboardStaleInfo {
  * acionar alertas de disponibilidade:
  *   - `kind: "upstream-error"` — outage 403/5xx OU erro de rede/timeout cru
  *     do fetch pra Brevo (#4251/#4533); `upstreamStatus` traz o status real
- *     ou o literal `"network_error"`.
+ *     ou o literal `"network_error"`. `X-Dashboard-Stale-Since` (#4612), quando
+ *     presente, traz o timestamp REAL de geração do cache — idade real, não
+ *     o teto pessimista de 24h.
  *   - `kind: "inflight-coalesced"` — lock de refresh concorrente (#3644,
  *     coalescing entre requests simultâneas), sem relação com a Brevo;
- *     `upstreamStatus` ausente, cai no fallback `"unknown"`.
+ *     `upstreamStatus` ausente, cai no fallback `"unknown"`; `since` sempre
+ *     ausente (não há "geração" de cache pra datar neste caso).
  * Rate-limit (429) NÃO é mascarado nesta rota — `rateLimitResponse(_, false)`
  * devolve 503 puro sem `X-Dashboard-Stale` (o banner "200 + stale" pra 429
  * existe só na rota HTML do painel, `buildStaleResponse`) — continua caindo
@@ -165,7 +184,30 @@ export interface DashboardStaleInfo {
 export function extractDashboardStaleInfo(res: Response): DashboardStaleInfo | undefined {
   const kind = res.headers.get("X-Dashboard-Stale");
   if (!kind) return undefined;
-  return { kind, upstreamStatus: res.headers.get("X-Dashboard-Upstream-Status") ?? "unknown" };
+  const since = res.headers.get("X-Dashboard-Stale-Since");
+  return {
+    kind,
+    upstreamStatus: res.headers.get("X-Dashboard-Upstream-Status") ?? "unknown",
+    ...(since ? { since } : {}),
+  };
+}
+
+/**
+ * #4612: descreve a idade real do cache stale a partir de `stale.since`
+ * (`X-Dashboard-Stale-Since`) quando disponível — em vez de só citar o teto
+ * pessimista de 24h (`LASTGOOD_TTL`) em todo log, que trata "3min stale" e
+ * "23h stale" como indistinguíveis para o operador decidir o risco. Pura,
+ * testável. `since` ausente/inválido cai no teto pessimista explícito (nunca
+ * finge saber uma idade que não tem).
+ */
+export function describeStaleAge(since: string | undefined, now: Date = new Date()): string {
+  if (!since) return "idade real desconhecida (sem X-Dashboard-Stale-Since) — trate como até 24h, o teto pessimista de LASTGOOD_TTL (#4543)";
+  const sinceMs = Date.parse(since);
+  if (Number.isNaN(sinceMs)) return `X-Dashboard-Stale-Since inválido ("${since}") — trate como até 24h, o teto pessimista de LASTGOOD_TTL (#4543)`;
+  const ageMs = Math.max(0, now.getTime() - sinceMs);
+  const ageMin = ageMs / 60_000;
+  if (ageMin < 60) return `~${Math.round(ageMin)}min stale (gerado ${since})`;
+  return `~${(ageMs / 3_600_000).toFixed(1)}h stale (gerado ${since})`;
 }
 
 // ---------------------------------------------------------------------------
@@ -279,6 +321,61 @@ export function deriveRampVolumes(
   const semaphore = decideSemaphore(health, spamSignal);
   const plan = computeWeekPlan(baseVolume, semaphore);
   return { ok: true, plan: { volumes: plan.volumes, semaphore: plan.semaphore, flagged: plan.flagged, baseVolume } };
+}
+
+export type AutoRampVolumeResult =
+  | { ok: true; plan: RampVolumePlan; stale?: DashboardStaleInfo }
+  | { ok: false; reason: string; stale?: DashboardStaleInfo };
+
+/**
+ * #4612: extrai o bloco "sem --volumes explícito" de dentro de `main()` pra
+ * uma função testável com `fetchImpl` injetável — mesmo padrão de
+ * `checkSemaphore` em `clarice-check-semaphore.ts`. Antes, este bloco vivia
+ * inline em `main()` chamando o `fetch` global direto: nenhum teste
+ * conseguia simular uma resposta STALE do dashboard sem bater na rede de
+ * verdade, e o `console.error` de `extractDashboardStaleInfo` era a ÚNICA
+ * superfície onde esse sinal aparecia — nunca chegava a `RampVolumeResult`/
+ * `ramp-summary.json`/ao JSON impresso.
+ *
+ * Não lança nem chama `process.exit` (`main()` decide o que fazer com o
+ * resultado) — GET não-2xx vira `{ok:false, reason}`, simétrico a
+ * `deriveRampVolumes` já retornar `{ok:false, reason}` por falta de dado
+ * maduro. `stale`, quando presente, é preservado em AMBOS os ramos
+ * (`ok:true` e `ok:false`) — mesmo com `deriveRampVolumes` falhando por falta
+ * de dado maduro, o dado que HÁ pode ainda ser stale, e essa informação não
+ * deve se perder.
+ */
+export async function resolveAutoRampVolumes(
+  dashboardUrl: string,
+  limit: number,
+  fetchImpl: typeof fetch = fetch,
+): Promise<AutoRampVolumeResult> {
+  const res = await fetchImpl(`${dashboardUrl}/api/campaigns?limit=${limit}`);
+  if (!res.ok) {
+    return { ok: false, reason: `GET ${dashboardUrl}/api/campaigns falhou (${res.status}). Use --volumes A,B,C explícito.` };
+  }
+  const stale = extractDashboardStaleInfo(res);
+  if (stale) {
+    console.error(
+      `⚠️  Dashboard serviu dado STALE (${stale.kind}, upstream=${stale.upstreamStatus}) — ${describeStaleAge(stale.since)} — ` +
+      `próxima wave decidida sobre esse cache (#4543/#4612).`,
+    );
+  }
+  const campaigns = (await res.json()) as BrevoCampaign[];
+  // #4131 finding 4: busca a leitura do Postmaster no MESMO dashboard — sem
+  // isso, o semáforo nunca escalonava a verde. `fetchImpl` propagado (não o
+  // `fetch` global) pelo mesmo motivo documentado em `checkSemaphore`: testes
+  // que injetam `fetchImpl` pra evitar rede real ainda disparariam uma
+  // chamada de verdade aqui.
+  const spamEntry = await fetchPostmasterSpamEntry(dashboardUrl, fetchImpl);
+  const spamSourceLabel = spamEntry?.producedBy === "auto" ? " (auto)" : spamEntry?.producedBy === "manual" ? " (manual)" : "";
+  console.error(
+    spamEntry
+      ? `   leitura Postmaster${spamSourceLabel}: ${spamEntry.spamRatePct}% (registrada ${spamEntry.recordedAt})`
+      : `   leitura Postmaster: ausente/indisponível — semáforo de spam fica "indeterminate" (nunca verde às cegas).`,
+  );
+  const result = deriveRampVolumes(campaigns, undefined, spamEntry);
+  return stale ? { ...result, stale } : result;
 }
 
 /** Parse de `--volumes N,N,N` — exatamente 3 inteiros > 0. Pura, testável. */
@@ -606,6 +703,17 @@ export interface RampWaveEntry {
   // bateu a contagem esperada; --create/--schedule recusam prosseguir sem
   // --force (ver `assertImportUsable`).
   status: "planned" | "list_created" | "imported" | "import_incomplete" | "draft" | "scheduled";
+  /**
+   * #4612: presente quando o VOLUME desta wave (campo `volume` acima) foi
+   * computado por `resolveAutoRampVolumes` sobre dado STALE do dashboard —
+   * nunca setado quando `--volumes A,B,C` explícito foi usado (nesse caso não
+   * há fetch ao dashboard, não há stale a reportar). Antes do #4612, esse
+   * sinal só existia como `console.error` — some junto com a sessão de
+   * terminal. Persistido aqui pra sobreviver às invocações SEPARADAS e
+   * possivelmente dias-depois de `--import`/`--create`/`--schedule`, que
+   * releem só este arquivo, nunca a saída de `--build-audience`.
+   */
+  stale?: DashboardStaleInfo;
 }
 
 /**
@@ -864,12 +972,25 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const skipVerify = hasFlag(argv, "skip-verify");
   const force = hasFlag(argv, "force"); // #3643 bug 2: override consciente pra prosseguir com import não-confirmado
 
-  const rampDir = clariceRampDir(cycle);
+  // #4612: `--data-root` OPCIONAL, uso interno de teste — mesmo padrão de
+  // `--data-root` em clarice-build-segment.ts/verify-emails-mv.ts (#4207,
+  // generaliza o `--segments-dir` pontual do #4176). Sem isso, `main()` só
+  // conseguia escrever sob o `data/` real (junction OneDrive) — impossível
+  // isolar um teste de `--build-audience` num tmpdir sem tocar disco de
+  // produção.
+  const dataRootArg = getArg(argv, "data-root");
+  const rampDir = clariceRampDir(cycle, dataRootArg || undefined);
   const manifestPath = resolve(rampDir, "ramp-manifest.json");
 
   // --- 1. Volumes ---
   const volumesArg = parseVolumesArg(getArg(argv, "volumes"));
   let volumes: [number, number, number];
+  // #4612: `stale`, quando presente, é dado sobre o FETCH ao dashboard, não
+  // sobre `--volumes` explícito (nesse ramo não há fetch nenhum) — populado
+  // só no ramo auto abaixo, e depois propagado pro JSON impresso E pras
+  // entries de `ramp-summary.json` (`--build-audience`), pra não se perder
+  // além do `console.error` que já existia (#4543).
+  let autoVolumesStale: DashboardStaleInfo | undefined;
   if (volumesArg) {
     volumes = volumesArg;
     console.error(`📋 Volumes (explícito --volumes): ${volumes.join(", ")}`);
@@ -885,30 +1006,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     const limitWarning = warnIfLimitExceedsWorkerClamp(limit);
     if (limitWarning) console.error(limitWarning);
     console.error(`📋 Volumes: nenhum --volumes explícito — recomputando via ${dashboardUrl}/api/campaigns?limit=${limit}…`);
-    const res = await fetch(`${dashboardUrl}/api/campaigns?limit=${limit}`);
-    if (!res.ok) {
-      console.error(`❌ GET ${dashboardUrl}/api/campaigns falhou (${res.status}). Use --volumes A,B,C explícito.`);
-      process.exit(1);
-    }
-    const stale = extractDashboardStaleInfo(res);
-    if (stale) {
-      console.error(
-        `⚠️  Dashboard serviu dado STALE (${stale.kind}, upstream=${stale.upstreamStatus}) — próxima wave decidida sobre cache possivelmente desatualizado, até 24h (#4543).`,
-      );
-    }
-    const campaigns = (await res.json()) as BrevoCampaign[];
-    // #4131 finding 4: busca a leitura do Postmaster no MESMO dashboard — sem
-    // isso, o semáforo nunca escalonava a verde (ver docstring de
-    // fetchPostmasterSpamEntry/deriveRampVolumes). Fail-soft (null em
-    // qualquer erro) — nunca bloqueia o cálculo do plano.
-    const spamEntry = await fetchPostmasterSpamEntry(dashboardUrl);
-    const spamSourceLabel = spamEntry?.producedBy === "auto" ? " (auto)" : spamEntry?.producedBy === "manual" ? " (manual)" : "";
-    console.error(
-      spamEntry
-        ? `   leitura Postmaster${spamSourceLabel}: ${spamEntry.spamRatePct}% (registrada ${spamEntry.recordedAt})`
-        : `   leitura Postmaster: ausente/indisponível — semáforo de spam fica "indeterminate" (nunca verde às cegas).`,
-    );
-    const result = deriveRampVolumes(campaigns, undefined, spamEntry);
+    const result = await resolveAutoRampVolumes(dashboardUrl, limit);
+    autoVolumesStale = result.stale;
     if (!result.ok) {
       console.error(`❌ ${result.reason}`);
       process.exit(1);
@@ -931,7 +1030,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   if (!doBuildAudience && !doImport && !doCreate && !doTest && !doSchedule) {
     console.error(`\ndry-run — use --build-audience, depois --import, depois --create, --send-test, --schedule.`);
-    console.log(JSON.stringify({ mode: "dry-run", cycle, volumes, total: totalRequested }, null, 2));
+    console.log(JSON.stringify(
+      { mode: "dry-run", cycle, volumes, total: totalRequested, ...(autoVolumesStale ? { stale: autoVolumesStale } : {}) },
+      null,
+      2,
+    ));
     return;
   }
 
@@ -1025,6 +1128,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         volume: volumes[i],
         count: countRows(csv),
         status: "planned",
+        // #4612: persiste a proveniência stale (quando o volume veio do
+        // ramo auto sobre cache do dashboard) em CADA entry — sobrevive à
+        // sessão de terminal, diferente do console.error de
+        // resolveAutoRampVolumes, e é relido por invocações SEPARADAS
+        // (--import/--create/--schedule), possivelmente dias depois.
+        ...(autoVolumesStale ? { stale: autoVolumesStale } : {}),
       });
       console.error(`  ${manifest[i].key} (${dayLabels[i]}): ${g.length.toLocaleString("pt-BR")}/${volumes[i].toLocaleString("pt-BR")} contatos → ${manifest[i].file}`);
     });
@@ -1237,7 +1346,20 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       {
         cycle,
         volumes,
-        entries: loadRampSummary(rampDir).map((e) => ({ key: e.key, status: e.status, listId: e.listId, campaignId: e.campaignId })),
+        // #4612: `stale` no resumo final do modo-AÇÃO — antes, o único lugar
+        // onde esse sinal aparecia era o `console.error` de
+        // `resolveAutoRampVolumes` (perdido assim que a sessão de terminal
+        // fecha). `entries[].stale` (por-wave, persistido em
+        // ramp-summary.json) é a fonte de verdade que sobrevive entre
+        // invocações; este campo top-level é só o resumo da invocação ATUAL.
+        ...(autoVolumesStale ? { stale: autoVolumesStale } : {}),
+        entries: loadRampSummary(rampDir).map((e) => ({
+          key: e.key,
+          status: e.status,
+          listId: e.listId,
+          campaignId: e.campaignId,
+          ...(e.stale ? { stale: e.stale } : {}),
+        })),
       },
       null,
       2,
