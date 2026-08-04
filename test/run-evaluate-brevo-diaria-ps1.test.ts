@@ -36,8 +36,8 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = join(ROOT, "scripts", "run-evaluate-brevo-diaria.ps1");
-const NOOP_FIXTURE = join(ROOT, "test", "fixtures", "clarice-sync-daily", "noop-exit0.ts");
-const NOOP_EXIT1_FIXTURE = join(ROOT, "test", "fixtures", "clarice-sync-daily", "noop-exit1.ts");
+const NOOP_FIXTURE = join(ROOT, "test-fixtures", "clarice-sync-daily", "noop-exit0.ts");
+const NOOP_EXIT1_FIXTURE = join(ROOT, "test-fixtures", "clarice-sync-daily", "noop-exit1.ts");
 
 const isWindows = process.platform === "win32";
 
@@ -200,7 +200,7 @@ describe(
       const content = readFileSync(finalLog, "utf8");
       assert.match(content, /AVISO.*contacts\.json nao encontrado/);
       // Prova de que o evaluate script (NOOP_FIXTURE) nunca rodou: seu
-      // próprio stdout ("noop ok", ver test/fixtures/clarice-sync-daily/
+      // próprio stdout ("noop ok", ver test-fixtures/clarice-sync-daily/
       // noop-exit0.ts) nunca teria chegado ao log se o guard interceptou
       // antes da chamada `npx tsx`.
       assert.doesNotMatch(content, /noop ok/);
