@@ -1,16 +1,18 @@
 /**
  * test/brevo-diaria-score-4266.test.ts (#4266, reescrito no #4476 item 1;
  * threshold de supressão corrigido pra n>=3 e o input passou a exigir 2
- * conjuntos de contadores — instantâneo/maduro — no self-review pós-merge)
+ * conjuntos de contadores — instantâneo/maduro — no self-review pós-merge;
+ * piso de promoção revisado de n>=2 pra n>=3 na sessão 260804)
  *
  * Fórmula de saída (promoção/supressão) do canal Brevo próprio do editor —
- * taxa de abertura com piso mínimo de amostra, assimétrica entre promoção
- * (n>=2, taxa>=50%, contadores INSTANTÂNEOS) e supressão (n>=3, taxa<=20%,
- * contadores MADUROS — só envios >=48h). Cobre as bordas EXATAS dos dois
- * thresholds, os casos abaixo do piso de amostra que NUNCA agem mesmo com a
- * taxa já batendo o threshold (#633 exige regressão nos limites, não só no
- * "meio" da faixa), e os casos onde instant≠mature divergem (a divergência
- * é o comportamento inteiro da janela de maturação).
+ * taxa de abertura com piso mínimo de amostra, hoje IGUAL nos dois lados
+ * (n>=3): promoção (taxa>=50%, contadores INSTANTÂNEOS) e supressão
+ * (taxa<=20%, contadores MADUROS — só envios >=48h). Cobre as bordas EXATAS
+ * dos dois thresholds, os casos abaixo do piso de amostra que NUNCA agem
+ * mesmo com a taxa já batendo o threshold (#633 exige regressão nos
+ * limites, não só no "meio" da faixa), e os casos onde instant≠mature
+ * divergem (a divergência é o comportamento inteiro da janela de
+ * maturação).
  */
 
 import { describe, it } from "node:test";
@@ -51,18 +53,26 @@ describe("computeBrevoDiariaOpenRate — #4476", () => {
   });
 });
 
-describe("classifyBrevoDiariaAction — promoção (#4476 item 1, sempre via instant)", () => {
-  it(`sends_count=${BREVO_DIARIA_PROMOTE_MIN_SENDS}, openRate=${BREVO_DIARIA_PROMOTE_MIN_OPEN_RATE} (bordas exatas) → promote_to_beehiiv`, () => {
+describe("classifyBrevoDiariaAction — promoção (#4476 item 1, sempre via instant; piso revisado pra n>=3 em 260804)", () => {
+  it(`sends_count=${BREVO_DIARIA_PROMOTE_MIN_SENDS} (piso de amostra exato), openRate acima do threshold → promote_to_beehiiv`, () => {
     assert.equal(
-      classifyBrevoDiariaAction(same(1, 2)),
+      classifyBrevoDiariaAction(same(2, BREVO_DIARIA_PROMOTE_MIN_SENDS)),
       "promote_to_beehiiv",
-      "2 enviados/1 aberto = 50% exato, piso de amostra 2 exato",
+      "3 enviados/2 abertos = 66,7%, piso de amostra 3 exato",
     );
   });
 
-  it("sends_count=1 (1 abaixo do piso), openRate=100% → keep (NÃO promove mesmo com taxa perfeita)", () => {
+  it(`sends_count=4, openRate=${BREVO_DIARIA_PROMOTE_MIN_OPEN_RATE * 100}% (borda EXATA do threshold de taxa) → promote_to_beehiiv`, () => {
     assert.equal(
-      classifyBrevoDiariaAction(same(1, 1)),
+      classifyBrevoDiariaAction(same(2, 4)),
+      "promote_to_beehiiv",
+      "4 enviados/2 abertos = 50% exato — n=3 não permite atingir 50% exato com inteiros, usa n=4 só pra esta borda",
+    );
+  });
+
+  it("sends_count=2 (1 abaixo do piso), openRate=100% → keep (NÃO promove mesmo com taxa perfeita)", () => {
+    assert.equal(
+      classifyBrevoDiariaAction(same(2, 2)),
       "keep",
       "amostra insuficiente sempre vence, mesmo com taxa acima do threshold",
     );
