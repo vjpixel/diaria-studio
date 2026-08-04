@@ -118,6 +118,93 @@ export function shouldMirrorToWeb(brand: string | null): boolean {
   return brand === null;
 }
 
+/**
+ * #4563: input do sanity check pós-correção — os campos que `/stats` (Worker
+ * de poll) devolve depois de `close-poll.ts` chamar `/admin/correct`.
+ */
+export interface CorrectCountSanityInput {
+  /** Gabarito que ACABAMOS de setar (A ou B). */
+  answer: string;
+  /** `stats.total` de `/stats`. */
+  totalVotes: number;
+  /** `stats.voted_a` de `/stats`. */
+  votedA: number;
+  /** `stats.voted_b` de `/stats`. */
+  votedB: number;
+  /** `stats.correct_count` de `/stats`, LIDO DEPOIS da correção. */
+  correctCountFromStats: number;
+  /** `updated_votes` que `/admin/correct` reportou ter mudado. */
+  updatedVotes: number;
+}
+
+export interface CorrectCountSanityResult {
+  ok: boolean;
+  /** Contagem de acertos esperada pro gabarito setado (voted_a ou voted_b). */
+  expectedCorrectCount: number;
+  /** Presente só quando ok=false — mensagem de diagnóstico pronta pra log. */
+  message?: string;
+  /**
+   * #4563 item 2: true quando updated_votes=0 mas o check acima passou —
+   * o caso legítimo de "gabarito já batia com o crédito existente, nenhum
+   * voto precisava mudar" (ex: re-rodar close-poll com o MESMO --answer).
+   * Nunca true quando ok=false (nesse caso updated_votes=0 é sintoma do bug,
+   * não um no-op legítimo).
+   */
+  legitimateNoop: boolean;
+}
+
+/**
+ * Pure (#4563), testável sem rede/KV: decide se o `correct_count` que
+ * `/stats` devolveu DEPOIS de `close-poll.ts` fechar o gabarito bate com o
+ * esperado — quem votou no lado que ACABOU de virar o gabarito.
+ *
+ * Bug real que motivou este guard (issue #4563, ciclo 2607-08): o sanity
+ * check pré-existente (#1367) só conferia que `/stats.correct_answer`
+ * refletia o gabarito GRAVADO — nunca que o CRÉDITO (`correct_count`) tinha
+ * sido de fato recalculado. `close-poll.ts --answer B` sobre 10 votos A / 4
+ * votos B reportava `ok:true` com `/stats.correct_count` ainda em 10 (os que
+ * ACERTARAM o gabarito ERRADO anterior) em vez de 4 — e `updated_votes: 0`
+ * não acusava nada porque o script nunca comparava contra o valor esperado.
+ *
+ * `expectedCorrectCount` = `votedA` quando `answer === "A"`, senão `votedB`
+ * — é sempre um dos dois, nunca uma soma; o gabarito define qual dos dois
+ * lados "ganhou".
+ *
+ * `updatedVotes === 0` SÓ é aceito como no-op legítimo (`legitimateNoop:
+ * true`) quando `correctCountFromStats` já bate com o esperado — ou seja,
+ * nenhum voto precisava mudar porque já estava certo (ex: reexecução com o
+ * mesmo --answer). Quando não bate, é sempre reportado como erro
+ * (`ok: false`), independente de updated_votes ter sido 0 ou não — o mismatch
+ * em si já é suficiente pra provar que o crédito não foi aplicado
+ * corretamente (causas candidatas documentadas na issue: DO StatsCounter
+ * stale, ou votos individuais não encontrados pra recreditar — diagnóstico
+ * bloqueado por falta de acesso ao KV, ver #4563).
+ */
+export function checkCorrectCountSanity(input: CorrectCountSanityInput): CorrectCountSanityResult {
+  const { answer, totalVotes, votedA, votedB, correctCountFromStats, updatedVotes } = input;
+  const expectedCorrectCount = answer === "A" ? votedA : votedB;
+  const matches = correctCountFromStats === expectedCorrectCount;
+
+  if (!matches) {
+    return {
+      ok: false,
+      expectedCorrectCount,
+      legitimateNoop: false,
+      message:
+        `correct_count pós-correção (${correctCountFromStats}) não bate com o esperado para o gabarito "${answer}" ` +
+        `(esperado=${expectedCorrectCount}, voted_a=${votedA}, voted_b=${votedB}, total=${totalVotes}, updated_votes=${updatedVotes}). ` +
+        `O Worker respondeu ok:true no /admin/correct mas o crédito não foi aplicado corretamente aos votos — ` +
+        `ver #4563 (causas candidatas: DO StatsCounter stale ou votos individuais não encontrados pra recreditar).`,
+    };
+  }
+
+  return {
+    ok: true,
+    expectedCorrectCount,
+    legitimateNoop: updatedVotes === 0 && totalVotes > 0,
+  };
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const { values } = parseCliArgs(args); // #535: fix indexOf+1 bug
@@ -219,13 +306,43 @@ async function main(): Promise<void> {
   // rationale completo no header de `statsSig` acima.
   const statsSigQ = `&sig=${statsSig(secret, brand ?? "diaria", edition)}`;
   const statsRes = await dohFetch(`${POLL_WORKER_URL}/stats?edition=${edition}${brandQ}${statsSigQ}`);
-  const stats = await statsRes.json() as { correct_answer?: string | null };
+  const stats = await statsRes.json() as {
+    correct_answer?: string | null;
+    total?: number;
+    voted_a?: number;
+    voted_b?: number;
+    correct_count?: number;
+  };
   if (!statsRes.ok || stats.correct_answer !== answer) {
     console.error(
       `[close-poll] FATAL: sanity check falhou — /stats retornou correct_answer=${JSON.stringify(stats.correct_answer)} ` +
         `esperado="${answer}". Worker pode ter rejeitado silenciosamente ou retornou stale.`,
     );
     process.exit(1);
+  }
+
+  // #4563: o check acima só confirma que o GABARITO foi gravado — não que o
+  // CRÉDITO (correct_count) foi de fato aplicado aos votos já registrados.
+  // `?? 0` nos campos ausentes: mocks de teste/versões antigas do Worker que
+  // só devolvem `correct_answer` (sem total/voted_a/voted_b/correct_count)
+  // resultam em esperado=0 e atual=0 — nunca disparam este guard à toa.
+  const correctCountSanity = checkCorrectCountSanity({
+    answer,
+    totalVotes: stats.total ?? 0,
+    votedA: stats.voted_a ?? 0,
+    votedB: stats.voted_b ?? 0,
+    correctCountFromStats: stats.correct_count ?? 0,
+    updatedVotes: data.updated_votes ?? 0,
+  });
+  if (!correctCountSanity.ok) {
+    console.error(`[close-poll] FATAL: ${correctCountSanity.message}`);
+    process.exit(1);
+  }
+  if (correctCountSanity.legitimateNoop) {
+    console.error(
+      `[close-poll] updated_votes=0 — nenhum voto precisou de ajuste (correct_count já batia com o esperado=` +
+        `${correctCountSanity.expectedCorrectCount} pro gabarito "${answer}").`,
+    );
   }
 
   // #1367: marker de sucesso pra Stage 5 invariant checar.
@@ -256,7 +373,14 @@ async function main(): Promise<void> {
           brand: "clarice",
           updated_votes: data.updated_votes ?? 0,
           closed_at: new Date().toISOString(),
-          sanity_check: { correct_answer: stats.correct_answer },
+          // #4563: expected_correct_count/correct_count_from_stats registrados
+          // pra auditoria — sanity check pós-correção já validou que batem
+          // (senão o script teria saído com FATAL acima).
+          sanity_check: {
+            correct_answer: stats.correct_answer,
+            correct_count: stats.correct_count ?? 0,
+            expected_correct_count: correctCountSanity.expectedCorrectCount,
+          },
         },
         null,
         2,
@@ -277,7 +401,11 @@ async function main(): Promise<void> {
         answer,
         updated_votes: data.updated_votes ?? 0,
         marker_path: markerPath,
-        sanity_check: { correct_answer: stats.correct_answer },
+        sanity_check: {
+          correct_answer: stats.correct_answer,
+          correct_count: stats.correct_count ?? 0,
+          expected_correct_count: correctCountSanity.expectedCorrectCount,
+        },
       }),
     );
     return;
@@ -371,7 +499,12 @@ async function main(): Promise<void> {
         answer,
         updated_votes: data.updated_votes ?? 0,
         closed_at: new Date().toISOString(),
-        sanity_check: { correct_answer: stats.correct_answer },
+        // #4563: mesma auditoria do marker clarice acima — check já validado.
+        sanity_check: {
+          correct_answer: stats.correct_answer,
+          correct_count: stats.correct_count ?? 0,
+          expected_correct_count: correctCountSanity.expectedCorrectCount,
+        },
       },
       null,
       2,
@@ -430,7 +563,11 @@ async function main(): Promise<void> {
       answer,
       updated_votes: data.updated_votes ?? 0,
       marker_path: markerPath,
-      sanity_check: { correct_answer: stats.correct_answer },
+      sanity_check: {
+        correct_answer: stats.correct_answer,
+        correct_count: stats.correct_count ?? 0,
+        expected_correct_count: correctCountSanity.expectedCorrectCount,
+      },
     }),
   );
 }
