@@ -127,12 +127,13 @@ export function stripGreetingAndSupporterBlocks(content: NewsletterContent): New
 /**
  * Pura — assunto derivado do título do D1 (não há um "ASSUNTO" dedicado no
  * template diário, diferente do mensal — a diária usa metadados manuais na
- * UI do Beehiiv, CLAUDE.md §Publicadores). Formato escolhido:
- * "diar.ia.br — {título do D1}". Decisão de design (não veio da issue) — o
- * editor pode ajustar depois via `--subject-override` sem mudar código.
+ * UI do Beehiiv, CLAUDE.md §Publicadores). Sem prefixo de marca (decisão do
+ * editor, 260804) — o remetente (`sender_name: "diar.ia.br"`) já identifica
+ * a marca no inbox, repetir no assunto é redundante. Formato anterior
+ * ("diar.ia.br — {título}") usado só na campanha #13/edição 260804.
  */
 export function buildDailyBrevoSubject(content: Pick<NewsletterContent, "title">): string {
-  return `diar.ia.br — ${content.title}`;
+  return content.title;
 }
 
 /** Pura — preview text a partir do subtítulo (mesmo campo usado como "por

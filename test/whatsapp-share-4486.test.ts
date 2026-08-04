@@ -13,10 +13,24 @@
  *   3. Conteúdo: título + tagline + CTA de assinatura → SÓ título + URL da edição.
  *   4. Botão: pill contornado → botão preenchido (fundo sólido).
  *
- * Cobertura do critério de pronto da issue original + #4570:
+ * #4582 (mesma sessão, revisão do teste enviado por Brevo — box quebrava em
+ * clientes de e-mail) reverteu/ajustou 3 coisas do #4570 dentro do HTML
+ * RENDERIZADO (os helpers puros `buildWhatsappShareBlock`/
+ * `buildWhatsappEditionUrl`/`buildWhatsappShareLink` NÃO mudaram — a URL
+ * continua no bloco que alimenta o `wa.me/?text=`, só não é mais desenhada
+ * como linha própria no box):
+ *   1. A URL some da linha visível — só a manchete do D1 aparece no box.
+ *   2. A manchete do D1 vai em `<strong>` (negrito).
+ *   3. Botão volta a ser o MESMO pill contornado (fundo papel) dos demais
+ *      CTAs do template, agora centralizado — revertendo o botão preenchido
+ *      TEAL do #4570.
+ *
+ * Cobertura do critério de pronto da issue original + #4570 + #4582:
  *   - Texto sem markdown (`**`, `#`, `- `) — regra "output final sem
  *     markdown" (context/editorial-rules.md) aplicada também aqui.
- *   - Link `wa.me/?text=` bem formado, com o bloco URL-encoded.
+ *   - Link `wa.me/?text=` bem formado, com o bloco URL-encoded (título + URL
+ *     da edição — a URL segue viajando nesse texto, mesmo não aparecendo
+ *     como linha solta no box).
  *   - UTM conferindo com o contrato fixo da issue (utm_source=whatsapp,
  *     utm_medium=share, utm_campaign={AAMMDD}) — mantida por decisão
  *     explícita do coordenador no #4570 (atribuição de assinante novo).
@@ -160,27 +174,52 @@ describe("#4570 — renderWhatsappShare (HTML)", () => {
     assert.ok(!html.includes("📰"), "emoji não deve aparecer no bloco WhatsApp renderizado");
   });
 
-  it("botão preenchido — background sólido (não mais pill contornado com fundo papel, #4570 item 4)", () => {
+  it("botão pill contornado, fundo papel — mesmo padrão dos demais CTAs (#4582, reverte o preenchido TEAL do #4570)", () => {
     const html = renderWhatsappShare([makeD1()], EDITION);
     const btnMatch = html.match(/<a href="https:\/\/wa\.me\/\?text=[^"]*"\s+style="([^"]*)"/);
     assert.ok(btnMatch, "botão Compartilhar no WhatsApp não encontrado no HTML");
     const style = btnMatch![1];
-    assert.match(style, /background:#[0-9A-Fa-f]{6}/, "botão deve ter background sólido definido");
-    assert.ok(!/background:#FFFFFF/i.test(style), "botão não deve mais usar fundo papel/branco (era o pill antigo)");
+    assert.match(style, /background:#FBFAF6/i, "botão deve usar o mesmo fundo papel dos demais CTAs (COLORS.paper)");
+    assert.ok(!/background:#00A0A0/i.test(style), "botão não deve mais usar o preenchido TEAL do #4570");
+    assert.match(style, /border-radius:999px/, "botão deve continuar sendo um pill");
+  });
+
+  it("botão centralizado dentro do box (#4582 — antes ficava alinhado à esquerda)", () => {
+    const html = renderWhatsappShare([makeD1()], EDITION);
+    assert.match(
+      html,
+      /<div style="text-align:center;margin-top:16px;">\s*<a href="https:\/\/wa\.me\/\?text=/,
+      "botão deve estar envolto por um wrapper text-align:center",
+    );
+  });
+
+  it("manchete em negrito (<strong>), sem a URL como linha visível própria (#4582)", () => {
+    const html = renderWhatsappShare([makeD1()], EDITION);
+    assert.ok(html.includes(`<strong>${D1_TITLE}</strong>`), "manchete do D1 deve estar envolta por <strong>");
+    // A URL da edição não deve aparecer como texto/link solto no HTML — só
+    // dentro do href URL-encoded do botão wa.me.
+    const editionUrl = buildWhatsappEditionUrl(EDITION, D1_TITLE);
+    assert.ok(!html.includes(editionUrl), "URL crua não deve aparecer como texto/link visível no box");
   });
 
   it("retorna string vazia quando não há destaques (defensivo)", () => {
     assert.equal(renderWhatsappShare([], EDITION), "");
   });
 
-  it("o link embutido no HTML aponta pra URL da edição (diar.ia.br/p/{slug}), não pra home", () => {
+  it("a URL da edição (diar.ia.br/p/{slug}) viaja dentro do texto do wa.me, mesmo não aparecendo crua no box (#4582)", () => {
     const html = renderWhatsappShare([makeD1()], EDITION);
-    assert.match(html, new RegExp(`https://diar\\.ia\\.br/p/${seoSlug(D1_TITLE)}`));
+    const btnMatch = html.match(/<a href="(https:\/\/wa\.me\/\?text=[^"]*)"/);
+    assert.ok(btnMatch, "botão wa.me não encontrado");
+    const decoded = decodeURIComponent(btnMatch![1].slice("https://wa.me/?text=".length));
+    assert.match(decoded, new RegExp(`https://diar\\.ia\\.br/p/${seoSlug(D1_TITLE)}`));
   });
 
-  it("o link de assinatura embutido no HTML carrega a UTM correta", () => {
+  it("o texto do wa.me carrega a UTM correta (#4582: já não aparece crua no HTML, só dentro do link codificado)", () => {
     const html = renderWhatsappShare([makeD1()], EDITION);
-    assert.match(html, new RegExp(`utm_source=whatsapp.*utm_medium=share.*utm_campaign=${EDITION}|utm_campaign=${EDITION}.*utm_medium=share.*utm_source=whatsapp`));
+    const btnMatch = html.match(/<a href="(https:\/\/wa\.me\/\?text=[^"]*)"/);
+    assert.ok(btnMatch, "botão wa.me não encontrado");
+    const decoded = decodeURIComponent(btnMatch![1].slice("https://wa.me/?text=".length));
+    assert.match(decoded, new RegExp(`utm_source=whatsapp.*utm_medium=share.*utm_campaign=${EDITION}|utm_campaign=${EDITION}.*utm_medium=share.*utm_source=whatsapp`));
   });
 
   it("#4519: título do D1 com caracteres especiais (&, aspas, <tag>) é escapado — não vaza HTML nem quebra o href adjacente", () => {
@@ -190,15 +229,11 @@ describe("#4570 — renderWhatsappShare (HTML)", () => {
     assert.ok(html.includes("&lt;tag&gt;"), "< e > do título devem virar entidades HTML");
     assert.ok(html.includes("&amp;"), "& do título deve virar &amp;");
     assert.ok(html.includes("&quot;"), "aspas do título devem virar &quot;");
-    // O bloco tem 2 <a href> por desenho — o link da edição embutido no
-    // texto (diar.ia.br/p/...) e o botão "Compartilhar no WhatsApp →" (wa.me) —
-    // nenhum dos dois deve ser contaminado pelo conteúdo do título.
+    // #4582: o box só tem 1 <a href> agora — o botão "Compartilhar no
+    // WhatsApp →" (wa.me). A linha de URL da edição saiu do box (só segue
+    // dentro do texto URL-encoded do próprio botão).
     const hrefMatches = html.match(/<a href="([^"]*)"/g) ?? [];
-    assert.equal(hrefMatches.length, 2, `esperava exatamente 2 <a href> (edição + botão wa.me), achou ${hrefMatches.length}`);
-    assert.ok(
-      hrefMatches.some((h) => /^<a href="https:\/\/diar\.ia\.br/.test(h)),
-      "href do link da edição não deve ser contaminado pelo título",
-    );
+    assert.equal(hrefMatches.length, 1, `esperava exatamente 1 <a href> (botão wa.me), achou ${hrefMatches.length}`);
     assert.ok(
       hrefMatches.some((h) => /^<a href="https:\/\/wa\.me\/\?text=/.test(h)),
       "href do botão wa.me deve continuar apontando pro compartilhamento",
@@ -283,19 +318,17 @@ describe("#4570 — posição no corpo da newsletter: ENTRE D1 e D2", () => {
   });
 });
 
-describe("#4512 (fleet review round 2, achados comment-analyzer/code-reviewer), preservado no #4570: titleLine/urlLine do HTML derivam de buildWhatsappShareBlock, não duplicam", () => {
-  it("a URL (2ª linha) do HTML renderizado é EXATAMENTE a 2ª linha do bloco wa.me — não uma cópia manual que pode divergir", () => {
+describe("#4512 (fleet review round 2, achados comment-analyzer/code-reviewer), preservado no #4570/#4582: titleLine do HTML deriva de buildWhatsappShareBlock, não duplica", () => {
+  it("#4582: a URL (2ª linha do bloco) NÃO aparece mais crua no HTML — só URL-encoded dentro do href do botão wa.me", () => {
     const url = buildWhatsappEditionUrl(EDITION, D1_TITLE);
     const block = buildWhatsappShareBlock(D1_TITLE, url);
     const [, urlLine] = block.split("\n\n");
     const html = renderWhatsappShare([makeD1()], EDITION);
-    // A URL aparece 2x no HTML (href do <a> + texto visível dentro dele) —
-    // ambas escapadas via esc() (o & que separa os params UTM vira &amp;
-    // tanto no atributo quanto no texto). As duas ocorrências devem derivar
-    // de urlLine — a mesma 2ª linha do bloco, nunca uma cópia manual.
     const escapedUrl = escHtml(urlLine);
-    const occurrences = html.split(escapedUrl).length - 1;
-    assert.equal(occurrences, 2, `esperava a URL escapada 2x no HTML (href + texto), achou ${occurrences}`);
+    assert.ok(!html.includes(escapedUrl), "URL não deve mais aparecer como texto/link visível no box (#4582)");
+    // Mas continua presente, URL-encoded, dentro do texto que alimenta o wa.me.
+    const link = buildWhatsappShareLink(block);
+    assert.ok(html.includes(escHtml(link)), "link wa.me com a URL embutida deve continuar no HTML");
   });
 
   it("o título (1ª linha) do HTML renderizado é EXATAMENTE a 1ª linha do bloco wa.me", () => {

@@ -1505,14 +1505,12 @@ describe("renderHTML erroIntencional reveal (#1279)", () => {
     assert.doesNotMatch(html, /\{placeholder\}/);
     // #1936/#1943: box "contorno" do DS — borda bege, sem teal. O fundo acompanha
     // o container: paper #FBFAF6 na web/mensal, branco #FFFFFF no e-mail (#1943).
-    // #4570: a asserção de "sem teal" precisa ficar ESCOPADA só ao box do reveal
-    // (fatia entre o marcador do reveal e o próximo comentário HTML) — desde que
-    // o bloco WhatsApp passou a renderizar entre D1/D2 (sempre presente quando há
-    // destaque), a página inteira legitimamente contém `border:1px solid #00A0A0`
-    // no botão "Compartilhar no WhatsApp" (fundo preenchido teal, #4570 item 4).
-    // Checar a página inteira faria essa asserção falsear-positivo pra qualquer
-    // fixture com destaques — nunca foi sobre a página inteira, sempre foi sobre
-    // este box específico.
+    // A asserção de "sem teal" fica ESCOPADA só ao box do reveal (fatia entre
+    // o marcador do reveal e o próximo comentário HTML) — checar a página
+    // inteira nunca foi a intenção, sempre foi sobre este box específico
+    // (o botão "Compartilhar no WhatsApp" usava borda teal no #4570 item 4;
+    // revertido pro pill padrão bege no #4582 — a asserção continua escopada
+    // por precaução, não por necessidade atual).
     const revealIdx = html.indexOf("<!-- ERRO INTENCIONAL — reveal -->");
     assert.ok(revealIdx !== -1, "marcador do box de reveal ausente do HTML");
     const nextCommentIdx = html.indexOf("<!--", revealIdx + 1);
