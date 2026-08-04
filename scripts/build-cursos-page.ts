@@ -44,6 +44,14 @@ import {
   type ValidationResult,
 } from "./lib/shared/curadoria-data.ts"; // #3118 item 13: layer de dados comum com build-livros-page.ts
 import { CURSOS_FOOTER_NAV_UTM } from "./lib/shared/utm-registry.ts"; // #4295 — link de rodapé sem UTM (assimetria com Livros/#4051)
+import {
+  formatMonthYear,
+  renderGeoByline,
+  renderGeoFaqSection,
+  renderGeoFaqStyles,
+  renderGeoJsonLd,
+  type GeoFaqItem,
+} from "./lib/shared/geo-faq.ts"; // #4558 Parte B: estrutura GEO (FAQ + JSON-LD FAQPage/Article + autoria)
 export { esc, isSafeUrl, availableThemes, distinctThemes, type ValidationResult };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -61,6 +69,14 @@ export const PAGE_URL = "https://cursos.diar.ia.br/";
 const PAGE_TITLE = "Cursos sobre IA · diar.ia.br";
 const PAGE_DESCRIPTION =
   "Cursos gratuitos e pagos sobre inteligência artificial, com filtros por idioma, nível, formato, duração e plataforma — curadoria da diar.ia.br.";
+
+/** #4558 Parte B: data ESTÁTICA (não `new Date()`) do Article JSON-LD — um
+ * valor dinâmico quebraria `test/cursos-asset-drift.test.ts`/
+ * `test/cursos-full-drift.test.ts` (comparam o HTML committed contra um
+ * render fresco; "hoje" nunca bate com o commit de ontem). Bump manual
+ * quando o conteúdo GEO (intro/FAQ) for reescrito de forma substancial —
+ * não a cada atualização rotineira do seed de cursos. */
+const GEO_CONTENT_DATE = "2026-08-04";
 
 // #1936/#1935: DS canônico (vjpixel/diaria-design via lib/shared/design-tokens.ts).
 // Era ad-hoc (Newsreader + paleta #F5F1E8/#FFFDF8/#1A1A1A divergente do canvas
@@ -224,6 +240,84 @@ export function loadCourses(seedPath = SEED_PATH): Course[] {
   return loadSeedItems<Course>(seedPath, "courses", validateCourses);
 }
 
+/**
+ * Monta as perguntas/respostas do FAQ a partir do dataset REAL de cursos —
+ * nunca números inventados (#4558 item 6). Usa o CATÁLOGO COMPLETO (não só
+ * os abertos no teaser) pras CONTAGENS agregadas — o banner de gate já
+ * expõe a contagem total de cursos fechados pro mesmo leitor, então uma
+ * contagem a mais não vaza nada que a página já não diga. NUNCA nomeia
+ * plataforma/tema/curso específico aqui (#4052/#4305, `test/cursos-teaser-leak.test.ts`):
+ * um nome de plataforma pode ser EXCLUSIVO de um curso gated (ex:
+ * "Fundação Bradesco (Escola Virtual)"), e a composição de quais cursos
+ * ficam abertos no teaser muda conforme o seed — um número é seguro em
+ * qualquer composição, um nome não é. Pure.
+ */
+export function buildCursosFaq(courses: Course[]): GeoFaqItem[] {
+  const total = courses.length;
+  const free = courses.filter((c) => c.cost === "free").length;
+  const comCertificado = courses.filter((c) => c.certificate).length;
+  const ptBr = courses.filter((c) => c.language === "pt-br").length;
+  const en = total - ptBr;
+  const iniciante = courses.filter((c) => c.level === "iniciante").length;
+  const plataformas = distinctPlatforms(courses).length;
+  const open = openCourseCount(total);
+
+  return [
+    {
+      question: "Quais são os melhores cursos gratuitos de inteligência artificial?",
+      answer: `Esta curadoria reúne ${total} cursos sobre inteligência artificial, dos quais ${free} têm acesso gratuito ou auditoria livre. ${comCertificado} deles emitem certificado sem custo ao concluir. ${open} ficam abertos direto na página; o restante desbloqueia pra quem já é assinante da diar.ia.br.`,
+    },
+    {
+      question: "Tem curso de inteligência artificial em português?",
+      answer: `Sim — ${ptBr} dos ${total} cursos da lista são em português, cobrindo desde fundamentos de IA até IA generativa e ética. Os outros ${en} estão em inglês, geralmente cursos mais técnicos.`,
+    },
+    {
+      question: "Quantas plataformas de cursos de IA a diar.ia.br já curou?",
+      answer: `A curadoria já cobre ${plataformas} plataformas diferentes — de universidades a empresas de tecnologia. Cada card de curso mostra a plataforma de origem antes do link, e dá pra filtrar por ela na página.`,
+    },
+    {
+      question: "Esses cursos de IA dão certificado?",
+      answer: `${comCertificado} dos ${total} cursos da lista emitem certificado sem custo ao concluir — procure o selo específico no card do curso, ou use o filtro de Certificado na página.`,
+    },
+    {
+      question: "Tem curso de IA pra iniciante, sem experiência técnica?",
+      answer: `Sim — ${iniciante} dos ${total} cursos são classificados como nível iniciante, sem pré-requisito de programação. Use o filtro de Nível pra ver só esses.`,
+    },
+    {
+      question: "Como faço pra desbloquear todos os cursos da lista?",
+      answer:
+        "Uma parte do catálogo fica aberta sem cadastro; o restante desbloqueia pra quem já é assinante ativo da diar.ia.br (verificação automática por e-mail) ou pra quem se cadastra na hora pelo banner no topo da página.",
+    },
+    {
+      question: "Os links dos cursos levam direto pra plataforma de origem?",
+      answer:
+        "Sim, todos os links levam direto ao curso na plataforma original que oferece o conteúdo — a diar.ia.br não hospeda nada, só cura e organiza.",
+    },
+    {
+      question: "Essa lista de cursos de IA é atualizada?",
+      answer:
+        "Sim, a curadoria é mantida manualmente pelo editor da diar.ia.br e cresce sem periodicidade fixa. A forma de acompanhar novidades é assinando a newsletter diária.",
+    },
+  ];
+}
+
+/** Parágrafo introdutório (issue #4558 item 1: responde a pergunta principal
+ * por inteiro nos primeiros ~200 palavras, sem enrolação) + H2 em formato de
+ * pergunta literal (item 2). Fica no header, antes dos filtros. Mesma
+ * disciplina de `buildCursosFaq`: só contagens agregadas, nunca nome de
+ * plataforma/tema específico (poderia ser exclusivo de um curso gated). */
+function renderGeoIntro(courses: Course[]): string {
+  const total = courses.length;
+  const free = courses.filter((c) => c.cost === "free").length;
+  const comCertificado = courses.filter((c) => c.certificate).length;
+  const plataformas = distinctPlatforms(courses).length;
+  return `    <div class="geo-intro-wrap">
+      <h2 class="geo-h2">Quais são os melhores cursos gratuitos de inteligência artificial?</h2>
+      <p class="geo-intro">Esta página reúne ${total} cursos sobre inteligência artificial de ${plataformas} plataformas diferentes — ${free} deles com acesso gratuito ou auditoria livre, e ${comCertificado} com certificado sem custo ao concluir. A curadoria vai de fundamentos de IA e IA generativa a especializações técnicas, em português e inglês. Filtre por idioma, nível, formato, duração e plataforma logo abaixo, ou role até o fim pras perguntas frequentes com os números completos da curadoria.</p>
+${renderGeoByline(undefined, `atualizado em ${formatMonthYear(GEO_CONTENT_DATE)}`)}
+    </div>`;
+}
+
 function renderCard(c: Course): string {
   const dur = `<span class="note">${esc(fmtDuration(c.duration_hours, c.duration_estimated))}</span>`;
   const cta = isSafeUrl(c.url)
@@ -283,17 +377,36 @@ export function renderCursosPage(courses: Course[], mode: CursosRenderMode = "fu
   // escopo. A primeira versão do gate errou exatamente assim (condicional
   // repetida em cada derivação, uma delas esquecida), e comentário não segura
   // isso; escopo segura.
+  //
+  // #4558 Parte B: intro/FAQ GEO são a ÚNICA exceção deliberada — contagens
+  // AGREGADAS do catálogo completo (idioma, certificado, plataforma), nunca
+  // título/link/tema de curso individual. Mesma categoria de informação que
+  // o banner de gate já expõe ("Mais N cursos curados"), só que quebrada em
+  // mais dimensões. Por isso são computadas AQUI (onde `courses` completo
+  // ainda existe) e passadas como STRING/array já pronto pra
+  // `renderPageBody` — o boundary de "curso individual nunca atravessa"
+  // continua intacto, só o agregado atravessa.
+  const geoIntroHtml = renderGeoIntro(courses);
+  const geoFaq = buildCursosFaq(courses);
   const openIds = new Set((mode === "teaser" ? selectOpenCourses(courses) : courses).map((c) => c.id));
   const visible = courses.filter((c) => openIds.has(c.id));
-  return renderPageBody(visible, courses.length - visible.length, mode);
+  return renderPageBody(visible, courses.length - visible.length, mode, geoIntroHtml, geoFaq);
 }
 
 /**
  * Corpo do render. Recebe SÓ os cursos visíveis — nunca o catálogo completo
- * (ver `renderCursosPage`). `hiddenCount` é a única informação sobre os
- * fechados que atravessa a fronteira, e só vira contagem agregada na CTA.
+ * (ver `renderCursosPage`). `hiddenCount` é a única informação NUMÉRICA
+ * sobre os fechados que atravessa a fronteira; `geoIntroHtml`/`geoFaq` são
+ * agregados GEO já renderizados/computados no caller (ver nota acima) —
+ * strings/estruturas prontas, nunca objetos `Course` individuais.
  */
-function renderPageBody(visible: Course[], hiddenCount: number, mode: CursosRenderMode): string {
+function renderPageBody(
+  visible: Course[],
+  hiddenCount: number,
+  mode: CursosRenderMode,
+  geoIntroHtml: string,
+  geoFaq: GeoFaqItem[],
+): string {
   const cards = visible.map(renderCard).join("\n");
   // #4052: banner de gate — só no modo teaser, e só quando há pelo menos 1
   // curso fechado (se um dia o catálogo couber inteiro na cota aberta, o
@@ -364,6 +477,14 @@ function renderPageBody(visible: Course[], hiddenCount: number, mode: CursosRend
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${PAGE_TITLE}</title>
 ${renderSeoMeta({ title: PAGE_TITLE, description: PAGE_DESCRIPTION, url: PAGE_URL })}
+${renderGeoJsonLd({
+  pageUrl: PAGE_URL,
+  headline: PAGE_TITLE,
+  description: PAGE_DESCRIPTION,
+  datePublished: GEO_CONTENT_DATE,
+  dateModified: GEO_CONTENT_DATE,
+  faq: geoFaq,
+})}
 <style>
 ${renderCuradoriaRootStyles()}
 
@@ -412,6 +533,8 @@ ${renderCuradoriaGridCardStyles()}
   .gate-banner-alt { margin: 0; font-family: ${SANS}; font-size: 12px; opacity: 0.9; }
   @media (max-width: 640px) { .gate-banner-wrap { flex-direction: column; align-items: flex-start; } .gate-banner-form { width: 100%; } .gate-banner-form input[type="email"] { width: auto; flex: 1; max-width: none; } }
 
+${renderGeoFaqStyles()}
+
 ${renderCuradoriaFooterStyles()}
 </style>
 </head>
@@ -422,7 +545,7 @@ ${gateBanner}  <header>
       <hr class="rule">
       <h1>Cursos sobre IA<span class="dot" aria-hidden="true">.</span></h1>
       <p class="tagline">5 minutos diários pra se manter atualizado e usar melhor as IAs</p>
-      <p class="lede">Uma seleção de cursos sobre inteligência artificial com acesso gratuito ou auditoria livre — de fundamentos a especializações técnicas, em português e inglês. Filtre por idioma, nível, formato, duração e plataforma.</p>
+${geoIntroHtml}
       <p class="lede">Todos os links levam direto à plataforma. Auditoria gratuita dá acesso ao conteúdo; o certificado, quando pago, está marcado.</p>
     </div>
   </header>
@@ -445,6 +568,7 @@ ${filters}
 ${cards}
         <p class="empty" id="empty" style="display:none">Nenhum curso com esses filtros.</p>
       </div>
+${renderGeoFaqSection(geoFaq, "faq-cursos")}
     </div>
   </main>
   ${renderCuradoriaFooter(

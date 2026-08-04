@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import {
   validateBooks,
   renderLivrosPage,
+  buildLivrosFaq,
   esc,
   isSafeUrl,
   fmtRating,
@@ -119,6 +120,26 @@ describe("distinctThemes / availableThemes (#1744)", () => {
 
   it("availableThemes combina idioma+nível", () => {
     assert.deepEqual(availableThemes(sample, "pt-br", "avancado"), ["Ciência", "Design"]);
+  });
+});
+
+describe("buildLivrosFaq (#4558 Parte B)", () => {
+  const sample = [
+    book({ id: "a", language: "pt-br", level: "iniciante", themes: ["História"] }),
+    book({ id: "b", language: "en", level: "avancado", themes: ["Engenharia"] }),
+    book({ id: "c", language: "pt-br", level: "avancado", themes: ["Design", "Ciência"] }),
+  ];
+
+  it("retorna entre 6 e 10 perguntas e usa contagens REAIS do dataset (não inventa número)", () => {
+    const faq = buildLivrosFaq(sample);
+    assert.ok(faq.length >= 6 && faq.length <= 10, `esperado 6-10, achou ${faq.length}`);
+    const joined = faq.map((f) => `${f.question} ${f.answer}`).join(" ");
+    assert.match(joined, /\b3\b/); // total de livros da amostra
+    assert.match(joined, /\b2\b/); // 2 pt-br
+  });
+
+  it("é pure — mesma entrada produz sempre a mesma saída", () => {
+    assert.deepEqual(buildLivrosFaq(sample), buildLivrosFaq(sample));
   });
 });
 
@@ -300,6 +321,38 @@ describe("CTA de assinatura inline — hero + fim de lista (#4051)", () => {
 
   it("footer de navegação (diar.ia.br) carrega UTM utm_source=livros&utm_medium=footer-nav", () => {
     assert.match(html, /<a href="https:\/\/diar\.ia\.br\?utm_source=livros&amp;utm_medium=footer-nav">diar\.ia\.br<\/a>/);
+  });
+});
+
+describe("estrutura GEO (#4558 Parte B)", () => {
+  const books = [
+    book({ id: "a", title: "Alpha", language: "pt-br" }),
+    book({ id: "b", title: "Beta", language: "en" }),
+  ];
+  const html = renderLivrosPage(books);
+
+  it("H2 em formato de pergunta + FAQ (6-10 perguntas) + byline aparecem no HTML", () => {
+    assert.match(html, /<h2 class="geo-h2">Quais os melhores livros sobre inteligência artificial em português\?<\/h2>/);
+    assert.match(html, /<section class="geo-faq"/);
+    const faqQuestions = [...html.matchAll(/<div class="geo-faq-item">\s*<h2>/g)];
+    assert.ok(faqQuestions.length >= 6 && faqQuestions.length <= 10);
+    assert.match(html, /Por <a href="https:\/\/www\.linkedin\.com\/in\/vjpixel\/" rel="author">Pixel<\/a>/);
+  });
+
+  it("JSON-LD FAQPage + Article presente e válido no <head>", () => {
+    const m = /<script type="application\/ld\+json">([\s\S]*?)<\/script>/.exec(html);
+    assert.ok(m, "deve ter <script type=application/ld+json>");
+    const jsonLd = JSON.parse(m![1]);
+    const types = jsonLd["@graph"].map((n: { "@type": string }) => n["@type"]);
+    assert.deepEqual(types.sort(), ["Article", "FAQPage"]);
+    const article = jsonLd["@graph"].find((n: { "@type": string }) => n["@type"] === "Article");
+    assert.equal(article.author.name, "Pixel");
+  });
+
+  it("FAQPage.mainEntity bate com buildLivrosFaq(books) — nunca diverge do visível", () => {
+    const jsonLd = JSON.parse(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/.exec(html)![1]);
+    const faqNode = jsonLd["@graph"].find((n: { "@type": string }) => n["@type"] === "FAQPage");
+    assert.equal(faqNode.mainEntity.length, buildLivrosFaq(books).length);
   });
 });
 

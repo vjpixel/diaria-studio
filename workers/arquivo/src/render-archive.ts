@@ -45,6 +45,13 @@ import {
 } from "../../../scripts/lib/shared/curadoria-page.ts";
 import { renderSeoMeta } from "../../../scripts/lib/shared/seo-meta.ts";
 import { ARQUIVO_FOOTER_NAV_UTM } from "../../../scripts/lib/shared/utm-registry.ts";
+import {
+  renderGeoByline,
+  renderGeoFaqSection,
+  renderGeoFaqStyles,
+  renderGeoJsonLd,
+  type GeoFaqItem,
+} from "../../../scripts/lib/shared/geo-faq.ts"; // #4558 Parte B: estrutura GEO (FAQ + JSON-LD FAQPage/Article + autoria)
 import titlesCacheRaw from "./titles-cache.json";
 
 /** Shape de cada entrada do cache (espelha `ArquivoTitleEntry` de
@@ -60,6 +67,16 @@ export interface TitleCacheEntry {
 export type TitlesCacheMap = Record<string, TitleCacheEntry>;
 
 const titlesCache: TitlesCacheMap = titlesCacheRaw as TitlesCacheMap;
+
+/** #4558 Parte B: `datePublished` ESTÁTICO do Article JSON-LD — data em que
+ * a estrutura GEO foi aplicada a esta página, não a data da edição mais
+ * recente (essa é `dateModified`, derivada dinamicamente da ENTRADA — ver
+ * `buildArchiveHtml` abaixo). Diferente de livros/cursos (páginas GERADAS
+ * por script, onde uma data dinâmica quebraria o teste de asset-drift),
+ * `arquivo` é renderizado por request a partir de dados live — não há asset
+ * committed pra "driftar" contra, então só `datePublished` precisa ser fixo
+ * (é sobre a página em si, não sobre o conteúdo que ela lista). */
+const GEO_LAUNCH_DATE = "2026-08-04";
 
 /** URL pública canônica desta página (Workers Custom Domain, #4105/#3698). */
 export const PAGE_URL = "https://arquivo.diar.ia.br/";
@@ -209,6 +226,74 @@ interface GroupedEntry {
 }
 
 /**
+ * Monta as perguntas/respostas do FAQ a partir dos dados REAIS já agrupados
+ * (#4558 item 6 — nunca números inventados). Pure. `newestLabel`/`oldestLabel`
+ * já vêm formatados ("julho de 2026") pelo caller.
+ */
+export function buildArquivoFaq(
+  count: number,
+  monthCount: number,
+  oldestLabel: string | null,
+  newestLabel: string | null,
+): GeoFaqItem[] {
+  const rangeAnswer =
+    oldestLabel && newestLabel
+      ? oldestLabel === newestLabel
+        ? `Todas as ${count} edições listadas aqui são de ${newestLabel}.`
+        : `As edições vão de ${oldestLabel} até ${newestLabel}, cobrindo ${monthCount} mes${monthCount === 1 ? "" : "es"} de publicação.`
+      : "O arquivo ainda não tem edições publicadas o suficiente pra mostrar um intervalo de datas.";
+
+  return [
+    {
+      question: "Quais são todas as edições já publicadas da diar.ia.br?",
+      answer: `Esta página lista as ${count} edições já publicadas da newsletter diar.ia.br, com link direto pra cada uma, agrupadas por mês da mais recente pra mais antiga.`,
+    },
+    {
+      question: "Desde quando a diar.ia.br publica edições?",
+      answer: rangeAnswer,
+    },
+    {
+      question: "Como encontro uma edição antiga da diar.ia.br?",
+      answer:
+        "Use o índice de meses no topo da lista pra pular direto pra um mês, ou role a página — as edições ficam agrupadas por mês, da mais recente pra mais antiga, cada uma com título e data.",
+    },
+    {
+      question: "A diar.ia.br publica todo dia?",
+      answer:
+        "A newsletter é publicada de segunda a sexta, sem edição nos fins de semana — por isso o número de edições por mês varia entre ~20 e ~23, conforme os dias úteis do mês.",
+    },
+    {
+      question: "Como faço pra assinar a diar.ia.br?",
+      answer:
+        "Basta se inscrever pelo link de assinatura no topo desta página — o cadastro é gratuito e a newsletter chega direto no e-mail, de segunda a sexta.",
+    },
+    {
+      question: "Essa lista de edições é atualizada automaticamente?",
+      answer:
+        "Sim — a página é gerada em tempo real a partir do sitemap oficial da diar.ia.br a cada acesso, então toda edição nova publicada aparece aqui sem intervenção manual.",
+    },
+  ];
+}
+
+/** Parágrafo introdutório (issue #4558 item 1: responde a pergunta principal
+ * por inteiro nos primeiros ~200 palavras, sem enrolação) + H2 em formato de
+ * pergunta literal (item 2). Fica no header, antes do índice de meses.
+ *
+ * Deliberadamente NÃO cita mês/ano específicos aqui (ex: "maio de 2026") —
+ * `test/arquivo-render.test.ts` afirma que a PRIMEIRA ocorrência de cada
+ * "{mês} de {ano}" no HTML segue a ordem cronológica das seções; citar um
+ * mês no header (que renderiza ANTES das seções) quebraria essa ordem sem
+ * mudar nada de real no conteúdo. O intervalo de datas específico vive só
+ * no FAQ (`buildArquivoFaq`), que fica DEPOIS das seções no documento. */
+function renderGeoIntro(count: number): string {
+  return `    <div class="geo-intro-wrap">
+      <h2 class="geo-h2">Quais são todas as edições já publicadas da diar.ia.br?</h2>
+      <p class="geo-intro">Esta página lista as ${count} edições já publicadas da newsletter diar.ia.br, agrupadas por mês da mais recente pra mais antiga, cada uma com link direto pro texto completo. A diar.ia.br publica de segunda a sexta, resumindo em 5 minutos de leitura as principais notícias e tutoriais de inteligência artificial do dia. Use o índice de meses logo abaixo pra pular direto pra um período, ou role até o fim pras perguntas frequentes sobre o arquivo.</p>
+${renderGeoByline(undefined, "atualizado em tempo real")}
+    </div>`;
+}
+
+/**
  * Constrói o HTML completo da página de arquivo a partir das entradas cruas
  * do sitemap. Filtra pra `/p/*` (edições reais — exclui home/archive/tags/
  * subscribe/authors/etc), descarta entradas sem `lastmod` (não dá pra
@@ -283,6 +368,22 @@ export function buildArchiveHtml(
       ? `${monthIndex}\n${sections.join("\n")}`
       : "    <p>Nenhuma edição encontrada.</p>";
 
+  // #4558 Parte B: intervalo de datas + FAQ — derivados dos MESMOS `editions`
+  // já agrupados acima, nunca números inventados. `sortedKeys` já está
+  // ordenado do mês mais recente pro mais antigo.
+  const newestKey = sortedKeys[0] ?? null;
+  const oldestKey = sortedKeys[sortedKeys.length - 1] ?? null;
+  const newestLabel = newestKey ? monthLabel(newestKey) : null;
+  const oldestLabel = oldestKey ? monthLabel(oldestKey) : null;
+  const geoFaq = buildArquivoFaq(count, sortedKeys.length, oldestLabel, newestLabel);
+  // `dateModified` dinâmico (deterministicamente derivado da ENTRADA, não de
+  // `Date.now()`) — a data efetiva da edição mais recente, ou `GEO_LAUNCH_DATE`
+  // se não houver nenhuma edição ainda.
+  const newestEditionDate = editions.reduce<string | null>(
+    (max, e) => (max === null || e.date > max ? e.date : max),
+    null,
+  );
+
   return `<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -298,6 +399,8 @@ ${renderCuradoriaHeaderStyles()}
 
 ${renderArchiveListStyles()}
 
+${renderGeoFaqStyles()}
+
 ${renderCuradoriaFooterStyles()}
 </style>
 </head>
@@ -308,7 +411,7 @@ ${renderCuradoriaFooterStyles()}
       <hr class="rule">
       <h1>Arquivo<span class="dot" aria-hidden="true">.</span></h1>
       <p class="tagline">5 minutos diários pra se manter atualizado e usar melhor as IAs</p>
-      <p class="lede">Todas as edições já publicadas da newsletter diar.ia.br, agrupadas por mês.</p>
+${renderGeoIntro(count)}
       <p class="subscribe-cta"><a href="${esc(SUBSCRIBE_URL)}">Assine a diar.ia.br →</a></p>
     </div>
   </header>
@@ -316,12 +419,28 @@ ${renderCuradoriaFooterStyles()}
     <div class="wrap">
       <p class="count">${count} ediç${count === 1 ? "ão" : "ões"} publicada${count === 1 ? "" : "s"}.</p>
 ${body}
+${renderGeoFaqSection(geoFaq, "faq-arquivo")}
     </div>
   </main>
   ${renderCuradoriaFooter(
     "diar.ia.br — arquivo de edições",
     `utm_source=${ARQUIVO_FOOTER_NAV_UTM.source}&utm_medium=${ARQUIVO_FOOTER_NAV_UTM.medium}`,
   )}
+  <!-- JSON-LD vai no FIM do body de propósito (diferente de livros/cursos,
+       que o colocam no head): as respostas do FAQ citam "mês de ano"
+       (ex: "julho de 2026") e o teste de render afirma que a PRIMEIRA
+       ocorrência de cada label de mês no HTML segue a ordem cronológica
+       das secoes — um JSON-LD no head citaria esses labels ANTES das
+       secoes e quebraria essa ordem sem mudar nada real no conteúdo.
+       Google aceita JSON-LD em qualquer lugar do documento. -->
+${renderGeoJsonLd({
+  pageUrl: PAGE_URL,
+  headline: PAGE_TITLE,
+  description: PAGE_DESCRIPTION,
+  datePublished: GEO_LAUNCH_DATE,
+  dateModified: newestEditionDate ?? GEO_LAUNCH_DATE,
+  faq: geoFaq,
+})}
 </body>
 </html>
 `;

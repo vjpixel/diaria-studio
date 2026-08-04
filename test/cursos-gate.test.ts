@@ -1198,3 +1198,39 @@ describe("workers/cursos: contadores de alarme no KV (#4382)", () => {
     assert.equal(await kv.get(CURSOS_ALARM_COUNTER_KEYS.emailGateNotConfirmed), null);
   });
 });
+
+describe("workers/cursos: log de Referer de assistente de IA (#4558 Parte C)", () => {
+  it("Referer de um assistente de IA conhecido — loga E o teaser continua sendo servido normalmente", async () => {
+    const env = baseEnv();
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (line: string) => logs.push(line);
+    try {
+      const req = new Request("https://cursos.diar.ia.br/", { headers: { Referer: "https://claude.ai/chat/abc" } });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+      assert.equal(await res.text(), TEASER_HTML, "conteúdo público inalterado — logging não interfere no gate");
+      const hit = logs.map((l) => { try { return JSON.parse(l); } catch { return null; } }).find((p) => p?.event === "ai_referrer_hit");
+      assert.ok(hit, "deve ter logado 1 ai_referrer_hit");
+      assert.equal(hit.worker, "cursos");
+      assert.equal(hit.host, "claude.ai");
+      assert.equal(hit.path, "/");
+    } finally {
+      console.log = originalLog;
+    }
+  });
+
+  it("sem Referer de IA — não loga nada", async () => {
+    const env = baseEnv();
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (line: string) => logs.push(line);
+    try {
+      await worker.fetch(new Request("https://cursos.diar.ia.br/gate"), env);
+      const hit = logs.map((l) => { try { return JSON.parse(l); } catch { return null; } }).find((p) => p?.event === "ai_referrer_hit");
+      assert.equal(hit, undefined);
+    } finally {
+      console.log = originalLog;
+    }
+  });
+});
