@@ -1090,10 +1090,38 @@ export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
   // resolve pro mesmo assinante via a MESMA entrada KV `polltoken:{token}`,
   // então um leitor que troca de ESP entre edições (não deveria acontecer,
   // mas não quebraria nada) manteria o mesmo streak/nickname no leaderboard.
+  // #4581 (260804): o ramo `esp="beehiiv"` VOLTOU ao e-mail cru `{{email}}`,
+  // desfazendo o #4487 para este canal. Decisão do editor, tomada ao vivo no
+  // Stage 5 da edição 260804, com a razão explícita: **o É IA? não distribui
+  // prêmio**, então alguém votar no lugar de outra pessoa não causa dano —
+  // não há aposta, só ranking de diversão. O custo do token, em compensação,
+  // era real: `{{poll_token}}` depende de um custom field populado por
+  // assinante (`scripts/inject-poll-token.ts`), que nunca chegou a rodar ao
+  // vivo; com o campo inexistente a Beehiiv marca "Invalid merge tag" e TODA a
+  // base vota com a mesma identidade degenerada — quebra pior do que o
+  // vazamento que o token evitava.
+  //
+  // NÃO reintroduzir o token aqui sem decisão nova do editor: o trade-off já
+  // foi pesado e o lado "sem prêmio" é o que manda. Se um dia o É IA? passar
+  // a valer prêmio de verdade, a conversa muda e aí sim vale reabrir.
+  //
+  // O ramo `esp="brevo"` (#4517) fica INTACTO de propósito: lá o atributo
+  // `POLL_TOKEN` é populado INLINE por `publish-daily-brevo.ts` antes de cada
+  // campanha, então o mecanismo funciona de fato e não tem pendência
+  // operacional. Unificar os dois ramos é decisão separada — ver #4581.
+  //
+  // Nota: sem o token, o sufixo `@${VOTE_TOKEN_DOMAIN}` NÃO pode sobrar neste
+  // ramo — produziria `fulano@gmail.com@vote.eia.diaria.local` (2 arrobas),
+  // rejeitado por `isValidVoteEmailFormat` antes de chegar no handleVote.
+  //
+  // O Worker aceita os dois formatos sem mudança: `classifyPollTokenEmail`
+  // devolve `not-token-domain` pra e-mail cru e o `handleVote` segue pelo
+  // caminho pré-#4487 (`workers/poll/src/vote.ts`), preservando
+  // streak/nickname de quem já vota há meses.
   const buildVoteUrl = (choice: "A" | "B") =>
     esp === "brevo"
       ? `${PUBLIC_GAME_BASE_URL}/vote?email={{ contact.POLL_TOKEN }}@${VOTE_TOKEN_DOMAIN}&amp;edition=${eia.edition}&amp;choice=${choice}`
-      : `${PUBLIC_GAME_BASE_URL}/vote?email={{poll_token}}@${VOTE_TOKEN_DOMAIN}&edition=${eia.edition}&choice=${choice}`;
+      : `${PUBLIC_GAME_BASE_URL}/vote?email={{email}}&edition=${eia.edition}&choice=${choice}`;
   // #2541: imagens A/B empilhadas (1 coluna), A acima de B, em desktop e mobile.
   const eiaChoice = (choice: "A" | "B", imgFile: string, paddingTop?: string) => {
     // #3101: width="480" em pixels (600px container − 32px×2 padding da seção

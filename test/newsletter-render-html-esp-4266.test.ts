@@ -2,8 +2,10 @@
  * test/newsletter-render-html-esp-4266.test.ts (#4266)
  *
  * Cobre a merge tag do link de voto do É IA? por ESP de destino: Beehiiv usa
- * o token opaco `{{poll_token}}@vote.eia.diaria.local` (#4487 — era
- * `{{email}}` cru até então); Brevo usa o MESMO token opaco via
+ * o e-mail CRU `{{email}}` (#4581 reverteu o token opaco do #4487 neste ramo —
+ * o É IA? não dá prêmio, então votar no lugar de outra pessoa não causa dano,
+ * e o token cobrava um custo operacional real: dependia de um custom field
+ * populado por assinante que nunca rodou ao vivo); Brevo segue com o token via
  * `{{ contact.POLL_TOKEN }}@vote.eia.diaria.local` (#4517 — era
  * `{{ contact.EMAIL }}` cru até então, paridade com o #4487) com `&`
  * escapado como `&amp;` (mesma sintaxe de merge tag Brevo já usada pelo
@@ -24,11 +26,18 @@ const baseEia: EIA = {
 };
 
 describe("renderEIA(eia, esp) — #4266", () => {
-  it("sem esp (default): merge tag Beehiiv opaca {{poll_token}}@vote.eia.diaria.local, & cru (#4487)", () => {
+  it("sem esp (default): merge tag Beehiiv com e-mail cru {{email}}, & cru (#4581)", () => {
     const html = renderEIA(baseEia);
-    assert.match(html, /\{\{poll_token\}\}@vote\.eia\.diaria\.local/);
-    assert.match(html, /&edition=260999&choice=A/);
-    assert.ok(!html.includes("{{email}}"), "e-mail cru não deve mais aparecer na URL de voto (#4487)");
+    assert.match(html, /email=\{\{email\}\}&edition=260999&choice=A/);
+    assert.match(html, /email=\{\{email\}\}&edition=260999&choice=B/);
+    assert.ok(
+      !html.includes("{{poll_token}}"),
+      "token opaco não deve mais aparecer no ramo Beehiiv (#4581 reverteu o #4487)",
+    );
+    assert.ok(
+      !html.includes("@vote.eia.diaria.local"),
+      "sem o token, o domínio do pseudo-e-mail não pode sobrar — produziria fulano@x.com@vote.eia.diaria.local",
+    );
     assert.ok(!html.includes("{{ contact.EMAIL }}"), "não deve conter merge tag Brevo");
   });
 
@@ -83,9 +92,10 @@ describe("renderHTML(content, { esp }) — threading pelos 3 call sites internos
     sections: [],
   };
 
-  it("sem opts.esp: merge tag Beehiiv opaca (#4487)", () => {
+  it("sem opts.esp: merge tag Beehiiv com e-mail cru (#4581)", () => {
     const html = renderHTML(fixtureComEia);
-    assert.match(html, /\{\{poll_token\}\}@vote\.eia\.diaria\.local/);
+    assert.match(html, /email=\{\{email\}\}&edition=/);
+    assert.ok(!html.includes("{{poll_token}}"), "#4581: token opaco saiu do ramo Beehiiv");
     assert.ok(!html.includes("{{ contact.EMAIL }}"));
   });
 
@@ -125,7 +135,8 @@ describe("renderHTML(content, { esp }) — threading pelos 3 call sites internos
   it("renderEiaStandalone permanece sempre Beehiiv — sem parâmetro esp (paste híbrido é Beehiiv-only)", () => {
     const html = renderEiaStandalone(fixtureComEia);
     assert.ok(html);
-    assert.match(html!, /\{\{poll_token\}\}@vote\.eia\.diaria\.local/);
+    assert.match(html!, /email=\{\{email\}\}&edition=/);
+    assert.ok(!html!.includes("{{poll_token}}"), "#4581: token opaco saiu do ramo Beehiiv");
     assert.ok(!html!.includes("{{ contact.EMAIL }}"));
   });
 });

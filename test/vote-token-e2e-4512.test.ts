@@ -78,8 +78,12 @@ afterEach(() => {
 /** Extrai o valor de `?email=` do href de voto A dentro do HTML do painel É
  * IA?. Não usa URL() pra parse — o merge tag `{{poll_token}}` ainda não foi
  * substituído neste ponto, então a string não é uma URL válida ainda. */
+// #4581: aceita o `&` cru (Beehiiv) E o `&amp;` escapado (Brevo) — desde que o
+// ramo Beehiiv voltou ao `{{email}}` cru, o par token↔template que este arquivo
+// guarda vive no ramo BREVO, cujo separador é escapado.
 function extractVoteEmailParam(html: string, choice: "A" | "B"): string {
-  const re = new RegExp(`href="[^"]*[?&]email=([^&"]+)&edition=[^&"]+&choice=${choice}`);
+  const sep = "(?:&amp;|&)";
+  const re = new RegExp(`href="[^"]*[?&]email=([^&"]+)${sep}edition=[^&"]+${sep}choice=${choice}`);
   const m = html.match(re);
   assert.ok(m, `href de voto (choice=${choice}) não encontrado no HTML renderizado`);
   return decodeURIComponent(m![1]);
@@ -133,16 +137,22 @@ describe("#4512 — combinação real inject-poll-token.ts + newsletter-render-h
       imageB: "01-eia-B.jpg",
       edition: "260999",
     };
-    const html = renderEIA(eia, "beehiiv");
+    // #4581: o ramo "beehiiv" voltou ao `{{email}}` cru (o É IA? não dá prêmio —
+    // ver newsletter-render-html.ts::buildVoteUrl), então o par
+    // token-gravado ↔ template-que-concatena-o-domínio só existe hoje no ramo
+    // BREVO. O valor do token é o MESMO nos dois ESPs (`computePollToken` é
+    // ESP-agnóstico), então este e2e continua guardando exatamente o bug que o
+    // #4512 corrigiu: domínio duplicado → 2 arrobas → voto rejeitado.
+    const html = renderEIA(eia, "brevo");
     const mergeTagUrlEmailParam = extractVoteEmailParam(html, "A");
     assert.equal(
       mergeTagUrlEmailParam,
-      "{{poll_token}}@vote.eia.diaria.local",
+      "{{ contact.POLL_TOKEN }}@vote.eia.diaria.local",
       "sanity check: o template ainda carrega o merge tag não-substituído",
     );
 
-    // Simula a substituição de merge tag que a Beehiiv faz no envio.
-    const finalEmailParam = mergeTagUrlEmailParam.replace("{{poll_token}}", patchedFieldValue!);
+    // Simula a substituição de merge tag que o ESP faz no envio.
+    const finalEmailParam = mergeTagUrlEmailParam.replace("{{ contact.POLL_TOKEN }}", patchedFieldValue!);
 
     assert.equal(
       (finalEmailParam.match(/@/g) ?? []).length,
@@ -172,11 +182,11 @@ describe("#4512 — combinação real inject-poll-token.ts + newsletter-render-h
       imageB: "01-eia-B.jpg",
       edition: "260999",
     };
-    const html = renderEIA(eia, "beehiiv");
+    const html = renderEIA(eia, "brevo"); // #4581: ver nota no teste acima
     const mergeTagUrlEmailParam = extractVoteEmailParam(html, "B");
 
     const buggyFieldValue = "abc123def456abc123def456@vote.eia.diaria.local"; // valor que o código com bug gravava
-    const finalEmailParamBuggy = mergeTagUrlEmailParam.replace("{{poll_token}}", buggyFieldValue);
+    const finalEmailParamBuggy = mergeTagUrlEmailParam.replace("{{ contact.POLL_TOKEN }}", buggyFieldValue);
 
     assert.equal((finalEmailParamBuggy.match(/@/g) ?? []).length, 2, "reproduz o bug: 2 arrobas");
     assert.equal(

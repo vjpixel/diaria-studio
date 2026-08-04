@@ -462,9 +462,16 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
     assert.ok(html.includes("#FFFFFF"), "branco PAPER ausente no output composto");
   });
 
-  it("merge tag do token opaco preservada no É IA? — modo merge-tag sem sig (#1186, token #4487)", () => {
-    assert.ok(html.includes("{{poll_token}}@vote.eia.diaria.local"), "merge tag do token opaco ausente na vote URL");
-    assert.ok(!html.includes("{{email}}"), "e-mail cru não deve mais aparecer na vote URL (#4487)");
+  it("merge tag de e-mail cru preservada no É IA? — modo merge-tag sem sig (#1186, revertido #4581)", () => {
+    assert.ok(html.includes("email={{email}}&edition="), "merge tag {{email}} ausente na vote URL");
+    assert.ok(
+      !html.includes("{{poll_token}}"),
+      "token opaco não deve mais aparecer no ramo Beehiiv (#4581 reverteu o #4487)",
+    );
+    assert.ok(
+      !html.includes("@vote.eia.diaria.local"),
+      "domínio do pseudo-e-mail do token não deve sobrar sem o token",
+    );
     // #1186: poll_sig removido — modo merge-tag, sem HMAC por subscriber.
     assert.ok(!html.includes("{{poll_sig}}"), "{{poll_sig}} presente — era esperado ser removido (#1186)");
     assert.ok(!html.includes("&sig="), "sig= presente — era esperado ser removido (#1186)");
