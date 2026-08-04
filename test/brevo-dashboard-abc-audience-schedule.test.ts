@@ -913,11 +913,17 @@ describe("aggregateAbcByAudience / renderAbcAudienceTable — cliques ATRIBUÍDO
   });
 
   test("sem divergência entre total e atribuído (fixture padrão) → renderAbcClickAttributionNote não adiciona ruído", () => {
+    // 3 células (não 2!) no mesmo dia — o guard de consolidação (`<3 células`,
+    // #3404/#4449) descarta o dia inteiro se só 2 aparecerem, o que faria esta
+    // asserção passar por um motivo errado (campaignCount=0 em tudo, não
+    // "sem divergência real"). Com as 3, a agregação acontece de verdade.
     const noCampaignStats = [
       makeCampaign(320, "Clarice News 2607-10 — A: subject A", "2026-08-06T09:00:00Z", { sent: 1000, delivered: 990, uniqueViews: 500, uniqueClicks: 80 }),
       makeCampaign(321, "Clarice News 2607-10 — B: subject B", "2026-08-06T09:01:00Z", { sent: 1000, delivered: 990, uniqueViews: 450, uniqueClicks: 60 }),
+      makeCampaign(322, "Clarice News 2607-10 — C: subject C", "2026-08-06T09:02:00Z", { sent: 1000, delivered: 990, uniqueViews: 400, uniqueClicks: 50 }),
     ];
     const result = aggregateAbcByAudience(noCampaignStats, "2607-10");
+    assert.ok(result.aggregate.cells.some((c) => c.campaignCount > 0), "pré-condição: a agregação precisa ter dado real (senão a asserção abaixo seria vácua)");
     assert.equal(renderAbcClickAttributionNote(result.aggregate.cells), "");
   });
 });
