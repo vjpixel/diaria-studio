@@ -50,7 +50,7 @@ const fixtureContent = {
 
 describe("buildDailyBrevoSubject / buildDailyBrevoPreviewText — #4266", () => {
   it("assunto deriva do título do D1", () => {
-    assert.equal(buildDailyBrevoSubject(fixtureContent), "diar.ia.br — Modelos se replicam sozinhos");
+    assert.equal(buildDailyBrevoSubject(fixtureContent), "Modelos se replicam sozinhos");
   });
 
   it("preview text é o subtítulo", () => {

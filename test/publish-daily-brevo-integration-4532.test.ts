@@ -337,7 +337,7 @@ describe("publish-daily-brevo.ts main() — wiring fail-closed de ponta a ponta 
         sender: { email: string; name: string };
       };
       assert.deepEqual(campaignBody.recipients, { listIds: [LIST_ID] });
-      assert.match(campaignBody.subject, /^diar\.ia\.br — /);
+      assert.equal(campaignBody.subject, "Título um");
       assert.equal(campaignBody.sender.email, "editor@diar.ia.br");
       assert.ok(
         calls.some((c) => c.method === "PUT" && c.pathname === `/v3/contacts/${encodeURIComponent("ok@x.com")}`),
