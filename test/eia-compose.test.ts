@@ -20,7 +20,10 @@ import {
   tokenizeImageTitle,
   readUsedTitles,
   isOwnWorkOnlyCredit,
+  isPtDescription,
+  translateToPtBR,
 } from "../scripts/eia-compose.ts";
+import { withFetchSpy } from "./_helpers/with-fetch-spy.ts";
 
 interface MockImage {
   title?: string;
@@ -1453,5 +1456,162 @@ describe("eia-compose.ts (source guard) — #4618: fix de raiz não regride sile
       /Traduza topônimos e nomes de lugares/,
       "prompt de tradução deve instruir explicitamente a tradução de topônimos",
     );
+  });
+});
+
+describe("isPtDescription (#4618)", () => {
+  it("lang='pt' → true", () => {
+    assert.equal(isPtDescription({ description: { lang: "pt" } }), true);
+  });
+
+  it("lang='en' → false (fallback esperado, sem warn)", () => {
+    assert.equal(isPtDescription({ description: { lang: "en" } }), false);
+  });
+
+  it("lang ausente (campo description ausente ou sem lang) → false", () => {
+    assert.equal(isPtDescription({}), false);
+    assert.equal(isPtDescription({ description: {} }), false);
+  });
+
+  it("lang inesperado (ex: 'pt-BR', formato que a Wikimedia poderia adotar) → false + warn em stderr", () => {
+    // Achado do review consolidado (type-design-analyzer): `lang` é lido via
+    // comparação frágil contra a literal "pt" — este teste trava que um
+    // valor fora do conjunto esperado {"pt","en",ausente} pelo menos EMITE
+    // um sinal observável em vez de degradar silenciosamente.
+    const originalWrite = process.stderr.write;
+    let captured = "";
+    process.stderr.write = ((chunk: string) => {
+      captured += chunk;
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      const result = isPtDescription({ description: { lang: "pt-BR" } });
+      assert.equal(result, false);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    assert.match(captured, /lang="pt-BR"/);
+  });
+});
+
+describe("pickSubjectWikipediaLink — stop words em pt (#4618)", () => {
+  it("stop word pt 'ponte' penaliza link genérico; subject específico em pt vence", () => {
+    // Espelha o teste EN existente ("Bridge" vs "Venice") — confirma que a
+    // lista pt adicionada em #4618 realmente participa do scoring, não só
+    // existe no Set sem efeito (SUBJECT_STOP_WORDS era 100% inglês antes;
+    // agora que pt é o locale PRIMÁRIO de description.html, essa cobertura
+    // deixou de ser cosmética).
+    const html =
+      '<a href="https://pt.wikipedia.org/wiki/Ponte">Ponte</a> em ' +
+      '<a href="https://pt.wikipedia.org/wiki/Veneza">Veneza</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://pt.wikipedia.org/wiki/Veneza");
+  });
+
+  it("stop word pt 'árvore' penaliza link genérico; subject específico vence", () => {
+    const html =
+      '<a href="https://pt.wikipedia.org/wiki/%C3%81rvore">Árvore</a> na ' +
+      '<a href="https://pt.wikipedia.org/wiki/Amaz%C3%B4nia">Amazônia</a>.';
+    const result = pickSubjectWikipediaLink(html);
+    assert.equal(result?.url, "https://pt.wikipedia.org/wiki/Amaz%C3%B4nia");
+  });
+});
+
+describe("pickSubjectWikipediaLink — domínios mistos en+pt na mesma description (#4618)", () => {
+  it("html com links en.wikipedia.org E pt.wikipedia.org: title-match decide, sem preferência de domínio (comportamento documentado)", () => {
+    // Achado do review consolidado (pr-test-analyzer): pickSubjectWikipediaLink
+    // é uma função PURA sobre html/title — não sabe se o caller espera pt ou
+    // en (isso é decidido por `sourceIsPt` em main(), fora desta função).
+    // Quando a description mistura domínios (cenário hipotético: fallback
+    // raro onde parte dos links residuais ainda aponta pra en.wikipedia.org),
+    // o scoring decide só por title-match/stop-words/proper-noun, IGUAL
+    // trataria dois links do mesmo domínio — não há bônus/penalidade por
+    // domínio. Este teste documenta esse comportamento atual (intencional,
+    // não um bug) em vez de deixá-lo implícito/não-testado.
+    const html =
+      '<a href="https://en.wikipedia.org/wiki/Generic">Generic</a> perto de ' +
+      '<a href="https://pt.wikipedia.org/wiki/Landsort">Landsort</a>.';
+    const title = "File:Landsort_April_2012.jpg";
+    const result = pickSubjectWikipediaLink(html, title);
+    assert.equal(result?.url, "https://pt.wikipedia.org/wiki/Landsort");
+  });
+});
+
+describe("fetchPotd (via findEligiblePotd com fetcher default) — #4618: URL real pede locale pt", () => {
+  it("a chamada fetch real (não mockada por injeção) pede /wikipedia/pt/featured/, nunca /en/", async () => {
+    // Complementa o guard de source-text (grep no arquivo) com um teste
+    // COMPORTAMENTAL de verdade: intercepta o `globalThis.fetch` real e
+    // confirma a URL que o código efetivamente monta e chama — não seria
+    // enganado por um refactor que movesse a URL pra uma constante, por
+    // exemplo (achado do review consolidado, pr-test-analyzer).
+    //
+    // `withFetchSpy` sempre lança na chamada interceptada (não devolve uma
+    // resposta mockada) — fetchPotd/findEligiblePotd não têm try/catch
+    // próprio ao redor do fetch, então o erro propaga como rejection; a
+    // asserção relevante é sobre a URL CAPTURADA antes do throw, não sobre
+    // o resultado da promise.
+    await withFetchSpy(async (calls) => {
+      await assert.rejects(() => findEligiblePotd("2026-08-04", new Set(), 1));
+      assert.equal(calls.length, 1, "exatamente 1 chamada fetch (sem fetcher injetado)");
+      assert.match(calls[0], /\/wikipedia\/pt\/featured\/2026\/08\/04/);
+      assert.ok(
+        !calls[0].includes("/wikipedia/en/featured/"),
+        `URL não deve mais pedir o locale en: ${calls[0]}`,
+      );
+    });
+  });
+});
+
+describe("translateToPtBR — prompt real enviado ao Gemini (#4618)", () => {
+  it("corpo da requisição instrui traduzir topônimos e contém o texto de entrada; resposta mockada é retornada", async () => {
+    // Comportamental (não source-grep): mocka `globalThis.fetch` capturando
+    // URL + body, devolve uma resposta Gemini sintética, e confirma tanto o
+    // PROMPT ENVIADO quanto o parsing do retorno — cobre exatamente o texto
+    // que chega no modelo, não só uma string solta em algum lugar do arquivo.
+    const originalFetch = globalThis.fetch;
+    const originalKey = process.env.GEMINI_API_KEY;
+    process.env.GEMINI_API_KEY = "test-key-synthetic";
+    let capturedUrl: string | null = null;
+    let capturedBody: string | null = null;
+    globalThis.fetch = (async (input: unknown, init?: unknown) => {
+      capturedUrl = String(input);
+      capturedBody = (init as { body?: string } | undefined)?.body ?? null;
+      return new Response(
+        JSON.stringify({
+          candidates: [{ content: { parts: [{ text: "Roma fica no Tibre." }] } }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch;
+    try {
+      const result = await translateToPtBR("Rome is on the Tiber.");
+      assert.equal(result, "Roma fica no Tibre.");
+      assert.ok(capturedUrl?.includes("generativelanguage.googleapis.com"), `URL inesperada: ${capturedUrl}`);
+      assert.ok(capturedBody, "corpo da requisição deveria ter sido capturado");
+      assert.match(capturedBody!, /Traduza topônimos e nomes de lugares/);
+      assert.match(capturedBody!, /Rome is on the Tiber\./);
+      assert.ok(
+        !capturedBody!.includes("mantendo nomes próprios, nomes científicos e siglas em inglês"),
+        "prompt enviado não deve conter a instrução antiga (root cause do #4618)",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalKey === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = originalKey;
+    }
+  });
+
+  it("sem GEMINI_API_KEY → null, sem chamada externa (fallback pra EN preservado)", async () => {
+    await withFetchSpy(async (calls) => {
+      const originalKey = process.env.GEMINI_API_KEY;
+      delete process.env.GEMINI_API_KEY;
+      try {
+        const result = await translateToPtBR("Rome is on the Tiber.");
+        assert.equal(result, null);
+      } finally {
+        if (originalKey !== undefined) process.env.GEMINI_API_KEY = originalKey;
+      }
+      assert.deepEqual(calls, [], "sem API key, translateToPtBR nunca deve chamar fetch");
+    });
   });
 });

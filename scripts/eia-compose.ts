@@ -73,6 +73,31 @@ interface WikimediaResponse {
   image?: WikimediaImage;
 }
 
+/**
+ * #4618: único ponto de leitura/interpretação de `image.description.lang` —
+ * centraliza a comparação (antes inline em `main()` como
+ * `image.description?.lang === "pt"`) e loga em stderr quando o valor
+ * observado foge do conjunto esperado (`"pt"`, `"en"`, ausente). `"en"` e
+ * ausente são tratados como fallback silenciosamente (comportamento
+ * conhecido/esperado — a Wikimedia usa `"en"` como default quando não há
+ * versão pt); qualquer OUTRO valor (ex: a Wikimedia passar a devolver
+ * `"pt-BR"` em vez de `"pt"`) é sinal de que o formato do código de idioma
+ * mudou — sem esse warn, cairíamos no fallback Gemini+langlinks silenciosamente
+ * mesmo com texto já nativo em português.
+ */
+export function isPtDescription(image: Pick<WikimediaImage, "description">): boolean {
+  const lang = image.description?.lang;
+  if (lang === "pt") return true;
+  if (lang !== undefined && lang !== "en") {
+    process.stderr.write(
+      `[eia-compose] warn: description.lang="${lang}" não é "pt" nem "en" nem ausente — ` +
+        "tratando como não-pt (fallback Gemini+langlinks). Se a Wikimedia mudou o formato " +
+        "do código de idioma, isPtDescription() pode precisar de ajuste.\n",
+    );
+  }
+  return false;
+}
+
 interface GeminiGenerateResponse {
   candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
   [k: string]: unknown;
@@ -335,11 +360,15 @@ async function fetchPotd(iso: string, retryOnRateLimit = 3): Promise<WikimediaIm
   // em `en` e tentar traduzir depois via Gemini deixava topônimos (Rome,
   // Tiber, Vatican City) vazando em inglês porque o prompt de tradução
   // instruía "manter nomes próprios em inglês" — a Wikimedia, ao contrário,
-  // já entrega "Roma", "rio Tibre", "Cidade do Vaticano" prontos. Ver
-  // `sourceIsPt` em main() — o fallback pra Gemini + langlinks só dispara se
-  // a resposta vier com `description.lang !== "pt"` (nunca observado em
-  // amostragem manual de ~10 datas espalhadas pelo ano, mas sem garantia
-  // formal da API).
+  // já entrega "Roma", "rio Tibre", "Cidade do Vaticano" prontos.
+  //
+  // Cobertura do `pt` NÃO é uma garantia formal da API — é uma observação
+  // empírica (amostragem manual de ~10 datas espalhadas pelo ano, sempre
+  // `description.lang === "pt"`). `main()` loga em stderr toda vez que o
+  // fallback (Gemini + langlinks, ver `sourceIsPt`) dispara, então essa nota
+  // fica verificável contra `data/run-log.jsonl`/stderr real em vez de só
+  // "nunca observado" — se o fallback começar a disparar com frequência,
+  // aparece lá.
   const url = `https://api.wikimedia.org/feed/v1/wikipedia/pt/featured/${yyyy}/${mm}/${dd}`;
   const res = await fetch(url, {
     headers: { "User-Agent": "diaria-studio/1.0 (diariaeditor@gmail.com)" },
@@ -487,6 +516,20 @@ const SUBJECT_STOP_WORDS = new Set([
   "tower", "dome", "gate", "statue", "fountain", "flower", "bird",
   "animal", "frog", "fish", "butterfly", "leaf", "tree", "cloud",
   "night", "morning", "evening", "scene",
+  // #4618: equivalentes em pt — a lista acima é 100% inglesa; desde que
+  // fetchPotd passou a pedir a feed em locale `pt` como PRIMÁRIO (não mais
+  // fallback raro), o texto dos links candidatos normalmente vem em
+  // português, então os termos genéricos em pt precisam do mesmo -5 que
+  // "bridge"/"tower"/etc. já davam em inglês — sem isso a heurística de
+  // desambiguação (#301/#434) fica sistematicamente mais fraca no caminho
+  // que agora é o comum, não o raro. Cobre só os mesmos conceitos da lista
+  // EN (tradução 1:1), não uma lista pt independente.
+  "piloto", "barco", "vista", "prédio", "edifício", "ponte", "montanha",
+  "rio", "lago", "céu", "paisagem", "panorama", "entardecer", "amanhecer",
+  "praia", "floresta", "estrada", "rua", "campo", "jardim", "parque",
+  "torre", "cúpula", "portão", "estátua", "fonte", "flor", "pássaro",
+  "ave", "animal", "sapo", "rã", "peixe", "borboleta", "folha", "árvore",
+  "nuvem", "noite", "manhã", "tarde", "cena",
 ]);
 
 /**
@@ -559,9 +602,15 @@ export function pickSubjectWikipediaLink(
 
 /**
  * Backward-compat wrapper: retorna só a URL do link escolhido por
- * `pickSubjectWikipediaLink`. Mantido pra calcular `subject_wikipedia_url`
- * no meta JSON sem precisar do text. Quando `imageTitle` não é passado, cai
- * pro pattern original (primeiro link).
+ * `pickSubjectWikipediaLink`. Quando `imageTitle` não é passado, cai pro
+ * pattern original (primeiro link).
+ *
+ * #4618: desde a troca de `main()` pra chamar `pickSubjectWikipediaLink`
+ * diretamente (precisa do par `{url, text}`, não só a URL — ver `subj` em
+ * `main()`), este wrapper não é mais chamado pelo caminho de produção.
+ * Mantido exportado por back-compat de API e porque os testes
+ * (`test/eia-compose.test.ts`, `test/eia-compose-credit-regression.test.ts`)
+ * ainda o exercitam diretamente.
  */
 export function extractFirstWikipediaUrl(
   html: string | undefined,
@@ -630,8 +679,13 @@ export async function findPtWikipediaUrl(enUrl: string): Promise<string | null> 
  * Retorna null se GEMINI_API_KEY ausente ou em falha. Em caso de falha,
  * loga o motivo concreto (HTTP status + body excerpt) em stderr — antes era
  * fallback silencioso, mascarando regressões em produção.
+ *
+ * Exportado (era privada) desde #4618 pra permitir teste comportamental do
+ * prompt via mock de `fetch` — o texto exato enviado ao Gemini era coberto
+ * só por um guard de source-text (grep no arquivo), gameable por qualquer
+ * refactor cosmético do template literal.
  */
-async function translateToPtBR(text: string): Promise<string | null> {
+export async function translateToPtBR(text: string): Promise<string | null> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     process.stderr.write('[eia-compose] translate: GEMINI_API_KEY ausente — fallback EN\n');
@@ -1133,6 +1187,23 @@ async function main(): Promise<void> {
   // Dispatch via platform.config.json > image_generator (#329) — mesmo pattern de
   // scripts/image-generate.ts. Antes hardcodava gemini-image.js, o que fazia
   // eai falhar quando Gemini estava unavailable mesmo com cloudflare/comfyui ativos.
+  //
+  // #4618 ATENÇÃO (achado do review consolidado, code-reviewer): `buildSdPrompt`
+  // usa `image.description.text` como positive prompt — antes desta issue,
+  // esse texto era SEMPRE inglês (fetchPotd pedia a feed `en`); desde a troca
+  // pra locale `pt`, no caminho comum (`sourceIsPt`) esse texto vem em
+  // português. `gemini-image.js` (backend ATIVO hoje, `image_generator:
+  // "gemini"` no platform.config.json) é um LLM multilíngue — lida bem com
+  // prompt em pt. MAS `comfyui-run.js`/`cloudflare-image.js` (backends
+  // alternativos suportados, ver docs/comfyui-setup.md) alimentam esse texto
+  // direto num `CLIPTextEncode`/modelo Stable Diffusion — treinados quase
+  // exclusivamente em legendas EM INGLÊS; prompt em pt degradaria a fidelidade
+  // da imagem gerada SILENCIOSAMENTE (sem erro, sem teste que pegue isso) se
+  // o editor trocar `image_generator` pra "comfyui"/"cloudflare". Risco latente,
+  // não ativo — não corrigido nesta PR (exigiria decidir se vale reintroduzir
+  // uma 2ª chamada à feed `en` só pra este prompt, com o custo de latência
+  // que isso adiciona); documentado aqui pra não ser redescoberto como
+  // regressão silenciosa mais tarde. Ver PR #4619 pro contexto completo.
   const sdPrompt = buildSdPrompt(image);
   const sdPromptPath = resolve(internalDir, "01-eia-sd-prompt.json");
   writeFileSync(sdPromptPath, JSON.stringify(sdPrompt, null, 2));
@@ -1158,12 +1229,43 @@ async function main(): Promise<void> {
   // (`subj` recomputado a partir de `image.description.html`), que já produz
   // o resultado correto sem tradução nem lookup de langlinks nenhum.
   //
-  // O caminho antigo (#337 langlinks + #480 Gemini) só roda no fallback raro
-  // — `description.lang !== "pt"` (nunca observado em amostragem manual de
-  // ~10 datas espalhadas pelo ano, mas sem garantia formal da API de que
-  // TODA POTD tenha versão pt).
-  const sourceIsPt = image.description?.lang === "pt";
+  // O caminho antigo (#337 langlinks + #480 Gemini) só roda no fallback —
+  // `!isPtDescription(image)`. Loga em stderr toda vez que dispara (abaixo),
+  // pra a nota de "cobertura pt não é garantida" em fetchPotd ficar
+  // verificável ao longo do tempo, não só uma suposição.
+  const sourceIsPt = isPtDescription(image);
+  if (!sourceIsPt) {
+    process.stderr.write(
+      `[eia-compose] info: description.lang="${image.description?.lang ?? "ausente"}" (!= "pt") — ` +
+        "usando fallback Gemini+langlinks (#4618).\n",
+    );
+  }
   const subj = pickSubjectWikipediaLink(image.description?.html, image.title);
+  // #4618 (achado do review consolidado, silent-failure-hunter): antes desta
+  // PR, `subj === null` só acontecia quando `description.html` genuinamente
+  // não tinha link nenhum (caso raro/legítimo). Desde que pt virou o locale
+  // PRIMÁRIO, `description.html` vem preenchido pra praticamente toda
+  // edição — se `pickSubjectWikipediaLink` retornar null MESMO com html
+  // presente, é sinal de que o regex (só aceita en|pt.wikipedia.org) não bate
+  // com o shape real da resposta (ex: Wikimedia mudar pra link
+  // protocol-relative ou subdomínio mobile) — sem este warn, o crédito
+  // degradaria pra texto plano sem link, edição após edição, silenciosamente.
+  if (image.description?.html && !subj) {
+    process.stderr.write(
+      "[eia-compose] warn: description.html não vazio mas nenhum link " +
+        `en/pt.wikipedia.org extraído (lang="${image.description?.lang ?? "ausente"}") — ` +
+        "crédito vai sair sem link de subject.\n",
+    );
+  }
+  // `subjectEnUrl`: nome herdado do formato pré-#4618 (só existia o caminho
+  // en) — no fallback (`!sourceIsPt`) normalmente é mesmo um en.wikipedia.org
+  // (a Wikimedia cai pra EN quando não tem pt), mas tecnicamente pode ser
+  // pt.wikipedia.org também (o regex de pickSubjectWikipediaLink aceita os
+  // dois desde #4618). Isso é inofensivo: getPtLabel/findPtWikipediaUrl abaixo
+  // assumem um en.wikipedia.org e, se receberem um pt.wikipedia.org por essa
+  // via, simplesmente não encontram langlink e retornam null (fail-soft) —
+  // `subjectWikipediaUrl` mais abaixo cai pro próprio `subj?.url`, que já
+  // era pt e portanto correto.
   const subjectEnUrl = sourceIsPt ? null : subj?.url ?? null;
   let ptLabel: string | null = null;
   let ptWikipediaUrl: string | null = null;
