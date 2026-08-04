@@ -123,7 +123,7 @@ editor:
 ## Fora de escopo desta skill
 
 - Corrigir o gate de lote em `selectContactsForBackfill`
-  (`sync-pending-to-brevo.ts`) — issue #4579, separada.
+  (`sync-pending-to-brevo.ts`) — issue #4632, separada.
 - Adicionar `--send-test` a `publish-daily-brevo.ts` — gap conhecido (ver
   Passo 3), não fechado aqui.
 - Agendar ou disparar a campanha de fato — sempre ação manual do editor no
