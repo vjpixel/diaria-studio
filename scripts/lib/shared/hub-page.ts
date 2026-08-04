@@ -43,6 +43,59 @@ import {
 } from "./geo-faq.ts";
 import { DIARIA_ARQUIVO_URL } from "../canonical-urls.ts";
 
+/**
+ * Acha links markdown `[texto](url)` num parágrafo, com parênteses
+ * balanceados na URL (mesmo algoritmo de `findMarkdownLinks` em
+ * `scripts/lib/newsletter-render-html.ts` — REIMPLEMENTADO aqui, não
+ * importado: aquele módulo faz `import { readFileSync } from "node:fs"` no
+ * topo do arquivo, API ausente no runtime do Cloudflare Workers; puxar
+ * qualquer export de lá pra um módulo `shared/` bundlado no Worker `arquivo`
+ * quebraria o build. Mesma disciplina de duplicação já usada em
+ * `build-livros-page.ts::renderSubscribeCtaScript` pra bundles separados). */
+function findParagraphLinks(s: string): { url: string; label: string; start: number; end: number }[] {
+  const out: { url: string; label: string; start: number; end: number }[] = [];
+  const linkStart = /\[([^\]]+)\]\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = linkStart.exec(s)) !== null) {
+    const label = m[1];
+    const destStart = m.index + m[0].length;
+    let depth = 0;
+    let j = destStart;
+    for (; j < s.length; j++) {
+      const ch = s[j];
+      if (ch === "(") depth++;
+      else if (ch === ")") {
+        if (depth === 0) break;
+        depth--;
+      }
+    }
+    if (j >= s.length) continue; // sem `)` de fechamento — não é link válido
+    out.push({ url: s.slice(destStart, j).trim(), label, start: m.index, end: j + 1 });
+    linkStart.lastIndex = j + 1;
+  }
+  return out;
+}
+
+/** Converte `[texto](url)` num parágrafo de `HubSection` em `<a href>` —
+ * único subset de markdown suportado na prosa do hub (issue #4558: "hub
+ * temático é link interno de verdade" — cada afirmação linka a edição de
+ * origem, não só a lista de fontes no rodapé). Todo texto fora dos links,
+ * e o `label`/`url` de cada link, passa por `esc()`; nunca interpola HTML
+ * cru vindo do conteúdo. */
+function renderParagraphInline(p: string): string {
+  const links = findParagraphLinks(p);
+  if (links.length === 0) return esc(p);
+  const parts: string[] = [];
+  let lastIdx = 0;
+  for (const { url, label, start, end } of links) {
+    parts.push(esc(p.slice(lastIdx, start)));
+    parts.push(`<a href="${esc(url)}">${esc(label)}</a>`);
+    lastIdx = end;
+  }
+  parts.push(esc(p.slice(lastIdx)));
+  return parts.join("");
+}
+
 /** Uma edição da diar.ia.br citada como fonte do hub — link interno real
  * (issue #4558: "efeito colateral bom: hub temático é link interno de
  * verdade"). `url` é sempre o domínio de marca (`diar.ia.br/p/{slug}`, não
@@ -101,8 +154,18 @@ function renderHubBodyStyles(): string {
   .hub-section h2 { font-family: Georgia, 'Times New Roman', serif; font-size: 24px; font-weight: 700;
     line-height: 1.28; margin: 0 0 14px; color: var(--ink); }
   .hub-section p { font-size: 17px; line-height: 1.65; color: var(--ink); margin: 0 0 14px; }
+  .hub-section p a { color: var(--teal); text-decoration: underline; text-decoration-color: var(--rule); text-underline-offset: 2px; }
+  .hub-section p a:hover { text-decoration-color: var(--teal); }
   .hub-section p:last-child { margin-bottom: 0; }
-  .hub-sources { margin: 48px 0 0; padding: 32px 0 0; border-top: 1px solid var(--rule); }
+  .hub-sources { margin: 48px 0 0; padding: 32px 0 0; border-top: 1px solid var(--rule); max-width: 720px; }
+  /* #4558: .geo-faq vem de geo-faq.ts (compartilhado com livros/cursos/arquivo,
+     sem max-width — lá o conteúdo ao redor já é largo, grid de cards ou lista
+     de edições). No hub, .hub-section/.geo-intro/.hub-sources são 720px pra
+     leitura longa; sem este override o FAQ ficava sozinho mais largo que o
+     resto da página. Seletor com "main" (especificidade maior que a classe
+     solta) pra vencer .geo-faq sem depender da ordem de concatenação dos
+     blocos de CSS em renderHubPage. */
+  main .geo-faq { max-width: 720px; }
   .hub-sources h2 { font-family: Georgia, 'Times New Roman', serif; font-size: 15px; font-weight: 700;
     letter-spacing: 0.08em; text-transform: uppercase; color: var(--teal); margin: 0 0 20px; }
   .hub-sources ul { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule); }
@@ -174,7 +237,7 @@ export function renderHubPage(hub: HubContent): string {
     .map(
       (s) => `    <article class="hub-section">
       <h2>${esc(s.heading)}</h2>
-${s.paragraphs.map((p) => `      <p>${esc(p)}</p>`).join("\n")}
+${s.paragraphs.map((p) => `      <p>${renderParagraphInline(p)}</p>`).join("\n")}
     </article>`,
     )
     .join("\n");

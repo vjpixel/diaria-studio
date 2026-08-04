@@ -40,7 +40,10 @@ describe("buildAnthropicClaudeFaq (#4558 Parte A) — regression do bug NFD/NFC"
   });
 
   it("conta lançamentos > 0 — regression: regex acentuado contra texto NFD batia 0/12 antes da normalização NFC", () => {
-    const launchFaq = faq.find((f) => f.question.startsWith("Com que frequência"));
+    // Busca pelo conteúdo da resposta, não pelo texto da pergunta — a
+    // pergunta foi reformulada (achado do editor 260804: FAQ não pode
+    // duplicar o H2 de uma section) e não pode mais ser um prefixo estável.
+    const launchFaq = faq.find((f) => /noticiou \d+ lançamentos/.test(f.answer));
     assert.ok(launchFaq);
     assert.doesNotMatch(launchFaq.answer, /noticiou 0 lançamentos/);
     assert.match(launchFaq.answer, /noticiou 12 lançamentos/);
@@ -77,7 +80,7 @@ describe("buildAnthropicClaudeFaq (#4558 Parte A) — regression do bug NFD/NFC"
       },
     ];
     const syntheticFaq = buildAnthropicClaudeFaq(synthetic);
-    const launchFaq = syntheticFaq.find((f) => f.question.startsWith("Com que frequência"));
+    const launchFaq = syntheticFaq.find((f) => /noticiou \d+ lançamentos/.test(f.answer));
     assert.ok(launchFaq);
     assert.match(launchFaq.answer, /noticiou 2 lançamentos/);
     const mythosFaq = syntheticFaq.find((f) => f.question.includes("Mythos"));
@@ -108,7 +111,7 @@ describe("consistência FAQ × prosa das sections/INTRO (#4558 Parte A)", () => 
   });
 
   it("a seção de cadência de lançamento cita o mesmo número que o FAQ computa", () => {
-    const launchFaq = faq.find((f) => f.question.startsWith("Com que frequência"));
+    const launchFaq = faq.find((f) => /noticiou \d+ lançamentos/.test(f.answer));
     const launchMatch = /noticiou (\d+) lançamentos/.exec(launchFaq?.answer ?? "");
     assert.ok(launchMatch, "FAQ não tem a contagem de lançamentos no formato esperado");
     const launchSection = hub.sections.find((s) => s.heading.startsWith("Com que frequência"));
