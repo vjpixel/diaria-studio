@@ -208,19 +208,20 @@ describe("SOCIAL_INVITE / CURADORIA_PILLS — blocos fixos, mesma constante em d
     }
   });
 
-  it("CURADORIA_PILLS tem exatamente 4 pills, nesta ordem: Cursos, Livros, Equipamentos, Arquivo (#4536)", () => {
+  it("CURADORIA_PILLS tem exatamente 5 pills, nesta ordem: Cursos, Livros, Equipamentos, Arquivo, É IA? (#4536/#4550)", () => {
     const idxCursos = CURADORIA_PILLS.indexOf("[Cursos]");
     const idxLivros = CURADORIA_PILLS.indexOf("[Livros]");
     const idxEquip = CURADORIA_PILLS.indexOf("[Equipamentos]");
     const idxArquivo = CURADORIA_PILLS.indexOf("[Arquivo]");
+    const idxEia = CURADORIA_PILLS.indexOf("[É IA?]");
     assert.ok(
-      idxCursos >= 0 && idxLivros > idxCursos && idxEquip > idxLivros && idxArquivo > idxEquip,
+      idxCursos >= 0 && idxLivros > idxCursos && idxEquip > idxLivros && idxArquivo > idxEquip && idxEia > idxArquivo,
       "ordem/labels das pills incorretos",
     );
-    assert.equal(CURADORIA_PILLS.split("\n").length, 4, "deveriam existir exatamente 4 linhas de pill");
+    assert.equal(CURADORIA_PILLS.split("\n").length, 5, "deveriam existir exatamente 5 linhas de pill");
   });
 
-  it("Cursos/Livros/Arquivo levam UTM (newsletter→curadoria); Equipamentos fica sem, #4553)", () => {
+  it("Cursos/Livros/Arquivo/É IA? levam UTM (newsletter→curadoria/jogo); Equipamentos fica sem, #4553/#4550)", () => {
     assert.match(
       CURADORIA_PILLS,
       /\[Cursos\]\(https:\/\/cursos\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=cursos-rodape\)/,
@@ -232,6 +233,10 @@ describe("SOCIAL_INVITE / CURADORIA_PILLS — blocos fixos, mesma constante em d
     assert.match(
       CURADORIA_PILLS,
       /\[Arquivo\]\(https:\/\/arquivo\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape\)/,
+    );
+    assert.match(
+      CURADORIA_PILLS,
+      /\[É IA\?\]\(https:\/\/eia\.diar\.ia\.br\/jogar\?utm_source=newsletter&utm_medium=email&utm_campaign=jogar-rodape\)/,
     );
     assert.match(CURADORIA_PILLS, /\[Equipamentos\]\(https:\/\/www\.amazon\.com\.br\/shop\/vjpixel\)/);
   });
@@ -273,10 +278,12 @@ describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartil
     assert.match(out, /usei Claude Code para automatizar parte da pesquisa/);
     // #4411: labels curtos ("Cursos de IA"/"Livros sobre IA" → "Cursos"/"Livros").
     // #4536/#4553: Cursos/Livros/Arquivo levam UTM newsletter→curadoria; Equipamentos não.
+    // #4550: pill nova "É IA?" (distribuição própria do jogo).
     assert.match(out, /- \[Cursos\]\(https:\/\/cursos\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=cursos-rodape\)/);
     assert.match(out, /- \[Livros\]\(https:\/\/livros\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=livros-rodape\)/);
     assert.match(out, /- \[Equipamentos\]\(https:\/\/www\.amazon\.com\.br\/shop\/vjpixel\)/);
     assert.match(out, /- \[Arquivo\]\(https:\/\/arquivo\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape\)/);
+    assert.match(out, /- \[É IA\?\]\(https:\/\/eia\.diar\.ia\.br\/jogar\?utm_source=newsletter&utm_medium=email&utm_campaign=jogar-rodape\)/);
   });
 
   it("#4357: override de para_encerrar.slot_a (texto arbitrário, sem lista) NÃO apaga a linha de pills 'Acesse nossas curadorias'", () => {
@@ -293,6 +300,7 @@ describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartil
     assert.match(out, /- \[Livros\]\(https:\/\/livros\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=livros-rodape\)/);
     assert.match(out, /- \[Equipamentos\]\(https:\/\/www\.amazon\.com\.br\/shop\/vjpixel\)/);
     assert.match(out, /- \[Arquivo\]\(https:\/\/arquivo\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape\)/);
+    assert.match(out, /- \[É IA\?\]\(https:\/\/eia\.diar\.ia\.br\/jogar\?utm_source=newsletter&utm_medium=email&utm_campaign=jogar-rodape\)/);
   });
 
   it("#4413: um eventual slot_b em platform.config.json/override (config legado) é ignorado — convite social nunca varia", () => {

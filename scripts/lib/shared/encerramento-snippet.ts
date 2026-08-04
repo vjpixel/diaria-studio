@@ -36,12 +36,14 @@ import {
   DIARIA_LIVROS_URL,
   DIARIA_AMAZON_LOJA_URL,
   DIARIA_ARQUIVO_URL,
+  DIARIA_EIA_URL,
 } from "../canonical-urls.ts";
 import {
   CURSOS_RODAPE_UTM,
   LIVROS_RODAPE_UTM,
   ARQUIVO_RODAPE_UTM,
-} from "./utm-registry.ts"; // #4536/#4553 — UTM da direção newsletter → curadoria
+  JOGAR_RODAPE_UTM,
+} from "./utm-registry.ts"; // #4536/#4553 — UTM da direção newsletter → curadoria; JOGAR_RODAPE_UTM #4550
 
 /**
  * #4413: convite social FIXO — texto único, idêntico em diário e mensal,
@@ -92,11 +94,23 @@ function withRodapeUtm(
  * newsletter → curadoria; convenção `source: newsletter, medium: email,
  * campaign` único por pill, ver `utm-registry.ts`). "Equipamentos" fica de
  * fora do UTM — link de afiliado direto à Amazon, fora do escopo do #4553.
+ *
+ * #4550 (pill nova "É IA?", 260804): distribuição própria do jogo — decisão
+ * do editor de dar tratamento de produto ao "É IA?" (motor de divulgação
+ * inteiro construído, ~8 votos/edição, "ninguém chega na porta"). Esta é 1
+ * das 3 superfícies acordadas no briefing overnight do #4550 (rodapé +
+ * post/story dedicado + link em bio — ver `jogar-promo-urls.ts` pras outras
+ * 2). "Ao lado das pills de curadoria" na issue original vira, na prática,
+ * a MESMA lista: `renderEncerrar` (`newsletter-render-html.ts`) só reconhece
+ * 1 bloco de lista por seção, sempre rotulado "Acesse nossas curadorias:" —
+ * uma 2ª lista separada duplicaria esse rótulo. Replicar o padrão como pill
+ * nova dá UTM + render consistente sem precisar de um 2º mecanismo de lista.
  */
 export const CURADORIA_PILLS = `- [Cursos](${withRodapeUtm(DIARIA_CURSOS_URL, CURSOS_RODAPE_UTM)})
 - [Livros](${withRodapeUtm(DIARIA_LIVROS_URL, LIVROS_RODAPE_UTM)})
 - [Equipamentos](${DIARIA_AMAZON_LOJA_URL})
-- [Arquivo](${withRodapeUtm(DIARIA_ARQUIVO_URL, ARQUIVO_RODAPE_UTM)})`;
+- [Arquivo](${withRodapeUtm(DIARIA_ARQUIVO_URL, ARQUIVO_RODAPE_UTM)})
+- [É IA?](${withRodapeUtm(`${DIARIA_EIA_URL}/jogar`, JOGAR_RODAPE_UTM)})`;
 
 /**
  * Cláusula de abertura do parágrafo de apoio pro DIÁRIO — vazia, porque o

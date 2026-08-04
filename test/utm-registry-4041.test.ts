@@ -393,6 +393,54 @@ describe("#4536/#4537/#4553 — pills do PARA ENCERRAR + resíduos de UTM/fixtur
   });
 });
 
+describe("#4550 — distribuição própria do 'É IA?': rodapé + post dedicado + link em bio", () => {
+  it("os 2 novos ids (rodapé + post dedicado) estão presentes em UTM_EMITTERS", () => {
+    const ids = shared.UTM_EMITTERS.map((e) => e.id);
+    for (const id of ["jogar-rodape", "jogar-post-dedicado"]) {
+      assert.ok(ids.includes(id), `UTM_EMITTERS deve conter "${id}"`);
+    }
+  });
+
+  it("JOGAR_RODAPE_UTM: mesmo source/medium ('newsletter'/'email') das outras pills do rodapé", () => {
+    assert.equal(shared.JOGAR_RODAPE_UTM.source, "newsletter");
+    assert.equal(shared.JOGAR_RODAPE_UTM.medium, "email");
+    assert.equal(shared.JOGAR_RODAPE_UTM.campaign, "jogar-rodape");
+  });
+
+  it("JOGAR_POST_DEDICADO_UTM: source genérico 'social' (sem plataforma fixa), medium 'organic_social'", () => {
+    assert.equal(shared.JOGAR_POST_DEDICADO_UTM.source, "social");
+    assert.equal(shared.JOGAR_POST_DEDICADO_UTM.medium, "organic_social");
+    assert.equal(shared.JOGAR_POST_DEDICADO_UTM.campaign, "jogar-post-dedicado");
+  });
+
+  it("buildJogarBioCampaign: usa o mecanismo de VARIANTE (não 'perfil-{source}' puro) pra não colidir com o slot de bio já aplicado pra home dessa plataforma", () => {
+    assert.equal(shared.buildJogarBioCampaign("instagram"), "perfil-instagram-jogar");
+    assert.equal(shared.buildJogarBioCampaign("threads"), "perfil-threads-jogar");
+    // nunca igual ao campaign já em uso por uma superfície externa existente
+    // apontando pra home (mesma fonte, ver EXTERNAL_UTM_SURFACES).
+    const homeCampaigns = shared.EXTERNAL_UTM_SURFACES.map((s) => s.campaign);
+    assert.ok(!homeCampaigns.includes(shared.buildJogarBioCampaign("instagram")));
+  });
+
+  it("scripts/lib/jogar-promo-urls.ts — buildJogarPostDedicadoUrl emite o triplo de JOGAR_POST_DEDICADO_UTM sobre /jogar", async () => {
+    const { buildJogarPostDedicadoUrl } = await import("../scripts/lib/jogar-promo-urls.ts");
+    const url = new URL(buildJogarPostDedicadoUrl());
+    assert.equal(url.origin + url.pathname, "https://eia.diar.ia.br/jogar");
+    assert.equal(url.searchParams.get("utm_source"), shared.JOGAR_POST_DEDICADO_UTM.source);
+    assert.equal(url.searchParams.get("utm_medium"), shared.JOGAR_POST_DEDICADO_UTM.medium);
+    assert.equal(url.searchParams.get("utm_campaign"), shared.JOGAR_POST_DEDICADO_UTM.campaign);
+  });
+
+  it("scripts/lib/jogar-promo-urls.ts — buildJogarBioUrl emite source dinâmico + medium 'bio' + campaign com variante 'jogar'", async () => {
+    const { buildJogarBioUrl } = await import("../scripts/lib/jogar-promo-urls.ts");
+    const url = new URL(buildJogarBioUrl("instagram"));
+    assert.equal(url.origin + url.pathname, "https://eia.diar.ia.br/jogar");
+    assert.equal(url.searchParams.get("utm_source"), "instagram");
+    assert.equal(url.searchParams.get("utm_medium"), shared.EXTERNAL_SURFACE_MEDIUM);
+    assert.equal(url.searchParams.get("utm_campaign"), "perfil-instagram-jogar");
+  });
+});
+
 describe("#4530 Parte C — guard de colisão de triplo (source, medium, campaignPattern)", () => {
   it("findUtmEmitterCollisions() não acusa nenhuma colisão INESPERADA no inventário atual", () => {
     assert.deepEqual(
