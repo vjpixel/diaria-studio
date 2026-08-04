@@ -91,3 +91,10 @@ export const JOGAR_IDENTIFY_INLINE_UTM = {
   medium: "jogar-identify",
   campaign: "eia-jogar-identify-signup",
 } as const;
+
+/** Caixa unificada do gate no pós-voto de /jogar?from=post-web (#4578). @see scripts/lib/shared/utm-registry.ts */
+export const JOGAR_POSTWEB_UTM = {
+  source: EIA_STANDALONE_SOURCE,
+  medium: "jogar-postweb",
+  campaign: "eia-jogar-postweb-signup",
+} as const;

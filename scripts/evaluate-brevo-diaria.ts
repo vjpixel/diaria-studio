@@ -180,6 +180,42 @@
  * avaliar auto-confirmação/score com dado incompleto) — mais seguro que
  * decidir com informação parcial.
  *
+ * ## Reconciliação de órfãos (#4579)
+ *
+ * Achado da issue: `brunopierro2@gmail.com` estava vinculado à lista Brevo
+ * (`listIds` incluindo o `list_id` deste canal) e recebendo envios, mas
+ * **ausente de `contacts.json` inteiro** — nunca foi ingerido pelo store por
+ * nenhum caminho (`sync-pending-to-brevo.ts` grava o store; um contato
+ * adicionado à lista diretamente na Brevo, ou uma execução de sync
+ * interrompida antes do `writeStore()`, nunca aparece aqui). Como `main()`
+ * só avalia `store.contacts.filter(status === "in_brevo")`, um contato órfão
+ * nunca é avaliado pra promoção/supressão e continua recebendo envios
+ * indefinidamente sem que ninguém saiba que ele existe.
+ *
+ * `reconcileStoreWithBrevoList` fecha esse gap de OBSERVABILIDADE (não de
+ * correção automática): busca `GET /contacts/lists/{id}/contacts` (Brevo,
+ * fonte de verdade — mesmo endpoint/paginação de
+ * `inject-poll-token-brevo.ts::iterateListContacts`) e diffa contra
+ * `store.contacts` via `findOrphanContacts` (pura, testável com fixtures,
+ * mesmo espírito de `checkContactCountReconciliation` em
+ * `publish-daily-brevo.ts` #4532, mas do lado da avaliação/supressão, não do
+ * envio — aquela função ABORTA o envio quando a enumeração diverge; esta
+ * função nunca aborta nada, só REPORTA). Roda SEMPRE em `main()` — não atrás
+ * de uma flag `--reconcile-only` — porque é uma leitura (nunca escreve) e
+ * porque este script já roda diariamente via Task Scheduler
+ * (`Diaria-Brevo-Diaria-Evaluate`, 05:30 BRT): rodar a cada invocação dá
+ * observabilidade contínua de graça, sem precisar lembrar de agendar uma
+ * chamada separada. Best-effort quando a chave Brevo está ausente (mesmo
+ * fallback de dry-run sem key já documentado acima) e nunca aborta o run
+ * principal se a chamada falhar (log de warning, segue pra avaliação normal).
+ *
+ * **Ação quando encontra órfãos: só loga/reporta, nunca modifica o store
+ * sozinho.** A decisão de adicionar um órfão retroativamente ao store (com
+ * que `sends_count`/status) versus removê-lo da lista Brevo é caso a caso —
+ * o #4579 resolveu isso pro contato específico da issue (decisão do editor:
+ * adicionar, é assinante ativo, sem motivo pra remover) mas essa resolução
+ * não generaliza pra qualquer órfão futuro sem revisão humana.
+ *
  * ## Uso
  *
  *   npx tsx scripts/evaluate-brevo-diaria.ts           # dry-run (default)
@@ -213,10 +249,13 @@ import {
   applyEvaluation,
   applySelfConfirmed,
   applyNativeUnsubscribe,
+  normalizeEmail,
   DEFAULT_STORE_PATH,
   type BrevoDiariaContact,
   type BrevoDiariaStore,
 } from "./lib/brevo-diaria-store.ts";
+import { BREVO_DIARIA_PROMOCAO_SCORE_UTM } from "./lib/shared/utm-registry.ts"; // #4530
+import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -527,7 +566,17 @@ export async function promoteBeehiivSubscription(
   const res = await fetchImpl(`${base}/publications/${publicationId}/subscriptions`, {
     method: "POST",
     headers: { ...authHeaders, "Content-Type": "application/json" },
-    body: JSON.stringify({ email, send_welcome_email: false }),
+    body: JSON.stringify({
+      email,
+      send_welcome_email: false,
+      // #4530: atribuição — sem isto, todo cadastro promovido por score caía
+      // como "api: direct / (none)" na Beehiiv, indistinguível de qualquer
+      // outro cadastro via API.
+      utm_source: BREVO_DIARIA_PROMOCAO_SCORE_UTM.source,
+      utm_medium: BREVO_DIARIA_PROMOCAO_SCORE_UTM.medium,
+      utm_campaign: BREVO_DIARIA_PROMOCAO_SCORE_UTM.campaign,
+      referring_site: BREVO_DIARIA_PROMOCAO_SCORE_UTM.referringSite,
+    }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -603,6 +652,132 @@ export async function verifySuppressedInBrevo(apiKey: string, listId: number, em
   const listIds: unknown = res.body?.listIds;
   const stillInList = Array.isArray(listIds) && listIds.includes(listId);
   return blacklisted && !stillInList;
+}
+
+// ── reconciliação de órfãos (#4579) ────────────────────────────────────────
+
+interface BrevoListContactsPage {
+  contacts?: Array<{ email?: string }>;
+}
+
+/**
+ * I/O — todos os e-mails vinculados a uma lista Brevo, paginado
+ * (`GET /contacts/lists/{listId}/contacts`, mesmo endpoint/paginação de
+ * `inject-poll-token-brevo.ts::iterateListContacts` — não reusado diretamente
+ * porque não é exportado de lá, e este caller só precisa do e-mail, não
+ * `id`/`attributes`). Falha alto em qualquer status != 200 (mesma disciplina
+ * do #4532 documentada no cabeçalho de `iterateListContacts`) — uma resposta
+ * 404/403/5xx NUNCA é tratada como "lista vazia", que produziria um
+ * falso-negativo silencioso ("zero órfãos") quando na verdade a chamada
+ * falhou.
+ */
+export async function fetchBrevoListEmails(apiKey: string, listId: number): Promise<string[]> {
+  const limit = 50;
+  let offset = 0;
+  const emails: string[] = [];
+  for (;;) {
+    const { status, body } = await brevoGet(apiKey, `/contacts/lists/${listId}/contacts?limit=${limit}&offset=${offset}`);
+    if (status !== 200) {
+      throw new Error(
+        `GET /contacts/lists/${listId}/contacts (offset=${offset}) retornou status ${status} — abortando ` +
+          "reconciliação de órfãos (#4579, nunca trata resposta não-200 como lista vazia).",
+      );
+    }
+    const contacts = (body as BrevoListContactsPage).contacts ?? [];
+    for (const c of contacts) {
+      if (c.email) emails.push(c.email);
+    }
+    if (contacts.length < limit) break;
+    offset += limit;
+  }
+  return emails;
+}
+
+/**
+ * Pura — diff entre os e-mails vinculados à lista Brevo (fonte de verdade) e
+ * o store local (`store.contacts`, QUALQUER status — um contato já
+ * `promoted_beehiiv`/`suppressed`/`unsubscribed` também conta como
+ * "conhecido", mesmo que o `unlinkFromBrevoList` correspondente tenha
+ * falhado silenciosamente e ele ainda apareça vinculado na Brevo). Retorna
+ * só os e-mails presentes na Brevo que NUNCA foram ingeridos no store — o
+ * caso do #4579 (`brunopierro2@gmail.com`: vinculado à lista, recebendo
+ * envios, mas ausente de `contacts.json` inteiro, então `runEvaluation`
+ * nunca o avalia, já que `main()` só itera `status === "in_brevo"`).
+ *
+ * Mesmo espírito de `checkContactCountReconciliation`
+ * (`publish-daily-brevo.ts`, #4532) — a "função irmã" citada na issue — mas
+ * do lado da avaliação/supressão, não do envio: aquela função ABORTA o envio
+ * quando a enumeração diverge da contagem da lista; esta função nunca aborta
+ * nada, só REPORTA — a ação correta (adicionar retroativamente vs. remover
+ * da lista) é decisão do editor caso a caso (#4579 item 1), não algo que
+ * este guard deva resolver sozinho.
+ *
+ * Dedup do input pelo e-mail normalizado — a mesma pessoa não conta 2x mesmo
+ * que a API devolva a mesma linha em páginas adjacentes (raro, mas o dedup é
+ * gratuito e evita relatar o mesmo órfão >1x).
+ *
+ * `EDITOR_SEED_EMAILS` (sonda de inbox placement por provedor,
+ * `platform.config.json > brevo_diaria.note`) fica deliberadamente vinculada
+ * à lista 7 sem nunca ser ingerida por `sync-pending-to-brevo.ts` — sem essa
+ * exclusão, o guard flagaria os mesmos 5 e-mails como órfãos TODO dia,
+ * diluindo o sinal de alerta pra quando um órfão de verdade aparecer (achado
+ * do self-review, #4579).
+ */
+export function findOrphanContacts(
+  brevoListEmails: string[],
+  store: BrevoDiariaStore,
+  expectedNonStoreEmails: readonly string[] = EDITOR_SEED_EMAILS,
+): string[] {
+  const known = new Set([...store.contacts.map((c) => c.email), ...expectedNonStoreEmails.map((e) => normalizeEmail(e))]);
+  const seen = new Set<string>();
+  const orphans: string[] = [];
+  for (const raw of brevoListEmails) {
+    const email = normalizeEmail(raw);
+    if (!email || seen.has(email)) continue;
+    seen.add(email);
+    if (!known.has(email)) orphans.push(email);
+  }
+  return orphans;
+}
+
+export interface OrphanReconciliationSummary {
+  brevoListCount: number;
+  orphanEmails: string[];
+}
+
+/**
+ * I/O — orquestra a reconciliação de órfãos (#4579): busca a lista Brevo
+ * inteira (`fetchBrevoListEmails`), calcula o diff puro (`findOrphanContacts`)
+ * contra o store dado, e LOGA o resultado através do `log` injetado (mesmo
+ * padrão de logging estruturado do resto do arquivo) — NUNCA escreve no
+ * store; a persistência de uma correção (adicionar/remover) é sempre ação
+ * manual separada do editor. Chamada por `main()` ANTES da avaliação normal,
+ * best-effort (ver `main()` — se a chave Brevo estiver ausente, o caller
+ * pula esta chamada inteiramente; se a chamada lançar, o caller loga um
+ * warning e segue pra avaliação normal sem abortar o run).
+ */
+export async function reconcileStoreWithBrevoList(params: {
+  brevoApiKey: string;
+  listId: number;
+  store: BrevoDiariaStore;
+  log: (msg: string) => void;
+}): Promise<OrphanReconciliationSummary> {
+  const { brevoApiKey, listId, store, log } = params;
+  const brevoListEmails = await fetchBrevoListEmails(brevoApiKey, listId);
+  const orphanEmails = findOrphanContacts(brevoListEmails, store);
+  if (orphanEmails.length > 0) {
+    log(
+      `ALERTA reconciliação (#4579): ${orphanEmails.length} contato(s) vinculado(s) à lista Brevo ${listId} ` +
+        `MAS AUSENTE(S) do store local (${store.contacts.length} contato(s) rastreado(s) no total) — nunca ` +
+        `avaliado(s) pra promoção/supressão: ${orphanEmails.join(", ")}. Store NÃO modificado automaticamente — ` +
+        "decisão de adicionar retroativamente (ou remover da lista) é do editor, caso a caso (#4579 item 1).",
+    );
+  } else {
+    log(
+      `reconciliação (#4579): ${brevoListEmails.length} contato(s) na lista Brevo ${listId}, nenhum órfão — store consistente.`,
+    );
+  }
+  return { brevoListCount: brevoListEmails.length, orphanEmails };
 }
 
 // ── orquestração testável (#4398 review — pr-test-analyzer: main() precisa
@@ -837,6 +1012,25 @@ async function main(): Promise<void> {
   }
 
   const store = readStore(DEFAULT_STORE_PATH);
+
+  // #4579: reconciliação de órfãos — roda SEMPRE (mesmo em dry-run, é
+  // read-only) quando a chave Brevo está disponível; NUNCA aborta o run
+  // principal se falhar (best-effort, mesmo espírito do try/catch por
+  // contato do loop abaixo). Um contato vinculado à lista Brevo mas ausente
+  // do store nunca é avaliado por `runEvaluation` (que só itera
+  // `status === "in_brevo"`) — sem este guard, ele continua recebendo
+  // envios indefinidamente sem que ninguém saiba que existe (achado
+  // original da issue, ver docstring do módulo).
+  if (brevoApiKey) {
+    try {
+      await reconcileStoreWithBrevoList({ brevoApiKey, listId: brevoDiaria.list_id as number, store, log });
+    } catch (e) {
+      log(`warn: reconciliação de órfãos (#4579) falhou: ${(e as Error).message} — avaliação prossegue normalmente.`);
+    }
+  } else {
+    log(`reconciliação de órfãos (#4579) pulada — ${brevoDiaria.api_key_env} ausente no ambiente.`);
+  }
+
   const inBrevo: BrevoDiariaContact[] = store.contacts.filter((c) => c.status === "in_brevo");
   log(`${inBrevo.length} contato(s) in_brevo a avaliar.`);
 

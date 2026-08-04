@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import {
   formatInstagramWeekly,
   INSTAGRAM_WEEKLY_CHAR_LIMIT,
+  buildInstagramWeeklyArchiveUrl,
   type InstagramWeeklyItem,
 } from "../scripts/lib/format-weekly-social.ts";
 
@@ -37,12 +38,24 @@ describe("formatInstagramWeekly", () => {
     assert.ok(long.length <= INSTAGRAM_WEEKLY_CHAR_LIMIT);
   });
 
-  it('menciona "link da bio" e a única URL no corpo é o link de arquivo (nunca URL de item)', () => {
+  it('menciona "link da bio" e a única URL no corpo é o link de arquivo, agora com UTM (#4537, nunca URL de item)', () => {
     const items = makeItems(5);
     const caption = formatInstagramWeekly(items);
     assert.ok(caption.toLowerCase().includes("bio"));
     const urls = caption.match(/https?:\/\/\S+/g) ?? [];
-    assert.deepEqual(urls, ["https://diar.ia.br."], "só o link de arquivo deveria aparecer, sem URL crua de item");
+    assert.deepEqual(
+      urls,
+      [`${buildInstagramWeeklyArchiveUrl()}.`],
+      "só o link de arquivo (com UTM) deveria aparecer, sem URL crua de item",
+    );
+  });
+
+  it("#4537: buildInstagramWeeklyArchiveUrl carrega os 3 params via new URL()/searchParams (nunca concatenação)", () => {
+    const url = new URL(buildInstagramWeeklyArchiveUrl());
+    assert.equal(url.hostname, "diar.ia.br");
+    assert.equal(url.searchParams.get("utm_source"), "instagram");
+    assert.equal(url.searchParams.get("utm_medium"), "organic_social");
+    assert.equal(url.searchParams.get("utm_campaign"), "weekly-archive");
   });
 
   it("inclui todos os títulos, numerados", () => {

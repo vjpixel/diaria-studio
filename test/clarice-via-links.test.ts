@@ -3,7 +3,7 @@
  *
  * Garante que todo link da Clarice voltado ao leitor carrega o tracking de
  * afiliado `via=diaria` (Rewardful → revenue share da parceria). Sem ele, a
- * conversão acontece mas a Diar.ia perde a comissão.
+ * conversão acontece mas a diar.ia.br perde a comissão.
  *
  * (a) unit do helper `clariceLinkMissingVia` / `findClariceLinksMissingVia`.
  * (b) varre os arquivos COMMITADOS que podem conter links da Clarice e falha

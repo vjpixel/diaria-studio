@@ -626,6 +626,44 @@ describe("#2013 — isLinkDeadFalsePositive", () => {
   });
 });
 
+describe("#4604 — isLinkDeadFalsePositive não desfaz a detecção do redirect pro jogo anônimo", () => {
+  // `redirect: "follow"` (nativo, já usado por headOrGet) resolve o fetch
+  // diretamente pra Response FINAL pós-redirect — `.url` reflete o destino
+  // final, exatamente como um `fetch()` real entrega ao caller.
+  function mockFollowFetch(status: number, finalUrl: string): FetchFn {
+    return async () => ({ status, url: finalUrl, headers: new Headers() } as Response);
+  }
+
+  it("NÃO é FP: redirect final aponta pra /jogar?...&from=post-web (merge tag travada, #4578/#4604) mesmo com HTTP 200", async () => {
+    const issue =
+      "email:link_dead: https://eia.diar.ia.br/vote?email={{poll_token}}@vote.eia.diaria.local&edition=260801&choice=A → Redirect final aponta pra /jogar com from=post-web (HTTP 200 em https://eia.diar.ia.br/jogar?edition=260801&from=post-web)";
+    const fetchStub = mockFollowFetch(200, "https://eia.diar.ia.br/jogar?edition=260801&from=post-web");
+    const r = await isLinkDeadFalsePositive(issue, fetchStub);
+    assert.equal(r.falsePositive, false, "não deve ser limpo como FP — é o próprio defeito de merge tag travada, não link vivo");
+  });
+
+  it("continua FP normal: redirect final pra outro destino qualquer (link genuinamente vivo)", async () => {
+    const issue = "email:link_dead: https://example.com/old-path → HTTP 404";
+    const fetchStub = mockFollowFetch(200, "https://example.com/new-path");
+    const r = await isLinkDeadFalsePositive(issue, fetchStub);
+    assert.equal(r.falsePositive, true, "redirect comum pra outro destino continua FP (link vivo)");
+  });
+
+  it("continua FP normal: destino final é /jogar mas SEM from=post-web (não confundir com link de embed legítimo)", async () => {
+    const issue = "email:link_dead: https://eia.diar.ia.br/embed-link → HTTP 404";
+    const fetchStub = mockFollowFetch(200, "https://eia.diar.ia.br/jogar?edition=260801&utm_source=embed");
+    const r = await isLinkDeadFalsePositive(issue, fetchStub);
+    assert.equal(r.falsePositive, true, "sem from=post-web não é o sinal de merge tag travada");
+  });
+
+  it("mock sem .url (cobertura pré-#4604 preservada) continua tratando 2xx como FP normal", async () => {
+    const issue = "email:link_dead: https://example.com/page → HTTP 404";
+    const fetchStub: FetchFn = async () => ({ status: 200, headers: new Headers() } as Response);
+    const r = await isLinkDeadFalsePositive(issue, fetchStub);
+    assert.equal(r.falsePositive, true, "sem .url no mock, finalUrl é null — comportamento pré-#4604 preservado");
+  });
+});
+
 describe("#2013 — filterAgentIssues integração completa (caso 260610)", () => {
   /** Mock fetch pra re-verificação de links. */
   function mockFetch(statusByUrl: Record<string, number>): FetchFn {

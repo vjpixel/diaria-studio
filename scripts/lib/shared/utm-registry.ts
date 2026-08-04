@@ -56,6 +56,24 @@ export const MENSAL_BEEHIIV_UTM_SOURCE = "mensal-beehiiv";
 export const MENSAL_BEEHIIV_UTM_MEDIUM = "email";
 
 /**
+ * `utm_source`/`utm_medium` da variante BREVO do envio extra pra apoiadores
+ * (#4593, follow-up do #4572/#4482). O envio extra migrou de canal — Beehiiv
+ * bloqueia "Include and exclude segments" (audiência multi-segmento) atrás do
+ * plano Scale, workspace é Launch/free (confirmado ao vivo 260804, #4572) —
+ * mas a audiência (só Mantenedor/Patrono) e o conteúdo (mesmo `draft.md`)
+ * continuam os mesmos do #4482, só a plataforma de envio muda de Beehiiv pra
+ * Brevo. UTM PRÓPRIO, nunca `MENSAL_UTM_SOURCE` ("clarice") nem
+ * `MENSAL_BEEHIIV_UTM_SOURCE` ("mensal-beehiiv", que nunca chegou a ser usado
+ * ao vivo — o envio Beehiiv nunca saiu do estágio de draft órfão, #4572): os
+ * 3 são audiência/canal distintos e misturar a atribuição refaria o mesmo
+ * problema que o #2975 original corrigiu.
+ * Consumido por `APOIADORES_BREVO_UTM_PROFILE` em
+ * `scripts/lib/mensal/monthly-apoiadores-brevo-render.ts`.
+ */
+export const MENSAL_APOIADORES_BREVO_UTM_SOURCE = "mensal-apoiadores-brevo";
+export const MENSAL_APOIADORES_BREVO_UTM_MEDIUM = "email";
+
+/**
  * Slug de seção usado no sufixo do wordmark (`wordmark-{secao}`): minúsculo,
  * sem acento, `[a-z0-9-]`, ≤32 chars. Nunca lança — entrada vazia/ilegível cai
  * em `geral`, que mantém o funil mensurável em vez de emitir um campaign quebrado.
@@ -99,6 +117,18 @@ export function buildMensalCampaign(ciclo: string, posicao: string): string {
 export function buildMensalBeehiivCampaign(ciclo: string, posicao: string): string {
   const p = slugifySecao(posicao);
   return `${MENSAL_BEEHIIV_UTM_SOURCE}-${ciclo}-${p}`;
+}
+
+/**
+ * Compõe o `utm_campaign` da variante Brevo do envio extra pra apoiadores
+ * (#4593): `mensal-apoiadores-brevo-{ciclo}-{posicao}` — mesmo padrão de
+ * `buildMensalCampaign`/`buildMensalBeehiivCampaign`, `utm_source` distinto.
+ *
+ * @pure
+ */
+export function buildMensalApoiadoresBrevoCampaign(ciclo: string, posicao: string): string {
+  const p = slugifySecao(posicao);
+  return `${MENSAL_APOIADORES_BREVO_UTM_SOURCE}-${ciclo}-${p}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +217,22 @@ export const JOGAR_GATE_INLINE_UTM = {
   campaign: "eia-jogar-gate-signup",
 } as const;
 
+/** Caixa unificada do gate revelada no pós-voto do caminho `from=post-web`
+ * (#4578) — visitante que clicou no botão de voto do "É IA?" na versão WEB
+ * de um post (merge tag `{{email}}`/`{{poll_token}}` nunca resolvida fora do
+ * envio real, guard #2262 em `vote.ts`) é redirecionado pro jogo anônimo em
+ * `/jogar?edition=...&from=post-web` em vez de um dead end 400. UTM PRÓPRIO
+ * (não `JOGAR_GATE_INLINE_UTM` acima) porque é um funil de entrada distinto:
+ * aquele chega de DENTRO do jogo (nudge periódico por rodada, #4054/#4253);
+ * este chega de FORA (link de e-mail/web que não resolveu), mesmo form/
+ * wiring (verify→subscribe→identify, `web-gate.ts::renderJogarGateBoxBlock`)
+ * mas atribuição não pode se misturar entre os dois pontos de entrada. */
+export const JOGAR_POSTWEB_UTM = {
+  source: EIA_STANDALONE_SOURCE,
+  medium: "jogar-postweb",
+  campaign: "eia-jogar-postweb-signup",
+} as const;
+
 /** CTA de e-mail injetado em todo post de Facebook no publish (#3991, valor
  * UTM adicionado no #4295) — `injectChannelLine` monta a linha a partir daqui
  * via `scripts/lib/social-cta-lines.ts`. */
@@ -236,6 +282,98 @@ export const LINKEDIN_POST_PIXEL_UTM = {
 export const CURSOS_FOOTER_NAV_UTM = {
   source: "cursos",
   medium: "footer-nav",
+} as const;
+
+/**
+ * Pills de curadoria do bloco PARA ENCERRAR (`CURADORIA_PILLS`,
+ * `scripts/lib/shared/encerramento-snippet.ts`) — direção NEWSLETTER →
+ * curadoria (#4536/#4553), oposta a `CURSOS_FOOTER_NAV_UTM`/
+ * `ARQUIVO_FOOTER_NAV_UTM` acima (curadoria → `diar.ia.br`). Antes desta
+ * fatia as 3 pills saíam cruas, sem UTM — impossível medir quantos cliques
+ * cada uma gera a partir do e-mail diário (~548 leitores/dia, #4553). Mesmo
+ * `source`/`medium` nas 3 (o leitor clicou dentro do e-mail da newsletter),
+ * `campaign` único por pill. A pill "Equipamentos" (Amazon, `DIARIA_AMAZON_LOJA_URL`)
+ * fica de fora — link de afiliado direto a terceiro, fora do escopo do #4553.
+ */
+export const CURSOS_RODAPE_UTM = {
+  source: "newsletter",
+  medium: "email",
+  campaign: "cursos-rodape",
+} as const;
+
+/** Pill "Livros" do PARA ENCERRAR — ver `CURSOS_RODAPE_UTM` acima. */
+export const LIVROS_RODAPE_UTM = {
+  source: "newsletter",
+  medium: "email",
+  campaign: "livros-rodape",
+} as const;
+
+/** Pill "Arquivo" do PARA ENCERRAR (#4536, pill nova) — ver `CURSOS_RODAPE_UTM` acima. */
+export const ARQUIVO_RODAPE_UTM = {
+  source: "newsletter",
+  medium: "email",
+  campaign: "arquivo-rodape",
+} as const;
+
+/**
+ * Pill "É IA?" do PARA ENCERRAR (#4550, pill nova, 1ª das 3 superfícies de
+ * distribuição própria do jogo) — mesmo padrão de `CURSOS_RODAPE_UTM`/
+ * `LIVROS_RODAPE_UTM`/`ARQUIVO_RODAPE_UTM` acima (direção newsletter →
+ * `/jogar`). Decisão do editor (comentários do #4550, 260804): o "É IA?" tem
+ * o motor de divulgação inteiro construído (card assinado, ranking público,
+ * cadastro inline) mas ~8 votos/edição e 2 cadastros na vida do mecanismo —
+ * "ninguém chega na porta". Overnight instrumenta a medição (este UTM +
+ * `JOGAR_POST_DEDICADO_UTM`/`buildJogarBioCampaign` abaixo); publicar em
+ * qualquer superfície (frequência, texto final, escolha de plataforma pro
+ * post/bio) continua 100% editorial.
+ */
+export const JOGAR_RODAPE_UTM = {
+  source: "newsletter",
+  medium: "email",
+  campaign: "jogar-rodape",
+} as const;
+
+/**
+ * Post/story dedicado de divulgação do "/jogar" fora da edição (#4550, 2ª das
+ * 3 superfícies) — conteúdo publicado manualmente pelo editor em qualquer
+ * rede social; QUAL plataforma e QUANDO publicar são decisão 100% editorial,
+ * fora do escopo desta instrumentação (comentário do #4550, 260804: "Overnight
+ * prepara as peças; a publicação fica com o editor"). `utm_source="social"`
+ * genérico — diferente de `FACEBOOK_CTA_UTM`/`TWITTER_EDITION_UTM`/
+ * `LINKEDIN_POST_PIXEL_UTM` acima (1 emissor por plataforma, porque cada um é
+ * injetado automaticamente num canal FIXO), este post não tem plataforma fixa:
+ * o editor escolhe onde publicar a cada vez, então um único `utm_campaign`
+ * mede a divulgação como UM funil, independente de canal. `medium=
+ * "organic_social"` segue a mesma convenção dos emissores de post acima.
+ * Resolvida em `scripts/lib/jogar-promo-urls.ts::buildJogarPostDedicadoUrl`.
+ */
+export const JOGAR_POST_DEDICADO_UTM = {
+  source: "social",
+  medium: "organic_social",
+  campaign: "jogar-post-dedicado",
+} as const;
+
+/** Rodapé de navegação cruzada da página de Livros (#4537 item 2) — mesmo
+ * padrão de `CURSOS_FOOTER_NAV_UTM`/`ARQUIVO_FOOTER_NAV_UTM` (só source+medium,
+ * sem campaign de verdade — link de nav, não funil de conversão). Livros
+ * emitia o literal solto `"utm_source=livros&utm_medium=footer-nav"` direto
+ * em `build-livros-page.ts:360` desde #4051 — último dos três fora do
+ * registry (Cursos/Arquivo já tinham migrado, #4295/#4312). */
+export const LIVROS_FOOTER_NAV_UTM = {
+  source: "livros",
+  medium: "footer-nav",
+} as const;
+
+/** Link "Arquivo completo em {url}" do post semanal do Instagram
+ * (`scripts/lib/format-weekly-social.ts`, #4537 item 1) — o #4295 cobriu os
+ * links que a pipeline DIÁRIA publica; o post semanal ficou fora do escopo
+ * daquela issue e nunca ganhou UTM. Volume baixo (~1 link/semana, e o
+ * Instagram não linka no corpo — o app suprime o Referer mesmo se o leitor
+ * copiar o texto), mas mantém o inventário completo e sem literal solto. */
+export const INSTAGRAM_WEEKLY_ARCHIVE_UTM = {
+  source: "instagram",
+  medium: "organic_social",
+  campaign: "weekly-archive",
 } as const;
 
 /** Cadastro no gate inline do worker `cursos` (`workers/cursos/src/subscribe.ts`,
@@ -292,6 +430,37 @@ export const LINKEDIN_WEEKLY_UTM = {
   campaignPattern: "ln-{cycle}",
 } as const;
 
+/**
+ * Clique no link de confirmação de 1-clique do Worker `reativar` (#4530,
+ * decisão do editor 260803) — o LEITOR confirma ativamente o cadastro Pending
+ * clicando no CTA do bloco de intro do canal Brevo próprio
+ * (`context/snippets/brevo-diaria-pending-intro.md`). `referringSite` distinto
+ * do triplo UTM porque `workers/reativar/src/index.ts` chama a MESMA API
+ * Beehiiv (`POST /subscriptions`) que aceita `referring_site` além dos 3 UTMs
+ * — ver `BREVO_DIARIA_PROMOCAO_SCORE_UTM` abaixo pro segundo caminho, que
+ * NUNCA deve compartilhar este `utm_campaign`: a métrica que interessa ao
+ * #4476 é justamente "o leitor clicou" vs. "o sistema promoveu por score", e
+ * misturar os dois no mesmo campaign perderia essa comparação. */
+export const BREVO_DIARIA_REATIVAR_CLIQUE_UTM = {
+  source: "brevo-diaria",
+  medium: "reativacao-pending",
+  campaign: "pending-reativar-clique",
+  referringSite: "brevo-diaria-reativar",
+} as const;
+
+/** Promoção AUTOMÁTICA por score de engajamento (#4530) —
+ * `scripts/evaluate-brevo-diaria.ts::promoteBeehiivSubscription`, via
+ * `runEvaluation` quando `classifyBrevoDiariaAction` decide promover pela
+ * taxa de abertura, sem clique do leitor. Mesmo `source`/`medium` de
+ * `BREVO_DIARIA_REATIVAR_CLIQUE_UTM` (ambos são o canal Brevo Pending), mas
+ * `campaign`/`referringSite` PRÓPRIOS — nunca reusar os do clique acima. */
+export const BREVO_DIARIA_PROMOCAO_SCORE_UTM = {
+  source: "brevo-diaria",
+  medium: "reativacao-pending",
+  campaign: "pending-promocao-score",
+  referringSite: "brevo-diaria-evaluate",
+} as const;
+
 /** Uma entrada do inventário: um ponto do código que emite UTM. */
 export interface UtmEmitter {
   /** Identificador estável — chave de join com os metadados editáveis da UI. */
@@ -346,7 +515,25 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     description:
       "Envio EXTRA do digest mensal pra apoiadores Mantenedor/Patrono via Beehiiv (#4482) — " +
       "mesmo conteúdo/posições da entrada 'mensal-clarice' acima, `utm_source` distinto pra " +
-      "não misturar a atribuição dos 2 canais (audiência e plataforma diferentes).",
+      "não misturar a atribuição dos 2 canais (audiência e plataforma diferentes). " +
+      "SUPERSEDIDO pelo canal Brevo ('mensal-apoiadores-brevo' abaixo, #4572/#4593) — este " +
+      "envio nunca saiu do estágio de draft órfão na Beehiiv (plano Launch/free bloqueia " +
+      "\"Include and exclude segments\"), mantido no registry só por histórico/rastreabilidade.",
+    status: "aposentado",
+  },
+  {
+    id: "mensal-apoiadores-brevo",
+    label: "Digest mensal (Brevo, apoiadores)",
+    source: MENSAL_APOIADORES_BREVO_UTM_SOURCE,
+    medium: MENSAL_APOIADORES_BREVO_UTM_MEDIUM,
+    campaignPattern: `${MENSAL_APOIADORES_BREVO_UTM_SOURCE}-{ciclo}-{posicao}`,
+    originFile: "scripts/lib/mensal/monthly-apoiadores-brevo-render.ts",
+    description:
+      "Envio EXTRA do digest mensal pra apoiadores Mantenedor/Patrono via Brevo (#4572/#4593) — " +
+      "sucessor do canal Beehiiv ('mensal-beehiiv' acima, aposentado sem nunca ter enviado ao " +
+      "vivo): mesmo conteúdo/posições/audiência do #4482, canal trocado por bloqueio de plano da " +
+      "Beehiiv. `utm_source` próprio pra não misturar atribuição com 'mensal-clarice' " +
+      "(assinantes Clarice reais) nem com o 'mensal-beehiiv' aposentado.",
     status: "ativo",
   },
   {
@@ -443,6 +630,19 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     status: "ativo",
   },
   {
+    id: "jogar-postweb-gate",
+    label: "É IA? — cadastro pós-voto vindo da versão web do post",
+    source: JOGAR_POSTWEB_UTM.source,
+    medium: JOGAR_POSTWEB_UTM.medium,
+    campaignPattern: JOGAR_POSTWEB_UTM.campaign,
+    originFile: "workers/poll/src/web-gate.ts",
+    description:
+      "Caixa unificada do gate revelada no pós-voto de /jogar?from=post-web (#4578) — " +
+      "visitante que clicou no botão de voto na versão WEB de um post (merge tag nunca " +
+      "resolvida ali) foi redirecionado pro jogo anônimo em vez de um 400 dead end.",
+    status: "ativo",
+  },
+  {
     id: "livros-inline-hero",
     label: "Livros — cadastro inline (hero)",
     source: LIVROS_INLINE_UTM.source,
@@ -475,6 +675,21 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     description:
       'Link "diar.ia.br" no rodapé de navegação cruzada da página de arquivo — ' +
       "sem utm_campaign, só source+medium (#4265 item 9, gap fechado no #4312).",
+    status: "ativo",
+  },
+  {
+    id: "livros-footer-nav",
+    label: "Livros — link de rodapé pra diar.ia.br",
+    source: LIVROS_FOOTER_NAV_UTM.source,
+    medium: LIVROS_FOOTER_NAV_UTM.medium,
+    // #4537 item 2: sem utm_campaign de verdade (link de nav, só source+medium) —
+    // mesmo padrão-placeholder de cursos-footer-nav/arquivo-footer-nav acima.
+    campaignPattern: "livros-footer-nav",
+    originFile: "scripts/build-livros-page.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada da página de Livros — ' +
+      "último dos três (Cursos/Livros/Arquivo) a sair do literal solto " +
+      "`utm_source=livros&utm_medium=footer-nav` direto no call site (#4051/#4295/#4537).",
     status: "ativo",
   },
   {
@@ -561,6 +776,70 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     status: "ativo",
   },
   {
+    id: "cursos-rodape",
+    label: "Pill 'Cursos' do PARA ENCERRAR (e-mail diário)",
+    source: CURSOS_RODAPE_UTM.source,
+    medium: CURSOS_RODAPE_UTM.medium,
+    campaignPattern: CURSOS_RODAPE_UTM.campaign,
+    originFile: "scripts/lib/shared/encerramento-snippet.ts",
+    description:
+      "Pill 'Cursos' da lista 'Acesse nossas curadorias' no bloco PARA ENCERRAR — " +
+      "direção newsletter → curadoria (#4553), oposta a 'cursos-footer-nav' abaixo. " +
+      "Antes saía crua, sem UTM — impossível medir cliques a partir do e-mail (~548 leitores/dia).",
+    status: "ativo",
+  },
+  {
+    id: "livros-rodape",
+    label: "Pill 'Livros' do PARA ENCERRAR (e-mail diário)",
+    source: LIVROS_RODAPE_UTM.source,
+    medium: LIVROS_RODAPE_UTM.medium,
+    campaignPattern: LIVROS_RODAPE_UTM.campaign,
+    originFile: "scripts/lib/shared/encerramento-snippet.ts",
+    description: "Pill 'Livros' do PARA ENCERRAR — mesmo padrão de 'cursos-rodape' acima (#4553).",
+    status: "ativo",
+  },
+  {
+    id: "arquivo-rodape",
+    label: "Pill 'Arquivo' do PARA ENCERRAR (e-mail diário)",
+    source: ARQUIVO_RODAPE_UTM.source,
+    medium: ARQUIVO_RODAPE_UTM.medium,
+    campaignPattern: ARQUIVO_RODAPE_UTM.campaign,
+    originFile: "scripts/lib/shared/encerramento-snippet.ts",
+    description:
+      "Pill 'Arquivo' (4ª pill, nova — #4536) do PARA ENCERRAR — antes desta issue " +
+      "o arquivo.diar.ia.br não tinha NENHUM link de entrada a partir da newsletter.",
+    status: "ativo",
+  },
+  {
+    id: "jogar-rodape",
+    label: "Pill 'É IA?' do PARA ENCERRAR (e-mail diário)",
+    source: JOGAR_RODAPE_UTM.source,
+    medium: JOGAR_RODAPE_UTM.medium,
+    campaignPattern: JOGAR_RODAPE_UTM.campaign,
+    originFile: "scripts/lib/shared/encerramento-snippet.ts",
+    description:
+      "Pill 'É IA?' (5ª pill, nova — #4550) do PARA ENCERRAR — mesmo padrão de " +
+      "'cursos-rodape'/'livros-rodape'/'arquivo-rodape' acima. Antes desta issue o " +
+      "jogo não tinha NENHUM link de entrada a partir do rodapé da newsletter " +
+      "(a única menção, o link de arquivo do gabarito, mora em 'eia-arquivo-newsletter').",
+    status: "ativo",
+  },
+  {
+    id: "jogar-post-dedicado",
+    label: "É IA? — post/story dedicado de divulgação",
+    source: JOGAR_POST_DEDICADO_UTM.source,
+    medium: JOGAR_POST_DEDICADO_UTM.medium,
+    campaignPattern: JOGAR_POST_DEDICADO_UTM.campaign,
+    originFile: "scripts/lib/jogar-promo-urls.ts",
+    description:
+      "Link do post/story dedicado que o editor publica manualmente em qualquer rede " +
+      "social pra divulgar o jogo fora da edição (#4550, distribuição própria — decisão " +
+      "do editor 260804 de dar ao /jogar tratamento de produto, não de anexo da edição). " +
+      "Nunca automatizado: `buildJogarPostDedicadoUrl` só resolve a URL pronta pro " +
+      "copy-paste, publicação/frequência/plataforma são 100% editoriais.",
+    status: "ativo",
+  },
+  {
     id: "cursos-footer-nav",
     label: "Cursos — link de rodapé pra diar.ia.br",
     source: CURSOS_FOOTER_NAV_UTM.source,
@@ -602,6 +881,19 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     status: "ativo",
   },
   {
+    id: "instagram-weekly-archive",
+    label: "Instagram — link de arquivo no post semanal",
+    source: INSTAGRAM_WEEKLY_ARCHIVE_UTM.source,
+    medium: INSTAGRAM_WEEKLY_ARCHIVE_UTM.medium,
+    campaignPattern: INSTAGRAM_WEEKLY_ARCHIVE_UTM.campaign,
+    originFile: "scripts/lib/format-weekly-social.ts",
+    description:
+      "\"Arquivo completo em {url}\" no post semanal do Instagram (#4101/#4483) — " +
+      "saía cru, sem UTM (resíduo do #4295, fechado no #4537 item 1). Volume baixo " +
+      "(~1/semana) e o Instagram não linka no corpo, mas fecha o inventário.",
+    status: "ativo",
+  },
+  {
     id: "linkedin-weekly-newsletter",
     label: "LinkedIn — newsletter semanal",
     source: LINKEDIN_WEEKLY_UTM.source,
@@ -617,11 +909,85 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "clique no nome da marca em prosa, separado pra não inflar o CTA da abertura.",
     status: "ativo",
   },
+  {
+    id: "brevo-diaria-reativar-clique",
+    label: "Brevo diária — clique no link de reativação",
+    source: BREVO_DIARIA_REATIVAR_CLIQUE_UTM.source,
+    medium: BREVO_DIARIA_REATIVAR_CLIQUE_UTM.medium,
+    campaignPattern: BREVO_DIARIA_REATIVAR_CLIQUE_UTM.campaign,
+    originFile: "workers/reativar/src/index.ts",
+    description:
+      "Clique do LEITOR no CTA de 1-clique do bloco de intro do canal Brevo Pending " +
+      "(#4530/#4476) — cria/ativa a assinatura Beehiiv via activateSubscription. " +
+      "Distinto de 'brevo-diaria-promocao-score' (mesmo source/medium, campaign " +
+      "próprio) — nunca colapsar os dois, é a comparação clique×score que justifica " +
+      "o canário do #4476.",
+    status: "ativo",
+  },
+  {
+    id: "brevo-diaria-promocao-score",
+    label: "Brevo diária — promoção automática por score",
+    source: BREVO_DIARIA_PROMOCAO_SCORE_UTM.source,
+    medium: BREVO_DIARIA_PROMOCAO_SCORE_UTM.medium,
+    campaignPattern: BREVO_DIARIA_PROMOCAO_SCORE_UTM.campaign,
+    originFile: "scripts/evaluate-brevo-diaria.ts",
+    description:
+      "Promoção AUTOMÁTICA pra Beehiiv por taxa de abertura (#4530/#4476, via " +
+      "promoteBeehiivSubscription/runEvaluation) — sem clique do leitor. Distinto " +
+      "de 'brevo-diaria-reativar-clique' (mesmo source/medium, campaign próprio).",
+    status: "ativo",
+  },
 ] as const;
 
 /** Busca uma entrada do inventário por id. `undefined` se não existe. @pure */
 export function findUtmEmitter(id: string): UtmEmitter | undefined {
   return UTM_EMITTERS.find((e) => e.id === id);
+}
+
+/**
+ * Grupos de emissores que COMPARTILHAM DE PROPÓSITO o mesmo triplo
+ * `(source, medium, campaignPattern)` — hoje só o par do arquivo É IA?
+ * (#3524): o Worker precisa emitir o MESMO valor que o e-mail, sem poder
+ * importar de `scripts/**`. Qualquer OUTRA colisão é acidente (literal
+ * copiado sem querer, o padrão que motivou esta issue — #4530 Parte C) e deve
+ * travar `findUtmEmitterCollisions()`/o teste que a consome.
+ */
+export const DELIBERATE_UTM_EMITTER_DUPLICATES: readonly (readonly string[])[] = [
+  ["eia-arquivo-newsletter", "eia-arquivo-worker"],
+];
+
+/**
+ * Detecta colisões de `(source, medium, campaignPattern)` entre emissores do
+ * inventário — sinal de literal duplicado sem querer, sem depender de quem
+ * lembrar de checar manualmente (#4530 Parte C). Ignora os grupos declarados
+ * em `DELIBERATE_UTM_EMITTER_DUPLICATES` (duplicidade intencional e
+ * documentada). Retorna os grupos de `id`s que colidem e NÃO são
+ * deliberados — array vazio significa "nenhuma colisão inesperada".
+ *
+ * `emitters` é injetável (default `UTM_EMITTERS`) só pra permitir teste com
+ * dados sintéticos sem mexer no inventário real — o uso normal nunca passa
+ * o argumento.
+ *
+ * @pure
+ */
+export function findUtmEmitterCollisions(emitters: readonly UtmEmitter[] = UTM_EMITTERS): string[][] {
+  const bySignature = new Map<string, string[]>();
+  for (const e of emitters) {
+    const signature = `${e.source}|${e.medium}|${e.campaignPattern}`;
+    const ids = bySignature.get(signature) ?? [];
+    ids.push(e.id);
+    bySignature.set(signature, ids);
+  }
+  const deliberate = new Set(
+    DELIBERATE_UTM_EMITTER_DUPLICATES.map((group) => [...group].sort().join(",")),
+  );
+  const unexpected: string[][] = [];
+  for (const ids of bySignature.values()) {
+    if (ids.length < 2) continue;
+    if (deliberate.has([...ids].sort().join(","))) continue;
+    unexpected.push(ids);
+  }
+  return unexpected;
 }
 
 // ---------------------------------------------------------------------------
@@ -676,6 +1042,33 @@ export const EXTERNAL_SURFACE_CAMPAIGN_PREFIX = "perfil";
 export function buildExternalSurfaceCampaign(source: string, variant?: string): string {
   const base = `${EXTERNAL_SURFACE_CAMPAIGN_PREFIX}-${source.toLowerCase()}`;
   return variant ? `${base}-${variant.toLowerCase()}` : base;
+}
+
+/**
+ * `utm_campaign` do link de bio dedicado ao "É IA?"/`/jogar` (#4550, 3ª das 3
+ * superfícies de distribuição própria do jogo — ver `JOGAR_RODAPE_UTM`/
+ * `JOGAR_POST_DEDICADO_UTM` acima). Reusa `buildExternalSurfaceCampaign` com o
+ * mecanismo de VARIANTE que `EXTERNAL_UTM_SURFACES` já usa pra "mesma
+ * plataforma, duas superfícies" (os 2 repositórios do GitHub, #4525) —
+ * necessário porque `perfil-{source}` sozinho JÁ está em uso pelo slot de bio
+ * ATUAL de cada plataforma (apontando pra home, `EXTERNAL_SURFACE_BASE_URL`);
+ * reusar o campaign puro colidiria e mascararia as duas conversões — o mesmo
+ * bug de atribuição que o review do #4526 corrigiu, agora na direção /jogar.
+ *
+ * Deliberadamente NÃO existe uma entrada correspondente em
+ * `EXTERNAL_UTM_SURFACES`: aquele array modela um slot de bio JÁ APLICADO
+ * (`panelUrl`/`field`/`appliedAt`) — e cada plataforma listada lá só tem 1
+ * slot de bio, hoje ocupado pela home. Repontar esse slot único pro jogo (e
+ * QUAL plataforma, se alguma) é decisão editorial genuína, fora do escopo
+ * desta instrumentação (comentário do #4550, 260804). Esta função só deixa o
+ * VALOR pronto — quando o editor decidir a superfície, `buildJogarBioUrl`
+ * (`scripts/lib/jogar-promo-urls.ts`) monta a URL e uma entrada nova em
+ * `EXTERNAL_UTM_SURFACES` fica pra essa próxima unidade de trabalho.
+ *
+ * @pure
+ */
+export function buildJogarBioCampaign(source: string): string {
+  return buildExternalSurfaceCampaign(source, "jogar");
 }
 
 /** URL base que toda superfície externa aponta. */

@@ -72,7 +72,26 @@
  * pendente" (`status: "confirmed_not_pending"`) — `activateSubscription` só
  * bloqueia em `"confirmed_pending"`, tudo mais (incluindo `unknown`) segue
  * (fail-open preservado).
+ *
+ * ## Contadores de alarme durável (#4551)
+ *
+ * Cada um dos 3 motivos de fail-open acima incrementa um contador cumulativo
+ * no KV opcional `REATIVAR_ALARM` (ver `scripts/lib/shared/reativar-alarm-counters.ts`
+ * pras chaves + rationale completo) — mesmo padrão de `Diaria-Cursos-Error-Alarm`
+ * (#4320/#4382): sem isso, o único sinal de uma `BREVO_DIARIA_API_KEY`
+ * revogada ou de erro persistente da Brevo era `console.error`/`console.warn`
+ * em `wrangler tail`, que ninguém olha ativamente. **Só o mecanismo de
+ * contagem está implementado nesta unidade** — o binding `REATIVAR_ALARM`
+ * ainda não foi criado (`wrangler kv namespace create REATIVAR_ALARM`, ver
+ * `wrangler.toml`), e a task agendada de leitura/alarme por e-mail (mesmo
+ * papel de `scripts/cursos-error-alarm.ts`) fica pendente do editor, mesma
+ * disciplina já normalizada em CLAUDE.md pros #4320/#4382/#4490/#4534. Até
+ * lá, `incrementReativarAlarmCounter` é NO-OP fail-soft (binding ausente).
  */
+
+import { REATIVAR_ALARM_COUNTER_KEYS, incrementReativarAlarmCounter } from "../../../scripts/lib/shared/reativar-alarm-counters.ts";
+import { BREVO_DIARIA_REATIVAR_CLIQUE_UTM } from "../../../scripts/lib/shared/utm-registry.ts"; // #4530
+import { unlinkFromBrevoListShared } from "../../../scripts/lib/shared/brevo-list-unlink.ts"; // #4535
 
 export interface Env {
   /** Secret — `wrangler secret put BEEHIIV_API_KEY`. Sem ela, 503 amigável. */
@@ -91,6 +110,25 @@ export interface Env {
   BREVO_DIARIA_API_KEY?: string;
   /** Override só pra teste (mock server local) — default `https://api.brevo.com/v3`. */
   BREVO_API_URL?: string;
+  /**
+   * Secret — `wrangler secret put BREVO_DIARIA_LIST_ID` (#4535). List id Brevo
+   * do canal `brevo_diaria` (mesmo valor de `platform.config.json` →
+   * `brevo_diaria.list_id`, hoje 7). OPCIONAL: sem ele (ou sem
+   * `BREVO_DIARIA_API_KEY`), `unlinkReativarFromBrevoList` pula o unlink com
+   * log estruturado — nunca derruba a ativação Beehiiv já feita. A varredura
+   * diária (`evaluate-brevo-diaria.ts`, #4534) continua sendo a rede de
+   * segurança que eventualmente desvincula mesmo sem esta chamada instantânea.
+   */
+  BREVO_DIARIA_LIST_ID?: string;
+  /**
+   * Binding OPCIONAL (#4551) — `wrangler kv namespace create REATIVAR_ALARM`,
+   * ainda NÃO criado (ação pendente do editor, mesmo padrão dos #4320/#4382).
+   * Sem ele, `incrementReativarAlarmCounter` é pulado (fail-soft) — mesmo
+   * padrão de `SUBSCRIBERS_KV` opcional em `workers/poll/wrangler.toml`
+   * (#3399/#4054): nunca quebra o fluxo principal por causa de um binding de
+   * OBSERVABILIDADE ausente. Ver `scripts/lib/shared/reativar-alarm-counters.ts`.
+   */
+  REATIVAR_ALARM?: KVNamespace;
 }
 
 const CORS_HEADERS = { "Access-Control-Allow-Origin": "*" } as const;
@@ -161,6 +199,7 @@ export async function checkNativeUnsubscribePending(
     // console.warn, não console.error. Diferente dos branches abaixo, que
     // são falhas reais.
     console.warn(JSON.stringify({ event: "reativar_brevo_guard_skipped", reason: "BREVO_DIARIA_API_KEY ausente" }));
+    await incrementReativarAlarmCounter(env.REATIVAR_ALARM, REATIVAR_ALARM_COUNTER_KEYS.noApiKey);
     return { status: "unknown", reason: "no_api_key" };
   }
   const base = env.BREVO_API_URL ?? "https://api.brevo.com/v3";
@@ -183,15 +222,18 @@ export async function checkNativeUnsubscribePending(
             hint: "BREVO_DIARIA_API_KEY provavelmente inválida/revogada — não é o mesmo caso de 'não configurada'",
           }),
         );
+        await incrementReativarAlarmCounter(env.REATIVAR_ALARM, REATIVAR_ALARM_COUNTER_KEYS.httpErrorAuthDenied);
       } else {
         console.error(JSON.stringify({ event: "reativar_brevo_guard_non_2xx", status: res.status }));
       }
+      await incrementReativarAlarmCounter(env.REATIVAR_ALARM, REATIVAR_ALARM_COUNTER_KEYS.httpError);
       return { status: "unknown", reason: "http_error" }; // fail-open — ver cabeçalho do módulo
     }
     const body = (await res.json().catch(() => null)) as { emailBlacklisted?: boolean } | null;
     return body?.emailBlacklisted === true ? { status: "confirmed_pending" } : { status: "confirmed_not_pending" };
   } catch (e) {
     console.error(JSON.stringify({ event: "reativar_brevo_guard_failed", error: String(e) }));
+    await incrementReativarAlarmCounter(env.REATIVAR_ALARM, REATIVAR_ALARM_COUNTER_KEYS.networkError);
     return { status: "unknown", reason: "network_error" }; // fail-open — ver cabeçalho do módulo
   }
 }
@@ -323,7 +365,17 @@ export async function activateSubscription(
     res = await fetchImpl(`${base}/publications/${pubId}/subscriptions`, {
       method: "POST",
       headers: { ...authHeaders, "Content-Type": "application/json" },
-      body: JSON.stringify({ email, send_welcome_email: false }),
+      body: JSON.stringify({
+        email,
+        send_welcome_email: false,
+        // #4530: atribuição — sem isto, todo cadastro criado por este caminho
+        // caía como "api: direct / (none)" na Beehiiv, indistinguível de
+        // qualquer outro cadastro via API.
+        utm_source: BREVO_DIARIA_REATIVAR_CLIQUE_UTM.source,
+        utm_medium: BREVO_DIARIA_REATIVAR_CLIQUE_UTM.medium,
+        utm_campaign: BREVO_DIARIA_REATIVAR_CLIQUE_UTM.campaign,
+        referring_site: BREVO_DIARIA_REATIVAR_CLIQUE_UTM.referringSite,
+      }),
       signal: AbortSignal.timeout(ACTIVATE_FETCH_TIMEOUT_MS),
     });
   } catch (e) {
@@ -443,6 +495,53 @@ export function renderNativeUnsubscribePage(): string {
   );
 }
 
+// ── desvincular da lista Brevo no clique (#4535) ────────────────────────
+
+/**
+ * Depois que `activateSubscription` confirma `beehiivStatus === "active"`,
+ * a pessoa não precisa mais receber a diária pelo canal Brevo Pending — sem
+ * este passo, ela ficava vinculada à lista 7 e recebia os dois canais até a
+ * próxima varredura do `evaluate-brevo-diaria.ts` (#4534, até 1 dia depois).
+ * Mesma chamada de `unlinkFromBrevoList` (`scripts/evaluate-brevo-diaria.ts`),
+ * via `unlinkFromBrevoListShared` (`scripts/lib/shared/brevo-list-unlink.ts`).
+ *
+ * **Fail-soft obrigatório:** `BREVO_DIARIA_API_KEY`/`BREVO_DIARIA_LIST_ID`
+ * ausentes, ou qualquer falha HTTP/rede da Brevo, NUNCA vira erro pro usuário
+ * nem reverte a ativação Beehiiv já feita — o unlink é best-effort; a
+ * varredura diária continua sendo a rede de segurança que eventualmente
+ * desvincula mesmo sem esta chamada instantânea. Nunca loga o e-mail.
+ */
+export async function unlinkReativarFromBrevoList(
+  env: Env,
+  email: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const apiKey = env.BREVO_DIARIA_API_KEY;
+  const listIdRaw = env.BREVO_DIARIA_LIST_ID;
+  const listId = listIdRaw !== undefined ? Number(listIdRaw) : NaN;
+  if (!apiKey || !listIdRaw || Number.isNaN(listId)) {
+    // Esperado/documentado (secrets novos, armamento pendente do editor) —
+    // console.warn, não console.error, mesma disciplina de
+    // `reativar_brevo_guard_skipped` acima.
+    console.warn(
+      JSON.stringify({
+        event: "reativar_brevo_unlink_skipped",
+        reason: "BREVO_DIARIA_API_KEY/BREVO_DIARIA_LIST_ID ausente ou inválido",
+      }),
+    );
+    return;
+  }
+  const base = env.BREVO_API_URL ?? "https://api.brevo.com/v3";
+  try {
+    await unlinkFromBrevoListShared(apiKey, listId, email, fetchImpl, base, ACTIVATE_FETCH_TIMEOUT_MS);
+  } catch (e) {
+    // Falha REAL da Brevo (HTTP não-2xx ou exceção de rede) — console.error,
+    // mesmo padrão de `reativar_beehiiv_non_2xx`/`reativar_fetch_failed`
+    // acima. NUNCA propaga: a ativação Beehiiv já aconteceu e não é revertida.
+    console.error(JSON.stringify({ event: "reativar_brevo_unlink_failed", error: String(e) }));
+  }
+}
+
 // ── handler ────────────────────────────────────────────────────────────
 
 function htmlResponse(html: string, status: number): Response {
@@ -480,7 +579,13 @@ export async function handleConfirm(
   // garantia de `active` — só `beehiivStatus === "active"` conta como
   // confirmação real (mesma correção aplicada em
   // `verifyPromotedToBeehiiv`, scripts/evaluate-brevo-diaria.ts).
-  if (result.beehiivStatus === "active") return htmlResponse(renderSuccessPage(), 200);
+  if (result.beehiivStatus === "active") {
+    // #4535: desvincula da lista Brevo Pending SÓ quando a ativação Beehiiv
+    // está de fato confirmada — best-effort, nunca bloqueia a página de
+    // sucesso (ver docstring de `unlinkReativarFromBrevoList`).
+    await unlinkReativarFromBrevoList(env, parsed.email, fetchImpl);
+    return htmlResponse(renderSuccessPage(), 200);
+  }
   return htmlResponse(renderNotConfirmedPage(), 200);
 }
 

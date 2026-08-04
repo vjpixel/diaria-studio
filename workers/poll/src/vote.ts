@@ -302,6 +302,43 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
     // logar o valor (truncado, defensivo) é seguro e mais útil que
     // `email_domain` pra identificar QUAL merge tag ficou sem substituir.
     console.log(JSON.stringify({ event: "poll_vote_unsubstituted_merge_tag", edition, raw: email.slice(0, 100) }));
+    // #4578: até aqui o guard terminava sempre em 400 ("abra o voto pelo
+    // botão no email") — dead end pra quem clicou no botão de voto na
+    // versão WEB do post (a merge tag só é resolvida no ENVIO do e-mail,
+    // nunca na página web do post, #4487/#4581). Existe um caminho que
+    // funciona perfeitamente pra esse visitante: o jogo anônimo em /jogar
+    // (#3516), que não depende de e-mail resolvido nenhum. Redireciona pra
+    // lá em vez do dead end — `from=post-web` sinaliza pro `/jogar`
+    // (handleJogarPage/renderJogarPageHtml, jogar.ts) revelar a caixa
+    // unificada do gate no pós-voto (web-gate.ts::renderJogarGateBoxBlock)
+    // no lugar dos 2 blocos default (CTA-link + form de identidade) — ver
+    // rationale completo lá.
+    //
+    // `edition` precisa ser REVALIDADO aqui, nunca reusar o valor cru da
+    // query string: `isValidVoteEditionFormat` só roda mais abaixo, DEPOIS
+    // deste guard — compor a URL do redirect com um `edition` ainda
+    // não-validado propagaria lixo arbitrário pro Location (e, rio abaixo,
+    // pra dentro de `/jogar`). Se a validação falhar aqui, cai no mesmo 400
+    // de sempre — mesmo comportamento pré-#4578 pra esse caso combinado
+    // (merge tag quebrada E edition malformada ao mesmo tempo).
+    //
+    // Brand não entra na decisão: o redirect é sempre pro jogo `web`
+    // (JOGAR_BRAND, jogar.ts), venha o /vote original de brand=diaria
+    // (e-mail diário) ou brand=clarice (Brevo mensal, mesma classe de bug
+    // — ver corpo da issue). `edition` no formato de ciclo (Clarice,
+    // YYMM-MM) passa a validação de FORMATO mas não bate `AAMMDD_RE` — o
+    // próprio `/jogar` já degrada com graça pra esse caso (cai na sequência
+    // genérica em vez da edição específica, mesmo comportamento de hoje pra
+    // qualquer link `/jogar?edition=` com esse formato), nunca quebra.
+    if (isValidVoteEditionFormat(edition)) {
+      const target = new URL("/jogar", url);
+      target.searchParams.set("edition", edition);
+      target.searchParams.set("from", "post-web");
+      return new Response(null, {
+        status: 302,
+        headers: { Location: target.toString(), "Cache-Control": "no-store" },
+      });
+    }
     return voteHtmlResponse(votePageHtml("Link inválido — abra o voto pelo botão no email.", false, null, null, null, brand), 400);
   }
 
@@ -2289,7 +2326,21 @@ export async function getSummedEditionStats(
   edition: string,
   rawEnv: Env = env,
 ): Promise<{ stats: StatsCounterData; correctRaw: string | null }> {
-  const legacyEdition = legacyMonthlyEditionForCycle(edition);
+  // #4563: `legacyMonthlyEditionForCycle` valida só a FORMA do `edition`
+  // (`YYMM-MM`), nunca o brand — sem este guard, um `edition` em formato de
+  // ciclo consultado sob um brand `leaderboardPeriod !== "year"` (ex:
+  // `diaria`/`web`, que não têm conceito de ciclo mensal) faz
+  // `legacyMonthlyEditionForCycle` apontar pra um AAMMDD que é uma edição
+  // DIÁRIA REAL (não um marcador legado) — somando stats de uma edição
+  // completamente alheia. Achado ao vivo (#4563): `/stats?edition=2607-08`
+  // sem `&brand=` (default "diaria") somou os stats da edição diária real
+  // `260731`, produzindo `correct_count`/`total` que não correspondem a
+  // NENHUM voto do ciclo `2607-08` de fato. Mesmo guard que a direção
+  // INVERSA (`cycleForLegacyMonthlyEdition`) já aplica no call site
+  // (`handleEditions` abaixo, `normalizeLegacy = leaderboardPeriod === "year"`).
+  const legacyEdition = BRAND_INFO[brand].leaderboardPeriod === "year"
+    ? legacyMonthlyEditionForCycle(edition)
+    : null;
 
   const [primary, legacy] = await Promise.all([
     fetchEditionStatsAndCorrect(env, brand, edition, rawEnv),

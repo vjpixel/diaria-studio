@@ -31,9 +31,17 @@ export interface PodiumEntry {
 
 export interface RaffleConfig {
   meet_url: string;
-  /** Dia do mês (do mês da EDIÇÃO corrente, não do mês celebrado) em que o
-   * sorteio ao vivo acontece. Ex: 2 (edição 260701 → sorteio "2 de julho"). */
-  day_of_month: number;
+  /** Mês (YYYY-MM) + dia do mês (do mês da EDIÇÃO corrente, não do mês
+   * celebrado) em que o sorteio ao vivo acontece — #4583: substitui o antigo
+   * `day_of_month` fixo, que nascia desatualizado todo mês (não existe "dia
+   * fixo do sorteio"). `mes` é validado pelo caller
+   * (`inject-champions-callout.ts`) contra o mês da edição ANTES de chegar
+   * aqui — esta função só consome `dia` já validado. Ex: `{ mes: "2026-07",
+   * dia: 2 }` → sorteio "2 de julho" na edição 260701. */
+  sorteio_do_mes: {
+    mes: string;
+    dia: number;
+  };
   /** "HH:MM" 24h. */
   hora_inicio: string;
   /** "HH:MM" 24h. */

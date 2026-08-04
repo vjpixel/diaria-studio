@@ -1606,8 +1606,21 @@ export function isNetworkOrTimeoutError(e: unknown): boolean {
 // #2337 fix 1: exportado para teste direto do parse de headers de rate-limit
 // (epoch-elapsed → retryAfterSecs inteiro 0 + floorMs 250).
 export async function brevoFetch<T>(path: string, env: Env): Promise<T> {
+  return brevoFetchWithApiKey<T>(path, env.BREVO_API_KEY);
+}
+
+/**
+ * #4515: núcleo de `brevoFetch`, parametrizado por API key EXPLÍCITA em vez
+ * de `Env` — permite chamar a API Brevo em nome de uma conta diferente da
+ * Clarice (`env.BREVO_API_KEY`) sem duplicar o parsing de rate-limit/erro
+ * abaixo. `brevoFetch` (acima) delega pra cá; a aba `brevo_diaria`
+ * (`brevo-diaria.ts`, conta SEPARADA — `env.BREVO_DIARIA_API_KEY`) chama esta
+ * função diretamente. Mesmo tratamento de 429/erro para as duas contas —
+ * nenhuma duplicação de lógica.
+ */
+export async function brevoFetchWithApiKey<T>(path: string, apiKey: string): Promise<T> {
   const res = await fetch(`https://api.brevo.com${path}`, {
-    headers: { "api-key": env.BREVO_API_KEY, accept: "application/json" },
+    headers: { "api-key": apiKey, accept: "application/json" },
   });
   if (res.status === 429) {
     // Semantica observada 2026-06-10 em chamada real: x-sib-ratelimit-reset

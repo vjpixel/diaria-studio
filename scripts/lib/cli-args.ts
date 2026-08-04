@@ -61,7 +61,23 @@ export function parseArgs(argv: string[]): ParsedArgs {
   return { flags, values, positional };
 }
 
-/** Atalho: retorna values[key] ?? "" (never returns args[0] quando key ausente). */
+/**
+ * Atalho: retorna values[key] ?? "" (never returns args[0] quando key ausente).
+ *
+ * @deprecated (#4573) Colapsa "flag ausente" e "flag presente mas vazia/sem
+ * valor" no mesmo sentinela `""` — 3 incidentes de produção já nasceram desse
+ * colapso (#4476/#4496, #4542/#4564, #4568; ver issue #4573 pro histórico
+ * completo). **Ainda legítimo** pra flag de TEXTO LIVRE onde `""` é um
+ * "sem preferência" genuinamente aceitável (ex: `--label`, `--subject` com
+ * fallback explícito). **Nunca** pra flag NUMÉRICA (`Number(getArg(...))`/
+ * `parseInt(getArg(...))` sem proteção — barrado por `test/getarg-numeric-guard-4573.test.ts`)
+ * nem pra flag OBRIGATÓRIA-quando-presente. Use `getIntArg` (numérica,
+ * `undefined` quando ausente, lança em valor inválido) ou `getStringArg`
+ * (texto obrigatório-quando-presente) nesses dois casos. Migração dos 118
+ * call sites existentes é INCREMENTAL, sob demanda quando o arquivo for
+ * tocado por outro motivo — não numa varredura única (decisão do editor,
+ * #4573).
+ */
 export function getArg(argv: string[], key: string): string {
   return parseArgs(argv).values[key] ?? "";
 }

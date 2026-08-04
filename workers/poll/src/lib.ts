@@ -678,12 +678,17 @@ export function classify403Reason(sig: string): Vote403Reason {
  * votos desse envio no leaderboard `clarice` cruzaria 2 audiências
  * distintas (achado do review pré-merge do #4482/#4510: `renderEia`
  * mandava TODO voto do digest, veio ele da Clarice ou do Beehiiv, pro mesmo
- * `brand=clarice`). Cada marca tem ranking, gate de edições e apelidos
+ * `brand=clarice`); `mensal-apoiadores-brevo` (#4593) é o SUCESSOR de
+ * `mensal-beehiiv` — mesma audiência (apoiadores Mantenedor/Patrono), canal
+ * trocado de Beehiiv pra Brevo porque a Beehiiv bloqueia "Include and
+ * exclude segments" atrás do plano Scale (#4572). `mensal-beehiiv` nunca
+ * chegou a enviar ao vivo (fica no tipo por histórico/rastreabilidade, sem
+ * uso ativo). Cada marca tem ranking, gate de edições e apelidos
  * isolados (mecânica #1905 — um brand novo entra de graça na isolação, ver
  * `brandKvPrefix`/`parseBrandParam` abaixo, derivados de
  * `Object.keys(BRAND_INFO)`).
  */
-export type Brand = "diaria" | "clarice" | "web" | "mensal-beehiiv";
+export type Brand = "diaria" | "clarice" | "web" | "mensal-beehiiv" | "mensal-apoiadores-brevo";
 
 /**
  * #2018: leaderboardPeriod — período canônico do leaderboard por brand.
@@ -701,9 +706,13 @@ export const BRAND_INFO: Record<Brand, { name: string; siteUrl: string; leaderbo
   // #1910: via=diaria é o tracking de afiliado (Rewardful) — todo link da
   // Clarice voltado ao leitor precisa carregar.
   // #2018: leaderboardPeriod: "year" — mensal vota 1×/mês, ranking anual até 12 chances.
-  // #3108: shortName — a sub-copy do leaderboard clarice linka só "Clarice" (não
-  // "Clarice News" inteiro) na frase "newsletter da Clarice".
-  clarice: { name: "Clarice News", siteUrl: "https://clarice.ai/?via=diaria", leaderboardPeriod: "year", shortName: "Clarice" },
+  // #3108/#4569: `shortName: "Clarice"` existiu pra sub-copy do leaderboard
+  // linkar só "Clarice" (não "Clarice News" inteiro) na frase "newsletter da
+  // Clarice" — removido no #4569 (260804): essa frase virou "newsletter
+  // mensal", sem link nem nome de marca (2 audiências compartilham este
+  // leaderboard desde #4521, "da Clarice" deixou de descrever a única
+  // audiência real). Confirmado sem outro consumidor antes de remover.
+  clarice: { name: "Clarice News", siteUrl: "https://clarice.ai/?via=diaria", leaderboardPeriod: "year" },
   // #3516: leaderboardPeriod "month" com reset natural por mês de publicação
   // (mesma mecânica score-by-month da diária, #1345) — sugestão #2 do EPIC
   // #3514 ("mensal com reset+archive, consistente com diaria"). siteUrl
@@ -723,6 +732,12 @@ export const BRAND_INFO: Record<Brand, { name: string; siteUrl: string; leaderbo
   // siteUrl aponta pro site principal (não clarice.ai — esta audiência já é
   // assinante da diária, sem afiliado `?via=diaria` a rastrear).
   "mensal-beehiiv": { name: "diar.ia.br", siteUrl: "https://diar.ia.br", leaderboardPeriod: "year" },
+  // #4593: sucessor de "mensal-beehiiv" — mesma audiência (apoiadores
+  // Mantenedor/Patrono), mesma cadência de edição (ciclo `YYMM-MM`), canal
+  // trocado de Beehiiv pra Brevo (#4572). `leaderboardPeriod: "year"`
+  // OBRIGATÓRIO pelo mesmo motivo documentado acima pra "mensal-beehiiv" —
+  // sem isso `vote.ts` rejeita edição em formato de ciclo com 400 (#4435).
+  "mensal-apoiadores-brevo": { name: "diar.ia.br", siteUrl: "https://diar.ia.br", leaderboardPeriod: "year" },
 };
 
 /**
@@ -1162,16 +1177,27 @@ export function brandHiddenInput(brand: Brand): string {
  * de re-tentativa de apelido (#1774) reusa esta MESMA função só pra corrigir
  * o apelido, sem reabrir a oferta de assinatura — daí o flag ser decidido
  * pelo CALLER, não inferido só do `brand` aqui dentro.
+ *
+ * `surface` (default `"vote"`, back-compat com todo caller pré-#4562): rótulo
+ * do botão primário. Em `"vote"` (tela de resultado do voto, index.ts:912) o
+ * botão nomeia o destino de verdade — "Salvar e ver o leaderboard" — porque
+ * de lá o leitor ainda não está no ranking. Em `"leaderboard"`
+ * (leaderboard-routes.ts) essa mesma frase seria autorreferente — o destino
+ * anunciado É a própria página — então o botão diz só "Salvar" (#4562). A
+ * caixa em si (o "trabalho" de salvar o apelido) continua igual nas duas
+ * superfícies; só o rótulo muda.
  */
 export function renderNicknameFormHtml(
   nicknameForm: { email: string; sig: string },
   brand: Brand,
   showOptIn: boolean = false,
+  surface: "vote" | "leaderboard" = "vote",
 ): string {
   const leaderboardPeriodWord = BRAND_INFO[brand].leaderboardPeriod === "year" ? "anual" : "mensal";
   const optinHtml = showOptIn
     ? `\n    <label class="nick-optin"><input type="checkbox" name="optin" value="on"> Quero receber a diar.ia.br — newsletter gratuita com as novidades de IA e como usar melhor as IAs, 5 minutos por dia, seg-sex.</label>`
     : "";
+  const saveLabel = surface === "leaderboard" ? "Salvar" : "Salvar e ver o leaderboard";
   return `<div class="nick-box">
   <p class="nick-title">Entre no leaderboard ${leaderboardPeriodWord}</p>
   <p class="nick-explain">Sem apelido você aparece como <code>${htmlEscape(maskEmail(nicknameForm.email))}</code> no ranking público.</p>
@@ -1180,7 +1206,7 @@ export function renderNicknameFormHtml(
     <input type="hidden" name="sig" value="${htmlEscape(nicknameForm.sig)}">
     ${brandHiddenInput(brand)}
     <input type="text" name="name" placeholder="Seu nome" maxlength="40" required class="nick-input">
-    <button type="submit" class="nick-save">Salvar e ver o leaderboard</button>${optinHtml}
+    <button type="submit" class="nick-save">${saveLabel}</button>${optinHtml}
   </form>
 </div>`;
 }
@@ -1210,6 +1236,13 @@ export interface SubscribeBoxState {
  * assinatura a oferecer aqui) — mesmo padrão de `renderNicknameFormHtml`: a
  * função não valida `brand`, é responsabilidade do CALLER decidir quando
  * chamar.
+ *
+ * #4562: o #4418 §2 tinha trazido esta caixa também pro leaderboard
+ * (leaderboard-routes.ts), mas os dois CTAs ("Assinar e ver o leaderboard" /
+ * "Ver o leaderboard") apontam pro leaderboard numa página que JÁ É o
+ * leaderboard — autorreferente, removido de lá. O ÚNICO call site continua
+ * sendo a tela de resultado do voto (index.ts:912), onde a caixa nasceu e
+ * "ver o leaderboard" é de fato um destino novo.
  */
 export function renderSubscribeBoxHtml(box: SubscribeBoxState, brand: Brand): string {
   const lbHref = leaderboardHref(brand);

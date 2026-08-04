@@ -9,6 +9,16 @@
  * SEGURANÇA: dry-run por padrão (só imprime o plano). `--execute` é que de fato
  * cria listas e importa contatos na conta de PRODUÇÃO da Clarice.
  *
+ * #4577: `--execute` AGUARDA o processo assíncrono de `/contacts/import`
+ * terminar (`GET /processes/{id}` até status terminal) e RECONCILIA a
+ * contagem confirmada da lista (`GET /contacts/lists/{id}`) contra as linhas
+ * de fato enviadas — antes desta correção, o script declarava sucesso assim
+ * que a Brevo aceitava o POST, sem nunca confirmar nem o término do processo
+ * nem se todos os contatos entraram (um contato foi perdido em silêncio dessa
+ * forma — `a15276@aecampo.pt`, 04/08/2026). Processo `failed`/timeout, ou
+ * contagem confirmada menor que a enviada, abortam a invocação inteira
+ * (exit ≠ 0) antes de registrar a lista como importada.
+ *
  * Uso:
  *   npx tsx scripts/clarice-import-waves.ts --cycle 2605-06 --label "Mai→Jun/2026"            # dry-run
  *   npx tsx scripts/clarice-import-waves.ts --cycle 2605-06 --label "Mai→Jun/2026" --execute  # cria + importa
@@ -52,7 +62,8 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { brevoPost, brevoListAllLists } from "./lib/brevo-client.ts"; // #2018: brevoListAllLists
+import { brevoPost, brevoGet, brevoGetList, brevoListAllLists } from "./lib/brevo-client.ts"; // #2018: brevoListAllLists
+import { pollProcessUntilTerminal, type PollOptions } from "./lib/brevo-process-poll.ts"; // #4577
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { clariceWavesDir, clariceSegmentsDir, parseCycleArg } from "./lib/clarice-paths.ts"; // #1961 / #2916
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
@@ -248,6 +259,148 @@ export function findExistingConflicts(
 const fetchExistingLists = brevoListAllLists;
 
 // ---------------------------------------------------------------------------
+// Import + confirmação (#4577)
+// ---------------------------------------------------------------------------
+//
+// Até aqui (#4577), `main()` disparava `POST /contacts/import`, imprimia o
+// `processId` e declarava sucesso — sem NUNCA confirmar que o processo
+// assíncrono da Brevo tinha terminado, nem que tinha terminado com sucesso.
+// Um contato (`a15276@aecampo.pt`) foi descartado pela Brevo em silêncio no
+// meio do processamento: o processo terminou `completed`, mas a lista ficou
+// com menos contatos que o CSV enviado — nada no script pegava isso.
+//
+// `ImportRunClient` é a interface injetável (mesmo padrão de
+// `CampaignExportClient` em clarice-engagement-cohorts-v2.ts) que separa a
+// ORQUESTRAÇÃO (`importOneWave`, testável com um fake client, sem rede) do
+// TRANSPORTE real (`makeRealImportRunClient`, usado só por `main()`).
+
+/** Contrato mínimo que `importOneWave` precisa da Brevo — injetável pra teste. */
+export interface ImportRunClient {
+  createList(name: string, folderId: number): Promise<{ id: number }>;
+  importCsv(listId: number, csv: string): Promise<{ processId: number | string }>;
+  pollProcess(processId: number | string): Promise<{ status?: string }>;
+  getListInfo(listId: number): Promise<{ totalSubscribers: number }>;
+}
+
+/**
+ * #4577 item 1: `processId` vinha tipado `unknown` e nunca era validado — uma
+ * resposta sem `processId` (ou com um valor não-usável) seguia como se nada
+ * tivesse acontecido, porque nada no código de fato LIA o valor depois de
+ * imprimi-lo. Falha alto aqui em vez de deixar `pollProcess` receber
+ * `undefined`/`NaN` e falhar mais tarde com um erro menos claro.
+ */
+export function validateProcessId(raw: unknown): number | string {
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (typeof raw === "string" && raw.trim().length > 0) return raw;
+  throw new Error(
+    `Brevo POST /contacts/import retornou processId ausente/inválido: ${JSON.stringify(raw)}.`,
+  );
+}
+
+/** Cliente real, fino sobre `brevoPost`/`brevoGet`/`brevoGetList` (retry-on-429/5xx
+ *  já embutido nelas — ver brevo-client.ts). Só usado por `main()` — testes
+ *  injetam um fake que implementa o mesmo `ImportRunClient`. */
+export function makeRealImportRunClient(apiKey: string): ImportRunClient {
+  return {
+    async createList(name, folderId) {
+      const list = (await brevoPost(apiKey, "/contacts/lists", { name, folderId })) as { id?: number };
+      if (typeof list?.id !== "number") {
+        throw new Error(`Brevo /contacts/lists retornou shape inesperado: ${JSON.stringify(list)}`);
+      }
+      return { id: list.id };
+    },
+    async importCsv(listId, csv) {
+      const imp = (await brevoPost(apiKey, "/contacts/import", {
+        fileBody: csv,
+        listIds: [listId],
+        updateExistingContacts: true,
+        emptyContactsAttributes: false,
+      })) as { processId?: unknown };
+      return { processId: validateProcessId(imp.processId) };
+    },
+    async pollProcess(processId) {
+      const { status, body } = await brevoGet(apiKey, `/processes/${processId}`);
+      if (status === 404) {
+        throw new Error(`GET /processes/${processId} retornou 404 (processo desconhecido).`);
+      }
+      return { status: body?.status };
+    },
+    async getListInfo(listId) {
+      const info = await brevoGetList(apiKey, listId);
+      return { totalSubscribers: info.totalSubscribers };
+    },
+  };
+}
+
+export interface ImportOneResult {
+  wave: string;
+  listId: number;
+  listName: string;
+  /** #4577 item 4: contagem CONFIRMADA pela Brevo pós-import (`totalSubscribers`
+   *  da lista recém-criada), não a contagem de linhas enviadas — é essa
+   *  distinção que o `a15276@aecampo.pt` real teria exposto. */
+  count: number;
+  /** Linhas de fato enviadas no CSV (reais + cópias do editor) — referência
+   *  pra auditoria; `count` acima é a fonte de verdade pós-reconciliação. */
+  sentCount: number;
+  importedAt: string;
+}
+
+/**
+ * Cria a lista, dispara o import, aguarda o processo assíncrono terminar
+ * (`pollProcessUntilTerminal`, scripts/lib/brevo-process-poll.ts — mesmo
+ * poller que `clarice-engagement-cohorts-v2.ts` usa pra export, extraído em
+ * #4577 pra ser reusado aqui em vez de duplicado) e RECONCILIA a contagem
+ * antes de declarar sucesso.
+ *
+ * #4577 item 2: `status` terminal `failed`/`error`, ou timeout de poll, já
+ * lança dentro de `pollProcessUntilTerminal` — propaga daqui sem tratamento
+ * extra.
+ *
+ * #4577 item 3: processo `completed` NÃO garante que toda linha entrou — é
+ * exatamente o caso real (`a15276@aecampo.pt`: processo completou, contagem
+ * ficou menor) que só a reconciliação contra `getListInfo` pega. Divergência
+ * (`totalSubscribers < sentCount`) lança nomeando a lista e o delta.
+ */
+export async function importOneWave(
+  client: ImportRunClient,
+  plan: Pick<Plan, "wave" | "listName" | "csv" | "sentCount">,
+  opts: { folderId: number; poll?: PollOptions; now?: () => string; log?: (msg: string) => void },
+): Promise<ImportOneResult> {
+  const log = opts.log ?? ((m: string) => console.error(m));
+  const now = opts.now ?? (() => new Date().toISOString());
+
+  log(`\n→ ${plan.wave.key}: criando lista "${plan.listName}"…`);
+  const list = await client.createList(plan.listName, opts.folderId);
+  log(`   list #${list.id} criada · importando ${plan.sentCount} linha(s)…`);
+  const { processId } = await client.importCsv(list.id, plan.csv);
+  log(`   import disparado (processId=${processId}) · aguardando confirmação da Brevo…`);
+
+  await pollProcessUntilTerminal((pid) => client.pollProcess(pid), processId, opts.poll);
+
+  const info = await client.getListInfo(list.id);
+  if (info.totalSubscribers < plan.sentCount) {
+    const delta = plan.sentCount - info.totalSubscribers;
+    throw new Error(
+      `${plan.wave.key}: lista #${list.id} ("${plan.listName}") — Brevo confirma ${info.totalSubscribers} ` +
+        `contato(s), mas o CSV enviado tinha ${plan.sentCount} linha(s). ${delta} contato(s) perdido(s) em ` +
+        `silêncio pela Brevo (o processo terminou 'completed', a contagem não bate). Abortando — limpe a ` +
+        `lista #${list.id} antes de re-rodar.`,
+    );
+  }
+  log(`   ✓ confirmado: ${info.totalSubscribers} contato(s) na lista (${plan.sentCount} enviados).`);
+
+  return {
+    wave: plan.wave.key,
+    listId: list.id,
+    listName: plan.listName,
+    count: info.totalSubscribers,
+    sentCount: plan.sentCount,
+    importedAt: now(),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Registro de listas Brevo criadas por grupo nomeado (#3228)
 // ---------------------------------------------------------------------------
 //
@@ -260,6 +413,19 @@ const fetchExistingLists = brevoListAllLists;
 // sem exigir que o editor copie o listId manualmente do stdout.
 
 export interface GroupListEntry {
+  /**
+   * #4576 — chave da campanha/wave que gerou esta lista (`wave.key`, o mesmo
+   * valor que resolve `listName` via `groupCellListNameFor`/`listNameFor`).
+   * Sem isso, `resolveGroupListId` (clarice-schedule-group.ts) não tinha
+   * como distinguir MÚLTIPLAS listas do mesmo grupo/ciclo — um teste A/B/C
+   * com 3 listas resolvia sempre a ÚLTIMA, ignorando `--key`. OPCIONAL na
+   * leitura: registros gravados ANTES desta correção não têm este campo, e
+   * `resolveGroupListId` preserva o comportamento antigo (default = última)
+   * quando NENHUMA entrada do registro o carrega — compatibilidade
+   * retroativa de formato de dado, não removível. Toda entrada NOVA
+   * (`appendGroupListsRegistry`, chamada por `main()` abaixo) sempre grava.
+   */
+  key?: string;
   listId: number;
   listName: string;
   count: number;
@@ -342,9 +508,19 @@ export function parseArgs(argv: string[]): Args {
 interface Plan {
   wave: WaveDef;
   listName: string;
+  /** Contatos REAIS do CSV de origem — não conta a(s) linha(s) do editor (#3455). */
   count: number;
   csv: string;
   columns: string[];
+  /**
+   * #4577: linhas de fato enviadas no `fileBody` do POST /contacts/import —
+   * `count` (contatos reais) + as cópias do editor (`ensureEditorCopyRow`,
+   * até 5 endereços-seed, #4045). É ESTA contagem que a reconciliação pós-
+   * import (`importOneWave`) compara contra `totalSubscribers` da lista —
+   * usar `count` aqui inflaria falso-positivo de "tudo bateu" quando faltam
+   * só os contatos reais (as cópias do editor mascarariam o delta).
+   */
+  sentCount: number;
 }
 
 /**
@@ -388,7 +564,14 @@ export function buildPlan(
     // #4471: braço com célula do --group usa groupCellListNameFor (formato
     // exigido por parseAbcAudienceCampaign); tudo mais usa listNameFor — ver
     // resolveListName acima.
-    plans.push({ wave, listName: resolveListName(wave, label, cycle, group), count: countRows(raw), csv, columns });
+    plans.push({
+      wave,
+      listName: resolveListName(wave, label, cycle, group),
+      count: countRows(raw),
+      csv,
+      columns,
+      sentCount: countRows(csv), // #4577: reais + cópias do editor — o que de fato vai no POST
+    });
   }
   return plans;
 }
@@ -441,50 +624,47 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     process.exit(1);
   }
 
-  const results: { wave: string; listId: number; processId: unknown; count: number }[] = [];
+  // #4577: cria + importa + AGUARDA o processo assíncrono terminar +
+  // RECONCILIA a contagem final contra a Brevo — antes, o loop disparava o
+  // import e seguia pra próxima wave assim que a Brevo aceitava o POST, sem
+  // nunca confirmar que o processo tinha de fato terminado (nem com sucesso,
+  // nem com a contagem esperada). `importOneWave` (acima) encapsula essa
+  // sequência inteira; `client` é injetável — testes usam um fake, aqui é
+  // sempre o transporte real da Brevo.
+  const client = makeRealImportRunClient(apiKey);
+  const results: ImportOneResult[] = [];
   try {
     for (const p of plans) {
-      console.error(`\n→ ${p.wave.key}: criando lista "${p.listName}"…`);
-      const list = (await brevoPost(apiKey, "/contacts/lists", {
-        name: p.listName,
-        folderId: args.folderId,
-      })) as { id?: number };
-      if (typeof list?.id !== "number") {
-        throw new Error(`Brevo /contacts/lists retornou shape inesperado: ${JSON.stringify(list)}`);
-      }
-      console.error(`   list #${list.id} criada · importando ${p.count} contatos…`);
-      const imp = (await brevoPost(apiKey, "/contacts/import", {
-        fileBody: p.csv,
-        listIds: [list.id],
-        updateExistingContacts: true,
-        emptyContactsAttributes: false,
-      })) as { processId?: unknown };
-      console.error(`   import disparado (processId=${imp.processId ?? "?"})`);
-      results.push({ wave: p.wave.key, listId: list.id, processId: imp.processId, count: p.count });
+      const r = await importOneWave(client, p, { folderId: args.folderId });
+      results.push(r);
     }
   } catch (e) {
     // Falha parcial: reporta as listas JÁ criadas pro editor limpar antes de re-rodar
     // (senão o pré-flight de idempotência barra o retry).
     if (results.length) {
-      console.error(`\n⚠️  erro no meio — ${results.length} lista(s) JÁ criada(s), limpe antes de re-rodar:`);
+      console.error(`\n⚠️  erro no meio — ${results.length} lista(s) JÁ criada(s) e confirmada(s), limpe antes de re-rodar:`);
       for (const r of results) console.error(`   #${r.listId} (${r.wave})`);
     }
     throw e;
   }
 
-  console.error(`\n✅ ${results.length} listas criadas + imports disparados (assíncronos na Brevo).`);
+  console.error(`\n✅ ${results.length} listas criadas + imports CONFIRMADOS (contagem reconciliada contra a Brevo).`);
 
   // #3228: registra as listas criadas pra este GRUPO (não pra rampa — waves/
   // não tem o conceito de "campanha ad-hoc por lista", só dNN do plano de
   // blocos) — sem isso, clarice-schedule-group.ts não teria como resolver
   // --group NOME pra um listId sem o editor copiar do stdout.
   if (args.group && results.length > 0) {
-    const now = new Date().toISOString();
     appendGroupListsRegistry(
       clariceSegmentsDir(args.cycle),
       args.cycle,
       args.group,
-      results.map((r, i) => ({ listId: r.listId, listName: plans[i].listName, count: r.count, importedAt: now })),
+      // #4576: `key: r.wave` — `importOneWave` já grava o `wave.key` original
+      // em `r.wave`; propagar pro registro é o que permite `resolveGroupListId`
+      // casar `--key` contra a lista certa quando o grupo tem múltiplas (ex:
+      // teste A/B/C com 3 keys/3 listas). #4577 item 4: `r.count` agora é a
+      // contagem CONFIRMADA pela Brevo pós-reconciliação, não a enviada.
+      results.map((r) => ({ key: r.wave, listId: r.listId, listName: r.listName, count: r.count, importedAt: r.importedAt })),
     );
     console.error(
       `📝 registrado em ${groupListsRegistryPath(clariceSegmentsDir(args.cycle), args.group)} — ${results.length} lista(s) do grupo '${args.group}'.`,

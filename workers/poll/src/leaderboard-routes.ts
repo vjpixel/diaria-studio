@@ -32,7 +32,6 @@ import {
   renderNicknameFormStyles, // #4232: CSS do nick-box, idem
   isValidVoteEmailFormat, // #4232: valida forma do email recebido via query param
   safeParseKv, // #4232: parse seguro de score:{email} (mesmo padrão de handleSetName)
-  renderSubscribeBoxHtml, // #4418 §2b: Caixa B (assinatura), trazida pro leaderboard
   type SubscribeBoxState, // #4418 §2b
   resolveVoteIdentityBoxKind, // #4438: decisão A/B/nenhuma centralizada (mesmo helper de vote.ts) — não reimplementar à mão
   resolveSetNameConfirmationBanner, // #4418 §3: faixa de confirmação pós-redirect de /set-name
@@ -1165,8 +1164,15 @@ function renderLeaderboardHtml(
   // função (que é "clarice" nesse ramo).
   const diariaHref = buildBrandSiteUrl("diaria", "leaderboard-copy", "eia-leaderboard-copy");
   const brandHref = buildBrandSiteUrl(brand, "leaderboard-copy", "eia-leaderboard-copy");
+  // #4569 (260804, pedido do editor): o envio Beehiiv apoiadores passou a
+  // usar `pollBrand: "clarice"` (#4521), compartilhando este leaderboard com
+  // 2 audiências (Clarice/Brevo + Beehiiv apoiadores) — "da Clarice" com link
+  // pra clarice.ai deixou de descrever a única audiência real. Troca por
+  // "mensal" (texto plano, sem link) — descreve a newsletter mensal em si,
+  // não uma marca específica. O 1º link (diariaHref → diar.ia.br) fica
+  // intacto; só o 2º (brandHref → clarice.ai) sai desta sub-copy.
   const subCopy = brand === "clarice"
-    ? `<p class="sub">Quem mais acertou ${periodNoun} qual imagem foi gerada pela <a href="${htmlEscape(diariaHref)}">diar.ia.br</a> na newsletter da <a href="${htmlEscape(brandHref)}">${info.shortName ?? info.name}</a>.</p>`
+    ? `<p class="sub">Quem mais acertou ${periodNoun} qual imagem foi gerada pela <a href="${htmlEscape(diariaHref)}">diar.ia.br</a> na newsletter mensal.</p>`
     : `<p class="sub">Quem mais acertou ${periodNoun} qual imagem foi gerada por IA na <a href="${htmlEscape(brandHref)}">${info.name}</a>.</p>`;
   // #3615: link do arquivo só pra clarice — mesmo gate já aplicado à página
   // de voto (votePageHtml, index.ts) pelo #3578. Diária não tem mais acesso
@@ -1194,16 +1200,22 @@ function renderLeaderboardHtml(
     ? `<a href="${leaderboardHref(brand, String(year))}">Ver ranking anual de ${year}</a>`
     : "";
   const navHtml = annualLinkHtml ? `<p class="nav">${annualLinkHtml}</p>` : "";
-  // #4232 / #4418 §2b: bloco de identidade (Caixa A — mesmo markup da tela de
-  // resultado do voto — ou Caixa B, assinatura) — só quando
-  // resolveLeaderboardNicknameForm/resolveLeaderboardSubscribeBox validou
-  // email+sig da query string. `showOptIn: brand === "clarice"` traz o
-  // checkbox pro leaderboard também (recomendação da issue #4418 §2:
-  // "outra superfície de conversão pelo mesmo código").
-  const identityBoxHtml = subscribeBox
-    ? renderSubscribeBoxHtml(subscribeBox, brand)
-    : nicknameForm
-    ? renderNicknameFormHtml(nicknameForm, brand, brand === "clarice")
+  // #4232: bloco de identidade (Caixa A — mesmo markup da tela de resultado
+  // do voto) — só quando resolveLeaderboardNicknameForm validou email+sig da
+  // query string. `showOptIn: brand === "clarice"` traz o checkbox pro
+  // leaderboard também (recomendação da issue #4418 §2: "outra superfície de
+  // conversão pelo mesmo código"). `surface: "leaderboard"` troca o rótulo do
+  // botão pra "Salvar" (não "Salvar e ver o leaderboard" — autorreferente
+  // nesta página, #4562).
+  //
+  // #4562: a Caixa B (renderSubscribeBoxHtml/subscribeBox) SAIU do
+  // leaderboard — os 2 CTAs dela ("Assinar e ver o leaderboard" / "Ver o
+  // leaderboard") apontavam pro leaderboard numa página que já É o
+  // leaderboard. `subscribeBox` continua resolvido acima (ver
+  // handleLeaderboardByMonth/ByYear) só porque também alimenta `identified`
+  // (cache-control) mais abaixo — não porque ainda tem HTML a oferecer aqui.
+  const identityBoxHtml = nicknameForm
+    ? renderNicknameFormHtml(nicknameForm, brand, brand === "clarice", "leaderboard")
     : "";
   // #4418 §3: faixa de confirmação pós-redirect de /set-name — topo da
   // página, acima do heading (é a PRIMEIRA coisa que o leitor vê ao chegar

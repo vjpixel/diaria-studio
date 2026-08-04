@@ -277,11 +277,21 @@ export interface GateSubscribeDeps extends SubscribeDeps {}
 /**
  * Handler `POST /jogar/gate/subscribe` — cadastro inline no MESMO mecanismo
  * de `POST /jogar/subscribe` (#3580: honeypot + rate-limit + double opt-in
- * via Beehiiv), aqui com `source` FIXO `"jogar-gate"` (UTM próprio,
- * `resolveSubscribeUtm`) e emissão de cookie de sessão IMEDIATA no sucesso —
- * a confirmação da Beehiiv segue em paralelo (double opt-in), o cookie NÃO
- * espera por ela (decisão do editor, #4054: a fricção de esperar clique em
- * e-mail mataria a conversão do gate).
+ * via Beehiiv), aqui com `source` (UTM próprio, `resolveSubscribeUtm`) e
+ * emissão de cookie de sessão IMEDIATA no sucesso — a confirmação da Beehiiv
+ * segue em paralelo (double opt-in), o cookie NÃO espera por ela (decisão do
+ * editor, #4054: a fricção de esperar clique em e-mail mataria a conversão
+ * do gate).
+ *
+ * #4578: `source` no corpo do POST (opcional, default `"jogar-gate"`) —
+ * antes era FIXO `"jogar-gate"` porque só a tela de gate por rodada
+ * (`renderJogarGatePage`) chamava este endpoint. A caixa unificada do gate
+ * no pós-voto de `/jogar?from=post-web` (`renderJogarGateBoxBlock` abaixo)
+ * reusa o MESMO endpoint mas manda `source: "jogar-postweb"` — dois pontos
+ * de entrada, atribuição separada. Igual a `resolveSubscribeUtm` (subscribe.ts),
+ * `source` desconhecido/ausente nunca lança — cai no default explícito deste
+ * handler (não no default GENÉRICO `"jogar"` de `resolveSubscribeUtm`, que
+ * mediria errado o funil da tela de gate por rodada).
  *
  * #4253 item 4: `optin` deixa de ser pré-requisito. Identidade de ranking
  * (a promessa do gate) e assinatura da newsletter são coisas DIFERENTES —
@@ -310,7 +320,7 @@ export async function handleJogarGateSubscribe(
 ): Promise<Response> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const raw = await request.text();
-  let parsed: { name?: unknown; email?: unknown; optin?: unknown; website?: unknown };
+  let parsed: { name?: unknown; email?: unknown; optin?: unknown; website?: unknown; source?: unknown };
   const ct = (request.headers.get("Content-Type") ?? "").toLowerCase();
   if (ct.includes("application/json")) {
     try {
@@ -325,6 +335,7 @@ export async function handleJogarGateSubscribe(
       email: params.get("email") ?? "",
       optin: params.get("optin") ?? "",
       website: params.get("website") ?? "",
+      source: params.get("source") ?? "",
     };
   }
 
@@ -360,7 +371,10 @@ export async function handleJogarGateSubscribe(
     return jsonWithCookie({ ok: true }, 200, env, setCookie);
   }
 
-  const utm = resolveSubscribeUtm("jogar-gate");
+  // #4578: `source` do corpo do POST, default "jogar-gate" (tela de gate por
+  // rodada, comportamento pré-#4578 preservado — não manda esse campo).
+  const sourceRaw = typeof parsed.source === "string" ? parsed.source.trim() : "";
+  const utm = resolveSubscribeUtm(sourceRaw || "jogar-gate");
   const result = await subscribeToBeehiiv(env, { name, email }, fetchImpl, utm);
   if (!result.ok) {
     if (result.reason === "not_configured") return json({ ok: false, error: "subscribe_unavailable" }, 503, env);
@@ -609,4 +623,173 @@ export function renderJogarGatePage(
 </script>
 </body>
 </html>`;
+}
+
+/**
+ * Pure (#4578): HTML da CAIXA UNIFICADA do gate revelada no pós-voto de
+ * `/jogar?from=post-web` — MESMO form de `renderJogarGatePage` acima (nome
+ * obrigatório + e-mail + checkbox OPCIONAL de newsletter), mas como bloco
+ * EMBUTIDO na página de voto único (`renderJogarPageHtml`, jogar.ts) em vez
+ * de página inteira: aqui o gate vem DEPOIS do voto (a pessoa já jogou),
+ * nunca antes (mostrar antes seria pedir e-mail de quem ainda nem votou —
+ * mesma disciplina anti-spoiler do resto do produto).
+ *
+ * ids PRÓPRIOS (`jogar-gate-box`/`jogar-gate-box-note`) — deliberadamente
+ * DISTINTOS do form de identidade (#3975, `jogar-identity-form`/
+ * `jogar-identified-note`, `renderIdentityFormBlock` em jogar.ts): a página
+ * só renderiza UM dos dois por vez (nunca os dois — decisão do editor #4578,
+ * "não consolidar os 3 blocos atuais em todo pós-voto", só substituir NESTE
+ * caminho específico quando `from=post-web`), e ids distintos deixam
+ * inequívoco no DOM/nos testes qual dos dois foi de fato renderizado. O
+ * script PRINCIPAL de `renderJogarPageHtml` resolve QUAL id observar
+ * server-side (`postWeb ? "jogar-gate-box" : "jogar-identity-form"`) — o
+ * resto da lógica de reveal/hide/sync é idêntica nos 2 casos.
+ *
+ * Wiring client-side em `jogarGateBoxScript()` abaixo — verify→subscribe→
+ * identify, reusando os MESMOS 3 endpoints do gate por rodada
+ * (`/jogar/gate/verify`, `/jogar/gate/subscribe` com `source: "jogar-postweb"`,
+ * `/jogar/identify`) — nunca duplica a lógica de verificação/cadastro, só a
+ * apresentação (bloco embutido vs. página inteira) e o `source` de UTM.
+ */
+export function renderJogarGateBoxBlock(): string {
+  return `<form id="jogar-gate-box" class="signup-form" hidden novalidate>
+  <p class="signup-text">Quer entrar no ranking? Deixe seu nome e e-mail — se você já assina a diar.ia.br, é só isso.</p>
+  <label class="signup-field"><span>Nome ou apelido</span><input type="text" name="name" autocomplete="name" maxlength="100" required></label>
+  <label class="signup-field"><span>E-mail</span><input type="email" name="email" autocomplete="email" maxlength="254" required></label>
+  <div class="signup-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
+  <label class="signup-optin"><input type="checkbox" name="optin" value="on"> Quero receber a diar.ia.br — newsletter gratuita com as novidades de IA e como usar melhor as IAs, 5 minutos por dia, seg-sex.</label>
+  <button type="submit" class="signup-btn">Entrar no ranking</button>
+  <p class="signup-note">Já assina? Some com o mesmo e-mail e pronto — sem cadastrar de novo.</p>
+  <p class="signup-status" role="status" aria-live="polite" hidden></p>
+</form>
+<p id="jogar-gate-box-note" class="identified-note" hidden></p>`;
+}
+
+/**
+ * Pure (#4578): script (IIFE) da caixa unificada do gate embutida no pós-voto
+ * de `/jogar?from=post-web` (`renderJogarGateBoxBlock` acima). Encadeia
+ * verify → subscribe → identify — mesma sequência de `renderJogarGatePage`
+ * (página inteira), aqui SEM navegação (goToGame()/skip-link não fazem
+ * sentido: a pessoa já está na página certa, já votou, só falta confirmar o
+ * cadastro — sucesso só esconde o form e mostra uma nota, mesmo padrão do
+ * `identityFormScript` que este bloco substitui nesse caminho).
+ *
+ * Reusa a mesma classe "signup-*"/mesma `IDENTITY_KEY` de localStorage do
+ * form de identidade (#3975, `identityFormScript` em jogar.ts) — só os ids
+ * do form/nota são PRÓPRIOS (`jogar-gate-box`/`jogar-gate-box-note`, ver
+ * rationale em `renderJogarGateBoxBlock` acima). O chamador
+ * (`renderJogarPageHtml`) escolhe UM dos dois scripts, nunca os dois juntos.
+ *
+ * `source` (default "jogar-postweb") — parametrizado como
+ * `inlineSignupScript` (jogar.ts), mesmo padrão do resto do arquivo, embora
+ * hoje só exista 1 call site real.
+ */
+export function jogarGateBoxScript(source: string = "jogar-postweb"): string {
+  return `<script>
+(function () {
+  var IDENTITY_KEY = "eia_web_identified_email";
+  function getIdentifiedEmail() {
+    try { return window.localStorage.getItem(IDENTITY_KEY); } catch (e) { return null; }
+  }
+  function setIdentifiedEmail(email) {
+    try { window.localStorage.setItem(IDENTITY_KEY, email); } catch (e) {}
+  }
+  var form = document.getElementById("jogar-gate-box");
+  var note = document.getElementById("jogar-gate-box-note");
+  if (!form) return;
+
+  var identified = getIdentifiedEmail();
+  if (identified) {
+    form.hidden = true;
+    if (note) { note.hidden = false; note.textContent = "Você está no ranking como " + identified + "."; }
+  }
+
+  var status = form.querySelector(".signup-status");
+  function setStatus(msg, ok) {
+    if (!status) return;
+    status.hidden = false;
+    status.textContent = msg;
+    status.className = "signup-status" + (ok ? " ok" : " err");
+  }
+  function val(sel) { var el = form.querySelector(sel); return el ? el.value : ""; }
+
+  // Merge do histórico anônimo pro e-mail (POST /jogar/identify) — mesma
+  // chamada que renderJogarGatePage faz (identifyAfterGate) depois de
+  // verify/subscribe darem certo. optin SEMPRE false aqui: o opt-in de
+  // newsletter já foi resolvido por gate/verify (assinante existente) ou
+  // gate/subscribe (cadastro novo) antes desta chamada.
+  function identifyAfterGate(email, name) {
+    var anonEmail = window.__jogarSessionEmail || "";
+    var edition = window.__jogarRepresentativeEdition || "";
+    if (!anonEmail || typeof window.fetch !== "function") return Promise.resolve({ pending: false });
+    return window.fetch("/jogar/identify?brand=web", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name, email: email, anonEmail: anonEmail, optin: false, edition: edition })
+    }).then(function (res) {
+      return res.json().then(function (d) { return d; }, function () { return null; });
+    }).then(function (d) {
+      if (d && d.ok && d.pending) return { pending: true };
+      return { pending: false };
+    }).catch(function () { return { pending: false }; });
+  }
+
+  function afterIdentify(email, result) {
+    var btn = form.querySelector('button[type="submit"]');
+    if (result && result.pending) {
+      setStatus("Enviamos um e-mail de confirmação: clique no link pra migrar seu histórico e entrar no ranking.", true);
+      if (btn) btn.disabled = false;
+      return;
+    }
+    setIdentifiedEmail(email);
+    form.hidden = true;
+    if (note) { note.hidden = false; note.textContent = "Pronto! Você está no ranking como " + email + "."; }
+  }
+
+  form.addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var email = (val('input[name="email"]') || "").trim();
+    var name = (val('input[name="name"]') || "").trim();
+    if (!name) { setStatus("Digite seu nome ou apelido.", false); return; }
+    if (!email || email.indexOf("@") < 0) { setStatus("Digite um e-mail válido.", false); return; }
+    var optinEl = form.querySelector('input[name="optin"]');
+    var optin = !!(optinEl && optinEl.checked);
+    var website = val('input[name="website"]') || "";
+    var btn = form.querySelector('button[type="submit"]');
+    if (btn) btn.disabled = true;
+    setStatus("Verificando…", true);
+
+    window.fetch("/jogar/gate/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: email, name: name, website: website })
+    }).then(function (r) { return r.json(); }).then(function (data) {
+      if (data && data.ok) { return identifyAfterGate(email, name).then(function (r) { afterIdentify(email, r); }); }
+      // Não é assinante confirmado — cadastra (com ou sem newsletter,
+      // gate/subscribe decide server-side a partir de optin), mesmo padrão
+      // de renderJogarGatePage. source próprio (#4578) pra medir esta origem.
+      return window.fetch("/jogar/gate/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email, name: name, optin: optin, website: website, source: ${JSON.stringify(source)} })
+      }).then(function (r2) { return r2.json(); }).then(function (data2) {
+        if (data2 && data2.ok && !data2.sessionUnavailable) { return identifyAfterGate(email, name).then(function (r) { afterIdentify(email, r); }); }
+        // sessionUnavailable: a Beehiiv aceitou a assinatura, mas o worker não
+        // conseguiu emitir cookie de sessão (COOKIE_HMAC_SECRET ausente —
+        // config de servidor, não erro do leitor). Mesmo padrão de
+        // renderJogarGatePage acima: mostra a mensagem e PARA aqui, sem
+        // chamar identifyAfterGate — senão o then() seguinte sobrescreveria
+        // esta mensagem antes de dar tempo de ler (achado do self-review).
+        if (data2 && data2.ok && data2.sessionUnavailable) {
+          setStatus("Assinatura feita! Confirme o e-mail que te enviamos — o que você já jogou continua contando.", true);
+          if (btn) btn.disabled = false;
+          return;
+        }
+        setStatus("Não deu, tente de novo em instantes.", false);
+        if (btn) btn.disabled = false;
+      });
+    }).catch(function () { setStatus("Erro de conexão. Tente de novo.", false); if (btn) btn.disabled = false; });
+  });
+})();
+</script>`;
 }

@@ -131,12 +131,16 @@ nunca reescrever de memória):
    Clarice, Beehiiv).
 2. A lista de pílulas de curadoria (`CURADORIA_PILLS`) — SEM label manual
    "Acesse nossas curadorias:" antes dela, só a lista, sempre nesta ordem e
-   com estes labels exatos, EXATAMENTE como abaixo (#4411, decisão do
-   editor: labels curtos, mesma ordem do diário):
+   com estes labels exatos, EXATAMENTE como abaixo (#4411/#4536/#4553, decisão
+   do editor: labels curtos, mesma ordem do diário; o UTM embutido nas URLs de
+   Cursos/Livros/Arquivo é sobrescrito pelo próprio render mensal —
+   `normalizeKnownUrl`/`withClariceUtm` — não reescrever os parâmetros):
 
-- [Cursos](https://cursos.diar.ia.br)
-- [Livros](https://livros.diar.ia.br)
+- [Cursos](https://cursos.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=cursos-rodape)
+- [Livros](https://livros.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=livros-rodape)
 - [Equipamentos](https://www.amazon.com.br/shop/vjpixel)
+- [Arquivo](https://arquivo.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape)
+- [É IA?](https://eia.diar.ia.br/jogar?utm_source=newsletter&utm_medium=email&utm_campaign=jogar-rodape)
 
    `monthly-render.ts` gera o label sozinho ao detectar uma lista de links
    nessa posição (mesmo padrão do diário, `FIXED_BLOCKS.para_encerrar_curadorias`

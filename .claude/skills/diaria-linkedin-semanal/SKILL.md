@@ -183,8 +183,13 @@ Depois:
 mcp__clarice__correct_text(<texto humanizado>)
 ```
 
-Aplique as sugestões da Clarice manualmente (texto curto — não precisa de
-`clarice-apply.ts`). Guarde o resultado final dos 3 textos pro Passo 5.
+Aplique **todas** as sugestões da Clarice, incondicionalmente (texto curto
+— não precisa de `clarice-apply.ts`) — nunca apresente as sugestões como
+menu de escolha ao editor, relate o que mudou depois de aplicar, não
+negocie antes (#4514). **Única exceção:** sugestão que corrompa
+identificador técnico ou nome de marca (ex: `diar.ia` → `diária` quebraria
+a marca) — nesse caso aplique todo o resto e sinalize só essa ao editor.
+Guarde o resultado final dos 3 textos pro Passo 5.
 
 ## Passo 5 — Renderizar o artefato final
 

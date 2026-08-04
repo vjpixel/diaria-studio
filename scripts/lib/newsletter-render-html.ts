@@ -1492,21 +1492,23 @@ export function buildWhatsappShareLink(block: string): string {
 /**
  * Renderiza o bloco encaminhável por WhatsApp em HTML — mesmo padrão visual
  * "painel" de `renderSorteio`/`renderEIA` (kicker + box bege) — com um botão
- * de compartilhamento abaixo do texto. As 2 linhas visíveis (#4570: eram 3
- * antes — manchete + frase-gancho + CTA de assinatura; a frase-gancho e o CTA
- * separado saíram, sobrou só manchete + URL) são DERIVADAS de `block`
- * (`block.split("\n\n")`) — a MESMA string que vai pro `wa.me/?text=` — e só
- * então escapadas via `esc` (nunca `mdInlineToHtml`, não há markdown pra
- * interpretar aqui). #4512 (fleet review round 2): titleLine/urlLine nunca
- * são reescritos como literais separados — dois textos mantidos por
- * convenção em vez de por derivação divergem cedo ou tarde. A URL ganha um
- * `<a href>` clicável na versão renderizada — o texto puro do `wa.me` mantém
- * a URL como texto normal (o WhatsApp auto-linkifica ao colar). #4570: botão
- * "Compartilhar no WhatsApp" passou de pill contornado SEM `background:`
- * explícito (transparente/herdado, lia como link) para botão preenchido
- * (fundo TEAL sólido, texto papel) — pedido explícito do editor, distingue
- * visualmente das demais pills do template (linhas 445/646/657/929), que
- * TÊM `background:${COLORS.paper}` explícito de propósito.
+ * de compartilhamento abaixo do texto. #4582 (achado ao vivo 260804: a URL
+ * visível — crua, com os 3 params UTM — quebrava o layout do box em clientes
+ * de e-mail; pedido do editor): a ÚNICA linha visível agora é a manchete do
+ * D1 em `<strong>`, sem a URL solta como texto/link. A URL continua existindo
+ * — só não é mais renderizada como linha própria — ela segue embutida no
+ * texto que vai pro `wa.me/?text=` (`block`, via `buildWhatsappShareBlock`),
+ * que é o que de fato importa: quando o leitor encaminha, o link vai junto.
+ * `titleLine` é DERIVADO de `block` (`block.split("\n\n")[0]`) — mesma
+ * disciplina anti-duplicação do #4512 (nunca um literal separado que pode
+ * divergir do texto que alimenta o wa.me).
+ *
+ * #4582: botão voltou a seguir o MESMO padrão pill dos demais CTAs do
+ * template (fundo `${COLORS.paper}`, borda `${RULE}`, texto `${TEXT_COLOR}`,
+ * `border-radius:999px` — ver linhas 446/647/658/930) e ganhou
+ * `text-align:center` (antes ficava alinhado à esquerda dentro do box) —
+ * revertendo a escolha do #4570 de um botão preenchido TEAL, que o editor
+ * pediu pra desfazer nesta mesma sessão.
  *
  * `""` quando não há D1 (edição sem destaques — nunca deveria acontecer dado
  * o invariante de 2-3 destaques, `scripts/extract-destaques.ts`, mas
@@ -1527,20 +1529,14 @@ export function renderWhatsappShare(destaques: RenderDestaque[], edition: string
   const block = buildWhatsappShareBlock(d1.title, editionUrl);
   const shareLink = buildWhatsappShareLink(block);
 
-  // Deriva as 2 linhas visíveis de `block` — única fonte de verdade real
-  // (ver rationale no doc comment acima). `urlLine` é EXATAMENTE `editionUrl`
-  // (#4570: sem prefixo de texto na frente, diferente do CTA antigo).
-  const [titleLine, urlLine] = block.split("\n\n");
-  const linkHtml = `<a href="${esc(editionUrl)}" style="color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};" target="_blank" rel="noopener noreferrer">${esc(urlLine)}</a>`;
-  const innerHtml = [
-    bodyP("0", esc(titleLine)),
-    bodyP("12px 0 0", linkHtml),
-  ].join("\n      ");
+  // Só a manchete é visível no box (#4582) — a URL segue só dentro de `block`
+  // (texto do wa.me), nunca renderizada como linha própria aqui.
+  const [titleLine] = block.split("\n\n");
+  const innerHtml = bodyP("0", `<strong>${esc(titleLine)}</strong>`);
 
-  // #4570: botão PREENCHIDO (fundo TEAL sólido, texto papel) — pedido
-  // explícito do editor pra parar de "ler como link" (as demais pills do
-  // template usam fundo papel de propósito, ver linhas 445/646/657/929).
-  const buttonStyle = `display:inline-block;margin-top:16px;background:${TEAL};border:1px solid ${TEAL};border-radius:999px;padding:10px 18px;font-family:${FONT_LABEL};font-size:16px;font-weight:bold;color:${PAPER};text-decoration:none;`;
+  // #4582: mesmo pill dos demais CTAs (ver linhas 446/647/658/930) —
+  // reverte o botão preenchido TEAL introduzido no #4570.
+  const buttonStyle = `display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;`;
 
   return `<!-- Compartilhe no WhatsApp -->
 <tr><td class="pad" style="padding:${PAD_SECTION};">
@@ -1548,9 +1544,9 @@ export function renderWhatsappShare(destaques: RenderDestaque[], edition: string
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-collapse:separate;border-spacing:0"><tr>
     <td style="background:${SURFACE};border-radius:12px;padding:24px 28px;">
       ${innerHtml}
-      <table role="presentation" cellpadding="0" cellspacing="0"><tr><td>
+      <div style="text-align:center;margin-top:16px;">
         <a href="${esc(shareLink)}" style="${buttonStyle}" target="_blank" rel="noopener noreferrer">Compartilhar no WhatsApp →</a>
-      </td></tr></table>
+      </div>
     </td>
   </tr></table>
 </td></tr>`;

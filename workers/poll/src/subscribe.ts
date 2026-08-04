@@ -35,7 +35,7 @@ import { json } from "./index";
 // medium/campaign PRÓPRIOS abaixo distinguem o cadastro inline do CTA-link e
 // do quiz.
 import { isValidVoteEmailFormat, SUBSCRIBE_UTM_SOURCE } from "./lib";
-import { JOGAR_GATE_INLINE_UTM, JOGAR_IDENTIFY_INLINE_UTM, JOGAR_INLINE_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041, #4054, #4125 item 4
+import { JOGAR_GATE_INLINE_UTM, JOGAR_IDENTIFY_INLINE_UTM, JOGAR_INLINE_UTM, JOGAR_POSTWEB_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041, #4054, #4125 item 4, #4578
 
 /** UTM próprio do cadastro inline (#3580) — `utm_source` continua
  * `eia-standalone` (convenção de medição), medium/campaign distintos pra medir
@@ -75,13 +75,37 @@ export const INLINE_SUBSCRIBE_UTM_CAMPAIGN = JOGAR_INLINE_UTM.campaign;
  * argumento e caía no default `jogar` — colidindo com o form standalone do
  * #3580 (que só sobrevive em `/jogar/quiz`), tornando as duas conversões
  * indistinguíveis na atribuição.
+ *
+ * #4578: `"jogar-postweb"` — cadastro na CAIXA UNIFICADA DO GATE revelada no
+ * pós-voto de `/jogar?from=post-web` (visitante redirecionado de `/vote` na
+ * versão web de um post, merge tag nunca resolvida ali — ver rationale em
+ * `vote.ts`). Mesmo endpoint/mecanismo de `"jogar-gate"` acima
+ * (`POST /jogar/gate/subscribe`, `handleJogarGateSubscribe`, web-gate.ts) —
+ * `handleJogarGateSubscribe` lê `source` do corpo do POST (default
+ * `"jogar-gate"`, back-compat com a tela de gate por rodada que não manda
+ * esse campo) pra distinguir os dois pontos de entrada na atribuição.
  */
-export type SubscribeSource = "jogar" | "livros-hero" | "livros-footer" | "vote-clarice" | "jogar-gate" | "jogar-identify";
+export type SubscribeSource = "jogar" | "livros-hero" | "livros-footer" | "vote-clarice" | "jogar-gate" | "jogar-identify" | "jogar-postweb";
 
+/**
+ * #4530 Parte B: `referringSite` promovido a campo do triplo — antes disto
+ * `subscribeToBeehiiv` tinha o literal `"jogar-eia-inline"` HARDCODED no
+ * corpo da função, compartilhado por TODO call site (livros hero/footer,
+ * gate, identify, magic-link, caixa clarice do `/set-name`) independente do
+ * `source` de fato. O campo não distinguia nada — só o triplo UTM
+ * distinguia. Cada entrada de `SUBSCRIBE_UTM_BY_SOURCE` abaixo agora carrega
+ * o `referringSite` PRÓPRIO da posição do link; `identify.ts`/`magic-link.ts`
+ * (que compartilham `source="jogar-identify"`, mas são fluxos DIFERENTES —
+ * form on-page vs. link de e-mail) e `index.ts` (caixa clarice do
+ * `/set-name`, que não passa por `resolveSubscribeUtm`) sobrescrevem o campo
+ * na chamada — ver `JOGAR_IDENTIFY_MAGIC_LINK_REFERRING_SITE`/
+ * `VOTE_CLARICE_SET_NAME_REFERRING_SITE` exportados abaixo.
+ */
 export interface SubscribeUtm {
   source: string;
   medium: string;
   campaign: string;
+  referringSite: string;
 }
 
 const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
@@ -89,6 +113,7 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     source: SUBSCRIBE_UTM_SOURCE,
     medium: INLINE_SUBSCRIBE_UTM_MEDIUM,
     campaign: INLINE_SUBSCRIBE_UTM_CAMPAIGN,
+    referringSite: "eia-jogar-inline",
   },
   // utm_source=livros / utm_medium distinto por posição — pedido explícito da
   // issue #4051 pra medir hero × fim-de-lista separadamente.
@@ -97,11 +122,13 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     source: LIVROS_INLINE_UTM.source,
     medium: LIVROS_INLINE_UTM.hero.medium,
     campaign: LIVROS_INLINE_UTM.campaign,
+    referringSite: "livros-inline-hero",
   },
   "livros-footer": {
     source: LIVROS_INLINE_UTM.source,
     medium: LIVROS_INLINE_UTM.footer.medium,
     campaign: LIVROS_INLINE_UTM.campaign,
+    referringSite: "livros-inline-footer",
   },
   // #4065: cadastro inline na tela de resultado do voto do brand clarice —
   // utm_source distinto (não é o funil "eia-standalone" do jogo público, é a
@@ -111,22 +138,48 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     source: VOTE_CLARICE_INLINE_UTM.source,
     medium: VOTE_CLARICE_INLINE_UTM.medium,
     campaign: VOTE_CLARICE_INLINE_UTM.campaign,
+    referringSite: "vote-clarice-inline",
   },
   // #4054: cadastro na tela de gate do caminho de fora (`web-gate.ts`).
   "jogar-gate": {
     source: JOGAR_GATE_INLINE_UTM.source,
     medium: JOGAR_GATE_INLINE_UTM.medium,
     campaign: JOGAR_GATE_INLINE_UTM.campaign,
+    referringSite: "jogar-gate-inline",
   },
   // #4125 (item 4): opt-in de newsletter do form de IDENTIDADE (#3975,
   // `identify.ts`) — UTM próprio pra não colidir com "jogar" (form standalone
-  // do #3580, hoje só em `/jogar/quiz`).
+  // do #3580, hoje só em `/jogar/quiz`). `referringSite` cobre o form
+  // ON-PAGE de `identify.ts` — `magic-link.ts` (mesmo `source`, fluxo
+  // DIFERENTE) sobrescreve com `JOGAR_IDENTIFY_MAGIC_LINK_REFERRING_SITE`.
   "jogar-identify": {
     source: JOGAR_IDENTIFY_INLINE_UTM.source,
     medium: JOGAR_IDENTIFY_INLINE_UTM.medium,
     campaign: JOGAR_IDENTIFY_INLINE_UTM.campaign,
+    referringSite: "jogar-identify-inline",
+  },
+  // #4578: caixa unificada do gate no pós-voto de /jogar?from=post-web —
+  // mesmo endpoint de "jogar-gate" (POST /jogar/gate/subscribe), source
+  // distinto pra não misturar os 2 pontos de entrada na atribuição.
+  "jogar-postweb": {
+    source: JOGAR_POSTWEB_UTM.source,
+    medium: JOGAR_POSTWEB_UTM.medium,
+    campaign: JOGAR_POSTWEB_UTM.campaign,
+    referringSite: "jogar-postweb-gate",
   },
 };
+
+/** #4530 Parte B: `magic-link.ts` reusa o triplo UTM de `"jogar-identify"`
+ * (mesmo funil de opt-in do form de identidade), mas é um CALL SITE distinto
+ * (link de confirmação por e-mail, não o form on-page) — precisa do próprio
+ * `referringSite`, nunca o mesmo de `identify.ts`. */
+export const JOGAR_IDENTIFY_MAGIC_LINK_REFERRING_SITE = "jogar-identify-magic-link";
+
+/** #4530 Parte B: caixa clarice do `/set-name` (`index.ts::handleSetName`) —
+ * chama `subscribeToBeehiiv` direto com `VOTE_CLARICE_INLINE_UTM` (não passa
+ * por `resolveSubscribeUtm`), então precisa do próprio `referringSite`
+ * explícito na chamada. */
+export const VOTE_CLARICE_SET_NAME_REFERRING_SITE = "vote-clarice-set-name";
 
 /** Pure: resolve o triplo UTM a partir do `source` mandado pelo cliente
  * (default `jogar` pra valor ausente/desconhecido — nunca lança). */
@@ -314,7 +367,10 @@ export async function subscribeToBeehiiv(
     utm_source: utm.source,
     utm_medium: utm.medium,
     utm_campaign: utm.campaign,
-    referring_site: "jogar-eia-inline",
+    // #4530 Parte B: era o literal fixo "jogar-eia-inline" pra TODO call
+    // site — agora vem do triplo, um valor por posição de link (ver
+    // docstring de `SubscribeUtm`).
+    referring_site: utm.referringSite,
   };
   if (input.name && env.BEEHIIV_NAME_FIELD) {
     body.custom_fields = [{ name: env.BEEHIIV_NAME_FIELD, value: input.name }];

@@ -42,9 +42,23 @@ const FONT_SANS = "'Geist', 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-se
  * caractere (0.52 * font-size) — mesma heurística de largura usada nos outros
  * geradores de card do repo; sem medição real de glifo, o clamp de font-size
  * abaixo é o que garante que não estoura.
+ *
+ * Wrap guloso (empurra o máximo de palavras pra 1ª linha) só decide QUANTAS
+ * linhas o título precisa — esse é o mínimo possível (greedy first-fit é
+ * ótimo em contagem de linhas, prova por troca). A partir daí,
+ * `balanceLines` (#4575) busca, entre todas as formas de distribuir as MESMAS
+ * palavras nesse mesmo número de linhas, a que deixa as linhas mais parecidas
+ * em comprimento — corrige o caso clássico do wrap guloso (1ª linha quase
+ * cheia, última com uma palavra órfã).
  */
 export function wrapTitle(title: string, maxCharsPerLine: number): string[] {
   const words = title.split(/\s+/).filter(Boolean);
+  const greedy = greedyWrapLines(words, maxCharsPerLine);
+  if (greedy.length < 2) return greedy;
+  return balanceLines(words, maxCharsPerLine, greedy.length) ?? greedy;
+}
+
+function greedyWrapLines(words: string[], maxCharsPerLine: number): string[] {
   const lines: string[] = [];
   let cur = "";
   for (const w of words) {
@@ -58,6 +72,84 @@ export function wrapTitle(title: string, maxCharsPerLine: number): string[] {
   }
   if (cur) lines.push(cur);
   return lines;
+}
+
+/** Uma palavra sozinha nunca é cortada/descartada, mesmo estourando o limite — mesma regra do wrap guloso. */
+function isValidSegment(wordCount: number, segmentLen: number, maxCharsPerLine: number): boolean {
+  return wordCount === 1 || segmentLen <= maxCharsPerLine;
+}
+
+/** [maior-menor, soma dos quadrados da folga em relação à média] — comparado lexicograficamente (menor é melhor). */
+function balanceCost(lines: string[]): [number, number] {
+  const lens = lines.map((l) => l.length);
+  const max = Math.max(...lens);
+  const min = Math.min(...lens);
+  const mean = lens.reduce((a, b) => a + b, 0) / lens.length;
+  const sumSq = lens.reduce((a, l) => a + (l - mean) ** 2, 0);
+  return [max - min, sumSq];
+}
+
+function costLess(a: [number, number], b: [number, number]): boolean {
+  return a[0] !== b[0] ? a[0] < b[0] : a[1] < b[1];
+}
+
+/**
+ * Busca, por força bruta, a distribuição das `words` em exatamente `lineCount`
+ * linhas contíguas que minimiza `balanceCost` — sem nunca violar
+ * `maxCharsPerLine` (exceto o caso degenerado de palavra única maior que o
+ * limite, que `isValidSegment` permite). Viável porque `lineCount` e o número
+ * de palavras são pequenos com títulos editoriais (≤52 caracteres); o guard
+ * de `words.length` é só defensivo pra input fora desse regime.
+ *
+ * O espaço de busca sempre contém a própria partição gulosa (ela é composta
+ * só de segmentos válidos por construção), então o resultado nunca é pior que
+ * o guloso — na pior das hipóteses, empata.
+ */
+function balanceLines(words: string[], maxCharsPerLine: number, lineCount: number): string[] | null {
+  if (lineCount < 2 || words.length < lineCount) return null;
+  // Guard defensivo: título editorial é ≤52 caracteres (~10-15 palavras em
+  // português); 24 dá margem generosa mantendo o pior caso da busca na casa
+  // de poucos ms mesmo com palavras curtas adversariais (medido: ~8ms com 28
+  // palavras curtas vs. ~550ms com 40 — a busca cresce combinatorialmente com
+  // o nº de palavras). Acima do guard, cai pro resultado guloso sem tentar
+  // balancear.
+  if (words.length > 24) return null;
+
+  let best: string[] | null = null;
+  let bestCost: [number, number] | null = null;
+
+  const segmentStr = (start: number, end: number): string => words.slice(start, end).join(" ");
+
+  function search(startIdx: number, linesLeft: number, acc: string[]): void {
+    if (linesLeft === 1) {
+      const wordsLeft = words.length - startIdx;
+      if (wordsLeft < 1) return;
+      const seg = segmentStr(startIdx, words.length);
+      if (!isValidSegment(wordsLeft, seg.length, maxCharsPerLine)) return;
+      const lines = [...acc, seg];
+      const cost = balanceCost(lines);
+      if (!bestCost || costLess(cost, bestCost)) {
+        bestCost = cost;
+        best = lines;
+      }
+      return;
+    }
+    // Precisa sobrar ao menos 1 palavra por linha restante.
+    const maxLen = words.length - startIdx - (linesLeft - 1);
+    for (let len = 1; len <= maxLen; len++) {
+      const seg = segmentStr(startIdx, startIdx + len);
+      if (isValidSegment(len, seg.length, maxCharsPerLine)) {
+        search(startIdx + len, linesLeft - 1, [...acc, seg]);
+      } else if (len >= 2) {
+        // Comprimento só cresce com `len` — uma vez estourado (segmento com
+        // 2+ palavras), qualquer `len` maior também estoura. Corta a busca.
+        break;
+      }
+    }
+  }
+
+  search(0, lineCount, []);
+  return best;
 }
 
 /** Escapa texto pra dentro de `<text>` do SVG. */

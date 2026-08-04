@@ -1,5 +1,14 @@
 export interface Env {
   BREVO_API_KEY: string;
+  /**
+   * #4515: API key da conta Brevo PRÓPRIA do editor (canal `brevo_diaria` —
+   * `platform.config.json > brevo_diaria.api_key_env`), conta SEPARADA da
+   * Clarice (`BREVO_API_KEY` acima) — IP/domínio isolados, ver #4266/#4476.
+   * Secret opcional: ausente → a aba "brevo_diaria" fica oculta (mesmo padrão
+   * de STRIPE_API_KEY/COUPONS_TAB_ENABLED — nunca lança, nunca derruba o
+   * resto do dashboard). Setup: `wrangler secret put BREVO_DIARIA_API_KEY`.
+   */
+  BREVO_DIARIA_API_KEY?: string;
   /** KV namespace para cache de stats imutáveis (#2144) */
   STATS_CACHE: KVNamespace;
   /** Chave Stripe restrita (read-only). Secret via `wrangler secret put STRIPE_API_KEY`. */

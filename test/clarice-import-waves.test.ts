@@ -15,8 +15,12 @@ import {
   loadWaveDefs,
   groupListsRegistryPath,
   appendGroupListsRegistry,
+  validateProcessId,
+  importOneWave,
+  makeRealImportRunClient,
   type WaveDef,
   type GroupListEntry,
+  type ImportRunClient,
 } from "../scripts/clarice-import-waves.ts";
 import { buildSegmentArtifact, type SegmentRow } from "../scripts/clarice-build-segment.ts";
 import { campaignNameFor } from "../scripts/clarice-schedule-group.ts";
@@ -513,6 +517,175 @@ describe("appendGroupListsRegistry (#3228)", () => {
       assert.equal(engajados.lists[0].listId, 10);
       assert.equal(reativacao.lists.length, 1);
       assert.equal(reativacao.lists[0].listId, 20);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4577 — clarice-import-waves declarava sucesso só por a Brevo ter aceitado
+// o POST /contacts/import, sem NUNCA confirmar que o processo assíncrono
+// tinha terminado, nem que a lista de fato recebeu todos os contatos do CSV
+// enviado. Um contato (a15276@aecampo.pt) foi perdido em silêncio: o
+// processo terminou 'completed', mas a lista ficou com menos contatos que o
+// CSV — só a reconciliação contra a contagem confirmada da Brevo pega isso.
+// ---------------------------------------------------------------------------
+
+describe("validateProcessId (#4577 item 1)", () => {
+  it("número finito → aceita", () => {
+    assert.equal(validateProcessId(42), 42);
+  });
+
+  it("string não-vazia → aceita", () => {
+    assert.equal(validateProcessId("abc-123"), "abc-123");
+  });
+
+  it("ausente/null/undefined → lança", () => {
+    assert.throws(() => validateProcessId(undefined), /processId ausente\/inválido/);
+    assert.throws(() => validateProcessId(null), /processId ausente\/inválido/);
+  });
+
+  it("string vazia/em branco → lança", () => {
+    assert.throws(() => validateProcessId(""), /processId ausente\/inválido/);
+    assert.throws(() => validateProcessId("   "), /processId ausente\/inválido/);
+  });
+
+  it("NaN/Infinity → lança (não é um processId usável)", () => {
+    assert.throws(() => validateProcessId(NaN));
+    assert.throws(() => validateProcessId(Infinity));
+  });
+});
+
+describe("importOneWave (#4577 — confirma o processo assíncrono + reconcilia contagem)", () => {
+  const wave: WaveDef = { key: "W1", file: "w1-store.csv", desc: "re-envio (engajado)" };
+  const plan = {
+    wave,
+    listName: "Clarice Jun/2026 W1 — re-envio (engajado)",
+    csv: "EMAIL,NOME\na@x.com,Ana\nb@x.com,Bia\nvjpixel@gmail.com,Pixel (editor)\n",
+    sentCount: 3, // 2 contatos reais + 1 cópia do editor
+  };
+  const noSleep = { sleep: async () => {}, intervalMs: 0 };
+
+  function makeFakeClient(overrides: Partial<ImportRunClient> = {}): ImportRunClient {
+    return {
+      createList: async () => ({ id: 99 }),
+      importCsv: async () => ({ processId: "proc-1" }),
+      pollProcess: async () => ({ status: "completed" }),
+      getListInfo: async () => ({ totalSubscribers: plan.sentCount }),
+      ...overrides,
+    };
+  }
+
+  // Cenário (a) da issue: processo que termina 'failed' → rejeita (o
+  // chamador real, main(), propaga isso como exit ≠ 0).
+  it("(a) processo termina 'failed' → rejeita, nunca declara sucesso", async () => {
+    const client = makeFakeClient({ pollProcess: async () => ({ status: "failed" }) });
+    await assert.rejects(
+      () => importOneWave(client, plan, { folderId: 1, poll: noSleep }),
+      /falhou/,
+    );
+  });
+
+  // Cenário (b) da issue: processo 'completed', mas a lista confirma MENOS
+  // contatos que o CSV enviado (o caso real do a15276@aecampo.pt — o
+  // processo relata sucesso, a linha simplesmente não entrou). É esta
+  // checagem — não o poll — que detecta o caso real.
+  it("(b) completed com contagem confirmada MENOR que o CSV enviado → aborta nomeando a lista e o delta", async () => {
+    const client = makeFakeClient({ getListInfo: async () => ({ totalSubscribers: plan.sentCount - 1 }) });
+    await assert.rejects(
+      () => importOneWave(client, plan, { folderId: 1, poll: noSleep }),
+      (err: Error) => {
+        assert.match(err.message, /lista #99/);
+        assert.match(err.message, /1 contato\(s\) perdido/);
+        assert.match(err.message, /Brevo confirma 2/);
+        assert.match(err.message, /CSV enviado tinha 3/);
+        return true;
+      },
+    );
+  });
+
+  it("(c) caso feliz — completed com contagem batendo → resolve com a contagem CONFIRMADA (não a enviada)", async () => {
+    const client = makeFakeClient();
+    const result = await importOneWave(client, plan, { folderId: 1, poll: noSleep, now: () => "2026-08-04T12:00:00.000Z" });
+    assert.deepEqual(result, {
+      wave: "W1",
+      listId: 99,
+      listName: plan.listName,
+      count: 3, // #4577 item 4: grava a contagem CONFIRMADA pela Brevo
+      sentCount: 3,
+      importedAt: "2026-08-04T12:00:00.000Z",
+    });
+  });
+
+  it("contagem confirmada MAIOR que o CSV enviado (lista pré-existia com outros contatos) → não é tratado como perda, resolve normalmente", async () => {
+    const client = makeFakeClient({ getListInfo: async () => ({ totalSubscribers: plan.sentCount + 5 }) });
+    const result = await importOneWave(client, plan, { folderId: 1, poll: noSleep });
+    assert.equal(result.count, plan.sentCount + 5);
+  });
+
+});
+
+// #4577 item 1: `makeRealImportRunClient` (o transporte REAL, usado só por
+// `main()`) é onde `validateProcessId` de fato entra em jogo — antes desta
+// issue, a resposta de `POST /contacts/import` era lida como `{ processId?:
+// unknown }` e nunca validada; um `processId` ausente/malformado seguia
+// adiante como se nada tivesse acontecido. Mocka `fetch` global (mesmo
+// padrão de test/brevo-send-now-4347.test.ts) pra provar a validação
+// realmente ACONTECE no ponto de entrada real, não só na função pura isolada.
+describe("makeRealImportRunClient().importCsv (#4577 item 1 — validação real do processId)", () => {
+  function jsonRes(status: number, body: unknown): Response {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+    } as unknown as Response;
+  }
+
+  it("POST /contacts/import sem processId no corpo → rejeita (não segue como se tivesse disparado)", async () => {
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async () => jsonRes(200, {})) as typeof fetch;
+    try {
+      const client = makeRealImportRunClient("fake-key");
+      await assert.rejects(
+        () => client.importCsv(99, "EMAIL\na@x.com\n"),
+        /processId ausente\/inválido/,
+      );
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
+  it("POST /contacts/import com processId válido → resolve com ele", async () => {
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async () => jsonRes(200, { processId: 4242 })) as typeof fetch;
+    try {
+      const client = makeRealImportRunClient("fake-key");
+      const { processId } = await client.importCsv(99, "EMAIL\na@x.com\n");
+      assert.equal(processId, 4242);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+});
+
+describe("buildPlan — sentCount inclui as cópias do editor (#4577)", () => {
+  it("sentCount = contatos reais + linhas de cópia do editor (count fica só com os reais)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "bp-sentcount-"));
+    try {
+      writeFileSync(
+        join(dir, "waves-manifest.json"),
+        JSON.stringify([{ key: "W1", file: "w1-store.csv", desc: "re-envio (engajado)" }]),
+      );
+      writeFileSync(join(dir, "w1-store.csv"), "email,NOME\na@x.com,Ana\nb@x.com,Bia\n");
+      const plans = buildPlan("Jun/2026", "2606-07", dir) as unknown as { count: number; sentCount: number }[];
+      assert.equal(plans[0].count, 2, "count continua só os contatos reais (#3455)");
+      assert.ok(
+        plans[0].sentCount > plans[0].count,
+        `sentCount (${plans[0].sentCount}) deve ser MAIOR que count (${plans[0].count}) — inclui as cópias do editor`,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

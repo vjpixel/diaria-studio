@@ -35,7 +35,15 @@ import {
   DIARIA_CURSOS_URL,
   DIARIA_LIVROS_URL,
   DIARIA_AMAZON_LOJA_URL,
+  DIARIA_ARQUIVO_URL,
+  DIARIA_EIA_URL,
 } from "../canonical-urls.ts";
+import {
+  CURSOS_RODAPE_UTM,
+  LIVROS_RODAPE_UTM,
+  ARQUIVO_RODAPE_UTM,
+  JOGAR_RODAPE_UTM,
+} from "./utm-registry.ts"; // #4536/#4553 — UTM da direção newsletter → curadoria; JOGAR_RODAPE_UTM #4550
 
 /**
  * #4413: convite social FIXO — texto único, idêntico em diário e mensal,
@@ -50,15 +58,59 @@ export const SOCIAL_INVITE =
   `Para acompanhar as 3 principais notícias de IA todos os dias, siga a **diar.ia.br** no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}), [Instagram](${DIARIA_INSTAGRAM_URL}), [Threads](${DIARIA_THREADS_URL}), [Facebook](${DIARIA_FACEBOOK_PAGE_URL}) ou [X](${DIARIA_X_URL}).`;
 
 /**
+ * Monta `{url}?utm_source=...&utm_medium=...&utm_campaign=...` a partir de um
+ * triplo do registry — mesmo padrão TEXTUAL já usado pelos emissores de
+ * footer-nav (`renderCuradoriaFooter` em `curadoria-page.ts`, consumido por
+ * `build-cursos-page.ts`/`build-livros-page.ts`/`render-archive.ts`):
+ * concatenação simples, preservando a URL base EXATAMENTE como a constante
+ * declara (`DIARIA_CURSOS_URL`/`DIARIA_LIVROS_URL`/`DIARIA_ARQUIVO_URL`, sem
+ * `/` final). Deliberadamente NÃO usa `new URL()` aqui — diferente de
+ * `buildFacebookCtaUrl`/`buildInstagramWeeklyArchiveUrl` (que partem de uma
+ * URL genérica embutida em prosa e não têm essa restrição), `new URL(...)
+ * .toString()` normaliza o path vazio pra `/`, o que mudaria a forma da URL
+ * base em TODO outro lugar que a compara/hardcoda por igualdade de string
+ * (ex: `FOOTER_DOMAINS`/testes que citam `DIARIA_CURSOS_URL` cru). Os valores
+ * aqui são 100% ASCII estático (sem risco de encoding), então a concatenação
+ * é segura. Centralizado porque as 3 pills abaixo repetem a mesma forma 3x
+ * (#4536/#4553).
+ */
+function withRodapeUtm(
+  url: string,
+  utm: { source: string; medium: string; campaign: string },
+): string {
+  return `${url}?utm_source=${utm.source}&utm_medium=${utm.medium}&utm_campaign=${utm.campaign}`;
+}
+
+/**
  * #4411: lista de pílulas "Acesse nossas curadorias" — navegação estrutural
  * FIXA, idêntica em diário e mensal (labels curtos: Cursos/Livros/
- * Equipamentos). SEM label manual — o render de cada formato
+ * Equipamentos/Arquivo). SEM label manual — o render de cada formato
  * (`newsletter-render-html.ts`/`monthly-render.ts`) gera o label "Acesse
  * nossas curadorias:" sozinho ao detectar esta lista na posição certa.
+ *
+ * #4536 (pill nova "Arquivo" — antes desta issue `arquivo.diar.ia.br` não
+ * tinha NENHUM link de entrada a partir da newsletter) + #4553 (UTM nas 3
+ * pills que apontam pra domínio próprio — Cursos/Livros/Arquivo — na direção
+ * newsletter → curadoria; convenção `source: newsletter, medium: email,
+ * campaign` único por pill, ver `utm-registry.ts`). "Equipamentos" fica de
+ * fora do UTM — link de afiliado direto à Amazon, fora do escopo do #4553.
+ *
+ * #4550 (pill nova "É IA?", 260804): distribuição própria do jogo — decisão
+ * do editor de dar tratamento de produto ao "É IA?" (motor de divulgação
+ * inteiro construído, ~8 votos/edição, "ninguém chega na porta"). Esta é 1
+ * das 3 superfícies acordadas no briefing overnight do #4550 (rodapé +
+ * post/story dedicado + link em bio — ver `jogar-promo-urls.ts` pras outras
+ * 2). "Ao lado das pills de curadoria" na issue original vira, na prática,
+ * a MESMA lista: `renderEncerrar` (`newsletter-render-html.ts`) só reconhece
+ * 1 bloco de lista por seção, sempre rotulado "Acesse nossas curadorias:" —
+ * uma 2ª lista separada duplicaria esse rótulo. Replicar o padrão como pill
+ * nova dá UTM + render consistente sem precisar de um 2º mecanismo de lista.
  */
-export const CURADORIA_PILLS = `- [Cursos](${DIARIA_CURSOS_URL})
-- [Livros](${DIARIA_LIVROS_URL})
-- [Equipamentos](${DIARIA_AMAZON_LOJA_URL})`;
+export const CURADORIA_PILLS = `- [Cursos](${withRodapeUtm(DIARIA_CURSOS_URL, CURSOS_RODAPE_UTM)})
+- [Livros](${withRodapeUtm(DIARIA_LIVROS_URL, LIVROS_RODAPE_UTM)})
+- [Equipamentos](${DIARIA_AMAZON_LOJA_URL})
+- [Arquivo](${withRodapeUtm(DIARIA_ARQUIVO_URL, ARQUIVO_RODAPE_UTM)})
+- [É IA?](${withRodapeUtm(`${DIARIA_EIA_URL}/jogar`, JOGAR_RODAPE_UTM)})`;
 
 /**
  * Cláusula de abertura do parágrafo de apoio pro DIÁRIO — vazia, porque o

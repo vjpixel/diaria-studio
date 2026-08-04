@@ -45,6 +45,8 @@ export * from "./sections-core.ts";
 export * from "./weekly-plan.ts";
 // #3884: painel de avaliação de experimentos A/B + registro "Experimento vigente".
 export * from "./experiment-cta.ts";
+// #4515: aba brevo_diaria (canal Brevo PRÓPRIO do editor, conta SEPARADA da Clarice).
+export * from "./brevo-diaria.ts";
 // #3078: DEFAULT_HEALTH_THRESHOLDS/HealthThresholds já chegam via weekly-plan.ts
 // (reexportados lá) — export nomeado aqui evita ambiguidade de `export *` duplicado.
 export { isBounceBreach } from "./thresholds.ts";
@@ -84,6 +86,8 @@ import { LASTGOOD_TTL, POSTMASTER_SPAM_KV_KEY } from "./types.ts";
 import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles } from "./sections-core.ts"; // #4184: collectMonthlyLinkCycles
 import { refreshEiaEngagement } from "./eia-refresh.ts";
 export * from "./eia-refresh.ts";
+// #4515: aba brevo_diaria — fetch fail-soft (nunca lança), ver docstring em brevo-diaria.ts.
+import { fetchBrevoDiariaTabData } from "./brevo-diaria.ts";
 
 const AUTH_COOKIE = 'cf-dash-auth'
 
@@ -391,11 +395,24 @@ async function buildDashboardResponse(request: Request, env: Env, isFresh: boole
     // parseClariceCampaignKey) têm prioritized.md/mapa de seção — campanhas
     // diárias não entram aqui e caem no fallback "—" sem custo extra.
     const monthlyCycles = collectMonthlyLinkCycles([...campaigns, ...scheduled]);
-    const [linkSectionsByCycle, linkTitlesByCycle] = await Promise.all([
+    // #4515: aba brevo_diaria (canal Brevo SEPARADO da Clarice) roda em
+    // PARALELO com as 2 leituras de link-section acima — nenhuma depende do
+    // resultado das outras, e serializar adicionaria latência a TODO load do
+    // dashboard principal da Clarice só por causa de uma aba secundária.
+    // `fetchBrevoDiariaTabData` já é fail-soft por construção (nunca lança —
+    // ver docstring em brevo-diaria.ts); o `.catch` aqui é defesa em
+    // profundidade (mesmo padrão do resto desta função) — uma falha
+    // inesperada neste canal SECUNDÁRIO nunca pode derrubar o dashboard
+    // principal da Clarice.
+    const [linkSectionsByCycle, linkTitlesByCycle, brevoDiaria] = await Promise.all([
       readLinkSectionsByCycle(env, monthlyCycles),
       readLinkTitlesByCycle(env, monthlyCycles), // #4198
+      fetchBrevoDiariaTabData(env, isFresh).catch((e) => {
+        console.error("[#4515] brevo_diaria tab: falha inesperada fora do fail-soft interno:", e instanceof Error ? e.message : e);
+        return null;
+      }),
     ]);
-    const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, planCredits, dataGeneratedAt, campaignsWindowLimit, postmasterSpam, { linkSectionsByCycle, linkTitlesByCycle });
+    const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, planCredits, dataGeneratedAt, campaignsWindowLimit, postmasterSpam, { linkSectionsByCycle, linkTitlesByCycle, brevoDiaria });
     const response = new Response(html, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",

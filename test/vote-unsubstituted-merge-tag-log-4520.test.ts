@@ -15,6 +15,14 @@
  * não-substituída é tipicamente sintoma de config/outage do lado da
  * plataforma de envio (test send, preview, atributo ausente), não um bug
  * deste Worker — mesmo nível de `poll_vote_403` (sig ausente/inválido).
+ *
+ * #4578 (achado desta issue): o retorno deste guard deixou de ser 400 —
+ * agora é 302 pro jogo anônimo em `/jogar?...&from=post-web` (o log
+ * estruturado abaixo, único motivo pelo qual o 400 tinha valor diagnóstico,
+ * PERMANECE 100% intacto no novo caminho). Os testes abaixo foram
+ * atualizados pra refletir o status 302 — a cobertura completa do redirect
+ * (Location, validação de edition, paridade com o 400 quando edition também
+ * é inválida) mora em test/poll-vote-postweb-redirect-4578.test.ts.
  */
 
 import { describe, it } from "node:test";
@@ -26,7 +34,7 @@ import { makePollEnv } from "./_helpers/make-poll-env.ts";
 const EDITION = "260801";
 
 describe("#4520 — guard isUnsubstitutedMergeTag loga poll_vote_unsubstituted_merge_tag", () => {
-  it("email com merge tag não-substituída ({{ subscriber.email }}) → 400 + console.log estruturado", async () => {
+  it("email com merge tag não-substituída ({{ subscriber.email }}) → 302 (#4578) + console.log estruturado", async () => {
     const kv = makeTrackedKv();
     const env = makePollEnv(kv);
 
@@ -46,7 +54,11 @@ describe("#4520 — guard isUnsubstitutedMergeTag loga poll_vote_unsubstituted_m
       console.log = originalConsoleLog;
     }
 
-    assert.equal(res.status, 400, "merge tag não-substituída deve ser rejeitada");
+    // #4578: o guard não rejeita mais com 400 — redireciona (302) pro jogo
+    // anônimo em /jogar. Cobertura completa do redirect em
+    // test/poll-vote-postweb-redirect-4578.test.ts; aqui só confirma que o
+    // log #4520 (o motivo original deste arquivo) sobrevive intacto.
+    assert.equal(res.status, 302, "merge tag não-substituída agora redireciona pro /jogar (#4578), não mais 400");
     const parsed = logs.map((l) => { try { return JSON.parse(l); } catch { return null; } });
     const found = parsed.find((p) => p?.event === "poll_vote_unsubstituted_merge_tag");
     assert.ok(
@@ -75,7 +87,7 @@ describe("#4520 — guard isUnsubstitutedMergeTag loga poll_vote_unsubstituted_m
       console.log = originalConsoleLog;
     }
 
-    assert.equal(res.status, 400);
+    assert.equal(res.status, 302, "#4578: redireciona pro /jogar, não mais 400");
     const parsed = logs.map((l) => { try { return JSON.parse(l); } catch { return null; } });
     assert.ok(parsed.some((p) => p?.event === "poll_vote_unsubstituted_merge_tag"));
   });
