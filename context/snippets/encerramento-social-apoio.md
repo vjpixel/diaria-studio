@@ -26,7 +26,7 @@ Marcador `{{OPENING}}` no início do parágrafo de apoio é substituído conform
 
 O parágrafo de créditos (ferramentas) é IDÊNTICO nos dois formatos — sem parametrização.
 
-O bloco "Acesse nossas curadorias" (pills Cursos/Livros/Equipamentos, #4411)
+O bloco "Acesse nossas curadorias" (pills Cursos/Livros/Equipamentos/Arquivo, #4411/#4536)
 e o convite social (#4413) NÃO estão neste arquivo — os dois são blocos FIXOS
 compartilhados via `scripts/lib/shared/encerramento-snippet.ts`
 (`CURADORIA_PILLS`/`SOCIAL_INVITE`). No diário, `buildParaEncerrar()` injeta

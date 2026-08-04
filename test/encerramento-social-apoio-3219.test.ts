@@ -404,6 +404,28 @@ describe("integração de render — diário (renderEncerrar processa o novo blo
       assert.match(html, /Para acompanhar as 3 principais notícias de IA todos os dias/);
     });
   });
+
+  it("#4536 item 6: o & do UTM nas pills sai como &amp; no href (1º link do bloco com & na query)", () => {
+    withStableSnippet(() => {
+      const full = buildParaEncerrar();
+      const body = extractTemplateBlock(full, "🙋🏼‍♀️ PARA ENCERRAR");
+      const html = renderEncerrar(body!);
+      assert.match(
+        html,
+        /href="https:\/\/cursos\.diar\.ia\.br\?utm_source=newsletter&amp;utm_medium=email&amp;utm_campaign=cursos-rodape"/,
+      );
+      assert.match(
+        html,
+        /href="https:\/\/livros\.diar\.ia\.br\?utm_source=newsletter&amp;utm_medium=email&amp;utm_campaign=livros-rodape"/,
+      );
+      assert.match(
+        html,
+        /href="https:\/\/arquivo\.diar\.ia\.br\?utm_source=newsletter&amp;utm_medium=email&amp;utm_campaign=arquivo-rodape"/,
+      );
+      // cru ("&" sem escapar) nunca deveria sobreviver no HTML final
+      assert.doesNotMatch(html, /utm_source=newsletter&utm_medium=email/, "\"&\" cru vazou sem escapar pra &amp;");
+    });
+  });
 });
 
 describe("integração de render — mensal (renderEncerramento processa o novo bloco, #3219/#4413/#4411, fixture estável #4139)", () => {
