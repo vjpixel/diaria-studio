@@ -23,7 +23,7 @@
  *              que já teve tempo de virar sinal real).
  *   Entre os dois (ou piso de amostra não atingido): mantém (`keep`).
  *
- * ## Pisos de amostra agora iguais (n>=3 pros dois lados, 260804)
+ * ## Por que os pisos de amostra podem divergir de novo (histórico de mudanças independentes)
  *
  * Até 260804 o piso de promoção era `n>=2` (menor que o de supressão,
  * `n>=3`) — a assimetria original vinha do racional "errar promovendo é

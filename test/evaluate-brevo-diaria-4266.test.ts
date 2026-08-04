@@ -1049,7 +1049,7 @@ describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fix
         return jsonRes(200, {});
       }
       // GET /contacts/{email} (passo 0, reusado no passo 2) — 3 enviados/3
-      // abertos → openRate 1.0, sends_count=3 >= 2 → promote
+      // abertos → openRate 1.0, sends_count=3 >= 3 → promote
       return jsonRes(200, {
         statistics: {
           messagesSent: [{ campaignId: 1 }, { campaignId: 2 }, { campaignId: 3 }],

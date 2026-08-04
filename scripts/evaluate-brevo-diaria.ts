@@ -3,14 +3,16 @@
  * scripts/evaluate-brevo-diaria.ts (#4266, item 4/5 do plano da issue;
  * fórmula de saída e checagem de descadastro nativo reescritas no #4476;
  * threshold de supressão corrigido pra n>=3 + janela de maturação de 48h
- * implementada no self-review pós-merge da issue #4476)
+ * implementada no self-review pós-merge da issue #4476; piso de promoção
+ * revisado de n>=2 pra n>=3 na sessão 260804 — ver
+ * `scripts/lib/shared/brevo-diaria-score.ts` pro racional completo)
  *
  * Avaliação periódica dos contatos `in_brevo` do canal Brevo próprio do
  * editor: recomputa a TAXA de abertura (`computeBrevoDiariaOpenRate`,
  * `scripts/lib/shared/brevo-diaria-score.ts`) e aplica a decisão do editor
  * (issue #4476, item 1 — substitui a fórmula aditiva original do #4266):
  *
- *   sends_count>=2 E openRate>=50% (INSTANTÂNEO) → promove pra Beehiiv
+ *   sends_count>=3 E openRate>=50% (INSTANTÂNEO) → promove pra Beehiiv
  *                  (lista confirmada)
  *   sends_count>=3 E openRate<=20% (só envios MADUROS, >=48h — ver "Passo
  *                  2b" abaixo) → suprime (para de receber, `emailBlacklisted:
