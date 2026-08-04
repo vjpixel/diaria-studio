@@ -312,15 +312,15 @@ describe("aggregateAbcByAudience", () => {
     const result = aggregateAbcByAudience([...cold, ...warm], cycle);
     const coldA = result.cold.cells.find((c) => c.cell === "A")!;
     assert.equal(coldA.delivered, 1980);
-    assert.equal(coldA.clicks, 20);
+    assert.equal(coldA.clicksAttributed, 20);
 
     const warmA = result.warm.cells.find((c) => c.cell === "A")!;
     assert.equal(warmA.delivered, 1490);
-    assert.equal(warmA.clicks, 150);
+    assert.equal(warmA.clicksAttributed, 150);
 
     const aggA = result.aggregate.cells.find((c) => c.cell === "A")!;
     assert.equal(aggA.delivered, 1980 + 1490);
-    assert.equal(aggA.clicks, 20 + 150);
+    assert.equal(aggA.clicksAttributed, 20 + 150);
   });
 
   test("fria: LÍDER de abertura é A, mas LÍDER de clique é B (diverge — o ponto central do #2976)", () => {
@@ -439,11 +439,11 @@ describe("aggregateAbcByAudience — naming '--group' (célula só na LISTA), re
     const b = result.aggregate.cells.find((c) => c.cell === "B")!;
     const c = result.aggregate.cells.find((c) => c.cell === "C")!;
     assert.equal(a.delivered, 2977);
-    assert.equal(a.clicks, 101);
+    assert.equal(a.clicksAttributed, 101);
     assert.equal(b.delivered, 2980);
-    assert.equal(b.clicks, 28);
+    assert.equal(b.clicksAttributed, 28);
     assert.equal(c.delivered, 2979);
-    assert.equal(c.clicks, 65);
+    assert.equal(c.clicksAttributed, 65);
   });
 
   test("LÍDER de abertura é B, mas LÍDER de clique é A (divergência real do ciclo 2607-08)", () => {
@@ -567,7 +567,7 @@ describe("renderAbcAudienceTable / renderAbcAudienceSection — omite audiência
       sent: 0,
       delivered: 0,
       opens: 0,
-      clicks: 0,
+      clicksAttributed: 0,
       unsubscriptions: 0,
       openRate: 0,
       ctor: 0,
@@ -616,7 +616,7 @@ describe("renderAbcAudienceTable / renderAbcAudienceSection — omite quando <2 
       sent: 0,
       delivered: 0,
       opens: 0,
-      clicks: 0,
+      clicksAttributed: 0,
       unsubscriptions: 0,
       openRate: 0,
       ctor: 0,
@@ -628,7 +628,7 @@ describe("renderAbcAudienceTable / renderAbcAudienceSection — omite quando <2 
     const table: AbcAudienceTable = {
       cells: [
         {
-          cell: "A", campaignCount: 1, sent: 1000, delivered: 990, opens: 500, clicks: 80,
+          cell: "A", campaignCount: 1, sent: 1000, delivered: 990, opens: 500, clicksAttributed: 80,
           unsubscriptions: 2, openRate: 50.5, ctor: 16, clickRate: 8.1, unsubRate: 0.2,
           bounceRate: 1, spamRate: 0.01,
         },
@@ -716,7 +716,7 @@ describe("renderAbcAudienceTable — guard opens>0/clicks=0 não é 'empate' (#3
       sent: 100,
       delivered: 100,
       opens,
-      clicks: 0,
+      clicksAttributed: 0,
       unsubscriptions: 0,
       openRate: opens,
       ctor: 0,
@@ -747,7 +747,7 @@ describe("renderAbcAudienceTable — guard opens>0/clicks=0 não é 'empate' (#3
   test("empate REAL de clique (clicks>0, taxas iguais) continua mostrando 'Empate no clique'", () => {
     const tied = (cellId: "A" | "B" | "C") => ({
       ...cell(cellId, 50),
-      clicks: 10,
+      clicksAttributed: 10,
       clickRate: 10,
     });
     const table: AbcAudienceTable = {
@@ -857,14 +857,20 @@ describe("aggregateAbcByAudience / renderAbcAudienceTable — cliques ATRIBUÍDO
     ),
   ];
 
-  test("agrega .clicks com o número ATRIBUÍDO (campaignStats), não o total (globalStats) — .clicksTotal preserva o total pra exibição", () => {
+  test("agrega .clicksAttributed com o número ATRIBUÍDO (campaignStats), não o total (globalStats) — .clicksTotal preserva o total pra exibição", () => {
     const result = aggregateAbcByAudience(distorted, cycle);
     const a = result.aggregate.cells.find((c) => c.cell === "A")!;
     const b = result.aggregate.cells.find((c) => c.cell === "B")!;
     const c = result.aggregate.cells.find((c) => c.cell === "C")!;
-    assert.equal(a.clicks, 50); assert.equal(a.clicksTotal, 144);
-    assert.equal(b.clicks, 38); assert.equal(b.clicksTotal, 79);
-    assert.equal(c.clicks, 48); assert.equal(c.clicksTotal, 255);
+    assert.equal(a.clicksAttributed, 50); assert.equal(a.clicksTotal, 144);
+    assert.equal(b.clicksAttributed, 38); assert.equal(b.clicksTotal, 79);
+    assert.equal(c.clicksAttributed, 48); assert.equal(c.clicksTotal, 255);
+    // #4567: fixtures usam withCampaignStats (todas têm campaignStats) —
+    // nenhuma célula deve carregar contagem de atribuição desconhecida.
+    assert.equal(a.unattributedCampaignCount, 0);
+    assert.equal(b.unattributedCampaignCount, 0);
+    assert.equal(c.unattributedCampaignCount, 0);
+    assert.equal(result.aggregate.attributionUnknown, false);
   });
 
   test("Célula C NÃO vence por clique mesmo tendo o maior total reportado (255) — vence quem tem mais clique ATRIBUÍDO (A, 50)", () => {
@@ -900,6 +906,56 @@ describe("aggregateAbcByAudience / renderAbcAudienceTable — cliques ATRIBUÍDO
     assert.match(html, /79 totais, 38 atribuídos à lista/, "nota de divergência também cobre Célula B");
   });
 
+  // #4567: achado CRITICAL do review pré-merge (fleet review da PR #4567) —
+  // reproduz os MESMOS números distorcidos da issue #4559, mas SEM
+  // `withCampaignStats` (simulando uma campanha real sem esse campo — envio
+  // multi-lista, lista deletada, mudança de shape da resposta da Brevo).
+  // Antes deste teste, a suíte só cobria (a) dado distorcido SEMPRE com
+  // campaignStats presente (prova o caminho corrigido) e (b) "sem
+  // campaignStats" com números benignos que nunca chegam perto de
+  // significância — nenhum teste combinava os dois, exatamente o cenário em
+  // que o fallback `attributedClicks = totalClicks` derrotava o fix E o
+  // guard de poder estatístico ao mesmo tempo (demonstrado matematicamente
+  // no review: C ainda vence por clique, p≈8,8×10⁻⁹, e
+  // minDetectableRelativeLift(255,2970,144,2970)≈27,1% fica ABAIXO do
+  // LOW_POWER_MDE_THRESHOLD de 30% — nem a significância nem o power guard
+  // pré-existentes pegavam este caso).
+  test("#4567: campanhas decisórias SEM campaignStats não são declaradas vencedoras sem ressalva, mesmo quando p<0.05 E o guard de poder (MDE) não pega", () => {
+    const distortedNoAttribution = [
+      makeCampaign(340, "Clarice News 2607-08 — A: subject A", "2026-08-01T09:00:00Z", { sent: 3000, delivered: 2970, uniqueViews: 713, uniqueClicks: 144 }),
+      makeCampaign(341, "Clarice News 2607-08 — B: subject B", "2026-08-01T09:01:00Z", { sent: 3000, delivered: 2970, uniqueViews: 713, uniqueClicks: 79 }),
+      makeCampaign(342, "Clarice News 2607-08 — C: subject C", "2026-08-01T09:02:00Z", { sent: 3000, delivered: 2970, uniqueViews: 713, uniqueClicks: 255 }),
+    ];
+    const result = aggregateAbcByAudience(distortedNoAttribution, cycle);
+    const a = result.aggregate.cells.find((c) => c.cell === "A")!;
+    const c = result.aggregate.cells.find((c) => c.cell === "C")!;
+
+    // Pré-condições que reproduzem o achado do review: sem o fix desta PR, o
+    // painel caía exatamente nesta armadilha (nem significância nem power
+    // guard detectavam o problema).
+    assert.equal(result.aggregate.leaderClickRate, "C", "pré-condição: sem campaignStats, C ainda lidera por clique (255 > 144 > 79) — o bug original");
+    assert.equal(result.aggregate.significantClick, true, "pré-condição: p<0.05 mesmo com dado inteiramente não-atribuído");
+    assert.ok(
+      result.aggregate.minDetectableLiftRelative != null && result.aggregate.minDetectableLiftRelative < LOW_POWER_MDE_THRESHOLD,
+      "pré-condição: o guard de poder estatístico pré-existente NÃO pega este caso (MDE ~27% < 30%)",
+    );
+
+    // O sinal que este fix adiciona: atribuição desconhecida na célula líder
+    // (C) e na 2ª colocada (A) — nenhuma das campanhas tinha campaignStats.
+    assert.equal(a.unattributedCampaignCount, 1);
+    assert.equal(c.unattributedCampaignCount, 1);
+    assert.equal(result.aggregate.attributionUnknown, true);
+
+    const html = renderAbcAudienceTable("Agregada (Fria + Quente)", result.aggregate);
+    assert.doesNotMatch(
+      html,
+      /Já dá pra concluir\./,
+      "CRITICAL: sem esta ressalva, o painel declarava conclusão plena sobre dado inteiramente não-atribuído",
+    );
+    assert.match(html, /com ressalva/i, "deve sinalizar ressalva mesmo com significância + power guard não acionado");
+    assert.match(html, /campaignStats ausente/, "deve explicar que a atribuição é desconhecida, não só 'amostra pequena'");
+  });
+
   test("campanha sem campaignStats (fixture legado/API antiga) → cai pro valor de globalStats, sem quebrar (mesmo comportamento pré-#4559)", () => {
     const noCampaignStats = [
       makeCampaign(310, "Clarice News 2607-09 — A: subject A", "2026-08-05T09:00:00Z", { sent: 1000, delivered: 990, uniqueViews: 500, uniqueClicks: 80 }),
@@ -908,8 +964,13 @@ describe("aggregateAbcByAudience / renderAbcAudienceTable — cliques ATRIBUÍDO
     ];
     const result = aggregateAbcByAudience(noCampaignStats, "2607-09");
     const a = result.aggregate.cells.find((c) => c.cell === "A")!;
-    assert.equal(a.clicks, 80, "sem campaignStats, .clicks cai pro valor de globalStats (comportamento preservado)");
-    assert.equal(a.clicksTotal, 80, "clicksTotal também é 80 — sem divergência conhecida, não há nada pra sinalizar");
+    assert.equal(a.clicksAttributed, 80, "sem campaignStats, .clicksAttributed cai pro valor de globalStats (comportamento preservado)");
+    assert.equal(a.clicksTotal, 80, "clicksTotal também é 80 — sem divergência de VALOR conhecida, não há nada pra sinalizar via renderAbcClickAttributionNote");
+    // #4567 (achado CRITICAL do review pré-merge): mesmo sem divergência de
+    // valor, a campanha NÃO tinha campaignStats — isso precisa continuar
+    // rastreável como atribuição desconhecida, não desaparecer só porque
+    // total e atribuído coincidiram.
+    assert.equal(a.unattributedCampaignCount, 1, "1 campanha desta célula não tinha campaignStats");
   });
 
   test("sem divergência entre total e atribuído (fixture padrão) → renderAbcClickAttributionNote não adiciona ruído", () => {
@@ -938,7 +999,7 @@ describe("renderAbcAudienceTable — guard de poder estatístico (#4559)", () =>
       sent: delivered,
       delivered,
       opens: Math.round(delivered * 0.3),
-      clicks,
+      clicksAttributed: clicks,
       clicksTotal: clicks,
       unsubscriptions: 0,
       openRate: 30,
