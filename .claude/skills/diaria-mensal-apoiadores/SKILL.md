@@ -1,9 +1,27 @@
 ---
 name: diaria-mensal-apoiadores
-description: Envia a edição mensal (data/monthly/{ciclo}/draft.md) por e-mail via Beehiiv pros apoiadores dos níveis Mantenedor/Patrono — skill manual e separada do fluxo 0-5 de /diaria-mensal (o editor decide o timing). Uso — `/diaria-mensal-apoiadores --cycle YYMM-MM [--force] [--mark-sent]`.
+description: Envia a edição mensal (data/monthly/{ciclo}/draft.md) por e-mail pros apoiadores dos níveis Mantenedor/Patrono — skill manual e separada do fluxo 0-5 de /diaria-mensal (o editor decide o timing). CANAL EM MIGRAÇÃO de Beehiiv pra Brevo (#4572, ver nota logo abaixo) — o mecanismo descrito neste arquivo ainda é o antigo (Beehiiv); a ponte de audiência Brevo (scripts/sync-apoio-nivel-brevo.ts) já existe, o Passo 2 abaixo ainda não foi reescrito. Uso — `/diaria-mensal-apoiadores --cycle YYMM-MM [--force] [--mark-sent]`.
 ---
 
 # /diaria-mensal-apoiadores
+
+> **STATUS (#4572, 260804): canal em migração de Beehiiv pra Brevo — este
+> SKILL.md ainda descreve o fluxo ANTIGO.** A Beehiiv bloqueia "Include and
+> exclude segments" (o mecanismo de audiência que o Passo 2 abaixo depende)
+> atrás do plano Scale — o workspace é Launch/free. Decisão do editor:
+> reescrever pra Brevo, reusando a maquinaria de `publish-daily-brevo.ts`.
+> **Já pronto:** `scripts/sync-apoio-nivel-brevo.ts` — espelho de
+> `scripts/sync-apoio-nivel-beehiiv.ts` (#4436) que converge a membresia de
+> uma lista Brevo dedicada (`platform.config.json` → `brevo_apoiadores.list_id`,
+> ainda `null` — lista não criada na conta Brevo do editor) com quem tem nível
+> Mantenedor/Patrono. **Ainda pendente:** reescrever o Passo 2 (Publicar)
+> abaixo pro fluxo Brevo de verdade (criar campanha via API `emailCampaigns`
+> em vez de colar no Beehiiv) e avaliar rename de
+> `scripts/lib/mensal/monthly-beehiiv-render.ts`/`scripts/render-monthly-beehiiv.ts`
+> — entrelaçado com `scripts/lib/shared/utm-registry.ts` (registro de
+> atribuição), decisão maior que ficou pra próxima rodada (ver PR #4572). Até
+> lá, o texto abaixo (Beehiiv) continua sendo o mecanismo REAL — não confundir
+> com o canal-ALVO (Brevo).
 
 Entrega o "artigo especial do mês" já anunciado como recompensa Mantenedor/
 Patrono (`context/snippets/agradecimento-apoiadores.md`) — hoje só existe como
