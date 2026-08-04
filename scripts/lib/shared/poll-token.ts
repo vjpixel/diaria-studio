@@ -61,6 +61,12 @@
  *    contra o secret atual (ver `docs/runbooks/poll-secret-rotation.md`,
  *    nota #4487).
  *
+ * Nota (#4581, 260804): os itens 1-4 acima narram o mecanismo tal como
+ * desenhado originalmente pro Beehiiv (`inject-poll-token.ts`, custom field
+ * `poll_token`) — hoje o único caminho vivo é o Brevo
+ * (`inject-poll-token-brevo.ts`, atributo de contato `POLL_TOKEN`); ver
+ * escopo atual no topo deste arquivo.
+ *
  * Domínio reservado `VOTE_TOKEN_DOMAIN`: o token vira o local-part de um
  * pseudo-email (`{token}@vote.eia.diaria.local`), reaproveitando o parser
  * de `email` já existente em `/vote` (mesmo truque de `web.eia.diaria.local`

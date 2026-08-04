@@ -336,8 +336,8 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   // O que o token protegia (e ainda protege, no Brevo): quem recebe a edição
   // ENCAMINHADA não herda o e-mail do assinante original na URL. O
   // token é gravado no KV como `polltoken:{token} -> email` pelo script de
-  // injeção (`scripts/inject-poll-token.ts`, popula o custom field Beehiiv
-  // `poll_token` por assinante). Token sem entrada no KV (subscriber novo
+  // injeção (`scripts/inject-poll-token-brevo.ts`, popula o atributo de
+  // contato Brevo `POLL_TOKEN` por assinante). Token sem entrada no KV (subscriber novo
   // ainda não sincronizado) falha como link inválido — fail-closed, nunca
   // fail-open pra e-mail arbitrário. #4512 (correção de comentário, achado
   // comment-analyzer): rotação de POLL_SECRET SOZINHA nunca invalida uma
@@ -387,7 +387,7 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
       // forma de token válida (`classification.kind === "valid"`) mas a
       // entrada reversa não existe/está corrompida no KV — na prática, o
       // caso real mais comum é um assinante novo ainda não coberto pelo
-      // próximo sync incremental de `inject-poll-token.ts` (#4512, correção
+      // próximo sync incremental de `inject-poll-token-brevo.ts` (#4512, correção
       // de comentário: a versão anterior descrevia isto como "todo voto até
       // a 1ª execução ao vivo", impreciso — um token com custom field
       // vazio/tag não substituída é rejeitado ANTES, pelos guards de
