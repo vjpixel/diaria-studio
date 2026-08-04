@@ -13,6 +13,7 @@ import {
   buildDailyBrevoSubject,
   buildDailyBrevoPreviewText,
   checkDailySendCap,
+  checkSubjectNotEmpty,
   buildDailyBrevoHtml,
   checkBrevoDiariaGuards,
   checkPollTokenGuards,
@@ -55,6 +56,29 @@ describe("buildDailyBrevoSubject / buildDailyBrevoPreviewText — #4266", () => 
 
   it("preview text é o subtítulo", () => {
     assert.equal(buildDailyBrevoPreviewText(fixtureContent), "E o que isso muda pra você");
+  });
+});
+
+describe("checkSubjectNotEmpty — guard contra assunto vazio (#4588)", () => {
+  it("assunto não-vazio → ok", () => {
+    assert.deepEqual(checkSubjectNotEmpty("Modelos se replicam sozinhos"), { ok: true });
+  });
+
+  it("assunto vazio ('') → not ok, motivo cita content.title em branco", () => {
+    const result = checkSubjectNotEmpty("");
+    assert.equal(result.ok, false);
+    assert.match((result as { ok: false; reason: string }).reason, /assunto vazio/i);
+  });
+
+  it("assunto só com whitespace ('   ') → not ok (trim antes de checar)", () => {
+    const result = checkSubjectNotEmpty("   ");
+    assert.equal(result.ok, false);
+  });
+
+  it("buildDailyBrevoSubject com content.title vazio → checkSubjectNotEmpty pega o defeito (integração das 2 funções puras)", () => {
+    const emptyTitleContent = { ...fixtureContent, title: "" };
+    const subject = buildDailyBrevoSubject(emptyTitleContent);
+    assert.equal(checkSubjectNotEmpty(subject).ok, false);
   });
 });
 

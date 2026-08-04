@@ -193,15 +193,15 @@ describe("Grupo 2 — rodapé de /vote (index.ts, votePageHtml, #3978)", () => {
 });
 
 describe("Grupo 2 — sub-copy do leaderboard (leaderboard-routes.ts, #3978)", () => {
-  it("brand clarice: os 2 links (diar.ia.br e Clarice) carregam UTM — antes o 1º ia pra diaria.beehiiv.com SEM parâmetro nenhum", async () => {
+  it("brand clarice: o link diar.ia.br carrega UTM — antes ia pra diaria.beehiiv.com SEM parâmetro nenhum. #4569 (260804) removeu o 2º link (Clarice/clarice.ai) desta sub-copy — só 1 ocorrência de utm_source agora", async () => {
     const html = await fetchHtml("/leaderboard/2026?brand=clarice");
     const subCopyMatch = html.match(/<p class="sub">.*?<\/p>/s);
     assert.ok(subCopyMatch, "sub-copy deve existir");
     const subCopy = subCopyMatch![0];
     assert.match(subCopy, /utm_medium=leaderboard-copy/);
     assert.match(subCopy, /utm_campaign=eia-leaderboard-copy/);
-    // 2 ocorrências de utm_source: 1 por link.
-    assert.equal((subCopy.match(/utm_source=eia-standalone/g) ?? []).length, 2);
+    // 1 ocorrência de utm_source: só o link diar.ia.br sobra (#4569).
+    assert.equal((subCopy.match(/utm_source=eia-standalone/g) ?? []).length, 1);
   });
 
   it("brand diaria: link único também ganha UTM (antes: BRAND_INFO.diaria.siteUrl cru)", async () => {

@@ -701,9 +701,13 @@ export const BRAND_INFO: Record<Brand, { name: string; siteUrl: string; leaderbo
   // #1910: via=diaria é o tracking de afiliado (Rewardful) — todo link da
   // Clarice voltado ao leitor precisa carregar.
   // #2018: leaderboardPeriod: "year" — mensal vota 1×/mês, ranking anual até 12 chances.
-  // #3108: shortName — a sub-copy do leaderboard clarice linka só "Clarice" (não
-  // "Clarice News" inteiro) na frase "newsletter da Clarice".
-  clarice: { name: "Clarice News", siteUrl: "https://clarice.ai/?via=diaria", leaderboardPeriod: "year", shortName: "Clarice" },
+  // #3108/#4569: `shortName: "Clarice"` existiu pra sub-copy do leaderboard
+  // linkar só "Clarice" (não "Clarice News" inteiro) na frase "newsletter da
+  // Clarice" — removido no #4569 (260804): essa frase virou "newsletter
+  // mensal", sem link nem nome de marca (2 audiências compartilham este
+  // leaderboard desde #4521, "da Clarice" deixou de descrever a única
+  // audiência real). Confirmado sem outro consumidor antes de remover.
+  clarice: { name: "Clarice News", siteUrl: "https://clarice.ai/?via=diaria", leaderboardPeriod: "year" },
   // #3516: leaderboardPeriod "month" com reset natural por mês de publicação
   // (mesma mecânica score-by-month da diária, #1345) — sugestão #2 do EPIC
   // #3514 ("mensal com reset+archive, consistente com diaria"). siteUrl
