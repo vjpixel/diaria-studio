@@ -221,6 +221,24 @@ function restoreProcessExit(): void {
   process.exit = originalExit;
 }
 
+// #4572/#4593 self-review — captura process.stderr.write durante `fn()`,
+// mesmo padrão de test/publish-monthly.test.ts (`withMockedExit`) e
+// test/monthly-apoiadores-state.test.ts (`captureStderr`).
+async function captureStderrAsync(fn: () => Promise<void>): Promise<string> {
+  const real = process.stderr.write.bind(process.stderr);
+  let out = "";
+  process.stderr.write = ((data: string) => {
+    out += data;
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    await fn();
+  } finally {
+    process.stderr.write = real;
+  }
+  return out;
+}
+
 before(() => {});
 after(() => {
   process.argv = originalArgv;
@@ -484,6 +502,103 @@ describe("#4572/#4593 — main() guard de idempotência (deps.readState/writeSta
       assert.equal(exitCode, null);
       assert.ok(writeStateCalledWith);
       assert.equal(writeStateCalledWith!.brevoCampaignId, 4242);
+    } finally {
+      delete process.env.TEST_APOIADORES_KEY_4593;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── #4572/#4593 self-review: silent-failure hardening ──────────────────────
+
+describe("#4572/#4593 self-review — silent-failure hardening", () => {
+  afterEach(restoreProcessExit);
+
+  it("criação da campanha falha (fetch rejeita): deps.writeState NUNCA é chamado", async () => {
+    const root = mkTmpRoot();
+    try {
+      writePlatformConfig(root, { list_id: 42, sender_email: "oi@diar.ia.br" });
+      process.env.TEST_APOIADORES_KEY_4593 = "fake_key";
+      process.argv = ["node", "publish-monthly-apoiadores-brevo.ts", "--cycle", "2607-08"];
+
+      globalThis.fetch = (async () => jsonRes(500, { message: "internal error" })) as typeof fetch;
+
+      let writeStateCalled = false;
+      await assert.rejects(
+        () => main(root, {
+          renderEmail: () => FAKE_RENDERED,
+          readState: () => null,
+          writeState: () => { writeStateCalled = true; },
+        }),
+      );
+      assert.equal(writeStateCalled, false, "writeState nunca deveria ser chamado quando a criação da campanha falha");
+    } finally {
+      delete process.env.TEST_APOIADORES_KEY_4593;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("writeState lança DEPOIS da campanha criada com sucesso: erro propaga E loga o campaign.id explicitamente", async () => {
+    const root = mkTmpRoot();
+    try {
+      writePlatformConfig(root, { list_id: 42, sender_email: "oi@diar.ia.br" });
+      process.env.TEST_APOIADORES_KEY_4593 = "fake_key";
+      process.argv = ["node", "publish-monthly-apoiadores-brevo.ts", "--cycle", "2607-08"];
+
+      globalThis.fetch = (async () => jsonRes(201, { id: 8080 })) as typeof fetch;
+
+      let rejected: Error | null = null;
+      const stderr = await captureStderrAsync(async () => {
+        try {
+          await main(root, {
+            renderEmail: () => FAKE_RENDERED,
+            readState: () => null,
+            writeState: () => { throw new Error("disk full (simulado)"); },
+          });
+        } catch (e) {
+          rejected = e as Error;
+        }
+      });
+
+      assert.ok(rejected, "main() deveria propagar o erro de writeState (nunca engolir silenciosamente)");
+      assert.match(stderr, /ERRO CRÍTICO/);
+      assert.match(stderr, /8080/, "a mensagem crítica deveria nomear o campaign.id explicitamente");
+      assert.match(stderr, /NÃO reexecute/i);
+    } finally {
+      delete process.env.TEST_APOIADORES_KEY_4593;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--force sobre brevoCampaignId existente: loga aviso nomeando o id da campanha anterior (órfã na Brevo)", async () => {
+    const root = mkTmpRoot();
+    try {
+      writePlatformConfig(root, { list_id: 42, sender_email: "oi@diar.ia.br" });
+      process.env.TEST_APOIADORES_KEY_4593 = "fake_key";
+      process.argv = ["node", "publish-monthly-apoiadores-brevo.ts", "--cycle", "2607-08", "--force"];
+      mockProcessExit();
+
+      const existingState: ApoiadoresState = {
+        cycle: "2607-08",
+        status: "draft_prepared",
+        preparedAt: "2026-08-04T09:00:00.000Z",
+        sentAt: null,
+        htmlPath: "/x/apoiadores-brevo-preview.html",
+        subject: "Assunto anterior",
+        segments: [],
+        brevoCampaignId: 999,
+      };
+
+      globalThis.fetch = (async () => jsonRes(201, { id: 1000 })) as typeof fetch;
+
+      const stderr = await captureStderrAsync(async () => {
+        await main(root, { renderEmail: () => FAKE_RENDERED, readState: () => existingState, writeState: noopWriteState });
+      });
+
+      assert.equal(exitCode, null);
+      assert.match(stderr, /AVISO/);
+      assert.match(stderr, /999/, "o aviso deveria nomear o id da campanha anterior (órfã)");
+      assert.match(stderr, /órfã|manualmente/i);
     } finally {
       delete process.env.TEST_APOIADORES_KEY_4593;
       rmSync(root, { recursive: true, force: true });

@@ -27,9 +27,9 @@
  *      diária de origem), a partir do MESMO `draft.md` que a skill já usa.
  *   2. Guards de pré-condição (`checkApoiadoresBrevoGuards`) fora de
  *      `--dry-run`: `brevo_apoiadores` configurado, `list_id` NÃO-null
- *      (pré-requisito real ainda pendente — ver #4572/#4593: a lista
- *      dedicada ainda não foi criada na conta Brevo do editor),
- *      `sender_email` preenchido, API key no ambiente.
+ *      (confirmado ao vivo em 260804, `list_id = 8` — ver PRÉ-REQUISITO
+ *      REAL abaixo pro que ainda falta), `sender_email` preenchido, API key
+ *      no ambiente.
  *   3. Cria a campanha Brevo (`POST /emailCampaigns`) — SEM `--send-now`/
  *      `--schedule-at`: fica como RASCUNHO na conta Brevo, mesma cautela do
  *      publisher mensal legado (`publish-monthly.ts`) e do publisher diário
@@ -66,11 +66,15 @@
  * preenchidos (mesmo contrato de `publish-daily-brevo.ts --dry-run`), nem
  * consulta o state de idempotência.
  *
- * PRÉ-REQUISITO REAL (documentado, não resolvido nesta unidade, #4572/#4593):
- * `platform.config.json` → `brevo_apoiadores.list_id` continua `null` — a
- * lista dedicada ainda não foi criada na conta Brevo do editor. Rodar este
- * script fora de `--dry-run` sem isso ABORTA de forma clara (exit 2), nunca
- * tenta criar a campanha com uma lista inexistente.
+ * PRÉ-REQUISITO REAL (parcialmente resolvido, #4572 develop 260804):
+ * `platform.config.json` → `brevo_apoiadores.list_id` era `null` até esta
+ * unidade — confirmado ao vivo via `GET /v3/contacts/lists` = `8` (lista
+ * "Apoio — Mantenedor + Patrono (mensal, one-off 2607-08)", `totalSubscribers:
+ * 0` — a lista EXISTE mas está VAZIA, porque `scripts/sync-apoio-nivel-brevo.ts
+ * --push` (quem a popula) ainda não rodou contra a Brevo real). `list_id`
+ * ausente/`null` continua abortando de forma clara (exit 2) — esse caminho
+ * só é alcançável hoje via edição manual do config, não é mais o estado
+ * padrão do repo.
  */
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -266,6 +270,20 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresBrevoDeps =
       process.exit(2);
       return;
     }
+    // #4572/#4593 self-review: `force` só chega até aqui quando o guard acima
+    // teria bloqueado — avisar explicitamente quando isso significa criar uma
+    // 2ª campanha por cima de uma já registrada. Sem este log, `--force`
+    // sobre um `brevoCampaignId` existente descarta silenciosamente o único
+    // rastro local do rascunho anterior — ele continua existindo na Brevo
+    // (nunca é deletado automaticamente), mas nada aqui aponta de volta pra
+    // ele depois que o state é sobrescrito.
+    if (force && existingState?.brevoCampaignId != null) {
+      log(
+        `AVISO: --force ignorando idempotência — campanha anterior id=${existingState.brevoCampaignId} ` +
+          `(criada em ${existingState.preparedAt}) NÃO será excluída automaticamente e ficará órfã como ` +
+          "rascunho na Brevo. Confira o painel (Campaigns → Drafts) e exclua manualmente se não for mais necessária.",
+      );
+    }
   }
 
   const rendered = deps.renderEmail(cycle);
@@ -294,10 +312,29 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresBrevoDeps =
   // #4572/#4593 — grava o brevoCampaignId de volta no state, fechando o laço
   // de idempotência: a próxima invocação pra este ciclo verá `decidePublishBrevoAction`
   // bloquear sem --force (guard acima).
-  deps.writeState(
-    dir,
-    buildApoiadoresBrevoPublishedState(existingState, cycle, new Date().toISOString(), rendered.htmlPath, content.subject, campaign.id),
-  );
+  try {
+    deps.writeState(
+      dir,
+      buildApoiadoresBrevoPublishedState(existingState, cycle, new Date().toISOString(), rendered.htmlPath, content.subject, campaign.id),
+    );
+  } catch (e) {
+    // #4572/#4593 self-review: se a gravação falhar DEPOIS da campanha já ter
+    // sido criada na Brevo com sucesso, o erro genérico do catch top-level
+    // ("erro fatal: ...") não deixaria claro que uma campanha REAL já existe
+    // — um operador que só olha "erro fatal" e reexecuta o comando criaria um
+    // 2º rascunho duplicado, exatamente a falha que este guard existe pra
+    // evitar. Loga alto-severidade nomeando o campaign.id explicitamente
+    // ANTES de repropagar (mantém o exit(1) do catch top-level).
+    log(
+      `ERRO CRÍTICO: a campanha Brevo id=${campaign.id} FOI CRIADA com sucesso, mas o registro de ` +
+        `idempotência NÃO foi salvo (${(e as Error).message}). NÃO reexecute este comando sem antes conferir ` +
+        "o painel Brevo (Campaigns → Drafts) — reexecutar agora criaria um 2º rascunho duplicado, porque o " +
+        "guard de idempotência não tem como saber que id=" +
+        campaign.id +
+        " já existe.",
+    );
+    throw e;
+  }
 }
 
 if (isMainModule(import.meta.url)) {

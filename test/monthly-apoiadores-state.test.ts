@@ -22,6 +22,7 @@ import {
   decidePrepareAction,
   decideMarkSentAction,
   buildPreparedState,
+  buildSentState,
   decidePublishBrevoAction,
   buildApoiadoresBrevoPublishedState,
   type ApoiadoresState,
@@ -31,6 +32,23 @@ function tmpMonthlyDir(prefix: string): string {
   const dir = mkdtempSync(resolve(tmpdir(), prefix));
   mkdirSync(resolve(dir, "_internal"), { recursive: true });
   return dir;
+}
+
+// #4572/#4593 self-review — captura process.stderr.write durante `fn()`,
+// mesmo padrão de `test/publish-monthly.test.ts` (`withMockedExit`).
+function captureStderr(fn: () => void): string {
+  const real = process.stderr.write.bind(process.stderr);
+  let out = "";
+  process.stderr.write = ((data: string) => {
+    out += data;
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    fn();
+  } finally {
+    process.stderr.write = real;
+  }
+  return out;
 }
 
 const PREPARED: ApoiadoresState = {
@@ -54,21 +72,66 @@ const SENT: ApoiadoresState = {
 // readApoiadoresState / writeApoiadoresState
 // ---------------------------------------------------------------------------
 
-test("readApoiadoresState: diretório sem state file -> null (nunca preparado)", () => {
+test("readApoiadoresState: diretório sem state file -> null (nunca preparado), SEM aviso em stderr (caso esperado)", () => {
   const dir = tmpMonthlyDir("apoiadores-state-empty-");
-  assert.equal(readApoiadoresState(dir), null);
+  let result: ApoiadoresState | null = null;
+  const stderr = captureStderr(() => { result = readApoiadoresState(dir); });
+  assert.equal(result, null);
+  assert.equal(stderr, "", "arquivo AUSENTE é o caso esperado (todo ciclo começa assim) — nunca deveria logar aviso");
 });
 
-test("readApoiadoresState: JSON corrompido -> null (tolerante, nunca lança)", () => {
+test("readApoiadoresState: JSON corrompido -> null (tolerante, nunca lança), COM aviso em stderr (#4572/#4593)", () => {
   const dir = tmpMonthlyDir("apoiadores-state-corrupt-");
   writeFileSync(apoiadoresStatePath(dir), "{ não é json", "utf8");
-  assert.equal(readApoiadoresState(dir), null);
+  let result: ApoiadoresState | null = null;
+  const stderr = captureStderr(() => { result = readApoiadoresState(dir); });
+  assert.equal(result, null);
+  assert.match(stderr, /AVISO/);
+  assert.match(stderr, /não pôde ser lido\/parseado/);
 });
 
-test("readApoiadoresState: shape inesperado (status inválido) -> null", () => {
+test("readApoiadoresState: shape inesperado (status inválido) -> null, COM aviso em stderr (#4572/#4593)", () => {
   const dir = tmpMonthlyDir("apoiadores-state-badshape-");
   writeFileSync(apoiadoresStatePath(dir), JSON.stringify({ cycle: "2607-08", status: "queued", preparedAt: "x" }), "utf8");
-  assert.equal(readApoiadoresState(dir), null);
+  let result: ApoiadoresState | null = null;
+  const stderr = captureStderr(() => { result = readApoiadoresState(dir); });
+  assert.equal(result, null);
+  assert.match(stderr, /AVISO/);
+  assert.match(stderr, /status inválido/);
+});
+
+test("readApoiadoresState: cycle/preparedAt ausentes -> null, COM aviso em stderr (#4572/#4593)", () => {
+  const dir = tmpMonthlyDir("apoiadores-state-noshape-");
+  writeFileSync(apoiadoresStatePath(dir), JSON.stringify({ status: "draft_prepared" }), "utf8");
+  let result: ApoiadoresState | null = null;
+  const stderr = captureStderr(() => { result = readApoiadoresState(dir); });
+  assert.equal(result, null);
+  assert.match(stderr, /AVISO/);
+  assert.match(stderr, /shape inesperado/);
+});
+
+test("readApoiadoresState: arquivo legado sem a chave brevoCampaignId -> brevoCampaignId null, SEM aviso (caso esperado, #4572/#4593)", () => {
+  // Todo state file escrito ANTES desta unidade (fluxo Beehiiv puro, #4521)
+  // nunca teve essa chave — é o formato real que já existe em produção, não
+  // um erro. Diferente dos testes de corrupção/shape acima, este NÃO deveria
+  // emitir aviso: ausência da chave é esperada e tratada silenciosamente.
+  const dir = tmpMonthlyDir("apoiadores-state-legacy-");
+  const legacyShape = {
+    cycle: "2607-08",
+    status: "draft_prepared",
+    preparedAt: "2026-08-03T10:00:00.000Z",
+    sentAt: null,
+    htmlPath: "/x/beehiiv-preview.html",
+    subject: "Assunto",
+    segments: ["Apoio — Mantenedor"],
+    // brevoCampaignId: ausente de propósito — simula um state pré-#4572/#4593
+  };
+  writeFileSync(apoiadoresStatePath(dir), JSON.stringify(legacyShape), "utf8");
+  let result: ApoiadoresState | null = null;
+  const stderr = captureStderr(() => { result = readApoiadoresState(dir); });
+  assert.equal(result?.brevoCampaignId, null);
+  assert.equal(result?.cycle, "2607-08");
+  assert.equal(stderr, "", "chave ausente é o formato legado esperado — nunca deveria logar aviso");
 });
 
 test("writeApoiadoresState + readApoiadoresState: round-trip preserva os campos (draft_prepared)", () => {
@@ -249,4 +312,27 @@ test("buildApoiadoresBrevoPublishedState: NUNCA herda sentAt de um previous 'sen
 test("buildApoiadoresBrevoPublishedState: preserva segments do previous quando presente", () => {
   const s = buildApoiadoresBrevoPublishedState(PREPARED, "2607-08", "2026-08-04T10:00:00.000Z", "/x/y.html", "Assunto", 555);
   assert.deepEqual(s.segments, PREPARED.segments);
+});
+
+// ---------------------------------------------------------------------------
+// buildSentState (#4572/#4593 self-review — extraído do spread inline em
+// send-monthly-apoiadores.ts::main() pra ganhar cobertura de teste; garante
+// que brevoCampaignId (e qualquer campo futuro) sobrevive ao --mark-sent).
+// ---------------------------------------------------------------------------
+
+test("buildSentState: muda status pra 'sent' e grava sentAt", () => {
+  const s = buildSentState(PREPARED, "2026-08-04T09:00:00.000Z");
+  assert.equal(s.status, "sent");
+  assert.equal(s.sentAt, "2026-08-04T09:00:00.000Z");
+});
+
+test("buildSentState: preserva brevoCampaignId do state anterior (regressão — spread inline não perde o campo)", () => {
+  const withCampaign: ApoiadoresState = { ...PREPARED, brevoCampaignId: 999 };
+  const s = buildSentState(withCampaign, "2026-08-04T09:00:00.000Z");
+  assert.equal(s.brevoCampaignId, 999);
+});
+
+test("buildSentState: preserva cycle/htmlPath/subject/segments do state anterior, só muda status+sentAt", () => {
+  const s = buildSentState(PREPARED, "2026-08-04T09:00:00.000Z");
+  assert.deepEqual(s, { ...PREPARED, status: "sent", sentAt: "2026-08-04T09:00:00.000Z" });
 });

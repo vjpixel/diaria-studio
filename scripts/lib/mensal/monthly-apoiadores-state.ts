@@ -21,9 +21,12 @@
  *      (só regenera o HTML — reflete qualquer edição do `draft.md` desde a
  *      última preparação).
  *   2. `sent` — o EDITOR confirmou manualmente, via `--mark-sent`, que de fato
- *      enviou pela UI da Beehiiv. Este módulo não tem como observar isso
- *      sozinho (não há webhook/poll da campanha real aqui) — é uma decisão
- *      humana registrada, não inferida.
+ *      enviou pela UI (Beehiiv originalmente; desde #4572/#4593 o mesmo
+ *      `--mark-sent` também confirma o envio real pela UI da Brevo — o
+ *      campo é channel-agnostic, só o texto desta docstring ficou preso à
+ *      origem histórica). Este módulo não tem como observar isso sozinho
+ *      (não há webhook/poll da campanha real aqui) — é uma decisão humana
+ *      registrada, não inferida.
  *
  * O dedup real (#4521 questão 3) age na transição `sent → prepare de novo`:
  * bloqueada por padrão (`decidePrepareAction`), destravável com `--force`
@@ -31,7 +34,19 @@
  *
  * Fail-soft por design (mesmo padrão de `clarice-novos-state.ts`/
  * `studio-chat-enabled.ts`): leitura tolerante — arquivo ausente/corrompido/
- * shape inesperado vira `null` ("nunca preparado"), nunca lança.
+ * shape inesperado vira `null` ("nunca preparado"), nunca lança. Desde
+ * #4572/#4593 (guard de idempotência do Passo 2 Brevo, ver `brevoCampaignId`
+ * abaixo) essa tolerância tem uma consequência nova: um state file que
+ * EXISTIA mas ficou corrompido/malformado é indistinguível de "nunca
+ * preparado" pro caller, o que reabriria a janela de campanha Brevo
+ * duplicada que o guard existe pra fechar. `readApoiadoresState` continua
+ * retornando `null` nesse caso (não muda o contrato — mudar pra fail-closed
+ * afetaria também o dedup legado do Passo 1, que é propositalmente tolerante
+ * e de baixo risco), mas agora emite um aviso em stderr quando o arquivo
+ * EXISTE e falha ao ser lido/parseado (diferente de simplesmente ausente,
+ * que é silencioso e esperado) — visibilidade mínima pro operador notar
+ * antes de confiar cegamente num "nunca preparado" que na verdade é "não
+ * consegui ler o que já existia".
  */
 
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
@@ -72,14 +87,35 @@ export function apoiadoresStatePath(monthlyDir: string): string {
   return resolve(monthlyDir, "_internal", STATE_FILENAME);
 }
 
-/** Lê o state file. Tolerante: ausente/corrompido/shape inesperado → `null` (nunca lança) — "nunca preparado". */
+/**
+ * Lê o state file. Tolerante: ausente/corrompido/shape inesperado → `null`
+ * (nunca lança) — "nunca preparado". Arquivo AUSENTE é o caso esperado
+ * (silencioso, sem log — todo ciclo começa assim). Arquivo PRESENTE mas
+ * ilegível/malformado é anômalo (corrupção, escrita concorrente truncada,
+ * edição manual quebrada) — emite um aviso em stderr antes de retornar
+ * `null`, pra não mascarar silenciosamente um estado real perdido (ver
+ * docstring do módulo, #4572/#4593: essa perda agora pode reabrir a janela
+ * de campanha Brevo duplicada que o guard de idempotência existe pra fechar).
+ */
 export function readApoiadoresState(monthlyDir: string): ApoiadoresState | null {
   const path = apoiadoresStatePath(monthlyDir);
   if (!existsSync(path)) return null;
+  const warn = (reason: string) =>
+    process.stderr.write(
+      `[monthly-apoiadores-state] AVISO: ${path} existe mas ${reason} — tratando como "nunca preparado" ` +
+        "(fail-soft), mas isso pode mascarar um brevoCampaignId já gravado. Confira o arquivo manualmente antes " +
+        "de rodar o Passo 2 de novo.\n",
+    );
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<ApoiadoresState>;
-    if (typeof parsed.cycle !== "string" || typeof parsed.preparedAt !== "string") return null;
-    if (parsed.status !== "draft_prepared" && parsed.status !== "sent") return null;
+    if (typeof parsed.cycle !== "string" || typeof parsed.preparedAt !== "string") {
+      warn("tem shape inesperado (cycle/preparedAt ausente ou não-string)");
+      return null;
+    }
+    if (parsed.status !== "draft_prepared" && parsed.status !== "sent") {
+      warn(`tem status inválido ("${String(parsed.status)}")`);
+      return null;
+    }
     return {
       cycle: parsed.cycle,
       status: parsed.status,
@@ -90,7 +126,8 @@ export function readApoiadoresState(monthlyDir: string): ApoiadoresState | null 
       segments: Array.isArray(parsed.segments) ? parsed.segments.filter((s): s is string => typeof s === "string") : [],
       brevoCampaignId: typeof parsed.brevoCampaignId === "number" ? parsed.brevoCampaignId : null,
     };
-  } catch {
+  } catch (e) {
+    warn(`não pôde ser lido/parseado como JSON (${(e as Error).message})`);
     return null;
   }
 }
@@ -145,16 +182,22 @@ export function decidePrepareAction(state: ApoiadoresState | null, force: boolea
  * pra travar esse contrato com teste, em vez de confiar em revisão visual da
  * linha inline no `main()`.
  *
- * `previousBrevoCampaignId` (#4572/#4593) é a ÚNICA exceção deliberada ao
- * "não recebe o state anterior": Passo 1 (este `prepare`, fluxo Beehiiv
- * legado) e Passo 2 (`publish-monthly-apoiadores-brevo.ts`, cria a campanha
- * Brevo real) escrevem no MESMO state file — sem repassar esse campo, rodar
- * o Passo 1 depois do Passo 2 apagaria o registro de que já existe uma
- * campanha Brevo criada pro ciclo, reabrindo a janela do "Gap conhecido" do
- * SKILL.md (2 rascunhos duplicados na Brevo). Diferente de `sentAt`, este
- * campo não carrega o bug documentado acima — não há transição que o torne
- * inconsistente, só registra um fato ("essa campanha Brevo já existe") que
- * continua verdadeiro independente do que o Passo 1 faz.
+ * `previousBrevoCampaignId` (#4572/#4593) é uma exceção deliberada ao "não
+ * recebe o state anterior" — hoje a única, mas o motivo abaixo é específico
+ * dela, não uma regra geral; se um 3º campo precisar do mesmo tratamento no
+ * futuro, avalie-o pelo mesmo critério (é um FATO monotônico, não um valor
+ * derivado do `status`?) em vez de assumir que "já existe uma exceção,
+ * então tudo bem". Passo 1 (este `prepare`, fluxo Beehiiv legado) e Passo 2
+ * (`publish-monthly-apoiadores-brevo.ts`, cria a campanha Brevo real)
+ * escrevem no MESMO state file — sem repassar esse campo, rodar o Passo 1
+ * depois do Passo 2 apagaria o registro de que já existe uma campanha Brevo
+ * criada pro ciclo, reabrindo a janela do "Gap conhecido" do SKILL.md (2
+ * rascunhos duplicados na Brevo). Diferente de `sentAt` (que É derivado do
+ * `status` e por isso pode ficar contraditório numa transição), este campo
+ * é passado por VALOR, nunca derivado do `status`/`sentAt` deste `prepare`
+ * — não há transição interna que o torne inconsistente, só registra um fato
+ * ("essa campanha Brevo já existe") que continua verdadeiro independente do
+ * que o Passo 1 faz.
  */
 export function buildPreparedState(
   cycle: string,
@@ -213,6 +256,25 @@ export function decideMarkSentAction(state: ApoiadoresState | null): MarkSentDec
     return { action: "noop", reason: `Ciclo ${state.cycle} já estava marcado como enviado em ${state.sentAt} — nada a fazer.` };
   }
   return { action: "mark", state };
+}
+
+/**
+ * Pura/testável: monta o `ApoiadoresState` gravado depois de um `--mark-sent`
+ * bem-sucedido (transição `draft_prepared -> sent`, `decideMarkSentAction`
+ * já validou que `state.status !== "sent"`). Extraída do que era um object
+ * spread inline em `send-monthly-apoiadores.ts::main()`
+ * (`{ ...decision.state, status: "sent", sentAt: ... }`) — mesma disciplina
+ * que este módulo já cobra de si mesmo (`buildPreparedState`,
+ * `buildApoiadoresBrevoPublishedState`): construir `ApoiadoresState` só via
+ * builder testado, nunca ad hoc no `main()` de um script (o bug histórico do
+ * #4521 self-review, documentado acima em `buildPreparedState`, é exatamente
+ * o tipo de erro que um spread inline sem teste pode reintroduzir). Preserva
+ * TODOS os campos de `state` por spread — inclusive `brevoCampaignId`
+ * (#4572/#4593): marcar um ciclo como enviado não apaga o registro de que
+ * uma campanha Brevo foi criada pra ele.
+ */
+export function buildSentState(state: ApoiadoresState, sentAt: string): ApoiadoresState {
+  return { ...state, status: "sent", sentAt };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
