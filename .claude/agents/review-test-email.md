@@ -389,17 +389,26 @@ npx tsx scripts/lint-test-email-link-tracking.ts \
 **#4512:** este comando roda com `stage: "delivered"` por default (o e-mail
 apontado por `--email-file` é sempre o JÁ ENTREGUE, nunca draft) — uma merge
 tag `{{poll_token}}`/`{{email}}` ainda literal aqui **não é mais skipada como
-`merge_tag`**: segue pro HEAD normal e vira `link_dead` (blocker) se o
-`/vote` real rejeitar o parâmetro literal (guard `isUnsubstitutedMergeTag`,
-`workers/poll/src/vote.ts`, sempre retorna 4xx pra isso). Antes do #4512
-qualquer `{{...}}` era skipada incondicionalmente — mascarando o cenário real
-de custom field `poll_token` não populado (ver `scripts/inject-poll-token.ts`).
+`merge_tag`**: segue pro HEAD normal e vira `link_dead` (blocker).
+
+**#4604 (correção do rationale do #4512 — o guard mudou de comportamento no
+#4578):** o `/vote` real **não retorna mais 4xx incondicionalmente** pra
+merge tag literal — o guard `isUnsubstitutedMergeTag`
+(`workers/poll/src/vote.ts`) agora responde **302** pro jogo anônimo
+(`/jogar?edition=...&from=post-web`) quando `edition` tem formato válido, em
+vez do dead-end 400 de antes. Um HEAD que segue esse redirect vê status
+final **200** (a página `/jogar` existe e funciona) — `lint-test-email-link-tracking.ts`
+trata esse destino final especificamente (`isPostWebRedirectTarget`) e
+CONTINUA classificando como `link_dead` (blocker) mesmo com HTTP 200, porque
+o redirect em si só existe quando a merge tag chegou travada. Não espere
+`status: 4xx` neste caso — confira `details` (menciona `from=post-web`) pra
+confirmar a causa.
 
 Output JSON: `{ total_urls_extracted, total_urls_checked, issues, skipped, passed }`.
 Cada issue tem `severity: "blocker" | "warning"` (#1949). **Exit 1 só com blocker.**
 
 Mapear `issues[]` pra strings do output do agent **respeitando o severity**:
-- `type:link_dead` (severity:blocker) → `"email:link_dead: {url} → HTTP {status}"` (blocker)
+- `type:link_dead` (severity:blocker) → `"email:link_dead: {url} → {details}"` (blocker) — **#4604: usar sempre `i.details`, nunca hardcoded `"HTTP {status}"`** (o status do `link_dead` de merge-tag-travada-via-redirect pode ser 200, não um código de erro).
 - `type:link_redirect_chain_long` (blocker) → `"email:link_redirect_chain_long: {url} → {hops} hops"` (blocker)
 - `type:link_timeout` (severity:**warning**, #1949) → `"info:link_timeout: {url} (>5s, transiente)"` — **WARNING, nunca blocker**. Timeout é transiente (host lento pontual, ex: anthropic.com); não derruba o fix loop.
 

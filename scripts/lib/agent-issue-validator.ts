@@ -48,6 +48,13 @@
  * julgamento editorial, não validation determinística.
  */
 
+// #4604: `isPostWebRedirectTarget` mora em lint-test-email-link-tracking.ts
+// (o detector original do sinal) — reusado aqui pra que a re-verificação de
+// `email:link_dead` (isLinkDeadFalsePositive, mais abaixo) reconheça o MESMO
+// sinal indireto e não desfaça a correção do #4604 uma camada depois. Ver
+// rationale completo no header de `isLinkDeadFalsePositive`.
+import { isPostWebRedirectTarget } from "../lint-test-email-link-tracking.ts";
+
 export interface FilterResult {
   kept: string[];
   dropped: Array<{ issue: string; reason: string }>;
@@ -532,6 +539,18 @@ export function extractLinkDeadUrl(issue: string): string | null {
  *
  * Regras:
  *   - HTTP 2xx ou 3xx → FP (link vivo, bot-block na primeira tentativa do agent)
+ *     **#4604 (exceção):** SALVO quando o destino final do redirect bate
+ *     `isPostWebRedirectTarget` (`/jogar?...&from=post-web`) — esse padrão só
+ *     existe pq `handleVote` (workers/poll/src/vote.ts, guard
+ *     `isUnsubstitutedMergeTag`, #4578) redireciona pra lá quando a merge tag
+ *     de identidade do voto ainda chegou literal. HTTP final 200 nesse caso
+ *     NÃO significa "link vivo" — é o PRÓPRIO defeito que o `link_dead`
+ *     original tentou reportar. Sem esta exceção, a re-verificação com
+ *     `redirect: "follow"` (que `headOrGet` já usa) sempre resolveria o mesmo
+ *     redirect e apagaria como FP o exato issue que `lint-test-email-link-tracking.ts`
+ *     (#4604) passou a saber detectar — desfazendo a correção uma camada
+ *     depois. Ver rationale completo no header de `isPostWebRedirectTarget`
+ *     (`lint-test-email-link-tracking.ts`).
  *   - HTTP 403 em domínio *.beehiiv.com → FP (bot-protection conhecida)
  *   - Qualquer outro 4xx/5xx ou timeout → verdadeiro positivo (mantém issue)
  *
@@ -555,7 +574,7 @@ export async function isLinkDeadFalsePositive(
     const hostname = new URL(url).hostname;
     if (hostname.endsWith(".beehiiv.com") || hostname === "beehiiv.com") {
       // Fazer o request pra confirmar o 403 (não assumir só pelo hostname)
-      const status = await headOrGet(url, fetchFn);
+      const { status, finalUrl } = await headOrGet(url, fetchFn);
       if (status === 403) {
         return {
           falsePositive: true,
@@ -563,6 +582,10 @@ export async function isLinkDeadFalsePositive(
         };
       }
       if (status !== null && status >= 200 && status < 400) {
+        // #4604: ver rationale completo no header desta função.
+        if (finalUrl && isPostWebRedirectTarget(finalUrl)) {
+          return { falsePositive: false };
+        }
         return {
           falsePositive: true,
           reason: `link_dead falso-positivo: ${url} → HTTP ${status} na re-verificação (link vivo — #2013)`,
@@ -576,8 +599,13 @@ export async function isLinkDeadFalsePositive(
   }
 
   // Re-verificação geral: HEAD, fallback GET
-  const status = await headOrGet(url, fetchFn);
+  const { status, finalUrl } = await headOrGet(url, fetchFn);
   if (status !== null && status >= 200 && status < 400) {
+    // #4604: ver rationale completo no header desta função — o redirect pro
+    // jogo anônimo (/jogar?...&from=post-web) NÃO é link vivo, é o defeito.
+    if (finalUrl && isPostWebRedirectTarget(finalUrl)) {
+      return { falsePositive: false };
+    }
     return {
       falsePositive: true,
       reason: `link_dead falso-positivo: ${url} → HTTP ${status} na re-verificação (link vivo — #2013)`,
@@ -589,9 +617,19 @@ export async function isLinkDeadFalsePositive(
 
 /**
  * Faz HEAD, com fallback GET se o servidor rejeitar HEAD (alguns CDNs retornam
- * 405 Method Not Allowed). Retorna o status final ou null em caso de timeout/erro.
+ * 405 Method Not Allowed). Retorna o status final (null em caso de timeout/
+ * erro) e a URL final após seguir redirects (`redirect: "follow"` — nativo do
+ * fetch, `Response.url` já reflete o destino pós-redirect sem precisar
+ * reimplementar o loop manual que `lint-test-email-link-tracking.ts` usa).
  *
  * Interno — não exportado.
+ *
+ * #4604: `finalUrl` foi adicionado (era só `status`) — necessário pra
+ * `isLinkDeadFalsePositive` reconhecer o redirect pro jogo anônimo
+ * (`/jogar?...&from=post-web`) mesmo quando o status final "parece" saudável
+ * (200). `finalUrl` vem de `res.url`, `null` quando ausente/vazio (mock de
+ * teste que não seta essa propriedade) — callers tratam `null` como "sem
+ * sinal", nunca lançam.
  *
  * #2048 item 9: divergência intencional vs `verify-accessibility.ts`:
  *   - Aqui: timeout fixo `REVERIFY_TIMEOUT_MS = 8000ms` (re-verificação rápida,
@@ -601,7 +639,7 @@ export async function isLinkDeadFalsePositive(
  * forçaria um timeout unificado ou um parâmetro extra, aumentando o acoplamento
  * sem ganho real. Mantidos separados; documentada a divergência aqui.
  */
-async function headOrGet(url: string, fetchFn: FetchFn): Promise<number | null> {
+async function headOrGet(url: string, fetchFn: FetchFn): Promise<{ status: number | null; finalUrl: string | null }> {
   const headers = { "User-Agent": BROWSER_UA };
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), REVERIFY_TIMEOUT_MS);
@@ -624,16 +662,16 @@ async function headOrGet(url: string, fetchFn: FetchFn): Promise<number | null> 
           redirect: "follow",
           signal: controller2.signal,
         });
-        return res2.status;
+        return { status: res2.status, finalUrl: res2.url || null };
       } catch {
-        return null;
+        return { status: null, finalUrl: null };
       } finally {
         clearTimeout(t2);
       }
     }
-    return res.status;
+    return { status: res.status, finalUrl: res.url || null };
   } catch {
-    return null;
+    return { status: null, finalUrl: null };
   } finally {
     clearTimeout(t);
   }

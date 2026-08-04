@@ -11,6 +11,7 @@ import {
   categorizeUrl,
   checkLinkTracking,
   classifyKnownArtifact,
+  isPostWebRedirectTarget,
 } from "../scripts/lint-test-email-link-tracking.ts";
 
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -437,5 +438,106 @@ describe("#4520 — mainCli() --stage via argv (CLI e2e)", () => {
     } finally {
       rmSync(dirname(emailFile), { recursive: true, force: true });
     }
+  });
+});
+
+describe("isPostWebRedirectTarget (#4604)", () => {
+  it("true: pathname /jogar + from=post-web", () => {
+    assert.equal(
+      isPostWebRedirectTarget("https://eia.diar.ia.br/jogar?edition=260801&from=post-web"),
+      true,
+    );
+  });
+
+  it("false: pathname /jogar SEM from=post-web (link legítimo do embed, embed.ts::buildEmbedJogarUrl)", () => {
+    assert.equal(
+      isPostWebRedirectTarget("https://eia.diar.ia.br/jogar?edition=260801&utm_source=embed"),
+      false,
+    );
+  });
+
+  it("false: from=post-web em pathname diferente de /jogar", () => {
+    assert.equal(
+      isPostWebRedirectTarget("https://eia.diar.ia.br/jogar/arquivo?from=post-web"),
+      false,
+    );
+  });
+
+  it("false: URL sem relação nenhuma", () => {
+    assert.equal(isPostWebRedirectTarget("https://example.com/article"), false);
+  });
+
+  it("false: URL inválida não lança", () => {
+    assert.equal(isPostWebRedirectTarget("not-a-url"), false);
+  });
+});
+
+describe("#4604 — redirect pro /jogar?from=post-web pós-#4578 não mascara merge tag travada", () => {
+  // Reproduz o comportamento REAL de handleVote (workers/poll/src/vote.ts,
+  // guard isUnsubstitutedMergeTag) desde o #4578: merge tag ainda literal +
+  // edition em formato válido → 302 com Location /jogar?edition=...&from=post-web
+  // (em vez do 400 incondicional de antes do #4578, que o teste #4512 acima
+  // ainda cobre para o caso de edition malformada).
+  const VOTE_URL_WITH_LITERAL_TAG =
+    "https://eia.diar.ia.br/vote?email={{poll_token}}@vote.eia.diaria.local&edition=260801&choice=A";
+
+  it("HEAD segue o 302 até /jogar?...&from=post-web (HTTP final 200) → ainda vira link_dead (blocker), não passed", async () => {
+    const html = `<a href="${VOTE_URL_WITH_LITERAL_TAG}">votar</a>`;
+    const responses = [
+      new Response(null, {
+        status: 302,
+        headers: { Location: "https://eia.diar.ia.br/jogar?edition=260801&from=post-web" },
+      }),
+      new Response(null, { status: 200 }),
+    ];
+    let i = 0;
+    const fetchStub = (): Promise<Response> => Promise.resolve(responses[i++]);
+    const r = await checkLinkTracking(html, fetchStub as never, undefined, "delivered");
+    assert.equal(r.passed, 0, "não deve contar como passed — mascararia a merge tag travada");
+    assert.equal(r.issues.length, 1);
+    assert.equal(r.issues[0].type, "link_dead");
+    assert.equal(r.issues[0].severity, "blocker");
+    assert.equal(r.issues[0].status, 200, "status final do HEAD é 200 (a página /jogar existe)");
+    assert.equal(r.issues[0].final_url, "https://eia.diar.ia.br/jogar?edition=260801&from=post-web");
+    assert.match(r.issues[0].details, /from=post-web/);
+  });
+
+  it("mesma URL SEM redirecionar (voto normal, merge tag já resolvida) → passed, não vira issue", async () => {
+    // Caminho feliz: a Beehiiv já substituiu o poll_token — a URL do /vote
+    // real (sem {{...}}) responde 200 direto, sem redirect nenhum.
+    const html = '<a href="https://eia.diar.ia.br/vote?email=abc123@vote.eia.diaria.local&edition=260801&choice=A">votar</a>';
+    const fetchStub = (): Promise<Response> => Promise.resolve(new Response(null, { status: 200 }));
+    const r = await checkLinkTracking(html, fetchStub as never, undefined, "delivered");
+    assert.equal(r.passed, 1);
+    assert.equal(r.issues.length, 0);
+  });
+
+  it("redirect pra /jogar SEM from=post-web (ex: link de embed) não é confundido com merge tag travada", async () => {
+    const html = '<a href="https://eia.diar.ia.br/embed-redirect">embed</a>';
+    const responses = [
+      new Response(null, {
+        status: 301,
+        headers: { Location: "https://eia.diar.ia.br/jogar?edition=260801&utm_source=embed" },
+      }),
+      new Response(null, { status: 200 }),
+    ];
+    let i = 0;
+    const fetchStub = (): Promise<Response> => Promise.resolve(responses[i++]);
+    const r = await checkLinkTracking(html, fetchStub as never, undefined, "delivered");
+    assert.equal(r.issues.length, 0, "sem from=post-web não é o sinal de merge tag travada");
+    assert.equal(r.passed, 1);
+  });
+
+  it("edition malformada (caminho pré-#4578 preservado): guard ainda retorna 400 direto, sem redirect — continua link_dead pelo ramo genérico de status", async () => {
+    // #4578: isValidVoteEditionFormat(edition) falso → o guard cai no 400 de
+    // sempre (comportamento intocado desse caso combinado). Sem redirect
+    // nenhum — hops=0, então o novo branch de #4604 nem entra em jogo; o
+    // ramo genérico >=400 já pré-existente continua responsável por isso.
+    const html = '<a href="https://eia.diar.ia.br/vote?email={{poll_token}}@vote.eia.diaria.local&edition=lixo&choice=A">votar</a>';
+    const fetchStub = (): Promise<Response> => Promise.resolve(new Response(null, { status: 400 }));
+    const r = await checkLinkTracking(html, fetchStub as never, undefined, "delivered");
+    assert.equal(r.issues.length, 1);
+    assert.equal(r.issues[0].type, "link_dead");
+    assert.equal(r.issues[0].status, 400);
   });
 });

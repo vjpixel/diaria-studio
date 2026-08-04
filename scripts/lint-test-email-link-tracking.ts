@@ -10,7 +10,9 @@
  * 1. Extrai URLs de hrefs no HTML do email.
  * 2. Para cada URL única, resolve até 3 redirects + HEAD.
  * 3. Reporta:
- *    - `link_dead` (blocker): HEAD final retorna 4xx/5xx (exceto 401/403)
+ *    - `link_dead` (blocker): HEAD final retorna 4xx/5xx (exceto 401/403) OU
+ *      (#4604) o redirect final aterrissa em `/jogar?...&from=post-web` — ver
+ *      rationale completo no header de `isPostWebRedirectTarget` abaixo.
  *    - `link_timeout` (warning, #1949): HEAD demora >5s — transiente, NÃO blocker
  *    - `link_redirect_chain_long` (blocker): >3 hops até 200
  *
@@ -33,8 +35,14 @@
  *      expandida por design). O caller real (`mainCli`, único hoje) sempre
  *      passa `stage: "delivered"` (e-mail JÁ ENTREGUE) — nesse estágio uma
  *      tag ainda literal é o DEFEITO que este linter existe pra pegar, não
- *      skipada: segue pro HEAD normal e vira `link_dead` via o 4xx real do
- *      guard `isUnsubstitutedMergeTag` (workers/poll/src/vote.ts).
+ *      skipada: segue pro HEAD normal. **#4604:** o guard `isUnsubstitutedMergeTag`
+ *      (workers/poll/src/vote.ts) deixou de retornar 4xx incondicionalmente a
+ *      partir do #4578 — quando `edition` tem formato válido, ele agora
+ *      responde 302 pro jogo anônimo (`/jogar?edition=...&from=post-web`) em
+ *      vez do dead-end 400. Um HEAD que segue esse redirect vê status final
+ *      200 (a página `/jogar` existe e funciona) — sem tratamento extra, o
+ *      link apareceria como `passed`, mascarando a merge tag travada. Ver
+ *      `isPostWebRedirectTarget` abaixo pro detector desse sinal indireto.
  *    - `non_http`/`tel_mailto`: protocolos não-http
  *    - Artefatos conhecidos de test-send (#3480/#3481/#3482, post-mortem 260716)
  *      — classificados via `classifyKnownArtifact`, sempre `skipped[]` (nunca
@@ -202,11 +210,18 @@ export type LinkTrackingStage = "draft" | "delivered";
  * defeito que este linter existe pra pegar (ex: custom field `poll_token`
  * não populado pro assinante de teste antes do 1º envio — ver
  * `scripts/inject-poll-token.ts`). Por isso NÃO skipa neste estágio: retorna
- * `null` (URL segue pro HEAD normal) — um GET real em `/vote` com o
- * parâmetro literal retorna 4xx (`isUnsubstitutedMergeTag`, guard já existente
- * em `workers/poll/src/vote.ts`), então o HEAD equivalente também recebe
- * status >=400 e vira `link_dead` (blocker) pela lógica genérica já existente
- * abaixo — nenhuma lógica extra além de deixar de skipar.
+ * `null` (URL segue pro HEAD normal).
+ *
+ * **#4604 (correção do rationale acima, achado de self-review do #4603):** o
+ * guard `isUnsubstitutedMergeTag` (`workers/poll/src/vote.ts`) NÃO retorna
+ * mais 4xx incondicionalmente desde o #4578 — com `edition` em formato
+ * válido, ele responde 302 pro jogo anônimo (`/jogar?edition=...&from=post-web`)
+ * em vez do 400 de antes. Um HEAD que segue esse redirect até `/jogar` vê
+ * status final 200 (a página existe e funciona). A detecção deixou de
+ * depender só do status HTTP — `checkLinkTracking` agora também confere se o
+ * destino final do redirect bate a assinatura `isPostWebRedirectTarget`
+ * (pathname `/jogar` + `from=post-web`), classificando como `link_dead`
+ * mesmo com HTTP final 200. Ver header de `isPostWebRedirectTarget` abaixo.
  */
 export function categorizeUrl(url: string, stage: LinkTrackingStage = "draft"): "non_http" | "auth_required" | "merge_tag" | null {
   // #1949: URL com merge tag Beehiiv (`{{email}}`) — a vote URL do É IA? é
@@ -353,6 +368,34 @@ async function headWithRedirects(url: string, fetchImpl: typeof fetch): Promise<
   return { status: lastStatus, hops, final_url: current, timed_out: false };
 }
 
+/**
+ * #4604: detecta o destino do redirect que `handleVote` (workers/poll/src/
+ * vote.ts, guard `isUnsubstitutedMergeTag`, #4578) emite quando a merge tag
+ * de identidade do voto (`{{email}}`/`{{poll_token}}`) chega ainda literal —
+ * `302` pro jogo anônimo `/jogar?edition=...&from=post-web` em vez do 400
+ * incondicional de antes do #4578. Esse destino é um sinal INDIRETO de merge
+ * tag travada: o HEAD final costuma retornar 200 (a página `/jogar` existe e
+ * funciona), então sem este check o link apareceria como saudável
+ * (`passed`), mascarando o defeito real no envio.
+ *
+ * A checagem exige AMBOS pathname `/jogar` E query `from=post-web` — não só
+ * pathname. `/jogar` sozinho tem produtor legítimo e comum: o embed do jogo
+ * (`workers/poll/src/embed.ts::buildEmbedJogarUrl`) monta
+ * `/jogar?{params}` SEM o parâmetro `from`, e não deve ser confundido com o
+ * sinal de merge tag travada. `from=post-web` é setado EXCLUSIVAMENTE pelo
+ * guard de `handleVote` (nenhum outro call site do repo produz esse valor —
+ * ver `workers/poll/src/vote.ts`), tornando a combinação um sinal específico
+ * o suficiente pra não gerar falso-positivo em um link `/jogar` legítimo.
+ */
+export function isPostWebRedirectTarget(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.pathname === "/jogar" && u.searchParams.get("from") === "post-web";
+  } catch {
+    return false;
+  }
+}
+
 export async function checkLinkTracking(
   emailContent: string,
   fetchImpl: typeof fetch = fetch,
@@ -417,6 +460,22 @@ export async function checkLinkTracking(
           status: null,
           hops: r.hops,
           details: `HEAD timeout após ${HEAD_TIMEOUT_MS}ms (transiente — warning, não blocker).`,
+        });
+      } else if (r.hops > 0 && isPostWebRedirectTarget(r.final_url)) {
+        // #4604: destino final do redirect é `/jogar?...&from=post-web` — sinal
+        // indireto de merge tag de identidade do voto ainda literal no /vote
+        // (guard isUnsubstitutedMergeTag, workers/poll/src/vote.ts, #4578).
+        // Checado ANTES dos ramos por status abaixo de propósito: o HEAD final
+        // aqui tipicamente é 200 (a página /jogar existe e funciona), então sem
+        // esta checagem cairia no `else { passed++ }` — mascarando o defeito.
+        issues.push({
+          type: "link_dead",
+          severity: "blocker",
+          url,
+          final_url: r.final_url,
+          status: r.status,
+          hops: r.hops,
+          details: `Redirect final aponta pra /jogar com from=post-web (HTTP ${r.status} em ${r.final_url}) — merge tag de identidade do voto ainda literal no /vote (guard isUnsubstitutedMergeTag, workers/poll/src/vote.ts, #4578/#4604).`,
         });
       } else if (r.hops > MAX_REDIRECTS) {
         issues.push({
