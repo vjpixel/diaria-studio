@@ -22,6 +22,8 @@ import {
   isOwnWorkOnlyCredit,
   isPtDescription,
   translateToPtBR,
+  resolveTranslatedSentence,
+  resolveSubjectWikipediaUrl,
 } from "../scripts/eia-compose.ts";
 import { withFetchSpy } from "./_helpers/with-fetch-spy.ts";
 
@@ -1491,6 +1493,117 @@ describe("isPtDescription (#4618)", () => {
       process.stderr.write = originalWrite;
     }
     assert.match(captured, /lang="pt-BR"/);
+  });
+
+  it("lang ausente MAS description.html contém link pt.wikipedia.org → false + warn de shape drift (#4619 item 1)", () => {
+    // Achado do review consolidado sobre a PR #4619 (silent-failure-hunter):
+    // `lang` ausente hoje é tratado igual a "sem versão pt" (fallback
+    // silencioso, esperado). Mas se a Wikimedia mantivesse a resposta em pt
+    // e só renomeasse/removesse o campo `lang`, description.html continuaria
+    // apontando pra pt.wikipedia.org — esse teste confirma que esse
+    // cenário específico pelo menos emite um warning observável, mesmo sem
+    // mudar o retorno (false, main() ainda cai no fallback).
+    const originalWrite = process.stderr.write;
+    let captured = "";
+    process.stderr.write = ((chunk: string) => {
+      captured += chunk;
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      const result = isPtDescription({
+        description: { html: '<a href="https://pt.wikipedia.org/wiki/Landsort">Landsort</a>' },
+      });
+      assert.equal(result, false);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    assert.match(captured, /shape drift/);
+    assert.match(captured, /pt\.wikipedia\.org/);
+  });
+
+  it("lang ausente e description.html sem link pt.wikipedia.org → false, sem warn de shape drift", () => {
+    // Contraprova do teste acima: html ausente, vazio, ou só com link
+    // en.wikipedia.org não deve disparar o warning de shape drift — é
+    // exatamente o caminho "sem versão pt" normal, já coberto sem warn
+    // pelo teste "lang ausente ... → false" logo acima.
+    const originalWrite = process.stderr.write;
+    let captured = "";
+    process.stderr.write = ((chunk: string) => {
+      captured += chunk;
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      assert.equal(isPtDescription({}), false);
+      assert.equal(
+        isPtDescription({
+          description: { html: '<a href="https://en.wikipedia.org/wiki/Landsort">Landsort</a>' },
+        }),
+        false,
+      );
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    assert.doesNotMatch(captured, /shape drift/);
+  });
+});
+
+describe("resolveTranslatedSentence — gate central do #4618 não gasta Gemini quando já é pt (#4619 item 2)", () => {
+  it("sourceIsPt=true → nunca chama translateToPtBR (zero fetch)", async () => {
+    await withFetchSpy(async (calls) => {
+      const result = await resolveTranslatedSentence(true, "Rome is on the Tiber.");
+      assert.equal(result, null);
+      assert.deepEqual(calls, [], "sourceIsPt=true não deve fazer nenhuma chamada externa");
+    });
+  });
+
+  it("sourceIsPt=false → chama translateToPtBR (fetch acontece)", async () => {
+    // withFetchSpy sempre lança na chamada interceptada — a asserção
+    // relevante é que a chamada FOI feita (calls.length===1), não o
+    // resultado (que fica null pelo fallback silencioso de translateToPtBR,
+    // já coberto por outro teste). Mesmo padrão usado pro guard de
+    // fetchPotd acima.
+    const originalKey = process.env.GEMINI_API_KEY;
+    process.env.GEMINI_API_KEY = "test-key-synthetic";
+    try {
+      await withFetchSpy(async (calls) => {
+        const result = await resolveTranslatedSentence(false, "Rome is on the Tiber.");
+        assert.equal(result, null, "fetch mockado lança, então cai no fallback silencioso EN");
+        assert.equal(calls.length, 1, "sourceIsPt=false deve chamar translateToPtBR exatamente 1 vez");
+      });
+    } finally {
+      if (originalKey === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = originalKey;
+    }
+  });
+});
+
+describe("resolveSubjectWikipediaUrl (#4619 item 3)", () => {
+  it("pt nativo (sourceIsPt): ptWikipediaUrl e subjectEnUrl null → usa subjUrl direto", () => {
+    const result = resolveSubjectWikipediaUrl(null, null, "https://pt.wikipedia.org/wiki/Landsort");
+    assert.equal(result, "https://pt.wikipedia.org/wiki/Landsort");
+  });
+
+  it("fallback com tradução pt bem-sucedida: ptWikipediaUrl tem prioridade sobre subjectEnUrl/subjUrl", () => {
+    const result = resolveSubjectWikipediaUrl(
+      "https://pt.wikipedia.org/wiki/Sapo-escavador",
+      "https://en.wikipedia.org/wiki/Burrowing_frog",
+      "https://en.wikipedia.org/wiki/Burrowing_frog",
+    );
+    assert.equal(result, "https://pt.wikipedia.org/wiki/Sapo-escavador");
+  });
+
+  it("fallback sem tradução (langlink pt não encontrado): cai pro subjectEnUrl", () => {
+    const result = resolveSubjectWikipediaUrl(
+      null,
+      "https://en.wikipedia.org/wiki/Burrowing_frog",
+      "https://en.wikipedia.org/wiki/Burrowing_frog",
+    );
+    assert.equal(result, "https://en.wikipedia.org/wiki/Burrowing_frog");
+  });
+
+  it("nenhum candidato disponível → null", () => {
+    assert.equal(resolveSubjectWikipediaUrl(null, null, undefined), null);
+    assert.equal(resolveSubjectWikipediaUrl(null, null, null), null);
   });
 });
 
