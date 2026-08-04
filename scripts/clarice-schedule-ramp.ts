@@ -136,6 +136,38 @@ export const DEFAULT_DASHBOARD_URL = "https://clarice-dashboard.diaria.workers.d
 export const DEFAULT_DASHBOARD_LIMIT = 50;
 export const DASHBOARD_WORKER_CLAMP = 50;
 
+export interface DashboardStaleInfo {
+  kind: string;
+  upstreamStatus: string;
+}
+
+/**
+ * #4543: `GET /api/campaigns` (`workers/brevo-dashboard/src/index.ts`,
+ * `buildCampaignsResponse`) serve HTTP 200 mesmo quando o dado é cache, em
+ * dois cenários REAIS desta rota — sinalizados via
+ * `X-Dashboard-Stale`/`X-Dashboard-Upstream-Status`, por design, pra não
+ * acionar alertas de disponibilidade:
+ *   - `kind: "upstream-error"` — outage 403/5xx OU erro de rede/timeout cru
+ *     do fetch pra Brevo (#4251/#4533); `upstreamStatus` traz o status real
+ *     ou o literal `"network_error"`.
+ *   - `kind: "inflight-coalesced"` — lock de refresh concorrente (#3644,
+ *     coalescing entre requests simultâneas), sem relação com a Brevo;
+ *     `upstreamStatus` ausente, cai no fallback `"unknown"`.
+ * Rate-limit (429) NÃO é mascarado nesta rota — `rateLimitResponse(_, false)`
+ * devolve 503 puro sem `X-Dashboard-Stale` (o banner "200 + stale" pra 429
+ * existe só na rota HTML do painel, `buildStaleResponse`) — continua caindo
+ * no `!res.ok` pré-existente em ambos os consumidores, inalterado por este PR.
+ * Consumidores que checavam só `res.ok` (este script e
+ * `clarice-check-semaphore.ts`) não enxergavam essa diferença pros dois casos
+ * acima. Decisão do editor: fail-open com visibilidade — nunca bloquear por
+ * isso, mas nunca silencioso.
+ */
+export function extractDashboardStaleInfo(res: Response): DashboardStaleInfo | undefined {
+  const kind = res.headers.get("X-Dashboard-Stale");
+  if (!kind) return undefined;
+  return { kind, upstreamStatus: res.headers.get("X-Dashboard-Upstream-Status") ?? "unknown" };
+}
+
 // ---------------------------------------------------------------------------
 // Volumes — explícito (--volumes) OU calculado a partir do worker (#3593 item 1)
 // ---------------------------------------------------------------------------
@@ -857,6 +889,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     if (!res.ok) {
       console.error(`❌ GET ${dashboardUrl}/api/campaigns falhou (${res.status}). Use --volumes A,B,C explícito.`);
       process.exit(1);
+    }
+    const stale = extractDashboardStaleInfo(res);
+    if (stale) {
+      console.error(
+        `⚠️  Dashboard serviu dado STALE (${stale.kind}, upstream=${stale.upstreamStatus}) — próxima wave decidida sobre cache possivelmente desatualizado, até 24h (#4543).`,
+      );
     }
     const campaigns = (await res.json()) as BrevoCampaign[];
     // #4131 finding 4: busca a leitura do Postmaster no MESMO dashboard — sem

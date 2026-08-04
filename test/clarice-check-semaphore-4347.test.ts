@@ -119,6 +119,47 @@ test("checkSemaphore: recordedAt fresco mas date stale (#4541) -> semáforo trat
   assert.equal(result.semaphore, "yellow");
 });
 
+// ---------------------------------------------------------------------------
+// #4543 — dashboard pode servir HTTP 200 com dado STALE (ver docstring de
+// extractDashboardStaleInfo em clarice-schedule-ramp.ts pra causas reais).
+// Decisão do editor: fail-open com visibilidade — nunca tratar como falha,
+// mas nunca silencioso (resultado carrega `stale` pra quem consumir o JSON).
+// ---------------------------------------------------------------------------
+
+test("REGRESSÃO (#4543): checkSemaphore com X-Dashboard-Stale presente -> resultado carrega `stale`, NÃO lança nem vira 'red'", async () => {
+  const fetchImpl = (async (url: string | URL) => {
+    const u = String(url);
+    if (u.includes("/api/campaigns")) {
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "X-Dashboard-Stale": "upstream-error",
+          "X-Dashboard-Upstream-Status": "503",
+        },
+      });
+    }
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+
+  const result = await checkSemaphore("https://fake-dashboard", 50, fetchImpl);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.stale, { kind: "upstream-error", upstreamStatus: "503" });
+});
+
+test("checkSemaphore: sem X-Dashboard-Stale -> `stale` fica ausente (resultado não fica poluído em toda chamada)", async () => {
+  const fetchImpl = (async (url: string | URL) => {
+    const u = String(url);
+    if (u.includes("/api/campaigns")) {
+      return new Response(JSON.stringify([]), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+
+  const result = await checkSemaphore("https://fake-dashboard", 50, fetchImpl);
+  assert.equal(result.stale, undefined);
+});
+
 // #4568 — o guard pedia `?limit=0` em toda invocação sem flags e o Worker
 // respondia 502, então ele abortava SEMPRE, sem nunca avaliar entregabilidade.
 // Causa HISTÓRICA: `getArg` devolve "" (não undefined) e

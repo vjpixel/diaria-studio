@@ -27,6 +27,7 @@ import {
   checkAllCampaignsCreated,
   runScheduleLoop,
   fetchPostmasterSpamEntry,
+  extractDashboardStaleInfo,
   type CampaignEntryLike,
 } from "../scripts/clarice-schedule-ramp.ts";
 import { EDITOR_COPY_EMAIL } from "../scripts/lib/editor-copy.ts";
@@ -383,6 +384,26 @@ describe("deriveRampVolumes (#3593 item 1 — recomputa volumes via a MESMA lóg
       if (!result.ok) throw new Error("unreachable");
       assert.equal(result.plan.semaphore, "yellow");
     }
+  });
+});
+
+describe("extractDashboardStaleInfo (#4543 — clarice-check-semaphore.ts/clarice-schedule-ramp.ts checavam só res.ok, ignoravam cache stale)", () => {
+  it("header X-Dashboard-Stale presente -> extrai kind + upstreamStatus", () => {
+    const res = new Response("[]", {
+      status: 200,
+      headers: { "X-Dashboard-Stale": "upstream-error", "X-Dashboard-Upstream-Status": "503" },
+    });
+    assert.deepEqual(extractDashboardStaleInfo(res), { kind: "upstream-error", upstreamStatus: "503" });
+  });
+
+  it("header X-Dashboard-Stale ausente -> undefined (resposta fresh não fica marcada)", () => {
+    const res = new Response("[]", { status: 200 });
+    assert.equal(extractDashboardStaleInfo(res), undefined);
+  });
+
+  it("X-Dashboard-Stale presente sem X-Dashboard-Upstream-Status -> upstreamStatus cai em 'unknown', nunca lança", () => {
+    const res = new Response("[]", { status: 200, headers: { "X-Dashboard-Stale": "rate-limit" } });
+    assert.deepEqual(extractDashboardStaleInfo(res), { kind: "rate-limit", upstreamStatus: "unknown" });
   });
 });
 

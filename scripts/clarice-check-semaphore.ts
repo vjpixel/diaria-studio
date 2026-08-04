@@ -32,7 +32,11 @@
  *   ?limit=0, que o servico responde com 5xx (observado ao vivo, comportamento
  *   externo: nada neste repo garante esse status).
  *
- * Stdout: JSON { ok, semaphore, reason? }. Stderr: log humano-legível.
+ * Stdout: JSON { ok, semaphore, reason?, stale? }. Stderr: log humano-legível.
+ *
+ * `stale` (#4543): ver docstring de `extractDashboardStaleInfo` em
+ * clarice-schedule-ramp.ts pra causas e decisão do editor (fail-open com
+ * visibilidade — nunca tratado como falha aqui).
  */
 
 import { getArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
@@ -42,14 +46,18 @@ import {
   warnIfLimitExceedsWorkerClamp,
   fetchPostmasterSpamEntry,
   deriveRampVolumes,
+  extractDashboardStaleInfo,
 } from "./clarice-schedule-ramp.ts";
 import type { BrevoCampaign } from "../workers/brevo-dashboard/src/types.ts";
 import type { Semaphore } from "../workers/brevo-dashboard/src/weekly-plan.ts";
+import type { DashboardStaleInfo } from "./clarice-schedule-ramp.ts";
 
 export interface SemaphoreCheckResult {
   ok: boolean; // false = ABORTAR a rodada (semáforo vermelho)
   semaphore: Semaphore | "indeterminate";
   reason?: string;
+  /** #4543: presente quando o dashboard serviu X-Dashboard-Stale — decisão tomada sobre cache, não fresh. */
+  stale?: DashboardStaleInfo;
 }
 
 /** Pura: decide o resultado do guard a partir do `deriveRampVolumes` já resolvido. */
@@ -87,6 +95,16 @@ export async function checkSemaphore(
   if (!res.ok) {
     throw new Error(`GET ${dashboardUrl}/api/campaigns falhou (${res.status}) — não dá pra determinar o semáforo, tratado como falha (não "indeterminate/passa").`);
   }
+  // #4543: HTTP 200 não significa dado FRESH — ver docstring de
+  // `extractDashboardStaleInfo` em clarice-schedule-ramp.ts. Decisão do
+  // editor: não tratar como falha — logar e prosseguir (fail-open com
+  // visibilidade), nunca silencioso.
+  const stale = extractDashboardStaleInfo(res);
+  if (stale) {
+    console.error(
+      `⚠️  Dashboard serviu dado STALE (${stale.kind}, upstream=${stale.upstreamStatus}) — semáforo decidido sobre cache possivelmente desatualizado, até 24h (#4543).`,
+    );
+  }
   const campaigns = (await res.json()) as BrevoCampaign[];
   // `fetchImpl` propagado (não o default global `fetch`) — sem isso, testes
   // que injetam `fetchImpl` pra evitar rede real ainda disparariam uma
@@ -94,7 +112,8 @@ export async function checkSemaphore(
   // fetchPostmasterSpamEntry, mas uma chamada de rede real mesmo assim).
   const spamEntry = await fetchPostmasterSpamEntry(dashboardUrl, fetchImpl).catch(() => null);
   const result = deriveRampVolumes(campaigns, new Date(), spamEntry);
-  return decideSemaphoreGuard(result);
+  const guardResult = decideSemaphoreGuard(result);
+  return stale ? { ...guardResult, stale } : guardResult;
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
@@ -114,6 +133,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   if (limitWarning) console.error(limitWarning);
 
   const result = await checkSemaphore(dashboardUrl, limit);
+  if (result.stale) {
+    console.error(`⚠️  resultado acima decidido sobre dado STALE (${result.stale.kind}, upstream=${result.stale.upstreamStatus}) — #4543.`);
+  }
   if (result.semaphore === "red") {
     console.error(`🔴 semáforo VERMELHO — ${result.reason}`);
   } else if (result.semaphore === "indeterminate") {
