@@ -109,8 +109,8 @@ export function findDangerousGetArgUsages(dir: string): DangerousMatch[] {
 const ALLOWLIST: readonly DangerousMatch[] = [
   { file: "scripts/clarice-sync-brevo.ts", line: 178 },
   { file: "scripts/clarice-engagement-cohorts.ts", line: 552 },
-  { file: "scripts/clarice-engagement-cohorts-v2.ts", line: 645 },
-  { file: "scripts/clarice-engagement-cohorts-v2.ts", line: 654 },
+  { file: "scripts/clarice-engagement-cohorts-v2.ts", line: 639 },
+  { file: "scripts/clarice-engagement-cohorts-v2.ts", line: 648 },
 ] as const;
 
 function isAllowlisted(m: DangerousMatch): boolean {
