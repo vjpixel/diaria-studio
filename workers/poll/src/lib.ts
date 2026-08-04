@@ -678,12 +678,17 @@ export function classify403Reason(sig: string): Vote403Reason {
  * votos desse envio no leaderboard `clarice` cruzaria 2 audiências
  * distintas (achado do review pré-merge do #4482/#4510: `renderEia`
  * mandava TODO voto do digest, veio ele da Clarice ou do Beehiiv, pro mesmo
- * `brand=clarice`). Cada marca tem ranking, gate de edições e apelidos
+ * `brand=clarice`); `mensal-apoiadores-brevo` (#4593) é o SUCESSOR de
+ * `mensal-beehiiv` — mesma audiência (apoiadores Mantenedor/Patrono), canal
+ * trocado de Beehiiv pra Brevo porque a Beehiiv bloqueia "Include and
+ * exclude segments" atrás do plano Scale (#4572). `mensal-beehiiv` nunca
+ * chegou a enviar ao vivo (fica no tipo por histórico/rastreabilidade, sem
+ * uso ativo). Cada marca tem ranking, gate de edições e apelidos
  * isolados (mecânica #1905 — um brand novo entra de graça na isolação, ver
  * `brandKvPrefix`/`parseBrandParam` abaixo, derivados de
  * `Object.keys(BRAND_INFO)`).
  */
-export type Brand = "diaria" | "clarice" | "web" | "mensal-beehiiv";
+export type Brand = "diaria" | "clarice" | "web" | "mensal-beehiiv" | "mensal-apoiadores-brevo";
 
 /**
  * #2018: leaderboardPeriod — período canônico do leaderboard por brand.
@@ -727,6 +732,12 @@ export const BRAND_INFO: Record<Brand, { name: string; siteUrl: string; leaderbo
   // siteUrl aponta pro site principal (não clarice.ai — esta audiência já é
   // assinante da diária, sem afiliado `?via=diaria` a rastrear).
   "mensal-beehiiv": { name: "diar.ia.br", siteUrl: "https://diar.ia.br", leaderboardPeriod: "year" },
+  // #4593: sucessor de "mensal-beehiiv" — mesma audiência (apoiadores
+  // Mantenedor/Patrono), mesma cadência de edição (ciclo `YYMM-MM`), canal
+  // trocado de Beehiiv pra Brevo (#4572). `leaderboardPeriod: "year"`
+  // OBRIGATÓRIO pelo mesmo motivo documentado acima pra "mensal-beehiiv" —
+  // sem isso `vote.ts` rejeita edição em formato de ciclo com 400 (#4435).
+  "mensal-apoiadores-brevo": { name: "diar.ia.br", siteUrl: "https://diar.ia.br", leaderboardPeriod: "year" },
 };
 
 /**
