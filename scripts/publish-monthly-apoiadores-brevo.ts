@@ -38,15 +38,33 @@
  *      manual do editor no painel Brevo.
  *
  * Exit codes: 1 uso/erro fatal genérico; 2 guard de config/list_id/sender/
- * API key ausente (fora de `--dry-run`).
+ * API key ausente OU guard de idempotência (campanha já criada/ciclo já
+ * enviado) barrando fora de `--dry-run`.
+ *
+ * ## Idempotência Passo 1 ↔ Passo 2 (#4572/#4593, fecha o "Gap conhecido")
+ *
+ * Antes desta unidade, este script criava a campanha Brevo sem consultar nem
+ * gravar `data/monthly/{ciclo}/_internal/beehiiv-apoiadores-state.json`
+ * (mesmo state file do Passo 1/Passo 3, `scripts/lib/mensal/monthly-apoiadores-state.ts`)
+ * — rodar o Passo 2 2x pro mesmo ciclo criava DOIS rascunhos duplicados na
+ * Brevo. Agora, fora de `--dry-run`, `main()` lê o state ANTES de criar a
+ * campanha (`decidePublishBrevoAction`): se já existe `brevoCampaignId`
+ * gravado pra este ciclo, ou o ciclo já foi marcado `sent`, aborta com
+ * exit(2) — `--force` ignora os dois guards. Depois de criar a campanha com
+ * sucesso, grava o `brevoCampaignId` de volta no state
+ * (`buildApoiadoresBrevoPublishedState`), fechando o laço. `--dry-run` nunca
+ * toca o state (nem lê nem grava) — só o Passo 2 real cria/consulta o
+ * registro.
  *
  * Uso:
  *   npx tsx scripts/publish-monthly-apoiadores-brevo.ts --cycle 2607-08 --dry-run
  *   npx tsx scripts/publish-monthly-apoiadores-brevo.ts --cycle 2607-08
+ *   npx tsx scripts/publish-monthly-apoiadores-brevo.ts --cycle 2607-08 --force  # ignora idempotência
  *
  * `--dry-run`: monta o HTML/assunto/preview e imprime o que SERIA criado,
  * sem chamar a API Brevo — não exige `list_id`/`sender_email`/API key
- * preenchidos (mesmo contrato de `publish-daily-brevo.ts --dry-run`).
+ * preenchidos (mesmo contrato de `publish-daily-brevo.ts --dry-run`), nem
+ * consulta o state de idempotência.
  *
  * PRÉ-REQUISITO REAL (documentado, não resolvido nesta unidade, #4572/#4593):
  * `platform.config.json` → `brevo_apoiadores.list_id` continua `null` — a
@@ -59,9 +77,16 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { requireMonthlyCycleArg } from "./lib/mensal/monthly-paths.ts";
+import { requireMonthlyCycleArg, monthlyDir } from "./lib/mensal/monthly-paths.ts";
 import { brevoPost } from "./lib/brevo-client.ts";
 import { renderMonthlyApoiadoresBrevoEmail, type RenderedMonthlyApoiadoresBrevoEmail } from "./render-monthly-apoiadores-brevo.ts";
+import {
+  readApoiadoresState,
+  writeApoiadoresState,
+  decidePublishBrevoAction,
+  buildApoiadoresBrevoPublishedState,
+  type ApoiadoresState,
+} from "./lib/mensal/monthly-apoiadores-state.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -182,25 +207,35 @@ export interface ApoiadoresBrevoDeps {
    * de verdade (toca `data/monthly/` real, não fixture-ável — mesma limitação já aceita por
    * `test/render-monthly-beehiiv.test.ts`/`test/send-monthly-apoiadores.test.ts`). */
   renderEmail: (cycle: string) => RenderedMonthlyApoiadoresBrevoEmail;
+  /** Injetável pra teste (#4572/#4593 — guard de idempotência) — produção sempre chama
+   * `readApoiadoresState`/`writeApoiadoresState` de verdade, que resolvem contra
+   * `data/monthly/` real via `monthlyDir(cycle)` (mesma limitação de fixture do `renderEmail`
+   * acima — `monthlyDir()` não aceita um root override). */
+  readState: (monthlyDirPath: string) => ApoiadoresState | null;
+  writeState: (monthlyDirPath: string, state: ApoiadoresState) => void;
 }
 
 const defaultDeps: ApoiadoresBrevoDeps = {
   renderEmail: renderMonthlyApoiadoresBrevoEmail,
+  readState: readApoiadoresState,
+  writeState: writeApoiadoresState,
 };
 
 /**
  * @param rootDirOverride Opcional. Default = raiz do repo. Em testes, passar
  *   tempdir com `platform.config.json` fixture (mesmo padrão de
  *   `publish-daily-brevo.ts::main(rootDirOverride)`, #4532).
- * @param deps Opcional. Injeta `renderEmail` em teste pra não depender de
- *   `data/monthly/` real (`monthlyDir()` resolve sempre contra o repo real,
- *   não é fixture-ável — ver docstring de `ApoiadoresBrevoDeps`).
+ * @param deps Opcional. Injeta `renderEmail`/`readState`/`writeState` em
+ *   teste pra não depender de `data/monthly/` real (`monthlyDir()` resolve
+ *   sempre contra o repo real, não é fixture-ável — ver docstring de
+ *   `ApoiadoresBrevoDeps`).
  */
 export async function main(rootDirOverride?: string, deps: ApoiadoresBrevoDeps = defaultDeps): Promise<void> {
   const rootDir = rootDirOverride ?? ROOT;
   loadProjectEnv(rootDir);
   const argv = process.argv.slice(2);
   const dryRun = hasFlag(argv, "dry-run");
+  const force = hasFlag(argv, "force");
   const cycle = requireMonthlyCycleArg(argv);
   const log = (msg: string) => process.stderr.write(`[publish-monthly-apoiadores-brevo] ${msg}\n`);
 
@@ -216,6 +251,21 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresBrevoDeps =
     log(`ERRO: ${guardCheck.reason}`);
     process.exit(2);
     return;
+  }
+
+  // #4572/#4593 — guard de idempotência Passo 1 ↔ Passo 2 (fecha o "Gap
+  // conhecido" do SKILL.md): fora de --dry-run, recusa criar uma 2ª campanha
+  // Brevo pro mesmo ciclo (ver decidePublishBrevoAction). --dry-run nunca
+  // toca o state (nem lê nem grava) — é só preview local.
+  const dir = monthlyDir(cycle);
+  const existingState = dryRun ? null : deps.readState(dir);
+  if (!dryRun) {
+    const publishDecision = decidePublishBrevoAction(existingState, force);
+    if (publishDecision.action === "blocked") {
+      log(`ERRO: ${publishDecision.reason}`);
+      process.exit(2);
+      return;
+    }
   }
 
   const rendered = deps.renderEmail(cycle);
@@ -239,6 +289,14 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresBrevoDeps =
   log(
     `campanha criada: id=${campaign.id} (rascunho — schedule/send é ação manual separada no painel Brevo, ` +
       "mesma cautela de publish-daily-brevo.ts/publish-monthly.ts).",
+  );
+
+  // #4572/#4593 — grava o brevoCampaignId de volta no state, fechando o laço
+  // de idempotência: a próxima invocação pra este ciclo verá `decidePublishBrevoAction`
+  // bloquear sem --force (guard acima).
+  deps.writeState(
+    dir,
+    buildApoiadoresBrevoPublishedState(existingState, cycle, new Date().toISOString(), rendered.htmlPath, content.subject, campaign.id),
   );
 }
 

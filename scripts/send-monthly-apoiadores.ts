@@ -115,6 +115,11 @@ async function main(): Promise<void> {
     rendered.htmlPath,
     rendered.subject,
     APOIADORES_TARGET_SEGMENT_NAMES,
+    // #4572/#4593: preserva o brevoCampaignId de um Passo 2 já rodado — este
+    // Passo 1 (fluxo Beehiiv legado) não pode apagar o registro de que já
+    // existe uma campanha Brevo criada pro ciclo (ver docstring de
+    // buildPreparedState).
+    state?.brevoCampaignId ?? null,
   );
   writeApoiadoresState(monthlyDir, newState);
 

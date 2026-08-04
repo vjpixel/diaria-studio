@@ -52,6 +52,16 @@ export interface ApoiadoresState {
   subject: string;
   /** Nomes dos segmentos Beehiiv usados como audiência (auditoria — não reconstrói do zero em cada leitura). */
   segments: string[];
+  /**
+   * Id da campanha Brevo real criada por `scripts/publish-monthly-apoiadores-brevo.ts`
+   * (Passo 2, #4572/#4593) — `null` enquanto nenhuma campanha Brevo foi criada
+   * pra este ciclo (inclui todo state legado do fluxo Beehiiv, que nunca setava
+   * este campo). Guard de idempotência do Passo 2 (`decidePublishBrevoAction`):
+   * uma vez não-null, uma nova invocação sem `--force` é bloqueada — fecha o
+   * "Gap conhecido" do SKILL.md (rodar o Passo 2 2x criava DOIS rascunhos
+   * duplicados na Brevo, sem essa trava).
+   */
+  brevoCampaignId: number | null;
 }
 
 /** Nome do arquivo de estado, sob `_internal/` do ciclo — mesma convenção de `05-published.json`/`06-social-published.json`. */
@@ -78,6 +88,7 @@ export function readApoiadoresState(monthlyDir: string): ApoiadoresState | null 
       htmlPath: typeof parsed.htmlPath === "string" ? parsed.htmlPath : "",
       subject: typeof parsed.subject === "string" ? parsed.subject : "",
       segments: Array.isArray(parsed.segments) ? parsed.segments.filter((s): s is string => typeof s === "string") : [],
+      brevoCampaignId: typeof parsed.brevoCampaignId === "number" ? parsed.brevoCampaignId : null,
     };
   } catch {
     return null;
@@ -133,6 +144,17 @@ export function decidePrepareAction(state: ApoiadoresState | null, force: boolea
  * `--force` reabrir o ciclo pra uma correção). Extraído como função pura
  * pra travar esse contrato com teste, em vez de confiar em revisão visual da
  * linha inline no `main()`.
+ *
+ * `previousBrevoCampaignId` (#4572/#4593) é a ÚNICA exceção deliberada ao
+ * "não recebe o state anterior": Passo 1 (este `prepare`, fluxo Beehiiv
+ * legado) e Passo 2 (`publish-monthly-apoiadores-brevo.ts`, cria a campanha
+ * Brevo real) escrevem no MESMO state file — sem repassar esse campo, rodar
+ * o Passo 1 depois do Passo 2 apagaria o registro de que já existe uma
+ * campanha Brevo criada pro ciclo, reabrindo a janela do "Gap conhecido" do
+ * SKILL.md (2 rascunhos duplicados na Brevo). Diferente de `sentAt`, este
+ * campo não carrega o bug documentado acima — não há transição que o torne
+ * inconsistente, só registra um fato ("essa campanha Brevo já existe") que
+ * continua verdadeiro independente do que o Passo 1 faz.
  */
 export function buildPreparedState(
   cycle: string,
@@ -140,8 +162,18 @@ export function buildPreparedState(
   htmlPath: string,
   subject: string,
   segments: readonly string[],
+  previousBrevoCampaignId: number | null = null,
 ): ApoiadoresState {
-  return { cycle, status: "draft_prepared", preparedAt, sentAt: null, htmlPath, subject, segments: [...segments] };
+  return {
+    cycle,
+    status: "draft_prepared",
+    preparedAt,
+    sentAt: null,
+    htmlPath,
+    subject,
+    segments: [...segments],
+    brevoCampaignId: previousBrevoCampaignId,
+  };
 }
 
 export type MarkSentDecision =
@@ -181,4 +213,84 @@ export function decideMarkSentAction(state: ApoiadoresState | null): MarkSentDec
     return { action: "noop", reason: `Ciclo ${state.cycle} já estava marcado como enviado em ${state.sentAt} — nada a fazer.` };
   }
   return { action: "mark", state };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// #4572/#4593 — guard de idempotência Passo 1 ↔ Passo 2 (fecha o "Gap
+// conhecido" do SKILL.md: `publish-monthly-apoiadores-brevo.ts` criava uma
+// campanha Brevo real sem consultar nem gravar este state file, então rodar
+// o Passo 2 2x pro mesmo ciclo criava DOIS rascunhos duplicados na Brevo).
+// ─────────────────────────────────────────────────────────────────────────
+
+export type PublishBrevoDecision = { action: "create" } | { action: "blocked"; reason: string };
+
+/**
+ * Pura/testável: decide se `publish-monthly-apoiadores-brevo.ts` (Passo 2)
+ * pode criar uma campanha Brevo nova pra este ciclo. Dois motivos de bloqueio
+ * independentes, cada um com `--force` como escape hatch explícito (mesma
+ * disciplina de `decidePrepareAction`):
+ *
+ *   1. `status === "sent"` — ciclo já confirmado como enviado (`--mark-sent`,
+ *      Passo 3). Criar outra campanha pra um ciclo já enviado é bloqueado por
+ *      padrão (mesmo racional do dedup do Passo 1).
+ *   2. `brevoCampaignId != null` — já existe uma campanha Brevo criada pra
+ *      este ciclo (Passo 2 já rodou com sucesso antes), rascunho ou não. Sem
+ *      este guard, rodar o Passo 2 de novo cria um 2º rascunho duplicado na
+ *      Brevo (ruído no painel, não um blast radius alto — ambos exigem ação
+ *      manual do editor pra sair de rascunho — mas é exatamente o gap que o
+ *      SKILL.md documentava como aceito/não resolvido).
+ *
+ * `force: true` ignora os dois — mesmo `--force` que a skill já expõe
+ * (SKILL.md `--force`), não introduz uma 2ª flag.
+ */
+export function decidePublishBrevoAction(state: ApoiadoresState | null, force: boolean): PublishBrevoDecision {
+  if (force) return { action: "create" };
+  if (state?.status === "sent") {
+    return {
+      action: "blocked",
+      reason:
+        `Ciclo ${state.cycle} já foi marcado como ENVIADO pros apoiadores em ${state.sentAt}. ` +
+        "Criar uma nova campanha Brevo pra um ciclo já confirmado como enviado é bloqueado por padrão " +
+        "(mesmo dedup do Passo 1). Use --force se realmente precisa (ex: reenviar uma correção).",
+    };
+  }
+  if (state?.brevoCampaignId != null) {
+    return {
+      action: "blocked",
+      reason:
+        `Já existe uma campanha Brevo criada pro ciclo ${state.cycle} (id ${state.brevoCampaignId}, criada em ` +
+        `${state.preparedAt}) — rodar de novo sem --force criaria um 2º rascunho duplicado na Brevo. Confira o ` +
+        "painel Brevo (Campaigns → Drafts); use --force se realmente precisa criar outro.",
+    };
+  }
+  return { action: "create" };
+}
+
+/**
+ * Pura/testável: monta o `ApoiadoresState` gravado após o Passo 2 criar a
+ * campanha Brevo com sucesso. Sempre `status: "draft_prepared"`/`sentAt:
+ * null` — mesma filosofia de `buildPreparedState` (nunca herdar `sentAt`):
+ * mesmo que `previous?.status === "sent"` (só alcançável aqui via `--force`,
+ * ver `decidePublishBrevoAction`), a campanha recém-criada é NOVA e ainda não
+ * foi enviada, então o estado correto é "preparado, não enviado" — não a data
+ * de envio antiga carimbada por cima de um rascunho diferente.
+ */
+export function buildApoiadoresBrevoPublishedState(
+  previous: ApoiadoresState | null,
+  cycle: string,
+  preparedAt: string,
+  htmlPath: string,
+  subject: string,
+  brevoCampaignId: number,
+): ApoiadoresState {
+  return {
+    cycle,
+    status: "draft_prepared",
+    preparedAt,
+    sentAt: null,
+    htmlPath,
+    subject,
+    segments: previous?.segments ?? [],
+    brevoCampaignId,
+  };
 }
