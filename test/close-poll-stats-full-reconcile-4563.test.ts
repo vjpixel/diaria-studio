@@ -25,7 +25,7 @@
  *
  * ## Fix
  *
- * `handleAdminCorrect` agora tambpem tally `total`/`voted_a`/`voted_b` a
+ * `handleAdminCorrect` agora também tallya `total`/`voted_a`/`voted_b` a
  * partir dos MESMOS registros `vote:{edition}:*` já iterados pra
  * `correct_count`, e reconcilia os 4 campos juntos: no DO StatsCounter (via
  * `/adjust-correct`, payload estendido — `AdjustCorrectPayload` ganhou 3
@@ -287,10 +287,22 @@ describe("handleAdminCorrect — reconcilia total/voted_a/voted_b a partir dos r
       body: JSON.stringify({ choice: "B", correct: null }),
     });
 
-    // Sanity: antes da correção, o DO/KV têm o drift (total 35, voted_b 16).
+    // Sanity: antes da correção, o DO (que recebeu o increment órfão direto)
+    // tem o drift (total 35, voted_b 16). O simulacro acima chama
+    // "/increment" do DO diretamente — não passa por updateStatsCounter
+    // (vote.ts), que é quem também escreveria o espelho KV — então o
+    // espelho KV NÃO herda esse drift específico: ele já ficou em total:34
+    // (correto) depois dos 34 votos reais feitos via /vote acima, e só o DO
+    // diverge. Isso é o oposto do que produção mostrou (lá o `vote:` record
+    // é quem falta, não o incremento do DO) — mas serve igualmente bem como
+    // reprodução do MECANISMO (DO com 1 voto a mais que o KV/registros
+    // reais concordam ter) sem precisar simular a interrupção real
+    // dentro de vote.ts.
     const preStats = await (await doStub.fetch("https://internal/stats")).json() as { stats: StatsCounterData };
     assert.equal(preStats.stats.total, 35, "sanity: 34 votos reais + 1 órfão = 35");
     assert.equal(preStats.stats.voted_b, 16, "sanity: 15 B reais + 1 B órfão = 16");
+    const preKvMirror = JSON.parse((await kv.get(`clarice:stats:${edition}`))!) as StatsCounterData;
+    assert.equal(preKvMirror.total, 34, "sanity: o espelho KV não foi tocado pelo increment direto no DO — só os 34 votos reais via /vote passaram por updateStatsCounter");
 
     // Fecha o gabarito B via /admin/correct — mesmo endpoint que close-poll.ts chama.
     const sig = await hmacSign("test-admin-secret", `${brand}:${edition}:B`);
@@ -318,5 +330,109 @@ describe("handleAdminCorrect — reconcilia total/voted_a/voted_b a partir dos r
     // pro gabarito B — com o drift reconciliado, os dois batem (15 === 15),
     // então close-poll.ts NÃO sairia mais FATAL pra este ciclo.
     assert.equal(postStats.stats.correct_count, postStats.stats.voted_b);
+  });
+});
+
+// ── handleAdminCorrect — registro com choice corrompido não entra na reconciliação ──
+
+describe("handleAdminCorrect — vote: record com choice corrompido é excluído do total/voted_a/voted_b (#4563)", () => {
+  it("choice fora de A/B (JSON válido, campo corrompido) não infla total sem inflar voted_a+voted_b", async () => {
+    const kv = makeTrackedKv({
+      // 2 votos legítimos.
+      "vote:260801:alice@x.com": JSON.stringify({ choice: "A", ts: "t1", correct: null }),
+      "vote:260801:bob@x.com": JSON.stringify({ choice: "B", ts: "t2", correct: null }),
+      // Registro corrompido: JSON válido, mas `choice` não é "A" nem "B" —
+      // exatamente o caso que o guard `vote.choice === "A" || vote.choice === "B"`
+      // (index.ts) existe pra excluir da reconciliação, senão total contaria
+      // este voto sem que voted_a+voted_b o contassem também, violando o
+      // invariante que isValidReconcileTriple/o DO passam a exigir.
+      "vote:260801:corrupt-choice@x.com": JSON.stringify({ choice: "C", ts: "t3", correct: null }),
+      // Registro corrompido de outra forma: `choice` ausente.
+      "vote:260801:missing-choice@x.com": JSON.stringify({ ts: "t4", correct: null }),
+    });
+    const env: Env = {
+      POLL: kv as unknown as KVNamespace,
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+
+    const sig = await hmacSign("test-admin-secret", "diaria:260801:A");
+    const adminUrl = new URL("https://poll.diaria.workers.dev/admin/correct");
+    adminUrl.searchParams.set("edition", "260801");
+    adminUrl.searchParams.set("answer", "A");
+    adminUrl.searchParams.set("sig", sig);
+    const adminRes = await worker.fetch(new Request(adminUrl.toString(), { method: "POST" }), env, {} as ExecutionContext);
+    assert.equal(adminRes.status, 200);
+
+    // O espelho KV reflete SÓ os 2 votos com choice reconhecido — os 2
+    // corrompidos (choice="C" e choice ausente) não contam pra total nem
+    // pra voted_a/voted_b, embora tenham sido iterados (e seu campo
+    // `correct` re-escrito, ver próxima asserção).
+    const kvMirror = JSON.parse((await kv.get("stats:260801"))!) as StatsCounterData;
+    assert.deepEqual(
+      kvMirror,
+      { total: 2, voted_a: 1, voted_b: 1, correct_count: 1 },
+      "registros com choice corrompido/ausente não devem inflar total sem inflar voted_a+voted_b",
+    );
+
+    // Os registros corrompidos continuam sendo re-avaliados pelo backfill de
+    // `correct` (comportamento pré-existente, #2202) — só ficam de fora da
+    // reconciliação do AGREGADO, que é o que #4563 mudou.
+    const corruptChoice = JSON.parse((await kv.get("vote:260801:corrupt-choice@x.com"))!) as { choice: string; correct: boolean };
+    assert.equal(corruptChoice.correct, false, "choice='C' !== answer='A' → correct=false, mas não conta em nenhum dos 4 campos reconciliados");
+  });
+});
+
+// ── handleAdminCorrect — espelho KV corrompido/ausente é sobrescrito pelo reconciliado ──
+
+describe("handleAdminCorrect — stats:{edition} corrompido ou ausente é sobrescrito pelo agregado reconciliado (#4563)", () => {
+  it("espelho KV corrompido (JSON inválido) antes da correção: sobrescrito por inteiro com o agregado reconciliado, não pulado (comportamento pré-#4563 pulava a escrita, ver #3298)", async () => {
+    const kv = makeTrackedKv({
+      "vote:260802:alice@x.com": JSON.stringify({ choice: "A", ts: "t1", correct: null }),
+      "stats:260802": "{ isto não é JSON válido",
+    });
+    const env: Env = {
+      POLL: kv as unknown as KVNamespace,
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+
+    const sig = await hmacSign("test-admin-secret", "diaria:260802:A");
+    const adminUrl = new URL("https://poll.diaria.workers.dev/admin/correct");
+    adminUrl.searchParams.set("edition", "260802");
+    adminUrl.searchParams.set("answer", "A");
+    adminUrl.searchParams.set("sig", sig);
+    const adminRes = await worker.fetch(new Request(adminUrl.toString(), { method: "POST" }), env, {} as ExecutionContext);
+    assert.equal(adminRes.status, 200, "JSON corrompido no espelho não deve derrubar a rota com 500 (#3298 preservado)");
+
+    const kvMirror = JSON.parse((await kv.get("stats:260802"))!) as StatsCounterData;
+    assert.deepEqual(
+      kvMirror,
+      { total: 1, voted_a: 1, voted_b: 0, correct_count: 1 },
+      "REGRESSÃO #4563: o espelho corrompido deve ser SOBRESCRITO com o agregado reconciliado — antes do #4563 a escrita era pulada quando o parse falhava, deixando o JSON corrompido intacto",
+    );
+  });
+
+  it("espelho KV ausente (edição sem NENHUM /vote anterior, admin corrige antes de qualquer voto): cria o espelho do zero", async () => {
+    const kv = makeTrackedKv();
+    const env: Env = {
+      POLL: kv as unknown as KVNamespace,
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+
+    const sig = await hmacSign("test-admin-secret", "diaria:260803:A");
+    const adminUrl = new URL("https://poll.diaria.workers.dev/admin/correct");
+    adminUrl.searchParams.set("edition", "260803");
+    adminUrl.searchParams.set("answer", "A");
+    adminUrl.searchParams.set("sig", sig);
+    const adminRes = await worker.fetch(new Request(adminUrl.toString(), { method: "POST" }), env, {} as ExecutionContext);
+    assert.equal(adminRes.status, 200);
+
+    const kvMirror = JSON.parse((await kv.get("stats:260803"))!) as StatsCounterData;
+    assert.deepEqual(kvMirror, { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 }, "espelho criado do zero, sem votos ainda");
   });
 });

@@ -54,7 +54,7 @@ import {
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 export { VoteDedup } from "./vote-dedup";
 export { StatsCounter } from "./stats-counter";
-import type { StatsCounterData } from "./stats-counter"; // #4563: reconciliação completa em handleAdminCorrect
+import type { StatsCounterData } from "./stats-counter"; // #4563
 export { ScoreCounter } from "./score-counter";
 
 export interface Env {
@@ -608,6 +608,23 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria", r
   // POLL.put(voteKey) em vote.ts, uma interrupção entre as duas deixa o
   // agregado com um voto sem registro individual correspondente). Só
   // correct_count tinha esse caminho de auto-correção; agora os 4 campos têm.
+  //
+  // Trade-off aceito (achado do review fleet do #4614): `listAllKeys` lê o
+  // KV, que é eventualmente consistente — um voto que acabou de incrementar
+  // o DO (`handleIncrement`, vote.ts) mas cujo `POLL.put(voteKey)` ainda não
+  // propagou (ou que chegou DEPOIS deste snapshot mas ANTES da chamada a
+  // `/adjust-correct` abaixo) fica de fora desta contagem, e a reconciliação
+  // vai sobrescrever o DO/KV pra baixo, "perdendo" esse voto até a PRÓXIMA
+  // correção bem-sucedida (self-healing, mas não imediato). Isso troca o bug
+  // original (drift nunca se autocorrige) por uma janela de subcontagem
+  // MUITO mais estreita — só existe entre o snapshot deste loop e o retorno
+  // desta função, tipicamente sub-segundo, e só se materializa se um voto
+  // real coincidir exatamente com essa janela. `close-poll.ts` só chama
+  // `/admin/correct` depois do envio, quando o volume de votos concorrentes
+  // é baixo — não implementamos lock/serialização adicional contra o `/vote`
+  // endpoint porque o custo (mais uma barreira de concorrência) não parece
+  // justificado por esse risco residual; se isso incomodar na prática, o
+  // log de delta abaixo é o sinal a observar.
   let totalFromVotes = 0;
   let votedAFromVotes = 0;
   let votedBFromVotes = 0;
@@ -679,15 +696,19 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria", r
   //
   // #4125 (item 2): a falha do DO aqui, sozinha, mascarava o correct_count
   // ERRADO pra sempre em /stats — `mergeStatsWithKvFallback` (stats-counter.ts)
-  // só preferia o KV quando `total` divergia, e uma correção de gabarito NUNCA
-  // muda `total` (empate sempre devolvia o DO stale, sem nenhum caminho de
-  // auto-correção). Fix: `stats-do-stale:{edition}` (branded — mesmo espaço de
-  // `stats:{edition}`) marca explicitamente "DO desatualizado aqui" quando a
-  // chamada falha, e é limpo quando uma correção subsequente tem sucesso
-  // (self-healing). `fetchEditionStatsAndCorrect` (vote.ts) lê essa flag e
-  // repassa pro merge, que então usa o correct_count do KV mesmo com total
-  // empatado. Ambas as operações são fail-soft (nunca bloqueiam a resposta
-  // 200 do admin nem a atualização do espelho KV logo abaixo).
+  // só preferia o KV quando `total` divergia, e (até #4563) uma correção de
+  // gabarito nunca mudava `total` (empate sempre devolvia o DO stale, sem
+  // nenhum caminho de auto-correção). Fix: `stats-do-stale:{edition}` (branded
+  // — mesmo espaço de `stats:{edition}`) marca explicitamente "DO
+  // desatualizado aqui" quando a chamada falha, e é limpo quando uma correção
+  // subsequente tem sucesso (self-healing). `fetchEditionStatsAndCorrect`
+  // (vote.ts) lê essa flag e repassa pro merge, que hoje (#4563) usa o objeto
+  // KV inteiro quando ela está setada — não só `correct_count` — porque desde
+  // #4563 a correção TAMBÉM reconcilia `total`/`voted_a`/`voted_b`, então o
+  // DO stale pode estar errado nesses 3 campos também, não só em
+  // `correct_count` (ver `mergeStatsWithKvFallback`, stats-counter.ts). Ambas
+  // as operações são fail-soft (nunca bloqueiam a resposta 200 do admin nem a
+  // atualização do espelho KV logo abaixo).
   if (env.STATS_COUNTER) {
     const staleFlagKey = `stats-do-stale:${edition}`;
     try {
@@ -727,18 +748,37 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria", r
   // sobrescrevia correct_count nele (preservando total/voted_a/voted_b como
   // estavam, mesmo quando esses 3 tinham divergido dos registros
   // vote:{edition}:* reais — a fonte de verdade, já integralmente recontada
-  // no loop acima). Como o valor gravado agora é sempre o agregado
-  // RECONCILIADO do zero (nunca um patch sobre o estado anterior), não há
-  // mais necessidade de ler/parsear o espelho antigo antes de escrever — só
-  // interessava pra decidir SE sobrescrevia (#3298), decisão que deixou de
-  // existir (sempre sobrescreve, inclusive criando o espelho do zero se
-  // nunca existiu ou estava corrompido).
+  // no loop acima). O valor gravado agora é sempre o agregado RECONCILIADO
+  // do zero (nunca um patch sobre o estado anterior) — a escrita em si não
+  // depende mais do valor anterior, mas ainda o lemos abaixo, só pra fins de
+  // AUDITORIA (achado do review fleet do #4614): sem isso, uma reconciliação
+  // que reduz `total` (o "voto órfão perdido" documentado acima, ou —
+  // teoricamente — a janela de corrida com um voto concorrente) fica
+  // completamente invisível nos logs. `safeParseKv` também cobre o caso do
+  // #3298 (espelho corrompido) — se `prevStats` vier null por parse-error, o
+  // evento de erro correspondente já foi logado dentro dela.
+  const prevStatsRaw = await env.POLL.get(`stats:${edition}`);
+  const prevStats = safeParseKv<{ total?: number; [k: string]: unknown }>(prevStatsRaw, "admin_correct_stats_mirror_parse_error", edition);
   const reconciledStats: StatsCounterData = {
     total: totalFromVotes,
     voted_a: votedAFromVotes,
     voted_b: votedBFromVotes,
     correct_count: correctCount,
   };
+  if (prevStats && typeof prevStats.total === "number" && prevStats.total > reconciledStats.total) {
+    // Não é necessariamente um bug — pode ser o próprio "voto órfão"
+    // documentado no header desta função sendo corrigido, o comportamento
+    // ESPERADO. Mas se este evento aparecer com frequência/magnitude maior
+    // que a de um voto órfão ocasional, é sinal de que a janela de corrida
+    // documentada acima está se materializando na prática.
+    console.warn(JSON.stringify({
+      event: "admin_correct_stats_reconciled_total_shrank",
+      edition,
+      brand,
+      prev_total: prevStats.total,
+      new_total: reconciledStats.total,
+    }));
+  }
   await env.POLL.put(`stats:${edition}`, JSON.stringify(reconciledStats));
 
   return json({ ok: true, edition, answer, updated_votes: updated }, 200, env);

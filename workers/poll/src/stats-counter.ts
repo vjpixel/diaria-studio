@@ -103,15 +103,19 @@ export function isValidStatsCounterData(data: unknown): data is StatsCounterData
  * Cenário: `handleAdminCorrect` (index.ts) atualiza o DO via `/adjust-correct`
  * e, se essa chamada falhar, loga o erro mas segue gravando o espelho KV de
  * qualquer forma (fail-soft deliberado — "melhor ter KV correto e DO stale
- * do que nenhum"). Uma correção de gabarito NUNCA muda `total` (só decide
- * quais votos já registrados contam como corretos) — então o `total` do DO
- * e do KV sempre EMPATAM depois de uma correção, e o `kvStats.total >
- * doStats.total` acima nunca dispara. Sem este sinal extra, o empate sempre
- * preferia o DO (linha `return doStats` abaixo), servindo o `correct_count`
- * ERRADO indefinidamente em `/stats`, no sufixo "% acertaram" e na aba
- * Engajamento da dashboard — sem nenhum caminho de auto-correção, porque
- * incrementos normais (`handleIncrement`) só ALTERAM `correct_count` a partir
- * do valor já armazenado no DO, nunca resetam do zero.
+ * do que nenhum"). **Histórico (só até #4563, não mais verdade hoje):** até
+ * então, uma correção de gabarito nunca mudava `total` (só decidia quais
+ * votos já registrados contavam como corretos) — o `total` do DO e do KV
+ * sempre EMPATAVAM depois de uma correção, e o `kvStats.total >
+ * doStats.total` acima nunca disparava. Sem este sinal extra, o empate
+ * sempre preferia o DO (linha `return doStats` abaixo), servindo o
+ * `correct_count` ERRADO indefinidamente em `/stats`, no sufixo "%
+ * acertaram" e na aba Engajamento da dashboard — sem nenhum caminho de
+ * auto-correção, porque incrementos normais (`handleIncrement`) só ALTERAM
+ * `correct_count` a partir do valor já armazenado no DO, nunca resetam do
+ * zero. Desde #4563 esse pressuposto não vale mais — ver o parágrafo
+ * abaixo — mas o SINAL (`correctCountStale`) e o motivo de precisar dele
+ * continuam os mesmos.
  *
  * Quando `correctCountStale` é true E o KV existe, o resultado usa o objeto
  * KV INTEIRO, não só `correct_count`.
@@ -322,9 +326,13 @@ export class StatsCounter {
    *
    * #4563: quando o payload também traz `total`/`voted_a`/`voted_b` (trio
    * validado por `isValidReconcileTriple`), estes SOBRESCREVEM os valores do
-   * DO também — não só `correct_count`. Payload com só `correct_count`
-   * (chamador legado, ou trio inválido) preserva o comportamento anterior:
-   * só `correct_count` muda, `total`/`voted_a`/`voted_b` do DO ficam intactos.
+   * DO também — não só `correct_count`. Payload SEM nenhum dos 3 campos
+   * (chamador legado) preserva o comportamento anterior: só `correct_count`
+   * muda, `total`/`voted_a`/`voted_b` do DO ficam intactos. Payload com um
+   * trio INVÁLIDO (presente mas malformado/inconsistente) é rejeitado com
+   * 400 ANTES de qualquer escrita — nesse caso nada muda, nem sequer
+   * `correct_count` (ver os `return` de erro abaixo, antes do
+   * `state.storage.put`).
    *
    * Serializado via `blockConcurrencyWhile` para não raçar com increments
    * concorrentes (ex: votos chegando enquanto o admin aplica o gabarito).
@@ -354,6 +362,13 @@ export class StatsCounter {
           headers: { "Content-Type": "application/json" },
         });
       }
+      // #4563: `correct_count` reconciliado é sempre um subconjunto do
+      // `total` reconciliado (é a contagem dos que acertaram, dentre os que
+      // votaram) — nunca pode excedê-lo. Trio válido mas `correct_count`
+      // maior que `total` só acontece por bug no caller (não por dado de
+      // produção real — `handleAdminCorrect` computa os 4 valores da MESMA
+      // passada sobre os mesmos registros), mas rejeitamos aqui mesmo assim
+      // em vez de persistir um estado internamente inconsistente.
       if (reconcileAttempted && correct_count > (total as number)) {
         return new Response(JSON.stringify({
           error: `correct_count (${correct_count}) não pode exceder total (${total})`,
