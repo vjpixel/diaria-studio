@@ -84,6 +84,7 @@ import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 import { brevoGet, brevoPost } from "./lib/brevo-client.ts";
+import { pollProcessUntilTerminal, type PollOptions } from "./lib/brevo-process-poll.ts"; // #4577
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
@@ -320,41 +321,34 @@ export function makeRealCampaignExportClient(apiKey: string): CampaignExportClie
 
 // ─── Poll até completar ───────────────────────────────────────────────────────
 
-export interface PollOptions {
-  sleep?: (ms: number) => Promise<void>;
-  intervalMs?: number;
-  maxAttempts?: number;
-}
+// #4577: o loop de poll genérico (até status terminal) foi extraído pra
+// scripts/lib/brevo-process-poll.ts — reusado por clarice-import-waves.ts,
+// que precisava do mesmo poll pra confirmar `/contacts/import` (antes só
+// disparava e assumia sucesso). `PollOptions` reexportado por compatibilidade
+// — nenhum import externo deste módulo dependia do tipo até aqui, mas a
+// assinatura pública (`pollExportUntilDone`) não muda.
+export type { PollOptions };
 
 /**
- * Poll `GET /processes/{id}` até `status` terminal. Testado ao vivo: a
- * campanha de 116 destinatários completou em ~4s — default de 2s/attempt,
- * 30 tentativas (~1min de teto), generoso o bastante pra campanhas maiores
- * (3-9k destinatários da rampa atual) sem pendurar o processo indefinidamente.
+ * Poll `GET /processes/{id}` até `status` terminal, extraindo `exportUrl` do
+ * resultado — wrapper fino sobre `pollProcessUntilTerminal` (genérico,
+ * scripts/lib/brevo-process-poll.ts) especializado pro caso de uso de EXPORT.
+ * Testado ao vivo: a campanha de 116 destinatários completou em ~4s.
  */
 export async function pollExportUntilDone(
   client: Pick<CampaignExportClient, "pollProcess">,
   processId: number | string,
   opts: PollOptions = {},
 ): Promise<string> {
-  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const intervalMs = opts.intervalMs ?? 2000;
-  const maxAttempts = opts.maxAttempts ?? 30;
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const res = await client.pollProcess(processId);
-    if (res.status === "completed" || res.status === "success") {
-      if (!res.exportUrl) {
-        throw new Error(`Processo ${processId} completou sem export_url.`);
-      }
-      return res.exportUrl;
-    }
-    if (res.status === "failed" || res.status === "error") {
-      throw new Error(`Processo ${processId} falhou (status=${res.status}).`);
-    }
-    if (attempt < maxAttempts - 1) await sleep(intervalMs);
+  const res = await pollProcessUntilTerminal(
+    (pid) => client.pollProcess(pid),
+    processId,
+    opts,
+  );
+  if (!res.exportUrl) {
+    throw new Error(`Processo ${processId} completou sem export_url.`);
   }
-  throw new Error(`Processo ${processId} não completou após ${maxAttempts} tentativas de poll.`);
+  return res.exportUrl as string;
 }
 
 // ─── Janela de re-fetch (#4451 Fase 2) ───────────────────────────────────────
