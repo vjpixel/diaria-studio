@@ -1,5 +1,5 @@
 /**
- * test/poll-vote-page-merge-boxes-4418.test.ts (#4418, #4420)
+ * test/poll-vote-page-merge-boxes-4418.test.ts (#4418, #4420, #4562)
  *
  * Reescrita da tela de resultado do voto do "É IA?" (marca clarice): a caixa
  * de apelido (leaderboard) e a caixa de assinatura da diar.ia.br viram UMA
@@ -12,10 +12,20 @@
  *   §2b — matriz A/B/nada (resolveVoteIdentityBoxKind + rendering e2e),
  *         Caixa B (assinatura), escaping, sem-JS.
  *   §2c — /set-name redireciona no sucesso; self-highlight server-side no
- *         leaderboard; cadastro fail-soft (sucesso e falha).
+ *         leaderboard; cadastro fail-soft (sucesso e falha); rótulo do botão
+ *         da Caixa A por superfície (vote vs. leaderboard, #4562).
  *   §3  — telas de erro do /set-name nunca redirecionam nem mostram caixa
  *         (exceto o form de retry mínimo, #1774); faixa de confirmação.
  *   #4420 — botão do link de arquivo (tratamento visual).
+ *
+ * #4562 (260804): a Caixa B (`renderSubscribeBoxHtml`) foi trazida pro
+ * leaderboard em #4418 §2, mas os 2 CTAs dela apontavam pro leaderboard numa
+ * página que já É o leaderboard — autorreferente. Removida SÓ do call site de
+ * leaderboard-routes.ts (o call site da tela pós-voto, index.ts:912,
+ * continua intocado — cobertura de contraste explícita logo após o teste que
+ * prova a ausência). Adjacente: o botão da Caixa A ("Salvar e ver o
+ * leaderboard") ganhou o mesmo tratamento — no leaderboard vira só "Salvar"
+ * (novo parâmetro `surface`, default "vote" = comportamento pré-#4562).
  */
 
 import { describe, it } from "node:test";
@@ -163,6 +173,48 @@ describe("§2c — rótulos de botão nomeiam o destino (#4418)", () => {
   it("Caixa B: botão primário diz 'Assinar e ver o leaderboard'", () => {
     const html = renderSubscribeBoxHtml({ email: "a@x.com", sig: "sig", nickname: "Ana" }, "clarice");
     assert.match(html, /class="nick-save nick-save-primary">Assinar e ver o leaderboard<\/button>/);
+  });
+});
+
+// #4562: o teste acima ("Caixa A: botão diz 'Salvar e ver o leaderboard'")
+// travava o rótulo pra QUALQUER contexto — mas "e ver o leaderboard" só faz
+// sentido na tela de VOTO (de lá, o leaderboard é de fato um destino novo).
+// No próprio /leaderboard (surface="leaderboard"), o mesmo texto seria
+// autorreferente: "aponta pro leaderboard, numa página que É o leaderboard"
+// (issue #4562). Em vez de afrouxar o teste original, o rótulo ganhou um eixo
+// novo (`surface: "vote" | "leaderboard"`, default "vote" — back-compat de
+// todo caller pré-#4562) — o teste original acima continua travando a
+// superfície de voto; esta suíte cobre a superfície de leaderboard.
+describe("§2c — rótulo de botão por superfície (#4562, sucessor do teste acima)", () => {
+  it("Caixa A com surface='leaderboard': botão diz só 'Salvar', nunca 'Salvar e ver o leaderboard'", () => {
+    const html = renderNicknameFormHtml({ email: "a@x.com", sig: "sig" }, "clarice", true, "leaderboard");
+    assert.match(html, /<button type="submit" class="nick-save">Salvar<\/button>/);
+    assert.doesNotMatch(html, />Salvar e ver o leaderboard<\/button>/);
+  });
+
+  it("Caixa A sem surface (default): comportamento idêntico a surface='vote' — 'Salvar e ver o leaderboard'", () => {
+    const withDefault = renderNicknameFormHtml({ email: "a@x.com", sig: "sig" }, "clarice", true);
+    const withExplicitVote = renderNicknameFormHtml({ email: "a@x.com", sig: "sig" }, "clarice", true, "vote");
+    assert.equal(withDefault, withExplicitVote);
+  });
+
+  it("Caixa A via /leaderboard e2e: botão diz 'Salvar' (não autorreferente)", async () => {
+    const email = "leaderboard-label@x.com";
+    const sig = await hmacSign(SECRET, `setname:${email}`);
+    const kv = makeTrackedKv({ [`clarice:score:${email}`]: JSON.stringify({ total: 1, nickname: null }) });
+    const env = makePollEnv(kv);
+    const url = new URL(`https://poll.test/leaderboard?brand=clarice&email=${encodeURIComponent(email)}&sig=${sig}`);
+    const res = await worker.fetch(new Request(url.toString()), env, {} as ExecutionContext);
+    const html = await res.text();
+    assert.match(html, /<button type="submit" class="nick-save">Salvar<\/button>/);
+    assert.doesNotMatch(html, />Salvar e ver o leaderboard<\/button>/);
+  });
+
+  it("Caixa A via /vote e2e (votePageHtml): botão continua 'Salvar e ver o leaderboard' — superfície de voto intocada", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(voteReq("clarice", "vote-label@example.com", "A"), env);
+    const html = await res.text();
+    assert.match(html, /<button type="submit" class="nick-save">Salvar e ver o leaderboard<\/button>/);
   });
 });
 
@@ -657,15 +709,24 @@ describe("§2c — self-highlight server-side no leaderboard da clarice (#4418)"
 
 // ── §2b — resolveLeaderboardSubscribeBox (leaderboard, #4418) ───────────────
 
-describe("§2b — resolveLeaderboardSubscribeBox: Caixa B trazida pro leaderboard (#4418, 'Recomendação: levar')", () => {
+describe("§2b — resolveLeaderboardSubscribeBox: resolver da Caixa B (#4418, RENDER removido do leaderboard em #4562)", () => {
   // Nota: `resolveLeaderboardSubscribeBox`, assim como `resolveLeaderboardNicknameForm`
   // (padrão preexistente #4232), NÃO aplica `brandedNamespace` internamente —
   // quem chama a função diretamente (fora do router de index.ts) é
   // responsável por já passar um `env` branded se quiser simular o brand.
   // Aqui testamos a função pura em isolamento com chaves CRUAS (mesmo padrão
   // do describe "resolveLeaderboardNicknameForm" em
-  // poll-leaderboard-nickname-cta-4232.test.ts); a integração real com o
-  // prefixo `clarice:` é coberta pelo teste e2e (via worker.fetch) logo abaixo.
+  // poll-leaderboard-nickname-cta-4232.test.ts).
+  //
+  // #4562: o #4418 §2 tinha trazido o RENDER da Caixa B pro leaderboard (2
+  // CTAs autorreferentes, "some" no leaderboard-routes.ts). Este resolver em
+  // si (`resolveLeaderboardSubscribeBox`) continua existindo e sendo chamado
+  // por handleLeaderboardByMonth/ByYear — não porque ainda tem HTML a
+  // oferecer, mas porque o resultado também alimenta `identified`
+  // (cache-control no-store, ver leaderboard-routes.ts). Os 3 testes abaixo
+  // continuam cobrindo o CONTRATO do resolver (função pura); o teste e2e ao
+  // final da suíte prova que, apesar do resolver retornar não-null, o
+  // leaderboard NUNCA renderiza a Caixa B.
   it("clarice, apelido salvo, sem opt-in, sig válida → retorna a Caixa B", async () => {
     const email = "leaderboard-sub@x.com";
     const sig = await hmacSign(SECRET, `setname:${email}`);
@@ -691,15 +752,46 @@ describe("§2b — resolveLeaderboardSubscribeBox: Caixa B trazida pro leaderboa
     assert.equal(await resolveLeaderboardSubscribeBox(url, env, "diaria"), null);
   });
 
-  it("leaderboard e2e: clarice com apelido salvo, sem opt-in → Caixa B renderiza de fato", async () => {
+  // #4562: substitui o antigo "leaderboard e2e: ... → Caixa B renderiza de
+  // fato" — era exatamente o comportamento que a issue #4562 pede pra
+  // remover ("dois CTAs que mandam pro leaderboard, numa página que É o
+  // leaderboard"). O resolver (acima) continua retornando não-null neste
+  // cenário (apelido salvo, sem opt-in, sig válida) — a asserção nova é que,
+  // mesmo assim, NENHUM html de Caixa B chega na resposta.
+  it("leaderboard e2e: clarice com apelido salvo, sem opt-in → Caixa B NUNCA renderiza (#4562, autorreferente)", async () => {
     const email = "leaderboard-sub-e2e@x.com";
     const sig = await hmacSign(SECRET, `setname:${email}`);
+    // Sanity (env direto, chave CRUA — mesmo padrão dos testes do resolver
+    // acima): prova que o resolver de fato encontraria a Caixa B pra este
+    // cenário, então a ausência abaixo (via router, chave `clarice:`
+    // prefixada) é decisão do CALLER (render), não um falso negativo do
+    // resolver.
+    const directEnv = makeEnv({ POLL: makeTrackedKv({ [`score:${email}`]: JSON.stringify({ total: 1, nickname: "Leo" }) }) as unknown as KVNamespace });
+    const url = new URL(`https://poll.test/leaderboard?brand=clarice&email=${encodeURIComponent(email)}&sig=${sig}`);
+    const resolved = await resolveLeaderboardSubscribeBox(url, directEnv, "clarice");
+    assert.deepEqual(resolved, { email, sig, nickname: "Leo" }, "sanity: o resolver deveria encontrar a Caixa B neste cenário");
+
     const kv = makeTrackedKv({
       [`clarice:score:${email}`]: JSON.stringify({ total: 1, nickname: "Leo" }),
     });
     const env = makePollEnv(kv);
-    const url = new URL(`https://poll.test/leaderboard?brand=clarice&email=${encodeURIComponent(email)}&sig=${sig}`);
     const res = await worker.fetch(new Request(url.toString()), env, {} as ExecutionContext);
+    const html = await res.text();
+    assert.doesNotMatch(html, /<div class="nick-box nick-sub-box">/, "Caixa B nunca deve renderizar no leaderboard (#4562)");
+    assert.doesNotMatch(html, /Assinar e ver o leaderboard/);
+    assert.doesNotMatch(html, /Você está no ranking como Leo\./);
+  });
+
+  // Contraste: mesmo cenário (apelido salvo, sem opt-in, clarice) na tela
+  // PÓS-VOTO continua mostrando a Caixa B normalmente — só o leaderboard
+  // perdeu o render (#4562 é explícito: "não mexer no call site de
+  // index.ts").
+  it("tela pós-voto (/vote), MESMO cenário: Caixa B continua renderizando normalmente (superfície intocada)", async () => {
+    const kv = makeTrackedKv({
+      "clarice:score:leaderboard-sub-contrast@example.com": JSON.stringify({ total: 1, correct: 1, nickname: "Leo" }),
+    });
+    const env = makePollEnv(kv);
+    const res = await worker.fetch(voteReq("clarice", "leaderboard-sub-contrast@example.com", "A"), env);
     const html = await res.text();
     assert.match(html, /<div class="nick-box nick-sub-box">/);
     assert.match(html, /Você está no ranking como Leo\./);
