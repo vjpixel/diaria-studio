@@ -118,6 +118,144 @@ export function shouldMirrorToWeb(brand: string | null): boolean {
   return brand === null;
 }
 
+/**
+ * #4563: input do sanity check pós-correção — os campos que `/stats` (Worker
+ * de poll) devolve depois de `close-poll.ts` chamar `/admin/correct`.
+ */
+export interface CorrectCountSanityInput {
+  /** Gabarito que ACABAMOS de setar (A ou B). */
+  answer: string;
+  /** `stats.total` de `/stats`. */
+  totalVotes: number;
+  /** `stats.voted_a` de `/stats`. */
+  votedA: number;
+  /** `stats.voted_b` de `/stats`. */
+  votedB: number;
+  /** `stats.correct_count` de `/stats`, LIDO DEPOIS da correção. */
+  correctCountFromStats: number;
+  /** `updated_votes` que `/admin/correct` reportou ter mudado. */
+  updatedVotes: number;
+}
+
+export interface CorrectCountSanityResult {
+  ok: boolean;
+  /** Contagem de acertos esperada pro gabarito setado (voted_a ou voted_b). */
+  expectedCorrectCount: number;
+  /** Presente só quando ok=false — mensagem de diagnóstico pronta pra log. */
+  message?: string;
+  /**
+   * #4563 item 2: true quando updated_votes=0 mas o check acima passou —
+   * o caso legítimo de "gabarito já batia com o crédito existente, nenhum
+   * voto precisava mudar" (ex: re-rodar close-poll com o MESMO --answer).
+   * Nunca true quando ok=false (nesse caso updated_votes=0 é sintoma do bug,
+   * não um no-op legítimo).
+   */
+  legitimateNoop: boolean;
+}
+
+/**
+ * Pure (#4563), testável sem rede/KV: decide se o `correct_count` que
+ * `/stats` devolveu DEPOIS de `close-poll.ts` fechar o gabarito bate com o
+ * esperado — quem votou no lado que ACABOU de virar o gabarito.
+ *
+ * Bug real que motivou este guard (issue #4563, ciclo 2607-08): o sanity
+ * check pré-existente (#1367) só conferia que `/stats.correct_answer`
+ * refletia o gabarito GRAVADO — nunca que o CRÉDITO (`correct_count`) tinha
+ * sido de fato recalculado. `close-poll.ts --answer B` sobre 10 votos A / 4
+ * votos B reportava `ok:true` com `/stats.correct_count` ainda em 10 (os que
+ * ACERTARAM o gabarito ERRADO anterior) em vez de 4 — e `updated_votes: 0`
+ * não acusava nada porque o script nunca comparava contra o valor esperado.
+ *
+ * `expectedCorrectCount` = `votedA` quando `answer === "A"`, senão `votedB`
+ * — é sempre um dos dois, nunca uma soma; o gabarito define qual dos dois
+ * lados "ganhou".
+ *
+ * `updatedVotes === 0` SÓ é aceito como no-op legítimo (`legitimateNoop:
+ * true`) quando `correctCountFromStats` já bate com o esperado — ou seja,
+ * nenhum voto precisava mudar porque já estava certo (ex: reexecução com o
+ * mesmo --answer). Quando não bate, é sempre reportado como erro
+ * (`ok: false`), independente de updated_votes ter sido 0 ou não — o mismatch
+ * em si já é suficiente pra provar que o crédito não foi aplicado
+ * corretamente (causas candidatas documentadas na issue: DO StatsCounter
+ * stale, ou votos individuais não encontrados pra recreditar — diagnóstico
+ * bloqueado por falta de acesso ao KV, ver #4563).
+ */
+export function checkCorrectCountSanity(input: CorrectCountSanityInput): CorrectCountSanityResult {
+  const { answer, totalVotes, votedA, votedB, correctCountFromStats, updatedVotes } = input;
+  const expectedCorrectCount = answer === "A" ? votedA : votedB;
+  const matches = correctCountFromStats === expectedCorrectCount;
+
+  if (!matches) {
+    return {
+      ok: false,
+      expectedCorrectCount,
+      legitimateNoop: false,
+      message:
+        `correct_count pós-correção (${correctCountFromStats}) não bate com o esperado para o gabarito "${answer}" ` +
+        `(esperado=${expectedCorrectCount}, voted_a=${votedA}, voted_b=${votedB}, total=${totalVotes}, updated_votes=${updatedVotes}). ` +
+        `O Worker respondeu ok:true no /admin/correct mas o crédito não foi aplicado corretamente aos votos — ` +
+        `ver #4563 (causas candidatas: DO StatsCounter stale ou votos individuais não encontrados pra recreditar).`,
+    };
+  }
+
+  return {
+    ok: true,
+    expectedCorrectCount,
+    legitimateNoop: updatedVotes === 0 && totalVotes > 0,
+  };
+}
+
+/** Campos numéricos de `/stats` já validados como `number` de verdade. */
+export interface StatsNumericFields {
+  total: number;
+  votedA: number;
+  votedB: number;
+  correctCount: number;
+}
+
+/**
+ * #4566 (review fleet, achado MEDIUM): valida que os 4 campos numéricos que
+ * `/stats` devolve pós-correção (`total`, `voted_a`, `voted_b`,
+ * `correct_count`) são de fato `number` antes de virarem input de
+ * `checkCorrectCountSanity`. Ausência ou tipo errado indica regressão de
+ * schema no Worker — sem este guard, todos cairiam em `?? 0`, `matches`
+ * bateria sempre 0 === 0 e `checkCorrectCountSanity` nunca acusaria nada:
+ * a MESMA classe de "fallback que mascara o problema real" que #4563 existe
+ * pra eliminar, só que um nível abaixo (o CAMINHO que popula o input a
+ * partir do JSON de rede, não o guard em si — o tipo de
+ * `CorrectCountSanityInput` já exige `number`, nunca `number|undefined`).
+ *
+ * Pure, testável sem rede/spawn — `main()` usa isto tanto no sanity check
+ * principal (FATAL se inválido) quanto na releitura pós-mirror --brand web
+ * (fail-soft, só warning — ver #4566 achado HIGH).
+ */
+export function validateStatsNumericFields(stats: {
+  total?: unknown;
+  voted_a?: unknown;
+  voted_b?: unknown;
+  correct_count?: unknown;
+}): { ok: true; fields: StatsNumericFields } | { ok: false; message: string } {
+  if (
+    typeof stats.total !== "number" ||
+    typeof stats.voted_a !== "number" ||
+    typeof stats.voted_b !== "number" ||
+    typeof stats.correct_count !== "number"
+  ) {
+    return {
+      ok: false,
+      message:
+        `resposta /stats malformada — total/voted_a/voted_b/correct_count ausente(s) ou de tipo inválido ` +
+        `(total=${JSON.stringify(stats.total)}, voted_a=${JSON.stringify(stats.voted_a)}, ` +
+        `voted_b=${JSON.stringify(stats.voted_b)}, correct_count=${JSON.stringify(stats.correct_count)}). ` +
+        `Worker pode ter regressão de schema — ver #4566.`,
+    };
+  }
+  return {
+    ok: true,
+    fields: { total: stats.total, votedA: stats.voted_a, votedB: stats.voted_b, correctCount: stats.correct_count },
+  };
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const { values } = parseCliArgs(args); // #535: fix indexOf+1 bug
@@ -219,13 +357,51 @@ async function main(): Promise<void> {
   // rationale completo no header de `statsSig` acima.
   const statsSigQ = `&sig=${statsSig(secret, brand ?? "diaria", edition)}`;
   const statsRes = await dohFetch(`${POLL_WORKER_URL}/stats?edition=${edition}${brandQ}${statsSigQ}`);
-  const stats = await statsRes.json() as { correct_answer?: string | null };
+  const stats = await statsRes.json() as {
+    correct_answer?: string | null;
+    total?: number;
+    voted_a?: number;
+    voted_b?: number;
+    correct_count?: number;
+  };
   if (!statsRes.ok || stats.correct_answer !== answer) {
     console.error(
       `[close-poll] FATAL: sanity check falhou — /stats retornou correct_answer=${JSON.stringify(stats.correct_answer)} ` +
         `esperado="${answer}". Worker pode ter rejeitado silenciosamente ou retornou stale.`,
     );
     process.exit(1);
+  }
+
+  // #4563: o check acima só confirma que o GABARITO foi gravado — não que o
+  // CRÉDITO (correct_count) foi de fato aplicado aos votos já registrados.
+  //
+  // #4566 (review fleet, achado MEDIUM): `validateStatsNumericFields` (pure,
+  // acima) garante que os 4 campos são `number` de verdade — sem isso,
+  // campos ausentes/malformados cairiam silenciosamente em `?? 0` e
+  // mascarariam uma regressão de schema do Worker. FATAL, não silencioso.
+  const statsFields = validateStatsNumericFields(stats);
+  if (!statsFields.ok) {
+    console.error(`[close-poll] FATAL: ${statsFields.message}`);
+    process.exit(1);
+  }
+
+  const correctCountSanity = checkCorrectCountSanity({
+    answer,
+    totalVotes: statsFields.fields.total,
+    votedA: statsFields.fields.votedA,
+    votedB: statsFields.fields.votedB,
+    correctCountFromStats: statsFields.fields.correctCount,
+    updatedVotes: data.updated_votes ?? 0,
+  });
+  if (!correctCountSanity.ok) {
+    console.error(`[close-poll] FATAL: ${correctCountSanity.message}`);
+    process.exit(1);
+  }
+  if (correctCountSanity.legitimateNoop) {
+    console.error(
+      `[close-poll] updated_votes=0 — nenhum voto precisou de ajuste (correct_count já batia com o esperado=` +
+        `${correctCountSanity.expectedCorrectCount} pro gabarito "${answer}").`,
+    );
   }
 
   // #1367: marker de sucesso pra Stage 5 invariant checar.
@@ -256,7 +432,17 @@ async function main(): Promise<void> {
           brand: "clarice",
           updated_votes: data.updated_votes ?? 0,
           closed_at: new Date().toISOString(),
-          sanity_check: { correct_answer: stats.correct_answer },
+          // #4563: expected_correct_count/correct_count registrados pra
+          // auditoria (correct_count é o valor JÁ CORRIGIDO lido de /stats —
+          // não confundir com correctCountFromStats, nome interno camelCase
+          // do parâmetro de CorrectCountSanityInput) — sanity check
+          // pós-correção já validou que batem (senão o script teria saído
+          // com FATAL acima).
+          sanity_check: {
+            correct_answer: stats.correct_answer,
+            correct_count: stats.correct_count ?? 0,
+            expected_correct_count: correctCountSanity.expectedCorrectCount,
+          },
         },
         null,
         2,
@@ -277,7 +463,11 @@ async function main(): Promise<void> {
         answer,
         updated_votes: data.updated_votes ?? 0,
         marker_path: markerPath,
-        sanity_check: { correct_answer: stats.correct_answer },
+        sanity_check: {
+          correct_answer: stats.correct_answer,
+          correct_count: stats.correct_count ?? 0,
+          expected_correct_count: correctCountSanity.expectedCorrectCount,
+        },
       }),
     );
     return;
@@ -306,11 +496,54 @@ async function main(): Promise<void> {
       const webSig = adminSig(secret, "web", edition, answer);
       const webUrl = `${POLL_WORKER_URL}/admin/correct?edition=${edition}&answer=${answer}&sig=${webSig}&brand=web`;
       const webRes = await dohFetch(webUrl, { method: "POST" });
-      const webData = await webRes.json().catch(() => ({})) as { ok?: boolean };
+      const webData = await webRes.json().catch(() => ({})) as { ok?: boolean; updated_votes?: number };
       if (!webRes.ok || !webData.ok) {
         console.error(`[close-poll] aviso (#3516): mirror --brand web falhou (status ${webRes.status}) para edition=${edition} — não bloqueia close-poll da diária.`);
       } else {
         console.error(`[close-poll] gabarito espelhado pro brand=web (edition=${edition}) — #3516.`);
+
+        // #4566 (review fleet, achado HIGH): o /admin/correct acima só
+        // confirma que o GABARITO do brand `web` foi gravado — StatsCounter
+        // é instanciado por `{brand}:{edition}`, então o DO do brand `web` é
+        // uma instância TOTALMENTE separada da diária, e um resultado limpo
+        // lá em cima não garante nada sobre o mirror. Mesma classe de bug do
+        // #4563 (`ok:true` sem o CRÉDITO ter sido de fato aplicado), agora
+        // reproduzível aqui. Relê `/stats?brand=web` e roda o MESMO guard
+        // puro (`checkCorrectCountSanity`) — mas fail-soft (aviso em stderr,
+        // NUNCA FATAL/exit): o close-poll da diária já terminou com sucesso
+        // neste ponto, e o mirror inteiro é best-effort por natureza (#3516)
+        // — um mismatch aqui não deve derrubar o processo, só alertar.
+        try {
+          const webStatsSigQ = `&sig=${statsSig(secret, "web", edition)}`;
+          const webStatsRes = await dohFetch(`${POLL_WORKER_URL}/stats?edition=${edition}&brand=web${webStatsSigQ}`);
+          const webStats = await webStatsRes.json().catch(() => ({})) as {
+            total?: number;
+            voted_a?: number;
+            voted_b?: number;
+            correct_count?: number;
+          };
+          const webStatsFields = webStatsRes.ok ? validateStatsNumericFields(webStats) : { ok: false as const, message: `status ${webStatsRes.status}` };
+          if (!webStatsFields.ok) {
+            console.error(
+              `[close-poll] aviso (#4566): não foi possível validar o crédito do mirror --brand web (resposta ` +
+                `/stats malformada ou indisponível para edition=${edition}: ${webStatsFields.message}).`,
+            );
+          } else {
+            const webSanity = checkCorrectCountSanity({
+              answer,
+              totalVotes: webStatsFields.fields.total,
+              votedA: webStatsFields.fields.votedA,
+              votedB: webStatsFields.fields.votedB,
+              correctCountFromStats: webStatsFields.fields.correctCount,
+              updatedVotes: webData.updated_votes ?? 0,
+            });
+            if (!webSanity.ok) {
+              console.error(`[close-poll] aviso (#4566): mirror --brand web reportou ok:true mas o crédito diverge — ${webSanity.message}`);
+            }
+          }
+        } catch (e) {
+          console.error(`[close-poll] aviso (#4566): validação pós-mirror --brand web lançou exceção para edition=${edition}: ${(e as Error).message} — não bloqueia close-poll.`);
+        }
       }
     } catch (e) {
       console.error(`[close-poll] aviso (#3516): mirror --brand web lançou exceção para edition=${edition}: ${(e as Error).message} — não bloqueia close-poll.`);
@@ -371,7 +604,12 @@ async function main(): Promise<void> {
         answer,
         updated_votes: data.updated_votes ?? 0,
         closed_at: new Date().toISOString(),
-        sanity_check: { correct_answer: stats.correct_answer },
+        // #4563: mesma auditoria do marker clarice acima — check já validado.
+        sanity_check: {
+          correct_answer: stats.correct_answer,
+          correct_count: stats.correct_count ?? 0,
+          expected_correct_count: correctCountSanity.expectedCorrectCount,
+        },
       },
       null,
       2,
@@ -430,7 +668,11 @@ async function main(): Promise<void> {
       answer,
       updated_votes: data.updated_votes ?? 0,
       marker_path: markerPath,
-      sanity_check: { correct_answer: stats.correct_answer },
+      sanity_check: {
+        correct_answer: stats.correct_answer,
+        correct_count: stats.correct_count ?? 0,
+        expected_correct_count: correctCountSanity.expectedCorrectCount,
+      },
     }),
   );
 }

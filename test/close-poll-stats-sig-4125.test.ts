@@ -66,7 +66,16 @@ function startMockPollWorkerWithSigCheck(answer: string, brand: string, edition:
         const sig = url.searchParams.get("sig");
         const authorized = sig === expectedStatsSig(brand, edition);
         res.writeHead(200);
-        res.end(JSON.stringify({ correct_answer: authorized ? answer : null }));
+        // #4566: total/voted_a/voted_b/correct_count agora são validados
+        // como `number` antes de montar CorrectCountSanityInput — só
+        // incluídos na resposta AUTORIZADA (a não-autorizada, usada só pra
+        // simular a omissão anti-spoiler, nunca chega lá — o script já sai
+        // FATAL no check de correct_answer logo acima na main()).
+        res.end(JSON.stringify(
+          authorized
+            ? { correct_answer: answer, total: 1, voted_a: answer === "A" ? 1 : 0, voted_b: answer === "B" ? 1 : 0, correct_count: 1 }
+            : { correct_answer: null },
+        ));
         return;
       }
       res.writeHead(404);
@@ -103,7 +112,10 @@ describe("close-poll.ts CLI — envia sig autenticado no sanity check de /stats 
       );
 
       assert.equal(r.status, 0, `esperado exit 0 (sig deve autenticar) — stderr: ${r.stderr}`);
-      assert.equal(statsCalls.length, 1, "sanity check deve ter chamado /stats exatamente 1 vez");
+      // #4566: 2 chamadas a /stats agora — a 1ª é o sanity check da diária
+      // (#4125, verificado abaixo), a 2ª é a releitura pós-mirror --brand
+      // web (#4566 HIGH) que o branch default sempre dispara em seguida.
+      assert.equal(statsCalls.length, 2, "sanity check da diária + releitura pós-mirror web devem ter chamado /stats");
       assert.match(statsCalls[0], /sig=/, "URL do sanity check deve incluir ?sig=");
 
       // Confirma que o sig enviado é EXATAMENTE o que o Worker de produção
