@@ -35,6 +35,7 @@ import {
   renderCuradoriaCtaSubscribeStyles, // #4051: CSS do CTA de assinatura inline (hero + fim-de-lista)
 } from "./lib/shared/curadoria-page.ts"; // #3113: CSS/footer comuns com build-cursos-page.ts
 import {
+  formatMonthYear,
   renderGeoByline,
   renderGeoFaqSection,
   renderGeoFaqStyles,
@@ -363,7 +364,7 @@ function renderGeoIntro(books: Book[]): string {
   return `    <div class="geo-intro-wrap">
       <h2 class="geo-h2">Quais os melhores livros sobre inteligência artificial em português?</h2>
       <p class="geo-intro">Esta página reúne ${total} livros sobre inteligência artificial — ${ptBr} deles com edição em português — selecionados a partir de mais de 10 listas de recomendação e ranqueados por um critério subjetivo (prêmio do livro ou do autor) e um objetivo (nota na Amazon). A lista cobre desde introduções pra quem nunca leu nada sobre IA até títulos técnicos de deep learning e engenharia de machine learning, passando por estratégia, negócios, filosofia e história da tecnologia. Filtre por idioma, nível de leitura e tema logo abaixo pra achar o livro certo pro seu momento — ou role até o fim pras perguntas frequentes, com os números completos da curadoria.</p>
-${renderGeoByline(undefined, "atualizado em agosto de 2026")}
+${renderGeoByline(undefined, `atualizado em ${formatMonthYear(GEO_CONTENT_DATE)}`)}
     </div>`;
 }
 

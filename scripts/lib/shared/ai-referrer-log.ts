@@ -50,9 +50,18 @@ export function matchAiReferrerHost(referer: string | null | undefined): AiRefer
   return null;
 }
 
+/** Os 3 Workers que chamam `logAiReferrerHit` hoje (achado #4616: `worker`
+ * era `string` livre, populado por 3 call sites cada um hardcodando um
+ * literal — `"cursos"`/`"livros"`/`"arquivo"` — sem checagem de tipo; um
+ * typo (`"curso"`, `"Livros"`) compilava limpo e corrompia o log de
+ * atribuição em silêncio). Union tipada — igual `AiReferrerHost` acima —
+ * fecha essa classe de erro em compile-time. */
+export const AI_REFERRER_WORKERS = ["cursos", "livros", "arquivo"] as const;
+export type AiReferrerWorker = (typeof AI_REFERRER_WORKERS)[number];
+
 export interface AiReferrerHit {
-  /** Nome do Worker que capturou o hit (ex: "cursos", "livros", "arquivo"). */
-  worker: string;
+  /** Nome do Worker que capturou o hit. */
+  worker: AiReferrerWorker;
   host: AiReferrerHost;
   /** Path da request (`url.pathname`) — nunca a URL inteira (sem query string
    * com possível PII, ex: `?email=` do gate). */
@@ -73,7 +82,7 @@ export function formatAiReferrerLogLine(hit: AiReferrerHit): string {
  * padrão de DI usado em `scripts/gsc-submit-sitemaps.ts` (`fetchImpl`).
  */
 export function logAiReferrerHit(
-  worker: string,
+  worker: AiReferrerWorker,
   host: AiReferrerHost,
   path: string,
   logger: (line: string) => void = console.log,

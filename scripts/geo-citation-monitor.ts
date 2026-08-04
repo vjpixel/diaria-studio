@@ -84,9 +84,18 @@ async function main(): Promise<number> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().then((code) => {
-    process.exitCode = code;
-  });
+  main()
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .catch((e) => {
+      // Alinha com o padrão dos scripts irmãos agendáveis via Task Scheduler
+      // (postmaster-spam-sync.ts, apoios-diff-alarm.ts, cursos-error-alarm.ts,
+      // achado #4616): sem isso, uma exceção não tratada vira stack trace cru
+      // em vez de log estruturado que o `.ps1` wrapper capturaria.
+      console.error("[geo-citation-monitor] erro:", e);
+      process.exit(1);
+    });
 }
 
 export { main };

@@ -116,6 +116,43 @@ export function renderGeoByline(author: GeoAuthor = GEO_AUTHOR, dateLabel?: stri
   return `  <p class="geo-byline">Por <a href="${esc(author.url)}" rel="author">${esc(author.name)}</a>${datePart}</p>`;
 }
 
+const PT_BR_MONTHS = [
+  "janeiro",
+  "fevereiro",
+  "março",
+  "abril",
+  "maio",
+  "junho",
+  "julho",
+  "agosto",
+  "setembro",
+  "outubro",
+  "novembro",
+  "dezembro",
+] as const;
+
+/**
+ * Formata uma data `YYYY-MM-DD` como "{mês} de {ano}" em pt-BR (ex:
+ * "2026-08-04" → "agosto de 2026"). Achado #4616 (code-reviewer, PR #4558
+ * B+C): `build-cursos-page.ts`/`build-livros-page.ts` hardcodavam o texto
+ * visível do byline ("atualizado em agosto de 2026") como string literal
+ * independente de `GEO_CONTENT_DATE` — um bump futuro da constante não
+ * atualizava o texto que o leitor vê, criando divergência com
+ * `datePublished`/`dateModified` do JSON-LD (exatamente o tipo de
+ * inconsistência que validadores de dado estruturado do Google sinalizam).
+ * `formatMonthYear` deriva o rótulo DA constante, então os dois nunca podem
+ * divergir. Pure — lança se `dateIso` não bater no formato esperado (fail
+ * loud em vez de imprimir uma data quebrada silenciosamente).
+ */
+export function formatMonthYear(dateIso: string): string {
+  const m = /^(\d{4})-(\d{2})-\d{2}$/.exec(dateIso);
+  if (!m) throw new Error(`formatMonthYear: data inválida "${dateIso}", esperado YYYY-MM-DD`);
+  const [, year, month] = m;
+  const monthName = PT_BR_MONTHS[Number(month) - 1];
+  if (!monthName) throw new Error(`formatMonthYear: mês inválido "${month}" em "${dateIso}"`);
+  return `${monthName} de ${year}`;
+}
+
 export interface GeoJsonLdOptions {
   /** URL absoluta canônica da página. */
   pageUrl: string;

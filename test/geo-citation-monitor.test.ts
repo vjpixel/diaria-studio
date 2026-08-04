@@ -12,8 +12,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  GEO_PROVIDER_TIMEOUT_MS,
   GEO_PROVIDERS,
   GEO_QUESTIONS,
+  GEO_RATE_LIMIT_RETRY_DELAY_MS,
   GEO_TARGET_DOMAIN,
   appendGeoCitationLog,
   detectCitation,
@@ -131,26 +133,82 @@ describe("queryProvider (fetchImpl injetado — nunca rede real)", () => {
     if (result.ok) assert.match(result.text, /diar\.ia\.br/);
   });
 
-  it("HTTP não-ok: devolve {ok:false, error} com o status", async () => {
+  it("HTTP não-ok: devolve {ok:false, error, errorKind:'http', httpStatus} (#4616 achado 1)", async () => {
     const fakeFetch = async () => new Response("unauthorized", { status: 401 });
     const result = await queryProvider(anthropic, "pergunta", "bad-key", "claude-sonnet-5", fakeFetch);
     assert.equal(result.ok, false);
-    if (!result.ok) assert.match(result.error, /401/);
+    if (!result.ok) {
+      assert.match(result.error, /401/);
+      assert.equal(result.errorKind, "http");
+      assert.equal(result.httpStatus, 401);
+    }
   });
 
-  it("erro de rede (fetch rejeita): devolve {ok:false, error}, nunca lança", async () => {
+  it("erro de rede (fetch rejeita): devolve {ok:false, error, errorKind:'network'}, sem httpStatus (#4616 achado 1)", async () => {
     const fakeFetch = async () => {
       throw new Error("network down");
     };
     const result = await queryProvider(anthropic, "pergunta", "fake-key", "claude-sonnet-5", fakeFetch);
     assert.equal(result.ok, false);
-    if (!result.ok) assert.match(result.error, /network down/);
+    if (!result.ok) {
+      assert.match(result.error, /network down/);
+      assert.equal(result.errorKind, "network");
+      assert.equal(result.httpStatus, undefined);
+    }
   });
 
-  it("JSON malformado: devolve {ok:false, error}, nunca lança", async () => {
+  it("JSON malformado: devolve {ok:false, error, errorKind:'parse'} (#4616 achado 1)", async () => {
     const fakeFetch = async () => new Response("{not json", { status: 200 });
     const result = await queryProvider(anthropic, "pergunta", "fake-key", "claude-sonnet-5", fakeFetch);
     assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.errorKind, "parse");
+  });
+
+  it("extractText lança (regressão de contrato): devolve {ok:false, errorKind:'extract'}, distinguível de rede/parse (#4616 achado 1)", async () => {
+    // Regressão hipotética: extractText é documentado como pura/defensiva/
+    // nunca-lança, mas se algum dia regredir, o catch ANTES do #4616 (um
+    // único try/catch em volta de fetch+json+extractText) faria isso virar
+    // um `error: string` idêntico em forma a uma falha de rede transitória —
+    // impossível distinguir depois. Este teste garante o discriminante.
+    const throwingProvider = {
+      ...anthropic,
+      extractText: () => {
+        throw new Error("bug de regressão no extractText");
+      },
+    };
+    const fakeFetch = async () => new Response(JSON.stringify({ content: [] }), { status: 200 });
+    const result = await queryProvider(throwingProvider, "pergunta", "fake-key", "claude-sonnet-5", fakeFetch);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.match(result.error, /bug de regressão/);
+      assert.equal(result.errorKind, "extract");
+      assert.notEqual(result.errorKind, "network");
+      assert.notEqual(result.errorKind, "parse");
+    }
+  });
+
+  it("timeout explícito: fetch que nunca resolve é abortado via AbortController (#4616 achado 2)", async () => {
+    // fetchImpl que só resolve/rejeita quando o signal injetado abortar —
+    // simula uma conexão pendurada de verdade. timeoutMs pequeno (10ms) pra
+    // manter o teste rápido; o valor de produção é GEO_PROVIDER_TIMEOUT_MS.
+    const fakeFetch = (_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const err = new Error("The operation was aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      });
+    const result = await queryProvider(anthropic, "pergunta", "fake-key", "claude-sonnet-5", fakeFetch, 10);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorKind, "network");
+      assert.match(result.error, /abort/i);
+    }
+  });
+
+  it("GEO_PROVIDER_TIMEOUT_MS é o default (25s, mesma referência do fetch in-page do Beehiiv, #4616 achado 2)", () => {
+    assert.equal(GEO_PROVIDER_TIMEOUT_MS, 25_000);
   });
 });
 
@@ -222,6 +280,70 @@ describe("runGeoCitationMonitor (#4558 Parte C)", () => {
     );
     assert.equal(seenModels[0], "claude-sonnet-5"); // default do provider
     assert.equal(seenModels[1], "claude-opus-5"); // override via env
+  });
+
+  it("propaga errorKind/httpStatus pro record (#4616 achado 1)", async () => {
+    const fakeFetch = async () => new Response("nope", { status: 500 });
+    const records = await runGeoCitationMonitor({ ANTHROPIC_API_KEY: "fake-key" }, ["pergunta"], fakeFetch);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].errorKind, "http");
+    assert.equal(records[0].httpStatus, 500);
+  });
+
+  it("429 recebe exatamente 1 retry, com backoff — sucede na 2ª tentativa (#4616 achado 4)", async () => {
+    let calls = 0;
+    const fakeFetch = async () => {
+      calls += 1;
+      if (calls === 1) return new Response("rate limited", { status: 429 });
+      return new Response(JSON.stringify({ content: [{ type: "text", text: "veja diar.ia.br" }] }), { status: 200 });
+    };
+    const sleeps: number[] = [];
+    const records = await runGeoCitationMonitor(
+      { ANTHROPIC_API_KEY: "fake-key" },
+      ["pergunta"],
+      fakeFetch,
+      undefined,
+      undefined,
+      async (ms) => {
+        sleeps.push(ms);
+      },
+    );
+    assert.equal(calls, 2, "esperava 2 chamadas: a 429 original + o retry");
+    assert.deepEqual(sleeps, [GEO_RATE_LIMIT_RETRY_DELAY_MS]);
+    assert.equal(records.length, 1, "1 record final — não 2 (o retry não deve duplicar o record)");
+    assert.equal(records[0].cited, true);
+    assert.equal(records[0].error, undefined);
+  });
+
+  it("429 que persiste nas 2 tentativas vira record de erro (sem retry infinito, #4616 achado 4)", async () => {
+    let calls = 0;
+    const fakeFetch = async () => {
+      calls += 1;
+      return new Response("rate limited", { status: 429 });
+    };
+    const records = await runGeoCitationMonitor(
+      { ANTHROPIC_API_KEY: "fake-key" },
+      ["pergunta"],
+      fakeFetch,
+      undefined,
+      undefined,
+      async () => {}, // sleep no-op — não espera o delay real no teste
+    );
+    assert.equal(calls, 2, "1 tentativa original + exatamente 1 retry, nunca mais");
+    assert.equal(records.length, 1);
+    assert.equal(records[0].errorKind, "http");
+    assert.equal(records[0].httpStatus, 429);
+  });
+
+  it("erro não-429 (ex: 500) NÃO é retentado (só 429 tem o retry, #4616 achado 4)", async () => {
+    let calls = 0;
+    const fakeFetch = async () => {
+      calls += 1;
+      return new Response("boom", { status: 500 });
+    };
+    const records = await runGeoCitationMonitor({ ANTHROPIC_API_KEY: "fake-key" }, ["pergunta"], fakeFetch);
+    assert.equal(calls, 1, "500 não deve disparar o retry de rate-limit");
+    assert.equal(records[0].httpStatus, 500);
   });
 });
 

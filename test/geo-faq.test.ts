@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 
 import {
   GEO_AUTHOR,
+  formatMonthYear,
   renderGeoByline,
   renderGeoFaqSection,
   renderGeoJsonLd,
@@ -67,6 +68,54 @@ describe("renderGeoByline", () => {
   it("acrescenta o dateLabel quando fornecido", () => {
     const html = renderGeoByline(GEO_AUTHOR, "agosto de 2026");
     assert.match(html, /· agosto de 2026/);
+  });
+});
+
+describe("formatMonthYear (#4616 achado 6 — byline derivado de GEO_CONTENT_DATE, não hardcoded)", () => {
+  it("formata YYYY-MM-DD como '{mês} de {ano}' em pt-BR", () => {
+    assert.equal(formatMonthYear("2026-08-04"), "agosto de 2026");
+  });
+
+  it("cobre os 12 meses corretamente", () => {
+    assert.equal(formatMonthYear("2026-01-15"), "janeiro de 2026");
+    assert.equal(formatMonthYear("2026-02-01"), "fevereiro de 2026");
+    assert.equal(formatMonthYear("2026-03-01"), "março de 2026");
+    assert.equal(formatMonthYear("2026-04-01"), "abril de 2026");
+    assert.equal(formatMonthYear("2026-05-01"), "maio de 2026");
+    assert.equal(formatMonthYear("2026-06-01"), "junho de 2026");
+    assert.equal(formatMonthYear("2026-07-01"), "julho de 2026");
+    assert.equal(formatMonthYear("2026-09-01"), "setembro de 2026");
+    assert.equal(formatMonthYear("2026-10-01"), "outubro de 2026");
+    assert.equal(formatMonthYear("2026-11-01"), "novembro de 2026");
+    assert.equal(formatMonthYear("2026-12-31"), "dezembro de 2026");
+  });
+
+  it("nunca fica dessincronizado de um bump futuro de GEO_CONTENT_DATE — deriva DA data, não hardcoded (regressão #4616)", () => {
+    // O bug original: build-cursos-page.ts/build-livros-page.ts chamavam
+    // renderGeoByline(undefined, "atualizado em agosto de 2026") como string
+    // literal, independente de GEO_CONTENT_DATE. Um bump futuro da constante
+    // não atualizava esse texto visível. Este teste prova que o mesmo valor
+    // usado no JSON-LD (datePublished/dateModified) produz o texto visível —
+    // não podem divergir porque um deriva do outro.
+    const futureContentDate = "2027-03-10";
+    assert.equal(formatMonthYear(futureContentDate), "março de 2027");
+    assert.notEqual(formatMonthYear(futureContentDate), "agosto de 2026");
+  });
+
+  it("lança (fail loud) pra formato inválido, nunca imprime uma data quebrada em silêncio", () => {
+    assert.throws(() => formatMonthYear("04/08/2026"));
+    assert.throws(() => formatMonthYear("2026-8-4"));
+    assert.throws(() => formatMonthYear(""));
+  });
+
+  it("lança pra mês fora do intervalo 01-12", () => {
+    assert.throws(() => formatMonthYear("2026-13-01"));
+    assert.throws(() => formatMonthYear("2026-00-01"));
+  });
+
+  it("renderGeoByline(undefined, `atualizado em ${formatMonthYear(...)}`) produz o mesmo texto visível de antes (regressão de valor)", () => {
+    const html = renderGeoByline(undefined, `atualizado em ${formatMonthYear("2026-08-04")}`);
+    assert.match(html, /· atualizado em agosto de 2026/);
   });
 });
 

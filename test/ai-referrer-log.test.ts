@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 
 import {
   AI_REFERRER_HOSTS,
+  AI_REFERRER_WORKERS,
   formatAiReferrerLogLine,
   logAiReferrerHit,
   matchAiReferrerHost,
@@ -103,5 +104,29 @@ describe("logAiReferrerHit", () => {
 
   it("usa console.log e new Date() por default (só verifica que não lança)", () => {
     assert.doesNotThrow(() => logAiReferrerHit("livros", "perplexity.ai", "/", () => {}));
+  });
+});
+
+describe("AiReferrerWorker (#4616 achado 5: union tipada, não string livre)", () => {
+  it("AI_REFERRER_WORKERS tem exatamente os 3 Workers que chamam logAiReferrerHit hoje", () => {
+    assert.deepEqual([...AI_REFERRER_WORKERS].sort(), ["arquivo", "cursos", "livros"]);
+  });
+
+  it("os 3 call sites reais (cursos/livros/arquivo) continuam aceitos", () => {
+    const lines: string[] = [];
+    for (const worker of AI_REFERRER_WORKERS) {
+      assert.doesNotThrow(() => logAiReferrerHit(worker, "claude.ai", "/", (l) => lines.push(l)));
+    }
+    assert.equal(lines.length, AI_REFERRER_WORKERS.length);
+  });
+
+  it("um typo no worker é rejeitado em COMPILE-TIME, não silenciosamente aceito (regressão #4616)", () => {
+    // Antes do #4616, `worker` era `string` livre — este typo compilava limpo
+    // e corrompia o log de atribuição em silêncio. Agora `AiReferrerWorker` é
+    // uma union fechada — o erro de tipo abaixo É o teste (se alguém reverter
+    // pra `string`, `tsc --noEmit` deixa de reclamar aqui e o typo volta a
+    // passar despercebido).
+    // @ts-expect-error — "curso" (sem 's') não é um AiReferrerWorker válido
+    assert.doesNotThrow(() => logAiReferrerHit("curso", "claude.ai", "/", () => {}));
   });
 });

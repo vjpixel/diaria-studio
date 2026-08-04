@@ -45,6 +45,7 @@ import {
 } from "./lib/shared/curadoria-data.ts"; // #3118 item 13: layer de dados comum com build-livros-page.ts
 import { CURSOS_FOOTER_NAV_UTM } from "./lib/shared/utm-registry.ts"; // #4295 — link de rodapé sem UTM (assimetria com Livros/#4051)
 import {
+  formatMonthYear,
   renderGeoByline,
   renderGeoFaqSection,
   renderGeoFaqStyles,
@@ -313,7 +314,7 @@ function renderGeoIntro(courses: Course[]): string {
   return `    <div class="geo-intro-wrap">
       <h2 class="geo-h2">Quais são os melhores cursos gratuitos de inteligência artificial?</h2>
       <p class="geo-intro">Esta página reúne ${total} cursos sobre inteligência artificial de ${plataformas} plataformas diferentes — ${free} deles com acesso gratuito ou auditoria livre, e ${comCertificado} com certificado sem custo ao concluir. A curadoria vai de fundamentos de IA e IA generativa a especializações técnicas, em português e inglês. Filtre por idioma, nível, formato, duração e plataforma logo abaixo, ou role até o fim pras perguntas frequentes com os números completos da curadoria.</p>
-${renderGeoByline(undefined, "atualizado em agosto de 2026")}
+${renderGeoByline(undefined, `atualizado em ${formatMonthYear(GEO_CONTENT_DATE)}`)}
     </div>`;
 }
 

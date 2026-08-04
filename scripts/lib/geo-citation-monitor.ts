@@ -30,6 +30,18 @@
  * documentação oficial atual antes da 1ª execução ao vivo — os testes deste
  * módulo cobrem o CONTRATO interno (parsing determinístico de uma resposta
  * fixture), não a forma exata da API real.
+ *
+ * **Resiliência (#4616, fleet review da PR #4616 que introduziu este
+ * módulo):** `queryProvider` tem timeout explícito (`GEO_PROVIDER_TIMEOUT_MS`,
+ * 25s — mesma referência de `DEFAULT_FETCH_TIMEOUT_MS` do fetch in-page do
+ * Beehiiv), separa o catch de rede do catch de parse/extração, e devolve
+ * `errorKind`/`httpStatus` pra tornar a ORIGEM do erro auditável (rede vs.
+ * HTTP vs. parse vs. regressão de `extractText`) em vez de um `error: string`
+ * solto e indistinguível. `runGeoCitationMonitor` faz 1 retry com backoff
+ * curto (`GEO_RATE_LIMIT_RETRY_DELAY_MS`) especificamente pra 429 — outros
+ * erros não são retentados de propósito (rede/parse/extract tendem a não ser
+ * transitórios da mesma forma que rate-limit, e mais retries alongaria as
+ * ~24 chamadas seriais de uma rodada completa sem ganho claro).
  */
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -249,37 +261,99 @@ export interface GeoCitationRecord {
   /** Presente só quando a chamada falhou (rede/HTTP/parse) — `cited` fica
    * `false` nesse caso, nunca indeterminado. */
   error?: string;
+  /** Status HTTP da resposta, quando o erro veio de um HTTP não-2xx.
+   * Ausente pra erro de rede/timeout (fetch nunca completou) ou de parse/
+   * extração (completou com 2xx, quebrou depois) — ver `errorKind`. */
+  httpStatus?: number;
+  /** Discrimina a ORIGEM do erro (achado #4616 do fleet review): sem isso,
+   * um bug de regressão em `extractText` (documentado como "nunca lança")
+   * fica indistinguível de uma falha de rede transitória — ambos viravam o
+   * mesmo `error: string` solto. `"http"` = status não-2xx; `"network"` =
+   * fetch rejeitou (timeout incluso, `AbortError`); `"parse"` = `res.json()`
+   * lançou (corpo não é JSON válido); `"extract"` = `provider.extractText`
+   * lançou (regressão de contrato — a função é documentada como pura e
+   * defensiva, nunca deveria lançar). */
+  errorKind?: "http" | "network" | "parse" | "extract";
 }
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
+/** Timeout por chamada de provider — mesma referência de 25s já usada pro
+ * fetch in-page do Beehiiv (`DEFAULT_FETCH_TIMEOUT_MS`,
+ * `scripts/lib/beehiiv-insert-text.ts`, documentado em
+ * `context/publishers/beehiiv-playbook.md` §Fase 3). Sem isso, até 24
+ * chamadas seriais (3 providers × 8 perguntas) podiam travar o processo
+ * inteiro numa conexão pendurada (achado #4616 do fleet review). */
+export const GEO_PROVIDER_TIMEOUT_MS = 25_000;
+
+type QueryProviderResult =
+  | { ok: true; text: string }
+  | { ok: false; error: string; errorKind: "http" | "network" | "parse" | "extract"; httpStatus?: number };
+
 /** Consulta 1 provider com 1 pergunta e devolve o texto extraído (ou erro).
- * Nunca lança — falha de rede/HTTP/parse vira `{ok:false, error}`. */
+ * Nunca lança — falha de rede/HTTP/parse/extração vira `{ok:false, error,
+ * errorKind}`. O catch de rede (`fetchImpl`) é separado do catch de
+ * parse/extração (achado #4616): assim uma regressão em `extractText` nunca
+ * se disfarça de falha de rede transitória. Timeout explícito via
+ * `AbortController` (`GEO_PROVIDER_TIMEOUT_MS`) quando `fetchImpl` não
+ * suporta `signal` nativamente do lado do caller — o timeout é aplicado
+ * aqui, não deixado a cargo de cada `buildRequest`. */
 export async function queryProvider(
   provider: GeoProviderDef,
   question: string,
   apiKey: string,
   model: string,
   fetchImpl: FetchLike,
-): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
+  timeoutMs: number = GEO_PROVIDER_TIMEOUT_MS,
+): Promise<QueryProviderResult> {
+  const { url, init } = provider.buildRequest(question, apiKey, model);
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  let res: Response;
   try {
-    const { url, init } = provider.buildRequest(question, apiKey, model);
-    const res = await fetchImpl(url, init);
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      return { ok: false, error: `HTTP ${res.status}: ${body.slice(0, 300)}` };
-    }
-    const json = await res.json();
+    res = await fetchImpl(url, { ...init, signal: controller.signal });
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e), errorKind: "network" };
+  } finally {
+    clearTimeout(t);
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    return { ok: false, error: `HTTP ${res.status}: ${body.slice(0, 300)}`, errorKind: "http", httpStatus: res.status };
+  }
+  let json: unknown;
+  try {
+    json = await res.json();
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e), errorKind: "parse" };
+  }
+  // Separado do catch de parse de propósito (achado #4616): extractText é
+  // documentado como pura/defensiva/nunca-lança — se algum dia regredir,
+  // errorKind:"extract" torna essa regressão de código visível em vez de
+  // se disfarçar de falha de rede/parse transitória.
+  try {
     return { ok: true, text: provider.extractText(json) };
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    return { ok: false, error: e instanceof Error ? e.message : String(e), errorKind: "extract" };
   }
 }
+
+/** Delay do único retry de rate-limit (item 4 do achado #4616) — curto de
+ * propósito, só o bastante pra dar uma segunda chance a um 429 transitório
+ * sem alongar sensivelmente as ~24 chamadas seriais de uma rodada completa. */
+export const GEO_RATE_LIMIT_RETRY_DELAY_MS = 1_500;
 
 /**
  * Roda TODAS as combinações provider×pergunta pros providers cuja API key
  * está presente em `env` (providers sem key são pulados — fail-soft, nunca
  * erro). Retorna 1 `GeoCitationRecord` por combinação executada.
+ *
+ * **Rate-limit (#4616 achado 4):** um 429 recebe exatamente 1 retry, após
+ * `GEO_RATE_LIMIT_RETRY_DELAY_MS` — o suficiente pra não perder uma
+ * combinação inteira por um rate-limit transitório de 1 chamada, sem virar
+ * um backoff geral (outros erros — rede/parse/extract — não são retentados;
+ * ver docstring do módulo pra rationale de escopo). `sleepFn` é injetável em
+ * teste pra não esperar o delay real.
  */
 export async function runGeoCitationMonitor(
   env: Record<string, string | undefined>,
@@ -287,6 +361,7 @@ export async function runGeoCitationMonitor(
   fetchImpl: FetchLike = fetch,
   now: () => Date = () => new Date(),
   providers: readonly GeoProviderDef[] = GEO_PROVIDERS,
+  sleepFn: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
 ): Promise<GeoCitationRecord[]> {
   const records: GeoCitationRecord[] = [];
   for (const provider of providers) {
@@ -294,7 +369,11 @@ export async function runGeoCitationMonitor(
     if (!apiKey) continue; // sem key → pula esse provider, fail-soft
     const model = env[`${provider.envKey}_MODEL`] || provider.defaultModel;
     for (const question of questions) {
-      const result = await queryProvider(provider, question, apiKey, model, fetchImpl);
+      let result = await queryProvider(provider, question, apiKey, model, fetchImpl);
+      if (!result.ok && result.errorKind === "http" && result.httpStatus === 429) {
+        await sleepFn(GEO_RATE_LIMIT_RETRY_DELAY_MS);
+        result = await queryProvider(provider, question, apiKey, model, fetchImpl);
+      }
       const ts = now().toISOString();
       const date = ts.slice(0, 10);
       if (!result.ok) {
@@ -308,6 +387,8 @@ export async function runGeoCitationMonitor(
           domain: GEO_TARGET_DOMAIN,
           snippet: null,
           error: result.error,
+          errorKind: result.errorKind,
+          ...(result.httpStatus !== undefined ? { httpStatus: result.httpStatus } : {}),
         });
         continue;
       }
