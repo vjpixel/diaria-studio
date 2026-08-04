@@ -43,17 +43,42 @@ import {
 } from "./geo-faq.ts";
 import { DIARIA_ARQUIVO_URL } from "../canonical-urls.ts";
 
+/** Um link markdown `[label](url)` já parseado — `start`/`end` são o span
+ * (índices) do match completo na string de origem, meio-aberto (`end`
+ * exclusivo). Nomeado (não shape inline) porque o MESMO shape existe em
+ * `findMarkdownLinks` (`scripts/lib/newsletter-render-html.ts`) — nomear
+ * documenta que as duas funções concordam no contrato, mesmo duplicando a
+ * lógica (achado do fleet review). */
+export interface ParsedLink {
+  url: string;
+  label: string;
+  start: number;
+  end: number;
+}
+
 /**
  * Acha links markdown `[texto](url)` num parágrafo, com parênteses
  * balanceados na URL (mesmo algoritmo de `findMarkdownLinks` em
  * `scripts/lib/newsletter-render-html.ts` — REIMPLEMENTADO aqui, não
- * importado: aquele módulo faz `import { readFileSync } from "node:fs"` no
- * topo do arquivo, API ausente no runtime do Cloudflare Workers; puxar
- * qualquer export de lá pra um módulo `shared/` bundlado no Worker `arquivo`
- * quebraria o build. Mesma disciplina de duplicação já usada em
- * `build-livros-page.ts::renderSubscribeCtaScript` pra bundles separados). */
-function findParagraphLinks(s: string): { url: string; label: string; start: number; end: number }[] {
-  const out: { url: string; label: string; start: number; end: number }[] = [];
+ * importado. **Não é porque este arquivo é bundlado no Worker hoje — não é**
+ * (`workers/arquivo/src/hubs/registry.ts` garante de propósito que o Worker
+ * só importa o HTML já gerado, nunca `scripts/lib/hubs/` nem este módulo;
+ * achado do fleet review corrigindo uma alegação errada da versão anterior
+ * deste comentário). O motivo real: `newsletter-render-html.ts` importa
+ * `readFileSync` de `node:fs` no topo do arquivo e carrega toda uma cadeia
+ * de dependência específica de e-mail (word-joiner, wordmark de marca,
+ * estilo inline pro Outlook) que não serve a uma página web comum — puxar
+ * qualquer export de lá acopla este módulo a essa cadeia inteira à toa, e
+ * fica uma armadilha se este arquivo um dia passar a ser importado por algo
+ * que É bundlado no Worker (`geo-faq.ts`, por exemplo, já é).
+ *
+ * **`[texto]()` com URL vazia não é tratado como link** (mesmo guard do
+ * `mdInlineToHtml`/`processInlineLinks` na função original — "preserva
+ * texto bruto", ver comentário lá) — sem isso, um typo comum ao digitar
+ * link à mão vira um `href=""` silencioso (link morto, sem erro nenhum;
+ * achado do fleet review). */
+export function findParagraphLinks(s: string): ParsedLink[] {
+  const out: ParsedLink[] = [];
   const linkStart = /\[([^\]]+)\]\(/g;
   let m: RegExpExecArray | null;
   while ((m = linkStart.exec(s)) !== null) {
@@ -70,7 +95,9 @@ function findParagraphLinks(s: string): { url: string; label: string; start: num
       }
     }
     if (j >= s.length) continue; // sem `)` de fechamento — não é link válido
-    out.push({ url: s.slice(destStart, j).trim(), label, start: m.index, end: j + 1 });
+    const url = s.slice(destStart, j).trim();
+    if (!url) continue; // `[texto]()` — URL vazia, preserva texto bruto (não vira <a href="">)
+    out.push({ url, label, start: m.index, end: j + 1 });
     linkStart.lastIndex = j + 1;
   }
   return out;
@@ -81,8 +108,12 @@ function findParagraphLinks(s: string): { url: string; label: string; start: num
  * temático é link interno de verdade" — cada afirmação linka a edição de
  * origem, não só a lista de fontes no rodapé). Todo texto fora dos links,
  * e o `label`/`url` de cada link, passa por `esc()`; nunca interpola HTML
- * cru vindo do conteúdo. */
-function renderParagraphInline(p: string): string {
+ * cru vindo do conteúdo. `HubContent.introParagraph`/`metaDescription` NÃO
+ * passam por aqui (renderizados via `esc()` puro em `renderHubPage`) — só
+ * `HubSection.paragraphs` suporta este subset de markdown; um `[texto](url)`
+ * em qualquer outro campo de `HubContent` renderiza como colchete literal,
+ * não como link. */
+export function renderParagraphInline(p: string): string {
   const links = findParagraphLinks(p);
   if (links.length === 0) return esc(p);
   const parts: string[] = [];
@@ -115,7 +146,11 @@ export interface HubSection {
   /** Parágrafos — cada string vira um `<p>`. Tupla não-vazia (não
    * `string[]`) — uma seção com 0 parágrafos renderizaria um H2 sem nada
    * embaixo; o tipo torna isso impossível em vez de depender de validação
-   * em runtime (achado do fleet review). */
+   * em runtime (achado do fleet review). Suporta o subset de markdown
+   * `[texto](url)` (renderizado como `<a href>` via `renderParagraphInline`)
+   * — ÚNICO campo de `HubContent` com esse suporte; outros campos de texto
+   * livre (`introParagraph`, `metaDescription`) renderizam colchete literal
+   * se alguém escrever markdown neles (achado do fleet review). */
   paragraphs: [string, ...string[]];
 }
 

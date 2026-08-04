@@ -110,7 +110,7 @@ export function buildAnthropicClaudeFaq(sources: HubSourceEntry[]): GeoFaqItem[]
     /hacke|espiona|expõe bugs|consciente|análise psicológica|pensamentos silenciosos/i,
   );
 
-  // Achado do editor (260804): as 8 perguntas abaixo não podem repetir o
+  // Achado do editor (260804): as perguntas abaixo não podem repetir o
   // texto literal do H2 de nenhuma `section` (fariam o mesmo trabalho 2x).
   // Onde o tema já tem uma seção de síntese, a pergunta do FAQ pega um
   // ângulo mais estreito (estatística rápida, recorte "mais recente",

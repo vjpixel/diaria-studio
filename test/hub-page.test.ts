@@ -1,0 +1,87 @@
+/**
+ * test/hub-page.test.ts (#4558 Parte A)
+ *
+ * Cobre `findParagraphLinks`/`renderParagraphInline` (scripts/lib/shared/hub-page.ts)
+ * — o parser de markdown `[texto](url)` usado na prosa das `HubSection`.
+ * Reimplementação self-contained de `findMarkdownLinks`/`mdInlineToHtml`
+ * (scripts/lib/newsletter-render-html.ts, coberto por
+ * test/render-newsletter-mdinline.test.ts) — este arquivo espelha os casos
+ * de borda mais relevantes daquela suíte pra essa reimplementação, achado
+ * do fleet review da PR #4635: `[texto]()` com URL vazia divergia do
+ * comportamento já testado da função original antes do fix.
+ */
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+
+import { findParagraphLinks, renderParagraphInline } from "../scripts/lib/shared/hub-page.ts";
+
+describe("findParagraphLinks (#4558 Parte A)", () => {
+  it("acha um link simples", () => {
+    const links = findParagraphLinks("veja [o texto](https://diar.ia.br/p/x) aqui");
+    assert.equal(links.length, 1);
+    assert.equal(links[0].label, "o texto");
+    assert.equal(links[0].url, "https://diar.ia.br/p/x");
+  });
+
+  it("URL com parênteses balanceados não é truncada", () => {
+    // Mesmo caso que motivou o paren-balance parsing em findMarkdownLinks
+    // (#1634) — ex: URL de Wikipedia com desambiguação "(language_model)".
+    const links = findParagraphLinks("[GPT-4](https://en.wikipedia.org/wiki/GPT-4_(language_model))");
+    assert.equal(links.length, 1);
+    assert.equal(links[0].url, "https://en.wikipedia.org/wiki/GPT-4_(language_model)");
+  });
+
+  it("múltiplos links no mesmo parágrafo, em ordem", () => {
+    const links = findParagraphLinks("[A](https://a) e depois [B](https://b)");
+    assert.equal(links.length, 2);
+    assert.equal(links[0].label, "A");
+    assert.equal(links[1].label, "B");
+  });
+
+  it("link sem `)` de fechamento é ignorado (não é link válido)", () => {
+    const links = findParagraphLinks("isto é [quase um link](https://x sem fechar");
+    assert.deepEqual(links, []);
+  });
+
+  it("`[texto]()` com URL vazia NÃO é tratado como link — regression do fleet review", () => {
+    // mdInlineToHtml (newsletter-render-html.ts) já tinha esse guard
+    // ("URL vazia — preserva texto bruto"); a 1ª versão desta
+    // reimplementação não replicou e produzia <a href="">.
+    const links = findParagraphLinks("[clique aqui]() pra nada");
+    assert.deepEqual(links, []);
+  });
+
+  it("parágrafo sem nenhum link retorna array vazio", () => {
+    assert.deepEqual(findParagraphLinks("texto sem link nenhum"), []);
+  });
+});
+
+describe("renderParagraphInline (#4558 Parte A)", () => {
+  it("sem link, retorna o texto escapado (esc puro)", () => {
+    assert.equal(renderParagraphInline(`<script>&"'`), "&lt;script&gt;&amp;&quot;&#39;");
+  });
+
+  it("escapa label e url — nunca interpola HTML cru", () => {
+    const html = renderParagraphInline('[<b>negrito</b>](https://x?a=1&b="2")');
+    assert.doesNotMatch(html, /<b>negrito<\/b>/);
+    assert.match(html, /&lt;b&gt;negrito&lt;\/b&gt;/);
+    assert.match(html, /href="https:\/\/x\?a=1&amp;b=&quot;2&quot;"/);
+  });
+
+  it("`[texto]()` com URL vazia renderiza texto plano, nunca <a href=\"\">", () => {
+    const html = renderParagraphInline("[clique aqui]() pra nada");
+    assert.doesNotMatch(html, /<a href="">/);
+    assert.match(html, /\[clique aqui\]\(\) pra nada/);
+  });
+
+  it("mistura texto + link + texto, preservando a ordem", () => {
+    const html = renderParagraphInline("antes [meio](https://x) depois");
+    assert.equal(html, 'antes <a href="https://x">meio</a> depois');
+  });
+
+  it("múltiplos links no mesmo parágrafo renderizam todos", () => {
+    const html = renderParagraphInline("[A](https://a) e [B](https://b)");
+    assert.match(html, /<a href="https:\/\/a">A<\/a>/);
+    assert.match(html, /<a href="https:\/\/b">B<\/a>/);
+  });
+});
