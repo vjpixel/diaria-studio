@@ -24,6 +24,10 @@ Ver o cabeçalho de `scripts/evaluate-brevo-diaria.ts` para o histórico complet
 
 Não é preferência — é restrição real. A Brevo **congela os destinatários no agendamento da campanha**, não no envio (ver memória de sessão "Brevo: snapshot de destinatários"). Se o evaluate rodar depois da campanha do dia já ter sido criada/agendada, o unlink de quem foi promovido/suprimido não tem efeito nesse envio específico — a pessoa recebe mesmo assim, só sai a partir do dia seguinte.
 
+## Fuso horário
+
+A task usa o fuso local da máquina. Confirmar `Get-TimeZone` = America/Sao_Paulo (BRT) antes de confiar no agendamento; se a máquina não estiver em BRT, ajustar o horário em `setup-evaluate-brevo-diaria-schedule.ps1`. Isso é ainda mais crítico aqui do que em `docs/scheduled-edicao-setup.md`/`docs/dashboard-schedule.md` — o evaluate precisa disparar estritamente ANTES das 06:00 BRT do envio canônico (ver seção anterior).
+
 ## Setup (ação local one-time do editor — NÃO feito nesta sessão)
 
 Requer Windows + Task Scheduler + o junction `data/` (OneDrive) + `BREVO_DIARIA_API_KEY` + `BEEHIIV_API_KEY` (+ opcional `BEEHIIV_PUBLICATION_ID`, fallback `platform.config.json`).

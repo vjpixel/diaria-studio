@@ -27,7 +27,8 @@ param(
     # depender de credenciais reais nem do junction data/.
     [string]$EvaluateScript,
     [string]$LogPath,
-    [string]$TempLogPath
+    [string]$TempLogPath,
+    [string]$ContactsJsonPath
 )
 
 Set-StrictMode -Version Latest
@@ -36,9 +37,10 @@ $ErrorActionPreference = "Continue"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 
-if (-not $EvaluateScript) { $EvaluateScript = Join-Path $RepoRoot "scripts\evaluate-brevo-diaria.ts" }
-if (-not $LogPath)        { $LogPath        = Join-Path $RepoRoot "data\brevo-diaria\.evaluate.log" }
-if (-not $TempLogPath)    { $TempLogPath    = Join-Path $env:TEMP "diaria-evaluate-brevo-diaria-$PID.log" }
+if (-not $EvaluateScript)    { $EvaluateScript    = Join-Path $RepoRoot "scripts\evaluate-brevo-diaria.ts" }
+if (-not $LogPath)           { $LogPath           = Join-Path $RepoRoot "data\brevo-diaria\.evaluate.log" }
+if (-not $TempLogPath)       { $TempLogPath       = Join-Path $env:TEMP "diaria-evaluate-brevo-diaria-$PID.log" }
+if (-not $ContactsJsonPath)  { $ContactsJsonPath  = Join-Path $RepoRoot "data\brevo-diaria\contacts.json" }
 
 Set-Location $RepoRoot
 
@@ -50,22 +52,39 @@ function Write-TempLogLine {
 Write-TempLogLine ""
 Write-TempLogLine "===== $(Get-Date -Format o) - evaluate brevo diaria ====="
 
-# Pre-inicializa $LASTEXITCODE=$null ANTES da chamada nativa (#4343): mesmo
-# guard documentado em run-cursos-kv-sync.ps1/run-clarice-sync-daily.ps1/
-# run-apoios-diff-alarm.ps1 -- sob Set-StrictMode, `npx` falhando a resolver
-# deixa $LASTEXITCODE genuinamente indefinido (nao $null), e ler essa
-# variavel lanca. Pre-setar aqui garante deteccao correta do caso "npx nao
-# rodou".
-$LASTEXITCODE = $null
-& npx tsx "$EvaluateScript" --push 2>&1 | ForEach-Object { $_.ToString() } | Out-File -FilePath $TempLogPath -Append -Encoding utf8
-$evaluateCode = $LASTEXITCODE
-
-if ($null -eq $evaluateCode) {
-    Write-TempLogLine "ERRO: npx nao executou (comando nao encontrado ou falha antes do processo iniciar)."
+# Guard de junction nao montada (review PR #4552, achado HIGH silent-failure-
+# hunter): readStore() em scripts/lib/brevo-diaria-store.ts trata "arquivo
+# ausente" como "1a execucao legitima" (emptyStore(), sem distinguir isso de
+# "o junction data/ do OneDrive ainda nao montou" -- ex: task disparando as
+# 05:30 logo apos a maquina acordar/reiniciar). Sem esse guard, main() loga
+# "0 contato(s) in_brevo a avaliar" (texto identico ao caso legitimo de fila
+# vazia) e, como --push esta ativo, grava esse {"contacts":[]} de volta,
+# sobrescrevendo os contatos reais do store. Guard fica aqui no WRAPPER (nao
+# em evaluate-brevo-diaria.ts/brevo-diaria-store.ts, compartilhados fora
+# deste fluxo) -- mesmo espirito de deteccao local/cloud de
+# scripts/lib/exec-mode.ts, resolvido aqui no nivel do .ps1.
+if (-not (Test-Path -LiteralPath $ContactsJsonPath -PathType Leaf)) {
+    Write-TempLogLine "AVISO: contacts.json nao encontrado ($ContactsJsonPath) -- provavel junction data/ nao montada ainda; abortando por seguranca, NAO rodando --push."
+    Write-TempLogLine "===== fim (evaluate=skip-guard) ====="
     $evaluateCode = 1
-}
+} else {
+    # Pre-inicializa $LASTEXITCODE=$null ANTES da chamada nativa (#4343): mesmo
+    # guard documentado em run-cursos-kv-sync.ps1/run-clarice-sync-daily.ps1/
+    # run-apoios-diff-alarm.ps1 -- sob Set-StrictMode, `npx` falhando a resolver
+    # deixa $LASTEXITCODE genuinamente indefinido (nao $null), e ler essa
+    # variavel lanca. Pre-setar aqui garante deteccao correta do caso "npx nao
+    # rodou".
+    $LASTEXITCODE = $null
+    & npx tsx "$EvaluateScript" --push 2>&1 | ForEach-Object { $_.ToString() } | Out-File -FilePath $TempLogPath -Append -Encoding utf8
+    $evaluateCode = $LASTEXITCODE
 
-Write-TempLogLine "===== fim (evaluate=$evaluateCode) ====="
+    if ($null -eq $evaluateCode) {
+        Write-TempLogLine "ERRO: npx nao executou (comando nao encontrado ou falha antes do processo iniciar)."
+        $evaluateCode = 1
+    }
+
+    Write-TempLogLine "===== fim (evaluate=$evaluateCode) ====="
+}
 
 # Anexa o log temporario (fora de data/, sem risco de lock OneDrive) ao log
 # final dentro de data/, com retry curto -- o lock do OneDrive costuma liberar
