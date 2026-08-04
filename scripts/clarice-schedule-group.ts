@@ -69,8 +69,16 @@
  *                      `clarice-import-waves.ts --group NOME --execute` em
  *                      `{ciclo}/segments/{NOME}-lists.json` (#3228). Se o
  *                      grupo foi rodado mais de uma vez (várias listas no
- *                      mesmo ciclo), usa a ÚLTIMA por padrão — `--list-index N`
- *                      (0-based) escolhe outra.
+ *                      mesmo ciclo), a resolução é por `--key` (#4576 —
+ *                      cada entrada do registro carrega o `wave.key` que a
+ *                      gerou): sem match e sem `--list-index` explícito,
+ *                      ABORTA em vez de cair silenciosamente na última (era
+ *                      o bug do #4576 — um teste A/B/C com 3 listas/3 keys
+ *                      resolvia sempre a célula C, mesmo pra `--key`
+ *                      A ou B). Registros gravados ANTES do #4576 (sem `key`
+ *                      em nenhuma entrada) continuam resolvendo pelo
+ *                      comportamento antigo — default = última. `--list-index N`
+ *                      (0-based) sempre escolhe explicitamente, ignorando `--key`.
  *   --list-id N        lista Brevo arbitrária direta (não precisa ter
  *                      passado pelo fluxo --group — cobre lista criada por
  *                      outro caminho, ex: manual/legado).
@@ -119,7 +127,7 @@ import { clariceSegmentsDir, ensureDir, parseCycleArg } from "./lib/clarice-path
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/monthly-paths.ts";
 import { checkEiaGuard, applyVerifyResults } from "./clarice-schedule-sends.ts";
 import { groupListsRegistryPath, type GroupListEntry } from "./clarice-import-waves.ts";
-import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 
 loadProjectEnv();
 
@@ -158,13 +166,28 @@ type ScheduleSendsShape = {
 /**
  * Resolve `{listId, listName}` do registro escrito por
  * `clarice-import-waves.ts --group NOME --execute` (#3228,
- * `{ciclo}/segments/{group}-lists.json`). `index` (0-based) escolhe qual
- * entrada usar quando o grupo tem múltiplas listas no ciclo; default = a
- * ÚLTIMA (mais recente).
+ * `{ciclo}/segments/{group}-lists.json`).
+ *
+ * `index` (0-based), quando informado (`--list-index`), sempre vence —
+ * escolhe a entrada explicitamente, ignorando `key`.
+ *
+ * Sem `index`:
+ *   - registro com 1 única lista → resolve ela direto, sem checar `key`
+ *     (não há ambiguidade a resolver).
+ *   - registro com >1 lista → casa por `key` (#4576 — cada entrada nova
+ *     carrega o `wave.key` que a gerou, ver `GroupListEntry`). SEM match →
+ *     ABORTA em vez de cair silenciosamente na última: era exatamente o bug
+ *     do #4576 — um teste A/B/C com 3 listas/3 keys resolvia sempre a
+ *     última (célula C), mesmo pra `--key` da célula A ou B, fazendo as 3
+ *     campanhas apontarem pro mesmo público. EXCEÇÃO retroativa: se
+ *     NENHUMA entrada do registro carrega `key` (registro gravado antes do
+ *     #4576), preserva o comportamento antigo — default = última — pra não
+ *     quebrar leitura de registros já gravados em produção.
  */
 export function resolveGroupListId(
   segmentsDir: string,
   group: string,
+  key: string,
   index?: number,
 ): { listId: number; listName: string } {
   const file = groupListsRegistryPath(segmentsDir, group);
@@ -185,14 +208,42 @@ export function resolveGroupListId(
   if (lists.length === 0) {
     throw new Error(`registro de listas do grupo '${group}' está vazio: ${file}`);
   }
-  const idx = index ?? lists.length - 1;
-  const entry = lists[idx];
-  if (!entry) {
+
+  // --list-index explícito sempre vence (override manual) — ignora `key`.
+  if (index !== undefined) {
+    const entry = lists[index];
+    if (!entry) {
+      throw new Error(
+        `--list-index ${index} fora do range (grupo '${group}' tem ${lists.length} lista(s), 0..${lists.length - 1}).`,
+      );
+    }
+    return { listId: entry.listId, listName: entry.listName };
+  }
+
+  // 1 única lista: sem ambiguidade, resolve ela — `key` não importa aqui.
+  if (lists.length === 1) {
+    return { listId: lists[0].listId, listName: lists[0].listName };
+  }
+
+  // #4576: >1 lista, sem --list-index — só é seguro resolver por `key`.
+  // Compat retroativa: se o registro é do formato ANTIGO (nenhuma entrada
+  // carrega `key`), preserva o comportamento pré-#4576 (default = última).
+  const hasKeyField = lists.some((e) => typeof e.key === "string" && e.key.length > 0);
+  if (!hasKeyField) {
+    const entry = lists[lists.length - 1];
+    return { listId: entry.listId, listName: entry.listName };
+  }
+
+  const matched = lists.find((e) => e.key === key);
+  if (!matched) {
     throw new Error(
-      `--list-index ${idx} fora do range (grupo '${group}' tem ${lists.length} lista(s), 0..${lists.length - 1}).`,
+      `--key '${key}' não corresponde a nenhuma lista registrada pro grupo '${group}' ` +
+        `(${lists.length} listas — keys conhecidas: ${lists.map((e) => e.key ?? "(sem key)").join(", ")}).\n` +
+        `   Passe --key correspondente a uma das listas acima, ou --list-index N ` +
+        `(0..${lists.length - 1}) pra escolher explicitamente.`,
     );
   }
-  return { listId: entry.listId, listName: entry.listName };
+  return { listId: matched.listId, listName: matched.listName };
 }
 
 /** Nome determinístico da campanha. Ex: "Clarice 2606 grupo:ramp-warm". */
@@ -253,6 +304,25 @@ export function checkListIdMismatch(
 export function parseSubjectArg(argv: string[]): string | undefined {
   const v = getArg(argv, "subject");
   return v || undefined;
+}
+
+/**
+ * #4576 — resolve `--list-index` via `getIntArg` em vez do `getArg(...) +
+ * Number(...)` anterior, que colapsava "--list-index" SEM valor (fim do
+ * argv, ou seguido de outra `--flag`) em `""` → `Number("") = 0` →
+ * `undefined` só quando string vazia era tratada à parte — na prática o
+ * bug caiu justo nessa flag: `--list-index` sem valor virava `undefined` e
+ * o default silencioso (última lista) tomava conta, exatamente o caso que
+ * `--list-index` existe pra evitar (mesma classe do #4542/#4568). Pura/
+ * testável: mesmo padrão de `resolveScheduleAtArg` abaixo — extrai a
+ * validação inline de `main()` pra permitir testar sem mockar `process.exit`.
+ */
+export function resolveListIndexArg(argv: string[]): { listIndex: number | undefined } | { error: string } {
+  try {
+    return { listIndex: getIntArg(argv, "list-index", { min: 0 }) };
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
 }
 
 /**
@@ -410,17 +480,24 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     process.exit(1);
   }
 
+  // #4576: `--key` precisa ser resolvida ANTES do listId no braço `--group`
+  // — é ela quem desambigua QUAL lista, quando o registro tem mais de uma
+  // (ver resolveGroupListId). No braço `--list-id`, key continua dependendo
+  // do listId resolvido (fallback `list-{listId}`, comportamento inalterado).
+  const keyArg = getArg(argv, "key") || undefined;
+
   const segmentsDir = clariceSegmentsDir(cycle);
   let listId: number;
   let listNameHint: string | undefined;
+  let key: string;
   if (groupArg) {
-    const listIndexRaw = getArg(argv, "list-index");
-    const listIndex = listIndexRaw !== "" ? Number(listIndexRaw) : undefined;
-    if (listIndex !== undefined && (!Number.isInteger(listIndex) || listIndex < 0)) {
-      console.error(`--list-index inválido: "${listIndexRaw}" (esperado inteiro >= 0).`);
+    const listIndexResolved = resolveListIndexArg(argv);
+    if ("error" in listIndexResolved) {
+      console.error(`❌ ${listIndexResolved.error}`);
       process.exit(1);
     }
-    const resolved = resolveGroupListId(segmentsDir, groupArg, listIndex);
+    key = keyArg || groupArg;
+    const resolved = resolveGroupListId(segmentsDir, groupArg, key, listIndexResolved.listIndex);
     listId = resolved.listId;
     listNameHint = resolved.listName;
   } else {
@@ -430,9 +507,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       process.exit(1);
     }
     listId = n;
+    key = keyArg || `list-${listId}`;
   }
-
-  const key = getArg(argv, "key") || groupArg || `list-${listId}`;
 
   const doCreate = hasFlag(argv, "create");
   const doUpdateHtml = hasFlag(argv, "update-html");
