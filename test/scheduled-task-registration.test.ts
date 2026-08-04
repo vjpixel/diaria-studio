@@ -241,3 +241,38 @@ describe("setup-clarice-sync-schedule.ps1: horário posterior ao envio das 06:00
     );
   });
 });
+
+/**
+ * #4534 — o horário do evaluate-brevo-diaria é o INVERSO da restrição acima:
+ * tem que rodar ANTES do envio canônico das 06:00 BRT, não depois. A Brevo
+ * congela destinatários no AGENDAMENTO da campanha, não no envio — se o
+ * evaluate (que desvincula quem foi promovido/suprimido/descadastrado da
+ * lista) rodar depois da campanha do dia já ter sido criada/agendada, o
+ * unlink não tem efeito nesse envio: a pessoa recebe mesmo assim.
+ *
+ * O risco que este teste cobre é o mesmo silêncio de `Register-ScheduledTask
+ * -Force` documentado acima: re-rodar o script de setup com um horário
+ * alterado substitui a task inteira sem log nem aviso.
+ */
+describe("setup-evaluate-brevo-diaria-schedule.ps1: horário anterior ao envio das 06:00 BRT (#4534)", () => {
+  const file = join(ROOT, "scripts", "setup-evaluate-brevo-diaria-schedule.ps1");
+  const trigger = logicalLines(readFileSync(file, "utf8")).find((l) =>
+    /New-ScheduledTaskTrigger/i.test(l),
+  );
+
+  it("declara exatamente um New-ScheduledTaskTrigger", () => {
+    assert.ok(trigger, "nenhum New-ScheduledTaskTrigger encontrado no script");
+  });
+
+  it("dispara às 05:30, antes do envio das 06:00 (senão o unlink não afeta o envio do dia)", () => {
+    const hora = Number((trigger!.match(/-Hour\s+(\d+)/i) ?? [])[1]);
+    const minuto = Number((trigger!.match(/-Minute\s+(\d+)/i) ?? [])[1]);
+    assert.equal(hora, 5, `hora do trigger: ${trigger!.trim()}`);
+    assert.equal(minuto, 30, `minuto do trigger: ${trigger!.trim()}`);
+    assert.ok(
+      hora * 60 + minuto < 6 * 60,
+      "o evaluate tem que rodar ANTES das 06:00 BRT — a Brevo congela destinatários no agendamento " +
+        "da campanha, não no envio, então rodar depois deixa o unlink sem efeito no envio do dia (#4534)",
+    );
+  });
+});
