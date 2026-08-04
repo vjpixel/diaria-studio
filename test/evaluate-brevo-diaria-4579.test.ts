@@ -21,6 +21,7 @@ import {
   findOrphanContacts,
   reconcileStoreWithBrevoList,
 } from "../scripts/evaluate-brevo-diaria.ts";
+import { EDITOR_SEED_EMAILS } from "../scripts/lib/editor-copy.ts";
 import type { BrevoDiariaContact, BrevoDiariaStore } from "../scripts/lib/brevo-diaria-store.ts";
 
 function jsonRes(status: number, body: unknown): Response {
@@ -92,16 +93,29 @@ describe("findOrphanContacts — diff puro entre lista Brevo e store (#4579)", (
     assert.deepEqual(orphans, ["orphan1@a.com", "orphan2@a.com"]);
   });
 
-  it("caso da issue #4579: reproduz 98 conhecidos + 5 sondas editoriais + 1 órfão (brunopierro2) → só o órfão retorna", () => {
+  it("caso da issue #4579: reproduz 98 conhecidos + 5 sondas editoriais (NUNCA ingeridas no store, como na realidade) + 1 órfão (brunopierro2) → só o órfão retorna", () => {
     const known = Array.from({ length: 98 }, (_, i) => contact(`known${i}@a.com`));
-    const editorSeeds = ["pixel@memelab.com.br", "vjpixel@gmail.com", "seed3@a.com", "seed4@a.com", "seed5@a.com"].map((e) =>
-      contact(e),
-    );
-    const store = storeOf([...known, ...editorSeeds]);
-    const brevoListEmails = [...known.map((c) => c.email), ...editorSeeds.map((c) => c.email), "brunopierro2@gmail.com"];
-    assert.equal(brevoListEmails.length, 104, "98 + 5 + 1 = 104, mesma conta reportada na issue");
+    // As sondas do editor (EDITOR_SEED_EMAILS) ficam vinculadas à lista Brevo
+    // mas NUNCA passam por sync-pending-to-brevo.ts — não entram no store.
+    // O caso real (achado do self-review, #4579): sem excluí-las, o guard as
+    // reportaria como órfãs TODO dia, apesar de estarem lá de propósito.
+    const store = storeOf(known);
+    const brevoListEmails = [...known.map((c) => c.email), ...EDITOR_SEED_EMAILS, "brunopierro2@gmail.com"];
+    assert.equal(brevoListEmails.length, 98 + EDITOR_SEED_EMAILS.length + 1, "98 conhecidos + N sondas + 1 órfão");
     const orphans = findOrphanContacts(brevoListEmails, store);
-    assert.deepEqual(orphans, ["brunopierro2@gmail.com"]);
+    assert.deepEqual(orphans, ["brunopierro2@gmail.com"], "só o órfão de verdade retorna — as sondas do editor nunca aparecem como órfãs");
+  });
+
+  it("#4579 self-review: sondas do editor (EDITOR_SEED_EMAILS) NUNCA são reportadas como órfãs, mesmo ausentes do store", () => {
+    const store = storeOf([contact("known@a.com")]);
+    const orphans = findOrphanContacts(["known@a.com", ...EDITOR_SEED_EMAILS], store);
+    assert.deepEqual(orphans, [], "sondas do editor são exclusão conhecida, não órfãos — evita ruído diário no alerta");
+  });
+
+  it("expectedNonStoreEmails é sobrescrevível — chamador pode passar uma lista de exclusão diferente (ex: teste isolado)", () => {
+    const store = storeOf([]);
+    const orphans = findOrphanContacts(["custom-known@a.com", "real-orphan@a.com"], store, ["custom-known@a.com"]);
+    assert.deepEqual(orphans, ["real-orphan@a.com"]);
   });
 });
 

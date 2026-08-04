@@ -255,6 +255,7 @@ import {
   type BrevoDiariaStore,
 } from "./lib/brevo-diaria-store.ts";
 import { BREVO_DIARIA_PROMOCAO_SCORE_UTM } from "./lib/shared/utm-registry.ts"; // #4530
+import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -714,9 +715,20 @@ export async function fetchBrevoListEmails(apiKey: string, listId: number): Prom
  * Dedup do input pelo e-mail normalizado — a mesma pessoa não conta 2x mesmo
  * que a API devolva a mesma linha em páginas adjacentes (raro, mas o dedup é
  * gratuito e evita relatar o mesmo órfão >1x).
+ *
+ * `EDITOR_SEED_EMAILS` (sonda de inbox placement por provedor,
+ * `platform.config.json > brevo_diaria.note`) fica deliberadamente vinculada
+ * à lista 7 sem nunca ser ingerida por `sync-pending-to-brevo.ts` — sem essa
+ * exclusão, o guard flagaria os mesmos 5 e-mails como órfãos TODO dia,
+ * diluindo o sinal de alerta pra quando um órfão de verdade aparecer (achado
+ * do self-review, #4579).
  */
-export function findOrphanContacts(brevoListEmails: string[], store: BrevoDiariaStore): string[] {
-  const known = new Set(store.contacts.map((c) => c.email));
+export function findOrphanContacts(
+  brevoListEmails: string[],
+  store: BrevoDiariaStore,
+  expectedNonStoreEmails: readonly string[] = EDITOR_SEED_EMAILS,
+): string[] {
+  const known = new Set([...store.contacts.map((c) => c.email), ...expectedNonStoreEmails.map((e) => normalizeEmail(e))]);
   const seen = new Set<string>();
   const orphans: string[] = [];
   for (const raw of brevoListEmails) {
