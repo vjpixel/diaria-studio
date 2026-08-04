@@ -16,6 +16,7 @@ import {
   validateCourses,
   loadCourses,
   renderCursosPage,
+  buildCursosFaq,
   esc,
   isSafeUrl,
   slugify,
@@ -150,6 +151,33 @@ describe("temas/plataformas (#1745)", () => {
   });
   it("distinctPlatforms ordenado", () => {
     assert.deepEqual(distinctPlatforms(sample), ["Coursera", "IBM SkillsBuild", "USP / Coursera"]);
+  });
+});
+
+describe("buildCursosFaq (#4558 Parte B)", () => {
+  const sample = [
+    course({ id: "a", cost: "free", certificate: true, language: "pt-br", level: "iniciante" }),
+    course({ id: "b", cost: "free", certificate: false, language: "en", level: "avancado", platform: "IBM SkillsBuild" }),
+    course({ id: "c", cost: "subscription", certificate: true, language: "en", level: "intermediario", platform: "Google Skills" }),
+  ];
+
+  it("retorna entre 6 e 10 perguntas e usa contagens REAIS do dataset", () => {
+    const faq = buildCursosFaq(sample);
+    assert.ok(faq.length >= 6 && faq.length <= 10, `esperado 6-10, achou ${faq.length}`);
+    const joined = faq.map((f) => `${f.question} ${f.answer}`).join(" ");
+    assert.match(joined, /\b3\b/); // total de cursos da amostra
+  });
+
+  it("é pure — mesma entrada produz sempre a mesma saída", () => {
+    assert.deepEqual(buildCursosFaq(sample), buildCursosFaq(sample));
+  });
+
+  it("NUNCA nomeia uma plataforma específica (poderia ser exclusiva de curso gated no teaser, #4052)", () => {
+    const faq = buildCursosFaq(sample);
+    const joined = faq.map((f) => f.answer).join(" ");
+    for (const platform of distinctPlatforms(sample)) {
+      assert.ok(!joined.includes(platform), `FAQ vazou o nome da plataforma "${platform}"`);
+    }
   });
 });
 
@@ -330,6 +358,36 @@ describe("filtros colapsam em mobile (#3107)", () => {
     assert.match(mobileBlockMatch![1], /\.filters-body \.count\s*\{[^}]*display:\s*none/);
   });
 
+});
+
+describe("estrutura GEO (#4558 Parte B)", () => {
+  const courses = [
+    course({ id: "a", cost: "free", certificate: true }),
+    course({ id: "b", cost: "subscription", certificate: false, platform: "Anthropic Academy" }),
+  ];
+  const html = renderCursosPage(courses, "full");
+
+  it("H2 em formato de pergunta + FAQ (6-10 perguntas) + byline aparecem no HTML", () => {
+    assert.match(html, /<h2 class="geo-h2">Quais são os melhores cursos gratuitos de inteligência artificial\?<\/h2>/);
+    assert.match(html, /<section class="geo-faq"/);
+    const faqQuestions = [...html.matchAll(/<div class="geo-faq-item">\s*<h2>/g)];
+    assert.ok(faqQuestions.length >= 6 && faqQuestions.length <= 10);
+    assert.match(html, /Por <a href="https:\/\/www\.linkedin\.com\/in\/vjpixel\/" rel="author">Pixel<\/a>/);
+  });
+
+  it("JSON-LD FAQPage + Article presente e válido no <head>", () => {
+    const m = /<script type="application\/ld\+json">([\s\S]*?)<\/script>/.exec(html);
+    assert.ok(m, "deve ter <script type=application/ld+json>");
+    const jsonLd = JSON.parse(m![1]);
+    const types = jsonLd["@graph"].map((n: { "@type": string }) => n["@type"]);
+    assert.deepEqual(types.sort(), ["Article", "FAQPage"]);
+  });
+
+  it("teaser mode também traz a estrutura GEO — não é gated pelo mesmo mecanismo do catálogo", () => {
+    const teaserHtml = renderCursosPage(courses, "teaser");
+    assert.match(teaserHtml, /<section class="geo-faq"/);
+    assert.match(teaserHtml, /<script type="application\/ld\+json">/);
+  });
 });
 
 describe("SEO/compartilhamento — meta tags (#3106)", () => {

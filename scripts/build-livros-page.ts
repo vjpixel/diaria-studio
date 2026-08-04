@@ -34,6 +34,13 @@ import {
   renderCuradoriaFooter,
   renderCuradoriaCtaSubscribeStyles, // #4051: CSS do CTA de assinatura inline (hero + fim-de-lista)
 } from "./lib/shared/curadoria-page.ts"; // #3113: CSS/footer comuns com build-cursos-page.ts
+import {
+  renderGeoByline,
+  renderGeoFaqSection,
+  renderGeoFaqStyles,
+  renderGeoJsonLd,
+  type GeoFaqItem,
+} from "./lib/shared/geo-faq.ts"; // #4558 Parte B: estrutura GEO (FAQ + JSON-LD FAQPage/Article + autoria)
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #4051: /jogar/subscribe mora no worker `poll` (eia.diar.ia.br)
 import { LIVROS_FOOTER_NAV_UTM } from "./lib/shared/utm-registry.ts"; // #4537 item 2 — era literal solto, último dos 3 (Cursos/Arquivo já migrados) fora do registry
 import {
@@ -60,6 +67,13 @@ export const PAGE_URL = "https://livros.diar.ia.br/";
 const PAGE_TITLE = "Livros sobre IA · diar.ia.br";
 const PAGE_DESCRIPTION =
   "Livros sobre inteligência artificial recomendados pela diar.ia.br — filtre por idioma, nível e tema, com links diretos para a Amazon.";
+
+/** #4558 Parte B: data ESTÁTICA (não `new Date()`) do Article JSON-LD — um
+ * valor dinâmico quebraria `test/livros-asset-drift.test.ts` (compara o
+ * HTML committed contra um render fresco; "hoje" nunca bate com o commit de
+ * ontem). Bump manual quando o conteúdo GEO (intro/FAQ) for reescrito de
+ * forma substancial — não a cada atualização rotineira do seed de livros. */
+const GEO_CONTENT_DATE = "2026-08-04";
 
 // #1936/#1935: DS canônico (lib/shared/design-tokens.ts) — era ad-hoc (Newsreader +
 // #F5F1E8/#FFFDF8/#1A1A1A). Agora os mesmos tokens da diária/mensal/É IA?/cursos.
@@ -280,6 +294,79 @@ function renderSubscribeCtaScript(): string {
   </script>`;
 }
 
+/** Conta quantos livros têm o `highlight` de destaque (prêmio do autor/livro,
+ * bestseller etc.) — usado no FAQ pra dar um número específico do critério
+ * subjetivo, em vez de só descrevê-lo em prosa (#4558 item 6: dados próprios). */
+function countWithHighlight(books: Book[]): number {
+  return books.filter((b) => Boolean(b.highlight?.trim())).length;
+}
+
+/**
+ * Monta as perguntas/respostas do FAQ a partir do dataset REAL de livros —
+ * nunca números inventados (#4558 item 6). Pure, testável sem IO.
+ */
+export function buildLivrosFaq(books: Book[]): GeoFaqItem[] {
+  const total = books.length;
+  const ptBr = books.filter((b) => b.language === "pt-br").length;
+  const en = total - ptBr;
+  const iniciante = books.filter((b) => b.level === "iniciante").length;
+  const avancado = books.filter((b) => b.level === "avancado").length;
+  const intermediario = total - iniciante - avancado;
+  const comDestaque = countWithHighlight(books);
+  const temas = distinctThemes(books);
+
+  return [
+    {
+      question: "Quais os melhores livros sobre inteligência artificial em português?",
+      answer: `Desta lista de ${total} livros, ${ptBr} têm edição em português — a diar.ia.br sempre mostra a edição em português quando ela existe, mesmo que o livro seja originalmente em inglês. Eles cobrem de introduções para leigos a livros técnicos de estratégia e negócios.`,
+    },
+    {
+      question: "Como esta lista de livros sobre IA foi escolhida?",
+      answer: `Os ${total} livros foram reunidos a partir de mais de 10 listas de recomendação e ranqueados por um critério subjetivo (prêmio do livro ou do autor, indicação de bestseller) e um objetivo (nota do livro na Amazon). ${comDestaque} deles carregam um selo de destaque — prêmio, indicação editorial ou reconhecimento do autor.`,
+    },
+    {
+      question: "Tem livro sobre IA pra quem está começando do zero?",
+      answer: `Sim — ${iniciante} dos ${total} livros da lista são classificados como nível iniciante, sem pré-requisito técnico. Use o filtro de Nível na página pra ver só esses.`,
+    },
+    {
+      question: "Existe livro técnico ou avançado sobre inteligência artificial na lista?",
+      answer: `Sim, ${avancado} livros são de nível avançado (fundamentos matemáticos, deep learning, engenharia de sistemas de ML) e ${intermediario} de nível intermediário — geralmente estratégia, negócios ou filosofia da IA sem pré-requisito de programação.`,
+    },
+    {
+      question: "Tem livro sobre IA em inglês recomendado, sem tradução?",
+      answer: `Sim, ${en} dos ${total} livros da lista não têm edição em português e aparecem no idioma original (inglês) — normalmente títulos técnicos ou lançamentos recentes ainda sem tradução no Brasil.`,
+    },
+    {
+      question: "Quais temas de inteligência artificial os livros da lista cobrem?",
+      answer: `A lista cobre ${temas.length} temas — de ${temas.slice(0, 3).join(", ")} a temas mais técnicos como engenharia e fundamentos matemáticos. Use o filtro de Tema na página pra restringir a um assunto específico.`,
+    },
+    {
+      question: "Os links dos livros são de afiliado?",
+      answer:
+        "Sim. Os links levam para a Amazon com um código de afiliado da diar.ia.br — comprando por eles, o leitor apoia a newsletter sem pagar nada a mais pelo livro.",
+    },
+    {
+      question: "Como faço pra saber quando um livro novo sobre IA entrar na lista?",
+      answer:
+        "A lista de livros é curada manualmente pelo editor da diar.ia.br e atualizada sem periodicidade fixa. A forma de acompanhar é assinando a newsletter diária — atualizações relevantes de curadoria costumam ser mencionadas lá.",
+    },
+  ];
+}
+
+/** Parágrafo introdutório (issue #4558 item 1: responde a pergunta principal
+ * por inteiro nos primeiros ~200 palavras, sem enrolação) + H2 em formato de
+ * pergunta literal (item 2). Fica ENTRE o header e os filtros — antes de
+ * qualquer JS/interação. */
+function renderGeoIntro(books: Book[]): string {
+  const total = books.length;
+  const ptBr = books.filter((b) => b.language === "pt-br").length;
+  return `    <div class="geo-intro-wrap">
+      <h2 class="geo-h2">Quais os melhores livros sobre inteligência artificial em português?</h2>
+      <p class="geo-intro">Esta página reúne ${total} livros sobre inteligência artificial — ${ptBr} deles com edição em português — selecionados a partir de mais de 10 listas de recomendação e ranqueados por um critério subjetivo (prêmio do livro ou do autor) e um objetivo (nota na Amazon). A lista cobre desde introduções pra quem nunca leu nada sobre IA até títulos técnicos de deep learning e engenharia de machine learning, passando por estratégia, negócios, filosofia e história da tecnologia. Filtre por idioma, nível de leitura e tema logo abaixo pra achar o livro certo pro seu momento — ou role até o fim pras perguntas frequentes, com os números completos da curadoria.</p>
+${renderGeoByline(undefined, "atualizado em agosto de 2026")}
+    </div>`;
+}
+
 /**
  * Renderiza a página completa no design editorial diar.ia.br. Pure — recebe os
  * livros, devolve HTML 100% self-contained (Georgia é system font — sem fonte externa).
@@ -307,6 +394,14 @@ export function renderLivrosPage(books: Book[]): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${PAGE_TITLE}</title>
 ${renderSeoMeta({ title: PAGE_TITLE, description: PAGE_DESCRIPTION, url: PAGE_URL })}
+${renderGeoJsonLd({
+  pageUrl: PAGE_URL,
+  headline: PAGE_TITLE,
+  description: PAGE_DESCRIPTION,
+  datePublished: GEO_CONTENT_DATE,
+  dateModified: GEO_CONTENT_DATE,
+  faq: buildLivrosFaq(books),
+})}
 <style>
 ${renderCuradoriaRootStyles()}
 
@@ -320,6 +415,8 @@ ${renderCuradoriaGridCardStyles()}
 
 ${renderCuradoriaCtaSubscribeStyles()}
 
+${renderGeoFaqStyles()}
+
 ${renderCuradoriaFooterStyles()}
 </style>
 </head>
@@ -330,7 +427,7 @@ ${renderCuradoriaFooterStyles()}
       <hr class="rule">
       <h1>Livros sobre IA<span class="dot" aria-hidden="true">.</span></h1>
       <p class="tagline">5 minutos diários pra se manter atualizado e usar melhor as IAs</p>
-      <p class="lede">Uma seleção dos melhores livros sobre inteligência artificial, reunida a partir de mais de 10 listas e ranqueada por um critério subjetivo (prêmios do livro ou do autor) e um objetivo (nota na Amazon). Quando há edição em português, é ela que aparece.</p>
+${renderGeoIntro(books)}
       <p class="lede">Os links são de afiliado — comprando por eles, você apoia a diar.ia.br sem pagar nada a mais.</p>
 ${renderSubscribeCta(CTA_HERO, "hero")}
     </div>
@@ -356,6 +453,7 @@ ${cards}
         <p class="empty" id="empty" style="display:none">Nenhum livro com esses filtros.</p>
       </div>
 ${renderSubscribeCta(CTA_FOOTER, "end")}
+${renderGeoFaqSection(buildLivrosFaq(books), "faq-livros")}
     </div>
   </main>
   ${renderCuradoriaFooter(

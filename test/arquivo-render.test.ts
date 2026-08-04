@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 
 import {
   buildArchiveHtml,
+  buildArquivoFaq,
   displayTextFromLoc,
   esc,
 } from "../workers/arquivo/src/render-archive.ts";
@@ -290,6 +291,90 @@ describe("buildArchiveHtml (#4105)", () => {
   });
 });
 
+describe("estrutura GEO (#4558 Parte B)", () => {
+  it("H2 em formato de pergunta + FAQ (6-10 perguntas) + byline aparecem no HTML", () => {
+    const html = buildArchiveHtml([entry("https://diar.ia.br/p/edicao-a", "2026-07-27")]);
+    assert.match(html, /<h2 class="geo-h2">Quais são todas as edições já publicadas da diar\.ia\.br\?<\/h2>/);
+    assert.match(html, /<section class="geo-faq"/);
+    const faqQuestions = [...html.matchAll(/<div class="geo-faq-item">\s*<h2>/g)];
+    assert.ok(faqQuestions.length >= 6 && faqQuestions.length <= 10, `FAQ deve ter 6-10 perguntas, achou ${faqQuestions.length}`);
+    assert.match(html, /Por <a href="https:\/\/www\.linkedin\.com\/in\/vjpixel\/" rel="author">Pixel<\/a>/);
+  });
+
+  it("JSON-LD (FAQPage + Article) presente, válido, e no FIM do body (não antes das seções)", () => {
+    const html = buildArchiveHtml([
+      entry("https://diar.ia.br/p/edicao-julho", "2026-07-15"),
+      entry("https://diar.ia.br/p/edicao-maio", "2026-05-10"),
+    ]);
+    const m = /<script type="application\/ld\+json">([\s\S]*?)<\/script>/.exec(html);
+    assert.ok(m, "deve ter 1 <script type=application/ld+json>");
+    const jsonLd = JSON.parse(m![1]);
+    const types = jsonLd["@graph"].map((n: { "@type": string }) => n["@type"]);
+    assert.deepEqual(types.sort(), ["Article", "FAQPage"]);
+
+    // O JSON-LD deve vir DEPOIS de todas as <section> — regressão do bug
+    // achado em 260804: colocá-lo no <head> quebrava a ordem cronológica
+    // que outro teste afirma sobre a 1ª ocorrência de cada label de mês.
+    const idxJsonLd = html.indexOf('<script type="application/ld+json">');
+    const idxLastSection = html.lastIndexOf("</section>");
+    assert.ok(idxJsonLd > idxLastSection, "JSON-LD deve vir depois de todas as <section>");
+  });
+
+  it("meses citados no header (geo-intro) não quebram a ordem cronológica das seções (regressão 260804)", () => {
+    // #4558: geo-intro NÃO deve citar mês/ano específico (só o FAQ, que vem
+    // depois das seções, pode) — senão a 1ª ocorrência de "{mês} de {ano}"
+    // aparece no header (antes das seções) em vez de na seção certa.
+    const html = buildArchiveHtml([
+      entry("https://diar.ia.br/p/edicao-julho", "2026-07-15"),
+      entry("https://diar.ia.br/p/edicao-junho", "2026-06-01"),
+      entry("https://diar.ia.br/p/edicao-maio", "2026-05-10"),
+    ]);
+    const idxJulho = html.indexOf("julho de 2026");
+    const idxJunho = html.indexOf("junho de 2026");
+    const idxMaio = html.indexOf("maio de 2026");
+    assert.ok(idxJulho < idxJunho && idxJunho < idxMaio, "ordem cronológica das seções deve continuar intacta");
+  });
+
+  it("Article JSON-LD traz autor (Pixel) nomeado e verificável", () => {
+    const html = buildArchiveHtml([entry("https://diar.ia.br/p/edicao-a", "2026-07-27")]);
+    const jsonLd = JSON.parse(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/.exec(html)![1]);
+    const article = jsonLd["@graph"].find((n: { "@type": string }) => n["@type"] === "Article");
+    assert.equal(article.author.name, "Pixel");
+    assert.equal(article.author.url, "https://www.linkedin.com/in/vjpixel/");
+  });
+
+  it("Article dateModified reflete a edição mais recente (dinâmico, mas determinístico — não Date.now())", () => {
+    const html = buildArchiveHtml([
+      entry("https://diar.ia.br/p/edicao-recente", "2026-07-27"),
+      entry("https://diar.ia.br/p/edicao-antiga", "2026-01-05"),
+    ]);
+    const jsonLd = JSON.parse(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/.exec(html)![1]);
+    const article = jsonLd["@graph"].find((n: { "@type": string }) => n["@type"] === "Article");
+    assert.equal(article.dateModified, "2026-07-27");
+  });
+});
+
+describe("buildArquivoFaq (#4558 Parte B)", () => {
+  it("é pure e usa os números recebidos, nunca inventa dado", () => {
+    const faq = buildArquivoFaq(42, 3, "maio de 2026", "julho de 2026");
+    const joined = faq.map((f) => `${f.question} ${f.answer}`).join(" ");
+    assert.match(joined, /42/);
+    assert.match(joined, /maio de 2026/);
+    assert.match(joined, /julho de 2026/);
+  });
+
+  it("sem edições (count=0), não afirma um intervalo de datas inexistente", () => {
+    const faq = buildArquivoFaq(0, 0, null, null);
+    const joined = faq.map((f) => f.answer).join(" ");
+    assert.doesNotMatch(joined, /undefined|null/);
+  });
+
+  it("retorna entre 6 e 10 perguntas", () => {
+    const faq = buildArquivoFaq(10, 2, "junho de 2026", "julho de 2026");
+    assert.ok(faq.length >= 6 && faq.length <= 10);
+  });
+});
+
 describe("displayTextFromLoc (#4105)", () => {
   it("troca hífen por espaço e capitaliza a 1ª letra", () => {
     assert.equal(
@@ -381,6 +466,61 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     const body = await res.text();
     assert.match(body, /<urlset/);
     assert.match(body, /<loc>https:\/\/arquivo\.diar\.ia\.br\/<\/loc>/);
+  });
+
+  it("Referer de assistente de IA conhecido → loga ai_referrer_hit E a página continua respondendo normalmente (#4558 Parte C)", async () => {
+    const fakeSitemap = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://diar.ia.br/p/edicao-de-teste</loc><lastmod>2026-07-27</lastmod></url>
+</urlset>`;
+    globalThis.fetch = (async () => new Response(fakeSitemap, { status: 200 })) as unknown as typeof fetch;
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (line: string) => logs.push(line);
+    try {
+      const req = new Request("https://arquivo.diar.ia.br/", { headers: { Referer: "https://gemini.google.com/app" } });
+      const res = await worker.fetch(req);
+      assert.equal(res.status, 200);
+      const hit = logs
+        .map((l) => {
+          try {
+            return JSON.parse(l);
+          } catch {
+            return null;
+          }
+        })
+        .find((p) => p?.event === "ai_referrer_hit");
+      assert.ok(hit, "deve ter logado 1 ai_referrer_hit");
+      assert.equal(hit.worker, "arquivo");
+      assert.equal(hit.host, "gemini.google.com");
+      assert.equal(hit.path, "/");
+    } finally {
+      console.log = originalLog;
+    }
+  });
+
+  it("sem Referer de IA → não loga nada (#4558 Parte C)", async () => {
+    const fakeSitemap = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>`;
+    globalThis.fetch = (async () => new Response(fakeSitemap, { status: 200 })) as unknown as typeof fetch;
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (line: string) => logs.push(line);
+    try {
+      await worker.fetch(new Request("https://arquivo.diar.ia.br/"));
+      const hit = logs
+        .map((l) => {
+          try {
+            return JSON.parse(l);
+          } catch {
+            return null;
+          }
+        })
+        .find((p) => p?.event === "ai_referrer_hit");
+      assert.equal(hit, undefined);
+    } finally {
+      console.log = originalLog;
+    }
   });
 
   it("GET /robots.txt → 200 texto com Allow: /, Sitemap: própria e sem fetch externo (#4546)", async () => {

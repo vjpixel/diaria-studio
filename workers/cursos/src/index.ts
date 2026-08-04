@@ -44,6 +44,7 @@ import { checkGateRateLimit, checkGateSubscriber, shouldRecheckEmailVerification
 import { clearSessionCookieHeader, issueSessionCookie, readSession } from "./cookie.ts";
 import { handleGateSubscribe, isValidEmailFormat } from "./subscribe.ts";
 import { CURSOS_ALARM_COUNTER_KEYS, incrementKvCounter } from "../../../scripts/lib/shared/cursos-alarm-counters.ts";
+import { matchAiReferrerHost, logAiReferrerHit } from "../../../scripts/lib/shared/ai-referrer-log.ts"; // #4558 Parte C
 
 export interface Env {
   ASSETS: Fetcher;
@@ -322,6 +323,16 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const runtimeEnv: Env = { ...env, _requestOrigin: request.headers.get("Origin") };
+
+    // #4558 Parte C: log estruturado (Workers Logs) quando o Referer aponta
+    // pra um dos 4 assistentes de IA — complemento barato ao monitor de
+    // citação (scripts/geo-citation-monitor.ts). Nunca bloqueia a resposta.
+    try {
+      const aiHost = matchAiReferrerHost(request.headers.get("Referer"));
+      if (aiHost) logAiReferrerHit("cursos", aiHost, url.pathname);
+    } catch {
+      // logging nunca derruba a página.
+    }
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders(runtimeEnv) });

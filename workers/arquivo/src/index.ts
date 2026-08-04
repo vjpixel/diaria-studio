@@ -34,6 +34,7 @@
  */
 import { parseSitemap } from "../../../scripts/lib/fetch-sitemap.ts";
 import { renderCuradoriaRobotsTxt } from "../../../scripts/lib/shared/robots-txt.ts";
+import { matchAiReferrerHost, logAiReferrerHit } from "../../../scripts/lib/shared/ai-referrer-log.ts"; // #4558 Parte C
 import { buildArchiveHtml, PAGE_URL } from "./render-archive.ts";
 
 /**
@@ -135,6 +136,18 @@ async function fetchSitemapXml(): Promise<string> {
 export default {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    // #4558 Parte C: log estruturado (Workers Logs) quando o Referer aponta
+    // pra um dos 4 assistentes de IA — complemento barato ao monitor de
+    // citação (scripts/geo-citation-monitor.ts), já que boa parte do
+    // tráfego vindo de assistente chega SEM Referer e cai como "direct".
+    // Nunca bloqueia a resposta (try/catch isolado, fail-soft).
+    try {
+      const aiHost = matchAiReferrerHost(request.headers.get("Referer"));
+      if (aiHost) logAiReferrerHit("arquivo", aiHost, url.pathname);
+    } catch {
+      // logging nunca derruba a página — ver mesma disciplina do
+      // catch genérico em handleIndex de workers/cursos/src/index.ts.
+    }
     if (url.pathname === "/sitemap.xml") {
       return sitemapResponse();
     }

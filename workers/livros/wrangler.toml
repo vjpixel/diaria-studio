@@ -1,9 +1,8 @@
 # workers/livros — hosting da página piloto "Livros sobre IA" (#1744).
 #
-# Worker de static assets (sem script): serve workers/livros/public/index.html
-# em https://livros.diar.ia.br/ (domínio de marca, #3698) — também acessível
-# via https://livros.diaria.workers.dev/ (mantido por compat de links já
-# enviados em edições passadas). O HTML é gerado por
+# Worker de static assets em https://livros.diar.ia.br/ (domínio de marca,
+# #3698) — também acessível via https://livros.diaria.workers.dev/ (mantido
+# por compat de links já enviados em edições passadas). O HTML é gerado por
 # `scripts/build-livros-page.ts` a partir de `seed/books/livros-ia.json`
 # (fonte de verdade, versionada). REGENERAR antes do deploy quando o seed mudar:
 #
@@ -12,8 +11,16 @@
 #
 # O teste `test/livros-asset-drift.test.ts` garante que o HTML committed reflete
 # o seed (CI falha se alguém editar o seed sem regenerar).
+#
+# #4558 Parte C: ganhou um `main` (`src/index.ts`) MÍNIMO — só loga o Referer
+# quando é de um assistente de IA conhecido (`scripts/lib/shared/ai-referrer-log.ts`),
+# então delega pro MESMO `env.ASSETS` que sempre serviu o conteúdo. Nenhuma
+# lógica de gate/cookie/KV como em `workers/cursos` — o comportamento público
+# da página não muda.
 name = "livros"
+main = "src/index.ts"
 compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
 # #3698: domínio de marca (livros.diar.ia.br). workers_dev = true continua
@@ -25,3 +32,11 @@ custom_domain = true
 
 [assets]
 directory = "./public"
+binding = "ASSETS"
+# INVARIANTE (mesmo padrão de workers/cursos/wrangler.toml, #4052 follow-up):
+# Workers com Static Assets servem o ASSET ANTES de invocar o script — sem
+# isto, o `main` acima NUNCA roda e o log de Referer fica morto. Aqui não há
+# gate de conteúdo (diferente de cursos, que precisa listar paths
+# específicos) — `true` cobre TODO path, porque o único trabalho do script é
+# instrumentação, sem nenhuma decisão de roteamento condicional.
+run_worker_first = true

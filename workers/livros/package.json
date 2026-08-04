@@ -3,12 +3,13 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Worker de static assets — página Livros sobre IA (livros.diar.ia.br). Adicionado em #4084 para viabilizar deploy-livros.yml (npm ci exige lockfile).",
+  "description": "Worker de static assets + script mínimo — página Livros sobre IA (livros.diar.ia.br). Adicionado em #4084 para viabilizar deploy-livros.yml (npm ci exige lockfile); ganhou script (`main`) no #4558 Parte C só pra logar Referer de assistente de IA — conteúdo continua 100% servido por `env.ASSETS`.",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260722.1",
     "typescript": "^5.0.0",
     "wrangler": "^4.0.0"
   }
