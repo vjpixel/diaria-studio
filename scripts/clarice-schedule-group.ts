@@ -179,10 +179,17 @@ type ScheduleSendsShape = {
  *     ABORTA em vez de cair silenciosamente na última: era exatamente o bug
  *     do #4576 — um teste A/B/C com 3 listas/3 keys resolvia sempre a
  *     última (célula C), mesmo pra `--key` da célula A ou B, fazendo as 3
- *     campanhas apontarem pro mesmo público. EXCEÇÃO retroativa: se
- *     NENHUMA entrada do registro carrega `key` (registro gravado antes do
- *     #4576), preserva o comportamento antigo — default = última — pra não
- *     quebrar leitura de registros já gravados em produção.
+ *     campanhas apontarem pro mesmo público. Se MAIS DE UMA entrada casa
+ *     com a mesma `key` (grupos sem célula, ex: `ramp-warm`/`engajados` —
+ *     `clarice-build-segment.ts` grava `wave.key === group` em toda
+ *     re-execução do mesmo grupo, então re-rodar com budgets diferentes
+ *     produz várias entradas com a MESMA key), resolve a ÚLTIMA dentre as
+ *     que casaram — preserva o "default = mais recente" que já era correto
+ *     pra esse caso (cenário real 260710: 3 budgets do mesmo grupo,
+ *     #69/#70/#71). EXCEÇÃO retroativa: se NENHUMA entrada do registro
+ *     carrega `key` (registro gravado antes do #4576), preserva o
+ *     comportamento antigo — default = última — pra não quebrar leitura de
+ *     registros já gravados em produção.
  */
 export function resolveGroupListId(
   segmentsDir: string,
@@ -234,8 +241,19 @@ export function resolveGroupListId(
     return { listId: entry.listId, listName: entry.listName };
   }
 
-  const matched = lists.find((e) => e.key === key);
-  if (!matched) {
+  // #4576 (self-review): grupos SEM célula (ramp-warm, engajados, ...) usam
+  // `wave.key === group` pra TODA lista importada — clarice-build-segment.ts
+  // não varia o key entre re-runs do mesmo grupo com budgets diferentes (só
+  // o A/B/C varia, via sufixo -A/-B/-C). Isso significa que o caso "múltiplas
+  // listas do MESMO grupo não-célula" (cenário real 260710: 3 budgets,
+  // #69/#70/#71) tem as 3 entradas com a MESMA `key` — `find` pegaria a
+  // PRIMEIRA (mais antiga), regredindo o "default = última" que era correto
+  // aí. `filter` + pegar a ÚLTIMA ocorrência preserva os dois casos: A/B/C
+  // (cada key aparece 1x → filter devolve 1 match) e grupo não-célula
+  // re-rodado (todas as entradas compartilham a mesma key → filter devolve
+  // todas, e a última é a mais recente — igual ao comportamento pré-#4576).
+  const matches = lists.filter((e) => e.key === key);
+  if (matches.length === 0) {
     throw new Error(
       `--key '${key}' não corresponde a nenhuma lista registrada pro grupo '${group}' ` +
         `(${lists.length} listas — keys conhecidas: ${lists.map((e) => e.key ?? "(sem key)").join(", ")}).\n` +
@@ -243,6 +261,7 @@ export function resolveGroupListId(
         `(0..${lists.length - 1}) pra escolher explicitamente.`,
     );
   }
+  const matched = matches[matches.length - 1];
   return { listId: matched.listId, listName: matched.listName };
 }
 

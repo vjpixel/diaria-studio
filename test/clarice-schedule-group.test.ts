@@ -101,6 +101,31 @@ describe("resolveGroupListId (#3228 — resolve listId do registro de --group --
     }
   });
 
+  it("self-review #4576: grupo SEM célula re-rodado (mesma `key` em todas as entradas, ex: ramp-warm com 3 budgets) → casar por key ainda resolve a MAIS RECENTE, não a primeira", () => {
+    // clarice-build-segment.ts grava wave.key === group pra TODA entrada de
+    // um grupo sem célula (ramp-warm/engajados/...) — re-rodar o mesmo grupo
+    // com budgets diferentes produz várias entradas com a MESMA key. Um
+    // match por `find` pegaria a PRIMEIRA (regressão do "default = última"
+    // que já era correto pra esse caso, cenário real 260710 #69/#70/#71) —
+    // por isso resolveGroupListId usa `filter` + última ocorrência.
+    const dir = mkdtempSync(join(tmpdir(), "resolve-group-samekey-"));
+    try {
+      appendGroupListsRegistry(dir, "2606-07", "ramp-warm", [
+        { key: "ramp-warm", listId: 69, listName: "lista 1", count: 6403, importedAt: "2026-07-10T12:00:00.000Z" },
+      ]);
+      appendGroupListsRegistry(dir, "2606-07", "ramp-warm", [
+        { key: "ramp-warm", listId: 70, listName: "lista 2", count: 7043, importedAt: "2026-07-10T13:00:00.000Z" },
+      ]);
+      appendGroupListsRegistry(dir, "2606-07", "ramp-warm", [
+        { key: "ramp-warm", listId: 71, listName: "lista 3", count: 7748, importedAt: "2026-07-10T14:00:00.000Z" },
+      ]);
+
+      assert.deepEqual(resolveGroupListId(dir, "ramp-warm", "ramp-warm"), { listId: 71, listName: "lista 3" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("regressão #4576: --key sem match entre listas do formato NOVO (todas com `key`) → ABORTA, não cai na última", () => {
     const dir = mkdtempSync(join(tmpdir(), "resolve-group-abc-nomatch-"));
     try {
