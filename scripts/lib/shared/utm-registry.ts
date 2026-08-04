@@ -364,6 +364,21 @@ export const LIVROS_FOOTER_NAV_UTM = {
   medium: "footer-nav",
 } as const;
 
+/** Rodapé de navegação cruzada do hub temático Anthropic/Claude (#4558 Parte
+ * A, `scripts/lib/hubs/anthropic-claude.ts`) — mesmo padrão de
+ * `CURSOS_FOOTER_NAV_UTM`/`ARQUIVO_FOOTER_NAV_UTM`/`LIVROS_FOOTER_NAV_UTM`
+ * (só source+medium, sem campaign de verdade — link de nav, não funil de
+ * conversão). `source` é prefixado `hub-` (não `arquivo`) porque o hub é uma
+ * sub-rota de `arquivo.diar.ia.br` mas mede uma superfície distinta da
+ * listagem de edições — misturar o source com `ARQUIVO_FOOTER_NAV_UTM`
+ * esconderia qual das duas páginas gerou o clique. Um hub novo (mais temas
+ * virão, decisão do editor 260804: hubs de empresa e temáticos coexistem)
+ * ganha sua própria constante seguindo este mesmo padrão. */
+export const HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM = {
+  source: "hub-anthropic-claude",
+  medium: "footer-nav",
+} as const;
+
 /** Link "Arquivo completo em {url}" do post semanal do Instagram
  * (`scripts/lib/format-weekly-social.ts`, #4537 item 1) — o #4295 cobriu os
  * links que a pipeline DIÁRIA publica; o post semanal ficou fora do escopo
@@ -935,6 +950,21 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "Promoção AUTOMÁTICA pra Beehiiv por taxa de abertura (#4530/#4476, via " +
       "promoteBeehiivSubscription/runEvaluation) — sem clique do leitor. Distinto " +
       "de 'brevo-diaria-reativar-clique' (mesmo source/medium, campaign próprio).",
+    status: "ativo",
+  },
+  {
+    id: "hub-anthropic-claude-footer-nav",
+    label: "Hub Anthropic/Claude — link de rodapé pra diar.ia.br",
+    source: HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM.source,
+    medium: HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM.medium,
+    // sem utm_campaign de verdade (link de nav, só source+medium) — mesmo
+    // padrão-placeholder de arquivo-footer-nav/livros-footer-nav acima.
+    campaignPattern: "hub-anthropic-claude-footer-nav",
+    originFile: "scripts/lib/hubs/anthropic-claude.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada do hub temático Anthropic/Claude ' +
+      "(#4558 Parte A) — 1º hub publicado; mais temas virão como novas entradas " +
+      "seguindo o mesmo padrão.",
     status: "ativo",
   },
 ] as const;

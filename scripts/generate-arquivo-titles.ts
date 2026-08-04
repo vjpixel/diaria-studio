@@ -42,10 +42,15 @@ const POSTS_DIR = resolve(ROOT, "data/beehiiv-cache/posts");
 const DEFAULT_OUT = resolve(ROOT, "workers/arquivo/src/titles-cache.json");
 
 /** Shape mínimo lido de cada `data/beehiiv-cache/posts/{id}.json` — passthrough
- * (a API/cache carrega bem mais campos; só os usados aqui). */
+ * (a API/cache carrega bem mais campos; só os usados aqui). `subtitle` não é
+ * usado por este arquivo (só por `generate-hub-sources.ts`, #4558 Parte A —
+ * D2/D3 da edição, separados por " | "), mas vive na mesma interface
+ * compartilhada em vez de duplicada, já que os dois scripts leem o mesmo
+ * `data/beehiiv-cache/posts/*.json`. */
 export interface RawCachedPost {
   slug?: string;
   title?: string;
+  subtitle?: string;
   subject?: string;
   web_url?: string;
   publish_date?: number | null;

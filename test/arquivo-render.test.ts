@@ -553,4 +553,46 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
       assert.doesNotMatch(body, new RegExp(`User-agent: ${bot}\\b`));
     }
   });
+
+  it("GET /temas/anthropic-claude → 200 com o hub, sem fetch externo (#4558 Parte A)", async () => {
+    globalThis.fetch = (async () => {
+      throw new Error("/temas/{slug} não deveria depender de rede — HTML já gerado e commitado");
+    }) as unknown as typeof fetch;
+
+    const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/temas/anthropic-claude"));
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("Cache-Control"), "public, max-age=3600");
+    const body = await res.text();
+    assert.match(body, /<h1>Anthropic e Claude/);
+  });
+
+  it("GET /temas/{slug-desconhecido} → 404 (#4558 Parte A)", async () => {
+    globalThis.fetch = (async () => {
+      throw new Error("não deveria fazer fetch nenhum");
+    }) as unknown as typeof fetch;
+
+    const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/temas/tema-que-nao-existe"));
+    assert.equal(res.status, 404);
+  });
+
+  it("GET /temas/constructor (ou outra propriedade herdada de Object.prototype) → 404, não 200 com lixo (regressão do fleet review)", async () => {
+    globalThis.fetch = (async () => {
+      throw new Error("não deveria fazer fetch nenhum");
+    }) as unknown as typeof fetch;
+
+    for (const slug of ["constructor", "toString", "hasOwnProperty", "__proto__"]) {
+      const res = await worker.fetch(new Request(`https://arquivo.diar.ia.br/temas/${slug}`));
+      assert.equal(res.status, 404, `slug "${slug}" deveria 404, não vazar propriedade de Object.prototype`);
+    }
+  });
+
+  it("GET /sitemap.xml inclui um <url> por hub publicado (#4558 Parte A)", async () => {
+    globalThis.fetch = (async () => {
+      throw new Error("/sitemap.xml não deveria depender do sitemap remoto");
+    }) as unknown as typeof fetch;
+
+    const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/sitemap.xml"));
+    const body = await res.text();
+    assert.match(body, /<loc>https:\/\/arquivo\.diar\.ia\.br\/temas\/anthropic-claude<\/loc>/);
+  });
 });
