@@ -37,7 +37,7 @@ import {
 
 // ─── Fixtures de sinais ────────────────────────────────────────────────────────
 
-/** Sinais mínimos com dados reais representativos do perfil da Diar.ia */
+/** Sinais mínimos com dados reais representativos do perfil da diar.ia.br */
 function makeSignals(opts: {
   ctrMap?: Map<string, number>;
   surveyTools?: Set<string>;

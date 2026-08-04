@@ -1,6 +1,6 @@
 # Cloudflare Worker `diaria-linkedin-cron` Setup
 
-One-time setup pra ativar agendamento real de posts LinkedIn da Diar.ia. Substitui a abordagem Make.com Data Store (que não funcionou — ver `feedback_make_searchrecord_mapping_unsolved.md` na memory). PC pode estar desligado — o cron roda na Cloudflare.
+One-time setup pra ativar agendamento real de posts LinkedIn da diar.ia.br. Substitui a abordagem Make.com Data Store (que não funcionou — ver `feedback_make_searchrecord_mapping_unsolved.md` na memory). PC pode estar desligado — o cron roda na Cloudflare.
 
 ## Arquitetura
 
@@ -90,7 +90,7 @@ Triggers
   - Schedule: */5 * * * *
 ```
 
-## Passo 5 — Configurar a Diar.ia
+## Passo 5 — Configurar a diar.ia.br
 
 Em `.env.local` (gitignored, recomendado):
 
@@ -126,7 +126,7 @@ curl -X POST https://diaria-linkedin-cron.diaria.workers.dev/queue \
   -H "X-Diaria-Token: <seu-token>" \
   -H "Content-Type: application/json" \
   -d '{
-    "text": "Teste do cron do LinkedIn — Diar.ia",
+    "text": "Teste do cron do LinkedIn — diar.ia.br",
     "image_url": null,
     "scheduled_at": "2026-05-07T01:35:00-03:00",
     "destaque": "d1"

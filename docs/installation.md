@@ -1,4 +1,4 @@
-# Installation — Diar.ia Studio
+# Installation — diar.ia.br Studio
 
 Passo-a-passo end-to-end, do zero ao primeiro `/diaria-edicao` funcional. Estimativa: **30–45 min** na primeira vez.
 

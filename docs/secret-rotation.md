@@ -1,6 +1,6 @@
 # Rotação de credenciais e playbook de emergência
 
-Este doc é o ponto único de consulta quando alguma credencial expira, é revogada, ou precisa rotação proativa. Cobre todas as 7 credenciais usadas pela pipeline da Diar.ia.
+Este doc é o ponto único de consulta quando alguma credencial expira, é revogada, ou precisa rotação proativa. Cobre todas as 7 credenciais usadas pela pipeline da diar.ia.br.
 
 > Em emergência (edição em produção e algo está quebrando agora): pula direto pro [Playbook emergencial](#playbook-emergencial) no fim deste doc.
 
