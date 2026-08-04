@@ -18,7 +18,7 @@
  * Uso:
  *   npx tsx scripts/build-hub-page.ts --hub anthropic-claude
  *   npx tsx scripts/build-hub-page.ts --all
- *   npx tsx scripts/build-hub-page.ts --hub anthropic-claude --check   # só valida
+ *   npx tsx scripts/build-hub-page.ts --hub anthropic-claude --check   # renderiza (valida invariantes via HubContent), não escreve
  */
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,8 +33,12 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Registry completo de hubs — 1 entrada por tema publicado. Adicionar um
  * hub novo: escrever `scripts/lib/hubs/{slug}.ts` (exportando `HubContent`)
- * e uma linha aqui. */
-const HUB_LOADERS: Record<string, () => HubContent> = {
+ * e uma linha aqui. Exportado (não só usado localmente) pra
+ * `test/hub-registry-completeness.test.ts` cruzar contra
+ * `workers/arquivo/src/hubs/registry.ts::HUB_REGISTRY` — pega o caso "hub
+ * novo entrou aqui, mas ninguém atualizou o registry do Worker" antes de
+ * virar 404 em produção (achado do fleet review). */
+export const HUB_LOADERS: Record<string, () => HubContent> = {
   "anthropic-claude": getAnthropicClaudeHub,
 };
 

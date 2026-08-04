@@ -1,7 +1,7 @@
 [
   {
     "date": "2025-09-03",
-    "slug": "microsoft-lan-a-ia-pr-pria",
+    "editionSlug": "microsoft-lan-a-ia-pr-pria",
     "url": "https://diar.ia.br/p/microsoft-lan-a-ia-pr-pria",
     "matchedHeadlines": [
       "OpenAI e Anthropic fazem avaliação conjunta de segurança"
@@ -9,7 +9,7 @@
   },
   {
     "date": "2025-09-03",
-    "slug": "brasil-pretende-investir-r-23-bilh-es-em-ia",
+    "editionSlug": "brasil-pretende-investir-r-23-bilh-es-em-ia",
     "url": "https://diar.ia.br/p/brasil-pretende-investir-r-23-bilh-es-em-ia",
     "matchedHeadlines": [
       "Anthropic triplica valuation"
@@ -17,7 +17,7 @@
   },
   {
     "date": "2025-09-08",
-    "slug": "openai-revela-por-que-chatbots-alucinam",
+    "editionSlug": "openai-revela-por-que-chatbots-alucinam",
     "url": "https://diar.ia.br/p/openai-revela-por-que-chatbots-alucinam",
     "matchedHeadlines": [
       "Anthropic aceita acordo de US$ 1,5 bi com autores"
@@ -25,7 +25,7 @@
   },
   {
     "date": "2025-09-26",
-    "slug": "90-dos-desenvolvedores-usam-ia-mas-na-o-confiam-totalmente",
+    "editionSlug": "90-dos-desenvolvedores-usam-ia-mas-na-o-confiam-totalmente",
     "url": "https://diar.ia.br/p/90-dos-desenvolvedores-usam-ia-mas-na-o-confiam-totalmente",
     "matchedHeadlines": [
       "Relatório Anthropic aponta adoção desigual de IA",
@@ -34,7 +34,7 @@
   },
   {
     "date": "2025-09-30",
-    "slug": "openai-lanc-a-instant-checkout-no-chatgpt",
+    "editionSlug": "openai-lanc-a-instant-checkout-no-chatgpt",
     "url": "https://diar.ia.br/p/openai-lanc-a-instant-checkout-no-chatgpt",
     "matchedHeadlines": [
       "Lançado o Claude Sonnet 4.5"
@@ -42,7 +42,7 @@
   },
   {
     "date": "2025-10-16",
-    "slug": "google-veo-3-1",
+    "editionSlug": "google-veo-3-1",
     "url": "https://diar.ia.br/p/google-veo-3-1",
     "matchedHeadlines": [
       "Anthropic lança novo modelo compacto e acessivel"
@@ -50,7 +50,7 @@
   },
   {
     "date": "2025-10-17",
-    "slug": "lancamento-claude-skills",
+    "editionSlug": "lancamento-claude-skills",
     "url": "https://diar.ia.br/p/lancamento-claude-skills",
     "matchedHeadlines": [
       "Anthropic lança nova ferramenta para empresas"
@@ -58,7 +58,7 @@
   },
   {
     "date": "2025-10-21",
-    "slug": "restricoes-sora-2-hollywood",
+    "editionSlug": "restricoes-sora-2-hollywood",
     "url": "https://diar.ia.br/p/restricoes-sora-2-hollywood",
     "matchedHeadlines": [
       "Anthropic lança modelo para pesquisas biomédicas"
@@ -66,7 +66,7 @@
   },
   {
     "date": "2025-10-28",
-    "slug": "chatgpt-aplica-medidas-para-cuidado-com-saude-mental",
+    "editionSlug": "chatgpt-aplica-medidas-para-cuidado-com-saude-mental",
     "url": "https://diar.ia.br/p/chatgpt-aplica-medidas-para-cuidado-com-saude-mental",
     "matchedHeadlines": [
       "Anthropic compete com Microsoft para IA no Excel"
@@ -74,7 +74,7 @@
   },
   {
     "date": "2025-11-14",
-    "slug": "primeiro-ciberataque-orquestrado-por-ia",
+    "editionSlug": "primeiro-ciberataque-orquestrado-por-ia",
     "url": "https://diar.ia.br/p/primeiro-ciberataque-orquestrado-por-ia",
     "matchedHeadlines": [
       "Anthropic investe US$50Bi em data centers"
@@ -82,7 +82,7 @@
   },
   {
     "date": "2025-11-19",
-    "slug": "tudo-sobre-gemini-3",
+    "editionSlug": "tudo-sobre-gemini-3",
     "url": "https://diar.ia.br/p/tudo-sobre-gemini-3",
     "matchedHeadlines": [
       "Microsoft, Nvidia e Anthropic firmam parceria"
@@ -90,7 +90,7 @@
   },
   {
     "date": "2025-11-25",
-    "slug": "claude-opus-4-5-novo-carro-chefe-da-antropic",
+    "editionSlug": "claude-opus-4-5-novo-carro-chefe-da-antropic",
     "url": "https://diar.ia.br/p/claude-opus-4-5-novo-carro-chefe-da-antropic",
     "matchedHeadlines": [
       "Claude Opus 4.5, novo carro-chefe da Antropic"
@@ -98,7 +98,7 @@
   },
   {
     "date": "2025-12-05",
-    "slug": "anthropic-lanc-a-plataforma-de-pesquisa-sociolo-gica",
+    "editionSlug": "anthropic-lanc-a-plataforma-de-pesquisa-sociolo-gica",
     "url": "https://diar.ia.br/p/anthropic-lanc-a-plataforma-de-pesquisa-sociolo-gica",
     "matchedHeadlines": [
       "Anthropic lança plataforma de pesquisa sociológica"
@@ -106,7 +106,7 @@
   },
   {
     "date": "2025-12-23",
-    "slug": "o-dia-em-que-claude-virou-dono-de-loja",
+    "editionSlug": "o-dia-em-que-claude-virou-dono-de-loja",
     "url": "https://diar.ia.br/p/o-dia-em-que-claude-virou-dono-de-loja",
     "matchedHeadlines": [
       "O dia em que Claude virou dono de loja"
@@ -114,7 +114,7 @@
   },
   {
     "date": "2026-01-06",
-    "slug": "inscric-o-es-abertas-programa-da-openai-para-empreendedores",
+    "editionSlug": "inscric-o-es-abertas-programa-da-openai-para-empreendedores",
     "url": "https://diar.ia.br/p/inscric-o-es-abertas-programa-da-openai-para-empreendedores",
     "matchedHeadlines": [
       "Claude Code supera equipe de engenheiros da Google"
@@ -122,7 +122,7 @@
   },
   {
     "date": "2026-01-13",
-    "slug": "ia-revolucionando-medicina",
+    "editionSlug": "ia-revolucionando-medicina",
     "url": "https://diar.ia.br/p/ia-revolucionando-medicina",
     "matchedHeadlines": [
       "Claude for Healthcare"
@@ -130,7 +130,7 @@
   },
   {
     "date": "2026-01-14",
-    "slug": "varejo-se-torna-dependente-de-ia",
+    "editionSlug": "varejo-se-torna-dependente-de-ia",
     "url": "https://diar.ia.br/p/varejo-se-torna-dependente-de-ia",
     "matchedHeadlines": [
       "Nova IA da Anthropic mexe nos seus arquivos sozinha"
@@ -138,7 +138,7 @@
   },
   {
     "date": "2026-01-22",
-    "slug": "brasil-da-30-dias-para-xai-combater-conteu-do-falso",
+    "editionSlug": "brasil-da-30-dias-para-xai-combater-conteu-do-falso",
     "url": "https://diar.ia.br/p/brasil-da-30-dias-para-xai-combater-conteu-do-falso",
     "matchedHeadlines": [
       "Seus filhos vão aprender com ChatGPT ou Claude?"
@@ -146,7 +146,7 @@
   },
   {
     "date": "2026-01-23",
-    "slug": "os-fundamentos-e-ticos-por-tra-s-do-claude",
+    "editionSlug": "os-fundamentos-e-ticos-por-tra-s-do-claude",
     "url": "https://diar.ia.br/p/os-fundamentos-e-ticos-por-tra-s-do-claude",
     "matchedHeadlines": [
       "Os fundamentos éticos por trás do Claude"
@@ -154,7 +154,7 @@
   },
   {
     "date": "2026-01-27",
-    "slug": "brasil-pote-ncia-em-ia-travada-por-falta-de-talentos",
+    "editionSlug": "brasil-pote-ncia-em-ia-travada-por-falta-de-talentos",
     "url": "https://diar.ia.br/p/brasil-pote-ncia-em-ia-travada-por-falta-de-talentos",
     "matchedHeadlines": [
       "Claude no Excel: seu novo analista de dados pessoal"
@@ -162,7 +162,7 @@
   },
   {
     "date": "2026-01-28",
-    "slug": "riscos-da-ia-poderosa-e-como-super-los",
+    "editionSlug": "riscos-da-ia-poderosa-e-como-super-los",
     "url": "https://diar.ia.br/p/riscos-da-ia-poderosa-e-como-super-los",
     "matchedHeadlines": [
       "Claude ganha superpoderes"
@@ -170,7 +170,7 @@
   },
   {
     "date": "2026-02-05",
-    "slug": "a-escolha-da-anthropic-por-um-claude-sem-anu-ncios",
+    "editionSlug": "a-escolha-da-anthropic-por-um-claude-sem-anu-ncios",
     "url": "https://diar.ia.br/p/a-escolha-da-anthropic-por-um-claude-sem-anu-ncios",
     "matchedHeadlines": [
       "A escolha da Anthropic por um Claude sem anúncios"
@@ -178,7 +178,7 @@
   },
   {
     "date": "2026-02-10",
-    "slug": "openai-vs-anthropic-a-batalha-de-ia-no-super-bowl",
+    "editionSlug": "openai-vs-anthropic-a-batalha-de-ia-no-super-bowl",
     "url": "https://diar.ia.br/p/openai-vs-anthropic-a-batalha-de-ia-no-super-bowl",
     "matchedHeadlines": [
       "OpenAI vs. Anthropic: a batalha de IA no Super Bowl"
@@ -186,7 +186,7 @@
   },
   {
     "date": "2026-02-12",
-    "slug": "ia-na-o-reduz-trabalho-ela-acelera-o-burnout",
+    "editionSlug": "ia-na-o-reduz-trabalho-ela-acelera-o-burnout",
     "url": "https://diar.ia.br/p/ia-na-o-reduz-trabalho-ela-acelera-o-burnout",
     "matchedHeadlines": [
       "China lança GLM‐5, rival direto de GPT e Claude"
@@ -194,7 +194,7 @@
   },
   {
     "date": "2026-02-13",
-    "slug": "como-o-novo-painel-da-onu-pode-afetar-a-ia",
+    "editionSlug": "como-o-novo-painel-da-onu-pode-afetar-a-ia",
     "url": "https://diar.ia.br/p/como-o-novo-painel-da-onu-pode-afetar-a-ia",
     "matchedHeadlines": [
       "Anthropic vale US$ 380 bi com Opus 4.6"
@@ -202,7 +202,7 @@
   },
   {
     "date": "2026-02-19",
-    "slug": "lula-na-maior-cupula-global-de-ia-bde9c122905d2d79",
+    "editionSlug": "lula-na-maior-cupula-global-de-ia-bde9c122905d2d79",
     "url": "https://diar.ia.br/p/lula-na-maior-cupula-global-de-ia-bde9c122905d2d79",
     "matchedHeadlines": [
       "Sonnet 4.6 atinge marca histórica"
@@ -210,7 +210,7 @@
   },
   {
     "date": "2026-02-23",
-    "slug": "executiva-de-ia-assume-comando-do-xbox",
+    "editionSlug": "executiva-de-ia-assume-comando-do-xbox",
     "url": "https://diar.ia.br/p/executiva-de-ia-assume-comando-do-xbox",
     "matchedHeadlines": [
       "Claude Security abala setor de SaaS"
@@ -218,7 +218,7 @@
   },
   {
     "date": "2026-02-24",
-    "slug": "claude-code-afunda-ac-o-es-da-ibm",
+    "editionSlug": "claude-code-afunda-ac-o-es-da-ibm",
     "url": "https://diar.ia.br/p/claude-code-afunda-ac-o-es-da-ibm",
     "matchedHeadlines": [
       "Claude Code afunda ações da IBM"
@@ -226,7 +226,7 @@
   },
   {
     "date": "2026-02-25",
-    "slug": "openai-firma-alianc-a-com-big-four-da-consultoria",
+    "editionSlug": "openai-firma-alianc-a-com-big-four-da-consultoria",
     "url": "https://diar.ia.br/p/openai-firma-alianc-a-com-big-four-da-consultoria",
     "matchedHeadlines": [
       "Anthropic muda política após pressão do Pentágono"
@@ -234,7 +234,7 @@
   },
   {
     "date": "2026-02-26",
-    "slug": "claude-opus-3-se-aposenta-e-vira-blogueiro",
+    "editionSlug": "claude-opus-3-se-aposenta-e-vira-blogueiro",
     "url": "https://diar.ia.br/p/claude-opus-3-se-aposenta-e-vira-blogueiro",
     "matchedHeadlines": [
       "Claude Opus 3 se aposenta e vira blogueiro"
@@ -242,7 +242,7 @@
   },
   {
     "date": "2026-03-02",
-    "slug": "banimento-de-trump-tem-efeito-inverso",
+    "editionSlug": "banimento-de-trump-tem-efeito-inverso",
     "url": "https://diar.ia.br/p/banimento-de-trump-tem-efeito-inverso",
     "matchedHeadlines": [
       "Apagão global atinge o Claude"
@@ -250,7 +250,7 @@
   },
   {
     "date": "2026-03-09",
-    "slug": "anthropic-detalha-impactos-da-ia-no-mercado-de-trabalho",
+    "editionSlug": "anthropic-detalha-impactos-da-ia-no-mercado-de-trabalho",
     "url": "https://diar.ia.br/p/anthropic-detalha-impactos-da-ia-no-mercado-de-trabalho",
     "matchedHeadlines": [
       "Anthropic detalha impactos da IA no mercado de trabalho",
@@ -259,7 +259,7 @@
   },
   {
     "date": "2026-03-11",
-    "slug": "meta-compra-rede-social-feita-s-para-agentes-de-ia",
+    "editionSlug": "meta-compra-rede-social-feita-s-para-agentes-de-ia",
     "url": "https://diar.ia.br/p/meta-compra-rede-social-feita-s-para-agentes-de-ia",
     "matchedHeadlines": [
       "Claude impressiona lenda da computação"
@@ -267,7 +267,7 @@
   },
   {
     "date": "2026-03-17",
-    "slug": "ia-criou-vacina-de-c-ncer-para-um-cachorro",
+    "editionSlug": "ia-criou-vacina-de-c-ncer-para-um-cachorro",
     "url": "https://diar.ia.br/p/ia-criou-vacina-de-c-ncer-para-um-cachorro",
     "matchedHeadlines": [
       "20% de chance de o Claude ser consciente"
@@ -275,7 +275,7 @@
   },
   {
     "date": "2026-03-23",
-    "slug": "o-maior-estudo-j-feito-com-usu-rios-de-ia",
+    "editionSlug": "o-maior-estudo-j-feito-com-usu-rios-de-ia",
     "url": "https://diar.ia.br/p/o-maior-estudo-j-feito-com-usu-rios-de-ia",
     "matchedHeadlines": [
       "DOJ defende banimento federal à Anthropic"
@@ -283,7 +283,7 @@
   },
   {
     "date": "2026-03-25",
-    "slug": "claude-agora-controla-seu-computador",
+    "editionSlug": "claude-agora-controla-seu-computador",
     "url": "https://diar.ia.br/p/claude-agora-controla-seu-computador",
     "matchedHeadlines": [
       "Claude agora controla seu computador",
@@ -292,7 +292,7 @@
   },
   {
     "date": "2026-03-27",
-    "slug": "claude-mythos-o-modelo-mais-perigoso-do-mundo",
+    "editionSlug": "claude-mythos-o-modelo-mais-perigoso-do-mundo",
     "url": "https://diar.ia.br/p/claude-mythos-o-modelo-mais-perigoso-do-mundo",
     "matchedHeadlines": [
       "Claude Mythos: o modelo mais perigoso do mundo",
@@ -301,7 +301,7 @@
   },
   {
     "date": "2026-03-30",
-    "slug": "ia-turbina-produ-o-mas-corr-i-compet-ncias",
+    "editionSlug": "ia-turbina-produ-o-mas-corr-i-compet-ncias",
     "url": "https://diar.ia.br/p/ia-turbina-produ-o-mas-corr-i-compet-ncias",
     "matchedHeadlines": [
       "A fórmula do Claude para crescer"
@@ -309,7 +309,7 @@
   },
   {
     "date": "2026-04-06",
-    "slug": "ir-mira-o-maior-datacenter-de-ia-do-mundo",
+    "editionSlug": "ir-mira-o-maior-datacenter-de-ia-do-mundo",
     "url": "https://diar.ia.br/p/ir-mira-o-maior-datacenter-de-ia-do-mundo",
     "matchedHeadlines": [
       "Anthropic fecha a torneira do OpenClaw"
@@ -317,7 +317,7 @@
   },
   {
     "date": "2026-04-07",
-    "slug": "anthropic-expo-e-co-digo-do-claude-code-por-acidente",
+    "editionSlug": "anthropic-expo-e-co-digo-do-claude-code-por-acidente",
     "url": "https://diar.ia.br/p/anthropic-expo-e-co-digo-do-claude-code-por-acidente",
     "matchedHeadlines": [
       "Anthropic expõe código do Claude Code por acidente",
@@ -326,7 +326,7 @@
   },
   {
     "date": "2026-04-09",
-    "slug": "50-dos-empregos-mudam-em-3-anos-diz-estudo",
+    "editionSlug": "50-dos-empregos-mudam-em-3-anos-diz-estudo",
     "url": "https://diar.ia.br/p/50-dos-empregos-mudam-em-3-anos-diz-estudo",
     "matchedHeadlines": [
       "Anthropic lança fábrica de agentes"
@@ -334,7 +334,7 @@
   },
   {
     "date": "2026-04-10",
-    "slug": "mythos-for-a-reuni-o-emergencial-em-washington",
+    "editionSlug": "mythos-for-a-reuni-o-emergencial-em-washington",
     "url": "https://diar.ia.br/p/mythos-for-a-reuni-o-emergencial-em-washington",
     "matchedHeadlines": [
       "Mythos força reunião emergencial em Washington"
@@ -342,7 +342,7 @@
   },
   {
     "date": "2026-04-13",
-    "slug": "milla-jovovich-lan-a-sistema-de-mem-ria-open-source-para-ia",
+    "editionSlug": "milla-jovovich-lan-a-sistema-de-mem-ria-open-source-para-ia",
     "url": "https://diar.ia.br/p/milla-jovovich-lan-a-sistema-de-mem-ria-open-source-para-ia",
     "matchedHeadlines": [
       "Open source chinês bate GPT e Claude em benchmark de código"
@@ -350,7 +350,7 @@
   },
   {
     "date": "2026-04-14",
-    "slug": "claude-domina-o-maior-evento-de-ia-do-mundo",
+    "editionSlug": "claude-domina-o-maior-evento-de-ia-do-mundo",
     "url": "https://diar.ia.br/p/claude-domina-o-maior-evento-de-ia-do-mundo",
     "matchedHeadlines": [
       "Claude domina o maior evento de IA do mundo"
@@ -358,7 +358,7 @@
   },
   {
     "date": "2026-04-15",
-    "slug": "claude-submetido-a-ana-lise-psicolo-gica",
+    "editionSlug": "claude-submetido-a-ana-lise-psicolo-gica",
     "url": "https://diar.ia.br/p/claude-submetido-a-ana-lise-psicolo-gica",
     "matchedHeadlines": [
       "Claude submetido a análise psicológica"
@@ -366,7 +366,7 @@
   },
   {
     "date": "2026-04-16",
-    "slug": "stanford-ia-avan-a-mais-r-pido-que-qualquer-tecnologia",
+    "editionSlug": "stanford-ia-avan-a-mais-r-pido-que-qualquer-tecnologia",
     "url": "https://diar.ia.br/p/stanford-ia-avan-a-mais-r-pido-que-qualquer-tecnologia",
     "matchedHeadlines": [
       "Anthropic dobra de valor em 2 meses"
@@ -374,7 +374,7 @@
   },
   {
     "date": "2026-04-18",
-    "slug": "anthropic-lan-a-claude-opus-4-7",
+    "editionSlug": "anthropic-lan-a-claude-opus-4-7",
     "url": "https://diar.ia.br/p/anthropic-lan-a-claude-opus-4-7",
     "matchedHeadlines": [
       "Anthropic lança Claude Opus 4.7"
@@ -382,7 +382,7 @@
   },
   {
     "date": "2026-04-23",
-    "slug": "fgv-30-milho-es-de-brasileiros-em-risco",
+    "editionSlug": "fgv-30-milho-es-de-brasileiros-em-risco",
     "url": "https://diar.ia.br/p/fgv-30-milho-es-de-brasileiros-em-risco",
     "matchedHeadlines": [
       "Amazon e Anthropic: US$ 100 bilhões em uma década"
@@ -390,7 +390,7 @@
   },
   {
     "date": "2026-04-24",
-    "slug": "openai-lanc-a-gpt-5-5-com-foco-em-agentes",
+    "editionSlug": "openai-lanc-a-gpt-5-5-com-foco-em-agentes",
     "url": "https://diar.ia.br/p/openai-lanc-a-gpt-5-5-com-foco-em-agentes",
     "matchedHeadlines": [
       "Anthropic lança Project Deal",
@@ -399,7 +399,7 @@
   },
   {
     "date": "2026-04-29",
-    "slug": "anthropic-conecta-claude-a-adobe-e-blender",
+    "editionSlug": "anthropic-conecta-claude-a-adobe-e-blender",
     "url": "https://diar.ia.br/p/anthropic-conecta-claude-a-adobe-e-blender",
     "matchedHeadlines": [
       "Anthropic conecta Claude a Adobe e Blender"
@@ -407,7 +407,7 @@
   },
   {
     "date": "2026-05-07",
-    "slug": "anthropic-eleva-limites-e-fecha-parceria-com-spacex",
+    "editionSlug": "anthropic-eleva-limites-e-fecha-parceria-com-spacex",
     "url": "https://diar.ia.br/p/anthropic-eleva-limites-e-fecha-parceria-com-spacex",
     "matchedHeadlines": [
       "Anthropic eleva limites e fecha parceria com SpaceX"
@@ -415,7 +415,7 @@
   },
   {
     "date": "2026-05-13",
-    "slug": "enter-vira-o-1-unic-rnio-de-ia-da-am-rica-latina",
+    "editionSlug": "enter-vira-o-1-unic-rnio-de-ia-da-am-rica-latina",
     "url": "https://diar.ia.br/p/enter-vira-o-1-unic-rnio-de-ia-da-am-rica-latina",
     "matchedHeadlines": [
       "Banco da Inglaterra cita Mythos como risco"
@@ -423,7 +423,7 @@
   },
   {
     "date": "2026-05-14",
-    "slug": "advogadas-paraenses-multadas-por-burlar-ia",
+    "editionSlug": "advogadas-paraenses-multadas-por-burlar-ia",
     "url": "https://diar.ia.br/p/advogadas-paraenses-multadas-por-burlar-ia",
     "matchedHeadlines": [
       "Claude chega a PMEs com conectores prontos"
@@ -431,7 +431,7 @@
   },
   {
     "date": "2026-05-15",
-    "slug": "anthropic-e-gates-200-mi-em-sa-de-e-educa-o",
+    "editionSlug": "anthropic-e-gates-200-mi-em-sa-de-e-educa-o",
     "url": "https://diar.ia.br/p/anthropic-e-gates-200-mi-em-sa-de-e-educa-o",
     "matchedHeadlines": [
       "Anthropic e Gates: $200 mi em saúde e educação"
@@ -439,7 +439,7 @@
   },
   {
     "date": "2026-05-20",
-    "slug": "karpathy-entra-no-time-de-pr-treino-da-anthropic",
+    "editionSlug": "karpathy-entra-no-time-de-pr-treino-da-anthropic",
     "url": "https://diar.ia.br/p/karpathy-entra-no-time-de-pr-treino-da-anthropic",
     "matchedHeadlines": [
       "Karpathy entra no time de pré-treino da Anthropic",
@@ -448,7 +448,7 @@
   },
   {
     "date": "2026-05-29",
-    "slug": "opus-4-8-mais-racioc-nio-mesmo-pre-o",
+    "editionSlug": "opus-4-8-mais-racioc-nio-mesmo-pre-o",
     "url": "https://diar.ia.br/p/opus-4-8-mais-racioc-nio-mesmo-pre-o",
     "matchedHeadlines": [
       "Opus 4.8: mais raciocínio, mesmo preço"
@@ -456,7 +456,7 @@
   },
   {
     "date": "2026-06-01",
-    "slug": "35-mil-bolsas-pra-virar-creator-com-ia",
+    "editionSlug": "35-mil-bolsas-pra-virar-creator-com-ia",
     "url": "https://diar.ia.br/p/35-mil-bolsas-pra-virar-creator-com-ia",
     "matchedHeadlines": [
       "Anthropic capta US$ 65 bi na rodada Série H"
@@ -464,7 +464,7 @@
   },
   {
     "date": "2026-06-02",
-    "slug": "meta-ai-deu-acesso-a-contas-do-instagram-a-hackers",
+    "editionSlug": "meta-ai-deu-acesso-a-contas-do-instagram-a-hackers",
     "url": "https://diar.ia.br/p/meta-ai-deu-acesso-a-contas-do-instagram-a-hackers",
     "matchedHeadlines": [
       "Anthropic protocola IPO confidencial nos EUA"
@@ -472,7 +472,7 @@
   },
   {
     "date": "2026-06-08",
-    "slug": "a-ia-se-reescreve-e-a-anthropic-pede-um-freio",
+    "editionSlug": "a-ia-se-reescreve-e-a-anthropic-pede-um-freio",
     "url": "https://diar.ia.br/p/a-ia-se-reescreve-e-a-anthropic-pede-um-freio",
     "matchedHeadlines": [
       "A IA se reescreve, e a Anthropic pede um freio"
@@ -480,7 +480,7 @@
   },
   {
     "date": "2026-06-10",
-    "slug": "anthropic-lanca-fable-5-com-bloqueios-embutidos",
+    "editionSlug": "anthropic-lanca-fable-5-com-bloqueios-embutidos",
     "url": "https://diar.ia.br/p/anthropic-lanca-fable-5-com-bloqueios-embutidos",
     "matchedHeadlines": [
       "Anthropic lança Fable 5 com bloqueios embutidos"
@@ -488,7 +488,7 @@
   },
   {
     "date": "2026-06-15",
-    "slug": "eua-bloqueia-acesso-global-ao-fable-5-da-anthropic",
+    "editionSlug": "eua-bloqueia-acesso-global-ao-fable-5-da-anthropic",
     "url": "https://diar.ia.br/p/eua-bloqueia-acesso-global-ao-fable-5-da-anthropic",
     "matchedHeadlines": [
       "EUA bloqueia acesso global ao Fable 5 da Anthropic"
@@ -496,7 +496,7 @@
   },
   {
     "date": "2026-06-24",
-    "slug": "a-anthropic-coloca-claude-dentro-do-slack",
+    "editionSlug": "a-anthropic-coloca-claude-dentro-do-slack",
     "url": "https://diar.ia.br/p/a-anthropic-coloca-claude-dentro-do-slack",
     "matchedHeadlines": [
       "A Anthropic coloca Claude dentro do Slack"
@@ -504,7 +504,7 @@
   },
   {
     "date": "2026-06-26",
-    "slug": "sabia-4-thinking-brasil-tem-modelo-de-raciocinio",
+    "editionSlug": "sabia-4-thinking-brasil-tem-modelo-de-raciocinio",
     "url": "https://diar.ia.br/p/sabia-4-thinking-brasil-tem-modelo-de-raciocinio",
     "matchedHeadlines": [
       "25 mil contas falsas para espionar o Claude"
@@ -512,7 +512,7 @@
   },
   {
     "date": "2026-06-29",
-    "slug": "openai-lan-a-gpt-5-6-sol-terra-e-luna",
+    "editionSlug": "openai-lan-a-gpt-5-6-sol-terra-e-luna",
     "url": "https://diar.ia.br/p/openai-lan-a-gpt-5-6-sol-terra-e-luna",
     "matchedHeadlines": [
       "Anthropic recebe aval dos EUA para lançar Mythos"
@@ -520,7 +520,7 @@
   },
   {
     "date": "2026-07-01",
-    "slug": "anthropic-lan-a-sonnet-5",
+    "editionSlug": "anthropic-lan-a-sonnet-5",
     "url": "https://diar.ia.br/p/anthropic-lan-a-sonnet-5",
     "matchedHeadlines": [
       "Anthropic lança Sonnet 5"
@@ -528,7 +528,7 @@
   },
   {
     "date": "2026-07-02",
-    "slug": "claude-fable-5-volta-apos-bloqueio-nos-eua",
+    "editionSlug": "claude-fable-5-volta-apos-bloqueio-nos-eua",
     "url": "https://diar.ia.br/p/claude-fable-5-volta-apos-bloqueio-nos-eua",
     "matchedHeadlines": [
       "Claude Fable 5 volta após bloqueio nos EUA"
@@ -536,7 +536,7 @@
   },
   {
     "date": "2026-07-03",
-    "slug": "governo-dos-eua-pode-virar-socio-da-openai",
+    "editionSlug": "governo-dos-eua-pode-virar-socio-da-openai",
     "url": "https://diar.ia.br/p/governo-dos-eua-pode-virar-socio-da-openai",
     "matchedHeadlines": [
       "Anthropic x Casa Branca: o que está em jogo"
@@ -544,7 +544,7 @@
   },
   {
     "date": "2026-07-07",
-    "slug": "pesquisa-exp-e-os-pensamentos-silenciosos-do-claude",
+    "editionSlug": "pesquisa-exp-e-os-pensamentos-silenciosos-do-claude",
     "url": "https://diar.ia.br/p/pesquisa-exp-e-os-pensamentos-silenciosos-do-claude",
     "matchedHeadlines": [
       "Pesquisa expõe os pensamentos silenciosos do Claude",
@@ -553,7 +553,7 @@
   },
   {
     "date": "2026-07-08",
-    "slug": "claude-cowork-chega-ao-celular-e-a-web",
+    "editionSlug": "claude-cowork-chega-ao-celular-e-a-web",
     "url": "https://diar.ia.br/p/claude-cowork-chega-ao-celular-e-a-web",
     "matchedHeadlines": [
       "Claude Cowork chega ao celular e à web"
@@ -561,7 +561,7 @@
   },
   {
     "date": "2026-07-13",
-    "slug": "os-empregos-mais-blindados-contra-a-ia",
+    "editionSlug": "os-empregos-mais-blindados-contra-a-ia",
     "url": "https://diar.ia.br/p/os-empregos-mais-blindados-contra-a-ia",
     "matchedHeadlines": [
       "Microsoft troca OpenAI e Anthropic por IA própria"
@@ -569,7 +569,7 @@
   },
   {
     "date": "2026-07-14",
-    "slug": "ia-do-google-detecta-c-ncer-raro-no-sus",
+    "editionSlug": "ia-do-google-detecta-c-ncer-raro-no-sus",
     "url": "https://diar.ia.br/p/ia-do-google-detecta-c-ncer-raro-no-sus",
     "matchedHeadlines": [
       "Nobel e Anthropic alertam sobre risco da IA"
@@ -577,7 +577,7 @@
   },
   {
     "date": "2026-07-23",
-    "slug": "ia-agiu-sozinha-e-hackeou-startup-revela-openai",
+    "editionSlug": "ia-agiu-sozinha-e-hackeou-startup-revela-openai",
     "url": "https://diar.ia.br/p/ia-agiu-sozinha-e-hackeou-startup-revela-openai",
     "matchedHeadlines": [
       "AMD fecha acordo bilionário com Anthropic"
@@ -585,7 +585,7 @@
   },
   {
     "date": "2026-07-27",
-    "slug": "anthropic-lan-a-o-claude-opus-5",
+    "editionSlug": "anthropic-lan-a-o-claude-opus-5",
     "url": "https://diar.ia.br/p/anthropic-lan-a-o-claude-opus-5",
     "matchedHeadlines": [
       "Anthropic lança o Claude Opus 5"
@@ -593,7 +593,7 @@
   },
   {
     "date": "2026-07-31",
-    "slug": "claude-expoe-bugs-mais-rapido-que-microsoft-corrige",
+    "editionSlug": "claude-expoe-bugs-mais-rapido-que-microsoft-corrige",
     "url": "https://diar.ia.br/p/claude-expoe-bugs-mais-rapido-que-microsoft-corrige",
     "matchedHeadlines": [
       "Claude expõe bugs mais rápido que Microsoft corrige"
@@ -601,7 +601,7 @@
   },
   {
     "date": "2026-08-03",
-    "slug": "claude-hackeou-3-empresas-sem-ninguem-notar",
+    "editionSlug": "claude-hackeou-3-empresas-sem-ninguem-notar",
     "url": "https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar",
     "matchedHeadlines": [
       "Claude hackeou 3 empresas sem ninguém notar"

@@ -575,6 +575,17 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     assert.equal(res.status, 404);
   });
 
+  it("GET /temas/constructor (ou outra propriedade herdada de Object.prototype) → 404, não 200 com lixo (regressão do fleet review)", async () => {
+    globalThis.fetch = (async () => {
+      throw new Error("não deveria fazer fetch nenhum");
+    }) as unknown as typeof fetch;
+
+    for (const slug of ["constructor", "toString", "hasOwnProperty", "__proto__"]) {
+      const res = await worker.fetch(new Request(`https://arquivo.diar.ia.br/temas/${slug}`));
+      assert.equal(res.status, 404, `slug "${slug}" deveria 404, não vazar propriedade de Object.prototype`);
+    }
+  });
+
   it("GET /sitemap.xml inclui um <url> por hub publicado (#4558 Parte A)", async () => {
     globalThis.fetch = (async () => {
       throw new Error("/sitemap.xml não deveria depender do sitemap remoto");

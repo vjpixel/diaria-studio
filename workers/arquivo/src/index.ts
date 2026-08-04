@@ -161,11 +161,17 @@ export default {
     }
     // #4558 Parte A: hubs temáticos — HTML já gerado e commitado
     // (`hubs/registry.ts`), servido tal qual, sem fetch/render em runtime.
+    // `Object.hasOwn` (não `HUB_REGISTRY[slug]` cru + `!html`) — achado do
+    // fleet review da PR: um slug igual a uma propriedade herdada de
+    // `Object.prototype` (`constructor`, `toString`, `hasOwnProperty`,
+    // `__proto__`) faz o lookup em objeto plano devolver essa função/valor
+    // herdado (truthy) em vez de `undefined`, escapando do `if (!html)` e
+    // servindo 200 com lixo (`String(Object.prototype.toString)`) em vez do
+    // 404 esperado.
     if (url.pathname.startsWith("/temas/")) {
       const slug = url.pathname.slice("/temas/".length).replace(/\/$/, "");
-      const html = HUB_REGISTRY[slug];
-      if (!html) return new Response("Not found", { status: 404 });
-      return htmlResponse(html);
+      if (!Object.hasOwn(HUB_REGISTRY, slug)) return new Response("Not found", { status: 404 });
+      return htmlResponse(HUB_REGISTRY[slug]);
     }
     if (url.pathname !== "/") {
       return new Response("Not found", { status: 404 });

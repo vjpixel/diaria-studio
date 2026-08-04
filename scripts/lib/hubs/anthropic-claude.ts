@@ -9,12 +9,20 @@
  * **Critério de qualidade da issue #4558 (não-negociável):** as seções
  * abaixo conectam pontos ao longo de ~11 meses de cobertura (o que só é
  * possível olhando o ARQUIVO inteiro, não uma edição isolada) — não
- * reempacotam manchete. Cada afirmação numérica é ancorada em
- * `anthropic-claude-sources.generated.json` (gerado por
- * `scripts/generate-hub-sources.ts --hub anthropic-claude` a partir de
- * `data/beehiiv-cache/posts/*.json`) — nunca um número solto. A prosa cita
- * datas e contagens computadas por `countMatching`/`buildAnthropicClaudeFaq`
- * abaixo, não hardcoded em paralelo.
+ * reempacotam manchete.
+ *
+ * **Precisão do escopo "número computado, nunca solto" (achado do fleet
+ * review — o texto anterior aqui superestimava isso):** só as respostas do
+ * `faq` são de fato COMPUTADAS em runtime, via `countMatching`/
+ * `buildAnthropicClaudeFaq` sobre `SOURCES`. Os números na prosa de
+ * `sections`/`INTRO` (datas, contagens como "12 lançamentos"/"75 edições")
+ * são TRANSCRITOS À MÃO a partir do mesmo dataset no momento em que a
+ * prosa foi escrita — corretos hoje (verificado contra `SOURCES` real ao
+ * escrever), mas não recalculados a cada regeneração de
+ * `sources.generated.json`. `test/build-hub-page.test.ts` tem um teste de
+ * consistência que falha se esses números divergirem dos computados pelo
+ * FAQ — rode a suíte depois de qualquer `generate-hub-sources.ts` novo, e
+ * se ela quebrar, é a prosa que precisa de revisão manual, não o teste.
  *
  * **Fonte é a cobertura da diária, não fato-checado contra a Anthropic
  * real** — este módulo sintetiza o que a diar.ia.br noticiou sobre o tema,
@@ -37,9 +45,13 @@ const SOURCES = sourcesRaw as HubSourceEntry[];
 
 /** `YYYY-MM-DD` estático — data em que a síntese abaixo foi escrita. Ver
  * nota de `hub-page.ts` sobre por que não pode ser `new Date()`. Bump manual
- * quando a prosa for reescrita de forma substancial (não a cada regeneração
- * rotineira do `sources.generated.json`, que só adiciona linhas novas ao
- * fim da lista sem invalidar a leitura já escrita). */
+ * quando a prosa for reescrita de forma substancial. **Atenção:** uma
+ * regeneração rotineira de `sources.generated.json` (edição nova entrando
+ * na cauda da lista) NÃO invalida a data — mas PODE desincronizar os
+ * números computados do `faq` dos números transcritos à mão em
+ * `sections`/`INTRO` (ver nota acima). O teste de consistência em
+ * `test/build-hub-page.test.ts` pega esse caso; bump `CONTENT_DATE` só
+ * depois de reconciliar a prosa manualmente. */
 const CONTENT_DATE = "2026-08-04";
 
 /** O `matchedHeadlines` de `sources.generated.json` preserva o texto ORIGINAL
@@ -49,10 +61,24 @@ const CONTENT_DATE = "2026-08-04";
  * silenciosamente (achado ao vivo: `/anthropic lanç/i` batia 0 das 12
  * manchetes reais). `countMatching` normaliza pra NFC antes do teste — os
  * PATTERNS abaixo continuam escritos com acento normal (legíveis), a
- * normalização acontece só no lado do dado. */
-function countMatching(pattern: RegExp): number {
+ * normalização acontece só no lado do dado. Compare com `stripAccents()` em
+ * `generate-hub-sources.ts` — normalização na direção OPOSTA (NFD+strip),
+ * porque `HUB_KEYWORD_PATTERNS` de lá não tem acento nenhum hoje (é
+ * defensiva pra um hub futuro, não corrige um bug já visto ali); aqui os
+ * PATTERNS têm acento de verdade, então NFC é o que resolve.
+ *
+ * **Recebe `sources` como parâmetro (achado do fleet review) — antes lia a
+ * constante `SOURCES` do módulo direto, ignorando qualquer `sources`
+ * passado por quem chama.** Isso tornava `buildAnthropicClaudeFaq` só
+ * PARCIALMENTE pura: `totalMentions`/`totalEditions`/`oldest`/`newest`
+ * respeitavam o argumento, mas `launches`/`mythos`/`fable`/`seguranca`
+ * sempre refletiam o dado real de produção — um teste com fixture
+ * sintético (ex: array vazio, ou 1 headline construída à mão) passaria
+ * "por acidente" comparando contra o número de produção, não contra o
+ * fixture. */
+function countMatching(sources: HubSourceEntry[], pattern: RegExp): number {
   let n = 0;
-  for (const s of SOURCES) {
+  for (const s of sources) {
     for (const h of s.matchedHeadlines) {
       if (pattern.test(h.normalize("NFC"))) n++;
     }
@@ -68,17 +94,21 @@ function formatDateLabel(dateIso: string): string {
 
 /**
  * Monta o FAQ (issue #4558 item 3/6: 6-10 perguntas, números reais). Pure —
- * testável sem IO, recebe `SOURCES` já carregado no topo do módulo.
+ * testável sem IO, opera inteiramente sobre o `sources` recebido (nunca lê
+ * `SOURCES` do módulo direto — ver nota de `countMatching`).
  */
 export function buildAnthropicClaudeFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
   const totalMentions = sources.reduce((n, s) => n + s.matchedHeadlines.length, 0);
   const totalEditions = sources.length;
   const oldest = sources[0]?.date;
   const newest = sources[sources.length - 1]?.date;
-  const launches = countMatching(/anthropic lanç|lançado o claude|recebe aval.*lançar/i);
-  const mythos = countMatching(/mythos/i);
-  const fable = countMatching(/fable/i);
-  const seguranca = countMatching(/hacke|espiona|expõe bugs|consciente|análise psicológica|pensamentos silenciosos/i);
+  const launches = countMatching(sources, /anthropic lanç|lançado o claude|recebe aval.*lançar/i);
+  const mythos = countMatching(sources, /mythos/i);
+  const fable = countMatching(sources, /fable/i);
+  const seguranca = countMatching(
+    sources,
+    /hacke|espiona|expõe bugs|consciente|análise psicológica|pensamentos silenciosos/i,
+  );
 
   return [
     {

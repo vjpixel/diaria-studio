@@ -59,8 +59,11 @@ export interface HubSourceEdition {
  * próprio, não reempacote de manchete). */
 export interface HubSection {
   heading: string;
-  /** Parágrafos — cada string vira um `<p>`. */
-  paragraphs: string[];
+  /** Parágrafos — cada string vira um `<p>`. Tupla não-vazia (não
+   * `string[]`) — uma seção com 0 parágrafos renderizaria um H2 sem nada
+   * embaixo; o tipo torna isso impossível em vez de depender de validação
+   * em runtime (achado do fleet review). */
+  paragraphs: [string, ...string[]];
 }
 
 export interface HubContent {
@@ -116,10 +119,54 @@ function renderHubBodyStyles(): string {
 
 const SUBSCRIBE_URL = "https://diar.ia.br/subscribe";
 
+/**
+ * Valida os invariantes de `HubContent` que a issue #4558 e o próprio
+ * módulo documentam mas o TYPE não consegue expressar sozinho (contagem de
+ * FAQ, formato de data, não-vazio de listas). Pure, devolve a lista de
+ * violações (vazia = válido) — nunca lança sozinha, quem chama decide.
+ * Existe pra que um 2º/3º hub (decisão do editor: hubs coexistem, mais
+ * temas virão) herde essas garantias automaticamente em vez de depender de
+ * um teste hand-written por hub (achado do fleet review — hoje só
+ * `anthropic-claude` tem essa cobertura via teste, não via estrutura).
+ */
+export function validateHubContent(hub: HubContent): string[] {
+  const errors: string[] = [];
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(hub.contentDate)) {
+    errors.push(`contentDate "${hub.contentDate}" não é YYYY-MM-DD`);
+  }
+  if (hub.faq.length < 6 || hub.faq.length > 10) {
+    errors.push(`faq tem ${hub.faq.length} perguntas — issue #4558 item 3 pede 6-10`);
+  }
+  if (hub.sourceEditions.length === 0) {
+    errors.push("sourceEditions está vazio — hub sem nenhuma edição citada como fonte");
+  }
+  for (let i = 1; i < hub.sourceEditions.length; i++) {
+    if (hub.sourceEditions[i - 1].date < hub.sourceEditions[i].date) {
+      errors.push("sourceEditions não está ordenado da edição mais recente pra mais antiga");
+      break;
+    }
+  }
+  for (const e of hub.sourceEditions) {
+    if (!e.url.startsWith("https://diar.ia.br/")) {
+      errors.push(`sourceEdition com url fora do domínio de marca: "${e.url}"`);
+    }
+  }
+  if (hub.sections.length === 0) {
+    errors.push("sections está vazio — hub sem nenhuma seção narrativa");
+  }
+  return errors;
+}
+
 /** Renderiza o HTML completo de um hub temático. Pure — sem I/O, sem
- * `Date.now()`. Chamada por `scripts/build-hub-page.ts` (nunca em runtime no
- * Worker, que só importa o HTML já gerado). */
+ * `Date.now()`. Lança se `validateHubContent` encontrar violação (fail-fast
+ * — melhor quebrar o build do que publicar um hub malformado). Chamada por
+ * `scripts/build-hub-page.ts` (nunca em runtime no Worker, que só importa o
+ * HTML já gerado). */
 export function renderHubPage(hub: HubContent): string {
+  const violations = validateHubContent(hub);
+  if (violations.length > 0) {
+    throw new Error(`renderHubPage: HubContent inválido para "${hub.slug}":\n- ${violations.join("\n- ")}`);
+  }
   const url = pageUrl(hub.slug);
   const pageTitle = `${hub.title} — cobertura da diar.ia.br`;
 
