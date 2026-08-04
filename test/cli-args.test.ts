@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { parseArgs, getArg, getIntArg, hasFlag, parseArgsSimple, isMainModule } from "../scripts/lib/cli-args.ts";
+import { parseArgs, getArg, getIntArg, getStringArg, hasFlag, parseArgsSimple, isMainModule } from "../scripts/lib/cli-args.ts";
 
 describe("parseArgs — pares key-value", () => {
   it("extrai um par --key value", () => {
@@ -260,5 +260,50 @@ describe("isMainModule — detecção de CLI-guard (#2834: consolida 4 variantes
   it("retorna true em invocação Unix-style (sem drive letter)", { skip: process.platform === "win32" }, () => {
     process.argv[1] = "/home/user/repo/scripts/bar.ts";
     assert.equal(isMainModule("file:///home/user/repo/scripts/bar.ts"), true);
+  });
+});
+
+describe("getStringArg — flag de texto com valor obrigatório (#4542)", () => {
+  // Regressão do review da PR #4564: `--hold` lido via `getArg` colapsava
+  // "flag ausente" e "flag presente mas quebrada" no mesmo `""`, e o caller
+  // tratava `""` como "não pediu reserva" — o script saía 0 tendo escrito o
+  // segmento inteiro que o operador acabara de pedir pra segurar.
+  it("flag ausente → undefined (caller decide o default)", () => {
+    assert.equal(getStringArg([], "hold"), undefined);
+    assert.equal(getStringArg(["--group", "engajados"], "hold"), undefined);
+  });
+
+  it("valor normal é devolvido intacto", () => {
+    assert.equal(getStringArg(["--hold", "juridico"], "hold"), "juridico");
+    assert.equal(getStringArg(["--hold=juridico"], "hold"), "juridico");
+    assert.equal(getStringArg(["--hold", "a,b"], "hold"), "a,b");
+  });
+
+  it("--key no fim do argv (sem valor) LANÇA", () => {
+    assert.throws(() => getStringArg(["--group", "engajados", "--hold"], "hold"), /sem valor/);
+  });
+
+  it("--key seguido de outra flag LANÇA", () => {
+    assert.throws(() => getStringArg(["--hold", "--dry-run"], "hold"), /sem valor/);
+  });
+
+  it("--key= (valor vazio explícito) LANÇA", () => {
+    assert.throws(() => getStringArg(["--hold="], "hold"), /valor vazio/);
+    assert.throws(() => getStringArg(["--hold", "   "], "hold"), /valor vazio/);
+  });
+
+  it("--key repetida LANÇA em vez de descartar o primeiro em silêncio", () => {
+    // parseArgs guarda um valor por chave (último vence) — sem este guard,
+    // `--hold juridico --hold setor-x` soltaria o jurídico sem avisar assim
+    // que um 2º segmento fosse registrado.
+    assert.throws(() => getStringArg(["--hold", "a", "--hold", "b"], "hold"), /2×/);
+    assert.throws(() => getStringArg(["--hold=a", "--hold=b"], "hold"), /2×/);
+  });
+
+  it("opts.example aparece na mensagem de erro", () => {
+    assert.throws(
+      () => getStringArg(["--hold"], "hold", { example: "juridico" }),
+      /--hold juridico/,
+    );
   });
 });

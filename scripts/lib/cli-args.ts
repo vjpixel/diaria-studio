@@ -97,6 +97,58 @@ export function hasFlag(argv: string[], flag: string): boolean {
  *   maior (ex: 1) pra flags que não fazem sentido como zero (ex: tamanho de
  *   lote, top-N).
  */
+/**
+ * Irmão de `getIntArg` pra flags de TEXTO cujo valor é obrigatório quando a
+ * flag aparece (#4542). Mesma motivação e mesmas regras — `getArg` colapsa
+ * "ausente" e "presente mas quebrada" no mesmo `""`, e um caller que trate
+ * `""` como "não pediu" degrada em silêncio exatamente no erro de digitação
+ * mais provável.
+ *
+ * Achado que motivou este helper (review do PR #4564): `--hold` lido via
+ * `getArg` transformava `--hold` (sem valor), `--hold --dry-run` e `--hold=`
+ * em "nenhuma reserva pedida" — o script saía 0 e gravava o segmento inteiro
+ * que o operador tinha acabado de pedir pra segurar, sem nada no stdout, no
+ * stderr ou no resumo JSON denunciando que a reserva foi descartada.
+ *
+ * Regras:
+ *   - flag ausente → `undefined` (caller decide o default).
+ *   - `--key` sem valor (fim do argv, ou seguido de outra `--flag`) → lança.
+ *   - `--key=` ou `--key ""` (valor vazio explícito) → lança.
+ *   - `--key` REPETIDA → lança. `parseArgs` guarda um valor por chave (último
+ *     vence), então `--hold a --hold b` descartaria `a` em silêncio. Rejeitar
+ *     é melhor que acumular aqui: acumular mudaria a semântica de toda flag
+ *     que já usa `parseArgs`, e a sintaxe sancionada pra múltiplos valores é
+ *     a lista por vírgula (`--key a,b`).
+ *
+ * @param opts.example valor de exemplo usado nas mensagens de erro.
+ */
+export function getStringArg(
+  argv: string[],
+  key: string,
+  opts: { example?: string } = {},
+): string | undefined {
+  const exemplo = opts.example ?? "valor";
+  const ocorrencias = argv.filter((a) => a === `--${key}` || a.startsWith(`--${key}=`)).length;
+  if (ocorrencias > 1) {
+    throw new Error(
+      `--${key} foi passada ${ocorrencias}× — só o último valor valeria e os anteriores seriam ` +
+        `descartados em silêncio. Passe uma lista separada por vírgula (ex: "--${key} ${exemplo}").`,
+    );
+  }
+  const parsed = parseArgs(argv);
+  if (parsed.flags.has(key)) {
+    throw new Error(`--${key} foi passado sem valor (ex: "--${key} ${exemplo}") — omita a flag pra não usá-la.`);
+  }
+  const raw = parsed.values[key];
+  if (raw === undefined) return undefined;
+  if (raw.trim() === "") {
+    throw new Error(
+      `--${key} foi passado com valor vazio (ex: "--${key}=" ou "--${key} ''") — omita a flag pra não usá-la, ou passe um valor válido.`,
+    );
+  }
+  return raw;
+}
+
 export function getIntArg(argv: string[], key: string, opts: { min?: number } = {}): number | undefined {
   const min = opts.min ?? 0;
   const parsed = parseArgs(argv);

@@ -61,6 +61,24 @@
  *                Sem a flag, nenhum corte por score é aplicado (comportamento
  *                inalterado).
  *   --dry-run    só conta/imprime o plano, nada escrito.
+ *   --hold X[,Y] (#4542) RESERVA: exclui da seleção os contatos do segmento X
+ *                (hoje só `juridico`), que o editor está segurando pra uma
+ *                campanha própria. Opt-in por invocação — o envio especial
+ *                desse mesmo segmento é montado SEM a flag. Nome inválido
+ *                aborta (nunca ignora em silêncio) — e desde o review da PR
+ *                #4564 a flag SEM VALOR (`--hold`, `--hold=`, `--hold` seguida
+ *                de outra flag) ou REPETIDA também aborta, via `getStringArg`:
+ *                antes viravam "nenhuma reserva pedida" e o script gravava o
+ *                segmento inteiro com exit 0. O resumo reporta `hold` (quais
+ *                segmentos foram passados — presente mesmo com 0 retidos, pro
+ *                operador ver que a reserva estava ativa), `held_by_segment`
+ *                (quebra por segmento) e
+ *                `held_from_selection` (quantos a reserva tirou DESTA seleção —
+ *                o número que responde "o que deixei de mandar hoje") ao lado
+ *                de `held_in_universe` (quantos do segmento existem no
+ *                universo, quase sempre muito maior e sem significado
+ *                operacional sozinho), pra seleção menor nunca ser confundida
+ *                com predicado errado.
  *   --since YYYY-MM-DD   OBRIGATÓRIO só pro grupo `novos` (#4347) — janela de
  *                "cadastrou desde". Ignorado pelos outros 3 grupos.
  *   --force      OPCIONAL — só pro grupo `novos` (#4347, D13): destrava a
@@ -129,8 +147,9 @@ import {
   type StoreRow,
 } from "./lib/clarice-segment.ts";
 import { clariceSegmentsDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
-import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { fetchCommittedCampaignListIds, fetchQueuedCampaignListIds } from "./lib/brevo-client.ts";
+import { parseHoldArg, applyHolds, type HoldSegmentName } from "./lib/clarice-hold.ts";
 
 loadProjectEnv();
 
@@ -515,7 +534,37 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     );
   }
 
-  const { csv, manifestEntry, selected } = buildSegmentArtifact(universe, group, budget, minScore, ctx);
+  // #4542: reserva de segmento — retira do universo quem o editor está
+  // segurando pra uma campanha própria (hoje `--hold juridico`). ANTES do
+  // buildSegmentArtifact de propósito: segurar depois do corte de budget
+  // encolheria a onda em vez de puxar os próximos da fila.
+  let holds: HoldSegmentName[];
+  try {
+    holds = parseHoldArg(getStringArg(argv, "hold", { example: "juridico" }));
+  } catch (e) {
+    console.error(`❌ ${(e as Error).message}`);
+    process.exit(1);
+  }
+  const holdResult = applyHolds(universe, holds);
+
+  const { csv, manifestEntry, selected } = buildSegmentArtifact(holdResult.kept, group, budget, minScore, ctx);
+
+  // O número que importa pro operador não é quantos contatos do segmento
+  // existem no universo (a maioria nem seria selecionada), e sim quantos a
+  // reserva TIROU DESTA seleção. Só o segundo responde "o que eu deixei de
+  // mandar hoje". Calculado rodando a mesma seleção sem a reserva —
+  // buildSegmentArtifact é puro (não escreve; a escrita é do main), então o
+  // custo é uma passada em memória, e só quando há reserva ativa.
+  let heldFromSelection = 0;
+  if (holdResult.heldTotal > 0) {
+    const semReserva = buildSegmentArtifact(universe, group, budget, minScore, ctx);
+    heldFromSelection = semReserva.manifestEntry.count - manifestEntry.count;
+    console.error(
+      `🔒 reserva (--hold ${holds.join(",")}): ${heldFromSelection} contato(s) a menos NESTA seleção ` +
+        `(${manifestEntry.count} em vez de ${semReserva.manifestEntry.count}). ` +
+        `${holdResult.heldTotal} do segmento retidos do universo.`,
+    );
+  }
 
   // #4347 D13: teto de tamanho da rodada — só o grupo 'novos' (substituto do
   // gate humano que a skill /diaria-clarice-novos não tem, D6). Checado ANTES
@@ -546,6 +595,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // grupo inteiro (ver `CommittedGuardScope`, clarice-segment.ts).
     guard_scope: guardScope,
     already_committed_brevo: committedExcluded || undefined,
+    // #4542: presente quando --hold foi PASSADA (independente de ter retido
+    // alguem) — o operador precisa ver que a flag estava ativa mesmo com 0
+    // retidos. Os campos held_* abaixo so aparecem quando algo casou.
+    hold: holds.length > 0 ? holds.join(",") : undefined,
+    /** Quantos a reserva tirou DESTA seleção — o "o que deixei de mandar hoje". */
+    // NUNCA `|| undefined`: um 0 legitimo (budget recompos a onda com os
+    // proximos da fila) sumiria do JSON e leria como campo quebrado, bem no
+    // caso em que o operador mais precisa saber que a reserva nao mudou nada.
+    held_from_selection: holdResult.heldTotal > 0 ? heldFromSelection : undefined,
+    /** Quantos do segmento existem no universo (contexto, quase sempre maior). */
+    held_in_universe: holdResult.heldTotal || undefined,
+    held_by_segment: holdResult.heldTotal > 0 ? holdResult.heldBySegment : undefined,
     selected: manifestEntry.count,
   };
 
