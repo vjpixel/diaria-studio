@@ -231,7 +231,7 @@ export interface ImportSendResult {
  */
 export async function importOneSend(
   client: ImportRunClient,
-  plan: Pick<Plan, "n" | "day" | "listName" | "csv" | "sentCount">,
+  plan: Pick<Plan, "n" | "listName" | "csv" | "sentCount">,
   opts: { folderId: number; poll?: PollOptions; now?: () => string; log?: (msg: string) => void },
 ): Promise<ImportSendResult> {
   const log = opts.log ?? ((m: string) => console.error(m));
