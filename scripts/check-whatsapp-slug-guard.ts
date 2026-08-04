@@ -15,11 +15,23 @@
  *
  * Uso:
  *   npx tsx scripts/check-whatsapp-slug-guard.ts \
- *     --post-id POST_ID --d1-title "Título do D1" [--actual-slug SLUG_ATUAL]
+ *     --post-id POST_ID --d1-title "Título do D1" [--actual-slug SLUG_ATUAL] \
+ *     [--out PATH]
  *
  *   `--actual-slug` pode ser omitido (post sem slug ainda / campo ausente no
  *   `get_post`) — tratado como divergência, nunca bate com um slug esperado
  *   não-vazio.
+ *
+ *   `--out PATH` (opcional, #4574) grava `{ ok, expectedSlug, actualSlug,
+ *   checkedAt }` em disco (cria diretórios pais se necessário). Existe pra
+ *   dar ao guard um backstop DETERMINÍSTICO: sem isso, o único jeito de o
+ *   Stage 6 "lembrar" que o guard rodou e passou é o agente LLM ter lido e
+ *   seguido a prosa do orchestrator corretamente — nada em código verificava
+ *   isso (achado do review consolidado da PR #4574, que introduziu o guard
+ *   em #4570 sem esse backstop). O orchestrator passa `{EDITION_DIR}/_internal/
+ *   whatsapp-slug-check.json`; `scripts/lib/invariant-checks/stage-6.ts`
+ *   (regra `whatsapp-slug-guard-ok`) exige esse arquivo com `ok: true` antes
+ *   de aceitar o Stage 6 como íntegro.
  *
  * Stdout: sempre o JSON de `WhatsappSlugCheckResult` (`ok`/`expectedSlug`/
  * `actualSlug`/`message?`) — consumível por script ou lido por um agente.
@@ -36,6 +48,8 @@
  *   2 = args inválidos (`--post-id`/`--d1-title` ausentes).
  */
 
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { checkWhatsappSlugMatch } from "./lib/whatsapp-slug-guard.ts";
 
@@ -44,13 +58,15 @@ export function main(argv: string[]): number {
   const postId = values["post-id"];
   const d1Title = values["d1-title"];
   const actualSlugRaw = values["actual-slug"];
+  const outPath = values["out"];
 
   if (!postId || !d1Title) {
     process.stderr.write(
-      "Uso: check-whatsapp-slug-guard.ts --post-id POST_ID --d1-title TITULO [--actual-slug SLUG]\n" +
+      "Uso: check-whatsapp-slug-guard.ts --post-id POST_ID --d1-title TITULO [--actual-slug SLUG] [--out PATH]\n" +
         "  --post-id      ID do post Beehiiv (só usado pra formatar a URL de correção manual)\n" +
         "  --d1-title     Título do D1 da edição (mesma fonte de buildWhatsappEditionUrl)\n" +
-        "  --actual-slug  Slug real do post (web_settings.slug de get_post) — omitir = ausente\n",
+        "  --actual-slug  Slug real do post (web_settings.slug de get_post) — omitir = ausente\n" +
+        "  --out          Grava { ok, expectedSlug, actualSlug, checkedAt } no path (#4574)\n",
     );
     return 2;
   }
@@ -59,6 +75,24 @@ export function main(argv: string[]): number {
   const result = checkWhatsappSlugMatch(postId, actualSlug, d1Title);
 
   console.log(JSON.stringify(result));
+
+  if (outPath) {
+    mkdirSync(dirname(outPath), { recursive: true });
+    writeFileSync(
+      outPath,
+      JSON.stringify(
+        {
+          ok: result.ok,
+          expectedSlug: result.expectedSlug,
+          actualSlug: result.actualSlug,
+          checkedAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+  }
 
   if (!result.ok) {
     process.stderr.write(`${result.message}\n`);

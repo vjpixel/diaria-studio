@@ -27,17 +27,34 @@
 
 import { seoSlug, formatManualSlugFixInstructions } from "./slug.ts";
 
-export interface WhatsappSlugCheckResult {
-  /** `true` quando o slug real bate com o previsto pelo bloco WhatsApp. */
-  ok: boolean;
-  /** `seoSlug(d1Title)` — o slug que a URL já embutida no e-mail prevê. */
-  expectedSlug: string;
-  /** Slug real do post na Beehiiv no momento da checagem (`null` = ausente/não setado). */
-  actualSlug: string | null;
-  /** Presente só quando `ok === false` — instruções de correção manual formatadas
-   *  (reusa `formatManualSlugFixInstructions`, #3449) + contexto do bloco WhatsApp. */
-  message?: string;
-}
+/**
+ * #4574 (achado type-design-analyzer, review consolidado): discriminated
+ * union em vez de `message?: string` solto — torna `message` obrigatório
+ * exatamente quando `ok: false` (checado pelo compilador, não só por
+ * docstring). Os call sites existentes (`if (!result.ok) {...result.message...}`)
+ * já narrowam corretamente sem mudança. Quando `ok: true`, `actualSlug` é
+ * necessariamente igual a `expectedSlug` (não-nulo, não-vazio — ver o guard
+ * de `expectedSlug.length === 0` em `checkWhatsappSlugMatch`), então o campo
+ * é `string`, não `string | null`, nesse branch.
+ */
+export type WhatsappSlugCheckResult =
+  | {
+      /** `true` quando o slug real bate com o previsto pelo bloco WhatsApp. */
+      readonly ok: true;
+      /** `seoSlug(d1Title)` — o slug que a URL já embutida no e-mail prevê. */
+      readonly expectedSlug: string;
+      /** Slug real do post — igual a `expectedSlug` neste branch. */
+      readonly actualSlug: string;
+    }
+  | {
+      readonly ok: false;
+      readonly expectedSlug: string;
+      /** Slug real do post na Beehiiv no momento da checagem (`null` = ausente/não setado). */
+      readonly actualSlug: string | null;
+      /** Instruções de correção manual formatadas (reusa
+       *  `formatManualSlugFixInstructions`, #3449) + contexto do bloco WhatsApp. */
+      readonly message: string;
+    };
 
 /**
  * Compara o slug REAL de um post Beehiiv contra o slug que a URL do bloco
@@ -58,6 +75,25 @@ export function checkWhatsappSlugMatch(
 ): WhatsappSlugCheckResult {
   const expectedSlug = seoSlug(d1Title);
   const normalizedActual = actualSlug ?? null;
+
+  // #4574 (achado do review consolidado da PR #4574, silent-failure-hunter):
+  // `expectedSlug === ""` acontece com um título D1 degenerado (só
+  // emoji/pontuação — `seoSlug` não tem fallback e retorna string vazia).
+  // Sem este guard, um `actualSlug` também vazio/ausente bateria
+  // `"" === ""` e o guard reportaria `ok:true` num match vazio-com-vazio —
+  // a URL do bloco WhatsApp ficaria `https://diar.ia.br/p/` (quebrada) e
+  // passaria despercebida. Rejeitar incondicionalmente, independente de
+  // `actualSlug`.
+  if (expectedSlug.length === 0) {
+    const message =
+      `[check-whatsapp-slug-guard] (#4570) seoSlug(título do D1) retornou string ` +
+      `vazia — título "${d1Title}" não produz um slug válido (só emoji/pontuação?). ` +
+      `A URL do bloco WhatsApp ficaria "https://diar.ia.br/p/" (quebrada) e já está ` +
+      `BAKED IN no corpo do e-mail. Corrigir o título do D1 antes do Schedule — ` +
+      `este guard não valida contra um slug esperado vazio, mesmo que o post também ` +
+      `esteja sem slug.`;
+    return { ok: false, expectedSlug, actualSlug: normalizedActual, message };
+  }
 
   if (normalizedActual === expectedSlug) {
     return { ok: true, expectedSlug, actualSlug: normalizedActual };

@@ -1457,10 +1457,11 @@ export function buildWhatsappShareLink(block: string): string {
  * convenção em vez de por derivação divergem cedo ou tarde. A URL ganha um
  * `<a href>` clicável na versão renderizada — o texto puro do `wa.me` mantém
  * a URL como texto normal (o WhatsApp auto-linkifica ao colar). #4570: botão
- * "Compartilhar no WhatsApp" passou de pill contornado (fundo papel, lia como
- * link) para botão preenchido (fundo TEAL sólido, texto branco) —
- * pedido explícito do editor, distingue visualmente das demais pills do
- * template (que usam fundo papel de propósito).
+ * "Compartilhar no WhatsApp" passou de pill contornado SEM `background:`
+ * explícito (transparente/herdado, lia como link) para botão preenchido
+ * (fundo TEAL sólido, texto papel) — pedido explícito do editor, distingue
+ * visualmente das demais pills do template (linhas 445/646/657/929), que
+ * TÊM `background:${COLORS.paper}` explícito de propósito.
  *
  * `""` quando não há D1 (edição sem destaques — nunca deveria acontecer dado
  * o invariante de 2-3 destaques, `scripts/extract-destaques.ts`, mas

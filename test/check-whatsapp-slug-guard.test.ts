@@ -18,6 +18,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { NPX, isWindows } from "./_helpers/spawn-npx.ts";
 import { checkWhatsappSlugMatch } from "../scripts/lib/whatsapp-slug-guard.ts";
 import { seoSlug, formatManualSlugFixInstructions } from "../scripts/lib/slug.ts";
@@ -81,6 +84,29 @@ describe("#4570 checkWhatsappSlugMatch — comparação pura slug real vs. previ
     const result = checkWhatsappSlugMatch(POST_ID, expected, D1_TITLE);
     assert.equal(result.ok, true);
   });
+
+  // #4574 (achado silent-failure-hunter, review consolidado): título D1
+  // degenerado (só emoji/pontuação) produz seoSlug() === "" — sem este guard,
+  // um post também sem slug bateria "" === "" e passaria como ok:true com a
+  // URL do bloco WhatsApp quebrada ("https://diar.ia.br/p/").
+  it("#4574: expectedSlug vazio (título só emoji/pontuação) → ok false MESMO com actualSlug também vazio/ausente", () => {
+    const degenerateTitle = "🤖🚀";
+    assert.equal(seoSlug(degenerateTitle), "", "sanity: título degenerado produz seoSlug vazio");
+    const resultBothEmpty = checkWhatsappSlugMatch(POST_ID, "", degenerateTitle);
+    assert.equal(resultBothEmpty.ok, false, "match vazio-com-vazio não pode ser ok:true");
+    assert.equal(resultBothEmpty.expectedSlug, "");
+    assert.ok(resultBothEmpty.message, "message deve estar presente quando ok=false");
+
+    const resultActualNull = checkWhatsappSlugMatch(POST_ID, null, degenerateTitle);
+    assert.equal(resultActualNull.ok, false, "expectedSlug vazio + actualSlug ausente também deve ser ok:false");
+  });
+
+  it("#4574: expectedSlug vazio → ok false mesmo com actualSlug não-vazio (divergência normal, cobertura redundante)", () => {
+    const degenerateTitle = "!!!";
+    const result = checkWhatsappSlugMatch(POST_ID, "algum-slug", degenerateTitle);
+    assert.equal(result.ok, false);
+    assert.equal(result.expectedSlug, "");
+  });
 });
 
 // ── (b) CLI check-whatsapp-slug-guard.ts — integração via spawnSync ───────
@@ -140,5 +166,63 @@ describe("#4570 CLI check-whatsapp-slug-guard.ts", () => {
   it("exit 2 quando --d1-title ausente", () => {
     const { exitCode } = runCli(["--post-id", POST_ID]);
     assert.equal(exitCode, 2);
+  });
+});
+
+// ── (c) --out — backstop determinístico consumido por check-invariants.ts (#4574) ──
+
+describe("#4574 CLI check-whatsapp-slug-guard.ts --out", () => {
+  it("--out grava { ok:true, expectedSlug, actualSlug, checkedAt } quando o slug bate", () => {
+    const dir = mkdtempSync(join(tmpdir(), "whatsapp-slug-out-"));
+    const outPath = join(dir, "_internal", "whatsapp-slug-check.json"); // dir pai não existe ainda
+    try {
+      const expected = seoSlug(CLI_TITLE);
+      const { exitCode } = runCli([
+        "--post-id", POST_ID,
+        "--d1-title", CLI_TITLE,
+        "--actual-slug", expected,
+        "--out", outPath,
+      ]);
+      assert.equal(exitCode, 0);
+      assert.ok(existsSync(outPath), "--out deve criar o diretório pai e escrever o arquivo");
+      const written = JSON.parse(readFileSync(outPath, "utf8"));
+      assert.equal(written.ok, true);
+      assert.equal(written.expectedSlug, expected);
+      assert.equal(written.actualSlug, expected);
+      assert.ok(typeof written.checkedAt === "string" && !Number.isNaN(Date.parse(written.checkedAt)));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--out grava { ok:false, ... } quando o slug diverge — mesmo exit 1 de antes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "whatsapp-slug-out-"));
+    const outPath = join(dir, "whatsapp-slug-check.json");
+    try {
+      const { exitCode } = runCli([
+        "--post-id", POST_ID,
+        "--d1-title", CLI_TITLE,
+        "--actual-slug", "slug-errado",
+        "--out", outPath,
+      ]);
+      assert.equal(exitCode, 1, "--out não deve mudar o exit code — só passar a escrever em disco também");
+      const written = JSON.parse(readFileSync(outPath, "utf8"));
+      assert.equal(written.ok, false);
+      assert.equal(written.actualSlug, "slug-errado");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sem --out, nenhum arquivo é escrito (comportamento pré-#4574 preservado)", () => {
+    const { exitCode, stdout } = runCli([
+      "--post-id", POST_ID,
+      "--d1-title", CLI_TITLE,
+      "--actual-slug", seoSlug(CLI_TITLE),
+    ]);
+    assert.equal(exitCode, 0);
+    // stdout continua sendo o JSON do WhatsappSlugCheckResult, sem side-effects.
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.ok, true);
   });
 });
