@@ -1166,16 +1166,27 @@ export function brandHiddenInput(brand: Brand): string {
  * de re-tentativa de apelido (#1774) reusa esta MESMA função só pra corrigir
  * o apelido, sem reabrir a oferta de assinatura — daí o flag ser decidido
  * pelo CALLER, não inferido só do `brand` aqui dentro.
+ *
+ * `surface` (default `"vote"`, back-compat com todo caller pré-#4562): rótulo
+ * do botão primário. Em `"vote"` (tela de resultado do voto, index.ts:912) o
+ * botão nomeia o destino de verdade — "Salvar e ver o leaderboard" — porque
+ * de lá o leitor ainda não está no ranking. Em `"leaderboard"`
+ * (leaderboard-routes.ts) essa mesma frase seria autorreferente — o destino
+ * anunciado É a própria página — então o botão diz só "Salvar" (#4562). A
+ * caixa em si (o "trabalho" de salvar o apelido) continua igual nas duas
+ * superfícies; só o rótulo muda.
  */
 export function renderNicknameFormHtml(
   nicknameForm: { email: string; sig: string },
   brand: Brand,
   showOptIn: boolean = false,
+  surface: "vote" | "leaderboard" = "vote",
 ): string {
   const leaderboardPeriodWord = BRAND_INFO[brand].leaderboardPeriod === "year" ? "anual" : "mensal";
   const optinHtml = showOptIn
     ? `\n    <label class="nick-optin"><input type="checkbox" name="optin" value="on"> Quero receber a diar.ia.br — newsletter gratuita com as novidades de IA e como usar melhor as IAs, 5 minutos por dia, seg-sex.</label>`
     : "";
+  const saveLabel = surface === "leaderboard" ? "Salvar" : "Salvar e ver o leaderboard";
   return `<div class="nick-box">
   <p class="nick-title">Entre no leaderboard ${leaderboardPeriodWord}</p>
   <p class="nick-explain">Sem apelido você aparece como <code>${htmlEscape(maskEmail(nicknameForm.email))}</code> no ranking público.</p>
@@ -1184,7 +1195,7 @@ export function renderNicknameFormHtml(
     <input type="hidden" name="sig" value="${htmlEscape(nicknameForm.sig)}">
     ${brandHiddenInput(brand)}
     <input type="text" name="name" placeholder="Seu nome" maxlength="40" required class="nick-input">
-    <button type="submit" class="nick-save">Salvar e ver o leaderboard</button>${optinHtml}
+    <button type="submit" class="nick-save">${saveLabel}</button>${optinHtml}
   </form>
 </div>`;
 }
@@ -1214,6 +1225,13 @@ export interface SubscribeBoxState {
  * assinatura a oferecer aqui) — mesmo padrão de `renderNicknameFormHtml`: a
  * função não valida `brand`, é responsabilidade do CALLER decidir quando
  * chamar.
+ *
+ * #4562: o #4418 §2 tinha trazido esta caixa também pro leaderboard
+ * (leaderboard-routes.ts), mas os dois CTAs ("Assinar e ver o leaderboard" /
+ * "Ver o leaderboard") apontam pro leaderboard numa página que JÁ É o
+ * leaderboard — autorreferente, removido de lá. O ÚNICO call site continua
+ * sendo a tela de resultado do voto (index.ts:912), onde a caixa nasceu e
+ * "ver o leaderboard" é de fato um destino novo.
  */
 export function renderSubscribeBoxHtml(box: SubscribeBoxState, brand: Brand): string {
   const lbHref = leaderboardHref(brand);

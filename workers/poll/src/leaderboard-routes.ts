@@ -32,7 +32,6 @@ import {
   renderNicknameFormStyles, // #4232: CSS do nick-box, idem
   isValidVoteEmailFormat, // #4232: valida forma do email recebido via query param
   safeParseKv, // #4232: parse seguro de score:{email} (mesmo padrão de handleSetName)
-  renderSubscribeBoxHtml, // #4418 §2b: Caixa B (assinatura), trazida pro leaderboard
   type SubscribeBoxState, // #4418 §2b
   resolveVoteIdentityBoxKind, // #4438: decisão A/B/nenhuma centralizada (mesmo helper de vote.ts) — não reimplementar à mão
   resolveSetNameConfirmationBanner, // #4418 §3: faixa de confirmação pós-redirect de /set-name
@@ -1201,16 +1200,22 @@ function renderLeaderboardHtml(
     ? `<a href="${leaderboardHref(brand, String(year))}">Ver ranking anual de ${year}</a>`
     : "";
   const navHtml = annualLinkHtml ? `<p class="nav">${annualLinkHtml}</p>` : "";
-  // #4232 / #4418 §2b: bloco de identidade (Caixa A — mesmo markup da tela de
-  // resultado do voto — ou Caixa B, assinatura) — só quando
-  // resolveLeaderboardNicknameForm/resolveLeaderboardSubscribeBox validou
-  // email+sig da query string. `showOptIn: brand === "clarice"` traz o
-  // checkbox pro leaderboard também (recomendação da issue #4418 §2:
-  // "outra superfície de conversão pelo mesmo código").
-  const identityBoxHtml = subscribeBox
-    ? renderSubscribeBoxHtml(subscribeBox, brand)
-    : nicknameForm
-    ? renderNicknameFormHtml(nicknameForm, brand, brand === "clarice")
+  // #4232: bloco de identidade (Caixa A — mesmo markup da tela de resultado
+  // do voto) — só quando resolveLeaderboardNicknameForm validou email+sig da
+  // query string. `showOptIn: brand === "clarice"` traz o checkbox pro
+  // leaderboard também (recomendação da issue #4418 §2: "outra superfície de
+  // conversão pelo mesmo código"). `surface: "leaderboard"` troca o rótulo do
+  // botão pra "Salvar" (não "Salvar e ver o leaderboard" — autorreferente
+  // nesta página, #4562).
+  //
+  // #4562: a Caixa B (renderSubscribeBoxHtml/subscribeBox) SAIU do
+  // leaderboard — os 2 CTAs dela ("Assinar e ver o leaderboard" / "Ver o
+  // leaderboard") apontavam pro leaderboard numa página que já É o
+  // leaderboard. `subscribeBox` continua resolvido acima (ver
+  // handleLeaderboardByMonth/ByYear) só porque também alimenta `identified`
+  // (cache-control) mais abaixo — não porque ainda tem HTML a oferecer aqui.
+  const identityBoxHtml = nicknameForm
+    ? renderNicknameFormHtml(nicknameForm, brand, brand === "clarice", "leaderboard")
     : "";
   // #4418 §3: faixa de confirmação pós-redirect de /set-name — topo da
   // página, acima do heading (é a PRIMEIRA coisa que o leitor vê ao chegar
