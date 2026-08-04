@@ -61,6 +61,17 @@
  *                Sem a flag, nenhum corte por score é aplicado (comportamento
  *                inalterado).
  *   --dry-run    só conta/imprime o plano, nada escrito.
+ *   --hold X[,Y] (#4542) RESERVA: exclui da seleção os contatos do segmento X
+ *                (hoje só `juridico`), que o editor está segurando pra uma
+ *                campanha própria. Opt-in por invocação — o envio especial
+ *                desse mesmo segmento é montado SEM a flag. Nome inválido
+ *                aborta (nunca ignora em silêncio). O resumo reporta
+ *                `held_from_selection` (quantos a reserva tirou DESTA seleção —
+ *                o número que responde "o que deixei de mandar hoje") ao lado
+ *                de `held_in_universe` (quantos do segmento existem no
+ *                universo, quase sempre muito maior e sem significado
+ *                operacional sozinho), pra seleção menor nunca ser confundida
+ *                com predicado errado.
  *   --since YYYY-MM-DD   OBRIGATÓRIO só pro grupo `novos` (#4347) — janela de
  *                "cadastrou desde". Ignorado pelos outros 3 grupos.
  *   --force      OPCIONAL — só pro grupo `novos` (#4347, D13): destrava a
@@ -131,6 +142,7 @@ import {
 import { clariceSegmentsDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { fetchCommittedCampaignListIds, fetchQueuedCampaignListIds } from "./lib/brevo-client.ts";
+import { parseHoldArg, applyHolds } from "./lib/clarice-hold.ts";
 
 loadProjectEnv();
 
@@ -515,7 +527,37 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     );
   }
 
-  const { csv, manifestEntry, selected } = buildSegmentArtifact(universe, group, budget, minScore, ctx);
+  // #4542: reserva de segmento — retira do universo quem o editor está
+  // segurando pra uma campanha própria (hoje `--hold juridico`). ANTES do
+  // buildSegmentArtifact de propósito: segurar depois do corte de budget
+  // encolheria a onda em vez de puxar os próximos da fila.
+  let holds: string[];
+  try {
+    holds = parseHoldArg(getArg(argv, "hold"));
+  } catch (e) {
+    console.error(`❌ ${(e as Error).message}`);
+    process.exit(1);
+  }
+  const holdResult = applyHolds(universe, holds);
+
+  const { csv, manifestEntry, selected } = buildSegmentArtifact(holdResult.kept, group, budget, minScore, ctx);
+
+  // O número que importa pro operador não é quantos contatos do segmento
+  // existem no universo (a maioria nem seria selecionada), e sim quantos a
+  // reserva TIROU DESTA seleção. Só o segundo responde "o que eu deixei de
+  // mandar hoje". Calculado rodando a mesma seleção sem a reserva —
+  // buildSegmentArtifact é puro (não escreve; a escrita é do main), então o
+  // custo é uma passada em memória, e só quando há reserva ativa.
+  let heldFromSelection = 0;
+  if (holdResult.heldTotal > 0) {
+    const semReserva = buildSegmentArtifact(universe, group, budget, minScore, ctx);
+    heldFromSelection = semReserva.manifestEntry.count - manifestEntry.count;
+    console.error(
+      `🔒 reserva (--hold ${holds.join(",")}): ${heldFromSelection} contato(s) a menos NESTA seleção ` +
+        `(${manifestEntry.count} em vez de ${semReserva.manifestEntry.count}). ` +
+        `${holdResult.heldTotal} do segmento retidos do universo.`,
+    );
+  }
 
   // #4347 D13: teto de tamanho da rodada — só o grupo 'novos' (substituto do
   // gate humano que a skill /diaria-clarice-novos não tem, D6). Checado ANTES
@@ -546,6 +588,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // grupo inteiro (ver `CommittedGuardScope`, clarice-segment.ts).
     guard_scope: guardScope,
     already_committed_brevo: committedExcluded || undefined,
+    // #4542: sempre presente quando houve reserva — o operador precisa ver no
+    // resumo que a seleção saiu menor DE PROPÓSITO, e não por predicado errado.
+    hold: holds.length > 0 ? holds.join(",") : undefined,
+    /** Quantos a reserva tirou DESTA seleção — o "o que deixei de mandar hoje". */
+    held_from_selection: heldFromSelection || undefined,
+    /** Quantos do segmento existem no universo (contexto, quase sempre maior). */
+    held_in_universe: holdResult.heldTotal || undefined,
+    held_by_segment: holdResult.heldTotal > 0 ? holdResult.heldBySegment : undefined,
     selected: manifestEntry.count,
   };
 
