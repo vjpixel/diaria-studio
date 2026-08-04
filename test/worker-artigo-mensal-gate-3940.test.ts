@@ -315,3 +315,31 @@ describe("fetch handler — método != GET → 405 (#3940)", () => {
     assert.equal(res.status, 405);
   });
 });
+
+describe("GET /sitemap.xml — sitemap vazio válido, não a página de paywall/form (#4546 achado lateral)", () => {
+  it("200 XML com <urlset> vazio — antes disto, o catch-all tratava 'sitemap.xml' como {cycle} e devolvia o form de e-mail com 200", async () => {
+    const worker = (await import("../workers/artigo-mensal/src/index.ts")).default;
+    // Nem allowlist nem artigo no KV — se o defeito antigo reaparecesse, o
+    // gate cairia em "no_email" (sem `?email=`) e devolveria o form de
+    // e-mail, não um sitemap.
+    const env = makeEnv(new Map(), null);
+    const res = await worker.fetch(new Request("https://artigo.diar.ia.br/sitemap.xml"), env);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("Content-Type") ?? "", /xml/);
+    const body = await res.text();
+    assert.match(body, /<urlset/);
+    assert.doesNotMatch(body, /<html/i, "não deve devolver HTML (form de e-mail/paywall) em /sitemap.xml");
+    assert.doesNotMatch(body, /<loc>/, "sem URL pública indexável — todo conteúdo é gated, sitemap deve ficar vazio");
+  });
+
+  it("continua servindo /sitemap.xml mesmo com ?email= na query (não é tratado como cycle)", async () => {
+    const worker = (await import("../workers/artigo-mensal/src/index.ts")).default;
+    const env = makeEnv(new Map(), JSON.stringify(["apoiador10@x.com"]));
+    const res = await worker.fetch(
+      new Request("https://artigo.diar.ia.br/sitemap.xml?email=apoiador10@x.com"),
+      env,
+    );
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /<urlset/);
+  });
+});

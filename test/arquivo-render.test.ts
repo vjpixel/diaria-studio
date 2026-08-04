@@ -382,4 +382,35 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     assert.match(body, /<urlset/);
     assert.match(body, /<loc>https:\/\/arquivo\.diar\.ia\.br\/<\/loc>/);
   });
+
+  it("GET /robots.txt → 200 texto com Allow: /, Sitemap: própria e sem fetch externo (#4546)", async () => {
+    globalThis.fetch = (async () => {
+      throw new Error("/robots.txt não deveria depender de rede nenhuma");
+    }) as unknown as typeof fetch;
+
+    const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/robots.txt"));
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("Content-Type") ?? "", /text\/plain/);
+    const body = await res.text();
+    assert.match(body, /Allow: \//);
+    assert.match(body, /Sitemap: https:\/\/arquivo\.diar\.ia\.br\/sitemap\.xml/);
+    // liberação seletiva (#4546, decisão do editor): só Amazonbot e
+    // CloudflareBrowserRenderingCrawler continuam bloqueados — os 7
+    // crawlers de assistente/treino (GPTBot, ClaudeBot, CCBot,
+    // Google-Extended, Bytespider, meta-externalagent, Applebot-Extended)
+    // NÃO aparecem como Disallow.
+    assert.match(body, /User-agent: Amazonbot\nDisallow: \//);
+    assert.match(body, /User-agent: CloudflareBrowserRenderingCrawler\nDisallow: \//);
+    for (const bot of [
+      "GPTBot",
+      "ClaudeBot",
+      "CCBot",
+      "Google-Extended",
+      "Bytespider",
+      "meta-externalagent",
+      "Applebot-Extended",
+    ]) {
+      assert.doesNotMatch(body, new RegExp(`User-agent: ${bot}\\b`));
+    }
+  });
 });
