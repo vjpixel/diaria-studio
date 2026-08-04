@@ -109,7 +109,7 @@ import { monthlyDir as resolveMonthlyDir } from "./lib/mensal/monthly-paths.ts";
 import { checkEiaGuard, applyVerifyResults } from "./clarice-schedule-sends.ts";
 import { findExistingConflicts, normalizeImportCsv, countRows, type WaveDef } from "./clarice-import-waves.ts";
 import { ensureEditorCopyRow } from "./lib/editor-copy.ts"; // #3455 / #3643 bug 3
-import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { extractPlanCredits } from "../workers/brevo-dashboard/src/brevo-api.ts";
 import {
   selectMatureDayCampaigns,
@@ -274,7 +274,18 @@ export function sliceIntoVolumes<T>(ordered: T[], volumes: number[]): T[][] {
  * Resolve `--dashboard-limit N` (#3643 minor 2): `N` explícito é usado mesmo
  * quando `0` — evita o bug clássico de falsy-zero de `Number(raw) || fallback`
  * (que descartaria um `--dashboard-limit 0` explícito e caísse no default
- * silenciosamente). `raw` ausente ou não-numérico → `fallback`. Pura, testável.
+ * silenciosamente).
+ *
+ * `raw` ausente, VAZIO/só-espaços (#4568) ou não-numérico → `fallback`. A
+ * string vazia precisa de checagem PRÓPRIA porque ela não é "não-numérica" em
+ * JS: `Number("") === 0`, e era exatamente por isso que um `getArg` sem a flag
+ * virava `?limit=0` em vez de cair no fallback. Pura, testável.
+ *
+ * PREFIRA `getIntArg(argv, key, { min: 1 })` em call sites novos: esta função
+ * cai em fallback silencioso pra lixo (`"abc"` → fallback) e aceita negativo e
+ * não-inteiro (`"-5"` → -5), enquanto `getIntArg` rejeita os três com erro
+ * legível. Mantida pelo contrato do #3643 minor 2 (o `0` explícito), não como
+ * o caminho recomendado.
  */
 export function resolveDashboardLimit(raw: string | undefined, fallback: number = DEFAULT_DASHBOARD_LIMIT): number {
   // #4568: string VAZIA é "flag ausente", não "limite zero". `getArg` devolve
@@ -832,7 +843,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     console.error(`📋 Volumes (explícito --volumes): ${volumes.join(", ")}`);
   } else {
     const dashboardUrl = getArg(argv, "dashboard-url") || DEFAULT_DASHBOARD_URL;
-    const limit = resolveDashboardLimit(getArg(argv, "dashboard-limit"), DEFAULT_DASHBOARD_LIMIT);
+    // #4568 (review): migrado junto com o call site irmão em
+    // clarice-check-semaphore.ts. O `resolveDashboardLimit` remendado cobre o
+    // caso "" que causou o bug, mas ainda aceita negativo e não-inteiro
+    // (`"-5"` → -5 → `?limit=-5`) e cai em fallback mudo pra lixo — manter
+    // DUAS disciplinas de erro pra MESMA flag, no mesmo arquivo, é como o
+    // invariante divergiu da primeira vez.
+    const limit = getIntArg(argv, "dashboard-limit", { min: 1 }) ?? DEFAULT_DASHBOARD_LIMIT;
     const limitWarning = warnIfLimitExceedsWorkerClamp(limit);
     if (limitWarning) console.error(limitWarning);
     console.error(`📋 Volumes: nenhum --volumes explícito — recomputando via ${dashboardUrl}/api/campaigns?limit=${limit}…`);

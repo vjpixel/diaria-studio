@@ -27,6 +27,10 @@
  *
  * Uso:
  *   npx tsx scripts/clarice-check-semaphore.ts [--dashboard-url URL] [--dashboard-limit N]
+ *   N: inteiro >= 1. Omitir usa DEFAULT_DASHBOARD_LIMIT (50). "0", valor vazio
+ *   ou flag sem valor sao REJEITADOS com erro de CLI (#4568) — antes viravam
+ *   ?limit=0, que o servico responde com 5xx (observado ao vivo, comportamento
+ *   externo: nada neste repo garante esse status).
  *
  * Stdout: JSON { ok, semaphore, reason? }. Stderr: log humano-legível.
  */
@@ -35,6 +39,7 @@ import { getArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
 import {
   DEFAULT_DASHBOARD_URL,
   DEFAULT_DASHBOARD_LIMIT,
+  warnIfLimitExceedsWorkerClamp,
   fetchPostmasterSpamEntry,
   deriveRampVolumes,
 } from "./clarice-schedule-ramp.ts";
@@ -97,9 +102,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // #4568: `getIntArg` (não `getArg` + resolveDashboardLimit) — devolve
   // `undefined` só quando a flag está genuinamente AUSENTE e LANÇA em valor
   // inválido, em vez de colapsar "" em 0. `min: 1` porque `limit=0` não tem
-  // significado válido pra este endpoint (o Worker responde 502): melhor um
-  // erro legível de CLI que um 5xx atribuído ao serviço.
+  // significado válido pra este endpoint — observado ao vivo devolvendo 5xx
+  // (#4568), mas isso é comportamento de serviço EXTERNO e nada aqui o garante:
+  // rejeitar no cliente vale independente do status que o Worker escolha.
   const limit = getIntArg(argv, "dashboard-limit", { min: 1 }) ?? DEFAULT_DASHBOARD_LIMIT;
+  // #4568 (review): o irmão `clarice-schedule-ramp.ts` já avisava quando o
+  // limite pedido excede o clamp do Worker (50) — este nunca avisou, nem antes
+  // nem depois do fix. Sem isto, um `--dashboard-limit 200` seria truncado em
+  // silêncio e o semáforo decidiria sobre uma janela menor que a pedida.
+  const limitWarning = warnIfLimitExceedsWorkerClamp(limit);
+  if (limitWarning) console.error(limitWarning);
 
   const result = await checkSemaphore(dashboardUrl, limit);
   if (result.semaphore === "red") {

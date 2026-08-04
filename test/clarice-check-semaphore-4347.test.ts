@@ -7,7 +7,7 @@
  */
 import { test, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { decideSemaphoreGuard, checkSemaphore } from "../scripts/clarice-check-semaphore.ts";
+import { decideSemaphoreGuard, checkSemaphore, main } from "../scripts/clarice-check-semaphore.ts";
 
 test("decideSemaphoreGuard: semáforo 'red' -> ok=false (aborta)", () => {
   const result = decideSemaphoreGuard({ ok: true, plan: { volumes: [10, 10, 10], semaphore: "red", flagged: [], baseVolume: 30 } });
@@ -121,7 +121,13 @@ test("checkSemaphore: recordedAt fresco mas date stale (#4541) -> semáforo trat
 
 // #4568 — o guard pedia `?limit=0` em toda invocação sem flags e o Worker
 // respondia 502, então ele abortava SEMPRE, sem nunca avaliar entregabilidade.
-// Causa: `getArg` devolve "" (não undefined) e `resolveDashboardLimit("")` = 0.
+// Causa HISTÓRICA: `getArg` devolve "" (não undefined) e
+// `resolveDashboardLimit("")` = 0. O caminho ATUAL deste arquivo não passa mais
+// por `resolveDashboardLimit` — `main()` chama `getIntArg` direto —, então
+// estes testes andam sobre o código novo, não sobre o antigo.
+//
+// CUIDADO ao reusar `urlPedida`: ele só captura REJEIÇÃO. Caminhos que saem por
+// `process.exit` (ex: semáforo vermelho) não rejeitam e passariam batido.
 describe("main(): limite pedido ao dashboard (#4568)", () => {
   async function urlPedida(argv: string[]): Promise<string> {
     let capturada = "";
@@ -136,7 +142,9 @@ describe("main(): limite pedido ao dashboard (#4568)", () => {
     console.log = () => {};
     console.error = () => {};
     try {
-      const { main } = await import("../scripts/clarice-check-semaphore.ts");
+      // `main` vem do import estático no topo — nada de `import()` dinâmico
+      // aqui (review #4571: reimportar só re-busca o mesmo namespace de módulo
+      // e adiciona uma janela de corrida sem ganho nenhum).
       await main(argv);
     } finally {
       globalThis.fetch = prevFetch;
@@ -163,4 +171,22 @@ describe("main(): limite pedido ao dashboard (#4568)", () => {
   it("--dashboard-limit sem valor ABORTA (mesma classe de bug)", async () => {
     await assert.rejects(() => urlPedida(["--dashboard-limit"]), /sem valor/);
   });
+});
+
+// #4571 review: negativo toma outro ramo da checagem do getIntArg
+// (`!Number.isInteger(v) || v < min`), mesma rejeição. Grátis de cobrir.
+test("--dashboard-limit negativo ABORTA", async () => {
+  const prevFetch = globalThis.fetch;
+  const prevLog = console.log;
+  const prevErr = console.error;
+  globalThis.fetch = (async () => new Response("[]", { status: 200 })) as typeof fetch;
+  console.log = () => {};
+  console.error = () => {};
+  try {
+    await assert.rejects(() => main(["--dashboard-limit", "-1"]), /inteiro ≥ 1/);
+  } finally {
+    globalThis.fetch = prevFetch;
+    console.log = prevLog;
+    console.error = prevErr;
+  }
 });
