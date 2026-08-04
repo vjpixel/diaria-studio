@@ -1,6 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { sendListName, toImportCsv, parseArgs, mergeSendsSummaryWithListIds } from "../scripts/clarice-import-sends.ts";
+import {
+  sendListName,
+  toImportCsv,
+  parseArgs,
+  mergeSendsSummaryWithListIds,
+  importOneSend,
+} from "../scripts/clarice-import-sends.ts";
+import { countRows, type ImportRunClient } from "../scripts/clarice-import-waves.ts";
 import { EDITOR_COPY_EMAIL } from "../scripts/lib/editor-copy.ts";
 
 describe("sendListName", () => {
@@ -62,6 +69,17 @@ describe("toImportCsv", () => {
     const { csv } = toImportCsv(`email,NOME\n${EDITOR_COPY_EMAIL},Pixel\na@b.com,Ana\n`);
     const occurrences = csv.split(EDITOR_COPY_EMAIL).length - 1;
     assert.equal(occurrences, 1, `email do editor não deve duplicar: ${csv}`);
+  });
+
+  // #4602: sentCount (usado na reconciliação pós-import de importOneSend) é
+  // countRows(csv) — o CSV final já inclui a cópia do editor, então deve
+  // exceder `count` (que reflete só os contatos reais).
+  it("#4602: countRows(csv) > count quando o CSV final inclui a cópia do editor", () => {
+    const { csv, count } = toImportCsv("email,NOME\na@b.com,Ana\nc@d.com,Caio\n");
+    assert.ok(
+      countRows(csv) > count,
+      `sentCount (countRows(csv)=${countRows(csv)}) deve ser maior que count real (${count})`,
+    );
   });
 });
 
@@ -153,5 +171,90 @@ describe("mergeSendsSummaryWithListIds (roundtrip import→summary #2007)", () =
     const summary = makeSummary([{ n: 8, file: "d08.csv", day: "ter", week: 2 }]);
     const merged = mergeSendsSummaryWithListIds(summary, []);
     assert.deepEqual(merged.sends, summary.sends);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4602 — mesmo padrão do #4577 (clarice-import-waves.ts): clarice-import-sends
+// disparava o import assíncrono e declarava sucesso sem NUNCA confirmar que o
+// processo tinha terminado, nem reconciliar a contagem de contatos ingeridos
+// contra o CSV enviado. importOneSend fecha esse gap reusando o poller
+// genérico (pollProcessUntilTerminal) + o ImportRunClient genérico (ambos já
+// extraídos de clarice-import-waves.ts no #4577) — mesmos 3 cenários de
+// regressão da issue original, adaptados à estrutura Plan{n, day} deste
+// arquivo em vez de Plan{wave}.
+// ---------------------------------------------------------------------------
+
+describe("importOneSend (#4602 — confirma o processo assíncrono + reconcilia contagem)", () => {
+  const plan = {
+    n: 1,
+    day: "qua",
+    listName: "Clarice Jun/2026 d01 (qua)",
+    csv: "EMAIL,NOME\na@x.com,Ana\nb@x.com,Bia\nvjpixel@gmail.com,Pixel (editor)\n",
+    sentCount: 3, // 2 contatos reais + 1 cópia do editor
+  };
+  const noSleep = { sleep: async () => {}, intervalMs: 0 };
+
+  function makeFakeClient(overrides: Partial<ImportRunClient> = {}): ImportRunClient {
+    return {
+      createList: async () => ({ id: 55 }),
+      importCsv: async () => ({ processId: "proc-9" }),
+      pollProcess: async () => ({ status: "completed" }),
+      getListInfo: async () => ({ totalSubscribers: plan.sentCount }),
+      ...overrides,
+    };
+  }
+
+  // Cenário (a) da issue: processo que termina 'failed' → rejeita (main()
+  // propaga isso como exit ≠ 0, antes de gravar listId em sends-summary.json).
+  it("(a) processo termina 'failed' → rejeita, nunca declara sucesso", async () => {
+    const client = makeFakeClient({ pollProcess: async () => ({ status: "failed" }) });
+    await assert.rejects(
+      () => importOneSend(client, plan, { folderId: 1, poll: noSleep }),
+      /falhou/,
+    );
+  });
+
+  // Cenário (b) da issue: processo 'completed', mas a lista confirma MENOS
+  // contatos que o CSV enviado — o mesmo caso real do #4577
+  // (a15276@aecampo.pt) poderia acontecer em qualquer envio dNN da rampa
+  // diária, não só nas waves.
+  it("(b) completed com contagem confirmada MENOR que o CSV enviado → aborta nomeando a lista e o delta", async () => {
+    const client = makeFakeClient({ getListInfo: async () => ({ totalSubscribers: plan.sentCount - 1 }) });
+    await assert.rejects(
+      () => importOneSend(client, plan, { folderId: 1, poll: noSleep }),
+      (err: Error) => {
+        assert.match(err.message, /lista #55/);
+        assert.match(err.message, /1 contato\(s\) perdido/);
+        assert.match(err.message, /Brevo confirma 2/);
+        assert.match(err.message, /CSV enviado tinha 3/);
+        return true;
+      },
+    );
+  });
+
+  // Cenário (c) da issue: caso feliz — o registro final reflete a contagem
+  // CONFIRMADA pela Brevo, não a enviada.
+  it("(c) caso feliz — completed com contagem batendo → resolve com a contagem CONFIRMADA (não a enviada)", async () => {
+    const client = makeFakeClient();
+    const result = await importOneSend(client, plan, {
+      folderId: 1,
+      poll: noSleep,
+      now: () => "2026-08-04T12:00:00.000Z",
+    });
+    assert.deepEqual(result, {
+      n: 1,
+      listId: 55,
+      listName: plan.listName,
+      count: 3, // #4602: grava a contagem CONFIRMADA pela Brevo
+      sentCount: 3,
+      importedAt: "2026-08-04T12:00:00.000Z",
+    });
+  });
+
+  it("contagem confirmada MAIOR que o CSV enviado (lista pré-existia com outros contatos) → não é tratado como perda, resolve normalmente", async () => {
+    const client = makeFakeClient({ getListInfo: async () => ({ totalSubscribers: plan.sentCount + 5 }) });
+    const result = await importOneSend(client, plan, { folderId: 1, poll: noSleep });
+    assert.equal(result.count, plan.sentCount + 5);
   });
 });
