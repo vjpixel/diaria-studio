@@ -54,6 +54,17 @@ describe("submitSitemap (#4546)", () => {
     assert.doesNotMatch(r.error ?? "", /oauth-setup/);
   });
 
+  it("fetchImpl que lança exceção (ex: GoogleAuthError de refresh_token revogado) → ok:false estruturado, sem propagar (#4615 achado CRITICAL)", async () => {
+    const fetchImpl = async (): Promise<Response> => {
+      throw new Error("Token refresh falhou (400): invalid_grant");
+    };
+    const r = await submitSitemap("sc-domain:diar.ia.br", "https://cursos.diar.ia.br/sitemap.xml", fetchImpl);
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 0);
+    assert.match(r.error ?? "", /invalid_grant/);
+    assert.match(r.error ?? "", /oauth-setup\.ts/);
+  });
+
   it("monta a URL da API com site e sitemapUrl url-encoded", async () => {
     let capturedUrl = "";
     let capturedMethod = "";
@@ -100,5 +111,22 @@ describe("submitAll (#4546)", () => {
       results.map((r) => r.ok),
       [true, false, true],
     );
+  });
+
+  it("uma EXCEÇÃO lançada no meio (não HTTP de erro) também não impede as demais (#4615 achado CRITICAL)", async () => {
+    let i = 0;
+    const fetchImpl = async () => {
+      i++;
+      if (i === 2) throw new Error("Token refresh falhou (400): invalid_grant");
+      return fakeResponse(200, "");
+    };
+    const results = await submitAll("sc-domain:diar.ia.br", CURADORIA_SITEMAPS, fetchImpl);
+    assert.equal(results.length, 3);
+    assert.deepEqual(
+      results.map((r) => r.ok),
+      [true, false, true],
+    );
+    assert.equal(results[1].status, 0);
+    assert.match(results[1].error ?? "", /invalid_grant/);
   });
 });

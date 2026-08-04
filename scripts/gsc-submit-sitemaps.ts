@@ -63,19 +63,28 @@ export async function submitSitemap(
   fetchImpl: FetchLike = gFetch,
 ): Promise<SitemapSubmitResult> {
   const url = `https://www.googleapis.com/webmasters/v3/sites/${encodeURIComponent(site)}/sitemaps/${encodeURIComponent(sitemapUrl)}`;
-  const res = await fetchImpl(url, { method: "PUT" });
-  if (res.ok) return { sitemapUrl, ok: true, status: res.status };
+  try {
+    const res = await fetchImpl(url, { method: "PUT" });
+    if (res.ok) return { sitemapUrl, ok: true, status: res.status };
 
-  const body = await res.text();
-  if (res.status === 403) {
+    const body = await res.text();
+    if (res.status === 403) {
+      return {
+        sitemapUrl,
+        ok: false,
+        status: 403,
+        error: `403 — escopo de escrita ausente no token OAuth atual ou site não verificado. Rode 'npx tsx scripts/oauth-setup.ts' (scope 'webmasters', #4546) e reaprove no browser. Body: ${body.slice(0, 200)}`,
+      };
+    }
+    return { sitemapUrl, ok: false, status: res.status, error: body.slice(0, 200) };
+  } catch (e) {
     return {
       sitemapUrl,
       ok: false,
-      status: 403,
-      error: `403 — escopo de escrita ausente no token OAuth atual ou site não verificado. Rode 'npx tsx scripts/oauth-setup.ts' (scope 'webmasters', #4546) e reaprove no browser. Body: ${body.slice(0, 200)}`,
+      status: 0,
+      error: `Falha de auth/rede: ${(e as Error).message}. Se for refresh_token expirado/revogado, rode 'npx tsx scripts/oauth-setup.ts'.`,
     };
   }
-  return { sitemapUrl, ok: false, status: res.status, error: body.slice(0, 200) };
 }
 
 /** Submete todos os sitemaps em sequência (volume baixo — 3 chamadas — não precisa de paralelismo). */
