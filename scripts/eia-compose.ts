@@ -54,6 +54,14 @@ import { runMain } from "./lib/exit-handler.ts";
 import { writeEiaAnswerSidecar, eiaAnswerSidecarPath } from "./lib/eia-answer.ts";
 import { runTsx } from "./lib/run-tsx.ts"; // #1811
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { logEvent } from "./lib/run-log.ts"; // #4620
+
+// Domínio real de platform.config.json > image_generator QUE ESTE ARQUIVO
+// sabe dispatchar (ver ternário de imageScriptName em main()) — não é o
+// schema completo (scripts/lib/schemas/platform-config.ts também aceita
+// "openai", que este arquivo trata como gemini por fallback silencioso,
+// pré-existente, fora do escopo do #4620).
+type ImageGenerator = "gemini" | "comfyui" | "cloudflare";
 
 export interface WikimediaImage {
   title?: string;
@@ -1059,35 +1067,48 @@ export function buildCreditLine(
 /**
  * #4620: decide qual texto alimenta `buildSdPrompt()` — `image.description.text`
  * (pt-BR nativo desde #4618) é seguro pro Gemini (`gemini-image.js`, multilíngue),
- * mas degradaria silenciosamente a fidelidade de `comfyui-run.js`/`cloudflare-image.js`
- * (o texto vai direto pro `CLIPTextEncode`, modelo treinado majoritariamente em EN).
- * Só paga o custo de uma 2ª chamada à Wikimedia (mesma data, locale `en`) quando
- * genuinamente precisa: `imageGenerator !== "gemini"` E a description já veio
- * nativa em pt (`isPtDescription`). Fail-soft — se a chamada EN falhar ou vier
- * sem `description.text`, cai de volta pro texto existente (nunca bloqueia a
- * composição da edição por causa disto), mas avisa em stderr.
+ * mas degradaria silenciosamente a fidelidade de `comfyui-run.js` (o texto vai
+ * direto pro `CLIPTextEncode`) ou `cloudflare-image.js` (vira o campo `prompt`
+ * da API SDXL/FLUX da Workers AI) — os dois modelos treinados majoritariamente
+ * em EN. Só paga o custo de uma 2ª chamada à Wikimedia (mesma data, locale
+ * `en`) quando genuinamente precisa: `imageGenerator !== "gemini"` E a
+ * description já veio nativa em pt (`isPtDescription`). Fail-soft — se a
+ * chamada EN falhar ou vier sem `description.text`, cai de volta pro texto
+ * existente (nunca bloqueia a composição da edição por causa disto), mas
+ * registra em stderr (debug local) e no run-log (`logEvent`, #612 —
+ * `/diaria-log {edition}` torna isso auditável mesmo rodando desatendido em
+ * background — ver docstring de `main()` no topo do arquivo sobre o dispatch
+ * via Bash).
  */
 export async function resolveSdPromptDescription(
-  imageGenerator: string,
-  image: WikimediaImage,
+  imageGenerator: ImageGenerator,
+  image: Pick<WikimediaImage, "description">,
   imageDate: string,
+  edition: string,
   fetchEn: (iso: string) => Promise<WikimediaImage | null> = (iso) => fetchPotd(iso, 3, "en"),
+  rootDir: string = process.cwd(), // injetável em teste, mesmo padrão de logEvent (#612)
 ): Promise<string> {
   const fallbackText = image.description?.text ?? "";
   if (imageGenerator === "gemini" || !isPtDescription(image)) {
     return fallbackText;
   }
-  const enImage = await fetchEn(imageDate).catch(() => null);
+  let fetchError: string | null = null;
+  const enImage = await fetchEn(imageDate).catch((e) => {
+    fetchError = e instanceof Error ? e.message : String(e);
+    return null;
+  });
   if (enImage?.description?.text) {
     return enImage.description.text;
   }
-  process.stderr.write(
-    `[eia-compose] warn: image_generator="${imageGenerator}" (!= gemini) e description é pt, mas o fetch EN de ` +
-      "fallback falhou/veio vazio — prompt SD seguirá em pt-BR (#4620), pode degradar fidelidade do backend Stable Diffusion.\n",
-  );
+  const message = fetchError
+    ? `image_generator="${imageGenerator}" (!= gemini) e description é pt, mas o fetch EN de fallback FALHOU (${fetchError}) — prompt SD seguirá em pt-BR (#4620), pode degradar fidelidade do backend Stable Diffusion.`
+    : `image_generator="${imageGenerator}" (!= gemini) e description é pt, mas o fetch EN de fallback veio SEM description.text (sem erro — provavelmente não há POTD nessa data no locale en) — prompt SD seguirá em pt-BR (#4620), pode degradar fidelidade do backend Stable Diffusion.`;
+  process.stderr.write(`[eia-compose] warn: ${message}\n`);
+  logEvent({ edition, stage: 3, agent: "eia-compose", level: "warn", message, details: { imageDate, imageGenerator, fetchError } }, rootDir);
   return fallbackText;
 }
 
+/** #4620: transform puro texto→prompt — caller resolve qual texto (idioma/fonte) passar, ver `resolveSdPromptDescription`. */
 export function buildSdPrompt(descriptionText: string): {
   positive: string;
   negative: string;
@@ -1317,8 +1338,8 @@ async function main(): Promise<void> {
   const platformCfg = JSON.parse(
     readFileSync(resolve(ROOT, "platform.config.json"), "utf8"),
   );
-  const imageGenerator = (platformCfg.image_generator ?? "gemini") as string;
-  const sdDescriptionText = await resolveSdPromptDescription(imageGenerator, image, imageDate);
+  const imageGenerator = (platformCfg.image_generator ?? "gemini") as ImageGenerator;
+  const sdDescriptionText = await resolveSdPromptDescription(imageGenerator, image, imageDate, edition);
   const sdPrompt = buildSdPrompt(sdDescriptionText);
   const sdPromptPath = resolve(internalDir, "01-eia-sd-prompt.json");
   writeFileSync(sdPromptPath, JSON.stringify(sdPrompt, null, 2));

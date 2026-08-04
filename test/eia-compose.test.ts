@@ -1769,12 +1769,26 @@ describe("buildSdPrompt (#4620 — antes recebia WikimediaImage inteiro, agora r
 describe("resolveSdPromptDescription (#4620 — só busca EN quando genuinamente precisa)", () => {
   const ptImage = { description: { text: "Roma fica no rio Tibre.", lang: "pt" } };
   const enNativeImage = { description: { text: "Rome is on the Tiber.", lang: "en" } };
+  const EDITION = "260804";
+
+  // #4620 (achado do review consolidado, silent-failure-hunter): todo caminho
+  // que chega no fail-soft chama logEvent(), que por padrão escreve em
+  // data/run-log.jsonl relativo ao cwd real — sem injetar rootDir, estes
+  // testes poluiriam o run-log de verdade do repo (mesmo padrão de isolamento
+  // já usado em test/run-log.test.ts). tmpdir novo por teste que precisa dele.
+  function makeTmpRoot(): string {
+    return mkdtempSync(join(tmpdir(), "eia-sd-prompt-logevent-"));
+  }
+  function readRunLog(rootDir: string): unknown[] {
+    const p = join(rootDir, "data", "run-log.jsonl");
+    return readFileSync(p, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  }
 
   it("image_generator=gemini + description pt → retorna o texto pt, ZERO fetch (custo do caminho ativo hoje)", async () => {
     const fetchEn = async () => {
       throw new Error("não deveria ser chamado");
     };
-    const result = await resolveSdPromptDescription("gemini", ptImage, "2026-08-04", fetchEn);
+    const result = await resolveSdPromptDescription("gemini", ptImage, "2026-08-04", EDITION, fetchEn);
     assert.equal(result, "Roma fica no rio Tibre.");
   });
 
@@ -1782,7 +1796,7 @@ describe("resolveSdPromptDescription (#4620 — só busca EN quando genuinamente
     const fetchEn = async () => {
       throw new Error("não deveria ser chamado");
     };
-    const result = await resolveSdPromptDescription("comfyui", enNativeImage, "2026-08-04", fetchEn);
+    const result = await resolveSdPromptDescription("comfyui", enNativeImage, "2026-08-04", EDITION, fetchEn);
     assert.equal(result, "Rome is on the Tiber.");
   });
 
@@ -1792,37 +1806,68 @@ describe("resolveSdPromptDescription (#4620 — só busca EN quando genuinamente
       calledWithIso = iso;
       return { description: { text: "Rome is on the Tiber.", lang: "en" } };
     };
-    const result = await resolveSdPromptDescription("comfyui", ptImage, "2026-08-04", fetchEn);
+    const result = await resolveSdPromptDescription("comfyui", ptImage, "2026-08-04", EDITION, fetchEn);
     assert.equal(result, "Rome is on the Tiber.");
     assert.equal(calledWithIso, "2026-08-04");
   });
 
-  it("image_generator=cloudflare + description pt + fetch EN falha → fail-soft, cai de volta pro texto pt (nunca lança)", async () => {
+  it("image_generator=cloudflare + description pt + fetch EN falha (exceção) → fail-soft, cai pro texto pt, warn em stderr E run-log com a mensagem de erro real", async () => {
+    const tmpRoot = makeTmpRoot();
     const fetchEn = async () => {
       throw new Error("Wikimedia indisponível");
     };
-    const result = await resolveSdPromptDescription("cloudflare", ptImage, "2026-08-04", fetchEn);
+    const originalWrite = process.stderr.write;
+    let captured = "";
+    process.stderr.write = ((chunk: string) => {
+      captured += chunk;
+      return true;
+    }) as typeof process.stderr.write;
+    let result: string;
+    try {
+      result = await resolveSdPromptDescription("cloudflare", ptImage, "2026-08-04", EDITION, fetchEn, tmpRoot);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
     assert.equal(result, "Roma fica no rio Tibre.");
+    assert.match(captured, /FALHOU \(Wikimedia indisponível\)/, "stderr deve conter a mensagem de erro REAL, não genérica (achado silent-failure-hunter)");
+    const entries = readRunLog(tmpRoot) as Array<{
+      edition: string; stage: number; agent: string; level: string; message: string;
+      details: { imageDate: string; imageGenerator: string; fetchError: string | null };
+    }>;
+    assert.equal(entries.length, 1, "logEvent deve gravar exatamente 1 entrada no run-log (#612, achado silent-failure-hunter: warning precisa ser durável, não só stderr)");
+    assert.equal(entries[0].edition, EDITION);
+    assert.equal(entries[0].stage, 3);
+    assert.equal(entries[0].agent, "eia-compose");
+    assert.equal(entries[0].level, "warn");
+    assert.match(entries[0].message, /FALHOU \(Wikimedia indisponível\)/);
+    assert.deepEqual(entries[0].details, { imageDate: "2026-08-04", imageGenerator: "cloudflare", fetchError: "Wikimedia indisponível" });
   });
 
-  it("image_generator=comfyui + description pt + fetch EN retorna sem description.text → fail-soft, cai pro texto pt", async () => {
+  it("image_generator=comfyui + description pt + fetch EN retorna sem description.text (sem erro) → fail-soft, cai pro texto pt, mensagem distingue de falha real", async () => {
+    const tmpRoot = makeTmpRoot();
     const fetchEn = async () => ({ description: { lang: "en" } });
-    const result = await resolveSdPromptDescription("comfyui", ptImage, "2026-08-04", fetchEn);
+    const result = await resolveSdPromptDescription("comfyui", ptImage, "2026-08-04", EDITION, fetchEn, tmpRoot);
     assert.equal(result, "Roma fica no rio Tibre.");
+    const entries = readRunLog(tmpRoot) as Array<{ message: string; details: { fetchError: string | null } }>;
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].details.fetchError, null, "sem exceção — não deve inventar uma mensagem de erro");
+    assert.match(entries[0].message, /SEM description\.text \(sem erro/);
   });
 
   it("image_generator=comfyui + description pt + fetch EN retorna null → fail-soft, cai pro texto pt", async () => {
+    const tmpRoot = makeTmpRoot();
     const fetchEn = async () => null;
-    const result = await resolveSdPromptDescription("comfyui", ptImage, "2026-08-04", fetchEn);
+    const result = await resolveSdPromptDescription("comfyui", ptImage, "2026-08-04", EDITION, fetchEn, tmpRoot);
     assert.equal(result, "Roma fica no rio Tibre.");
   });
 
   it("default fetchEn (sem injeção): pede a feed real no locale en pra mesma data (#4620)", async () => {
+    const tmpRoot = makeTmpRoot();
     await withFetchSpy(async (calls) => {
       // withFetchSpy sempre lança na chamada interceptada — cai no fail-soft,
       // a asserção relevante é a URL efetivamente pedida (mesmo padrão do
       // guard de fetchPotd/locale pt já usado pro #4618 mais acima).
-      const result = await resolveSdPromptDescription("comfyui", ptImage, "2026-08-04");
+      const result = await resolveSdPromptDescription("comfyui", ptImage, "2026-08-04", EDITION, undefined, tmpRoot);
       assert.equal(result, "Roma fica no rio Tibre.", "fail-soft cai pro texto pt quando o fetch real falha no teste");
       assert.equal(calls.length, 1);
       assert.match(calls[0], /\/wikipedia\/en\/featured\/2026\/08\/04/);
