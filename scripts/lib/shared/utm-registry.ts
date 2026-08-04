@@ -292,6 +292,37 @@ export const LINKEDIN_WEEKLY_UTM = {
   campaignPattern: "ln-{cycle}",
 } as const;
 
+/**
+ * Clique no link de confirmação de 1-clique do Worker `reativar` (#4530,
+ * decisão do editor 260803) — o LEITOR confirma ativamente o cadastro Pending
+ * clicando no CTA do bloco de intro do canal Brevo próprio
+ * (`context/snippets/brevo-diaria-pending-intro.md`). `referringSite` distinto
+ * do triplo UTM porque `workers/reativar/src/index.ts` chama a MESMA API
+ * Beehiiv (`POST /subscriptions`) que aceita `referring_site` além dos 3 UTMs
+ * — ver `BREVO_DIARIA_PROMOCAO_SCORE_UTM` abaixo pro segundo caminho, que
+ * NUNCA deve compartilhar este `utm_campaign`: a métrica que interessa ao
+ * #4476 é justamente "o leitor clicou" vs. "o sistema promoveu por score", e
+ * misturar os dois no mesmo campaign perderia essa comparação. */
+export const BREVO_DIARIA_REATIVAR_CLIQUE_UTM = {
+  source: "brevo-diaria",
+  medium: "reativacao-pending",
+  campaign: "pending-reativar-clique",
+  referringSite: "brevo-diaria-reativar",
+} as const;
+
+/** Promoção AUTOMÁTICA por score de engajamento (#4530) —
+ * `scripts/evaluate-brevo-diaria.ts::promoteBeehiivSubscription`, via
+ * `runEvaluation` quando `classifyBrevoDiariaAction` decide promover pela
+ * taxa de abertura, sem clique do leitor. Mesmo `source`/`medium` de
+ * `BREVO_DIARIA_REATIVAR_CLIQUE_UTM` (ambos são o canal Brevo Pending), mas
+ * `campaign`/`referringSite` PRÓPRIOS — nunca reusar os do clique acima. */
+export const BREVO_DIARIA_PROMOCAO_SCORE_UTM = {
+  source: "brevo-diaria",
+  medium: "reativacao-pending",
+  campaign: "pending-promocao-score",
+  referringSite: "brevo-diaria-evaluate",
+} as const;
+
 /** Uma entrada do inventário: um ponto do código que emite UTM. */
 export interface UtmEmitter {
   /** Identificador estável — chave de join com os metadados editáveis da UI. */
@@ -617,11 +648,85 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "clique no nome da marca em prosa, separado pra não inflar o CTA da abertura.",
     status: "ativo",
   },
+  {
+    id: "brevo-diaria-reativar-clique",
+    label: "Brevo diária — clique no link de reativação",
+    source: BREVO_DIARIA_REATIVAR_CLIQUE_UTM.source,
+    medium: BREVO_DIARIA_REATIVAR_CLIQUE_UTM.medium,
+    campaignPattern: BREVO_DIARIA_REATIVAR_CLIQUE_UTM.campaign,
+    originFile: "workers/reativar/src/index.ts",
+    description:
+      "Clique do LEITOR no CTA de 1-clique do bloco de intro do canal Brevo Pending " +
+      "(#4530/#4476) — cria/ativa a assinatura Beehiiv via activateSubscription. " +
+      "Distinto de 'brevo-diaria-promocao-score' (mesmo source/medium, campaign " +
+      "próprio) — nunca colapsar os dois, é a comparação clique×score que justifica " +
+      "o canário do #4476.",
+    status: "ativo",
+  },
+  {
+    id: "brevo-diaria-promocao-score",
+    label: "Brevo diária — promoção automática por score",
+    source: BREVO_DIARIA_PROMOCAO_SCORE_UTM.source,
+    medium: BREVO_DIARIA_PROMOCAO_SCORE_UTM.medium,
+    campaignPattern: BREVO_DIARIA_PROMOCAO_SCORE_UTM.campaign,
+    originFile: "scripts/evaluate-brevo-diaria.ts",
+    description:
+      "Promoção AUTOMÁTICA pra Beehiiv por taxa de abertura (#4530/#4476, via " +
+      "promoteBeehiivSubscription/runEvaluation) — sem clique do leitor. Distinto " +
+      "de 'brevo-diaria-reativar-clique' (mesmo source/medium, campaign próprio).",
+    status: "ativo",
+  },
 ] as const;
 
 /** Busca uma entrada do inventário por id. `undefined` se não existe. @pure */
 export function findUtmEmitter(id: string): UtmEmitter | undefined {
   return UTM_EMITTERS.find((e) => e.id === id);
+}
+
+/**
+ * Grupos de emissores que COMPARTILHAM DE PROPÓSITO o mesmo triplo
+ * `(source, medium, campaignPattern)` — hoje só o par do arquivo É IA?
+ * (#3524): o Worker precisa emitir o MESMO valor que o e-mail, sem poder
+ * importar de `scripts/**`. Qualquer OUTRA colisão é acidente (literal
+ * copiado sem querer, o padrão que motivou esta issue — #4530 Parte C) e deve
+ * travar `findUtmEmitterCollisions()`/o teste que a consome.
+ */
+export const DELIBERATE_UTM_EMITTER_DUPLICATES: readonly (readonly string[])[] = [
+  ["eia-arquivo-newsletter", "eia-arquivo-worker"],
+];
+
+/**
+ * Detecta colisões de `(source, medium, campaignPattern)` entre emissores do
+ * inventário — sinal de literal duplicado sem querer, sem depender de quem
+ * lembrar de checar manualmente (#4530 Parte C). Ignora os grupos declarados
+ * em `DELIBERATE_UTM_EMITTER_DUPLICATES` (duplicidade intencional e
+ * documentada). Retorna os grupos de `id`s que colidem e NÃO são
+ * deliberados — array vazio significa "nenhuma colisão inesperada".
+ *
+ * `emitters` é injetável (default `UTM_EMITTERS`) só pra permitir teste com
+ * dados sintéticos sem mexer no inventário real — o uso normal nunca passa
+ * o argumento.
+ *
+ * @pure
+ */
+export function findUtmEmitterCollisions(emitters: readonly UtmEmitter[] = UTM_EMITTERS): string[][] {
+  const bySignature = new Map<string, string[]>();
+  for (const e of emitters) {
+    const signature = `${e.source}|${e.medium}|${e.campaignPattern}`;
+    const ids = bySignature.get(signature) ?? [];
+    ids.push(e.id);
+    bySignature.set(signature, ids);
+  }
+  const deliberate = new Set(
+    DELIBERATE_UTM_EMITTER_DUPLICATES.map((group) => [...group].sort().join(",")),
+  );
+  const unexpected: string[][] = [];
+  for (const ids of bySignature.values()) {
+    if (ids.length < 2) continue;
+    if (deliberate.has([...ids].sort().join(","))) continue;
+    unexpected.push(ids);
+  }
+  return unexpected;
 }
 
 // ---------------------------------------------------------------------------

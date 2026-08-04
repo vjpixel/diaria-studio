@@ -81,7 +81,7 @@ import { performIdentifyMerge, type IdentifyMergeInput } from "./identify";
 // confirmação (o merge imediato em identify.ts já faz isto — ver
 // `handleJogarIdentify`). Sem import circular novo: subscribe.ts não importa
 // de magic-link.ts nem de identify.ts.
-import { resolveSubscribeUtm, subscribeToBeehiiv } from "./subscribe";
+import { resolveSubscribeUtm, subscribeToBeehiiv, JOGAR_IDENTIFY_MAGIC_LINK_REFERRING_SITE } from "./subscribe";
 
 /** TTL do token de confirmação — 24h (item 2 da issue). */
 export const MAGIC_LINK_TTL_SEC = 60 * 60 * 24;
@@ -431,7 +431,10 @@ export async function handleConfirmMerge(
   if (pending.optin) {
     const fetchImpl = deps.fetchImpl ?? fetch;
     try {
-      const utm = resolveSubscribeUtm("jogar-identify");
+      // #4530 Parte B: mesmo triplo UTM de identify.ts (funil de opt-in do
+      // form de identidade), mas `referringSite` PRÓPRIO — este é o clique no
+      // LINK DE E-MAIL de confirmação, não o form on-page.
+      const utm = { ...resolveSubscribeUtm("jogar-identify"), referringSite: JOGAR_IDENTIFY_MAGIC_LINK_REFERRING_SITE };
       const result = await subscribeToBeehiiv(bEnv, { name: pending.name, email: pending.email }, fetchImpl, utm);
       if (!result.ok) {
         console.error(JSON.stringify({ event: "identify_optin_not_subscribed", stage: "confirm_merge", reason: result.reason ?? null }));

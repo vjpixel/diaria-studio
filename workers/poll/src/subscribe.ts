@@ -78,10 +78,25 @@ export const INLINE_SUBSCRIBE_UTM_CAMPAIGN = JOGAR_INLINE_UTM.campaign;
  */
 export type SubscribeSource = "jogar" | "livros-hero" | "livros-footer" | "vote-clarice" | "jogar-gate" | "jogar-identify";
 
+/**
+ * #4530 Parte B: `referringSite` promovido a campo do triplo — antes disto
+ * `subscribeToBeehiiv` tinha o literal `"jogar-eia-inline"` HARDCODED no
+ * corpo da função, compartilhado por TODO call site (livros hero/footer,
+ * gate, identify, magic-link, caixa clarice do `/set-name`) independente do
+ * `source` de fato. O campo não distinguia nada — só o triplo UTM
+ * distinguia. Cada entrada de `SUBSCRIBE_UTM_BY_SOURCE` abaixo agora carrega
+ * o `referringSite` PRÓPRIO da posição do link; `identify.ts`/`magic-link.ts`
+ * (que compartilham `source="jogar-identify"`, mas são fluxos DIFERENTES —
+ * form on-page vs. link de e-mail) e `index.ts` (caixa clarice do
+ * `/set-name`, que não passa por `resolveSubscribeUtm`) sobrescrevem o campo
+ * na chamada — ver `JOGAR_IDENTIFY_MAGIC_LINK_REFERRING_SITE`/
+ * `VOTE_CLARICE_SET_NAME_REFERRING_SITE` exportados abaixo.
+ */
 export interface SubscribeUtm {
   source: string;
   medium: string;
   campaign: string;
+  referringSite: string;
 }
 
 const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
@@ -89,6 +104,7 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     source: SUBSCRIBE_UTM_SOURCE,
     medium: INLINE_SUBSCRIBE_UTM_MEDIUM,
     campaign: INLINE_SUBSCRIBE_UTM_CAMPAIGN,
+    referringSite: "eia-jogar-inline",
   },
   // utm_source=livros / utm_medium distinto por posição — pedido explícito da
   // issue #4051 pra medir hero × fim-de-lista separadamente.
@@ -97,11 +113,13 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     source: LIVROS_INLINE_UTM.source,
     medium: LIVROS_INLINE_UTM.hero.medium,
     campaign: LIVROS_INLINE_UTM.campaign,
+    referringSite: "livros-inline-hero",
   },
   "livros-footer": {
     source: LIVROS_INLINE_UTM.source,
     medium: LIVROS_INLINE_UTM.footer.medium,
     campaign: LIVROS_INLINE_UTM.campaign,
+    referringSite: "livros-inline-footer",
   },
   // #4065: cadastro inline na tela de resultado do voto do brand clarice —
   // utm_source distinto (não é o funil "eia-standalone" do jogo público, é a
@@ -111,22 +129,39 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     source: VOTE_CLARICE_INLINE_UTM.source,
     medium: VOTE_CLARICE_INLINE_UTM.medium,
     campaign: VOTE_CLARICE_INLINE_UTM.campaign,
+    referringSite: "vote-clarice-inline",
   },
   // #4054: cadastro na tela de gate do caminho de fora (`web-gate.ts`).
   "jogar-gate": {
     source: JOGAR_GATE_INLINE_UTM.source,
     medium: JOGAR_GATE_INLINE_UTM.medium,
     campaign: JOGAR_GATE_INLINE_UTM.campaign,
+    referringSite: "jogar-gate-inline",
   },
   // #4125 (item 4): opt-in de newsletter do form de IDENTIDADE (#3975,
   // `identify.ts`) — UTM próprio pra não colidir com "jogar" (form standalone
-  // do #3580, hoje só em `/jogar/quiz`).
+  // do #3580, hoje só em `/jogar/quiz`). `referringSite` cobre o form
+  // ON-PAGE de `identify.ts` — `magic-link.ts` (mesmo `source`, fluxo
+  // DIFERENTE) sobrescreve com `JOGAR_IDENTIFY_MAGIC_LINK_REFERRING_SITE`.
   "jogar-identify": {
     source: JOGAR_IDENTIFY_INLINE_UTM.source,
     medium: JOGAR_IDENTIFY_INLINE_UTM.medium,
     campaign: JOGAR_IDENTIFY_INLINE_UTM.campaign,
+    referringSite: "jogar-identify-inline",
   },
 };
+
+/** #4530 Parte B: `magic-link.ts` reusa o triplo UTM de `"jogar-identify"`
+ * (mesmo funil de opt-in do form de identidade), mas é um CALL SITE distinto
+ * (link de confirmação por e-mail, não o form on-page) — precisa do próprio
+ * `referringSite`, nunca o mesmo de `identify.ts`. */
+export const JOGAR_IDENTIFY_MAGIC_LINK_REFERRING_SITE = "jogar-identify-magic-link";
+
+/** #4530 Parte B: caixa clarice do `/set-name` (`index.ts::handleSetName`) —
+ * chama `subscribeToBeehiiv` direto com `VOTE_CLARICE_INLINE_UTM` (não passa
+ * por `resolveSubscribeUtm`), então precisa do próprio `referringSite`
+ * explícito na chamada. */
+export const VOTE_CLARICE_SET_NAME_REFERRING_SITE = "vote-clarice-set-name";
 
 /** Pure: resolve o triplo UTM a partir do `source` mandado pelo cliente
  * (default `jogar` pra valor ausente/desconhecido — nunca lança). */
@@ -314,7 +349,10 @@ export async function subscribeToBeehiiv(
     utm_source: utm.source,
     utm_medium: utm.medium,
     utm_campaign: utm.campaign,
-    referring_site: "jogar-eia-inline",
+    // #4530 Parte B: era o literal fixo "jogar-eia-inline" pra TODO call
+    // site — agora vem do triplo, um valor por posição de link (ver
+    // docstring de `SubscribeUtm`).
+    referring_site: utm.referringSite,
   };
   if (input.name && env.BEEHIIV_NAME_FIELD) {
     body.custom_fields = [{ name: env.BEEHIIV_NAME_FIELD, value: input.name }];

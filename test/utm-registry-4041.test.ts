@@ -134,16 +134,39 @@ describe("#4041 — emissores derivam do registry (sem literal solto no call sit
   it("subscribe.ts — cadastro inline do jogo e das páginas de livros", () => {
     assert.equal(INLINE_SUBSCRIBE_UTM_MEDIUM, shared.JOGAR_INLINE_UTM.medium);
     assert.equal(INLINE_SUBSCRIBE_UTM_CAMPAIGN, shared.JOGAR_INLINE_UTM.campaign);
+    // #4530 Parte B: referringSite entrou no triplo — um valor por posição de
+    // link, distinto do literal fixo "jogar-eia-inline" compartilhado antes.
     assert.deepEqual(resolveSubscribeUtm("livros-hero"), {
       source: shared.LIVROS_INLINE_UTM.source,
       medium: shared.LIVROS_INLINE_UTM.hero.medium,
       campaign: shared.LIVROS_INLINE_UTM.campaign,
+      referringSite: "livros-inline-hero",
     });
     assert.deepEqual(resolveSubscribeUtm("livros-footer"), {
       source: shared.LIVROS_INLINE_UTM.source,
       medium: shared.LIVROS_INLINE_UTM.footer.medium,
       campaign: shared.LIVROS_INLINE_UTM.campaign,
+      referringSite: "livros-inline-footer",
     });
+  });
+
+  it("#4530 Parte B — referringSite distinto por call site, mesmo quando o triplo UTM é compartilhado", async () => {
+    // identify.ts (form on-page) e magic-link.ts (link de e-mail) compartilham
+    // source="jogar-identify" — mas cada um marca o clique com um
+    // referringSite PRÓPRIO, nunca o mesmo literal fixo pra todo call site.
+    const identifyDefault = resolveSubscribeUtm("jogar-identify");
+    assert.equal(identifyDefault.referringSite, "jogar-identify-inline");
+
+    const magicLinkSrc = await import("../workers/poll/src/magic-link.ts");
+    const subscribeSrc = await import("../workers/poll/src/subscribe.ts");
+    assert.equal(subscribeSrc.JOGAR_IDENTIFY_MAGIC_LINK_REFERRING_SITE, "jogar-identify-magic-link");
+    assert.notEqual(subscribeSrc.JOGAR_IDENTIFY_MAGIC_LINK_REFERRING_SITE, identifyDefault.referringSite);
+    assert.equal(typeof magicLinkSrc.handleConfirmMerge, "function");
+
+    // caixa clarice do /set-name (index.ts) — não passa por resolveSubscribeUtm,
+    // tem constante própria distinta de qualquer source-keyed referringSite.
+    assert.equal(subscribeSrc.VOTE_CLARICE_SET_NAME_REFERRING_SITE, "vote-clarice-set-name");
+    assert.notEqual(subscribeSrc.VOTE_CLARICE_SET_NAME_REFERRING_SITE, resolveSubscribeUtm("vote-clarice").referringSite);
   });
 
   it("embed.ts — funil do widget de parceiro", () => {
@@ -251,5 +274,99 @@ describe("#4295 — social + Cursos: emissores novos derivam do registry, sem li
     assert.equal(shared.CURSOS_FOOTER_NAV_UTM.source, "cursos");
     assert.equal(shared.CURSOS_GATE_INLINE_UTM.source, "cursos");
     assert.notEqual(shared.CURSOS_FOOTER_NAV_UTM.medium, shared.CURSOS_GATE_INLINE_UTM.medium);
+  });
+});
+
+describe("#4530 — canal Brevo Pending (reativar/evaluate) entra no inventário de UTM", () => {
+  it("os 2 novos ids estão presentes em UTM_EMITTERS", () => {
+    const ids = shared.UTM_EMITTERS.map((e) => e.id);
+    for (const id of ["brevo-diaria-reativar-clique", "brevo-diaria-promocao-score"]) {
+      assert.ok(ids.includes(id), `UTM_EMITTERS deve conter "${id}"`);
+    }
+  });
+
+  it("mesmo source/medium ('brevo-diaria'/'reativacao-pending'), campaign e referringSite distintos (clique × score, #4476)", () => {
+    assert.equal(shared.BREVO_DIARIA_REATIVAR_CLIQUE_UTM.source, "brevo-diaria");
+    assert.equal(shared.BREVO_DIARIA_PROMOCAO_SCORE_UTM.source, "brevo-diaria");
+    assert.equal(shared.BREVO_DIARIA_REATIVAR_CLIQUE_UTM.medium, shared.BREVO_DIARIA_PROMOCAO_SCORE_UTM.medium);
+    assert.notEqual(shared.BREVO_DIARIA_REATIVAR_CLIQUE_UTM.campaign, shared.BREVO_DIARIA_PROMOCAO_SCORE_UTM.campaign);
+    assert.notEqual(
+      shared.BREVO_DIARIA_REATIVAR_CLIQUE_UTM.referringSite,
+      shared.BREVO_DIARIA_PROMOCAO_SCORE_UTM.referringSite,
+    );
+  });
+
+  it("workers/reativar/src/index.ts emite o triplo de BREVO_DIARIA_REATIVAR_CLIQUE_UTM no POST de criação", async () => {
+    const reativarSrc = await import("../workers/reativar/src/index.ts");
+    let body: unknown;
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "POST") {
+        body = JSON.parse(init!.body as string);
+        return new Response(JSON.stringify({ data: { id: "sub_new", status: "active" } }), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(null, { status: 404 }); // GET inicial — nunca existiu
+    }) as typeof fetch;
+    const env = { BEEHIIV_API_KEY: "key", BEEHIIV_PUBLICATION_ID: "pub_1" };
+    await reativarSrc.activateSubscription(env, "a@b.com", fetchImpl);
+    assert.deepEqual(body, {
+      email: "a@b.com",
+      send_welcome_email: false,
+      utm_source: shared.BREVO_DIARIA_REATIVAR_CLIQUE_UTM.source,
+      utm_medium: shared.BREVO_DIARIA_REATIVAR_CLIQUE_UTM.medium,
+      utm_campaign: shared.BREVO_DIARIA_REATIVAR_CLIQUE_UTM.campaign,
+      referring_site: shared.BREVO_DIARIA_REATIVAR_CLIQUE_UTM.referringSite,
+    });
+  });
+
+  it("scripts/evaluate-brevo-diaria.ts emite o triplo de BREVO_DIARIA_PROMOCAO_SCORE_UTM no POST de criação", async () => {
+    const evalSrc = await import("../scripts/evaluate-brevo-diaria.ts");
+    let body: unknown;
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "POST") {
+        body = JSON.parse(init!.body as string);
+        return new Response(JSON.stringify({}), { status: 200 });
+      }
+      return new Response(null, { status: 404 }); // GET inicial — nunca existiu
+    }) as typeof fetch;
+    await evalSrc.promoteBeehiivSubscription("pub_1", "key", "a@b.com", fetchImpl);
+    assert.deepEqual(body, {
+      email: "a@b.com",
+      send_welcome_email: false,
+      utm_source: shared.BREVO_DIARIA_PROMOCAO_SCORE_UTM.source,
+      utm_medium: shared.BREVO_DIARIA_PROMOCAO_SCORE_UTM.medium,
+      utm_campaign: shared.BREVO_DIARIA_PROMOCAO_SCORE_UTM.campaign,
+      referring_site: shared.BREVO_DIARIA_PROMOCAO_SCORE_UTM.referringSite,
+    });
+  });
+});
+
+describe("#4530 Parte C — guard de colisão de triplo (source, medium, campaignPattern)", () => {
+  it("findUtmEmitterCollisions() não acusa nenhuma colisão INESPERADA no inventário atual", () => {
+    assert.deepEqual(
+      shared.findUtmEmitterCollisions(),
+      [],
+      "colisão de triplo fora da allowlist DELIBERATE_UTM_EMITTER_DUPLICATES — literal duplicado sem querer?",
+    );
+  });
+
+  it("a duplicata deliberada (arquivo É IA?, #3524) é reconhecida e não conta como colisão inesperada", () => {
+    assert.deepEqual(shared.DELIBERATE_UTM_EMITTER_DUPLICATES, [["eia-arquivo-newsletter", "eia-arquivo-worker"]]);
+  });
+
+  it("detecta uma colisão sintética que NÃO está na allowlist (prova que a função REALMENTE detecta, não só retorna vazio por padrão)", () => {
+    const synthetic = [
+      ...shared.UTM_EMITTERS,
+      { ...shared.UTM_EMITTERS[0], id: "synthetic-duplicate-of-first" },
+    ];
+    const collisions = shared.findUtmEmitterCollisions(synthetic);
+    assert.ok(
+      collisions.some((ids) => ids.includes("synthetic-duplicate-of-first") && ids.includes(shared.UTM_EMITTERS[0].id)),
+      `esperava colisão sintética detectada, veio: ${JSON.stringify(collisions)}`,
+    );
   });
 });
