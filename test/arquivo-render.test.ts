@@ -361,12 +361,25 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     assert.equal(res.status, 502);
   });
 
-  it("path != / → 404", async () => {
+  it("path != / (e != /sitemap.xml) → 404", async () => {
     globalThis.fetch = (async () => {
       throw new Error("não deveria fazer fetch nenhum pra path != /");
     }) as unknown as typeof fetch;
 
     const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/outra-coisa"));
     assert.equal(res.status, 404);
+  });
+
+  it("GET /sitemap.xml → 200 XML com a própria PAGE_URL, sem fetch externo (#4546)", async () => {
+    globalThis.fetch = (async () => {
+      throw new Error("/sitemap.xml não deveria depender do sitemap remoto");
+    }) as unknown as typeof fetch;
+
+    const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/sitemap.xml"));
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("Content-Type") ?? "", /xml/);
+    const body = await res.text();
+    assert.match(body, /<urlset/);
+    assert.match(body, /<loc>https:\/\/arquivo\.diar\.ia\.br\/<\/loc>/);
   });
 });

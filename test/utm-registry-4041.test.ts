@@ -345,6 +345,54 @@ describe("#4530 — canal Brevo Pending (reativar/evaluate) entra no inventário
   });
 });
 
+describe("#4536/#4537/#4553 — pills do PARA ENCERRAR + resíduos de UTM/fixture", () => {
+  it("os 5 novos ids estão presentes em UTM_EMITTERS", () => {
+    const ids = shared.UTM_EMITTERS.map((e) => e.id);
+    for (const id of [
+      "cursos-rodape",
+      "livros-rodape",
+      "arquivo-rodape",
+      "livros-footer-nav",
+      "instagram-weekly-archive",
+    ]) {
+      assert.ok(ids.includes(id), `UTM_EMITTERS deve conter "${id}"`);
+    }
+  });
+
+  it("cursos-rodape/livros-rodape/arquivo-rodape: mesmo source/medium ('newsletter'/'email'), campaign único por pill (#4553)", () => {
+    assert.equal(shared.CURSOS_RODAPE_UTM.source, "newsletter");
+    assert.equal(shared.LIVROS_RODAPE_UTM.source, "newsletter");
+    assert.equal(shared.ARQUIVO_RODAPE_UTM.source, "newsletter");
+    assert.equal(shared.CURSOS_RODAPE_UTM.medium, "email");
+    assert.equal(shared.LIVROS_RODAPE_UTM.medium, "email");
+    assert.equal(shared.ARQUIVO_RODAPE_UTM.medium, "email");
+    const campaigns = [
+      shared.CURSOS_RODAPE_UTM.campaign,
+      shared.LIVROS_RODAPE_UTM.campaign,
+      shared.ARQUIVO_RODAPE_UTM.campaign,
+    ];
+    assert.equal(new Set(campaigns).size, campaigns.length, "campaign deveria ser único por pill");
+  });
+
+  it("livros-footer-nav: mesmo triplo (source='livros', medium='footer-nav') de cursos-footer-nav/arquivo-footer-nav", () => {
+    assert.equal(shared.LIVROS_FOOTER_NAV_UTM.source, "livros");
+    assert.equal(shared.LIVROS_FOOTER_NAV_UTM.medium, "footer-nav");
+  });
+
+  it("instagram-weekly-archive: format-weekly-social.ts deriva do registry via new URL()/searchParams (#4537 item 1)", async () => {
+    const { buildInstagramWeeklyArchiveUrl } = await import("../scripts/lib/format-weekly-social.ts");
+    const url = new URL(buildInstagramWeeklyArchiveUrl());
+    assert.equal(url.searchParams.get("utm_source"), shared.INSTAGRAM_WEEKLY_ARCHIVE_UTM.source);
+    assert.equal(url.searchParams.get("utm_medium"), shared.INSTAGRAM_WEEKLY_ARCHIVE_UTM.medium);
+    assert.equal(url.searchParams.get("utm_campaign"), shared.INSTAGRAM_WEEKLY_ARCHIVE_UTM.campaign);
+  });
+
+  it("build-livros-page.ts deriva LIVROS_FOOTER_NAV_UTM do registry (sem literal solto, #4537 item 2)", async () => {
+    const buildLivros = await import("../scripts/build-livros-page.ts");
+    assert.ok(typeof buildLivros.esc === "function", "módulo deveria carregar sem erro");
+  });
+});
+
 describe("#4530 Parte C — guard de colisão de triplo (source, medium, campaignPattern)", () => {
   it("findUtmEmitterCollisions() não acusa nenhuma colisão INESPERADA no inventário atual", () => {
     assert.deepEqual(

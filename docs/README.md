@@ -34,6 +34,7 @@ Ativo vs histórico. `context/` é o que entra no prompt cache (curado, ver `CLA
 | [`cohorts-schedule.md`](./cohorts-schedule.md) | Agendamento do crawl de coortes de engajamento do dashboard (#2426) |
 | [`coupon-kv-refresh.md`](./coupon-kv-refresh.md) | Refresh automático do KV de cupons do dashboard (#2750) |
 | [`runbooks/poll-secret-rotation.md`](./runbooks/poll-secret-rotation.md) | Runbook de rotação do secret HMAC do poll É IA? |
+| [`seo-notes.md`](./seo-notes.md) | Registro de fatos apurados sobre `data/seo/` (#4548) — evita reinterpretar `opportunities: 0`/canônica divergente como achado novo antes do checkpoint |
 
 ## Produto / estratégia / análises vivas
 

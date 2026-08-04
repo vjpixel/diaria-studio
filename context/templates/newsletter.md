@@ -106,9 +106,10 @@ Apoie a curadoria contribuindo a partir de R$5/mês em [apoia.se/diaria](https:/
 
 Nesta edição da **diar.ia.br**, usei Claude Code para automatizar parte da pesquisa e criar resumos, Gemini para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz ([ganhe um mês do plano Pro](https://wisprflow.ai/r?ANGELO492=)). A revisão foi feita pelo MCP da Clarice ([ganhe descontos com os cupons NEWS25 e NEWS50](https://clarice.ai/precos-planos?via=diaria)), dei o toque final e enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria)).
 
-- [Cursos](https://cursos.diar.ia.br)
-- [Livros](https://livros.diar.ia.br)
+- [Cursos](https://cursos.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=cursos-rodape)
+- [Livros](https://livros.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=livros-rodape)
 - [Equipamentos](https://www.amazon.com.br/shop/vjpixel)
+- [Arquivo](https://arquivo.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape)
 
 Para acompanhar as 3 principais notícias de IA todos os dias, siga a **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/), [Instagram](https://www.instagram.com/diar.ia.br), [Threads](https://www.threads.net/@diar.ia.br), [Facebook](https://www.facebook.com/diar.ia.br) ou [X](https://x.com/diariabr).
 ```

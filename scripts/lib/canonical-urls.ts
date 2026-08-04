@@ -161,6 +161,19 @@ export const DIARIA_EIA_URL = "https://eia.diar.ia.br";
  */
 export const DIARIA_ARTIGO_URL = "https://artigo.diar.ia.br";
 
+/**
+ * URL canônica da página de arquivo de edições (#3698/#4265) — domínio de
+ * marca (Workers Custom Domain, `workers/arquivo/wrangler.toml`,
+ * `arquivo.diar.ia.br`). Mesmo padrão de `DIARIA_CURSOS_URL`/
+ * `DIARIA_LIVROS_URL`/`DIARIA_EIA_URL`/`DIARIA_ARTIGO_URL` acima. Fonte única
+ * pra referências reader-facing — a 4ª pill "Arquivo" do PARA ENCERRAR
+ * (`CURADORIA_PILLS`, #4536) importa daqui em vez de hardcodear a URL de
+ * novo (o Worker mantém seu próprio `PAGE_URL` local pra canonical/og:url,
+ * ver `workers/arquivo/src/render-archive.ts` — não importar esta constante
+ * lá, ver nota de `FOOTER_DOMAINS`/#4536 sobre não acoplar `scripts/` ao Worker).
+ */
+export const DIARIA_ARQUIVO_URL = "https://arquivo.diar.ia.br";
+
 interface ArticleLike {
   url?: string;
   title?: string;

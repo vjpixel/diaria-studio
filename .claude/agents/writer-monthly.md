@@ -98,12 +98,13 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
    **Apoio + ferramentas + curadorias + convite social (#3219/#4413/#4411, sempre presentes, nunca parafrasear).** Logo após o parágrafo do encerramento padrão acima, na MESMA seção `PARA ENCERRAR` (sem label novo antes de cada peça), emitir NESTA ORDEM:
 
    1. Ler `context/snippets/encerramento-social-apoio.md` e emitir o corpo do arquivo (sem o comentário HTML de header) literalmente, substituindo o marcador `{{OPENING}}` pela variante MENSAL documentada no header do próprio arquivo — `"Essa edição mensal nasce da **diar.ia.br**, newsletter diária gratuita sobre IA. "` (com o espaço final antes de "Apoie"). Resultado esperado: 2 parágrafos — apoio à curadoria via Apoia.se (recompensas em negrito) e créditos das ferramentas de produção.
-   2. A lista de pílulas de curadoria — SEM label manual ("Acesse nossas curadorias:" é gerado pelo render) — literal e verbatim (EXATAMENTE como abaixo, sem indentação), sempre nesta ordem e com estes labels exatos (#4411, constante `CURADORIA_PILLS` em `scripts/lib/shared/encerramento-snippet.ts`):
+   2. A lista de pílulas de curadoria — SEM label manual ("Acesse nossas curadorias:" é gerado pelo render) — literal e verbatim (EXATAMENTE como abaixo, sem indentação), sempre nesta ordem e com estes labels exatos (#4411/#4536/#4553, constante `CURADORIA_PILLS` em `scripts/lib/shared/encerramento-snippet.ts`; o UTM embutido nas URLs de Cursos/Livros/Arquivo é sobrescrito pelo próprio render mensal — `normalizeKnownUrl`/`withClariceUtm` — pelo padrão `clarice-{ciclo}-pill-{label}`, então não reescreva os parâmetros à mão):
 
 ```
-- [Cursos](https://cursos.diar.ia.br)
-- [Livros](https://livros.diar.ia.br)
+- [Cursos](https://cursos.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=cursos-rodape)
+- [Livros](https://livros.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=livros-rodape)
 - [Equipamentos](https://www.amazon.com.br/shop/vjpixel)
+- [Arquivo](https://arquivo.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape)
 ```
    3. O convite social — texto FIXO, idêntico ao diário, nunca parafrasear (#4413, decisão do editor 260801, constante `SOCIAL_INVITE` em `scripts/lib/shared/encerramento-snippet.ts`):
 
@@ -119,7 +120,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
    - D1 ≤ 1.500 chars (prosa + fio); D2/D3 ≤ 1.200 chars cada
    - Use Melhor (até 3) + Radar (até 7), formato `título URL\ndescrição 1-2 frases` (warning se menos; Use Melhor pode estar vazio)
    - É IA? presente — texto resolvido (se `eia_selection_path` deu `edition`) ou placeholder (#2904) — e encerramento presentes
-   - `PARA ENCERRAR` inclui, ao final, nesta ordem: os 2 parágrafos literais de `context/snippets/encerramento-social-apoio.md` (apoio Apoia.se + ferramentas) com a abertura mensal substituída (#3219), a lista `CURADORIA_PILLS` (3 pills — Cursos/Livros/Equipamentos, #4411) e o convite social fixo `SOCIAL_INVITE` (#4413)
+   - `PARA ENCERRAR` inclui, ao final, nesta ordem: os 2 parágrafos literais de `context/snippets/encerramento-social-apoio.md` (apoio Apoia.se + ferramentas) com a abertura mensal substituída (#3219), a lista `CURADORIA_PILLS` (4 pills — Cursos/Livros/Equipamentos/Arquivo, #4411/#4536) e o convite social fixo `SOCIAL_INVITE` (#4413)
    - Sem markdown excêntrico no corpo — MAS todo label de seção em negrito `**...**` (#2794); sem links de paywall/agregador
    - `_internal/02-d1-prompt.md`, `02-d2-prompt.md`, `02-d3-prompt.md` gravados (#1916)
 
