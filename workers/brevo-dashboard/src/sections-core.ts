@@ -39,6 +39,11 @@ import {
   renderExperimentRegistrySection,
   renderExperimentsEvaluationSections,
 } from "./experiment-cta.ts";
+// #4515: aba brevo_diaria (canal Brevo PRÓPRIO do editor, conta SEPARADA da
+// Clarice) — import circular com este módulo (escHtml é usado lá, definido
+// aqui), mesmo padrão já documentado acima para render-links.ts/weekly-plan.ts/
+// experiment-cta.ts (uso só em corpo de função, request-time).
+import { renderBrevoDiariaTabPanel, type BrevoDiariaTabData } from "./brevo-diaria.ts";
 
 /**
  * #3082: rótulo pra 2ª linha (<small>) da célula "Lista" na tabela Envios —
@@ -113,6 +118,15 @@ export interface RenderDashboardOptions {
    * comportamento anterior ao #4198 — rótulo sempre derivado da URL.
    */
   linkTitlesByCycle?: Record<string, Record<string, string>> | null;
+  /**
+   * #4515: dados pré-buscados da aba brevo_diaria (canal Brevo PRÓPRIO do
+   * editor, conta SEPARADA da Clarice — ver `fetchBrevoDiariaTabData` em
+   * brevo-diaria.ts, chamado no call site do Worker — index.ts). `null`/
+   * ausente (default, preserva TODOS os callers/testes pré-#4515) → aba
+   * oculta. Presente → aba aparece (mesmo com `campaigns: []`/erro, que vira
+   * um banner explícito em vez de esconder a falha).
+   */
+  brevoDiaria?: BrevoDiariaTabData | null;
 }
 
 /**
@@ -690,6 +704,13 @@ ${monthlyAbcSectionsByDate}
     ? renderCouponTabPanel(couponUsage, nowDate)
     : (opts.studioMode ? renderKvUnavailableNote("panel-cupons") : "");
   const showCuponsTab = couponUsage !== null || opts.studioMode === true;
+  // #4515: aba brevo_diaria — canal Brevo PRÓPRIO do editor, conta SEPARADA
+  // da Clarice. `opts.brevoDiaria` ausente/`null` (default — nenhum caller
+  // pré-#4515 passa isto) → aba oculta, preservando EXATAMENTE o
+  // comportamento anterior. Presente (mesmo com `campaigns: []`/erro) → aba
+  // aparece com o banner apropriado (ver renderBrevoDiariaTabPanel).
+  const showBrevoDiariaTab = opts.brevoDiaria != null;
+  const brevoDiariaSection = showBrevoDiariaTab ? renderBrevoDiariaTabPanel(opts.brevoDiaria!) : "";
   // #3415: variante scoped só pra Visão Geral — mesmo painel, header "Total
   // por mês" → "Cupons" (rename que não pode vazar pra aba Cupons, fonte
   // compartilhada — ver renderCouponTabPanel opts.monthlyTitle).
@@ -931,6 +952,7 @@ ${monthlyAbcSectionsByDate}
   #tab-links:checked ~ .tab-bar label[for="tab-links"],
   #tab-contatos:checked ~ .tab-bar label[for="tab-contatos"],
   #tab-rampa:checked ~ .tab-bar label[for="tab-rampa"],
+  #tab-brevodiaria:checked ~ .tab-bar label[for="tab-brevodiaria"],
   #tab-cupons:checked ~ .tab-bar label[for="tab-cupons"] {
     background: var(--paper); border-color: var(--rule); opacity: 1;
     color: var(--brand); border-bottom-color: var(--paper);
@@ -942,6 +964,7 @@ ${monthlyAbcSectionsByDate}
   #tab-links:focus-visible ~ .tab-bar label[for="tab-links"],
   #tab-contatos:focus-visible ~ .tab-bar label[for="tab-contatos"],
   #tab-rampa:focus-visible ~ .tab-bar label[for="tab-rampa"],
+  #tab-brevodiaria:focus-visible ~ .tab-bar label[for="tab-brevodiaria"],
   #tab-cupons:focus-visible ~ .tab-bar label[for="tab-cupons"] {
     outline: 2px solid var(--brand); outline-offset: 2px; opacity: 1;
   }
@@ -952,6 +975,7 @@ ${monthlyAbcSectionsByDate}
   #tab-links:checked ~ .tab-panels #panel-links,
   #tab-contatos:checked ~ .tab-panels #panel-contatos,
   #tab-rampa:checked ~ .tab-panels #panel-rampa,
+  #tab-brevodiaria:checked ~ .tab-panels #panel-brevodiaria,
   #tab-cupons:checked ~ .tab-panels #panel-cupons { display: block; }
   @media (max-width: 700px) {
     body { margin: 16px auto; padding: 0 12px; }
@@ -974,6 +998,7 @@ ${monthlyAbcSectionsByDate}
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-engajamento">
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-links">
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-contatos">
+${showBrevoDiariaTab ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-brevodiaria">' : ''}
 ${showCuponsTab ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-cupons">' : ''}
 
 <!-- tab bar (labels referencing the radio inputs above; aria-controls liga aba↔painel) -->
@@ -984,6 +1009,7 @@ ${showCuponsTab ? '<input type="radio" class="tab-radios" name="dash-tab" id="ta
   <label class="tab-label" id="tablabel-engajamento" for="tab-engajamento" role="tab" aria-controls="panel-engajamento">Engajamento</label>
   <label class="tab-label" id="tablabel-links" for="tab-links" role="tab" aria-controls="panel-links">Links / Cliques</label>
   <label class="tab-label" id="tablabel-contatos" for="tab-contatos" role="tab" aria-controls="panel-contatos">Contatos</label>
+  ${showBrevoDiariaTab ? '<label class="tab-label" id="tablabel-brevodiaria" for="tab-brevodiaria" role="tab" aria-controls="panel-brevodiaria">brevo_diaria</label>' : ''}
   ${showCuponsTab ? '<label class="tab-label" id="tablabel-cupons" for="tab-cupons" role="tab" aria-controls="panel-cupons">Cupons</label>' : ''}
 </div>
 
@@ -1132,6 +1158,11 @@ ${aggregatedLinksSection}
 ${contactsSummarySection}
 ${cohortsTabSection}
   </div><!-- /panel-contatos -->
+
+${showBrevoDiariaTab ? `  <!-- Aba brevo_diaria: canal Brevo PRÓPRIO do editor (#4515), conta SEPARADA da Clarice -->
+  <div class="tab-panel" id="panel-brevodiaria" role="tabpanel" aria-labelledby="tablabel-brevodiaria">
+${brevoDiariaSection}
+  </div><!-- /panel-brevodiaria -->` : ''}
 
 ${showCuponsTab ? `  <!-- Aba 5: Cupons — uso de cupons Stripe (#2718, PII-gated; #4165/#4173: aviso em vez de sumir quando null em studioMode) -->
   <div class="tab-panel" id="panel-cupons" role="tabpanel" aria-labelledby="tablabel-cupons">
