@@ -48,7 +48,7 @@ Last Result:                          0
 Author:                               DESKTOP-PIXEL\\pixel
 Task To Run:                          npx tsx "C:\\Users\\pixel\\Projects\\diaria-studio\\scripts\\overnight-watchdog.ts"
 Start In:                             C:\\Users\\pixel\\Projects\\diaria-studio
-Comment:                               Diar.ia: watchdog de stall overnight (#2688) — roda a cada 10 min entre 18:00-09:00.
+Comment:                               diar.ia.br: watchdog de stall overnight (#2688) — roda a cada 10 min entre 18:00-09:00.
 Scheduled Task State:                 Enabled
 Repeat: Every:                        0 Hours, 10 Minutes
 Repeat: Until: Time:                  None
@@ -237,7 +237,7 @@ Last Result:                          0
 Author:                               N/A
 Task To Run:                          npx tsx "C:\\Users\\pixel\\Projects\\diaria-studio\\scripts\\overnight-watchdog.ts"
 Start In:                             C:\\Users\\pixel\\Projects\\diaria-studio
-Comment:                               Diar.ia: watchdog de stall overnight (#2688) - roda a cada 10 min entre 18:00-09:00.
+Comment:                               diar.ia.br: watchdog de stall overnight (#2688) - roda a cada 10 min entre 18:00-09:00.
 Scheduled Task State:                 Enabled
 Repeat: Every:                        0 Hour(s), 10 Minute(s)
 `;

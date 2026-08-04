@@ -1,7 +1,7 @@
 /**
  * test/poll-ink-hierarchy-3113.test.ts (#3113 item 6)
  *
- * O DS canônico da Diar.ia aboliu cinzas via opacity (`design-tokens.ts`:
+ * O DS canônico da diar.ia.br aboliu cinzas via opacity (`design-tokens.ts`:
  * "não há cinzas na paleta" — texto secundário é sempre ink, hierarquia vem
  * de tamanho/peso). As páginas do jogo "É IA?" (`workers/poll/src`) ainda
  * usavam `rgba(23,20,17,X)` em vários lugares (kicker, sub-copy, th, criteria

@@ -4,7 +4,7 @@
  *
  * #2975 — assinantes vindos da Clarice News mensal apareciam no Beehiiv como
  * `utm_source=sendinblue` (auto-tag do Brevo), impossível medir a conversão da
- * migração Clarice→Diar.ia. Fix: todo link de marca do render mensal carrega
+ * migração Clarice→diar.ia.br. Fix: todo link de marca do render mensal carrega
  * `utm_source=clarice&utm_medium=email&utm_campaign=clarice-{ciclo}`.
  *
  * #4059 — o host desses links passou de `diaria.beehiiv.com` pra `diar.ia.br`
