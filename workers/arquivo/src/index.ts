@@ -36,20 +36,25 @@ import { parseSitemap } from "../../../scripts/lib/fetch-sitemap.ts";
 import { renderCuradoriaRobotsTxt } from "../../../scripts/lib/shared/robots-txt.ts";
 import { matchAiReferrerHost, logAiReferrerHit } from "../../../scripts/lib/shared/ai-referrer-log.ts"; // #4558 Parte C
 import { buildArchiveHtml, PAGE_URL } from "./render-archive.ts";
+import { HUB_REGISTRY } from "./hubs/registry.ts"; // #4558 Parte A: hubs temáticos em /temas/{slug}
 
 /**
- * Sitemap PRÓPRIO desta página (#4546) — 1 único `<url>`, a própria
- * `PAGE_URL`. NÃO enumera as ~246 edições individuais (essas já vivem no
- * sitemap do host principal, `https://diar.ia.br/sitemap.xml`, consumido
- * acima via `fetchSitemapXml`) — o objetivo aqui é só dar ao Google um
- * caminho de descoberta pra ESTA página, que por sua vez lista `<a href>`
- * reais pra cada edição.
+ * Sitemap PRÓPRIO desta página (#4546) — `PAGE_URL` + 1 `<url>` por hub
+ * temático publicado (#4558 Parte A, `HUB_REGISTRY` — cresce sozinho a
+ * cada hub novo, sem editar esta lista). NÃO enumera as ~246 edições
+ * individuais (essas já vivem no sitemap do host principal,
+ * `https://diar.ia.br/sitemap.xml`, consumido acima via `fetchSitemapXml`)
+ * — o objetivo aqui é só dar ao Google um caminho de descoberta pra ESTAS
+ * páginas, que por sua vez listam `<a href>` reais pra cada edição.
  */
 const ARQUIVO_SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>${PAGE_URL}</loc>
   </url>
+${Object.keys(HUB_REGISTRY)
+  .map((slug) => `  <url>\n    <loc>${PAGE_URL}temas/${slug}</loc>\n  </url>`)
+  .join("\n")}
 </urlset>
 `;
 
@@ -153,6 +158,14 @@ export default {
     }
     if (url.pathname === "/robots.txt") {
       return robotsResponse();
+    }
+    // #4558 Parte A: hubs temáticos — HTML já gerado e commitado
+    // (`hubs/registry.ts`), servido tal qual, sem fetch/render em runtime.
+    if (url.pathname.startsWith("/temas/")) {
+      const slug = url.pathname.slice("/temas/".length).replace(/\/$/, "");
+      const html = HUB_REGISTRY[slug];
+      if (!html) return new Response("Not found", { status: 404 });
+      return htmlResponse(html);
     }
     if (url.pathname !== "/") {
       return new Response("Not found", { status: 404 });
