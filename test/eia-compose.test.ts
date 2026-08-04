@@ -1,8 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   findEligiblePotd,
   chooseSides,
@@ -1337,5 +1337,121 @@ describe("readUsedTitles excludeEdition (#1417)", () => {
     const titles = readUsedTitles(undefined, [corruptPath, validPath]);
     assert.ok(titles.has("file:valid.jpg"));
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("pickSubjectWikipediaLink — aceita pt.wikipedia.org (#4618)", () => {
+  it("extrai link pt.wikipedia.org quando description.html já vem nativa em pt", () => {
+    // #4618: desde que fetchPotd passou a pedir a feed em locale `pt`, a
+    // Wikimedia devolve description.html com links pra pt.wikipedia.org
+    // (antes só en.wikipedia.org era reconhecido pelo regex).
+    const html =
+      '<a href="https://pt.wikipedia.org/wiki/Foo">Foo</a> bla bla.';
+    assert.deepEqual(pickSubjectWikipediaLink(html), {
+      url: "https://pt.wikipedia.org/wiki/Foo",
+      text: "Foo",
+    });
+  });
+
+  it("continua aceitando en.wikipedia.org (fallback path quando description.lang !== pt)", () => {
+    const html = '<a href="https://en.wikipedia.org/wiki/Foo">Foo</a> bla bla.';
+    assert.deepEqual(pickSubjectWikipediaLink(html), {
+      url: "https://en.wikipedia.org/wiki/Foo",
+      text: "Foo",
+    });
+  });
+
+  it("ranking por title match funciona igual com links pt.wikipedia.org", () => {
+    // Confirma que a heurística de scoring (title match, #284) não dependia
+    // implicitamente do domínio en.wikipedia.org — só o SUBJECT_STOP_WORDS
+    // (#301) é inerentemente inglês (não penaliza termos em pt), então este
+    // teste usa title-match puro em vez de reusar o cenário "Pilot boat".
+    const html =
+      '<a href="https://pt.wikipedia.org/wiki/Barco">Barco</a> perto de ' +
+      '<a href="https://pt.wikipedia.org/wiki/Landsort">Landsort</a>.';
+    const title = "File:Landsort_April_2012.jpg";
+    const result = pickSubjectWikipediaLink(html, title);
+    assert.equal(result?.url, "https://pt.wikipedia.org/wiki/Landsort");
+  });
+});
+
+describe("buildCreditLine — #4618: topônimos não vazam em EN quando a Wikimedia serve description nativa em pt", () => {
+  it("caso real (edição 260804, issue #4618): Rome/Tiber/Vatican City saem como Roma/rio Tibre/Cidade do Vaticano, sem tradução nenhuma", () => {
+    // Fixture = resposta REAL da Wikimedia feed API pra
+    // https://api.wikimedia.org/feed/v1/wikipedia/pt/featured/2026/08/04 —
+    // mesma POTD do bug relatado na issue (File:Rom (IT), Brücke „Ponte
+    // Vittorio Emanuele II“ ...), capturada ao vivo durante a investigação
+    // desta correção. Antes (#4618), eia-compose.ts pedia a description em
+    // EN e tentava traduzir via Gemini com um prompt que instruía "manter
+    // nomes próprios em inglês" — Rome/Tiber/Vatican City (topônimos, mas
+    // também "nomes próprios" no sentido amplo) vazavam intactos. Buscar a
+    // description já em pt elimina a tradução inteira nesse caso comum.
+    const image = {
+      title: 'File:Rom (IT), Brücke „Ponte Vittorio Emanuele II“ -- 2024 -- 0732.jpg',
+      description: {
+        html:
+          '<a rel="mw:WikiLink/Interwiki" href="https://pt.wikipedia.org/wiki/Ponte%20Vittorio%20Emanuele%20II" title="pt:Ponte Vittorio Emanuele II" class="extiw">Ponte Vittorio Emanuele II</a>, com 108 metros de extensão, conecta o centro histórico de Roma — a leste do <a rel="mw:WikiLink/Interwiki" href="https://pt.wikipedia.org/wiki/rio%20Tibre" title="pt:rio Tibre" class="extiw">rio Tibre</a> — à <a rel="mw:WikiLink/Interwiki" href="https://pt.wikipedia.org/wiki/Vaticano" title="pt:Vaticano" class="extiw">Cidade do Vaticano</a>.',
+        text:
+          "Ponte Vittorio Emanuele II, com 108 metros de extensão, conecta o centro histórico de Roma — a leste do rio Tibre — à Cidade do Vaticano.",
+        lang: "pt",
+      },
+      artist: {
+        html:
+          '<bdi><a href="//commons.wikimedia.org/wiki/User:A._%C3%96ztas" title="User:A. Öztas">Anil Öztas</a></bdi>',
+        text: "Anil Öztas",
+      },
+      license: { type: "CC BY 4.0", url: "https://creativecommons.org/licenses/by/4.0" },
+    };
+    // Sem passar opts (ptLabel/ptWikipediaUrl/translatedSentence) — exatamente
+    // como main() chama quando `sourceIsPt` é true (#4618): buildCreditLine
+    // cai no fallback interno (`subj` recomputado de description.html), que
+    // já é suficiente porque a description em si já está em pt.
+    const credit = buildCreditLine(image as never);
+    assert.match(credit, /Roma/, `credit deve conter "Roma": ${credit}`);
+    assert.match(credit, /rio Tibre/, `credit deve conter "rio Tibre": ${credit}`);
+    assert.match(credit, /Cidade do Vaticano/, `credit deve conter "Cidade do Vaticano": ${credit}`);
+    assert.ok(!credit.includes("Rome"), `credit não deve conter "Rome" (vazamento EN): ${credit}`);
+    assert.ok(!credit.includes("Tiber"), `credit não deve conter "Tiber" (vazamento EN): ${credit}`);
+    assert.ok(!credit.includes("Vatican City"), `credit não deve conter "Vatican City" (vazamento EN): ${credit}`);
+    // Subject principal linkado direto pra pt.wikipedia.org, sem precisar de
+    // ptLabel/ptWikipediaUrl explícitos (mecanismo do #337/#480 fica ocioso).
+    assert.match(
+      credit,
+      /\[Ponte Vittorio Emanuele II\]\(https:\/\/pt\.wikipedia\.org\/wiki\/Ponte%20Vittorio%20Emanuele%20II\)/,
+    );
+  });
+});
+
+describe("eia-compose.ts (source guard) — #4618: fix de raiz não regride silenciosamente", () => {
+  it("fetchPotd pede a feed no locale pt (não mais en)", () => {
+    // Guard de configuração: a troca de locale é o fix primário (a Wikimedia
+    // passa a servir a description já traduzida nativamente). Sem este
+    // guard, um revert acidental de volta pra `/wikipedia/en/featured/`
+    // reintroduziria o vazamento de topônimos em EN sem nenhum teste falhar
+    // (buildCreditLine sozinho não pega isso — ele só reage ao que recebe).
+    const src = readFileSync(resolve(import.meta.dirname, "../scripts/eia-compose.ts"), "utf8");
+    assert.match(src, /feed\/v1\/wikipedia\/pt\/featured/);
+    assert.ok(
+      !src.includes("feed/v1/wikipedia/en/featured"),
+      "fetchPotd não deve mais pedir a feed no locale en como primário",
+    );
+  });
+
+  it("prompt de tradução (fallback) não instrui mais 'manter nomes próprios em inglês' de forma ampla", () => {
+    // #4618 causa raiz: a instrução antiga ("mantendo nomes próprios,
+    // científicos e siglas em inglês") fazia o Gemini preservar topônimos —
+    // tecnicamente nomes próprios — intactos em inglês. Esse prompt só roda
+    // no fallback raro agora (description.lang !== "pt"), mas continua
+    // sendo corrigido pra não repetir o mesmo bug nesse caminho.
+    const src = readFileSync(resolve(import.meta.dirname, "../scripts/eia-compose.ts"), "utf8");
+    assert.ok(
+      !src.includes("mantendo nomes próprios, nomes científicos e siglas em inglês"),
+      "prompt de tradução não deve mais instruir manter TODOS os nomes próprios (incl. topônimos) em inglês",
+    );
+    assert.match(
+      src,
+      /Traduza topônimos e nomes de lugares/,
+      "prompt de tradução deve instruir explicitamente a tradução de topônimos",
+    );
   });
 });
