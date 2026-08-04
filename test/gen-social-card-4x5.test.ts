@@ -54,6 +54,98 @@ describe("wrapTitle (#4114)", () => {
   });
 });
 
+describe("wrapTitle — redistribuição balanceada (#4575)", () => {
+  // Compara contra a versão gulosa antiga (reimplementada aqui, isolada) pra
+  // provar a PROPRIEDADE que mudou — nunca uma string literal, senão um
+  // ajuste futuro de limiar (maxCharsPerLine, heurística de largura) quebra
+  // o teste sem existir defeito real.
+  function greedyOnly(title: string, maxCharsPerLine: number): string[] {
+    const words = title.split(/\s+/).filter(Boolean);
+    const lines: string[] = [];
+    let cur = "";
+    for (const w of words) {
+      const candidate = cur ? `${cur} ${w}` : w;
+      if (candidate.length > maxCharsPerLine && cur) {
+        lines.push(cur);
+        cur = w;
+      } else {
+        cur = candidate;
+      }
+    }
+    if (cur) lines.push(cur);
+    return lines;
+  }
+
+  const maxMinDiff = (lines: string[]): number =>
+    Math.max(...lines.map((l) => l.length)) - Math.min(...lines.map((l) => l.length));
+
+  it("título que sairia com órfã na 2ª linha (guloso) sai balanceado (#4575, exemplo da issue)", () => {
+    // Mesmo exemplo do corpo da issue #4575: guloso empurra tudo pra 1ª
+    // linha e deixa "notar" sozinha na 2ª.
+    const title = "Claude hackeou 3 empresas sem ninguém notar";
+    const maxCharsPerLine = 38;
+    const before = greedyOnly(title, maxCharsPerLine);
+    const after = wrapTitle(title, maxCharsPerLine);
+
+    // A propriedade que importa: a diferença entre a linha mais longa e a
+    // mais curta caiu — não qual string exata saiu.
+    assert.ok(
+      maxMinDiff(after) < maxMinDiff(before),
+      `esperava diferença menor após balancear: antes=${JSON.stringify(before)} (diff ${maxMinDiff(before)}), depois=${JSON.stringify(after)} (diff ${maxMinDiff(after)})`,
+    );
+    // Invariante: nunca mais linhas que o guloso original.
+    assert.equal(after.length, before.length);
+    // Invariante: nenhuma linha estoura o limite.
+    for (const l of after) assert.ok(l.length <= maxCharsPerLine);
+    // Nenhuma palavra perdida/reordenada.
+    assert.equal(after.join(" "), title);
+  });
+
+  it("nunca aumenta o número de linhas nem produz linha acima do limite (várias larguras)", () => {
+    const titles = [
+      "Brasil pretende investir R$ 23 bilhões em inteligência artificial",
+      "Google lança Gemini 3.6 e 3.5 Flash com contexto expandido e preço menor",
+      "Estudo mostra que empresas adotam IA sem medir retorno real",
+    ];
+    for (const title of titles) {
+      for (const maxCharsPerLine of [18, 24, 30, 36, 44]) {
+        const before = greedyOnly(title, maxCharsPerLine);
+        const after = wrapTitle(title, maxCharsPerLine);
+        assert.ok(
+          after.length <= before.length,
+          `linhas aumentaram: ${JSON.stringify(before)} → ${JSON.stringify(after)}`,
+        );
+        for (const l of after) {
+          assert.ok(
+            l.length <= maxCharsPerLine || l.split(" ").length === 1,
+            `linha estourou o limite sem ser palavra única: "${l}" (${l.length} > ${maxCharsPerLine})`,
+          );
+        }
+        assert.equal(after.join(" "), title);
+      }
+    }
+  });
+
+  it("caso degenerado — palavra única maior que o limite continua sozinha (comportamento inalterado)", () => {
+    assert.deepEqual(wrapTitle("Superintendência antitruste", 5), ["Superintendência", "antitruste"]);
+  });
+
+  it("caso degenerado — título de 1 linha continua de 1 linha (comportamento inalterado)", () => {
+    assert.deepEqual(wrapTitle("OpenAI lança modelo novo", 40), ["OpenAI lança modelo novo"]);
+  });
+
+  it("caso de 3+ linhas também é elegível pro balanceamento (sem estourar limite nem crescer linhas)", () => {
+    const title = "Empresa brasileira de inteligência artificial recebe aporte bilionário de fundo internacional";
+    const maxCharsPerLine = 22;
+    const before = greedyOnly(title, maxCharsPerLine);
+    const after = wrapTitle(title, maxCharsPerLine);
+    assert.ok(before.length >= 3, `pré-condição do teste falhou: guloso deu só ${before.length} linha(s)`);
+    assert.equal(after.length, before.length);
+    for (const l of after) assert.ok(l.length <= maxCharsPerLine);
+    assert.equal(after.join(" "), title);
+  });
+});
+
 describe("stripKickerEmoji (#4114)", () => {
   it("tira o emoji do kicker e preserva o texto", () => {
     // Emoji em SVG depende de fonte instalada — varia por plataforma.
