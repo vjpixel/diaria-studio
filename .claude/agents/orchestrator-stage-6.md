@@ -177,23 +177,58 @@ O botao clicado foi "Publish" (envio imediato), nao "Schedule".
 data/past-editions.md regenerado via refresh-dedup.
 ```
 
-**Verificar e corrigir slug pos-Schedule (#2011, #3449):**
+**Verificar e corrigir slug pos-Schedule (#2011, #3449) — GATE-BLOCKING desde #4570:**
 
-```bash
-npx tsx -e "
-  import { seoSlug } from './scripts/lib/slug.ts';
-  console.log(seoSlug('{title}'));
-"
-```
+O bloco encaminhavel por WhatsApp (entre D1/D2, ver `context/templates/newsletter.md`)
+ja tem a URL `https://diar.ia.br/p/{seoSlug(title)}` BAKED IN no corpo do
+e-mail desde o pre-render do Stage 4 — se o slug real do post divergir, esse
+link ja enviado 404 pra quem abrir o e-mail. Por isso esta checagem deixou de
+ser so-corrija-se-puder (#2011) e passou a **bloquear o Stage 6** ate o slug
+bater (#4570).
 
-Se o slug atual (via `mcp__claude_ai_Beehiiv__get_post`) divergir do correto, a
-correcao via API esta **permanentemente bloqueada** no plano atual (#3449,
-confirmado 260714 — `403 SEND_API_NOT_ENTERPRISE_PLAN`, nao transitorio). Ir
-direto pra correcao manual documentada em `context/publishers/beehiiv-playbook.md`
-§9 (aba visivel → campo `#text-input-slug` em Settings → SEO/URL slug →
-digitar o slug correto via teclado real). Nao vale gastar uma chamada de
+1. Buscar o slug real do post: `mcp__claude_ai_Beehiiv__get_post({ post_id })`
+   → `web_settings.slug`. **Se `get_post` falhar/erroar** (não apenas
+   retornar slug ausente — timeout, disconnect, erro de API), tratar como
+   falha de MCP (#738) — halt banner (comando exato abaixo), nunca
+   prosseguir assumindo divergência resolvida ou slug correto.
+2. Rodar o guard determinístico (comparação pura, `scripts/lib/whatsapp-slug-guard.ts`),
+   gravando o resultado em `_internal/whatsapp-slug-check.json` (`--out`,
+   #4574 — backstop determinístico consumido por `check-invariants.ts --stage 6`
+   em §6g; sem esse arquivo, ou com `ok:false` nele, o Stage 6 nunca é aceito
+   como íntegro, independente do que este passo faça):
+   ```bash
+   npx tsx scripts/check-whatsapp-slug-guard.ts \
+     --post-id {post_id} \
+     --d1-title "{title}" \
+     --actual-slug "{slug_atual_do_get_post}" \
+     --out {EDITION_DIR}/_internal/whatsapp-slug-check.json
+   ```
+   (omitir `--actual-slug` se `web_settings.slug` vier ausente/vazio — o guard
+   trata ausência como divergência.)
+3. Logar o resultado (mesmo padrão de todo outro ponto de decisão deste
+   arquivo — início do stage, resposta do gate, purga de leaderboard):
+   ```bash
+   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
+     --level {info se ok, error se não} \
+     --message "whatsapp slug guard: {ok|diverge}" \
+     --details '{"ok":{ok},"expectedSlug":"{expected_slug}","actualSlug":"{actual_slug}"}'
+   ```
+
+| Exit | Significado | Ação |
+|------|-------------|------|
+| `0` | Slug bate com `seoSlug(title)` — o link do bloco WhatsApp é válido. | Continuar para §6e. |
+| `1` | **GATE-BLOCKING.** Slug diverge (mangling PT-BR, #1989, ou nunca setado). | Ver abaixo — **não prosseguir para §6e/§6f/§6g/§6h/auto-reporter** enquanto não sair `0`. |
+| `2` | Args inválidos (bug do orchestrator — `post_id`/`title` ausentes). | Investigar antes de repetir. |
+
+**No exit 1:** a correção via API está **permanentemente bloqueada** no plano
+atual (#3449, confirmado 260714 — `403 SEND_API_NOT_ENTERPRISE_PLAN`, não
+transitório). Ir direto pra correção manual — o stderr do guard já traz a
+mensagem formatada (reusa `formatManualSlugFixInstructions`, #3449): aba
+visível → campo `#text-input-slug` em Settings → SEO/URL slug → digitar o
+slug correto via teclado real (mesmo passo documentado em
+`context/publishers/beehiiv-playbook.md` §9). Não vale gastar uma chamada de
 `fix-post-slug.ts --execute` esperando sucesso — ela vai retornar `exit 3`
-(plan-gated) e so serve pra reconfirmar/logar o estado, se necessario:
+(plan-gated) e só serve pra reconfirmar/logar o estado, se necessário:
 
 ```bash
 npx tsx scripts/fix-post-slug.ts \
@@ -202,6 +237,19 @@ npx tsx scripts/fix-post-slug.ts \
   --execute
 # exit 3 esperado (#3449) — stderr traz instrucoes manuais formatadas
 ```
+
+Renderizar halt banner (mesmo padrão do #738), comando exato:
+
+```bash
+npx tsx scripts/render-halt-banner.ts \
+  --stage "6 — Agendamento" \
+  --reason "slug do post diverge do link já enviado no bloco WhatsApp" \
+  --action "corrigir manualmente em Settings → SEO/URL slug, depois responder 'corrigido'"
+```
+
+Ao receber confirmação do editor, re-buscar o slug via `get_post` e re-rodar
+o guard (passo 2 acima, mesmo `--out`) — repetir até sair `0`. Só então
+prosseguir para §6e.
 
 **Guard refresh-dedup apos schedule confirmado:** rodar `/diaria-refresh-dedup` (equivalente a `npx tsx scripts/refresh-dedup.ts`) para manter `data/past-editions.md` atualizado.
 
@@ -243,7 +291,13 @@ de fato. O `--status done` correto fica no passo **6b-7**, apos o report ser esc
 npx tsx scripts/check-invariants.ts --stage 6 --edition-dir {EDITION_DIR}/
 ```
 
-Exit 1 = logar warn (nao bloquear auto-reporter).
+Exit 1 = logar warn (nao bloquear auto-reporter). Inclui a regra
+`whatsapp-slug-guard-ok` (#4574) — backstop determinístico que confirma que
+`_internal/whatsapp-slug-check.json` existe com `ok:true`; se §6d de fato
+loopou até sair `0` antes de prosseguir, esta regra já passa por
+construção. Ela existe pra pegar o caso em que o agente pulou/ignorou a
+prosa de §6d — aqui é só confirmação pós-hoc (warn), o bloqueio real já
+aconteceu em §6d.
 
 ### 6h. Purga automatica de votos do editor no leaderboard (#3032)
 

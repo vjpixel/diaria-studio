@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 66 invariants.
+**Total**: 67 invariants.
 
 ## Static (estrutura do repo)
 
@@ -111,6 +111,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `scheduled-at-present` | 05-published.json tem scheduled_at ou status=published (#1694) | #1694 |
 | `step-5-sentinel-exists` | _internal/.step-5-done.json escrito pelo Stage 5 (#1694) | #1694 |
 | `step-6-sentinel-exists` | _internal/.step-6-done.json escrito pelo pipeline-sentinel (#1694) | #1694 |
+| `whatsapp-slug-guard-ok` | _internal/whatsapp-slug-check.json presente com ok:true (#4570, backstop #4574) | #4574 |
 
 ---
 

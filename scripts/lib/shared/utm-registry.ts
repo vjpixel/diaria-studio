@@ -262,11 +262,15 @@ export const JOGAR_IDENTIFY_INLINE_UTM = {
   campaign: "eia-jogar-identify-signup",
 } as const;
 
-/** Bloco encaminhável por WhatsApp no fim de cada edição diária (#4486) —
- * `utm_campaign` traz o AAMMDD da edição que gerou o encaminhamento (o
- * Beehiiv grava a UTM no momento da inscrição, então dá pra atribuir
- * assinante novo à edição específica). Fonte dos valores:
- * `scripts/lib/newsletter-render-html.ts::buildWhatsappSubscribeUrl`. */
+/** Bloco encaminhável por WhatsApp, entre D1 e D2 de cada edição diária
+ * (#4486, posição/conteúdo revisados em #4570) — `utm_campaign` traz o
+ * AAMMDD da edição que gerou o encaminhamento. Desde #4570 a URL aponta pra
+ * PÁGINA DA EDIÇÃO (`diar.ia.br/p/{seoSlug(D1)}`), não mais direto pra home —
+ * a UTM foi mantida por decisão explícita (#4570): preserva a atribuição de
+ * assinante novo a quem se cadastrar pelo formulário embutido na própria
+ * página da edição, mesmo o bloco tendo deixado de ser um CTA de assinatura
+ * direto. Fonte dos valores:
+ * `scripts/lib/newsletter-render-html.ts::buildWhatsappEditionUrl`. */
 export const WHATSAPP_SHARE_UTM = {
   source: "whatsapp",
   medium: "share",
@@ -591,8 +595,9 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     campaignPattern: WHATSAPP_SHARE_UTM.campaignPattern,
     originFile: "scripts/lib/newsletter-render-html.ts",
     description:
-      "Link de assinatura dentro do bloco fixo pré-'Para encerrar', pensado " +
-      "pra colar/encaminhar no WhatsApp (#4486) — utm_campaign = AAMMDD da " +
+      "Link pra página da edição (diar.ia.br/p/{seoSlug(D1)}) dentro do bloco " +
+      "fixo entre D1 e D2, pensado pra colar/encaminhar no WhatsApp (#4486, " +
+      "posição/conteúdo revisados em #4570) — utm_campaign = AAMMDD da " +
       "edição que gerou o encaminhamento.",
     status: "ativo",
   },

@@ -6,6 +6,7 @@
  *   - sentinel .step-5-done.json ausente (Stage 5 não completou)
  *   - 05-published.json sem scheduled_at (Schedule não rodou)
  *   - edition-report.html ausente (auto-reporter não rodou)
+ *   - guard de slug do bloco WhatsApp (#4570) não rodou, ou rodou e falhou (#4574)
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -124,6 +125,73 @@ function checkStep6Sentinel(editionDir: string): InvariantViolation[] {
   return [];
 }
 
+/**
+ * `_internal/whatsapp-slug-check.json` deve existir com `ok: true` — o guard
+ * determinístico de slug do bloco WhatsApp (#4570) precisa ter RODADO e
+ * PASSADO antes do Stage 6 ser aceito como íntegro (#4574).
+ *
+ * Sem esta regra, o mecanismo GATE-BLOCKING documentado em
+ * `.claude/agents/orchestrator-stage-6.md` §6d dependia 100% de um agente
+ * LLM ler e seguir a prosa — nada em código verificava que o guard rodou,
+ * rodou corretamente, ou passou antes do Stage 6 avançar. Achado do review
+ * consolidado da PR #4574 (pr-test-analyzer + silent-failure-hunter,
+ * convergentes): exatamente o anti-padrão que este módulo (`check-invariants.ts`)
+ * existe pra eliminar.
+ *
+ * O arquivo é escrito por `scripts/check-whatsapp-slug-guard.ts --out` — o
+ * orchestrator passa `{EDITION_DIR}/_internal/whatsapp-slug-check.json` como
+ * `--out` na chamada de §6d.
+ */
+function checkWhatsappSlugGuard(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", "whatsapp-slug-check.json");
+  if (!existsSync(path)) {
+    return [
+      {
+        rule: "whatsapp-slug-guard-ok",
+        message:
+          `_internal/whatsapp-slug-check.json ausente — o guard de slug do bloco WhatsApp ` +
+          `(#4570) não rodou (ou rodou sem \`--out\`). GATE-BLOCKING: o link do bloco WhatsApp ` +
+          `(entre D1/D2) já está BAKED IN no corpo do e-mail — sem essa checagem, um slug ` +
+          `divergente 404 pra quem abrir o e-mail. Rodar \`npx tsx scripts/check-whatsapp-slug-guard.ts\` ` +
+          `(ver \`.claude/agents/orchestrator-stage-6.md\` §6d) antes de aceitar o Stage 6.`,
+        source_issue: "#4574",
+        severity: "error",
+        file: path,
+      },
+    ];
+  }
+  let data: { ok?: boolean; expectedSlug?: string; actualSlug?: string | null };
+  try {
+    data = JSON.parse(readFileSync(path, "utf8"));
+  } catch (e) {
+    return [
+      {
+        rule: "whatsapp-slug-guard-parseable",
+        message: `whatsapp-slug-check.json não parseável: ${(e as Error).message}`,
+        source_issue: "#4574",
+        severity: "error",
+        file: path,
+      },
+    ];
+  }
+  if (data.ok !== true) {
+    return [
+      {
+        rule: "whatsapp-slug-guard-ok",
+        message:
+          `whatsapp-slug-check.json registra ok=${String(data.ok)} — o slug do post diverge ` +
+          `do previsto pelo bloco WhatsApp (esperado "${data.expectedSlug ?? "?"}", atual ` +
+          `"${data.actualSlug ?? "(ausente)"}"). GATE-BLOCKING (#4570): corrigir o slug manualmente ` +
+          `(Settings → SEO/URL slug) e re-rodar \`scripts/check-whatsapp-slug-guard.ts\` até \`ok: true\`.`,
+        source_issue: "#4574",
+        severity: "error",
+        file: path,
+      },
+    ];
+  }
+  return [];
+}
+
 export const STAGE_6_RULES: InvariantRule[] = [
   {
     id: "step-5-sentinel-exists",
@@ -147,6 +215,13 @@ export const STAGE_6_RULES: InvariantRule[] = [
     run: checkEditionReport,
   },
   {
+    id: "whatsapp-slug-guard-ok",
+    description: "_internal/whatsapp-slug-check.json presente com ok:true (#4570, backstop #4574)",
+    source_issue: "#4574",
+    stage: 6,
+    run: checkWhatsappSlugGuard,
+  },
+  {
     id: "step-6-sentinel-exists",
     description: "_internal/.step-6-done.json escrito pelo pipeline-sentinel (#1694)",
     source_issue: "#1694",
@@ -159,5 +234,6 @@ export {
   checkStep5Sentinel,
   checkScheduledAt,
   checkEditionReport,
+  checkWhatsappSlugGuard,
   checkStep6Sentinel,
 };

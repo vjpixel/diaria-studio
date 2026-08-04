@@ -171,6 +171,15 @@ Coletar e organizar todas as informações da edição final para apresentar ao 
   ```
   Capturar `verify_verdict` (accessible/inaccessible/timeout) para cada URL. Inacessível = mostrar ⚠️ no resumo mas não bloquear.
 
+**4c.1b — URL prevista do bloco WhatsApp (#4570):** computar a URL EXATA que já está baked-in no HTML do bloco WhatsApp (entre D1/D2), pra conferência do editor ANTES de aprovar — ela depende de `seoSlug(título_d1)` bater com o slug real do post, o que só é possível de garantir no Stage 6 (post ainda não existe aqui), então esta linha é só PREVISÃO/conferência visual:
+  ```bash
+  npx tsx -e "
+    import { buildWhatsappEditionUrl } from './scripts/lib/newsletter-render-html.ts';
+    console.log(buildWhatsappEditionUrl('{AAMMDD}', '{título_d1}'));
+  "
+  ```
+  Capturar como `{whatsapp_url}` — incluído no gate (§4d). Se o editor mudar o título do D1 via "ajustar" (§4d.1), recomputar antes de re-apresentar o gate (mesma cascata de re-render já disparada pela mudança de título).
+
 **4c.2 — Lints consolidados:**
 ```bash
 npx tsx scripts/validate-lancamentos.ts {EDITION_DIR}/02-reviewed.md
@@ -479,6 +488,9 @@ Apresentar ao editor numa visualização limpa:
 
 📰 Newsletter HTML:   {newsletter_url}
 📱 Social preview:   {social_url}
+📲 WhatsApp (entre D1/D2): {whatsapp_url}
+   ⚠️ URL prevista — só é garantida se o slug do post na Beehiiv bater com
+   isso no Stage 6 (o post ainda não existe agora). Ver #4570.
 
 ━━━ DESTAQUES ━━━━━━━━━━━━━━━━━━━━━━
 
@@ -540,6 +552,7 @@ Regras de apresentação:
 - `{box_click_report_block}` = stdout de `scripts/box-click-report.ts` (§4c.7) — nunca bloqueia o gate (ver tratamento de exit code em §4c.7).
 - Títulos dos posts sociais: primeira linha não-vazia de cada post no `03-social.md` (o "hook").
 - Se pré-render falhou em algum passo (newsletter HTML, social HTML), indicar `⚠️ preview indisponível` com motivo.
+- `{whatsapp_url}` (#4570) = saída de `buildWhatsappEditionUrl` (§4c.1b) — a URL que já está baked-in no bloco WhatsApp entre D1/D2. Puramente informativa aqui (nunca bloqueia o gate) — o guard que de fato BLOQUEIA quando essa previsão não bate com o slug real do post roda no Stage 6 (`scripts/check-whatsapp-slug-guard.ts`, ver `orchestrator-stage-6.md` §6d), porque o post só existe na Beehiiv a partir do Stage 5.
 
 Logar a resposta:
 ```bash

@@ -31,6 +31,12 @@ const ORCHESTRATOR_FILES = [
   "orchestrator-stage-3.md",
   "orchestrator-stage-4.md",
   "orchestrator-stage-5.md",
+  // #4574: orchestrator-stage-6.md nunca tinha sido incluído aqui (gap
+  // pré-existente, não introduzido pela PR que fechou o gap — ver stage-6.ts
+  // e o achado do review consolidado #4574) — o Stage 6 tem o mecanismo mais
+  // crítico do pipeline (guard GATE-BLOCKING de slug do bloco WhatsApp,
+  // #4570) e não tinha NENHUMA cobertura de snapshot/invariante-de-conteúdo.
+  "orchestrator-stage-6.md",
 ];
 
 /** Invariants that must be present in the combined orchestrator content. */
@@ -188,6 +194,12 @@ describe("orchestrator-prompt (#634)", () => {
       // Teto bumped de 690→735 com headroom pequeno (era 721 medido pós-#4505).
       "orchestrator-stage-4.md": 735,
       "orchestrator-stage-5.md": 455,
+      // #4574: 1º teto registrado pra este arquivo (nunca tinha entry —
+      // ORCHESTRATOR_FILES não o incluía até esta PR). Arquivo tinha 491
+      // linhas pós-fix do #4574 (guard de slug ganhou --out + log-event +
+      // fail-closed de get_post + comando exato de halt banner + nota em
+      // §6g). Teto com headroom pequeno, mesmo padrão dos demais.
+      "orchestrator-stage-6.md": 510,
     };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       const budget = PER_FILE_LINE_BUDGET[file];
