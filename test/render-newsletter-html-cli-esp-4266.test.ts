@@ -89,7 +89,11 @@ describe("render-newsletter-html CLI — --esp (#4266)", () => {
       const r = run([dir, "--full", "--out", outPath]);
       assert.equal(r.status, 0, `stderr: ${r.stderr}`);
       const html = readFileSync(outPath, "utf8");
-      assert.match(html, /\{\{poll_token\}\}@vote\.eia\.diaria\.local/); // #4487: token opaco, era {{email}} cru
+      assert.match(html, /email=\{\{email\}\}&edition=/); // #4581: e-mail cru — o token opaco do #4487 foi revertido neste ramo
+      assert.ok(
+        !html.includes("@vote.eia.diaria.local"),
+        "sem o token, o domínio do pseudo-e-mail não pode sobrar — produziria 2 arrobas (#4512)",
+      );
       assert.ok(!html.includes("{{ contact.EMAIL }}"));
     } finally {
       rmSync(resolve(dir, ".."), { recursive: true, force: true }); // remove o tmpdir base inteiro (dir é a subpasta "260999")
@@ -164,7 +168,12 @@ describe("render-newsletter-html CLI — --esp (#4266)", () => {
       assert.equal(r.status, 0, `stderr: ${r.stderr}`);
       assert.match(r.stderr, /--split \+ --esp brevo/);
       const eiaHtml = readFileSync(join(dir, "_internal", "newsletter-eia.html"), "utf8");
-      assert.match(eiaHtml, /\{\{poll_token\}\}@vote\.eia\.diaria\.local/, "newsletter-eia.html do modo split continua Beehiiv mesmo com --esp brevo"); // #4487: token opaco, era {{email}} cru
+      // #4581: o standalone continua Beehiiv-only, e Beehiiv agora é e-mail cru.
+      assert.match(eiaHtml, /email=\{\{email\}\}&edition=/, "newsletter-eia.html do modo split continua Beehiiv mesmo com --esp brevo");
+      assert.ok(
+        !eiaHtml.includes("@vote.eia.diaria.local"),
+        "standalone Beehiiv também não pode concatenar o domínio do token (#4581)",
+      );
     } finally {
       rmSync(resolve(dir, ".."), { recursive: true, force: true }); // remove o tmpdir base inteiro (dir é a subpasta "260999")
     }
