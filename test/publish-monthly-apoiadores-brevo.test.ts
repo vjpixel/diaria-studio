@@ -172,6 +172,17 @@ describe("#4593 — createApoiadoresBrevoCampaign (fetch mockado)", () => {
     const config: BrevoApoiadoresPublishConfig = { api_key_env: "X", list_id: 42, sender_email: "oi@diar.ia.br" };
     await assert.rejects(() => createApoiadoresBrevoCampaign("fake_key", config, CONTENT, "2607-08"), /sem campo 'id'/);
   });
+
+  it("#4593 self-review: list_id null → lança ANTES de qualquer chamada fetch, mesmo chamada direta sem passar por main()/checkApoiadoresBrevoGuards", async () => {
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return jsonRes(201, { id: 1 });
+    }) as typeof fetch;
+    const config: BrevoApoiadoresPublishConfig = { api_key_env: "X", list_id: null, sender_email: "oi@diar.ia.br" };
+    await assert.rejects(() => createApoiadoresBrevoCampaign("fake_key", config, CONTENT, "2607-08"), /list_id é null/);
+    assert.equal(fetchCalled, false, "fetch nunca deve ser chamado quando list_id é null");
+  });
 });
 
 // ── main() — integração com deps.renderEmail injetado + fetch mockado ──────

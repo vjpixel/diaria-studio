@@ -160,7 +160,14 @@ export async function createApoiadoresBrevoCampaign(
   content: ApoiadoresBrevoEmailContent,
   cycle: string,
 ): Promise<{ id: number }> {
-  const body = buildApoiadoresBrevoCampaignBody(content, config, config.list_id as number, buildApoiadoresBrevoCampaignName(cycle));
+  // Achado do self-review (#4593): `main()` já valida `list_id` não-null via
+  // `checkApoiadoresBrevoGuards` antes de chegar aqui, mas essa função é
+  // exportada — reforça o mesmo invariante localmente, pra não depender só
+  // da disciplina do único call site atual.
+  if (config.list_id == null) {
+    throw new Error("createApoiadoresBrevoCampaign: config.list_id é null — rode checkApoiadoresBrevoGuards antes.");
+  }
+  const body = buildApoiadoresBrevoCampaignBody(content, config, config.list_id, buildApoiadoresBrevoCampaignName(cycle));
   const resp = (await brevoPost(apiKey, "/emailCampaigns", body)) as Record<string, unknown>;
   if (typeof resp.id !== "number") {
     throw new Error(`Brevo API retornou resposta inesperada (sem campo 'id'): ${JSON.stringify(resp)}`);
