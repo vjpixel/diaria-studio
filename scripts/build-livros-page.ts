@@ -454,7 +454,7 @@ ${cards}
         <p class="empty" id="empty" style="display:none">Nenhum livro com esses filtros.</p>
       </div>
 ${renderSubscribeCta(CTA_FOOTER, "end")}
-${renderGeoFaqSection(buildLivrosFaq(books), "faq-livros")}
+${renderGeoFaqSection(buildLivrosFaq(books), { sectionId: "faq-livros" })}
     </div>
   </main>
   ${renderCuradoriaFooter(

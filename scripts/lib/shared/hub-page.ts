@@ -104,12 +104,17 @@ function pageUrl(slug: string): string {
 function renderHubBodyStyles(): string {
   return `  main { padding: 40px 0 64px; }
   /* #4558: .geo-h2 (H2 da intro, geo-faq.ts) não tem max-width no módulo
-     compartilhado — lá quem embrulha é o caller de cada página, e livros/
-     cursos/arquivo não têm esse problema porque o H2 já senta dentro de um
-     container mais estreito. No hub, .geo-intro-wrap é filho direto de
-     .wrap (1120px) — sem este override o H2 da intro ficava mais largo que
-     o parágrafo logo abaixo (que TEM max-width via .geo-intro) e que o
-     resto da página. Achado do editor 260804. */
+     compartilhado. Livros/cursos/arquivo usam o MESMO container .wrap de
+     1120px (curadoria-page.ts) — não têm um container mais estreito, só um
+     introHeading mais curto (~57-70 caracteres) que por coincidência não
+     estoura 720px ali dentro. O introHeading do hub (~89 caracteres,
+     scripts/lib/hubs/anthropic-claude.ts) é mais longo, e sem este override
+     ficava mais largo que o parágrafo logo abaixo (que TEM max-width via
+     .geo-intro) e que o resto da página. Correção do comentário original
+     (achado do fleet review da PR #4642): mesmo bug pode aparecer em
+     livros/cursos/arquivo se o texto de intro deles crescer — não é
+     estruturalmente impossível lá, só não aconteceu ainda. Achado do editor
+     260804. */
   .geo-intro-wrap { max-width: 720px; }
   .hub-sections { max-width: 720px; }
   .hub-sections-heading { font-family: Georgia, 'Times New Roman', serif; font-size: 15px; font-weight: 700;
@@ -269,7 +274,12 @@ ${renderGeoByline(undefined, `atualizado em ${formatMonthYear(hub.contentDate)}`
   <main>
     <div class="wrap">
 ${sectionsHtml}
-${renderGeoFaqSection(hub.faq, `faq-${hub.slug}`, "Perguntas rápidas")}
+<!-- #4635/#4642: FAQ logo após .hub-sections (não depois de .hub-sources) —
+     achado do editor: a lista de edições citadas fica melhor por último,
+     como bibliografia; "Perguntas rápidas" (heading próprio, não o default
+     "Perguntas frequentes" de livros/cursos/arquivo) evita ler como um 2º
+     bloco de FAQ idêntico ao de .hub-sections logo acima. -->
+${renderGeoFaqSection(hub.faq, { sectionId: `faq-${hub.slug}`, heading: "Perguntas rápidas" })}
 ${sourcesHtml}
     </div>
   </main>

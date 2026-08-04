@@ -64,9 +64,16 @@ export const GEO_AUTHOR: GeoAuthor = {
 export interface GeoFaqItem {
   /** Pergunta literal, no formato como alguém perguntaria a um assistente. */
   question: string;
-  /** Resposta completa — mesmo texto que aparece na seção visível E no
-   * JSON-LD (Google exige que o `FAQPage` bata com o conteúdo visível,
-   * senão invalida o rich result). */
+  /** Resposta completa. Suporta o subset de markdown `[texto](url)`
+   * (#4635 item 3, `scripts/lib/shared/markdown-links.ts`) — renderizado
+   * como `<a href>` de verdade no bloco visível (`renderInlineLinks`, via
+   * `renderGeoFaqSection`) e como TEXTO PURO sem colchete/URL no JSON-LD
+   * (`stripMarkdownLinks`, via `renderGeoJsonLd`), nunca o mesmo texto cru
+   * nos dois lugares quando há link: schema.org espera prosa legível em
+   * `acceptedAnswer.text`, não markup — Google invalidaria o rich result
+   * se recebesse `[texto](url)` literal ali. Sem `[texto](url)` na resposta
+   * (caso de livros/cursos/arquivo hoje) as duas saídas são idênticas ao
+   * texto de entrada, como antes de #4635. */
   answer: string;
 }
 
@@ -82,11 +89,20 @@ export interface GeoFaqItem {
  * subset hoje, então o comportamento pra eles é idêntico a antes (`esc()`
  * puro quando não há `[...](...)` no texto).
  *
- * `heading` (#4635 item 1): rótulo do H2 do bloco — default "Perguntas
+ * `opts.heading` (#4635 item 1): rótulo do H2 do bloco — default "Perguntas
  * frequentes" preserva o comportamento das 3 páginas antigas; o hub passa
  * um rótulo próprio pra não ler como um 2º bloco de FAQ idêntico ao de
- * `.hub-sections` logo acima (achado do editor 260804). */
-export function renderGeoFaqSection(items: GeoFaqItem[], sectionId = "faq", heading = "Perguntas frequentes"): string {
+ * `.hub-sections` logo acima (achado do editor 260804).
+ *
+ * `sectionId`/`heading` como objeto de opções, não 2 parâmetros posicionais
+ * soltos (achado do fleet review da PR #4642): os dois são `string`
+ * opcionais — nomeados, uma troca de ordem num call site futuro não
+ * compila limpo silenciosamente como compilaria com posição. */
+export function renderGeoFaqSection(
+  items: GeoFaqItem[],
+  opts: { sectionId?: string; heading?: string } = {},
+): string {
+  const { sectionId = "faq", heading = "Perguntas frequentes" } = opts;
   const blocks = items
     .map(
       (item) => `    <div class="geo-faq-item">

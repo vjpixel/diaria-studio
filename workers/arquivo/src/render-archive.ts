@@ -419,7 +419,7 @@ ${renderGeoIntro(count)}
     <div class="wrap">
       <p class="count">${count} ediç${count === 1 ? "ão" : "ões"} publicada${count === 1 ? "" : "s"}.</p>
 ${body}
-${renderGeoFaqSection(geoFaq, "faq-arquivo")}
+${renderGeoFaqSection(geoFaq, { sectionId: "faq-arquivo" })}
     </div>
   </main>
   ${renderCuradoriaFooter(

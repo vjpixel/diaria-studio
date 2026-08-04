@@ -53,6 +53,17 @@ describe("findParagraphLinks (#4558 Parte A)", () => {
     assert.deepEqual(links, []);
   });
 
+  it("um `[` solto antes de um link real não engole o label do link — regression do fleet review PR #4642", () => {
+    // Achado: o label regex original ([^\]]+), herdado de
+    // findMarkdownLinks, exclui só `]`, não `[`. Um colchete solto ANTES de
+    // um link real fazia o parser capturar tudo entre os dois `[` como
+    // label — corrompendo o link e o texto ao redor em silêncio, sem erro.
+    const links = findParagraphLinks("texto [solto e depois [Claude](https://claude.ai) real");
+    assert.equal(links.length, 1);
+    assert.equal(links[0].label, "Claude");
+    assert.equal(links[0].url, "https://claude.ai");
+  });
+
   it("parágrafo sem nenhum link retorna array vazio", () => {
     assert.deepEqual(findParagraphLinks("texto sem link nenhum"), []);
   });
