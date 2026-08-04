@@ -42,6 +42,7 @@
  * recente no sitemap) sem quebrar nenhum teste — ver `render-archive.ts`.
  */
 import { escHtml as esc } from "../html-escape.ts";
+import { renderInlineLinks, stripMarkdownLinks } from "./markdown-links.ts"; // #4635: respostas de FAQ do hub ganham link [texto](url); outras 3 páginas não usam o subset, comportamento intacto
 
 export interface GeoAuthor {
   name: string;
@@ -73,18 +74,29 @@ export interface GeoFaqItem {
  * decide a contagem exata; este módulo não valida o intervalo, é
  * responsabilidade do caller). H2 por pergunta, sem `<details>`/accordion:
  * o objetivo é responder direto no HTML server-rendered, não esconder atrás
- * de um clique que um crawler de assistente não executa. */
-export function renderGeoFaqSection(items: GeoFaqItem[], sectionId = "faq"): string {
+ * de um clique que um crawler de assistente não executa.
+ *
+ * `answer` suporta o subset de markdown `[texto](url)` (renderizado via
+ * `renderInlineLinks`, #4635 item 3 — resposta de FAQ também vira link
+ * interno pra edição de origem) — livros/cursos/arquivo não usam esse
+ * subset hoje, então o comportamento pra eles é idêntico a antes (`esc()`
+ * puro quando não há `[...](...)` no texto).
+ *
+ * `heading` (#4635 item 1): rótulo do H2 do bloco — default "Perguntas
+ * frequentes" preserva o comportamento das 3 páginas antigas; o hub passa
+ * um rótulo próprio pra não ler como um 2º bloco de FAQ idêntico ao de
+ * `.hub-sections` logo acima (achado do editor 260804). */
+export function renderGeoFaqSection(items: GeoFaqItem[], sectionId = "faq", heading = "Perguntas frequentes"): string {
   const blocks = items
     .map(
       (item) => `    <div class="geo-faq-item">
       <h2>${esc(item.question)}</h2>
-      <p>${esc(item.answer)}</p>
+      <p>${renderInlineLinks(item.answer)}</p>
     </div>`,
     )
     .join("\n");
   return `  <section class="geo-faq" id="${esc(sectionId)}" aria-labelledby="${esc(sectionId)}-heading">
-    <h2 id="${esc(sectionId)}-heading" class="geo-faq-heading">Perguntas frequentes</h2>
+    <h2 id="${esc(sectionId)}-heading" class="geo-faq-heading">${esc(heading)}</h2>
 ${blocks}
   </section>`;
 }
@@ -177,6 +189,13 @@ export interface GeoJsonLdOptions {
  * `FAQPage` (mainEntity = as perguntas/respostas visíveis) e `Article`
  * (autor nomeado, datas, publisher, `inLanguage`). Pure — string pronta pra
  * interpolar no `<head>`, entre `<title>` e `<style>`.
+ *
+ * `acceptedAnswer.text` usa `stripMarkdownLinks(item.answer)` (#4635 item
+ * 3) — schema.org espera texto legível ali, não markup; embutir
+ * `[texto](url)` cru faria um crawler/rich-result mostrar colchete e
+ * parêntese literais na resposta. O bloco VISÍVEL (`renderGeoFaqSection`)
+ * continua renderizando o link de verdade — só o JSON-LD recebe a versão
+ * sem marcação.
  */
 export function renderGeoJsonLd(opts: GeoJsonLdOptions): string {
   const { pageUrl, headline, description, datePublished, dateModified, faq, siteName = "diar.ia.br" } = opts;
@@ -188,7 +207,7 @@ export function renderGeoJsonLd(opts: GeoJsonLdOptions): string {
       mainEntity: faq.map((item) => ({
         "@type": "Question",
         name: item.question,
-        acceptedAnswer: { "@type": "Answer", text: item.answer },
+        acceptedAnswer: { "@type": "Answer", text: stripMarkdownLinks(item.answer) },
       })),
     },
     {

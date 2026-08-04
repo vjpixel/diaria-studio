@@ -128,24 +128,24 @@ export function buildAnthropicClaudeFaq(sources: HubSourceEntry[]): GeoFaqItem[]
     {
       question: "A Anthropic teve conflito com o governo dos EUA?",
       answer:
-        "Sim, foi um confronto real de cerca de 5 meses (25/02 a 03/07/2026), não um episódio isolado. A seção acima detalha a cronologia completa, incluindo vitórias e derrotas judiciais dos dois lados.",
+        "Sim, foi um confronto real de cerca de 5 meses, não um episódio isolado. A seção acima detalha a cronologia completa, incluindo vitórias e derrotas judiciais dos dois lados.",
     },
     {
       question: "O que é o Claude Mythos e por que ele virou notícia repetidas vezes?",
-      answer: `O Claude Mythos foi citado em ${mythos} edições diferentes: chamado de "o modelo mais perigoso do mundo" quando lançado, forçou uma reunião emergencial em Washington, foi citado pelo Banco da Inglaterra como risco sistêmico e só recebeu aval formal dos EUA para lançamento em 29/06/2026, meses depois da polêmica inicial.`,
+      answer: `O Claude Mythos foi citado em ${mythos} edições diferentes: [chamado de "o modelo mais perigoso do mundo" quando lançado](https://diar.ia.br/p/claude-mythos-o-modelo-mais-perigoso-do-mundo), [forçou uma reunião emergencial em Washington](https://diar.ia.br/p/mythos-for-a-reuni-o-emergencial-em-washington), [foi citado pelo Banco da Inglaterra como risco sistêmico](https://diar.ia.br/p/enter-vira-o-1-unic-rnio-de-ia-da-am-rica-latina) e [só recebeu aval formal dos EUA para lançamento](https://diar.ia.br/p/openai-lan-a-gpt-5-6-sol-terra-e-luna), meses depois da polêmica inicial.`,
     },
     {
       question: "O que aconteceu com o Claude Fable 5?",
-      answer: `O Fable 5 apareceu em ${fable} edições: lançado em 10/06/2026 "com bloqueios embutidos", teve o acesso global bloqueado pelos EUA 5 dias depois e voltou ao ar em 02/07/2026. Um ciclo completo de lançamento, bloqueio e reversão em menos de 4 semanas.`,
+      answer: `O Fable 5 apareceu em ${fable} edições: [lançado](https://diar.ia.br/p/anthropic-lanca-fable-5-com-bloqueios-embutidos) já "com bloqueios embutidos", [teve o acesso global bloqueado pelos EUA](https://diar.ia.br/p/eua-bloqueia-acesso-global-ao-fable-5-da-anthropic) 5 dias depois e [voltou ao ar](https://diar.ia.br/p/claude-fable-5-volta-apos-bloqueio-nos-eua) menos de 4 semanas depois do lançamento. Um ciclo completo de lançamento, bloqueio e reversão numa janela curta.`,
     },
     {
       question: "Anthropic dobrou de valor sozinha, ou teve outros eventos financeiros grandes no período?",
       answer:
-        "Não foi só a duplicação de valor: em pouco mais de 6 semanas (16/04 a 02/06/2026) vieram também a parceria de US$ 100 bi com a Amazon, a rodada Série H de US$ 65 bi e o pedido de IPO confidencial nos EUA. A seção acima traz a cronologia completa da valuation, desde a primeira edição deste hub.",
+        'Não foi só a duplicação de valor: em pouco mais de 6 semanas vieram também [a parceria de US$ 100 bi com a Amazon](https://diar.ia.br/p/fgv-30-milho-es-de-brasileiros-em-risco), [a rodada Série H de US$ 65 bi](https://diar.ia.br/p/35-mil-bolsas-pra-virar-creator-com-ia) e [o pedido de IPO confidencial nos EUA](https://diar.ia.br/p/meta-ai-deu-acesso-a-contas-do-instagram-a-hackers). A seção acima traz a cronologia completa da valuation, desde a primeira edição deste hub.',
     },
     {
       question: "Quais foram os episódios mais recentes envolvendo segurança do Claude?",
-      answer: `Os dois mais recentes: o Claude expondo bugs mais rápido do que a Microsoft consegue corrigi-los (31/07/2026) e, dois dias antes deste hub ser publicado, um episódio em que o Claude invadiu 3 empresas sem que ninguém notasse (03/08/2026). A seção acima cobre os ${seguranca} episódios do período inteiro.`,
+      answer: `Os dois mais recentes: [o Claude expondo bugs mais rápido do que a Microsoft consegue corrigi-los](https://diar.ia.br/p/claude-expoe-bugs-mais-rapido-que-microsoft-corrige) e, dois dias antes deste hub ser publicado, [um episódio em que o Claude invadiu 3 empresas sem que ninguém notasse](https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar). A seção acima cobre os ${seguranca} episódios do período inteiro.`,
     },
     {
       question: "Como acompanho as próximas notícias sobre Anthropic e Claude?",

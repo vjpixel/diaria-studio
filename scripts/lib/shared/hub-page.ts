@@ -41,91 +41,8 @@ import {
   renderGeoJsonLd,
   type GeoFaqItem,
 } from "./geo-faq.ts";
+import { renderInlineLinks } from "./markdown-links.ts"; // #4558/#4635: parser [texto](url), compartilhado com geo-faq.ts (respostas de FAQ também ganharam link)
 import { DIARIA_ARQUIVO_URL } from "../canonical-urls.ts";
-
-/** Um link markdown `[label](url)` já parseado — `start`/`end` são o span
- * (índices) do match completo na string de origem, meio-aberto (`end`
- * exclusivo). Nomeado (não shape inline) porque o MESMO shape existe em
- * `findMarkdownLinks` (`scripts/lib/newsletter-render-html.ts`) — nomear
- * documenta que as duas funções concordam no contrato, mesmo duplicando a
- * lógica (achado do fleet review). */
-export interface ParsedLink {
-  url: string;
-  label: string;
-  start: number;
-  end: number;
-}
-
-/**
- * Acha links markdown `[texto](url)` num parágrafo, com parênteses
- * balanceados na URL (mesmo algoritmo de `findMarkdownLinks` em
- * `scripts/lib/newsletter-render-html.ts` — REIMPLEMENTADO aqui, não
- * importado. **Não é porque este arquivo é bundlado no Worker hoje — não é**
- * (`workers/arquivo/src/hubs/registry.ts` garante de propósito que o Worker
- * só importa o HTML já gerado, nunca `scripts/lib/hubs/` nem este módulo;
- * achado do fleet review corrigindo uma alegação errada da versão anterior
- * deste comentário). O motivo real: `newsletter-render-html.ts` importa
- * `readFileSync` de `node:fs` no topo do arquivo e carrega toda uma cadeia
- * de dependência específica de e-mail (word-joiner, wordmark de marca,
- * estilo inline pro Outlook) que não serve a uma página web comum — puxar
- * qualquer export de lá acopla este módulo a essa cadeia inteira à toa, e
- * fica uma armadilha se este arquivo um dia passar a ser importado por algo
- * que É bundlado no Worker (`geo-faq.ts`, por exemplo, já é).
- *
- * **`[texto]()` com URL vazia não é tratado como link** (mesmo guard do
- * `mdInlineToHtml`/`processInlineLinks` na função original — "preserva
- * texto bruto", ver comentário lá) — sem isso, um typo comum ao digitar
- * link à mão vira um `href=""` silencioso (link morto, sem erro nenhum;
- * achado do fleet review). */
-export function findParagraphLinks(s: string): ParsedLink[] {
-  const out: ParsedLink[] = [];
-  const linkStart = /\[([^\]]+)\]\(/g;
-  let m: RegExpExecArray | null;
-  while ((m = linkStart.exec(s)) !== null) {
-    const label = m[1];
-    const destStart = m.index + m[0].length;
-    let depth = 0;
-    let j = destStart;
-    for (; j < s.length; j++) {
-      const ch = s[j];
-      if (ch === "(") depth++;
-      else if (ch === ")") {
-        if (depth === 0) break;
-        depth--;
-      }
-    }
-    if (j >= s.length) continue; // sem `)` de fechamento — não é link válido
-    const url = s.slice(destStart, j).trim();
-    if (!url) continue; // `[texto]()` — URL vazia, preserva texto bruto (não vira <a href="">)
-    out.push({ url, label, start: m.index, end: j + 1 });
-    linkStart.lastIndex = j + 1;
-  }
-  return out;
-}
-
-/** Converte `[texto](url)` num parágrafo de `HubSection` em `<a href>` —
- * único subset de markdown suportado na prosa do hub (issue #4558: "hub
- * temático é link interno de verdade" — cada afirmação linka a edição de
- * origem, não só a lista de fontes no rodapé). Todo texto fora dos links,
- * e o `label`/`url` de cada link, passa por `esc()`; nunca interpola HTML
- * cru vindo do conteúdo. `HubContent.introParagraph`/`metaDescription` NÃO
- * passam por aqui (renderizados via `esc()` puro em `renderHubPage`) — só
- * `HubSection.paragraphs` suporta este subset de markdown; um `[texto](url)`
- * em qualquer outro campo de `HubContent` renderiza como colchete literal,
- * não como link. */
-export function renderParagraphInline(p: string): string {
-  const links = findParagraphLinks(p);
-  if (links.length === 0) return esc(p);
-  const parts: string[] = [];
-  let lastIdx = 0;
-  for (const { url, label, start, end } of links) {
-    parts.push(esc(p.slice(lastIdx, start)));
-    parts.push(`<a href="${esc(url)}">${esc(label)}</a>`);
-    lastIdx = end;
-  }
-  parts.push(esc(p.slice(lastIdx)));
-  return parts.join("");
-}
 
 /** Uma edição da diar.ia.br citada como fonte do hub — link interno real
  * (issue #4558: "efeito colateral bom: hub temático é link interno de
@@ -147,10 +64,11 @@ export interface HubSection {
    * `string[]`) — uma seção com 0 parágrafos renderizaria um H2 sem nada
    * embaixo; o tipo torna isso impossível em vez de depender de validação
    * em runtime (achado do fleet review). Suporta o subset de markdown
-   * `[texto](url)` (renderizado como `<a href>` via `renderParagraphInline`)
-   * — ÚNICO campo de `HubContent` com esse suporte; outros campos de texto
-   * livre (`introParagraph`, `metaDescription`) renderizam colchete literal
-   * se alguém escrever markdown neles (achado do fleet review). */
+   * `[texto](url)` (`scripts/lib/shared/markdown-links.ts::renderInlineLinks`)
+   * — mesmo suporte das respostas de `GeoFaqItem.answer` (#4635 item 3).
+   * `introParagraph`/`metaDescription` continuam SEM suporte (renderizados
+   * via `esc()` puro) — um `[texto](url)` nesses dois campos renderiza
+   * colchete literal, não link. */
   paragraphs: [string, ...string[]];
 }
 
@@ -185,6 +103,14 @@ function pageUrl(slug: string): string {
  * `geo-faq.ts` (bloco de FAQ, reusado tal qual). */
 function renderHubBodyStyles(): string {
   return `  main { padding: 40px 0 64px; }
+  /* #4558: .geo-h2 (H2 da intro, geo-faq.ts) não tem max-width no módulo
+     compartilhado — lá quem embrulha é o caller de cada página, e livros/
+     cursos/arquivo não têm esse problema porque o H2 já senta dentro de um
+     container mais estreito. No hub, .geo-intro-wrap é filho direto de
+     .wrap (1120px) — sem este override o H2 da intro ficava mais largo que
+     o parágrafo logo abaixo (que TEM max-width via .geo-intro) e que o
+     resto da página. Achado do editor 260804. */
+  .geo-intro-wrap { max-width: 720px; }
   .hub-sections { max-width: 720px; }
   .hub-sections-heading { font-family: Georgia, 'Times New Roman', serif; font-size: 15px; font-weight: 700;
     letter-spacing: 0.08em; text-transform: uppercase; color: var(--teal); margin: 0 0 24px; }
@@ -286,7 +212,7 @@ ${hub.sections
   .map(
     (s) => `      <article class="hub-section">
         <h2>${esc(s.heading)}</h2>
-${s.paragraphs.map((p) => `        <p>${renderParagraphInline(p)}</p>`).join("\n")}
+${s.paragraphs.map((p) => `        <p>${renderInlineLinks(p)}</p>`).join("\n")}
       </article>`,
   )
   .join("\n")}
@@ -343,8 +269,8 @@ ${renderGeoByline(undefined, `atualizado em ${formatMonthYear(hub.contentDate)}`
   <main>
     <div class="wrap">
 ${sectionsHtml}
+${renderGeoFaqSection(hub.faq, `faq-${hub.slug}`, "Perguntas rápidas")}
 ${sourcesHtml}
-${renderGeoFaqSection(hub.faq, `faq-${hub.slug}`)}
     </div>
   </main>
   ${renderCuradoriaFooter(
