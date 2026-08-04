@@ -1,12 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  HOLD_SEGMENTS,
-  holdSegmentNames,
-  parseHoldArg,
-  applyHolds,
-  describeHolds,
-} from "../scripts/lib/clarice-hold.ts";
+import { holdSegmentNames, parseHoldArg, applyHolds } from "../scripts/lib/clarice-hold.ts";
 
 // Regressão do #4542: o cohort jurídico estava retido só editorialmente —
 // nenhuma trava no pipeline. Medido em 260803: 117 dos 124 elegíveis de
@@ -22,8 +16,6 @@ const comum = { email: "fulano@gmail.com" };
 test("parseHoldArg: vazio/ausente não retém nada", () => {
   assert.deepEqual(parseHoldArg(null), []);
   assert.deepEqual(parseHoldArg(undefined), []);
-  assert.deepEqual(parseHoldArg(""), []);
-  assert.deepEqual(parseHoldArg("   "), []);
 });
 
 test("parseHoldArg: aceita nome válido, lista e variação de caixa", () => {
@@ -44,7 +36,12 @@ test("parseHoldArg: nome desconhecido ABORTA, nunca é ignorado", () => {
 
 test("holdSegmentNames expõe os segmentos registrados", () => {
   assert.ok(holdSegmentNames().includes("juridico"));
-  assert.equal(typeof HOLD_SEGMENTS.juridico, "function");
+});
+
+test("parseHoldArg: valor vazio LANÇA (nunca vira 'nao pediu reserva')", () => {
+  // getStringArg ja barra isso antes; defesa em profundidade no helper.
+  assert.throws(() => parseHoldArg(""), /valor vazio/);
+  assert.throws(() => parseHoldArg("   "), /valor vazio/);
 });
 
 test("applyHolds sem holds é no-op (mesmo array, nada retido)", () => {
@@ -78,13 +75,4 @@ test("applyHolds não retém ninguém quando o segmento não casa", () => {
   const r = applyHolds(rows, ["juridico"]);
   assert.equal(r.kept.length, 2);
   assert.equal(r.heldTotal, 0);
-  assert.equal(describeHolds(r), null, "sem retidos não emite linha de log");
-});
-
-test("describeHolds reporta total e detalhe por segmento", () => {
-  const r = applyHolds([juridico, advogado, comum], ["juridico"]);
-  const linha = describeHolds(r);
-  assert.ok(linha, "com retidos precisa emitir linha");
-  assert.match(linha as string, /2 contato\(s\) retido\(s\)/);
-  assert.match(linha as string, /juridico=2/);
 });

@@ -23,6 +23,15 @@
  * Uso:
  *   npx tsx scripts/clarice-build-waves-store.ts --cycle 2605-06 --budget 8000 [--wave-size 2000] [--dry-run] [--cohort junho]
  *   --budget N   OBRIGATÓRIO (>0) — contatos a enviar neste ciclo (lever de alcance).
+ *   --hold X[,Y] (#4542) RESERVA: exclui da rampa os contatos do segmento X
+ *                (hoje só `juridico`), retido pra uma campanha própria do
+ *                editor. Mesma flag e mesma semântica de
+ *                `clarice-build-segment.ts` — precisa existir NOS DOIS porque
+ *                o jurídico é segmento VIRTUAL (casa por domínio/handle, nunca
+ *                por coluna `cohort`), então um contato retido pertence a
+ *                qualquer safra e entraria numa onda de cohort normal sem
+ *                enforcement. Flag sem valor, com valor vazio ou repetida
+ *                aborta (`getStringArg`), nunca vira "reserva não pedida".
  *   --cohort X   OPCIONAL (#2817) — restringe a segmentação a uma safra mensal
  *                (rótulo pt-BR, ex: "junho", ou forma canônica "YYYY-MM", ex:
  *                "2026-06" — ver `resolveCohortArg`). Sem a flag, roda sobre a
@@ -47,7 +56,8 @@ import {
   type StoreRow,
 } from "./lib/clarice-segment.ts";
 import { clariceWavesDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
-import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { getArg, getIntArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { parseHoldArg, applyHolds, type HoldSegmentName } from "./lib/clarice-hold.ts";
 import { injectSeed, CLARICE_SEED_EMAIL, CLARICE_SEED_NOME } from "./lib/clarice-seed.ts";
 
 interface BuilderRow extends StoreRow {
@@ -204,7 +214,26 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     process.exit(1);
   }
 
-  const { manifest, csvByFile, seg } = buildWaveArtifacts(rows, budget, waveSize);
+  // #4542 (achado do review da PR #4564): a rampa lê o MESMO store que os
+  // grupos nomeados, e o jurídico é segmento VIRTUAL (casa por domínio/handle,
+  // nunca por coluna `cohort`) — um contato retido pertence a qualquer safra e
+  // entrava numa onda normal sem enforcement nenhum. Sem esta reserva aqui, a
+  // trava do `clarice-build-segment.ts` fecharia só metade da porta.
+  let holds: HoldSegmentName[];
+  try {
+    holds = parseHoldArg(getStringArg(argv, "hold", { example: "juridico" }));
+  } catch (e) {
+    console.error(`❌ ${(e as Error).message}`);
+    process.exit(1);
+  }
+  const holdResult = applyHolds(rows, holds);
+  if (holdResult.heldTotal > 0) {
+    console.error(
+      `🔒 reserva (--hold ${holds.join(",")}): ${holdResult.heldTotal} contato(s) retido(s) e fora desta rampa.`,
+    );
+  }
+
+  const { manifest, csvByFile, seg } = buildWaveArtifacts(holdResult.kept, budget, waveSize);
   const selectedTotal = manifest.reduce((s, m) => s + m.count, 0);
 
   // Guard: 0 waves = nenhum elegível selecionado (bug de send_eligible / store).
@@ -224,6 +253,10 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     wave_size: waveSize,
     // #2817: auditoria — undefined vira ausente no JSON (não escreve `null` ruidoso).
     cohort: cohort ?? undefined,
+    // #4542: presente quando --hold foi PASSADA (mesmo com 0 retidos) — o
+    // operador precisa ver que a reserva estava ativa nesta rampa.
+    hold: holds.length > 0 ? holds.join(",") : undefined,
+    held: holds.length > 0 ? holdResult.heldTotal : undefined,
     // Contagens de assinantes reais (pré-seed). O seed (IS_SEED=true) é injetado
     // em cada wave CSV como +1 row extra de monitoramento (#2683).
     seed_email: CLARICE_SEED_EMAIL,

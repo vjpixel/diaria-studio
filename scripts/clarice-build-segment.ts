@@ -65,7 +65,14 @@
  *                (hoje só `juridico`), que o editor está segurando pra uma
  *                campanha própria. Opt-in por invocação — o envio especial
  *                desse mesmo segmento é montado SEM a flag. Nome inválido
- *                aborta (nunca ignora em silêncio). O resumo reporta
+ *                aborta (nunca ignora em silêncio) — e desde o review da PR
+ *                #4564 a flag SEM VALOR (`--hold`, `--hold=`, `--hold` seguida
+ *                de outra flag) ou REPETIDA também aborta, via `getStringArg`:
+ *                antes viravam "nenhuma reserva pedida" e o script gravava o
+ *                segmento inteiro com exit 0. O resumo reporta `hold` (quais
+ *                segmentos foram passados — presente mesmo com 0 retidos, pro
+ *                operador ver que a reserva estava ativa), `held_by_segment`
+ *                (quebra por segmento) e
  *                `held_from_selection` (quantos a reserva tirou DESTA seleção —
  *                o número que responde "o que deixei de mandar hoje") ao lado
  *                de `held_in_universe` (quantos do segmento existem no
@@ -140,9 +147,9 @@ import {
   type StoreRow,
 } from "./lib/clarice-segment.ts";
 import { clariceSegmentsDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
-import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { fetchCommittedCampaignListIds, fetchQueuedCampaignListIds } from "./lib/brevo-client.ts";
-import { parseHoldArg, applyHolds } from "./lib/clarice-hold.ts";
+import { parseHoldArg, applyHolds, type HoldSegmentName } from "./lib/clarice-hold.ts";
 
 loadProjectEnv();
 
@@ -531,9 +538,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // segurando pra uma campanha própria (hoje `--hold juridico`). ANTES do
   // buildSegmentArtifact de propósito: segurar depois do corte de budget
   // encolheria a onda em vez de puxar os próximos da fila.
-  let holds: string[];
+  let holds: HoldSegmentName[];
   try {
-    holds = parseHoldArg(getArg(argv, "hold"));
+    holds = parseHoldArg(getStringArg(argv, "hold", { example: "juridico" }));
   } catch (e) {
     console.error(`❌ ${(e as Error).message}`);
     process.exit(1);
@@ -588,11 +595,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // grupo inteiro (ver `CommittedGuardScope`, clarice-segment.ts).
     guard_scope: guardScope,
     already_committed_brevo: committedExcluded || undefined,
-    // #4542: sempre presente quando houve reserva — o operador precisa ver no
-    // resumo que a seleção saiu menor DE PROPÓSITO, e não por predicado errado.
+    // #4542: presente quando --hold foi PASSADA (independente de ter retido
+    // alguem) — o operador precisa ver que a flag estava ativa mesmo com 0
+    // retidos. Os campos held_* abaixo so aparecem quando algo casou.
     hold: holds.length > 0 ? holds.join(",") : undefined,
     /** Quantos a reserva tirou DESTA seleção — o "o que deixei de mandar hoje". */
-    held_from_selection: heldFromSelection || undefined,
+    // NUNCA `|| undefined`: um 0 legitimo (budget recompos a onda com os
+    // proximos da fila) sumiria do JSON e leria como campo quebrado, bem no
+    // caso em que o operador mais precisa saber que a reserva nao mudou nada.
+    held_from_selection: holdResult.heldTotal > 0 ? heldFromSelection : undefined,
     /** Quantos do segmento existem no universo (contexto, quase sempre maior). */
     held_in_universe: holdResult.heldTotal || undefined,
     held_by_segment: holdResult.heldTotal > 0 ? holdResult.heldBySegment : undefined,

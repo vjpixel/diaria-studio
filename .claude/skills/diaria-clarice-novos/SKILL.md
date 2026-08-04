@@ -79,8 +79,10 @@ Se `exit 1` (semáforo vermelho) → **ABORTE a rodada inteira aqui**, registre 
 Depois o grupo:
 
 ```bash
-npx tsx scripts/clarice-build-segment.ts --group novos --since {SINCE} --cycle {CICLO_ENVIO}
+npx tsx scripts/clarice-build-segment.ts --group novos --since {SINCE} --cycle {CICLO_ENVIO} --hold juridico
 ```
+
+**`--hold juridico` é obrigatório aqui e NÃO pode ser removido sem decisão do editor (#4542).** O cohort jurídico está reservado pra uma edição especial. Esta skill é o único chamador **desassistido** do `clarice-build-segment.ts` (~4×/semana, sem gate humano), e um cadastro jurídico novo satisfaz `isNovos` exatamente como qualquer outro — sem a flag, todo jurídico que se cadastrar daqui pra frente sai no envio comum e a reserva vaza em silêncio. Quando a edição especial do jurídico for de fato montada, ela roda SEM a flag; até lá, ela fica. O resumo reporta `hold`/`held_from_selection` — se `hold` não aparecer no JSON, a flag não chegou ao script e a rodada deve ser tratada como suspeita.
 
 Se abortar por D13 (>500 contatos), NÃO passe `--force` automaticamente numa sessão desassistida — isso é o substituto do gate humano. Registre no relatório e pare. Numa sessão supervisionada (`/diaria-develop`), pergunte ao editor antes de repetir com `--force`.
 

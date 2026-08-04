@@ -34,14 +34,26 @@ import { isJuridicoEmail } from "./clarice-sector.ts";
  * Deliberadamente um registro (não um `if (hold === "juridico")` no call site):
  * o próximo segmento a ganhar reserva — setor, faixa de apoio, safra — entra
  * aqui sem tocar em `clarice-build-segment.ts`.
+ *
+ * NÃO exportado de propósito (review do PR #4564): exportar o registro deixa
+ * qualquer caller fazer `HOLD_SEGMENTS[input]?.(email)` e pular a validação e a
+ * mensagem de erro de `parseHoldArg`. A superfície pública é o tipo
+ * `HoldSegmentName` + `holdSegmentNames()` + `parseHoldArg`/`applyHolds`.
+ *
+ * `satisfies` em vez de anotar `Record<string, …>`: a anotação alargava as
+ * chaves pra `string`, e era por isso que `parseHoldArg` validava o nome e
+ * depois jogava a validação fora ao devolver `string[]`.
  */
-export const HOLD_SEGMENTS: Record<string, (email: string) => boolean> = {
+const HOLD_SEGMENTS = {
   juridico: isJuridicoEmail,
-};
+} satisfies Record<string, (email: string) => boolean>;
+
+/** Nome de segmento JÁ VALIDADO — cresce sozinho quando `HOLD_SEGMENTS` cresce. */
+export type HoldSegmentName = keyof typeof HOLD_SEGMENTS;
 
 /** Nomes válidos de segmento retido, para mensagem de erro e docs. */
-export function holdSegmentNames(): string[] {
-  return Object.keys(HOLD_SEGMENTS);
+export function holdSegmentNames(): HoldSegmentName[] {
+  return Object.keys(HOLD_SEGMENTS) as HoldSegmentName[];
 }
 
 /**
@@ -52,8 +64,14 @@ export function holdSegmentNames(): string[] {
  * segmento que o operador pediu para segurar — falha exatamente no caso que a
  * flag existe para evitar.
  */
-export function parseHoldArg(raw: string | null | undefined): string[] {
-  if (raw === null || raw === undefined || raw.trim() === "") return [];
+export function parseHoldArg(raw: string | null | undefined): HoldSegmentName[] {
+  // `undefined`/`null` = flag genuinamente ausente (getStringArg ja lanca em
+  // "presente mas sem valor"). String vazia nunca deveria chegar aqui; se
+  // chegar, e erro do caller, nao "nao pediu reserva" -- lanca.
+  if (raw === null || raw === undefined) return [];
+  if (raw.trim() === "") {
+    throw new Error("--hold recebeu valor vazio -- omita a flag pra nao reservar nada.");
+  }
   const names = raw
     .split(",")
     .map((s) => s.trim().toLowerCase())
@@ -65,7 +83,7 @@ export function parseHoldArg(raw: string | null | undefined): string[] {
     );
   }
   // Dedup preservando ordem — `--hold juridico,juridico` não deve contar 2×.
-  return [...new Set(names)];
+  return [...new Set(names)] as HoldSegmentName[];
 }
 
 export interface HoldResult<T> {
@@ -89,7 +107,7 @@ export interface HoldResult<T> {
  */
 export function applyHolds<T extends { email: string }>(
   rows: T[],
-  holds: string[],
+  holds: HoldSegmentName[],
 ): HoldResult<T> {
   if (holds.length === 0) {
     return { kept: rows, heldBySegment: {}, heldTotal: 0 };
@@ -109,13 +127,4 @@ export function applyHolds<T extends { email: string }>(
     else kept.push(row);
   }
   return { kept, heldBySegment, heldTotal };
-}
-
-/** Linha de log do que foi retido — vazia quando nada foi. */
-export function describeHolds(result: HoldResult<unknown>): string | null {
-  if (result.heldTotal === 0) return null;
-  const detalhe = Object.entries(result.heldBySegment)
-    .map(([name, n]) => `${name}=${n}`)
-    .join(", ");
-  return `🔒 reserva (--hold): ${result.heldTotal} contato(s) retido(s) e fora desta seleção (${detalhe}).`;
 }
