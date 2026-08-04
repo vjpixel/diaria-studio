@@ -181,7 +181,7 @@ describe("main() CLI (#2725 integração)", () => {
       JSON.stringify({
         raffle: {
           meet_url: "https://meet.google.com/nbs-jcut-ojj",
-          day_of_month: 2,
+          sorteio_do_mes: { mes: "2026-07", dia: 2 },
           hora_inicio: "13:30",
           hora_fim: "14:00",
         },
@@ -230,8 +230,77 @@ describe("main() CLI (#2725 integração)", () => {
       const written = readFileSync(reviewedPath, "utf8");
       assert.match(written, /Os campeões do É IA\? em junho/);
       assert.match(written, /🥇 jorgemartinsfilho/);
+      // #4583(a): sorteio_do_mes.mes ("2026-07") bate com a edição corrente
+      // (260701 → slug "2026-07") — renderiza normalmente com o `dia` (2) do
+      // config, mês "julho" resolvido do próprio slug da edição.
+      assert.match(written, /dia 2 de julho, das 13h30 às 14h/);
       const cta = extractIntroCallout(written);
       assert.ok(cta);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#4583(b) — sorteio_do_mes.mes divergente do mês da edição corrente → aborta (exit 1), nunca renderiza a data velha", () => {
+    const { dir, editionDir, reviewedPath } = setup();
+    try {
+      const leaderboardJson = join(editionDir, "_internal", "04-leaderboard-top1.json");
+      writeFileSync(
+        leaderboardJson,
+        JSON.stringify({
+          podium: [
+            { nickname: "jorgemartinsfilho", rank: 1 },
+            { nickname: "Bruna Quevedo", rank: 2 },
+            { nickname: "Joshu", rank: 3 },
+          ],
+        }),
+      );
+      const pastEditions = join(dir, "past-editions-raw.json");
+      // Nenhuma edição publicada em julho ainda → 260701 é a 1ª.
+      writeFileSync(
+        pastEditions,
+        JSON.stringify([{ published_at: "2026-06-15T09:00:00.000Z" }]),
+      );
+      // sorteio_do_mes ainda aponta pro mês ANTERIOR (junho) — o editor não
+      // atualizou o config pra julho antes desta edição rodar.
+      const staleConfig = join(dir, "stale-platform.config.json");
+      writeFileSync(
+        staleConfig,
+        JSON.stringify({
+          raffle: {
+            meet_url: "https://meet.google.com/nbs-jcut-ojj",
+            sorteio_do_mes: { mes: "2026-06", dia: 2 },
+            hora_inicio: "13:30",
+            hora_fim: "14:00",
+          },
+        }),
+      );
+
+      const before = readFileSync(reviewedPath, "utf8");
+      let threw = false;
+      try {
+        runCli([
+          "--edition", "260701",
+          "--reviewed", reviewedPath,
+          "--leaderboard-json", leaderboardJson,
+          "--past-editions", pastEditions,
+          "--platform-config", staleConfig,
+        ]);
+      } catch (err) {
+        threw = true;
+        const e = err as { status?: number | null; stderr?: string };
+        assert.equal(e.status, 1, "exit code deve ser 1 (fatal), não 0/2");
+        assert.match(String(e.stderr), /sorteio_do_mes\.mes/);
+        assert.match(String(e.stderr), /"2026-06"/);
+        assert.match(String(e.stderr), /"2026-07"/);
+      }
+      assert.ok(threw, "esperava que o processo abortasse (exit != 0) com sorteio_do_mes.mes divergente");
+
+      // 02-reviewed.md NUNCA é tocado — não renderiza silenciosamente o `dia`
+      // herdado do mês anterior.
+      const after = readFileSync(reviewedPath, "utf8");
+      assert.equal(after, before, "02-reviewed.md não deve mudar quando sorteio_do_mes.mes diverge");
+      assert.ok(!after.includes("Os campeões do É IA?"));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -258,7 +327,12 @@ describe("main() CLI (#2725 integração)", () => {
       writeFileSync(
         platformConfigWithWorker,
         JSON.stringify({
-          raffle: { meet_url: "https://meet.google.com/nbs-jcut-ojj", day_of_month: 2, hora_inicio: "13:30", hora_fim: "14:00" },
+          raffle: {
+            meet_url: "https://meet.google.com/nbs-jcut-ojj",
+            sorteio_do_mes: { mes: "2026-07", dia: 2 },
+            hora_inicio: "13:30",
+            hora_fim: "14:00",
+          },
           poll: { worker_url: "https://eia.diar.ia.br" },
         }),
       );
