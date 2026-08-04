@@ -72,6 +72,22 @@ const SCOPES = [
   // coisas são independentes; faltar uma dá 403 SERVICE_DISABLED mesmo com o
   // scope concedido (achado #4154, 260730).
   "https://www.googleapis.com/auth/postmaster.readonly",
+  // #4539: registrar um domínio novo no Postmaster (`domains.create`) exige a
+  // API **v2** — a v1 que `postmaster-spam-sync.ts` usa é read-only
+  // (`domains.get`/`domains.list`/`trafficStats`) e não tem método de criação.
+  // A v2 pede `.../auth/postmaster` OU `.../auth/postmaster.domain`; usamos o
+  // segundo (mais estreito — gestão de domínio, sem abrir o resto).
+  //
+  // SOMA ao `.readonly` acima, não substitui: diferente do par
+  // `webmasters`/`webmasters.readonly` (bloco anterior), aqui os dois scopes
+  // são eixos DIFERENTES (gestão de domínio vs. leitura de trafficStats), não
+  // superset/subset — remover o `.readonly` quebraria o sync diário de
+  // spamRate que alimenta o breaker da Rampa.
+  //
+  // Mesma armadilha do #4546 anotada no bloco `webmasters`: o token já emitido
+  // em `data/.credentials.json` NÃO ganha este scope sozinho — sem re-rodar
+  // este script e reaprovar no browser, a falha só aparece no POST, com 403.
+  "https://www.googleapis.com/auth/postmaster.domain",
   // #4064: enviar o e-mail de alarme de guardrail furado do ramp Clarice
   // (`scripts/clarice-guardrail-alarm.ts`) via Gmail API direta — rodando fora
   // de uma sessão Claude Code (Task Scheduler), sem MCP Gmail disponível.
