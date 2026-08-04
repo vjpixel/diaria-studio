@@ -18,14 +18,19 @@ import {
   classifyClariceAudience,
   parseAbcAudienceCampaign,
   twoProportionZTest,
+  SIGNIFICANCE_ALPHA,
+  minDetectableRelativeLift,
+  LOW_POWER_MDE_THRESHOLD,
   aggregateAbcByAudience,
   renderAbcAudienceSection,
   renderAbcAudienceTable,
+  renderAbcClickAttributionNote,
   pickTopWeekdays,
   aggregateByWeekday,
   renderTopWeekdaysSection,
   type WeekdaySummary,
   type AbcAudienceTable,
+  type CellSummaryV2,
 } from "../workers/brevo-dashboard/src/index.ts";
 import type { BrevoCampaign } from "../workers/brevo-dashboard/src/types.ts";
 
@@ -60,6 +65,38 @@ function makeCampaign(id: number, name: string, sentDate: string, gsOverrides: P
     listSize: 100,
     statistics: {
       globalStats: makeGlobalStats(gsOverrides),
+    },
+  };
+}
+
+/**
+ * #4559: adiciona `statistics.campaignStats[0]` (atribuição por LISTA) a uma
+ * campanha já construída por `makeCampaign` — por padrão espelha os mesmos
+ * valores de `globalStats` (sem divergência, o caso comum), só `csOverrides`
+ * diverge dos campos que o teste quer distorcer (tipicamente `uniqueClicks`,
+ * pra simular o K de tráfego não atribuível achado na issue #4559).
+ */
+function withCampaignStats(
+  campaign: ReturnType<typeof makeCampaign>,
+  csOverrides: Partial<{
+    listId: number; sent: number; delivered: number; hardBounces: number; softBounces: number;
+    deferred: number; uniqueViews: number; viewed: number; trackableViews: number;
+    uniqueClicks: number; clickers: number; unsubscriptions: number; complaints: number;
+  }> = {},
+) {
+  const gs = campaign.statistics.globalStats;
+  return {
+    ...campaign,
+    statistics: {
+      ...campaign.statistics,
+      campaignStats: [{
+        listId: 1,
+        sent: gs.sent, delivered: gs.delivered, hardBounces: gs.hardBounces, softBounces: gs.softBounces,
+        deferred: 0, uniqueViews: gs.uniqueViews, viewed: gs.viewed, trackableViews: gs.trackableViews,
+        uniqueClicks: gs.uniqueClicks, clickers: gs.clickers, unsubscriptions: gs.unsubscriptions,
+        complaints: gs.complaints,
+        ...csOverrides,
+      }],
     },
   };
 }
@@ -275,15 +312,15 @@ describe("aggregateAbcByAudience", () => {
     const result = aggregateAbcByAudience([...cold, ...warm], cycle);
     const coldA = result.cold.cells.find((c) => c.cell === "A")!;
     assert.equal(coldA.delivered, 1980);
-    assert.equal(coldA.clicks, 20);
+    assert.equal(coldA.clicksAttributed, 20);
 
     const warmA = result.warm.cells.find((c) => c.cell === "A")!;
     assert.equal(warmA.delivered, 1490);
-    assert.equal(warmA.clicks, 150);
+    assert.equal(warmA.clicksAttributed, 150);
 
     const aggA = result.aggregate.cells.find((c) => c.cell === "A")!;
     assert.equal(aggA.delivered, 1980 + 1490);
-    assert.equal(aggA.clicks, 20 + 150);
+    assert.equal(aggA.clicksAttributed, 20 + 150);
   });
 
   test("fria: LÍDER de abertura é A, mas LÍDER de clique é B (diverge — o ponto central do #2976)", () => {
@@ -402,11 +439,11 @@ describe("aggregateAbcByAudience — naming '--group' (célula só na LISTA), re
     const b = result.aggregate.cells.find((c) => c.cell === "B")!;
     const c = result.aggregate.cells.find((c) => c.cell === "C")!;
     assert.equal(a.delivered, 2977);
-    assert.equal(a.clicks, 101);
+    assert.equal(a.clicksAttributed, 101);
     assert.equal(b.delivered, 2980);
-    assert.equal(b.clicks, 28);
+    assert.equal(b.clicksAttributed, 28);
     assert.equal(c.delivered, 2979);
-    assert.equal(c.clicks, 65);
+    assert.equal(c.clicksAttributed, 65);
   });
 
   test("LÍDER de abertura é B, mas LÍDER de clique é A (divergência real do ciclo 2607-08)", () => {
@@ -530,7 +567,7 @@ describe("renderAbcAudienceTable / renderAbcAudienceSection — omite audiência
       sent: 0,
       delivered: 0,
       opens: 0,
-      clicks: 0,
+      clicksAttributed: 0,
       unsubscriptions: 0,
       openRate: 0,
       ctor: 0,
@@ -579,7 +616,7 @@ describe("renderAbcAudienceTable / renderAbcAudienceSection — omite quando <2 
       sent: 0,
       delivered: 0,
       opens: 0,
-      clicks: 0,
+      clicksAttributed: 0,
       unsubscriptions: 0,
       openRate: 0,
       ctor: 0,
@@ -591,7 +628,7 @@ describe("renderAbcAudienceTable / renderAbcAudienceSection — omite quando <2 
     const table: AbcAudienceTable = {
       cells: [
         {
-          cell: "A", campaignCount: 1, sent: 1000, delivered: 990, opens: 500, clicks: 80,
+          cell: "A", campaignCount: 1, sent: 1000, delivered: 990, opens: 500, clicksAttributed: 80,
           unsubscriptions: 2, openRate: 50.5, ctor: 16, clickRate: 8.1, unsubRate: 0.2,
           bounceRate: 1, spamRate: 0.01,
         },
@@ -679,7 +716,7 @@ describe("renderAbcAudienceTable — guard opens>0/clicks=0 não é 'empate' (#3
       sent: 100,
       delivered: 100,
       opens,
-      clicks: 0,
+      clicksAttributed: 0,
       unsubscriptions: 0,
       openRate: opens,
       ctor: 0,
@@ -710,7 +747,7 @@ describe("renderAbcAudienceTable — guard opens>0/clicks=0 não é 'empate' (#3
   test("empate REAL de clique (clicks>0, taxas iguais) continua mostrando 'Empate no clique'", () => {
     const tied = (cellId: "A" | "B" | "C") => ({
       ...cell(cellId, 50),
-      clicks: 10,
+      clicksAttributed: 10,
       clickRate: 10,
     });
     const table: AbcAudienceTable = {
@@ -792,5 +829,260 @@ describe("renderTopWeekdaysSection", () => {
       makeCampaign(1, "Clarice News 2605 d01-A (seg)", "2026-06-01T09:00:00Z"),
     ];
     assert.equal(renderTopWeekdaysSection(campaigns as unknown as BrevoCampaign[], now), "");
+  });
+});
+
+// ─── #4559: vencedor por CLIQUE usa cliques ATRIBUÍDOS (campaignStats), não globalStats ──
+
+describe("aggregateAbcByAudience / renderAbcAudienceTable — cliques ATRIBUÍDOS decidem o vencedor, não globalStats (#4559)", () => {
+  const cycle = "2607-08";
+
+  // Reproduz a distorção real do ciclo 2607-08 (issue #4559): globalStats.uniqueClicks
+  // inclui K cliques não atribuíveis a NENHUM contato da lista (scanner/encaminhamento/
+  // espelho público) — concentrados numa única campanha fria (d3-seg03-C). Números da
+  // issue: A totais=144/atribuídos=50, B totais=79/atribuídos=38, C totais=255/atribuídos=48.
+  // Delivered ~2970 por célula (~8.910 entregues no ciclo ÷ 3, valor real reportado).
+  const distorted = [
+    withCampaignStats(
+      makeCampaign(301, "Clarice News 2607-08 — A: subject A", "2026-08-01T09:00:00Z", { sent: 3000, delivered: 2970, uniqueViews: 713, uniqueClicks: 144 }),
+      { uniqueClicks: 50 },
+    ),
+    withCampaignStats(
+      makeCampaign(302, "Clarice News 2607-08 — B: subject B", "2026-08-01T09:01:00Z", { sent: 3000, delivered: 2970, uniqueViews: 713, uniqueClicks: 79 }),
+      { uniqueClicks: 38 },
+    ),
+    withCampaignStats(
+      makeCampaign(303, "Clarice News 2607-08 — C: subject C", "2026-08-01T09:02:00Z", { sent: 3000, delivered: 2970, uniqueViews: 713, uniqueClicks: 255 }),
+      { uniqueClicks: 48 },
+    ),
+  ];
+
+  test("agrega .clicksAttributed com o número ATRIBUÍDO (campaignStats), não o total (globalStats) — .clicksTotal preserva o total pra exibição", () => {
+    const result = aggregateAbcByAudience(distorted, cycle);
+    const a = result.aggregate.cells.find((c) => c.cell === "A")!;
+    const b = result.aggregate.cells.find((c) => c.cell === "B")!;
+    const c = result.aggregate.cells.find((c) => c.cell === "C")!;
+    assert.equal(a.clicksAttributed, 50); assert.equal(a.clicksTotal, 144);
+    assert.equal(b.clicksAttributed, 38); assert.equal(b.clicksTotal, 79);
+    assert.equal(c.clicksAttributed, 48); assert.equal(c.clicksTotal, 255);
+    // #4567: fixtures usam withCampaignStats (todas têm campaignStats) —
+    // nenhuma célula deve carregar contagem de atribuição desconhecida.
+    assert.equal(a.unattributedCampaignCount, 0);
+    assert.equal(b.unattributedCampaignCount, 0);
+    assert.equal(c.unattributedCampaignCount, 0);
+    assert.equal(result.aggregate.attributionUnknown, false);
+  });
+
+  test("Célula C NÃO vence por clique mesmo tendo o maior total reportado (255) — vence quem tem mais clique ATRIBUÍDO (A, 50)", () => {
+    const result = aggregateAbcByAudience(distorted, cycle);
+    assert.equal(result.aggregate.leaderClickRate, "A", "com os números corretos, A lidera (50 > 48 > 38) — não C");
+    assert.notEqual(result.aggregate.leaderClickRate, "C", "C só lidera nos totais brutos (255), dominados por tráfego não atribuível — o bug original");
+  });
+
+  test("com os números corretos a diferença NÃO é estatisticamente significativa — o 'vencedor' do bug original era só o K de ruído", () => {
+    const result = aggregateAbcByAudience(distorted, cycle);
+    assert.equal(result.aggregate.significantClick, false);
+    assert.ok(result.aggregate.pValue !== null && result.aggregate.pValue > SIGNIFICANCE_ALPHA, `p-valor esperado > 0.05, obtido ${result.aggregate.pValue}`);
+  });
+
+  test("regressão de raiz: comparando pelos TOTAIS (globalStats) a diferença SERIA declarada altamente significativa — confirma que só a troca de fonte evita o falso positivo", () => {
+    // Reproduz deliberadamente o cálculo do código ANTIGO (globalStats.uniqueClicks)
+    // pra provar que o bug não era sutil: com os totais brutos, C (255) vs A (144)
+    // dava p ≈ 8.8e-9 — o "Já dá pra concluir" da issue original.
+    const oldBuggyTest = twoProportionZTest(255, 2970, 144, 2970);
+    assert.ok(oldBuggyTest.pValue < SIGNIFICANCE_ALPHA, "confirma que o bug produzia falsa significância usando os totais");
+  });
+
+  test("renderAbcAudienceTable: não declara Célula C vencedora e mostra a divergência total vs atribuído pras 3 células", () => {
+    const result = aggregateAbcByAudience(distorted, cycle);
+    const html = renderAbcAudienceTable("Agregada (Fria + Quente)", result.aggregate);
+    // A frase de conclusão usa <strong style="color:..."> (diferente do <strong>
+    // Célula X</strong> plano de CADA linha da tabela, sempre presente) — checar
+    // esse padrão específico evita falso-positivo com a linha da própria célula C.
+    assert.doesNotMatch(html, /Vencedor[^<]*<strong style="color:[^"]*">Célula C<\/strong>/, "Célula C não pode ser declarada vencedora/líder na frase de conclusão");
+    assert.match(html, /Vencedor provisório por clique:\s*<strong style="color:[^"]*">Célula A/, "com os números corretos, a diferença não é significativa — texto provisório, célula A (não C)");
+    assert.match(html, /255 totais, 48 atribuídos à lista/, "nota de divergência deve expor os dois números pra Célula C");
+    assert.match(html, /144 totais, 50 atribuídos à lista/, "nota de divergência também cobre Célula A");
+    assert.match(html, /79 totais, 38 atribuídos à lista/, "nota de divergência também cobre Célula B");
+  });
+
+  // #4567: achado CRITICAL do review pré-merge (fleet review da PR #4567) —
+  // reproduz os MESMOS números distorcidos da issue #4559, mas SEM
+  // `withCampaignStats` (simulando uma campanha real sem esse campo — envio
+  // multi-lista, lista deletada, mudança de shape da resposta da Brevo).
+  // Antes deste teste, a suíte só cobria (a) dado distorcido SEMPRE com
+  // campaignStats presente (prova o caminho corrigido) e (b) "sem
+  // campaignStats" com números benignos que nunca chegam perto de
+  // significância — nenhum teste combinava os dois, exatamente o cenário em
+  // que o fallback `attributedClicks = totalClicks` derrotava o fix E o
+  // guard de poder estatístico ao mesmo tempo (demonstrado matematicamente
+  // no review: C ainda vence por clique, p≈8,8×10⁻⁹, e
+  // minDetectableRelativeLift(255,2970,144,2970)≈27,1% fica ABAIXO do
+  // LOW_POWER_MDE_THRESHOLD de 30% — nem a significância nem o power guard
+  // pré-existentes pegavam este caso).
+  test("#4567: campanhas decisórias SEM campaignStats não são declaradas vencedoras sem ressalva, mesmo quando p<0.05 E o guard de poder (MDE) não pega", () => {
+    const distortedNoAttribution = [
+      makeCampaign(340, "Clarice News 2607-08 — A: subject A", "2026-08-01T09:00:00Z", { sent: 3000, delivered: 2970, uniqueViews: 713, uniqueClicks: 144 }),
+      makeCampaign(341, "Clarice News 2607-08 — B: subject B", "2026-08-01T09:01:00Z", { sent: 3000, delivered: 2970, uniqueViews: 713, uniqueClicks: 79 }),
+      makeCampaign(342, "Clarice News 2607-08 — C: subject C", "2026-08-01T09:02:00Z", { sent: 3000, delivered: 2970, uniqueViews: 713, uniqueClicks: 255 }),
+    ];
+    const result = aggregateAbcByAudience(distortedNoAttribution, cycle);
+    const a = result.aggregate.cells.find((c) => c.cell === "A")!;
+    const c = result.aggregate.cells.find((c) => c.cell === "C")!;
+
+    // Pré-condições que reproduzem o achado do review: sem o fix desta PR, o
+    // painel caía exatamente nesta armadilha (nem significância nem power
+    // guard detectavam o problema).
+    assert.equal(result.aggregate.leaderClickRate, "C", "pré-condição: sem campaignStats, C ainda lidera por clique (255 > 144 > 79) — o bug original");
+    assert.equal(result.aggregate.significantClick, true, "pré-condição: p<0.05 mesmo com dado inteiramente não-atribuído");
+    assert.ok(
+      result.aggregate.minDetectableLiftRelative != null && result.aggregate.minDetectableLiftRelative < LOW_POWER_MDE_THRESHOLD,
+      "pré-condição: o guard de poder estatístico pré-existente NÃO pega este caso (MDE ~27% < 30%)",
+    );
+
+    // O sinal que este fix adiciona: atribuição desconhecida na célula líder
+    // (C) e na 2ª colocada (A) — nenhuma das campanhas tinha campaignStats.
+    assert.equal(a.unattributedCampaignCount, 1);
+    assert.equal(c.unattributedCampaignCount, 1);
+    assert.equal(result.aggregate.attributionUnknown, true);
+
+    const html = renderAbcAudienceTable("Agregada (Fria + Quente)", result.aggregate);
+    assert.doesNotMatch(
+      html,
+      /Já dá pra concluir\./,
+      "CRITICAL: sem esta ressalva, o painel declarava conclusão plena sobre dado inteiramente não-atribuído",
+    );
+    assert.match(html, /com ressalva/i, "deve sinalizar ressalva mesmo com significância + power guard não acionado");
+    assert.match(html, /campaignStats ausente/, "deve explicar que a atribuição é desconhecida, não só 'amostra pequena'");
+  });
+
+  test("campanha sem campaignStats (fixture legado/API antiga) → cai pro valor de globalStats, sem quebrar (mesmo comportamento pré-#4559)", () => {
+    const noCampaignStats = [
+      makeCampaign(310, "Clarice News 2607-09 — A: subject A", "2026-08-05T09:00:00Z", { sent: 1000, delivered: 990, uniqueViews: 500, uniqueClicks: 80 }),
+      makeCampaign(311, "Clarice News 2607-09 — B: subject B", "2026-08-05T09:01:00Z", { sent: 1000, delivered: 990, uniqueViews: 450, uniqueClicks: 60 }),
+      makeCampaign(312, "Clarice News 2607-09 — C: subject C", "2026-08-05T09:02:00Z", { sent: 1000, delivered: 990, uniqueViews: 400, uniqueClicks: 50 }),
+    ];
+    const result = aggregateAbcByAudience(noCampaignStats, "2607-09");
+    const a = result.aggregate.cells.find((c) => c.cell === "A")!;
+    assert.equal(a.clicksAttributed, 80, "sem campaignStats, .clicksAttributed cai pro valor de globalStats (comportamento preservado)");
+    assert.equal(a.clicksTotal, 80, "clicksTotal também é 80 — sem divergência de VALOR conhecida, não há nada pra sinalizar via renderAbcClickAttributionNote");
+    // #4567 (achado CRITICAL do review pré-merge): mesmo sem divergência de
+    // valor, a campanha NÃO tinha campaignStats — isso precisa continuar
+    // rastreável como atribuição desconhecida, não desaparecer só porque
+    // total e atribuído coincidiram.
+    assert.equal(a.unattributedCampaignCount, 1, "1 campanha desta célula não tinha campaignStats");
+  });
+
+  test("sem divergência entre total e atribuído (fixture padrão) → renderAbcClickAttributionNote não adiciona ruído", () => {
+    // 3 células (não 2!) no mesmo dia — o guard de consolidação (`<3 células`,
+    // #3404/#4449) descarta o dia inteiro se só 2 aparecerem, o que faria esta
+    // asserção passar por um motivo errado (campaignCount=0 em tudo, não
+    // "sem divergência real"). Com as 3, a agregação acontece de verdade.
+    const noCampaignStats = [
+      makeCampaign(320, "Clarice News 2607-10 — A: subject A", "2026-08-06T09:00:00Z", { sent: 1000, delivered: 990, uniqueViews: 500, uniqueClicks: 80 }),
+      makeCampaign(321, "Clarice News 2607-10 — B: subject B", "2026-08-06T09:01:00Z", { sent: 1000, delivered: 990, uniqueViews: 450, uniqueClicks: 60 }),
+      makeCampaign(322, "Clarice News 2607-10 — C: subject C", "2026-08-06T09:02:00Z", { sent: 1000, delivered: 990, uniqueViews: 400, uniqueClicks: 50 }),
+    ];
+    const result = aggregateAbcByAudience(noCampaignStats, "2607-10");
+    assert.ok(result.aggregate.cells.some((c) => c.campaignCount > 0), "pré-condição: a agregação precisa ter dado real (senão a asserção abaixo seria vácua)");
+    assert.equal(renderAbcClickAttributionNote(result.aggregate.cells), "");
+  });
+});
+
+// ─── #4559: guard de poder estatístico — amostra ATRIBUÍDA pequena não vira "já dá pra concluir" ──
+
+describe("renderAbcAudienceTable — guard de poder estatístico (#4559)", () => {
+  function cellWithClicks(cellId: "A" | "B" | "C", clicks: number, delivered: number): CellSummaryV2 {
+    return {
+      cell: cellId,
+      campaignCount: 1,
+      sent: delivered,
+      delivered,
+      opens: Math.round(delivered * 0.3),
+      clicksAttributed: clicks,
+      clicksTotal: clicks,
+      unsubscriptions: 0,
+      openRate: 30,
+      ctor: (clicks / (delivered * 0.3)) * 100,
+      clickRate: (clicks / delivered) * 100,
+      unsubRate: 0,
+      bounceRate: 0,
+      spamRate: 0,
+    };
+  }
+
+  // Números confirmados via minDetectableRelativeLift/twoProportionZTest diretamente
+  // (mesma fórmula usada pelo painel): 50/1000 vs 10/1000 → p≈1.58e-7 (bem
+  // significativo), MDE≈71.2% (bem acima de LOW_POWER_MDE_THRESHOLD=30%) — o
+  // cenário exato que o guard existe pra qualificar, mesmo com p tecnicamente
+  // "significativo".
+  test("p<0.05 mas amostra ATRIBUÍDA pequena (MDE > 30%) → texto qualificado, NÃO 'Já dá pra concluir' sem ressalva", () => {
+    const zTest = twoProportionZTest(50, 1000, 10, 1000);
+    const mde = minDetectableRelativeLift(50, 1000, 10, 1000);
+    assert.ok(zTest.pValue < SIGNIFICANCE_ALPHA, "pré-condição: teste deve ser significativo");
+    assert.ok(mde > LOW_POWER_MDE_THRESHOLD, "pré-condição: MDE deve estar acima do limiar de poder baixo");
+
+    const table: AbcAudienceTable = {
+      cells: [cellWithClicks("A", 50, 1000), cellWithClicks("B", 10, 1000), { ...cellWithClicks("C", 0, 1000), campaignCount: 0 }],
+      leaderOpenRate: "A",
+      leaderClickRate: "A",
+      significantClick: true,
+      pValue: zTest.pValue,
+      minDetectableLiftRelative: mde,
+    };
+    const html = renderAbcAudienceTable("Agregada (Fria + Quente)", table);
+    assert.doesNotMatch(html, /Já dá pra concluir\./, "não pode afirmar conclusão sem qualificar quando o poder é baixo");
+    assert.match(html, /com ressalva/i, "deve sinalizar explicitamente que é uma conclusão com ressalva");
+    assert.match(html, /Tratar como indicativo, não conclusivo/, "deve orientar o editor a não tratar como definitivo");
+    assert.match(html, /71%/, "deve mostrar o MDE calculado (~71%) pro editor entender o motivo da ressalva");
+  });
+
+  test("p<0.05 e amostra bem-powered (MDE < 30%) → 'Já dá pra concluir' sem ressalva (comportamento original preservado)", () => {
+    const zTest = twoProportionZTest(400, 2000, 100, 2000);
+    const mde = minDetectableRelativeLift(400, 2000, 100, 2000);
+    assert.ok(zTest.pValue < SIGNIFICANCE_ALPHA, "pré-condição: teste deve ser significativo");
+    assert.ok(mde < LOW_POWER_MDE_THRESHOLD, "pré-condição: MDE deve estar abaixo do limiar (amostra grande o bastante)");
+
+    const table: AbcAudienceTable = {
+      cells: [cellWithClicks("A", 400, 2000), cellWithClicks("B", 100, 2000), { ...cellWithClicks("C", 0, 2000), campaignCount: 0 }],
+      leaderOpenRate: "A",
+      leaderClickRate: "A",
+      significantClick: true,
+      pValue: zTest.pValue,
+      minDetectableLiftRelative: mde,
+    };
+    const html = renderAbcAudienceTable("Agregada (Fria + Quente)", table);
+    assert.match(html, /Já dá pra concluir\./, "amostra grande o bastante não deve carregar a ressalva de poder baixo");
+    assert.doesNotMatch(html, /com ressalva/i);
+  });
+
+  test("minDetectableLiftRelative ausente (fixture legado sem o campo) → trata como bem-powered, preserva comportamento anterior ao #4559", () => {
+    const table: AbcAudienceTable = {
+      cells: [cellWithClicks("A", 400, 2000), cellWithClicks("B", 100, 2000), { ...cellWithClicks("C", 0, 2000), campaignCount: 0 }],
+      leaderOpenRate: "A",
+      leaderClickRate: "A",
+      significantClick: true,
+      pValue: 0.0001,
+      // minDetectableLiftRelative omitido de propósito
+    };
+    const html = renderAbcAudienceTable("Agregada (Fria + Quente)", table);
+    assert.match(html, /Já dá pra concluir\./);
+  });
+});
+
+describe("minDetectableRelativeLift (#4559)", () => {
+  test("amostra maior → MDE menor (mais poder pra detectar lifts pequenos)", () => {
+    const small = minDetectableRelativeLift(20, 200, 15, 200);
+    const large = minDetectableRelativeLift(200, 2000, 150, 2000);
+    assert.ok(large < small, `amostra 10x maior deveria ter MDE menor (${large} vs ${small})`);
+  });
+
+  test("n1 ou n2 = 0 → Infinity (indeterminado)", () => {
+    assert.equal(minDetectableRelativeLift(10, 0, 5, 100), Infinity);
+    assert.equal(minDetectableRelativeLift(10, 100, 5, 0), Infinity);
+  });
+
+  test("taxa pooled degenerada (0 cliques nos 2 braços) → Infinity", () => {
+    assert.equal(minDetectableRelativeLift(0, 100, 0, 100), Infinity);
   });
 });
