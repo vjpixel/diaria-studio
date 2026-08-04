@@ -238,6 +238,60 @@ export const CURSOS_FOOTER_NAV_UTM = {
   medium: "footer-nav",
 } as const;
 
+/**
+ * Pills de curadoria do bloco PARA ENCERRAR (`CURADORIA_PILLS`,
+ * `scripts/lib/shared/encerramento-snippet.ts`) — direção NEWSLETTER →
+ * curadoria (#4536/#4553), oposta a `CURSOS_FOOTER_NAV_UTM`/
+ * `ARQUIVO_FOOTER_NAV_UTM` acima (curadoria → `diar.ia.br`). Antes desta
+ * fatia as 3 pills saíam cruas, sem UTM — impossível medir quantos cliques
+ * cada uma gera a partir do e-mail diário (~548 leitores/dia, #4553). Mesmo
+ * `source`/`medium` nas 3 (o leitor clicou dentro do e-mail da newsletter),
+ * `campaign` único por pill. A pill "Equipamentos" (Amazon, `DIARIA_AMAZON_LOJA_URL`)
+ * fica de fora — link de afiliado direto a terceiro, fora do escopo do #4553.
+ */
+export const CURSOS_RODAPE_UTM = {
+  source: "newsletter",
+  medium: "email",
+  campaign: "cursos-rodape",
+} as const;
+
+/** Pill "Livros" do PARA ENCERRAR — ver `CURSOS_RODAPE_UTM` acima. */
+export const LIVROS_RODAPE_UTM = {
+  source: "newsletter",
+  medium: "email",
+  campaign: "livros-rodape",
+} as const;
+
+/** Pill "Arquivo" do PARA ENCERRAR (#4536, pill nova) — ver `CURSOS_RODAPE_UTM` acima. */
+export const ARQUIVO_RODAPE_UTM = {
+  source: "newsletter",
+  medium: "email",
+  campaign: "arquivo-rodape",
+} as const;
+
+/** Rodapé de navegação cruzada da página de Livros (#4537 item 2) — mesmo
+ * padrão de `CURSOS_FOOTER_NAV_UTM`/`ARQUIVO_FOOTER_NAV_UTM` (só source+medium,
+ * sem campaign de verdade — link de nav, não funil de conversão). Livros
+ * emitia o literal solto `"utm_source=livros&utm_medium=footer-nav"` direto
+ * em `build-livros-page.ts:360` desde #4051 — último dos três fora do
+ * registry (Cursos/Arquivo já tinham migrado, #4295/#4312). */
+export const LIVROS_FOOTER_NAV_UTM = {
+  source: "livros",
+  medium: "footer-nav",
+} as const;
+
+/** Link "Arquivo completo em {url}" do post semanal do Instagram
+ * (`scripts/lib/format-weekly-social.ts`, #4537 item 1) — o #4295 cobriu os
+ * links que a pipeline DIÁRIA publica; o post semanal ficou fora do escopo
+ * daquela issue e nunca ganhou UTM. Volume baixo (~1 link/semana, e o
+ * Instagram não linka no corpo — o app suprime o Referer mesmo se o leitor
+ * copiar o texto), mas mantém o inventário completo e sem literal solto. */
+export const INSTAGRAM_WEEKLY_ARCHIVE_UTM = {
+  source: "instagram",
+  medium: "organic_social",
+  campaign: "weekly-archive",
+} as const;
+
 /** Cadastro no gate inline do worker `cursos` (`workers/cursos/src/subscribe.ts`,
  * #4052) — fold-in do drift pré-existente apontado pelo #4295: o worker já
  * emitia este triplo com literais locais, ausente do registry/`/utms`. Move
@@ -509,6 +563,21 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     status: "ativo",
   },
   {
+    id: "livros-footer-nav",
+    label: "Livros — link de rodapé pra diar.ia.br",
+    source: LIVROS_FOOTER_NAV_UTM.source,
+    medium: LIVROS_FOOTER_NAV_UTM.medium,
+    // #4537 item 2: sem utm_campaign de verdade (link de nav, só source+medium) —
+    // mesmo padrão-placeholder de cursos-footer-nav/arquivo-footer-nav acima.
+    campaignPattern: "livros-footer-nav",
+    originFile: "scripts/build-livros-page.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada da página de Livros — ' +
+      "último dos três (Cursos/Livros/Arquivo) a sair do literal solto " +
+      "`utm_source=livros&utm_medium=footer-nav` direto no call site (#4051/#4295/#4537).",
+    status: "ativo",
+  },
+  {
     id: "embed-widget",
     label: "Embed do jogo (parceiros)",
     source: EMBED_UTM.source,
@@ -592,6 +661,41 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     status: "ativo",
   },
   {
+    id: "cursos-rodape",
+    label: "Pill 'Cursos' do PARA ENCERRAR (e-mail diário)",
+    source: CURSOS_RODAPE_UTM.source,
+    medium: CURSOS_RODAPE_UTM.medium,
+    campaignPattern: CURSOS_RODAPE_UTM.campaign,
+    originFile: "scripts/lib/shared/encerramento-snippet.ts",
+    description:
+      "Pill 'Cursos' da lista 'Acesse nossas curadorias' no bloco PARA ENCERRAR — " +
+      "direção newsletter → curadoria (#4553), oposta a 'cursos-footer-nav' abaixo. " +
+      "Antes saía crua, sem UTM — impossível medir cliques a partir do e-mail (~548 leitores/dia).",
+    status: "ativo",
+  },
+  {
+    id: "livros-rodape",
+    label: "Pill 'Livros' do PARA ENCERRAR (e-mail diário)",
+    source: LIVROS_RODAPE_UTM.source,
+    medium: LIVROS_RODAPE_UTM.medium,
+    campaignPattern: LIVROS_RODAPE_UTM.campaign,
+    originFile: "scripts/lib/shared/encerramento-snippet.ts",
+    description: "Pill 'Livros' do PARA ENCERRAR — mesmo padrão de 'cursos-rodape' acima (#4553).",
+    status: "ativo",
+  },
+  {
+    id: "arquivo-rodape",
+    label: "Pill 'Arquivo' do PARA ENCERRAR (e-mail diário)",
+    source: ARQUIVO_RODAPE_UTM.source,
+    medium: ARQUIVO_RODAPE_UTM.medium,
+    campaignPattern: ARQUIVO_RODAPE_UTM.campaign,
+    originFile: "scripts/lib/shared/encerramento-snippet.ts",
+    description:
+      "Pill 'Arquivo' (4ª pill, nova — #4536) do PARA ENCERRAR — antes desta issue " +
+      "o arquivo.diar.ia.br não tinha NENHUM link de entrada a partir da newsletter.",
+    status: "ativo",
+  },
+  {
     id: "cursos-footer-nav",
     label: "Cursos — link de rodapé pra diar.ia.br",
     source: CURSOS_FOOTER_NAV_UTM.source,
@@ -630,6 +734,19 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "fixo entre D1 e D2, pensado pra colar/encaminhar no WhatsApp (#4486, " +
       "posição/conteúdo revisados em #4570) — utm_campaign = AAMMDD da " +
       "edição que gerou o encaminhamento.",
+    status: "ativo",
+  },
+  {
+    id: "instagram-weekly-archive",
+    label: "Instagram — link de arquivo no post semanal",
+    source: INSTAGRAM_WEEKLY_ARCHIVE_UTM.source,
+    medium: INSTAGRAM_WEEKLY_ARCHIVE_UTM.medium,
+    campaignPattern: INSTAGRAM_WEEKLY_ARCHIVE_UTM.campaign,
+    originFile: "scripts/lib/format-weekly-social.ts",
+    description:
+      "\"Arquivo completo em {url}\" no post semanal do Instagram (#4101/#4483) — " +
+      "saía cru, sem UTM (resíduo do #4295, fechado no #4537 item 1). Volume baixo " +
+      "(~1/semana) e o Instagram não linka no corpo, mas fecha o inventário.",
     status: "ativo",
   },
   {

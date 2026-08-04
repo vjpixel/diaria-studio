@@ -35,6 +35,7 @@ import {
   renderCuradoriaCtaSubscribeStyles, // #4051: CSS do CTA de assinatura inline (hero + fim-de-lista)
 } from "./lib/shared/curadoria-page.ts"; // #3113: CSS/footer comuns com build-cursos-page.ts
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #4051: /jogar/subscribe mora no worker `poll` (eia.diar.ia.br)
+import { LIVROS_FOOTER_NAV_UTM } from "./lib/shared/utm-registry.ts"; // #4537 item 2 — era literal solto, último dos 3 (Cursos/Arquivo já migrados) fora do registry
 import {
   isSafeUrl,
   availableThemes,
@@ -357,7 +358,10 @@ ${cards}
 ${renderSubscribeCta(CTA_FOOTER, "end")}
     </div>
   </main>
-  ${renderCuradoriaFooter("diar.ia.br — curadoria de livros sobre IA", "utm_source=livros&utm_medium=footer-nav")}
+  ${renderCuradoriaFooter(
+    "diar.ia.br — curadoria de livros sobre IA",
+    `utm_source=${LIVROS_FOOTER_NAV_UTM.source}&utm_medium=${LIVROS_FOOTER_NAV_UTM.medium}`,
+  )}
 <script>
   (function () {
     // #3118 item 6: mapa slug→label completo — data-themes/option value agora

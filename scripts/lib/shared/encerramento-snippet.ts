@@ -35,7 +35,13 @@ import {
   DIARIA_CURSOS_URL,
   DIARIA_LIVROS_URL,
   DIARIA_AMAZON_LOJA_URL,
+  DIARIA_ARQUIVO_URL,
 } from "../canonical-urls.ts";
+import {
+  CURSOS_RODAPE_UTM,
+  LIVROS_RODAPE_UTM,
+  ARQUIVO_RODAPE_UTM,
+} from "./utm-registry.ts"; // #4536/#4553 — UTM da direção newsletter → curadoria
 
 /**
  * #4413: convite social FIXO — texto único, idêntico em diário e mensal,
@@ -49,16 +55,35 @@ import {
 export const SOCIAL_INVITE =
   `Para acompanhar as 3 principais notícias de IA todos os dias, siga a **diar.ia.br** no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}), [Instagram](${DIARIA_INSTAGRAM_URL}), [Threads](${DIARIA_THREADS_URL}), [Facebook](${DIARIA_FACEBOOK_PAGE_URL}) ou [X](${DIARIA_X_URL}).`;
 
+/** Monta `{url}?utm_source=...&utm_medium=...&utm_campaign=...` a partir de um
+ * triplo do registry — mesmo padrão textual já usado pelos emissores de
+ * footer-nav (`build-cursos-page.ts`/`render-archive.ts`), aqui centralizado
+ * porque as 3 pills abaixo repetem a mesma forma 3x (#4536/#4553). */
+function withRodapeUtm(
+  url: string,
+  utm: { source: string; medium: string; campaign: string },
+): string {
+  return `${url}?utm_source=${utm.source}&utm_medium=${utm.medium}&utm_campaign=${utm.campaign}`;
+}
+
 /**
  * #4411: lista de pílulas "Acesse nossas curadorias" — navegação estrutural
  * FIXA, idêntica em diário e mensal (labels curtos: Cursos/Livros/
- * Equipamentos). SEM label manual — o render de cada formato
+ * Equipamentos/Arquivo). SEM label manual — o render de cada formato
  * (`newsletter-render-html.ts`/`monthly-render.ts`) gera o label "Acesse
  * nossas curadorias:" sozinho ao detectar esta lista na posição certa.
+ *
+ * #4536 (pill nova "Arquivo" — antes desta issue `arquivo.diar.ia.br` não
+ * tinha NENHUM link de entrada a partir da newsletter) + #4553 (UTM nas 3
+ * pills que apontam pra domínio próprio — Cursos/Livros/Arquivo — na direção
+ * newsletter → curadoria; convenção `source: newsletter, medium: email,
+ * campaign` único por pill, ver `utm-registry.ts`). "Equipamentos" fica de
+ * fora do UTM — link de afiliado direto à Amazon, fora do escopo do #4553.
  */
-export const CURADORIA_PILLS = `- [Cursos](${DIARIA_CURSOS_URL})
-- [Livros](${DIARIA_LIVROS_URL})
-- [Equipamentos](${DIARIA_AMAZON_LOJA_URL})`;
+export const CURADORIA_PILLS = `- [Cursos](${withRodapeUtm(DIARIA_CURSOS_URL, CURSOS_RODAPE_UTM)})
+- [Livros](${withRodapeUtm(DIARIA_LIVROS_URL, LIVROS_RODAPE_UTM)})
+- [Equipamentos](${DIARIA_AMAZON_LOJA_URL})
+- [Arquivo](${withRodapeUtm(DIARIA_ARQUIVO_URL, ARQUIVO_RODAPE_UTM)})`;
 
 /**
  * Cláusula de abertura do parágrafo de apoio pro DIÁRIO — vazia, porque o

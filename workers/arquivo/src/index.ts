@@ -17,7 +17,11 @@
  * renderiza on-the-fly. `Cache-Control: public, max-age=3600` + edge cache
  * do Cloudflare absorvem o resto (o sitemap não muda mais que 1x/dia).
  *
- * Rota única: GET / → HTML completo. Qualquer outro path → 404.
+ * Rotas: GET / → HTML completo. GET /sitemap.xml → sitemap estático de 1
+ * `<url>` (a própria página, #4546 — descoberta pelo Google; sem `[assets]`
+ * neste Worker, então é a rota que precisa servir o XML, diferente de
+ * cursos/livros, que servem via `public/sitemap.xml` estático). Qualquer
+ * outro path → 404.
  *
  * Falha de fetch/parse do sitemap NUNCA lança sem tratamento — cai numa
  * página de erro simples (502), nunca crash.
@@ -27,7 +31,33 @@
  * deste repo) pra que o Googlebot de fato a descubra. Ver PR body de #4105.
  */
 import { parseSitemap } from "../../../scripts/lib/fetch-sitemap.ts";
-import { buildArchiveHtml } from "./render-archive.ts";
+import { buildArchiveHtml, PAGE_URL } from "./render-archive.ts";
+
+/**
+ * Sitemap PRÓPRIO desta página (#4546) — 1 único `<url>`, a própria
+ * `PAGE_URL`. NÃO enumera as ~246 edições individuais (essas já vivem no
+ * sitemap do host principal, `https://diar.ia.br/sitemap.xml`, consumido
+ * acima via `fetchSitemapXml`) — o objetivo aqui é só dar ao Google um
+ * caminho de descoberta pra ESTA página, que por sua vez lista `<a href>`
+ * reais pra cada edição.
+ */
+const ARQUIVO_SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>${PAGE_URL}</loc>
+  </url>
+</urlset>
+`;
+
+function sitemapResponse(): Response {
+  return new Response(ARQUIVO_SITEMAP_XML, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/xml;charset=utf-8",
+      "Cache-Control": "public, max-age=3600",
+    },
+  });
+}
 
 const SITEMAP_URL = "https://diar.ia.br/sitemap.xml";
 const USER_AGENT = "DiariaBot/1.0 (+https://diar.ia.br)";
@@ -84,6 +114,9 @@ async function fetchSitemapXml(): Promise<string> {
 export default {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === "/sitemap.xml") {
+      return sitemapResponse();
+    }
     if (url.pathname !== "/") {
       return new Response("Not found", { status: 404 });
     }

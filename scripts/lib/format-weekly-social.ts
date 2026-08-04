@@ -15,12 +15,30 @@
  *
  * Pura (texto in, texto out) — nenhuma I/O ou chamada de rede.
  * `publish-weekly-social.ts` consome esta função antes de despachar.
+ *
+ * #4537 item 1: o link de arquivo saía cru (`https://diar.ia.br`), sem UTM —
+ * resíduo do #4295, que só cobriu os links da pipeline DIÁRIA. UTM montado
+ * via `new URL()` + `searchParams` (nunca concatenação), mesmo padrão de
+ * `buildFacebookCtaUrl` em `social-cta-lines.ts`, a partir do triplo único em
+ * `scripts/lib/shared/utm-registry.ts` (`INSTAGRAM_WEEKLY_ARCHIVE_UTM`).
  */
+
+import { INSTAGRAM_WEEKLY_ARCHIVE_UTM } from "./shared/utm-registry.ts";
 
 /** Limite de caracteres de caption no Instagram (mesmo valor de publish-instagram.ts). */
 export const INSTAGRAM_WEEKLY_CHAR_LIMIT = 2200;
 
-const ARCHIVE_URL = "https://diar.ia.br";
+/** Monta a URL do link de arquivo com UTM (#4537) — exportada pra teste, mesmo
+ * padrão de `buildFacebookCtaUrl` (`social-cta-lines.ts`). */
+export function buildInstagramWeeklyArchiveUrl(): string {
+  const url = new URL("https://diar.ia.br");
+  url.searchParams.set("utm_source", INSTAGRAM_WEEKLY_ARCHIVE_UTM.source);
+  url.searchParams.set("utm_medium", INSTAGRAM_WEEKLY_ARCHIVE_UTM.medium);
+  url.searchParams.set("utm_campaign", INSTAGRAM_WEEKLY_ARCHIVE_UTM.campaign);
+  return url.toString();
+}
+
+const ARCHIVE_URL = buildInstagramWeeklyArchiveUrl();
 
 const INTRO_LINE = "Os mais clicados da semana na diar.ia.br:";
 

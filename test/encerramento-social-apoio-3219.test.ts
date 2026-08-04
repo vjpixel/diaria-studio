@@ -208,12 +208,32 @@ describe("SOCIAL_INVITE / CURADORIA_PILLS — blocos fixos, mesma constante em d
     }
   });
 
-  it("CURADORIA_PILLS tem exatamente 3 pills, nesta ordem: Cursos, Livros, Equipamentos", () => {
+  it("CURADORIA_PILLS tem exatamente 4 pills, nesta ordem: Cursos, Livros, Equipamentos, Arquivo (#4536)", () => {
     const idxCursos = CURADORIA_PILLS.indexOf("[Cursos]");
     const idxLivros = CURADORIA_PILLS.indexOf("[Livros]");
     const idxEquip = CURADORIA_PILLS.indexOf("[Equipamentos]");
-    assert.ok(idxCursos >= 0 && idxLivros > idxCursos && idxEquip > idxLivros, "ordem/labels das pills incorretos");
-    assert.equal(CURADORIA_PILLS.split("\n").length, 3, "deveriam existir exatamente 3 linhas de pill");
+    const idxArquivo = CURADORIA_PILLS.indexOf("[Arquivo]");
+    assert.ok(
+      idxCursos >= 0 && idxLivros > idxCursos && idxEquip > idxLivros && idxArquivo > idxEquip,
+      "ordem/labels das pills incorretos",
+    );
+    assert.equal(CURADORIA_PILLS.split("\n").length, 4, "deveriam existir exatamente 4 linhas de pill");
+  });
+
+  it("Cursos/Livros/Arquivo levam UTM (newsletter→curadoria); Equipamentos fica sem, #4553)", () => {
+    assert.match(
+      CURADORIA_PILLS,
+      /\[Cursos\]\(https:\/\/cursos\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=cursos-rodape\)/,
+    );
+    assert.match(
+      CURADORIA_PILLS,
+      /\[Livros\]\(https:\/\/livros\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=livros-rodape\)/,
+    );
+    assert.match(
+      CURADORIA_PILLS,
+      /\[Arquivo\]\(https:\/\/arquivo\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape\)/,
+    );
+    assert.match(CURADORIA_PILLS, /\[Equipamentos\]\(https:\/\/www\.amazon\.com\.br\/shop\/vjpixel\)/);
   });
 
   it("buildParaEncerrar() (diária) usa exatamente SOCIAL_INVITE como último parágrafo", () => {
@@ -252,9 +272,11 @@ describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartil
     assert.match(out, /\*\*🙋🏼‍♀️ PARA ENCERRAR\*\*/);
     assert.match(out, /usei Claude Code para automatizar parte da pesquisa/);
     // #4411: labels curtos ("Cursos de IA"/"Livros sobre IA" → "Cursos"/"Livros").
-    assert.match(out, /- \[Cursos\]\(https:\/\/cursos\.diar\.ia\.br\)/);
-    assert.match(out, /- \[Livros\]\(https:\/\/livros\.diar\.ia\.br\)/);
+    // #4536/#4553: Cursos/Livros/Arquivo levam UTM newsletter→curadoria; Equipamentos não.
+    assert.match(out, /- \[Cursos\]\(https:\/\/cursos\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=cursos-rodape\)/);
+    assert.match(out, /- \[Livros\]\(https:\/\/livros\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=livros-rodape\)/);
     assert.match(out, /- \[Equipamentos\]\(https:\/\/www\.amazon\.com\.br\/shop\/vjpixel\)/);
+    assert.match(out, /- \[Arquivo\]\(https:\/\/arquivo\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape\)/);
   });
 
   it("#4357: override de para_encerrar.slot_a (texto arbitrário, sem lista) NÃO apaga a linha de pills 'Acesse nossas curadorias'", () => {
@@ -267,9 +289,10 @@ describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartil
       slotA: "Apoie a curadoria contribuindo a partir de R$5/mês em [apoia.se/diaria](https://apoia.se/diaria). Nesta edição, usei alguns equipamentos legais.",
     });
     assert.equal((out.match(/\[Cursos\]/g) ?? []).length, 1, "não deveria haver duplicação — só 1 ocorrência da pill");
-    assert.match(out, /- \[Cursos\]\(https:\/\/cursos\.diar\.ia\.br\)/);
-    assert.match(out, /- \[Livros\]\(https:\/\/livros\.diar\.ia\.br\)/);
+    assert.match(out, /- \[Cursos\]\(https:\/\/cursos\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=cursos-rodape\)/);
+    assert.match(out, /- \[Livros\]\(https:\/\/livros\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=livros-rodape\)/);
     assert.match(out, /- \[Equipamentos\]\(https:\/\/www\.amazon\.com\.br\/shop\/vjpixel\)/);
+    assert.match(out, /- \[Arquivo\]\(https:\/\/arquivo\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape\)/);
   });
 
   it("#4413: um eventual slot_b em platform.config.json/override (config legado) é ignorado — convite social nunca varia", () => {
@@ -394,7 +417,10 @@ describe("integração de render — mensal (renderEncerramento processa o novo 
       assert.match(html, /href="https:\/\/apoia\.se\/diaria"/);
       assert.match(html, new RegExp(`href="${DIARIA_LINKEDIN_PAGE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
       assert.match(html, new RegExp(`href="${DIARIA_FACEBOOK_PAGE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
-      assert.match(html, /href="https:\/\/cursos\.diar\.ia\.br"/);
+      // #4536/#4553: pill "Cursos" agora carrega UTM (query string) — o href
+      // não termina mais logo após o domínio.
+      assert.match(html, /href="https:\/\/cursos\.diar\.ia\.br\?utm_source=newsletter&amp;utm_medium=email&amp;utm_campaign=cursos-rodape"/);
+      assert.match(html, /href="https:\/\/arquivo\.diar\.ia\.br\?utm_source=newsletter&amp;utm_medium=email&amp;utm_campaign=arquivo-rodape"/);
       assert.match(html, /Essa edição mensal nasce/);
       // encerramento padrão pré-existente continua presente — não foi substituído
       assert.match(html, /assine em/);
