@@ -55,10 +55,23 @@ import {
 export const SOCIAL_INVITE =
   `Para acompanhar as 3 principais notícias de IA todos os dias, siga a **diar.ia.br** no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}), [Instagram](${DIARIA_INSTAGRAM_URL}), [Threads](${DIARIA_THREADS_URL}), [Facebook](${DIARIA_FACEBOOK_PAGE_URL}) ou [X](${DIARIA_X_URL}).`;
 
-/** Monta `{url}?utm_source=...&utm_medium=...&utm_campaign=...` a partir de um
- * triplo do registry — mesmo padrão textual já usado pelos emissores de
- * footer-nav (`build-cursos-page.ts`/`render-archive.ts`), aqui centralizado
- * porque as 3 pills abaixo repetem a mesma forma 3x (#4536/#4553). */
+/**
+ * Monta `{url}?utm_source=...&utm_medium=...&utm_campaign=...` a partir de um
+ * triplo do registry — mesmo padrão TEXTUAL já usado pelos emissores de
+ * footer-nav (`renderCuradoriaFooter` em `curadoria-page.ts`, consumido por
+ * `build-cursos-page.ts`/`build-livros-page.ts`/`render-archive.ts`):
+ * concatenação simples, preservando a URL base EXATAMENTE como a constante
+ * declara (`DIARIA_CURSOS_URL`/`DIARIA_LIVROS_URL`/`DIARIA_ARQUIVO_URL`, sem
+ * `/` final). Deliberadamente NÃO usa `new URL()` aqui — diferente de
+ * `buildFacebookCtaUrl`/`buildInstagramWeeklyArchiveUrl` (que partem de uma
+ * URL genérica embutida em prosa e não têm essa restrição), `new URL(...)
+ * .toString()` normaliza o path vazio pra `/`, o que mudaria a forma da URL
+ * base em TODO outro lugar que a compara/hardcoda por igualdade de string
+ * (ex: `FOOTER_DOMAINS`/testes que citam `DIARIA_CURSOS_URL` cru). Os valores
+ * aqui são 100% ASCII estático (sem risco de encoding), então a concatenação
+ * é segura. Centralizado porque as 3 pills abaixo repetem a mesma forma 3x
+ * (#4536/#4553).
+ */
 function withRodapeUtm(
   url: string,
   utm: { source: string; medium: string; campaign: string },
