@@ -142,13 +142,25 @@ export interface DashboardStaleInfo {
 }
 
 /**
- * #4543: `workers/brevo-dashboard/src/brevo-api.ts` serve `GET /api/campaigns`
- * com HTTP 200 mesmo quando o dado é cache (rate-limit/outage/erro de rede da
- * Brevo), sinalizando isso via `X-Dashboard-Stale`/`X-Dashboard-Upstream-Status`
- * — por design, pra não acionar alertas de disponibilidade. Consumidores que
- * checam só `res.ok` (este script e `clarice-check-semaphore.ts`) não
- * enxergavam essa diferença. Decisão do editor: fail-open com visibilidade —
- * nunca bloquear por isso, mas nunca silencioso.
+ * #4543: `GET /api/campaigns` (`workers/brevo-dashboard/src/index.ts`,
+ * `buildCampaignsResponse`) serve HTTP 200 mesmo quando o dado é cache, em
+ * dois cenários REAIS desta rota — sinalizados via
+ * `X-Dashboard-Stale`/`X-Dashboard-Upstream-Status`, por design, pra não
+ * acionar alertas de disponibilidade:
+ *   - `kind: "upstream-error"` — outage 403/5xx OU erro de rede/timeout cru
+ *     do fetch pra Brevo (#4251/#4533); `upstreamStatus` traz o status real
+ *     ou o literal `"network_error"`.
+ *   - `kind: "inflight-coalesced"` — lock de refresh concorrente (#3644,
+ *     coalescing entre requests simultâneas), sem relação com a Brevo;
+ *     `upstreamStatus` ausente, cai no fallback `"unknown"`.
+ * Rate-limit (429) NÃO é mascarado nesta rota — `rateLimitResponse(_, false)`
+ * devolve 503 puro sem `X-Dashboard-Stale` (o banner "200 + stale" pra 429
+ * existe só na rota HTML do painel, `buildStaleResponse`) — continua caindo
+ * no `!res.ok` pré-existente em ambos os consumidores, inalterado por este PR.
+ * Consumidores que checavam só `res.ok` (este script e
+ * `clarice-check-semaphore.ts`) não enxergavam essa diferença pros dois casos
+ * acima. Decisão do editor: fail-open com visibilidade — nunca bloquear por
+ * isso, mas nunca silencioso.
  */
 export function extractDashboardStaleInfo(res: Response): DashboardStaleInfo | undefined {
   const kind = res.headers.get("X-Dashboard-Stale");

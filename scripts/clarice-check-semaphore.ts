@@ -34,13 +34,9 @@
  *
  * Stdout: JSON { ok, semaphore, reason?, stale? }. Stderr: log humano-legível.
  *
- * `stale` (#4543): quando o dashboard responde com o header `X-Dashboard-Stale`
- * (rate-limit/outage/erro de rede da Brevo — ver `workers/brevo-dashboard/src/brevo-api.ts`),
- * a decisão acima foi tomada sobre cache possivelmente desatualizado (até
- * `LASTGOOD_TTL`, 24h) mesmo com HTTP 200. Decisão do editor (#4543): não
- * tratar como falha — logar e prosseguir (fail-open com visibilidade), porque
- * bloquear aqui na frequência de instabilidade observada pós-#4533 seria
- * bloqueio demais para um sinal que ainda costuma ser direcionalmente útil.
+ * `stale` (#4543): ver docstring de `extractDashboardStaleInfo` em
+ * clarice-schedule-ramp.ts pra causas e decisão do editor (fail-open com
+ * visibilidade — nunca tratado como falha aqui).
  */
 
 import { getArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
@@ -54,13 +50,14 @@ import {
 } from "./clarice-schedule-ramp.ts";
 import type { BrevoCampaign } from "../workers/brevo-dashboard/src/types.ts";
 import type { Semaphore } from "../workers/brevo-dashboard/src/weekly-plan.ts";
+import type { DashboardStaleInfo } from "./clarice-schedule-ramp.ts";
 
 export interface SemaphoreCheckResult {
   ok: boolean; // false = ABORTAR a rodada (semáforo vermelho)
   semaphore: Semaphore | "indeterminate";
   reason?: string;
   /** #4543: presente quando o dashboard serviu X-Dashboard-Stale — decisão tomada sobre cache, não fresh. */
-  stale?: { kind: string; upstreamStatus: string };
+  stale?: DashboardStaleInfo;
 }
 
 /** Pura: decide o resultado do guard a partir do `deriveRampVolumes` já resolvido. */

@@ -120,8 +120,8 @@ test("checkSemaphore: recordedAt fresco mas date stale (#4541) -> semáforo trat
 });
 
 // ---------------------------------------------------------------------------
-// #4543 — dashboard pode servir HTTP 200 com dado STALE (rate-limit/outage/
-// erro de rede da Brevo, headers X-Dashboard-Stale/X-Dashboard-Upstream-Status).
+// #4543 — dashboard pode servir HTTP 200 com dado STALE (ver docstring de
+// extractDashboardStaleInfo em clarice-schedule-ramp.ts pra causas reais).
 // Decisão do editor: fail-open com visibilidade — nunca tratar como falha,
 // mas nunca silencioso (resultado carrega `stale` pra quem consumir o JSON).
 // ---------------------------------------------------------------------------

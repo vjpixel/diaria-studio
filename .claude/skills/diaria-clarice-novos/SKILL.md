@@ -76,6 +76,8 @@ npx tsx scripts/clarice-check-semaphore.ts
 
 Se `exit 1` (semáforo vermelho) → **ABORTE a rodada inteira aqui**, registre no relatório, não prossiga.
 
+Se o JSON impresso trouxer `stale` presente (#4543 — dashboard serviu `X-Dashboard-Stale`, decisão tomada sobre cache possivelmente desatualizado) → **prossiga normalmente** (nunca é motivo de abort), mas **registre no relatório** que o semáforo desta rodada foi decidido sobre dado stale (`stale.kind`/`stale.upstreamStatus`) — mesmo padrão de registrar `fallback: true` mais abaixo.
+
 Depois o grupo:
 
 ```bash
