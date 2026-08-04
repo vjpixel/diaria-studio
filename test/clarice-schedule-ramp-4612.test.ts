@@ -206,6 +206,33 @@ function mockFetchRouter(campaignsHeaders: Record<string, string> = {}): typeof 
   }) as typeof fetch;
 }
 
+// #4612 gap (fleet review da PR #4617, pr-test-analyzer): mock mínimo pra
+// `--import` — só as 3 rotas Brevo que esse ramo de fato chama quando
+// `--skip-verify` está ativo (dispensa `GET /contacts/lists/{id}` do poll):
+//   GET  /v3/contacts/lists  (brevoListAllLists, check de conflito de nome)
+//   POST /v3/contacts/lists  (cria 1 lista por wave)
+//   POST /v3/contacts/import (importa o CSV da wave)
+// Nunca chama /api/campaigns nem /v3/account nesta rota — só se usa junto
+// com `--volumes` explícito na invocação de teste, pra isolar a asserção
+// (nenhum stale NOVO deveria entrar via fetch nesta 2ª chamada).
+function importOnlyRouter(): typeof fetch {
+  let nextListId = 9001;
+  return (async (url: string | URL, init?: RequestInit) => {
+    const u = String(url);
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (u.includes("/v3/contacts/lists") && method === "GET") {
+      return new Response(JSON.stringify({ lists: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (u.includes("/v3/contacts/lists") && method === "POST") {
+      return new Response(JSON.stringify({ id: nextListId++ }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (u.includes("/v3/contacts/import") && method === "POST") {
+      return new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+}
+
 async function captureLogs(fn: () => void | Promise<void>): Promise<string[]> {
   const logs: string[] = [];
   const orig = console.log;
@@ -315,5 +342,81 @@ test("main() --build-audience: SEM X-Dashboard-Stale, nenhuma entry carrega o ca
   assert.equal(entries.length, 3);
   for (const entry of entries) {
     assert.equal(Object.prototype.hasOwnProperty.call(entry, "stale"), false, `${entry.key} não deveria ter a chave 'stale'`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// REGRESSÃO (#4612, gap apontado pelo fleet review da PR #4617):
+//
+// Os testes acima só chamam `main()` UMA VEZ (`--build-audience`) e leem
+// `ramp-summary.json` de volta com `readFileSync` direto — nunca reentram em
+// `main()` via um segundo MODO (`--import`/`--create`/`--schedule`) pra
+// provar que `stale` sobrevive ao caminho de MUTAÇÃO
+// (`loadRampSummary` → mutar `entry.listId`/`entry.status` IN-PLACE →
+// `writeRampSummary`), que é exatamente o cenário motivador da issue #4612:
+// "--import/--create/--schedule relendo o manifest dias depois, possivelmente
+// numa invocação diferente". Dois revisores (`code-reviewer`,
+// `type-design-analyzer`) confirmaram por leitura estática que o mecanismo
+// funciona por construção (--import muta os objetos existentes em vez de
+// reconstruí-los com uma lista explícita de campos, ao contrário do ramo
+// --build-audience — ver o `entries.push({...})` acima), mas nenhum teste
+// provava isso; um refactor futuro que aplicasse o mesmo padrão de "lista
+// explícita de campos" ao ponto de mutação do --import faria `stale`
+// desaparecer silenciosamente sem nenhum teste pegar.
+//
+// `--import` é o modo mais barato de mockar entre --import/--create/--schedule
+// (3 rotas Brevo — `importOnlyRouter` acima — vs. o guard de HTML/`{{
+// unsubscribe }}` de --create ou o guard É IA? de --schedule), e já basta pra
+// provar o invariante: `stale` é dado da ETAPA `--build-audience` (fetch ao
+// dashboard), não dessas fases posteriores — nenhuma delas deveria escrevê-lo
+// nem apagá-lo.
+// ---------------------------------------------------------------------------
+
+test("REGRESSÃO (#4612): `stale` sobrevive a uma invocação SEPARADA de main() em modo diferente (--build-audience, depois --import dias depois)", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "ramp-4612-roundtrip-"));
+  const dbPath = resolve(dir, "store.db");
+  openClariceDb(dbPath).close(); // schema vazio — audiência 0 contatos, irrelevante pra esta asserção
+
+  // 1ª invocação: --build-audience com dashboard stale — grava `stale` em
+  // cada entry de ramp-summary.json (mesmo setup dos testes acima).
+  await withFakeBrevoFetch(mockFetchRouter(STALE_HEADERS), () =>
+    captureLogs(() => main(["--cycle", "2606-07", "--db", dbPath, "--data-root", dir, "--build-audience"])),
+  );
+
+  const rampDir = clariceRampDir("2606-07", dir);
+  const summaryPath = resolve(rampDir, "ramp-summary.json");
+  const before = JSON.parse(readFileSync(summaryPath, "utf8")) as RampWaveEntry[];
+  assert.equal(before.length, 3);
+  for (const entry of before) assert.deepEqual(entry.stale, EXPECTED_STALE);
+
+  // 2ª invocação: SEPARADA (processo/chamada de main() distinta) — --import
+  // com --volumes EXPLÍCITO, de propósito: esta chamada nunca faz fetch ao
+  // dashboard, então qualquer `stale` que apareça no resultado só pode ter
+  // vindo da RELEITURA do ramp-summary.json gravado na 1ª invocação, nunca de
+  // um fetch novo. --skip-verify dispensa o poll (`GET /contacts/lists/{id}`)
+  // sem enfraquecer a asserção — o poll não toca `entry.stale`.
+  const logs = await withFakeBrevoFetch(importOnlyRouter(), () =>
+    captureLogs(() => main([
+      "--cycle", "2606-07", "--db", dbPath, "--data-root", dir,
+      "--volumes", "10,10,10", "--import", "--skip-verify",
+    ])),
+  );
+
+  assert.equal(logs.length, 1);
+  const printed = JSON.parse(logs[0]);
+  assert.equal("stale" in printed, false, "--volumes explícito nesta chamada -> sem fetch -> sem stale NOVO no top-level");
+  assert.equal(printed.entries.length, 3);
+  for (const e of printed.entries) {
+    assert.equal(e.status, "imported", `${e.key} deveria estar "imported" após --import --skip-verify`);
+    assert.deepEqual(e.stale, EXPECTED_STALE, `${e.key}: stale da 1ª invocação deveria sobreviver à mutação de --import`);
+  }
+
+  // E o arquivo em disco — é ISSO que uma 3ª invocação (--create/--schedule),
+  // possivelmente dias depois, vai reler.
+  const after = JSON.parse(readFileSync(summaryPath, "utf8")) as RampWaveEntry[];
+  assert.equal(after.length, 3);
+  for (const entry of after) {
+    assert.notEqual(entry.listId, undefined, `${entry.key}: listId deveria ter sido setado pelo --import`);
+    assert.deepEqual(entry.stale, EXPECTED_STALE, `${entry.key}: stale ausente em disco após --import — mecanismo de persistência quebrado`);
   }
 });
