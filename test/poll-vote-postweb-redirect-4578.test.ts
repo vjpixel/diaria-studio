@@ -310,4 +310,12 @@ describe("#4578 item 3 — POST /jogar/gate/subscribe aceita source e resolve o 
     const script = jogarGateBoxScript();
     assert.match(script, /source:\s*"jogar-postweb"/);
   });
+
+  it("SELF-REVIEW: sessionUnavailable (Beehiiv OK, sem COOKIE_HMAC_SECRET) mostra a mensagem e PARA — não chama identifyAfterGate em seguida (que sobrescreveria a mensagem antes do leitor ler)", () => {
+    const script = jogarGateBoxScript();
+    const branch = script.match(/if \(data2 && data2\.ok && data2\.sessionUnavailable\) \{[\s\S]*?\n\s*\}/);
+    assert.ok(branch, "branch sessionUnavailable deve existir no script");
+    assert.doesNotMatch(branch![0], /identifyAfterGate/, "não pode encadear identifyAfterGate nesta branch — sobrescreveria a mensagem de confirmação de e-mail");
+    assert.match(branch![0], /Assinatura feita! Confirme o e-mail/);
+  });
 });

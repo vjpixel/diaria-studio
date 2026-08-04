@@ -774,9 +774,16 @@ export function jogarGateBoxScript(source: string = "jogar-postweb"): string {
         body: JSON.stringify({ email: email, name: name, optin: optin, website: website, source: ${JSON.stringify(source)} })
       }).then(function (r2) { return r2.json(); }).then(function (data2) {
         if (data2 && data2.ok && !data2.sessionUnavailable) { return identifyAfterGate(email, name).then(function (r) { afterIdentify(email, r); }); }
+        // sessionUnavailable: a Beehiiv aceitou a assinatura, mas o worker não
+        // conseguiu emitir cookie de sessão (COOKIE_HMAC_SECRET ausente —
+        // config de servidor, não erro do leitor). Mesmo padrão de
+        // renderJogarGatePage acima: mostra a mensagem e PARA aqui, sem
+        // chamar identifyAfterGate — senão o then() seguinte sobrescreveria
+        // esta mensagem antes de dar tempo de ler (achado do self-review).
         if (data2 && data2.ok && data2.sessionUnavailable) {
           setStatus("Assinatura feita! Confirme o e-mail que te enviamos — o que você já jogou continua contando.", true);
-          return identifyAfterGate(email, name).then(function (r) { afterIdentify(email, r); });
+          if (btn) btn.disabled = false;
+          return;
         }
         setStatus("Não deu, tente de novo em instantes.", false);
         if (btn) btn.disabled = false;
