@@ -277,7 +277,13 @@ export function sliceIntoVolumes<T>(ordered: T[], volumes: number[]): T[][] {
  * silenciosamente). `raw` ausente ou não-numérico → `fallback`. Pura, testável.
  */
 export function resolveDashboardLimit(raw: string | undefined, fallback: number = DEFAULT_DASHBOARD_LIMIT): number {
-  if (raw === undefined) return fallback;
+  // #4568: string VAZIA é "flag ausente", não "limite zero". `getArg` devolve
+  // `""` quando a flag não foi passada (nunca `undefined`), e o `Number("") === 0`
+  // daqui virava `?limit=0` — que o Worker responde com 502. Resultado: o guard
+  // D4 do semáforo abortava TODA invocação padrão, sem nunca avaliar
+  // entregabilidade. O `0` EXPLÍCITO (`--dashboard-limit 0`) segue preservado,
+  // que é o comportamento testado do #3643 minor 2.
+  if (raw === undefined || raw.trim() === "") return fallback;
   const n = Number(raw);
   return Number.isFinite(n) ? n : fallback;
 }

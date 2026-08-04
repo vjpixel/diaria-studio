@@ -5,7 +5,7 @@
  * resultado de `deriveRampVolumes` (já testado em test/clarice-schedule-ramp.test.ts;
  * aqui só a política "vermelho aborta, resto passa").
  */
-import { test } from "node:test";
+import { test, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { decideSemaphoreGuard, checkSemaphore } from "../scripts/clarice-check-semaphore.ts";
 
@@ -117,4 +117,50 @@ test("checkSemaphore: recordedAt fresco mas date stale (#4541) -> semáforo trat
   // tivesse voltado a confiar em `recordedAt` fresco sozinho, isto teria
   // resolvido "green" (spamRatePct=0,02% é bem abaixo do breaker).
   assert.equal(result.semaphore, "yellow");
+});
+
+// #4568 — o guard pedia `?limit=0` em toda invocação sem flags e o Worker
+// respondia 502, então ele abortava SEMPRE, sem nunca avaliar entregabilidade.
+// Causa: `getArg` devolve "" (não undefined) e `resolveDashboardLimit("")` = 0.
+describe("main(): limite pedido ao dashboard (#4568)", () => {
+  async function urlPedida(argv: string[]): Promise<string> {
+    let capturada = "";
+    const prevFetch = globalThis.fetch;
+    const prevLog = console.log;
+    const prevErr = console.error;
+    globalThis.fetch = (async (u: string | URL | Request) => {
+      const s = String(u);
+      if (s.includes("/api/campaigns")) capturada = s;
+      return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    console.log = () => {};
+    console.error = () => {};
+    try {
+      const { main } = await import("../scripts/clarice-check-semaphore.ts");
+      await main(argv);
+    } finally {
+      globalThis.fetch = prevFetch;
+      console.log = prevLog;
+      console.error = prevErr;
+    }
+    return capturada;
+  }
+
+  it("SEM flags pede o default (50), nunca limit=0", async () => {
+    const url = await urlPedida([]);
+    assert.match(url, /[?&]limit=50\b/);
+    assert.doesNotMatch(url, /[?&]limit=0\b/, "limit=0 faz o Worker devolver 502");
+  });
+
+  it("--dashboard-limit explícito é respeitado", async () => {
+    assert.match(await urlPedida(["--dashboard-limit", "5"]), /[?&]limit=5\b/);
+  });
+
+  it("--dashboard-limit 0 ABORTA com erro de CLI legível, em vez de virar 502 do Worker", async () => {
+    await assert.rejects(() => urlPedida(["--dashboard-limit", "0"]), /inteiro ≥ 1/);
+  });
+
+  it("--dashboard-limit sem valor ABORTA (mesma classe de bug)", async () => {
+    await assert.rejects(() => urlPedida(["--dashboard-limit"]), /sem valor/);
+  });
 });

@@ -494,6 +494,19 @@ describe("resolveDashboardLimit (#3643 minor 2 — falsy-zero de `Number(raw) ||
   it("valor não-numérico cai no fallback", () => {
     assert.equal(resolveDashboardLimit("abc", 80), 80);
   });
+
+  // #4568: `getArg` devolve "" quando a flag NÃO foi passada (nunca undefined),
+  // e o `Number("") === 0` daqui virava `?limit=0` — que o Worker responde com
+  // 502. O guard D4 do semáforo abortava toda invocação padrão sem nunca
+  // avaliar entregabilidade.
+  it("string VAZIA é 'flag ausente', não 'limite zero' (regressão #4568)", () => {
+    assert.equal(resolveDashboardLimit("", 80), 80);
+    assert.equal(resolveDashboardLimit("   ", 80), 80);
+  });
+
+  it("o `0` EXPLÍCITO segue preservado — o fix do #4568 não desfaz o do #3643", () => {
+    assert.equal(resolveDashboardLimit("0", 80), 0);
+  });
 });
 
 describe("warnIfLimitExceedsWorkerClamp (#3643 minor 1 — Worker clampa em 50 sem avisar)", () => {

@@ -31,11 +31,10 @@
  * Stdout: JSON { ok, semaphore, reason? }. Stderr: log humano-legível.
  */
 
-import { getArg, isMainModule } from "./lib/cli-args.ts";
+import { getArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
 import {
   DEFAULT_DASHBOARD_URL,
   DEFAULT_DASHBOARD_LIMIT,
-  resolveDashboardLimit,
   fetchPostmasterSpamEntry,
   deriveRampVolumes,
 } from "./clarice-schedule-ramp.ts";
@@ -95,7 +94,12 @@ export async function checkSemaphore(
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const dashboardUrl = getArg(argv, "dashboard-url") || DEFAULT_DASHBOARD_URL;
-  const limit = resolveDashboardLimit(getArg(argv, "dashboard-limit"), DEFAULT_DASHBOARD_LIMIT);
+  // #4568: `getIntArg` (não `getArg` + resolveDashboardLimit) — devolve
+  // `undefined` só quando a flag está genuinamente AUSENTE e LANÇA em valor
+  // inválido, em vez de colapsar "" em 0. `min: 1` porque `limit=0` não tem
+  // significado válido pra este endpoint (o Worker responde 502): melhor um
+  // erro legível de CLI que um 5xx atribuído ao serviço.
+  const limit = getIntArg(argv, "dashboard-limit", { min: 1 }) ?? DEFAULT_DASHBOARD_LIMIT;
 
   const result = await checkSemaphore(dashboardUrl, limit);
   if (result.semaphore === "red") {
