@@ -54,6 +54,7 @@ import {
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 export { VoteDedup } from "./vote-dedup";
 export { StatsCounter } from "./stats-counter";
+import type { StatsCounterData } from "./stats-counter"; // #4563: reconciliação completa em handleAdminCorrect
 export { ScoreCounter } from "./score-counter";
 
 export interface Env {
@@ -599,6 +600,17 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria", r
   const prefix = `vote:${edition}:`;
   let updated = 0;
   let correctCount = 0;
+  // #4563: reconciliação completa do agregado — total/voted_a/voted_b
+  // recomputados do ZERO a partir dos registros vote:{edition}:* (fonte de
+  // verdade), o mesmo tratamento que correctCount já recebia. Achado ao vivo
+  // (ciclo Clarice 2607-08): o DO/KV total/voted_b podiam divergir por +1 dos
+  // registros reais (increment "órfão" — updateStatsCounter roda ANTES de
+  // POLL.put(voteKey) em vote.ts, uma interrupção entre as duas deixa o
+  // agregado com um voto sem registro individual correspondente). Só
+  // correct_count tinha esse caminho de auto-correção; agora os 4 campos têm.
+  let totalFromVotes = 0;
+  let votedAFromVotes = 0;
+  let votedBFromVotes = 0;
 
   for await (const keyName of listAllKeys(env, prefix)) {
     const raw = await env.POLL.get(keyName);
@@ -616,6 +628,16 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria", r
       console.error(JSON.stringify({ event: "admin_correct_backfill_parse_error", key: keyName, edition, error: String(e) }));
       continue;
     }
+    // #4563: só conta pra reconciliação um registro com choice reconhecido —
+    // um registro corrompido (JSON válido, choice fora de A/B) não deve
+    // inflar total sem inflar voted_a+voted_b também (quebraria o invariante
+    // total = voted_a + voted_b que o DO agora valida em /adjust-correct).
+    if (vote.choice === "A" || vote.choice === "B") {
+      totalFromVotes++;
+      if (vote.choice === "A") votedAFromVotes++;
+      else votedBFromVotes++;
+    }
+
     const prevCorrect = vote.correct ?? null;
     const newCorrect = vote.choice === answer;
 
@@ -674,7 +696,15 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria", r
       const doResp = await doStub.fetch("https://internal/adjust-correct", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ correct_count: correctCount }),
+        // #4563: total/voted_a/voted_b viajam junto — reconciliação completa,
+        // não só correct_count (ver rationale no header de AdjustCorrectPayload,
+        // stats-counter.ts).
+        body: JSON.stringify({
+          correct_count: correctCount,
+          total: totalFromVotes,
+          voted_a: votedAFromVotes,
+          voted_b: votedBFromVotes,
+        }),
       });
       if (!doResp.ok) {
         console.error(JSON.stringify({ event: "stats_counter_adjust_correct_error", status: doResp.status, edition }));
@@ -690,21 +720,26 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria", r
     }
   }
 
-  // Actualizar counter agregado KV com correct_count real (espelho para compat)
+  // Atualizar counter agregado KV com o agregado reconciliado (espelho para compat)
   //
-  // #3298 (achado adicional além dos 9 enumerados na issue, mesma classe de
-  // bug): stats:{edition} corrompido lançava aqui um JSON.parse desguardado —
-  // um admin corrigindo o gabarito de uma edição com espelho corrompido
-  // recebia 500 mesmo com o backfill de scores (loop acima) já concluído com
-  // sucesso. Corrompido → pula o espelho KV (não-autoritativo; o DO
-  // StatsCounter, atualizado acima, é a fonte de verdade), loga e segue pro
-  // response 200 normal.
-  const statsRaw = await env.POLL.get(`stats:${edition}`);
-  const stats = safeParseKv<{ correct_count?: number; [k: string]: unknown }>(statsRaw, "admin_correct_stats_mirror_parse_error", edition);
-  if (stats) {
-    stats.correct_count = correctCount;
-    await env.POLL.put(`stats:${edition}`, JSON.stringify(stats));
-  }
+  // #4563: escreve os 4 campos (total/voted_a/voted_b/correct_count), não só
+  // correct_count — o espelho anterior lia o `stats:{edition}` existente e só
+  // sobrescrevia correct_count nele (preservando total/voted_a/voted_b como
+  // estavam, mesmo quando esses 3 tinham divergido dos registros
+  // vote:{edition}:* reais — a fonte de verdade, já integralmente recontada
+  // no loop acima). Como o valor gravado agora é sempre o agregado
+  // RECONCILIADO do zero (nunca um patch sobre o estado anterior), não há
+  // mais necessidade de ler/parsear o espelho antigo antes de escrever — só
+  // interessava pra decidir SE sobrescrevia (#3298), decisão que deixou de
+  // existir (sempre sobrescreve, inclusive criando o espelho do zero se
+  // nunca existiu ou estava corrompido).
+  const reconciledStats: StatsCounterData = {
+    total: totalFromVotes,
+    voted_a: votedAFromVotes,
+    voted_b: votedBFromVotes,
+    correct_count: correctCount,
+  };
+  await env.POLL.put(`stats:${edition}`, JSON.stringify(reconciledStats));
 
   return json({ ok: true, edition, answer, updated_votes: updated }, 200, env);
 }
