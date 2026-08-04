@@ -16,9 +16,15 @@
  * FIX: `stats-do-stale:{edition}` (KV, branded) marca "DO desatualizado
  * aqui" quando `/adjust-correct` falha, e é limpo quando uma correção
  * subsequente tem sucesso. `mergeStatsWithKvFallback` ganha um 3º parâmetro
- * `correctCountStale` — quando true, usa `correct_count` do KV mesmo com
- * `total` empatado (preservando total/voted_a/voted_b do DO, que continuam
- * corretos — só o `/adjust-correct` falhou, não os increments normais).
+ * `correctCountStale` — quando true, usa o `kvStats` INTEIRO (não só
+ * `correct_count`; ver #4563 abaixo, que muda semântica). Original (pré-#4563):
+ * só `correct_count` vinha do KV, preservando total/voted_a/voted_b do DO —
+ * válido quando a reconciliação de gabarito só recalculava correct_count.
+ * Desde #4563, `handleAdminCorrect` também reconcilia total/voted_a/voted_b
+ * a partir dos registros `vote:{edition}:*`, então um DO stale pode estar
+ * errado nesses 3 campos também, não só em correct_count — daí o KV inteiro
+ * substituir o DO quando `correctCountStale` está setado. Cobertura completa
+ * dessa mudança de semântica: test/close-poll-stats-full-reconcile-4563.test.ts.
  */
 
 import { describe, it } from "node:test";

@@ -331,6 +331,102 @@ describe("handleAdminCorrect — reconcilia total/voted_a/voted_b a partir dos r
     // então close-poll.ts NÃO sairia mais FATAL pra este ciclo.
     assert.equal(postStats.stats.correct_count, postStats.stats.voted_b);
   });
+
+  // #4614 (achado 4 do review fleet, pr-test-analyzer): o teste acima simula
+  // o drift chamando `/increment` da DO diretamente, o que deixa só a DO
+  // desincronizada (35/16) enquanto o espelho KV já está correto (34) — ver
+  // comentário nas linhas 290-300 acima, que documenta essa limitação
+  // honestamente. Isso é o OPOSTO do incidente real de produção, onde
+  // `updateStatsCounter` escreve DO E KV juntos antes do `vote:` record
+  // comitar — então os dois ficam desincronizados JUNTOS, não só a DO. Sem
+  // um fixture assim, o log `admin_correct_stats_reconciled_total_shrank`
+  // (index.ts) nunca é exercitado por nenhum teste. Este caso pré-semeia o
+  // espelho KV com o MESMO drift (35/16) que a DO tem, reproduzindo o
+  // mecanismo real e provando que o warning de auditoria dispara.
+  it("KV mirror TAMBÉM drifted (não só a DO) — reconciliação reduz total e emite admin_correct_stats_reconciled_total_shrank", async () => {
+    const kv = makeTrackedKv();
+    const statsNs = makeStatsCounterNs();
+    const env: Env = {
+      POLL: kv as unknown as KVNamespace,
+      VOTE_DEDUP: makeVoteDedupNs(),
+      STATS_COUNTER: statsNs,
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+
+    const edition = "2607-08";
+    const brand = "clarice";
+
+    for (let i = 0; i < 19; i++) {
+      const voteUrl = new URL("https://poll.diaria.workers.dev/vote");
+      voteUrl.searchParams.set("email", `voter-a2-${i}@x.com`);
+      voteUrl.searchParams.set("edition", edition);
+      voteUrl.searchParams.set("choice", "A");
+      voteUrl.searchParams.set("brand", brand);
+      const res = await worker.fetch(new Request(voteUrl.toString(), { method: "GET" }), env, {} as ExecutionContext);
+      assert.equal(res.status, 200);
+    }
+    for (let i = 0; i < 15; i++) {
+      const voteUrl = new URL("https://poll.diaria.workers.dev/vote");
+      voteUrl.searchParams.set("email", `voter-b2-${i}@x.com`);
+      voteUrl.searchParams.set("edition", edition);
+      voteUrl.searchParams.set("choice", "B");
+      voteUrl.searchParams.set("brand", brand);
+      const res = await worker.fetch(new Request(voteUrl.toString(), { method: "GET" }), env, {} as ExecutionContext);
+      assert.equal(res.status, 200);
+    }
+
+    // Simula o incremento órfão NAS DUAS superfícies — DO (via /increment
+    // direto, mesmo mecanismo do teste acima) E o espelho KV (write manual),
+    // reproduzindo a assinatura exata do incidente real (updateStatsCounter
+    // escreve as duas ANTES do vote: record comitar).
+    const doId = statsNs.idFromName(`${brand}:${edition}`);
+    const doStub = statsNs.get(doId);
+    await doStub.fetch("https://internal/increment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ choice: "B", correct: null }),
+    });
+    await kv.put(`clarice:stats:${edition}`, JSON.stringify({ total: 35, voted_a: 19, voted_b: 16, correct_count: 15 }));
+
+    // Sanity: as duas superfícies concordam no drift antes da correção.
+    const preStats = await (await doStub.fetch("https://internal/stats")).json() as { stats: StatsCounterData };
+    assert.equal(preStats.stats.total, 35);
+    const preKvMirror = JSON.parse((await kv.get(`clarice:stats:${edition}`))!) as StatsCounterData;
+    assert.equal(preKvMirror.total, 35, "sanity: diferente do teste acima, o espelho KV também está drifted aqui");
+
+    const warnCalls: unknown[][] = [];
+    const prevWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnCalls.push(args); };
+    try {
+      const sig = await hmacSign("test-admin-secret", `${brand}:${edition}:B`);
+      const adminUrl = new URL("https://poll.diaria.workers.dev/admin/correct");
+      adminUrl.searchParams.set("edition", edition);
+      adminUrl.searchParams.set("answer", "B");
+      adminUrl.searchParams.set("sig", sig);
+      adminUrl.searchParams.set("brand", brand);
+      const adminRes = await worker.fetch(new Request(adminUrl.toString(), { method: "POST" }), env, {} as ExecutionContext);
+      assert.equal(adminRes.status, 200);
+    } finally {
+      console.warn = prevWarn;
+    }
+
+    // O warning de auditoria disparou, com os valores prev/new corretos.
+    const shrinkWarn = warnCalls.find((args) => typeof args[0] === "string" && args[0].includes("admin_correct_stats_reconciled_total_shrank"));
+    assert.ok(shrinkWarn, "esperava console.warn com admin_correct_stats_reconciled_total_shrank");
+    const payload = JSON.parse(shrinkWarn![0] as string);
+    assert.equal(payload.edition, edition);
+    assert.equal(payload.prev_total, 35);
+    assert.equal(payload.new_total, 34);
+
+    // E a reconciliação em si continua correta nas duas superfícies.
+    const postStats = await (await doStub.fetch("https://internal/stats")).json() as { stats: StatsCounterData };
+    assert.equal(postStats.stats.total, 34);
+    assert.equal(postStats.stats.voted_b, 15);
+    const kvMirror = JSON.parse((await kv.get(`clarice:stats:${edition}`))!) as StatsCounterData;
+    assert.deepEqual(kvMirror, { total: 34, voted_a: 19, voted_b: 15, correct_count: 15 });
+  });
 });
 
 // ── handleAdminCorrect — registro com choice corrompido não entra na reconciliação ──
@@ -381,6 +477,76 @@ describe("handleAdminCorrect — vote: record com choice corrompido é excluído
     // reconciliação do AGREGADO, que é o que #4563 mudou.
     const corruptChoice = JSON.parse((await kv.get("vote:260801:corrupt-choice@x.com"))!) as { choice: string; correct: boolean };
     assert.equal(corruptChoice.correct, false, "choice='C' !== answer='A' → correct=false, mas não conta em nenhum dos 4 campos reconciliados");
+  });
+
+  // #4614 (achado 2 do review fleet, MEDIUM): registros excluídos por choice
+  // inválido eram pulados sem log dedicado, diferente do branch de
+  // parse-error acima que já loga `admin_correct_backfill_parse_error`.
+  it("registros com choice inválido/ausente disparam admin_correct_backfill_invalid_choice com a contagem correta", async () => {
+    const kv = makeTrackedKv({
+      "vote:260805:alice@x.com": JSON.stringify({ choice: "A", ts: "t1", correct: null }),
+      "vote:260805:bob@x.com": JSON.stringify({ choice: "B", ts: "t2", correct: null }),
+      "vote:260805:corrupt-choice@x.com": JSON.stringify({ choice: "C", ts: "t3", correct: null }),
+      "vote:260805:missing-choice@x.com": JSON.stringify({ ts: "t4", correct: null }),
+    });
+    const env: Env = {
+      POLL: kv as unknown as KVNamespace,
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+
+    const errorCalls: unknown[][] = [];
+    const prevError = console.error;
+    console.error = (...args: unknown[]) => { errorCalls.push(args); };
+    try {
+      const sig = await hmacSign("test-admin-secret", "diaria:260805:A");
+      const adminUrl = new URL("https://poll.diaria.workers.dev/admin/correct");
+      adminUrl.searchParams.set("edition", "260805");
+      adminUrl.searchParams.set("answer", "A");
+      adminUrl.searchParams.set("sig", sig);
+      const adminRes = await worker.fetch(new Request(adminUrl.toString(), { method: "POST" }), env, {} as ExecutionContext);
+      assert.equal(adminRes.status, 200);
+    } finally {
+      console.error = prevError;
+    }
+
+    const invalidChoiceLog = errorCalls.find((args) => typeof args[0] === "string" && args[0].includes("admin_correct_backfill_invalid_choice"));
+    assert.ok(invalidChoiceLog, "esperava console.error com admin_correct_backfill_invalid_choice");
+    const payload = JSON.parse(invalidChoiceLog![0] as string);
+    assert.equal(payload.edition, "260805");
+    assert.equal(payload.skipped, 2, "2 registros excluídos: choice='C' e choice ausente");
+  });
+
+  it("nenhum registro com choice inválido → admin_correct_backfill_invalid_choice NÃO é logado", async () => {
+    const kv = makeTrackedKv({
+      "vote:260806:alice@x.com": JSON.stringify({ choice: "A", ts: "t1", correct: null }),
+      "vote:260806:bob@x.com": JSON.stringify({ choice: "B", ts: "t2", correct: null }),
+    });
+    const env: Env = {
+      POLL: kv as unknown as KVNamespace,
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+
+    const errorCalls: unknown[][] = [];
+    const prevError = console.error;
+    console.error = (...args: unknown[]) => { errorCalls.push(args); };
+    try {
+      const sig = await hmacSign("test-admin-secret", "diaria:260806:A");
+      const adminUrl = new URL("https://poll.diaria.workers.dev/admin/correct");
+      adminUrl.searchParams.set("edition", "260806");
+      adminUrl.searchParams.set("answer", "A");
+      adminUrl.searchParams.set("sig", sig);
+      const adminRes = await worker.fetch(new Request(adminUrl.toString(), { method: "POST" }), env, {} as ExecutionContext);
+      assert.equal(adminRes.status, 200);
+    } finally {
+      console.error = prevError;
+    }
+
+    const invalidChoiceLog = errorCalls.find((args) => typeof args[0] === "string" && args[0].includes("admin_correct_backfill_invalid_choice"));
+    assert.equal(invalidChoiceLog, undefined, "sem registros corrompidos, o log não deve disparar");
   });
 });
 
@@ -434,5 +600,67 @@ describe("handleAdminCorrect — stats:{edition} corrompido ou ausente é sobres
 
     const kvMirror = JSON.parse((await kv.get("stats:260803"))!) as StatsCounterData;
     assert.deepEqual(kvMirror, { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 }, "espelho criado do zero, sem votos ainda");
+  });
+});
+
+// ── handleAdminCorrect — write final do espelho KV é fail-soft ──────────────
+
+describe("handleAdminCorrect — write final de stats:{edition} é fail-soft (#4614 achado 1)", () => {
+  it("POLL.put do espelho final falha (outage/quota) → rota ainda responde 200 e loga admin_correct_stats_mirror_write_error, em vez de propagar exceção não tratada", async () => {
+    const kv = makeTrackedKv({
+      "vote:260807:alice@x.com": JSON.stringify({ choice: "A", ts: "t1", correct: null }),
+    });
+    // #4614: antes do #4563 este write era CONDICIONAL — agora roda sempre e
+    // é a ÚLTIMA operação de handleAdminCorrect. Sem try/catch, uma falha
+    // transitória de KV propagava sem tratamento (500 cru, sem o log
+    // estruturado que o resto do arquivo usa) mesmo já tendo gravado
+    // `correct:{edition}` e reconciliado a DO com sucesso. Simula essa falha
+    // sobrescrevendo só o `.put` da chave final `stats:{edition}` — as
+    // outras chaves (`correct:{edition}`, `vote:*`) continuam funcionando
+    // normalmente via o KV tracked por baixo.
+    const flakyKv = {
+      ...kv,
+      async put(key: string, value: string, opts?: { expirationTtl?: number }) {
+        if (key === "stats:260807") {
+          throw new Error("simulated KV outage");
+        }
+        return kv.put(key, value, opts);
+      },
+    };
+    const env: Env = {
+      POLL: flakyKv as unknown as KVNamespace,
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+
+    const errorCalls: unknown[][] = [];
+    const prevError = console.error;
+    console.error = (...args: unknown[]) => { errorCalls.push(args); };
+    let adminRes: Response;
+    try {
+      const sig = await hmacSign("test-admin-secret", "diaria:260807:A");
+      const adminUrl = new URL("https://poll.diaria.workers.dev/admin/correct");
+      adminUrl.searchParams.set("edition", "260807");
+      adminUrl.searchParams.set("answer", "A");
+      adminUrl.searchParams.set("sig", sig);
+      adminRes = await worker.fetch(new Request(adminUrl.toString(), { method: "POST" }), env, {} as ExecutionContext);
+    } finally {
+      console.error = prevError;
+    }
+
+    assert.equal(adminRes!.status, 200, "falha de KV no write final não deve propagar como exceção/500 — fail-soft, mesma filosofia do resto da função");
+    const body = await adminRes!.json() as { ok: boolean; edition: string };
+    assert.equal(body.ok, true);
+
+    const mirrorWriteErrorLog = errorCalls.find((args) => typeof args[0] === "string" && args[0].includes("admin_correct_stats_mirror_write_error"));
+    assert.ok(mirrorWriteErrorLog, "esperava console.error com admin_correct_stats_mirror_write_error");
+    const payload = JSON.parse(mirrorWriteErrorLog![0] as string);
+    assert.equal(payload.edition, "260807");
+    assert.match(payload.error, /simulated KV outage/);
+
+    // correct:{edition} foi gravado antes do write que falhou — a correção
+    // de gabarito em si teve efeito, só o espelho final que não persistiu.
+    assert.equal(await kv.get("correct:260807"), "A");
   });
 });

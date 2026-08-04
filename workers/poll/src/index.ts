@@ -628,6 +628,13 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria", r
   let totalFromVotes = 0;
   let votedAFromVotes = 0;
   let votedBFromVotes = 0;
+  // #4614 (achado 2 do review fleet): registros com `choice` fora de A/B são
+  // excluídos da reconciliação (ver comentário #4563 abaixo) mas isso
+  // acontecia sem nenhum sinal — diferente do branch de parse-error logo
+  // acima, que já loga. Conta quantos foram pulados por esse motivo e loga
+  // 1x ao final do loop (se > 0) pra não perder o sinal silenciosamente caso
+  // um bug futuro grave `choice` malformado em volume.
+  let skippedInvalidChoice = 0;
 
   for await (const keyName of listAllKeys(env, prefix)) {
     const raw = await env.POLL.get(keyName);
@@ -653,6 +660,8 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria", r
       totalFromVotes++;
       if (vote.choice === "A") votedAFromVotes++;
       else votedBFromVotes++;
+    } else {
+      skippedInvalidChoice++;
     }
 
     const prevCorrect = vote.correct ?? null;
@@ -676,6 +685,14 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria", r
       updated++;
     }
     if (newCorrect) correctCount++;
+  }
+
+  if (skippedInvalidChoice > 0) {
+    console.error(JSON.stringify({
+      event: "admin_correct_backfill_invalid_choice",
+      edition,
+      skipped: skippedInvalidChoice,
+    }));
   }
 
   // #1348: invalida snapshot do mês UMA vez após o loop — todos os votos acima
@@ -779,7 +796,27 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria", r
       new_total: reconciledStats.total,
     }));
   }
-  await env.POLL.put(`stats:${edition}`, JSON.stringify(reconciledStats));
+  // #4614 (achado 1 do review fleet, HIGH): antes do #4563 este write era
+  // CONDICIONAL (só rodava se `stats:{edition}` já existisse) — agora roda
+  // sempre, incondicional, e é a ÚLTIMA operação de `handleAdminCorrect`.
+  // Toda outra escrita desta função (staleFlagKey acima, fetch da DO) está
+  // em try/catch com log estruturado; esta não estava. Sem o guard, uma
+  // falha transitória de KV (outage, quota) propagava como exceção não
+  // tratada — um 500 cru sem o log estruturado do resto do arquivo, mesmo
+  // depois de `correct:{edition}` já ter sido gravado com sucesso e a DO já
+  // ter reconciliado. Fail-soft aqui: loga e retorna 200 de qualquer forma
+  // (mesma filosofia do resto da função — `stats-do-stale:{edition}` já
+  // cobre o caso do DO estar à frente do KV; se o mirror falhar também, o
+  // próximo `/stats` cai no fallback normal, não trava a resposta ao admin).
+  try {
+    await env.POLL.put(`stats:${edition}`, JSON.stringify(reconciledStats));
+  } catch (e) {
+    console.error(JSON.stringify({
+      event: "admin_correct_stats_mirror_write_error",
+      edition,
+      error: String(e),
+    }));
+  }
 
   return json({ ok: true, edition, answer, updated_votes: updated }, 200, env);
 }
