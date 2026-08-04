@@ -140,6 +140,7 @@ nunca reescrever de memória):
 - [Livros](https://livros.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=livros-rodape)
 - [Equipamentos](https://www.amazon.com.br/shop/vjpixel)
 - [Arquivo](https://arquivo.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape)
+- [É IA?](https://eia.diar.ia.br/jogar?utm_source=newsletter&utm_medium=email&utm_campaign=jogar-rodape)
 
    `monthly-render.ts` gera o label sozinho ao detectar uma lista de links
    nessa posição (mesmo padrão do diário, `FIXED_BLOCKS.para_encerrar_curadorias`

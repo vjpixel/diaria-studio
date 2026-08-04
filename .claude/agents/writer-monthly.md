@@ -105,6 +105,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
 - [Livros](https://livros.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=livros-rodape)
 - [Equipamentos](https://www.amazon.com.br/shop/vjpixel)
 - [Arquivo](https://arquivo.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape)
+- [É IA?](https://eia.diar.ia.br/jogar?utm_source=newsletter&utm_medium=email&utm_campaign=jogar-rodape)
 ```
    3. O convite social — texto FIXO, idêntico ao diário, nunca parafrasear (#4413, decisão do editor 260801, constante `SOCIAL_INVITE` em `scripts/lib/shared/encerramento-snippet.ts`):
 
@@ -120,7 +121,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
    - D1 ≤ 1.500 chars (prosa + fio); D2/D3 ≤ 1.200 chars cada
    - Use Melhor (até 3) + Radar (até 7), formato `título URL\ndescrição 1-2 frases` (warning se menos; Use Melhor pode estar vazio)
    - É IA? presente — texto resolvido (se `eia_selection_path` deu `edition`) ou placeholder (#2904) — e encerramento presentes
-   - `PARA ENCERRAR` inclui, ao final, nesta ordem: os 2 parágrafos literais de `context/snippets/encerramento-social-apoio.md` (apoio Apoia.se + ferramentas) com a abertura mensal substituída (#3219), a lista `CURADORIA_PILLS` (4 pills — Cursos/Livros/Equipamentos/Arquivo, #4411/#4536) e o convite social fixo `SOCIAL_INVITE` (#4413)
+   - `PARA ENCERRAR` inclui, ao final, nesta ordem: os 2 parágrafos literais de `context/snippets/encerramento-social-apoio.md` (apoio Apoia.se + ferramentas) com a abertura mensal substituída (#3219), a lista `CURADORIA_PILLS` (5 pills — Cursos/Livros/Equipamentos/Arquivo/É IA?, #4411/#4536/#4550) e o convite social fixo `SOCIAL_INVITE` (#4413)
    - Sem markdown excêntrico no corpo — MAS todo label de seção em negrito `**...**` (#2794); sem links de paywall/agregador
    - `_internal/02-d1-prompt.md`, `02-d2-prompt.md`, `02-d3-prompt.md` gravados (#1916)
 

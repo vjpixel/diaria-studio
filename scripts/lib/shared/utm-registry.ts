@@ -269,6 +269,44 @@ export const ARQUIVO_RODAPE_UTM = {
   campaign: "arquivo-rodape",
 } as const;
 
+/**
+ * Pill "É IA?" do PARA ENCERRAR (#4550, pill nova, 1ª das 3 superfícies de
+ * distribuição própria do jogo) — mesmo padrão de `CURSOS_RODAPE_UTM`/
+ * `LIVROS_RODAPE_UTM`/`ARQUIVO_RODAPE_UTM` acima (direção newsletter →
+ * `/jogar`). Decisão do editor (comentários do #4550, 260804): o "É IA?" tem
+ * o motor de divulgação inteiro construído (card assinado, ranking público,
+ * cadastro inline) mas ~8 votos/edição e 2 cadastros na vida do mecanismo —
+ * "ninguém chega na porta". Overnight instrumenta a medição (este UTM +
+ * `JOGAR_POST_DEDICADO_UTM`/`buildJogarBioCampaign` abaixo); publicar em
+ * qualquer superfície (frequência, texto final, escolha de plataforma pro
+ * post/bio) continua 100% editorial.
+ */
+export const JOGAR_RODAPE_UTM = {
+  source: "newsletter",
+  medium: "email",
+  campaign: "jogar-rodape",
+} as const;
+
+/**
+ * Post/story dedicado de divulgação do "/jogar" fora da edição (#4550, 2ª das
+ * 3 superfícies) — conteúdo publicado manualmente pelo editor em qualquer
+ * rede social; QUAL plataforma e QUANDO publicar são decisão 100% editorial,
+ * fora do escopo desta instrumentação (comentário do #4550, 260804: "Overnight
+ * prepara as peças; a publicação fica com o editor"). `utm_source="social"`
+ * genérico — diferente de `FACEBOOK_CTA_UTM`/`TWITTER_EDITION_UTM`/
+ * `LINKEDIN_POST_PIXEL_UTM` acima (1 emissor por plataforma, porque cada um é
+ * injetado automaticamente num canal FIXO), este post não tem plataforma fixa:
+ * o editor escolhe onde publicar a cada vez, então um único `utm_campaign`
+ * mede a divulgação como UM funil, independente de canal. `medium=
+ * "organic_social"` segue a mesma convenção dos emissores de post acima.
+ * Resolvida em `scripts/lib/jogar-promo-urls.ts::buildJogarPostDedicadoUrl`.
+ */
+export const JOGAR_POST_DEDICADO_UTM = {
+  source: "social",
+  medium: "organic_social",
+  campaign: "jogar-post-dedicado",
+} as const;
+
 /** Rodapé de navegação cruzada da página de Livros (#4537 item 2) — mesmo
  * padrão de `CURSOS_FOOTER_NAV_UTM`/`ARQUIVO_FOOTER_NAV_UTM` (só source+medium,
  * sem campaign de verdade — link de nav, não funil de conversão). Livros
@@ -696,6 +734,35 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     status: "ativo",
   },
   {
+    id: "jogar-rodape",
+    label: "Pill 'É IA?' do PARA ENCERRAR (e-mail diário)",
+    source: JOGAR_RODAPE_UTM.source,
+    medium: JOGAR_RODAPE_UTM.medium,
+    campaignPattern: JOGAR_RODAPE_UTM.campaign,
+    originFile: "scripts/lib/shared/encerramento-snippet.ts",
+    description:
+      "Pill 'É IA?' (5ª pill, nova — #4550) do PARA ENCERRAR — mesmo padrão de " +
+      "'cursos-rodape'/'livros-rodape'/'arquivo-rodape' acima. Antes desta issue o " +
+      "jogo não tinha NENHUM link de entrada a partir do rodapé da newsletter " +
+      "(a única menção, o link de arquivo do gabarito, mora em 'eia-arquivo-newsletter').",
+    status: "ativo",
+  },
+  {
+    id: "jogar-post-dedicado",
+    label: "É IA? — post/story dedicado de divulgação",
+    source: JOGAR_POST_DEDICADO_UTM.source,
+    medium: JOGAR_POST_DEDICADO_UTM.medium,
+    campaignPattern: JOGAR_POST_DEDICADO_UTM.campaign,
+    originFile: "scripts/lib/jogar-promo-urls.ts",
+    description:
+      "Link do post/story dedicado que o editor publica manualmente em qualquer rede " +
+      "social pra divulgar o jogo fora da edição (#4550, distribuição própria — decisão " +
+      "do editor 260804 de dar ao /jogar tratamento de produto, não de anexo da edição). " +
+      "Nunca automatizado: `buildJogarPostDedicadoUrl` só resolve a URL pronta pro " +
+      "copy-paste, publicação/frequência/plataforma são 100% editoriais.",
+    status: "ativo",
+  },
+  {
     id: "cursos-footer-nav",
     label: "Cursos — link de rodapé pra diar.ia.br",
     source: CURSOS_FOOTER_NAV_UTM.source,
@@ -898,6 +965,33 @@ export const EXTERNAL_SURFACE_CAMPAIGN_PREFIX = "perfil";
 export function buildExternalSurfaceCampaign(source: string, variant?: string): string {
   const base = `${EXTERNAL_SURFACE_CAMPAIGN_PREFIX}-${source.toLowerCase()}`;
   return variant ? `${base}-${variant.toLowerCase()}` : base;
+}
+
+/**
+ * `utm_campaign` do link de bio dedicado ao "É IA?"/`/jogar` (#4550, 3ª das 3
+ * superfícies de distribuição própria do jogo — ver `JOGAR_RODAPE_UTM`/
+ * `JOGAR_POST_DEDICADO_UTM` acima). Reusa `buildExternalSurfaceCampaign` com o
+ * mecanismo de VARIANTE que `EXTERNAL_UTM_SURFACES` já usa pra "mesma
+ * plataforma, duas superfícies" (os 2 repositórios do GitHub, #4525) —
+ * necessário porque `perfil-{source}` sozinho JÁ está em uso pelo slot de bio
+ * ATUAL de cada plataforma (apontando pra home, `EXTERNAL_SURFACE_BASE_URL`);
+ * reusar o campaign puro colidiria e mascararia as duas conversões — o mesmo
+ * bug de atribuição que o review do #4526 corrigiu, agora na direção /jogar.
+ *
+ * Deliberadamente NÃO existe uma entrada correspondente em
+ * `EXTERNAL_UTM_SURFACES`: aquele array modela um slot de bio JÁ APLICADO
+ * (`panelUrl`/`field`/`appliedAt`) — e cada plataforma listada lá só tem 1
+ * slot de bio, hoje ocupado pela home. Repontar esse slot único pro jogo (e
+ * QUAL plataforma, se alguma) é decisão editorial genuína, fora do escopo
+ * desta instrumentação (comentário do #4550, 260804). Esta função só deixa o
+ * VALOR pronto — quando o editor decidir a superfície, `buildJogarBioUrl`
+ * (`scripts/lib/jogar-promo-urls.ts`) monta a URL e uma entrada nova em
+ * `EXTERNAL_UTM_SURFACES` fica pra essa próxima unidade de trabalho.
+ *
+ * @pure
+ */
+export function buildJogarBioCampaign(source: string): string {
+  return buildExternalSurfaceCampaign(source, "jogar");
 }
 
 /** URL base que toda superfície externa aponta. */
