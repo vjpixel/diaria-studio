@@ -20,6 +20,14 @@
  *   GET /{cycle}?email=...  → e-mail na allowlist: artigo completo
  *                              e-mail FORA da allowlist: paywall
  *   GET /                   → 400 (ciclo obrigatório)
+ *   GET /sitemap.xml        → sitemap vazio válido (#4546 achado lateral —
+ *                              antes disto, o catch-all tratava "sitemap.xml"
+ *                              como se fosse um {cycle} e servia o form de
+ *                              e-mail com 200, confundindo crawler. Todo o
+ *                              conteúdo deste Worker é gated por allowlist
+ *                              de apoiador — não há URL pública indexável
+ *                              pra declarar, então vazio é o valor correto,
+ *                              não um erro de implementação)
  *   * outros métodos        → 405
  *
  * Fail-closed (#3940, invariante central): qualquer falha ao ler o KV
@@ -48,6 +56,25 @@ const HTML_HEADERS = { "Content-Type": "text/html; charset=utf-8" } as const;
 
 function htmlResponse(body: string, status = 200): Response {
   return new Response(body, { status, headers: HTML_HEADERS });
+}
+
+/**
+ * Sitemap vazio válido (#4546 achado lateral). Este Worker não tem NENHUMA
+ * URL pública indexável — todo `/{cycle}` é gated por allowlist de
+ * apoiador — então um `<urlset>` sem `<url>` é o dado correto, não um erro:
+ * distinto tanto de um 404 quanto de servir o form de e-mail como se fosse
+ * conteúdo de sitemap.
+ */
+const EMPTY_SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+</urlset>
+`;
+
+function sitemapResponse(): Response {
+  return new Response(EMPTY_SITEMAP_XML, {
+    status: 200,
+    headers: { "Content-Type": "application/xml;charset=utf-8", "Cache-Control": "public, max-age=3600" },
+  });
 }
 
 /** Lê + parseia a allowlist do KV. Qualquer falha (exception incluída) → `null` (fail-closed). */
@@ -111,6 +138,9 @@ export default {
       );
     }
     const url = new URL(request.url);
+    if (url.pathname === "/sitemap.xml") {
+      return sitemapResponse();
+    }
     return handleGet(url, env);
   },
 };

@@ -20,8 +20,10 @@
  * Rotas: GET / → HTML completo. GET /sitemap.xml → sitemap estático de 1
  * `<url>` (a própria página, #4546 — descoberta pelo Google; sem `[assets]`
  * neste Worker, então é a rota que precisa servir o XML, diferente de
- * cursos/livros, que servem via `public/sitemap.xml` estático). Qualquer
- * outro path → 404.
+ * cursos/livros, que servem via `public/sitemap.xml` estático). GET
+ * /robots.txt → mesmo raciocínio, mesmo motivo de não poder ser estático
+ * (`scripts/lib/shared/robots-txt.ts`, compartilhado com cursos/livros —
+ * ver #4546). Qualquer outro path → 404.
  *
  * Falha de fetch/parse do sitemap NUNCA lança sem tratamento — cai numa
  * página de erro simples (502), nunca crash.
@@ -31,6 +33,7 @@
  * deste repo) pra que o Googlebot de fato a descubra. Ver PR body de #4105.
  */
 import { parseSitemap } from "../../../scripts/lib/fetch-sitemap.ts";
+import { renderCuradoriaRobotsTxt } from "../../../scripts/lib/shared/robots-txt.ts";
 import { buildArchiveHtml, PAGE_URL } from "./render-archive.ts";
 
 /**
@@ -54,6 +57,24 @@ function sitemapResponse(): Response {
     status: 200,
     headers: {
       "Content-Type": "application/xml;charset=utf-8",
+      "Cache-Control": "public, max-age=3600",
+    },
+  });
+}
+
+/**
+ * `robots.txt` PRÓPRIO (#4546) — mesmo conteúdo/racional de cursos/livros
+ * (ver `scripts/lib/shared/robots-txt.ts`), só que servido dinamicamente
+ * porque este Worker não tem `[assets]`. `Sitemap:` aponta pro
+ * `/sitemap.xml` deste próprio host, não pro do host principal.
+ */
+const ARQUIVO_ROBOTS_TXT = renderCuradoriaRobotsTxt(`${PAGE_URL}sitemap.xml`);
+
+function robotsResponse(): Response {
+  return new Response(ARQUIVO_ROBOTS_TXT, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/plain;charset=utf-8",
       "Cache-Control": "public, max-age=3600",
     },
   });
@@ -116,6 +137,9 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/sitemap.xml") {
       return sitemapResponse();
+    }
+    if (url.pathname === "/robots.txt") {
+      return robotsResponse();
     }
     if (url.pathname !== "/") {
       return new Response("Not found", { status: 404 });
