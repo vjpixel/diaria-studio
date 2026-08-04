@@ -125,7 +125,7 @@ describe("parseInlineLink — strip de **...** dentro do título (regression: **
     assert.equal(r?.title, "Antes **bold** depois");
   });
 
-  it("source real da Diar.ia (260508 d1)", () => {
+  it("source real da diar.ia.br (260508 d1)", () => {
     const r = parseInlineLink(
       "[**Modelos se replicam sozinhos, diz estudo inédito**](https://www.theguardian.com/technology/2026/may/07/no-one-has-done-this-in-the-wild-study-observes-ai-replicate-itself)",
     );

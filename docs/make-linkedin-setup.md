@@ -37,7 +37,7 @@ One-time setup to enable programmatic LinkedIn publishing via Make.com webhook i
 
 ---
 
-## Passo 2 — Configurar a Diar.ia
+## Passo 2 — Configurar a diar.ia.br
 
 > **(#3903) A URL do webhook NUNCA vai commitada em texto puro.** A postura anterior deste doc ("URL pública é aceitável", já que a defesa primária seria o token `X-Diaria-Token` do Worker) se provou errada na prática: bots que monitoram commits do GitHub encontraram a URL commitada em `platform.config.json` e passaram a visitá-la periodicamente — um POST bem-formado direto no webhook Make posta na company page **sem passar pelo Worker nem pelo token** (o Make webhook em si nunca teve auth). `platform.config.json` → `publishing.social.linkedin.make_webhook_url` fica **sempre `""`** em código versionado.
 

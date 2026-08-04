@@ -89,7 +89,7 @@ describe("splitIntoChunks", () => {
   });
 
   it("newsletter sintética >10k → ≥2 chunks com fronteiras em parágrafos", () => {
-    // Simula newsletter Diar.ia real: seções com ---
+    // Simula newsletter diar.ia.br real: seções com ---
     const header = "Olá!\n\n" + "Texto de abertura. ".repeat(50) + "\n\n";
     const destaque = (n: number) =>
       `DESTAQUE ${n}\n\n` + "Conteúdo do destaque com muitos detalhes editoriais. ".repeat(100) + "\n\n" + "Por que isso importa: " + "Análise detalhada e extensa do impacto deste acontecimento no ecossistema de IA. ".repeat(50) + "\n\n";

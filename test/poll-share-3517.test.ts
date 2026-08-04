@@ -384,7 +384,7 @@ describe("integração /vote (#3517, #4065) — card embutido em todos os brands
 
   // #4065: a premissa original ("diaria/clarice são e-mail assinantes,
   // 'compartilhar meu resultado' não se aplica") estava errada pros dois —
-  // clarice não é assinante Diar.ia (é o público que a parceria existe pra
+  // clarice não é assinante diar.ia.br (é o público que a parceria existe pra
   // converter) e diaria pode indicar mesmo já sendo assinante. O link
   // compartilhado continua brand-agnóstico (sempre `/share/{token}` →
   // `/jogar` público, ver renderSharePageHtml em share.ts, #3701).
