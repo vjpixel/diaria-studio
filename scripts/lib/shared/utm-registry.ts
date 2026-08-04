@@ -187,6 +187,22 @@ export const JOGAR_GATE_INLINE_UTM = {
   campaign: "eia-jogar-gate-signup",
 } as const;
 
+/** Caixa unificada do gate revelada no pós-voto do caminho `from=post-web`
+ * (#4578) — visitante que clicou no botão de voto do "É IA?" na versão WEB
+ * de um post (merge tag `{{email}}`/`{{poll_token}}` nunca resolvida fora do
+ * envio real, guard #2262 em `vote.ts`) é redirecionado pro jogo anônimo em
+ * `/jogar?edition=...&from=post-web` em vez de um dead end 400. UTM PRÓPRIO
+ * (não `JOGAR_GATE_INLINE_UTM` acima) porque é um funil de entrada distinto:
+ * aquele chega de DENTRO do jogo (nudge periódico por rodada, #4054/#4253);
+ * este chega de FORA (link de e-mail/web que não resolveu), mesmo form/
+ * wiring (verify→subscribe→identify, `web-gate.ts::renderJogarGateBoxBlock`)
+ * mas atribuição não pode se misturar entre os dois pontos de entrada. */
+export const JOGAR_POSTWEB_UTM = {
+  source: EIA_STANDALONE_SOURCE,
+  medium: "jogar-postweb",
+  campaign: "eia-jogar-postweb-signup",
+} as const;
+
 /** CTA de e-mail injetado em todo post de Facebook no publish (#3991, valor
  * UTM adicionado no #4295) — `injectChannelLine` monta a linha a partir daqui
  * via `scripts/lib/social-cta-lines.ts`. */
@@ -563,6 +579,19 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     description:
       "Cadastro na tela de gate de /jogar (#4054) — visitante de fora que " +
       "cruzou o nudge periódico de rodadas (#4253 item 3) e se identifica/cadastra.",
+    status: "ativo",
+  },
+  {
+    id: "jogar-postweb-gate",
+    label: "É IA? — cadastro pós-voto vindo da versão web do post",
+    source: JOGAR_POSTWEB_UTM.source,
+    medium: JOGAR_POSTWEB_UTM.medium,
+    campaignPattern: JOGAR_POSTWEB_UTM.campaign,
+    originFile: "workers/poll/src/web-gate.ts",
+    description:
+      "Caixa unificada do gate revelada no pós-voto de /jogar?from=post-web (#4578) — " +
+      "visitante que clicou no botão de voto na versão WEB de um post (merge tag nunca " +
+      "resolvida ali) foi redirecionado pro jogo anônimo em vez de um 400 dead end.",
     status: "ativo",
   },
   {

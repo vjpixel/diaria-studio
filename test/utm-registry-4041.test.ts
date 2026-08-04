@@ -68,6 +68,7 @@ const MIRRORED = [
   "VOTE_CLARICE_INLINE_UTM", // #4065
   "JOGAR_GATE_INLINE_UTM", // #4054
   "JOGAR_IDENTIFY_INLINE_UTM", // #4125 item 4
+  "JOGAR_POSTWEB_UTM", // #4578
 ] as const;
 
 describe("#4041 — espelho do registry dentro do Worker não pode driftar", () => {
@@ -464,5 +465,27 @@ describe("#4530 Parte C — guard de colisão de triplo (source, medium, campaig
       collisions.some((ids) => ids.includes("synthetic-duplicate-of-first") && ids.includes(shared.UTM_EMITTERS[0].id)),
       `esperava colisão sintética detectada, veio: ${JSON.stringify(collisions)}`,
     );
+  });
+});
+
+describe("#4578 — voto vindo da versão web do post redireciona pro gate unificado de /jogar", () => {
+  it("jogar-postweb-gate está presente em UTM_EMITTERS", () => {
+    const ids = shared.UTM_EMITTERS.map((e) => e.id);
+    assert.ok(ids.includes("jogar-postweb-gate"), 'UTM_EMITTERS deve conter "jogar-postweb-gate"');
+  });
+
+  it("JOGAR_POSTWEB_UTM: mesmo source ('eia-standalone') de JOGAR_GATE_INLINE_UTM, medium/campaign PRÓPRIOS (funil de entrada distinto)", () => {
+    assert.equal(shared.JOGAR_POSTWEB_UTM.source, shared.EIA_STANDALONE_SOURCE);
+    assert.notEqual(shared.JOGAR_POSTWEB_UTM.medium, shared.JOGAR_GATE_INLINE_UTM.medium);
+    assert.notEqual(shared.JOGAR_POSTWEB_UTM.campaign, shared.JOGAR_GATE_INLINE_UTM.campaign);
+  });
+
+  it("subscribe.ts — resolveSubscribeUtm('jogar-postweb') deriva do registry (sem literal solto)", () => {
+    assert.deepEqual(resolveSubscribeUtm("jogar-postweb"), {
+      source: shared.JOGAR_POSTWEB_UTM.source,
+      medium: shared.JOGAR_POSTWEB_UTM.medium,
+      campaign: shared.JOGAR_POSTWEB_UTM.campaign,
+      referringSite: "jogar-postweb-gate",
+    });
   });
 });
