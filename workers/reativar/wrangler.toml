@@ -19,6 +19,15 @@ workers_dev = true
 #   cd workers/reativar && npx wrangler secret put BREVO_DIARIA_API_KEY
 # AÇÃO PENDENTE DO EDITOR — não armada nesta unidade (worktree isolado, sem
 # Cloudflare/Brevo credentials ao vivo, mesmo padrão dos #4320/#4382).
+#
+# BREVO_DIARIA_LIST_ID — OPCIONAL (#4535). List id Brevo do canal
+# `brevo_diaria` (mesmo valor de platform.config.json → brevo_diaria.list_id,
+# hoje 7) — usado só pra desvincular da lista Brevo logo no clique
+# (`unlinkReativarFromBrevoList`, src/index.ts). Sem ele (ou sem
+# BREVO_DIARIA_API_KEY), o unlink é pulado com log estruturado — a varredura
+# diária (evaluate-brevo-diaria.ts, #4534) continua sendo a rede de segurança:
+#   cd workers/reativar && npx wrangler secret put BREVO_DIARIA_LIST_ID
+# AÇÃO PENDENTE DO EDITOR — mesmo padrão dos #4320/#4382/#4490/#4534.
 
 # REATIVAR_ALARM — binding KV OPCIONAL (#4551), NÃO declarado aqui de
 # propósito (mesmo racional de `SUBSCRIBERS_KV` em workers/poll/wrangler.toml

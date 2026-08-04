@@ -406,7 +406,7 @@ import { handleJogarArchivePage, handleJogarPage, handleJogarQuizPage, handleJog
 // de resultado do voto (`/set-name?...&optin=on`) é submetida, mesmo padrão
 // de UTM próprio (`VOTE_CLARICE_INLINE_UTM`, ./utm-registry) que o CTA
 // inline antigo usava via `resolveSubscribeUtm("vote-clarice")`.
-import { handleJogarSubscribe, subscribeToBeehiiv } from "./subscribe";
+import { handleJogarSubscribe, subscribeToBeehiiv, VOTE_CLARICE_SET_NAME_REFERRING_SITE } from "./subscribe";
 import { VOTE_CLARICE_INLINE_UTM } from "./utm-registry";
 // #4054: gate por rodada do caminho de fora — tela + verify + subscribe.
 import { clearWebSessionCookieHeader, handleJogarGateSubscribe, handleJogarGateVerify, renderJogarGatePage } from "./web-gate";
@@ -1262,7 +1262,11 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
   let signupOutcome: "subscribed" | "failed" | null = null;
   if (optinRequested) {
     try {
-      const result = await subscribeToBeehiiv(env, { name: cleanName, email }, fetch, VOTE_CLARICE_INLINE_UTM);
+      // #4530 Parte B: `referringSite` PRÓPRIO — este é a caixa clarice do
+      // `/set-name` (tela de resultado do voto), distinto de qualquer outro
+      // call site que compartilhe o mesmo `VOTE_CLARICE_INLINE_UTM`.
+      const utm = { ...VOTE_CLARICE_INLINE_UTM, referringSite: VOTE_CLARICE_SET_NAME_REFERRING_SITE };
+      const result = await subscribeToBeehiiv(env, { name: cleanName, email }, fetch, utm);
       if (result.ok) {
         score.optin = true;
         signupOutcome = "subscribed";

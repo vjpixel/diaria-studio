@@ -16,6 +16,7 @@ import {
   activateSubscription,
   handleConfirm,
   checkNativeUnsubscribePending,
+  unlinkReativarFromBrevoList,
   renderSuccessPage,
   renderMissingEmailPage,
   renderInvalidEmailPage,
@@ -24,6 +25,7 @@ import {
   renderNativeUnsubscribePage,
   type Env,
 } from "../workers/reativar/src/index.ts";
+import { BREVO_DIARIA_REATIVAR_CLIQUE_UTM } from "../scripts/lib/shared/utm-registry.ts";
 
 function jsonRes(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -95,7 +97,16 @@ describe("activateSubscription — DELETE + CREATE, não mais reactivate_existin
     const { fetchImpl, calls } = routedFetch({
       get: () => jsonRes(200, { data: { id: "sub_old", status: "pending" } }),
       post: (body) => {
-        assert.deepEqual(body, { email: "a@b.com", send_welcome_email: false });
+        // #4530: atribuição — utm_source/medium/campaign + referring_site do
+        // registry, não mais só {email, send_welcome_email}.
+        assert.deepEqual(body, {
+          email: "a@b.com",
+          send_welcome_email: false,
+          utm_source: BREVO_DIARIA_REATIVAR_CLIQUE_UTM.source,
+          utm_medium: BREVO_DIARIA_REATIVAR_CLIQUE_UTM.medium,
+          utm_campaign: BREVO_DIARIA_REATIVAR_CLIQUE_UTM.campaign,
+          referring_site: BREVO_DIARIA_REATIVAR_CLIQUE_UTM.referringSite,
+        });
         return jsonRes(201, { data: { id: "sub_new", status: "active" } });
       },
     });
@@ -443,6 +454,117 @@ describe("handleConfirm — guard de descadastro nativo pendente (#4538 item B)"
     const res = await handleConfirm(url, env, fetchImpl);
     assert.equal(res.status, 200);
     assert.equal(await res.text(), renderNativeUnsubscribePage());
+  });
+});
+
+describe("unlinkReativarFromBrevoList — desvincula da lista Brevo no clique (#4535)", () => {
+  it("BREVO_DIARIA_API_KEY/BREVO_DIARIA_LIST_ID ausentes → pula com log estruturado, nunca chama fetch", async () => {
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return jsonRes(200, {});
+    }) as typeof fetch;
+    const origWarn = console.warn;
+    let warned: unknown;
+    console.warn = (msg: unknown) => { warned = msg; };
+    try {
+      await unlinkReativarFromBrevoList({}, "a@b.com", fetchImpl);
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.equal(called, false);
+    const parsed = JSON.parse(String(warned));
+    assert.equal(parsed.event, "reativar_brevo_unlink_skipped");
+    assert.ok(!String(warned).includes("a@b.com"), "log não pode conter o e-mail");
+  });
+
+  it("configurado → PUT /contacts/{email} com unlinkListIds:[listId]", async () => {
+    let call: { url: string; body: unknown } | undefined;
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      call = { url: String(url), body: JSON.parse(init!.body as string) };
+      return jsonRes(200, {});
+    }) as typeof fetch;
+    const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key", BREVO_DIARIA_LIST_ID: "7" };
+    await unlinkReativarFromBrevoList(env, "a@b.com", fetchImpl);
+    assert.equal(call?.url, "https://api.brevo.com/v3/contacts/a%40b.com");
+    assert.deepEqual(call?.body, { unlinkListIds: [7] });
+  });
+
+  it("falha HTTP da Brevo → engolida (fail-soft), log estruturado, NUNCA lança", async () => {
+    const fetchImpl = (async () => new Response("forbidden", { status: 403 })) as typeof fetch;
+    const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key", BREVO_DIARIA_LIST_ID: "7" };
+    const origError = console.error;
+    let errored: unknown;
+    console.error = (msg: unknown) => { errored = msg; };
+    try {
+      await unlinkReativarFromBrevoList(env, "a@b.com", fetchImpl);
+    } finally {
+      console.error = origError;
+    }
+    const parsed = JSON.parse(String(errored));
+    assert.equal(parsed.event, "reativar_brevo_unlink_failed");
+    assert.ok(!String(errored).includes("a@b.com"), "log não pode conter o e-mail");
+  });
+
+  it("falha de rede (exceção) → engolida (fail-soft), NUNCA propaga", async () => {
+    const fetchImpl = (async () => { throw new Error("network down"); }) as typeof fetch;
+    const env: Env = { BREVO_DIARIA_API_KEY: "brevo_key", BREVO_DIARIA_LIST_ID: "7" };
+    await assert.doesNotReject(() => unlinkReativarFromBrevoList(env, "a@b.com", fetchImpl));
+  });
+
+  it("handleConfirm: unlink (PUT) dispara no caminho de sucesso (beehiivStatus:active) e a falha da Brevo não muda status HTTP nem conteúdo da página", async () => {
+    // Distingue o GET do guard de descadastro nativo (#4538, já existente) do
+    // PUT de unlink (#4535, novo) — os dois batem em api.brevo.com, só o
+    // método/verbo separa qual é qual.
+    let unlinkPutCalled = false;
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      if (u.includes("api.brevo.com") && method === "PUT") {
+        unlinkPutCalled = true;
+        return new Response("boom", { status: 500 }); // falha da Brevo — não deve afetar a resposta
+      }
+      if (u.includes("api.brevo.com")) return jsonRes(200, {}); // GET do guard de descadastro nativo
+      if (method === "POST") return jsonRes(200, { data: { status: "active" } });
+      return new Response(null, { status: 404 });
+    }) as typeof fetch;
+    const url = new URL("https://reativar.diaria.workers.dev/?email=a@b.com");
+    const env: Env = {
+      BEEHIIV_API_KEY: "key",
+      BEEHIIV_PUBLICATION_ID: "pub_1",
+      BREVO_DIARIA_API_KEY: "brevo_key",
+      BREVO_DIARIA_LIST_ID: "7",
+    };
+    const res = await handleConfirm(url, env, fetchImpl);
+    assert.equal(res.status, 200);
+    assert.equal(await res.text(), renderSuccessPage());
+    assert.equal(unlinkPutCalled, true, "o unlink (PUT) deveria ter sido tentado no caminho de sucesso");
+  });
+
+  it("handleConfirm: beehiivStatus NÃO active (ex: 'invalid') → unlink (PUT) NUNCA é tentado", async () => {
+    let unlinkPutCalled = false;
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      if (u.includes("api.brevo.com") && method === "PUT") {
+        unlinkPutCalled = true;
+        return jsonRes(200, {});
+      }
+      if (u.includes("api.brevo.com")) return jsonRes(200, {}); // GET do guard de descadastro nativo
+      if (method === "POST") return jsonRes(201, { data: { status: "invalid" } });
+      return new Response(null, { status: 404 });
+    }) as typeof fetch;
+    const url = new URL("https://reativar.diaria.workers.dev/?email=a@b.com");
+    const env: Env = {
+      BEEHIIV_API_KEY: "key",
+      BEEHIIV_PUBLICATION_ID: "pub_1",
+      BREVO_DIARIA_API_KEY: "brevo_key",
+      BREVO_DIARIA_LIST_ID: "7",
+    };
+    const res = await handleConfirm(url, env, fetchImpl);
+    assert.equal(res.status, 200);
+    assert.equal(await res.text(), renderNotConfirmedPage());
+    assert.equal(unlinkPutCalled, false);
   });
 });
 

@@ -217,6 +217,7 @@ import {
   type BrevoDiariaContact,
   type BrevoDiariaStore,
 } from "./lib/brevo-diaria-store.ts";
+import { BREVO_DIARIA_PROMOCAO_SCORE_UTM } from "./lib/shared/utm-registry.ts"; // #4530
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -527,7 +528,17 @@ export async function promoteBeehiivSubscription(
   const res = await fetchImpl(`${base}/publications/${publicationId}/subscriptions`, {
     method: "POST",
     headers: { ...authHeaders, "Content-Type": "application/json" },
-    body: JSON.stringify({ email, send_welcome_email: false }),
+    body: JSON.stringify({
+      email,
+      send_welcome_email: false,
+      // #4530: atribuição — sem isto, todo cadastro promovido por score caía
+      // como "api: direct / (none)" na Beehiiv, indistinguível de qualquer
+      // outro cadastro via API.
+      utm_source: BREVO_DIARIA_PROMOCAO_SCORE_UTM.source,
+      utm_medium: BREVO_DIARIA_PROMOCAO_SCORE_UTM.medium,
+      utm_campaign: BREVO_DIARIA_PROMOCAO_SCORE_UTM.campaign,
+      referring_site: BREVO_DIARIA_PROMOCAO_SCORE_UTM.referringSite,
+    }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");

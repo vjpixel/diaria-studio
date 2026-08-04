@@ -533,7 +533,9 @@ export async function handleJogarIdentify(
       // #4125 (item 4): UTM próprio ("jogar-identify") — antes caía no
       // default "jogar" (form standalone do #3580, que só sobrevive em
       // /jogar/quiz desde o #3975), colidindo com aquela conversão na
-      // atribuição.
+      // atribuição. #4530 Parte B: o `referringSite` default deste triplo
+      // ("jogar-identify-inline") já cobre este call site (form ON-PAGE) —
+      // `magic-link.ts` (link de e-mail, mesmo triplo) sobrescreve o campo.
       const utm = resolveSubscribeUtm("jogar-identify");
       const result = await subscribeToBeehiiv(bEnv, { name, email }, fetchImpl, utm);
       subscribed = result.ok;

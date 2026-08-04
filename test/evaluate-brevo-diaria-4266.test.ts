@@ -28,6 +28,7 @@ import {
   runEvaluation,
 } from "../scripts/evaluate-brevo-diaria.ts";
 import { findContact, type BrevoDiariaContact } from "../scripts/lib/brevo-diaria-store.ts";
+import { BREVO_DIARIA_PROMOCAO_SCORE_UTM } from "../scripts/lib/shared/utm-registry.ts";
 
 function jsonRes(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -375,7 +376,16 @@ describe("suppressInBrevo / unlinkFromBrevoList / promoteBeehiivSubscription —
     const { fetchImpl, calls } = routedPromoteFetch({
       get: () => jsonRes(200, { data: { id: "sub_atual", status: "pending" } }),
       post: (body) => {
-        assert.deepEqual(body, { email: "a@b.com", send_welcome_email: false });
+        // #4530: atribuição — utm_source/medium/campaign + referring_site do
+        // registry, não mais só {email, send_welcome_email}.
+        assert.deepEqual(body, {
+          email: "a@b.com",
+          send_welcome_email: false,
+          utm_source: BREVO_DIARIA_PROMOCAO_SCORE_UTM.source,
+          utm_medium: BREVO_DIARIA_PROMOCAO_SCORE_UTM.medium,
+          utm_campaign: BREVO_DIARIA_PROMOCAO_SCORE_UTM.campaign,
+          referring_site: BREVO_DIARIA_PROMOCAO_SCORE_UTM.referringSite,
+        });
         return jsonRes(200, {});
       },
     });
