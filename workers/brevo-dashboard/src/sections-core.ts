@@ -1928,13 +1928,35 @@ export interface CellSummaryV2 {
   sent: number;
   delivered: number;
   opens: number;
+  /**
+   * #4559: cliques ATRIBUÍDOS a algum contato da lista de destinatários
+   * (`campaignStats[0].uniqueClicks`) — fonte usada pra decidir o vencedor
+   * (clickRate/ctor/leaderClickRate/z-test abaixo usam este campo, não
+   * `clicksTotal`). Cai pra `clicksTotal` quando a campanha não tem
+   * `campaignStats` (resposta antiga da API, ou fixture de teste legado) —
+   * nesse caso não há divergência conhecida pra corrigir.
+   */
   clicks: number;
+  /**
+   * #4559: cliques TOTAIS reportados por `globalStats`/`pickStats` — pode
+   * INCLUIR tráfego que a Brevo não conseguiu atribuir a nenhum contato da
+   * lista (scanner, preview, encaminhamento, espelho público — achado ao
+   * vivo no ciclo 2607-08: uma única campanha fria concentrava K=166 desse
+   * tipo de clique, o suficiente pra inverter o vencedor do teste de
+   * assunto). Só existe pra exibir a DIVERGÊNCIA quando ela ocorre
+   * (`renderAbcClickAttributionNote`) — nunca usado pra decidir o vencedor.
+   * Opcional pra não quebrar fixtures de teste que constroem `CellSummaryV2`
+   * à mão sem este campo (mesmo padrão de `suspectedDriftDays` em
+   * `AbcAudienceTable`) — `renderAbcClickAttributionNote` trata ausente como
+   * "sem divergência conhecida" (cai pro valor de `clicks`).
+   */
+  clicksTotal?: number;
   unsubscriptions: number;
   /** opens / delivered */
   openRate: number;
-  /** clicks / opens — qualidade da abertura */
+  /** clicks (ATRIBUÍDOS) / opens — qualidade da abertura */
   ctor: number;
-  /** clicks / delivered — o "fundo do poço" do engajamento (#2976) */
+  /** clicks (ATRIBUÍDOS) / delivered — o "fundo do poço" do engajamento (#2976) */
   clickRate: number;
   /** unsub / sent */
   unsubRate: number;
@@ -1995,6 +2017,52 @@ export function twoProportionZTest(x1: number, n1: number, x2: number, n2: numbe
 /** Limiar de significância padrão (p < 0.05) usado no flag `significantClick`. #2976 */
 export const SIGNIFICANCE_ALPHA = 0.05;
 
+// z-crítico bicaudal pra alpha=0.05 (SIGNIFICANCE_ALPHA) e z pro poder-alvo de
+// 80% (convenção padrão da indústria pra cálculo de amostra/MDE) — constantes
+// fixas em vez de reimplementar a normal inversa pro único uso abaixo.
+const Z_ALPHA_005_TWO_SIDED = 1.9599639845400545;
+const Z_BETA_POWER_80 = 0.8416212335729143;
+
+/**
+ * #4559: guard de PODER ESTATÍSTICO — calcula o lift relativo MÍNIMO que um
+ * teste de duas proporções (x1/n1 vs x2/n2) conseguiria detectar com 80% de
+ * poder a alpha=0.05, dado o tamanho de amostra ATUAL dos 2 braços. Mesma
+ * assinatura de `twoProportionZTest` (x1,n1,x2,n2) de propósito — os dois
+ * são chamados em par no mesmo call site.
+ *
+ * Racional: com contagem de clicadores ATRIBUÍDOS pequena (ex: 48/50/38 —
+ * cenário real do ciclo 2607-08, #4559), um teste pode cruzar p<0.05 por
+ * acaso (falso positivo) ou por um efeito real mas MUITO maior do que
+ * qualquer lift que interesse editorialmente — sem essa segunda leitura, o
+ * painel declarava "já dá pra concluir" só olhando o p-valor, sem informar
+ * que a amostra só tinha poder pra detectar uma diferença enorme (~60%
+ * relativo no exemplo da issue). Fórmula padrão de cálculo de amostra pra
+ * teste de 2 proporções (variância pooled, mesma usada em `twoProportionZTest`),
+ * resolvida pro delta mínimo: `delta_min = (z_alpha/2 + z_beta) * se`, onde
+ * `se` é o MESMO erro padrão pooled do z-test. Retorna `Infinity` quando a
+ * amostra é degenerada (n<=0 ou taxa pooled <=0/>=1) — MDE indeterminado.
+ */
+export function minDetectableRelativeLift(x1: number, n1: number, x2: number, n2: number): number {
+  if (!(n1 > 0) || !(n2 > 0)) return Infinity;
+  const pooled = (x1 + x2) / (n1 + n2);
+  if (!(pooled > 0) || pooled >= 1) return Infinity;
+  const se = Math.sqrt(pooled * (1 - pooled) * (1 / n1 + 1 / n2));
+  const deltaMin = (Z_ALPHA_005_TWO_SIDED + Z_BETA_POWER_80) * se;
+  return deltaMin / pooled;
+}
+
+/**
+ * #4559: patamar acima do qual um resultado "significativo" (p<0.05) ainda
+ * recebe a ressalva de poder baixo, em vez do "já dá pra concluir" sem
+ * qualificação. Reusa os mesmos 30% do protocolo pré-registrado do CTA-01
+ * (`ExperimentDefinition.liftThreshold` em experiment-cta.ts) — o menor lift
+ * que o editor já registrou como editorialmente relevante; um teste que só
+ * teria poder pra detectar algo BEM maior que isso não dá confiança de que um
+ * resultado "significativo" nessa faixa não seja um falso positivo ou uma
+ * distorção não percebida (winner's curse) — precisamente o que este PR corrige.
+ */
+export const LOW_POWER_MDE_THRESHOLD = 0.30;
+
 export interface AbcAudienceTable {
   cells: CellSummaryV2[];
   /** Célula com maior open rate entre as amostradas (empate → null). */
@@ -2005,6 +2073,15 @@ export interface AbcAudienceTable {
   significantClick: boolean;
   /** p-value do z-test líder vs 2ª colocada (null quando não há 2 células amostradas). */
   pValue: number | null;
+  /**
+   * #4559: lift relativo MÍNIMO que o teste líder vs 2ª colocada teria poder
+   * (80%) pra detectar, dado o tamanho de amostra ATUAL dos 2 braços — ver
+   * `minDetectableRelativeLift`. `null` quando não há 2 células amostradas
+   * (mesma condição de `pValue`); opcional pra não quebrar fixtures de teste
+   * que constroem `AbcAudienceTable` à mão sem este campo (mesmo padrão de
+   * `suspectedDriftDays` abaixo).
+   */
+  minDetectableLiftRelative?: number | null;
   /**
    * #4449 item 1: dias (YYYY-MM-DD BRT) excluídos da agregação pelo guard
    * `<3 células` (#3404) que TAMBÉM têm sinal de 3 campanhas do mesmo grupo
@@ -2025,6 +2102,7 @@ function emptyCellV2(cell: "A" | "B" | "C"): CellSummaryV2 {
     delivered: 0,
     opens: 0,
     clicks: 0,
+    clicksTotal: 0,
     unsubscriptions: 0,
     openRate: 0,
     ctor: 0,
@@ -2096,10 +2174,10 @@ function aggregateCellsV2(
   cycle: string,
   audienceFilter: ClariceAudience | "any",
 ): { cells: CellSummaryV2[]; driftDays: string[] } {
-  const acc: Record<"A" | "B" | "C", { sent: number; delivered: number; opens: number; clicks: number; unsub: number; bounces: number; spam: number; count: number }> = {
-    A: { sent: 0, delivered: 0, opens: 0, clicks: 0, unsub: 0, bounces: 0, spam: 0, count: 0 },
-    B: { sent: 0, delivered: 0, opens: 0, clicks: 0, unsub: 0, bounces: 0, spam: 0, count: 0 },
-    C: { sent: 0, delivered: 0, opens: 0, clicks: 0, unsub: 0, bounces: 0, spam: 0, count: 0 },
+  const acc: Record<"A" | "B" | "C", { sent: number; delivered: number; opens: number; clicksAttributed: number; clicksTotal: number; unsub: number; bounces: number; spam: number; count: number }> = {
+    A: { sent: 0, delivered: 0, opens: 0, clicksAttributed: 0, clicksTotal: 0, unsub: 0, bounces: 0, spam: 0, count: 0 },
+    B: { sent: 0, delivered: 0, opens: 0, clicksAttributed: 0, clicksTotal: 0, unsub: 0, bounces: 0, spam: 0, count: 0 },
+    C: { sent: 0, delivered: 0, opens: 0, clicksAttributed: 0, clicksTotal: 0, unsub: 0, bounces: 0, spam: 0, count: 0 },
   };
   const parsedCampaigns: Array<{
     c: BrevoCampaign & { listName?: string; listSize?: number };
@@ -2149,7 +2227,22 @@ function aggregateCellsV2(
     a.opens += s.uniqueViews ?? 0;
     // #3398 (revertido 260713): uniqueClicks já vem sem clique de unsubscribe direto
     // da Brevo — ver comentário equivalente em aggregateAbcSummary.
-    a.clicks += s.uniqueClicks ?? 0;
+    const totalClicks = s.uniqueClicks ?? 0;
+    // #4559: o vencedor por CLIQUE precisa usar cliques ATRIBUÍDOS a um
+    // contato da lista (`campaignStats[0].uniqueClicks`, sempre por-lista),
+    // não `pickStats`/`globalStats.uniqueClicks` (agregado da campanha
+    // inteira — pode incluir clique que a Brevo não conseguiu ligar a
+    // NENHUM membro da lista: scanner, preview, encaminhamento, espelho
+    // público). Achado ao vivo (issue #4559): uma única campanha fria do
+    // ciclo 2607-08 concentrava K=166 desse tráfego, o suficiente pra
+    // inverter o vencedor de um teste de assunto que na verdade estava
+    // empatado. `campaignStats` ausente (resposta antiga da API, ou fixture
+    // de teste legado sem esse campo) cai pro valor de `picked` — não há
+    // divergência conhecida pra corrigir nesse caso.
+    const cs = c.statistics?.campaignStats?.[0];
+    const attributedClicks = cs && Number.isFinite(cs.uniqueClicks) ? cs.uniqueClicks : totalClicks;
+    a.clicksAttributed += attributedClicks;
+    a.clicksTotal += totalClicks;
     a.unsub += s.unsubscriptions ?? 0;
     a.bounces += (s.hardBounces ?? 0) + (s.softBounces ?? 0);
     a.spam += s.complaints ?? 0;
@@ -2164,11 +2257,12 @@ function aggregateCellsV2(
       sent: d.sent,
       delivered: d.delivered,
       opens: d.opens,
-      clicks: d.clicks,
+      clicks: d.clicksAttributed,
+      clicksTotal: d.clicksTotal,
       unsubscriptions: d.unsub,
       openRate: d.delivered > 0 ? (d.opens / d.delivered) * 100 : 0,
-      ctor: d.opens > 0 ? (d.clicks / d.opens) * 100 : 0,
-      clickRate: d.delivered > 0 ? (d.clicks / d.delivered) * 100 : 0,
+      ctor: d.opens > 0 ? (d.clicksAttributed / d.opens) * 100 : 0,
+      clickRate: d.delivered > 0 ? (d.clicksAttributed / d.delivered) * 100 : 0,
       unsubRate: d.sent > 0 ? (d.unsub / d.sent) * 100 : 0,
       bounceRate: d.sent > 0 ? (d.bounces / d.sent) * 100 : 0,
       spamRate: d.sent > 0 ? (d.spam / d.sent) * 100 : 0,
@@ -2193,6 +2287,7 @@ function buildAbcAudienceTable(result: { cells: CellSummaryV2[]; driftDays: stri
 
   let significantClick = false;
   let pValue: number | null = null;
+  let minDetectableLiftRelative: number | null = null;
   if (leaderClickRate && sampled.length >= 2) {
     const leader = sampled.find((c) => c.cell === leaderClickRate)!;
     // 2ª colocada por click rate (a que mais ameaça a liderança).
@@ -2200,13 +2295,20 @@ function buildAbcAudienceTable(result: { cells: CellSummaryV2[]; driftDays: stri
       .filter((c) => c.cell !== leaderClickRate)
       .sort((a, b) => b.clickRate - a.clickRate)[0];
     if (runnerUp) {
+      // #4559: leader.clicks/runnerUp.clicks já são cliques ATRIBUÍDOS
+      // (aggregateCellsV2 preenche `.clicks` com clicksAttributed) — tanto o
+      // z-test quanto o guard de poder abaixo decidem sobre a mesma base.
       const test = twoProportionZTest(leader.clicks, leader.delivered, runnerUp.clicks, runnerUp.delivered);
       pValue = test.pValue;
       significantClick = test.pValue < SIGNIFICANCE_ALPHA;
+      minDetectableLiftRelative = minDetectableRelativeLift(leader.clicks, leader.delivered, runnerUp.clicks, runnerUp.delivered);
     }
   }
 
-  return { cells, leaderOpenRate, leaderClickRate, significantClick, pValue, suspectedDriftDays: driftDays };
+  return {
+    cells, leaderOpenRate, leaderClickRate, significantClick, pValue,
+    minDetectableLiftRelative, suspectedDriftDays: driftDays,
+  };
 }
 
 /**
@@ -2242,9 +2344,30 @@ function renderAbcDriftNote(driftDays: string[]): string {
   return `<p class="section-note"><small>⚠️ ${driftDays.length} dia${plural} com possível DRIFT DE NAMING (${list}): o grupo parece ter tido 3 campanhas, mas 1 ou mais não teve a célula reconhecida — excluído da comparação por segurança (dado ausente é mais seguro que dado errado), mas isso pode NÃO ser consolidação real. Confira o naming da LISTA de destinatários dessas campanhas (ver #4447/#4449).</small></p>`;
 }
 
+/**
+ * #4559: nota de divergência entre cliques TOTAIS (`clicksTotal`,
+ * globalStats/pickStats — pode incluir tráfego não atribuível a nenhum
+ * contato da lista) e cliques ATRIBUÍDOS (`clicks`, usado pra decidir o
+ * vencedor). "" quando nenhuma célula amostrada diverge — não adiciona ruído
+ * quando as duas fontes concordam (caso comum, sem esse tipo de tráfego
+ * fantasma). Exportado pra teste unitário.
+ */
+export function renderAbcClickAttributionNote(cells: CellSummaryV2[]): string {
+  // `clicksTotal` é opcional (fixture de teste sem o campo) — trata ausente
+  // como "sem divergência conhecida", nunca como 0 (que compararia falso
+  // contra `.clicks` > 0 e disparataria a nota indevidamente).
+  const total = (c: CellSummaryV2) => c.clicksTotal ?? c.clicks;
+  const diverging = cells.filter((c) => c.campaignCount > 0 && total(c) !== c.clicks);
+  if (diverging.length === 0) return "";
+  const parts = diverging
+    .map((c) => `Célula ${c.cell}: ${total(c).toLocaleString("pt-BR")} totais, ${c.clicks.toLocaleString("pt-BR")} atribuídos à lista`)
+    .join(" · ");
+  return `<p class="section-note"><small>ℹ️ Cliques totais reportados divergem dos atribuídos a contato da lista (${parts}) — o vencedor por clique usa só o número ATRIBUÍDO, nunca o total (ver #4559).</small></p>`;
+}
+
 /** Renderiza 1 tabela (Agregada/Fria/Quente) do Resumo A/B/C por Audiência. Exportado pra teste unitário. */
 export function renderAbcAudienceTable(title: string, table: AbcAudienceTable): string {
-  const { cells, leaderOpenRate, leaderClickRate, significantClick, pValue, suspectedDriftDays } = table;
+  const { cells, leaderOpenRate, leaderClickRate, significantClick, pValue, minDetectableLiftRelative, suspectedDriftDays } = table;
   const driftNote = renderAbcDriftNote(suspectedDriftDays ?? []);
   if (cells.filter((c) => c.campaignCount > 0).length < 2) {
     // #3127: omite a subseção inteira (sem header nem stub "Sem dados") quando
@@ -2301,19 +2424,32 @@ export function renderAbcAudienceTable(title: string, table: AbcAudienceTable): 
   // abertura secundária também aguardando; o resto dos campos (open rate, CTOR)
   // já está populado quando isso dispara.
   const allZero = sampled.every((c) => c.clicks === 0);
+  // #4559: guard de poder estatístico — um resultado "significativo" (p<0.05)
+  // com amostra ATRIBUÍDA tão pequena que o teste só teria poder pra detectar
+  // um lift bem maior que o menor lift editorialmente relevante
+  // (LOW_POWER_MDE_THRESHOLD, 30% — mesmo patamar do protocolo CTA-01) não
+  // deve ser anunciado como "já dá pra concluir" sem essa ressalva: tanto pode
+  // ser um falso positivo (5% de chance sob H0) quanto uma distorção não
+  // percebida na fonte do dado — o próprio cenário que motivou este fix.
+  const isLowPower = minDetectableLiftRelative != null && minDetectableLiftRelative > LOW_POWER_MDE_THRESHOLD;
   const conclusionNote =
     allZero
       ? "Aguardando dados de clique — primeiras horas pós-envio."
       : !leaderClickRate
       ? "Empate no clique — aguardar mais dados."
-      : significantClick
+      : significantClick && !isLowPower
       ? `Vencedor por CLIQUE: <strong style="color:${DS.ink}">Célula ${leaderClickRate}</strong> — diferença estatisticamente significativa (p ${pValue !== null ? pValue.toFixed(4) : "?"} &lt; ${SIGNIFICANCE_ALPHA}). Já dá pra concluir.`
+      : significantClick && isLowPower
+      ? `Vencedor por CLIQUE (com ressalva): <strong style="color:${DS.ink}">Célula ${leaderClickRate}</strong> — diferença estatisticamente significativa (p ${pValue !== null ? pValue.toFixed(4) : "?"} &lt; ${SIGNIFICANCE_ALPHA}), mas a amostra ATRIBUÍDA ainda é pequena: o teste só tem poder (80%) pra detectar lift relativo ≥ ${(minDetectableLiftRelative! * 100).toFixed(0)}%. Tratar como indicativo, não conclusivo (#4559).`
       : `Vencedor provisório por clique: <strong style="color:${DS.ink}">Célula ${leaderClickRate}</strong> — diferença <strong>NÃO</strong> significativa ainda (p ${pValue !== null ? pValue.toFixed(4) : "?"} ≥ ${SIGNIFICANCE_ALPHA}). Precisa de mais dados antes de concluir.`;
+
+  const attributionNote = renderAbcClickAttributionNote(cells);
 
   return `
   <h4 class="subsection-title">${escHtml(title)}</h4>
   ${driftNote}
   <p class="section-note">${conclusionNote}</p>
+  ${attributionNote}
   <div class="table-wrap">
   <table>
     <thead>
@@ -2322,8 +2458,8 @@ export function renderAbcAudienceTable(title: string, table: AbcAudienceTable): 
         <th scope="col" title="Dias/envios contabilizados">Envios</th>
         <th scope="col" title="Total entregue">Delivered</th>
         <th scope="col" title="Aberturas únicas ÷ delivered">Open rate</th>
-        <th scope="col" title="CTOR = cliques únicos ÷ aberturas — qualidade da abertura entre quem abriu; ▲CLIQUE marca o vencedor por cliques únicos ÷ delivered, o &quot;fundo do poço&quot; do engajamento (#2976)">CTOR</th>
-        <th scope="col" title="Total de cliques únicos">Cliques</th>
+        <th scope="col" title="CTOR = cliques únicos ATRIBUÍDOS ÷ aberturas — qualidade da abertura entre quem abriu; ▲CLIQUE marca o vencedor por cliques ÷ delivered, o &quot;fundo do poço&quot; do engajamento (#2976)">CTOR</th>
+        <th scope="col" title="Cliques únicos ATRIBUÍDOS a algum contato da lista (campaignStats) — usado pra decidir o vencedor; pode divergir do total reportado, ver nota acima (#4559)">Cliques</th>
         <th scope="col" title="Descadastros ÷ sent">Unsub</th>
       </tr>
     </thead>
