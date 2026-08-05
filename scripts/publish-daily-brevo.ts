@@ -376,7 +376,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
   const log = (msg: string) => process.stderr.write(`[publish-daily-brevo] ${msg}\n`);
 
   // #4651: os process.exit() abaixo até o 1º `await` de rede (brevoGetList,
-  // linha ~436) ficam como estão de propósito — nenhum fetch rodou ainda
+  // mais adiante) ficam como estão de propósito — nenhum fetch rodou ainda
   // neste processo nestes pontos, então não há socket keep-alive aberto que
   // dispare o crash libuv (UV_HANDLE_CLOSING) do #4638/#1401. Só os exits
   // POSTERIORES a esse await foram convertidos pra process.exitCode + return.

@@ -1246,10 +1246,12 @@ async function main(): Promise<void> {
 
   // Windows fix (#4651, mesma classe do #4638/#1401): tanto o branch
   // dry-run quanto o --push chegam aqui só depois de `await runEvaluation`
-  // (que já fez await fetch — reconcileStoreWithBrevoList e o loop por
-  // contato) — process.exit() arriscaria o crash libuv (UV_HANDLE_CLOSING)
-  // com sockets keep-alive ainda abertos. process.exitCode + return (já
-  // presente no branch dry-run) deixa o event loop drenar sozinho.
+  // que, no caminho normal com `brevoApiKey` presente e contato(s) in_brevo
+  // pra avaliar, já fez await fetch (reconcileStoreWithBrevoList — condicional
+  // a `brevoApiKey` — e o loop por contato dentro de runEvaluation) — mas
+  // process.exitCode + return é seguro de qualquer forma, com ou sem fetch
+  // prévio, evitando o crash libuv (UV_HANDLE_CLOSING) com sockets
+  // keep-alive ainda abertos.
   if (!push) {
     log("dry-run (default) — NENHUMA mutação aplicada. Use --push para gravar.");
     if (result.failed > 0) process.exitCode = 1;

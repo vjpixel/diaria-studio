@@ -608,10 +608,11 @@ async function main(): Promise<void> {
   }
   writeStore(nextStore, DEFAULT_STORE_PATH);
   log(`push concluído: ${applied} ingerido(s), ${failed} falha(s).`);
-  // Windows fix (#4651, mesma classe do #4638/#1401): já houve await fetch
-  // (fetchPendingBeehiivSubscriptions + ingestContactToBrevo no loop acima)
-  // antes deste ponto — process.exit() arriscaria o crash libuv
-  // (UV_HANDLE_CLOSING) com sockets keep-alive ainda abertos.
+  // Windows fix (#4651, mesma classe do #4638/#1401): fetchPendingBeehiivSubscriptions
+  // (incondicional, mais acima) já garante um await fetch antes deste ponto — e,
+  // no caminho normal com `selected` não-vazio, o loop `ingestContactToBrevo`
+  // acima também faz fetch — de qualquer forma, process.exit() arriscaria o
+  // crash libuv (UV_HANDLE_CLOSING) com sockets keep-alive ainda abertos.
   if (failed > 0) process.exitCode = 1;
 }
 
