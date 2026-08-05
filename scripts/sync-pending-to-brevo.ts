@@ -128,7 +128,9 @@ import {
   normalizeEmail,
   DEFAULT_STORE_PATH,
   type BrevoDiariaStore,
+  type BrevoDiariaContact,
 } from "./lib/brevo-diaria-store.ts";
+import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts"; // #4631
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const RATE_LIMIT_DELAY_MS = 300;
@@ -374,6 +376,29 @@ export function computeAvailableSlots(currentActiveCount: number, cap: number): 
 }
 
 /**
+ * Pura (#4631) — quantos contatos do store hoje ocupam um slot `in_brevo`,
+ * EXCLUINDO `EDITOR_SEED_EMAILS` do numerador. Diferente de
+ * `checkDailySendCap` (`publish-daily-brevo.ts`), este número já vinha
+ * correto por CONSTRUÇÃO antes deste fix: `EDITOR_SEED_EMAILS` nunca são
+ * ingeridos por este script (ficam vinculados à lista Brevo diretamente,
+ * fora do fluxo `upsertIngested` — mesmo fato documentado em
+ * `findOrphanContacts`, `evaluate-brevo-diaria.ts`), então o filtro abaixo
+ * normalmente não remove ninguém do `store.contacts` real. A exclusão
+ * explícita é defesa em profundidade (mesmo raciocínio de
+ * `checkContactCountReconciliation`/#4532): se algum caminho futuro alguma
+ * vez inserir um dos 5 endereços no store (ex: um deles aparecer Pending na
+ * Beehiiv e ser ingerido normalmente), este helper garante que ele nunca
+ * conte 2x contra o cap — sem depender só do invariante "nunca acontece".
+ */
+export function computeCurrentActiveCount(
+  contacts: readonly BrevoDiariaContact[],
+  seedEmails: readonly string[] = EDITOR_SEED_EMAILS,
+): number {
+  const seedSet = new Set(seedEmails.map((e) => normalizeEmail(e)));
+  return contacts.filter((c) => c.status === "in_brevo" && !seedSet.has(normalizeEmail(c.email))).length;
+}
+
+/**
  * Pura — seleciona os próximos `availableSlots` candidatos a ingerir,
  * ORDENADOS pelo score de origem (#4476 item 4, maior primeiro). `scoreByEmail`
  * vem de `data/pending-reativacao/pending-scored-computed.csv`
@@ -549,7 +574,7 @@ async function main(): Promise<void> {
   // pelo score de origem (item 4). Substitui o comportamento antigo de
   // ingerir TODO o `toIngest` de uma vez (ou abortar se > cap).
   const cap = brevoDiaria!.daily_send_cap ?? DEFAULT_QUEUE_CAP;
-  const currentActiveCount = store.contacts.filter((c) => c.status === "in_brevo").length;
+  const currentActiveCount = computeCurrentActiveCount(store.contacts); // #4631: exclui EDITOR_SEED_EMAILS
   const availableSlots = computeAvailableSlots(currentActiveCount, cap);
   log(`fila: ${currentActiveCount}/${cap} ocupados, ${availableSlots} slot(s) livre(s) pro backfill.`);
 

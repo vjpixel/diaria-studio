@@ -18,6 +18,13 @@
  * enumeração que silenciosamente retorna 0 contatos (ex: página 200 com
  * corpo vazio) apesar da lista Brevo não estar vazia precisa abortar, não
  * passar como "0 falhas" e criar a campanha sem ninguém protegido.
+ *
+ * #4631 (fleet review da PR #4646, achado pr-test-analyzer): os 4 casos
+ * acima usam `totalSubscribers: 1` ou `3` contra `daily_send_cap: 300` —
+ * longe da fronteira real do incidente 260804 (lista com 179 assinantes
+ * brutos, cap 175). O caso adicional abaixo reproduz essa fronteira via
+ * `main()` de verdade — o guard antigo (`checkDailySendCap` sem subtrair
+ * `EDITOR_SEED_EMAILS`) abortava aqui com exit(3); o novo deve prosseguir.
  */
 
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
@@ -210,6 +217,19 @@ function installRouter(opts: RouterOpts): void {
   }) as typeof fetch;
 }
 
+/** Gera `n` contatos fake paginados em blocos de 50 (mesmo `limit` fixo de
+ * `iterateListContacts`, `inject-poll-token-brevo.ts`) — usado pra reproduzir
+ * uma lista Brevo de tamanho real sem depender de fixtures manuais. */
+function generateContactsPages(n: number): Array<Array<{ email: string; attributes: Record<string, unknown> }>> {
+  const PAGE_SIZE = 50;
+  const contacts = Array.from({ length: n }, (_, i) => ({ email: `contato${i}@x.com`, attributes: {} }));
+  const pages: Array<Array<{ email: string; attributes: Record<string, unknown> }>> = [];
+  for (let offset = 0; offset < contacts.length; offset += PAGE_SIZE) {
+    pages.push(contacts.slice(offset, offset + PAGE_SIZE));
+  }
+  return pages;
+}
+
 function setAllCredentials(): void {
   process.env[API_KEY_ENV] = API_KEY;
   process.env.POLL_SECRET = "test_poll_secret";
@@ -237,7 +257,11 @@ describe("publish-daily-brevo.ts main() — wiring fail-closed de ponta a ponta 
       delete process.env.CLOUDFLARE_ACCOUNT_ID;
       delete process.env.CLOUDFLARE_WORKERS_TOKEN;
 
-      installRouter({ totalSubscribers: 1, contactsPages: [[{ email: "a@x.com", attributes: {} }]] });
+      // totalSubscribers >= 5 (EDITOR_SEED_EMAILS.length) de propósito — #4631
+      // acrescentou um piso que aborta com exit(3) ANTES desta guard quando o
+      // bruto fica abaixo do seedCount; abaixo disso o teste pegaria o guard
+      // errado.
+      installRouter({ totalSubscribers: 6, contactsPages: [[{ email: "a@x.com", attributes: {} }]] });
       process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy"];
       mockProcessExit();
 
@@ -263,8 +287,9 @@ describe("publish-daily-brevo.ts main() — wiring fail-closed de ponta a ponta 
       writeEdition(root, EDITION_DATE);
       setAllCredentials();
 
+      // totalSubscribers >= 5 pelo mesmo motivo do teste anterior (#4631).
       installRouter({
-        totalSubscribers: 1,
+        totalSubscribers: 6,
         contactsPages: [[{ email: "falha@x.com", attributes: {} }]],
         putStatus: 500,
       });
@@ -293,14 +318,16 @@ describe("publish-daily-brevo.ts main() — wiring fail-closed de ponta a ponta 
       writeEdition(root, EDITION_DATE);
       setAllCredentials();
 
-      // listInfo.totalSubscribers=3 (brevoGetList, endpoint separado), mas a
+      // listInfo.totalSubscribers=6 (brevoGetList, endpoint separado — >= 5
+      // EDITOR_SEED_EMAILS de propósito, #4631, pra não disparar o piso de
+      // anomalia ANTES de chegar na reconciliação sob teste), mas a
       // enumeração paginada devolve uma página VAZIA (200, contacts: []) —
       // simula qualquer forma de enumeração incompleta que não seja um
       // 404/5xx explícito (esse caso já é coberto no nível de unidade por
       // inject-poll-token-brevo-4517.test.ts). Sem a reconciliação (#4532),
       // isso resultaria em total_contacts:0, failed:0 — passando o gate
       // antigo e criando a campanha sem ninguém protegido.
-      installRouter({ totalSubscribers: 3, contactsPages: [[]] });
+      installRouter({ totalSubscribers: 6, contactsPages: [[]] });
       process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy"];
       mockProcessExit();
 
@@ -322,7 +349,22 @@ describe("publish-daily-brevo.ts main() — wiring fail-closed de ponta a ponta 
       writeEdition(root, EDITION_DATE);
       setAllCredentials();
 
-      installRouter({ totalSubscribers: 1, contactsPages: [[{ email: "ok@x.com", attributes: {} }]] });
+      // totalSubscribers >= 5 (#4631) e enumeração com o MESMO total (senão a
+      // reconciliação do #4532, que roda antes da criação da campanha, aborta
+      // com exit(6) por divergência).
+      installRouter({
+        totalSubscribers: 6,
+        contactsPages: [
+          [
+            { email: "ok@x.com", attributes: {} },
+            { email: "ok2@x.com", attributes: {} },
+            { email: "ok3@x.com", attributes: {} },
+            { email: "ok4@x.com", attributes: {} },
+            { email: "ok5@x.com", attributes: {} },
+            { email: "ok6@x.com", attributes: {} },
+          ],
+        ],
+      });
       process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy"];
       mockProcessExit();
 
@@ -342,6 +384,31 @@ describe("publish-daily-brevo.ts main() — wiring fail-closed de ponta a ponta 
       assert.ok(
         calls.some((c) => c.method === "PUT" && c.pathname === `/v3/contacts/${encodeURIComponent("ok@x.com")}`),
         "o contato deveria ter recebido o PUT do token opaco de voto ANTES da campanha",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#4631: reproduz o incidente 260804 via main() real — lista Brevo com 179 assinantes brutos, daily_send_cap 175 → prossegue sem abortar no cap (guard antigo abortava com exit(3))", async () => {
+    const root = mkTmpRoot();
+    try {
+      writePlatformConfig(root, { daily_send_cap: 175 });
+      writeEdition(root, EDITION_DATE);
+      setAllCredentials();
+
+      installRouter({ totalSubscribers: 179, contactsPages: generateContactsPages(179) });
+      process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy"];
+      mockProcessExit();
+
+      await main(root);
+
+      assert.equal(exitCode, null, "não deveria ter abortado em NENHUM guard — em particular não exit(3), o cap");
+      assert.ok(
+        calls.some((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns"),
+        `POST /emailCampaigns deveria ter sido disparado (fronteira 179 bruto / 175 cap): ${JSON.stringify(
+          calls.map((c) => `${c.method} ${c.pathname}`),
+        )}`,
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
