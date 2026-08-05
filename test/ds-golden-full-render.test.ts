@@ -305,10 +305,12 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
   // Regra: cada bloco tem um comentário HTML canônico no render. Verificamos
   // que aparecem na ordem correta no HTML composto.
   //
-  // Ordem esperada (alinhada ao renderHTML, #3476):
-  //   INTRO → coverageLine → introCallout → D1 → boxDivulgacao1 → D2 → D3 →
-  //   boxDivulgacao3 → LANÇAMENTOS → OUTRAS NOTÍCIAS → USE MELHOR → É IA? →
-  //   RADAR → SORTEIO → ERRO INTENCIONAL → PARA ENCERRAR
+  // Ordem esperada (alinhada ao renderHTML, #3476, atualizada pelo #4624):
+  //   INTRO → coverageLine → introCallout → D1 → WhatsApp (#4570) →
+  //   D2 → boxDivulgacao1 (deslocado de D1/D2 pra D2/D3 pelo WhatsApp, #4624,
+  //   já que este fixture não configura o slot 2) → D3 → boxDivulgacao3 →
+  //   LANÇAMENTOS → OUTRAS NOTÍCIAS → USE MELHOR → É IA? → RADAR → SORTEIO →
+  //   ERRO INTENCIONAL → PARA ENCERRAR
 
   it("composição: coverageLine antes do primeiro Destaque", () => {
     // Usa comentários HTML canônicos — estáveis e não aparecem no conteúdo editorial
@@ -319,12 +321,16 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
     assertOrder(html, "<!-- #1648 intro callout (sorteio/CTA) -->", "<!-- Destaque 1 -->");
   });
 
-  it("composição: Destaque 1 antes do boxDivulgacao1", () => {
-    assertOrder(html, "<!-- Destaque 1 -->", "<!-- mid callout com imagem -->");
+  it("composição: Destaque 1 antes do Destaque 2 (WhatsApp entre os dois, #4570)", () => {
+    assertOrder(html, "<!-- Destaque 1 -->", "<!-- Destaque 2 -->");
   });
 
-  it("composição: boxDivulgacao1 antes do Destaque 2", () => {
-    assertOrder(html, "<!-- mid callout com imagem -->", "<!-- Destaque 2 -->");
+  it("composição: Destaque 2 antes do boxDivulgacao1 (#4624: desliza pra D2/D3 — o slot 2 não está configurado neste fixture, então o WhatsApp em D1/D2 empurra o slot 1 pra cá)", () => {
+    assertOrder(html, "<!-- Destaque 2 -->", "<!-- mid callout com imagem -->");
+  });
+
+  it("composição: boxDivulgacao1 antes do Destaque 3 (#4624)", () => {
+    assertOrder(html, "<!-- mid callout com imagem -->", "<!-- Destaque 3 -->");
   });
 
   it("composição: Destaque 2 antes do É IA?", () => {
