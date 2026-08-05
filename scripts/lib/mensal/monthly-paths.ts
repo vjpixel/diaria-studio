@@ -34,7 +34,12 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg, parseArgs } from "../cli-args.ts";
-import { isValidCycle, clariceCycleDir } from "../clarice-paths.ts";
+import {
+  isValidCycle,
+  clariceCycleDir,
+  cycleHasClariceActivity,
+  listClariceCycleDirs,
+} from "../clarice-paths.ts";
 
 // scripts/lib/mensal/ → raiz do repo são 3 níveis acima (mensal → lib → scripts).
 // (#2747 desceu este arquivo de scripts/lib/ pra scripts/lib/mensal/ e o `../..`
@@ -405,4 +410,145 @@ export function resolveLatestMonthlyCycleDeps(): ResolveLatestMonthlyCycleDeps {
 /** Atalho de produção — `resolveLatestMonthlyCycle` com as deps reais do disco. */
 export function resolveLatestMonthlyCycleFromDisk(subjectOverride?: string): ResolveLatestMonthlyCycleResult {
   return resolveLatestMonthlyCycle(resolveLatestMonthlyCycleDeps(), subjectOverride);
+}
+
+// ── Guard de atividade real do ciclo (#4621) ───────────────────────────────
+//
+// Achado ao vivo 260804: `resolveLatestMonthlyCycle` caiu (D3, fallback
+// legítimo por design) do ciclo corrente `2607-08` pro ciclo `2605-06` — o
+// digest de MAIO (conteúdo do ciclo `2605-06`), ~2 meses desatualizado — porque `2607-08` não tinha
+// entrada em `campaigns-summary.json` (os envios reais daquele ciclo foram
+// montados via `clarice-build-segment.ts --group`/`clarice-schedule-group.ts
+// --group`, que nunca escrevem nesse arquivo, ver clarice-paths.ts). O
+// fallback em si (D3) segue correto quando o ciclo mais recente genuinamente
+// não está pronto — o problema é fallback **silencioso** demais pra trás
+// quando existe evidência independente (atividade real em
+// data/clarice-subscribers/) de que um ciclo mais recente já está em uso.
+//
+// Defesa em profundidade (#4621, combinação dos itens 2+3 do achado):
+//   1. `mostRecentActiveClariceCycle` — sinal independente de "ciclo em uso",
+//      via presença de arquivos em data/clarice-subscribers/{cycle}/.
+//   2. `evaluateClariceActivityGuard` — compara o fallback escolhido contra
+//      esse sinal: diverge (nota auditável sempre) e, se a distância for
+//      MAIOR que 1 ciclo mensal, BLOQUEIA (exige --subject explícito) em vez
+//      de aceitar silenciosamente.
+
+/**
+ * Distância em MESES entre dois ciclos, pelo mês de CONTEÚDO (`{YYMM}` — os
+ * 4 primeiros dígitos do rótulo). Ex: `cycleMonthDistance("2605-06",
+ * "2607-08")` → 2 (maio → julho). Pure. Assume-se ciclo válido (`isValidCycle`)
+ * — caller é responsável por filtrar antes.
+ */
+export function cycleMonthDistance(cycleA: string, cycleB: string): number {
+  const ordinal = (c: string): number => {
+    const yymm = cycleToYymm(c);
+    const yy = Number(yymm.slice(0, 2));
+    const mm = Number(yymm.slice(2, 4));
+    return yy * 12 + mm;
+  };
+  return Math.abs(ordinal(cycleA) - ordinal(cycleB));
+}
+
+/** Dependências injetáveis do sinal de atividade Clarice (teste sem tocar disco real). */
+export interface ClariceActivityDeps {
+  /** Lista TODOS os ciclos com pasta em data/clarice-subscribers/ (qualquer ordem). */
+  listCyclesWithClariceDir: () => string[];
+  /** Ciclo tem QUALQUER arquivo dentro da pasta (não só criada vazia). */
+  cycleHasActivity: (cycle: string) => boolean;
+  /**
+   * Erros de IO acumulados durante a varredura (EBUSY/EPERM/EACCES do lock
+   * do OneDrive, p.ex.) — não-vazio significa que `false`/`[]` retornado
+   * pelas duas funções acima pode ser "não consegui ler", não "genuinamente
+   * sem atividade" (#4621 follow-up — silent-failure-hunter). Opcional: só
+   * as deps de produção (`clariceActivityDepsFromDisk`) e fixtures de teste
+   * que queiram exercitar esse caminho precisam prover.
+   */
+  ioErrors?: () => string[];
+}
+
+/** Deps de PRODUÇÃO (disco real) do sinal de atividade Clarice. */
+export function clariceActivityDepsFromDisk(): ClariceActivityDeps {
+  const errors: string[] = [];
+  const collect = (msg: string): void => {
+    console.error(`⚠️  ${msg}`);
+    errors.push(msg);
+  };
+  return {
+    listCyclesWithClariceDir: () => listClariceCycleDirs(undefined, collect),
+    cycleHasActivity: (c) => cycleHasClariceActivity(c, undefined, collect),
+    ioErrors: () => errors,
+  };
+}
+
+/**
+ * Ciclo MAIS RECENTE (string sort desc — mesmo critério de
+ * `resolveLatestMonthlyCycle`) com atividade real registrada em
+ * `data/clarice-subscribers/`. `undefined` se nenhum ciclo tiver atividade.
+ */
+export function mostRecentActiveClariceCycle(deps: ClariceActivityDeps): string | undefined {
+  const active = [...new Set(deps.listCyclesWithClariceDir())]
+    .filter((c) => isValidMonthlyCycle(c) && deps.cycleHasActivity(c))
+    .sort()
+    .reverse();
+  return active[0];
+}
+
+/** Resultado do guard — sempre computável, mesmo quando nada diverge/bloqueia. */
+export interface ActivityGuardResult {
+  /** Ciclo mais recente com atividade real (undefined = sem sinal, ou fallback=false — guard não avalia). */
+  activeCycle: string | undefined;
+  /** `activeCycle` definido e diferente do ciclo resolvido. */
+  diverges: boolean;
+  /** Distância em meses entre o ciclo resolvido e `activeCycle` (undefined se `activeCycle` indefinido). */
+  distance: number | undefined;
+  /** `diverges` + distância > 1 ciclo + sem `--subject` explícito — caller deve abortar. */
+  blocked: boolean;
+  /** Mensagem pronta pra log/alarme quando `diverges` — rastro auditável mesmo sem bloquear (#4621 item 3). */
+  note: string | undefined;
+  /**
+   * Erros de IO acumulados por `activityDeps` durante esta avaliação (via
+   * `ClariceActivityDeps.ioErrors`) — `[]` quando a leitura de disco correu
+   * limpa OU quando `fallback` é `false` (guard não avalia). Não-vazio
+   * significa que `activeCycle`/`diverges` podem estar incompletos — o
+   * caller (ver `clarice-novos-resolve-cycle.ts`) deve tratar como sinal de
+   * incerteza distinto de "sem atividade" (#4621 follow-up).
+   */
+  ioErrors: string[];
+}
+
+/**
+ * Guard de atividade real (#4621) — só avalia quando `fallback` é `true`
+ * (é literalmente "o fallback escolhido" que está sendo auditado; se o
+ * ciclo resolvido já é o mais recente candidato, não há nada de suspeito
+ * pra checar aqui). Quando `fallback` diverge do ciclo mais recente com
+ * atividade em `data/clarice-subscribers/` por MAIS de 1 ciclo mensal,
+ * `blocked: true` — o caller deve abortar exigindo `--subject` explícito
+ * em vez de aceitar o fallback silenciosamente (item 2). `hasExplicitSubject`
+ * destrava o bloqueio (o editor já confirmou conscientemente), mas a `note`
+ * de divergência é sempre computada quando `diverges`, pra deixar rastro
+ * auditável mesmo nesse caso e no caso "diverge só 1 ciclo, fallback
+ * legítimo" (item 3).
+ */
+export function evaluateClariceActivityGuard(
+  resolvedCycle: string,
+  fallback: boolean,
+  hasExplicitSubject: boolean,
+  activityDeps: ClariceActivityDeps,
+): ActivityGuardResult {
+  if (!fallback) {
+    return { activeCycle: undefined, diverges: false, distance: undefined, blocked: false, note: undefined, ioErrors: [] };
+  }
+  const activeCycle = mostRecentActiveClariceCycle(activityDeps);
+  const ioErrors = activityDeps.ioErrors?.() ?? [];
+  if (!activeCycle) {
+    return { activeCycle: undefined, diverges: false, distance: undefined, blocked: false, note: undefined, ioErrors };
+  }
+  const distance = cycleMonthDistance(resolvedCycle, activeCycle);
+  const diverges = activeCycle !== resolvedCycle;
+  const blocked = diverges && distance > 1 && !hasExplicitSubject;
+  const note = diverges
+    ? `ciclo resolvido por fallback (${resolvedCycle}) diverge do ciclo mais recente com atividade real em ` +
+      `data/clarice-subscribers/ (${activeCycle}); distância ${distance} ${distance === 1 ? "mês" : "meses"}`
+    : undefined;
+  return { activeCycle, diverges, distance, blocked, note, ioErrors };
 }
