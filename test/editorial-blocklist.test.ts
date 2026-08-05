@@ -45,4 +45,12 @@ describe("isEditoriallyBlocked (#1760)", () => {
   it("a lista contém simonwillison.net (#1760)", () => {
     assert.ok(EDITORIAL_BLOCKLIST.has("simonwillison.net"));
   });
+
+  it("bloqueia langchain.com (editor 260806 — case study sob categoria Tutoriais)", () => {
+    assert.equal(
+      isEditoriallyBlocked("https://www.langchain.com/blog/evaluating-code-review-agents-with-reviewbench"),
+      true,
+    );
+    assert.ok(EDITORIAL_BLOCKLIST.has("langchain.com"));
+  });
 });
