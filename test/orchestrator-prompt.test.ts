@@ -192,7 +192,7 @@ describe("orchestrator-prompt (#634)", () => {
       // do gate + nota no passo 7 do loop "ajustar" pra re-rodar quando
       // habilitado. Arquivo tinha 690 linhas (teto já saturado pelo #4354).
       // Teto bumped de 690→735 com headroom pequeno (era 721 medido pós-#4505).
-      // #4636: +19 linhas — backstop `no-xml-artifacts` GATE-BLOCKING no
+      // #4636: +8 linhas — backstop `no-xml-artifacts` GATE-BLOCKING no
       // próprio loop "ajustar" (§4d.1): passo 2 re-audita 02-reviewed.md
       // logo após a edição inline via `Edit`, e o passo 6.7 ganha a mesma
       // chamada para 03-social.md, ao lado dos outros tic-lints re-auditados
@@ -834,6 +834,11 @@ describe("#4636: backstop no-xml-artifacts no próprio loop 'ajustar' (§4d.1)",
       step67Text.includes("--check no-xml-artifacts --md {EDITION_DIR}/03-social.md"),
       "#4636: passo 6.7 precisa re-rodar no-xml-artifacts sobre 03-social.md — o mesmo risco de tag vazada existe quando o orchestrator reescreve ## post_pixel ou re-humaniza dentro do loop 'ajustar'",
     );
+    assert.ok(
+      /\*\*GATE-BLOCKING\*\*/.test(step67Text),
+      "#4636: a verificação no passo 6.7 precisa ser GATE-BLOCKING, não apenas informativa — mesmo padrão do passo 2 (linha acima)",
+    );
+    assert.ok(/4636/.test(step67Text), "passo 6.7 deve referenciar #4636 — rastreabilidade da recorrência");
   });
 });
 
