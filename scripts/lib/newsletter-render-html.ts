@@ -1647,6 +1647,96 @@ export function renderEncerrar(text: string): string {
 </td></tr>`;
 }
 
+/** #4624: uma caixa de divulgação configurada (slot 1/2/3), já com todos os
+ *  parâmetros que `renderBoxDivulgacao` precisa. Ver `assignDivulgacaoGaps`. */
+export interface DivulgacaoBoxDef {
+  slot: 1 | 2 | 3;
+  content: string;
+  image: string | null;
+  bold: boolean;
+  categoria: string | null | undefined;
+  imageExplicit: boolean;
+  imagePortrait: boolean;
+  imageAlt: string | null;
+}
+
+/**
+ * #4624: calcula em qual lacuna (índice do destaque logo após o qual a caixa
+ * renderiza) cada caixa de divulgação configurada deve cair, dado se o bloco
+ * WhatsApp (permanente, #4570) está ocupando a lacuna D1/D2 nesta edição.
+ *
+ * Motivação: antes desta correção, o box de divulgação do slot 1 (configurado
+ * por padrão em toda edição) empilhava LOGO ABAIXO do CTA do WhatsApp na
+ * MESMA lacuna D1/D2, sem respiro editorial — dois CTAs consecutivos, achado
+ * na revisão da edição 260805 (issue #4624).
+ *
+ * Lacunas possíveis, em ordem: D1/D2 (índice 0 — só fica livre quando NÃO há
+ * WhatsApp), D2/D3 (índice 1 — só existe com 2+ destaques), pós-último
+ * destaque (índice `destaqueCount - 1` — distinto de D2/D3 só com 3+
+ * destaques).
+ *
+ * Cada caixa tem uma lacuna de origem fixa por slot (slot1→D1/D2, slot2→D2/D3,
+ * slot3→pós-último) e só se desloca quando a SUA PRÓPRIA lacuna está ocupada
+ * — nunca por conveniência de fila. Isso importa: se só o slot 3 estiver
+ * configurado (slot 1/2 ausentes), ele continua na posição pós-último de
+ * sempre — não haveria NENHUMA disputa pela lacuna D1/D2 nesse caso, então
+ * não há motivo pra adiantá-lo. O deslocamento só é um efeito em CADEIA: o
+ * WhatsApp ocupa D1/D2 → slot 1 (se configurado) avança pra próxima lacuna
+ * livre em ordem (D2/D3) → se ISSO empurrar o slot 2 (se configurado), o
+ * slot 2 avança pra lacuna seguinte (pós-último) → se isso empurrar o slot 3,
+ * o slot 3 fica sem lacuna e não renderiza nesta edição (config intacta, só
+ * não coube no espaço hoje — mesmo princípio já usado quando o slot 2 não
+ * tem lacuna D2/D3 em edições de 2 destaques).
+ *
+ * Sem WhatsApp (`whatsappPresent=false` — só no caso defensivo de edição sem
+ * D1, nunca deveria acontecer dado o invariante de 2-3 destaques), a lacuna
+ * D1/D2 volta a ficar livre e as 3 caixas mantêm suas posições originais
+ * (slot1@D1/D2, slot2@D2/D3, slot3@pós-D3) — reduz exatamente ao
+ * comportamento pré-#4624.
+ *
+ * Pure function — não decide o CONTEÚDO das caixas, só a alocação de lacunas.
+ */
+export function assignDivulgacaoGaps(
+  whatsappPresent: boolean,
+  destaqueCount: number,
+  boxes: DivulgacaoBoxDef[],
+): Map<number, DivulgacaoBoxDef> {
+  const lastIdx = destaqueCount - 1;
+  // Lista canônica de lacunas em ordem (índice do destaque logo após o qual a
+  // caixa renderiza), deduplicada — em edição de 2 destaques a lacuna "D2/D3"
+  // (índice 1) e a lacuna "pós-último" (índice destaqueCount-1=1) são a MESMA
+  // posição física.
+  const canonicalGaps: number[] = [0];
+  if (destaqueCount >= 2) canonicalGaps.push(1);
+  if (lastIdx >= 1 && lastIdx !== 1) canonicalGaps.push(lastIdx);
+
+  // Posição de origem (índice em `canonicalGaps`, não índice de destaque) de
+  // cada slot — onde a caixa renderizaria SE nada a deslocasse.
+  const originPosition: Record<1 | 2 | 3, number> = {
+    1: 0,
+    2: canonicalGaps.indexOf(1),
+    3: canonicalGaps.length - 1,
+  };
+
+  const takenPositions = new Set<number>();
+  if (whatsappPresent) takenPositions.add(0); // D1/D2 pertence ao WhatsApp
+
+  const assignment = new Map<number, DivulgacaoBoxDef>();
+  // Processa em ordem de prioridade (slot 1 > slot 2 > slot 3) — é essa ordem
+  // que faz o deslocamento propagar corretamente em cadeia (slot 1 desloca
+  // slot 2, que desloca slot 3), nunca ao contrário.
+  const sorted = [...boxes].sort((a, b) => a.slot - b.slot);
+  for (const box of sorted) {
+    let pos = originPosition[box.slot];
+    if (pos === undefined || pos < 0) continue; // defensivo — não deveria ocorrer
+    while (pos < canonicalGaps.length && takenPositions.has(pos)) pos++;
+    if (pos >= canonicalGaps.length) continue; // sem lacuna livre — dropped nesta edição
+    takenPositions.add(pos);
+    assignment.set(canonicalGaps[pos], box);
+  }
+  return assignment;
+}
+
 export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): string {
   const parts: string[] = [];
 
@@ -1705,80 +1795,99 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
 
   const includeEia = !!(!opts.excludeEia && content.eia.credit);
   let eiaInserted = false;
+
+  // #4570: bloco encaminhável por WhatsApp — SEMPRE na lacuna D1/D2 (após D1)
+  // quando D1 existe. Permanente/fixo por decisão do editor (ver doc comment
+  // de `renderWhatsappShare`); calculado uma vez aqui (fora do loop) pra
+  // `assignDivulgacaoGaps` (#4624) saber se essa lacuna já está ocupada antes
+  // de alocar as caixas de divulgação.
+  const whatsappShare = renderWhatsappShare(content.destaques, content.eia.edition);
+
+  // #2978/#3476/#4624: caixas de divulgação configuradas (slot 1/2/3), na
+  // ordem de prioridade em que devem preencher as lacunas disponíveis — ver
+  // `assignDivulgacaoGaps`. O formato (bold-line ou carrinho) é decidido por
+  // `renderBoxDivulgacao` pela ESTRUTURA do conteúdo (#3204/#3475), não pelo
+  // slot nem por marcador emoji.
+  const divulgacaoBoxes: DivulgacaoBoxDef[] = [];
+  if (content.boxDivulgacao1) {
+    divulgacaoBoxes.push({
+      slot: 1,
+      content: content.boxDivulgacao1,
+      image: content.boxDivulgacao1Image ?? null,
+      bold: content.boxDivulgacao1Bold ?? true,
+      categoria: content.boxDivulgacao1Categoria,
+      imageExplicit: content.boxDivulgacaoImageExplicit?.[1] ?? false,
+      imagePortrait: content.boxDivulgacaoImagePortrait?.[1] ?? false,
+      imageAlt: content.boxDivulgacaoImageAlt?.[1] ?? null,
+    });
+  }
+  if (content.boxDivulgacao2) {
+    divulgacaoBoxes.push({
+      slot: 2,
+      content: content.boxDivulgacao2,
+      image: content.boxDivulgacao2Image ?? null,
+      bold: content.boxDivulgacao2Bold ?? true,
+      categoria: content.boxDivulgacao2Categoria,
+      imageExplicit: content.boxDivulgacaoImageExplicit?.[2] ?? false,
+      imagePortrait: content.boxDivulgacaoImagePortrait?.[2] ?? false,
+      imageAlt: content.boxDivulgacaoImageAlt?.[2] ?? null,
+    });
+  }
+  if (content.boxDivulgacao3) {
+    divulgacaoBoxes.push({
+      slot: 3,
+      content: content.boxDivulgacao3,
+      image: content.boxDivulgacao3Image ?? null,
+      bold: content.boxDivulgacao3Bold ?? true,
+      categoria: content.boxDivulgacao3Categoria,
+      imageExplicit: content.boxDivulgacaoImageExplicit?.[3] ?? false,
+      imagePortrait: content.boxDivulgacaoImagePortrait?.[3] ?? false,
+      imageAlt: content.boxDivulgacaoImageAlt?.[3] ?? null,
+    });
+  }
+  const divulgacaoGaps = assignDivulgacaoGaps(!!whatsappShare, content.destaques.length, divulgacaoBoxes);
+  // #4624: caixa que não coube em nenhuma lacuna livre nesta edição — logar
+  // pra rastreabilidade (mesmo padrão do `whatsapp_share_no_d1` já existente).
+  if (divulgacaoBoxes.length > divulgacaoGaps.size) {
+    const assigned = new Set([...divulgacaoGaps.values()].map((b) => b.slot));
+    for (const box of divulgacaoBoxes) {
+      if (!assigned.has(box.slot)) {
+        console.error(JSON.stringify({
+          event: "divulgacao_box_dropped_no_gap",
+          edition: content.eia.edition,
+          slot: box.slot,
+        }));
+      }
+    }
+  }
+
   for (let i = 0; i < content.destaques.length; i++) {
     parts.push(renderDestaque(content.destaques[i]));
-    // #4570: bloco encaminhável por WhatsApp — SEMPRE na lacuna D1/D2 (após
-    // D1, i===0), ANTES de qualquer box de divulgação do slot 1 (que também
-    // ocupa essa lacuna, mas é opcional/editorial — o bloco WhatsApp é
-    // permanente/fixo por decisão do editor, ver doc comment de
-    // `renderWhatsappShare`). Posição antiga era ANTES de "Para encerrar"
-    // (pé do e-mail) — mudou por pedido explícito do editor na revisão da
-    // edição 260804 ("deixe o box de whatsapp permanente entre d1 e d2 até
-    // que eu peça para mudar").
-    if (i === 0) {
-      const whatsappShare = renderWhatsappShare(content.destaques, content.eia.edition);
-      if (whatsappShare) parts.push(whatsappShare);
-    }
-    // #2978: box de divulgação slot 1 — SEMPRE na lacuna D1/D2 (após D1, i===0).
-    // O formato (bold-line ou carrinho) é decidido por renderBoxDivulgacao
-    // pela ESTRUTURA do conteúdo (#3204/#3475), não pelo slot nem por
-    // marcador emoji. TODO box de divulgação recebe o kicker "● DIVULGAÇÃO"
-    // antes (260611, supersede #1940/#2069).
-    if (content.boxDivulgacao1 && i === 0) {
-      // #3981: `categoria:` do snippet (Studio, seção "Caixas") SUBRESCREVE o
+    // Posição antiga do bloco WhatsApp era ANTES de "Para encerrar" (pé do
+    // e-mail) — mudou por pedido explícito do editor na revisão da edição
+    // 260804 ("deixe o box de whatsapp permanente entre d1 e d2 até que eu
+    // peça para mudar").
+    if (i === 0 && whatsappShare) parts.push(whatsappShare);
+
+    // #4624: caixa de divulgação alocada pra esta lacuna (slot original ou
+    // deslocado por `assignDivulgacaoGaps`, nunca mais de uma por lacuna —
+    // nunca mais empilhada logo abaixo do WhatsApp).
+    const assignedBox = divulgacaoGaps.get(i);
+    if (assignedBox) {
+      // #3981: `categoria:` do snippet (Studio, seção "Caixas") SOBRESCREVE o
       // rótulo default "Divulgação"/"Agradecimento" quando presente — mesmo
       // kicker (`renderDivulgacaoSeparator`/`renderKicker`), texto diferente.
-      // Ausente -> renderiza exatamente como hoje.
-      const label1 = content.boxDivulgacao1Categoria
-        || (isAgradecimentoBox(content.boxDivulgacao1) ? "Agradecimento" : "Divulgação");
-      parts.push(renderDivulgacaoSeparator(label1));
+      const label = assignedBox.categoria
+        || (isAgradecimentoBox(assignedBox.content) ? "Agradecimento" : "Divulgação");
+      parts.push(renderDivulgacaoSeparator(label));
       parts.push(
         renderBoxDivulgacao(
-          content.boxDivulgacao1,
-          content.boxDivulgacao1Image ?? null,
-          content.boxDivulgacao1Bold ?? true,
-          content.boxDivulgacaoImageExplicit?.[1] ?? false,
-          content.boxDivulgacaoImagePortrait?.[1] ?? false,
-          content.boxDivulgacaoImageAlt?.[1] ?? null,
-        ),
-      );
-    }
-    // #2978: box de divulgação slot 2 — SEMPRE na lacuna D2/D3 (após D2, i===1).
-    // Só existe em edições de 3 destaques (sem gap D2/D3 em edições de 2).
-    if (content.boxDivulgacao2 && i === 1) {
-      const label2 = content.boxDivulgacao2Categoria // #3981
-        || (isAgradecimentoBox(content.boxDivulgacao2) ? "Agradecimento" : "Divulgação");
-      parts.push(renderDivulgacaoSeparator(label2));
-      // #2978-slot2-parity: passa a imagem (quando presente) igual ao slot 1 —
-      // antes caía sempre em renderMidCallout(text, null) → degradava pro box
-      // só-texto (sem imagem/CTA-pill) mesmo quando o box de livros caía aqui.
-      parts.push(
-        renderBoxDivulgacao(
-          content.boxDivulgacao2,
-          content.boxDivulgacao2Image ?? null,
-          content.boxDivulgacao2Bold ?? true,
-          content.boxDivulgacaoImageExplicit?.[2] ?? false,
-          content.boxDivulgacaoImagePortrait?.[2] ?? false,
-          content.boxDivulgacaoImageAlt?.[2] ?? null,
-        ),
-      );
-    }
-    // #3476: box de divulgação slot 3 — SEMPRE após o ÚLTIMO destaque (D3 em
-    // edições de 3 destaques; D2 em edições de 2), antes de USE MELHOR/É IA?.
-    // Diferente do slot 2 (só existe com D3), o slot 3 existe em QUALQUER
-    // contagem de destaques — não é uma lacuna ENTRE destaques.
-    if (content.boxDivulgacao3 && i === content.destaques.length - 1) {
-      const label3 = content.boxDivulgacao3Categoria // #3981
-        || (isAgradecimentoBox(content.boxDivulgacao3) ? "Agradecimento" : "Divulgação");
-      parts.push(renderDivulgacaoSeparator(label3));
-      parts.push(
-        renderBoxDivulgacao(
-          content.boxDivulgacao3,
-          content.boxDivulgacao3Image ?? null,
-          content.boxDivulgacao3Bold ?? true,
-          content.boxDivulgacaoImageExplicit?.[3] ?? false,
-          content.boxDivulgacaoImagePortrait?.[3] ?? false,
-          content.boxDivulgacaoImageAlt?.[3] ?? null,
+          assignedBox.content,
+          assignedBox.image,
+          assignedBox.bold,
+          assignedBox.imageExplicit,
+          assignedBox.imagePortrait,
+          assignedBox.imageAlt,
         ),
       );
     }

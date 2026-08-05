@@ -89,6 +89,7 @@ export {
   buildJogarArchiveUrl, // #3524
   renderHTML,
   renderEiaStandalone,
+  assignDivulgacaoGaps, // #4624
 } from "./lib/newsletter-render-html.ts";
 
 export { singularizeSectionName } from "./lib/section-naming.ts";

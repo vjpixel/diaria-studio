@@ -35,6 +35,7 @@ import {
   pickErroIntencionalReveal,
   readBoxDivulgacaoCategoriaForSlot,
   readBoxDivulgacaoAltForSlot,
+  assignDivulgacaoGaps,
 } from "../scripts/render-newsletter-html.ts";
 import { DS_STYLE_BLOCK, mdInlineToHtml, renderHeroImageInner, renderErroIntencionalReveal } from "../scripts/lib/newsletter-render-html.ts";
 
@@ -3312,7 +3313,12 @@ describe("renderHTML — categoria do box de divulgação como rótulo do kicker
   });
 
   it("com boxDivulgacao3Categoria: kicker do slot 3 (pós-D3) usa a categoria", () => {
-    const html = renderHTML(fixt({ boxDivulgacao3Categoria: "Apoie a Diar.ia" }));
+    // #4624: boxDivulgacao1:null pra isolar o teste do cascade de lacunas —
+    // com os 3 slots configurados (fixture default), o WhatsApp (sempre
+    // presente, já que a fixture tem D1) desloca slot1→D2/D3 e slot2→pós-D3,
+    // deixando slot3 sem lacuna nesta edição (ver describe "#4624" abaixo).
+    // Sem slot1, nada desloca — slot3 mantém sua posição original pós-D3.
+    const html = renderHTML(fixt({ boxDivulgacao1: null, boxDivulgacao3Categoria: "Apoie a Diar.ia" }));
     assert.match(html, /Apoie a Diar\.ia<\/td>/);
   });
 
@@ -3335,6 +3341,121 @@ describe("renderHTML — categoria do box de divulgação como rótulo do kicker
   it("categoria presente mas box ausente nesse slot: sem kicker/box nenhum (não vaza rótulo órfão)", () => {
     const html = renderHTML(fixt({ boxDivulgacao1: null, boxDivulgacao1Categoria: "Órfã" }));
     assert.doesNotMatch(html, /Órfã/);
+  });
+});
+
+describe("assignDivulgacaoGaps (#4624, pure)", () => {
+  const box = (slot: 1 | 2 | 3): { slot: 1 | 2 | 3; content: string } => ({
+    slot,
+    content: `box${slot}`,
+  });
+
+  it("sem WhatsApp: 3 caixas mantêm as posições originais (slot1@0, slot2@1, slot3@2)", () => {
+    const m = assignDivulgacaoGaps(false, 3, [box(1), box(2), box(3)] as never);
+    assert.equal(m.get(0)?.slot, 1);
+    assert.equal(m.get(1)?.slot, 2);
+    assert.equal(m.get(2)?.slot, 3);
+    assert.equal(m.size, 3);
+  });
+
+  it("com WhatsApp + 3 destaques + 3 caixas: slot1→gap1 (D2/D3), slot2→gap2 (pós-D3), slot3 sem lacuna (dropped)", () => {
+    const m = assignDivulgacaoGaps(true, 3, [box(1), box(2), box(3)] as never);
+    assert.equal(m.get(0), undefined, "lacuna D1/D2 fica só pro WhatsApp");
+    assert.equal(m.get(1)?.slot, 1);
+    assert.equal(m.get(2)?.slot, 2);
+    assert.equal(m.size, 2, "slot3 não coube — nenhuma 3ª lacuna disponível");
+  });
+
+  it("com WhatsApp + 2 destaques: só 1 lacuna livre (pós-D2) — slot1 a ocupa, o resto é dropped", () => {
+    const m = assignDivulgacaoGaps(true, 2, [box(1), box(3)] as never);
+    assert.equal(m.get(1)?.slot, 1);
+    assert.equal(m.size, 1);
+  });
+
+  it("com WhatsApp, só slot2/slot3 configurados (slot1 ausente): nenhum cascade necessário", () => {
+    const m = assignDivulgacaoGaps(true, 3, [box(2), box(3)] as never);
+    assert.equal(m.get(1)?.slot, 2);
+    assert.equal(m.get(2)?.slot, 3);
+    assert.equal(m.size, 2);
+  });
+
+  it("sem nenhuma caixa configurada: Map vazio, não lança", () => {
+    const m = assignDivulgacaoGaps(true, 3, []);
+    assert.equal(m.size, 0);
+  });
+});
+
+describe("renderHTML — bloco WhatsApp + caixa de divulgação não empilham mais na lacuna D1/D2 (#4624)", () => {
+  const d = (n: 1 | 2 | 3, url: string) => ({
+    n,
+    category: "LANÇAMENTO",
+    title: `T${n}`,
+    body: `B${n}`,
+    why: `W${n}`,
+    url,
+    emoji: "🚀",
+    imageFile: `04-d${n}-2x1.jpg`,
+  });
+  const fixt3 = (extras: Partial<Record<string, unknown>> = {}) => ({
+    title: "X",
+    subtitle: "X",
+    coverImage: "04-d1-2x1.jpg",
+    destaques: [d(1, "https://example.com/d1"), d(2, "https://example.com/d2"), d(3, "https://example.com/d3")],
+    eia: { credit: "", imageA: "", imageB: "", edition: "260806" },
+    sections: [],
+    boxDivulgacao1: "Confira nossa curadoria. [Link](https://example.com/box1).",
+    boxDivulgacao2: "Confira nossos livros. [Link](https://example.com/box2).",
+    boxDivulgacao3: "Apoie a curadoria. [Link](https://example.com/box3).",
+    ...extras,
+  });
+
+  it("caso real da edição 260806: nenhuma caixa de divulgação aparece logo após o botão do WhatsApp", () => {
+    const html = renderHTML(fixt3());
+    const waIdx = html.indexOf("Compartilhar no WhatsApp");
+    assert.notEqual(waIdx, -1, "bloco WhatsApp precisa existir");
+    // Pega os 400 chars logo depois do botão do WhatsApp (fecha o box do
+    // WhatsApp) e confirma que o PRÓXIMO bloco é o Destaque 2, não uma caixa
+    // "● Divulgação".
+    const afterWhatsapp = html.slice(waIdx, waIdx + 600);
+    assert.doesNotMatch(
+      afterWhatsapp,
+      /Divulgação<\/td>/,
+      "nenhuma caixa de divulgação deve empilhar logo abaixo do CTA do WhatsApp",
+    );
+    assert.match(afterWhatsapp, /Destaque 2/, "o próximo bloco depois do WhatsApp é D2 diretamente");
+  });
+
+  it("slot1 desliza pra lacuna D2/D3 (aparece entre os comentários 'Destaque 2' e 'Destaque 3')", () => {
+    const html = renderHTML(fixt3());
+    const d2Idx = html.indexOf("<!-- Destaque 2 -->");
+    const d3Idx = html.indexOf("<!-- Destaque 3 -->");
+    assert.ok(d2Idx > -1 && d3Idx > -1 && d2Idx < d3Idx);
+    const betweenD2D3 = html.slice(d2Idx, d3Idx);
+    assert.match(betweenD2D3, /Confira nossa curadoria/, "conteúdo do slot1 aparece na lacuna D2/D3");
+  });
+
+  it("slot2 desliza pra lacuna pós-D3 (aparece depois do comentário 'Destaque 3')", () => {
+    const html = renderHTML(fixt3());
+    const d3Idx = html.indexOf("<!-- Destaque 3 -->");
+    assert.ok(d3Idx > -1);
+    assert.match(html.slice(d3Idx), /Confira nossos livros/, "conteúdo do slot2 aparece pós-D3");
+  });
+
+  it("slot3 não renderiza nesta edição — não sobrou lacuna livre pra 3ª caixa", () => {
+    const html = renderHTML(fixt3());
+    assert.doesNotMatch(html, /Apoie a curadoria/);
+  });
+
+  it("edição de 2 destaques: slot1 ocupa a única lacuna livre (pós-D2), sem stacking com o WhatsApp", () => {
+    const fixt2 = fixt3({
+      destaques: [d(1, "https://example.com/d1"), d(2, "https://example.com/d2")],
+    });
+    const html = renderHTML(fixt2);
+    const waIdx = html.indexOf("Compartilhar no WhatsApp");
+    assert.notEqual(waIdx, -1);
+    const afterWhatsapp = html.slice(waIdx, waIdx + 600);
+    assert.doesNotMatch(afterWhatsapp, /Divulgação<\/td>/);
+    assert.match(html.slice(waIdx), /Confira nossa curadoria/);
   });
 });
 
