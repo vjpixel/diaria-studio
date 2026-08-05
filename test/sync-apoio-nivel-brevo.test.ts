@@ -44,6 +44,7 @@ import {
   fetchCurrentBrevoApoiadoresState,
   applyBrevoApoioAddEntry,
   applyBrevoApoioRemoveEntry,
+  ensureContactAttribute,
   APOIO_NIVEL_ATTR_NAME,
   type BrevoApoiadorMember,
 } from "../scripts/sync-apoio-nivel-brevo.ts";
@@ -384,6 +385,58 @@ describe("applyBrevoApoioAddEntry — cria/atualiza + verifica por releitura (#4
         () => applyBrevoApoioAddEntry({ contactId: "c1", contactName: "C1", email: "a@x.com", fromLevel: null, toLevel: "patrono" }, 42, "key"),
         /releitura pós-escrita falhou/,
       );
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("ensureContactAttribute — cria o atributo APOIO_NIVEL quando ausente (#4634)", () => {
+  const origFetch = globalThis.fetch;
+  function restore() {
+    globalThis.fetch = origFetch;
+  }
+
+  it("atributo ausente: cria via POST /contacts/attributes/normal/APOIO_NIVEL", async () => {
+    let createCall: unknown;
+    globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (init?.method === undefined || init.method === "GET") {
+        assert.equal(url.pathname, "/v3/contacts/attributes");
+        return jsonRes(200, { attributes: [] });
+      }
+      if (init.method === "POST") {
+        assert.equal(url.pathname, "/v3/contacts/attributes/normal/APOIO_NIVEL");
+        createCall = JSON.parse(init.body as string);
+        return jsonRes(201, { name: "APOIO_NIVEL" });
+      }
+      throw new Error(`unexpected fetch: ${init.method} ${url.pathname}`);
+    }) as typeof fetch;
+    try {
+      await ensureContactAttribute("key");
+      assert.deepEqual(createCall, { type: "text" });
+    } finally {
+      restore();
+    }
+  });
+
+  it("atributo já existe: NÃO chama POST (idempotente, evita recriação)", async () => {
+    let postCalled = false;
+    globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (init?.method === undefined || init.method === "GET") {
+        assert.equal(url.pathname, "/v3/contacts/attributes");
+        return jsonRes(200, { attributes: [{ name: "APOIO_NIVEL", category: "normal", type: "text" }] });
+      }
+      if (init.method === "POST") {
+        postCalled = true;
+        return jsonRes(201, {});
+      }
+      throw new Error(`unexpected fetch: ${init.method} ${url.pathname}`);
+    }) as typeof fetch;
+    try {
+      await ensureContactAttribute("key");
+      assert.equal(postCalled, false, "não deveria recriar um atributo que já existe");
     } finally {
       restore();
     }

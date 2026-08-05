@@ -332,6 +332,38 @@ export function evaluateBrevoBlastRadiusGuard(
 
 // ── aplicação (I/O — escrita + verificação por releitura) ──────────────────
 
+interface BrevoContactAttribute {
+  name: string;
+  category: string;
+  type: string;
+}
+
+/**
+ * Cria o atributo de contato `APOIO_NIVEL` (categoria "normal", tipo texto)
+ * se ainda não existir — mesmo padrão de `ensureContactAttribute` em
+ * `inject-poll-token-brevo.ts` (~linha 99). Idempotente.
+ *
+ * Causa raiz do #4634: este script nunca garantia a existência do atributo
+ * antes de escrevê-lo via `applyBrevoApoioAddEntry` — diferente de
+ * `POLL_TOKEN` (que `inject-poll-token-brevo.ts` sempre garante antes de
+ * qualquer PUT), `APOIO_NIVEL` dependia de alguém criar o atributo
+ * manualmente na conta Brevo primeiro, o que nunca aconteceu até a sessão
+ * 260804 (criado manualmente pra destravar 2 e-mails). Sem o atributo
+ * existir, `POST /contacts` com `attributes: {APOIO_NIVEL: ...}` retorna 2xx
+ * mas ignora o campo em silêncio — a releitura pós-escrita em
+ * `applyBrevoApoioAddEntry` já pega esse caso (lança "NÃO confere"), mas só
+ * DEPOIS da tentativa; garantir o atributo antes evita a falha inteira.
+ */
+export async function ensureContactAttribute(apiKey: string): Promise<void> {
+  const { body } = await brevoGet(apiKey, "/contacts/attributes");
+  const existing = new Set<string>(
+    ((body as { attributes?: BrevoContactAttribute[] })?.attributes ?? []).map((a) => a.name),
+  );
+  if (existing.has(APOIO_NIVEL_ATTR_NAME)) return;
+  await brevoPost(apiKey, `/contacts/attributes/normal/${APOIO_NIVEL_ATTR_NAME}`, { type: "text" });
+  process.stderr.write(`${LOG_PREFIX} criado atributo de contato "${APOIO_NIVEL_ATTR_NAME}"\n`);
+}
+
 /**
  * Cria/atualiza o contato (`POST /contacts`, upsert — mesmo padrão de
  * `ingestContactToBrevo` em `sync-pending-to-brevo.ts`) com a lista dedicada
@@ -571,6 +603,14 @@ async function main(): Promise<void> {
   }
 
   const toRemoveNow = removalsBlockedByPartialData ? [] : diff.toRemove;
+
+  if (diff.toApply.length > 0) {
+    // #4634: garante que o atributo `APOIO_NIVEL` existe na conta Brevo
+    // ANTES de qualquer applyBrevoApoioAddEntry — sem isso, toda escrita de
+    // nível falhava em silêncio (POST 2xx, atributo nunca persistido).
+    await ensureContactAttribute(apiKey!);
+  }
+
   log(`--push: aplicando ${diff.toApply.length} adição(ões)/troca(s) + ${toRemoveNow.length} remoção(ões)…`);
 
   let applied = 0;
