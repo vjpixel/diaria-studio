@@ -39,6 +39,7 @@ import {
   isPressCovertageOfHighlight,
   CROSS_EDITION_TERM_MIN_LEN,
   CROSS_EDITION_TERM_MIN_SHARED,
+  INTRA_BUCKET_DEDUP_BUCKETS,
 } from "../scripts/dedup-intra-edition.ts";
 import { tokenizeForJaccard, jaccardSimilarity } from "../scripts/lib/title-similarity.ts";
 
@@ -1805,7 +1806,7 @@ describe("CROSS_EDITION_TERM_MIN_LEN / CROSS_EDITION_TERM_MIN_SHARED (#4262)", (
 // ---------------------------------------------------------------------------
 
 import {
-  dedupLancamentoIntraBucket,
+  dedupSecondaryIntraBucket,
   isModelCardOrHubPage,
 } from "../scripts/dedup-intra-edition.ts";
 
@@ -1841,7 +1842,7 @@ describe("isModelCardOrHubPage (#4360)", () => {
   });
 });
 
-describe("dedupLancamentoIntraBucket (#4360)", () => {
+describe("dedupSecondaryIntraBucket (#4360, generalizado #4667)", () => {
   it("CASO REAL: consolida model-card + post oficial do mesmo lançamento (Gemini Robotics ER 2)", () => {
     const articles = [
       {
@@ -1856,7 +1857,7 @@ describe("dedupLancamentoIntraBucket (#4360)", () => {
       },
     ];
 
-    const { kept, removed } = dedupLancamentoIntraBucket(articles);
+    const { kept, removed } = dedupSecondaryIntraBucket(articles);
 
     assert.equal(removed.length, 1, "deve consolidar em 1 item");
     assert.equal(
@@ -1878,20 +1879,20 @@ describe("dedupLancamentoIntraBucket (#4360)", () => {
       { url: "https://a.com/1", title: "Google lança Pixel 10 Pro", summary: "..." },
       { url: "https://b.com/2", title: "Google anuncia Android 17", summary: "..." },
     ];
-    const { kept, removed } = dedupLancamentoIntraBucket(articles);
+    const { kept, removed } = dedupSecondaryIntraBucket(articles);
     assert.equal(removed.length, 0);
     assert.equal(kept.length, 2);
   });
 
   it("bucket com 1 único item não é afetado", () => {
     const articles = [{ url: "https://a.com/1", title: "Gemini Robotics ER 2" }];
-    const { kept, removed } = dedupLancamentoIntraBucket(articles);
+    const { kept, removed } = dedupSecondaryIntraBucket(articles);
     assert.equal(removed.length, 0);
     assert.equal(kept.length, 1);
   });
 
   it("bucket vazio não é afetado", () => {
-    const { kept, removed } = dedupLancamentoIntraBucket([]);
+    const { kept, removed } = dedupSecondaryIntraBucket([]);
     assert.equal(removed.length, 0);
     assert.equal(kept.length, 0);
   });
@@ -1906,7 +1907,7 @@ describe("dedupLancamentoIntraBucket (#4360)", () => {
       },
       { url: "https://c.com/3", title: "Gemini Robotics ER 2 details" },
     ];
-    const { kept, removed } = dedupLancamentoIntraBucket(articles);
+    const { kept, removed } = dedupSecondaryIntraBucket(articles);
     assert.equal(kept.length, 1, "só 1 sobrevive");
     assert.equal(removed.length, 2);
     assert.equal(kept[0].url, "https://b.com/2", "o único com summary sobrevive");
@@ -1929,7 +1930,7 @@ describe("dedupLancamentoIntraBucket (#4360)", () => {
         // sem summary também — mas NÃO é model-card/hub page
       },
     ];
-    const { kept, removed } = dedupLancamentoIntraBucket(articles);
+    const { kept, removed } = dedupSecondaryIntraBucket(articles);
     assert.equal(removed.length, 1);
     assert.equal(
       removed[0].url,
@@ -1977,5 +1978,184 @@ describe("dedupLancamentoIntraBucket (#4360)", () => {
     );
     // destaque não-relacionado preservado
     assert.equal(kept.highlights?.length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4667 CASO REAL (edição 260806) — RADAR sem consolidação item-vs-item.
+// Generaliza o mecanismo do #4360 (antes só LANÇAMENTOS) para também cobrir
+// RADAR dentro de `dedupIntraEdition`. Fixtures extraídas literalmente do
+// corpo da issue #4667: 2 clusters de 3-4 fontes distintas cobrindo o mesmo
+// fato do dia, nenhuma delas destaque nem lançamento.
+// ---------------------------------------------------------------------------
+
+describe("dedupIntraEdition — #4667 RADAR consolidação item-vs-item", () => {
+  it("INTRA_BUCKET_DEDUP_BUCKETS inclui radar (além de lancamento)", () => {
+    assert.deepEqual([...INTRA_BUCKET_DEDUP_BUCKETS].sort(), ["lancamento", "radar"]);
+  });
+
+  it("CASO REAL: cluster de 3 fontes 'Google Assistente será desativado' consolida em 1 item no RADAR", () => {
+    const input = {
+      highlights: [
+        { rank: 1, url: "https://highlight.com/x", title: "Um destaque completamente não-relacionado" },
+      ],
+      radar: [
+        {
+          url: "https://tecnoblog.net/1",
+          title: "Google decreta fim definitivo do Google Assistente",
+        },
+        {
+          url: "https://canaltech.com.br/2",
+          title:
+            'Google marca data para "matar" o Google Assistente no Android; veja quando acontecerá',
+        },
+        {
+          url: "https://cnnbrasil.com.br/3",
+          title: "Fim de uma era: Google Assistente será desativado e Gemini assume",
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed } = dedupIntraEdition(input);
+
+    const radarIntraBucket = removed.filter(
+      (r) => r.match_type === "intra_bucket" && r.bucket === "radar",
+    );
+    assert.equal(radarIntraBucket.length, 2, "deve consolidar 2 das 3 fontes no item sobrevivente");
+    assert.equal(kept.radar?.length, 1, "RADAR: cluster consolidado em 1 item");
+    // destaque não-relacionado preservado
+    assert.equal(kept.highlights?.length, 1);
+  });
+
+  it("CASO REAL: cluster de 4 fontes 'Claude caiu' consolida em 1 item no RADAR", () => {
+    const input = {
+      highlights: [
+        { rank: 1, url: "https://highlight.com/y", title: "Outro destaque não-relacionado a outages" },
+      ],
+      radar: [
+        {
+          url: "https://canaltech.com.br/a",
+          title: "Claude caiu? Usuários relatam problemas com a IA da Anthropic nesta quarta (5)",
+        },
+        {
+          url: "https://tecnoblog.net/b",
+          title: "Claude fora do ar? Instabilidade derruba modelos da Anthropic",
+        },
+        {
+          url: "https://cnnbrasil.com.br/c",
+          title: "Claude caiu? Chatbot apresenta instabilidade nesta quarta-feira (5)",
+        },
+        {
+          url: "https://exame.com/d",
+          title: "O Claude caiu? Anthropic confirma falha nesta quarta-feira, 5",
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed } = dedupIntraEdition(input);
+
+    const radarIntraBucket = removed.filter(
+      (r) => r.match_type === "intra_bucket" && r.bucket === "radar",
+    );
+    assert.equal(radarIntraBucket.length, 3, "deve consolidar 3 das 4 fontes no item sobrevivente");
+    assert.equal(kept.radar?.length, 1, "RADAR: cluster de 4 fontes consolidado em 1 item");
+  });
+
+  it("NÃO consolida itens genuinamente distintos no RADAR (falso-positivo é o risco real)", () => {
+    // Mistura os 2 clusters reais do #4667 (Google Assistente x Claude caiu)
+    // com um 3º item sem relação nenhuma — nenhum dos 3 temas deve cruzar
+    // com outro, só as duplicatas DENTRO do mesmo tema.
+    const input = {
+      highlights: [],
+      radar: [
+        { url: "https://a.com/1", title: "Google decreta fim definitivo do Google Assistente" },
+        { url: "https://b.com/2", title: "Claude caiu? Usuários relatam problemas com a IA da Anthropic" },
+        { url: "https://c.com/3", title: "OpenAI lança novo modelo de geração de vídeo Sora 3" },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed } = dedupIntraEdition(input);
+
+    const radarIntraBucket = removed.filter(
+      (r) => r.match_type === "intra_bucket" && r.bucket === "radar",
+    );
+    assert.equal(radarIntraBucket.length, 0, "3 histórias distintas não devem ser consolidadas entre si");
+    assert.equal(kept.radar?.length, 3, "todos os 3 itens distintos preservados");
+  });
+
+  it("comportamento de LANÇAMENTOS permanece inalterado (regressão #4360 preservada pós-generalização #4667)", () => {
+    const input = {
+      highlights: [
+        { rank: 1, url: "https://highlight.com/x", title: "Um destaque completamente não-relacionado" },
+      ],
+      radar: [],
+      lancamento: [
+        {
+          url: "https://deepmind.google/models/model-cards/gemini-robotics-er-2",
+          title: "Gemini Robotics-ER 1.5",
+        },
+        {
+          url: "https://blog.google/technology/google-deepmind/gemini-robotics-er-2/",
+          title: "Gemini Robotics-ER 1.5: bringing AI into the physical world",
+          summary: "Google DeepMind announces the newest embodied reasoning model.",
+        },
+      ],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed } = dedupIntraEdition(input);
+
+    const intraBucketRemoved = removed.filter((r) => r.match_type === "intra_bucket");
+    assert.equal(intraBucketRemoved.length, 1, "deve consolidar via intra_bucket, exatamente como antes do #4667");
+    assert.equal(
+      intraBucketRemoved[0].url,
+      "https://deepmind.google/models/model-cards/gemini-robotics-er-2",
+    );
+    assert.equal(intraBucketRemoved[0].bucket, "lancamento");
+    assert.equal(kept.lancamento?.length, 1, "lançamento consolidado em 1 item, comportamento inalterado");
+    assert.equal(
+      kept.lancamento?.[0].url,
+      "https://blog.google/technology/google-deepmind/gemini-robotics-er-2/",
+    );
+  });
+
+  it("use_melhor e video NÃO rodam consolidação item-vs-item (fora do escopo do #4667)", () => {
+    // Mesmo par duplicado do #4360 (Gemini Robotics ER 2), mas em use_melhor/
+    // video em vez de lancamento/radar — não deve ser tocado, confirmando o
+    // escopo deliberadamente restrito de INTRA_BUCKET_DEDUP_BUCKETS.
+    const duplicatePair = [
+      {
+        url: "https://deepmind.google/models/model-cards/gemini-robotics-er-2",
+        title: "Gemini Robotics-ER 1.5",
+      },
+      {
+        url: "https://blog.google/technology/google-deepmind/gemini-robotics-er-2/",
+        title: "Gemini Robotics-ER 1.5: bringing AI into the physical world",
+        summary: "Google DeepMind announces the newest embodied reasoning model.",
+      },
+    ];
+    const input = {
+      highlights: [],
+      radar: [],
+      lancamento: [],
+      use_melhor: [...duplicatePair],
+      video: [...duplicatePair.map((a) => ({ ...a, url: a.url + "-video" }))],
+    };
+
+    const { kept, removed } = dedupIntraEdition(input);
+
+    assert.equal(removed.length, 0, "use_melhor/video ficam fora de INTRA_BUCKET_DEDUP_BUCKETS por enquanto");
+    assert.equal(kept.use_melhor?.length, 2);
+    assert.equal(kept.video?.length, 2);
   });
 });
