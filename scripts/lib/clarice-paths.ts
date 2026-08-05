@@ -29,7 +29,7 @@
  * "data da edição é sempre explícita") — sem default, pra não rotular/ler o
  * ciclo errado perto da virada do mês.
  */
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg } from "./cli-args.ts";
@@ -117,6 +117,60 @@ export function clariceBaseFile(name: string): string {
 export function ensureDir(dir: string): string {
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+// ── Sinal de atividade real do ciclo (#4621) ────────────────────────────────
+//
+// `campaigns-summary.json` (consultado por `resolveSubjectFromCampaignsSummary`
+// em monthly-paths.ts) só é escrito pelo pipeline canônico multi-bloco
+// (clarice-build-edition-sends.ts → clarice-split-cells.ts). Os envios ad-hoc
+// por grupo nomeado (clarice-build-segment.ts --group + clarice-schedule-group.ts
+// --group, ex: reativacao/novos) NUNCA escrevem nesse arquivo — mas escrevem
+// artefatos (segments/*.csv, segments/sent-or-queued.json,
+// segments/group-campaigns.json, waves/*) dentro de `clariceCycleDir(cycle)`.
+// Essa presença é o sinal barato de "esse ciclo teve envio de verdade
+// recentemente", usado como guard independente pra detectar quando
+// `resolve-cycle` caiu num fallback silenciosamente desatualizado.
+
+/**
+ * O diretório do ciclo (`data/clarice-subscribers/{cycle}/`) existe e contém
+ * pelo menos 1 arquivo (recursivo) — sinal de atividade real de envio, não
+ * só a pasta criada vazia. Pure/IO: lê disco, nunca lança (retorna `false`
+ * em qualquer erro, mesma disciplina de `hasReadyPreviewHtml`).
+ */
+export function cycleHasClariceActivity(cycle: string, baseDir?: string): boolean {
+  if (!isValidCycle(cycle)) return false;
+  const dir = clariceCycleDir(cycle, baseDir);
+  if (!existsSync(dir)) return false;
+  try {
+    const entries = readdirSync(dir, { recursive: true, withFileTypes: true });
+    return entries.some((e) => e.isFile());
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Lista os subdiretórios de `data/clarice-subscribers/` (ou `baseDir`) cujo
+ * nome é um ciclo `{conteúdo}-{envio}` válido — candidatos a "ciclo com
+ * atividade" antes do filtro `cycleHasClariceActivity`. `[]` se a base não
+ * existir (nunca lança).
+ */
+export function listClariceCycleDirs(baseDir?: string): string[] {
+  const base = baseDir ?? CLARICE_BASE;
+  if (!existsSync(base)) return [];
+  try {
+    return readdirSync(base).filter((d) => {
+      if (!isValidCycle(d)) return false;
+      try {
+        return statSync(resolve(base, d)).isDirectory();
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return [];
+  }
 }
 
 /** Pure (testável): parseia `--cycle`; "" quando ausente/inválido (caller valida).

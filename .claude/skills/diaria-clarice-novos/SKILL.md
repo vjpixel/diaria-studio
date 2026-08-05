@@ -7,7 +7,7 @@ description: Fecha o laço cadastro novo no Stripe → verificação MillionVeri
 
 Fecha o laço operacional que a issue #4347 identificou: cadastro novo no Stripe não virava envio sozinho. Esta skill busca o delta do Stripe, verifica os e-mails que precisam de verificação no MillionVerifier, monta o grupo `novos` (cadastro recente) e dispara a campanha IMEDIATAMENTE com a edição mensal mais recente da Clarice — sem intervenção do editor a cada rodada.
 
-**Regime de execução — sem gate humano (D6).** Decisão travada do editor (#4347): os 8 guards determinísticos abaixo são a ÚNICA trava. Cada um deles **ABORTA**, nunca só avisa, fora de `--dry-run`. `--dry-run` é o modo recomendado pra 1ª invocação numa máquina nova.
+**Regime de execução — sem gate humano (D6).** Decisão travada do editor (#4347): os 9 guards determinísticos abaixo são a ÚNICA trava. Cada um deles **ABORTA**, nunca só avisa, fora de `--dry-run`. `--dry-run` é o modo recomendado pra 1ª invocação numa máquina nova.
 
 | Guard | Onde | Condição de abort |
 |---|---|---|
@@ -16,13 +16,14 @@ Fecha o laço operacional que a issue #4347 identificou: cadastro novo no Stripe
 | Queued/sent | `clarice-build-segment.ts` (todos os grupos) | falha ao consultar campanhas comprometidas na Brevo → aborta fora de `--dry-run`. |
 | HTML | `clarice-novos-resolve-cycle.ts` | nenhum ciclo com preview pronto → aborta. |
 | É IA? | `clarice-novos-resolve-cycle.ts` / `checkEiaGuard` no `--send-now` | gabarito não gravado pro ciclo resolvido → aborta. |
+| Atividade divergente (#4621) | `clarice-novos-resolve-cycle.ts` | fallback (D3) diverge por MAIS de 1 ciclo mensal do ciclo mais recente com atividade real em `data/clarice-subscribers/` (envios ad-hoc por grupo, que não aparecem em `campaigns-summary.json`) → aborta. `--subject "Assunto explícito"` destrava conscientemente. |
 | Crédito Brevo | Passo 4 (import) | import incompleto → aborta antes do `--create`. |
 | Import incompleto | Passo 4 | polling não bate o total esperado → aborta antes do `--create`. |
 | Custo MV (D8) | `verify-emails-mv.ts --since` | recorte > 500 e-mails a verificar sem `--confirm` → aborta sem gastar crédito. |
 
 Falha de MCP/ferramenta em qualquer passo → halt banner (`scripts/render-halt-banner.ts`), nunca stall silencioso (regra global do projeto, #738).
 
-**Status pós-envio conhecidos (Passo 6, `--send-now`) — não são guards de abort, são exit codes do GET-verify (#4364).** Além dos 8 guards acima (que sempre abortam), o disparo em si tem 3 desfechos possíveis via exit code (ver Passo 6): `0` = confirmado (`sent`); `1` = erro duro; `2` = incerto (`isTerminalSendStatus` não bateu). Dentro do `2`, um status já conhecido e documentado da própria Brevo é `in_review` — revisão automática de compliance/anti-abuso da plataforma (motivo não exposto pela API), reproduzido ao vivo em 260731 (campanha #101). `describeUncertainSendStatus` (`scripts/lib/brevo-client.ts`) emite mensagem específica pra esse caso ("checar app.brevo.com, geralmente exige ação humana no painel, não é erro do nosso lado") em vez do genérico "reconsulte manualmente" — numa rodada autônoma sem editor presente, o tratamento continua o mesmo do exit 2 padrão (registrar como incerto no relatório e re-tentar `--send-now` depois, idempotente).
+**Status pós-envio conhecidos (Passo 6, `--send-now`) — não são guards de abort, são exit codes do GET-verify (#4364).** Além dos 9 guards acima (que sempre abortam), o disparo em si tem 3 desfechos possíveis via exit code (ver Passo 6): `0` = confirmado (`sent`); `1` = erro duro; `2` = incerto (`isTerminalSendStatus` não bateu). Dentro do `2`, um status já conhecido e documentado da própria Brevo é `in_review` — revisão automática de compliance/anti-abuso da plataforma (motivo não exposto pela API), reproduzido ao vivo em 260731 (campanha #101). `describeUncertainSendStatus` (`scripts/lib/brevo-client.ts`) emite mensagem específica pra esse caso ("checar app.brevo.com, geralmente exige ação humana no painel, não é erro do nosso lado") em vez do genérico "reconsulte manualmente" — numa rodada autônoma sem editor presente, o tratamento continua o mesmo do exit 2 padrão (registrar como incerto no relatório e re-tentar `--send-now` depois, idempotente).
 
 **Zero elegíveis** em qualquer ponto (delta vazio, grupo `novos` vazio) → sai limpo, grava relatório "0 contatos", **exit 0** (não é erro).
 
@@ -109,7 +110,7 @@ O import da Brevo é assíncrono (`processId` no retorno) — aguarde alguns seg
 npx tsx scripts/clarice-novos-resolve-cycle.ts [--subject "Assunto explícito"]
 ```
 
-Sem `--subject`, o script tenta resolver o assunto vencedor A/B/C já usado nos envios canônicos do ciclo (`campaigns-summary.json`). Se nenhum ciclo estiver pronto (preview + gabarito É IA? + assunto conhecido), ABORTA com o motivo por ciclo candidato — pare a rodada aqui. Se o ciclo mais recente não estava pronto mas um anterior está (D3), o script já resolve automaticamente e sinaliza `fallback: true` — registre isso no relatório.
+Sem `--subject`, o script tenta resolver o assunto vencedor A/B/C já usado nos envios canônicos do ciclo (`campaigns-summary.json`). Se nenhum ciclo estiver pronto (preview + gabarito É IA? + assunto conhecido), ABORTA com o motivo por ciclo candidato — pare a rodada aqui. Se o ciclo mais recente não estava pronto mas um anterior está (D3), o script já resolve automaticamente e sinaliza `fallback: true` — registre isso no relatório. **#4621:** se esse fallback divergir por MAIS de 1 ciclo mensal do ciclo mais recente com atividade real em `data/clarice-subscribers/` (sinal de envios ad-hoc por grupo — que não escrevem em `campaigns-summary.json`), o script ABORTA (guard "atividade divergente" da tabela acima) em vez de resolver silenciosamente pro ciclo antigo — nesse caso confirme manualmente qual ciclo é o correto e rode de novo com `--subject "Assunto explícito"`.
 
 Resolva a key idempotente do dia (namespace por `{CICLO_ENVIO}` — é onde `group-campaigns.json` deste grupo mora):
 
