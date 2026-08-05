@@ -347,26 +347,29 @@ describe("recommendAbcAction (#4657)", () => {
     assert.deepEqual(r.caveats, []);
   });
 
-  it("REGRESSÃO #4559: significativo COM atribuição desconhecida → continuar, nunca travar", () => {
-    // O caso real do 2607-08: A venceu por clique com p=0,0049, mas 81% dos
-    // cliques não eram atribuíveis. Travar aqui propagaria o assunto errado
-    // pra todas as ondas seguintes, de forma irreversível na prática.
+  it("#4559: significativo COM atribuição desconhecida → travar, mas com a ressalva explícita", () => {
+    // Decisão do editor (05/08): a skill dá a leitura e o editor pesa a
+    // ressalva no gate. Rebaixar pra "continuar" sempre que houvesse
+    // ressalva fazia o teste nunca terminar — no 2607-08, concluir por
+    // clique exigiria ~217k envios contra uma fila de ~26k.
     const r = recommendAbcAction(table({ attributionUnknown: true }));
-    assert.equal(r.action, "continuar");
+    assert.equal(r.action, "travar");
     assert.equal(r.winner, "A");
     assert.equal(r.caveats.length, 1);
     assert.match(r.caveats[0], /NÃO-VERIFICADA/);
+    // A ressalva NUNCA some — some do veredito, não do gate.
+    assert.match(r.rationale, /ressalva/);
   });
 
-  it("REGRESSÃO #4559: significativo com PODER BAIXO → continuar", () => {
+  it("#4559: significativo com PODER BAIXO → travar, ressalva nos avisos", () => {
     const r = recommendAbcAction(table({ minDetectableLiftRelative: 0.9 }));
-    assert.equal(r.action, "continuar");
+    assert.equal(r.action, "travar");
     assert.match(r.caveats.join(" "), /Poder baixo/);
   });
 
-  it("REGRESSÃO #4449: dia com drift de naming vira ressalva e impede travar", () => {
+  it("REGRESSÃO #4449: dia com drift de naming continua virando ressalva visível", () => {
     const r = recommendAbcAction(table({ suspectedDriftDays: ["2026-08-04"] }));
-    assert.equal(r.action, "continuar");
+    assert.equal(r.action, "travar");
     assert.match(r.caveats.join(" "), /DRIFT DE NAMING/);
   });
 

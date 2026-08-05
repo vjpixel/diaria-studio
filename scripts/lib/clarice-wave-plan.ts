@@ -301,12 +301,17 @@ export interface AbcRecommendation {
  * ação. NUNCA decide sozinha — quem chama apresenta isto como RECOMENDAÇÃO
  * num gate de confirmação (decisão do editor, #4657).
  *
- * A regra é deliberadamente conservadora: só recomenda `travar` quando o
- * resultado é significativo E nenhuma ressalva de confiança está de pé.
- * Significativo COM ressalva vira `continuar` — porque travar o vencedor é
- * irreversível na prática (as ondas seguintes saem todas com esse assunto) e
- * a #4559 mostrou que "significativo" por clique já apontou pra um vencedor
- * cuja evidência era 81% não-atribuível.
+ * Significativo recomenda `travar`, COM as ressalvas de confiança aparecendo
+ * como AVISO no gate — decisão do editor (05/08): a skill dá a leitura, o
+ * editor pesa a ressalva. A alternativa (rebaixar pra `continuar` sempre que
+ * houvesse ressalva) foi descartada porque, na prática, ressalva quase sempre
+ * existe e o efeito era um teste que nunca terminava.
+ *
+ * O caso 2607-08 mostra por que isso é razoável: continuar o teste até
+ * concluir por CLIQUE exigiria ~217k envios adicionais contra uma fila de
+ * ~26k — 8× toda a base disponível. Segurar a decisão "até ter certeza" não
+ * é o lado seguro quando a certeza é inalcançável; é só gastar a fila em 3
+ * braços em vez de 1.
  */
 export function recommendAbcAction(
   table: AbcAudienceTable | null,
@@ -359,21 +364,15 @@ export function recommendAbcAction(
   const pTxt = p !== null ? p.toFixed(4) : "?";
 
   if (t.significantClick && t.leaderClickRate) {
-    if (caveats.length === 0) {
-      return {
-        action: "travar",
-        metric: "clique",
-        winner: t.leaderClickRate,
-        caveats,
-        rationale: `Célula ${t.leaderClickRate} vence por CLIQUE com diferença significativa (p ${pTxt} < 0,05) e sem ressalva de confiança. Dá pra travar o assunto vencedor nas próximas ondas.`,
-      };
-    }
     return {
-      action: "continuar",
+      action: "travar",
       metric: "clique",
       winner: t.leaderClickRate,
       caveats,
-      rationale: `Célula ${t.leaderClickRate} lidera por CLIQUE com p ${pTxt} < 0,05, MAS há ressalva de confiança — tratar como indicativo, não conclusivo. Recomendado seguir com as 3 células mais uma onda antes de travar.`,
+      rationale:
+        caveats.length === 0
+          ? `Célula ${t.leaderClickRate} vence por CLIQUE com diferença significativa (p ${pTxt} < 0,05) e sem ressalva de confiança. Travar o assunto vencedor nas próximas ondas.`
+          : `Célula ${t.leaderClickRate} vence por CLIQUE com p ${pTxt} < 0,05, mas com ${caveats.length} ressalva(s) de confiança listada(s) nos avisos — pesar antes de confirmar.`,
     };
   }
 

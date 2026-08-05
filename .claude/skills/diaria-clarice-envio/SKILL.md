@@ -94,11 +94,10 @@ confirma** (decisão do editor, #4657) — nunca decidir sozinha.
 métrica que decide o teste por design (#2976), mas é também a contaminada
 pela #4559 — o editor precisa saber qual sustentou a recomendação.
 
-**A regra é conservadora de propósito:** resultado significativo **com**
-qualquer ressalva vira `continuar`, não `travar`. Travar é irreversível na
-prática (todas as ondas seguintes herdam o assunto), e no ciclo 2607-08 o A
-"venceu" por clique com p=0,0049 enquanto 81% dos cliques daquela célula não
-eram atribuíveis a nenhum contato da lista. As ressalvas que rebaixam:
+**Significativo recomenda `travar`; a ressalva vira aviso** (decisão do
+editor, 05/08) — a skill dá a leitura, o editor pesa a ressalva no gate.
+Rebaixar pra `continuar` sempre que houvesse ressalva fazia o teste nunca
+terminar. As ressalvas que aparecem nos avisos:
 
 - `attributionUnknown` — clique parcialmente não-verificado (#4567).
 - `minDetectableLiftRelative` acima de 30% — poder baixo, risco de winner's
@@ -108,6 +107,22 @@ eram atribuíveis a nenhum contato da lista. As ressalvas que rebaixam:
 Se `abc.metric` for clique e a líder por **abertura** for outra célula, o
 `rationale` diz isso. As duas métricas já discordaram (memória
 `teste-abc-subject-2606-07`) — apresentar, não esconder.
+
+**Antes de recomendar `continuar`, checar se a conclusão é alcançável.**
+Aprendizado do 2607-08 (05/08): o teste estava em p=0,34 por clique, e
+concluir exigiria ~217.000 envios adicionais contra uma fila de ~26.000 —
+8× toda a base disponível. Continuar teria gastado 2/3 da fila remanescente
+perseguindo o inalcançável.
+
+O diagnóstico veio de olhar a métrica certa: **abertura** estava em
+23,73%/23,98%/24,04% com ~9,4k por célula — espalhamento de 0,32pp (p≈0,61)
+com poder pra detectar 7,3% de lift relativo. Isso não é "ainda não sei", é
+"os assuntos são equivalentes", com amostra pra afirmar. Assunto move
+abertura; clique é dirigido pelo conteúdo, idêntico nas 3 células — a
+diferença de 10 cliques media a coisa errada.
+
+Regra prática: se a abertura está empatada COM poder suficiente, o teste
+respondeu. Encerrar não é desistir.
 
 ---
 
