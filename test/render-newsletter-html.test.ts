@@ -3307,7 +3307,7 @@ describe("renderHTML — categoria do box de divulgação como rótulo do kicker
     assert.match(html, /Recomendado<\/td>/);
   });
 
-  it("com boxDivulgacao2Categoria: kicker do slot 2 (gap D2/D3) usa a categoria", () => {
+  it("com boxDivulgacao2Categoria: kicker do slot 2 usa a categoria (posição real pós-D3 nesta fixture, #4624 — slot1 cascade desloca slot2 pra lá)", () => {
     const html = renderHTML(fixt({ boxDivulgacao2Categoria: "Achado da semana" }));
     assert.match(html, /Achado da semana<\/td>/);
   });
@@ -3383,6 +3383,51 @@ describe("assignDivulgacaoGaps (#4624, pure)", () => {
     const m = assignDivulgacaoGaps(true, 3, []);
     assert.equal(m.size, 0);
   });
+
+  // #4624 review (silent-failure-hunter): destaqueCount=0 não pode "atribuir"
+  // uma caixa a um índice que o loop de destaques de renderHTML (que itera só
+  // até destaqueCount) nunca visita — isso sumiria do HTML sem nunca contar
+  // como dropped no log. canonicalGaps vazio garante que NADA seja atribuído.
+  it("destaqueCount=0 (edição sem D1, degenerado): nenhuma caixa é atribuída — nada fica órfão", () => {
+    const m = assignDivulgacaoGaps(false, 0, [box(1), box(2), box(3)] as never);
+    assert.equal(m.size, 0);
+  });
+
+  it("destaqueCount=1 (degenerado): só a lacuna D1/D2 existe — sem WhatsApp, slot1 a ocupa; com WhatsApp, tudo dropped", () => {
+    const semWhatsapp = assignDivulgacaoGaps(false, 1, [box(1), box(2), box(3)] as never);
+    assert.equal(semWhatsapp.get(0)?.slot, 1);
+    assert.equal(semWhatsapp.size, 1);
+
+    const comWhatsapp = assignDivulgacaoGaps(true, 1, [box(1), box(2), box(3)] as never);
+    assert.equal(comWhatsapp.size, 0);
+  });
+
+  // #4624 review (comment-analyzer): com exatamente 2 destaques, a lacuna
+  // "D2/D3" do slot 2 e a lacuna "pós-último" do slot 3 são a MESMA posição
+  // física — slot 2 nunca deveria competir por ela (é dado inconsistente,
+  // #2978 só injeta slot 2 quando há D3). slot 2 cai incondicionalmente,
+  // nunca numa corrida arbitrária contra o slot 3.
+  it("destaqueCount=2 com slot2 (dado inconsistente) + slot3: slot2 dropped incondicionalmente, slot3 mantém sua posição", () => {
+    const m = assignDivulgacaoGaps(false, 2, [box(1), box(2), box(3)] as never);
+    assert.equal(m.get(0)?.slot, 1);
+    assert.equal(m.get(1)?.slot, 3, "slot3 vence a lacuna, não é uma corrida com slot2");
+    assert.equal(m.size, 2, "slot2 nunca teve lacuna própria com só 2 destaques");
+  });
+
+  it("destaqueCount=2 + WhatsApp + slot2 (dado inconsistente): slot1 ocupa a única lacuna, slot2 E slot3 dropped", () => {
+    const m = assignDivulgacaoGaps(true, 2, [box(1), box(2), box(3)] as never);
+    assert.equal(m.get(1)?.slot, 1);
+    assert.equal(m.size, 1);
+  });
+
+  it("ordem de entrada de `boxes` não importa — resultado é determinado só pelo slot (sort interno)", () => {
+    const ascending = assignDivulgacaoGaps(true, 3, [box(1), box(2), box(3)] as never);
+    const reversed = assignDivulgacaoGaps(true, 3, [box(3), box(2), box(1)] as never);
+    const shuffled = assignDivulgacaoGaps(true, 3, [box(2), box(1), box(3)] as never);
+    for (const m of [reversed, shuffled]) {
+      assert.deepEqual([...m.entries()].map(([k, v]) => [k, v.slot]), [...ascending.entries()].map(([k, v]) => [k, v.slot]));
+    }
+  });
 });
 
 describe("renderHTML — bloco WhatsApp + caixa de divulgação não empilham mais na lacuna D1/D2 (#4624)", () => {
@@ -3413,16 +3458,17 @@ describe("renderHTML — bloco WhatsApp + caixa de divulgação não empilham ma
     const html = renderHTML(fixt3());
     const waIdx = html.indexOf("Compartilhar no WhatsApp");
     assert.notEqual(waIdx, -1, "bloco WhatsApp precisa existir");
-    // Pega os 400 chars logo depois do botão do WhatsApp (fecha o box do
-    // WhatsApp) e confirma que o PRÓXIMO bloco é o Destaque 2, não uma caixa
-    // "● Divulgação".
-    const afterWhatsapp = html.slice(waIdx, waIdx + 600);
+    const d2Idx = html.indexOf("<!-- Destaque 2 -->", waIdx);
+    assert.ok(d2Idx > waIdx, "'Destaque 2' precisa vir depois do WhatsApp");
+    // Fatia até o boundary REAL (próximo comentário '<!-- Destaque 2 -->'),
+    // não uma janela de char-count arbitrária — robusto a crescimento futuro
+    // do markup do bloco WhatsApp.
+    const afterWhatsapp = html.slice(waIdx, d2Idx);
     assert.doesNotMatch(
       afterWhatsapp,
       /Divulgação<\/td>/,
       "nenhuma caixa de divulgação deve empilhar logo abaixo do CTA do WhatsApp",
     );
-    assert.match(afterWhatsapp, /Destaque 2/, "o próximo bloco depois do WhatsApp é D2 diretamente");
   });
 
   it("slot1 desliza pra lacuna D2/D3 (aparece entre os comentários 'Destaque 2' e 'Destaque 3')", () => {
@@ -3452,10 +3498,56 @@ describe("renderHTML — bloco WhatsApp + caixa de divulgação não empilham ma
     });
     const html = renderHTML(fixt2);
     const waIdx = html.indexOf("Compartilhar no WhatsApp");
-    assert.notEqual(waIdx, -1);
-    const afterWhatsapp = html.slice(waIdx, waIdx + 600);
-    assert.doesNotMatch(afterWhatsapp, /Divulgação<\/td>/);
-    assert.match(html.slice(waIdx), /Confira nossa curadoria/);
+    const d2Idx = html.indexOf("<!-- Destaque 2 -->", waIdx);
+    assert.ok(waIdx > -1 && d2Idx > waIdx, "WhatsApp e Destaque 2 precisam existir, nessa ordem");
+    // Nenhuma caixa de divulgação entre o WhatsApp e D2 (boundary real, não
+    // janela de char-count) — slot1 só aparece DEPOIS de D2 nesta edição.
+    assert.doesNotMatch(html.slice(waIdx, d2Idx), /Divulgação<\/td>/);
+    assert.match(html.slice(d2Idx), /Confira nossa curadoria/, "slot1 aparece pós-D2 (única lacuna livre)");
+  });
+
+  it("slot 2 (📚) sob deslocamento: categoria/imagem/pill continuam corretos na nova lacuna (#4624 review)", () => {
+    // #4624 review (pr-test-analyzer): o teste de categoria pré-existente
+    // isola boxDivulgacao1:null pra não disparar o cascade — este cobre o
+    // caso OPOSTO, com slot1 presente (cascade ativo), confirmando que
+    // categoria + imagem + pill viajam junto com a caixa deslocada, não só o
+    // texto bruto.
+    const html = renderHTML(fixt3({
+      boxDivulgacao2Categoria: "Achado da semana",
+      boxDivulgacao2Image: "https://img.example/livros-cascade.jpg",
+      boxDivulgacaoImageExplicit: { 2: true },
+    }));
+    const d3Idx = html.indexOf("<!-- Destaque 3 -->");
+    assert.ok(d3Idx > -1);
+    const postD3 = html.slice(d3Idx);
+    assert.match(postD3, /Achado da semana<\/td>/, "categoria do slot2 segue a caixa deslocada pra pós-D3");
+    assert.match(postD3, /https:\/\/img\.example\/livros-cascade\.jpg/, "imagem do slot2 segue a caixa deslocada");
+  });
+
+  it("console.error divulgacao_box_dropped_no_gap: dispara com o slot correto quando falta lacuna, nunca quando tudo cabe", () => {
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+
+    let htmlDropped: string;
+    let htmlFits: string;
+    try {
+      htmlDropped = renderHTML(fixt3()); // 3 destaques + 3 caixas + WhatsApp → slot3 sem lacuna
+      const errorsAfterDrop = [...errors];
+      errors.length = 0;
+      htmlFits = renderHTML(fixt3({ boxDivulgacao3: null })); // só 2 caixas — cabem as duas
+      const errorsAfterFit = [...errors];
+
+      assert.ok(htmlDropped.length > 0 && htmlFits.length > 0); // uso defensivo — silencia "unused"
+      assert.equal(errorsAfterDrop.length, 1, `esperado 1 log de drop, obtido: ${errorsAfterDrop.join(" | ")}`);
+      assert.match(errorsAfterDrop[0], /divulgacao_box_dropped_no_gap/);
+      assert.match(errorsAfterDrop[0], /"slot":3/, "o slot logado precisa ser o que de fato não coube (3)");
+      assert.equal(errorsAfterFit.length, 0, "sem caixa sobrando, nenhum drop deve ser logado");
+    } finally {
+      console.error = origError;
+    }
   });
 });
 

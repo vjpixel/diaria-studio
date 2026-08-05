@@ -1654,7 +1654,7 @@ export interface DivulgacaoBoxDef {
   content: string;
   image: string | null;
   bold: boolean;
-  categoria: string | null | undefined;
+  categoria: string | null;
   imageExplicit: boolean;
   imagePortrait: boolean;
   imageAlt: string | null;
@@ -1688,11 +1688,29 @@ export interface DivulgacaoBoxDef {
  * não coube no espaço hoje — mesmo princípio já usado quando o slot 2 não
  * tem lacuna D2/D3 em edições de 2 destaques).
  *
- * Sem WhatsApp (`whatsappPresent=false` — só no caso defensivo de edição sem
- * D1, nunca deveria acontecer dado o invariante de 2-3 destaques), a lacuna
- * D1/D2 volta a ficar livre e as 3 caixas mantêm suas posições originais
- * (slot1@D1/D2, slot2@D2/D3, slot3@pós-D3) — reduz exatamente ao
- * comportamento pré-#4624.
+ * Sem WhatsApp e com dados bem-formados (slot 2 só configurado quando há D3,
+ * convenção já estabelecida — #2978), a lacuna D1/D2 volta a ficar livre e as
+ * caixas mantêm suas posições originais (slot1@D1/D2, slot2@D2/D3,
+ * slot3@pós-D3) — reduz exatamente ao comportamento pré-#4624.
+ *
+ * Dois casos degenerados, tratados explicitamente (achados de review #4624):
+ *  - `destaqueCount < 1` (edição sem D1, nunca deveria acontecer dado o
+ *    invariante de 2-3 destaques): NENHUMA lacuna existe (`canonicalGaps`
+ *    fica vazio) — toda caixa configurada é dropped e corretamente logada
+ *    pelo caller. Sem esse guard, uma caixa podia ser "atribuída" a um índice
+ *    que o loop de destaques de `renderHTML` (que itera só até
+ *    `destaqueCount`) nunca visita — sumindo do HTML SEM disparar o log de
+ *    drop, porque o Map ainda reportava a caixa como "atribuída".
+ *  - `destaqueCount === 2` com slot 2 configurado (dado inconsistente — #2978
+ *    só injeta o slot 2 quando há D3, mas uma edição de 2 destaques feita a
+ *    partir de uma demoção D3→Radar no meio da revisão pode deixar o campo
+ *    stale): a lacuna "D2/D3" do slot 2 e a lacuna "pós-último" do slot 3 são
+ *    a MESMA posição física quando só há 2 destaques. Tratar os dois como
+ *    concorrentes pela mesma posição produziria uma corrida arbitrária
+ *    (quem processa primeiro ganha). Em vez disso, `originPosition[2]` só é
+ *    válida com `destaqueCount >= 3` — com 2 destaques, o slot 2 é tratado
+ *    como estruturalmente inexistente e cai incondicionalmente, nunca
+ *    disputando a posição com o slot 3.
  *
  * Pure function — não decide o CONTEÚDO das caixas, só a alocação de lacunas.
  */
@@ -1700,21 +1718,29 @@ export function assignDivulgacaoGaps(
   whatsappPresent: boolean,
   destaqueCount: number,
   boxes: DivulgacaoBoxDef[],
-): Map<number, DivulgacaoBoxDef> {
+): ReadonlyMap<number, DivulgacaoBoxDef> {
   const lastIdx = destaqueCount - 1;
   // Lista canônica de lacunas em ordem (índice do destaque logo após o qual a
   // caixa renderiza), deduplicada — em edição de 2 destaques a lacuna "D2/D3"
   // (índice 1) e a lacuna "pós-último" (índice destaqueCount-1=1) são a MESMA
-  // posição física.
-  const canonicalGaps: number[] = [0];
+  // posição física. `destaqueCount < 1` (degenerado, ver docstring) não gera
+  // NENHUMA lacuna — sem isso, o índice 0 seria "atribuível" mesmo quando o
+  // loop de destaques de `renderHTML` nunca itera (0 destaques), deixando uma
+  // caixa "atribuída" só no papel, nunca renderizada nem logada como dropped.
+  const canonicalGaps: number[] = [];
+  if (destaqueCount >= 1) canonicalGaps.push(0);
   if (destaqueCount >= 2) canonicalGaps.push(1);
   if (lastIdx >= 1 && lastIdx !== 1) canonicalGaps.push(lastIdx);
 
   // Posição de origem (índice em `canonicalGaps`, não índice de destaque) de
-  // cada slot — onde a caixa renderizaria SE nada a deslocasse.
+  // cada slot — onde a caixa renderizaria SE nada a deslocasse. `2` só é
+  // válida com `destaqueCount >= 3`: com exatamente 2 destaques a lacuna
+  // "D2/D3" colapsa na mesma posição física da lacuna "pós-último" do slot 3
+  // (ver docstring) — tratar o slot 2 como sem posição própria aí evita uma
+  // corrida arbitrária entre os dois pela mesma lacuna.
   const originPosition: Record<1 | 2 | 3, number> = {
     1: 0,
-    2: canonicalGaps.indexOf(1),
+    2: destaqueCount >= 3 ? canonicalGaps.indexOf(1) : -1,
     3: canonicalGaps.length - 1,
   };
 
@@ -1728,7 +1754,10 @@ export function assignDivulgacaoGaps(
   const sorted = [...boxes].sort((a, b) => a.slot - b.slot);
   for (const box of sorted) {
     let pos = originPosition[box.slot];
-    if (pos === undefined || pos < 0) continue; // defensivo — não deveria ocorrer
+    // `pos === undefined`: defensivo, inalcançável para `slot` tipado 1|2|3.
+    // `pos < 0`: caminho REAL e alcançável (slot 2 com destaqueCount < 3, ou
+    // slot 3 quando `canonicalGaps` está vazio) — não é dead code.
+    if (pos === undefined || pos < 0) continue;
     while (pos < canonicalGaps.length && takenPositions.has(pos)) pos++;
     if (pos >= canonicalGaps.length) continue; // sem lacuna livre — dropped nesta edição
     takenPositions.add(pos);
@@ -1815,7 +1844,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
       content: content.boxDivulgacao1,
       image: content.boxDivulgacao1Image ?? null,
       bold: content.boxDivulgacao1Bold ?? true,
-      categoria: content.boxDivulgacao1Categoria,
+      categoria: content.boxDivulgacao1Categoria ?? null,
       imageExplicit: content.boxDivulgacaoImageExplicit?.[1] ?? false,
       imagePortrait: content.boxDivulgacaoImagePortrait?.[1] ?? false,
       imageAlt: content.boxDivulgacaoImageAlt?.[1] ?? null,
@@ -1827,7 +1856,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
       content: content.boxDivulgacao2,
       image: content.boxDivulgacao2Image ?? null,
       bold: content.boxDivulgacao2Bold ?? true,
-      categoria: content.boxDivulgacao2Categoria,
+      categoria: content.boxDivulgacao2Categoria ?? null,
       imageExplicit: content.boxDivulgacaoImageExplicit?.[2] ?? false,
       imagePortrait: content.boxDivulgacaoImagePortrait?.[2] ?? false,
       imageAlt: content.boxDivulgacaoImageAlt?.[2] ?? null,
@@ -1839,7 +1868,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
       content: content.boxDivulgacao3,
       image: content.boxDivulgacao3Image ?? null,
       bold: content.boxDivulgacao3Bold ?? true,
-      categoria: content.boxDivulgacao3Categoria,
+      categoria: content.boxDivulgacao3Categoria ?? null,
       imageExplicit: content.boxDivulgacaoImageExplicit?.[3] ?? false,
       imagePortrait: content.boxDivulgacaoImagePortrait?.[3] ?? false,
       imageAlt: content.boxDivulgacaoImageAlt?.[3] ?? null,
