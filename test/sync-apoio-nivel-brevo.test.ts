@@ -44,6 +44,7 @@ import {
   fetchCurrentBrevoApoiadoresState,
   applyBrevoApoioAddEntry,
   applyBrevoApoioRemoveEntry,
+  applyBrevoApoioDiff,
   ensureContactAttribute,
   APOIO_NIVEL_ATTR_NAME,
   type BrevoApoiadorMember,
@@ -397,17 +398,23 @@ describe("ensureContactAttribute — cria o atributo APOIO_NIVEL quando ausente 
     globalThis.fetch = origFetch;
   }
 
-  it("atributo ausente: cria via POST /contacts/attributes/normal/APOIO_NIVEL", async () => {
+  it("atributo ausente: cria via POST /contacts/attributes/normal/APOIO_NIVEL, confirma por releitura", async () => {
     let createCall: unknown;
+    let getCalls = 0;
+    let created = false;
     globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
       const url = new URL(String(input));
       if (init?.method === undefined || init.method === "GET") {
         assert.equal(url.pathname, "/v3/contacts/attributes");
-        return jsonRes(200, { attributes: [] });
+        getCalls++;
+        // Simula estado real da conta: só aparece na listagem DEPOIS do POST
+        // de criação — exercita a releitura pós-escrita (#4634 item 2).
+        return jsonRes(200, { attributes: created ? [{ name: "APOIO_NIVEL", category: "normal", type: "text" }] : [] });
       }
       if (init.method === "POST") {
         assert.equal(url.pathname, "/v3/contacts/attributes/normal/APOIO_NIVEL");
         createCall = JSON.parse(init.body as string);
+        created = true;
         return jsonRes(201, { name: "APOIO_NIVEL" });
       }
       throw new Error(`unexpected fetch: ${init.method} ${url.pathname}`);
@@ -415,17 +422,20 @@ describe("ensureContactAttribute — cria o atributo APOIO_NIVEL quando ausente 
     try {
       await ensureContactAttribute("key");
       assert.deepEqual(createCall, { type: "text" });
+      assert.equal(getCalls, 2, "deveria reler /contacts/attributes após o POST pra confirmar a criação");
     } finally {
       restore();
     }
   });
 
-  it("atributo já existe: NÃO chama POST (idempotente, evita recriação)", async () => {
+  it("atributo já existe: NÃO chama POST (idempotente, evita recriação) e não releitura desnecessária", async () => {
     let postCalled = false;
+    let getCalls = 0;
     globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
       const url = new URL(String(input));
       if (init?.method === undefined || init.method === "GET") {
         assert.equal(url.pathname, "/v3/contacts/attributes");
+        getCalls++;
         return jsonRes(200, { attributes: [{ name: "APOIO_NIVEL", category: "normal", type: "text" }] });
       }
       if (init.method === "POST") {
@@ -437,6 +447,146 @@ describe("ensureContactAttribute — cria o atributo APOIO_NIVEL quando ausente 
     try {
       await ensureContactAttribute("key");
       assert.equal(postCalled, false, "não deveria recriar um atributo que já existe");
+      assert.equal(getCalls, 1, "atributo já existente é confirmado numa única leitura, sem POST nem 2ª GET");
+    } finally {
+      restore();
+    }
+  });
+
+  it("GET /contacts/attributes falha (status != 200) → rejeita, nunca trata como lista vazia (#4634 item 3)", async () => {
+    globalThis.fetch = (async () => jsonRes(404, { message: "not found" })) as typeof fetch;
+    try {
+      await assert.rejects(() => ensureContactAttribute("key"), /Brevo API 404 em \/contacts\/attributes/);
+    } finally {
+      restore();
+    }
+  });
+
+  it("POST de criação falha (400) → rejeita (#4634 item 4)", async () => {
+    globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (init?.method === undefined || init.method === "GET") {
+        assert.equal(url.pathname, "/v3/contacts/attributes");
+        return jsonRes(200, { attributes: [] });
+      }
+      if (init.method === "POST") {
+        return jsonRes(400, { message: "invalid attribute name" });
+      }
+      throw new Error(`unexpected fetch: ${init.method} ${url.pathname}`);
+    }) as typeof fetch;
+    try {
+      await assert.rejects(() => ensureContactAttribute("key"), /Brevo API POST/);
+    } finally {
+      restore();
+    }
+  });
+
+  it("POST 2xx mas atributo NÃO aparece na releitura → rejeita (mutação não confirmada)", async () => {
+    globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (init?.method === undefined || init.method === "GET") {
+        assert.equal(url.pathname, "/v3/contacts/attributes");
+        // Sempre vazio, mesmo depois do POST — simula o mesmo padrão de
+        // silêncio já visto na Beehiiv (#4273): 2xx que não persiste nada.
+        return jsonRes(200, { attributes: [] });
+      }
+      if (init.method === "POST") {
+        return jsonRes(201, { name: "APOIO_NIVEL" });
+      }
+      throw new Error(`unexpected fetch: ${init.method} ${url.pathname}`);
+    }) as typeof fetch;
+    try {
+      await assert.rejects(() => ensureContactAttribute("key"), /NÃO confere/);
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("applyBrevoApoioDiff — wiring: ensureContactAttribute roda ANTES da 1ª aplicação (#4634)", () => {
+  const origFetch = globalThis.fetch;
+  function restore() {
+    globalThis.fetch = origFetch;
+  }
+
+  it("com toApply não-vazio: atributo é garantido (GET+POST) ANTES do 1º POST /contacts de aplicação", async () => {
+    const callOrder: string[] = [];
+    let attributeExists = false;
+    globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+      if (method === "GET" && url.pathname === "/v3/contacts/attributes") {
+        callOrder.push("GET-attributes");
+        return jsonRes(200, {
+          attributes: attributeExists ? [{ name: "APOIO_NIVEL", category: "normal", type: "text" }] : [],
+        });
+      }
+      if (method === "POST" && url.pathname === "/v3/contacts/attributes/normal/APOIO_NIVEL") {
+        callOrder.push("POST-create-attribute");
+        attributeExists = true;
+        return jsonRes(201, { name: "APOIO_NIVEL" });
+      }
+      if (method === "POST" && url.pathname === "/v3/contacts") {
+        callOrder.push("POST-apply-contact");
+        return jsonRes(201, {});
+      }
+      if (method === "GET" && url.pathname.startsWith("/v3/contacts/")) {
+        // releitura pós-escrita de applyBrevoApoioAddEntry
+        return jsonRes(200, { email: "a@x.com", listIds: [42], attributes: { APOIO_NIVEL: "patrono" } });
+      }
+      throw new Error(`unexpected fetch: ${method} ${url.pathname}`);
+    }) as typeof fetch;
+
+    try {
+      const result = await applyBrevoApoioDiff(
+        [{ contactId: "c1", contactName: "C1", email: "a@x.com", fromLevel: null, toLevel: "patrono" }],
+        [],
+        42,
+        "key",
+        () => {},
+      );
+      assert.equal(result.applied, 1);
+      assert.equal(result.failed, 0);
+      const attrIdx = callOrder.indexOf("POST-create-attribute");
+      const applyIdx = callOrder.indexOf("POST-apply-contact");
+      assert.ok(attrIdx !== -1, "deveria ter criado o atributo");
+      assert.ok(applyIdx !== -1, "deveria ter aplicado o contato");
+      assert.ok(
+        attrIdx < applyIdx,
+        `criação do atributo (idx ${attrIdx}) deveria vir ANTES da aplicação (idx ${applyIdx}) — ordem real: ${callOrder.join(" -> ")}`,
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("com toApply vazio (só remoções): NUNCA chama o endpoint de atributos", async () => {
+    let calledAttrEndpoint = false;
+    globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+      if (url.pathname.includes("/contacts/attributes")) {
+        calledAttrEndpoint = true;
+      }
+      if (method === "PUT" && url.pathname.startsWith("/v3/contacts/")) {
+        return emptyRes(204);
+      }
+      if (method === "GET" && url.pathname.startsWith("/v3/contacts/")) {
+        return jsonRes(200, { email: "b@x.com", listIds: [] });
+      }
+      throw new Error(`unexpected fetch: ${method} ${url.pathname}`);
+    }) as typeof fetch;
+
+    try {
+      const result = await applyBrevoApoioDiff(
+        [],
+        [{ contactId: "c2", contactName: "C2", email: "b@x.com", fromLevel: "mantenedor" }],
+        42,
+        "key",
+        () => {},
+      );
+      assert.equal(result.applied, 1);
+      assert.equal(calledAttrEndpoint, false, "sem adições, ensureContactAttribute nunca deveria ser chamado");
     } finally {
       restore();
     }

@@ -91,7 +91,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { readApoiaSeEnv, defaultCacheDir, competenceMonth } from "./lib/apoia-se.ts";
 import { runApoioReconciliationCycle } from "./lib/apoio-reconciliation-cycle.ts";
-import { brevoGet, brevoPost, brevoPut } from "./lib/brevo-client.ts";
+import { brevoGet, brevoPost, brevoPut, ensureBrevoContactAttribute } from "./lib/brevo-client.ts";
 import {
   computeDesiredApoioLevels,
   shouldBlockRemovals,
@@ -332,16 +332,14 @@ export function evaluateBrevoBlastRadiusGuard(
 
 // ── aplicação (I/O — escrita + verificação por releitura) ──────────────────
 
-interface BrevoContactAttribute {
-  name: string;
-  category: string;
-  type: string;
-}
-
 /**
  * Cria o atributo de contato `APOIO_NIVEL` (categoria "normal", tipo texto)
- * se ainda não existir — mesmo padrão de `ensureContactAttribute` em
- * `inject-poll-token-brevo.ts` (~linha 99). Idempotente.
+ * se ainda não existir — thin wrapper sobre `ensureBrevoContactAttribute`
+ * (`scripts/lib/brevo-client.ts`, #4634 finding do type-design-analyzer),
+ * versão compartilhada do mesmo padrão antes duplicado com
+ * `inject-poll-token-brevo.ts::ensureContactAttribute` (~linha 99).
+ * Idempotente; confirma a criação por releitura antes de retornar (ver
+ * docstring de `ensureBrevoContactAttribute`).
  *
  * Causa raiz do #4634: este script nunca garantia a existência do atributo
  * antes de escrevê-lo via `applyBrevoApoioAddEntry` — diferente de
@@ -355,13 +353,10 @@ interface BrevoContactAttribute {
  * DEPOIS da tentativa; garantir o atributo antes evita a falha inteira.
  */
 export async function ensureContactAttribute(apiKey: string): Promise<void> {
-  const { body } = await brevoGet(apiKey, "/contacts/attributes");
-  const existing = new Set<string>(
-    ((body as { attributes?: BrevoContactAttribute[] })?.attributes ?? []).map((a) => a.name),
-  );
-  if (existing.has(APOIO_NIVEL_ATTR_NAME)) return;
-  await brevoPost(apiKey, `/contacts/attributes/normal/${APOIO_NIVEL_ATTR_NAME}`, { type: "text" });
-  process.stderr.write(`${LOG_PREFIX} criado atributo de contato "${APOIO_NIVEL_ATTR_NAME}"\n`);
+  const created = await ensureBrevoContactAttribute(apiKey, APOIO_NIVEL_ATTR_NAME, "text");
+  if (created) {
+    process.stderr.write(`${LOG_PREFIX} criado atributo de contato "${APOIO_NIVEL_ATTR_NAME}"\n`);
+  }
 }
 
 /**
@@ -425,6 +420,67 @@ export async function applyBrevoApoioRemoveEntry(
       `releitura pós-remoção NÃO confere pra ${entry.email}: ainda consta em listIds=${JSON.stringify(listIds)}.`,
     );
   }
+}
+
+// ── aplicação do diff (I/O — wiring testável, #4634) ────────────────────────
+
+export interface ApplyBrevoApoioDiffResult {
+  applied: number;
+  failed: number;
+}
+
+/**
+ * Aplica o diff calculado na Brevo: garante o atributo `APOIO_NIVEL` (se há
+ * algo a aplicar) ANTES de qualquer `applyBrevoApoioAddEntry` — causa raiz do
+ * #4634 (ver docstring de `ensureContactAttribute`) — e só então aplica as
+ * duas listas de entrada (adições/trocas, depois remoções liberadas).
+ *
+ * Extraído de `main()` (#4634, achado ALTO do pr-test-analyzer): antes desta
+ * extração, os testes de `ensureContactAttribute` só chamavam a função
+ * ISOLADA — nenhum teste provava que a ORDEM real dentro do fluxo de
+ * `--push` (garantir o atributo ANTES do 1º POST de aplicação) continuava
+ * correta. Um refactor futuro que movesse/removesse essas linhas de `main()`
+ * passaria verde nos testes antigos e reintroduziria o bug em silêncio — ver
+ * `test/sync-apoio-nivel-brevo.test.ts` describe `applyBrevoApoioDiff —
+ * wiring`.
+ */
+export async function applyBrevoApoioDiff(
+  toApply: ApoioBrevoDiffEntry[],
+  toRemoveNow: ApoioBrevoRemovalEntry[],
+  listId: number,
+  apiKey: string,
+  log: (msg: string) => void,
+): Promise<ApplyBrevoApoioDiffResult> {
+  if (toApply.length > 0) {
+    // #4634: garante que o atributo `APOIO_NIVEL` existe na conta Brevo
+    // ANTES de qualquer applyBrevoApoioAddEntry — sem isso, toda escrita de
+    // nível falhava em silêncio (POST 2xx, atributo nunca persistido).
+    await ensureContactAttribute(apiKey);
+  }
+
+  log(`--push: aplicando ${toApply.length} adição(ões)/troca(s) + ${toRemoveNow.length} remoção(ões)…`);
+
+  let applied = 0;
+  let failed = 0;
+  for (const entry of toApply) {
+    try {
+      await applyBrevoApoioAddEntry(entry, listId, apiKey);
+      applied++;
+    } catch (e) {
+      failed++;
+      log(`FALHA em ${entry.email}: ${(e as Error).message}`);
+    }
+  }
+  for (const entry of toRemoveNow) {
+    try {
+      await applyBrevoApoioRemoveEntry(entry, listId, apiKey);
+      applied++;
+    } catch (e) {
+      failed++;
+      log(`FALHA em ${entry.email}: ${(e as Error).message}`);
+    }
+  }
+  return { applied, failed };
 }
 
 // ── logging do diff (dry-run e --push) ──────────────────────────────────
@@ -604,35 +660,13 @@ async function main(): Promise<void> {
 
   const toRemoveNow = removalsBlockedByPartialData ? [] : diff.toRemove;
 
-  if (diff.toApply.length > 0) {
-    // #4634: garante que o atributo `APOIO_NIVEL` existe na conta Brevo
-    // ANTES de qualquer applyBrevoApoioAddEntry — sem isso, toda escrita de
-    // nível falhava em silêncio (POST 2xx, atributo nunca persistido).
-    await ensureContactAttribute(apiKey!);
-  }
-
-  log(`--push: aplicando ${diff.toApply.length} adição(ões)/troca(s) + ${toRemoveNow.length} remoção(ões)…`);
-
-  let applied = 0;
-  let failed = 0;
-  for (const entry of diff.toApply) {
-    try {
-      await applyBrevoApoioAddEntry(entry, config!.list_id as number, apiKey!);
-      applied++;
-    } catch (e) {
-      failed++;
-      log(`FALHA em ${entry.email}: ${(e as Error).message}`);
-    }
-  }
-  for (const entry of toRemoveNow) {
-    try {
-      await applyBrevoApoioRemoveEntry(entry, config!.list_id as number, apiKey!);
-      applied++;
-    } catch (e) {
-      failed++;
-      log(`FALHA em ${entry.email}: ${(e as Error).message}`);
-    }
-  }
+  const { applied, failed } = await applyBrevoApoioDiff(
+    diff.toApply,
+    toRemoveNow,
+    config!.list_id as number,
+    apiKey!,
+    log,
+  );
 
   log(`push concluído: ${applied} aplicada(s), ${failed} falha(s).`);
   if (failed > 0) process.exit(1);
