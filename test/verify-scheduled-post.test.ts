@@ -17,9 +17,11 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { verifyScheduledPost } from "../scripts/verify-scheduled-post.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const SCRIPT = resolve(ROOT, "scripts", "verify-scheduled-post.ts");
 const NOW = new Date("2026-06-11T01:30:00Z");
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -272,5 +274,67 @@ describe("verifyScheduledPost (#2074)", () => {
     } finally {
       cleanupDir(dir);
     }
+  });
+});
+
+describe("verify-scheduled-post exit semantics (#4638)", () => {
+  // Regression test pro crash Windows libuv. O bug: process.exit(N) dentro
+  // de main() forçava shutdown do libuv enquanto o fetch agent ainda tinha
+  // sockets keep-alive abertos, disparando a assertion UV_HANDLE_CLOSING
+  // (exit 127/134) mesmo com o JSON de resultado já impresso corretamente
+  // no stdout. Mesma classe já corrigida em validate-gemini-config.ts (#1401)
+  // e check-google-token.ts. Fix: process.exitCode + return, deixando o
+  // event loop drenar naturalmente.
+  //
+  // O check estático abaixo garante que main() não chama process.exit()
+  // diretamente — single source of truth pra detectar a regressão.
+  // Portável em Linux/Mac (CI) e Windows (onde o bug original aparecia).
+
+  it("main() usa process.exitCode em vez de process.exit() (#4638)", () => {
+    const source = readFileSync(SCRIPT, "utf8");
+    // Strip line comments pra não matchar referências em // process.exit() ...
+    const sourceNoComments = source.replace(/\/\/.*$/gm, "");
+    // Pega só o corpo da função main()
+    const mainMatch = sourceNoComments.match(/async function main\(\)[\s\S]*?\n\}\n/);
+    assert.ok(mainMatch, "main() function não encontrada no script");
+    const mainBody = mainMatch[0];
+    // Bug original: process.exit(N) dentro de main()
+    // Fix: deve usar process.exitCode pra evitar UV_HANDLE_CLOSING no Windows
+    assert.equal(
+      /process\.exit\s*\(/.test(mainBody),
+      false,
+      "main() não pode chamar process.exit() — usar process.exitCode (#4638 Windows crash)",
+    );
+    // E deve setar exitCode em todos os branches
+    assert.match(mainBody, /process\.exitCode/, "main() deve setar process.exitCode");
+  });
+
+  it("catch handler do isMainModule() também usa process.exitCode (#4638)", () => {
+    const source = readFileSync(SCRIPT, "utf8");
+    const sourceNoComments = source.replace(/\/\/.*$/gm, "");
+    const catchMatch = sourceNoComments.match(/if \(isMainModule\(import\.meta\.url\)\) \{[\s\S]*?\n\}\n?$/);
+    assert.ok(catchMatch, "bloco isMainModule() não encontrado no script");
+    const catchBody = catchMatch[0];
+    assert.equal(
+      /process\.exit\s*\(/.test(catchBody),
+      false,
+      "catch de main() não pode chamar process.exit() — usar process.exitCode (#4638 Windows crash)",
+    );
+    assert.match(catchBody, /process\.exitCode/, "catch de main() deve setar process.exitCode");
+  });
+
+  it("script sem --post-id sai limpo com exit 2 (cross-platform smoke)", () => {
+    // Smoke test: spawnSync sem args obrigatórios cai no branch de uso
+    // (exit 2) sem chamar a API Beehiiv. O ponto não é testar a lógica de
+    // validação — é provar que o script SAI LIMPO sem disparar
+    // UV_HANDLE_CLOSING. Antes do fix, Windows podia retornar 127 (crash)
+    // em vez de 2 nesse mesmo branch pós-fetch (aqui nem chega a haver
+    // fetch, mas o smoke cobre o caminho isMainModule()/exitCode ponta-a-ponta).
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx", SCRIPT],
+      { encoding: "utf8", env: process.env, timeout: 30_000 },
+    );
+    assert.equal(result.status, 2, `exit code esperado 2, veio ${result.status} (stderr: ${result.stderr?.slice(0, 200)})`);
   });
 });
