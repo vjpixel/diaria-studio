@@ -89,15 +89,33 @@ export function extractQuotedTerms(issue: string): string[] {
  * eram dropados de fato, só nos testes sintéticos com 1 termo só.
  *
  * Retorna `{ char, context }` quando o formato de produção é reconhecido
- * (codepoint + char + "em" + context), ou `null` caso contrário (formato
- * legado/sintético sem codepoint, usado nos testes originais #2013).
+ * (codepoint + char + "em" + context). #4629: um segundo formato, também
+ * tolerado (não-canônico — o agent desviou do spec ao vivo na edição 260805,
+ * emitindo o codepoint DEPOIS do char, entre parênteses: `"char (U+XXXX) em
+ * '…context…'"`), também retorna `{ char, context }` pelo mesmo caminho.
+ * Só formatos genuinamente NÃO reconhecidos (nem oficial, nem o alternativo
+ * do #4629) retornam `null` — inclui o legado/sintético sem codepoint, usado
+ * nos testes originais #2013.
  */
 export function extractEncodingDropCharAndContext(
   issue: string,
 ): { char: string; context: string } | null {
-  const m = issue.match(/U\+[0-9A-Fa-f]{2,8}\s+'([^']+)'\s+em\s+'([^']*)'/i);
-  if (!m) return null;
-  return { char: m[1], context: m[2] };
+  // Formato oficial (`.claude/agents/review-test-email.md` passo 3e):
+  // "U+XXXX 'char' em 'context'" — codepoint primeiro (sem aspas), char entre
+  // aspas simples, depois "em", depois o context entre aspas simples.
+  const official = issue.match(/U\+[0-9A-Fa-f]{2,8}\s+'([^']+)'\s+em\s+'([^']*)'/i);
+  if (official) return { char: official[1], context: official[2] };
+  // #4629: formato alternativo observado ao vivo na edição 260805 — o agent
+  // desviou do spec e emitiu o codepoint DEPOIS do char, entre parênteses, e
+  // o char cru (sem aspas): "char (U+XXXX) em 'context'". Ex real:
+  // "email:encoding_drop: 🚨 (U+1F6A8) em 'DESTAQUE 1 | 🚨 SEGURANÇA' — emoji dropado".
+  // Tolerar essa ordem evita que emojis by-design (badges de DESTAQUE) sobrevivam
+  // ao filtro só porque o agent variou a ordem dos termos — a checagem de
+  // by-design abaixo (isEncodingDropSectionEmojiByDesign) depende de conseguir
+  // extrair char+context de qualquer um dos 2 formatos.
+  const alt = issue.match(/(\S+)\s*\(U\+[0-9A-Fa-f]{2,8}\)\s+em\s+'([^']*)'/i);
+  if (alt) return { char: alt[1], context: alt[2] };
+  return null;
 }
 
 /**
@@ -286,21 +304,43 @@ export function isMergeTagUnexpandedFalsePositive(
  * desses emojis como ausente num header, é falso-positivo by-design.
  *
  * Lista derivada de `context/templates/newsletter.md` + `section-naming.ts`.
+ *
+ * #4629: a tabela de categorias de DESTAQUE em `context/templates/newsletter.md`
+ * ("Regras de preenchimento" — CATEGORIA dos destaques) é explicitamente
+ * OPEN-ENDED — "Para categorias não listadas, escolher emoji semanticamente
+ * próximo. Se nenhum se encaixar bem, criar uma nova categoria com emoji
+ * adequado." Ou seja, esta lista NUNCA vai cobrir toda categoria possível; ela
+ * cobre a tabela canônica do template + os casos ad-hoc já confirmados ao vivo
+ * como ausência by-design (`renderKicker`/`stripKickerEmoji` remove QUALQUER
+ * emoji de badge, não só os desta lista — `d.category` em
+ * `newsletter-render-html.ts` passa direto por `renderKicker`). Se um novo
+ * emoji de categoria aparecer reportado como `encoding_drop` num header/badge
+ * e não estiver aqui, é o mesmo FP by-design — adicionar à lista (e ao
+ * `SECTION_EMOJI_LABEL_PATTERN` correspondente) em vez de tratar como bug real.
  */
 export const SECTION_HEADER_EMOJIS: ReadonlySet<string> = new Set([
-  "🚀", // LANÇAMENTOS
+  "🚀", // LANÇAMENTOS / LANÇAMENTO
   "📡", // RADAR
-  "🛠️", // USE MELHOR (inclui variation selector U+FE0F)
+  "🛠️", // USE MELHOR / FERRAMENTA (inclui variation selector U+FE0F)
   "🎁", // SORTEIO
   "🙋", // PARA ENCERRAR (base — variantes com skin-tone são prefixadas com este)
   "🙋🏼‍♀️", // PARA ENCERRAR (sequência completa com skin-tone)
-  "💼", // categoria de negócios (usado em DESTAQUE labels)
+  "💼", // MERCADO (categoria de negócios, usado em DESTAQUE labels)
   "🌐", // categoria global/internacional
   "📺", // VÍDEOS
-  "🔬", // PESQUISAS (legacy)
+  "🔬", // PESQUISAS / PESQUISA (legacy + categoria)
   "📰", // OUTRAS NOTÍCIAS (legacy)
-  "⚖️", // categoria jurídico/regulação
-  "🇧🇷", // Brasil
+  "⚖️", // REGULAÇÃO (categoria jurídico/regulação)
+  "🇧🇷", // BRASIL
+  "📦", // PRODUTO (categoria)
+  "🏭", // INDÚSTRIA (categoria)
+  "📈", // TENDÊNCIA (categoria)
+  "💡", // CONCEITO (categoria)
+  "🎭", // CULTURA (categoria)
+  "💬", // OPINIÃO (categoria)
+  "📊", // DADOS (categoria)
+  "🚨", // SEGURANÇA — #4629, confirmado ao vivo 260805 (categoria ad-hoc, não estava na tabela do template)
+  "👷", // TRABALHO — #4629, confirmado ao vivo 260805 (categoria ad-hoc, não estava na tabela do template)
 ]);
 
 /**
@@ -341,13 +381,24 @@ const SECTION_EMOJI_LABEL_PATTERN: ReadonlyMap<string, RegExp> = new Map([
   ["🎁", /SORTEIO/i],
   ["🙋", /PARA ENCERRAR/i],
   ["🙋🏼‍♀️", /PARA ENCERRAR/i],
-  ["💼", /MERCADO|TRABALHO/i],
+  ["💼", /MERCADO|TRABALHO/i], // #4629: fixtures existentes (ex: test/collect-monthly.test.ts) usam 💼 pra TRABALHO também — 👷 é outra opção observada ao vivo pra mesma categoria, não substitui
   ["🌐", /GLOBAL/i],
   ["📺", /V[ÍI]DEOS?/i],
   ["🔬", /PESQUISAS?/i],
   ["📰", /OUTRAS NOT[ÍI]CIAS?/i],
   ["⚖️", /REGULA[ÇC][ÃA]O/i],
   ["🇧🇷", /BRASIL/i],
+  // #4629: categorias adicionais confirmadas ao vivo 260805 + tabela canônica
+  // do template (`context/templates/newsletter.md`, "Regras de preenchimento").
+  ["📦", /PRODUTO/i],
+  ["🏭", /IND[ÚU]STRIA/i],
+  ["📈", /TEND[ÊE]NCIA/i],
+  ["💡", /CONCEITO/i],
+  ["🎭", /CULTURA/i],
+  ["💬", /OPINI[ÃA]O/i],
+  ["📊", /DADOS/i],
+  ["🚨", /SEGURAN[ÇC]A/i],
+  ["👷", /TRABALHO/i],
 ]);
 
 export function isEncodingDropSectionEmojiByDesign(
@@ -554,6 +605,16 @@ export function extractLinkDeadUrl(issue: string): string | null {
  *   - HTTP 403 em domínio *.beehiiv.com → FP (bot-protection conhecida)
  *   - Qualquer outro 4xx/5xx ou timeout → verdadeiro positivo (mantém issue)
  *
+ * O status acima já é o resultado FINAL pós fallback HEAD→GET de `headOrGet`
+ * (mais abaixo) — esse fallback só dispara quando o HEAD devolve 404, 405 ou
+ * 501 (`HEAD_FALLBACK_STATUSES`, sinal de método/roteamento não suportado,
+ * não erro real: #4628 é o caso 404 ao vivo, #2013 é o 405 original).
+ * **5xx e 429 NUNCA disparam o fallback** (#4647) — um GET subsequente
+ * poderia acertar uma página de erro genérica/soft-404 (comum em
+ * WordPress/Squarespace/CDN) que retorna 200, mascarando como "vivo" um link
+ * com erro real de servidor ou sob rate-limit. Por isso HEAD 5xx/429 já
+ * chegam aqui como status final, sem chance de o fallback apagar o sinal.
+ *
  * A `fetchFn` é injetável para testabilidade — testes NUNCA usam o fetch global.
  * Em produção, passar `globalThis.fetch` ou omitir.
  *
@@ -616,13 +677,49 @@ export async function isLinkDeadFalsePositive(
 }
 
 /**
- * Faz HEAD, com fallback GET se o servidor rejeitar HEAD (alguns CDNs retornam
- * 405 Method Not Allowed). Retorna o status final (null em caso de timeout/
- * erro) e a URL final após seguir redirects (`redirect: "follow"` — nativo do
- * fetch, `Response.url` já reflete o destino pós-redirect sem precisar
- * reimplementar o loop manual que `lint-test-email-link-tracking.ts` usa).
+ * Status HEAD que justificam fallback pra GET — allowlist explícita, só os
+ * status que são genuinamente sobre suporte a MÉTODO/ROTEAMENTO, nunca sobre
+ * erro real do servidor (#4647, corrige a ampliação excessiva introduzida
+ * pelo #4628 original — ver JSDoc de `headOrGet` abaixo).
+ *
+ *   - 404 (#4628): caso real ao vivo na edição 260805 — o Worker
+ *     `eia.diar.ia.br` (rotas `/vote` e `/jogar`) retorna 404 em HEAD mesmo
+ *     quando a rota existe e responde 200 via GET.
+ *   - 405 (#2013): Method Not Allowed — o caso original que motivou o
+ *     fallback antes de qualquer ampliação.
+ *   - 501: Not Implemented — mesma classe de "servidor reconhece a rota mas
+ *     recusa o verbo HEAD especificamente".
+ *
+ * Deliberadamente NÃO inclui 5xx nem 429: ver JSDoc de `headOrGet`.
+ */
+const HEAD_FALLBACK_STATUSES: ReadonlySet<number> = new Set([404, 405, 501]);
+
+/**
+ * Faz HEAD, com fallback GET quando o HEAD devolve um status que sinaliza
+ * "método/rota não suportado" (`HEAD_FALLBACK_STATUSES` — 404, 405 ou 501).
+ * Retorna o status final (null em caso de timeout/erro) e a URL final após
+ * seguir redirects (`redirect: "follow"` — nativo do fetch, `Response.url`
+ * já reflete o destino pós-redirect sem precisar reimplementar o loop manual
+ * que `lint-test-email-link-tracking.ts` usa).
  *
  * Interno — não exportado.
+ *
+ * #4628: caso real confirmado ao vivo na edição 260805 — o Worker
+ * `eia.diar.ia.br` (rotas `/vote` e `/jogar`) retorna 404 (não 405) em HEAD
+ * mesmo quando a rota existe e responde 200 via GET. O fallback pra GET só
+ * disparava em `status === 405`, então esses 2 links vivos ficavam presos
+ * como falso-positivo `link_dead` (404 na re-verificação HEAD, sem chance de
+ * o GET provar que estavam vivos).
+ *
+ * #4647: o fix acima (#4628) tinha sido implementado ampliando o gatilho pra
+ * "qualquer status fora de 2xx/3xx" — isso também disparava fallback pra 5xx
+ * (erro real do servidor) e 429 (rate limit), cenários onde um GET
+ * subsequente pode acertar uma página de erro genérica/soft-404 do host
+ * retornando 200 (comum em WordPress/Squarespace/CDN atrás de proteção
+ * anti-bot ou balanceador com fallback de erro). Um link genuinamente
+ * morto/instável sobreviveria ao filtro como falso "link vivo". O fallback
+ * agora dispara só pra `HEAD_FALLBACK_STATUSES` (404/405/501) — 5xx e 429 no
+ * HEAD retornam como status final direto, preservando o verdadeiro-positivo.
  *
  * #4604: `finalUrl` foi adicionado (era só `status`) — necessário pra
  * `isLinkDeadFalsePositive` reconhecer o redirect pro jogo anônimo
@@ -650,8 +747,11 @@ async function headOrGet(url: string, fetchFn: FetchFn): Promise<{ status: numbe
       redirect: "follow",
       signal: controller.signal,
     });
-    if (res.status === 405) {
-      // HEAD rejeitado — tentar GET
+    const shouldFallbackToGet = HEAD_FALLBACK_STATUSES.has(res.status);
+    if (shouldFallbackToGet) {
+      // #4628/#4647: HEAD sinalizou "método/rota não suportado" (404, 405 ou
+      // 501 — allowlist explícita, NUNCA 5xx/429) — tentar GET antes de
+      // desistir.
       clearTimeout(t);
       const controller2 = new AbortController();
       const t2 = setTimeout(() => controller2.abort(), REVERIFY_TIMEOUT_MS);

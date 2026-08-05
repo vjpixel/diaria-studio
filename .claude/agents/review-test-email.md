@@ -492,6 +492,16 @@ Mapear `issues[]`:
 - `type:char_dropped` → `"email:encoding_drop: {codepoint} '{char}' em '…{source_context}…'"`
 - `type:char_substituted` → `"info:encoding_subst: {codepoint} '{char}' → '{email_substitute}' (ASCII fallback aceitável)"`
 
+**#4629 — seguir literalmente esta ordem, sem variação:** codepoint primeiro
+(sem aspas), depois `'{char}'` entre aspas simples, depois `em`, depois
+`'{source_context}'` entre aspas simples. NUNCA inverter pra `{char} (U+{codepoint}) em '{context}'`
+(char cru sem aspas + codepoint entre parênteses) — esse desvio já aconteceu
+ao vivo (edição 260805) e quebrava o parser determinístico
+(`extractEncodingDropCharAndContext` em `scripts/lib/agent-issue-validator.ts`)
+que decide se um emoji de badge/header ausente é falso-positivo by-design (DS
+#1936). O parser hoje tolera os dois formatos como rede de segurança, mas o
+formato oficial acima é o único que deve ser emitido.
+
 ASCII substituições conhecidas (ã→a, ç→c, smart quotes→ASCII) ficam como
 warning `info:` (não blocker). Drop sem substituto vira blocker — provável
 charset mismatch (latin1 vs UTF-8) no template.

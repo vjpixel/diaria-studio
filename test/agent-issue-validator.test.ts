@@ -26,6 +26,7 @@ import {
   extractEncodingDropCharTerm,
   filterAgentIssues,
   ISSUE_HANDLERS,
+  SECTION_HEADER_EMOJIS,
   type FetchFn,
 } from "../scripts/lib/agent-issue-validator.ts";
 
@@ -340,6 +341,28 @@ describe("#2013 — isEncodingDropSectionEmojiByDesign", () => {
     const r = isEncodingDropSectionEmojiByDesign(issue);
     assert.equal(r.falsePositive, false);
   });
+
+  // #4629: 🚨 SEGURANÇA e 👷 TRABALHO são categorias de badge de DESTAQUE
+  // confirmadas ao vivo (edição 260805) como ausência by-design no HTML
+  // (mesmo mecanismo renderKicker/stripKickerEmoji do DS #1936), mas não
+  // estavam em SECTION_HEADER_EMOJIS — sobreviviam ao filtro como FP não
+  // reconhecido.
+  it("SECTION_HEADER_EMOJIS inclui 🚨 (SEGURANÇA) e 👷 (TRABALHO) — #4629", () => {
+    assert.ok(SECTION_HEADER_EMOJIS.has("🚨"), "🚨 deve estar na lista (badge de DESTAQUE SEGURANÇA)");
+    assert.ok(SECTION_HEADER_EMOJIS.has("👷"), "👷 deve estar na lista (badge de DESTAQUE TRABALHO)");
+  });
+
+  it("FP: emoji 🚨 de SEGURANÇA em header, formato legado (1 termo + frase 'header')", () => {
+    const issue = "email:encoding_drop: '🚨' ausente no header do badge DESTAQUE 1 SEGURANÇA";
+    const r = isEncodingDropSectionEmojiByDesign(issue);
+    assert.equal(r.falsePositive, true);
+  });
+
+  it("FP: emoji 👷 de TRABALHO em header, formato legado (1 termo + frase 'header')", () => {
+    const issue = "email:encoding_drop: '👷' ausente no header do badge DESTAQUE 2 TRABALHO";
+    const r = isEncodingDropSectionEmojiByDesign(issue);
+    assert.equal(r.falsePositive, true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -378,6 +401,67 @@ describe("#2730 — extractEncodingDropCharAndContext / extractEncodingDropCharT
   it("extractEncodingDropCharTerm: null quando múltiplos termos reais sem codepoint", () => {
     const issue = "email:encoding_drop: 'pré-treino' e 'funcionários' corrompidos";
     assert.equal(extractEncodingDropCharTerm(issue), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4629 — teste de regressão: o agent desviou do formato oficial na edição
+// 260805 (Stage 5, review-test-email attempt 1) e emitiu o codepoint DEPOIS
+// do char, entre parênteses, com o char cru (sem aspas): "char (U+XXXX) em
+// 'context'" — em vez de "U+XXXX 'char' em 'context'". Sem tolerar esse
+// formato alternativo, extractEncodingDropCharAndContext retornava null e
+// isEncodingDropSectionEmojiByDesign nunca disparava, deixando sobreviver ao
+// filtro emojis de badge de DESTAQUE (🚨 SEGURANÇA, 👷 TRABALHO) ausentes
+// by-design (DS #1936, renderKicker/stripKickerEmoji).
+// ---------------------------------------------------------------------------
+describe("#4629 — extractEncodingDropCharAndContext: formato alternativo char (U+XXXX) em 'context'", () => {
+  it("reconhece o formato alternativo (codepoint depois do char, entre parênteses)", () => {
+    const issue = "email:encoding_drop: 🚨 (U+1F6A8) em 'DESTAQUE 1 | 🚨 SEGURANÇA' — emoji dropado";
+    const r = extractEncodingDropCharAndContext(issue);
+    assert.ok(r, `esperado par char+context, got null: ${issue}`);
+    assert.equal(r?.char, "🚨");
+    assert.match(r!.context, /SEGURAN[ÇC]A/);
+  });
+
+  it("reconhece o formato alternativo pra 👷 (caso real 260805)", () => {
+    const issue = "email:encoding_drop: 👷 (U+1F477) em 'DESTAQUE 2 | 👷 TRABALHO' — emoji dropado";
+    const r = extractEncodingDropCharAndContext(issue);
+    assert.ok(r);
+    assert.equal(r?.char, "👷");
+    assert.match(r!.context, /TRABALHO/);
+  });
+
+  it("extractEncodingDropCharTerm usa o char do formato alternativo", () => {
+    const issue = "email:encoding_drop: 💼 (U+1F4BC) em 'DESTAQUE 2 | 💼 MERCADO' — emoji dropado";
+    assert.equal(extractEncodingDropCharTerm(issue), "💼");
+  });
+
+  it("isEncodingDropSectionEmojiByDesign: FP pra 🚨 SEGURANÇA no formato alternativo (caso real 260805)", () => {
+    const issue = "email:encoding_drop: 🚨 (U+1F6A8) em 'DESTAQUE 1 | 🚨 SEGURANÇA' — emoji dropado";
+    const r = isEncodingDropSectionEmojiByDesign(issue);
+    assert.equal(r.falsePositive, true, `esperado FP by-design: ${JSON.stringify(r)}`);
+    if (r.falsePositive) assert.match(r.reason, /stripKickerEmoji|by-design/i);
+  });
+
+  it("isEncodingDropSectionEmojiByDesign: FP pra 👷 TRABALHO no formato alternativo (caso real 260805)", () => {
+    const issue = "email:encoding_drop: 👷 (U+1F477) em 'DESTAQUE 2 | 👷 TRABALHO' — emoji dropado";
+    const r = isEncodingDropSectionEmojiByDesign(issue);
+    assert.equal(r.falsePositive, true, `esperado FP by-design: ${JSON.stringify(r)}`);
+  });
+
+  it("isEncodingDropSectionEmojiByDesign: FP pra 💼 MERCADO no formato alternativo (caso real 260805)", () => {
+    const issue = "email:encoding_drop: 💼 (U+1F4BC) em 'DESTAQUE 2 | 💼 MERCADO' — emoji dropado";
+    const r = isEncodingDropSectionEmojiByDesign(issue);
+    assert.equal(r.falsePositive, true, `esperado FP by-design: ${JSON.stringify(r)}`);
+  });
+
+  it("confirma que o branch oficial tem precedência e é usado quando o formato oficial está presente", () => {
+    // O regex `official` é checado primeiro (com return antecipado) — cobertura
+    // de não-regressão de que o branch `alt` nunca é avaliado nesse caso.
+    const issue = "email:encoding_drop: U+1F680 '🚀' em '…🚀 LANÇAMENTOS…'";
+    const r = extractEncodingDropCharAndContext(issue);
+    assert.ok(r);
+    assert.equal(r?.char, "🚀"); // veio do branch oficial, não do alternativo
   });
 });
 
@@ -624,6 +708,47 @@ describe("#2013 — isLinkDeadFalsePositive", () => {
     const r = await isLinkDeadFalsePositive(issue, mockFetch(200, 405));
     assert.equal(r.falsePositive, true);
   });
+
+  // #4628: caso real confirmado ao vivo na edição 260805 — o Worker
+  // eia.diar.ia.br (rotas /vote e /jogar) retorna 404 (não 405) em HEAD,
+  // mesmo quando a rota existe e responde 200 via GET. Antes do fix, o
+  // fallback só disparava em status===405, então esses links vivos ficavam
+  // presos como falso-positivo (HEAD 404, sem chance do GET provar vida).
+  it("HEAD 404 → fallback GET usado (não só 405, #4628)", async () => {
+    const issue = "email:link_dead: https://eia.diar.ia.br/jogar?edition=260805&choice=A → HTTP 404";
+    // HEAD retorna 404, GET retorna 200 → deve reconhecer como FP (link vivo)
+    const r = await isLinkDeadFalsePositive(issue, mockFetch(200, 404));
+    assert.equal(r.falsePositive, true, "HEAD 404 com GET 200 deve ser reconhecido como link vivo (#4628)");
+  });
+
+  it("HEAD 404 + GET também 404 → mantém issue (link genuinamente morto)", async () => {
+    const issue = "email:link_dead: https://example.com/really-dead → HTTP 404";
+    const r = await isLinkDeadFalsePositive(issue, mockFetch(404, 404));
+    assert.equal(r.falsePositive, false, "HEAD e GET ambos 404 → link realmente morto, não é FP");
+  });
+
+  // #4647: o fallback HEAD→GET introduzido pelo #4628 tinha sido implementado
+  // amplo demais ("qualquer status fora de 2xx/3xx") — isso também disparava
+  // fallback pra 5xx (erro real do servidor) e 429 (rate limit), cenários onde
+  // um GET subsequente pode acertar uma página de erro genérica/soft-404 (comum
+  // em WordPress/Squarespace/CDN) retornando 200, mascarando um link
+  // genuinamente morto/instável como "vivo". O fallback agora só dispara pra
+  // 404/405/501 (HEAD_FALLBACK_STATUSES) — 5xx/429 nunca chegam a tentar o GET.
+  it("HEAD 500 → NÃO faz fallback GET, mantém issue mesmo que o GET responderia 200 (#4647)", async () => {
+    const issue = "email:link_dead: https://example.com/server-error → HTTP 500";
+    // HEAD retorna 500 (erro real de servidor); GET retornaria 200 (ex: soft-404
+    // genérico de CDN) — mas o fallback NÃO deve disparar pra 5xx.
+    const r = await isLinkDeadFalsePositive(issue, mockFetch(200, 500));
+    assert.equal(r.falsePositive, false, "HEAD 500 não deve disparar fallback GET — verdadeiro positivo (#4647)");
+  });
+
+  it("HEAD 429 → NÃO faz fallback GET, mantém issue mesmo que o GET responderia 200 (#4647)", async () => {
+    const issue = "email:link_dead: https://example.com/rate-limited → HTTP 429";
+    // HEAD retorna 429 (rate limit); GET retornaria 200 — mas o fallback NÃO
+    // deve disparar pra 429.
+    const r = await isLinkDeadFalsePositive(issue, mockFetch(200, 429));
+    assert.equal(r.falsePositive, false, "HEAD 429 não deve disparar fallback GET — verdadeiro positivo (#4647)");
+  });
 });
 
 describe("#4604 — isLinkDeadFalsePositive não desfaz a detecção do redirect pro jogo anônimo", () => {
@@ -786,7 +911,7 @@ describe("#2047 — filterAgentIssues: paralelismo de link_dead", () => {
     );
   });
 
-  it("N fetches paralelos: contagem de chamadas ao fetchFn = N (sem cache)", async () => {
+  it("N fetches paralelos: contagem de chamadas ao fetchFn = N×2 (HEAD + fallback GET, #4628)", async () => {
     let callCount = 0;
     const urls = [
       "https://example.com/a → HTTP 404",
@@ -799,8 +924,14 @@ describe("#2047 — filterAgentIssues: paralelismo de link_dead", () => {
       return { status: 404, headers: new Headers() } as Response;
     };
     await filterAgentIssues(issues, "<p>x</p>", "260611", fetchFn);
-    // Sem cache: cada URL chama fetchFn 1x (HEAD) — nenhum repetido
-    assert.equal(callCount, urls.length, `fetchFn deve ser chamado ${urls.length}×, foi ${callCount}×`);
+    // #4628: HEAD 404 não é 2xx/3xx → headOrGet sempre faz fallback GET (não só
+    // em 405) → 2 chamadas por URL (HEAD + GET), nenhuma cacheada entre URLs
+    // distintas.
+    assert.equal(
+      callCount,
+      urls.length * 2,
+      `fetchFn deve ser chamado ${urls.length * 2}× (HEAD+GET por URL), foi ${callCount}×`,
+    );
   });
 });
 
@@ -817,14 +948,16 @@ describe("#2047 — filterAgentIssues: cache por URL entre iterações", () => {
     const cache = new Map<string, boolean>(); // #2061: boolean (não boolean|null) após narrowing
     const html = "<p>x</p>";
 
-    // 1ª iteração: fetch acontece, cache é populado com false (link morto)
+    // 1ª iteração: fetch acontece, cache é populado com false (link morto).
+    // #4628: HEAD 404 não é 2xx/3xx → headOrGet faz fallback GET (também 404)
+    // → 2 fetches nesta 1ª iteração (HEAD + GET), não 1.
     await filterAgentIssues([issue], html, "260611", fetchFn, cache);
-    assert.equal(fetchCallCount, 1, "1ª chamada deve fazer 1 fetch");
+    assert.equal(fetchCallCount, 2, "1ª chamada deve fazer 2 fetches (HEAD 404 + fallback GET, #4628)");
     assert.equal(cache.get(url), false, "cache deve ser false (link morto)");
 
     // 2ª iteração: cache hit — fetchFn NÃO é chamado novamente
     await filterAgentIssues([issue], html, "260611", fetchFn, cache);
-    assert.equal(fetchCallCount, 1, "2ª chamada NÃO deve re-fetchar (cache hit)");
+    assert.equal(fetchCallCount, 2, "2ª chamada NÃO deve re-fetchar (cache hit)");
   });
 
   it("cache hit positivo (link vivo): 2ª chamada dropa sem re-fetch", async () => {
@@ -863,8 +996,10 @@ describe("#2047 — filterAgentIssues: cache por URL entre iterações", () => {
     const html = "<p>x</p>";
     await filterAgentIssues([issue], html, "260611", fetchFn);
     await filterAgentIssues([issue], html, "260611", fetchFn);
-    // Sem cache compartilhado, cada chamada fetcha independentemente
-    assert.equal(fetchCallCount, 2, "sem cache: cada chamada re-fetcha");
+    // Sem cache compartilhado, cada chamada fetcha independentemente. #4628:
+    // HEAD 404 não é 2xx/3xx → fallback GET também dispara em cada uma das 2
+    // chamadas de filterAgentIssues → 2 fetches × 2 chamadas = 4.
+    assert.equal(fetchCallCount, 4, "sem cache: cada chamada re-fetcha (HEAD+GET por chamada, #4628)");
   });
 });
 
