@@ -568,7 +568,7 @@ ${filters}
 ${cards}
         <p class="empty" id="empty" style="display:none">Nenhum curso com esses filtros.</p>
       </div>
-${renderGeoFaqSection(geoFaq, "faq-cursos")}
+${renderGeoFaqSection(geoFaq, { sectionId: "faq-cursos" })}
     </div>
   </main>
   ${renderCuradoriaFooter(

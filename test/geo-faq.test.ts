@@ -3,9 +3,12 @@
  *
  * Cobre `scripts/lib/shared/geo-faq.ts` — o bloco de estrutura GEO
  * (FAQ + JSON-LD FAQPage/Article + byline de autor) compartilhado por
- * livros/cursos/arquivo. Foco: o JSON-LD é válido e BATE com o conteúdo
- * visível (Google invalida o rich result se FAQPage divergir do HTML), e o
- * autor é sempre nomeado + com URL verificável.
+ * livros/cursos/arquivo/hub. Foco: o JSON-LD é válido e bate com o
+ * conteúdo visível pra resposta sem markdown (Google invalida o rich
+ * result se FAQPage divergir do HTML) — pra resposta COM `[texto](url)`
+ * (hub, #4635 item 3) a divergência é intencional e testada à parte:
+ * JSON-LD recebe texto puro, visível recebe `<a href>`. Autor é sempre
+ * nomeado + com URL verificável.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -40,7 +43,7 @@ describe("renderGeoFaqSection", () => {
   });
 
   it("aceita um sectionId customizado (aria-labelledby bate com o id do heading)", () => {
-    const html = renderGeoFaqSection(SAMPLE_FAQ, "faq-livros");
+    const html = renderGeoFaqSection(SAMPLE_FAQ, { sectionId: "faq-livros" });
     assert.match(html, /id="faq-livros"/);
     assert.match(html, /aria-labelledby="faq-livros-heading"/);
     assert.match(html, /id="faq-livros-heading"/);
@@ -50,6 +53,25 @@ describe("renderGeoFaqSection", () => {
     const html = renderGeoFaqSection(SAMPLE_FAQ);
     assert.doesNotMatch(html, /<details/);
     assert.doesNotMatch(html, /<summary/);
+  });
+
+  it("heading default é 'Perguntas frequentes' — comportamento de livros/cursos/arquivo preservado (#4642)", () => {
+    const html = renderGeoFaqSection(SAMPLE_FAQ);
+    assert.match(html, /class="geo-faq-heading">Perguntas frequentes</);
+  });
+
+  it("aceita heading customizado — usado pelo hub pra não ler como 2º bloco de FAQ idêntico (#4642)", () => {
+    const html = renderGeoFaqSection(SAMPLE_FAQ, { heading: "Perguntas rápidas" });
+    assert.match(html, /class="geo-faq-heading">Perguntas rápidas</);
+    assert.doesNotMatch(html, /Perguntas frequentes/);
+  });
+
+  it("resposta com [texto](url) renderiza <a href> de verdade (#4635 item 3)", () => {
+    const html = renderGeoFaqSection([
+      { question: "Onde?", answer: "Veja [a fonte](https://diar.ia.br/p/x) pra mais detalhes." },
+    ]);
+    assert.match(html, /<a href="https:\/\/diar\.ia\.br\/p\/x">a fonte<\/a>/);
+    assert.doesNotMatch(html, /\[a fonte\]/);
   });
 });
 
@@ -139,20 +161,43 @@ describe("renderGeoJsonLd", () => {
     assert.equal(parsed["@graph"].length, 2);
   });
 
-  it("FAQPage.mainEntity bate EXATAMENTE (pergunta e resposta) com o bloco visível", () => {
+  it("FAQPage.mainEntity bate EXATAMENTE (pergunta e resposta) com o bloco visível — SAMPLE_FAQ sem markdown", () => {
     const html = renderGeoJsonLd(baseOpts);
     const visible = renderGeoFaqSection(baseOpts.faq);
     const jsonLd = JSON.parse(/<script type="application\/ld\+json">([\s\S]*)<\/script>/.exec(html)![1]);
     const faqNode = jsonLd["@graph"].find((n: { "@type": string }) => n["@type"] === "FAQPage");
     assert.equal(faqNode.mainEntity.length, baseOpts.faq.length);
     for (let i = 0; i < baseOpts.faq.length; i++) {
-      // JSON-LD carrega o texto CRU; o bloco visível carrega a versão
-      // escapada em HTML do MESMO texto — checa as duas fontes contra o
-      // mesmo array de entrada, nunca uma reformulação/subconjunto.
+      // Válido só quando `answer` NÃO tem `[texto](url)` (caso de SAMPLE_FAQ,
+      // igual às respostas reais de livros/cursos/arquivo hoje) — nesse
+      // caso `stripMarkdownLinks`/`renderInlineLinks` são no-op e as duas
+      // fontes batem com o mesmo array de entrada, sem reformulação. Pra
+      // resposta COM markdown, ver o teste seguinte — a divergência ali é
+      // intencional, não um bug (achado do fleet review da PR #4642, que
+      // apontou este comentário como desatualizado depois de #4635 item 3).
       assert.equal(faqNode.mainEntity[i].name, baseOpts.faq[i].question);
       assert.equal(faqNode.mainEntity[i].acceptedAnswer.text, baseOpts.faq[i].answer);
       assert.match(visible, new RegExp(faqNode.mainEntity[i].name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
+  });
+
+  it("resposta com [texto](url): JSON-LD recebe texto puro (sem colchete), visível recebe <a href> — divergência intencional (#4635 item 3)", () => {
+    const faqWithLink: GeoFaqItem[] = [
+      { question: "Onde?", answer: "Veja [a fonte](https://diar.ia.br/p/x) pra mais detalhes." },
+    ];
+    const html = renderGeoJsonLd({ ...baseOpts, faq: faqWithLink });
+    const visible = renderGeoFaqSection(faqWithLink);
+    const jsonLd = JSON.parse(/<script type="application\/ld\+json">([\s\S]*)<\/script>/.exec(html)![1]);
+    const faqNode = jsonLd["@graph"].find((n: { "@type": string }) => n["@type"] === "FAQPage");
+    const jsonLdText = faqNode.mainEntity[0].acceptedAnswer.text;
+    // JSON-LD: texto legível, sem [ ] ( ) — schema.org não espera markup ali.
+    assert.equal(jsonLdText, "Veja a fonte pra mais detalhes.");
+    assert.doesNotMatch(jsonLdText, /[[\]]/);
+    // Visível: link de verdade.
+    assert.match(visible, /<a href="https:\/\/diar\.ia\.br\/p\/x">a fonte<\/a>/);
+    // As duas fontes DIVERGEM de propósito pra esta resposta — não é o
+    // caso "bate EXATAMENTE" do teste anterior.
+    assert.notEqual(jsonLdText, faqWithLink[0].answer);
   });
 
   it("Article traz autor nomeado com url verificável (default GEO_AUTHOR)", () => {
