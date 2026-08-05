@@ -18,7 +18,7 @@ import {
   MV_COST_PER_EMAIL_USD,
   type WaveProposalInput,
 } from "../scripts/lib/clarice-wave-plan.ts";
-import { buildGroupCells, cellManifestFileName } from "../scripts/lib/clarice-group-cells.ts";
+import { buildGroupCells, buildSingleWave, cellManifestFileName } from "../scripts/lib/clarice-group-cells.ts";
 import { parseDatesArg } from "../scripts/clarice-plan-wave.ts";
 import { groupCellListNameFor } from "../scripts/clarice-import-waves.ts";
 import { parseAbcAudienceCampaign } from "../workers/brevo-dashboard/src/index.ts";
@@ -275,6 +275,21 @@ describe("buildGroupCells (#4657 — fecha o item 3 da #4449)", () => {
       assert.equal(parsed.cycle, "2607-08");
       assert.equal(parsed.cell, entry.key.slice(-1));
     }
+  });
+
+  it("buildSingleWave: assunto travado → 1 lista com a chave do dia", () => {
+    // Sem isto, o caminho `travar` com vários dias sairia com a chave
+    // `ramp-warm` do build-segment: 3 campanhas com o MESMO nome
+    // (`grupo:ramp-warm`) colidindo entre si, e `computeNextWaveNumber`
+    // travado (porque `ramp-warm` não casa `d{N}-`).
+    const { groupKey, manifest, cells } = buildSingleWave(rows, 6, "2026-08-06");
+    assert.equal(groupKey, "d6-qui06");
+    assert.equal(manifest.length, 1);
+    assert.equal(manifest[0].key, "d6-qui06");
+    assert.equal(manifest[0].count, 10);
+    assert.equal(cells[0].length, 10);
+    // A chave gerada avança a numeração, ao contrário de 'ramp-warm':
+    assert.equal(computeNextWaveNumber([{ key: manifest[0].key }]), 7);
   });
 
   it("lista vazia não estoura — 3 células vazias", () => {

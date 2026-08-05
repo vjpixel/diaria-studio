@@ -75,6 +75,30 @@ export function buildGroupCells<T>(rows: T[], n: number, date: string): GroupCel
   return { groupKey, manifest, cells };
 }
 
+/**
+ * Variante SEM teste A/B/C — uma lista só para a onda do dia, usada quando a
+ * recomendação é `travar` (assunto único).
+ *
+ * Existe pelo mesmo motivo de `buildGroupCells`: `clarice-build-segment.ts`
+ * escreve manifest com `key` = nome do grupo (`ramp-warm`), que não carrega o
+ * dia. Com assunto travado e vários dias na onda, as 3 campanhas sairiam
+ * todas como `grupo:ramp-warm` — mesmo nome, colidindo entre si — e
+ * `computeNextWaveNumber` nunca avançaria a numeração, porque `ramp-warm`
+ * não casa `d{N}-`. A chave do dia vem de `waveKey()`, gerada.
+ *
+ * `desc` entra no nome da lista via `listNameFor` (`Clarice {label} {key} —
+ * {desc}`); o `--label` do import é quem carrega o ciclo mensal, que é o que
+ * `summarizeCycleSends` usa pra atribuir a campanha ao ciclo.
+ */
+export function buildSingleWave<T>(rows: T[], n: number, date: string): GroupCellsArtifact<T> {
+  const groupKey = waveKey(n, date);
+  return {
+    groupKey,
+    manifest: [{ key: groupKey, file: `${groupKey}.csv`, desc: "onda unica", count: rows.length }],
+    cells: [rows],
+  };
+}
+
 /** Nome do arquivo de manifest que `clarice-import-waves --group {groupKey}` lê. */
 export function cellManifestFileName(groupKey: string): string {
   return `${groupKey}-manifest.json`;

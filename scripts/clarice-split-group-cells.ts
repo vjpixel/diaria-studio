@@ -21,13 +21,14 @@
  *
  * Uso:
  *   npx tsx scripts/clarice-split-group-cells.ts --cycle 2607-08 --wave 6 \
- *     --date 2026-08-06 --from segments/ramp-warm.csv [--dry-run]
+ *     --date 2026-08-06 --from segments/ramp-warm.csv [--no-cells] [--dry-run]
  *
  *   --cycle X   OBRIGATÓRIO — {conteúdo}-{envio}.
  *   --wave N    OBRIGATÓRIO — número da onda (vem de `startingWaveNumber` da
  *               proposta; continua a numeração do ciclo, nunca reinicia).
  *   --date D    OBRIGATÓRIO — YYYY-MM-DD do envio (explícita, nunca inferida).
  *   --from P    OBRIGATÓRIO — CSV de origem, relativo ao dir do ciclo.
+ *   --no-cells  1 lista só (assunto travado, sem teste A/B/C).
  *   --dry-run   só imprime o plano.
  */
 
@@ -37,7 +38,7 @@ import Papa from "papaparse";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { clariceCycleDir, clariceSegmentsDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { buildGroupCells, cellManifestFileName } from "./lib/clarice-group-cells.ts";
+import { buildGroupCells, buildSingleWave, cellManifestFileName } from "./lib/clarice-group-cells.ts";
 
 type Row = Record<string, string>;
 
@@ -75,7 +76,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     process.exit(1);
   }
 
-  const { groupKey, manifest, cells } = buildGroupCells(rows, wave, date);
+  // `--no-cells`: assunto travado → 1 lista por dia, sem teste A/B/C.
+  const noCells = hasFlag(argv, "no-cells");
+  const { groupKey, manifest, cells } = noCells
+    ? buildSingleWave(rows, wave, date)
+    : buildGroupCells(rows, wave, date);
   const fields = parsed.meta.fields ?? Object.keys(rows[0]);
 
   console.log(`Onda d${wave} · ${date} · grupo '${groupKey}' · ${rows.length} contatos`);
