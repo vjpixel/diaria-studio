@@ -182,17 +182,40 @@ export type DailyCapCheck = { ok: true } | { ok: false; reason: string };
  * `evaluate-brevo-diaria.ts`, documenta o mesmo fato do lado da avaliação).
  * Sem subtrair, o cap real disponível pra fila de reativação de verdade era
  * sempre `cap - seedCount`, não `cap` — achado ao vivo em 260804 (lista com
- * 179 assinantes, cap 175, fila real batendo exatamente 175; contornado
- * naquela sessão só subindo o cap pra 180 em `platform.config.json`, PR
- * #4640 — este fix estrutural substitui esse ajuste manual). `seedCount`
+ * 179 assinantes brutos, cap 175; líquido dos 5 seeds = 174, abaixo do cap,
+ * mas o guard antigo comparava o bruto (179) contra o cap (175) sem
+ * subtrair e abortava mesmo assim; contornado naquela sessão só subindo o
+ * cap pra 180 em `platform.config.json`, PR #4640 — este fix estrutural
+ * substitui esse ajuste manual). `seedCount`
  * default é `EDITOR_SEED_EMAILS.length`; parametrizado pra teste sem
  * depender do tamanho real da constante.
+ *
+ * Piso contra `totalSubscribers < seedCount` (achado convergente
+ * silent-failure-hunter + type-design-analyzer, fleet review da #4646): os
+ * `seedCount` `EDITOR_SEED_EMAILS` ficam permanentemente vinculados à lista
+ * — uma contagem bruta menor que `seedCount` é fisicamente impossível pra
+ * uma lista saudável, e sinaliza API instável/resposta truncada, não uma
+ * fila pequena legítima. Sem este guard, `netSubscribers` ficaria negativo
+ * e passaria trivialmente (`<= cap`), mascarando a anomalia em vez de
+ * denunciá-la — mesmo princípio de `detectZeroAudienceAnomaly`
+ * (`clarice-reapply-scheduled-html.ts`, #4142): estado impossível é
+ * hard-stop, nunca sucesso silencioso.
  */
 export function checkDailySendCap(
   totalSubscribers: number,
   cap: number,
   seedCount: number = EDITOR_SEED_EMAILS.length,
 ): DailyCapCheck {
+  if (totalSubscribers < seedCount) {
+    return {
+      ok: false,
+      reason:
+        `lista Brevo reporta ${totalSubscribers} assinante(s) bruto(s), abaixo dos ${seedCount} ` +
+        `EDITOR_SEED_EMAILS que ficam permanentemente vinculados à lista — contagem impossível pra uma ` +
+        "lista saudável, sinal de erro/API instável (não de fila pequena). Abortando antes de comparar " +
+        "contra o cap.",
+    };
+  }
   const netSubscribers = totalSubscribers - seedCount;
   if (netSubscribers <= cap) return { ok: true };
   return {

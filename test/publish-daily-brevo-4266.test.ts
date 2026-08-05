@@ -167,6 +167,30 @@ describe("checkDailySendCap — exclui EDITOR_SEED_EMAILS do denominador (#4631)
   });
 });
 
+describe("checkDailySendCap — piso contra totalSubscribers < seedCount (achado convergente silent-failure-hunter + type-design-analyzer, PR #4646)", () => {
+  it("totalSubscribers (4) abaixo de seedCount default (5) → not ok, NUNCA passa por 'líquido negativo <= cap'", () => {
+    const result = checkDailySendCap(4, 300);
+    assert.equal(result.ok, false);
+    const reason = (result as { ok: false; reason: string }).reason;
+    assert.match(reason, /4/);
+    assert.match(reason, /5/);
+    assert.match(reason, /impossível/i);
+  });
+
+  it("totalSubscribers (0) com seedCount explícito (1) → not ok (mesmo guard vale com seedCount parametrizado)", () => {
+    const result = checkDailySendCap(0, 300, 1);
+    assert.equal(result.ok, false);
+  });
+
+  it("totalSubscribers exatamente igual a seedCount (5) → ok (líquido 0, dentro de qualquer cap não-negativo) — o piso é só '<', não '<='", () => {
+    assert.deepEqual(checkDailySendCap(5, 300), { ok: true });
+  });
+
+  it("seedCount 0 (compat) → guard nunca dispara pra totalSubscribers >= 0", () => {
+    assert.deepEqual(checkDailySendCap(0, 300, 0), { ok: true });
+  });
+});
+
 describe("checkBrevoDiariaGuards — pré-condições fora de --dry-run (#4404)", () => {
   const validBrevoDiaria = {
     api_key_env: "BREVO_DIARIA_API_KEY",
