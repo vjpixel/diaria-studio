@@ -522,6 +522,12 @@ async function main(): Promise<void> {
       poolSize,
     };
   }
+  // #4651: os process.exit() abaixo até o 1º `await` de rede
+  // (fetchPendingBeehiivSubscriptions, mais adiante) ficam como estão de
+  // propósito — nenhum fetch rodou ainda neste processo nestes pontos
+  // (guard de MV + leitura de platform.config.json/env são só I/O local
+  // síncrono), então não há socket keep-alive aberto que dispare o crash
+  // libuv (UV_HANDLE_CLOSING) do #4638/#1401.
   const mvComplete = coverage !== null && coverage.poolSize > 0 && coverage.processedCount >= coverage.poolSize;
   if (push) {
     try {
@@ -602,12 +608,19 @@ async function main(): Promise<void> {
   }
   writeStore(nextStore, DEFAULT_STORE_PATH);
   log(`push concluído: ${applied} ingerido(s), ${failed} falha(s).`);
-  if (failed > 0) process.exit(1);
+  // Windows fix (#4651, mesma classe do #4638/#1401): fetchPendingBeehiivSubscriptions
+  // (incondicional, mais acima) já garante um await fetch antes deste ponto — e,
+  // no caminho normal com `selected` não-vazio, o loop `ingestContactToBrevo`
+  // acima também faz fetch — de qualquer forma, process.exit() arriscaria o
+  // crash libuv (UV_HANDLE_CLOSING) com sockets keep-alive ainda abertos.
+  if (failed > 0) process.exitCode = 1;
 }
 
 if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     process.stderr.write(`[sync-pending-to-brevo] erro fatal: ${(e as Error).message}\n`);
-    process.exit(1);
+    // Windows fix (#4651): main() pode lançar depois de já ter feito await
+    // fetch — mesma razão do bloco acima.
+    process.exitCode = 1;
   });
 }

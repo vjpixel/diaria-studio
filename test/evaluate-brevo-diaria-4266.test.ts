@@ -11,6 +11,9 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   computeCountsFromBrevoStatistics,
   computeMatureCountsFromBrevoStatistics,
@@ -1411,5 +1414,60 @@ describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fix
     } finally {
       restore();
     }
+  });
+});
+
+describe("evaluate-brevo-diaria.ts exit semantics (#4651, mesma classe do #4638/#1401)", () => {
+  // Regressão: process.exit(1) chamado DEPOIS de um await fetch
+  // (reconcileStoreWithBrevoList + runEvaluation, que faz múltiplas chamadas
+  // Brevo/Beehiiv por contato) derruba o processo no Windows com
+  // UV_HANDLE_CLOSING enquanto o fetch agent ainda tem sockets keep-alive
+  // abertos. Fix: process.exitCode nos dois branches pós-await (dry-run com
+  // failed>0, que já tinha um `return` logo depois; --push com failed>0, que
+  // já era a última instrução de main()) e no catch handler do
+  // isMainModule(). Os guards pré-await (brevo_diaria/list_id ausente, API
+  // key ausente pro --push) ficam como process.exit(2) de propósito —
+  // nenhum fetch rodou ainda nesses pontos.
+  const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "evaluate-brevo-diaria.ts");
+
+  function readMainAndCatchBodies(): { mainBody: string; catchBody: string } {
+    const source = readFileSync(SCRIPT, "utf8");
+    const sourceNoComments = source.replace(/\/\/.*$/gm, "");
+    const mainMatch = sourceNoComments.match(/async function main\([^)]*\)[^{]*\{[\s\S]*?\n\}\n\nif \(isMainModule/);
+    assert.ok(mainMatch, "main() não encontrada em evaluate-brevo-diaria.ts");
+    const catchMatch = sourceNoComments.match(/if \(isMainModule\(import\.meta\.url\)\) \{[\s\S]*?\n\}\n?$/);
+    assert.ok(catchMatch, "bloco isMainModule() não encontrado em evaluate-brevo-diaria.ts");
+    return { mainBody: mainMatch[0], catchBody: catchMatch[0] };
+  }
+
+  it("branches pós-await (exit 1 — dry-run e --push com failed>0) usam process.exitCode, não process.exit (#4651)", () => {
+    const { mainBody } = readMainAndCatchBodies();
+    assert.equal(
+      /process\.exit\(1\)/.test(mainBody),
+      false,
+      "process.exit(1) não deveria mais existir em main() — usar process.exitCode (#4651 Windows crash)",
+    );
+    // Duas ocorrências esperadas: branch dry-run e branch --push.
+    const matches = mainBody.match(/process\.exitCode = 1/g) ?? [];
+    assert.equal(matches.length, 2, `esperava 2 ocorrências de process.exitCode = 1 (dry-run + --push), achei ${matches.length}`);
+  });
+
+  it("guards pré-await (exit 2 — brevo_diaria/list_id, API key) continuam com process.exit — sem risco libuv (#4651)", () => {
+    const { mainBody } = readMainAndCatchBodies();
+    assert.match(
+      mainBody,
+      /process\.exit\(2\)/,
+      "process.exit(2) deveria continuar existindo (guards pré-await, seguros)",
+    );
+  });
+
+  it("catch handler do isMainModule() usa process.exitCode, não process.exit (#4651)", () => {
+    const { catchBody } = readMainAndCatchBodies();
+    assert.equal(
+      /process\.exit\s*\(/.test(catchBody),
+      false,
+      "catch de main() não pode chamar process.exit() — usar process.exitCode (#4651 Windows crash)",
+    );
+    assert.match(catchBody, /process\.exitCode/, "catch de main() deve setar process.exitCode");
   });
 });
