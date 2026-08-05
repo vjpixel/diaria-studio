@@ -1880,9 +1880,13 @@ export function parseAbcAudienceCampaign(
   // não há naming-only equivalente, a campanha retorna null (ver teste
   // "sem listName → null" abaixo).
   //
-  // Não há gerador desse formato de nome de lista neste repo (diferente do
-  // nome de CAMPANHA, que `scripts/clarice-schedule-group.ts` produz de forma
-  // determinística) — foi digitado à mão pra este ciclo. `c[eé]lula` aceita
+  // Esse formato JÁ TEM gerador desde o #4449/#4471 (`groupCellListNameFor`
+  // em `scripts/clarice-import-waves.ts`, ligado ao ponto real de criação da
+  // lista via `resolveListName`), e desde o #4657 as próprias CHAVES vêm
+  // geradas (`waveKey` em `scripts/lib/clarice-wave-plan.ts`) — o round-trip
+  // gerador→parser é travado por teste em `test/clarice-wave-plan.test.ts`.
+  // Este comentário dizia "não há gerador... foi digitado à mão pra este
+  // ciclo", o que descrevia o 2607-08 e deixou de valer. `c[eé]lula` aceita
   // as duas grafias (sem/com acento) de propósito: a #4447 original só
   // testava a forma sem acento e um retype com "célula" (grafia correta em
   // PT-BR, usada em todo o resto deste arquivo) reproduziria o MESMO bug —
