@@ -18,7 +18,15 @@ import {
   MV_COST_PER_EMAIL_USD,
   type WaveProposalInput,
 } from "../scripts/lib/clarice-wave-plan.ts";
-import { buildGroupCells, buildSingleWave, cellManifestFileName } from "../scripts/lib/clarice-group-cells.ts";
+import {
+  buildGroupCells,
+  buildSingleWave,
+  cellManifestFileName,
+  manifestOf,
+  resolveCellStrategy,
+  unknownFlags,
+} from "../scripts/lib/clarice-group-cells.ts";
+import { resolveListName } from "../scripts/clarice-import-waves.ts";
 import { parseDatesArg } from "../scripts/clarice-plan-wave.ts";
 import { groupCellListNameFor } from "../scripts/clarice-import-waves.ts";
 import { parseAbcAudienceCampaign } from "../workers/brevo-dashboard/src/index.ts";
@@ -245,21 +253,22 @@ describe("buildGroupCells (#4657 — fecha o item 3 da #4449)", () => {
   const rows = Array.from({ length: 10 }, (_, i) => ({ email: `p${i}@x.com` }));
 
   it("divide em 3 células com tamanhos o mais iguais possível", () => {
-    const { cells, manifest } = buildGroupCells(rows, 6, "2026-08-06");
-    assert.deepEqual(manifest.map((m) => m.count), [4, 3, 3]);
-    assert.equal(cells.flat().length, 10);
+    const a = buildGroupCells(rows, 6, "2026-08-06");
+    assert.deepEqual(manifestOf(a).map((m) => m.count), [4, 3, 3]);
+    assert.equal(a.cells.flatMap((c) => c.rows).length, 10);
   });
 
   it("nenhum contato aparece em duas células", () => {
     const { cells } = buildGroupCells(rows, 6, "2026-08-06");
-    const all = cells.flat().map((r) => r.email);
+    const all = cells.flatMap((c) => c.rows).map((r) => r.email);
     assert.equal(new Set(all).size, all.length);
   });
 
   it("as chaves são GERADAS e o groupKey é o do dia (o --group do import)", () => {
-    const { groupKey, manifest } = buildGroupCells(rows, 6, "2026-08-06");
-    assert.equal(groupKey, "d6-qui06");
-    assert.deepEqual(manifest.map((m) => m.key), ["d6-qui06-A", "d6-qui06-B", "d6-qui06-C"]);
+    const a = buildGroupCells(rows, 6, "2026-08-06");
+    assert.equal(a.groupKey, "d6-qui06");
+    assert.deepEqual(manifestOf(a).map((m) => m.key), ["d6-qui06-A", "d6-qui06-B", "d6-qui06-C"]);
+    const groupKey = a.groupKey;
     assert.equal(cellManifestFileName(groupKey), "d6-qui06-manifest.json");
   });
 
@@ -267,8 +276,7 @@ describe("buildGroupCells (#4657 — fecha o item 3 da #4449)", () => {
     // Este é o teste que faltava pra "o nome da lista nunca é digitado" ser
     // verdade: antes, o manifest de 3 entradas era escrito à mão (era esse o
     // "digitado à mão" da #4449, que sobreviveu ao #4471).
-    const { manifest } = buildGroupCells(rows, 6, "2026-08-06");
-    for (const entry of manifest) {
+    for (const entry of manifestOf(buildGroupCells(rows, 6, "2026-08-06"))) {
       const listName = groupCellListNameFor("2607-08", entry.key);
       const parsed = parseAbcAudienceCampaign(`Clarice 2608 grupo:${entry.key}`, listName);
       assert.ok(parsed, `não parseou: ${listName}`);
@@ -282,19 +290,85 @@ describe("buildGroupCells (#4657 — fecha o item 3 da #4449)", () => {
     // `ramp-warm` do build-segment: 3 campanhas com o MESMO nome
     // (`grupo:ramp-warm`) colidindo entre si, e `computeNextWaveNumber`
     // travado (porque `ramp-warm` não casa `d{N}-`).
-    const { groupKey, manifest, cells } = buildSingleWave(rows, 6, "2026-08-06");
-    assert.equal(groupKey, "d6-qui06");
+    const a = buildSingleWave(rows, 6, "2026-08-06");
+    const manifest = manifestOf(a);
+    assert.equal(a.groupKey, "d6-qui06");
     assert.equal(manifest.length, 1);
     assert.equal(manifest[0].key, "d6-qui06");
     assert.equal(manifest[0].count, 10);
-    assert.equal(cells[0].length, 10);
+    assert.equal(a.cells[0].rows.length, 10);
     // A chave gerada avança a numeração, ao contrário de 'ramp-warm':
     assert.equal(computeNextWaveNumber([{ key: manifest[0].key }]), 7);
   });
 
+  it("buildSingleWave: lista vazia não estoura", () => {
+    const a = buildSingleWave([], 6, "2026-08-06");
+    assert.equal(manifestOf(a)[0].count, 0);
+    assert.deepEqual(a.cells[0].rows, []);
+  });
+
+  it("REGRESSÃO: buildSingleWave COPIA as linhas, não aliasa o array do chamador", () => {
+    // `buildGroupCells` devolve arrays novos (de `stratify`). Aliasar aqui
+    // deixaria os dois construtores com contratos diferentes — o tipo de
+    // assimetria que produz "funcionou no teste, corrompeu na 3ª invocação".
+    const src = [{ email: "a@x.com" }, { email: "b@x.com" }];
+    const a = buildSingleWave(src, 6, "2026-08-06");
+    src.push({ email: "c@x.com" });
+    assert.equal(a.cells[0].rows.length, 2);
+  });
+
+  it("chave de onda única NÃO colide com as chaves de célula do mesmo dia", () => {
+    const single = manifestOf(buildSingleWave(rows, 6, "2026-08-06")).map((m) => m.key);
+    const abc = manifestOf(buildGroupCells(rows, 6, "2026-08-06")).map((m) => m.key);
+    assert.equal(new Set([...single, ...abc]).size, single.length + abc.length);
+  });
+
+  it("resolveCellStrategy: --no-cells escolhe onda única; ausência escolhe A/B/C", () => {
+    // Única lógica com consequência de produção no CLI (1 ou 3 listas na
+    // Brevo pra um envio real) e antes sem teste nenhum.
+    assert.equal(resolveCellStrategy(["--cycle", "2607-08", "--no-cells"]), "single");
+    assert.equal(resolveCellStrategy(["--cycle", "2607-08"]), "cells");
+    assert.equal(resolveCellStrategy(["--no-cells", "--dry-run"]), "single");
+  });
+
+  it("REGRESSÃO: typo em --no-cells é REJEITADO, nunca cai em 3 células calado", () => {
+    // `hasFlag` faz match exato: `--nocells` devolvia false e o script gerava
+    // A/B/C em silêncio — com assunto travado, 3 listas pro mesmo assunto.
+    assert.deepEqual(unknownFlags(["--no-cells"]), []);
+    assert.deepEqual(unknownFlags(["--nocells"]), ["--nocells"]);
+    assert.deepEqual(unknownFlags(["--no-cell"]), ["--no-cell"]);
+    // Flag COM valor não é confundida com flag booleana desconhecida:
+    assert.deepEqual(unknownFlags(["--cycle", "2607-08", "--dry-run"]), []);
+  });
+
+  it("REGRESSÃO: o nome da lista da onda de dia embute o CICLO, não o label", () => {
+    // `listNameFor` embute só `label`, e `summarizeCycleSends` atribui ciclo
+    // por `listName.includes(cycle)` — a atribuição dependia de o operador
+    // lembrar de digitar o ciclo no `--label`, sem nada forçando (#4660).
+    const entry = manifestOf(buildSingleWave(rows, 6, "2026-08-06"))[0];
+    const name = resolveListName(
+      { key: entry.key, file: entry.file, desc: entry.desc },
+      "Agosto/2026", // label SEM o ciclo — o caso que quebrava
+      "2607-08",
+      "d6-qui06",
+    );
+    assert.ok(name.includes("2607-08"), `nome sem ciclo: ${name}`);
+    // E continua atribuível pelo mesmo predicado que summarizeCycleSends usa:
+    assert.ok(name.includes("d6-qui06"));
+  });
+
+  it("grupo nomeado sem formato de dia mantém o naming de sempre (sem blast radius)", () => {
+    const name = resolveListName(
+      { key: "ramp-warm", file: "ramp-warm.csv", desc: "Ramp warm (1º envio seguro)" },
+      "Jun/2026",
+      "2607-08",
+      "ramp-warm",
+    );
+    assert.match(name, /^Clarice Jun\/2026 ramp-warm — /);
+  });
+
   it("lista vazia não estoura — 3 células vazias", () => {
-    const { manifest } = buildGroupCells([], 6, "2026-08-06");
-    assert.deepEqual(manifest.map((m) => m.count), [0, 0, 0]);
+    assert.deepEqual(manifestOf(buildGroupCells([], 6, "2026-08-06")).map((m) => m.count), [0, 0, 0]);
   });
 });
 

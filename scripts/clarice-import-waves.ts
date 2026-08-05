@@ -210,6 +210,18 @@ export function resolveListName(wave: WaveDef, label: string, cycle: string, gro
   if (group && /-[ABC]$/i.test(wave.key)) {
     return groupCellListNameFor(cycle, wave.key);
   }
+  // #4660: onda de DIA sem célula (`d6-qui06`, assunto travado — ver
+  // `buildSingleWave`). `listNameFor` embute `label`, NUNCA o ciclo, e
+  // `summarizeCycleSends` (clarice-wave-plan.ts) atribui campanha a ciclo por
+  // `listName.includes(cycle)`. Sem este branch, a atribuição dependia de o
+  // operador lembrar de digitar o ciclo no `--label` — convenção não
+  // documentada e não forçada por nada; esquecer jogava a campanha em
+  // `unscopedCount` silenciosamente. Só alcança chave com formato de dia:
+  // grupos nomeados (`engajados`, `ramp-warm`) não casam `^d\d+-` e seguem
+  // com o naming de sempre, sem blast radius.
+  if (group && /^d\d+-/.test(wave.key)) {
+    return `Clarice ${cycle} ${wave.key} — ${wave.desc}`;
+  }
   return listNameFor(wave, label);
 }
 
