@@ -162,6 +162,25 @@ export interface CycleSendState {
   sentCount: number;
   /** Ondas ainda agendadas pro futuro — imutáveis na Brevo. */
   scheduledCount: number;
+  /**
+   * Campanhas com naming `grupo:` que NÃO puderam ser atribuídas a ciclo
+   * nenhum, por falta de `listName` (a lista é a única fonte do ciclo mensal
+   * — o nome da campanha só tem `yymm`, ambíguo entre conteúdo e envio).
+   *
+   * Existe porque a versão original deste filtro era `if (c.listName &&
+   * !c.listName.includes(cycle)) continue` — um guard "pula-se-presente" que,
+   * sem `listName`, MANTINHA a campanha em qualquer ciclo. E `listName`
+   * depende de uma chamada de rede por lista que pode falhar
+   * individualmente, então uma campanha de OUTRO ciclo entrava no resumo,
+   * inflando `volumeSum`/`sentCount` e — pior — o `maxWaveN` que decide o
+   * número da próxima onda (chave duplicada). Achado por dois reviewers
+   * independentes no PR #4658.
+   *
+   * Agora essas campanhas são EXCLUÍDAS (dado ausente é mais seguro que dado
+   * errado, mesmo critério do guard `<3 células` do painel) e contadas aqui
+   * pra virar aviso — nunca sumir em silêncio.
+   */
+  unscopedCount: number;
 }
 
 /** Extrai a chave `{key}` de um nome de campanha `Clarice {yymm} grupo:{key}`. */
@@ -182,12 +201,19 @@ export function summarizeCycleSends(
   now: Date,
 ): CycleSendState {
   const waves: WaveState[] = [];
+  let unscopedCount = 0;
   for (const c of campaigns) {
     const key = groupKeyFromCampaignName(c.name ?? "");
     if (!key) continue;
     // A campanha só pertence a ESTE ciclo se a lista carrega o ciclo mensal —
     // o nome da campanha só tem `yymm`, que é ambíguo entre conteúdo e envio.
-    if (c.listName && !c.listName.includes(cycle)) continue;
+    // Sem `listName` NÃO dá pra afirmar o ciclo: excluir e contar (ver
+    // `unscopedCount`). Nunca "manter na dúvida" — era esse o bug original.
+    if (!c.listName) {
+      unscopedCount += 1;
+      continue;
+    }
+    if (!c.listName.includes(cycle)) continue;
     const when = c.scheduledAt ?? c.sentDate ?? null;
     // `BrevoCampaign` não tem `listId` — a lista vive em `recipients.lists`
     // (array; o fluxo `--group` sempre mira UMA lista por campanha, então o
@@ -221,7 +247,31 @@ export function summarizeCycleSends(
     volumeComplete: waves.length > 0 && waves.every((w) => w.volume !== null),
     sentCount,
     scheduledCount,
+    unscopedCount,
   };
+}
+
+/**
+ * Próximo número de onda: continua a numeração do ciclo (`d5` → `d6`), nunca
+ * reinicia. Extraída de `planWave` pra cá (PR #4658) porque é DECISÃO, não
+ * I/O: um off-by-one aqui reusa um número já usado e produz uma chave
+ * `grupo:` duplicada — que `summarizeCycleSends` depois funde ou conta duas
+ * vezes, a classe do #3682.
+ *
+ * Chave que não casa o padrão `d{N}-` é IGNORADA de propósito (grupos
+ * legítimos sem numeração, ex: `novos`, `d1-sab01-interno` já casa por
+ * prefixo). Ignorar é seguro aqui porque o efeito é sempre CONSERVADOR:
+ * no máximo o número proposto fica menor que o real, e aí o import aborta
+ * por conflito de nome de lista (`findExistingConflicts`) em vez de
+ * sobrescrever.
+ */
+export function computeNextWaveNumber(waves: Array<Pick<WaveState, "key">>): number {
+  let max = 0;
+  for (const w of waves) {
+    const n = /^d(\d+)-/.exec(w.key)?.[1];
+    if (n) max = Math.max(max, Number(n));
+  }
+  return max + 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -537,7 +587,23 @@ export interface WaveProposalInput {
   staleNote: string | null;
   /** Índice do 1º dia da onda (continua a numeração do ciclo). */
   startingWaveNumber: number;
+  /**
+   * `true` quando a consulta de campanhas comprometidas (`queued` ∪ `sent`)
+   * FALHOU. Vira bloqueio, nunca aviso: `fetchCommittedCampaignListIds` é
+   * documentada pra "falhar alto" justamente porque, sem ela, o set de
+   * exclusão fica vazio e a fila disponível é SUPERESTIMADA — o caminho do
+   * #3682, que reenviou 100% pra quem já tinha recebido.
+   */
+  committedLookupFailed: boolean;
 }
+
+/**
+ * Marca de proveniência: só `buildWaveProposal` a produz. Impede que outro
+ * call site monte `{ ...input, blockers: [] }` à mão e passe no typecheck
+ * pulando toda a computação de segurança — um `blockers: []` forjado é
+ * indistinguível de um "tudo certo" real (achado do review de tipos, #4658).
+ */
+declare const WAVE_PROPOSAL_BRAND: unique symbol;
 
 export interface WaveProposal extends WaveProposalInput {
   waves: PlannedWave[];
@@ -545,6 +611,8 @@ export interface WaveProposal extends WaveProposalInput {
   blockers: string[];
   /** Avisos que não impedem, mas o editor precisa ver antes de confirmar. */
   warnings: string[];
+  /** Ver `WAVE_PROPOSAL_BRAND`. Não construir à mão. */
+  readonly [WAVE_PROPOSAL_BRAND]: true;
 }
 
 /**
@@ -558,18 +626,36 @@ export interface WaveProposal extends WaveProposalInput {
  * entre "não pode" e "olha isso".
  */
 export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
+  // `perDay` tem que cobrir todo dia pedido. Antes isto caía num `?? 0`
+  // silencioso — uma onda de volume ZERO renderizada como se fosse plano
+  // legítimo. Lançar é o certo: é erro de programação do chamador, não
+  // estado do mundo (achado do review de testes, #4658).
+  if (input.volumes.perDay.length !== input.dates.length) {
+    throw new Error(
+      `volumes.perDay (${input.volumes.perDay.length}) não cobre dates (${input.dates.length}) — ` +
+        `proposta inconsistente, nunca preencher volume que faltou com 0.`,
+    );
+  }
+
   const withCells = input.abc.action !== "travar";
   const waves: PlannedWave[] = input.dates.map((date, i) => {
     const n = input.startingWaveNumber + i;
-    const volume = input.volumes.perDay[i] ?? input.volumes.perDay[input.volumes.perDay.length - 1] ?? 0;
     const keys = withCells
       ? (["A", "B", "C"] as const).map((cell) => waveKey(n, date, cell))
       : [waveKey(n, date)];
-    return { n, date, scheduledAt: scheduledAtForDate(date), volume, keys };
+    return { n, date, scheduledAt: scheduledAtForDate(date), volume: input.volumes.perDay[i], keys };
   });
 
   const blockers: string[] = [];
   const warnings: string[] = [];
+
+  if (input.committedLookupFailed) {
+    blockers.push(
+      "Consulta de campanhas comprometidas (queued/sent) FALHOU — sem ela a fila disponível é superestimada e " +
+        "quem já está agendado pode receber de novo (#3682). `fetchCommittedCampaignListIds` é documentada pra falhar alto; " +
+        "não agendar até a consulta voltar.",
+    );
+  }
 
   if (input.volumes.flagged || input.volumes.semaphore === "red") {
     blockers.push(
@@ -614,9 +700,16 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
       `${fmt(input.nonOpeners.count)} contatos elegíveis (${(input.nonOpeners.fraction * 100).toFixed(1)}% da base elegível) já receberam ${input.nonOpeners.minSends}+ envios sem NUNCA abrir — o sunset da #4430 nunca foi implementado, então eles voltam pra fila a cada onda e alimentam a reclamação de spam que depois freia o volume.`,
     );
   }
+  if (input.state.unscopedCount > 0) {
+    warnings.push(
+      `${input.state.unscopedCount} campanha(s) com naming 'grupo:' foram EXCLUÍDAS do resumo por não ter metadado de lista ` +
+        `(a lista é a única fonte do ciclo mensal). O quadro "já enviado" e a numeração da onda podem estar incompletos — ` +
+        `confira no painel da Brevo antes de confirmar.`,
+    );
+  }
   for (const c of input.abc.caveats) warnings.push(`Teste A/B/C: ${c}`);
 
-  return { ...input, waves, blockers, warnings };
+  return { ...input, waves, blockers, warnings } as WaveProposal;
 }
 
 function fmt(n: number): string {

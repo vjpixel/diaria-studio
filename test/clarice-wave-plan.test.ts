@@ -1,8 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   brtDayLabel,
   buildWaveProposal,
+  computeNextWaveNumber,
   groupKeyFromCampaignName,
   measureNonOpenerExposure,
   proposeVolumes,
@@ -15,6 +18,7 @@ import {
   MV_COST_PER_EMAIL_USD,
   type WaveProposalInput,
 } from "../scripts/lib/clarice-wave-plan.ts";
+import { buildGroupCells, cellManifestFileName } from "../scripts/lib/clarice-group-cells.ts";
 import { parseDatesArg } from "../scripts/clarice-plan-wave.ts";
 import { groupCellListNameFor } from "../scripts/clarice-import-waves.ts";
 import { parseAbcAudienceCampaign } from "../workers/brevo-dashboard/src/index.ts";
@@ -43,6 +47,20 @@ describe("scheduledAtForDate (#4657)", () => {
     // anterior pega. Rejeição por qualquer um dos dois caminhos serve; o que
     // não pode é passar.
     assert.throws(() => scheduledAtForDate("2026-14-01"), /data inválida|inexistente/);
+  });
+
+  it("REGRESSÃO: 29/02 é aceito em ano bissexto e rejeitado fora dele", () => {
+    // O caso "parece plausível, está errado" — o que o Date do JS mais
+    // gosta de 'consertar' em silêncio. 2028 é bissexto, 2026 não.
+    assert.equal(scheduledAtForDate("2028-02-29"), "2028-02-29T09:00:00.000Z");
+    assert.throws(() => scheduledAtForDate("2026-02-29"), /inexistente no calendário/);
+  });
+
+  it("o offset é FIXO o ano todo — Brasil não tem horário de verão desde 2019", () => {
+    // Trava a premissa contra alguém 'consertar' isto pra conversão via ICU
+    // no futuro: janeiro e julho têm que dar o mesmo horário UTC.
+    assert.ok(scheduledAtForDate("2026-01-15").endsWith("T09:00:00.000Z"));
+    assert.ok(scheduledAtForDate("2026-07-15").endsWith("T09:00:00.000Z"));
   });
 
   it("brtDayLabel dá o dia da semana em BRT", () => {
@@ -161,6 +179,26 @@ describe("summarizeCycleSends (#4657)", () => {
     assert.equal(state.waves.length, 0);
   });
 
+  it("REGRESSÃO: campanha SEM listName é EXCLUÍDA e contada, nunca mantida 'na dúvida'", () => {
+    // O guard original era `if (c.listName && !c.listName.includes(cycle))`
+    // — pula-se-presente. Sem listName (falha da chamada por lista, ou API
+    // key ausente), uma campanha de OUTRO ciclo entrava no resumo e inflava
+    // volumeSum/sentCount e o maxWaveN que decide a próxima chave.
+    const state = summarizeCycleSends(
+      [
+        campaign({ listName: "Clarice 2607-08 d1-sab01-A — célula A", listSize: 100 }),
+        campaign({ name: "Clarice 2608 grupo:d9-dom09-A", listSize: 9999 }), // sem listName
+      ],
+      "2607-08",
+      now,
+    );
+    assert.equal(state.waves.length, 1);
+    assert.equal(state.unscopedCount, 1);
+    assert.equal(state.volumeSum, 100);
+    // E não contamina a numeração da próxima onda:
+    assert.equal(computeNextWaveNumber(state.waves), 2);
+  });
+
   it("volume desconhecido faz o total virar PISO, não total exato", () => {
     const state = summarizeCycleSends(
       [
@@ -172,6 +210,76 @@ describe("summarizeCycleSends (#4657)", () => {
     );
     assert.equal(state.volumeComplete, false);
     assert.equal(state.volumeSum, 100);
+  });
+});
+
+describe("computeNextWaveNumber (#4657)", () => {
+  it("continua a numeração, nunca reinicia", () => {
+    assert.equal(computeNextWaveNumber([{ key: "d5-qua05-A" }, { key: "d1-sab01-A" }]), 6);
+  });
+
+  it("ciclo vazio começa em 1", () => {
+    assert.equal(computeNextWaveNumber([]), 1);
+  });
+
+  it("REGRESSÃO: número de 2 dígitos não perde pra 1 dígito (ordenação numérica, não lexical)", () => {
+    // "d9" > "d10" lexicalmente — se comparasse string, a próxima onda
+    // reusaria d10 e produziria chave/lista duplicada (classe do #3682).
+    assert.equal(computeNextWaveNumber([{ key: "d9-dom09" }, { key: "d10-seg10" }]), 11);
+  });
+
+  it("chave sem numeração é ignorada (grupos legítimos como 'novos')", () => {
+    assert.equal(computeNextWaveNumber([{ key: "novos" }, { key: "d3-seg03-A" }]), 4);
+  });
+
+  it("sufixo -interno do fluxo real casa pelo prefixo e conta", () => {
+    assert.equal(computeNextWaveNumber([{ key: "d1-sab01-interno" }]), 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Divisão em células — o naming determinístico ponta a ponta
+// ---------------------------------------------------------------------------
+
+describe("buildGroupCells (#4657 — fecha o item 3 da #4449)", () => {
+  const rows = Array.from({ length: 10 }, (_, i) => ({ email: `p${i}@x.com` }));
+
+  it("divide em 3 células com tamanhos o mais iguais possível", () => {
+    const { cells, manifest } = buildGroupCells(rows, 6, "2026-08-06");
+    assert.deepEqual(manifest.map((m) => m.count), [4, 3, 3]);
+    assert.equal(cells.flat().length, 10);
+  });
+
+  it("nenhum contato aparece em duas células", () => {
+    const { cells } = buildGroupCells(rows, 6, "2026-08-06");
+    const all = cells.flat().map((r) => r.email);
+    assert.equal(new Set(all).size, all.length);
+  });
+
+  it("as chaves são GERADAS e o groupKey é o do dia (o --group do import)", () => {
+    const { groupKey, manifest } = buildGroupCells(rows, 6, "2026-08-06");
+    assert.equal(groupKey, "d6-qui06");
+    assert.deepEqual(manifest.map((m) => m.key), ["d6-qui06-A", "d6-qui06-B", "d6-qui06-C"]);
+    assert.equal(cellManifestFileName(groupKey), "d6-qui06-manifest.json");
+  });
+
+  it("PARIDADE ponta a ponta: chave gerada → nome de lista → parser do painel", () => {
+    // Este é o teste que faltava pra "o nome da lista nunca é digitado" ser
+    // verdade: antes, o manifest de 3 entradas era escrito à mão (era esse o
+    // "digitado à mão" da #4449, que sobreviveu ao #4471).
+    const { manifest } = buildGroupCells(rows, 6, "2026-08-06");
+    for (const entry of manifest) {
+      const listName = groupCellListNameFor("2607-08", entry.key);
+      const parsed = parseAbcAudienceCampaign(`Clarice 2608 grupo:${entry.key}`, listName);
+      assert.ok(parsed, `não parseou: ${listName}`);
+      assert.equal(parsed.cycle, "2607-08");
+      assert.equal(parsed.cell, entry.key.slice(-1));
+    }
+  });
+
+  it("lista vazia não estoura — 3 células vazias", () => {
+    const { manifest } = buildGroupCells([], 6, "2026-08-06");
+    assert.deepEqual(manifest.map((m) => m.count), [0, 0, 0]);
   });
 });
 
@@ -425,13 +533,14 @@ function proposalInput(over: Partial<WaveProposalInput> = {}): WaveProposalInput
       spamSignal: { source: "postmaster", ratePct: 0.1, breach: false },
     },
     abc: { action: "continuar", metric: "clique", winner: "A", caveats: [], rationale: "…" },
-    state: { cycle: "2607-08", waves: [], volumeSum: 0, volumeComplete: false, sentCount: 0, scheduledCount: 0 },
+    state: { cycle: "2607-08", waves: [], volumeSum: 0, volumeComplete: false, sentCount: 0, scheduledCount: 0, unscopedCount: 0 },
     availableFirstSend: 50_000,
     mvBacklog: { total: 253_730, byCohort: [], estimatedCostUsd: 482 },
     nonOpeners: { count: 0, fraction: 0, minSends: 2 },
     brevoCredits: 148_947,
     staleNote: null,
     startingWaveNumber: 6,
+    committedLookupFailed: false,
     ...over,
   };
 }
@@ -448,7 +557,13 @@ describe("buildWaveProposal (#4657)", () => {
   });
 
   it("numera as ondas continuando o ciclo, nunca reiniciando", () => {
-    const p = buildWaveProposal(proposalInput({ dates: ["2026-08-06", "2026-08-07"], startingWaveNumber: 6 }));
+    const p = buildWaveProposal(
+      proposalInput({
+        dates: ["2026-08-06", "2026-08-07"],
+        volumes: { ...proposalInput().volumes, perDay: [1000, 1100], total: 2100 },
+        startingWaveNumber: 6,
+      }),
+    );
     assert.deepEqual(p.waves.map((w) => w.n), [6, 7]);
     assert.equal(p.waves[1].scheduledAt, "2026-08-07T09:00:00.000Z");
   });
@@ -473,6 +588,38 @@ describe("buildWaveProposal (#4657)", () => {
   it("BLOQUEIA quando a fila é menor que o volume proposto", () => {
     const p = buildWaveProposal(proposalInput({ availableFirstSend: 100 }));
     assert.match(p.blockers.join(" "), /Fila de 1º envio/);
+  });
+
+  it("REGRESSÃO #3682: falha na consulta de comprometidos BLOQUEIA, não avisa", () => {
+    // `fetchCommittedCampaignListIds` é documentada pra falhar alto: sem ela
+    // o set de exclusão fica vazio e a fila é superestimada — quem já está
+    // agendado recebe de novo. Antes isso era só um console.error, que nem
+    // entra no --json que a skill lê.
+    const p = buildWaveProposal(proposalInput({ committedLookupFailed: true }));
+    assert.match(p.blockers.join(" "), /campanhas comprometidas/);
+    assert.match(p.blockers.join(" "), /#3682/);
+  });
+
+  it("REGRESSÃO: perDay que não cobre dates LANÇA, nunca preenche com 0", () => {
+    // Antes caía num `?? 0` silencioso — uma onda de volume ZERO renderizada
+    // como se fosse plano legítimo.
+    assert.throws(
+      () =>
+        buildWaveProposal(
+          proposalInput({
+            dates: ["2026-08-06", "2026-08-07"],
+            volumes: { ...proposalInput().volumes, perDay: [1000] },
+          }),
+        ),
+      /não cobre dates/,
+    );
+  });
+
+  it("AVISA quando campanhas ficaram sem escopo de ciclo", () => {
+    const p = buildWaveProposal(
+      proposalInput({ state: { ...proposalInput().state, unscopedCount: 2 } }),
+    );
+    assert.match(p.warnings.join(" "), /EXCLUÍDAS do resumo/);
   });
 
   it("AVISA (sem bloquear) quando a fila acaba logo, apontando o MV como alavanca", () => {
@@ -510,6 +657,26 @@ describe("buildWaveProposal (#4657)", () => {
       }),
     );
     assert.match(p.warnings.join(" "), /Teste A\/B\/C: ressalva X/);
+  });
+});
+
+describe("clarice-plan-wave.ts é READ-ONLY (#4657)", () => {
+  it("não importa nenhum helper de ESCRITA da Brevo", () => {
+    // A PR afirma "read-only por construção". Sem este teste a afirmação
+    // vive só num comentário, e uma edição futura que adicione um POST
+    // passaria despercebida — num script cujo output autoriza envio pra
+    // dezenas de milhares de contatos.
+    const src = readFileSync(resolve(import.meta.dirname, "../scripts/clarice-plan-wave.ts"), "utf8");
+    for (const forbidden of ["brevoPost", "brevoPut", "brevoDelete", "brevoSendNow", "writeFileSync", "writeFileAtomic"]) {
+      assert.doesNotMatch(src, new RegExp(`\\b${forbidden}\\b`), `${forbidden} não pode aparecer neste script`);
+    }
+  });
+
+  it("só usa SELECT no store — nenhum INSERT/UPDATE/DELETE", () => {
+    const src = readFileSync(resolve(import.meta.dirname, "../scripts/clarice-plan-wave.ts"), "utf8");
+    for (const forbidden of ["INSERT", "UPDATE ", "DELETE", "DROP", "recomputeDerived"]) {
+      assert.doesNotMatch(src, new RegExp(forbidden), `${forbidden} não pode aparecer neste script`);
+    }
   });
 });
 

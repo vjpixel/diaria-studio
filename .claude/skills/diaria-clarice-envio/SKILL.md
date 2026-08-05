@@ -214,32 +214,50 @@ dezenas de milhares de e-mails.
 Só depois do `sim`. Nada aqui é novo: são os scripts já existentes, agora com
 os parâmetros que o editor confirmou.
 
-Para cada onda `d{N}` da proposta, e para cada chave de lista:
+**Atenção ao `--group`:** ele nomeia o MANIFEST a ler
+(`{grupo}-manifest.json`), não uma lista individual. Numa onda com teste
+A/B/C o `--group` é a chave do **dia** (`d6-qui06`), e o manifest dela
+contém as 3 entradas de célula (`d6-qui06-A/B/C`). Passar a chave de célula
+direto (`--group d6-qui06-A`) procura um arquivo que não existe.
+
+Para cada onda `d{N}` da proposta:
 
 ```bash
 # 1. Segmentar (dry-run primeiro, sempre)
 npx tsx scripts/clarice-build-segment.ts --group ramp-warm --cycle $CYCLE --budget {volume}
 
-# 2. Importar as listas — --execute AGUARDA o processo assíncrono e RECONCILIA
-#    a contagem (#4577/#4602: a Brevo dropa linha em silêncio; um contato foi
-#    perdido assim em 04/08). Processo failed/timeout ou contagem menor abortam.
-npx tsx scripts/clarice-import-waves.ts --cycle $CYCLE --group {key} --label "{label}" --execute
+# 2. Dividir em células A/B/C e gerar o manifest do dia.
+#    Só necessário quando a recomendação do Passo 2 for iniciar/continuar.
+#    Escreve {dia}-A/B/C.csv + {dia}-manifest.json com as chaves GERADAS.
+npx tsx scripts/clarice-split-group-cells.ts --cycle $CYCLE --wave {N} --date {YYYY-MM-DD} \
+  --from segments/ramp-warm.csv
 
-# 3. Criar a campanha como RASCUNHO
-npx tsx scripts/clarice-schedule-group.ts --cycle $CYCLE --key {key} --subject "{assunto}" --create
+# 3. Importar — --group é a chave do DIA. `--execute` AGUARDA o processo
+#    assíncrono e RECONCILIA a contagem (#4577/#4602: a Brevo dropa linha em
+#    silêncio; um contato foi perdido assim em 04/08). Processo failed/timeout
+#    ou contagem menor abortam a invocação inteira.
+npx tsx scripts/clarice-import-waves.ts --cycle $CYCLE --group {dia} --label "{label}" --execute
 
-# 4. Gabarito É IA? — OBRIGATÓRIO antes de agendar
+# 4. Criar a campanha como RASCUNHO — uma por célula
+npx tsx scripts/clarice-schedule-group.ts --cycle $CYCLE --key {dia}-A --subject "{assunto A}" --create
+
+# 5. Gabarito É IA? — OBRIGATÓRIO antes de agendar
 npx tsx scripts/close-poll.ts --brand clarice --cycle $CYCLE --edition {AAMMDD}
 
-# 5. Agendar
-npx tsx scripts/clarice-schedule-group.ts --cycle $CYCLE --key {key} --schedule-at {YYYY-MM-DD}
+# 6. Agendar
+npx tsx scripts/clarice-schedule-group.ts --cycle $CYCLE --key {dia}-A --schedule-at {YYYY-MM-DD}
 ```
 
-**O nome da lista nunca é digitado.** `clarice-import-waves.ts` deriva de
-`groupCellListNameFor` quando a chave termina em `-A`/`-B`/`-C` — e as chaves
-vêm de `waveKey()`, geradas. Digitar o nome à mão é o que quebrou o painel 3×
-(#3081 → #3128 → #4447); há teste de paridade gerador↔parser em
-`test/clarice-wave-plan.test.ts`.
+Sem teste A/B/C (recomendação `travar`), pular o passo 2 e usar
+`--group ramp-warm` / `--key {dia}` nos passos 3-6.
+
+**O nome da lista nunca é digitado — nem a chave.** A chave sai de
+`waveKey()` (passo 2) e o nome da lista de `groupCellListNameFor()`, que
+`clarice-import-waves.ts` aplica quando a chave termina em `-A`/`-B`/`-C`.
+Antes do passo 2 existir, esse manifest de 3 entradas era escrito à mão — era
+esse o "digitado à mão" da #4449, e ele sobreviveu ao #4471 (que ligou o
+gerador de NOME) porque quem se digitava era a CHAVE. Teste de paridade
+gerador↔parser em `test/clarice-wave-plan.test.ts`.
 
 ### Guards que não se pulam
 

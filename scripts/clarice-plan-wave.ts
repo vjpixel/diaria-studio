@@ -53,6 +53,7 @@ import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { requireCycleArg } from "./lib/clarice-paths.ts";
 import {
   buildWaveProposal,
+  computeNextWaveNumber,
   measureNonOpenerExposure,
   proposeVolumes,
   recommendAbcAction,
@@ -118,10 +119,17 @@ async function enrichWithLists(
           total: Number((body as { totalSubscribers?: unknown }).totalSubscribers ?? 0),
         });
       }
-    } catch {
-      // Lista inacessível (removida, permissão) — segue sem ela. O efeito
-      // aparece como campanha sem célula reconhecida, que a própria
-      // recomendação A/B/C já sinaliza via `suspectedDriftDays`.
+    } catch (err) {
+      // Lista inacessível (removida, permissão, rede). NÃO é inócuo: sem
+      // `listName` a campanha não pode ser atribuída a ciclo nenhum, e
+      // `summarizeCycleSends` a exclui contando em `unscopedCount` (que vira
+      // aviso). Antes este catch era vazio e o comentário afirmava que o
+      // efeito aparecia via `suspectedDriftDays` — falso: aquele sinal só
+      // existe dentro da tabela A/B/C, nunca tocava o resumo do ciclo.
+      console.error(
+        `⚠️  Metadados da lista ${id} indisponíveis: ${err instanceof Error ? err.message : err} — ` +
+          `campanhas que apontam pra ela ficam fora do resumo do ciclo.`,
+      );
     }
   }
   return campaigns.map((c) => {
@@ -182,16 +190,23 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
     db.close();
   }
 
+  // `fetchCommittedCampaignListIds` é documentada pra FALHAR ALTO: sem ela o
+  // set de exclusão fica vazio e a fila é superestimada (#3682 — reenvio 100%
+  // pra quem já tinha recebido). Antes esta falha virava só um `console.error`,
+  // que nem entra no `--json` que a skill de fato lê. Agora vira BLOQUEIO
+  // estrutural, como o crédito não-consultado já fazia.
   let committed = new Set<string>();
+  let committedLookupFailed = false;
   if (apiKey) {
     try {
       committed = await fetchCommittedCampaignListIds(apiKey);
     } catch (err) {
-      console.error(
-        `⚠️  Não foi possível consultar campanhas comprometidas: ${err instanceof Error ? err.message : err}. ` +
-          `A fila abaixo pode incluir quem já está agendado — confirme antes de agendar.`,
-      );
+      committedLookupFailed = true;
+      console.error(`⚠️  Consulta de campanhas comprometidas falhou: ${err instanceof Error ? err.message : err}`);
     }
+  } else {
+    // Sem chave a checagem nem foi tentada — mesma consequência prática.
+    committedLookupFailed = true;
   }
   const availableFirstSend = excludeCommittedToQueuedCampaigns(segmentRampWarm(rows), committed).length;
 
@@ -206,13 +221,6 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
     }
   }
 
-  // A numeração continua de onde o ciclo parou — `d6` depois de `d5`, nunca
-  // reinicia (o nome da lista é a chave que o painel usa pra agrupar).
-  const maxWaveN = state.waves.reduce((m, w) => {
-    const n = /^d(\d+)-/.exec(w.key)?.[1];
-    return n ? Math.max(m, Number(n)) : m;
-  }, 0);
-
   return buildWaveProposal({
     cycle: opts.cycle,
     dates: opts.dates,
@@ -224,7 +232,9 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
     nonOpeners: measureNonOpenerExposure(rows),
     brevoCredits,
     staleNote,
-    startingWaveNumber: maxWaveN + 1,
+    // Continua a numeração do ciclo — `d6` depois de `d5`, nunca reinicia.
+    startingWaveNumber: computeNextWaveNumber(state.waves),
+    committedLookupFailed,
   });
 }
 
