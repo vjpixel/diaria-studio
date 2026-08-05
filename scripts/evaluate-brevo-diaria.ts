@@ -4,11 +4,14 @@
  * fórmula de saída e checagem de descadastro nativo reescritas no #4476;
  * threshold de supressão corrigido pra n>=3 + janela de maturação de 48h
  * implementada no self-review pós-merge da issue #4476; piso de promoção
- * revisado de n>=2 pra n>=3 na sessão 260804; Passo 0 corrigido no #4630
- * (checa Beehiiv-já-ativo E `userUnsubscription` genuína antes de tratar
- * `emailBlacklisted` como descadastro nativo) e no #4633 (HTTP 404 na
- * propagação pra Beehiiv é falha PERMANENTE, não retentada pra sempre) — ver
- * `scripts/lib/shared/brevo-diaria-score.ts` pro racional completo)
+ * revisado de n>=2 pra n>=3 na sessão 260804 — ver
+ * `scripts/lib/shared/brevo-diaria-score.ts` pro racional completo do piso.
+ * Separadamente, Passo 0 corrigido no #4630 (checa Beehiiv-já-ativo E
+ * `userUnsubscription` genuína antes de tratar `emailBlacklisted` como
+ * descadastro nativo) e no #4633 (HTTP 404 na propagação pra Beehiiv é falha
+ * PERMANENTE, não retentada pra sempre) — o racional de #4630/#4633 vive nas
+ * seções `### #4630`/`### #4633` mais abaixo, NESTE arquivo, não em
+ * `brevo-diaria-score.ts`)
  *
  * Avaliação periódica dos contatos `in_brevo` do canal Brevo próprio do
  * editor: recomputa a TAXA de abertura (`computeBrevoDiariaOpenRate`,
@@ -509,6 +512,26 @@ export async function unlinkFromBrevoList(apiKey: string, listId: number, email:
 }
 
 /**
+ * **#4633** — erro nominal (não um cast estrutural ad-hoc) pra carregar o
+ * código HTTP de uma chamada à API da Beehiiv que falhou. Segue o precedente
+ * já existente no codebase (`Brevo429Signal` em `scripts/lib/brevo-client.ts`,
+ * checado via `instanceof`) em vez de `Error & { status?: number }` + 2
+ * assertions estruturais não relacionadas (uma no throw, outra no catch) —
+ * um rename futuro de `.status` quebraria essas assertions silenciosamente,
+ * sem sinal do compilador, reintroduzindo a classe de bug do #4633
+ * (type-design-analyzer, review do #4650).
+ */
+export class BeehiivHttpError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+    this.name = "BeehiivHttpError";
+  }
+}
+
+/**
  * Propaga o descadastro NATIVO detectado no passo 0 pra Beehiiv (#4538) —
  * `PUT .../subscriptions/by_email/{email}` com `{unsubscribe: true}`, o campo
  * documentado pela API pública (não `status`, que não é gravável nesse
@@ -520,7 +543,7 @@ export async function unlinkFromBrevoList(apiKey: string, listId: number, email:
  * `in_brevo` e retenta na próxima rodada quando a propagação não é
  * confirmada, ver `verifyUnsubscribedInBeehiiv`).
  *
- * **#4633** — o `Error` lançado carrega `.status` (o código HTTP da
+ * **#4633** — lança `BeehiivHttpError` (carrega `.status`, o código HTTP da
  * resposta) pra que o caller distinga 404 (PERMANENTE — nenhum registro
  * Beehiiv pra este e-mail, nunca vai confirmar) de qualquer outro erro
  * (transitório — 5xx, timeout — retenta na próxima rodada como antes). Sem
@@ -543,11 +566,10 @@ export async function unsubscribeInBeehiiv(
   );
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    const err = new Error(
+    throw new BeehiivHttpError(
       `Beehiiv API PUT subscriptions/by_email/${email} (unsubscribe:true) falhou (HTTP ${res.status}): ${text}`,
-    ) as Error & { status?: number };
-    err.status = res.status;
-    throw err;
+      res.status,
+    );
   }
 }
 
@@ -891,6 +913,17 @@ export interface RunEvaluationResult {
   store: BrevoDiariaStore;
   /** #4476 item 7 — descadastro nativo detectado (saída terminal distinta de `suppressed`). */
   unsubscribedNative: number;
+  /**
+   * #4633, subconjunto de `unsubscribedNative` (silent-failure-hunter, review
+   * do #4650) — quantos desses descadastros nativos foram resolvidos via 404
+   * PERMANENTE da Beehiiv (`resolution_reason: "native_unsubscribe_beehiiv_404"`)
+   * em vez da confirmação normal (`verifyUnsubscribedInBeehiiv` mostrando
+   * `"inactive"`). Sem este campo separado, os dois caminhos incrementam o
+   * mesmo `unsubscribedNative` e a distinção só sobrevive per-contato em
+   * `resolution_reason` — fácil de perder entre muitos contatos, minando o
+   * próprio objetivo de auditabilidade que o #4633 promete.
+   */
+  unsubscribedNativeBeehiivNotFound: number;
   selfConfirmed: number;
   promoted: number;
   suppressed: number;
@@ -918,6 +951,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
   let store = params.store;
 
   let unsubscribedNative = 0;
+  let unsubscribedNativeBeehiivNotFound = 0;
   let selfConfirmed = 0;
   let promoted = 0;
   let suppressed = 0;
@@ -993,8 +1027,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
                   await unsubscribeInBeehiiv(publicationId, beehiivApiKey, contact.email);
                   beehiivConfirmed = await verifyUnsubscribedInBeehiiv(publicationId, beehiivApiKey, contact.email);
                 } catch (e) {
-                  const status = (e as { status?: number }).status;
-                  if (status === 404) {
+                  if (e instanceof BeehiivHttpError && e.status === 404) {
                     // #4633: 404 é PERMANENTE — não existe (e nunca vai
                     // existir) registro Beehiiv pra este e-mail, então não há
                     // o que confirmar; retentar toda rodada só repetiria a
@@ -1013,6 +1046,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
                 if (permanentNotFound) {
                   await unlinkFromBrevoList(brevoApiKey, listId, contact.email);
                   store = applyNativeUnsubscribe(store, contact.email, new Date().toISOString(), "native_unsubscribe_beehiiv_404");
+                  unsubscribedNativeBeehiivNotFound++;
                   continue;
                 }
                 if (!beehiivConfirmed) {
@@ -1138,7 +1172,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     }
   }
 
-  return { store, unsubscribedNative, selfConfirmed, promoted, suppressed, kept, failed };
+  return { store, unsubscribedNative, unsubscribedNativeBeehiivNotFound, selfConfirmed, promoted, suppressed, kept, failed };
 }
 
 // ── main ─────────────────────────────────────────────────────────────────
@@ -1197,7 +1231,9 @@ async function main(): Promise<void> {
   });
 
   log(
-    `resumo: ${result.unsubscribedNative} descadastrado(s) nativamente, ${result.selfConfirmed} auto-confirmado(s), ` +
+    `resumo: ${result.unsubscribedNative} descadastrado(s) nativamente ` +
+      `(${result.unsubscribedNativeBeehiivNotFound} via 404 permanente Beehiiv, ver resolution_reason), ` +
+      `${result.selfConfirmed} auto-confirmado(s), ` +
       `${result.promoted} promovido(s) por taxa de abertura, ${result.suppressed} suprimido(s), ` +
       `${result.kept} mantido(s), ${result.failed} falha(s).`,
   );

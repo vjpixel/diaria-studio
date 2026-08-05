@@ -211,12 +211,12 @@ export function applySelfConfirmed(
  * engajamento baixo", mesmo que ambos liberem o slot da fila (item 5) do
  * mesmo jeito. Mesmo guard de idempotência dos outros `apply*` — só contatos
  * `in_brevo` transicionam; um contato já resolvido nunca regride.
- */
-/**
- * `reason` (#4633) — override pro caso HTTP 404 permanente na propagação
- * (`native_unsubscribe_beehiiv_404`, ver `RunEvaluationParams`/`runEvaluation`
- * em `evaluate-brevo-diaria.ts`); default `"native_unsubscribe"` cobre o
- * caso confirmado normalmente (releitura mostrou `inactive`).
+ *
+ * @param reason (#4633) — override pro caso HTTP 404 permanente na
+ * propagação (`native_unsubscribe_beehiiv_404`, ver
+ * `RunEvaluationParams`/`runEvaluation` em `evaluate-brevo-diaria.ts`);
+ * default `"native_unsubscribe"` cobre o caso confirmado normalmente
+ * (releitura mostrou `inactive`).
  */
 export function applyNativeUnsubscribe(
   store: BrevoDiariaStore,
