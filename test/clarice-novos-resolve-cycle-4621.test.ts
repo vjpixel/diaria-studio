@@ -3,7 +3,7 @@
  *
  * Achado ao vivo 260804: `clarice-novos-resolve-cycle.ts` caiu (D3, fallback
  * legítimo por design) do ciclo corrente `2607-08` pro ciclo `2605-06` — o
- * digest de JUNHO, ~2 meses desatualizado — porque `2607-08` não tinha
+ * digest de MAIO, ~2 meses desatualizado — porque `2607-08` não tinha
  * entrada em `campaigns-summary.json` (os envios reais daquele ciclo foram
  * montados via `clarice-build-segment.ts --group`/`clarice-schedule-group.ts
  * --group`, que nunca escrevem nesse arquivo). Este arquivo cobre o guard de
@@ -15,7 +15,14 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  existsSync as realExistsSync,
+  statSync as realStatSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -25,18 +32,33 @@ import {
   type ClariceActivityDeps,
   type ResolveLatestMonthlyCycleResult,
 } from "../scripts/lib/mensal/monthly-paths.ts";
-import { cycleHasClariceActivity, listClariceCycleDirs } from "../scripts/lib/clarice-paths.ts";
+import { cycleHasClariceActivity, listClariceCycleDirs, type ClariceCycleFsOps } from "../scripts/lib/clarice-paths.ts";
 import { main } from "../scripts/clarice-novos-resolve-cycle.ts";
+
+/** Fs ops de teste: existsSync/statSync reais + readdirSync que sempre lança (simula EBUSY/EPERM). */
+function throwingFsOps(err: NodeJS.ErrnoException): ClariceCycleFsOps {
+  return {
+    existsSync: realExistsSync,
+    statSync: realStatSync,
+    // @ts-expect-error -- assinatura mínima suficiente pro caso de teste (sem opts, sem overloads)
+    readdirSync: () => {
+      throw err;
+    },
+  };
+}
 
 function activityDeps(overrides: {
   cycles?: string[];
   activity?: Record<string, boolean>;
+  ioErrors?: string[];
 }): ClariceActivityDeps {
   const cycles = overrides.cycles ?? [];
   const activity = overrides.activity ?? {};
+  const ioErrors = overrides.ioErrors ?? [];
   return {
     listCyclesWithClariceDir: () => cycles,
     cycleHasActivity: (c) => activity[c] ?? false,
+    ioErrors: () => ioErrors,
   };
 }
 
@@ -106,6 +128,72 @@ test("listClariceCycleDirs: lista só subpastas com nome de ciclo válido", () =
 
 test("listClariceCycleDirs: base inexistente -> [] (nunca lança)", () => {
   assert.deepEqual(listClariceCycleDirs(join(tmpdir(), "nao-existe-" + Date.now())), []);
+});
+
+// ── Erro de IO não-ENOENT: fail-closed mas VISÍVEL, não fail-open silencioso
+// (#4621 follow-up, silent-failure-hunter). Injeta readdirSync mockado que
+// lança EBUSY (lock do OneDrive, p.ex.) — diferente de "pasta não existe"
+// (que existsSync já filtra ANTES do try, sem tocar o mock).
+
+test("cycleHasClariceActivity: readdirSync lança EBUSY -> false, mas onError é chamado com o motivo (não é 'sem atividade' silencioso)", () => {
+  const root = mkdtempSync(join(tmpdir(), "clarice-activity-ebusy-"));
+  try {
+    mkdirSync(join(root, "2607-08"), { recursive: true });
+    const errors: string[] = [];
+    const err = new Error("resource busy or locked") as NodeJS.ErrnoException;
+    err.code = "EBUSY";
+    const result = cycleHasClariceActivity("2607-08", root, (msg) => errors.push(msg), throwingFsOps(err));
+    assert.equal(result, false);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /EBUSY|resource busy/);
+    assert.match(errors[0], /cycleHasClariceActivity/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("cycleHasClariceActivity: onError default (sem override) imprime warning no stderr em erro de IO", () => {
+  const root = mkdtempSync(join(tmpdir(), "clarice-activity-ebusy-default-"));
+  try {
+    mkdirSync(join(root, "2607-08"), { recursive: true });
+    const origErr = console.error;
+    const captured: string[] = [];
+    console.error = (...a: unknown[]) => captured.push(a.join(" "));
+    try {
+      const err = new Error("permission denied") as NodeJS.ErrnoException;
+      err.code = "EPERM";
+      const result = cycleHasClariceActivity("2607-08", root, undefined, throwingFsOps(err));
+      assert.equal(result, false);
+    } finally {
+      console.error = origErr;
+    }
+    assert.ok(captured.some((line) => /EPERM|permission denied/.test(line)));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("listClariceCycleDirs: readdirSync lança EBUSY -> [], mas onError é chamado (comportamento visível difere de 'base genuinamente vazia')", () => {
+  const root = mkdtempSync(join(tmpdir(), "clarice-list-ebusy-"));
+  try {
+    const errors: string[] = [];
+    const err = new Error("resource busy or locked") as NodeJS.ErrnoException;
+    err.code = "EBUSY";
+    const result = listClariceCycleDirs(root, (msg) => errors.push(msg), throwingFsOps(err));
+    assert.deepEqual(result, []);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /EBUSY|resource busy/);
+    assert.match(errors[0], /listClariceCycleDirs/);
+
+    // Contraste explícito: base genuinamente vazia (sem erro) -> [] SEM chamar onError.
+    const cleanErrors: string[] = [];
+    const cleanResult = listClariceCycleDirs(root, (msg) => cleanErrors.push(msg));
+    assert.deepEqual(cleanResult, []);
+    assert.equal(cleanErrors.length, 0);
+    assert.notEqual(errors.length, cleanErrors.length); // comportamento visível DIFERE entre os dois "[]"
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 // ── mostRecentActiveClariceCycle ────────────────────────────────────────────
@@ -199,6 +287,25 @@ test("evaluateClariceActivityGuard: ciclo resolvido == ciclo ativo -> não diver
   assert.equal(guard.blocked, false);
 });
 
+test("evaluateClariceActivityGuard: ioErrors da deps propaga pro resultado (mesmo sem nenhum ciclo ativo encontrado)", () => {
+  const deps = activityDeps({ cycles: [], activity: {}, ioErrors: ["listClariceCycleDirs: falha ao listar ... (EBUSY)"] });
+  const guard = evaluateClariceActivityGuard("2605-06", true, false, deps);
+  assert.equal(guard.activeCycle, undefined); // sinal aparentemente "sem atividade" -- mas...
+  assert.deepEqual(guard.ioErrors, ["listClariceCycleDirs: falha ao listar ... (EBUSY)"]); // ...não é confiável
+});
+
+test("evaluateClariceActivityGuard: sem fallback -> ioErrors sempre [] (guard não avalia, não deveria ter lido nada)", () => {
+  const deps = activityDeps({ cycles: [], activity: {}, ioErrors: ["nunca deveria aparecer aqui"] });
+  const guard = evaluateClariceActivityGuard("2605-06", /* fallback */ false, false, deps);
+  assert.deepEqual(guard.ioErrors, []);
+});
+
+test("evaluateClariceActivityGuard: sem erro de IO -> ioErrors == []", () => {
+  const deps = activityDeps({ cycles: ["2607-08"], activity: { "2607-08": true } });
+  const guard = evaluateClariceActivityGuard("2605-06", true, false, deps);
+  assert.deepEqual(guard.ioErrors, []);
+});
+
 // ── Integração: main() da CLI (overrides injetados, sem tocar disco real) ──
 
 function makeResolveResult(cycle: string, fallback: boolean): ResolveLatestMonthlyCycleResult {
@@ -277,4 +384,32 @@ test("main(): sem fallback (ciclo mais recente candidato já pronto) -> guard n�
   assert.equal(exitCode, undefined);
   assert.ok(errs.some((e) => /ciclo resolvido: 2607-08/.test(e)));
   assert.ok(!errs.some((e) => /diverge/.test(e)));
+});
+
+// ── main(): erro de IO durante o guard não pode virar "sem atividade" silencioso
+// (#4621 follow-up, silent-failure-hunter) ──────────────────────────────────
+
+test("main(): ioErrors não-vazio sem --subject -> ABORTA (exit 1) com warning distinto, mesmo que activeCycle pareça undefined", () => {
+  const { exitCode, errs } = captureMain([], {
+    resolveCycle: () => makeResolveResult("2605-06", true),
+    activityDeps: activityDeps({ cycles: [], activity: {}, ioErrors: ["listClariceCycleDirs: falha ao listar data/clarice-subscribers/ (EBUSY)"] }),
+  });
+  assert.equal(exitCode, 1);
+  assert.ok(errs.some((e) => /erro\(s\) de IO/.test(e)));
+  assert.ok(errs.some((e) => /não conseguiu ler.*com confiança/.test(e)));
+  // Não pode ser confundido com o caminho "sem atividade" que segue em frente:
+  assert.ok(!errs.some((e) => /ciclo mais recente não estava pronto/.test(e)));
+});
+
+test("main(): ioErrors não-vazio COM --subject explícito -> não aborta, mas ainda avisa o erro de IO", () => {
+  const { exitCode, errs } = captureMain(["--subject", "Assunto explícito"], {
+    resolveCycle: (subjectOverride) => ({
+      ...makeResolveResult("2605-06", true),
+      subject: subjectOverride ?? "Assunto qualquer",
+    }),
+    activityDeps: activityDeps({ cycles: [], activity: {}, ioErrors: ["listClariceCycleDirs: falha ao listar data/clarice-subscribers/ (EBUSY)"] }),
+  });
+  assert.equal(exitCode, undefined);
+  assert.ok(errs.some((e) => /erro\(s\) de IO/.test(e)));
+  assert.ok(!errs.some((e) => /não conseguiu ler.*com confiança/.test(e))); // não abortou
 });

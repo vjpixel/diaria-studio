@@ -29,7 +29,7 @@
  * "data da edição é sempre explícita") — sem default, pra não rotular/ler o
  * ciclo errado perto da virada do mês.
  */
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, type Dirent } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg } from "./cli-args.ts";
@@ -123,29 +123,67 @@ export function ensureDir(dir: string): string {
 //
 // `campaigns-summary.json` (consultado por `resolveSubjectFromCampaignsSummary`
 // em monthly-paths.ts) só é escrito pelo pipeline canônico multi-bloco
-// (clarice-build-edition-sends.ts → clarice-split-cells.ts). Os envios ad-hoc
-// por grupo nomeado (clarice-build-segment.ts --group + clarice-schedule-group.ts
-// --group, ex: reativacao/novos) NUNCA escrevem nesse arquivo — mas escrevem
-// artefatos (segments/*.csv, segments/sent-or-queued.json,
-// segments/group-campaigns.json, waves/*) dentro de `clariceCycleDir(cycle)`.
-// Essa presença é o sinal barato de "esse ciclo teve envio de verdade
-// recentemente", usado como guard independente pra detectar quando
-// `resolve-cycle` caiu num fallback silenciosamente desatualizado.
+// (clarice-build-edition-sends.ts → clarice-split-cells.ts → clarice-schedule-sends.ts --create).
+// Os envios ad-hoc por grupo nomeado (clarice-build-segment.ts --group +
+// clarice-schedule-group.ts --group, ex: reativacao/novos) NUNCA escrevem
+// nesse arquivo — mas escrevem artefatos (segments/*.csv,
+// segments/sent-or-queued.json, segments/group-campaigns.json, waves/*)
+// dentro de `clariceCycleDir(cycle)`. Essa presença é o sinal barato de
+// "esse ciclo teve envio de verdade recentemente", usado como guard
+// independente pra detectar quando `resolve-cycle` caiu num fallback
+// silenciosamente desatualizado.
+
+/**
+ * Fs ops injetáveis pra teste (default = reais do `node:fs`). Permite
+ * simular falha de IO (EBUSY/EPERM/EACCES do OneDrive, p.ex.) sem depender
+ * de condição de corrida real no disco — ver `cycleHasClariceActivity`/
+ * `listClariceCycleDirs` (#4621 follow-up: fail-open silencioso em erro de
+ * IO era indistinguível de "genuinamente sem atividade").
+ */
+export interface ClariceCycleFsOps {
+  existsSync: typeof existsSync;
+  readdirSync: typeof readdirSync;
+  statSync: typeof statSync;
+}
+
+const DEFAULT_FS_OPS: ClariceCycleFsOps = { existsSync, readdirSync, statSync };
+
+/** Callback default de `onError`: imprime no stderr — nunca some em silêncio. */
+function warnToStderr(msg: string): void {
+  console.error(`⚠️  ${msg}`);
+}
 
 /**
  * O diretório do ciclo (`data/clarice-subscribers/{cycle}/`) existe e contém
  * pelo menos 1 arquivo (recursivo) — sinal de atividade real de envio, não
  * só a pasta criada vazia. Pure/IO: lê disco, nunca lança (retorna `false`
  * em qualquer erro, mesma disciplina de `hasReadyPreviewHtml`).
+ *
+ * `false` tem 2 causas bem diferentes: (a) o diretório genuinamente não tem
+ * arquivo (`existsSync` já filtrou "não existe" antes do try); (b) a leitura
+ * falhou por erro de IO inesperado (lock do OneDrive, permissão). (b) é
+ * silenciosamente indistinguível de (a) pro caller — por isso chama
+ * `onError` (default: warning no stderr) ANTES de retornar `false`, e aceita
+ * `onError` injetável pra quem precisa acumular o erro (ver
+ * `ClariceActivityDeps.ioErrors` em monthly-paths.ts, #4621 follow-up).
  */
-export function cycleHasClariceActivity(cycle: string, baseDir?: string): boolean {
+export function cycleHasClariceActivity(
+  cycle: string,
+  baseDir?: string,
+  onError: (msg: string) => void = warnToStderr,
+  fsOps: ClariceCycleFsOps = DEFAULT_FS_OPS,
+): boolean {
   if (!isValidCycle(cycle)) return false;
   const dir = clariceCycleDir(cycle, baseDir);
-  if (!existsSync(dir)) return false;
+  if (!fsOps.existsSync(dir)) return false;
   try {
-    const entries = readdirSync(dir, { recursive: true, withFileTypes: true });
+    const entries = fsOps.readdirSync(dir, { recursive: true, withFileTypes: true }) as Dirent[];
     return entries.some((e) => e.isFile());
-  } catch {
+  } catch (err) {
+    onError(
+      `cycleHasClariceActivity: falha ao ler ${dir} (${err instanceof Error ? err.message : String(err)}) — ` +
+        `tratando como "sem atividade" pra ESTE ciclo (fail-closed), mas o sinal de #4621 pode estar cego aqui.`,
+    );
     return false;
   }
 }
@@ -155,20 +193,33 @@ export function cycleHasClariceActivity(cycle: string, baseDir?: string): boolea
  * nome é um ciclo `{conteúdo}-{envio}` válido — candidatos a "ciclo com
  * atividade" antes do filtro `cycleHasClariceActivity`. `[]` se a base não
  * existir (nunca lança).
+ *
+ * Mesma disciplina de `cycleHasClariceActivity`: `[]` por erro de IO
+ * (distinto de "base ausente", já filtrado por `existsSync` antes do try)
+ * chama `onError` antes de retornar, pra não ficar indistinguível de "base
+ * genuinamente sem ciclos" (#4621 follow-up).
  */
-export function listClariceCycleDirs(baseDir?: string): string[] {
+export function listClariceCycleDirs(
+  baseDir?: string,
+  onError: (msg: string) => void = warnToStderr,
+  fsOps: ClariceCycleFsOps = DEFAULT_FS_OPS,
+): string[] {
   const base = baseDir ?? CLARICE_BASE;
-  if (!existsSync(base)) return [];
+  if (!fsOps.existsSync(base)) return [];
   try {
-    return readdirSync(base).filter((d) => {
-      if (!isValidCycle(d)) return false;
+    return fsOps.readdirSync(base).filter((d) => {
+      if (!isValidCycle(d as string)) return false;
       try {
-        return statSync(resolve(base, d)).isDirectory();
+        return fsOps.statSync(resolve(base, d as string)).isDirectory();
       } catch {
         return false;
       }
-    });
-  } catch {
+    }) as string[];
+  } catch (err) {
+    onError(
+      `listClariceCycleDirs: falha ao listar ${base} (${err instanceof Error ? err.message : String(err)}) — ` +
+        `tratando como "nenhum ciclo" (fail-closed), mas o sinal de #4621 pode estar cego aqui.`,
+    );
     return [];
   }
 }

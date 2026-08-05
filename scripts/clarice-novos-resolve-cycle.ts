@@ -14,7 +14,8 @@
  * `--group` — que nunca escrevem em `campaigns-summary.json`, então o D3
  * acima não os enxerga), o script ABORTA exigindo `--subject` explícito em
  * vez de aceitar o fallback silenciosamente (achado ao vivo 260804: caiu 2
- * meses pra trás, no digest de junho, com o ciclo de agosto já em envio real).
+ * meses pra trás, no digest de maio (2605-06), com o ciclo de julho (2607-08)
+ * já em envio real).
  * Ver `evaluateClariceActivityGuard` pra a lógica pura.
  *
  * Uso:
@@ -49,14 +50,26 @@ export function main(argv: string[] = process.argv.slice(2), overrides: ResolveC
 
   const activityDeps = overrides.activityDeps ?? clariceActivityDepsFromDisk();
   const guard = evaluateClariceActivityGuard(result.cycle, result.fallback, !!subjectOverride, activityDeps);
+  if (guard.ioErrors.length > 0) {
+    console.error(
+      `⚠️  guard de atividade Clarice (#4621) teve ${guard.ioErrors.length} erro(s) de IO ao ler ` +
+      `data/clarice-subscribers/ — o sinal de "ciclo mais recente com atividade" pode estar incompleto: ` +
+      guard.ioErrors.join("; "),
+    );
+  }
   if (guard.note) {
     console.error(`⚠️  ${guard.note}`);
   }
-  if (guard.blocked) {
+  const ioUncertain = guard.ioErrors.length > 0 && !subjectOverride;
+  if (guard.blocked || ioUncertain) {
     console.error(
-      `❌ fallback caiu mais de 1 ciclo mensal atrás do ciclo mais recente com atividade real em ` +
-      `data/clarice-subscribers/ (${guard.activeCycle}) — abortando pra evitar reenviar conteúdo ` +
-      `desatualizado (#4621). Passe --subject "Assunto explícito" pra confirmar ${result.cycle} mesmo assim.`,
+      guard.blocked
+        ? `❌ fallback caiu mais de 1 ciclo mensal atrás do ciclo mais recente com atividade real em ` +
+          `data/clarice-subscribers/ (${guard.activeCycle}) — abortando pra evitar reenviar conteúdo ` +
+          `desatualizado (#4621). Passe --subject "Assunto explícito" pra confirmar ${result.cycle} mesmo assim.`
+        : `❌ guard de atividade Clarice não conseguiu ler data/clarice-subscribers/ com confiança (erro de IO, ` +
+          `ver aviso acima) — abortando por segurança em vez de assumir "sem atividade" (#4621). Passe ` +
+          `--subject "Assunto explícito" pra confirmar ${result.cycle} mesmo assim.`,
     );
     process.exit(1);
   }
