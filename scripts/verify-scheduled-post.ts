@@ -217,17 +217,26 @@ async function main(): Promise<void> {
   const postId = args.values["post-id"];
   const editionDirRaw = args.values["edition-dir"];
 
+  // Windows fix (#4638, mesma classe do #1401 em validate-gemini-config.ts):
+  // process.exit() força libuv shutdown enquanto o fetch agent ainda tem
+  // sockets keep-alive abertos, disparando a assertion UV_HANDLE_CLOSING
+  // (exit 127/134) mesmo com o JSON de resultado já impresso corretamente.
+  // Fix: process.exitCode + return, deixando o event loop drenar sozinho —
+  // por isso cada `return` explícito abaixo é necessário (process.exitCode
+  // não interrompe o fluxo de controle como process.exit fazia).
   if (!postId) {
     process.stderr.write(
       "Uso: verify-scheduled-post.ts --post-id POST_ID --edition-dir data/editions/{AAMMDD}/\n",
     );
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
   if (!editionDirRaw) {
     process.stderr.write(
       "Uso: verify-scheduled-post.ts --post-id POST_ID --edition-dir data/editions/{AAMMDD}/\n",
     );
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
 
   const editionDir = resolve(ROOT, editionDirRaw);
@@ -238,7 +247,8 @@ async function main(): Promise<void> {
     post = await fetchPost(cfg, postId);
   } catch (e) {
     process.stderr.write(`[verify-scheduled-post] erro API: ${(e as Error).message}\n`);
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
 
   const now = new Date();
@@ -269,14 +279,20 @@ async function main(): Promise<void> {
   //   0 = scheduled (agendado corretamente)
   //   1 = published (envio imediato — requer ação)
   //   2 = unknown/draft ou erro (já tratado acima)
-  if (result.state === "scheduled") process.exit(0);
-  if (result.immediate_send_detected) process.exit(1);
-  process.exit(2);
+  if (result.state === "scheduled") {
+    process.exitCode = 0;
+    return;
+  }
+  if (result.immediate_send_detected) {
+    process.exitCode = 1;
+    return;
+  }
+  process.exitCode = 2;
 }
 
 if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     process.stderr.write(`Fatal error: ${(e as Error).message}\n`);
-    process.exit(2);
+    process.exitCode = 2;
   });
 }
