@@ -375,6 +375,11 @@ export async function main(rootDirOverride?: string): Promise<void> {
   const reviewedCopy = hasFlag(argv, "i-reviewed-the-copy");
   const log = (msg: string) => process.stderr.write(`[publish-daily-brevo] ${msg}\n`);
 
+  // #4651: os process.exit() abaixo até o 1º `await` de rede (brevoGetList,
+  // linha ~436) ficam como estão de propósito — nenhum fetch rodou ainda
+  // neste processo nestes pontos, então não há socket keep-alive aberto que
+  // dispare o crash libuv (UV_HANDLE_CLOSING) do #4638/#1401. Só os exits
+  // POSTERIORES a esse await foram convertidos pra process.exitCode + return.
   if (!editionDirArg) {
     log("uso: npx tsx scripts/publish-daily-brevo.ts <edition-dir> [--dry-run] [--i-reviewed-the-copy]");
     process.exit(1);
@@ -438,7 +443,12 @@ export async function main(rootDirOverride?: string): Promise<void> {
   const capCheck = checkDailySendCap(listInfo.totalSubscribers, cap);
   if (!capCheck.ok) {
     log(`ERRO: ${(capCheck as { ok: false; reason: string }).reason}`);
-    process.exit(3);
+    // Windows fix (#4651, mesma classe do #4638/#1401): process.exit() após
+    // um await fetch (brevoGetList acima) derruba o processo no Windows com
+    // UV_HANDLE_CLOSING enquanto o fetch agent ainda tem sockets keep-alive
+    // abertos. process.exitCode + return deixa o event loop drenar sozinho.
+    process.exitCode = 3;
+    return;
   }
 
   // #4517: popula o token opaco de voto (`POLL_TOKEN`) pra TODA a lista Brevo
@@ -453,7 +463,10 @@ export async function main(rootDirOverride?: string): Promise<void> {
   });
   if (!pollTokenGuard.ok) {
     log(`ERRO: ${(pollTokenGuard as { ok: false; reason: string }).reason}`);
-    process.exit(4);
+    // Windows fix (#4651): mesma razão do bloco acima — já houve await fetch
+    // (brevoGetList) antes deste ponto.
+    process.exitCode = 4;
+    return;
   }
   const injectionResult = await injectPollTokenBrevo({
     dryRun: false,
@@ -481,7 +494,10 @@ export async function main(rootDirOverride?: string): Promise<void> {
       `ERRO: ${injectionResult.failed} contato(s) da lista Brevo falharam ao receber o token opaco de voto (#4517) — ` +
         `abortando envio (nunca envia com merge tag sem token resolvido, fail-closed). Falhas: ${preview}${more}`,
     );
-    process.exit(5);
+    // Windows fix (#4651): já houve await fetch (brevoGetList +
+    // injectPollTokenBrevo, múltiplos PATCH/POST) antes deste ponto.
+    process.exitCode = 5;
+    return;
   }
 
   // #4532 (achado HIGH): reconcilia a enumeração de `injectPollTokenBrevo`
@@ -492,7 +508,9 @@ export async function main(rootDirOverride?: string): Promise<void> {
   const reconciliation = checkContactCountReconciliation(injectionResult.total_contacts, listInfo.totalSubscribers);
   if (!reconciliation.ok) {
     log(`ERRO: ${(reconciliation as { ok: false; reason: string }).reason}`);
-    process.exit(6);
+    // Windows fix (#4651): mesma razão dos blocos acima.
+    process.exitCode = 6;
+    return;
   }
 
   log(
@@ -518,6 +536,9 @@ export async function main(rootDirOverride?: string): Promise<void> {
 if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     process.stderr.write(`[publish-daily-brevo] erro fatal: ${(e as Error).message}\n`);
-    process.exit(1);
+    // Windows fix (#4651, mesma classe do #4638/#1401): main() pode lançar
+    // depois de já ter feito await fetch (brevoGetList/brevoPost/injectPollTokenBrevo)
+    // — process.exit() aqui arriscaria o mesmo crash libuv.
+    process.exitCode = 1;
   });
 }

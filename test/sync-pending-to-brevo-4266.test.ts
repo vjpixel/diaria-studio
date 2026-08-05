@@ -10,9 +10,10 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   fetchPendingBeehiivSubscriptions,
   computeContactsToIngest,
@@ -404,5 +405,56 @@ describe("loadOriginScores — leitura fail-soft do CSV de score-pending-origin.
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("sync-pending-to-brevo.ts exit semantics (#4651, mesma classe do #4638/#1401)", () => {
+  // Regressão: process.exit(1) chamado DEPOIS de um await fetch
+  // (fetchPendingBeehiivSubscriptions + ingestContactToBrevo no loop de
+  // --push) derruba o processo no Windows com UV_HANDLE_CLOSING enquanto o
+  // fetch agent ainda tem sockets keep-alive abertos. Fix: process.exitCode
+  // (sem `return` adicional — já era a última instrução de main()) e o mesmo
+  // no catch handler do isMainModule(). Os guards pré-await (--push sem MV,
+  // config ausente, list_id ausente, API key ausente pro --push) ficam como
+  // process.exit(2) de propósito — nenhum fetch rodou ainda nesses pontos.
+  const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "sync-pending-to-brevo.ts");
+
+  function readMainAndCatchBodies(): { mainBody: string; catchBody: string } {
+    const source = readFileSync(SCRIPT, "utf8");
+    const sourceNoComments = source.replace(/\/\/.*$/gm, "");
+    const mainMatch = sourceNoComments.match(/async function main\([^)]*\)[^{]*\{[\s\S]*?\n\}\n\nif \(isMainModule/);
+    assert.ok(mainMatch, "main() não encontrada em sync-pending-to-brevo.ts");
+    const catchMatch = sourceNoComments.match(/if \(isMainModule\(import\.meta\.url\)\) \{[\s\S]*?\n\}\n?$/);
+    assert.ok(catchMatch, "bloco isMainModule() não encontrado em sync-pending-to-brevo.ts");
+    return { mainBody: mainMatch[0], catchBody: catchMatch[0] };
+  }
+
+  it("branch pós-await (exit 1, resumo do --push) usa process.exitCode, não process.exit (#4651)", () => {
+    const { mainBody } = readMainAndCatchBodies();
+    assert.equal(
+      /process\.exit\(1\)/.test(mainBody),
+      false,
+      "process.exit(1) não deveria mais existir em main() — usar process.exitCode (#4651 Windows crash)",
+    );
+    assert.match(mainBody, /process\.exitCode = 1/, "process.exitCode = 1 deveria existir no branch pós-await");
+  });
+
+  it("guards pré-await (exit 2 — MV, config, list_id, API key) continuam com process.exit — sem risco libuv (#4651)", () => {
+    const { mainBody } = readMainAndCatchBodies();
+    assert.match(
+      mainBody,
+      /process\.exit\(2\)/,
+      "process.exit(2) deveria continuar existindo (guards pré-await, seguros)",
+    );
+  });
+
+  it("catch handler do isMainModule() usa process.exitCode, não process.exit (#4651)", () => {
+    const { catchBody } = readMainAndCatchBodies();
+    assert.equal(
+      /process\.exit\s*\(/.test(catchBody),
+      false,
+      "catch de main() não pode chamar process.exit() — usar process.exitCode (#4651 Windows crash)",
+    );
+    assert.match(catchBody, /process\.exitCode/, "catch de main() deve setar process.exitCode");
   });
 });

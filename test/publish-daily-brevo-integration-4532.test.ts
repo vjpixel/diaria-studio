@@ -244,6 +244,9 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = originalFetch;
   restoreProcessExit();
+  // #4651: defesa contra teste que falhar ANTES do reset explícito no corpo
+  // — nunca deixar process.exitCode vazar pro exit code real do test runner.
+  process.exitCode = undefined;
 });
 
 describe("publish-daily-brevo.ts main() — wiring fail-closed de ponta a ponta (#4532)", () => {
@@ -263,10 +266,15 @@ describe("publish-daily-brevo.ts main() — wiring fail-closed de ponta a ponta 
       // errado.
       installRouter({ totalSubscribers: 6, contactsPages: [[{ email: "a@x.com", attributes: {} }]] });
       process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy"];
-      mockProcessExit();
+      mockProcessExit(); // belt-and-suspenders: se main() voltar a chamar process.exit(), este teste falha alto.
+      process.exitCode = undefined;
 
-      await assert.rejects(() => main(root), /__mocked_exit__/);
-      assert.equal(exitCode, 4, "guard de credenciais do token de voto deveria abortar com exit(4)");
+      // #4651 (Windows fix, mesma classe do #4638): este branch já não chama
+      // process.exit(4) — seta process.exitCode + return, então main()
+      // RESOLVE normalmente em vez de rejeitar.
+      await main(root);
+      assert.equal(process.exitCode, 4, "guard de credenciais do token de voto deveria abortar com exitCode 4");
+      process.exitCode = undefined;
       assert.ok(
         !calls.some((c) => c.method === "GET" && c.pathname === `/v3/contacts/lists/${LIST_ID}/contacts`),
         `injectPollTokenBrevo nunca deveria ter enumerado a lista: ${JSON.stringify(calls)}`,
@@ -294,10 +302,13 @@ describe("publish-daily-brevo.ts main() — wiring fail-closed de ponta a ponta 
         putStatus: 500,
       });
       process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy"];
-      mockProcessExit();
+      mockProcessExit(); // belt-and-suspenders: se main() voltar a chamar process.exit(), este teste falha alto.
+      process.exitCode = undefined;
 
-      await assert.rejects(() => main(root), /__mocked_exit__/);
-      assert.equal(exitCode, 5, "falha de injeção em ≥1 contato deveria abortar com exit(5)");
+      // #4651: este branch já não chama process.exit(5) — resolve normalmente.
+      await main(root);
+      assert.equal(process.exitCode, 5, "falha de injeção em ≥1 contato deveria abortar com exitCode 5");
+      process.exitCode = undefined;
       assert.ok(
         calls.some((c) => c.method === "PUT" && c.pathname === `/v3/contacts/${encodeURIComponent("falha@x.com")}`),
         "a injeção deveria de fato ter tentado o PUT antes de falhar",
@@ -329,10 +340,13 @@ describe("publish-daily-brevo.ts main() — wiring fail-closed de ponta a ponta 
       // antigo e criando a campanha sem ninguém protegido.
       installRouter({ totalSubscribers: 6, contactsPages: [[]] });
       process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy"];
-      mockProcessExit();
+      mockProcessExit(); // belt-and-suspenders: se main() voltar a chamar process.exit(), este teste falha alto.
+      process.exitCode = undefined;
 
-      await assert.rejects(() => main(root), /__mocked_exit__/);
-      assert.equal(exitCode, 6, "divergência enumeração×lista deveria abortar com exit(6)");
+      // #4651: este branch já não chama process.exit(6) — resolve normalmente.
+      await main(root);
+      assert.equal(process.exitCode, 6, "divergência enumeração×lista deveria abortar com exitCode 6");
+      process.exitCode = undefined;
       assert.ok(
         !calls.some((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns"),
         "campanha nunca deveria ter sido criada com enumeração divergente da lista",

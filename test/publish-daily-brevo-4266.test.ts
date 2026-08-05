@@ -22,7 +22,9 @@ import {
   stripGreetingAndSupporterBlocks,
 } from "../scripts/publish-daily-brevo.ts";
 import type { NewsletterContent } from "../scripts/lib/newsletter-parse.ts";
-import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const baseDestaque = {
   n: 1 as const,
@@ -343,5 +345,67 @@ describe("buildDailyBrevoHtml — guard do bloco de intro obrigatório (#4266 it
     const { unresolvedImages } = buildDailyBrevoHtml(fixtureContent, {}, "<div>INTRO</div>");
     assert.ok(unresolvedImages.length > 0, "sem mapa de imagens, todo {{IMG:...}} do fixture deve ficar unresolved");
     assert.ok(unresolvedImages.includes("04-d1-2x1.jpg"), `esperava 04-d1-2x1.jpg em ${JSON.stringify(unresolvedImages)}`);
+  });
+});
+
+describe("publish-daily-brevo.ts exit semantics (#4651, mesma classe do #4638/#1401)", () => {
+  // Regressão: process.exit(N) chamado DEPOIS de um await fetch
+  // (brevoGetList/injectPollTokenBrevo/brevoPost) derruba o processo no
+  // Windows com UV_HANDLE_CLOSING enquanto o fetch agent ainda tem sockets
+  // keep-alive abertos (mesma classe já corrigida em verify-scheduled-post.ts
+  // pro #4638). Fix: process.exitCode + return nos branches PÓS-await (cap
+  // excedido, credenciais de token ausentes, falha de injeção, divergência de
+  // reconciliação) e no catch handler do isMainModule(). Os branches
+  // PRÉ-await (args ausentes, guard de config, assunto vazio) ficam como
+  // process.exit() de propósito — nenhum fetch rodou ainda nesses pontos.
+  const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "publish-daily-brevo.ts");
+
+  function readMainAndCatchBodies(): { mainBody: string; catchBody: string } {
+    const source = readFileSync(SCRIPT, "utf8");
+    const sourceNoComments = source.replace(/\/\/.*$/gm, "");
+    const mainMatch = sourceNoComments.match(/async function main\([^)]*\)[^{]*\{[\s\S]*?\n\}\n\nif \(isMainModule/);
+    assert.ok(mainMatch, "main() não encontrada em publish-daily-brevo.ts");
+    const catchMatch = sourceNoComments.match(/if \(isMainModule\(import\.meta\.url\)\) \{[\s\S]*?\n\}\n?$/);
+    assert.ok(catchMatch, "bloco isMainModule() não encontrado em publish-daily-brevo.ts");
+    return { mainBody: mainMatch[0], catchBody: catchMatch[0] };
+  }
+
+  it("branches pós-await (exit 3/4/5/6) usam process.exitCode, não process.exit (#4651)", () => {
+    const { mainBody } = readMainAndCatchBodies();
+    for (const code of [3, 4, 5, 6]) {
+      assert.equal(
+        new RegExp(`process\\.exit\\(${code}\\)`).test(mainBody),
+        false,
+        `process.exit(${code}) não deveria mais existir em main() — usar process.exitCode (#4651 Windows crash)`,
+      );
+      assert.match(
+        mainBody,
+        new RegExp(`process\\.exitCode = ${code}`),
+        `process.exitCode = ${code} deveria existir no branch pós-await correspondente`,
+      );
+    }
+  });
+
+  it("branches pré-await (exit 1/2/7 — args, config, assunto vazio) continuam com process.exit — sem risco libuv (#4651)", () => {
+    // Positive control: nenhum await fetch rodou ainda nestes pontos, então
+    // manter process.exit() ali é seguro e intencional.
+    const { mainBody } = readMainAndCatchBodies();
+    for (const code of [1, 2, 7]) {
+      assert.match(
+        mainBody,
+        new RegExp(`process\\.exit\\(${code}\\)`),
+        `process.exit(${code}) deveria continuar existindo (guard pré-await, seguro)`,
+      );
+    }
+  });
+
+  it("catch handler do isMainModule() usa process.exitCode, não process.exit (#4651)", () => {
+    const { catchBody } = readMainAndCatchBodies();
+    assert.equal(
+      /process\.exit\s*\(/.test(catchBody),
+      false,
+      "catch de main() não pode chamar process.exit() — usar process.exitCode (#4651 Windows crash)",
+    );
+    assert.match(catchBody, /process\.exitCode/, "catch de main() deve setar process.exitCode");
   });
 });

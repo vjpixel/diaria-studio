@@ -539,6 +539,12 @@ async function main(): Promise<void> {
   loadProjectEnv(ROOT);
   const log = (msg: string) => process.stderr.write(`${LOG_PREFIX} ${msg}\n`);
 
+  // #4651: os process.exit() abaixo até o 1º `await` de rede
+  // (runApoioReconciliationCycle, mais adiante) ficam como estão de
+  // propósito — nenhum fetch rodou ainda neste processo nestes pontos
+  // (leitura de platform.config.json/env é I/O local síncrono), então não
+  // há socket keep-alive aberto que dispare o crash libuv
+  // (UV_HANDLE_CLOSING) do #4638/#1401.
   const platformConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as PlatformConfig;
   const config = platformConfig.brevo_apoiadores;
   if (!config) {
@@ -595,7 +601,11 @@ async function main(): Promise<void> {
       `ERRO FATAL: chave apoia.se rejeitada durante a reconciliação de promessas pendentes (${cycle.authError}) — ` +
         "verifique APOIA_SE_API_KEY/APOIA_SE_API_SECRET. Sync abortado antes de tocar a Brevo.",
     );
-    process.exit(1);
+    // Windows fix (#4651, mesma classe do #4638/#1401): já houve await fetch
+    // (runApoioReconciliationCycle acima — drain Gmail/apoia.se) antes deste
+    // ponto — process.exit() arriscaria o crash libuv (UV_HANDLE_CLOSING).
+    process.exitCode = 1;
+    return;
   }
 
   const data = await buildApoiosData(ROOT);
@@ -647,7 +657,11 @@ async function main(): Promise<void> {
         "adições nem remoções. Confira se é uma virada de mês/instabilidade da apoia.se antes de usar " +
         "--force-blast-radius (decisão consciente do editor, sempre logada).",
     );
-    process.exit(1);
+    // Windows fix (#4651): já houve await fetch (runApoioReconciliationCycle,
+    // buildApoiosData e, quando list_id/apiKey presentes,
+    // fetchCurrentBrevoApoiadoresState) antes deste ponto.
+    process.exitCode = 1;
+    return;
   }
 
   if (removalsBlockedByPartialData && diff.toRemove.length > 0) {
@@ -669,12 +683,16 @@ async function main(): Promise<void> {
   );
 
   log(`push concluído: ${applied} aplicada(s), ${failed} falha(s).`);
-  if (failed > 0) process.exit(1);
+  // Windows fix (#4651): já houve await fetch (applyBrevoApoioDiff acima)
+  // antes deste ponto — mesma razão dos blocos anteriores.
+  if (failed > 0) process.exitCode = 1;
 }
 
 if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     process.stderr.write(`${LOG_PREFIX} erro fatal: ${(e as Error).message}\n`);
-    process.exit(1);
+    // Windows fix (#4651): main() pode lançar depois de já ter feito await
+    // fetch — mesma razão do bloco acima.
+    process.exitCode = 1;
   });
 }
