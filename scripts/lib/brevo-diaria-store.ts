@@ -66,8 +66,17 @@ export interface BrevoDiariaContact {
   /** ISO — quando status virou unsubscribed (#4476 item 7). */
   unsubscribed_at?: string;
   /** Motivo da supressão/promoção/descadastro — auditoria (#4266 self-review:
-   * nunca silenciar POR QUE um contato saiu do fluxo). */
-  resolution_reason?: "score_threshold" | "self_confirmed_beehiiv" | "native_unsubscribe";
+   * nunca silenciar POR QUE um contato saiu do fluxo). `native_unsubscribe_beehiiv_404`
+   * (#4633) é uma variante do descadastro nativo: a propagação pra Beehiiv
+   * encontrou HTTP 404 (nenhum registro de subscription pra esse e-mail —
+   * falha PERMANENTE, não transitória) — marcado `unsubscribed` mesmo sem a
+   * confirmação usual (`verifyUnsubscribedInBeehiiv`), já que não há o que
+   * confirmar; a divergência fica registrada aqui pra auditoria. */
+  resolution_reason?:
+    | "score_threshold"
+    | "self_confirmed_beehiiv"
+    | "native_unsubscribe"
+    | "native_unsubscribe_beehiiv_404";
 }
 
 export interface BrevoDiariaStore {
@@ -202,17 +211,24 @@ export function applySelfConfirmed(
  * engajamento baixo", mesmo que ambos liberem o slot da fila (item 5) do
  * mesmo jeito. Mesmo guard de idempotência dos outros `apply*` — só contatos
  * `in_brevo` transicionam; um contato já resolvido nunca regride.
+ *
+ * @param reason (#4633) — override pro caso HTTP 404 permanente na
+ * propagação (`native_unsubscribe_beehiiv_404`, ver
+ * `RunEvaluationParams`/`runEvaluation` em `evaluate-brevo-diaria.ts`);
+ * default `"native_unsubscribe"` cobre o caso confirmado normalmente
+ * (releitura mostrou `inactive`).
  */
 export function applyNativeUnsubscribe(
   store: BrevoDiariaStore,
   email: string,
   now: string = new Date().toISOString(),
+  reason: Extract<BrevoDiariaContact["resolution_reason"], "native_unsubscribe" | "native_unsubscribe_beehiiv_404"> = "native_unsubscribe",
 ): BrevoDiariaStore {
   const norm = normalizeEmail(email);
   return {
     contacts: store.contacts.map((c) => {
       if (c.email !== norm || c.status !== "in_brevo") return c;
-      return { ...c, status: "unsubscribed", unsubscribed_at: now, resolution_reason: "native_unsubscribe" };
+      return { ...c, status: "unsubscribed", unsubscribed_at: now, resolution_reason: reason };
     }),
   };
 }

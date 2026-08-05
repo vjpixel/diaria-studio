@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import {
   computeCountsFromBrevoStatistics,
   computeMatureCountsFromBrevoStatistics,
+  hasUserUnsubscription,
   evaluateContact,
   fetchBrevoContactState,
   fetchBeehiivSubscriptionStatus,
@@ -24,6 +25,7 @@ import {
   promoteBeehiivSubscription,
   unsubscribeInBeehiiv,
   verifyUnsubscribedInBeehiiv,
+  BeehiivHttpError,
   PROMOTION_VERIFY_RETRY_DELAY_MS,
   runEvaluation,
 } from "../scripts/evaluate-brevo-diaria.ts";
@@ -174,6 +176,32 @@ describe("computeMatureCountsFromBrevoStatistics — janela de maturação de 48
   });
 });
 
+describe("hasUserUnsubscription — sinal PRIMÁRIO de descadastro genuíno (#4630)", () => {
+  it("array userUnsubscription não-vazio → true", () => {
+    assert.equal(hasUserUnsubscription({ unsubscriptions: { userUnsubscription: [{ date: "x" }] } }), true);
+  });
+
+  it("array userUnsubscription vazio → false", () => {
+    assert.equal(hasUserUnsubscription({ unsubscriptions: { userUnsubscription: [] } }), false);
+  });
+
+  it("só adminUnsubscription (userUnsubscription ausente) → false — adminUnsubscription isolado nunca é genuíno", () => {
+    assert.equal(hasUserUnsubscription({ unsubscriptions: { adminUnsubscription: [{ date: "x" }] } }), false);
+  });
+
+  it("unsubscriptions ausente inteiro → false", () => {
+    assert.equal(hasUserUnsubscription({}), false);
+  });
+
+  it("statistics ausente (undefined) → false", () => {
+    assert.equal(hasUserUnsubscription(undefined), false);
+  });
+
+  it("userUnsubscription malformado (não-array) → false, fail-safe", () => {
+    assert.equal(hasUserUnsubscription({ unsubscriptions: { userUnsubscription: "not-an-array" as unknown as unknown[] } }), false);
+  });
+});
+
 describe("fetchBrevoContactState — 1 leitura, contadores + emailBlacklisted (#4476 item 7)", () => {
   const origFetch = globalThis.fetch;
   function restore() {
@@ -194,6 +222,7 @@ describe("fetchBrevoContactState — 1 leitura, contadores + emailBlacklisted (#
         mature_sends_count: 2,
         mature_opens_count: 1,
         emailBlacklisted: false,
+        userUnsubscribed: false, // #4630 — sem statistics.unsubscriptions.userUnsubscription no fixture
       });
     } finally {
       restore();
@@ -206,6 +235,42 @@ describe("fetchBrevoContactState — 1 leitura, contadores + emailBlacklisted (#
     try {
       const state = await fetchBrevoContactState("key", "a@b.com");
       assert.equal(state.emailBlacklisted, true);
+    } finally {
+      restore();
+    }
+  });
+
+  it("#4630 — userUnsubscription não-vazio no body → userUnsubscribed:true no estado (sinal PRIMÁRIO de descadastro genuíno)", async () => {
+    globalThis.fetch = (async () =>
+      jsonRes(200, {
+        emailBlacklisted: true,
+        statistics: {
+          messagesSent: [],
+          opened: [],
+          unsubscriptions: { userUnsubscription: [{ date: "2026-08-01T00:00:00.000Z" }], adminUnsubscription: [] },
+        },
+      })) as typeof fetch;
+    try {
+      const state = await fetchBrevoContactState("key", "a@b.com");
+      assert.equal(state.userUnsubscribed, true);
+    } finally {
+      restore();
+    }
+  });
+
+  it("#4630 — só adminUnsubscription (userUnsubscription vazio/ausente) → userUnsubscribed:false, mesmo com emailBlacklisted:true", async () => {
+    globalThis.fetch = (async () =>
+      jsonRes(200, {
+        emailBlacklisted: true,
+        statistics: {
+          messagesSent: [],
+          opened: [],
+          unsubscriptions: { adminUnsubscription: [{ date: "2026-08-01T00:00:00.000Z" }] },
+        },
+      })) as typeof fetch;
+    try {
+      const state = await fetchBrevoContactState("key", "a@b.com");
+      assert.equal(state.userUnsubscribed, false, "adminUnsubscription isolado NUNCA é sinal genuíno de descadastro (#4630)");
     } finally {
       restore();
     }
@@ -495,6 +560,14 @@ describe("unsubscribeInBeehiiv / verifyUnsubscribedInBeehiiv — propagação do
     await assert.rejects(() => unsubscribeInBeehiiv("pub_1", "key", "a@b.com", fetchImpl), /PUT subscriptions\/by_email.*unsubscribe:true.*falhou.*403/);
   });
 
+  it("unsubscribeInBeehiiv 404 → BeehiivHttpError lançado carrega .status === 404 (#4633, teste direto/isolado do contrato — antes só coberto indiretamente via runEvaluation)", async () => {
+    const fetchImpl = (async () => new Response("not found", { status: 404 })) as typeof fetch;
+    await assert.rejects(
+      () => unsubscribeInBeehiiv("pub_1", "key", "a@b.com", fetchImpl),
+      (e: unknown) => e instanceof BeehiivHttpError && e.status === 404,
+    );
+  });
+
   it('verifyUnsubscribedInBeehiiv: status "inactive" → true (confirmado)', async () => {
     const fetchImpl = (async () => jsonRes(200, { data: { status: "inactive" } })) as typeof fetch;
     assert.equal(await verifyUnsubscribedInBeehiiv("pub_1", "key", "a@b.com", fetchImpl), true);
@@ -581,17 +654,28 @@ describe("verifySuppressedInBrevo — releitura pós-supressão (#4398 fix 4)", 
   });
 });
 
-describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0", () => {
+describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0 (reescrito #4630/#4633)", () => {
   const origFetch = globalThis.fetch;
   function restore() {
     globalThis.fetch = origFetch;
   }
 
-  it("emailBlacklisted:true detectado ANTES de qualquer avaliação de score → unsubscribedNative, nunca kept/suppressed", async () => {
+  /** Evento `userUnsubscription` genuíno — presença mínima que
+   * `hasUserUnsubscription` exige (array não-vazio; conteúdo não importa). */
+  const userUnsubscriptionEvent = { date: "2026-08-01T00:00:00.000Z" };
+
+  it("emailBlacklisted:true + userUnsubscription genuína, não-active na Beehiiv → unsubscribedNative, nunca kept/suppressed/selfConfirmed (#4630)", async () => {
     globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
       const u = String(url);
-      if (u.includes("/contacts/")) return jsonRes(200, { emailBlacklisted: true, statistics: { messagesSent: [], opened: [] } });
-      throw new Error(`fetch inesperado (não deveria checar Beehiiv/self-confirmação): ${u} ${init?.method}`);
+      // #4630: pré-checagem Beehiiv-já-ativo (Passo 0) — não está active.
+      if (u.includes("subscriptions/by_email/")) return jsonRes(200, { data: { status: "pending" } });
+      if (u.includes("/contacts/")) {
+        return jsonRes(200, {
+          emailBlacklisted: true,
+          statistics: { messagesSent: [], opened: [], unsubscriptions: { userUnsubscription: [userUnsubscriptionEvent] } },
+        });
+      }
+      throw new Error(`fetch inesperado: ${u} ${init?.method}`);
     }) as typeof fetch;
 
     try {
@@ -616,9 +700,10 @@ describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0", () => {
     }
   });
 
-  it("push:true, releitura Beehiiv confirma 'inactive' → PUT unsubscribe:true emitido, unlinkFromBrevoList chamado, store marca status unsubscribed motivo native_unsubscribe (#4538 caso a)", async () => {
+  it("push:true, userUnsubscription genuína, releitura Beehiiv confirma 'inactive' → PUT unsubscribe:true emitido, unlinkFromBrevoList chamado, store marca status unsubscribed motivo native_unsubscribe (#4538 caso a, #4630)", async () => {
     const putCalls: { url: string; body: unknown }[] = [];
     let beehiivPutCalled = false;
+    let byEmailCalls = 0;
     globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
       const u = String(url);
       if (u.includes("api.beehiiv.com") && init?.method === "PUT") {
@@ -627,14 +712,22 @@ describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0", () => {
         return jsonRes(200, {});
       }
       if (u.includes("api.beehiiv.com") && u.includes("subscriptions/by_email/")) {
-        // releitura pós-propagação — confirma inactive
+        byEmailCalls++;
+        // 1ª chamada: pré-checagem Beehiiv-já-ativo do #4630 — não active.
+        if (byEmailCalls === 1) return jsonRes(200, { data: { status: "pending" } });
+        // 2ª chamada: releitura pós-propagação — confirma inactive.
         return jsonRes(200, { data: { status: "inactive" } });
       }
       if (init?.method === "PUT") {
         putCalls.push({ url: u, body: JSON.parse(init.body as string) });
         return jsonRes(200, {});
       }
-      if (u.includes("/contacts/")) return jsonRes(200, { emailBlacklisted: true, statistics: { messagesSent: [], opened: [] } });
+      if (u.includes("/contacts/")) {
+        return jsonRes(200, {
+          emailBlacklisted: true,
+          statistics: { messagesSent: [], opened: [], unsubscriptions: { userUnsubscription: [userUnsubscriptionEvent] } },
+        });
+      }
       throw new Error(`fetch inesperado: ${u} ${init?.method}`);
     }) as typeof fetch;
 
@@ -651,6 +744,7 @@ describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0", () => {
         log: () => {},
       });
       assert.equal(result.unsubscribedNative, 1);
+      assert.equal(result.unsubscribedNativeBeehiivNotFound, 0, "confirmação normal via releitura 'inactive' — não é o caminho 404 (silent-failure-hunter, review #4650)");
       assert.equal(result.failed, 0);
       assert.equal(beehiivPutCalled, true, "chamada Beehiiv (unsubscribe:true) foi emitida");
       assert.deepEqual(putCalls, [{ url: putCalls[0]?.url, body: { unlinkListIds: [7] } }]);
@@ -662,7 +756,7 @@ describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0", () => {
     }
   });
 
-  it("push:true, releitura Beehiiv NÃO confirma 'inactive' → contato segue in_brevo no store (nunca marcado unsubscribed sem confirmação), run sai com failed>0, unlinkFromBrevoList NUNCA chamado (#4538 caso b, fail-safe)", async () => {
+  it("push:true, userUnsubscription genuína, releitura Beehiiv NÃO confirma 'inactive' → contato segue in_brevo no store (nunca marcado unsubscribed sem confirmação), run sai com failed>0, unlinkFromBrevoList NUNCA chamado (#4538 caso b, fail-safe)", async () => {
     const brevoPutCalls: { body: unknown }[] = [];
     globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
       const u = String(url);
@@ -671,15 +765,21 @@ describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0", () => {
         return jsonRes(200, {});
       }
       if (u.includes("api.beehiiv.com") && u.includes("subscriptions/by_email/")) {
-        // ...mas a releitura NÃO confirma "inactive" — mesma armadilha do
-        // endpoint de tags, a mutação foi ignorada em silêncio.
+        // ...mas TODA leitura (pré-checagem #4630 E releitura pós-propagação)
+        // NÃO confirma "inactive" — mesma armadilha do endpoint de tags, a
+        // mutação foi ignorada em silêncio.
         return jsonRes(200, { data: { status: "pending" } });
       }
       if (init?.method === "PUT") {
         brevoPutCalls.push({ body: JSON.parse(init.body as string) });
         return jsonRes(200, {});
       }
-      if (u.includes("/contacts/")) return jsonRes(200, { emailBlacklisted: true, statistics: { messagesSent: [], opened: [] } });
+      if (u.includes("/contacts/")) {
+        return jsonRes(200, {
+          emailBlacklisted: true,
+          statistics: { messagesSent: [], opened: [], unsubscriptions: { userUnsubscription: [userUnsubscriptionEvent] } },
+        });
+      }
       throw new Error(`fetch inesperado: ${u} ${init?.method}`);
     }) as typeof fetch;
 
@@ -706,12 +806,19 @@ describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0", () => {
     }
   });
 
-  it("push:true, PUT pra Beehiiv lança (rede/HTTP) → mesmo fail-safe: contato segue in_brevo, failed>0, unlink nunca chamado", async () => {
+  it("push:true, userUnsubscription genuína, PUT pra Beehiiv retorna erro TRANSITÓRIO (500) → mesmo fail-safe: contato segue in_brevo, failed>0, unlink nunca chamado (cenário (d) do #4633 — nunca confundir com 404 permanente)", async () => {
     globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
       const u = String(url);
-      if (u.includes("api.beehiiv.com")) return new Response("boom", { status: 500 });
+      if (u.includes("api.beehiiv.com") && init?.method === "PUT") return new Response("boom", { status: 500 });
+      // #4630: pré-checagem Beehiiv-já-ativo — não active (500 é só na propagação em si).
+      if (u.includes("api.beehiiv.com") && u.includes("subscriptions/by_email/")) return jsonRes(200, { data: { status: "pending" } });
       if (init?.method === "PUT") throw new Error("unlinkFromBrevoList não deveria ser chamado");
-      if (u.includes("/contacts/")) return jsonRes(200, { emailBlacklisted: true, statistics: { messagesSent: [], opened: [] } });
+      if (u.includes("/contacts/")) {
+        return jsonRes(200, {
+          emailBlacklisted: true,
+          statistics: { messagesSent: [], opened: [], unsubscriptions: { userUnsubscription: [userUnsubscriptionEvent] } },
+        });
+      }
       throw new Error(`fetch inesperado: ${u} ${init?.method}`);
     }) as typeof fetch;
 
@@ -730,6 +837,233 @@ describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0", () => {
       assert.equal(result.failed, 1);
       const c = findContact(result.store, "unsub4@b.com")!;
       assert.equal(c.status, "in_brevo");
+      assert.equal(c.resolution_reason, undefined);
+    } finally {
+      restore();
+    }
+  });
+
+  it("push:true, userUnsubscription genuína, propagação retorna HTTP 404 (sem registro Beehiiv pra este e-mail) → marca unsubscribed DIRETO sem esperar confirmação (nada a confirmar), resolution_reason native_unsubscribe_beehiiv_404, nunca fica preso em in_brevo, nunca conta como failed (#4633, caso do achado ao vivo walterhaoliveira.rj@gmail.com)", async () => {
+    const brevoPutCalls: { body: unknown }[] = [];
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("api.beehiiv.com") && init?.method === "PUT") {
+        return new Response(
+          JSON.stringify({ status: 404, errors: [{ message: "Couldn't find subscriber", code: "RECORD_NOT_FOUND" }] }),
+          { status: 404 },
+        );
+      }
+      // #4630: pré-checagem Beehiiv-já-ativo — não active (404 é só na propagação PUT).
+      if (u.includes("api.beehiiv.com") && u.includes("subscriptions/by_email/")) return jsonRes(200, { data: { status: "pending" } });
+      if (init?.method === "PUT") {
+        brevoPutCalls.push({ body: JSON.parse(init.body as string) });
+        return jsonRes(200, {});
+      }
+      if (u.includes("/contacts/")) {
+        return jsonRes(200, {
+          emailBlacklisted: true,
+          statistics: { messagesSent: [], opened: [], unsubscriptions: { userUnsubscription: [userUnsubscriptionEvent] } },
+        });
+      }
+      throw new Error(`fetch inesperado: ${u} ${init?.method}`);
+    }) as typeof fetch;
+
+    try {
+      const contacts = [contact("orfao404@b.com")];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: true,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: () => {},
+      });
+      assert.equal(result.failed, 0, "404 é PERMANENTE, resolvido na mesma rodada — nunca fica marcado como falha (diferente do 5xx/timeout)");
+      assert.equal(result.unsubscribedNative, 1);
+      assert.equal(result.unsubscribedNativeBeehiivNotFound, 1, "sinal agregado distinto do caminho 404 (silent-failure-hunter, review #4650)");
+      assert.deepEqual(brevoPutCalls, [{ body: { unlinkListIds: [7] } }], "unlinkFromBrevoList AINDA é chamado — sai da lista Brevo mesmo sem registro Beehiiv");
+      const c = findContact(result.store, "orfao404@b.com")!;
+      assert.equal(c.status, "unsubscribed", "marcado direto — nunca preso em in_brevo esperando confirmação que nunca chegaria");
+      assert.equal(c.resolution_reason, "native_unsubscribe_beehiiv_404");
+    } finally {
+      restore();
+    }
+  });
+
+  it("emailBlacklisted:true SEM userUnsubscription (bounce/ação admin) MAS já ativo na Beehiiv → tratado como auto-confirmação, NUNCA reverte o assinante real (#4630, caso do achado ao vivo marcelo.nunes@safra.com.br)", async () => {
+    globalThis.fetch = (async (url: string | URL) => {
+      const u = String(url);
+      if (u.includes("subscriptions/by_email/")) return jsonRes(200, { data: { status: "active" } });
+      if (u.includes("/contacts/")) {
+        // emailBlacklisted:true sem statistics.unsubscriptions.userUnsubscription
+        // — só adminUnsubscription/bounce, nunca clique real do usuário.
+        return jsonRes(200, { emailBlacklisted: true, statistics: { messagesSent: [], opened: [] } });
+      }
+      throw new Error(`fetch inesperado: ${u}`);
+    }) as typeof fetch;
+
+    try {
+      const contacts = [contact("bounce-mas-ativo@b.com")];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: false,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: () => {},
+      });
+      assert.equal(result.selfConfirmed, 1, "tratado como auto-confirmação — a Beehiiv já mostra active");
+      assert.equal(result.unsubscribedNative, 0, "NUNCA a saída nativa — reverteria um assinante já confirmado (o bug original do #4630)");
+      assert.equal(result.failed, 0);
+    } finally {
+      restore();
+    }
+  });
+
+  it("push:true, mesmo caso acima (bounce/admin + Beehiiv já active) → applySelfConfirmed aplicado, unlinkFromBrevoList chamado, status final promoted_beehiiv/self_confirmed_beehiiv (nunca unsubscribed)", async () => {
+    let unlinkBody: unknown;
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("subscriptions/by_email/")) return jsonRes(200, { data: { status: "active" } });
+      if (init?.method === "PUT") {
+        unlinkBody = JSON.parse(init.body as string);
+        return jsonRes(200, {});
+      }
+      if (u.includes("/contacts/")) {
+        return jsonRes(200, { emailBlacklisted: true, statistics: { messagesSent: [], opened: [] } });
+      }
+      throw new Error(`fetch inesperado: ${u} ${init?.method}`);
+    }) as typeof fetch;
+
+    try {
+      const contacts = [contact("bounce-mas-ativo2@b.com")];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: true,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: () => {},
+      });
+      assert.equal(result.selfConfirmed, 1);
+      assert.deepEqual(unlinkBody, { unlinkListIds: [7] });
+      const c = findContact(result.store, "bounce-mas-ativo2@b.com")!;
+      assert.equal(c.status, "promoted_beehiiv");
+      assert.equal(c.resolution_reason, "self_confirmed_beehiiv");
+    } finally {
+      restore();
+    }
+  });
+
+  it("beehiivStatus active E userUnsubscription genuína simultâneos → active vence, NUNCA unsubscribedNative (ordem de prioridade #4630)", async () => {
+    // Beehiiv já mostra active E a Brevo tem um userUnsubscription genuíno pro
+    // mesmo contato — cenário deliberadamente ambíguo pra travar a ORDEM de
+    // checagem que o cabeçalho do módulo declara: "1. Status Beehiiv atual...
+    // se já active, trata como auto-confirmação... NUNCA reverte um
+    // assinante já confirmado. 2. Só se não-active: userUnsubscription".
+    globalThis.fetch = (async (url: string | URL) => {
+      const u = String(url);
+      if (u.includes("subscriptions/by_email/")) return jsonRes(200, { data: { status: "active" } });
+      if (u.includes("/contacts/")) {
+        return jsonRes(200, {
+          emailBlacklisted: true,
+          statistics: { messagesSent: [], opened: [], unsubscriptions: { userUnsubscription: [userUnsubscriptionEvent] } },
+        });
+      }
+      throw new Error(`fetch inesperado: ${u}`);
+    }) as typeof fetch;
+
+    try {
+      const contacts = [contact("active-e-unsub@b.com")];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: false,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: () => {},
+      });
+      assert.equal(result.selfConfirmed, 1, "Beehiiv já active vence — ordem de prioridade #4630, item 1 antes do item 2");
+      assert.equal(result.unsubscribedNative, 0, "NUNCA reverte um assinante já confirmado, mesmo com userUnsubscription genuína presente");
+      assert.equal(result.failed, 0);
+    } finally {
+      restore();
+    }
+  });
+
+  it("emailBlacklisted:true SEM userUnsubscription E sem estar ativo na Beehiiv → NÃO tratado como descadastro nativo (#4630, ruído de bounce/admin isolado), segue avaliação normal por score, beehiivStatus buscado 1x só (reusado entre passo 0 e passo 1)", async () => {
+    let byEmailCalls = 0;
+    globalThis.fetch = (async (url: string | URL) => {
+      const u = String(url);
+      if (u.includes("subscriptions/by_email/")) {
+        byEmailCalls++;
+        return jsonRes(200, { data: { status: "pending" } });
+      }
+      if (u.includes("/contacts/")) {
+        return jsonRes(200, {
+          emailBlacklisted: true,
+          statistics: { messagesSent: [{ campaignId: 1 }, { campaignId: 2 }, { campaignId: 3 }], opened: [] },
+        });
+      }
+      throw new Error(`fetch inesperado: ${u}`);
+    }) as typeof fetch;
+
+    try {
+      const contacts = [contact("bounce-nao-ativo@b.com")];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: false,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: () => {},
+      });
+      assert.equal(result.unsubscribedNative, 0, "adminUnsubscription isolado nunca é tratado como saída nativa (#4630)");
+      assert.equal(result.selfConfirmed, 0);
+      // eventos sem timestamp de data → tratados como IMATUROS (fail-safe) →
+      // mature sends_count=0 < piso de supressão (3) → keep.
+      assert.equal(result.kept, 1);
+      assert.equal(result.failed, 0);
+      assert.equal(byEmailCalls, 1, "beehiivStatus buscado só 1x — reusado entre o passo 0 (pré-checagem) e o passo 1 (auto-confirmação)");
+    } finally {
+      restore();
+    }
+  });
+
+  it("emailBlacklisted:true, falha ao checar status Beehiiv (pré-checagem #4630) → conta failed, contato pulado inteiro (nem native, nem self-confirmed, nem score)", async () => {
+    globalThis.fetch = (async (url: string | URL) => {
+      const u = String(url);
+      if (u.includes("subscriptions/by_email/")) return new Response("boom", { status: 500 });
+      if (u.includes("/contacts/")) return jsonRes(200, { emailBlacklisted: true, statistics: { messagesSent: [], opened: [] } });
+      throw new Error(`fetch inesperado: ${u}`);
+    }) as typeof fetch;
+
+    try {
+      const contacts = [contact("falha-precheck@b.com")];
+      const result = await runEvaluation({
+        contacts,
+        store: { contacts },
+        push: false,
+        publicationId: "pub_1",
+        beehiivApiKey: "bkey",
+        brevoApiKey: "brkey",
+        listId: 7,
+        log: () => {},
+      });
+      assert.equal(result.failed, 1);
+      assert.equal(result.unsubscribedNative, 0);
+      assert.equal(result.selfConfirmed, 0);
+      assert.equal(result.kept, 0);
     } finally {
       restore();
     }

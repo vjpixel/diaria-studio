@@ -170,6 +170,13 @@ describe("applyNativeUnsubscribe — 3ª saída terminal, distinta de suppress (
     assert.equal(c.resolution_reason, "native_unsubscribe");
   });
 
+  it("reason override (#4633) — 404 permanente na propagação Beehiiv → resolution_reason native_unsubscribe_beehiiv_404", () => {
+    const out = applyNativeUnsubscribe(base, "a@b.com", "2026-08-04T00:00:00.000Z", "native_unsubscribe_beehiiv_404");
+    const c = findContact(out, "a@b.com")!;
+    assert.equal(c.status, "unsubscribed");
+    assert.equal(c.resolution_reason, "native_unsubscribe_beehiiv_404");
+  });
+
   it("distinto de suppressed: mesmo evento base, resolution_reason nunca vira score_threshold", () => {
     const out = applyNativeUnsubscribe(base, "a@b.com");
     const c = findContact(out, "a@b.com")!;

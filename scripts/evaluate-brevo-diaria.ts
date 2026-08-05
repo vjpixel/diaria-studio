@@ -5,7 +5,13 @@
  * threshold de supressão corrigido pra n>=3 + janela de maturação de 48h
  * implementada no self-review pós-merge da issue #4476; piso de promoção
  * revisado de n>=2 pra n>=3 na sessão 260804 — ver
- * `scripts/lib/shared/brevo-diaria-score.ts` pro racional completo)
+ * `scripts/lib/shared/brevo-diaria-score.ts` pro racional completo do piso.
+ * Separadamente, Passo 0 corrigido no #4630 (checa Beehiiv-já-ativo E
+ * `userUnsubscription` genuína antes de tratar `emailBlacklisted` como
+ * descadastro nativo) e no #4633 (HTTP 404 na propagação pra Beehiiv é falha
+ * PERMANENTE, não retentada pra sempre) — o racional de #4630/#4633 vive nas
+ * seções `### #4630`/`### #4633` mais abaixo, NESTE arquivo, não em
+ * `brevo-diaria-score.ts`)
  *
  * Avaliação periódica dos contatos `in_brevo` do canal Brevo próprio do
  * editor: recomputa a TAXA de abertura (`computeBrevoDiariaOpenRate`,
@@ -66,6 +72,46 @@
  * mesmo `emailBlacklisted:true` de novo e retenta a propagação sozinha, sem
  * precisar de nenhum estado extra persistido pra saber "isso ainda está
  * pendente" — a fonte da verdade do retry é a própria Brevo, não o store.
+ *
+ * ### #4630 — `emailBlacklisted` bruto NÃO é sinal suficiente de descadastro genuíno
+ *
+ * Achado ao vivo (260804, `marcelo.nunes@safra.com.br`): `emailBlacklisted`
+ * na Brevo pode vir de `adminUnsubscription` (bounce, ação admin-side) OU
+ * `userUnsubscription` (clique real no link de opt-out) — a API mistura as
+ * duas causas no mesmo booleano. O bug original tratava as duas igual, E
+ * nunca checava se a pessoa já estava `active` na Beehiiv (assinante
+ * CONFIRMADO de verdade) antes de propagar o unsubscribe — resultado: um
+ * contato já confirmado teve sua assinatura revertida por causa de um
+ * `adminUnsubscription` isolado. Corrigido em 2 frentes, checadas NESTA
+ * ORDEM antes de qualquer decisão:
+ *
+ *   1. Status Beehiiv atual (`fetchBeehiivSubscriptionStatus`, mesmo helper
+ *      do Passo 1) — se já `active`, trata como auto-confirmação
+ *      (`applySelfConfirmed`), independente do `emailBlacklisted` bruto.
+ *      NUNCA reverte um assinante já confirmado.
+ *   2. Só se não-`active`: `statistics.unsubscriptions.userUnsubscription`
+ *      (não vazio) é o sinal PRIMÁRIO de descadastro genuíno — não
+ *      `emailBlacklisted` sozinho. `adminUnsubscription` isolado (sem
+ *      `userUnsubscription`) NÃO dispara a propagação pra Beehiiv; o
+ *      contato segue pra avaliação normal (Passo 1/2).
+ *
+ * O status Beehiiv buscado no passo 1 desta checagem é REUSADO pelo Passo 1
+ * de auto-confirmação logo abaixo quando a decisão cai pra baixo (nunca um
+ * 2º GET pro mesmo contato no mesmo run).
+ *
+ * ### #4633 — HTTP 404 na propagação pra Beehiiv é falha PERMANENTE
+ *
+ * Achado ao vivo (260804, `walterhaoliveira.rj@gmail.com`): quando não
+ * existe (e nunca vai existir) um registro Beehiiv pro e-mail do contato, a
+ * chamada de `unsubscribeInBeehiiv` retorna HTTP 404 — diferente de uma
+ * falha transitória (5xx, timeout), que se resolve numa próxima tentativa.
+ * Tratar os dois casos igual (fail-safe genérico: mantém `in_brevo`, retenta
+ * pra sempre) prendia o contato indefinidamente, repetindo a mesma falha
+ * toda rodada sem nunca liberar o slot. `unsubscribeInBeehiiv` agora anexa
+ * `.status` ao `Error` lançado; o caller distingue 404 (marca `unsubscribed`
+ * direto, `resolution_reason: "native_unsubscribe_beehiiv_404"`, sem
+ * confirmação — não há o que confirmar) de qualquer outro erro (mantém o
+ * fail-safe original: `in_brevo`, retentado na próxima rodada).
  *
  * ## Passo 1: auto-confirmação (fecha gap registrado na própria issue #4266)
  *
@@ -277,6 +323,26 @@ interface BrevoStatEvent {
 export interface BrevoContactStatistics {
   messagesSent?: BrevoStatEvent[];
   opened?: BrevoStatEvent[];
+  /** #4630 — `emailBlacklisted` sozinho mistura 2 causas bem diferentes:
+   * clique real no link de opt-out (`userUnsubscription`) e qualquer ação
+   * admin-side/bounce (`adminUnsubscription`). Só a 1ª é descadastro
+   * GENUÍNO — a 2ª nunca deveria disparar a propagação de unsubscribe pra
+   * Beehiiv (ver `hasUserUnsubscription`/Passo 0 de `runEvaluation`). */
+  unsubscriptions?: {
+    userUnsubscription?: unknown[];
+    adminUnsubscription?: unknown[];
+  };
+}
+
+/** Pura — `true` só se existir >=1 evento de descadastro por INICIATIVA DO
+ * USUÁRIO (`statistics.unsubscriptions.userUnsubscription`, não vazio).
+ * `adminUnsubscription` isolado (bounce, ação admin-side na Brevo) NUNCA
+ * torna isto `true` — é justamente a distinção que faltava no #4630. Campo
+ * ausente/malformado → `false` (fail-safe: sem confirmação explícita de
+ * clique do usuário, não assume descadastro genuíno). */
+export function hasUserUnsubscription(statistics: BrevoContactStatistics | undefined): boolean {
+  const arr = statistics?.unsubscriptions?.userUnsubscription;
+  return Array.isArray(arr) && arr.length > 0;
 }
 
 /** Pura — dedup por campaignId (uma campanha reaberta várias vezes conta 1x). */
@@ -353,6 +419,10 @@ export interface BrevoContactState {
   mature_sends_count: number;
   mature_opens_count: number;
   emailBlacklisted: boolean;
+  /** #4630 — sinal PRIMÁRIO de descadastro genuíno (clique do usuário no
+   * link nativo). `emailBlacklisted` sozinho não basta — ver
+   * `hasUserUnsubscription`. */
+  userUnsubscribed: boolean;
 }
 
 export async function fetchBrevoContactState(apiKey: string, email: string): Promise<BrevoContactState> {
@@ -367,6 +437,7 @@ export async function fetchBrevoContactState(apiKey: string, email: string): Pro
     mature_sends_count: mature.sends_count,
     mature_opens_count: mature.opens_count,
     emailBlacklisted: res.body?.emailBlacklisted === true,
+    userUnsubscribed: hasUserUnsubscription(res.body?.statistics),
   };
 }
 
@@ -441,6 +512,26 @@ export async function unlinkFromBrevoList(apiKey: string, listId: number, email:
 }
 
 /**
+ * **#4633** — erro nominal (não um cast estrutural ad-hoc) pra carregar o
+ * código HTTP de uma chamada à API da Beehiiv que falhou. Segue o precedente
+ * já existente no codebase (`Brevo429Signal` em `scripts/lib/brevo-client.ts`,
+ * checado via `instanceof`) em vez de `Error & { status?: number }` + 2
+ * assertions estruturais não relacionadas (uma no throw, outra no catch) —
+ * um rename futuro de `.status` quebraria essas assertions silenciosamente,
+ * sem sinal do compilador, reintroduzindo a classe de bug do #4633
+ * (type-design-analyzer, review do #4650).
+ */
+export class BeehiivHttpError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+    this.name = "BeehiivHttpError";
+  }
+}
+
+/**
  * Propaga o descadastro NATIVO detectado no passo 0 pra Beehiiv (#4538) —
  * `PUT .../subscriptions/by_email/{email}` com `{unsubscribe: true}`, o campo
  * documentado pela API pública (não `status`, que não é gravável nesse
@@ -451,6 +542,13 @@ export async function unlinkFromBrevoList(apiKey: string, listId: number, email:
  * fail-safe (nunca reverte o descadastro já feito na Brevo; mantém o contato
  * `in_brevo` e retenta na próxima rodada quando a propagação não é
  * confirmada, ver `verifyUnsubscribedInBeehiiv`).
+ *
+ * **#4633** — lança `BeehiivHttpError` (carrega `.status`, o código HTTP da
+ * resposta) pra que o caller distinga 404 (PERMANENTE — nenhum registro
+ * Beehiiv pra este e-mail, nunca vai confirmar) de qualquer outro erro
+ * (transitório — 5xx, timeout — retenta na próxima rodada como antes). Sem
+ * essa distinção, um contato sem registro Beehiiv ficava preso em `in_brevo`
+ * indefinidamente, sendo reavaliado e falhando do mesmo jeito toda rodada.
  */
 export async function unsubscribeInBeehiiv(
   publicationId: string,
@@ -468,8 +566,9 @@ export async function unsubscribeInBeehiiv(
   );
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(
+    throw new BeehiivHttpError(
       `Beehiiv API PUT subscriptions/by_email/${email} (unsubscribe:true) falhou (HTTP ${res.status}): ${text}`,
+      res.status,
     );
   }
 }
@@ -814,6 +913,17 @@ export interface RunEvaluationResult {
   store: BrevoDiariaStore;
   /** #4476 item 7 — descadastro nativo detectado (saída terminal distinta de `suppressed`). */
   unsubscribedNative: number;
+  /**
+   * #4633, subconjunto de `unsubscribedNative` (silent-failure-hunter, review
+   * do #4650) — quantos desses descadastros nativos foram resolvidos via 404
+   * PERMANENTE da Beehiiv (`resolution_reason: "native_unsubscribe_beehiiv_404"`)
+   * em vez da confirmação normal (`verifyUnsubscribedInBeehiiv` mostrando
+   * `"inactive"`). Sem este campo separado, os dois caminhos incrementam o
+   * mesmo `unsubscribedNative` e a distinção só sobrevive per-contato em
+   * `resolution_reason` — fácil de perder entre muitos contatos, minando o
+   * próprio objetivo de auditabilidade que o #4633 promete.
+   */
+  unsubscribedNativeBeehiivNotFound: number;
   selfConfirmed: number;
   promoted: number;
   suppressed: number;
@@ -841,6 +951,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
   let store = params.store;
 
   let unsubscribedNative = 0;
+  let unsubscribedNativeBeehiivNotFound = 0;
   let selfConfirmed = 0;
   let promoted = 0;
   let suppressed = 0;
@@ -854,6 +965,13 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
       // configurado) — best-effort: sem a key, este passo é pulado (dry-run
       // ainda funciona pra preview do resto via contadores já no store).
       let nativeState: BrevoContactState | undefined;
+      // #4630 — status Beehiiv, checado ANTES de decidir se um
+      // `emailBlacklisted` na Brevo é descadastro genuíno; reusado no passo
+      // 1 (auto-confirmação) quando a decisão do passo 0 cai pra baixo —
+      // nunca um 2º GET pro mesmo contato no mesmo run. `undefined` = ainda
+      // não buscado nesta iteração.
+      let beehiivStatus: string | null | undefined;
+      let statusCheckFailed = false;
       if (brevoApiKey) {
         try {
           nativeState = await fetchBrevoContactState(brevoApiKey, contact.email);
@@ -865,49 +983,114 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           continue;
         }
         if (nativeState.emailBlacklisted) {
-          log(`${contact.email}: já descadastrado (emailBlacklisted) na Brevo → saída nativa, libera slot imediatamente.`);
-          unsubscribedNative++;
-          if (push) {
-            // #4538: propaga o descadastro pra Beehiiv ANTES de tocar no
-            // store/lista Brevo — write+reread, mesma disciplina de
-            // `applyApoioTagEntry`. Fail-safe: se a Beehiiv não confirmar
-            // `inactive`, o contato PERMANECE `in_brevo` (nunca marcado
-            // `unsubscribed` sem confirmação) — o descadastro NATIVO já feito
-            // na Brevo nunca é revertido (não tocamos `emailBlacklisted`
-            // aqui, só lemos), então a PRÓXIMA rodada detecta o mesmo
-            // `emailBlacklisted:true` de novo e retenta sozinha, sem precisar
-            // de estado extra persistido.
-            let beehiivConfirmed = false;
-            try {
-              await unsubscribeInBeehiiv(publicationId, beehiivApiKey, contact.email);
-              beehiivConfirmed = await verifyUnsubscribedInBeehiiv(publicationId, beehiivApiKey, contact.email);
-            } catch (e) {
-              log(`warn: falha ao propagar descadastro nativo de ${contact.email} pra Beehiiv: ${(e as Error).message}`);
-            }
-            if (!beehiivConfirmed) {
-              failed++;
+          // #4630: `emailBlacklisted` sozinho mistura clique real de opt-out
+          // (`userUnsubscription`) com qualquer ação admin-side/bounce
+          // (`adminUnsubscription`) — e o bug original era nunca checar se a
+          // pessoa já era assinante CONFIRMADO na Beehiiv antes de reverter.
+          // Corrigido: busca o status Beehiiv primeiro; se já `active`, cai
+          // no bloco compartilhado de auto-confirmação abaixo (nunca reverte
+          // um assinante real) — só senão é que se decide entre descadastro
+          // genuíno (`userUnsubscribed`) e ruído admin/bounce.
+          beehiivStatus = await fetchBeehiivSubscriptionStatus(publicationId, beehiivApiKey, contact.email).catch((e) => {
+            log(`warn: falha ao checar status Beehiiv de ${contact.email}: ${(e as Error).message}`);
+            statusCheckFailed = true;
+            return undefined;
+          });
+          if (statusCheckFailed) {
+            failed++;
+            // Sem status Beehiiv confiável — não decide com dado incompleto
+            // (mesmo racional do catch acima), tenta de novo na próxima rodada.
+            continue;
+          }
+
+          if (beehiivStatus !== "active") {
+            if (nativeState.userUnsubscribed) {
               log(
-                `warn: ${contact.email} — propagação do descadastro pra Beehiiv NÃO confirmada (releitura não ` +
-                  `mostrou "inactive") — mantendo in_brevo no store (fail-safe: o descadastro já feito na Brevo ` +
-                  "nunca é revertido; retentado na próxima rodada).",
+                `${contact.email}: já descadastrado (emailBlacklisted + userUnsubscription confirmado) na Brevo → ` +
+                  "saída nativa, libera slot imediatamente.",
               );
+              unsubscribedNative++;
+              if (push) {
+                // #4538: propaga o descadastro pra Beehiiv ANTES de tocar no
+                // store/lista Brevo — write+reread, mesma disciplina de
+                // `applyApoioTagEntry`. Fail-safe (exceto #4633, ver abaixo):
+                // se a Beehiiv não confirmar `inactive`, o contato PERMANECE
+                // `in_brevo` (nunca marcado `unsubscribed` sem confirmação) —
+                // o descadastro NATIVO já feito na Brevo nunca é revertido
+                // (não tocamos `emailBlacklisted` aqui, só lemos), então a
+                // PRÓXIMA rodada detecta o mesmo `emailBlacklisted:true` de
+                // novo e retenta sozinha, sem precisar de estado extra
+                // persistido.
+                let beehiivConfirmed = false;
+                let permanentNotFound = false;
+                try {
+                  await unsubscribeInBeehiiv(publicationId, beehiivApiKey, contact.email);
+                  beehiivConfirmed = await verifyUnsubscribedInBeehiiv(publicationId, beehiivApiKey, contact.email);
+                } catch (e) {
+                  if (e instanceof BeehiivHttpError && e.status === 404) {
+                    // #4633: 404 é PERMANENTE — não existe (e nunca vai
+                    // existir) registro Beehiiv pra este e-mail, então não há
+                    // o que confirmar; retentar toda rodada só repetiria a
+                    // mesma falha pra sempre. Marca `unsubscribed` direto,
+                    // registrando a divergência em `resolution_reason` pra
+                    // auditoria.
+                    permanentNotFound = true;
+                    log(
+                      `${contact.email}: propagação do descadastro pra Beehiiv retornou 404 (sem registro Beehiiv ` +
+                        "pra este e-mail) — falha PERMANENTE (#4633), marcando unsubscribed sem confirmação (nada a confirmar).",
+                    );
+                  } else {
+                    log(`warn: falha ao propagar descadastro nativo de ${contact.email} pra Beehiiv: ${(e as Error).message}`);
+                  }
+                }
+                if (permanentNotFound) {
+                  await unlinkFromBrevoList(brevoApiKey, listId, contact.email);
+                  store = applyNativeUnsubscribe(store, contact.email, new Date().toISOString(), "native_unsubscribe_beehiiv_404");
+                  unsubscribedNativeBeehiivNotFound++;
+                  continue;
+                }
+                if (!beehiivConfirmed) {
+                  failed++;
+                  log(
+                    `warn: ${contact.email} — propagação do descadastro pra Beehiiv NÃO confirmada (releitura não ` +
+                      `mostrou "inactive") — mantendo in_brevo no store (fail-safe: o descadastro já feito na Brevo ` +
+                      "nunca é revertido; retentado na próxima rodada).",
+                  );
+                  continue;
+                }
+                await unlinkFromBrevoList(brevoApiKey, listId, contact.email);
+                store = applyNativeUnsubscribe(store, contact.email);
+              }
               continue;
             }
-            await unlinkFromBrevoList(brevoApiKey, listId, contact.email);
-            store = applyNativeUnsubscribe(store, contact.email);
+            // emailBlacklisted true mas nem já-ativo na Beehiiv nem
+            // userUnsubscription genuíno (#4630) — ruído de
+            // adminUnsubscription/bounce isolado. Não propaga pra Beehiiv,
+            // não conta como saída nativa. Segue avaliação normal abaixo
+            // (passo 1 reusa `beehiivStatus`, já sabido "não active" — nunca
+            // um 2º GET).
+            log(
+              `${contact.email}: emailBlacklisted na Brevo sem userUnsubscription (bounce/ação admin) → NÃO ` +
+                "tratado como descadastro nativo (#4630), segue avaliação normal.",
+            );
           }
-          continue;
+          // beehiivStatus === "active" cai direto pro bloco compartilhado de
+          // auto-confirmação (passo 1) abaixo — nunca reverte um assinante já
+          // confirmado, independente do emailBlacklisted (#4630).
         }
       }
 
-      // 1) auto-confirmação — sempre checada, independente da taxa de abertura.
-      let statusCheckFailed = false;
-      const beehiivStatus = await fetchBeehiivSubscriptionStatus(publicationId, beehiivApiKey, contact.email).catch((e) => {
-        log(`warn: falha ao checar status Beehiiv de ${contact.email}: ${(e as Error).message}`);
-        statusCheckFailed = true;
-        return undefined;
-      });
-      if (statusCheckFailed) failed++;
+      // 1) auto-confirmação — sempre checada, independente da taxa de
+      // abertura. Reusa `beehiivStatus` se o passo 0 já buscou (contato
+      // `emailBlacklisted`) — nunca um 2º GET pro mesmo contato no mesmo run.
+      if (beehiivStatus === undefined) {
+        beehiivStatus = await fetchBeehiivSubscriptionStatus(publicationId, beehiivApiKey, contact.email).catch((e) => {
+          log(`warn: falha ao checar status Beehiiv de ${contact.email}: ${(e as Error).message}`);
+          statusCheckFailed = true;
+          return undefined;
+        });
+        if (statusCheckFailed) failed++;
+      }
 
       if (beehiivStatus === "active") {
         log(`${contact.email}: já ativo na Beehiiv (auto-confirmação) → promovido, sem depender da taxa de abertura.`);
@@ -989,7 +1172,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     }
   }
 
-  return { store, unsubscribedNative, selfConfirmed, promoted, suppressed, kept, failed };
+  return { store, unsubscribedNative, unsubscribedNativeBeehiivNotFound, selfConfirmed, promoted, suppressed, kept, failed };
 }
 
 // ── main ─────────────────────────────────────────────────────────────────
@@ -1048,7 +1231,9 @@ async function main(): Promise<void> {
   });
 
   log(
-    `resumo: ${result.unsubscribedNative} descadastrado(s) nativamente, ${result.selfConfirmed} auto-confirmado(s), ` +
+    `resumo: ${result.unsubscribedNative} descadastrado(s) nativamente ` +
+      `(${result.unsubscribedNativeBeehiivNotFound} via 404 permanente Beehiiv, ver resolution_reason), ` +
+      `${result.selfConfirmed} auto-confirmado(s), ` +
       `${result.promoted} promovido(s) por taxa de abertura, ${result.suppressed} suprimido(s), ` +
       `${result.kept} mantido(s), ${result.failed} falha(s).`,
   );
