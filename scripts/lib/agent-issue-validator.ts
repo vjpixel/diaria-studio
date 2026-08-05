@@ -89,8 +89,13 @@ export function extractQuotedTerms(issue: string): string[] {
  * eram dropados de fato, só nos testes sintéticos com 1 termo só.
  *
  * Retorna `{ char, context }` quando o formato de produção é reconhecido
- * (codepoint + char + "em" + context), ou `null` caso contrário (formato
- * legado/sintético sem codepoint, usado nos testes originais #2013).
+ * (codepoint + char + "em" + context). #4629: um segundo formato, também
+ * tolerado (não-canônico — o agent desviou do spec ao vivo na edição 260805,
+ * emitindo o codepoint DEPOIS do char, entre parênteses: `"char (U+XXXX) em
+ * '…context…'"`), também retorna `{ char, context }` pelo mesmo caminho.
+ * Só formatos genuinamente NÃO reconhecidos (nem oficial, nem o alternativo
+ * do #4629) retornam `null` — inclui o legado/sintético sem codepoint, usado
+ * nos testes originais #2013.
  */
 export function extractEncodingDropCharAndContext(
   issue: string,
@@ -600,6 +605,16 @@ export function extractLinkDeadUrl(issue: string): string | null {
  *   - HTTP 403 em domínio *.beehiiv.com → FP (bot-protection conhecida)
  *   - Qualquer outro 4xx/5xx ou timeout → verdadeiro positivo (mantém issue)
  *
+ * O status acima já é o resultado FINAL pós fallback HEAD→GET de `headOrGet`
+ * (mais abaixo) — esse fallback só dispara quando o HEAD devolve 404, 405 ou
+ * 501 (`HEAD_FALLBACK_STATUSES`, sinal de método/roteamento não suportado,
+ * não erro real: #4628 é o caso 404 ao vivo, #2013 é o 405 original).
+ * **5xx e 429 NUNCA disparam o fallback** (#4647) — um GET subsequente
+ * poderia acertar uma página de erro genérica/soft-404 (comum em
+ * WordPress/Squarespace/CDN) que retorna 200, mascarando como "vivo" um link
+ * com erro real de servidor ou sob rate-limit. Por isso HEAD 5xx/429 já
+ * chegam aqui como status final, sem chance de o fallback apagar o sinal.
+ *
  * A `fetchFn` é injetável para testabilidade — testes NUNCA usam o fetch global.
  * Em produção, passar `globalThis.fetch` ou omitir.
  *
@@ -662,12 +677,30 @@ export async function isLinkDeadFalsePositive(
 }
 
 /**
- * Faz HEAD, com fallback GET sempre que o HEAD não retornar 2xx/3xx (não só
- * quando o servidor sinaliza 405 Method Not Allowed — #4628). Retorna o
- * status final (null em caso de timeout/erro) e a URL final após seguir
- * redirects (`redirect: "follow"` — nativo do fetch, `Response.url` já
- * reflete o destino pós-redirect sem precisar reimplementar o loop manual que
- * `lint-test-email-link-tracking.ts` usa).
+ * Status HEAD que justificam fallback pra GET — allowlist explícita, só os
+ * status que são genuinamente sobre suporte a MÉTODO/ROTEAMENTO, nunca sobre
+ * erro real do servidor (#4647, corrige a ampliação excessiva introduzida
+ * pelo #4628 original — ver JSDoc de `headOrGet` abaixo).
+ *
+ *   - 404 (#4628): caso real ao vivo na edição 260805 — o Worker
+ *     `eia.diar.ia.br` (rotas `/vote` e `/jogar`) retorna 404 em HEAD mesmo
+ *     quando a rota existe e responde 200 via GET.
+ *   - 405 (#2013): Method Not Allowed — o caso original que motivou o
+ *     fallback antes de qualquer ampliação.
+ *   - 501: Not Implemented — mesma classe de "servidor reconhece a rota mas
+ *     recusa o verbo HEAD especificamente".
+ *
+ * Deliberadamente NÃO inclui 5xx nem 429: ver JSDoc de `headOrGet`.
+ */
+const HEAD_FALLBACK_STATUSES: ReadonlySet<number> = new Set([404, 405, 501]);
+
+/**
+ * Faz HEAD, com fallback GET quando o HEAD devolve um status que sinaliza
+ * "método/rota não suportado" (`HEAD_FALLBACK_STATUSES` — 404, 405 ou 501).
+ * Retorna o status final (null em caso de timeout/erro) e a URL final após
+ * seguir redirects (`redirect: "follow"` — nativo do fetch, `Response.url`
+ * já reflete o destino pós-redirect sem precisar reimplementar o loop manual
+ * que `lint-test-email-link-tracking.ts` usa).
  *
  * Interno — não exportado.
  *
@@ -676,10 +709,17 @@ export async function isLinkDeadFalsePositive(
  * mesmo quando a rota existe e responde 200 via GET. O fallback pra GET só
  * disparava em `status === 405`, então esses 2 links vivos ficavam presos
  * como falso-positivo `link_dead` (404 na re-verificação HEAD, sem chance de
- * o GET provar que estavam vivos). O fallback agora dispara pra qualquer
- * status fora de 2xx/3xx — cobre 404 e qualquer outro comportamento de
- * Worker/CDN de terceiro que não sinalize "method not allowed" com 405 em
- * específico.
+ * o GET provar que estavam vivos).
+ *
+ * #4647: o fix acima (#4628) tinha sido implementado ampliando o gatilho pra
+ * "qualquer status fora de 2xx/3xx" — isso também disparava fallback pra 5xx
+ * (erro real do servidor) e 429 (rate limit), cenários onde um GET
+ * subsequente pode acertar uma página de erro genérica/soft-404 do host
+ * retornando 200 (comum em WordPress/Squarespace/CDN atrás de proteção
+ * anti-bot ou balanceador com fallback de erro). Um link genuinamente
+ * morto/instável sobreviveria ao filtro como falso "link vivo". O fallback
+ * agora dispara só pra `HEAD_FALLBACK_STATUSES` (404/405/501) — 5xx e 429 no
+ * HEAD retornam como status final direto, preservando o verdadeiro-positivo.
  *
  * #4604: `finalUrl` foi adicionado (era só `status`) — necessário pra
  * `isLinkDeadFalsePositive` reconhecer o redirect pro jogo anônimo
@@ -707,10 +747,11 @@ async function headOrGet(url: string, fetchFn: FetchFn): Promise<{ status: numbe
       redirect: "follow",
       signal: controller.signal,
     });
-    const headOk = res.status >= 200 && res.status < 400;
-    if (!headOk) {
-      // #4628: HEAD não confirmou vida (qualquer status fora de 2xx/3xx —
-      // não só 405) — tentar GET antes de desistir.
+    const shouldFallbackToGet = HEAD_FALLBACK_STATUSES.has(res.status);
+    if (shouldFallbackToGet) {
+      // #4628/#4647: HEAD sinalizou "método/rota não suportado" (404, 405 ou
+      // 501 — allowlist explícita, NUNCA 5xx/429) — tentar GET antes de
+      // desistir.
       clearTimeout(t);
       const controller2 = new AbortController();
       const t2 = setTimeout(() => controller2.abort(), REVERIFY_TIMEOUT_MS);

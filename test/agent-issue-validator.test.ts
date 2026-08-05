@@ -455,8 +455,9 @@ describe("#4629 — extractEncodingDropCharAndContext: formato alternativo char 
     assert.equal(r.falsePositive, true, `esperado FP by-design: ${JSON.stringify(r)}`);
   });
 
-  it("NÃO reconhece o formato alternativo quando não há '(U+' entre parênteses (evita casar o formato oficial 2×)", () => {
-    // Formato oficial não deve cair no branch alternativo — cobertura de não-regressão.
+  it("confirma que o branch oficial tem precedência e é usado quando o formato oficial está presente", () => {
+    // O regex `official` é checado primeiro (com return antecipado) — cobertura
+    // de não-regressão de que o branch `alt` nunca é avaliado nesse caso.
     const issue = "email:encoding_drop: U+1F680 '🚀' em '…🚀 LANÇAMENTOS…'";
     const r = extractEncodingDropCharAndContext(issue);
     assert.ok(r);
@@ -724,6 +725,29 @@ describe("#2013 — isLinkDeadFalsePositive", () => {
     const issue = "email:link_dead: https://example.com/really-dead → HTTP 404";
     const r = await isLinkDeadFalsePositive(issue, mockFetch(404, 404));
     assert.equal(r.falsePositive, false, "HEAD e GET ambos 404 → link realmente morto, não é FP");
+  });
+
+  // #4647: o fallback HEAD→GET introduzido pelo #4628 tinha sido implementado
+  // amplo demais ("qualquer status fora de 2xx/3xx") — isso também disparava
+  // fallback pra 5xx (erro real do servidor) e 429 (rate limit), cenários onde
+  // um GET subsequente pode acertar uma página de erro genérica/soft-404 (comum
+  // em WordPress/Squarespace/CDN) retornando 200, mascarando um link
+  // genuinamente morto/instável como "vivo". O fallback agora só dispara pra
+  // 404/405/501 (HEAD_FALLBACK_STATUSES) — 5xx/429 nunca chegam a tentar o GET.
+  it("HEAD 500 → NÃO faz fallback GET, mantém issue mesmo que o GET responderia 200 (#4647)", async () => {
+    const issue = "email:link_dead: https://example.com/server-error → HTTP 500";
+    // HEAD retorna 500 (erro real de servidor); GET retornaria 200 (ex: soft-404
+    // genérico de CDN) — mas o fallback NÃO deve disparar pra 5xx.
+    const r = await isLinkDeadFalsePositive(issue, mockFetch(200, 500));
+    assert.equal(r.falsePositive, false, "HEAD 500 não deve disparar fallback GET — verdadeiro positivo (#4647)");
+  });
+
+  it("HEAD 429 → NÃO faz fallback GET, mantém issue mesmo que o GET responderia 200 (#4647)", async () => {
+    const issue = "email:link_dead: https://example.com/rate-limited → HTTP 429";
+    // HEAD retorna 429 (rate limit); GET retornaria 200 — mas o fallback NÃO
+    // deve disparar pra 429.
+    const r = await isLinkDeadFalsePositive(issue, mockFetch(200, 429));
+    assert.equal(r.falsePositive, false, "HEAD 429 não deve disparar fallback GET — verdadeiro positivo (#4647)");
   });
 });
 
