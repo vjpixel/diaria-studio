@@ -591,6 +591,12 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
 
 1. **Arquivos já estão localmente atualizados** — sem round-trip externo a aguardar antes de editar (Studio, se usado pelo editor pra revisão fora do terminal, grava direto no arquivo local).
 2. **Aplicar edição cirúrgica** em `02-reviewed.md` seguindo #495: substituições linha-a-linha mínimas via `Edit` com `old_string` mínimo. Nunca substituir blocos grandes.
+
+   **Verificar vazamento de tag XML imediatamente após a edição (#4077, #4636)** — **GATE-BLOCKING**:
+   ```bash
+   npx tsx scripts/lint-newsletter-md.ts --check no-xml-artifacts --md {EDITION_DIR}/02-reviewed.md
+   ```
+   O lint `no-xml-artifacts` de §4c.2 roda só UMA VEZ, na montagem inicial do resumo, antes do primeiro gate — nenhum outro passo do loop "ajustar" o re-executava depois de uma edição inline. Uma tag de tool-call crua (`</content>`, `</invoke>`, `</function_calls>`) grudada no fim do arquivo pela própria chamada `Edit` acima sobreviveria até a aprovação sem ser pega automaticamente (caso real #4636, edição 260805: só um mecanismo de auto-detecção em runtime do próprio orchestrator — não este lint — achou e corrigiu a tempo; a causa exata do vazamento na chamada `Edit` em si não foi reproduzida, mesma conclusão do #4077 original). Exit 1 = remover a tag manualmente (`Edit` cirúrgico) e re-rodar até exit 0 antes de seguir pro passo 3.
 3. **Cascata de título (crítico):** se a mudança alterar um TÍTULO de destaque:
    - O orchestrator **avisa** o editor: "Essa mudança afeta a imagem e os posts sociais do D{N} — vou re-gerar os passos afetados."
    - Re-rodar: re-render do HTML (§4b steps 1-3), regenerar imagem do destaque (`scripts/image-generate.ts --edition {AAMMDD} --highlight d{N}`), e regenerar o texto social do D{N} (`social-writer`, #3991 — texto único LinkedIn/Facebook/Instagram, para aquele destaque).
@@ -673,7 +679,9 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
       npx tsx scripts/lint-social-md.ts --check platform-headers-unicos --md {EDITION_DIR}/03-social.md
       npx tsx scripts/lint-social-md.ts --check no-antithesis-reveal --md {EDITION_DIR}/03-social.md
       npx tsx scripts/lint-social-md.ts --check no-trailing-editorial-hook --md {EDITION_DIR}/03-social.md
+      npx tsx scripts/lint-social-md.ts --check no-xml-artifacts --md {EDITION_DIR}/03-social.md
       ```
+      **(#4636 — mesmo backstop de #4077 aplicado a `02-reviewed.md` no passo 2 acima, agora também sobre `03-social.md` neste loop):** `no-xml-artifacts` **GATE-BLOCKING** quando exit 1 — o passo 6.3/6.2' acima já é uma escrita do próprio orchestrator (reescrita do bloco `## post_pixel` no passo 4, ou re-humanização scoped/full-file), então carrega o mesmo risco de tag de tool-call crua grudada no fim do arquivo. Exit 1 = **GATE-BLOCKING**: NÃO seguir pro passo 6.8 ainda. Ação: remover a tag manualmente (`Edit` cirúrgico), depois re-rodar `npx tsx scripts/lint-social-md.ts --check no-xml-artifacts --md {EDITION_DIR}/03-social.md` até exit 0, antes de prosseguir.
       **(#4505 item 2 — mesmos tic-lints GATE-BLOCKING de §4c.2b/§4c.6c, agora também no loop "ajustar"):** o passo 6 acima já re-humanizou a(s) seção(ões) tocada(s), mas re-humanizar não garante que o tique sumiu — pode sobreviver ou ser reintroduzido pela própria correção mecânica que disparou o ajuste (achado #4505, recorrência ao vivo 260803: correção de travessão→pontuação reintroduziu antítese-revelação 3× seguidas na mesma sessão, cada uma só notada porque o editor pediu "passa o humanizador de novo" de novo — sem este passo, nada automatizava a re-checagem). Exit 1 em qualquer um dos dois = **GATE-BLOCKING**: NÃO voltar ao gate ainda. Ação: reescrever a frase cirurgicamente (`Edit` com `old_string` mínimo, #495) ou re-invocar a Skill humanizador só na seção acusada, depois re-rodar o lint até exit 0, antes de seguir pro passo 6.8.
    **6.8** — Re-rodar check para confirmar exit 0 antes de voltar ao gate:
       ```bash

@@ -192,7 +192,18 @@ describe("orchestrator-prompt (#634)", () => {
       // do gate + nota no passo 7 do loop "ajustar" pra re-rodar quando
       // habilitado. Arquivo tinha 690 linhas (teto já saturado pelo #4354).
       // Teto bumped de 690→735 com headroom pequeno (era 721 medido pós-#4505).
-      "orchestrator-stage-4.md": 735,
+      // #4636: +8 linhas — backstop `no-xml-artifacts` GATE-BLOCKING no
+      // próprio loop "ajustar" (§4d.1): passo 2 re-audita 02-reviewed.md
+      // logo após a edição inline via `Edit`, e o passo 6.7 ganha a mesma
+      // chamada para 03-social.md, ao lado dos outros tic-lints re-auditados
+      // (#4505 item 2). O lint GATE-BLOCKING de §4c.2/§4c.2b só rodava uma
+      // vez, na montagem inicial do resumo — nenhum passo do loop "ajustar"
+      // o re-executava, então uma tag vazada pela própria escrita do
+      // orchestrator sobrevivia até a aprovação (caso real #4636, edição
+      // 260805: só um mecanismo de auto-detecção em runtime achou e
+      // corrigiu, nenhum lint determinístico). Arquivo tinha 743 linhas.
+      // Teto bumped de 735→760 com headroom pequeno.
+      "orchestrator-stage-4.md": 760,
       "orchestrator-stage-5.md": 455,
       // #4574: 1º teto registrado pra este arquivo (nunca tinha entry —
       // ORCHESTRATOR_FILES não o incluía até esta PR). Arquivo tinha 491
@@ -779,6 +790,55 @@ describe("#4505 item 2: re-auditoria sistemática dos tic-lints no loop 'ajustar
       step67Idx < ticLintIdx && ticLintIdx < step68Idx,
       "#4505 item 2: os tic-lints devem rodar DENTRO do passo 6.7, antes do passo 6.8 voltar ao gate",
     );
+  });
+});
+
+describe("#4636: backstop no-xml-artifacts no próprio loop 'ajustar' (§4d.1)", () => {
+  // O #4077 tinha corrigido o vazamento de tag de tool-call crua
+  // (</content>, </invoke>, </function_calls>) na fonte conhecida na época
+  // (chat drawer do Studio, saveReviewFile) + backstop via lint GATE-BLOCKING
+  // no Stage 4 (§4c.2/§4c.2b). Mas esse lint roda só UMA VEZ, na montagem
+  // inicial do resumo consolidado, ANTES do primeiro gate — o loop "ajustar"
+  // (§4d.1) faz o PRÓPRIO orchestrator aplicar `Edit` diretamente em
+  // `02-reviewed.md` (passo 2) e, às vezes, em `03-social.md` (passo 4/6),
+  // sem nunca re-rodar esse lint depois. Recorrência ao vivo (#4636, edição
+  // 260805): uma tag vazou por essa via e só foi pega por um mecanismo de
+  // auto-detecção em runtime do próprio orchestrator — não por nenhum lint
+  // determinístico. Este teste garante que o loop "ajustar" agora re-audita
+  // os dois arquivos que ele pode escrever.
+  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+  const section4d1 = stage4.slice(stage4.indexOf("### 4d.1"));
+
+  it("passo 2 roda no-xml-artifacts sobre 02-reviewed.md logo após a edição inline, como GATE-BLOCKING", () => {
+    const step2Idx = section4d1.indexOf("**Aplicar edição cirúrgica**");
+    const step3Idx = section4d1.indexOf("**Cascata de título");
+    assert.ok(step2Idx !== -1 && step3Idx !== -1, "§4d.1 precisa ter os passos 2 e 3");
+    const step2Text = section4d1.slice(step2Idx, step3Idx);
+    assert.ok(
+      step2Text.includes("--check no-xml-artifacts --md {EDITION_DIR}/02-reviewed.md"),
+      "#4636: passo 2 do loop 'ajustar' precisa re-rodar no-xml-artifacts sobre 02-reviewed.md — o lint de §4c.2 só roda uma vez, antes do primeiro gate, e não cobre edições inline aplicadas depois",
+    );
+    assert.ok(
+      /\*\*GATE-BLOCKING\*\*/.test(step2Text),
+      "#4636: a verificação no passo 2 precisa ser GATE-BLOCKING, não apenas informativa",
+    );
+    assert.ok(/4636/.test(step2Text), "passo 2 deve referenciar #4636 — rastreabilidade da recorrência");
+  });
+
+  it("passo 6.7 roda no-xml-artifacts sobre 03-social.md, no mesmo bloco dos outros tic-lints re-auditados", () => {
+    const step67Idx = section4d1.indexOf("**6.7**");
+    const step68Idx = section4d1.indexOf("**6.8**");
+    assert.ok(step67Idx !== -1 && step68Idx !== -1, "§4d.1 precisa ter os passos 6.7 e 6.8");
+    const step67Text = section4d1.slice(step67Idx, step68Idx);
+    assert.ok(
+      step67Text.includes("--check no-xml-artifacts --md {EDITION_DIR}/03-social.md"),
+      "#4636: passo 6.7 precisa re-rodar no-xml-artifacts sobre 03-social.md — o mesmo risco de tag vazada existe quando o orchestrator reescreve ## post_pixel ou re-humaniza dentro do loop 'ajustar'",
+    );
+    assert.ok(
+      /\*\*GATE-BLOCKING\*\*/.test(step67Text),
+      "#4636: a verificação no passo 6.7 precisa ser GATE-BLOCKING, não apenas informativa — mesmo padrão do passo 2 (linha acima)",
+    );
+    assert.ok(/4636/.test(step67Text), "passo 6.7 deve referenciar #4636 — rastreabilidade da recorrência");
   });
 });
 
