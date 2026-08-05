@@ -86,6 +86,7 @@ import { buildFilenameMap, substituteImagePlaceholders, type PublicImagesFile } 
 import { renderPendingIntroHtml, injectPendingIntro } from "./lib/brevo-diaria-intro.ts";
 import { brevoPost, brevoGetList } from "./lib/brevo-client.ts";
 import { run as injectPollTokenBrevo, DEFAULT_POLL_KV_NAMESPACE_ID } from "./inject-poll-token-brevo.ts"; // #4517
+import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts"; // #4631
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -174,13 +175,31 @@ export type DailyCapCheck = { ok: true } | { ok: false; reason: string };
  * cabeçalho do módulo). `totalSubscribers` vem de `brevoGetList` (contagem
  * ao vivo da lista Brevo) — se exceder o cap, o script recusa criar a
  * campanha em vez de enviar uma fatia arbitrária.
+ *
+ * #4631: `totalSubscribers` (bruto da API Brevo) inclui os `seedCount`
+ * `EDITOR_SEED_EMAILS` — sondas de inbox placement permanentemente
+ * vinculadas à lista, mas NUNCA rastreadas no store (`findOrphanContacts`,
+ * `evaluate-brevo-diaria.ts`, documenta o mesmo fato do lado da avaliação).
+ * Sem subtrair, o cap real disponível pra fila de reativação de verdade era
+ * sempre `cap - seedCount`, não `cap` — achado ao vivo em 260804 (lista com
+ * 179 assinantes, cap 175, fila real batendo exatamente 175; contornado
+ * naquela sessão só subindo o cap pra 180 em `platform.config.json`, PR
+ * #4640 — este fix estrutural substitui esse ajuste manual). `seedCount`
+ * default é `EDITOR_SEED_EMAILS.length`; parametrizado pra teste sem
+ * depender do tamanho real da constante.
  */
-export function checkDailySendCap(totalSubscribers: number, cap: number): DailyCapCheck {
-  if (totalSubscribers <= cap) return { ok: true };
+export function checkDailySendCap(
+  totalSubscribers: number,
+  cap: number,
+  seedCount: number = EDITOR_SEED_EMAILS.length,
+): DailyCapCheck {
+  const netSubscribers = totalSubscribers - seedCount;
+  if (netSubscribers <= cap) return { ok: true };
   return {
     ok: false,
     reason:
-      `lista Brevo tem ${totalSubscribers} assinante(s), acima do cap diário (${cap}). ` +
+      `lista Brevo tem ${totalSubscribers} assinante(s) (${netSubscribers} líquido(s) dos ${seedCount} ` +
+      `EDITOR_SEED_EMAILS), acima do cap diário (${cap}). ` +
       "Este publisher não faz rotação por ondas (fora do escopo desta unidade) — " +
       "reduza a lista ou implemente segmentação antes de enviar.",
   };

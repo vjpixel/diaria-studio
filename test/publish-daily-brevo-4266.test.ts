@@ -117,19 +117,53 @@ describe("stripGreetingAndSupporterBlocks — achado 260803 (revisão do editor 
 });
 
 describe("checkDailySendCap — guard de segurança, não rotação (#4266)", () => {
-  it("dentro do cap → ok", () => {
+  it("dentro do cap (líquido dos seeds default) → ok", () => {
     assert.deepEqual(checkDailySendCap(250, 300), { ok: true });
   });
 
-  it("exatamente no cap → ok (inclusivo)", () => {
-    assert.deepEqual(checkDailySendCap(300, 300), { ok: true });
+  it("bruto acima do cap, mas líquido dos seeds default (5) exatamente no cap → ok (inclusivo)", () => {
+    assert.deepEqual(checkDailySendCap(305, 300), { ok: true });
   });
 
-  it("acima do cap → not ok, motivo explica que não há rotação de ondas", () => {
-    const result = checkDailySendCap(301, 300);
+  it("acima do cap mesmo líquido dos seeds default → not ok, motivo explica que não há rotação de ondas", () => {
+    const result = checkDailySendCap(306, 300);
     assert.equal(result.ok, false);
-    assert.match((result as { ok: false; reason: string }).reason, /301/);
+    assert.match((result as { ok: false; reason: string }).reason, /306/);
     assert.match((result as { ok: false; reason: string }).reason, /rotação por ondas/);
+  });
+
+  it("seedCount explícito (compat/teste sem depender de EDITOR_SEED_EMAILS) → 301 bruto, 0 seeds, cap 300 → not ok", () => {
+    const result = checkDailySendCap(301, 300, 0);
+    assert.equal(result.ok, false);
+  });
+
+  it("seedCount explícito → 301 bruto, 1 seed, cap 300 → ok (líquido 300)", () => {
+    assert.deepEqual(checkDailySendCap(301, 300, 1), { ok: true });
+  });
+});
+
+describe("checkDailySendCap — exclui EDITOR_SEED_EMAILS do denominador (#4631)", () => {
+  it("reproduz o incidente 260804: lista Brevo com 179 assinantes, cap 175 → ok (líquido dos 5 seeds = 174)", () => {
+    // Antes do #4631: checkDailySendCap(179, 175) abortava com "acima do cap
+    // diário (175)" mesmo com a fila real (`in_brevo` no store) batendo
+    // exatamente 175 — os 5 EDITOR_SEED_EMAILS (nunca rastreados no store,
+    // mas permanentemente vinculados à lista) infestavam o bruto da API.
+    assert.deepEqual(checkDailySendCap(179, 175), { ok: true });
+  });
+
+  it("179 bruto, cap 173 (fila real de 174 excede o cap líquido) → not ok", () => {
+    const result = checkDailySendCap(179, 173);
+    assert.equal(result.ok, false);
+    assert.match((result as { ok: false; reason: string }).reason, /173/);
+  });
+
+  it("mensagem de erro cita o total bruto E o líquido dos seeds", () => {
+    const result = checkDailySendCap(306, 300);
+    assert.equal(result.ok, false);
+    const reason = (result as { ok: false; reason: string }).reason;
+    assert.match(reason, /306 assinante/);
+    assert.match(reason, /301 líquido/);
+    assert.match(reason, /5 EDITOR_SEED_EMAILS/);
   });
 });
 

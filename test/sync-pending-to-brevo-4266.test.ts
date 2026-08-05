@@ -18,6 +18,7 @@ import {
   computeContactsToIngest,
   ingestContactToBrevo,
   computeAvailableSlots,
+  computeCurrentActiveCount,
   selectContactsForBackfill,
   loadOriginScores,
   loadMvVerifiedEmails,
@@ -25,7 +26,7 @@ import {
   type BeehiivPendingSubscription,
   type PendingToIngestEntry,
 } from "../scripts/sync-pending-to-brevo.ts";
-import type { BrevoDiariaStore } from "../scripts/lib/brevo-diaria-store.ts";
+import type { BrevoDiariaStore, BrevoDiariaContact } from "../scripts/lib/brevo-diaria-store.ts";
 
 function jsonRes(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -273,6 +274,49 @@ describe("computeAvailableSlots — fila de tamanho fixo (#4476 item 5)", () => 
 
   it("população acima do cap (ex: cap reduzido depois do fato) → 0, nunca negativo", () => {
     assert.equal(computeAvailableSlots(310, 300), 0);
+  });
+});
+
+describe("computeCurrentActiveCount — exclui EDITOR_SEED_EMAILS do numerador (#4631)", () => {
+  function contact(email: string, status: BrevoDiariaContact["status"]): BrevoDiariaContact {
+    return {
+      email,
+      beehiiv_subscription_id: "sub-" + email,
+      status,
+      opens_count: 0,
+      sends_count: 0,
+      last_open_rate: null,
+      added_at: "2026-08-01T00:00:00.000Z",
+      last_evaluated_at: null,
+    };
+  }
+
+  it("store real (seeds nunca ingeridos, achado de findOrphanContacts/#4579) → conta só os in_brevo reais", () => {
+    const contacts = [
+      contact("a@x.com", "in_brevo"),
+      contact("b@x.com", "in_brevo"),
+      contact("c@x.com", "promoted_beehiiv"),
+    ];
+    assert.equal(computeCurrentActiveCount(contacts), 2);
+  });
+
+  it("defesa em profundidade: se um EDITOR_SEED_EMAILS acabar in_brevo no store (não deveria, mas não deve contar 2x contra o cap)", () => {
+    const contacts = [
+      contact("a@x.com", "in_brevo"),
+      contact("vjpixel@gmail.com", "in_brevo"), // EDITOR_COPY_EMAIL, 1º da lista EDITOR_SEED_EMAILS
+      contact("pixel@memelab.com.br", "in_brevo"), // outro seed
+    ];
+    assert.equal(computeCurrentActiveCount(contacts), 1);
+  });
+
+  it("dedup case-insensitive contra a lista de seeds (normaliza email)", () => {
+    const contacts = [contact("VJPixel@Gmail.com", "in_brevo")];
+    assert.equal(computeCurrentActiveCount(contacts), 0);
+  });
+
+  it("seedEmails explícito (compat/teste sem depender de EDITOR_SEED_EMAILS) → só exclui os passados", () => {
+    const contacts = [contact("custom-seed@x.com", "in_brevo"), contact("a@x.com", "in_brevo")];
+    assert.equal(computeCurrentActiveCount(contacts, ["custom-seed@x.com"]), 1);
   });
 });
 
