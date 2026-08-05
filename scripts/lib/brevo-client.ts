@@ -546,3 +546,73 @@ export async function resolveOrCreateBrevoFolder(
   }
   return created.id;
 }
+
+// ---------------------------------------------------------------------------
+// Contact attributes (#4634 finding do type-design-analyzer) — mesmo padrão
+// duplicado até aqui em `inject-poll-token-brevo.ts::ensureContactAttribute`
+// (POLL_TOKEN) e `sync-apoio-nivel-brevo.ts::ensureContactAttribute`
+// (APOIO_NIVEL). Extraído aqui como a versão compartilhada; migrar
+// `inject-poll-token-brevo.ts` pra usá-la é follow-up separado, fora do
+// escopo desta unidade (não expandir — decisão explícita do briefing #4634).
+// ---------------------------------------------------------------------------
+
+interface BrevoContactAttributeMinimal {
+  name: string;
+}
+
+/**
+ * Lista os nomes de atributos de contato existentes na conta. `GET
+ * /contacts/attributes` FALHA ALTO em qualquer status != 200 em vez de
+ * reusar a tolerância a 404 de `brevoGet` (que devolve `{status:404,
+ * body:{}}` como resultado benigno) — essa tolerância foi desenhada pra
+ * lookup de UMA entidade (ex: contato que sumiu entre listar e buscar), não
+ * pra esta listagem em massa (a única lista de atributos da conta inteira).
+ * Um 404/erro aqui não significa "conta sem atributos" — significa que algo
+ * está quebrado (key errada, endpoint indisponível) — mesmo racional já
+ * corrigido em `inject-poll-token-brevo.ts::iterateListContacts` (#4532: "404
+ * numa listagem em massa não significa vazio, significa que algo está
+ * errado"). Tratar como vazio faria `ensureBrevoContactAttribute` tentar
+ * recriar um atributo que já existe, ou mascarar um erro real como "sucesso,
+ * atributo ausente".
+ */
+async function fetchBrevoContactAttributeNames(apiKey: string): Promise<Set<string>> {
+  const { status, body } = await brevoGet(apiKey, "/contacts/attributes");
+  if (status !== 200) {
+    throw new Error(
+      `Brevo API ${status} em /contacts/attributes — leitura de atributos falhou (não seguro assumir ` +
+        "lista vazia; #4634, mesma disciplina de #4532 pra listagem em massa).",
+    );
+  }
+  return new Set<string>(
+    ((body as { attributes?: BrevoContactAttributeMinimal[] })?.attributes ?? []).map((a) => a.name),
+  );
+}
+
+/**
+ * Garante que um atributo de contato "normal" existe na conta Brevo,
+ * criando-o (`POST /contacts/attributes/normal/{attrName}`) se ausente e
+ * confirmando a criação por RELEITURA (#4634, achado silent-failure-hunter —
+ * mesma disciplina de `applyBrevoApoioAddEntry`/`applyBrevoApoioRemoveEntry`
+ * em `sync-apoio-nivel-brevo.ts`, lição #4273: nunca confiar só no 2xx do
+ * POST). Idempotente — retorna `false` sem nenhuma escrita se o atributo já
+ * existir. Retorna `true` se criou agora (o caller decide se loga).
+ */
+export async function ensureBrevoContactAttribute(
+  apiKey: string,
+  attrName: string,
+  attrType = "text",
+): Promise<boolean> {
+  const existing = await fetchBrevoContactAttributeNames(apiKey);
+  if (existing.has(attrName)) return false;
+
+  await brevoPost(apiKey, `/contacts/attributes/normal/${attrName}`, { type: attrType });
+
+  const confirmed = await fetchBrevoContactAttributeNames(apiKey);
+  if (!confirmed.has(attrName)) {
+    throw new Error(
+      `releitura pós-criação NÃO confere: atributo "${attrName}" ainda não aparece em ` +
+        "/contacts/attributes — mutação não confirmada.",
+    );
+  }
+  return true;
+}
