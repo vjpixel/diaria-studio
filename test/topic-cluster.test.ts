@@ -13,7 +13,13 @@ import {
   rankWithinCluster,
   clusterBucket,
   clusterCategorized,
+  aggregateEmbeddingStats,
+  resolveEmbeddingModel,
+  resolveEmbeddingModelWithDiagnostics,
+  embedText,
+  DEFAULT_EMBEDDING_MODEL,
   type Article,
+  type EmbeddingStats,
 } from "../scripts/topic-cluster.ts";
 
 describe("tokenize", () => {
@@ -281,6 +287,9 @@ describe("clusterCategorized (com fallback Jaccard — sem GEMINI_API_KEY)", () 
     assert.equal(result.use_melhor.length, 1); // #1628: agora processa use_melhor/video
     assert.equal(result.video.length, 0);
     assert.equal(result.clusters.length, 1);
+    // #4654: embedding_health agregado dos 4 buckets, sem key → nunca reportado como falha.
+    assert.equal(result.embedding_health.key_present, false);
+    assert.equal(result.embedding_health.failed, 0);
   });
 });
 
@@ -328,9 +337,20 @@ describe("clusterArticlesWithEmbeddings — fallback Jaccard quando GEMINI_API_K
         summary: "Novo Gemini 3 Google multimodal arquitetura",
       },
     ];
-    const clusters = await clusterArticlesWithEmbeddings(articles, 0.3);
+    const { clusters } = await clusterArticlesWithEmbeddings(articles, 0.3);
     assert.equal(clusters.length, 1, "artigos similares devem cair no mesmo cluster");
     assert.equal(clusters[0].method, "jaccard");
+  });
+
+  it("#4654: sem key, stats.key_present=false — nunca é reportado como falha", async () => {
+    const articles: Article[] = [
+      { url: "https://a.com/1", title: "OpenAI GPT-5 model release", summary: "" },
+    ];
+    const { stats } = await clusterArticlesWithEmbeddings(articles, 0.5);
+    assert.equal(stats.key_present, false);
+    assert.equal(stats.attempted, 0);
+    assert.equal(stats.failed, 0);
+    assert.equal(stats.fallback_triggered, true);
   });
 });
 
@@ -374,16 +394,21 @@ describe("clusterArticlesWithEmbeddings — caminho com embeddings (fetch mockad
     ];
 
     // Threshold 0.85 → A e B (cos≈0.995) agrupados; C separado
-    const clusters = await clusterArticlesWithEmbeddings(articles, 0.85);
+    const { clusters, stats } = await clusterArticlesWithEmbeddings(articles, 0.85);
     assert.equal(clusters.length, 2, "deve produzir 2 clusters");
     assert.equal(clusters[0].members.length, 2, "cluster A+B deve ter 2 membros");
     assert.equal(clusters[0].method, "cosine");
     assert.equal(clusters[1].members.length, 1, "cluster C deve ter 1 membro");
+    // #4654: caminho feliz — key presente, tudo respondeu, sem falha reportada.
+    assert.equal(stats.key_present, true);
+    assert.equal(stats.attempted, 3);
+    assert.equal(stats.failed, 0);
+    assert.equal(stats.fallback_triggered, false);
   });
 
-  it("fallback para Jaccard quando todos embeddings retornam null (erro de API)", async () => {
+  it("#4654: fallback para Jaccard quando TODOS embeddings retornam null (modelo 404/erro de API) — reportado em stats, não só console.warn", async () => {
     globalThis.fetch = async (_url: string | URL | Request, _init?: RequestInit) => {
-      return new Response(JSON.stringify({ error: "API error" }), { status: 500 });
+      return new Response(JSON.stringify({ error: { code: 404, message: "model not found" } }), { status: 404 });
     };
 
     const articles: Article[] = [
@@ -399,12 +424,184 @@ describe("clusterArticlesWithEmbeddings — caminho com embeddings (fetch mockad
       },
     ];
 
-    // Embeddings retornarão null (500 error) → cai no Jaccard com threshold=0.5
-    const clusters = await clusterArticlesWithEmbeddings(articles, 0.85);
+    // Embeddings retornarão null (404) → cai no Jaccard com threshold=0.5
+    const { clusters, stats } = await clusterArticlesWithEmbeddings(articles, 0.85);
     // Com Jaccard esses artigos são dissimilares → 2 clusters
     assert.equal(clusters.length, 2);
     // Fallback total deve usar Jaccard, não cosine
     assert.equal(clusters[0].method, "jaccard");
+    // #4654: a falha 100% precisa aparecer em stats — key presente, todos falharam.
+    assert.equal(stats.key_present, true);
+    assert.equal(stats.attempted, 2);
+    assert.equal(stats.failed, 2);
+    assert.equal(stats.fail_rate, 1);
+    assert.equal(stats.fallback_triggered, true);
+  });
+
+  it("#4654: degradação parcial (1 de 2 embeddings falha) fica registrada em stats.failed", async () => {
+    let callIndex = 0;
+    globalThis.fetch = async (_url: string | URL | Request, _init?: RequestInit) => {
+      callIndex++;
+      if (callIndex === 1) {
+        return new Response(JSON.stringify({ embedding: { values: [1, 0, 0] } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ error: "transient" }), { status: 500 });
+    };
+
+    const articles: Article[] = [
+      { url: "https://a.com/1", title: "Artigo A", summary: "" },
+      { url: "https://b.com/1", title: "Artigo B", summary: "" },
+    ];
+
+    const { stats } = await clusterArticlesWithEmbeddings(articles, 0.85);
+    assert.equal(stats.key_present, true);
+    assert.equal(stats.attempted, 2);
+    assert.equal(stats.failed, 1);
+    assert.equal(stats.fail_rate, 0.5);
+    // Degradação parcial não é "fallback total" (só alguns pares caem em Jaccard).
+    assert.equal(stats.fallback_triggered, false);
+  });
+
+  it("embedText usa o model passado na URL e no body (não hardcoded text-embedding-004, #4654)", async () => {
+    let capturedUrl = "";
+    let capturedBody = "";
+    globalThis.fetch = async (url: string | URL | Request, init?: RequestInit) => {
+      capturedUrl = String(url);
+      capturedBody = String(init?.body ?? "");
+      return new Response(JSON.stringify({ embedding: { values: [1, 2, 3] } }), { status: 200 });
+    };
+    const result = await embedText("texto de teste", "gemini-embedding-001");
+    assert.deepEqual(result, [1, 2, 3]);
+    assert.ok(capturedUrl.includes("gemini-embedding-001"), `URL deveria conter o model: ${capturedUrl}`);
+    assert.ok(!capturedUrl.includes("text-embedding-004"), "URL não deve mais usar o modelo descontinuado");
+    assert.ok(capturedBody.includes("gemini-embedding-001"), `body deveria referenciar o model: ${capturedBody}`);
+  });
+});
+
+describe("resolveEmbeddingModel (#4654)", () => {
+  it("lê gemini.embedding_model de platform.config.json quando presente", () => {
+    const dir = mkdtempSync(join(tmpdir(), "topic-cluster-cfg-"));
+    try {
+      writeFileSync(
+        join(dir, "platform.config.json"),
+        JSON.stringify({ gemini: { embedding_model: "gemini-embedding-2" } }),
+        "utf8",
+      );
+      assert.equal(resolveEmbeddingModel(dir), "gemini-embedding-2");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("cai no default quando platform.config.json não existe", () => {
+    const dir = mkdtempSync(join(tmpdir(), "topic-cluster-cfg-missing-"));
+    try {
+      assert.equal(resolveEmbeddingModel(dir), DEFAULT_EMBEDDING_MODEL);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("cai no default quando gemini.embedding_model está ausente do config", () => {
+    const dir = mkdtempSync(join(tmpdir(), "topic-cluster-cfg-partial-"));
+    try {
+      writeFileSync(join(dir, "platform.config.json"), JSON.stringify({ gemini: { model: "x" } }), "utf8");
+      assert.equal(resolveEmbeddingModel(dir), DEFAULT_EMBEDDING_MODEL);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("DEFAULT_EMBEDDING_MODEL não é o modelo descontinuado (#4654)", () => {
+    assert.notEqual(DEFAULT_EMBEDDING_MODEL, "text-embedding-004");
+  });
+});
+
+// ─── Achado #2 do fleet review (#4654 fix, 2ª camada) ──────────────────────
+// resolveEmbeddingModel() degradava só com console.error — mesmo padrão de
+// sinal-perdido-em-stderr que originou o #4654. configError precisa chegar
+// até o caller pra ser roteado por logEvent + propagado pro sidecar/gate.
+describe("resolveEmbeddingModelWithDiagnostics (#4654 fleet review achado #2)", () => {
+  it("configError null quando platform.config.json é lido normalmente", () => {
+    const dir = mkdtempSync(join(tmpdir(), "topic-cluster-diag-ok-"));
+    try {
+      writeFileSync(
+        join(dir, "platform.config.json"),
+        JSON.stringify({ gemini: { embedding_model: "gemini-embedding-2" } }),
+        "utf8",
+      );
+      const result = resolveEmbeddingModelWithDiagnostics(dir);
+      assert.equal(result.model, "gemini-embedding-2");
+      assert.equal(result.configError, null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("arquivo ausente também popula configError — mesmo tratamento pré-existente do catch (ENOENT)", () => {
+    // Nota: preserva o comportamento ANTERIOR ao fleet review — o catch já
+    // tratava ENOENT igual a JSON inválido (console.error incondicional).
+    // Este teste documenta que a propagação de configError não distingue
+    // "arquivo não existe" de "arquivo corrompido" — ambos caem no mesmo
+    // catch. Isso é aceitável: em produção (`main()` roda de cwd=ROOT do
+    // repo) `platform.config.json` sempre existe; a distinção relevante pro
+    // achado #2 é key_present/model_used no sidecar, não a causa do ENOENT.
+    const dir = mkdtempSync(join(tmpdir(), "topic-cluster-diag-missing-"));
+    try {
+      const result = resolveEmbeddingModelWithDiagnostics(dir);
+      assert.equal(result.model, DEFAULT_EMBEDDING_MODEL);
+      assert.ok(result.configError, "ENOENT também é reportado — mesmo catch de antes do fix");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("configError populado quando platform.config.json existe mas é JSON inválido", () => {
+    const dir = mkdtempSync(join(tmpdir(), "topic-cluster-diag-corrupt-"));
+    try {
+      writeFileSync(join(dir, "platform.config.json"), "{ isso não é json", "utf8");
+      const result = resolveEmbeddingModelWithDiagnostics(dir);
+      assert.equal(result.model, DEFAULT_EMBEDDING_MODEL, "cai no default mesmo com config corrompido");
+      assert.ok(result.configError, "configError deve capturar o motivo — não pode ser null aqui");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolveEmbeddingModel (wrapper de compat) continua retornando só o model", () => {
+    const dir = mkdtempSync(join(tmpdir(), "topic-cluster-diag-wrapper-"));
+    try {
+      writeFileSync(join(dir, "platform.config.json"), "{ corrompido", "utf8");
+      assert.equal(resolveEmbeddingModel(dir), DEFAULT_EMBEDDING_MODEL);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("aggregateEmbeddingStats (#4654)", () => {
+  it("soma attempted/failed de vários buckets e mantém o model comum", () => {
+    const statsList: EmbeddingStats[] = [
+      { model: "gemini-embedding-001", key_present: true, attempted: 3, failed: 0, fail_rate: 0, fallback_triggered: false },
+      { model: "gemini-embedding-001", key_present: true, attempted: 5, failed: 5, fail_rate: 1, fallback_triggered: true },
+    ];
+    const agg = aggregateEmbeddingStats(statsList);
+    assert.equal(agg.attempted, 8);
+    assert.equal(agg.failed, 5);
+    assert.equal(agg.fail_rate, 5 / 8);
+    assert.equal(agg.key_present, true);
+    assert.equal(agg.fallback_triggered, true, "qualquer bucket com fallback total marca o agregado");
+    assert.equal(agg.model, "gemini-embedding-001");
+  });
+
+  it("bucket vazio (attempted=0) não quebra fail_rate", () => {
+    const statsList: EmbeddingStats[] = [
+      { model: "gemini-embedding-001", key_present: false, attempted: 0, failed: 0, fail_rate: 0, fallback_triggered: true },
+    ];
+    const agg = aggregateEmbeddingStats(statsList);
+    assert.equal(agg.attempted, 0);
+    assert.equal(agg.fail_rate, 0);
+    assert.equal(agg.key_present, false);
   });
 });
 
@@ -460,6 +657,96 @@ describe("topic-cluster CLI main() — legacy shape não crasha (#1671 — site 
       assert.ok(existsSync(outPath), "output deve ser escrito (não abortado pré-write)");
       const out = JSON.parse(rf(outPath, "utf8"));
       assert.deepEqual(out.radar.map((a: { url: string }) => a.url).sort(), ["https://x/n", "https://x/p"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#4654: escreve sidecar topic-cluster-stats.json junto do --out (embedding_health visível pro validator)", () => {
+    const ROOT = resolve(import.meta.dirname, "..");
+    const dir = mkdtempSync(join(tmpdir(), "topic-cluster-cli-stats-"));
+    try {
+      const input = {
+        lancamento: [{ url: "https://x/l", title: "Lançamento", summary: "produto" }],
+        radar: [],
+        use_melhor: [],
+        video: [],
+      };
+      const inPath = join(dir, "categorized.json");
+      const outPath = join(dir, "clustered.json");
+      writeFileSync(inPath, JSON.stringify(input), "utf8");
+      const env = { ...process.env };
+      delete env.GEMINI_API_KEY; // sem key — caminho esperado, key_present=false
+      const r = spawnSync(
+        "npx",
+        [
+          "tsx", "scripts/topic-cluster.ts",
+          "--in", inPath, "--out", outPath, "--threshold", "0.5",
+          "--log-root-dir", dir, // #3311: isola o run-log do worktree real
+        ],
+        { cwd: ROOT, env, encoding: "utf8", shell: true, timeout: 120000 },
+      );
+      assert.equal(r.status, 0, `CLI deve sair 0. stderr: ${r.stderr?.slice(0, 400)}`);
+      const statsPath = join(dir, "topic-cluster-stats.json");
+      assert.ok(existsSync(statsPath), "sidecar topic-cluster-stats.json deve ser escrito");
+      const stats = JSON.parse(rf(statsPath, "utf8"));
+      assert.equal(stats.key_present, false);
+      assert.equal(stats.model, "gemini-embedding-001");
+
+      const out = JSON.parse(rf(outPath, "utf8"));
+      assert.ok(out.embedding_health, "output principal também carrega embedding_health");
+      assert.equal(out.embedding_health.key_present, false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Achado #2 do fleet review (#4654 fix, 2ª camada): platform.config.json
+  // ilegível não pode degradar só com console.error — precisa ir pro
+  // run-log.jsonl e pro sidecar (config_error), pra chegar até o gate.
+  it("#4654 achado #2: platform.config.json corrompido loga em run-log.jsonl e marca config_error no sidecar", () => {
+    const ROOT = resolve(import.meta.dirname, "..");
+    const dir = mkdtempSync(join(tmpdir(), "topic-cluster-cli-cfg-error-"));
+    try {
+      const input = {
+        lancamento: [{ url: "https://x/l", title: "Lançamento", summary: "produto" }],
+        radar: [],
+        use_melhor: [],
+        video: [],
+      };
+      const inPath = join(dir, "categorized.json");
+      const outPath = join(dir, "clustered.json");
+      writeFileSync(inPath, JSON.stringify(input), "utf8");
+      // platform.config.json corrompido NA RAIZ do worktree — resolveEmbeddingModelWithDiagnostics
+      // lê de process.cwd() (= cwd do subprocess = ROOT), não de --log-root-dir.
+      // Como não dá pra corromper o platform.config.json real do worktree
+      // (compartilhado com outros testes/processos), rodamos o CLI com
+      // cwd apontando pro tmpdir e copiamos só o necessário.
+      writeFileSync(join(dir, "platform.config.json"), "{ isso não é json válido", "utf8");
+      const env = { ...process.env };
+      delete env.GEMINI_API_KEY;
+      const r = spawnSync(
+        "npx",
+        [
+          "tsx", resolve(ROOT, "scripts/topic-cluster.ts"),
+          "--in", inPath, "--out", outPath, "--threshold", "0.5",
+          "--log-root-dir", dir,
+        ],
+        { cwd: dir, env, encoding: "utf8", shell: true, timeout: 120000 },
+      );
+      assert.equal(r.status, 0, `CLI deve sair 0 mesmo com config corrompido. stderr: ${r.stderr?.slice(0, 400)}`);
+
+      const statsPath = join(dir, "topic-cluster-stats.json");
+      const stats = JSON.parse(rf(statsPath, "utf8"));
+      assert.ok(stats.config_error, "sidecar deve carregar config_error");
+      assert.equal(stats.model, "gemini-embedding-001", "cai no default mesmo com config corrompido");
+
+      const logPath = join(dir, "data", "run-log.jsonl");
+      assert.ok(existsSync(logPath), "run-log.jsonl deve ser escrito");
+      const lines = rf(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      const entry = lines.find((l: { message?: string }) => l.message?.includes("platform.config.json não lido"));
+      assert.ok(entry, "evento de config ilegível deve estar no run-log");
+      assert.equal(entry.level, "warn");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

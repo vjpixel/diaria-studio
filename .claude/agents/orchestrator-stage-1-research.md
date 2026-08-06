@@ -402,6 +402,8 @@ npx tsx scripts/topic-cluster.ts \
 ```
 Threshold `0.3` é agressivo (Jaccard de tokens). False positives são amortecidos pelo ranking intra-cluster (representante mantido é o de melhor qualidade). Daqui em diante usar `_internal/tmp-clustered.json`. Logar `clusters.length` (zero é normal).
 
+Modelo de embedding vem de `platform.config.json > gemini.embedding_model` (default `gemini-embedding-001`, #4654 — sucede o `text-embedding-004` descontinuado). O script escreve `_internal/topic-cluster-stats.json` junto do `--out`; o pre-gate validator (Passo 3, `validate-stage-1-output.ts`) lê esse sidecar e vira um WARN visível no gate quando `GEMINI_API_KEY` está configurada mas os embeddings falharam (drift de catálogo, quota, rede) — nunca um `console.warn` perdido no stderr. Sem `GEMINI_API_KEY`, o fallback Jaccard é o caminho esperado e não gera warning.
+
 ### 1o. Filtro determinístico de janela (#233, #560)
 
 Antes do step 1p1 (research-review-dates), rodar `scripts/filter-date-window.ts` pra garantir que **nenhum** artigo fora da janela chegue ao filtro de datas. **Anchor = `anchor_iso`** (today UTC), não `edition_iso` — assim a janela cobre o que foi publicado de fato nos últimos `window_days` dias, e não uma janela hipotética entre hoje e a publication date:
@@ -748,7 +750,6 @@ Apresentar ao usuário:
    ⚠️ N submissão(ões) sua(s) removida(s) pelo dedup: {title} — motivo: {dedup_note}
    ```
    Onde N = `editorSubmittedLost.length`. Nota: `editorSubmittedLost` já exclui as submissões que o próprio dedup conseguiu resgatar via um sobrevivente same-story (`editor_submitted_url`, #4193) — só o que ficou genuinamente sem sobrevivente aparece aqui.
-
 4b. **⚠️ Submissões do editor removidas pela janela de data (#4656):** ler `stats.editorSubmittedLost` de `_internal/tmp-dates-reviewed.json` (passo 1p1). Best-effort, nunca bloqueia; vazio/ausente → omitir; se não-vazio, uma linha por entry: `⚠️ N submissão(ões) sua(s) removida(s) pela janela de data: {title} — motivo: {detail}` (N = `.length`). `filter-date-window.ts` isenta `flag: "editor_submitted"` dessa remoção desde #4656 (mesmo precedente do dedup Pass 1d/#4192) — deveria estar sempre vazio; só dispara se um refactor futuro quebrar o guard. **Contrapartida (#4685):** ler também `stats.dateWindowSpared` (mesmo arquivo) — a isenção É incondicional, então artigos fora da janela SÃO mantidos; se não-vazio, exibir `⚠️ N submissão(ões) sua(s) mantida(s) fora da janela de data pela isenção: {title} [{bucket}] — confira se ainda vale publicar` (N = `.length`), pra distinguir do `⚠️` genérico de `date_unverified` no `01-categorized.md`.
 
 5. **Relatório de saúde das fontes:**
