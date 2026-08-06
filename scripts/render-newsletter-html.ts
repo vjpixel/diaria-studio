@@ -18,8 +18,8 @@
  * --out: write to file instead of stdout
  * --esp beehiiv|brevo: merge tag do link de voto do É IA? (#4266). Default
  *   beehiiv (`{{email}}` cru — o token opaco do #4487 foi revertido neste
- *   ramo pelo #4581). brevo usa `{{ contact.POLL_TOKEN }}@vote.eia.diaria.local`
- *   (token opaco, ainda vivo lá, #4517) — só relevante pro modo --format html sem --split
+ *   ramo pelo #4581). brevo usa `{{ contact.POLL_TOKEN }}%40vote.eia.diaria.local`
+ *   (token opaco, ainda vivo lá, #4517; `@` percent-encoded desde #4692) — só relevante pro modo --format html sem --split
  *   (É IA? standalone/split fica sempre Beehiiv).
  *
  * Image references use {{IMG:filename}} placeholders. The publish agent
