@@ -1,32 +1,51 @@
 /**
  * topic-cluster.ts
  *
- * Agrupa artigos cobrindo o mesmo tema usando embedding similarity (Gemini
- * text-embedding-004) com fallback para Jaccard similarity de tokens.
- * Reduz buckets poluídos com N artigos do mesmo evento (ex: Google Cloud
- * Next coberto por blog.google + techtudo.com.br).
+ * Agrupa artigos cobrindo o mesmo tema usando embedding similarity (Gemini)
+ * com fallback para Jaccard similarity de tokens. Reduz buckets poluídos com
+ * N artigos do mesmo evento (ex: Google Cloud Next coberto por blog.google +
+ * techtudo.com.br).
+ *
+ * Modelo de embedding (#4654): `text-embedding-004` foi descontinuado pelo
+ * Gemini (404) — confirmado ao vivo na edição 260806, 167/167 embeddings
+ * falharam e o script caiu no fallback Jaccard SEM sinal visível pro editor
+ * (só `console.warn`). Ponto único de config agora é
+ * `platform.config.json > gemini.embedding_model` (mesmo padrão de
+ * `gemini.translate_model` em eia-compose.ts), com fallback pro modelo
+ * estável default (`DEFAULT_EMBEDDING_MODEL`) — ver `resolveEmbeddingModel`.
  *
  * Threshold default:
  *   - cosine (com GEMINI_API_KEY):  0.85  (documentado no CLI como --threshold 0.85)
  *   - Jaccard (fallback sem key):   0.5   (mais tolerante — tokens são esparsos)
  *
  * Uso:
- *   npx tsx scripts/topic-cluster.ts --in <categorized.json> --out <clustered.json> [--threshold 0.85]
+ *   npx tsx scripts/topic-cluster.ts --in <categorized.json> --out <clustered.json> [--threshold 0.85] [--log-root-dir <path>]
  *
  * Input:  { lancamento: Article[], radar: Article[], use_melhor: Article[], video: Article[] }
- * Output: mesmo shape + { clusters: ClusterMetadata[] } com os artigos
- *         "runners-up" removidos dos buckets e capturados nos clusters
- *         pra rastreabilidade.
+ * Output: mesmo shape + { clusters: ClusterMetadata[], embedding_health: EmbeddingStats }
+ *         com os artigos "runners-up" removidos dos buckets e capturados nos
+ *         clusters pra rastreabilidade.
  *
  * Ranking intra-cluster:
  *   1. Fonte cadastrada (discovered_source=false) antes de discovered.
  *   2. Score maior primeiro (se presente).
  *   3. Ordem original como desempate final.
+ *
+ * Falha silenciosa (#4654): quando `--out` é passado, `embedding_health` é
+ * também escrito num sidecar `topic-cluster-stats.json` na mesma pasta —
+ * `scripts/lib/stage-1-validator.ts` (`validateEmbeddingHealth`) lê esse
+ * arquivo e vira um WARN visível no gate humano da Etapa 1 quando
+ * `key_present=true` e `failed>0` (GEMINI_API_KEY configurada mas o modelo
+ * falhou — não é o caso esperado de "sem key = Jaccard por design"). Além
+ * disso, falha com key presente também vai pro `data/run-log.jsonl`
+ * (level `error` se 100% falhou, `warn` se parcial).
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { normalizeCategorizedBuckets } from "./lib/categorized-buckets.ts"; // #1671
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { logEvent } from "./lib/run-log.ts";
 
 export interface Article {
   url: string;
@@ -54,25 +73,81 @@ export interface CategorizedInput {
   video: Article[];
 }
 
+/**
+ * Saúde do embedding batch (#4654) — visível pro editor via
+ * `stage-1-validator.ts` (`validateEmbeddingHealth`), nunca só um
+ * `console.warn` perdido no stderr.
+ *
+ * `key_present=false` é o caminho ESPERADO (sem GEMINI_API_KEY, Jaccard por
+ * design) — nunca vira warning loud. `key_present=true` com `failed>0` é o
+ * sinal real de degradação (modelo saiu do catálogo, quota, rede).
+ */
+export interface EmbeddingStats {
+  model: string;
+  key_present: boolean;
+  attempted: number;
+  failed: number;
+  fail_rate: number;
+  fallback_triggered: boolean;
+}
+
 export interface ClusterOutput extends CategorizedInput {
   clusters: Cluster[];
+  embedding_health: EmbeddingStats;
+}
+
+// #4654: text-embedding-004 saiu do catálogo Gemini (404). gemini-embedding-001
+// é estável e não-preview (checado via ListModels na issue, 260805) — usado
+// como fallback quando platform.config.json > gemini.embedding_model está
+// ausente/ilegível.
+export const DEFAULT_EMBEDDING_MODEL = "gemini-embedding-001";
+
+/**
+ * Resolve o modelo de embedding a partir de `platform.config.json >
+ * gemini.embedding_model`, com fallback pra `DEFAULT_EMBEDDING_MODEL` quando
+ * o campo está ausente ou o config não é legível (mesmo padrão de
+ * `gemini.translate_model` em `eia-compose.ts`, #4654). Config corrompida
+ * nunca é uma falha silenciosa — loga o motivo em stderr antes de cair no
+ * default.
+ */
+export function resolveEmbeddingModel(rootDir: string = process.cwd()): string {
+  try {
+    const cfgPath = resolve(rootDir, "platform.config.json");
+    const cfg = JSON.parse(readFileSync(cfgPath, "utf8")) as {
+      gemini?: { embedding_model?: string };
+    };
+    if (
+      typeof cfg?.gemini?.embedding_model === "string" &&
+      cfg.gemini.embedding_model.length > 0
+    ) {
+      return cfg.gemini.embedding_model;
+    }
+  } catch (e) {
+    console.error(
+      `topic-cluster: platform.config.json não lido (${(e as Error).message}); usando embedding_model default '${DEFAULT_EMBEDDING_MODEL}'`,
+    );
+  }
+  return DEFAULT_EMBEDDING_MODEL;
 }
 
 /**
- * Fetches a text embedding from the Gemini text-embedding-004 model.
+ * Fetches a text embedding from the given Gemini embedding model.
  * Returns null when GEMINI_API_KEY is absent or the request fails.
  */
-export async function embedText(text: string): Promise<number[] | null> {
+export async function embedText(
+  text: string,
+  model: string = DEFAULT_EMBEDDING_MODEL,
+): Promise<number[] | null> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return null;
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent?key=${apiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "models/text-embedding-004",
+          model: `models/${model}`,
           content: { parts: [{ text }] },
         }),
       }
@@ -189,6 +264,11 @@ export function clusterArticles(
   return clusters.map((c) => ({ members: c.members, similarityMin: c.similarityMin, method: c.method }));
 }
 
+/** Constrói `EmbeddingStats` pro caso "sem GEMINI_API_KEY" — esperado por design, nunca warning loud. */
+function noKeyStats(model: string): EmbeddingStats {
+  return { model, key_present: false, attempted: 0, failed: 0, fail_rate: 0, fallback_triggered: true };
+}
+
 /**
  * Cluster greedy usando cosine similarity de embeddings (assíncrono).
  *
@@ -196,24 +276,55 @@ export function clusterArticles(
  * chamadas, não N²). Se qualquer embedding falhar, usa o vetor nulo e o
  * par cai abaixo do threshold — safe degradation.
  *
- * Se nenhum embedding retornar, recai silenciosamente no Jaccard.
+ * #4654: quando GEMINI_API_KEY está presente e os embeddings falham (modelo
+ * fora do catálogo, quota, rede), o fallback pra Jaccard continua existindo
+ * mas agora é reportado em `EmbeddingStats` — `key_present=true` distingue
+ * essa degradação real do caminho esperado "sem key = Jaccard por design"
+ * (`key_present=false`, nunca tratado como falha).
  */
 export async function clusterArticlesWithEmbeddings(
   articles: Article[],
   threshold: number,
-): Promise<Array<{ members: Article[]; similarityMin: number; method: "cosine" | "jaccard" }>> {
+  model: string = DEFAULT_EMBEDDING_MODEL,
+): Promise<{
+  clusters: Array<{ members: Article[]; similarityMin: number; method: "cosine" | "jaccard" }>;
+  stats: EmbeddingStats;
+}> {
+  // Sem key: nem tenta a API — caminho esperado, não é uma falha (#4654).
+  if (!process.env.GEMINI_API_KEY) {
+    return { clusters: clusterArticles(articles, Math.min(threshold, 0.5)), stats: noKeyStats(model) };
+  }
+
   // Batch: buscar todos os embeddings em paralelo
   const texts = articles.map((a) => articleText(a));
-  const embeddingResults = await Promise.all(texts.map((t) => embedText(t)));
+  const embeddingResults = await Promise.all(texts.map((t) => embedText(t, model)));
 
-  const allNull = embeddingResults.every((e) => e === null);
+  const attempted = embeddingResults.length;
+  const failed = embeddingResults.filter((e) => e === null).length;
+  const allNull = attempted > 0 && failed === attempted;
+  const stats: EmbeddingStats = {
+    model,
+    key_present: true,
+    attempted,
+    failed,
+    fail_rate: attempted > 0 ? failed / attempted : 0,
+    fallback_triggered: allNull,
+  };
+
   if (allNull) {
     // Fallback total para Jaccard.
     // Usa threshold Jaccard padrão (0.5) em vez do threshold cosine passado (0.85):
     // threshold=0.85 para Jaccard é extremamente alto e produziria quase zero clusters.
     const jaccardThreshold = Math.min(threshold, 0.5);
-    console.warn(`topic-cluster: todos os embeddings falharam — usando Jaccard com threshold=${jaccardThreshold}`);
-    return clusterArticles(articles, jaccardThreshold);
+    console.warn(
+      `topic-cluster: todos os ${attempted} embeddings falharam (model=${model}, GEMINI_API_KEY presente) — usando Jaccard com threshold=${jaccardThreshold}`,
+    );
+    return { clusters: clusterArticles(articles, jaccardThreshold), stats };
+  }
+  if (failed > 0) {
+    console.warn(
+      `topic-cluster: ${failed}/${attempted} embeddings falharam (model=${model}) — degradação parcial, fallback por-par pra Jaccard onde faltou`,
+    );
   }
 
   // Greedy cluster com cosine similarity
@@ -263,7 +374,10 @@ export async function clusterArticlesWithEmbeddings(
     }
   }
 
-  return clusters.map((c) => ({ members: c.members, similarityMin: c.similarityMin, method: c.method }));
+  return {
+    clusters: clusters.map((c) => ({ members: c.members, similarityMin: c.similarityMin, method: c.method })),
+    stats,
+  };
 }
 
 /**
@@ -295,8 +409,9 @@ export function rankWithinCluster(members: Article[]): Article[] {
 export async function clusterBucket(
   articles: Article[],
   threshold: number,
-): Promise<{ kept: Article[]; clusters: Cluster[] }> {
-  const clusters = await clusterArticlesWithEmbeddings(articles, threshold);
+  model: string = DEFAULT_EMBEDDING_MODEL,
+): Promise<{ kept: Article[]; clusters: Cluster[]; stats: EmbeddingStats }> {
+  const { clusters, stats } = await clusterArticlesWithEmbeddings(articles, threshold, model);
   const kept: Article[] = [];
   const clusterMeta: Cluster[] = [];
   for (const c of clusters) {
@@ -313,12 +428,34 @@ export async function clusterBucket(
       });
     }
   }
-  return { kept, clusters: clusterMeta };
+  return { kept, clusters: clusterMeta, stats };
+}
+
+/**
+ * Agrega `EmbeddingStats` de N buckets num único sumário (#4654) — soma
+ * attempted/failed, `key_present`/`fallback_triggered` são `true` se
+ * qualquer bucket teve. `model` vem do primeiro bucket com `attempted > 0`
+ * (todos os buckets usam o mesmo model — resolvido uma vez em `main()`).
+ */
+export function aggregateEmbeddingStats(statsList: EmbeddingStats[]): EmbeddingStats {
+  const withAttempts = statsList.find((s) => s.attempted > 0);
+  const model = withAttempts?.model ?? statsList[0]?.model ?? DEFAULT_EMBEDDING_MODEL;
+  const attempted = statsList.reduce((sum, s) => sum + s.attempted, 0);
+  const failed = statsList.reduce((sum, s) => sum + s.failed, 0);
+  return {
+    model,
+    key_present: statsList.some((s) => s.key_present),
+    attempted,
+    failed,
+    fail_rate: attempted > 0 ? failed / attempted : 0,
+    fallback_triggered: statsList.some((s) => s.fallback_triggered),
+  };
 }
 
 export async function clusterCategorized(
   input: CategorizedInput,
   threshold: number,
+  model: string = DEFAULT_EMBEDDING_MODEL,
 ): Promise<ClusterOutput> {
   // #1629: cluster TODOS os 4 buckets. Antes só processava 3 e dropava
   // tutorial/video silenciosamente (#1628).
@@ -329,10 +466,10 @@ export async function clusterCategorized(
     input as unknown as Record<string, unknown>,
   );
   const [l, r, u, v] = await Promise.all([
-    clusterBucket(buckets.lancamento, threshold),
-    clusterBucket(buckets.radar, threshold),
-    clusterBucket(buckets.use_melhor, threshold),
-    clusterBucket(buckets.video, threshold),
+    clusterBucket(buckets.lancamento, threshold, model),
+    clusterBucket(buckets.radar, threshold, model),
+    clusterBucket(buckets.use_melhor, threshold, model),
+    clusterBucket(buckets.video, threshold, model),
   ]);
   return {
     lancamento: l.kept,
@@ -340,6 +477,7 @@ export async function clusterCategorized(
     use_melhor: u.kept,
     video: v.kept,
     clusters: [...l.clusters, ...r.clusters, ...u.clusters, ...v.clusters],
+    embedding_health: aggregateEmbeddingStats([l.stats, r.stats, u.stats, v.stats]),
   };
 }
 
@@ -358,13 +496,18 @@ async function main(): Promise<void> {
 
   if (!inPath) {
     console.error(
-      "Uso: topic-cluster.ts --in <categorized.json> [--out <clustered.json>] [--threshold 0.85]",
+      "Uso: topic-cluster.ts --in <categorized.json> [--out <clustered.json>] [--threshold 0.85] [--log-root-dir <path>]",
     );
     process.exit(1);
   }
 
+  // #3311/#3310 padrão: override SÓ pra isolamento de teste — sem a flag,
+  // logEvent cai no default process.cwd() (produção roda da raiz do repo).
+  const logRootDir = args["log-root-dir"];
+
+  const model = resolveEmbeddingModel();
   const input = JSON.parse(readFileSync(inPath, "utf8")) as CategorizedInput;
-  const result = await clusterCategorized(input, threshold);
+  const result = await clusterCategorized(input, threshold, model);
 
   // #1671: totalIn dos buckets NORMALIZADOS (não do input cru) — senão um
   // categorized.json legacy sem radar/use_melhor/video crasha aqui (`undefined.length`)
@@ -374,13 +517,40 @@ async function main(): Promise<void> {
   const totalOut = result.lancamento.length + result.radar.length + result.use_melhor.length + result.video.length;
   const method = result.clusters[0]?.similarity_method ?? (hasKey ? "cosine" : "jaccard");
   console.error(
-    `topic-cluster: ${totalIn} in → ${totalOut} kept, ${result.clusters.length} cluster(s) com runners-up (threshold=${threshold}, method=${method})`,
+    `topic-cluster: ${totalIn} in → ${totalOut} kept, ${result.clusters.length} cluster(s) com runners-up (threshold=${threshold}, method=${method}, embedding_model=${model})`,
   );
+
+  // #4654: falha silenciosa morre aqui. Sem GEMINI_API_KEY (key_present=false)
+  // é o caminho esperado — nunca vira warning loud. Com key presente e
+  // falhas > 0, é degradação real (modelo fora do catálogo, quota, rede):
+  // sempre visível em stderr + data/run-log.jsonl, `error` se 100% falhou
+  // (fallback total, o padrão que causou o bug #4654 em 260806), `warn` se
+  // parcial.
+  const health = result.embedding_health;
+  if (health.key_present && health.failed > 0) {
+    const allFailed = health.failed === health.attempted;
+    const level = allFailed ? "error" : "warn";
+    const message = allFailed
+      ? `topic-cluster: 100% dos ${health.attempted} embeddings falharam (model=${health.model}) — fallback Jaccard ativo. Provável drift de catálogo Gemini (#4654); rode 'npx tsx scripts/validate-gemini-config.ts' ou confira platform.config.json > gemini.embedding_model.`
+      : `topic-cluster: ${health.failed}/${health.attempted} embeddings falharam (model=${health.model}) — clustering parcialmente degradado.`;
+    console.error(`⚠️ ${message}`);
+    logEvent(
+      { edition: null, stage: 1, agent: "topic-cluster.ts", level, message, details: health },
+      logRootDir,
+    );
+  }
 
   const json = JSON.stringify(result, null, 2);
   if (outPath) {
     writeFileSync(outPath, json, "utf8");
     console.error(`Wrote to ${outPath}`);
+    // Sidecar de auditoria (#4654): `stage-1-validator.ts` lê este arquivo
+    // pra virar um WARN visível no gate humano da Etapa 1 — não depende de
+    // `embedding_health` sobreviver a transformações downstream do JSON
+    // principal (filter-date-window.ts, dedup-intra-edition.ts, etc).
+    const statsPath = resolve(dirname(outPath), "topic-cluster-stats.json");
+    writeFileSync(statsPath, JSON.stringify(health, null, 2), "utf8");
+    console.error(`Wrote embedding health to ${statsPath}`);
   } else {
     process.stdout.write(json);
   }

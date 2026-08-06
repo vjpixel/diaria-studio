@@ -103,7 +103,8 @@
   },
   "gemini": {
     "model": "gemini-2.5-flash-image",
-    "translate_model": "gemini-flash-latest"
+    "translate_model": "gemini-flash-latest",
+    "embedding_model": "gemini-embedding-001"
   },
   "cloudflare": {
     "model": "@cf/black-forest-labs/flux-1-schnell",

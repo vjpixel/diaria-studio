@@ -359,6 +359,70 @@ export function validateSectionMinimums(
 }
 
 /**
+ * Shape mínimo do sidecar `topic-cluster-stats.json` (#4654) — espelha
+ * `EmbeddingStats` de `scripts/topic-cluster.ts` sem importar o módulo
+ * inteiro aqui (evita acoplar o validator ao CLI de clustering).
+ */
+export interface EmbeddingHealthStats {
+  model: string;
+  key_present: boolean;
+  attempted: number;
+  failed: number;
+  fail_rate: number;
+  fallback_triggered: boolean;
+}
+
+/**
+ * Pure: avisa quando o modelo de embedding do topic-cluster (#237) falhou
+ * com GEMINI_API_KEY presente — sinal de drift de catálogo Gemini (#4654,
+ * caso real: `text-embedding-004` saiu do ar, 167/167 embeddings falharam
+ * numa edição inteira e o único sinal era um `console.warn` que ninguém lia).
+ *
+ * `key_present=false` é o caminho ESPERADO (sem key, Jaccard por design) —
+ * nunca vira warning. `stats === null` (sidecar ausente — edição anterior ao
+ * #4654, ou topic-cluster não rodou com `--out`) também não é erro: skip.
+ */
+export function validateEmbeddingHealth(stats: EmbeddingHealthStats | null): AssertionResult {
+  if (stats === null) {
+    return {
+      name: "embedding_health",
+      status: "ok",
+      message: "topic-cluster-stats.json ausente — sem dado de embedding health pra checar.",
+    };
+  }
+  if (!stats.key_present) {
+    return {
+      name: "embedding_health",
+      status: "ok",
+      message: "GEMINI_API_KEY ausente — topic-cluster usou Jaccard por design (não é falha).",
+      details: { ...stats },
+    };
+  }
+  if (stats.attempted > 0 && stats.failed === stats.attempted) {
+    return {
+      name: "embedding_health",
+      status: "warn",
+      message: `100% dos ${stats.attempted} embeddings falharam (model=${stats.model}) — topic-cluster caiu inteiro no fallback Jaccard. Provável drift de catálogo Gemini (#4654) — rode 'npx tsx scripts/validate-gemini-config.ts' ou confira platform.config.json > gemini.embedding_model.`,
+      details: { ...stats },
+    };
+  }
+  if (stats.failed > 0) {
+    return {
+      name: "embedding_health",
+      status: "warn",
+      message: `${stats.failed}/${stats.attempted} embeddings falharam (model=${stats.model}) — clustering parcialmente degradado.`,
+      details: { ...stats },
+    };
+  }
+  return {
+    name: "embedding_health",
+    status: "ok",
+    message: `Embeddings OK (${stats.attempted}/${stats.attempted}, model=${stats.model}).`,
+    details: { ...stats },
+  };
+}
+
+/**
  * Roda toda a bateria de assertions e agrega counts.
  *
  * `editionDir` deve ser o caminho absoluto pra `data/editions/{AAMMDD}/`.
@@ -418,6 +482,21 @@ export function runStage1Validation(
       const md = readFileSync(categorizedMdPath, "utf8");
       assertions.push(validateSequentialNumbering(md));
     }
+
+    // #4654: sidecar escrito por topic-cluster.ts (passo 1n) junto do --out.
+    const embeddingStatsPath = join(editionDir, "_internal", "topic-cluster-stats.json");
+    let embeddingStats: EmbeddingHealthStats | null = null;
+    if (existsSync(embeddingStatsPath)) {
+      try {
+        embeddingStats = JSON.parse(readFileSync(embeddingStatsPath, "utf8")) as EmbeddingHealthStats;
+      } catch {
+        // Sidecar corrompido — tratado como ausente (validateEmbeddingHealth
+        // já retorna "ok"/skip pra stats=null); não vale a pena bloquear o
+        // gate por isso.
+        embeddingStats = null;
+      }
+    }
+    assertions.push(validateEmbeddingHealth(embeddingStats));
 
     // Drive sync — caller passa `driveCachePath: null` quando drive_sync=false.
     // Se a opção for omitida, default = `data/drive-cache.json` em ROOT relativo

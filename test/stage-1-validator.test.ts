@@ -14,7 +14,9 @@ import {
   validateDriveSyncConfirmed,
   validateSequentialNumbering,
   validateSectionMinimums,
+  validateEmbeddingHealth,
   runStage1Validation,
+  type EmbeddingHealthStats,
 } from "../scripts/lib/stage-1-validator.ts";
 
 // Default options pra rodar os testes de integração sem trip nos novos
@@ -405,5 +407,139 @@ describe("validateSectionMinimums (#581 → #488 → #1568 → #1629)", () => {
       minUseMelhor: 0,
     });
     assert.equal(result.status, "ok");
+  });
+});
+
+describe("validateEmbeddingHealth (#4654 — text-embedding-004 descontinuado, fallback silencioso)", () => {
+  it("ok quando sidecar ausente (stats=null) — edição pré-#4654 ou topic-cluster sem --out", () => {
+    const result = validateEmbeddingHealth(null);
+    assert.equal(result.status, "ok");
+    assert.ok(result.message.includes("ausente"));
+  });
+
+  it("ok quando GEMINI_API_KEY ausente (key_present=false) — Jaccard por design, NUNCA warning", () => {
+    const stats: EmbeddingHealthStats = {
+      model: "gemini-embedding-001",
+      key_present: false,
+      attempted: 0,
+      failed: 0,
+      fail_rate: 0,
+      fallback_triggered: true,
+    };
+    const result = validateEmbeddingHealth(stats);
+    assert.equal(result.status, "ok");
+    assert.ok(result.message.includes("Jaccard por design"));
+  });
+
+  it("warn quando key presente e 100% dos embeddings falharam — o caso real do #4654 (167/167)", () => {
+    const stats: EmbeddingHealthStats = {
+      model: "text-embedding-004",
+      key_present: true,
+      attempted: 167,
+      failed: 167,
+      fail_rate: 1,
+      fallback_triggered: true,
+    };
+    const result = validateEmbeddingHealth(stats);
+    assert.equal(result.status, "warn");
+    assert.ok(result.message.includes("167"));
+    assert.ok(result.message.includes("#4654"));
+  });
+
+  it("warn quando degradação parcial (key presente, falha > 0 mas não 100%)", () => {
+    const stats: EmbeddingHealthStats = {
+      model: "gemini-embedding-001",
+      key_present: true,
+      attempted: 10,
+      failed: 3,
+      fail_rate: 0.3,
+      fallback_triggered: false,
+    };
+    const result = validateEmbeddingHealth(stats);
+    assert.equal(result.status, "warn");
+    assert.ok(result.message.includes("3/10"));
+  });
+
+  it("ok quando key presente e todos os embeddings tiveram sucesso", () => {
+    const stats: EmbeddingHealthStats = {
+      model: "gemini-embedding-001",
+      key_present: true,
+      attempted: 20,
+      failed: 0,
+      fail_rate: 0,
+      fallback_triggered: false,
+    };
+    const result = validateEmbeddingHealth(stats);
+    assert.equal(result.status, "ok");
+    assert.ok(result.message.includes("OK"));
+  });
+});
+
+describe("runStage1Validation lê topic-cluster-stats.json (#4654) — integration", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "stage1-embedding-health-"));
+    mkdirSync(join(tmpDir, "_internal"), { recursive: true });
+    writeFileSync(join(tmpDir, "01-categorized.md"), "x".repeat(300), "utf8");
+    writeFileSync(
+      join(tmpDir, "_internal", "01-categorized.json"),
+      JSON.stringify({
+        radar: [
+          { url: "u1", title: "GPT-5 release", summary: "x".repeat(60) },
+          { url: "u2", title: "AI alignment progress", summary: "x".repeat(60) },
+          { url: "u3", title: "Transformer benchmarks", summary: "x".repeat(60) },
+        ],
+      }),
+      "utf8",
+    );
+  });
+
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it("100% falha (sidecar) vira warning visível no gate — não fica preso num console.warn", () => {
+    writeFileSync(
+      join(tmpDir, "_internal", "topic-cluster-stats.json"),
+      JSON.stringify({
+        model: "text-embedding-004",
+        key_present: true,
+        attempted: 167,
+        failed: 167,
+        fail_rate: 1,
+        fallback_triggered: true,
+      }),
+      "utf8",
+    );
+    const result = runStage1Validation("260806", tmpDir, TEST_OPTS_NO_AUX);
+    assert.equal(result.blocking_count, 0, "não bloqueia — fallback Jaccard continua funcionando");
+    const embedding = result.assertions.find((a) => a.name === "embedding_health");
+    assert.equal(embedding?.status, "warn");
+    assert.ok(embedding?.message.includes("100%"));
+  });
+
+  it("sem sidecar (edição legada) não gera warning nem blocker", () => {
+    const result = runStage1Validation("260805", tmpDir, TEST_OPTS_NO_AUX);
+    const embedding = result.assertions.find((a) => a.name === "embedding_health");
+    assert.equal(embedding?.status, "ok");
+  });
+
+  it("sidecar sem key_present (sem GEMINI_API_KEY) não gera warning", () => {
+    writeFileSync(
+      join(tmpDir, "_internal", "topic-cluster-stats.json"),
+      JSON.stringify({
+        model: "gemini-embedding-001",
+        key_present: false,
+        attempted: 0,
+        failed: 0,
+        fail_rate: 0,
+        fallback_triggered: true,
+      }),
+      "utf8",
+    );
+    const result = runStage1Validation("260805", tmpDir, TEST_OPTS_NO_AUX);
+    const embedding = result.assertions.find((a) => a.name === "embedding_health");
+    assert.equal(embedding?.status, "ok");
   });
 });
