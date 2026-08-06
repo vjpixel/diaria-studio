@@ -265,7 +265,8 @@ export async function main(
     flush();
   } catch (e) {
     // persiste o que já veio antes de abortar; um flush que TAMBÉM falhe não pode
-    // escapar daqui (senão db.close()/exit 2 não rodam → exit 1 com stack).
+    // escapar daqui (senão db.close()/exitCode 2 + return não rodam → uncaught
+    // exception derruba com exit 1 e stack, mascarando o exit code do erro real).
     try {
       flush();
     } catch (flushErr) {
@@ -276,7 +277,13 @@ export async function main(
         `salvos no DB + checkpoint. Re-rode pra continuar de onde parou.`,
     );
     db.close();
-    process.exit(2);
+    // Windows fix (#4689, mesma classe do #4651/#4638/#1401): este catch só é
+    // alcançado depois de pelo menos um `await brevoGet(...)` (pool acima) —
+    // process.exit() aqui derrubaria o processo via libuv (UV_HANDLE_CLOSING)
+    // antes do flush dos streams, no MESMO caminho de erro que mais precisa
+    // do log. process.exitCode + return deixa o event loop drenar sozinho.
+    process.exitCode = 2;
+    return;
   }
 
   // Concluído: recompute global + limpa checkpoint.

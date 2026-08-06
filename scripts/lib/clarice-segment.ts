@@ -81,6 +81,43 @@ export interface StoreRow {
   // dele; fixtures que não populam o campo continuam válidas pros demais
   // grupos/segmentFromStore.
   created?: string | null;
+  // #4688: timestamp (ISO, com offset da Brevo) da ÚLTIMA vez que
+  // `clarice-sync-brevo.ts` de fato escreveu esta linha via upsert — `null`
+  // SEMPRE que o contato nunca foi tocado por um sync Brevo (nunca recebeu
+  // `UPDATE ... brevo_modified_at = ?`). Diferente de `opens_count`/
+  // `sends_count` (colunas `INTEGER DEFAULT 0` — um contato NUNCA sincronizado
+  // já nasce com `opens_count=0`, indistinguível de "sincronizado, mediu
+  // zero"), esta coluna não tem DEFAULT: seu `null` é sempre genuíno. É por
+  // isso o único sinal barato pra `hasMeasuredOpens` (abaixo) distinguir as
+  // duas leituras de `opens_count === 0`. Opcional (mesmo padrão dos campos
+  // acima) — fixtures que não populam o campo continuam válidas pros grupos
+  // que não checam engajamento (`segmentFromStore`/`priorityQueue`/`ramp-warm`).
+  brevo_modified_at?: string | null;
+}
+
+/**
+ * #4688: `opens_count === 0` só prova "nunca abriu" se o contato JÁ foi
+ * sincronizado com a Brevo pelo menos 1x — a coluna nasce em 0
+ * (`INTEGER DEFAULT 0`) mesmo pra quem nunca teve `clarice-sync-brevo.ts`
+ * rodando sobre ele (contato só-Stripe recém-ingerido, por exemplo). Sem essa
+ * distinção, `isReativacao` colocaria na fila de reativação um contato cujo
+ * engajamento real é simplesmente DESCONHECIDO — rotulado como "confirmado
+ * não-abridor" sem nenhuma medição por trás.
+ *
+ * Root-cause relacionado (mesma issue, achado por probe ao vivo, #4688):
+ * mesmo um contato JÁ sincronizado pode ter `opens_count` DEFASADO (subconta)
+ * se abriu um e-mail sem que isso tocasse o `modifiedAt` do contato na Brevo
+ * (confirmado: `modifiedAt` idêntico antes/depois de uma abertura nova) — o
+ * `--incremental` (`modifiedSince`) nunca re-sincroniza esse contato. Este
+ * helper NÃO resolve esse 2º problema (staleness pós-1º-sync é indetectável
+ * sem reconsultar a Brevo ao vivo, contato a contato) — só fecha a lacuna
+ * MAIS BARATA e determinística: nunca tratar "nunca sincronizado" como
+ * "sincronizado, mediu zero".
+ */
+export function hasMeasuredOpens(
+  r: Pick<StoreRow, "brevo_modified_at">,
+): boolean {
+  return r.brevo_modified_at != null;
 }
 
 export interface Segmentation {
@@ -397,14 +434,24 @@ export function segmentEngajados(rows: StoreRow[]): StoreRow[] {
  * abriu pouco). NÃO exclui internos (#4434 — mesma decisão/motivo de
  * `isEngajados` acima). Exclui contas de teste do editor (#2895/#2920 —
  * mesmo motivo de `isEngajados`).
+ *
+ * #4688: exige `hasMeasuredOpens` — sem isso, um contato NUNCA sincronizado
+ * pela Brevo (`opens_count=0` só pelo `DEFAULT 0` do schema, nunca medido de
+ * fato) entraria como "confirmado não-abridor" por acidente de dado, não por
+ * comportamento real. Fail-safe pro lado conservador: fica de fora de
+ * `reativacao` até o sync rodar sobre ele pelo menos 1x.
  */
 export function isReativacao(
-  r: Pick<StoreRow, "email" | "send_eligible" | "sends_count" | "opens_count">,
+  r: Pick<
+    StoreRow,
+    "email" | "send_eligible" | "sends_count" | "opens_count" | "brevo_modified_at"
+  >,
 ): boolean {
   return (
     isSendEligible(r) &&
     (r.sends_count ?? 0) > 0 &&
     (r.opens_count ?? 0) === 0 &&
+    hasMeasuredOpens(r) &&
     !isTestAccount(r.email)
   );
 }

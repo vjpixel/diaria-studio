@@ -181,7 +181,7 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
     rows = db
       .prepare(
         `SELECT email, tier, cohort, priority_points, send_eligible, ineligible_reason,
-                sends_count, opens_count, last_sent_at, mv_bucket, brevo_list_ids
+                sends_count, opens_count, last_sent_at, mv_bucket, brevo_list_ids, brevo_modified_at
            FROM clarice_users`,
       )
       .all() as unknown as StoreRow[];
