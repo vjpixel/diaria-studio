@@ -93,6 +93,18 @@ const SCOPES = [
   // em `data/.credentials.json` NÃO ganha este scope sozinho — sem re-rodar
   // este script e reaprovar no browser, a falha só aparece no POST, com 403.
   "https://www.googleapis.com/auth/postmaster.domain",
+  // #4704: `domainStats.query` da v2 (spam POR CAMPANHA via
+  // `FEEDBACK_LOOP_SPAM_RATE`, query por intervalo em vez de N GETs diários,
+  // `MESSAGE_VOLUME_LOW` explícito) exige `.../auth/postmaster` OU
+  // `.../auth/postmaster.traffic.readonly` — usamos o segundo (mais estreito).
+  // Confirmado ao vivo em 260806: `/v2/domains` responde 200 só com
+  // `postmaster.domain` (scope acima), mas `domainStats:query` dá 403
+  // ACCESS_TOKEN_SCOPE_INSUFFICIENT sem este scope à parte — é um 3º eixo,
+  // não superset de `postmaster.domain` (gestão de domínio) nem de
+  // `postmaster.readonly` (a v1, que `postmaster-spam-sync.ts` usa hoje).
+  // Mesma armadilha de sempre: token já emitido não ganha este scope sozinho
+  // sem re-rodar este script e reaprovar no browser.
+  "https://www.googleapis.com/auth/postmaster.traffic.readonly",
   // #4064: enviar o e-mail de alarme de guardrail furado do ramp Clarice
   // (`scripts/clarice-guardrail-alarm.ts`) via Gmail API direta — rodando fora
   // de uma sessão Claude Code (Task Scheduler), sem MCP Gmail disponível.

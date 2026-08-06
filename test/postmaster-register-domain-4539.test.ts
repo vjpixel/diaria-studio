@@ -253,3 +253,16 @@ test("oauth-setup mantém postmaster.domain SOMADO ao postmaster.readonly (#4539
     "postmaster.domain sumiu — create/verify da v2 param de funcionar",
   );
 });
+
+test("oauth-setup soma postmaster.traffic.readonly — 3º eixo, não substitui os outros dois (#4704)", () => {
+  // Mesma disciplina de leitura de TEXTO do teste acima (importar dispara main()).
+  const src = readFileSync(resolve(import.meta.dirname, "..", "scripts", "oauth-setup.ts"), "utf8");
+  assert.ok(
+    src.includes('"https://www.googleapis.com/auth/postmaster.traffic.readonly"'),
+    "postmaster.traffic.readonly sumiu — domainStats.query da v2 (spam por campanha) dá 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT sem ele",
+  );
+  // As 3 permissões precisam coexistir — nenhuma é superset das outras
+  // (verificado ao vivo em 260806, ver comentário em oauth-setup.ts).
+  assert.ok(src.includes('"https://www.googleapis.com/auth/postmaster.readonly"'));
+  assert.ok(src.includes('"https://www.googleapis.com/auth/postmaster.domain"'));
+});
