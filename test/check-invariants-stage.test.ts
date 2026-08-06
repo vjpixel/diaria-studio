@@ -171,6 +171,25 @@ describe("invariant-checks registry (#1007)", () => {
       );
     }
   });
+
+  // --- #4690: consent-binding também é estruturalmente pós-dispatch ---
+
+  it("#4690: consent-binding é postDispatchOnly", () => {
+    const consentBinding = getRulesForStage(5).find((r) => r.id === "consent-binding");
+    assert.ok(consentBinding !== undefined);
+    assert.equal(consentBinding!.postDispatchOnly, true);
+  });
+
+  it("#4690: getRulesForStage(5, { phase: 'pre-dispatch' }) exclui consent-binding", () => {
+    const preDispatch = getRulesForStage(5, { phase: "pre-dispatch" });
+    const ids = preDispatch.map((r) => r.id);
+    assert.ok(!ids.includes("consent-binding"), `não deveria incluir consent-binding: ${ids}`);
+  });
+
+  it("#4690: getRulesForStage(5) sem opts continua incluindo consent-binding — comportamento de sempre pro §5i", () => {
+    const full = getRulesForStage(5);
+    assert.ok(full.map((r) => r.id).includes("consent-binding"));
+  });
 });
 
 describe("Stage 0 invariants", () => {
@@ -2585,6 +2604,50 @@ describe("CLI --stage N", () => {
       const out = JSON.parse(r.stdout);
       assert.ok(out.rules_run.includes("social-published-complete"), `rules_run: ${JSON.stringify(out.rules_run)}`);
       assert.ok(out.rules_run.includes("step-5-sentinel-exists"), `rules_run: ${JSON.stringify(out.rules_run)}`);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  // --- #4690: consent-binding falso-positivo em edição recém-chegada ao Stage 5 ---
+
+  it("#4690: --stage 5 --phase pre-dispatch NUNCA reporta consent-binding-newsletter, mesmo com consent.newsletter=auto e 05-published.json ausente (reprodução exata da 260806)", () => {
+    const fixture = makeFixtureEdition();
+    try {
+      writeFileSync(
+        join(fixture, "_internal", "05-publish-consent.json"),
+        JSON.stringify({ newsletter: "auto" }),
+      );
+      // 05-published.json propositalmente ausente — é exatamente o estado
+      // logo após build-publish-consent.ts, ANTES do playbook Beehiiv rodar.
+      const r = runCli(["--stage", "5", "--phase", "pre-dispatch", "--edition-dir", fixture]);
+      const out = JSON.parse(r.stdout);
+      assert.ok(!out.rules_run.includes("consent-binding"), `rules_run: ${JSON.stringify(out.rules_run)}`);
+      const violationRuleIds = out.violations.map((v: { rule: string }) => v.rule);
+      assert.ok(
+        !violationRuleIds.includes("consent-binding-newsletter"),
+        `não deveria reportar consent-binding-newsletter em pre-dispatch: ${JSON.stringify(out.violations)}`,
+      );
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it("#4690: --stage 5 SEM --phase (§5i, pós-dispatch) continua reportando consent-binding-newsletter quando o dispatch de fato não aconteceu", () => {
+    const fixture = makeFixtureEdition();
+    try {
+      writeFileSync(
+        join(fixture, "_internal", "05-publish-consent.json"),
+        JSON.stringify({ newsletter: "auto" }),
+      );
+      const r = runCli(["--stage", "5", "--edition-dir", fixture]);
+      const out = JSON.parse(r.stdout);
+      assert.ok(out.rules_run.includes("consent-binding"), `rules_run: ${JSON.stringify(out.rules_run)}`);
+      const violationRuleIds = out.violations.map((v: { rule: string }) => v.rule);
+      assert.ok(
+        violationRuleIds.includes("consent-binding-newsletter"),
+        `deveria continuar reportando em §5i (pós-dispatch): ${JSON.stringify(out.violations)}`,
+      );
     } finally {
       rmSync(fixture, { recursive: true, force: true });
     }
