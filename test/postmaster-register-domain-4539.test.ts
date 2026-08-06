@@ -252,4 +252,25 @@ test("oauth-setup mantém postmaster.domain SOMADO ao postmaster.readonly (#4539
     src.includes('"https://www.googleapis.com/auth/postmaster.domain"'),
     "postmaster.domain sumiu — create/verify da v2 param de funcionar",
   );
+  // #4704: terceiro eixo. Sem esta asserção, remover o scope da v2 passaria
+  // verde — o modo de falha é um 403 no `domainStats:query`, longe daqui.
+  assert.ok(
+    src.includes('"https://www.googleapis.com/auth/postmaster.traffic.readonly"'),
+    "postmaster.traffic.readonly sumiu — domainStats:query da v2 (spam por campanha) para de funcionar",
+  );
+  // A invariante real não é "cada um existe", é "os TRÊS coexistem". Contar
+  // fecha o buraco que `includes` isolado deixa: alguém confundir
+  // `postmaster.readonly` com `postmaster.traffic.readonly` (nomes quase
+  // iguais, ambos "leitura") e SUBSTITUIR em vez de somar passaria nas
+  // asserções acima se a substituída ainda aparecesse em algum comentário.
+  const scopeLiterals = src.match(/"https:\/\/www\.googleapis\.com\/auth\/postmaster[.\w]*"/g) ?? [];
+  assert.deepEqual(
+    [...new Set(scopeLiterals)].sort(),
+    [
+      '"https://www.googleapis.com/auth/postmaster.domain"',
+      '"https://www.googleapis.com/auth/postmaster.readonly"',
+      '"https://www.googleapis.com/auth/postmaster.traffic.readonly"',
+    ],
+    "os 3 eixos de Postmaster (v1 trafficStats / gestão de domínio / stats v2) precisam coexistir — nenhum é superset do outro",
+  );
 });
