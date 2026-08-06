@@ -44,6 +44,10 @@ function row(p: Partial<SegmentRow> & { email: string }): SegmentRow {
     opens_count: 0,
     last_sent_at: null,
     mv_bucket: null,
+    // #4688: default "já sincronizado pela Brevo" — hasMeasuredOpens(row) só
+    // é `false` quando um teste sobrescreve com `brevo_modified_at: null`
+    // explicitamente (simulando contato nunca tocado por clarice-sync-brevo.ts).
+    brevo_modified_at: "2026-06-01T00:00:00Z",
     ...p,
   };
 }
@@ -878,14 +882,16 @@ test("REGRESSÃO main(): 'reativacao' também ignora `sent` — mas continua exc
   const dir = mkdtempSync(resolve(tmpdir(), "bseg-reativacao-scope-"));
   const dbPath = resolve(dir, "store.db");
   const db = openClariceDb(dbPath);
-  // `reativacao`: recebeu e NUNCA abriu (opens_count=0).
+  // `reativacao`: recebeu e NUNCA abriu (opens_count=0). brevo_modified_at
+  // populado (#4688: hasMeasuredOpens) — simula contato JÁ sincronizado pela
+  // Brevo, opens_count=0 é medição real, não o DEFAULT 0 de nunca-sincronizado.
   db.prepare(
-    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket, brevo_list_ids) VALUES ('nao-abriu-em-sent@x.com','N',2,0,3,'verified','[\"70\"]')",
+    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket, brevo_list_ids, brevo_modified_at) VALUES ('nao-abriu-em-sent@x.com','N',2,0,3,'verified','[\"70\"]','2026-06-01T00:00:00Z')",
   ).run();
   // Mesmo perfil, mas numa lista com campanha AGENDADA — esse tem de sair,
   // senão o envio agendado (imutável na Brevo) duplicaria.
   db.prepare(
-    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket, brevo_list_ids) VALUES ('nao-abriu-em-queued@x.com','Q',2,0,3,'verified','[\"71\"]')",
+    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket, brevo_list_ids, brevo_modified_at) VALUES ('nao-abriu-em-queued@x.com','Q',2,0,3,'verified','[\"71\"]','2026-06-01T00:00:00Z')",
   ).run();
   recomputeDerived(db);
   db.close();

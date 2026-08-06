@@ -506,13 +506,15 @@ describe("summarizeMvBacklog (#4657)", () => {
 });
 
 describe("measureNonOpenerExposure (#4657 — lacuna do sunset #4430)", () => {
+  const measured = "2026-06-01T00:00:00Z"; // #4688: hasMeasuredOpens exige brevo_modified_at != null
+
   it("conta elegíveis com N+ envios e zero aberturas", () => {
     const e = measureNonOpenerExposure([
-      { send_eligible: 1, sends_count: 3, opens_count: 0 },
-      { send_eligible: 1, sends_count: 2, opens_count: 0 },
-      { send_eligible: 1, sends_count: 5, opens_count: 1 }, // abriu
-      { send_eligible: 1, sends_count: 1, opens_count: 0 }, // 1 envio só
-      { send_eligible: 0, sends_count: 9, opens_count: 0 }, // inelegível
+      { send_eligible: 1, sends_count: 3, opens_count: 0, brevo_modified_at: measured },
+      { send_eligible: 1, sends_count: 2, opens_count: 0, brevo_modified_at: measured },
+      { send_eligible: 1, sends_count: 5, opens_count: 1, brevo_modified_at: measured }, // abriu
+      { send_eligible: 1, sends_count: 1, opens_count: 0, brevo_modified_at: measured }, // 1 envio só
+      { send_eligible: 0, sends_count: 9, opens_count: 0, brevo_modified_at: measured }, // inelegível
     ]);
     assert.equal(e.count, 2);
     assert.equal(e.minSends, 2);
@@ -520,9 +522,19 @@ describe("measureNonOpenerExposure (#4657 — lacuna do sunset #4430)", () => {
   });
 
   it("base elegível vazia não divide por zero", () => {
-    const e = measureNonOpenerExposure([{ send_eligible: 0, sends_count: 3, opens_count: 0 }]);
+    const e = measureNonOpenerExposure([{ send_eligible: 0, sends_count: 3, opens_count: 0, brevo_modified_at: measured }]);
     assert.equal(e.count, 0);
     assert.equal(e.fraction, 0);
+  });
+
+  it("#4688: contato NUNCA sincronizado pela Brevo (brevo_modified_at null) não conta como não-abridor — opens_count=0 aqui é só o DEFAULT do schema, não uma medição", () => {
+    const e = measureNonOpenerExposure([
+      { send_eligible: 1, sends_count: 3, opens_count: 0, brevo_modified_at: measured }, // não-abridor confirmado
+      { send_eligible: 1, sends_count: 3, opens_count: 0, brevo_modified_at: null }, // nunca sincronizado — NÃO conta
+      { send_eligible: 1, sends_count: 3, opens_count: 0 }, // brevo_modified_at ausente — mesmo tratamento
+    ]);
+    assert.equal(e.count, 1, "só o contato com brevo_modified_at != null conta como não-abridor medido");
+    assert.equal(e.fraction, 1 / 3);
   });
 });
 

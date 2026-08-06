@@ -53,6 +53,7 @@ import {
 } from "../../workers/brevo-dashboard/src/sections-core.ts";
 import type { BrevoCampaign } from "../../workers/brevo-dashboard/src/types.ts";
 import type { StoreRow } from "./clarice-segment.ts";
+import { hasMeasuredOpens } from "./clarice-segment.ts";
 
 // ---------------------------------------------------------------------------
 // Datas e chaves da onda — determinístico, nunca inferido de weekday
@@ -460,9 +461,19 @@ export interface NonOpenerExposure {
  * é esse estoque que alimenta a reclamação de spam, que por sua vez faz
  * `decideSemaphore` FREAR o volume das ondas seguintes. O laço se fecha
  * contra o próprio alcance, e hoje ele é invisível na hora de decidir a onda.
+ *
+ * #4688: só conta como não-abridor quem `hasMeasuredOpens` (já foi
+ * sincronizado pela Brevo ao menos 1x) — sem isso, um contato nunca
+ * sincronizado (`opens_count=0` só pelo `DEFAULT 0` do schema, nunca medido)
+ * infla `count`/`fraction` artificialmente, o que por sua vez faz esta
+ * medição SUPERESTIMAR a exposição real e — via `decideSemaphore`, que a
+ * consome — pode frear volume de onda mais do que o comportamento real da
+ * base justifica.
  */
 export function measureNonOpenerExposure(
-  rows: Array<Pick<StoreRow, "send_eligible" | "sends_count" | "opens_count">>,
+  rows: Array<
+    Pick<StoreRow, "send_eligible" | "sends_count" | "opens_count" | "brevo_modified_at">
+  >,
   minSends = 2,
 ): NonOpenerExposure {
   let eligible = 0;
@@ -470,7 +481,8 @@ export function measureNonOpenerExposure(
   for (const r of rows) {
     if (r.send_eligible !== 1) continue;
     eligible += 1;
-    if ((r.sends_count ?? 0) >= minSends && (r.opens_count ?? 0) === 0) count += 1;
+    if ((r.sends_count ?? 0) >= minSends && (r.opens_count ?? 0) === 0 && hasMeasuredOpens(r))
+      count += 1;
   }
   return { count, fraction: eligible > 0 ? count / eligible : 0, minSends };
 }

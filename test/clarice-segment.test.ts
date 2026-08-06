@@ -53,6 +53,10 @@ function row(p: Partial<StoreRow> & { email: string }): StoreRow {
     send_eligible: 1,
     ineligible_reason: null,
     sends_count: 0,
+    // #4688: default "já sincronizado pela Brevo" — testes que exercitam
+    // especificamente `hasMeasuredOpens`/o gap de "nunca sincronizado"
+    // sobrescrevem com `brevo_modified_at: null` explicitamente.
+    brevo_modified_at: "2026-06-01T00:00:00Z",
     ...p,
   };
 }
@@ -686,40 +690,68 @@ test("#4434: segmentEngajados inclui interno com priority_points alto — entra 
 });
 
 test("isReativacao: send_eligible=1 AND sends_count>0 AND opens_count=0; NÃO exclui internos (#4434, reverte #2809)", () => {
+  const measured = "2026-06-01T00:00:00Z"; // #4688: hasMeasuredOpens exige brevo_modified_at != null
   assert.equal(
-    isReativacao({ email: "a@x.com", send_eligible: 1, sends_count: 3, opens_count: 0 }),
+    isReativacao({ email: "a@x.com", send_eligible: 1, sends_count: 3, opens_count: 0, brevo_modified_at: measured }),
     true,
   );
   assert.equal(
-    isReativacao({ email: "a@x.com", send_eligible: 0, sends_count: 3, opens_count: 0 }),
+    isReativacao({ email: "a@x.com", send_eligible: 0, sends_count: 3, opens_count: 0, brevo_modified_at: measured }),
     false,
     "send_eligible=0 → fora",
   );
   assert.equal(
-    isReativacao({ email: "a@x.com", send_eligible: 1, sends_count: 0, opens_count: 0 }),
+    isReativacao({ email: "a@x.com", send_eligible: 1, sends_count: 0, opens_count: 0, brevo_modified_at: measured }),
     false,
     "sends_count=0 (nunca enviado) → fora",
   );
   assert.equal(
-    isReativacao({ email: "a@x.com", send_eligible: 1, sends_count: 3, opens_count: 1 }),
+    isReativacao({ email: "a@x.com", send_eligible: 1, sends_count: 3, opens_count: 1, brevo_modified_at: measured }),
     false,
     "opens_count>0 (abriu ao menos 1×) → fora, isso não é reativação",
   );
   assert.equal(
-    isReativacao({ email: "pixel@memelab.com.br", send_eligible: 1, sends_count: 3, opens_count: 0 }),
+    isReativacao({ email: "pixel@memelab.com.br", send_eligible: 1, sends_count: 3, opens_count: 0, brevo_modified_at: measured }),
     true,
     "interno (#4434) → ENTRA normalmente",
   );
 });
 
+test("#4688: isReativacao exige hasMeasuredOpens — contato NUNCA sincronizado pela Brevo (brevo_modified_at null) fica FORA mesmo com opens_count=0/sends_count>0", () => {
+  assert.equal(
+    isReativacao({
+      email: "nunca-sincronizado@x.com",
+      send_eligible: 1,
+      sends_count: 3,
+      opens_count: 0,
+      brevo_modified_at: null,
+    }),
+    false,
+    "opens_count=0 aqui é só o DEFAULT 0 do schema, nunca medido de fato — não é prova de 'nunca abriu'",
+  );
+  assert.equal(
+    isReativacao({
+      email: "sem-campo@x.com",
+      send_eligible: 1,
+      sends_count: 3,
+      opens_count: 0,
+      // brevo_modified_at omitido (undefined) — mesmo tratamento de null
+    }),
+    false,
+    "brevo_modified_at ausente (undefined) degrada igual a null — fail-safe",
+  );
+});
+
 test("segmentReativacao: ordem last_sent_at DESC (não-abridor mais recente primeiro); email ASC desempata; ausente vai pro fim", () => {
+  const measured = "2026-06-01T00:00:00Z";
   const rows: StoreRow[] = [
-    row({ email: "old@x.com", sends_count: 2, opens_count: 0, last_sent_at: "2026-01-01T00:00:00Z" }),
-    row({ email: "new@x.com", sends_count: 2, opens_count: 0, last_sent_at: "2026-06-01T00:00:00Z" }),
-    row({ email: "mid@x.com", sends_count: 2, opens_count: 0, last_sent_at: "2026-03-01T00:00:00Z" }),
-    row({ email: "sem-data@x.com", sends_count: 2, opens_count: 0, last_sent_at: null }),
-    row({ email: "b-tie@x.com", sends_count: 1, opens_count: 0, last_sent_at: "2026-06-01T00:00:00Z" }), // empata com new@
-    row({ email: "abridor@x.com", sends_count: 2, opens_count: 1, last_sent_at: "2026-12-01T00:00:00Z" }), // opens>0, fora
+    row({ email: "old@x.com", sends_count: 2, opens_count: 0, last_sent_at: "2026-01-01T00:00:00Z", brevo_modified_at: measured }),
+    row({ email: "new@x.com", sends_count: 2, opens_count: 0, last_sent_at: "2026-06-01T00:00:00Z", brevo_modified_at: measured }),
+    row({ email: "mid@x.com", sends_count: 2, opens_count: 0, last_sent_at: "2026-03-01T00:00:00Z", brevo_modified_at: measured }),
+    row({ email: "sem-data@x.com", sends_count: 2, opens_count: 0, last_sent_at: null, brevo_modified_at: measured }),
+    row({ email: "b-tie@x.com", sends_count: 1, opens_count: 0, last_sent_at: "2026-06-01T00:00:00Z", brevo_modified_at: measured }), // empata com new@
+    row({ email: "abridor@x.com", sends_count: 2, opens_count: 1, last_sent_at: "2026-12-01T00:00:00Z", brevo_modified_at: measured }), // opens>0, fora
+    row({ email: "nunca-sincronizado@x.com", sends_count: 2, opens_count: 0, last_sent_at: "2027-01-01T00:00:00Z", brevo_modified_at: null }), // #4688: sem medição, fora
   ];
   assert.deepEqual(
     segmentReativacao(rows).map((r) => r.email),
