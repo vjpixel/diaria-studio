@@ -36,6 +36,7 @@ import {
   readBoxDivulgacaoCategoriaForSlot,
   readBoxDivulgacaoAltForSlot,
   assignDivulgacaoGaps,
+  getRenderWarnings, // #4673
 } from "../scripts/render-newsletter-html.ts";
 import { DS_STYLE_BLOCK, mdInlineToHtml, renderHeroImageInner, renderErroIntencionalReveal } from "../scripts/lib/newsletter-render-html.ts";
 
@@ -3548,6 +3549,21 @@ describe("renderHTML — bloco WhatsApp + caixa de divulgação não empilham ma
     } finally {
       console.error = origError;
     }
+  });
+
+  it("#4673: getRenderWarnings() expõe divulgacao_box_dropped_no_gap pra caller programático (não só console.error), e reseta a cada renderHTML()", () => {
+    renderHTML(fixt3()); // 3 destaques + 3 caixas + WhatsApp → slot3 sem lacuna
+    const afterDrop = getRenderWarnings();
+    assert.equal(afterDrop.length, 1, `esperado 1 evento coletado, obtido: ${JSON.stringify(afterDrop)}`);
+    assert.equal(afterDrop[0].event, "divulgacao_box_dropped_no_gap");
+    assert.equal(afterDrop[0].slot, 3, "o slot coletado precisa ser o que de fato não coube (3)");
+    assert.equal(afterDrop[0].edition, "260806");
+
+    // #4673 — edição normal (nada perdido) não deve deixar ruído: o coletor
+    // reseta no início de CADA chamada de renderHTML(), então a chamada
+    // seguinte (sem caixa sobrando) não carrega o evento da chamada anterior.
+    renderHTML(fixt3({ boxDivulgacao3: null }));
+    assert.deepEqual(getRenderWarnings(), [], "edição sem conteúdo perdido não deve produzir nenhum evento coletado");
   });
 });
 

@@ -88,6 +88,45 @@ export const EIA_ARCHIVE_UTM_MEDIUM = EIA_ARCHIVE_UTM.medium;
 export const EIA_ARCHIVE_UTM_CAMPAIGN = EIA_ARCHIVE_UTM.campaign;
 
 /**
+ * #4673: eventos estruturados de conteúdo editorial/comercial que sumiu
+ * silenciosamente do render (caixa de divulgação sem lacuna, bloco WhatsApp
+ * sem D1). Antes deste fix, cada evento só ia pro `console.error` — nenhum
+ * caller programático (CLI, orchestrator do Stage 4) tinha como reagir sem
+ * grepar stderr cru, e o `console.error` sozinho nunca chegava no resumo
+ * consolidado que o editor de fato revisa antes de publicar (`orchestrator-
+ * stage-4.md`). `emitRenderWarning` mantém o `console.error` (terminal
+ * continua útil pra debug ao vivo) e ADICIONALMENTE empilha o evento num
+ * array module-level que `renderHTML` reseta no início de cada chamada —
+ * `getRenderWarnings()` deixa o caller (`render-newsletter-html.ts` CLI)
+ * persistir os eventos desta invocação em `_internal/render-warnings.json`,
+ * que `checkRenderWarnings` (scripts/lib/invariant-checks/stage-4.ts)
+ * consome no gate como warning (nunca bloqueia — mesmo padrão de
+ * `image-crop-warn`/`card-4x5-upload-missing`).
+ */
+export interface RenderWarningEvent {
+  event: "divulgacao_box_dropped_no_gap" | "whatsapp_share_no_d1";
+  edition: string;
+  slot?: number;
+}
+
+let collectedRenderWarnings: RenderWarningEvent[] = [];
+
+/** Reseta o coletor — chamado no início de cada `renderHTML()`. */
+export function resetRenderWarnings(): void {
+  collectedRenderWarnings = [];
+}
+
+/** Eventos coletados durante a última chamada de `renderHTML()`. */
+export function getRenderWarnings(): RenderWarningEvent[] {
+  return collectedRenderWarnings;
+}
+
+function emitRenderWarning(w: RenderWarningEvent): void {
+  collectedRenderWarnings.push(w);
+  console.error(JSON.stringify(w));
+}
+
+/**
  * Pure (#3524): URL do arquivo jogável do "É IA?" standalone (`/jogar/arquivo`,
  * #3519) com o UTM do funil newsletter→site. Determinística — sem variante
  * A/B, mesma decisão conservadora de `buildSubscribeUrl` (jogar.ts, #3518).
@@ -1521,7 +1560,7 @@ export function buildWhatsappShareLink(block: string): string {
 export function renderWhatsappShare(destaques: RenderDestaque[], edition: string): string {
   const d1 = destaques[0];
   if (!d1) {
-    console.error(JSON.stringify({ event: "whatsapp_share_no_d1", edition }));
+    emitRenderWarning({ event: "whatsapp_share_no_d1", edition });
     return "";
   }
 
@@ -1767,6 +1806,12 @@ export function assignDivulgacaoGaps(
 }
 
 export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): string {
+  // #4673: reseta o coletor no início de CADA chamada — `getRenderWarnings()`
+  // depois desta chamada reflete só esta invocação, nunca acumula entre
+  // chamadas (ex: --split roda renderHTML 1x; um caller de teste que chama
+  // renderHTML várias vezes não vê eventos de uma chamada anterior vazarem
+  // pra próxima).
+  resetRenderWarnings();
   const parts: string[] = [];
 
   // #1093: linha de cobertura no topo, antes do primeiro destaque. Graceful
@@ -1881,11 +1926,11 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     const assigned = new Set([...divulgacaoGaps.values()].map((b) => b.slot));
     for (const box of divulgacaoBoxes) {
       if (!assigned.has(box.slot)) {
-        console.error(JSON.stringify({
+        emitRenderWarning({
           event: "divulgacao_box_dropped_no_gap",
           edition: content.eia.edition,
           slot: box.slot,
-        }));
+        });
       }
     }
   }
