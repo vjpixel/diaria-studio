@@ -24,6 +24,27 @@
  * Brevo → uma fração das chamadas, sem hammering do teto horário. --modified-since
  * <ISO> força uma data explícita. Sem nenhum dos dois = full (comportamento antigo).
  *
+ * OPENS CATCH-UP (#4688): abrir um e-mail NÃO toca `modifiedAt` do contato na
+ * Brevo — só clique/outras mutações tocam. Isso faz `--incremental` (que
+ * enumera contatos via `modifiedSince`) nunca re-visitar quem só abre sem
+ * clicar, e `opens_count` degrada continuamente (medido ao vivo em 260806:
+ * ~32% de subcontagem agregada antes de um full resync manual). Em vez de
+ * depender do `modifiedAt` do contato, o modo incremental TAMBÉM varre os
+ * destinatários das campanhas enviadas numa janela recente
+ * (`--opens-window-days`, default 30 dias — mesma ordem de grandeza do
+ * `DEFAULT_REFETCH_WINDOW_DAYS` de `clarice-engagement-cohorts-v2.ts`, #4451,
+ * reusando a MESMA infra de export por campanha, já validada ao vivo em
+ * 260802) via `POST /emailCampaigns/{id}/exportRecipients`, que reporta
+ * `Total Opens` por destinatário independente de `modifiedAt`. Os e-mails com
+ * abertura registrada nessa janela são re-buscados individualmente
+ * (`GET /contacts/{email}`, mesmo parsing/upsert do loop principal — MAX-merge
+ * em `opens_count`, nunca regride). Roda só quando `modifiedSince` é
+ * conhecido (modo incremental ou `--modified-since` explícito) — o modo full
+ * já pega todo mundo com stats exatos, catch-up seria redundante ali.
+ * Desligável via `--no-catch-opens`. FAIL-SOFT: uma falha no catch-up (rede,
+ * rate-limit) vira warning no stderr + `opens_catchup.error` no summary —
+ * nunca reprova o sync principal, que já persistiu com sucesso.
+ *
  * Requer BREVO_CLARICE_API_KEY no env. Stdout: JSON summary. Stderr: progresso.
  */
 
@@ -32,7 +53,7 @@ import { resolve } from "node:path";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { brevoGet } from "./lib/brevo-client.ts";
 import { pool } from "./lib/pool.ts";
-import { parseBrevoContact } from "./lib/brevo-stats.ts";
+import { parseBrevoContact, type BrevoColumns } from "./lib/brevo-stats.ts";
 import {
   openClariceDb,
   makeBrevoUpsert,
@@ -40,6 +61,14 @@ import {
   DEFAULT_DB_PATH,
 } from "./lib/clarice-db.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import {
+  makeRealCampaignExportClient,
+  getOrFetchCampaignCache,
+  isWithinRefetchWindow,
+  CAMPAIGN_CACHE_DIR,
+  type CampaignExportClient,
+  type CampaignCache,
+} from "./clarice-engagement-cohorts-v2.ts"; // #4688: reusa a infra de export por campanha (#4451)
 
 /**
  * #4205: caminho dos 2 arquivos de checkpoint (full + incremental — #2928,
@@ -131,6 +160,118 @@ export function anchorForIncremental(
   return deriveIncrementalSince(maxBrevoModifiedAt, bufferMs);
 }
 
+// ─── Opens catch-up (#4688) ──────────────────────────────────────────────
+//
+// Abrir um e-mail não toca `modifiedAt` — o incremental (que enumera por
+// `modifiedSince`) nunca revisita esses contatos, então `opens_count`
+// degrada continuamente pra quem abre sem clicar. Em vez disso, varremos os
+// destinatários das campanhas ENVIADAS numa janela recente via
+// `exportRecipients` (`Total Opens` por destinatário, independe de
+// `modifiedAt` do contato) e re-buscamos cada opener individualmente — mesmo
+// caminho preciso de sempre (`GET /contacts/{id}`, MAX-merge no upsert).
+
+/** Janela default (dias) — mesma ordem de grandeza do DEFAULT_REFETCH_WINDOW_DAYS
+ * de clarice-engagement-cohorts-v2.ts (#4451); "chute inicial" documentado lá,
+ * não recalibrado empiricamente ainda. Override via --opens-window-days. */
+export const DEFAULT_OPENS_CATCHUP_WINDOW_DAYS = 30;
+
+/**
+ * Extrai o conjunto de e-mails normalizados com abertura registrada em
+ * QUALQUER dos caches de campanha passados (union — um opener em 2
+ * campanhas diferentes entra 1x). Pura — testável sem rede (#633).
+ */
+export function collectOpenedEmails(caches: CampaignCache[]): Set<string> {
+  const out = new Set<string>();
+  for (const cache of caches) {
+    for (const [email, flags] of Object.entries(cache.recipients)) {
+      if (flags.opened) out.add(email);
+    }
+  }
+  return out;
+}
+
+export interface OpensCatchupDeps {
+  /** Cliente de export de campanha — real (`makeRealCampaignExportClient`) ou fake em teste. */
+  client: Pick<CampaignExportClient, "listSentCampaigns" | "exportRecipients" | "pollProcess" | "downloadCsv">;
+  /** Busca 1 contato por identificador (email ou id) — devolve o body cru da Brevo. */
+  fetchContact: (identifier: string) => Promise<Record<string, any>>;
+  /** Upsert no store — mesma função usada pelo loop principal (MAX-merge, nunca regride). */
+  upsert: (cols: BrevoColumns) => void;
+  cacheDir?: string;
+  windowDays?: number;
+  nowMs?: number;
+  concurrency?: number;
+}
+
+export interface OpensCatchupResult {
+  campaignsConsidered: number;
+  campaignsInWindow: number;
+  campaignsFailed: number;
+  openersFound: number;
+  contactsUpdated: number;
+  contactsFailed: number;
+}
+
+/**
+ * Roda o catch-up: campanhas recentes → destinatários com abertura → re-busca
+ * individual + upsert. FAIL-SOFT por campanha (uma campanha que falhar no
+ * export não aborta as demais) e por contato (um 404/erro pontual não aborta
+ * o catch-up inteiro) — o chamador (`main`) decide se uma falha TOTAL vira
+ * warning ou propaga.
+ */
+export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatchupResult> {
+  const windowDays = deps.windowDays ?? DEFAULT_OPENS_CATCHUP_WINDOW_DAYS;
+  const nowMs = deps.nowMs ?? Date.now();
+  const cacheDir = deps.cacheDir ?? CAMPAIGN_CACHE_DIR;
+  const concurrency = deps.concurrency ?? 4;
+
+  const campaigns = await deps.client.listSentCampaigns();
+  const recent = campaigns.filter((c) => isWithinRefetchWindow(c, nowMs, windowDays));
+
+  const caches: CampaignCache[] = [];
+  let campaignsFailed = 0;
+  for (const campaign of recent) {
+    try {
+      // dentro da janela → sempre re-exporta (mesma semântica de isWithinRefetchWindow
+      // em clarice-engagement-cohorts-v2.ts: captura engajamento tardio).
+      const { cache } = await getOrFetchCampaignCache(deps.client as CampaignExportClient, campaign, {
+        cacheDir,
+        forceRefresh: true,
+      });
+      caches.push(cache);
+    } catch {
+      campaignsFailed++;
+    }
+  }
+
+  const openerEmails = collectOpenedEmails(caches);
+  let contactsUpdated = 0;
+  let contactsFailed = 0;
+  await pool(Array.from(openerEmails), concurrency, async (email) => {
+    try {
+      const contact = await deps.fetchContact(email);
+      const cols = parseBrevoContact(contact);
+      if (!cols.email) {
+        contactsFailed++; // 404/corpo vazio (contato sumiu entre o export e a re-busca)
+        return;
+      }
+      deps.upsert(cols);
+      contactsUpdated++;
+    } catch {
+      contactsFailed++;
+    }
+  });
+
+  return {
+    campaignsConsidered: campaigns.length,
+    campaignsInWindow: recent.length,
+    campaignsFailed,
+    openersFound: openerEmails.size,
+    contactsUpdated,
+    contactsFailed,
+  };
+}
+
 /**
  * Enumera contatos (id + email) paginando /contacts. Resumível.
  * #2928: com `modifiedSince` (ISO), enumera SÓ os contatos modificados desde
@@ -182,6 +323,11 @@ export async function main(
   // não distinguia "flag ausente" de "valor inválido" — mesma classe do
   // incidente #4476/#4496).
   const limitArg = getIntArg(argv, "limit") ?? 0;
+  // #4688: catch-up de opens via export de campanha, ligado por padrão em modo
+  // incremental (ver bloco "Opens catch-up" acima); --no-catch-opens desliga.
+  const catchOpensEnabled = !hasFlag(argv, "no-catch-opens");
+  const opensWindowDays =
+    getIntArg(argv, "opens-window-days") ?? DEFAULT_OPENS_CATCHUP_WINDOW_DAYS;
   const { checkpoint: CHECKPOINT, checkpointInc: CHECKPOINT_INC } =
     checkpointPathsForDb(dbPath);
 
@@ -286,6 +432,45 @@ export async function main(
     return;
   }
 
+  // #4688: catch-up de opens via export de campanha — só faz sentido em modo
+  // incremental (full já pega stats exatos de todo mundo via GET /contacts/{id}).
+  // FAIL-SOFT: uma falha aqui não derruba o sync principal, que já persistiu.
+  let opensCatchup: (OpensCatchupResult & { error?: string }) | null = null;
+  if (modifiedSince && catchOpensEnabled) {
+    console.error(
+      `🔄 catch-up de opens (janela ${opensWindowDays}d) — campanhas enviadas recentemente…`,
+    );
+    try {
+      const campaignClient = makeRealCampaignExportClient(apiKey);
+      opensCatchup = await runOpensCatchup({
+        client: campaignClient,
+        fetchContact: async (identifier) => {
+          const { body } = await brevoGet(apiKey, `/contacts/${encodeURIComponent(identifier)}`);
+          return body;
+        },
+        upsert: upsertBrevo,
+        windowDays: opensWindowDays,
+      });
+      console.error(
+        `✅ catch-up: ${opensCatchup.campaignsInWindow}/${opensCatchup.campaignsConsidered} campanhas na janela ` +
+          `(${opensCatchup.campaignsFailed} falharam) · ${opensCatchup.openersFound} openers · ` +
+          `${opensCatchup.contactsUpdated} contatos atualizados (${opensCatchup.contactsFailed} falharam)`,
+      );
+    } catch (e) {
+      const msg = (e as Error).message;
+      console.error(`⚠️  catch-up de opens falhou (não afeta o sync principal, já persistido): ${msg}`);
+      opensCatchup = {
+        campaignsConsidered: 0,
+        campaignsInWindow: 0,
+        campaignsFailed: 0,
+        openersFound: 0,
+        contactsUpdated: 0,
+        contactsFailed: 0,
+        error: msg,
+      };
+    }
+  }
+
   // Concluído: recompute global + limpa checkpoint.
   console.error(`⚙️  recomputando derivados (send_eligible + priority_points)…`);
   const derived = recomputeDerived(db);
@@ -313,6 +498,7 @@ export async function main(
         suppressed,
         derived_recomputed: derived,
         brevo_synced: true,
+        opens_catchup: opensCatchup,
       },
       null,
       2,
