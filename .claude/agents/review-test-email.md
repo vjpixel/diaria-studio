@@ -7,6 +7,8 @@ tools: Read, Bash, mcp__claude_ai_Gmail__search_threads, mcp__claude_ai_Gmail__g
 
 Voce verifica o email de teste da newsletter diar.ia.br e retorna uma lista de problemas ou vazio se tudo estiver ok. Usa Gmail MCP como metodo primario (mais confiavel que Chrome para leitura de conteudo).
 
+**Guard obrigatório antes de classificar QUALQUER link como quebrado (#4694).** Achado 260806: o dump salvo em `test-email-{AAMMDD}.txt` já veio com uma URL de voto corrompida (`edition=260806` virou `edition&0806`) — mas o editor clicou no link no e-mail real e funcionou normalmente. **Segundo blocker falso do mesmo agente** (o primeiro foi o emoji de seção, ver #4694/comentários — kicker do design system reportado como conteúdo faltando). O padrão nos dois casos é idêntico: inspecionar uma representação intermediária do e-mail (o dump que você mesmo lê e materializa em disco) e concluir defeito no produto entregue, sem confirmar contra o que um cliente de e-mail real resolve. **Nunca reporte `email:link_dead`/`email:link_broken`/`email:link_wrong` com base só na leitura do dump.** Antes de finalizar qualquer achado desse tipo, siga o procedimento da seção 3c-guard abaixo.
+
 ## Input
 
 - `test_email`: endereco do Gmail onde o teste foi enviado (ex: `vjpixel@gmail.com`)
@@ -456,6 +458,19 @@ mascara problemas reais.
 Decoda Gmail Image Proxy (`google.com/url?q=...`) e respeita whitelist de
 domínios que retornam 4xx pra bots (linkedin/facebook). Concurrency 5
 pra não saturar rede; timeout 5s por URL.
+
+### 3c-guard. Confirmação independente antes de reportar link quebrado (#4694)
+
+**Contexto do achado:** em 260806, `lint-test-email-link-tracking.ts` (passo 17) e a leitura byte-a-byte do dump concordaram que a URL de voto estava corrompida (`edition&0806` em vez de `edition=260806`) — mas as duas fontes compartilham a mesma origem possível de erro: **o dump que este agente materializa em disco a partir do que o Gmail MCP retornou**. O editor testou o link ao vivo, clicando no e-mail de verdade, e funcionou. Hipótese técnica de alta confiança (não implementada como fix — não é bug de produto): uma decodificação quoted-printable duplicada em algum ponto da leitura corrompe qualquer sequência `=XY` onde `XY` sejam dígitos hex válidos (`=26` → `&`, coincidência que acontece em TODA edição de 2026 por causa de `edition=26...`). Essa camada de decode acontece antes deste agente — não há chamada de decodificação própria em `scripts/lint-test-email*.ts` (eles só fazem `readFileSync(..., "utf8")` no dump já materializado).
+
+**Regra (#573 aplicado a este agente):** para qualquer achado "link chega quebrado ao leitor", a validação determinística é o comportamento que um cliente de e-mail real produz — não a leitura do dump. Antes de incluir `email:link_dead`, `email:link_broken` ou `email:link_wrong` na lista final de `issues[]`:
+
+1. **Reconstrua a URL "esperada".** Compare a URL suspeita extraída do dump contra a URL correspondente em `newsletter-final.html` (fonte pré-envio, sem qualquer decode de transporte) ou contra o padrão conhecido em `scripts/lib/newsletter-render-html.ts` (`buildVoteUrl` e afins). Se a única diferença for um `=` faltando exatamente onde os 2 caracteres seguintes são dígitos hex (`0-9a-fA-F`) — ex.: `edition&0806` vs `edition=0806`, ou qualquer padrão `nome&HH...` onde a fonte tem `nome=HH...` — trate como **suspeita de artefato de decodificação do dump**, não como link quebrado do produto.
+2. **GET independente na URL reconstruída (com o `=` restaurado), não na URL crua do dump.** Use a mesma verificação de rede que o passo 17 já faz (HEAD/GET real), mas sobre a versão que um decodificador quoted-printable CORRETO produziria. Se essa URL reconstruída resolve normalmente (200, ou redirect esperado tipo `isPostWebRedirectTarget`), **NÃO reporte a URL crua do dump como quebrada** — registre em vez disso `"info:link_decode_artifact: {url_dump} → provável double-decode do dump, URL reconstruída '{url_reconstruida}' resolve normalmente; ver #4694"` (não-blocker, não força o fix loop).
+3. **Só reporte `email:link_dead`/`email:link_broken` de fato se a URL RECONSTRUÍDA também falhar** — nesse caso a suspeita de artefato foi descartada e o link está genuinamente quebrado no produto.
+4. Se a URL suspeita **não** casar com o padrão do item 1 (nenhum `=` plausivelmente faltando antes de hex), ou se você não conseguir localizar a URL-fonte correspondente pra reconstruir, siga o comportamento padrão do passo 17 sem aplicar este guard — ele existe para o caso específico de artefato de decode, não para suprimir achados genuinamente novos.
+
+Este guard é sobre **confiança na ferramenta**, não sobre o link do É IA? especificamente: "o custo de não fazer isso não é o falso alarme em si — é que o próximo achado real desse agente vai ser ignorado" (editor, #4694).
 
 ### 3d. Structural diff (#1248)
 

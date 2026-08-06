@@ -974,6 +974,14 @@ export const STAGE_5_RULES: InvariantRule[] = [
     description: "canais com consent=auto devem ter dispatch real (#1575)",
     source_issue: "#1575",
     stage: 5,
+    // #4690: estruturalmente pós-dispatch — o cenário que existe pra pegar
+    // (dispatch pulado + paste manual mascarando a violação de consent) só é
+    // detectável DEPOIS que o dispatch deveria ter rodado. 05-published.json/
+    // 06-social-published.json nunca existem em §5a (pre-dispatch), então sem
+    // esta flag a regra dava erro em 100% das edições, igual social-published-complete/
+    // step-5-sentinel-exists davam antes do #4516. Continua rodando na chamada
+    // pós-dispatch de §5i, sem --phase pre-dispatch.
+    postDispatchOnly: true,
     run: checkConsentBinding,
   },
 ];
