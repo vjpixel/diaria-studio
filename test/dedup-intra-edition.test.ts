@@ -2239,3 +2239,171 @@ describe("dedupIntraEdition — #4667 RADAR consolidação item-vs-item", () => 
     assert.equal(kept.video?.length, 2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #4695: editor_submitted nunca é perdido em silêncio pelos dois passes.
+// ---------------------------------------------------------------------------
+
+describe("dedupIntraEdition — editor_submitted nunca é perdido em silêncio (#4695)", () => {
+  it("passe destaque-vs-bucket: item editor_submitted que casa com D1 sai do bucket mas é reportado em editorSubmittedSpared (rescatado via cluster_sources, #4228 preservado)", () => {
+    const input = {
+      highlights: [
+        {
+          rank: 1,
+          url: "https://braziljournal.com/spacex-compra-cursor",
+          article: {
+            url: "https://braziljournal.com/spacex-compra-cursor",
+            title: "SpaceX compra o Cursor por US$ 60 bilhões",
+          },
+        },
+      ],
+      radar: [
+        {
+          url: "https://exame.com/spacex-cursor",
+          title: "SpaceX compra Cursor por 60 bilhões de dólares",
+          flag: "editor_submitted",
+          editor_submitted_url: "https://exame.com/spacex-cursor",
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed, editorSubmittedSpared } = dedupIntraEdition(input);
+
+    // Item ainda sai do RADAR (comportamento #4185/#4228 preservado).
+    assert.equal(removed.length, 1);
+    assert.equal(kept.radar?.length, 0);
+    // Mas o conteúdo sobrevive como cluster_sources[] do D1.
+    const d1 = kept.highlights?.[0] as {
+      article?: { cluster_sources?: Array<{ url: string }> };
+    };
+    assert.ok(d1.article?.cluster_sources?.some((c) => c.url === "https://exame.com/spacex-cursor"));
+    // E agora aparece em editorSubmittedSpared pra visibilidade no gate (item 4c) —
+    // antes desta issue, isso só ia pro stderr.
+    assert.equal(editorSubmittedSpared.length, 1);
+    assert.equal(editorSubmittedSpared[0].url, "https://exame.com/spacex-cursor");
+    assert.equal(editorSubmittedSpared[0].bucket, "radar");
+  });
+
+  it("passe item-vs-item: item editor_submitted que casaria como duplicata de outro item do RADAR sobrevive (exemção incondicional)", () => {
+    const input = {
+      highlights: [
+        { rank: 1, url: "https://highlight.com/x", title: "Destaque não-relacionado a outages" },
+      ],
+      radar: [
+        {
+          url: "https://canaltech.com.br/a",
+          title: "Claude caiu? Usuários relatam problemas com a IA da Anthropic nesta quarta (5)",
+        },
+        {
+          url: "https://exame.com/claude-caiu-editor",
+          title: "Claude fora do ar? Instabilidade derruba modelos da Anthropic",
+          flag: "editor_submitted",
+          editor_submitted_url: "https://exame.com/claude-caiu-editor",
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed, editorSubmittedSpared } = dedupIntraEdition(input);
+
+    // Nenhum dos dois lados é removido — a submissão do editor é poupada,
+    // e o outro item também sobrevive (a exemção poupa a DUPLA inteira,
+    // não troca qual sobrevive).
+    assert.equal(removed.length, 0, "nenhuma remoção intra_bucket deve ocorrer quando um dos lados é editor_submitted");
+    assert.equal(kept.radar?.length, 2, "os 2 itens do RADAR permanecem — nenhum foi consolidado");
+    // O match é reportado em editorSubmittedSpared pra visibilidade do gate.
+    assert.equal(editorSubmittedSpared.length, 1);
+    assert.equal(editorSubmittedSpared[0].url, "https://exame.com/claude-caiu-editor");
+    assert.equal(editorSubmittedSpared[0].bucket, "radar");
+    assert.equal(editorSubmittedSpared[0].match_type, "intra_bucket");
+  });
+
+  it("item normal (sem editor_submitted) continua sendo consolidado normalmente no passe item-vs-item", () => {
+    const input = {
+      highlights: [],
+      radar: [
+        {
+          url: "https://canaltech.com.br/a",
+          title: "Claude caiu? Usuários relatam problemas com a IA da Anthropic nesta quarta (5)",
+        },
+        {
+          url: "https://tecnoblog.net/b",
+          title: "Claude fora do ar? Instabilidade derruba modelos da Anthropic",
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed, editorSubmittedSpared } = dedupIntraEdition(input);
+
+    assert.equal(removed.length, 1, "sem editor_submitted, consolidação item-vs-item continua ocorrendo como antes");
+    assert.equal(kept.radar?.length, 1);
+    assert.equal(editorSubmittedSpared.length, 0);
+  });
+
+  it("dedupSecondaryIntraBucket unit: dupla inteira é poupada quando qualquer lado é editor_submitted, mesmo em modo strict (RADAR)", () => {
+    const a = {
+      url: "https://a.com/1",
+      title: "ChatGPT banido em escolas de Nova York por medo de cola",
+    };
+    const b = {
+      url: "https://b.com/2",
+      title: "ChatGPT proibido em escolas de Nova York após denúncias de cola",
+      flag: "editor_submitted",
+    };
+    const { kept, removed, editorSubmittedSpared } = dedupSecondaryIntraBucket([a, b], {
+      strict: true,
+      jaccardThreshold: 0.1,
+    });
+    assert.equal(removed.length, 0);
+    assert.equal(kept.length, 2);
+    assert.equal(editorSubmittedSpared.length, 1);
+    assert.equal(editorSubmittedSpared[0].url, "https://b.com/2");
+  });
+
+  it("review finding 2: cluster de 3+ gera 1 entrada de editorSubmittedSpared por PAR, mesma url com matched_against distinto — dedupe é responsabilidade do render, não do array", () => {
+    // A é editor_submitted; B e C não são, mas ambos casam com A (mesmo
+    // evento). O loop i<j compara A-B e A-C separadamente: 2 entradas com
+    // url=A, matched_against diferente (B, depois C). O array preserva as
+    // duas de propósito (cada matched_against é informação real sobre qual
+    // par disparou a exemção); quem consome (item 4c do gate) é que deve
+    // deduplicar por URL para reportar "N submissões distintas".
+    // Tokens desenhados pra jaccard(a,b)=jaccard(a,c)=0.333 (≥0.2) e
+    // jaccard(b,c)=0.143 (<0.2) — a "casa" com os outros dois, mas b e c
+    // não casam entre si.
+    const a = {
+      url: "https://a.com/editor",
+      title: "Robotica telescopio marciano hoje",
+      flag: "editor_submitted",
+    };
+    const b = {
+      url: "https://b.com/1",
+      title: "Robotica telescopio oceano fundo",
+    };
+    const c = {
+      url: "https://c.com/2",
+      title: "Robotica marciano vulcao ativo",
+    };
+    const { kept, removed, editorSubmittedSpared } = dedupSecondaryIntraBucket(
+      [a, b, c],
+      { strict: true, jaccardThreshold: 0.2 },
+    );
+
+    assert.equal(removed.length, 0, "nenhum item removido — todos os pares envolvem o editor_submitted");
+    assert.equal(kept.length, 3, "os 3 itens permanecem");
+    assert.equal(editorSubmittedSpared.length, 2, "1 entrada por par comparado (A-B, A-C)");
+    const urls = editorSubmittedSpared.map((s) => s.url);
+    assert.deepEqual(urls, ["https://a.com/editor", "https://a.com/editor"], "mesma url do lado editor em ambas as entradas");
+    const distinctUrls = new Set(urls);
+    assert.equal(distinctUrls.size, 1, "dedupe por URL (responsabilidade do render) reduziria isso a 1 submissão");
+    const matchedAgainst = editorSubmittedSpared.map((s) => s.matched_against).sort();
+    assert.deepEqual(matchedAgainst, ["https://b.com/1", "https://c.com/2"], "matched_against distinto preservado por par");
+  });
+});

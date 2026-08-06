@@ -32,11 +32,20 @@
  *
  * Input:  JSON com `{ highlights, runners_up?, lancamento, radar, use_melhor, video, ... }`
  *         (output do passo 1u do orchestrator).
- * Output: mesmo JSON com items duplicados removidos dos buckets secundários.
+ * Output: mesmo JSON com items duplicados removidos dos buckets secundários,
+ *         reescrito in-place em `--out` (tipicamente = `--in`). Além disso
+ *         (#4695), escreve um SIDECAR `dedup-intra-edition-stats.json` na
+ *         mesma pasta de `--out`, com `{ removed, editorSubmittedSpared }` —
+ *         `removed` é a lista completa de itens tirados dos buckets
+ *         secundários; `editorSubmittedSpared` é o subconjunto `flag:
+ *         "editor_submitted"` cujo conteúdo NUNCA foi descartado (resgatado
+ *         via `cluster_sources[]` ou isento incondicionalmente — ver
+ *         docstring de `IntraEditionDedupResult`). O gate (item 4c do
+ *         orchestrator) lê esse sidecar, não `--out`.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
 import {
   tokenizeForJaccard,
   jaccardSimilarity,
@@ -270,6 +279,11 @@ export function extractProductEntitiesIntra(title: string): Set<string> {
 interface Article {
   url: string;
   title?: string;
+  /** #4695: marca artigos que chegaram via submissão direta do editor
+   *  (`diariaeditor@gmail.com`). Mesmo campo/semântica de `dedup.ts` Pass 1d
+   *  (#4192) e `filter-date-window.ts` (#4656) — exime o item da remoção
+   *  aqui também, nos dois passes (destaque-vs-bucket e item-vs-item). */
+  flag?: string;
   /** #4185: usado (junto com o title) como haystack pro sinal de código de
    *  produto (`extractProductCodeTokens`) — nome de produto versionado/
    *  codinome muitas vezes só aparece no corpo/lead da matéria, não na
@@ -304,24 +318,51 @@ interface CategorizedWithHighlights {
   [key: string]: unknown;
 }
 
+interface IntraEditionRemovedEntry {
+  url: string;
+  title?: string;
+  bucket: string;
+  match_type:
+    | "jaccard"
+    | "entity"
+    | "domain"
+    | "cross_vehicle"
+    | "product_code"
+    | "content_terms"
+    /** #4360: duplicata DENTRO do bucket LANÇAMENTOS (não envolve destaque). */
+    | "intra_bucket";
+  matched_highlight: string;
+  score: number;
+}
+
 export interface IntraEditionDedupResult {
   kept: CategorizedWithHighlights;
-  removed: Array<{
-    url: string;
-    title?: string;
-    bucket: string;
-    match_type:
-      | "jaccard"
-      | "entity"
-      | "domain"
-      | "cross_vehicle"
-      | "product_code"
-      | "content_terms"
-      /** #4360: duplicata DENTRO do bucket LANÇAMENTOS (não envolve destaque). */
-      | "intra_bucket";
-    matched_highlight: string;
-    score: number;
-  }>;
+  removed: IntraEditionRemovedEntry[];
+  /**
+   * #4695 (renomeado no review): itens `flag: "editor_submitted"` que
+   * casaram com um critério de duplicata intra-edição em QUALQUER um dos
+   * dois passes, mas cujo conteúdo NUNCA é descartado silenciosamente:
+   *  - Passe destaque-vs-bucket: o item sai do bucket secundário como antes
+   *    (#4185/#4228), mas é RESGATADO como `cluster_sources[]` no destaque
+   *    que ele duplicou — o `writer-destaque` lê esse material. Aparece aqui
+   *    só pra dar visibilidade ao gate (item 4c) de que isso aconteceu; não
+   *    é uma perda real.
+   *  - Passe item-vs-item (`dedupSecondaryIntraBucket`): não existe fold
+   *    equivalente (o "sobrevivente" é outro item do MESMO bucket, não um
+   *    destaque com corpo próprio), então aqui a exemção é INCONDICIONAL —
+   *    o item permanece no bucket, sem nenhum dos dois lados sendo removido.
+   * Em ambos os casos o campo `bucket` identifica de onde veio o match.
+   *
+   * **Nome DELIBERADAMENTE diferente** de `editorSubmittedLost` (o campo
+   * homônimo de `dedup.ts`/`filter-date-window.ts`) — não por descuido, mas
+   * porque a semântica aqui é o OPOSTO da deles: lá o array lista perda
+   * REAL (o item saiu da edição sem sobrevivente); aqui o array nunca lista
+   * perda — todo item ou foi resgatado via `cluster_sources[]` ou foi
+   * isento incondicionalmente. Usar o mesmo nome nos três scripts seria a
+   * armadilha que motivou este comentário: quem generalizasse código entre
+   * eles herdaria o nome sem herdar a semântica.
+   */
+  editorSubmittedSpared: IntraEditionRemovedEntry[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1016,6 +1057,10 @@ export function isModelCardOrHubPage(url: string): boolean {
 export interface SecondaryIntraBucketResult {
   kept: Article[];
   removed: Array<{ url: string; title?: string; consolidated_into: string }>;
+  /** #4695: itens `flag: "editor_submitted"` que casariam como duplicata de
+   *  outro item do MESMO bucket (candidato a `dropped`) mas foram poupados
+   *  incondicionalmente. Ver docstring de `IntraEditionDedupResult.editorSubmittedLost`. */
+  editorSubmittedSpared: Array<{ url: string; title?: string; matched_against: string }>;
 }
 
 /**
@@ -1071,6 +1116,7 @@ export function dedupSecondaryIntraBucket(
     (options.strict ? SECONDARY_INTRA_BUCKET_STRICT_JACCARD_THRESHOLD : INTRA_JACCARD_THRESHOLD);
   const removedUrls = new Set<string>();
   const removed: SecondaryIntraBucketResult["removed"] = [];
+  const editorSubmittedSpared: SecondaryIntraBucketResult["editorSubmittedSpared"] = [];
 
   for (let i = 0; i < articles.length; i++) {
     const a = articles[i];
@@ -1101,6 +1147,25 @@ export function dedupSecondaryIntraBucket(
       const isSameLaunch = jaccard >= jThreshold || sharedProduct.length >= 1;
       if (!isSameLaunch) continue;
 
+      // #4695: se QUALQUER um dos dois lados é submissão do editor, a dupla
+      // inteira é poupada — nenhum dos dois é removido, mesmo que o outro
+      // lado NÃO seja editor_submitted. Mesmo precedente do `dedup.ts` Pass
+      // 1d (#4192): a curadoria do editor prevalece sobre o dedup mecânico.
+      // Reporta em `editorSubmittedSpared` pra visibilidade no gate (item 4c)
+      // em vez de descartar silenciosamente em stderr.
+      const aIsEditorSubmitted = a.flag === "editor_submitted";
+      const bIsEditorSubmitted = b.flag === "editor_submitted";
+      if (aIsEditorSubmitted || bIsEditorSubmitted) {
+        const editorItem = aIsEditorSubmitted ? a : b;
+        const otherItem = aIsEditorSubmitted ? b : a;
+        editorSubmittedSpared.push({
+          url: editorItem.url,
+          title: editorItem.title,
+          matched_against: otherItem.url,
+        });
+        continue;
+      }
+
       // Desempate: preferir item com summary/descrição não-vazia; senão,
       // preferir o que NÃO é model-card/hub page; senão, manter o primeiro.
       const aHasSummary = !!(a.summary && a.summary.trim().length > 0);
@@ -1126,6 +1191,7 @@ export function dedupSecondaryIntraBucket(
   return {
     kept: articles.filter((a) => !removedUrls.has(a.url)),
     removed,
+    editorSubmittedSpared,
   };
 }
 
@@ -1166,6 +1232,7 @@ export function dedupIntraEdition(
     })
     .slice(0, n);
   const removed: IntraEditionDedupResult["removed"] = [];
+  const editorSubmittedSpared: IntraEditionDedupResult["editorSubmittedSpared"] = [];
 
   // #4185: clona os highlights candidatos ANTES de qualquer mutação — a
   // função permanece pure (não muta `input`); as cópias substituem os
@@ -1193,12 +1260,33 @@ export function dedupIntraEdition(
           ...match,
         });
         // #4185: preserva o artigo como cluster_sources[] no destaque
-        // (clone) que ele duplicou, em vez de só descartá-lo.
+        // (clone) que ele duplicou, em vez de só descartá-lo. #4228 já
+        // garantia que o marcador `flag: "editor_submitted"` sobrevive
+        // nesse fold (`toClusterSource` preserva o campo) — o conteúdo da
+        // submissão do editor não desaparece, vira material de apoio do
+        // destaque que o `writer-destaque` de fato lê. Por isso este passe
+        // NÃO exime a remoção do bucket (diferente do passe item-vs-item
+        // abaixo, que não tem fold equivalente): remover exigiria descartar
+        // um mecanismo de resgate já testado (#4228) por um pior (deixar o
+        // item duplicado solto no bucket).
         const matchedHighlight = highlights.find(
           (h) => highlightTitle(h) === match.matched_highlight,
         );
         if (matchedHighlight) {
           attachClusterSource(highlightClones.get(matchedHighlight)!, article);
+        }
+        // #4695: mesmo sendo uma remoção "boa" (rescatada via cluster_sources,
+        // não um descarte cru), o gate nunca soube disso — só ia pro stderr.
+        // Reporta em `editorSubmittedSpared` pra visibilidade (item 4c), com o
+        // mesmo shape usado pelo passe item-vs-item (onde a exemção É
+        // incondicional porque não existe fold equivalente lá).
+        if (article.flag === "editor_submitted") {
+          editorSubmittedSpared.push({
+            url: article.url,
+            title: article.title,
+            bucket,
+            ...match,
+          });
         }
       } else {
         bucketKept.push(article);
@@ -1223,10 +1311,14 @@ export function dedupIntraEdition(
     // o caminho de entidade-sozinha) pra todo bucket que não seja
     // `lancamento` — hoje, na prática, só `radar`. Ver docstring de
     // `dedupSecondaryIntraBucket`.
-    const { kept: bucketKept, removed: bucketRemoved } = dedupSecondaryIntraBucket(
-      bucketAfterHighlightPass,
-      { ...options, strict: bucket !== "lancamento" },
-    );
+    const {
+      kept: bucketKept,
+      removed: bucketRemoved,
+      editorSubmittedSpared: bucketSpared,
+    } = dedupSecondaryIntraBucket(bucketAfterHighlightPass, {
+      ...options,
+      strict: bucket !== "lancamento",
+    });
     if (bucketRemoved.length > 0) {
       keptBuckets[bucket] = bucketKept;
       for (const r of bucketRemoved) {
@@ -1239,6 +1331,18 @@ export function dedupIntraEdition(
           score: 1,
         });
       }
+    }
+    // #4695: item-vs-item também poupa editor_submitted incondicionalmente
+    // (ver `dedupSecondaryIntraBucket`) — reporta pra visibilidade no gate.
+    for (const s of bucketSpared) {
+      editorSubmittedSpared.push({
+        url: s.url,
+        title: s.title,
+        bucket,
+        match_type: "intra_bucket",
+        matched_highlight: s.matched_against,
+        score: 1,
+      });
     }
   }
 
@@ -1255,7 +1359,7 @@ export function dedupIntraEdition(
       : {}),
   };
 
-  return { kept, removed };
+  return { kept, removed, editorSubmittedSpared };
 }
 
 // ---------------------------------------------------------------------------
@@ -1292,7 +1396,9 @@ function main(): void {
   );
 
   const highlightCount = input.highlights?.length ?? 0;
-  const { kept, removed } = dedupIntraEdition(input, { destaqueCount: args.destaqueCount });
+  const { kept, removed, editorSubmittedSpared } = dedupIntraEdition(input, {
+    destaqueCount: args.destaqueCount,
+  });
 
   const totalSecondary = SECONDARY_BUCKETS.reduce(
     (sum, b) => sum + (input[b]?.length ?? 0),
@@ -1317,7 +1423,43 @@ function main(): void {
     }
   }
 
+  // #4695: submissão(ões) do editor que bateram um critério de duplicata mas
+  // NUNCA foram descartadas em silêncio — viram cluster_sources[] do destaque
+  // (match destaque-vs-bucket) ou permanecem no bucket (match item-vs-item,
+  // sem fold equivalente). Antes desta issue, esses casos só apareciam em
+  // stderr — sem arquivo, sem stats, sem gate.
+  //
+  // Review (finding 2): um cluster de 3+ itens no mesmo bucket pode gerar
+  // 2+ entradas com a MESMA url (1 submissão comparada contra vários
+  // `matched_against` diferentes) — o array preserva cada match como
+  // informação real, mas a CONTAGEM exibida aqui deve ser de URLs
+  // distintas, não de entradas, pra não ler "2 submissões suas" quando é
+  // 1 submissão comparada 2×.
+  if (editorSubmittedSpared.length > 0) {
+    const distinctUrls = new Set(editorSubmittedSpared.map((r) => r.url));
+    process.stderr.write(
+      `⚠️ [dedup-intra-edition] ${distinctUrls.size} submissão(ões) sua(s) bateram um critério de duplicata mas o conteúdo foi preservado (#4695):\n`,
+    );
+    for (const r of editorSubmittedSpared) {
+      process.stderr.write(
+        `  [${r.bucket}] ${r.title ?? r.url} — ${r.match_type} → "${r.matched_highlight}"\n`,
+      );
+    }
+  }
+
   writeFileSync(resolve(args.out), JSON.stringify(kept, null, 2), "utf8");
+
+  // #4695: sidecar de stats junto do --out (mesmo padrão de
+  // `topic-cluster-stats.json`, ver orchestrator-stage-1-research.md 1n) —
+  // `--out` sobrescreve `01-categorized.json` in-place com só `kept`, então
+  // `removed`/`editorSubmittedSpared` precisam de um arquivo próprio pro
+  // gate (item 4c) conseguir ler sem depender do stderr desta invocação.
+  const statsPath = resolve(dirname(resolve(args.out)), "dedup-intra-edition-stats.json");
+  writeFileSync(
+    statsPath,
+    JSON.stringify({ removed, editorSubmittedSpared }, null, 2),
+    "utf8",
+  );
 }
 
 if (isMainModule(import.meta.url)) {
