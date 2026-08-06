@@ -336,6 +336,24 @@ export interface IntraEditionDedupResult {
 export const INTRA_JACCARD_THRESHOLD = 0.45;
 
 /**
+ * #4675 review (fix de regressão do #4667): threshold Jaccard usado por
+ * `dedupSecondaryIntraBucket` em modo `strict` (buckets secundários ≠
+ * `lancamento` — hoje só RADAR via `INTRA_BUCKET_DEDUP_BUCKETS`). Ver
+ * docstring de `dedupSecondaryIntraBucket` para o racional completo do modo
+ * strict. Mais permissivo que `INTRA_JACCARD_THRESHOLD` (0.45) porque em
+ * modo strict o caminho de entidade-sozinha está desligado — só Jaccard
+ * resta como sinal, então o threshold precisa ser baixo o bastante para
+ * capturar títulos de veículos diferentes cobrindo o mesmo fato do dia com
+ * vocabulário bem divergente (ver os 2 clusters reais na issue #4667).
+ * Calibrado contra o par mais fraco desses clusters (cluster "Claude caiu",
+ * 4 fontes — menor Jaccard par-a-par ≈0.167), com margem folgada abaixo dos
+ * pares falso-positivo reproduzidos no review do #4675 (≈0.06–0.08: "ChatGPT
+ * banido em escolas" x "ChatGPT ganha novo modo de voz"; "Gemini fica
+ * instável" x "Google testa recurso experimental do Gemini").
+ */
+export const SECONDARY_INTRA_BUCKET_STRICT_JACCARD_THRESHOLD = 0.15;
+
+/**
  * Número mínimo de entidades compartilhadas para considerar entity-match.
  * 2 entidades = 1 empresa/produto + 1 numérico/outro, ou 2 entidades nomeadas.
  * Evita falso-positivo de 1 entidade genérica (ex: só "SpaceX" matcharia
@@ -899,6 +917,21 @@ export function isIntraEditionDuplicate(
 export const DEFAULT_INTRA_DESTAQUE_COUNT = 3;
 
 /**
+ * #4667: buckets secundários onde `dedupSecondaryIntraBucket` roda a
+ * consolidação item-vs-item (além do destaque-vs-bucket já feito pelo loop
+ * principal). `lancamento` está aqui desde o #4360; `radar` foi adicionado
+ * pelo #4667 — maior volume (~30-40 itens/edição) e maior taxa observada de
+ * notícia "quente" do dia coberta por 3-4 veículos brasileiros simultâneos
+ * (outage, desativação de produto, etc.).
+ *
+ * `use_melhor`/`video` deliberadamente FORA por enquanto — a issue #4667 não
+ * trouxe caso real para esses buckets (menor volume, cobertura menos
+ * duplicada na prática); adicionar aqui quando houver evidência concreta,
+ * mesmo mecanismo, sem precisar tocar `dedupIntraEdition`.
+ */
+export const INTRA_BUCKET_DEDUP_BUCKETS: readonly string[] = ["lancamento", "radar"];
+
+/**
  * #4185: anexa `article` como `cluster_sources[]` do destaque (highlight
  * CLONE — nunca o original de `input`) que ele duplicou intra-edição. Mesma
  * semântica do `foldCluster` de `scripts/lib/cluster-sources.ts` (#3920),
@@ -931,13 +964,18 @@ function attachClusterSource(h: HighlightEntry, article: Article): void {
 }
 
 // ---------------------------------------------------------------------------
-// #4360: dedup DENTRO do bucket LANÇAMENTOS (item-vs-item, não destaque-vs-bucket)
+// #4360/#4667: dedup DENTRO de um bucket secundário (item-vs-item, não
+// destaque-vs-bucket). Nasceu específico de LANÇAMENTOS (#4360); generalizado
+// pelo #4667 para rodar também sobre RADAR — a função já era bucket-agnostic
+// na prática (recebe só `Article[]`, sem saber de qual bucket veio; já era
+// reusada contra `radar[]` em `validate-lancamentos.ts` desde o #4386), o gap
+// real era só o call site em `dedupIntraEdition`, cabeado só para `lancamento`.
 // ---------------------------------------------------------------------------
 
 /**
  * #4360: página de MODEL CARD / hub — tipicamente specs técnicas sem prosa
  * descritiva, ao contrário de um post oficial de blog (que tem lead/resumo).
- * Usado como critério de desempate em `dedupLancamentoIntraBucket`: quando 2
+ * Usado como critério de desempate em `dedupSecondaryIntraBucket`: quando 2
  * itens cobrem o MESMO lançamento, o post de blog (com descrição) é
  * preferido sobre a página de model-card/hub (sem descrição).
  *
@@ -975,36 +1013,64 @@ export function isModelCardOrHubPage(url: string): boolean {
   }
 }
 
-export interface LancamentoIntraBucketResult {
+export interface SecondaryIntraBucketResult {
   kept: Article[];
   removed: Array<{ url: string; title?: string; consolidated_into: string }>;
 }
 
 /**
- * #4360: consolida duplicatas DENTRO do bucket LANÇAMENTOS — 2 URLs distintas
- * cobrindo o MESMO produto/lançamento (ex: model-card + post oficial de
- * blog). `dedupIntraEdition`/`isIntraEditionDuplicate` só comparam bucket-vs-
- * HIGHLIGHTS — nunca item-vs-item dentro do mesmo bucket secundário — então o
- * caso real (#4360) em que os 2 itens estavam SIMULTANEAMENTE fora dos
- * destaques nunca era comparado um com o outro.
+ * #4360, generalizado pelo #4667: consolida duplicatas DENTRO de um bucket
+ * secundário — 2+ URLs distintas cobrindo o MESMO produto/lançamento/evento
+ * (ex: model-card + post oficial de blog em LANÇAMENTOS; 3 veículos cobrindo
+ * a mesma notícia do dia em RADAR). `dedupIntraEdition`/`isIntraEditionDuplicate`
+ * só comparam bucket-vs-HIGHLIGHTS — nunca item-vs-item dentro do mesmo bucket
+ * secundário — então o caso real (#4360, depois #4667 para RADAR) em que os
+ * itens estavam SIMULTANEAMENTE fora dos destaques nunca era comparado um com
+ * o outro. A função é agnóstica de bucket (só recebe `Article[]`) — quem
+ * decide QUAL bucket rodar é o caller (`dedupIntraEdition` via
+ * `INTRA_BUCKET_DEDUP_BUCKETS`, ou `validate-lancamentos.ts` contra `radar[]`
+ * cheio pós-demote, #4386).
  *
- * Sinal de "mesmo lançamento" (mesmos critérios já usados no dedup destaque-
- * vs-bucket, conservador): Jaccard de título ≥ threshold OU ≥1 entidade de
+ * Sinal de "mesmo evento": Jaccard de título ≥ threshold OU ≥1 entidade de
  * PRODUTO compartilhada (`extractProductEntitiesIntra` — inclui nome de
  * modelo, exclui empresa/genéricos). Em caso de match, mantém o item com
  * `summary` não-vazio; se ambos (ou nenhum) têm summary, prefere o que NÃO é
  * model-card/hub page (`isModelCardOrHubPage`). Empate residual: mantém o
  * primeiro da lista (ordem estável).
  *
+ * **`options.strict` (#4675 review, fix de regressão do #4667):** o
+ * caminho "≥1 entidade de PRODUTO compartilhada" foi calibrado para
+ * LANÇAMENTOS, onde TODO item já é por definição um lançamento — então
+ * "mesmo produto citado" implica "mesmo lançamento" sem precisar de mais
+ * nada. RADAR não tem essa garantia (~30-40 notícias gerais/dia) e, ao
+ * contrário do segundo-sinal de `isIntraEditionDuplicate` (#2587), aqui não
+ * existe gate de domínio (`isPressCovertageOfHighlight`) confirmando que os
+ * 2 itens já são sobre a MESMA empresa/lançamento antes de aceitar a
+ * entidade sozinha — então 2 notícias DIFERENTES sobre o mesmo produto
+ * flagship (ex: "ChatGPT banido em escolas" x "ChatGPT ganha novo modo de
+ * voz"; "Gemini fica instável" x "Google testa recurso do Gemini")
+ * consolidavam incorretamente. Com `strict: true` (usado por
+ * `dedupIntraEdition` para todo bucket ≠ `lancamento`), o caminho de
+ * entidade-sozinha é DESLIGADO — só Jaccard conta, contra
+ * `SECONDARY_INTRA_BUCKET_STRICT_JACCARD_THRESHOLD` (mais permissivo que o
+ * default 0.45, calibrado contra o par mais fraco dos 2 clusters reais da
+ * #4667 — "Claude caiu", mínimo par-a-par ≈0.167 — com margem folgada abaixo
+ * dos pares falso-positivo observados, ≈0.06–0.08). Default `false`
+ * preserva o comportamento original para LANÇAMENTOS e para o call site de
+ * `validate-lancamentos.ts` (que roda contra `radar[]` mas em contexto
+ * onde os itens recém-demovidos SÃO lançamento por origem, #4386).
+ *
  * Pure function — não muta `articles`.
  */
-export function dedupLancamentoIntraBucket(
+export function dedupSecondaryIntraBucket(
   articles: Article[],
-  options: { jaccardThreshold?: number } = {},
-): LancamentoIntraBucketResult {
-  const jThreshold = options.jaccardThreshold ?? INTRA_JACCARD_THRESHOLD;
+  options: { jaccardThreshold?: number; strict?: boolean } = {},
+): SecondaryIntraBucketResult {
+  const jThreshold =
+    options.jaccardThreshold ??
+    (options.strict ? SECONDARY_INTRA_BUCKET_STRICT_JACCARD_THRESHOLD : INTRA_JACCARD_THRESHOLD);
   const removedUrls = new Set<string>();
-  const removed: LancamentoIntraBucketResult["removed"] = [];
+  const removed: SecondaryIntraBucketResult["removed"] = [];
 
   for (let i = 0; i < articles.length; i++) {
     const a = articles[i];
@@ -1018,9 +1084,19 @@ export function dedupLancamentoIntraBucket(
       const bTokens = tokenizeForJaccard(stripVehicleSuffix(b.title));
       const jaccard = jaccardSimilarity(aTokens, bTokens);
 
-      const aProductEntities = extractProductEntitiesIntra(a.title);
-      const bProductEntities = extractProductEntitiesIntra(b.title);
-      const sharedProduct = [...aProductEntities].filter((e) => bProductEntities.has(e));
+      // #4675 review: em modo `strict` (buckets ≠ lancamento), o caminho de
+      // entidade-sozinha fica fora do critério — só Jaccard decide. Evita
+      // recalcular `extractProductEntitiesIntra` à toa quando strict (e,
+      // como efeito colateral, neutraliza pra RADAR o bug separado de
+      // `extractProductEntitiesIntra` não pular o índice 0 — a 1ª palavra
+      // maiúscula de início de frase não pode mais, sozinha, virar match).
+      const sharedProduct = options.strict
+        ? []
+        : (() => {
+            const aProductEntities = extractProductEntitiesIntra(a.title);
+            const bProductEntities = extractProductEntitiesIntra(b.title);
+            return [...aProductEntities].filter((e) => bProductEntities.has(e));
+          })();
 
       const isSameLaunch = jaccard >= jThreshold || sharedProduct.length >= 1;
       if (!isSameLaunch) continue;
@@ -1132,23 +1208,32 @@ export function dedupIntraEdition(
     keptBuckets[bucket] = bucketKept;
   }
 
-  // #4360: consolida duplicatas DENTRO do bucket LANÇAMENTOS (item-vs-item,
-  // não destaque-vs-bucket como o loop acima) — caso em que 2 URLs distintas
-  // cobrem o MESMO lançamento e NENHUMA das duas é destaque, então o loop
-  // acima nunca as compara uma com a outra.
-  const lancamentoAfterHighlightPass = keptBuckets.lancamento ?? [];
-  if (lancamentoAfterHighlightPass.length > 1) {
-    const { kept: lancamentoKept, removed: lancamentoRemoved } = dedupLancamentoIntraBucket(
-      lancamentoAfterHighlightPass,
-      options,
+  // #4360/#4667: consolida duplicatas DENTRO de um bucket secundário
+  // (item-vs-item, não destaque-vs-bucket como o loop acima) — caso em que
+  // 2+ URLs distintas cobrem o MESMO evento e NENHUMA delas é destaque, então
+  // o loop acima nunca as compara umas com as outras. Nasceu restrito a
+  // LANÇAMENTOS (#4360); generalizado pelo #4667 para rodar também sobre
+  // RADAR (maior volume da edição e maior taxa observada de multi-fonte
+  // cobrindo o mesmo fato do dia — ver `INTRA_BUCKET_DEDUP_BUCKETS`).
+  for (const bucket of INTRA_BUCKET_DEDUP_BUCKETS) {
+    const bucketAfterHighlightPass = keptBuckets[bucket] ?? [];
+    if (bucketAfterHighlightPass.length <= 1) continue;
+
+    // #4675 review: `strict` liga o modo mais conservador (só Jaccard, sem
+    // o caminho de entidade-sozinha) pra todo bucket que não seja
+    // `lancamento` — hoje, na prática, só `radar`. Ver docstring de
+    // `dedupSecondaryIntraBucket`.
+    const { kept: bucketKept, removed: bucketRemoved } = dedupSecondaryIntraBucket(
+      bucketAfterHighlightPass,
+      { ...options, strict: bucket !== "lancamento" },
     );
-    if (lancamentoRemoved.length > 0) {
-      keptBuckets.lancamento = lancamentoKept;
-      for (const r of lancamentoRemoved) {
+    if (bucketRemoved.length > 0) {
+      keptBuckets[bucket] = bucketKept;
+      for (const r of bucketRemoved) {
         removed.push({
           url: r.url,
           title: r.title,
-          bucket: "lancamento",
+          bucket,
           match_type: "intra_bucket",
           matched_highlight: r.consolidated_into,
           score: 1,

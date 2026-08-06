@@ -1337,7 +1337,7 @@ describe("#4339 — demoteNotATool: not_a_tool sai de LANÇAMENTOS automaticamen
     assert.equal(
       updated.radar?.[0].url,
       "https://techcrunch.com/2026/01/openai-chatgpt-academic-researchers",
-      "mantém o item com descrição (mais completo), segue a preferência já usada por dedupLancamentoIntraBucket",
+      "mantém o item com descrição (mais completo), segue a preferência já usada por dedupSecondaryIntraBucket",
     );
 
     // consolidated: reporta a fusão (item descartado → item mantido).

@@ -56,9 +56,10 @@ import { fileURLToPath } from "node:url";
 import { isOfficialLancamentoUrl } from "./categorize.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { VERSION_SIGNAL_RE } from "./lib/version-signal-detect.ts"; // #4337: extraído (fonte única)
-// #4386: reusa o MESMO dedup intra-bucket já usado no Stage 1 (#4360) pra
-// checar o radar[] contra o item recém-demovido (ver `demoteNotATool` abaixo).
-import { dedupLancamentoIntraBucket } from "./dedup-intra-edition.ts";
+// #4386: reusa o MESMO dedup intra-bucket já usado no Stage 1 (#4360, nome
+// generalizado pelo #4667) pra checar o radar[] contra o item recém-demovido
+// (ver `demoteNotATool` abaixo).
+import { dedupSecondaryIntraBucket } from "./dedup-intra-edition.ts";
 
 /**
  * #1968: allowlist de override pra a verificação positiva de ferramenta. Arquivo
@@ -609,7 +610,7 @@ export interface DemoteNotAToolResult {
   /** Itens efetivamente movidos (mesma forma de `not_a_tool` do summary). */
   demoted: Array<{ url: string; title?: string }>;
   /** #4386: itens demovidos que colidiram (mesmo lançamento) com um item já
-   *  presente em `radar[]` — consolidados via `dedupLancamentoIntraBucket`
+   *  presente em `radar[]` — consolidados via `dedupSecondaryIntraBucket`
    *  em vez de duplicados. `url` é o item descartado; `consolidated_into` é
    *  o item de `radar[]` mantido. */
   consolidated: Array<{ url: string; title?: string; consolidated_into: string }>;
@@ -634,7 +635,7 @@ export interface DemoteNotAToolResult {
  * já presente em `radar[]` vindo da Etapa 1 (ex: model-card oficial demovido
  * duplicando uma cobertura de imprensa do mesmo lançamento que a categorização
  * já tinha posto em radar — nenhum dos 2 mecanismos sabia do timing do
- * outro). `dedupLancamentoIntraBucket` (#4360) já resolve exatamente esse
+ * outro). `dedupSecondaryIntraBucket` (#4360) já resolve exatamente esse
  * tipo de colisão dentro de um bucket — reusada aqui contra o `radar[]` CHEIO
  * (pré-existente + recém-demovido), não só os itens demovidos entre si, pra
  * pegar a colisão que o Stage 1 (que só rodou sobre `lancamento[]`) não podia
@@ -676,7 +677,7 @@ export function demoteNotATool(
     );
     const withoutUrl = radar.filter((r) => !(typeof r.url === "string" && r.url.length > 0));
     if (withUrl.length > 1) {
-      const { kept: dedupedRadar, removed } = dedupLancamentoIntraBucket(withUrl);
+      const { kept: dedupedRadar, removed } = dedupSecondaryIntraBucket(withUrl);
       if (removed.length > 0) {
         // Ordem: itens deduped primeiro, depois os (raros) sem URL, que não
         // participam do dedup por URL e ficam intocados.
