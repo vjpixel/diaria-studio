@@ -351,6 +351,36 @@ test("reconcilePendingSend: status queued -> 'still-pending', state INALTERADO (
   assert.deepEqual(result.state, prev); // nada muda — nem sentCount, nem pendingSend
 });
 
+test("reconcilePendingSend: status scheduled -> 'still-pending' (Brevo reporta 'queued' OU 'scheduled' conforme versão/timing, mesma semântica de isSchedulableStatus/isScheduledStatus)", async () => {
+  const prev: NovosState = {
+    lastRunAt: "2026-08-05T12:00:00.000Z",
+    lastHtmlSha256: "sha-agendado",
+    lastCycle: "2607-08",
+    lastListId: 10,
+    lastCampaignId: 20,
+    sentCount: 200,
+    pendingSend: { campaignId: 120, listId: 106, scheduledAt: "2026-08-06T10:00:00-03:00", contactCount: 70 },
+  };
+  const result = await reconcilePendingSend(prev, async () => ({ status: "scheduled" }));
+  assert.equal(result.action, "still-pending");
+  assert.deepEqual(result.state, prev);
+});
+
+test("reconcilePendingSend: status in_review -> 'still-pending' (revisão de compliance/anti-abuso da Brevo, não-terminal, mesma semântica de describeUncertainSendStatus)", async () => {
+  const prev: NovosState = {
+    lastRunAt: "2026-08-05T12:00:00.000Z",
+    lastHtmlSha256: "sha-agendado",
+    lastCycle: "2607-08",
+    lastListId: 10,
+    lastCampaignId: 20,
+    sentCount: 200,
+    pendingSend: { campaignId: 120, listId: 106, scheduledAt: "2026-08-06T10:00:00-03:00", contactCount: 70 },
+  };
+  const result = await reconcilePendingSend(prev, async () => ({ status: "in_review" }));
+  assert.equal(result.action, "still-pending");
+  assert.deepEqual(result.state, prev);
+});
+
 test("reconcilePendingSend (caso 'agendado→cancelado'): status suspended -> 'cancelled', limpa pendingSend, sentCount NÃO incrementa", async () => {
   const prev: NovosState = {
     lastRunAt: "2026-08-05T12:00:00.000Z",
@@ -368,7 +398,7 @@ test("reconcilePendingSend (caso 'agendado→cancelado'): status suspended -> 'c
   assert.equal(result.state.lastCampaignId, 20); // NÃO promove o campaignId cancelado
 });
 
-test("reconcilePendingSend: status desconhecido/inesperado -> tratado como 'cancelled' (fail-safe: nunca conta como enviado sem confirmação)", async () => {
+test("reconcilePendingSend: status draft -> 'cancelled' (reversão manual pro rascunho — cancelamento CONHECIDO)", async () => {
   const prev: NovosState = {
     lastRunAt: "x",
     lastHtmlSha256: null,
@@ -381,6 +411,24 @@ test("reconcilePendingSend: status desconhecido/inesperado -> tratado como 'canc
   const result = await reconcilePendingSend(prev, async () => ({ status: "draft" }));
   assert.equal(result.action, "cancelled");
   assert.equal(result.state.sentCount, 0);
+  assert.equal(result.state.pendingSend, null);
+});
+
+test("reconcilePendingSend: status GENUINAMENTE desconhecido -> 'uncertain', state INALTERADO (nem soma sentCount, nem limpa pendingSend — não é conclusão que o código tem base pra tirar)", async () => {
+  const prev: NovosState = {
+    lastRunAt: "x",
+    lastHtmlSha256: null,
+    lastCycle: null,
+    lastListId: null,
+    lastCampaignId: null,
+    sentCount: 0,
+    pendingSend: { campaignId: 9, listId: 1, scheduledAt: "2026-08-06T10:00:00-03:00", contactCount: 1 },
+  };
+  const result = await reconcilePendingSend(prev, async () => ({ status: "someNewBrevoStatus" }));
+  assert.equal(result.action, "uncertain");
+  assert.equal(result.state.sentCount, 0);
+  assert.notEqual(result.state.pendingSend, null);
+  assert.deepEqual(result.state.pendingSend, prev.pendingSend);
 });
 
 test("reconcilePendingSend (dupla finalização não conta 2×): 2ª chamada após 'finalized' -> 'no-pending', sentCount NÃO soma de novo", async () => {

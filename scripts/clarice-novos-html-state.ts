@@ -161,7 +161,14 @@ export async function runReconcile(argv: string[]): Promise<void> {
 
   if (result.action !== "no-pending") writeNovosState(result.state, dataRootArg);
 
-  const icon = result.action === "finalized" ? "✓" : result.action === "cancelled" ? "⚠" : "↷";
+  const icon =
+    result.action === "finalized"
+      ? "✓"
+      : result.action === "cancelled"
+        ? "⚠"
+        : result.action === "uncertain"
+          ? "❓"
+          : "↷";
   console.error(`${icon} ${result.detail}`);
   console.log(JSON.stringify({ action: result.action, state: result.state }, null, 2));
 }

@@ -226,12 +226,40 @@ export function buildFinalizeState(prev: NovosState | null, opts: FinalizeOption
   };
 }
 
-/** Status Brevo (`GET /emailCampaigns/{id}`) que confirmam disparo — mesma semântica de `isTerminalSendStatus` em `brevo-client.ts` (não importado daqui pra manter esta lib livre de dependência de rede/transporte; os dois conjuntos devem ser mantidos em sincronia). */
-const CONFIRMED_SENT_STATUSES = new Set(["sent", "inProcess"]);
-/** Status Brevo que significam "ainda na fila, aguardando o horário agendado" — nem confirmado, nem cancelado. */
-const STILL_QUEUED_STATUSES = new Set(["queued"]);
+// ---------------------------------------------------------------------------
+// Taxonomia de status Brevo (`GET /emailCampaigns/{id}`) — REPLICADA (não
+// importada) de `scripts/lib/brevo-client.ts` pra manter esta lib livre de
+// dependência de rede/transporte. Os 3 conjuntos abaixo precisam ficar em
+// SINCRONIA com as fontes-de-verdade citadas em cada comentário — qualquer
+// status novo que a Brevo passe a reportar entra em UM desses conjuntos
+// (nunca "cancelled" por omissão, ver `UNKNOWN_SEND_STATUS` mais abaixo).
+// ---------------------------------------------------------------------------
 
-export type ReconcileAction = "no-pending" | "finalized" | "still-pending" | "cancelled";
+/** Confirma disparo — mesma semântica de `isTerminalSendStatus` em `brevo-client.ts`. */
+const CONFIRMED_SENT_STATUSES = new Set(["sent", "inProcess"]);
+/**
+ * Ainda não terminou, mas NÃO é cancelamento — nem confirmado, nem cancelado:
+ *   - "queued"/"scheduled": agendada-não-enviada. A Brevo reporta um ou outro
+ *     dependendo da versão de API/timing — documentado em
+ *     `isSchedulableStatus` (`scripts/clarice-reapply-scheduled-html.ts`) e
+ *     `isScheduledStatus` (`scripts/clarice-schedule-sends.ts`).
+ *   - "in_review": revisão de compliance/anti-abuso da própria Brevo, status
+ *     conhecido e não-terminal — documentado em `describeUncertainSendStatus`
+ *     (`scripts/lib/brevo-client.ts`), reproduzido ao vivo em 260731 (#101).
+ */
+const STILL_PENDING_STATUSES = new Set(["queued", "scheduled", "in_review"]);
+/**
+ * Cancelamento CONHECIDO — a campanha não vai (ou não vai mais) disparar como
+ * agendado. Deliberadamente CURTO: só entram aqui status que este repo já
+ * documentou como estado-terminal-de-falha em outro lugar ("suspended" —
+ * `scripts/clarice-reapply-scheduled-html.ts`, estado em que uma campanha
+ * fica PRESA quando o reschedule falha no meio; "draft" — reversão manual no
+ * painel). Um status que NÃO está aqui nem nos outros dois conjuntos cai em
+ * `"uncertain"`, nunca em `"cancelled"` por default — ver `reconcilePendingSend`.
+ */
+const KNOWN_CANCELLED_STATUSES = new Set(["suspended", "draft"]);
+
+export type ReconcileAction = "no-pending" | "finalized" | "still-pending" | "cancelled" | "uncertain";
 
 export interface ReconcileResult {
   action: ReconcileAction;
@@ -249,13 +277,21 @@ export interface ReconcileResult {
  *   - status confirma disparo (`sent`/`inProcess`) → `"finalized"`: soma
  *     `contactCount` ao `sentCount`, promove `lastListId`/`lastCampaignId`
  *     pro par pendente, limpa `pendingSend`.
- *   - status ainda `queued` → `"still-pending"`, state inalterado — nada a
- *     fazer ainda, só informar.
- *   - qualquer outro status (`suspended`, `draft`, `archive`, desconhecido) →
+ *   - status ainda não-terminal mas NÃO-cancelamento (`queued`, `scheduled`,
+ *     `in_review`) → `"still-pending"`, state inalterado — nada a fazer
+ *     ainda, só informar.
+ *   - status CONHECIDO como cancelamento (`suspended`, `draft`) →
  *     `"cancelled"`: a campanha NÃO vai (ou não vai mais) disparar como
  *     agendado — limpa `pendingSend` SEM somar `sentCount` (#4670 critério de
  *     pronto: "campanha cancelada/falha no painel não é contada como
  *     enviada").
+ *   - qualquer OUTRO status (desconhecido — novo valor que a Brevo introduza)
+ *     → `"uncertain"`, state INALTERADO: nem soma `sentCount` nem limpa
+ *     `pendingSend`. "Cancelada" é uma CONCLUSÃO, e não há base pra concluí-la
+ *     a partir de um status que este módulo não reconhece — declarar
+ *     cancelamento errado aqui tem o mesmo efeito do bug original do #4670
+ *     (sentCount subcontado, silenciosamente). Fica pendente pra próxima
+ *     reconciliação re-checar.
  *
  * `fetchStatus` pode lançar (erro de rede/API) — propositalmente não
  * capturado aqui: o caller decide o fallback (mesma disciplina de "MCP
@@ -290,7 +326,7 @@ export async function reconcilePendingSend(
     };
   }
 
-  if (STILL_QUEUED_STATUSES.has(status)) {
+  if (STILL_PENDING_STATUSES.has(status)) {
     return {
       action: "still-pending",
       state: prev,
@@ -298,12 +334,24 @@ export async function reconcilePendingSend(
     };
   }
 
-  const state: NovosState = { ...prev, pendingSend: null };
+  if (KNOWN_CANCELLED_STATUSES.has(status)) {
+    const state: NovosState = { ...prev, pendingSend: null };
+    return {
+      action: "cancelled",
+      state,
+      detail:
+        `Campanha #${pending.campaignId} não confirmou disparo (status="${status}") — tratada como cancelada/falha. ` +
+        "pendingSend limpo, sentCount NÃO incrementado.",
+    };
+  }
+
   return {
-    action: "cancelled",
-    state,
+    action: "uncertain",
+    state: prev,
     detail:
-      `Campanha #${pending.campaignId} não confirmou disparo (status="${status}") — tratada como cancelada/falha. ` +
-      "pendingSend limpo, sentCount NÃO incrementado.",
+      `Campanha #${pending.campaignId} tem status desconhecido ("${status}") — nem confirmado nem cancelamento ` +
+      "reconhecido. pendingSend MANTIDO (não limpo), sentCount NÃO incrementado — precisa de checagem humana. " +
+      "Se este for um status legítimo novo da Brevo, adicione-o em STILL_PENDING_STATUSES ou " +
+      "KNOWN_CANCELLED_STATUSES em scripts/lib/clarice-novos-state.ts.",
   };
 }
