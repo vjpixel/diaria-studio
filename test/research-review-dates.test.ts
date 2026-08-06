@@ -14,8 +14,10 @@ import assert from "node:assert/strict";
 import {
   unwrapCategorized,
   applyVerifyResults,
+  buildReviewStats,
 } from "../scripts/research-review-dates.ts";
 import type { DateVerifyResult } from "../scripts/verify-dates.ts";
+import { filterDateWindow } from "../scripts/filter-date-window.ts";
 
 function fakeResult(
   url: string,
@@ -264,5 +266,67 @@ describe("applyVerifyResults — #2371 date_unverified para null-date articles",
     }];
     applyVerifyResults(cat, results);
     assert.equal(cat.radar[0].date_unverified, false, "data verificada → date_unverified=false");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4656 — buildReviewStats propaga editorSubmittedLost do filterDateWindow
+// ---------------------------------------------------------------------------
+
+describe("buildReviewStats (#4656)", () => {
+  it("editorSubmittedLost fica [] no caminho normal (editor_submitted poupado pelo guard)", () => {
+    const filterResult = filterDateWindow(
+      {
+        lancamento: [
+          { url: "https://openai.com/x", title: "OpenAI post", date: null, flag: "editor_submitted" },
+        ],
+        radar: [],
+      },
+      "2026-08-06",
+      3,
+    );
+    const stats = buildReviewStats(1, 0, 1, filterResult);
+    assert.deepEqual(stats.editorSubmittedLost, []);
+    assert.equal(stats.removed_date_window, 0);
+    assert.equal(stats.total_output, 1, "o artigo editor_submitted sobreviveu ao filtro");
+  });
+
+  it("propaga editorSubmittedLost não-vazio quando presente no filterResult (defesa-em-profundidade)", () => {
+    // Simula o caso hipotético em que o guard de filter-date-window.ts falhou
+    // e um editor_submitted acabou em `removed` mesmo assim — buildReviewStats
+    // precisa repassar isso pro stats sem perder a informação no caminho.
+    const filterResult = {
+      kept: { lancamento: [], radar: [], use_melhor: [], video: [] },
+      removed: [
+        {
+          url: "https://openai.com/x",
+          title: "OpenAI post",
+          date: null,
+          bucket: "lancamento",
+          reason: "date_window" as const,
+          source_field: "date" as const,
+          detail: "date null < cutoff 2026-08-03",
+          editor_submitted: true,
+        },
+      ],
+      cutoff: "2026-08-03",
+      anchor: "2026-08-06",
+      editorSubmittedLost: [
+        {
+          url: "https://openai.com/x",
+          title: "OpenAI post",
+          date: null,
+          bucket: "lancamento",
+          reason: "date_window" as const,
+          source_field: "date" as const,
+          detail: "date null < cutoff 2026-08-03",
+          editor_submitted: true,
+        },
+      ],
+    };
+    const stats = buildReviewStats(1, 0, 1, filterResult);
+    assert.equal(stats.editorSubmittedLost.length, 1);
+    assert.equal(stats.editorSubmittedLost[0].url, "https://openai.com/x");
+    assert.equal(stats.editorSubmittedLost[0].detail, "date null < cutoff 2026-08-03");
   });
 });
