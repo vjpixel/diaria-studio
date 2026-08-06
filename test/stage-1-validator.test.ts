@@ -4,7 +4,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -541,5 +541,61 @@ describe("runStage1Validation lê topic-cluster-stats.json (#4654) — integrati
     const result = runStage1Validation("260805", tmpDir, TEST_OPTS_NO_AUX);
     const embedding = result.assertions.find((a) => a.name === "embedding_health");
     assert.equal(embedding?.status, "ok");
+  });
+
+  it("sidecar com config_error (platform.config.json ilegível no topic-cluster) vira warn dedicado", () => {
+    writeFileSync(
+      join(tmpDir, "_internal", "topic-cluster-stats.json"),
+      JSON.stringify({
+        model: "gemini-embedding-001",
+        key_present: false,
+        attempted: 0,
+        failed: 0,
+        fail_rate: 0,
+        fallback_triggered: true,
+        config_error: "Unexpected token } in JSON at position 12",
+      }),
+      "utf8",
+    );
+    const result = runStage1Validation("260805", tmpDir, TEST_OPTS_NO_AUX);
+    const embedding = result.assertions.find((a) => a.name === "embedding_health");
+    assert.equal(embedding?.status, "warn");
+    assert.ok(embedding?.message.includes("platform.config.json"));
+  });
+
+  // ─── Achado #1 do fleet review (#4654 fix, 2ª camada) ─────────────────────
+  // Sidecar CORROMPIDO é indistinguível de sidecar AUSENTE se o erro de parse
+  // é engolido — mesma classe de bug que o #4654 original, uma camada acima.
+  it("sidecar CORROMPIDO (JSON inválido) vira warning distinto, NUNCA 'ok' silencioso", () => {
+    writeFileSync(
+      join(tmpDir, "_internal", "topic-cluster-stats.json"),
+      "{ isso não é json válido, truncado no meio",
+      "utf8",
+    );
+    const result = runStage1Validation("260806", tmpDir, {
+      ...TEST_OPTS_NO_AUX,
+      logRootDir: tmpDir,
+    });
+    const embedding = result.assertions.find((a) => a.name === "embedding_health");
+    assert.equal(embedding?.status, "warn", "corrompido NUNCA pode virar ok — indistinguível de ausente");
+    assert.ok(embedding?.message.includes("corrompido"));
+    assert.equal(result.blocking_count, 0, "não bloqueia — só sinaliza que não deu pra confirmar");
+
+    // O erro de parse não pode ser engolido num catch{} vazio — precisa
+    // aparecer no run-log.jsonl.
+    const logPath = join(tmpDir, "data", "run-log.jsonl");
+    assert.ok(existsSync(logPath), "run-log.jsonl deve ser escrito");
+    const lines = readFileSync(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const entry = lines.find((l) => l.message?.includes("corrompido"));
+    assert.ok(entry, "evento de sidecar corrompido deve estar no run-log");
+    assert.equal(entry.level, "warn");
+  });
+
+  it("sidecar AUSENTE (edição legada) continua 'ok' — comportamento preservado", () => {
+    // Sem escrever topic-cluster-stats.json nenhum.
+    const result = runStage1Validation("260805", tmpDir, TEST_OPTS_NO_AUX);
+    const embedding = result.assertions.find((a) => a.name === "embedding_health");
+    assert.equal(embedding?.status, "ok");
+    assert.ok(embedding?.message.includes("ausente"));
   });
 });

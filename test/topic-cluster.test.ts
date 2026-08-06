@@ -15,6 +15,7 @@ import {
   clusterCategorized,
   aggregateEmbeddingStats,
   resolveEmbeddingModel,
+  resolveEmbeddingModelWithDiagnostics,
   embedText,
   DEFAULT_EMBEDDING_MODEL,
   type Article,
@@ -516,6 +517,68 @@ describe("resolveEmbeddingModel (#4654)", () => {
   });
 });
 
+// ─── Achado #2 do fleet review (#4654 fix, 2ª camada) ──────────────────────
+// resolveEmbeddingModel() degradava só com console.error — mesmo padrão de
+// sinal-perdido-em-stderr que originou o #4654. configError precisa chegar
+// até o caller pra ser roteado por logEvent + propagado pro sidecar/gate.
+describe("resolveEmbeddingModelWithDiagnostics (#4654 fleet review achado #2)", () => {
+  it("configError null quando platform.config.json é lido normalmente", () => {
+    const dir = mkdtempSync(join(tmpdir(), "topic-cluster-diag-ok-"));
+    try {
+      writeFileSync(
+        join(dir, "platform.config.json"),
+        JSON.stringify({ gemini: { embedding_model: "gemini-embedding-2" } }),
+        "utf8",
+      );
+      const result = resolveEmbeddingModelWithDiagnostics(dir);
+      assert.equal(result.model, "gemini-embedding-2");
+      assert.equal(result.configError, null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("arquivo ausente também popula configError — mesmo tratamento pré-existente do catch (ENOENT)", () => {
+    // Nota: preserva o comportamento ANTERIOR ao fleet review — o catch já
+    // tratava ENOENT igual a JSON inválido (console.error incondicional).
+    // Este teste documenta que a propagação de configError não distingue
+    // "arquivo não existe" de "arquivo corrompido" — ambos caem no mesmo
+    // catch. Isso é aceitável: em produção (`main()` roda de cwd=ROOT do
+    // repo) `platform.config.json` sempre existe; a distinção relevante pro
+    // achado #2 é key_present/model_used no sidecar, não a causa do ENOENT.
+    const dir = mkdtempSync(join(tmpdir(), "topic-cluster-diag-missing-"));
+    try {
+      const result = resolveEmbeddingModelWithDiagnostics(dir);
+      assert.equal(result.model, DEFAULT_EMBEDDING_MODEL);
+      assert.ok(result.configError, "ENOENT também é reportado — mesmo catch de antes do fix");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("configError populado quando platform.config.json existe mas é JSON inválido", () => {
+    const dir = mkdtempSync(join(tmpdir(), "topic-cluster-diag-corrupt-"));
+    try {
+      writeFileSync(join(dir, "platform.config.json"), "{ isso não é json", "utf8");
+      const result = resolveEmbeddingModelWithDiagnostics(dir);
+      assert.equal(result.model, DEFAULT_EMBEDDING_MODEL, "cai no default mesmo com config corrompido");
+      assert.ok(result.configError, "configError deve capturar o motivo — não pode ser null aqui");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolveEmbeddingModel (wrapper de compat) continua retornando só o model", () => {
+    const dir = mkdtempSync(join(tmpdir(), "topic-cluster-diag-wrapper-"));
+    try {
+      writeFileSync(join(dir, "platform.config.json"), "{ corrompido", "utf8");
+      assert.equal(resolveEmbeddingModel(dir), DEFAULT_EMBEDDING_MODEL);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("aggregateEmbeddingStats (#4654)", () => {
   it("soma attempted/failed de vários buckets e mantém o model comum", () => {
     const statsList: EmbeddingStats[] = [
@@ -633,6 +696,57 @@ describe("topic-cluster CLI main() — legacy shape não crasha (#1671 — site 
       const out = JSON.parse(rf(outPath, "utf8"));
       assert.ok(out.embedding_health, "output principal também carrega embedding_health");
       assert.equal(out.embedding_health.key_present, false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Achado #2 do fleet review (#4654 fix, 2ª camada): platform.config.json
+  // ilegível não pode degradar só com console.error — precisa ir pro
+  // run-log.jsonl e pro sidecar (config_error), pra chegar até o gate.
+  it("#4654 achado #2: platform.config.json corrompido loga em run-log.jsonl e marca config_error no sidecar", () => {
+    const ROOT = resolve(import.meta.dirname, "..");
+    const dir = mkdtempSync(join(tmpdir(), "topic-cluster-cli-cfg-error-"));
+    try {
+      const input = {
+        lancamento: [{ url: "https://x/l", title: "Lançamento", summary: "produto" }],
+        radar: [],
+        use_melhor: [],
+        video: [],
+      };
+      const inPath = join(dir, "categorized.json");
+      const outPath = join(dir, "clustered.json");
+      writeFileSync(inPath, JSON.stringify(input), "utf8");
+      // platform.config.json corrompido NA RAIZ do worktree — resolveEmbeddingModelWithDiagnostics
+      // lê de process.cwd() (= cwd do subprocess = ROOT), não de --log-root-dir.
+      // Como não dá pra corromper o platform.config.json real do worktree
+      // (compartilhado com outros testes/processos), rodamos o CLI com
+      // cwd apontando pro tmpdir e copiamos só o necessário.
+      writeFileSync(join(dir, "platform.config.json"), "{ isso não é json válido", "utf8");
+      const env = { ...process.env };
+      delete env.GEMINI_API_KEY;
+      const r = spawnSync(
+        "npx",
+        [
+          "tsx", resolve(ROOT, "scripts/topic-cluster.ts"),
+          "--in", inPath, "--out", outPath, "--threshold", "0.5",
+          "--log-root-dir", dir,
+        ],
+        { cwd: dir, env, encoding: "utf8", shell: true, timeout: 120000 },
+      );
+      assert.equal(r.status, 0, `CLI deve sair 0 mesmo com config corrompido. stderr: ${r.stderr?.slice(0, 400)}`);
+
+      const statsPath = join(dir, "topic-cluster-stats.json");
+      const stats = JSON.parse(rf(statsPath, "utf8"));
+      assert.ok(stats.config_error, "sidecar deve carregar config_error");
+      assert.equal(stats.model, "gemini-embedding-001", "cai no default mesmo com config corrompido");
+
+      const logPath = join(dir, "data", "run-log.jsonl");
+      assert.ok(existsSync(logPath), "run-log.jsonl deve ser escrito");
+      const lines = rf(logPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      const entry = lines.find((l: { message?: string }) => l.message?.includes("platform.config.json não lido"));
+      assert.ok(entry, "evento de config ilegível deve estar no run-log");
+      assert.equal(entry.level, "warn");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

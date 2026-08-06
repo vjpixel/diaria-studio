@@ -89,6 +89,14 @@ export interface EmbeddingStats {
   failed: number;
   fail_rate: number;
   fallback_triggered: boolean;
+  /**
+   * Mensagem de erro quando `platform.config.json` existe mas não pôde ser
+   * lido/parseado (#4654 fix segunda camada — mesma classe de "sinal
+   * engolido" que o embedding fail-rate, um passo antes: se o config está
+   * corrompido, `model` já é o default, sem confirmação editorial nenhuma).
+   * `null`/ausente = config lido normalmente (ou ausente por design).
+   */
+  config_error?: string | null;
 }
 
 export interface ClusterOutput extends CategorizedInput {
@@ -102,15 +110,28 @@ export interface ClusterOutput extends CategorizedInput {
 // ausente/ilegível.
 export const DEFAULT_EMBEDDING_MODEL = "gemini-embedding-001";
 
+export interface EmbeddingModelResolution {
+  model: string;
+  /** Mensagem de erro se `platform.config.json` existe mas não pôde ser
+   *  lido/parseado. `null` = leitura OK (campo presente, ausente, ou o
+   *  arquivo inteiro não existe — isso é caminho esperado, não erro). */
+  configError: string | null;
+}
+
 /**
  * Resolve o modelo de embedding a partir de `platform.config.json >
  * gemini.embedding_model`, com fallback pra `DEFAULT_EMBEDDING_MODEL` quando
  * o campo está ausente ou o config não é legível (mesmo padrão de
  * `gemini.translate_model` em `eia-compose.ts`, #4654). Config corrompida
  * nunca é uma falha silenciosa — loga o motivo em stderr antes de cair no
- * default.
+ * default, e devolve o motivo em `configError` pra `main()` também rotear
+ * pelo `run-log.jsonl` e pelo sidecar (achado #2 do fleet review do #4654 —
+ * antes disso o único sinal era o `console.error`, a mesma classe de bug que
+ * este PR existe pra matar, um nível acima).
  */
-export function resolveEmbeddingModel(rootDir: string = process.cwd()): string {
+export function resolveEmbeddingModelWithDiagnostics(
+  rootDir: string = process.cwd(),
+): EmbeddingModelResolution {
   try {
     const cfgPath = resolve(rootDir, "platform.config.json");
     const cfg = JSON.parse(readFileSync(cfgPath, "utf8")) as {
@@ -120,14 +141,25 @@ export function resolveEmbeddingModel(rootDir: string = process.cwd()): string {
       typeof cfg?.gemini?.embedding_model === "string" &&
       cfg.gemini.embedding_model.length > 0
     ) {
-      return cfg.gemini.embedding_model;
+      return { model: cfg.gemini.embedding_model, configError: null };
     }
+    return { model: DEFAULT_EMBEDDING_MODEL, configError: null };
   } catch (e) {
+    const message = (e as Error).message;
     console.error(
-      `topic-cluster: platform.config.json não lido (${(e as Error).message}); usando embedding_model default '${DEFAULT_EMBEDDING_MODEL}'`,
+      `topic-cluster: platform.config.json não lido (${message}); usando embedding_model default '${DEFAULT_EMBEDDING_MODEL}'`,
     );
+    return { model: DEFAULT_EMBEDDING_MODEL, configError: message };
   }
-  return DEFAULT_EMBEDDING_MODEL;
+}
+
+/**
+ * Wrapper de compat — só o `model`, sem diagnóstico. Usado por callers que
+ * não precisam propagar `configError` (ex: testes existentes). `main()` usa
+ * `resolveEmbeddingModelWithDiagnostics` diretamente pra não perder o sinal.
+ */
+export function resolveEmbeddingModel(rootDir: string = process.cwd()): string {
+  return resolveEmbeddingModelWithDiagnostics(rootDir).model;
 }
 
 /**
@@ -505,9 +537,25 @@ async function main(): Promise<void> {
   // logEvent cai no default process.cwd() (produção roda da raiz do repo).
   const logRootDir = args["log-root-dir"];
 
-  const model = resolveEmbeddingModel();
+  const { model, configError } = resolveEmbeddingModelWithDiagnostics();
+  if (configError) {
+    logEvent(
+      {
+        edition: null,
+        stage: 1,
+        agent: "topic-cluster.ts",
+        level: "warn",
+        message: `topic-cluster: platform.config.json não lido (${configError}) — caiu no embedding_model default '${DEFAULT_EMBEDDING_MODEL}' sem confirmação editorial.`,
+        details: { config_error: configError, model_used: model },
+      },
+      logRootDir,
+    );
+  }
   const input = JSON.parse(readFileSync(inPath, "utf8")) as CategorizedInput;
   const result = await clusterCategorized(input, threshold, model);
+  if (configError) {
+    result.embedding_health = { ...result.embedding_health, config_error: configError };
+  }
 
   // #1671: totalIn dos buckets NORMALIZADOS (não do input cru) — senão um
   // categorized.json legacy sem radar/use_melhor/video crasha aqui (`undefined.length`)
@@ -531,7 +579,7 @@ async function main(): Promise<void> {
     const allFailed = health.failed === health.attempted;
     const level = allFailed ? "error" : "warn";
     const message = allFailed
-      ? `topic-cluster: 100% dos ${health.attempted} embeddings falharam (model=${health.model}) — fallback Jaccard ativo. Provável drift de catálogo Gemini (#4654); rode 'npx tsx scripts/validate-gemini-config.ts' ou confira platform.config.json > gemini.embedding_model.`
+      ? `topic-cluster: 100% dos ${health.attempted} embeddings falharam (model=${health.model}) — fallback Jaccard ativo. Causa não confirmada por esta checagem (drift de catálogo Gemini #4654, quota ou rede indistinguíveis aqui); rode 'npx tsx scripts/validate-gemini-config.ts' ou confira platform.config.json > gemini.embedding_model.`
       : `topic-cluster: ${health.failed}/${health.attempted} embeddings falharam (model=${health.model}) — clustering parcialmente degradado.`;
     console.error(`⚠️ ${message}`);
     logEvent(

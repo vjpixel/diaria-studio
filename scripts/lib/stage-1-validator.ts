@@ -19,6 +19,7 @@ import { resolve, join } from "node:path";
 import { isArticleAIRelevant } from "./ai-relevance.ts";
 import type { Article } from "./types/article.ts";
 import { readDriveCache, getPushCount } from "./drive-cache.ts";
+import { logEvent } from "./run-log.ts";
 
 export type AssertionStatus = "ok" | "warn" | "blocker";
 
@@ -370,6 +371,10 @@ export interface EmbeddingHealthStats {
   failed: number;
   fail_rate: number;
   fallback_triggered: boolean;
+  /** Espelha `EmbeddingStats.config_error` — presente quando `topic-cluster.ts`
+   *  não conseguiu ler/parsear `platform.config.json` (achado #2 do fleet
+   *  review do #4654). `null`/ausente = leitura OK. */
+  config_error?: string | null;
 }
 
 /**
@@ -390,6 +395,14 @@ export function validateEmbeddingHealth(stats: EmbeddingHealthStats | null): Ass
       message: "topic-cluster-stats.json ausente — sem dado de embedding health pra checar.",
     };
   }
+  if (stats.config_error) {
+    return {
+      name: "embedding_health",
+      status: "warn",
+      message: `platform.config.json não pôde ser lido pelo topic-cluster (${stats.config_error}) — caiu no embedding_model default '${stats.model}' sem confirmação editorial.`,
+      details: { ...stats },
+    };
+  }
   if (!stats.key_present) {
     return {
       name: "embedding_health",
@@ -402,7 +415,7 @@ export function validateEmbeddingHealth(stats: EmbeddingHealthStats | null): Ass
     return {
       name: "embedding_health",
       status: "warn",
-      message: `100% dos ${stats.attempted} embeddings falharam (model=${stats.model}) — topic-cluster caiu inteiro no fallback Jaccard. Provável drift de catálogo Gemini (#4654) — rode 'npx tsx scripts/validate-gemini-config.ts' ou confira platform.config.json > gemini.embedding_model.`,
+      message: `100% dos ${stats.attempted} embeddings falharam (model=${stats.model}) — topic-cluster caiu inteiro no fallback Jaccard. Causa não confirmada por esta checagem (drift de catálogo Gemini #4654, quota ou rede indistinguíveis aqui) — rode 'npx tsx scripts/validate-gemini-config.ts' ou confira platform.config.json > gemini.embedding_model.`,
       details: { ...stats },
     };
   }
@@ -437,6 +450,10 @@ export interface RunStage1ValidationOptions {
   driveCachePath?: string | null;
   /** Arquivos cujo push pro Drive deve ser confirmado. Default: o gate-facing. */
   driveSyncRequiredFiles?: string[];
+  /** Override do root de `data/run-log.jsonl` — só pra isolamento de teste
+   *  (mesmo padrão #3311/#3310 de outros scripts). Sem a flag, `logEvent`
+   *  cai no default `process.cwd()`. */
+  logRootDir?: string;
 }
 
 export function runStage1Validation(
@@ -484,19 +501,44 @@ export function runStage1Validation(
     }
 
     // #4654: sidecar escrito por topic-cluster.ts (passo 1n) junto do --out.
+    // Achado #1 do fleet review (#4654 fix, 2ª camada): sidecar CORROMPIDO
+    // (disco cheio, processo morto no meio do write, leitura concorrente)
+    // não pode virar "ok" silencioso — isso é a mesma classe de falha que
+    // este arquivo inteiro existe pra matar, um nível acima. `catch` distingue
+    // ausente (esperado, edição pré-#4654 ou sem --out) de corrompido (erro
+    // real, logado + assertion warn própria — nunca colapsa em "ok").
     const embeddingStatsPath = join(editionDir, "_internal", "topic-cluster-stats.json");
-    let embeddingStats: EmbeddingHealthStats | null = null;
     if (existsSync(embeddingStatsPath)) {
       try {
-        embeddingStats = JSON.parse(readFileSync(embeddingStatsPath, "utf8")) as EmbeddingHealthStats;
-      } catch {
-        // Sidecar corrompido — tratado como ausente (validateEmbeddingHealth
-        // já retorna "ok"/skip pra stats=null); não vale a pena bloquear o
-        // gate por isso.
-        embeddingStats = null;
+        const embeddingStats = JSON.parse(
+          readFileSync(embeddingStatsPath, "utf8"),
+        ) as EmbeddingHealthStats;
+        assertions.push(validateEmbeddingHealth(embeddingStats));
+      } catch (err) {
+        const errMessage = err instanceof Error ? err.message : String(err);
+        const message = `topic-cluster-stats.json existe mas está corrompido (${errMessage}) — não foi possível confirmar a saúde dos embeddings.`;
+        console.error(`stage-1-validator: ${message}`);
+        logEvent(
+          {
+            edition,
+            stage: 1,
+            agent: "stage-1-validator.ts",
+            level: "warn",
+            message,
+            details: { path: embeddingStatsPath, error: errMessage },
+          },
+          opts.logRootDir,
+        );
+        assertions.push({
+          name: "embedding_health",
+          status: "warn",
+          message,
+          details: { path: embeddingStatsPath, error: errMessage },
+        });
       }
+    } else {
+      assertions.push(validateEmbeddingHealth(null));
     }
-    assertions.push(validateEmbeddingHealth(embeddingStats));
 
     // Drive sync — caller passa `driveCachePath: null` quando drive_sync=false.
     // Se a opção for omitida, default = `data/drive-cache.json` em ROOT relativo
