@@ -160,6 +160,16 @@ npx tsx scripts/clarice-novos-html-state.ts --cycle {CICLO_MENSAL_RESOLVIDO} --f
   --list-id {LIST_ID_DO_PASSO_4} --campaign-id {CAMPAIGN_ID_DO_PASSO_5} --sent-count {N_CONTATOS_DO_GRUPO}
 ```
 
+**Se o editor pedir envio AGENDADO em vez de imediato (fora do fluxo padrão desta skill, decisão pontual — #4670):** o Passo 6 acima assume `--send-now`; se a campanha do Passo 5 foi agendada (`--schedule-at`) em vez de disparada agora, **não** rode `--finalize` (contaria como enviado algo que ainda não foi). Rode `--finalize-scheduled` no lugar — grava o SHA (mata o `--send-test` redundante da próxima rodada) e registra a campanha como PENDENTE de confirmação, sem tocar `sentCount`:
+
+```bash
+npx tsx scripts/clarice-novos-html-state.ts --cycle {CICLO_MENSAL_RESOLVIDO} --finalize-scheduled \
+  --list-id {LIST_ID_DO_PASSO_4} --campaign-id {CAMPAIGN_ID_DO_PASSO_5} \
+  --scheduled-at {ISO_DO_AGENDAMENTO} --sent-count {N_CONTATOS_DO_GRUPO}
+```
+
+Depois do horário agendado, feche o loop com `npx tsx scripts/clarice-novos-html-state.ts --reconcile` (consulta a Brevo ao vivo — nunca rodar em teste; requer `BREVO_CLARICE_API_KEY`) — confirma o disparo (`sent`/`inProcess` → soma `sentCount`, limpa o pendente), constata que ainda está na fila (`queued` → nada muda), ou trata como cancelado (qualquer outro status, ex: `suspended` — limpa o pendente SEM contar como enviado). Alternativa manual: rodar `--finalize` com o MESMO `--campaign-id` depois de confirmar o disparo no painel Brevo. **Este caminho agendado é operação MANUAL, fora do fluxo `--send-now` padrão desta skill** — o Passo 5/6 acima continuam descrevendo o caso comum (~4×/semana, imediato).
+
 ## Passo 7 — Relatório
 
 Escreva um resumo em markdown (destaques: quantos contatos no delta Stripe, quantos verificados no MV, quantos no grupo `novos`, se algum guard abortou e qual, ciclo mensal usado + fallback ou não, resultado do disparo) em `data/clarice-subscribers/novos-reports/{KEY}.md`, depois registre:
