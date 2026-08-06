@@ -56,13 +56,14 @@
  * mas mantendo o Studio como onde o relatório de fato é lido.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { escHtml } from "../lib/html-escape.ts";
 import { sendGmailMessage, type GmailSendResult } from "../lib/gmail-send.ts";
 import { resolveEditorEmail } from "../lib/inbox-stats.ts";
 import { gFetch, CREDENTIALS_PATH_TEST_OVERRIDE_ENV } from "../google-auth.ts"; // #4478 achados 1/2
+import { acquireLock, releaseLock } from "../lib/file-lock.ts"; // #4677 — lock + write atômico do registry
 
 // #4347: "clarice-novos" — relatório da skill /diaria-clarice-novos (rodada
 // sem gate humano do laço cadastro-novo→envio-imediato, D14).
@@ -328,6 +329,19 @@ export async function dispatchReportEmail(
  * verbatim — este passo só remove o que consegue identificar com certeza como
  * "mesmo id", nunca arrisca descartar dado que não conseguiu interpretar.
  *
+ * **#4677 (fleet review do #4666): lock + escrita atômica.** O read-modify-write
+ * inteiro (ler o registry, montar `nextLines`, gravar) roda sob
+ * `acquireLock`/`releaseLock` (`scripts/lib/file-lock.ts`, mesmo mecanismo de
+ * `social-published-store.ts`) — `index.jsonl` é escrito por processos
+ * concorrentes independentes (overnight, develop, diária, `clarice-novos`,
+ * CLI manual), então sem lock um "lost update" é só uma questão de timing:
+ * dois writers leem o mesmo snapshot, o segundo grava por cima do primeiro. A
+ * gravação em si vai pra um `.tmp` e só then `renameSync` pro path vivo —
+ * `rename` é atômico no filesystem, então uma falha (crash, disco cheio,
+ * OneDrive segurando o arquivo — `data/` é junction, ver CLAUDE.md) nunca
+ * deixa o arquivo real truncado ou vazio; na pior hipótese sobra um `.tmp`
+ * órfão, nunca a perda do registry inteiro.
+ *
  * **Fail-soft por design (#3714):** qualquer falha de escrita (disco cheio,
  * permissão, `rootDir` inválido) nunca lança — retorna `{ok: false, error}`.
  * O caller (send-edition-report.ts, fechos de overnight/develop) não deve
@@ -335,7 +349,7 @@ export async function dispatchReportEmail(
  * extra, não um passo crítico.
  *
  * **#4475: também dispara e-mail de notificação** (título + link, best-effort,
- * via `dispatchReportEmail`) depois que o append acima já terminou — a
+ * via `dispatchReportEmail`) depois que o upsert acima já terminou — a
  * promise fica disponível em `result.emailDispatch` pra quem quiser aguardar
  * (testes) mas NUNCA precisa ser aguardada por callers de produção (fail-soft:
  * `dispatchReportEmail` nunca rejeita).
@@ -372,9 +386,17 @@ export function registerReport(
   try {
     mkdirSync(resolve(rootDir, REPORTS_DIR), { recursive: true });
     const path = registryPath(rootDir);
-    const otherLines = readLinesExcludingId(path, id);
-    const nextLines = [...otherLines, JSON.stringify(entry)];
-    writeFileSync(path, nextLines.join("\n") + "\n", "utf8");
+    const lockPath = path + ".lock";
+    acquireLock(lockPath);
+    try {
+      const otherLines = readLinesExcludingId(path, id);
+      const nextLines = [...otherLines, JSON.stringify(entry)];
+      const tmpPath = path + ".tmp";
+      writeFileSync(tmpPath, nextLines.join("\n") + "\n", "utf8");
+      renameSync(tmpPath, path);
+    } finally {
+      releaseLock(lockPath);
+    }
     return {
       ok: true,
       entry,
@@ -509,6 +531,11 @@ export interface PruneReportsRegistryResult {
  * `clarice-novos-novos-260805`, caso que abriu a issue) — CLI fina em
  * `scripts/prune-reports-registry.ts`.
  *
+ * **#4677:** mesmo lock + escrita atômica (`.tmp` + `renameSync`) de
+ * `registerReport` — a reescrita completa do arquivo é o mesmo padrão
+ * read-modify-write, sujeito ao mesmo risco de lost update se rodar
+ * concorrente com um `registerReport` de outro processo.
+ *
  * Idempotente: rodar de novo sobre um arquivo já limpo não remove nada
  * (`removedDuplicates`/`removedCorrupted` saem 0). Fail-soft, mesma disciplina
  * de `registerReport` — qualquer falha de I/O vira `{ok: false, error}`, nunca
@@ -519,29 +546,40 @@ export function pruneReportsRegistry(rootDir: string): PruneReportsRegistryResul
   if (!existsSync(path)) {
     return { ok: true, linesBefore: 0, linesAfter: 0, removedDuplicates: 0, removedCorrupted: 0, error: null };
   }
+  const lockPath = path + ".lock";
   try {
-    const raw = readFileSync(path, "utf8");
-    const rawLines = raw.split("\n").filter((l) => l.trim());
-
-    const byId = new Map<string, string>();
+    let rawLines: string[] = [];
+    let keptLines: string[] = [];
     let removedCorrupted = 0;
-    for (const line of rawLines) {
-      let id: string | null = null;
-      try {
-        const parsed = JSON.parse(line) as Partial<ReportEntry>;
-        if (typeof parsed?.id === "string") id = parsed.id;
-      } catch {
-        // segue null — tratado como corrompida abaixo.
-      }
-      if (id === null) {
-        removedCorrupted++;
-        continue;
-      }
-      byId.set(id, line); // última linha física por id vence.
-    }
 
-    const keptLines = [...byId.values()];
-    writeFileSync(path, keptLines.length ? keptLines.join("\n") + "\n" : "", "utf8");
+    acquireLock(lockPath);
+    try {
+      const raw = readFileSync(path, "utf8");
+      rawLines = raw.split("\n").filter((l) => l.trim());
+
+      const byId = new Map<string, string>();
+      for (const line of rawLines) {
+        let id: string | null = null;
+        try {
+          const parsed = JSON.parse(line) as Partial<ReportEntry>;
+          if (typeof parsed?.id === "string") id = parsed.id;
+        } catch {
+          // segue null — tratado como corrompida abaixo.
+        }
+        if (id === null) {
+          removedCorrupted++;
+          continue;
+        }
+        byId.set(id, line); // última linha física por id vence.
+      }
+
+      keptLines = [...byId.values()];
+      const tmpPath = path + ".tmp";
+      writeFileSync(tmpPath, keptLines.length ? keptLines.join("\n") + "\n" : "", "utf8");
+      renameSync(tmpPath, path);
+    } finally {
+      releaseLock(lockPath);
+    }
 
     return {
       ok: true,

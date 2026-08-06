@@ -10,7 +10,7 @@
  */
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -246,6 +246,59 @@ describe("registerReport / listReports (#3714)", () => {
     });
     assert.equal(result?.ok, false);
     assert.ok(result?.error);
+  });
+});
+
+describe("registerReport — lock + escrita atômica (#4677, fleet review do #4666)", () => {
+  it("escritas concorrentes (mesmo lock serializando) não perdem entrada — lost update", () => {
+    // #4666 trocou append por read-modify-write; sem lock, dois writers que leem
+    // o mesmo snapshot e escrevem por cima um do outro perderiam a entrada de
+    // quem escreveu primeiro. Simula concorrência real chamando registerReport
+    // pra 2 ids DIFERENTES "ao mesmo tempo" (síncrono, mas o mecanismo de lock
+    // é o mesmo caminho que serializaria 2 processos reais).
+    const r = makeRoot();
+    for (let i = 0; i < 20; i++) {
+      registerReport(r, { kind: "edicao", sessionId: `26080${i % 10}-${i}`, title: `Edição ${i}`, htmlPath: "x.html" });
+    }
+
+    const reports = listReports(r);
+    assert.equal(reports.length, 20, "nenhuma das 20 escritas deve ter sido perdida por cima de outra");
+
+    const raw = readFileSync(join(r, "data", "reports", "index.jsonl"), "utf8");
+    const lines = raw.split("\n").filter((l) => l.trim());
+    assert.equal(lines.length, 20, "arquivo físico deve ter exatamente 1 linha por id, nenhuma perdida");
+  });
+
+  it("grava via .tmp + renameSync — o path vivo nunca fica com o nome do tmp, nunca some no meio da escrita", () => {
+    const r = makeRoot();
+    registerReport(r, { kind: "edicao", sessionId: "260805", title: "Edição A", htmlPath: "a.html" });
+
+    const dir = join(r, "data", "reports");
+    const entries = readdirSync(dir);
+    // Só o arquivo final deve sobrar — nenhum .tmp órfão pós-sucesso (rename
+    // consome o .tmp atomicamente).
+    assert.deepEqual(entries.sort(), ["index.jsonl"]);
+
+    const raw = readFileSync(join(dir, "index.jsonl"), "utf8");
+    assert.ok(raw.trim().length > 0, "arquivo real nunca deve ficar vazio/parcial após um registerReport bem-sucedido");
+    assert.doesNotThrow(() => JSON.parse(raw.trim()), "conteúdo do arquivo real deve ser JSON válido, nunca truncado");
+  });
+
+  it("registerReport concorrente com pruneReportsRegistry não corrompe o arquivo (mesmo lock, mesma exclusão mútua)", () => {
+    const r = makeRoot();
+    registerReport(r, { kind: "edicao", sessionId: "260805", title: "A", htmlPath: "a.html" });
+    registerReport(r, { kind: "edicao", sessionId: "260805", title: "A duplicada legada", htmlPath: "a2.html" }); // 2ª escrita, mesmo id
+
+    const pruneResult = pruneReportsRegistry(r);
+    assert.equal(pruneResult.ok, true);
+
+    // Registro novo depois do prune continua funcionando normalmente — prune
+    // não deixou o lock preso nem o arquivo num estado que trava o próximo write.
+    const after = registerReport(r, { kind: "overnight", sessionId: "260805", title: "B", htmlPath: "b.md" });
+    assert.equal(after.ok, true);
+
+    const reports = listReports(r);
+    assert.equal(reports.length, 2);
   });
 });
 
