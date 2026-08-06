@@ -111,6 +111,15 @@ export interface ReviewStats {
    * despercebido.
    */
   editorSubmittedLost: Array<{ url: string; title?: string; detail: string }>;
+  /**
+   * #4685 (follow-up do #4656): artigos `editor_submitted` mantidos SÓ por
+   * causa da isenção de janela — `filter-date-window.ts` marca
+   * `date_window_spared: true` neles, mas nada lia esse campo até aqui. O
+   * gate da Etapa 1 precisa saber quando a isenção incondicional de fato
+   * salvou uma submissão velha (ou não-drenada), não só quando o guard
+   * falhou (`editorSubmittedLost` acima).
+   */
+  dateWindowSpared: Array<{ url: string; title?: string; bucket: string }>;
 }
 
 /**
@@ -202,6 +211,17 @@ export function buildReviewStats(
     return sum + (Array.isArray(arr) ? arr.length : 0);
   }, 0);
 
+  const dateWindowSpared: ReviewStats["dateWindowSpared"] = [];
+  for (const bucket of BUCKET_KEYS) {
+    const arr = (filterResult.kept as Record<string, unknown>)[bucket];
+    if (!Array.isArray(arr)) continue;
+    for (const article of arr as ArticleEntry[]) {
+      if (article.date_window_spared === true) {
+        dateWindowSpared.push({ url: article.url, title: article.title as string | undefined, bucket });
+      }
+    }
+  }
+
   return {
     total_input: totalInput,
     date_corrected: dateCorrected,
@@ -218,6 +238,7 @@ export function buildReviewStats(
       title: r.title,
       detail: r.detail,
     })),
+    dateWindowSpared,
   };
 }
 
@@ -394,6 +415,14 @@ async function main(): Promise<void> {
   if (stats.editorSubmittedLost.length > 0) {
     process.stderr.write(
       `⚠️ [research-review-dates] ${stats.editorSubmittedLost.length} submissão(ões) do editor removida(s) pela janela de data (guard #4656 não cobriu este caso — investigar)\n`,
+    );
+  }
+
+  // #4685: contrapartida da isenção do #4656 — a submissão FOI poupada
+  // (não removida), mas isso significa que passou por cima da janela.
+  if (stats.dateWindowSpared.length > 0) {
+    process.stderr.write(
+      `⚠️ [research-review-dates] ${stats.dateWindowSpared.length} submissão(ões) do editor mantida(s) fora da janela de data pela isenção (#4656) — ver gate\n`,
     );
   }
 }

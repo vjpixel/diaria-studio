@@ -330,3 +330,70 @@ describe("buildReviewStats (#4656)", () => {
     assert.equal(stats.editorSubmittedLost[0].detail, "date null < cutoff 2026-08-03");
   });
 });
+
+// ---------------------------------------------------------------------------
+// #4685 (follow-up do #4656) — buildReviewStats propaga dateWindowSpared:
+// `date_window_spared` era gravado por filter-date-window.ts mas nunca lido
+// em lugar nenhum do pipeline; o gate da Etapa 1 precisa enxergar quando a
+// isenção incondicional de fato salvou uma submissão fora da janela.
+// ---------------------------------------------------------------------------
+
+describe("buildReviewStats — dateWindowSpared (#4685)", () => {
+  it("popula dateWindowSpared quando editor_submitted com data verificada e fora da janela é poupado", () => {
+    const filterResult = filterDateWindow(
+      {
+        lancamento: [],
+        radar: [
+          {
+            url: "https://a.com/old-but-submitted",
+            title: "Antigo mas enviado pelo editor",
+            date: "2026-04-10",
+            flag: "editor_submitted",
+          },
+        ],
+      },
+      "2026-04-24",
+      3,
+    );
+    const stats = buildReviewStats(1, 0, 0, filterResult);
+    assert.equal(stats.dateWindowSpared.length, 1);
+    assert.equal(stats.dateWindowSpared[0].url, "https://a.com/old-but-submitted");
+    assert.equal(stats.dateWindowSpared[0].title, "Antigo mas enviado pelo editor");
+    assert.equal(stats.dateWindowSpared[0].bucket, "radar");
+  });
+
+  it("NÃO marca dateWindowSpared quando o editor_submitted está dentro da janela (isenção não foi necessária)", () => {
+    const filterResult = filterDateWindow(
+      {
+        lancamento: [],
+        radar: [
+          {
+            url: "https://a.com/recent-submitted",
+            title: "Recente e enviado pelo editor",
+            date: "2026-04-23",
+            flag: "editor_submitted",
+          },
+        ],
+      },
+      "2026-04-24",
+      3,
+    );
+    const stats = buildReviewStats(1, 0, 0, filterResult);
+    assert.deepEqual(stats.dateWindowSpared, []);
+  });
+
+  it("NÃO marca dateWindowSpared quando date é null (benefício da dúvida, não isenção de janela)", () => {
+    const filterResult = filterDateWindow(
+      {
+        lancamento: [
+          { url: "https://openai.com/x", title: "OpenAI post", date: null, flag: "editor_submitted" },
+        ],
+        radar: [],
+      },
+      "2026-08-06",
+      3,
+    );
+    const stats = buildReviewStats(1, 0, 1, filterResult);
+    assert.deepEqual(stats.dateWindowSpared, []);
+  });
+});
