@@ -47,7 +47,11 @@
  * entity-only (#3972, janela curta) pegam. Dispara com só 1 entidade de
  * empresa em comum + vocabulário de incidente/segurança presente em AMBOS os
  * títulos (não precisa ser o mesmo termo), contra a janela INTEIRA (não só
- * as últimas 1-2 edições). Ver docstring de `SAGA_MIN_SHARED_ENTITIES`.
+ * as últimas 1-2 edições). A "entidade de empresa" exclui qualquer token que
+ * também seja vocabulário de incidente — sem isso a própria palavra de
+ * abertura da manchete ("Vazamento...", "Hackers...") contaria como entidade
+ * sozinha (ver `excludeIncidentStemEntities`). Ver docstring de
+ * `SAGA_MIN_SHARED_ENTITIES`.
  *
  * Algoritmo para SECUNDÁRIOS (#2652, dois sinais obrigatórios):
  *   1. Entity overlap (incluindo 1ª palavra — empresas costumam estar no início):
@@ -231,7 +235,14 @@ const INCIDENT_KEYWORD_STEMS = [
   "sandbox",
   "brecha",
   "explor",    // explorou, exploração, exploit
-  "atac",      // atacou, ataque, atacaram
+  "atac",      // atacou, atacar, atacaram — verbal. NÃO cobre "ataque"/"ataques":
+               // ortografia PT-BR troca c→qu antes de e/i, então
+               // "ataque".startsWith("atac") é FALSE (verificado; o comentário
+               // antigo estava errado). Precisa do stem separado abaixo.
+  "ataqu",     // ataque, ataques — substantivo, a forma mais comum em
+               // manchete de incidente de segurança pt-BR ("Ataque derruba
+               // sistema..."); sem este stem o substantivo nunca disparava
+               // o gatilho saga (#4661 review, achado 2).
   "violac",    // violação
   "viol",      // violou
   "roub",      // roubou, roubo
@@ -258,6 +269,36 @@ function extractIncidentKeywords(tokens: Set<string>): Set<string> {
     }
   }
   return matched;
+}
+
+/**
+ * #4661 review (achado 1, crítico): remove de um set de entidades qualquer
+ * token que TAMBÉM seja vocabulário de incidente (`INCIDENT_KEYWORD_STEMS`).
+ *
+ * Sem este filtro, o gatilho saga usava `extractEntityOnlyEntities` — que
+ * INCLUI a 1ª palavra do título — como fonte da "entidade de empresa em
+ * comum". Manchete de incidente pt-BR abre rotineiramente com o próprio
+ * substantivo do incidente capitalizado por estar no início da frase
+ * ("Vazamento revela...", "Hackers invadem..."), então essa palavra
+ * satisfazia OS DOIS sinais (entidade E vocabulário de incidente) sozinha —
+ * os dois sinais deixavam de ser independentes e colapsavam numa palavra só.
+ * Falso-positivo real reproduzido: "Vazamento revela falha grave em sistema
+ * do INSS" × "Vazamento expõe dados de milhões de clientes da Serasa"
+ * disparava saga_match com shared_entities=["vazamento"] — INSS e Serasa não
+ * têm relação nenhuma, a única coisa em comum é a palavra de abertura.
+ *
+ * Aplicado SÓ ao gatilho saga (via `sagaEntities`/`candidateSagaEntities`
+ * abaixo) — não muda `extractEntityOnlyEntities` em si nem o gatilho
+ * entity-only (#3972), que não teve esse bug reportado e já é mais estrito
+ * (exige 2+ entidades específicas contra janela curta).
+ */
+function excludeIncidentStemEntities(entities: Set<string>): Set<string> {
+  const result = new Set<string>();
+  for (const e of entities) {
+    const isIncidentWord = INCIDENT_KEYWORD_STEMS.some((stem) => e.startsWith(stem));
+    if (!isIncidentWord) result.add(e);
+  }
+  return result;
 }
 
 /**
@@ -462,6 +503,14 @@ interface PastEditionIndex {
   entities: Set<string>;
   /** #3972: entidades pré-computadas para o gatilho entity-only independente. */
   entityOnlyEntities: Set<string>;
+  /**
+   * #4661 review (achado 1): subconjunto de `entityOnlyEntities` SEM os
+   * tokens que também são vocabulário de incidente — fonte da "entidade de
+   * empresa em comum" usada pelo gatilho saga (nunca usado pelo entity-only
+   * #3972, que continua consumindo `entityOnlyEntities` sem filtro). Ver
+   * docstring de `excludeIncidentStemEntities`.
+   */
+  sagaEntities: Set<string>;
   /** #4661: stems de incidente/segurança pré-computados para o gatilho "saga em andamento". */
   incidentKeywords: Set<string>;
 }
@@ -474,11 +523,13 @@ function buildPastIndex(pastEditions: PastEditionEntry[]): PastEditionIndex[] {
   return pastEditions
     .map((entry) => {
       const tokens = tokenizeForJaccard(entry.title);
+      const entityOnlyEntities = extractEntityOnlyEntities(entry.title);
       return {
         entry,
         tokens,
         entities: extractHighlightEntities(entry.title),
-        entityOnlyEntities: extractEntityOnlyEntities(entry.title),
+        entityOnlyEntities,
+        sagaEntities: excludeIncidentStemEntities(entityOnlyEntities),
         incidentKeywords: extractIncidentKeywords(tokens),
       };
     })
@@ -508,6 +559,10 @@ function findThemeMatch(
   const candidateEntityOnly = extractEntityOnlyEntities(candidate.title);
   // #4661: stems de incidente/segurança do candidato — pré-computado uma vez.
   const candidateIncidentKeywords = extractIncidentKeywords(candidateTokens);
+  // #4661 review (achado 1): entidades do candidato pra fins de saga, SEM os
+  // tokens que também são vocabulário de incidente — ver docstring de
+  // `excludeIncidentStemEntities`.
+  const candidateSagaEntities = excludeIncidentStemEntities(candidateEntityOnly);
 
   let bestMatch: HighlightThemeWarning | null = null;
   // #3972: melhor match do gatilho entity-only independente (fallback).
@@ -521,6 +576,7 @@ function findThemeMatch(
       tokens: pastTokens,
       entities: pastEntities,
       entityOnlyEntities: pastEntityOnly,
+      sagaEntities: pastSagaEntities,
       incidentKeywords: pastIncidentKeywords,
     } = pastEntry;
 
@@ -588,9 +644,15 @@ function findThemeMatch(
     // numa saga é a categoria do evento, não o verbo exato). Ver docstring de
     // `SAGA_MIN_SHARED_ENTITIES` para o caso real e o trade-off assumido.
     if (candidateIncidentKeywords.size > 0 && pastIncidentKeywords.size > 0) {
+      // #4661 review (achado 1): usa os sets JÁ FILTRADOS de vocabulário de
+      // incidente (`candidateSagaEntities`/`pastSagaEntities`), não
+      // `candidateEntityOnly`/`pastEntityOnly` brutos — senão a própria
+      // palavra de incidente (ex: "vazamento", "hackers" no início da
+      // manchete) conta como a "entidade de empresa em comum" sozinha. Ver
+      // docstring de `excludeIncidentStemEntities`.
       const sharedSagaEntities: string[] = [];
-      for (const e of candidateEntityOnly) {
-        if (pastEntityOnly.has(e)) sharedSagaEntities.push(e);
+      for (const e of candidateSagaEntities) {
+        if (pastSagaEntities.has(e)) sharedSagaEntities.push(e);
       }
       if (sharedSagaEntities.length >= SAGA_MIN_SHARED_ENTITIES) {
         const isBetter =

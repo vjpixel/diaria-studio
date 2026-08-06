@@ -683,6 +683,132 @@ describe('checkHighlightThemes — gatilho "saga em andamento" (#4661)', () => {
     );
   });
 
+  it("guard REFORÇADO: empresas diferentes E AMBOS os títulos com vocabulário de incidente NÃO disparam (o guard anterior não exercitava esse caminho — candidatos sem vocabulário de incidente nem chegam a avaliar entidade)", () => {
+    const candidates = [
+      { rank: 1, title: "Nubank sofre vazamento de dados de clientes", url: "https://example.com/nubank-vazamento" },
+    ];
+    const past: PastEditionEntry[] = [
+      { date: "2026-07-23", title: "Itaú investiga invasão em sistema interno" },
+    ];
+
+    const result = checkHighlightThemes(candidates, past);
+    assert.equal(
+      result.warnings.length,
+      0,
+      `empresas distintas (Nubank × Itaú) com vocabulário de incidente em ambos não devem disparar: ${JSON.stringify(result.warnings)}`,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Review #4661 — achado 1 (crítico): substantivo de manchete de incidente
+  // não pode contar como "entidade de empresa". Ver docstring de
+  // `excludeIncidentStemEntities` em check-highlight-themes.ts.
+  // -------------------------------------------------------------------------
+
+  it("achado 1: substantivo de abertura da manchete ('Vazamento...') não conta como empresa em comum — INSS × Serasa não têm relação", () => {
+    const candidates = [
+      {
+        rank: 1,
+        title: "Vazamento revela falha grave em sistema do INSS",
+        url: "https://example.com/inss-vazamento",
+      },
+    ];
+    const past: PastEditionEntry[] = [
+      { date: "2026-07-23", title: "Vazamento expõe dados de milhões de clientes da Serasa" },
+    ];
+
+    const result = checkHighlightThemes(candidates, past);
+    assert.equal(
+      result.warnings.length,
+      0,
+      `"vazamento" sozinho (substantivo de abertura, não empresa) não deve contar como entidade compartilhada: ${JSON.stringify(result.warnings)}`,
+    );
+  });
+
+  it("achado 1: 'Hackers...' de abertura não conta como empresa em comum — Banco Central × Vivo não têm relação", () => {
+    const candidates = [
+      {
+        rank: 1,
+        title: "Hackers invadem sistema do Banco Central e vazam dados de clientes",
+        url: "https://example.com/bc-invasao",
+      },
+    ];
+    const past: PastEditionEntry[] = [
+      { date: "2026-07-23", title: "Hackers atacam rede da Vivo e comprometem informações de usuários" },
+    ];
+
+    const result = checkHighlightThemes(candidates, past);
+    assert.equal(
+      result.warnings.length,
+      0,
+      `"hackers" sozinho (substantivo de abertura, não empresa) não deve contar como entidade compartilhada: ${JSON.stringify(result.warnings)}`,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Review #4661 — achado 2 (importante): stem "atac" nunca casa com o
+  // substantivo "ataque" (c→qu antes de e/i). Ver INCIDENT_KEYWORD_STEMS.
+  // -------------------------------------------------------------------------
+
+  it("achado 2: substantivo 'ataque' (não 'atacou'/'atacar') agora dispara saga via novo stem 'ataqu'", () => {
+    const candidates = [
+      {
+        rank: 1,
+        title: "Ataque derruba sistema da OpenAI por horas",
+        url: "https://example.com/openai-ataque-1",
+      },
+    ];
+    const past: PastEditionEntry[] = [
+      { date: "2026-07-23", title: "Novo ataque atinge servidores da OpenAI e expõe falha" },
+    ];
+
+    const result = checkHighlightThemes(candidates, past);
+    assert.equal(
+      result.warnings.length,
+      1,
+      `"ataque" (substantivo) deve casar com o vocabulário de incidente e disparar via saga: ${JSON.stringify(result.warnings)}`,
+    );
+    assert.equal(result.warnings[0].saga_match, true);
+    assert.ok(result.warnings[0].shared_entities.includes("openai"));
+    assert.ok(
+      (result.warnings[0].saga_keywords ?? []).includes("ataqu"),
+      `saga_keywords deve conter o stem "ataqu": ${JSON.stringify(result.warnings[0].saga_keywords)}`,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Risco aceito, documentado na docstring de SAGA_MIN_SHARED_ENTITIES: mesma
+  // empresa REAL + 2 incidentes de segurança GENUINAMENTE diferentes ainda
+  // dispara — trade-off intencional (warn-only, o editor decide). Sem este
+  // teste, um refator futuro poderia "consertar" isso sem ninguém perceber
+  // que reduz a cobertura de saga real (achado do fleet de review).
+  // -------------------------------------------------------------------------
+
+  it("risco aceito (documentado): mesma empresa + 2 incidentes de segurança DIFERENTES ainda dispara saga_match — trade-off intencional", () => {
+    const candidates = [
+      {
+        rank: 1,
+        title: "Uber confirma vazamento de dados de motoristas após invasão",
+        url: "https://example.com/uber-motoristas",
+      },
+    ];
+    const past: PastEditionEntry[] = [
+      {
+        date: "2026-07-23",
+        title: "Uber sofre ataque hacker que expõe dados de passageiros",
+      },
+    ];
+
+    const result = checkHighlightThemes(candidates, past);
+    assert.equal(
+      result.warnings.length,
+      1,
+      `mesma empresa + vocabulário de incidente em ambos deve disparar mesmo sendo incidentes distintos (risco aceito por design): ${JSON.stringify(result.warnings)}`,
+    );
+    assert.equal(result.warnings[0].saga_match, true);
+    assert.ok(result.warnings[0].shared_entities.includes("uber"));
+  });
+
   it("SAGA_MIN_SHARED_ENTITIES é 1 (mais permissivo que ENTITY_ONLY_MIN_SHARED=2, por design)", () => {
     assert.equal(SAGA_MIN_SHARED_ENTITIES, 1);
     assert.ok(
