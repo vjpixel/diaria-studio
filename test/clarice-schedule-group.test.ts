@@ -436,6 +436,37 @@ describe("buildInvocationSummary (#4202 — JSON de saída reflete a INVOCAÇÃO
     );
     assert.equal(summary.phase, "create+send-test+schedule");
   });
+
+  it("#4680 (achado 1): --reschedule inclui scheduledAt no resumo — o caller precisa ver o horário sem re-consultar a Brevo", () => {
+    const c: CampaignEntry = {
+      key: "envio11",
+      campaignId: 100,
+      listId: 85,
+      subject: "X",
+      scheduledAt: "2026-08-06T09:00:00.000Z",
+      status: "scheduled",
+    };
+    const summary = buildInvocationSummary(
+      "envio11",
+      85,
+      { create: false, updateHtml: false, sendTest: false, schedule: false, reschedule: true },
+      c,
+      [c],
+    );
+    assert.equal(summary.phase, "reschedule");
+    assert.equal(summary.scheduledAt, "2026-08-06T09:00:00.000Z");
+  });
+
+  it("#4680: campanha ausente (undefined) → scheduledAt null, não lança", () => {
+    const summary = buildInvocationSummary(
+      "envio12",
+      86,
+      { create: false, updateHtml: false, sendTest: false, schedule: false },
+      undefined,
+      [envio10],
+    );
+    assert.equal(summary.scheduledAt, null);
+  });
 });
 
 // Prova que o script novo REUSA (não duplica) os guards do pipeline

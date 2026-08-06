@@ -160,12 +160,18 @@ export async function brevoPost(
  * GET de uma campanha Brevo. Usado pra validar status antes de PUT em
  * `--update-existing` (#1015) — Brevo rejeita update em campanha já enviada,
  * mas o erro é pouco amigável. Vale checar antes pra dar mensagem clara.
+ *
+ * `scheduledAt` (#4668): opcional/nullable — presente quando a campanha tem
+ * data agendada. A Brevo devolve esse campo com OFFSET (ex:
+ * "...-03:00"), não necessariamente "Z" — quem compara contra um alvo local
+ * deve usar `Date.parse`/instante, nunca igualdade de string (ver
+ * `isSameInstant` em `clarice-schedule-group.ts`).
  */
 export async function brevoGetCampaign(
   apiKey: string,
   campaignId: number,
   _sleep = _defaultSleep,
-): Promise<{ id: number; name: string; status: string }> {
+): Promise<{ id: number; name: string; status: string; scheduledAt?: string | null }> {
   return withBrevo429Retry(async () => {
     const res = await brevoRawFetch(`https://api.brevo.com/v3/emailCampaigns/${campaignId}`, {
       method: "GET",
@@ -175,7 +181,7 @@ export async function brevoGetCampaign(
       const text = await res.text();
       throw new Error(`Brevo API GET /emailCampaigns/${campaignId} falhou (${res.status}): ${text}`);
     }
-    const data = await res.json() as { id: number; name: string; status: string };
+    const data = await res.json() as { id: number; name: string; status: string; scheduledAt?: string | null };
     return data;
   }, _sleep);
 }

@@ -48,6 +48,37 @@
  *                        npx tsx scripts/close-poll.ts --brand clarice --cycle {cycle} --edition {AAMMDD} [--answer A|B]
  *                      --skip-eia-guard pula essa verificação (não recomendado).
  *                      Este caminho NÃO MUDA (#4347) — outros fluxos dependem dele.
+ *                      Pula (idempotente) se a campanha JÁ está scheduled/sent
+ *                      — pra CORRIGIR o horário de uma campanha já agendada,
+ *                      use --reschedule (abaixo), nunca PUT manual na API.
+ *   --reschedule       #4668: REAGENDA uma campanha que já está `scheduled`
+ *                      (corrige `scheduledAt`, nunca toca recipients/HTML).
+ *                      Requer `--schedule-at <ISO com hora>` (o novo alvo) e o
+ *                      mesmo gabarito É IA? do --schedule. Guards, nesta ordem:
+ *                        1. recusa se o registro LOCAL nunca foi agendado
+ *                           (status "draft" — use --schedule) ou já foi
+ *                           disparado (status "sent" — terminal).
+ *                        2. GET ao vivo na Brevo ANTES do PUT: se o status
+ *                           real não for "queued"/"scheduled" (ex: entrou em
+ *                           "in_review", ou já disparou entre invocações),
+ *                           recusa mesmo que o registro local diga "scheduled"
+ *                           — o local pode estar defasado.
+ *                        3. PUT do novo `scheduledAt`, depois GET-verify
+ *                           comparando por INSTANTE (`Date.parse`), nunca por
+ *                           string — a Brevo devolve `scheduledAt` com OFFSET
+ *                           (ex: "...-03:00"), não com "Z", e dois valores do
+ *                           MESMO instante têm strings diferentes.
+ *                        4. `group-campaigns.json` só é gravado DEPOIS do
+ *                           GET-verify confirmar o novo horário — nunca antes.
+ *                      ⚠️  Incerteza documentada, não confirmada ao vivo: não
+ *                      se sabe se a Brevo RE-CONGELA o snapshot de
+ *                      destinatários no reagendamento (a memória do projeto —
+ *                      `brevo-recipients-snapshot` — só cobre o AGENDAMENTO
+ *                      inicial). Se re-congelar, uma mudança de lista feita
+ *                      entre o agendamento original e o reagendamento passaria
+ *                      a valer — se NÃO re-congelar, o snapshot antigo
+ *                      permanece. Confirmar ao vivo e documentar aqui quando
+ *                      alguém rodar `--reschedule` de verdade pela 1ª vez.
  *   --send-now         #4347 G7/D7: dispara a campanha IMEDIATAMENTE (POST
  *                      /emailCampaigns/{id}/sendNow) — sem agendamento, sem
  *                      trava de janela. Mesmo guard É IA? do --schedule.
@@ -105,6 +136,10 @@
  *   npx tsx scripts/close-poll.ts --brand clarice --cycle 2606-07 --edition 260714 --answer A
  *   npx tsx scripts/clarice-schedule-group.ts --cycle 2606-07 --group ramp-warm --schedule
  *
+ * Corrigir o horário de uma campanha JÁ agendada (#4668 — nunca PUT manual):
+ *   npx tsx scripts/clarice-schedule-group.ts --cycle 2606-07 --group ramp-warm \
+ *     --schedule-at 2026-07-15T13:00:00Z --reschedule
+ *
  * Uso típico (via --list-id direto, ex: 3 listas do mesmo grupo no mesmo ciclo):
  *   npx tsx scripts/clarice-schedule-group.ts --cycle 2606-07 --list-id 69 --key ramp-warm-1 \
  *     --subject "Assunto A" --schedule-at 2026-07-15T09:00:00Z --create
@@ -113,8 +148,9 @@
  *
  * Estado em {ciclo}/segments/group-campaigns.json (idempotência: --create
  * pula campanhas já criadas pra a mesma --key; --schedule usa os IDs
- * gravados) — irmão de campaigns-summary.json (rampa) e {group}-lists.json
- * (registro de listas, #3228), todos em segments/.
+ * gravados; --reschedule sobrescreve `scheduledAt` da mesma entrada só após
+ * GET-verify confirmar, #4668) — irmão de campaigns-summary.json (rampa) e
+ * {group}-lists.json (registro de listas, #3228), todos em segments/.
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -125,7 +161,11 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { brevoPost, brevoPut, brevoGetCampaign, brevoSendNow, isTerminalSendStatus, describeUncertainSendStatus } from "./lib/brevo-client.ts";
 import { clariceSegmentsDir, ensureDir, parseCycleArg } from "./lib/clarice-paths.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/monthly-paths.ts";
-import { checkEiaGuard, applyVerifyResults } from "./clarice-schedule-sends.ts";
+import { checkEiaGuard, applyVerifyResults, isScheduledStatus } from "./clarice-schedule-sends.ts";
+// #4662: fonte única do horário canônico de envio (09:00 UTC = 06:00 BRT) —
+// usada só pra COMPOR a sugestão no erro de --schedule-at só-data (nunca
+// duplicar "09:00:00Z" aqui) e pra validar calendário (2026-02-31 etc).
+import { scheduledAtForDate } from "./lib/clarice-wave-plan.ts";
 import { groupListsRegistryPath, type GroupListEntry } from "./clarice-import-waves.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 
@@ -362,15 +402,81 @@ export function resolveContentCycle(argv: string[], segmentsCycle: string): stri
   return getArg(argv, "content-cycle") || segmentsCycle;
 }
 
+/** Regex de data ISO simples (YYYY-MM-DD) — mesmo formato de ISO_DATE_RE em clarice-wave-plan.ts. */
+const ONLY_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * ISO 8601 completo, sufixado em "Z" OU offset explícito ("+HH:MM"/"-HH:MM")
+ * — #4680 (achado 2 do silent-failure-hunter): a versão original só casava
+ * "Z" (convenção interna deste projeto), mas o editor digitando um horário
+ * BRT com offset explícito ("...T09:00:00-03:00") é a forma NATURAL de
+ * escrever — e o `Date` do JS faz o MESMO rollover silencioso de calendário
+ * (2026-02-31 vira 2026-03-03) independente de offset. Captura h/m/s
+ * separadamente do offset porque o round-trip abaixo usa `Date.UTC` com os
+ * componentes CRUS (não `d.toISOString()`, que já aplicou o offset e
+ * mudaria de dia em horários próximos da virada — ex: 23:00-03:00 vira
+ * 02:00Z do dia seguinte mesmo sendo uma data válida).
+ */
+const FULL_ISO_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
+
 export function resolveScheduleAtArg(
   raw: string | undefined,
   now: Date = new Date(),
 ): { scheduledAt: string | undefined } | { error: string } {
   if (!raw) return { scheduledAt: undefined };
+
+  // #4662 (incidente 260805, campanha #119): "YYYY-MM-DD" sem hora era
+  // interpretado pelo `Date` do JS como MEIA-NOITE UTC (21:00 BRT do dia
+  // ANTERIOR) — nenhuma onda deste projeto sai nesse horário, e a campanha
+  // ficou agendada 9h adiantada. Alternativa conservadora escolhida na
+  // issue: abortar com erro claro (guard determinístico, nunca warning) em
+  // vez de "adivinhar" um horário em silêncio — quem quer o canônico digita
+  // a hora explícita. `scheduledAtForDate` também é a fonte que valida o
+  // calendário (2026-02-31 etc.) — se `raw` for uma data inexistente, o erro
+  // sai daqui, sem duplicar a lógica de round-trip.
+  if (ONLY_DATE_RE.test(raw)) {
+    let suggestion: string;
+    try {
+      suggestion = scheduledAtForDate(raw);
+    } catch (e) {
+      return { error: `--schedule-at: ${(e as Error).message}` };
+    }
+    return {
+      error:
+        `--schedule-at "${raw}" não tem hora — seria interpretado como meia-noite UTC ` +
+        `(21:00 BRT do dia anterior), o que quase causou um envio 9h adiantado (incidente #4662). ` +
+        `Informe a hora explícita: "${suggestion}" pro horário canônico da Clarice News ` +
+        `(09:00 UTC = 06:00 BRT), ou outro horário ISO 8601 com "Z"/offset se for intencional.`,
+    };
+  }
+
   const d = new Date(raw);
   if (Number.isNaN(d.getTime())) {
     return { error: `--schedule-at não é ISO 8601 válido: "${raw}"` };
   }
+
+  // #4662/#4680: mesmo com hora explícita, o `Date` do JS "conserta" em
+  // silêncio um dia de calendário inexistente (2026-02-31 vira 2026-03-03)
+  // — mesma técnica de round-trip de `scheduledAtForDate`
+  // (clarice-wave-plan.ts). Cobre tanto "Z" quanto offset explícito
+  // (+HH:MM/-HH:MM) — ver docstring de `FULL_ISO_RE`. O round-trip usa
+  // `Date.UTC` com os componentes CRUS do input (não `d.toISOString()`),
+  // porque a conversão de offset pra UTC pode mudar de dia mesmo em datas
+  // válidas (ex: 23:00-03:00 vira 02:00Z do dia seguinte).
+  const isoMatch = FULL_ISO_RE.exec(raw);
+  if (isoMatch) {
+    const [, y, mo, day, hh, mm, ss] = isoMatch;
+    const roundTrip = new Date(
+      Date.UTC(Number(y), Number(mo) - 1, Number(day), Number(hh), Number(mm), Number(ss || 0)),
+    );
+    const back =
+      `${roundTrip.getUTCFullYear()}-${String(roundTrip.getUTCMonth() + 1).padStart(2, "0")}-` +
+      `${String(roundTrip.getUTCDate()).padStart(2, "0")}`;
+    if (back !== `${y}-${mo}-${day}`) {
+      return { error: `--schedule-at "${raw}" é uma data inexistente no calendário.` };
+    }
+  }
+
   if (d.getTime() <= now.getTime()) {
     return {
       error: `--schedule-at deve estar no futuro. Recebido: ${d.toISOString()}, agora: ${now.toISOString()}`,
@@ -386,6 +492,14 @@ export interface InvocationSummary {
   campaignId?: number;
   phase: string;
   status?: CampaignEntry["status"];
+  /**
+   * #4680 (achado 2 do silent-failure-hunter sobre #4662/#4668/#4663): o
+   * `scheduledAt` atual da campanha desta invocação — permite ao caller
+   * (e ao teste) confirmar o horário sem re-consultar a Brevo. Sempre
+   * incluído quando a campanha existe, não só na fase reschedule — o
+   * campo é barato e útil em qualquer fase que toque agendamento.
+   */
+  scheduledAt?: string | null;
   cycleTotals: { created: number; scheduled: number; sent: number };
 }
 
@@ -404,7 +518,7 @@ export interface InvocationSummary {
 export function buildInvocationSummary(
   key: string,
   listId: number,
-  flags: { create: boolean; updateHtml: boolean; sendTest: boolean; schedule: boolean; sendNow?: boolean },
+  flags: { create: boolean; updateHtml: boolean; sendTest: boolean; schedule: boolean; sendNow?: boolean; reschedule?: boolean },
   campaign: CampaignEntry | undefined,
   allCampaigns: CampaignEntry[],
 ): InvocationSummary {
@@ -414,6 +528,7 @@ export function buildInvocationSummary(
     flags.sendTest && "send-test",
     flags.schedule && "schedule",
     flags.sendNow && "send-now",
+    flags.reschedule && "reschedule",
   ]
     .filter((p): p is string => typeof p === "string")
     .join("+");
@@ -423,6 +538,7 @@ export function buildInvocationSummary(
     campaignId: campaign?.campaignId,
     phase,
     status: campaign?.status,
+    scheduledAt: campaign?.scheduledAt ?? null,
     cycleTotals: {
       created: allCampaigns.length,
       scheduled: allCampaigns.filter((c) => c.status === "scheduled").length,
@@ -481,6 +597,120 @@ export function applySendNowVerifyResults(
   }
 }
 
+/**
+ * #4668 — decide se uma campanha pode ser REAGENDADA, dado o status LOCAL
+ * (`CampaignEntry.status`, sempre "draft"/"scheduled"/"sent") e o status AO
+ * VIVO da Brevo (string livre — inclui "in_review"/"queued", que o tipo
+ * local não expressa). Pura/testável: extrai a decisão de `main()` pra provar
+ * os casos terminais (local "sent", ao-vivo "in_review") sem mockar HTTP.
+ *
+ * Terminal ao vivo vence sobre o local: o registro local pode estar
+ * defasado (campanha entrou em revisão da Brevo, ou disparou entre
+ * invocações) — só o GET recém-feito é confiável pra essa decisão.
+ */
+export function checkRescheduleAllowed(
+  localStatus: CampaignEntry["status"],
+  liveStatus: string,
+): { ok: true } | { ok: false; reason: string } {
+  if (localStatus === "draft") {
+    return { ok: false, reason: "nunca foi agendada (registro local) — use --schedule (não --reschedule) pra agendar pela primeira vez." };
+  }
+  if (localStatus === "sent") {
+    return { ok: false, reason: "já foi DISPARADA (registro local) — status terminal, não pode ser reagendada." };
+  }
+  if (!isScheduledStatus(liveStatus)) {
+    const terminal = isTerminalSendStatus(liveStatus) || liveStatus === "in_review";
+    return {
+      ok: false,
+      reason:
+        `está em status "${liveStatus}" na Brevo (esperado "queued"/"scheduled") — ` +
+        (terminal
+          ? "status terminal AO VIVO, não pode ser reagendada (o registro local pode estar defasado)."
+          : "recuse e investigue antes de reagendar."),
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * #4668 — compara dois `scheduledAt` por INSTANTE (`Date.parse`), nunca por
+ * igualdade de string. A Brevo devolve `scheduledAt` com OFFSET (ex:
+ * "2026-08-06T06:00:00.000-03:00"), não com "Z" — dois valores que
+ * representam o MESMO instante têm strings diferentes, e comparação por
+ * string dá falso negativo num reagendamento que na verdade funcionou
+ * (aconteceu ao vivo na 1ª verificação do fix do #4662).
+ */
+export function isSameInstant(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  const ma = Date.parse(a);
+  const mb = Date.parse(b);
+  return Number.isFinite(ma) && Number.isFinite(mb) && ma === mb;
+}
+
+/**
+ * #4668 — aplica o resultado do GET-verify pós-PUT de `--reschedule`.
+ * Mesmo padrão de `applySendNowVerifyResults`: só persiste em disco (e só
+ * marca sucesso) quando (a) o GET não rejeitou, (b) o status devolvido é
+ * "queued"/"scheduled" E (c) o `scheduledAt` devolvido bate por INSTANTE
+ * (`isSameInstant`, nunca string) com o alvo desta invocação. Qualquer um
+ * dos três falhando: warn, `c.scheduledAt`/`c.status` NÃO mudam, e a
+ * próxima invocação de `--reschedule` re-tenta (nada fica "meio aplicado").
+ */
+export function applyRescheduleVerifyResults(
+  settled: PromiseSettledResult<{ status: string; scheduledAt?: string | null }>[],
+  toVerify: CampaignEntry[],
+  newScheduledAts: string[],
+  campaigns: CampaignEntry[],
+  campaignsPath: string,
+  writeFn: (path: string, content: string) => void = (p, c) => writeFileAtomic(p, c),
+  logFn: (msg: string) => void = (m) => console.error(m),
+): void {
+  if (settled.length !== toVerify.length || toVerify.length !== newScheduledAts.length) {
+    throw new Error(
+      `applyRescheduleVerifyResults: invariante quebrada — settled.length (${settled.length}), ` +
+        `toVerify.length (${toVerify.length}), newScheduledAts.length (${newScheduledAts.length}) devem ser iguais.`,
+    );
+  }
+  for (let i = 0; i < toVerify.length; i++) {
+    const c = toVerify[i];
+    const result = settled[i];
+    const target = newScheduledAts[i];
+    const previous = c.scheduledAt;
+
+    if (result.status === "rejected") {
+      logFn(
+        `⚠ GET-verify pós-reschedule ${c.key} (campanha #${c.campaignId}) falhou: ${String(result.reason)}. ` +
+          `Status local NÃO atualizado — re-tente --reschedule.`,
+      );
+      continue;
+    }
+
+    const verified = result.value;
+    if (!isScheduledStatus(verified.status)) {
+      logFn(
+        `⚠ GET-verify pós-reschedule ${c.key} (campanha #${c.campaignId}): status="${verified.status}" ` +
+          `(esperado "queued"/"scheduled" após PUT scheduledAt="${target}"). ` +
+          `Status local NÃO atualizado — re-tente --reschedule após checar o Brevo.`,
+      );
+      continue;
+    }
+    if (!isSameInstant(verified.scheduledAt, target)) {
+      logFn(
+        `⚠ GET-verify pós-reschedule ${c.key} (campanha #${c.campaignId}): scheduledAt devolvido ` +
+          `("${verified.scheduledAt ?? "ausente"}") NÃO confere com o alvo ("${target}") — comparação por ` +
+          `INSTANTE (Date.parse), não string (a Brevo pode responder com offset em vez de "Z"). ` +
+          `Status local NÃO atualizado — re-tente --reschedule.`,
+      );
+      continue;
+    }
+
+    c.scheduledAt = target;
+    c.status = "scheduled";
+    writeFn(campaignsPath, JSON.stringify(campaigns, null, 2));
+    logFn(`✓ ${c.key} REAGENDADA: ${previous ?? "(sem data anterior)"} → ${target} (GET-verify: status=${verified.status})`);
+  }
+}
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const cycle = parseCycleArg(argv);
   if (!cycle) {
@@ -534,6 +764,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const doTest = hasFlag(argv, "send-test");
   const doSchedule = hasFlag(argv, "schedule");
   const doSendNow = hasFlag(argv, "send-now"); // #4347 G7/D7
+  const doReschedule = hasFlag(argv, "reschedule"); // #4668
   const skipEiaGuard = hasFlag(argv, "skip-eia-guard");
 
   // #4347: --content-cycle é OPCIONAL — o ciclo do CONTEÚDO/edição mensal a
@@ -570,8 +801,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       `${listNameHint ? `  (lista: "${listNameHint}")` : ""}` +
       `${existing ? `  [campanha #${existing.campaignId} ${existing.status}]` : "  [ainda não criada]"}`,
   );
-  if (!doCreate && !doUpdateHtml && !doTest && !doSchedule && !doSendNow) {
-    console.error(`\ndry-run — use --create, depois --send-test, depois --schedule (ou --send-now pra disparo imediato).`);
+  if (!doCreate && !doUpdateHtml && !doTest && !doSchedule && !doSendNow && !doReschedule) {
+    console.error(`\ndry-run — use --create, depois --send-test, depois --schedule (ou --send-now pra disparo imediato; --reschedule pra corrigir uma campanha já agendada).`);
     return;
   }
 
@@ -767,12 +998,70 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
   }
 
+  // --- reschedule (PUT do NOVO scheduledAt numa campanha JÁ agendada +
+  // GET-verify por INSTANTE) — #4668. Mesmo guard É IA? do --schedule: a
+  // campanha já passou pelo gate editorial, reagendar só muda "quando".
+  if (doReschedule) {
+    const eiaCheck = checkEiaGuard(contentCycle, skipEiaGuard, undefined);
+    if (!eiaCheck.ok) {
+      console.error(eiaCheck.message);
+      process.exit(1);
+    }
+    console.error(skipEiaGuard ? `⚠  --skip-eia-guard ativo — verificação de gabarito É IA? ignorada.` : `✓ Gabarito É IA? verificado`);
+
+    const c = byKey.get(key);
+    if (!c) throw new Error(`campanha '${key}' não criada — rode --create antes.`);
+
+    // #4668: checa o status AO VIVO na Brevo ANTES de tocar em qualquer
+    // coisa — o registro local (c.status) pode estar defasado (a campanha
+    // pode ter entrado em "in_review" ou já disparado desde a última
+    // sincronização). checkRescheduleAllowed decide os dois níveis (local +
+    // ao vivo) numa função pura/testável.
+    const live = await brevoGetCampaign(apiKey, c.campaignId);
+    const allowed = checkRescheduleAllowed(c.status, live.status);
+    if (!allowed.ok) {
+      throw new Error(`--reschedule: ${key} (campanha #${c.campaignId}) ${allowed.reason}`);
+    }
+
+    const scheduleAtResolved = resolveScheduleAtArg(getArg(argv, "schedule-at") || undefined);
+    if ("error" in scheduleAtResolved) throw new Error(scheduleAtResolved.error);
+    const newScheduledAt = scheduleAtResolved.scheduledAt;
+    if (!newScheduledAt) {
+      throw new Error(`--reschedule requer --schedule-at com a NOVA data/hora (ex: --schedule-at 2026-08-06T10:00:00Z).`);
+    }
+
+    const previousScheduledAt = c.scheduledAt ?? live.scheduledAt ?? null;
+    console.error(`↻ Reagendando ${key} (campanha #${c.campaignId}): ${previousScheduledAt ?? "(sem data anterior)"} → ${newScheduledAt}`);
+
+    await brevoPut(apiKey, `/emailCampaigns/${c.campaignId}`, { scheduledAt: newScheduledAt });
+    // #4668: `group-campaigns.json` só é gravado DEPOIS deste GET-verify
+    // confirmar por INSTANTE — nunca antes do PUT ser confirmado (ver
+    // docstring de `applyRescheduleVerifyResults`).
+    const verifySettled = await Promise.allSettled([brevoGetCampaign(apiKey, c.campaignId)]);
+    applyRescheduleVerifyResults(verifySettled, [c], [newScheduledAt], campaigns, campaignsPath);
+    // #4680 (achado 1 do silent-failure-hunter): mesmo racional do guard de
+    // --send-now acima (linhas ~962-970) — `applyRescheduleVerifyResults`
+    // só faz `console.error` + `continue` nos 3 modos de falha do
+    // GET-verify (rejeitado, status≠scheduled/queued, scheduledAt não bate
+    // por instante); sem isto, `main()` terminava com exit 0 mesmo quando o
+    // PUT foi aceito mas o reagendamento NÃO foi confirmado — o
+    // `--send-now` do mesmo arquivo já resolvia essa classe de bug,
+    // `--reschedule` reabria ela pelo lado oposto. `process.exitCode` (não
+    // `process.exit`) deixa o JSON de resumo abaixo imprimir normalmente.
+    if (!isSameInstant(c.scheduledAt, newScheduledAt)) {
+      console.error(
+        `❌ ${key}: reschedule PUT enviado mas GET-verify não confirmou o novo scheduledAt — NÃO declare sucesso. Re-tente --reschedule.`,
+      );
+      process.exitCode = 2;
+    }
+  }
+
   console.log(
     JSON.stringify(
       buildInvocationSummary(
         key,
         listId,
-        { create: doCreate, updateHtml: doUpdateHtml, sendTest: doTest, schedule: doSchedule, sendNow: doSendNow },
+        { create: doCreate, updateHtml: doUpdateHtml, sendTest: doTest, schedule: doSchedule, sendNow: doSendNow, reschedule: doReschedule },
         byKey.get(key),
         campaigns,
       ),
