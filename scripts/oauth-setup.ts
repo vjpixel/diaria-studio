@@ -18,7 +18,11 @@
  * O script salva os tokens em `data/.credentials.json` (gitignored).
  * Após o setup, drive-sync.ts e inbox-drain.ts usam esses tokens automaticamente.
  *
- * Scopes necessários:
+ * Scopes necessários — LISTA NÃO-AUTORITATIVA. A fonte de verdade é o array
+ * `SCOPES` abaixo, comentado entrada por entrada. Esta lista já ficou defasada
+ * duas vezes (não citava `postmaster.domain` do #4539 nem
+ * `postmaster.traffic.readonly` do #4704 — corrigido em 260806); trate-a como
+ * resumo de leitura, não como inventário:
  *   - https://www.googleapis.com/auth/drive (Drive completo)
  *   - https://www.googleapis.com/auth/gmail.readonly (Gmail somente leitura)
  *   - https://www.googleapis.com/auth/gmail.labels (criar labels)
@@ -26,7 +30,12 @@
  *   - https://www.googleapis.com/auth/webmasters (#1989 leitura: GSC / seo-pull;
  *     #4546 escrita: submeter sitemap dos subdomínios de curadoria)
  *   - https://www.googleapis.com/auth/postmaster.readonly (#4063: Gmail Postmaster
- *     Tools — spamRate diário que alimenta o circuit breaker de spam da Rampa)
+ *     Tools v1 — spamRate diário que alimenta o circuit breaker de spam da Rampa)
+ *   - https://www.googleapis.com/auth/postmaster.domain (#4539: registrar/verificar
+ *     domínio no Postmaster — `domains.create`/`:verify`, só existe na v2)
+ *   - https://www.googleapis.com/auth/postmaster.traffic.readonly (#4704:
+ *     `domainStats:query` da v2 — spam por CAMPANHA via FEEDBACK_LOOP_SPAM_RATE,
+ *     que a v1 não expõe)
  *   - https://www.googleapis.com/auth/gmail.send (#4064: alarme de guardrail
  *     furado do ramp Clarice — `scripts/clarice-guardrail-alarm.ts` envia
  *     e-mail ao editor via `scripts/lib/gmail-send.ts`, chamada direta à Gmail
@@ -49,9 +58,11 @@ const CREDENTIALS_PATH = resolve(ROOT, "data", ".credentials.json");
 const REDIRECT_PORT = 8765;
 const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/oauth/callback`;
 
-// A invariante "postmaster.domain SOMA ao postmaster.readonly, nunca
-// substitui" é travada por `test/oauth-scopes-4539.test.ts`, que lê ESTE
-// ARQUIVO COMO TEXTO em vez de importar `SCOPES`. Importar não é opção:
+// A invariante "os 3 scopes de Postmaster SOMAM entre si, nenhum substitui o
+// outro" é travada por `test/postmaster-register-domain-4539.test.ts` (o path
+// citado aqui até 260806 era `test/oauth-scopes-4539.test.ts`, que nunca
+// existiu — o comentário prometia uma garantia mecânica sem apontar pra ela),
+// que lê ESTE ARQUIVO COMO TEXTO em vez de importar `SCOPES`. Importar não é opção:
 // `main()` roda incondicionalmente no fim do módulo, então um import abriria
 // o browser e subiria o servidor da porta 8765 dentro do CI.
 const SCOPES = [
@@ -93,6 +104,25 @@ const SCOPES = [
   // em `data/.credentials.json` NÃO ganha este scope sozinho — sem re-rodar
   // este script e reaprovar no browser, a falha só aparece no POST, com 403.
   "https://www.googleapis.com/auth/postmaster.domain",
+  // #4704: ler `trafficStats` pela API **v2** (`domainStats:query`), que a v1
+  // não tem. É o que desbloqueia spam POR CAMPANHA — as métricas
+  // `FEEDBACK_LOOP_ID`/`FEEDBACK_LOOP_SPAM_RATE` só existem na v2, e o
+  // identificador vem do header `Feedback-ID` que a Brevo já manda
+  // (`{conta}_{campanha}`). A v2 aceita `.../auth/postmaster` OU
+  // `.../auth/postmaster.traffic.readonly`; usamos o segundo (mais estreito —
+  // só leitura de estatística, sem abrir gestão de domínio nem usuários).
+  //
+  // SOMA aos dois de Postmaster acima, não substitui: `postmaster.readonly` é
+  // o eixo da v1 (`trafficStats` por data, que o sync diário usa hoje),
+  // `postmaster.domain` é gestão de domínio, e este é leitura de estatística
+  // na v2 — três eixos distintos, nenhum superset do outro.
+  //
+  // Mesma armadilha dos blocos acima, confirmada AO VIVO em 260806: com o token
+  // atual, `GET /v2/domains` responde 200 mas `POST /v2/{d}/domainStats:query`
+  // devolve 403 `ACCESS_TOKEN_SCOPE_INSUFFICIENT`. O token já emitido em
+  // `data/.credentials.json` NÃO ganha este scope sozinho — exige re-rodar
+  // este script e reaprovar no browser.
+  "https://www.googleapis.com/auth/postmaster.traffic.readonly",
   // #4064: enviar o e-mail de alarme de guardrail furado do ramp Clarice
   // (`scripts/clarice-guardrail-alarm.ts`) via Gmail API direta — rodando fora
   // de uma sessão Claude Code (Task Scheduler), sem MCP Gmail disponível.
