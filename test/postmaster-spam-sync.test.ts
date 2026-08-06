@@ -80,6 +80,38 @@ test("extractReputationSignal — domainReputation não-string ou ipReputations 
   assert.deepEqual(signal, {});
 });
 
+// #4711 fleet review (silent-failure-hunter): payload malformado não pode
+// ficar indistinguível de campo genuinamente ausente nos logs — precisa
+// avisar, mesmo tratando o valor como ausente no retorno.
+test("extractReputationSignal — payload malformado gera console.warn (não fica indistinguível de campo ausente)", () => {
+  const original = console.warn;
+  const calls: string[] = [];
+  console.warn = (msg: string) => calls.push(msg);
+  try {
+    extractReputationSignal({
+      domainReputation: 42 as unknown as string,
+      ipReputations: "oops" as unknown as never,
+    });
+  } finally {
+    console.warn = original;
+  }
+  assert.equal(calls.length, 2);
+  assert.match(calls[0], /domainReputation presente mas não é string/);
+  assert.match(calls[1], /ipReputations presente mas não é array/);
+});
+
+test("extractReputationSignal — campo genuinamente ausente NÃO gera console.warn (só o malformado avisa)", () => {
+  const original = console.warn;
+  const calls: string[] = [];
+  console.warn = (msg: string) => calls.push(msg);
+  try {
+    extractReputationSignal({ userReportedSpamRatio: 0.01 });
+  } finally {
+    console.warn = original;
+  }
+  assert.equal(calls.length, 0);
+});
+
 // ── collectSpamReadings ──
 
 test("collectSpamReadings — coleta 1 leitura por dia com 200 (campo presente OU ausente=0), pula 404", async () => {

@@ -14,9 +14,13 @@
  *      `feedback_loop_id` dá o que a v1 nunca teve — hoje "spam" é
  *      propriedade do domínio inteiro, sem separar a newsletter de outro
  *      tráfego do mesmo domínio, nem uma variante de assunto A/B/C da outra.
- *   2. **Query por intervalo.** A v1 faz 1 GET por dia (N chamadas, cada
- *      execução do cron registra pelo menos 1 erro 429). A v2 aceita um
- *      `DateRange` inteiro numa chamada só — os 429 somem por construção.
+ *   2. **Query por intervalo.** A v1 faz 1 GET por dia (N chamadas) — não
+ *      verifiquei ao vivo a frequência de 429 (afirmação anterior deste
+ *      docstring era universal e sem citação; removida por precisão). O que
+ *      é estruturalmente verdade e não precisa de medição: a v2 aceita um
+ *      `DateRange` inteiro numa chamada só, então N GETs viram 1 POST — a
+ *      superfície de rate limit encolhe por construção, seja qual for a
+ *      taxa real de 429 hoje.
  *   3. **v1 e v2 DIVERGEM materialmente no mesmo dia.** Medido ao vivo em
  *      260806 pra `clarice.ai`, 03/08/2026: v1 (`trafficStats.get`, campo
  *      `userReportedSpamRatio`) leu **1,6%**; v2 (`domainStats.query`,
@@ -29,10 +33,15 @@
  * Uso típico (todo I/O passa por `gFetch`, que já lida com refresh de token):
  *
  *   import { gFetch } from "../google-auth.ts";
- *   import { queryDomainStatsV2, buildSpamRateRequestBody } from "./postmaster-v2-client.ts";
+ *   import { queryDomainStatsV2, extractSpamRateReadingsV2 } from "./postmaster-v2-client.ts";
  *
- *   const body = buildSpamRateRequestBody("clarice.ai", { start: ..., end: ... });
- *   const stats = await queryDomainStatsV2(body, gFetch);
+ *   const response = await queryDomainStatsV2(
+ *     "clarice.ai",
+ *     [{ name: "spam_rate", standardMetric: "SPAM_RATE" }],
+ *     { start: { year: 2026, month: 8, day: 1 }, end: { year: 2026, month: 8, day: 6 } },
+ *     gFetch,
+ *   );
+ *   const readings = extractSpamRateReadingsV2(response, "spam_rate");
  *
  * Escopo requerido: `postmaster.traffic.readonly` (ou `postmaster`, mais
  * amplo — não usado aqui, mesma disciplina de escopo mínimo do #4539) — ver
@@ -78,8 +87,14 @@ export interface MetricDefinitionV2 {
  * `StatisticValue` (discovery doc v2) — o valor vem SEMPRE aninhado sob
  * `DomainStatV2.value`, nunca no nível raiz do `DomainStatV2` (confirmado ao
  * vivo em 260806, probe real contra `domains/clarice.ai/domainStats:query`
- * — achado que já pegou 1 bug real no rascunho deste módulo, ver histórico
- * do commit).
+ * — fixture exata em `test/postmaster-v2-client.test.ts`, teste
+ * "200: retorna domainStats parseado").
+ *
+ * Só `floatValue` foi confirmado ao vivo (métrica `SPAM_RATE`) —
+ * `doubleValue`/`intValue`/`stringValue`/`stringList` são inferidos do
+ * discovery doc pra outras métricas (`AUTH_SUCCESS_RATE`, contadores,
+ * `FEEDBACK_LOOP_ID`), nunca exercitados contra a API real. Ver
+ * `extractSpamRateReadingsV2` pro fallback defensivo `floatValue ?? doubleValue`.
  */
 export interface StatisticValueV2 {
   floatValue?: number;
@@ -113,6 +128,12 @@ export function buildDomainStatsQueryBody(
 ): Record<string, unknown> {
   if (metricDefinitions.length === 0) {
     throw new Error("[postmaster-v2-client] metricDefinitions vazio — pelo menos 1 métrica é obrigatória.");
+  }
+  const missingFilter = metricDefinitions.find((m) => m.standardMetric === "FEEDBACK_LOOP_SPAM_RATE" && !m.filter);
+  if (missingFilter) {
+    throw new Error(
+      `[postmaster-v2-client] métrica "${missingFilter.name}" é FEEDBACK_LOOP_SPAM_RATE sem filter — exige feedback_loop_id (ver MetricDefinitionV2.filter).`,
+    );
   }
   return {
     parent: `domains/${domain}`,
@@ -187,18 +208,32 @@ export interface DayReadingV2 {
 
 /**
  * Pura/testável: converte a resposta bruta de `domainStats.query` (métrica
- * `SPAM_RATE`, filtrada por `metricName`) em leituras por dia. Um dia sem
- * `DomainStatV2` na resposta significa "sem dado ainda" — análogo ao 404 da
- * v1 (nunca virou 0%, ver docstring de `postmaster-spam-sync.ts`); a v2 não
- * distingue isso de "dado 0% real" no nível de `domainStats.query` (essa
- * distinção fica em `getComplianceStatus`/`MESSAGE_VOLUME_LOW`, fora de
- * escopo deste módulo — ver checklist da #4704).
+ * `SPAM_RATE`, filtrada por `metricName`) em leituras por dia.
+ *
+ * Um dia AUSENTE da lista `domainStats` significa "sem dado ainda" — análogo
+ * ao 404 da v1 (nunca vira 0%, ver docstring de `postmaster-spam-sync.ts`).
+ * Um dia PRESENTE com `value.floatValue: 0` é 0% real (confirmado ao vivo em
+ * 260806: 01/08 e 03/08 vieram exatamente assim). O que este endpoint NÃO
+ * distingue é "0% confirmado" de "volume baixo demais pra medir"
+ * (`MESSAGE_VOLUME_LOW`) — essa distinção fica em `getComplianceStatus`,
+ * outro endpoint, fora de escopo deste módulo (ver checklist da #4704).
+ *
+ * Lê `floatValue ?? doubleValue` — só `floatValue` foi confirmado ao vivo
+ * pra `SPAM_RATE` (ver `StatisticValueV2`), mas o fallback evita que uma
+ * métrica futura (`FEEDBACK_LOOP_SPAM_RATE`) que serialize como `doubleValue`
+ * seja descartada em silêncio, indistinguível de "sem dado ainda".
  */
 export function extractSpamRateReadingsV2(
   response: QueryDomainStatsResponseV2,
   metricName: string,
 ): DayReadingV2[] {
   return response.domainStats
-    .filter((s) => s.metric === metricName && s.date && typeof s.value?.floatValue === "number")
-    .map((s) => ({ date: calendarDateToEntryDate(s.date as CalendarDate), ratio: s.value!.floatValue as number }));
+    .filter((s) => {
+      const v = s.value?.floatValue ?? s.value?.doubleValue;
+      return s.metric === metricName && s.date && typeof v === "number";
+    })
+    .map((s) => ({
+      date: calendarDateToEntryDate(s.date as CalendarDate),
+      ratio: (s.value!.floatValue ?? s.value!.doubleValue) as number,
+    }));
 }

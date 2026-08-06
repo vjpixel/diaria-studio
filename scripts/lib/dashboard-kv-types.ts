@@ -137,21 +137,48 @@ export interface CohortStatsRow {
 export type PostmasterProducer = "manual" | "auto";
 
 /**
+ * Bucket de reputação — a API devolve `BAD`/`LOW`/`MEDIUM`/`HIGH`
+ * (confirmado no payload de exemplo da issue #4703), mas o tipo aceita
+ * qualquer string (`string & {}` — mesmo truque de "literal union aberta"
+ * documentado em vários lugares do TS) porque nunca observamos ao vivo se a
+ * API pode introduzir um bucket novo sem aviso; travar num union fechado
+ * quebraria o parse silenciosamente nesse caso.
+ */
+export type PostmasterReputationLevel = "BAD" | "LOW" | "MEDIUM" | "HIGH" | (string & {});
+
+/**
  * Um item de `ipReputations` na resposta de `trafficStats.get` (v1) — a API
- * devolve um bucket por faixa de reputação (BAD/LOW/MEDIUM/HIGH), cada um
- * opcionalmente com a contagem e uma amostra de IPs SÓ quando o bucket tem
- * pelo menos 1 IP (#4703). `[key: string]: unknown` absorve campos futuros
- * da API sem quebrar o parse — mesmo espírito de `TrafficStatsResponse` em
- * postmaster-spam-sync.ts, que não fixa um shape exaustivo do payload cru.
+ * devolve um bucket por faixa de reputação, cada um opcionalmente com
+ * `ipCount` (contagem como STRING — mesma serialização protobuf int64→string
+ * usada em `StatisticValueV2.intValue`, scripts/lib/postmaster-v2-client.ts)
+ * e uma amostra de IPs. O exemplo da #4703 só mostrou esses dois campos
+ * presentes quando o bucket tinha ≥1 IP — não confirmado como regra da API,
+ * só o que foi observado numa amostra. `[key: string]: unknown` absorve
+ * campos futuros sem quebrar o parse — mesmo espírito de
+ * `TrafficStatsResponse` em postmaster-spam-sync.ts.
  */
 export interface PostmasterIpReputation {
-  reputation: string;
+  reputation: PostmasterReputationLevel;
   ipCount?: string;
   sampleIps?: string[];
   [key: string]: unknown;
 }
 
-export interface PostmasterSpamEntry {
+/**
+ * #4703: sinal de reputação capturado da v1 (`trafficStats.get`) — hoje
+ * puramente diagnóstico, `resolveSpamSignal` não consome nenhum dos dois
+ * campos. Fatorado num tipo próprio (em vez de repetir `{domainReputation?;
+ * ipReputations?}` em `PostmasterSpamEntry`, `TrafficStatsResponse` e
+ * `DayReading` de postmaster-spam-sync.ts) pra que os 3 lugares fiquem
+ * amarrados pelo compilador, não só por convenção — um campo novo adicionado
+ * aqui se propaga sem precisar lembrar de editar os outros 2.
+ */
+export interface PostmasterReputationSignal {
+  domainReputation?: PostmasterReputationLevel;
+  ipReputations?: PostmasterIpReputation[];
+}
+
+export interface PostmasterSpamEntry extends PostmasterReputationSignal {
   /** Data (YYYY-MM-DD) a que a leitura se refere. Manual: o dia do painel Postmaster consultado. Auto (#4345): o dia mais recente dentro da janela usada pra calcular a média — não o único dia da leitura. */
   date: string;
   /** spamRate (%) lido no painel do Google Postmaster Tools. */
@@ -164,10 +191,10 @@ export interface PostmasterSpamEntry {
   daysWithData?: number;
   /** #4541: tamanho da janela sondada (dias-calendário), independente de quantos tiveram leitura válida — ver `daysWithData`. `undefined` no mesmo caso acima. */
   daysProbed?: number;
-  /** #4703: `domainReputation` do dia mais recente da janela com leitura válida (BAD/LOW/MEDIUM/HIGH), já presente na resposta de `trafficStats.get` (v1) e até agora descartada. Puramente diagnóstico — `resolveSpamSignal` não consome este campo ainda; nenhuma mudança de comportamento do breaker. Ausente quando a API não devolveu o campo naquele dia (schema evolution — nunca inferir um valor pra entries sem este campo, mesmo tratamento de `daysWithData`/`daysProbed`). */
-  domainReputation?: string;
-  /** #4703: `ipReputations` do mesmo dia — buckets por faixa, com contagem/amostra de IP quando presente. Mesma disciplina de opcionalidade de `domainReputation`. */
-  ipReputations?: PostmasterIpReputation[];
+  // `domainReputation`/`ipReputations` herdados de PostmasterReputationSignal
+  // (#4703): snapshot do dia mais recente da janela com leitura válida —
+  // ausente quando a API não devolveu o campo naquele dia (schema evolution,
+  // nunca inferir um valor, mesmo tratamento de daysWithData/daysProbed).
 }
 
 /**

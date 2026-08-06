@@ -164,6 +164,53 @@ test("queryDomainStatsV2 — 403 SERVICE_DISABLED aponta pro console GCP", async
   );
 });
 
+test("queryDomainStatsV2 — 401 pós-retry aponta pro oauth-setup.ts (refresh token revogado, #4585 mesmo padrão do #4539)", async () => {
+  const fake = (async () => new Response('{"error":{"status":"UNAUTHENTICATED"}}', { status: 401 })) as unknown as typeof fetch;
+  await assert.rejects(
+    () =>
+      queryDomainStatsV2("clarice.ai", [{ name: "spam_rate", standardMetric: "SPAM_RATE" }], { start: { year: 2026, month: 8, day: 1 }, end: { year: 2026, month: 8, day: 1 } }, fake),
+    /oauth-setup\.ts/,
+  );
+});
+
+test("queryDomainStatsV2 — 403 sem código de scope/API reconhecido aponta pra permissão de domínio, não pro fallback genérico", async () => {
+  const fake = (async () =>
+    new Response('{"error":{"message":"The caller does not have permission"}}', { status: 403 })) as unknown as typeof fetch;
+  await assert.rejects(
+    () =>
+      queryDomainStatsV2("clarice.ai", [{ name: "spam_rate", standardMetric: "SPAM_RATE" }], { start: { year: 2026, month: 8, day: 1 }, end: { year: 2026, month: 8, day: 1 } }, fake),
+    /postmaster\.google\.com\/managedomains/,
+  );
+});
+
+test("queryDomainStatsV2 — status HTTP inesperado (ex: 500) cai no fallback genérico com o corpo truncado, nunca vira sucesso silencioso", async () => {
+  const fake = (async () => new Response('{"error":{"status":"INTERNAL"}}', { status: 500 })) as unknown as typeof fetch;
+  await assert.rejects(
+    () =>
+      queryDomainStatsV2("clarice.ai", [{ name: "spam_rate", standardMetric: "SPAM_RATE" }], { start: { year: 2026, month: 8, day: 1 }, end: { year: 2026, month: 8, day: 1 } }, fake),
+    /HTTP 500 inesperado/,
+  );
+});
+
+test("buildDomainStatsQueryBody — FEEDBACK_LOOP_SPAM_RATE sem filter lança erro explícito (nunca manda request malformado, #4711 fleet review)", () => {
+  assert.throws(
+    () =>
+      buildDomainStatsQueryBody(
+        "clarice.ai",
+        [{ name: "fbl", standardMetric: "FEEDBACK_LOOP_SPAM_RATE" }],
+        { start: { year: 2026, month: 8, day: 1 }, end: { year: 2026, month: 8, day: 1 } },
+      ),
+    /FEEDBACK_LOOP_SPAM_RATE sem filter/,
+  );
+});
+
+test("extractSpamRateReadingsV2 — cai em doubleValue quando floatValue está ausente (fallback defensivo, #4711 fleet review)", () => {
+  const response = {
+    domainStats: [{ metric: "spam_rate", date: { year: 2026, month: 8, day: 1 }, value: { doubleValue: 0.03 } }],
+  };
+  assert.deepEqual(extractSpamRateReadingsV2(response, "spam_rate"), [{ date: "2026-08-01", ratio: 0.03 }]);
+});
+
 test("queryDomainStatsV2 — resposta 2xx não-JSON erra com contexto (proxy/truncamento), nunca lança SyntaxError cru", async () => {
   const fake = (async () => new Response("<html>proxy interceptou</html>", { status: 200 })) as unknown as typeof fetch;
   await assert.rejects(
