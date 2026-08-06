@@ -18,6 +18,7 @@ import {
   toApiDateStr,
   apiDateToEntryDate,
   extractDayRatio,
+  extractReputationSignal,
   collectSpamReadings,
   buildAveragedEntry,
   parseWindowDaysArg,
@@ -44,13 +45,48 @@ test("extractDayRatio — userReportedSpamRatio AUSENTE vira 0 (achado 260730: c
   assert.equal(extractDayRatio({ domainReputation: "HIGH" }), 0);
 });
 
+// ── extractReputationSignal (#4703) ──
+
+test("extractReputationSignal — captura domainReputation/ipReputations quando presentes", () => {
+  const signal = extractReputationSignal({
+    userReportedSpamRatio: 0.016,
+    domainReputation: "MEDIUM",
+    ipReputations: [
+      { reputation: "BAD" },
+      { reputation: "MEDIUM", ipCount: "1", sampleIps: ["77.32.148.101"] },
+    ],
+  });
+  assert.deepEqual(signal, {
+    domainReputation: "MEDIUM",
+    ipReputations: [
+      { reputation: "BAD" },
+      { reputation: "MEDIUM", ipCount: "1", sampleIps: ["77.32.148.101"] },
+    ],
+  });
+});
+
+test("extractReputationSignal — campos ausentes ficam ausentes (nunca infere um valor)", () => {
+  const signal = extractReputationSignal({ userReportedSpamRatio: 0 });
+  assert.deepEqual(signal, {});
+  assert.ok(!("domainReputation" in signal));
+  assert.ok(!("ipReputations" in signal));
+});
+
+test("extractReputationSignal — domainReputation não-string ou ipReputations não-array são ignorados (payload malformado nunca vira dado inventado)", () => {
+  const signal = extractReputationSignal({
+    domainReputation: 42 as unknown as string,
+    ipReputations: "oops" as unknown as never,
+  });
+  assert.deepEqual(signal, {});
+});
+
 // ── collectSpamReadings ──
 
 test("collectSpamReadings — coleta 1 leitura por dia com 200 (campo presente OU ausente=0), pula 404", async () => {
   const fetchStats = async (apiDate: string) => {
     if (apiDate === "20260730") return { status: 404, body: null };
     if (apiDate === "20260729") return { status: 200, body: { userReportedSpamRatio: 0.009 } };
-    if (apiDate === "20260728") return { status: 200, body: { domainReputation: "HIGH" } }; // sem o campo = 0%
+    if (apiDate === "20260728") return { status: 200, body: { someUnrelatedField: true } }; // sem o campo = 0%
     return { status: 404, body: null };
   };
   const { readings, daysChecked } = await collectSpamReadings(7, NOW, fetchStats);
@@ -101,6 +137,28 @@ test("collectSpamReadings — janela inteira sem publicação (tudo 404) → rea
   const { readings, httpErrors } = await collectSpamReadings(5, NOW, fetchStats);
   assert.equal(readings.length, 0);
   assert.equal(httpErrors.length, 0);
+});
+
+test("collectSpamReadings — carrega domainReputation/ipReputations no DayReading quando presentes (#4703)", async () => {
+  const fetchStats = async (apiDate: string) => {
+    if (apiDate === "20260729")
+      return {
+        status: 200,
+        body: { userReportedSpamRatio: 0.009, domainReputation: "MEDIUM", ipReputations: [{ reputation: "MEDIUM" }] },
+      };
+    return { status: 404, body: null };
+  };
+  const { readings } = await collectSpamReadings(2, NOW, fetchStats);
+  assert.deepEqual(readings, [
+    { apiDate: "20260729", ratio: 0.009, domainReputation: "MEDIUM", ipReputations: [{ reputation: "MEDIUM" }] },
+  ]);
+});
+
+test("collectSpamReadings — dia sem os campos de reputação não os inclui no DayReading", async () => {
+  const fetchStats = async () => ({ status: 200, body: { userReportedSpamRatio: 0.01 } });
+  const { readings } = await collectSpamReadings(1, NOW, fetchStats);
+  assert.deepEqual(readings, [{ apiDate: "20260730", ratio: 0.01 }]);
+  assert.ok(!("domainReputation" in readings[0]));
 });
 
 // ── buildAveragedEntry ──
@@ -157,6 +215,29 @@ test("buildAveragedEntry — grava daysWithData (readings.length) e daysProbed (
 // é o mais recente — acha o apiDate máximo explicitamente, mesmo com input
 // fora de ordem (ex: um futuro collectSpamReadings paralelizado que não
 // preserve a ordem sequencial de hoje).
+// #4703: domainReputation/ipReputations são um SNAPSHOT do dia mais recente
+// (não faz sentido "mediar" um enum ou uma lista de IPs), e omitidos por
+// completo quando ausentes — nunca `undefined` explícito, mesma disciplina
+// de schema evolution de `daysWithData`/`daysProbed`.
+test("buildAveragedEntry — anexa domainReputation/ipReputations do dia mais recente (#4703)", () => {
+  const entry = buildAveragedEntry(
+    [
+      { apiDate: "20260728", ratio: 0.008, domainReputation: "HIGH" }, // mais antigo — reputação diferente, não deve vazar
+      { apiDate: "20260730", ratio: 0.016, domainReputation: "MEDIUM", ipReputations: [{ reputation: "MEDIUM", ipCount: "1" }] },
+    ],
+    NOW,
+    2,
+  );
+  assert.equal(entry?.domainReputation, "MEDIUM");
+  assert.deepEqual(entry?.ipReputations, [{ reputation: "MEDIUM", ipCount: "1" }]);
+});
+
+test("buildAveragedEntry — omite domainReputation/ipReputations por completo quando o dia mais recente não os trouxe", () => {
+  const entry = buildAveragedEntry([{ apiDate: "20260730", ratio: 0.01 }], NOW, 1);
+  assert.ok(entry && !("domainReputation" in entry));
+  assert.ok(entry && !("ipReputations" in entry));
+});
+
 test("buildAveragedEntry — acha o dia mais recente mesmo com readings fora de ordem", () => {
   const entry = buildAveragedEntry(
     [

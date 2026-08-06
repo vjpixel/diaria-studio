@@ -74,7 +74,7 @@ import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
 import { POSTMASTER_SPAM_KV_KEY } from "./postmaster-spam-entry.ts";
 import { HEALTH_SAMPLE_DAYS } from "../workers/brevo-dashboard/src/weekly-plan.ts";
-import type { PostmasterSpamEntry } from "./lib/dashboard-kv-types.ts";
+import type { PostmasterSpamEntry, PostmasterIpReputation } from "./lib/dashboard-kv-types.ts";
 
 loadProjectEnv();
 
@@ -97,6 +97,9 @@ export function apiDateToEntryDate(apiDate: string): string {
 
 export interface TrafficStatsResponse {
   userReportedSpamRatio?: number;
+  /** #4703: presentes na resposta e descartados até agora — ver `extractReputationSignal`. */
+  domainReputation?: string;
+  ipReputations?: PostmasterIpReputation[];
   [key: string]: unknown;
 }
 
@@ -118,9 +121,29 @@ export function extractDayRatio(body: TrafficStatsResponse): number {
   return typeof body.userReportedSpamRatio === "number" ? body.userReportedSpamRatio : 0;
 }
 
+/**
+ * Pura/testável: extrai `domainReputation`/`ipReputations` de uma resposta
+ * 200 (#4703). Ao contrário de `extractDayRatio`, aqui AUSENTE fica AUSENTE
+ * (`undefined`) — não existe um "default 0" que faça sentido pra reputação
+ * (diferente do double protobuf omitido = 0 de `userReportedSpamRatio`), e
+ * inventar um valor violaria a mesma disciplina de schema evolution já
+ * documentada pra `daysWithData`/`daysProbed` em `PostmasterSpamEntry`.
+ */
+export function extractReputationSignal(
+  body: TrafficStatsResponse,
+): { domainReputation?: string; ipReputations?: PostmasterIpReputation[] } {
+  const signal: { domainReputation?: string; ipReputations?: PostmasterIpReputation[] } = {};
+  if (typeof body.domainReputation === "string") signal.domainReputation = body.domainReputation;
+  if (Array.isArray(body.ipReputations)) signal.ipReputations = body.ipReputations;
+  return signal;
+}
+
 export interface DayReading {
   apiDate: string;
   ratio: number;
+  /** #4703: só presentes quando a resposta 200 do dia trouxe os campos — ver `extractReputationSignal`. */
+  domainReputation?: string;
+  ipReputations?: PostmasterIpReputation[];
 }
 
 export interface CollectSpamReadingsResult {
@@ -160,7 +183,7 @@ export async function collectSpamReadings(
 
     if (status === 200) {
       if (!body) continue; // defensivo — não deveria acontecer com status 200
-      readings.push({ apiDate, ratio: extractDayRatio(body) });
+      readings.push({ apiDate, ratio: extractDayRatio(body), ...extractReputationSignal(body) });
       continue;
     }
 
@@ -211,6 +234,12 @@ export function buildAveragedEntry(
     producedBy: "auto",
     daysWithData: readings.length,
     daysProbed,
+    // #4703: reputação é um snapshot do dia mais recente, não uma média — não
+    // faz sentido "mediar" um enum (BAD/LOW/MEDIUM/HIGH) nem uma lista de IPs.
+    // Omitido inteiramente (não `undefined` explícito) quando o dia mais
+    // recente não trouxe o campo, mesma disciplina de `daysWithData` acima.
+    ...(mostRecent.domainReputation !== undefined ? { domainReputation: mostRecent.domainReputation } : {}),
+    ...(mostRecent.ipReputations !== undefined ? { ipReputations: mostRecent.ipReputations } : {}),
   };
 }
 
