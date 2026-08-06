@@ -149,4 +149,66 @@ describe("#4691: <time> aninhado em card de 'artigos relacionados' não deve vir
     const result = extractDateFromBody(body);
     assert.equal(result.date, "2026-08-05");
   });
+
+  it("finding 1: <TIME> maiúsculo dentro de card de link ainda é reconhecido como aninhado (case-insensitive)", () => {
+    // Antes do fix, `lastIndexOf("<time")` era case-sensitive enquanto a regex
+    // que produz o match é `/i` — um `<TIME>` maiúsculo fazia lastIndexOf
+    // retornar -1, o guard nunca aplicava, e a data velha do card vazava.
+    const body = `
+      <main>
+        <div class="related-articles">
+          <a href="/index/other-article/">
+            <div class="text-h5">Related</div>
+            <p><TIME class="text-nowrap" DATETIME="2026-07-21T00:00:00-07:00">Jul 21, 2026</TIME></p>
+          </a>
+        </div>
+      </main>
+    `;
+    const result = extractDateFromBody(body);
+    assert.equal(result.date, null);
+    assert.equal(result.note, "no-date-found");
+  });
+
+  it("finding 3: <a\\nhref=...> com newline em vez de espaço ainda ativa o guard de anchor-card", () => {
+    // `lastIndexOf("<a ")` exigia um espaço literal após `<a` — minificadores
+    // e frameworks que quebram linha antes dos atributos (`<a\nhref=...>`)
+    // escapavam do guard, mesma classe de falha silenciosa do finding 1.
+    const body = `
+      <main>
+        <div class="related-articles">
+          <a
+            href="/index/other-article/">
+            <time datetime="2026-07-21T00:00:00-07:00">Jul 21, 2026</time>
+          </a>
+        </div>
+      </main>
+    `;
+    const result = extractDateFromBody(body);
+    assert.equal(result.date, null);
+    assert.equal(result.note, "no-date-found");
+  });
+
+  it("finding 2 (limitação conhecida, NÃO um bug): wrapper de card maior que a janela de 1500 chars escapa do guard e a data do card é aceita", () => {
+    // A janela de 1500 chars olhando pra trás é uma heurística barata, calibrada
+    // pro único caso confirmado até aqui (#4691). Se o `<a href=...>` do card
+    // abre mais de 1500 chars antes do `<time>`, o guard não enxerga a abertura
+    // e trata como "não está em card" — a data do card (potencialmente errada)
+    // é aceita. Este teste documenta esse limite deliberadamente, para que
+    // ele seja visível e não uma surpresa quando reaparecer; não é um convite
+    // para ajustar o valor da janela sem dados que justifiquem outro número.
+    const padding = "x".repeat(1600);
+    const body = `
+      <main>
+        <div class="related-articles">
+          <a href="/index/other-article/">
+            <p>${padding}</p>
+            <time datetime="2026-07-21T00:00:00-07:00">Jul 21, 2026</time>
+          </a>
+        </div>
+      </main>
+    `;
+    const result = extractDateFromBody(body);
+    // Comportamento conhecido: guard não aplica, data do card "vaza".
+    assert.equal(result.date, "2026-07-21");
+  });
 });

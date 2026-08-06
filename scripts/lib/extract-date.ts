@@ -45,9 +45,15 @@ function isInsideAnchorCard(body: string, index: number): boolean {
   if (index < 0) return false;
   const windowStart = Math.max(0, index - 1500);
   const before = body.slice(windowStart, index);
-  const lastAnchorOpen = before.lastIndexOf("<a ");
+  // Case-insensitive e tolerante a whitespace variado (espaço, \n, \t) após
+  // `<a` — minificadores/frameworks quebram linha antes dos atributos (#4691
+  // finding 1 e 3: `<TIME>` maiúsculo e `<a\nhref=...>` escapavam do guard).
+  let lastAnchorOpen = -1;
+  for (const m of before.matchAll(/<a\s/gi)) {
+    lastAnchorOpen = m.index ?? lastAnchorOpen;
+  }
   if (lastAnchorOpen === -1) return false;
-  const lastAnchorClose = before.lastIndexOf("</a>");
+  const lastAnchorClose = before.toLowerCase().lastIndexOf("</a>");
   return lastAnchorOpen > lastAnchorClose;
 }
 
@@ -167,7 +173,7 @@ export function extractDateFromBody(body: string): { date: string | null; note: 
       // começa em `<article`/`<main`/`<header`/classe de byline), não do
       // `<time` em si — localizar o offset real do `<time` dentro do match
       // pra checar a posição correta contra o guard de anchor-card.
-      const timeOffsetInMatch = articleTimeMatch[0].lastIndexOf("<time");
+      const timeOffsetInMatch = articleTimeMatch[0].toLowerCase().lastIndexOf("<time");
       const timeIndex =
         (articleTimeMatch.index ?? -1) >= 0 && timeOffsetInMatch >= 0
           ? (articleTimeMatch.index as number) + timeOffsetInMatch
