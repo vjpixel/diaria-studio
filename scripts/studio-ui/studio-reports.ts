@@ -12,11 +12,25 @@
  * (`data/editions/{AAMMDD}/_internal/edition-report.html`,
  * `data/overnight/{AAMMDD}/report.md`, `data/develop/{AAMMDD}/report.md`) —
  * este arquivo NÃO reinventa onde o conteúdo mora. O único artefato novo é um
- * índice append-only (`data/reports/index.jsonl`, mesma convenção de
- * `data/run-log.jsonl`/`data/sources/{slug}.jsonl`) que aponta pra esses
- * arquivos, porque não existe hoje um jeito barato de descobrir "todos os
- * relatórios de todas as sessões" sem esse índice (teria que varrer
- * `data/editions/*`, `data/overnight/*`, `data/develop/*` a cada request).
+ * índice (`data/reports/index.jsonl`) que aponta pra esses arquivos, porque
+ * não existe hoje um jeito barato de descobrir "todos os relatórios de todas
+ * as sessões" sem esse índice (teria que varrer `data/editions/*`,
+ * `data/overnight/*`, `data/develop/*` a cada request).
+ *
+ * **#4666: upsert por id, não append-only.** Até #4666 o registro era
+ * append-only (mesma convenção de `data/run-log.jsonl`/`data/sources/{slug}.jsonl`)
+ * e a leitura (`listReports`) dedupava por id na hora de exibir — a ideia era
+ * "a última linha física vence". Na prática, um caller que re-registra o
+ * MESMO `(kind, sessionId)` pra corrigir um relatório anterior (ex: rodada que
+ * abortou e depois foi retomada manualmente) deixava a entrada FALSA enterrada
+ * no arquivo pra sempre, e a superfície de notificação por e-mail (#4475)
+ * disparava 2× — uma vez por registro, sem saber que era uma correção.
+ * `registerReport` agora reescreve o arquivo removendo qualquer linha com o
+ * MESMO id antes de acrescentar a nova (`data/reports/index.jsonl` nunca tem
+ * 2 linhas pro mesmo id depois de #4666) — deixou de ser append-only, mas o
+ * *conteúdo* servido a cada `id` sempre foi "a versão mais recente", então o
+ * comportamento observável de `listReports`/`getReportById` não muda; só o
+ * arquivo físico não acumula lixo.
  *
  * **Registro é 100% file-based, nunca uma chamada HTTP ao Studio** — o
  * servidor pode estar parado no momento em que um relatório é gerado (é um
@@ -42,13 +56,14 @@
  * mas mantendo o Studio como onde o relatório de fato é lido.
  */
 
-import { existsSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { escHtml } from "../lib/html-escape.ts";
 import { sendGmailMessage, type GmailSendResult } from "../lib/gmail-send.ts";
 import { resolveEditorEmail } from "../lib/inbox-stats.ts";
 import { gFetch, CREDENTIALS_PATH_TEST_OVERRIDE_ENV } from "../google-auth.ts"; // #4478 achados 1/2
+import { acquireLock, releaseLock } from "../lib/file-lock.ts"; // #4677 — lock + write atômico do registry
 
 // #4347: "clarice-novos" — relatório da skill /diaria-clarice-novos (rodada
 // sem gate humano do laço cadastro-novo→envio-imediato, D14).
@@ -70,7 +85,8 @@ function registryPath(rootDir: string): string {
 /** Id estável do relatório — `{kind}-{sessionId}` (ex: `overnight-260720`).
  * Registrar de novo o mesmo `(kind, sessionId)` (relatório regenerado, ex:
  * `edition-report.html` reescrito em 6b-8 depois do 6b-6 descartável) reusa o
- * mesmo id — a leitura (`listReports`) sempre usa a linha mais recente. */
+ * mesmo id — `registerReport` faz upsert por esse id (#4666), então a entrada
+ * anterior é substituída, nunca duplicada. */
 export function reportId(kind: ReportKind, sessionId: string): string {
   return `${kind}-${sessionId}`;
 }
@@ -302,11 +318,29 @@ export async function dispatchReportEmail(
 }
 
 /**
- * Registra um relatório — append de 1 linha JSON em `data/reports/index.jsonl`.
- * Nunca reescreve/trunca o arquivo (append-only, mesma convenção de
- * `data/run-log.jsonl`): registrar de novo o mesmo id apenas adiciona uma
- * linha nova que supera a anterior na leitura (`listReports` dedupa por id,
- * última linha vence).
+ * Registra um relatório — upsert de 1 linha JSON em `data/reports/index.jsonl`,
+ * indexado por `reportId(kind, sessionId)` (#4666). Antes de escrever, remove
+ * qualquer linha existente com o MESMO id — registrar de novo o mesmo
+ * `(kind, sessionId)` (relatório regenerado, ou uma correção como o caso que
+ * abriu a #4666: rodada abortou, registrou "0 contatos", depois foi retomada
+ * manualmente e re-registrada com o resultado real) SUBSTITUI a entrada
+ * anterior no arquivo físico, nunca deixa as duas coexistindo. Linhas
+ * corrompidas (JSON inválido, ou sem campo `id` string) são preservadas
+ * verbatim — este passo só remove o que consegue identificar com certeza como
+ * "mesmo id", nunca arrisca descartar dado que não conseguiu interpretar.
+ *
+ * **#4677 (fleet review do #4666): lock + escrita atômica.** O read-modify-write
+ * inteiro (ler o registry, montar `nextLines`, gravar) roda sob
+ * `acquireLock`/`releaseLock` (`scripts/lib/file-lock.ts`, mesmo mecanismo de
+ * `social-published-store.ts`) — `index.jsonl` é escrito por processos
+ * concorrentes independentes (overnight, develop, diária, `clarice-novos`,
+ * CLI manual), então sem lock um "lost update" é só uma questão de timing:
+ * dois writers leem o mesmo snapshot, o segundo grava por cima do primeiro. A
+ * gravação em si vai pra um `.tmp` e só then `renameSync` pro path vivo —
+ * `rename` é atômico no filesystem, então uma falha (crash, disco cheio,
+ * OneDrive segurando o arquivo — `data/` é junction, ver CLAUDE.md) nunca
+ * deixa o arquivo real truncado ou vazio; na pior hipótese sobra um `.tmp`
+ * órfão, nunca a perda do registry inteiro.
  *
  * **Fail-soft por design (#3714):** qualquer falha de escrita (disco cheio,
  * permissão, `rootDir` inválido) nunca lança — retorna `{ok: false, error}`.
@@ -315,7 +349,7 @@ export async function dispatchReportEmail(
  * extra, não um passo crítico.
  *
  * **#4475: também dispara e-mail de notificação** (título + link, best-effort,
- * via `dispatchReportEmail`) depois que o append acima já terminou — a
+ * via `dispatchReportEmail`) depois que o upsert acima já terminou — a
  * promise fica disponível em `result.emailDispatch` pra quem quiser aguardar
  * (testes) mas NUNCA precisa ser aguardada por callers de produção (fail-soft:
  * `dispatchReportEmail` nunca rejeita).
@@ -330,7 +364,7 @@ export async function dispatchReportEmail(
  * edição, todo dia. `notify: false` pula o disparo inteiramente (nem chama
  * `dispatchReportEmail`, então `deps.hasCredentials` nunca roda pra essa
  * invocação) e resolve `emailDispatch` direto com
- * `{sent: false, skipped: "notify-disabled"}` — o append em `index.jsonl`
+ * `{sent: false, skipped: "notify-disabled"}` — o upsert em `index.jsonl`
  * acontece igual, só o e-mail é que não sai. Default `true` preserva o
  * comportamento anterior (#4475) pra todo caller que não passar nada —
  * inclusive a chamada final de 6b-8, que deve continuar notificando.
@@ -351,7 +385,18 @@ export function registerReport(
   };
   try {
     mkdirSync(resolve(rootDir, REPORTS_DIR), { recursive: true });
-    appendFileSync(registryPath(rootDir), JSON.stringify(entry) + "\n", "utf8");
+    const path = registryPath(rootDir);
+    const lockPath = path + ".lock";
+    acquireLock(lockPath);
+    try {
+      const otherLines = readLinesExcludingId(path, id);
+      const nextLines = [...otherLines, JSON.stringify(entry)];
+      const tmpPath = path + ".tmp";
+      writeFileSync(tmpPath, nextLines.join("\n") + "\n", "utf8");
+      renameSync(tmpPath, path);
+    } finally {
+      releaseLock(lockPath);
+    }
     return {
       ok: true,
       entry,
@@ -371,10 +416,51 @@ export function registerReport(
 }
 
 /**
- * Lê o registry inteiro, dedupa por id (última linha física vence — um
- * relatório regenerado "sobrescreve" a entry anterior na leitura sem truncar
- * o arquivo) e ordena por `createdAt` desc (mais recente no topo — #3714
- * pede "mais recentes no topo").
+ * Lê `path` (se existir) e retorna todas as linhas não-vazias EXCETO a(s) que
+ * tem `id` igual a `excludeId` — usado por `registerReport` pra fazer upsert
+ * (#4666): as linhas restantes formam a base sobre a qual a nova entrada é
+ * acrescentada.
+ *
+ * Linha corrompida (JSON inválido, ou sem campo `id` string) é preservada
+ * verbatim — sem conseguir confirmar que é "o mesmo id", o upsert nunca a
+ * descarta (mesma disciplina fail-soft de `listReports`, que ignora essas
+ * linhas na LEITURA sem apagá-las do arquivo).
+ */
+function readLinesExcludingId(path: string, excludeId: string): string[] {
+  if (!existsSync(path)) return [];
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return [];
+  }
+  const kept: string[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line) as Partial<ReportEntry>;
+      if (typeof parsed?.id === "string" && parsed.id === excludeId) {
+        continue; // será substituída pela entrada nova logo em seguida.
+      }
+    } catch {
+      // linha corrompida — não dá pra saber o id, preserva como está.
+    }
+    kept.push(line);
+  }
+  return kept;
+}
+
+/**
+ * Lê o registry inteiro, dedupa por id (última linha física vence) e ordena
+ * por `createdAt` desc (mais recente no topo — #3714 pede "mais recentes no
+ * topo").
+ *
+ * **O dedup aqui é defensivo, não a linha de defesa principal (#4666).** Desde
+ * #4666 `registerReport` já garante por construção que o arquivo nunca tem 2
+ * linhas pro mesmo id (upsert na escrita) — este `byId.set` continua existindo
+ * pra tolerar registry legado (linhas duplicadas escritas antes do fix) sem
+ * exigir migração, e como defesa em profundidade caso outra escrita direta no
+ * arquivo (fora de `registerReport`) volte a introduzir duplicatas.
  *
  * Fail-soft: registry ausente → `[]`; linha corrompida é ignorada
  * silenciosamente (nunca derruba a listagem inteira) — mesma convenção de
@@ -420,6 +506,99 @@ export function listReports(rootDir: string): ReportEntry[] {
  * nunca registrada ou registry ausente. */
 export function getReportById(rootDir: string, id: string): ReportEntry | null {
   return listReports(rootDir).find((r) => r.id === id) ?? null;
+}
+
+export interface PruneReportsRegistryResult {
+  ok: boolean;
+  /** Linhas não-vazias no arquivo antes da limpeza (0 se o registry não existe). */
+  linesBefore: number;
+  /** Linhas escritas de volta (1 por id único válido). */
+  linesAfter: number;
+  /** Linhas com `id` válido descartadas por serem cópia mais antiga do mesmo id. */
+  removedDuplicates: number;
+  /** Linhas descartadas por não terem `id` string (JSON inválido ou campo ausente). */
+  removedCorrupted: number;
+  error: string | null;
+}
+
+/**
+ * Ação de manutenção ONE-OFF (#4666) — reescreve `data/reports/index.jsonl`
+ * mantendo só 1 linha por id (a última fisicamente escrita, mesmo critério de
+ * `listReports`) e descartando linhas corrompidas. Nunca precisa rodar em uso
+ * normal: a partir de #4666 `registerReport` já faz upsert na escrita, então
+ * o arquivo nunca mais acumula uma duplicata NOVA. Este helper existe só pra
+ * limpar o histórico de duplicatas que se acumulou ANTES do fix (ex:
+ * `clarice-novos-novos-260805`, caso que abriu a issue) — CLI fina em
+ * `scripts/prune-reports-registry.ts`.
+ *
+ * **#4677:** mesmo lock + escrita atômica (`.tmp` + `renameSync`) de
+ * `registerReport` — a reescrita completa do arquivo é o mesmo padrão
+ * read-modify-write, sujeito ao mesmo risco de lost update se rodar
+ * concorrente com um `registerReport` de outro processo.
+ *
+ * Idempotente: rodar de novo sobre um arquivo já limpo não remove nada
+ * (`removedDuplicates`/`removedCorrupted` saem 0). Fail-soft, mesma disciplina
+ * de `registerReport` — qualquer falha de I/O vira `{ok: false, error}`, nunca
+ * lança.
+ */
+export function pruneReportsRegistry(rootDir: string): PruneReportsRegistryResult {
+  const path = registryPath(rootDir);
+  if (!existsSync(path)) {
+    return { ok: true, linesBefore: 0, linesAfter: 0, removedDuplicates: 0, removedCorrupted: 0, error: null };
+  }
+  const lockPath = path + ".lock";
+  try {
+    let rawLines: string[] = [];
+    let keptLines: string[] = [];
+    let removedCorrupted = 0;
+
+    acquireLock(lockPath);
+    try {
+      const raw = readFileSync(path, "utf8");
+      rawLines = raw.split("\n").filter((l) => l.trim());
+
+      const byId = new Map<string, string>();
+      for (const line of rawLines) {
+        let id: string | null = null;
+        try {
+          const parsed = JSON.parse(line) as Partial<ReportEntry>;
+          if (typeof parsed?.id === "string") id = parsed.id;
+        } catch {
+          // segue null — tratado como corrompida abaixo.
+        }
+        if (id === null) {
+          removedCorrupted++;
+          continue;
+        }
+        byId.set(id, line); // última linha física por id vence.
+      }
+
+      keptLines = [...byId.values()];
+      const tmpPath = path + ".tmp";
+      writeFileSync(tmpPath, keptLines.length ? keptLines.join("\n") + "\n" : "", "utf8");
+      renameSync(tmpPath, path);
+    } finally {
+      releaseLock(lockPath);
+    }
+
+    return {
+      ok: true,
+      linesBefore: rawLines.length,
+      linesAfter: keptLines.length,
+      removedDuplicates: rawLines.length - keptLines.length - removedCorrupted,
+      removedCorrupted,
+      error: null,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      linesBefore: 0,
+      linesAfter: 0,
+      removedDuplicates: 0,
+      removedCorrupted: 0,
+      error: (e as Error).message,
+    };
+  }
 }
 
 export interface ReportRenderResult {

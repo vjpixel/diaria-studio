@@ -10,7 +10,7 @@
  */
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -24,6 +24,7 @@ import {
   defaultHasCredentials,
   reportId,
   isReportKind,
+  pruneReportsRegistry,
   type ReportEntry,
   type ReportEmailDeps,
 } from "../scripts/studio-ui/studio-reports.ts";
@@ -117,7 +118,7 @@ describe("registerReport / listReports (#3714)", () => {
     );
   });
 
-  it("registrar de novo o MESMO (kind, sessionId) -> última entry vence na leitura, arquivo físico só cresce (append-only)", () => {
+  it("registrar de novo o MESMO (kind, sessionId) -> ATUALIZA a entrada existente no lugar, sem duplicar (upsert, #4666)", () => {
     const r = makeRoot();
     registerReport(r, {
       kind: "overnight",
@@ -135,13 +136,69 @@ describe("registerReport / listReports (#3714)", () => {
     });
 
     const reports = listReports(r);
-    assert.equal(reports.length, 1); // dedupado por id
+    assert.equal(reports.length, 1);
     assert.equal(reports[0].title, "diar.ia.br overnight 260720 — 5 resolvidas");
 
-    // append-only: o arquivo físico tem as 2 linhas, nunca foi truncado.
+    // upsert (#4666): o arquivo físico tem só 1 linha — a entrada antiga foi
+    // SUBSTITUÍDA, não apenas superada na leitura. Antes do fix o arquivo
+    // acumulava as 2 linhas pra sempre (PoC da issue: um registro FALSO
+    // "0 contatos" convivendo indefinidamente ao lado do correto).
     const raw = readFileSync(join(r, "data", "reports", "index.jsonl"), "utf8");
     const lines = raw.split("\n").filter((l) => l.trim());
-    assert.equal(lines.length, 2);
+    assert.equal(lines.length, 1);
+    assert.equal(JSON.parse(lines[0]).title, "diar.ia.br overnight 260720 — 5 resolvidas");
+  });
+
+  it("registrar o MESMO id 3x seguidas -> arquivo físico continua com exatamente 1 linha (#4666)", () => {
+    const r = makeRoot();
+    for (const title of ["v1", "v2", "v3 (final)"]) {
+      registerReport(r, {
+        kind: "clarice-novos",
+        sessionId: "novos-260805",
+        title,
+        htmlPath: "data/clarice-novos/260805/report.md",
+      });
+    }
+
+    const reports = listReports(r);
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].title, "v3 (final)");
+    assert.equal(reports[0].id, "clarice-novos-novos-260805");
+
+    const raw = readFileSync(join(r, "data", "reports", "index.jsonl"), "utf8");
+    const lines = raw.split("\n").filter((l) => l.trim());
+    assert.equal(lines.length, 1);
+  });
+
+  it("ids DIFERENTES continuam coexistindo normalmente (upsert só afeta o MESMO id)", () => {
+    const r = makeRoot();
+    registerReport(r, { kind: "edicao", sessionId: "260805", title: "Edição A", htmlPath: "a.html" });
+    registerReport(r, { kind: "edicao", sessionId: "260806", title: "Edição B", htmlPath: "b.html" });
+    registerReport(r, { kind: "overnight", sessionId: "260805", title: "Overnight", htmlPath: "c.md" });
+
+    const raw = readFileSync(join(r, "data", "reports", "index.jsonl"), "utf8");
+    const lines = raw.split("\n").filter((l) => l.trim());
+    assert.equal(lines.length, 3);
+
+    const reports = listReports(r);
+    assert.equal(reports.length, 3);
+    assert.deepEqual(
+      new Set(reports.map((r2) => r2.id)),
+      new Set(["edicao-260805", "edicao-260806", "overnight-260805"]),
+    );
+  });
+
+  it("registry existe mas vazio -> registerReport funciona normalmente (upsert em arquivo vazio, #4666)", () => {
+    const r = makeRoot();
+    mkdirSync(join(r, "data", "reports"), { recursive: true });
+    writeFileSync(join(r, "data", "reports", "index.jsonl"), "", "utf8");
+
+    const result = registerReport(r, { kind: "edicao", sessionId: "260805", title: "x", htmlPath: "x.html" });
+    assert.equal(result.ok, true);
+
+    const reports = listReports(r);
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].id, "edicao-260805");
   });
 
   it("linha corrompida no registry é ignorada, não derruba a listagem", () => {
@@ -189,6 +246,173 @@ describe("registerReport / listReports (#3714)", () => {
     });
     assert.equal(result?.ok, false);
     assert.ok(result?.error);
+  });
+});
+
+describe("registerReport — lock + escrita atômica (#4677, fleet review do #4666)", () => {
+  it("escritas concorrentes (mesmo lock serializando) não perdem entrada — lost update", () => {
+    // #4666 trocou append por read-modify-write; sem lock, dois writers que leem
+    // o mesmo snapshot e escrevem por cima um do outro perderiam a entrada de
+    // quem escreveu primeiro. Simula concorrência real chamando registerReport
+    // pra 2 ids DIFERENTES "ao mesmo tempo" (síncrono, mas o mecanismo de lock
+    // é o mesmo caminho que serializaria 2 processos reais).
+    const r = makeRoot();
+    for (let i = 0; i < 20; i++) {
+      registerReport(r, { kind: "edicao", sessionId: `26080${i % 10}-${i}`, title: `Edição ${i}`, htmlPath: "x.html" });
+    }
+
+    const reports = listReports(r);
+    assert.equal(reports.length, 20, "nenhuma das 20 escritas deve ter sido perdida por cima de outra");
+
+    const raw = readFileSync(join(r, "data", "reports", "index.jsonl"), "utf8");
+    const lines = raw.split("\n").filter((l) => l.trim());
+    assert.equal(lines.length, 20, "arquivo físico deve ter exatamente 1 linha por id, nenhuma perdida");
+  });
+
+  it("grava via .tmp + renameSync — o path vivo nunca fica com o nome do tmp, nunca some no meio da escrita", () => {
+    const r = makeRoot();
+    registerReport(r, { kind: "edicao", sessionId: "260805", title: "Edição A", htmlPath: "a.html" });
+
+    const dir = join(r, "data", "reports");
+    const entries = readdirSync(dir);
+    // Só o arquivo final deve sobrar — nenhum .tmp órfão pós-sucesso (rename
+    // consome o .tmp atomicamente).
+    assert.deepEqual(entries.sort(), ["index.jsonl"]);
+
+    const raw = readFileSync(join(dir, "index.jsonl"), "utf8");
+    assert.ok(raw.trim().length > 0, "arquivo real nunca deve ficar vazio/parcial após um registerReport bem-sucedido");
+    assert.doesNotThrow(() => JSON.parse(raw.trim()), "conteúdo do arquivo real deve ser JSON válido, nunca truncado");
+  });
+
+  it("registerReport concorrente com pruneReportsRegistry não corrompe o arquivo (mesmo lock, mesma exclusão mútua)", () => {
+    const r = makeRoot();
+    registerReport(r, { kind: "edicao", sessionId: "260805", title: "A", htmlPath: "a.html" });
+    registerReport(r, { kind: "edicao", sessionId: "260805", title: "A duplicada legada", htmlPath: "a2.html" }); // 2ª escrita, mesmo id
+
+    const pruneResult = pruneReportsRegistry(r);
+    assert.equal(pruneResult.ok, true);
+
+    // Registro novo depois do prune continua funcionando normalmente — prune
+    // não deixou o lock preso nem o arquivo num estado que trava o próximo write.
+    const after = registerReport(r, { kind: "overnight", sessionId: "260805", title: "B", htmlPath: "b.md" });
+    assert.equal(after.ok, true);
+
+    const reports = listReports(r);
+    assert.equal(reports.length, 2);
+  });
+});
+
+describe("pruneReportsRegistry (#4666 — limpeza de duplicatas legadas)", () => {
+  it("registry ausente -> no-op, ok:true com tudo zerado", () => {
+    const r = makeRoot();
+    const result = pruneReportsRegistry(r);
+    assert.deepEqual(result, {
+      ok: true,
+      linesBefore: 0,
+      linesAfter: 0,
+      removedDuplicates: 0,
+      removedCorrupted: 0,
+      error: null,
+    });
+  });
+
+  it("registry já limpo (só ids únicos) -> idempotente, 0 removidos", () => {
+    const r = makeRoot();
+    registerReport(r, { kind: "edicao", sessionId: "260805", title: "A", htmlPath: "a.html" });
+    registerReport(r, { kind: "overnight", sessionId: "260805", title: "B", htmlPath: "b.md" });
+
+    const result = pruneReportsRegistry(r);
+    assert.equal(result.ok, true);
+    assert.equal(result.linesBefore, 2);
+    assert.equal(result.linesAfter, 2);
+    assert.equal(result.removedDuplicates, 0);
+    assert.equal(result.removedCorrupted, 0);
+    assert.equal(listReports(r).length, 2);
+  });
+
+  it("duplicata legada (2 linhas físicas pro MESMO id, escritas antes do fix) -> colapsa pra 1, mantém a última", () => {
+    const r = makeRoot();
+    const path = join(r, "data", "reports");
+    mkdirSync(path, { recursive: true });
+    // Simula o estado PRÉ-#4666: append-only, 2 linhas com o mesmo id — o
+    // caso exato relatado na issue (registro FALSO "ABORTADA" + o correto).
+    const line1 = JSON.stringify({
+      id: "clarice-novos-novos-260805",
+      kind: "clarice-novos",
+      sessionId: "novos-260805",
+      title: "diar.ia.br Clarice novos 260805 — ABORTADA (semáforo vermelho, 0 contatos)",
+      htmlPath: "data/clarice-novos/260805/report.md",
+      createdAt: "2026-08-05T08:00:00.000Z",
+      url: "/relatorios/clarice-novos-novos-260805",
+    });
+    const line2 = JSON.stringify({
+      id: "clarice-novos-novos-260805",
+      kind: "clarice-novos",
+      sessionId: "novos-260805",
+      title: "diar.ia.br Clarice novos 260805 — 70 contatos agendados (corrige 'abortada')",
+      htmlPath: "data/clarice-novos/260805/report.md",
+      createdAt: "2026-08-05T14:00:00.000Z",
+      url: "/relatorios/clarice-novos-novos-260805",
+    });
+    writeFileSync(join(path, "index.jsonl"), `${line1}\n${line2}\n`, "utf8");
+
+    const result = pruneReportsRegistry(r);
+    assert.equal(result.ok, true);
+    assert.equal(result.linesBefore, 2);
+    assert.equal(result.linesAfter, 1);
+    assert.equal(result.removedDuplicates, 1);
+    assert.equal(result.removedCorrupted, 0);
+
+    const raw = readFileSync(join(path, "index.jsonl"), "utf8");
+    const lines = raw.split("\n").filter((l) => l.trim());
+    assert.equal(lines.length, 1);
+    assert.match(JSON.parse(lines[0]).title, /70 contatos agendados/);
+
+    const reports = listReports(r);
+    assert.equal(reports.length, 1);
+    assert.match(reports[0].title, /70 contatos agendados/);
+  });
+
+  it("linha corrompida é removida (contada em removedCorrupted), linhas válidas preservadas", () => {
+    const r = makeRoot();
+    registerReport(r, { kind: "edicao", sessionId: "260805", title: "A", htmlPath: "a.html" });
+    const path = join(r, "data", "reports", "index.jsonl");
+    writeFileSync(path, readFileSync(path, "utf8") + "{ not json\n");
+
+    const result = pruneReportsRegistry(r);
+    assert.equal(result.ok, true);
+    assert.equal(result.linesBefore, 2);
+    assert.equal(result.linesAfter, 1);
+    assert.equal(result.removedDuplicates, 0);
+    assert.equal(result.removedCorrupted, 1);
+    assert.equal(listReports(r).length, 1);
+  });
+
+  it("é idempotente: rodar 2x seguidas na mesma duplicata legada só remove na 1ª", () => {
+    const r = makeRoot();
+    const path = join(r, "data", "reports");
+    mkdirSync(path, { recursive: true });
+    const mk = (title: string) =>
+      JSON.stringify({
+        id: "overnight-260805",
+        kind: "overnight",
+        sessionId: "260805",
+        title,
+        htmlPath: "x.md",
+        createdAt: "2026-08-05T08:00:00.000Z",
+        url: "/relatorios/overnight-260805",
+      });
+    writeFileSync(join(path, "index.jsonl"), `${mk("velho")}\n${mk("novo")}\n`, "utf8");
+
+    const first = pruneReportsRegistry(r);
+    assert.equal(first.linesAfter, 1);
+    assert.equal(first.removedDuplicates, 1);
+
+    const second = pruneReportsRegistry(r);
+    assert.equal(second.linesBefore, 1);
+    assert.equal(second.linesAfter, 1);
+    assert.equal(second.removedDuplicates, 0);
+    assert.equal(second.removedCorrupted, 0);
   });
 });
 
