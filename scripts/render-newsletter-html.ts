@@ -35,7 +35,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // ── Re-exports (back-compat: callers import by name from this module) ──
 export type { EIA, NewsletterContent } from "./lib/newsletter-parse.ts";
-export type { RenderOpts } from "./lib/newsletter-render-html.ts";
+export type { RenderOpts, RenderWarningEvent } from "./lib/newsletter-render-html.ts"; // RenderWarningEvent: #4673
 export {
   CATEGORY_EMOJI,
   extractTemplateBlock,
@@ -90,13 +90,20 @@ export {
   renderHTML,
   renderEiaStandalone,
   assignDivulgacaoGaps, // #4624
+  getRenderWarnings, // #4673
 } from "./lib/newsletter-render-html.ts";
 
 export { singularizeSectionName } from "./lib/section-naming.ts";
 
 // ── Imports for main() ─────────────────────────────────────────────────
 import { extractContent } from "./lib/newsletter-parse.ts";
-import { renderHTML, renderEiaStandalone, type Esp } from "./lib/newsletter-render-html.ts";
+import {
+  renderHTML,
+  renderEiaStandalone,
+  resetRenderWarnings, // #4687
+  getRenderWarnings, // #4673
+  type Esp,
+} from "./lib/newsletter-render-html.ts";
 import { applyPatronosBoxes } from "./lib/newsletter-patronos.ts"; // #4275
 
 // #4266 — fonte única do conjunto válido; deriva mensagem de uso/erro do CLI
@@ -109,6 +116,36 @@ const ESP_SET: Record<Esp, true> = { beehiiv: true, brevo: true };
 const VALID_ESP = Object.keys(ESP_SET) as Esp[];
 
 // ── Main ──────────────────────────────────────────────────────────────
+
+/**
+ * #4673: persiste os eventos coletados por `getRenderWarnings()` (populados
+ * pela chamada de `renderHTML()` que acabou de rodar) em
+ * `_internal/render-warnings.json` — sinal consumível por caller programático
+ * (`checkRenderWarnings`, scripts/lib/invariant-checks/stage-4.ts), em vez de
+ * só stderr cru que nenhum caller do Stage 4 lia. Escreve SEMPRE (mesmo array
+ * vazio) — o Stage 4 pré-render roda de novo a cada retomada/re-render da
+ * edição (§4b/§4c.6b do orchestrator), e um arquivo escrito só quando há
+ * warning deixaria uma entrada STALE de uma rodada anterior sobrevivendo
+ * depois que a causa foi corrigida (edição sem perda voltaria a acusar
+ * warning fantasma). Sobrescrever sempre com o estado fresco desta chamada
+ * evita esse falso positivo.
+ */
+function writeRenderWarningsFile(resolvedDir: string): void {
+  const warnings = getRenderWarnings();
+  const internalDir = resolve(resolvedDir, "_internal");
+  mkdirSync(internalDir, { recursive: true });
+  const warningsPath = resolve(internalDir, "render-warnings.json");
+  writeFileSync(
+    warningsPath,
+    JSON.stringify({ generated_at: new Date().toISOString(), warnings }, null, 2) + "\n",
+  );
+  if (warnings.length > 0) {
+    console.error(
+      `[render-newsletter-html] ${warnings.length} evento(s) de conteúdo perdido gravado(s) em ` +
+        `${warningsPath} (#4673) — ver checkRenderWarnings no gate do Stage 4.`,
+    );
+  }
+}
 
 function main(): void {
   const args = process.argv.slice(2);
@@ -205,6 +242,7 @@ function main(): void {
     const bodyPath = resolve(internalDir, "newsletter-body.html");
     const eiaPath = resolve(internalDir, "newsletter-eia.html");
     const bodyHtml = renderHTML(content, { excludeEia: true });
+    writeRenderWarningsFile(resolvedDir); // #4673 — captura eventos desta chamada de renderHTML
     writeFileSync(bodyPath, bodyHtml + "\n");
     console.error(`Written body to ${bodyPath} (${bodyHtml.length} bytes)`);
     const eiaHtml = renderEiaStandalone(content);
@@ -220,10 +258,22 @@ function main(): void {
   let output: string;
   if (format === "json") {
     output = JSON.stringify(content, null, 2);
+    // #4687 — `renderHTML()` não roda neste branch, então `getRenderWarnings()`
+    // não reflete NADA desta invocação. Sem este reset+write explícitos, uma
+    // invocação anterior (--format html, mesmo processo — ex: testes; ou um
+    // `render-warnings.json` já em disco de uma execução anterior no mesmo
+    // diretório) deixava um aviso STALE sobrevivendo indefinidamente — o
+    // editor via "2 caixas dropadas" no gate do Stage 4 mesmo depois de
+    // corrigir a causa, porque `--format json` (uso legítimo de debug/
+    // inspeção) nunca reescrevia o arquivo. Resetar+escrever aqui também
+    // garante array vazio quando não há renderHTML nesta chamada.
+    resetRenderWarnings();
+    writeRenderWarningsFile(resolvedDir);
   } else {
     // #1936 --full: documento HTML completo (shell DS + preheader) pro preview/
     // email Worker-hosted. Sem a flag: fragmento container pro paste no Beehiiv.
     output = renderHTML(content, { fullDocument: flags.has("full"), esp });
+    writeRenderWarningsFile(resolvedDir); // #4673 — captura eventos desta chamada de renderHTML
   }
 
   if (outPath) {

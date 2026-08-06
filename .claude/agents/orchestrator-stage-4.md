@@ -156,7 +156,7 @@ npx tsx scripts/render-halt-banner.ts \
    ```bash
    npx tsx scripts/check-invariants.ts --stage 4 --edition-dir {EDITION_DIR}/
    ```
-   Exit 1 = pausar com violations no stderr. Editor corrige e re-roda. Inclui `image-crop-warn` (#3951, revisor de crop do Stage 3) — severity warning, nunca pausa; incluir no `{violations_block}` do gate (§4d). Inclui também `card-4x5-upload-missing` (#4090 item 4) — dispara quando `04-d{N}-4x5.jpg` existe no disco mas `06-public-images.json` não tem `d{N}_4x5.url` (upload não subiu o card); severity warning, nunca pausa, mas silêncio aqui publica o post no formato errado (1:1 sem título) — incluir no `{violations_block}` do gate (§4d).
+   Exit 1 = pausar com violations no stderr. Editor corrige e re-roda. Inclui `image-crop-warn` (#3951, revisor de crop do Stage 3) — severity warning, nunca pausa; incluir no `{violations_block}` do gate (§4d). Inclui também `card-4x5-upload-missing` (#4090 item 4) — dispara quando `04-d{N}-4x5.jpg` existe no disco mas `06-public-images.json` não tem `d{N}_4x5.url` (upload não subiu o card); severity warning, nunca pausa, mas silêncio aqui publica o post no formato errado (1:1 sem título) — incluir no `{violations_block}` do gate (§4d). Inclui também `render-warnings-consumed` (#4673) — lê `_internal/render-warnings.json` (escrito pelo `render-newsletter-html.ts` do step 2 acima, a cada chamada) e surfaced os eventos `divulgacao_box_dropped_no_gap` (caixa de divulgação COMERCIAL que não coube em nenhuma lacuna) e `whatsapp_share_no_d1` (bloco WhatsApp sem D1); severity warning, nunca pausa — incluir no `{violations_block}` do gate (§4d).
 
 ### 4c. Montar resumo consolidado da edição
 

@@ -1240,6 +1240,68 @@ function checkCard4x5UploadMismatch(editionDir: string): InvariantViolation[] {
   return violations;
 }
 
+/**
+ * #4673: `render-newsletter-html.ts` (via `renderHTML`/`getRenderWarnings`,
+ * scripts/lib/newsletter-render-html.ts) emite 2 eventos estruturados quando
+ * conteúdo editorial/comercial some silenciosamente do render — caixa de
+ * divulgação sem lacuna livre (`divulgacao_box_dropped_no_gap`, #4624) e
+ * bloco WhatsApp sem D1 (`whatsapp_share_no_d1`). Antes deste check, os dois
+ * ficavam só no `console.error` de qualquer terminal que por acaso estava
+ * rodando o render — nunca chegavam no resumo consolidado do gate que o
+ * editor de fato revisa antes de publicar. O CLI (§4b step 2 do orchestrator)
+ * grava esses eventos em `_internal/render-warnings.json` a cada chamada
+ * (sempre — mesmo array vazio, pra nunca deixar warning STALE de uma rodada
+ * anterior sobreviver). Warning-only, nunca bloqueia (mesmo padrão de
+ * `image-crop-warn`/`card-4x5-upload-missing` acima) — a decisão de como
+ * corrigir (reduzir caixas configuradas, promover/demover destaque) é
+ * editorial, não mecânica.
+ *
+ * Se o arquivo não existe (edição pré-#4673, ou render ainda não rodou nesta
+ * retomada), não é violação — o arquivo é escrito pelo pré-render, que roda
+ * ANTES deste invariant no fluxo do Stage 4 (§4b step 2 → §4b step 5).
+ */
+function checkRenderWarnings(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", "render-warnings.json");
+  if (!existsSync(path)) return [];
+  let data: { warnings?: Array<{ event?: string; edition?: string; slot?: number }> };
+  try {
+    data = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return [];
+  }
+  const warnings = Array.isArray(data.warnings) ? data.warnings : [];
+  const violations: InvariantViolation[] = [];
+  for (const w of warnings) {
+    if (w.event === "divulgacao_box_dropped_no_gap") {
+      violations.push({
+        rule: "divulgacao-box-dropped-no-gap",
+        message:
+          `Caixa de divulgação do slot ${w.slot ?? "?"} (platform.config.json → ` +
+          `boxes_divulgacao) não coube em nenhuma lacuna livre desta edição — conteúdo ` +
+          `COMERCIAL configurado não sairá publicado. Fix: reduzir o número de caixas ` +
+          `configuradas para o número de lacunas disponíveis (D1/D2, D2/D3 + região ` +
+          `pós-último-destaque), ou ajustar quais slots estão engajados.`,
+        source_issue: "#4673",
+        severity: "warning",
+        file: path,
+      });
+    } else if (w.event === "whatsapp_share_no_d1") {
+      violations.push({
+        rule: "whatsapp-share-no-d1",
+        message:
+          `Bloco "Compartilhe no WhatsApp" não foi renderizado — a edição não tem D1 ` +
+          `(nunca deveria acontecer dado o invariante de 2-3 destaques, mas o bloco ` +
+          `depende de D1 pra existir). Fix: confirmar que 02-reviewed.md tem ao menos 1 ` +
+          `destaque antes de publicar.`,
+        source_issue: "#4673",
+        severity: "warning",
+        file: path,
+      });
+    }
+  }
+  return violations;
+}
+
 export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "public-images-populated",
@@ -1367,6 +1429,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     stage: 4,
     run: checkBoxDivulgacaoRuntimeExcluded,
   },
+  {
+    id: "render-warnings-consumed",
+    description: "eventos estruturados de render-newsletter-html.ts (divulgacao_box_dropped_no_gap / whatsapp_share_no_d1) surfaced no gate (#4673, warning-only)",
+    source_issue: "#4673",
+    stage: 4,
+    run: checkRenderWarnings,
+  },
   // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
   // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem
   // bloquear a Revisão (Stage 4) quando tokens expirados ou não configurados.
@@ -1395,4 +1464,5 @@ export {
   checkBoxDivulgacaoAltMissing,
   checkCard4x5UploadMismatch,
   checkBoxDivulgacaoRuntimeExcluded,
+  checkRenderWarnings,
 };

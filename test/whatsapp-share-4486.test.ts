@@ -46,6 +46,8 @@ import {
   buildWhatsappShareLink,
   renderWhatsappShare,
   renderHTML,
+  resetRenderWarnings, // #4673
+  getRenderWarnings, // #4673
 } from "../scripts/lib/newsletter-render-html.ts";
 import { seoSlug } from "../scripts/lib/slug.ts";
 import { escHtml } from "../scripts/lib/html-escape.ts";
@@ -204,6 +206,21 @@ describe("#4570 — renderWhatsappShare (HTML)", () => {
 
   it("retorna string vazia quando não há destaques (defensivo)", () => {
     assert.equal(renderWhatsappShare([], EDITION), "");
+  });
+
+  it("#4673: getRenderWarnings() expõe whatsapp_share_no_d1 pra caller programático (não só console.error)", () => {
+    resetRenderWarnings();
+    renderWhatsappShare([], EDITION);
+    const warnings = getRenderWarnings();
+    assert.equal(warnings.length, 1, `esperado 1 evento coletado, obtido: ${JSON.stringify(warnings)}`);
+    assert.equal(warnings[0].event, "whatsapp_share_no_d1");
+    assert.equal(warnings[0].edition, EDITION);
+  });
+
+  it("#4673: caso normal (D1 presente) não deixa ruído — nenhum evento coletado", () => {
+    resetRenderWarnings();
+    renderWhatsappShare([makeD1()], EDITION);
+    assert.deepEqual(getRenderWarnings(), [], "D1 presente não deve produzir nenhum evento coletado");
   });
 
   it("a URL da edição (diar.ia.br/p/{slug}) viaja dentro do texto do wa.me, mesmo não aparecendo crua no box (#4582)", () => {

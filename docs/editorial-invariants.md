@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 67 invariants.
+**Total**: 68 invariants.
 
 ## Static (estrutura do repo)
 
@@ -75,6 +75,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `narrative-not-generic-placeholder` | narrative ERRO INTENCIONAL é declaração real de primeira pessoa (#2377) | #2377 |
 | `no-trailing-ellipsis` | descrição de item secundário não termina em reticências herdadas da fonte (#2881) | #2881 |
 | `public-images-populated` | 06-public-images.json com URLs d1/d2/d3 (#999) | #999 |
+| `render-warnings-consumed` | eventos estruturados de render-newsletter-html.ts (divulgacao_box_dropped_no_gap / whatsapp_share_no_d1) surfaced no gate (#4673, warning-only) | #4673 |
 | `social-hash-fresh` | social.md hash bate com approved.json highlights (#1413) | #1413 |
 | `title-publisher-suffix` | título sem sufixo residual de veículo (' \| Veículo' / ' - Veículo', #2664) | #2664 |
 | `title-trailing-period` | título de destaque/item sem ponto final único (#2672) | #2672 |
