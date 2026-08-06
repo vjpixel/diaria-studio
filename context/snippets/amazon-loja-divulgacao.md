@@ -24,10 +24,10 @@ newsletter-render-html.ts, #3204), sem precisar de imagem.
 
 **Equipamentos que eu uso**
 
-Reuni numa vitrine da Amazon o que uso de verdade no dia a dia: câmera, microfone, setup de trabalho inteiro.
+Como trabalho com tecnologia e pesquiso bastante antes de adquirir, muita gente me pergunta o que comprar. Juntei tudo em um só lugar.
 
-Todo mundo me pergunta o que comprar, e eu pesquiso bastante antes de qualquer equipamento novo — então fazia sentido juntar tudo num lugar só.
+Cada item tem um comentário explicando por que escolhi ele. Basta clicar no botão no canto inferior direito da foto para ler.
 
-Cada item tem um comentário meu explicando por que escolhi aquele modelo. É só clicar no botão no canto inferior direito da foto pra ler.
+Se quiser saber mais sobre minha experiência com algum equipamento, responda a um e-mail da newsletter.
 
 [Confira a vitrine](https://www.amazon.com.br/shop/vjpixel)

@@ -93,6 +93,25 @@ const SCOPES = [
   // em `data/.credentials.json` NÃO ganha este scope sozinho — sem re-rodar
   // este script e reaprovar no browser, a falha só aparece no POST, com 403.
   "https://www.googleapis.com/auth/postmaster.domain",
+  // #4704: ler `trafficStats` pela API **v2** (`domainStats:query`), que a v1
+  // não tem. É o que desbloqueia spam POR CAMPANHA — as métricas
+  // `FEEDBACK_LOOP_ID`/`FEEDBACK_LOOP_SPAM_RATE` só existem na v2, e o
+  // identificador vem do header `Feedback-ID` que a Brevo já manda
+  // (`{conta}_{campanha}`). A v2 aceita `.../auth/postmaster` OU
+  // `.../auth/postmaster.traffic.readonly`; usamos o segundo (mais estreito —
+  // só leitura de estatística, sem abrir gestão de domínio nem usuários).
+  //
+  // SOMA aos dois de Postmaster acima, não substitui: `postmaster.readonly` é
+  // o eixo da v1 (`trafficStats` por data, que o sync diário usa hoje),
+  // `postmaster.domain` é gestão de domínio, e este é leitura de estatística
+  // na v2 — três eixos distintos, nenhum superset do outro.
+  //
+  // Mesma armadilha dos blocos acima, confirmada AO VIVO em 06/08: com o token
+  // atual, `GET /v2/domains` responde 200 mas `POST /v2/{d}/domainStats:query`
+  // devolve 403 `ACCESS_TOKEN_SCOPE_INSUFFICIENT`. O token já emitido em
+  // `data/.credentials.json` NÃO ganha este scope sozinho — exige re-rodar
+  // este script e reaprovar no browser.
+  "https://www.googleapis.com/auth/postmaster.traffic.readonly",
   // #4064: enviar o e-mail de alarme de guardrail furado do ramp Clarice
   // (`scripts/clarice-guardrail-alarm.ts`) via Gmail API direta — rodando fora
   // de uma sessão Claude Code (Task Scheduler), sem MCP Gmail disponível.
