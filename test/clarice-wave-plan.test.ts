@@ -21,6 +21,7 @@ import {
   MV_COST_PER_EMAIL_USD,
   type WaveProposalInput,
 } from "../scripts/lib/clarice-wave-plan.ts";
+import { COHORT_ASSINANTES_ATIVOS } from "../scripts/lib/cohorts.ts";
 import {
   buildGroupCells,
   buildSingleWave,
@@ -572,6 +573,22 @@ describe("REGRESSÃO (#4669): evaluateSunsetBlastRadius — guard reporta a cont
     assert.equal(g.eligibleBefore, 0);
     assert.equal(g.ratio, 0);
     assert.equal(g.exceedsThreshold, false);
+  });
+
+  it("#4688: assinantes-ativos (mvExempt) NÃO entra no cutCount — classifyEligibility já os isenta do corte real", () => {
+    const rows = [
+      // Seria contado como não-abridor pelo cálculo cru, mas é assinante-ativo
+      // — classifyEligibility isenta esse cohort do corte de sunset (ver
+      // clarice-db.ts), então não pode aparecer como "seria cortado" aqui.
+      { send_eligible: 1, sends_count: 3, opens_count: 0, cohort: COHORT_ASSINANTES_ATIVOS },
+      // Corte real: não é assinante-ativo.
+      { send_eligible: 1, sends_count: 3, opens_count: 0, cohort: "leads-2025h2" },
+      { send_eligible: 1, sends_count: 1, opens_count: 0, cohort: "leads-2025h2" },
+    ];
+    const g = evaluateSunsetBlastRadius(rows);
+    assert.equal(g.cutCount, 1, "só o lead com 3 envios/0 aberturas conta — o assinante-ativo é isento");
+    assert.equal(g.eligibleBefore, 3, "o denominador continua contando TODOS os elegíveis, inclusive o assinante-ativo");
+    assert.equal(g.ratio, 1 / 3);
   });
 
   it("renderSunsetBlastRadiusGuard: mensagem contém contagem, base, % e o limiar", () => {

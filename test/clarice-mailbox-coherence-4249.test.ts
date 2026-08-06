@@ -12,6 +12,7 @@ import {
   computeMailboxDryrunReport,
   renderMailboxDryrunMarkdown,
 } from "../scripts/lib/clarice-mailbox-dryrun.ts";
+import { isReativacao } from "../scripts/lib/clarice-segment.ts";
 
 // ---------------------------------------------------------------------------
 // #4249 — coerência por caixa canônica (Gmail ignora ponto/+tag no
@@ -110,6 +111,81 @@ describe("resolveMailboxCoherence: supressão propaga pela caixa canônica (#424
     assert.equal(resolved.get(b.email)!.send_eligible, false);
     assert.equal(resolved.get(b.email)!.ineligible_reason, "mv_rejected");
     assert.equal(resolved.get(b.email)!.mailbox_suppressed, false, "já era inelegível por conta própria — supressão da irmã não é a CAUSA aqui");
+  });
+});
+
+describe("resolveMailboxCoherence × isReativacao (#4669/#4688 — bug de consentimento)", () => {
+  // Linha B bateria o sunset por conta própria (3 envios, 0 aberturas,
+  // sem MV ruim) — isolado, isReativacao(B) seria true (comportamento
+  // intencional do #4669: sunset não é definitivo, reativação é o caminho
+  // de volta). O bug: quando a MESMA caixa tem uma linha irmã com sinal de
+  // consentimento/entrega real (unsub/hard_bounce/complaint), a supressão de
+  // caixa precisa VENCER o rótulo de sunset — senão isReativacao volta a
+  // ofertar a caixa suprimida pra reengajamento.
+  const nonOpener = (email: string): MailboxRow => ({
+    ...CLEAN,
+    email,
+    sends_count: 3,
+    opens_count: 0,
+    mv_bucket: "verified",
+  });
+
+  it("irmã unsubscribed vence o rótulo non_opener_sunset — B não entra em reativacao", () => {
+    const a: MailboxRow = { ...CLEAN, email: "saiu.daqui@gmail.com", unsubscribed: true };
+    const b = nonOpener("saiudaqui@gmail.com"); // mesma caixa, sem ponto
+    const resolved = resolveMailboxCoherence([a, b]);
+    const rb = resolved.get(b.email)!;
+    assert.equal(rb.send_eligible, false);
+    assert.equal(rb.ineligible_reason, "mailbox_suppressed", "supressão de consentimento vence o sunset, não o contrário");
+    assert.equal(rb.mailbox_suppressed, true);
+    assert.equal(
+      isReativacao({ email: b.email, ...rb, sends_count: b.sends_count, opens_count: b.opens_count }),
+      false,
+      "caixa suprimida por unsub da irmã NUNCA deve voltar como alvo de reativação",
+    );
+  });
+
+  it("irmã hard_bounced vence o rótulo non_opener_sunset — B não entra em reativacao", () => {
+    const a: MailboxRow = { ...CLEAN, email: "quicou.aqui@gmail.com", hard_bounced: true };
+    const b = nonOpener("quicouaqui@gmail.com");
+    const resolved = resolveMailboxCoherence([a, b]);
+    const rb = resolved.get(b.email)!;
+    assert.equal(rb.send_eligible, false);
+    assert.equal(rb.ineligible_reason, "mailbox_suppressed");
+    assert.equal(
+      isReativacao({ email: b.email, ...rb, sends_count: b.sends_count, opens_count: b.opens_count }),
+      false,
+    );
+  });
+
+  it("irmã complained vence o rótulo non_opener_sunset — B não entra em reativacao", () => {
+    const a: MailboxRow = { ...CLEAN, email: "reclamou.aqui@gmail.com", complained: true };
+    const b = nonOpener("reclamouaqui@gmail.com");
+    const resolved = resolveMailboxCoherence([a, b]);
+    const rb = resolved.get(b.email)!;
+    assert.equal(rb.send_eligible, false);
+    assert.equal(rb.ineligible_reason, "mailbox_suppressed");
+    assert.equal(
+      isReativacao({ email: b.email, ...rb, sends_count: b.sends_count, opens_count: b.opens_count }),
+      false,
+    );
+  });
+
+  it("caso legítimo (sunset PURO, sem irmã suprimida) CONTINUA entrando em reativacao", () => {
+    const clean: MailboxRow = { ...CLEAN, email: "vizinha.limpa@gmail.com" }; // não suprime a caixa
+    const b = nonOpener("vizinhalimpa2@gmail.com"); // caixa DIFERENTE — não colide com a acima
+    const resolved = resolveMailboxCoherence([b]);
+    const rb = resolved.get(b.email)!;
+    assert.equal(rb.send_eligible, false);
+    assert.equal(rb.ineligible_reason, "non_opener_sunset", "sem supressão de caixa, o rótulo do sunset se mantém");
+    assert.equal(rb.mailbox_suppressed, false);
+    assert.equal(
+      isReativacao({ email: b.email, ...rb, sends_count: b.sends_count, opens_count: b.opens_count }),
+      true,
+      "sunset puro continua sendo o caso legítimo de reativação (#4669)",
+    );
+    // referência ao vizinho limpo só pra documentar que ele não participa deste grupo.
+    void clean;
   });
 });
 

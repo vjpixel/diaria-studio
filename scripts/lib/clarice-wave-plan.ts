@@ -53,7 +53,7 @@ import {
 } from "../../workers/brevo-dashboard/src/sections-core.ts";
 import type { BrevoCampaign } from "../../workers/brevo-dashboard/src/types.ts";
 import type { StoreRow } from "./clarice-segment.ts";
-import { NON_OPENER_SUNSET_MIN_SENDS } from "./cohorts.ts";
+import { NON_OPENER_SUNSET_MIN_SENDS, isMvExemptCohort } from "./cohorts.ts";
 
 // ---------------------------------------------------------------------------
 // Datas e chaves da onda — determinístico, nunca inferido de weekday
@@ -519,18 +519,27 @@ export interface SunsetBlastRadiusGuard {
  * depois, só que o resultado tende a `cutCount=0` em regime estacionário).
  */
 export function evaluateSunsetBlastRadius(
-  rows: Array<Pick<StoreRow, "send_eligible" | "sends_count" | "opens_count">>,
+  rows: Array<Pick<StoreRow, "send_eligible" | "sends_count" | "opens_count" | "cohort">>,
   minSends: number = NON_OPENER_SUNSET_MIN_SENDS,
 ): SunsetBlastRadiusGuard {
-  const exposure = measureNonOpenerExposure(rows, minSends);
+  // #4688: `classifyEligibility` isenta `assinantes-ativos` (mvExempt) do
+  // corte de sunset — um pagante nunca perde a newsletter por não abrir
+  // e-mail de reengajamento (ver bloco em clarice-db.ts). `measureNonOpenerExposure`
+  // não recebe `cohort` (contrato genérico, reusado por `clarice-plan-wave.ts`
+  // com N=2 só como indicador de tendência — NÃO mudar essa assinatura/
+  // semântica aqui, ver instrução do PR), então o desconto da isenção é feito
+  // localmente: filtramos as linhas isentas ANTES de medir, restrito a este
+  // guard, sem afetar o outro call site.
+  const nonExemptRows = rows.filter((r) => !isMvExemptCohort(r.cohort));
+  const exposure = measureNonOpenerExposure(nonExemptRows, minSends);
   let eligibleBefore = 0;
   for (const r of rows) if (r.send_eligible === 1) eligibleBefore += 1;
   return {
     cutCount: exposure.count,
     eligibleBefore,
-    ratio: exposure.fraction,
+    ratio: eligibleBefore > 0 ? exposure.count / eligibleBefore : 0,
     minSends,
-    exceedsThreshold: exposure.fraction > SUNSET_BLAST_RADIUS_THRESHOLD,
+    exceedsThreshold: (eligibleBefore > 0 ? exposure.count / eligibleBefore : 0) > SUNSET_BLAST_RADIUS_THRESHOLD,
   };
 }
 

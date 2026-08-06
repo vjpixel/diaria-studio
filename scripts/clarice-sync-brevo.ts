@@ -183,6 +183,7 @@ export async function main(
   // não distinguia "flag ausente" de "valor inválido" — mesma classe do
   // incidente #4476/#4496).
   const limitArg = getIntArg(argv, "limit") ?? 0;
+  const forceBlastRadius = hasFlag(argv, "force-blast-radius");
   const { checkpoint: CHECKPOINT, checkpointInc: CHECKPOINT_INC } =
     checkpointPathsForDb(dbPath);
 
@@ -289,10 +290,33 @@ export async function main(
   // `recomputeDerived` — depois dela os cortados já são send_eligible=0 e
   // não apareceriam mais aqui.
   const preRecomputeRows = db
-    .prepare("SELECT send_eligible, sends_count, opens_count FROM clarice_users")
-    .all() as Array<{ send_eligible: number; sends_count: number; opens_count: number }>;
+    .prepare("SELECT send_eligible, sends_count, opens_count, cohort FROM clarice_users")
+    .all() as Array<{ send_eligible: number; sends_count: number; opens_count: number; cohort: string | null }>;
   const sunsetGuard = evaluateSunsetBlastRadius(preRecomputeRows);
   console.error(`⚙️  ${renderSunsetBlastRadiusGuard(sunsetGuard)}`);
+
+  // #4688: decisão do editor — o guard passa a BLOQUEAR acima do limiar
+  // (era só log, `exceedsThreshold` nunca lido — #4669 follow-up), mesmo
+  // padrão de `evaluateBlastRadiusGuard`/`--force-blast-radius` em
+  // sync-apoio-nivel-beehiiv.ts (#4436). `recomputeDerived` NÃO roda quando
+  // bloqueado — o corte fica represado no store até o editor investigar ou
+  // forçar conscientemente. Uso da flag é sempre logado.
+  if (sunsetGuard.exceedsThreshold && !forceBlastRadius) {
+    console.error(
+      `❌ RECUSANDO recomputeDerived (guard de blast radius do sunset acima) — nenhum contato foi ` +
+        "cortado nesta rodada. Confira se é bug de dado antes de usar --force-blast-radius " +
+        "(decisão consciente do editor, sempre logada).",
+    );
+    db.close();
+    // #4651: pós-await (pool/fetch já rodou acima) — process.exit() direto
+    // aqui é a mesma classe de crash libuv no Windows já corrigida em outros
+    // 4 scripts (ver CLAUDE.md); process.exitCode + return é o padrão seguro.
+    process.exitCode = 1;
+    return;
+  }
+  if (sunsetGuard.exceedsThreshold && forceBlastRadius) {
+    console.error("⚠️  --force-blast-radius usado — aplicando o corte de sunset apesar do guard EXCEDIDO acima.");
+  }
 
   // Concluído: recompute global + limpa checkpoint.
   console.error(`⚙️  recomputando derivados (send_eligible + priority_points)…`);

@@ -874,12 +874,32 @@ export function resolveMailboxCoherence(
     for (const r of groupRows) {
       const own = ownElig.get(r.email)!;
       const ownSignal = r.email_blacklisted || r.unsubscribed || r.complained;
+      // #4669/#4688: quando a razão PRÓPRIA é o sunset de não-abridores
+      // (comportamento, não consentimento — a razão mais "fraca" do rubrico,
+      // ver classifyEligibility) e a caixa TAMBÉM está suprimida por sinal de
+      // consentimento/entrega real de uma linha irmã (unsub/hard_bounce/
+      // complaint), a supressão de caixa vence: `mailbox_suppressed` prevalece
+      // sobre `non_opener_sunset`. Sem isso, `isReativacao` (clarice-segment.ts,
+      // que reconhece especificamente NON_OPENER_SUNSET_REASON pra continuar
+      // ofertando reativação) mandaria e-mail de reengajamento pra uma caixa
+      // cujo dono já pediu pra sair — a razão própria mais fraca não pode
+      // mascarar um consentimento real mais forte só porque avaliada primeiro.
+      // Qualquer OUTRA razão própria (unsub, hard_bounce, mv_rejected, etc.)
+      // continua vencendo como antes (#4249) — só o sunset cede precedência.
       if (!own.send_eligible) {
-        afterSuppression.set(r.email, {
-          eligible: false,
-          reason: own.ineligible_reason,
-          suppressedBySibling: false,
-        });
+        if (own.ineligible_reason === NON_OPENER_SUNSET_REASON && mailboxSuppressed && !ownSignal) {
+          afterSuppression.set(r.email, {
+            eligible: false,
+            reason: "mailbox_suppressed",
+            suppressedBySibling: true,
+          });
+        } else {
+          afterSuppression.set(r.email, {
+            eligible: false,
+            reason: own.ineligible_reason,
+            suppressedBySibling: false,
+          });
+        }
       } else if (mailboxSuppressed && !ownSignal) {
         afterSuppression.set(r.email, {
           eligible: false,
