@@ -430,7 +430,7 @@ npx tsx scripts/research-review-dates.ts \
   --verify-cache data/link-verify-cache.json \
   --link-verify-json {EDITION_DIR}/_internal/link-verify-all.json
 ```
-Output: `{ categorized, stats }`. Logar `stats.date_corrected`, `stats.fetch_failed`, `stats.removed_date_window`.
+Output: `{ categorized, stats }`. Logar `stats.date_corrected`, `stats.fetch_failed`, `stats.removed_date_window`. `stats.editorSubmittedLost` (#4656) deveria ser sempre `[]` — submissão do editor nunca é removida pela janela de data (guard em `filter-date-window.ts`, mesmo precedente de `dedup.ts` Pass 1d/#4192); se vier não-vazio é regressão do guard, ver item 4b do gate abaixo.
 
 **#1554 P2 — `--link-verify-json`**: passa o output do passo 1i (verify-accessibility). Verify-accessibility já fetcha cada URL e extrai `published_date` inline durante o GET. Quando esse campo está populado, o script aqui faz pre-skip do verifyDate (sem novo HTTP GET) — economiza 2-4 min em edições com 70+ artigos. URLs sem pre-extracted date (browser fallback, HEAD-only, fetch failed) caem no caminho normal de verifyDate.
 
@@ -748,6 +748,8 @@ Apresentar ao usuário:
    ⚠️ N submissão(ões) sua(s) removida(s) pelo dedup: {title} — motivo: {dedup_note}
    ```
    Onde N = `editorSubmittedLost.length`. Nota: `editorSubmittedLost` já exclui as submissões que o próprio dedup conseguiu resgatar via um sobrevivente same-story (`editor_submitted_url`, #4193) — só o que ficou genuinamente sem sobrevivente aparece aqui.
+
+4b. **⚠️ Submissões do editor removidas pela janela de data (#4656):** ler `stats.editorSubmittedLost` de `_internal/tmp-dates-reviewed.json` (passo 1p1). Best-effort, nunca bloqueia; vazio/ausente → omitir; se não-vazio, uma linha por entry: `⚠️ N submissão(ões) sua(s) removida(s) pela janela de data: {title} — motivo: {detail}` (N = `.length`). `filter-date-window.ts` isenta `flag: "editor_submitted"` dessa remoção desde #4656 (mesmo precedente do dedup Pass 1d/#4192) — deveria estar sempre vazio; só dispara se um refactor futuro quebrar o guard. **Contrapartida (#4685):** ler também `stats.dateWindowSpared` (mesmo arquivo) — a isenção É incondicional, então artigos fora da janela SÃO mantidos; se não-vazio, exibir `⚠️ N submissão(ões) sua(s) mantida(s) fora da janela de data pela isenção: {title} [{bucket}] — confira se ainda vale publicar` (N = `.length`), pra distinguir do `⚠️` genérico de `date_unverified` no `01-categorized.md`.
 
 5. **Relatório de saúde das fontes:**
    - `⚠️` por fonte com outcome não-ok *nesta execução*.

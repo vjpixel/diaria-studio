@@ -102,6 +102,24 @@ export interface ReviewStats {
   removed_date_window: number;
   total_output: number;
   removals: Array<{ url: string; reason: string; detail: string }>;
+  /**
+   * #4656: espelha `filterDateWindow(...).editorSubmittedLost` — submissões
+   * do editor que, apesar do guard de isenção em filter-date-window.ts, ainda
+   * assim foram removidas pela janela de data. Deveria ser sempre `[]`; o
+   * gate da Etapa 1 lê este campo (mesmo padrão de `editorSubmittedLost[]`
+   * do dedup.ts, #4192) pra nunca depender só do console.error passar
+   * despercebido.
+   */
+  editorSubmittedLost: Array<{ url: string; title?: string; detail: string }>;
+  /**
+   * #4685 (follow-up do #4656): artigos `editor_submitted` mantidos SÓ por
+   * causa da isenção de janela — `filter-date-window.ts` marca
+   * `date_window_spared: true` neles, mas nada lia esse campo até aqui. O
+   * gate da Etapa 1 precisa saber quando a isenção incondicional de fato
+   * salvou uma submissão velha (ou não-drenada), não só quando o guard
+   * falhou (`editorSubmittedLost` acima).
+   */
+  dateWindowSpared: Array<{ url: string; title?: string; bucket: string }>;
 }
 
 /**
@@ -174,6 +192,54 @@ export function unwrapCategorized(input: unknown): CategorizedShape {
     return obj as CategorizedShape;
   }
   throw new Error("Input não é um objeto categorized válido");
+}
+
+/**
+ * Pure: monta o `ReviewStats` final a partir do resultado de `filterDateWindow`
+ * + contadores do passo de verify. Extraído pra testar sem precisar de fetch
+ * real (o resto de `main()` depende de rede) — cobre especificamente a
+ * propagação de `editorSubmittedLost` (#4656).
+ */
+export function buildReviewStats(
+  totalInput: number,
+  dateCorrected: number,
+  fetchFailed: number,
+  filterResult: ReturnType<typeof filterDateWindow>,
+): ReviewStats {
+  const totalOutput = BUCKET_KEYS.reduce((sum, b) => {
+    const arr = (filterResult.kept as Record<string, unknown>)[b];
+    return sum + (Array.isArray(arr) ? arr.length : 0);
+  }, 0);
+
+  const dateWindowSpared: ReviewStats["dateWindowSpared"] = [];
+  for (const bucket of BUCKET_KEYS) {
+    const arr = (filterResult.kept as Record<string, unknown>)[bucket];
+    if (!Array.isArray(arr)) continue;
+    for (const article of arr as ArticleEntry[]) {
+      if (article.date_window_spared === true) {
+        dateWindowSpared.push({ url: article.url, title: article.title as string | undefined, bucket });
+      }
+    }
+  }
+
+  return {
+    total_input: totalInput,
+    date_corrected: dateCorrected,
+    fetch_failed: fetchFailed,
+    removed_date_window: filterResult.removed.length,
+    total_output: totalOutput,
+    removals: filterResult.removed.map((r) => ({
+      url: r.url,
+      reason: "date_window",
+      detail: r.detail,
+    })),
+    editorSubmittedLost: filterResult.editorSubmittedLost.map((r) => ({
+      url: r.url,
+      title: r.title,
+      detail: r.detail,
+    })),
+    dateWindowSpared,
+  };
 }
 
 function parseArgs(argv: string[]): Args {
@@ -330,23 +396,7 @@ async function main(): Promise<void> {
     args.editionIso,
   );
 
-  const totalOutput = BUCKET_KEYS.reduce((sum, b) => {
-    const arr = (filterResult.kept as Record<string, unknown>)[b];
-    return sum + (Array.isArray(arr) ? arr.length : 0);
-  }, 0);
-
-  const stats: ReviewStats = {
-    total_input: totalInput,
-    date_corrected: dateCorrected,
-    fetch_failed: fetchFailed,
-    removed_date_window: filterResult.removed.length,
-    total_output: totalOutput,
-    removals: filterResult.removed.map((r) => ({
-      url: r.url,
-      reason: "date_window",
-      detail: r.detail,
-    })),
-  };
+  const stats = buildReviewStats(totalInput, dateCorrected, fetchFailed, filterResult);
 
   writeFileSync(
     args.out,
@@ -355,8 +405,26 @@ async function main(): Promise<void> {
   );
 
   process.stderr.write(
-    `[research-review-dates] input=${totalInput}, date_corrected=${dateCorrected}, fetch_failed=${fetchFailed}, removed_window=${filterResult.removed.length}, output=${totalOutput}\n`,
+    `[research-review-dates] input=${totalInput}, date_corrected=${dateCorrected}, fetch_failed=${fetchFailed}, removed_window=${filterResult.removed.length}, output=${stats.total_output}\n`,
   );
+
+  // #4656: deveria ser sempre 0 — ver docstring de `editorSubmittedLost` em
+  // ReviewStats. Se não for, é sinal de regressão no guard de
+  // filter-date-window.ts e precisa aparecer alto (não só dentro de
+  // `removals[]`, que o operador não costuma abrir linha a linha).
+  if (stats.editorSubmittedLost.length > 0) {
+    process.stderr.write(
+      `⚠️ [research-review-dates] ${stats.editorSubmittedLost.length} submissão(ões) do editor removida(s) pela janela de data (guard #4656 não cobriu este caso — investigar)\n`,
+    );
+  }
+
+  // #4685: contrapartida da isenção do #4656 — a submissão FOI poupada
+  // (não removida), mas isso significa que passou por cima da janela.
+  if (stats.dateWindowSpared.length > 0) {
+    process.stderr.write(
+      `⚠️ [research-review-dates] ${stats.dateWindowSpared.length} submissão(ões) do editor mantida(s) fora da janela de data pela isenção (#4656) — ver gate\n`,
+    );
+  }
 }
 
 const isMain = isMainModule(import.meta.url);

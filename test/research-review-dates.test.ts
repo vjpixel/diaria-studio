@@ -14,8 +14,10 @@ import assert from "node:assert/strict";
 import {
   unwrapCategorized,
   applyVerifyResults,
+  buildReviewStats,
 } from "../scripts/research-review-dates.ts";
 import type { DateVerifyResult } from "../scripts/verify-dates.ts";
+import { filterDateWindow } from "../scripts/filter-date-window.ts";
 
 function fakeResult(
   url: string,
@@ -264,5 +266,134 @@ describe("applyVerifyResults — #2371 date_unverified para null-date articles",
     }];
     applyVerifyResults(cat, results);
     assert.equal(cat.radar[0].date_unverified, false, "data verificada → date_unverified=false");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4656 — buildReviewStats propaga editorSubmittedLost do filterDateWindow
+// ---------------------------------------------------------------------------
+
+describe("buildReviewStats (#4656)", () => {
+  it("editorSubmittedLost fica [] no caminho normal (editor_submitted poupado pelo guard)", () => {
+    const filterResult = filterDateWindow(
+      {
+        lancamento: [
+          { url: "https://openai.com/x", title: "OpenAI post", date: null, flag: "editor_submitted" },
+        ],
+        radar: [],
+      },
+      "2026-08-06",
+      3,
+    );
+    const stats = buildReviewStats(1, 0, 1, filterResult);
+    assert.deepEqual(stats.editorSubmittedLost, []);
+    assert.equal(stats.removed_date_window, 0);
+    assert.equal(stats.total_output, 1, "o artigo editor_submitted sobreviveu ao filtro");
+  });
+
+  it("propaga editorSubmittedLost não-vazio quando presente no filterResult (defesa-em-profundidade)", () => {
+    // Simula o caso hipotético em que o guard de filter-date-window.ts falhou
+    // e um editor_submitted acabou em `removed` mesmo assim — buildReviewStats
+    // precisa repassar isso pro stats sem perder a informação no caminho.
+    const filterResult = {
+      kept: { lancamento: [], radar: [], use_melhor: [], video: [] },
+      removed: [
+        {
+          url: "https://openai.com/x",
+          title: "OpenAI post",
+          date: null,
+          bucket: "lancamento",
+          reason: "date_window" as const,
+          source_field: "date" as const,
+          detail: "date null < cutoff 2026-08-03",
+          editor_submitted: true,
+        },
+      ],
+      cutoff: "2026-08-03",
+      anchor: "2026-08-06",
+      editorSubmittedLost: [
+        {
+          url: "https://openai.com/x",
+          title: "OpenAI post",
+          date: null,
+          bucket: "lancamento",
+          reason: "date_window" as const,
+          source_field: "date" as const,
+          detail: "date null < cutoff 2026-08-03",
+          editor_submitted: true,
+        },
+      ],
+    };
+    const stats = buildReviewStats(1, 0, 1, filterResult);
+    assert.equal(stats.editorSubmittedLost.length, 1);
+    assert.equal(stats.editorSubmittedLost[0].url, "https://openai.com/x");
+    assert.equal(stats.editorSubmittedLost[0].detail, "date null < cutoff 2026-08-03");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4685 (follow-up do #4656) — buildReviewStats propaga dateWindowSpared:
+// `date_window_spared` era gravado por filter-date-window.ts mas nunca lido
+// em lugar nenhum do pipeline; o gate da Etapa 1 precisa enxergar quando a
+// isenção incondicional de fato salvou uma submissão fora da janela.
+// ---------------------------------------------------------------------------
+
+describe("buildReviewStats — dateWindowSpared (#4685)", () => {
+  it("popula dateWindowSpared quando editor_submitted com data verificada e fora da janela é poupado", () => {
+    const filterResult = filterDateWindow(
+      {
+        lancamento: [],
+        radar: [
+          {
+            url: "https://a.com/old-but-submitted",
+            title: "Antigo mas enviado pelo editor",
+            date: "2026-04-10",
+            flag: "editor_submitted",
+          },
+        ],
+      },
+      "2026-04-24",
+      3,
+    );
+    const stats = buildReviewStats(1, 0, 0, filterResult);
+    assert.equal(stats.dateWindowSpared.length, 1);
+    assert.equal(stats.dateWindowSpared[0].url, "https://a.com/old-but-submitted");
+    assert.equal(stats.dateWindowSpared[0].title, "Antigo mas enviado pelo editor");
+    assert.equal(stats.dateWindowSpared[0].bucket, "radar");
+  });
+
+  it("NÃO marca dateWindowSpared quando o editor_submitted está dentro da janela (isenção não foi necessária)", () => {
+    const filterResult = filterDateWindow(
+      {
+        lancamento: [],
+        radar: [
+          {
+            url: "https://a.com/recent-submitted",
+            title: "Recente e enviado pelo editor",
+            date: "2026-04-23",
+            flag: "editor_submitted",
+          },
+        ],
+      },
+      "2026-04-24",
+      3,
+    );
+    const stats = buildReviewStats(1, 0, 0, filterResult);
+    assert.deepEqual(stats.dateWindowSpared, []);
+  });
+
+  it("NÃO marca dateWindowSpared quando date é null (benefício da dúvida, não isenção de janela)", () => {
+    const filterResult = filterDateWindow(
+      {
+        lancamento: [
+          { url: "https://openai.com/x", title: "OpenAI post", date: null, flag: "editor_submitted" },
+        ],
+        radar: [],
+      },
+      "2026-08-06",
+      3,
+    );
+    const stats = buildReviewStats(1, 0, 1, filterResult);
+    assert.deepEqual(stats.dateWindowSpared, []);
   });
 });

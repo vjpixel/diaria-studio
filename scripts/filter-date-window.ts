@@ -67,6 +67,13 @@ interface Article {
    * de data para que fontes que postam ~1×/mês não sejam sempre descartadas.
    */
   bypass_date_window?: boolean;
+  /**
+   * #593/#4192/#4656: `"editor_submitted"` marca artigos injetados por
+   * `inject-inbox-urls.ts` a partir de submissões do editor. Ver guard
+   * abaixo — nunca removido pela janela de data (mesmo precedente de
+   * `dedup.ts` Pass 1d e `verify-accessibility.ts` §1i).
+   */
+  flag?: string;
   [key: string]: unknown;
 }
 
@@ -120,6 +127,15 @@ interface RemovedEntry {
    */
   source_field: "date" | "published_date" | "published_at";
   detail: string;
+  /**
+   * #4656: true quando o artigo removido tinha `flag: "editor_submitted"`.
+   * Mesmo padrão de `dedup.ts` (`pushRemoved`, #4192) — na prática nunca
+   * deveria disparar, porque o guard abaixo poupa `editor_submitted` da
+   * remoção diretamente; existe como defesa-em-profundidade (mesmo
+   * catch-all redundante do #2371 em `applyVerifyResults`) caso algum
+   * refactor futuro quebre esse guard sem que ninguém note.
+   */
+  editor_submitted?: boolean;
 }
 
 export function todayUtcIso(): string {
@@ -185,6 +201,12 @@ export function filterDateWindow(
   removed: RemovedEntry[];
   cutoff: string;
   anchor: string;
+  /** #4656: subconjunto de `removed` com `editor_submitted: true` — deveria
+   *  ser SEMPRE vazio (guard abaixo poupa esses artigos antes de chegar em
+   *  `removed`), mas fica exposto pro mesmo motivo do `editorSubmittedLost[]`
+   *  de `dedup.ts` (#4192): se algo escapar do guard, o gate da Etapa 1
+   *  precisa saber, não descobrir por acaso quando LANÇAMENTOS zera. */
+  editorSubmittedLost: RemovedEntry[];
 } {
   // Cutoff "global" calculado a partir do windowDays default (usado como
   // fallback no return + logging). Cada bucket tem cutoff próprio via
@@ -229,6 +251,7 @@ export function filterDateWindow(
         continue;
       }
 
+      const isEditorSubmitted = article.flag === "editor_submitted";
       const eff = effectiveDate(article);
       // Sem date nem published_at = mantém com benefício da dúvida (#1322
       // preserva regra antiga). Editor-submitted normalmente cai aqui e está
@@ -239,6 +262,18 @@ export function filterDateWindow(
       }
       const normDate = eff.value;
       if (normDate < bucketCutoff) {
+        // #4656: submissão do editor NUNCA é removida pela janela de data —
+        // mesmo precedente de dedup.ts Pass 1d (#4192) e verify-accessibility.ts
+        // §1i: o editor já exerceu curadoria ao enviar o link; uma data
+        // ausente/desatualizada (real ou por falha de extração numa página
+        // JS-heavy, caso real openai.com na edição 260806) não deve
+        // sobrepor essa decisão editorial. Mantido com date_unverified pro
+        // editor reconsiderar no gate — `date_window_spared` documenta que
+        // teria sido removido não fosse a isenção.
+        if (isEditorSubmitted) {
+          kept[bucket].push({ ...article, date_unverified: true, date_window_spared: true });
+          continue;
+        }
         removed.push({
           url: article.url,
           title: article.title,
@@ -247,6 +282,7 @@ export function filterDateWindow(
           reason: "date_window",
           source_field: eff.source!,
           detail: `${eff.source} ${normDate} < cutoff ${bucketCutoff}${bucketDetailSuffix}`,
+          editor_submitted: isEditorSubmitted,
         });
       } else if (eff.source !== "date") {
         // Caiu num fallback não-verificado (published_date extraído #1631, ou
@@ -259,7 +295,9 @@ export function filterDateWindow(
     }
   }
 
-  return { kept, removed, cutoff, anchor: anchorDate };
+  const editorSubmittedLost = removed.filter((r) => r.editor_submitted);
+
+  return { kept, removed, cutoff, anchor: anchorDate, editorSubmittedLost };
 }
 
 function parseArgs(argv: string[]) {
@@ -311,7 +349,7 @@ function main() {
   const anchorDate = anchorArg || todayUtcIso();
   const input: CategorizedInput = JSON.parse(readFileSync(articlesPath, "utf8"));
 
-  const { kept, removed, cutoff, anchor } = filterDateWindow(
+  const { kept, removed, cutoff, anchor, editorSubmittedLost } = filterDateWindow(
     input,
     anchorDate,
     windowDays,
@@ -343,7 +381,16 @@ function main() {
     }
   }
 
-  const result = { kept, removed, cutoff, anchor };
+  // #4656: deveria ser sempre 0 (guard poupa editor_submitted antes de
+  // chegar em `removed`) — se não for, é sinal de regressão do guard e
+  // precisa aparecer alto, não só dentro do "Removed:" genérico acima.
+  if (editorSubmittedLost.length > 0) {
+    console.error(
+      `⚠️ filter-date-window: ${editorSubmittedLost.length} submissão(ões) do editor removida(s) pela janela de data (guard #4656 não cobriu este caso — investigar)`,
+    );
+  }
+
+  const result = { kept, removed, cutoff, anchor, editorSubmittedLost };
 
   if (out) {
     writeFileSync(out, JSON.stringify(result, null, 2), "utf8");

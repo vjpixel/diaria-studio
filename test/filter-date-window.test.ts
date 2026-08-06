@@ -456,6 +456,101 @@ describe("bypass_date_window (#1992 — low-cadence sources)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// #4656 — editor_submitted nunca removido pela janela de data
+// ---------------------------------------------------------------------------
+
+describe("filterDateWindow — editor_submitted nunca removido pela janela (#4656)", () => {
+  it("editor_submitted com fetch_failed (sem date/published_at/published_date) é mantido — caso real openai.com 260806", () => {
+    // Reproduz o cenário da issue: research-review-dates.ts não conseguiu
+    // extrair data de uma página JS-heavy (openai.com), o artigo não tem
+    // nenhum campo de data alternativo, e `flag: "editor_submitted"` prova
+    // que o editor mandou o link (dentro da janela, via submitted_at).
+    const input = {
+      lancamento: [
+        {
+          url: "https://openai.com/index/third-party-cyber-evaluations-involving-openai-models/",
+          title: "Third-party cyber evaluations involving OpenAI models",
+          date: null,
+          flag: "editor_submitted",
+          submitted_at: "2026-08-05T12:47:54Z",
+        },
+      ],
+      radar: [],
+    };
+    const { kept, removed } = filterDateWindow(input, "2026-08-06", 3);
+    assert.equal(kept.lancamento.length, 1, "artigo editor_submitted não deve sumir");
+    assert.equal(kept.lancamento[0].date_unverified, true);
+    assert.equal(removed.length, 0);
+  });
+
+  it("editor_submitted com data VERIFICADA e genuinamente fora da janela é poupado (nunca removido)", () => {
+    // Mesmo quando há uma `date` verificada e ela está fora do cutoff, a
+    // submissão do editor não é removida — mesmo precedente do Pass 1d de
+    // dedup.ts (#4192): o editor já exerceu curadoria ao enviar o link.
+    const input = {
+      lancamento: [],
+      radar: [
+        {
+          url: "https://a.com/old-but-submitted",
+          title: "Antigo mas enviado pelo editor",
+          date: "2026-04-10",
+          flag: "editor_submitted",
+        },
+      ],
+    };
+    const { kept, removed } = filterDateWindow(input, "2026-04-24", 3);
+    assert.equal(kept.radar.length, 1, "editor_submitted poupado mesmo com date verificada e antiga");
+    assert.equal(kept.radar[0].date_unverified, true);
+    assert.equal(kept.radar[0].date_window_spared, true);
+    assert.equal(removed.length, 0);
+  });
+
+  it("regressão: artigo NORMAL (sem flag editor_submitted) continua sendo removido normalmente", () => {
+    const input = {
+      lancamento: [],
+      radar: [
+        { url: "https://a.com/recent", title: "Recente", date: "2026-04-23" },
+        { url: "https://a.com/old-not-submitted", title: "Antigo comum", date: "2026-04-10" },
+      ],
+    };
+    const { kept, removed } = filterDateWindow(input, "2026-04-24", 3);
+    assert.equal(kept.radar.length, 1, "só o recente fica");
+    assert.equal(kept.radar[0].title, "Recente");
+    assert.equal(removed.length, 1, "o artigo comum antigo continua caindo pela janela");
+    assert.equal(removed[0].title, "Antigo comum");
+    assert.equal(removed[0].editor_submitted, false);
+  });
+
+  it("editorSubmittedLost é [] quando nenhuma submissão do editor foi removida (caso normal)", () => {
+    const input = {
+      lancamento: [],
+      radar: [
+        { url: "https://a.com/old", title: "Antigo", date: "2026-04-10" },
+        { url: "https://a.com/submitted-old", title: "Antigo enviado", date: "2026-04-05", flag: "editor_submitted" },
+      ],
+    };
+    const { editorSubmittedLost, removed } = filterDateWindow(input, "2026-04-24", 3);
+    assert.equal(removed.length, 1, "só o artigo comum foi removido");
+    assert.deepEqual(editorSubmittedLost, [], "nenhuma submissão do editor foi de fato perdida");
+  });
+
+  it("editor_submitted funciona em todos os buckets (lancamento, use_melhor, video)", () => {
+    const old = "2026-01-01";
+    const input = {
+      lancamento: [{ url: "https://a.com/1", title: "L", date: old, flag: "editor_submitted" }],
+      radar: [],
+      use_melhor: [{ url: "https://b.com/1", title: "U", date: old, flag: "editor_submitted" }],
+      video: [{ url: "https://c.com/1", title: "V", date: old, flag: "editor_submitted" }],
+    };
+    const { kept, removed } = filterDateWindow(input, "2026-04-24", 3);
+    assert.equal(kept.lancamento.length, 1);
+    assert.equal(kept.use_melhor.length, 1);
+    assert.equal(kept.video.length, 1);
+    assert.equal(removed.length, 0);
+  });
+});
+
 describe("bucketWindowDays (#1155, #1629 — agora aceita Category)", () => {
   // #1629: bucketWindowDays foi adaptado pra receber a Category do artigo
   // (não o Bucket). Bucket `radar` mistura articles com category=pesquisa
