@@ -2,13 +2,17 @@
  * scripts/lib/postmaster-v2-client.ts (#4704)
  *
  * Cliente genérico pra `domains.domainStats.query` — a API v2 do Google
- * Postmaster Tools. NÃO substitui `postmaster-spam-sync.ts` (que continua na
- * v1 e segue alimentando o breaker de spam da Rampa via
- * `resolveSpamSignal`) — este módulo é aditivo, standalone, e nada aqui é
- * consumido pelo cron de produção ainda.
+ * Postmaster Tools. Continua um módulo separado (não fundido em
+ * `postmaster-spam-sync.ts`) porque é reusável por outros consumidores
+ * futuros (`FEEDBACK_LOOP_SPAM_RATE` por campanha, `getComplianceStatus`) —
+ * mas desde 260806 (#4704) É a fonte do breaker de spam da Rampa:
+ * `postmaster-spam-sync.ts` migrou de v1 (`trafficStats.get`) pra
+ * `queryDomainStatsV2` (este módulo) como caller de produção, decisão
+ * registrada no #4703 depois de confirmar ao vivo que v1 e v2 divergem no
+ * mesmo dia/domínio.
  *
- * Por quê a v2 existe como módulo separado em vez de substituir a v1 direto
- * (#4704, confirmado ao vivo em 260806):
+ * Por quê a v2 existe como módulo separado em vez de virar código inline de
+ * `postmaster-spam-sync.ts` (#4704, confirmado ao vivo em 260806):
  *
  *   1. **Spam POR CAMPANHA.** `FEEDBACK_LOOP_SPAM_RATE` filtrado por
  *      `feedback_loop_id` dá o que a v1 nunca teve — hoje "spam" é
@@ -166,15 +170,29 @@ function describeQueryFailure(status: number, body: string): string {
 }
 
 /**
+ * Assinatura mínima exigida de `fetchImpl` — deliberadamente MAIS ESTREITA
+ * que `typeof fetch` (que aceita `URL | RequestInfo`) porque `gFetch`
+ * (`scripts/google-auth.ts`) só aceita `string` no 1º argumento. `fetch`
+ * global e os fakes de teste (tipados `typeof fetch`) continuam compatíveis
+ * aqui por variância normal de parâmetro de função — só quem NÃO era
+ * compatível (`gFetch`) passa a ser aceito. Achado ao integrar este módulo
+ * no primeiro consumidor real (#4704, 260806): `typeof fetch` barrava
+ * `gFetch` na chamada de `postmaster-spam-sync.ts`, um erro de tipo latente
+ * desde a criação do módulo (#4704 anterior) que só apareceu quando um
+ * caller de produção de fato tentou passar `gFetch`.
+ */
+type PostmasterV2FetchImpl = (url: string, init?: RequestInit) => Promise<Response>;
+
+/**
  * I/O: chama `domains.domainStats.query`. `fetchImpl` é injetável (mesmo
- * padrão de `postmaster-register-domain.ts`) — default é `gFetch`, mas os
+ * padrão de `postmaster-register-domain.ts`) — produção passa `gFetch`, os
  * testes passam um fake pra não bater rede/token real.
  */
 export async function queryDomainStatsV2(
   domain: string,
   metricDefinitions: MetricDefinitionV2[],
   range: DateRangeV2,
-  fetchImpl: typeof fetch,
+  fetchImpl: PostmasterV2FetchImpl,
 ): Promise<QueryDomainStatsResponseV2> {
   const res = await fetchImpl(`${POSTMASTER_V2_BASE}/domains/${encodeURIComponent(domain)}/domainStats:query`, {
     method: "POST",
@@ -194,7 +212,7 @@ export async function queryDomainStatsV2(
   return { domainStats: parsed.domainStats ?? [], nextPageToken: parsed.nextPageToken };
 }
 
-/** `CalendarDate` → `YYYY-MM-DD`, mesmo formato de `PostmasterSpamEntry.date`/`apiDateToEntryDate` em postmaster-spam-sync.ts. */
+/** `CalendarDate` → `YYYY-MM-DD`, mesmo formato de `PostmasterSpamEntry.date` em postmaster-spam-sync.ts. */
 export function calendarDateToEntryDate(d: CalendarDate): string {
   const m = String(d.month).padStart(2, "0");
   const day = String(d.day).padStart(2, "0");
