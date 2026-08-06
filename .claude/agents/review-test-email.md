@@ -665,6 +665,8 @@ Checar os seguintes itens no conteúdo do email:
 
 6. **Links funcionais.** Extrair alguns hrefs do email e verificar que não estão vazios, `#` ou `javascript:`. Se encontrar links inválidos: `"email:link_broken: link em '{contexto}' tem href inválido: '{href}'"`.
 
+   **O guard obrigatório da seção 3c-guard vale aqui também (#4694).** Esta rota (`platform="brevo"`) é uma seção separada da Beehiiv, mas o modo de falha é idêntico — o dump do e-mail é lido e materializado por nós, então uma corrupção introduzida na LEITURA (ex: double-decode de quoted-printable) parece defeito no produto entregue. Antes de reportar `email:link_dead`/`email:link_broken`/`email:link_wrong`, confirme por caminho independente sobre a URL RECONSTRUÍDA, exatamente como a seção 3c-guard descreve.
+
 7. **Encoding.** Verificar que caracteres especiais (ã, ç, í, ê, ó, ú, etc.) estão renderizados corretamente (não aparecem como `?` ou boxes). Se corrompidos: `"email:encoding_broken: caracteres especiais corrompidos em '{contexto}'"`.
 
 8. **Visual formatting (#753 — subset relevante pro mensal).** Inspecionar HTML do email pra verificar formatação de elementos chave:
