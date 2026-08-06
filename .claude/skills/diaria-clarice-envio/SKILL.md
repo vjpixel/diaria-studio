@@ -227,22 +227,33 @@ dezenas de milhares de e-mails.
 ## Passo 7 — Executar
 
 Só depois do `sim`. Nada aqui é novo: são os scripts já existentes, agora com
-os parâmetros que o editor confirmou.
+os parâmetros que o editor confirmou. **Passo corrigido em 05/08/2026 (#4663)
+por execução ao vivo** — a versão anterior tinha 2 comandos que não rodavam
+(`--key` sozinho onde `--group` é obrigatório; `--schedule-at` só-data). O
+fluxo abaixo é o que de fato funcionou (onda `d6-qui06`, ciclo 2607-08).
 
 **Atenção ao `--group`:** ele nomeia o MANIFEST a ler
 (`{grupo}-manifest.json`), não uma lista individual. Numa onda com teste
 A/B/C o `--group` é a chave do **dia** (`d6-qui06`), e o manifest dela
-contém as 3 entradas de célula (`d6-qui06-A/B/C`). Passar a chave de célula
-direto (`--group d6-qui06-A`) procura um arquivo que não existe.
+contém as 3 entradas de célula (`d6-qui06-A/B/C`) — `--key {dia}-A` desambigua
+QUAL das 3. **`--key` sozinho não seleciona nada** — `clarice-schedule-group.ts`
+exige `--group NOME` (ou `--list-id N`) sempre; `--key` é só o desambiguador
+quando `--group` resolve mais de uma lista.
 
-Para cada onda `d{N}` da proposta:
+**Atenção ao `--schedule-at`:** exige HORA explícita (#4662 — `YYYY-MM-DD`
+sozinho é RECUSADO com erro claro desde 05/08/2026, nunca mais silenciosamente
+vira meia-noite UTC = 21:00 BRT do dia anterior, o incidente da campanha #119).
+Use sempre `{YYYY-MM-DD}T09:00:00Z` (09:00 UTC = 06:00 BRT, o horário
+canônico) a menos que o horário pretendido seja outro de propósito.
+
+Com teste A/B/C (recomendação `iniciar`/`continuar` do Passo 2), para cada
+onda `d{N}` da proposta:
 
 ```bash
 # 1. Segmentar (dry-run primeiro, sempre)
 npx tsx scripts/clarice-build-segment.ts --group ramp-warm --cycle $CYCLE --budget {volume}
 
 # 2. Dividir em células A/B/C e gerar o manifest do dia.
-#    Só necessário quando a recomendação do Passo 2 for iniciar/continuar.
 #    Escreve {dia}-A/B/C.csv + {dia}-manifest.json com as chaves GERADAS.
 npx tsx scripts/clarice-split-group-cells.ts --cycle $CYCLE --wave {N} --date {YYYY-MM-DD} \
   --from segments/ramp-warm.csv
@@ -250,21 +261,56 @@ npx tsx scripts/clarice-split-group-cells.ts --cycle $CYCLE --wave {N} --date {Y
 # 3. Importar — --group é a chave do DIA. `--execute` AGUARDA o processo
 #    assíncrono e RECONCILIA a contagem (#4577/#4602: a Brevo dropa linha em
 #    silêncio; um contato foi perdido assim em 04/08). Processo failed/timeout
-#    ou contagem menor abortam a invocação inteira.
+#    ou contagem menor abortam a invocação inteira. A contagem importada pode
+#    sair MAIOR que a segmentada (ver nota EDITOR_SEED_EMAILS abaixo).
 npx tsx scripts/clarice-import-waves.ts --cycle $CYCLE --group {dia} --label "{label}" --execute
 
-# 4. Criar a campanha como RASCUNHO — uma por célula
-npx tsx scripts/clarice-schedule-group.ts --cycle $CYCLE --key {dia}-A --subject "{assunto A}" --create
+# 4. Criar a campanha como RASCUNHO — uma por célula (--group + --key, hora EXPLÍCITA)
+npx tsx scripts/clarice-schedule-group.ts --cycle $CYCLE --group {dia} --key {dia}-A \
+  --subject "{assunto A}" --schedule-at {YYYY-MM-DD}T09:00:00Z --create
 
-# 5. Gabarito É IA? — OBRIGATÓRIO antes de agendar
+# 5. E-mail de teste + verificação
+npx tsx scripts/clarice-schedule-group.ts --cycle $CYCLE --group {dia} --key {dia}-A --send-test
+# (dispatchar o agente review-test-email, platform: brevo)
+
+# 6. Gabarito É IA? — OBRIGATÓRIO antes de agendar. Confira
+#    _internal/.close-poll-clarice.json do ciclo ANTES de chegar aqui — o
+#    guard só roda neste passo 6 (--schedule), não no --create acima.
 npx tsx scripts/close-poll.ts --brand clarice --cycle $CYCLE --edition {AAMMDD}
 
-# 6. Agendar
-npx tsx scripts/clarice-schedule-group.ts --cycle $CYCLE --key {dia}-A --schedule-at {YYYY-MM-DD}
+# 7. Agendar (--group + --key, SEM --schedule-at — a data já foi fixada no --create)
+npx tsx scripts/clarice-schedule-group.ts --cycle $CYCLE --group {dia} --key {dia}-A --schedule
 ```
 
-Sem teste A/B/C (recomendação `travar`), pular o passo 2 e usar
-`--group ramp-warm` / `--key {dia}` nos passos 3-6.
+Repita os passos 4-7 pra cada célula (`--key {dia}-A`, `-B`, `-C`).
+
+Sem teste A/B/C (recomendação `travar` do Passo 2) — 1 lista só, assunto
+único, validado ao vivo em 05/08/2026:
+
+```bash
+# 1. Segmentar
+npx tsx scripts/clarice-build-segment.ts --group ramp-warm --cycle $CYCLE --budget {volume}
+
+# 2. Gerar a chave do dia SEM célula (1 lista, assunto travado)
+npx tsx scripts/clarice-split-group-cells.ts --cycle $CYCLE --wave {N} --date {YYYY-MM-DD} \
+  --from segments/ramp-warm.csv --no-cells
+
+# 3. Importar — --group é a chave do DIA (1 lista só, --key não é necessário)
+npx tsx scripts/clarice-import-waves.ts --cycle $CYCLE --group {dia} --label "{label}" --execute
+
+# 4. Criar rascunho — --group basta (1 lista só), hora EXPLÍCITA
+npx tsx scripts/clarice-schedule-group.ts --cycle $CYCLE --group {dia} \
+  --subject "{assunto travado}" --schedule-at {YYYY-MM-DD}T09:00:00Z --create
+
+# 5. E-mail de teste + verificação
+npx tsx scripts/clarice-schedule-group.ts --cycle $CYCLE --group {dia} --send-test
+
+# 6. Gabarito É IA?
+npx tsx scripts/close-poll.ts --brand clarice --cycle $CYCLE --edition {AAMMDD}
+
+# 7. Agendar
+npx tsx scripts/clarice-schedule-group.ts --cycle $CYCLE --group {dia} --schedule
+```
 
 **O nome da lista nunca é digitado — nem a chave.** A chave sai de
 `waveKey()` (passo 2) e o nome da lista de `groupCellListNameFor()`, que
@@ -274,13 +320,43 @@ esse o "digitado à mão" da #4449, e ele sobreviveu ao #4471 (que ligou o
 gerador de NOME) porque quem se digitava era a CHAVE. Teste de paridade
 gerador↔parser em `test/clarice-wave-plan.test.ts`.
 
+**A contagem importada pode ser maior que a segmentada.** No ciclo 2607-08:
+737 selecionados no Passo 1 → 742 na lista Brevo após o Passo 3. A diferença
+são os `EDITOR_SEED_EMAILS` (`scripts/lib/editor-copy.ts`) — endereços do
+editor sempre adicionados pelo import, pra o editor também receber a
+campanha. Não é bug; não investigar como se fosse.
+
+**Reagendar uma campanha JÁ `scheduled`/`sent`? `--schedule` PULA
+silenciosamente** (idempotência: `↷ {key} já scheduled — pulando`) —
+mudar o horário exige `--reschedule` (#4668), nunca PUT manual na API (o PUT
+manual não grava `group-campaigns.json`, deixando o `scheduledAt` local
+mentiroso — aconteceu 2× em 05/08/2026, ver #4668):
+
+```bash
+npx tsx scripts/clarice-schedule-group.ts --cycle $CYCLE --group {dia} --key {dia}-A \
+  --schedule-at {YYYY-MM-DD}T{NOVA-HORA}Z --reschedule
+```
+
+`--reschedule` recusa campanha nunca agendada (`draft` — use `--schedule`) ou
+já disparada (`sent`, ou `in_review`/terminal AO VIVO na Brevo mesmo que o
+registro local ainda diga `scheduled`), exige o mesmo gabarito É IA? do
+`--schedule`, e só grava o novo `scheduledAt` local DEPOIS de um GET-verify
+que confere o horário por INSTANTE (`Date.parse`) — a Brevo devolve
+`scheduledAt` com OFFSET (ex: `...-03:00`), não com `Z`, e comparação por
+string dá falso negativo num reagendamento que na verdade funcionou.
+⚠️ **Não confirmado ao vivo:** se a Brevo RE-CONGELA o snapshot de
+destinatários no reagendamento (a memória `brevo-recipients-snapshot` só
+cobre o AGENDAMENTO inicial) — documentar quando alguém rodar `--reschedule`
+de verdade pela 1ª vez.
+
 ### Guards que não se pulam
 
-- **Gabarito É IA?** antes de qualquer `--schedule`. `--skip-eia-guard`
-  existe mas não é pra uso normal.
+- **Gabarito É IA?** antes de qualquer `--schedule`/`--reschedule`.
+  `--skip-eia-guard` existe mas não é pra uso normal.
 - **Exclusão de comprometidos** (`queued`/`sent`) por fetch ao vivo — imune
   ao lag do store (#3682, que reenviou 100% pra quem já tinha recebido).
-- **GET-verify pós-schedule** — confirma que a Brevo aceitou o agendamento.
+- **GET-verify pós-schedule/reschedule** — confirma que a Brevo aceitou o
+  agendamento/reagendamento (por INSTANTE, nunca por igualdade de string).
 - **Nunca dois agendamentos em paralelo** pro mesmo ciclo.
 
 ---
