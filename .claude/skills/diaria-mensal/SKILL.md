@@ -666,7 +666,7 @@ Todos em `data/monthly/{ciclo}/` (ex: `data/monthly/2605-06/`):
 - `_internal/04-fact-check.json` — claims verificados (Etapa 4)
 - `_internal/.step-N-done.json` (N=1..5) — checkpoints de conclusão por etapa, mesmo formato do diário (#2795)
 - `_internal/05-published.json` — campanha Brevo criada (Etapa 5)
-- `_internal/beehiiv-preview.html` + `_internal/beehiiv-apoiadores-state.json` — variante Beehiiv pra apoiadores Mantenedor/Patrono (#4482, opcional, fora da sequência 0-5 — gerados por `/diaria-mensal-apoiadores`, skill separada desde #4521, ver seção "Envio extra Beehiiv" abaixo)
+- `_internal/apoiadores-brevo-preview.html` + `_internal/beehiiv-apoiadores-state.json` (nome residual do fluxo Beehiiv original, conteúdo channel-agnostic) — variante Brevo pra apoiadores Mantenedor/Patrono (#4482 produto, canal Brevo desde #4572/#4593, opcional, fora da sequência 0-5 — gerados por `/diaria-mensal-apoiadores`, skill separada desde #4521, ver seção "Envio extra Brevo" abaixo)
 
 ## Notas
 
@@ -701,9 +701,10 @@ Para pular a verificação (não recomendado): `clarice-schedule-sends --schedul
 
 ---
 
-## Envio extra Beehiiv — apoiadores Mantenedor/Patrono (#4482, skill própria desde #4521)
+## Envio extra Brevo — apoiadores Mantenedor/Patrono (#4482 produto, canal Brevo #4572/#4593, skill própria desde #4521)
 
-Canal SEPARADO do envio Clarice/Brevo acima — mesmo `draft.md`, audiência e
+Canal SEPARADO do envio Clarice/Brevo acima (lista Brevo dedicada, não a
+`brevo_monthly` do envio canônico) — mesmo `draft.md`, audiência e
 plataforma diferentes. **Migrado pra skill própria, separada de
 `/diaria-mensal`** (#4521, decisão "skill manual separada, não uma etapa
 nova dentro de /diaria-mensal" — o editor decide o timing independente do
@@ -714,19 +715,26 @@ ciclo 0-5 acima):
 ```
 
 Ver `.claude/skills/diaria-mensal-apoiadores/SKILL.md` para o fluxo completo
-(render, idempotência/dedup do envio via
+(render via `scripts/lib/mensal/monthly-apoiadores-brevo-render.ts` com UTM
+próprio `APOIADORES_BREVO_UTM_PROFILE`, publicação via
+`scripts/publish-monthly-apoiadores-brevo.ts` — cria a campanha Brevo real,
+sempre como rascunho —, idempotência/dedup do envio via
 `scripts/lib/mensal/monthly-apoiadores-state.ts`, e o passo-a-passo de
-publicação manual — incluindo o mecanismo de audiência multi-segmento
-verificado no #4521: a Beehiiv aceita nativamente incluir/excluir até 5
-segmentos combinados por post, então **não é preciso criar um 7º segmento
-combinado** "Mantenedor ou Patrono").
+publicação manual). Audiência = lista Brevo dedicada (`platform.config.json`
+→ `brevo_apoiadores.list_id`), convergida com quem tem nível Mantenedor/
+Patrono por `scripts/sync-apoio-nivel-brevo.ts`. O canal original era
+Beehiiv, mas o mecanismo de audiência multi-segmento ("Include and exclude
+segments") ficou bloqueado atrás do plano Scale (workspace é Launch/free,
+confirmado ao vivo no #4572/260804) — `scripts/render-monthly-beehiiv.ts` e
+`scripts/lib/mensal/monthly-beehiiv-render.ts` continuam no repo, intocados,
+mas órfãos: não são mais referenciados por este fluxo.
 
-Resumo das decisões de produto (issue #4482, sessão develop 260802b/260803):
-cadência = envio EXTRA num dia sem edição diária pesada; segmento = só
-Mantenedor/Patrono (nunca a base inteira, nunca reativação de inativos);
-seções `CLARICE — *`/`APRESENTAÇÃO` removidas sem substituição (espaço
-reservado fica vazio — decisão mantida pela skill nova, não reaberta);
-plataforma = Beehiiv, reusando `context/publishers/beehiiv-playbook.md`.
+Resumo das decisões de produto (issue #4482, sessão develop 260802b/260803,
+não reabertas pela migração de canal): cadência = envio EXTRA num dia sem
+edição diária pesada; segmento = só Mantenedor/Patrono (nunca a base
+inteira, nunca reativação de inativos); seções `CLARICE — *`/`APRESENTAÇÃO`
+removidas sem substituição (espaço reservado fica vazio — decisão mantida
+pela skill nova, não reaberta).
 
 Sem gate/checkpoint próprio no esquema `_internal/.step-N-done.json` deste
 arquivo — este envio é opcional e roda fora da sequência 0-5 do ciclo, numa
