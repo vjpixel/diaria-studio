@@ -68,6 +68,25 @@ describe("resolveScheduleAtArg (#4662 — incidente campanha #119, meia-noite UT
     assert.equal(result.scheduledAt, new Date(raw).toISOString());
   });
 
+  it("REGRESSÃO (#4680, achado 2): data inexistente no calendário COM OFFSET explícito (2026-02-31-03:00) → aborta — antes só o sufixo 'Z' era validado", () => {
+    const result = resolveScheduleAtArg("2026-02-31T09:00:00-03:00");
+    assert.ok("error" in result);
+    if (!("error" in result)) throw new Error("unreachable");
+    assert.match(result.error, /inexistente no calendário/);
+  });
+
+  it("(#4680) ano bissexto válido COM OFFSET (2028-02-29) → aceito", () => {
+    const result = resolveScheduleAtArg("2028-02-29T09:00:00-03:00");
+    assert.ok("scheduledAt" in result, `esperava sucesso, recebeu erro: ${"error" in result ? result.error : ""}`);
+  });
+
+  it("(#4680) ano NÃO-bissexto COM OFFSET (2026-02-29) → recusado, dia inexistente", () => {
+    const result = resolveScheduleAtArg("2026-02-29T09:00:00-03:00");
+    assert.ok("error" in result);
+    if (!("error" in result)) throw new Error("unreachable");
+    assert.match(result.error, /inexistente no calendário/);
+  });
+
   it("REGRESSÃO: data no PASSADO continua abortando — guard pré-existente não regride", () => {
     const past = new Date(Date.now() - 3600_000).toISOString();
     const result = resolveScheduleAtArg(past);
@@ -231,6 +250,10 @@ describe("applyRescheduleVerifyResults (#4668 — grava group-campaigns.json só
     assert.equal(c.scheduledAt, original, "nada deve mudar quando o instante não confere");
     assert.equal(writeCalled, false);
     assert.ok(logs.some((l) => /NÃO confere/.test(l) && /INSTANTE/.test(l)));
+    // #4680 (achado 1): mesmo guard aplicado em main() após esta chamada —
+    // c.scheduledAt não bate com o alvo, então o caller deve setar
+    // process.exitCode = 2 em vez de sair com 0 silenciosamente.
+    assert.equal(isSameInstant(c.scheduledAt, "2026-08-06T09:00:00.000Z"), false);
   });
 
   it("GET não mostra status scheduled/queued (ex: draft, PUT não pegou) → NÃO persiste", () => {
@@ -249,6 +272,9 @@ describe("applyRescheduleVerifyResults (#4668 — grava group-campaigns.json só
     );
     assert.equal(writeCalled, false);
     assert.ok(logs.some((l) => /status="draft"/.test(l)));
+    // #4680 (achado 1): status errado → scheduledAt local nunca foi tocado,
+    // guard de main() deve sinalizar exit 2.
+    assert.equal(isSameInstant(c.scheduledAt, "2026-08-06T09:00:00.000Z"), false);
   });
 
   it("GET rejeitado (falha de rede) → NÃO persiste, avisa pra re-tentar", () => {
@@ -267,6 +293,9 @@ describe("applyRescheduleVerifyResults (#4668 — grava group-campaigns.json só
     );
     assert.equal(writeCalled, false);
     assert.ok(logs.some((l) => /falhou/.test(l) && /re-tente --reschedule/.test(l)));
+    // #4680 (achado 1): GET rejeitado → scheduledAt local nunca foi tocado,
+    // guard de main() deve sinalizar exit 2.
+    assert.equal(isSameInstant(c.scheduledAt, "2026-08-06T09:00:00.000Z"), false);
   });
 
   it("invariante settled.length/toVerify.length/newScheduledAts.length divergentes → lança", () => {

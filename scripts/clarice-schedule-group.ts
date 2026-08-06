@@ -405,8 +405,19 @@ export function resolveContentCycle(argv: string[], segmentsCycle: string): stri
 /** Regex de data ISO simples (YYYY-MM-DD) — mesmo formato de ISO_DATE_RE em clarice-wave-plan.ts. */
 const ONLY_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-/** ISO 8601 completo, sufixado em "Z" (convenção deste projeto — todo `--schedule-at` gerado internamente usa Z, nunca offset local). */
-const FULL_ISO_UTC_RE = /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}(:\d{2}(\.\d+)?)?Z$/;
+/**
+ * ISO 8601 completo, sufixado em "Z" OU offset explícito ("+HH:MM"/"-HH:MM")
+ * — #4680 (achado 2 do silent-failure-hunter): a versão original só casava
+ * "Z" (convenção interna deste projeto), mas o editor digitando um horário
+ * BRT com offset explícito ("...T09:00:00-03:00") é a forma NATURAL de
+ * escrever — e o `Date` do JS faz o MESMO rollover silencioso de calendário
+ * (2026-02-31 vira 2026-03-03) independente de offset. Captura h/m/s
+ * separadamente do offset porque o round-trip abaixo usa `Date.UTC` com os
+ * componentes CRUS (não `d.toISOString()`, que já aplicou o offset e
+ * mudaria de dia em horários próximos da virada — ex: 23:00-03:00 vira
+ * 02:00Z do dia seguinte mesmo sendo uma data válida).
+ */
+const FULL_ISO_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 export function resolveScheduleAtArg(
   raw: string | undefined,
@@ -444,16 +455,23 @@ export function resolveScheduleAtArg(
     return { error: `--schedule-at não é ISO 8601 válido: "${raw}"` };
   }
 
-  // #4662: mesmo com hora explícita, o `Date` do JS "conserta" em silêncio
-  // um dia de calendário inexistente (2026-02-31 vira 2026-03-03) — mesma
-  // técnica de round-trip de `scheduledAtForDate` (clarice-wave-plan.ts),
-  // aplicada aqui só pro caso Z-sufixado (a convenção do projeto; input com
-  // offset explícito não é validado por este guard, mesmo comportamento de
-  // antes desta correção).
-  const isoMatch = FULL_ISO_UTC_RE.exec(raw);
+  // #4662/#4680: mesmo com hora explícita, o `Date` do JS "conserta" em
+  // silêncio um dia de calendário inexistente (2026-02-31 vira 2026-03-03)
+  // — mesma técnica de round-trip de `scheduledAtForDate`
+  // (clarice-wave-plan.ts). Cobre tanto "Z" quanto offset explícito
+  // (+HH:MM/-HH:MM) — ver docstring de `FULL_ISO_RE`. O round-trip usa
+  // `Date.UTC` com os componentes CRUS do input (não `d.toISOString()`),
+  // porque a conversão de offset pra UTC pode mudar de dia mesmo em datas
+  // válidas (ex: 23:00-03:00 vira 02:00Z do dia seguinte).
+  const isoMatch = FULL_ISO_RE.exec(raw);
   if (isoMatch) {
-    const [, y, mo, day] = isoMatch;
-    const back = d.toISOString().slice(0, 10);
+    const [, y, mo, day, hh, mm, ss] = isoMatch;
+    const roundTrip = new Date(
+      Date.UTC(Number(y), Number(mo) - 1, Number(day), Number(hh), Number(mm), Number(ss || 0)),
+    );
+    const back =
+      `${roundTrip.getUTCFullYear()}-${String(roundTrip.getUTCMonth() + 1).padStart(2, "0")}-` +
+      `${String(roundTrip.getUTCDate()).padStart(2, "0")}`;
     if (back !== `${y}-${mo}-${day}`) {
       return { error: `--schedule-at "${raw}" é uma data inexistente no calendário.` };
     }
@@ -474,6 +492,14 @@ export interface InvocationSummary {
   campaignId?: number;
   phase: string;
   status?: CampaignEntry["status"];
+  /**
+   * #4680 (achado 2 do silent-failure-hunter sobre #4662/#4668/#4663): o
+   * `scheduledAt` atual da campanha desta invocação — permite ao caller
+   * (e ao teste) confirmar o horário sem re-consultar a Brevo. Sempre
+   * incluído quando a campanha existe, não só na fase reschedule — o
+   * campo é barato e útil em qualquer fase que toque agendamento.
+   */
+  scheduledAt?: string | null;
   cycleTotals: { created: number; scheduled: number; sent: number };
 }
 
@@ -512,6 +538,7 @@ export function buildInvocationSummary(
     campaignId: campaign?.campaignId,
     phase,
     status: campaign?.status,
+    scheduledAt: campaign?.scheduledAt ?? null,
     cycleTotals: {
       created: allCampaigns.length,
       scheduled: allCampaigns.filter((c) => c.status === "scheduled").length,
@@ -1012,6 +1039,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // docstring de `applyRescheduleVerifyResults`).
     const verifySettled = await Promise.allSettled([brevoGetCampaign(apiKey, c.campaignId)]);
     applyRescheduleVerifyResults(verifySettled, [c], [newScheduledAt], campaigns, campaignsPath);
+    // #4680 (achado 1 do silent-failure-hunter): mesmo racional do guard de
+    // --send-now acima (linhas ~962-970) — `applyRescheduleVerifyResults`
+    // só faz `console.error` + `continue` nos 3 modos de falha do
+    // GET-verify (rejeitado, status≠scheduled/queued, scheduledAt não bate
+    // por instante); sem isto, `main()` terminava com exit 0 mesmo quando o
+    // PUT foi aceito mas o reagendamento NÃO foi confirmado — o
+    // `--send-now` do mesmo arquivo já resolvia essa classe de bug,
+    // `--reschedule` reabria ela pelo lado oposto. `process.exitCode` (não
+    // `process.exit`) deixa o JSON de resumo abaixo imprimir normalmente.
+    if (!isSameInstant(c.scheduledAt, newScheduledAt)) {
+      console.error(
+        `❌ ${key}: reschedule PUT enviado mas GET-verify não confirmou o novo scheduledAt — NÃO declare sucesso. Re-tente --reschedule.`,
+      );
+      process.exitCode = 2;
+    }
   }
 
   console.log(
