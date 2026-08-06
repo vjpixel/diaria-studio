@@ -336,6 +336,24 @@ export interface IntraEditionDedupResult {
 export const INTRA_JACCARD_THRESHOLD = 0.45;
 
 /**
+ * #4675 review (fix de regressão do #4667): threshold Jaccard usado por
+ * `dedupSecondaryIntraBucket` em modo `strict` (buckets secundários ≠
+ * `lancamento` — hoje só RADAR via `INTRA_BUCKET_DEDUP_BUCKETS`). Ver
+ * docstring de `dedupSecondaryIntraBucket` para o racional completo do modo
+ * strict. Mais permissivo que `INTRA_JACCARD_THRESHOLD` (0.45) porque em
+ * modo strict o caminho de entidade-sozinha está desligado — só Jaccard
+ * resta como sinal, então o threshold precisa ser baixo o bastante para
+ * capturar títulos de veículos diferentes cobrindo o mesmo fato do dia com
+ * vocabulário bem divergente (ver os 2 clusters reais na issue #4667).
+ * Calibrado contra o par mais fraco desses clusters (cluster "Claude caiu",
+ * 4 fontes — menor Jaccard par-a-par ≈0.167), com margem folgada abaixo dos
+ * pares falso-positivo reproduzidos no review do #4675 (≈0.06–0.08: "ChatGPT
+ * banido em escolas" x "ChatGPT ganha novo modo de voz"; "Gemini fica
+ * instável" x "Google testa recurso experimental do Gemini").
+ */
+export const SECONDARY_INTRA_BUCKET_STRICT_JACCARD_THRESHOLD = 0.15;
+
+/**
  * Número mínimo de entidades compartilhadas para considerar entity-match.
  * 2 entidades = 1 empresa/produto + 1 numérico/outro, ou 2 entidades nomeadas.
  * Evita falso-positivo de 1 entidade genérica (ex: só "SpaceX" matcharia
@@ -1013,22 +1031,44 @@ export interface SecondaryIntraBucketResult {
  * `INTRA_BUCKET_DEDUP_BUCKETS`, ou `validate-lancamentos.ts` contra `radar[]`
  * cheio pós-demote, #4386).
  *
- * Sinal de "mesmo evento" (mesmos critérios já usados no dedup destaque-
- * vs-bucket, conservador — #4667 NÃO introduz um critério novo, mesma
- * calibração pra LANÇAMENTOS e RADAR): Jaccard de título ≥ threshold OU ≥1
- * entidade de PRODUTO compartilhada (`extractProductEntitiesIntra` — inclui
- * nome de modelo, exclui empresa/genéricos). Em caso de match, mantém o item
- * com `summary` não-vazio; se ambos (ou nenhum) têm summary, prefere o que
- * NÃO é model-card/hub page (`isModelCardOrHubPage`). Empate residual: mantém
- * o primeiro da lista (ordem estável).
+ * Sinal de "mesmo evento": Jaccard de título ≥ threshold OU ≥1 entidade de
+ * PRODUTO compartilhada (`extractProductEntitiesIntra` — inclui nome de
+ * modelo, exclui empresa/genéricos). Em caso de match, mantém o item com
+ * `summary` não-vazio; se ambos (ou nenhum) têm summary, prefere o que NÃO é
+ * model-card/hub page (`isModelCardOrHubPage`). Empate residual: mantém o
+ * primeiro da lista (ordem estável).
+ *
+ * **`options.strict` (#4675 review, fix de regressão do #4667):** o
+ * caminho "≥1 entidade de PRODUTO compartilhada" foi calibrado para
+ * LANÇAMENTOS, onde TODO item já é por definição um lançamento — então
+ * "mesmo produto citado" implica "mesmo lançamento" sem precisar de mais
+ * nada. RADAR não tem essa garantia (~30-40 notícias gerais/dia) e, ao
+ * contrário do segundo-sinal de `isIntraEditionDuplicate` (#2587), aqui não
+ * existe gate de domínio (`isPressCovertageOfHighlight`) confirmando que os
+ * 2 itens já são sobre a MESMA empresa/lançamento antes de aceitar a
+ * entidade sozinha — então 2 notícias DIFERENTES sobre o mesmo produto
+ * flagship (ex: "ChatGPT banido em escolas" x "ChatGPT ganha novo modo de
+ * voz"; "Gemini fica instável" x "Google testa recurso do Gemini")
+ * consolidavam incorretamente. Com `strict: true` (usado por
+ * `dedupIntraEdition` para todo bucket ≠ `lancamento`), o caminho de
+ * entidade-sozinha é DESLIGADO — só Jaccard conta, contra
+ * `SECONDARY_INTRA_BUCKET_STRICT_JACCARD_THRESHOLD` (mais permissivo que o
+ * default 0.45, calibrado contra o par mais fraco dos 2 clusters reais da
+ * #4667 — "Claude caiu", mínimo par-a-par ≈0.167 — com margem folgada abaixo
+ * dos pares falso-positivo observados, ≈0.06–0.08). Default `false`
+ * preserva o comportamento original para LANÇAMENTOS e para o call site de
+ * `validate-lancamentos.ts` (que roda contra `radar[]` mas em contexto
+ * onde os itens recém-demovidos SÃO lançamento por origem, #4386).
  *
  * Pure function — não muta `articles`.
  */
 export function dedupSecondaryIntraBucket(
   articles: Article[],
-  options: { jaccardThreshold?: number } = {},
+  options: { jaccardThreshold?: number; strict?: boolean } = {},
 ): SecondaryIntraBucketResult {
-  const jThreshold = options.jaccardThreshold ?? INTRA_JACCARD_THRESHOLD;
+  const jThreshold =
+    options.jaccardThreshold ??
+    (options.strict ? SECONDARY_INTRA_BUCKET_STRICT_JACCARD_THRESHOLD : INTRA_JACCARD_THRESHOLD);
   const removedUrls = new Set<string>();
   const removed: SecondaryIntraBucketResult["removed"] = [];
 
@@ -1044,9 +1084,19 @@ export function dedupSecondaryIntraBucket(
       const bTokens = tokenizeForJaccard(stripVehicleSuffix(b.title));
       const jaccard = jaccardSimilarity(aTokens, bTokens);
 
-      const aProductEntities = extractProductEntitiesIntra(a.title);
-      const bProductEntities = extractProductEntitiesIntra(b.title);
-      const sharedProduct = [...aProductEntities].filter((e) => bProductEntities.has(e));
+      // #4675 review: em modo `strict` (buckets ≠ lancamento), o caminho de
+      // entidade-sozinha fica fora do critério — só Jaccard decide. Evita
+      // recalcular `extractProductEntitiesIntra` à toa quando strict (e,
+      // como efeito colateral, neutraliza pra RADAR o bug separado de
+      // `extractProductEntitiesIntra` não pular o índice 0 — a 1ª palavra
+      // maiúscula de início de frase não pode mais, sozinha, virar match).
+      const sharedProduct = options.strict
+        ? []
+        : (() => {
+            const aProductEntities = extractProductEntitiesIntra(a.title);
+            const bProductEntities = extractProductEntitiesIntra(b.title);
+            return [...aProductEntities].filter((e) => bProductEntities.has(e));
+          })();
 
       const isSameLaunch = jaccard >= jThreshold || sharedProduct.length >= 1;
       if (!isSameLaunch) continue;
@@ -1169,9 +1219,13 @@ export function dedupIntraEdition(
     const bucketAfterHighlightPass = keptBuckets[bucket] ?? [];
     if (bucketAfterHighlightPass.length <= 1) continue;
 
+    // #4675 review: `strict` liga o modo mais conservador (só Jaccard, sem
+    // o caminho de entidade-sozinha) pra todo bucket que não seja
+    // `lancamento` — hoje, na prática, só `radar`. Ver docstring de
+    // `dedupSecondaryIntraBucket`.
     const { kept: bucketKept, removed: bucketRemoved } = dedupSecondaryIntraBucket(
       bucketAfterHighlightPass,
-      options,
+      { ...options, strict: bucket !== "lancamento" },
     );
     if (bucketRemoved.length > 0) {
       keptBuckets[bucket] = bucketKept;

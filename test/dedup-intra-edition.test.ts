@@ -2026,6 +2026,10 @@ describe("dedupIntraEdition — #4667 RADAR consolidação item-vs-item", () => 
     );
     assert.equal(radarIntraBucket.length, 2, "deve consolidar 2 das 3 fontes no item sobrevivente");
     assert.equal(kept.radar?.length, 1, "RADAR: cluster consolidado em 1 item");
+    // #4675 review: achado menor — assegurar QUAL url sobrevive, não só a
+    // contagem. Sem summary/model-card em nenhum dos 3, o desempate cai no
+    // primeiro item da lista (ordem estável).
+    assert.equal(kept.radar?.[0].url, "https://tecnoblog.net/1");
     // destaque não-relacionado preservado
     assert.equal(kept.highlights?.length, 1);
   });
@@ -2065,6 +2069,8 @@ describe("dedupIntraEdition — #4667 RADAR consolidação item-vs-item", () => 
     );
     assert.equal(radarIntraBucket.length, 3, "deve consolidar 3 das 4 fontes no item sobrevivente");
     assert.equal(kept.radar?.length, 1, "RADAR: cluster de 4 fontes consolidado em 1 item");
+    // #4675 review: achado menor — assegurar QUAL url sobrevive.
+    assert.equal(kept.radar?.[0].url, "https://canaltech.com.br/a");
   });
 
   it("NÃO consolida itens genuinamente distintos no RADAR (falso-positivo é o risco real)", () => {
@@ -2090,6 +2096,80 @@ describe("dedupIntraEdition — #4667 RADAR consolidação item-vs-item", () => 
     );
     assert.equal(radarIntraBucket.length, 0, "3 histórias distintas não devem ser consolidadas entre si");
     assert.equal(kept.radar?.length, 3, "todos os 3 itens distintos preservados");
+  });
+
+  // -------------------------------------------------------------------------
+  // #4675 review — 2 revisores do fleet reproduziram falso-positivo: o
+  // caminho "≥1 entidade de produto compartilhada" (sem gate de domínio,
+  // diferente do segundo-sinal #2587 de isIntraEditionDuplicate) consolidava
+  // notícias DIFERENTES que só citam o mesmo produto flagship. Fixtures
+  // literais do achado do review.
+  // -------------------------------------------------------------------------
+
+  it("NÃO consolida 2 pares de notícias DIFERENTES que só compartilham o nome de um produto flagship (ChatGPT/Gemini)", () => {
+    const input = {
+      highlights: [],
+      radar: [
+        { url: "https://a.com/1", title: "ChatGPT é banido em escolas de Nova York após casos de plágio" },
+        { url: "https://b.com/2", title: "ChatGPT ganha novo modo de voz mais natural para usuários pagantes" },
+        { url: "https://c.com/3", title: "Gemini fica instável e usuários relatam respostas erradas" },
+        { url: "https://d.com/4", title: "Google testa recurso experimental do Gemini para programadores" },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed } = dedupIntraEdition(input);
+
+    const radarIntraBucket = removed.filter(
+      (r) => r.match_type === "intra_bucket" && r.bucket === "radar",
+    );
+    assert.equal(
+      radarIntraBucket.length,
+      0,
+      "produto compartilhado sozinho não deve consolidar eventos DIFERENTES em RADAR",
+    );
+    assert.equal(kept.radar?.length, 4, "os 4 itens distintos são preservados");
+  });
+
+  it("NÃO consolida 2 notícias que só compartilham a 1ª palavra maiúscula genérica (índice 0) — 'Justiça'", () => {
+    // Achado adicional do review: extractProductEntitiesIntra não pula o
+    // índice 0, então a 1ª palavra da manchete (maiúscula por início de
+    // frase, não nome próprio) contava como entidade. Em modo strict o
+    // caminho de entidade está desligado, então este par (Jaccard baixo, só
+    // "justica" em comum) não consolida mais por nenhum caminho.
+    const input = {
+      highlights: [],
+      radar: [
+        { url: "https://a.com/1", title: "Justiça suspende licença de empresa de IA por descumprir a LGPD" },
+        { url: "https://b.com/2", title: "Justiça nega recurso de startup de IA contra multa da ANPD" },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed } = dedupIntraEdition(input);
+
+    const radarIntraBucket = removed.filter(
+      (r) => r.match_type === "intra_bucket" && r.bucket === "radar",
+    );
+    assert.equal(radarIntraBucket.length, 0, "casos distintos não devem colidir só pela 1ª palavra genérica");
+    assert.equal(kept.radar?.length, 2);
+  });
+
+  it("dedupSecondaryIntraBucket com strict:true não consolida via entidade-sozinha (unit, sem passar por dedupIntraEdition)", () => {
+    const articles = [
+      { url: "https://a.com/1", title: "Gemini fica instável e usuários relatam respostas erradas" },
+      { url: "https://b.com/2", title: "Google testa recurso experimental do Gemini para programadores" },
+    ];
+    const permissive = dedupSecondaryIntraBucket(articles);
+    assert.equal(permissive.removed.length, 1, "sem strict, o comportamento antigo (bugado) ainda consolida — prova que o teste cobre o caminho certo");
+
+    const strict = dedupSecondaryIntraBucket(articles, { strict: true });
+    assert.equal(strict.removed.length, 0, "com strict:true, entidade-sozinha não basta");
+    assert.equal(strict.kept.length, 2);
   });
 
   it("comportamento de LANÇAMENTOS permanece inalterado (regressão #4360 preservada pós-generalização #4667)", () => {
