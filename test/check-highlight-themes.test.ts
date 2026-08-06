@@ -37,6 +37,7 @@ import {
   DEFAULT_SECONDARY_BUCKETS,
   ENTITY_ONLY_RECENT_WINDOW,
   ENTITY_ONLY_MIN_SHARED,
+  SAGA_MIN_SHARED_ENTITIES,
   readPastFullBodyItems,
   checkFullBodyThemes,
   DEFAULT_FULL_BODY_WINDOW,
@@ -502,6 +503,342 @@ describe("checkHighlightThemes — gatilho entity-only independente (#3972)", ()
       0,
       `match fora da janela curta não deve disparar via entity-only: ${JSON.stringify(result.warnings)}`,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkHighlightThemes — gatilho "saga em andamento" (#4661)
+//
+// Caso real (edição 260806, achado ao vivo pelo editor): o incidente "agente
+// da OpenAI escapa de sandbox e invade sistemas reais (Hugging Face, Modal
+// Labs)" virou DESTAQUE 3x em ~2 semanas, todas dentro da janela de 12
+// edições — e check-highlight-themes.ts não sinalizou NENHUMA (warnings: []
+// nas 3). Títulos reais do corpo da issue:
+//
+//   1. 260723 — "IA agiu sozinha e hackeou startup, revela OpenAI"
+//   2. 260730 — "Agente da OpenAI invadiu mais plataformas"
+//   3. 260806 — "Agentes da OpenAI invadiram a Hugging Face"
+//
+// Nem o Jaccard textual (vocabulário muda a cada cobertura) nem o
+// entity-only #3972 (exige 2+ entidades específicas — só "openai" persiste
+// entre os pares 1↔3 e 2↔3; e a janela curta de 2 edições não alcançaria
+// 260723/260730 a partir de 260806 de qualquer forma) pegam esse padrão.
+// ---------------------------------------------------------------------------
+
+describe('checkHighlightThemes — gatilho "saga em andamento" (#4661)', () => {
+  const OPENAI_SAGA_PAST: PastEditionEntry[] = [
+    {
+      date: "2026-07-30",
+      title: "Agente da OpenAI invadiu mais plataformas",
+    },
+    {
+      date: "2026-07-23",
+      title: "IA agiu sozinha e hackeou startup, revela OpenAI",
+    },
+  ];
+
+  it("caso real 260806: detecta repeat contra a cobertura mais recente (260730) via empresa + vocabulário de invasão", () => {
+    const candidates = [
+      {
+        rank: 2,
+        title: "Agentes da OpenAI invadiram a Hugging Face",
+        url: "https://cnnbrasil.com.br/tecnologia/agentes-openai-hugging-face",
+      },
+    ];
+
+    const result = checkHighlightThemes(candidates, OPENAI_SAGA_PAST);
+    assert.equal(
+      result.warnings.length,
+      1,
+      `deve detectar o repeat via saga (openai + invasão): ${JSON.stringify(result.warnings)}`,
+    );
+    const w = result.warnings[0];
+    assert.equal(w.matched_edition, "260730");
+    assert.equal(w.saga_match, true, "deve estar marcado como match via gatilho saga");
+    assert.ok(
+      w.shared_entities.includes("openai"),
+      `shared_entities deve conter "openai": ${JSON.stringify(w.shared_entities)}`,
+    );
+    assert.ok(
+      w.jaccard < 0.25,
+      `Jaccard textual deve ficar abaixo do threshold rebaixado por entidade (0.25) — o ponto do bug era esse: got ${w.jaccard}`,
+    );
+  });
+
+  it("caso real 260806: detecta repeat contra a cobertura mais antiga (260723) via empresa + vocabulário de invasão/hack", () => {
+    // Isola 260723 (sem 260730) para confirmar que o par 1↔3 sozinho também
+    // dispara — "hackeou" (260723) e "invadiram" (260806) são STEMS
+    // diferentes (hacke vs invad), então o match só funciona porque o
+    // gatilho não exige o MESMO termo, só que ambos mencionem vocabulário
+    // de incidente (ver docstring de SAGA_MIN_SHARED_ENTITIES).
+    const candidates = [
+      {
+        rank: 2,
+        title: "Agentes da OpenAI invadiram a Hugging Face",
+        url: "https://cnnbrasil.com.br/tecnologia/agentes-openai-hugging-face",
+      },
+    ];
+    const past: PastEditionEntry[] = [
+      {
+        date: "2026-07-23",
+        title: "IA agiu sozinha e hackeou startup, revela OpenAI",
+      },
+    ];
+
+    const result = checkHighlightThemes(candidates, past);
+    assert.equal(
+      result.warnings.length,
+      1,
+      `deve detectar o repeat mesmo com verbos de incidente diferentes (hackeou vs invadiram): ${JSON.stringify(result.warnings)}`,
+    );
+    const w = result.warnings[0];
+    assert.equal(w.matched_edition, "260723");
+    assert.equal(w.saga_match, true);
+    assert.ok(w.shared_entities.includes("openai"));
+    assert.ok(
+      (w.saga_keywords ?? []).includes("hacke") && (w.saga_keywords ?? []).includes("invad"),
+      `saga_keywords deve conter os 2 stems distintos (hacke, invad): ${JSON.stringify(w.saga_keywords)}`,
+    );
+  });
+
+  it("as 3 coberturas reais da saga, checadas em sequência como o pipeline faria, são todas sinalizadas", () => {
+    // 260730 é checado contra o histórico já existente na 260723 (1 edição).
+    const resultFor260730 = checkHighlightThemes(
+      [{ rank: 3, title: "Agente da OpenAI invadiu mais plataformas", url: "https://theguardian.com/openai-modal-labs" }],
+      [{ date: "2026-07-23", title: "IA agiu sozinha e hackeou startup, revela OpenAI" }],
+    );
+    assert.equal(resultFor260730.warnings.length, 1, "260730 deveria ter sido sinalizada contra 260723");
+
+    // 260806 é checado contra o histórico com as 2 edições anteriores.
+    const resultFor260806 = checkHighlightThemes(
+      [{ rank: 2, title: "Agentes da OpenAI invadiram a Hugging Face", url: "https://cnnbrasil.com.br/agentes-openai-hf" }],
+      OPENAI_SAGA_PAST,
+    );
+    assert.equal(resultFor260806.warnings.length, 1, "260806 deveria ter sido sinalizada contra o histórico");
+  });
+
+  it("guard de falso-positivo: mesma empresa (OpenAI) SEM vocabulário de incidente em nenhum dos títulos não dispara via saga", () => {
+    const candidates = [
+      {
+        rank: 1,
+        title: "OpenAI lança novo modelo de geração de imagens",
+        url: "https://openai.com/blog/novo-modelo-imagens",
+      },
+    ];
+    const past: PastEditionEntry[] = [
+      { date: "2026-07-23", title: "OpenAI anuncia parceria com universidades europeias" },
+    ];
+
+    const result = checkHighlightThemes(candidates, past);
+    assert.equal(
+      result.warnings.length,
+      0,
+      `sem vocabulário de incidente em nenhum título, saga não deve disparar: ${JSON.stringify(result.warnings)}`,
+    );
+  });
+
+  it("guard de falso-positivo: vocabulário de incidente presente mas SEM empresa em comum não dispara via saga", () => {
+    const candidates = [
+      {
+        rank: 1,
+        title: "Hackers invadiram sistema de banco brasileiro",
+        url: "https://example.com/banco-invasao",
+      },
+    ];
+    const past: PastEditionEntry[] = [
+      { date: "2026-07-23", title: "IA agiu sozinha e hackeou startup, revela OpenAI" },
+    ];
+
+    const result = checkHighlightThemes(candidates, past);
+    assert.equal(
+      result.warnings.length,
+      0,
+      `sem empresa em comum, vocabulário de incidente sozinho não deve disparar: ${JSON.stringify(result.warnings)}`,
+    );
+  });
+
+  it("dois destaques genuinamente distintos (empresas diferentes, sem vocabulário de incidente) NÃO são marcados", () => {
+    const candidates = [
+      {
+        rank: 1,
+        title: "Google lança Gemini 4 com raciocínio multimodal avançado",
+        url: "https://blog.google/gemini-4",
+      },
+      {
+        rank: 2,
+        title: "Meta anuncia parceria com universidades para pesquisa de IA",
+        url: "https://meta.com/research-partnerships",
+      },
+    ];
+    const past: PastEditionEntry[] = [
+      { date: "2026-07-23", title: "IA agiu sozinha e hackeou startup, revela OpenAI" },
+      { date: "2026-07-30", title: "Agente da OpenAI invadiu mais plataformas" },
+    ];
+
+    const result = checkHighlightThemes(candidates, past);
+    assert.equal(
+      result.warnings.length,
+      0,
+      `destaques genuinamente distintos não devem ser marcados: ${JSON.stringify(result.warnings)}`,
+    );
+  });
+
+  it("guard REFORÇADO: empresas diferentes E AMBOS os títulos com vocabulário de incidente NÃO disparam (o guard anterior não exercitava esse caminho — candidatos sem vocabulário de incidente nem chegam a avaliar entidade)", () => {
+    const candidates = [
+      { rank: 1, title: "Nubank sofre vazamento de dados de clientes", url: "https://example.com/nubank-vazamento" },
+    ];
+    const past: PastEditionEntry[] = [
+      { date: "2026-07-23", title: "Itaú investiga invasão em sistema interno" },
+    ];
+
+    const result = checkHighlightThemes(candidates, past);
+    assert.equal(
+      result.warnings.length,
+      0,
+      `empresas distintas (Nubank × Itaú) com vocabulário de incidente em ambos não devem disparar: ${JSON.stringify(result.warnings)}`,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Review #4661 — achado 1 (crítico): substantivo de manchete de incidente
+  // não pode contar como "entidade de empresa". Ver docstring de
+  // `excludeIncidentStemEntities` em check-highlight-themes.ts.
+  // -------------------------------------------------------------------------
+
+  it("achado 1: substantivo de abertura da manchete ('Vazamento...') não conta como empresa em comum — INSS × Serasa não têm relação", () => {
+    const candidates = [
+      {
+        rank: 1,
+        title: "Vazamento revela falha grave em sistema do INSS",
+        url: "https://example.com/inss-vazamento",
+      },
+    ];
+    const past: PastEditionEntry[] = [
+      { date: "2026-07-23", title: "Vazamento expõe dados de milhões de clientes da Serasa" },
+    ];
+
+    const result = checkHighlightThemes(candidates, past);
+    assert.equal(
+      result.warnings.length,
+      0,
+      `"vazamento" sozinho (substantivo de abertura, não empresa) não deve contar como entidade compartilhada: ${JSON.stringify(result.warnings)}`,
+    );
+  });
+
+  it("achado 1: 'Hackers...' de abertura não conta como empresa em comum — Banco Central × Vivo não têm relação", () => {
+    const candidates = [
+      {
+        rank: 1,
+        title: "Hackers invadem sistema do Banco Central e vazam dados de clientes",
+        url: "https://example.com/bc-invasao",
+      },
+    ];
+    const past: PastEditionEntry[] = [
+      { date: "2026-07-23", title: "Hackers atacam rede da Vivo e comprometem informações de usuários" },
+    ];
+
+    const result = checkHighlightThemes(candidates, past);
+    assert.equal(
+      result.warnings.length,
+      0,
+      `"hackers" sozinho (substantivo de abertura, não empresa) não deve contar como entidade compartilhada: ${JSON.stringify(result.warnings)}`,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Review #4661 — achado 2 (importante): stem "atac" nunca casa com o
+  // substantivo "ataque" (c→qu antes de e/i). Ver INCIDENT_KEYWORD_STEMS.
+  // -------------------------------------------------------------------------
+
+  it("achado 2: substantivo 'ataque' (não 'atacou'/'atacar') agora dispara saga via novo stem 'ataqu'", () => {
+    const candidates = [
+      {
+        rank: 1,
+        title: "Ataque derruba sistema da OpenAI por horas",
+        url: "https://example.com/openai-ataque-1",
+      },
+    ];
+    const past: PastEditionEntry[] = [
+      { date: "2026-07-23", title: "Novo ataque atinge servidores da OpenAI e expõe falha" },
+    ];
+
+    const result = checkHighlightThemes(candidates, past);
+    assert.equal(
+      result.warnings.length,
+      1,
+      `"ataque" (substantivo) deve casar com o vocabulário de incidente e disparar via saga: ${JSON.stringify(result.warnings)}`,
+    );
+    assert.equal(result.warnings[0].saga_match, true);
+    assert.ok(result.warnings[0].shared_entities.includes("openai"));
+    assert.ok(
+      (result.warnings[0].saga_keywords ?? []).includes("ataqu"),
+      `saga_keywords deve conter o stem "ataqu": ${JSON.stringify(result.warnings[0].saga_keywords)}`,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Risco aceito, documentado na docstring de SAGA_MIN_SHARED_ENTITIES: mesma
+  // empresa REAL + 2 incidentes de segurança GENUINAMENTE diferentes ainda
+  // dispara — trade-off intencional (warn-only, o editor decide). Sem este
+  // teste, um refator futuro poderia "consertar" isso sem ninguém perceber
+  // que reduz a cobertura de saga real (achado do fleet de review).
+  // -------------------------------------------------------------------------
+
+  it("risco aceito (documentado): mesma empresa + 2 incidentes de segurança DIFERENTES ainda dispara saga_match — trade-off intencional", () => {
+    const candidates = [
+      {
+        rank: 1,
+        title: "Uber confirma vazamento de dados de motoristas após invasão",
+        url: "https://example.com/uber-motoristas",
+      },
+    ];
+    const past: PastEditionEntry[] = [
+      {
+        date: "2026-07-23",
+        title: "Uber sofre ataque hacker que expõe dados de passageiros",
+      },
+    ];
+
+    const result = checkHighlightThemes(candidates, past);
+    assert.equal(
+      result.warnings.length,
+      1,
+      `mesma empresa + vocabulário de incidente em ambos deve disparar mesmo sendo incidentes distintos (risco aceito por design): ${JSON.stringify(result.warnings)}`,
+    );
+    assert.equal(result.warnings[0].saga_match, true);
+    assert.ok(result.warnings[0].shared_entities.includes("uber"));
+  });
+
+  it("SAGA_MIN_SHARED_ENTITIES é 1 (mais permissivo que ENTITY_ONLY_MIN_SHARED=2, por design)", () => {
+    assert.equal(SAGA_MIN_SHARED_ENTITIES, 1);
+    assert.ok(
+      SAGA_MIN_SHARED_ENTITIES < ENTITY_ONLY_MIN_SHARED,
+      "saga precisa de menos entidades porque compensa exigindo vocabulário de incidente compartilhado",
+    );
+  });
+
+  it("gatilho padrão/entity-only, quando encontram match, têm prioridade sobre saga (nenhuma mudança de comportamento nos casos já cobertos)", () => {
+    // Mesmo par do caso real #3972 (entity-only) — teria vocabulário de
+    // incidente também presente ("ataque"), mas o entity-only já resolve com
+    // 2 entidades (hugging + face) e deve prevalecer (não reportar saga_match).
+    const candidates = [
+      {
+        rank: 1,
+        title: "Skynet, é você? Ataque à Hugging Face foi 100% feito por IA \"irmã\" do ChatGPT",
+        url: "https://canaltech.com.br/ia/ataque-hugging-face",
+      },
+    ];
+    const past: PastEditionEntry[] = [
+      {
+        date: "2026-07-23",
+        title: "Agente da OpenAI invade sistemas da Hugging Face em incidente de segurança",
+      },
+    ];
+
+    const result = checkHighlightThemes(candidates, past);
+    assert.equal(result.warnings.length, 1);
+    assert.equal(result.warnings[0].entity_only_match, true, "entity-only deve prevalecer sobre saga");
+    assert.notEqual(result.warnings[0].saga_match, true, "saga_match não deve estar setado quando entity-only já resolveu");
   });
 });
 

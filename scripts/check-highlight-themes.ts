@@ -38,6 +38,21 @@
  * já encontrou um match, ele prevalece (nenhuma mudança de comportamento nos
  * casos que já funcionavam).
  *
+ * #4661: terceiro gatilho, ainda mais permissivo — "saga em andamento". Cobre
+ * o caso onde o MESMO incidente é destaque várias vezes ao longo de semanas
+ * (não dias), cada cobertura enfatizando um fato novo daquela rodada, e a
+ * ÚNICA coisa que persiste é a empresa + a categoria do evento (ex:
+ * "OpenAI" + "invasão de sistema") — nem 2 entidades específicas nem o mesmo
+ * verbo se repetem entre as coberturas, então nem o passe padrão nem o
+ * entity-only (#3972, janela curta) pegam. Dispara com só 1 entidade de
+ * empresa em comum + vocabulário de incidente/segurança presente em AMBOS os
+ * títulos (não precisa ser o mesmo termo), contra a janela INTEIRA (não só
+ * as últimas 1-2 edições). A "entidade de empresa" exclui qualquer token que
+ * também seja vocabulário de incidente — sem isso a própria palavra de
+ * abertura da manchete ("Vazamento...", "Hackers...") contaria como entidade
+ * sozinha (ver `excludeIncidentStemEntities`). Ver docstring de
+ * `SAGA_MIN_SHARED_ENTITIES`.
+ *
  * Algoritmo para SECUNDÁRIOS (#2652, dois sinais obrigatórios):
  *   1. Entity overlap (incluindo 1ª palavra — empresas costumam estar no início):
  *      ≥1 entidade em comum (stopwords mais permissivos que o check de destaques).
@@ -157,6 +172,134 @@ export const ENTITY_ONLY_RECENT_WINDOW = 2;
 
 /** Mínimo de entidades específicas compartilhadas para o gatilho entity-only disparar (#3972). */
 export const ENTITY_ONLY_MIN_SHARED = 2;
+
+/**
+ * #4661: gatilho "saga em andamento" — terceiro nível de fallback, mais amplo
+ * que o entity-only (#3972) acima.
+ *
+ * Problema: uma SAGA (mesmo incidente coberto múltiplas vezes ao longo de
+ * semanas, cada cobertura enfatizando um FATO NOVO daquela rodada) escapa
+ * tanto do Jaccard textual quanto do entity-only, porque:
+ *   1. O Jaccard textual é baixo — cada cobertura usa vocabulário diferente
+ *      pro fato novo (plataforma atacada, estágio da investigação).
+ *   2. O entity-only (#3972) exige 2+ entidades específicas compartilhadas
+ *      E só olha pra janela CURTA (últimas `ENTITY_ONLY_RECENT_WINDOW`
+ *      edições) — uma saga se estende por mais tempo que isso, e a única
+ *      entidade que persiste entre as coberturas costuma ser 1 (a empresa).
+ *
+ * Caso real (#4661, edições 260723/260730/260806 — ~2 semanas de distância,
+ * todas dentro da janela padrão de 12): o mesmo incidente ("agente da OpenAI
+ * escapa de sandbox e invade sistemas reais") foi destaque 3x, cada vez
+ * citando OpenAI + um verbo de invasão diferente ("hackeou", "invadiu",
+ * "invadiram") — nunca a MESMA entidade extra (Hugging Face só aparece em
+ * 2 das 3 coberturas) nem o MESMO verbo exato.
+ *
+ * Sinal: 1 entidade de empresa em comum (via `extractEntityOnlyEntities` —
+ * já inclui nomes de empresa grandes como openai/google/meta, ao contrário
+ * do passe 2 que os filtra) + AMBOS os títulos mencionarem vocabulário de
+ * incidente/segurança (`INCIDENT_KEYWORD_STEMS` abaixo) — não precisa ser o
+ * MESMO termo em ambos, porque o que persiste numa saga é a CATEGORIA do
+ * evento ("é um incidente de segurança envolvendo essa empresa"), não o
+ * verbo específico usado naquela rodada.
+ *
+ * Roda contra a janela INTEIRA de `pastIndex` (mesma do algoritmo padrão,
+ * default 12 edições) — não limitada à janela curta do entity-only —
+ * porque sagas se espalham por mais tempo que 1-2 edições.
+ *
+ * Risco assumido (falso-positivo): mesma empresa + termo de incidente
+ * recorrente para 2 eventos GENUINAMENTE diferentes também dispara. Aceito
+ * de propósito — este é o terceiro nível de fallback, sempre WARN-ONLY
+ * (nunca bloqueia o gate, nunca remove o candidato); o editor vê o histórico
+ * completo (`matched_edition` + `matched_title`) e decide. Preferir avisar
+ * de mais a deixar uma saga real passar em silêncio 3x (decisão da issue).
+ */
+export const SAGA_MIN_SHARED_ENTITIES = 1;
+
+/**
+ * Stems (prefixos, lowercase, sem acentos) de vocabulário de incidente/
+ * segurança usados pelo gatilho "saga em andamento" (#4661). Prefixo, não
+ * palavra exata, pra capturar conjugações PT-BR sem precisar listar cada
+ * variante (hackeou/hackear/hackeada → "hacke"; invadiu/invadiram/invasor →
+ * "invad"). Deliberadamente restrito a vocabulário de segurança/incidente —
+ * não é uma lista genérica de verbos de "evento ruim" (evita capturar
+ * "demitiu"/"cortou" etc., que já têm seu próprio vocabulário editorial e
+ * não são o padrão de saga que esta issue endereça).
+ */
+const INCIDENT_KEYWORD_STEMS = [
+  "hacke",     // hackeou, hackear, hackeada, hackers
+  "invad",     // invadiu, invadiram, invadir, invasor
+  "invas",     // invasão, invasoes
+  "escap",     // escapou, escapar, escape (sandbox escape)
+  "vaz",       // vazou, vazamento, vazaram
+  "compromet", // comprometeu, comprometimento
+  "sandbox",
+  "brecha",
+  "explor",    // explorou, exploração, exploit
+  "atac",      // atacou, atacar, atacaram — verbal. NÃO cobre "ataque"/"ataques":
+               // ortografia PT-BR troca c→qu antes de e/i, então
+               // "ataque".startsWith("atac") é FALSE (verificado; o comentário
+               // antigo estava errado). Precisa do stem separado abaixo.
+  "ataqu",     // ataque, ataques — substantivo, a forma mais comum em
+               // manchete de incidente de segurança pt-BR ("Ataque derruba
+               // sistema..."); sem este stem o substantivo nunca disparava
+               // o gatilho saga (#4661 review, achado 2).
+  "violac",    // violação
+  "viol",      // violou
+  "roub",      // roubou, roubo
+  "furt",      // furto, furtou
+  "malici",    // malicioso, maliciosamente
+  "seguranca", // "falha de segurança", "teste de segurança"
+];
+
+/**
+ * Extrai os stems de `INCIDENT_KEYWORD_STEMS` presentes num set de tokens já
+ * normalizados (saída de `tokenizeForJaccard` — lowercase, sem acentos).
+ * Retorna o STEM casado (não o token original), pra permitir comparação de
+ * "categoria compartilhada" entre títulos que usam verbos diferentes da
+ * mesma família (#4661 — ver docstring de `SAGA_MIN_SHARED_ENTITIES`).
+ */
+function extractIncidentKeywords(tokens: Set<string>): Set<string> {
+  const matched = new Set<string>();
+  for (const token of tokens) {
+    for (const stem of INCIDENT_KEYWORD_STEMS) {
+      if (token.startsWith(stem)) {
+        matched.add(stem);
+        break;
+      }
+    }
+  }
+  return matched;
+}
+
+/**
+ * #4661 review (achado 1, crítico): remove de um set de entidades qualquer
+ * token que TAMBÉM seja vocabulário de incidente (`INCIDENT_KEYWORD_STEMS`).
+ *
+ * Sem este filtro, o gatilho saga usava `extractEntityOnlyEntities` — que
+ * INCLUI a 1ª palavra do título — como fonte da "entidade de empresa em
+ * comum". Manchete de incidente pt-BR abre rotineiramente com o próprio
+ * substantivo do incidente capitalizado por estar no início da frase
+ * ("Vazamento revela...", "Hackers invadem..."), então essa palavra
+ * satisfazia OS DOIS sinais (entidade E vocabulário de incidente) sozinha —
+ * os dois sinais deixavam de ser independentes e colapsavam numa palavra só.
+ * Falso-positivo real reproduzido: "Vazamento revela falha grave em sistema
+ * do INSS" × "Vazamento expõe dados de milhões de clientes da Serasa"
+ * disparava saga_match com shared_entities=["vazamento"] — INSS e Serasa não
+ * têm relação nenhuma, a única coisa em comum é a palavra de abertura.
+ *
+ * Aplicado SÓ ao gatilho saga (via `sagaEntities`/`candidateSagaEntities`
+ * abaixo) — não muda `extractEntityOnlyEntities` em si nem o gatilho
+ * entity-only (#3972), que não teve esse bug reportado e já é mais estrito
+ * (exige 2+ entidades específicas contra janela curta).
+ */
+function excludeIncidentStemEntities(entities: Set<string>): Set<string> {
+  const result = new Set<string>();
+  for (const e of entities) {
+    const isIncidentWord = INCIDENT_KEYWORD_STEMS.some((stem) => e.startsWith(stem));
+    if (!isIncidentWord) result.add(e);
+  }
+  return result;
+}
 
 /**
  * Extrai entidades para o gatilho entity-only independente (#3972).
@@ -311,6 +454,21 @@ export interface HighlightThemeWarning {
    * critério; ele só é reportado para contexto).
    */
   entity_only_match?: boolean;
+  /**
+   * #4661: true quando o warning foi disparado pelo gatilho "saga em
+   * andamento" (janela ampla, 1+ entidade de empresa + vocabulário de
+   * incidente/segurança compartilhado em AMBOS os títulos, não
+   * necessariamente o mesmo termo) — ver docstring de
+   * `SAGA_MIN_SHARED_ENTITIES`. Como no entity-only, `jaccard` pode estar
+   * abaixo de `effective_threshold`; não é o critério aqui.
+   */
+  saga_match?: boolean;
+  /**
+   * #4661: stems de vocabulário de incidente/segurança encontrados (união
+   * candidato + edição passada) quando `saga_match` é true — contexto pro
+   * editor entender por que o par foi sinalizado.
+   */
+  saga_keywords?: string[];
 }
 
 export interface CheckHighlightThemesResult {
@@ -345,6 +503,16 @@ interface PastEditionIndex {
   entities: Set<string>;
   /** #3972: entidades pré-computadas para o gatilho entity-only independente. */
   entityOnlyEntities: Set<string>;
+  /**
+   * #4661 review (achado 1): subconjunto de `entityOnlyEntities` SEM os
+   * tokens que também são vocabulário de incidente — fonte da "entidade de
+   * empresa em comum" usada pelo gatilho saga (nunca usado pelo entity-only
+   * #3972, que continua consumindo `entityOnlyEntities` sem filtro). Ver
+   * docstring de `excludeIncidentStemEntities`.
+   */
+  sagaEntities: Set<string>;
+  /** #4661: stems de incidente/segurança pré-computados para o gatilho "saga em andamento". */
+  incidentKeywords: Set<string>;
 }
 
 /**
@@ -353,12 +521,18 @@ interface PastEditionIndex {
  */
 function buildPastIndex(pastEditions: PastEditionEntry[]): PastEditionIndex[] {
   return pastEditions
-    .map((entry) => ({
-      entry,
-      tokens: tokenizeForJaccard(entry.title),
-      entities: extractHighlightEntities(entry.title),
-      entityOnlyEntities: extractEntityOnlyEntities(entry.title),
-    }))
+    .map((entry) => {
+      const tokens = tokenizeForJaccard(entry.title);
+      const entityOnlyEntities = extractEntityOnlyEntities(entry.title);
+      return {
+        entry,
+        tokens,
+        entities: extractHighlightEntities(entry.title),
+        entityOnlyEntities,
+        sagaEntities: excludeIncidentStemEntities(entityOnlyEntities),
+        incidentKeywords: extractIncidentKeywords(tokens),
+      };
+    })
     .filter((idx) => idx.tokens.size > 0);
 }
 
@@ -383,13 +557,28 @@ function findThemeMatch(
 
   const candidateEntities = extractHighlightEntities(candidate.title);
   const candidateEntityOnly = extractEntityOnlyEntities(candidate.title);
+  // #4661: stems de incidente/segurança do candidato — pré-computado uma vez.
+  const candidateIncidentKeywords = extractIncidentKeywords(candidateTokens);
+  // #4661 review (achado 1): entidades do candidato pra fins de saga, SEM os
+  // tokens que também são vocabulário de incidente — ver docstring de
+  // `excludeIncidentStemEntities`.
+  const candidateSagaEntities = excludeIncidentStemEntities(candidateEntityOnly);
 
   let bestMatch: HighlightThemeWarning | null = null;
   // #3972: melhor match do gatilho entity-only independente (fallback).
   let bestEntityOnlyMatch: HighlightThemeWarning | null = null;
+  // #4661: melhor match do gatilho "saga em andamento" (fallback final, janela ampla).
+  let bestSagaMatch: HighlightThemeWarning | null = null;
 
   pastIndex.forEach((pastEntry, position) => {
-    const { entry: past, tokens: pastTokens, entities: pastEntities, entityOnlyEntities: pastEntityOnly } = pastEntry;
+    const {
+      entry: past,
+      tokens: pastTokens,
+      entities: pastEntities,
+      entityOnlyEntities: pastEntityOnly,
+      sagaEntities: pastSagaEntities,
+      incidentKeywords: pastIncidentKeywords,
+    } = pastEntry;
 
     // Compute shared entities
     const sharedEntities: string[] = [];
@@ -446,11 +635,53 @@ function findThemeMatch(
         }
       }
     }
+
+    // #4661: gatilho "saga em andamento" — janela AMPLA (toda `pastIndex`,
+    // não só `ENTITY_ONLY_RECENT_WINDOW`). Dispara quando candidato e edição
+    // passada compartilham ≥1 entidade de empresa E AMBOS mencionam
+    // vocabulário de incidente/segurança (não precisa ser o mesmo termo —
+    // "hackeou" num título e "invadiu" noutro contam, porque o que persiste
+    // numa saga é a categoria do evento, não o verbo exato). Ver docstring de
+    // `SAGA_MIN_SHARED_ENTITIES` para o caso real e o trade-off assumido.
+    if (candidateIncidentKeywords.size > 0 && pastIncidentKeywords.size > 0) {
+      // #4661 review (achado 1): usa os sets JÁ FILTRADOS de vocabulário de
+      // incidente (`candidateSagaEntities`/`pastSagaEntities`), não
+      // `candidateEntityOnly`/`pastEntityOnly` brutos — senão a própria
+      // palavra de incidente (ex: "vazamento", "hackers" no início da
+      // manchete) conta como a "entidade de empresa em comum" sozinha. Ver
+      // docstring de `excludeIncidentStemEntities`.
+      const sharedSagaEntities: string[] = [];
+      for (const e of candidateSagaEntities) {
+        if (pastSagaEntities.has(e)) sharedSagaEntities.push(e);
+      }
+      if (sharedSagaEntities.length >= SAGA_MIN_SHARED_ENTITIES) {
+        const isBetter =
+          bestSagaMatch === null ||
+          sharedSagaEntities.length > bestSagaMatch.shared_entities.length ||
+          (sharedSagaEntities.length === bestSagaMatch.shared_entities.length && jaccard > bestSagaMatch.jaccard);
+        if (isBetter) {
+          bestSagaMatch = {
+            candidate_rank: candidate.rank,
+            candidate_title: candidate.title,
+            candidate_url: candidate.url,
+            matched_edition: isoDateToAammdd(past.date),
+            matched_title: past.title,
+            jaccard: Math.round(jaccard * 100) / 100,
+            shared_entities: sharedSagaEntities,
+            effective_threshold: JACCARD_THRESHOLD_WITH_ENTITY,
+            saga_match: true,
+            saga_keywords: [...new Set([...candidateIncidentKeywords, ...pastIncidentKeywords])].sort(),
+          };
+        }
+      }
+    }
   });
 
-  // #3972: algoritmo padrão (Jaccard/threshold) tem prioridade quando encontra
-  // algo — o entity-only é fallback só para os casos que ele não cobre.
-  return bestMatch ?? bestEntityOnlyMatch;
+  // #3972/#4661: algoritmo padrão (Jaccard/threshold) tem prioridade quando
+  // encontra algo; entity-only (janela curta, mais específico) é o próximo
+  // fallback; saga (janela ampla, mais permissivo) é o último recurso — só
+  // pega o que os dois anteriores não cobrem.
+  return bestMatch ?? bestEntityOnlyMatch ?? bestSagaMatch;
 }
 
 /**
@@ -1117,7 +1348,9 @@ async function main(): Promise<void> {
       // do threshold normal, então isso é anotado explicitamente no log.
       const note = w.entity_only_match
         ? " [entity-only: match independente do Jaccard, janela curta]"
-        : "";
+        : w.saga_match
+          ? ` [saga: empresa em comum + vocabulário de incidente (${(w.saga_keywords ?? []).join(",")}), janela ampla]`
+          : "";
       console.error(
         `[check-highlight-themes] ⚠️  Candidato #${w.candidate_rank} "${w.candidate_title}" repete tema de ${w.matched_edition} "${w.matched_title}" (Jaccard=${w.jaccard}, entities=[${w.shared_entities.join(",")}])${note}`,
       );

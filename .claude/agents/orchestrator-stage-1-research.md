@@ -687,7 +687,7 @@ Output: grava `_internal/01-payload-sizes.json` (relatório completo) e append e
 
 ### 1w-quint-b. Check de repeat-de-tema nos destaques candidatos e itens secundários (#2073, #2652, #4262)
 
-Antes do gate, verificar se algum candidato a destaque repete o TEMA de um destaque publicado nas **últimas 12 edições**, se algum item RADAR/LANÇAMENTOS repete empresa+sub-tema de itens em `01-approved.json` das **últimas 10 edições** (match: entidade + Jaccard ≥ 0.15 OU prefixo ≥ 6 chars), e se algum candidato a destaque repete uma história já coberta no CORPO INTEIRO (destaques + todos os buckets secundários, não só destaques publicados) das **últimas 10 edições** (#4262 — reusa o comparador cross-veículo de `dedup-intra-edition.ts`). **Warn-only — nunca bloqueia.**
+Antes do gate, verificar se algum candidato a destaque repete o TEMA de um destaque publicado nas **últimas 12 edições** (inclui o gatilho "saga em andamento" #4661 — mesmo incidente coberto várias vezes ao longo de semanas, cada cobertura com fato novo; dispara com só 1 empresa em comum + vocabulário de incidente/segurança presente em ambos os títulos, não precisa ser o mesmo verbo), se algum item RADAR/LANÇAMENTOS repete empresa+sub-tema de itens em `01-approved.json` das **últimas 10 edições** (match: entidade + Jaccard ≥ 0.15 OU prefixo ≥ 6 chars), e se algum candidato a destaque repete uma história já coberta no CORPO INTEIRO (destaques + todos os buckets secundários, não só destaques publicados) das **últimas 10 edições** (#4262 — reusa o comparador cross-veículo de `dedup-intra-edition.ts`). **Warn-only — nunca bloqueia.**
 
 ```bash
 npx tsx scripts/check-highlight-themes.ts \
