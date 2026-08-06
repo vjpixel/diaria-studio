@@ -2239,3 +2239,132 @@ describe("dedupIntraEdition — #4667 RADAR consolidação item-vs-item", () => 
     assert.equal(kept.video?.length, 2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #4695: editor_submitted nunca é perdido em silêncio pelos dois passes.
+// ---------------------------------------------------------------------------
+
+describe("dedupIntraEdition — editor_submitted nunca é perdido em silêncio (#4695)", () => {
+  it("passe destaque-vs-bucket: item editor_submitted que casa com D1 sai do bucket mas é reportado em editorSubmittedLost (rescatado via cluster_sources, #4228 preservado)", () => {
+    const input = {
+      highlights: [
+        {
+          rank: 1,
+          url: "https://braziljournal.com/spacex-compra-cursor",
+          article: {
+            url: "https://braziljournal.com/spacex-compra-cursor",
+            title: "SpaceX compra o Cursor por US$ 60 bilhões",
+          },
+        },
+      ],
+      radar: [
+        {
+          url: "https://exame.com/spacex-cursor",
+          title: "SpaceX compra Cursor por 60 bilhões de dólares",
+          flag: "editor_submitted",
+          editor_submitted_url: "https://exame.com/spacex-cursor",
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed, editorSubmittedLost } = dedupIntraEdition(input);
+
+    // Item ainda sai do RADAR (comportamento #4185/#4228 preservado).
+    assert.equal(removed.length, 1);
+    assert.equal(kept.radar?.length, 0);
+    // Mas o conteúdo sobrevive como cluster_sources[] do D1.
+    const d1 = kept.highlights?.[0] as {
+      article?: { cluster_sources?: Array<{ url: string }> };
+    };
+    assert.ok(d1.article?.cluster_sources?.some((c) => c.url === "https://exame.com/spacex-cursor"));
+    // E agora aparece em editorSubmittedLost pra visibilidade no gate (item 4c) —
+    // antes desta issue, isso só ia pro stderr.
+    assert.equal(editorSubmittedLost.length, 1);
+    assert.equal(editorSubmittedLost[0].url, "https://exame.com/spacex-cursor");
+    assert.equal(editorSubmittedLost[0].bucket, "radar");
+  });
+
+  it("passe item-vs-item: item editor_submitted que casaria como duplicata de outro item do RADAR sobrevive (exemção incondicional)", () => {
+    const input = {
+      highlights: [
+        { rank: 1, url: "https://highlight.com/x", title: "Destaque não-relacionado a outages" },
+      ],
+      radar: [
+        {
+          url: "https://canaltech.com.br/a",
+          title: "Claude caiu? Usuários relatam problemas com a IA da Anthropic nesta quarta (5)",
+        },
+        {
+          url: "https://exame.com/claude-caiu-editor",
+          title: "Claude fora do ar? Instabilidade derruba modelos da Anthropic",
+          flag: "editor_submitted",
+          editor_submitted_url: "https://exame.com/claude-caiu-editor",
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed, editorSubmittedLost } = dedupIntraEdition(input);
+
+    // Nenhum dos dois lados é removido — a submissão do editor é poupada,
+    // e o outro item também sobrevive (a exemção poupa a DUPLA inteira,
+    // não troca qual sobrevive).
+    assert.equal(removed.length, 0, "nenhuma remoção intra_bucket deve ocorrer quando um dos lados é editor_submitted");
+    assert.equal(kept.radar?.length, 2, "os 2 itens do RADAR permanecem — nenhum foi consolidado");
+    // O match é reportado em editorSubmittedLost pra visibilidade do gate.
+    assert.equal(editorSubmittedLost.length, 1);
+    assert.equal(editorSubmittedLost[0].url, "https://exame.com/claude-caiu-editor");
+    assert.equal(editorSubmittedLost[0].bucket, "radar");
+    assert.equal(editorSubmittedLost[0].match_type, "intra_bucket");
+  });
+
+  it("item normal (sem editor_submitted) continua sendo consolidado normalmente no passe item-vs-item", () => {
+    const input = {
+      highlights: [],
+      radar: [
+        {
+          url: "https://canaltech.com.br/a",
+          title: "Claude caiu? Usuários relatam problemas com a IA da Anthropic nesta quarta (5)",
+        },
+        {
+          url: "https://tecnoblog.net/b",
+          title: "Claude fora do ar? Instabilidade derruba modelos da Anthropic",
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed, editorSubmittedLost } = dedupIntraEdition(input);
+
+    assert.equal(removed.length, 1, "sem editor_submitted, consolidação item-vs-item continua ocorrendo como antes");
+    assert.equal(kept.radar?.length, 1);
+    assert.equal(editorSubmittedLost.length, 0);
+  });
+
+  it("dedupSecondaryIntraBucket unit: dupla inteira é poupada quando qualquer lado é editor_submitted, mesmo em modo strict (RADAR)", () => {
+    const a = {
+      url: "https://a.com/1",
+      title: "ChatGPT banido em escolas de Nova York por medo de cola",
+    };
+    const b = {
+      url: "https://b.com/2",
+      title: "ChatGPT proibido em escolas de Nova York após denúncias de cola",
+      flag: "editor_submitted",
+    };
+    const { kept, removed, editorSubmittedSpared } = dedupSecondaryIntraBucket([a, b], {
+      strict: true,
+      jaccardThreshold: 0.1,
+    });
+    assert.equal(removed.length, 0);
+    assert.equal(kept.length, 2);
+    assert.equal(editorSubmittedSpared.length, 1);
+    assert.equal(editorSubmittedSpared[0].url, "https://b.com/2");
+  });
+});
