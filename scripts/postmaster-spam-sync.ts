@@ -74,7 +74,7 @@ import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
 import { POSTMASTER_SPAM_KV_KEY } from "./postmaster-spam-entry.ts";
 import { HEALTH_SAMPLE_DAYS } from "../workers/brevo-dashboard/src/weekly-plan.ts";
-import type { PostmasterSpamEntry } from "./lib/dashboard-kv-types.ts";
+import type { PostmasterSpamEntry, PostmasterReputationSignal } from "./lib/dashboard-kv-types.ts";
 
 loadProjectEnv();
 
@@ -95,8 +95,10 @@ export function apiDateToEntryDate(apiDate: string): string {
   return `${apiDate.slice(0, 4)}-${apiDate.slice(4, 6)}-${apiDate.slice(6, 8)}`;
 }
 
-export interface TrafficStatsResponse {
+export interface TrafficStatsResponse extends PostmasterReputationSignal {
   userReportedSpamRatio?: number;
+  // domainReputation/ipReputations herdados de PostmasterReputationSignal
+  // (#4703) — presentes na resposta e descartados até agora, ver `extractReputationSignal`.
   [key: string]: unknown;
 }
 
@@ -118,9 +120,37 @@ export function extractDayRatio(body: TrafficStatsResponse): number {
   return typeof body.userReportedSpamRatio === "number" ? body.userReportedSpamRatio : 0;
 }
 
-export interface DayReading {
+/**
+ * Pura/testável: extrai `domainReputation`/`ipReputations` de uma resposta
+ * 200 (#4703). Ao contrário de `extractDayRatio`, aqui AUSENTE fica AUSENTE
+ * (`undefined`) — não existe um "default 0" que faça sentido pra reputação
+ * (diferente do double protobuf omitido = 0 de `userReportedSpamRatio`), e
+ * inventar um valor violaria a mesma disciplina de schema evolution já
+ * documentada pra `daysWithData`/`daysProbed` em `PostmasterSpamEntry`.
+ *
+ * Campo presente mas com shape errado (`domainReputation` não-string,
+ * `ipReputations` não-array) é tratado como ausente, mas com um AVISO no
+ * console — não some em silêncio como um payload genuinamente sem o campo.
+ */
+export function extractReputationSignal(body: TrafficStatsResponse): PostmasterReputationSignal {
+  const signal: PostmasterReputationSignal = {};
+  if ("domainReputation" in body) {
+    if (typeof body.domainReputation === "string") signal.domainReputation = body.domainReputation;
+    else console.warn(`[postmaster-spam-sync] domainReputation presente mas não é string: ${JSON.stringify(body.domainReputation)}`);
+  }
+  if ("ipReputations" in body) {
+    if (Array.isArray(body.ipReputations)) signal.ipReputations = body.ipReputations;
+    else console.warn(`[postmaster-spam-sync] ipReputations presente mas não é array: ${JSON.stringify(body.ipReputations)}`);
+  }
+  return signal;
+}
+
+export interface DayReading extends PostmasterReputationSignal {
   apiDate: string;
   ratio: number;
+  // domainReputation/ipReputations herdados de PostmasterReputationSignal
+  // (#4703) — só presentes quando a resposta 200 do dia trouxe os campos,
+  // ver `extractReputationSignal`.
 }
 
 export interface CollectSpamReadingsResult {
@@ -160,7 +190,7 @@ export async function collectSpamReadings(
 
     if (status === 200) {
       if (!body) continue; // defensivo — não deveria acontecer com status 200
-      readings.push({ apiDate, ratio: extractDayRatio(body) });
+      readings.push({ apiDate, ratio: extractDayRatio(body), ...extractReputationSignal(body) });
       continue;
     }
 
@@ -211,6 +241,17 @@ export function buildAveragedEntry(
     producedBy: "auto",
     daysWithData: readings.length,
     daysProbed,
+    // #4703: reputação é um snapshot do dia mais recente, não uma média — não
+    // faz sentido "mediar" um enum (BAD/LOW/MEDIUM/HIGH) nem uma lista de IPs.
+    // Omitido inteiramente (não `undefined` explícito) quando o dia mais
+    // recente não trouxe o campo — mesma disciplina de opcionalidade descrita
+    // na definição de `daysWithData`/`daysProbed` em `PostmasterSpamEntry`
+    // (schema evolution: campo ausente pra entries que não o têm, nunca
+    // inferido). Diferente de `daysWithData`/`daysProbed` acima, que SÃO
+    // sempre atribuídos por esta função — só domainReputation/ipReputations
+    // são condicionais aqui.
+    ...(mostRecent.domainReputation !== undefined ? { domainReputation: mostRecent.domainReputation } : {}),
+    ...(mostRecent.ipReputations !== undefined ? { ipReputations: mostRecent.ipReputations } : {}),
   };
 }
 
