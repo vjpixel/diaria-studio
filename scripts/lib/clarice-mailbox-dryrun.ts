@@ -107,6 +107,8 @@ export function computeMailboxDryrunReport(
         soft_bounce_count: r.soft_bounce_count,
         priority_points: r.priority_points,
         cohort: r.cohort ?? null,
+        sends_count: r.sends_count, // #4669
+        opens_count: r.opens_count, // #4669
       });
       const transitioned = before.send_eligible && !res.send_eligible;
 

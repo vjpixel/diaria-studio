@@ -40,6 +40,7 @@ import {
   DEFAULT_DB_PATH,
 } from "./lib/clarice-db.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { evaluateSunsetBlastRadius, renderSunsetBlastRadiusGuard } from "./lib/clarice-wave-plan.ts";
 
 /**
  * #4205: caminho dos 2 arquivos de checkpoint (full + incremental — #2928,
@@ -279,6 +280,20 @@ export async function main(
     process.exit(2);
   }
 
+  // #4669: guard de blast radius do sunset de não-abridores — reporta ANTES
+  // de recomputar quantos contatos ELEGÍVEIS hoje perderiam send_eligible só
+  // pelo corte novo (3+ envios, 0 aberturas). Puramente informativo (esta
+  // rotina roda desassistida diariamente via Task Scheduler — não há editor
+  // pra responder a um bloqueio), mas garante que o corte nunca é silencioso
+  // na primeira vez que este código roda contra a base real. Query ANTES de
+  // `recomputeDerived` — depois dela os cortados já são send_eligible=0 e
+  // não apareceriam mais aqui.
+  const preRecomputeRows = db
+    .prepare("SELECT send_eligible, sends_count, opens_count FROM clarice_users")
+    .all() as Array<{ send_eligible: number; sends_count: number; opens_count: number }>;
+  const sunsetGuard = evaluateSunsetBlastRadius(preRecomputeRows);
+  console.error(`⚙️  ${renderSunsetBlastRadiusGuard(sunsetGuard)}`);
+
   // Concluído: recompute global + limpa checkpoint.
   console.error(`⚙️  recomputando derivados (send_eligible + priority_points)…`);
   const derived = recomputeDerived(db);
@@ -306,6 +321,7 @@ export async function main(
         suppressed,
         derived_recomputed: derived,
         brevo_synced: true,
+        sunset_blast_radius: sunsetGuard, // #4669
       },
       null,
       2,

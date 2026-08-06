@@ -71,6 +71,35 @@ export function isMvExemptCohort(cohort: string | null | undefined): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Sunset de não-abridores (#4669, decisão do editor 260805b — sessão
+// `/diaria-develop`, comentário de decisão de produto) — corte de
+// `send_eligible` pra contato que recebeu N+ envios e NUNCA abriu nenhum. A
+// #4430 original tinha proposto isto e foi fechada sem implementar; a #4669
+// reabriu porque esse estoque (16.117 contatos medidos, `measureNonOpenerExposure`
+// em clarice-wave-plan.ts) volta pra fila a cada onda e alimenta a reclamação
+// de spam que trava o breaker (`resolveSpamSignal`) pros dois canais de envio.
+//
+// NÃO é corte definitivo — decisão explícita do editor: o contato sai da fila
+// de ondas normais (`classifyEligibility`, clarice-db.ts) mas continua alvo
+// do grupo nomeado `reativacao` (`isReativacao`, clarice-segment.ts), que
+// existe exatamente pra esse perfil. As duas constantes moram aqui
+// (dependency-free/Workers-safe, mesmo motivo de `INTERNAL_EMAILS` acima)
+// porque 3 módulos precisam do mesmo valor sem poder formar ciclo de import:
+//   - `clarice-db.ts` (decide o corte em `classifyEligibility`, usa `node:sqlite`)
+//   - `clarice-segment.ts` (Workers-safe — `isReativacao` reconhece a razão
+//     pra NÃO excluir quem só foi cortado por isto)
+//   - `clarice-wave-plan.ts` (guard de blast radius, reusa
+//     `measureNonOpenerExposure` com este N em vez de reimplementar a contagem)
+// ---------------------------------------------------------------------------
+
+/** N de envios sem NENHUMA abertura que aciona o corte (#4669: 3 — margem a
+ *  mais que o N=2 usado só pra MEDIR exposição em `measureNonOpenerExposure`). */
+export const NON_OPENER_SUNSET_MIN_SENDS = 3;
+
+/** `ineligible_reason` emitida pelo corte acima. */
+export const NON_OPENER_SUNSET_REASON = "non_opener_sunset" as const;
+
+// ---------------------------------------------------------------------------
 // Emails internos (#2809) — editor + parceiro Clarice. Abrem/testam envios
 // por ofício; o engajamento deles não é sinal de audiência. Movido pra cá
 // (fonte única, #2885) porque tanto `clarice-db.ts` (agregações de exibição)

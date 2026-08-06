@@ -412,6 +412,8 @@ const CLEAN = {
   soft_bounce_count: 0,
   priority_points: 0,
   cohort: null,
+  sends_count: 0, // #4669
+  opens_count: 0, // #4669
 };
 
 test("eligibility: tudo limpo → elegível, sem razão", () => {
@@ -660,6 +662,53 @@ test("eligibility #2876: soft_bounce >= limite + priority_points > 0 → SEGUE s
   const r = classifyEligibility({ ...CLEAN, soft_bounce_count: SOFT_BOUNCE_LIMIT, priority_points: 60 });
   assert.equal(r.send_eligible, false);
   assert.equal(r.ineligible_reason, "soft_bounce");
+});
+
+// ---------------------------------------------------------------------------
+// #4669 — sunset de não-abridores (decisão do editor 260805b): sends_count
+// >= 3 e opens_count === 0 perde send_eligible, mas NÃO definitivamente
+// (isReativacao continua oferecendo o contato — testado em clarice-segment).
+// ---------------------------------------------------------------------------
+
+test("REGRESSÃO (#4669): 3 envios, 0 aberturas → perde send_eligible com razão non_opener_sunset", () => {
+  const r = classifyEligibility({ ...CLEAN, sends_count: 3, opens_count: 0 });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "non_opener_sunset");
+});
+
+test("REGRESSÃO (#4669): 2 envios, 0 aberturas → continua elegível (corte é em 3, não 2)", () => {
+  const r = classifyEligibility({ ...CLEAN, sends_count: 2, opens_count: 0 });
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
+});
+
+test("REGRESSÃO (#4669): 3 envios, 1 abertura → continua elegível (não é 'nunca abriu')", () => {
+  const r = classifyEligibility({ ...CLEAN, sends_count: 3, opens_count: 1 });
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
+});
+
+test("eligibility #4669: sends_count bem acima do limiar (10 envios, 0 aberturas) também corta — não é só o valor exato 3", () => {
+  const r = classifyEligibility({ ...CLEAN, sends_count: 10, opens_count: 0 });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "non_opener_sunset");
+});
+
+test("eligibility #4669: cohort assinantes-ativos é ISENTO do sunset (mesma isenção 'pagante SEMPRE elegível' que já cobre os cortes de MV, #3819)", () => {
+  const r = classifyEligibility({
+    ...CLEAN,
+    sends_count: 10,
+    opens_count: 0,
+    cohort: "assinantes-ativos",
+  });
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
+});
+
+test("eligibility #4669: razão mais forte (unsubscribed) continua vencendo mesmo quando o sunset também bateria", () => {
+  const r = classifyEligibility({ ...CLEAN, sends_count: 5, opens_count: 0, unsubscribed: true });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "unsubscribed", "unsubscribed é checado ANTES do sunset — não deve trocar de razão");
 });
 
 // ---------------------------------------------------------------------------

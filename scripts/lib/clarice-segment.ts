@@ -37,6 +37,7 @@ import {
   isMvExemptCohort,
   INTERNAL_EMAILS,
   isTestAccount,
+  NON_OPENER_SUNSET_REASON,
 } from "./cohorts.ts";
 
 export interface StoreRow {
@@ -397,12 +398,23 @@ export function segmentEngajados(rows: StoreRow[]): StoreRow[] {
  * abriu pouco). NÃO exclui internos (#4434 — mesma decisão/motivo de
  * `isEngajados` acima). Exclui contas de teste do editor (#2895/#2920 —
  * mesmo motivo de `isEngajados`).
+ *
+ * #4669 (sunset de não-abridores, decisão do editor 260805b): um contato
+ * pode ter `send_eligible = 0` justamente por ESTE predicado (3+ envios sem
+ * NENHUMA abertura, ver `classifyEligibility` em clarice-db.ts) — o corte
+ * NÃO é definitivo, `reativacao` é o único caminho de volta pra esse
+ * perfil. Por isso o `isSendEligible(r)` puro do resto do módulo é relaxado
+ * aqui: `ineligible_reason === NON_OPENER_SUNSET_REASON` também qualifica,
+ * mesmo com `send_eligible = 0`. Qualquer OUTRA razão de corte (unsub,
+ * hard_bounce, mv_rejected, etc.) continua excluindo normalmente — só o
+ * motivo específico do sunset é reconhecido aqui, porque é o único cujo
+ * próprio desenho prevê reativação como saída.
  */
 export function isReativacao(
-  r: Pick<StoreRow, "email" | "send_eligible" | "sends_count" | "opens_count">,
+  r: Pick<StoreRow, "email" | "send_eligible" | "sends_count" | "opens_count" | "ineligible_reason">,
 ): boolean {
   return (
-    isSendEligible(r) &&
+    (isSendEligible(r) || r.ineligible_reason === NON_OPENER_SUNSET_REASON) &&
     (r.sends_count ?? 0) > 0 &&
     (r.opens_count ?? 0) === 0 &&
     !isTestAccount(r.email)

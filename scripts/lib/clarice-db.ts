@@ -35,6 +35,8 @@ import {
   isKnownCohortSlug,
   isMvExemptCohort,
   isTestAccount,
+  NON_OPENER_SUNSET_MIN_SENDS,
+  NON_OPENER_SUNSET_REASON,
 } from "./cohorts.ts";
 import { canonicalizeGmail, GMAIL_DOMAINS } from "./canonicalize-gmail.ts";
 
@@ -388,7 +390,13 @@ export type IneligibleReason =
   // nada sobre ELA) — são efeito de uma linha IRMÃ na mesma caixa Gmail
   // (`canonicalizeGmail`, #1969: ponto/+tag ignorados, mesmo inbox físico).
   | "mailbox_suppressed" // linha irmã tem unsubscribed/blacklist/complaint
-  | "duplicate_mailbox"; // linha irmã venceu o desempate de duplicata
+  | "duplicate_mailbox" // linha irmã venceu o desempate de duplicata
+  // #4669: sunset de não-abridores — ver bloco na cohorts.ts
+  // (NON_OPENER_SUNSET_MIN_SENDS/NON_OPENER_SUNSET_REASON) e o check no fim
+  // de `classifyEligibility` abaixo. NÃO definitivo: `isReativacao`
+  // (clarice-segment.ts) reconhece esta razão especificamente pra continuar
+  // oferecendo o contato ao grupo `reativacao`.
+  | typeof NON_OPENER_SUNSET_REASON;
 
 export interface EligibilityInput {
   email_blacklisted: boolean;
@@ -425,6 +433,17 @@ export interface EligibilityInput {
    * distinção.
    */
   cohort: string | null | undefined;
+  /**
+   * #4669 (sunset de não-abridores): total de envios já recebidos. Junto com
+   * `opens_count`, decide o corte no fim de `classifyEligibility` — contato
+   * com `sends_count >= NON_OPENER_SUNSET_MIN_SENDS` e `opens_count === 0`
+   * perde `send_eligible` (mas continua alvo de `reativacao`, ver
+   * cohorts.ts). Já existia em `MailboxRow`/no store — só agora entra
+   * explicitamente no contrato de `classifyEligibility`.
+   */
+  sends_count: number;
+  /** #4669 — ver `sends_count` acima. */
+  opens_count: number;
 }
 
 export function classifyEligibility(i: EligibilityInput): {
@@ -484,6 +503,22 @@ export function classifyEligibility(i: EligibilityInput): {
   // cohort isento no futuro só precisa mudar num lugar.
   if (!i.mv_bucket && !mvExempt && !engaged)
     return { send_eligible: false, ineligible_reason: "mv_unverified" };
+  // #4669 (sunset de não-abridores, decisão do editor 260805b): recebeu
+  // NON_OPENER_SUNSET_MIN_SENDS (3) envios ou mais e nunca abriu NENHUM.
+  // Checado por ÚLTIMO — é o corte mais "fraco" de todos (comportamento, não
+  // consentimento/entregabilidade), então qualquer razão mais forte acima já
+  // teria retornado primeiro. Isento: `mvExempt` (cohort `assinantes-ativos`)
+  // — mesma isenção de pagante SEMPRE elegível que já cobre os cortes de MV
+  // acima; um pagante não perde a newsletter que ele PAGA por não abrir
+  // e-mails de re-engajamento de uma campanha voltada pra leads/ex-assinantes
+  // (#4669/#4657 nunca tratam de assinantes-ativos). NÃO checa `engaged`
+  // (priority_points > 0) — a decisão do editor foi literal sobre
+  // sends_count/opens_count, sem carve-out pro opt-in manual de prioridade.
+  // NÃO é corte definitivo: `isReativacao` (clarice-segment.ts) reconhece
+  // `NON_OPENER_SUNSET_REASON` especificamente e continua oferecendo este
+  // contato ao grupo `reativacao`.
+  if (i.sends_count >= NON_OPENER_SUNSET_MIN_SENDS && i.opens_count === 0 && !mvExempt)
+    return { send_eligible: false, ineligible_reason: NON_OPENER_SUNSET_REASON };
   return { send_eligible: true, ineligible_reason: null };
 }
 
@@ -820,6 +855,8 @@ export function resolveMailboxCoherence(
           soft_bounce_count: r.soft_bounce_count,
           priority_points: r.priority_points,
           cohort: resolvedCohort.get(r.email) ?? null,
+          sends_count: r.sends_count, // #4669
+          opens_count: r.opens_count, // #4669
         }),
       );
     }

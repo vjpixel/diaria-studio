@@ -6,14 +6,17 @@ import {
   brtDayLabel,
   buildWaveProposal,
   computeNextWaveNumber,
+  evaluateSunsetBlastRadius,
   groupKeyFromCampaignName,
   measureNonOpenerExposure,
   proposeVolumes,
   recommendAbcAction,
+  renderSunsetBlastRadiusGuard,
   renderWaveProposal,
   scheduledAtForDate,
   summarizeCycleSends,
   summarizeMvBacklog,
+  SUNSET_BLAST_RADIUS_THRESHOLD,
   waveKey,
   MV_COST_PER_EMAIL_USD,
   type WaveProposalInput,
@@ -505,7 +508,7 @@ describe("summarizeMvBacklog (#4657)", () => {
   });
 });
 
-describe("measureNonOpenerExposure (#4657 — lacuna do sunset #4430)", () => {
+describe("measureNonOpenerExposure (#4657 — indicador antecipado do sunset #4669, N=2 vs corte real N=3)", () => {
   it("conta elegíveis com N+ envios e zero aberturas", () => {
     const e = measureNonOpenerExposure([
       { send_eligible: 1, sends_count: 3, opens_count: 0 },
@@ -523,6 +526,67 @@ describe("measureNonOpenerExposure (#4657 — lacuna do sunset #4430)", () => {
     const e = measureNonOpenerExposure([{ send_eligible: 0, sends_count: 3, opens_count: 0 }]);
     assert.equal(e.count, 0);
     assert.equal(e.fraction, 0);
+  });
+});
+
+describe("REGRESSÃO (#4669): evaluateSunsetBlastRadius — guard reporta a contagem ANTES de aplicar o corte", () => {
+  it("reporta cutCount/eligibleBefore/ratio com N=3 (o corte real, não o N=2 de measureNonOpenerExposure)", () => {
+    const g = evaluateSunsetBlastRadius([
+      { send_eligible: 1, sends_count: 3, opens_count: 0 }, // cortado
+      { send_eligible: 1, sends_count: 2, opens_count: 0 }, // NÃO cortado — só 2 envios
+      { send_eligible: 1, sends_count: 5, opens_count: 1 }, // NÃO cortado — abriu
+      { send_eligible: 1, sends_count: 4, opens_count: 0 }, // cortado
+      { send_eligible: 0, sends_count: 9, opens_count: 0 }, // já inelegível — fora do denominador
+    ]);
+    assert.equal(g.cutCount, 2);
+    assert.equal(g.eligibleBefore, 4);
+    assert.equal(g.ratio, 2 / 4);
+    assert.equal(g.minSends, 3);
+  });
+
+  it("exceedsThreshold: true quando a proporção cortada passa de 30% (mesmo limiar do guard de apoio, #4436)", () => {
+    const rows = [
+      { send_eligible: 1, sends_count: 3, opens_count: 0 },
+      { send_eligible: 1, sends_count: 3, opens_count: 0 },
+      { send_eligible: 1, sends_count: 1, opens_count: 0 },
+    ];
+    const g = evaluateSunsetBlastRadius(rows);
+    assert.equal(g.ratio, 2 / 3);
+    assert.equal(g.exceedsThreshold, true);
+  });
+
+  it("exceedsThreshold: false quando a proporção fica no limiar ou abaixo (estrito — não bloqueia exatamente em 30%)", () => {
+    const rows = Array.from({ length: 10 }, (_, i) => ({
+      send_eligible: 1 as const,
+      sends_count: i < 3 ? 3 : 1, // 3 de 10 = exatamente 30%
+      opens_count: 0,
+    }));
+    const g = evaluateSunsetBlastRadius(rows);
+    assert.equal(g.ratio, SUNSET_BLAST_RADIUS_THRESHOLD);
+    assert.equal(g.exceedsThreshold, false, "'passar de' é estrito — no limiar exato não bloqueia");
+  });
+
+  it("base elegível vazia não divide por zero", () => {
+    const g = evaluateSunsetBlastRadius([{ send_eligible: 0, sends_count: 3, opens_count: 0 }]);
+    assert.equal(g.cutCount, 0);
+    assert.equal(g.eligibleBefore, 0);
+    assert.equal(g.ratio, 0);
+    assert.equal(g.exceedsThreshold, false);
+  });
+
+  it("renderSunsetBlastRadiusGuard: mensagem contém contagem, base, % e o limiar", () => {
+    const g = evaluateSunsetBlastRadius([
+      { send_eligible: 1, sends_count: 3, opens_count: 0 }, // cortado (1)
+      { send_eligible: 1, sends_count: 1, opens_count: 0 },
+      { send_eligible: 1, sends_count: 1, opens_count: 0 },
+      { send_eligible: 1, sends_count: 1, opens_count: 0 }, // 4 elegíveis, 1 cortado = 25%
+    ]);
+    const msg = renderSunsetBlastRadiusGuard(g);
+    assert.match(msg, /1 contato\(s\)/);
+    assert.match(msg, /4 elegíveis hoje/);
+    assert.match(msg, /25[.,]0%/);
+    assert.match(msg, /limiar 30%/);
+    assert.doesNotMatch(msg, /EXCEDIDO/, "25% fica abaixo do limiar de 30% — não deve sinalizar excedido");
   });
 });
 
@@ -724,10 +788,10 @@ describe("buildWaveProposal (#4657)", () => {
     assert.match(p.warnings.join(" "), /não trocar o público pra reenvio/);
   });
 
-  it("AVISA sobre não-abridores acumulados (sunset #4430 nunca implementado)", () => {
+  it("AVISA sobre não-abridores acumulados como indicador antecipado do sunset (#4669 — corte real já implementado em classifyEligibility)", () => {
     const p = buildWaveProposal(proposalInput({ nonOpeners: { count: 112_172, fraction: 0.675, minSends: 2 } }));
     assert.match(p.warnings.join(" "), /NUNCA abrir/);
-    assert.match(p.warnings.join(" "), /#4430/);
+    assert.match(p.warnings.join(" "), /#4669/);
   });
 
   it("AVISA sobre dado stale do dashboard com a idade real", () => {

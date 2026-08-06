@@ -712,6 +712,40 @@ test("isReativacao: send_eligible=1 AND sends_count>0 AND opens_count=0; NÃO ex
   );
 });
 
+test("REGRESSÃO (#4669): contato cortado PELO sunset (send_eligible=0, ineligible_reason='non_opener_sunset') ainda entra em isReativacao/segmentReativacao — não é corte definitivo", () => {
+  assert.equal(
+    isReativacao({
+      email: "cortado@x.com",
+      send_eligible: 0,
+      ineligible_reason: "non_opener_sunset",
+      sends_count: 3,
+      opens_count: 0,
+    }),
+    true,
+    "send_eligible=0 SÓ por causa do sunset continua qualificando pra reativacao (decisão do editor 260805b)",
+  );
+  assert.deepEqual(
+    segmentReativacao([
+      row({ email: "cortado@x.com", send_eligible: 0, ineligible_reason: "non_opener_sunset", sends_count: 3, opens_count: 0 }),
+    ]).map((r) => r.email),
+    ["cortado@x.com"],
+  );
+});
+
+test("#4669: contato inelegível por OUTRA razão (não o sunset) continua FORA de reativacao mesmo com send_eligible=0", () => {
+  assert.equal(
+    isReativacao({
+      email: "unsub@x.com",
+      send_eligible: 0,
+      ineligible_reason: "unsubscribed",
+      sends_count: 3,
+      opens_count: 0,
+    }),
+    false,
+    "só o motivo 'non_opener_sunset' é relaxado — unsub/hard_bounce/mv_rejected/etc continuam excluindo",
+  );
+});
+
 test("segmentReativacao: ordem last_sent_at DESC (não-abridor mais recente primeiro); email ASC desempata; ausente vai pro fim", () => {
   const rows: StoreRow[] = [
     row({ email: "old@x.com", sends_count: 2, opens_count: 0, last_sent_at: "2026-01-01T00:00:00Z" }),

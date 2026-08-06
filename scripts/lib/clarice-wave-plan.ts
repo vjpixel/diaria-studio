@@ -53,6 +53,7 @@ import {
 } from "../../workers/brevo-dashboard/src/sections-core.ts";
 import type { BrevoCampaign } from "../../workers/brevo-dashboard/src/types.ts";
 import type { StoreRow } from "./clarice-segment.ts";
+import { NON_OPENER_SUNSET_MIN_SENDS } from "./cohorts.ts";
 
 // ---------------------------------------------------------------------------
 // Datas e chaves da onda — determinístico, nunca inferido de weekday
@@ -439,7 +440,12 @@ export function summarizeMvBacklog(
 }
 
 // ---------------------------------------------------------------------------
-// Não-abridor reincidente — a lacuna que o sunset (#4430) nunca fechou
+// Não-abridor reincidente — a lacuna que o sunset (#4430) nunca fechou.
+// #4669 (260805b) IMPLEMENTOU o corte em `classifyEligibility`
+// (clarice-db.ts) com N=3 — `measureNonOpenerExposure` abaixo continua
+// existindo como MEDIÇÃO informativa (N=2, mais sensível, pra visão de
+// tendência na proposta de onda); o guard de blast radius logo abaixo é
+// quem traduz o mesmo cálculo, com N=3, no veredito real do corte.
 // ---------------------------------------------------------------------------
 
 export interface NonOpenerExposure {
@@ -473,6 +479,71 @@ export function measureNonOpenerExposure(
     if ((r.sends_count ?? 0) >= minSends && (r.opens_count ?? 0) === 0) count += 1;
   }
   return { count, fraction: eligible > 0 ? count / eligible : 0, minSends };
+}
+
+// ---------------------------------------------------------------------------
+// Guard de blast radius do sunset de não-abridores (#4669) — decisão do
+// editor 260805b: "guard de blast radius obrigatório — reportar quantos
+// contatos saem da base elegível antes de aplicar", mesmo padrão dos demais
+// scripts de sync do repo (`evaluateBlastRadiusGuard` em
+// sync-apoio-nivel-beehiiv.ts, #4436, limiar 30%). PURO — reusa
+// `measureNonOpenerExposure` acima com N = `NON_OPENER_SUNSET_MIN_SENDS` (3,
+// o corte REAL) em vez de reimplementar a contagem de "nunca abriu".
+// ---------------------------------------------------------------------------
+
+/** Mesma decisão de magnitude do guard de apoio (#4436): 30%. */
+export const SUNSET_BLAST_RADIUS_THRESHOLD = 0.3;
+
+export interface SunsetBlastRadiusGuard {
+  /** Quantos contatos ELEGÍVEIS hoje perderiam `send_eligible` só por causa
+   *  do sunset (sends_count >= minSends, opens_count = 0). */
+  cutCount: number;
+  /** Base elegível ANTES do corte — denominador do limiar. */
+  eligibleBefore: number;
+  /** `cutCount / eligibleBefore` (0 quando `eligibleBefore` é 0). */
+  ratio: number;
+  minSends: number;
+  /** `true` quando `ratio` excede `SUNSET_BLAST_RADIUS_THRESHOLD` — mesmo
+   *  critério de MAGNITUDE do guard de apoio: reportar sempre, sinalizar
+   *  revisão humana quando a proporção é grande demais pra aplicar às cegas. */
+  exceedsThreshold: boolean;
+}
+
+/**
+ * Reporta a blast radius do sunset ANTES de aplicar. Pensado pra rodar sobre
+ * um snapshot do store TOMADO ANTES do corte entrar em produção — depois que
+ * `recomputeDerived` (clarice-db.ts) já aplicou o corte uma vez, os
+ * contatos cortados já viram `send_eligible=0` e não aparecem mais aqui por
+ * construção (esperado: este guard é pra MIGRAÇÃO inicial do estoque
+ * retroativo, não uma re-checagem a cada sync — nada impede rodar de novo
+ * depois, só que o resultado tende a `cutCount=0` em regime estacionário).
+ */
+export function evaluateSunsetBlastRadius(
+  rows: Array<Pick<StoreRow, "send_eligible" | "sends_count" | "opens_count">>,
+  minSends: number = NON_OPENER_SUNSET_MIN_SENDS,
+): SunsetBlastRadiusGuard {
+  const exposure = measureNonOpenerExposure(rows, minSends);
+  let eligibleBefore = 0;
+  for (const r of rows) if (r.send_eligible === 1) eligibleBefore += 1;
+  return {
+    cutCount: exposure.count,
+    eligibleBefore,
+    ratio: exposure.fraction,
+    minSends,
+    exceedsThreshold: exposure.fraction > SUNSET_BLAST_RADIUS_THRESHOLD,
+  };
+}
+
+/** Renderiza o guard acima pro log de um script CLI — mesmo estilo de
+ *  `logBlastRadiusGuard` (sync-apoio-nivel-beehiiv.ts). */
+export function renderSunsetBlastRadiusGuard(g: SunsetBlastRadiusGuard): string {
+  const pct = (g.ratio * 100).toFixed(1);
+  return (
+    `guard de blast radius do sunset de não-abridores (#4669): ${fmt(g.cutCount)} contato(s) ` +
+    `perderiam send_eligible de ${fmt(g.eligibleBefore)} elegíveis hoje (${pct}%, limiar ` +
+    `${(SUNSET_BLAST_RADIUS_THRESHOLD * 100).toFixed(0)}%, corte a partir de ${g.minSends} envios)` +
+    (g.exceedsThreshold ? " — EXCEDIDO, revisar antes de aplicar." : ".")
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -695,8 +766,12 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
     );
   }
   if (input.nonOpeners.count > 0) {
+    // #4669 implementou o corte real em `classifyEligibility` com N=3 — este
+    // aviso mede com N=2 (`measureNonOpenerExposure` default), então é
+    // INDICADOR ANTECIPADO de quem está a 1 envio do corte, não mais "o
+    // sunset nunca foi implementado" (texto pré-#4669).
     warnings.push(
-      `${fmt(input.nonOpeners.count)} contatos elegíveis (${(input.nonOpeners.fraction * 100).toFixed(1)}% da base elegível) já receberam ${input.nonOpeners.minSends}+ envios sem NUNCA abrir — o sunset da #4430 nunca foi implementado, então eles voltam pra fila a cada onda e alimentam a reclamação de spam que depois freia o volume.`,
+      `${fmt(input.nonOpeners.count)} contatos elegíveis (${(input.nonOpeners.fraction * 100).toFixed(1)}% da base elegível) já receberam ${input.nonOpeners.minSends}+ envios sem NUNCA abrir — indicador antecipado do sunset (#4669, corte real em 3 envios): quem chegar no 3º envio sem abrir sai da fila normal e passa a depender do grupo reativacao.`,
     );
   }
   if (input.state.unscopedCount > 0) {
