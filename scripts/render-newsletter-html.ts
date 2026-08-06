@@ -100,6 +100,7 @@ import { extractContent } from "./lib/newsletter-parse.ts";
 import {
   renderHTML,
   renderEiaStandalone,
+  resetRenderWarnings, // #4687
   getRenderWarnings, // #4673
   type Esp,
 } from "./lib/newsletter-render-html.ts";
@@ -257,6 +258,17 @@ function main(): void {
   let output: string;
   if (format === "json") {
     output = JSON.stringify(content, null, 2);
+    // #4687 — `renderHTML()` não roda neste branch, então `getRenderWarnings()`
+    // não reflete NADA desta invocação. Sem este reset+write explícitos, uma
+    // invocação anterior (--format html, mesmo processo — ex: testes; ou um
+    // `render-warnings.json` já em disco de uma execução anterior no mesmo
+    // diretório) deixava um aviso STALE sobrevivendo indefinidamente — o
+    // editor via "2 caixas dropadas" no gate do Stage 4 mesmo depois de
+    // corrigir a causa, porque `--format json` (uso legítimo de debug/
+    // inspeção) nunca reescrevia o arquivo. Resetar+escrever aqui também
+    // garante array vazio quando não há renderHTML nesta chamada.
+    resetRenderWarnings();
+    writeRenderWarningsFile(resolvedDir);
   } else {
     // #1936 --full: documento HTML completo (shell DS + preheader) pro preview/
     // email Worker-hosted. Sem a flag: fragmento container pro paste no Beehiiv.

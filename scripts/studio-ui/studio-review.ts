@@ -696,6 +696,16 @@ export function resolveReviewImagePath(editionDir: string, filename: string): st
  * (chamada fora do contexto de rota HTTP), os placeholders ficam intactos
  * (mesmo comportamento de antes, sem imagem — não quebra, só sem preview
  * visual de imagem). */
+// #4687 (fleet review do #4673) — este módulo roda dentro do
+// `Diaria-Studio-Server`, um processo LONGO, e chama `renderHTML` sem
+// consumir `getRenderWarnings()` (sem bug ativo hoje). Mas o coletor de
+// avisos é estado MUTÁVEL DE PROCESSO (ver comentário em
+// `collectedRenderWarnings`, scripts/lib/newsletter-render-html.ts) — se um
+// endpoint futuro passar a surfaçar esses avisos no painel, NUNCA chamar
+// `renderHTML()` seguido de `getRenderWarnings()` depois de um `await`
+// (duas previews concorrentes podem interpor um reset no meio). Use
+// `renderHTMLWithWarnings()` (mesmo módulo), que lê o coletor
+// sincronamente logo após o render.
 export function buildReviewPreviewHtml(editionDir: string, aammdd?: string): PreviewResult {
   if (!existsSync(resolve(editionDir, "02-reviewed.md"))) {
     return {

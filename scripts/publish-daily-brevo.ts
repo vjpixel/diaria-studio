@@ -81,7 +81,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { extractContent, type NewsletterContent } from "./lib/newsletter-parse.ts";
-import { renderHTML } from "./lib/newsletter-render-html.ts";
+import { renderHTMLWithWarnings, type RenderWarningEvent } from "./lib/newsletter-render-html.ts"; // #4687
 import { buildFilenameMap, substituteImagePlaceholders, type PublicImagesFile } from "./substitute-image-urls.ts";
 import { renderPendingIntroHtml, injectPendingIntro } from "./lib/brevo-diaria-intro.ts";
 import { brevoPost, brevoGetList } from "./lib/brevo-client.ts";
@@ -335,23 +335,32 @@ export function checkContactCountReconciliation(
  * placeholders de imagem → injeta o bloco de intro obrigatório. Lança se o
  * bloco de intro não existir (`introHtml === null`) — nunca envia pro
  * segmento Pending sem a explicação (#4266 item 5, decisão de compliance).
+ *
+ * #4687 (fleet review do #4673): usa `renderHTMLWithWarnings` — antes este
+ * render Brevo descartava qualquer `RenderWarningEvent` (ex: caixa de
+ * divulgação dropada por falta de lacuna) em silêncio, porque nada aqui
+ * chamava `getRenderWarnings()`. É o MESMO conteúdo comercial que o caminho
+ * Beehiiv persiste em `_internal/render-warnings.json` — `main()` abaixo loga
+ * os eventos (mesmo padrão de `unresolvedImages`); não há `_internal/` de
+ * edição dedicado ao canal Brevo pra persistir um arquivo equivalente, então
+ * o log continua sendo o sinal, como já era pra `unresolvedImages`.
  */
 export function buildDailyBrevoHtml(
   content: NewsletterContent,
   publicImages: PublicImagesFile,
   introHtml: string | null,
-): { html: string; unresolvedImages: string[] } {
+): { html: string; unresolvedImages: string[]; renderWarnings: RenderWarningEvent[] } {
   if (!introHtml) {
     throw new Error(
       "bloco de intro do segmento Pending ausente/vazio (context/snippets/brevo-diaria-pending-intro.md) — " +
         "publish-daily-brevo.ts recusa montar o HTML sem ele (decisão de compliance, #4266 item 5).",
     );
   }
-  const rendered = renderHTML(content, { esp: "brevo", fullDocument: true });
+  const { html: rendered, warnings } = renderHTMLWithWarnings(content, { esp: "brevo", fullDocument: true });
   const filenameMap = buildFilenameMap(publicImages.images ?? {});
   const { html: substituted, unresolved } = substituteImagePlaceholders(rendered, filenameMap);
   const final = injectPendingIntro(substituted, introHtml);
-  return { html: final, unresolvedImages: unresolved };
+  return { html: final, unresolvedImages: unresolved, renderWarnings: warnings };
 }
 
 // ── main ─────────────────────────────────────────────────────────────────
@@ -411,9 +420,18 @@ export async function main(rootDirOverride?: string): Promise<void> {
     : {};
 
   const introHtml = renderPendingIntroHtml();
-  const { html, unresolvedImages } = buildDailyBrevoHtml(content, publicImages, introHtml);
+  const { html, unresolvedImages, renderWarnings } = buildDailyBrevoHtml(content, publicImages, introHtml);
   if (unresolvedImages.length > 0) {
     log(`warn: ${unresolvedImages.length} placeholder(s) de imagem sem URL: ${unresolvedImages.join(", ")}`);
+  }
+  // #4687 — mesmo conteúdo COMERCIAL que o caminho Beehiiv acusa via
+  // `_internal/render-warnings.json` (checkRenderWarnings, Stage 4); aqui só
+  // log (sem `_internal/` de edição dedicado ao Brevo) — não silencia mais.
+  if (renderWarnings.length > 0) {
+    log(
+      `warn: ${renderWarnings.length} evento(s) de conteúdo perdido no render Brevo (#4687): ` +
+        renderWarnings.map((w) => w.event).join(", "),
+    );
   }
 
   const subject = buildDailyBrevoSubject(content);
