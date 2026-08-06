@@ -298,3 +298,44 @@ describe("isLikelyNewsNotLaunch (#1442) — anúncio institucional vs lançament
     assert.equal(isLikelyNewsNotLaunch("Google Research at AAAI 2026"), true);
   });
 });
+
+describe("#4678: avaliação/incidente de segurança de terceiros vs lançamento", () => {
+  it("título REAL do incidente 260806: 'Third-party cyber evaluations involving OpenAI models' → true", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch("Third-party cyber evaluations involving OpenAI models"),
+      true,
+    );
+  });
+
+  it("'Third-party safety assessment of our latest model' → true", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch("Third-party safety assessment of our latest model"),
+      true,
+    );
+  });
+
+  it("'Responding to a security incident' → true", () => {
+    assert.equal(isLikelyNewsNotLaunch("Responding to a security incident"), true);
+  });
+
+  it("'Avaliação de segurança de terceiros sobre nossos modelos' → true (PT)", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch("Avaliação de segurança de terceiros sobre nossos modelos"),
+      true,
+    );
+  });
+
+  // Guard contra falso-positivo: produto real chamado "Evals"/"Evaluations"
+  // não deve virar notícia só por conter a palavra — falta o qualificador
+  // "third-party"/"security incident" que discrimina o caso real.
+  it("'Introducing OpenAI Evals' — produto real, sem 'third-party' → false", () => {
+    assert.equal(isLikelyNewsNotLaunch("Introducing OpenAI Evals"), false);
+  });
+
+  it("'OpenAI Evaluations API is now generally available' — produto, sem qualificador → false", () => {
+    assert.equal(
+      isLikelyNewsNotLaunch("OpenAI Evaluations API is now generally available"),
+      false,
+    );
+  });
+});

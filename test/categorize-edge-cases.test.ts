@@ -954,3 +954,21 @@ describe("#4337 — release note e narrativa em host misto tutorial/lançamento"
     assert.equal(categorize({ url: "https://www.latent.space/p/agent-eng" }), "tutorial");
   });
 });
+
+describe("#4678: incidente de segurança de terceiros em domínio oficial -> noticias", () => {
+  it("CASO REAL 260806: 'Third-party cyber evaluations involving OpenAI models' (openai.com) -> noticias, não lancamento", () => {
+    const art: Article = {
+      url: "https://openai.com/index/third-party-cyber-evaluations-involving-openai-models/",
+      title: "Third-party cyber evaluations involving OpenAI models",
+    };
+    assert.equal(categorize(art), "noticias");
+  });
+
+  it("sem-regressão: lançamento product-only com 'Evals' no nome continua lancamento (sem qualificador third-party)", () => {
+    const art: Article = {
+      url: "https://openai.com/index/introducing-openai-evals/",
+      title: "Introducing OpenAI Evals",
+    };
+    assert.equal(categorize(art), "lancamento");
+  });
+});

@@ -94,3 +94,59 @@ describe("extractDateFromBody — strategy 2-7: fallbacks", () => {
     assert.equal(result.note, "no-date-found");
   });
 });
+
+describe("#4691: <time> aninhado em card de 'artigos relacionados' não deve virar a data do artigo", () => {
+  it("CASO REAL 260806 (openai.com/index/third-party-cyber-evaluations-involving-openai-models): único <time> do doc é de um card 'related' -> no-date-found, não a data velha do card", () => {
+    // Reprodução mínima da estrutura real: um card de "artigo relacionado"
+    // inteiro envolto por <a href="...outra-url...">, contendo <time> com
+    // uma data ~2 semanas mais velha que o artigo real (que não tem NENHUM
+    // <time> próprio no HTML servido ao crawler, confirmado via curl 260805).
+    const body = `
+      <html><body>
+        <main>
+          <h1>Third-party cyber evaluations involving OpenAI models</h1>
+          <p>OpenAI worked with third-party evaluators...</p>
+          <div class="related-articles">
+            <a href="/index/hugging-face-model-evaluation-security-incident/">
+              <div class="text-h5">OpenAI and Hugging Face address security incident</div>
+              <p><span>Security</span><span><time class="text-nowrap text-primary-60" dateTime="2026-07-21T00:00:00-07:00">Jul 21, 2026</time></span></p>
+            </a>
+          </div>
+        </main>
+      </body></html>
+    `;
+    const result = extractDateFromBody(body);
+    assert.equal(result.date, null);
+    assert.equal(result.note, "no-date-found");
+  });
+
+  it("<time> da própria dateline (fora de <a>) continua extraído normalmente — sem regressão", () => {
+    const body = `
+      <article>
+        <h1>Some real launch</h1>
+        <p class="byline">Published <time datetime="2026-05-20T15:00:00Z">May 20</time></p>
+      </article>
+    `;
+    const result = extractDateFromBody(body);
+    assert.equal(result.date, "2026-05-20");
+    assert.equal(result.note, "time:in-article-context");
+  });
+
+  it("primeiro <time> está num card relacionado, mas um segundo <time> fora de <a> é a dateline real -> extrai o segundo", () => {
+    const body = `
+      <main>
+        <div class="related">
+          <a href="/index/other-article/">
+            <time datetime="2026-07-21T00:00:00-07:00">Jul 21, 2026</time>
+          </a>
+        </div>
+        <article>
+          <h1>Real article</h1>
+          <time datetime="2026-08-05T12:00:00Z">Aug 5, 2026</time>
+        </article>
+      </main>
+    `;
+    const result = extractDateFromBody(body);
+    assert.equal(result.date, "2026-08-05");
+  });
+});
