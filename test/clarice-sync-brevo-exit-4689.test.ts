@@ -40,6 +40,14 @@ function readMainBody(): string {
   return mainMatch[0];
 }
 
+function readIsMainModuleBlock(): string {
+  const source = readFileSync(SCRIPT, "utf8");
+  const sourceNoComments = source.replace(/\/\/.*$/gm, "");
+  const blockMatch = sourceNoComments.match(/if \(isMainModule\([^]*$/);
+  assert.ok(blockMatch, "bloco isMainModule não encontrado em clarice-sync-brevo.ts");
+  return blockMatch[0];
+}
+
 describe("clarice-sync-brevo.ts exit semantics (#4689, mesma classe libuv do #4651/#4638/#1401)", () => {
   it("catch do pool de fetch (pós-await) usa process.exitCode = 2 + return, não process.exit(2)", () => {
     const mainBody = readMainBody();
@@ -73,6 +81,24 @@ describe("clarice-sync-brevo.ts exit semantics (#4689, mesma classe libuv do #46
       exits,
       ["1"],
       "único process.exit() esperado em main() é o guard pré-await de exit 1 — qualquer outro precisa da mesma conversão pra process.exitCode",
+    );
+  });
+
+  it("main() é chamada com .catch() no bloco isMainModule (mesma classe do #4651)", () => {
+    // Se algo lançar FORA do try/catch interno de main() (ex: enumerateContacts
+    // na Fase 1, antes do try; ou recomputeDerived/db.close() pós-sucesso),
+    // uma chamada nua `main();` derruba o processo por unhandled rejection,
+    // sem mensagem amigável nem controle de exit code.
+    const block = readIsMainModuleBlock();
+    assert.doesNotMatch(
+      block,
+      /\bmain\(\);/,
+      "main() não deveria ser chamada sem .catch() — mesma classe de risco do #4651",
+    );
+    assert.match(
+      block,
+      /main\(\)\.catch\(/,
+      "main() deveria ser chamada com .catch(e => { ...; process.exitCode = 1; }) igual aos scripts irmãos (#4651)",
     );
   });
 });

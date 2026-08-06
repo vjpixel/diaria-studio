@@ -321,5 +321,13 @@ export async function main(
 }
 
 if (isMainModule(import.meta.url)) {
-  main();
+  main().catch((e) => {
+    process.stderr.write(`[clarice-sync-brevo] erro fatal: ${(e as Error).message}\n`);
+    // Windows fix (#4651, mesma classe do #4638/#1401/#4689): main() pode
+    // lançar fora do try/catch interno (ex: enumerateContacts na Fase 1,
+    // antes do try; ou recomputeDerived/db.close() pós-sucesso) — depois de
+    // já ter feito await fetch, então process.exit() aqui arriscaria o mesmo
+    // crash libuv que o #4689 corrigiu no catch pós-await.
+    process.exitCode = 1;
+  });
 }

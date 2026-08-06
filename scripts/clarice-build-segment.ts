@@ -17,8 +17,13 @@
  *                     priority_points>0, ordem priority_points DESC.
  *                     Exclui internos (#2809).
  *   - `reativacao`              = send_eligible=1 AND sends_count>0 AND
- *                     opens_count=0, ordem last_sent_at DESC (não-abridores
- *                     mais recentes primeiro). Exclui internos (#2809).
+ *                     opens_count=0 AND hasMeasuredOpens (brevo_modified_at
+ *                     != null — #4688, opens_count=0 sozinho não basta: sem
+ *                     essa condição um contato NUNCA sincronizado também
+ *                     aparenta opens_count=0), ordem last_sent_at DESC
+ *                     (não-abridores mais recentes primeiro). Ver JSDoc de
+ *                     `isReativacao` em clarice-segment.ts. Exclui internos
+ *                     (#2809).
  *   - `ramp-warm`   (1º envio seguro) = send_eligible=1 AND sends_count=0 AND
  *                     (mv_bucket='verified' OR cohort MV-isento — #3826,
  *                     `isMvExemptCohort`), ordem cohortSendRank (morno→frio,
