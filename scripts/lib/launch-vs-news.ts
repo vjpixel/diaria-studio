@@ -239,6 +239,19 @@ export const NEWS_TITLE_PATTERNS: RegExp[] = [
   /\b(?:season|temporada)\s+\d+\b/i,
   /\b(?:series|season|episode|temporada)\s+finale\b/i,
   /\bAds?\s+Decoded\b/i,
+  // #4678: avaliação/auditoria de segurança de terceiros — resposta a
+  // incidente, não anúncio de produto. Caso real 260806: "Third-party
+  // cyber evaluations involving OpenAI models" (openai.com/index/) caiu em
+  // LANÇAMENTO por falta de guard (nenhum dos 4 guards existentes —
+  // isReport/isExplainerByTitle/isNonProductAnnouncement/
+  // isLikelyNewsNotLaunch — cobria esse formato de título).
+  // Requer "third-party" explícito pra não colidir com um produto real
+  // chamado "Evals"/"Evaluations" (ex: OpenAI Evals) — título product-only
+  // sem "third-party" não dispara.
+  /\bthird-party\s+\w+\s+evaluations?\b/i,
+  /\bthird-party\s+\w+\s+assessments?\b/i,
+  /\bsecurity\s+(?:incident|evaluation)\b/i,
+  /\bavalia[çc][ãa]o\s+de\s+seguran[çc]a\b/i,
 ];
 
 /**

@@ -33,6 +33,31 @@ export function normalizeDate(raw: string): string | null {
 }
 
 /**
+ * #4691: `true` quando a posição `index` (de um match de `<time>`) está
+ * aninhada dentro de um `<a href=...>...</a>` — sinal de card de "artigos
+ * relacionados"/"recentes" em vez da dateline do próprio artigo. Heurística
+ * conservadora: olha só pra trás numa janela de 1500 chars (suficiente pra
+ * cobrir o wrapper de um card típico sem custar um parse de DOM real) e
+ * verifica se a última abertura `<a ` nessa janela não foi fechada antes do
+ * `index` alvo.
+ */
+function isInsideAnchorCard(body: string, index: number): boolean {
+  if (index < 0) return false;
+  const windowStart = Math.max(0, index - 1500);
+  const before = body.slice(windowStart, index);
+  // Case-insensitive e tolerante a whitespace variado (espaço, \n, \t) após
+  // `<a` — minificadores/frameworks quebram linha antes dos atributos (#4691
+  // finding 1 e 3: `<TIME>` maiúsculo e `<a\nhref=...>` escapavam do guard).
+  let lastAnchorOpen = -1;
+  for (const m of before.matchAll(/<a\s/gi)) {
+    lastAnchorOpen = m.index ?? lastAnchorOpen;
+  }
+  if (lastAnchorOpen === -1) return false;
+  const lastAnchorClose = before.toLowerCase().lastIndexOf("</a>");
+  return lastAnchorOpen > lastAnchorClose;
+}
+
+/**
  * Pure: extracts the best possible date from an HTML body using 7 strategies
  * in order of confidence. Sem I/O, sem state.
  *
@@ -144,17 +169,47 @@ export function extractDateFromBody(body: string): { date: string | null; note: 
         /<[^>]+class=["'][^"']*(?:post-date|article-date|publish[^"']*|entry-date|byline)[^"']*["'][^>]*>[\s\S]{0,200}?<time[^>]+datetime=["']([^"']+)["']/i
       );
     if (articleTimeMatch) {
-      const d = normalizeDate(articleTimeMatch[1]);
-      if (d) return { date: d, note: "time:in-article-context" };
+      // #4691: `articleTimeMatch.index` é o início do match INTEIRO (que
+      // começa em `<article`/`<main`/`<header`/classe de byline), não do
+      // `<time` em si — localizar o offset real do `<time` dentro do match
+      // pra checar a posição correta contra o guard de anchor-card.
+      const timeOffsetInMatch = articleTimeMatch[0].toLowerCase().lastIndexOf("<time");
+      const timeIndex =
+        (articleTimeMatch.index ?? -1) >= 0 && timeOffsetInMatch >= 0
+          ? (articleTimeMatch.index as number) + timeOffsetInMatch
+          : -1;
+      if (!isInsideAnchorCard(body, timeIndex)) {
+        const d = normalizeDate(articleTimeMatch[1]);
+        if (d) return { date: d, note: "time:in-article-context" };
+      }
     }
 
     // 7. Primeiro `<time datetime="...">` do documento (fallback genérico —
     //    OpenAI, por exemplo, marca a data do artigo em `<time dateTime=...>`
     //    sem `itemprop`). Se houver múltiplos, usamos o primeiro (tipicamente
     //    é o cabeçalho do artigo).
-    const firstTime =
-      body.match(/<time[^>]+datetime=["']([^"']+)["']/i)?.[1] ??
-      body.match(/<time[^>]+dateTime=["']([^"']+)["']/)?.[1];
+    //
+    //    #4691: pular ocorrências aninhadas dentro de um `<a href=...>...</a>`
+    //    (card de "artigos relacionados"). Caso real 260806:
+    //    openai.com/index/third-party-cyber-evaluations-involving-openai-models/
+    //    não tem NENHUM `<time>` do próprio artigo no HTML servido ao crawler
+    //    (SSR client-rendered) — o único `<time>` do documento pertencia a um
+    //    card "OpenAI and Hugging Face address security incident" (outro
+    //    artigo, ~2 semanas mais velho), inteiro envolto por
+    //    `<a href="/index/hugging-face-model-evaluation-security-incident/">`.
+    //    A dateline genuína de um artigo quase nunca fica dentro de um `<a>`
+    //    que aponta pra OUTRA página — cards de "relacionados"/"recentes" sim.
+    //    Sem este guard, o fallback pegava esse `<time>` alheio e devolvia uma
+    //    data antiga-mas-não-nula, que passa incólume pelo "benefício da
+    //    dúvida" de `filter-date-window.ts` (reservado a `date == null`) e é
+    //    comparada contra o cutoff — risco de remoção silenciosa por data
+    //    errada em QUALQUER artigo (não só `editor_submitted`).
+    let firstTime: string | undefined;
+    for (const m of body.matchAll(/<time[^>]+(?:datetime|dateTime)=["']([^"']+)["']/gi)) {
+      if (isInsideAnchorCard(body, m.index)) continue;
+      firstTime = m[1];
+      break;
+    }
     if (firstTime) {
       const d = normalizeDate(firstTime);
       if (d) return { date: d, note: "time:first" };
