@@ -1,19 +1,33 @@
 /**
- * clarice-novos-state.ts (#4347 Etapa 4)
+ * clarice-novos-state.ts (#4347 Etapa 4, agendamento #4670)
  *
  * Estado da skill `/diaria-clarice-novos` — persistido em
  * `data/clarice-subscribers/novos-state.json` (arquivo dedicado, mesmo
- * padrão de `data/studio-chat-enabled.json`). Sustenta 2 decisões da issue:
+ * padrão de `data/studio-chat-enabled.json`). Sustenta 3 decisões da issue:
  *
  *   - D12: pular `--send-test` quando o SHA-256 do HTML (`cloudflare-preview.html`
  *     do ciclo resolvido) for IDÊNTICO ao da última rodada — o digest mensal
  *     é o mesmo em ~16 de 17 rodadas (~4×/semana vs ~1 mudança de conteúdo/mês).
  *   - Idempotência de `--key` (D11-adjacent): `novos-{AAMMDD}`, com sufixo
  *     `-2`/`-3`… se a skill rodar mais de uma vez no mesmo dia.
+ *   - #4670: o `--finalize` original assumia envio SEMPRE imediato
+ *     (`--send-now`) — quando o disparo do grupo `novos` é AGENDADO em vez de
+ *     imediato (caso real: campanha #120, 70 contatos, agendada pro dia
+ *     seguinte junto com uma onda), não havia onde encaixar "campanha criada,
+ *     ainda não confirmadamente enviada". `pendingSend` guarda esse estado
+ *     intermediário: `lastHtmlSha256` pode ser gravado no AGENDAMENTO (mata o
+ *     `--send-test` redundante da próxima rodada, D12 continua valendo), mas
+ *     `sentCount` só soma quando o disparo é CONFIRMADO — via `--finalize`
+ *     manual (mesmo campaignId do pendingSend) ou via `reconcilePendingSend`
+ *     (consulta o status real na Brevo, cliente injetado — nunca chamado ao
+ *     vivo pelos testes deste módulo).
  *
  * Fail-soft por design (mesmo padrão de `studio-chat-enabled.ts`/`exec-mode.ts`):
  * leitura tolerante (arquivo ausente/corrompido → estado "1ª rodada", nunca
  * lança) — a skill não pode travar por causa de um estado auxiliar corrompido.
+ * Retrocompat (#4670): state antigo, gravado ANTES de `pendingSend` existir,
+ * lê sem quebrar — o campo simplesmente degrada pra `null` (mesmo padrão já
+ * usado pelos demais campos opcionais desta função).
  */
 
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
@@ -22,6 +36,21 @@ import { createHash } from "node:crypto";
 import { writeFileAtomic } from "./atomic-write.ts";
 import { CLARICE_BASE } from "./clarice-paths.ts";
 
+/**
+ * Envio agendado ainda NÃO confirmado como disparado (#4670). Existe entre o
+ * momento em que a campanha é criada/agendada na Brevo (`--finalize-scheduled`)
+ * e o momento em que o disparo é confirmado (`--finalize` com o mesmo
+ * `campaignId`, ou `reconcilePendingSend` consultando a Brevo).
+ */
+export interface NovosPendingSend {
+  campaignId: number;
+  listId: number;
+  /** ISO — horário agendado do disparo na Brevo. */
+  scheduledAt: string;
+  /** Contagem de contatos do grupo nesta rodada — só entra em `sentCount` quando confirmado. */
+  contactCount: number;
+}
+
 export interface NovosState {
   lastRunAt: string;
   lastHtmlSha256: string | null;
@@ -29,11 +58,32 @@ export interface NovosState {
   lastListId: number | null;
   lastCampaignId: number | null;
   sentCount: number;
+  /** #4670 — `null` quando não há envio agendado pendente de confirmação. */
+  pendingSend: NovosPendingSend | null;
 }
 
 /** Path do state file. `baseDir` opcional — uso interno de teste (mesmo padrão `--data-root` do resto do projeto). */
 export function novosStatePath(baseDir: string = CLARICE_BASE): string {
   return resolve(baseDir, "novos-state.json");
+}
+
+/**
+ * Parseia `pendingSend` de um state file bruto. Shape inesperado (campo
+ * ausente — state antigo, pré-#4670 — ou corrompido/parcial) → `null`, nunca
+ * lança. Mesma disciplina tolerante do resto de `readNovosState`.
+ */
+function parsePendingSend(raw: unknown): NovosPendingSend | null {
+  if (!raw || typeof raw !== "object") return null;
+  const p = raw as Partial<NovosPendingSend>;
+  if (
+    typeof p.campaignId === "number" &&
+    typeof p.listId === "number" &&
+    typeof p.scheduledAt === "string" &&
+    typeof p.contactCount === "number"
+  ) {
+    return { campaignId: p.campaignId, listId: p.listId, scheduledAt: p.scheduledAt, contactCount: p.contactCount };
+  }
+  return null;
 }
 
 /** Lê o state file. Tolerante: ausente/corrompido/shape inesperado → `null` (nunca lança) — "1ª rodada". */
@@ -50,6 +100,7 @@ export function readNovosState(baseDir: string = CLARICE_BASE): NovosState | nul
       lastListId: parsed.lastListId ?? null,
       lastCampaignId: parsed.lastCampaignId ?? null,
       sentCount: typeof parsed.sentCount === "number" ? parsed.sentCount : 0,
+      pendingSend: parsePendingSend(parsed.pendingSend),
     };
   } catch {
     return null;
@@ -94,4 +145,165 @@ export function resolveNovosKey(existingKeys: readonly string[], aammdd: string)
   let n = 2;
   while (existingKeys.includes(`${base}-${n}`)) n++;
   return `${base}-${n}`;
+}
+
+// ---------------------------------------------------------------------------
+// #4670 — envio agendado: separa "campanha criada/agendada" (grava SHA, não
+// mexe em sentCount) de "disparo confirmado" (soma sentCount, limpa
+// pendingSend). Toda função aqui é PURA — sem I/O, sem chamada de rede — o
+// caller (CLI) resolve o `now`/o cliente Brevo e injeta.
+// ---------------------------------------------------------------------------
+
+export interface FinalizeScheduledOptions {
+  htmlSha256: string;
+  cycle: string;
+  listId: number;
+  campaignId: number;
+  scheduledAt: string;
+  /** Contagem de contatos da rodada — vira `pendingSend.contactCount` (ainda NÃO soma em `sentCount`). */
+  contactCount: number;
+  now?: string;
+}
+
+/**
+ * `--finalize-scheduled` (#4670): a campanha foi criada/agendada na Brevo,
+ * mas o disparo ainda não foi confirmado. Grava `lastHtmlSha256`/`lastCycle`
+ * (mata o `--send-test` redundante da próxima rodada, D12 continua valendo)
+ * e registra `pendingSend` — mas **não** soma `sentCount` nem toca
+ * `lastListId`/`lastCampaignId` (esses só avançam quando o disparo é
+ * confirmado, via `buildFinalizeState`/`reconcilePendingSend`).
+ */
+export function buildFinalizeScheduledState(prev: NovosState | null, opts: FinalizeScheduledOptions): NovosState {
+  return {
+    lastRunAt: opts.now ?? new Date().toISOString(),
+    lastHtmlSha256: opts.htmlSha256,
+    lastCycle: opts.cycle,
+    lastListId: prev?.lastListId ?? null,
+    lastCampaignId: prev?.lastCampaignId ?? null,
+    sentCount: prev?.sentCount ?? 0,
+    pendingSend: {
+      campaignId: opts.campaignId,
+      listId: opts.listId,
+      scheduledAt: opts.scheduledAt,
+      contactCount: opts.contactCount,
+    },
+  };
+}
+
+export interface FinalizeOptions {
+  htmlSha256: string;
+  cycle: string;
+  listId: number | null;
+  campaignId: number | null;
+  /** Contagem de contatos DESTA rodada — soma ao `sentCount` acumulado (não substitui). */
+  sentCountDelta: number;
+  now?: string;
+}
+
+/**
+ * `--finalize` (disparo CONFIRMADO — o `--send-now` original, ou a
+ * confirmação manual de uma campanha antes agendada): soma `sentCountDelta`
+ * ao `sentCount` acumulado, como sempre fez. #4670: além disso, limpa
+ * `pendingSend` — mas SÓ quando o `campaignId` desta finalização é o MESMO
+ * do `pendingSend` pendente (nunca limpa às cegas o rastro de uma campanha
+ * agendada DIFERENTE só porque outra rodada finalizou no meio do caminho —
+ * cenário real: rodada N agenda #120 e ainda não foi confirmada quando a
+ * rodada N+1, imediata, chama `--finalize` pra sua própria campanha).
+ */
+export function buildFinalizeState(prev: NovosState | null, opts: FinalizeOptions): NovosState {
+  const resolvedCampaignId = opts.campaignId ?? prev?.lastCampaignId ?? null;
+  const resolvedListId = opts.listId ?? prev?.lastListId ?? null;
+  const matchesPending =
+    prev?.pendingSend != null && resolvedCampaignId != null && prev.pendingSend.campaignId === resolvedCampaignId;
+  return {
+    lastRunAt: opts.now ?? new Date().toISOString(),
+    lastHtmlSha256: opts.htmlSha256,
+    lastCycle: opts.cycle,
+    lastListId: resolvedListId,
+    lastCampaignId: resolvedCampaignId,
+    sentCount: (prev?.sentCount ?? 0) + opts.sentCountDelta,
+    pendingSend: matchesPending ? null : (prev?.pendingSend ?? null),
+  };
+}
+
+/** Status Brevo (`GET /emailCampaigns/{id}`) que confirmam disparo — mesma semântica de `isTerminalSendStatus` em `brevo-client.ts` (não importado daqui pra manter esta lib livre de dependência de rede/transporte; os dois conjuntos devem ser mantidos em sincronia). */
+const CONFIRMED_SENT_STATUSES = new Set(["sent", "inProcess"]);
+/** Status Brevo que significam "ainda na fila, aguardando o horário agendado" — nem confirmado, nem cancelado. */
+const STILL_QUEUED_STATUSES = new Set(["queued"]);
+
+export type ReconcileAction = "no-pending" | "finalized" | "still-pending" | "cancelled";
+
+export interface ReconcileResult {
+  action: ReconcileAction;
+  state: NovosState;
+  /** Mensagem legível pra log/relatório — descreve o que aconteceu e por quê. */
+  detail: string;
+}
+
+/**
+ * Consulta o status ATUAL de uma campanha Brevo (`fetchStatus`, injetado —
+ * nunca uma chamada de rede real dentro desta função). Resolve sozinho o
+ * `pendingSend`, se houver:
+ *
+ *   - `pendingSend` ausente → `"no-pending"`, state inalterado (nada a fazer).
+ *   - status confirma disparo (`sent`/`inProcess`) → `"finalized"`: soma
+ *     `contactCount` ao `sentCount`, promove `lastListId`/`lastCampaignId`
+ *     pro par pendente, limpa `pendingSend`.
+ *   - status ainda `queued` → `"still-pending"`, state inalterado — nada a
+ *     fazer ainda, só informar.
+ *   - qualquer outro status (`suspended`, `draft`, `archive`, desconhecido) →
+ *     `"cancelled"`: a campanha NÃO vai (ou não vai mais) disparar como
+ *     agendado — limpa `pendingSend` SEM somar `sentCount` (#4670 critério de
+ *     pronto: "campanha cancelada/falha no painel não é contada como
+ *     enviada").
+ *
+ * `fetchStatus` pode lançar (erro de rede/API) — propositalmente não
+ * capturado aqui: o caller decide o fallback (mesma disciplina de "MCP
+ * indisponível = fail-fast" do projeto — nunca engolir erro de rede em
+ * silêncio e declarar reconciliação bem-sucedida).
+ */
+export async function reconcilePendingSend(
+  prev: NovosState,
+  fetchStatus: (campaignId: number) => Promise<{ status: string }>,
+  now: string = new Date().toISOString(),
+): Promise<ReconcileResult> {
+  const pending = prev.pendingSend;
+  if (!pending) {
+    return { action: "no-pending", state: prev, detail: "Nenhum envio agendado pendente de confirmação." };
+  }
+
+  const { status } = await fetchStatus(pending.campaignId);
+
+  if (CONFIRMED_SENT_STATUSES.has(status)) {
+    const state: NovosState = {
+      ...prev,
+      lastRunAt: now,
+      lastListId: pending.listId,
+      lastCampaignId: pending.campaignId,
+      sentCount: prev.sentCount + pending.contactCount,
+      pendingSend: null,
+    };
+    return {
+      action: "finalized",
+      state,
+      detail: `Campanha #${pending.campaignId} confirmada (status="${status}") — sentCount +${pending.contactCount}.`,
+    };
+  }
+
+  if (STILL_QUEUED_STATUSES.has(status)) {
+    return {
+      action: "still-pending",
+      state: prev,
+      detail: `Campanha #${pending.campaignId} ainda agendada (status="${status}", previsto para ${pending.scheduledAt}) — nada a fazer ainda.`,
+    };
+  }
+
+  const state: NovosState = { ...prev, pendingSend: null };
+  return {
+    action: "cancelled",
+    state,
+    detail:
+      `Campanha #${pending.campaignId} não confirmou disparo (status="${status}") — tratada como cancelada/falha. ` +
+      "pendingSend limpo, sentCount NÃO incrementado.",
+  };
 }
