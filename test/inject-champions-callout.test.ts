@@ -51,7 +51,7 @@ const CALLOUT_INNER = `🎉 Os campeões do É IA? em junho:
 
 **Sorteio**
 
-O sorteio entre quem achou o erro intencional será ao vivo no dia 2 de julho, das 13h30 às 14h, no [Google Meet](https://meet.google.com/nbs-jcut-ojj). Apareça para acompanhar o resultado e bater um papo sobre IA.`;
+O sorteio entre quem achou o erro intencional será ao vivo no dia 2 de julho, das 13h30 às 14h, no [Google Meet](https://meet.google.com/nbs-jcut-ojj). Será uma caneca entre quem encontrou o erro intencional e outra entre os Patronos. Apareça para ver quem vai ganhar caneca e bater um papo sobre IA.`;
 
 describe("insertChampionsCallout (#2725)", () => {
   it("injeta o box entre a coverage line e o separador antes de DESTAQUE 1", () => {
@@ -64,7 +64,7 @@ describe("insertChampionsCallout (#2725)", () => {
     assert.ok(cta);
     assert.match(cta!, /^🎉 Os campeões do É IA\? em junho:/);
     assert.match(cta!, /\*\*Sorteio\*\*/);
-    assert.match(cta!, /Apareça para acompanhar o resultado/);
+    assert.match(cta!, /Apareça para ver quem vai ganhar caneca/);
     // Coverage line + DESTAQUE 1 continuam intactos.
     assert.match(result.text!, /Para esta edição, eu \(o editor\)/);
     assert.match(result.text!, /\*\*DESTAQUE 1 \| 💰 MERCADO\*\*/);

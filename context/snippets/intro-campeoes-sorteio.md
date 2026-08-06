@@ -43,4 +43,4 @@ estilo do título (#2727).
 
 **Sorteio**
 
-O sorteio entre quem achou o erro intencional será ao vivo no dia {data}, das {hora_inicio} às {hora_fim}, no [Google Meet]({meet_url}). Apareça para acompanhar o resultado e bater um papo sobre IA.**
+O sorteio entre quem achou o erro intencional será ao vivo no dia {data}, das {hora_inicio} às {hora_fim}, no [Google Meet]({meet_url}). Será uma caneca entre quem encontrou o erro intencional e outra entre os Patronos. Apareça para ver quem vai ganhar caneca e bater um papo sobre IA.**

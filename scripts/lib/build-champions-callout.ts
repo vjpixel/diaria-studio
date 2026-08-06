@@ -119,5 +119,5 @@ export function buildChampionsCallout(
 
 **Sorteio**
 
-O sorteio entre quem achou o erro intencional será ao vivo no dia ${raffleDateLabelResolved}, das ${horaInicio} às ${horaFim}, no [Google Meet](${raffle.meet_url}). Apareça para acompanhar o resultado e bater um papo sobre IA.`;
+O sorteio entre quem achou o erro intencional será ao vivo no dia ${raffleDateLabelResolved}, das ${horaInicio} às ${horaFim}, no [Google Meet](${raffle.meet_url}). Será uma caneca entre quem encontrou o erro intencional e outra entre os Patronos. Apareça para ver quem vai ganhar caneca e bater um papo sobre IA.`;
 }
