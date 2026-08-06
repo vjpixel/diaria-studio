@@ -6,12 +6,19 @@
  * o É IA? não dá prêmio, então votar no lugar de outra pessoa não causa dano,
  * e o token cobrava um custo operacional real: dependia de um custom field
  * populado por assinante que nunca rodou ao vivo); Brevo segue com o token via
- * `{{ contact.POLL_TOKEN }}@vote.eia.diaria.local` (#4517 — era
+ * `{{ contact.POLL_TOKEN }}%40vote.eia.diaria.local` (#4517 — era
  * `{{ contact.EMAIL }}` cru até então, paridade com o #4487) com `&`
  * escapado como `&amp;` (mesma sintaxe de merge tag Brevo já usada pelo
  * mensal em `lib/mensal/monthly-render.ts`, que segue com `{{ contact.EMAIL }}`
  * cru por estar fora do escopo do #4487/#4517). Sem `esp`/`esp: "beehiiv"`
  * o comportamento é idêntico entre si — regressão coberta abaixo.
+ *
+ * #4692: o `@` do domínio de token virou `%40` (percent-encoded) no ramo
+ * Brevo — 2 campanhas seguidas enviadas com `@` cru adjacente à chave `}}`
+ * tiveram uniqueClicks=0 em 289 entregas, contra 5 cliques na campanha
+ * anterior sem esse padrão. `URL.searchParams.get` decodifica `%40` de volta
+ * pra `@` automaticamente no Worker, então o token resolvido não muda — só
+ * o link deixa de parecer um e-mail cru pro parser da Brevo antes do envio.
  */
 
 import { describe, it } from "node:test";
@@ -45,14 +52,18 @@ describe("renderEIA(eia, esp) — #4266", () => {
     assert.equal(renderEIA(baseEia), renderEIA(baseEia, "beehiiv"));
   });
 
-  it('esp: "brevo" — merge tag {{ contact.POLL_TOKEN }}@vote.eia.diaria.local (token opaco, #4517), & escapado como &amp;', () => {
+  it('esp: "brevo" — merge tag {{ contact.POLL_TOKEN }}%40vote.eia.diaria.local (token opaco, #4517, @ percent-encoded desde #4692), & escapado como &amp;', () => {
     const html = renderEIA(baseEia, "brevo");
-    assert.match(html, /\{\{ contact\.POLL_TOKEN \}\}@vote\.eia\.diaria\.local/);
+    assert.match(html, /\{\{ contact\.POLL_TOKEN \}\}%40vote\.eia\.diaria\.local/);
     assert.match(html, /&amp;edition=260999&amp;choice=A/);
     assert.match(html, /&amp;edition=260999&amp;choice=B/);
     assert.ok(!html.includes("{{email}}"), "não deve conter merge tag Beehiiv");
     assert.ok(!html.includes("{{ contact.EMAIL }}"), "e-mail cru não deve mais aparecer na URL de voto (#4517)");
     assert.ok(!html.includes("&edition=260999&choice="), "& não pode aparecer cru (sem escape) na variante Brevo");
+    assert.ok(
+      !html.includes("{{ contact.POLL_TOKEN }}@"),
+      "#4692: @ cru adjacente à chave }} não pode voltar — suspeito de quebrar o click-tracking da Brevo",
+    );
   });
 
   it('esp: "brevo" — resto do painel (crédito, imagens, leaderboard) inalterado', () => {
@@ -101,7 +112,7 @@ describe("renderHTML(content, { esp }) — threading pelos 3 call sites internos
 
   it('opts.esp: "brevo": merge tag Brevo (token opaco, #4517) no HTML completo', () => {
     const html = renderHTML(fixtureComEia, { esp: "brevo" });
-    assert.match(html, /\{\{ contact\.POLL_TOKEN \}\}@vote\.eia\.diaria\.local/);
+    assert.match(html, /\{\{ contact\.POLL_TOKEN \}\}%40vote\.eia\.diaria\.local/);
     assert.ok(!html.includes("{{email}}"), "não deve sobrar merge tag Beehiiv");
     assert.ok(!html.includes("{{ contact.EMAIL }}"), "e-mail cru não deve mais aparecer (#4517)");
     // Regressão: resto do corpo (destaque) intacto.
@@ -111,7 +122,7 @@ describe("renderHTML(content, { esp }) — threading pelos 3 call sites internos
   it('opts.esp: "brevo" + fullDocument: true — combinação que `publish-daily-brevo.ts` (#4266 item 2, #4517) consome', () => {
     const html = renderHTML(fixtureComEia, { esp: "brevo", fullDocument: true });
     assert.match(html, /<!doctype html>/i);
-    assert.match(html, /\{\{ contact\.POLL_TOKEN \}\}@vote\.eia\.diaria\.local/);
+    assert.match(html, /\{\{ contact\.POLL_TOKEN \}\}%40vote\.eia\.diaria\.local/);
   });
 
   it("USE MELHOR presente: É IA? renderiza DEPOIS da seção — esp ainda propaga nesse ramo", () => {
@@ -126,7 +137,7 @@ describe("renderHTML(content, { esp }) — threading pelos 3 call sites internos
       ],
     };
     const html = renderHTML(fixtureComUseMelhor, { esp: "brevo" });
-    assert.match(html, /\{\{ contact\.POLL_TOKEN \}\}@vote\.eia\.diaria\.local/);
+    assert.match(html, /\{\{ contact\.POLL_TOKEN \}\}%40vote\.eia\.diaria\.local/);
     const useMelhorIdx = html.indexOf("USE MELHOR");
     const eiaIdx = html.indexOf("{{ contact.POLL_TOKEN }}");
     assert.ok(useMelhorIdx > -1 && eiaIdx > useMelhorIdx, "É IA? deve vir depois de USE MELHOR");

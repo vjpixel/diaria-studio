@@ -100,16 +100,20 @@ describe("render-newsletter-html CLI — --esp (#4266)", () => {
     }
   });
 
-  it("--esp brevo: merge tag Brevo no HTML gerado (#4517: token opaco {{ contact.POLL_TOKEN }}, era {{ contact.EMAIL }} cru)", () => {
+  it("--esp brevo: merge tag Brevo no HTML gerado (#4517: token opaco {{ contact.POLL_TOKEN }}, era {{ contact.EMAIL }} cru; @ percent-encoded desde #4692)", () => {
     const dir = makeEditionDir();
     try {
       const outPath = join(dir, "_internal", "out.html");
       const r = run([dir, "--full", "--esp", "brevo", "--out", outPath]);
       assert.equal(r.status, 0, `stderr: ${r.stderr}`);
       const html = readFileSync(outPath, "utf8");
-      assert.match(html, /\{\{ contact\.POLL_TOKEN \}\}@vote\.eia\.diaria\.local/);
+      assert.match(html, /\{\{ contact\.POLL_TOKEN \}\}%40vote\.eia\.diaria\.local/);
       assert.ok(!html.includes("{{email}}"));
       assert.ok(!html.includes("{{ contact.EMAIL }}"), "e-mail cru não deve mais aparecer na URL de voto Brevo (#4517)");
+      assert.ok(
+        !html.includes("{{ contact.POLL_TOKEN }}@"),
+        "#4692: @ cru adjacente à chave }} não pode voltar",
+      );
     } finally {
       rmSync(resolve(dir, ".."), { recursive: true, force: true }); // remove o tmpdir base inteiro (dir é a subpasta "260999")
     }

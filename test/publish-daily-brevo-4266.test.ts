@@ -335,7 +335,7 @@ describe("buildDailyBrevoHtml — guard do bloco de intro obrigatório (#4266 it
       },
       "<div>INTRO OBRIGATÓRIA</div>",
     );
-    assert.match(html, /\{\{ contact\.POLL_TOKEN \}\}@vote\.eia\.diaria\.local/, "usa merge tag Brevo do token opaco (esp brevo, #4517)");
+    assert.match(html, /\{\{ contact\.POLL_TOKEN \}\}%40vote\.eia\.diaria\.local/, "usa merge tag Brevo do token opaco, @ percent-encoded (esp brevo, #4517/#4692)");
     assert.match(html, /INTRO OBRIGATÓRIA/, "intro injetada no HTML");
     assert.match(html, /https:\/\/cdn\.example\.com\/d1\.jpg/, "placeholder de imagem substituído");
     assert.deepEqual(unresolvedImages, []);

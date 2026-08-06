@@ -260,7 +260,8 @@ const DARK_CANVAS_STYLE_BLOCK = buildDarkCanvasStyleBlock(TEXT_COLOR);
  * É IA? (`renderEIA`). **Os dois ramos NÃO são simétricos desde o #4581**:
  * Beehiiv usa `{{email}}` cru, `&` cru (voltou ao e-mail direto — o É IA? não
  * distribui prêmio, ver `buildVoteUrl`); Brevo usa
- * `{{ contact.POLL_TOKEN }}@vote.eia.diaria.local` (token opaco, `&` escapado
+ * `{{ contact.POLL_TOKEN }}%40vote.eia.diaria.local` (token opaco, `@`
+ * percent-encoded desde #4692 — ver rationale em `buildVoteUrl` — `&` escapado
  * como `&amp;` — mesma sintaxe de merge tag já usada pelo mensal,
  * `lib/mensal/monthly-render.ts`, que segue com `{{ contact.EMAIL }}` cru por
  * não estar no escopo do #4487/#4517, ver `monthly-render.ts::renderEia`).
@@ -1155,7 +1156,8 @@ export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
   // que constrói sua própria URL de voto e nunca chama esta função).
   //
   // #4517: `esp="brevo"` recebeu a MESMA proteção de token opaco —
-  // `{{ contact.POLL_TOKEN }}@vote.eia.diaria.local`, `&` escapado como
+  // `{{ contact.POLL_TOKEN }}%40vote.eia.diaria.local` (`@` percent-encoded
+  // desde #4692, ver `buildVoteUrl` abaixo), `&` escapado como
   // `&amp;` (sintaxe de merge tag Brevo, igual ao `{{ contact.EMAIL }}` que
   // este ramo usava antes). O atributo de contato `POLL_TOKEN` (equivalente
   // ao custom field Beehiiv `poll_token`) é populado por
@@ -1195,9 +1197,24 @@ export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
   // devolve `not-token-domain` pra e-mail cru e o `handleVote` segue pelo
   // caminho pré-#4487 (`workers/poll/src/vote.ts`), preservando
   // streak/nickname de quem já vota há meses.
+  //
+  // #4692: o `@` LITERAL entre `}}` e `${VOTE_TOKEN_DOMAIN}` é suspeito de
+  // quebrar o click-tracking da Brevo — as 2 campanhas enviadas com essa
+  // sintaxe (04/08, 05/08) tiveram uniqueClicks=0 em 289 entregas somadas,
+  // contra a campanha anterior (03/08, ainda com `{{ contact.EMAIL }}` cru,
+  // sem `@` literal adjacente à chave `}}`) que teve 5 cliques (issue #4692).
+  // Correlação, não prova (não dá pra rodar campanha real de teste pra
+  // confirmar a causa — guard de publicação do repo proíbe), mas o padrão de
+  // ESPs não trackearem/tratarem como PII um link cujo texto bruto parece um
+  // e-mail (`{{...}}@domínio`) é conhecido o bastante pra justificar tirar o
+  // `@` cru da vista sem esperar uma 3ª campanha zerada. `%40` (percent-encode)
+  // preserva a mesma URL final pro Worker — `URL.searchParams.get("email")`
+  // decodifica automaticamente antes de `isValidVoteEmailFormat`/`handleVote`
+  // rodarem, então o token resolvido é idêntico — só deixa de parecer um
+  // e-mail cru pro parser de link da Brevo antes do envio.
   const buildVoteUrl = (choice: "A" | "B") =>
     esp === "brevo"
-      ? `${PUBLIC_GAME_BASE_URL}/vote?email={{ contact.POLL_TOKEN }}@${VOTE_TOKEN_DOMAIN}&amp;edition=${eia.edition}&amp;choice=${choice}`
+      ? `${PUBLIC_GAME_BASE_URL}/vote?email={{ contact.POLL_TOKEN }}%40${VOTE_TOKEN_DOMAIN}&amp;edition=${eia.edition}&amp;choice=${choice}`
       : `${PUBLIC_GAME_BASE_URL}/vote?email={{email}}&edition=${eia.edition}&choice=${choice}`;
   // #2541: imagens A/B empilhadas (1 coluna), A acima de B, em desktop e mobile.
   const eiaChoice = (choice: "A" | "B", imgFile: string, paddingTop?: string) => {
