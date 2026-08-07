@@ -52,6 +52,8 @@ import {
   renderGeoJsonLd,
   type GeoFaqItem,
 } from "../../../scripts/lib/shared/geo-faq.ts"; // #4558 Parte B: estrutura GEO (FAQ + JSON-LD FAQPage/Article + autoria)
+import { HUB_META } from "./hubs/meta.ts"; // #4558 Parte A: navegação "Por tema" — só slug+rótulo, nunca o HTML gerado
+import type { HubMeta } from "./hubs/meta.ts";
 import titlesCacheRaw from "./titles-cache.json";
 
 /** Shape de cada entrada do cache (espelha `ArquivoTitleEntry` de
@@ -96,6 +98,11 @@ function renderArchiveListStyles(): string {
     color: var(--teal); text-decoration: none; border-bottom: 1px solid var(--teal); padding-bottom: 2px; }
   .subscribe-cta a:hover { opacity: 0.75; }
   .count { font-family: ${FONTS.sans}; font-size: 14px; color: var(--ink); margin: 8px 0 24px; }
+  .tema-index { font-family: ${FONTS.sans}; font-size: 13px; line-height: 2; color: var(--ink);
+    margin: 0 0 16px; }
+  .tema-index .tema-index-label { font-weight: 700; margin-right: 6px; }
+  .tema-index a { color: var(--teal); text-decoration: none; }
+  .tema-index a:hover { text-decoration: underline; }
   .month-index { font-family: ${FONTS.sans}; font-size: 13px; line-height: 2; color: var(--ink);
     margin: 0 0 40px; padding: 16px 0; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
   .month-index a { color: var(--teal); text-decoration: none; }
@@ -294,6 +301,28 @@ ${renderGeoByline(undefined, "atualizado em tempo real")}
 }
 
 /**
+ * Navegação "Por tema" (#4558 Parte A) — a lista de hubs temáticos linkada no
+ * topo do arquivo.
+ *
+ * **Recebe os hubs por parâmetro em vez de ler `HUB_META` direto** por causa
+ * de uma lacuna de teste real: o `HUB_META` de produção tem 1 entrada só, então
+ * um teste que importasse o array real nunca exercitaria o `.join(" · ")` — um
+ * separador quebrado (links colados, espaço faltando) só apareceria no ar
+ * quando o 2º tema fosse publicado, e o teste de "existe um `<a href>` por hub"
+ * continuaria passando, porque checa presença de substring, não a formatação
+ * entre itens. Achado do fleet review da PR #4749.
+ *
+ * Lista vazia → string vazia (nunca um `<nav>` órfão sem links).
+ */
+export function buildTemaNav(hubs: readonly HubMeta[]): string {
+  if (hubs.length === 0) return "";
+  const links = hubs
+    .map((h) => `<a href="/temas/${esc(h.slug)}">${esc(h.label)}</a>`)
+    .join(" · ");
+  return `    <nav class="tema-index" aria-label="Navegação por tema">\n      <span class="tema-index-label">Por tema</span>${links}\n    </nav>`;
+}
+
+/**
  * Constrói o HTML completo da página de arquivo a partir das entradas cruas
  * do sitemap. Filtra pra `/p/*` (edições reais — exclui home/archive/tags/
  * subscribe/authors/etc), descarta entradas sem `lastmod` (não dá pra
@@ -338,6 +367,13 @@ export function buildArchiveHtml(
   }
 
   const sortedKeys = [...groups.keys()].sort().reverse();
+
+  // Navegação "Por tema" (#4558 Parte A) — os hubs temáticos só existiam no
+  // sitemap e na rota `GET /temas/{slug}`: nenhuma página do site linkava pra
+  // eles, então nasciam órfãos de link interno, que é o oposto do que a issue
+  // pretendia. Renderizado fora do `body` abaixo de propósito — os hubs
+  // existem independentemente de haver edição no sitemap.
+  const temaIndex = buildTemaNav(HUB_META);
 
   // Índice de âncoras por mês (#4265 item 5) — sem JS, sem paginação; todos
   // os `<a href>` das edições continuam na mesma resposta.
@@ -418,6 +454,7 @@ ${renderGeoIntro(count)}
   <main>
     <div class="wrap">
       <p class="count">${count} ediç${count === 1 ? "ão" : "ões"} publicada${count === 1 ? "" : "s"}.</p>
+${temaIndex}
 ${body}
 ${renderGeoFaqSection(geoFaq, { sectionId: "faq-arquivo" })}
     </div>
