@@ -297,9 +297,10 @@ npx tsx scripts/beehiiv-sync.ts
 
 **0h.2 — Enriquece clicks via subagent (delegação pro `beehiiv-clicks-enricher`)**
 
-Se `posts_needing_clicks` é não-vazio no output anterior, **delegue** pro subagent dedicado em vez de chamar a MCP do top-level:
+Se `posts_needing_clicks` é não-vazio no output anterior, **delegue** pro subagent dedicado em vez de chamar a MCP do top-level. Capturar o timestamp ISO **imediatamente antes** do dispatch (usado pelo validator determinístico abaixo):
 
 ```
+dispatchedAt = new Date().toISOString()
 Agent(subagent_type="beehiiv-clicks-enricher", prompt=<manifest items uma por linha>)
 ```
 
@@ -309,7 +310,18 @@ Cada item do prompt no formato `post_id=<id> title=<title>`. O agent itera, cham
 
 **Field mapping**: `apply-mcp-clicks.ts` (chamado pelo agent) mapeia os field names modernos da API (`total_clicked_verified`, etc.) pros legacy (`verified_clicks`, `unique_verified_clicks`, etc.) que `build-link-ctr.ts` espera.
 
-**Manifest vazio**: skip 0h.2 inteiro. Apenas log info "no posts need clicks enrichment".
+**Manifest vazio**: skip 0h.2 inteiro (inclusive a verificação abaixo). Apenas log info "no posts need clicks enrichment".
+
+**Validação determinística pós-dispatch (#4732, regra #573):** o summary do agent é texto de um subagent Haiku sobre estado externo — nunca aceitar cego. Gravar o manifest (`posts_needing_clicks`) e o summary do agent em arquivos temporários e rodar:
+```bash
+npx tsx scripts/verify-clicks-enrichment.ts \
+  --manifest {tmp-manifest.json} \
+  --summary {tmp-agent-summary.json} \
+  --dispatched-at {dispatchedAt}
+```
+Cruza cada post_id que o manifest pediu e que o agent NÃO listou em `failed_posts` (ou seja, alegou sucesso) contra o mtime real de `data/beehiiv-cache/posts/{post_id}.json` — write atômico de `apply-mcp-clicks.ts` sempre atualiza o mtime, mesmo quando o array de clicks aplicado é `[]` (post sem clicks reais é resultado legítimo, não falha). Um post `ok` cujo cache não mudou desde `dispatchedAt` é a MESMA classe de bug do caso real 260807: o agent alegou sucesso, o disco discorda.
+
+Exit 1 do script (JSON `{ok:false, mismatches:[...]}`) → logar `level: warn` (evento real, **nunca** `--informational` — suprimiria o sinal do `collect-edition-signals.ts`, o próprio ponto cego que permitiu o #4732 passar despercebido) citando quantos posts o agent alegou processar vs. quantos de fato mudaram no disco. **Não aborta o pipeline** — mesmo padrão fail-soft do resto do bloco 0h (CTR sem enrichment completo ainda funciona, só é menos preciso).
 
 **0h.3 — Build CTR table**
 
@@ -319,7 +331,7 @@ npx tsx scripts/build-link-ctr.ts
 
 Lê o cache enriquecido e regenera `data/link-ctr-table.csv`.
 
-**Logging**: 0h.1 e 0h.3 silenciosos (warn-only). 0h.2 loga `info` quando processa posts, `warn` se MCP timeout/error em algum post (continua nos próximos). Falha de qualquer sub-passo não aborta pipeline.
+**Logging**: 0h.1 e 0h.3 silenciosos (warn-only). 0h.2 loga `info` quando processa posts, `warn` se MCP timeout/error em algum post (continua nos próximos) OU se `verify-clicks-enrichment.ts` (#4732) encontrar divergência entre o summary do agent e o disco. Falha de qualquer sub-passo não aborta pipeline.
 
 ### 0i. Audience profile refresh
 

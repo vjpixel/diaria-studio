@@ -7,6 +7,7 @@ import {
   shouldBypassHeadFor,
   BROWSER_UA,
   verify,
+  reclassifyExhaustedTimeout,
 } from "../scripts/verify-accessibility.ts";
 
 const TRUSTED_HOST = "techcrunch.com"; // está em TRUSTED_PUBLISHERS
@@ -64,6 +65,67 @@ describe("classifyHttpStatus (#696) — 429 sempre anti_bot", () => {
 
   it("301 → null (sem erro)", () => {
     assert.equal(classifyHttpStatus(301, UNKNOWN_HOST, "HEAD"), null);
+  });
+});
+
+// #4730 REGRESSÃO: caso real 260807 — D2 teve timeout na verificação de
+// paywall do Stage 1, sobreviveu ao pool inteiro como `uncertain` genérico
+// (indistinguível de body curto/soft 404), e só foi pego por acaso numa
+// re-verificação manual no gate do Stage 2 (era paywall de verdade). Timeout
+// esgotado nas duas tentativas (fetch direto + browser fallback) agora vira
+// `needs_reverify` — sinal específico que `check-stage2-invariants.ts`
+// consome pra forçar re-checagem determinística antes do gate humano.
+describe("reclassifyExhaustedTimeout (#4730)", () => {
+  it("timeout na 1ª tentativa + browser fallback também uncertain → needs_reverify", () => {
+    const r = reclassifyExhaustedTimeout("fetch error: The operation was aborted", {
+      verdict: "uncertain",
+      finalUrl: "https://tecnoblog.net/x",
+      note: "browser error: Navigation timeout of 20000 ms exceeded",
+    });
+    assert.equal(r.verdict, "needs_reverify");
+    assert.equal(r.note, "browser error: Navigation timeout of 20000 ms exceeded", "preserva o note original");
+  });
+
+  it("ECONNRESET na 1ª tentativa + browser fallback uncertain → needs_reverify", () => {
+    const r = reclassifyExhaustedTimeout("fetch error: read ECONNRESET", {
+      verdict: "uncertain",
+      finalUrl: "https://x.com/y",
+    });
+    assert.equal(r.verdict, "needs_reverify");
+  });
+
+  it("browser fallback resolve pra accessible → NÃO reclassifica (não é mais uncertain)", () => {
+    const r = reclassifyExhaustedTimeout("fetch error: timeout", {
+      verdict: "accessible",
+      finalUrl: "https://x.com/y",
+      note: "browser fallback",
+    });
+    assert.equal(r.verdict, "accessible", "browser fallback recuperou a URL — timeout foi transiente");
+  });
+
+  it("1ª tentativa uncertain por body curto (não timeout) → NÃO vira needs_reverify", () => {
+    const r = reclassifyExhaustedTimeout("body < 500 chars", {
+      verdict: "uncertain",
+      finalUrl: "https://x.com/y",
+      note: "browser body < 500 chars",
+    });
+    assert.equal(r.verdict, "uncertain", "conteúdo ambíguo real não é timeout — retry não muda a interpretação");
+  });
+
+  it("1ª tentativa uncertain por soft 404 (não timeout) → NÃO vira needs_reverify", () => {
+    const r = reclassifyExhaustedTimeout('possível soft 404 (title: "Not Found")', {
+      verdict: "uncertain",
+      finalUrl: "https://x.com/y",
+    });
+    assert.equal(r.verdict, "uncertain");
+  });
+
+  it("sem note na 1ª tentativa (undefined) → NÃO reclassifica", () => {
+    const r = reclassifyExhaustedTimeout(undefined, {
+      verdict: "uncertain",
+      finalUrl: "https://x.com/y",
+    });
+    assert.equal(r.verdict, "uncertain");
   });
 });
 

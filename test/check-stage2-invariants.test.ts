@@ -17,6 +17,7 @@ import {
   checkErroIntencionalRendered,
   checkIntentionalErrorFrontmatter,
   checkStage2Invariants,
+  checkUrlsAccessible,
 } from "../scripts/check-stage2-invariants.ts";
 
 /**
@@ -286,7 +287,7 @@ describe("checkErroIntencionalRendered (#1073)", () => {
 const REVIEWED_WITH_FRONTMATTER = `b clarificado, sem placeholder`;
 
 describe("checkStage2Invariants — integração", () => {
-  it("OK quando os 4 invariants passam (#2284/#3222: inclui _internal/intentional-error.json)", () => {
+  it("OK quando os 4 invariants passam (#2284/#3222: inclui _internal/intentional-error.json)", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -295,7 +296,7 @@ describe("checkStage2Invariants — integração", () => {
       writeFileSync(join(dir, "02-reviewed.md"), REVIEWED_WITH_FRONTMATTER);
       // #1402: Clarice agora exige suggestions.json
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
-      const r = checkStage2Invariants(dir);
+      const r = await checkStage2Invariants(dir);
       assert.equal(r.ok, true);
       assert.equal(r.checks.humanizador.ok, true);
       assert.equal(r.checks.clarice.ok, true);
@@ -306,7 +307,7 @@ describe("checkStage2Invariants — integração", () => {
     }
   });
 
-  it("FAIL quando humanizador pulou (260511 real case)", () => {
+  it("FAIL quando humanizador pulou (260511 real case)", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       // Pula humanizador (sem 02-humanized.md)
@@ -314,7 +315,7 @@ describe("checkStage2Invariants — integração", () => {
       writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "a");
       writeFileSync(join(dir, "02-reviewed.md"), "a clarificado");
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
-      const r = checkStage2Invariants(dir);
+      const r = await checkStage2Invariants(dir);
       assert.equal(r.ok, false);
       assert.equal(r.checks.humanizador.ok, false);
     } finally {
@@ -323,7 +324,7 @@ describe("checkStage2Invariants — integração", () => {
   });
 
   // #1456: novo check urls_accessible
-  it("urls_accessible OK quando cache marca todas as URLs accessible", () => {
+  it("urls_accessible OK quando cache marca todas as URLs accessible", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -342,7 +343,7 @@ describe("checkStage2Invariants — integração", () => {
           "https://b.com/y": { verdict: "accessible" },
         }),
       );
-      const r = checkStage2Invariants(dir, { cachePath });
+      const r = await checkStage2Invariants(dir, { cachePath });
       assert.equal(r.ok, true);
       assert.equal(r.checks.urls_accessible.ok, true);
     } finally {
@@ -350,7 +351,7 @@ describe("checkStage2Invariants — integração", () => {
     }
   });
 
-  it("urls_accessible FAIL quando URL pós-edit não está no cache (caso 260522)", () => {
+  it("urls_accessible FAIL quando URL pós-edit não está no cache (caso 260522)", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -364,7 +365,7 @@ describe("checkStage2Invariants — integração", () => {
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const cachePath = join(dir, "verify-cache.json");
       writeFileSync(cachePath, JSON.stringify({})); // cache vazio
-      const r = checkStage2Invariants(dir, { cachePath });
+      const r = await checkStage2Invariants(dir, { cachePath });
       assert.equal(r.ok, false);
       assert.equal(r.checks.urls_accessible.ok, false);
       assert.match(
@@ -376,7 +377,7 @@ describe("checkStage2Invariants — integração", () => {
     }
   });
 
-  it("urls_accessible FAIL quando URL tem verdict != accessible no cache", () => {
+  it("urls_accessible FAIL quando URL tem verdict != accessible no cache", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -392,7 +393,7 @@ describe("checkStage2Invariants — integração", () => {
         cachePath,
         JSON.stringify({ "https://nyt.com/x": { verdict: "paywall" } }),
       );
-      const r = checkStage2Invariants(dir, { cachePath });
+      const r = await checkStage2Invariants(dir, { cachePath });
       assert.equal(r.ok, false);
       assert.equal(r.checks.urls_accessible.ok, false);
     } finally {
@@ -400,7 +401,7 @@ describe("checkStage2Invariants — integração", () => {
     }
   });
 
-  it("urls_accessible ignora footer/affiliate URLs (não bloqueia stage 2)", () => {
+  it("urls_accessible ignora footer/affiliate URLs (não bloqueia stage 2)", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -413,7 +414,7 @@ describe("checkStage2Invariants — integração", () => {
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const cachePath = join(dir, "verify-cache.json");
       writeFileSync(cachePath, JSON.stringify({})); // cache vazio mas só tem footer URLs
-      const r = checkStage2Invariants(dir, { cachePath });
+      const r = await checkStage2Invariants(dir, { cachePath });
       assert.equal(r.ok, true);
       assert.equal(r.checks.urls_accessible.ok, true);
     } finally {
@@ -422,7 +423,7 @@ describe("checkStage2Invariants — integração", () => {
   });
 
   // #1456 review fix: schema canonical {version, entries}
-  it("urls_accessible aceita schema canonical {version, entries: {...}}", () => {
+  it("urls_accessible aceita schema canonical {version, entries: {...}}", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -445,7 +446,7 @@ describe("checkStage2Invariants — integração", () => {
           },
         }),
       );
-      const r = checkStage2Invariants(dir, { cachePath });
+      const r = await checkStage2Invariants(dir, { cachePath });
       assert.equal(r.ok, true, `failed: ${r.checks.urls_accessible.label}`);
       assert.equal(r.checks.urls_accessible.ok, true);
     } finally {
@@ -453,7 +454,7 @@ describe("checkStage2Invariants — integração", () => {
     }
   });
 
-  it("urls_accessible normaliza trailing slash entre MD e cache", () => {
+  it("urls_accessible normaliza trailing slash entre MD e cache", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -476,14 +477,14 @@ describe("checkStage2Invariants — integração", () => {
           },
         }),
       );
-      const r = checkStage2Invariants(dir, { cachePath });
+      const r = await checkStage2Invariants(dir, { cachePath });
       assert.equal(r.ok, true, `failed: ${r.checks.urls_accessible.label}`);
     } finally {
       cleanup();
     }
   });
 
-  it("urls_accessible faz match via finalUrl (redirect)", () => {
+  it("urls_accessible faz match via finalUrl (redirect)", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -509,14 +510,14 @@ describe("checkStage2Invariants — integração", () => {
           },
         }),
       );
-      const r = checkStage2Invariants(dir, { cachePath });
+      const r = await checkStage2Invariants(dir, { cachePath });
       assert.equal(r.ok, true, `failed: ${r.checks.urls_accessible.label}`);
     } finally {
       cleanup();
     }
   });
 
-  it("urls_accessible aceita variantes wikipedia (en.wikipedia.org)", () => {
+  it("urls_accessible aceita variantes wikipedia (en.wikipedia.org)", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -529,14 +530,14 @@ describe("checkStage2Invariants — integração", () => {
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const cachePath = join(dir, "verify-cache.json");
       writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
-      const r = checkStage2Invariants(dir, { cachePath });
+      const r = await checkStage2Invariants(dir, { cachePath });
       assert.equal(r.ok, true, `failed: ${r.checks.urls_accessible.label}`);
     } finally {
       cleanup();
     }
   });
 
-  it("urls_accessible persiste lista completa em _internal/02-urls-suspicious.json", () => {
+  it("urls_accessible persiste lista completa em _internal/02-urls-suspicious.json", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -548,7 +549,7 @@ describe("checkStage2Invariants — integração", () => {
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const cachePath = join(dir, "verify-cache.json");
       writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
-      const r = checkStage2Invariants(dir, { cachePath });
+      const r = await checkStage2Invariants(dir, { cachePath });
       assert.equal(r.ok, false);
       // Verifica que o arquivo foi gerado
       const persisted = JSON.parse(
@@ -560,7 +561,7 @@ describe("checkStage2Invariants — integração", () => {
     }
   });
 
-  it("urls_accessible skip silencioso quando cache não existe", () => {
+  it("urls_accessible skip silencioso quando cache não existe", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -568,7 +569,7 @@ describe("checkStage2Invariants — integração", () => {
       writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
       writeFileSync(join(dir, "02-reviewed.md"), `${REVIEWED_WITH_FRONTMATTER}\n[T](https://x.com/y)`);
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
-      const r = checkStage2Invariants(dir, { cachePath: join(dir, "nonexistent.json") });
+      const r = await checkStage2Invariants(dir, { cachePath: join(dir, "nonexistent.json") });
       assert.equal(r.ok, true); // não bloqueia
       assert.equal(r.checks.urls_accessible.ok, true);
       assert.match(r.checks.urls_accessible.label ?? "", /verify_cache_missing/);
@@ -577,8 +578,95 @@ describe("checkStage2Invariants — integração", () => {
     }
   });
 
+  // #4730: caso real 260807 — D2 teve timeout no Stage 1, sobreviveu ao pool
+  // como uncertain, e só uma re-verificação manual no gate achou o paywall
+  // real. Regressão: needs_reverify força re-checagem determinística AQUI,
+  // mesmo quando o cache cross-edição tem uma entry stale `accessible`.
+  describe("checkUrlsAccessible — needs_reverify força re-verificação (#4730)", () => {
+    it("FAIL quando needs_reverify e a re-verificação fresca acha paywall, mesmo com cache stale accessible", async () => {
+      const { dir, cleanup } = mkEdition();
+      try {
+        writeFileSync(
+          join(dir, "02-reviewed.md"),
+          `${REVIEWED_WITH_FRONTMATTER}\n[D2](https://tecnoblog.net/artigo)`,
+        );
+        // Cache cross-edição stale: essa URL foi accessible numa edição
+        // anterior e o TTL de 7 dias ainda não expirou.
+        const cachePath = join(dir, "verify-cache.json");
+        writeFileSync(
+          cachePath,
+          JSON.stringify({
+            version: 1,
+            entries: { "https://tecnoblog.net/artigo": { verdict: "accessible" } },
+          }),
+        );
+        // Stage 1 desta edição marcou a URL needs_reverify (timeout esgotado).
+        writeFileSync(
+          join(dir, "_internal", "link-verify-all.json"),
+          JSON.stringify([{ url: "https://tecnoblog.net/artigo", verdict: "needs_reverify" }]),
+        );
+        const r = await checkUrlsAccessible(dir, cachePath, {
+          reverify: async () => ({ verdict: "paywall" }), // re-check determinístico acha paywall real
+        });
+        assert.equal(r.ok, false, "deve reprovar mesmo com cache stale accessible");
+        assert.match(r.label ?? "", /needs_reverify_failed/);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it("OK quando needs_reverify mas a re-verificação fresca confirma accessible", async () => {
+      const { dir, cleanup } = mkEdition();
+      try {
+        writeFileSync(
+          join(dir, "02-reviewed.md"),
+          `${REVIEWED_WITH_FRONTMATTER}\n[D2](https://example.com/artigo)`,
+        );
+        const cachePath = join(dir, "verify-cache.json");
+        writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
+        writeFileSync(
+          join(dir, "_internal", "link-verify-all.json"),
+          JSON.stringify([{ url: "https://example.com/artigo", verdict: "needs_reverify" }]),
+        );
+        const r = await checkUrlsAccessible(dir, cachePath, {
+          reverify: async () => ({ verdict: "accessible" }), // rede se recuperou — timeout foi transiente
+        });
+        assert.equal(r.ok, true, `esperado OK, got: ${r.label}`);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it("sem link-verify-all.json (edição antiga/sem Stage 1 fresco) — comportamento inalterado, usa só o cache", async () => {
+      const { dir, cleanup } = mkEdition();
+      try {
+        writeFileSync(
+          join(dir, "02-reviewed.md"),
+          `${REVIEWED_WITH_FRONTMATTER}\n[T](https://a.com/x)`,
+        );
+        const cachePath = join(dir, "verify-cache.json");
+        writeFileSync(
+          cachePath,
+          JSON.stringify({ version: 1, entries: { "https://a.com/x": { verdict: "accessible" } } }),
+        );
+        // Sem _internal/link-verify-all.json de propósito.
+        let reverifyCalled = false;
+        const r = await checkUrlsAccessible(dir, cachePath, {
+          reverify: async () => {
+            reverifyCalled = true;
+            return { verdict: "accessible" };
+          },
+        });
+        assert.equal(r.ok, true);
+        assert.equal(reverifyCalled, false, "reverify não deve ser chamado sem needs_reverify");
+      } finally {
+        cleanup();
+      }
+    });
+  });
+
   // #2284/#3222: novo check intentional_error_frontmatter (migrado pra JSON)
-  it("#2284/#3222: FAIL quando _internal/intentional-error.json ausente", () => {
+  it("#2284/#3222: FAIL quando _internal/intentional-error.json ausente", async () => {
     const { dir, cleanup } = mkEdition({ withIntentionalError: false });
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -588,7 +676,7 @@ describe("checkStage2Invariants — integração", () => {
       // render-erro-intencional.ts não inseria o placeholder.
       writeFileSync(join(dir, "02-reviewed.md"), "b clarificado, sem placeholder");
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
-      const r = checkStage2Invariants(dir, { cachePath: join(dir, "no-cache.json") });
+      const r = await checkStage2Invariants(dir, { cachePath: join(dir, "no-cache.json") });
       assert.equal(r.ok, false);
       assert.equal(r.checks.intentional_error_frontmatter.ok, false);
       assert.match(
@@ -600,7 +688,7 @@ describe("checkStage2Invariants — integração", () => {
     }
   });
 
-  it("#3222: OK quando _internal/intentional-error.json existe como objeto vazio (presença-only check)", () => {
+  it("#3222: OK quando _internal/intentional-error.json existe como objeto vazio (presença-only check)", async () => {
     // Ao contrário do check antigo (que exigia a CHAVE `intentional_error:` presente
     // no frontmatter), este check só confirma que o arquivo existe — validação de
     // conteúdo/completude fica pro lint do Stage 5 (`intentional-error-flagged`).
@@ -612,14 +700,14 @@ describe("checkStage2Invariants — integração", () => {
       writeFileSync(join(dir, "02-reviewed.md"), "b clarificado");
       writeIntentionalErrorRecord(dir, {});
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
-      const r = checkStage2Invariants(dir, { cachePath: join(dir, "no-cache.json") });
+      const r = await checkStage2Invariants(dir, { cachePath: join(dir, "no-cache.json") });
       assert.equal(r.checks.intentional_error_frontmatter.ok, true);
     } finally {
       cleanup();
     }
   });
 
-  it("#2284/#3222: OK quando intentional-error.json tem placeholders", () => {
+  it("#2284/#3222: OK quando intentional-error.json tem placeholders", async () => {
     const { dir, cleanup } = mkEdition({ withIntentionalError: false });
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -635,7 +723,7 @@ describe("checkStage2Invariants — integração", () => {
         reveal: "{PREENCHER}",
       });
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
-      const r = checkStage2Invariants(dir, { cachePath: join(dir, "no-cache.json") });
+      const r = await checkStage2Invariants(dir, { cachePath: join(dir, "no-cache.json") });
       assert.equal(r.checks.intentional_error_frontmatter.ok, true);
     } finally {
       cleanup();
@@ -706,7 +794,7 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
   // escrito por default por mkEdition().
   const REVIEWED_WITH_FM = `corpo`;
 
-  it("cursos.diaria.workers.dev NÃO bloqueia mesmo ausente do cache", () => {
+  it("cursos.diaria.workers.dev NÃO bloqueia mesmo ausente do cache", async () => {
     // Bug 260623: URL fixa do rodapé (PARA ENCERRAR) era flagada not_in_cache.
     const { dir, cleanup } = mkEdition();
     try {
@@ -720,7 +808,7 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const cachePath = join(dir, "verify-cache.json");
       writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
-      const r = checkStage2Invariants(dir, { cachePath });
+      const r = await checkStage2Invariants(dir, { cachePath });
       assert.equal(r.checks.urls_accessible.ok, true, "cursos.diaria.workers.dev deve ser allowlistado");
       assert.equal(r.ok, true);
     } finally {
@@ -728,7 +816,7 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
     }
   });
 
-  it("livros.diaria.workers.dev NÃO bloqueia mesmo ausente do cache", () => {
+  it("livros.diaria.workers.dev NÃO bloqueia mesmo ausente do cache", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -741,14 +829,14 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const cachePath = join(dir, "verify-cache.json");
       writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
-      const r = checkStage2Invariants(dir, { cachePath });
+      const r = await checkStage2Invariants(dir, { cachePath });
       assert.equal(r.checks.urls_accessible.ok, true, "livros.diaria.workers.dev deve ser allowlistado");
     } finally {
       cleanup();
     }
   });
 
-  it("poll.diaria.workers.dev NÃO bloqueia mesmo ausente do cache", () => {
+  it("poll.diaria.workers.dev NÃO bloqueia mesmo ausente do cache", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -761,7 +849,7 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const cachePath = join(dir, "verify-cache.json");
       writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
-      const r = checkStage2Invariants(dir, { cachePath });
+      const r = await checkStage2Invariants(dir, { cachePath });
       assert.equal(r.checks.urls_accessible.ok, true, "poll.diaria.workers.dev deve ser allowlistado");
     } finally {
       cleanup();
@@ -769,7 +857,7 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
   });
 
   // #3698/#3701: domínios de marca (Workers Custom Domain) — cutover reader-facing.
-  it("cursos.diar.ia.br (domínio de marca) NÃO bloqueia mesmo ausente do cache (#3698)", () => {
+  it("cursos.diar.ia.br (domínio de marca) NÃO bloqueia mesmo ausente do cache (#3698)", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -782,7 +870,7 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const cachePath = join(dir, "verify-cache.json");
       writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
-      const r = checkStage2Invariants(dir, { cachePath });
+      const r = await checkStage2Invariants(dir, { cachePath });
       assert.equal(r.checks.urls_accessible.ok, true, "cursos.diar.ia.br deve ser allowlistado");
       assert.equal(r.ok, true);
     } finally {
@@ -790,7 +878,7 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
     }
   });
 
-  it("livros.diar.ia.br (domínio de marca) NÃO bloqueia mesmo ausente do cache (#3698)", () => {
+  it("livros.diar.ia.br (domínio de marca) NÃO bloqueia mesmo ausente do cache (#3698)", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -803,14 +891,14 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const cachePath = join(dir, "verify-cache.json");
       writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
-      const r = checkStage2Invariants(dir, { cachePath });
+      const r = await checkStage2Invariants(dir, { cachePath });
       assert.equal(r.checks.urls_accessible.ok, true, "livros.diar.ia.br deve ser allowlistado");
     } finally {
       cleanup();
     }
   });
 
-  it("eia.diar.ia.br (domínio de marca do É IA?) NÃO bloqueia mesmo ausente do cache (#3701)", () => {
+  it("eia.diar.ia.br (domínio de marca do É IA?) NÃO bloqueia mesmo ausente do cache (#3701)", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -823,14 +911,14 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const cachePath = join(dir, "verify-cache.json");
       writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
-      const r = checkStage2Invariants(dir, { cachePath });
+      const r = await checkStage2Invariants(dir, { cachePath });
       assert.equal(r.checks.urls_accessible.ok, true, "eia.diar.ia.br deve ser allowlistado");
     } finally {
       cleanup();
     }
   });
 
-  it("linkedin.com/in/vjpixel (bio do editor) NÃO bloqueia mesmo com verdict=blocked no cache (#4263)", () => {
+  it("linkedin.com/in/vjpixel (bio do editor) NÃO bloqueia mesmo com verdict=blocked no cache (#4263)", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -850,7 +938,7 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
           entries: { "https://www.linkedin.com/in/vjpixel/": { verdict: "blocked" } },
         }),
       );
-      const r = checkStage2Invariants(dir, { cachePath });
+      const r = await checkStage2Invariants(dir, { cachePath });
       assert.equal(r.checks.urls_accessible.ok, true, "linkedin.com/in/vjpixel deve ser allowlistado");
       assert.equal(r.ok, true);
     } finally {
@@ -858,7 +946,7 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
     }
   });
 
-  it("URL de vídeo (youtu.be) NÃO bloqueia mesmo ausente do cache — verdict video nunca é cacheado por design (#4263)", () => {
+  it("URL de vídeo (youtu.be) NÃO bloqueia mesmo ausente do cache — verdict video nunca é cacheado por design (#4263)", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -871,7 +959,7 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const cachePath = join(dir, "verify-cache.json");
       writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} })); // cache vazio de propósito
-      const r = checkStage2Invariants(dir, { cachePath });
+      const r = await checkStage2Invariants(dir, { cachePath });
       assert.equal(r.checks.urls_accessible.ok, true, "URL de vídeo deve ser pulada, não flagada not_in_cache");
       assert.equal(r.ok, true);
     } finally {
@@ -879,7 +967,7 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
     }
   });
 
-  it("youtube.com/watch (não só youtu.be) também é pulado — mesma cobertura de isVideoUrl (#4263)", () => {
+  it("youtube.com/watch (não só youtu.be) também é pulado — mesma cobertura de isVideoUrl (#4263)", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -892,7 +980,7 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const cachePath = join(dir, "verify-cache.json");
       writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
-      const r = checkStage2Invariants(dir, { cachePath });
+      const r = await checkStage2Invariants(dir, { cachePath });
       assert.equal(r.checks.urls_accessible.ok, true);
     } finally {
       cleanup();
@@ -905,7 +993,7 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
   // test/canonical-urls.test.ts). Trava que o display agora sinaliza
   // truncamento com reticências, e que o valor persistido no JSON continua
   // completo (nunca cortado) — é só a mensagem de console que é encurtada.
-  it("mensagem de console marca truncamento com reticências; JSON persistido mantém a URL completa (#4263)", () => {
+  it("mensagem de console marca truncamento com reticências; JSON persistido mantém a URL completa (#4263)", async () => {
     const { dir, cleanup } = mkEdition();
     try {
       writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
@@ -920,7 +1008,7 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const cachePath = join(dir, "verify-cache.json");
       writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} })); // not_in_cache
-      const r = checkStage2Invariants(dir, { cachePath });
+      const r = await checkStage2Invariants(dir, { cachePath });
       assert.equal(r.checks.urls_accessible.ok, false);
       // Mensagem de console: cortada em 80 chars + "…" — não a URL completa crua.
       assert.match(r.checks.urls_accessible.label ?? "", /…/);
@@ -938,7 +1026,7 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
     }
   });
 
-  it("URL editorial externa desconhecida AINDA bloqueia (allowlist não é permissiva)", () => {
+  it("URL editorial externa desconhecida AINDA bloqueia (allowlist não é permissiva)", async () => {
     // Garantia de que a allowlist só cobre os Workers específicos, não qualquer URL.
     const { dir, cleanup } = mkEdition();
     try {
@@ -953,7 +1041,7 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
       writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
       const cachePath = join(dir, "verify-cache.json");
       writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
-      const r = checkStage2Invariants(dir, { cachePath });
+      const r = await checkStage2Invariants(dir, { cachePath });
       assert.equal(r.checks.urls_accessible.ok, false, "URL editorial desconhecida ainda bloqueia");
     } finally {
       cleanup();

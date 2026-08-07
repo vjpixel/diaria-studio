@@ -146,7 +146,14 @@ const PAYWALL_MARKERS = [
   "conteúdo exclusivo para assinantes",
 ];
 
-type Verdict = "accessible" | "paywall" | "blocked" | "aggregator" | "uncertain" | "anti_bot" | "video";
+// #4730: `needs_reverify` é um verdict distinto de `uncertain` — sinaliza que
+// AMBAS as tentativas determinísticas (fetch direto + browser fallback)
+// falharam por motivo de INFRA (timeout/conexão), não por ambiguidade de
+// conteúdo (body curto, soft 404, 403 sem sinal claro). É o único subconjunto
+// de `uncertain` que vale a pena re-tentar mais tarde de forma determinística
+// (falha de rede é transiente; conteúdo ambíguo não muda com um retry) — ver
+// `reclassifyExhaustedTimeout` abaixo e o consumo em `check-stage2-invariants.ts`.
+type Verdict = "accessible" | "paywall" | "blocked" | "aggregator" | "uncertain" | "needs_reverify" | "anti_bot" | "video";
 
 type VerifyResult = {
   verdict: Verdict;
@@ -530,6 +537,34 @@ export async function runBounded<T>(
   await Promise.all(Array.from({ length: safe }, () => worker()));
 }
 
+/**
+ * #4730: decide se o resultado do browser fallback (segundo pass) deve ser
+ * reclassificado de `uncertain` para `needs_reverify`.
+ *
+ * Reclassifica só quando AMBAS as tentativas falharam por timeout/erro de
+ * conexão (`firstPassNote` começa com `"fetch error:"`, gravado no catch de
+ * `verify()` — linha ~497 — que cobre abort/timeout/ECONNREFUSED/ECONNRESET)
+ * E o browser fallback também terminou `uncertain`. Content ambíguo — body
+ * curto, soft 404, 403 sem sinal — nunca vira `needs_reverify`: um retry
+ * determinístico não muda a interpretação de conteúdo real observado, só
+ * ajuda quando a causa raiz foi infraestrutura transiente.
+ *
+ * Caso real (#4730, edição 260807): D2 teve timeout na 1ª tentativa,
+ * sobreviveu como `uncertain` ao pool inteiro, e só foi descoberto como
+ * paywall de verdade numa re-verificação manual no gate do Stage 2. Com
+ * `needs_reverify`, `check-stage2-invariants.ts` força essa re-verificação
+ * automaticamente antes do gate humano em vez de depender de acaso.
+ */
+export function reclassifyExhaustedTimeout(
+  firstPassNote: string | undefined,
+  browserResult: VerifyResult,
+): VerifyResult {
+  if (browserResult.verdict === "uncertain" && firstPassNote?.startsWith("fetch error:")) {
+    return { ...browserResult, verdict: "needs_reverify" };
+  }
+  return browserResult;
+}
+
 async function verifyWithBrowser(
   url: string,
   browser: Browser,
@@ -692,8 +727,12 @@ async function main() {
       const launched = browser;
       await runBounded(uncertainIdxs, effectiveConcurrency, async (idx) => {
         const r = results[idx];
+        const firstPassNote = r.note;
         const browserResult = await verifyWithBrowser(r.url, launched);
-        results[idx] = { url: r.url, ...browserResult };
+        // #4730: exhausted timeout (ambas tentativas falharam por infra) vira
+        // needs_reverify em vez de uncertain — sinal específico pro gate do
+        // Stage 2 forçar re-verificação determinística.
+        results[idx] = { url: r.url, ...reclassifyExhaustedTimeout(firstPassNote, browserResult) };
       });
       const elapsedMs = Date.now() - fallbackStart;
       console.error(
@@ -767,14 +806,18 @@ async function main() {
   const blocked = results.filter((r) => r.verdict === "blocked" || r.verdict === "anti_bot").length;
   const aggregator = results.filter((r) => r.verdict === "aggregator").length;
   const ok = results.filter((r) => r.verdict === "accessible" || r.verdict === "video").length;
+  // #4730: needs_reverify = ambas tentativas (fetch + browser fallback)
+  // esgotadas por timeout/erro de conexão — sinal visível no log pra não
+  // desaparecer no stderr como o fallback Jaccard silencioso do #4654.
+  const needsReverify = results.filter((r) => r.verdict === "needs_reverify").length;
   const total = results.length;
   logEvent({
     edition: null,
     stage: 1,
     agent: "verify-accessibility.ts",
     level: "info",
-    message: `verify: ${paywall} paywall, ${blocked} blocked, ${aggregator} aggregator, ${ok} ok`,
-    details: { paywall, blocked, aggregator, ok, total },
+    message: `verify: ${paywall} paywall, ${blocked} blocked, ${aggregator} aggregator, ${ok} ok, ${needsReverify} needs_reverify`,
+    details: { paywall, blocked, aggregator, ok, needsReverify, total },
   }, logRootDir);
 
   // Strip internal `_cacheHit` field before serialization — purely

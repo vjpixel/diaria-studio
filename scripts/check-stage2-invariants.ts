@@ -24,6 +24,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { extractUrlsFromMd, FOOTER_DOMAINS } from "./lib/canonical-urls.ts"; // #1456 / #2695
 import { intentionalErrorJsonPath } from "./lib/intentional-errors.ts"; // #3222
 import { isVideoUrl } from "./lib/video-youtube-resolve.ts"; // #4263
+import { verify as verifyUrl } from "./verify-accessibility.ts"; // #4730
 
 interface VerifyCacheEntry {
   verdict: "accessible" | "paywall" | "blocked" | "aggregator" | "uncertain" | "anti_bot";
@@ -178,8 +179,51 @@ export function checkIntentionalErrorFrontmatter(editionDir: string): CheckResul
 }
 
 /**
- * Pure (#1456): valida que todas as URLs editoriais no `02-reviewed.md` estão
- * marcadas como `accessible` no cache cross-edition de verify-accessibility.
+ * #4730: entry do output per-edição de `verify-accessibility.ts`
+ * (`_internal/link-verify-all.json`, ver invocação em
+ * `orchestrator-stage-1-research.md` step 1i). Diferente do cache
+ * cross-edição (`VerifyCacheShape`), este arquivo é escrito POR ESTA edição
+ * — inclui verdicts não-cacheáveis como `needs_reverify`/`uncertain`, que o
+ * cache cross-edição nunca persiste (`isCacheableVerdict`).
+ */
+interface EditionVerifyEntry {
+  url?: string;
+  finalUrl?: string;
+  verdict?: string;
+}
+
+/**
+ * #4730: lê `_internal/link-verify-all.json` (se existir) e retorna o
+ * conjunto de URLs marcadas `needs_reverify` nesta edição — timeout/erro de
+ * conexão esgotado nas duas tentativas do Stage 1 (fetch + browser
+ * fallback), sinal específico que não é ambiguidade de conteúdo (ver
+ * `reclassifyExhaustedTimeout` em `verify-accessibility.ts`).
+ *
+ * Best-effort: arquivo ausente/inválido → Set vazio, sem bloquear o resto do
+ * check (mesmo padrão fail-soft do cache cross-edição abaixo).
+ */
+function loadNeedsReverifyUrls(editionDir: string): Set<string> {
+  const path = join(editionDir, "_internal", "link-verify-all.json");
+  if (!existsSync(path)) return new Set();
+  try {
+    const raw: EditionVerifyEntry[] = JSON.parse(readFileSync(path, "utf8"));
+    if (!Array.isArray(raw)) return new Set();
+    const urls = new Set<string>();
+    for (const entry of raw) {
+      if (entry?.verdict !== "needs_reverify") continue;
+      if (entry.url) urls.add(entry.url);
+      if (entry.finalUrl) urls.add(entry.finalUrl);
+    }
+    return urls;
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * (#1456, async desde #4730): valida que todas as URLs editoriais no
+ * `02-reviewed.md` estão marcadas como `accessible` no cache cross-edition
+ * de verify-accessibility.
  *
  * Pega edições manuais de top-level Claude/editor que introduziram URLs
  * hallucinadas (caso 260522 — Hassabis Guardian URL 404, Canaltech com sufixo
@@ -199,14 +243,25 @@ export function checkIntentionalErrorFrontmatter(editionDir: string): CheckResul
  * (confirmado 260729: `verify-accessibility.ts` rodou explicitamente sobre a
  * URL e persistiu 0 novos entries, por design, não por falha).
  *
+ * #4730: URLs marcadas `needs_reverify` pelo Stage 1 (timeout esgotado nas
+ * duas tentativas) recebem uma re-verificação determinística AQUI, no gate,
+ * em vez de confiar no cache cross-edição — que pode ter uma entry STALE
+ * `accessible` de uma edição anterior (o `needs_reverify` desta run nunca
+ * sobrescreve o cache, por ser não-cacheável) mascarando o timeout de hoje.
+ * Caso real (#4730, edição 260807): D2 tinha `uncertain` fresco por timeout
+ * mas sobreviveu ao pool sem re-checagem automática; só uma re-verificação
+ * manual no gate achou o paywall real. `opts.reverify` é injetável pra
+ * permitir teste determinístico sem rede (default: `verify()` real).
+ *
  * @param cachePath path pro link-verify-cache.json (default
  *   `data/link-verify-cache.json`). Quando ausente/inválido, skip silencioso
  *   (não bloqueia stage 2 mas perde a defesa).
  */
-export function checkUrlsAccessible(
+export async function checkUrlsAccessible(
   editionDir: string,
   cachePath: string,
-): CheckResult {
+  opts: { reverify?: (url: string) => Promise<{ verdict: string }> } = {},
+): Promise<CheckResult> {
   const reviewed = join(editionDir, "02-reviewed.md");
   if (!existsSync(reviewed)) {
     return { ok: true, label: "reviewed_missing: outro check captura isso" };
@@ -260,10 +315,23 @@ export function checkUrlsAccessible(
       normalizedIndex.get(stripTrailingSlash(url))
     );
   };
+  // #4730: URLs desta edição marcadas needs_reverify pelo Stage 1 recebem
+  // re-verificação determinística AQUI, ao invés de consultar o cache
+  // cross-edição (que pode ter entry stale de outra edição mascarando o
+  // timeout fresco de hoje).
+  const needsReverifyUrls = loadNeedsReverifyUrls(editionDir);
+  const reverify = opts.reverify ?? ((url: string) => verifyUrl(url));
   const suspicious: { url: string; reason: string }[] = [];
   for (const url of urls) {
     if (FOOTER_DOMAINS.some((d) => url.includes(d))) continue;
     if (isVideoUrl(url)) continue; // #4263: video verdict nunca é cacheado, por design — não é not_in_cache
+    if (needsReverifyUrls.has(url)) {
+      const fresh = await reverify(url);
+      if (fresh.verdict !== "accessible" && fresh.verdict !== "video") {
+        suspicious.push({ url, reason: `needs_reverify_failed: verdict=${fresh.verdict}` });
+      }
+      continue;
+    }
     const entry = lookupCacheEntry(url);
     if (!entry) {
       suspicious.push({ url, reason: "not_in_cache (URL nova pós-edit manual)" });
@@ -319,10 +387,12 @@ interface AggregateResult {
   };
 }
 
-export function checkStage2Invariants(
+// #4730: async — checkUrlsAccessible pode re-verificar URLs needs_reverify
+// via rede (verify-accessibility.ts real, ou opts.reverify injetado em teste).
+export async function checkStage2Invariants(
   editionDir: string,
-  opts: { cachePath?: string } = {},
-): AggregateResult {
+  opts: { cachePath?: string; reverify?: (url: string) => Promise<{ verdict: string }> } = {},
+): Promise<AggregateResult> {
   const internalDir = join(editionDir, "_internal");
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const cachePath = opts.cachePath ?? resolve(ROOT, "data/link-verify-cache.json");
@@ -330,14 +400,14 @@ export function checkStage2Invariants(
   const clarice = checkClariceRan(editionDir);
   const erro_intencional = checkErroIntencionalRendered(editionDir);
   const intentional_error_frontmatter = checkIntentionalErrorFrontmatter(editionDir);
-  const urls_accessible = checkUrlsAccessible(editionDir, cachePath);
+  const urls_accessible = await checkUrlsAccessible(editionDir, cachePath, { reverify: opts.reverify });
   return {
     ok: humanizador.ok && clarice.ok && erro_intencional.ok && intentional_error_frontmatter.ok && urls_accessible.ok,
     checks: { humanizador, clarice, erro_intencional, intentional_error_frontmatter, urls_accessible },
   };
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const { values } = parseArgs(process.argv.slice(2));
   const editionDirArg = values["edition-dir"];
@@ -350,7 +420,7 @@ function main(): void {
     console.error(`[check-stage2-invariants] dir não existe: ${editionDir}`);
     process.exit(1);
   }
-  const result = checkStage2Invariants(editionDir);
+  const result = await checkStage2Invariants(editionDir);
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) {
     const failed: string[] = [];

@@ -103,6 +103,10 @@ describe("run-clarice-sync-daily.ps1: exit code honesto quando o log falha (#404
       "-SummaryScript", NOOP_FIXTURE,
       "-LogPath", finalLog,
       "-TempLogPath", tempLog,
+      // #4740: sem estes overrides, o wrapper chamaria o extract-opens-catchup-status.ts
+      // REAL contra o junction data/ real — noop evita side-effect na run de teste.
+      "-ExtractScript", NOOP_FIXTURE,
+      "-OpensStatusOut", join(workDir, "opens-status.json"),
     ]);
 
     assert.equal(result.status, 0, `esperava exit 0, obteve ${result.status}. stderr:\n${result.stderr}`);
@@ -126,6 +130,9 @@ describe("run-clarice-sync-daily.ps1: exit code honesto quando o log falha (#404
       "-SummaryScript", NOOP_FIXTURE,
       "-LogPath", badLogPath,
       "-TempLogPath", tempLog,
+      // #4740: evita side-effect no junction data/ real (ver teste "caso feliz" acima).
+      "-ExtractScript", NOOP_FIXTURE,
+      "-OpensStatusOut", join(workDir, "opens-status.json"),
     ]);
 
     assert.notEqual(
@@ -164,6 +171,9 @@ describe("run-clarice-sync-daily.ps1: exit code honesto quando npx não spawna (
       "-SummaryScript", NOOP_FIXTURE,
       "-LogPath", finalLog,
       "-TempLogPath", tempLog,
+      // #4740: evita side-effect no junction data/ real (npx tampouco resolveria aqui, mas fica explícito).
+      "-ExtractScript", NOOP_FIXTURE,
+      "-OpensStatusOut", join(workDir, "opens-status.json"),
     ]);
 
     assert.notEqual(

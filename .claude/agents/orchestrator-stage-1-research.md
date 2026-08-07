@@ -397,10 +397,9 @@ Rodar `topic-cluster.ts` pra consolidar artigos do mesmo evento dentro do mesmo 
 ```bash
 npx tsx scripts/topic-cluster.ts \
   --in {EDITION_DIR}/_internal/tmp-categorized.json \
-  --out {EDITION_DIR}/_internal/tmp-clustered.json \
-  --threshold 0.3
+  --out {EDITION_DIR}/_internal/tmp-clustered.json
 ```
-Threshold `0.3` é agressivo (Jaccard de tokens). False positives são amortecidos pelo ranking intra-cluster (representante mantido é o de melhor qualidade). Daqui em diante usar `_internal/tmp-clustered.json`. Logar `clusters.length` (zero é normal).
+**Não passar `--threshold` explícito** (#4729) — o script escolhe o default correto por método sozinho: `0.85` para cosine similarity (via `gemini-embedding-001`, quando `GEMINI_API_KEY` está configurada — caminho normal de produção) ou `0.5` para o fallback Jaccard de tokens (sem key, ou quando todos os embeddings falham). Um `--threshold 0.3` fixo no CLI, como este arquivo documentava antes, é calibrado pra Jaccard e sobrescreve o default de 0.85 sempre que a key está presente — cosine com threshold 0.3 é extremamente agressivo (clustering falso-positivo dispara). False positives no fallback Jaccard são amortecidos pelo ranking intra-cluster (representante mantido é o de melhor qualidade). Daqui em diante usar `_internal/tmp-clustered.json`. Logar `clusters.length` (zero é normal).
 
 Modelo de embedding vem de `platform.config.json > gemini.embedding_model` (default `gemini-embedding-001`, #4654 — sucede o `text-embedding-004` descontinuado). O script escreve `_internal/topic-cluster-stats.json` junto do `--out`; o pre-gate validator (Passo 3, `validate-stage-1-output.ts`) lê esse sidecar e vira um WARN visível no gate quando `GEMINI_API_KEY` está configurada mas os embeddings falharam (drift de catálogo, quota, rede) — nunca um `console.warn` perdido no stderr. Sem `GEMINI_API_KEY`, o fallback Jaccard é o caminho esperado e não gera warning.
 
