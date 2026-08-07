@@ -2047,6 +2047,48 @@ describe("isOpinionOrStudy (#2368 item 2)", () => {
     assert.ok(!isOpinionOrStudy("https://canaltech.com.br/chatgpt/como-usar-chatgpt", "Como usar ChatGPT no trabalho — guia prático"));
     assert.ok(isOpinionOrStudy("https://x.com/p", "Como a IA transforma FP&A e Controladoria"));
   });
+
+  it("#4713 fleet review achado 1: ', segundo maior/menor X' é ordinal comparativo, não atribuição de notícia", () => {
+    assert.ok(
+      !isOpinionOrStudy(
+        "https://x.com/p",
+        "Startup capta R$10 milhões, segundo maior aporte do trimestre",
+      ),
+      "'segundo maior' é ordinal comparativo — não deve disparar atribuição de notícia",
+    );
+    assert.ok(
+      !isOpinionOrStudy(
+        "https://x.com/p",
+        "Rodada fecha em R$2 milhões, segundo menor valor captado no setor este ano",
+      ),
+      "'segundo menor' também é ordinal comparativo",
+    );
+  });
+
+  it("#4713 fleet review achado 1: sem-regressão — 'segundo X' como atribuição de fonte continua disparando", () => {
+    assert.ok(
+      isOpinionOrStudy("https://x.com/p", "Empresas adotam IA mais rápido, segundo consultoria"),
+      "'segundo consultoria' (fonte) não deve ser confundido com 'segundo maior/menor' (ordinal)",
+    );
+    assert.ok(
+      isOpinionOrStudy("https://x.com/p", "Uso de IA no trabalho cresce, segundo a Microsoft"),
+    );
+  });
+
+  it("#4713 fleet review achado 2: frases EN soltas ('shows that'/'reveals that'/'X says') no SUMMARY não disparam — só no título", () => {
+    assert.ok(
+      !isOpinionOrStudy(
+        "https://example.com/guide",
+        "Como criar um agente de IA com LangChain",
+        "This step-by-step guide shows that building an agent is easier than it seems.",
+      ),
+      "tutorial legítimo com 'shows that' só no summary (meta-description raspada) não deve virar atribuição de notícia",
+    );
+    assert.ok(
+      isOpinionOrStudy("https://x.com/p", "Report shows that AI usage doubled in 2026"),
+      "'shows that' NO TÍTULO continua disparando normalmente",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

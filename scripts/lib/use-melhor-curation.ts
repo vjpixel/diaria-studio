@@ -909,9 +909,28 @@ const RESEARCH_STUDY_TITLE_RE =
  * roda `HOW_TO_GUARD_RE` ANTES de checar este padrão, então "Fulano explica
  * como fazer X" bate em "como fazer" primeiro e nunca chega aqui (não
  * precisamos excluir esse caso no regex).
+ *
+ * #4713 fleet review, achado 1 (self-review, caso real 260807/260807b):
+ * ", segundo maior/menor X" é ordinal comparativo PT-BR ("Startup capta
+ * R$10 milhões, segundo maior aporte do trimestre"), não atribuição de
+ * fonte ("segundo a empresa", "segundo consultoria"). O lookahead negativo
+ * abaixo exclui só essa dupla ambígua (maior/menor) — "segundo" seguido de
+ * qualquer outra palavra (artigo, substantivo, nome próprio) continua
+ * batendo como atribuição, caso coberto pelo teste "segundo consultoria".
  */
 const NEWS_ATTRIBUTION_TITLE_RE =
-  /,\s*(?:diz|afirma(?:m)?|revela(?:m)?|aponta(?:m)?|mostra(?:m)?|admite(?:m)?|segundo)\b|\b(?:diz|afirma(?:m)?|revela(?:m)?|aponta(?:m)?|mostra(?:m)?|admite(?:m)?)\s+que\b|\baponta(?:m)?\s+(?:estudo|pesquisa)\b|\baccording\s+to\b|\b\w+\s+says\b|\breveals?\s+that\b|\bshows?\s+that\b/i;
+  /,\s*(?:diz|afirma(?:m)?|revela(?:m)?|aponta(?:m)?|mostra(?:m)?|admite(?:m)?|segundo(?!\s+(?:maior|menor)\b))\b|\b(?:diz|afirma(?:m)?|revela(?:m)?|aponta(?:m)?|mostra(?:m)?|admite(?:m)?)\s+que\b|\baponta(?:m)?\s+(?:estudo|pesquisa)\b|\baccording\s+to\b/i;
+
+/**
+ * #4713 fleet review, achado 2: as três alternativas EN acima eram checadas
+ * contra `hay` (título + summary), mas "shows that"/"reveals that"/"X says"
+ * são frases genéricas demais pra rodar sobre summary — um tutorial legítimo
+ * cujo meta-description raspado diga algo como "this guide shows that..."
+ * viraria falso-positivo de notícia. Restrito ao TÍTULO apenas; "according
+ * to" (acima, em NEWS_ATTRIBUTION_TITLE_RE) é frase mais inequívoca e
+ * incomum em prosa descritiva, então continua valendo contra `hay`.
+ */
+const NEWS_ATTRIBUTION_TITLE_ONLY_RE = /\b\w+\s+says\b|\breveals?\s+that\b|\bshows?\s+that\b/i;
 
 /**
  * Guard de sinal how-to/tutorial. Se presente, o artigo é tutorial acionável
@@ -996,7 +1015,7 @@ export function isOpinionOrStudy(url: string, title: string, summary = ""): bool
   // ("diz X", "aponta estudo", "admite que", "according to") — cobertura
   // jornalística, não tutorial. Roda por último, mesma precedência dos
   // demais (perde pra HOW_TO_GUARD_RE, checado no topo da função).
-  if (NEWS_ATTRIBUTION_TITLE_RE.test(hay)) {
+  if (NEWS_ATTRIBUTION_TITLE_RE.test(hay) || NEWS_ATTRIBUTION_TITLE_ONLY_RE.test(title)) {
     return true;
   }
 
