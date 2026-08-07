@@ -154,8 +154,8 @@ export type PostmasterReputationLevel = "BAD" | "LOW" | "MEDIUM" | "HIGH" | (str
  * e uma amostra de IPs. O exemplo da #4703 só mostrou esses dois campos
  * presentes quando o bucket tinha ≥1 IP — não confirmado como regra da API,
  * só o que foi observado numa amostra. `[key: string]: unknown` absorve
- * campos futuros sem quebrar o parse — mesmo espírito de
- * `TrafficStatsResponse` em postmaster-spam-sync.ts.
+ * campos futuros sem quebrar o parse — mesmo espírito do antigo
+ * `TrafficStatsResponse` (v1, removido em #4704) em postmaster-spam-sync.ts.
  */
 export interface PostmasterIpReputation {
   reputation: PostmasterReputationLevel;
@@ -168,10 +168,14 @@ export interface PostmasterIpReputation {
  * #4703: sinal de reputação capturado da v1 (`trafficStats.get`) — hoje
  * puramente diagnóstico, `resolveSpamSignal` não consome nenhum dos dois
  * campos. Fatorado num tipo próprio (em vez de repetir `{domainReputation?;
- * ipReputations?}` em `PostmasterSpamEntry`, `TrafficStatsResponse` e
- * `DayReading` de postmaster-spam-sync.ts) pra que os 3 lugares fiquem
+ * ipReputations?}` em `PostmasterSpamEntry` e no antigo `TrafficStatsResponse`/
+ * `DayReading` v1 de `postmaster-spam-sync.ts`) pra que os 2 lugares fiquem
  * amarrados pelo compilador, não só por convenção — um campo novo adicionado
- * aqui se propaga sem precisar lembrar de editar os outros 2.
+ * aqui se propaga sem precisar lembrar de editar o outro. #4704 (260806):
+ * `postmaster-spam-sync.ts` migrou pra v2 e NENHUM produtor popula estes 2
+ * campos hoje (ver nota na definição de `PostmasterSpamEntry` abaixo) — o
+ * tipo continua existindo pra entries antigas (schema evolution) e pro
+ * retorno via `getComplianceStatus` v2, ainda não implementado.
  */
 export interface PostmasterReputationSignal {
   domainReputation?: PostmasterReputationLevel;
@@ -187,7 +191,7 @@ export interface PostmasterSpamEntry extends PostmasterReputationSignal {
   recordedAt: string;
   /** Qual dos dois produtores gravou esta leitura — opcional pra entries pré-#4154 (schema evolution, nunca inferir um valor). */
   producedBy?: PostmasterProducer;
-  /** #4541: quantos dias da janela sondada tiveram leitura válida (200, com ou sem o campo) usada no cálculo da média. Junto com `daysProbed`, permite `resolveSpamSignal` degradar pra `indeterminate` quando a cobertura é baixa demais (ex: 1/10 dias, por erro HTTP nos demais). `undefined` pra entries manuais (1 leitura, não é média de janela) ou pré-#4541. */
+  /** #4541: quantos dias da janela sondada tiveram leitura válida usada no cálculo da média. #4704 (v2): produzido por UMA chamada `domainStats:query` pro range inteiro — o dia "tem leitura válida" quando aparece na resposta com a métrica `SPAM_RATE`; ausência do dia na resposta (não erro HTTP por dia, que não existe mais na v2) é o único jeito de faltar cobertura. Junto com `daysProbed`, permite `resolveSpamSignal` degradar pra `indeterminate` quando a cobertura é baixa demais (ex: 1/10 dias). `undefined` pra entries manuais (1 leitura, não é média de janela) ou pré-#4541. */
   daysWithData?: number;
   /** #4541: tamanho da janela sondada (dias-calendário), independente de quantos tiveram leitura válida — ver `daysWithData`. `undefined` no mesmo caso acima. */
   daysProbed?: number;
@@ -195,6 +199,24 @@ export interface PostmasterSpamEntry extends PostmasterReputationSignal {
   // (#4703): snapshot do dia mais recente da janela com leitura válida —
   // ausente quando a API não devolveu o campo naquele dia (schema evolution,
   // nunca inferir um valor, mesmo tratamento de daysWithData/daysProbed).
+  // #4704 (260806): o produtor "auto" migrou de v1 (`trafficStats.get`, tinha
+  // esses campos no payload) pra v2 (`domainStats:query`, não tem) — desde a
+  // migração, NENHUM produtor popula domainReputation/ipReputations (nem
+  // "manual", que nunca populou). Ficam no tipo por schema evolution (entries
+  // pré-migração ainda podem tê-los) e porque a v2 tem um caminho de volta —
+  // `getComplianceStatus`, endpoint próprio, explicitamente fora do escopo do
+  // #4704 — não são código morto, são um produtor pausado.
+  /**
+   * #4704 (260806): série diária persistida — um item por dia da janela
+   * sondada que teve leitura publicada (v2 `domainStats:query`, métrica
+   * `SPAM_RATE`), mais antigo primeiro. Antes da migração v2,
+   * `collectSpamReadings`/`buildAveragedEntry` descartavam o detalhe diário e
+   * gravavam só a média — esta série é o que falta pra um consumidor futuro
+   * (ex: coluna de spam por dia na tabela Envios do painel, ver comentário na
+   * #4703) sem precisar reconstruir o dia-a-dia a partir da média. `undefined`
+   * pra entries manuais (1 única leitura, não é janela) ou pré-#4704.
+   */
+  dailyReadings?: Array<{ date: string; spamRatePct: number }>;
 }
 
 /**

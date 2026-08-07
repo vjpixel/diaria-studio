@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Wrapper do sync automatico do spamRate do Google Postmaster Tools (#4154)
     - para o Task Scheduler.
@@ -10,9 +10,11 @@
     do Postmaster (~1min antes de cada envio, facil de esquecer -> sinal fica
     indeterminate e trava o escalonamento de volume).
 
-    Requer data/.credentials.json com o scope postmaster.readonly (ver
-    scripts/oauth-setup.ts) + CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_WORKERS_TOKEN
-    no .env local + o junction data/ (OneDrive).
+    Requer data/.credentials.json com o scope postmaster.traffic.readonly
+    (v2, #4704/#4707/#4711 — postmaster-spam-sync.ts migrou de
+    postmaster.readonly/v1 pra domainStats:query/v2; ver scripts/oauth-setup.ts)
+    + CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_WORKERS_TOKEN no .env local + o
+    junction data/ (OneDrive).
 
     Mesmo padrao de log resiliente do #4047/#4064 (run-clarice-*.ps1): escreve
     primeiro num arquivo temporario FORA de data/ (sem risco de lock do
