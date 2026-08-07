@@ -165,6 +165,39 @@ describe("renderHtmlReport", () => {
     assert.ok(html.includes("crash"));
   });
 
+  describe("pendingScheduledTasks (#4708 Parte 1)", () => {
+    it("null (default, ou sessão cloud) -> nenhuma seção 'Tasks pendentes' aparece no HTML", () => {
+      const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, [], []);
+      assert.ok(!html.includes("Tasks pendentes de registro"));
+    });
+
+    it("array vazio (checagem OK, 0 pendências) -> seção também omitida (não polui rodada limpa)", () => {
+      const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, [], [], null, null, null, []);
+      assert.ok(!html.includes("Tasks pendentes de registro"));
+    });
+
+    it("com pendências -> seção aparece com task name + script de setup", () => {
+      const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, [], [], null, null, null, [
+        { scriptPath: "scripts/setup-apoios-diff-alarm-schedule.ps1", taskName: "Diaria-Apoios-Diff-Alarm" },
+        { scriptPath: "scripts/setup-cursos-error-alarm-schedule.ps1", taskName: "Diaria-Cursos-Error-Alarm" },
+      ]);
+      assert.ok(html.includes("Tasks pendentes de registro (#4708)"));
+      assert.match(html, /2 task\(s\) declarada\(s\)/);
+      assert.ok(html.includes("Diaria-Apoios-Diff-Alarm"));
+      assert.ok(html.includes("scripts/setup-apoios-diff-alarm-schedule.ps1"));
+      assert.ok(html.includes("Diaria-Cursos-Error-Alarm"));
+    });
+
+    it("HTML no taskName/scriptPath é escapado (defesa consistente com o resto do relatório)", () => {
+      const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, [], [], null, null, null, [
+        { scriptPath: "scripts/<script>alert(1)</script>.ps1", taskName: "Diaria-<b>X</b>" },
+      ]);
+      assert.ok(!html.includes("<script>alert(1)</script>"));
+      assert.ok(!html.includes("Diaria-<b>X</b>"));
+      assert.match(html, /Diaria-&lt;b&gt;X&lt;\/b&gt;/);
+    });
+  });
+
   it("renders social posts table", () => {
     const social = {
       posts: [
