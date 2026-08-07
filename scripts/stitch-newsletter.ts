@@ -45,6 +45,7 @@ import {
   buildSnippetBodyHashManifest,
   writeSnippetBodyHashManifest,
 } from "./lib/lint-checks/snippet-staleness.ts"; // #4150: grava hash do corpo pós-cabeçalho dos snippets usados, pro guard de staleness distinguir edição de metadado de edição de conteúdo
+import { resolveBoxesForEdition } from "./select-boxes-by-clicks.ts"; // #4626: seleção automática de boxes 1/2/3 por cliques+tendência+anti-repetição — só afeta main() (CLI), stitchNewsletter() em si permanece pura/sem I/O de auto-seleção
 
 interface ArticleLike {
   url?: string;
@@ -778,6 +779,20 @@ function main(): void {
       ? join(editionDir, "_internal", "02-d3-draft.md")
       : null;
 
+    // #4626: resolve o mapeamento EFETIVO slot1/2/3 (pin manual vence, senão
+    // seleção automática por cliques+tendência+anti-repetição, senão cede
+    // pro valor já configurado — ver docstring de `resolveBoxesForEdition`).
+    // Roda ANTES de `stitchNewsletter()` pra poder passar o resultado como
+    // override explícito (`boxesDivulgacao`) — `stitchNewsletter()` em si
+    // continua pura, sem saber que a auto-seleção existe. Nunca escreve em
+    // `platform.config.json`: a mudança vale só pra esta stitch.
+    const boxesCfgLoaded = loadBoxesDivulgacaoConfig();
+    const editionAammdd = editionDirArg.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
+    const { effective: effectiveBoxes, selection: boxSelection } = resolveBoxesForEdition({
+      aammdd: editionAammdd,
+      boxesCfg: boxesCfgLoaded,
+    });
+
     const out = stitchNewsletter({
       d1Path: join(editionDir, "_internal", "02-d1-draft.md"),
       d2Path: join(editionDir, "_internal", "02-d2-draft.md"),
@@ -786,9 +801,32 @@ function main(): void {
       editionDir,
       // #1938: kill-switch — `--no-sponsor` pula o midCallout da Clarice.
       sponsor: values["no-sponsor"] ? false : true,
+      boxesDivulgacao: {
+        slot0: effectiveBoxes.slot0,
+        slot1: effectiveBoxes.slot1,
+        slot2: effectiveBoxes.slot2,
+        slot3: effectiveBoxes.slot3,
+      },
     });
     const outPath = join(editionDir, "_internal", "02-draft.md");
     writeFileSync(outPath, out);
+
+    // #4626: registro da seleção (pinado/automático/fallback por slot, com
+    // score+tendência quando automático) — consumido pelo resumo do Stage 4
+    // (§4c.7 de orchestrator-stage-4.md) pra mostrar ao editor QUAL box
+    // entrou em cada slot e POR QUÊ, sem exigir ação (decisão do editor
+    // #4626: visibilidade sem fricção, nenhum gate novo). Fail-soft: nunca
+    // derruba o stitch por falha de escrita deste arquivo informativo.
+    try {
+      writeFileSync(
+        join(editionDir, "_internal", "box-selection.json"),
+        JSON.stringify(boxSelection, null, 2),
+      );
+    } catch (selectionErr) {
+      console.error(
+        `[stitch-newsletter] warn — falha gravando box-selection.json: ${(selectionErr as Error).message}`,
+      );
+    }
 
     // #4150: grava hash do corpo pós-cabeçalho de cada snippet USADO nesta
     // edição (mesmo `used` que o guard de staleness recalcula depois) — o
@@ -798,17 +836,18 @@ function main(): void {
     // volta pro mtime-puro (mesmo padrão de `.social-source-hash.json`/#1413).
     try {
       const snippetsDir = join(ROOT, "context", "snippets");
-      // Recarrega a mesma config que `stitchNewsletter()` usou internamente
-      // (main() não passa `boxesDivulgacao` explícito, então o default é
-      // sempre reler `platform.config.json` — idêntico ao que rodou dentro
-      // da função pura acima; `--no-sponsor` só suprime a INSERÇÃO do box,
-      // não muda o mapeamento slot→arquivo usado aqui).
-      const boxesCfgLoaded = loadBoxesDivulgacaoConfig();
+      // #4626: usa o mapeamento EFETIVO (pós auto-seleção), não uma releitura
+      // crua de `platform.config.json` — antes do #4626 os dois eram sempre
+      // idênticos (main() nunca passava `boxesDivulgacao` pra stitchNewsletter,
+      // então recarregar era equivalente); agora que `stitchNewsletter()` pode
+      // ter recebido um slot AUTO-selecionado diferente do que está gravado no
+      // disco, hashear a config crua hashearia o snippet ERRADO (o pinado/
+      // fallback, não o que de fato foi injetado em `out`).
       const boxesCfgForHash = {
-        slot1: boxesCfgLoaded.slot1,
-        slot2: boxesCfgLoaded.slot2,
-        slot3: boxesCfgLoaded.slot3 ?? null,
-        slot0: boxesCfgLoaded.slot0 ?? null,
+        slot1: effectiveBoxes.slot1,
+        slot2: effectiveBoxes.slot2,
+        slot3: effectiveBoxes.slot3,
+        slot0: effectiveBoxes.slot0,
       };
       const used = resolveUsedSnippets(
         out,
