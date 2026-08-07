@@ -24,6 +24,7 @@
  *   npx tsx scripts/cohort-engagement.ts --threshold 50
  *   npx tsx scripts/cohort-engagement.ts --min-received 10
  *   npx tsx scripts/cohort-engagement.ts --since 2026-07-31
+ *   npx tsx scripts/cohort-engagement.ts --since 2026-07-21 --until 2026-08-02
  *   npx tsx scripts/cohort-engagement.ts --json
  *
  * Flags:
@@ -32,6 +33,13 @@
  *                      cujo total_received >= N (amostra com histórico suficiente).
  *   --since AAAA-MM-DD Filtra assinantes por `created` (epoch, UTC) >= início do dia
  *                      informado (inclusivo). Ex: verificar a meta da #4295.
+ *   --until AAAA-MM-DD Borda superior INCLUSIVA da mesma janela (#4556) — o dia
+ *                      informado entra inteiro. Combinada com `--since`, isola uma
+ *                      COORTE fechada. Sem ela, `--since` sozinho pega tudo daquele
+ *                      dia pra frente e mistura quem chegou depois — que costuma ser
+ *                      justamente o grupo de controle da comparação.
+ *                      Ex: coorte da campanha de lançamento, `--since 2026-07-21
+ *                      --until 2026-08-02` (checkpoint de retenção da #4556).
  *   --json            Emite o resultado como JSON (stdout) para uso em pipelines.
  *
  * ## Agrupamento
@@ -72,6 +80,7 @@ const PER_PAGE = 100;
 const RATE_LIMIT_DELAY_MS = 300;
 const MAX_RETRIES = 5;
 const DEFAULT_THRESHOLD = 40;
+const NEWLINE = "\n";
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -124,12 +133,37 @@ export interface EngagementOptions {
   minReceived?: number;
 }
 
+/**
+ * Janela FECHADA de cadastro. Campos nomeados em vez de dois `number | null`
+ * posicionais de propósito (achado do fleet review da PR #4751): as duas bordas
+ * têm semânticas diferentes — uma inclusiva, outra exclusiva — e posicionais
+ * adjacentes do mesmo tipo são trocáveis sem o compilador reclamar. Mesmo shape
+ * já usado por `AggregateOptions` em `scripts/aggregate-costs.ts`.
+ */
+export interface CohortWindow {
+  /** Epoch em segundos do início do dia de `--since`. Inclusivo. `null` = sem borda inferior. */
+  since: number | null;
+  /** Epoch em segundos do início do dia SEGUINTE ao de `--until`. Exclusivo. `null` = sem borda superior. */
+  untilExclusive: number | null;
+}
+
 export interface EngagementResult {
   groups: Record<string, GroupEngagement>;
   total_cadastros: number;
   threshold: number;
   min_received: number | null;
+  /** Borda inferior INCLUSIVA da janela de cadastro, como o usuário passou. */
   since: string | null;
+  /** Borda superior INCLUSIVA da janela de cadastro, como o usuário passou. #4556 */
+  until: string | null;
+  /**
+   * Quantos assinantes foram descartados por não terem `created` quando alguma
+   * borda de janela estava ativa (#4556). Sem este número, o viés que
+   * `filterWindow` assume conscientemente ficava invisível — e ele pesa mais
+   * justamente em janela estreita, que é o caso de uso que `--until` viabiliza.
+   * `0` quando nenhuma borda foi informada.
+   */
+  excluded_missing_created: number;
   fetched_at: string;
 }
 
@@ -167,17 +201,57 @@ export function resolveGroupKey(sub: Pick<EngagementSubscriber, "utm_source" | "
  *
  * @pure
  */
-export function parseSinceToEpochSeconds(since: string): number {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(since.trim());
+function parseDayToEpochSeconds(day: string, flag: string): number {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day.trim());
   if (!m) {
-    throw new Error(`--since inválido: "${since}" (esperado AAAA-MM-DD)`);
+    throw new Error(`${flag} inválido: "${day}" (esperado AAAA-MM-DD)`);
   }
   const [, y, mo, d] = m;
   const ms = Date.UTC(Number(y), Number(mo) - 1, Number(d), 0, 0, 0, 0);
-  if (Number.isNaN(ms)) {
-    throw new Error(`--since inválido: "${since}" (data não existe)`);
+  // `Date.UTC` NÃO devolve NaN para mês/dia fora de faixa — ele ROLA
+  // (Date.UTC(2026, 12, 45) = 2027-02-14). O regex aceita qualquer `\d{2}`,
+  // então sem esta verificação de ida-e-volta `--since 2026-13-45` era aceito
+  // em silêncio e media uma janela completamente diferente da pedida — e a
+  // mensagem "data não existe" abaixo era inalcançável. Achado ao estender
+  // este parser para `--until` (#4556).
+  const dt = new Date(ms);
+  if (
+    dt.getUTCFullYear() !== Number(y) ||
+    dt.getUTCMonth() !== Number(mo) - 1 ||
+    dt.getUTCDate() !== Number(d)
+  ) {
+    throw new Error(`${flag} inválido: "${day}" (data não existe)`);
   }
   return Math.floor(ms / 1000);
+}
+
+/**
+ * Converte "AAAA-MM-DD" no epoch (segundos, UTC) do INÍCIO daquele dia — borda
+ * INFERIOR inclusiva da janela. Lança se o formato ou a data for inválida; o
+ * CLI guard trata a mensagem. Ver `parseDayToEpochSeconds` para o porquê da
+ * verificação de ida-e-volta.
+ *
+ * @pure
+ */
+export function parseSinceToEpochSeconds(since: string): number {
+  return parseDayToEpochSeconds(since, "--since");
+}
+
+/**
+ * Converte "AAAA-MM-DD" no epoch (segundos, UTC) que serve de limite
+ * superior EXCLUSIVO — o início do dia SEGUINTE.
+ *
+ * A exclusividade é detalhe interno; a semântica exposta ao usuário é
+ * inclusiva: `--until 2026-08-02` inclui o dia 02 inteiro, até 23:59:59 UTC.
+ * Somar 86400 a uma meia-noite UTC é seguro por duas razões independentes: UTC
+ * não tem horário de verão, e o Unix time em que `Date`/`Date.UTC` operam por
+ * definição NUNCA representa segundo bissexto — todo dia do calendário tem
+ * exatamente 86400 nesse modelo, aconteça o que acontecer no tempo real.
+ *
+ * @pure
+ */
+export function parseUntilToEpochSecondsExclusive(until: string): number {
+  return parseDayToEpochSeconds(until, "--until") + 86_400;
 }
 
 /**
@@ -191,8 +265,73 @@ export function filterSince(
   subs: EngagementSubscriber[],
   sinceEpochSeconds: number | null,
 ): EngagementSubscriber[] {
-  if (sinceEpochSeconds == null) return subs;
-  return subs.filter((s) => typeof s.created === "number" && s.created >= sinceEpochSeconds);
+  return filterWindow(subs, { since: sinceEpochSeconds, untilExclusive: null });
+}
+
+/**
+ * Filtra assinantes por uma janela FECHADA de cadastro: `created` >= `since`
+ * (inclusivo) e `created` < `untilExclusive`.
+ *
+ * Por que a janela fechada existe (#4556): com só `--since`, "a coorte de
+ * lançamento 21/07–02/08" não é isolável — o recorte pega tudo de 21/07 pra
+ * frente e mistura quem chegou depois, que é justamente o grupo de controle
+ * contra o qual a coorte deveria ser comparada.
+ *
+ * Assinante sem `created` é excluído quando QUALQUER borda é informada — não
+ * há como verificar a condição, e assumir presente enviesaria a métrica.
+ *
+ * @pure
+ */
+export function filterWindow(
+  subs: EngagementSubscriber[],
+  window: CohortWindow,
+): EngagementSubscriber[] {
+  const { since, untilExclusive } = window;
+  if (since == null && untilExclusive == null) return subs;
+  return subs.filter((s) => {
+    if (typeof s.created !== "number") return false;
+    if (since != null && s.created < since) return false;
+    if (untilExclusive != null && s.created >= untilExclusive) return false;
+    return true;
+  });
+}
+
+/**
+ * Quantos assinantes seriam descartados por falta de `created` sob esta janela.
+ * Separado de `filterWindow` de propósito: o filtro devolve QUEM entra, este
+ * conta QUEM SUMIU e por qual motivo — sem isso o viés fica invisível no output.
+ *
+ * @pure
+ */
+export function countMissingCreated(
+  subs: EngagementSubscriber[],
+  window: CohortWindow,
+): number {
+  if (window.since == null && window.untilExclusive == null) return 0;
+  return subs.filter((s) => typeof s.created !== "number").length;
+}
+
+/**
+ * Valida a janela ANTES de rodar. Devolve a mensagem de erro, ou `null` se a
+ * janela é coerente.
+ *
+ * Extraída do bloco `isMainModule` (achado do fleet review da PR #4751): a
+ * validação vivia inline e por isso não tinha teste nenhum — e é exatamente a
+ * categoria que quebra em silêncio num refactor futuro (trocar `>=` por `>`
+ * reabriria a janela de um único dia como erro).
+ *
+ * @pure
+ */
+export function resolveWindowGuardError(
+  window: CohortWindow,
+  labels: { since?: string | null; until?: string | null } = {},
+): string | null {
+  const { since, untilExclusive } = window;
+  if (since == null || untilExclusive == null) return null;
+  if (since >= untilExclusive) {
+    return `janela inválida: --since ${labels.since ?? since} é depois de --until ${labels.until ?? untilExclusive}`;
+  }
+  return null;
 }
 
 /** Mediana de uma lista de números. Retorna null para lista vazia. @pure */
@@ -325,9 +464,37 @@ export function aggregateEngagement(
  *
  * @pure
  */
+/**
+ * Rodapé com os parâmetros efetivamente aplicados. Extraído pra ser emitido
+ * TAMBÉM no caminho de resultado vazio (#4751) — ver comentário lá.
+ *
+ * @pure
+ */
+function windowFooter(result: EngagementResult): string[] {
+  const lines = [
+    `TOTAL cadastros: ${result.total_cadastros}`,
+    `threshold (open_rate >=): ${result.threshold}`,
+  ];
+  if (result.min_received != null) lines.push(`min-received: ${result.min_received}`);
+  if (result.since != null) lines.push(`since: ${result.since}`);
+  if (result.until != null) lines.push(`until: ${result.until}`);
+  if (result.excluded_missing_created > 0) {
+    lines.push(`descartados sem \`created\`: ${result.excluded_missing_created}`);
+  }
+  return lines;
+}
+
 export function formatEngagementTable(result: EngagementResult): string {
   const rows = Object.entries(result.groups).sort((a, b) => b[1].cadastros - a[1].cadastros);
-  if (rows.length === 0) return "(nenhum assinante encontrado)";
+
+  // Resultado vazio SEM ecoar a janela é indistinguível de "essa coorte não
+  // existe" — e o caso comum é typo de mês (`--since 2026-06-21` no lugar de
+  // `07`). No modo texto, que é o que o editor usa na mão, o rodapé era a única
+  // pista e sumia junto. Achado do fleet review da PR #4751.
+  if (rows.length === 0) {
+    const vazio = ["(nenhum assinante encontrado)", ...windowFooter(result)];
+    return vazio.join(NEWLINE);
+  }
 
   const maxKeyLen = Math.max(...rows.map(([k]) => k.length), "origem".length);
   const header =
@@ -347,10 +514,7 @@ export function formatEngagementTable(result: EngagementResult): string {
     );
   }
   lines.push(sep);
-  lines.push(`TOTAL cadastros: ${result.total_cadastros}`);
-  lines.push(`threshold (open_rate >=): ${result.threshold}`);
-  if (result.min_received != null) lines.push(`min-received: ${result.min_received}`);
-  if (result.since != null) lines.push(`since: ${result.since}`);
+  lines.push(...windowFooter(result));
   return lines.join("\n");
 }
 
@@ -453,14 +617,23 @@ export async function fetchAllSubscribers(
   return all;
 }
 
-/** Orquestra fetch + filtro `--since` + agregação. Não é `@pure` (I/O). */
+/** Orquestra fetch + filtro da janela `--since`/`--until` + agregação. Não é `@pure` (I/O). */
 export async function runCohortEngagement(
   publicationId: string,
   apiKey: string,
-  opts: EngagementOptions & { sinceEpochSeconds?: number | null; sinceLabel?: string | null },
+  opts: EngagementOptions & {
+    sinceEpochSeconds?: number | null;
+    sinceLabel?: string | null;
+    untilEpochSecondsExclusive?: number | null;
+    untilLabel?: string | null;
+  },
 ): Promise<EngagementResult> {
   const all = await fetchAllSubscribers(publicationId, apiKey);
-  const filtered = filterSince(all, opts.sinceEpochSeconds ?? null);
+  const window: CohortWindow = {
+    since: opts.sinceEpochSeconds ?? null,
+    untilExclusive: opts.untilEpochSecondsExclusive ?? null,
+  };
+  const filtered = filterWindow(all, window);
   const groups = aggregateEngagement(filtered, opts);
 
   return {
@@ -469,6 +642,8 @@ export async function runCohortEngagement(
     threshold: opts.threshold,
     min_received: opts.minReceived ?? null,
     since: opts.sinceLabel ?? null,
+    until: opts.untilLabel ?? null,
+    excluded_missing_created: countMissingCreated(all, window),
     fetched_at: new Date().toISOString(),
   };
 }
@@ -499,6 +674,22 @@ if (isMainModule(import.meta.url)) {
     }
   }
 
+  // `parseArgs` só grava em `values` quando o token seguinte não começa com
+  // `--`; senão a flag cai em `flags` e vira booleana. Sem esta checagem,
+  // `--since 2026-07-21 --until --json` roda como se `--until` nunca tivesse
+  // sido passado: devolve a consulta CONTAMINADA que esta issue existe pra
+  // evitar, com exit 0 e nenhuma mensagem. Num script de medição, esse é o pior
+  // desfecho possível — alguém decide em cima de um número errado.
+  // Achado do fleet review da PR #4751.
+  for (const flag of ["since", "until", "threshold", "min-received"]) {
+    if (flags.has(flag)) {
+      process.stderr.write(
+        `[cohort-engagement] --${flag} requer um valor (ex: --${flag} 2026-07-21)\n`,
+      );
+      process.exit(3);
+    }
+  }
+
   const sinceRaw = values["since"];
   let sinceEpochSeconds: number | null = null;
   if (sinceRaw != null) {
@@ -510,6 +701,28 @@ if (isMainModule(import.meta.url)) {
     }
   }
 
+  const untilRaw = values["until"];
+  let untilEpochSecondsExclusive: number | null = null;
+  if (untilRaw != null) {
+    try {
+      untilEpochSecondsExclusive = parseUntilToEpochSecondsExclusive(untilRaw);
+    } catch (e) {
+      process.stderr.write(`[cohort-engagement] ${(e as Error).message}\n`);
+      process.exit(3);
+    }
+  }
+
+  // Janela invertida devolveria zero assinantes com exit 0 — resultado vazio
+  // que parece uma coorte que não existe, em vez de um erro de digitação.
+  const guardError = resolveWindowGuardError(
+    { since: sinceEpochSeconds, untilExclusive: untilEpochSecondsExclusive },
+    { since: sinceRaw, until: untilRaw },
+  );
+  if (guardError != null) {
+    process.stderr.write(`[cohort-engagement] ${guardError}\n`);
+    process.exit(3);
+  }
+
   const cfg = loadBeehiivConfig("[cohort-engagement]");
 
   runCohortEngagement(cfg.publicationId, cfg.apiKey, {
@@ -517,6 +730,8 @@ if (isMainModule(import.meta.url)) {
     minReceived,
     sinceEpochSeconds,
     sinceLabel: sinceRaw ?? null,
+    untilEpochSecondsExclusive,
+    untilLabel: untilRaw ?? null,
   })
     .then((result) => {
       if (jsonMode) {

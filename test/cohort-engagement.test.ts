@@ -14,7 +14,11 @@ import {
   normalizeKey,
   resolveGroupKey,
   parseSinceToEpochSeconds,
+  parseUntilToEpochSecondsExclusive,
   filterSince,
+  filterWindow,
+  countMissingCreated,
+  resolveWindowGuardError,
   median,
   mean,
   computeGroupEngagement,
@@ -78,6 +82,188 @@ describe("parseSinceToEpochSeconds (#4464)", () => {
     assert.throws(() => parseSinceToEpochSeconds("31/07/2026"), /--since inválido/);
     assert.throws(() => parseSinceToEpochSeconds("2026-7-31"), /--since inválido/);
     assert.throws(() => parseSinceToEpochSeconds(""), /--since inválido/);
+  });
+});
+
+/**
+ * Janela fechada `--since`/`--until` (#4556).
+ *
+ * Motivação concreta: o checkpoint de retenção da coorte de lançamento
+ * (21/07–02/08) não era isolável com `--since` sozinho — o recorte pegava tudo
+ * de 21/07 pra frente e misturava quem chegou depois, que é justamente o grupo
+ * de controle contra o qual a coorte deveria ser comparada.
+ */
+describe("parseUntilToEpochSecondsExclusive (#4556)", () => {
+  it("o dia informado entra INTEIRO — a borda é o início do dia seguinte", () => {
+    const until = parseUntilToEpochSecondsExclusive("2026-08-02");
+    const proximoDia = parseSinceToEpochSeconds("2026-08-03");
+    assert.equal(until, proximoDia);
+  });
+
+  it("nomeia a própria flag na mensagem de erro, não --since", () => {
+    assert.throws(() => parseUntilToEpochSecondsExclusive("02/08/2026"), /--until inválido/);
+  });
+});
+
+/**
+ * Regressão do rollover silencioso (#4556).
+ *
+ * `Date.UTC` NÃO devolve NaN para mês/dia fora de faixa — ele ROLA:
+ * `Date.UTC(2026, 12, 45)` = 2027-02-14. Como o regex aceita qualquer `\d{2}`,
+ * `--since 2026-13-45` era aceito em silêncio e media uma janela completamente
+ * diferente da pedida, com exit 0. A mensagem "data não existe" que já existia
+ * no código era inalcançável.
+ */
+describe("data fora de faixa é rejeitada em vez de rolar (#4556)", () => {
+  it("mês 13 não vira janeiro do ano seguinte", () => {
+    assert.throws(() => parseSinceToEpochSeconds("2026-13-01"), /data não existe/);
+  });
+
+  it("dia 45 não rola pro mês seguinte", () => {
+    assert.throws(() => parseSinceToEpochSeconds("2026-08-45"), /data não existe/);
+  });
+
+  it("31 de fevereiro não vira 3 de março", () => {
+    assert.throws(() => parseSinceToEpochSeconds("2026-02-31"), /data não existe/);
+  });
+
+  it("dia 00 e mês 00 são rejeitados", () => {
+    assert.throws(() => parseSinceToEpochSeconds("2026-08-00"), /data não existe/);
+    assert.throws(() => parseSinceToEpochSeconds("2026-00-10"), /data não existe/);
+  });
+
+  it("data bissexta VÁLIDA continua passando (o guard não é agressivo demais)", () => {
+    assert.equal(typeof parseSinceToEpochSeconds("2028-02-29"), "number");
+  });
+});
+
+describe("filterWindow — janela fechada (#4556)", () => {
+  const since = parseSinceToEpochSeconds("2026-07-21");
+  const untilExcl = parseUntilToEpochSecondsExclusive("2026-08-02");
+
+  it("inclui o último segundo do dia informado em --until", () => {
+    const subs: EngagementSubscriber[] = [{ created: untilExcl - 1 }];
+    assert.equal(filterWindow(subs, { since, untilExclusive: untilExcl }).length, 1);
+  });
+
+  it("exclui o primeiro segundo do dia SEGUINTE ao --until", () => {
+    const subs: EngagementSubscriber[] = [{ created: untilExcl }];
+    assert.equal(filterWindow(subs, { since, untilExclusive: untilExcl }).length, 0);
+  });
+
+  it("isola a coorte de quem chegou depois — o caso que motivou a issue", () => {
+    const subs: EngagementSubscriber[] = [
+      { created: since - 1, utm_source: "antes" },
+      { created: since, utm_source: "coorte" },
+      { created: untilExcl - 1, utm_source: "coorte" },
+      { created: untilExcl, utm_source: "depois" },
+    ];
+    const dentro = filterWindow(subs, { since, untilExclusive: untilExcl });
+    assert.deepEqual(
+      dentro.map((s) => s.utm_source),
+      ["coorte", "coorte"],
+    );
+  });
+
+  it("só --until (sem --since) funciona como borda superior sozinha", () => {
+    const subs: EngagementSubscriber[] = [{ created: 0 }, { created: untilExcl }];
+    assert.equal(filterWindow(subs, { since: null, untilExclusive: untilExcl }).length, 1);
+  });
+
+  it("assinante sem `created` é excluído quando só --until é informado", () => {
+    const subs: EngagementSubscriber[] = [{ utm_source: "sem-data" }];
+    assert.equal(filterWindow(subs, { since: null, untilExclusive: untilExcl }).length, 0);
+  });
+
+  it("sem nenhuma borda devolve a lista intacta, inclusive quem não tem `created`", () => {
+    const subs: EngagementSubscriber[] = [{ utm_source: "sem-data" }, { created: 123 }];
+    assert.equal(filterWindow(subs, { since: null, untilExclusive: null }).length, 2);
+  });
+
+  it("filterSince continua sendo filterWindow sem borda superior", () => {
+    const subs: EngagementSubscriber[] = [{ created: since }, { created: untilExcl + 999 }];
+    assert.deepEqual(filterSince(subs, since), filterWindow(subs, { since, untilExclusive: null }));
+  });
+
+  it("ano 0-99 não é remapeado pra 1900-1999 em silêncio", () => {
+    // Peculiaridade do JS: Date.UTC(0, 0, 1) = 1900-01-01, não ano 0. O guard
+    // de ida-e-volta pega por construção, mas sem teste isso não fica travado
+    // contra uma refatoração que comparasse o ano de outra forma.
+    assert.throws(() => parseSinceToEpochSeconds("0000-01-01"), /data não existe/);
+    assert.throws(() => parseSinceToEpochSeconds("0099-05-01"), /data não existe/);
+  });
+});
+
+/**
+ * O contador existe porque `filterWindow` descarta quem não tem `created` —
+ * viés assumido conscientemente, mas que era invisível no output. Pesa mais em
+ * janela estreita, que é justamente o caso de uso que `--until` viabiliza.
+ * Achado do fleet review da PR #4751.
+ */
+describe("countMissingCreated (#4556)", () => {
+  const since = parseSinceToEpochSeconds("2026-07-21");
+  const untilExcl = parseUntilToEpochSecondsExclusive("2026-08-02");
+  const subs: EngagementSubscriber[] = [
+    { created: since },
+    { utm_source: "sem-data" },
+    { created: null },
+  ];
+
+  it("conta os descartados quando há janela", () => {
+    assert.equal(countMissingCreated(subs, { since, untilExclusive: untilExcl }), 2);
+  });
+
+  it("conta também quando só uma das bordas existe", () => {
+    assert.equal(countMissingCreated(subs, { since, untilExclusive: null }), 2);
+    assert.equal(countMissingCreated(subs, { since: null, untilExclusive: untilExcl }), 2);
+  });
+
+  it("é 0 sem janela — ninguém é descartado por falta de `created`", () => {
+    assert.equal(countMissingCreated(subs, { since: null, untilExclusive: null }), 0);
+  });
+});
+
+/**
+ * O guard de janela vivia inline no bloco `isMainModule` e por isso não tinha
+ * teste nenhum — categoria que quebra em silêncio num refactor (trocar `>=` por
+ * `>` reabriria a janela de um único dia como erro). Extraído no fleet review
+ * da PR #4751 justamente pra ser testável sem subir subprocesso.
+ */
+describe("resolveWindowGuardError (#4556)", () => {
+  const dia = (d: string) => parseSinceToEpochSeconds(d);
+  const ate = (d: string) => parseUntilToEpochSecondsExclusive(d);
+
+  it("janela invertida vira erro", () => {
+    const err = resolveWindowGuardError({ since: dia("2026-08-02"), untilExclusive: ate("2026-07-21") });
+    assert.match(err ?? "", /janela inválida/);
+  });
+
+  it("janela de UM ÚNICO dia é válida — o limite exato do `>=`", () => {
+    assert.equal(
+      resolveWindowGuardError({ since: dia("2026-07-21"), untilExclusive: ate("2026-07-21") }),
+      null,
+    );
+  });
+
+  it("janela normal não erra", () => {
+    assert.equal(
+      resolveWindowGuardError({ since: dia("2026-07-21"), untilExclusive: ate("2026-08-02") }),
+      null,
+    );
+  });
+
+  it("uma borda só nunca erra — não há o que comparar", () => {
+    assert.equal(resolveWindowGuardError({ since: dia("2026-07-21"), untilExclusive: null }), null);
+    assert.equal(resolveWindowGuardError({ since: null, untilExclusive: ate("2026-08-02") }), null);
+    assert.equal(resolveWindowGuardError({ since: null, untilExclusive: null }), null);
+  });
+
+  it("usa os rótulos do usuário na mensagem, não o epoch", () => {
+    const err = resolveWindowGuardError(
+      { since: dia("2026-08-02"), untilExclusive: ate("2026-07-21") },
+      { since: "2026-08-02", until: "2026-07-21" },
+    );
+    assert.match(err ?? "", /--since 2026-08-02 é depois de --until 2026-07-21/);
   });
 });
 
@@ -326,9 +512,51 @@ describe("formatEngagementTable (#4464)", () => {
       threshold: 40,
       min_received: null,
       since: null,
+      until: null,
+      excluded_missing_created: 0,
       fetched_at: "2026-08-02T00:00:00.000Z",
     });
-    assert.equal(table, "(nenhum assinante encontrado)");
+    assert.match(table, /\(nenhum assinante encontrado\)/);
+  });
+
+  /**
+   * Antes do fleet review da PR #4751 o caminho vazio devolvia SÓ
+   * "(nenhum assinante encontrado)", sem ecoar a janela aplicada. No modo texto
+   * — o que o editor usa na mão — isso torna um typo de mês
+   * (`--since 2026-06-21` no lugar de `07`) indistinguível de "essa coorte não
+   * existe". O rodapé some junto com a tabela, e some justamente quando é a
+   * única informação que ainda importa.
+   */
+  it("resultado vazio ECOA a janela aplicada, pra typo de data não parecer coorte inexistente", () => {
+    const table = formatEngagementTable({
+      groups: {},
+      total_cadastros: 0,
+      threshold: 40,
+      min_received: null,
+      since: "2026-06-21",
+      until: "2026-08-02",
+      excluded_missing_created: 3,
+      fetched_at: "2026-08-02T00:00:00.000Z",
+    });
+    assert.match(table, /\(nenhum assinante encontrado\)/);
+    assert.match(table, /since: 2026-06-21/);
+    assert.match(table, /until: 2026-08-02/);
+    assert.match(table, /TOTAL cadastros: 0/);
+    assert.match(table, /descartados sem `created`: 3/);
+  });
+
+  it("não polui o rodapé com o contador quando ninguém foi descartado", () => {
+    const table = formatEngagementTable({
+      groups: {},
+      total_cadastros: 0,
+      threshold: 40,
+      min_received: null,
+      since: "2026-06-21",
+      until: null,
+      excluded_missing_created: 0,
+      fetched_at: "2026-08-02T00:00:00.000Z",
+    });
+    assert.ok(!table.includes("descartados sem"));
   });
 
   it("inclui a origem, cadastros e o marcador de instabilidade", () => {
