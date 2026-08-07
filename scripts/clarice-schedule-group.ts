@@ -82,10 +82,17 @@
  *   --send-now         #4347 G7/D7: dispara a campanha IMEDIATAMENTE (POST
  *                      /emailCampaigns/{id}/sendNow) — sem agendamento, sem
  *                      trava de janela. Mesmo guard É IA? do --schedule.
- *                      GET-verify pós-disparo confirma status terminal
- *                      ("sent"/"inProcess") antes de marcar sucesso — nunca
- *                      confia só no 2xx do POST. Idempotente: campanha já
- *                      `"sent"` é pulada.
+ *                      GET-verify pós-disparo (com retry+backoff curto,
+ *                      #4718 item 1 — "queued" costuma resolver em segundos)
+ *                      confirma status terminal ("sent"/"inProcess") antes
+ *                      de marcar sucesso — nunca confia só no 2xx do POST.
+ *                      Idempotente por estado AO VIVO da Brevo (#4718 —
+ *                      GET antes de qualquer POST via `checkSendNowGuard`),
+ *                      NÃO só pelo registro local: campanha já
+ *                      `"sent"`/`"inProcess"`/`"queued"` na Brevo nunca leva
+ *                      a um novo POST, mesmo que o registro local (que pode
+ *                      ficar defasado justo quando o GET-verify anterior
+ *                      pegou a campanha em "queued") ainda diga "draft".
  *
  * --content-cycle X    #4347: OPCIONAL — ciclo mensal do CONTEÚDO (HTML +
  *                      gabarito É IA?) quando diverge do --cycle de
@@ -158,7 +165,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { brevoPost, brevoPut, brevoGetCampaign, brevoSendNow, isTerminalSendStatus, describeUncertainSendStatus } from "./lib/brevo-client.ts";
+import { brevoPost, brevoPut, brevoGetCampaign, brevoSendNow, isTerminalSendStatus, describeUncertainSendStatus, pollTerminalSendStatus } from "./lib/brevo-client.ts";
 import { clariceSegmentsDir, ensureDir, parseCycleArg } from "./lib/clarice-paths.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/monthly-paths.ts";
 import { checkEiaGuard, applyVerifyResults, isScheduledStatus } from "./clarice-schedule-sends.ts";
@@ -582,11 +589,21 @@ export function applySendNowVerifyResults(
 
     const verified = result.value;
     if (!isTerminalSendStatus(verified.status)) {
+      // #4718 (item 3): "queued" tem encerramento próprio — não é incerteza,
+      // é progresso (a Brevo já aceitou o disparo). Repetir "re-tente
+      // --send-now" pra esse caso especificamente era a instrução que levou
+      // ao 2º POST sendNow no incidente de origem — para os demais status
+      // (in_review, draft residual, etc.) o retry continua sendo a
+      // orientação certa, agora protegido pelo guard ao vivo em `main()`.
+      const followUp =
+        verified.status === "queued"
+          ? `Status local NÃO atualizado — reconsulte a Brevo em instantes, NÃO re-dispare.`
+          : `Status local NÃO atualizado — re-tente --send-now após checar o Brevo.`;
       logFn(
         `⚠ GET-verify pós-sendNow ${c.key} (campanha #${c.campaignId}): status="${verified.status}" ` +
           `(esperado "sent"/"inProcess" após POST sendNow) — o 2xx do POST não é suficiente. ` +
           `${describeUncertainSendStatus(verified.status)} ` +
-          `Status local NÃO atualizado — re-tente --send-now após checar o Brevo.`,
+          `${followUp}`,
       );
       continue;
     }
@@ -595,6 +612,55 @@ export function applySendNowVerifyResults(
     writeFn(campaignsPath, JSON.stringify(campaigns, null, 2));
     logFn(`✓ ${c.key} disparada AGORA (campanha #${c.campaignId}, GET-verify: status=${verified.status})`);
   }
+}
+
+/**
+ * #4718 — decide se um POST `sendNow` pode ser emitido, dado o status LOCAL
+ * (`CampaignEntry.status`, sempre "draft"/"scheduled"/"sent") e o status AO
+ * VIVO da Brevo (string livre — inclui "queued"/"inProcess"/"in_review", que
+ * o tipo local não expressa). Pura/testável, mesmo padrão de
+ * `checkRescheduleAllowed` abaixo.
+ *
+ * Causa raiz do bug original: o guard de idempotência só olhava
+ * `c.status === "sent"` — campo que `applySendNowVerifyResults` só grava
+ * quando o GET-verify pós-`sendNow` confirma status TERMINAL (#4347). Se
+ * esse GET pegar a campanha em `"queued"` (disparo ACEITO pela Brevo, ainda
+ * processando a fila — não é falha), a entrada local fica presa em "draft"
+ * PARA SEMPRE mesmo com o disparo real já em curso — e a mensagem de erro
+ * da invocação anterior instruía "re-tente --send-now", levando direto a um
+ * 2º POST na mesma campanha (incidente ao vivo 260806, campanha #121: o 1º
+ * disparo funcionou desde o início — 88 entregues, 0 bounce — mas o
+ * registro local nunca soube).
+ *
+ * `"queued"`/`"inProcess"`/`"sent"` AO VIVO → NUNCA emitir POST, mesmo que o
+ * local diga "draft"/"scheduled"-nunca-chega-aqui (o `--send-now` guard
+ * anterior já barra "scheduled" antes de chamar esta função). `syncLocalAsSent`
+ * sinaliza quando vale corrigir o registro local NESTA invocação — só quando
+ * o status AO VIVO já é TERMINAL; "queued" ainda pode virar outra coisa (ex:
+ * "in_review"), então não persiste sucesso ainda, só recusa o reenvio.
+ */
+export function checkSendNowGuard(
+  localStatus: CampaignEntry["status"],
+  liveStatus: string,
+): { send: true } | { send: false; reason: string; syncLocalAsSent: boolean } {
+  if (localStatus === "sent") {
+    return { send: false, reason: `já disparada (registro local)`, syncLocalAsSent: false };
+  }
+  if (isTerminalSendStatus(liveStatus)) {
+    return {
+      send: false,
+      reason: `já disparada na Brevo — status ao vivo="${liveStatus}" (registro local dizia "${localStatus}", estava defasado)`,
+      syncLocalAsSent: true,
+    };
+  }
+  if (liveStatus === "queued") {
+    return {
+      send: false,
+      reason: `disparo já ACEITO e na fila da Brevo (status ao vivo="queued") — NÃO re-dispare, só reconsulte em instantes`,
+      syncLocalAsSent: false,
+    };
+  }
+  return { send: true };
 }
 
 /**
@@ -974,26 +1040,58 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     } else if (c.status === "scheduled") {
       throw new Error(`--send-now: ${key} (campanha #${c.campaignId}) já está AGENDADA — não faz sentido disparar imediato também. Desagende antes ou não use --send-now nesta campanha.`);
     } else {
-      await brevoSendNow(apiKey, c.campaignId);
-      // #4347: NUNCA confiar só no 2xx do POST — GET-verify pós-disparo
-      // confirmando status terminal antes de declarar sucesso (mesmo
-      // racional de applyVerifyResults pro --schedule).
-      const verifySettled = await Promise.allSettled([brevoGetCampaign(apiKey, c.campaignId)]);
-      applySendNowVerifyResults(verifySettled, [c], campaigns, campaignsPath);
-      // #4347: sem gate humano (D6), a skill /diaria-clarice-novos precisa de
-      // um sinal MÁQUINA-VERIFICÁVEL de "disparo não confirmado" — não só o
-      // texto de warning que applySendNowVerifyResults já loga. process.exitCode
-      // (não process.exit — deixa o JSON de resumo abaixo imprimir normalmente,
-      // útil pro diagnóstico) sinaliza a um caller automatizado que este
-      // --send-now NÃO deve ser tratado como sucesso, mesmo com stdout válido.
-      // Cast: TS estreitou c.status pra "draft" neste branch (os `if`s acima
-      // já excluíram "sent"/"scheduled") e não enxerga que
-      // applySendNowVerifyResults pode MUTAR c.status pra "sent" por
-      // referência — sem o cast, a comparação vira "sempre true" pro
-      // typechecker, mascarando o próprio propósito do guard.
-      if ((c.status as CampaignEntry["status"]) !== "sent") {
-        console.error(`❌ ${key}: sendNow disparado mas GET-verify não confirmou status terminal — NÃO declare sucesso. Re-tente --send-now.`);
-        process.exitCode = 2;
+      // #4718 (item 2 — o que fecha o buraco): idempotência por estado AO
+      // VIVO, não local. O registro local pode estar defasado exatamente
+      // pelo motivo que este guard cobre — ver docstring de
+      // `checkSendNowGuard` acima. Sem esta consulta, a orientação de retry
+      // da mensagem de erro anterior levava direto a um 2º POST sendNow na
+      // mesma campanha (incidente ao vivo 260806, campanha #121).
+      const live = await brevoGetCampaign(apiKey, c.campaignId);
+      const guard = checkSendNowGuard(c.status, live.status);
+      if (!guard.send) {
+        console.error(`↷ ${key} (campanha #${c.campaignId}): ${guard.reason} — sem novo POST sendNow.`);
+        // #4718: `c.status` só chega até aqui como "draft" (os `if`s acima já
+        // excluíram "sent"/"scheduled") — `guard.syncLocalAsSent` sozinho já
+        // basta pra decidir se vale corrigir o registro local, sem checar
+        // `c.status !== "sent"` de novo (redundante e o TS estreita o tipo
+        // pra "draft" aqui, marcando essa comparação como sempre-verdadeira).
+        if (guard.syncLocalAsSent) {
+          c.status = "sent";
+          writeFileAtomic(campaignsPath, JSON.stringify(campaigns, null, 2));
+          console.error(`   (registro local corrigido pra "sent" — estava defasado)`);
+        }
+      } else {
+        await brevoSendNow(apiKey, c.campaignId);
+        // #4347: NUNCA confiar só no 2xx do POST. #4718 (item 1): re-verifica
+        // com retry+backoff curto (pollTerminalSendStatus) em vez de um único
+        // GET imediato — "queued" costuma resolver em segundos, e um GET
+        // cedo demais era o próprio motivo do falso alarme reportado.
+        const verified = await pollTerminalSendStatus(apiKey, c.campaignId);
+        applySendNowVerifyResults(
+          [{ status: "fulfilled", value: verified }],
+          [c],
+          campaigns,
+          campaignsPath,
+        );
+        // #4347: sem gate humano (D6), a skill /diaria-clarice-novos precisa de
+        // um sinal MÁQUINA-VERIFICÁVEL de "disparo não confirmado" — não só o
+        // texto de warning que applySendNowVerifyResults já loga. process.exitCode
+        // (não process.exit — deixa o JSON de resumo abaixo imprimir normalmente,
+        // útil pro diagnóstico) sinaliza a um caller automatizado que este
+        // --send-now NÃO deve ser tratado como sucesso, mesmo com stdout válido.
+        // Cast: TS estreitou c.status pra "draft" neste branch (os `if`s acima
+        // já excluíram "sent"/"scheduled") e não enxerga que
+        // applySendNowVerifyResults pode MUTAR c.status pra "sent" por
+        // referência — sem o cast, a comparação vira "sempre true" pro
+        // typechecker, mascarando o próprio propósito do guard.
+        if ((c.status as CampaignEntry["status"]) !== "sent") {
+          console.error(
+            `❌ ${key}: sendNow disparado mas GET-verify (com retry) não confirmou status terminal — NÃO declare sucesso. ` +
+              `Reconsulte a Brevo antes de agir de novo — o guard ao vivo acima (#4718) já impede um 2º POST enquanto ` +
+              `o status real for "queued"/"inProcess"/"sent", então re-rodar --send-now é seguro, mas provavelmente redundante.`,
+          );
+          process.exitCode = 2;
+        }
       }
     }
   }

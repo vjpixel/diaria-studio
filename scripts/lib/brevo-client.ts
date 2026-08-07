@@ -488,7 +488,18 @@ export function isTerminalSendStatus(status: string): boolean {
  * incerto, reconsulte manualmente" que qualquer outro valor desconhecido —
  * o exit code 2 (seguro) já era o comportamento correto, isto só melhora a
  * mensagem pra nomear o estado real em vez de mascará-lo como "incerto".
- * Qualquer outro status não-terminal (`queued`, `draft`, etc.) cai no genérico.
+ *
+ * `"queued"` ganhou mensagem própria em #4718 (item 3 da issue): antes caía
+ * no genérico "reconsulte a Brevo manualmente", que soa como "tente de novo"
+ * — e a orientação anterior no chamador ERA literalmente "re-tente
+ * --send-now", o que levou a um 2º POST `sendNow` na mesma campanha já
+ * disparada (incidente ao vivo 260806, campanha #121: o GET imediato leu
+ * "queued" — lag assíncrono normal da Brevo, não falha — e o 1º disparo
+ * tinha funcionado desde o início). A mensagem agora deixa explícito que
+ * "queued" é progresso, não incerteza, e que reenviar é o comportamento
+ * errado (o guard `checkSendNowGuard` em `clarice-schedule-group.ts` fecha o
+ * buraco de fato; isto só corrige o texto que empurrava o operador pra lá).
+ * Qualquer outro status não-terminal (`draft`, etc.) cai no genérico.
  */
 export function describeUncertainSendStatus(status: string): string {
   if (status === "in_review") {
@@ -497,7 +508,58 @@ export function describeUncertainSendStatus(status: string): string {
       `checar app.brevo.com; geralmente exige ação humana no painel, não é um erro do nosso lado.`
     );
   }
+  if (status === "queued") {
+    return (
+      `status="queued" — a Brevo ACEITOU o disparo e está processando a fila (lag assíncrono ` +
+      `normal, costuma resolver em segundos); NÃO é indício de falha. Reconsulte em instantes — ` +
+      `NÃO re-dispare (#4718: um novo --send-now não repete o POST enquanto a Brevo confirmar ` +
+      `"queued"/"inProcess"/"sent" ao vivo, mas repetir a invocação sem necessidade continua ` +
+      `sendo trabalho evitável).`
+    );
+  }
   return `status="${status}" não confirma disparo — reconsulte a Brevo manualmente.`;
+}
+
+/**
+ * #4718 (item 1 da issue) — GET-verify pós-`sendNow` com retry curto e
+ * backoff fixo (default: 3 tentativas, 5s entre elas) antes de declarar o
+ * disparo incerto. `"queued"` costuma resolver pra `"sent"`/`"inProcess"` em
+ * segundos — um único GET imediatamente após o POST (comportamento anterior
+ * a este fix) capturava a campanha nesse limbo assíncrono e produzia um
+ * falso "disparo não confirmado" mesmo quando o disparo funcionou desde o
+ * início (confirmado ao vivo: campanha #121 — GET imediato leu "queued",
+ * consulta minutos depois já mostrava "sent", 88 entregues, 0 bounce).
+ *
+ * Só insiste enquanto o status for especificamente `"queued"` — outros
+ * status não-terminais (`"draft"`, `"in_review"`, etc.) não têm motivo pra
+ * virar terminal sozinhos com a passagem do tempo, então retorna já na 1ª
+ * leitura sem gastar retries à toa. `getCampaignFn`/`sleepFn` injetáveis pra
+ * testabilidade sem rede/tempo real (mesmo padrão de `_sleep` no resto deste
+ * arquivo).
+ */
+export async function pollTerminalSendStatus(
+  apiKey: string,
+  campaignId: number,
+  opts: {
+    attempts?: number;
+    delayMs?: number;
+    getCampaignFn?: (apiKey: string, campaignId: number) => Promise<{ status: string; scheduledAt?: string | null }>;
+    sleepFn?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<{ status: string; scheduledAt?: string | null }> {
+  const attempts = opts.attempts ?? 3;
+  const delayMs = opts.delayMs ?? 5000;
+  const getCampaignFn = opts.getCampaignFn ?? brevoGetCampaign;
+  const sleepFn = opts.sleepFn ?? _defaultSleep;
+
+  let last: { status: string; scheduledAt?: string | null } = { status: "unknown" };
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    last = await getCampaignFn(apiKey, campaignId);
+    if (isTerminalSendStatus(last.status)) return last;
+    if (last.status !== "queued") return last;
+    if (attempt < attempts) await sleepFn(delayMs);
+  }
+  return last;
 }
 
 // ---------------------------------------------------------------------------
