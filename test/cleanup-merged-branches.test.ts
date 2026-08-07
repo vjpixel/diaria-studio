@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import {
   parseLsRemoteHeads,
   selectMergedForDeletion,
+  excludeReopenedBranches,
 } from "../scripts/cleanup-merged-branches.ts";
 
 // ── parseLsRemoteHeads ──
@@ -74,4 +75,39 @@ test("selectMergedForDeletion — nenhuma mergeada -> array vazio (fail-soft: nu
 
 test("selectMergedForDeletion — lista vazia de entrada -> array vazio", () => {
   assert.deepEqual(selectMergedForDeletion([], () => true), []);
+});
+
+// ── excludeReopenedBranches (#4744 fleet review) ──
+
+test("excludeReopenedBranches — branch com PR mergeado antigo E PR aberto novo reusando o nome vai pra 'excluded', não deletada", () => {
+  // Cenário do achado: overnight/fix-4700 teve um PR mergeado no passado,
+  // depois a issue reabriu e uma 2ª tentativa reusou o MESMO nome de branch
+  // com um PR ainda ABERTO — checkBranchMergedViaGh sozinho confirmaria
+  // "mergeado" (existe HISTORICAMENTE um PR mergeado com esse head), mas
+  // deletar a branch agora destruiria o trabalho em andamento do PR aberto.
+  const candidates = ["overnight/fix-4700", "overnight/fix-4701"];
+  const hasOpenPr = (b: string) => b === "overnight/fix-4700";
+  const { safe, excluded } = excludeReopenedBranches(candidates, hasOpenPr);
+  assert.deepEqual(safe, ["overnight/fix-4701"]);
+  assert.deepEqual(excluded, ["overnight/fix-4700"]);
+});
+
+test("excludeReopenedBranches — nenhuma reaberta -> todas seguras, excluded vazio", () => {
+  const candidates = ["overnight/fix-1", "develop/fix-2"];
+  const { safe, excluded } = excludeReopenedBranches(candidates, () => false);
+  assert.deepEqual(safe, candidates);
+  assert.deepEqual(excluded, []);
+});
+
+test("excludeReopenedBranches — todas reabertas -> safe vazio (fail-soft: nunca deleta por engano)", () => {
+  const candidates = ["overnight/fix-1", "develop/fix-2"];
+  const { safe, excluded } = excludeReopenedBranches(candidates, () => true);
+  assert.deepEqual(safe, []);
+  assert.deepEqual(excluded, candidates);
+});
+
+test("excludeReopenedBranches — lista vazia de entrada -> ambos vazios", () => {
+  const { safe, excluded } = excludeReopenedBranches([], () => true);
+  assert.deepEqual(safe, []);
+  assert.deepEqual(excluded, []);
 });

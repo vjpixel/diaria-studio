@@ -73,6 +73,22 @@ export function selectMergedForDeletion(
   return branches.filter((b) => isMerged(b));
 }
 
+/**
+ * #4744 fleet review: entre as branches já confirmadas como "PR mergeado
+ * existe", separa as que têm um PR ABERTO reusando o mesmo nome AGORA (nome
+ * reaproveitado numa retentativa — não são lixo, excluir da deleção) das
+ * que estão genuinamente seguras. `hasOpenPr` é injetável (mesmo padrão de
+ * `isMerged` em `selectMergedForDeletion`) pra testar sem `gh` real.
+ */
+export function excludeReopenedBranches(
+  branches: string[],
+  hasOpenPr: (branch: string) => boolean,
+): { safe: string[]; excluded: string[] } {
+  const excluded = branches.filter((b) => hasOpenPr(b));
+  const safe = branches.filter((b) => !hasOpenPr(b));
+  return { safe, excluded };
+}
+
 // ─── I/O real (fail-soft) ────────────────────────────────────────────────
 
 const GIT_TIMEOUT_MS = 15_000;
@@ -93,6 +109,38 @@ function listRemoteBranchesSafe(cwd: string, prefixes: string[]): string[] {
   } catch (e) {
     console.warn(`[cleanup-merged-branches] git ls-remote lançou: ${(e as Error).message}`);
     return [];
+  }
+}
+
+/**
+ * `gh pr list --head {branch} --state open` — true se existir um PR ABERTO
+ * usando este nome de branch AGORA. #4744 fleet review: `checkBranchMergedViaGh`
+ * só pergunta "existe algum PR HISTORICAMENTE mergeado com este nome?" — não
+ * garante que o nome não foi reaproveitado por um PR novo, ainda aberto,
+ * depois que o antigo foi mergeado (branch com nome baseado em número de
+ * issue reaberta, ex: `overnight/fix-4700` reusado numa 2ª tentativa). Sem
+ * este guard extra, `cleanup-merged-branches.ts` deletaria a branch remota
+ * de um PR aberto em andamento só porque um PR ANTIGO, já mergeado, tinha o
+ * mesmo nome — irreversível (perde o trabalho não mergeado ainda). Fail-soft
+ * pro lado SEGURO: qualquer erro na consulta retorna `true` (assume que HÁ
+ * um PR aberto, não deleta) — o oposto do fail-soft de `checkBranchMergedViaGh`
+ * (que retorna `false`/não-mergeado em erro), porque aqui um falso positivo
+ * é "não deletei uma branch seguramente deletável" (barato, resolve na
+ * próxima execução) enquanto lá seria "deletei uma branch que não devia"
+ * (irreversível).
+ */
+export function hasOpenPrForBranch(branch: string, cwd: string): boolean {
+  try {
+    const result = spawnSync(
+      "gh",
+      ["pr", "list", "--head", branch, "--state", "open", "--json", "number", "--limit", "1"],
+      { cwd, encoding: "utf8", timeout: GIT_TIMEOUT_MS },
+    );
+    if (result.status !== 0) return true;
+    const parsed = JSON.parse(result.stdout ?? "[]") as unknown[];
+    return Array.isArray(parsed) && parsed.length > 0;
+  } catch {
+    return true;
   }
 }
 
@@ -134,12 +182,24 @@ function main(): void {
       return;
     }
 
-    const merged = selectMergedForDeletion(all, (branch) => checkBranchMergedViaGh(branch, repoRoot));
-    const unmerged = all.filter((b) => !merged.includes(b));
+    const mergedCandidates = selectMergedForDeletion(all, (branch) => checkBranchMergedViaGh(branch, repoRoot));
+    const unmerged = all.filter((b) => !mergedCandidates.includes(b));
+
+    // #4744 fleet review: um nome de branch pode ter um PR ANTIGO mergeado
+    // E um PR NOVO ainda aberto reusando o mesmo nome (issue reaberta,
+    // retentativa) — checkBranchMergedViaGh sozinho não distingue os dois
+    // casos. Reconfirma cada candidata contra PR ABERTO antes de deletar;
+    // qualquer uma com PR aberto agora sai da lista de deleção (fail-soft
+    // pro lado seguro — ver docstring de hasOpenPrForBranch).
+    const { safe: merged, excluded: reopened } = excludeReopenedBranches(mergedCandidates, (branch) =>
+      hasOpenPrForBranch(branch, repoRoot),
+    );
 
     console.log(
       `[cleanup-merged-branches] ${all.length} branch(es) remota(s) encontrada(s) sob ${prefixes.join(", ")}, ` +
-        `${merged.length} com PR mergeada confirmada, ${unmerged.length} sem confirmação (PR aberto/fechado-sem-merge/sem PR — não tocadas).`,
+        `${merged.length} com PR mergeada confirmada e SEM PR aberto reusando o nome, ${unmerged.length} sem confirmação ` +
+        `(PR aberto/fechado-sem-merge/sem PR — não tocadas)` +
+        `${reopened.length > 0 ? `, ${reopened.length} excluída(s) da deleção por ter PR ABERTO reusando o nome (${reopened.join(", ")})` : ""}.`,
     );
 
     if (!push) {
