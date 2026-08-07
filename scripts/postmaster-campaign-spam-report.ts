@@ -101,8 +101,16 @@ export async function enrichWithCampaignMetadata(
     let meta: { name?: string; subject?: string } | null = null;
     try {
       meta = await resolveMetadata(row.campaignId);
-    } catch {
-      meta = null; // best-effort — nunca derruba o relatório por 1 campanha problemática
+    } catch (e) {
+      // best-effort — nunca derruba o relatório por 1 campanha problemática, mas
+      // console.warn torna a falha visível: sem isso, um BREVO_CLARICE_API_KEY
+      // inválido (401/403 sistemático) e uma campanha antiga não encontrada na
+      // Brevo (404 pontual) ficam indistinguíveis — as duas viram silenciosamente
+      // "nome indisponível" em toda linha, sem sinal de qual é a causa real.
+      console.warn(
+        `[postmaster-campaign-spam-report] falha ao buscar metadata da campanha #${row.campaignId}: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      meta = null;
     }
     out.push({ ...row, campaignName: meta?.name, campaignSubject: meta?.subject });
   }
@@ -191,10 +199,25 @@ async function main(): Promise<void> {
   const campaigns = collectCampaignFeedbackLoopIds(idsByDay, accountId);
 
   if (campaigns.length === 0) {
-    console.log(
-      `[postmaster-campaign-spam-report] Nenhum feedback_loop_id no formato {conta}_{campanha} (conta="${accountId}") ` +
-        `na janela de ${windowDays} dias — nenhuma campanha atribuível encontrada.`,
-    );
+    // Distingue "sem tráfego de feedback loop na janela" de "tráfego existe, mas
+    // nenhum id bateu accountId" — sem isso, um DEFAULT_ACCOUNT_ID desatualizado
+    // (constante hardcoded a partir de UMA observação ao vivo, ver docstring do
+    // módulo) lê exatamente como "nada pra reportar", mascarando a premissa
+    // stale em vez de sinalizá-la.
+    const rawIdCount = idsByDay.reduce((n, day) => n + day.ids.length, 0);
+    const matchedAnyAccount = collectCampaignFeedbackLoopIds(idsByDay).length;
+    if (rawIdCount > 0 && matchedAnyAccount > 0) {
+      console.log(
+        `[postmaster-campaign-spam-report] ${matchedAnyAccount} campanha(s) com feedback_loop_id no formato ` +
+          `{conta}_{campanha} na janela de ${windowDays} dias, mas NENHUMA da conta="${accountId}" ` +
+          `(--account-id) — confira se DEFAULT_ACCOUNT_ID ainda é a conta ESP certa antes de assumir que não há campanha.`,
+      );
+    } else {
+      console.log(
+        `[postmaster-campaign-spam-report] Nenhum feedback_loop_id no formato {conta}_{campanha} (conta="${accountId}") ` +
+          `na janela de ${windowDays} dias — nenhuma campanha atribuível encontrada.`,
+      );
+    }
     return;
   }
 
