@@ -325,7 +325,7 @@ export function makeRealCampaignExportClient(apiKey: string): CampaignExportClie
       // #4451 carry-forward (achado 5 do fleet review em #4479): sem timeout
       // explícito, um `export_url` (link assinado S3, fora do domínio da
       // Brevo — não passa pelo retry-on-429 de brevoGet/brevoPost) que
-      // penduta a conexão travava o backfill inteiro sem sinal de erro.
+      // pendura a conexão travava o backfill inteiro sem sinal de erro.
       // Mesmo padrão de `AbortController` + `setTimeout` já usado em
       // verify-dates.ts/beehiiv-insert-text.ts (#4196) neste repo.
       const ctrl = new AbortController();
