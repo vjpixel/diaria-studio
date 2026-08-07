@@ -166,6 +166,9 @@ function describeQueryFailure(status: number, body: string): string {
   if (status === 403) {
     return "403 sem código de scope/API reconhecido — confira permissão do domínio em postmaster.google.com/managedomains.";
   }
+  if (status === 429) {
+    return "429 inesperado mesmo com 1 chamada por execução — a migração v2 (#4704) existe justamente pra eliminar rate limit por volume; verificar se há outro consumidor da mesma quota (execução concorrente do sync, chamada manual) rodando ao mesmo tempo.";
+  }
   return `HTTP ${status} inesperado. Corpo: ${b.slice(0, 300)}`;
 }
 

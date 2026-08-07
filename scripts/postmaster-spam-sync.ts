@@ -250,7 +250,17 @@ async function main(): Promise<void> {
     return;
   }
 
-  const daysDetail = entry.dailyReadings!.map((r) => `${r.date}=${r.spamRatePct.toFixed(3)}%`).join(", ");
+  if (!entry.dailyReadings || entry.dailyReadings.length === 0) {
+    // `buildAveragedEntry` sempre popula `dailyReadings` quando `entry` não é
+    // `null` (guard acima) — chegar aqui vazio seria um bug de regressão
+    // naquela função, não um caso normal. `dailyReadings` continua opcional
+    // no TYPE (schema evolution, entries manuais/pré-#4704), então o
+    // acesso abaixo não pode assumir presença via non-null assertion (#4716).
+    console.warn(
+      "[postmaster-spam-sync] entry sem dailyReadings apesar de ter leituras — inesperado, buildAveragedEntry deveria sempre populá-lo.",
+    );
+  }
+  const daysDetail = (entry.dailyReadings ?? []).map((r) => `${r.date}=${r.spamRatePct.toFixed(3)}%`).join(", ");
   console.log(
     `[postmaster-spam-sync] média de ${readings.length}/${daysProbed} dias da janela: ${daysDetail}`,
   );

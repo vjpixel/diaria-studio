@@ -106,3 +106,66 @@ describe("normalizePostmasterSpamEntry — daysWithData/daysProbed passam pelo b
     assert.equal(entry?.daysProbed, undefined);
   });
 });
+
+// #4716 (fleet review do #4703/#4704, achado type-design-analyzer): mesma
+// classe de risco de novo — `dailyReadings` (#4704, série diária persistida
+// pela migração v2) não era copiado em `normalizePostmasterSpamEntry`, então
+// todo entry gravado por `buildAveragedEntry` (que sempre a popula) saía
+// normalizado sem ela pra qualquer consumidor deste choke point. Espelha os
+// casos de `producedBy`/`daysWithData` acima.
+describe("normalizePostmasterSpamEntry — dailyReadings passa pelo boundary do KV (#4704, #4716)", () => {
+  it("dailyReadings presente e bem formado é preservado", () => {
+    const entry = normalizePostmasterSpamEntry({
+      date: "2026-08-03",
+      spamRatePct: 0.137,
+      recordedAt: "2026-08-06T09:00:00.000Z",
+      dailyReadings: [
+        { date: "2026-08-01", spamRatePct: 0 },
+        { date: "2026-08-02", spamRatePct: 0.41 },
+        { date: "2026-08-03", spamRatePct: 0 },
+      ],
+    });
+    assert.deepEqual(entry?.dailyReadings, [
+      { date: "2026-08-01", spamRatePct: 0 },
+      { date: "2026-08-02", spamRatePct: 0.41 },
+      { date: "2026-08-03", spamRatePct: 0 },
+    ]);
+  });
+
+  it("dailyReadings ausente (entry manual ou pré-#4704) vira undefined, nunca inferido", () => {
+    const entry = normalizePostmasterSpamEntry({
+      date: "2026-07-30",
+      spamRatePct: 0.05,
+      recordedAt: "2026-07-30T09:00:00.000Z",
+    });
+    assert.equal(entry?.dailyReadings, undefined);
+  });
+
+  it("dailyReadings vazio vira undefined (mesma disciplina de daysWithData/daysProbed — nunca []falso)", () => {
+    const entry = normalizePostmasterSpamEntry({
+      date: "2026-07-30",
+      spamRatePct: 0.05,
+      recordedAt: "2026-07-30T09:00:00.000Z",
+      dailyReadings: [],
+    });
+    assert.equal(entry?.dailyReadings, undefined);
+  });
+
+  it("dailyReadings não-array ou com itens corrompidos não é confiado cegamente", () => {
+    const notArray = normalizePostmasterSpamEntry({
+      date: "2026-07-30",
+      spamRatePct: 0.05,
+      recordedAt: "2026-07-30T09:00:00.000Z",
+      dailyReadings: "não é array",
+    });
+    assert.equal(notArray?.dailyReadings, undefined);
+
+    const corruptedItems = normalizePostmasterSpamEntry({
+      date: "2026-07-30",
+      spamRatePct: 0.05,
+      recordedAt: "2026-07-30T09:00:00.000Z",
+      dailyReadings: [{ date: "2026-08-01", spamRatePct: 0 }, { date: "2026-08-02" }, "lixo"],
+    });
+    assert.deepEqual(corruptedItems?.dailyReadings, [{ date: "2026-08-01", spamRatePct: 0 }]);
+  });
+});

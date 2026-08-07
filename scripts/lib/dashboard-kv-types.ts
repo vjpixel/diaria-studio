@@ -154,8 +154,8 @@ export type PostmasterReputationLevel = "BAD" | "LOW" | "MEDIUM" | "HIGH" | (str
  * e uma amostra de IPs. O exemplo da #4703 só mostrou esses dois campos
  * presentes quando o bucket tinha ≥1 IP — não confirmado como regra da API,
  * só o que foi observado numa amostra. `[key: string]: unknown` absorve
- * campos futuros sem quebrar o parse — mesmo espírito de
- * `TrafficStatsResponse` em postmaster-spam-sync.ts.
+ * campos futuros sem quebrar o parse — mesmo espírito do antigo
+ * `TrafficStatsResponse` (v1, removido em #4704) em postmaster-spam-sync.ts.
  */
 export interface PostmasterIpReputation {
   reputation: PostmasterReputationLevel;
@@ -191,7 +191,7 @@ export interface PostmasterSpamEntry extends PostmasterReputationSignal {
   recordedAt: string;
   /** Qual dos dois produtores gravou esta leitura — opcional pra entries pré-#4154 (schema evolution, nunca inferir um valor). */
   producedBy?: PostmasterProducer;
-  /** #4541: quantos dias da janela sondada tiveram leitura válida (200, com ou sem o campo) usada no cálculo da média. Junto com `daysProbed`, permite `resolveSpamSignal` degradar pra `indeterminate` quando a cobertura é baixa demais (ex: 1/10 dias, por erro HTTP nos demais). `undefined` pra entries manuais (1 leitura, não é média de janela) ou pré-#4541. */
+  /** #4541: quantos dias da janela sondada tiveram leitura válida usada no cálculo da média. #4704 (v2): produzido por UMA chamada `domainStats:query` pro range inteiro — o dia "tem leitura válida" quando aparece na resposta com a métrica `SPAM_RATE`; ausência do dia na resposta (não erro HTTP por dia, que não existe mais na v2) é o único jeito de faltar cobertura. Junto com `daysProbed`, permite `resolveSpamSignal` degradar pra `indeterminate` quando a cobertura é baixa demais (ex: 1/10 dias). `undefined` pra entries manuais (1 leitura, não é média de janela) ou pré-#4541. */
   daysWithData?: number;
   /** #4541: tamanho da janela sondada (dias-calendário), independente de quantos tiveram leitura válida — ver `daysWithData`. `undefined` no mesmo caso acima. */
   daysProbed?: number;

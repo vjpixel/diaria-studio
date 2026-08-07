@@ -898,12 +898,26 @@ export function normalizeEiaEngagement(raw: unknown): EiaEngagementSummary | nul
  * cópia aqui derrubaria silenciosamente o guard de cobertura mínima de
  * `resolveSpamSignal` pra todo mundo que lê via `GET /api/postmaster-spam`
  * (`scripts/clarice-schedule-ramp.ts`), mesmo que o KV tenha os campos.
+ *
+ * `dailyReadings` (#4704): mesma classe de risco de novo — sem copiar aqui, a
+ * série diária persistida pela migração v2 seria descartada silenciosamente
+ * pra todo consumidor que lê via este choke point, mesmo com o KV populado.
  */
 export function normalizePostmasterSpamEntry(raw: unknown): PostmasterSpamEntry | null {
   if (!raw || typeof raw !== "object") return null;
   const s = raw as Partial<PostmasterSpamEntry> & Record<string, unknown>;
   if (typeof s.spamRatePct !== "number" || !Number.isFinite(s.spamRatePct)) return null;
   if (typeof s.recordedAt !== "string" || !s.recordedAt) return null;
+  const dailyReadings = Array.isArray(s.dailyReadings)
+    ? s.dailyReadings.filter(
+        (d): d is { date: string; spamRatePct: number } =>
+          !!d &&
+          typeof d === "object" &&
+          typeof (d as Record<string, unknown>).date === "string" &&
+          typeof (d as Record<string, unknown>).spamRatePct === "number" &&
+          Number.isFinite((d as Record<string, unknown>).spamRatePct),
+      )
+    : undefined;
   return {
     date: typeof s.date === "string" ? s.date : "",
     spamRatePct: s.spamRatePct,
@@ -911,6 +925,7 @@ export function normalizePostmasterSpamEntry(raw: unknown): PostmasterSpamEntry 
     producedBy: s.producedBy === "manual" || s.producedBy === "auto" ? s.producedBy : undefined,
     daysWithData: typeof s.daysWithData === "number" && Number.isFinite(s.daysWithData) ? s.daysWithData : undefined,
     daysProbed: typeof s.daysProbed === "number" && Number.isFinite(s.daysProbed) ? s.daysProbed : undefined,
+    dailyReadings: dailyReadings && dailyReadings.length > 0 ? dailyReadings : undefined,
   };
 }
 

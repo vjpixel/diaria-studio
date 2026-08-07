@@ -183,6 +183,15 @@ test("queryDomainStatsV2 — 403 sem código de scope/API reconhecido aponta pra
   );
 });
 
+test("queryDomainStatsV2 — 429 aponta pra outro consumidor de quota/execução concorrente, não pro fallback genérico (#4716)", async () => {
+  const fake = (async () => new Response('{"error":{"status":"RESOURCE_EXHAUSTED"}}', { status: 429 })) as unknown as typeof fetch;
+  await assert.rejects(
+    () =>
+      queryDomainStatsV2("clarice.ai", [{ name: "spam_rate", standardMetric: "SPAM_RATE" }], { start: { year: 2026, month: 8, day: 1 }, end: { year: 2026, month: 8, day: 1 } }, fake),
+    /execução concorrente/,
+  );
+});
+
 test("queryDomainStatsV2 — status HTTP inesperado (ex: 500) cai no fallback genérico com o corpo truncado, nunca vira sucesso silencioso", async () => {
   const fake = (async () => new Response('{"error":{"status":"INTERNAL"}}', { status: 500 })) as unknown as typeof fetch;
   await assert.rejects(
