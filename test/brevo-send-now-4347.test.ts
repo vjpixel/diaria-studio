@@ -52,10 +52,17 @@ test("REGRESSÃO (#4364): describeUncertainSendStatus('in_review') nomeia o esta
   assert.doesNotMatch(msg, /reconsulte a Brevo manualmente/);
 });
 
-test("describeUncertainSendStatus: status desconhecido cai no genérico (não confunde com in_review)", () => {
-  const msg = describeUncertainSendStatus("queued");
+test("describeUncertainSendStatus: status desconhecido cai no genérico (não confunde com in_review nem queued)", () => {
+  const msg = describeUncertainSendStatus("expired");
   assert.match(msg, /reconsulte a Brevo manualmente/);
   assert.doesNotMatch(msg, /revisão da própria Brevo/);
+});
+
+test("REGRESSÃO (#4718 item 3): describeUncertainSendStatus('queued') orienta reconsultar, NÃO re-disparar", () => {
+  const msg = describeUncertainSendStatus("queued");
+  assert.match(msg, /ACEITOU o disparo/);
+  assert.match(msg, /NÃO re-dispare/);
+  assert.doesNotMatch(msg, /reconsulte a Brevo manualmente\./);
 });
 
 // ---------------------------------------------------------------------------
