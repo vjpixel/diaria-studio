@@ -72,6 +72,7 @@ import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 import {
   DEFAULT_LAST_N,
   extractEditionBoxUsages,
+  findPostForEdition,
   loadSnippets,
   sumClicksForUrl,
   type BoxSlot,
@@ -430,18 +431,6 @@ function loadPostsCache(postsDir: string): PostCacheLike[] {
     .filter((p): p is PostCacheLike => p !== null);
 }
 
-function findPostForAammdd(aammdd: string, posts: PostCacheLike[]): PostCacheLike | null {
-  const matches = posts.filter((p) => {
-    if (typeof p.publish_date !== "number") return false;
-    const iso = new Date(p.publish_date * 1000).toISOString().slice(0, 10);
-    const [yyyy, mm, dd] = iso.split("-");
-    return `${yyyy.slice(2)}${mm}${dd}` === aammdd;
-  });
-  if (matches.length === 0) return null;
-  matches.sort((a, b) => (b.publish_date ?? 0) - (a.publish_date ?? 0));
-  return matches[0];
-}
-
 const SLOT_KEY: Record<SlotNumber, "slot1" | "slot2" | "slot3"> = { 1: "slot1", 2: "slot2", 3: "slot3" };
 
 /**
@@ -502,7 +491,7 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
     aammddList,
     readReviewedMd,
     snippets,
-    findPost: (aammdd) => findPostForAammdd(aammdd, posts),
+    findPost: (aammdd) => findPostForEdition(aammdd, posts),
   });
   const ranked = [...history.values()].map((h) => scoreBox(h, autoCfg.recentWindow, autoCfg.priorWindow));
   const previousSnippets = findPreviousEditionSnippets(opts.aammdd, aammddList, readReviewedMd, snippets);
