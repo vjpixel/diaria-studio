@@ -113,8 +113,15 @@ documentado no CLAUDE.md — critério de retomada registrado no comentário
 260806 da issue #4637: abertura madura ≥~20% no mesmo volume → causa
 provável é horário de envio, não composição da fila; ~10% no mesmo volume →
 composição da fila é a causa, considerar suprimir os não-abridores antes de
-ingerir qualquer contato novo). Só então rode o push, **limitado ao número
-escolhido**:
+ingerir qualquer contato novo). Cheque o número real com:
+
+```bash
+npx tsx scripts/check-brevo-diaria-guardrail.ts --dry-run
+```
+
+(`openRatePct` no output — mesma métrica agregada do piso de 15% citado
+acima; não julgue "abaixo de 15%" de memória). Só então rode o push,
+**limitado ao número escolhido**:
 
 ```bash
 npx tsx scripts/sync-pending-to-brevo.ts --push --max-add N
