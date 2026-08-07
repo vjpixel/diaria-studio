@@ -5,10 +5,13 @@ import { resolve } from "node:path";
 import {
   brtDayLabel,
   buildWaveProposal,
+  computeFirstSendDeficit,
   computeNextWaveNumber,
   groupKeyFromCampaignName,
   measureNonOpenerExposure,
   measureNovosFreshness,
+  MV_BACKLOG_NO_COHORT_LABEL,
+  planMvOnDemand,
   proposeVolumes,
   recommendAbcAction,
   renderWaveProposal,
@@ -17,6 +20,7 @@ import {
   summarizeMvBacklog,
   waveKey,
   MV_COST_PER_EMAIL_USD,
+  MV_ONDEMAND_APPROVAL_MARGIN,
   NOVOS_FRESHNESS_WARNING_HOURS,
   NOVOS_FRESHNESS_BLOCKER_HOURS,
   type WaveProposalInput,
@@ -505,6 +509,241 @@ describe("summarizeMvBacklog (#4657)", () => {
   it("cohort ausente cai num rótulo explícito, nunca em undefined", () => {
     const b = summarizeMvBacklog([{ cohort: null, mv_bucket: null, ineligible_reason: "mv_unverified" }]);
     assert.equal(b.byCohort[0].cohort, "(sem cohort)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Verificação MV sob demanda (#4659)
+// ---------------------------------------------------------------------------
+
+describe("computeFirstSendDeficit (#4659)", () => {
+  it("fila cobre o volume → déficit zero", () => {
+    assert.equal(computeFirstSendDeficit(5000, 1000), 0);
+    assert.equal(computeFirstSendDeficit(1000, 1000), 0);
+  });
+
+  it("fila menor que o volume → déficit é a diferença exata", () => {
+    assert.equal(computeFirstSendDeficit(300, 1000), 700);
+  });
+
+  it("nunca negativo mesmo com fila zero/negativa (defesa)", () => {
+    assert.equal(computeFirstSendDeficit(0, 1000), 1000);
+  });
+});
+
+describe("planMvOnDemand (#4659)", () => {
+  const backlog = (byCohort: Array<{ cohort: string; count: number }>) => ({
+    total: byCohort.reduce((s, e) => s + e.count, 0),
+    byCohort,
+    estimatedCostUsd: byCohort.reduce((s, e) => s + e.count, 0) * MV_COST_PER_EMAIL_USD,
+  });
+
+  it("déficit zero → plano vazio, backlog nem é olhado", () => {
+    const p = planMvOnDemand(backlog([{ cohort: "leads-2026-06", count: 1000 }]), 0);
+    assert.deepEqual(p.byCohort, []);
+    assert.equal(p.targetVerifyCount, 0);
+    assert.equal(p.backlogInsufficient, false);
+  });
+
+  it("aplica a margem de aprovação (déficit ÷ 0,90) — nunca verifica só o déficit exato", () => {
+    const p = planMvOnDemand(backlog([{ cohort: "ex-assinantes", count: 5000 }]), 900);
+    // 900 / 0.9 = 1000 exato — mas o arredondamento pra cima (Math.ceil)
+    // importa em casos que não fecham redondo, testado abaixo.
+    assert.equal(p.targetVerifyCount, 1000);
+    assert.equal(p.byCohort[0].count, 1000);
+  });
+
+  it("arredonda o alvo pra CIMA (nunca deixa a onda curta por truncar)", () => {
+    const p = planMvOnDemand(backlog([{ cohort: "ex-assinantes", count: 5000 }]), 100);
+    // 100 / 0.9 = 111.11... → 112
+    assert.equal(p.targetVerifyCount, 112);
+  });
+
+  it("REGRESSÃO #4542: aloca na ordem de cohortSendRank (morno→frio), NUNCA por volume", () => {
+    // leads-caudao tem MUITO mais volume, mas ex-assinantes é mais morno —
+    // summarizeMvBacklog ordenaria caudao primeiro (maior count); o plano
+    // sob demanda tem que inverter isso pra ordem de prioridade de envio.
+    const p = planMvOnDemand(
+      backlog([
+        { cohort: "leads-caudao", count: 50_000 },
+        { cohort: "ex-assinantes", count: 200 },
+        { cohort: "leads-2026-06", count: 500 },
+      ]),
+      600, // alvo = 600/0.9 = 667
+    );
+    assert.deepEqual(
+      p.byCohort.map((a) => a.cohort),
+      ["ex-assinantes", "leads-2026-06"],
+    );
+    assert.equal(p.byCohort[0].count, 200); // esgota ex-assinantes primeiro
+    assert.equal(p.byCohort[1].count, 467); // resto (667-200) do próximo cohort mais morno
+    assert.equal(p.totalPlanned, 667);
+    assert.equal(p.backlogInsufficient, false);
+  });
+
+  it("backlog insuficiente pra cobrir o alvo → totalPlanned < targetVerifyCount, sinalizado", () => {
+    const p = planMvOnDemand(backlog([{ cohort: "ex-assinantes", count: 50 }]), 1000);
+    assert.equal(p.totalPlanned, 50);
+    assert.ok(p.totalPlanned < p.targetVerifyCount);
+    assert.equal(p.backlogInsufficient, true);
+  });
+
+  it("guard explícito da issue: NUNCA aloca assinantes-ativos, mesmo se aparecer no backlog", () => {
+    // Defesa em profundidade — summarizeMvBacklog não deveria produzir esta
+    // entrada na prática (classifyEligibility nunca marca esse cohort como
+    // mv_unverified), mas o filtro aqui não pode depender disso pra ser
+    // verdade.
+    const p = planMvOnDemand(
+      backlog([
+        { cohort: "assinantes-ativos", count: 9999 },
+        { cohort: "ex-assinantes", count: 100 },
+      ]),
+      50,
+    );
+    assert.deepEqual(
+      p.byCohort.map((a) => a.cohort),
+      ["ex-assinantes"],
+    );
+  });
+
+  it("REGRESSÃO (achado do self-review): '(sem cohort)' é EXCLUÍDA do plano, nunca alocada", () => {
+    // '(sem cohort)' é só o rótulo de EXIBIÇÃO que summarizeMvBacklog usa pra
+    // `cohort IS NULL` — não é um valor real da coluna. Se entrasse no plano,
+    // `clarice-mv-ondemand.ts` faria `WHERE cohort = '(sem cohort)'` na hora
+    // de executar, que nunca bate uma linha real (`cohort IS NULL`) — a
+    // alocação gastaria "espaço" do alvo de verificação sem cobrir déficit
+    // nenhum, silenciosamente.
+    const p = planMvOnDemand(
+      backlog([
+        { cohort: MV_BACKLOG_NO_COHORT_LABEL, count: 500 },
+        { cohort: "ex-assinantes", count: 100 },
+      ]),
+      150, // alvo = ceil(150/0.9) = 167 — sem a exclusão, sobraria pra '(sem cohort)'
+    );
+    assert.deepEqual(
+      p.byCohort.map((a) => a.cohort),
+      ["ex-assinantes"],
+      "'(sem cohort)' nunca deveria aparecer numa alocação executável",
+    );
+    // Consequência esperada: com só 100 disponíveis em ex-assinantes contra
+    // um alvo de 167, o backlog fica insuficiente — mesmo havendo 500
+    // contatos "disponíveis" sob o rótulo não-executável.
+    assert.equal(p.totalPlanned, 100);
+    assert.equal(p.backlogInsufficient, true);
+  });
+
+  it("cohort DESCONHECIDO mas com slug real (não o sentinel) ainda cai no FIM da fila via cohortSendRank", () => {
+    // Distinto do caso acima: um slug real que `cohortSendRank` não reconhece
+    // (RANK_UNKNOWN) continua ALOCÁVEL — só vai pro fim da prioridade, nunca
+    // é excluído por construção. Só o sentinel de exibição '(sem cohort)' é
+    // filtrado (ele não é um valor real de cohort, esses são).
+    const p = planMvOnDemand(
+      backlog([
+        { cohort: "algum-slug-nao-mapeado", count: 500 },
+        { cohort: "ex-assinantes", count: 100 },
+      ]),
+      150,
+    );
+    assert.deepEqual(
+      p.byCohort.map((a) => a.cohort),
+      ["ex-assinantes", "algum-slug-nao-mapeado"],
+    );
+  });
+
+  it("estimatedCostUsd reflete só o TOTAL PLANEJADO, não o alvo", () => {
+    const p = planMvOnDemand(backlog([{ cohort: "ex-assinantes", count: 30 }]), 1000);
+    assert.equal(p.totalPlanned, 30);
+    assert.equal(p.estimatedCostUsd, 30 * MV_COST_PER_EMAIL_USD);
+  });
+
+  it("rejeita approvalMargin fora de (0, 1]", () => {
+    assert.throws(() => planMvOnDemand(backlog([{ cohort: "ex-assinantes", count: 10 }]), 5, 0), /approvalMargin inválido/);
+    assert.throws(() => planMvOnDemand(backlog([{ cohort: "ex-assinantes", count: 10 }]), 5, 1.1), /approvalMargin inválido/);
+  });
+
+  it("MV_ONDEMAND_APPROVAL_MARGIN é 0,90 (documentado, #4659)", () => {
+    assert.equal(MV_ONDEMAND_APPROVAL_MARGIN, 0.9);
+  });
+});
+
+describe("buildWaveProposal — mvOnDemandPlan embutido (#4659)", () => {
+  it("sem déficit (fila cobre o volume) → mvOnDemandPlan vazio", () => {
+    const p = buildWaveProposal(proposalInput({ availableFirstSend: 50_000 }));
+    assert.deepEqual(p.mvOnDemandPlan.byCohort, []);
+    assert.equal(p.mvOnDemandPlan.deficit, 0);
+  });
+
+  it("com déficit e backlog disponível → plano não-vazio, e o BLOQUEIO cita o recorte", () => {
+    const p = buildWaveProposal(
+      proposalInput({
+        availableFirstSend: 300,
+        mvBacklog: {
+          total: 5000,
+          byCohort: [{ cohort: "ex-assinantes", count: 5000 }],
+          estimatedCostUsd: 5000 * MV_COST_PER_EMAIL_USD,
+        },
+      }),
+    );
+    // déficit = 1000 - 300 = 700; alvo = ceil(700/0.9) = 778
+    assert.equal(p.mvOnDemandPlan.deficit, 700);
+    assert.equal(p.mvOnDemandPlan.targetVerifyCount, 778);
+    assert.deepEqual(p.mvOnDemandPlan.byCohort, [{ cohort: "ex-assinantes", count: 778 }]);
+    assert.match(p.blockers.join(" "), /Verificação MV sob demanda cobriria/);
+    assert.match(p.blockers.join(" "), /778 contato/);
+  });
+
+  it("com déficit mas SEM candidato no backlog (default mvBacklog.byCohort vazio) → bloqueio explica a ausência de alavanca", () => {
+    const p = buildWaveProposal(proposalInput({ availableFirstSend: 100 }));
+    assert.deepEqual(p.mvOnDemandPlan.byCohort, []);
+    assert.match(p.blockers.join(" "), /não tem candidato pra cobrir o déficit/);
+  });
+
+  it("REGRESSÃO (achado do self-review): backlog INSUFICIENTE nunca diz 'cobriria' — o texto declara quanto falta", () => {
+    // Sem este cuidado, o bloqueio dizia "cobriria: 778 contato(s)" mesmo
+    // quando só 50 dos 778 alvo estavam de fato disponíveis — uma alegação
+    // de cobertura total que era falsa.
+    const p = buildWaveProposal(
+      proposalInput({
+        availableFirstSend: 300,
+        mvBacklog: {
+          total: 50,
+          byCohort: [{ cohort: "ex-assinantes", count: 50 }],
+          estimatedCostUsd: 50 * MV_COST_PER_EMAIL_USD,
+        },
+      }),
+    );
+    assert.equal(p.mvOnDemandPlan.backlogInsufficient, true);
+    assert.equal(p.mvOnDemandPlan.totalPlanned, 50);
+    const text = p.blockers.join(" ");
+    assert.doesNotMatch(text, /Verificação MV sob demanda cobriria/, "nunca afirmar cobertura total quando é parcial");
+    assert.match(text, /NÃO cobre inteiramente/);
+    assert.match(text, /50 de 778 contato/);
+  });
+});
+
+describe("renderWaveProposal — seção MV sob demanda (#4659)", () => {
+  it("aparece só quando o plano tem alocação, com o comando pronto pra rodar", () => {
+    const withPlan = renderWaveProposal(
+      buildWaveProposal(
+        proposalInput({
+          availableFirstSend: 300,
+          mvBacklog: {
+            total: 5000,
+            byCohort: [{ cohort: "ex-assinantes", count: 5000 }],
+            estimatedCostUsd: 5000 * MV_COST_PER_EMAIL_USD,
+          },
+        }),
+      ),
+    );
+    assert.match(withPlan, /Verificação MV sob demanda \(#4659\)/);
+    assert.match(withPlan, /Ex-assinantes.*778 contato/);
+    assert.match(withPlan, /clarice-mv-ondemand\.ts --cycle 2607-08 --dates 2026-08-06/);
+    assert.match(withPlan, /clarice-build-db\.ts/);
+  });
+
+  it("some da tela quando não há déficit (plano vazio)", () => {
+    const noPlan = renderWaveProposal(buildWaveProposal(proposalInput({ availableFirstSend: 50_000 })));
+    assert.doesNotMatch(noPlan, /Verificação MV sob demanda/);
   });
 });
 

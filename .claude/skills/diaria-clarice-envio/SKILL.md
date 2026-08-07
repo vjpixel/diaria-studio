@@ -172,7 +172,75 @@ Depois de rodar, **repetir o Passo 1** — a fila mudou.
 
 ---
 
-## Passo 5 — Proposta de volume
+## Passo 5 — Verificação MV sob demanda (#4659)
+
+Só relevante quando o Passo 1 revelar um **déficit** de fila de 1º envio
+(o mesmo bloqueio "Fila de 1º envio... é menor que o volume proposto"). Nesse
+caso a saída de `clarice-plan-wave.ts` já traz `mvOnDemandPlan` calculado:
+quantos contatos verificar, de quais cohorts — na MESMA ordem de prioridade
+da fila de envio (`cohortSendRank`, morno→frio — #4542 já corrigiu uma
+inversão dessa ordem, não reintroduzir) — e o custo estimado.
+`renderWaveProposal` imprime isso numa seção própria ("Verificação MV sob
+demanda"), já dentro do texto do Passo 1.
+
+Substitui a abordagem em lote da #4427 (fechada como "aberta cedo demais",
+propunha varrer os ~253k contatos `mv_unverified` de uma vez, ~US$482
+pré-comprados). Aqui o gasto é proporcional ao déficit REAL desta onda —
+decisão do editor (05-06/08/2026, #4659).
+
+Se `mvOnDemandPlan.byCohort` vier **vazio**, não há nada a fazer aqui — ou
+não há déficit, ou o backlog disponível não cobre (a proposta já diz qual
+dos dois). Pule pro Passo 6.
+
+Se `mvOnDemandPlan.byCohort` tiver entradas, rode os 3 comandos NESTA ordem:
+
+```bash
+# 1. Verifica só o recorte que a proposta revelou — GASTA crédito
+#    MillionVerifier de verdade (ao contrário de clarice-plan-wave.ts, que é
+#    read-only por construção).
+npx tsx scripts/clarice-mv-ondemand.ts --cycle $CYCLE --dates $DATES
+
+# 2. Reingere o store (#4362) — sem isso os recém-verificados ficam
+#    invisíveis na mesma rodada (mesmo passo que a #4362 já exige depois do
+#    MV do Passo 4/novos).
+npx tsx scripts/clarice-build-db.ts
+
+# 3. Recompõe a proposta — availableFirstSend deve subir (ou o déficit
+#    encolher, se o backlog disponível não cobriu tudo).
+npx tsx scripts/clarice-plan-wave.ts --cycle $CYCLE --dates $DATES --json
+```
+
+**Sem gate de confirmação de gasto separado aqui** (decisão do editor,
+05-06/08/2026, #4659) — o volume desta verificação já é limitado pelo
+déficit da onda ATUAL (ordem de grandeza ~1k contatos/dia ≈ US$2/dia), nunca
+um lote arbitrário sobre o backlog inteiro. O gate de confirmação da onda
+continua sendo o Passo 7 — o custo desta verificação aparece ali dentro do
+resumo (quantos foram verificados, quanto custou, taxa de aprovação obtida),
+não como uma pergunta separada.
+
+Guards preservados (nunca pulados por este passo):
+- **"Skip forever"** (#2886) — um contato já verificado em QUALQUER ciclo
+  anterior nunca é re-verificado.
+- **`assinantes-ativos` NUNCA entra no recorte** — MV-isento (#3826/#1297);
+  `planMvOnDemand` filtra por construção, e `verify-emails-mv.ts` também
+  abortaria se recebesse esse cohort (defesa em profundidade dupla).
+- **Falha transitória vai pro `-error.csv`**, nunca no checkpoint (#4353) —
+  retentada automaticamente na próxima invocação.
+
+Se depois do passo 3 acima a fila continuar menor que o volume proposto
+(`mvOnDemandPlan.backlogInsufficient` — o backlog disponível não cobriu o
+alvo mesmo verificando tudo), volte ao Passo 6 com o déficit remanescente e
+decida com o editor: reduzir o volume da onda, ou aceitar a fila do jeito que
+está. Este passo NUNCA reduz o volume proposto sozinho.
+
+⚠️ **Não exercitado ao vivo nesta unidade** (#4659, worktree isolado sem
+`MILLION_VERIFIER_API_KEY`/`data/` reais — mesma disciplina do #4320/#4382/
+#4490/#4534/#4572) — testado com mocks; a 1ª execução numa onda real com
+déficit de verdade fica pra sessão supervisionada, com o editor presente.
+
+---
+
+## Passo 6 — Proposta de volume
 
 Também já vem calculada (`volumes`) no Passo 1. O volume **não** é decidido
 por esta skill: vem de `computeWeekPlan`, a mesma máquina que alimenta a aba
@@ -201,7 +269,7 @@ visível sem poder cortá-lo.
 
 ---
 
-## Passo 6 — Gate de confirmação
+## Passo 7 — Gate de confirmação
 
 Apresentar a saída de `renderWaveProposal` (o script sem `--json` já imprime).
 Ela mostra **todo** valor que vira escrita na Brevo — datas, volume por dia,
@@ -214,7 +282,10 @@ oferecer "sim"**. Os bloqueios são:
 - Semáforo vermelho (circuit breaker estourado).
 - Crédito Brevo não cobre a onda.
 - Crédito Brevo **não consultado** — nunca agendar sem validar antes.
-- Fila de 1º envio menor que o volume proposto.
+- Fila de 1º envio menor que o volume proposto — se o Passo 5
+  (`mvOnDemandPlan`) revelou um recorte cobrível, rode-o e volte aqui antes
+  de tentar de novo; se revelou vazio ou `backlogInsufficient`, a alavanca de
+  fila não está disponível e o editor decide (reduzir volume ou aceitar).
 - `/diaria-clarice-novos` do ciclo nunca rodou, ou rodou há mais de 48h
   (#4664) — sem isso, cadastro novo (`cohortSendRank: 0`) perde prioridade
   em silêncio pra leads frios.
@@ -237,7 +308,7 @@ dezenas de milhares de e-mails.
 
 ---
 
-## Passo 7 — Executar
+## Passo 8 — Executar
 
 Só depois do `sim`. Nada aqui é novo: são os scripts já existentes, agora com
 os parâmetros que o editor confirmou. **Passo corrigido em 05/08/2026 (#4663)
@@ -382,7 +453,7 @@ npx tsx scripts/clarice-plan-wave.ts --cycle $CYCLE --dates $DATES --json
 
 As ondas recém-agendadas devem aparecer em `state.waves` com
 `status: "queued"` e o `scheduledAt` correto. Se não aparecerem, **não
-re-executar o Passo 7** — investigar primeiro (pode ter agendado e falhado o
+re-executar o Passo 8** — investigar primeiro (pode ter agendado e falhado o
 registro, e re-executar duplicaria o envio).
 
 ## Não faz
