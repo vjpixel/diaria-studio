@@ -68,8 +68,13 @@ Write-TempLogLine "===== $(Get-Date -Format o) - geo citation monitor ====="
 # Set-StrictMode, `npx` falhando a resolver deixa $LASTEXITCODE genuinamente
 # indefinido (nao $null), e ler essa variavel lanca. Pre-setar aqui garante
 # deteccao correta do caso "npx nao rodou".
+#
+# --strict (#4754): no caminho AGENDADO, sair 0 sem ter medido nada e uma
+# mentira -- a task marcaria verde pra sempre enquanto history.jsonl congelava.
+# Na invocacao manual o default (sem --strict) continua sendo 0, porque "sem
+# key configurada" e estado valido por decisao do #4616.
 $LASTEXITCODE = $null
-& npx tsx "$MonitorScript" 2>&1 | ForEach-Object { $_.ToString() } | Out-File -FilePath $TempLogPath -Append -Encoding utf8
+& npx tsx "$MonitorScript" --strict 2>&1 | ForEach-Object { $_.ToString() } | Out-File -FilePath $TempLogPath -Append -Encoding utf8
 $monitorCode = $LASTEXITCODE
 
 if ($null -eq $monitorCode) {
