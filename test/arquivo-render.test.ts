@@ -17,6 +17,7 @@ import {
 } from "../workers/arquivo/src/render-archive.ts";
 import type { TitlesCacheMap } from "../workers/arquivo/src/render-archive.ts";
 import type { SitemapEntry } from "../scripts/lib/fetch-sitemap.ts";
+import { HUB_META } from "../workers/arquivo/src/hubs/meta.ts";
 import worker from "../workers/arquivo/src/index.ts";
 
 function entry(loc: string, lastmod: string | null): SitemapEntry {
@@ -594,5 +595,47 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/sitemap.xml"));
     const body = await res.text();
     assert.match(body, /<loc>https:\/\/arquivo\.diar\.ia\.br\/temas\/anthropic-claude<\/loc>/);
+  });
+});
+
+/**
+ * Regressão do hub órfão (#4558 Parte A).
+ *
+ * O primeiro hub (`/temas/anthropic-claude`) subiu ao ar em 05/ago/2026
+ * alcançável SÓ pelo sitemap: nenhuma página do site linkava pra ele. Como a
+ * tese da issue é ser citado por assistente — e crawler chega por link, não só
+ * por sitemap —, um hub sem link interno contradiz o próprio motivo de existir.
+ * Estes casos falham se a navegação "Por tema" sumir da página de arquivo.
+ */
+describe("navegação Por tema no arquivo (#4558 Parte A)", () => {
+  const ENTRIES = [
+    { loc: "https://diar.ia.br/p/edicao-teste", lastmod: "2026-08-01" },
+  ];
+
+  it("renderiza um <a href> para cada hub de HUB_META", () => {
+    const html = buildArchiveHtml(ENTRIES);
+    for (const hub of HUB_META) {
+      assert.ok(
+        html.includes(`href="/temas/${hub.slug}"`),
+        `arquivo não linka o hub "${hub.slug}" — ele fica alcançável só pelo sitemap`,
+      );
+      assert.ok(html.includes(hub.label), `rótulo "${hub.label}" ausente da navegação`);
+    }
+  });
+
+  it("renderiza a navegação mesmo sem nenhuma edição no sitemap", () => {
+    // Os hubs existem independentemente de haver edição listada: se o sitemap
+    // remoto vier vazio, o link do hub não pode sumir junto.
+    const html = buildArchiveHtml([]);
+    assert.ok(html.includes('class="tema-index"'));
+    assert.ok(html.includes(`href="/temas/${HUB_META[0]?.slug}"`));
+  });
+
+  it("a navegação vem antes do índice por mês", () => {
+    const html = buildArchiveHtml(ENTRIES);
+    const tema = html.indexOf('class="tema-index"');
+    const mes = html.indexOf('class="month-index"');
+    assert.ok(tema >= 0 && mes >= 0, "as duas navegações deveriam existir");
+    assert.ok(tema < mes, "a navegação por tema deveria vir antes do índice por mês");
   });
 });
