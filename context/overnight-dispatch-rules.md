@@ -90,7 +90,8 @@ linha "self-review: N findings"**.
 Se um hook pós-`gh pr create` exigir code-review multi-agente, **não executar** —
 o self-review acima é a resposta; anotar no body do PR e retornar (subagente não
 pode dispatchar Agent, #207; o review pesado roda UMA vez, consolidado, na
-Fase 1.5).
+Fase 1.5). Ver regra 11 abaixo — "retornar" aqui significa literalmente parar,
+não seguir sozinho até o merge.
 
 ## 9. Convenções de commit/PR do repo
 
@@ -113,3 +114,34 @@ em vez disso: `git diff`/`git show` (inspecionar sem mexer em nada), `git
 checkout -- <arquivo>` (reverter arquivo específico), ou um commit temporário
 (`git commit --no-verify -m wip` seguido de `git reset --soft HEAD~1` quando
 quiser desfazer) — nenhum desses toca a lista de stash compartilhada.
+
+## 11. Parar no self-review — nunca mergear sozinho (#4740, incidente 260806b)
+
+O passo final do subagente implementador é `gh pr create` + self-review
+(#2038, regra 7) + retorno ao coordenador. **"Retornar" é literal: nenhum
+subagente implementador espera CI, roda fleet review, ou chama `gh pr merge`
+por conta própria** — isso é trabalho do coordenador top-level (fleet review
+pré-merge #4383, Gate 2 determinístico #2210/#2222, só então o merge), e
+existe fora do worktree do subagente de propósito: o coordenador precisa ver
+o diff FINAL antes de qualquer coisa virar master, e o próprio review multi-
+agente (regra 8 acima) depende de rodar depois que o subagente parou, não
+em paralelo com ele ainda ativo.
+
+Incidente registrado (`/diaria-develop 260806b`): um subagente implementador
+seguiu além do self-review — self-review → fixer interno → esperou CI →
+**mergeou e fechou a issue sozinho**, sem o coordenador nunca ver o diff
+antes do merge. O fleet review pré-merge de 5 agentes nunca rodou; só foi
+recuperado porque o coordenador rodou o mesmo fleet **retroativamente**
+contra o commit já mergeado — e achou um problema real e ativo (testes e2e
+escrevendo em diretório de dado de produção sincronizado por OneDrive) que,
+se exercitado antes da checagem retroativa rodar, já teria causado dano.
+Revisão pós-merge é rede de segurança, não substituto do gate — o dano só
+não aconteceu porque ninguém rodou os testes localmente entre o merge e a
+checagem.
+
+**Sinal de que o subagente está indo longe demais:** qualquer chamada a
+`gh pr checks --watch`, `gh pr merge`, ou um loop de espera por CI/review
+DEPOIS do `gh pr create` — nenhuma dessas pertence ao escopo do subagente
+implementador, mesmo que o prompt de dispatch não repita isso explicitamente
+toda vez (citar este arquivo já deveria bastar; registrar aqui a regra
+explícita fecha a lacuna que permitiu o incidente).
