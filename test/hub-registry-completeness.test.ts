@@ -1,7 +1,7 @@
 /**
  * test/hub-registry-completeness.test.ts (#4558 Parte A)
  *
- * Cruza os 2 registries de hub, deliberadamente separados (ver docstring de
+ * Cruza os 3 registries de hub, deliberadamente separados (ver docstring de
  * `scripts/build-hub-page.ts`): `HUB_LOADERS` (builder, Node-side) e
  * `HUB_REGISTRY` (Worker, escrito à mão, `workers/arquivo/src/hubs/registry.ts`).
  * O caso que este teste pega — achado do fleet review da PR #4558 Parte A —
@@ -70,5 +70,22 @@ describe("completude entre HUB_LOADERS (builder) e HUB_REGISTRY (Worker) (#4558 
     assert.equal(new Set(slugs).size, slugs.length, `slug duplicado em HUB_META: ${slugs.join(", ")}`);
     const semLabel = HUB_META.filter((h) => h.label.trim() === "").map((h) => h.slug);
     assert.deepEqual(semLabel, [], `rótulo vazio em HUB_META: ${semLabel.join(", ")}`);
+  });
+
+  // Formato do slug era o ÚNICO invariante do módulo sem enforcement nenhum —
+  // nem tipo, nem teste (achado do fleet review da PR #4749). O slug é
+  // interpolado em `href="/temas/${slug}"`: uma barra ou espaço produz um link
+  // quebrado em silêncio. `esc()` impede que vire markup, mas não torna o link
+  // correto. Os outros invariantes do arquivo já eram travados; este não.
+  it("todo slug de HUB_META é um segmento de path válido", () => {
+    const invalidos = HUB_META.filter(
+      (h) => !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(h.slug),
+    ).map((h) => h.slug);
+    assert.deepEqual(
+      invalidos,
+      [],
+      `slug(s) fora do formato kebab-case sem barra/espaço — produziriam href quebrado ` +
+        `em /temas/{slug}: ${invalidos.map((s) => JSON.stringify(s)).join(", ")}`,
+    );
   });
 });

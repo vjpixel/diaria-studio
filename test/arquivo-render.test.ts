@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import {
   buildArchiveHtml,
   buildArquivoFaq,
+  buildTemaNav,
   displayTextFromLoc,
   esc,
 } from "../workers/arquivo/src/render-archive.ts";
@@ -601,11 +602,13 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
 /**
  * Regressão do hub órfão (#4558 Parte A).
  *
- * O primeiro hub (`/temas/anthropic-claude`) subiu ao ar em 05/ago/2026
- * alcançável SÓ pelo sitemap: nenhuma página do site linkava pra ele. Como a
- * tese da issue é ser citado por assistente — e crawler chega por link, não só
- * por sitemap —, um hub sem link interno contradiz o próprio motivo de existir.
- * Estes casos falham se a navegação "Por tema" sumir da página de arquivo.
+ * O primeiro hub (`/temas/anthropic-claude`) subiu ao ar em 04/ago/2026 (PRs
+ * #4627/#4635/#4642, o último às 21:51 BRT — em UTC cai no dia 5, mas todo o
+ * resto deste repo raciocina em BRT) alcançável SÓ pelo sitemap: nenhuma
+ * página do site linkava pra ele. Como a tese da issue é ser citado por
+ * assistente — e crawler chega por link, não só por sitemap —, um hub sem link
+ * interno contradiz o próprio motivo de existir. Estes casos falham se a
+ * navegação "Por tema" sumir da página de arquivo.
  */
 describe("navegação Por tema no arquivo (#4558 Parte A)", () => {
   const ENTRIES = [
@@ -631,11 +634,48 @@ describe("navegação Por tema no arquivo (#4558 Parte A)", () => {
     assert.ok(html.includes(`href="/temas/${HUB_META[0]?.slug}"`));
   });
 
-  it("a navegação vem antes do índice por mês", () => {
-    const html = buildArchiveHtml(ENTRIES);
-    const tema = html.indexOf('class="tema-index"');
-    const mes = html.indexOf('class="month-index"');
-    assert.ok(tema >= 0 && mes >= 0, "as duas navegações deveriam existir");
-    assert.ok(tema < mes, "a navegação por tema deveria vir antes do índice por mês");
+  // NÃO existe teste de ordem (tema antes do índice por mês). Foi escrito e
+  // removido no fleet review da PR #4749: ordem entre as duas navegações é
+  // preferência de layout, não comportamento. O crawler acha o `<a href>`
+  // esteja ele acima ou abaixo — mesma resposta HTML, sem paginação nem
+  // lazy-load — então um redesenho legítimo da página quebraria o teste sem
+  // nada de errado ter acontecido. O que precisa ser garantido é que o link
+  // EXISTA, e disso cuidam os casos acima.
+
+  // `HUB_META` de produção tem 1 entrada só, então nenhum teste que importe o
+  // array real exercita o separador. `buildTemaNav` é exportada exatamente pra
+  // fechar essa lacuna: com 2+ hubs, um `.join` quebrado (links colados, espaço
+  // faltando) falha aqui em vez de aparecer no ar quando o 2º tema entrar.
+  describe("buildTemaNav com múltiplos hubs", () => {
+    const DOIS = [
+      { slug: "openai-chatgpt", label: "OpenAI e ChatGPT" },
+      { slug: "brasil-regulacao", label: "Brasil e regulação" },
+    ] as const;
+
+    it("separa os links com ' · ' e não cola um no outro", () => {
+      const nav = buildTemaNav(DOIS);
+      assert.ok(
+        nav.includes('<a href="/temas/openai-chatgpt">OpenAI e ChatGPT</a> · <a href="/temas/brasil-regulacao">'),
+        `separador ausente ou malformado entre os links: ${nav}`,
+      );
+    });
+
+    it("preserva a ordem do array (é curadoria editorial, não alfabética)", () => {
+      const nav = buildTemaNav(DOIS);
+      assert.ok(
+        nav.indexOf("openai-chatgpt") < nav.indexOf("brasil-regulacao"),
+        "a ordem de HUB_META é a ordem de exibição — ver docstring de meta.ts",
+      );
+    });
+
+    it("escapa slug e rótulo", () => {
+      const nav = buildTemaNav([{ slug: "a&b", label: 'Aspas " e <tag>' }]);
+      assert.ok(!nav.includes("<tag>"), "rótulo não escapado vira markup");
+      assert.ok(nav.includes("&amp;"), "slug não escapado");
+    });
+
+    it("lista vazia não produz <nav> órfão", () => {
+      assert.equal(buildTemaNav([]), "");
+    });
   });
 });
