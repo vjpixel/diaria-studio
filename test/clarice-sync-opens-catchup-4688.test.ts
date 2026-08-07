@@ -208,6 +208,11 @@ test("DEFAULT_OPENS_CATCHUP_WINDOW_DAYS: valor positivo razoável (não 0, não 
 test("REGRESSÃO (#4688): opener com brevo_modified_at ANTIGO (fora do modifiedSince) tem opens_count atualizado via catch-up de campanha — não fica invisível pro incremental", async (t) => {
   const dir = mkdtempSync(resolve(tmpdir(), "sync-brevo-4688-"));
   const dbPath = resolve(dir, "store.db");
+  // #4717 follow-up (achado 1): cache do catch-up isolado num tmpdir próprio
+  // — sem `--cache-dir`, main() cairia no default de PRODUÇÃO
+  // (OPENS_CATCHUP_CACHE_DIR, dentro de data/clarice-subscribers/), escrevendo
+  // fora do tmpdir isolado em qualquer máquina com o junction `data/` presente.
+  const cacheDir = mkdtempSync(resolve(tmpdir(), "sync-brevo-4688-cache-"));
 
   // Setup: 2 contatos. `a@x.com` foi modificado recentemente (entra no
   // modifiedSince do listing normal). `b@x.com` só abriu uma campanha, sem
@@ -306,7 +311,7 @@ test("REGRESSÃO (#4688): opener com brevo_modified_at ANTIGO (fora do modifiedS
     else process.env.BREVO_CLARICE_API_KEY = origApiKey;
   });
 
-  await main(["--db", dbPath, "--incremental"]);
+  await main(["--db", dbPath, "--incremental", "--cache-dir", cacheDir]);
 
   const finalDb = openClariceDb(dbPath);
   const a = finalDb
@@ -328,6 +333,11 @@ test("REGRESSÃO (#4688): opener com brevo_modified_at ANTIGO (fora do modifiedS
 test("REGRESSÃO (#4688): --no-catch-opens desliga o catch-up — opener fora do modifiedSince continua com opens_count defasado", async (t) => {
   const dir = mkdtempSync(resolve(tmpdir(), "sync-brevo-4688-off-"));
   const dbPath = resolve(dir, "store.db");
+  // #4717 follow-up (achado 1): --cache-dir isolado por defesa em profundidade
+  // — este teste roda com --no-catch-opens (nunca alcança runOpensCatchup),
+  // mas isolar aqui também evita que uma futura remoção da flag volte a
+  // escrever no diretório de produção sem ninguém notar.
+  const cacheDir = mkdtempSync(resolve(tmpdir(), "sync-brevo-4688-off-cache-"));
 
   const setupDb = openClariceDb(dbPath);
   setupDb
@@ -363,7 +373,7 @@ test("REGRESSÃO (#4688): --no-catch-opens desliga o catch-up — opener fora do
     else process.env.BREVO_CLARICE_API_KEY = origApiKey;
   });
 
-  await main(["--db", dbPath, "--incremental", "--no-catch-opens"]);
+  await main(["--db", dbPath, "--incremental", "--no-catch-opens", "--cache-dir", cacheDir]);
 
   const finalDb = openClariceDb(dbPath);
   const b = finalDb
@@ -372,4 +382,93 @@ test("REGRESSÃO (#4688): --no-catch-opens desliga o catch-up — opener fora do
   finalDb.close();
   assert.equal(b.opens_count, 0, "sem catch-up, opens_count não é tocado (só o listing, que não achou ninguém)");
   assert.equal(existsSync(dbPath), true);
+});
+
+// ─── #4717 follow-up (achado 3): try/catch MAIS EXTERNO de main() ────────
+//
+// A garantia fail-soft central que o docstring do #4688 promete ("uma falha
+// no catch-up nunca reprova o sync principal já persistido") só era testada
+// nos NÍVEIS internos de runOpensCatchup (fail-soft por campanha/por
+// contato). O catch de main() que envolve a CHAMADA INTEIRA a runOpensCatchup
+// nunca tinha sido exercitado — este teste força listSentCampaigns a lançar
+// ANTES de retornar (fora de qualquer try interno de runOpensCatchup), prova
+// que main() não propaga, e que `opens_catchup.error` aparece no summary.
+
+test("REGRESSÃO (#4717): falha TOTAL do catch-up (listSentCampaigns rejeita) não derruba main() — sync principal persiste, opens_catchup.error aparece no summary", async (t) => {
+  const dir = mkdtempSync(resolve(tmpdir(), "sync-brevo-4717-outer-"));
+  const dbPath = resolve(dir, "store.db");
+  const cacheDir = mkdtempSync(resolve(tmpdir(), "sync-brevo-4717-outer-cache-"));
+
+  const setupDb = openClariceDb(dbPath);
+  setupDb
+    .prepare(
+      `INSERT INTO clarice_users (email, tier, sends_count, opens_count, brevo_modified_at)
+       VALUES ('a@x.com', 2, 1, 0, '2026-08-06T00:00:00.000Z')`,
+    )
+    .run();
+  recomputeDerived(setupDb);
+  setupDb.close();
+
+  const origFetch = globalThis.fetch;
+  const origApiKey = process.env.BREVO_CLARICE_API_KEY;
+  const origLog = console.log;
+  process.env.BREVO_CLARICE_API_KEY = "test-key-4717-outer";
+  const logged: string[] = [];
+  console.log = (msg: unknown) => {
+    logged.push(String(msg));
+  };
+
+  globalThis.fetch = (async (url: string | URL) => {
+    const u = String(url);
+    // Sync principal — listing por modifiedSince: responde normalmente,
+    // ninguém modificado (o ponto do teste é isolar a falha no catch-up).
+    if (u.includes("/contacts?")) {
+      return new Response(JSON.stringify({ contacts: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    // Catch-up — listSentCampaigns: 403 → brevoGet lança IMEDIATAMENTE (sem
+    // retry, ver lib/brevo-client.ts "outro 4xx → throw"), ANTES de
+    // runOpensCatchup sequer entrar no loop de campanhas — logo fora de
+    // qualquer try/catch INTERNO de runOpensCatchup. Só o catch mais externo
+    // de main() pode capturar isto.
+    if (u.includes("/emailCampaigns?status=sent")) {
+      return new Response("forbidden", { status: 403 });
+    }
+    throw new Error(`fetch inesperado no mock: ${u}`);
+  }) as unknown as typeof globalThis.fetch;
+
+  t.after(() => {
+    globalThis.fetch = origFetch;
+    console.log = origLog;
+    if (origApiKey === undefined) delete process.env.BREVO_CLARICE_API_KEY;
+    else process.env.BREVO_CLARICE_API_KEY = origApiKey;
+  });
+
+  // A garantia central: main() não rejeita/lança mesmo com falha TOTAL do
+  // catch-up — se propagasse, este await lançaria e o teste falharia aqui.
+  await main(["--db", dbPath, "--incremental", "--cache-dir", cacheDir]);
+
+  const finalDb = openClariceDb(dbPath);
+  const a = finalDb
+    .prepare("SELECT opens_count FROM clarice_users WHERE email = 'a@x.com'")
+    .get() as { opens_count: number };
+  const total = finalDb.prepare("SELECT COUNT(*) AS n FROM clarice_users").get() as { n: number };
+  finalDb.close();
+
+  assert.equal(total.n, 1, "sync principal já persistido continua íntegro — falha do catch-up não corrompeu o store");
+  assert.equal(a.opens_count, 0, "contato pré-existente inalterado (nem regrediu, nem foi tocado por engano)");
+
+  const summaryLine = logged.find((l) => l.includes("opens_catchup"));
+  assert.ok(summaryLine, "summary JSON (stdout) deve conter a chave opens_catchup");
+  const summary = JSON.parse(summaryLine!);
+  assert.equal(summary.brevo_synced, true, "sync principal reporta sucesso mesmo com catch-up falho");
+  assert.ok(summary.opens_catchup, "opens_catchup não deve ser null quando o catch-up rodou (mesmo falhando)");
+  assert.ok(
+    typeof summary.opens_catchup.error === "string" && summary.opens_catchup.error.length > 0,
+    "opens_catchup.error deve carregar a mensagem da falha total — não pode ficar mudo",
+  );
+  assert.equal(summary.opens_catchup.campaignsConsidered, 0);
+  assert.equal(summary.opens_catchup.contactsUpdated, 0);
 });
