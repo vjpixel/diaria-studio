@@ -227,8 +227,15 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
+  // #4745: process.exitCode em vez de process.exit() — este catch roda DEPOIS
+  // de awaits de rede (fetchSentCampaigns/fetchCampaignStats/sendGmailMessage),
+  // o cenário exato da classe UV_HANDLE_CLOSING no Windows (#1401/#4638/#4651/
+  // #4653): process.exit() força o shutdown do libuv antes dos sockets
+  // keep-alive do fetch fecharem. process.exitCode deixa o event loop drenar
+  // sozinho. Os guards pré-await (linhas acima) continuam com process.exit(2)
+  // de propósito — nenhum fetch rodou ainda nesses pontos.
   main().catch((e) => {
     console.error("[check-brevo-diaria-guardrail] erro:", e);
-    process.exit(1);
+    process.exitCode = 1;
   });
 }

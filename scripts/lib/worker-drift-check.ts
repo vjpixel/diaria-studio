@@ -250,17 +250,100 @@ export interface WorkerDriftAlarmState {
   lastAlarmedFingerprint: string | null;
   /** ISO — só pra REPORTAR ("desde X"), não participa da idempotência. */
   lastCheckedAt: string | null;
+  /** ISO — quando a consulta à Cloudflare API (`fetchAllWorkerScriptsMetadata`)
+   * começou a falhar nesta série CONSECUTIVA. `null` sempre que a consulta
+   * mais recente teve sucesso — reseta a série inteira, porque uma falha
+   * isolada nunca é "sustentada" (#4746). */
+  firstApiErrorAt: string | null;
+  /** ISO — quando o alarme de "consulta à API falhando há muito tempo" foi
+   * enviado pela ÚLTIMA vez NESTA série. Reseta junto com `firstApiErrorAt`
+   * quando a série resolve (sucesso), permitindo alarmar de novo numa série
+   * futura sem repetir o mesmo e-mail a cada execução da série atual (#4746). */
+  lastApiErrorAlarmedAt: string | null;
 }
 
 export function emptyWorkerDriftAlarmState(): WorkerDriftAlarmState {
-  return { lastAlarmedFingerprint: null, lastCheckedAt: null };
+  return {
+    lastAlarmedFingerprint: null,
+    lastCheckedAt: null,
+    firstApiErrorAt: null,
+    lastApiErrorAlarmedAt: null,
+  };
 }
 
 /** Pura — avança o cursor. `fingerprint: null` quando não há drift pendente
  * nesta checagem (re-arma pra próxima ocorrência, mesmo padrão de
- * `apoios-diff-alarm.ts`). */
-export function advanceState(fingerprint: string | null, now: Date): WorkerDriftAlarmState {
-  return { lastAlarmedFingerprint: fingerprint, lastCheckedAt: now.toISOString() };
+ * `apoios-diff-alarm.ts`). `apiErrorState` (default: série resetada) carrega
+ * `firstApiErrorAt`/`lastApiErrorAlarmedAt` — só é chamado com um valor
+ * explícito no branch de SUCESSO de main() (`advanceApiErrorState` já
+ * resolveu pra `{ null, null }` nesse caso; o default aqui existe só pra não
+ * quebrar callers/testes que não se importam com a série de erro). */
+export function advanceState(
+  fingerprint: string | null,
+  now: Date,
+  apiErrorState: Pick<WorkerDriftAlarmState, "firstApiErrorAt" | "lastApiErrorAlarmedAt"> = {
+    firstApiErrorAt: null,
+    lastApiErrorAlarmedAt: null,
+  },
+): WorkerDriftAlarmState {
+  return { lastAlarmedFingerprint: fingerprint, lastCheckedAt: now.toISOString(), ...apiErrorState };
+}
+
+/** #4746 — threshold pra considerar a falha da consulta à Cloudflare API
+ * "sustentada" (credencial expirada/revogada, não um blip transitório). A
+ * task roda a cada 6h (`run-worker-drift-check.ps1`) — 24h ~ 4 execuções
+ * consecutivas falhando antes de acordar o editor com um alarme distinto do
+ * alarme de drift em si. */
+export const API_ERROR_SUSTAINED_THRESHOLD_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Pura — deriva `firstApiErrorAt`/`lastApiErrorAlarmedAt` PARA PERSISTIR
+ * nesta execução, a partir do estado anterior + se ESTA execução teve
+ * `metadataError` (#4746):
+ *   - `metadataError` ausente (consulta OK) → RESETA a série inteira
+ *     (`null`, `null`) — falha resolvida; a próxima falha começa uma série
+ *     nova, com threshold contado do zero.
+ *   - `metadataError` presente e já havia `firstApiErrorAt` anterior →
+ *     PRESERVA o início da série (a falha continua) e `lastApiErrorAlarmedAt`
+ *     tal como estava (main() avança pra `now` só se o e-mail for de fato
+ *     enviado — ver `shouldAlarmApiError`).
+ *   - `metadataError` presente mas `firstApiErrorAt` anterior era `null`
+ *     (1ª falha desta série) → inicia a série agora.
+ */
+export function advanceApiErrorState(
+  previous: Pick<WorkerDriftAlarmState, "firstApiErrorAt" | "lastApiErrorAlarmedAt">,
+  metadataError: string | null,
+  now: Date,
+): Pick<WorkerDriftAlarmState, "firstApiErrorAt" | "lastApiErrorAlarmedAt"> {
+  if (!metadataError) {
+    return { firstApiErrorAt: null, lastApiErrorAlarmedAt: null };
+  }
+  return {
+    firstApiErrorAt: previous.firstApiErrorAt ?? now.toISOString(),
+    lastApiErrorAlarmedAt: previous.lastApiErrorAlarmedAt,
+  };
+}
+
+/**
+ * Pura — `true` quando a falha da consulta já persiste por >=
+ * `API_ERROR_SUSTAINED_THRESHOLD_MS` E ainda não foi alarmada NESTA série
+ * (idempotente: uma vez alarmado, só alarma de novo depois que a série
+ * resolver — sucesso reseta `firstApiErrorAt`/`lastApiErrorAlarmedAt` via
+ * `advanceApiErrorState` — e uma NOVA série atingir o threshold de novo).
+ * Recebe o estado JÁ avançado por `advanceApiErrorState` desta mesma
+ * execução (não o estado bruto anterior) — é o `firstApiErrorAt` da série
+ * corrente que importa pro cálculo de duração.
+ */
+export function shouldAlarmApiError(
+  nextApiErrorState: Pick<WorkerDriftAlarmState, "firstApiErrorAt" | "lastApiErrorAlarmedAt">,
+  metadataError: string | null,
+  now: Date,
+  thresholdMs: number = API_ERROR_SUSTAINED_THRESHOLD_MS,
+): boolean {
+  if (!metadataError) return false;
+  if (!nextApiErrorState.firstApiErrorAt) return false;
+  if (nextApiErrorState.lastApiErrorAlarmedAt) return false;
+  return now.getTime() - Date.parse(nextApiErrorState.firstApiErrorAt) >= thresholdMs;
 }
 
 /**
@@ -295,7 +378,7 @@ export function shouldAdvanceState(opts: { isDryRun: boolean; metadataError: str
 
 // ─── Corpo do e-mail de alarme (puro) ──────────────────────────────────────
 
-function formatDuration(ms: number): string {
+export function formatDuration(ms: number): string {
   const hours = ms / (1000 * 60 * 60);
   if (hours < 24) return `${hours.toFixed(1)}h`;
   const days = hours / 24;
@@ -345,4 +428,44 @@ export function buildWorkerDriftAlarmEmail(
   lines.push("", `(alarme automático — checagem rodou em ${now.toISOString()})`);
 
   return { subject, body: lines.join("\n") };
+}
+
+/**
+ * Pura — assunto + corpo do e-mail de "não consigo checar drift há muito
+ * tempo" (#4746): DISTINTO do alarme de drift em si (`buildWorkerDriftAlarmEmail`)
+ * — dispara quando a consulta à Cloudflare API vem falhando de forma
+ * SUSTENTADA (`shouldAlarmApiError`), não quando um drift real foi
+ * encontrado. Sem este alarme separado, uma credencial expirada/revogada faz
+ * TODO worker cair em `status: "error"` (`hasPendingDrift` exclui "error"),
+ * `shouldAlarm` nunca dispara, e nenhum e-mail é enviado indefinidamente —
+ * mesmo que um drift real esteja acontecendo nesse meio-tempo, sem sinal
+ * nenhum pro editor.
+ */
+export function buildApiErrorAlarmEmail(
+  metadataError: string,
+  firstApiErrorAt: string,
+  now: Date = new Date(),
+): { subject: string; body: string } {
+  const elapsedMs = Math.max(0, now.getTime() - Date.parse(firstApiErrorAt));
+  const ago = formatDuration(elapsedMs);
+
+  const subject = "[diar.ia.br] Não consigo checar drift de Workers há muito tempo";
+
+  const body = [
+    "A consulta à Cloudflare Workers API (GET /accounts/{account}/workers/scripts,",
+    `usada por scripts/worker-drift-check.ts) vem falhando continuamente há ~${ago}`,
+    `(desde ${firstApiErrorAt}) — nenhum worker teve dado confiável nesse período,`,
+    "então um drift real nesse meio-tempo não teria sido detectado nem alarmado.",
+    "",
+    `Último erro: ${metadataError}`,
+    "",
+    "Verifique se CLOUDFLARE_WORKERS_TOKEN expirou/foi revogado (ou",
+    "CLOUDFLARE_ACCOUNT_ID mudou) e confirme com:",
+    "",
+    "  npx tsx scripts/worker-drift-check.ts --dry-run",
+    "",
+    `(alarme automático — checagem rodou em ${now.toISOString()})`,
+  ].join("\n");
+
+  return { subject, body };
 }

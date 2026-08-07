@@ -19,9 +19,13 @@ import {
   computeDriftFingerprint,
   emptyWorkerDriftAlarmState,
   advanceState,
+  advanceApiErrorState,
+  shouldAlarmApiError,
   shouldAlarm,
   shouldAdvanceState,
   buildWorkerDriftAlarmEmail,
+  buildApiErrorAlarmEmail,
+  API_ERROR_SUSTAINED_THRESHOLD_MS,
   type WorkerDriftCheckInput,
   type WorkerDriftResult,
 } from "../scripts/lib/worker-drift-check.ts";
@@ -375,5 +379,131 @@ describe("buildWorkerDriftAlarmEmail (#4723)", () => {
     const results = [driftResult({})];
     const { body } = buildWorkerDriftAlarmEmail(results, NOW);
     assert.doesNotMatch(body, /não puderam ser checados/);
+  });
+});
+
+// ─── #4746: alarme separado pra falha SUSTENTADA da consulta à API ─────────
+//
+// Regressão do achado #4746: `hasPendingDrift` exclui `status === "error"`,
+// então uma falha da consulta à Cloudflare API (credencial expirada/
+// revogada) faz TODO worker virar "error", `pending = false`,
+// `shouldAlarm` nunca dispara — nenhum e-mail é enviado, indefinidamente,
+// mesmo que um drift real esteja acontecendo nesse meio-tempo. Estas 3
+// funções puras (`advanceApiErrorState`, `shouldAlarmApiError`,
+// `buildApiErrorAlarmEmail`) implementam um alarme SEPARADO, com sua
+// própria idempotência, persistido no MESMO state.json (não um 2º arquivo).
+
+describe("advanceApiErrorState (#4746)", () => {
+  const empty = { firstApiErrorAt: null, lastApiErrorAlarmedAt: null };
+
+  it("sucesso (metadataError null) -> RESETA a série inteira, mesmo vindo de uma série em andamento", () => {
+    const previous = { firstApiErrorAt: "2026-08-01T00:00:00Z", lastApiErrorAlarmedAt: "2026-08-02T00:00:00Z" };
+    assert.deepEqual(advanceApiErrorState(previous, null, NOW), empty);
+  });
+
+  it("1ª falha da série (firstApiErrorAt anterior null) -> inicia a série AGORA", () => {
+    assert.deepEqual(advanceApiErrorState(empty, "HTTP 401", NOW), {
+      firstApiErrorAt: NOW.toISOString(),
+      lastApiErrorAlarmedAt: null,
+    });
+  });
+
+  it("falha CONTINUA (firstApiErrorAt anterior já existia) -> PRESERVA o início original da série", () => {
+    const previous = { firstApiErrorAt: "2026-08-01T00:00:00Z", lastApiErrorAlarmedAt: null };
+    assert.deepEqual(advanceApiErrorState(previous, "HTTP 401", NOW), {
+      firstApiErrorAt: "2026-08-01T00:00:00Z",
+      lastApiErrorAlarmedAt: null,
+    });
+  });
+
+  it("falha continua E já foi alarmada antes -> preserva lastApiErrorAlarmedAt também", () => {
+    const previous = { firstApiErrorAt: "2026-08-01T00:00:00Z", lastApiErrorAlarmedAt: "2026-08-05T00:00:00Z" };
+    assert.deepEqual(advanceApiErrorState(previous, "HTTP 401", NOW), previous);
+  });
+});
+
+describe("shouldAlarmApiError (#4746)", () => {
+  it("falha ISOLADA (duração abaixo do threshold) -> não alarma ainda", () => {
+    const nextState = { firstApiErrorAt: new Date(NOW.getTime() - 1000).toISOString(), lastApiErrorAlarmedAt: null };
+    assert.equal(shouldAlarmApiError(nextState, "HTTP 401", NOW), false);
+  });
+
+  it("falha SUSTENTADA além do threshold -> alarma", () => {
+    const nextState = {
+      firstApiErrorAt: new Date(NOW.getTime() - API_ERROR_SUSTAINED_THRESHOLD_MS).toISOString(),
+      lastApiErrorAlarmedAt: null,
+    };
+    assert.equal(shouldAlarmApiError(nextState, "HTTP 401", NOW), true);
+  });
+
+  it("exatamente 1ms abaixo do threshold -> ainda não alarma (limite exclusivo por baixo)", () => {
+    const nextState = {
+      firstApiErrorAt: new Date(NOW.getTime() - API_ERROR_SUSTAINED_THRESHOLD_MS + 1).toISOString(),
+      lastApiErrorAlarmedAt: null,
+    };
+    assert.equal(shouldAlarmApiError(nextState, "HTTP 401", NOW), false);
+  });
+
+  it("alarme já disparado recentemente NESTA série -> não repete", () => {
+    const nextState = {
+      firstApiErrorAt: new Date(NOW.getTime() - API_ERROR_SUSTAINED_THRESHOLD_MS * 3).toISOString(),
+      lastApiErrorAlarmedAt: new Date(NOW.getTime() - 1000).toISOString(),
+    };
+    assert.equal(shouldAlarmApiError(nextState, "HTTP 401", NOW), false);
+  });
+
+  it("falha RESOLVIDA (metadataError null) -> nunca alarma, mesmo com firstApiErrorAt antigo no estado", () => {
+    const nextState = {
+      firstApiErrorAt: new Date(NOW.getTime() - API_ERROR_SUSTAINED_THRESHOLD_MS * 3).toISOString(),
+      lastApiErrorAlarmedAt: null,
+    };
+    assert.equal(shouldAlarmApiError(nextState, null, NOW), false);
+  });
+
+  it("firstApiErrorAt null (sem série em andamento) -> nunca alarma, mesmo com metadataError presente", () => {
+    assert.equal(shouldAlarmApiError({ firstApiErrorAt: null, lastApiErrorAlarmedAt: null }, "HTTP 401", NOW), false);
+  });
+
+  it("fluxo completo: isolada -> sustentada -> alarma -> resolvida -> nova série sustentada -> alarma de novo", () => {
+    let state = { firstApiErrorAt: null as string | null, lastApiErrorAlarmedAt: null as string | null };
+
+    // t0: 1ª falha — isolada, não alarma.
+    const t0 = NOW;
+    state = advanceApiErrorState(state, "HTTP 401", t0);
+    assert.equal(shouldAlarmApiError(state, "HTTP 401", t0), false);
+
+    // t0 + threshold: mesma série, agora sustentada -> alarma.
+    const t1 = new Date(t0.getTime() + API_ERROR_SUSTAINED_THRESHOLD_MS);
+    state = advanceApiErrorState(state, "HTTP 401", t1);
+    assert.equal(shouldAlarmApiError(state, "HTTP 401", t1), true);
+    state = { ...state, lastApiErrorAlarmedAt: t1.toISOString() }; // main() faz isso após enviar
+
+    // t1 + 1h: mesma série, já alarmada -> não repete.
+    const t2 = new Date(t1.getTime() + 60 * 60 * 1000);
+    state = advanceApiErrorState(state, "HTTP 401", t2);
+    assert.equal(shouldAlarmApiError(state, "HTTP 401", t2), false);
+
+    // t2 + 1h: resolvida -> reseta.
+    const t3 = new Date(t2.getTime() + 60 * 60 * 1000);
+    state = advanceApiErrorState(state, null, t3);
+    assert.deepEqual(state, { firstApiErrorAt: null, lastApiErrorAlarmedAt: null });
+
+    // t3 + threshold: NOVA série sustentada -> alarma de novo (não fica mudo pra sempre).
+    const t4 = new Date(t3.getTime() + API_ERROR_SUSTAINED_THRESHOLD_MS);
+    state = advanceApiErrorState(state, "HTTP 401", t3); // início da nova série em t3
+    state = advanceApiErrorState(state, "HTTP 401", t4); // ainda na mesma série em t4
+    assert.equal(shouldAlarmApiError(state, "HTTP 401", t4), true);
+  });
+});
+
+describe("buildApiErrorAlarmEmail (#4746)", () => {
+  it("assunto distinto do alarme de drift, corpo cita o erro e a duração", () => {
+    const firstApiErrorAt = new Date(NOW.getTime() - API_ERROR_SUSTAINED_THRESHOLD_MS).toISOString();
+    const { subject, body } = buildApiErrorAlarmEmail("Cloudflare API retornou 401: invalid token", firstApiErrorAt, NOW);
+    assert.match(subject, /Não consigo checar drift/);
+    assert.doesNotMatch(subject, /worker\(s\) com deploy defasado/); // não é o mesmo assunto do alarme de drift
+    assert.match(body, /Cloudflare API retornou 401: invalid token/);
+    assert.match(body, /CLOUDFLARE_WORKERS_TOKEN/);
+    assert.match(body, /1\.0 dia\(s\)/); // formatDuration: 24h exatas -> vira "1.0 dia(s)", não "24.0h" (hours<24 é estrito)
   });
 });
