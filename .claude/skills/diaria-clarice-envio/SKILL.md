@@ -145,7 +145,16 @@ viraria 03/03 em silêncio no `Date` do JS).
 ## Passo 4 — Puxar os cadastros novos
 
 **Antes** de fechar a proposta, rodar a skill de novos (decisão do editor,
-#4657 — invoca como passo do plano, não absorve):
+#4657 — invoca como passo do plano, não absorve).
+
+**Desde #4664, isto não é só prosa** — a saída do Passo 1 (`clarice-plan-wave.ts`)
+traz `novosFreshness`, medindo há quanto tempo `/diaria-clarice-novos` rodou de
+fato (`lastRunAt` do `novos-state.json`): acima de 12h vira **aviso**, acima de
+48h vira **bloqueio** (o gate não pode oferecer "sim" com ele de pé), e "nunca
+rodou" também bloqueia. O guard só DETECTA e REPORTA — nunca invoca a skill
+sozinho (`clarice-plan-wave.ts` é read-only por construção). Caso real que
+motivou isto: onda `d6-qui06` (05/08) saiu 99,3% leads frios de 2024 porque
+este passo foi pulado.
 
 ```
 /diaria-clarice-novos
@@ -206,9 +215,13 @@ oferecer "sim"**. Os bloqueios são:
 - Crédito Brevo não cobre a onda.
 - Crédito Brevo **não consultado** — nunca agendar sem validar antes.
 - Fila de 1º envio menor que o volume proposto.
+- `/diaria-clarice-novos` do ciclo nunca rodou, ou rodou há mais de 48h
+  (#4664) — sem isso, cadastro novo (`cohortSendRank: 0`) perde prioridade
+  em silêncio pra leads frios.
 
 Avisos (fila apertando, não-abridores, dado stale, campanha agendada,
-ressalvas do A/B/C) o editor **pesa**, não impedem.
+ressalvas do A/B/C, `/diaria-clarice-novos` rodou entre 12h e 48h atrás)
+o editor **pesa**, não impedem.
 
 ```
 Confirmar e agendar? sim / ajustar / abortar

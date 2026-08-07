@@ -98,6 +98,35 @@
  *                são lidos/escritos sob `{data-root}/{cycle}/segments` em vez do
  *                disco real de produção. Sem a flag, comportamento de produção
  *                inalterado (baseDir default = `CLARICE_BASE`).
+ *   --cohort X   OPCIONAL (#4622) — restringe o universo a uma safra mensal
+ *                específica ANTES do predicado/ordem do grupo (mesma mecânica
+ *                de `--cohort` em `clarice-build-waves-store.ts` desde #2817:
+ *                resolvido via `resolveCohortArg` — rótulo pt-BR como
+ *                "junho", forma canônica "YYYY-MM", ou slug direto da
+ *                taxonomia como "leads-2024h2"). Reusável pelos 4
+ *                `NAMED_GROUPS` (não só `reativacao`) — resolve o caso "N
+ *                contatos frios de uma safra específica, ordenados no TOM do
+ *                grupo escolhido" sem precisar de SQL ad-hoc fora do pipeline
+ *                versionado. Sem a flag, roda sobre a base inteira
+ *                (comportamento pré-#4622, sem mudança).
+ *   --not-sent-within Nd / --not-sent-since YYYY-MM-DD   OPCIONAIS e
+ *                mutuamente exclusivos (#4719) — excluem do universo quem tem
+ *                `last_sent_at` dentro da janela pedida, ANTES do corte por
+ *                `--budget` (senão o volume final sai menor que o pedido).
+ *                Diferente do dedup por ciclo (`sent-or-queued.json` abaixo,
+ *                que só enxerga quem foi SELECIONADO por um `--group` neste
+ *                ciclo): este filtro responde "recebeu e-mail nosso de fato,
+ *                não importa por qual via?" — cobre seeds do editor, listas
+ *                montadas à mão, campanhas ad-hoc, tudo que o dedup por ciclo
+ *                não vê mas que ainda assim atualiza `last_sent_at` via o
+ *                sync da Brevo. Ver `scripts/lib/clarice-recency.ts` pro
+ *                racional completo e o caso real (onda `d7-sex07`, 06/08,
+ *                15 de 817 contatos vazaram e foram filtrados à mão).
+ *                `EDITOR_SEED_EMAILS` continuam ISENTOS — a linha do editor só
+ *                é injetada no CSV no momento do IMPORT
+ *                (`ensureEditorCopyRow`, `clarice-import-waves.ts`), depois
+ *                desta seleção, então nunca faz parte do universo que este
+ *                filtro enxerga.
  *
  * Outputs (em data/clarice-subscribers/{conteúdo}-{envio}/segments/):
  *   {group}.csv              (colunas: email,NOME — compatível com clarice-import-waves)
@@ -147,6 +176,7 @@ import {
   NAMED_GROUPS,
   isNamedGroupKey,
   excludeCommittedToQueuedCampaigns,
+  resolveCohortArg,
   type NamedGroupKey,
   type NamedGroupContext,
   type StoreRow,
@@ -155,6 +185,7 @@ import { clariceSegmentsDir, ensureDir, requireCycleArg } from "./lib/clarice-pa
 import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { fetchCommittedCampaignListIds, fetchQueuedCampaignListIds } from "./lib/brevo-client.ts";
 import { parseHoldArg, applyHolds, type HoldSegmentName } from "./lib/clarice-hold.ts";
+import { resolveNotSentCutoff, excludeSentSince } from "./lib/clarice-recency.ts";
 
 loadProjectEnv();
 
@@ -408,6 +439,34 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   const dryRun = hasFlag(argv, "dry-run");
 
+  // #4622: --cohort restringe o universo a uma safra mensal específica.
+  // Resolvido ANTES do SELECT (falha cedo se o rótulo/forma não for
+  // reconhecido — ver resolveCohortArg) e aplicado como WHERE, mesma mecânica
+  // de --cohort em clarice-build-waves-store.ts (#2817).
+  let cohort: string | null = null;
+  try {
+    const cohortArg = getStringArg(argv, "cohort", { example: "junho" });
+    cohort = cohortArg ? resolveCohortArg(cohortArg) : null;
+  } catch (e) {
+    console.error(`❌ ${(e as Error).message}`);
+    process.exit(1);
+  }
+
+  // #4719: --not-sent-within/--not-sent-since — cutoff de recência resolvido
+  // cedo (mesmo padrão do --cohort acima), aplicado depois do SELECT (precisa
+  // de last_sent_at, que só existe pós-carga).
+  let notSentCutoff: string | null = null;
+  try {
+    notSentCutoff = resolveNotSentCutoff(
+      getStringArg(argv, "not-sent-within", { example: "30d" }),
+      getStringArg(argv, "not-sent-since", { example: "2026-08-01" }),
+      new Date(),
+    );
+  } catch (e) {
+    console.error(`❌ ${(e as Error).message}`);
+    process.exit(1);
+  }
+
   const db = openClariceDb(dbPath);
 
   // #4205: 'engajados' é o único grupo nomeado que filtra por priority_points
@@ -436,13 +495,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     .prepare(
       `SELECT email, name, tier, cohort, priority_points, send_eligible, ineligible_reason, sends_count,
               opens_count, last_sent_at, mv_bucket, brevo_list_ids, created, brevo_modified_at
-         FROM clarice_users`,
+         FROM clarice_users${cohort ? " WHERE cohort = ?" : ""}`,
     )
-    .all() as unknown as SegmentRow[];
+    .all(...(cohort ? [cohort] : [])) as unknown as SegmentRow[];
   db.close();
 
+  if (cohort) {
+    console.error(`🎯 filtro --cohort aplicado: cohort='${cohort}' (${rows.length} linha(s) no universo)`);
+  }
+
   if (rows.length === 0) {
-    console.error("❌ store vazio — rode clarice-build-db.ts + clarice-sync-brevo.ts antes.");
+    console.error(
+      cohort
+        ? `❌ 0 contatos com cohort='${cohort}' — verifique se o store já foi rebuildado após o import da safra.`
+        : "❌ store vazio — rode clarice-build-db.ts + clarice-sync-brevo.ts antes.",
+    );
     process.exit(1);
   }
 
@@ -461,6 +528,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   if (alreadyTracked > 0) {
     console.error(
       `🔒 dedup por ciclo (#3227): ${alreadyTracked} contato(s) já selecionado(s) por outra invocação de grupo nomeado neste ciclo — excluído(s) do universo.`,
+    );
+  }
+
+  // #4719: filtro de recência — "recebeu de fato?" é uma pergunta diferente
+  // de "foi selecionado neste ciclo?" (o guard acima). Ver
+  // scripts/lib/clarice-recency.ts pro racional completo. ANTES do corte por
+  // --budget (senão o volume final sai menor que o pedido).
+  const afterRecency = notSentCutoff ? excludeSentSince(afterSentOrQueued, notSentCutoff) : afterSentOrQueued;
+  const excludedByRecency = afterSentOrQueued.length - afterRecency.length;
+  if (notSentCutoff) {
+    console.error(
+      `🔒 filtro de recência (#4719): ${excludedByRecency} contato(s) com last_sent_at >= ${notSentCutoff} excluído(s) do universo.`,
     );
   }
 
@@ -528,8 +607,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     );
     process.exit(1);
   }
-  const universe = excludeCommittedToQueuedCampaigns(afterSentOrQueued, guardListIds);
-  const committedExcluded = afterSentOrQueued.length - universe.length;
+  const universe = excludeCommittedToQueuedCampaigns(afterRecency, guardListIds);
+  const committedExcluded = afterRecency.length - universe.length;
   if (committedExcluded > 0) {
     // A causa nomeada acompanha o escopo: em RE-envio nunca é "disparada".
     console.error(
@@ -592,8 +671,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     budget: budget || undefined,
     min_score: minScore || undefined,
     since: ctx?.sinceIso || undefined,
+    // #4622: auditoria — undefined vira ausente no JSON (não escreve `null` ruidoso).
+    cohort: cohort ?? undefined,
     universe_total: rows.length,
     already_sent_or_queued: alreadyTracked || undefined,
+    // #4719: cutoff resolvido (undefined = filtro desligado) + quantos ele
+    // excluiu — número que não aparece no resumo é número que ninguém confere.
+    not_sent_cutoff: notSentCutoff ?? undefined,
+    excluded_by_recency: excludedByRecency || undefined,
     // Sempre presente (não `|| undefined`): saber QUAL escopo de guard rodou é
     // o que permite auditar, meses depois, por que um contato entrou ou não
     // numa rodada — e este guard já falhou em silêncio uma vez, zerando um
@@ -628,7 +713,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       return;
     }
     console.error(
-      `❌ 0 contato(s) no grupo '${group}' — verifique o predicado (send_eligible/histórico/mv_bucket) contra o store, ou se todo o universo elegível já foi selecionado por outra invocação deste ciclo (${alreadyTracked} excluído(s) via sent-or-queued.json). Nada escrito.`,
+      `❌ 0 contato(s) no grupo '${group}' — verifique o predicado (send_eligible/histórico/mv_bucket) contra o store, ` +
+        `se todo o universo elegível já foi selecionado por outra invocação deste ciclo ` +
+        `(${alreadyTracked} excluído(s) via sent-or-queued.json)` +
+        (cohort ? `, se a safra '${cohort}' (--cohort) tem contatos elegíveis pro predicado` : "") +
+        (notSentCutoff ? `, ou se --not-sent-within/--not-sent-since (${excludedByRecency} excluído(s)) zerou o universo` : "") +
+        `. Nada escrito.`,
     );
     process.exit(1);
   }

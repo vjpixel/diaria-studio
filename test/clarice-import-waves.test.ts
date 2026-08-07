@@ -18,6 +18,8 @@ import {
   validateProcessId,
   importOneWave,
   makeRealImportRunClient,
+  extractCsvEmails,
+  findMissingContacts,
   type WaveDef,
   type GroupListEntry,
   type ImportRunClient,
@@ -397,6 +399,47 @@ describe("normalizeImportCsv", () => {
   });
 });
 
+describe("extractCsvEmails (#4720)", () => {
+  it("extrai a coluna EMAIL, normalizada trim+lowercase", () => {
+    assert.deepEqual(
+      extractCsvEmails("EMAIL,NOME\nA@X.com,Ana\n b@x.com ,Bia\n"),
+      ["a@x.com", "b@x.com"],
+    );
+  });
+
+  it("aceita header minúsculo 'email' também", () => {
+    assert.deepEqual(extractCsvEmails("email,NOME\na@x.com,Ana\n"), ["a@x.com"]);
+  });
+
+  it("linha vazia/sem email não entra", () => {
+    assert.deepEqual(extractCsvEmails("EMAIL,NOME\n\na@x.com,Ana\n,Sem email\n"), ["a@x.com"]);
+  });
+});
+
+describe("findMissingContacts (#4720)", () => {
+  it("nomeia quem está no CSV mas não veio na paginação da lista real", () => {
+    assert.deepEqual(
+      findMissingContacts(["a@x.com", "b@x.com", "c@x.com"], ["a@x.com", "c@x.com"]),
+      ["b@x.com"],
+    );
+  });
+
+  it("normaliza trim+lowercase nos dois lados antes de comparar", () => {
+    assert.deepEqual(
+      findMissingContacts(["A@X.com"], [" a@x.com "]),
+      [],
+    );
+  });
+
+  it("nenhum faltando → array vazio", () => {
+    assert.deepEqual(findMissingContacts(["a@x.com"], ["a@x.com", "b@x.com"]), []);
+  });
+
+  it("não repete o mesmo e-mail duas vezes mesmo se ele aparece 2× no esperado", () => {
+    assert.deepEqual(findMissingContacts(["a@x.com", "a@x.com"], []), ["a@x.com"]);
+  });
+});
+
 describe("parseArgs", () => {
   it("default = dry-run, folder 1, label genérico", () => {
     const a = parseArgs([]);
@@ -573,6 +616,9 @@ describe("importOneWave (#4577 — confirma o processo assíncrono + reconcilia 
       importCsv: async () => ({ processId: "proc-1" }),
       pollProcess: async () => ({ status: "completed" }),
       getListInfo: async () => ({ totalSubscribers: plan.sentCount }),
+      // #4720: default devolve TODOS os e-mails do plano — só sobrescrito
+      // pelos testes que exercitam o diff de contato perdido.
+      listContactEmails: async () => ["a@x.com", "b@x.com", "vjpixel@gmail.com"],
       ...overrides,
     };
   }
@@ -603,6 +649,79 @@ describe("importOneWave (#4577 — confirma o processo assíncrono + reconcilia 
         return true;
       },
     );
+  });
+
+  // #4720: a divergência de contagem sozinha só dizia "1 contato perdido" —
+  // o operador tinha que paginar a lista e diffar à mão pra saber QUEM.
+  describe("#4720 — diagnóstico automático do contato perdido + comando de limpeza", () => {
+    it("nomeia o e-mail que faltou na lista (diff CSV × membros reais)", async () => {
+      // b@x.com está no CSV mas NÃO voltou na paginação da lista real.
+      const client = makeFakeClient({
+        getListInfo: async () => ({ totalSubscribers: plan.sentCount - 1 }),
+        listContactEmails: async () => ["a@x.com", "vjpixel@gmail.com"],
+      });
+      await assert.rejects(
+        () => importOneWave(client, plan, { folderId: 1, poll: noSleep }),
+        (err: Error) => {
+          assert.match(err.message, /Contato\(s\) identificado\(s\): b@x\.com/);
+          return true;
+        },
+      );
+    });
+
+    it("imprime o comando curl DELETE exato pra limpar a lista órfã (bash E PowerShell), nunca apaga sozinho", async () => {
+      const client = makeFakeClient({
+        getListInfo: async () => ({ totalSubscribers: plan.sentCount - 1 }),
+        listContactEmails: async () => ["a@x.com", "vjpixel@gmail.com"],
+      });
+      await assert.rejects(
+        () => importOneWave(client, plan, { folderId: 1, poll: noSleep }),
+        (err: Error) => {
+          assert.match(err.message, /curl -X DELETE "https:\/\/api\.brevo\.com\/v3\/contacts\/lists\/99"/);
+          assert.match(err.message, /-H "api-key: \$BREVO_CLARICE_API_KEY"/);
+          // #4720 self-review: $VAR só expande em bash — em PowerShell (shell
+          // primário deste projeto) viraria header vazio, silenciosamente.
+          assert.match(err.message, /curl\.exe -X DELETE/);
+          assert.match(err.message, /-H "api-key: \$env:BREVO_CLARICE_API_KEY"/);
+          return true;
+        },
+      );
+    });
+
+    it("diff que não acha ninguém faltando ainda assim não esconde o erro original", async () => {
+      // Caso raro/defensivo: a lista real tem todo mundo do CSV mas
+      // totalSubscribers ainda diverge (ex: paginação capturou um estado
+      // intermediário) — a mensagem reporta a ambiguidade, não finge certeza.
+      const client = makeFakeClient({
+        getListInfo: async () => ({ totalSubscribers: plan.sentCount - 1 }),
+        listContactEmails: async () => ["a@x.com", "b@x.com", "vjpixel@gmail.com"],
+      });
+      await assert.rejects(
+        () => importOneWave(client, plan, { folderId: 1, poll: noSleep }),
+        (err: Error) => {
+          assert.match(err.message, /não identificou o e-mail exato/);
+          return true;
+        },
+      );
+    });
+
+    it("diagnóstico automático que FALHA nunca engole o erro original de reconciliação", async () => {
+      const client = makeFakeClient({
+        getListInfo: async () => ({ totalSubscribers: plan.sentCount - 1 }),
+        listContactEmails: async () => {
+          throw new Error("Brevo API 500 em /contacts/lists/99/contacts");
+        },
+      });
+      await assert.rejects(
+        () => importOneWave(client, plan, { folderId: 1, poll: noSleep }),
+        (err: Error) => {
+          assert.match(err.message, /1 contato\(s\) perdido/);
+          assert.match(err.message, /diagnóstico automático do contato falhou/);
+          assert.match(err.message, /Brevo API 500/);
+          return true;
+        },
+      );
+    });
   });
 
   it("(c) caso feliz — completed com contagem batendo → resolve com a contagem CONFIRMADA (não a enviada)", async () => {
