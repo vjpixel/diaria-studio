@@ -27,10 +27,22 @@
  * v1 grava o JSON de coortes em stdout (`console.log`) mesmo sem `--out`
  * explícito — redirecionar pra arquivo funciona (`> v1.json`), mas os logs de
  * progresso vão para stderr (não contaminam o arquivo).
+ *
+ * SINAL DEGRADADO (#4451 achado 6 do fleet review em #4479): desde que
+ * `clarice-engagement-cohorts-v2.ts --out` passou a gravar cohorts+diagnostics
+ * (`scripts/lib/cohorts-v2-artifact.ts`), esta comparação recusa rodar por
+ * padrão (`process.exit(1)` ANTES do diff) quando o lado v2 tem
+ * `adminOptOutsAvailable=false` (store administrativo indisponível na hora do
+ * export, ou `--no-admin-optouts` explícito) — sem isso, os campos
+ * `exits`/`exitsBreakdown.optedOut` podiam "bater" ou "divergir" contra o v1
+ * pela razão errada (comparação sobre dado sabidamente incompleto de um dos
+ * lados). `--allow-degraded` sobrescreve o bloqueio, mas ainda imprime o
+ * aviso — o operador reconhece o risco explicitamente, não silencia.
  */
 
 import { readFileSync } from "node:fs";
-import { getArg, isMainModule } from "./lib/cli-args.ts";
+import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { extractCohortsArtifact, evaluateDegradedGate } from "./lib/cohorts-v2-artifact.ts";
 import type { EngagementCohorts } from "./lib/dashboard-kv-types.ts";
 
 /** Um campo comparado entre as duas coortes. Pura — sem I/O. */
@@ -100,27 +112,41 @@ export function formatCohortsDiff(rows: CohortsDiffField[]): string {
   return [header, ...lines].join("\n");
 }
 
-function loadCohorts(path: string): EngagementCohorts {
-  return JSON.parse(readFileSync(path, "utf8")) as EngagementCohorts;
+function loadArtifact(path: string): ReturnType<typeof extractCohortsArtifact> {
+  return extractCohortsArtifact(JSON.parse(readFileSync(path, "utf8")));
 }
 
-async function main(): Promise<void> {
-  const argv = process.argv.slice(2);
+// exportado (#4451) só pra permitir teste direto do gate de sinal degradado
+// via arquivos temporários, sem invocar o processo CLI real.
+export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const aPath = getArg(argv, "a");
   const bPath = getArg(argv, "b");
   const toleranceArg = getArg(argv, "tolerance");
   const toleranceRatio = toleranceArg ? Number(toleranceArg) : 0.02;
+  const allowDegraded = hasFlag(argv, "allow-degraded");
 
   if (!aPath || !bPath) {
     console.error(
-      "Uso: npx tsx scripts/compare-cohorts.ts --a v1.json --b v2.json [--tolerance 0.02]",
+      "Uso: npx tsx scripts/compare-cohorts.ts --a v1.json --b v2.json [--tolerance 0.02] [--allow-degraded]",
     );
     process.exit(1);
   }
 
-  const a = loadCohorts(aPath);
-  const b = loadCohorts(bPath);
-  const { rows, allWithinTolerance } = diffCohorts(a, b, toleranceRatio);
+  const a = loadArtifact(aPath);
+  const b = loadArtifact(bPath);
+
+  // #4451 achado 6 — recusa comparar sinal degradado por padrão (ver docstring de topo).
+  const gate = evaluateDegradedGate(a, b, allowDegraded);
+  for (const w of gate.warnings) console.error(`⚠️  ${w}`);
+  if (gate.blocked) {
+    console.error(
+      "\n❌ Sinal degradado detectado num dos lados — recusando comparar (risco de 'bater' ou " +
+        "'divergir' pela razão errada). Passe --allow-degraded pra prosseguir mesmo assim.",
+    );
+    process.exit(1);
+  }
+
+  const { rows, allWithinTolerance } = diffCohorts(a.cohorts, b.cohorts, toleranceRatio);
 
   console.log(`Comparando ${aPath} (v1) × ${bPath} (v2), tolerância ${toleranceRatio * 100}%:\n`);
   console.log(formatCohortsDiff(rows));
