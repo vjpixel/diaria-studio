@@ -171,7 +171,7 @@ export async function brevoGetCampaign(
   apiKey: string,
   campaignId: number,
   _sleep = _defaultSleep,
-): Promise<{ id: number; name: string; status: string; scheduledAt?: string | null }> {
+): Promise<{ id: number; name: string; subject?: string; status: string; scheduledAt?: string | null }> {
   return withBrevo429Retry(async () => {
     const res = await brevoRawFetch(`https://api.brevo.com/v3/emailCampaigns/${campaignId}`, {
       method: "GET",
@@ -181,7 +181,10 @@ export async function brevoGetCampaign(
       const text = await res.text();
       throw new Error(`Brevo API GET /emailCampaigns/${campaignId} falhou (${res.status}): ${text}`);
     }
-    const data = await res.json() as { id: number; name: string; status: string; scheduledAt?: string | null };
+    // `subject` (#4704 fleet review): a API sempre devolve o campo — já tipado
+    // em `CampaignDetail` (scripts/clarice-cta-ab-setup.ts), só faltava aqui.
+    // Aditivo: callers existentes ignoram o campo extra, nenhum contrato quebra.
+    const data = await res.json() as { id: number; name: string; subject?: string; status: string; scheduledAt?: string | null };
     return data;
   }, _sleep);
 }

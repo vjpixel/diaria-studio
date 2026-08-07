@@ -174,7 +174,10 @@ async function resolveBrevoCampaignMetadata(campaignId: number): Promise<{ name?
   const apiKey = process.env.BREVO_CLARICE_API_KEY;
   if (!apiKey) return null;
   const detail = await brevoGetCampaign(apiKey, campaignId);
-  return { name: detail.name };
+  // #4704 fleet review: `subject` é o que de fato distingue as variantes A/B/C
+  // de teste (o `name` da campanha na Brevo é genérico) — era omitido aqui só
+  // porque `brevoGetCampaign` não tipava o campo, não porque a API não devolve.
+  return { name: detail.name, subject: detail.subject };
 }
 
 async function main(): Promise<void> {
@@ -223,10 +226,22 @@ async function main(): Promise<void> {
 
   // Sequencial de propósito — ver docstring do arquivo (comportamento de
   // rate-limit da v2 sob N chamadas simultâneas não foi medido ao vivo).
+  // #4704 fleet review: try/catch POR CAMPANHA — sem isso, 1 falha (429/5xx/
+  // timeout) numa query propagava até main().catch() e derrubava o processo
+  // inteiro via process.exit(1), descartando os resultados de campanhas que
+  // já tinham tido sucesso. Mesmo padrão best-effort de `enrichWithCampaignMetadata`
+  // logo abaixo — best-effort só numa das duas fases não bastava.
   const aggregates: CampaignSpamAggregate[] = [];
   for (const parsed of campaigns) {
-    const agg = await fetchCampaignSpamReadings(range, parsed);
-    if (agg) aggregates.push(agg);
+    try {
+      const agg = await fetchCampaignSpamReadings(range, parsed);
+      if (agg) aggregates.push(agg);
+    } catch (e) {
+      console.warn(
+        `[postmaster-campaign-spam-report] falha ao consultar FEEDBACK_LOOP_SPAM_RATE da campanha #${parsed.campaignId} ` +
+          `(feedback_loop_id="${parsed.feedbackLoopId}"): ${e instanceof Error ? e.message : String(e)} — pulando, resto do relatório segue.`,
+      );
+    }
   }
 
   const sorted = sortCampaignSpamReport(aggregates);
