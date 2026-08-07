@@ -19,6 +19,15 @@ describe("resolveNotSentCutoff (#4719)", () => {
     assert.throws(() => resolveNotSentCutoff(null, "ontem", now), /YYYY-MM-DD/);
   });
 
+  it("REGRESSÃO (fleet review): --not-sent-since rejeita dia inexistente no calendário, não rola em silêncio (2026-02-31 → 2026-03-03)", () => {
+    assert.throws(() => resolveNotSentCutoff(null, "2026-02-31", now), /inexistente no calendário/);
+    assert.throws(() => resolveNotSentCutoff(null, "2026-04-31", now), /inexistente no calendário/);
+  });
+
+  it("--not-sent-since mês fora de 01-12 já é rejeitado no parse (Date.parse devolve NaN, não rola pra outro ano)", () => {
+    assert.throws(() => resolveNotSentCutoff(null, "2026-13-01", now), /YYYY-MM-DD/);
+  });
+
   it("--not-sent-within Nd calcula relativo a `now` (injetado, nunca Date.now() implícito)", () => {
     assert.equal(resolveNotSentCutoff("30d", null, now), "2026-07-08T00:00:00.000Z");
     assert.equal(resolveNotSentCutoff("1d", null, now), "2026-08-06T00:00:00.000Z");

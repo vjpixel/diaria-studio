@@ -215,9 +215,13 @@ oferecer "sim"**. Os bloqueios são:
 - Crédito Brevo não cobre a onda.
 - Crédito Brevo **não consultado** — nunca agendar sem validar antes.
 - Fila de 1º envio menor que o volume proposto.
+- `/diaria-clarice-novos` do ciclo nunca rodou, ou rodou há mais de 48h
+  (#4664) — sem isso, cadastro novo (`cohortSendRank: 0`) perde prioridade
+  em silêncio pra leads frios.
 
 Avisos (fila apertando, não-abridores, dado stale, campanha agendada,
-ressalvas do A/B/C) o editor **pesa**, não impedem.
+ressalvas do A/B/C, `/diaria-clarice-novos` rodou entre 12h e 48h atrás)
+o editor **pesa**, não impedem.
 
 ```
 Confirmar e agendar? sim / ajustar / abortar

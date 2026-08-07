@@ -56,10 +56,25 @@ export function resolveNotSentCutoff(
     );
   }
   if (sinceArg) {
-    if (!ISO_DATE_RE.test(sinceArg) || Number.isNaN(Date.parse(sinceArg))) {
+    const m = ISO_DATE_RE.exec(sinceArg);
+    if (!m) {
       throw new Error(`--not-sent-since inválido: "${sinceArg}" — esperado YYYY-MM-DD.`);
     }
-    return new Date(`${sinceArg}T00:00:00.000Z`).toISOString();
+    const iso = `${sinceArg}T00:00:00.000Z`;
+    const ms = Date.parse(iso);
+    if (!Number.isFinite(ms)) {
+      throw new Error(`--not-sent-since inválido: "${sinceArg}" — esperado YYYY-MM-DD.`);
+    }
+    // Fleet review (#4719): round-trip — pega "2026-02-31" → "2026-03-03" (o
+    // Date "conserta" datas inexistentes em silêncio ao invés de rejeitar).
+    // Mesmo padrão já usado em `scheduledAtForDate` (clarice-wave-plan.ts) —
+    // esta issue toca o mesmo fluxo de montagem de onda que já corrigiu essa
+    // classe de bug uma vez; não deixar o mesmo footgun voltar aqui.
+    const back = new Date(ms).toISOString().slice(0, 10);
+    if (back !== sinceArg) {
+      throw new Error(`--not-sent-since é uma data inexistente no calendário: "${sinceArg}".`);
+    }
+    return new Date(iso).toISOString();
   }
   if (withinArg) {
     const m = WITHIN_DAYS_RE.exec(withinArg.trim());
