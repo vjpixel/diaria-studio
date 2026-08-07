@@ -54,6 +54,7 @@ import {
 import type { BrevoCampaign } from "../../workers/brevo-dashboard/src/types.ts";
 import type { StoreRow } from "./clarice-segment.ts";
 import { hasMeasuredOpens } from "./clarice-segment.ts";
+import { cohortDisplayLabel, cohortSendRank, isMvExemptCohort } from "./cohorts.ts";
 
 // ---------------------------------------------------------------------------
 // Datas e chaves da onda — determinístico, nunca inferido de weekday
@@ -440,6 +441,143 @@ export function summarizeMvBacklog(
 }
 
 // ---------------------------------------------------------------------------
+// Verificação MV SOB DEMANDA (#4659) — recorte mínimo do backlog acima pra
+// cobrir o déficit da ONDA ATUAL, nunca um lote sobre os ~253k `mv_unverified`
+// inteiros (essa era a proposta da #4427, fechada como "aberta cedo demais").
+//
+// Decisão do editor (05-06/08/2026, #4659): a verificação acontece na hora de
+// montar o grupo de envio, só o suficiente pra destravar a proposta ATUAL —
+// "o teto é o próprio volume diário da onda" (~1k contatos/dia ≈ US$2/dia),
+// sem gate de gasto adicional nessa ordem de grandeza.
+// ---------------------------------------------------------------------------
+
+/**
+ * Déficit de fila de 1º envio pra UMA proposta: quanto falta pra a fila
+ * disponível cobrir o volume total proposto. Nunca negativo — zero quando a
+ * fila já cobre (ou excede) o volume, nesse caso não há nada a verificar.
+ *
+ * Espelha EXATAMENTE a condição do blocker "Fila de 1º envio... é menor que
+ * o volume proposto" logo abaixo em `buildWaveProposal` — os dois precisam
+ * concordar sobre o que é "déficit", senão reabre a classe de divergência
+ * que a #4658 já corrigiu uma vez (2 cálculos paralelos do mesmo fato).
+ */
+export function computeFirstSendDeficit(availableFirstSend: number, volumeTotal: number): number {
+  return Math.max(0, volumeTotal - availableFirstSend);
+}
+
+/**
+ * Margem de aprovação esperada do MillionVerifier — ~90% nos cohorts já
+ * verificados (medição do editor, #4659/#1297). Verificar exatamente o
+ * déficit deixaria a onda curta sempre que a taxa real de aprovação caísse
+ * abaixo de 100%, então o alvo de verificação é inflado por esta margem.
+ */
+export const MV_ONDEMAND_APPROVAL_MARGIN = 0.9;
+
+export interface MvOnDemandAllocation {
+  cohort: string;
+  /** Quantos deste cohort entram no recorte a verificar nesta invocação. */
+  count: number;
+}
+
+export interface MvOnDemandPlan {
+  /** Déficit que motivou o recorte. Zero = plano vazio, nada a verificar. */
+  deficit: number;
+  /**
+   * `deficit ÷ MV_ONDEMAND_APPROVAL_MARGIN`, arredondado pra cima — quantos
+   * verificar pra cobrir o déficit mesmo perdendo ~10% pra rejeição/inconclusivo.
+   */
+  targetVerifyCount: number;
+  /**
+   * Alocação por cohort, na MESMA ordem de prioridade de `cohortSendRank`
+   * (morno→frio — a ordem que a fila de envio de fato usa, ver
+   * `segmentRampWarm` em clarice-segment.ts). NUNCA a ordem por volume que
+   * `summarizeMvBacklog.byCohort` usa pra exibição — a #4542 já corrigiu uma
+   * inversão dessa ordem (verificar lead frio antes de um morno com backlog
+   * pendente); reordenar por volume aqui reintroduziria a mesma classe de bug.
+   */
+  byCohort: MvOnDemandAllocation[];
+  /**
+   * Soma de `byCohort` — pode ser MENOR que `targetVerifyCount` quando o
+   * backlog disponível (já excluindo cohorts MV-isentos) não cobre o alvo.
+   */
+  totalPlanned: number;
+  /**
+   * `true` quando `totalPlanned < targetVerifyCount` — verificando TODO o
+   * backlog disponível ainda não cobriria o déficit. Sinal pro gate: mesmo
+   * rodando a verificação sob demanda, a onda pode continuar bloqueada.
+   */
+  backlogInsufficient: boolean;
+  estimatedCostUsd: number;
+}
+
+const EMPTY_MV_ONDEMAND_PLAN: MvOnDemandPlan = {
+  deficit: 0,
+  targetVerifyCount: 0,
+  byCohort: [],
+  totalPlanned: 0,
+  backlogInsufficient: false,
+  estimatedCostUsd: 0,
+};
+
+/**
+ * Monta o recorte MÍNIMO de verificação MV pra cobrir `deficit` — nunca o
+ * backlog inteiro. Percorre `backlog.byCohort` na ordem de `cohortSendRank`
+ * (morno→frio), acumulando até `targetVerifyCount`; cohorts MV-isentos
+ * (`isMvExemptCohort` — hoje só `assinantes-ativos`) NUNCA entram no plano —
+ * defesa em profundidade: `summarizeMvBacklog` já não deveria contar um
+ * cohort isento (`classifyEligibility` nunca atribui `mv_unverified` a ele,
+ * clarice-db.ts), mas o filtro aqui torna essa garantia explícita e testável
+ * sem depender de outro módulo se comportar certo (#4659, guard explícito da
+ * issue: "NUNCA verificar assinantes-ativos").
+ *
+ * `deficit <= 0` devolve o plano vazio sem tocar `backlog` — não há nada a
+ * cobrir. Puro — nunca lê disco/rede; quem EXECUTA o plano (gasta crédito de
+ * verdade) é `scripts/clarice-mv-ondemand.ts`, script separado e read+write
+ * por construção, nunca este planejador read-only.
+ */
+export function planMvOnDemand(
+  backlog: MvBacklog,
+  deficit: number,
+  approvalMargin: number = MV_ONDEMAND_APPROVAL_MARGIN,
+): MvOnDemandPlan {
+  if (deficit <= 0) return EMPTY_MV_ONDEMAND_PLAN;
+  if (!(approvalMargin > 0) || approvalMargin > 1) {
+    throw new Error(`approvalMargin inválido: ${approvalMargin} — esperado (0, 1].`);
+  }
+
+  const targetVerifyCount = Math.ceil(deficit / approvalMargin);
+
+  const ordered = backlog.byCohort
+    .filter((e) => !isMvExemptCohort(e.cohort))
+    .slice()
+    .sort((a, b) => {
+      const ra = cohortSendRank(a.cohort);
+      const rb = cohortSendRank(b.cohort);
+      if (ra !== rb) return ra < rb ? -1 : 1;
+      return a.cohort.localeCompare(b.cohort);
+    });
+
+  const byCohort: MvOnDemandAllocation[] = [];
+  let remaining = targetVerifyCount;
+  for (const entry of ordered) {
+    if (remaining <= 0) break;
+    const count = Math.min(entry.count, remaining);
+    if (count > 0) byCohort.push({ cohort: entry.cohort, count });
+    remaining -= count;
+  }
+
+  const totalPlanned = byCohort.reduce((s, e) => s + e.count, 0);
+  return {
+    deficit,
+    targetVerifyCount,
+    byCohort,
+    totalPlanned,
+    backlogInsufficient: totalPlanned < targetVerifyCount,
+    estimatedCostUsd: totalPlanned * MV_COST_PER_EMAIL_USD,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Não-abridor reincidente — a lacuna que o sunset (#4430) nunca fechou
 // ---------------------------------------------------------------------------
 
@@ -688,6 +826,13 @@ export interface WaveProposal extends WaveProposalInput {
   blockers: string[];
   /** Avisos que não impedem, mas o editor precisa ver antes de confirmar. */
   warnings: string[];
+  /**
+   * #4659 — recorte de verificação MV sob demanda que cobriria o déficit
+   * DESTA proposta (`computeFirstSendDeficit` + `planMvOnDemand`). Vazio
+   * (`byCohort: []`) quando não há déficit. Só COMPUTA — quem gasta crédito
+   * de verdade é `scripts/clarice-mv-ondemand.ts`, nunca este planejador.
+   */
+  mvOnDemandPlan: MvOnDemandPlan;
   /** Ver `WAVE_PROPOSAL_BRAND`. Não construir à mão. */
   readonly [WAVE_PROPOSAL_BRAND]: true;
 }
@@ -770,9 +915,14 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
       `Crédito Brevo insuficiente: a onda pede ${fmt(input.volumes.total)} e restam ${fmt(input.brevoCredits)} no ciclo de cobrança.`,
     );
   }
+  const firstSendDeficit = computeFirstSendDeficit(input.availableFirstSend, input.volumes.total);
+  const mvOnDemandPlan = planMvOnDemand(input.mvBacklog, firstSendDeficit);
   if (input.availableFirstSend < input.volumes.total) {
     blockers.push(
-      `Fila de 1º envio (${fmt(input.availableFirstSend)}) é menor que o volume proposto (${fmt(input.volumes.total)}) — as últimas ondas sairiam menores que o planejado ou puxariam público de outra natureza.`,
+      `Fila de 1º envio (${fmt(input.availableFirstSend)}) é menor que o volume proposto (${fmt(input.volumes.total)}) — as últimas ondas sairiam menores que o planejado ou puxariam público de outra natureza.` +
+        (mvOnDemandPlan.byCohort.length > 0
+          ? ` Verificação MV sob demanda cobriria: ${fmt(mvOnDemandPlan.targetVerifyCount)} contato(s) em ${mvOnDemandPlan.byCohort.length} cohort(s) (~US$ ${mvOnDemandPlan.estimatedCostUsd.toFixed(2)}) — ver seção "Verificação MV sob demanda" abaixo.`
+          : ` Backlog MV (${fmt(input.mvBacklog.total)} contatos, excluindo cohorts MV-isentos) não tem candidato pra cobrir o déficit — a alavanca de fila não está disponível aqui.`),
     );
   }
   if (input.brevoCredits === null) {
@@ -812,7 +962,7 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
   }
   for (const c of input.abc.caveats) warnings.push(`Teste A/B/C: ${c}`);
 
-  return { ...input, waves, blockers, warnings } as WaveProposal;
+  return { ...input, waves, blockers, warnings, mvOnDemandPlan } as WaveProposal;
 }
 
 function fmt(n: number): string {
@@ -901,6 +1051,23 @@ export function renderWaveProposal(p: WaveProposal): string {
   }
   L.push(`  Fila de 1º envio disponível: ${fmt(p.availableFirstSend)}`);
   L.push("");
+
+  if (p.mvOnDemandPlan.byCohort.length > 0) {
+    L.push("── Verificação MV sob demanda (#4659) ──");
+    L.push(
+      `  Déficit ${fmt(p.mvOnDemandPlan.deficit)} → alvo de verificação ${fmt(p.mvOnDemandPlan.targetVerifyCount)} (margem ${(MV_ONDEMAND_APPROVAL_MARGIN * 100).toFixed(0)}%)`,
+    );
+    for (const a of p.mvOnDemandPlan.byCohort) {
+      L.push(`    ${cohortDisplayLabel(a.cohort).padEnd(28)} ${fmt(a.count)} contato(s)`);
+    }
+    L.push(`  Custo estimado: ~US$ ${p.mvOnDemandPlan.estimatedCostUsd.toFixed(2)}`);
+    if (p.mvOnDemandPlan.backlogInsufficient) {
+      L.push("  ⚠️  Backlog insuficiente pra cobrir o alvo mesmo verificando tudo disponível.");
+    }
+    L.push(`  Rodar: npx tsx scripts/clarice-mv-ondemand.ts --cycle ${p.cycle} --dates ${p.dates.join(",")}`);
+    L.push("  (depois: npx tsx scripts/clarice-build-db.ts — reingerir o store antes de recompor a proposta, #4362)");
+    L.push("");
+  }
 
   if (p.warnings.length > 0) {
     L.push("── Avisos ──");
