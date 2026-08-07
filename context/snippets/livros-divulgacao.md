@@ -16,6 +16,11 @@ emoji (#3204/#3232).
 O bloco Clarice continua disponível em
 context/snippets/clarice-divulgacao.md para reuso (ex: mensal, ou troca
 pontual do callout diário).
+
+#4641: este parágrafo passou por Humanizador + mcp__clarice__correct_text em
+260807 (mesmo padrão do Stage 2 da diária). Ao editar a prosa deste bloco no
+futuro, repetir os dois passes antes de commitar — não é automático (o texto
+é majoritariamente estático, editado por curadoria manual, não a cada build).
 -->
 
-**A diar.ia.br mantém uma curadoria de livros sobre IA: cada título com nota da Amazon, resenha e link de compra, e filtros por idioma, nível e tema. Dá pra achar sua próxima leitura em segundos. [Confira a página de livros](https://livros.diar.ia.br).**
+**A diar.ia.br mantém uma curadoria de livros sobre IA, cada título com nota da Amazon, resenha e link de compra, e filtros por idioma, nível e tema. Encontre sua próxima leitura em segundos. [Confira a página de livros](https://livros.diar.ia.br).**

@@ -14,6 +14,17 @@
  * Uso:
  *   npx tsx scripts/build-livros-page.ts --out workers/livros/public/index.html
  *   npx tsx scripts/build-livros-page.ts --check       # só valida
+ *
+ * #4641: a prosa GEO (H1 + FAQ, em `renderGeoIntro`/`buildLivrosFaq`) passou
+ * por Humanizador + `mcp__clarice__correct_text` em 260807 — mesmo padrão do
+ * Stage 2 da diária (Skill("humanizador", ...) seguido de correct_text,
+ * aplicando sugestões exceto o que quebra marca/identificador ou hardcoda um
+ * valor hoje dinâmico). Não roda automaticamente a cada build (o seed muda por
+ * curadoria manual, não diariamente) — ao reescrever essa prosa de forma
+ * substancial no futuro, repetir os dois passes antes de commitar, e bump
+ * `GEO_CONTENT_DATE` abaixo. As PERGUNTAS do FAQ (e o H2, que espelha a
+ * pergunta principal) ficam fora do escopo do Humanizador de propósito — são
+ * fraseado GEO calibrado para bater com busca real do leitor (#4558 Parte B).
  */
 
 import { mkdirSync } from "node:fs";
@@ -74,7 +85,7 @@ const PAGE_DESCRIPTION =
  * HTML committed contra um render fresco; "hoje" nunca bate com o commit de
  * ontem). Bump manual quando o conteúdo GEO (intro/FAQ) for reescrito de
  * forma substancial — não a cada atualização rotineira do seed de livros. */
-const GEO_CONTENT_DATE = "2026-08-04";
+const GEO_CONTENT_DATE = "2026-08-07"; // #4641: prosa GEO (intro + FAQ) revisada por Humanizador + Clarice
 
 // #1936/#1935: DS canônico (lib/shared/design-tokens.ts) — era ad-hoc (Newsreader +
 // #F5F1E8/#FFFDF8/#1A1A1A). Agora os mesmos tokens da diária/mensal/É IA?/cursos.
@@ -316,40 +327,46 @@ export function buildLivrosFaq(books: Book[]): GeoFaqItem[] {
   const comDestaque = countWithHighlight(books);
   const temas = distinctThemes(books);
 
+  // #4641: respostas revisadas por Humanizador + Clarice (mcp__clarice__correct_text) —
+  // travessão de conector/definição removido (regra #20 do humanizador), gerúndio em
+  // cascata evitado, contrações formalizadas conforme sugestão da Clarice. As
+  // PERGUNTAS ficam intocadas de propósito: são fraseado GEO calibrado pra bater com
+  // busca real do leitor (#4558 Parte B) — reescrevê-las é decisão editorial, não
+  // higienização de prosa.
   return [
     {
       question: "Quais os melhores livros sobre inteligência artificial em português?",
-      answer: `Desta lista de ${total} livros, ${ptBr} têm edição em português — a diar.ia.br sempre mostra a edição em português quando ela existe, mesmo que o livro seja originalmente em inglês. Eles cobrem de introduções para leigos a livros técnicos de estratégia e negócios.`,
+      answer: `Desta lista de ${total} livros, ${ptBr} têm edição em português. A diar.ia.br sempre mostra a edição em português quando disponível, mesmo que a obra seja originalmente em inglês. Os títulos abrangem de introduções para leigos a obras técnicas de estratégia e negócios.`,
     },
     {
       question: "Como esta lista de livros sobre IA foi escolhida?",
-      answer: `Os ${total} livros foram reunidos a partir de mais de 10 listas de recomendação e ranqueados por um critério subjetivo (prêmio do livro ou do autor, indicação de bestseller) e um objetivo (nota do livro na Amazon). ${comDestaque} deles carregam um selo de destaque — prêmio, indicação editorial ou reconhecimento do autor.`,
+      answer: `Os ${total} livros foram reunidos a partir de mais de 10 listas de recomendação e ranqueados por um critério subjetivo (prêmio do livro ou do autor, indicação de bestseller) e um objetivo (nota do livro na Amazon). ${comDestaque} deles carregam um selo de destaque: prêmio, indicação editorial ou reconhecimento do autor.`,
     },
     {
       question: "Tem livro sobre IA pra quem está começando do zero?",
-      answer: `Sim — ${iniciante} dos ${total} livros da lista são classificados como nível iniciante, sem pré-requisito técnico. Use o filtro de Nível na página pra ver só esses.`,
+      answer: `Sim, ${iniciante} dos ${total} livros da lista são classificados como nível iniciante, sem pré-requisitos técnicos. Use o filtro de "Nível" para visualizar apenas esses títulos.`,
     },
     {
       question: "Existe livro técnico ou avançado sobre inteligência artificial na lista?",
-      answer: `Sim, ${avancado} livros são de nível avançado (fundamentos matemáticos, deep learning, engenharia de sistemas de ML) e ${intermediario} de nível intermediário — geralmente estratégia, negócios ou filosofia da IA sem pré-requisito de programação.`,
+      answer: `Sim, ${avancado} livros são de nível avançado (fundamentos matemáticos, deep learning, engenharia de sistemas de ML) e ${intermediario} de nível intermediário, geralmente estratégia, negócios ou filosofia da IA sem pré-requisito de programação.`,
     },
     {
       question: "Tem livro sobre IA em inglês recomendado, sem tradução?",
-      answer: `Sim, ${en} dos ${total} livros da lista não têm edição em português e aparecem no idioma original (inglês) — normalmente títulos técnicos ou lançamentos recentes ainda sem tradução no Brasil.`,
+      answer: `Sim, ${en} dos ${total} livros da lista não têm edição em português e aparecem no idioma original (inglês), normalmente títulos técnicos ou lançamentos recentes ainda sem tradução no Brasil.`,
     },
     {
       question: "Quais temas de inteligência artificial os livros da lista cobrem?",
-      answer: `A lista cobre ${temas.length} temas — de ${temas.slice(0, 3).join(", ")} a temas mais técnicos como engenharia e fundamentos matemáticos. Use o filtro de Tema na página pra restringir a um assunto específico.`,
+      answer: `A lista abrange ${temas.length} temas, de ${temas.slice(0, 3).join(", ")} a temas mais técnicos como fundamentos matemáticos. Use o filtro de "Tema" na página para restringir a um assunto específico.`,
     },
     {
       question: "Os links dos livros são de afiliado?",
       answer:
-        "Sim. Os links levam para a Amazon com um código de afiliado da diar.ia.br — comprando por eles, o leitor apoia a newsletter sem pagar nada a mais pelo livro.",
+        "Sim. Os links direcionam para a Amazon com um código de afiliado da diar.ia.br. Quem compra por eles apoia a newsletter sem custo adicional.",
     },
     {
       question: "Como faço pra saber quando um livro novo sobre IA entrar na lista?",
       answer:
-        "A lista de livros é curada manualmente pelo editor da diar.ia.br e atualizada sem periodicidade fixa. A forma de acompanhar é assinando a newsletter diária — atualizações relevantes de curadoria costumam ser mencionadas lá.",
+        "A lista de livros é curada manualmente pelo editor da diar.ia.br e atualizada sem periodicidade fixa. A melhor forma de acompanhar é assinar a newsletter diária: atualizações relevantes de curadoria costumam ser mencionadas lá.",
     },
   ];
 }
@@ -363,7 +380,7 @@ function renderGeoIntro(books: Book[]): string {
   const ptBr = books.filter((b) => b.language === "pt-br").length;
   return `    <div class="geo-intro-wrap">
       <h2 class="geo-h2">Quais os melhores livros sobre inteligência artificial em português?</h2>
-      <p class="geo-intro">Esta página reúne ${total} livros sobre inteligência artificial — ${ptBr} deles com edição em português — selecionados a partir de mais de 10 listas de recomendação e ranqueados por um critério subjetivo (prêmio do livro ou do autor) e um objetivo (nota na Amazon). A lista cobre desde introduções pra quem nunca leu nada sobre IA até títulos técnicos de deep learning e engenharia de machine learning, passando por estratégia, negócios, filosofia e história da tecnologia. Filtre por idioma, nível de leitura e tema logo abaixo pra achar o livro certo pro seu momento — ou role até o fim pras perguntas frequentes, com os números completos da curadoria.</p>
+      <p class="geo-intro">Esta página reúne ${total} livros sobre inteligência artificial, sendo ${ptBr} deles com edição em português, selecionados a partir de mais de 10 listas de recomendação e ranqueados por um critério subjetivo (prêmio do livro ou do autor) e um objetivo (nota na Amazon). A lista cobre desde introduções para quem nunca leu nada sobre IA até títulos técnicos de deep learning e engenharia de machine learning, passando por estratégia, negócios, filosofia e história da tecnologia. Filtre por idioma, nível de leitura e tema logo abaixo para achar o livro certo para o seu momento, ou role até o final para as perguntas frequentes, com os números completos da curadoria.</p>
 ${renderGeoByline(undefined, `atualizado em ${formatMonthYear(GEO_CONTENT_DATE)}`)}
     </div>`;
 }
