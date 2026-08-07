@@ -401,7 +401,11 @@ export function makeRealImportRunClient(apiKey: string): ImportRunClient {
     // alto em não-200 (nunca trata resposta ruim como "lista vazia").
     async listContactEmails(listId) {
       const out: string[] = [];
-      const limit = 50;
+      // #4720 self-review: 500 (não 50) — este diagnóstico roda sobre listas
+      // de rampa que podem ter milhares de contatos (a issue original tinha
+      // ~800); limit=500 é o mesmo já usado pro mesmo endpoint em
+      // clarice-cta-ab-setup.ts/clarice-engagement-cohorts.ts, sem risco novo.
+      const limit = 500;
       let offset = 0;
       for (;;) {
         const { status, body } = await brevoGet(
