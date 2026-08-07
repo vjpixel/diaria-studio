@@ -263,8 +263,16 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
+  // #4745: process.exitCode em vez de process.exit() — este catch roda DEPOIS
+  // de awaits de rede (fetchFeedbackLoopIdsByDay/fetchCampaignSpamReadings/
+  // enrichWithCampaignMetadata), o cenário exato da classe UV_HANDLE_CLOSING
+  // no Windows (#1401/#4638/#4651/#4653): process.exit() força o shutdown do
+  // libuv antes dos sockets keep-alive do fetch fecharem. process.exitCode
+  // deixa o event loop drenar sozinho. O guard pré-await (linha acima,
+  // --window-days inválido) continua com process.exit(2) de propósito —
+  // nenhum fetch rodou ainda nesse ponto.
   main().catch((e) => {
     console.error("[postmaster-campaign-spam-report] erro:", e);
-    process.exit(1);
+    process.exitCode = 1;
   });
 }

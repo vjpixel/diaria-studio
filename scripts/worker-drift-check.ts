@@ -87,8 +87,11 @@ import {
   shouldAlarm,
   shouldAdvanceState,
   advanceState,
+  advanceApiErrorState,
+  shouldAlarmApiError,
   emptyWorkerDriftAlarmState,
   buildWorkerDriftAlarmEmail,
+  buildApiErrorAlarmEmail,
   type WorkerDriftCheckInput,
   type WorkerDriftResult,
   type WorkerDriftAlarmState,
@@ -111,7 +114,20 @@ export function loadState(statePath: string = STATE_PATH): WorkerDriftAlarmState
         ? raw.lastAlarmedFingerprint
         : null;
     const checkedAt = typeof raw.lastCheckedAt === "string" || raw.lastCheckedAt === null ? raw.lastCheckedAt : null;
-    return { lastAlarmedFingerprint: fingerprint ?? null, lastCheckedAt: checkedAt ?? null };
+    // #4746: campos novos — fail-soft pra state.json legado (pré-#4746) sem
+    // esses campos, mesmo padrão dos 2 campos originais acima.
+    const firstApiErrorAt =
+      typeof raw.firstApiErrorAt === "string" || raw.firstApiErrorAt === null ? raw.firstApiErrorAt : null;
+    const lastApiErrorAlarmedAt =
+      typeof raw.lastApiErrorAlarmedAt === "string" || raw.lastApiErrorAlarmedAt === null
+        ? raw.lastApiErrorAlarmedAt
+        : null;
+    return {
+      lastAlarmedFingerprint: fingerprint ?? null,
+      lastCheckedAt: checkedAt ?? null,
+      firstApiErrorAt: firstApiErrorAt ?? null,
+      lastApiErrorAlarmedAt: lastApiErrorAlarmedAt ?? null,
+    };
   } catch {
     return emptyWorkerDriftAlarmState();
   }
@@ -309,6 +325,34 @@ async function main(): Promise<void> {
       `(última checagem: ${state.lastCheckedAt ?? "nunca"}).`,
   );
 
+  // #4746: falha SUSTENTADA da consulta à Cloudflare API (credencial
+  // expirada/revogada) nunca disparava alarme — `metadataError` faz
+  // `hasPendingDrift` excluir "error", `shouldAlarm` nunca vira `true`, e o
+  // editor nunca sabia que a checagem estava cega, mesmo indefinidamente.
+  // Alarme SEPARADO do alarme de drift acima, com sua própria idempotência
+  // (`firstApiErrorAt`/`lastApiErrorAlarmedAt`, persistidos no MESMO
+  // state.json). `nextApiErrorState` já é o valor que será persistido nesta
+  // execução — sucesso reseta a série; falha preserva/inicia.
+  const nextApiErrorState = advanceApiErrorState(state, metadataError, now);
+  const sendApiErrorAlarm = shouldAlarmApiError(nextApiErrorState, metadataError, now);
+  if (sendApiErrorAlarm) {
+    const { subject, body } = buildApiErrorAlarmEmail(metadataError!, nextApiErrorState.firstApiErrorAt!, now);
+    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
+    if (isDryRun) {
+      console.log(
+        `${LOG_PREFIX} --dry-run: enviaria e-mail (falha sustentada da API) pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`,
+      );
+    } else {
+      // Mesmo racional do alarme de drift abaixo: sem try/catch — se o envio
+      // falhar, `lastApiErrorAlarmedAt` NÃO avança (não seta aqui embaixo) e
+      // a próxima execução tenta alarmar de novo, em vez de marcar esta série
+      // como "já avisada" sem o editor ter recebido nada.
+      await sendGmailMessage(to, subject, body);
+      console.log(`${LOG_PREFIX} e-mail de alarme (falha sustentada da API) enviado pra ${to}.`);
+      nextApiErrorState.lastApiErrorAlarmedAt = now.toISOString();
+    }
+  }
+
   if (shouldAlarm(state, results)) {
     const { subject, body } = buildWorkerDriftAlarmEmail(results, now);
     const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
@@ -339,25 +383,40 @@ async function main(): Promise<void> {
   if (!shouldAdvanceState({ isDryRun, metadataError })) {
     // #4723 fleet review, achado 1: `metadataError` (falha da conta inteira)
     // faz TODO worker cair em "error", `pending` vira false, e avançar o
-    // cursor aqui gravaria `lastAlarmedFingerprint: null` mesmo com um
-    // drift real já alarmado pendente — a próxima execução bem-sucedida
+    // cursor de DRIFT aqui gravaria `lastAlarmedFingerprint: null` mesmo com
+    // um drift real já alarmado pendente — a próxima execução bem-sucedida
     // recomputaria o mesmo fingerprint e re-alarmaria, duplicando um e-mail
-    // que o editor já recebeu. Preserva o estado anterior intacto.
+    // que o editor já recebeu. Preserva `lastAlarmedFingerprint`/
+    // `lastCheckedAt` intactos (`state` original, não `advanceState`).
+    //
+    // #4746: MESMO sem avançar o cursor de drift, persiste o estado da
+    // SÉRIE de falha da API (`nextApiErrorState`) — sem isso, `firstApiErrorAt`
+    // nunca é salvo em disco e cada execução recomeça a série do zero,
+    // fazendo a falha nunca ficar "sustentada" de verdade (o bug que este
+    // fix resolve).
     console.error(
       `${LOG_PREFIX} consulta à Cloudflare Workers API falhou nesta execução (${metadataError}) — nenhum ` +
-        "worker teve dado confiável. Cursor de idempotência NÃO avançado (preserva o estado anterior).",
+        "worker teve dado confiável. Cursor de drift NÃO avançado (preserva o estado anterior).",
     );
+    saveState({ ...state, ...nextApiErrorState });
     process.exitCode = 1;
     return;
   }
 
   const nextFingerprint = pending ? computeDriftFingerprint(results) : null;
-  saveState(advanceState(nextFingerprint, now));
+  saveState(advanceState(nextFingerprint, now, nextApiErrorState));
 }
 
 if (isMainModule(import.meta.url)) {
+  // #4745: process.exitCode em vez de process.exit() — este catch roda DEPOIS
+  // de awaits de rede (fetchAllWorkerScriptsMetadata/sendGmailMessage), o
+  // cenário exato da classe UV_HANDLE_CLOSING no Windows (#1401/#4638/#4651/
+  // #4653): process.exit() força o shutdown do libuv antes dos sockets
+  // keep-alive do fetch fecharem. process.exitCode deixa o event loop drenar
+  // sozinho. O guard pré-await (linha acima, envs ausentes) continua com
+  // process.exit(2) de propósito — nenhum fetch rodou ainda nesse ponto.
   main().catch((e) => {
     console.error(`${LOG_PREFIX} erro:`, e);
-    process.exit(1);
+    process.exitCode = 1;
   });
 }
