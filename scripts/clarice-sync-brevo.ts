@@ -43,7 +43,10 @@
  * já pega todo mundo com stats exatos, catch-up seria redundante ali.
  * Desligável via `--no-catch-opens`. FAIL-SOFT: uma falha no catch-up (rede,
  * rate-limit) vira warning no stderr + `opens_catchup.error` no summary —
- * nunca reprova o sync principal, que já persistiu com sucesso.
+ * nunca reprova o sync principal, que já persistiu com sucesso. O cache de
+ * campanha do catch-up vive em `OPENS_CATCHUP_CACHE_DIR`, subdiretório
+ * PRÓPRIO (nunca o `CAMPAIGN_CACHE_DIR` real da #4451, #4717 follow-up
+ * achado 5) — `--cache-dir <dir>` sobrescreve pra isolamento em teste.
  *
  * Requer BREVO_CLARICE_API_KEY no env. Stdout: JSON summary. Stderr: progresso.
  */
@@ -168,12 +171,25 @@ export function anchorForIncremental(
 // destinatários das campanhas ENVIADAS numa janela recente via
 // `exportRecipients` (`Total Opens` por destinatário, independe de
 // `modifiedAt` do contato) e re-buscamos cada opener individualmente — mesmo
-// caminho preciso de sempre (`GET /contacts/{id}`, MAX-merge no upsert).
+// caminho preciso de sempre (`GET /contacts/{email}`, MAX-merge no upsert).
 
 /** Janela default (dias) — mesma ordem de grandeza do DEFAULT_REFETCH_WINDOW_DAYS
  * de clarice-engagement-cohorts-v2.ts (#4451); "chute inicial" documentado lá,
  * não recalibrado empiricamente ainda. Override via --opens-window-days. */
 export const DEFAULT_OPENS_CATCHUP_WINDOW_DAYS = 30;
+
+/**
+ * #4717 follow-up (achado 5): subdiretório PRÓPRIO do catch-up, irmão de
+ * `CAMPAIGN_CACHE_DIR` (não o mesmo diretório). `CAMPAIGN_CACHE_DIR` é o
+ * cache que `clarice-engagement-cohorts-v2.ts` (#4451) usa como artefato
+ * ESTÁVEL pro cutover v1-vs-v2 ainda em dry-run — o catch-up roda diariamente
+ * (task `Diaria-Clarice-Sync`, 08:30) com `forceRefresh: true` e sobrescreve
+ * o cache de cada campanha na janela a cada execução; compartilhar o mesmo
+ * diretório acoplaria essas duas features sem documentação (a #4451 acabaria
+ * vendo o cache re-escrito por uma rotina que ela não conhece). Separar em
+ * `opens-catchup/` evita a colisão sem exigir coordenação entre as duas.
+ */
+export const OPENS_CATCHUP_CACHE_DIR = resolve(CAMPAIGN_CACHE_DIR, "..", "opens-catchup");
 
 /**
  * Extrai o conjunto de e-mails normalizados com abertura registrada em
@@ -222,7 +238,12 @@ export interface OpensCatchupResult {
 export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatchupResult> {
   const windowDays = deps.windowDays ?? DEFAULT_OPENS_CATCHUP_WINDOW_DAYS;
   const nowMs = deps.nowMs ?? Date.now();
-  const cacheDir = deps.cacheDir ?? CAMPAIGN_CACHE_DIR;
+  // #4717 follow-up (achado 5, hardening): o default cai no subdiretório
+  // PRÓPRIO do catch-up, nunca em CAMPAIGN_CACHE_DIR (produção compartilhada
+  // com a #4451) — `main()` já passa `deps.cacheDir` sempre explicitamente
+  // (achado 1), este fallback é só defesa em profundidade pra qualquer
+  // caller futuro de runOpensCatchup que esqueça de passar cacheDir.
+  const cacheDir = deps.cacheDir ?? OPENS_CATCHUP_CACHE_DIR;
   const concurrency = deps.concurrency ?? 4;
 
   const campaigns = await deps.client.listSentCampaigns();
@@ -239,8 +260,16 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
         forceRefresh: true,
       });
       caches.push(cache);
-    } catch {
+    } catch (e) {
       campaignsFailed++;
+      // #4717 follow-up (achado 2): logar a mensagem, não só incrementar o
+      // contador — um contador anônimo esconderia erro real (escrita SQLite,
+      // regressão de escopo OAuth, timeout de polling) atrás de um número,
+      // a mesma classe de subcontagem silenciosa que esta feature existe
+      // pra corrigir.
+      console.error(
+        `⚠️  catch-up: export da campanha ${campaign.id} (${campaign.name}) falhou: ${(e as Error).message}`,
+      );
     }
   }
 
@@ -257,8 +286,12 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
       }
       deps.upsert(cols);
       contactsUpdated++;
-    } catch {
+    } catch (e) {
       contactsFailed++;
+      // #4717 follow-up (achado 2): diferente do `!cols.email` acima (404
+      // esperado — contato sumiu entre export e re-busca, não logado), este
+      // catch pega falha REAL (rede, parse, upsert no SQLite) — logar sempre.
+      console.error(`⚠️  catch-up: re-busca/upsert de ${email} falhou: ${(e as Error).message}`);
     }
   });
 
@@ -328,6 +361,12 @@ export async function main(
   const catchOpensEnabled = !hasFlag(argv, "no-catch-opens");
   const opensWindowDays =
     getIntArg(argv, "opens-window-days") ?? DEFAULT_OPENS_CATCHUP_WINDOW_DAYS;
+  // #4717 follow-up (achado 1): SEMPRE passado explicitamente pro
+  // runOpensCatchup abaixo — nunca deixar o default implícito de dentro de
+  // runOpensCatchup decidir. `--cache-dir` existe só pra teste isolar o
+  // diretório (mkdtempSync); em produção cai no subdiretório próprio do
+  // catch-up (achado 5), nunca no CAMPAIGN_CACHE_DIR real compartilhado.
+  const opensCatchupCacheDir = getArg(argv, "cache-dir") || OPENS_CATCHUP_CACHE_DIR;
   const { checkpoint: CHECKPOINT, checkpointInc: CHECKPOINT_INC } =
     checkpointPathsForDb(dbPath);
 
@@ -451,6 +490,7 @@ export async function main(
         upsert: upsertBrevo,
         windowDays: opensWindowDays,
         concurrency, // #4688 self-review: reusa o mesmo --concurrency do loop principal (era hardcoded default 4)
+        cacheDir: opensCatchupCacheDir, // #4717 follow-up (achado 1 + 5): nunca o default implícito
       });
       console.error(
         `✅ catch-up: ${opensCatchup.campaignsInWindow}/${opensCatchup.campaignsConsidered} campanhas na janela ` +

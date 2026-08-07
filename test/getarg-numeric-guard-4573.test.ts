@@ -107,7 +107,7 @@ export function findDangerousGetArgUsages(dir: string): DangerousMatch[] {
  * protege o caso `""`).
  */
 const ALLOWLIST: readonly DangerousMatch[] = [
-  { file: "scripts/clarice-sync-brevo.ts", line: 319 }, // #4688: linha deslocada (catch-up de opens inseriu código acima)
+  { file: "scripts/clarice-sync-brevo.ts", line: 352 }, // #4717 follow-up: linha deslocada de novo (cache-dir + logs de erro inseriram código acima)
   { file: "scripts/clarice-engagement-cohorts.ts", line: 552 },
   { file: "scripts/clarice-engagement-cohorts-v2.ts", line: 639 },
   { file: "scripts/clarice-engagement-cohorts-v2.ts", line: 648 },
