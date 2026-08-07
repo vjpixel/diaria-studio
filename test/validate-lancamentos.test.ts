@@ -1238,6 +1238,100 @@ describe("#4336 — incidente de segurança / case study de cliente não são pr
 });
 
 // ---------------------------------------------------------------------------
+// #4714 CASO REAL 260807 — PRODUCT_SIGNAL_RE casa "models" genérico em ensaio
+// de posicionamento da NVIDIA (nova instância do padrão #227/#236/#244).
+// ---------------------------------------------------------------------------
+
+describe("#4714 — ensaio de posicionamento não é produto", () => {
+  it("hasNonProductHints: CASO REAL NVIDIA 'push the frontier' dispara", () => {
+    assert.ok(
+      hasNonProductHints(
+        "Into the Omniverse: How Open World Models Push the Frontier of Physical AI",
+      ),
+    );
+  });
+
+  it("hasNonProductHints: variações de verbo (advance/shape/drive/expand + the frontier) disparam", () => {
+    assert.ok(hasNonProductHints("How our research is advancing the frontier of robotics"));
+    assert.ok(hasNonProductHints("Shaping the frontier of scientific discovery"));
+    assert.ok(hasNonProductHints("What's driving the frontier of AI safety"));
+    assert.ok(hasNonProductHints("Expanding the frontier of multimodal reasoning"));
+    // 3ª pessoa do singular ("expandS", não "expandES") — \w* cobre a conjugação
+    // real sem precisar enumerar sufixo por verbo (push/es, advanc/es, drive/s...).
+    assert.ok(hasNonProductHints("This model expands the frontier of what's possible"));
+  });
+
+  it("hasNonProductHints: NÃO dispara em lançamento real (sem vocabulário de ensaio de posicionamento)", () => {
+    assert.ok(!hasNonProductHints("Introducing GPT-6: a new frontier model"));
+    assert.ok(!hasNonProductHints("Gemini 2.5 Flash"));
+  });
+
+  it("isNonProductLancamento: CASO REAL NVIDIA → não-produto", () => {
+    assert.ok(
+      isNonProductLancamento(
+        "https://blogs.nvidia.com/blog/open-world-models-physical-ai/",
+        "Into the Omniverse: How Open World Models Push the Frontier of Physical AI",
+      ),
+    );
+  });
+
+  it("isVerifiedTool: CASO REAL NVIDIA → não-ferramenta (models genérico não basta)", () => {
+    assert.ok(
+      !isVerifiedTool(
+        "https://blogs.nvidia.com/blog/open-world-models-physical-ai/",
+        "Into the Omniverse: How Open World Models Push the Frontier of Physical AI",
+      ),
+    );
+  });
+
+  it("validateLancamentosFromApproved: CASO REAL NVIDIA vira not_a_tool", () => {
+    const approved = {
+      lancamento: [
+        {
+          url: "https://blogs.nvidia.com/blog/open-world-models-physical-ai/",
+          title:
+            "Into the Omniverse: How Open World Models Push the Frontier of Physical AI",
+        },
+      ],
+    };
+    const s = validateLancamentosFromApproved(approved);
+    assert.equal(s.not_a_tool.length, 1);
+  });
+
+  it("sem-regressão: lançamento real com 'models'/'frontier' genérico ainda passa (sem push-the-frontier hint)", () => {
+    assert.ok(
+      !isNonProductLancamento(
+        "https://openai.com/index/introducing-gpt-6",
+        "Introducing GPT-6: a new frontier model",
+      ),
+    );
+    assert.ok(
+      hasProductSignal(
+        "https://openai.com/index/introducing-gpt-6",
+        "Introducing GPT-6: a new frontier model",
+      ),
+    );
+  });
+
+  it("sem-regressão: casos reais #4336 (incidente/case-study) continuam corretos após adicionar POSITIONING_ESSAY_HINTS_RE", () => {
+    assert.ok(
+      hasNonProductHints(
+        "Anatomy of a Frontier Lab Agent Intrusion: A Technical Timeline of the July 2026 Incident",
+      ),
+    );
+    assert.ok(
+      hasNonProductHints("How Gemini Flash agents are helping a Michigan dairy farmer"),
+    );
+  });
+
+  it("sem-regressão: caso real claude-corps continua correto após adicionar POSITIONING_ESSAY_HINTS_RE", () => {
+    assert.ok(
+      isNonProductLancamento("https://www.anthropic.com/news/claude-corps", "Claude Corps"),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #4339 — not_a_tool auto-demovido pra RADAR em vez de warning-only
 // ---------------------------------------------------------------------------
 

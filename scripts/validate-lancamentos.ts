@@ -239,15 +239,40 @@ const INCIDENT_HINTS_RE =
 const CASE_STUDY_HINTS_RE = /\bhelping\s+a\b|\bcustomer\s+stor(y|ies)\b|\bcase\s+stud(y|ies)\b/i;
 
 /**
- * #4336: `true` se o título bate em vocabulário de ALTA precisão de incidente
- * de segurança ou case study de cliente — usado como negative hint que anula
- * o sinal positivo genérico de `PRODUCT_SIGNAL_RE` (agent/model/gemini/gpt
- * sozinhos não bastam quando o resto do título é claramente incidente ou
- * case study).
+ * #4714: título de ENSAIO DE POSICIONAMENTO ("How X Push/Advance/Shape/Drive
+ * the Frontier of Y") em domínio oficial. `PRODUCT_SIGNAL_RE` casa substantivo
+ * genérico plural (`models`) nesse tipo de texto — não é o lançamento de um
+ * produto específico nomeado, é reflexão editorial sobre uma categoria/tema.
+ *
+ * "push/advance/shape/drive the frontier" é o padrão de alta precisão
+ * observado no caso real — vocabulário de ensaio/thought-leadership que
+ * praticamente não aparece em título de anúncio real ("Introducing X",
+ * "X is now available"). Mesma classe de bug do #4336 (INCIDENT_HINTS_RE /
+ * CASE_STUDY_HINTS_RE): termo genérico de alta frequência (model/models/
+ * agent/platform) casando PRODUCT_SIGNAL_RE fora de contexto de anúncio.
+ *
+ * Caso real (#4714, 260807): "Into the Omniverse: How Open World Models
+ * Push the Frontier of Physical AI" (blogs.nvidia.com/blog/open-world-models-
+ * physical-ai/) — casava `\bmodels\b` em PRODUCT_SIGNAL_RE, mas é ensaio de
+ * posicionamento, sem "estamos lançando X" nenhum.
+ */
+const POSITIONING_ESSAY_HINTS_RE =
+  /\b(?:push|advanc|shap|driv|expand)\w*\s+the\s+frontier\b/i;
+
+/**
+ * #4336/#4714: `true` se o título bate em vocabulário de ALTA precisão de
+ * incidente de segurança, case study de cliente, ou ensaio de posicionamento
+ * — usado como negative hint que anula o sinal positivo genérico de
+ * `PRODUCT_SIGNAL_RE` (agent/model/gemini/gpt sozinhos não bastam quando o
+ * resto do título é claramente incidente, case study, ou ensaio).
  */
 export function hasNonProductHints(title?: string): boolean {
   if (!title) return false;
-  return INCIDENT_HINTS_RE.test(title) || CASE_STUDY_HINTS_RE.test(title);
+  return (
+    INCIDENT_HINTS_RE.test(title) ||
+    CASE_STUDY_HINTS_RE.test(title) ||
+    POSITIONING_ESSAY_HINTS_RE.test(title)
+  );
 }
 
 /** Slug normalizado (`[-_/]→ espaço`) pra match de palavras; url crua no catch. */
