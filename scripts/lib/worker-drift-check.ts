@@ -66,12 +66,24 @@
  * todo `wrangler.toml` deste repo — regex é suficiente, não precisa de um
  * parser TOML completo só pra este campo).
  *
+ * Restrito ao PREÂMBULO do arquivo — tudo ANTES da 1ª seção de tabela TOML
+ * (`[...]`/`[[...]]`). #4723 fleet review, achado 2: vários `wrangler.toml`
+ * reais do repo (`workers/poll`, `workers/linkedin-cron`) têm bindings como
+ * `[[durable_objects.bindings]]` com seu PRÓPRIO campo `name = "..."` (ex:
+ * `name = "VOTE_DEDUP"`) — sem esse corte, um regex sem âncora de seção
+ * casaria o PRIMEIRO `name` do arquivo inteiro, que hoje é sempre o do topo
+ * só por convenção de ordenação (nenhum `wrangler.toml` deste repo tem uma
+ * seção ANTES do `name` de topo), não por garantia estrutural.
+ *
  * Retorna `null` se o conteúdo não tiver uma linha `name = "..."` reconhecível
- * (arquivo vazio/malformado) — caller decide o que fazer (pular o worker,
- * reportar erro), esta função nunca lança.
+ * no preâmbulo (arquivo vazio/malformado, ou `name` só existe dentro de uma
+ * seção) — caller decide o que fazer (pular o worker, reportar erro), esta
+ * função nunca lança.
  */
 export function parseWranglerTomlName(tomlContent: string): string | null {
-  const m = tomlContent.match(/^\s*name\s*=\s*"([^"]+)"/m);
+  const sectionHeader = tomlContent.match(/^\s*\[/m);
+  const preamble = sectionHeader ? tomlContent.slice(0, sectionHeader.index) : tomlContent;
+  const m = preamble.match(/^\s*name\s*=\s*"([^"]+)"/m);
   return m ? m[1] : null;
 }
 
@@ -259,6 +271,26 @@ export function advanceState(fingerprint: string | null, now: Date): WorkerDrift
 export function shouldAlarm(state: WorkerDriftAlarmState, results: readonly WorkerDriftResult[]): boolean {
   if (!hasPendingDrift(results)) return false;
   return computeDriftFingerprint(results) !== state.lastAlarmedFingerprint;
+}
+
+/**
+ * Pura — `false` quando o cursor de idempotência NÃO deve ser persistido
+ * nesta execução: `--dry-run` (nunca grava) OU falha da consulta Cloudflair
+ * para a conta inteira (`metadataError` presente).
+ *
+ * #4723 fleet review, achado 1: sem este guard, uma falha de API faz TODO
+ * worker cair em `status: "error"`, `hasPendingDrift` exclui `"error"` (só
+ * conta `drift`/`never_deployed`), então `pending = false` e o main()
+ * gravaria `advanceState(null, now)` — resetando `lastAlarmedFingerprint`
+ * pra `null` mesmo que um drift REAL já alarmado continuasse pendente. A
+ * PRÓXIMA execução bem-sucedida recomputaria o mesmo fingerprint e
+ * re-alarmaria, duplicando um e-mail que o editor já recebeu. Sem dado
+ * confiável nesta execução (falha de conta inteira), o correto é preservar
+ * o estado anterior intacto — mesmo espírito do `--dry-run` (nunca avança
+ * cursor sem convicção do resultado).
+ */
+export function shouldAdvanceState(opts: { isDryRun: boolean; metadataError: string | null }): boolean {
+  return !opts.isDryRun && !opts.metadataError;
 }
 
 // ─── Corpo do e-mail de alarme (puro) ──────────────────────────────────────

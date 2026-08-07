@@ -20,6 +20,7 @@ import {
   emptyWorkerDriftAlarmState,
   advanceState,
   shouldAlarm,
+  shouldAdvanceState,
   buildWorkerDriftAlarmEmail,
   type WorkerDriftCheckInput,
   type WorkerDriftResult,
@@ -54,6 +55,44 @@ describe("parseWranglerTomlName (#4723)", () => {
   it("não confunde outro campo terminado em 'name' (ex: kv_namespace_name) com o campo name", () => {
     const toml = `kv_namespace_name = "algo"\nname = "poll"\n`;
     assert.equal(parseWranglerTomlName(toml), "poll");
+  });
+
+  it("#4723 fleet review achado 2: não confunde o 'name' de um binding ([[durable_objects.bindings]]) com o name de topo", () => {
+    // Caso real: workers/poll/wrangler.toml — o campo name de topo continua
+    // sendo encontrado mesmo com múltiplos bindings tendo seu PRÓPRIO 'name'
+    // depois dele no arquivo (VOTE_DEDUP, STATS_COUNTER, SCORE_COUNTER).
+    const toml = [
+      `name = "poll"`,
+      `main = "src/index.ts"`,
+      `[[kv_namespaces]]`,
+      `binding = "POLL"`,
+      `id = "abc123"`,
+      ``,
+      `[[durable_objects.bindings]]`,
+      `name = "VOTE_DEDUP"`,
+      `class_name = "VoteDedup"`,
+      ``,
+      `[[durable_objects.bindings]]`,
+      `name = "STATS_COUNTER"`,
+      `class_name = "StatsCounter"`,
+    ].join("\n");
+    assert.equal(parseWranglerTomlName(toml), "poll");
+  });
+
+  it("#4723 fleet review achado 2: se o name de topo VIER DEPOIS de uma seção, não é mais confundido com o name da seção", () => {
+    // Sem o corte no preâmbulo, o regex antigo casaria "VOTE_DEDUP" aqui
+    // (1º 'name' do arquivo) em vez do name de topo real — cenário
+    // hipotético que a ordem de arquivo atual do repo não exercita, mas que
+    // o parser precisa recusar corretamente (retorna null — não há name no
+    // preâmbulo antes da 1ª seção).
+    const toml = [
+      `[[durable_objects.bindings]]`,
+      `name = "VOTE_DEDUP"`,
+      `class_name = "VoteDedup"`,
+      ``,
+      `name = "poll"`,
+    ].join("\n");
+    assert.equal(parseWranglerTomlName(toml), null);
   });
 });
 
@@ -257,6 +296,24 @@ describe("shouldAlarm (#4723)", () => {
     state = advanceState(null, new Date("2026-08-06T12:00:00Z"));
     // Novo commit sem novo deploy reaparece.
     assert.equal(shouldAlarm(state, results), true);
+  });
+});
+
+describe("shouldAdvanceState (#4723 fleet review achado 1)", () => {
+  it("execução normal (sem dry-run, sem erro de conta) -> avança", () => {
+    assert.equal(shouldAdvanceState({ isDryRun: false, metadataError: null }), true);
+  });
+
+  it("--dry-run -> nunca avança, mesmo sem erro", () => {
+    assert.equal(shouldAdvanceState({ isDryRun: true, metadataError: null }), false);
+  });
+
+  it("falha de API pra conta inteira -> NÃO avança, mesmo sem dry-run (preserva cursor, evita re-alarme espúrio)", () => {
+    assert.equal(shouldAdvanceState({ isDryRun: false, metadataError: "HTTP 500" }), false);
+  });
+
+  it("dry-run E erro de API simultâneos -> continua não avançando (nenhuma das duas condições permite)", () => {
+    assert.equal(shouldAdvanceState({ isDryRun: true, metadataError: "HTTP 500" }), false);
   });
 });
 

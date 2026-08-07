@@ -85,6 +85,7 @@ import {
   hasPendingDrift,
   computeDriftFingerprint,
   shouldAlarm,
+  shouldAdvanceState,
   advanceState,
   emptyWorkerDriftAlarmState,
   buildWorkerDriftAlarmEmail,
@@ -332,6 +333,21 @@ async function main(): Promise<void> {
 
   if (isDryRun) {
     console.log(`${LOG_PREFIX} --dry-run: cursor NÃO avançado.`);
+    return;
+  }
+
+  if (!shouldAdvanceState({ isDryRun, metadataError })) {
+    // #4723 fleet review, achado 1: `metadataError` (falha da conta inteira)
+    // faz TODO worker cair em "error", `pending` vira false, e avançar o
+    // cursor aqui gravaria `lastAlarmedFingerprint: null` mesmo com um
+    // drift real já alarmado pendente — a próxima execução bem-sucedida
+    // recomputaria o mesmo fingerprint e re-alarmaria, duplicando um e-mail
+    // que o editor já recebeu. Preserva o estado anterior intacto.
+    console.error(
+      `${LOG_PREFIX} consulta à Cloudflare Workers API falhou nesta execução (${metadataError}) — nenhum ` +
+        "worker teve dado confiável. Cursor de idempotência NÃO avançado (preserva o estado anterior).",
+    );
+    process.exitCode = 1;
     return;
   }
 
