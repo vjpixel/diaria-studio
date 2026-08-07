@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Wrapper do sync automatico do spamRate do Google Postmaster Tools (#4154)
     - para o Task Scheduler.
