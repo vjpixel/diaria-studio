@@ -130,7 +130,7 @@
   border-radius: 4px;
   border: 1px solid var(--rule);
 }
-.priority-p0 { background: var(--status-danger); color: #fff; border-color: var(--status-danger); }
+.priority-p0 { background: var(--status-danger); color: var(--on-status); border-color: var(--status-danger); }
 .priority-p1 { background: var(--status-warn); color: var(--status-warn-ink); border-color: var(--status-warn); }
 .priority-p2 { background: var(--status-warn); color: var(--status-warn-ink); border-color: var(--status-warn); }
 .priority-p3 { background: var(--paper-alt); opacity: 0.8; }
@@ -196,8 +196,8 @@
   border: 1px solid var(--rule);
   white-space: nowrap;
 }
-.ci-green { background: var(--status-ok); color: #fff; border-color: var(--status-ok); }
-.ci-red { background: var(--status-danger); color: #fff; border-color: var(--status-danger); }
+.ci-green { background: var(--status-ok); color: var(--on-status); border-color: var(--status-ok); }
+.ci-red { background: var(--status-danger); color: var(--on-status); border-color: var(--status-danger); }
 .ci-pending { background: var(--status-warn); color: var(--status-warn-ink); border-color: var(--status-warn); }
 .ci-none { opacity: 0.5; }
 

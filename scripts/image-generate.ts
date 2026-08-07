@@ -26,6 +26,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseSdPrompt } from "./lib/schemas/image-generate.ts"; // #649
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
+import { parsePlatformConfig } from "./lib/schemas/platform-config.ts"; // #4625 item 4
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -198,9 +199,13 @@ function main() {
   console.error(`Positive: ${positivePrompt.slice(0, 120)}...`);
 
   // Escolher backend de geração com base em platform.config.json > image_generator.
-  // Suporta "gemini" (padrão), "cloudflare" (Workers AI free tier) e "comfyui".
-  const platformCfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
-  const generator = (platformCfg.image_generator ?? "gemini") as string;
+  // Suporta "gemini" (padrão), "cloudflare" (Workers AI free tier), "comfyui" e "openai".
+  // #4625 item 4: valida via parsePlatformConfig (schema Zod) em vez de um
+  // cast cru — mesmo fix aplicado em scripts/eia-compose.ts.
+  const platformCfg = parsePlatformConfig(
+    JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")),
+  );
+  const generator = platformCfg.image_generator;
   const scriptName =
     generator === "comfyui"     ? "comfyui-run.js" :
     generator === "cloudflare"  ? "cloudflare-image.js" :

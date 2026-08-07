@@ -79,7 +79,7 @@
   font-weight: 400;
 }
 .stage-age-stale {
-  color: #c07800;
+  color: var(--status-warn);
   opacity: 1;
   font-weight: 600;
 }

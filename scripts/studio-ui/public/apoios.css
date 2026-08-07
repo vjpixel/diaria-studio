@@ -236,7 +236,7 @@
   border: 1px solid var(--rule);
   white-space: nowrap;
 }
-.status-apoiando { background: var(--status-ok); color: #fff; border-color: var(--status-ok); }
+.status-apoiando { background: var(--status-ok); color: var(--on-status); border-color: var(--status-ok); }
 .status-nao_apoia { opacity: 0.55; }
 .status-apoiou_e_parou { border-color: var(--status-warn); color: var(--status-warn); }
 .status-sem_dados { border-style: dashed; opacity: 0.6; }

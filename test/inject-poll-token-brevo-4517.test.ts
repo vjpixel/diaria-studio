@@ -13,6 +13,9 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { run } from "../scripts/inject-poll-token-brevo.ts";
 import { computePollToken, pollTokenKvKey } from "../scripts/lib/shared/poll-token.ts";
 import type { CloudflareKVConfig } from "../scripts/lib/cloudflare-kv-upload.ts";
@@ -348,5 +351,49 @@ describe("inject-poll-token-brevo.ts run() — #4517", () => {
     assert.equal(result.failedContacts.length, 1);
     assert.equal(result.failedContacts[0].email, email);
     assert.match(result.failedContacts[0].error, /500/);
+  });
+});
+
+describe("inject-poll-token-brevo.ts exit semantics (#4653, mesma classe do #4638/#4651/#1401)", () => {
+  // Regressão: process.exit(N) chamado no catch handler do isMainModule()
+  // roda DEPOIS de `await run(...)` (fetch pra Brevo + KV Cloudflare) — o
+  // cenário exato da assertion UV_HANDLE_CLOSING no Windows (libuv força
+  // shutdown antes dos sockets keep-alive do fetch fecharem). Fix:
+  // process.exitCode no catch. Os 2 guards PRÉ-await (list-id ausente, envs
+  // ausentes) ficam com process.exit() de propósito — nenhum fetch rodou
+  // ainda nesses pontos, mesmo padrão de publish-daily-brevo.ts (#4651).
+  const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "inject-poll-token-brevo.ts");
+
+  function readMainAndCatchBodies(): { mainBody: string; catchBody: string } {
+    const source = readFileSync(SCRIPT, "utf8");
+    const sourceNoComments = source.replace(/\/\/.*$/gm, "");
+    const mainMatch = sourceNoComments.match(/async function main\([^)]*\)[^{]*\{[\s\S]*?\n\}\n\nconst _argv1/);
+    assert.ok(mainMatch, "main() não encontrada em inject-poll-token-brevo.ts");
+    const catchMatch = sourceNoComments.match(/if \(\s*import\.meta\.url[\s\S]*?\n\}\n?$/);
+    assert.ok(catchMatch, "bloco isMainModule() (import.meta.url guard) não encontrado em inject-poll-token-brevo.ts");
+    return { mainBody: mainMatch[0], catchBody: catchMatch[0] };
+  }
+
+  it("catch handler do CLI usa process.exitCode, não process.exit (#4653)", () => {
+    const { catchBody } = readMainAndCatchBodies();
+    assert.equal(
+      /process\.exit\s*\(/.test(catchBody),
+      false,
+      "catch de main() não pode chamar process.exit() — usar process.exitCode (#4653 Windows crash, mesma classe #4638/#4651)",
+    );
+    assert.match(catchBody, /process\.exitCode/, "catch de main() deve setar process.exitCode");
+  });
+
+  it("guards pré-await (list-id, envs ausentes) continuam com process.exit — sem risco libuv (#4653)", () => {
+    // Positive control: nenhum await fetch rodou ainda nestes pontos, então
+    // manter process.exit() ali é seguro e intencional (mesmo padrão do
+    // #4651 em publish-daily-brevo.ts/sync-apoio-nivel-brevo.ts).
+    const { mainBody } = readMainAndCatchBodies();
+    const occurrences = mainBody.match(/process\.exit\(1\)/g) ?? [];
+    assert.equal(
+      occurrences.length,
+      2,
+      "esperava exatamente 2 process.exit(1) em main() (guard de --list-id + guard de envs ausentes)",
+    );
   });
 });

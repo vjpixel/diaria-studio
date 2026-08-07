@@ -51,6 +51,25 @@ function withMockedExit(fn: () => unknown): Promise<number> {
   });
 }
 
+/**
+ * #4653: `runMain` agora seta `process.exitCode` em vez de chamar
+ * `process.exit()` no caminho de erro (classe de bug UV_HANDLE_CLOSING no
+ * Windows — #1401/#4638/#4651, consolidada aqui). `process.exitCode` é uma
+ * propriedade global mutável do processo de teste real — sem save/restore
+ * em torno de cada asserção, um teste que seta `1` faria o PRÓPRIO runner
+ * `node --test` terminar com exit code 1 mesmo com todos os testes verdes.
+ */
+async function withSavedExitCode(fn: () => Promise<void>): Promise<number | undefined> {
+  const saved = process.exitCode;
+  process.exitCode = undefined;
+  try {
+    await fn();
+    return process.exitCode;
+  } finally {
+    process.exitCode = saved;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // runMain
 // ---------------------------------------------------------------------------
@@ -69,8 +88,8 @@ describe("runMain", () => {
     assert.equal(exitCode, -1);
   });
 
-  it("chama process.exit(1) quando a função rejeita", async () => {
-    const exitCode = await withMockedExit(() =>
+  it("seta process.exitCode = 1 quando a função rejeita (#4653: nunca process.exit)", async () => {
+    const exitCode = await withSavedExitCode(() =>
       runMain(async () => {
         throw new Error("algo deu errado");
       }),
@@ -79,15 +98,30 @@ describe("runMain", () => {
     assert.equal(exitCode, 1);
   });
 
-  it("loga a mensagem de erro no stderr quando rejeita", async () => {
-    const savedExit = process.exit;
-    // Suppress actual exit during stderr capture
-    (process as NodeJS.Process & { exit: (code?: number) => never }).exit = (
-      _code?: number,
-    ): never => {
-      throw Object.assign(new Error("__mock_exit__"), { __mockExit: true });
-    };
+  it("#4653: NUNCA chama process.exit() no caminho de erro (regressão UV_HANDLE_CLOSING)", async () => {
+    // withMockedExit captura se process.exit foi chamado (capturedCode !== -1).
+    // Combinado com withSavedExitCode pra não vazar process.exitCode = 1 pro
+    // runner de teste real caso o fix regrida.
+    let processExitCalled = -1;
+    await withSavedExitCode(async () => {
+      processExitCalled = await withMockedExit(() =>
+        runMain(async () => {
+          throw new Error("simula falha pós-fetch");
+        }),
+      );
+    });
 
+    assert.equal(
+      processExitCalled,
+      -1,
+      "runMain não deve chamar process.exit() — só process.exitCode (#1401/#4638/#4651/#4653)",
+    );
+  });
+
+  it("loga a mensagem de erro no stderr quando rejeita", async () => {
+    // #4653: não mocka mais process.exit — runMain não o chama mais no
+    // caminho de erro, então o mock nunca dispararia (dead code). O side
+    // effect real a limpar agora é process.exitCode (withSavedExitCode).
     let stderrOutput = "";
     const origWrite = process.stderr.write.bind(process.stderr);
     process.stderr.write = (chunk: string | Uint8Array): boolean => {
@@ -96,15 +130,12 @@ describe("runMain", () => {
     };
 
     try {
-      await runMain(async () => {
-        throw new Error("mensagem de teste");
-      });
-    } catch (e: unknown) {
-      if (!(e instanceof Error) || !(e as Error & { __mockExit?: boolean }).__mockExit) {
-        throw e;
-      }
+      await withSavedExitCode(() =>
+        runMain(async () => {
+          throw new Error("mensagem de teste");
+        }),
+      );
     } finally {
-      process.exit = savedExit;
       process.stderr.write = origWrite;
     }
 
@@ -116,13 +147,6 @@ describe("runMain", () => {
   });
 
   it("loga o stack trace quando disponível", async () => {
-    const savedExit = process.exit;
-    (process as NodeJS.Process & { exit: (code?: number) => never }).exit = (
-      _code?: number,
-    ): never => {
-      throw Object.assign(new Error("__mock_exit__"), { __mockExit: true });
-    };
-
     let stderrOutput = "";
     const origWrite = process.stderr.write.bind(process.stderr);
     process.stderr.write = (chunk: string | Uint8Array): boolean => {
@@ -131,32 +155,19 @@ describe("runMain", () => {
     };
 
     try {
-      await runMain(async () => {
-        throw new Error("com stack");
-      });
-    } catch (e: unknown) {
-      if (!(e instanceof Error) || !(e as Error & { __mockExit?: boolean }).__mockExit) {
-        throw e;
-      }
+      await withSavedExitCode(() =>
+        runMain(async () => {
+          throw new Error("com stack");
+        }),
+      );
     } finally {
-      process.exit = savedExit;
       process.stderr.write = origWrite;
     }
 
     assert.ok(stderrOutput.includes("Error:"), `stderr deve incluir stack trace, got: ${stderrOutput}`);
   });
 
-  it("trata rejeição com valor não-Error (string)", async () => {
-    const savedExit = process.exit;
-    let exitCode = -1;
-    (process as NodeJS.Process & { exit: (code?: number) => never }).exit = (
-      code?: number,
-    ): never => {
-      exitCode = code ?? 0;
-      process.exit = savedExit;
-      throw Object.assign(new Error("__mock_exit__"), { __mockExit: true });
-    };
-
+  it("trata rejeição com valor não-Error (string), seta exitCode = 1 (#4653)", async () => {
     let stderrOutput = "";
     const origWrite = process.stderr.write.bind(process.stderr);
     process.stderr.write = (chunk: string | Uint8Array): boolean => {
@@ -164,17 +175,15 @@ describe("runMain", () => {
       return true;
     };
 
+    let exitCode: number | undefined;
     try {
-      await runMain(async () => {
-        // Throwing a non-Error value
-        throw "erro em string";
-      });
-    } catch (e: unknown) {
-      if (!(e instanceof Error) || !(e as Error & { __mockExit?: boolean }).__mockExit) {
-        throw e;
-      }
+      exitCode = await withSavedExitCode(() =>
+        runMain(async () => {
+          // Throwing a non-Error value
+          throw "erro em string";
+        }),
+      );
     } finally {
-      process.exit = savedExit;
       process.stderr.write = origWrite;
     }
 
