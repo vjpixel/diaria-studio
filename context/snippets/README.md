@@ -6,11 +6,17 @@ consulte-o para a convenção completa daquele bloco específico); este README �
 o mapa de qual bloco existe, onde ele entra na edição, que formato de render
 ele produz, e quando o editor deve escolher cada um.
 
-**Isto é sobre catalogar os modelos de conteúdo — não sobre automatizar a
-escolha entre eles.** A decisão de qual box entra em qual slot numa edição
-específica ainda é manual (config em `platform.config.json` ou paste direto
-no draft pelo editor). Automação/rotação dessa escolha é escopo de #3212,
-não deste índice.
+**Isto é sobre catalogar os modelos de conteúdo — a escolha de qual box
+entra em qual slot 1/2/3 numa edição específica.** Até o #4626 essa escolha
+era 100% manual (config em `platform.config.json` ou paste direto no draft
+pelo editor); desde o #4626, os slots 1/2/3 são preenchidos por padrão por
+`scripts/select-boxes-by-clicks.ts` — seleção automática por cliques +
+tendência de queda + anti-repetição vs. a edição anterior, controlada por
+`platform.config.json` → `boxes_divulgacao_auto` (`enabled`, e
+`pinned_slots` pra fixar manualmente 1 ou mais slots, que aí voltam a ler
+`boxes_divulgacao.slotN` como sempre). Slot 0 (topo) fica de fora dessa
+automação — continua manual/opt-in raro, decisão do #4274. Ver a docstring
+de `select-boxes-by-clicks.ts` pra precedência completa.
 
 ## Onde um box pode entrar
 
@@ -183,10 +189,11 @@ estendeu pra 3 boxes permanentes (slot 3 = indicação de ferramenta, entre o
 último destaque e USE MELHOR) e reposicionou É IA? pra depois de USE MELHOR.
 
 Este índice cataloga **o que existe**. A pergunta "qual CONTEÚDO específico
-entra em cada slot nesta edição" (ex: qual livro recomendar, qual ferramenta
-indicar) ainda é decidida manualmente — o editor substitui o conteúdo do
-snippet correspondente a cada reuso, ou troca `boxes_divulgacao` em
-`platform.config.json` pra usar outro dos 8 arquivos (ou colar direto no
-draft, pros que não são auto-injetáveis). Automação/rotação dessa escolha de
-conteúdo (ex: rotação automática a partir de um catálogo) é escopo futuro,
-não implementado aqui.
+entra em cada slot nesta edição" é resolvida de duas formas, dependendo do
+slot: slot 0 (topo) e qualquer slot 1/2/3 listado em
+`boxes_divulgacao_auto.pinned_slots` continuam manuais — o editor substitui
+o conteúdo do snippet a cada reuso, ou troca `boxes_divulgacao` em
+`platform.config.json` (ou cola direto no draft, pros que não são
+auto-injetáveis); slots 1/2/3 não-pinados são resolvidos automaticamente por
+`scripts/select-boxes-by-clicks.ts` (**#4626**, rotação por cliques +
+tendência + anti-repetição — ver seção acima).

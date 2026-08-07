@@ -465,15 +465,22 @@ Exit code handling:
 
 **Comportamento em `auto_approve = true` (`--no-gates`):** roda normalmente se habilitado (mesmo custo, sem apresentação visual); nunca bloqueia o fluxo — coerente com "opcional" da issue #4505.
 
-**4c.7 — Recomendação de boxes de divulgação (#4354):**
+**4c.7 — Boxes de divulgação: o que foi aplicado + ranking de apoio (#4354/#4626):**
 
-Rodar `scripts/box-click-report.ts` — ranking orientado por dados de qual box de divulgação (`context/snippets/*.md`, slots 0–3 via `platform.config.json` → `boxes_divulgacao`) performou melhor em cliques nas últimas edições, apoio à decisão de troca de slot no gate:
+**#4626 — a seleção dos slots 1/2/3 já ACONTECEU no Stage 2** (`resolveBoxesForEdition` dentro de `stitch-newsletter.ts`, automática por padrão — ver §2 de `orchestrator-stage-2.md`). Este passo só EXIBE o que foi decidido, não decide nada aqui. Ler `_internal/box-selection.json` (gravado pelo Stage 2; ausente em edições retomadas de um checkpoint anterior ao #4626 — nesse caso, pular esta exibição sem erro) e montar 1 linha por slot:
+
+- `mode: "auto"` → `Slot N: {nome do snippet} — auto-selecionado (score {score}, {editionsAppeared} edições{, tendência de queda se trend.declining}).`
+- `mode: "pinned"` → `Slot N: {file} — pinado manualmente (boxes_divulgacao_auto.pinned_slots).`
+- `mode: "fallback-no-candidates"` → `Slot N: {file} — mantido (sem dado suficiente pra seleção automática ainda).`
+- `mode: "disabled"` → `Slot N: {file} — seleção automática desligada (boxes_divulgacao_auto.enabled=false).`
+
+Rodar também `scripts/box-click-report.ts` — ranking bruto de cliques por box nas últimas edições (contexto adicional, mesmo sem decidir nada):
 
 ```bash
 npx tsx scripts/box-click-report.ts --last 20
 ```
 
-Capturar stdout e incluir na seção `━━━ BOXES DE DIVULGAÇÃO` do gate (§4d). **Puramente informativo — nunca bloqueia o gate, nunca troca a box sozinho** (decisão 100% editorial). Exit code sempre **não-fatal**: `0` → capturar stdout (ranking vazio é resultado válido); qualquer falha (`1` = `data/editions` ausente, ou exception) → `⚠️ Recomendação de boxes indisponível: {motivo}.`, sem halt banner (não depende de MCP, diferente do #738). Em `--no-gates`: rodar normalmente (barato, só leitura de disco), pular só a apresentação.
+Capturar os dois e incluir na seção `━━━ BOXES DE DIVULGAÇÃO` do gate (§4d): primeiro o que foi aplicado (`box-selection.json`), depois o ranking (`box-click-report.ts`) como contexto. **Puramente informativo — nunca bloqueia o gate.** Se o editor discordar da seleção automática, o override é editar `02-reviewed.md` diretamente (trocar o texto do box na lacuna) — não há confirmação/reversão automatizada aqui (decisão do editor #4626: sem gate novo). Exit code de `box-click-report.ts` sempre **não-fatal**: `0` → capturar stdout (ranking vazio é resultado válido); qualquer falha (`1` = `data/editions` ausente, ou exception) → `⚠️ Recomendação de boxes indisponível: {motivo}.`, sem halt banner (não depende de MCP, diferente do #738). `box-selection.json` ausente/corrompido → mesma tolerância, pular a linha correspondente sem bloquear. Em `--no-gates`: rodar normalmente (barato, só leitura de disco), pular só a apresentação.
 
 ### 4d. Gate humano (#1694)
 
