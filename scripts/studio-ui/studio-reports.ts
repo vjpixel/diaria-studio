@@ -46,20 +46,34 @@
  * `studio-issues.ts`).
  *
  * **#4475: e-mail de notificação leve, não a volta do draft narrativo do
- * #3714.** O draft removido em #3714 era um e-mail PESADO — narrativa
- * completa colada via `create_draft` (MCP), que o editor precisava abrir e
- * ler inteiro. O que `registerReport` dispara agora (`dispatchReportEmail`,
- * via Gmail API direta — `sendGmailMessage`, mesmo mecanismo do alarme de
- * guardrail, #4064) é só título + link — um PING pra avisar que um relatório
- * novo existe, não uma reintrodução do conteúdo duplicado que #3714
- * eliminou. Decisão do editor em #4475: quer o aviso por e-mail de volta,
- * mas mantendo o Studio como onde o relatório de fato é lido.
+ * #3714** — DECISÃO REVERTIDA em 06/08 pelo editor (#4708), ver bloco
+ * abaixo. Histórico preservado porque a issue #4708 explicitamente pediu
+ * pra registrar a reversão em vez de só trocar o código: uma sessão futura
+ * que lesse só "#4475: e-mail leve" concluiria que o corpo cheio é
+ * regressão e reverteria de volta.
+ *
+ * O draft removido em #3714 era um e-mail PESADO — narrativa completa
+ * colada via `create_draft` (MCP), que o editor precisava abrir e ler
+ * inteiro. O que `registerReport` disparava entre #4475 (260802) e #4708
+ * (260806) via `dispatchReportEmail` era só título + link — um PING pra
+ * avisar que um relatório novo existe, sem reintroduzir o conteúdo
+ * duplicado que #3714 tinha eliminado.
+ *
+ * **#4708 (2026-08-06): o editor quer o relatório COMPLETO de volta no
+ * corpo do e-mail, não só título + link.** `buildReportEmail` agora lê o
+ * conteúdo real do relatório (via `resolveReportHtml`, mesma resolução
+ * segura contra path traversal já usada pelo Studio) e o embute no corpo —
+ * ver `buildReportEmail` abaixo pro mecanismo (conversão HTML→texto puro,
+ * truncamento explícito quando o conteúdo é grande). O link continua no
+ * corpo (ler no e-mail OU agir no Studio, ambos úteis) — só deixou de ser a
+ * ÚNICA coisa que o e-mail carrega.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { escHtml } from "../lib/html-escape.ts";
+import { stripHtml } from "../lib/strip-html.ts"; // #4708 — corpo completo do e-mail (reverte o "leve" do #4475)
 import { sendGmailMessage, type GmailSendResult } from "../lib/gmail-send.ts";
 import { resolveEditorEmail } from "../lib/inbox-stats.ts";
 import { gFetch, CREDENTIALS_PATH_TEST_OVERRIDE_ENV } from "../google-auth.ts"; // #4478 achados 1/2
@@ -240,15 +254,76 @@ function resolveReportUrl(entry: ReportEntry): string {
 }
 
 /**
- * Monta o e-mail de notificação — título do relatório + link (#4475).
+ * Tamanho prático de leitura pro corpo do e-mail (#4708) — não é um limite
+ * técnico da Gmail API (que aceita mensagens bem maiores), é o ponto em que
+ * um relatório deixa de ser "leitura rápida no e-mail" e vira "melhor ler no
+ * Studio". O relatório overnight de 260805 tinha ~7 KB de markdown (texto
+ * puro depois de stripHtml fica ainda menor); 30.000 caracteres dá folga
+ * generosa acima disso pro caso comum, sem deixar uma rodada excepcionalmente
+ * grande (muitos findings/PRs) produzir um e-mail impraticável. Truncamento é
+ * SEMPRE explícito no corpo (nunca silencioso) — ver `buildReportEmail`.
+ */
+export const REPORT_EMAIL_BODY_MAX_CHARS = 30_000;
+
+/** Remove blocos `<style>`/`<script>` inteiros ANTES de `stripHtml` — sem
+ * isso, o CSS/JS cru dos relatórios HTML (`resolveReportHtml` embute um
+ * `<style>` tanto no wrap de markdown quanto no `edition-report.html` nativo)
+ * vazaria como texto ilegível no corpo do e-mail (`stripHtml` só remove TAGS,
+ * não o conteúdo textual entre elas). */
+function htmlReportToPlainText(html: string): string {
+  const withoutStyleAndScript = html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "");
+  return stripHtml(withoutStyleAndScript);
+}
+
+export interface TruncateReportBodyResult {
+  text: string;
+  truncated: boolean;
+}
+
+/** Corta `text` em `maxChars` — puro, testável isoladamente do resto do
+ * pipeline de e-mail. `truncated: true` é o sinal que `buildReportEmail` usa
+ * pra nunca truncar em silêncio (#4708, pedido explícito da issue). */
+export function truncateReportBody(
+  text: string,
+  maxChars: number = REPORT_EMAIL_BODY_MAX_CHARS,
+): TruncateReportBodyResult {
+  if (text.length <= maxChars) return { text, truncated: false };
+  return { text: text.slice(0, maxChars).trimEnd(), truncated: true };
+}
+
+/**
+ * Monta o e-mail de notificação — título + CONTEÚDO COMPLETO do relatório +
+ * link (#4708, reverte o "só título + link" do #4475 — ver o bloco de
+ * histórico no topo do arquivo).
+ *
+ * Precisa de `rootDir` (novo parâmetro nesta revisão) porque o conteúdo é
+ * lido do disco via `resolveReportHtml` — a MESMA resolução usada pra servir
+ * `/relatorios/:id` no Studio, então herda de graça o guard de path
+ * traversal e o fallback gracioso "arquivo não encontrado" (nunca lança
+ * aqui). O HTML resolvido (que pra `.md` já vem envolto em `<style>` +
+ * `<h1>{title}</h1>` + corpo renderizado, e pra `.html` é servido cru) passa
+ * por `htmlReportToPlainText` (remove `<style>`/`<script>`, depois
+ * `stripHtml` — preserva `href` de link como URL inline) pra virar texto
+ * plano legível — `sendGmailMessage`/`buildMimeMessage` (`gmail-send.ts`)
+ * só sabem montar `Content-Type: text/plain`, então HTML de verdade no
+ * corpo nunca foi uma opção sem also reescrever o MIME builder; texto plano
+ * cobre o pedido da issue ("o relatório completo no corpo") sem esse escopo
+ * extra.
+ *
+ * **Truncamento explícito, nunca silencioso (#4708):** acima de
+ * `REPORT_EMAIL_BODY_MAX_CHARS`, o corpo termina com
+ * `[relatório truncado — íntegra em {url}]` em vez de só cortar o texto sem
+ * aviso. Abaixo do limite, o corpo termina com `Ver no Studio: {url}` — o
+ * link SEMPRE aparece, truncado ou não (pedido explícito da issue: "ter os
+ * dois é útil").
  *
  * **Kinds com resumo curto pronto no próprio título** (overnight/develop —
  * ex: "diar.ia.br overnight 260720 — 5 resolvidas, 2 puladas, 1 finding",
  * montado por `.claude/skills/diaria-overnight/SKILL.md` Fase 2 passo 3)
- * já carregam esse resumo em `entry.title`, então título+link no corpo cobre
- * o requisito de incluir o resumo sem duplicar lógica de digest aqui — este
- * módulo não conhece a estrutura de `plan.json`/`report.md` por kind, só o
- * texto que o caller já preparou como título.
+ * continuam usando esse resumo como primeira linha do corpo (via
+ * `entry.title`) — o conteúdo completo do relatório vem logo depois.
  *
  * **`[diar.ia.br]` só é prefixado quando o título ainda não começa com
  * "diar.ia.br" (achado do self-review, #4478; grafia atualizada #4424).**
@@ -256,9 +331,14 @@ function resolveReportUrl(entry: ReportEntry): string {
  * `clarice-novos`/`edicao`) já começa com "diar.ia.br" — sem esse guard o
  * subject saía `"[diar.ia.br] diar.ia.br overnight ..."`, duplicando a marca.
  */
-export function buildReportEmail(entry: ReportEntry): { subject: string; body: string } {
+export function buildReportEmail(rootDir: string, entry: ReportEntry): { subject: string; body: string } {
   const subject = entry.title.startsWith("diar.ia.br") ? entry.title : `[diar.ia.br] ${entry.title}`;
-  const body = `${entry.title}\n\n${resolveReportUrl(entry)}\n`;
+  const url = resolveReportUrl(entry);
+  const { html } = resolveReportHtml(rootDir, entry);
+  const plainContent = htmlReportToPlainText(html);
+  const { text: content, truncated } = truncateReportBody(plainContent);
+  const closingLine = truncated ? `[relatório truncado — íntegra em ${url}]` : `Ver no Studio: ${url}`;
+  const body = `${entry.title}\n\n${content}\n\n${closingLine}\n`;
   return { subject, body };
 }
 
@@ -297,7 +377,7 @@ export async function dispatchReportEmail(
       return { sent: false, skipped: "no-credentials" };
     }
     const to = deps.resolveEditorEmail(resolve(rootDir, "platform.config.json"));
-    const { subject, body } = buildReportEmail(entry);
+    const { subject, body } = buildReportEmail(rootDir, entry);
     await deps.sendMail(to, subject, body);
     return { sent: true };
   } catch (e) {

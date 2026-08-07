@@ -386,6 +386,11 @@ Triagem dos findings:
        --plan data/overnight/{AAMMDD}/plan.json
      ```
      O script lê o campo `timeline` de cada issue no `plan.json` e imprime a tabela markdown `unidade | início | fim | duração | fix-iterations` + total da rodada + unidade mais lenta. Degrada graciosamente: issues sem campo `timeline` (rodadas anteriores ao #2099 ou unidades interrompidas) aparecem na tabela com `—` nos campos de horário e duração — a tabela nunca quebra. Esta seção é a fonte primária de observabilidade de tempo; `plan.json` é a fonte do relatório (pós-compaction o run-log pode ser grande),
+   - **Tasks pendentes de registro (#4708 Parte 1):**
+     ```bash
+     npx tsx scripts/lib/pending-scheduled-tasks.ts
+     ```
+     Cruza o `$TaskName` declarado em cada `scripts/**/setup-*-schedule.ps1` contra as tasks REALMENTE registradas no Task Scheduler desta máquina (`Get-ScheduledTask -TaskName 'Diaria-*'`). Fecha o padrão medido em 06/08 (#4708): três tasks — `Diaria-Brevo-Diaria-Evaluate`, `Diaria-Apoios-Diff-Alarm`, `Diaria-Cursos-Error-Alarm` — mergearam, testaram e ficaram órfãs do único passo que só roda na máquina do editor, sem NENHUM sinal automático até uma auditoria manual. Imprime a seção markdown pronta pra colar no relatório quando há pendência, ou nada quando não há (não polui rodada limpa) — inclusive em sessão cloud (Task Scheduler é recurso local, mesmo sinal de `exec-mode.ts`). Se a saída não for vazia, colar verbatim no `report.md` desta rodada,
    - estado final da fila (`gh issue list` fresco).
 2. Salvar em `data/overnight/{AAMMDD}/report.md` (AAMMDD do `plan.json`, não recomputado).
 3. **Registrar o relatório na superfície de Relatórios do Studio (#3714, decisão do editor 260720 — substitui o antigo draft de Gmail, não soma a ele):**

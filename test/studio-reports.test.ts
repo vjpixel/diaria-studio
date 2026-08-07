@@ -25,6 +25,8 @@ import {
   reportId,
   isReportKind,
   pruneReportsRegistry,
+  truncateReportBody,
+  REPORT_EMAIL_BODY_MAX_CHARS,
   type ReportEntry,
   type ReportEmailDeps,
 } from "../scripts/studio-ui/studio-reports.ts";
@@ -669,18 +671,18 @@ describe("buildReportEmail — prefixo [diar.ia.br] não duplica a marca (#4478,
   }
 
   it("título já começa com 'diar.ia.br' -> subject usa o título cru, sem prefixo duplicado", () => {
-    const { subject } = buildReportEmail(mkEntry());
+    const { subject } = buildReportEmail(makeRoot(), mkEntry());
     assert.equal(subject, "diar.ia.br — relatório de edição 260802");
     assert.ok(!subject.startsWith("[diar.ia.br] diar.ia.br"));
   });
 
   it("título NÃO começa com 'diar.ia.br' -> prefixo [diar.ia.br] continua sendo adicionado", () => {
-    const { subject } = buildReportEmail(mkEntry({ title: "Relatório sem prefixo" }));
+    const { subject } = buildReportEmail(makeRoot(), mkEntry({ title: "Relatório sem prefixo" }));
     assert.equal(subject, "[diar.ia.br] Relatório sem prefixo");
   });
 });
 
-describe("buildReportEmail / dispatchReportEmail (#4475)", () => {
+describe("buildReportEmail / dispatchReportEmail (#4475, corpo completo desde #4708)", () => {
   function mkEntry(overrides: Partial<ReportEntry> = {}): ReportEntry {
     return {
       id: "overnight-260720",
@@ -694,8 +696,8 @@ describe("buildReportEmail / dispatchReportEmail (#4475)", () => {
     };
   }
 
-  it("buildReportEmail: subject e body carregam o título do relatório + URL", () => {
-    const { subject, body } = buildReportEmail(mkEntry());
+  it("buildReportEmail: subject e body carregam o título do relatório + URL (arquivo ausente -> fallback gracioso, nunca lança)", () => {
+    const { subject, body } = buildReportEmail(makeRoot(), mkEntry());
     assert.match(subject, /diar\.ia\.br overnight 260720 — 5 resolvidas/);
     assert.match(body, /diar\.ia\.br overnight 260720 — 5 resolvidas/);
     assert.match(body, /\/relatorios\/overnight-260720/);
@@ -705,12 +707,77 @@ describe("buildReportEmail / dispatchReportEmail (#4475)", () => {
     const prevRemote = process.env.STUDIO_REMOTE_URL;
     process.env.STUDIO_REMOTE_URL = "https://studio.diar.ia.br";
     try {
-      const { body } = buildReportEmail(mkEntry({ id: "edicao-260802", url: "/relatorios/edicao-260802" }));
+      const { body } = buildReportEmail(
+        makeRoot(),
+        mkEntry({ id: "edicao-260802", url: "/relatorios/edicao-260802" }),
+      );
       assert.match(body, /https:\/\/studio\.diar\.ia\.br\/relatorios\/edicao-260802/);
     } finally {
       if (prevRemote === undefined) delete process.env.STUDIO_REMOTE_URL;
       else process.env.STUDIO_REMOTE_URL = prevRemote;
     }
+  });
+
+  it("#4708: relatório markdown REAL -> o conteúdo (não só título+link) aparece no corpo do e-mail", () => {
+    const r = makeRoot();
+    mkdirSync(join(r, "data", "overnight", "260720"), { recursive: true });
+    writeFileSync(
+      join(r, "data", "overnight", "260720", "report.md"),
+      "# Overnight 260720\n\n**Resolvidas:** 5\n\n- issue #1234 — fix X\n- issue #1235 — fix Y\n",
+    );
+    const { body } = buildReportEmail(r, mkEntry());
+    // conteúdo de verdade (não só título+link, o comportamento pré-#4708).
+    assert.match(body, /Resolvidas:\s*5/);
+    assert.match(body, /issue #1234 — fix X/);
+    assert.match(body, /issue #1235 — fix Y/);
+    // link continua presente (pedido explícito da issue: "ter os dois é útil").
+    assert.match(body, /Ver no Studio:.*\/relatorios\/overnight-260720/);
+    // sem truncamento aqui — não deve aparecer o marcador de truncado.
+    assert.ok(!body.includes("relatório truncado"));
+  });
+
+  it("#4708: relatório HTML (edicao) REAL -> conteúdo aparece, <style>/<script> nunca vazam como texto cru", () => {
+    const r = makeRoot();
+    mkdirSync(join(r, "data", "editions", "260802", "_internal"), { recursive: true });
+    writeFileSync(
+      join(r, "data", "editions", "260802", "_internal", "edition-report.html"),
+      `<!doctype html><html><head><style>body { color: #2563eb; font-family: sans-serif; }</style>` +
+        `<script>window.alert('nunca deveria vazar isto');</script></head>` +
+        `<body><h1>diar.ia.br — Report edicao 260802</h1><p>Newsletter publicada com sucesso.</p></body></html>`,
+    );
+    const entry = mkEntry({
+      id: "edicao-260802",
+      kind: "edicao",
+      sessionId: "260802",
+      title: "diar.ia.br — relatório de edição 260802",
+      htmlPath: "data/editions/260802/_internal/edition-report.html",
+      url: "/relatorios/edicao-260802",
+    });
+    const { body } = buildReportEmail(r, entry);
+    assert.match(body, /Newsletter publicada com sucesso/);
+    assert.match(body, /Report edicao 260802/);
+    // CSS/JS crus nunca vazam pro corpo do e-mail (htmlReportToPlainText remove <style>/<script> inteiros).
+    assert.ok(!body.includes("color: #2563eb"));
+    assert.ok(!body.includes("window.alert"));
+    assert.ok(!body.includes("nunca deveria vazar isto"));
+  });
+
+  it("#4708: conteúdo maior que REPORT_EMAIL_BODY_MAX_CHARS -> truncamento EXPLÍCITO no corpo, nunca silencioso", () => {
+    const r = makeRoot();
+    mkdirSync(join(r, "data", "overnight", "260805"), { recursive: true });
+    const bigContent = "linha de conteúdo bem grande repetida. ".repeat(2000); // >> 30_000 chars
+    writeFileSync(join(r, "data", "overnight", "260805", "report.md"), `# Overnight 260805\n\n${bigContent}`);
+    const entry = mkEntry({
+      id: "overnight-260805",
+      sessionId: "260805",
+      htmlPath: "data/overnight/260805/report.md",
+      url: "/relatorios/overnight-260805",
+    });
+    const { body } = buildReportEmail(r, entry);
+    assert.match(body, /relatório truncado — íntegra em/);
+    assert.match(body, /\/relatorios\/overnight-260805/);
+    // o marcador de truncamento substitui a linha "Ver no Studio:" (não os dois ao mesmo tempo).
+    assert.ok(!body.includes("Ver no Studio:"));
   });
 
   it("dispatchReportEmail: chamado direto (fora de registerReport) também respeita hasCredentials/sendMail injetados", async () => {
@@ -727,6 +794,34 @@ describe("buildReportEmail / dispatchReportEmail (#4475)", () => {
     assert.equal(result.sent, true);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].to, "editor@example.com");
+  });
+});
+
+describe("truncateReportBody (#4708 — puro)", () => {
+  it("texto menor que o limite -> não trunca", () => {
+    const result = truncateReportBody("texto curto", 100);
+    assert.deepEqual(result, { text: "texto curto", truncated: false });
+  });
+
+  it("texto igual ao limite -> não trunca (fronteira inclusiva)", () => {
+    const text = "x".repeat(100);
+    const result = truncateReportBody(text, 100);
+    assert.equal(result.truncated, false);
+    assert.equal(result.text, text);
+  });
+
+  it("texto maior que o limite -> trunca em maxChars, truncated: true", () => {
+    const text = "a".repeat(150);
+    const result = truncateReportBody(text, 100);
+    assert.equal(result.truncated, true);
+    assert.equal(result.text.length, 100);
+  });
+
+  it("default maxChars é REPORT_EMAIL_BODY_MAX_CHARS quando omitido", () => {
+    const text = "b".repeat(REPORT_EMAIL_BODY_MAX_CHARS + 10);
+    const result = truncateReportBody(text);
+    assert.equal(result.truncated, true);
+    assert.ok(result.text.length <= REPORT_EMAIL_BODY_MAX_CHARS);
   });
 });
 
