@@ -413,6 +413,21 @@ export interface MvBacklog {
 }
 
 /**
+ * Rótulo de exibição pros contatos sem cohort conhecido (`cohort IS NULL` no
+ * store) dentro de `MvBacklog.byCohort` — NUNCA um valor real da coluna
+ * `cohort` (que só guarda um slug reconhecido ou `NULL`, nunca esta string).
+ * Exportado (não um literal solto) porque `planMvOnDemand` precisa EXCLUIR
+ * esta entrada do recorte executável: `readStoreCandidates`/`verify-emails-mv.ts`
+ * fazem `WHERE cohort = ?` com o valor exato, e `cohort = '(sem cohort)'`
+ * nunca bate uma linha real com `cohort IS NULL` — sem o filtro, um contato
+ * sem cohort no backlog vira uma alocação no plano que `clarice-mv-ondemand.ts`
+ * silenciosamente verificaria ZERO candidatos (query sem match), gastando o
+ * "espaço" do alvo de verificação sem cobrir déficit nenhum (#4659, achado do
+ * self-review).
+ */
+export const MV_BACKLOG_NO_COHORT_LABEL = "(sem cohort)";
+
+/**
  * Conta os contatos que nunca passaram pelo MillionVerifier, por cohort.
  *
  * Isto NÃO é enfeite de relatório: é a única alavanca de alcance que sobra
@@ -430,7 +445,7 @@ export function summarizeMvBacklog(
   for (const r of rows) {
     const unverified = !r.mv_bucket && r.ineligible_reason === "mv_unverified";
     if (!unverified) continue;
-    const cohort = r.cohort ?? "(sem cohort)";
+    const cohort = r.cohort ?? MV_BACKLOG_NO_COHORT_LABEL;
     counts.set(cohort, (counts.get(cohort) ?? 0) + 1);
     total += 1;
   }
@@ -534,6 +549,14 @@ const EMPTY_MV_ONDEMAND_PLAN: MvOnDemandPlan = {
  * cobrir. Puro — nunca lê disco/rede; quem EXECUTA o plano (gasta crédito de
  * verdade) é `scripts/clarice-mv-ondemand.ts`, script separado e read+write
  * por construção, nunca este planejador read-only.
+ *
+ * Também exclui a entrada `MV_BACKLOG_NO_COHORT_LABEL` (contatos sem cohort
+ * conhecido) — não é um cohort EXECUTÁVEL: `readStoreCandidates` faz
+ * `WHERE cohort = ?` com o valor exato, e essa string nunca bate uma linha
+ * real (`cohort IS NULL`). Alocar orçamento pra ela produziria uma entrada no
+ * plano que `clarice-mv-ondemand.ts` verificaria como ZERO candidatos —
+ * gastando "espaço" do alvo sem cobrir déficit nenhum (achado do self-review,
+ * #4659).
  */
 export function planMvOnDemand(
   backlog: MvBacklog,
@@ -548,7 +571,7 @@ export function planMvOnDemand(
   const targetVerifyCount = Math.ceil(deficit / approvalMargin);
 
   const ordered = backlog.byCohort
-    .filter((e) => !isMvExemptCohort(e.cohort))
+    .filter((e) => !isMvExemptCohort(e.cohort) && e.cohort !== MV_BACKLOG_NO_COHORT_LABEL)
     .slice()
     .sort((a, b) => {
       const ra = cohortSendRank(a.cohort);
@@ -921,7 +944,7 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
     blockers.push(
       `Fila de 1º envio (${fmt(input.availableFirstSend)}) é menor que o volume proposto (${fmt(input.volumes.total)}) — as últimas ondas sairiam menores que o planejado ou puxariam público de outra natureza.` +
         (mvOnDemandPlan.byCohort.length > 0
-          ? ` Verificação MV sob demanda cobriria: ${fmt(mvOnDemandPlan.targetVerifyCount)} contato(s) em ${mvOnDemandPlan.byCohort.length} cohort(s) (~US$ ${mvOnDemandPlan.estimatedCostUsd.toFixed(2)}) — ver seção "Verificação MV sob demanda" abaixo.`
+          ? ` Verificação MV sob demanda ${mvOnDemandPlan.backlogInsufficient ? "reduziria (mas NÃO cobre inteiramente)" : "cobriria"}: ${fmt(mvOnDemandPlan.totalPlanned)} de ${fmt(mvOnDemandPlan.targetVerifyCount)} contato(s) alvo, em ${mvOnDemandPlan.byCohort.length} cohort(s) (~US$ ${mvOnDemandPlan.estimatedCostUsd.toFixed(2)}) — ver seção "Verificação MV sob demanda" abaixo.`
           : ` Backlog MV (${fmt(input.mvBacklog.total)} contatos, excluindo cohorts MV-isentos) não tem candidato pra cobrir o déficit — a alavanca de fila não está disponível aqui.`),
     );
   }
