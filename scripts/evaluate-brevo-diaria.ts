@@ -18,8 +18,10 @@
  * `scripts/lib/shared/brevo-diaria-score.ts`) e aplica a decisão do editor
  * (issue #4476, item 1 — substitui a fórmula aditiva original do #4266):
  *
- *   sends_count>=3 E openRate>=50% (INSTANTÂNEO) → promove pra Beehiiv
- *                  (lista confirmada)
+ *   sends_count>=3 E openRate>51% ESTRITO (INSTANTÂNEO) → promove pra
+ *                  Beehiiv (lista confirmada) — threshold revisado de
+ *                  `>=50%` pra `>51%` na decisão do editor, comentário
+ *                  260805b da issue #4637 (ver `brevo-diaria-score.ts`)
  *   sends_count>=3 E openRate<=20% (só envios MADUROS, >=48h — ver "Passo
  *                  2b" abaixo) → suprime (para de receber, `emailBlacklisted:
  *                  true` na Brevo — NUNCA deletado, mesma semântica de

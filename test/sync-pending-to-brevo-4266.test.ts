@@ -25,6 +25,7 @@ import {
   loadMvVerifiedEmails,
   assertMvGuardAcknowledged,
   applyRolloutGuardrailGate,
+  applyMaxAddGate,
   type BeehiivPendingSubscription,
   type PendingToIngestEntry,
 } from "../scripts/sync-pending-to-brevo.ts";
@@ -420,6 +421,28 @@ describe("applyRolloutGuardrailGate — circuit breaker de campanha zera o backf
 
   it("rollout PAUSADO com 0 slots livres → continua 0 (idempotente)", () => {
     assert.equal(applyRolloutGuardrailGate(0, true), 0);
+  });
+});
+
+describe("applyMaxAddGate — teto opcional do editor no passo de decisão de volume (#4637 item 2)", () => {
+  it("maxAdd ausente (undefined) → devolve availableSlots sem alteração (comportamento antigo)", () => {
+    assert.equal(applyMaxAddGate(150, undefined), 150);
+  });
+
+  it("maxAdd 0 (\"nenhum\", resposta válida do editor) → zera, mesmo com slots livres", () => {
+    assert.equal(applyMaxAddGate(150, 0), 0);
+  });
+
+  it("maxAdd abaixo de availableSlots → limita ao maxAdd", () => {
+    assert.equal(applyMaxAddGate(150, 10), 10);
+  });
+
+  it("maxAdd acima de availableSlots → nunca aumenta além dos slots livres reais", () => {
+    assert.equal(applyMaxAddGate(5, 100), 5);
+  });
+
+  it("maxAdd igual a availableSlots → sem alteração", () => {
+    assert.equal(applyMaxAddGate(20, 20), 20);
   });
 });
 

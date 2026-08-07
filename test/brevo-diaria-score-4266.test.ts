@@ -2,11 +2,13 @@
  * test/brevo-diaria-score-4266.test.ts (#4266, reescrito no #4476 item 1;
  * threshold de supressão corrigido pra n>=3 e o input passou a exigir 2
  * conjuntos de contadores — instantâneo/maduro — no self-review pós-merge;
- * piso de promoção revisado de n>=2 pra n>=3 na sessão 260804)
+ * piso de promoção revisado de n>=2 pra n>=3 na sessão 260804; threshold de
+ * TAXA de promoção revisado de `>=50%` pra `>51%` ESTRITO na decisão do
+ * editor, comentário 260805b da issue #4637)
  *
  * Fórmula de saída (promoção/supressão) do canal Brevo próprio do editor —
  * taxa de abertura com piso mínimo de amostra, hoje IGUAL nos dois lados
- * (n>=3): promoção (taxa>=50%, contadores INSTANTÂNEOS) e supressão
+ * (n>=3): promoção (taxa>51% ESTRITO, contadores INSTANTÂNEOS) e supressão
  * (taxa<=20%, contadores MADUROS — só envios >=48h). Cobre as bordas EXATAS
  * dos dois thresholds, os casos abaixo do piso de amostra que NUNCA agem
  * mesmo com a taxa já batendo o threshold (#633 exige regressão nos
@@ -62,11 +64,27 @@ describe("classifyBrevoDiariaAction — promoção (#4476 item 1, sempre via ins
     );
   });
 
-  it(`sends_count=4, openRate=${BREVO_DIARIA_PROMOTE_MIN_OPEN_RATE * 100}% (borda EXATA do threshold de taxa) → promote_to_beehiiv`, () => {
+  it(`sends_count=100, openRate=${BREVO_DIARIA_PROMOTE_MIN_OPEN_RATE * 100}% (borda EXATA do threshold, comparação ESTRITA) → keep`, () => {
+    assert.equal(
+      classifyBrevoDiariaAction(same(51, 100)),
+      "keep",
+      "51% exato NÃO promove — #4637 260805b pediu comparação ESTRITA (>), não >=",
+    );
+  });
+
+  it("sends_count=1000, openRate=51,1% (1 décimo acima da borda) → promote_to_beehiiv", () => {
+    assert.equal(
+      classifyBrevoDiariaAction(same(511, 1000)),
+      "promote_to_beehiiv",
+      "51,1% > 51% — exemplo literal do comentário 260805b da issue #4637",
+    );
+  });
+
+  it("sends_count=4, openRate=50% (abaixo do novo threshold de 51%) → keep", () => {
     assert.equal(
       classifyBrevoDiariaAction(same(2, 4)),
-      "promote_to_beehiiv",
-      "4 enviados/2 abertos = 50% exato — n=3 não permite atingir 50% exato com inteiros, usa n=4 só pra esta borda",
+      "keep",
+      "4 enviados/2 abertos = 50% — promovia sob o threshold antigo (>=50%), não promove mais sob >51%",
     );
   });
 
@@ -163,7 +181,7 @@ describe("classifyBrevoDiariaAction — meio da faixa e zero atividade (#4476)",
       for (let opens = 0; opens <= sends; opens++) {
         const input = { opens_count: opens, sends_count: sends };
         const rate = computeBrevoDiariaOpenRate(input);
-        const isPromote = sends >= BREVO_DIARIA_PROMOTE_MIN_SENDS && rate >= BREVO_DIARIA_PROMOTE_MIN_OPEN_RATE;
+        const isPromote = sends >= BREVO_DIARIA_PROMOTE_MIN_SENDS && rate > BREVO_DIARIA_PROMOTE_MIN_OPEN_RATE;
         const isSuppress = sends >= BREVO_DIARIA_SUPPRESS_MIN_SENDS && rate <= BREVO_DIARIA_SUPPRESS_MAX_OPEN_RATE;
         assert.ok(!(isPromote && isSuppress), `sends=${sends} opens=${opens} não deveria bater os dois thresholds`);
       }

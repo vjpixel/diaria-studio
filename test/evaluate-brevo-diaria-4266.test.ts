@@ -94,9 +94,15 @@ describe("computeCountsFromBrevoStatistics — dedup por campaignId (#4266)", ()
 });
 
 describe("evaluateContact — taxa de abertura + threshold combinados, instant/mature (#4476 item 1)", () => {
-  it("4 enviados/2 abertos (instant) → openRate 0.5 → promote_to_beehiiv (piso de promoção n>=3, revisado 260804)", () => {
+  it("4 enviados/2 abertos (instant) → openRate 0.5 → keep (piso de amostra n>=3 atingido, mas 50% não passa do threshold ESTRITO >51%, #4637 260805b)", () => {
     const ev = evaluateContact({ instant: { opens_count: 2, sends_count: 4 }, mature: { opens_count: 2, sends_count: 4 } });
     assert.equal(ev.open_rate, 0.5);
+    assert.equal(ev.action, "keep");
+  });
+
+  it("1000 enviados/511 abertos (instant) → openRate 0.511 → promote_to_beehiiv (acima do threshold ESTRITO >51%)", () => {
+    const ev = evaluateContact({ instant: { opens_count: 511, sends_count: 1000 }, mature: { opens_count: 511, sends_count: 1000 } });
+    assert.equal(ev.open_rate, 0.511);
     assert.equal(ev.action, "promote_to_beehiiv");
   });
 

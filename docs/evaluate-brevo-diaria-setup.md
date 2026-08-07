@@ -14,7 +14,7 @@ O envio diário do canal `brevo_diaria` (`scripts/publish-daily-brevo.ts`) mira 
 
 1. **Descadastro nativo** (Passo 0) — contato que clicou no opt-out do bloco de intro (`emailBlacklisted: true` na Brevo) é reconhecido como saída terminal e a Beehiiv é atualizada em paralelo (`unsubscribe: true`, #4538).
 2. **Auto-confirmação** (Passo 1) — contato que confirmou o double opt-in da Beehiiv por conta própria nesse meio-tempo é promovido, independente da taxa de abertura.
-3. **Promoção/supressão por score** (Passo 2) — mesmo piso de amostra dos dois lados (`sends_count>=3`) e `openRate>=50%` promove pra Beehiiv; `sends_count>=3` (só envios com ≥48h de maturação) e `openRate<=20%` suprime (`emailBlacklisted: true`, nunca deleta). Piso exato vive em `scripts/lib/shared/brevo-diaria-score.ts` — não duplicado aqui, pra não desatualizar de novo se ele mudar.
+3. **Promoção/supressão por score** (Passo 2) — mesmo piso de amostra dos dois lados (`sends_count>=3`) e `openRate>51%` ESTRITO promove pra Beehiiv (revisado de `>=50%`, decisão do editor #4637 260805b); `sends_count>=3` (só envios com ≥48h de maturação) e `openRate<=20%` suprime (`emailBlacklisted: true`, nunca deleta). Piso exato vive em `scripts/lib/shared/brevo-diaria-score.ts` — não duplicado aqui, pra não desatualizar de novo se ele mudar.
 
 Toda ação que remove alguém da avaliação futura (promoção, supressão, descadastro nativo) termina com `unlinkFromBrevoList` — é esse passo final que fecha o gap do #4534: sem ele, a pessoa continua na lista mesmo depois de resolvida.
 
