@@ -159,11 +159,19 @@ async function main(): Promise<void> {
   }
   log(`${stats.length} de ${campaignList.length} campanha(s) enviada(s) com stats disponíveis.`);
 
-  const evaluation = evaluateBrevoDiariaRolloutGuardrail(stats);
+  // #4476 self-review: lê o estado ANTES de avaliar, pra passar `unpaused_at`
+  // como corte (`sentAfter`) — sem isso, um recheck logo após `--unpause`
+  // reavaliava o mesmo agregado que causou a pausa e re-pausava sozinho,
+  // sobrepondo a decisão do editor em silêncio (ver "Janela de agregação
+  // pós-unpause" em scripts/lib/brevo-diaria-guardrail.ts).
   const stateBefore = readRolloutGuardrailState();
+  const evaluation = evaluateBrevoDiariaRolloutGuardrail(stats, undefined, stateBefore.unpaused_at);
 
   if (evaluation === null) {
-    log("nenhuma campanha com dado suficiente ainda — sem avaliação possível (nunca pausa/despausa por ausência de dado).");
+    const reason = stateBefore.unpaused_at
+      ? `nenhuma campanha enviada desde o unpause em ${stateBefore.unpaused_at} ainda — aguardando dado NOVO pra reavaliar (não re-pausa sobre dado antigo)`
+      : "nenhuma campanha com dado suficiente ainda";
+    log(`${reason} — sem avaliação possível (nunca pausa/despausa por ausência de dado).`);
     if (!isDryRun) writeRolloutGuardrailState(applyGuardrailCheck(stateBefore, null, new Date()));
     return;
   }

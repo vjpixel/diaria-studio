@@ -186,6 +186,7 @@ test("applyGuardrailCheck — LATCH: já pausado + resultado SAUDÁVEL na checag
     paused_reason: ["Bounce — hard 2.5% (limite: <2%)"],
     last_checked_at: "2026-08-05T09:00:00.000Z",
     last_campaign_count: 1,
+    unpaused_at: null,
   };
   const healthyEvaluation = evaluateBrevoDiariaRolloutGuardrail([mkCampaign()]); // tudo verde agora
   const next = applyGuardrailCheck(pausedState, healthyEvaluation, NOW);
@@ -202,12 +203,89 @@ test("unpauseRollout — limpa o latch explicitamente (única forma de despausar
     paused_reason: ["Bounce — hard 2.5% (limite: <2%)"],
     last_checked_at: "2026-08-05T09:00:00.000Z",
     last_campaign_count: 1,
+    unpaused_at: null,
   };
   const next = unpauseRollout(pausedState, NOW);
   assert.equal(next.rollout_paused, false);
   assert.equal(next.paused_at, null);
   assert.equal(next.paused_reason, null);
   assert.equal(next.last_checked_at, NOW.toISOString());
+});
+
+test("unpauseRollout — grava unpaused_at (achado de self-review: sem isso o próximo recheck re-pausa sozinho sobre dado antigo)", () => {
+  const pausedState: RolloutGuardrailState = {
+    rollout_paused: true,
+    paused_at: "2026-08-05T09:00:00.000Z",
+    paused_reason: ["Bounce — hard 2.5% (limite: <2%)"],
+    last_checked_at: "2026-08-05T09:00:00.000Z",
+    last_campaign_count: 1,
+    unpaused_at: null,
+  };
+  const next = unpauseRollout(pausedState, NOW);
+  assert.equal(next.unpaused_at, NOW.toISOString());
+});
+
+// ─── evaluateBrevoDiariaRolloutGuardrail — sentAfter (janela pós-unpause) ──
+
+test("evaluateBrevoDiariaRolloutGuardrail — sentAfter exclui campanhas enviadas ANTES do corte", () => {
+  const evaluation = evaluateBrevoDiariaRolloutGuardrail(
+    [mkCampaign({ sentDate: "2026-08-05T08:00:00.000Z" })], // antes do corte
+    undefined,
+    "2026-08-05T09:00:00.000Z",
+  );
+  assert.equal(evaluation, null, "única campanha é anterior ao corte — sem dado suficiente");
+});
+
+test("evaluateBrevoDiariaRolloutGuardrail — sentAfter mantém campanhas enviadas DEPOIS do corte", () => {
+  const evaluation = evaluateBrevoDiariaRolloutGuardrail(
+    [mkCampaign({ sentDate: "2026-08-05T10:00:00.000Z" })], // depois do corte
+    undefined,
+    "2026-08-05T09:00:00.000Z",
+  );
+  assert.ok(evaluation, "campanha posterior ao corte deve contar");
+  assert.equal(evaluation!.campaignCount, 1);
+});
+
+test("evaluateBrevoDiariaRolloutGuardrail — sentAfter ausente/null agrega tudo sem corte (comportamento anterior preservado)", () => {
+  const campaigns = [mkCampaign({ sentDate: "2020-01-01T00:00:00.000Z" })];
+  assert.equal(evaluateBrevoDiariaRolloutGuardrail(campaigns, undefined, undefined)!.campaignCount, 1);
+  assert.equal(evaluateBrevoDiariaRolloutGuardrail(campaigns, undefined, null)!.campaignCount, 1);
+});
+
+test("REGRESSÃO (achado de self-review pós-#4476): unpause seguido de recheck com dado inalterado NÃO re-pausa", () => {
+  // 1. Campanha ruim furou bounce → pausa.
+  const badCampaign = mkCampaign({ id: 1, sentDate: "2026-08-05T09:00:00.000Z", sent: 1000, hardBounces: 25, softBounces: 0 });
+  const evaluation1 = evaluateBrevoDiariaRolloutGuardrail([badCampaign]);
+  assert.ok(evaluation1 && shouldPauseRollout(evaluation1.result));
+  const pausedState = applyGuardrailCheck(emptyRolloutGuardrailState(), evaluation1, NOW);
+  assert.equal(pausedState.rollout_paused, true);
+
+  // 2. Editor investiga e roda --unpause.
+  const unpausedAt = new Date(NOW.getTime() + 60 * 60 * 1000); // 1h depois
+  const unpausedState = unpauseRollout(pausedState, unpausedAt);
+  assert.equal(unpausedState.rollout_paused, false);
+
+  // 3. Recheck 4h depois — NENHUMA campanha nova foi enviada (cadência ~diária),
+  //    fetchSentCampaigns() ainda devolve a MESMA badCampaign (sentDate ANTES do unpause).
+  const recheckAt = new Date(unpausedAt.getTime() + 4 * 60 * 60 * 1000);
+  const evaluation2 = evaluateBrevoDiariaRolloutGuardrail([badCampaign], undefined, unpausedState.unpaused_at);
+  assert.equal(evaluation2, null, "campanha antiga (pré-unpause) não deve contar — sem dado novo pra decidir");
+  const stateAfterRecheck = applyGuardrailCheck(unpausedState, evaluation2, recheckAt);
+  assert.equal(stateAfterRecheck.rollout_paused, false, "NÃO deveria re-pausar sozinho sobre o mesmo dado que já causou a pausa original");
+
+  // 4. Uma campanha NOVA e ainda ruim, enviada DEPOIS do unpause, deve
+  //    continuar sendo detectada normalmente (a janela não esconde dano real).
+  const newBadCampaign = mkCampaign({
+    id: 2,
+    sentDate: new Date(unpausedAt.getTime() + 30 * 60 * 1000).toISOString(), // 30min pós-unpause
+    sent: 1000,
+    hardBounces: 25,
+    softBounces: 0,
+  });
+  const evaluation3 = evaluateBrevoDiariaRolloutGuardrail([badCampaign, newBadCampaign], undefined, unpausedState.unpaused_at);
+  assert.ok(evaluation3, "campanha nova pós-unpause deve produzir avaliação");
+  assert.equal(evaluation3!.campaignCount, 1, "só a campanha NOVA entra no agregado — a antiga continua fora da janela");
+  assert.equal(shouldPauseRollout(evaluation3!.result), true, "campanha nova ruim ainda pausa normalmente");
 });
 
 // ─── describeBreaches — reuso, sem duplicar formatação ────────────────────
@@ -231,6 +309,7 @@ test("readRolloutGuardrailState/writeRolloutGuardrailState — round-trip", () =
       paused_reason: ["Bounce — hard 2.5% (limite: <2%)"],
       last_checked_at: "2026-08-06T09:00:00.000Z",
       last_campaign_count: 3,
+      unpaused_at: "2026-08-04T09:00:00.000Z",
     };
     writeRolloutGuardrailState(state, path);
     const read = readRolloutGuardrailState(path);

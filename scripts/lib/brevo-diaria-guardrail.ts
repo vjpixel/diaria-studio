@@ -42,6 +42,32 @@
  * como falha total de entrega por engano). `applyGuardrailCheck` trata
  * `null` como "sem dado suficiente pra decidir" — atualiza só o timestamp de
  * última checagem, nunca pausa nem despausa a partir de ausência de dado.
+ *
+ * ## Janela de agregação pós-unpause (achado de self-review, não a primeira
+ * implementação do item 9)
+ *
+ * O agregado de `evaluateBrevoDiariaRolloutGuardrail` é, por padrão, SEM
+ * limite de tempo — soma TODAS as campanhas `sent` retornadas pelo fetch do
+ * orquestrador. Sem correção, isso cria um buraco: depois de um
+ * `--unpause` explícito do editor, a checagem seguinte (4h depois, cadência
+ * da task) reavalia o MESMO agregado crescente. Se nenhuma campanha NOVA
+ * tiver sido enviada nesse intervalo — bem provável, dado o cadence ~diário
+ * de `brevo_diaria` — o agregado é numericamente idêntico ao que causou a
+ * pausa original, `shouldPauseRollout` continua `true`, e
+ * `applyGuardrailCheck` pausa de novo IMEDIATAMENTE — sobrepondo a decisão
+ * do editor em silêncio, sem nenhuma campanha nova ter contribuído pra essa
+ * 2ª pausa.
+ *
+ * Fix: `unpauseRollout` grava `unpaused_at` no estado; o orquestrador
+ * (`check-brevo-diaria-guardrail.ts`) passa esse valor como `sentAfter` pra
+ * `evaluateBrevoDiariaRolloutGuardrail`, que exclui do agregado qualquer
+ * campanha com `sentDate <= unpaused_at`. Efeito: logo após um unpause, se
+ * nada novo foi enviado, o agregado fica vazio → `evaluateBrevoDiariaRolloutGuardrail`
+ * retorna `null` → `applyGuardrailCheck` só atualiza `last_checked_at`, NÃO
+ * re-pausa — o unpause do editor é respeitado até que uma campanha
+ * genuinamente NOVA (pós-unpause) traga dado real pra avaliar. Estado sem
+ * `unpaused_at` (nunca pausado/despausado) continua agregando sem corte —
+ * comportamento anterior a este fix, preservado.
  */
 
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
@@ -106,9 +132,9 @@ export function aggregateBrevoDiariaCampaignStats(
 }
 
 /**
- * Pura — avalia o guardrail agregado. `null` se `campaigns` estiver vazia
- * (nenhuma campanha enviada ainda pela conta `brevo_diaria` — sem dado
- * suficiente pra decidir qualquer coisa, ver header do módulo).
+ * Pura — avalia o guardrail agregado. `null` se `campaigns` (após o corte de
+ * `sentAfter`, se passado) estiver vazia — nenhuma campanha com dado
+ * suficiente pra decidir qualquer coisa, ver header do módulo.
  *
  * `treatZeroAsBreach: true` (mesmo racional de `evaluateSendGuardrails` em
  * `clarice-guardrail-alarm.ts`): diferente do path original da dashboard
@@ -117,6 +143,15 @@ export function aggregateBrevoDiariaCampaignStats(
  * sobre dado JÁ existente — 0% de abertura agregada é sinal real (embora,
  * pela decisão da issue, só INFORMATIVO — não pausa sozinho, ver
  * `shouldPauseRollout`).
+ *
+ * `sentAfter` (achado de self-review pós-implementação, ver "Janela de
+ * agregação pós-unpause" no header do módulo): quando passado, campanhas com
+ * `sentDate <= sentAfter` são excluídas do agregado ANTES de avaliar —
+ * comparação por instante (`Date.parse`), nunca por igualdade/ordem de
+ * string (mesma disciplina do resto do repo pra timestamps com offset, ver
+ * docstring de `scheduledAt` em `brevo-client.ts`). `undefined`/`null` (o
+ * default) = sem corte, agrega tudo — comportamento anterior a este campo,
+ * preservado pra quem nunca pausou/despausou.
  */
 export interface BrevoDiariaGuardrailEvaluation {
   result: ArmGuardrailResult;
@@ -130,8 +165,11 @@ export interface BrevoDiariaGuardrailEvaluation {
 export function evaluateBrevoDiariaRolloutGuardrail(
   campaigns: readonly CampaignGuardrailInput[],
   thresholds: HealthThresholds = DEFAULT_HEALTH_THRESHOLDS,
+  sentAfter?: string | null,
 ): BrevoDiariaGuardrailEvaluation | null {
-  const agg = aggregateBrevoDiariaCampaignStats(campaigns);
+  const cutoffMs = sentAfter ? Date.parse(sentAfter) : null;
+  const scoped = cutoffMs !== null ? campaigns.filter((c) => Date.parse(c.sentDate) > cutoffMs) : campaigns;
+  const agg = aggregateBrevoDiariaCampaignStats(scoped);
   if (agg.campaignCount === 0) return null;
   const result = evaluateArmGuardrails(
     {
@@ -183,6 +221,12 @@ export interface RolloutGuardrailState {
   last_checked_at: string | null;
   /** `campaignCount` agregado na última checagem com dado suficiente. */
   last_campaign_count: number;
+  /** ISO do último `unpauseRollout` explícito — `null` se nunca despausado (estado nunca
+   * pausou, ou é um estado antigo de antes deste campo existir). Consumido por
+   * `check-brevo-diaria-guardrail.ts` como corte de `evaluateBrevoDiariaRolloutGuardrail`'s
+   * `sentAfter` — ver "Janela de agregação pós-unpause" no header do módulo pro racional
+   * completo (achado de self-review pós-implementação do item 9 da #4476). */
+  unpaused_at: string | null;
 }
 
 export function emptyRolloutGuardrailState(): RolloutGuardrailState {
@@ -192,6 +236,7 @@ export function emptyRolloutGuardrailState(): RolloutGuardrailState {
     paused_reason: null,
     last_checked_at: null,
     last_campaign_count: 0,
+    unpaused_at: null,
   };
 }
 
@@ -226,6 +271,7 @@ export function applyGuardrailCheck(
   }
   if (shouldPauseRollout(result)) {
     return {
+      ...state,
       rollout_paused: true,
       paused_at: nowIso,
       paused_reason: describeBreaches(result, thresholds),
@@ -236,8 +282,19 @@ export function applyGuardrailCheck(
   return { ...state, last_checked_at: nowIso, last_campaign_count: campaignCount };
 }
 
-/** Pura — limpa o latch (ação explícita do editor, ex: `--unpause`). Nunca
- * chamada automaticamente por `applyGuardrailCheck`. */
+/**
+ * Pura — limpa o latch (ação explícita do editor, ex: `--unpause`). Nunca
+ * chamada automaticamente por `applyGuardrailCheck`.
+ *
+ * Grava `unpaused_at = now` (achado de self-review pós-implementação): sem
+ * isso, a checagem seguinte (4h depois) reavaliava o MESMO agregado
+ * crescente de campanhas — se nenhuma campanha NOVA tivesse sido enviada
+ * nesse intervalo (cadência ~diária de `brevo_diaria`, bem provável), o
+ * agregado batia idêntico ao que causou a pausa original, e
+ * `applyGuardrailCheck` pausava de novo IMEDIATAMENTE, sobrepondo o
+ * `--unpause` do editor em silêncio — ver "Janela de agregação pós-unpause"
+ * no header do módulo.
+ */
 export function unpauseRollout(state: RolloutGuardrailState, now: Date): RolloutGuardrailState {
   return {
     ...state,
@@ -245,6 +302,7 @@ export function unpauseRollout(state: RolloutGuardrailState, now: Date): Rollout
     paused_at: null,
     paused_reason: null,
     last_checked_at: now.toISOString(),
+    unpaused_at: now.toISOString(),
   };
 }
 
@@ -275,6 +333,9 @@ export function readRolloutGuardrailState(path: string = DEFAULT_GUARDRAIL_STATE
       paused_reason: Array.isArray(raw.paused_reason) ? raw.paused_reason.map(String) : null,
       last_checked_at: typeof raw.last_checked_at === "string" ? raw.last_checked_at : null,
       last_campaign_count: typeof raw.last_campaign_count === "number" ? raw.last_campaign_count : 0,
+      // Ausente em estado gravado antes deste campo existir → null, mesmo
+      // efeito de "nunca despausado" (sem corte na agregação) — fail-soft.
+      unpaused_at: typeof raw.unpaused_at === "string" ? raw.unpaused_at : null,
     };
   } catch {
     return emptyRolloutGuardrailState();
