@@ -192,7 +192,7 @@ export function collectOpenedEmails(caches: CampaignCache[]): Set<string> {
 
 export interface OpensCatchupDeps {
   /** Cliente de export de campanha — real (`makeRealCampaignExportClient`) ou fake em teste. */
-  client: Pick<CampaignExportClient, "listSentCampaigns" | "exportRecipients" | "pollProcess" | "downloadCsv">;
+  client: CampaignExportClient;
   /** Busca 1 contato por identificador (email ou id) — devolve o body cru da Brevo. */
   fetchContact: (identifier: string) => Promise<Record<string, any>>;
   /** Upsert no store — mesma função usada pelo loop principal (MAX-merge, nunca regride). */
@@ -234,7 +234,7 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
     try {
       // dentro da janela → sempre re-exporta (mesma semântica de isWithinRefetchWindow
       // em clarice-engagement-cohorts-v2.ts: captura engajamento tardio).
-      const { cache } = await getOrFetchCampaignCache(deps.client as CampaignExportClient, campaign, {
+      const { cache } = await getOrFetchCampaignCache(deps.client, campaign, {
         cacheDir,
         forceRefresh: true,
       });
@@ -450,6 +450,7 @@ export async function main(
         },
         upsert: upsertBrevo,
         windowDays: opensWindowDays,
+        concurrency, // #4688 self-review: reusa o mesmo --concurrency do loop principal (era hardcoded default 4)
       });
       console.error(
         `✅ catch-up: ${opensCatchup.campaignsInWindow}/${opensCatchup.campaignsConsidered} campanhas na janela ` +
