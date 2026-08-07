@@ -67,6 +67,17 @@
  * documentado). Concorrência default BAIXA (2) — nunca dispara exports de
  * várias campanhas em paralelo sem limite.
  *
+ * FLEET REVIEW #4479 — achados corrigidos nesta rodada (sem exigir API real,
+ * ver issue #4451 pra lista completa): (4) `--refetch-window-days` não colapsa
+ * mais silenciosamente pro default em valor "0"/inválido (`getIntArg`, mesmo
+ * fix já aplicado a `--limit` em #4497); (5) `downloadCsv` tem timeout
+ * explícito (`DOWNLOAD_CSV_TIMEOUT_MS`, `AbortController`); (6) `--out` grava
+ * cohorts+diagnostics (`scripts/lib/cohorts-v2-artifact.ts`), e
+ * `compare-cohorts.ts` recusa comparar por padrão quando o lado v2 tem sinal
+ * administrativo degradado. Achados 1-3/7 continuam documentados como estão
+ * (decisão de comportamento pendente de dado real, ou já cobertos por teste
+ * que documenta o comportamento atual — ver comentários locais).
+ *
  * Env:
  *   BREVO_CLARICE_API_KEY  obrigatório
  *
@@ -75,8 +86,8 @@
  *
  *   --concurrency        campanhas processadas em paralelo (default 2 — throttling conservador).
  *   --limit               processa só as N campanhas mais recentes (útil pra validar sem rodar a história inteira).
- *   --out                 além do stdout, grava o JSON de coortes neste path.
- *   --refetch-window-days janela (dias) de campanhas recentes sempre re-exportadas (default 30).
+ *   --out                 além do stdout, grava cohorts+diagnostics (CohortsV2Artifact) neste path.
+ *   --refetch-window-days janela (dias) de campanhas recentes sempre re-exportadas (default 30; aceita 0; valor inválido lança).
  *   --no-admin-optouts    desliga o merge do gap de blacklist administrativo via store local.
  */
 
@@ -89,6 +100,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
+import { buildCohortsV2Artifact } from "./lib/cohorts-v2-artifact.ts";
 import {
   computeCohorts,
   COHORTS_STATE_DIR,
@@ -310,14 +322,34 @@ export function makeRealCampaignExportClient(apiKey: string): CampaignExportClie
       return { status: body?.status, exportUrl: body?.export_url ?? body?.exportUrl };
     },
     async downloadCsv(url) {
-      const res = await fetch(url);
-      if (!res.ok) {
-        throw new Error(`Download do CSV de export falhou (${res.status}): ${url}`);
+      // #4451 carry-forward (achado 5 do fleet review em #4479): sem timeout
+      // explícito, um `export_url` (link assinado S3, fora do domínio da
+      // Brevo — não passa pelo retry-on-429 de brevoGet/brevoPost) que
+      // penduta a conexão travava o backfill inteiro sem sinal de erro.
+      // Mesmo padrão de `AbortController` + `setTimeout` já usado em
+      // verify-dates.ts/beehiiv-insert-text.ts (#4196) neste repo.
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), DOWNLOAD_CSV_TIMEOUT_MS);
+      try {
+        const res = await fetch(url, { signal: ctrl.signal });
+        if (!res.ok) {
+          throw new Error(`Download do CSV de export falhou (${res.status}): ${url}`);
+        }
+        return await res.text();
+      } catch (e) {
+        if (e instanceof Error && e.name === "AbortError") {
+          throw new Error(`Download do CSV de export excedeu ${DOWNLOAD_CSV_TIMEOUT_MS}ms: ${url}`);
+        }
+        throw e;
+      } finally {
+        clearTimeout(timer);
       }
-      return await res.text();
     },
   };
 }
+
+/** #4451 carry-forward — timeout do download do CSV assinado (fora do domínio Brevo, sem retry embutido). */
+export const DOWNLOAD_CSV_TIMEOUT_MS = 30_000;
 
 // ─── Poll até completar ───────────────────────────────────────────────────────
 
@@ -645,7 +677,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // "--limit abc" virava NaN e, na prática, "processa tudo" sem aviso).
   const limit = getIntArg(argv, "limit");
   const outPath = getArg(argv, "out");
-  const refetchWindowDays = Number(getArg(argv, "refetch-window-days") || String(DEFAULT_REFETCH_WINDOW_DAYS)) || DEFAULT_REFETCH_WINDOW_DAYS;
+  // #4451 achado 4 do fleet review em #4479: o idioma antigo
+  // (`Number(getArg(...) || default) || default`) tratava "0" como falsy e
+  // colapsava silenciosamente pro default de 30d — um operador que passasse
+  // `--refetch-window-days 0` de propósito (ex: "nunca reaproveitar cache
+  // nesta rodada de validação") tinha o pedido ignorado sem aviso. Mesmo
+  // idioma pré-existente em clarice-build-waves-store.ts/clarice-sync-brevo.ts/
+  // cohort-order-dryrun.ts — não corrigido ali (fora de escopo desta issue),
+  // só aqui. `getIntArg` distingue ausente (→ default) de presente-e-inválido
+  // (→ lança, nunca "0 abc" virando NaN→default em silêncio).
+  const refetchWindowDays = getIntArg(argv, "refetch-window-days") ?? DEFAULT_REFETCH_WINDOW_DAYS;
   const includeAdminOptOuts = !hasFlag(argv, "no-admin-optouts");
 
   const apiKey = process.env.BREVO_CLARICE_API_KEY;
@@ -692,8 +733,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   console.log(output);
 
   if (outPath) {
-    writeFileAtomic(resolve(outPath), output, { fsync: false });
-    console.error(`📝 Output também salvo em ${outPath} (nada gravado no KV).`);
+    // #4451 achado 6 do fleet review em #4479: `--out` agora grava
+    // cohorts+diagnostics (não só cohorts) — sem isso, uma rodada com o store
+    // administrativo indisponível ficava indistinguível de uma rodada
+    // completa quando lida de volta por compare-cohorts.ts. stdout continua
+    // só cohorts (não muda) — o consumidor de `--out` é sempre
+    // compare-cohorts.ts, que já sabe ler o wrapper.
+    const artifact = buildCohortsV2Artifact(result);
+    writeFileAtomic(resolve(outPath), JSON.stringify(artifact, null, 2), { fsync: false });
+    console.error(`📝 Output também salvo em ${outPath} (cohorts + diagnostics; nada gravado no KV).`);
   }
 }
 

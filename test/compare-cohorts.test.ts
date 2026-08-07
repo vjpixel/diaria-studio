@@ -9,8 +9,12 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { diffCohorts, formatCohortsDiff } from "../scripts/compare-cohorts.ts";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { diffCohorts, formatCohortsDiff, main } from "../scripts/compare-cohorts.ts";
 import type { EngagementCohorts } from "../scripts/lib/dashboard-kv-types.ts";
+import type { CohortsV2Artifact } from "../scripts/lib/cohorts-v2-artifact.ts";
 
 const GEN = "2026-08-02T00:00:00.000Z";
 
@@ -104,4 +108,115 @@ test("formatCohortsDiff: produz 1 linha de header + 1 linha por campo, sem lanç
   assert.ok(out.includes("universe"));
   assert.ok(out.includes("❌ FORA DA TOLERÂNCIA")); // universe diverge
   assert.ok(out.includes("✅ OK")); // os outros 8 campos batem
+});
+
+// ─── main() — gate de sinal degradado end-to-end (#4451 achado 6) ────────
+
+function withTmpFiles<T>(files: Record<string, unknown>, fn: (paths: Record<string, string>) => T): T {
+  const dir = mkdtempSync(join(tmpdir(), "compare-cohorts-"));
+  try {
+    const paths: Record<string, string> = {};
+    for (const [name, content] of Object.entries(files)) {
+      const p = resolve(dir, name);
+      writeFileSync(p, JSON.stringify(content));
+      paths[name] = p;
+    }
+    return fn(paths);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Mocka process.exit pra capturar o exit code sem matar o processo de teste. */
+async function runMainCapturingExit(argv: string[]): Promise<{ exitCode: number | undefined; threw: boolean }> {
+  const originalExit = process.exit;
+  let exitCode: number | undefined;
+  // @ts-expect-error — mock de process.exit só para este teste
+  process.exit = (code?: number) => {
+    exitCode = code;
+    throw new Error("__exit__");
+  };
+  try {
+    await main(argv);
+    return { exitCode: undefined, threw: false };
+  } catch (e) {
+    if (e instanceof Error && e.message === "__exit__") return { exitCode, threw: true };
+    throw e;
+  } finally {
+    process.exit = originalExit;
+  }
+}
+
+test("main: v1 (cru) × v2 wrapper com adminOptOutsAvailable=true → compara normalmente, sem bloquear", async () => {
+  const v2Artifact: CohortsV2Artifact = {
+    cohorts: makeCohorts(),
+    diagnostics: {
+      campaignsTotal: 5,
+      campaignsFromCache: 5,
+      campaignsFetched: 0,
+      campaignsFailedCount: 0,
+      adminOptOutsAvailable: true,
+      adminOptOutsApplied: 3,
+    },
+  };
+  await withTmpFiles({ "v1.json": makeCohorts(), "v2.json": v2Artifact }, async (paths) => {
+    const { exitCode, threw } = await runMainCapturingExit(["--a", paths["v1.json"], "--b", paths["v2.json"]]);
+    assert.equal(threw, false); // coortes idênticas → allWithinTolerance → não chama process.exit
+    assert.equal(exitCode, undefined);
+  });
+});
+
+test("main: v2 wrapper com adminOptOutsAvailable=false → BLOQUEIA (exit 1) antes do diff, sem --allow-degraded", async () => {
+  const v2Artifact: CohortsV2Artifact = {
+    cohorts: makeCohorts(),
+    diagnostics: {
+      campaignsTotal: 5,
+      campaignsFromCache: 5,
+      campaignsFetched: 0,
+      campaignsFailedCount: 0,
+      adminOptOutsAvailable: false,
+      adminOptOutsApplied: 0,
+      adminOptOutsUnavailableReason: "store não encontrado",
+    },
+  };
+  await withTmpFiles({ "v1.json": makeCohorts(), "v2.json": v2Artifact }, async (paths) => {
+    const { exitCode, threw } = await runMainCapturingExit(["--a", paths["v1.json"], "--b", paths["v2.json"]]);
+    assert.equal(threw, true);
+    assert.equal(exitCode, 1);
+  });
+});
+
+test("main: v2 wrapper degradado + --allow-degraded → NÃO bloqueia, segue pro diff normal", async () => {
+  const v2Artifact: CohortsV2Artifact = {
+    cohorts: makeCohorts(),
+    diagnostics: {
+      campaignsTotal: 5,
+      campaignsFromCache: 5,
+      campaignsFetched: 0,
+      campaignsFailedCount: 0,
+      adminOptOutsAvailable: false,
+      adminOptOutsApplied: 0,
+      adminOptOutsUnavailableReason: "store não encontrado",
+    },
+  };
+  await withTmpFiles({ "v1.json": makeCohorts(), "v2.json": v2Artifact }, async (paths) => {
+    const { exitCode, threw } = await runMainCapturingExit([
+      "--a",
+      paths["v1.json"],
+      "--b",
+      paths["v2.json"],
+      "--allow-degraded",
+    ]);
+    // coortes idênticas (só diagnostics degradado) → allWithinTolerance → não chama process.exit
+    assert.equal(threw, false);
+    assert.equal(exitCode, undefined);
+  });
+});
+
+test("main: v1 × v2-antigo (sem wrapper, EngagementCohorts cru dos 2 lados) → sem diagnostics, nunca bloqueia por sinal degradado", async () => {
+  await withTmpFiles({ "v1.json": makeCohorts(), "v2.json": makeCohorts() }, async (paths) => {
+    const { exitCode, threw } = await runMainCapturingExit(["--a", paths["v1.json"], "--b", paths["v2.json"]]);
+    assert.equal(threw, false);
+    assert.equal(exitCode, undefined);
+  });
 });

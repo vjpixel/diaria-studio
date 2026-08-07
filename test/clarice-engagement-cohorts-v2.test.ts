@@ -33,7 +33,9 @@ import {
   isWithinRefetchWindow,
   fetchAdminOptOutEmails,
   applyAdminOptOuts,
+  makeRealCampaignExportClient,
   DEFAULT_REFETCH_WINDOW_DAYS,
+  DOWNLOAD_CSV_TIMEOUT_MS,
   main,
   type CampaignExportClient,
   type CampaignCache,
@@ -691,6 +693,90 @@ test("main: --limit inválido (typo de valor) LANÇA — não vira 'sem limite' 
   // getIntArg lança ANTES do check de BREVO_CLARICE_API_KEY (não precisa
   // mockar client/fetch nem definir a key pra provar o throw).
   await assert.rejects(main(["--limit", "abc"]), /inteiro/);
+});
+
+// ─── --refetch-window-days (#4451 achado 4 do fleet review em #4479) ─────
+
+test("main: --refetch-window-days inválido (typo de valor) LANÇA — não colapsa pro default 30 em silêncio", async () => {
+  await assert.rejects(main(["--refetch-window-days", "abc"]), /inteiro/);
+});
+
+test("main: --refetch-window-days sem valor (fim do argv) LANÇA", async () => {
+  await assert.rejects(main(["--refetch-window-days"]), /sem valor/);
+});
+
+test("main: --refetch-window-days=0 é aceito (não colapsa pro default 30 — antes do fix, '0' era falsy)", async () => {
+  // getIntArg aceita 0 (min default é 0) e NÃO lança — a chamada só falha
+  // depois, no check de BREVO_CLARICE_API_KEY (que também lança, mas com
+  // mensagem DIFERENTE de "inteiro"/"sem valor"), provando que "0" passou
+  // pela validação numérica sem virar erro nem colapsar pro default.
+  const originalKey = process.env.BREVO_CLARICE_API_KEY;
+  delete process.env.BREVO_CLARICE_API_KEY;
+  try {
+    let exitCode: number | undefined;
+    const originalExit = process.exit;
+    // @ts-expect-error — mock de process.exit só para este teste
+    process.exit = (code?: number) => {
+      exitCode = code;
+      throw new Error("__exit__");
+    };
+    try {
+      await assert.rejects(main(["--refetch-window-days", "0"]), /__exit__/);
+    } finally {
+      process.exit = originalExit;
+    }
+    assert.equal(exitCode, 1); // saiu pelo check de API key, não por erro de parsing de --refetch-window-days
+  } finally {
+    if (originalKey !== undefined) process.env.BREVO_CLARICE_API_KEY = originalKey;
+  }
+});
+
+// ─── downloadCsv timeout (#4451 achado 5 do fleet review em #4479) ───────
+
+test("makeRealCampaignExportClient.downloadCsv: AbortError (timeout) vira mensagem amigável citando o timeout configurado", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    const err = new Error("This operation was aborted");
+    err.name = "AbortError";
+    throw err;
+  }) as typeof fetch;
+  try {
+    const client = makeRealCampaignExportClient("fake-key");
+    await assert.rejects(
+      () => client.downloadCsv("https://example.com/export.csv"),
+      (e: unknown) =>
+        e instanceof Error &&
+        e.message.includes(String(DOWNLOAD_CSV_TIMEOUT_MS)) &&
+        e.message.toLowerCase().includes("excedeu"),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("makeRealCampaignExportClient.downloadCsv: erro de rede genérico (não abort) propaga sem reescrever a mensagem", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("network down");
+  }) as typeof fetch;
+  try {
+    const client = makeRealCampaignExportClient("fake-key");
+    await assert.rejects(() => client.downloadCsv("https://example.com/export.csv"), /network down/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("makeRealCampaignExportClient.downloadCsv: sucesso retorna o texto do CSV (timer é limpo, não vaza)", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("Email_ID\na@x.com\n", { status: 200 })) as typeof fetch;
+  try {
+    const client = makeRealCampaignExportClient("fake-key");
+    const text = await client.downloadCsv("https://example.com/export.csv");
+    assert.ok(text.includes("a@x.com"));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("buildCohortsV2: campanha que falha no export não derruba as demais (isolamento de erro)", async () => {
