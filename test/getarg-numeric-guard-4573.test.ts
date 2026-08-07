@@ -107,7 +107,7 @@ export function findDangerousGetArgUsages(dir: string): DangerousMatch[] {
  * protege o caso `""`).
  */
 const ALLOWLIST: readonly DangerousMatch[] = [
-  { file: "scripts/clarice-sync-brevo.ts", line: 352 }, // #4717 follow-up: linha deslocada de novo (cache-dir + logs de erro inseriram código acima)
+  { file: "scripts/clarice-sync-brevo.ts", line: 422 }, // #4722: linha deslocada de novo (união discriminada + limit/transaction de OpensCatchupDeps inseriram código acima)
   { file: "scripts/clarice-engagement-cohorts.ts", line: 552 },
   // #4451 follow-up (fleet review #4479 achado 4): a entrada da linha 648
   // (--refetch-window-days) foi MIGRADA pra getIntArg neste PR — "se sumiu,

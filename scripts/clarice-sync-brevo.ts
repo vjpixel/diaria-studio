@@ -42,8 +42,10 @@
  * conhecido (modo incremental ou `--modified-since` explícito) — o modo full
  * já pega todo mundo com stats exatos, catch-up seria redundante ali.
  * Desligável via `--no-catch-opens`. FAIL-SOFT: uma falha no catch-up (rede,
- * rate-limit) vira warning no stderr + `opens_catchup.error` no summary —
- * nunca reprova o sync principal, que já persistiu com sucesso. O cache de
+ * rate-limit) vira warning no stderr + `opens_catchup: { ok: false, error }`
+ * no summary (união discriminada, #4722 item 1 — `ok: true` sempre carrega
+ * `result` completo, `ok: false` só a mensagem) — nunca reprova o sync
+ * principal, que já persistiu com sucesso. O cache de
  * campanha do catch-up vive em `OPENS_CATCHUP_CACHE_DIR`, subdiretório
  * PRÓPRIO (nunca o `CAMPAIGN_CACHE_DIR` real da #4451, #4717 follow-up
  * achado 5) — `--cache-dir <dir>` sobrescreve pra isolamento em teste.
@@ -217,6 +219,30 @@ export interface OpensCatchupDeps {
   windowDays?: number;
   nowMs?: number;
   concurrency?: number;
+  /**
+   * #4722 item 2: mesma semântica do `--limit` do loop principal — trunca
+   * quantos openers são de fato re-buscados/upsertados (debug/teste rápido).
+   * Antes o `--limit N` do CLI só cobria o loop principal; o catch-up sempre
+   * varria TODAS as campanhas na janela + TODOS os openers, mesmo com
+   * `--limit 10`. `openersFound` no resultado continua reportando o total
+   * REAL de openers na janela (pré-limite) — só o processamento é truncado,
+   * pra não mascarar quantos openers de fato existiam. undefined/0/negativo =
+   * sem limite (comportamento anterior, default de produção).
+   */
+  limit?: number;
+  /**
+   * #4722 item 3: agrupa as escritas do catch-up em batches de `batchSize`
+   * (default 200, mesmo `BATCH` do loop principal), opcionalmente dentro de
+   * uma transação real fornecida pelo chamador — mesmo padrão do
+   * `flush()`/BEGIN-COMMIT do loop principal (menos overhead de N transações
+   * implícitas do SQLite pra volumes grandes de openers, e durabilidade em
+   * lote em vez de 1 `deps.upsert` isolado por contato). `main()` sempre
+   * passa a wrapper real (`db.exec("BEGIN")`/COMMIT/ROLLBACK); testes que
+   * omitirem só chamam `fn()` direto (sem atomicidade real, mas sem exigir
+   * um DB de verdade no fake).
+   */
+  transaction?: (fn: () => void) => void;
+  batchSize?: number;
 }
 
 export interface OpensCatchupResult {
@@ -227,6 +253,18 @@ export interface OpensCatchupResult {
   contactsUpdated: number;
   contactsFailed: number;
 }
+
+/**
+ * #4722 item 1: união discriminada pro shape do resultado do catch-up no
+ * summary JSON — antes era `(OpensCatchupResult & { error?: string }) | null`
+ * montado ad-hoc em `main()`, deixando "sucesso com contadores reais" e
+ * "falha total com contadores zerados + erro" indistinguíveis no TIPO (só na
+ * leitura de `error` em runtime). `ok: true` sempre carrega um `result`
+ * completo; `ok: false` carrega só a mensagem — não finge contadores.
+ */
+export type OpensCatchupOutcome =
+  | { ok: true; result: OpensCatchupResult }
+  | { ok: false; error: string };
 
 /**
  * Roda o catch-up: campanhas recentes → destinatários com abertura → re-busca
@@ -245,6 +283,11 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
   // caller futuro de runOpensCatchup que esqueça de passar cacheDir.
   const cacheDir = deps.cacheDir ?? OPENS_CATCHUP_CACHE_DIR;
   const concurrency = deps.concurrency ?? 4;
+  // #4722 item 3: batch size do flush + wrapper de transação (default: chama
+  // fn() direto, sem BEGIN/COMMIT real — testes sem `db` de verdade continuam
+  // funcionando; main() sempre passa a wrapper real).
+  const batchSize = deps.batchSize ?? BATCH;
+  const runInTransaction = deps.transaction ?? ((fn: () => void) => fn());
 
   const campaigns = await deps.client.listSentCampaigns();
   const recent = campaigns.filter((c) => isWithinRefetchWindow(c, nowMs, windowDays));
@@ -273,9 +316,32 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
     }
   }
 
-  const openerEmails = collectOpenedEmails(caches);
+  const openersFull = collectOpenedEmails(caches);
+  // #4722 item 2: --limit trunca o PROCESSAMENTO (fetch+upsert), não a
+  // contagem reportada — openersFound abaixo usa openersFull.size, sempre o
+  // total real da janela, mesmo com limite ativo.
+  const openerEmails =
+    deps.limit && deps.limit > 0
+      ? new Set(Array.from(openersFull).slice(0, deps.limit))
+      : openersFull;
+
   let contactsUpdated = 0;
   let contactsFailed = 0;
+
+  // #4722 item 3: escrita em BATCH (mesmo padrão do flush()/BEGIN-COMMIT do
+  // loop principal) — o fetch (I/O de rede) segue concorrente via pool();
+  // só o upsert (I/O local) é buffered e batelado, opcionalmente dentro de
+  // uma transação real (deps.transaction).
+  let buffer: BrevoColumns[] = [];
+  const flush = (): void => {
+    if (buffer.length === 0) return;
+    const batch = buffer;
+    buffer = [];
+    runInTransaction(() => {
+      for (const cols of batch) deps.upsert(cols);
+    });
+  };
+
   await pool(Array.from(openerEmails), concurrency, async (email) => {
     try {
       const contact = await deps.fetchContact(email);
@@ -284,22 +350,26 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
         contactsFailed++; // 404/corpo vazio (contato sumiu entre o export e a re-busca)
         return;
       }
-      deps.upsert(cols);
+      buffer.push(cols);
       contactsUpdated++;
+      if (buffer.length >= batchSize) flush();
     } catch (e) {
       contactsFailed++;
       // #4717 follow-up (achado 2): diferente do `!cols.email` acima (404
       // esperado — contato sumiu entre export e re-busca, não logado), este
-      // catch pega falha REAL (rede, parse, upsert no SQLite) — logar sempre.
-      console.error(`⚠️  catch-up: re-busca/upsert de ${email} falhou: ${(e as Error).message}`);
+      // catch pega falha REAL (rede, parse) — logar sempre. Falha de upsert
+      // em si só pode acontecer no flush() abaixo (batelado), fora deste
+      // catch por contato — ver docstring de `transaction` em OpensCatchupDeps.
+      console.error(`⚠️  catch-up: re-busca de ${email} falhou: ${(e as Error).message}`);
     }
   });
+  flush(); // drena o resto do buffer (< batchSize) ao final do pool
 
   return {
     campaignsConsidered: campaigns.length,
     campaignsInWindow: recent.length,
     campaignsFailed,
-    openersFound: openerEmails.size,
+    openersFound: openersFull.size,
     contactsUpdated,
     contactsFailed,
   };
@@ -474,14 +544,14 @@ export async function main(
   // #4688: catch-up de opens via export de campanha — só faz sentido em modo
   // incremental (full já pega stats exatos de todo mundo via GET /contacts/{id}).
   // FAIL-SOFT: uma falha aqui não derruba o sync principal, que já persistiu.
-  let opensCatchup: (OpensCatchupResult & { error?: string }) | null = null;
+  let opensCatchup: OpensCatchupOutcome | null = null;
   if (modifiedSince && catchOpensEnabled) {
     console.error(
       `🔄 catch-up de opens (janela ${opensWindowDays}d) — campanhas enviadas recentemente…`,
     );
     try {
       const campaignClient = makeRealCampaignExportClient(apiKey);
-      opensCatchup = await runOpensCatchup({
+      const result = await runOpensCatchup({
         client: campaignClient,
         fetchContact: async (identifier) => {
           const { body } = await brevoGet(apiKey, `/contacts/${encodeURIComponent(identifier)}`);
@@ -491,24 +561,31 @@ export async function main(
         windowDays: opensWindowDays,
         concurrency, // #4688 self-review: reusa o mesmo --concurrency do loop principal (era hardcoded default 4)
         cacheDir: opensCatchupCacheDir, // #4717 follow-up (achado 1 + 5): nunca o default implícito
+        limit: limitArg > 0 ? limitArg : undefined, // #4722 item 2: --limit agora também cobre o catch-up
+        transaction: (fn) => {
+          // #4722 item 3: mesmo padrão BEGIN/COMMIT/ROLLBACK do flush() do
+          // loop principal acima — batches do catch-up ganham a mesma
+          // durabilidade/atomicidade.
+          db.exec("BEGIN");
+          try {
+            fn();
+            db.exec("COMMIT");
+          } catch (e) {
+            db.exec("ROLLBACK");
+            throw e;
+          }
+        },
       });
       console.error(
-        `✅ catch-up: ${opensCatchup.campaignsInWindow}/${opensCatchup.campaignsConsidered} campanhas na janela ` +
-          `(${opensCatchup.campaignsFailed} falharam) · ${opensCatchup.openersFound} openers · ` +
-          `${opensCatchup.contactsUpdated} contatos atualizados (${opensCatchup.contactsFailed} falharam)`,
+        `✅ catch-up: ${result.campaignsInWindow}/${result.campaignsConsidered} campanhas na janela ` +
+          `(${result.campaignsFailed} falharam) · ${result.openersFound} openers · ` +
+          `${result.contactsUpdated} contatos atualizados (${result.contactsFailed} falharam)`,
       );
+      opensCatchup = { ok: true, result };
     } catch (e) {
       const msg = (e as Error).message;
       console.error(`⚠️  catch-up de opens falhou (não afeta o sync principal, já persistido): ${msg}`);
-      opensCatchup = {
-        campaignsConsidered: 0,
-        campaignsInWindow: 0,
-        campaignsFailed: 0,
-        openersFound: 0,
-        contactsUpdated: 0,
-        contactsFailed: 0,
-        error: msg,
-      };
+      opensCatchup = { ok: false, error: msg };
     }
   }
 

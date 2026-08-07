@@ -96,7 +96,10 @@ function makeFakeClient(
   campaigns: SentCampaignRef[],
   recipientsByCampaign: Record<number, Array<{ email: string; opened: boolean }>>,
   opts: { failExportFor?: Set<number> } = {},
-): Pick<CampaignExportClient, "listSentCampaigns" | "exportRecipients" | "pollProcess" | "downloadCsv"> {
+): CampaignExportClient {
+  // #4722 item 5: era `Pick<CampaignExportClient, "listSentCampaigns" | ...>`
+  // com as 4 props que CampaignExportClient JÁ TEM inteiro — o Pick não
+  // restringia nada, cleanup cosmético sem mudança de comportamento.
   return {
     async listSentCampaigns() {
       return campaigns;
@@ -210,6 +213,109 @@ test("runOpensCatchup: contato que some entre o export e a re-busca (404 → bod
 
 test("DEFAULT_OPENS_CATCHUP_WINDOW_DAYS: valor positivo razoável (não 0, não negativo)", () => {
   assert.ok(DEFAULT_OPENS_CATCHUP_WINDOW_DAYS > 0);
+});
+
+// ─── #4722 item 2: --limit também restringe o catch-up ───────────────────
+
+test("runOpensCatchup: deps.limit trunca quantos openers são re-buscados/upsertados, mas openersFound reporta o total REAL", async () => {
+  const c1 = fakeCampaign(1, 1);
+  const client = makeFakeClient([c1], {
+    1: [
+      { email: "a@x.com", opened: true },
+      { email: "b@x.com", opened: true },
+      { email: "c@x.com", opened: true },
+    ],
+  });
+  const fetched: string[] = [];
+  const deps: OpensCatchupDeps = {
+    client,
+    fetchContact: async (identifier) => {
+      fetched.push(identifier);
+      return { email: identifier };
+    },
+    upsert: () => {},
+    cacheDir: mkdtempSync(resolve(tmpdir(), "opens-catchup-cache-")),
+    limit: 2,
+  };
+  const result = await runOpensCatchup(deps);
+  assert.equal(result.openersFound, 3, "openersFound continua contando o total real (pré-limite)");
+  assert.equal(fetched.length, 2, "só 2 openers foram de fato re-buscados (limit=2)");
+  assert.equal(result.contactsUpdated, 2);
+});
+
+test("runOpensCatchup: sem deps.limit (undefined/0) processa TODOS os openers — comportamento anterior preservado", async () => {
+  const c1 = fakeCampaign(1, 1);
+  const client = makeFakeClient([c1], {
+    1: [
+      { email: "a@x.com", opened: true },
+      { email: "b@x.com", opened: true },
+    ],
+  });
+  const deps: OpensCatchupDeps = {
+    client,
+    fetchContact: async (identifier) => ({ email: identifier }),
+    upsert: () => {},
+    cacheDir: mkdtempSync(resolve(tmpdir(), "opens-catchup-cache-")),
+    limit: 0,
+  };
+  const result = await runOpensCatchup(deps);
+  assert.equal(result.contactsUpdated, 2, "limit=0 é 'sem limite' (mesma semântica do --limit do loop principal)");
+});
+
+// ─── #4722 item 3: batching/transação nas escritas do catch-up ───────────
+
+test("runOpensCatchup: escritas passam por deps.transaction em vez de deps.upsert isolado por contato", async () => {
+  const c1 = fakeCampaign(1, 1);
+  const client = makeFakeClient([c1], {
+    1: [
+      { email: "a@x.com", opened: true },
+      { email: "b@x.com", opened: true },
+      { email: "c@x.com", opened: true },
+    ],
+  });
+  const txCalls: number[] = []; // tamanho do batch em cada chamada de transaction
+  const upserted: string[] = [];
+  const deps: OpensCatchupDeps = {
+    client,
+    fetchContact: async (identifier) => ({ email: identifier }),
+    upsert: (cols) => {
+      upserted.push(cols.email);
+    },
+    cacheDir: mkdtempSync(resolve(tmpdir(), "opens-catchup-cache-")),
+    batchSize: 2, // força >1 flush pra 3 openers (2 + 1)
+    transaction: (fn) => {
+      const before = upserted.length;
+      fn();
+      txCalls.push(upserted.length - before);
+    },
+  };
+  const result = await runOpensCatchup(deps);
+  assert.equal(result.contactsUpdated, 3);
+  assert.equal(upserted.length, 3, "todos os 3 contatos foram upsertados (via transaction, batelado)");
+  assert.deepEqual([...upserted].sort(), ["a@x.com", "b@x.com", "c@x.com"]);
+  assert.ok(txCalls.length >= 2, "batchSize=2 força pelo menos 2 chamadas de transaction pra 3 openers");
+  assert.equal(
+    txCalls.reduce((a, b) => a + b, 0),
+    3,
+    "a soma dos batches passados por transaction cobre todos os contatos",
+  );
+});
+
+test("runOpensCatchup: sem deps.transaction, upsert ainda roda (fallback chama fn() direto, sem BEGIN/COMMIT real)", async () => {
+  const c1 = fakeCampaign(1, 1);
+  const client = makeFakeClient([c1], { 1: [{ email: "a@x.com", opened: true }] });
+  const upserted: string[] = [];
+  const deps: OpensCatchupDeps = {
+    client,
+    fetchContact: async (identifier) => ({ email: identifier }),
+    upsert: (cols) => {
+      upserted.push(cols.email);
+    },
+    cacheDir: mkdtempSync(resolve(tmpdir(), "opens-catchup-cache-")),
+  };
+  const result = await runOpensCatchup(deps);
+  assert.equal(result.contactsUpdated, 1);
+  assert.deepEqual(upserted, ["a@x.com"], "fallback sem deps.transaction ainda persiste (compat com testes/fakes antigos)");
 });
 
 // ─── REGRESSÃO fim-a-fim (#4688): main() --incremental, fetch mockado ────
@@ -474,10 +580,115 @@ test("REGRESSÃO (#4717): falha TOTAL do catch-up (listSentCampaigns rejeita) n�
   const summary = JSON.parse(summaryLine!);
   assert.equal(summary.brevo_synced, true, "sync principal reporta sucesso mesmo com catch-up falho");
   assert.ok(summary.opens_catchup, "opens_catchup não deve ser null quando o catch-up rodou (mesmo falhando)");
+  // #4722 item 1: união discriminada — falha total é { ok: false, error },
+  // sem contadores fingidos (antes era OpensCatchupResult & { error? } com
+  // campaignsConsidered/contactsUpdated zerados junto do error).
+  assert.equal(summary.opens_catchup.ok, false, "falha total → ok:false (#4722)");
   assert.ok(
     typeof summary.opens_catchup.error === "string" && summary.opens_catchup.error.length > 0,
     "opens_catchup.error deve carregar a mensagem da falha total — não pode ficar mudo",
   );
-  assert.equal(summary.opens_catchup.campaignsConsidered, 0);
-  assert.equal(summary.opens_catchup.contactsUpdated, 0);
+  assert.equal(summary.opens_catchup.result, undefined, "ok:false não carrega result (#4722)");
+});
+
+// ─── #4722 item 1: união discriminada no summary JSON (caminho de sucesso) ─
+
+test("REGRESSÃO (#4722 item 1): catch-up bem-sucedido reporta opens_catchup: { ok: true, result } no summary", async (t) => {
+  const dir = mkdtempSync(resolve(tmpdir(), "sync-brevo-4722-ok-"));
+  const dbPath = resolve(dir, "store.db");
+  const cacheDir = mkdtempSync(resolve(tmpdir(), "sync-brevo-4722-ok-cache-"));
+
+  const setupDb = openClariceDb(dbPath);
+  setupDb
+    .prepare(
+      `INSERT INTO clarice_users (email, tier, sends_count, opens_count, brevo_modified_at)
+       VALUES ('b@x.com', 2, 1, 0, '2026-01-01T00:00:00.000Z')`,
+    )
+    .run();
+  recomputeDerived(setupDb);
+  setupDb.close();
+
+  const recentSentDate = new Date(Date.now() - 2 * 86_400_000).toISOString();
+  const origFetch = globalThis.fetch;
+  const origApiKey = process.env.BREVO_CLARICE_API_KEY;
+  const origLog = console.log;
+  process.env.BREVO_CLARICE_API_KEY = "test-key-4722-ok";
+  const logged: string[] = [];
+  console.log = (msg: unknown) => {
+    logged.push(String(msg));
+  };
+
+  globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.includes("/contacts?")) {
+      return new Response(JSON.stringify({ contacts: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (u.includes("/emailCampaigns?status=sent")) {
+      return new Response(
+        JSON.stringify({ campaigns: [{ id: 99, name: "Clarice News", sentDate: recentSentDate }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (u.includes("/emailCampaigns/99/exportRecipients")) {
+      assert.equal(init?.method, "POST");
+      return new Response(JSON.stringify({ processId: 555 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (u.includes("/processes/555")) {
+      return new Response(
+        JSON.stringify({ status: "completed", export_url: "https://export.example.com/99.csv" }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (u.includes("export.example.com")) {
+      return new Response(
+        ["Email_ID,Delivered_Date,Total Opens", "b@x.com,2026-08-04 10:00:00,1"].join("\n"),
+        { status: 200 },
+      );
+    }
+    if (u.includes("/contacts/b%40x.com")) {
+      return new Response(
+        JSON.stringify({
+          email: "b@x.com",
+          emailBlacklisted: false,
+          listIds: [],
+          modifiedAt: "2026-01-01T00:00:00.000Z",
+          statistics: {
+            opened: [{ eventTime: "2026-08-04T10:00:00.000Z" }],
+            clicked: [],
+            messagesSent: [{ eventTime: "2026-08-01T09:00:00.000Z" }],
+            hardBounces: [],
+            softBounces: [],
+            complaints: [],
+            unsubscriptions: [],
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    throw new Error(`fetch inesperado no mock: ${u}`);
+  }) as unknown as typeof globalThis.fetch;
+
+  t.after(() => {
+    globalThis.fetch = origFetch;
+    console.log = origLog;
+    if (origApiKey === undefined) delete process.env.BREVO_CLARICE_API_KEY;
+    else process.env.BREVO_CLARICE_API_KEY = origApiKey;
+  });
+
+  await main(["--db", dbPath, "--incremental", "--cache-dir", cacheDir]);
+
+  const summaryLine = logged.find((l) => l.includes("opens_catchup"));
+  assert.ok(summaryLine, "summary JSON deve conter a chave opens_catchup");
+  const summary = JSON.parse(summaryLine!);
+  assert.equal(summary.opens_catchup.ok, true, "catch-up bem-sucedido → ok:true (#4722)");
+  assert.equal(summary.opens_catchup.error, undefined, "ok:true não carrega error (#4722)");
+  assert.ok(summary.opens_catchup.result, "ok:true carrega result completo (#4722)");
+  assert.equal(summary.opens_catchup.result.contactsUpdated, 1);
+  assert.equal(summary.opens_catchup.result.openersFound, 1);
 });

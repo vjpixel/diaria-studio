@@ -920,7 +920,7 @@ ${subtotalRows}</tbody></table></div>`;
   ${kvTable("Inelegíveis por razão", elig.by_reason)}
   ${kvTable("MillionVerifier (bucket)", s.mv, "não verificado (sem bucket)")}
   </div>
-  <p class="section-note">Engajamento Brevo: ${n(eng.with_opens)} com abertura · ${n(eng.with_clicks)} com clique.</p>
+  <p class="section-note">Aberturas/cliques acumulados (store): ${n(eng.with_opens)} com abertura · ${n(eng.with_clicks)} com clique. Não é um card da API Brevo nem um subconjunto do histograma acima — os dois conjuntos se cruzam sem um conter o outro: abrir ao menos uma vez não implica score positivo (o score decai por não-abertura), e opt-in sem abertura nenhuma já entra como positivo.</p>
 </section>`;
 }
 

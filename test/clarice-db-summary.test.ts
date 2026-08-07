@@ -66,8 +66,10 @@ test("computeStoreSummary: agrega tier/elegibilidade/pontos/mv/engajamento", () 
 
 test("computeStoreSummary: emails internos fora do bloco priority_points, mas dentro do resto (#2809)", () => {
   // vjpixel@gmail.com abre tudo por ofício (score alto) — NÃO pode aparecer no
-  // histograma/faixas de priority_points; mas segue no total/mv/engagement
-  // (só exibição: continua no store e na fila de envio).
+  // histograma/faixas de priority_points; mas segue no total/mv (só exibição:
+  // continua no store e na fila de envio). #4712: `engagement` (with_opens/
+  // with_clicks) passou a filtrar internos também — mesmo universo do
+  // histograma de priority_points, não mais "dentro do resto".
   const db = openClariceDb(":memory:");
   const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
 
@@ -108,9 +110,11 @@ test("computeStoreSummary: emails internos fora do bloco priority_points, mas de
     s.total - pp.internal_excluded,
   );
 
-  // demais agregações seguem contando os internos (sem filtro)
-  assert.equal(s.engagement.with_opens, 2, "interno + real");
-  assert.equal(s.engagement.with_clicks, 1, "interno");
+  // #4712: engagement agora filtra internos (mesmo universo do histograma
+  // acima) — só real@x.com conta; vjpixel@gmail.com (2 opens, 1 click) some.
+  assert.equal(s.engagement.with_opens, 1, "só real@x.com — interno excluído (#4712)");
+  assert.equal(s.engagement.with_clicks, 0, "interno excluído — real@x.com não tem clicks_count>0 (#4712)");
+  // mv segue sem filtro — não mudou no #4712 (só engagement, escopo da issue)
   assert.equal(s.mv["verified"], 1, "interno verified conta no mv");
 
   db.close();
