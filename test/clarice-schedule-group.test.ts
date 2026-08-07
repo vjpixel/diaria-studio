@@ -283,7 +283,24 @@ describe("resolveGroupListId (#4753 — 2ª+ importação de grupo SEM célula r
         { key: "novos-260807", listId: 104, listName: "lista pós-#4753", count: 6, importedAt: "2026-08-07T09:00:00.000Z" },
       ]);
       assert.deepEqual(resolveGroupListId(dir, "novos", "novos-260807"), { listId: 104, listName: "lista pós-#4753" });
-      assert.deepEqual(resolveGroupListId(dir, "novos", "novos"), { listId: 103, listName: "lista legado #3" });
+
+      // A PARTIR daqui o registro está MISTO (legadas com key estática +
+      // pós-fix com key de campanha) — e `--key "novos"` é a assinatura exata
+      // de "--key não foi passado, caiu no default `key = group`".
+      //
+      // Antes do fleet review da PR #4758 esta linha afirmava
+      // `{ listId: 103 }` — ou seja, TRAVAVA o comportamento de resolver
+      // silenciosamente uma entrada LEGADA existindo uma mais recente. O
+      // revisor mostrou que isso é pior que o bug original da #4753: aquele
+      // abortava alto, este criaria campanha contra a lista errada sem erro.
+      // Agora aborta.
+      assert.throws(
+        () => resolveGroupListId(dir, "novos", "novos"),
+        /key de campanha.*nenhuma --key foi informada/s,
+        "registro misto + key == nome do grupo deve abortar, não resolver a legada em silêncio",
+      );
+      // --list-index continua sendo a saída explícita pra alcançar uma legada.
+      assert.deepEqual(resolveGroupListId(dir, "novos", "novos", 3), { listId: 103, listName: "lista legado #3" });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

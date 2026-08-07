@@ -860,6 +860,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     console.error(
       `📝 registrado em ${groupListsRegistryPath(clariceSegmentsDir(args.cycle), args.group)} — ${results.length} lista(s) do grupo '${args.group}'.`,
     );
+
+    // Achado do fleet review da PR #4758: sem `--key`, `resolveRegistryKey`
+    // cai no nome ESTÁTICO do grupo e a entrada só será resolvível por
+    // `--list-index` depois — que é exatamente o bug da #4753, reintroduzido
+    // em silêncio. O banner de sucesso acima não distinguia os dois casos, e a
+    // omissão só aparecia 2 passos adiante. Avisa no ponto da falha.
+    if (!args.campaignKey) {
+      console.error(
+        `⚠️  --key não informado: as entradas acima foram gravadas com a key estática '${args.group}'. ` +
+          `Uma resolução posterior por --key de campanha NÃO vai encontrá-las (bug da #4753) — ` +
+          `use --list-index, ou re-rode o import passando --key.`,
+      );
+    }
   }
 
   console.log(JSON.stringify({ mode: "execute", folder_id: args.folderId, label: args.label, results }, null, 2));

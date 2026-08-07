@@ -507,6 +507,31 @@ describe("resolveRegistryKey (#4753)", () => {
     assert.equal(resolveRegistryKey("d4-ter04-B", "novos-260807"), "d4-ter04-B");
     assert.equal(resolveRegistryKey("d4-ter04-c", "novos-260807"), "d4-ter04-c"); // case-insensitive na detecção da célula
   });
+
+  // Caso NEGATIVO do gate de célula (achado do fleet review da PR #4758).
+  // `/-[ABC]$/i` é uma heurística: um nome de grupo que legitimamente termine
+  // em `-a`/`-b`/`-c` sem ser célula de teste seria tratado como célula e NÃO
+  // receberia a key de campanha — reintroduzindo o bug só pra ele, em silêncio.
+  // Nenhum grupo real tem essa forma hoje (`novos`, `ramp-warm`, `engajados`),
+  // e a regex não é nova desta PR (já existe em `resolveListName`) — mas
+  // `resolveRegistryKey` é um ponto de confiança NOVO nela, então vale travar
+  // a convenção explicitamente em vez de deixá-la implícita.
+  it("gate de célula exige o hífen — sufixo de letra sem hífen NÃO é célula", () => {
+    assert.equal(resolveRegistryKey("basta", "novos-260807"), "novos-260807");
+    assert.equal(resolveRegistryKey("usa", "novos-260807"), "novos-260807");
+    // Documenta o limite conhecido da heurística: um grupo hipotético terminado
+    // em `-a` É tratado como célula. Se algum dia existir um grupo assim, este
+    // teste é o lugar onde a decisão precisa ser revisitada.
+    assert.equal(resolveRegistryKey("grupo-a", "novos-260807"), "grupo-a");
+  });
+
+  // `--key ""` degrada pra "sem override" via `values["key"] || undefined` —
+  // mesmo padrão de `clarice-schedule-group.ts`. Travado pra que uma mudança
+  // futura no parse não transforme string vazia numa key literal vazia gravada
+  // no registro, que não resolveria nunca.
+  it("campaignKey vazia é tratada como ausente, não como key literal", () => {
+    assert.equal(resolveRegistryKey("novos", ""), "novos");
+  });
 });
 
 // ---------------------------------------------------------------------------
