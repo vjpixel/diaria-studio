@@ -1982,6 +1982,113 @@ describe("isOpinionOrStudy (#2368 item 2)", () => {
     assert.ok(!isOpinionOrStudy("https://x.com/p", "Como criar um agente de IA do zero"));
     assert.ok(!isOpinionOrStudy("https://x.com/p", "Veja como funciona o novo modelo da OpenAI"));
   });
+
+  // #4713 CASO REAL 260807: 3 de 4 itens do bucket USE MELHOR eram notícia/
+  // pesquisa/opinião de atribuição em 3ª pessoa ("diz X", "admite que"), não
+  // tutorial — nenhum casava OPINION_ESSAY_TITLE_RE/RESEARCH_STUDY_TITLE_RE.
+  it("#4713: CASO REAL 'Proibir IA no trabalho ..., diz COO da RecargaPay' é atribuição de notícia", () => {
+    assert.ok(
+      isOpinionOrStudy(
+        "https://canaltech.com.br/inteligencia-artificial/proibir-ia-trabalho",
+        "Proibir IA no trabalho pode levar a usos mais inseguros, diz COO da RecargaPay",
+      ),
+      "manchete com ', diz X' deve ser classificada como atribuição de notícia",
+    );
+  });
+
+  it("#4713: CASO REAL 'Maioria dos brasileiros admite que sim' é atribuição de notícia", () => {
+    assert.ok(
+      isOpinionOrStudy(
+        "https://cnnbrasil.com.br/tecnologia/voce-ja-usou-ia-escondido",
+        "Você já usou IA escondido? Maioria dos brasileiros admite que sim",
+      ),
+      "manchete com 'admite que' deve ser classificada como atribuição de notícia",
+    );
+  });
+
+  it("#4713: variações de verbo de atribuição (afirma, revela, aponta, mostra, segundo) disparam", () => {
+    assert.ok(isOpinionOrStudy("https://x.com/p", "IA vai substituir empregos, afirma especialista"));
+    assert.ok(isOpinionOrStudy("https://x.com/p", "Novo modelo é mais seguro, revela pesquisa"));
+    assert.ok(isOpinionOrStudy("https://x.com/p", "Estudo aponta que uso de IA cresceu 40%"));
+    assert.ok(isOpinionOrStudy("https://x.com/p", "Pesquisa aponta estudo inédito sobre adoção de IA"));
+    assert.ok(isOpinionOrStudy("https://x.com/p", "Empresas adotam IA mais rápido, segundo consultoria"));
+  });
+
+  it("#4713: EN 'according to' / 'says' / 'reveals that' / 'shows that' disparam", () => {
+    assert.ok(isOpinionOrStudy("https://x.com/p", "AI adoption is accelerating, according to new data"));
+    assert.ok(isOpinionOrStudy("https://x.com/p", "AI will replace jobs, expert says"));
+    assert.ok(isOpinionOrStudy("https://x.com/p", "New survey reveals that most workers use AI secretly"));
+    assert.ok(isOpinionOrStudy("https://x.com/p", "Report shows that AI usage doubled in 2026"));
+  });
+
+  it("#4713: sem-regressão — tutorial legítimo (4º item real da edição 260807) continua false", () => {
+    assert.ok(
+      !isOpinionOrStudy("https://x.com/p", "Como criar um formulário de contato com IA"),
+      "tutorial genuíno não deve virar atribuição de notícia",
+    );
+  });
+
+  it("#4713: sem-regressão — atribuição + how-to explícito no MESMO título continua tutorial, não notícia", () => {
+    // Título com AMBOS os sinais (", diz X" E "como fazer") — HOW_TO_GUARD_RE
+    // roda primeiro e vence, mesmo comportamento herdado da precedência
+    // existente (ver docstring de NEWS_ATTRIBUTION_TITLE_RE).
+    assert.ok(
+      !isOpinionOrStudy(
+        "https://x.com/p",
+        "Como fazer prompts melhores para ChatGPT, diz CEO da empresa",
+      ),
+    );
+  });
+
+  it("#4713: sem-regressão — casos existentes (#2368/#3027) continuam corretos após adicionar NEWS_ATTRIBUTION_TITLE_RE", () => {
+    assert.ok(isOpinionOrStudy("https://hamel.dev/blog/posts/evals-opinion", "My Take on AI Evals: What Actually Works"));
+    assert.ok(isOpinionOrStudy("https://x.com/p", "Benchmark: GPT-4 vs Claude 3 on Coding Tasks"));
+    assert.ok(!isOpinionOrStudy("https://cookbook.openai.com/examples/structured_outputs_intro", "Structured Outputs: Getting Started"));
+    assert.ok(!isOpinionOrStudy("https://canaltech.com.br/chatgpt/como-usar-chatgpt", "Como usar ChatGPT no trabalho — guia prático"));
+    assert.ok(isOpinionOrStudy("https://x.com/p", "Como a IA transforma FP&A e Controladoria"));
+  });
+
+  it("#4713 fleet review achado 1: ', segundo maior/menor X' é ordinal comparativo, não atribuição de notícia", () => {
+    assert.ok(
+      !isOpinionOrStudy(
+        "https://x.com/p",
+        "Startup capta R$10 milhões, segundo maior aporte do trimestre",
+      ),
+      "'segundo maior' é ordinal comparativo — não deve disparar atribuição de notícia",
+    );
+    assert.ok(
+      !isOpinionOrStudy(
+        "https://x.com/p",
+        "Rodada fecha em R$2 milhões, segundo menor valor captado no setor este ano",
+      ),
+      "'segundo menor' também é ordinal comparativo",
+    );
+  });
+
+  it("#4713 fleet review achado 1: sem-regressão — 'segundo X' como atribuição de fonte continua disparando", () => {
+    assert.ok(
+      isOpinionOrStudy("https://x.com/p", "Empresas adotam IA mais rápido, segundo consultoria"),
+      "'segundo consultoria' (fonte) não deve ser confundido com 'segundo maior/menor' (ordinal)",
+    );
+    assert.ok(
+      isOpinionOrStudy("https://x.com/p", "Uso de IA no trabalho cresce, segundo a Microsoft"),
+    );
+  });
+
+  it("#4713 fleet review achado 2: frases EN soltas ('shows that'/'reveals that'/'X says') no SUMMARY não disparam — só no título", () => {
+    assert.ok(
+      !isOpinionOrStudy(
+        "https://example.com/guide",
+        "Como criar um agente de IA com LangChain",
+        "This step-by-step guide shows that building an agent is easier than it seems.",
+      ),
+      "tutorial legítimo com 'shows that' só no summary (meta-description raspada) não deve virar atribuição de notícia",
+    );
+    assert.ok(
+      isOpinionOrStudy("https://x.com/p", "Report shows that AI usage doubled in 2026"),
+      "'shows that' NO TÍTULO continua disparando normalmente",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

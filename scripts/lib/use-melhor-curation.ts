@@ -884,6 +884,55 @@ const RESEARCH_STUDY_TITLE_RE =
   /\b(research\s+(?:study|paper|report|findings?|survey)\b|estudo\s+(?:de\s+pesquisa|sobre|de\s+caso)\b|survey\s+(?:of|on|about)\b|benchmark(?:ing|s?)\s*:|benchmark(?:ing|s?)\s+(?:of|on|between|comparing)\b|whitepaper\b|white\s+paper\b|literature\s+review\b|systematic\s+review\b|meta[- ]?analysis\b|ablation\s+(?:study|test)\b|empirical\s+(?:study|analysis|evaluation|evidence)\b|estat[íi]sticas?\s+(?:de|sobre)\b|relat[óo]rio\s+(?:de|sobre|anual)\b|annual\s+report\b)/i;
 
 /**
+ * #4713: Padrões de título que indicam ATRIBUIÇÃO de fala/pesquisa em 3ª
+ * pessoa — cobertura jornalística de notícia/opinião/pesquisa citada, não
+ * tutorial acionável. Extremamente comum em manchete PT-BR ("..., diz X") e
+ * também em EN ("... according to X").
+ *
+ * Casos reais 260807 (edição USE MELHOR, revisão manual "reavalie a
+ * categorização de todos os itens"):
+ *   - "Proibir IA no trabalho pode levar a usos mais inseguros, diz COO da RecargaPay"
+ *   - "Você já usou IA escondido? Maioria dos brasileiros admite que sim"
+ *
+ * Nenhum dos dois casa OPINION_ESSAY_TITLE_RE nem RESEARCH_STUDY_TITLE_RE
+ * (que exigem vocabulário mais formal — "reflections on", "research study"),
+ * mas ambos são claramente notícia de 3ª pessoa, não conteúdo acionável.
+ *
+ * Três formatos cobertos:
+ *   (a) vírgula + verbo de atribuição — convenção clássica de manchete PT-BR
+ *       ("..., diz/afirma/revela/aponta/mostra/admite/segundo X");
+ *   (b) verbo de atribuição + "que" — oração subordinada ("X admite que Y",
+ *       "estudo/pesquisa aponta que Y");
+ *   (c) EN: "according to X", "X says", "reveals that", "shows that".
+ *
+ * Precedência: igual aos outros dois regex acima — `isOpinionOrStudy` já
+ * roda `HOW_TO_GUARD_RE` ANTES de checar este padrão, então "Fulano explica
+ * como fazer X" bate em "como fazer" primeiro e nunca chega aqui (não
+ * precisamos excluir esse caso no regex).
+ *
+ * #4713 fleet review, achado 1 (self-review, caso real 260807/260807b):
+ * ", segundo maior/menor X" é ordinal comparativo PT-BR ("Startup capta
+ * R$10 milhões, segundo maior aporte do trimestre"), não atribuição de
+ * fonte ("segundo a empresa", "segundo consultoria"). O lookahead negativo
+ * abaixo exclui só essa dupla ambígua (maior/menor) — "segundo" seguido de
+ * qualquer outra palavra (artigo, substantivo, nome próprio) continua
+ * batendo como atribuição, caso coberto pelo teste "segundo consultoria".
+ */
+const NEWS_ATTRIBUTION_TITLE_RE =
+  /,\s*(?:diz|afirma(?:m)?|revela(?:m)?|aponta(?:m)?|mostra(?:m)?|admite(?:m)?|segundo(?!\s+(?:maior|menor)\b))\b|\b(?:diz|afirma(?:m)?|revela(?:m)?|aponta(?:m)?|mostra(?:m)?|admite(?:m)?)\s+que\b|\baponta(?:m)?\s+(?:estudo|pesquisa)\b|\baccording\s+to\b/i;
+
+/**
+ * #4713 fleet review, achado 2: as três alternativas EN acima eram checadas
+ * contra `hay` (título + summary), mas "shows that"/"reveals that"/"X says"
+ * são frases genéricas demais pra rodar sobre summary — um tutorial legítimo
+ * cujo meta-description raspado diga algo como "this guide shows that..."
+ * viraria falso-positivo de notícia. Restrito ao TÍTULO apenas; "according
+ * to" (acima, em NEWS_ATTRIBUTION_TITLE_RE) é frase mais inequívoca e
+ * incomum em prosa descritiva, então continua valendo contra `hay`.
+ */
+const NEWS_ATTRIBUTION_TITLE_ONLY_RE = /\b\w+\s+says\b|\breveals?\s+that\b|\bshows?\s+that\b/i;
+
+/**
  * Guard de sinal how-to/tutorial. Se presente, o artigo é tutorial acionável
  * mesmo que o título também tenha sinal de opinião/estudo. Módulo-level
  * (#2368 self-review) — antes vivia inline dentro do branch de domínio, então
@@ -920,7 +969,7 @@ const BUSINESS_TREND_TITLE_RE =
  * Precedência: sinal how-to explícito (HOW_TO_GUARD_RE) VENCE qualquer sinal de
  * opinião/estudo — um tutorial "Hands-on analysis of X" não é estudo. Depois
  * checamos domínio de opinião → título de tendência de negócio (#3027) → título
- * de opinião → título de estudo.
+ * de opinião → título de estudo → título de atribuição de notícia (#4713).
  *
  * @param url     URL do artigo.
  * @param title   Título do artigo.
@@ -959,6 +1008,14 @@ export function isOpinionOrStudy(url: string, title: string, summary = ""): bool
 
   // 3. Título de estudo/pesquisa/benchmark — rebaixar independente do domínio.
   if (RESEARCH_STUDY_TITLE_RE.test(hay)) {
+    return true;
+  }
+
+  // 4. (#4713) Título com padrão de ATRIBUIÇÃO de notícia em 3ª pessoa
+  // ("diz X", "aponta estudo", "admite que", "according to") — cobertura
+  // jornalística, não tutorial. Roda por último, mesma precedência dos
+  // demais (perde pra HOW_TO_GUARD_RE, checado no topo da função).
+  if (NEWS_ATTRIBUTION_TITLE_RE.test(hay) || NEWS_ATTRIBUTION_TITLE_ONLY_RE.test(title)) {
     return true;
   }
 
