@@ -32,7 +32,11 @@ param(
     [string]$SyncScript,
     [string]$SummaryScript,
     [string]$LogPath,
-    [string]$TempLogPath
+    [string]$TempLogPath,
+    # #4740: overrides pro teste de regressão do passo de extração do status
+    # do catch-up de opens — evita tocar o junction data/ real durante testes.
+    [string]$ExtractScript,
+    [string]$OpensStatusOut
 )
 
 Set-StrictMode -Version Latest
@@ -41,10 +45,12 @@ $ErrorActionPreference = "Continue"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 
-if (-not $SyncScript)    { $SyncScript    = Join-Path $RepoRoot "scripts\clarice-sync-brevo.ts" }
-if (-not $SummaryScript) { $SummaryScript = Join-Path $RepoRoot "scripts\clarice-db-summary.ts" }
-if (-not $LogPath)       { $LogPath       = Join-Path $RepoRoot "data\clarice-subscribers\.brevo-sync-daily.log" }
-if (-not $TempLogPath)   { $TempLogPath   = Join-Path $env:TEMP "diaria-clarice-sync-daily-$PID.log" }
+if (-not $SyncScript)     { $SyncScript     = Join-Path $RepoRoot "scripts\clarice-sync-brevo.ts" }
+if (-not $SummaryScript)  { $SummaryScript  = Join-Path $RepoRoot "scripts\clarice-db-summary.ts" }
+if (-not $LogPath)        { $LogPath        = Join-Path $RepoRoot "data\clarice-subscribers\.brevo-sync-daily.log" }
+if (-not $TempLogPath)    { $TempLogPath    = Join-Path $env:TEMP "diaria-clarice-sync-daily-$PID.log" }
+if (-not $ExtractScript)  { $ExtractScript  = Join-Path $RepoRoot "scripts\extract-opens-catchup-status.ts" }
+if (-not $OpensStatusOut) { $OpensStatusOut = Join-Path $RepoRoot "data\clarice-subscribers\last-opens-catchup-status.json" }
 
 Set-Location $RepoRoot
 
@@ -91,6 +97,19 @@ $syncCode = $LASTEXITCODE
 if ($null -eq $syncCode) {
     Write-TempLogLine "ERRO: npx nao executou (comando nao encontrado ou falha antes do processo iniciar)."
     $syncCode = 1
+}
+
+# #4740: extrai o status do catch-up de opens (#4688) desta run pro alarme
+# dedicado (Diaria-Clarice-Opens-Catchup-Alarm / clarice-opens-catchup-alarm.ts)
+# consumir depois -- lido AQUI, com $TempLogPath contendo so a saida do passo 1
+# (antes do passo 2 acrescentar mais linhas), evitando ambiguidade entre runs.
+# Best-effort: nunca falha a run principal (extract-opens-catchup-status.ts
+# sempre sai 0, mas o try/catch cobre falha de spawn do proprio npx).
+try {
+    & npx tsx "$ExtractScript" --log "$TempLogPath" --out "$OpensStatusOut" 2>&1 |
+        ForEach-Object { $_.ToString() } | Out-File -FilePath $TempLogPath -Append -Encoding utf8
+} catch {
+    Write-TempLogLine "AVISO: extract-opens-catchup-status.ts falhou a rodar (nao bloqueia o sync): $_"
 }
 
 # 2. Push do summary → atualiza a DASHBOARD (KV contacts:summary). Store e KV sao
