@@ -333,13 +333,33 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
   // só o upsert (I/O local) é buffered e batelado, opcionalmente dentro de
   // uma transação real (deps.transaction).
   let buffer: BrevoColumns[] = [];
+  // #4722 item 3, achado de self-review corrigido pelo coordenador: `flush()`
+  // NUNCA deixa uma exceção escapar — se ela escapasse, o catch por-contato
+  // do pool() abaixo (pensado só pra falha de BUSCA) capturaria uma falha de
+  // ESCRITA em lote e misatribuiria: (a) a mensagem de log culparia o e-mail
+  // que só disparou o flush, não o batch inteiro que falhou; (b)
+  // `contactsFailed` só seria incrementado em 1, enquanto `contactsUpdated`
+  // já tinha sido incrementado otimisticamente pra cada item do batch (até
+  // `batchSize`) ANTES do flush — resultando em "N atualizados" pra
+  // contatos que na verdade nunca foram persistidos (a transação reverteu).
+  // Corrigido: o próprio flush() desfaz o incremento otimista e reatribui o
+  // batch inteiro a `contactsFailed`, com log identificando explicitamente
+  // uma falha de ESCRITA (não de busca).
   const flush = (): void => {
     if (buffer.length === 0) return;
     const batch = buffer;
     buffer = [];
-    runInTransaction(() => {
-      for (const cols of batch) deps.upsert(cols);
-    });
+    try {
+      runInTransaction(() => {
+        for (const cols of batch) deps.upsert(cols);
+      });
+    } catch (e) {
+      contactsUpdated -= batch.length;
+      contactsFailed += batch.length;
+      console.error(
+        `⚠️  catch-up: escrita em lote falhou (${batch.length} contato(s), transação revertida): ${(e as Error).message}`,
+      );
+    }
   };
 
   await pool(Array.from(openerEmails), concurrency, async (email) => {
@@ -352,16 +372,20 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
       }
       buffer.push(cols);
       contactsUpdated++;
-      if (buffer.length >= batchSize) flush();
     } catch (e) {
       contactsFailed++;
       // #4717 follow-up (achado 2): diferente do `!cols.email` acima (404
       // esperado — contato sumiu entre export e re-busca, não logado), este
-      // catch pega falha REAL (rede, parse) — logar sempre. Falha de upsert
-      // em si só pode acontecer no flush() abaixo (batelado), fora deste
-      // catch por contato — ver docstring de `transaction` em OpensCatchupDeps.
+      // catch pega falha REAL de BUSCA (rede, parse) — logar sempre. Falha de
+      // escrita/upsert nunca chega aqui — `flush()` acima trata a si mesmo,
+      // fora deste catch por-contato (achado de self-review, #4722).
       console.error(`⚠️  catch-up: re-busca de ${email} falhou: ${(e as Error).message}`);
     }
+    // Fora do try/catch por-contato de propósito — o flush intermediário
+    // (buffer cheio) não é parte do resultado desta busca específica, e
+    // agora nunca lança (ver comentário do flush acima). Roda mesmo quando
+    // a busca deste e-mail falhou, pra não atrasar o batelamento.
+    if (buffer.length >= batchSize) flush();
   });
   flush(); // drena o resto do buffer (< batchSize) ao final do pool
 

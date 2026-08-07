@@ -318,6 +318,46 @@ test("runOpensCatchup: sem deps.transaction, upsert ainda roda (fallback chama f
   assert.deepEqual(upserted, ["a@x.com"], "fallback sem deps.transaction ainda persiste (compat com testes/fakes antigos)");
 });
 
+test("REGRESSÃO (achado de self-review, #4722 item 3): flush() intermediário que falha NÃO é misatribuído ao e-mail que disparou o flush — desfaz contactsUpdated do batch inteiro e soma em contactsFailed, nunca 1", async () => {
+  // 5 openers, batchSize=2 → flushes intermediários em 2/4, mais o flush final
+  // drenando o resto (1). O 2º flush intermediário (contatos c,d) FALHA na
+  // escrita (transaction lança) — antes do fix, isso seria capturado pelo
+  // catch por-contato de QUALQUER UM dos 5 e-mails (o que por acaso disparou
+  // aquele flush específico), incrementando contactsFailed em só 1 e deixando
+  // contactsUpdated com +2 fantasmas (c e d nunca foram persistidos de verdade).
+  const c1 = fakeCampaign(1, 1);
+  const client = makeFakeClient([c1], {
+    1: [
+      { email: "a@x.com", opened: true },
+      { email: "b@x.com", opened: true },
+      { email: "c@x.com", opened: true },
+      { email: "d@x.com", opened: true },
+      { email: "e@x.com", opened: true },
+    ],
+  });
+  const upserted: string[] = [];
+  let txCallCount = 0;
+  const deps: OpensCatchupDeps = {
+    client,
+    fetchContact: async (identifier) => ({ email: identifier }),
+    upsert: (cols) => {
+      upserted.push(cols.email);
+    },
+    cacheDir: mkdtempSync(resolve(tmpdir(), "opens-catchup-cache-")),
+    batchSize: 2,
+    transaction: (fn) => {
+      txCallCount += 1;
+      if (txCallCount === 2) throw new Error("simulated write failure (batch 2)");
+      fn();
+    },
+  };
+  const result = await runOpensCatchup(deps);
+  // 5 openers processados; 1 batch de 2 falhou na escrita → 2 nunca persistidos.
+  assert.equal(result.contactsUpdated, 3, "só os 3 contatos cujo batch teve sucesso contam como atualizados");
+  assert.equal(result.contactsFailed, 2, "o batch inteiro que falhou (2 contatos) conta como falha, não 1");
+  assert.equal(upserted.length, 3, "o batch que falhou nunca chegou a chamar upsert de verdade dentro dele (fn() não executa se transaction lança antes)");
+});
+
 // ─── REGRESSÃO fim-a-fim (#4688): main() --incremental, fetch mockado ────
 
 test("REGRESSÃO (#4688): opener com brevo_modified_at ANTIGO (fora do modifiedSince) tem opens_count atualizado via catch-up de campanha — não fica invisível pro incremental", async (t) => {
