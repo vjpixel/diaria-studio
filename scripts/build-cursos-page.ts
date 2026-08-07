@@ -16,6 +16,17 @@
  * Uso:
  *   npx tsx scripts/build-cursos-page.ts --out workers/cursos/public/index.html
  *   npx tsx scripts/build-cursos-page.ts --check       # só valida
+ *
+ * #4641: a prosa GEO (H1/H2 + FAQ, em `renderGeoIntro`/`buildCursosFaq`) passou
+ * por Humanizador + `mcp__clarice__correct_text` em 260807 — mesmo padrão do
+ * Stage 2 da diária (Skill("humanizador", ...) seguido de correct_text,
+ * aplicando sugestões exceto o que quebra marca/identificador ou hardcoda um
+ * valor hoje dinâmico). Não roda automaticamente a cada build (o seed muda por
+ * curadoria manual, não diariamente) — ao reescrever essa prosa de forma
+ * substancial no futuro, repetir os dois passes antes de commitar, e bump
+ * `GEO_CONTENT_DATE` abaixo. As PERGUNTAS do FAQ (e o H2, que espelha a
+ * pergunta principal) ficam fora do escopo do Humanizador de propósito — são
+ * fraseado GEO calibrado para bater com busca real do leitor (#4558 Parte B).
  */
 
 import { mkdirSync } from "node:fs";
@@ -76,7 +87,7 @@ const PAGE_DESCRIPTION =
  * render fresco; "hoje" nunca bate com o commit de ontem). Bump manual
  * quando o conteúdo GEO (intro/FAQ) for reescrito de forma substancial —
  * não a cada atualização rotineira do seed de cursos. */
-const GEO_CONTENT_DATE = "2026-08-04";
+const GEO_CONTENT_DATE = "2026-08-07"; // #4641: prosa GEO (intro + FAQ) revisada por Humanizador + Clarice
 
 // #1936/#1935: DS canônico (vjpixel/diaria-design via lib/shared/design-tokens.ts).
 // Era ad-hoc (Newsreader + paleta #F5F1E8/#FFFDF8/#1A1A1A divergente do canvas
@@ -262,41 +273,47 @@ export function buildCursosFaq(courses: Course[]): GeoFaqItem[] {
   const plataformas = distinctPlatforms(courses).length;
   const open = openCourseCount(total);
 
+  // #4641: respostas revisadas por Humanizador + Clarice (mcp__clarice__correct_text) —
+  // travessão de conector/definição removido (regra #20 do humanizador), gerúndio em
+  // cascata evitado, contrações formalizadas conforme sugestão da Clarice. As
+  // PERGUNTAS ficam intocadas de propósito: são fraseado GEO calibrado pra bater com
+  // busca real do leitor (#4558 Parte B) — reescrevê-las é decisão editorial, não
+  // higienização de prosa.
   return [
     {
       question: "Quais são os melhores cursos gratuitos de inteligência artificial?",
-      answer: `Esta curadoria reúne ${total} cursos sobre inteligência artificial, dos quais ${free} têm acesso gratuito ou auditoria livre. ${comCertificado} deles emitem certificado sem custo ao concluir. ${open} ficam abertos direto na página; o restante desbloqueia pra quem já é assinante da diar.ia.br.`,
+      answer: `Esta curadoria reúne ${total} cursos sobre inteligência artificial, dos quais ${free} têm acesso gratuito ou auditoria livre. ${comCertificado} deles emitem certificado sem custo ao concluir. ${open} ficam abertos diretamente na página, e o restante é desbloqueado para assinantes da diar.ia.br.`,
     },
     {
       question: "Tem curso de inteligência artificial em português?",
-      answer: `Sim — ${ptBr} dos ${total} cursos da lista são em português, cobrindo desde fundamentos de IA até IA generativa e ética. Os outros ${en} estão em inglês, geralmente cursos mais técnicos.`,
+      answer: `Sim, ${ptBr} dos ${total} cursos da lista são em português, cobrindo desde fundamentos de IA até IA generativa e ética. Os outros ${en} estão em inglês, geralmente cursos mais técnicos.`,
     },
     {
       question: "Quantas plataformas de cursos de IA a diar.ia.br já curou?",
-      answer: `A curadoria já cobre ${plataformas} plataformas diferentes — de universidades a empresas de tecnologia. Cada card de curso mostra a plataforma de origem antes do link, e dá pra filtrar por ela na página.`,
+      answer: `A curadoria já cobre ${plataformas} plataformas diferentes, de universidades a empresas de tecnologia. Cada card de curso indica a plataforma de origem antes do link, sendo possível filtrar por ela na página.`,
     },
     {
       question: "Esses cursos de IA dão certificado?",
-      answer: `${comCertificado} dos ${total} cursos da lista emitem certificado sem custo ao concluir — procure o selo específico no card do curso, ou use o filtro de Certificado na página.`,
+      answer: `${comCertificado} dos ${total} cursos da lista emitem certificado sem custo ao concluir. Procure o selo específico no card do curso, ou utilize o filtro de "Certificado" na página.`,
     },
     {
       question: "Tem curso de IA pra iniciante, sem experiência técnica?",
-      answer: `Sim — ${iniciante} dos ${total} cursos são classificados como nível iniciante, sem pré-requisito de programação. Use o filtro de Nível pra ver só esses.`,
+      answer: `Sim, ${iniciante} dos ${total} cursos são classificados como nível iniciante, sem pré-requisito de programação. Use o filtro de "Nível" para visualizar apenas esses títulos.`,
     },
     {
       question: "Como faço pra desbloquear todos os cursos da lista?",
       answer:
-        "Uma parte do catálogo fica aberta sem cadastro; o restante desbloqueia pra quem já é assinante ativo da diar.ia.br (verificação automática por e-mail) ou pra quem se cadastra na hora pelo banner no topo da página.",
+        "Uma parte do catálogo está disponível sem cadastro; o restante é liberado para assinantes ativos da diar.ia.br (verificação automática por e-mail) ou para quem se cadastra pelo banner no topo da página.",
     },
     {
       question: "Os links dos cursos levam direto pra plataforma de origem?",
       answer:
-        "Sim, todos os links levam direto ao curso na plataforma original que oferece o conteúdo — a diar.ia.br não hospeda nada, só cura e organiza.",
+        "Sim, todos os links direcionam para o curso na plataforma original que oferece o conteúdo. A diar.ia.br não hospeda arquivos, apenas faz a curadoria e organização.",
     },
     {
       question: "Essa lista de cursos de IA é atualizada?",
       answer:
-        "Sim, a curadoria é mantida manualmente pelo editor da diar.ia.br e cresce sem periodicidade fixa. A forma de acompanhar novidades é assinando a newsletter diária.",
+        "Sim, a curadoria é mantida manualmente pelo editor da diar.ia.br e cresce sem periodicidade fixa. A melhor forma de acompanhar as novidades é assinar a newsletter diária.",
     },
   ];
 }
@@ -313,7 +330,7 @@ function renderGeoIntro(courses: Course[]): string {
   const plataformas = distinctPlatforms(courses).length;
   return `    <div class="geo-intro-wrap">
       <h2 class="geo-h2">Quais são os melhores cursos gratuitos de inteligência artificial?</h2>
-      <p class="geo-intro">Esta página reúne ${total} cursos sobre inteligência artificial de ${plataformas} plataformas diferentes — ${free} deles com acesso gratuito ou auditoria livre, e ${comCertificado} com certificado sem custo ao concluir. A curadoria vai de fundamentos de IA e IA generativa a especializações técnicas, em português e inglês. Filtre por idioma, nível, formato, duração e plataforma logo abaixo, ou role até o fim pras perguntas frequentes com os números completos da curadoria.</p>
+      <p class="geo-intro">Esta página reúne ${total} cursos sobre inteligência artificial de ${plataformas} plataformas diferentes: ${free} deles com acesso gratuito ou auditoria livre, e ${comCertificado} com certificado sem custo ao concluir. A curadoria abrange desde fundamentos de IA e IA generativa até especializações técnicas, em português e inglês. Filtre por idioma, nível, formato, duração e plataforma logo abaixo, ou role até o final para as perguntas frequentes com os números completos da curadoria.</p>
 ${renderGeoByline(undefined, `atualizado em ${formatMonthYear(GEO_CONTENT_DATE)}`)}
     </div>`;
 }
