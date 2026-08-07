@@ -15,6 +15,7 @@ import {
   loadWaveDefs,
   groupListsRegistryPath,
   appendGroupListsRegistry,
+  resolveRegistryKey,
   validateProcessId,
   importOneWave,
   makeRealImportRunClient,
@@ -469,6 +470,42 @@ describe("parseArgs", () => {
     const a = parseArgs(["--label", "--execute"]);
     assert.equal(a.label, "edição atual");
     assert.equal(a.execute, true);
+  });
+
+  it("#4753: --key ausente → campaignKey undefined (comportamento original preservado)", () => {
+    assert.equal(parseArgs(["--cycle", "2607-08", "--group", "novos"]).campaignKey, undefined);
+  });
+
+  it("#4753: --key presente → campaignKey recebe o valor (key de CAMPANHA, não de grupo)", () => {
+    const a = parseArgs(["--cycle", "2607-08", "--group", "novos", "--key", "novos-260807"]);
+    assert.equal(a.campaignKey, "novos-260807");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4753 — clarice-import-waves.ts gravava `key: wave.key` (nome ESTÁTICO do
+// grupo, ex: "novos") em toda entrada de {group}-lists.json pra grupos sem
+// célula A/B/C — mas clarice-schedule-group.ts --key recebe a key de
+// CAMPANHA (`novos-{AAMMDD}`, data-based). A partir da 2ª lista registrada no
+// mesmo ciclo, --key não batia com nada e o script abortava (só workaround
+// era --list-index). resolveRegistryKey é o fix: grava a key de campanha
+// (--key desta invocação) em vez do nome estático, quando informada.
+// ---------------------------------------------------------------------------
+
+describe("resolveRegistryKey (#4753)", () => {
+  it("sem campaignKey → mantém wave.key (comportamento original, ramp-warm/engajados/etc nunca passam --key)", () => {
+    assert.equal(resolveRegistryKey("novos"), "novos");
+    assert.equal(resolveRegistryKey("ramp-warm", undefined), "ramp-warm");
+  });
+
+  it("com campaignKey + wave.key SEM célula → sobrescreve pra campaignKey", () => {
+    assert.equal(resolveRegistryKey("novos", "novos-260807"), "novos-260807");
+  });
+
+  it("com campaignKey + wave.key COM célula (-A/-B/-C) → mantém wave.key (célula já é key distinta por construção)", () => {
+    assert.equal(resolveRegistryKey("d4-ter04-A", "novos-260807"), "d4-ter04-A");
+    assert.equal(resolveRegistryKey("d4-ter04-B", "novos-260807"), "d4-ter04-B");
+    assert.equal(resolveRegistryKey("d4-ter04-c", "novos-260807"), "d4-ter04-c"); // case-insensitive na detecção da célula
   });
 });
 

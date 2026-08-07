@@ -91,14 +91,24 @@ Se abortar por D13 (>500 contatos), NÃO passe `--force` automaticamente numa se
 
 Se `0 contato(s) no grupo 'novos'` → rodada vazia, pule pro fecho (relatório "0 contatos", exit 0).
 
-## Passo 4 — Import Brevo
+## Passo 4 — Resolver a key da campanha + import Brevo
+
+Resolva a key idempotente do dia PRIMEIRO (namespace por `{CICLO_ENVIO}` — é onde `group-campaigns.json` deste grupo mora):
+
+```bash
+npx tsx scripts/clarice-novos-resolve-key.ts --cycle {CICLO_ENVIO} --date {AAMMDD_HOJE}
+```
+
+Extraia `{KEY}` do JSON acima (`novos-{AAMMDD}`, com sufixo `-2`/`-3`… se a skill já rodou mais de uma vez hoje) — é usada aqui no import E no Passo 5/6.
 
 ```bash
 FOLDER_JSON=$(npx tsx scripts/clarice-resolve-folder.ts --name "Clarice novos")
 # extraia .folderId do JSON acima
-npx tsx scripts/clarice-import-waves.ts --cycle {CICLO_ENVIO} --group novos \
+npx tsx scripts/clarice-import-waves.ts --cycle {CICLO_ENVIO} --group novos --key {KEY} \
   --label "Novos {DD/MM}" --folder-id {FOLDER_ID} --execute
 ```
+
+**`--key {KEY}` é obrigatório aqui, não opcional (#4753).** Sem ele, `clarice-import-waves.ts` grava no registro de listas do grupo (`{CICLO_ENVIO}/segments/novos-lists.json`) o nome ESTÁTICO do grupo (`"novos"`) em vez da key de campanha — a partir da 2ª rodada da skill no mesmo `{CICLO_ENVIO}`, `clarice-schedule-group.ts --key {KEY}` (Passo 5) não encontraria a lista recém-criada e abortaria. Com `--key`, o registro grava a MESMA key de campanha usada no Passo 5 — `--key` volta a resolver sozinho, sem precisar de `--list-index` manual.
 
 `clarice-resolve-folder.ts` nunca aborta — se não conseguir resolver/criar a folder "Clarice novos", cai na folder `1` com aviso (organização visual, não afeta elegibilidade).
 
@@ -112,11 +122,7 @@ npx tsx scripts/clarice-novos-resolve-cycle.ts [--subject "Assunto explícito"]
 
 Sem `--subject`, o script tenta resolver o assunto vencedor A/B/C já usado nos envios canônicos do ciclo (`campaigns-summary.json`). Se nenhum ciclo estiver pronto (preview + gabarito É IA? + assunto conhecido), ABORTA com o motivo por ciclo candidato — pare a rodada aqui. Se o ciclo mais recente não estava pronto mas um anterior está (D3), o script já resolve automaticamente e sinaliza `fallback: true` — registre isso no relatório. **#4621:** se esse fallback divergir por MAIS de 1 ciclo mensal do ciclo mais recente com atividade real em `data/clarice-subscribers/` (sinal de envios ad-hoc por grupo — que não escrevem em `campaigns-summary.json`), o script ABORTA (guard "atividade divergente" da tabela acima) em vez de resolver silenciosamente pro ciclo antigo — nesse caso confirme manualmente qual ciclo é o correto e rode de novo com `--subject "Assunto explícito"`.
 
-Resolva a key idempotente do dia (namespace por `{CICLO_ENVIO}` — é onde `group-campaigns.json` deste grupo mora):
-
-```bash
-npx tsx scripts/clarice-novos-resolve-key.ts --cycle {CICLO_ENVIO} --date {AAMMDD_HOJE}
-```
+`{KEY}` já foi resolvida no Passo 4 (reuse — não rode `clarice-novos-resolve-key.ts` de novo aqui; uma 2ª chamada no mesmo processo devolveria a mesma key, mas recalcular é redundante e o import do Passo 4 já gravou o registro de listas contra ESSA key específica).
 
 Crie a campanha, SEM `--schedule-at` (rascunho pra envio imediato). **`--cycle` é sempre `{CICLO_ENVIO}`** (governa `segments/`/`group-campaigns.json` — mesmo namespace dos Passos 2–4); **`--content-cycle` é `{CICLO_MENSAL_RESOLVIDO}`** só quando ele DIVERGE de `{CICLO_ENVIO}` (caso comum no fallback D3) — controla de onde vêm o HTML e o gabarito É IA?:
 
