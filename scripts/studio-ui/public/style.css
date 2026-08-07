@@ -40,7 +40,7 @@ h2 { font-size: 1.1rem; }
 .statusbar .value { font-family: var(--font-mono); }
 
 .statusbar-item.conn { margin-left: auto; display: flex; align-items: center; gap: 0.4rem; }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: #999; display: inline-block; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: color-mix(in srgb, var(--ink) 40%, var(--paper)); display: inline-block; }
 .dot.ok { background: var(--brand); }
 .dot.down { background: var(--status-danger); }
 

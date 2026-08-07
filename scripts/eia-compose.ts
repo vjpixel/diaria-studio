@@ -27,7 +27,8 @@
  * do recap foi escolhida (ver scripts/select-eia-edition.ts). Omitidos na
  * composição diária (Stage 3 da diária não seleciona entre candidatas).
  *
- * Output JSON em stdout: { out_md, out_real, out_ia, out_meta, image_title, image_credit, image_date_used, rejections[] }
+ * Output JSON em stdout: { out_md, out_real, out_ia, out_meta, image_title, image_credit, image_date_used, rejections[], sd_prompt_locale }
+ * (#4625: sd_prompt_locale é "pt" | "en" | "pt_fallback" — ver resolveSdPromptDescription.)
  * Exit code != 0 em qualquer falha bloqueante (Wikimedia API down, sem POTD elegível, Gemini down).
  *
  * Resume-aware (#192): se Stage 4 já completo (md + meta + par de imagens
@@ -55,9 +56,10 @@ import { writeEiaAnswerSidecar, eiaAnswerSidecarPath } from "./lib/eia-answer.ts
 import { runTsx } from "./lib/run-tsx.ts"; // #1811
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { logEvent } from "./lib/run-log.ts"; // #4620
+import { parsePlatformConfig } from "./lib/schemas/platform-config.ts"; // #4625 item 4
 
 // Domínio real de platform.config.json > image_generator QUE ESTE ARQUIVO
-// sabe dispatchar (ver ternário de imageScriptName em main()) — não é o
+// sabe dispatchar (ver resolveImageScriptName, #4625) — não é o
 // schema completo (scripts/lib/schemas/platform-config.ts também aceita
 // "openai", que este arquivo trata como gemini por fallback silencioso,
 // pré-existente, fora do escopo do #4620).
@@ -1065,20 +1067,51 @@ export function buildCreditLine(
 }
 
 /**
+ * #4625 (achado 3 do fleet review do #4623): único ponto de decisão "qual
+ * script de backend de imagem esta config dispatcha" — usado tanto pelo
+ * dispatch real em `main()` quanto pelo gate "precisa de EN?" de
+ * `resolveSdPromptDescription` abaixo. Antes os dois decidiam
+ * independentemente (`imageGenerator === "gemini"` vs.
+ * `... ? comfyui : ... ? cloudflare : gemini`) — um valor de config
+ * typo'd/futuro (ex: `"Gemini"`, `"openai"`) fazia as duas decisões poderem
+ * divergir silenciosamente. Com um helper único, elas NUNCA divergem por
+ * construção — `"openai"` (aceito pelo schema Zod mais amplo de
+ * `platform-config.ts`, mas fora do domínio que este arquivo sabe dispatchar,
+ * ver comentário do `type ImageGenerator` acima) cai no mesmo fallback
+ * gemini-image.js que qualquer valor desconhecido, em ambos os call sites.
+ */
+export function resolveImageScriptName(imageGenerator: ImageGenerator): string {
+  if (imageGenerator === "comfyui") return "scripts/comfyui-run.js";
+  if (imageGenerator === "cloudflare") return "scripts/cloudflare-image.js";
+  return "scripts/gemini-image.js";
+}
+
+/**
  * #4620: decide qual texto alimenta `buildSdPrompt()` — `image.description.text`
  * (pt-BR nativo desde #4618) é seguro pro Gemini (`gemini-image.js`, multilíngue),
  * mas degradaria silenciosamente a fidelidade de `comfyui-run.js` (o texto vai
  * direto pro `CLIPTextEncode`) ou `cloudflare-image.js` (vira o campo `prompt`
  * da API SDXL/FLUX da Workers AI) — os dois modelos treinados majoritariamente
  * em EN. Só paga o custo de uma 2ª chamada à Wikimedia (mesma data, locale
- * `en`) quando genuinamente precisa: `imageGenerator !== "gemini"` E a
- * description já veio nativa em pt (`isPtDescription`). Fail-soft — se a
- * chamada EN falhar ou vier sem `description.text`, cai de volta pro texto
- * existente (nunca bloqueia a composição da edição por causa disto), mas
- * registra em stderr (debug local) e no run-log (`logEvent`, #612 —
- * `/diaria-log {edition}` torna isso auditável mesmo rodando desatendido em
- * background — ver docstring de `main()` no topo do arquivo sobre o dispatch
- * via Bash).
+ * `en`) quando genuinamente precisa: backend != gemini-image.js (via
+ * `resolveImageScriptName`, #4625 — não mais um `!== "gemini"` solto que
+ * podia divergir do dispatch real) E a description já veio nativa em pt
+ * (`isPtDescription`). Fail-soft — se a chamada EN falhar ou vier sem
+ * `description.text`, cai de volta pro texto existente (nunca bloqueia a
+ * composição da edição por causa disto), mas registra em stderr (debug
+ * local) e no run-log (`logEvent`, #612 — `/diaria-log {edition}` torna isso
+ * auditável mesmo rodando desatendido em background — ver docstring de
+ * `main()` no topo do arquivo sobre o dispatch via Bash).
+ *
+ * #4625 (achado 1): o retorno inclui `locale` — sinal de qual idioma
+ * efetivamente alimentou o prompt SD, pra `main()` poder propagar no
+ * contrato JSON final (`sd_prompt_locale`) que o orchestrator lê. `"pt"` =
+ * gemini (multilíngue, pt é aceitável) OU fonte já não-pt tratada como en;
+ * `"en"` = backend não-gemini que buscou/já tinha EN com sucesso (caminho
+ * saudável); `"pt_fallback"` = backend não-gemini SEM EN disponível — prompt
+ * seguiu em pt-BR pro backend treinado majoritariamente em EN, a degradação
+ * que este mecanismo existe pra minimizar e que precisa ficar visível pro
+ * editor, não só auditável no run-log.
  */
 export async function resolveSdPromptDescription(
   imageGenerator: ImageGenerator,
@@ -1087,10 +1120,12 @@ export async function resolveSdPromptDescription(
   edition: string,
   fetchEn: (iso: string) => Promise<WikimediaImage | null> = (iso) => fetchPotd(iso, 3, "en"),
   rootDir: string = process.cwd(), // injetável em teste, mesmo padrão de logEvent (#612)
-): Promise<string> {
+): Promise<{ text: string; locale: "pt" | "en" | "pt_fallback" }> {
   const fallbackText = image.description?.text ?? "";
-  if (imageGenerator === "gemini" || !isPtDescription(image)) {
-    return fallbackText;
+  const sourceIsPt = isPtDescription(image);
+  const needsEn = resolveImageScriptName(imageGenerator) !== "scripts/gemini-image.js" && sourceIsPt;
+  if (!needsEn) {
+    return { text: fallbackText, locale: sourceIsPt ? "pt" : "en" };
   }
   let fetchError: string | null = null;
   const enImage = await fetchEn(imageDate).catch((e) => {
@@ -1098,14 +1133,14 @@ export async function resolveSdPromptDescription(
     return null;
   });
   if (enImage?.description?.text) {
-    return enImage.description.text;
+    return { text: enImage.description.text, locale: "en" };
   }
   const message = fetchError
     ? `image_generator="${imageGenerator}" (!= gemini) e description é pt, mas o fetch EN de fallback FALHOU (${fetchError}) — prompt SD seguirá em pt-BR (#4620), pode degradar fidelidade do backend Stable Diffusion.`
     : `image_generator="${imageGenerator}" (!= gemini) e description é pt, mas o fetch EN de fallback veio SEM description.text (sem erro — provavelmente não há POTD nessa data no locale en) — prompt SD seguirá em pt-BR (#4620), pode degradar fidelidade do backend Stable Diffusion.`;
   process.stderr.write(`[eia-compose] warn: ${message}\n`);
   logEvent({ edition, stage: 3, agent: "eia-compose", level: "warn", message, details: { imageDate, imageGenerator, fetchError } }, rootDir);
-  return fallbackText;
+  return { text: fallbackText, locale: "pt_fallback" };
 }
 
 /** #4620: transform puro texto→prompt — caller resolve qual texto (idioma/fonte) passar, ver `resolveSdPromptDescription`. */
@@ -1335,19 +1370,35 @@ async function main(): Promise<void> {
   // decidido por `resolveSdPromptDescription` — ver docstring lá (fecha o
   // risco documentado no #4618/PR #4619 de prompt pt-BR vazando pra
   // comfyui/cloudflare).
-  const platformCfg = JSON.parse(
-    readFileSync(resolve(ROOT, "platform.config.json"), "utf8"),
+  //
+  // #4625 item 4: valida o shape via `parsePlatformConfig` (schema Zod já
+  // existente) em vez de um cast cru — mesmo padrão pré-existente corrigido
+  // em `scripts/image-generate.ts`. `image_generator` do schema aceita
+  // também `"openai"`, fora do domínio que este arquivo sabe dispatchar
+  // (ver comentário do `type ImageGenerator` no topo) — cai no fallback
+  // gemini-image.js via `resolveImageScriptName`, comportamento inalterado.
+  const platformCfg = parsePlatformConfig(
+    JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")),
   );
-  const imageGenerator = (platformCfg.image_generator ?? "gemini") as ImageGenerator;
-  const sdDescriptionText = await resolveSdPromptDescription(imageGenerator, image, imageDate, edition);
+  const imageGenerator = platformCfg.image_generator as ImageGenerator;
+  // #4625 item 1: `sdPromptLocale` viaja no contrato JSON final (abaixo) pro
+  // orchestrator saber quando o prompt SD degradou pra pt-BR num backend
+  // não-gemini — antes só auditável no run-log (logEvent dentro de
+  // resolveSdPromptDescription), não visível no caminho que
+  // orchestrator-stage-3.md de fato lê.
+  const { text: sdDescriptionText, locale: sdPromptLocale } = await resolveSdPromptDescription(
+    imageGenerator,
+    image,
+    imageDate,
+    edition,
+  );
   const sdPrompt = buildSdPrompt(sdDescriptionText);
   const sdPromptPath = resolve(internalDir, "01-eia-sd-prompt.json");
   writeFileSync(sdPromptPath, JSON.stringify(sdPrompt, null, 2));
   const iaPath = resolve(outDir, iaFilename);
-  const imageScriptName =
-    imageGenerator === "comfyui" ? "scripts/comfyui-run.js" :
-    imageGenerator === "cloudflare" ? "scripts/cloudflare-image.js" :
-    "scripts/gemini-image.js";
+  // #4625 item 3: mesmo helper que o gate "precisa de EN?" de
+  // resolveSdPromptDescription usa — nunca mais pode divergir por construção.
+  const imageScriptName = resolveImageScriptName(imageGenerator);
   runNode(imageScriptName, [sdPromptPath, iaPath, "diaria_eia_"]);
 
   // 7. Write 01-eia.md (frontmatter + corpo + opcional resultado da edição anterior #107)
@@ -1516,6 +1567,10 @@ async function main(): Promise<void> {
       image_credit: credit,
       image_date_used: imageDate,
       rejections,
+      // #4625 item 1: sinal de fallback do prompt SD, mesmo tratamento de
+      // `rejections[]` — orchestrator-stage-3.md reporta quando vier
+      // "pt_fallback" (ver docstring de resolveSdPromptDescription).
+      sd_prompt_locale: sdPromptLocale,
     }),
   );
 }

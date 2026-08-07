@@ -51,7 +51,7 @@
 }
 .skill-copy-btn[data-copied="1"] {
   background: var(--status-ok);
-  color: #fff;
+  color: var(--on-status);
   border-color: var(--status-ok);
 }
 

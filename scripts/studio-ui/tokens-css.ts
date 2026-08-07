@@ -52,6 +52,13 @@ import { COLORS, FONTS } from "../lib/shared/design-tokens.ts";
  * se o editor quiser um degradê de severidade de volta, é follow-up via
  * `color-mix(in srgb, var(--status-warn) N%, var(--paper-alt))`, não um hex
  * novo hardcoded.
+ *
+ * `onStatus` é o par de texto pra badges preenchidos com `ok`/`danger`/`info`
+ * (#4674) — os 3 já passam WCAG AA de texto normal (4.5:1) com branco puro,
+ * então (diferente de `warn`, que precisa de `warnInk` escuro) um único token
+ * branco cobre os 3: ok ≈5,08:1, danger ≈5,44:1, info ≈7,89:1 (calculado
+ * contra a fórmula de luminância relativa do WCAG). Recalcular se qualquer um
+ * dos 3 hex mudar de tom.
  */
 export const STATUS_COLORS = {
   ok: "#1a7f37",
@@ -60,6 +67,8 @@ export const STATUS_COLORS = {
   warnInk: "#3a2e00",
   danger: "#c0392b",
   info: "#5319e7",
+  /** Texto sobre `ok`/`danger`/`info` preenchidos (ver docstring acima) — NÃO usar sobre `warn`. */
+  onStatus: "#fff",
 } as const;
 
 /** Monta o CSS de `:root { --token: valor; ... }` a partir dos tokens do DS. */
@@ -92,6 +101,7 @@ export function buildTokensCss(
   --status-warn-ink: ${status.warnInk};
   --status-danger: ${status.danger};
   --status-info: ${status.info};
+  --on-status: ${status.onStatus};
 }
 `;
 }

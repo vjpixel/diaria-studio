@@ -88,7 +88,7 @@ body.chat-drawer-present.chat-drawer-collapsed {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #999;
+  background: color-mix(in srgb, var(--ink) 40%, var(--paper));
   flex: none;
 }
 .chat-toggle-dot.ok { background: var(--brand); }
@@ -115,7 +115,7 @@ body.chat-drawer-present.chat-drawer-collapsed {
   padding: 0 0.3rem;
   border-radius: 999px;
   background: var(--status-danger);
-  color: #fff;
+  color: var(--on-status);
   font-size: 0.7rem;
   font-weight: 600;
   line-height: 1;

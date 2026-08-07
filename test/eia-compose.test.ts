@@ -26,6 +26,7 @@ import {
   resolveSubjectWikipediaUrl,
   buildSdPrompt,
   resolveSdPromptDescription,
+  resolveImageScriptName,
 } from "../scripts/eia-compose.ts";
 import { withFetchSpy } from "./_helpers/with-fetch-spy.ts";
 
@@ -1683,6 +1684,82 @@ describe("fetchPotd (via findEligiblePotd com fetcher default) — #4618: URL re
   });
 });
 
+describe("fetchPotd — retry recursivo em 429 propaga o locale corretamente (#4625 item 2)", () => {
+  // #4625: `fetchPotd` (privada, não exportada) recomputa a URL com o MESMO
+  // `locale` recebido a cada retry recursivo (`return fetchPotd(iso,
+  // retryOnRateLimit - 1, locale)`) — confirmado por LEITURA na issue, mas
+  // nenhum teste existente exercitava o branch de retry (nem pt nem en) com
+  // um fetch em FILA (429 seguido de 200). `test/_helpers/with-fetch-spy.ts`
+  // sempre lança na chamada interceptada — não serve pra simular "1ª chamada
+  // falha, 2ª sucede". Mock direto de `globalThis.fetch`, mesmo padrão de
+  // `test/brevo-get-retry.test.ts` (fila de respostas por índice de chamada).
+  // `Retry-After: 0` mantém o teste rápido (fetchPotd não tem `_sleep`
+  // injetável como brevoGet — só delay real via setTimeout).
+
+  function wikimediaJsonResponse(title: string): Response {
+    return new Response(
+      JSON.stringify({
+        image: {
+          title,
+          description: { text: "desc", lang: "en" },
+          image: { source: "https://example.org/x.jpg", width: 1600, height: 800 },
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }
+
+  it("locale pt (via findEligiblePotd, fetcher default): 429 → retry → 200, mesma URL /wikipedia/pt/", async () => {
+    const originalFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: unknown) => {
+      calls.push(String(input));
+      if (calls.length === 1) {
+        return new Response("rate limited", { status: 429, headers: { "retry-after": "0" } });
+      }
+      return wikimediaJsonResponse("Ponte de teste pt");
+    }) as unknown as typeof globalThis.fetch;
+
+    try {
+      const result = await findEligiblePotd("2026-08-04", new Set(), 1);
+      assert.equal(result.image.title, "Ponte de teste pt");
+      assert.equal(calls.length, 2, "1ª chamada (429) + 2ª chamada (200, mesmo retryOnRateLimit-1)");
+      for (const url of calls) {
+        assert.match(url, /\/wikipedia\/pt\/featured\/2026\/08\/04/, `locale pt preservado no retry: ${url}`);
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("locale en (via resolveSdPromptDescription, fetchEn default): 429 → retry → 200, mesma URL /wikipedia/en/", async () => {
+    const originalFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: unknown) => {
+      calls.push(String(input));
+      if (calls.length === 1) {
+        return new Response("rate limited", { status: 429, headers: { "retry-after": "0" } });
+      }
+      return wikimediaJsonResponse("Bridge test en");
+    }) as unknown as typeof globalThis.fetch;
+
+    try {
+      // imageGenerator != gemini + description pt (isPtDescription=true) →
+      // dispara o fetchEn default = fetchPotd(iso, 3, "en").
+      const ptImage = { description: { text: "Roma fica no rio Tibre.", lang: "pt" } };
+      const result = await resolveSdPromptDescription("comfyui", ptImage, "2026-08-04", "260804");
+      assert.equal(result.locale, "en", "fetch EN sucedeu após o retry — não deveria degradar pra pt_fallback");
+      assert.equal(result.text, "desc");
+      assert.equal(calls.length, 2, "1ª chamada (429) + 2ª chamada (200, mesmo retryOnRateLimit-1)");
+      for (const url of calls) {
+        assert.match(url, /\/wikipedia\/en\/featured\/2026\/08\/04/, `locale en preservado no retry: ${url}`);
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 describe("translateToPtBR — prompt real enviado ao Gemini (#4618)", () => {
   it("corpo da requisição instrui traduzir topônimos e contém o texto de entrada; resposta mockada é retornada", async () => {
     // Comportamental (não source-grep): mocka `globalThis.fetch` capturando
@@ -1784,34 +1861,37 @@ describe("resolveSdPromptDescription (#4620 — só busca EN quando genuinamente
     return readFileSync(p, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
   }
 
-  it("image_generator=gemini + description pt → retorna o texto pt, ZERO fetch (custo do caminho ativo hoje)", async () => {
+  it("image_generator=gemini + description pt → retorna o texto pt, locale=pt, ZERO fetch (custo do caminho ativo hoje)", async () => {
     const fetchEn = async () => {
       throw new Error("não deveria ser chamado");
     };
     const result = await resolveSdPromptDescription("gemini", ptImage, "2026-08-04", EDITION, fetchEn);
-    assert.equal(result, "Roma fica no rio Tibre.");
+    assert.equal(result.text, "Roma fica no rio Tibre.");
+    assert.equal(result.locale, "pt", "#4625: gemini é multilíngue, pt é aceitável — não é degradação");
   });
 
-  it("image_generator=comfyui + description já nativa em EN (isPtDescription=false) → retorna o texto EN, ZERO fetch", async () => {
+  it("image_generator=comfyui + description já nativa em EN (isPtDescription=false) → retorna o texto EN, locale=en, ZERO fetch", async () => {
     const fetchEn = async () => {
       throw new Error("não deveria ser chamado");
     };
     const result = await resolveSdPromptDescription("comfyui", enNativeImage, "2026-08-04", EDITION, fetchEn);
-    assert.equal(result, "Rome is on the Tiber.");
+    assert.equal(result.text, "Rome is on the Tiber.");
+    assert.equal(result.locale, "en");
   });
 
-  it("image_generator=comfyui + description pt → busca EN da MESMA data e usa o texto EN retornado", async () => {
+  it("image_generator=comfyui + description pt → busca EN da MESMA data e usa o texto EN retornado, locale=en", async () => {
     let calledWithIso: string | null = null;
     const fetchEn = async (iso: string) => {
       calledWithIso = iso;
       return { description: { text: "Rome is on the Tiber.", lang: "en" } };
     };
     const result = await resolveSdPromptDescription("comfyui", ptImage, "2026-08-04", EDITION, fetchEn);
-    assert.equal(result, "Rome is on the Tiber.");
+    assert.equal(result.text, "Rome is on the Tiber.");
+    assert.equal(result.locale, "en", "#4625: fetch EN bem-sucedido — caminho saudável, sem degradação");
     assert.equal(calledWithIso, "2026-08-04");
   });
 
-  it("image_generator=cloudflare + description pt + fetch EN falha (exceção) → fail-soft, cai pro texto pt, warn em stderr E run-log com a mensagem de erro real", async () => {
+  it("image_generator=cloudflare + description pt + fetch EN falha (exceção) → fail-soft, cai pro texto pt, locale=pt_fallback, warn em stderr E run-log com a mensagem de erro real", async () => {
     const tmpRoot = makeTmpRoot();
     const fetchEn = async () => {
       throw new Error("Wikimedia indisponível");
@@ -1822,13 +1902,14 @@ describe("resolveSdPromptDescription (#4620 — só busca EN quando genuinamente
       captured += chunk;
       return true;
     }) as typeof process.stderr.write;
-    let result: string;
+    let result: { text: string; locale: "pt" | "en" | "pt_fallback" };
     try {
       result = await resolveSdPromptDescription("cloudflare", ptImage, "2026-08-04", EDITION, fetchEn, tmpRoot);
     } finally {
       process.stderr.write = originalWrite;
     }
-    assert.equal(result, "Roma fica no rio Tibre.");
+    assert.equal(result.text, "Roma fica no rio Tibre.");
+    assert.equal(result.locale, "pt_fallback", "#4625: EN falhou e o backend não é gemini — degradação real, precisa ser visível pro editor");
     assert.match(captured, /FALHOU \(Wikimedia indisponível\)/, "stderr deve conter a mensagem de erro REAL, não genérica (achado silent-failure-hunter)");
     const entries = readRunLog(tmpRoot) as Array<{
       edition: string; stage: number; agent: string; level: string; message: string;
@@ -1843,22 +1924,24 @@ describe("resolveSdPromptDescription (#4620 — só busca EN quando genuinamente
     assert.deepEqual(entries[0].details, { imageDate: "2026-08-04", imageGenerator: "cloudflare", fetchError: "Wikimedia indisponível" });
   });
 
-  it("image_generator=comfyui + description pt + fetch EN retorna sem description.text (sem erro) → fail-soft, cai pro texto pt, mensagem distingue de falha real", async () => {
+  it("image_generator=comfyui + description pt + fetch EN retorna sem description.text (sem erro) → fail-soft, cai pro texto pt, locale=pt_fallback, mensagem distingue de falha real", async () => {
     const tmpRoot = makeTmpRoot();
     const fetchEn = async () => ({ description: { lang: "en" } });
     const result = await resolveSdPromptDescription("comfyui", ptImage, "2026-08-04", EDITION, fetchEn, tmpRoot);
-    assert.equal(result, "Roma fica no rio Tibre.");
+    assert.equal(result.text, "Roma fica no rio Tibre.");
+    assert.equal(result.locale, "pt_fallback");
     const entries = readRunLog(tmpRoot) as Array<{ message: string; details: { fetchError: string | null } }>;
     assert.equal(entries.length, 1);
     assert.equal(entries[0].details.fetchError, null, "sem exceção — não deve inventar uma mensagem de erro");
     assert.match(entries[0].message, /SEM description\.text \(sem erro/);
   });
 
-  it("image_generator=comfyui + description pt + fetch EN retorna null → fail-soft, cai pro texto pt", async () => {
+  it("image_generator=comfyui + description pt + fetch EN retorna null → fail-soft, cai pro texto pt, locale=pt_fallback", async () => {
     const tmpRoot = makeTmpRoot();
     const fetchEn = async () => null;
     const result = await resolveSdPromptDescription("comfyui", ptImage, "2026-08-04", EDITION, fetchEn, tmpRoot);
-    assert.equal(result, "Roma fica no rio Tibre.");
+    assert.equal(result.text, "Roma fica no rio Tibre.");
+    assert.equal(result.locale, "pt_fallback");
   });
 
   it("default fetchEn (sem injeção): pede a feed real no locale en pra mesma data (#4620)", async () => {
@@ -1868,9 +1951,33 @@ describe("resolveSdPromptDescription (#4620 — só busca EN quando genuinamente
       // a asserção relevante é a URL efetivamente pedida (mesmo padrão do
       // guard de fetchPotd/locale pt já usado pro #4618 mais acima).
       const result = await resolveSdPromptDescription("comfyui", ptImage, "2026-08-04", EDITION, undefined, tmpRoot);
-      assert.equal(result, "Roma fica no rio Tibre.", "fail-soft cai pro texto pt quando o fetch real falha no teste");
+      assert.equal(result.text, "Roma fica no rio Tibre.", "fail-soft cai pro texto pt quando o fetch real falha no teste");
+      assert.equal(result.locale, "pt_fallback");
       assert.equal(calls.length, 1);
       assert.match(calls[0], /\/wikipedia\/en\/featured\/2026\/08\/04/);
     });
+  });
+});
+
+describe("resolveImageScriptName (#4625 item 3 — helper único compartilhado)", () => {
+  it("comfyui → scripts/comfyui-run.js", () => {
+    assert.equal(resolveImageScriptName("comfyui"), "scripts/comfyui-run.js");
+  });
+
+  it("cloudflare → scripts/cloudflare-image.js", () => {
+    assert.equal(resolveImageScriptName("cloudflare"), "scripts/cloudflare-image.js");
+  });
+
+  it("gemini → scripts/gemini-image.js", () => {
+    assert.equal(resolveImageScriptName("gemini"), "scripts/gemini-image.js");
+  });
+
+  it("valor desconhecido (typo/futuro, ex: openai) cai no mesmo fallback gemini que o dispatch real usaria", () => {
+    // #4625: garante que o gate de resolveSdPromptDescription e o dispatch de
+    // main() NUNCA divergem — os dois chamam este mesmo helper.
+    assert.equal(
+      resolveImageScriptName("openai" as unknown as Parameters<typeof resolveImageScriptName>[0]),
+      "scripts/gemini-image.js",
+    );
   });
 });

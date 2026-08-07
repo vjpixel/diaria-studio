@@ -293,6 +293,9 @@ async function main(): Promise<void> {
     console.error(
       "[inject-poll-token-brevo] uso: npx tsx scripts/inject-poll-token-brevo.ts --list-id N [--dry-run] [--force]",
     );
+    // Guard pré-await (nenhum fetch rodou ainda) — process.exit() continua
+    // seguro aqui, mesmo padrão de publish-daily-brevo.ts (#4651). Só o
+    // catch handler abaixo (pós-`await run()`) precisa de process.exitCode.
     process.exit(1);
   }
 
@@ -307,6 +310,7 @@ async function main(): Promise<void> {
   if (!dryRun && !workersToken) missing.push("CLOUDFLARE_WORKERS_TOKEN");
   if (missing.length > 0) {
     console.error(`[inject-poll-token-brevo] envs ausentes: ${missing.join(", ")} — abortando`);
+    // Guard pré-await — ver comentário acima.
     process.exit(1);
   }
 
@@ -332,8 +336,13 @@ if (
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {
+  // #4653: process.exitCode em vez de process.exit() — este catch roda DEPOIS
+  // de `await run(...)` (chamadas fetch pra Brevo/Cloudflare KV), o cenário
+  // exato da classe de bug UV_HANDLE_CLOSING no Windows (#1401/#4638/#4651):
+  // process.exit() força o shutdown do libuv antes dos sockets keep-alive do
+  // fetch fecharem. process.exitCode deixa o event loop drenar sozinho.
   main().catch((e) => {
     console.error(`[inject-poll-token-brevo] ${(e as Error).message}`);
-    process.exit(1);
+    process.exitCode = 1;
   });
 }
