@@ -24,6 +24,7 @@ import {
   loadOriginScores,
   loadMvVerifiedEmails,
   assertMvGuardAcknowledged,
+  applyRolloutGuardrailGate,
   type BeehiivPendingSubscription,
   type PendingToIngestEntry,
 } from "../scripts/sync-pending-to-brevo.ts";
@@ -405,6 +406,20 @@ describe("loadOriginScores — leitura fail-soft do CSV de score-pending-origin.
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("applyRolloutGuardrailGate — circuit breaker de campanha zera o backfill (#4476 item 9)", () => {
+  it("rollout NÃO pausado → devolve availableSlots sem alteração", () => {
+    assert.equal(applyRolloutGuardrailGate(150, false), 150);
+  });
+
+  it("rollout PAUSADO → zera, mesmo com slots livres (pausa o rollout INTEIRO, não um ajuste parcial)", () => {
+    assert.equal(applyRolloutGuardrailGate(150, true), 0);
+  });
+
+  it("rollout PAUSADO com 0 slots livres → continua 0 (idempotente)", () => {
+    assert.equal(applyRolloutGuardrailGate(0, true), 0);
   });
 });
 

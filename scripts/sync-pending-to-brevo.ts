@@ -28,6 +28,18 @@
  * deste script vê mais slots livres e ingere o próximo da fila — nenhum
  * mecanismo adicional de "notificação de slot livre" é necessário.
  *
+ * ## Circuit breaker de campanha pausa o backfill (#4476 item 9)
+ *
+ * Antes de calcular `availableSlots`, este script lê o latch persistido por
+ * `scripts/check-brevo-diaria-guardrail.ts` (`data/brevo-diaria/guardrail-state.json`,
+ * `scripts/lib/brevo-diaria-guardrail.ts`) — se `rollout_paused === true`
+ * (bounce/spam/unsub agregado cruzou o limiar do ramp Clarice), o backfill é
+ * ZERADO nesta rodada (nenhum contato novo ingerido), mesmo com slots livres
+ * na fila top-300. Camada DIFERENTE do filtro de MV/score — este é o
+ * circuit breaker AGREGADO da campanha, não decide sobre 1 pessoa. Volta a
+ * funcionar normalmente só depois de `check-brevo-diaria-guardrail.ts
+ * --unpause` (ação explícita do editor) — nunca despausa sozinho.
+ *
  * MillionVerifier (issue #4476 item 8) — `scripts/verify-pending-emails-mv.ts`,
  * implementado 260802. 1 passada em lote sobre o pool inteiro ANTES do
  * primeiro envio (não por-backfill — decisão da issue #4476, pool estático).
@@ -121,6 +133,7 @@ import { hasMorePages } from "./sync-cursos-subscribers-kv.ts";
 import { brevoPost, brevoGet } from "./lib/brevo-client.ts";
 import { DEFAULT_OUTPUT_PATH as ORIGIN_SCORES_CSV_PATH } from "./score-pending-origin.ts";
 import { MV_VERIFIED_CSV_PATH, MV_REJECTED_CSV_PATH, MV_UNKNOWN_CSV_PATH } from "./verify-pending-emails-mv.ts";
+import { readRolloutGuardrailState } from "./lib/brevo-diaria-guardrail.ts";
 import {
   readStore,
   writeStore,
@@ -376,6 +389,19 @@ export function computeAvailableSlots(currentActiveCount: number, cap: number): 
 }
 
 /**
+ * Pura (#4476 item 9) — aplica o circuit breaker de campanha por cima do
+ * cálculo normal de slots: `rolloutPaused === true` (latch de
+ * `scripts/lib/brevo-diaria-guardrail.ts`, bounce/spam/unsub agregado
+ * cruzou o limiar) zera o backfill desta rodada, mesmo com slots livres —
+ * "pausa o rollout inteiro" (issue #4476), não um ajuste parcial. Quando
+ * `false`, devolve `availableSlots` sem alteração — a fila top-300 (item 5)
+ * continua funcionando normalmente.
+ */
+export function applyRolloutGuardrailGate(availableSlots: number, rolloutPaused: boolean): number {
+  return rolloutPaused ? 0 : availableSlots;
+}
+
+/**
  * Pura (#4631) — quantos contatos do store hoje ocupam um slot `in_brevo`,
  * EXCLUINDO `EDITOR_SEED_EMAILS` do numerador. Diferente de
  * `checkDailySendCap` (`publish-daily-brevo.ts`), este número já vinha
@@ -581,7 +607,21 @@ async function main(): Promise<void> {
   // ingerir TODO o `toIngest` de uma vez (ou abortar se > cap).
   const cap = brevoDiaria!.daily_send_cap ?? DEFAULT_QUEUE_CAP;
   const currentActiveCount = computeCurrentActiveCount(store.contacts); // #4631: exclui EDITOR_SEED_EMAILS
-  const availableSlots = computeAvailableSlots(currentActiveCount, cap);
+  const slotsBeforeGuardrail = computeAvailableSlots(currentActiveCount, cap);
+
+  // #4476 item 9 — circuit breaker de campanha: bounce/spam/unsub agregado
+  // furado pausa o backfill inteiro (latch, ver scripts/lib/brevo-diaria-guardrail.ts
+  // + scripts/check-brevo-diaria-guardrail.ts), independente de slots livres.
+  const guardrailState = readRolloutGuardrailState();
+  const availableSlots = applyRolloutGuardrailGate(slotsBeforeGuardrail, guardrailState.rollout_paused);
+  if (guardrailState.rollout_paused) {
+    log(
+      `AVISO: rollout PAUSADO pelo circuit breaker de campanha (#4476 item 9) desde ${guardrailState.paused_at} — ` +
+        `backfill ZERADO nesta rodada (seriam ${slotsBeforeGuardrail} slot(s) livre(s) sem a pausa). ` +
+        `Motivo: ${guardrailState.paused_reason?.join("; ") ?? "desconhecido"}. ` +
+        "Rode 'npx tsx scripts/check-brevo-diaria-guardrail.ts --unpause' após investigar.",
+    );
+  }
   log(`fila: ${currentActiveCount}/${cap} ocupados, ${availableSlots} slot(s) livre(s) pro backfill.`);
 
   const selected = selectContactsForBackfill(toIngest, availableSlots, scoreByEmail);
