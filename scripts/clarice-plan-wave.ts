@@ -50,11 +50,13 @@ import {
 import { brevoGet, fetchCommittedCampaignListIds } from "./lib/brevo-client.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { requireCycleArg } from "./lib/clarice-paths.ts";
+import { requireCycleArg, CLARICE_BASE } from "./lib/clarice-paths.ts";
+import { readNovosState } from "./lib/clarice-novos-state.ts";
 import {
   buildWaveProposal,
   computeNextWaveNumber,
   measureNonOpenerExposure,
+  measureNovosFreshness,
   proposeVolumes,
   recommendAbcAction,
   renderWaveProposal,
@@ -145,6 +147,9 @@ export interface PlanWaveOptions {
   dbPath: string;
   dashboardUrl: string;
   lockedSubject: string | null;
+  /** #4664 — override de teste da raiz de `novos-state.json` (mesmo padrão
+   *  `--data-root` do resto do projeto). Default = `CLARICE_BASE` (produção). */
+  novosStateBaseDir?: string;
 }
 
 export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
@@ -221,6 +226,13 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
     }
   }
 
+  // 6. Frescor do /diaria-clarice-novos (#4664) — leitura local, mesma
+  // disciplina fail-soft de `readNovosState` (arquivo ausente/corrompido →
+  // `null`, nunca lança); `measureNovosFreshness` trata `null` como
+  // "never-run" (ver docstring em clarice-wave-plan.ts).
+  const novosState = readNovosState(opts.novosStateBaseDir ?? CLARICE_BASE);
+  const novosFreshness = measureNovosFreshness(novosState?.lastRunAt ?? null, now);
+
   return buildWaveProposal({
     cycle: opts.cycle,
     dates: opts.dates,
@@ -235,6 +247,7 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
     // Continua a numeração do ciclo — `d6` depois de `d5`, nunca reinicia.
     startingWaveNumber: computeNextWaveNumber(state.waves),
     committedLookupFailed,
+    novosFreshness,
   });
 }
 

@@ -488,6 +488,70 @@ export function measureNonOpenerExposure(
 }
 
 // ---------------------------------------------------------------------------
+// Frescor do /diaria-clarice-novos (#4664) — guard read-only contra montar a
+// onda com o laço de cadastro novo defasado
+// ---------------------------------------------------------------------------
+//
+// O Passo 4 de `.claude/skills/diaria-clarice-envio/SKILL.md` manda invocar
+// `/diaria-clarice-novos` ANTES de fechar a proposta da onda — até #4664 isso
+// era só prosa, nada verificava. Na primeira execução real (onda `d6-qui06`,
+// 05/08/2026) o passo foi pulado: o último `novos` tinha rodado ~24h antes, e
+// a onda saiu 99,3% leads frios de 2024, 0% cadastros recentes — porque
+// cadastro novo entra com `cohortSendRank` 0 (frente da fila) e só chega lá
+// se `novos` rodou antes da onda ser montada.
+//
+// Limiares CONFIRMADOS pelo editor no briefing overnight de 260806/07 (ver
+// comentário na issue #4664): warning acima de 12h, blocker acima de 48h.
+
+export const NOVOS_FRESHNESS_WARNING_HOURS = 12;
+export const NOVOS_FRESHNESS_BLOCKER_HOURS = 48;
+
+export type NovosFreshnessStatus = "fresh" | "warning" | "blocker" | "never-run";
+
+/**
+ * Union discriminada (não um `{status; lastRunAt: X | null; ageHours: X |
+ * null}` solto): `"never-run"` é o ÚNICO estado sem idade — todo outro status
+ * carrega `lastRunAt`/`ageHours` não-nulos por construção do tipo, não por
+ * convenção que o caller precisa lembrar de checar. Evita a classe de bug
+ * "status diz 'blocker' mas ageHours é null" — um estado que o TYPESCRIPT
+ * agora rejeita, não só a lógica de quem consome.
+ */
+export type NovosFreshness =
+  | { status: "never-run"; lastRunAt: null; ageHours: null }
+  | { status: "fresh" | "warning" | "blocker"; lastRunAt: string; ageHours: number };
+
+/**
+ * Mede o frescor do último `/diaria-clarice-novos` a partir de `lastRunAt`
+ * (lido de `novos-state.json` — `readNovosState().lastRunAt`, mais preciso e
+ * autoritativo que mtime de arquivo: é o timestamp que a própria skill grava
+ * no momento em que confirma a rodada, `clarice-novos-state.ts`). Pura —
+ * `now` é sempre injetado, nunca `Date.now()` implícito.
+ *
+ * "Nunca rodou" (`lastRunAt` ausente/inválido) é um estado DISTINTO de
+ * "rodou há muito tempo" (`status: "never-run"`, não apenas um `ageHours`
+ * enorme) — critério de pronto explícito da #4664: o gate precisa dizer "isto
+ * nunca aconteceu neste histórico", não computar uma idade sem sentido a
+ * partir de um timestamp que não existe.
+ */
+export function measureNovosFreshness(
+  lastRunAt: string | null | undefined,
+  now: Date,
+): NovosFreshness {
+  if (!lastRunAt) return { status: "never-run", lastRunAt: null, ageHours: null };
+  const ms = Date.parse(lastRunAt);
+  if (!Number.isFinite(ms)) return { status: "never-run", lastRunAt: null, ageHours: null };
+  const ageHours = (now.getTime() - ms) / (60 * 60 * 1000);
+  if (ageHours > NOVOS_FRESHNESS_BLOCKER_HOURS) return { status: "blocker", lastRunAt, ageHours };
+  if (ageHours > NOVOS_FRESHNESS_WARNING_HOURS) return { status: "warning", lastRunAt, ageHours };
+  return { status: "fresh", lastRunAt, ageHours };
+}
+
+/** Descreve a idade em horas de forma legível ("2,3h", "51h"). */
+function describeAgeHours(ageHours: number): string {
+  return ageHours < 10 ? `${ageHours.toFixed(1)}h` : `${Math.round(ageHours)}h`;
+}
+
+// ---------------------------------------------------------------------------
 // Volume — delega inteiramente ao semáforo do dashboard
 // ---------------------------------------------------------------------------
 
@@ -606,6 +670,8 @@ export interface WaveProposalInput {
    * #3682, que reenviou 100% pra quem já tinha recebido.
    */
   committedLookupFailed: boolean;
+  /** #4664 — frescor do último `/diaria-clarice-novos`. Ver seção acima. */
+  novosFreshness: NovosFreshness;
 }
 
 /**
@@ -665,6 +731,32 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
       "Consulta de campanhas comprometidas (queued/sent) FALHOU — sem ela a fila disponível é superestimada e " +
         "quem já está agendado pode receber de novo (#3682). `fetchCommittedCampaignListIds` é documentada pra falhar alto; " +
         "não agendar até a consulta voltar.",
+    );
+  }
+
+  // #4664: frescor do /diaria-clarice-novos. "Nunca rodou" e "blocker" viram
+  // BLOQUEIO (a chance de haver assinante novo esperando é alta o bastante
+  // pra reverter a prioridade editorial em silêncio, ver docstring da seção
+  // acima); "warning" é aviso — o editor pesa. Read-only por construção: este
+  // guard só DETECTA e REPORTA, nunca invoca a skill sozinho.
+  if (input.novosFreshness.status === "never-run") {
+    blockers.push(
+      "/diaria-clarice-novos nunca rodou neste histórico — nenhum cadastro recente foi processado. " +
+        "A onda pode sair 100% leads frios sem que assinante novo receba a prioridade que o fluxo garante (#4664). " +
+        "Rode /diaria-clarice-novos antes de montar esta onda.",
+    );
+  } else if (input.novosFreshness.status === "blocker") {
+    blockers.push(
+      `/diaria-clarice-novos rodou há ${describeAgeHours(input.novosFreshness.ageHours)} ` +
+        `(acima do limiar de ${NOVOS_FRESHNESS_BLOCKER_HOURS}h) — cadastro novo pode estar esperando na fila com ` +
+        `prioridade invertida (caso real: onda d6-qui06, 05/08, saiu 99,3% leads frios de 2024, #4664). ` +
+        "Rode /diaria-clarice-novos antes de montar esta onda.",
+    );
+  } else if (input.novosFreshness.status === "warning") {
+    warnings.push(
+      `/diaria-clarice-novos rodou há ${describeAgeHours(input.novosFreshness.ageHours)} ` +
+        `(acima do limiar de ${NOVOS_FRESHNESS_WARNING_HOURS}h, abaixo do bloqueio de ${NOVOS_FRESHNESS_BLOCKER_HOURS}h) — ` +
+        "considere rodar antes de montar esta onda (#4664).",
     );
   }
 
@@ -761,6 +853,23 @@ export function renderWaveProposal(p: WaveProposal): string {
     }
     L.push(
       `  ${p.state.waves.length} campanha(s) · ${fmt(p.state.volumeSum)} contatos${p.state.volumeComplete ? "" : " (PISO — nem toda onda reportou tamanho)"}`,
+    );
+  }
+  L.push("");
+
+  L.push("── /diaria-clarice-novos ──");
+  if (p.novosFreshness.status === "never-run") {
+    L.push("  Nunca rodou neste histórico — nenhum registro de execução encontrado.");
+  } else {
+    const STATUS_ICON: Record<NovosFreshnessStatus, string> = {
+      fresh: "✓",
+      warning: "⚠️ ",
+      blocker: "⛔",
+      "never-run": "⛔",
+    };
+    L.push(
+      `  ${STATUS_ICON[p.novosFreshness.status]} Última execução: ${p.novosFreshness.lastRunAt} ` +
+        `(${describeAgeHours(p.novosFreshness.ageHours)} atrás)`,
     );
   }
   L.push("");

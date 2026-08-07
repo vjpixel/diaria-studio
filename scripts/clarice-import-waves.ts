@@ -19,6 +19,13 @@
  * contagem confirmada menor que a enviada, abortam a invocação inteira
  * (exit ≠ 0) antes de registrar a lista como importada.
  *
+ * #4720: quando a reconciliação de contagem detecta divergência, o erro
+ * agora NOMEIA o(s) contato(s) perdido(s) (paginando a lista recém-criada e
+ * diffando contra o CSV enviado — `listContactEmails`/`findMissingContacts`
+ * abaixo) e imprime o comando `curl DELETE` exato pra limpar a lista órfã —
+ * ver `importOneWave` pro racional completo, inclusive por que a lista NÃO é
+ * apagada automaticamente.
+ *
  * Uso:
  *   npx tsx scripts/clarice-import-waves.ts --cycle 2605-06 --label "Mai→Jun/2026"            # dry-run
  *   npx tsx scripts/clarice-import-waves.ts --cycle 2605-06 --label "Mai→Jun/2026" --execute  # cria + importa
@@ -249,6 +256,45 @@ export function normalizeImportCsv(csv: string): string {
 }
 
 /**
+ * #4720: extrai os e-mails de um CSV já normalizado (`normalizeImportCsv`,
+ * coluna `EMAIL`) — normalizados trim+lowercase. Usado só no caminho de erro
+ * da reconciliação de import (`importOneWave` abaixo), pra diffar contra os
+ * membros reais da lista e nomear quem faltou.
+ */
+export function extractCsvEmails(csv: string): string[] {
+  const parsed = Papa.parse(csv, { header: true, skipEmptyLines: true });
+  const rows = parsed.data as Array<Record<string, unknown>>;
+  const out: string[] = [];
+  for (const r of rows) {
+    const raw = r.EMAIL ?? r.email;
+    if (typeof raw === "string" && raw.trim()) out.push(raw.trim().toLowerCase());
+  }
+  return out;
+}
+
+/**
+ * #4720: diff puro — quais `expected` (e-mails do CSV enviado) NÃO aparecem
+ * em `actual` (e-mails de fato na lista, via `listContactEmails`). Só chamado
+ * quando a reconciliação de CONTAGEM já detectou divergência (`importOneWave`)
+ * — transforma "1 contato perdido" em "1 contato perdido: x@y.z". Normalizado
+ * trim+lowercase nos dois lados (mesmo padrão de `excludeSentOrQueued`).
+ * Preserva a ordem de `expected` e não repete um e-mail já reportado.
+ */
+export function findMissingContacts(expected: string[], actual: string[]): string[] {
+  const actualSet = new Set(actual.map((e) => e.trim().toLowerCase()));
+  const seen = new Set<string>();
+  const missing: string[] = [];
+  for (const raw of expected) {
+    const email = raw.trim().toLowerCase();
+    if (email && !actualSet.has(email) && !seen.has(email)) {
+      seen.add(email);
+      missing.push(email);
+    }
+  }
+  return missing;
+}
+
+/**
  * Idempotência: nomes planejados que JÁ existem no Brevo. Re-rodar --execute
  * sem isso criaria listas duplicadas (Brevo permite nomes iguais), e o editor
  * poderia mandar pra lista errada / em dobro.
@@ -292,6 +338,14 @@ export interface ImportRunClient {
   importCsv(listId: number, csv: string): Promise<{ processId: number | string }>;
   pollProcess(processId: number | string): Promise<{ status?: string }>;
   getListInfo(listId: number): Promise<{ totalSubscribers: number }>;
+  /**
+   * #4720: pagina TODOS os e-mails de fato membros da lista — chamado só
+   * quando a reconciliação de CONTAGEM (`getListInfo`) já detectou
+   * divergência, pra nomear o(s) contato(s) perdido(s) em vez de só reportar
+   * quantos. Barato nesse ponto (1 chamada por página de 50), porque só roda
+   * no caminho de erro, não em toda invocação.
+   */
+  listContactEmails(listId: number): Promise<string[]>;
 }
 
 /**
@@ -341,6 +395,34 @@ export function makeRealImportRunClient(apiKey: string): ImportRunClient {
       const info = await brevoGetList(apiKey, listId);
       return { totalSubscribers: info.totalSubscribers };
     },
+    // #4720: mesmo endpoint/paginação já validados ao vivo em
+    // `sync-apoio-nivel-brevo.ts::fetchCurrentBrevoApoiadoresState` e
+    // `inject-poll-token-brevo.ts::iterateListContacts` — `brevoGet` já falha
+    // alto em não-200 (nunca trata resposta ruim como "lista vazia").
+    async listContactEmails(listId) {
+      const out: string[] = [];
+      const limit = 50;
+      let offset = 0;
+      for (;;) {
+        const { status, body } = await brevoGet(
+          apiKey,
+          `/contacts/lists/${listId}/contacts?limit=${limit}&offset=${offset}`,
+        );
+        if (status !== 200) {
+          throw new Error(
+            `GET /contacts/lists/${listId}/contacts (offset=${offset}) retornou status ${status} — ` +
+              "não é seguro tratar como lista vazia (diagnóstico de contato perdido abortado).",
+          );
+        }
+        const contacts = (body as { contacts?: Array<{ email?: unknown }> })?.contacts ?? [];
+        for (const c of contacts) {
+          if (typeof c.email === "string") out.push(c.email);
+        }
+        if (contacts.length < limit) break;
+        offset += limit;
+      }
+      return out;
+    },
   };
 }
 
@@ -373,6 +455,25 @@ export interface ImportOneResult {
  * exatamente o caso real (`a15276@aecampo.pt`: processo completou, contagem
  * ficou menor) que só a reconciliação contra `getListInfo` pega. Divergência
  * (`totalSubscribers < sentCount`) lança nomeando a lista e o delta.
+ *
+ * #4720: a divergência de contagem sozinha só diz "N perdido(s)" — o operador
+ * tinha que paginar a lista à mão e diffar contra o CSV pra saber QUEM (caso
+ * real: `aluno225370@epad.edu.pt`, 2 listas descartadas antes do diagnóstico
+ * manual). `listContactEmails` (barato aqui — só roda no caminho de erro)
+ * pagina os membros de fato e `findMissingContacts` nomeia o(s) contato(s).
+ * Diagnóstico é best-effort: se a própria paginação falhar, a mensagem de
+ * erro original ainda sai (nunca troca "diagnóstico falhou" por "sem erro
+ * nenhum"). A lista órfã NÃO é apagada automaticamente aqui — decisão
+ * registrada na issue: apagar é uma escrita destrutiva ADICIONAL no próprio
+ * caminho de erro (que já está numa reconciliação que falhou), e o projeto
+ * prefere sempre uma ação explícita do operador a uma automação nova
+ * escrevendo na Brevo dentro de um catch. Em vez disso, a mensagem imprime o
+ * comando `curl DELETE` exato — copiar/colar, nada memorizado.
+ *
+ * O comando cobre bash E PowerShell (`$VAR` só expande em bash — em
+ * PowerShell vira uma variável local vazia, e o header `api-key` sairia em
+ * branco, silenciosamente. O ambiente principal deste projeto é Windows +
+ * PowerShell, ver CLAUDE.md) — nunca assume um shell só.
  */
 export async function importOneWave(
   client: ImportRunClient,
@@ -393,11 +494,25 @@ export async function importOneWave(
   const info = await client.getListInfo(list.id);
   if (info.totalSubscribers < plan.sentCount) {
     const delta = plan.sentCount - info.totalSubscribers;
+    let missingDetail = "";
+    try {
+      const actualEmails = await client.listContactEmails(list.id);
+      const expectedEmails = extractCsvEmails(plan.csv);
+      const missing = findMissingContacts(expectedEmails, actualEmails);
+      missingDetail =
+        missing.length > 0
+          ? ` Contato(s) identificado(s): ${missing.join(", ")}.`
+          : " Diff não identificou o e-mail exato (todo e-mail do CSV apareceu na lista — investigar manualmente).";
+    } catch (diffErr) {
+      missingDetail = ` (diagnóstico automático do contato falhou: ${diffErr instanceof Error ? diffErr.message : diffErr} — nomeie manualmente.)`;
+    }
     throw new Error(
       `${plan.wave.key}: lista #${list.id} ("${plan.listName}") — Brevo confirma ${info.totalSubscribers} ` +
         `contato(s), mas o CSV enviado tinha ${plan.sentCount} linha(s). ${delta} contato(s) perdido(s) em ` +
-        `silêncio pela Brevo (o processo terminou 'completed', a contagem não bate). Abortando — limpe a ` +
-        `lista #${list.id} antes de re-rodar.`,
+        `silêncio pela Brevo (o processo terminou 'completed', a contagem não bate).${missingDetail} ` +
+        `Abortando — apague a lista #${list.id} antes de re-rodar. bash: ` +
+        `curl -X DELETE "https://api.brevo.com/v3/contacts/lists/${list.id}" -H "api-key: $BREVO_CLARICE_API_KEY"` +
+        ` | PowerShell: curl.exe -X DELETE "https://api.brevo.com/v3/contacts/lists/${list.id}" -H "api-key: $env:BREVO_CLARICE_API_KEY"`,
     );
   }
   log(`   ✓ confirmado: ${info.totalSubscribers} contato(s) na lista (${plan.sentCount} enviados).`);

@@ -145,7 +145,16 @@ viraria 03/03 em silêncio no `Date` do JS).
 ## Passo 4 — Puxar os cadastros novos
 
 **Antes** de fechar a proposta, rodar a skill de novos (decisão do editor,
-#4657 — invoca como passo do plano, não absorve):
+#4657 — invoca como passo do plano, não absorve).
+
+**Desde #4664, isto não é só prosa** — a saída do Passo 1 (`clarice-plan-wave.ts`)
+traz `novosFreshness`, medindo há quanto tempo `/diaria-clarice-novos` rodou de
+fato (`lastRunAt` do `novos-state.json`): acima de 12h vira **aviso**, acima de
+48h vira **bloqueio** (o gate não pode oferecer "sim" com ele de pé), e "nunca
+rodou" também bloqueia. O guard só DETECTA e REPORTA — nunca invoca a skill
+sozinho (`clarice-plan-wave.ts` é read-only por construção). Caso real que
+motivou isto: onda `d6-qui06` (05/08) saiu 99,3% leads frios de 2024 porque
+este passo foi pulado.
 
 ```
 /diaria-clarice-novos

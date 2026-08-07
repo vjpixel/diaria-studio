@@ -8,6 +8,7 @@ import {
   computeNextWaveNumber,
   groupKeyFromCampaignName,
   measureNonOpenerExposure,
+  measureNovosFreshness,
   proposeVolumes,
   recommendAbcAction,
   renderWaveProposal,
@@ -16,6 +17,8 @@ import {
   summarizeMvBacklog,
   waveKey,
   MV_COST_PER_EMAIL_USD,
+  NOVOS_FRESHNESS_WARNING_HOURS,
+  NOVOS_FRESHNESS_BLOCKER_HOURS,
   type WaveProposalInput,
 } from "../scripts/lib/clarice-wave-plan.ts";
 import {
@@ -539,6 +542,119 @@ describe("measureNonOpenerExposure (#4657 — lacuna do sunset #4430)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Frescor do /diaria-clarice-novos (#4664)
+// ---------------------------------------------------------------------------
+
+describe("measureNovosFreshness (#4664)", () => {
+  const now = new Date("2026-08-07T00:00:00.000Z");
+
+  it("nunca rodou (lastRunAt ausente) → status 'never-run', ageHours null", () => {
+    const f = measureNovosFreshness(null, now);
+    assert.equal(f.status, "never-run");
+    assert.equal(f.lastRunAt, null);
+    assert.equal(f.ageHours, null);
+  });
+
+  it("lastRunAt inválido também é tratado como 'never-run', nunca uma idade sem sentido", () => {
+    const f = measureNovosFreshness("não é uma data", now);
+    assert.equal(f.status, "never-run");
+    assert.equal(f.ageHours, null);
+  });
+
+  it("dentro do limiar de warning → 'fresh'", () => {
+    const f = measureNovosFreshness("2026-08-06T18:00:00.000Z", now); // 6h atrás
+    assert.equal(f.status, "fresh");
+    assert.equal(f.ageHours, 6);
+  });
+
+  it("exatamente no limiar de warning (12h) ainda é 'fresh' — só ULTRAPASSAR vira warning", () => {
+    const f = measureNovosFreshness("2026-08-06T12:00:00.000Z", now); // exatos 12h
+    assert.equal(f.status, "fresh");
+  });
+
+  it("acima de 12h e abaixo de 48h → 'warning'", () => {
+    const f = measureNovosFreshness("2026-08-06T06:00:00.000Z", now); // 18h atrás
+    assert.equal(f.status, "warning");
+    assert.equal(f.ageHours, 18);
+  });
+
+  it("REGRESSÃO: onda d6-qui06 (05/08 18:06, montada ~24h depois) cai em 'warning', não 'fresh'", () => {
+    // Caso real da issue: novos rodou 04/08 18:06, onda foi montada ~24h
+    // depois — o achado mostrou 99,3% leads frios/0% cadastros recentes.
+    const f = measureNovosFreshness("2026-08-04T18:06:00.000Z", new Date("2026-08-05T18:00:00.000Z"));
+    assert.equal(f.status, "warning");
+  });
+
+  it("acima de 48h → 'blocker'", () => {
+    const f = measureNovosFreshness("2026-08-04T00:00:00.000Z", now); // 72h atrás
+    assert.equal(f.status, "blocker");
+    assert.equal(f.ageHours, 72);
+  });
+
+  it("exatamente no limiar de blocker (48h) ainda é 'warning' — só ULTRAPASSAR vira blocker", () => {
+    const f = measureNovosFreshness("2026-08-05T00:00:00.000Z", now); // exatos 48h
+    assert.equal(f.status, "warning");
+  });
+
+  it("limiares expostos batem com os valores confirmados pelo editor (260806/07, #4664)", () => {
+    assert.equal(NOVOS_FRESHNESS_WARNING_HOURS, 12);
+    assert.equal(NOVOS_FRESHNESS_BLOCKER_HOURS, 48);
+  });
+});
+
+describe("buildWaveProposal — frescor do novos (#4664)", () => {
+  it("'never-run' BLOQUEIA", () => {
+    const p = buildWaveProposal(
+      proposalInput({ novosFreshness: { status: "never-run", lastRunAt: null, ageHours: null } }),
+    );
+    assert.match(p.blockers.join(" "), /nunca rodou/);
+  });
+
+  it("'blocker' (>48h) BLOQUEIA, nomeando a idade", () => {
+    const p = buildWaveProposal(
+      proposalInput({ novosFreshness: { status: "blocker", lastRunAt: "2026-08-04T00:00:00.000Z", ageHours: 72 } }),
+    );
+    assert.match(p.blockers.join(" "), /72h/);
+    assert.match(p.blockers.join(" "), /#4664/);
+  });
+
+  it("'warning' (>12h, <=48h) AVISA, sem bloquear", () => {
+    const p = buildWaveProposal(
+      proposalInput({ novosFreshness: { status: "warning", lastRunAt: "2026-08-06T06:00:00.000Z", ageHours: 18 } }),
+    );
+    assert.equal(p.blockers.length, 0);
+    assert.match(p.warnings.join(" "), /18h/);
+  });
+
+  it("'fresh' não gera blocker nem warning", () => {
+    const p = buildWaveProposal(
+      proposalInput({ novosFreshness: { status: "fresh", lastRunAt: "2026-08-06T20:00:00.000Z", ageHours: 2 } }),
+    );
+    assert.equal(p.blockers.length, 0);
+    assert.doesNotMatch(p.warnings.join(" "), /clarice-novos/);
+  });
+});
+
+describe("renderWaveProposal — data do novos SEMPRE visível (#4664)", () => {
+  it("mostra a data/hora mesmo dentro do prazo ('fresh')", () => {
+    const out = renderWaveProposal(
+      buildWaveProposal(
+        proposalInput({ novosFreshness: { status: "fresh", lastRunAt: "2026-08-06T20:00:00.000Z", ageHours: 2 } }),
+      ),
+    );
+    assert.match(out, /Última execução: 2026-08-06T20:00:00\.000Z/);
+    assert.match(out, /2\.0h atrás/);
+  });
+
+  it("'never-run' aparece explicitamente na tela, não só como bloqueio genérico", () => {
+    const out = renderWaveProposal(
+      buildWaveProposal(proposalInput({ novosFreshness: { status: "never-run", lastRunAt: null, ageHours: null } })),
+    );
+    assert.match(out, /Nunca rodou neste histórico/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Volume — delega ao semáforo, sem lógica própria
 // ---------------------------------------------------------------------------
 
@@ -645,6 +761,7 @@ function proposalInput(over: Partial<WaveProposalInput> = {}): WaveProposalInput
     staleNote: null,
     startingWaveNumber: 6,
     committedLookupFailed: false,
+    novosFreshness: { status: "fresh", lastRunAt: "2026-08-06T08:00:00.000Z", ageHours: 4 },
     ...over,
   };
 }
