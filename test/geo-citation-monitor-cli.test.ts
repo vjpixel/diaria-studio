@@ -14,8 +14,9 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { main } from "../scripts/geo-citation-monitor.ts";
+import { main, resolveStrictOutcome } from "../scripts/geo-citation-monitor.ts";
 import { GEO_PROVIDERS } from "../scripts/lib/geo-citation-monitor.ts";
+import type { GeoCitationRecord } from "../scripts/lib/geo-citation-monitor.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -62,6 +63,28 @@ describe("scripts/geo-citation-monitor.ts main() (#4558 Parte C)", () => {
     assert.ok(logs.some((l) => l.includes("nenhum provider configurado")));
   });
 
+  /**
+   * `--strict` (#4754) NÃO inverte o default acima — ele é opt-in, e só o
+   * caminho agendado (`run-geo-citation-monitor.ps1`) o liga.
+   *
+   * A distinção importa: na mão, "sem key configurada" é estado válido e
+   * devolver 0 é decisão deliberada do #4616. Numa task agendada, o mesmo 0
+   * é mentira — reportaria verde para sempre enquanto `history.jsonl`
+   * congelava, que é o modo de falha que deixou este monitor inerte por
+   * semanas.
+   */
+  it("--strict sem NENHUMA API key: exit 2 (config), não 0", async () => {
+    process.argv = ["node", "geo-citation-monitor.ts", "--strict"];
+    const code = await main();
+    assert.equal(code, 2, "sob --strict, zero providers é falha de configuração");
+  });
+
+  it("--strict com --dry-run continua 0 — dry-run é opt-in explícito de não medir", async () => {
+    process.argv = ["node", "geo-citation-monitor.ts", "--strict", "--dry-run"];
+    const code = await main();
+    assert.equal(code, 0);
+  });
+
   it("--dry-run lista os providers configurados quando alguma key está presente", async () => {
     process.env.ANTHROPIC_API_KEY = "fake-key-for-dry-run";
     process.argv = ["node", "geo-citation-monitor.ts", "--dry-run"];
@@ -90,5 +113,85 @@ describe("scripts/geo-citation-monitor.ts: main() invocado com .catch() explíci
     assert.match(block, /main\(\)/);
     assert.match(block, /\.catch\(/, "main() precisa ter um .catch() explícito (#4616 achado 3)");
     assert.match(block, /process\.exit\(1\)|process\.exitCode\s*=\s*1/, "o catch precisa sinalizar falha via exit code");
+  });
+});
+
+/**
+ * `resolveStrictOutcome` — extraída de `main()` no fleet review da PR #4754
+ * justamente pra ser testável: `main()` chama `runGeoCitationMonitor(process.env)`
+ * sem ponto de injeção, então a decisão embutida ali só seria exercitável com
+ * rede real. Mesma armadilha do guard inline apontada no review da #4751.
+ */
+describe("resolveStrictOutcome (#4754)", () => {
+  const rec = (over: Partial<GeoCitationRecord> = {}): GeoCitationRecord =>
+    ({
+      ts: "2026-08-07T00:00:00.000Z",
+      provider: "openai",
+      question: "q",
+      cited: false,
+      ...over,
+    }) as GeoCitationRecord;
+
+  it("sem --strict nunca reprova, mesmo com 100% de erro", () => {
+    const out = resolveStrictOutcome([rec({ error: "x", errorKind: "network" })], false);
+    assert.equal(out.code, 0);
+    assert.equal(out.level, "none");
+  });
+
+  it("falha PARCIAL sai 0 — o fail-soft por provedor é desenhado", () => {
+    const out = resolveStrictOutcome(
+      [rec({ error: "x", errorKind: "network" }), rec({ cited: true })],
+      true,
+    );
+    assert.equal(out.code, 0);
+  });
+
+  it("lista vazia não reprova (nada foi tentado, não é falha de medição)", () => {
+    assert.equal(resolveStrictOutcome([], true).code, 0);
+  });
+
+  /**
+   * O cenário que mais preocupa: as 8 perguntas de um provider saem em
+   * sequência com um único retry de 1,5s. Num free tier de RPM baixo — o
+   * Gemini é o caso concreto de hoje — isso pode dar 429 nas 8 TODA SEMANA
+   * sem nada estar quebrado. Exit != 0 recorrente em cenário benigno treina
+   * o editor a ignorar o alarme, que é o oposto do que a #4558 quer.
+   */
+  it("100% HTTP 429 NÃO reprova — avisa, mas sai 0 pra não virar alarme falso semanal", () => {
+    const out = resolveStrictOutcome(
+      [
+        rec({ error: "HTTP 429", errorKind: "http", httpStatus: 429 }),
+        rec({ error: "HTTP 429", errorKind: "http", httpStatus: 429 }),
+      ],
+      true,
+    );
+    assert.equal(out.code, 0);
+    assert.equal(out.level, "warn");
+    assert.match(out.message, /rate limit/i);
+  });
+
+  it("100% HTTP 401 reprova e NOMEIA a causa — 401 exige ação, DNS só espera", () => {
+    const out = resolveStrictOutcome(
+      [
+        rec({ error: "HTTP 401", errorKind: "http", httpStatus: 401 }),
+        rec({ error: "HTTP 401", errorKind: "http", httpStatus: 401 }),
+      ],
+      true,
+    );
+    assert.equal(out.code, 1);
+    assert.equal(out.level, "error");
+    assert.match(out.message, /HTTP 401 \(2\)/);
+  });
+
+  it("429 misturado com outra causa reprova — não é só rate limit", () => {
+    const out = resolveStrictOutcome(
+      [
+        rec({ error: "HTTP 429", errorKind: "http", httpStatus: 429 }),
+        rec({ error: "dns", errorKind: "network" }),
+      ],
+      true,
+    );
+    assert.equal(out.code, 1);
+    assert.match(out.message, /network/);
   });
 });
