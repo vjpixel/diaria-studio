@@ -57,6 +57,20 @@ test("renderContactsSummarySection: renderiza razões/pontos/mv/engajamento", ()
   assert.match(html, /2[.,]?219/); // engajamento with_opens
 });
 
+// #4712: a nota da seção não pode mais rotular a fonte como "Brevo" (sugere
+// API/campaignStats — ambos os números vêm do MESMO store SQLite do
+// histograma acima) nem deixar implícito que é subconjunto do histograma.
+test("renderContactsSummarySection: nota de engajamento não usa rótulo 'Brevo' e explicita que os conjuntos se cruzam (#4712)", () => {
+  const html = renderContactsSummarySection(sample);
+  assert.match(html, /Aberturas\/cliques acumulados \(store\)/, "rótulo não sugere API Brevo");
+  assert.doesNotMatch(html, /Engajamento Brevo/, "rótulo antigo removido");
+  assert.match(
+    html,
+    /não implica score positivo/,
+    "nota explicita que abrir não implica score positivo (sets se cruzam sem conter um ao outro)",
+  );
+});
+
 // #3081: priority_points.internal_excluded já era computado por
 // clarice-db-summary.ts (#2809) mas nunca propagado ao tipo do worker nem
 // exibido no render — cobertura da propagação + exibição.
@@ -433,8 +447,8 @@ test("renderContactsSummarySection: identificador interno priority_points intoca
 test("renderContactsSummarySection: 'Inelegíveis por razão' e 'MillionVerifier (bucket)' num container .side-by-side (#2908)", () => {
   const html = renderContactsSummarySection(sample);
   assert.match(html, /<div class="side-by-side">/, "container flex presente");
-  const sbsMatch = html.match(/<div class="side-by-side">([\s\S]*?)<\/div>\s*<p class="section-note">Engajamento Brevo/);
-  assert.ok(sbsMatch, "container .side-by-side capturável (fecha antes da nota de Engajamento)");
+  const sbsMatch = html.match(/<div class="side-by-side">([\s\S]*?)<\/div>\s*<p class="section-note">Aberturas\/cliques acumulados/);
+  assert.ok(sbsMatch, "container .side-by-side capturável (fecha antes da nota de aberturas/cliques, #4712)");
   const inner = sbsMatch![1];
   assert.match(inner, /Inelegíveis por razão/, "tabela Inelegíveis dentro do container");
   assert.match(inner, /MillionVerifier \(bucket\)/, "tabela MillionVerifier dentro do container");

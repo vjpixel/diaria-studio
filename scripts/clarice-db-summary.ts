@@ -291,9 +291,29 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
       db,
       "SELECT COALESCE(mv_bucket,'none') AS k, COUNT(*) n FROM clarice_users GROUP BY COALESCE(mv_bucket,'none')",
     ),
+    // #4712: excluído internos (NOT_INTERNAL_SQL) — mesmo universo do
+    // histograma de priority_points acima (`priority_points_histogram`),
+    // pra que a nota "Aberturas/cliques acumulados" na mesma seção do
+    // dashboard conte a MESMA população que o subtotal "Score positivo" do
+    // histograma. Antes do #4712 este bloco era a ÚNICA agregação da seção
+    // sem o filtro — comentário/teste em #2809 dizia explicitamente "demais
+    // agregações seguem contando os internos (sem filtro)", o que ficou
+    // desatualizado por este bloco a partir daqui. Mesmo assim os dois
+    // conjuntos continuam se cruzando sem um conter o outro — não é
+    // subconjunto (ver nota renderizada em sections-kv.ts): priority_points
+    // decai por não-abertura (quem abriu 1 de 5 pode ter score negativo) e
+    // opt-in sem abertura nenhuma já entra como score positivo.
     engagement: {
-      with_opens: count(db, "SELECT COUNT(*) n FROM clarice_users WHERE opens_count>0"),
-      with_clicks: count(db, "SELECT COUNT(*) n FROM clarice_users WHERE clicks_count>0"),
+      with_opens: count(
+        db,
+        `SELECT COUNT(*) n FROM clarice_users WHERE opens_count>0 AND ${NOT_INTERNAL_SQL}`,
+        INTERNAL_PARAMS,
+      ),
+      with_clicks: count(
+        db,
+        `SELECT COUNT(*) n FROM clarice_users WHERE clicks_count>0 AND ${NOT_INTERNAL_SQL}`,
+        INTERNAL_PARAMS,
+      ),
     },
   };
 }
