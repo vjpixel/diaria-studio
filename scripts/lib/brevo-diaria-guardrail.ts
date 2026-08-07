@@ -167,7 +167,18 @@ export function evaluateBrevoDiariaRolloutGuardrail(
   thresholds: HealthThresholds = DEFAULT_HEALTH_THRESHOLDS,
   sentAfter?: string | null,
 ): BrevoDiariaGuardrailEvaluation | null {
-  const cutoffMs = sentAfter ? Date.parse(sentAfter) : null;
+  // Fleet review (#4476): `Date.parse` de string malformada devolve NaN, e
+  // `NaN !== null` é `true` — sem o `Number.isNaN` abaixo, um `sentAfter`
+  // corrompido (estado gravado à mão, ou JSON malformado que passou pelo
+  // `typeof === "string"` fail-soft de `readRolloutGuardrailState`) entraria
+  // no branch de filtro com um corte quebrado: `Date.parse(...) > NaN` é
+  // SEMPRE `false`, então `scoped` viraria `[]` incondicionalmente — o
+  // guardrail retornaria `null` pra sempre, mesmo com campanha nova
+  // genuinamente ruim, DESLIGANDO o breaker em silêncio (o oposto do
+  // fail-soft pretendido: `sentAfter` ausente/inválido deveria significar
+  // "sem corte", não "corta tudo").
+  const parsedCutoff = sentAfter ? Date.parse(sentAfter) : NaN;
+  const cutoffMs = Number.isNaN(parsedCutoff) ? null : parsedCutoff;
   const scoped = cutoffMs !== null ? campaigns.filter((c) => Date.parse(c.sentDate) > cutoffMs) : campaigns;
   const agg = aggregateBrevoDiariaCampaignStats(scoped);
   if (agg.campaignCount === 0) return null;

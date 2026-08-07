@@ -252,6 +252,13 @@ test("evaluateBrevoDiariaRolloutGuardrail — sentAfter ausente/null agrega tudo
   assert.equal(evaluateBrevoDiariaRolloutGuardrail(campaigns, undefined, null)!.campaignCount, 1);
 });
 
+test("REGRESSÃO (fleet review): sentAfter MALFORMADO (Date.parse -> NaN) não desliga o breaker em silêncio — trata como 'sem corte', igual a ausente", () => {
+  const campaigns = [mkCampaign({ sentDate: "2020-01-01T00:00:00.000Z" })];
+  const evaluation = evaluateBrevoDiariaRolloutGuardrail(campaigns, undefined, "não-é-uma-data");
+  assert.ok(evaluation, "sentAfter inválido nunca deveria filtrar tudo silenciosamente (NaN > x é sempre false)");
+  assert.equal(evaluation!.campaignCount, 1, "campanha deveria contar normalmente — cutoff inválido == sem cutoff");
+});
+
 test("REGRESSÃO (achado de self-review pós-#4476): unpause seguido de recheck com dado inalterado NÃO re-pausa", () => {
   // 1. Campanha ruim furou bounce → pausa.
   const badCampaign = mkCampaign({ id: 1, sentDate: "2026-08-05T09:00:00.000Z", sent: 1000, hardBounces: 25, softBounces: 0 });
