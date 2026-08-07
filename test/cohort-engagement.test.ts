@@ -479,6 +479,50 @@ describe("computeGroupEngagement (#4464)", () => {
     assert.equal(g.abertura_agregada, null);
     assert.equal(g.amostra_instavel, false);
   });
+
+  /**
+   * Regressão #4752: `amostra_considerada === 0` (denominador vazio, o caso
+   * PIOR) fazia `amostra_instavel` ficar `false` — indistinguível de "amostra
+   * grande e saudável" no JSON. `amostra_vazia` é o sinal dedicado, aditivo,
+   * que não muda o significado de `amostra_instavel` (opção 2 da issue).
+   */
+  it("amostra_vazia = true quando amostra_considerada é zero (nenhum ativo com stats)", () => {
+    const subs = [makeSub({ status: "pending", stats: null })];
+    const g = computeGroupEngagement(subs, { threshold: 40 });
+    assert.equal(g.amostra_considerada, 0);
+    assert.equal(g.amostra_vazia, true);
+    assert.equal(g.amostra_instavel, false, "amostra_instavel não é redefinida — continua false pra vazio");
+  });
+
+  it("amostra_vazia = true quando --min-received corta todos os ativos", () => {
+    const subs = [makeSub({ stats: { total_received: 3, total_unique_opened: 1, open_rate: 100 } })];
+    const g = computeGroupEngagement(subs, { threshold: 40, minReceived: 10 });
+    assert.equal(g.amostra_considerada, 0);
+    assert.equal(g.amostra_vazia, true);
+  });
+
+  it("amostra_vazia = false quando amostra_considerada está entre 1 e 9 — amostra_instavel continua disparando (não regride)", () => {
+    const subs = [
+      makeSub({ stats: { total_received: 2, total_unique_opened: 1, open_rate: 50 } }),
+      makeSub({ stats: { total_received: 3, total_unique_opened: 1, open_rate: 33 } }),
+      makeSub({ stats: { total_received: 4, total_unique_opened: 1, open_rate: 25 } }),
+    ];
+    const g = computeGroupEngagement(subs, { threshold: 40 });
+    assert.equal(g.amostra_considerada, 3);
+    assert.equal(g.amostra_vazia, false);
+    assert.equal(g.amostra_instavel, true, "1-9 considerados continua marcando amostra_instavel");
+  });
+
+  it("amostra_vazia = false quando amostra_considerada é saudável (>= 10)", () => {
+    const subs = [
+      makeSub({ stats: { total_received: 10, total_unique_opened: 1, open_rate: 10 } }),
+      makeSub({ stats: { total_received: 15, total_unique_opened: 1, open_rate: 10 } }),
+      makeSub({ stats: { total_received: 20, total_unique_opened: 1, open_rate: 10 } }),
+    ];
+    const g = computeGroupEngagement(subs, { threshold: 40 });
+    assert.equal(g.amostra_vazia, false);
+    assert.equal(g.amostra_instavel, false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -575,6 +619,7 @@ describe("formatEngagementTable (#4464)", () => {
           mediana_recebidas: 3,
           amostra_instavel: true,
           amostra_considerada: 3,
+          amostra_vazia: false,
         },
       },
       total_cadastros: 3,
@@ -586,6 +631,76 @@ describe("formatEngagementTable (#4464)", () => {
     assert.ok(table.includes("google-ads"));
     assert.ok(table.includes("24.9%"));
     assert.ok(table.includes("⚠instável"));
+  });
+
+  /**
+   * #4752 opção 3: `amostra_considerada` existia no tipo desde sempre e nunca
+   * aparecia na tabela de texto — a única saída que o editor lê na mão. A
+   * coluna "considerados" fecha essa lacuna de legibilidade.
+   */
+  it("expõe amostra_considerada como coluna na tabela de texto", () => {
+    const table = formatEngagementTable({
+      groups: {
+        "google-ads": {
+          cadastros: 5,
+          ativos: 5,
+          inativos: 0,
+          pending: 0,
+          invalid: 0,
+          outros_status: 0,
+          leitores: 2,
+          abertura_agregada: 0.4,
+          media_recebidas: 12,
+          mediana_recebidas: 12,
+          amostra_instavel: false,
+          amostra_considerada: 5,
+          amostra_vazia: false,
+        },
+      },
+      total_cadastros: 5,
+      threshold: 40,
+      min_received: null,
+      since: null,
+      fetched_at: "2026-08-02T00:00:00.000Z",
+    });
+    assert.match(table, /considerados/);
+    // A linha do grupo carrega o valor 5 no lugar da coluna nova.
+    assert.match(table, /google-ads[\s\S]*?\b5\b/);
+  });
+
+  /**
+   * #4752: o caso PIOR (amostra_considerada === 0) precisa de um marcador tão
+   * visível quanto `⚠instável` — antes não tinha nenhum, e a linha parecia
+   * "normal" (leitores: 0, abertura%: n/a) sem sinalizar que o denominador
+   * inteiro estava vazio.
+   */
+  it("marca ⚠vazio quando amostra_considerada é zero — nunca junto de ⚠instável", () => {
+    const table = formatEngagementTable({
+      groups: {
+        "campanha-fechada": {
+          cadastros: 2,
+          ativos: 2,
+          inativos: 0,
+          pending: 0,
+          invalid: 0,
+          outros_status: 0,
+          leitores: 0,
+          abertura_agregada: null,
+          media_recebidas: null,
+          mediana_recebidas: null,
+          amostra_instavel: false,
+          amostra_considerada: 0,
+          amostra_vazia: true,
+        },
+      },
+      total_cadastros: 2,
+      threshold: 40,
+      min_received: null,
+      since: null,
+      fetched_at: "2026-08-02T00:00:00.000Z",
+    });
+    assert.ok(table.includes("⚠vazio"));
+    assert.ok(!table.includes("⚠instável"));
   });
 });
 
