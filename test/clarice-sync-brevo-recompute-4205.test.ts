@@ -76,6 +76,12 @@ test("checkpointPathsForDb: co-localiza os 2 checkpoints (full/incremental) no M
 test("REGRESSÃO (#4205): main() --incremental deixa priority_points consistente com o opens_count recém-sincronizado, SEM recomputeDerived manual", async (t) => {
   const dir = mkdtempSync(resolve(tmpdir(), "sync-brevo-4205-"));
   const dbPath = resolve(dir, "store.db");
+  // #4721 follow-up (achado 1, code-reviewer): --cache-dir isolado — sem ele
+  // este teste caía no bloco de catch-up (modifiedSince && catchOpensEnabled)
+  // e só não escrevia em data/clarice-subscribers/cohorts/opens-catchup/ (cache
+  // de PRODUÇÃO) por coincidência — o mock de fetch abaixo não trata
+  // /emailCampaigns?status=sent e lança antes de listSentCampaigns() retornar.
+  const cacheDir = mkdtempSync(resolve(tmpdir(), "sync-brevo-4205-cache-"));
 
   // Setup: contato já existia no store (1 send anterior, nunca abriu) — o
   // recompute ANTERIOR (simulando o último clarice-build-db.ts) deixou
@@ -144,7 +150,7 @@ test("REGRESSÃO (#4205): main() --incremental deixa priority_points consistente
   // O ponto central do teste: SÓ main() roda aqui. Nenhuma chamada manual a
   // recomputeDerived depois — se main() parar de chamá-lo internamente, o
   // assert abaixo falha.
-  await main(["--db", dbPath, "--incremental"]);
+  await main(["--db", dbPath, "--incremental", "--cache-dir", cacheDir]);
 
   const { checkpoint, checkpointInc } = checkpointPathsForDb(dbPath);
   assert.equal(existsSync(checkpoint), false, "checkpoint full não deveria existir (run foi incremental)");

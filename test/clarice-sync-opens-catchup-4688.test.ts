@@ -159,7 +159,7 @@ test("runOpensCatchup: só considera campanhas DENTRO da janela; agrega openers;
   assert.equal(result.contactsFailed, 0);
 });
 
-test("runOpensCatchup: falha no export de UMA campanha não aborta as demais (fail-soft)", async () => {
+test("runOpensCatchup: falha no export de UMA campanha não aborta as demais (fail-soft)", async (t) => {
   const c1 = fakeCampaign(1, 1);
   const c2 = fakeCampaign(2, 1);
   const client = makeFakeClient(
@@ -173,10 +173,19 @@ test("runOpensCatchup: falha no export de UMA campanha não aborta as demais (fa
     upsert: () => {},
     cacheDir: mkdtempSync(resolve(tmpdir(), "opens-catchup-cache-")),
   };
+  // #4721 follow-up (achado 2, pr-test-analyzer): trava que a falha REALMENTE
+  // é logada (não só contada) — um catch{} silencioso reintroduzido passaria
+  // por todos os asserts de contador abaixo sem ser detectado.
+  const errorMock = t.mock.method(console, "error");
   const result = await runOpensCatchup(deps);
   assert.equal(result.campaignsFailed, 1);
   assert.equal(result.campaignsInWindow, 2);
   assert.equal(result.openersFound, 1, "campanha 2 processada normalmente apesar da falha na 1");
+  const logged = errorMock.mock.calls.map((call) => String(call.arguments[0]));
+  assert.ok(
+    logged.some((msg) => msg.includes("1") && msg.includes("Campanha 1") && msg.includes("export falhou pra campanha 1")),
+    `esperava log com id/nome da campanha + mensagem do erro, recebi: ${JSON.stringify(logged)}`,
+  );
 });
 
 test("runOpensCatchup: contato que some entre o export e a re-busca (404 → body vazio) conta como falha, não trava o resto", async () => {
