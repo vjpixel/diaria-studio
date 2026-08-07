@@ -19,6 +19,7 @@ import {
   buildDomainStatsQueryBody,
   calendarDateToEntryDate,
   extractSpamRateReadingsV2,
+  extractFeedbackLoopIdsV2,
   queryDomainStatsV2,
 } from "../scripts/lib/postmaster-v2-client.ts";
 
@@ -227,6 +228,55 @@ test("queryDomainStatsV2 — resposta 2xx não-JSON erra com contexto (proxy/tru
       queryDomainStatsV2("clarice.ai", [{ name: "spam_rate", standardMetric: "SPAM_RATE" }], { start: { year: 2026, month: 8, day: 1 }, end: { year: 2026, month: 8, day: 1 } }, fake),
     /não é JSON válido.*proxy interceptou/s,
   );
+});
+
+// ── extractFeedbackLoopIdsV2 (#4704 — spam POR CAMPANHA) ──
+
+test("extractFeedbackLoopIdsV2 — fixture real 260806: extrai a lista de ids por dia (métrica FEEDBACK_LOOP_ID)", () => {
+  // Shape confirmado ao vivo pelo editor no comentário da #4704: 27/07 e 02/08.
+  const response = {
+    domainStats: [
+      {
+        metric: "feedback_loop_id",
+        date: { year: 2026, month: 7, day: 27 },
+        value: { stringList: ["11130585", "11130585_99", "77.32.148.101"] },
+      },
+      {
+        metric: "feedback_loop_id",
+        date: { year: 2026, month: 8, day: 2 },
+        value: { stringList: ["11130585", "11130585_105", "11130585_106", "11130585_107", "77.32.148.101"] },
+      },
+    ],
+  };
+  const result = extractFeedbackLoopIdsV2(response, "feedback_loop_id");
+  assert.deepEqual(result, [
+    { date: "2026-07-27", ids: ["11130585", "11130585_99", "77.32.148.101"] },
+    { date: "2026-08-02", ids: ["11130585", "11130585_105", "11130585_106", "11130585_107", "77.32.148.101"] },
+  ]);
+});
+
+test("extractFeedbackLoopIdsV2 — dia sem stringList (ausente ou vazio) não aparece no resultado (ausência ≠ lista vazia)", () => {
+  const response = {
+    domainStats: [
+      { metric: "feedback_loop_id", date: { year: 2026, month: 8, day: 1 }, value: { stringList: [] } },
+      { metric: "feedback_loop_id", date: { year: 2026, month: 8, day: 2 } }, // sem value
+      { metric: "feedback_loop_id", date: { year: 2026, month: 8, day: 3 }, value: { stringList: ["11130585_50"] } },
+    ],
+  };
+  const result = extractFeedbackLoopIdsV2(response, "feedback_loop_id");
+  assert.deepEqual(result, [{ date: "2026-08-03", ids: ["11130585_50"] }]);
+});
+
+test("extractFeedbackLoopIdsV2 — ignora entradas de métrica diferente (query com múltiplas metricDefinitions)", () => {
+  const response = {
+    domainStats: [
+      { metric: "feedback_loop_id", date: { year: 2026, month: 8, day: 1 }, value: { stringList: ["11130585_50"] } },
+      { metric: "spam_rate", date: { year: 2026, month: 8, day: 1 }, value: { floatValue: 0.01 } },
+    ],
+  };
+  assert.deepEqual(extractFeedbackLoopIdsV2(response, "feedback_loop_id"), [
+    { date: "2026-08-01", ids: ["11130585_50"] },
+  ]);
 });
 
 test("queryDomainStatsV2 — domainStats ausente na resposta 200 vira array vazio, nunca undefined (mesma disciplina de listDomains em postmaster-register-domain.ts)", async () => {

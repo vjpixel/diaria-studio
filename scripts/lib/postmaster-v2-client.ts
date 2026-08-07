@@ -258,3 +258,39 @@ export function extractSpamRateReadingsV2(
       ratio: (s.value!.floatValue ?? s.value!.doubleValue) as number,
     }));
 }
+
+export interface DayFeedbackLoopIdsV2 {
+  date: string;
+  ids: string[];
+}
+
+/**
+ * Pura/testável (#4704 — spam POR CAMPANHA): converte a resposta bruta de
+ * `domainStats.query` (métrica `FEEDBACK_LOOP_ID`) na lista de feedback loop
+ * ids ATIVOS em cada dia. Diferente de `extractSpamRateReadingsV2`
+ * (`value.floatValue`/`doubleValue`, um número por dia), `FEEDBACK_LOOP_ID`
+ * devolve `value.stringList` — uma LISTA de ids por dia (confirmado ao vivo em
+ * 260806, ver comentário do editor na #4704: 27/07 devolveu
+ * `["11130585", "11130585_99", "77.32.148.101"]`; 02/08 devolveu 5 ids
+ * incluindo `"11130585_105"`, `"11130585_106"`, `"11130585_107"` — as 3
+ * variantes A/B/C daquele dia). Um dia ausente da resposta (ou com
+ * `stringList` ausente/vazio) simplesmente não aparece no resultado — mesma
+ * disciplina de "ausência ≠ zero" de `extractSpamRateReadingsV2`, só que aqui
+ * "zero" seria uma lista vazia em vez de `0`.
+ *
+ * Não filtra pelo formato do id (`{conta}_{campanha}` vs. conta sozinha vs.
+ * IP) — essa é responsabilidade de negócio de
+ * `scripts/lib/postmaster-campaign-spam.ts::parseFeedbackLoopId`, não deste
+ * módulo genérico.
+ */
+export function extractFeedbackLoopIdsV2(
+  response: QueryDomainStatsResponseV2,
+  metricName: string,
+): DayFeedbackLoopIdsV2[] {
+  return response.domainStats
+    .filter((s) => s.metric === metricName && s.date && Array.isArray(s.value?.stringList) && s.value!.stringList!.length > 0)
+    .map((s) => ({
+      date: calendarDateToEntryDate(s.date as CalendarDate),
+      ids: s.value!.stringList as string[],
+    }));
+}
