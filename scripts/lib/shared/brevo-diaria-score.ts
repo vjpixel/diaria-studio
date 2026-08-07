@@ -1,7 +1,9 @@
 /**
  * brevo-diaria-score.ts (#4266, reescrito no #4476 item 1; threshold de
  * supressão e janela de maturação corrigidos no self-review pós-merge, ver
- * comentário na issue #4476)
+ * comentário na issue #4476; threshold de PROMOÇÃO revisado de `>=50%` pra
+ * `>51%` na decisão do editor registrada no comentário 260805b da issue
+ * #4637 — ver "Por que 51% estrito" abaixo)
  *
  * Fórmula de saída (promoção/supressão) do canal Brevo separado do editor
  * (conta própria, distinta da parceria Clarice) — decisão do editor, sessão
@@ -10,18 +12,31 @@
  * não-abertura, sem piso de amostra) por TAXA de abertura com piso mínimo de
  * amostra:
  *
- *   Promoção:  sends_count >= 3 E openRate >= 50% — contadores INSTANTÂNEOS
- *              (todos os envios, sem filtro de idade). Reage na hora —
- *              abertura já é evidência consumada, não há "ainda pode
- *              acontecer". Piso de amostra revisado de `n>=2` pra `n>=3`
- *              (decisão do editor, sessão 260804) — 1/2=50% já promovia com
- *              uma amostra rasa demais.
+ *   Promoção:  sends_count >= 3 E openRate > 51% (ESTRITO, não >=) —
+ *              contadores INSTANTÂNEOS (todos os envios, sem filtro de
+ *              idade). Reage na hora — abertura já é evidência consumada,
+ *              não há "ainda pode acontecer". Piso de amostra revisado de
+ *              `n>=2` pra `n>=3` (decisão do editor, sessão 260804) —
+ *              1/2=50% já promovia com uma amostra rasa demais.
  *   Supressão: sends_count >= 3 E openRate <= 20% — contadores MADUROS
  *              (só envios com >=48h de idade, ver "Janela de maturação"
  *              abaixo). Errar suprimindo é caro/quase irreversível, então
  *              exige mais evidência (piso de amostra maior E só sobre dado
  *              que já teve tempo de virar sinal real).
  *   Entre os dois (ou piso de amostra não atingido): mantém (`keep`).
+ *
+ * ## Por que 51% estrito, não 50% ou 51% inclusive (#4637, 260805b)
+ *
+ * O editor recalculou a promoção olhando a tabela REAL de ações (não no
+ * abstrato) e pediu >51% como novo corte, fixado no código pra que a próxima
+ * sessão não precise refazer a mesma correspondência de cabeça. A comparação
+ * é ESTRITA (`>`, não `>=`) por pedido explícito: 51% exato NÃO promove,
+ * 51,1% promove — ver os testes de borda em `test/brevo-diaria-score-4266.test.ts`.
+ * Promoção e supressão usam constantes SEPARADAS por decisão de risco
+ * assimétrico (promover errado é barato; suprimir errado é quase
+ * irreversível) — `BREVO_DIARIA_PROMOTE_MIN_OPEN_RATE` nunca deve ser lido
+ * como se valesse pra supressão, nem vice-versa, mesmo que os dois valores
+ * um dia voltem a coincidir por acaso.
  *
  * ## Por que os pisos de amostra podem divergir de novo (histórico de mudanças independentes)
  *
@@ -94,13 +109,15 @@ export interface BrevoDiariaRateInput {
   sends_count: number;
 }
 
-/** Piso de amostra + threshold de PROMOÇÃO — inclusivos nos dois lados
- * (`sends_count >= 3` E `openRate >= 0.5`; piso revisado de `n>=2` pra
- * `n>=3` na sessão 260804 — ver "Pisos de amostra agora iguais" acima).
- * Avaliado contra contadores INSTANTÂNEOS (`instant`) — sem janela de
- * maturação. */
+/** Piso de amostra (inclusivo, `sends_count >= 3`) + threshold de taxa de
+ * PROMOÇÃO (ESTRITO, `openRate > 0.51` — não `>=`; revisado de `>=0.5` pra
+ * `>0.51` na decisão do editor, comentário 260805b da issue #4637: "51% não
+ * promove, 51,1% promove", ver "Por que 51% estrito" acima). Piso de amostra
+ * revisado de `n>=2` pra `n>=3` na sessão 260804 — ver "Pisos de amostra
+ * agora iguais" acima. Avaliado contra contadores INSTANTÂNEOS (`instant`)
+ * — sem janela de maturação. */
 export const BREVO_DIARIA_PROMOTE_MIN_SENDS = 3;
-export const BREVO_DIARIA_PROMOTE_MIN_OPEN_RATE = 0.5;
+export const BREVO_DIARIA_PROMOTE_MIN_OPEN_RATE = 0.51;
 
 /** Piso de amostra + threshold de SUPRESSÃO — inclusivos nos dois lados
  * (`sends_count >= 3` E `openRate <= 0.2`; revisado de `n>=5` pra `n>=3` na
@@ -165,7 +182,8 @@ export function classifyBrevoDiariaAction(input: BrevoDiariaEvaluationInput): Br
   const instantRate = computeBrevoDiariaOpenRate(input.instant);
   if (
     input.instant.sends_count >= BREVO_DIARIA_PROMOTE_MIN_SENDS &&
-    instantRate >= BREVO_DIARIA_PROMOTE_MIN_OPEN_RATE
+    // #4637 260805b: comparação ESTRITA (>), não >= — 51% exato NÃO promove.
+    instantRate > BREVO_DIARIA_PROMOTE_MIN_OPEN_RATE
   ) {
     return "promote_to_beehiiv";
   }

@@ -106,6 +106,18 @@
  * o status Beehiiv atual de cada contato `in_brevo` a cada rodada de
  * avaliação (ver `applySelfConfirmed` em `brevo-diaria-store.ts`).
  *
+ * ## Teto opcional escolhido pelo editor (#4637 item 2 — "quantos acrescentar")
+ *
+ * `--max-add N` limita o backfill desta rodada a no máximo N contatos, por
+ * cima do teto normal de slots livres (`computeAvailableSlots`) — sem a
+ * flag, o comportamento antigo continua (preenche até o cap). Isso existe
+ * pra sustentar o passo de decisão de volume de `/diaria-brevo-diaria`
+ * (Passo 2, SKILL.md): o editor decide quantos slots livres de fato
+ * preencher nesta rodada (com "nenhum"/`--max-add 0` como resposta válida),
+ * em vez do script sempre inferir "preenche tudo que couber". `--max-add`
+ * nunca AUMENTA o backfill além do que já era possível (slots livres e
+ * circuit breaker de campanha continuam valendo como teto) — só reduz.
+ *
  * ## Uso
  *
  *   npx tsx scripts/sync-pending-to-brevo.ts              # dry-run (default)
@@ -114,6 +126,8 @@
  *     # (rode scripts/verify-pending-emails-mv.ts primeiro) — OU passe, ciente
  *     # do risco de bounce, sem MV nenhum:
  *   npx tsx scripts/sync-pending-to-brevo.ts --push --i-know-this-skips-mv
+ *   npx tsx scripts/sync-pending-to-brevo.ts --push --max-add 10   # limita a 10 novos contatos
+ *   npx tsx scripts/sync-pending-to-brevo.ts --push --max-add 0    # "nenhum" — roda o resto do fluxo sem ingerir ninguém
  *
  * Env: BEEHIIV_API_KEY (leitura) + platform.config.json → brevo_diaria.api_key_env (escrita).
  *
@@ -128,7 +142,7 @@ import { fileURLToPath } from "node:url";
 import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
-import { hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { hasFlag, isMainModule, getIntArg } from "./lib/cli-args.ts";
 import { hasMorePages } from "./sync-cursos-subscribers-kv.ts";
 import { brevoPost, brevoGet } from "./lib/brevo-client.ts";
 import { DEFAULT_OUTPUT_PATH as ORIGIN_SCORES_CSV_PATH } from "./score-pending-origin.ts";
@@ -402,6 +416,23 @@ export function applyRolloutGuardrailGate(availableSlots: number, rolloutPaused:
 }
 
 /**
+ * Pura (#4637 item 2) — aplica o teto OPCIONAL que o editor escolhe no passo
+ * de decisão de volume de `/diaria-brevo-diaria` (Passo 2, SKILL.md) por
+ * cima do cálculo normal de slots livres (já passado pelo circuit breaker
+ * acima, se aplicável). `maxAdd === undefined` (flag `--max-add` omitida)
+ * preserva o comportamento antigo — preenche até o cap, sem teto extra.
+ * `maxAdd` sempre CLAMPA pra baixo (nunca aumenta o backfill além do que os
+ * slots livres já permitiam) e nunca fica negativo — `--max-add 0` é a
+ * resposta "nenhum" da pergunta ao editor, um valor válido e distinto de
+ * "flag ausente" (mesma disciplina de não colapsar os dois no mesmo
+ * sentinela documentada em `getIntArg`, `lib/cli-args.ts`).
+ */
+export function applyMaxAddGate(availableSlots: number, maxAdd: number | undefined): number {
+  if (maxAdd === undefined) return availableSlots;
+  return Math.max(0, Math.min(availableSlots, maxAdd));
+}
+
+/**
  * Pura (#4631) — quantos contatos do store hoje ocupam um slot `in_brevo`,
  * EXCLUINDO `EDITOR_SEED_EMAILS` do numerador. Diferente de
  * `checkDailySendCap` (`publish-daily-brevo.ts`), este número já vinha
@@ -531,6 +562,13 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const push = hasFlag(argv, "push");
   const log = (msg: string) => process.stderr.write(`[sync-pending-to-brevo] ${msg}\n`);
+  let maxAdd: number | undefined;
+  try {
+    maxAdd = getIntArg(argv, "max-add", { min: 0 });
+  } catch (e) {
+    log(`ERRO: ${(e as Error).message}`);
+    process.exit(2);
+  }
 
   // #4476/#4494 achados silent-failure-hunter: guard de MV ANTES de qualquer
   // I/O de rede — falha rápido, nunca deixa a paginação/backfill rodar pra
@@ -613,13 +651,21 @@ async function main(): Promise<void> {
   // furado pausa o backfill inteiro (latch, ver scripts/lib/brevo-diaria-guardrail.ts
   // + scripts/check-brevo-diaria-guardrail.ts), independente de slots livres.
   const guardrailState = readRolloutGuardrailState();
-  const availableSlots = applyRolloutGuardrailGate(slotsBeforeGuardrail, guardrailState.rollout_paused);
+  const slotsAfterGuardrail = applyRolloutGuardrailGate(slotsBeforeGuardrail, guardrailState.rollout_paused);
   if (guardrailState.rollout_paused) {
     log(
       `AVISO: rollout PAUSADO pelo circuit breaker de campanha (#4476 item 9) desde ${guardrailState.paused_at} — ` +
         `backfill ZERADO nesta rodada (seriam ${slotsBeforeGuardrail} slot(s) livre(s) sem a pausa). ` +
         `Motivo: ${guardrailState.paused_reason?.join("; ") ?? "desconhecido"}. ` +
         "Rode 'npx tsx scripts/check-brevo-diaria-guardrail.ts --unpause' após investigar.",
+    );
+  }
+  // #4637 item 2 — teto opcional do editor (--max-add), por cima do circuit breaker.
+  const availableSlots = applyMaxAddGate(slotsAfterGuardrail, maxAdd);
+  if (maxAdd !== undefined) {
+    log(
+      `--max-add ${maxAdd} aplicado: ${slotsAfterGuardrail} slot(s) livre(s) → ${availableSlots} slot(s) ` +
+        "efetivo(s) pro backfill desta rodada (teto escolhido pelo editor no passo de decisão de volume).",
     );
   }
   log(`fila: ${currentActiveCount}/${cap} ocupados, ${availableSlots} slot(s) livre(s) pro backfill.`);
