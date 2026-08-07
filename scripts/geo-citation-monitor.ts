@@ -61,12 +61,17 @@ async function main(): Promise<number> {
     return 0;
   }
 
+  // Exit 2 (config inválida), não 0. Este caminho não escreve NADA em
+  // history.jsonl — nem um marcador de "rodou e pulou tudo". Com exit 0, a
+  // task agendada reportaria verde para sempre enquanto a série congelava, que
+  // é exatamente o modo de falha que deixou este monitor inerte desde o #4616.
+  // Achado do fleet review da PR #4754.
   if (configured.length === 0) {
-    console.log(
-      "[geo-citation-monitor] nenhum provider configurado — nada a fazer. " +
+    console.error(
+      "[geo-citation-monitor] ERRO: nenhum provider configurado — nenhuma medição foi feita. " +
         "Configure ANTHROPIC_API_KEY/OPENAI_API_KEY/GEMINI_API_KEY (ver .env.example) e rode de novo.",
     );
-    return 0;
+    return 2;
   }
 
   const records = await runGeoCitationMonitor(process.env);
@@ -78,6 +83,22 @@ async function main(): Promise<number> {
   );
   for (const [providerId, s] of Object.entries(summary.byProvider)) {
     console.log(`  - ${providerId}: ${s.cited}/${s.total} citaram`);
+  }
+
+  // Falha TOTAL (100% das consultas erraram) sai != 0. Key expirada, cartão
+  // recusado no provedor, DNS/firewall bloqueando — tudo isso produz 24 de 24
+  // com `error`, e antes devolvia o mesmo exit 0 de uma semana saudável. O dado
+  // bruto até fica em history.jsonl, mas ninguém é avisado a olhar.
+  //
+  // Falha PARCIAL continua saindo 0 de propósito: o fail-soft por provedor é
+  // desenhado, e um timeout isolado não é motivo pra reprovar a semana — a
+  // execução de 07/ago teve 1 erro em 16 e é uma medição legítima.
+  if (summary.total > 0 && summary.errors === summary.total) {
+    console.error(
+      `[geo-citation-monitor] ERRO: as ${summary.total} consultas falharam — nenhuma medição válida nesta execução. ` +
+        "Verifique validade das API keys e conectividade.",
+    );
+    return 1;
   }
 
   return 0;

@@ -113,6 +113,37 @@ describe(
       assert.ok(existsSync(tempLog), "esperava o log temporário preservado quando o anexo final falha");
     });
 
+    /**
+     * O molde copiado (`run-cursos-kv-sync-ps1.test.ts`) NÃO tem este caso —
+     * dois irmãos o ganharam como achado nomeado do review #4552
+     * (`run-evaluate-brevo-diaria-ps1`, `run-check-brevo-diaria-guardrail-ps1`)
+     * e o backport nunca chegou ao molde que eu copiei, então a lacuna se
+     * propagou até aqui. Achado do fleet review da PR #4754.
+     *
+     * Sem ele, nenhum dos casos exercita o branch central do wrapper —
+     * `$monitorCode` vindo de uma falha REAL do script embrulhado. Os outros
+     * cobrem sucesso e os dois guards (pré e pós-execução).
+     */
+    it("monitor falha (exit 1) -> wrapper propaga exit 1, não engole", () => {
+      const tempLog = join(workDir, "fail-temp.log");
+      const finalLog = join(workDir, "fail-final.log");
+      const failFixture = join(ROOT, "test-fixtures", "clarice-sync-daily", "noop-exit1.ts");
+
+      const result = runScript([
+        "-MonitorScript", failFixture,
+        "-LogPath", finalLog,
+        "-TempLogPath", tempLog,
+      ]);
+
+      assert.equal(
+        result.status,
+        1,
+        `esperava o exit 1 do monitor propagado, obteve ${result.status}. ` +
+          `Engolir isso faria a task marcar verde com zero medição — o modo de falha que a #4558 Parte C existe pra corrigir.`,
+      );
+      assert.ok(existsSync(finalLog), "o log final deve existir mesmo quando o monitor falha");
+    });
+
     it("PATH sem node/npx -> npx não resolve -> $LASTEXITCODE null -> guard força exit != 0 (#4343)", () => {
       const tempLog = join(workDir, "nonpx-temp.log");
       const finalLog = join(workDir, "nonpx-final.log");

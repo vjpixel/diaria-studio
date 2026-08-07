@@ -9,16 +9,17 @@
     provedor configurado as perguntas fixas de GEO_QUESTIONS e registra em
     data/geo-citations/history.jsonl se a diar.ia.br foi citada.
 
-    Por que agendar: o monitor foi mergeado no #4616 e ficou 3 dias sem NUNCA
-    ter rodado -- data/geo-citations/ nao existia no disco. Nenhum .ps1,
-    nenhum workflow, nenhuma task o invocava, enquanto oito outras tasks do
-    repo seguem esse padrao. Sem cadencia o numero nunca acumula e o baseline
-    de 07/ago (0 de 16) morre sozinho.
+    Por que agendar: o monitor foi mergeado no #4616 e ficou sem NUNCA ter
+    rodado -- data/geo-citations/ nao existia no disco. Nenhum .ps1, nenhum
+    workflow, nenhuma task o invocava, enquanto TODAS as outras tasks
+    agendadas do repo ja seguiam esse padrao (13 em 07/ago; conferir com
+    `ls scripts/setup-*-schedule.ps1`, o numero cresce). Sem cadencia o
+    numero nunca acumula e o baseline de 07/ago morre sozinho.
 
     SEMANAL de proposito, nao diario: citacao por assistente muda em escala de
-    semanas, o custo e inferencia paga por consulta (8 perguntas x N
-    provedores por execucao), e a serie so tem valor como tendencia. Diario
-    seria gastar 7x pra ler ruido.
+    semanas, a serie so tem valor como tendencia, e cada execucao gasta
+    8 perguntas x N provedores em chamadas de API. Diario seria gastar 7x pra
+    ler ruido.
 
     Fail-soft por provedor: o script pula quem nao tem API key configurada e
     reporta quais pulou (medido em 07/ago: rodou com OpenAI + Gemini,

@@ -19,15 +19,24 @@
 
     O monitor foi mergeado no #4616 e ficou sem NUNCA ter rodado --
     data/geo-citations/ nao existia no disco ate 07/ago. Nenhum .ps1, nenhum
-    workflow, nenhuma task o invocava. Sem cadencia, o baseline medido em
-    07/ago (0 de 16 consultas citaram) morre sozinho e a tese GEO da #4558
-    nunca ganha serie temporal pra ser avaliada.
+    workflow, nenhuma task o invocava -- enquanto TODAS as outras tasks
+    agendadas do repo ja seguiam esse padrao (13 em 07/ago; conferir com
+    `ls scripts/setup-*-schedule.ps1` em vez de confiar neste numero, que
+    cresce a cada task nova). Sem cadencia, o baseline medido em 07/ago
+    (0 de 16 consultas citaram) morre sozinho e a tese GEO da #4558 nunca
+    ganha serie temporal pra ser avaliada.
 
     *** Por que SEMANAL e nao diario ***
 
-    Citacao por assistente muda em escala de semanas; o custo e inferencia
-    paga por consulta (8 perguntas x N provedores por execucao); e a serie so
-    tem valor como tendencia. Diario seria gastar 7x pra ler ruido.
+    Citacao por assistente muda em escala de semanas; a serie so tem valor
+    como tendencia; e cada execucao gasta 8 perguntas x N provedores em
+    chamadas de API. Diario seria gastar 7x pra ler ruido.
+
+    NAO ASSUMIR custo uniforme entre provedores: OpenAI e Anthropic cobram por
+    token, mas a Gemini historicamente tem free tier que 8 chamadas/semana
+    plausivelmente nao estouram. Nunca foi medido -- se alguem for reafirmar
+    "custa X por execucao", conferir a fatura real de cada provedor antes
+    (principio de zero custo recorrente do CLAUDE.md).
 
     *** Fail-soft por provedor ***
 
