@@ -58,6 +58,15 @@
  *   mediana_recebidas   mediana de total_received dos ativos considerados
  *   amostra_instavel    true se mediana_recebidas < 10 (poucas edições recebidas
  *                       → taxa não confiável)
+ *   amostra_considerada quantos ativos entraram no denominador acima (depois do
+ *                       corte de --min-received, se houver)
+ *   pre_corte_considerado  quantos ativos TINHAM stats, antes do corte de
+ *                       --min-received. Igual a amostra_considerada quando a flag
+ *                       não foi passada. A diferença entre os dois é quantos o
+ *                       piso cortou (#4752/#4757)
+ *   amostra_vazia       true se amostra_considerada === 0 — o denominador está
+ *                       vazio, que amostra_instavel NÃO sinaliza (mediana null
+ *                       nunca é < 10). Mutuamente exclusivo com amostra_instavel
  *
  * Assinante sem `stats` (campo ausente na resposta) nunca conta como leitor e
  * é excluído do denominador de abertura_agregada/media/mediana — mas ainda
@@ -124,6 +133,20 @@ export interface GroupEngagement {
   amostra_instavel: boolean;
   /** Quantos ativos entraram no denominador de leitores/abertura/média (após --min-received). */
   amostra_considerada: number;
+  /**
+   * Quantos ativos TINHAM `stats`, ANTES do corte de `--min-received`. Igual a
+   * `amostra_considerada` quando a flag não foi passada.
+   *
+   * Existe porque, sem ele, os dois caminhos que produzem `amostra_vazia`
+   * geram saída idêntica e pedem ações opostas (achado do fleet review da PR
+   * #4757): um grupo sem tracking de `stats` nenhum e um grupo cujos dados
+   * existem mas ficaram abaixo do piso escolhido na linha de comando aparecem
+   * os dois como `considerados: 0` + `⚠vazio`. Com este campo, a diferença
+   * `pre_corte_considerado - amostra_considerada` diz quantos o piso cortou —
+   * quem lê distingue "investigar por que não há stats" de "baixar o
+   * --min-received", sem precisar re-rodar o script.
+   */
+  pre_corte_considerado: number;
   /**
    * true quando `amostra_considerada === 0` (#4752) — nenhum ativo elegível
    * entrou no denominador de leitores/abertura/média, seja porque o grupo não
@@ -429,6 +452,7 @@ export function computeGroupEngagement(
   const mediana_recebidas = median(receivedValues);
   const amostra_instavel = mediana_recebidas != null && mediana_recebidas < 10;
   const amostra_considerada = considerados.length;
+  const pre_corte_considerado = ativosComStats.length;
 
   return {
     cadastros: subsInGroup.length,
@@ -443,6 +467,7 @@ export function computeGroupEngagement(
     mediana_recebidas,
     amostra_instavel,
     amostra_considerada,
+    pre_corte_considerado,
     amostra_vazia: amostra_considerada === 0,
   };
 }
@@ -523,7 +548,19 @@ export function formatEngagementTable(result: EngagementResult): string {
     // (1-9 considerados) — mas antes só o segundo tinha marcador visual, o que
     // fazia o denominador vazio parecer mais "normal" que uma amostra pequena.
     // Os dois nunca coexistem (mediana só é != null com >=1 considerado).
-    const flag = g.amostra_vazia ? " ⚠vazio" : g.amostra_instavel ? " ⚠instável" : "";
+    //
+    // O marcador de vazio diz QUAL dos dois caminhos produziu o zero (#4757):
+    // sem esse detalhe, "não há stats nenhum neste grupo" e "--min-received
+    // cortou todo mundo" saem byte-a-byte iguais — e pedem ações opostas
+    // (investigar tracking vs. baixar o piso). O dado já estava em
+    // `pre_corte_considerado`; só não chegava a quem lê.
+    const flag = g.amostra_vazia
+      ? g.pre_corte_considerado > 0
+        ? ` ⚠vazio(${g.pre_corte_considerado} cortados por --min-received)`
+        : " ⚠vazio(sem stats)"
+      : g.amostra_instavel
+        ? " ⚠instável"
+        : "";
     lines.push(
       `${key.padEnd(maxKeyLen)}  ${String(g.cadastros).padStart(9)}  ${String(g.ativos).padStart(6)}  ` +
         `${String(g.inativos).padStart(8)}  ${String(g.pending).padStart(7)}  ${String(g.invalid).padStart(7)}  ` +
