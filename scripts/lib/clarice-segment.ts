@@ -93,6 +93,13 @@ export interface StoreRow {
   // acima) — fixtures que não populam o campo continuam válidas pros grupos
   // que não checam engajamento (`segmentFromStore`/`priorityQueue`/`ramp-warm`).
   brevo_modified_at?: string | null;
+  // #4763: flag manual (`clarice-optin.ts`) — "pediu pra entrar na lista de
+  // prioridade". Opcional (mesmo padrão dos campos acima) — só consumido pelo
+  // snapshot de priority_points (`buildPrioritySnapshotCsv`,
+  // clarice-build-segment.ts), nunca pelos predicados/ordem de segmentação
+  // deste arquivo. `0 | 1 | null` — o schema real é `INTEGER DEFAULT 0`
+  // (clarice-db.ts); fixtures que não populam continuam válidas.
+  priority_optin?: number | null;
 }
 
 /**

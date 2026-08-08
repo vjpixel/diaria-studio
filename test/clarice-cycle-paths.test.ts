@@ -19,6 +19,7 @@ import {
   clariceWavesDir,
   clariceRampDir,
   clariceBaseFile,
+  cycleSendMonthStartIso,
   ensureDir,
   parseCycleArg,
   requireCycleArg,
@@ -118,5 +119,23 @@ describe("clarice cycle paths (#1961)", () => {
     assert.equal(parseArgs(["--cycle", "2605-06"]).cycle, "2605-06");
     assert.equal(parseArgs([]).cycle, ""); // ausente → vazio (main aborta)
     assert.equal(parseArgs(["--cycle", "2606"]).cycle, ""); // inválido → vazio
+  });
+
+  describe("cycleSendMonthStartIso (#4765)", () => {
+    it("mesmo ano: início do mês de ENVIO (não do conteúdo)", () => {
+      assert.equal(cycleSendMonthStartIso("2607-08"), "2026-08-01T00:00:00.000Z");
+      assert.equal(cycleSendMonthStartIso("2605-06"), "2026-06-01T00:00:00.000Z");
+      assert.equal(cycleSendMonthStartIso("2601-02"), "2026-02-01T00:00:00.000Z");
+    });
+
+    it("rollover dezembro→janeiro: o ano de ENVIO avança 1", () => {
+      assert.equal(cycleSendMonthStartIso("2612-01"), "2027-01-01T00:00:00.000Z");
+    });
+
+    it("ciclo inválido lança (mesmo erro/forma de clariceCycleDir)", () => {
+      assert.throws(() => cycleSendMonthStartIso("2606"), /ciclo inválido/);
+      assert.throws(() => cycleSendMonthStartIso("2605-07"), /ciclo inválido/); // gap de mês
+      assert.throws(() => cycleSendMonthStartIso("lixo"), /ciclo inválido/);
+    });
   });
 });

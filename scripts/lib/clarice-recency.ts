@@ -24,6 +24,18 @@
  * no momento do IMPORT (`ensureEditorCopyRow`, `clarice-import-waves.ts`),
  * depois desta seleção — o universo que `clarice-build-segment.ts` filtra
  * nunca inclui essa linha em primeiro lugar.
+ *
+ * #4765: até aqui, este filtro só rodava quando o operador lembrava de
+ * passar `--not-sent-within`/`--not-sent-since` — um dedup real (contra
+ * `last_sent_at`), mas OPCIONAL, diferente dos outros guards automáticos de
+ * `clarice-build-segment.ts` (sent-or-queued.json, committed/queued). Achado
+ * ao vivo: 52 de 1.963 contatos escaparam do dedup padrão numa onda porque
+ * `sent-or-queued.json` não tinha rastro deles (a invocação anterior que os
+ * selecionou não gravou essa entrada — causa raiz não fechada, ver docstring
+ * do topo de `clarice-build-segment.ts`). `resolveRecencyCutoffWithDefault`
+ * (abaixo) fecha essa lacuna: sem flag explícita, o filtro nunca fica
+ * desligado — cai num default automático (início do mês de ENVIO do ciclo,
+ * `cycleSendMonthStartIso`, clarice-paths.ts).
  */
 
 /** Formato aceito por `--not-sent-within` (ex: "30d"). */
@@ -108,4 +120,38 @@ export function excludeSentSince<T extends { last_sent_at?: string | null }>(
     const ms = Date.parse(r.last_sent_at);
     return !Number.isFinite(ms) || ms < cutoffMs;
   });
+}
+
+/** De onde veio o cutoff de recência efetivamente aplicado (#4765) — sempre
+ *  presente no summary de `clarice-build-segment.ts`, pra auditoria: saber SE
+ *  o operador pediu explicitamente ou se foi o default automático que agiu. */
+export type RecencyCutoffSource = "explicit" | "auto";
+
+export interface ResolvedRecencyCutoff {
+  cutoffIso: string;
+  source: RecencyCutoffSource;
+}
+
+/**
+ * Resolve o cutoff de recência que `clarice-build-segment.ts` SEMPRE aplica
+ * (#4765) — nunca fica ausente/desligado por omissão de flag. Se o operador
+ * passou `--not-sent-within`/`--not-sent-since` (`explicitCutoffIso`, já
+ * resolvido por `resolveNotSentCutoff` acima), esse valor VENCE
+ * (`source: "explicit"`) — é a escolha deliberada do operador, mais estreita
+ * ou mais larga que o default, e deve sobrescrevê-lo. Sem flag, cai no
+ * default automático `autoCutoffIso` (`source: "auto"` — o caller resolve
+ * esse valor via `cycleSendMonthStartIso`, clarice-paths.ts; este módulo não
+ * importa de lá pra não acoplar a decisão de QUAL default a uma forma
+ * específica de derivá-lo).
+ *
+ * Pura/testável sem I/O — o caller é responsável por resolver
+ * `explicitCutoffIso` (pode lançar, ver `resolveNotSentCutoff`) ANTES de
+ * chamar esta função.
+ */
+export function resolveRecencyCutoffWithDefault(
+  explicitCutoffIso: string | null,
+  autoCutoffIso: string,
+): ResolvedRecencyCutoff {
+  if (explicitCutoffIso) return { cutoffIso: explicitCutoffIso, source: "explicit" };
+  return { cutoffIso: autoCutoffIso, source: "auto" };
 }

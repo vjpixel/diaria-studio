@@ -308,10 +308,30 @@ test("main --not-sent-within com formato inválido ABORTA", async () => {
   assert.equal(code, 1);
 });
 
-test("main SEM --not-sent-within/--not-sent-since: comportamento inalterado", async () => {
-  const dir = mkdtempSync(resolve(tmpdir(), "recency-off-"));
+// ---------------------------------------------------------------------------
+// #4765 — default automático (início do mês de ENVIO do ciclo) quando o
+// operador NÃO passa --not-sent-within/--not-sent-since. Substitui o teste
+// antigo "comportamento inalterado" (pré-#4765 o filtro ficava desligado por
+// omissão da flag — exatamente a lacuna que a issue corrigiu).
+// ---------------------------------------------------------------------------
+
+test("REGRESSÃO (#4765): mesmo com sent-or-queued.json AUSENTE/sem rastro do envio, o cutoff automático ainda pega quem já recebeu via last_sent_at", async () => {
+  // Replica o cenário real da issue: um contato foi de fato enviado (o sync
+  // da Brevo grava `last_sent_at`), mas `sent-or-queued.json` — por qualquer
+  // motivo (não fechado ao vivo, ver docstring de main() no topo do arquivo)
+  // — não tem rastro dele neste ciclo. Este teste nem sequer cria
+  // sent-or-queued.json (equivalente a "0 tracked" — o pior caso), pra provar
+  // que o guard novo NÃO depende daquele arquivo estar correto.
+  const dir = mkdtempSync(resolve(tmpdir(), "recency-auto-"));
   const dbPath = storeComCohortsELastSent(dir, [
-    { email: "recente@x.com", cohort: "leads-2024h2", lastSentAt: "2026-08-06T09:00:00.000Z" },
+    // Ciclo 2607-08 → mês de ENVIO é agosto/2026 — recebido em 06/08 cai
+    // DENTRO do default automático (início de agosto) e é excluído, mesmo
+    // sem nenhuma flag --not-sent-* passada e sem sent-or-queued.json algum.
+    { email: "recebeu-em-agosto@x.com", cohort: "leads-2024h2", lastSentAt: "2026-08-06T09:00:00.000Z" },
+    // Recebido ANTES do início do mês de envio (julho) — fora da janela do
+    // default automático, mantido.
+    { email: "recebeu-em-julho@x.com", cohort: "leads-2024h2", lastSentAt: "2026-07-15T09:00:00.000Z" },
+    { email: "nunca-recebeu@x.com", cohort: "leads-2024h2", lastSentAt: null },
   ]);
 
   const logs = await semBrevoKey(() =>
@@ -320,7 +340,36 @@ test("main SEM --not-sent-within/--not-sent-since: comportamento inalterado", as
     ),
   );
   const out = JSON.parse(logs.join("\n"));
-  assert.equal(out.excluded_by_recency, undefined);
-  assert.equal(out.not_sent_cutoff, undefined);
+
+  assert.equal(out.already_sent_or_queued, undefined, "sent-or-queued.json não tinha nada rastreado (o cenário do bug)");
+  assert.equal(out.excluded_by_recency, 1, "ainda assim excluído — pelo cutoff automático contra last_sent_at, não pelo dedup por ciclo");
+  assert.equal(out.not_sent_cutoff, "2026-08-01T00:00:00.000Z");
+  assert.equal(out.recency_cutoff_source, "auto");
+  assert.equal(out.selected, 2);
+});
+
+test("main --not-sent-since EXPLÍCITO sobrescreve o default automático (#4765) — vence mesmo sendo mais largo que o início do mês de envio", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "recency-override-"));
+  const dbPath = storeComCohortsELastSent(dir, [
+    // Recebido em julho: o default automático (início de agosto, ciclo
+    // 2607-08) MANTERIA este contato — mas o operador pede explicitamente
+    // uma janela mais larga (desde 01/07), que deve vencer e excluí-lo.
+    { email: "recebeu-em-julho@x.com", cohort: "leads-2024h2", lastSentAt: "2026-07-15T09:00:00.000Z" },
+    { email: "recebeu-em-junho@x.com", cohort: "leads-2024h2", lastSentAt: "2026-06-01T09:00:00.000Z" },
+  ]);
+
+  const logs = await comBrevoFake(() =>
+    captureLogs(() =>
+      main([
+        "--cycle", "2607-08", "--db", dbPath, "--group", "engajados",
+        "--data-root", dir, "--not-sent-since", "2026-07-01",
+      ]),
+    ),
+  );
+  const out = JSON.parse(logs.join("\n"));
+
+  assert.equal(out.recency_cutoff_source, "explicit");
+  assert.equal(out.not_sent_cutoff, "2026-07-01T00:00:00.000Z");
+  assert.equal(out.excluded_by_recency, 1, "só quem recebeu em julho (dentro da janela explícita) é excluído");
   assert.equal(out.selected, 1);
 });

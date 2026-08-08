@@ -59,6 +59,34 @@ export function isValidCycle(c: string | undefined | null): c is string {
 }
 
 /**
+ * Primeiro instante (00:00 UTC) do mês de ENVIO do ciclo, em ISO (#4765).
+ * Base do cutoff automático de recência que `clarice-build-segment.ts` aplica
+ * por padrão (sem flag): o guard cycle-wide `sent-or-queued.json` só enxerga
+ * quem foi SELECIONADO por uma invocação `--group` neste processo — este
+ * cutoff cobre a MESMA janela de tempo (o ciclo corrente) contra o dado real
+ * do store (`last_sent_at`), pegando quem recebeu por qualquer via, mesmo se
+ * `sent-or-queued.json` não tiver rastro dele (achado #4765: 52 de 1.963
+ * contatos escaparam do dedup padrão numa onda porque a invocação anterior
+ * que os selecionou não deixou esse rastro).
+ *
+ * Rollover dez→jan: `isValidCycle` já garante `sendMonth === (contentMonth%12)+1`,
+ * então o único caso em que o ano de ENVIO avança é `contentMonth=12,
+ * sendMonth=1` — tratado abaixo via `sendMonth < contentMonth`.
+ */
+export function cycleSendMonthStartIso(cycle: string): string {
+  if (!isValidCycle(cycle)) {
+    throw new Error(
+      `ciclo inválido: ${cycle} (esperado {conteúdo}-{envio} com envio = conteúdo+1, ex: 2605-06)`,
+    );
+  }
+  const contentYear2 = Number(cycle.slice(0, 2));
+  const contentMonth = Number(cycle.slice(2, 4));
+  const sendMonth = Number(cycle.slice(5, 7));
+  const sendYear2 = sendMonth < contentMonth ? contentYear2 + 1 : contentYear2;
+  return new Date(Date.UTC(2000 + sendYear2, sendMonth - 1, 1)).toISOString();
+}
+
+/**
  * Diretório do ciclo (`…/clarice-subscribers/{conteúdo}-{envio}`). Pure (path join).
  *
  * @param baseDir Opcional, default = `CLARICE_BASE` (raiz REAL, junction pro

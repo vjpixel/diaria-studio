@@ -131,8 +131,31 @@
  *                desta seleção, então nunca faz parte do universo que este
  *                filtro enxerga.
  *
+ *                #4765: este filtro agora corre SEMPRE, nunca desligado por
+ *                omissão da flag — mesmo padrão dos outros guards automáticos
+ *                deste arquivo (sent-or-queued.json abaixo, committed/queued).
+ *                Sem `--not-sent-within`/`--not-sent-since`, o default é o
+ *                início do mês de ENVIO do ciclo (`cycleSendMonthStartIso`,
+ *                clarice-paths.ts) — cobre exatamente a MESMA janela que
+ *                `sent-or-queued.json` tenta cobrir, mas contra o dado real
+ *                do store (`last_sent_at`), então pega quem escapou do dedup
+ *                por ciclo por qualquer motivo (achado #4765: 52 de 1.963
+ *                contatos escaparam numa onda porque a invocação anterior que
+ *                os selecionou não deixou rastro em `sent-or-queued.json`).
+ *                Passar a flag explicitamente continua SOBRESCREVENDO esse
+ *                default (mais estreito ou mais largo, à escolha do
+ *                operador) — nunca soma/intersecta com ele.
+ *
  * Outputs (em data/clarice-subscribers/{conteúdo}-{envio}/segments/):
- *   {group}.csv              (colunas: email,NOME — compatível com clarice-import-waves)
+ *   {group}.csv                     (colunas: email,NOME — compatível com clarice-import-waves)
+ *   {group}-priority-snapshot.csv   (#4763 — colunas: email,priority_points,cohort,priority_optin;
+ *                             snapshot do MOMENTO em que a onda foi montada — `priority_points`
+ *                             só existe TRANSIENTE na query SQL (recomputado do zero a cada sync,
+ *                             sem histórico), então sem este arquivo nenhuma análise retroativa
+ *                             tipo "esta coorte abriu diferente daquela?" é possível. Arquivo
+ *                             SEPARADO do CSV de transporte — a Brevo lê só `{group}.csv` no
+ *                             import e não deve ganhar coluna que ela não espera. Não escrito
+ *                             em --dry-run (mesma disciplina do resto do script).)
  *   {group}-manifest.json    ([{ key, file, desc, count }], mesmo shape de waves-manifest.json)
  *   sent-or-queued.json      (#3227 — ÚNICO por ciclo, não por grupo; ver guard abaixo. Não
  *                             escrito em --dry-run.)
@@ -168,6 +191,29 @@
  * envio) e a mesma pessoa não deveria ser re-selecionada só porque o GRUPO
  * mudou. `--dry-run` só LÊ (pra refletir no preview), nunca ESCREVE (mesma
  * convenção do resto do script: dry-run não muta estado).
+ *
+ * #4765 — POR QUE `sent-or-queued.json` sozinho não bastava (achado, não
+ * fechado ao vivo): o guard acima é robusto CONTRA re-seleção dentro do
+ * PRÓPRIO fluxo `--group`, mas `appendSentOrQueuedEmails` faz um
+ * read-modify-write (lê o JSON inteiro, funde em memória, `writeFileSync` de
+ * volta) SEM lock nem escrita atômica (diferente de
+ * `appendGroupListsRegistry` em `clarice-import-waves.ts`, que já usa
+ * `writeFileAtomic`, `scripts/lib/atomic-write.ts`). Duas invocações deste
+ * script sobre o MESMO ciclo próximas no tempo (`data/` é uma junction
+ * compartilhada por todas as sessões/worktrees na mesma máquina, ver
+ * CLAUDE.md) sofrem um lost-update clássico: se a invocação B lê o arquivo
+ * ANTES da invocação A escrever, o write de A (que já leu uma versão mais
+ * antiga) sobrescreve o de B sem os emails que B tinha acabado de acrescentar
+ * — e nenhuma das duas erra ou avisa, o arquivo só fica menor do que devia.
+ * Hipótese plausível pro caso real (52 de 1.963 sem rastro), não confirmada
+ * ao vivo — nada nos logs disponíveis prova concorrência no momento exato.
+ * Corrigir isso (lock de arquivo, não só escrita atômica — atomicidade
+ * sozinha evita arquivo CORROMPIDO, não a perda de update concorrente) é
+ * escopo maior que este fix e não bloqueia o guard de recência automático
+ * abaixo, que é a mitigação primária pedida pela issue: ele não depende de
+ * `sent-or-queued.json` estar correto — lê `last_sent_at` direto do store,
+ * que o sync da Brevo grava independente de qual mecanismo local rastreou a
+ * seleção.
  */
 
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
@@ -184,11 +230,16 @@ import {
   type NamedGroupContext,
   type StoreRow,
 } from "./lib/clarice-segment.ts";
-import { clariceSegmentsDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
+import { clariceSegmentsDir, cycleSendMonthStartIso, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
 import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { fetchCommittedCampaignListIds, fetchQueuedCampaignListIds } from "./lib/brevo-client.ts";
 import { parseHoldArg, applyHolds, type HoldSegmentName } from "./lib/clarice-hold.ts";
-import { resolveNotSentCutoff, excludeSentSince } from "./lib/clarice-recency.ts";
+import {
+  resolveNotSentCutoff,
+  resolveRecencyCutoffWithDefault,
+  excludeSentSince,
+  type RecencyCutoffSource,
+} from "./lib/clarice-recency.ts";
 
 loadProjectEnv();
 
@@ -240,6 +291,34 @@ export function buildSegmentArtifact(
   const manifestEntry: SegmentManifestEntry = { key: group, file, desc: def.label, count: selected.length };
 
   return { csv, manifestEntry, selected };
+}
+
+/**
+ * Snapshot de `priority_points` do MOMENTO em que a onda foi montada (#4763).
+ * `priority_points` só existe TRANSIENTE na query SQL de `main()` — todo sync
+ * diário recomputa a coluna do zero (last-write-wins, `recomputeDerived`,
+ * clarice-db.ts), sem histórico. O valor de HOJE para um contato já inclui o
+ * engajamento de HOJE, então usá-lo pra reconstruir "em que faixa essa pessoa
+ * estava quando a onda saiu" é circular — sem este snapshot, "esta coorte
+ * abriu diferente daquela?" é uma pergunta estruturalmente impossível de
+ * responder depois (não só pra esta onda — pra TODA onda futura).
+ *
+ * Pura — recebe exatamente os `selected` que `main()` vai escrever no CSV de
+ * transporte, então os dois arquivos sempre descrevem o MESMO conjunto de
+ * contatos. Arquivo SEPARADO de `{group}.csv`: a Brevo lê só esse no import
+ * (`clarice-import-waves.ts`) e não deve ganhar coluna que ela não espera.
+ */
+export function buildPrioritySnapshotCsv(selected: SegmentRow[]): string {
+  const rows = selected.map((r) => ({
+    email: r.email,
+    priority_points: r.priority_points ?? 0,
+    cohort: r.cohort ?? "",
+    priority_optin: r.priority_optin ? 1 : 0,
+  }));
+  return Papa.unparse({
+    fields: ["email", "priority_points", "cohort", "priority_optin"],
+    data: rows,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -455,16 +534,23 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     process.exit(1);
   }
 
-  // #4719: --not-sent-within/--not-sent-since — cutoff de recência resolvido
-  // cedo (mesmo padrão do --cohort acima), aplicado depois do SELECT (precisa
-  // de last_sent_at, que só existe pós-carga).
-  let notSentCutoff: string | null = null;
+  // #4719/#4765: --not-sent-within/--not-sent-since — cutoff de recência
+  // resolvido cedo (mesmo padrão do --cohort acima), aplicado depois do
+  // SELECT (precisa de last_sent_at, que só existe pós-carga). Desde #4765
+  // este filtro NUNCA fica desligado: sem flag explícita, cai no default
+  // automático (início do mês de ENVIO do ciclo) — ver docstring do topo do
+  // arquivo e `resolveRecencyCutoffWithDefault` (clarice-recency.ts).
+  let notSentCutoff = "";
+  let recencyCutoffSource: RecencyCutoffSource = "auto";
   try {
-    notSentCutoff = resolveNotSentCutoff(
+    const explicitCutoff = resolveNotSentCutoff(
       getStringArg(argv, "not-sent-within", { example: "30d" }),
       getStringArg(argv, "not-sent-since", { example: "2026-08-01" }),
       new Date(),
     );
+    const resolved = resolveRecencyCutoffWithDefault(explicitCutoff, cycleSendMonthStartIso(cycle));
+    notSentCutoff = resolved.cutoffIso;
+    recencyCutoffSource = resolved.source;
   } catch (e) {
     console.error(`❌ ${(e as Error).message}`);
     process.exit(1);
@@ -496,8 +582,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   const rows = db
     .prepare(
-      `SELECT email, name, tier, cohort, priority_points, send_eligible, ineligible_reason, sends_count,
-              opens_count, last_sent_at, mv_bucket, brevo_list_ids, created, brevo_modified_at
+      `SELECT email, name, tier, cohort, priority_points, priority_optin, send_eligible, ineligible_reason,
+              sends_count, opens_count, last_sent_at, mv_bucket, brevo_list_ids, created, brevo_modified_at
          FROM clarice_users${cohort ? " WHERE cohort = ?" : ""}`,
     )
     .all(...(cohort ? [cohort] : [])) as unknown as SegmentRow[];
@@ -534,17 +620,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     );
   }
 
-  // #4719: filtro de recência — "recebeu de fato?" é uma pergunta diferente
-  // de "foi selecionado neste ciclo?" (o guard acima). Ver
-  // scripts/lib/clarice-recency.ts pro racional completo. ANTES do corte por
-  // --budget (senão o volume final sai menor que o pedido).
-  const afterRecency = notSentCutoff ? excludeSentSince(afterSentOrQueued, notSentCutoff) : afterSentOrQueued;
+  // #4719/#4765: filtro de recência — "recebeu de fato?" é uma pergunta
+  // diferente de "foi selecionado neste ciclo?" (o guard acima). Roda SEMPRE
+  // desde #4765 (nunca fica ausente). Ver scripts/lib/clarice-recency.ts pro
+  // racional completo. ANTES do corte por --budget (senão o volume final sai
+  // menor que o pedido).
+  const afterRecency = excludeSentSince(afterSentOrQueued, notSentCutoff);
   const excludedByRecency = afterSentOrQueued.length - afterRecency.length;
-  if (notSentCutoff) {
-    console.error(
-      `🔒 filtro de recência (#4719): ${excludedByRecency} contato(s) com last_sent_at >= ${notSentCutoff} excluído(s) do universo.`,
-    );
-  }
+  console.error(
+    recencyCutoffSource === "explicit"
+      ? `🔒 filtro de recência (#4719): ${excludedByRecency} contato(s) com last_sent_at >= ${notSentCutoff} excluído(s) do universo.`
+      : `🔒 filtro de recência automático (#4765 — início do mês de envio do ciclo): ${excludedByRecency} contato(s) com last_sent_at >= ${notSentCutoff} excluído(s) do universo.`,
+  );
 
   // #4347: guard de campanha comprometida (excludeCommittedToQueuedCampaigns, a
   // mesma checagem já usada por weekly-send-plan-audience.ts/
@@ -678,9 +765,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     cohort: cohort ?? undefined,
     universe_total: rows.length,
     already_sent_or_queued: alreadyTracked || undefined,
-    // #4719: cutoff resolvido (undefined = filtro desligado) + quantos ele
-    // excluiu — número que não aparece no resumo é número que ninguém confere.
-    not_sent_cutoff: notSentCutoff ?? undefined,
+    // #4719/#4765: cutoff SEMPRE presente (nunca ausente desde #4765 — o
+    // filtro nunca fica desligado) + a FONTE (explícito vs default automático)
+    // + quantos ele excluiu — número que não aparece no resumo é número que
+    // ninguém confere.
+    not_sent_cutoff: notSentCutoff,
+    recency_cutoff_source: recencyCutoffSource,
     excluded_by_recency: excludedByRecency || undefined,
     // Sempre presente (não `|| undefined`): saber QUAL escopo de guard rodou é
     // o que permite auditar, meses depois, por que um contato entrou ou não
@@ -720,7 +810,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         `se todo o universo elegível já foi selecionado por outra invocação deste ciclo ` +
         `(${alreadyTracked} excluído(s) via sent-or-queued.json)` +
         (cohort ? `, se a safra '${cohort}' (--cohort) tem contatos elegíveis pro predicado` : "") +
-        (notSentCutoff ? `, ou se --not-sent-within/--not-sent-since (${excludedByRecency} excluído(s)) zerou o universo` : "") +
+        `, ou se o filtro de recência (${recencyCutoffSource === "explicit" ? "--not-sent-within/--not-sent-since" : "automático — início do mês de envio, #4765"}: ${excludedByRecency} excluído(s)) zerou o universo` +
         `. Nada escrito.`,
     );
     process.exit(1);
@@ -730,6 +820,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     const dir = segDir;
     ensureDir(dir);
     writeFileSync(resolve(dir, manifestEntry.file), csv, "utf8");
+    // #4763: snapshot de priority_points no MOMENTO da montagem — arquivo
+    // SEPARADO do CSV de transporte (ver buildPrioritySnapshotCsv), mesmos
+    // `selected` que foram pro CSV acima.
+    writeFileSync(
+      resolve(dir, `${group}-priority-snapshot.csv`),
+      buildPrioritySnapshotCsv(selected),
+      "utf8",
+    );
     writeFileSync(
       resolve(dir, `${group}-manifest.json`),
       JSON.stringify([manifestEntry], null, 2),
