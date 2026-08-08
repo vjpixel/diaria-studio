@@ -3,11 +3,16 @@
  *
  * `scripts/run-cursos-kv-sync.ps1` (wrapper de `sync-cursos-subscribers-kv.ts`,
  * #4052) segue o MESMO molde de log resiliente + exit code honesto de
- * `run-clarice-sync-daily.ps1` (#4047/#4343). Mesmos 3 cenários travados:
+ * `run-clarice-sync-daily.ps1` (#4047/#4343), extraído para
+ * `scripts/lib/Invoke-DiariaScheduledWrapper.psm1` em #4756. Cenários travados:
  *   1. Caso feliz (script noop OK) → exit 0, log final criado.
  *   2. Log não gravável (parent do LogPath é um arquivo) → exit != 0.
  *   3. PATH restrito sem node/npx → `$LASTEXITCODE` fica indefinido/null →
  *      guard força exit != 0 (não um falso-sucesso silencioso, #4343).
+ *   4. Script noop que falha (exit 1) → exit code do wrapper também é 1
+ *      (backport do achado HIGH #2 do review #4552 — #4756: este era o
+ *      molde copiado pelos irmãos que ganharam o caso e nunca o repassaram
+ *      de volta pra este arquivo, propagando a lacuna).
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -20,6 +25,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = join(ROOT, "scripts", "run-cursos-kv-sync.ps1");
 const NOOP_FIXTURE = join(ROOT, "test-fixtures", "clarice-sync-daily", "noop-exit0.ts");
+const NOOP_EXIT1_FIXTURE = join(ROOT, "test-fixtures", "clarice-sync-daily", "noop-exit1.ts");
 
 const isWindows = process.platform === "win32";
 
@@ -126,6 +132,27 @@ describe(
       assert.ok(existsSync(finalLog), "esperava o log final criado mesmo com npx não resolvido");
       const content = readFileSync(finalLog, "utf8");
       assert.match(content, /npx nao executou/);
+    });
+
+    it("sync script falha (exit 1) -> exit code do wrapper também é 1 (#4756, backport do achado #4552)", () => {
+      const tempLog = join(workDir, "exit1-temp.log");
+      const finalLog = join(workDir, "exit1-final.log");
+
+      const result = runScript([
+        "-SyncScript", NOOP_EXIT1_FIXTURE,
+        "-LogPath", finalLog,
+        "-TempLogPath", tempLog,
+      ]);
+
+      assert.equal(
+        result.status,
+        1,
+        `esperava exit 1 quando o sync script falha com exit 1, obteve ${result.status}. ` +
+          `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+      );
+      assert.ok(existsSync(finalLog), "esperava o log final criado");
+      const content = readFileSync(finalLog, "utf8");
+      assert.match(content, /fim \(sync=1\)/);
     });
   },
 );

@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Wrapper do sync diario do KV CURSOS_SUBSCRIBERS (#4320) - para o Task Scheduler.
 
@@ -18,14 +18,15 @@
     data/ (OneDrive) -- so pro log, o script em si nao le/escreve em data/
     alem disso.
 
-    Mesmo padrao de log resiliente do #4047: escreve primeiro num arquivo
-    temporario FORA de data/ (sem risco de lock do OneDrive) e so no final
-    anexa ao log final, com retry curto.
+    Log resiliente + exit code honesto: molde compartilhado por
+    scripts/lib/Invoke-DiariaScheduledWrapper.psm1 (#4756) -- escreve
+    primeiro num arquivo temporario FORA de data/ (sem risco de lock do
+    OneDrive) e so no final anexa ao log final, com retry curto.
 
     Registrado pela task "Diaria-Cursos-Kv-Sync" (setup-cursos-kv-sync-schedule.ps1).
 
 .NOTES
-    Issue: #4052 (script), #4320 (agendamento).
+    Issue: #4052 (script), #4320 (agendamento), #4756 (extracao do modulo compartilhado).
 #>
 param(
     # Overrides usados por teste de regressao para simular sucesso/falha sem
@@ -45,63 +46,14 @@ if (-not $SyncScript)  { $SyncScript  = Join-Path $RepoRoot "scripts\sync-cursos
 if (-not $LogPath)     { $LogPath     = Join-Path $RepoRoot "data\cursos-subscribers\.kv-sync.log" }
 if (-not $TempLogPath) { $TempLogPath = Join-Path $env:TEMP "diaria-cursos-kv-sync-$PID.log" }
 
-Set-Location $RepoRoot
+Import-Module (Join-Path $ScriptDir "lib\Invoke-DiariaScheduledWrapper.psm1") -Force
 
-function Write-TempLogLine {
-    param([string]$Value)
-    Add-Content -Path $TempLogPath -Encoding utf8 -Value $Value
-}
+$code = Invoke-DiariaScheduledWrapper `
+    -RepoRoot $RepoRoot `
+    -ScriptPath $SyncScript `
+    -LogPath $LogPath `
+    -TempLogPath $TempLogPath `
+    -Label "cursos kv sync" `
+    -ExitCodeKey "sync"
 
-Write-TempLogLine ""
-Write-TempLogLine "===== $(Get-Date -Format o) - cursos kv sync ====="
-
-# Pre-inicializa $LASTEXITCODE=$null ANTES da chamada nativa (#4343): mesmo
-# guard documentado em run-clarice-sync-daily.ps1/run-cursos-error-alarm.ps1
-# -- sob Set-StrictMode, `npx` falhando a resolver deixa $LASTEXITCODE
-# genuinamente indefinido (nao $null), e ler essa variavel lanca. Pre-setar
-# aqui garante deteccao correta do caso "npx nao rodou".
-$LASTEXITCODE = $null
-& npx tsx "$SyncScript" 2>&1 | ForEach-Object { $_.ToString() } | Out-File -FilePath $TempLogPath -Append -Encoding utf8
-$syncCode = $LASTEXITCODE
-
-if ($null -eq $syncCode) {
-    Write-TempLogLine "ERRO: npx nao executou (comando nao encontrado ou falha antes do processo iniciar)."
-    $syncCode = 1
-}
-
-Write-TempLogLine "===== fim (sync=$syncCode) ====="
-
-# Anexa o log temporario (fora de data/, sem risco de lock OneDrive) ao log
-# final dentro de data/, com retry curto -- o lock do OneDrive costuma liberar
-# em milissegundos (#4047).
-$logAppendOk = $false
-$lastLogError = $null
-for ($attempt = 1; $attempt -le 3; $attempt++) {
-    try {
-        $logDir = Split-Path -Parent $LogPath
-        if (-not (Test-Path -LiteralPath $logDir)) {
-            New-Item -ItemType Directory -Path $logDir -Force -ErrorAction Stop | Out-Null
-        }
-        $tempContent = Get-Content -LiteralPath $TempLogPath -Raw -ErrorAction Stop
-        Add-Content -LiteralPath $LogPath -Encoding utf8 -Value $tempContent -ErrorAction Stop
-        $logAppendOk = $true
-        break
-    } catch {
-        $lastLogError = $_
-        if ($attempt -lt 3) {
-            Start-Sleep -Milliseconds (300 * $attempt)
-        }
-    }
-}
-
-if ($logAppendOk) {
-    Remove-Item -LiteralPath $TempLogPath -ErrorAction SilentlyContinue
-} else {
-    Write-Host "AVISO: falha ao gravar o log final em $LogPath apos 3 tentativas ($lastLogError). Log temporario preservado em $TempLogPath."
-}
-
-# Exit code honesto: falha de log tambem reprova a run, mesmo que o sync
-# tenha ido bem -- sem isso, o Task Scheduler poderia achar que esta tudo ok
-# sem nenhum log da run ter sido persistido.
-$code = if ($syncCode -ne 0) { $syncCode } elseif (-not $logAppendOk) { 1 } else { 0 }
 exit $code

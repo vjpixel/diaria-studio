@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Wrapper do monitor semanal de citacao por assistente de IA (#4558 Parte C)
     - para o Task Scheduler.
@@ -26,15 +26,21 @@
     ANTHROPIC_API_KEY ausente). Isso NAO reprova a run -- meia medicao vale
     mais que nenhuma, e o log registra a cobertura parcial.
 
-    Mesmo padrao de log resiliente do #4047/#4320: escreve primeiro num
-    arquivo temporario FORA de data/ (sem risco de lock do OneDrive) e so no
-    final anexa ao log final, com retry curto.
+    --strict (#4754): sob a task agendada, sair 0 sem ter medido nada e uma
+    mentira -- a task marcaria verde pra sempre enquanto a serie congelava.
+    Na invocacao manual o default (sem --strict) continua sendo 0, porque
+    "sem key configurada" e estado valido por decisao do #4616.
+
+    Log resiliente + exit code honesto: molde compartilhado por
+    scripts/lib/Invoke-DiariaScheduledWrapper.psm1 (#4756) -- escreve
+    primeiro num arquivo temporario FORA de data/ (sem risco de lock do
+    OneDrive) e so no final anexa ao log final, com retry curto.
 
     Registrado pela task "Diaria-Geo-Citation-Monitor"
     (setup-geo-citation-monitor-schedule.ps1).
 
 .NOTES
-    Issue: #4558 Parte C.
+    Issue: #4558 Parte C. Modulo compartilhado: #4756.
 #>
 param(
     # Overrides usados por teste de regressao para simular sucesso/falha sem
@@ -54,67 +60,15 @@ if (-not $MonitorScript) { $MonitorScript = Join-Path $RepoRoot "scripts\geo-cit
 if (-not $LogPath)       { $LogPath       = Join-Path $RepoRoot "data\geo-citations\.monitor.log" }
 if (-not $TempLogPath)   { $TempLogPath   = Join-Path $env:TEMP "diaria-geo-citation-monitor-$PID.log" }
 
-Set-Location $RepoRoot
+Import-Module (Join-Path $ScriptDir "lib\Invoke-DiariaScheduledWrapper.psm1") -Force
 
-function Write-TempLogLine {
-    param([string]$Value)
-    Add-Content -Path $TempLogPath -Encoding utf8 -Value $Value
-}
+$code = Invoke-DiariaScheduledWrapper `
+    -RepoRoot $RepoRoot `
+    -ScriptPath $MonitorScript `
+    -ScriptArgs @("--strict") `
+    -LogPath $LogPath `
+    -TempLogPath $TempLogPath `
+    -Label "geo citation monitor" `
+    -ExitCodeKey "monitor"
 
-Write-TempLogLine ""
-Write-TempLogLine "===== $(Get-Date -Format o) - geo citation monitor ====="
-
-# Pre-inicializa $LASTEXITCODE=$null ANTES da chamada nativa (#4343): sob
-# Set-StrictMode, `npx` falhando a resolver deixa $LASTEXITCODE genuinamente
-# indefinido (nao $null), e ler essa variavel lanca. Pre-setar aqui garante
-# deteccao correta do caso "npx nao rodou".
-#
-# --strict (#4754): no caminho AGENDADO, sair 0 sem ter medido nada e uma
-# mentira -- a task marcaria verde pra sempre enquanto history.jsonl congelava.
-# Na invocacao manual o default (sem --strict) continua sendo 0, porque "sem
-# key configurada" e estado valido por decisao do #4616.
-$LASTEXITCODE = $null
-& npx tsx "$MonitorScript" --strict 2>&1 | ForEach-Object { $_.ToString() } | Out-File -FilePath $TempLogPath -Append -Encoding utf8
-$monitorCode = $LASTEXITCODE
-
-if ($null -eq $monitorCode) {
-    Write-TempLogLine "ERRO: npx nao executou (comando nao encontrado ou falha antes do processo iniciar)."
-    $monitorCode = 1
-}
-
-Write-TempLogLine "===== fim (monitor=$monitorCode) ====="
-
-# Anexa o log temporario (fora de data/, sem risco de lock OneDrive) ao log
-# final dentro de data/, com retry curto -- o lock do OneDrive costuma liberar
-# em milissegundos (#4047).
-$logAppendOk = $false
-$lastLogError = $null
-for ($attempt = 1; $attempt -le 3; $attempt++) {
-    try {
-        $logDir = Split-Path -Parent $LogPath
-        if (-not (Test-Path -LiteralPath $logDir)) {
-            New-Item -ItemType Directory -Path $logDir -Force -ErrorAction Stop | Out-Null
-        }
-        $tempContent = Get-Content -LiteralPath $TempLogPath -Raw -ErrorAction Stop
-        Add-Content -LiteralPath $LogPath -Encoding utf8 -Value $tempContent -ErrorAction Stop
-        $logAppendOk = $true
-        break
-    } catch {
-        $lastLogError = $_
-        if ($attempt -lt 3) {
-            Start-Sleep -Milliseconds (300 * $attempt)
-        }
-    }
-}
-
-if ($logAppendOk) {
-    Remove-Item -LiteralPath $TempLogPath -ErrorAction SilentlyContinue
-} else {
-    Write-Host "AVISO: falha ao gravar o log final em $LogPath apos 3 tentativas ($lastLogError). Log temporario preservado em $TempLogPath."
-}
-
-# Exit code honesto: falha de log tambem reprova a run, mesmo que o monitor
-# tenha ido bem -- sem isso, o Task Scheduler poderia achar que esta tudo ok
-# sem nenhum log da run ter sido persistido.
-$code = if ($monitorCode -ne 0) { $monitorCode } elseif (-not $logAppendOk) { 1 } else { 0 }
 exit $code

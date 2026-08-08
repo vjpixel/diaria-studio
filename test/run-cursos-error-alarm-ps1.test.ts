@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = join(ROOT, "scripts", "run-cursos-error-alarm.ps1");
 const NOOP_FIXTURE = join(ROOT, "test-fixtures", "clarice-sync-daily", "noop-exit0.ts");
+const NOOP_EXIT1_FIXTURE = join(ROOT, "test-fixtures", "clarice-sync-daily", "noop-exit1.ts");
 
 const isWindows = process.platform === "win32";
 
@@ -128,6 +129,27 @@ describe(
       assert.ok(existsSync(finalLog), "esperava o log final criado mesmo com npx não resolvido");
       const content = readFileSync(finalLog, "utf8");
       assert.match(content, /npx nao executou/);
+    });
+
+    it("alarm script falha (exit 1) -> exit code do wrapper também é 1 (#4756, backport do achado #4552)", () => {
+      const tempLog = join(workDir, "exit1-temp.log");
+      const finalLog = join(workDir, "exit1-final.log");
+
+      const result = runScript([
+        "-AlarmScript", NOOP_EXIT1_FIXTURE,
+        "-LogPath", finalLog,
+        "-TempLogPath", tempLog,
+      ]);
+
+      assert.equal(
+        result.status,
+        1,
+        `esperava exit 1 quando o alarm script falha com exit 1, obteve ${result.status}. ` +
+          `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+      );
+      assert.ok(existsSync(finalLog), "esperava o log final criado");
+      const content = readFileSync(finalLog, "utf8");
+      assert.match(content, /fim \(alarm=1\)/);
     });
   },
 );

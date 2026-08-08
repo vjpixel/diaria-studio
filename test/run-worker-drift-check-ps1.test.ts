@@ -3,15 +3,18 @@
  *
  * `scripts/run-worker-drift-check.ps1` segue o MESMO molde de
  * `scripts/run-apoios-diff-alarm.ps1`/`scripts/run-cursos-error-alarm.ps1`
- * (#4064/#4343): log resiliente (temp file fora de data/, anexo com retry) +
+ * (#4064/#4343), extraído para `scripts/lib/Invoke-DiariaScheduledWrapper.psm1`
+ * em #4756: log resiliente (temp file fora de data/, anexo com retry) +
  * exit code honesto mesmo quando `npx` genuinamente não resolve no PATH
- * (contexto de serviço do Task Scheduler). Mesmos 3 cenários travados aqui —
- * ver `test/run-cursos-error-alarm-ps1.test.ts` pro precedente direto.
+ * (contexto de serviço do Task Scheduler). Cenários travados aqui — ver
+ * `test/run-cursos-error-alarm-ps1.test.ts` pro precedente direto. O caso
+ * exit-1 (#4756, backport do achado #4552) fecha a mesma lacuna encontrada
+ * em `run-geo-citation-monitor-ps1.test.ts`.
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +22,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = join(ROOT, "scripts", "run-worker-drift-check.ps1");
 const NOOP_FIXTURE = join(ROOT, "test-fixtures", "clarice-sync-daily", "noop-exit0.ts");
+const NOOP_EXIT1_FIXTURE = join(ROOT, "test-fixtures", "clarice-sync-daily", "noop-exit1.ts");
 
 const isWindows = process.platform === "win32";
 
@@ -123,6 +127,27 @@ describe(
           `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
       );
       assert.ok(existsSync(finalLog), "esperava o log final criado mesmo com npx não resolvido");
+    });
+
+    it("check script falha (exit 1) -> exit code do wrapper também é 1 (#4756, backport do achado #4552)", () => {
+      const tempLog = join(workDir, "exit1-temp.log");
+      const finalLog = join(workDir, "exit1-final.log");
+
+      const result = runScript([
+        "-CheckScript", NOOP_EXIT1_FIXTURE,
+        "-LogPath", finalLog,
+        "-TempLogPath", tempLog,
+      ]);
+
+      assert.equal(
+        result.status,
+        1,
+        `esperava exit 1 quando o check script falha com exit 1, obteve ${result.status}. ` +
+          `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+      );
+      assert.ok(existsSync(finalLog), "esperava o log final criado");
+      const content = readFileSync(finalLog, "utf8");
+      assert.match(content, /fim \(check=1\)/);
     });
   },
 );
