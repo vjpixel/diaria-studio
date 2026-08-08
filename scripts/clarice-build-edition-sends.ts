@@ -146,8 +146,8 @@ const pad = (t: number): string => `T${String(t).padStart(2, "0")}`;
  * Normaliza uma `StoreRow` pro output: email + NOME + TIER + IS_SEED.
  *
  * TIER deriva do tier numérico do store (`T01`..`T10`; vazio se nulo — leads
- * sem proveniência Stripe). Análogo ao `pad()` de `clarice-build-waves-store.ts`
- * (#2656) — mesma convenção de rótulo entre os dois builders store-driven.
+ * sem proveniência Stripe). Análogo ao `pad()` do extinto `clarice-build-waves-store.ts`
+ * (#2656/#4759) — mesma convenção de rótulo herdada daquele builder.
  *
  * IS_SEED: marca `true` se a row for o endereço de monitoramento do editor
  * (`CLARICE_SEED_EMAIL`) e ele aparecer NATURALMENTE na fila (é assinante

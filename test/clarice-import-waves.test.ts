@@ -236,6 +236,11 @@ describe("buildPlan — manifest-driven: obrigatória ausente explode", () => {
     const dir = tmpWaves(SAMPLE, SAMPLE.filter((w) => w.key !== "W3").map((w) => w.file));
     try {
       assert.throws(() => buildPlan("L", "2605-06", dir), /wave faltando/);
+      // #4759: sem --group (modo rampa órfão), a mensagem aponta pro sucessor
+      // vivo — não pro clarice-build-waves-store.ts removido. Regex mais
+      // solto acima passaria mesmo se a mensagem regredisse a citar o script
+      // aposentado; este mirra o padrão já usado em loadWaveDefs (#4759).
+      assert.throws(() => buildPlan("L", "2605-06", dir), /clarice-build-segment\.ts --cycle .* --group ramp-warm/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

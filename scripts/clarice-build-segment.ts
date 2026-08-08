@@ -5,10 +5,13 @@
  *
  * O store único (#2647) é a fonte única da verdade; um grupo de envio é um
  * PREDICADO sobre ele, re-derivado FRESCO a cada invocação — nunca um
- * snapshot congelado. Complementa `clarice-build-waves-store.ts` (a RAMPA —
- * fila engajado→1º envio→decaído, corte por `--budget`, pra crescer
- * alcance): este script cobre grupos por OBJETIVO (retenção, re-ativação,
- * 1º-envio-seguro), NÃO substitui a rampa.
+ * snapshot congelado. Cobre grupos por OBJETIVO: retenção (`engajados`),
+ * re-ativação (`reativacao`), e a RAMPA de 1º envio (`ramp-warm` — fila
+ * engajado→1º envio→decaído, corte por `--budget`, pra crescer alcance).
+ * Até o #4657 (05/08) a rampa vivia num script à parte, `clarice-build-waves-store.ts`
+ * — aposentado no #4759 por não ter o guard cycle-wide `sent-or-queued.json`
+ * (#3227, abaixo), que causou ~18k envios duplicados num ciclo antes de
+ * existir. `ramp-warm` aqui **substitui** aquele script, não só complementa.
  *
  * Grupos nomeados (predicados versionados/testados em
  * `scripts/lib/clarice-segment.ts`, ao lado de `segmentFromStore` — ver

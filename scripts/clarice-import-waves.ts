@@ -44,7 +44,11 @@
  *                                 da rampa: lê `{ciclo}/segments/{NOME}-manifest.json`
  *                                 (via `clariceSegmentsDir`) no lugar de
  *                                 `{ciclo}/waves/waves-manifest.json`. Sem a flag,
- *                                 comportamento inalterado (rampa via waves/).
+ *                                 comportamento inalterado — mas ÓRFÃO desde o
+ *                                 #4759 (nenhum produtor ativo escreve mais
+ *                                 `waves/`; ver nota no topo do arquivo). Use
+ *                                 sempre `--group` (ex: `ramp-warm` no lugar
+ *                                 da rampa).
  *
  * Uso (grupo nomeado):
  *   npx tsx scripts/clarice-build-segment.ts --group engajados --cycle 2605-06 --budget 500
