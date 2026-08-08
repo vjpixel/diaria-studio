@@ -233,8 +233,15 @@ export interface PostmasterSpamEntry extends PostmasterReputationSignal {
   /**
    * `feedback_loop_id` (`{conta}_{campanha}`) da campanha que produziu
    * `worstCampaignSpamRatePct` — só informativo (debug/auditoria), nunca
-   * entra em nenhuma decisão de classificação. Par com o campo acima: sempre
-   * populado junto, `undefined` no mesmo caso.
+   * entra em nenhuma decisão de classificação. Produzido em PAR com o campo
+   * acima pelo único produtor hoje (`buildAveragedEntry`), mas não é um
+   * invariante estrutural do tipo — no boundary do KV
+   * (`normalizePostmasterSpamEntry`) cada campo é validado
+   * independentemente e pode divergir sob payload corrompido (mesmo padrão
+   * de `daysWithData`/`daysProbed`, #4544; ver teste
+   * `postmaster-spam-normalize.test.ts` pro caso `worstCampaignSpamRatePct`
+   * NaN sobrevivendo como `undefined` enquanto este campo sobrevive como
+   * string).
    */
   worstCampaignFeedbackLoopId?: string;
 }

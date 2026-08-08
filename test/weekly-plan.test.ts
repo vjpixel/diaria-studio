@@ -888,11 +888,15 @@ test("resolveSpamSignal — só daysWithData OU só daysProbed presente (assimé
 });
 
 // ---------------------------------------------------------------------------
-// #4705 — resolveSpamSignal prefere o PICO por campanha (`worstCampaignSpamRatePct`)
-// sobre a média de domínio (`spamRatePct`) quando presente. Cenário real que
-// motivou a mudança (achado da issue): em 03/08/2026 a média de domínio ficou
-// dentro do limite enquanto uma campanha específica teve spam bem mais alto —
-// a média sozinha nunca revela isso, só o dado por-campanha.
+// #4705 — resolveSpamSignal usa o MAIOR entre a média de domínio
+// (`spamRatePct`) e o pico por campanha (`worstCampaignSpamRatePct`) quando
+// este último está presente. Cenário real que motivou a mudança (achado da
+// issue): em 03/08/2026 a média de domínio ficou dentro do limite enquanto
+// uma campanha específica teve spam bem mais alto — a média sozinha nunca
+// revela isso, só o dado por-campanha. `Math.max`, não precedência cega do
+// pico (achado do fleet review pré-merge, `pr-test-analyzer`): a direção
+// oposta também precisa ser coberta — um domínio pior que a pior campanha
+// ATRIBUÍVEL não pode ser mascarado por ela.
 // ---------------------------------------------------------------------------
 
 test("resolveSpamSignal — pico de campanha ACIMA do limite produz breach=true MESMO com a média de domínio dentro do limite (#4705, regressão do cenário real da issue)", () => {
@@ -929,6 +933,25 @@ test("resolveSpamSignal — pico de campanha ABAIXO do limite produz breach=fals
     NOW,
   );
   assert.equal(signal.breach, false);
+});
+
+test("resolveSpamSignal — média de domínio PIOR que o pico por campanha ATRIBUÍVEL: usa o domínio, nunca mascara um sinal pior por um melhor (achado do fleet review pré-merge, direção oposta do cenário #4705)", () => {
+  // Domínio inteiro em 0,45% (acima do breaker) — mas a pior campanha com
+  // feedback_loop_id atribuível na janela ficou em 0,08% (abaixo). Cenário
+  // plausível: spam concentrado em tráfego SEM feedback_loop_id na resposta
+  // da API (#4704 nota essa limitação — nem todo envio tem campanha
+  // atribuível). Precedência cega do pico teria produzido breach=false aqui,
+  // o INVERSO do que o breaker existe pra fazer.
+  const signal = resolveSpamSignal(
+    mkPostmasterEntry({
+      spamRatePct: 0.45,
+      worstCampaignSpamRatePct: 0.08,
+      worstCampaignFeedbackLoopId: "11130585_999",
+    }),
+    NOW,
+  );
+  assert.equal(signal.ratePct, 0.45, "usa a média de domínio (pior), não o pico de campanha (melhor)");
+  assert.equal(signal.breach, true, "domínio acima do limite tem que estourar o breaker mesmo com uma campanha atribuível abaixo");
 });
 
 test("resolveSpamSignal — guards de staleness/cobertura continuam avaliados sobre os campos de DOMÍNIO mesmo com worstCampaignSpamRatePct presente (#4705 preserva a lógica existente)", () => {
