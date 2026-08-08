@@ -67,6 +67,13 @@
  *   amostra_vazia       true se amostra_considerada === 0 — o denominador está
  *                       vazio, que amostra_instavel NÃO sinaliza (mediana null
  *                       nunca é < 10). Mutuamente exclusivo com amostra_instavel
+ *   amostra_pequena     true se 0 < amostra_considerada < 5 (#4761) — poucas
+ *                       PESSOAS na amostra, sinal independente de
+ *                       amostra_instavel (que mede a mediana de edições
+ *                       RECEBIDAS por pessoa, não quantas pessoas há). 1
+ *                       pessoa com mediana alta passa amostra_instavel=false
+ *                       e amostra_vazia=false sem este campo — taxa de
+ *                       abertura de N=1 fica indistinguível de N=300 na saída.
  *
  * Assinante sem `stats` (campo ausente na resposta) nunca conta como leitor e
  * é excluído do denominador de abertura_agregada/media/mediana — mas ainda
@@ -90,6 +97,15 @@ const RATE_LIMIT_DELAY_MS = 300;
 const MAX_RETRIES = 5;
 const DEFAULT_THRESHOLD = 40;
 const NEWLINE = "\n";
+/**
+ * Piso de `amostra_pequena` (#4761) — número de PESSOAS no denominador de
+ * leitores/abertura/média abaixo do qual a taxa é indefensável mesmo com
+ * `amostra_instavel` (mediana de edições recebidas) dizendo que está tudo
+ * bem. N=5 é o candidato conservador da issue: pega os casos gritantes
+ * (1 a 4 pessoas) sem marcar canais de cauda legítimos (N=10/N=30 dispararia
+ * em vários grupos reais da base atual).
+ */
+const AMOSTRA_PEQUENA_THRESHOLD = 5;
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -158,6 +174,21 @@ export interface GroupEngagement {
    * saída do que uma amostra de 1-9 (`⚠instável`).
    */
   amostra_vazia: boolean;
+  /**
+   * true quando `0 < amostra_considerada < AMOSTRA_PEQUENA_THRESHOLD` (#4761)
+   * — poucas PESSOAS entraram no denominador, independente de
+   * `amostra_instavel` (que mede a mediana de EDIÇÕES RECEBIDAS por pessoa,
+   * não quantas pessoas há). O caso motivador: 1 pessoa que recebeu 12
+   * edições produz `amostra_instavel: false` (12 >= 10) e
+   * `amostra_vazia: false` (1 !== 0) — sem este campo, `abertura: 50,0%`
+   * saía sem marcador nenhum, visualmente idêntica a uma linha com 300
+   * pessoas na mesma taxa. Campo SEPARADO de `amostra_instavel` de propósito
+   * (aditivo, mesma disciplina do `amostra_vazia` — #4752 rejeitou
+   * redefinir campo já serializado em JSON). Sempre `false` quando
+   * `amostra_vazia` é `true` (0 não é `> 0`) — não mutuamente exclusivo com
+   * `amostra_instavel`, que pode coexistir (ex: 3 pessoas, mediana 3).
+   */
+  amostra_pequena: boolean;
 }
 
 export interface EngagementOptions {
@@ -453,6 +484,8 @@ export function computeGroupEngagement(
   const amostra_instavel = mediana_recebidas != null && mediana_recebidas < 10;
   const amostra_considerada = considerados.length;
   const pre_corte_considerado = ativosComStats.length;
+  const amostra_vazia = amostra_considerada === 0;
+  const amostra_pequena = amostra_considerada > 0 && amostra_considerada < AMOSTRA_PEQUENA_THRESHOLD;
 
   return {
     cadastros: subsInGroup.length,
@@ -468,7 +501,8 @@ export function computeGroupEngagement(
     amostra_instavel,
     amostra_considerada,
     pre_corte_considerado,
-    amostra_vazia: amostra_considerada === 0,
+    amostra_vazia,
+    amostra_pequena,
   };
 }
 
@@ -547,20 +581,29 @@ export function formatEngagementTable(result: EngagementResult): string {
     // #4752: amostra_vazia (considerados === 0) é o caso PIOR que amostra_instavel
     // (1-9 considerados) — mas antes só o segundo tinha marcador visual, o que
     // fazia o denominador vazio parecer mais "normal" que uma amostra pequena.
-    // Os dois nunca coexistem (mediana só é != null com >=1 considerado).
+    // amostra_vazia é mutuamente exclusivo com os outros dois (mediana só é
+    // != null e amostra_pequena só é true com >=1 considerado).
     //
     // O marcador de vazio diz QUAL dos dois caminhos produziu o zero (#4757):
     // sem esse detalhe, "não há stats nenhum neste grupo" e "--min-received
     // cortou todo mundo" saem byte-a-byte iguais — e pedem ações opostas
     // (investigar tracking vs. baixar o piso). O dado já estava em
     // `pre_corte_considerado`; só não chegava a quem lê.
-    const flag = g.amostra_vazia
-      ? g.pre_corte_considerado > 0
+    //
+    // amostra_instavel (mediana de edições RECEBIDAS por pessoa) e
+    // amostra_pequena (#4761 — quantas PESSOAS há) medem dimensões
+    // diferentes e PODEM coexistir (ex: 3 pessoas, mediana 3) — por isso os
+    // dois marcadores se acumulam em vez de se excluírem, ao contrário do
+    // par vazio/instável.
+    let flag = "";
+    if (g.amostra_vazia) {
+      flag = g.pre_corte_considerado > 0
         ? ` ⚠vazio(${g.pre_corte_considerado} cortados por --min-received)`
-        : " ⚠vazio(sem stats)"
-      : g.amostra_instavel
-        ? " ⚠instável"
-        : "";
+        : " ⚠vazio(sem stats)";
+    } else {
+      if (g.amostra_instavel) flag += " ⚠instável";
+      if (g.amostra_pequena) flag += ` ⚠pequena(${g.amostra_considerada})`;
+    }
     lines.push(
       `${key.padEnd(maxKeyLen)}  ${String(g.cadastros).padStart(9)}  ${String(g.ativos).padStart(6)}  ` +
         `${String(g.inativos).padStart(8)}  ${String(g.pending).padStart(7)}  ${String(g.invalid).padStart(7)}  ` +
