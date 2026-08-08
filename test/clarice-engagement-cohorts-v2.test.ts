@@ -513,15 +513,15 @@ async function withTmpDbDir<T>(fn: (dbPath: string) => T | Promise<T>): Promise<
   }
 }
 
-test("fetchAdminOptOutEmails: lê email_blacklisted=1 OU unsubscribed=1 do store local", async () => {
+test("fetchAdminOptOutEmails: lê email_blacklisted=1 OU unsubscribed=1 do store local, entre quem já recebeu e-mail (sends_count > 0)", async () => {
   await withTmpDbDir((dbPath) => {
     const db = openClariceDb(dbPath);
     const now = new Date().toISOString();
     db.exec(
-      `INSERT INTO clarice_users (email, email_blacklisted, unsubscribed, updated_at) VALUES
-        ('blacklisted@x.com', 1, 0, '${now}'),
-        ('UNSUB@X.COM', 0, 1, '${now}'),
-        ('clean@x.com', 0, 0, '${now}')`,
+      `INSERT INTO clarice_users (email, email_blacklisted, unsubscribed, sends_count, updated_at) VALUES
+        ('blacklisted@x.com', 1, 0, 3, '${now}'),
+        ('UNSUB@X.COM', 0, 1, 1, '${now}'),
+        ('clean@x.com', 0, 0, 5, '${now}')`,
     );
     db.close();
 
@@ -532,6 +532,32 @@ test("fetchAdminOptOutEmails: lê email_blacklisted=1 OU unsubscribed=1 do store
     assert.ok(result.emails.has("blacklisted@x.com"));
     assert.ok(result.emails.has("unsub@x.com")); // normalizado (lowercase)
     assert.ok(!result.emails.has("clean@x.com"));
+  });
+});
+
+test("fetchAdminOptOutEmails: exclui blacklisted/unsub com sends_count=0 — nunca recebeu e-mail, fora do universo do v1 (#4451 fleet review #4479 achado 3)", async () => {
+  await withTmpDbDir((dbPath) => {
+    const db = openClariceDb(dbPath);
+    const now = new Date().toISOString();
+    db.exec(
+      `INSERT INTO clarice_users (email, email_blacklisted, unsubscribed, sends_count, updated_at) VALUES
+        ('blacklisted-nunca-enviado@x.com', 1, 0, 0, '${now}'),
+        ('unsub-nunca-enviado@x.com', 0, 1, 0, '${now}'),
+        ('blacklisted-ja-enviado@x.com', 1, 0, 2, '${now}')`,
+    );
+    db.close();
+
+    const result = fetchAdminOptOutEmails(dbPath);
+    assert.equal(result.available, true);
+    if (!result.available) throw new Error("esperado available=true");
+    // Só o contato que já recebeu ao menos 1 e-mail entra — os outros dois
+    // nunca foram destinatário de campanha alguma, então nem pertenceriam ao
+    // universo do v1 (fetchEmailedContactIds); incluí-los inflaria `exits`
+    // no v2 sem equivalente no v1 (a divergência que este fix fecha).
+    assert.equal(result.emails.size, 1);
+    assert.ok(result.emails.has("blacklisted-ja-enviado@x.com"));
+    assert.ok(!result.emails.has("blacklisted-nunca-enviado@x.com"));
+    assert.ok(!result.emails.has("unsub-nunca-enviado@x.com"));
   });
 });
 
@@ -548,8 +574,11 @@ test("buildCohortsV2: aplica opt-outs administrativos do store quando disponíve
     await withTmpDbDir(async (dbPath) => {
       const db = openClariceDb(dbPath);
       db.exec(
-        `INSERT INTO clarice_users (email, email_blacklisted, unsubscribed, updated_at) VALUES
-          ('nunca-exportado@x.com', 1, 0, '${new Date().toISOString()}')`,
+        // sends_count > 0: já recebeu e-mail (por alguma campanha fora do
+        // conjunto exportado nesta rodada), então continua no universo do
+        // gap administrativo mesmo após o filtro do achado 3 (#4479).
+        `INSERT INTO clarice_users (email, email_blacklisted, unsubscribed, sends_count, updated_at) VALUES
+          ('nunca-exportado@x.com', 1, 0, 1, '${new Date().toISOString()}')`,
       );
       db.close();
 

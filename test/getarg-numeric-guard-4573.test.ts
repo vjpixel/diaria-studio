@@ -113,8 +113,9 @@ const ALLOWLIST: readonly DangerousMatch[] = [
   // (--refetch-window-days) foi MIGRADA pra getIntArg neste PR — "se sumiu,
   // ótimo, remova a entrada" (comentário original desta allowlist). Só
   // --concurrency (abaixo) continua no padrão antigo, fora de escopo aqui —
-  // linha deslocada de 639→671 pelo comentário/import novos acima dela.
-  { file: "scripts/clarice-engagement-cohorts-v2.ts", line: 671 },
+  // linha deslocada de 639→671→684 (fix do achado 7/sends_count>0 no #4451
+  // adicionou linhas acima dela).
+  { file: "scripts/clarice-engagement-cohorts-v2.ts", line: 684 },
 ] as const;
 
 function isAllowlisted(m: DangerousMatch): boolean {

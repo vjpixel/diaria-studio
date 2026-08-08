@@ -60,23 +60,31 @@
  * Brevo (zero custo de API adicional). `fetchAdminOptOutEmails` é FAIL-SOFT:
  * se o store não existir (sessão cloud sem junction `data/`, ou task de sync
  * ainda não rodou), loga aviso e segue sem esse sinal em vez de abortar —
- * mesma postura de `exec-mode.ts`/`studio-chat-enabled.ts`.
+ * mesma postura de `exec-mode.ts`/`studio-chat-enabled.ts`. Escopado a
+ * `sends_count > 0` (achado 3 do fleet review #4479, fechado nesta sessão) —
+ * ver docstring de `fetchAdminOptOutEmails`.
  *
  * THROTTLING: a Brevo não documenta rate limit específico pra
  * `exportRecipients`/`processes` (diferente de `/v3/contacts/*`, 10 req/s
  * documentado). Concorrência default BAIXA (2) — nunca dispara exports de
  * várias campanhas em paralelo sem limite.
  *
- * FLEET REVIEW #4479 — achados corrigidos nesta rodada (sem exigir API real,
- * ver issue #4451 pra lista completa): (4) `--refetch-window-days` não colapsa
- * mais silenciosamente pro default em valor "0"/inválido (`getIntArg`, mesmo
- * fix já aplicado a `--limit` em #4497); (5) `downloadCsv` tem timeout
- * explícito (`DOWNLOAD_CSV_TIMEOUT_MS`, `AbortController`); (6) `--out` grava
+ * FLEET REVIEW #4479 — achados corrigidos SEM exigir API real (ver issue
+ * #4451 pra lista completa): (3) `fetchAdminOptOutEmails` agora escopa a
+ * `sends_count > 0` (fechado nesta sessão, `/diaria-develop` 260808 — ver
+ * docstring da função); (4) `--refetch-window-days` não colapsa mais
+ * silenciosamente pro default em valor "0"/inválido (`getIntArg`, mesmo fix
+ * já aplicado a `--limit` em #4497); (5) `downloadCsv` tem timeout explícito
+ * (`DOWNLOAD_CSV_TIMEOUT_MS`, `AbortController`); (6) `--out` grava
  * cohorts+diagnostics (`scripts/lib/cohorts-v2-artifact.ts`), e
  * `compare-cohorts.ts` recusa comparar por padrão quando o lado v2 tem sinal
- * administrativo degradado. Achados 1-3/7 continuam documentados como estão
- * (decisão de comportamento pendente de dado real, ou já cobertos por teste
- * que documenta o comportamento atual — ver comentários locais).
+ * administrativo degradado; (7) os 2 testes sugeridos (forceRefresh com
+ * export falhando sobre cache pré-existente; diffCohorts com campo ausente de
+ * um lado) já existem em `test/clarice-engagement-cohorts-v2.test.ts` e
+ * `test/compare-cohorts.test.ts`. Achados 1-2 continuam documentados como
+ * estão (decisão de comportamento / validação pendente de dado real da Fase
+ * 3 — ver comentários locais em `getOrFetchCampaignCache`/
+ * `isWithinRefetchWindow`).
  *
  * Env:
  *   BREVO_CLARICE_API_KEY  obrigatório
@@ -501,14 +509,19 @@ export type AdminOptOutsResult =
  * chamador decide como reagir (logar aviso, seguir sem o sinal). O universo
  * de coortes não deve depender de um recurso `local` pra rodar.
  *
- * RISCO DE ESCOPO A VALIDAR na comparação empírica (#4451 item 6): esta
- * função lê o store INTEIRO (`clarice_users`), sem filtrar por "já recebeu
- * e-mail" — mais amplo que o escopo do v1 (`fetchEmailedContactIds`, membros
- * de listas de campanhas ENVIADAS). Um contato blacklisted/unsub no store mas
- * que nunca foi membro de nenhuma lista enviada pode entrar em `exits` no v2
- * sem equivalente no v1 — provável fonte de divergência pequena e
- * EXPLICÁVEL na comparação via `scripts/compare-cohorts.ts` (não
- * necessariamente um bug: é dado administrativo mais completo, não ruído).
+ * ESCOPO FECHADO (#4451 fleet review #4479 achado 3, resolvido nesta sessão):
+ * a 1ª versão lia o store INTEIRO (`clarice_users`), sem filtrar por "já
+ * recebeu e-mail" — mais amplo que o escopo do v1 (`fetchEmailedContactIds`,
+ * membros de listas de campanhas ENVIADAS), porque um contato pode entrar no
+ * store (sync incremental da Brevo, #2932) sem nunca ter sido destinatário de
+ * campanha alguma (ex: cadastro que nunca chegou a ser inserido numa lista
+ * enviada, ou opt-out antes do 1º envio). O filtro `sends_count > 0` (coluna
+ * já mantida por `clarice-sync-brevo.ts`, incrementada só por envio real de
+ * campanha) restringe aos contatos que RECEBERAM ao menos 1 e-mail — mesma
+ * semântica de universo do v1, sem custo de chamada nova à Brevo (dado já
+ * sincronizado localmente). Fecha a fonte de divergência descrita no achado 3
+ * do fleet review em #4479 (`exits`/`exitsBreakdown.optedOut` "batendo" ou
+ * "divergindo" contra o v1 pela razão errada).
  */
 export function fetchAdminOptOutEmails(dbPath: string = DEFAULT_DB_PATH): AdminOptOutsResult {
   if (!existsSync(dbPath)) {
@@ -519,7 +532,7 @@ export function fetchAdminOptOutEmails(dbPath: string = DEFAULT_DB_PATH): AdminO
     try {
       const rows = db
         .prepare(
-          "SELECT email FROM clarice_users WHERE email_blacklisted = 1 OR unsubscribed = 1",
+          "SELECT email FROM clarice_users WHERE (email_blacklisted = 1 OR unsubscribed = 1) AND sends_count > 0",
         )
         .all() as Array<{ email: string }>;
       const emails = new Set(rows.map((r) => normalizeEmail(r.email)).filter((e) => e.length > 0));
