@@ -30,11 +30,11 @@ import { parseAbcAudienceCampaign } from "../workers/brevo-dashboard/src/index.t
 import { EDITOR_COPY_EMAIL } from "../scripts/lib/editor-copy.ts";
 
 describe("loadWaveDefs (#2656/#2844)", () => {
-  it("sem manifest → erro claro (rode clarice-build-waves-store)", () => {
+  it("sem manifest → erro claro (#4759: aponta pro grupo nomeado, não pro produtor aposentado)", () => {
     const dir = mkdtempSync(join(tmpdir(), "wd-legacy-"));
     try {
       assert.throws(() => loadWaveDefs(dir), /waves-manifest\.json ausente/);
-      assert.throws(() => loadWaveDefs(dir), /clarice-build-waves-store/);
+      assert.throws(() => loadWaveDefs(dir), /clarice-build-segment\.ts --cycle \.\.\. --group ramp-warm/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

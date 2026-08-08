@@ -144,15 +144,13 @@ describe("guard estrutural: Number/parseInt/parseFloat(getArg(...)) sem proteç�
     }
   });
 
-  it("sanity: comentários de LINHA (//) que citam o padrão em prosa (histórico) NÃO contam como violação", () => {
+  it("sanity: comentário de LINHA (//) que cita o padrão em prosa (histórico) NÃO conta como violação", () => {
     // Confirma que a heurística de comentário funciona de verdade (não é só
-    // sorte de nenhum comentário existir hoje) — os 2 arquivos abaixo citam
-    // o padrão antigo em comentário `//`, sem ser código real.
+    // sorte de nenhum comentário existir hoje) — o arquivo abaixo cita o
+    // padrão antigo em comentário `//`, sem ser código real. (#4759: o 2º
+    // exemplo original era scripts/clarice-build-waves-store.ts, removido
+    // nessa issue — a asserção ficaria vazia/vácua com o arquivo ausente.)
     const found = findDangerousGetArgUsages(SCRIPTS_DIR);
-    assert.ok(
-      !found.some((m) => m.file === "scripts/clarice-build-waves-store.ts"),
-      "comentário histórico em clarice-build-waves-store.ts não deveria contar",
-    );
     assert.ok(
       !found.some((m) => m.file === "scripts/cohort-order-dryrun.ts"),
       "comentário histórico em cohort-order-dryrun.ts não deveria contar",
