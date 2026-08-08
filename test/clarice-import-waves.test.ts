@@ -6,6 +6,7 @@ import { join, sep } from "node:path";
 import {
   listNameFor,
   groupCellListNameFor,
+  isGroupCellWave,
   resolveListName,
   countRows,
   normalizeImportCsv,
@@ -78,6 +79,36 @@ describe("loadWaveDefs (#2656/#2844)", () => {
     try {
       writeFileSync(join(dir, "w1-store.csv"), "email,NOME\na@x.com,A\n");
       assert.throws(() => loadWaveDefs(dir), /waves-manifest\.json ausente/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #4766: `loadWaveDefs` recebe `group` (o mesmo `string | null` tipado que
+  // `buildPlan` já tinha no escopo) em vez de um filename pré-formatado —
+  // este teste exercita o parâmetro DIRETO (sem passar por `buildPlan`),
+  // provando que `{group}-manifest.json` é lido e a mensagem de erro do
+  // grupo (não a da rampa) é a que sai quando `group` está presente.
+  it("com group → lê {group}-manifest.json (#4766: parâmetro tipado, não filename pré-formatado)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wd-group-"));
+    try {
+      writeFileSync(
+        join(dir, "engajados-manifest.json"),
+        JSON.stringify([{ key: "engajados", file: "engajados.csv", desc: "Engajados (retenção)" }]),
+      );
+      const defs = loadWaveDefs(dir, "engajados");
+      assert.equal(defs.length, 1);
+      assert.equal(defs[0].key, "engajados");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("com group + manifest ausente → erro claro aponta pro comando build-segment genérico, não pro ramp-warm", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wd-group-missing-"));
+    try {
+      assert.throws(() => loadWaveDefs(dir, "engajados"), /engajados-manifest\.json ausente/);
+      assert.throws(() => loadWaveDefs(dir, "engajados"), /clarice-build-segment\.ts --cycle \.\.\. --group \.\.\./);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -206,6 +237,30 @@ describe("resolveListName (#4471 — ponto de decisão entre os dois formatos, u
   });
 });
 
+// #4762: `isGroupCellWave` foi extraído de dentro de `resolveListName` pra
+// ser o único ponto de decisão "isto é célula A/B/C do --group?" — reusado
+// por `buildPlan` (grava em `Plan.hasCell`) e propagado até
+// `resolveRegistryKey`, em vez deste re-derivar a mesma heurística sozinho
+// (achado do fleet review da PR #4758 sobre a #4753). Os 3 casos abaixo
+// espelham exatamente os 3 casos de `resolveListName` acima — mesmo gate,
+// função extraída.
+describe("isGroupCellWave (#4762 — gate único, reusado por resolveListName e buildPlan/resolveRegistryKey)", () => {
+  it("group ativo + sufixo -A/-B/-C (case-insensitive) → true", () => {
+    assert.equal(isGroupCellWave("d1-sab01-A", "d1-sab01-A"), true);
+    assert.equal(isGroupCellWave("d1-sab01-A", "d1-sab01-a"), true);
+    assert.equal(isGroupCellWave("d1-sab01-A", "d1-sab01-B"), true);
+    assert.equal(isGroupCellWave("d1-sab01-A", "d1-sab01-c"), true);
+  });
+
+  it("group ativo, sem sufixo de célula → false", () => {
+    assert.equal(isGroupCellWave("engajados", "engajados"), false);
+  });
+
+  it("group null (rampa) → SEMPRE false, mesmo com sufixo coincidente — gate duplo defensivo", () => {
+    assert.equal(isGroupCellWave(null, "W1-A"), false);
+  });
+});
+
 // #2844/260702: o cohort fixo W1–W5 (WAVES) era exclusivo do fallback legado,
 // removido com clarice-build-waves.ts. Waves store-driven são inteiramente
 // dinâmicas (manifest lista só o que de fato foi gerado) — sem shape fixo pra
@@ -291,6 +346,7 @@ describe("buildPlan --group (#2916 — grupos nomeados de #2885 deixam de ser ó
       assert.equal(plans[0].wave.file, "engajados.csv");
       assert.equal(plans[0].count, 2, "resolve os 2 contatos reais do grupo (a@x.com, b@x.com — fresh@x.com fora)");
       assert.equal(plans[0].listName, "Clarice Retenção Jun/2026 engajados — Engajados (retenção)");
+      assert.equal(plans[0].hasCell, false, "#4762: grupo sem sufixo -A/-B/-C não é célula");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -351,6 +407,7 @@ describe("buildPlan --group (#2916 — grupos nomeados de #2885 deixam de ser ó
 
         const plans = buildPlan("Rótulo ignorado no braço com célula", cycle, dir, groupKey);
         assert.equal(plans.length, 1);
+        assert.equal(plans[0].hasCell, true, "#4762: wave.key com sufixo de célula + group ativo");
         const listName = plans[0].listName;
 
         // A campanha real (clarice-schedule-group.ts::campaignNameFor) usa o
@@ -497,37 +554,33 @@ describe("parseArgs", () => {
 // (--key desta invocação) em vez do nome estático, quando informada.
 // ---------------------------------------------------------------------------
 
-describe("resolveRegistryKey (#4753)", () => {
-  it("sem campaignKey → mantém wave.key (comportamento original, ramp-warm/engajados/etc nunca passam --key)", () => {
-    assert.equal(resolveRegistryKey("novos"), "novos");
-    assert.equal(resolveRegistryKey("ramp-warm", undefined), "ramp-warm");
+describe("resolveRegistryKey (#4753, sinal de célula EXPLÍCITO desde #4762)", () => {
+  it("sem campaignKey → mantém waveKey (comportamento original, ramp-warm/engajados/etc nunca passam --key)", () => {
+    assert.equal(resolveRegistryKey("novos", false), "novos");
+    assert.equal(resolveRegistryKey("ramp-warm", false, undefined), "ramp-warm");
   });
 
-  it("com campaignKey + wave.key SEM célula → sobrescreve pra campaignKey", () => {
-    assert.equal(resolveRegistryKey("novos", "novos-260807"), "novos-260807");
+  it("com campaignKey + hasCell=false → sobrescreve pra campaignKey", () => {
+    assert.equal(resolveRegistryKey("novos", false, "novos-260807"), "novos-260807");
   });
 
-  it("com campaignKey + wave.key COM célula (-A/-B/-C) → mantém wave.key (célula já é key distinta por construção)", () => {
-    assert.equal(resolveRegistryKey("d4-ter04-A", "novos-260807"), "d4-ter04-A");
-    assert.equal(resolveRegistryKey("d4-ter04-B", "novos-260807"), "d4-ter04-B");
-    assert.equal(resolveRegistryKey("d4-ter04-c", "novos-260807"), "d4-ter04-c"); // case-insensitive na detecção da célula
+  it("com campaignKey + hasCell=true → mantém waveKey (célula já é key distinta por construção)", () => {
+    assert.equal(resolveRegistryKey("d4-ter04-A", true, "novos-260807"), "d4-ter04-A");
+    assert.equal(resolveRegistryKey("d4-ter04-B", true, "novos-260807"), "d4-ter04-B");
+    assert.equal(resolveRegistryKey("d4-ter04-c", true, "novos-260807"), "d4-ter04-c");
   });
 
-  // Caso NEGATIVO do gate de célula (achado do fleet review da PR #4758).
-  // `/-[ABC]$/i` é uma heurística: um nome de grupo que legitimamente termine
-  // em `-a`/`-b`/`-c` sem ser célula de teste seria tratado como célula e NÃO
-  // receberia a key de campanha — reintroduzindo o bug só pra ele, em silêncio.
-  // Nenhum grupo real tem essa forma hoje (`novos`, `ramp-warm`, `engajados`),
-  // e a regex não é nova desta PR (já existe em `resolveListName`) — mas
-  // `resolveRegistryKey` é um ponto de confiança NOVO nela, então vale travar
-  // a convenção explicitamente em vez de deixá-la implícita.
-  it("gate de célula exige o hífen — sufixo de letra sem hífen NÃO é célula", () => {
-    assert.equal(resolveRegistryKey("basta", "novos-260807"), "novos-260807");
-    assert.equal(resolveRegistryKey("usa", "novos-260807"), "novos-260807");
-    // Documenta o limite conhecido da heurística: um grupo hipotético terminado
-    // em `-a` É tratado como célula. Se algum dia existir um grupo assim, este
-    // teste é o lugar onde a decisão precisa ser revisitada.
-    assert.equal(resolveRegistryKey("grupo-a", "novos-260807"), "grupo-a");
+  // #4762: achado do fleet review da PR #4758 sobre a #4753 — antes,
+  // `resolveRegistryKey` re-derivava "isto é célula?" fazendo regex direto
+  // em `waveKey`, sem o gate em `group` que a função irmã `resolveListName`
+  // já carregava (documentado no describe de `isGroupCellWave` acima, que
+  // agora é o ÚNICO lugar onde essa regex vive). Com `hasCell` como sinal
+  // explícito, a FORMA da string deixa de decidir qualquer coisa aqui — a
+  // prova é que um `waveKey` terminado em "-a" com `hasCell=false` (o valor
+  // que um grupo sem sufixo real de célula sempre produz) ainda sobrescreve
+  // normalmente, em vez de ser tratado como célula pela forma da string.
+  it("hasCell explícito — a forma da string não decide mais nada aqui (waveKey termina em -a, mas hasCell=false)", () => {
+    assert.equal(resolveRegistryKey("grupo-a", false, "novos-260807"), "novos-260807");
   });
 
   // `--key ""` degrada pra "sem override" via `values["key"] || undefined` —
@@ -535,7 +588,7 @@ describe("resolveRegistryKey (#4753)", () => {
   // futura no parse não transforme string vazia numa key literal vazia gravada
   // no registro, que não resolveria nunca.
   it("campaignKey vazia é tratada como ausente, não como key literal", () => {
-    assert.equal(resolveRegistryKey("novos", ""), "novos");
+    assert.equal(resolveRegistryKey("novos", false, ""), "novos");
   });
 });
 
@@ -810,6 +863,70 @@ describe("importOneWave (#4577 — confirma o processo assíncrono + reconcilia 
     assert.equal(result.count, plan.sentCount + 5);
   });
 
+  // #4764 — caso real: montando a onda d8 do ciclo 2607-08, o import
+  // reconciliou 1915 confirmados contra 1916 enviados. O contato
+  // (m.afonso1208@gmail.com) tinha blacklist GLOBAL na conta Brevo — nunca
+  // receberia o e-mail de qualquer forma, apagar/recriar a lista não
+  // resolveria nada. `getListInfo` já trazia `totalBlacklisted: 1` na mesma
+  // resposta; antes desta issue o código não usava o campo e tratava como
+  // o mesmo drop silencioso do #4577/#4720.
+  describe("#4764 — distingue blacklist administrativo de perda real", () => {
+    it("delta === totalBlacklisted → supressão esperada, NÃO aborta, resolve com a contagem confirmada", async () => {
+      const client = makeFakeClient({
+        getListInfo: async () => ({ totalSubscribers: plan.sentCount - 1, totalBlacklisted: 1 }),
+      });
+      const result = await importOneWave(client, plan, { folderId: 1, poll: noSleep, now: () => "2026-08-07T09:00:00.000Z" });
+      assert.deepEqual(result, {
+        wave: "W1",
+        listId: 99,
+        listName: plan.listName,
+        count: plan.sentCount - 1,
+        sentCount: plan.sentCount,
+        importedAt: "2026-08-07T09:00:00.000Z",
+      });
+    });
+
+    it("delta === totalBlacklisted → loga a supressão como informação, não como erro", async () => {
+      const logs: string[] = [];
+      const client = makeFakeClient({
+        getListInfo: async () => ({ totalSubscribers: plan.sentCount - 1, totalBlacklisted: 1 }),
+      });
+      await importOneWave(client, plan, { folderId: 1, poll: noSleep, log: (m) => logs.push(m) });
+      const joined = logs.join("\n");
+      assert.match(joined, /suprimido\(s\) por blacklist administrativo/);
+      assert.match(joined, /não é perda/);
+    });
+
+    it("delta > totalBlacklisted (perda parcial real, ALÉM da blacklist) → ainda aborta", async () => {
+      // 2 perdidos no total, só 1 é blacklist — o outro é o drop silencioso
+      // real que #4577/#4720 existem pra pegar; não pode ser mascarado.
+      const client = makeFakeClient({
+        getListInfo: async () => ({ totalSubscribers: plan.sentCount - 2, totalBlacklisted: 1 }),
+      });
+      await assert.rejects(
+        () => importOneWave(client, plan, { folderId: 1, poll: noSleep }),
+        /2 contato\(s\) perdido/,
+      );
+    });
+
+    it("totalBlacklisted ausente na resposta (fake antigo / campo faltando) → comportamento anterior preservado, aborta", async () => {
+      const client = makeFakeClient({ getListInfo: async () => ({ totalSubscribers: plan.sentCount - 1 }) });
+      await assert.rejects(
+        () => importOneWave(client, plan, { folderId: 1, poll: noSleep }),
+        /perdido\(s\) em/,
+      );
+    });
+
+    it("totalBlacklisted === 0 (campo presente, mas ninguém suprimido) → delta não bate com 0, aborta normalmente", async () => {
+      const client = makeFakeClient({
+        getListInfo: async () => ({ totalSubscribers: plan.sentCount - 1, totalBlacklisted: 0 }),
+      });
+      await assert.rejects(
+        () => importOneWave(client, plan, { folderId: 1, poll: noSleep }),
+        /perdido\(s\) em/,
+      );
+    });
+  });
 });
 
 // #4577 item 1: `makeRealImportRunClient` (o transporte REAL, usado só por

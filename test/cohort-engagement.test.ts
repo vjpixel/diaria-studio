@@ -573,6 +573,76 @@ describe("computeGroupEngagement (#4464)", () => {
     assert.equal(g.amostra_vazia, false);
     assert.equal(g.amostra_instavel, false);
   });
+
+  /**
+   * #4761 — o caso EXATO da issue: 1 única pessoa que recebeu 12 edições
+   * (mediana >= 10, então `amostra_instavel` fica false) produz
+   * `abertura: 50,0%` sem NENHUM marcador de alerta antes deste campo — uma
+   * taxa de N=1 ficava visualmente idêntica a uma de N=300.
+   */
+  it("amostra_pequena = true quando 1 pessoa recebeu 12 edições (mediana alta, amostra minúscula)", () => {
+    const subs = [
+      makeSub({ stats: { total_received: 12, total_unique_opened: 6, open_rate: 50 } }),
+    ];
+    const g = computeGroupEngagement(subs, { threshold: 40 });
+    assert.equal(g.amostra_considerada, 1);
+    assert.equal(g.mediana_recebidas, 12);
+    assert.equal(g.abertura_agregada, 0.5);
+    assert.equal(g.amostra_instavel, false, "mediana 12 >= 10 — o buraco que a issue #4761 documenta");
+    assert.equal(g.amostra_vazia, false, "1 !== 0 — não é o caso vazio");
+    assert.equal(g.amostra_pequena, true, "1 pessoa é indefensável mesmo com mediana alta");
+  });
+
+  it("amostra_pequena = false quando amostra_considerada é exatamente o piso (5)", () => {
+    const subs = Array.from({ length: 5 }, () =>
+      makeSub({ stats: { total_received: 12, total_unique_opened: 6, open_rate: 50 } }),
+    );
+    const g = computeGroupEngagement(subs, { threshold: 40 });
+    assert.equal(g.amostra_considerada, 5);
+    assert.equal(g.amostra_pequena, false, "5 é o piso — só < 5 marca, não <=");
+  });
+
+  it("amostra_pequena = true quando amostra_considerada é 4 (um abaixo do piso)", () => {
+    const subs = Array.from({ length: 4 }, () =>
+      makeSub({ stats: { total_received: 12, total_unique_opened: 6, open_rate: 50 } }),
+    );
+    const g = computeGroupEngagement(subs, { threshold: 40 });
+    assert.equal(g.amostra_considerada, 4);
+    assert.equal(g.amostra_pequena, true);
+  });
+
+  it("amostra_pequena = false quando amostra_vazia = true — 0 não é > 0", () => {
+    const subs = [makeSub({ status: "active", stats: null })];
+    const g = computeGroupEngagement(subs, { threshold: 40 });
+    assert.equal(g.amostra_considerada, 0);
+    assert.equal(g.amostra_vazia, true);
+    assert.equal(g.amostra_pequena, false, "amostra_pequena não se sobrepõe a amostra_vazia");
+  });
+
+  it("amostra_pequena e amostra_instavel PODEM coexistir — dimensões diferentes (pessoas vs. mediana)", () => {
+    const subs = [
+      makeSub({ stats: { total_received: 2, total_unique_opened: 1, open_rate: 50 } }),
+      makeSub({ stats: { total_received: 3, total_unique_opened: 1, open_rate: 33 } }),
+      makeSub({ stats: { total_received: 4, total_unique_opened: 1, open_rate: 25 } }),
+    ];
+    const g = computeGroupEngagement(subs, { threshold: 40 });
+    assert.equal(g.amostra_considerada, 3);
+    assert.equal(g.mediana_recebidas, 3);
+    assert.equal(g.amostra_instavel, true);
+    assert.equal(g.amostra_pequena, true, "3 pessoas E mediana baixa — os dois campos disparam juntos");
+  });
+
+  it("amostra_pequena = false quando amostra_considerada é grande mesmo com amostra_instavel", () => {
+    // 6 pessoas (>= piso de 5), todas com pouco histórico (mediana < 10) —
+    // amostra_instavel dispara, amostra_pequena não: são sinais independentes.
+    const subs = Array.from({ length: 6 }, () =>
+      makeSub({ stats: { total_received: 2, total_unique_opened: 1, open_rate: 50 } }),
+    );
+    const g = computeGroupEngagement(subs, { threshold: 40 });
+    assert.equal(g.amostra_considerada, 6);
+    assert.equal(g.amostra_instavel, true);
+    assert.equal(g.amostra_pequena, false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -767,6 +837,137 @@ describe("formatEngagementTable (#4464)", () => {
     });
     assert.ok(table.includes("⚠vazio"));
     assert.ok(!table.includes("⚠instável"));
+  });
+
+  /**
+   * #4761 — o cenário REAL da issue: 1 pessoa, mediana 12 (>= 10, então
+   * `amostra_instavel` fica false), `abertura: 50,0%`. Antes deste campo a
+   * linha saía SEM NENHUM marcador — indistinguível de um canal com 300
+   * pessoas na mesma taxa.
+   */
+  it("marca ⚠pequena(N) quando 1 pessoa com mediana alta produz abertura sem nenhum outro marcador", () => {
+    const table = formatEngagementTable({
+      groups: {
+        "canal-1-pessoa": {
+          cadastros: 1,
+          ativos: 1,
+          inativos: 0,
+          pending: 0,
+          invalid: 0,
+          outros_status: 0,
+          leitores: 1,
+          abertura_agregada: 0.5,
+          media_recebidas: 12,
+          mediana_recebidas: 12,
+          amostra_instavel: false,
+          amostra_considerada: 1,
+          pre_corte_considerado: 1,
+          amostra_vazia: false,
+          amostra_pequena: true,
+        },
+      },
+      total_cadastros: 1,
+      threshold: 40,
+      min_received: null,
+      since: null,
+      fetched_at: "2026-08-08T00:00:00.000Z",
+    });
+    assert.ok(table.includes("50.0%"), "a taxa de abertura ainda aparece — o marcador é aditivo, não substitui o número");
+    assert.ok(table.includes("⚠pequena(1)"), "1 é o amostra_considerada real, não o piso de 5");
+    assert.ok(!table.includes("⚠instável"), "mediana 12 >= 10 não dispara amostra_instavel — o buraco que a issue documenta");
+    assert.ok(!table.includes("⚠vazio"));
+  });
+
+  it("não marca ⚠pequena quando amostra_considerada atinge o piso (5)", () => {
+    const table = formatEngagementTable({
+      groups: {
+        "canal-5-pessoas": {
+          cadastros: 5,
+          ativos: 5,
+          inativos: 0,
+          pending: 0,
+          invalid: 0,
+          outros_status: 0,
+          leitores: 2,
+          abertura_agregada: 0.4,
+          media_recebidas: 12,
+          mediana_recebidas: 12,
+          amostra_instavel: false,
+          amostra_considerada: 5,
+          pre_corte_considerado: 5,
+          amostra_vazia: false,
+          amostra_pequena: false,
+        },
+      },
+      total_cadastros: 5,
+      threshold: 40,
+      min_received: null,
+      since: null,
+      fetched_at: "2026-08-08T00:00:00.000Z",
+    });
+    assert.ok(!table.includes("⚠pequena"));
+  });
+
+  it("acumula ⚠instável e ⚠pequena quando os dois disparam juntos (dimensões independentes)", () => {
+    const table = formatEngagementTable({
+      groups: {
+        "canal-3-pessoas-mediana-baixa": {
+          cadastros: 3,
+          ativos: 3,
+          inativos: 0,
+          pending: 0,
+          invalid: 0,
+          outros_status: 0,
+          leitores: 1,
+          abertura_agregada: 0.36,
+          media_recebidas: 3,
+          mediana_recebidas: 3,
+          amostra_instavel: true,
+          amostra_considerada: 3,
+          pre_corte_considerado: 3,
+          amostra_vazia: false,
+          amostra_pequena: true,
+        },
+      },
+      total_cadastros: 3,
+      threshold: 40,
+      min_received: null,
+      since: null,
+      fetched_at: "2026-08-08T00:00:00.000Z",
+    });
+    assert.ok(table.includes("⚠instável"));
+    assert.ok(table.includes("⚠pequena(3)"));
+  });
+
+  it("nunca marca ⚠pequena junto de ⚠vazio — 0 não é > 0", () => {
+    const table = formatEngagementTable({
+      groups: {
+        "campanha-fechada-vazia": {
+          cadastros: 2,
+          ativos: 2,
+          inativos: 0,
+          pending: 0,
+          invalid: 0,
+          outros_status: 0,
+          leitores: 0,
+          abertura_agregada: null,
+          media_recebidas: null,
+          mediana_recebidas: null,
+          amostra_instavel: false,
+          amostra_considerada: 0,
+          pre_corte_considerado: 0,
+          amostra_vazia: true,
+          amostra_pequena: false,
+        },
+      },
+      total_cadastros: 2,
+      threshold: 40,
+      min_received: null,
+      since: null,
+      fetched_at: "2026-08-08T00:00:00.000Z",
+    });
+    assert.ok(table.includes("⚠vazio"));
+    assert.ok(!table.includes("⚠pequena"));
   });
 });
 

@@ -193,7 +193,13 @@ export async function brevoGetList(
   apiKey: string,
   listId: number,
   _sleep = _defaultSleep,
-): Promise<{ id: number; name: string; totalSubscribers: number }> {
+  // #4764: `totalBlacklisted` já vem na mesma resposta — só faltava tipar.
+  // Distingue "contato blacklistado globalmente na conta" (nunca receberia
+  // o e-mail de qualquer forma) de perda real por drop silencioso da Brevo
+  // (#4577/#4720). Opcional na leitura por segurança (aditivo, nunca deveria
+  // faltar na resposta real da API, mas um shape inesperado não deve quebrar
+  // callers existentes que só liam `totalSubscribers`).
+): Promise<{ id: number; name: string; totalSubscribers: number; totalBlacklisted?: number }> {
   return withBrevo429Retry(async () => {
     const res = await brevoRawFetch(`https://api.brevo.com/v3/contacts/lists/${listId}`, {
       method: "GET",
@@ -203,7 +209,7 @@ export async function brevoGetList(
       const text = await res.text();
       throw new Error(`Brevo API GET /contacts/lists/${listId} falhou (${res.status}): ${text}`);
     }
-    const data = await res.json() as { id: number; name: string; totalSubscribers: number };
+    const data = await res.json() as { id: number; name: string; totalSubscribers: number; totalBlacklisted?: number };
     return data;
   }, _sleep);
 }
