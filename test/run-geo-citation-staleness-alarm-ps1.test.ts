@@ -1,15 +1,19 @@
 /**
- * test/run-hub-drift-check-ps1.test.ts (#4750)
+ * test/run-geo-citation-staleness-alarm-ps1.test.ts (#4756)
  *
- * `scripts/run-hub-drift-check.ps1` segue o MESMO molde de
- * `scripts/run-worker-drift-check.ps1` (#4723), extraído para
- * `scripts/lib/Invoke-DiariaScheduledWrapper.psm1` em #4756: log resiliente
- * (temp file fora de data/, anexo com retry) + exit code honesto mesmo
- * quando `npx` genuinamente não resolve no PATH (contexto de serviço do
- * Task Scheduler). Cenários travados aqui — ver
- * `test/run-worker-drift-check-ps1.test.ts` pro precedente direto. O caso
- * exit-1 (#4756, backport do achado #4552) fecha a mesma lacuna que existia
- * neste wrapper antes da migração pro módulo compartilhado.
+ * `scripts/run-geo-citation-staleness-alarm.ps1` (#4755) não tinha teste de
+ * regressão dedicado até a migração pro módulo compartilhado
+ * `scripts/lib/Invoke-DiariaScheduledWrapper.psm1` (#4756) — segue o MESMO
+ * molde de log resiliente + exit code honesto dos demais wrappers migrados
+ * (`run-worker-drift-check.ps1`/`run-hub-drift-check.ps1`, #4064/#4320/#4343).
+ * Cenários travados aqui:
+ *   1. Caso feliz (script noop OK) → exit 0, log final criado.
+ *   2. Log não gravável (parent do LogPath é um arquivo) → exit != 0.
+ *   3. PATH restrito sem node/npx → `$LASTEXITCODE` fica indefinido/null →
+ *      guard força exit != 0 (não um falso-sucesso silencioso, #4343).
+ *   4. Script noop que falha (exit 1) → exit code do wrapper também é 1
+ *      (mesmo caso do achado HIGH #2 do review #4552, escrito aqui desde a
+ *      criação do teste — não há molde antigo pra faltar o backport).
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -20,7 +24,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const SCRIPT = join(ROOT, "scripts", "run-hub-drift-check.ps1");
+const SCRIPT = join(ROOT, "scripts", "run-geo-citation-staleness-alarm.ps1");
 const NOOP_FIXTURE = join(ROOT, "test-fixtures", "clarice-sync-daily", "noop-exit0.ts");
 const NOOP_EXIT1_FIXTURE = join(ROOT, "test-fixtures", "clarice-sync-daily", "noop-exit1.ts");
 
@@ -61,25 +65,25 @@ function runScriptWithNpxUnresolvable(args: string[], timeoutMs = 120_000) {
 }
 
 describe(
-  "run-hub-drift-check.ps1: log resiliente + exit code honesto (#4750)",
+  "run-geo-citation-staleness-alarm.ps1: log resiliente + exit code honesto (#4756)",
   { skip: !isWindows && "requer powershell.exe (Windows)" },
   () => {
     let workDir: string;
 
     before(() => {
-      workDir = mkdtempSync(join(tmpdir(), "hub-drift-check-ps1-test-"));
+      workDir = mkdtempSync(join(tmpdir(), "geo-staleness-alarm-ps1-test-"));
     });
 
     after(() => {
       rmSync(workDir, { recursive: true, force: true });
     });
 
-    it("caso feliz: check script OK -> exit 0, log final criado", () => {
+    it("caso feliz: alarm script OK -> exit 0, log final criado", () => {
       const tempLog = join(workDir, "happy-temp.log");
       const finalLog = join(workDir, "happy-final.log");
 
       const result = runScript([
-        "-CheckScript", NOOP_FIXTURE,
+        "-AlarmScript", NOOP_FIXTURE,
         "-LogPath", finalLog,
         "-TempLogPath", tempLog,
       ]);
@@ -92,10 +96,10 @@ describe(
       const tempLog = join(workDir, "logfail-temp.log");
       const blockerFile = join(workDir, "blocker.txt");
       writeFileSync(blockerFile, "sou um arquivo, nao um diretorio");
-      const badLogPath = join(blockerFile, "sub", ".drift-check.log");
+      const badLogPath = join(blockerFile, "sub", ".staleness-alarm.log");
 
       const result = runScript([
-        "-CheckScript", NOOP_FIXTURE,
+        "-AlarmScript", NOOP_FIXTURE,
         "-LogPath", badLogPath,
         "-TempLogPath", tempLog,
       ]);
@@ -115,7 +119,7 @@ describe(
       const finalLog = join(workDir, "npxfail-final.log");
 
       const result = runScriptWithNpxUnresolvable([
-        "-CheckScript", NOOP_FIXTURE,
+        "-AlarmScript", NOOP_FIXTURE,
         "-LogPath", finalLog,
         "-TempLogPath", tempLog,
       ]);
@@ -127,14 +131,16 @@ describe(
           `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
       );
       assert.ok(existsSync(finalLog), "esperava o log final criado mesmo com npx não resolvido");
+      const content = readFileSync(finalLog, "utf8");
+      assert.match(content, /npx nao executou/);
     });
 
-    it("check script falha (exit 1) -> exit code do wrapper também é 1 (#4756, backport do achado #4552)", () => {
+    it("alarm script falha (exit 1) -> exit code do wrapper também é 1 (#4756, backport do achado #4552)", () => {
       const tempLog = join(workDir, "exit1-temp.log");
       const finalLog = join(workDir, "exit1-final.log");
 
       const result = runScript([
-        "-CheckScript", NOOP_EXIT1_FIXTURE,
+        "-AlarmScript", NOOP_EXIT1_FIXTURE,
         "-LogPath", finalLog,
         "-TempLogPath", tempLog,
       ]);
@@ -142,12 +148,12 @@ describe(
       assert.equal(
         result.status,
         1,
-        `esperava exit 1 quando o check script falha com exit 1, obteve ${result.status}. ` +
+        `esperava exit 1 quando o alarm script falha com exit 1, obteve ${result.status}. ` +
           `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
       );
       assert.ok(existsSync(finalLog), "esperava o log final criado");
       const content = readFileSync(finalLog, "utf8");
-      assert.match(content, /fim \(check=1\)/);
+      assert.match(content, /fim \(alarm=1\)/);
     });
   },
 );
