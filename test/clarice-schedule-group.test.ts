@@ -12,7 +12,7 @@ import {
   buildInvocationSummary,
   type CampaignEntry,
 } from "../scripts/clarice-schedule-group.ts";
-import { appendGroupListsRegistry } from "../scripts/clarice-import-waves.ts";
+import { appendGroupListsRegistry, resolveRegistryKey } from "../scripts/clarice-import-waves.ts";
 import { checkEiaGuard, isScheduledStatus, applyVerifyResults } from "../scripts/clarice-schedule-sends.ts";
 
 /**
@@ -202,6 +202,105 @@ describe("resolveGroupListId (#3228 — resolve listId do registro de --group --
         "utf8",
       );
       assert.throws(() => resolveGroupListId(dir, "engajados", "engajados"), /está vazio/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("resolveGroupListId (#4753 — 2ª+ importação de grupo SEM célula resolve por --key de CAMPANHA)", () => {
+  it("regressão #4753: 2ª importação no mesmo grupo/ciclo (clarice-import-waves.ts --key de campanha, ex: /diaria-clarice-novos rodando 2x no ciclo) — --key resolve a lista MAIS RECENTE, não aborta", () => {
+    const dir = mkdtempSync(join(tmpdir(), "resolve-group-4753-"));
+    try {
+      // Monta as entradas EXATAMENTE como main() de clarice-import-waves.ts
+      // monta (`key: resolveRegistryKey(r.wave, args.campaignKey)`) — grupo
+      // 'novos' não tem célula, então `wave.key` seria SEMPRE "novos"
+      // (estático, gravado por clarice-build-segment.ts) em toda invocação;
+      // sem `resolveRegistryKey` sobrescrevendo pra `campaignKey`, as duas
+      // linhas abaixo produziriam key IDÊNTICA ("novos") pras duas entradas
+      // — reproduzindo o defeito relatado na issue #4753 (--key de campanha
+      // nunca bate a partir da 2ª lista).
+      appendGroupListsRegistry(dir, "2607-08", "novos", [
+        {
+          key: resolveRegistryKey("novos", "novos-260807"),
+          listId: 201,
+          listName: "Clarice novos 07/08",
+          count: 42,
+          importedAt: "2026-08-07T09:00:00.000Z",
+        },
+      ]);
+      appendGroupListsRegistry(dir, "2607-08", "novos", [
+        {
+          key: resolveRegistryKey("novos", "novos-260808"),
+          listId: 202,
+          listName: "Clarice novos 08/08",
+          count: 17,
+          importedAt: "2026-08-08T09:00:00.000Z",
+        },
+      ]);
+
+      // Antes do #4753, as duas entradas teriam AMBAS `key: "novos"` (estático)
+      // e `--key novos-260808` teria abortado (nenhuma bate) — exatamente o
+      // erro relatado na issue a partir da 2ª lista do ciclo.
+      assert.deepEqual(resolveGroupListId(dir, "novos", "novos-260807"), { listId: 201, listName: "Clarice novos 07/08" });
+      assert.deepEqual(resolveGroupListId(dir, "novos", "novos-260808"), { listId: 202, listName: "Clarice novos 08/08" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("compat retroativa #4753: registro LEGADO misto (3 entradas key='novos' estática + 1 entrada SEM key, evidência real da issue) continua resolvendo — E uma nova importação pós-fix (key de campanha) resolve corretamente ao lado dele", () => {
+    const dir = mkdtempSync(join(tmpdir(), "resolve-group-4753-legacy-"));
+    try {
+      // Reproduz o arquivo real citado na issue: data/clarice-subscribers/
+      // 2607-08/segments/novos-lists.json tinha 4 entradas — 1 sem `key`
+      // (formato pré-#4576) + 3 com `key: "novos"` (formato #4576, mas
+      // ESTÁTICO — o defeito que o #4753 corrige).
+      appendGroupListsRegistry(dir, "2607-08", "novos", [
+        { listId: 100, listName: "lista pré-#4576 (sem key)", count: 5, importedAt: "2026-08-01T09:00:00.000Z" },
+      ]);
+      appendGroupListsRegistry(dir, "2607-08", "novos", [
+        { key: "novos", listId: 101, listName: "lista legado #1", count: 8, importedAt: "2026-08-02T09:00:00.000Z" },
+      ]);
+      appendGroupListsRegistry(dir, "2607-08", "novos", [
+        { key: "novos", listId: 102, listName: "lista legado #2", count: 12, importedAt: "2026-08-05T09:00:00.000Z" },
+      ]);
+      appendGroupListsRegistry(dir, "2607-08", "novos", [
+        { key: "novos", listId: 103, listName: "lista legado #3", count: 9, importedAt: "2026-08-06T09:00:00.000Z" },
+      ]);
+
+      // Registro legado: `--key "novos"` ainda resolve (filter + última
+      // ocorrência, comportamento #4576 inalterado por este fix).
+      assert.deepEqual(resolveGroupListId(dir, "novos", "novos"), { listId: 103, listName: "lista legado #3" });
+      // Workaround documentado na issue (--list-index) continua funcionando
+      // pra escolher qualquer entrada legada específica.
+      assert.deepEqual(resolveGroupListId(dir, "novos", "novos", 0), { listId: 100, listName: "lista pré-#4576 (sem key)" });
+
+      // Uma NOVA importação pós-#4753 (clarice-import-waves.ts --key
+      // novos-260807) grava a key de CAMPANHA — resolve sem ambiguidade e
+      // sem regredir a resolução das 4 entradas legadas acima.
+      appendGroupListsRegistry(dir, "2607-08", "novos", [
+        { key: "novos-260807", listId: 104, listName: "lista pós-#4753", count: 6, importedAt: "2026-08-07T09:00:00.000Z" },
+      ]);
+      assert.deepEqual(resolveGroupListId(dir, "novos", "novos-260807"), { listId: 104, listName: "lista pós-#4753" });
+
+      // A PARTIR daqui o registro está MISTO (legadas com key estática +
+      // pós-fix com key de campanha) — e `--key "novos"` é a assinatura exata
+      // de "--key não foi passado, caiu no default `key = group`".
+      //
+      // Antes do fleet review da PR #4758 esta linha afirmava
+      // `{ listId: 103 }` — ou seja, TRAVAVA o comportamento de resolver
+      // silenciosamente uma entrada LEGADA existindo uma mais recente. O
+      // revisor mostrou que isso é pior que o bug original da #4753: aquele
+      // abortava alto, este criaria campanha contra a lista errada sem erro.
+      // Agora aborta.
+      assert.throws(
+        () => resolveGroupListId(dir, "novos", "novos"),
+        /key de campanha.*nenhuma --key foi informada/s,
+        "registro misto + key == nome do grupo deve abortar, não resolver a legada em silêncio",
+      );
+      // --list-index continua sendo a saída explícita pra alcançar uma legada.
+      assert.deepEqual(resolveGroupListId(dir, "novos", "novos", 3), { listId: 103, listName: "lista legado #3" });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

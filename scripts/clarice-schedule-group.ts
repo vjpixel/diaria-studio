@@ -299,6 +299,28 @@ export function resolveGroupListId(
   // (cada key aparece 1x → filter devolve 1 match) e grupo não-célula
   // re-rodado (todas as entradas compartilham a mesma key → filter devolve
   // todas, e a última é a mais recente — igual ao comportamento pré-#4576).
+  // #4753 (achado do fleet review da PR #4758): quando `--key` é OMITIDO, o
+  // caller cai em `key = group` (o nome do grupo). Antes do #4753 isso era um
+  // acidente feliz — TODA entrada de grupo sem célula tinha `key === group`,
+  // então o filtro casava todas e "última vence" acertava a mais recente.
+  //
+  // Depois do #4753, só as entradas LEGADAS carregam o nome do grupo como key;
+  // as novas carregam key de campanha. Então o mesmo default passa a casar
+  // apenas as ANTIGAS e resolve uma lista obsoleta EM SILÊNCIO — campanha
+  // criada contra a lista errada, sem erro nenhum. O bug que o #4753 corrigiu
+  // falhava alto; este caminho residual falharia calado, que é pior.
+  //
+  // Registro MISTO + key == nome do grupo é exatamente a assinatura de "--key
+  // não foi passado num registro que já tem key de campanha". Aborta.
+  const outrasKeys = [...new Set(lists.map((e) => e.key).filter((k) => k && k !== group))];
+  if (key === group && outrasKeys.length > 0) {
+    throw new Error(
+      `registro do grupo '${group}' tem lista(s) com key de campanha (${outrasKeys.join(", ")}), ` +
+        `mas nenhuma --key foi informada — o default cairia numa entrada legada e resolveria a lista ERRADA em silêncio. ` +
+        `Passe --key correspondente à campanha desta rodada, ou --list-index N (0..${lists.length - 1}) pra escolher explicitamente.`,
+    );
+  }
+
   const matches = lists.filter((e) => e.key === key);
   if (matches.length === 0) {
     throw new Error(

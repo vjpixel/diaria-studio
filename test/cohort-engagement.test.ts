@@ -479,6 +479,100 @@ describe("computeGroupEngagement (#4464)", () => {
     assert.equal(g.abertura_agregada, null);
     assert.equal(g.amostra_instavel, false);
   });
+
+  /**
+   * Regressão #4752: `amostra_considerada === 0` (denominador vazio, o caso
+   * PIOR) fazia `amostra_instavel` ficar `false` — indistinguível de "amostra
+   * grande e saudável" no JSON. `amostra_vazia` é o sinal dedicado, aditivo,
+   * que não muda o significado de `amostra_instavel` (opção 2 da issue).
+   */
+  // O fixture usa status ATIVO com `stats: null` de propósito. Um `status:
+  // "pending"` sairia no `continue` de status antes de chegar em `stats`, e o
+  // teste passaria sem nunca exercitar o caminho que o nome promete — achado
+  // do fleet review da PR #4757.
+  it("amostra_vazia = true quando amostra_considerada é zero (ativo, mas sem stats)", () => {
+    const subs = [makeSub({ status: "active", stats: null })];
+    const g = computeGroupEngagement(subs, { threshold: 40 });
+    assert.equal(g.amostra_considerada, 0);
+    assert.equal(g.amostra_vazia, true);
+    assert.equal(g.amostra_instavel, false, "amostra_instavel não é redefinida — continua false pra vazio");
+  });
+
+  it("amostra_vazia = true quando --min-received corta todos os ativos", () => {
+    const subs = [makeSub({ stats: { total_received: 3, total_unique_opened: 1, open_rate: 100 } })];
+    const g = computeGroupEngagement(subs, { threshold: 40, minReceived: 10 });
+    assert.equal(g.amostra_considerada, 0);
+    assert.equal(g.amostra_vazia, true);
+  });
+
+  it("amostra_vazia = false quando amostra_considerada está entre 1 e 9 — amostra_instavel continua disparando (não regride)", () => {
+    const subs = [
+      makeSub({ stats: { total_received: 2, total_unique_opened: 1, open_rate: 50 } }),
+      makeSub({ stats: { total_received: 3, total_unique_opened: 1, open_rate: 33 } }),
+      makeSub({ stats: { total_received: 4, total_unique_opened: 1, open_rate: 25 } }),
+    ];
+    const g = computeGroupEngagement(subs, { threshold: 40 });
+    assert.equal(g.amostra_considerada, 3);
+    assert.equal(g.amostra_vazia, false);
+    assert.equal(g.amostra_instavel, true, "1-9 considerados continua marcando amostra_instavel");
+  });
+
+  // Borda EXATA entre vazio e não-vazio. Os testes de 0 e 3 não distinguem
+  // `=== 0` de `<= 1` — um refactor que confundisse a condição com a de
+  // `amostra_instavel` passaria despercebido. Achado do fleet review #4757.
+  it("amostra_vazia = false quando amostra_considerada é exatamente 1", () => {
+    const subs = [makeSub({ stats: { total_received: 2, total_unique_opened: 1, open_rate: 50 } })];
+    const g = computeGroupEngagement(subs, { threshold: 40 });
+    assert.equal(g.amostra_considerada, 1);
+    assert.equal(g.amostra_vazia, false);
+    assert.equal(g.amostra_instavel, true, "1 considerado com mediana 2 é instável, não vazio");
+  });
+
+  /**
+   * `pre_corte_considerado` (#4757) — os dois caminhos que produzem
+   * `amostra_vazia` produziam saída IDÊNTICA e pedem ações OPOSTAS: "não há
+   * tracking de stats neste grupo" (investigar) vs "--min-received cortou todo
+   * mundo" (baixar o piso). Sem este campo, quem lê não distingue.
+   */
+  it("pre_corte_considerado distingue 'sem stats' de 'cortado pelo piso'", () => {
+    const semStats = computeGroupEngagement([makeSub({ status: "active", stats: null })], {
+      threshold: 40,
+    });
+    assert.equal(semStats.amostra_vazia, true);
+    assert.equal(semStats.pre_corte_considerado, 0, "ninguém tinha stats pra começar");
+
+    const cortado = computeGroupEngagement(
+      [makeSub({ stats: { total_received: 3, total_unique_opened: 1, open_rate: 100 } })],
+      { threshold: 40, minReceived: 10 },
+    );
+    assert.equal(cortado.amostra_vazia, true);
+    assert.equal(cortado.pre_corte_considerado, 1, "tinha 1 com stats, o piso cortou");
+    assert.equal(
+      cortado.pre_corte_considerado - cortado.amostra_considerada,
+      1,
+      "a diferença é quantos o piso cortou",
+    );
+  });
+
+  it("pre_corte_considerado === amostra_considerada quando não há --min-received", () => {
+    const subs = [
+      makeSub({ stats: { total_received: 20, total_unique_opened: 10, open_rate: 50 } }),
+      makeSub({ stats: { total_received: 30, total_unique_opened: 9, open_rate: 30 } }),
+    ];
+    const g = computeGroupEngagement(subs, { threshold: 40 });
+    assert.equal(g.pre_corte_considerado, g.amostra_considerada);
+  });
+
+  it("amostra_vazia = false quando amostra_considerada é saudável (>= 10)", () => {
+    const subs = [
+      makeSub({ stats: { total_received: 10, total_unique_opened: 1, open_rate: 10 } }),
+      makeSub({ stats: { total_received: 15, total_unique_opened: 1, open_rate: 10 } }),
+      makeSub({ stats: { total_received: 20, total_unique_opened: 1, open_rate: 10 } }),
+    ];
+    const g = computeGroupEngagement(subs, { threshold: 40 });
+    assert.equal(g.amostra_vazia, false);
+    assert.equal(g.amostra_instavel, false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -575,6 +669,8 @@ describe("formatEngagementTable (#4464)", () => {
           mediana_recebidas: 3,
           amostra_instavel: true,
           amostra_considerada: 3,
+          pre_corte_considerado: 3,
+          amostra_vazia: false,
         },
       },
       total_cadastros: 3,
@@ -586,6 +682,91 @@ describe("formatEngagementTable (#4464)", () => {
     assert.ok(table.includes("google-ads"));
     assert.ok(table.includes("24.9%"));
     assert.ok(table.includes("⚠instável"));
+  });
+
+  /**
+   * #4752 opção 3: `amostra_considerada` existia no tipo desde sempre e nunca
+   * aparecia na tabela de texto — a única saída que o editor lê na mão. A
+   * coluna "considerados" fecha essa lacuna de legibilidade.
+   */
+  it("expõe amostra_considerada como coluna na tabela de texto", () => {
+    const table = formatEngagementTable({
+      groups: {
+        "google-ads": {
+          // Valores DISTINTOS de propósito: com cadastros === ativos ===
+          // amostra_considerada === 5, a asserção casava por acidente em
+          // `cadastros` e passaria mesmo se a coluna nova nunca fosse
+          // renderizada — achado do fleet review da PR #4757.
+          cadastros: 12,
+          ativos: 9,
+          inativos: 0,
+          pending: 0,
+          invalid: 0,
+          outros_status: 0,
+          leitores: 2,
+          abertura_agregada: 0.4,
+          media_recebidas: 12,
+          mediana_recebidas: 12,
+          amostra_instavel: false,
+          amostra_considerada: 5,
+          pre_corte_considerado: 5,
+          amostra_vazia: false,
+        },
+      },
+      total_cadastros: 12,
+      threshold: 40,
+      min_received: null,
+      since: null,
+      fetched_at: "2026-08-02T00:00:00.000Z",
+    });
+    assert.match(table, /considerados/);
+    // Ancorado na CAUDA da linha do grupo, não em busca livre. Sem isso, a
+    // regex casa no primeiro número depois de "google-ads" — que é `cadastros`,
+    // não a coluna nova — e passaria mesmo se `amostra_considerada` nunca fosse
+    // renderizado. Achado do fleet review da PR #4757, confirmado imprimindo a
+    // linha real.
+    const linha = table.split("\n").find((l) => l.startsWith("google-ads"));
+    assert.ok(linha, "esperava a linha do grupo na tabela");
+    assert.match(
+      linha!,
+      /\s5\s*$/,
+      `a coluna "considerados" (5) deveria ser o último campo da linha: ${linha}`,
+    );
+  });
+
+  /**
+   * #4752: o caso PIOR (amostra_considerada === 0) precisa de um marcador tão
+   * visível quanto `⚠instável` — antes não tinha nenhum, e a linha parecia
+   * "normal" (leitores: 0, abertura%: n/a) sem sinalizar que o denominador
+   * inteiro estava vazio.
+   */
+  it("marca ⚠vazio quando amostra_considerada é zero — nunca junto de ⚠instável", () => {
+    const table = formatEngagementTable({
+      groups: {
+        "campanha-fechada": {
+          cadastros: 2,
+          ativos: 2,
+          inativos: 0,
+          pending: 0,
+          invalid: 0,
+          outros_status: 0,
+          leitores: 0,
+          abertura_agregada: null,
+          media_recebidas: null,
+          mediana_recebidas: null,
+          amostra_instavel: false,
+          amostra_considerada: 0,
+          amostra_vazia: true,
+        },
+      },
+      total_cadastros: 2,
+      threshold: 40,
+      min_received: null,
+      since: null,
+      fetched_at: "2026-08-02T00:00:00.000Z",
+    });
+    assert.ok(table.includes("⚠vazio"));
+    assert.ok(!table.includes("⚠instável"));
   });
 });
 
