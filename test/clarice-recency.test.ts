@@ -1,6 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { resolveNotSentCutoff, excludeSentSince } from "../scripts/lib/clarice-recency.ts";
+import {
+  resolveNotSentCutoff,
+  excludeSentSince,
+  resolveRecencyCutoffWithDefault,
+} from "../scripts/lib/clarice-recency.ts";
 
 describe("resolveNotSentCutoff (#4719)", () => {
   const now = new Date("2026-08-07T00:00:00.000Z");
@@ -83,5 +87,32 @@ describe("excludeSentSince (#4719)", () => {
       { email: "c", last_sent_at: "2026-06-01T00:00:00.000Z" },
     ];
     assert.deepEqual(excludeSentSince(rows, cutoff).map((r) => r.email), ["a", "c"]);
+  });
+});
+
+describe("resolveRecencyCutoffWithDefault (#4765)", () => {
+  const autoCutoff = "2026-08-01T00:00:00.000Z";
+
+  it("sem cutoff explícito → cai no default automático (source: auto)", () => {
+    assert.deepEqual(resolveRecencyCutoffWithDefault(null, autoCutoff), {
+      cutoffIso: autoCutoff,
+      source: "auto",
+    });
+  });
+
+  it("com cutoff explícito → vence sobre o automático (source: explicit)", () => {
+    const explicit = "2026-07-01T00:00:00.000Z";
+    assert.deepEqual(resolveRecencyCutoffWithDefault(explicit, autoCutoff), {
+      cutoffIso: explicit,
+      source: "explicit",
+    });
+  });
+
+  it("explícito vence mesmo sendo MAIS LARGO (mais antigo) que o automático — escolha do operador nunca é sobreposta", () => {
+    const explicitMaisLargo = "2026-01-01T00:00:00.000Z"; // bem antes do autoCutoff
+    assert.deepEqual(resolveRecencyCutoffWithDefault(explicitMaisLargo, autoCutoff), {
+      cutoffIso: explicitMaisLargo,
+      source: "explicit",
+    });
   });
 });

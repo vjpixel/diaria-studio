@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   buildSegmentArtifact,
+  buildPrioritySnapshotCsv,
   main,
   loadSentOrQueuedEmails,
   excludeSentOrQueued,
@@ -160,6 +161,35 @@ test("buildSegmentArtifact: --min-score exclui priority_points abaixo do piso AN
   assert.deepEqual(emailsOf(csv), ["a@x.com", "b@x.com"]); // "c" (10) fica de fora do piso 20
 });
 
+// ---------------------------------------------------------------------------
+// buildPrioritySnapshotCsv (#4763) — puro
+// ---------------------------------------------------------------------------
+
+test("buildPrioritySnapshotCsv: monta CSV email,priority_points,cohort,priority_optin a partir dos selecionados", () => {
+  const selected: SegmentRow[] = [
+    row({ email: "a@x.com", priority_points: 60, cohort: "leads-2024h2", priority_optin: 1 }),
+    row({ email: "b@x.com", priority_points: 20, cohort: "assinantes-ativos", priority_optin: 0 }),
+  ];
+  const csv = buildPrioritySnapshotCsv(selected);
+  const parsed = Papa.parse(csv, { header: true, skipEmptyLines: true }).data as any[];
+
+  assert.deepEqual(Object.keys(parsed[0]).sort(), ["cohort", "email", "priority_optin", "priority_points"].sort());
+  assert.equal(parsed[0].email, "a@x.com");
+  assert.equal(parsed[0].priority_points, "60");
+  assert.equal(parsed[0].cohort, "leads-2024h2");
+  assert.equal(parsed[0].priority_optin, "1");
+  assert.equal(parsed[1].priority_optin, "0");
+});
+
+test("buildPrioritySnapshotCsv: priority_points/cohort/priority_optin ausentes degradam pra 0/''/0, nunca lançam", () => {
+  const selected: SegmentRow[] = [row({ email: "sem-dado@x.com", priority_points: 0, cohort: null })];
+  const csv = buildPrioritySnapshotCsv(selected);
+  const parsed = Papa.parse(csv, { header: true, skipEmptyLines: true }).data as any[];
+  assert.equal(parsed[0].priority_points, "0");
+  assert.equal(parsed[0].cohort, "");
+  assert.equal(parsed[0].priority_optin, "0");
+});
+
 test("buildSegmentArtifact: --min-score=0 (omitido) não corta nada — comportamento inalterado", () => {
   const rows: SegmentRow[] = [
     row({ email: "a@x.com", sends_count: 2, priority_points: 90 }),
@@ -275,6 +305,60 @@ test("main: SEM --dry-run escreve CSV+manifest+sent-or-queued.json de fato, isol
 
   const csv = readFileSync(resolve(segDir, "engajados.csv"), "utf8");
   assert.ok(csv.includes("real@x.com"), "CSV contém o contato selecionado");
+});
+
+test("main (#4763): SEM --dry-run também escreve {group}-priority-snapshot.csv, com o MESMO conjunto do CSV de transporte", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-snapshot-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, cohort, opens_count, sends_count, mv_bucket) VALUES ('snap@x.com','Snap',2,'leads-2024h2',3,3,'verified')",
+  ).run();
+  recomputeDerived(db);
+  db.close();
+
+  await withFakeBrevoFetch(() =>
+    captureLogs(() => main(["--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--data-root", dir])),
+  );
+
+  const segDir = clariceSegmentsDir("2606-07", dir);
+  const snapshotPath = resolve(segDir, "engajados-priority-snapshot.csv");
+  assert.ok(existsSync(snapshotPath), "escreve o snapshot de priority_points de fato");
+
+  const snapshot = Papa.parse(readFileSync(snapshotPath, "utf8"), { header: true, skipEmptyLines: true })
+    .data as any[];
+  assert.equal(snapshot.length, 1);
+  assert.equal(snapshot[0].email, "snap@x.com");
+  assert.equal(snapshot[0].cohort, "leads-2024h2");
+  assert.ok(Number(snapshot[0].priority_points) > 0, "priority_points recomputado (engajado com aberturas)");
+
+  // Não é o CSV de transporte — a Brevo não deve ver estas colunas extras no import.
+  const transportCsv = readFileSync(resolve(segDir, "engajados.csv"), "utf8");
+  assert.deepEqual(
+    Papa.parse(transportCsv, { header: true }).meta.fields,
+    ["email", "NOME"],
+    "engajados.csv continua email,NOME — colunas extras só vão pro snapshot separado",
+  );
+});
+
+test("main (#4763): --dry-run NÃO escreve {group}-priority-snapshot.csv (mesma disciplina dos outros artefatos)", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-snapshot-dryrun-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket) VALUES ('dry@x.com','Dry',2,3,3,'verified')",
+  ).run();
+  recomputeDerived(db);
+  db.close();
+
+  await withoutBrevoKey(() =>
+    captureLogs(() =>
+      main(["--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--dry-run", "--data-root", dir]),
+    ),
+  );
+
+  const segDir = clariceSegmentsDir("2606-07", dir);
+  assert.equal(existsSync(resolve(segDir, "engajados-priority-snapshot.csv")), false);
 });
 
 // NOTA (#4207, generaliza o `--segments-dir` pontual do #4176): os testes de
