@@ -12,11 +12,16 @@
  * a última instrução do `.catch()`), mesmo padrão já usado em
  * `scripts/sync-pending-to-brevo.ts`/`scripts/inject-poll-token-brevo.ts`.
  *
+ * `scripts/geo-citation-staleness-alarm.ts` (#4773) — mesmo defeito, achado
+ * pelo review consolidado do overnight 260807 num script novo — entrou na
+ * mesma lista em vez de ganhar teste próprio (a asserção é idêntica pros 4).
+ *
  * Mesma técnica de asserção por regex sobre o código-fonte usada em
  * `test/sync-pending-to-brevo-4266.test.ts`/`test/inject-poll-token-brevo-4517.test.ts`
- * — os 3 scripts fazem chamadas de rede reais em `main()`, então o teste não
- * invoca `main()` (nem mocka process.exit/process.exitCode do runner real);
- * ele verifica estaticamente que o catch handler não usa `process.exit(`.
+ * — os scripts cobertos fazem chamadas de rede reais em `main()`, então o
+ * teste não invoca `main()` (nem mocka process.exit/process.exitCode do
+ * runner real); ele verifica estaticamente que o catch handler não usa
+ * `process.exit(`.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -43,6 +48,8 @@ const SCRIPTS_UNDER_TEST = [
   "scripts/check-brevo-diaria-guardrail.ts",
   "scripts/worker-drift-check.ts",
   "scripts/postmaster-campaign-spam-report.ts",
+  // #4773: mesma regressão — catch roda depois de `await sendGmailMessage`.
+  "scripts/geo-citation-staleness-alarm.ts",
 ];
 
 describe("catch handler do isMainModule() usa process.exitCode, não process.exit (#4745, regressão #4653)", () => {
