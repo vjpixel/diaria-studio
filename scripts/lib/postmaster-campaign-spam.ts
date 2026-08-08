@@ -34,6 +34,17 @@
 import type { DayReadingV2 } from "./postmaster-v2-client.ts";
 
 /**
+ * Confirmado ao vivo (#4704, 260806, comentário do editor): prefixo de conta
+ * ESP (Brevo) em todo feedback_loop_id de campanha (`{conta}_{campanha}`).
+ * Fonte única — antes vivia hardcoded separadamente em
+ * `postmaster-campaign-spam-report.ts` (`--account-id` continua podendo
+ * sobrescrever lá) e, desde #4705, também em `postmaster-spam-sync.ts` (sem
+ * flag de override — caminho de produção automatizado). Não é garantido que
+ * a conta nunca mude; um valor observado, não uma constante da API.
+ */
+export const DEFAULT_POSTMASTER_ACCOUNT_ID = "11130585";
+
+/**
  * `{conta}_{campanha}`, ambos numéricos — ver docstring do arquivo. Ids que
  * não casam (conta sozinha, IP, qualquer outro formato) não mapeiam pra
  * campanha.
@@ -138,4 +149,37 @@ export function aggregateCampaignSpamReadings(
  */
 export function sortCampaignSpamReport(rows: CampaignSpamAggregate[]): CampaignSpamAggregate[] {
   return [...rows].sort((a, b) => b.peakSpamRatePct - a.peakSpamRatePct);
+}
+
+/**
+ * #4705: o valor por-campanha que alimenta o breaker (ver
+ * `resolveSpamSignal` em `workers/brevo-dashboard/src/thresholds.ts`) —
+ * `feedbackLoopId`/`campaignId` só informativos (debug/auditoria).
+ */
+export interface WorstCampaignSpam {
+  campaignId: number;
+  feedbackLoopId: string;
+  spamRatePct: number;
+  /** YYYY-MM-DD do dia em que o pico ocorreu (`peakDate` da campanha vencedora). */
+  date: string;
+}
+
+/**
+ * Pura: dentre as agregações de VÁRIAS campanhas na mesma janela, acha a que
+ * teve o PICO mais alto (comparando pico contra pico, não média contra
+ * média) — é este número que #4705 grava em
+ * `PostmasterSpamEntry.worstCampaignSpamRatePct` pra alimentar o breaker,
+ * preferido sobre a média de domínio quando disponível (ver
+ * `resolveSpamSignal`). `null` quando `aggregates` está vazio (nenhuma
+ * campanha atribuível na janela) — o chamador decide o fallback (domínio).
+ */
+export function findWorstCampaignSpam(aggregates: CampaignSpamAggregate[]): WorstCampaignSpam | null {
+  if (aggregates.length === 0) return null;
+  const worst = aggregates.reduce((max, a) => (a.peakSpamRatePct > max.peakSpamRatePct ? a : max), aggregates[0]);
+  return {
+    campaignId: worst.campaignId,
+    feedbackLoopId: worst.feedbackLoopId,
+    spamRatePct: worst.peakSpamRatePct,
+    date: worst.peakDate,
+  };
 }

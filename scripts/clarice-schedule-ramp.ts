@@ -243,7 +243,7 @@ export async function fetchPostmasterSpamEntry(
   fetchFn: typeof fetch = fetch,
 ): Promise<Pick<
   PostmasterSpamEntry,
-  "spamRatePct" | "recordedAt" | "producedBy" | "date" | "daysWithData" | "daysProbed"
+  "spamRatePct" | "recordedAt" | "producedBy" | "date" | "daysWithData" | "daysProbed" | "worstCampaignSpamRatePct"
 > | null> {
   try {
     const res = await fetchFn(`${dashboardUrl}/api/postmaster-spam`);
@@ -265,6 +265,11 @@ export async function fetchPostmasterSpamEntry(
     // não só gravação recente) trataria TODA leitura vinda deste script como
     // indeterminate pra sempre, mesmo com uma medição fresca no KV — o mesmo
     // "travado pra sempre" que o #4131 finding 4 corrigiu pro caso geral.
+    //
+    // #4705: mesma classe de risco pra `worstCampaignSpamRatePct` — sem
+    // repassar aqui, o CLI de agendamento da ramp nunca veria o pico por
+    // campanha e `resolveSpamSignal` cairia sempre no fallback de domínio
+    // pra este caminho, mesmo com o KV gravado corretamente.
     return {
       date: typeof e.date === "string" ? e.date : "",
       spamRatePct: e.spamRatePct,
@@ -272,6 +277,10 @@ export async function fetchPostmasterSpamEntry(
       producedBy: e.producedBy === "manual" || e.producedBy === "auto" ? e.producedBy : undefined,
       daysWithData: typeof e.daysWithData === "number" && Number.isFinite(e.daysWithData) ? e.daysWithData : undefined,
       daysProbed: typeof e.daysProbed === "number" && Number.isFinite(e.daysProbed) ? e.daysProbed : undefined,
+      worstCampaignSpamRatePct:
+        typeof e.worstCampaignSpamRatePct === "number" && Number.isFinite(e.worstCampaignSpamRatePct)
+          ? e.worstCampaignSpamRatePct
+          : undefined,
     };
   } catch {
     return null;
@@ -297,7 +306,7 @@ export function deriveRampVolumes(
   now: Date = new Date(),
   spamEntry?: Pick<
     PostmasterSpamEntry,
-    "spamRatePct" | "recordedAt" | "producedBy" | "date" | "daysWithData" | "daysProbed"
+    "spamRatePct" | "recordedAt" | "producedBy" | "date" | "daysWithData" | "daysProbed" | "worstCampaignSpamRatePct"
   > | null,
 ): RampVolumeResult {
   const allSent = campaigns.filter((c) => c.status === "sent" && !!c.sentDate);

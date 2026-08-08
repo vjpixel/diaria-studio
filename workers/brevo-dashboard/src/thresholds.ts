@@ -195,12 +195,33 @@ export const POSTMASTER_MIN_COVERAGE_RATIO = 0.5;
  * `indeterminate` (`missing` | `malformed` | `recorded-stale` | `date-stale` |
  * `low-coverage`) — ver docstring do tipo. Populado em toda saída
  * `indeterminate`, nunca em `postmaster`.
+ *
+ * #4705: das 2 leituras que uma entry pode carregar — a média de domínio
+ * inteiro (`spamRatePct`, sempre presente) e o PICO por campanha
+ * (`worstCampaignSpamRatePct`, opcional — schema evolution, entries antigas,
+ * ou dias sem `FEEDBACK_LOOP_ID` na resposta) — esta função usa a de
+ * campanha com PRECEDÊNCIA quando presente. Racional (achado da própria
+ * issue #4705): a média de domínio dilui uma campanha ruim isolada entre
+ * campanhas boas — o pico por campanha é o sinal de risco real (mesmo
+ * racional de `aggregateCampaignSpamReadings`/`findWorstCampaignSpam` em
+ * `scripts/lib/postmaster-campaign-spam.ts`, que reportam PICO, não média).
+ * Todos os guards de staleness/cobertura ACIMA continuam avaliados sobre os
+ * campos de domínio (`spamRatePct`/`recordedAt`/`date`/`daysWithData`/
+ * `daysProbed`) — a entry inteira (domínio + por-campanha) é produzida na
+ * MESMA execução do produtor "auto", então o frescor de um vale pro outro;
+ * só a escolha de QUAL número vira `ratePct`/`breach` muda.
  */
 export function resolveSpamSignal(
   entry:
     | Pick<
         PostmasterSpamEntry,
-        "spamRatePct" | "recordedAt" | "producedBy" | "date" | "daysWithData" | "daysProbed"
+        | "spamRatePct"
+        | "recordedAt"
+        | "producedBy"
+        | "date"
+        | "daysWithData"
+        | "daysProbed"
+        | "worstCampaignSpamRatePct"
       >
     | null
     | undefined,
@@ -226,10 +247,17 @@ export function resolveSpamSignal(
   ) {
     return { source: "indeterminate", ratePct: null, breach: false, reason: "low-coverage" };
   }
+  // #4705: pico por campanha tem precedência sobre a média de domínio quando
+  // presente e válido — `Number.isFinite` guarda contra um campo malformado
+  // (nunca confiar que "presente" implica "número válido", mesma disciplina
+  // do guard de `spamRatePct` acima).
+  const effectiveRatePct = Number.isFinite(entry.worstCampaignSpamRatePct)
+    ? (entry.worstCampaignSpamRatePct as number)
+    : entry.spamRatePct;
   return {
     source: "postmaster",
-    ratePct: entry.spamRatePct,
+    ratePct: effectiveRatePct,
     producedBy: entry.producedBy,
-    breach: entry.spamRatePct >= t.spamRate.yellow,
+    breach: effectiveRatePct >= t.spamRate.yellow,
   };
 }

@@ -65,6 +65,37 @@
  * 260730, reconfirmada pra v2 ao vivo em 260806 — ver docstring de
  * `extractSpamRateReadingsV2` em `postmaster-v2-client.ts`).
  *
+ * ── Spam POR CAMPANHA governa o breaker, não só a média de domínio (#4705) ──
+ *
+ * O #4704 (item residual do checklist original) já calculava o PICO de spam
+ * por campanha via `scripts/postmaster-campaign-spam-report.ts`, mas era só
+ * um relatório sob demanda — o breaker (`resolveSpamSignal` em
+ * `workers/brevo-dashboard/src/thresholds.ts`) continuava lendo só a média de
+ * domínio inteiro gravada por este produtor. A #4705 é o achado que expôs o
+ * custo disso: em 03/08/2026 a média de domínio ficou dentro do limite
+ * enquanto uma campanha específica provavelmente teve spam bem mais alto —
+ * dado que só existe no nível por campanha, nunca aparece na média.
+ *
+ * Esta versão do produtor "auto" faz uma 2ª rodada de consultas (reusando
+ * `scripts/lib/postmaster-campaign-spam.ts`, a mesma lib pura do #4704):
+ * `FEEDBACK_LOOP_ID` (DAILY) sobre a MESMA janela → `collectCampaignFeedbackLoopIds`
+ * deduplica por campanha → 1 query `FEEDBACK_LOOP_SPAM_RATE` por campanha →
+ * `findWorstCampaignSpam` acha o PICO mais alto entre todas — gravado em
+ * `PostmasterSpamEntry.worstCampaignSpamRatePct`/`worstCampaignFeedbackLoopId`.
+ * `resolveSpamSignal` prefere esse valor sobre a média de domínio quando
+ * presente (ver docstring de `resolveSpamSignal`).
+ *
+ * FAIL-SOFT em 2 camadas, nunca derruba a sync principal (a média de domínio
+ * é o que já funcionava antes do #4705, e continua sendo gravada mesmo se
+ * tudo abaixo falhar): (1) por campanha — 1 query de `FEEDBACK_LOOP_SPAM_RATE`
+ * que falha (429/5xx/timeout) é pulada, resto da coleta segue (mesmo padrão
+ * do `postmaster-campaign-spam-report.ts`); (2) a coleta inteira — se a
+ * própria query de `FEEDBACK_LOOP_ID` falhar, ou não houver nenhuma campanha
+ * atribuível na janela (schema evolution / dias sem `FEEDBACK_LOOP_ID` na
+ * resposta / conta ESP diferente de `DEFAULT_POSTMASTER_ACCOUNT_ID`), `main()`
+ * grava a entry só com a média de domínio — exatamente o comportamento
+ * anterior ao #4705.
+ *
  * Uso:
  *   npx tsx scripts/postmaster-spam-sync.ts [--window-days 10] [--dry-run]
  *
@@ -88,10 +119,20 @@ import type { PostmasterSpamEntry } from "./lib/dashboard-kv-types.ts";
 import {
   queryDomainStatsV2,
   extractSpamRateReadingsV2,
+  extractFeedbackLoopIdsV2,
   type CalendarDate,
   type DateRangeV2,
   type QueryDomainStatsResponseV2,
 } from "./lib/postmaster-v2-client.ts";
+import {
+  collectCampaignFeedbackLoopIds,
+  aggregateCampaignSpamReadings,
+  findWorstCampaignSpam,
+  DEFAULT_POSTMASTER_ACCOUNT_ID,
+  type CampaignSpamAggregate,
+  type ParsedFeedbackLoopId,
+  type WorstCampaignSpam,
+} from "./lib/postmaster-campaign-spam.ts";
 
 loadProjectEnv();
 
@@ -100,6 +141,10 @@ const POSTMASTER_DOMAIN = "clarice.ai";
 const DEFAULT_WINDOW_DAYS = HEALTH_SAMPLE_DAYS;
 /** Nome arbitrário ecoado de volta em `DomainStatV2.metric` — só precisa bater entre a query e `extractSpamRateReadingsV2`. */
 const SPAM_RATE_METRIC_NAME = "spam_rate";
+/** Idem, pra `FEEDBACK_LOOP_ID` (#4705). */
+const FEEDBACK_LOOP_ID_METRIC_NAME = "feedback_loop_id";
+/** Idem, pra `FEEDBACK_LOOP_SPAM_RATE` por campanha (#4705). */
+const CAMPAIGN_SPAM_RATE_METRIC_NAME = "campaign_spam_rate";
 
 /** `Date` → `CalendarDate` (UTC) — formato de fronteira de range da v2 (`domainStats:query`). */
 export function toCalendarDate(d: Date): CalendarDate {
@@ -179,11 +224,19 @@ export async function collectSpamReadingsV2(
  * #4704: `dailyReadings` grava a série completa (todos os dias com leitura,
  * mais antigo primeiro) — antes desta migração, esse detalhe era descartado
  * depois de calcular a média.
+ *
+ * #4705: `worstCampaign` (opcional, `null` por default — chamadas existentes
+ * com 3 args continuam produzindo uma entry sem os 2 campos novos, mesmo
+ * shape de antes) grava `worstCampaignSpamRatePct`/`worstCampaignFeedbackLoopId`
+ * quando o chamador achou pelo menos 1 campanha atribuível na janela — ver
+ * `findWorstCampaignSpam`. Ausência (`null`) nunca grava os campos (schema
+ * evolution: `undefined`, não um valor inventado).
  */
 export function buildAveragedEntry(
   readings: DayReading[],
   now: Date,
   daysProbed: number,
+  worstCampaign: WorstCampaignSpam | null = null,
 ): PostmasterSpamEntry | null {
   if (readings.length === 0) return null;
   const avgRatio = readings.reduce((sum, r) => sum + r.ratio, 0) / readings.length;
@@ -199,7 +252,58 @@ export function buildAveragedEntry(
     daysWithData: readings.length,
     daysProbed,
     dailyReadings,
+    ...(worstCampaign
+      ? {
+          worstCampaignSpamRatePct: worstCampaign.spamRatePct,
+          worstCampaignFeedbackLoopId: worstCampaign.feedbackLoopId,
+        }
+      : {}),
   };
+}
+
+/**
+ * I/O/testável (#4705): coleta o PICO de spam por campanha na mesma janela do
+ * domínio — `queryFeedbackLoopIds`/`queryCampaignSpamRate` injetáveis (mesmo
+ * padrão do resto do arquivo), produção passa `gFetch` via `queryDomainStatsV2`
+ * (ver `main()`), testes passam fakes sem bater rede/token real.
+ *
+ * FAIL-SOFT por campanha: uma query de `FEEDBACK_LOOP_SPAM_RATE` que falhar
+ * (429/5xx/timeout) é pulada com `console.warn`, resto da coleta segue — mesmo
+ * padrão de `postmaster-campaign-spam-report.ts`. Se `queryFeedbackLoopIds`
+ * (a query base) falhar, o erro PROPAGA — é responsabilidade do chamador
+ * (`main()`) decidir se isso derruba a sync inteira ou só a parte por-campanha
+ * (decisão: só a parte por-campanha, ver docstring do módulo).
+ *
+ * `null` quando não há nenhuma campanha atribuível na janela (`accountId` sem
+ * match, ou nenhum `FEEDBACK_LOOP_ID` no formato `{conta}_{campanha}`) — o
+ * chamador trata como "sem dado por-campanha", nunca como erro.
+ */
+export async function collectWorstCampaignSpam(
+  range: DateRangeV2,
+  accountId: string,
+  queryFeedbackLoopIds: (range: DateRangeV2) => Promise<QueryDomainStatsResponseV2>,
+  queryCampaignSpamRate: (parsed: ParsedFeedbackLoopId, range: DateRangeV2) => Promise<QueryDomainStatsResponseV2>,
+): Promise<WorstCampaignSpam | null> {
+  const idsResponse = await queryFeedbackLoopIds(range);
+  const idsByDay = extractFeedbackLoopIdsV2(idsResponse, FEEDBACK_LOOP_ID_METRIC_NAME);
+  const campaigns = collectCampaignFeedbackLoopIds(idsByDay, accountId);
+  if (campaigns.length === 0) return null;
+
+  const aggregates: CampaignSpamAggregate[] = [];
+  for (const parsed of campaigns) {
+    try {
+      const response = await queryCampaignSpamRate(parsed, range);
+      const campaignReadings = extractSpamRateReadingsV2(response, CAMPAIGN_SPAM_RATE_METRIC_NAME);
+      const agg = aggregateCampaignSpamReadings(parsed.campaignId, parsed.feedbackLoopId, campaignReadings);
+      if (agg) aggregates.push(agg);
+    } catch (e) {
+      console.warn(
+        `[postmaster-spam-sync] falha ao consultar FEEDBACK_LOOP_SPAM_RATE da campanha #${parsed.campaignId} ` +
+          `(feedback_loop_id="${parsed.feedbackLoopId}"): ${e instanceof Error ? e.message : String(e)} — pulando, resto da coleta por-campanha segue.`,
+      );
+    }
+  }
+  return findWorstCampaignSpam(aggregates);
 }
 
 /**
@@ -240,7 +344,52 @@ async function main(): Promise<void> {
     );
   const { readings, daysProbed } = await collectSpamReadingsV2(windowDays, now, query);
 
-  const entry = buildAveragedEntry(readings, now, daysProbed);
+  // #4705: pico de spam POR CAMPANHA na MESMA janela do domínio — fail-soft
+  // (ver docstring do módulo): uma falha aqui nunca derruba a sync principal,
+  // só deixa a entry sem os 2 campos novos (fallback pro comportamento
+  // anterior ao #4705, resolveSpamSignal usa a média de domínio).
+  const range = buildWindowRange(windowDays, now);
+  const queryFeedbackLoopIds = (r: DateRangeV2) =>
+    queryDomainStatsV2(
+      POSTMASTER_DOMAIN,
+      [{ name: FEEDBACK_LOOP_ID_METRIC_NAME, standardMetric: "FEEDBACK_LOOP_ID" }],
+      r,
+      gFetch,
+    );
+  const queryCampaignSpamRate = (parsed: ParsedFeedbackLoopId, r: DateRangeV2) =>
+    queryDomainStatsV2(
+      POSTMASTER_DOMAIN,
+      [
+        {
+          name: CAMPAIGN_SPAM_RATE_METRIC_NAME,
+          standardMetric: "FEEDBACK_LOOP_SPAM_RATE",
+          filter: `feedback_loop_id="${parsed.feedbackLoopId}"`,
+        },
+      ],
+      r,
+      gFetch,
+    );
+  let worstCampaign: WorstCampaignSpam | null = null;
+  try {
+    worstCampaign = await collectWorstCampaignSpam(range, DEFAULT_POSTMASTER_ACCOUNT_ID, queryFeedbackLoopIds, queryCampaignSpamRate);
+  } catch (e) {
+    console.warn(
+      `[postmaster-spam-sync] falha ao coletar spam por campanha (#4705) — seguindo só com a média de domínio: ` +
+        `${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  if (worstCampaign) {
+    console.log(
+      `[postmaster-spam-sync] pior campanha na janela: feedback_loop_id="${worstCampaign.feedbackLoopId}" ` +
+        `pico=${worstCampaign.spamRatePct.toFixed(3)}% em ${worstCampaign.date} — este valor governa o breaker (precedência sobre a média de domínio).`,
+    );
+  } else {
+    console.log(
+      "[postmaster-spam-sync] sem campanha atribuível na janela (#4705) — breaker segue usando a média de domínio.",
+    );
+  }
+
+  const entry = buildAveragedEntry(readings, now, daysProbed, worstCampaign);
 
   if (!entry) {
     console.log(

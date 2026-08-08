@@ -217,6 +217,26 @@ export interface PostmasterSpamEntry extends PostmasterReputationSignal {
    * pra entries manuais (1 única leitura, não é janela) ou pré-#4704.
    */
   dailyReadings?: Array<{ date: string; spamRatePct: number }>;
+  /**
+   * #4705: pior (pico) `FEEDBACK_LOOP_SPAM_RATE` dentre TODAS as campanhas com
+   * feedback_loop_id atribuível na mesma janela sondada — ver
+   * `scripts/lib/postmaster-campaign-spam.ts` (`aggregateCampaignSpamReadings`/
+   * `findWorstCampaignSpam`) pro racional completo de "pico, não média de
+   * domínio" (o achado original da #4704: a média do domínio mascarou uma
+   * campanha específica com spam bem mais alto). `resolveSpamSignal`
+   * (workers/brevo-dashboard/src/thresholds.ts) prefere este valor sobre
+   * `spamRatePct` (domínio) quando presente — `undefined` quando não há
+   * nenhuma campanha atribuível na janela (fallback pro domínio) ou em
+   * entries pré-#4705 (schema evolution) — nunca inferir um valor.
+   */
+  worstCampaignSpamRatePct?: number;
+  /**
+   * `feedback_loop_id` (`{conta}_{campanha}`) da campanha que produziu
+   * `worstCampaignSpamRatePct` — só informativo (debug/auditoria), nunca
+   * entra em nenhuma decisão de classificação. Par com o campo acima: sempre
+   * populado junto, `undefined` no mesmo caso.
+   */
+  worstCampaignFeedbackLoopId?: string;
 }
 
 /**
