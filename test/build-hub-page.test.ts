@@ -141,6 +141,25 @@ describe("getAnthropicClaudeHub (#4558 Parte A)", () => {
   });
 });
 
+describe("ItemList do JSON-LD espelha hub.sourceEditions (#4558 Parte B — reforço de estrutura GEO nos hubs)", () => {
+  it("todo item de hub.sourceEditions aparece no ItemList, na mesma ordem, com o mesmo nome e URL", () => {
+    const hub = getAnthropicClaudeHub();
+    const html = renderHubPage(hub);
+    const m = /<script type="application\/ld\+json">([\s\S]*?)<\/script>/.exec(html);
+    assert.ok(m, "hub sem JSON-LD");
+    const jsonLd = JSON.parse(m![1]);
+    const listNode = jsonLd["@graph"].find((n: { "@type": string }) => n["@type"] === "ItemList");
+    assert.ok(listNode, "hub sem node ItemList — sourceEditions não é vazio, deveria ter um");
+    assert.equal(listNode.numberOfItems, hub.sourceEditions.length);
+    assert.equal(listNode.itemListElement.length, hub.sourceEditions.length);
+    for (let i = 0; i < hub.sourceEditions.length; i++) {
+      assert.equal(listNode.itemListElement[i].position, i + 1);
+      assert.equal(listNode.itemListElement[i].name, hub.sourceEditions[i].title);
+      assert.equal(listNode.itemListElement[i].url, hub.sourceEditions[i].url);
+    }
+  });
+});
+
 describe("UTM do rodapé do hub está catalogado em UTM_EMITTERS (#4558 Parte A, mesmo padrão do #4312)", () => {
   // Regressão da MESMA classe que #4312 fechou pra arquivo/livros/cursos
   // (ver test/arquivo-render.test.ts): um literal solto de UTM no rodapé

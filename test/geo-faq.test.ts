@@ -231,4 +231,53 @@ describe("renderGeoJsonLd", () => {
     assert.equal(articleNode.author.name, "Outra Pessoa");
     assert.equal(articleNode.author.url, "https://example.com/x");
   });
+
+  // #4558 Parte B: ItemList opcional — espelha uma lista de itens com URL
+  // já visível no HTML (ex: fontes citadas de um hub) em dado estruturado.
+  it("sem itemList (caso de livros/cursos/arquivo hoje): @graph continua com só 2 nodes, nenhum ItemList", () => {
+    const html = renderGeoJsonLd(baseOpts);
+    const jsonLd = JSON.parse(/<script type="application\/ld\+json">([\s\S]*)<\/script>/.exec(html)![1]);
+    assert.equal(jsonLd["@graph"].length, 2);
+    assert.ok(!jsonLd["@graph"].some((n: { "@type": string }) => n["@type"] === "ItemList"));
+  });
+
+  it("itemList com items vazio: nenhum node ItemList (não polui o @graph com uma lista vazia)", () => {
+    const html = renderGeoJsonLd({ ...baseOpts, itemList: { name: "Fontes", items: [] } });
+    const jsonLd = JSON.parse(/<script type="application\/ld\+json">([\s\S]*)<\/script>/.exec(html)![1]);
+    assert.equal(jsonLd["@graph"].length, 2);
+  });
+
+  it("itemList com items: gera um node ItemList com posição 1-based e mesma ordem de entrada", () => {
+    const html = renderGeoJsonLd({
+      ...baseOpts,
+      itemList: {
+        name: "Edições citadas",
+        items: [
+          { name: "Primeira edição", url: "https://diar.ia.br/p/primeira" },
+          { name: "Segunda edição", url: "https://diar.ia.br/p/segunda" },
+        ],
+      },
+    });
+    const jsonLd = JSON.parse(/<script type="application\/ld\+json">([\s\S]*)<\/script>/.exec(html)![1]);
+    assert.equal(jsonLd["@graph"].length, 3);
+    const listNode = jsonLd["@graph"].find((n: { "@type": string }) => n["@type"] === "ItemList");
+    assert.ok(listNode);
+    assert.equal(listNode.name, "Edições citadas");
+    assert.equal(listNode.numberOfItems, 2);
+    assert.equal(listNode.itemListElement.length, 2);
+    assert.equal(listNode.itemListElement[0].position, 1);
+    assert.equal(listNode.itemListElement[0].name, "Primeira edição");
+    assert.equal(listNode.itemListElement[0].url, "https://diar.ia.br/p/primeira");
+    assert.equal(listNode.itemListElement[1].position, 2);
+    assert.equal(listNode.itemListElement[1].name, "Segunda edição");
+  });
+
+  it("itemList: é </script>-safe também (name com '<' embutido não fecha a tag cedo)", () => {
+    const html = renderGeoJsonLd({
+      ...baseOpts,
+      itemList: { name: "Título com </script> embutido", items: [{ name: "x", url: "https://diar.ia.br/p/x" }] },
+    });
+    const closingTags = html.match(/<\/script>/g) ?? [];
+    assert.equal(closingTags.length, 1);
+  });
 });

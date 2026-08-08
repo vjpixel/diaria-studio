@@ -181,6 +181,17 @@ export function formatMonthYear(dateIso: string): string {
   return `${monthName} de ${year}`;
 }
 
+/** Item de uma lista estruturada (`ItemList`) — issue #4558 Parte B, mesma
+ * lógica do item 6 ("dados e números próprios"): a lista de fontes de um hub
+ * (ou qualquer outra página que enumere itens com URL própria) já EXISTE no
+ * HTML visível; isto só espelha esses mesmos itens em dado estruturado, pra
+ * que um assistente enxergue a estrutura sem precisar fazer parsing de
+ * `<li>`. */
+export interface GeoItemListEntry {
+  name: string;
+  url: string;
+}
+
 export interface GeoJsonLdOptions {
   /** URL absoluta canônica da página. */
   pageUrl: string;
@@ -198,13 +209,24 @@ export interface GeoJsonLdOptions {
   author?: GeoAuthor;
   /** Nome do site — default "diar.ia.br". */
   siteName?: string;
+  /** `ItemList` opcional (issue #4558 Parte B) — pra páginas que enumeram
+   * itens com URL própria no HTML visível (ex: a lista de edições-fonte de
+   * um hub temático). Omitido (ou lista vazia) → nenhum node `ItemList` no
+   * `@graph`, comportamento idêntico a antes desta opção existir (livros,
+   * cursos e arquivo não passam este campo). `items` deve ser EXATAMENTE os
+   * mesmos itens do bloco visível, na mesma ordem — mesma disciplina de
+   * paridade já aplicada ao FAQ acima. */
+  itemList?: { name: string; items: readonly GeoItemListEntry[] };
 }
 
 /**
- * Monta o `<script type="application/ld+json">` com `@graph` de 2 nodes —
- * `FAQPage` (mainEntity = as perguntas/respostas visíveis) e `Article`
- * (autor nomeado, datas, publisher, `inLanguage`). Pure — string pronta pra
- * interpolar no `<head>`, entre `<title>` e `<style>`.
+ * Monta o `<script type="application/ld+json">` com `@graph` de 2 nodes
+ * fixos — `FAQPage` (mainEntity = as perguntas/respostas visíveis) e
+ * `Article` (autor nomeado, datas, publisher, `inLanguage`) — mais um
+ * terceiro node `ItemList` OPCIONAL quando `opts.itemList` é passado com
+ * `items` não-vazio (issue #4558 Parte B — ver `GeoJsonLdOptions.itemList`).
+ * Pure — string pronta pra interpolar no `<head>`, entre `<title>` e
+ * `<style>`.
  *
  * `acceptedAnswer.text` usa `stripMarkdownLinks(item.answer)` (#4635 item
  * 3) — schema.org espera texto legível ali, não markup; embutir
@@ -216,7 +238,7 @@ export interface GeoJsonLdOptions {
 export function renderGeoJsonLd(opts: GeoJsonLdOptions): string {
   const { pageUrl, headline, description, datePublished, dateModified, faq, siteName = "diar.ia.br" } = opts;
   const author = opts.author ?? GEO_AUTHOR;
-  const graph = [
+  const graph: Record<string, unknown>[] = [
     {
       "@type": "FAQPage",
       "@id": `${pageUrl}#faq`,
@@ -240,6 +262,20 @@ export function renderGeoJsonLd(opts: GeoJsonLdOptions): string {
       inLanguage: "pt-BR",
     },
   ];
+  if (opts.itemList && opts.itemList.items.length > 0) {
+    graph.push({
+      "@type": "ItemList",
+      "@id": `${pageUrl}#itemlist`,
+      name: opts.itemList.name,
+      numberOfItems: opts.itemList.items.length,
+      itemListElement: opts.itemList.items.map((item, i) => ({
+        "@type": "ListItem",
+        position: i + 1,
+        name: item.name,
+        url: item.url,
+      })),
+    });
+  }
   // </script>-safe embed — mesmo padrão de themeLabelJson em build-livros-page.ts/build-cursos-page.ts.
   const json = JSON.stringify({ "@context": "https://schema.org", "@graph": graph }).replaceAll("<", "\\u003c");
   return `<script type="application/ld+json">${json}</script>`;
