@@ -2,9 +2,17 @@
 /**
  * clarice-import-waves.ts
  *
- * Importa pro Brevo as waves geradas por clarice-build-waves-store.ts: cria uma
- * lista por wave e sobe os contatos do CSV correspondente. Terça-feira vira 1
+ * Importa pro Brevo waves/grupos já segmentados localmente: cria uma lista
+ * por wave/grupo e sobe os contatos do CSV correspondente. Terça-feira vira 1
  * comando em vez de import manual na UI.
+ *
+ * #4759: o modo "rampa" (sem `--group`, lendo `waves/waves-manifest.json`)
+ * ficou ÓRFÃO — seu único produtor, `clarice-build-waves-store.ts`, foi
+ * aposentado (não tinha o guard cycle-wide `sent-or-queued.json` do #3227 e
+ * causou ~18k envios duplicados no ciclo 2606). O código deste modo continua
+ * aqui (nenhum caminho ativo escreve `waves/` hoje, mas remover o branch é
+ * fora de escopo desta aposentadoria) — o caminho vivo é sempre `--group`,
+ * alimentado por `clarice-build-segment.ts`.
  *
  * SEGURANÇA: dry-run por padrão (só imprime o plano). `--execute` é que de fato
  * cria listas e importa contatos na conta de PRODUÇÃO da Clarice.
@@ -29,14 +37,18 @@
  * Uso:
  *   npx tsx scripts/clarice-import-waves.ts --cycle 2605-06 --label "Mai→Jun/2026"            # dry-run
  *   npx tsx scripts/clarice-import-waves.ts --cycle 2605-06 --label "Mai→Jun/2026" --execute  # cria + importa
- *   --cycle {conteúdo}-{envio}   OBRIGATÓRIO — ciclo do envio (casa com clarice-build-waves-store --cycle)
+ *   --cycle {conteúdo}-{envio}   OBRIGATÓRIO — ciclo do envio
  *   [--folder-id N]              folder Brevo onde criar as listas (default 1)
  *   [--group NOME]               #2916 — importa um GRUPO NOMEADO (#2885,
  *                                 `clarice-build-segment.ts --group NOME`) em vez
  *                                 da rampa: lê `{ciclo}/segments/{NOME}-manifest.json`
  *                                 (via `clariceSegmentsDir`) no lugar de
  *                                 `{ciclo}/waves/waves-manifest.json`. Sem a flag,
- *                                 comportamento inalterado (rampa via waves/).
+ *                                 comportamento inalterado — mas ÓRFÃO desde o
+ *                                 #4759 (nenhum produtor ativo escreve mais
+ *                                 `waves/`; ver nota no topo do arquivo). Use
+ *                                 sempre `--group` (ex: `ramp-warm` no lugar
+ *                                 da rampa).
  *   [--key CAMPAIGN_KEY]         #4753 — só relevante com --group + --execute, pra
  *                                 grupos SEM célula (-A/-B/-C). Sobrescreve o `key`
  *                                 gravado em `{group}-lists.json` (default: nome
@@ -60,9 +72,9 @@
  *
  * Inputs:
  *   sem --group (rampa, em data/clarice-subscribers/{conteúdo}-{envio}/waves/):
- *     waves-manifest.json (gerado por clarice-build-waves-store.ts) + os
- *     w*-store.csv correspondentes — único caminho suportado (#2656 cutover;
- *     o fallback pro cohort legado T1/T2 foi removido em #2844/260702).
+ *     waves-manifest.json + os w*-store.csv correspondentes — ÓRFÃO desde o
+ *     #4759 (produtor original, clarice-build-waves-store.ts, aposentado).
+ *     Nenhum fluxo ativo escreve mais esse diretório.
  *   com --group NOME (grupo nomeado, em .../{conteúdo}-{envio}/segments/):
  *     {NOME}-manifest.json + {NOME}.csv (gerados por clarice-build-segment.ts,
  *     #2885/#2916 — mesmo shape do manifest da rampa: key/file/desc).
@@ -106,11 +118,14 @@ export interface WaveDef {
 }
 
 /**
- * #2656: o builder store-driven (clarice-build-waves-store.ts) escreve um
- * `waves-manifest.json` no dir de waves listando as waves daquele ciclo — é a
- * ÚNICA fonte de verdade (#2844/260702: fallback pro cohort legado T1/T2
- * removido junto com clarice-build-waves.ts). Sem manifest, erro claro em vez
- * de silenciosamente montar um plano com CSVs que não existem mais.
+ * #2656: o builder store-driven escrevia um `waves-manifest.json` no dir de
+ * waves listando as waves daquele ciclo — era a ÚNICA fonte de verdade
+ * (#2844/260702: fallback pro cohort legado T1/T2 removido junto com
+ * clarice-build-waves.ts). #4759: esse produtor (clarice-build-waves-store.ts)
+ * foi aposentado — o modo sem `--group` não tem mais nenhum gerador ativo de
+ * `waves-manifest.json`; o caminho vivo é sempre `--group`. Sem manifest,
+ * erro claro em vez de silenciosamente montar um plano com CSVs que não
+ * existem mais.
  *
  * #2916: generalizado pra também ler o manifest de um GRUPO NOMEADO (#2885,
  * `clarice-build-segment.ts`) — `manifestFileName` default preserva o
@@ -124,7 +139,9 @@ export function loadWaveDefs(dir: string, manifestFileName = "waves-manifest.jso
     throw new Error(
       `${manifestFileName} ausente em ${dir} — gere com ` +
         (manifestFileName === "waves-manifest.json"
-          ? `'clarice-build-waves-store.ts --cycle ...'.`
+          ? `'clarice-build-segment.ts --cycle ... --group ramp-warm' seguido de 'clarice-import-waves.ts ` +
+            `--group ramp-warm ...' (#4759: o modo sem --group não tem mais produtor — clarice-build-waves-store.ts ` +
+            `foi aposentado; use sempre --group daqui pra frente).`
           : `'clarice-build-segment.ts --cycle ... --group ...'.`),
     );
   }
@@ -736,7 +753,8 @@ export function buildPlan(
       throw new Error(
         group
           ? `arquivo do grupo faltando: ${path} — rode 'clarice-build-segment.ts --cycle ${cycle} --group ${group}' antes.`
-          : `wave faltando: ${path} — rode 'clarice-build-waves-store.ts --cycle ${cycle}' antes.`,
+          : `wave faltando: ${path} — modo sem --group não tem mais produtor (#4759: clarice-build-waves-store.ts ` +
+            `foi aposentado); use 'clarice-build-segment.ts --cycle ${cycle} --group ramp-warm' + --group nesta invocação.`,
       );
     }
     const raw = readFileSync(path, "utf-8");

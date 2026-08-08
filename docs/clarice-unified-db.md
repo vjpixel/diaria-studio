@@ -105,10 +105,11 @@ mais fraco que dispute/soft_bounce).
 > Num store recém-buildado (Stripe+MV só), as colunas de supressão do Brevo ficam
 > no default → `send_eligible` reflete só MV + dispute, **não** captura
 > descadastro/bounce. O builder emite warning e reporta `brevo_synced: false`
-> nesse caso. Rode o sync do Brevo pra completar antes de gerar waves —
-> `clarice-build-waves-store.ts` **não** tem fallback independente de exclusão de
-> blacklist (o antigo `clarice-build-waves.ts`, removido em #2844/260702, fazia
-> um fetch próprio de `emailBlacklisted`; hoje `send_eligible` é a única fonte).
+> nesse caso. Rode o sync do Brevo pra completar antes de gerar waves — nenhum
+> builder de wave (hoje `clarice-build-segment.ts`; o antigo
+> `clarice-build-waves.ts`, removido em #2844/260702, fazia um fetch próprio
+> de `emailBlacklisted`) tem fallback independente de exclusão de blacklist —
+> `send_eligible` é a única fonte.
 >
 > Queries de wave devem exigir `cohort IS NOT NULL` além de `send_eligible = 1` —
 > linhas só-de-MV/Brevo (email ausente do Stripe) entram com `cohort = NULL` e
@@ -153,22 +154,25 @@ feitos. Se esgotar a cota / cair (exit 2), **re-rodar continua de onde parou**.
 Reusa o `brevoGet` de `scripts/lib/brevo-client.ts` (respeita `Retry-After`). Requer
 `BREVO_CLARICE_API_KEY`. Use `--limit N` pra um sync parcial / teste.
 
-## Cutover store-driven de waves (#2656) — FEITO
+## Cutover store-driven de waves (#2656) — FEITO, depois APOSENTADO (#4759)
 
-`scripts/clarice-build-waves-store.ts` monta as waves a partir do store (base
-inteira) e é o único builder de waves em produção (legado — `clarice-build-waves.ts`,
-o cohort T1/T2 + fetch ao vivo — removido em #2844/260702): corte por
-`send_eligible`, re-envio por `priority_points`, 1º envio por `cohort` (#2857
-fase C — sucessor de `tier`, que virou coluna legado read-only).
-Fila (`priorityQueue`): engajado → 1º envio → re-envio decaído. Pega o topo até
-`--budget` (lever de expansão de alcance) e fatia em `--wave-size`. Escreve
-`wN-store.csv` + `waves-manifest.json`; o `clarice-import-waves.ts` lê o manifest
-(sem fallback — manifest ausente é erro claro desde #2844). Só escreve CSV — envio
-segue gated (import dry-run + schedule manual). Validado pelo dry-run comparativo
-(`clarice-waves-dryrun.ts`, #2662): na supressão é no-op vs o pipeline pré-cutover;
-o que muda é a segmentação.
+`scripts/clarice-build-waves-store.ts` montava as waves a partir do store (base
+inteira) e foi o único builder de waves em produção por um tempo (sucedendo
+`clarice-build-waves.ts`, o cohort T1/T2 + fetch ao vivo, removido em
+#2844/260702): corte por `send_eligible`, re-envio por `priority_points`, 1º
+envio por `cohort` (#2857 fase C — sucessor de `tier`, que virou coluna legado
+read-only). Fila (`priorityQueue`): engajado → 1º envio → re-envio decaído.
+Pega o topo até `--budget` e fatia em `--wave-size`. Escrevia `wN-store.csv` +
+`waves-manifest.json`.
 
-Uso: `npx tsx scripts/clarice-build-waves-store.ts --cycle 2606-07 [--budget 8000] [--wave-size 2000] [--dry-run]`.
+**Removido no #4759**: não tinha o guard cycle-wide `sent-or-queued.json`
+(#3227, que só existe em `clarice-build-segment.ts`) — causou ~18k envios
+duplicados no ciclo 2606 (mesma edição mensal mandada 2× pra 18% da audiência
+alcançada, concentrado nos pares `envio inicial ↔ envio 4/5 da rampa`). Nenhuma
+skill ativa o invocava mais desde o #4657 (05/08), que migrou o caso de uso
+(rampa de 1º envio) pra `clarice-build-segment.ts --group ramp-warm`. O
+sucessor **tem** o guard e produz `{group}-manifest.json` em `segments/` (não
+`waves/`) — `clarice-import-waves.ts --group ramp-warm` lê esse formato.
 
 ## Follow-up (ainda não feito)
 
