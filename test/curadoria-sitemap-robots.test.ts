@@ -19,7 +19,11 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { renderCuradoriaRobotsTxt, CURADORIA_BLOCKED_BOTS } from "../scripts/lib/shared/robots-txt.ts";
+import {
+  renderCuradoriaRobotsTxt,
+  CURADORIA_BLOCKED_BOTS,
+  robotsTxtAllowsGeneralCrawling,
+} from "../scripts/lib/shared/robots-txt.ts";
 import { parseSitemap } from "../scripts/lib/fetch-sitemap.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -97,5 +101,52 @@ describe("renderCuradoriaRobotsTxt (#4546)", () => {
   it("Content-Signal reflete ai-train=yes (liberação do #4546, não o default ai-train=no da Cloudflare)", () => {
     const out = renderCuradoriaRobotsTxt("https://x.example/sitemap.xml");
     assert.match(out, /Content-Signal: search=yes,ai-train=yes,use=reference/);
+  });
+});
+
+describe("renderCuradoriaRobotsTxt — validação de forma (#4782 achado 5)", () => {
+  it("lança se algum extraDisallowPath não começar com '/' — regressão concreta do achado", () => {
+    // Sem a validação, "vote" (sem barra) virava `Disallow: vote` — um path
+    // RELATIVO, semântica diferente do `/vote` absoluto pretendido, e nada
+    // acusava o erro.
+    assert.throws(
+      () => renderCuradoriaRobotsTxt(undefined, { extraDisallowPaths: ["vote"] }),
+      /extraDisallowPaths deve conter paths começando com "\/"/,
+    );
+  });
+
+  it("aceita extraDisallowPaths que começam com '/' normalmente", () => {
+    assert.doesNotThrow(() => renderCuradoriaRobotsTxt(undefined, { extraDisallowPaths: ["/vote"] }));
+  });
+
+  it("lança se sitemapUrl não for uma URL absoluta http(s)", () => {
+    assert.throws(
+      () => renderCuradoriaRobotsTxt("arquivo.diar.ia.br/sitemap.xml"),
+      /sitemapUrl deve ser uma URL absoluta/,
+    );
+  });
+
+  it("aceita sitemapUrl ausente (omitido) sem lançar", () => {
+    assert.doesNotThrow(() => renderCuradoriaRobotsTxt());
+  });
+});
+
+describe("robotsTxtAllowsGeneralCrawling (#4782 achado 2)", () => {
+  it("true para a saída normal de renderCuradoriaRobotsTxt (Allow: / sob User-agent: *)", () => {
+    assert.equal(robotsTxtAllowsGeneralCrawling(renderCuradoriaRobotsTxt("https://x.example/sitemap.xml")), true);
+  });
+
+  it("false para uma cópia do default bloqueante da Cloudflare — regressão concreta do achado", () => {
+    const cloudflareDefault = "User-agent: *\nDisallow: /\n";
+    assert.equal(robotsTxtAllowsGeneralCrawling(cloudflareDefault), false);
+  });
+
+  it("true mesmo com um Disallow: /path específico (não confundir com Disallow: / genérico)", () => {
+    const out = renderCuradoriaRobotsTxt(undefined, { extraDisallowPaths: ["/vote"] });
+    assert.equal(robotsTxtAllowsGeneralCrawling(out), true);
+  });
+
+  it("false se não houver bloco User-agent: * nenhum", () => {
+    assert.equal(robotsTxtAllowsGeneralCrawling("User-agent: GPTBot\nDisallow: /\n"), false);
   });
 });
