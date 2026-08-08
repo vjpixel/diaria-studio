@@ -144,8 +144,11 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
+  // #4745: process.exitCode em vez de process.exit() — este catch roda DEPOIS
+  // de um await de rede em voo (sendGmailMessage via gFetch), mesmo cenário
+  // UV_HANDLE_CLOSING no Windows documentado em hub-drift-check.ts.
   main().catch((e) => {
     console.error(`${LOG_PREFIX} erro:`, e);
-    process.exit(1);
+    process.exitCode = 1;
   });
 }
