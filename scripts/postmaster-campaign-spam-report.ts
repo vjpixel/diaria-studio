@@ -64,6 +64,7 @@ import {
   collectCampaignFeedbackLoopIds,
   aggregateCampaignSpamReadings,
   sortCampaignSpamReport,
+  DEFAULT_POSTMASTER_ACCOUNT_ID,
   type CampaignSpamAggregate,
   type ParsedFeedbackLoopId,
 } from "./lib/postmaster-campaign-spam.ts";
@@ -72,10 +73,10 @@ import { buildWindowRange, parseWindowDaysArg } from "./postmaster-spam-sync.ts"
 loadProjectEnv();
 
 const POSTMASTER_DOMAIN = "clarice.ai";
-/** Confirmado ao vivo (#4704, 260806, comentário do editor): prefixo de conta
- * ESP (Brevo) em todo feedback_loop_id de campanha (`{conta}_{campanha}`).
- * Overridable via `--account-id` — não é garantido que a conta nunca mude. */
-const DEFAULT_ACCOUNT_ID = "11130585";
+/** Overridable via `--account-id` — ver docstring de `DEFAULT_POSTMASTER_ACCOUNT_ID`
+ * (scripts/lib/postmaster-campaign-spam.ts) pro racional do valor default;
+ * #4705 fatorou a constante lá pra ser compartilhada com `postmaster-spam-sync.ts`. */
+const DEFAULT_ACCOUNT_ID = DEFAULT_POSTMASTER_ACCOUNT_ID;
 const FEEDBACK_LOOP_ID_METRIC_NAME = "feedback_loop_id";
 const SPAM_RATE_METRIC_NAME = "spam_rate";
 

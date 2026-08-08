@@ -918,6 +918,21 @@ export function normalizePostmasterSpamEntry(raw: unknown): PostmasterSpamEntry 
           Number.isFinite((d as Record<string, unknown>).spamRatePct),
       )
     : undefined;
+  // #4705: pico por campanha — mesma disciplina dos demais opcionais deste
+  // normalizador (schema evolution: campo ausente/malformado nunca vira um
+  // valor inventado, só `undefined`). Os 2 campos são sempre gravados JUNTOS
+  // por `buildAveragedEntry` (scripts/postmaster-spam-sync.ts), mas o
+  // normalizador não assume esse pareamento — cada um é validado por conta
+  // própria, mesmo padrão de `daysWithData`/`daysProbed` acima (#4544 já
+  // documentou que esses 2 também podem chegar assimétricos).
+  const worstCampaignSpamRatePct =
+    typeof s.worstCampaignSpamRatePct === "number" && Number.isFinite(s.worstCampaignSpamRatePct)
+      ? s.worstCampaignSpamRatePct
+      : undefined;
+  const worstCampaignFeedbackLoopId =
+    typeof s.worstCampaignFeedbackLoopId === "string" && s.worstCampaignFeedbackLoopId
+      ? s.worstCampaignFeedbackLoopId
+      : undefined;
   return {
     date: typeof s.date === "string" ? s.date : "",
     spamRatePct: s.spamRatePct,
@@ -926,6 +941,8 @@ export function normalizePostmasterSpamEntry(raw: unknown): PostmasterSpamEntry 
     daysWithData: typeof s.daysWithData === "number" && Number.isFinite(s.daysWithData) ? s.daysWithData : undefined,
     daysProbed: typeof s.daysProbed === "number" && Number.isFinite(s.daysProbed) ? s.daysProbed : undefined,
     dailyReadings: dailyReadings && dailyReadings.length > 0 ? dailyReadings : undefined,
+    worstCampaignSpamRatePct,
+    worstCampaignFeedbackLoopId,
   };
 }
 

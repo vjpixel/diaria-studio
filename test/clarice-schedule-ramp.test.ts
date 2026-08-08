@@ -385,6 +385,27 @@ describe("deriveRampVolumes (#3593 item 1 — recomputa volumes via a MESMA lóg
       assert.equal(result.plan.semaphore, "yellow");
     }
   });
+
+  // #4705: cenário real da issue fim-a-fim através deste CLI (não só via
+  // resolveSpamSignal isolado, testado em test/weekly-plan.test.ts) — a média
+  // de domínio sozinha ficaria dentro do limite e deixaria o semáforo
+  // escalonar a verde; o pico por campanha é o que revela o risco e trava o
+  // semáforo em vermelho.
+  it("worstCampaignSpamRatePct acima do limite trava o semáforo em vermelho MESMO com a média de domínio saudável (#4705)", () => {
+    const now = new Date("2026-07-17T00:00:00Z");
+    const campaigns = [campaign({ id: 1, sentDate: "2026-07-10T09:00:00Z" })]; // saúde boa nas outras métricas
+    const entryWithCampaignPeak = {
+      spamRatePct: 0.02, // média de domínio: dentro do limite (green)
+      recordedAt: "2026-07-16T12:00:00Z",
+      date: "2026-07-16",
+      worstCampaignSpamRatePct: 1.39, // pico de uma campanha específica: bem acima do breaker
+    };
+    const result = deriveRampVolumes(campaigns, now, entryWithCampaignPeak);
+    assert.equal(result.ok, true);
+    if (!result.ok) throw new Error("unreachable");
+    assert.equal(result.plan.semaphore, "red", "a média de domínio sozinha resolveria 'green' — só o pico por campanha revela o risco real");
+    assert.equal(result.plan.flagged, true);
+  });
 });
 
 describe("extractDashboardStaleInfo (#4543 — clarice-check-semaphore.ts/clarice-schedule-ramp.ts checavam só res.ok, ignoravam cache stale)", () => {
@@ -425,6 +446,7 @@ describe("fetchPostmasterSpamEntry (#4131 finding 4 — leitura manual do Postma
       producedBy: undefined,
       daysWithData: undefined,
       daysProbed: undefined,
+      worstCampaignSpamRatePct: undefined,
     });
   });
 
@@ -466,6 +488,46 @@ describe("fetchPostmasterSpamEntry (#4131 finding 4 — leitura manual do Postma
       fakeFetch(200, { entry: { date: "2026-07-27", spamRatePct: 0.9, recordedAt: "2026-07-27T10:00:00.000Z", producedBy: "manual" } }),
     );
     assert.equal(manual?.producedBy, "manual");
+  });
+
+  // #4705: mesma classe de risco documentada acima pra date/daysWithData/
+  // daysProbed/producedBy — sem repassar worstCampaignSpamRatePct aqui, o CLI
+  // de agendamento da ramp nunca veria o pico por campanha e resolveSpamSignal
+  // cairia sempre no fallback de domínio pra este caminho.
+  it("entry com worstCampaignSpamRatePct preserva o campo (#4705)", async () => {
+    const entry = await fetchPostmasterSpamEntry(
+      "https://x",
+      fakeFetch(200, {
+        entry: {
+          date: "2026-08-03",
+          spamRatePct: 0.08,
+          recordedAt: "2026-08-06T09:00:00.000Z",
+          worstCampaignSpamRatePct: 1.39,
+        },
+      }),
+    );
+    assert.equal(entry?.worstCampaignSpamRatePct, 1.39);
+  });
+
+  it("worstCampaignSpamRatePct ausente ou não-numérico vira undefined, nunca inferido (#4705)", async () => {
+    const missing = await fetchPostmasterSpamEntry(
+      "https://x",
+      fakeFetch(200, { entry: { date: "2026-08-03", spamRatePct: 0.08, recordedAt: "2026-08-06T09:00:00.000Z" } }),
+    );
+    assert.equal(missing?.worstCampaignSpamRatePct, undefined);
+
+    const corrupted = await fetchPostmasterSpamEntry(
+      "https://x",
+      fakeFetch(200, {
+        entry: {
+          date: "2026-08-03",
+          spamRatePct: 0.08,
+          recordedAt: "2026-08-06T09:00:00.000Z",
+          worstCampaignSpamRatePct: "não é número",
+        },
+      }),
+    );
+    assert.equal(corrupted?.worstCampaignSpamRatePct, undefined);
   });
 
   it("entry null (sem leitura registrada) → null", async () => {

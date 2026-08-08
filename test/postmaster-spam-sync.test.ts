@@ -27,8 +27,10 @@ import {
   collectSpamReadingsV2,
   buildAveragedEntry,
   parseWindowDaysArg,
+  collectWorstCampaignSpam,
 } from "../scripts/postmaster-spam-sync.ts";
 import type { QueryDomainStatsResponseV2 } from "../scripts/lib/postmaster-v2-client.ts";
+import type { WorstCampaignSpam } from "../scripts/lib/postmaster-campaign-spam.ts";
 
 const NOW = new Date("2026-07-30T09:00:00.000Z");
 
@@ -213,6 +215,112 @@ test("cenário real 260806 (v2): janela de 10 dias com 3 leituras (01/08=0%, 02/
   assert.equal(entry?.daysWithData, 3);
   assert.equal(entry?.daysProbed, 10);
   assert.equal(entry?.dailyReadings?.length, 3);
+});
+
+// ── buildAveragedEntry + worstCampaign (#4705) ──
+
+function mkWorstCampaign(overrides: Partial<WorstCampaignSpam> = {}): WorstCampaignSpam {
+  return {
+    campaignId: 107,
+    feedbackLoopId: "11130585_107",
+    spamRatePct: 1.39,
+    date: "2026-08-02",
+    ...overrides,
+  };
+}
+
+test("buildAveragedEntry — sem worstCampaign (default, chamadas pré-#4705 com 3 args) não grava os 2 campos novos", () => {
+  const entry = buildAveragedEntry([{ date: "2026-07-30", ratio: 0.01 }], NOW, 1);
+  assert.equal(entry?.worstCampaignSpamRatePct, undefined);
+  assert.equal(entry?.worstCampaignFeedbackLoopId, undefined);
+});
+
+test("buildAveragedEntry — com worstCampaign presente, grava worstCampaignSpamRatePct/worstCampaignFeedbackLoopId (#4705)", () => {
+  const entry = buildAveragedEntry([{ date: "2026-07-30", ratio: 0.0008 }], NOW, 1, mkWorstCampaign());
+  assert.equal(entry?.worstCampaignSpamRatePct, 1.39);
+  assert.equal(entry?.worstCampaignFeedbackLoopId, "11130585_107");
+  // a média de domínio continua gravada normalmente ao lado do pico — os 2
+  // números convivem na mesma entry, é resolveSpamSignal quem escolhe.
+  assert.equal(entry?.spamRatePct, 0.08);
+});
+
+test("buildAveragedEntry — worstCampaign null explícito é equivalente a omitir o argumento", () => {
+  const entry = buildAveragedEntry([{ date: "2026-07-30", ratio: 0.01 }], NOW, 1, null);
+  assert.equal(entry?.worstCampaignSpamRatePct, undefined);
+});
+
+// ── collectWorstCampaignSpam (#4705) ──
+
+function feedbackLoopIdResponse(idsByDay: string[][]): QueryDomainStatsResponseV2 {
+  return {
+    domainStats: idsByDay.map((ids, i) => ({
+      metric: "feedback_loop_id",
+      date: { year: 2026, month: 8, day: 1 + i },
+      value: { stringList: ids },
+    })),
+  };
+}
+
+function campaignSpamResponse(readings: Array<{ day: number; floatValue: number }>): QueryDomainStatsResponseV2 {
+  return {
+    domainStats: readings.map((r) => ({
+      metric: "campaign_spam_rate",
+      date: { year: 2026, month: 8, day: r.day },
+      value: { floatValue: r.floatValue },
+    })),
+  };
+}
+
+const RANGE = buildWindowRange(3, NOW);
+
+test("collectWorstCampaignSpam — reflete o cenário real do #4705: acha o pico entre várias campanhas na janela", async () => {
+  const queryFeedbackLoopIds = async () =>
+    feedbackLoopIdResponse([
+      ["11130585", "11130585_105", "11130585_106", "11130585_107", "77.32.148.101"],
+    ]);
+  const queryCampaignSpamRate = async (parsed: { campaignId: number }) => {
+    if (parsed.campaignId === 107) return campaignSpamResponse([{ day: 2, floatValue: 0.0139 }]); // 1,39% — a pior
+    return campaignSpamResponse([{ day: 2, floatValue: 0.001 }]); // 0,1% — as outras
+  };
+  const worst = await collectWorstCampaignSpam(RANGE, "11130585", queryFeedbackLoopIds, queryCampaignSpamRate);
+  assert.equal(worst?.campaignId, 107);
+  assert.equal(worst?.feedbackLoopId, "11130585_107");
+  assert.equal(worst?.spamRatePct, 1.39);
+});
+
+test("collectWorstCampaignSpam — nenhuma campanha atribuível na janela devolve null (fallback pro domínio no chamador)", async () => {
+  const queryFeedbackLoopIds = async () => feedbackLoopIdResponse([["11130585", "77.32.148.101"]]);
+  const queryCampaignSpamRate = async () => campaignSpamResponse([]);
+  const worst = await collectWorstCampaignSpam(RANGE, "11130585", queryFeedbackLoopIds, queryCampaignSpamRate);
+  assert.equal(worst, null);
+});
+
+test("collectWorstCampaignSpam — accountId filtra campanhas de outra conta ESP", async () => {
+  const queryFeedbackLoopIds = async () => feedbackLoopIdResponse([["99999999_50"]]);
+  const queryCampaignSpamRate = async () => campaignSpamResponse([{ day: 1, floatValue: 0.05 }]);
+  const worst = await collectWorstCampaignSpam(RANGE, "11130585", queryFeedbackLoopIds, queryCampaignSpamRate);
+  assert.equal(worst, null);
+});
+
+test("collectWorstCampaignSpam — falha numa query de campanha específica é pulada (fail-soft), resto da coleta segue", async () => {
+  const queryFeedbackLoopIds = async () => feedbackLoopIdResponse([["11130585_105", "11130585_107"]]);
+  const queryCampaignSpamRate = async (parsed: { campaignId: number }) => {
+    if (parsed.campaignId === 105) throw new Error("HTTP 429");
+    return campaignSpamResponse([{ day: 1, floatValue: 0.02 }]);
+  };
+  const worst = await collectWorstCampaignSpam(RANGE, "11130585", queryFeedbackLoopIds, queryCampaignSpamRate);
+  assert.equal(worst?.campaignId, 107, "a campanha que falhou (105) é ignorada, a que respondeu (107) governa");
+});
+
+test("collectWorstCampaignSpam — falha na query BASE de FEEDBACK_LOOP_ID propaga (o chamador, main(), decide o fail-soft de nível superior)", async () => {
+  const queryFeedbackLoopIds = async () => {
+    throw new Error("[postmaster-v2-client] falha em domainStats.query: 403 SERVICE_DISABLED");
+  };
+  const queryCampaignSpamRate = async () => campaignSpamResponse([]);
+  await assert.rejects(
+    () => collectWorstCampaignSpam(RANGE, "11130585", queryFeedbackLoopIds, queryCampaignSpamRate),
+    /SERVICE_DISABLED/,
+  );
 });
 
 // ── parseWindowDaysArg ──

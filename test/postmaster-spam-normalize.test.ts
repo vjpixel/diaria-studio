@@ -169,3 +169,59 @@ describe("normalizePostmasterSpamEntry — dailyReadings passa pelo boundary do 
     assert.deepEqual(corruptedItems?.dailyReadings, [{ date: "2026-08-01", spamRatePct: 0 }]);
   });
 });
+
+// #4705: mesma classe de risco de novo — `worstCampaignSpamRatePct`/
+// `worstCampaignFeedbackLoopId` (pico por campanha, produzido por
+// `postmaster-spam-sync.ts`) precisam passar por este choke point ou
+// `resolveSpamSignal` nunca os vê em produção, mesmo com o KV gravado
+// corretamente — regressão silenciosa idêntica à de `producedBy`/
+// `dailyReadings` acima, só que para o dado que #4705 introduziu.
+describe("normalizePostmasterSpamEntry — worstCampaignSpamRatePct/worstCampaignFeedbackLoopId passam pelo boundary do KV (#4705)", () => {
+  it("presentes e bem formados são preservados", () => {
+    const entry = normalizePostmasterSpamEntry({
+      date: "2026-08-03",
+      spamRatePct: 0.137,
+      recordedAt: "2026-08-06T09:00:00.000Z",
+      worstCampaignSpamRatePct: 1.39,
+      worstCampaignFeedbackLoopId: "11130585_107",
+    });
+    assert.equal(entry?.worstCampaignSpamRatePct, 1.39);
+    assert.equal(entry?.worstCampaignFeedbackLoopId, "11130585_107");
+  });
+
+  it("ausentes (sem campanha atribuível na janela, ou entry pré-#4705) viram undefined, nunca inferidos", () => {
+    const entry = normalizePostmasterSpamEntry({
+      date: "2026-07-30",
+      spamRatePct: 0.05,
+      recordedAt: "2026-07-30T09:00:00.000Z",
+    });
+    assert.equal(entry?.worstCampaignSpamRatePct, undefined);
+    assert.equal(entry?.worstCampaignFeedbackLoopId, undefined);
+  });
+
+  it("payload corrompido (tipo errado) não é confiado cegamente", () => {
+    const entry = normalizePostmasterSpamEntry({
+      date: "2026-07-30",
+      spamRatePct: 0.05,
+      recordedAt: "2026-07-30T09:00:00.000Z",
+      worstCampaignSpamRatePct: "um pico qualquer",
+      worstCampaignFeedbackLoopId: 107,
+    });
+    assert.equal(entry?.worstCampaignSpamRatePct, undefined);
+    assert.equal(entry?.worstCampaignFeedbackLoopId, undefined);
+  });
+
+  it("worstCampaignSpamRatePct não-finito (NaN/Infinity) é descartado", () => {
+    const entry = normalizePostmasterSpamEntry({
+      date: "2026-07-30",
+      spamRatePct: 0.05,
+      recordedAt: "2026-07-30T09:00:00.000Z",
+      worstCampaignSpamRatePct: NaN,
+      worstCampaignFeedbackLoopId: "11130585_107",
+    });
+    assert.equal(entry?.worstCampaignSpamRatePct, undefined);
+    // o par não é acoplado estruturalmente (mesma disciplina de
+    // daysWithData/daysProbed, #4544) — o outro campo válido sobrevive.
+    assert.equal(entry?.worstCampaignFeedbackLoopId, "11130585_107");
+  });
+});

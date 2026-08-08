@@ -887,6 +887,82 @@ test("resolveSpamSignal — só daysWithData OU só daysProbed presente (assimé
   assert.equal(onlyProbed.source, "postmaster");
 });
 
+// ---------------------------------------------------------------------------
+// #4705 — resolveSpamSignal usa o MAIOR entre a média de domínio
+// (`spamRatePct`) e o pico por campanha (`worstCampaignSpamRatePct`) quando
+// este último está presente. Cenário real que motivou a mudança (achado da
+// issue): em 03/08/2026 a média de domínio ficou dentro do limite enquanto
+// uma campanha específica teve spam bem mais alto — a média sozinha nunca
+// revela isso, só o dado por-campanha. `Math.max`, não precedência cega do
+// pico (achado do fleet review pré-merge, `pr-test-analyzer`): a direção
+// oposta também precisa ser coberta — um domínio pior que a pior campanha
+// ATRIBUÍVEL não pode ser mascarado por ela.
+// ---------------------------------------------------------------------------
+
+test("resolveSpamSignal — pico de campanha ACIMA do limite produz breach=true MESMO com a média de domínio dentro do limite (#4705, regressão do cenário real da issue)", () => {
+  // Média de domínio: 0,08% — dentro do limite (green < 0.1%, yellow < 0.3%).
+  // Pico da campanha pior: 1,39% — bem acima do breaker (>= 0.3%).
+  const signal = resolveSpamSignal(
+    mkPostmasterEntry({
+      spamRatePct: 0.08,
+      worstCampaignSpamRatePct: 1.39,
+      worstCampaignFeedbackLoopId: "11130585_107",
+    }),
+    NOW,
+  );
+  assert.equal(signal.source, "postmaster");
+  assert.equal(signal.ratePct, 1.39, "usa o pico da campanha, não a média de domínio");
+  assert.equal(signal.breach, true, "a média de domínio sozinha (0,08%) NÃO estouraria o breaker — só o pico por campanha revela o risco real");
+});
+
+test("resolveSpamSignal — sem worstCampaignSpamRatePct (schema evolution / sem campanha atribuível na janela) usa a média de domínio, comportamento anterior ao #4705", () => {
+  const signal = resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.05 }), NOW);
+  assert.equal(signal.source, "postmaster");
+  assert.equal(signal.ratePct, 0.05);
+});
+
+test("resolveSpamSignal — worstCampaignSpamRatePct não-finito (NaN/Infinity, payload corrompido) cai pro fallback de domínio, nunca propaga um valor inválido", () => {
+  const signal = resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.05, worstCampaignSpamRatePct: NaN }), NOW);
+  assert.equal(signal.source, "postmaster");
+  assert.equal(signal.ratePct, 0.05);
+});
+
+test("resolveSpamSignal — pico de campanha ABAIXO do limite produz breach=false (mesma faixa que a média, só a fonte do número muda)", () => {
+  const signal = resolveSpamSignal(
+    mkPostmasterEntry({ spamRatePct: 0.05, worstCampaignSpamRatePct: 0.05 }),
+    NOW,
+  );
+  assert.equal(signal.breach, false);
+});
+
+test("resolveSpamSignal — média de domínio PIOR que o pico por campanha ATRIBUÍVEL: usa o domínio, nunca mascara um sinal pior por um melhor (achado do fleet review pré-merge, direção oposta do cenário #4705)", () => {
+  // Domínio inteiro em 0,45% (acima do breaker) — mas a pior campanha com
+  // feedback_loop_id atribuível na janela ficou em 0,08% (abaixo). Cenário
+  // plausível: spam concentrado em tráfego SEM feedback_loop_id na resposta
+  // da API (#4704 nota essa limitação — nem todo envio tem campanha
+  // atribuível). Precedência cega do pico teria produzido breach=false aqui,
+  // o INVERSO do que o breaker existe pra fazer.
+  const signal = resolveSpamSignal(
+    mkPostmasterEntry({
+      spamRatePct: 0.45,
+      worstCampaignSpamRatePct: 0.08,
+      worstCampaignFeedbackLoopId: "11130585_999",
+    }),
+    NOW,
+  );
+  assert.equal(signal.ratePct, 0.45, "usa a média de domínio (pior), não o pico de campanha (melhor)");
+  assert.equal(signal.breach, true, "domínio acima do limite tem que estourar o breaker mesmo com uma campanha atribuível abaixo");
+});
+
+test("resolveSpamSignal — guards de staleness/cobertura continuam avaliados sobre os campos de DOMÍNIO mesmo com worstCampaignSpamRatePct presente (#4705 preserva a lógica existente)", () => {
+  const staleRecordedAt = new Date(NOW.getTime() - POSTMASTER_STALE_MS - 1000).toISOString();
+  const signal = resolveSpamSignal(
+    mkPostmasterEntry({ spamRatePct: 0.05, worstCampaignSpamRatePct: 1.39, recordedAt: staleRecordedAt }),
+    NOW,
+  );
+  assert.deepEqual(signal, { source: "indeterminate", ratePct: null, breach: false, reason: "recorded-stale" });
+});
+
 test("renderWeeklyPlanTabPanel — com leitura de Postmaster acima do limite, semáforo geral é vermelho MESMO com tudo mais saudável e complaints da Brevo em zero (#4063 fim-a-fim)", () => {
   const camps = [
     campaignSentHoursAgo(60, {
