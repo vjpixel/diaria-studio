@@ -213,8 +213,8 @@ describe("resolveGroupListId (#4753 — 2ª+ importação de grupo SEM célula r
     const dir = mkdtempSync(join(tmpdir(), "resolve-group-4753-"));
     try {
       // Monta as entradas EXATAMENTE como main() de clarice-import-waves.ts
-      // monta (`key: resolveRegistryKey(r.wave, args.campaignKey)`) — grupo
-      // 'novos' não tem célula, então `wave.key` seria SEMPRE "novos"
+      // monta (`key: resolveRegistryKey(r.wave, plans[i].hasCell, args.campaignKey)`,
+      // #4762) — grupo 'novos' não tem célula, então `wave.key` seria SEMPRE "novos"
       // (estático, gravado por clarice-build-segment.ts) em toda invocação;
       // sem `resolveRegistryKey` sobrescrevendo pra `campaignKey`, as duas
       // linhas abaixo produziriam key IDÊNTICA ("novos") pras duas entradas
@@ -222,7 +222,8 @@ describe("resolveGroupListId (#4753 — 2ª+ importação de grupo SEM célula r
       // nunca bate a partir da 2ª lista).
       appendGroupListsRegistry(dir, "2607-08", "novos", [
         {
-          key: resolveRegistryKey("novos", "novos-260807"),
+          // #4762: 3º arg (hasCell) — grupo 'novos' não tem célula.
+          key: resolveRegistryKey("novos", false, "novos-260807"),
           listId: 201,
           listName: "Clarice novos 07/08",
           count: 42,
@@ -231,7 +232,7 @@ describe("resolveGroupListId (#4753 — 2ª+ importação de grupo SEM célula r
       ]);
       appendGroupListsRegistry(dir, "2607-08", "novos", [
         {
-          key: resolveRegistryKey("novos", "novos-260808"),
+          key: resolveRegistryKey("novos", false, "novos-260808"),
           listId: 202,
           listName: "Clarice novos 08/08",
           count: 17,

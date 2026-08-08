@@ -128,17 +128,27 @@ export interface WaveDef {
  * existem mais.
  *
  * #2916: generalizado pra também ler o manifest de um GRUPO NOMEADO (#2885,
- * `clarice-build-segment.ts`) — `manifestFileName` default preserva o
- * comportamento da rampa (`waves-manifest.json`); `buildPlan` passa
- * `{group}-manifest.json` quando `--group` é usado. Mesmo shape (array de
- * `{key, file, desc, ...}` — campos extras como `count` são ignorados aqui).
+ * `clarice-build-segment.ts`) — recebe `group` (o mesmo `string | null` já
+ * tipado no escopo de quem chama, `buildPlan`) em vez de um filename
+ * pré-formatado; `manifestFileName` é computado uma única vez AQUI DENTRO
+ * (#4766 — antes, `buildPlan` computava o filename duas linhas antes de
+ * chamar esta função, que então re-derivava a mesma distinção fazendo
+ * string-match no nome já formatado, um round-trip através de uma
+ * codificação em string de um booleano que já existia como valor tipado um
+ * frame acima). `group` ausente/null preserva o comportamento da rampa
+ * (`waves-manifest.json`); `--group NOME` lê `{NOME}-manifest.json`.
+ *
+ * O branch `group === null` abaixo é código morto-exceto-pela-mensagem-de-
+ * erro — todo call site real hoje passa `--group` (#4759) — mas removê-lo
+ * de vez é fora de escopo desta limpeza (ver nota no topo do arquivo).
  */
-export function loadWaveDefs(dir: string, manifestFileName = "waves-manifest.json"): WaveDef[] {
+export function loadWaveDefs(dir: string, group: string | null = null): WaveDef[] {
+  const manifestFileName = group ? `${group}-manifest.json` : "waves-manifest.json";
   const manifestPath = resolve(dir, manifestFileName);
   if (!existsSync(manifestPath)) {
     throw new Error(
       `${manifestFileName} ausente em ${dir} — gere com ` +
-        (manifestFileName === "waves-manifest.json"
+        (group === null
           ? `'clarice-build-segment.ts --cycle ... --group ramp-warm' seguido de 'clarice-import-waves.ts ` +
             `--group ramp-warm ...' (#4759: o modo sem --group não tem mais produtor — clarice-build-waves-store.ts ` +
             `foi aposentado; use sempre --group daqui pra frente).`
@@ -230,6 +240,24 @@ export function groupCellListNameFor(cycle: string, key: string): string {
 }
 
 /**
+ * #4762: único ponto que decide "esta wave é uma célula A/B/C do fluxo
+ * `--group`?" — extraído de dentro de `resolveListName` (onde nasceu, #4471)
+ * pra ser reusado por `buildPlan`, que grava o resultado em `Plan.hasCell` e
+ * propaga esse sinal explícito até `resolveRegistryKey`. Antes,
+ * `resolveRegistryKey` (introduzida no #4753) re-derivava a MESMA
+ * distinção fazendo regex direto em `waveKey`, sem o gate em `group` que
+ * esta função já carregava — achado do fleet review da PR #4758 (dívida de
+ * consistência: a heurística de sufixo sozinha já era conhecida como
+ * frágil aqui, mas essa disciplina não foi carregada adiante). Gate em
+ * `group` (não só no sufixo) é defensivo — mesmo que uma wave da rampa um
+ * dia termine coincidentemente em "-A", ela só entraria neste branch se
+ * também estivesse rodando via `--group`, o que não acontece hoje.
+ */
+export function isGroupCellWave(group: string | null, waveKey: string): boolean {
+  return Boolean(group) && /-[ABC]$/i.test(waveKey);
+}
+
+/**
  * #4471: resolve o nome de lista REAL usado por `buildPlan` — ponto único de
  * decisão entre os dois formatos coexistentes. Grupos nomeados sem célula
  * (rampa `W1`/`W2`/..., ou grupos como `engajados`/`ramp-warm`) sempre usam
@@ -237,13 +265,10 @@ export function groupCellListNameFor(cycle: string, key: string): string {
  * (`wave.key` termina em -A/-B/-C — só alcançável quando `group` está ativo,
  * já que nenhuma wave/grupo nomeado hoje produz esse sufixo) usa
  * `groupCellListNameFor`, que é o formato que `parseAbcAudienceCampaign`
- * exige (ver docstring dela acima). Gate em `group` (não só no sufixo) é
- * defensivo — mesmo que uma wave da rampa um dia termine coincidentemente em
- * "-A", ela só entraria neste branch se também estivesse rodando via
- * `--group`, o que não acontece hoje.
+ * exige (ver docstring dela acima).
  */
 export function resolveListName(wave: WaveDef, label: string, cycle: string, group: string | null): string {
-  if (group && /-[ABC]$/i.test(wave.key)) {
+  if (isGroupCellWave(group, wave.key)) {
     return groupCellListNameFor(cycle, wave.key);
   }
   // #4660: onda de DIA sem célula (`d6-qui06`, assunto travado — ver
@@ -366,7 +391,16 @@ export interface ImportRunClient {
   createList(name: string, folderId: number): Promise<{ id: number }>;
   importCsv(listId: number, csv: string): Promise<{ processId: number | string }>;
   pollProcess(processId: number | string): Promise<{ status?: string }>;
-  getListInfo(listId: number): Promise<{ totalSubscribers: number }>;
+  /**
+   * #4764: `totalBlacklisted` vem na MESMA resposta da Brevo (`GET
+   * /contacts/lists/{id}`) — usado por `importOneWave` pra distinguir
+   * blacklist administrativo (contato nunca receberia o e-mail de qualquer
+   * forma, independente da lista) de perda real por drop silencioso
+   * (#4577/#4720). Opcional: ausência (fake de teste antigo, ou resposta sem
+   * o campo) preserva o comportamento anterior — toda divergência de
+   * contagem é tratada como perda.
+   */
+  getListInfo(listId: number): Promise<{ totalSubscribers: number; totalBlacklisted?: number }>;
   /**
    * #4720: pagina TODOS os e-mails de fato membros da lista — chamado só
    * quando a reconciliação de CONTAGEM (`getListInfo`) já detectou
@@ -422,7 +456,7 @@ export function makeRealImportRunClient(apiKey: string): ImportRunClient {
     },
     async getListInfo(listId) {
       const info = await brevoGetList(apiKey, listId);
-      return { totalSubscribers: info.totalSubscribers };
+      return { totalSubscribers: info.totalSubscribers, totalBlacklisted: info.totalBlacklisted }; // #4764
     },
     // #4720: mesmo endpoint/paginação já validados ao vivo em
     // `sync-apoio-nivel-brevo.ts::fetchCurrentBrevoApoiadoresState` e
@@ -507,6 +541,21 @@ export interface ImportOneResult {
  * PowerShell vira uma variável local vazia, e o header `api-key` sairia em
  * branco, silenciosamente. O ambiente principal deste projeto é Windows +
  * PowerShell, ver CLAUDE.md) — nunca assume um shell só.
+ *
+ * #4764: nem toda divergência de contagem é perda. `getListInfo` também traz
+ * `totalBlacklisted` (contatos com blacklist GLOBAL na conta Brevo — nunca
+ * receberiam o e-mail de qualquer forma, independente da lista). Se
+ * `delta === totalBlacklisted`, a divergência inteira é explicada por
+ * supressão esperada, não por drop silencioso — reportar como informação
+ * (best-effort, nomeando quem foi suprimido via o mesmo diagnóstico do
+ * #4720) e seguir normalmente, sem abortar nem pedir pra apagar a lista
+ * (recriar a lista não resolveria nada: o mesmo contato blacklistado
+ * reapareceria "perdido" pra sempre). Caso real: `m.afonso1208@gmail.com`,
+ * ciclo 2607-08 — a lista #112 foi apagada por engano achando que era o
+ * bug do #4577/#4720; só na 2ª tentativa, idêntica, ficou claro que era
+ * blacklist, não drop. `totalBlacklisted` ausente (fake de teste antigo,
+ * ou resposta sem o campo) preserva o comportamento anterior — toda
+ * divergência é tratada como perda.
  */
 export async function importOneWave(
   client: ImportRunClient,
@@ -527,6 +576,14 @@ export async function importOneWave(
   const info = await client.getListInfo(list.id);
   if (info.totalSubscribers < plan.sentCount) {
     const delta = plan.sentCount - info.totalSubscribers;
+    // #4764: delta inteiro explicado por blacklist administrativo (contato
+    // nunca receberia o e-mail de qualquer forma) → não é o drop silencioso
+    // que #4577/#4720 existem pra pegar. `totalBlacklisted` ausente (fake
+    // de teste antigo / campo faltando na resposta) preserva o comportamento
+    // anterior — sempre trata a divergência como perda.
+    const isExpectedSuppression =
+      info.totalBlacklisted !== undefined && delta === info.totalBlacklisted;
+
     let missingDetail = "";
     try {
       const actualEmails = await client.listContactEmails(list.id);
@@ -539,13 +596,24 @@ export async function importOneWave(
     } catch (diffErr) {
       missingDetail = ` (diagnóstico automático do contato falhou: ${diffErr instanceof Error ? diffErr.message : diffErr} — nomeie manualmente.)`;
     }
-    throw new Error(
-      `${plan.wave.key}: lista #${list.id} ("${plan.listName}") — Brevo confirma ${info.totalSubscribers} ` +
-        `contato(s), mas o CSV enviado tinha ${plan.sentCount} linha(s). ${delta} contato(s) perdido(s) em ` +
-        `silêncio pela Brevo (o processo terminou 'completed', a contagem não bate).${missingDetail} ` +
-        `Abortando — apague a lista #${list.id} antes de re-rodar. bash: ` +
-        `curl -X DELETE "https://api.brevo.com/v3/contacts/lists/${list.id}" -H "api-key: $BREVO_CLARICE_API_KEY"` +
-        ` | PowerShell: curl.exe -X DELETE "https://api.brevo.com/v3/contacts/lists/${list.id}" -H "api-key: $env:BREVO_CLARICE_API_KEY"`,
+
+    if (!isExpectedSuppression) {
+      throw new Error(
+        `${plan.wave.key}: lista #${list.id} ("${plan.listName}") — Brevo confirma ${info.totalSubscribers} ` +
+          `contato(s), mas o CSV enviado tinha ${plan.sentCount} linha(s). ${delta} contato(s) perdido(s) em ` +
+          `silêncio pela Brevo (o processo terminou 'completed', a contagem não bate).${missingDetail} ` +
+          `Abortando — apague a lista #${list.id} antes de re-rodar. bash: ` +
+          `curl -X DELETE "https://api.brevo.com/v3/contacts/lists/${list.id}" -H "api-key: $BREVO_CLARICE_API_KEY"` +
+          ` | PowerShell: curl.exe -X DELETE "https://api.brevo.com/v3/contacts/lists/${list.id}" -H "api-key: $env:BREVO_CLARICE_API_KEY"`,
+      );
+    }
+
+    // #4764: supressão esperada — informa em vez de abortar. Recriar a lista
+    // não resolveria nada aqui (o mesmo contato blacklistado reapareceria
+    // "perdido" pra sempre); segue pro caminho de sucesso normal abaixo.
+    log(
+      `   ℹ️  ${delta} contato(s) suprimido(s) por blacklist administrativo da Brevo (nunca receberiam o ` +
+        `e-mail de qualquer forma) — não é perda.${missingDetail}`,
     );
   }
   log(`   ✓ confirmado: ${info.totalSubscribers} contato(s) na lista (${plan.sentCount} enviados).`);
@@ -656,9 +724,20 @@ export function appendGroupListsRegistry(
  * ramp-warm, engajados, grupos de dia com célula própria nunca passam
  * `--key` a este script) o comportamento é o ORIGINAL, inalterado: grava
  * `wave.key`.
+ *
+ * #4762: `hasCell` é um sinal EXPLÍCITO passado pelo chamador (`main()`, via
+ * `Plan.hasCell` — computado em `buildPlan` com `isGroupCellWave`, a mesma
+ * função que `resolveListName` usa) em vez de esta função re-derivar a
+ * mesma distinção fazendo regex direto em `waveKey`, sem gate em `group`.
+ * A re-derivação por string sozinha era uma heurística: um grupo nomeado
+ * que legitimamente terminasse em "-a"/"-b"/"-c" sem ser célula de teste
+ * A/B/C seria tratado como célula e NÃO receberia a key de campanha,
+ * reintroduzindo o bug da #4753 só pra ele, em silêncio (achado do fleet
+ * review da PR #4758) — gatear no sinal já computado por `isGroupCellWave`
+ * (que por sua vez já é gateado em `group`) elimina essa classe de erro.
  */
-export function resolveRegistryKey(waveKey: string, campaignKey?: string): string {
-  if (campaignKey && !/-[ABC]$/i.test(waveKey)) return campaignKey;
+export function resolveRegistryKey(waveKey: string, hasCell: boolean, campaignKey?: string): string {
+  if (campaignKey && !hasCell) return campaignKey;
   return waveKey;
 }
 
@@ -721,6 +800,14 @@ interface Plan {
    * só os contatos reais (as cópias do editor mascarariam o delta).
    */
   sentCount: number;
+  /**
+   * #4762: esta wave é uma célula A/B/C do fluxo `--group`? Computado uma
+   * única vez aqui via `isGroupCellWave` (mesma função que `resolveListName`
+   * usa pra decidir o formato de nome de lista) e propagado como sinal
+   * EXPLÍCITO até `resolveRegistryKey` (em `main()`) — em vez de cada ponto
+   * re-derivar a mesma heurística de string por conta própria.
+   */
+  hasCell: boolean;
 }
 
 /**
@@ -738,9 +825,8 @@ export function buildPlan(
   group: string | null = null,
 ): Plan[] {
   const resolvedDir = dir ?? (group ? clariceSegmentsDir(cycle) : clariceWavesDir(cycle));
-  const manifestFileName = group ? `${group}-manifest.json` : "waves-manifest.json";
   const plans: Plan[] = [];
-  for (const wave of loadWaveDefs(resolvedDir, manifestFileName)) { // #2656/#2844/#2916: manifest é a única fonte
+  for (const wave of loadWaveDefs(resolvedDir, group)) { // #2656/#2844/#2916/#4766: manifest é a única fonte
     const path = resolve(resolvedDir, wave.file);
     if (!existsSync(path)) {
       // Opcional ausente → pula com aviso (defensivo — o manifest store-driven
@@ -772,6 +858,7 @@ export function buildPlan(
       csv,
       columns,
       sentCount: countRows(csv), // #4577: reais + cópias do editor — o que de fato vai no POST
+      hasCell: isGroupCellWave(group, wave.key), // #4762
     });
   }
   return plans;
@@ -867,8 +954,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       // contagem CONFIRMADA pela Brevo pós-reconciliação, não a enviada.
       // #4753: `resolveRegistryKey` sobrescreve pra `args.campaignKey` (--key
       // desta invocação) quando o grupo NÃO tem célula — ver docstring dela.
-      results.map((r) => ({
-        key: resolveRegistryKey(r.wave, args.campaignKey),
+      // #4762: `plans[i].hasCell` (não uma re-derivação por regex em `r.wave`)
+      // — `results` só chega até aqui depois do loop `for (const p of plans)`
+      // ter terminado sem lançar, então `results[i]` corresponde exatamente
+      // a `plans[i]` (mesma ordem, mesmo tamanho — nenhum filtro/reordenação
+      // entre os dois).
+      results.map((r, i) => ({
+        key: resolveRegistryKey(r.wave, plans[i].hasCell, args.campaignKey),
         listId: r.listId,
         listName: r.listName,
         count: r.count,
