@@ -1,32 +1,18 @@
 /**
- * test/run-clarice-guardrail-alarm-npx-guard.test.ts (#4343)
+ * test/run-apoios-diff-alarm-ps1.test.ts (#4756)
  *
- * `scripts/run-clarice-guardrail-alarm.ps1` roda `npx tsx clarice-guardrail-alarm.ts`
- * como a PRIMEIRA (e única) invocação nativa da sessão do PowerShell. Sob
- * `Set-StrictMode -Version Latest` (já presente no script), se `npx` não puder
- * ser resolvido via PATH (cenário real: contexto de serviço do Task Scheduler
- * não herda o PATH corretamente — problema conhecido de Node/npx nesse
- * contexto), `& npx ...` lança `CommandNotFoundException` e `$LASTEXITCODE`
- * fica genuinamente INDEFINIDO (não `$null`) nessa sessão nova — ler uma
- * variável indefinida sob StrictMode lança outro erro (não-terminante,
- * engolido por `$ErrorActionPreference = "Continue"`), e um guard que só
- * checasse `if ($null -eq $alarmCode)` DEPOIS da chamada nunca dispararia
- * (a própria leitura de `$alarmCode`/`$LASTEXITCODE` já lançaria) — a run
- * cairia no `exit $code` final com `$code` também indefinido, resolvendo
- * pra exit 0 (falso sucesso), o pior cenário possível pra uma invocação
- * não-supervisionada.
- *
- * O fix pré-inicializa `$LASTEXITCODE = $null` IMEDIATAMENTE ANTES da
- * chamada nativa — isso garante que a variável já existe (com valor
- * `$null`) antes da tentativa; uma invocação nativa que falha a RESOLVER
- * (nunca chega a rodar um processo) não toca `$LASTEXITCODE` (fica no valor
- * anterior, ou seja, `$null`), permitindo que o guard funcione.
- *
- * Este teste roda o `.ps1` de verdade com o PATH do processo FILHO
- * restringido a só `System32` (sem o diretório do Node/npx) — reproduz o
- * cenário real (npx genuinamente não resolvível), não um mock sintético.
- * Sem o fix (guard sozinho, sem a pré-inicialização), este teste falharia
- * com exit 0 — verificado empiricamente antes do fix.
+ * `scripts/run-apoios-diff-alarm.ps1` não tinha teste de regressão dedicado
+ * até a extração de `scripts/lib/Invoke-DiariaScheduledWrapper.psm1` (#4756)
+ * — segue o MESMO molde de log resiliente + exit code honesto dos demais
+ * wrappers migrados (`run-cursos-error-alarm.ps1`/`run-clarice-guardrail-
+ * alarm.ps1`, #4064/#4320/#4343). Cenários travados aqui:
+ *   1. Caso feliz (script noop OK) → exit 0, log final criado.
+ *   2. Log não gravável (parent do LogPath é um arquivo) → exit != 0.
+ *   3. PATH restrito sem node/npx → `$LASTEXITCODE` fica indefinido/null →
+ *      guard força exit != 0 (não um falso-sucesso silencioso, #4343).
+ *   4. Script noop que falha (exit 1) → exit code do wrapper também é 1
+ *      (mesmo caso do achado HIGH #2 do review #4552, escrito aqui desde a
+ *      criação do teste — não há molde antigo pra faltar o backport).
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -37,7 +23,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const SCRIPT = join(ROOT, "scripts", "run-clarice-guardrail-alarm.ps1");
+const SCRIPT = join(ROOT, "scripts", "run-apoios-diff-alarm.ps1");
 const NOOP_FIXTURE = join(ROOT, "test-fixtures", "clarice-sync-daily", "noop-exit0.ts");
 const NOOP_EXIT1_FIXTURE = join(ROOT, "test-fixtures", "clarice-sync-daily", "noop-exit1.ts");
 
@@ -78,13 +64,13 @@ function runScriptWithNpxUnresolvable(args: string[], timeoutMs = 120_000) {
 }
 
 describe(
-  "run-clarice-guardrail-alarm.ps1: exit code honesto quando npx não spawna (#4343)",
+  "run-apoios-diff-alarm.ps1: log resiliente + exit code honesto (#4756)",
   { skip: !isWindows && "requer powershell.exe (Windows)" },
   () => {
     let workDir: string;
 
     before(() => {
-      workDir = mkdtempSync(join(tmpdir(), "clarice-guardrail-alarm-npx-test-"));
+      workDir = mkdtempSync(join(tmpdir(), "apoios-diff-alarm-test-"));
     });
 
     after(() => {
@@ -105,7 +91,29 @@ describe(
       assert.ok(existsSync(finalLog), "esperava o log final criado");
     });
 
-    it("PATH sem node/npx -> npx não resolve -> $LASTEXITCODE null -> guard força exit != 0", () => {
+    it("log não gravável (parent do LogPath é um arquivo) -> exit != 0", () => {
+      const tempLog = join(workDir, "logfail-temp.log");
+      const blockerFile = join(workDir, "blocker.txt");
+      writeFileSync(blockerFile, "sou um arquivo, nao um diretorio");
+      const badLogPath = join(blockerFile, "sub", ".diff-alarm.log");
+
+      const result = runScript([
+        "-AlarmScript", NOOP_FIXTURE,
+        "-LogPath", badLogPath,
+        "-TempLogPath", tempLog,
+      ]);
+
+      assert.notEqual(
+        result.status,
+        0,
+        `esperava exit != 0 quando o log não pôde ser persistido, obteve ${result.status}. ` +
+          `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+      );
+      assert.match(result.stdout ?? "", /AVISO.*falha ao gravar o log final/);
+      assert.ok(existsSync(tempLog), "esperava o log temporário preservado quando o anexo final falha");
+    });
+
+    it("PATH sem node/npx -> npx não resolve -> $LASTEXITCODE null -> guard força exit != 0 (#4343)", () => {
       const tempLog = join(workDir, "npxfail-temp.log");
       const finalLog = join(workDir, "npxfail-final.log");
 
@@ -126,7 +134,7 @@ describe(
       assert.match(content, /npx nao executou/);
     });
 
-    it("alarm script falha (exit 1) -> exit code do wrapper também é 1 (#4756, backport do achado #4552)", () => {
+    it("alarm script falha (exit 1) -> exit code do wrapper também é 1", () => {
       const tempLog = join(workDir, "exit1-temp.log");
       const finalLog = join(workDir, "exit1-final.log");
 
