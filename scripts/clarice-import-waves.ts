@@ -37,6 +37,18 @@
  *                                 (via `clariceSegmentsDir`) no lugar de
  *                                 `{ciclo}/waves/waves-manifest.json`. Sem a flag,
  *                                 comportamento inalterado (rampa via waves/).
+ *   [--key CAMPAIGN_KEY]         #4753 — só relevante com --group + --execute, pra
+ *                                 grupos SEM célula (-A/-B/-C). Sobrescreve o `key`
+ *                                 gravado em `{group}-lists.json` (default: nome
+ *                                 estático do grupo) pela key de CAMPANHA que
+ *                                 `clarice-schedule-group.ts --key` vai receber
+ *                                 depois (ex: `novos-260807`, resolvida por
+ *                                 `clarice-novos-resolve-key.ts`) — sem isso, a 2ª+
+ *                                 importação do mesmo grupo/ciclo grava outra
+ *                                 entrada com a MESMA key estática, e `--key` do
+ *                                 script de agendamento nunca bate com nada
+ *                                 (issue #4753). Sem a flag, comportamento
+ *                                 inalterado. Ver `resolveRegistryKey` abaixo.
  *
  * Uso (grupo nomeado):
  *   npx tsx scripts/clarice-build-segment.ts --group engajados --cycle 2605-06 --budget 500
@@ -602,6 +614,37 @@ export function appendGroupListsRegistry(
   writeFileAtomic(file, JSON.stringify(merged, null, 2) + "\n");
 }
 
+/**
+ * #4753: qual `key` gravar no registro `{group}-lists.json` pra uma entrada
+ * recém-importada. Grupos SEM célula (sem sufixo -A/-B/-C) recebem
+ * `wave.key === group` ESTÁTICO em TODA importação (`clarice-build-segment.ts`
+ * não varia esse campo — só o A/B/C varia, via sufixo) — então uma 2ª+
+ * importação do mesmo grupo/ciclo (ex: `/diaria-clarice-novos` rodando de
+ * novo no mesmo mês-envio) grava outra entrada com a MESMA `key` estática, e
+ * `clarice-schedule-group.ts --key` (que recebe a key de CAMPANHA,
+ * `novos-{AAMMDD}`, resolvida por `clarice-novos-resolve-key.ts`) nunca bate
+ * com nada — o defeito relatado na issue #4753.
+ *
+ * `campaignKey` (passado via `--key` a este script — opcional) é o mesmo
+ * valor que `clarice-schedule-group.ts --key` vai receber depois: gravá-lo
+ * no lugar de `wave.key` faz `--key` bastar sozinho de novo, sem exigir
+ * `--list-index` manual a partir da 2ª importação.
+ *
+ * Grupos COM célula (-A/-B/-C) sempre mantêm `wave.key` mesmo que
+ * `campaignKey` tenha sido passado — cada célula já é uma key distinta por
+ * construção (é o que `groupCellListNameFor`/`resolveGroupListId` esperam),
+ * e sobrescrever colapsaria as 3 entradas na mesma key.
+ *
+ * Sem `campaignKey` (chamadores que nunca tiveram este problema — rampa,
+ * ramp-warm, engajados, grupos de dia com célula própria nunca passam
+ * `--key` a este script) o comportamento é o ORIGINAL, inalterado: grava
+ * `wave.key`.
+ */
+export function resolveRegistryKey(waveKey: string, campaignKey?: string): string {
+  if (campaignKey && !/-[ABC]$/i.test(waveKey)) return campaignKey;
+  return waveKey;
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -613,6 +656,14 @@ interface Args {
   cycle: string;
   /** #2916 — grupo nomeado (#2885) a importar; null = rampa (waves/), default. */
   group: string | null;
+  /**
+   * #4753 — key de CAMPANHA (ex: `novos-260807`, resolvida por
+   * clarice-novos-resolve-key.ts) opcional. Sem célula (-A/-B/-C), sobrescreve
+   * `wave.key` no registro `{group}-lists.json` — ver `resolveRegistryKey`.
+   * Caminhos que nunca passam esta flag (rampa, ramp-warm, engajados, grupos
+   * de dia com célula própria) mantêm o comportamento ORIGINAL inalterado.
+   */
+  campaignKey?: string;
 }
 
 export function parseArgs(argv: string[]): Args {
@@ -629,6 +680,7 @@ export function parseArgs(argv: string[]): Args {
     folderId: Number.isFinite(folder) && folder > 0 ? folder : 1,
     cycle,
     group: values["group"] ?? null,
+    campaignKey: values["key"] || undefined,
   };
 }
 
@@ -795,11 +847,32 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       // casar `--key` contra a lista certa quando o grupo tem múltiplas (ex:
       // teste A/B/C com 3 keys/3 listas). #4577 item 4: `r.count` agora é a
       // contagem CONFIRMADA pela Brevo pós-reconciliação, não a enviada.
-      results.map((r) => ({ key: r.wave, listId: r.listId, listName: r.listName, count: r.count, importedAt: r.importedAt })),
+      // #4753: `resolveRegistryKey` sobrescreve pra `args.campaignKey` (--key
+      // desta invocação) quando o grupo NÃO tem célula — ver docstring dela.
+      results.map((r) => ({
+        key: resolveRegistryKey(r.wave, args.campaignKey),
+        listId: r.listId,
+        listName: r.listName,
+        count: r.count,
+        importedAt: r.importedAt,
+      })),
     );
     console.error(
       `📝 registrado em ${groupListsRegistryPath(clariceSegmentsDir(args.cycle), args.group)} — ${results.length} lista(s) do grupo '${args.group}'.`,
     );
+
+    // Achado do fleet review da PR #4758: sem `--key`, `resolveRegistryKey`
+    // cai no nome ESTÁTICO do grupo e a entrada só será resolvível por
+    // `--list-index` depois — que é exatamente o bug da #4753, reintroduzido
+    // em silêncio. O banner de sucesso acima não distinguia os dois casos, e a
+    // omissão só aparecia 2 passos adiante. Avisa no ponto da falha.
+    if (!args.campaignKey) {
+      console.error(
+        `⚠️  --key não informado: as entradas acima foram gravadas com a key estática '${args.group}'. ` +
+          `Uma resolução posterior por --key de campanha NÃO vai encontrá-las (bug da #4753) — ` +
+          `use --list-index, ou re-rode o import passando --key.`,
+      );
+    }
   }
 
   console.log(JSON.stringify({ mode: "execute", folder_id: args.folderId, label: args.label, results }, null, 2));
