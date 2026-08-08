@@ -294,6 +294,13 @@ ${renderGeoJsonLd({
   datePublished: hub.contentDate,
   dateModified: hub.contentDate,
   faq: hub.faq,
+  // #4558 Parte B: a lista de fontes já visível em `.hub-sources` (issue
+  // item 6, "dados e números próprios") também vira `ItemList` estruturado —
+  // mesmos itens, mesma ordem, nenhuma reformulação (paridade com o FAQ).
+  itemList: {
+    name: `Edições da diar.ia.br citadas em ${hub.title}`,
+    items: hub.sourceEditions.map((e) => ({ name: e.title, url: e.url })),
+  },
 })}
 </body>
 </html>
