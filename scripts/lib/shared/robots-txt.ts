@@ -26,24 +26,53 @@
  * `Sitemap:` aponta pro `/sitemap.xml` PRÓPRIO do host (não pro sitemap do
  * host principal) — fecha #4546 junto do sitemap em si: sem isso o Google
  * só descobre esses sitemaps por submissão manual/API.
+ *
+ * #4777 estendeu o helper pros outros 3 Workers com host próprio (poll/
+ * eia., artigo-mensal/artigo., artigos/especial.) que ficaram de fora do
+ * #4546 (escopo daquela issue era sitemap de curadoria; o robots entrou só
+ * como consequência dos 3 Workers que já eram estáticos):
+ *
+ *   - `sitemapUrl` agora é OPCIONAL — nem todo host tem `/sitemap.xml`
+ *     próprio (ex: `eia.diar.ia.br`, jogo dinâmico por edição, não índice de
+ *     conteúdo estático). Omitido, a linha `Sitemap:` simplesmente não
+ *     aparece, em vez de forçar um valor incorreto.
+ *   - `extraDisallowPaths` (opcional) bloqueia paths específicos pra TODOS
+ *     os crawlers (`User-agent: *`), além do `Allow: /` geral — caso de uso
+ *     concreto: `eia.diar.ia.br` bloqueia `/vote` (URLs de voto são
+ *     rastreáveis a partir da versão web do post mas não têm valor de
+ *     índice nenhum, só gastam rastreamento).
  */
 
 /** Bots que continuam bloqueados nos subdomínios de curadoria — ver docstring do módulo. */
 export const CURADORIA_BLOCKED_BOTS = ["Amazonbot", "CloudflareBrowserRenderingCrawler"] as const;
 
+export interface RenderCuradoriaRobotsTxtOptions {
+  /**
+   * Paths adicionais bloqueados pra TODOS os crawlers (`User-agent: *`),
+   * além do `Allow: /` geral (#4777). Ex.: `["/vote"]` pra `eia.diar.ia.br`.
+   */
+  extraDisallowPaths?: readonly string[];
+}
+
 /**
- * Monta o `robots.txt` de um Worker de curadoria. `sitemapUrl` é a URL
- * absoluta do `/sitemap.xml` PRÓPRIO daquele host (ex:
- * `https://cursos.diar.ia.br/sitemap.xml`) — nunca a do host principal.
+ * Monta o `robots.txt` de um Worker de curadoria. `sitemapUrl`, quando
+ * informado, é a URL absoluta do `/sitemap.xml` PRÓPRIO daquele host (ex:
+ * `https://cursos.diar.ia.br/sitemap.xml`) — nunca a do host principal;
+ * omitido (host sem sitemap próprio), a linha `Sitemap:` não é emitida.
  */
-export function renderCuradoriaRobotsTxt(sitemapUrl: string): string {
+export function renderCuradoriaRobotsTxt(
+  sitemapUrl?: string,
+  options: RenderCuradoriaRobotsTxtOptions = {},
+): string {
+  const { extraDisallowPaths = [] } = options;
   const blocks = CURADORIA_BLOCKED_BOTS.map((bot) => `User-agent: ${bot}\nDisallow: /`).join("\n\n");
+  const extraDisallowLines = extraDisallowPaths.map((p) => `Disallow: ${p}`).join("\n");
+  const allowSection = extraDisallowLines ? `Allow: /\n${extraDisallowLines}` : "Allow: /";
+  const sitemapSection = sitemapUrl ? `\nSitemap: ${sitemapUrl}\n` : "";
   return `User-agent: *
 Content-Signal: search=yes,ai-train=yes,use=reference
-Allow: /
+${allowSection}
 
 ${blocks}
-
-Sitemap: ${sitemapUrl}
-`;
+${sitemapSection}`;
 }

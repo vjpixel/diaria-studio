@@ -1,0 +1,9 @@
+User-agent: *
+Content-Signal: search=yes,ai-train=yes,use=reference
+Allow: /
+
+User-agent: Amazonbot
+Disallow: /
+
+User-agent: CloudflareBrowserRenderingCrawler
+Disallow: /
