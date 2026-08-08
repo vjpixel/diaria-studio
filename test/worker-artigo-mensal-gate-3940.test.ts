@@ -343,3 +343,44 @@ describe("GET /sitemap.xml — sitemap vazio válido, não a página de paywall/
     assert.match(await res.text(), /<urlset/);
   });
 });
+
+describe("GET /robots.txt — robots.txt PRÓPRIO, não a página de paywall/form (#4777)", () => {
+  it("200 texto com Allow: /, Sitemap: própria e liberação seletiva dos 7 crawlers de assistente/treino", async () => {
+    const worker = (await import("../workers/artigo-mensal/src/index.ts")).default;
+    // Mesmo racional do teste de /sitemap.xml acima: sem allowlist/artigo no
+    // KV, se o defeito do #4546 reaparecesse aqui o catch-all trataria
+    // "robots.txt" como {cycle} e devolveria o form de e-mail com 200.
+    const env = makeEnv(new Map(), null);
+    const res = await worker.fetch(new Request("https://artigo.diar.ia.br/robots.txt"), env);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("Content-Type") ?? "", /text\/plain/);
+    const body = await res.text();
+    assert.doesNotMatch(body, /<html/i, "não deve devolver HTML (form de e-mail/paywall) em /robots.txt");
+    assert.match(body, /Allow: \//);
+    assert.match(body, /Sitemap: https:\/\/artigo\.diar\.ia\.br\/sitemap\.xml/);
+    assert.match(body, /User-agent: Amazonbot\nDisallow: \//);
+    assert.match(body, /User-agent: CloudflareBrowserRenderingCrawler\nDisallow: \//);
+    for (const bot of [
+      "GPTBot",
+      "ClaudeBot",
+      "CCBot",
+      "Google-Extended",
+      "Bytespider",
+      "meta-externalagent",
+      "Applebot-Extended",
+    ]) {
+      assert.doesNotMatch(body, new RegExp(`User-agent: ${bot}\\b`));
+    }
+  });
+
+  it("continua servindo /robots.txt mesmo com ?email= na query (não é tratado como cycle)", async () => {
+    const worker = (await import("../workers/artigo-mensal/src/index.ts")).default;
+    const env = makeEnv(new Map(), JSON.stringify(["apoiador10@x.com"]));
+    const res = await worker.fetch(
+      new Request("https://artigo.diar.ia.br/robots.txt?email=apoiador10@x.com"),
+      env,
+    );
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /Allow: \//);
+  });
+});

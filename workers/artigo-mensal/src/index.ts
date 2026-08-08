@@ -28,6 +28,13 @@
  *                              de apoiador — não há URL pública indexável
  *                              pra declarar, então vazio é o valor correto,
  *                              não um erro de implementação)
+ *   GET /robots.txt         → robots.txt PRÓPRIO (#4777) — substitui o
+ *                              default gerenciado pela Cloudflare, que
+ *                              bloqueava os 7 crawlers de assistente/treino
+ *                              contra a decisão do editor de 03/ago
+ *                              (CLAUDE.md). `Sitemap:` aponta pro
+ *                              `/sitemap.xml` (vazio) acima — mesmo host,
+ *                              mesma semântica "sem URL indexável hoje".
  *   * outros métodos        → 405
  *
  * Fail-closed (#3940, invariante central): qualquer falha ao ler o KV
@@ -46,6 +53,10 @@ import {
   renderCycleNotFound,
   renderMissingCycle,
 } from "./render.ts";
+import { renderCuradoriaRobotsTxt } from "../../../scripts/lib/shared/robots-txt.ts"; // #4777
+
+/** Host público deste Worker — usado só pra montar a `Sitemap:` do robots.txt. */
+const ARTIGO_MENSAL_HOST = "https://artigo.diar.ia.br";
 
 export interface Env {
   ARTICLES: KVNamespace;
@@ -74,6 +85,23 @@ function sitemapResponse(): Response {
   return new Response(EMPTY_SITEMAP_XML, {
     status: 200,
     headers: { "Content-Type": "application/xml;charset=utf-8", "Cache-Control": "public, max-age=3600" },
+  });
+}
+
+/**
+ * `robots.txt` PRÓPRIO (#4777) — mesmo mecanismo/racional de
+ * `workers/arquivo` (`renderCuradoriaRobotsTxt`, `scripts/lib/shared/robots-txt.ts`,
+ * #4546). `Sitemap:` aponta pro `/sitemap.xml` deste próprio host (vazio,
+ * ver `EMPTY_SITEMAP_XML` acima) — declará-lo não muda a semântica "nenhuma
+ * URL indexável hoje", só evita que o crawler descubra o robots.txt e ache
+ * que não há sitemap nenhum.
+ */
+const ARTIGO_MENSAL_ROBOTS_TXT = renderCuradoriaRobotsTxt(`${ARTIGO_MENSAL_HOST}/sitemap.xml`);
+
+function robotsResponse(): Response {
+  return new Response(ARTIGO_MENSAL_ROBOTS_TXT, {
+    status: 200,
+    headers: { "Content-Type": "text/plain;charset=utf-8", "Cache-Control": "public, max-age=3600" },
   });
 }
 
@@ -140,6 +168,9 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/sitemap.xml") {
       return sitemapResponse();
+    }
+    if (url.pathname === "/robots.txt") {
+      return robotsResponse();
     }
     return handleGet(url, env);
   },

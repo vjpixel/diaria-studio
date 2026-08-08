@@ -48,6 +48,7 @@ import {
   renderBrandFooter, // #4110
   isOwnWorkOnlyCredit, // #4258 item 2: suprime "Own work" cru gravado no KV de edições antigas
 } from "./lib";
+import { renderCuradoriaRobotsTxt } from "../../../scripts/lib/shared/robots-txt.ts"; // #4777
 // #3111: tokens do DS canônico gerados por scripts/generate-worker-tokens.ts a
 // partir de scripts/lib/shared/design-tokens.ts — nunca hardcodear valores de
 // cor/fonte inline aqui (ver test/poll-ds-tokens.test.ts para a trava).
@@ -1564,6 +1565,34 @@ export async function handleImage(path: string, env: Env): Promise<Response> {
   });
 }
 
+// ── /robots.txt (#4777) ──────────────────────────────────────────────────────
+/**
+ * `robots.txt` PRÓPRIO pro domínio de marca `eia.diar.ia.br` — mesmo
+ * mecanismo/racional de `workers/arquivo` (`renderCuradoriaRobotsTxt`,
+ * `scripts/lib/shared/robots-txt.ts`, #4546): substitui o robots.txt DEFAULT
+ * gerenciado pela Cloudflare, que bloqueava os 7 crawlers de assistente/
+ * treino contra a decisão do editor de 03/ago (CLAUDE.md, "Crawlers de IA
+ * ficam liberados nas nossas superfícies").
+ *
+ * Sem `Sitemap:` — este Worker não tem `/sitemap.xml` próprio (jogo dinâmico
+ * por edição, não índice de conteúdo estático); `renderCuradoriaRobotsTxt`
+ * omite a linha quando `sitemapUrl` não é informado (#4777).
+ *
+ * `extraDisallowPaths: ["/vote"]`: URLs de voto
+ * (`/vote?email=...&edition=...&choice=...`) são rastreáveis a partir da
+ * versão web do post (foi assim que o Googlebot chegou numa delas, ver
+ * issue #4777) e não têm valor de índice nenhum — só gastam rastreamento
+ * num site onde boa parte do sitemap nunca foi rastreada.
+ */
+const EIA_ROBOTS_TXT = renderCuradoriaRobotsTxt(undefined, { extraDisallowPaths: ["/vote"] });
+
+function handleRobotsTxt(): Response {
+  return new Response(EIA_ROBOTS_TXT, {
+    status: 200,
+    headers: { "Content-Type": "text/plain;charset=utf-8", "Cache-Control": "public, max-age=3600" },
+  });
+}
+
 // ── Main handler ──────────────────────────────────────────────────────────────
 // #1239: /html/{key} handlers moved to dedicated Worker `draft` (deployed
 // at https://draft.diaria.workers.dev/{edition}). Removed here pós grace
@@ -1669,6 +1698,9 @@ export default {
  * qualquer rota futura que precise de `waitUntil()`.
  */
 async function routeRequest(request: Request, url: URL, path: string, env: Env, bEnv: Env, brand: Brand, ctx?: ExecutionContext): Promise<Response> {
+    // #4777: /robots.txt não depende de brand/KV — resolvido antes de
+    // qualquer outra rota, mesmo padrão de topo-de-router de workers/arquivo.
+    if (path === "/robots.txt" && request.method === "GET") return handleRobotsTxt();
     // #3516: /jogar é standalone e sempre brand="web" (ignora `?brand=` da
     // request — a rota já implica a marca). Usa `env` CRU (não `bEnv`) — a
     // página só lê o gabarito PÚBLICO compartilhado (`correct:{edition}`,
@@ -1860,5 +1892,5 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     if (path.startsWith("/img/") && (request.method === "GET" || request.method === "HEAD")) return handleImage(path, env);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 
-    return json({ error: "not found", endpoints: ["/jogar", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/jogar/seq-state", "/jogar/subscribe", "/jogar/gate", "/jogar/gate/verify", "/jogar/gate/subscribe", "/jogar/gate/logout", "/jogar/identify", "/confirm-merge", "/embed", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/admin/eiameta", "/admin/purge-score-do", "/img/{key}"] }, 404, env);
+    return json({ error: "not found", endpoints: ["/robots.txt", "/jogar", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/jogar/seq-state", "/jogar/subscribe", "/jogar/gate", "/jogar/gate/verify", "/jogar/gate/subscribe", "/jogar/gate/logout", "/jogar/identify", "/confirm-merge", "/embed", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/admin/eiameta", "/admin/purge-score-do", "/img/{key}"] }, 404, env);
 }
