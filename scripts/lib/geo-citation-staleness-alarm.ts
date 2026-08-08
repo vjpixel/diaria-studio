@@ -122,18 +122,32 @@ export function buildGeoCitationStalenessAlarmEmail(
   latestRecordTs: string | null,
   staleDays: number | null,
 ): { subject: string; body: string } {
-  const subject =
-    latestRecordTs === null
-      ? "[diar.ia.br] monitor de citação GEO nunca registrou nenhuma medição"
-      : `[diar.ia.br] monitor de citação GEO sem medição nova há ${staleDays} dias`;
+  // `staleDays === null` também cobre o caso de `latestRecordTs` NÃO-null mas
+  // ilegível (data corrompida — `computeStaleness` já trata isso como
+  // "nunca medido", ver docstring) — sem este OR, o ramo `else` abaixo
+  // interpolaria staleDays como a string literal "null" (achado de
+  // self-review, corrigido antes de reportar; ver
+  // test/geo-citation-staleness-alarm.test.ts).
+  const neverMeasured = latestRecordTs === null || staleDays === null;
+  const subject = neverMeasured
+    ? "[diar.ia.br] monitor de citação GEO nunca registrou nenhuma medição"
+    : `[diar.ia.br] monitor de citação GEO sem medição nova há ${staleDays} dias`;
 
   const lines: string[] = [];
-  if (latestRecordTs === null) {
-    lines.push(
-      "data/geo-citations/history.jsonl está ausente, vazio, ou sem nenhum",
-      "registro legível — o monitor semanal de citação (#4558 Parte C) nunca",
-      "produziu uma medição válida.",
-    );
+  if (neverMeasured) {
+    if (latestRecordTs !== null) {
+      lines.push(
+        `O último registro em data/geo-citations/history.jsonl tem um campo`,
+        `ts ilegível ("${latestRecordTs}") — tratado como equivalente a`,
+        "nenhuma medição válida.",
+      );
+    } else {
+      lines.push(
+        "data/geo-citations/history.jsonl está ausente, vazio, ou sem nenhum",
+        "registro legível — o monitor semanal de citação (#4558 Parte C) nunca",
+        "produziu uma medição válida.",
+      );
+    }
   } else {
     lines.push(
       `O último registro em data/geo-citations/history.jsonl é de ${latestRecordTs}`,

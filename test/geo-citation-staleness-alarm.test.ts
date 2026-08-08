@@ -147,6 +147,15 @@ describe("buildGeoCitationStalenessAlarmEmail (#4755)", () => {
     assert.match(subject, /nunca registrou/);
     assert.match(body, /ausente, vazio/);
   });
+
+  it("achado de self-review: ts NÃO-null mas staleDays null (data corrompida) — nunca interpola staleDays como a string 'null'", () => {
+    const { subject, body } = buildGeoCitationStalenessAlarmEmail("não-é-uma-data", null);
+    assert.doesNotMatch(subject, /\bnull\b/);
+    assert.doesNotMatch(body, /\bnull\b/);
+    assert.match(subject, /nunca registrou/);
+    assert.match(body, /ilegível/);
+    assert.match(body, /não-é-uma-data/);
+  });
 });
 
 describe("loadState / saveState (scripts/geo-citation-staleness-alarm.ts, I/O)", () => {
