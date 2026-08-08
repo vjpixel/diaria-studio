@@ -9,12 +9,19 @@
  * Task Scheduler). Cenários travados aqui — ver
  * `test/run-worker-drift-check-ps1.test.ts` pro precedente direto. O caso
  * exit-1 (#4756, backport do achado #4552) fecha a mesma lacuna que existia
- * neste wrapper antes da migração pro módulo compartilhado.
+ * neste wrapper antes da migração pro módulo compartilhado. O caso
+ * módulo-não-resolve (achado CRITICAL do fleet review pré-merge da #4756)
+ * fecha uma 2ª lacuna: sem esse guard, o `Import-Module` falhando é um erro
+ * NÃO-terminante sob `$ErrorActionPreference = "Continue"`, e o script cai
+ * direto no `exit $code` com `$code` nunca atribuído — que sai 0 sob
+ * `Set-StrictMode`. Ver `run-geo-citation-staleness-alarm-ps1.test.ts` pro
+ * comentário completo sobre por que o `try/catch` cobre só o
+ * `Import-Module`, nunca a chamada de `Invoke-DiariaScheduledWrapper` em si.
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, copyFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -148,6 +155,47 @@ describe(
       assert.ok(existsSync(finalLog), "esperava o log final criado");
       const content = readFileSync(finalLog, "utf8");
       assert.match(content, /fim \(check=1\)/);
+    });
+
+    it("Invoke-DiariaScheduledWrapper.psm1 não resolve -> exit != 0, nunca sucesso fantasma (achado CRITICAL, fleet review #4756)", () => {
+      const isolatedDir = mkdtempSync(join(tmpdir(), "hub-drift-check-noModule-"));
+      const isolatedScript = join(isolatedDir, "run-hub-drift-check.ps1");
+      copyFileSync(SCRIPT, isolatedScript);
+
+      const tempLog = join(workDir, "nomodule-temp.log");
+      const finalLog = join(workDir, "nomodule-final.log");
+
+      try {
+        const result = spawnSync(
+          POWERSHELL_ABS,
+          [
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            isolatedScript,
+            "-CheckScript",
+            NOOP_FIXTURE,
+            "-LogPath",
+            finalLog,
+            "-TempLogPath",
+            tempLog,
+          ],
+          { encoding: "utf8", timeout: 120_000 },
+        );
+
+        assert.notEqual(
+          result.status,
+          0,
+          `esperava exit != 0 quando o modulo compartilhado nao resolve, obteve ${result.status} (sucesso fantasma). ` +
+            `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+        );
+        assert.ok(existsSync(finalLog), "esperava o log final criado mesmo com o modulo ausente");
+        const content = readFileSync(finalLog, "utf8");
+        assert.match(content, /ERRO FATAL.*carregar Invoke-DiariaScheduledWrapper\.psm1/);
+      } finally {
+        rmSync(isolatedDir, { recursive: true, force: true });
+      }
     });
   },
 );

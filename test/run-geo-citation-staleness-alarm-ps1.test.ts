@@ -14,11 +14,23 @@
  *   4. Script noop que falha (exit 1) → exit code do wrapper também é 1
  *      (mesmo caso do achado HIGH #2 do review #4552, escrito aqui desde a
  *      criação do teste — não há molde antigo pra faltar o backport).
+ *   5. `Invoke-DiariaScheduledWrapper.psm1` não resolve (achado CRITICAL do
+ *      fleet review pré-merge da #4756) → sem este guard, o `Import-Module`
+ *      falhando é um erro NÃO-terminante sob `$ErrorActionPreference =
+ *      "Continue"`, e o script cai direto no `exit $code` com `$code` nunca
+ *      atribuído — que sai 0 sob `Set-StrictMode`. Sucesso fantasma
+ *      justamente no wrapper de um ALARME de staleness. Note que o
+ *      `try/catch` cobre só o `Import-Module`, nunca a chamada de
+ *      `Invoke-DiariaScheduledWrapper` em si — envolvê-la também quebraria o
+ *      guard #4343 (cenário 3 acima), que depende de rodar SEM um
+ *      try/catch envolvente pra degradar corretamente pra
+ *      `$LASTEXITCODE=$null` em vez de propagar a exceção terminante do
+ *      comando não encontrado.
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, copyFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -154,6 +166,51 @@ describe(
       assert.ok(existsSync(finalLog), "esperava o log final criado");
       const content = readFileSync(finalLog, "utf8");
       assert.match(content, /fim \(alarm=1\)/);
+    });
+
+    it("Invoke-DiariaScheduledWrapper.psm1 não resolve -> exit != 0, nunca sucesso fantasma (achado CRITICAL, fleet review #4756)", () => {
+      // Copia só o .ps1 pra um dir isolado SEM a subpasta lib/ -- o
+      // Join-Path relativo a $ScriptDir nao encontra o modulo, forcando o
+      // mesmo Import-Module que falharia num .psm1 corrompido/renomeado em
+      // producao.
+      const isolatedDir = mkdtempSync(join(tmpdir(), "geo-staleness-alarm-noModule-"));
+      const isolatedScript = join(isolatedDir, "run-geo-citation-staleness-alarm.ps1");
+      copyFileSync(SCRIPT, isolatedScript);
+
+      const tempLog = join(workDir, "nomodule-temp.log");
+      const finalLog = join(workDir, "nomodule-final.log");
+
+      try {
+        const result = spawnSync(
+          POWERSHELL_ABS,
+          [
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            isolatedScript,
+            "-AlarmScript",
+            NOOP_FIXTURE,
+            "-LogPath",
+            finalLog,
+            "-TempLogPath",
+            tempLog,
+          ],
+          { encoding: "utf8", timeout: 120_000 },
+        );
+
+        assert.notEqual(
+          result.status,
+          0,
+          `esperava exit != 0 quando o modulo compartilhado nao resolve, obteve ${result.status} (sucesso fantasma). ` +
+            `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+        );
+        assert.ok(existsSync(finalLog), "esperava o log final criado mesmo com o modulo ausente");
+        const content = readFileSync(finalLog, "utf8");
+        assert.match(content, /ERRO FATAL.*carregar Invoke-DiariaScheduledWrapper\.psm1/);
+      } finally {
+        rmSync(isolatedDir, { recursive: true, force: true });
+      }
     });
   },
 );

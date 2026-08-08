@@ -39,7 +39,33 @@ if (-not $CheckScript) { $CheckScript = Join-Path $RepoRoot "scripts\hub-drift-c
 if (-not $LogPath)     { $LogPath     = Join-Path $RepoRoot "data\hub-drift-check\.drift-check.log" }
 if (-not $TempLogPath) { $TempLogPath = Join-Path $env:TEMP "diaria-hub-drift-check-$PID.log" }
 
-Import-Module (Join-Path $ScriptDir "lib\Invoke-DiariaScheduledWrapper.psm1") -Force
+try {
+    # #4756 fleet review (achado CRITICAL): sem este guard, falha ao
+    # CARREGAR o modulo compartilhado (path errado, .psm1 corrompido, erro
+    # de sintaxe futuro) e' um erro NAO-terminante sob
+    # $ErrorActionPreference="Continue" -- o script cai direto no
+    # `Invoke-DiariaScheduledWrapper` (que nem existe mais como funcao),
+    # produz um 2o erro nao-terminante, e chega no `exit $code` com $code
+    # nunca atribuido, que sai 0 sob Set-StrictMode. So o Import-Module fica
+    # dentro do try -- a CHAMADA da funcao fica de propriedade FORA dele: o
+    # guard interno do modulo pro caso "npx nao resolve" (#4343, guard-*)
+    # depende de rodar SEM um try/catch envolvente (o erro de comando nao
+    # encontrado so degrada pra `$LASTEXITCODE=$null` quando nao ha catch
+    # mais proximo pra interceptar a excecao terminante antes da checagem de
+    # guard do proprio modulo rodar) -- confirmado ao vivo: envolver a
+    # chamada quebrou esse guard existente (regressao pega pelo teste
+    # #4343 durante o proprio fleet review desta correcao).
+    Import-Module (Join-Path $ScriptDir "lib\Invoke-DiariaScheduledWrapper.psm1") -Force -ErrorAction Stop
+} catch {
+    $failMsg = "ERRO FATAL: falha ao carregar Invoke-DiariaScheduledWrapper.psm1: $_"
+    Write-Error $failMsg
+    try {
+        Add-Content -Path $LogPath -Encoding utf8 -Value "`n===== $(Get-Date -Format o) - hub drift check =====`n$failMsg`n===== fim (check=1) =====" -ErrorAction Stop
+    } catch {
+        # melhor esforco -- falha de log aqui ja e' o pior caso possivel, mas nao pode mascarar o exit code
+    }
+    exit 1
+}
 
 $code = Invoke-DiariaScheduledWrapper `
     -RepoRoot $RepoRoot `
