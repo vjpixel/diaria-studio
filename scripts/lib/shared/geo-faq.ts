@@ -220,10 +220,13 @@ export interface GeoJsonLdOptions {
 }
 
 /**
- * Monta o `<script type="application/ld+json">` com `@graph` de 2 nodes —
- * `FAQPage` (mainEntity = as perguntas/respostas visíveis) e `Article`
- * (autor nomeado, datas, publisher, `inLanguage`). Pure — string pronta pra
- * interpolar no `<head>`, entre `<title>` e `<style>`.
+ * Monta o `<script type="application/ld+json">` com `@graph` de 2 nodes
+ * fixos — `FAQPage` (mainEntity = as perguntas/respostas visíveis) e
+ * `Article` (autor nomeado, datas, publisher, `inLanguage`) — mais um
+ * terceiro node `ItemList` OPCIONAL quando `opts.itemList` é passado com
+ * `items` não-vazio (issue #4558 Parte B — ver `GeoJsonLdOptions.itemList`).
+ * Pure — string pronta pra interpolar no `<head>`, entre `<title>` e
+ * `<style>`.
  *
  * `acceptedAnswer.text` usa `stripMarkdownLinks(item.answer)` (#4635 item
  * 3) — schema.org espera texto legível ali, não markup; embutir
