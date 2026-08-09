@@ -2,22 +2,29 @@
  * test/hub-content-no-diaria-nickname-4795.test.ts (#4795)
  *
  * Guard anti-regressão: o texto reader-facing dos hubs temáticos
- * (`scripts/lib/hubs/*.ts` — `question`/`answer` do FAQ, `heading`/
- * `paragraphs` das sections, `introHeading`/`introParagraph`) deve se referir
- * à newsletter pelo nome de marca "a diar.ia.br", nunca pelo apelido informal
- * "a diária" (e variantes de concordância que contêm essa substring — "da
- * diária", "pela diária", "segundo a diária"). Mesmo espírito do guard que o
- * #4424 já tem pra "Diar.ia" (`test/reader-facing-no-legacy-brand-4424.test.ts`)
- * — impede a forma errada de voltar via edição futura do conteúdo do hub.
+ * (`scripts/lib/hubs/*.ts` — `title`, `metaDescription`, `question`/`answer`
+ * do FAQ, `heading`/`paragraphs` das sections, `introHeading`/
+ * `introParagraph`) deve se referir à newsletter pelo nome de marca
+ * "a diar.ia.br", nunca pelo apelido informal "a diária" (e variantes de
+ * concordância que contêm essa substring — "da diária", "pela diária",
+ * "segundo a diária"). Mesmo espírito do guard que o #4424 já tem pra
+ * "Diar.ia" (`test/reader-facing-no-legacy-brand-4424.test.ts`) — impede a
+ * forma errada de voltar via edição futura do conteúdo do hub.
  *
- * Escopo: só os 3 arquivos de conteúdo de hub temático publicados hoje
- * (#4558 Partes A-C). Comentários de código (docstrings, notas de
- * implementação) NÃO são cobertos por este guard — não aparecem em nenhuma
- * página, trocar é opcional (ver corpo da #4795).
+ * Escopo: só os 3 arquivos de conteúdo de hub temático existentes no momento
+ * deste guard (#4558 Partes A-C, #4627). Um hub novo precisa ser adicionado
+ * à mão ao array `HUBS` abaixo — não é descoberto automaticamente — senão
+ * escapa deste guard em silêncio. Comentários de código (docstrings, notas de
+ * implementação) também NÃO são cobertos — não aparecem em nenhuma página,
+ * trocar é opcional (ver corpo da #4795).
  *
- * "a diária" é o achado real (#4795): nunca "à diária" (não existe em
- * PT-BR) nem "a Diária" maiúscula fora de início de frase — cobrir os dois
- * casos de capitalização (início de sentença vs. no meio) é suficiente.
+ * `NICKNAME_RE` exige que não haja letra imediatamente antes de "a"/"A"
+ * (lookbehind), pra não casar substantivos femininos terminados em "a" que
+ * antecedem "diária" como adjetivo comum ("rotina diária", "cadência
+ * diária"). "à diária" nunca aparece nas construções deste conteúdo
+ * ("segundo/da/pela a diária" não exigem crase), e "a Diária" maiúscula só
+ * ocorre em início de frase — cobrir os dois casos de capitalização (início
+ * de sentença vs. no meio) é suficiente.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -26,7 +33,7 @@ import { getOpenaiChatgptHub } from "../scripts/lib/hubs/openai-chatgpt.ts";
 import { getGoogleGeminiHub } from "../scripts/lib/hubs/google-gemini.ts";
 import type { HubContent } from "../scripts/lib/shared/hub-page.ts";
 
-const NICKNAME_RE = /[Aa] diária/;
+const NICKNAME_RE = /(?<![\p{L}])[Aa] diária/u;
 
 const HUBS: { slug: string; content: HubContent }[] = [
   { slug: "anthropic-claude", content: getAnthropicClaudeHub() },
@@ -36,6 +43,8 @@ const HUBS: { slug: string; content: HubContent }[] = [
 
 function collectReaderFacingStrings(content: HubContent): { field: string; value: string }[] {
   const out: { field: string; value: string }[] = [];
+  out.push({ field: "title", value: content.title });
+  out.push({ field: "metaDescription", value: content.metaDescription });
   out.push({ field: "introHeading", value: content.introHeading });
   out.push({ field: "introParagraph", value: content.introParagraph });
   content.sections.forEach((section, sIdx) => {
