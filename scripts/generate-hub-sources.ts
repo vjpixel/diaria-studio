@@ -37,7 +37,11 @@ import { fileURLToPath } from "node:url";
 
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { isMainModule } from "./lib/cli-args.ts";
-import { resolvePublishDate } from "./lib/beehiiv-publish-date.ts";
+import {
+  loadPublishDateOverrides,
+  resolvePublishDate,
+  type PublishDateOverridesResult,
+} from "./lib/beehiiv-publish-date.ts";
 import type { RawCachedPost } from "./generate-arquivo-titles.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -84,15 +88,33 @@ export interface CollectHubSourcesResult {
   warnings: string[];
 }
 
-/** Pure: varre os posts confirmados e devolve as entradas que casam
+/**
+ * Pure: varre os posts confirmados e devolve as entradas que casam
  * `pattern`, mais os warnings de qualquer post pulado. Ordenado por data
- * crescente. */
+ * crescente.
+ *
+ * @param overridesResult   Injetável pra testes (confirma que a função
+ *                           propaga um override presente/erro/descarte real
+ *                           — #4803); default é `loadPublishDateOverrides()`,
+ *                           o arquivo committado.
+ */
 export function collectHubSources(
   posts: RawCachedPost[],
   pattern: RegExp,
+  overridesResult: PublishDateOverridesResult = loadPublishDateOverrides(),
 ): CollectHubSourcesResult {
   const rows: HubSourceEntry[] = [];
   const warnings: string[] = [];
+
+  // #4803: mesmo racional de generate-arquivo-titles.ts::buildTitlesCache —
+  // falha de override não pode ficar só em stderr.
+  if (overridesResult.error) {
+    warnings.push(
+      `beehiiv-publish-date-overrides.json malformado (${overridesResult.error}) — seguindo SEM nenhum override; slugs afetados voltam pro publish_date bruto (comportamento pré-#4796)`,
+    );
+  }
+  for (const w of overridesResult.discarded) warnings.push(`beehiiv-publish-date-overrides.json: ${w}`);
+
   for (const post of posts) {
     if (post.status !== "confirmed") continue;
     const destaques = [post.title, ...(post.subtitle ? post.subtitle.split("|").map((s) => s.trim()) : [])].filter(
@@ -108,7 +130,7 @@ export function collectHubSources(
       continue;
     }
     // #4796: override por slug primeiro, cai no publish_date bruto pra todo o resto.
-    const date = resolvePublishDate(post.slug, post.publish_date);
+    const date = resolvePublishDate(post.slug, post.publish_date, overridesResult.overrides);
     if (!date) {
       warnings.push(`slug "${post.slug}" confirmado e casado, mas sem publish_date — pulado`);
       continue;

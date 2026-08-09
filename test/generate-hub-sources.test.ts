@@ -110,3 +110,50 @@ describe("collectHubSources (#4558 Parte A)", () => {
     assert.equal(warnings.length, 2);
   });
 });
+
+describe("collectHubSources — propagação do override de data (#4803)", () => {
+  it("um override presente e válido vence o publish_date bruto na entrada final", () => {
+    const posts: RawCachedPost[] = [
+      {
+        slug: "edicao-antiga",
+        title: "Anthropic lança algo antigo",
+        status: "confirmed",
+        publish_date: Date.UTC(2025, 8, 3, 18, 0, 0) / 1000,
+      },
+    ];
+    const { rows, warnings } = collectHubSources(posts, PATTERN, {
+      overrides: { "edicao-antiga": "2025-06-15" },
+      discarded: [],
+    });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].date, "2025-06-15");
+    assert.deepEqual(warnings, []);
+  });
+
+  it("overridesResult.error vira warning visível, sem bloquear o resto do processamento", () => {
+    const posts: RawCachedPost[] = [
+      { slug: "edicao-x", title: "Claude X", status: "confirmed", publish_date: Date.UTC(2026, 6, 1, 18) / 1000 },
+    ];
+    const { rows, warnings } = collectHubSources(posts, PATTERN, {
+      overrides: {},
+      error: "Unexpected end of JSON input",
+      discarded: [],
+    });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].date, "2026-07-01");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /malformado/);
+  });
+
+  it("overridesResult.discarded (entrada de formato inválido) vira warning visível", () => {
+    const posts: RawCachedPost[] = [
+      { slug: "edicao-y", title: "Claude Y", status: "confirmed", publish_date: Date.UTC(2026, 6, 1, 18) / 1000 },
+    ];
+    const { warnings } = collectHubSources(posts, PATTERN, {
+      overrides: {},
+      discarded: [`slug "edicao-y": valor de override inválido (esperado "YYYY-MM-DD", recebido "")`],
+    });
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /edicao-y/);
+  });
+});

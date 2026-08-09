@@ -36,7 +36,12 @@ import { fileURLToPath } from "node:url";
 
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { isMainModule } from "./lib/cli-args.ts";
-import { resolvePublishDate, unixSecondsToBrtDate } from "./lib/beehiiv-publish-date.ts";
+import {
+  loadPublishDateOverrides,
+  resolvePublishDate,
+  unixSecondsToBrtDate,
+  type PublishDateOverridesResult,
+} from "./lib/beehiiv-publish-date.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POSTS_DIR = resolve(ROOT, "data/beehiiv-cache/posts");
@@ -95,12 +100,28 @@ export const publishDateLabel = unixSecondsToBrtDate;
  * sem slug resolvível, sem título (nem `title` nem `subject`) ou sem
  * `publish_date` — todos os 3 campos são necessários pro Worker usar a
  * entrada (item 1 exige título real + data de publicação juntos).
+ *
+ * @param overridesResult   Injetável pra testes (confirma que a função
+ *                           propaga um override presente/erro/descarte real
+ *                           — #4803); default é `loadPublishDateOverrides()`,
+ *                           o arquivo committado.
  */
 export function buildTitlesCache(
   posts: RawCachedPost[],
+  overridesResult: PublishDateOverridesResult = loadPublishDateOverrides(),
 ): { cache: TitlesCache; warnings: string[] } {
   const cache: TitlesCache = {};
   const warnings: string[] = [];
+
+  // #4803: falha ao ler/validar o override NÃO pode ficar só em stderr — um
+  // erro de sintaxe do editor reverteria silenciosamente pro `publish_date`
+  // bruto que a #4796 existe pra corrigir.
+  if (overridesResult.error) {
+    warnings.push(
+      `beehiiv-publish-date-overrides.json malformado (${overridesResult.error}) — seguindo SEM nenhum override; slugs afetados voltam pro publish_date bruto (comportamento pré-#4796)`,
+    );
+  }
+  for (const w of overridesResult.discarded) warnings.push(`beehiiv-publish-date-overrides.json: ${w}`);
 
   for (const post of posts) {
     const slug = post.slug ?? (post.web_url ? slugFromUrl(post.web_url) : null);
@@ -116,7 +137,7 @@ export function buildTitlesCache(
     }
 
     // #4796: override por slug primeiro, cai no publish_date bruto pra todo o resto.
-    const publishDate = resolvePublishDate(slug, post.publish_date);
+    const publishDate = resolvePublishDate(slug, post.publish_date, overridesResult.overrides);
     if (!publishDate) {
       warnings.push(`slug "${slug}" sem publish_date — pulado`);
       continue;
