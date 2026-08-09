@@ -227,6 +227,73 @@ export function buildFinalizeState(prev: NovosState | null, opts: FinalizeOption
 }
 
 // ---------------------------------------------------------------------------
+// #4788 — reconciliação de `sentCount` (acumulador local, all-time) contra a
+// soma real das campanhas `novos-*` na Brevo. Achado: `sentCount` gravava 350
+// enquanto a soma das campanhas realmente enviadas era 440 — 90 envios ficam
+// invisíveis pra sempre quando `--finalize-scheduled` nunca vira `--finalize`
+// (disparo aconteceu, confirmação nunca rodou; ver docstring de
+// `buildFinalizeState`/`buildFinalizeScheduledState` acima). Escopo desta
+// unidade é SÓ a reconciliação (opção 1 da issue) — a ambiguidade de
+// semântica all-time-vs-por-ciclo (opção 2/3) fica pra depois, deliberadamente
+// fora de escopo.
+//
+// Comparação também é all-time por simetria: `sentCount` nunca reseta por
+// ciclo, então o lado "real" soma TODAS as campanhas cujo nome começa com
+// `novos-` (mesmo prefixo de `resolveNovosKey` — `novos-{AAMMDD}`,
+// `novos-{AAMMDD}-2`…), não só as do ciclo atual. Isso evita reabrir a
+// ambiguidade que a issue explicitamente deixou pra decidir depois.
+//
+// Warn-only por decisão do editor (#4788, comentário 260808b) — mesmo padrão
+// de `clarice-import-waves.ts` (#4577/#4602) na FORMA (soma real vs. esperado
+// via API), mas diferente no RESULTADO: import-waves ABORTA a invocação numa
+// divergência (contagem confirmada é pré-condição pra declarar sucesso);
+// aqui a divergência só é reportada — `sentCount` já é um contador auxiliar
+// que nenhum consumidor usa pra decidir volume/gate de envio hoje (ver
+// "Prioridade" na issue), então travar `--finalize` por causa dele seria
+// bloquear o disparo real por um problema no contador que só o descreve.
+// ---------------------------------------------------------------------------
+
+/** Uma campanha Brevo já enviada, reduzida ao que a reconciliação precisa. */
+export interface NovosCampaignSentCount {
+  name: string;
+  /** `statistics.globalStats.sent` da campanha (tentativas de envio — mesmo campo que `clarice-guardrail-alarm.ts` usa como denominador de taxa). */
+  sent: number;
+}
+
+export interface NovosSentCountReconciliation {
+  expected: number;
+  actual: number;
+  /** Quantas campanhas `novos-*` entraram na soma — 0 é informativo (ex: 1ª rodada, ou nenhuma campanha `sent` ainda). */
+  matchedCampaigns: number;
+  matches: boolean;
+  /** Mensagem legível pra log — inclui o ⚠/✓ e a issue de referência na divergência. */
+  detail: string;
+}
+
+/** Prefixo de nome usado por TODAS as campanhas do grupo `novos` — mesmo usado por `resolveNovosKey` (`novos-{AAMMDD}[-N]`). */
+export const NOVOS_CAMPAIGN_NAME_PREFIX = "novos-";
+
+/**
+ * Reconcilia `sentCount` (acumulador local) contra a soma real das campanhas
+ * `novos-*` já enviadas na Brevo (#4788). PURA — recebe a lista de campanhas
+ * já buscada (o caller resolve a chamada de rede, mesma separação usada em
+ * `reconcilePendingSend` acima). Filtra por prefixo de nome porque a Brevo não
+ * tem um conceito de "grupo" nativo pra filtrar na própria API.
+ */
+export function reconcileNovosSentCount(
+  expected: number,
+  campaigns: readonly NovosCampaignSentCount[],
+): NovosSentCountReconciliation {
+  const relevant = campaigns.filter((c) => c.name.startsWith(NOVOS_CAMPAIGN_NAME_PREFIX));
+  const actual = relevant.reduce((sum, c) => sum + c.sent, 0);
+  const matches = actual === expected;
+  const detail = matches
+    ? `✓ sentCount (${expected}) bate com a soma das ${relevant.length} campanhas "${NOVOS_CAMPAIGN_NAME_PREFIX}*" enviadas na Brevo.`
+    : `⚠ sentCount local (${expected}) DIVERGE da soma real das ${relevant.length} campanhas "${NOVOS_CAMPAIGN_NAME_PREFIX}*" enviadas na Brevo (${actual}) — diferença de ${actual - expected}. Ver #4788.`;
+  return { expected, actual, matchedCampaigns: relevant.length, matches, detail };
+}
+
+// ---------------------------------------------------------------------------
 // Taxonomia de status Brevo (`GET /emailCampaigns/{id}`) — REPLICADA (não
 // importada) de `scripts/lib/brevo-client.ts` pra manter esta lib livre de
 // dependência de rede/transporte. Os 3 conjuntos abaixo precisam ficar em
