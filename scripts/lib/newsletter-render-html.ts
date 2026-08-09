@@ -10,6 +10,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { escHtml as esc } from "./html-escape.ts"; // #1990
 import { COLORS, FONTS } from "./shared/design-tokens.ts"; // #1936
+import { applyBrandWordmark } from "./shared/brand-wordmark.ts"; // #4797 — extraído daqui, re-exportado abaixo (back-compat)
 import { buildDiariaStyleBlock, buildDarkCanvasStyleBlock } from "./shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado; #3104 — dark mode (fullDocument-only)
 import { tealDot } from "./shared/email-components.ts"; // #3269 — 1º componente extraído pra shared/; re-exportado abaixo (back-compat: monthly-render.ts e outros importavam daqui)
 import { applyWordJoiner } from "./word-joiner.ts"; // #2018 — shared helper
@@ -2216,54 +2217,16 @@ function escText(s: string): string {
 }
 
 /**
- * #2532: wordmark da marca no corpo — a forma antiga da marca (capitalizada,
- * sem sufixo `.br`) vira o domínio `diar.ia.br` com os separadores destacados
- * em teal (`.` e `.br` em #00A0A0; `diar`/`ia` em ink). Pedido do editor
- * (2026-06-23): a marca, onde aparece no corpo, exibe o domínio com os pontos
- * em verde.
- *
- * Aplica-se a conteúdo de TEXTO já renderizado (segmentos de prosa). Casa a
- * forma antiga da marca (sem `.br`) E `diar.ia.br` (domínio em minúscula,
- * #2674 — ex: a linha de comissão do box de afiliados, que antes saía
- * plana), absorvendo um sufixo `.br` opcional no MESMO match (sem `.br`
- * duplicado, #2533 review). #2674: o `i` faz casar minúsculas/maiúsculas
- * indiferentemente; os lookbehind/lookahead garantem que **NUNCA toca URLs**
- * — um `diar.ia.br` precedido por `/` `.` `@` ou letra (ex:
- * `https://diar.ia.br/p`, `www.diar.ia.br`) ou seguido por `/` letra `@` (path
- * de URL) NÃO casa. Também não casa `diaria` sem ponto. Output lowercase
- * (`diar...`), logo re-aplicar é idempotente. O caso bold (`**`/`<b>`) envolve o
- * wordmark (negrito redundante mas HTML válido).
+ * #4797: `applyBrandWordmark`/`BRAND_WORDMARK_HTML`/`BRAND_WORDMARK_RE`
+ * movidos pra `scripts/lib/shared/brand-wordmark.ts` (import no topo do
+ * arquivo) — o mesmo tratamento (negrito + `.`/`.br` teal) agora também é
+ * aplicado nas páginas do site (hubs temáticos, arquivo, livros, cursos,
+ * `workers/poll`), que importam `shared/` e não podiam puxar este arquivo
+ * (cadeia Node-only: `readFileSync`, word-joiner, estilo pro Outlook — ver
+ * docstring do módulo novo). Re-exportado aqui — todo call site existente
+ * (`monthly-render.ts`, testes) continua funcionando sem mudança.
  */
-// #2674 (260630): wordmark em negrito, com `.` e `.br` no teal da marca.
-const BRAND_WORDMARK_HTML =
-  `<strong>diar<span style="color:${TEAL}">.</span>ia<span style="color:${TEAL}">.br</span></strong>`;
-// Regex de módulo (não realocar por chamada). `replace` com `/g` é stateless.
-// `i`: casa a forma antiga da marca (capitalizada, sem `.br`) e `diar.ia.br`
-// (domínio minúsculo, ex: comissão) indiferente de caixa.
-// Alternância URL-safe (#2674 review): o domínio cheio `diar.ia.br` casa salvo
-// se seguido por `/` `\w` `@` (path de URL); a forma sem `.br` casa salvo se
-// seguido por `.br` (deixa o domínio cheio capturar) ou por `/` `\w` `@` (URL).
-// Lookbehind `(?<![/\w.@])` exclui `https://diar.ia.br`, `www.diar.ia.br`,
-// `user@diar.ia.br`. Fim de frase (forma antiga seguida de ponto, ou
-// `diar.ia.br.`) continua casando.
-const BRAND_WORDMARK_RE =
-  /(?<![/\w.@])(?:diar\.ia\.br(?![/\w@])|diar\.ia(?!\.br)(?![/\w@]))/gi;
-/**
- * @param linkHref (opcional) — quando presente, envolve o wordmark num link pra
- *   esse destino (mantendo o estilo do wordmark: negrito + pontos teal, sem
- *   sublinhar). Usado pela MENSAL (#template-branding 260703): toda ocorrência
- *   de `diar.ia.br` vira link pra `diaria.beehiiv.com`. Sem o param, comportamento
- *   inalterado (texto puro) — a DIÁRIA segue sem link (já vive no Beehiiv).
- */
-export function applyBrandWordmark(s: string, linkHref?: string): string {
-  const html = linkHref
-    ? `<a href="${linkHref}" style="color:inherit;text-decoration:none">${BRAND_WORDMARK_HTML}</a>`
-    : BRAND_WORDMARK_HTML;
-  // Replacement via função: `html` (que embute `linkHref` arbitrário) é inserido
-  // LITERAL — evita a interpretação de `$&`/`$1`/`$$` que o replace-string faz se
-  // a URL contiver `$` (agora que linkHref é parâmetro, não mais só a constante).
-  return s.replace(BRAND_WORDMARK_RE, () => html);
-}
+export { applyBrandWordmark };
 
 /** Process markdown links [text](url) to <a> tags, escaping surrounding text.
  * Input é normalizado via `unescapeMd` antes (#1117) — remove backslash escapes

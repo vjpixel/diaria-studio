@@ -396,7 +396,9 @@ describe("renderInlineSignupFormBlock (#3580)", () => {
 
   it("copy do opt-in é o consentimento explícito (notícias + tutoriais + par diário)", () => {
     const html = renderInlineSignupFormBlock();
-    assert.match(html, /Quero receber a Diar\.ia/i);
+    // #4797: "diar.ia.br" no corpo ganhou o wordmark da marca (negrito +
+    // `.`/`.br` teal) — não sobrevive mais como substring plana contígua.
+    assert.match(html, /Quero receber a <strong>diar<span[^>]*>\.<\/span>ia<span[^>]*>\.br<\/span><\/strong>/);
   });
 });
 

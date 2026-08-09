@@ -70,7 +70,8 @@ describe("convite explícito de assinatura (#4030 item 3)", () => {
   it("renderIdentityFormBlock: copy nomeia o valor da newsletter explicitamente", () => {
     const html = renderIdentityFormBlock();
     assert.match(html, /Quer um par desses todo dia no seu e-mail/);
-    assert.match(html, /assine a Diar\.ia/i);
+    // #4797: "diar.ia.br" nesta frase ganhou o wordmark da marca.
+    assert.match(html, /assine a <strong>diar<span[^>]*>\.<\/span>ia<span[^>]*>\.br<\/span><\/strong>/i);
   });
 
   it("renderSubscribeCtaBlock (#3589 item 4) NÃO foi tocado — continua a caixa de descoberta, sem empurrar assinatura (ver test/poll-jogar-cta-3518.test.ts)", () => {

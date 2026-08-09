@@ -78,7 +78,8 @@ describe("#4054/#4418: brand clarice — checkbox de opt-in (Caixa A fundida) CO
     // dentro da Caixa A (nick-box) — não mais um form/bloco separado.
     assert.match(html, /<div class="nick-box">/, "Caixa A deve estar presente (leitor sem apelido)");
     assert.match(html, /<label class="nick-optin"><input type="checkbox" name="optin" value="on">/, "checkbox de opt-in deve estar presente pra clarice");
-    assert.match(html, /Quero receber a diar\.ia\.br/, "copy do checkbox nomeia o produto");
+    // #4797: "diar.ia.br" nesta frase ganhou o wordmark da marca (negrito + `.`/`.br` teal).
+    assert.match(html, /Quero receber a <strong>diar<span[^>]*>\.<\/span>ia<span[^>]*>\.br<\/span><\/strong>/, "copy do checkbox nomeia o produto");
 
     // O link de saída pro parceiro (clarice.ai/?via=diaria) — a entrega da
     // parceria, medida pelo #4048. NUNCA pode desaparecer quando o CTA entra.

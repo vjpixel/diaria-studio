@@ -32,6 +32,7 @@
 import { COLORS, FONTS } from "./design-tokens.ts";
 import { escHtml } from "../html-escape.ts"; // reusa o escaper canônico (também cobre apóstrofo)
 import { DIARIA_EIA_URL } from "../canonical-urls.ts"; // #3904 — fonte única do domínio de marca do "É IA?"
+import { applyBrandWordmark } from "./brand-wordmark.ts"; // #4797 — wordmark da marca na linha de crédito do rodapé (compartilhada por hub/livros/cursos/arquivo)
 
 const TEAL = COLORS.brand;
 const INK = COLORS.ink;
@@ -189,11 +190,17 @@ export const CURADORIA_NAV_LINKS: readonly CuradoriaNavLink[] = [
  * cursos/livros/É IA? (#3113) — hardcodear o UTM de uma página aqui
  * vazaria pras outras duas. Cada página passa o próprio valor; ausência
  * preserva o comportamento anterior (link bare, sem UTM).
+ *
+ * `creditText` ganha o wordmark da marca (#4797, `applyBrandWordmark`
+ * pós-`escHtml`) — toda página de curadoria abre o crédito com
+ * "diar.ia.br — ...". A nav (`nav` acima) fica de fora de propósito: o
+ * label "diar.ia.br" ali é um link curto de navegação, mesma categoria de
+ * exclusão que CTAs/botões (#4797 fora de escopo), não prosa.
  */
 export function renderCuradoriaFooter(creditText: string, diariaUtm?: string): string {
   const nav = CURADORIA_NAV_LINKS.map((l) => {
     const href = l.label === "diar.ia.br" && diariaUtm ? `${l.url}?${diariaUtm}` : l.url;
     return `<a href="${escHtml(href)}">${escHtml(l.label)}</a>`;
   }).join(" · ");
-  return `<footer><div class="wrap"><p class="foot-nav">${nav}</p><p class="foot-credit">${escHtml(creditText)}</p></div></footer>`;
+  return `<footer><div class="wrap"><p class="foot-nav">${nav}</p><p class="foot-credit">${applyBrandWordmark(escHtml(creditText))}</p></div></footer>`;
 }

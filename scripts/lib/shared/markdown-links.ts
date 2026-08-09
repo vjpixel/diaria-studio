@@ -17,18 +17,25 @@
  * **Duplicata deliberada de `findMarkdownLinks`
  * (`scripts/lib/newsletter-render-html.ts`), não reuso por import.** Aquele
  * arquivo importa `readFileSync` de `node:fs` no topo e carrega uma cadeia
- * de dependência inteira específica de e-mail (word-joiner, wordmark de
- * marca, estilo inline pro Outlook) que não serve a uma página web comum.
- * `geo-faq.ts` (que importa este módulo) já é bundlado em RUNTIME no Worker
- * `arquivo` (via `render-archive.ts`) — puxar a cadeia de e-mail pra lá
- * seria custo real. Em `livros`/`cursos` o acoplamento só existiria em
- * BUILD-TIME (`build-livros-page.ts`/`build-cursos-page.ts` rodam em Node,
- * emitem HTML estático servido por `env.ASSETS` — o Worker deles nunca
- * importa `geo-faq.ts` em runtime, achado do fleet review da PR #4642), mas
- * o princípio geral (não acoplar um parser genérico a uma cadeia de e-mail)
+ * de dependência inteira específica de e-mail (word-joiner, estilo inline
+ * pro Outlook) que não serve a uma página web comum. `geo-faq.ts` (que
+ * importa este módulo) já é bundlado em RUNTIME no Worker `arquivo` (via
+ * `render-archive.ts`) — puxar a cadeia de e-mail pra lá seria custo real.
+ * Em `livros`/`cursos` o acoplamento só existiria em BUILD-TIME
+ * (`build-livros-page.ts`/`build-cursos-page.ts` rodam em Node, emitem HTML
+ * estático servido por `env.ASSETS` — o Worker deles nunca importa
+ * `geo-faq.ts` em runtime, achado do fleet review da PR #4642), mas o
+ * princípio geral (não acoplar um parser genérico a uma cadeia de e-mail)
  * vale de qualquer forma.
+ *
+ * O wordmark da marca (`applyBrandWordmark`, #4797) É reusado por import —
+ * diferente do resto da cadeia de e-mail, ele foi extraído pra
+ * `scripts/lib/shared/brand-wordmark.ts`, um módulo tão puro/sem-I/O quanto
+ * este (só depende de `design-tokens.ts`), então importá-lo aqui não
+ * reintroduz o acoplamento que o parágrafo acima evita.
  */
 import { escHtml as esc } from "../html-escape.ts";
+import { applyBrandWordmark } from "./brand-wordmark.ts"; // #4797 — texto puro fora dos links `[texto](url)` ganha o mesmo tratamento tipográfico da marca (negrito + `.`/`.br` teal) já usado no e-mail
 
 /** Um link markdown `[label](url)` já parseado — `start`/`end` são o span
  * (índices) do match completo na string de origem, meio-aberto (`end`
@@ -89,18 +96,26 @@ export function findParagraphLinks(s: string): ParsedLink[] {
 /** Converte `[texto](url)` numa string em `<a href>`. Todo texto fora dos
  * links, e o `label`/`url` de cada link, passa por `esc()`; nunca interpola
  * HTML cru vindo do conteúdo. Usado tanto nas `HubSection.paragraphs`
- * (`hub-page.ts`) quanto nas respostas de FAQ (`geo-faq.ts`). */
+ * (`hub-page.ts`) quanto nas respostas de FAQ (`geo-faq.ts`).
+ *
+ * #4797: o texto FORA dos links (já escapado) passa por
+ * `applyBrandWordmark` — uma ocorrência de "diar.ia.br" em prosa comum
+ * ganha o mesmo tratamento tipográfico (negrito + `.`/`.br` teal) já usado
+ * no e-mail. Só o texto puro: o `label`/`url` de um link markdown NUNCA
+ * recebe o wordmark (evita `<strong>` aninhado dentro de `<a>` e duplicar a
+ * marcação de um link que já resolveu pra `diar.ia.br` como destino/rótulo)
+ * — mesma disciplina de "nunca dentro de um href já resolvido" do e-mail. */
 export function renderInlineLinks(s: string): string {
   const links = findParagraphLinks(s);
-  if (links.length === 0) return esc(s);
+  if (links.length === 0) return applyBrandWordmark(esc(s));
   const parts: string[] = [];
   let lastIdx = 0;
   for (const { url, label, start, end } of links) {
-    parts.push(esc(s.slice(lastIdx, start)));
+    parts.push(applyBrandWordmark(esc(s.slice(lastIdx, start))));
     parts.push(`<a href="${esc(url)}">${esc(label)}</a>`);
     lastIdx = end;
   }
-  parts.push(esc(s.slice(lastIdx)));
+  parts.push(applyBrandWordmark(esc(s.slice(lastIdx))));
   return parts.join("");
 }
 

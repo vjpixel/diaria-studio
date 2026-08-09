@@ -52,7 +52,10 @@ describe("signup-note (#4316) — não afirma que o e-mail entra no ranking", ()
 describe("signup-note (#4316) — 'opcional' removido (disclaimer redundante com o checkbox desmarcado)", () => {
   it("renderIdentityFormBlock: nota não contém 'opcional'", () => {
     const html = renderIdentityFormBlock();
-    const noteMatch = html.match(/<p class="signup-note">([^<]*)<\/p>/);
+    // #4797: "diar.ia.br" dentro da nota ganhou o wordmark da marca
+    // (`<strong>`/`<span>` aninhados) — `[^<]*` não casa mais o conteúdo
+    // inteiro; `[\s\S]*?` (não-guloso) captura texto E marcação interna.
+    const noteMatch = html.match(/<p class="signup-note">([\s\S]*?)<\/p>/);
     assert.ok(noteMatch, "signup-note deve existir");
     assert.doesNotMatch(noteMatch![1], /opcional/i);
   });
@@ -61,7 +64,10 @@ describe("signup-note (#4316) — 'opcional' removido (disclaimer redundante com
 describe("signup-note (#4316) — afirma o NOME, não nega o e-mail em absoluto", () => {
   it("renderIdentityFormBlock: nota afirma que o ranking mostra o NOME", () => {
     const html = renderIdentityFormBlock();
-    const noteMatch = html.match(/<p class="signup-note">([^<]*)<\/p>/);
+    // #4797: "diar.ia.br" dentro da nota ganhou o wordmark da marca
+    // (`<strong>`/`<span>` aninhados) — `[^<]*` não casa mais o conteúdo
+    // inteiro; `[\s\S]*?` (não-guloso) captura texto E marcação interna.
+    const noteMatch = html.match(/<p class="signup-note">([\s\S]*?)<\/p>/);
     assert.ok(noteMatch);
     assert.match(noteMatch![1], /nome/i);
   });
@@ -73,9 +79,10 @@ describe("signup-note (#4316) — afirma o NOME, não nega o e-mail em absoluto"
 
   it("texto exato da decisão do editor (260729c)", () => {
     const html = renderIdentityFormBlock();
+    // #4797: "diar.ia.br" no fim da nota ganhou o wordmark da marca.
     assert.match(
       html,
-      /<p class="signup-note">No ranking você aparece pelo nome\. O e-mail é usado como seu identificador\. Marque a caixinha pra receber a diar\.ia\.br\.<\/p>/,
+      /<p class="signup-note">No ranking você aparece pelo nome\. O e-mail é usado como seu identificador\. Marque a caixinha pra receber a <strong>diar<span[^>]*>\.<\/span>ia<span[^>]*>\.br<\/span><\/strong>\.<\/p>/,
     );
   });
 });
@@ -92,18 +99,18 @@ describe("signup-note (#4316) — checkbox de opt-in continua desmarcado por pad
 describe("signup-note (#4316) — presente nas duas páginas do jogo (uma edição cobre as duas)", () => {
   it("par único (renderJogarPageHtml) carrega a nota nova", () => {
     const html = renderJogarPageHtml({ edition: "260701", revealed: false });
-    assert.match(html, /Marque a caixinha pra receber a diar\.ia\.br\./);
+    assert.match(html, /Marque a caixinha pra receber a <strong>diar<span[^>]*>\.<\/span>ia<span[^>]*>\.br<\/span><\/strong>\./);
   });
 
   it("sequência (renderJogarSequencePageHtml) carrega a nota nova", () => {
     const html = renderJogarSequencePageHtml(["260601"]);
-    assert.match(html, /Marque a caixinha pra receber a diar\.ia\.br\./);
+    assert.match(html, /Marque a caixinha pra receber a <strong>diar<span[^>]*>\.<\/span>ia<span[^>]*>\.br<\/span><\/strong>\./);
   });
 });
 
 describe("signup-note (#4316) — copy do gate (web-gate.ts) intacta, fora do escopo desta issue", () => {
   it("renderJogarGatePage não é tocado por este fix — sem a nota nova de signup-note (superfície diferente)", () => {
     const html = renderJogarGatePage(null);
-    assert.doesNotMatch(html, /Marque a caixinha pra receber a diar\.ia\.br\./);
+    assert.doesNotMatch(html, /Marque a caixinha pra receber a <strong>diar<span[^>]*>\.<\/span>ia<span[^>]*>\.br<\/span><\/strong>\./);
   });
 });

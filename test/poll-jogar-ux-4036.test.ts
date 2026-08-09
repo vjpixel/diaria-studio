@@ -60,7 +60,8 @@ describe("glow visível na foto de IA (#4036 item 2 — fix da regressão do #40
 describe("copy do opt-in explica o que é a diar.ia.br (#4036 item 5)", () => {
   it("renderIdentityFormBlock: checkbox nomeia o produto (newsletter de IA) + o que entrega + a frequência", () => {
     const html = renderIdentityFormBlock();
-    assert.match(html, /Quero receber a diar\.ia\.br — newsletter gratuita/);
+    // #4797: "diar.ia.br" nesta frase ganhou o wordmark da marca.
+    assert.match(html, /Quero receber a <strong>diar<span[^>]*>\.<\/span>ia<span[^>]*>\.br<\/span><\/strong> — newsletter gratuita/);
     assert.match(html, /IA/);
     assert.match(html, /seg-sex/);
   });
