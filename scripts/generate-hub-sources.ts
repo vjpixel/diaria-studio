@@ -63,6 +63,8 @@ export interface HubSourceEntry {
  * coexistem, mas só este entra nesta rodada). */
 export const HUB_KEYWORD_PATTERNS: Record<string, RegExp> = {
   "anthropic-claude": /anthropic|\bclaude\b|\bopus\b|\bsonnet\b|\bmythos\b|\bfable\b/i,
+  "openai-chatgpt": /openai|\bchatgpt\b|\bgpt-?\d|\bsora\b|sam altman/i,
+  "google-gemini": /\bgoogle\b|\bgemini\b|deepmind|\bveo\b|\bnano banana\b|sundar pichai/i,
 };
 
 function stripAccents(s: string): string {

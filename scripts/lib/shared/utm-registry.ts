@@ -379,6 +379,19 @@ export const HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM = {
   medium: "footer-nav",
 } as const;
 
+/** Mesmo padrão de `HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM` acima, pro 2º hub
+ * temático publicado (#4558 Parte A, leva OpenAI/Google, `scripts/lib/hubs/openai-chatgpt.ts`). */
+export const HUB_OPENAI_CHATGPT_FOOTER_NAV_UTM = {
+  source: "hub-openai-chatgpt",
+  medium: "footer-nav",
+} as const;
+
+/** Mesmo padrão acima, pro 3º hub temático publicado (`scripts/lib/hubs/google-gemini.ts`). */
+export const HUB_GOOGLE_GEMINI_FOOTER_NAV_UTM = {
+  source: "hub-google-gemini",
+  medium: "footer-nav",
+} as const;
+
 /** Link "Arquivo completo em {url}" do post semanal do Instagram
  * (`scripts/lib/format-weekly-social.ts`, #4537 item 1) — o #4295 cobriu os
  * links que a pipeline DIÁRIA publica; o post semanal ficou fora do escopo
@@ -965,6 +978,30 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       'Link "diar.ia.br" no rodapé de navegação cruzada do hub temático Anthropic/Claude ' +
       "(#4558 Parte A) — 1º hub publicado; mais temas virão como novas entradas " +
       "seguindo o mesmo padrão.",
+    status: "ativo",
+  },
+  {
+    id: "hub-openai-chatgpt-footer-nav",
+    label: "Hub OpenAI/ChatGPT — link de rodapé pra diar.ia.br",
+    source: HUB_OPENAI_CHATGPT_FOOTER_NAV_UTM.source,
+    medium: HUB_OPENAI_CHATGPT_FOOTER_NAV_UTM.medium,
+    campaignPattern: "hub-openai-chatgpt-footer-nav",
+    originFile: "scripts/lib/hubs/openai-chatgpt.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada do hub temático OpenAI/ChatGPT ' +
+      "(#4558, leva de hubs de empresa — decisão do editor 260808).",
+    status: "ativo",
+  },
+  {
+    id: "hub-google-gemini-footer-nav",
+    label: "Hub Google/Gemini — link de rodapé pra diar.ia.br",
+    source: HUB_GOOGLE_GEMINI_FOOTER_NAV_UTM.source,
+    medium: HUB_GOOGLE_GEMINI_FOOTER_NAV_UTM.medium,
+    campaignPattern: "hub-google-gemini-footer-nav",
+    originFile: "scripts/lib/hubs/google-gemini.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada do hub temático Google/Gemini ' +
+      "(#4558, leva de hubs de empresa — decisão do editor 260808).",
     status: "ativo",
   },
 ] as const;

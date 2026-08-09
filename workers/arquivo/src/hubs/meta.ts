@@ -36,4 +36,6 @@ export interface HubMeta {
 
 export const HUB_META: readonly HubMeta[] = [
   { slug: "anthropic-claude", label: "Anthropic e Claude" },
+  { slug: "openai-chatgpt", label: "OpenAI e ChatGPT" },
+  { slug: "google-gemini", label: "Google e Gemini" },
 ];
