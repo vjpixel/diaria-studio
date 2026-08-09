@@ -201,15 +201,18 @@ ${error ? '<p class="err">Token inválido. Tente novamente.</p>' : ''}
  *
  * `includeScheduled` (#4786): `/api/campaigns` filtra `status=sent` por
  * design -- `fetchRecentCampaigns` busca stats por campanha (globalStats/
- * linksStats), que só existem PÓS-disparo, e a aba Rampa (`aggregateHealth`/
- * `decideSemaphore`, ver `weekly-plan.ts`) espera exatamente essa forma.
- * Mudar o DEFAULT quebraria esse consumidor sem aviso. `includeScheduled=true`
- * anexa `fetchScheduledCampaigns` (campanhas `status=queued`, sem stats —
- * já usada pela rota `/` pra seção "Agendadas") ao array de resposta, sem
- * tocar o comportamento default. Consumidores que dependem de enxergar
- * campanha agendada (ex: `scripts/clarice-plan-wave.ts` → `state.scheduledCount`,
- * #4786) passam o parâmetro; automação que já lê esta rota sem o parâmetro
- * continua vendo só enviadas, byte a byte como antes.
+ * linksStats), que só existem PÓS-disparo. Mudar o DEFAULT quebraria essa
+ * forma sem aviso pra quem já lê esta rota (ver o motivo real logo abaixo, no
+ * bloco `#3081` do call site em `handleFetch`: automação EXTERNA que depende
+ * do shape atual -- a aba Rampa NÃO é consumidora desta rota: ela é servida
+ * por `buildDashboardResponse`/rota `/`, que chama `fetchRecentCampaigns`
+ * diretamente, um caminho totalmente desacoplado de `/api/campaigns`, #4792).
+ * `includeScheduled=true` anexa `fetchScheduledCampaigns` (campanhas
+ * `status=queued`, sem stats — já usada pela rota `/` pra seção "Agendadas")
+ * ao array de resposta, sem tocar o comportamento default. Consumidores que
+ * dependem de enxergar campanha agendada (ex: `scripts/clarice-plan-wave.ts`
+ * → `state.scheduledCount`, #4786) passam o parâmetro; automação que já lê
+ * esta rota sem o parâmetro continua vendo só enviadas, byte a byte como antes.
  */
 async function buildCampaignsResponse(
   request: Request,
@@ -219,7 +222,18 @@ async function buildCampaignsResponse(
   includeScheduled: boolean,
 ): Promise<Response> {
   const cache = caches.default;
-  const path = "/api/campaigns";
+  // #4792 (fleet review): sufixo `:scheduled` -- espelha `coalesceKey` (ver
+  // call site em `handleFetch`, `GET:${path}:${limit}${includeScheduled ?
+  // ":scheduled" : ""}`), que já distingue as duas variantes de shape
+  // (`?includeScheduled=1` anexa campanhas `queued`, sem stats, ao array).
+  // Sem o sufixo aqui, o lock KV cross-colo (`tryAcquireRefreshLock`, 2ª
+  // linha de defesa pra requests concorrentes em isolates/colos diferentes,
+  // fora do alcance do coalescing em memória) usava a MESMA chave
+  // `dash:refresh:inflight:/api/campaigns` pras duas variantes -- não
+  // corrompe dado (fail-open: lock ocupado só faz a request seguir sem
+  // segunda linha de defesa), mas reabria parcialmente o duplicate-fetch
+  // cross-colo que o #3644 existia pra evitar.
+  const path = `/api/campaigns${includeScheduled ? ":scheduled" : ""}`;
   let lockAcquired = false;
   try {
     if (!isFresh) {
@@ -235,8 +249,16 @@ async function buildCampaignsResponse(
     // #4786: agendadas são OPT-IN -- fetch separado (mesma função que a rota
     // `/` já usa pra seção "Agendadas") só quando pedido, fail-soft (uma
     // falha aqui nunca derruba a resposta principal de enviadas).
+    // #4792 (fleet review): `scheduledFetchFailed` espelha o padrão `scheduledOk`
+    // de `buildDashboardResponse` acima -- sem ele, rate limit/erro upstream/rede
+    // vira silenciosamente `[]`, e a resposta final sai 200 normal, indistinguível
+    // de "genuinamente zero campanhas agendadas". Isso reintroduzia exatamente o
+    // sintoma que o #4786 existe pra resolver: `state.scheduledCount` de
+    // `clarice-plan-wave.ts` ficava 0 numa falha transitória, sem sinal.
+    let scheduledFetchFailed = false;
     const scheduled = includeScheduled
       ? await fetchScheduledCampaigns(env, 50, isFresh).catch((e) => {
+          scheduledFetchFailed = true;
           console.error(
             "[#4786] /api/campaigns?includeScheduled=1: fetchScheduledCampaigns falhou — respondendo só enviadas:",
             e instanceof Error ? e.message : e,
@@ -253,6 +275,11 @@ async function buildCampaignsResponse(
         // proprio Worker. fresh=1 retorna no-store para o browser nao cachear o "fresh".
         "Cache-Control": isFresh ? "no-store" : "private, max-age=300",
         ...(isFresh ? {} : { "CDN-Cache-Control": "public, max-age=300" }),
+        // #4792: só setado quando o fetch de agendadas de fato falhou -- permite
+        // ao consumidor (`clarice-plan-wave.ts`) diferenciar zero-real de
+        // falha-mascarada sem inspecionar o corpo (que tem o mesmo shape nos dois
+        // casos: array de só enviadas).
+        ...(scheduledFetchFailed ? { "X-Dashboard-Scheduled-Fetch": "failed" } : {}),
       },
     });
     if (!isFresh) {

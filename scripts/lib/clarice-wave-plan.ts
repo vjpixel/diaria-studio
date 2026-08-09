@@ -543,15 +543,26 @@ export interface CohortInversion {
  * Cohorts MV-isentos (`isMvExemptCohort`) e o rótulo de exibição
  * `MV_BACKLOG_NO_COHORT_LABEL` NUNCA contam como "bloqueado" — mesmo guard de
  * `planMvOnDemand` (não são candidatos executáveis de verificação).
+ *
+ * `consumed` também filtra `cohort === null` antes de calcular o mais frio
+ * (#4792 fleet review, achado silent-failure-hunter) — espelha o guard
+ * equivalente do lado backlog (`MV_BACKLOG_NO_COHORT_LABEL` acima).
+ * `cohortSendRank(null)` devolve `RANK_UNKNOWN`, o rank mais FRIO possível
+ * (ver cohorts.ts), então uma única linha `cohort: null` em `consumed` —
+ * legítima, `isRampWarm` não exige cohort não-nulo — viraria trivialmente o
+ * "coldest" por construção, inflando `coldTailCount`/disparando inversão por
+ * ruído de dado (contato sem cohort identificável), não por inversão real de
+ * safra.
  */
 export function detectCohortInversion(
   consumed: CohortComposition[],
   mvBacklog: MvBacklog,
 ): CohortInversion | null {
-  if (consumed.length === 0) return null;
+  const identified = consumed.filter((c) => c.cohort !== null);
+  if (identified.length === 0) return null;
 
-  let coldest = consumed[0];
-  for (const c of consumed) {
+  let coldest = identified[0];
+  for (const c of identified) {
     if (cohortSendRank(c.cohort) > cohortSendRank(coldest.cohort)) coldest = c;
   }
   const coldestRank = cohortSendRank(coldest.cohort);
@@ -570,7 +581,7 @@ export function detectCohortInversion(
   }
   const blockedRank = cohortSendRank(blocked.cohort);
 
-  const coldTailCount = consumed
+  const coldTailCount = identified
     .filter((c) => cohortSendRank(c.cohort) > blockedRank)
     .reduce((s, c) => s + c.count, 0);
 

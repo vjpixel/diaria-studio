@@ -76,7 +76,7 @@ import {
   verifyCohortList,
   type CohortVerifySummary,
 } from "./verify-emails-mv.ts";
-import { MV_ONDEMAND_APPROVAL_MARGIN, type MvOnDemandPlan } from "./lib/clarice-wave-plan.ts";
+import { computeFirstSendDeficit, MV_ONDEMAND_APPROVAL_MARGIN, type MvOnDemandPlan } from "./lib/clarice-wave-plan.ts";
 import { planWave, parseDatesArg } from "./clarice-plan-wave.ts";
 import { clariceCycleDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -185,12 +185,28 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     lockedSubject: getArg(argv, "locked-subject") || null,
   });
   const plan = proposal.mvOnDemandPlan;
+  // #4792 (fleet review, achado #4): `plan.deficit` (desde #4787) é o MAIOR
+  // entre o déficit de fila tradicional e a cauda fria de uma inversão de
+  // safra (ver docstring de `MvOnDemandPlan.deficit` em clarice-wave-plan.ts)
+  // — pode vir INTEIRAMENTE de `coldTailCount` sem nenhum déficit real de
+  // fila. Rotular sempre como "Déficit" é o MESMO bug de rotulagem que o
+  // commit de fixup desta PR já corrigiu em `renderWaveProposal`; decompõe
+  // aqui pelo mesmo cálculo (puro, barato) pra não repetir o engano nas
+  // mensagens de console deste script.
+  const queueDeficit = computeFirstSendDeficit(proposal.availableFirstSend, proposal.volumes.total);
+  const inversionTail = proposal.cohortInversion?.coldTailCount ?? 0;
+  const deficitReason =
+    queueDeficit > 0 && inversionTail > 0
+      ? `déficit de fila (${queueDeficit}) + inversão de safra (${inversionTail}) — alvo pelo MAIOR dos dois`
+      : queueDeficit > 0
+        ? `déficit de fila: ${queueDeficit}`
+        : `inversão de safra (fila cobre o volume, sem déficit real): ${inversionTail}`;
 
   if (plan.byCohort.length === 0) {
     const msg =
       plan.deficit === 0
         ? "ℹ️  Fila de 1º envio já cobre o volume proposto — nenhuma verificação MV necessária."
-        : `⚠️  Déficit de ${plan.deficit} contato(s), mas o backlog MV (${proposal.mvBacklog.total} no total) não tem candidato elegível pra cobrir — nada a verificar aqui.`;
+        : `⚠️  Alvo de verificação motivado por ${deficitReason}, mas o backlog MV (${proposal.mvBacklog.total} no total) não tem candidato elegível pra cobrir — nada a verificar aqui.`;
     console.error(msg);
     console.log(JSON.stringify({ plan, perCohort: [], totalVerifiedNow: 0, approvalRate: null }, null, 2));
     return;
@@ -200,7 +216,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   ensureDir(cycleDir);
 
   console.error(
-    `🎯 déficit=${plan.deficit} → alvo de verificação=${plan.targetVerifyCount} ` +
+    `🎯 ${deficitReason} → alvo de verificação=${plan.targetVerifyCount} ` +
       `(margem ${(MV_ONDEMAND_APPROVAL_MARGIN * 100).toFixed(0)}%) em ${plan.byCohort.length} cohort(s), ` +
       `≈ US$ ${plan.estimatedCostUsd.toFixed(2)}` +
       (plan.backlogInsufficient

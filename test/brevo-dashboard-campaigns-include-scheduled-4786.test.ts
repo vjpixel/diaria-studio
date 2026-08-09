@@ -181,6 +181,73 @@ describe("GET /api/campaigns — includeScheduled (#4786)", () => {
   });
 });
 
+function mockBrevoFetchScheduledFails() {
+  return (async (url: unknown) => {
+    const u = String(url);
+    if (u.includes("emailCampaigns?status=sent")) {
+      return new Response(JSON.stringify({ campaigns: [sentCampaign] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    // #4792 (fleet review, CRITICAL): status=queued falha (5xx upstream) --
+    // status=sent segue sucedendo. Reproduz exatamente o cenário que
+    // `.catch(() => [])` mascarava: a resposta final saía 200 normal,
+    // indistinguível de "zero campanhas agendadas" genuíno.
+    if (u.includes("emailCampaigns?status=queued")) {
+      return new Response("upstream indisponível", { status: 500 });
+    }
+    if (u.includes(`emailCampaigns/${sentCampaign.id}`)) {
+      return new Response(JSON.stringify({ ...sentCampaign, statistics: { globalStats } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (u.includes("/contacts/lists/")) {
+      return new Response(JSON.stringify({ id: 1, name: "lista", totalSubscribers: 10 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  }) as any;
+}
+
+describe("GET /api/campaigns?includeScheduled=1 — falha de fetchScheduledCampaigns nunca é mascarada de zero-real (#4792)", () => {
+  it("status=sent sucede, status=queued falha (5xx) — resposta sai 200 mas com X-Dashboard-Scheduled-Fetch: failed", async () => {
+    const { kv } = { kv: makeKvMock() };
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockBrevoFetchScheduledFails();
+    try {
+      const res = await worker.fetch(new Request("http://localhost/api/campaigns?includeScheduled=1"), makeEnv(kv));
+      assert.equal(res.status, 200, "a falha de agendadas nunca deve derrubar a resposta principal de enviadas");
+      assert.equal(
+        res.headers.get("X-Dashboard-Scheduled-Fetch"),
+        "failed",
+        "sem este header, o consumidor não consegue distinguir zero-real de falha mascarada",
+      );
+      const body = (await res.json()) as Array<{ id: number }>;
+      assert.equal(body.length, 1, "só a enviada aparece -- agendadas ficaram fora por causa da falha, não por estarem genuinamente vazias");
+      assert.equal(body[0].id, sentCampaign.id);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("caminho feliz (sem falha) nunca carrega o header -- ausência é o sinal de sucesso genuíno", async () => {
+    const { kv } = { kv: makeKvMock() };
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockBrevoFetch();
+    try {
+      const res = await worker.fetch(new Request("http://localhost/api/campaigns?includeScheduled=1"), makeEnv(kv));
+      assert.equal(res.headers.get("X-Dashboard-Scheduled-Fetch"), null);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
 describe("buildInflightCoalescedCampaignsJson — includeScheduled (#4786)", () => {
   it("default (false) não anexa scheduled mesmo presente no KV stale", async () => {
     const kv = makeKvMock({

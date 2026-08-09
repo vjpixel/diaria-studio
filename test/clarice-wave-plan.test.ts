@@ -751,7 +751,7 @@ describe("detectCohortInversion (#4787)", () => {
     const backlog = mvBacklogFixture([
       { cohort: "leads-2024h1", count: 78_181 },
       { cohort: "leads-2023h2", count: 81_287 },
-      { cohort: "leads-2023h1", count: 67_081 },
+      { cohort: "leads-2023h1", count: 67_090 },
     ]);
     const inversion = detectCohortInversion(consumed, backlog);
     assert.ok(inversion, "deveria detectar a inversão");
@@ -774,6 +774,42 @@ describe("detectCohortInversion (#4787)", () => {
     const inversion = detectCohortInversion(
       consumed,
       mvBacklogFixture([{ cohort: MV_BACKLOG_NO_COHORT_LABEL, count: 9999 }]),
+    );
+    assert.equal(inversion, null);
+  });
+
+  it("REGRESSÃO (#4792 fleet review): cohort:null em `consumed` nunca vira 'coldest' por ruído de dado", () => {
+    // Sem o guard, `cohortSendRank(null)` (RANK_UNKNOWN, o rank mais FRIO
+    // possível) faria a linha `cohort: null` virar trivialmente "coldest",
+    // inflando `coldTailCount` e disparando inversão só por causa de um
+    // contato sem cohort identificável -- não por inversão real de safra.
+    const consumed = [
+      { cohort: "leads-2024h2", count: 500 },
+      { cohort: null, count: 50 },
+    ];
+    // leads-2022h1 é mais FRIO que leads-2024h2 (o único cohort identificado
+    // em `consumed`) -- não deveria virar candidato bloqueado.
+    const inversion = detectCohortInversion(consumed, mvBacklogFixture([{ cohort: "leads-2022h1", count: 1000 }]));
+    assert.equal(inversion, null);
+  });
+
+  it("REGRESSÃO (#4792): cohort:null é ignorado, mas inversão real ainda dispara e coldTailCount exclui a linha null", () => {
+    const consumed = [
+      { cohort: "leads-2024h2", count: 4_465 },
+      { cohort: "leads-2022h1", count: 6_237 },
+      { cohort: null, count: 999 }, // nunca deveria entrar em coldTailCount
+    ];
+    const inversion = detectCohortInversion(consumed, mvBacklogFixture([{ cohort: "leads-2024h1", count: 78_181 }]));
+    assert.ok(inversion, "deveria detectar a inversão pelo cohort identificado (leads-2022h1)");
+    assert.equal(inversion!.blockedCohort, "leads-2024h1");
+    assert.equal(inversion!.coldestConsumedCohort, "leads-2022h1");
+    assert.equal(inversion!.coldTailCount, 6_237, "a linha cohort:null nunca entra na cauda fria contável");
+  });
+
+  it("`consumed` só com cohort:null → null (nada identificável pra avaliar)", () => {
+    const inversion = detectCohortInversion(
+      [{ cohort: null, count: 100 }],
+      mvBacklogFixture([{ cohort: "leads-2024h1", count: 1000 }]),
     );
     assert.equal(inversion, null);
   });
