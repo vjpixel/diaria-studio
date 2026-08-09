@@ -134,7 +134,9 @@ describe("build-cursos-page.ts adota o módulo compartilhado (#3113)", () => {
 
   it("footer tem nav cruzada com as 4 superfícies + crédito de cursos", () => {
     assert.match(html, /<footer>.*foot-nav.*diar\.ia\.br.*Cursos.*Livros.*É IA\?.*<\/footer>/s);
-    assert.match(html, /diar\.ia\.br — curadoria de cursos sobre IA/);
+    // #4797: crédito do rodapé ganhou o wordmark da marca (negrito + `.`/`.br`
+    // teal) — "diar.ia.br" não sobrevive mais como texto plano no foot-credit.
+    assert.match(html, /foot-credit"><strong>diar<span[^>]*>\.<\/span>ia<span[^>]*>\.br<\/span><\/strong> — curadoria de cursos sobre IA/);
   });
 });
 
@@ -156,6 +158,8 @@ describe("build-livros-page.ts adota o módulo compartilhado (#3113)", () => {
 
   it("footer tem nav cruzada com as 4 superfícies + crédito de livros", () => {
     assert.match(html, /<footer>.*foot-nav.*diar\.ia\.br.*Cursos.*Livros.*É IA\?.*<\/footer>/s);
-    assert.match(html, /diar\.ia\.br — curadoria de livros sobre IA/);
+    // #4797: crédito do rodapé ganhou o wordmark da marca (negrito + `.`/`.br`
+    // teal) — "diar.ia.br" não sobrevive mais como texto plano no foot-credit.
+    assert.match(html, /foot-credit"><strong>diar<span[^>]*>\.<\/span>ia<span[^>]*>\.br<\/span><\/strong> — curadoria de livros sobre IA/);
   });
 });

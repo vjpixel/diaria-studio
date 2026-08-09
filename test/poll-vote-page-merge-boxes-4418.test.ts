@@ -488,7 +488,8 @@ describe("§2c — cadastro na Beehiiv é fail-soft: apelido persiste, tela repo
     const bannerUrl = new URL(loc, "https://poll.test");
     const bannerRes = await worker.fetch(new Request(bannerUrl.toString()), env, {} as ExecutionContext);
     const bannerHtml = await bannerRes.text();
-    assert.match(bannerHtml, /diar\.ia\.br começa a chegar amanhã/);
+    // #4797: "diar.ia.br" nesta frase ganhou o wordmark da marca.
+    assert.match(bannerHtml, /<strong>diar<span[^>]*>\.<\/span>ia<span[^>]*>\.br<\/span><\/strong> começa a chegar amanhã/);
   });
 
   it("#4438 (fleet review oficial, achado 1): apelido persiste no KV mesmo com a Beehiiv TRAVADA (hang que nunca resolve)", async () => {
@@ -577,7 +578,8 @@ describe("§3 — resolveSetNameConfirmationBanner (pure, #4418)", () => {
     const url = new URL("https://poll.example/leaderboard?saved=1&name=Ana&signup=subscribed");
     const banner = resolveSetNameConfirmationBanner(url);
     assert.match(banner ?? "", /Pronto, Ana!/);
-    assert.match(banner ?? "", /diar\.ia\.br começa a chegar amanhã/);
+    // #4797: "diar.ia.br" nesta frase ganhou o wordmark da marca.
+    assert.match(banner ?? "", /<strong>diar<span[^>]*>\.<\/span>ia<span[^>]*>\.br<\/span><\/strong> começa a chegar amanhã/);
   });
 
   it("saved=1 + signup=failed → apelido salvo, cadastro não completou", () => {

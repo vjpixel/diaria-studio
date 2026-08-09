@@ -67,6 +67,10 @@ import {
 import { isValidVoteEmailFormat, isAnonymousWebIdentity, WEB_TOKEN_DOMAIN } from "./lib"; // #4121: isAnonymousWebIdentity fecha o gap do domínio reservado no gate
 import { subscribeToBeehiiv, resolveSubscribeUtm, type SubscribeDeps } from "./subscribe";
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
+// #4797: wordmark da marca (negrito + `.`/`.br` teal) em prosa corrida — módulo
+// puro sem I/O, seguro de importar direto no bundle do Worker (mesmo padrão de
+// `robots-txt.ts`, #4777 — ver docstring de `brand-wordmark.ts`).
+import { applyBrandWordmark } from "../../../scripts/lib/shared/brand-wordmark.ts";
 
 /** Nome do cookie de sessão do caminho `/jogar` — namespace próprio, distinto
  * de `diaria_cursos_session` (#4052): domínios/workers diferentes, mas o
@@ -490,12 +494,12 @@ export function renderJogarGatePage(
 </head>
 <body>
 <h1>Quer disputar o ranking?</h1>
-<p class="explain">Com seu e-mail a gente guarda seus acertos e te coloca no ranking público do mês. Já assina a diar.ia.br? Entre direto. Continuar jogando sem cadastrar também vale. É só seguir.</p>
+<p class="explain">Com seu e-mail a gente guarda seus acertos e te coloca no ranking público do mês. Já assina a ${applyBrandWordmark("diar.ia.br")}? Entre direto. Continuar jogando sem cadastrar também vale. É só seguir.</p>
 <form id="gate-form">
   <input type="text" name="website" class="website" tabindex="-1" autocomplete="off">
   <input type="text" name="name" placeholder="Seu nome ou apelido" required>
   <input type="email" name="email" placeholder="seu@email.com" required>
-  <label class="optin"><input type="checkbox" name="optin" value="1"> Quero receber a diar.ia.br — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, direto no seu e-mail.</label>
+  <label class="optin"><input type="checkbox" name="optin" value="1"> Quero receber a ${applyBrandWordmark("diar.ia.br")} — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, direto no seu e-mail.</label>
   <button type="submit">Entrar no ranking</button>
 </form>
 <p id="gate-msg"></p>
@@ -653,11 +657,11 @@ export function renderJogarGatePage(
  */
 export function renderJogarGateBoxBlock(): string {
   return `<form id="jogar-gate-box" class="signup-form" hidden novalidate>
-  <p class="signup-text">Quer entrar no ranking? Deixe seu nome e e-mail — se você já assina a diar.ia.br, é só isso.</p>
+  <p class="signup-text">Quer entrar no ranking? Deixe seu nome e e-mail — se você já assina a ${applyBrandWordmark("diar.ia.br")}, é só isso.</p>
   <label class="signup-field"><span>Nome ou apelido</span><input type="text" name="name" autocomplete="name" maxlength="100" required></label>
   <label class="signup-field"><span>E-mail</span><input type="email" name="email" autocomplete="email" maxlength="254" required></label>
   <div class="signup-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
-  <label class="signup-optin"><input type="checkbox" name="optin" value="on"> Quero receber a diar.ia.br — newsletter gratuita com as novidades de IA e como usar melhor as IAs, 5 minutos por dia, seg-sex.</label>
+  <label class="signup-optin"><input type="checkbox" name="optin" value="on"> Quero receber a ${applyBrandWordmark("diar.ia.br")} — newsletter gratuita com as novidades de IA e como usar melhor as IAs, 5 minutos por dia, seg-sex.</label>
   <button type="submit" class="signup-btn">Entrar no ranking</button>
   <p class="signup-note">Já assina? Some com o mesmo e-mail e pronto — sem cadastrar de novo.</p>
   <p class="signup-status" role="status" aria-live="polite" hidden></p>

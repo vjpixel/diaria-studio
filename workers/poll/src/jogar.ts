@@ -117,6 +117,10 @@ import {
   jogarGateBoxScript,
 } from "./web-gate";
 import { parseCookieHeader } from "./session-cookie";
+// #4797: wordmark da marca (negrito + `.`/`.br` teal) em prosa corrida — módulo
+// puro sem I/O, seguro de importar direto no bundle do Worker (mesmo padrão de
+// `robots-txt.ts`, #4777 — ver docstring de `brand-wordmark.ts`).
+import { applyBrandWordmark } from "../../../scripts/lib/shared/brand-wordmark.ts";
 
 /** Brand fixo desta página — `/jogar` É o standalone, não um parâmetro. */
 const JOGAR_BRAND = "web" as const;
@@ -213,7 +217,7 @@ export function renderJogarBrandLogoBlock(): string {
 export function renderSubscribeCtaBlock(): string {
   const url = buildBrandSiteUrl(JOGAR_BRAND, "posvoto-cta", "eia-jogar-conhecer");
   return `<div id="jogar-subscribe-cta" class="subscribe-cta" hidden>
-  <p class="subscribe-text">Quer entender o que a diar.ia.br faz? Conheça o projeto.</p>
+  <p class="subscribe-text">Quer entender o que a ${applyBrandWordmark("diar.ia.br")} faz? Conheça o projeto.</p>
   <a class="subscribe-btn" href="${htmlEscape(url)}" target="_blank" rel="noopener">Conhecer a diar.ia.br</a>
 </div>`;
 }
@@ -260,7 +264,7 @@ export function buildQuizSubscribeUrl(): string {
 export function renderQuizSubscribeCtaBlock(): string {
   const url = buildQuizSubscribeUrl();
   return `<div id="jogar-subscribe-cta" class="subscribe-cta" hidden>
-  <p class="subscribe-text">Essas imagens são do arquivo de edições passadas da diar.ia.br. Quer receber notícias de IA, tutoriais pra usar no dia a dia e um par desses todo dia? Assine a diar.ia.br (grátis).</p>
+  <p class="subscribe-text">Essas imagens são do arquivo de edições passadas da ${applyBrandWordmark("diar.ia.br")}. Quer receber notícias de IA, tutoriais pra usar no dia a dia e um par desses todo dia? Assine a ${applyBrandWordmark("diar.ia.br")} (grátis).</p>
   <a class="subscribe-btn" href="${htmlEscape(url)}" target="_blank" rel="noopener">Assinar a diar.ia.br</a>
 </div>`;
 }
@@ -301,7 +305,7 @@ export function renderInlineSignupFormBlock(hidden: boolean = true): string {
   <label class="signup-field"><span>Nome</span><input type="text" name="name" autocomplete="name" maxlength="100"></label>
   <label class="signup-field"><span>E-mail</span><input type="email" name="email" autocomplete="email" maxlength="254" required></label>
   <div class="signup-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
-  <label class="signup-optin"><input type="checkbox" name="optin" value="on"> Quero receber a diar.ia.br — notícias de IA + tutoriais + um par desses todo dia.</label>
+  <label class="signup-optin"><input type="checkbox" name="optin" value="on"> Quero receber a ${applyBrandWordmark("diar.ia.br")} — notícias de IA + tutoriais + um par desses todo dia.</label>
   <button type="submit" class="signup-btn">Assinar a diar.ia.br (grátis)</button>
   <p class="signup-status" role="status" aria-live="polite" hidden></p>
 </form>`;
@@ -392,13 +396,13 @@ export function renderInlineSignupFormStyles(): string {
  */
 export function renderIdentityFormBlock(): string {
   return `<form id="jogar-identity-form" class="signup-form" hidden novalidate>
-  <p class="signup-text">Quer um par desses todo dia no seu e-mail? Deixe seu nome e e-mail: assine a diar.ia.br e entre no ranking.</p>
+  <p class="signup-text">Quer um par desses todo dia no seu e-mail? Deixe seu nome e e-mail: assine a ${applyBrandWordmark("diar.ia.br")} e entre no ranking.</p>
   <label class="signup-field"><span>Nome ou apelido</span><input type="text" name="name" autocomplete="name" maxlength="100" required></label>
   <label class="signup-field"><span>E-mail</span><input type="email" name="email" autocomplete="email" maxlength="254" required></label>
   <div class="signup-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
-  <label class="signup-optin"><input type="checkbox" name="optin" value="on"> Quero receber a diar.ia.br — newsletter gratuita com as novidades de IA e como usar melhor as IAs, 5 minutos por dia, seg-sex.</label>
+  <label class="signup-optin"><input type="checkbox" name="optin" value="on"> Quero receber a ${applyBrandWordmark("diar.ia.br")} — newsletter gratuita com as novidades de IA e como usar melhor as IAs, 5 minutos por dia, seg-sex.</label>
   <button type="submit" class="signup-btn">Entrar no ranking</button>
-  <p class="signup-note">No ranking você aparece pelo nome. O e-mail é usado como seu identificador. Marque a caixinha pra receber a diar.ia.br.</p>
+  <p class="signup-note">No ranking você aparece pelo nome. O e-mail é usado como seu identificador. Marque a caixinha pra receber a ${applyBrandWordmark("diar.ia.br")}.</p>
   <p class="signup-status" role="status" aria-live="polite" hidden></p>
 </form>
 <p id="jogar-identified-note" class="identified-note" hidden></p>`;

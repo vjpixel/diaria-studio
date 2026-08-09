@@ -11,6 +11,10 @@
 // usam font-family — antes só DS_COLORS era consumido aqui).
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 import { EIA_STANDALONE_SOURCE, EIA_ARCHIVE_UTM } from "./utm-registry"; // #4041
+// #4797: wordmark da marca (negrito + `.`/`.br` teal) em prosa corrida — módulo
+// puro sem I/O, seguro de importar direto no bundle do Worker (mesmo padrão de
+// `robots-txt.ts`, #4777 — ver docstring de `brand-wordmark.ts`).
+import { applyBrandWordmark } from "../../../scripts/lib/shared/brand-wordmark.ts";
 
 // ── Trailing slash normalization (#1319) ────────────────────────────────────
 
@@ -1195,7 +1199,7 @@ export function renderNicknameFormHtml(
 ): string {
   const leaderboardPeriodWord = BRAND_INFO[brand].leaderboardPeriod === "year" ? "anual" : "mensal";
   const optinHtml = showOptIn
-    ? `\n    <label class="nick-optin"><input type="checkbox" name="optin" value="on"> Quero receber a diar.ia.br — newsletter gratuita com as novidades de IA e como usar melhor as IAs, 5 minutos por dia, seg-sex.</label>`
+    ? `\n    <label class="nick-optin"><input type="checkbox" name="optin" value="on"> Quero receber a ${applyBrandWordmark("diar.ia.br")} — newsletter gratuita com as novidades de IA e como usar melhor as IAs, 5 minutos por dia, seg-sex.</label>`
     : "";
   const saveLabel = surface === "leaderboard" ? "Salvar" : "Salvar e ver o leaderboard";
   return `<div class="nick-box">
@@ -1249,7 +1253,7 @@ export function renderSubscribeBoxHtml(box: SubscribeBoxState, brand: Brand): st
   const secondaryHref = `${lbHref}${lbHref.includes("?") ? "&" : "?"}email=${encodeURIComponent(box.email)}&sig=${encodeURIComponent(box.sig)}`;
   return `<div class="nick-box nick-sub-box">
   <p class="nick-kicker">Você está no ranking como ${htmlEscape(box.nickname)}.</p>
-  <p class="nick-title">Assine a diar.ia.br, de graça</p>
+  <p class="nick-title">Assine a ${applyBrandWordmark("diar.ia.br")}, de graça</p>
   <p class="nick-explain">Newsletter diária com as novidades de IA e como usar melhor as IAs — 5 minutos, de segunda a sexta. O par de imagens do "É IA?" vai junto, todo dia.</p>
   <form action="/set-name" method="GET" class="nick-sub-form">
     <input type="hidden" name="email" value="${htmlEscape(box.email)}">
@@ -1307,10 +1311,10 @@ export function resolveSetNameConfirmationBanner(url: URL): string | null {
   const escapedName = htmlEscape(name);
   const signup = url.searchParams.get("signup");
   if (signup === "subscribed") {
-    return `Pronto, ${escapedName}! Você aparece assim no ranking — e a diar.ia.br começa a chegar amanhã de manhã.`;
+    return `Pronto, ${escapedName}! Você aparece assim no ranking — e a ${applyBrandWordmark("diar.ia.br")} começa a chegar amanhã de manhã.`;
   }
   if (signup === "failed") {
-    return `Apelido salvo. O cadastro na diar.ia.br não completou — tente de novo no próximo voto.`;
+    return `Apelido salvo. O cadastro na ${applyBrandWordmark("diar.ia.br")} não completou — tente de novo no próximo voto.`;
   }
   return `Pronto, ${escapedName}! Você aparece assim no ranking.`;
 }

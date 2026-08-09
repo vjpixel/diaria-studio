@@ -43,6 +43,7 @@ import {
 } from "./geo-faq.ts";
 import { renderInlineLinks } from "./markdown-links.ts"; // #4558/#4635: parser [texto](url), compartilhado com geo-faq.ts (respostas de FAQ também ganharam link)
 import { DIARIA_ARQUIVO_URL } from "../canonical-urls.ts";
+import { applyBrandWordmark } from "./brand-wordmark.ts"; // #4797 — wordmark da marca no corpo do hub (introParagraph não passa por renderInlineLinks — ver nota do campo)
 
 /** Uma edição da diar.ia.br citada como fonte do hub — link interno real
  * (issue #4558: "efeito colateral bom: hub temático é link interno de
@@ -66,9 +67,12 @@ export interface HubSection {
    * em runtime (achado do fleet review). Suporta o subset de markdown
    * `[texto](url)` (`scripts/lib/shared/markdown-links.ts::renderInlineLinks`)
    * — mesmo suporte das respostas de `GeoFaqItem.answer` (#4635 item 3).
-   * `introParagraph`/`metaDescription` continuam SEM suporte (renderizados
-   * via `esc()` puro) — um `[texto](url)` nesses dois campos renderiza
-   * colchete literal, não link. */
+   * `introParagraph`/`metaDescription` continuam SEM suporte a link
+   * (renderizados via `esc()` puro) — um `[texto](url)` nesses dois campos
+   * renderiza colchete literal, não link. `introParagraph` GANHA o wordmark
+   * da marca (#4797, `applyBrandWordmark` pós-`esc()`) — `metaDescription`
+   * não, porque vira valor de atributo (`<meta content="...">`/`og:description`
+   * via `renderSeoMeta`), onde HTML cru quebraria o atributo. */
   paragraphs: [string, ...string[]];
 }
 
@@ -265,7 +269,7 @@ ${renderCuradoriaFooterStyles()}
       <p class="tagline">5 minutos diários pra se manter atualizado e usar melhor as IAs</p>
       <div class="geo-intro-wrap">
         <h2 class="geo-h2">${esc(hub.introHeading)}</h2>
-        <p class="geo-intro">${esc(hub.introParagraph)}</p>
+        <p class="geo-intro">${applyBrandWordmark(esc(hub.introParagraph))}</p>
 ${renderGeoByline(undefined, `atualizado em ${formatMonthYear(hub.contentDate)}`)}
       </div>
       <p class="subscribe-cta"><a href="${esc(SUBSCRIBE_URL)}">Assine a diar.ia.br →</a></p>
