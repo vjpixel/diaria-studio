@@ -30,6 +30,8 @@ import {
   decideWatchdogArmedStatus,
   buildWatchdogHealthWarningMessage,
   queryWatchdogTaskVerboseOutput,
+  buildWatchdogCannotVerifyMessage,
+  checkWatchdogArmed,
 } from "../scripts/lib/check-watchdog-armed.ts";
 
 // ---------------------------------------------------------------------------
@@ -410,6 +412,110 @@ describe("buildWatchdogHealthWarningMessage (#2944)", () => {
     const msg = buildWatchdogHealthWarningMessage("not_armed", state);
     assert.equal(msg, buildWatchdogWarningMessage());
   });
+});
+
+// ---------------------------------------------------------------------------
+// buildWatchdogCannotVerifyMessage / checkWatchdogArmed roteamento (#4800)
+//
+// Regressão do bug relatado: numa máquina Linux com `data/` presente (logo
+// `mode === "local"`), `detectTaskScheduler` responde `'none'`/`'systemd'`
+// (nunca `'windows-task-scheduler'`) — o resultado deve ser o terceiro
+// estado explícito `armedStatus: "cannot_verify"`, NUNCA `"not_armed"`
+// (que teria mandado o editor rodar um comando pwsh inaplicável naquela
+// máquina). `checkWatchdogArmed` é exercitado via as injeções opcionais
+// (`execModeFn`/`taskSchedulerFn`/`emitWarn`) — nunca chama `schtasks`,
+// PowerShell, nem spawna `npx tsx log-event.ts` de verdade (mesma
+// disciplina de fixture-only do resto deste arquivo).
+// ---------------------------------------------------------------------------
+
+describe("buildWatchdogCannotVerifyMessage (#4800)", () => {
+  it("caso 'systemd': nomeia o systemd e o #4798, nunca sugere um COMANDO de arme (pwsh/ps1)", () => {
+    const msg = buildWatchdogCannotVerifyMessage("systemd");
+    assert.match(msg, /systemd/);
+    assert.match(msg, /#4798/);
+    // "schtasks" pode aparecer como EXPLICAÇÃO de por que a checagem não
+    // funciona nesta plataforma (esta checagem só sabe consultar schtasks);
+    // o que a issue proíbe é sugerir um COMANDO de arme pra rodar — isso é
+    // sempre `pwsh ... setup-watchdog-schedule.ps1` no restante do módulo.
+    assert.doesNotMatch(msg, /pwsh -NoProfile/i);
+    assert.doesNotMatch(msg, /powershell -NoProfile/i);
+    assert.doesNotMatch(msg, /setup-watchdog-schedule\.ps1/i);
+  });
+
+  it("caso 'none': não inventa nenhuma instrução de arme", () => {
+    const msg = buildWatchdogCannotVerifyMessage("none");
+    assert.doesNotMatch(msg, /pwsh -NoProfile/i);
+    assert.doesNotMatch(msg, /powershell -NoProfile/i);
+    assert.doesNotMatch(msg, /setup-watchdog-schedule\.ps1/i);
+  });
+
+  it("diferencia explicitamente de 'não armado' — diz que não deu pra verificar", () => {
+    const msg = buildWatchdogCannotVerifyMessage("none");
+    assert.match(msg, /NÃO PÔDE SER VERIFICADO/);
+    assert.match(msg, /diferente de "não armado"/);
+  });
+});
+
+describe("checkWatchdogArmed roteamento por agendador (#4800 regressão)", () => {
+  it("Linux sem schtasks disponível (schedulerKind='none') → cannot_verify, NUNCA not_armed", () => {
+    const emitted: Array<{ message: string; eventMessage?: string }> = [];
+    const result = checkWatchdogArmed({
+      execModeFn: () => "local",
+      taskSchedulerFn: () => "none",
+      emitWarn: (message, eventMessage) => emitted.push({ message, eventMessage }),
+    });
+
+    assert.equal(result.mode, "local");
+    assert.equal(result.armed, false);
+    assert.equal(result.action, "cannot_verify_warn");
+    assert.equal(result.armedStatus, "cannot_verify");
+    assert.notEqual(result.armedStatus, "not_armed");
+    assert.equal(result.taskState, null);
+    assert.doesNotMatch(result.message, /pwsh/i);
+    assert.doesNotMatch(result.message, /setup-watchdog-schedule\.ps1/i);
+
+    // Warning foi emitido (fail-soft, mas visível) com o rótulo distinto de
+    // "watchdog_not_armed" — o run-log não deve mentir por rótulo mesmo com
+    // a mensagem já corrigida.
+    assert.equal(emitted.length, 1);
+    assert.equal(emitted[0].eventMessage, "watchdog_cannot_verify");
+  });
+
+  it("Linux com systemd disponível (schedulerKind='systemd') → cannot_verify, nomeia o #4798", () => {
+    const result = checkWatchdogArmed({
+      execModeFn: () => "local",
+      taskSchedulerFn: () => "systemd",
+      emitWarn: () => {},
+    });
+    assert.equal(result.armedStatus, "cannot_verify");
+    assert.equal(result.action, "cannot_verify_warn");
+    assert.match(result.message, /#4798/);
+  });
+
+  it("modo cloud → skip_cloud independente do agendador (taskSchedulerFn nem é chamado)", () => {
+    let taskSchedulerCalled = false;
+    const result = checkWatchdogArmed({
+      execModeFn: () => "cloud",
+      taskSchedulerFn: () => {
+        taskSchedulerCalled = true;
+        return "windows-task-scheduler";
+      },
+      emitWarn: () => {
+        throw new Error("não deveria emitir warning em modo cloud");
+      },
+    });
+    assert.equal(result.action, "skip_cloud");
+    assert.equal(taskSchedulerCalled, false);
+  });
+
+  // Nota: um teste com `taskSchedulerFn: () => "windows-task-scheduler"` foi
+  // deliberadamente OMITIDO aqui — `checkWatchdogArmed` não expõe injeção
+  // para `queryWatchdogTaskExitCode`/`queryWatchdogTaskVerboseOutput`
+  // (só para `execModeFn`/`taskSchedulerFn`/`emitWarn`), então esse caminho
+  // chamaria `schtasks` de verdade em CI Windows — o mesmo motivo pelo qual
+  // este arquivo já testa esses dois helpers separadamente, via seus
+  // próprios parâmetros `exec` injetáveis (ver `queryWatchdogTaskExitCode`
+  // acima), nunca através de `checkWatchdogArmed` end-to-end.
 });
 
 describe("queryWatchdogTaskVerboseOutput (#2944)", () => {

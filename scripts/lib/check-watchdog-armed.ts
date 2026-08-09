@@ -41,6 +41,31 @@
  * textual legado) é mantido só porque `test/check-watchdog-armed.test.ts` o
  * cobre com fixtures — não é mais usado no caminho de detecção real.
  *
+ * #4800 (260809): bug distinto dos anteriores — não é sobre a task estar
+ * presente/saudável, é sobre em QUE MÁQUINA a checagem roda. `ExecMode`
+ * (`'local'` vs `'cloud'`, `scripts/lib/exec-mode.ts`) responde "tenho os
+ * recursos locais (`data/`, credenciais)?" — e nada mais. Até aqui, este
+ * módulo assumia implicitamente que `mode === 'local'` também significava
+ * "esta máquina roda o Task Scheduler do Windows", o que quebrou assim que
+ * o editor configurou o OneDrive numa máquina Linux: `data/` passa a
+ * existir lá (symlink), `detectExecMode()` responde `'local'` corretamente,
+ * mas `queryWatchdogTaskExitCode` tenta rodar `schtasks` (inexistente no
+ * Linux), lança, e o `catch` faz `taskPresent = false` — resultando num
+ * `armedStatus: "not_armed"` que é um FALSO NEGATIVO: a verdade é "não foi
+ * possível verificar", não "não está armado". Os dois estados pedem reações
+ * opostas do editor (um é "vá armar"; o outro é "não dá pra saber daqui").
+ * Fix: `detectTaskScheduler()` (novo eixo em `exec-mode.ts`, derivado da
+ * PLATAFORMA + presença do binário, nunca de `data/`) é consultado antes de
+ * escolher `schtasks`; quando o resultado não é
+ * `'windows-task-scheduler'`, `checkWatchdogArmed` retorna cedo com
+ * `armedStatus: "cannot_verify"` / `action: "cannot_verify_warn"` — um
+ * terceiro estado explícito, distinto de `"not_armed"`, cuja mensagem
+ * (`buildWatchdogCannotVerifyMessage`) NUNCA sugere um comando de arme
+ * específico de plataforma (ver docstring da função). Suporte de fato a
+ * verificar via `systemd` é escopo do #4798, ainda não implementado — até
+ * lá, `cannot_verify` em Linux só informa que não dá pra confirmar, sem
+ * inventar uma instrução que não existe.
+ *
  * Este módulo dá ao Passo 1 da Fase 0 de `/diaria-overnight` (e de
  * `/diaria-develop`, que roda por natureza local) uma forma determinística
  * de checar se a task "Diaria-Overnight-Watchdog" está registrada no Task
@@ -70,7 +95,7 @@
  *   ```ts
  *   import { checkWatchdogArmed } from "./lib/check-watchdog-armed.ts";
  *   const result = checkWatchdogArmed();
- *   // result.action: "skip_cloud" | "armed" | "not_armed_warn" | "check_failed"
+ *   // result.action: "skip_cloud" | "armed" | "not_armed_warn" | "cannot_verify_warn" (#4800)
  *   ```
  *
  * @see scripts/overnight-watchdog.ts (#2688)
@@ -82,7 +107,7 @@
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { existsSync } from "node:fs";
-import { detectExecMode, type ExecMode } from "./exec-mode.ts";
+import { detectExecMode, detectTaskScheduler, type ExecMode, type TaskSchedulerKind } from "./exec-mode.ts";
 import { isMainModule } from "./cli-args.ts";
 
 /** Nome exato da scheduled task, conforme `setup-watchdog-schedule.ps1`. */
@@ -135,12 +160,25 @@ export function isWatchdogTaskScheduled(schtasksOutput: string): boolean {
 // Decisão pura (dado modo + estado de arming, decide a ação)
 // ---------------------------------------------------------------------------
 
-export type WatchdogArmingAction = "skip_cloud" | "armed" | "not_armed_warn";
+/**
+ * `"cannot_verify_warn"` (#4800) é um caso PARALELO a `"not_armed_warn"`,
+ * não produzido por `decideWatchdogArmingAction` abaixo (que só conhece
+ * `armed: boolean`) — é decidido antes, em `checkWatchdogArmed`, quando
+ * `detectTaskScheduler()` não reconhece o agendador desta máquina. Ambos
+ * levam ao mesmo tratamento fail-soft de "avisar, nunca bloquear", mas o
+ * `action` distinto permite que quem consome o resultado (hoje: só a
+ * mensagem impressa por este módulo; potencialmente o coordenador de
+ * `/diaria-overnight` no futuro) não trate "não deu pra confirmar" como
+ * "confirmei que está desarmado" — são reações diferentes.
+ */
+export type WatchdogArmingAction = "skip_cloud" | "armed" | "not_armed_warn" | "cannot_verify_warn";
 
 /**
  * Pure: decide a ação dado o modo de execução e se a task está armada.
  * Em modo cloud, o watchdog (Task Scheduler local) não se aplica — nunca é
- * warning, é apenas fora de escopo.
+ * warning, é apenas fora de escopo. Não é chamada quando o agendador desta
+ * máquina não pôde ser identificado (`cannot_verify_warn`, #4800) — ver
+ * `checkWatchdogArmed`.
  */
 export function decideWatchdogArmingAction(
   mode: ExecMode,
@@ -159,6 +197,34 @@ export function buildWatchdogWarningMessage(): string {
     `evita o encoding gotcha do #2814 em PowerShell 5.1): ` +
     `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\\overnight\\setup-watchdog-schedule.ps1 ` +
     `(ou "powershell" no lugar de "pwsh" se pwsh 7 não estiver instalado)`
+  );
+}
+
+/**
+ * Mensagem para `armedStatus: "cannot_verify"` (#4800) — quando esta máquina
+ * não roda o Task Scheduler do Windows (ou `schtasks` não está no PATH).
+ * Regra dura, do próprio #4800: esta mensagem NUNCA sugere um comando de
+ * arme específico de plataforma. Diz explicitamente "não dá pra verificar
+ * daqui", não "não está armado" — os dois pedem reações opostas do editor.
+ * Para `systemd`, nomeia o #4798 (verificação via systemd, ainda não
+ * implementada) em vez de inventar uma instrução que não existe; para
+ * `'none'` (nenhum agendador reconhecido), só registra a ausência.
+ */
+export function buildWatchdogCannotVerifyMessage(schedulerKind: TaskSchedulerKind): string {
+  const platformNote =
+    schedulerKind === "systemd"
+      ? "esta máquina roda systemd, não o Task Scheduler do Windows"
+      : "não foi possível detectar um agendador de tarefas suportado nesta máquina";
+  const followUp =
+    schedulerKind === "systemd"
+      ? "Verificação via systemd é escopo do #4798, ainda não implementada — " +
+        "sem instrução de arme para esta plataforma por ora."
+      : "Sem agendador de tarefas reconhecido — sem instrução de arme aplicável.";
+  return (
+    `Watchdog overnight (#2688) NÃO PÔDE SER VERIFICADO nesta máquina — ${platformNote}, ` +
+    `e esta checagem (\`check-watchdog-armed.ts\`) só sabe consultar o Task Scheduler do ` +
+    `Windows (\`schtasks\`). Isto é diferente de "não armado": o watchdog pode estar ` +
+    `corretamente armado, só não dá pra confirmar a partir desta máquina (#4800). ${followUp}`
   );
 }
 
@@ -324,13 +390,21 @@ export function classifyWatchdogTaskHealth(state: WatchdogTaskState): WatchdogTa
  * incidente 260703. `"armed"` cobre tanto `"healthy"` quanto `"unknown"`
  * (fail-soft — nunca rebaixar por falta de dado, só por evidência positiva
  * de problema).
+ *
+ * `"cannot_verify"` (#4800) é um estado TERCEIRO, distinto de `"not_armed"`:
+ * significa "esta máquina não roda o Task Scheduler do Windows (ou o
+ * binário `schtasks` não foi encontrado), então esta checagem não sabe
+ * responder" — nunca "confirmei que a task não existe". `not_armed` continua
+ * reservado para quando a consulta REALMENTE rodou (via `schtasks`, em
+ * Windows) e a task não apareceu.
  */
 export type WatchdogArmedStatus =
   | "armed"
   | "armed_but_disabled"
   | "armed_but_stale"
   | "armed_but_never_run"
-  | "not_armed";
+  | "not_armed"
+  | "cannot_verify";
 
 export function decideWatchdogArmedStatus(
   taskPresent: boolean,
@@ -404,7 +478,15 @@ export function queryWatchdogTaskVerboseOutput(
   }
 }
 
-function emitWarnEvent(message: string): void {
+/**
+ * `eventMessage` distingue, no run-log, "confirmei que não está armado"
+ * (`"watchdog_not_armed"`, o default histórico) de "não deu pra verificar
+ * nesta máquina" (`"watchdog_cannot_verify"`, #4800) — mesma distinção que
+ * `armedStatus`/`buildWatchdogCannotVerifyMessage` fazem no texto da
+ * mensagem; sem isso o run-log ficaria mentindo por rótulo mesmo com a
+ * mensagem em si já corrigida.
+ */
+function emitWarnEvent(message: string, eventMessage: string = "watchdog_not_armed"): void {
   const ROOT = resolve(process.cwd());
   const logScript = resolve(ROOT, "scripts", "log-event.ts");
   if (!existsSync(logScript)) return;
@@ -419,7 +501,7 @@ function emitWarnEvent(message: string): void {
         "--level",
         "warn",
         "--message",
-        "watchdog_not_armed",
+        eventMessage,
         "--details",
         JSON.stringify({ task_name: WATCHDOG_TASK_NAME, message }),
       ],
@@ -464,9 +546,35 @@ export interface CheckWatchdogArmedResult {
  * `"armed"`; qualquer um dos 3 casos de falsa-confiança faz `action` cair
  * para `"not_armed_warn"` (mesmo tratamento fail-soft de "não confiar
  * nesta camada" que uma task ausente já recebia).
+ *
+ * #4800: ANTES de tudo isso, se `detectTaskScheduler()` não reconhecer
+ * `'windows-task-scheduler'` nesta máquina (ex: Linux, mesmo com
+ * `mode === "local"`), a função retorna cedo com `armedStatus:
+ * "cannot_verify"` / `action: "cannot_verify_warn"` — nem chega a tentar
+ * `schtasks`. Este é o terceiro estado explícito: "não sei verificar" é
+ * diferente de "verifiquei e não está armado".
+ *
+ * `opts` (#4800) são injeções OPCIONAIS de `detectExecMode`/
+ * `detectTaskScheduler`/`emitWarnEvent`, no mesmo espírito do parâmetro
+ * `exec` já usado por `queryWatchdogTaskExitCode`/`queryWatchdogTaskVerboseOutput`
+ * — permitem testar o roteamento completo (`checkWatchdogArmed({...})`) sem
+ * chamar `schtasks`/PowerShell real nem spawnar `npx tsx log-event.ts` de
+ * verdade em teste (ver `test/check-watchdog-armed.test.ts`). Em runtime,
+ * omitir — usa as funções reais.
  */
-export function checkWatchdogArmed(): CheckWatchdogArmedResult {
-  const mode = detectExecMode();
+export interface CheckWatchdogArmedOptions {
+  execModeFn?: () => ExecMode;
+  taskSchedulerFn?: () => TaskSchedulerKind;
+  emitWarn?: (message: string, eventMessage?: string) => void;
+}
+
+export function checkWatchdogArmed(opts: CheckWatchdogArmedOptions = {}): CheckWatchdogArmedResult {
+  const {
+    execModeFn = detectExecMode,
+    taskSchedulerFn = detectTaskScheduler,
+    emitWarn = emitWarnEvent,
+  } = opts;
+  const mode = execModeFn();
 
   if (mode === "cloud") {
     return {
@@ -475,6 +583,22 @@ export function checkWatchdogArmed(): CheckWatchdogArmedResult {
       action: "skip_cloud",
       message: "Sessão cloud — Task Scheduler não se aplica (watchdog é recurso local).",
       armedStatus: "not_armed",
+      taskState: null,
+    };
+  }
+
+  // #4800: consultar o eixo do agendador ANTES de escolher `schtasks` — em
+  // vez de assumir que `mode === "local"` implica Windows Task Scheduler.
+  const schedulerKind = taskSchedulerFn();
+  if (schedulerKind !== "windows-task-scheduler") {
+    const message = buildWatchdogCannotVerifyMessage(schedulerKind);
+    emitWarn(message, "watchdog_cannot_verify");
+    return {
+      mode,
+      armed: false,
+      action: "cannot_verify_warn",
+      message,
+      armedStatus: "cannot_verify",
       taskState: null,
     };
   }
@@ -525,7 +649,7 @@ export function checkWatchdogArmed(): CheckWatchdogArmedResult {
     taskPresent && taskState
       ? buildWatchdogHealthWarningMessage(armedStatus, taskState)
       : buildWatchdogWarningMessage();
-  emitWarnEvent(message);
+  emitWarn(message);
   return { mode, armed: false, action, message, armedStatus, taskState };
 }
 
@@ -535,7 +659,7 @@ export function checkWatchdogArmed(): CheckWatchdogArmedResult {
 
 if (isMainModule(import.meta.url)) {
   const result = checkWatchdogArmed();
-  if (result.action === "not_armed_warn") {
+  if (result.action === "not_armed_warn" || result.action === "cannot_verify_warn") {
     console.warn(`[watchdog-check] AVISO: ${result.message}`);
   } else {
     console.log(`[watchdog-check] ${result.message}`);

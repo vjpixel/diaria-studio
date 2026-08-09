@@ -15,7 +15,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { detectExecMode, type ExecMode } from "../scripts/lib/exec-mode.ts";
+import { detectExecMode, detectTaskScheduler, type ExecMode } from "../scripts/lib/exec-mode.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers de mock
@@ -94,6 +94,53 @@ function classifyLocalLabel(
   if (!hasLocalLabel) return "unaffected";
   return mode === "cloud" ? "requer-sessao-local" : "elegivel";
 }
+
+// ---------------------------------------------------------------------------
+// Testes do helper detectTaskScheduler (#4800)
+// ---------------------------------------------------------------------------
+
+describe("detectTaskScheduler (#4800)", () => {
+  it("win32 + schtasks no PATH → 'windows-task-scheduler'", () => {
+    const result = detectTaskScheduler({ platform: "win32", hasCommand: () => true });
+    assert.equal(result, "windows-task-scheduler");
+  });
+
+  it("win32 sem schtasks no PATH → 'none' (nunca finge ser Windows Task Scheduler)", () => {
+    const result = detectTaskScheduler({ platform: "win32", hasCommand: () => false });
+    assert.equal(result, "none");
+  });
+
+  it("linux + systemctl no PATH → 'systemd'", () => {
+    const result = detectTaskScheduler({ platform: "linux", hasCommand: () => true });
+    assert.equal(result, "systemd");
+  });
+
+  it("linux sem systemctl no PATH → 'none'", () => {
+    const result = detectTaskScheduler({ platform: "linux", hasCommand: () => false });
+    assert.equal(result, "none");
+  });
+
+  it("plataforma não reconhecida (ex: darwin) → 'none' independente de hasCommand", () => {
+    const result = detectTaskScheduler({ platform: "darwin", hasCommand: () => true });
+    assert.equal(result, "none");
+  });
+
+  it("consulta o comando certo por plataforma (schtasks no win32, systemctl no linux)", () => {
+    const queried: string[] = [];
+    const hasCommand = (cmd: string) => {
+      queried.push(cmd);
+      return true;
+    };
+    detectTaskScheduler({ platform: "win32", hasCommand });
+    detectTaskScheduler({ platform: "linux", hasCommand });
+    assert.deepEqual(queried, ["schtasks", "systemctl"]);
+  });
+
+  it("usa process.platform e checagem real quando opções são omitidas — não quebra", () => {
+    const result = detectTaskScheduler();
+    assert.ok(["windows-task-scheduler", "systemd", "none"].includes(result));
+  });
+});
 
 describe("classificação de label 'local' por modo de execução", () => {
   it("issue com label 'local' em sessão cloud → requer-sessao-local", () => {

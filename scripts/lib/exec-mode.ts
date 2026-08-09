@@ -42,6 +42,7 @@
 
 import { statSync } from "node:fs";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { isMainModule } from "./cli-args.ts";
 
 export type ExecMode = "local" | "cloud";
@@ -72,6 +73,88 @@ export function detectExecMode(opts: ExecModeOptions = {}): ExecMode {
     // ENOENT (clone fresco), EACCES, junction quebrada → cloud
     return "cloud";
   }
+}
+
+// ---------------------------------------------------------------------------
+// Eixo do agendador de tarefas (#4800)
+// ---------------------------------------------------------------------------
+
+/**
+ * Qual agendador de tarefas do sistema operacional está disponível nesta
+ * máquina. **Eixo separado de `ExecMode`** — não confundir os dois:
+ *
+ *   - `ExecMode` (`detectExecMode` acima) responde "tenho os recursos locais
+ *     (junction `data/`, credenciais, ComfyUI)?" — sinal correto, usado por
+ *     várias skills, **não alterado por este bloco**.
+ *   - `TaskSchedulerKind` responde uma pergunta DIFERENTE: "qual agendador de
+ *     sistema esta máquina roda?" — derivado da PLATAFORMA
+ *     (`process.platform`) e da presença do binário correspondente no PATH,
+ *     nunca de `data/`.
+ *
+ * A confusão dos dois eixos era a causa raiz do #4800: numa máquina Linux
+ * com `data/` presente (OneDrive via symlink), `detectExecMode()` responde
+ * `'local'` corretamente, mas dois consumidores (`check-watchdog-armed.ts`,
+ * `pending-scheduled-tasks.ts`) inferiam dali "então é Windows" e tentavam
+ * `schtasks`/`Get-ScheduledTask`, que não existem lá — dando um falso
+ * negativo ("watchdog não armado") quando a verdade era "não foi possível
+ * verificar nesta plataforma".
+ */
+export type TaskSchedulerKind = "windows-task-scheduler" | "systemd" | "none";
+
+/** Opções de injeção para tornar `detectTaskScheduler` testável sem depender
+ * da plataforma real nem de spawnar processos. Em runtime, omitir. */
+export interface TaskSchedulerOptions {
+  /** Substituto de `process.platform` para testes (mock). */
+  platform?: NodeJS.Platform;
+  /** Substituto da checagem "o comando `cmd` existe no PATH?" para testes (mock). */
+  hasCommand?: (cmd: string) => boolean;
+}
+
+/** Argumento de sondagem "sem efeito colateral" por comando — só serve para
+ * confirmar que o binário existe e responde; o exit code em si é ignorado
+ * (só `ENOENT` importa, ver `commandExistsSync`). */
+const COMMAND_PROBE_ARGS: Record<string, string[]> = {
+  schtasks: ["/?"],
+  systemctl: ["--version"],
+};
+
+/**
+ * Checa se `cmd` existe no PATH tentando executá-lo com um argumento de
+ * sondagem inofensivo. `ENOENT` (comando não encontrado) → `false`; qualquer
+ * outro resultado (sucesso, ou erro de exit code != 0 por argumento
+ * inesperado) → `true`, porque nesse caso o binário FOI encontrado e
+ * executado — só a sondagem em si não necessariamente retornou 0.
+ */
+function commandExistsSync(cmd: string): boolean {
+  try {
+    execFileSync(cmd, COMMAND_PROBE_ARGS[cmd] ?? [], { stdio: "ignore" });
+    return true;
+  } catch (e: unknown) {
+    const err = e as { code?: string };
+    return err.code !== "ENOENT";
+  }
+}
+
+/**
+ * Detecta qual agendador de tarefas está disponível nesta máquina, derivado
+ * da plataforma + presença do binário correspondente — nunca de `data/`.
+ *
+ * - `win32` + `schtasks` no PATH → `'windows-task-scheduler'`.
+ * - `linux` + `systemctl` no PATH → `'systemd'`.
+ * - Qualquer outra combinação (plataforma sem suporte, ou binário ausente
+ *   mesmo na plataforma certa — ex: Windows Server Core sem `schtasks`
+ *   habilitado) → `'none'`, tratado por quem consome como "não sei
+ *   verificar", nunca como "não armado" (ver #4800).
+ */
+export function detectTaskScheduler(opts: TaskSchedulerOptions = {}): TaskSchedulerKind {
+  const { platform = process.platform, hasCommand = commandExistsSync } = opts;
+  if (platform === "win32") {
+    return hasCommand("schtasks") ? "windows-task-scheduler" : "none";
+  }
+  if (platform === "linux") {
+    return hasCommand("systemctl") ? "systemd" : "none";
+  }
+  return "none";
 }
 
 // CLI guard: só executa como main module, importável sem efeito colateral.
