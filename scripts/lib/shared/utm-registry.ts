@@ -1316,6 +1316,25 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
     status: "ativo",
     appliedAt: "2026-08-03",
   },
+  {
+    id: "diretorio-manualdousuario",
+    label: "Manual do Usuário — diretório de newsletters brasileiras",
+    source: "manualdousuario",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: buildExternalSurfaceCampaign("manualdousuario"),
+    panelUrl: "https://manualdousuario.net/newsletters-brasileiras/",
+    field: "Formulário de submissão de newsletter (campo Site/URL)",
+    description:
+      "Primeira ação concreta do #4547 (backlinks/diretórios) — decisão do " +
+      "editor 260808: submeter ao diretório via Claude in Chrome, mostrando o " +
+      "conteúdo preenchido ao editor antes de confirmar o envio. Diferente das " +
+      "demais entradas (campo de bio de plataforma própria), este é um " +
+      "formulário de terceiro que gera uma página de listagem estática — não " +
+      "editável depois sem re-contato. Submissão confirmada 260808b (editor " +
+      "enviou o formulário depois da revisão do conteúdo preenchido).",
+    status: "ativo",
+    appliedAt: "2026-08-09",
+  },
 ] as const;
 
 /** Busca uma superfície externa por id. `undefined` se não existe. @pure */
