@@ -617,7 +617,15 @@ export interface MvOnDemandAllocation {
 }
 
 export interface MvOnDemandPlan {
-  /** Déficit que motivou o recorte. Zero = plano vazio, nada a verificar. */
+  /**
+   * Alvo bruto que motivou o recorte. Zero = plano vazio, nada a verificar.
+   * NÃO É SEMPRE um déficit de fila literal: desde #4787, `buildWaveProposal`
+   * chama `planMvOnDemand` com `Math.max(déficit de fila, cauda fria de uma
+   * inversão de safra)` — este campo carrega o MAIOR dos dois, não uma das
+   * duas fontes isoladamente. `renderWaveProposal` recompõe as duas partes
+   * separadamente pra exibir o motivo real (ver seção "Verificação MV sob
+   * demanda"); não assumir aqui que "deficit > 0" implica fila insuficiente.
+   */
   deficit: number;
   /**
    * `deficit ÷ MV_ONDEMAND_APPROVAL_MARGIN`, arredondado pra cima — quantos
@@ -1261,8 +1269,22 @@ export function renderWaveProposal(p: WaveProposal): string {
 
   if (p.mvOnDemandPlan.byCohort.length > 0) {
     L.push("── Verificação MV sob demanda (#4659) ──");
+    // #4787: `mvOnDemandPlan.deficit` agora é o MAIOR entre o déficit de fila
+    // tradicional e a cauda fria de uma inversão de safra (ver buildWaveProposal)
+    // — "Déficit X" sozinho ficaria enganoso quando o disparo é só por
+    // inversão (fila cobre o volume inteiro, não há déficit real nenhum).
+    // Recomputa os dois aqui (puro, barato) só pra render, sem inflar o
+    // shape de WaveProposal com um campo cuja única serventia é esta linha.
+    const queueDeficit = computeFirstSendDeficit(p.availableFirstSend, p.volumes.total);
+    const inversionTail = p.cohortInversion?.coldTailCount ?? 0;
+    const reason =
+      queueDeficit > 0 && inversionTail > 0
+        ? `déficit de fila (${fmt(queueDeficit)}) + inversão de safra (${fmt(inversionTail)}) — alvo pelo MAIOR dos dois`
+        : queueDeficit > 0
+          ? `déficit de fila: ${fmt(queueDeficit)}`
+          : `inversão de safra (fila cobre o volume, sem déficit real): ${fmt(inversionTail)}`;
     L.push(
-      `  Déficit ${fmt(p.mvOnDemandPlan.deficit)} → alvo de verificação ${fmt(p.mvOnDemandPlan.targetVerifyCount)} (margem ${(MV_ONDEMAND_APPROVAL_MARGIN * 100).toFixed(0)}%)`,
+      `  Motivo: ${reason} → alvo de verificação ${fmt(p.mvOnDemandPlan.targetVerifyCount)} (margem ${(MV_ONDEMAND_APPROVAL_MARGIN * 100).toFixed(0)}%)`,
     );
     for (const a of p.mvOnDemandPlan.byCohort) {
       L.push(`    ${cohortDisplayLabel(a.cohort).padEnd(28)} ${fmt(a.count)} contato(s)`);

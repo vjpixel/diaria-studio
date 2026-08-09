@@ -955,6 +955,53 @@ describe("renderWaveProposal — composição por safra (#4787)", () => {
     assert.match(out, /Inversão de safra/);
     assert.match(out, /Verificação MV sob demanda \(#4659\)/);
   });
+
+  it("REGRESSÃO (achado do self-review): 'Motivo' NUNCA rotula inversão pura como 'déficit de fila' — a fila cobre o volume inteiro aqui", () => {
+    // `mvOnDemandPlan.deficit` (o campo bruto) vira o MAIOR entre déficit de
+    // fila e cauda de inversão desde #4787 — sem este cuidado, o render dizia
+    // literalmente "Déficit 1.000" mesmo quando não havia déficit real
+    // nenhum (availableFirstSend 2000 >= volumes.total 1000), afirmando fila
+    // curta quando o problema era só a ORDEM da safra.
+    const out = renderWaveProposal(
+      buildWaveProposal(
+        proposalInput({
+          availableFirstSend: 2000, // >= volumes.total (1000) — SEM déficit de fila
+          availableFirstSendByCohort: [{ cohort: "leads-2022h1", count: 2000 }],
+          mvBacklog: mvBacklogFixture([{ cohort: "leads-2024h1", count: 5000 }]),
+        }),
+      ),
+    );
+    assert.match(out, /Motivo: inversão de safra \(fila cobre o volume, sem déficit real\): 1\.000/);
+    assert.doesNotMatch(out, /Motivo: déficit de fila/);
+  });
+
+  it("déficit de fila puro (sem inversão) → 'Motivo' rotula corretamente como déficit", () => {
+    const out = renderWaveProposal(
+      buildWaveProposal(
+        proposalInput({
+          availableFirstSend: 300, // déficit = 1000-300 = 700
+          // availableFirstSendByCohort vazio (default) → sem composição/inversão.
+          mvBacklog: mvBacklogFixture([{ cohort: "ex-assinantes", count: 5000 }]),
+        }),
+      ),
+    );
+    assert.match(out, /Motivo: déficit de fila: 700/);
+    assert.doesNotMatch(out, /inversão de safra/);
+  });
+
+  it("déficit de fila E inversão ao mesmo tempo → 'Motivo' nomeia os dois, alvo pelo maior", () => {
+    const out = renderWaveProposal(
+      buildWaveProposal(
+        proposalInput({
+          volumes: { ...proposalInput().volumes, perDay: [10_000], total: 10_000 },
+          availableFirstSend: 3_000, // déficit = 7.000
+          availableFirstSendByCohort: [{ cohort: "leads-2022h1", count: 3_000 }],
+          mvBacklog: mvBacklogFixture([{ cohort: "leads-2024h1", count: 50_000 }]),
+        }),
+      ),
+    );
+    assert.match(out, /Motivo: déficit de fila \(7\.000\) \+ inversão de safra \(3\.000\) — alvo pelo MAIOR dos dois/);
+  });
 });
 
 describe("measureNonOpenerExposure (#4657 — lacuna do sunset #4430)", () => {
