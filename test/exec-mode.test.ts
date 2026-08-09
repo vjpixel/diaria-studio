@@ -15,7 +15,12 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { detectExecMode, type ExecMode } from "../scripts/lib/exec-mode.ts";
+import {
+  detectExecMode,
+  detectTaskScheduler,
+  commandExistsSync,
+  type ExecMode,
+} from "../scripts/lib/exec-mode.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers de mock
@@ -94,6 +99,115 @@ function classifyLocalLabel(
   if (!hasLocalLabel) return "unaffected";
   return mode === "cloud" ? "requer-sessao-local" : "elegivel";
 }
+
+// ---------------------------------------------------------------------------
+// Testes do helper detectTaskScheduler (#4800)
+// ---------------------------------------------------------------------------
+
+describe("detectTaskScheduler (#4800)", () => {
+  it("win32 + schtasks no PATH → 'windows-task-scheduler'", () => {
+    const result = detectTaskScheduler({ platform: "win32", hasCommand: () => true });
+    assert.equal(result, "windows-task-scheduler");
+  });
+
+  it("win32 sem schtasks no PATH → 'none' (nunca finge ser Windows Task Scheduler)", () => {
+    const result = detectTaskScheduler({ platform: "win32", hasCommand: () => false });
+    assert.equal(result, "none");
+  });
+
+  it("linux + systemctl no PATH → 'systemd'", () => {
+    const result = detectTaskScheduler({ platform: "linux", hasCommand: () => true });
+    assert.equal(result, "systemd");
+  });
+
+  it("linux sem systemctl no PATH → 'none'", () => {
+    const result = detectTaskScheduler({ platform: "linux", hasCommand: () => false });
+    assert.equal(result, "none");
+  });
+
+  it("plataforma não reconhecida (ex: darwin) → 'none' independente de hasCommand", () => {
+    const result = detectTaskScheduler({ platform: "darwin", hasCommand: () => true });
+    assert.equal(result, "none");
+  });
+
+  it("consulta o comando certo por plataforma (schtasks no win32, systemctl no linux)", () => {
+    const queried: string[] = [];
+    const hasCommand = (cmd: string) => {
+      queried.push(cmd);
+      return true;
+    };
+    detectTaskScheduler({ platform: "win32", hasCommand });
+    detectTaskScheduler({ platform: "linux", hasCommand });
+    assert.deepEqual(queried, ["schtasks", "systemctl"]);
+  });
+
+  it("usa process.platform e checagem real quando opções são omitidas — não quebra", () => {
+    const result = detectTaskScheduler();
+    assert.ok(["windows-task-scheduler", "systemd", "none"].includes(result));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Testes do helper commandExistsSync (#4811 — achado 3 do silent-failure-hunter)
+// ---------------------------------------------------------------------------
+
+describe("commandExistsSync (#4811)", () => {
+  it("execução bem-sucedida → true, sem warning", () => {
+    let warned = false;
+    const result = commandExistsSync(
+      "schtasks",
+      () => undefined,
+      () => {
+        warned = true;
+      },
+    );
+    assert.equal(result, true);
+    assert.equal(warned, false);
+  });
+
+  it("ENOENT (comando ausente) → false, sem warning", () => {
+    let warned = false;
+    const execFn = () => {
+      const err = new Error("mock ENOENT") as NodeJS.ErrnoException;
+      err.code = "ENOENT";
+      throw err;
+    };
+    const result = commandExistsSync("schtasks", execFn, () => {
+      warned = true;
+    });
+    assert.equal(result, false);
+    assert.equal(warned, false);
+  });
+
+  it("erro não-ENOENT (ex: EACCES) → true, MAS loga warning em vez de engolir o erro em silêncio", () => {
+    let warnedMessage: string | null = null;
+    const execFn = () => {
+      const err = new Error("mock EACCES") as NodeJS.ErrnoException;
+      err.code = "EACCES";
+      throw err;
+    };
+    const result = commandExistsSync("schtasks", execFn, (message) => {
+      warnedMessage = message;
+    });
+    assert.equal(result, true);
+    assert.ok(warnedMessage !== null, "esperava que warnFn fosse chamado");
+    assert.match(warnedMessage!, /schtasks/);
+    assert.match(warnedMessage!, /EACCES/);
+  });
+
+  it("erro sem .code (ex: exit code != 0) → true, warning nomeia 'desconhecido'", () => {
+    let warnedMessage: string | null = null;
+    const execFn = () => {
+      throw new Error("mock exit code 1, sem .code");
+    };
+    const result = commandExistsSync("systemctl", execFn, (message) => {
+      warnedMessage = message;
+    });
+    assert.equal(result, true);
+    assert.ok(warnedMessage !== null);
+    assert.match(warnedMessage!, /desconhecido/);
+  });
+});
 
 describe("classificação de label 'local' por modo de execução", () => {
   it("issue com label 'local' em sessão cloud → requer-sessao-local", () => {
