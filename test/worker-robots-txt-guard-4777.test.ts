@@ -16,12 +16,16 @@
  * (`scripts/lib/worker-public-hosts.ts`) — sem lista hardcoded de hosts, o
  * mesmo padrão de `worker-drift-check.ts` (#4723). Dois caminhos de
  * handler são aceitos:
- *   1. Worker static-assets-only: `public/robots.txt` existe (o conteúdo
- *      exato é responsabilidade de testes dedicados por Worker, ex:
- *      `curadoria-sitemap-robots.test.ts`, `artigos-robots-txt-4777.test.ts`
- *      — aqui só confirma presença, não conteúdo).
- *   2. Worker com script: `src/` referencia a string `"/robots.txt"` em
- *      algum `.ts` — sinal de que existe uma rota registrada no código
+ *   1. Worker static-assets-only: `public/robots.txt` existe e passa por um
+ *      mínimo de correção de conteúdo (`robotsTxtAllowsGeneralCrawling` —
+ *      `Allow: /` sob `User-agent: *`, sem `Disallow: /` genérico ali,
+ *      #4782 achado 2); o conteúdo exato específico de cada Worker segue
+ *      nos testes dedicados, ex: `curadoria-sitemap-robots.test.ts`,
+ *      `artigos-robots-txt-4777.test.ts`.
+ *   2. Worker com script: `src/` tem um dispatch de rota REAL pra
+ *      `/robots.txt` (`anyTsFileHasRobotsRouteDispatch` — `===`/`case`,
+ *      não apenas a string aparecendo solta num comentário ou log, #4782
+ *      achado 1) — sinal de que existe uma rota registrada no código
  *      (verificação estrutural, não invoca `fetch` — cada Worker dinâmico
  *      já tem seu próprio teste de integração via `worker.fetch`, ex:
  *      `test/arquivo-render.test.ts`, `test/poll-robots-txt-4777.test.ts`,

@@ -32,11 +32,11 @@ export interface DiscoveredPublicHost {
  * substring aparecendo solta num comentário ou string qualquer (#4782
  * achado 1: a versão anterior desta checagem usava `.includes("/robots.txt")`,
  * que um `// TODO: add /robots.txt` sem nenhuma rota de verdade também
- * casaria). Cobre os 2 idiomas usados pelos Workers deste repo:
- * `pathname === "/robots.txt"` / `path === "/robots.txt"` e
- * `case "/robots.txt":`.
+ * casaria). Cobre o idioma usado (`pathname === "/robots.txt"` / `path ===
+ * "/robots.txt"`) e o antecipado (`case "/robots.txt":`, ainda sem uso real
+ * nos Workers deste repo — todos os 3 dinâmicos hoje despacham via `===`).
  */
-export const ROBOTS_ROUTE_DISPATCH_RE = /(?:===|case)\s*["']\/robots\.txt["']/;
+const ROBOTS_ROUTE_DISPATCH_RE = /(?:===|case)\s*["']\/robots\.txt["']/;
 
 /** `true` se `tsSource` contém um dispatch de rota real pra `/robots.txt`. */
 export function hasRobotsRouteDispatch(tsSource: string): boolean {
@@ -62,7 +62,8 @@ export function parseWranglerTomlCustomDomainHosts(tomlContent: string): string[
   // não relacionada (comentário, `[vars]`, etc.) vazando pro bloco anterior
   // — sem reprodução real hoje porque as rotas SEM `custom_domain = true`
   // nunca antecedem uma seção com essas palavras, mas é o mesmo tipo de
-  // fronteira frágil que já mordeu este repo 3x noutro parser (#4546/#4777).
+  // fronteira frágil de parser-sobre-texto que este módulo já tenta evitar
+  // em `parseWranglerTomlName` (`scripts/lib/worker-drift-check.ts`).
   const blocks = tomlContent.split(/(?=^\s*\[)/m).filter((b) => /^\s*\[\[routes\]\]/.test(b));
   for (const block of blocks) {
     if (!/custom_domain\s*=\s*true/.test(block)) continue;

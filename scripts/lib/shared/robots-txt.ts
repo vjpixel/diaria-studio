@@ -57,8 +57,10 @@ export interface RenderCuradoriaRobotsTxtOptions {
   /**
    * Paths adicionais bloqueados pra TODOS os crawlers (`User-agent: *`),
    * além do `Allow: /` geral (#4777). Ex.: `["/vote"]` pra `eia.diar.ia.br`.
+   * Tipo `` `/${string}` `` pega em `tsc` o erro de path relativo sem barra
+   * inicial que a validação em runtime abaixo também recusa (#4782 achado 5).
    */
-  extraDisallowPaths?: readonly string[];
+  extraDisallowPaths?: readonly `/${string}`[];
 }
 
 /**
@@ -117,7 +119,8 @@ export function robotsTxtAllowsGeneralCrawling(robotsTxt: string): boolean {
   // bloco inteiro do `User-agent: *` como string fixa (em vez de tentar
   // capturar seu fim via regex lazy + `$`) evita a armadilha de `$` com a
   // flag `m` casar fim-de-LINHA (qualquer `\n`), não fim-de-string — o que
-  // fazia a versão anterior desta função capturar um corpo vazio sempre.
+  // fazia um primeiro rascunho desta função (descartado ainda no design,
+  // nunca commitado) capturar um corpo vazio sempre.
   const blocks = robotsTxt.split(/\n\s*\n/);
   const starBlock = blocks.find((b) => /^User-agent:\s*\*\s*$/m.test(b));
   if (!starBlock) return false;
