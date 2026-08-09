@@ -1,17 +1,32 @@
 /**
- * pending-scheduled-tasks.ts (#4708 Parte 1)
+ * pending-scheduled-tasks.ts (#4708 Parte 1, refatorado #4805 Fase 1)
  *
- * Detecta tasks do Task Scheduler que estão DECLARADAS num
- * `scripts/**\/setup-*-schedule.ps1` mas nunca foram de fato registradas
- * nesta máquina — o padrão que a issue #4708 mediu ao vivo em 06/08: três
- * tasks (`Diaria-Brevo-Diaria-Evaluate` #4534, `Diaria-Apoios-Diff-Alarm`
- * #4485, `Diaria-Cursos-Error-Alarm` #4320/#4382) mergearam, testaram, e
- * ficaram órfãs do único passo que só roda na máquina do editor — a única
- * memória disso era um parágrafo no CLAUDE.md que ninguém relia.
+ * Detecta tasks do Task Scheduler que estão DECLARADAS mas nunca foram de
+ * fato registradas nesta máquina — o padrão que a issue #4708 mediu ao vivo
+ * em 06/08: três tasks (`Diaria-Brevo-Diaria-Evaluate` #4534,
+ * `Diaria-Apoios-Diff-Alarm` #4485, `Diaria-Cursos-Error-Alarm`
+ * #4320/#4382) mergearam, testaram, e ficaram órfãs do único passo que só
+ * roda na máquina do editor — a única memória disso era um parágrafo no
+ * CLAUDE.md que ninguém relia.
  *
- * Fonte determinística e barata: cruzar o `$TaskName = "..."` declarado
- * dentro de cada script de setup contra as tasks REALMENTE presentes no
- * Task Scheduler (`Get-ScheduledTask -TaskName 'Diaria-*'`).
+ * **Fonte de "esperadas" (#4805): registro declarativo como PRIMÁRIA, scan
+ * legado como FALLBACK.** Até o #4805, a lista de esperadas vinha inteira de
+ * varrer `scripts/**\/setup-*-schedule.ps1` e extrair `$TaskName` por regex.
+ * Agora `listExpectedScheduledTasks` primeiro consulta
+ * `scripts/lib/scheduled-tasks.ts` (`SCHEDULED_TASKS` — as 14 tasks já
+ * migradas pro registro TS) e só cai no scanner legado (mesmo regex de
+ * sempre) pra `setup-*-schedule.ps1` que NÃO tenham `legacySetupScript`
+ * correspondente no registro — hoje só `Diaria-Overnight-Watchdog` e
+ * `Diaria-Edicao-Diaria` (runners fora do padrão `npx tsx <script>.ts` que o
+ * registro modela; ver docstring de `scheduled-tasks.ts`). Uma entrada do
+ * registro só conta se o `.ps1` legado dela também existir sob `rootDir` —
+ * isso é o que mantém os testes com fixtures isoladas (`test/pending-
+ * scheduled-tasks.test.ts`) controlando o universo completo de tasks sem
+ * "vazamento" das 14 reais do repo pra dentro de um diretório de teste vazio.
+ *
+ * Fonte determinística e barata: cruzar essa lista de esperadas contra as
+ * tasks REALMENTE presentes no Task Scheduler (`Get-ScheduledTask -TaskName
+ * 'Diaria-*'`).
  *
  * **Por que PowerShell (`Get-ScheduledTask`) e não `schtasks` (#2814):** o
  * `check-watchdog-armed.ts` já documentou que `schtasks /query /fo LIST`
@@ -58,10 +73,11 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { detectExecMode, type ExecMode } from "./exec-mode.ts";
 import { isMainModule } from "./cli-args.ts";
+import { SCHEDULED_TASKS } from "./scheduled-tasks.ts";
 
 /** Nome de task esperado, extraído de um script de setup. */
 export interface SetupScriptTaskName {
@@ -116,27 +132,42 @@ function setupScheduleFilesUnder(dir: string): string[] {
 }
 
 /**
- * Descobre TODOS os `setup-*-schedule.ps1` sob `{rootDir}/scripts` (recursivo
- * — cobre tanto `scripts/setup-*.ps1` quanto `scripts/overnight/setup-*.ps1`)
- * e extrai o `$TaskName` declarado em cada um. Ordenado por `taskName` para
- * output determinístico.
+ * Lista as tasks esperadas: registro declarativo (`SCHEDULED_TASKS`, #4805)
+ * como fonte PRIMÁRIA — só entram as entradas cujo `legacySetupScript`
+ * também existe sob `rootDir` (ver docstring do módulo pro porquê disso) —
+ * mais um FALLBACK que varre `{rootDir}/scripts` recursivamente (mesmo
+ * scanner de sempre, cobre `scripts/setup-*.ps1` e
+ * `scripts/overnight/setup-*.ps1`) por `setup-*-schedule.ps1` cujo path NÃO
+ * está coberto por nenhuma entrada do registro — hoje só as tasks ainda não
+ * migradas (`Diaria-Overnight-Watchdog`, `Diaria-Edicao-Diaria`). Ordenado
+ * por `taskName` para output determinístico.
  *
  * Propaga a exceção de `parseTaskNameFromSetupScript` sem capturar — um
- * script que não bate o padrão esperado deve travar a listagem inteira
- * (fail LOUD), nunca ser descartado silenciosamente da lista de esperadas.
+ * `.ps1` fora do registro que não bate o padrão esperado deve travar a
+ * listagem inteira (fail LOUD), nunca ser descartado silenciosamente da
+ * lista de esperadas.
  */
 export function listExpectedScheduledTasks(rootDir: string): SetupScriptTaskName[] {
   const rootAbs = resolve(rootDir);
+
+  const fromRegistry: SetupScriptTaskName[] = SCHEDULED_TASKS.filter((t) =>
+    existsSync(resolve(rootAbs, ...t.legacySetupScript.split("/"))),
+  ).map((t) => ({ scriptPath: t.legacySetupScript, taskName: t.name }));
+  const registeredScriptPaths = new Set(fromRegistry.map((t) => t.scriptPath));
+
   const scriptsDir = resolve(rootAbs, "scripts");
   const files = setupScheduleFilesUnder(scriptsDir);
-  const result = files.map((full): SetupScriptTaskName => {
-    const rel = full.startsWith(rootAbs + sep) ? full.slice(rootAbs.length + 1) : full;
-    const scriptPath = rel.split(sep).join("/");
-    const source = readFileSync(full, "utf8");
-    const taskName = parseTaskNameFromSetupScript(source, scriptPath);
-    return { scriptPath, taskName };
-  });
-  return result.sort((a, b) => a.taskName.localeCompare(b.taskName));
+  const fromLegacyScan: SetupScriptTaskName[] = files
+    .map((full): SetupScriptTaskName => {
+      const rel = full.startsWith(rootAbs + sep) ? full.slice(rootAbs.length + 1) : full;
+      const scriptPath = rel.split(sep).join("/");
+      const source = readFileSync(full, "utf8");
+      const taskName = parseTaskNameFromSetupScript(source, scriptPath);
+      return { scriptPath, taskName };
+    })
+    .filter((t) => !registeredScriptPaths.has(t.scriptPath));
+
+  return [...fromRegistry, ...fromLegacyScan].sort((a, b) => a.taskName.localeCompare(b.taskName));
 }
 
 // ---------------------------------------------------------------------------
