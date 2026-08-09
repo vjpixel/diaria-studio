@@ -14,6 +14,7 @@ import {
   collectCampaignFeedbackLoopIds,
   aggregateCampaignSpamReadings,
   sortCampaignSpamReport,
+  findWorstCampaignSpam,
   type CampaignSpamAggregate,
 } from "../scripts/lib/postmaster-campaign-spam.ts";
 
@@ -181,4 +182,20 @@ test("sortCampaignSpamReport — não muta o array de entrada", () => {
   const originalOrder = rows.map((r) => r.campaignId);
   sortCampaignSpamReport(rows);
   assert.deepEqual(rows.map((r) => r.campaignId), originalOrder);
+});
+
+// ── findWorstCampaignSpam ──
+
+// #4780: `daysWithData` da campanha VENCEDORA precisa sobreviver até
+// `WorstCampaignSpam` (antes só existia em `CampaignSpamAggregate`, 1 nível
+// abaixo, e era descartado aqui) — sem isso, um pico de 1 dia isolado fica
+// indistinguível de um pico sustentado por vários dias no consumidor final.
+test("findWorstCampaignSpam — propaga daysWithData da campanha vencedora (#4780)", () => {
+  const aggregates: CampaignSpamAggregate[] = [
+    { campaignId: 1, feedbackLoopId: "a_1", avgSpamRatePct: 0.5, peakSpamRatePct: 0.5, peakDate: "2026-08-01", daysWithData: 5, dailyReadings: [] },
+    { campaignId: 2, feedbackLoopId: "a_2", avgSpamRatePct: 1.39, peakSpamRatePct: 1.39, peakDate: "2026-08-02", daysWithData: 1, dailyReadings: [] },
+  ];
+  const worst = findWorstCampaignSpam(aggregates);
+  assert.equal(worst?.campaignId, 2);
+  assert.equal(worst?.daysWithData, 1, "cobertura da campanha vencedora (campanha 2), não da 1");
 });

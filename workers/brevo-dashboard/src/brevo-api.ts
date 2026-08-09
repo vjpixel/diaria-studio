@@ -902,6 +902,11 @@ export function normalizeEiaEngagement(raw: unknown): EiaEngagementSummary | nul
  * `dailyReadings` (#4704): mesma classe de risco de novo — sem copiar aqui, a
  * série diária persistida pela migração v2 seria descartada silenciosamente
  * pra todo consumidor que lê via este choke point, mesmo com o KV populado.
+ *
+ * `worstCampaignDaysWithData` (#4780): mesma classe de risco de novo — sem
+ * copiar aqui, a cobertura do pico por campanha (item 3 do fleet review
+ * pré-merge do #4779) nunca chegaria ao CLI de agendamento da ramp
+ * (`scripts/clarice-schedule-ramp.ts`), mesmo com o KV populado pelo produtor.
  */
 export function normalizePostmasterSpamEntry(raw: unknown): PostmasterSpamEntry | null {
   if (!raw || typeof raw !== "object") return null;
@@ -933,6 +938,13 @@ export function normalizePostmasterSpamEntry(raw: unknown): PostmasterSpamEntry 
     typeof s.worstCampaignFeedbackLoopId === "string" && s.worstCampaignFeedbackLoopId
       ? s.worstCampaignFeedbackLoopId
       : undefined;
+  // #4780: cobertura (dias com dado) da campanha vencedora — mesma
+  // disciplina dos 2 campos acima (validado independentemente, nunca
+  // inferido a partir do par).
+  const worstCampaignDaysWithData =
+    typeof s.worstCampaignDaysWithData === "number" && Number.isFinite(s.worstCampaignDaysWithData)
+      ? s.worstCampaignDaysWithData
+      : undefined;
   return {
     date: typeof s.date === "string" ? s.date : "",
     spamRatePct: s.spamRatePct,
@@ -943,6 +955,7 @@ export function normalizePostmasterSpamEntry(raw: unknown): PostmasterSpamEntry 
     dailyReadings: dailyReadings && dailyReadings.length > 0 ? dailyReadings : undefined,
     worstCampaignSpamRatePct,
     worstCampaignFeedbackLoopId,
+    worstCampaignDaysWithData,
   };
 }
 

@@ -225,3 +225,57 @@ describe("normalizePostmasterSpamEntry — worstCampaignSpamRatePct/worstCampaig
     assert.equal(entry?.worstCampaignFeedbackLoopId, "11130585_107");
   });
 });
+
+// #4780 (item 3 do fleet review pré-merge do #4779): worstCampaignDaysWithData
+// é a MESMA classe de risco de novo — sem copiar no boundary, o CLI de
+// agendamento da ramp nunca veria a cobertura do pico por campanha, mesmo
+// com o KV gravado corretamente. Espelha os casos de
+// worstCampaignSpamRatePct/worstCampaignFeedbackLoopId acima.
+describe("normalizePostmasterSpamEntry — worstCampaignDaysWithData passa pelo boundary do KV (#4780)", () => {
+  it("presente e numérico é preservado", () => {
+    const entry = normalizePostmasterSpamEntry({
+      date: "2026-08-03",
+      spamRatePct: 0.137,
+      recordedAt: "2026-08-06T09:00:00.000Z",
+      worstCampaignSpamRatePct: 1.39,
+      worstCampaignFeedbackLoopId: "11130585_107",
+      worstCampaignDaysWithData: 3,
+    });
+    assert.equal(entry?.worstCampaignDaysWithData, 3);
+  });
+
+  it("ausente (sem campanha atribuível na janela, ou entry pré-#4780) vira undefined, nunca inferido", () => {
+    const entry = normalizePostmasterSpamEntry({
+      date: "2026-07-30",
+      spamRatePct: 0.05,
+      recordedAt: "2026-07-30T09:00:00.000Z",
+      worstCampaignSpamRatePct: 1.39,
+      worstCampaignFeedbackLoopId: "11130585_107",
+    });
+    assert.equal(entry?.worstCampaignDaysWithData, undefined);
+  });
+
+  it("não-numérico (payload corrompido) não é confiado cegamente", () => {
+    const entry = normalizePostmasterSpamEntry({
+      date: "2026-07-30",
+      spamRatePct: 0.05,
+      recordedAt: "2026-07-30T09:00:00.000Z",
+      worstCampaignDaysWithData: "três",
+    });
+    assert.equal(entry?.worstCampaignDaysWithData, undefined);
+  });
+
+  it("NaN é descartado, não acoplado estruturalmente aos outros 2 campos do par", () => {
+    const entry = normalizePostmasterSpamEntry({
+      date: "2026-07-30",
+      spamRatePct: 0.05,
+      recordedAt: "2026-07-30T09:00:00.000Z",
+      worstCampaignSpamRatePct: 1.39,
+      worstCampaignFeedbackLoopId: "11130585_107",
+      worstCampaignDaysWithData: NaN,
+    });
+    assert.equal(entry?.worstCampaignDaysWithData, undefined);
+    assert.equal(entry?.worstCampaignSpamRatePct, 1.39);
+    assert.equal(entry?.worstCampaignFeedbackLoopId, "11130585_107");
+  });
+});

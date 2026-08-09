@@ -96,6 +96,22 @@
  * grava a entry só com a média de domínio — exatamente o comportamento
  * anterior ao #4705.
  *
+ * ── Observabilidade do enriquecimento por-campanha (#4780) ──
+ *
+ * `collectWorstCampaignSpam` colapsava 3 cenários bem diferentes no MESMO
+ * retorno `null` — sem campanha na janela (benigno), toda query por-campanha
+ * falhou (real, silencioso), ou `DEFAULT_POSTMASTER_ACCOUNT_ID` desatualizado
+ * (real, silencioso: campanhas existiam, mas de OUTRA conta ESP). A #4780
+ * troca o retorno por `CollectWorstCampaignSpamResult` (`{worst, attempted,
+ * failed, otherAccountsSeen}`) — `main()` usa esses 4 campos pra logar cada
+ * cenário com uma mensagem DISTINTA (`console.warn` pros 2 casos reais,
+ * `console.log` pro benigno), em vez do log único "sem campanha atribuível"
+ * que valia pros 3. Não inclui um alarme por e-mail com streak (o padrão de
+ * `clarice-opens-catchup-alarm.ts`/#4740) — decisão explícita de escopo
+ * (issue #4780 P2, "não precisa criar um alarme completo se desproporcional")
+ * dado que o log distinto já resolve o "silencioso" da lacuna original; um
+ * alarme dedicado fica pra quando/se o log sozinho não bastar na prática.
+ *
  * Uso:
  *   npx tsx scripts/postmaster-spam-sync.ts [--window-days 10] [--dry-run]
  *
@@ -256,40 +272,75 @@ export function buildAveragedEntry(
       ? {
           worstCampaignSpamRatePct: worstCampaign.spamRatePct,
           worstCampaignFeedbackLoopId: worstCampaign.feedbackLoopId,
+          // #4780: cobertura da campanha vencedora — ver docstring de
+          // `WorstCampaignSpam.daysWithData` (postmaster-campaign-spam.ts).
+          worstCampaignDaysWithData: worstCampaign.daysWithData,
         }
       : {}),
   };
 }
 
 /**
- * I/O/testável (#4705): coleta o PICO de spam por campanha na mesma janela do
- * domínio — `queryFeedbackLoopIds`/`queryCampaignSpamRate` injetáveis (mesmo
- * padrão do resto do arquivo), produção passa `gFetch` via `queryDomainStatsV2`
- * (ver `main()`), testes passam fakes sem bater rede/token real.
+ * #4780: resultado ESTRUTURADO de `collectWorstCampaignSpam` — substitui o
+ * `WorstCampaignSpam | null` anterior, que colapsava 3 causas de "sem pico"
+ * na mesma saída (ver docstring do módulo, seção "Observabilidade do
+ * enriquecimento por-campanha"). `main()` usa os 4 campos pra decidir QUAL
+ * mensagem logar; nenhum deles entra em `buildAveragedEntry` além de `worst`
+ * (os outros 3 são só diagnóstico, nunca gravados no KV).
+ */
+export interface CollectWorstCampaignSpamResult {
+  /** Pico de spam por campanha na janela — `null` quando nenhuma campanha atribuível teve leitura (`attempted===0`) OU todas as queries tentadas falharam/vieram vazias. */
+  worst: WorstCampaignSpam | null;
+  /** Quantas campanhas (da conta `accountId` configurada) foram encontradas na janela e tiveram uma query de `FEEDBACK_LOOP_SPAM_RATE` tentada. `0` = nenhuma campanha atribuível a esta conta — ver `otherAccountsSeen` pra distinguir "não houve campanha na janela" de "accountId hardcoded desatualizado". */
+  attempted: number;
+  /** Dentre as `attempted`, quantas queries de `FEEDBACK_LOOP_SPAM_RATE` lançaram (429/5xx/timeout) — cada uma já foi pulada e logada via `console.warn` no momento da falha (fail-soft por campanha, preservado). `attempted>0 && failed===attempted` é o cenário "toda query por-campanha falhou" da issue #4780 — real, não deveria virar o mesmo log do caso benigno. */
+  failed: number;
+  /** #4780: quantas campanhas com `feedback_loop_id` no formato `{conta}_{campanha}` apareceram na janela mas de OUTRA conta ESP (`account !== accountId`) — `>0` junto com `attempted===0` é o sinal de que `DEFAULT_POSTMASTER_ACCOUNT_ID` pode estar desatualizado (havia campanha atribuível na resposta bruta, só não bateu a conta configurada); `0` é o caso benigno "nenhuma campanha (de nenhuma conta) na janela". */
+  otherAccountsSeen: number;
+}
+
+/**
+ * I/O/testável (#4705, retorno estruturado desde #4780): coleta o PICO de
+ * spam por campanha na mesma janela do domínio — `queryFeedbackLoopIds`/
+ * `queryCampaignSpamRate` injetáveis (mesmo padrão do resto do arquivo),
+ * produção passa `gFetch` via `queryDomainStatsV2` (ver `main()`), testes
+ * passam fakes sem bater rede/token real.
  *
  * FAIL-SOFT por campanha: uma query de `FEEDBACK_LOOP_SPAM_RATE` que falhar
  * (429/5xx/timeout) é pulada com `console.warn`, resto da coleta segue — mesmo
- * padrão de `postmaster-campaign-spam-report.ts`. Se `queryFeedbackLoopIds`
- * (a query base) falhar, o erro PROPAGA — é responsabilidade do chamador
- * (`main()`) decidir se isso derruba a sync inteira ou só a parte por-campanha
- * (decisão: só a parte por-campanha, ver docstring do módulo).
+ * padrão de `postmaster-campaign-spam-report.ts`; a falha é contada em
+ * `failed` pro chamador distinguir "algumas falharam" de "nenhuma campanha".
+ * Se `queryFeedbackLoopIds` (a query base) falhar, o erro PROPAGA — é
+ * responsabilidade do chamador (`main()`) decidir se isso derruba a sync
+ * inteira ou só a parte por-campanha (decisão: só a parte por-campanha, ver
+ * docstring do módulo).
  *
- * `null` quando não há nenhuma campanha atribuível na janela (`accountId` sem
- * match, ou nenhum `FEEDBACK_LOOP_ID` no formato `{conta}_{campanha}`) — o
- * chamador trata como "sem dado por-campanha", nunca como erro.
+ * `worst: null` quando não há nenhuma campanha atribuível na janela
+ * (`attempted===0`) ou quando as campanhas tentadas não produziram nenhum
+ * agregado válido (falha, ou sucesso com 0 leituras) — o chamador (`main()`)
+ * decide a mensagem certa a partir de `attempted`/`failed`/`otherAccountsSeen`.
  */
 export async function collectWorstCampaignSpam(
   range: DateRangeV2,
   accountId: string,
   queryFeedbackLoopIds: (range: DateRangeV2) => Promise<QueryDomainStatsResponseV2>,
   queryCampaignSpamRate: (parsed: ParsedFeedbackLoopId, range: DateRangeV2) => Promise<QueryDomainStatsResponseV2>,
-): Promise<WorstCampaignSpam | null> {
+): Promise<CollectWorstCampaignSpamResult> {
   const idsResponse = await queryFeedbackLoopIds(range);
   const idsByDay = extractFeedbackLoopIdsV2(idsResponse, FEEDBACK_LOOP_ID_METRIC_NAME);
   const campaigns = collectCampaignFeedbackLoopIds(idsByDay, accountId);
-  if (campaigns.length === 0) return null;
+  // #4780: mesma lista, SEM o filtro de accountId — a diferença de tamanho é
+  // quantas campanhas de OUTRA conta apareceram na janela (sinal de
+  // accountId hardcoded desatualizado quando attempted===0 mas isto é >0).
+  const allAccountsCampaigns = collectCampaignFeedbackLoopIds(idsByDay);
+  const otherAccountsSeen = allAccountsCampaigns.length - campaigns.length;
+
+  if (campaigns.length === 0) {
+    return { worst: null, attempted: 0, failed: 0, otherAccountsSeen };
+  }
 
   const aggregates: CampaignSpamAggregate[] = [];
+  let failed = 0;
   for (const parsed of campaigns) {
     try {
       const response = await queryCampaignSpamRate(parsed, range);
@@ -297,13 +348,14 @@ export async function collectWorstCampaignSpam(
       const agg = aggregateCampaignSpamReadings(parsed.campaignId, parsed.feedbackLoopId, campaignReadings);
       if (agg) aggregates.push(agg);
     } catch (e) {
+      failed++;
       console.warn(
         `[postmaster-spam-sync] falha ao consultar FEEDBACK_LOOP_SPAM_RATE da campanha #${parsed.campaignId} ` +
           `(feedback_loop_id="${parsed.feedbackLoopId}"): ${e instanceof Error ? e.message : String(e)} — pulando, resto da coleta por-campanha segue.`,
       );
     }
   }
-  return findWorstCampaignSpam(aggregates);
+  return { worst: findWorstCampaignSpam(aggregates), attempted: campaigns.length, failed, otherAccountsSeen };
 }
 
 /**
@@ -369,23 +421,48 @@ async function main(): Promise<void> {
       r,
       gFetch,
     );
-  let worstCampaign: WorstCampaignSpam | null = null;
+  let campaignResult: CollectWorstCampaignSpamResult = { worst: null, attempted: 0, failed: 0, otherAccountsSeen: 0 };
   try {
-    worstCampaign = await collectWorstCampaignSpam(range, DEFAULT_POSTMASTER_ACCOUNT_ID, queryFeedbackLoopIds, queryCampaignSpamRate);
+    campaignResult = await collectWorstCampaignSpam(range, DEFAULT_POSTMASTER_ACCOUNT_ID, queryFeedbackLoopIds, queryCampaignSpamRate);
   } catch (e) {
     console.warn(
       `[postmaster-spam-sync] falha ao coletar spam por campanha (#4705) — seguindo só com a média de domínio: ` +
         `${e instanceof Error ? e.message : String(e)}`,
     );
   }
+  const { worst: worstCampaign, attempted, failed, otherAccountsSeen } = campaignResult;
+
+  // #4780: 5 mensagens distintas em vez do log único "sem campanha
+  // atribuível" que antes valia pros 3 cenários da issue — só os 2 primeiros
+  // (pico achado / todas as queries falharam) e o de accountId suspeito são
+  // `console.warn`/`console.log` de ATENÇÃO; os outros 2 são o caminho
+  // normal/benigno.
   if (worstCampaign) {
     console.log(
       `[postmaster-spam-sync] pior campanha na janela: feedback_loop_id="${worstCampaign.feedbackLoopId}" ` +
-        `pico=${worstCampaign.spamRatePct.toFixed(3)}% em ${worstCampaign.date} — este valor governa o breaker (precedência sobre a média de domínio).`,
+        `pico=${worstCampaign.spamRatePct.toFixed(3)}% em ${worstCampaign.date} (cobertura: ${worstCampaign.daysWithData} dia(s) com dado) — ` +
+        `este valor governa o breaker (precedência sobre a média de domínio).`,
+    );
+  } else if (attempted > 0 && failed === attempted) {
+    console.warn(
+      `[postmaster-spam-sync] TODAS as ${attempted} campanha(s) atribuível(is) na janela falharam na query de FEEDBACK_LOOP_SPAM_RATE ` +
+        `(#4780) — enriquecimento por-campanha ficou OFFLINE nesta execução (não é "sem campanha", é falha real). ` +
+        `Breaker segue usando só a média de domínio.`,
+    );
+  } else if (attempted === 0 && otherAccountsSeen > 0) {
+    console.warn(
+      `[postmaster-spam-sync] ${otherAccountsSeen} campanha(s) com feedback_loop_id de OUTRA conta ESP apareceram na janela, ` +
+        `nenhuma da conta configurada (DEFAULT_POSTMASTER_ACCOUNT_ID="${DEFAULT_POSTMASTER_ACCOUNT_ID}") — este valor hardcoded pode estar ` +
+        `desatualizado (#4780). Breaker segue usando só a média de domínio.`,
+    );
+  } else if (attempted === 0) {
+    console.log(
+      "[postmaster-spam-sync] sem campanha atribuível na janela (#4705) — breaker segue usando a média de domínio.",
     );
   } else {
     console.log(
-      "[postmaster-spam-sync] sem campanha atribuível na janela (#4705) — breaker segue usando a média de domínio.",
+      `[postmaster-spam-sync] ${attempted - failed}/${attempted} campanha(s) consultada(s) com sucesso, mas nenhuma teve leitura de ` +
+        `FEEDBACK_LOOP_SPAM_RATE na janela — breaker segue usando a média de domínio.`,
     );
   }
 

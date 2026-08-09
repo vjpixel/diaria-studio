@@ -244,6 +244,21 @@ export interface PostmasterSpamEntry extends PostmasterReputationSignal {
    * string).
    */
   worstCampaignFeedbackLoopId?: string;
+  /**
+   * #4780: cobertura da janela da campanha vencedora (`WorstCampaignSpam.daysWithData`,
+   * `scripts/lib/postmaster-campaign-spam.ts`) — mesma classe de risco de
+   * `worstCampaignFeedbackLoopId` acima (par produzido junto pelo mesmo
+   * produtor, mas validado independentemente no boundary do KV). Sem este
+   * campo, um pico por-campanha de 1 dia isolado (baixa cobertura) fica
+   * indistinguível de um pico sustentado pela janela inteira — nenhum dos 2
+   * outros campos (`worstCampaignSpamRatePct`/`worstCampaignFeedbackLoopId`)
+   * carrega esse sinal. Só informativo (auditoria/log/CLI), nunca entra em
+   * `resolveSpamSignal` — não existe hoje um guard de cobertura mínima
+   * equivalente ao `POSTMASTER_MIN_COVERAGE_RATIO` do domínio pro pico por
+   * campanha (fora de escopo do #4780, ver issue). `undefined` quando não há
+   * campanha atribuível na janela ou em entries pré-#4780.
+   */
+  worstCampaignDaysWithData?: number;
 }
 
 /**

@@ -125,7 +125,7 @@ import {
   computeWeekPlan,
   type Semaphore,
 } from "../workers/brevo-dashboard/src/weekly-plan.ts";
-import { resolveSpamSignal } from "../workers/brevo-dashboard/src/thresholds.ts"; // #4063
+import { resolveSpamSignal, type SpamSignal } from "../workers/brevo-dashboard/src/thresholds.ts"; // #4063
 import type { BrevoCampaign } from "../workers/brevo-dashboard/src/types.ts";
 import type { PostmasterSpamEntry } from "./lib/dashboard-kv-types.ts"; // #4131 finding 4
 
@@ -243,7 +243,15 @@ export async function fetchPostmasterSpamEntry(
   fetchFn: typeof fetch = fetch,
 ): Promise<Pick<
   PostmasterSpamEntry,
-  "spamRatePct" | "recordedAt" | "producedBy" | "date" | "daysWithData" | "daysProbed" | "worstCampaignSpamRatePct"
+  | "spamRatePct"
+  | "recordedAt"
+  | "producedBy"
+  | "date"
+  | "daysWithData"
+  | "daysProbed"
+  | "worstCampaignSpamRatePct"
+  | "worstCampaignFeedbackLoopId"
+  | "worstCampaignDaysWithData"
 > | null> {
   try {
     const res = await fetchFn(`${dashboardUrl}/api/postmaster-spam`);
@@ -270,6 +278,12 @@ export async function fetchPostmasterSpamEntry(
     // repassar aqui, o CLI de agendamento da ramp nunca veria o pico por
     // campanha e `resolveSpamSignal` cairia sempre no fallback de domínio
     // pra este caminho, mesmo com o KV gravado corretamente.
+    //
+    // #4780: mesma classe de risco pra `worstCampaignFeedbackLoopId`/
+    // `worstCampaignDaysWithData` — sem repassar aqui, o CLI nunca teria como
+    // imprimir QUAL campanha decidiu o semáforo nem a cobertura do pico
+    // (achado item 3 do fleet review pré-merge do #4779), mesmo com o KV
+    // gravado corretamente pelo produtor.
     return {
       date: typeof e.date === "string" ? e.date : "",
       spamRatePct: e.spamRatePct,
@@ -280,6 +294,14 @@ export async function fetchPostmasterSpamEntry(
       worstCampaignSpamRatePct:
         typeof e.worstCampaignSpamRatePct === "number" && Number.isFinite(e.worstCampaignSpamRatePct)
           ? e.worstCampaignSpamRatePct
+          : undefined,
+      worstCampaignFeedbackLoopId:
+        typeof e.worstCampaignFeedbackLoopId === "string" && e.worstCampaignFeedbackLoopId
+          ? e.worstCampaignFeedbackLoopId
+          : undefined,
+      worstCampaignDaysWithData:
+        typeof e.worstCampaignDaysWithData === "number" && Number.isFinite(e.worstCampaignDaysWithData)
+          ? e.worstCampaignDaysWithData
           : undefined,
     };
   } catch {
@@ -306,7 +328,15 @@ export function deriveRampVolumes(
   now: Date = new Date(),
   spamEntry?: Pick<
     PostmasterSpamEntry,
-    "spamRatePct" | "recordedAt" | "producedBy" | "date" | "daysWithData" | "daysProbed" | "worstCampaignSpamRatePct"
+    | "spamRatePct"
+    | "recordedAt"
+    | "producedBy"
+    | "date"
+    | "daysWithData"
+    | "daysProbed"
+    | "worstCampaignSpamRatePct"
+    | "worstCampaignFeedbackLoopId"
+    | "worstCampaignDaysWithData"
   > | null,
 ): RampVolumeResult {
   const allSent = campaigns.filter((c) => c.status === "sent" && !!c.sentDate);
@@ -335,6 +365,76 @@ export function deriveRampVolumes(
 export type AutoRampVolumeResult =
   | { ok: true; plan: RampVolumePlan; stale?: DashboardStaleInfo }
   | { ok: false; reason: string; stale?: DashboardStaleInfo };
+
+/**
+ * #4780 item 2 (achado do fleet review pré-merge do #4779): antes desta
+ * função, o CLI sempre imprimia `spamEntry.spamRatePct` (a média de
+ * DOMÍNIO), mesmo quando `resolveSpamSignal` usa o PICO por campanha
+ * (`Math.max`, #4705) pra decidir o semáforo — um editor via
+ * "leitura Postmaster: 0,08%" ao lado de "semáforo=red" sem conseguir
+ * entender pela própria saída da ferramenta por que o breaker disparou.
+ *
+ * Pura/testável: recebe o `spamEntry` cru E o `spamSignal` já resolvido
+ * (`resolveSpamSignal(spamEntry, now)`, chamado 1x pelo caller e reusado —
+ * não recalcula aqui) — imprime o valor EFETIVO (`spamSignal.ratePct`, o
+ * `Math.max` já resolvido) + a ORIGEM (domínio vs. campanha
+ * `{feedback_loop_id}`, com a cobertura em dias quando disponível, #4780
+ * item 3), espelhando o mesmo número que já governa a aba Rampa do
+ * dashboard (`weekly-plan.ts` também renderiza `spamSignal.ratePct`, nunca
+ * `entry.spamRatePct` cru).
+ *
+ * Origem "campanha" quando `worstCampaignSpamRatePct` é finito E é o valor
+ * que o `Math.max` de `resolveSpamSignal` escolheu (mesma comparação de lá,
+ * não duplicada — só verifica qual dos 2 números bateu o `ratePct` já
+ * resolvido, para não divergir se `resolveSpamSignal` mudar o critério).
+ *
+ * `spamEntry` ausente OU `spamSignal.source !== "postmaster"` (stale,
+ * malformada, baixa cobertura — ver `SpamSignalIndeterminateReason`) cai no
+ * fallback "indeterminate": com entry presente, ainda mostra os números
+ * crus (auditoria) mas deixa claro que eles NÃO estão governando o
+ * semáforo agora; sem entry nenhuma, mantém a mensagem "ausente/indisponível"
+ * de antes (comportamento preservado).
+ */
+export function describeSpamSignalLine(
+  spamEntry:
+    | Pick<
+        PostmasterSpamEntry,
+        | "spamRatePct"
+        | "recordedAt"
+        | "producedBy"
+        | "worstCampaignSpamRatePct"
+        | "worstCampaignFeedbackLoopId"
+        | "worstCampaignDaysWithData"
+      >
+    | null
+    | undefined,
+  spamSignal: SpamSignal,
+): string {
+  if (!spamEntry) {
+    return `   leitura Postmaster: ausente/indisponível — semáforo de spam fica "indeterminate" (nunca verde às cegas).`;
+  }
+  const spamSourceLabel = spamEntry.producedBy === "auto" ? " (auto)" : spamEntry.producedBy === "manual" ? " (manual)" : "";
+  if (spamSignal.source !== "postmaster" || spamSignal.ratePct === null) {
+    return (
+      `   leitura Postmaster${spamSourceLabel}: ${spamEntry.spamRatePct}% (registrada ${spamEntry.recordedAt}) — ` +
+      `indeterminate p/ o semáforo${spamSignal.reason ? ` (${spamSignal.reason})` : ""}, nunca verde às cegas.`
+    );
+  }
+  const worst = spamEntry.worstCampaignSpamRatePct;
+  const usesCampaignPeak =
+    typeof worst === "number" && Number.isFinite(worst) && worst >= spamEntry.spamRatePct && spamSignal.ratePct === worst;
+  const coverageSuffix =
+    usesCampaignPeak && typeof spamEntry.worstCampaignDaysWithData === "number"
+      ? ` (${spamEntry.worstCampaignDaysWithData} dia(s) com dado)`
+      : "";
+  const originLabel = usesCampaignPeak
+    ? `pico da campanha ${spamEntry.worstCampaignFeedbackLoopId ?? "?"}${coverageSuffix}`
+    : "média de domínio";
+  return (
+    `   leitura Postmaster${spamSourceLabel}: ${spamSignal.ratePct.toFixed(3)}% — origem: ${originLabel} ` +
+    `(registrada ${spamEntry.recordedAt})`
+  );
+}
 
 /**
  * #4612: extrai o bloco "sem --volumes explícito" de dentro de `main()` pra
@@ -377,13 +477,16 @@ export async function resolveAutoRampVolumes(
   // que injetam `fetchImpl` pra evitar rede real ainda disparariam uma
   // chamada de verdade aqui.
   const spamEntry = await fetchPostmasterSpamEntry(dashboardUrl, fetchImpl);
-  const spamSourceLabel = spamEntry?.producedBy === "auto" ? " (auto)" : spamEntry?.producedBy === "manual" ? " (manual)" : "";
-  console.error(
-    spamEntry
-      ? `   leitura Postmaster${spamSourceLabel}: ${spamEntry.spamRatePct}% (registrada ${spamEntry.recordedAt})`
-      : `   leitura Postmaster: ausente/indisponível — semáforo de spam fica "indeterminate" (nunca verde às cegas).`,
-  );
-  const result = deriveRampVolumes(campaigns, undefined, spamEntry);
+  // #4780 item 2: imprime o valor EFETIVO (Math.max já resolvido) + a
+  // origem, não a média de domínio crua — ver `describeSpamSignalLine`.
+  // `now` computado 1x e reusado tanto pra resolver o sinal impresso quanto
+  // pra `deriveRampVolumes` (antes recebia `undefined` e criava seu próprio
+  // `new Date()` — 2 timestamps distintos pra decisões que devem ser
+  // consistentes entre si na mesma invocação).
+  const now = new Date();
+  const spamSignal = resolveSpamSignal(spamEntry ?? null, now);
+  console.error(describeSpamSignalLine(spamEntry, spamSignal));
+  const result = deriveRampVolumes(campaigns, now, spamEntry);
   return stale ? { ...result, stale } : result;
 }
 

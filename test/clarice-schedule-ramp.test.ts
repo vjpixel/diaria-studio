@@ -28,9 +28,11 @@ import {
   runScheduleLoop,
   fetchPostmasterSpamEntry,
   extractDashboardStaleInfo,
+  describeSpamSignalLine,
   type CampaignEntryLike,
 } from "../scripts/clarice-schedule-ramp.ts";
 import { EDITOR_COPY_EMAIL } from "../scripts/lib/editor-copy.ts";
+import { resolveSpamSignal } from "../workers/brevo-dashboard/src/thresholds.ts";
 import type { BrevoCampaign } from "../workers/brevo-dashboard/src/types.ts";
 
 /**
@@ -447,6 +449,8 @@ describe("fetchPostmasterSpamEntry (#4131 finding 4 — leitura manual do Postma
       daysWithData: undefined,
       daysProbed: undefined,
       worstCampaignSpamRatePct: undefined,
+      worstCampaignFeedbackLoopId: undefined,
+      worstCampaignDaysWithData: undefined,
     });
   });
 
@@ -528,6 +532,51 @@ describe("fetchPostmasterSpamEntry (#4131 finding 4 — leitura manual do Postma
       }),
     );
     assert.equal(corrupted?.worstCampaignSpamRatePct, undefined);
+  });
+
+  // #4780 item 3: mesma classe de risco do #4705 acima — sem repassar estes
+  // 2 campos aqui, o CLI de agendamento da ramp nunca teria como imprimir
+  // QUAL campanha decidiu o semáforo nem a cobertura do pico.
+  it("entry com worstCampaignFeedbackLoopId/worstCampaignDaysWithData preserva os 2 campos (#4780)", async () => {
+    const entry = await fetchPostmasterSpamEntry(
+      "https://x",
+      fakeFetch(200, {
+        entry: {
+          date: "2026-08-03",
+          spamRatePct: 0.08,
+          recordedAt: "2026-08-06T09:00:00.000Z",
+          worstCampaignSpamRatePct: 1.39,
+          worstCampaignFeedbackLoopId: "11130585_107",
+          worstCampaignDaysWithData: 3,
+        },
+      }),
+    );
+    assert.equal(entry?.worstCampaignFeedbackLoopId, "11130585_107");
+    assert.equal(entry?.worstCampaignDaysWithData, 3);
+  });
+
+  it("worstCampaignFeedbackLoopId/worstCampaignDaysWithData ausentes ou corrompidos viram undefined, nunca inferidos (#4780)", async () => {
+    const missing = await fetchPostmasterSpamEntry(
+      "https://x",
+      fakeFetch(200, { entry: { date: "2026-08-03", spamRatePct: 0.08, recordedAt: "2026-08-06T09:00:00.000Z" } }),
+    );
+    assert.equal(missing?.worstCampaignFeedbackLoopId, undefined);
+    assert.equal(missing?.worstCampaignDaysWithData, undefined);
+
+    const corrupted = await fetchPostmasterSpamEntry(
+      "https://x",
+      fakeFetch(200, {
+        entry: {
+          date: "2026-08-03",
+          spamRatePct: 0.08,
+          recordedAt: "2026-08-06T09:00:00.000Z",
+          worstCampaignFeedbackLoopId: 107,
+          worstCampaignDaysWithData: "três",
+        },
+      }),
+    );
+    assert.equal(corrupted?.worstCampaignFeedbackLoopId, undefined);
+    assert.equal(corrupted?.worstCampaignDaysWithData, undefined);
   });
 
   it("entry null (sem leitura registrada) → null", async () => {
@@ -905,4 +954,73 @@ describe("runScheduleLoop (#3652 bug 2 — persistência per-iteração, não em
       assert.equal(shouldSkipImport(w1), true, "shouldSkipImport deveria reconhecer o status escrito por runScheduleLoop");
     },
   );
+});
+
+// -----------------------------------------------------------------------------
+// describeSpamSignalLine (#4780 item 2 — achado do fleet review pré-merge do
+// #4779: o CLI imprimia a média de domínio mesmo quando o pico por campanha
+// decidia o semáforo)
+// -----------------------------------------------------------------------------
+
+describe("describeSpamSignalLine (#4780)", () => {
+  const NOW = new Date("2026-08-06T12:00:00.000Z");
+
+  it("spamEntry ausente → mensagem 'ausente/indisponível' (comportamento preservado)", () => {
+    const signal = resolveSpamSignal(null, NOW);
+    const line = describeSpamSignalLine(null, signal);
+    assert.match(line, /ausente\/indisponível/);
+  });
+
+  it("média de domínio governa (sem pico por campanha) → imprime o valor da média com origem 'domínio'", () => {
+    const entry = { spamRatePct: 0.02, recordedAt: "2026-08-06T09:00:00.000Z", producedBy: "auto" as const };
+    const signal = resolveSpamSignal({ ...entry, date: "2026-08-06" }, NOW);
+    const line = describeSpamSignalLine(entry, signal);
+    assert.match(line, /0\.020%/);
+    assert.match(line, /origem: média de domínio/);
+    assert.doesNotMatch(line, /pico da campanha/);
+  });
+
+  // Cenário real da issue #4780 (item 2): a média de domínio sozinha
+  // resolveria "verde"/número baixo, mas o pico por campanha é o que
+  // efetivamente governa o semáforo — a linha impressa precisa refletir ISSO,
+  // não a média.
+  it("pico por campanha governa (Math.max) → imprime o valor efetivo + origem 'campanha {feedback_loop_id}' + cobertura", () => {
+    const entry = {
+      spamRatePct: 0.02, // média de domínio: baixa
+      recordedAt: "2026-08-06T09:00:00.000Z",
+      producedBy: "auto" as const,
+      worstCampaignSpamRatePct: 1.39, // pico de campanha: bem mais alto
+      worstCampaignFeedbackLoopId: "11130585_107",
+      worstCampaignDaysWithData: 1,
+    };
+    const signal = resolveSpamSignal({ ...entry, date: "2026-08-06" }, NOW);
+    const line = describeSpamSignalLine(entry, signal);
+    assert.match(line, /1\.390%/, "deve imprimir o valor EFETIVO (pico), não a média de domínio (0.02%)");
+    assert.doesNotMatch(line, /0\.020%/);
+    assert.match(line, /origem: pico da campanha 11130585_107/);
+    assert.match(line, /\(1 dia\(s\) com dado\)/, "cobertura do pico (#4780 item 3) deve aparecer na linha");
+  });
+
+  it("domínio pior que o pico por campanha → Math.max escolhe o domínio, origem continua 'domínio' (não mascara o pior sinal)", () => {
+    const entry = {
+      spamRatePct: 0.5, // domínio pior
+      recordedAt: "2026-08-06T09:00:00.000Z",
+      producedBy: "auto" as const,
+      worstCampaignSpamRatePct: 0.1, // campanha melhor
+      worstCampaignFeedbackLoopId: "11130585_107",
+      worstCampaignDaysWithData: 5,
+    };
+    const signal = resolveSpamSignal({ ...entry, date: "2026-08-06" }, NOW);
+    const line = describeSpamSignalLine(entry, signal);
+    assert.match(line, /0\.500%/);
+    assert.match(line, /origem: média de domínio/);
+  });
+
+  it("entry presente mas indeterminate (stale) → mostra o valor cru e sinaliza que não governa o semáforo agora", () => {
+    const entry = { spamRatePct: 0.02, recordedAt: "2026-07-01T00:00:00.000Z", producedBy: "auto" as const }; // recordedAt bem velho
+    const signal = resolveSpamSignal({ ...entry, date: "2026-07-01" }, NOW);
+    const line = describeSpamSignalLine(entry, signal);
+    assert.match(line, /indeterminate/);
+    assert.match(line, /0\.02%/);
+  });
 });
