@@ -18,6 +18,7 @@ import {
   formatMonthYear,
   renderGeoByline,
   renderGeoFaqSection,
+  renderGeoFaqStyles,
   renderGeoJsonLd,
   type GeoFaqItem,
 } from "../scripts/lib/shared/geo-faq.ts";
@@ -72,6 +73,15 @@ describe("renderGeoFaqSection", () => {
     ]);
     assert.match(html, /<a href="https:\/\/diar\.ia\.br\/p\/x">a fonte<\/a>/);
     assert.doesNotMatch(html, /\[a fonte\]/);
+  });
+});
+
+describe("renderGeoFaqStyles (#4793 — links dentro de .geo-faq-item p ficavam pretos)", () => {
+  it("estiliza <a> dentro de .geo-faq-item p com a mesma cor teal de .hub-section p a", () => {
+    const css = renderGeoFaqStyles();
+    assert.match(css, /\.geo-faq-item p a \{[^}]*color: var\(--teal\)/);
+    assert.match(css, /\.geo-faq-item p a \{[^}]*text-decoration: underline/);
+    assert.match(css, /\.geo-faq-item p a:hover \{[^}]*text-decoration-color: var\(--teal\)/);
   });
 });
 
