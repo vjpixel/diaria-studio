@@ -37,3 +37,9 @@ review-result-*.json
 # Sem esta linha, qualquer `git add -A` (de sessão paralela ou subagente) o
 # arrasta pra dentro do repo, como já aconteceu com settings.local.json (#2824).
 nimbalyst-local/
+
+# #4805: output default de `scripts/setup-systemd-timers.ts` — units systemd
+# gerados localmente (equivalente Linux dos setup-*-schedule.ps1 do Windows,
+# que também não são commitados enquanto ARMADOS na máquina). Regenerável a
+# qualquer momento a partir de scripts/lib/scheduled-tasks.ts.
+.systemd-units/
