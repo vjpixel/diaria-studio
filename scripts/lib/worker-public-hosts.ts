@@ -28,6 +28,22 @@ export interface DiscoveredPublicHost {
 }
 
 /**
+ * Casa dispatch de rota REAL para `/robots.txt` em código TS — não a
+ * substring aparecendo solta num comentário ou string qualquer (#4782
+ * achado 1: a versão anterior desta checagem usava `.includes("/robots.txt")`,
+ * que um `// TODO: add /robots.txt` sem nenhuma rota de verdade também
+ * casaria). Cobre o idioma usado (`pathname === "/robots.txt"` / `path ===
+ * "/robots.txt"`) e o antecipado (`case "/robots.txt":`, ainda sem uso real
+ * nos Workers deste repo — todos os 3 dinâmicos hoje despacham via `===`).
+ */
+const ROBOTS_ROUTE_DISPATCH_RE = /(?:===|case)\s*["']\/robots\.txt["']/;
+
+/** `true` se `tsSource` contém um dispatch de rota real pra `/robots.txt`. */
+export function hasRobotsRouteDispatch(tsSource: string): boolean {
+  return ROBOTS_ROUTE_DISPATCH_RE.test(tsSource);
+}
+
+/**
  * Extrai todos os `pattern = "..."` de blocos `[[routes]]` que também têm
  * `custom_domain = true` no MESMO bloco (regex sobre texto, não um parser
  * TOML completo — mesmo racional de simplicidade de `parseWranglerTomlName`
@@ -40,7 +56,15 @@ export interface DiscoveredPublicHost {
  */
 export function parseWranglerTomlCustomDomainHosts(tomlContent: string): string[] {
   const hosts: string[] = [];
-  const blocks = tomlContent.split(/(?=^\s*\[\[routes\]\])/m).filter((b) => /^\s*\[\[routes\]\]/.test(b));
+  // Corta cada bloco no próximo header `[` de QUALQUER tipo (`[[routes]]`,
+  // `[vars]`, `[[kv_namespaces]]`, ...), não só no próximo `[[routes]]`
+  // (#4782 achado 3). Cortar só em `[[routes]]` deixava texto de uma seção
+  // não relacionada (comentário, `[vars]`, etc.) vazando pro bloco anterior
+  // — sem reprodução real hoje porque as rotas SEM `custom_domain = true`
+  // nunca antecedem uma seção com essas palavras, mas é o mesmo tipo de
+  // fronteira frágil de parser-sobre-texto que este módulo já tenta evitar
+  // em `parseWranglerTomlName` (`scripts/lib/worker-drift-check.ts`).
+  const blocks = tomlContent.split(/(?=^\s*\[)/m).filter((b) => /^\s*\[\[routes\]\]/.test(b));
   for (const block of blocks) {
     if (!/custom_domain\s*=\s*true/.test(block)) continue;
     const m = block.match(/pattern\s*=\s*"([^"]+)"/);
@@ -70,4 +94,23 @@ export function discoverWorkerPublicHosts(workersDir: string): DiscoveredPublicH
   }
 
   return discovered;
+}
+
+/**
+ * Varre `dir` recursivamente procurando algum `.ts` com dispatch de rota
+ * real pra `/robots.txt` (`hasRobotsRouteDispatch`, achado #4782 item 1) —
+ * usado pelo guard quando o Worker não é static-assets-only (sem
+ * `public/robots.txt`, precisa de rota no script).
+ */
+export function anyTsFileHasRobotsRouteDispatch(dir: string): boolean {
+  if (!existsSync(dir)) return false;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (anyTsFileHasRobotsRouteDispatch(full)) return true;
+    } else if (entry.isFile() && entry.name.endsWith(".ts")) {
+      if (hasRobotsRouteDispatch(readFileSync(full, "utf8"))) return true;
+    }
+  }
+  return false;
 }
