@@ -28,6 +28,8 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { renderHubPage, type HubContent } from "./lib/shared/hub-page.ts";
 import { getAnthropicClaudeHub } from "./lib/hubs/anthropic-claude.ts";
+import { getOpenaiChatgptHub } from "./lib/hubs/openai-chatgpt.ts";
+import { getGoogleGeminiHub } from "./lib/hubs/google-gemini.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -40,6 +42,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  * virar 404 em produção (achado do fleet review). */
 export const HUB_LOADERS: Record<string, () => HubContent> = {
   "anthropic-claude": getAnthropicClaudeHub,
+  "openai-chatgpt": getOpenaiChatgptHub,
+  "google-gemini": getGoogleGeminiHub,
 };
 
 function outPathFor(slug: string): string {
@@ -54,7 +58,7 @@ function constNameFor(slug: string): string {
 export function renderGeneratedModule(slug: string, html: string): string {
   const constName = constNameFor(slug);
   return `/**
- * ${slug}.generated.ts (#4558 Parte A) — GERADO, NÃO EDITAR À MÃO.
+ * ${slug}.generated.ts (#4558) — GERADO, NÃO EDITAR À MÃO.
  *
  * Fonte: scripts/lib/hubs/${slug}.ts → scripts/build-hub-page.ts.
  * HTML completo do hub temático "${slug}", servido pelo Worker \`arquivo\`
