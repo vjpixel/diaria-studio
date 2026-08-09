@@ -37,6 +37,7 @@ import { getArg, parseArgs } from "../cli-args.ts";
 import {
   isValidCycle,
   clariceCycleDir,
+  clariceSegmentsDir,
   cycleHasClariceActivity,
   listClariceCycleDirs,
 } from "../clarice-paths.ts";
@@ -297,10 +298,14 @@ export function hasEiaGabarito(cycle: string): boolean {
  * mesmo ciclo compartilham o mesmo assunto vencedor, salvo blocos-célula
  * A/B/C ainda não resolvidos). `undefined` se o arquivo não existir, estiver
  * vazio, ou nenhuma entrada tiver `subject`.
+ *
+ * `baseDir` opcional (default = `CLARICE_BASE` real) — só pra teste apontar
+ * pra um tmpdir isolado, mesmo padrão de `clariceCycleDir(cycle, baseDir?)`
+ * (#4207).
  */
-export function resolveSubjectFromCampaignsSummary(cycle: string): string | undefined {
+export function resolveSubjectFromCampaignsSummary(cycle: string, baseDir?: string): string | undefined {
   try {
-    const path = resolve(clariceCycleDir(cycle), "sends", "cells", "campaigns-summary.json");
+    const path = resolve(clariceCycleDir(cycle, baseDir), "sends", "cells", "campaigns-summary.json");
     if (!existsSync(path)) return undefined;
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Array<{ subject?: string }>;
     if (!Array.isArray(parsed)) return undefined;
@@ -322,6 +327,66 @@ export function resolveSubjectFromCampaignsSummary(cycle: string): string | unde
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Resolve o assunto vencedor a partir de `{ciclo}/segments/group-campaigns.json`
+ * (escrito por `clarice-schedule-group.ts --create`, ver `CampaignEntry.subject`
+ * em `clarice-schedule-group.ts`) — o fluxo `--group` NUNCA escreve em
+ * `campaigns-summary.json` (#4783, achado ao vivo 260808: ciclo `2607-08`
+ * montado inteiro via `--group` abortava toda rodada de `/diaria-clarice-novos`
+ * pedindo `--subject` explícito).
+ *
+ * Conta campanhas por assunto e exige **pluralidade estrita** (o vencedor
+ * precisa ter contagem ESTRITAMENTE MAIOR que o 2º colocado) — decisão de
+ * design deliberada, não "mais frequente" ingênuo: durante a fase balanceada
+ * de um teste A/B/C as células empatam (ex: 5 campanhas por variante em
+ * 2607-08 d1–d5) e nesse momento ninguém — automação inclusa — deveria
+ * decidir sozinho qual "venceu". Só depois que uma variante abre vantagem
+ * clara (rollout solo, ex: A ficou 8×5×5 em d6–d8) é que resolve
+ * automaticamente. Sem pluralidade estrita (empate, ou nenhuma entrada com
+ * `subject`) -> `undefined`, mesmo resultado de "assunto desconhecido" que
+ * o caller já trata (mantém o abort do #4621 pedindo `--subject`).
+ *
+ * `baseDir` opcional — ver docstring de `resolveSubjectFromCampaignsSummary`.
+ */
+export function resolveSubjectFromGroupCampaigns(cycle: string, baseDir?: string): string | undefined {
+  try {
+    const path = resolve(clariceSegmentsDir(cycle, baseDir), "group-campaigns.json");
+    if (!existsSync(path)) return undefined;
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Array<{ subject?: string }>;
+    if (!Array.isArray(parsed)) return undefined;
+    const counts = new Map<string, number>();
+    for (const c of parsed) {
+      const s = (c.subject ?? "").trim();
+      if (!s) continue;
+      counts.set(s, (counts.get(s) ?? 0) + 1);
+    }
+    const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    if (sorted.length === 0) return undefined;
+    const [bestSubject, bestCount] = sorted[0];
+    const secondCount = sorted.length > 1 ? sorted[1][1] : 0;
+    if (bestCount <= secondCount) return undefined; // empate (sem pluralidade estrita) — não resolve
+    return bestSubject;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Resolve o assunto do ciclo com a PRECEDÊNCIA correta entre os dois fluxos
+ * de envio (#4783): `campaigns-summary.json` (pipeline canônico multi-bloco,
+ * `clarice-schedule-sends.ts --create`) vence quando existir e tiver
+ * `subject` — o fallback pra `group-campaigns.json` (fluxo `--group`,
+ * `clarice-schedule-group.ts --create`) só entra quando o primeiro está
+ * ausente/incompleto. Único ponto usado por `resolveLatestMonthlyCycleDeps`
+ * (produção) — mantém as duas funções de leitura acima testáveis/chamáveis
+ * isoladamente.
+ *
+ * `baseDir` opcional — ver docstring de `resolveSubjectFromCampaignsSummary`.
+ */
+export function resolveSubjectForCycle(cycle: string, baseDir?: string): string | undefined {
+  return resolveSubjectFromCampaignsSummary(cycle, baseDir) ?? resolveSubjectFromGroupCampaigns(cycle, baseDir);
 }
 
 export interface MonthlyCycleReadiness {
@@ -378,7 +443,7 @@ export function resolveLatestMonthlyCycle(
     const reasons: string[] = [];
     if (!hasPreview) reasons.push("cloudflare-preview.html ausente/vazio/sem {{ unsubscribe }}");
     if (!hasEia) reasons.push("gabarito É IA? não gravado");
-    if (!subject) reasons.push("assunto desconhecido (sem --subject nem campanha prévia em campaigns-summary.json)");
+    if (!subject) reasons.push("assunto desconhecido (sem --subject, sem campanha prévia em campaigns-summary.json, e group-campaigns.json sem vencedor por pluralidade estrita)");
     const ready = hasPreview && hasEia && !!subject;
     checked.push({ cycle, ready, hasPreview, hasEiaGabarito: hasEia, subject, reasons });
     if (ready) {
@@ -403,7 +468,7 @@ export function resolveLatestMonthlyCycleDeps(): ResolveLatestMonthlyCycleDeps {
     },
     hasPreviewWithUnsubscribe: hasReadyPreviewHtml,
     hasEiaGabarito: hasEiaGabarito,
-    resolveSubject: resolveSubjectFromCampaignsSummary,
+    resolveSubject: resolveSubjectForCycle,
   };
 }
 
