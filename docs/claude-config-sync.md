@@ -25,7 +25,7 @@ estado/cache por máquina (`projects/`, `file-history/`, `mcp/`, `plugins/`,
 
 **`skills/humanizador`** não entra no `claude-config` — já é um repo git
 próprio (`github.com/vjpixel/humanizador`); o bootstrap clona direto, como
-já documentado no passo 3a do Setup acima.
+já documentado no passo 3a do Setup do `CLAUDE.md` deste repo.
 
 **`commands/` (day-plan.md, day-wrap.md, sprint-*.md) também não entra** —
 correção feita 260809 depois de um seed inicial ter vendorado esses
@@ -33,10 +33,12 @@ arquivos por engano. Eles não são config estática: são a **saída do
 instalador** de [`github.com/vjpixel/re-plan`](https://github.com/vjpixel/re-plan)
 (`npm run install-skills`, escreve direto em `~/.claude/commands/`; `npm
 install` arma git hooks que reinstalam sozinhos a cada `git pull` do
-re-plan). O bootstrap clona `re-plan` em `~/Projects/Re-plan` (mesmo padrão
-do `humanizador`) e roda o instalador dele — vendorar os `.md` aqui os
-deixaria estáticos pra sempre, o oposto do que o mecanismo do re-plan já
-garante sozinho.
+re-plan). O bootstrap clona o repo `re-plan` (destino `~/Projects/Re-plan`,
+não o mesmo diretório do `humanizador`) e roda o instalador dele — mesmo
+**princípio** do `humanizador` (clonar o repo real em vez de vendorar a
+saída dele), não o mesmo path. Vendorar os `.md` aqui os deixaria
+estáticos pra sempre, o oposto do que o mecanismo do re-plan já garante
+sozinho.
 
 **`projects/{slug}/memory/`** também fica de fora, de propósito, apesar de
 ser o que mais dói perder entre máquinas (é o único que muda dentro de
@@ -76,7 +78,7 @@ re-sync manual até o Modo Desenvolvedor ser ligado.
 sincronizado, mas os arquivos do plugin não — rodar
 `/plugin install pr-review-toolkit@claude-plugins-official` +
 `/reload-plugins` continua necessário em máquina nova (mesma pegadinha do
-item 3b do Setup acima).
+item 3b do Setup do `CLAUDE.md` deste repo).
 
 ## Estado (260809)
 
