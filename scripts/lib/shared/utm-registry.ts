@@ -380,7 +380,7 @@ export const HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM = {
 } as const;
 
 /** Mesmo padrão de `HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM` acima, pro 2º hub
- * temático publicado (#4558 Parte A, leva OpenAI/Google, `scripts/lib/hubs/openai-chatgpt.ts`). */
+ * temático publicado (#4558, `scripts/lib/hubs/openai-chatgpt.ts`). */
 export const HUB_OPENAI_CHATGPT_FOOTER_NAV_UTM = {
   source: "hub-openai-chatgpt",
   medium: "footer-nav",

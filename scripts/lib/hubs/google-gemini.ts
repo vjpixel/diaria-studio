@@ -1,9 +1,9 @@
 /**
- * google-gemini.ts (#4558 Parte B)
+ * google-gemini.ts (#4558, 3º hub temático publicado)
  *
- * Conteúdo editorial do 2º hub temático — Google/Gemini. Segue o mesmo
- * template estrutural e de qualidade de `anthropic-claude.ts` (#4558 Parte
- * A): mesmo shape de `HubContent`, mesma `countMatching` com normalização
+ * Conteúdo editorial do 3º hub temático — Google/Gemini. Segue o mesmo
+ * template estrutural e de qualidade de `anthropic-claude.ts` (#4558, 1º hub
+ * temático): mesmo shape de `HubContent`, mesma `countMatching` com normalização
  * NFC, mesma função de FAQ pura recebendo `sources` por parâmetro (nunca lê
  * `SOURCES` do módulo direto dentro da função — achado do fleet review
  * original, replicado aqui de propósito).

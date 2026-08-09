@@ -13,11 +13,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { renderGeneratedModule } from "../scripts/build-hub-page.ts";
+import { renderGeneratedModule, HUB_LOADERS } from "../scripts/build-hub-page.ts";
 import { renderHubPage } from "../scripts/lib/shared/hub-page.ts";
 import { buildAnthropicClaudeFaq, getAnthropicClaudeHub } from "../scripts/lib/hubs/anthropic-claude.ts";
+import { buildOpenaiChatgptFaq } from "../scripts/lib/hubs/openai-chatgpt.ts";
 import { knownUtmSources, HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM } from "../scripts/lib/shared/utm-registry.ts";
 import sourcesRaw from "../scripts/lib/hubs/anthropic-claude-sources.generated.json" with { type: "json" };
+import openaiChatgptSourcesRaw from "../scripts/lib/hubs/openai-chatgpt-sources.generated.json" with { type: "json" };
 
 describe("renderGeneratedModule (#4558 Parte A)", () => {
   it("emite um módulo TS válido com a constante esperada", () => {
@@ -180,5 +182,102 @@ describe("UTM do rodapé do hub está catalogado em UTM_EMITTERS (#4558 Parte A,
       knownUtmSources().includes((utmSource ?? "").toLowerCase()),
       `utm_source="${utmSource}" emitido pelo render mas ausente de UTM_EMITTERS`,
     );
+  });
+});
+
+// Cobertura genérica pra TODO hub em HUB_LOADERS (#4790 achado 3) — os blocos
+// acima protegem só anthropic-claude (fixture sintético + regression NFD/NFC
+// específicos daquele hub, mantidos como estão). openai-chatgpt e
+// google-gemini (PR #4790) entraram SEM nenhum teste, e foi exatamente essa
+// lacuna que deixou passar o achado #1 daquela PR (gpt5x contando uma
+// manchete de incidente de segurança como lançamento, sem nada flagrando a
+// divergência entre o número computado e a prosa transcrita à mão). Itera
+// sobre `HUB_LOADERS` — um hub novo ganha esta cobertura automaticamente.
+for (const slug of Object.keys(HUB_LOADERS)) {
+  describe(`cobertura mínima do hub — ${slug} (#4790 achado 3)`, () => {
+    const hub = HUB_LOADERS[slug]();
+
+    it("FAQ tem entre 6 e 10 itens (issue #4558 item 3)", () => {
+      assert.ok(hub.faq.length >= 6 && hub.faq.length <= 10, `esperado 6-10, veio ${hub.faq.length}`);
+    });
+
+    it("consistência: total de edições/manchetes que o FAQ #1 computa bate com o que o INTRO afirma", () => {
+      // Todo `buildXxxFaq` começa com a mesma pergunta computada
+      // ("Em quantas edições..."), respondida no formato "N edições da
+      // diar.ia.br, somando M manchetes" — e todo INTRO afirma os mesmos 2
+      // números à mão, no formato "N edições da diar.ia.br, M manchetes ao
+      // todo". Isto é o "nada automático religando os dois" que faltava:
+      // se `{slug}-sources.generated.json` for regenerado e a prosa do
+      // INTRO não acompanhar, este teste quebra.
+      const faqMatch = /(\d+) edições da diar\.ia\.br, somando (\d+) manchetes/.exec(hub.faq[0]?.answer ?? "");
+      assert.ok(faqMatch, `FAQ #1 do hub "${slug}" não tem o formato esperado de contagem`);
+      const introMatch = /(\d+) edições da diar\.ia\.br, (\d+) manchetes ao todo/.exec(hub.introParagraph);
+      assert.ok(introMatch, `INTRO do hub "${slug}" não tem o formato esperado de contagem`);
+      assert.equal(
+        faqMatch![1],
+        introMatch![1],
+        `hub "${slug}": FAQ computa ${faqMatch![1]} edições, INTRO afirma ${introMatch![1]}`,
+      );
+      assert.equal(
+        faqMatch![2],
+        introMatch![2],
+        `hub "${slug}": FAQ computa ${faqMatch![2]} manchetes, INTRO afirma ${introMatch![2]}`,
+      );
+    });
+
+    it("o link diar.ia.br do rodapé emite o UTM de hub.footerNavUtm, catalogado em UTM_EMITTERS", () => {
+      const html = renderHubPage(hub);
+      const m = /href="https:\/\/diar\.ia\.br\/?\?(utm_source=[^"]+)"/.exec(html);
+      assert.ok(m, `link 'diar.ia.br' do rodapé sem UTM na URL pro hub "${slug}"`);
+      const params = new URLSearchParams(m![1].replace(/&amp;/g, "&"));
+      assert.equal(params.get("utm_source"), hub.footerNavUtm.source);
+      assert.equal(params.get("utm_medium"), hub.footerNavUtm.medium);
+      assert.ok(
+        knownUtmSources().includes((params.get("utm_source") ?? "").toLowerCase()),
+        `utm_source="${params.get("utm_source")}" emitido pelo render mas ausente de UTM_EMITTERS`,
+      );
+    });
+  });
+}
+
+describe("buildOpenaiChatgptFaq (#4790 achado 1) — regression: manchete de incidente não é lançamento", () => {
+  it("contra o dataset real: gpt5x bate 6 (os releases enumerados no parêntese), não 7", () => {
+    // Antes do fix, `countMatching(sources, /GPT-?5\.\d/i)` também casava
+    // "GPT-5.6 Sol apaga arquivos sem permissão" (17/07/2026) — manchete de
+    // INCIDENTE DE SEGURANÇA sobre um modelo já lançado, não um release
+    // novo — inflando gpt5x pra 7 enquanto a prosa da resposta enumerava só
+    // 6 releases entre parênteses. Roda contra o JSON real commitado
+    // (mesmo racional do bloco NFD/NFC de anthropic-claude acima): o bug só
+    // aparece com a manchete real do incidente presente no dataset.
+    const faq = buildOpenaiChatgptFaq(openaiChatgptSourcesRaw as never);
+    const gpt5xFaq = faq.find((f) => f.question.includes("Quantas versões do GPT-5"));
+    assert.ok(gpt5xFaq, 'FAQ não tem a pergunta "Quantas versões do GPT-5..."');
+    assert.match(gpt5xFaq.answer, /A diária contou 6 manchetes/);
+    assert.doesNotMatch(gpt5xFaq.answer, /A diária contou 7 manchetes/);
+  });
+
+  it("com fixture sintético: uma manchete de incidente de segurança não conta como lançamento de versão", () => {
+    // Decoupla a proteção do estado do dataset real (mesmo racional do
+    // fixture sintético de anthropic-claude acima) — mesmo se
+    // `openai-chatgpt-sources.generated.json` mudar de forma, este teste
+    // continua flagrando a regressão específica.
+    const synthetic = [
+      {
+        date: "2026-01-01",
+        editionSlug: "edicao-1",
+        url: "https://diar.ia.br/p/edicao-1",
+        matchedHeadlines: ["OpenAI lança GPT-5.9"],
+      },
+      {
+        date: "2026-02-01",
+        editionSlug: "edicao-2",
+        url: "https://diar.ia.br/p/edicao-2",
+        matchedHeadlines: ["GPT-5.9 apaga arquivos sem permissão"],
+      },
+    ];
+    const faq = buildOpenaiChatgptFaq(synthetic);
+    const gpt5xFaq = faq.find((f) => f.question.includes("Quantas versões do GPT-5"));
+    assert.ok(gpt5xFaq);
+    assert.match(gpt5xFaq.answer, /A diária contou 1 manchetes/);
   });
 });

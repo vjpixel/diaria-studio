@@ -1,5 +1,5 @@
 /**
- * anthropic-claude.generated.ts (#4558 Parte A) — GERADO, NÃO EDITAR À MÃO.
+ * anthropic-claude.generated.ts (#4558) — GERADO, NÃO EDITAR À MÃO.
  *
  * Fonte: scripts/lib/hubs/anthropic-claude.ts → scripts/build-hub-page.ts.
  * HTML completo do hub temático "anthropic-claude", servido pelo Worker `arquivo`

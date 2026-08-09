@@ -1,5 +1,5 @@
 /**
- * google-gemini.generated.ts (#4558 Parte A) — GERADO, NÃO EDITAR À MÃO.
+ * google-gemini.generated.ts (#4558) — GERADO, NÃO EDITAR À MÃO.
  *
  * Fonte: scripts/lib/hubs/google-gemini.ts → scripts/build-hub-page.ts.
  * HTML completo do hub temático "google-gemini", servido pelo Worker `arquivo`

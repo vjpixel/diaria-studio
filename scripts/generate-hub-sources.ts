@@ -58,9 +58,11 @@ export interface HubSourceEntry {
 }
 
 /** Registro de palavra-chave por hub — espelha os padrões usados na proposta
- * de temas (#4558, artefato da sessão 260804). Só `anthropic-claude`
- * implementado por ora (decisão do editor: hubs de empresa e temáticos
- * coexistem, mas só este entra nesta rodada). */
+ * de temas (#4558, artefato da sessão 260804). 3 hubs implementados até
+ * aqui: `anthropic-claude` (#4558 original), `openai-chatgpt` e
+ * `google-gemini` (mesma issue, rodada seguinte). Adicionar um hub novo é
+ * uma entrada aqui + seu `scripts/lib/hubs/{slug}.ts` — este comentário não
+ * precisa de update a cada hub adicionado. */
 export const HUB_KEYWORD_PATTERNS: Record<string, RegExp> = {
   "anthropic-claude": /anthropic|\bclaude\b|\bopus\b|\bsonnet\b|\bmythos\b|\bfable\b/i,
   "openai-chatgpt": /openai|\bchatgpt\b|\bgpt-?\d|\bsora\b|sam altman/i,

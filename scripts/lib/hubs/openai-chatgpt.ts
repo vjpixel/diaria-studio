@@ -1,8 +1,8 @@
 /**
- * openai-chatgpt.ts (#4558 Parte A, 2º hub temático)
+ * openai-chatgpt.ts (#4558, 2º hub temático publicado)
  *
  * Conteúdo editorial do hub OpenAI/ChatGPT. Mesmo molde estrutural e mesmo
- * critério de qualidade de `anthropic-claude.ts` (#4558 Parte A original) —
+ * critério de qualidade de `anthropic-claude.ts` (#4558, 1º hub temático) —
  * ver aquele arquivo pro histórico completo da decisão. Resumo do critério
  * não-negociável da issue: "cada hub precisa carregar uma leitura que só
  * existe porque alguém acompanhou o tema por meses. Hub que reempacota
@@ -52,12 +52,23 @@ const CONTENT_DATE = "2026-08-09";
  * parâmetro (nunca lê a constante `SOURCES` do módulo direto) — mesmo
  * achado do fleet review original: só assim a função fica de fato pura e
  * testável com um fixture sintético em vez de sempre refletir produção.
+ *
+ * `excludePattern` opcional (fleet review #4790 achado 1): `pattern` sozinho
+ * casa manchete por FORMATO de versão, não por SEMÂNTICA de lançamento —
+ * "GPT-5.6 Sol apaga arquivos sem permissão" (manchete de incidente de
+ * segurança sobre um modelo já lançado) também bate `/GPT-?5\.\d/i` sem ser
+ * um release novo. Usado só onde essa ambiguidade existe de fato.
  */
-function countMatching(sources: HubSourceEntry[], pattern: RegExp): number {
+function countMatching(
+  sources: HubSourceEntry[],
+  pattern: RegExp,
+  excludePattern?: RegExp,
+): number {
   let n = 0;
   for (const s of sources) {
     for (const h of s.matchedHeadlines) {
-      if (pattern.test(h.normalize("NFC"))) n++;
+      const normalized = h.normalize("NFC");
+      if (pattern.test(normalized) && !(excludePattern && excludePattern.test(normalized))) n++;
     }
   }
   return n;
@@ -84,7 +95,7 @@ export function buildOpenaiChatgptFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
   const totalEditions = sources.length;
   const oldest = sources[0]?.date;
   const newest = sources[sources.length - 1]?.date;
-  const gpt5x = countMatching(sources, /GPT-?5\.\d/i);
+  const gpt5x = countMatching(sources, /GPT-?5\.\d/i, /apaga arquivos sem permiss[ãa]o/i);
   const codex = countMatching(sources, /codex/i);
   const hackAutonomo = countMatching(sources, /hacke|invad/i);
   const microsoft = countMatching(sources, /microsoft/i);
@@ -118,7 +129,7 @@ export function buildOpenaiChatgptFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
     },
     {
       question: "A OpenAI já foi processada judicialmente, segundo a cobertura da diária?",
-      answer: `Sim, ${processos} vezes na mesma edição inaugural deste hub (03/09/2025): [processada por suicídio de um adolescente](https://diar.ia.br/p/openai-processada-por-suic-dio-de-adolescente) e, na mesma data, [nomeada em um processo movido por X e xAI contra ela e a Apple](https://diar.ia.br/p/google-lan-a-gemini-2-5-flash-image). A seção sobre segurança e saúde acima cobre os episódios posteriores.`,
+      answer: `Sim, ${processos} vezes: na edição inaugural deste hub, [processada por suicídio de um adolescente](https://diar.ia.br/p/openai-processada-por-suic-dio-de-adolescente), e, dias depois, [nomeada em um processo movido por X e xAI contra ela e a Apple](https://diar.ia.br/p/google-lan-a-gemini-2-5-flash-image). A seção sobre segurança e saúde acima cobre os episódios posteriores.`,
     },
     {
       question: "Como acompanho as próximas notícias sobre OpenAI e ChatGPT?",
@@ -183,7 +194,7 @@ export function getOpenaiChatgptHub(): HubContent {
       {
         heading: "Que episódios de segurança e saúde marcaram a cobertura do ChatGPT?",
         paragraphs: [
-          "A primeira edição coberta por este hub já trazia dois processos judiciais na mesma data (03/09/2025): [a OpenAI processada por suicídio de um adolescente](https://diar.ia.br/p/openai-processada-por-suic-dio-de-adolescente) e [nomeada, ao lado da Apple, num processo movido por X e xAI](https://diar.ia.br/p/google-lan-a-gemini-2-5-flash-image). Meses depois vieram [a flexibilização de restrições para permitir conteúdo erótico](https://diar.ia.br/p/novo-estudo-revela-vulnerabilidade-de-modelos-a-envenenamento-de-dados), [um alerta de que o ChatGPT poderia aconselhar alguém a se suicidar](https://diar.ia.br/p/estudo-seguranca-ia-robos-pessoais), [o \"ChatGPT Cínico\" tornado oficial](https://diar.ia.br/p/adeus-recorte-manual-ia-separa-objetos-sozinha), [um filtro de idade](https://diar.ia.br/p/brasil-da-30-dias-para-xai-combater-conteu-do-falso) e [uma investigação por um tiroteio e danos a menores](https://diar.ia.br/p/claude-domina-o-maior-evento-de-ia-do-mundo). A seção mais recente do arco termina com [o GPT-5.6 Sol apagando arquivos sem permissão](https://diar.ia.br/p/gpt-5-6-sol-apaga-arquivos-sem-permissao), [a IA agindo sozinha e hackeando uma startup, revelado pela própria OpenAI](https://diar.ia.br/p/ia-agiu-sozinha-e-hackeou-startup-revela-openai), e [um agente da OpenAI invadindo mais plataformas](https://diar.ia.br/p/repositorio-de-ia-sem-freio-para-nudes-ilegais) 7 dias depois, a manchete mais recente coberta por este hub.",
+          "A primeira edição coberta por este hub já trazia [a OpenAI processada por suicídio de um adolescente](https://diar.ia.br/p/openai-processada-por-suic-dio-de-adolescente), e dias depois veio outro processo: [nomeada, ao lado da Apple, numa ação movida por X e xAI](https://diar.ia.br/p/google-lan-a-gemini-2-5-flash-image). Meses depois vieram [a flexibilização de restrições para permitir conteúdo erótico](https://diar.ia.br/p/novo-estudo-revela-vulnerabilidade-de-modelos-a-envenenamento-de-dados), [um alerta de que o ChatGPT poderia aconselhar alguém a se suicidar](https://diar.ia.br/p/estudo-seguranca-ia-robos-pessoais), [o \"ChatGPT Cínico\" tornado oficial](https://diar.ia.br/p/adeus-recorte-manual-ia-separa-objetos-sozinha), [um filtro de idade](https://diar.ia.br/p/brasil-da-30-dias-para-xai-combater-conteu-do-falso) e [uma investigação por um tiroteio e danos a menores](https://diar.ia.br/p/claude-domina-o-maior-evento-de-ia-do-mundo). A seção mais recente do arco termina com [o GPT-5.6 Sol apagando arquivos sem permissão](https://diar.ia.br/p/gpt-5-6-sol-apaga-arquivos-sem-permissao), [a IA agindo sozinha e hackeando uma startup, revelado pela própria OpenAI](https://diar.ia.br/p/ia-agiu-sozinha-e-hackeou-startup-revela-openai), e [um agente da OpenAI invadindo mais plataformas](https://diar.ia.br/p/repositorio-de-ia-sem-freio-para-nudes-ilegais) 7 dias depois, a manchete mais recente coberta por este hub.",
           "Em paralelo a esse arco, a diária também acompanhou a OpenAI apostando em saúde com resultado misto: [o ChatGPT ganhou medidas de cuidado com saúde mental](https://diar.ia.br/p/chatgpt-aplica-medidas-para-cuidado-com-saude-mental) em outubro de 2025 e [conectou-se a prontuários médicos](https://diar.ia.br/p/grok-acusado-de-sexualizar-imagens-de-crianc-as) em janeiro de 2026, repetido em julho quando [a diária voltou a noticiar a conexão do ChatGPT a prontuário médico](https://diar.ia.br/p/reddit-e-jornais-cogitam-banir-o-google). Em junho, [um modelo da OpenAI resolveu 18 casos sem diagnóstico](https://diar.ia.br/p/alexa-chega-ao-brasil-por-r-100-ao-mes), um resultado forte, mas 21 dias depois [a mesma cobertura registrou avanço em saúde acompanhado de falha em triagem](https://diar.ia.br/p/openai-lanca-gpt-5-6-mais-rapido-e-barato). Nem toda aposta em saúde teve o mesmo resultado.",
         ],
       },

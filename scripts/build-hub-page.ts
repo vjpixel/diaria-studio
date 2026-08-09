@@ -58,7 +58,7 @@ function constNameFor(slug: string): string {
 export function renderGeneratedModule(slug: string, html: string): string {
   const constName = constNameFor(slug);
   return `/**
- * ${slug}.generated.ts (#4558 Parte A) — GERADO, NÃO EDITAR À MÃO.
+ * ${slug}.generated.ts (#4558) — GERADO, NÃO EDITAR À MÃO.
  *
  * Fonte: scripts/lib/hubs/${slug}.ts → scripts/build-hub-page.ts.
  * HTML completo do hub temático "${slug}", servido pelo Worker \`arquivo\`
