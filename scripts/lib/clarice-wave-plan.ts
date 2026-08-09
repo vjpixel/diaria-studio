@@ -456,6 +456,139 @@ export function summarizeMvBacklog(
 }
 
 // ---------------------------------------------------------------------------
+// Composição por safra da fila de 1º envio (#4787) — o que `availableFirstSend`
+// (só um total) não dizia: DE QUE COHORT vem cada fatia da onda. Existe pra
+// tornar visível a olho nu quando a fila está "cheia" (sem déficit — ver
+// `computeFirstSendDeficit` abaixo) mas cheia da safra ERRADA, o caso real
+// que motivou a #4787: a onda de 09/08 do ciclo 2607-08 pulou de
+// `leads-2024h2` direto pra `leads-2022h1`/`leads-2021h2`, saltando por cima
+// de 226.558 contatos de `leads-2023h1/2023h2/2024h1` só porque essa safra
+// nunca passou pelo MillionVerifier — e nada no output avisava.
+// ---------------------------------------------------------------------------
+
+export interface CohortComposition {
+  cohort: string | null;
+  count: number;
+}
+
+/**
+ * Composição por cohort da fila de 1º envio DISPONÍVEL (já excluindo
+ * comprometidos — o mesmo conjunto cuja contagem `.length` vira
+ * `availableFirstSend`), ordenada por `cohortSendRank` (morno→frio — a MESMA
+ * ordem que `segmentRampWarm` usa pra consumir a fila de fato, ver
+ * clarice-segment.ts). Puro: não assume que `rows` já chega ordenado
+ * (reordena aqui por conta própria), então continua correta mesmo se o
+ * caller mudar a ordem de iteração no futuro.
+ */
+export function summarizeAvailableFirstSendByCohort(
+  rows: Array<Pick<StoreRow, "cohort">>,
+): CohortComposition[] {
+  const counts = new Map<string | null, number>();
+  for (const r of rows) {
+    const key = r.cohort ?? null;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([cohort, count]) => ({ cohort, count }))
+    .sort((a, b) => {
+      const ra = cohortSendRank(a.cohort);
+      const rb = cohortSendRank(b.cohort);
+      if (ra !== rb) return ra - rb;
+      return (a.cohort ?? "").localeCompare(b.cohort ?? "");
+    });
+}
+
+/**
+ * Recorta `available` (já ordenado morno→frio, ver `summarizeAvailableFirstSendByCohort`)
+ * até cobrir `total` contatos — a composição por cohort que a onda de fato
+ * consumiria da fila, respeitando a ordem de prioridade real. A última
+ * entrada pode ficar PARCIAL (o cohort onde o corte cai no meio); nunca lê
+ * além de `total`. `total <= 0` devolve `[]`.
+ */
+export function sliceCohortComposition(available: CohortComposition[], total: number): CohortComposition[] {
+  const out: CohortComposition[] = [];
+  let remaining = Math.max(0, total);
+  for (const entry of available) {
+    if (remaining <= 0) break;
+    const count = Math.min(entry.count, remaining);
+    if (count > 0) out.push({ cohort: entry.cohort, count });
+    remaining -= count;
+  }
+  return out;
+}
+
+export interface CohortInversion {
+  /** Cohort `mv_unverified` mais NOVO (menor `cohortSendRank`) que está bloqueado. */
+  blockedCohort: string;
+  /** Cohort mais FRIO que a onda efetivamente consumiria (maior rank entre os slices consumidos). */
+  coldestConsumedCohort: string | null;
+  /** Contatos da onda vindos de cohort(s) mais frios que `blockedCohort` — a cauda substituível. */
+  coldTailCount: number;
+}
+
+/**
+ * Detecta INVERSÃO DE SAFRA (#4787): a onda consumiria cohort mais FRIO
+ * enquanto existe cohort `mv_unverified` mais NOVO/morno BLOQUEADO no
+ * MillionVerifier. O gatilho por DÉFICIT (`computeFirstSendDeficit` abaixo)
+ * não pega esse caso — a fila pode estar "cheia" (déficit zero) e mesmo assim
+ * cheia da safra errada, porque `mvOnDemandPlan` só era acionado quando a
+ * fila total não bastava, nunca quando a ORDEM estava invertida.
+ *
+ * `consumed` é a composição por cohort que a onda de fato consumiria
+ * (`sliceCohortComposition` sobre `availableFirstSendByCohort`). `mvBacklog`
+ * é o backlog de `mv_unverified` (`summarizeMvBacklog`). `null` quando não há
+ * inversão — ou porque a onda não consome nada, ou porque nenhum cohort
+ * bloqueado é mais novo que o cohort mais frio que ela de fato toca.
+ *
+ * Cohorts MV-isentos (`isMvExemptCohort`) e o rótulo de exibição
+ * `MV_BACKLOG_NO_COHORT_LABEL` NUNCA contam como "bloqueado" — mesmo guard de
+ * `planMvOnDemand` (não são candidatos executáveis de verificação).
+ *
+ * `consumed` também filtra `cohort === null` antes de calcular o mais frio
+ * (#4792 fleet review, achado silent-failure-hunter) — espelha o guard
+ * equivalente do lado backlog (`MV_BACKLOG_NO_COHORT_LABEL` acima).
+ * `cohortSendRank(null)` devolve `RANK_UNKNOWN`, o rank mais FRIO possível
+ * (ver cohorts.ts), então uma única linha `cohort: null` em `consumed` —
+ * legítima, `isRampWarm` não exige cohort não-nulo — viraria trivialmente o
+ * "coldest" por construção, inflando `coldTailCount`/disparando inversão por
+ * ruído de dado (contato sem cohort identificável), não por inversão real de
+ * safra.
+ */
+export function detectCohortInversion(
+  consumed: CohortComposition[],
+  mvBacklog: MvBacklog,
+): CohortInversion | null {
+  const identified = consumed.filter((c) => c.cohort !== null);
+  if (identified.length === 0) return null;
+
+  let coldest = identified[0];
+  for (const c of identified) {
+    if (cohortSendRank(c.cohort) > cohortSendRank(coldest.cohort)) coldest = c;
+  }
+  const coldestRank = cohortSendRank(coldest.cohort);
+
+  const candidates = mvBacklog.byCohort.filter(
+    (e) =>
+      !isMvExemptCohort(e.cohort) &&
+      e.cohort !== MV_BACKLOG_NO_COHORT_LABEL &&
+      cohortSendRank(e.cohort) < coldestRank,
+  );
+  if (candidates.length === 0) return null;
+
+  let blocked = candidates[0];
+  for (const e of candidates) {
+    if (cohortSendRank(e.cohort) < cohortSendRank(blocked.cohort)) blocked = e;
+  }
+  const blockedRank = cohortSendRank(blocked.cohort);
+
+  const coldTailCount = identified
+    .filter((c) => cohortSendRank(c.cohort) > blockedRank)
+    .reduce((s, c) => s + c.count, 0);
+
+  return { blockedCohort: blocked.cohort, coldestConsumedCohort: coldest.cohort, coldTailCount };
+}
+
+// ---------------------------------------------------------------------------
 // Verificação MV SOB DEMANDA (#4659) — recorte mínimo do backlog acima pra
 // cobrir o déficit da ONDA ATUAL, nunca um lote sobre os ~253k `mv_unverified`
 // inteiros (essa era a proposta da #4427, fechada como "aberta cedo demais").
@@ -495,7 +628,15 @@ export interface MvOnDemandAllocation {
 }
 
 export interface MvOnDemandPlan {
-  /** Déficit que motivou o recorte. Zero = plano vazio, nada a verificar. */
+  /**
+   * Alvo bruto que motivou o recorte. Zero = plano vazio, nada a verificar.
+   * NÃO É SEMPRE um déficit de fila literal: desde #4787, `buildWaveProposal`
+   * chama `planMvOnDemand` com `Math.max(déficit de fila, cauda fria de uma
+   * inversão de safra)` — este campo carrega o MAIOR dos dois, não uma das
+   * duas fontes isoladamente. `renderWaveProposal` recompõe as duas partes
+   * separadamente pra exibir o motivo real (ver seção "Verificação MV sob
+   * demanda"); não assumir aqui que "deficit > 0" implica fila insuficiente.
+   */
   deficit: number;
   /**
    * `deficit ÷ MV_ONDEMAND_APPROVAL_MARGIN`, arredondado pra cima — quantos
@@ -815,6 +956,14 @@ export interface WaveProposalInput {
   state: CycleSendState;
   /** Fila de 1º envio disponível AGORA (pós-exclusão de comprometidos). */
   availableFirstSend: number;
+  /**
+   * #4787 — composição por cohort da MESMA fila que `availableFirstSend`
+   * conta (`summarizeAvailableFirstSendByCohort`, ordenada morno→frio).
+   * Existe pra tornar visível DE QUE SAFRA vem cada fatia da onda proposta —
+   * `availableFirstSend` sozinho não distingue "fila cheia da safra certa" de
+   * "fila cheia, mas pulando por cima de safra mais nova bloqueada no MV".
+   */
+  availableFirstSendByCohort: CohortComposition[];
   mvBacklog: MvBacklog;
   nonOpeners: NonOpenerExposure;
   /** Crédito Brevo restante no ciclo de cobrança. `null` = não consultado. */
@@ -856,6 +1005,19 @@ export interface WaveProposal extends WaveProposalInput {
    * de verdade é `scripts/clarice-mv-ondemand.ts`, nunca este planejador.
    */
   mvOnDemandPlan: MvOnDemandPlan;
+  /**
+   * #4787 — composição por cohort que a onda proposta EFETIVAMENTE
+   * consumiria (`sliceCohortComposition` sobre `availableFirstSendByCohort`,
+   * cortado em `volumes.total`). Renderizado como uma linha por cohort na
+   * proposta — é o dado que faz o salto de safra ficar visível a olho nu.
+   */
+  consumedByCohort: CohortComposition[];
+  /**
+   * #4787 — `null` quando a onda não pula nenhuma safra mais nova bloqueada
+   * no MillionVerifier; caso contrário, o cohort bloqueado + a cauda fria que
+   * ele substituiria. Ver `detectCohortInversion`.
+   */
+  cohortInversion: CohortInversion | null;
   /** Ver `WAVE_PROPOSAL_BRAND`. Não construir à mão. */
   readonly [WAVE_PROPOSAL_BRAND]: true;
 }
@@ -938,8 +1100,21 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
       `Crédito Brevo insuficiente: a onda pede ${fmt(input.volumes.total)} e restam ${fmt(input.brevoCredits)} no ciclo de cobrança.`,
     );
   }
+  // #4787: composição por safra da fila que ESTA onda consumiria — usada
+  // tanto pra render (`consumedByCohort`) quanto pro gatilho proativo de
+  // inversão abaixo.
+  const consumedByCohort = sliceCohortComposition(input.availableFirstSendByCohort, input.volumes.total);
+  const cohortInversion = detectCohortInversion(consumedByCohort, input.mvBacklog);
+
   const firstSendDeficit = computeFirstSendDeficit(input.availableFirstSend, input.volumes.total);
-  const mvOnDemandPlan = planMvOnDemand(input.mvBacklog, firstSendDeficit);
+  // #4787: o alvo de verificação cobre o MAIOR entre (a) o déficit de fila
+  // tradicional e (b) a cauda fria que uma inversão de safra tornaria
+  // substituível — os dois usam a MESMA máquina (`planMvOnDemand`, que já
+  // aloca morno→frio primeiro), então dimensionar pelo maior dos dois nunca
+  // sub-cobre o menor. Isso é o que faz o plano disparar MESMO SEM déficit
+  // total (a fila "cheia" da safra errada, caso real da issue).
+  const proactiveMvTarget = cohortInversion?.coldTailCount ?? 0;
+  const mvOnDemandPlan = planMvOnDemand(input.mvBacklog, Math.max(firstSendDeficit, proactiveMvTarget));
   if (input.availableFirstSend < input.volumes.total) {
     blockers.push(
       `Fila de 1º envio (${fmt(input.availableFirstSend)}) é menor que o volume proposto (${fmt(input.volumes.total)}) — as últimas ondas sairiam menores que o planejado ou puxariam público de outra natureza.` +
@@ -950,6 +1125,21 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
   }
   if (input.brevoCredits === null) {
     blockers.push("Crédito Brevo não consultado — nunca agendar sem validar o crédito ANTES (campanha agendada é imutável).");
+  }
+  // #4787: gatilho PROATIVO — dispara mesmo sem déficit de fila total.
+  // Diferente do blocker de déficit acima (que é sobre VOLUME), isto é sobre
+  // ORDEM: a fila pode cobrir o volume pedido inteiro e ainda assim pular por
+  // cima de uma safra mais nova bloqueada no MV, porque `mvOnDemandPlan` só
+  // disparava por déficit total antes deste guard (#4787, caso real: onda de
+  // 09/08 do 2607-08 pulou de leads-2024h2 direto pra leads-2022h1/2021h2).
+  if (cohortInversion) {
+    warnings.push(
+      `Inversão de safra (#4787): a onda consumiria ${fmt(cohortInversion.coldTailCount)} contato(s) de ` +
+        `${cohortDisplayLabel(cohortInversion.coldestConsumedCohort)} (mais FRIO) enquanto ` +
+        `${cohortDisplayLabel(cohortInversion.blockedCohort)} (mais NOVO/morno) está bloqueado em mv_unverified no ` +
+        `MillionVerifier — a ordem "mais novo primeiro" que cohortSendRank codifica não está sendo honrada. ` +
+        `Verificação MV sob demanda dimensionada pra cobrir a diferença — ver seção "Verificação MV sob demanda" abaixo.`,
+    );
   }
 
   if (input.staleNote) {
@@ -985,7 +1175,7 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
   }
   for (const c of input.abc.caveats) warnings.push(`Teste A/B/C: ${c}`);
 
-  return { ...input, waves, blockers, warnings, mvOnDemandPlan } as WaveProposal;
+  return { ...input, waves, blockers, warnings, mvOnDemandPlan, consumedByCohort, cohortInversion } as WaveProposal;
 }
 
 function fmt(n: number): string {
@@ -1075,10 +1265,37 @@ export function renderWaveProposal(p: WaveProposal): string {
   L.push(`  Fila de 1º envio disponível: ${fmt(p.availableFirstSend)}`);
   L.push("");
 
+  // #4787: de QUE cohort/safra vem cada fatia da onda — o dado que faltava
+  // pra um salto de safra (fila "cheia" mas cheia da safra errada) ficar
+  // visível a olho nu, sem precisar cruzar `availableFirstSend` com o store.
+  L.push("── Composição da fila consumida, por safra (#4787) ──");
+  if (p.consumedByCohort.length === 0) {
+    L.push("  (sem dado de composição — fila disponível vazia ou volume proposto zero)");
+  } else {
+    for (const c of p.consumedByCohort) {
+      L.push(`  ${cohortDisplayLabel(c.cohort).padEnd(28)} ${fmt(c.count)} contato(s)`);
+    }
+  }
+  L.push("");
+
   if (p.mvOnDemandPlan.byCohort.length > 0) {
     L.push("── Verificação MV sob demanda (#4659) ──");
+    // #4787: `mvOnDemandPlan.deficit` agora é o MAIOR entre o déficit de fila
+    // tradicional e a cauda fria de uma inversão de safra (ver buildWaveProposal)
+    // — "Déficit X" sozinho ficaria enganoso quando o disparo é só por
+    // inversão (fila cobre o volume inteiro, não há déficit real nenhum).
+    // Recomputa os dois aqui (puro, barato) só pra render, sem inflar o
+    // shape de WaveProposal com um campo cuja única serventia é esta linha.
+    const queueDeficit = computeFirstSendDeficit(p.availableFirstSend, p.volumes.total);
+    const inversionTail = p.cohortInversion?.coldTailCount ?? 0;
+    const reason =
+      queueDeficit > 0 && inversionTail > 0
+        ? `déficit de fila (${fmt(queueDeficit)}) + inversão de safra (${fmt(inversionTail)}) — alvo pelo MAIOR dos dois`
+        : queueDeficit > 0
+          ? `déficit de fila: ${fmt(queueDeficit)}`
+          : `inversão de safra (fila cobre o volume, sem déficit real): ${fmt(inversionTail)}`;
     L.push(
-      `  Déficit ${fmt(p.mvOnDemandPlan.deficit)} → alvo de verificação ${fmt(p.mvOnDemandPlan.targetVerifyCount)} (margem ${(MV_ONDEMAND_APPROVAL_MARGIN * 100).toFixed(0)}%)`,
+      `  Motivo: ${reason} → alvo de verificação ${fmt(p.mvOnDemandPlan.targetVerifyCount)} (margem ${(MV_ONDEMAND_APPROVAL_MARGIN * 100).toFixed(0)}%)`,
     );
     for (const a of p.mvOnDemandPlan.byCohort) {
       L.push(`    ${cohortDisplayLabel(a.cohort).padEnd(28)} ${fmt(a.count)} contato(s)`);

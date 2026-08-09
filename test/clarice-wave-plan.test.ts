@@ -7,6 +7,7 @@ import {
   buildWaveProposal,
   computeFirstSendDeficit,
   computeNextWaveNumber,
+  detectCohortInversion,
   groupKeyFromCampaignName,
   measureNonOpenerExposure,
   measureNovosFreshness,
@@ -16,6 +17,8 @@ import {
   recommendAbcAction,
   renderWaveProposal,
   scheduledAtForDate,
+  sliceCohortComposition,
+  summarizeAvailableFirstSendByCohort,
   summarizeCycleSends,
   summarizeMvBacklog,
   waveKey,
@@ -666,6 +669,152 @@ describe("planMvOnDemand (#4659)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Composição por safra e inversão de safra (#4787)
+// ---------------------------------------------------------------------------
+
+function mvBacklogFixture(byCohort: Array<{ cohort: string; count: number }>) {
+  return {
+    total: byCohort.reduce((s, e) => s + e.count, 0),
+    byCohort,
+    estimatedCostUsd: byCohort.reduce((s, e) => s + e.count, 0) * MV_COST_PER_EMAIL_USD,
+  };
+}
+
+describe("summarizeAvailableFirstSendByCohort (#4787)", () => {
+  it("agrupa por cohort e ordena morno→frio (cohortSendRank) — null (sem cohort) por último", () => {
+    const rows = [
+      { cohort: "leads-2022h1" },
+      { cohort: "leads-2024h2" },
+      { cohort: "leads-2024h2" },
+      { cohort: null },
+      { cohort: "ex-assinantes" },
+    ];
+    assert.deepEqual(summarizeAvailableFirstSendByCohort(rows), [
+      { cohort: "ex-assinantes", count: 1 },
+      { cohort: "leads-2024h2", count: 2 },
+      { cohort: "leads-2022h1", count: 1 },
+      { cohort: null, count: 1 },
+    ]);
+  });
+
+  it("lista vazia devolve array vazio", () => {
+    assert.deepEqual(summarizeAvailableFirstSendByCohort([]), []);
+  });
+});
+
+describe("sliceCohortComposition (#4787)", () => {
+  const available = [
+    { cohort: "ex-assinantes", count: 100 },
+    { cohort: "leads-2024h2", count: 50 },
+    { cohort: "leads-2022h1", count: 200 },
+  ];
+
+  it("corta no meio de um cohort quando o total pedido cai lá", () => {
+    assert.deepEqual(sliceCohortComposition(available, 120), [
+      { cohort: "ex-assinantes", count: 100 },
+      { cohort: "leads-2024h2", count: 20 },
+    ]);
+  });
+
+  it("total 0 ou negativo devolve vazio, nunca lê a fila", () => {
+    assert.deepEqual(sliceCohortComposition(available, 0), []);
+    assert.deepEqual(sliceCohortComposition(available, -5), []);
+  });
+
+  it("total maior que a fila inteira devolve tudo, sem estourar", () => {
+    assert.deepEqual(sliceCohortComposition(available, 10_000), available);
+  });
+});
+
+describe("detectCohortInversion (#4787)", () => {
+  it("sem consumo (onda vazia) → null", () => {
+    assert.equal(detectCohortInversion([], mvBacklogFixture([{ cohort: "leads-2024h2", count: 100 }])), null);
+  });
+
+  it("consumo já é da safra mais nova disponível — backlog bloqueado é MAIS FRIO → null (não é inversão)", () => {
+    const consumed = [{ cohort: "leads-2024h2", count: 500 }];
+    // leads-2022h1 é mais FRIO que leads-2024h2 (rank maior) — não vira candidato.
+    const inversion = detectCohortInversion(consumed, mvBacklogFixture([{ cohort: "leads-2022h1", count: 1000 }]));
+    assert.equal(inversion, null);
+  });
+
+  it("REGRESSÃO (caso real #4787, onda 09/08 do ciclo 2607-08): safra fria consumida com safra mais nova bloqueada no MV → inversão", () => {
+    // Reproduz a sequência real da issue: d9/d10 consumem 2024h2, d10/d11
+    // pulam DIRETO pra 2022h1/2021h2 — passando por cima de 2024h1/2023h2/2023h1
+    // (226.558 contatos), que nunca passaram pelo MillionVerifier.
+    const consumed = [
+      { cohort: "leads-2024h2", count: 4_465 },
+      { cohort: "leads-2022h1", count: 6_237 },
+      { cohort: "leads-2021h2", count: 5_689 },
+    ];
+    const backlog = mvBacklogFixture([
+      { cohort: "leads-2024h1", count: 78_181 },
+      { cohort: "leads-2023h2", count: 81_287 },
+      { cohort: "leads-2023h1", count: 67_090 },
+    ]);
+    const inversion = detectCohortInversion(consumed, backlog);
+    assert.ok(inversion, "deveria detectar a inversão");
+    // leads-2024h1 é o mais NOVO (menor rank) entre os 3 cohorts bloqueados.
+    assert.equal(inversion!.blockedCohort, "leads-2024h1");
+    assert.equal(inversion!.coldestConsumedCohort, "leads-2021h2");
+    // Cauda substituível = tudo consumido mais FRIO que leads-2024h1: 2022h1 + 2021h2
+    // (2024h2 é mais QUENTE que 2024h1 — não entra na cauda).
+    assert.equal(inversion!.coldTailCount, 6_237 + 5_689);
+  });
+
+  it("cohort MV-isento (assinantes-ativos) nunca conta como 'bloqueado', mesmo se aparecer no backlog", () => {
+    const consumed = [{ cohort: "leads-2022h1", count: 100 }];
+    const inversion = detectCohortInversion(consumed, mvBacklogFixture([{ cohort: "assinantes-ativos", count: 9999 }]));
+    assert.equal(inversion, null);
+  });
+
+  it("rótulo de exibição '(sem cohort)' nunca conta como 'bloqueado' — não é um cohort executável", () => {
+    const consumed = [{ cohort: "leads-2022h1", count: 100 }];
+    const inversion = detectCohortInversion(
+      consumed,
+      mvBacklogFixture([{ cohort: MV_BACKLOG_NO_COHORT_LABEL, count: 9999 }]),
+    );
+    assert.equal(inversion, null);
+  });
+
+  it("REGRESSÃO (#4792 fleet review): cohort:null em `consumed` nunca vira 'coldest' por ruído de dado", () => {
+    // Sem o guard, `cohortSendRank(null)` (RANK_UNKNOWN, o rank mais FRIO
+    // possível) faria a linha `cohort: null` virar trivialmente "coldest",
+    // inflando `coldTailCount` e disparando inversão só por causa de um
+    // contato sem cohort identificável -- não por inversão real de safra.
+    const consumed = [
+      { cohort: "leads-2024h2", count: 500 },
+      { cohort: null, count: 50 },
+    ];
+    // leads-2022h1 é mais FRIO que leads-2024h2 (o único cohort identificado
+    // em `consumed`) -- não deveria virar candidato bloqueado.
+    const inversion = detectCohortInversion(consumed, mvBacklogFixture([{ cohort: "leads-2022h1", count: 1000 }]));
+    assert.equal(inversion, null);
+  });
+
+  it("REGRESSÃO (#4792): cohort:null é ignorado, mas inversão real ainda dispara e coldTailCount exclui a linha null", () => {
+    const consumed = [
+      { cohort: "leads-2024h2", count: 4_465 },
+      { cohort: "leads-2022h1", count: 6_237 },
+      { cohort: null, count: 999 }, // nunca deveria entrar em coldTailCount
+    ];
+    const inversion = detectCohortInversion(consumed, mvBacklogFixture([{ cohort: "leads-2024h1", count: 78_181 }]));
+    assert.ok(inversion, "deveria detectar a inversão pelo cohort identificado (leads-2022h1)");
+    assert.equal(inversion!.blockedCohort, "leads-2024h1");
+    assert.equal(inversion!.coldestConsumedCohort, "leads-2022h1");
+    assert.equal(inversion!.coldTailCount, 6_237, "a linha cohort:null nunca entra na cauda fria contável");
+  });
+
+  it("`consumed` só com cohort:null → null (nada identificável pra avaliar)", () => {
+    const inversion = detectCohortInversion(
+      [{ cohort: null, count: 100 }],
+      mvBacklogFixture([{ cohort: "leads-2024h1", count: 1000 }]),
+    );
+    assert.equal(inversion, null);
+  });
+});
+
 describe("buildWaveProposal — mvOnDemandPlan embutido (#4659)", () => {
   it("sem déficit (fila cobre o volume) → mvOnDemandPlan vazio", () => {
     const p = buildWaveProposal(proposalInput({ availableFirstSend: 50_000 }));
@@ -721,6 +870,63 @@ describe("buildWaveProposal — mvOnDemandPlan embutido (#4659)", () => {
   });
 });
 
+describe("buildWaveProposal — inversão de safra (#4787)", () => {
+  it("SEM déficit de fila (fila cobre o volume) mas COM inversão de safra → mvOnDemandPlan dispara mesmo assim", () => {
+    const p = buildWaveProposal(
+      proposalInput({
+        availableFirstSend: 2000, // 2000 >= volumes.total (1000) — sem déficit
+        availableFirstSendByCohort: [{ cohort: "leads-2022h1", count: 2000 }], // única safra disponível, fria
+        mvBacklog: mvBacklogFixture([{ cohort: "leads-2024h1", count: 5000 }]), // mais nova, bloqueada
+      }),
+    );
+    assert.ok(p.cohortInversion, "deveria detectar a inversão");
+    assert.equal(p.cohortInversion!.blockedCohort, "leads-2024h1");
+    assert.equal(p.cohortInversion!.coldTailCount, 1000); // 100% do consumo é da safra fria
+    assert.ok(p.mvOnDemandPlan.byCohort.length > 0, "mvOnDemandPlan deveria disparar mesmo sem déficit de fila");
+    assert.equal(p.mvOnDemandPlan.byCohort[0].cohort, "leads-2024h1");
+    assert.match(p.warnings.join(" "), /Inversão de safra/);
+    assert.match(p.warnings.join(" "), /#4787/);
+    // Não é bloqueio — a fila cobre o volume pedido, só a ORDEM está errada.
+    assert.equal(p.blockers.length, 0);
+  });
+
+  it("sem inversão (fila já consome a safra mais nova disponível) → cohortInversion null, plano não dispara por isso", () => {
+    const p = buildWaveProposal(
+      proposalInput({
+        availableFirstSend: 2000,
+        availableFirstSendByCohort: [{ cohort: "leads-2024h2", count: 2000 }],
+        // leads-2022h1 é mais FRIO que o que já está sendo consumido — não é inversão.
+        mvBacklog: mvBacklogFixture([{ cohort: "leads-2022h1", count: 5000 }]),
+      }),
+    );
+    assert.equal(p.cohortInversion, null);
+    assert.deepEqual(p.mvOnDemandPlan.byCohort, []);
+    assert.doesNotMatch(p.warnings.join(" "), /Inversão de safra/);
+  });
+
+  it("déficit E inversão ao mesmo tempo → o alvo do plano é o MAIOR dos dois, nunca sub-cobre nenhum", () => {
+    const p = buildWaveProposal(
+      proposalInput({
+        volumes: { ...proposalInput().volumes, perDay: [10_000], total: 10_000 },
+        availableFirstSend: 3_000, // déficit = 10_000 - 3_000 = 7_000 → alvo ceil(7000/0.9) = 7778
+        availableFirstSendByCohort: [{ cohort: "leads-2022h1", count: 3_000 }],
+        mvBacklog: mvBacklogFixture([{ cohort: "leads-2024h1", count: 50_000 }]),
+      }),
+    );
+    // coldTailCount (3.000, tudo consumido é frio) é MENOR que o déficit — o
+    // déficit domina o alvo, mas a inversão continua sinalizada.
+    assert.equal(p.mvOnDemandPlan.targetVerifyCount, 7778);
+    assert.ok(p.cohortInversion);
+    assert.equal(p.cohortInversion!.coldTailCount, 3_000);
+  });
+
+  it("availableFirstSendByCohort vazio (caller não populou) → sem composição, sem inversão — nunca estoura", () => {
+    const p = buildWaveProposal(proposalInput());
+    assert.deepEqual(p.consumedByCohort, []);
+    assert.equal(p.cohortInversion, null);
+  });
+});
+
 describe("renderWaveProposal — seção MV sob demanda (#4659)", () => {
   it("aparece só quando o plano tem alocação, com o comando pronto pra rodar", () => {
     const withPlan = renderWaveProposal(
@@ -744,6 +950,93 @@ describe("renderWaveProposal — seção MV sob demanda (#4659)", () => {
   it("some da tela quando não há déficit (plano vazio)", () => {
     const noPlan = renderWaveProposal(buildWaveProposal(proposalInput({ availableFirstSend: 50_000 })));
     assert.doesNotMatch(noPlan, /Verificação MV sob demanda/);
+  });
+});
+
+describe("renderWaveProposal — composição por safra (#4787)", () => {
+  it("mostra uma linha por cohort consumido, na ordem morno→frio", () => {
+    const out = renderWaveProposal(
+      buildWaveProposal(
+        proposalInput({
+          availableFirstSend: 2000,
+          availableFirstSendByCohort: [
+            { cohort: "leads-2024h2", count: 400 },
+            { cohort: "leads-2022h1", count: 1600 },
+          ],
+        }),
+      ),
+    );
+    assert.match(out, /Composição da fila consumida, por safra \(#4787\)/);
+    // volumes.total (default) = 1000: consome os 400 inteiros de 2024h2 +
+    // 600 (PARCIAL) de 2022h1 — o corte no meio do 2º cohort é visível.
+    assert.match(out, /2024-H2\s+400 contato/);
+    assert.match(out, /2022-H1\s+600 contato/);
+  });
+
+  it("sem dado de composição → nota explícita, nunca tabela vazia silenciosa", () => {
+    const out = renderWaveProposal(buildWaveProposal(proposalInput()));
+    assert.match(out, /sem dado de composição/);
+  });
+
+  it("inversão de safra aparece nos avisos, e a seção MV sob demanda dispara mesmo sem déficit", () => {
+    const out = renderWaveProposal(
+      buildWaveProposal(
+        proposalInput({
+          availableFirstSend: 2000,
+          availableFirstSendByCohort: [{ cohort: "leads-2022h1", count: 2000 }],
+          mvBacklog: mvBacklogFixture([{ cohort: "leads-2024h1", count: 5000 }]),
+        }),
+      ),
+    );
+    assert.match(out, /Inversão de safra/);
+    assert.match(out, /Verificação MV sob demanda \(#4659\)/);
+  });
+
+  it("REGRESSÃO (achado do self-review): 'Motivo' NUNCA rotula inversão pura como 'déficit de fila' — a fila cobre o volume inteiro aqui", () => {
+    // `mvOnDemandPlan.deficit` (o campo bruto) vira o MAIOR entre déficit de
+    // fila e cauda de inversão desde #4787 — sem este cuidado, o render dizia
+    // literalmente "Déficit 1.000" mesmo quando não havia déficit real
+    // nenhum (availableFirstSend 2000 >= volumes.total 1000), afirmando fila
+    // curta quando o problema era só a ORDEM da safra.
+    const out = renderWaveProposal(
+      buildWaveProposal(
+        proposalInput({
+          availableFirstSend: 2000, // >= volumes.total (1000) — SEM déficit de fila
+          availableFirstSendByCohort: [{ cohort: "leads-2022h1", count: 2000 }],
+          mvBacklog: mvBacklogFixture([{ cohort: "leads-2024h1", count: 5000 }]),
+        }),
+      ),
+    );
+    assert.match(out, /Motivo: inversão de safra \(fila cobre o volume, sem déficit real\): 1\.000/);
+    assert.doesNotMatch(out, /Motivo: déficit de fila/);
+  });
+
+  it("déficit de fila puro (sem inversão) → 'Motivo' rotula corretamente como déficit", () => {
+    const out = renderWaveProposal(
+      buildWaveProposal(
+        proposalInput({
+          availableFirstSend: 300, // déficit = 1000-300 = 700
+          // availableFirstSendByCohort vazio (default) → sem composição/inversão.
+          mvBacklog: mvBacklogFixture([{ cohort: "ex-assinantes", count: 5000 }]),
+        }),
+      ),
+    );
+    assert.match(out, /Motivo: déficit de fila: 700/);
+    assert.doesNotMatch(out, /inversão de safra/);
+  });
+
+  it("déficit de fila E inversão ao mesmo tempo → 'Motivo' nomeia os dois, alvo pelo maior", () => {
+    const out = renderWaveProposal(
+      buildWaveProposal(
+        proposalInput({
+          volumes: { ...proposalInput().volumes, perDay: [10_000], total: 10_000 },
+          availableFirstSend: 3_000, // déficit = 7.000
+          availableFirstSendByCohort: [{ cohort: "leads-2022h1", count: 3_000 }],
+          mvBacklog: mvBacklogFixture([{ cohort: "leads-2024h1", count: 50_000 }]),
+        }),
+      ),
+    );
+    assert.match(out, /Motivo: déficit de fila \(7\.000\) \+ inversão de safra \(3\.000\) — alvo pelo MAIOR dos dois/);
   });
 });
 
@@ -994,6 +1287,9 @@ function proposalInput(over: Partial<WaveProposalInput> = {}): WaveProposalInput
     abc: { action: "continuar", metric: "clique", winner: "A", caveats: [], rationale: "…" },
     state: { cycle: "2607-08", waves: [], volumeSum: 0, volumeComplete: false, sentCount: 0, scheduledCount: 0, unscopedCount: 0 },
     availableFirstSend: 50_000,
+    // #4787: vazio por default — testes que exercitam composição/inversão de
+    // safra passam o override explicitamente (ver describes dedicados).
+    availableFirstSendByCohort: [],
     mvBacklog: { total: 253_730, byCohort: [], estimatedCostUsd: 482 },
     nonOpeners: { count: 0, fraction: 0, minSends: 2 },
     brevoCredits: 148_947,
@@ -1137,6 +1433,14 @@ describe("clarice-plan-wave.ts é READ-ONLY (#4657)", () => {
     for (const forbidden of ["INSERT", "UPDATE ", "DELETE", "DROP", "recomputeDerived"]) {
       assert.doesNotMatch(src, new RegExp(forbidden), `${forbidden} não pode aparecer neste script`);
     }
+  });
+
+  it("REGRESSÃO (#4786): pede includeScheduled=1 ao dashboard — sem isso, state.scheduledCount fica sempre 0", () => {
+    // `/api/campaigns` só devolve `status=sent` por default (deliberado — ver
+    // docstring de buildCampaignsResponse no Worker); sem este parâmetro o
+    // planner nunca enxerga a própria onda que acabou de agendar.
+    const src = readFileSync(resolve(import.meta.dirname, "../scripts/clarice-plan-wave.ts"), "utf8");
+    assert.match(src, /\/api\/campaigns\?limit=\$\{DEFAULT_DASHBOARD_LIMIT\}&includeScheduled=1/);
   });
 });
 
