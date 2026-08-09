@@ -11,11 +11,11 @@
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runScheduledTask, execTsxStep, type StepExecResult } from "../scripts/lib/task-runner.ts";
+import { runScheduledTask, execTsxStep, type StepExecResult, type AppendLogFn } from "../scripts/lib/task-runner.ts";
 import type { ScheduledTaskDefinition } from "../scripts/lib/scheduled-tasks.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -105,6 +105,70 @@ describe("runScheduledTask — log não gravável (parent do LogPath é um arqui
     assert.notEqual(result.code, 0);
     assert.equal(result.logAppendOk, false);
     assert.ok(existsSync(tempLogPath), "esperava o log temporário preservado quando o anexo final falha");
+  });
+});
+
+describe("runScheduledTask — retry-then-recover do log-append (achado do fleet review #4821, item 3)", () => {
+  let workDir: string;
+
+  before(() => {
+    workDir = mkdtempSync(join(tmpdir(), "task-runner-logretry-"));
+  });
+
+  after(() => {
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  it("falha nas 2 primeiras tentativas, sucede na 3ª -> logAppendOk true, exit 0, temp removido", () => {
+    const tempLogPath = join(workDir, "retry-temp.log");
+    const logPathOverride = join(workDir, "retry-final.log");
+
+    let attempts = 0;
+    const appendLog: AppendLogFn = (logPath, content) => {
+      attempts += 1;
+      if (attempts < 3) {
+        throw new Error(`falha transitória simulada (tentativa ${attempts})`);
+      }
+      writeFileSync(logPath, content, "utf8");
+    };
+
+    const result = runScheduledTask(baseDef(), {
+      rootDir: ROOT,
+      logPathOverride,
+      tempLogPathOverride: tempLogPath,
+      appendLog,
+    });
+
+    assert.equal(attempts, 3, "esperava exatamente 3 tentativas (2 falhas + 1 sucesso)");
+    assert.equal(result.logAppendOk, true);
+    assert.equal(result.code, 0);
+    assert.ok(existsSync(logPathOverride), "esperava o log final criado na 3ª tentativa");
+    assert.ok(!existsSync(tempLogPath), "esperava o log temporário removido após a recuperação");
+  });
+
+  it("falha em 1 tentativa, sucede na 2ª -> logAppendOk true sem esgotar as 3 tentativas", () => {
+    const tempLogPath = join(workDir, "retry-once-temp.log");
+    const logPathOverride = join(workDir, "retry-once-final.log");
+
+    let attempts = 0;
+    const appendLog: AppendLogFn = (logPath, content) => {
+      attempts += 1;
+      if (attempts < 2) {
+        throw new Error("falha transitória simulada (tentativa única)");
+      }
+      writeFileSync(logPath, content, "utf8");
+    };
+
+    const result = runScheduledTask(baseDef(), {
+      rootDir: ROOT,
+      logPathOverride,
+      tempLogPathOverride: tempLogPath,
+      appendLog,
+    });
+
+    assert.equal(attempts, 2, "esperava parar de tentar assim que a 2ª tentativa sucede");
+    assert.equal(result.logAppendOk, true);
+    assert.equal(result.code, 0);
   });
 });
 
@@ -307,7 +371,8 @@ describe("runScheduledTask — guard de pré-condição (#4552, molde Diaria-Bre
   it("arquivo requerido PRESENTE -> guard passa, passos rodam normalmente", () => {
     const tempLogPath = join(workDir, "guard-ok-temp.log");
     const logPathOverride = join(workDir, "guard-ok-final.log");
-    writeFileSync(join(workDir, "presente.json"), "{}");
+    mkdirSync(join(workDir, "data"), { recursive: true });
+    writeFileSync(join(workDir, "data", "presente.json"), "{}");
 
     let stepCalled = false;
     const fakeExecStep = (): StepExecResult => {

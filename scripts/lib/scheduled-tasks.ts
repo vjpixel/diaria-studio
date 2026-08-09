@@ -71,7 +71,10 @@ export type ScheduledTaskSchedule =
  * gravar um estado vazio por cima de dado real.
  */
 export interface ScheduledTaskGuard {
-  /** Path relativo à raiz do repo (POSIX), checado com `existsSync`. */
+  /** Path relativo a `data/` (POSIX), checado com `existsSync` — MESMA
+   * convenção de `ScheduledTaskDefinition.logPath` (implicitamente
+   * `data/`-relative, nunca inclua o prefixo `data/` aqui). Resolvido pelo
+   * runner como `join(rootDir, "data", ...requiredFile.split("/"))`. */
   requiredFile: string;
   /** Mensagem logada (prefixo "AVISO: ") quando o guard aborta a run. */
   abortMessage: string;
@@ -203,7 +206,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     logPath: "brevo-diaria/.evaluate.log",
     schedule: { kind: "daily", hour: 5, minute: 30 },
     guard: {
-      requiredFile: "data/brevo-diaria/contacts.json",
+      requiredFile: "brevo-diaria/contacts.json",
       abortMessage:
         "contacts.json nao encontrado (data/brevo-diaria/contacts.json) -- provavel junction data/ nao " +
         "montada ainda; abortando por seguranca, NAO rodando --push.",

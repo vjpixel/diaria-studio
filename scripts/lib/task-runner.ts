@@ -70,6 +70,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { ScheduledTaskDefinition } from "./scheduled-tasks.ts";
+import { unitBaseName } from "./systemd-units.ts";
 
 /** Resultado de rodar um único passo (`execStep`). */
 export interface StepExecResult {
@@ -152,13 +153,23 @@ export interface RunScheduledTaskOptions {
   tempLogPathOverride?: string;
   /** Injeção do executor de passo (testes). Default: `execTsxStep`. */
   execStep?: ExecStepFn;
+  /** Injeção de UMA tentativa de anexar o log final (testes) — lança pra
+   * simular falha transitória (ex: lock do OneDrive) sem depender de
+   * condição de corrida em cima do FS real. Default: `defaultAppendLog`
+   * (`mkdirSync` + `appendFileSync` reais). O retry 3× (ponto 2 da docstring
+   * do módulo) sempre chama esta função — sucesso na 1ª tentativa nunca
+   * distingue "sempre funcionou" de "não precisou retry". */
+  appendLog?: AppendLogFn;
 }
 
-function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+/** Assinatura injetável de UMA tentativa de anexar `content` a `logPath` —
+ * default `defaultAppendLog`. Lança em caso de falha (o chamador decide
+ * retry). */
+export type AppendLogFn = (logPath: string, content: string) => void;
+
+function defaultAppendLog(logPath: string, content: string): void {
+  mkdirSync(dirname(logPath), { recursive: true });
+  appendFileSync(logPath, content, "utf8");
 }
 
 /** Sleep síncrono — usado só pro backoff do retry de log (300ms×tentativa),
@@ -187,10 +198,11 @@ export function runScheduledTask(
   const rootDir = resolve(opts.rootDir ?? process.cwd());
   const now = opts.now ?? (() => new Date());
   const execStep = opts.execStep ?? execTsxStep;
+  const appendLog = opts.appendLog ?? defaultAppendLog;
 
   const logPath = opts.logPathOverride ?? join(rootDir, "data", ...def.logPath.split("/"));
   const tempLogPath =
-    opts.tempLogPathOverride ?? join(tmpdir(), `diaria-${slugify(def.name)}-${process.pid}-${Date.now()}.log`);
+    opts.tempLogPathOverride ?? join(tmpdir(), `diaria-${unitBaseName(def.name)}-${process.pid}-${Date.now()}.log`);
 
   const appendTemp = (text: string): void => {
     appendFileSync(tempLogPath, text.endsWith("\n") ? text : `${text}\n`, "utf8");
@@ -204,7 +216,9 @@ export function runScheduledTask(
   let failingCode = 0;
 
   if (def.guard) {
-    const guardPath = join(rootDir, ...def.guard.requiredFile.split("/"));
+    // `requiredFile` é implicitamente `data/`-relative — MESMA convenção de
+    // `def.logPath` logo acima (ver docstring de `ScheduledTaskGuard`).
+    const guardPath = join(rootDir, "data", ...def.guard.requiredFile.split("/"));
     if (!existsSync(guardPath)) {
       appendTemp(`AVISO: ${def.guard.abortMessage}`);
       guardAborted = true;
@@ -250,9 +264,8 @@ export function runScheduledTask(
   let lastError: unknown = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      mkdirSync(dirname(logPath), { recursive: true });
       const tempContent = readFileSync(tempLogPath, "utf8");
-      appendFileSync(logPath, tempContent, "utf8");
+      appendLog(logPath, tempContent);
       logAppendOk = true;
       break;
     } catch (e) {
