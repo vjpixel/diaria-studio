@@ -12,6 +12,12 @@
  *   1. só group-campaigns.json + vencedora clara (pluralidade estrita) -> resolve.
  *   2. A/B/C empatado -> NÃO resolve, mantém o abort do #4621.
  *   3. campaigns-summary.json presente -> precedência inalterada (canônico vence).
+ *
+ * + regressão do fleet review da #4783 (#4794):
+ *   4. JSON corrompido -> LANÇA (não colapsa em "empate normal"/undefined).
+ *   5. entradas sem `subject` -> descartadas mas com warning + contagem correta.
+ *   6. `resolveSubjectFromCampaignsSummary` também aplica pluralidade estrita
+ *      (achado 4 — helper unificado entre as duas funções de leitura).
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -127,6 +133,101 @@ test("resolveSubjectFromGroupCampaigns: arquivo ausente -> undefined (sem lança
   const root = mkdtempSync(join(tmpdir(), "monthly-group-campaigns-ausente-"));
   try {
     assert.equal(resolveSubjectFromGroupCampaigns("2607-08", root), undefined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ── Regressão fleet review #4794 (achados 1, 2, 4) ──────────────────────────
+
+test("resolveSubjectFromGroupCampaigns: JSON corrompido -> LANÇA (não colapsa em undefined de 'empate normal')", () => {
+  const root = mkdtempSync(join(tmpdir(), "monthly-group-campaigns-corrompido-"));
+  try {
+    const dir = join(root, "2607-08", "segments");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "group-campaigns.json"), "{ isso não é JSON válido", "utf8");
+    assert.throws(
+      () => resolveSubjectFromGroupCampaigns("2607-08", root),
+      /corrompido \(JSON inválido\)/,
+      "arquivo corrompido deve lançar, distinguível do undefined de 'ainda sem vencedor'",
+    );
+    // A precedência combinada também deve deixar o erro subir, não engolir.
+    assert.throws(() => resolveSubjectForCycle("2607-08", root), /corrompido \(JSON inválido\)/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resolveSubjectFromCampaignsSummary: JSON corrompido -> LANÇA", () => {
+  const root = mkdtempSync(join(tmpdir(), "monthly-campaigns-summary-corrompido-"));
+  try {
+    const dir = join(root, "2607-08", "sends", "cells");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "campaigns-summary.json"), "[{ subject: sem aspas }]", "utf8");
+    assert.throws(() => resolveSubjectFromCampaignsSummary("2607-08", root), /corrompido \(JSON inválido\)/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resolveSubjectFromGroupCampaigns: shape inesperado (objeto, não array) -> LANÇA", () => {
+  const root = mkdtempSync(join(tmpdir(), "monthly-group-campaigns-shape-"));
+  try {
+    const dir = join(root, "2607-08", "segments");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "group-campaigns.json"), JSON.stringify({ oops: "não é array" }), "utf8");
+    assert.throws(() => resolveSubjectFromGroupCampaigns("2607-08", root), /shape inesperado/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resolveSubjectFromGroupCampaigns: entradas sem 'subject' são ignoradas mas emitem warning com a contagem correta", () => {
+  const root = mkdtempSync(join(tmpdir(), "monthly-group-campaigns-sem-subject-"));
+  try {
+    // 3 entradas SEM subject (anomalia) + 2 entradas normais pra CELL_A, que
+    // sozinha já teria pluralidade estrita mesmo sem as descartadas contarem
+    // a favor de ninguém.
+    writeGroupCampaigns(root, "2607-08", [{}, {}, { subject: "" }, { subject: CELL_A }, { subject: CELL_A }]);
+
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+
+    let subject: string | undefined;
+    try {
+      subject = resolveSubjectFromGroupCampaigns("2607-08", root);
+    } finally {
+      console.error = origError;
+    }
+
+    assert.equal(subject, CELL_A);
+    assert.ok(errors.length > 0, "deve emitir warning sobre entradas descartadas");
+    assert.ok(
+      errors.some((e) => /3 entrada\(s\) sem 'subject'/.test(e)),
+      `esperava warning citando a contagem 3, obtive: ${errors.join(" | ")}`,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resolveSubjectFromCampaignsSummary: também exige pluralidade estrita (achado 4 — helper unificado)", () => {
+  const root = mkdtempSync(join(tmpdir(), "monthly-campaigns-summary-empate-"));
+  try {
+    // Empate 2x2 entre 2 assuntos diferentes no arquivo CANÔNICO — antes desta
+    // correção, a função original ("mais frequente, 1º que bate o máximo
+    // vence") decidiria sozinha por ordem de inserção; agora deve recusar,
+    // igual ao comportamento já validado pra group-campaigns.json.
+    writeCampaignsSummary(root, "2607-08", [
+      { subject: CELL_A },
+      { subject: CELL_A },
+      { subject: CELL_B },
+      { subject: CELL_B },
+    ]);
+    assert.equal(resolveSubjectFromCampaignsSummary("2607-08", root), undefined);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

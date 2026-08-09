@@ -9,6 +9,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   resolveLatestMonthlyCycle,
+  resolveLatestMonthlyCycleDeps,
+  resolveSubjectForCycle,
   type ResolveLatestMonthlyCycleDeps,
 } from "../scripts/lib/mensal/monthly-paths.ts";
 
@@ -107,6 +109,20 @@ test("resolveLatestMonthlyCycle: nenhum ciclo pronto → cycle=null, checked lis
   assert.equal(result.cycle, null);
   assert.equal(result.checked.length, 2);
   assert.ok(result.checked.every((c) => !c.ready));
+});
+
+// #4794 achado 3 (fleet review da #4783): `resolveLatestMonthlyCycleDeps()`
+// (fábrica de PRODUÇÃO) foi trocada pra usar `resolveSubjectForCycle` em vez
+// do antigo `resolveSubjectFromCampaignsSummary` isolado — essa É a mudança
+// que resolve o bug real do #4783 (o fallback pra group-campaigns.json). Sem
+// este teste, nenhum outro cobre a COSTURA de produção: todos os demais
+// testes deste arquivo injetam deps fake, e os de monthly-paths-group-campaigns-4783.test.ts
+// chamam `resolveSubjectForCycle` diretamente, nunca através de
+// `resolveLatestMonthlyCycleDeps()`. Se alguém reverter essa linha por
+// engano no futuro, nenhum teste ficaria vermelho sem esta checagem.
+test("resolveLatestMonthlyCycleDeps: production factory usa resolveSubjectForCycle (não um resolver isolado)", () => {
+  const deps = resolveLatestMonthlyCycleDeps();
+  assert.equal(deps.resolveSubject, resolveSubjectForCycle, "resolveSubject deve ser resolveSubjectForCycle por referência — não um wrapper equivalente nem o resolver canônico isolado");
 });
 
 test("resolveLatestMonthlyCycle: ciclos com forma inválida são ignorados (não candidatos)", () => {
