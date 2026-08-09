@@ -1016,6 +1016,25 @@ describe("describeSpamSignalLine (#4780)", () => {
     assert.match(line, /origem: média de domínio/);
   });
 
+  // #4785 (pr-test-analyzer, gap do fleet review pré-merge do #4780): entry
+  // LEGADA pré-#4780 — pico de campanha governa, mas `worstCampaignDaysWithData`
+  // nunca foi gravado (campo não existia ainda). Precisa renderizar a origem
+  // SEM o sufixo de cobertura, sem quebrar por acesso a campo ausente.
+  it("pico por campanha governa mas worstCampaignDaysWithData está AUSENTE (entry legado pré-#4780) → origem sem sufixo de cobertura, sem quebrar (#4785)", () => {
+    const entry = {
+      spamRatePct: 0.02,
+      recordedAt: "2026-08-06T09:00:00.000Z",
+      producedBy: "auto" as const,
+      worstCampaignSpamRatePct: 1.39,
+      worstCampaignFeedbackLoopId: "11130585_107",
+      // worstCampaignDaysWithData intencionalmente ausente (undefined)
+    };
+    const signal = resolveSpamSignal({ ...entry, date: "2026-08-06" }, NOW);
+    const line = describeSpamSignalLine(entry, signal);
+    assert.match(line, /origem: pico da campanha 11130585_107/);
+    assert.doesNotMatch(line, /dia\(s\) com dado/, "sem worstCampaignDaysWithData, o sufixo de cobertura não deve aparecer");
+  });
+
   it("entry presente mas indeterminate (stale) → mostra o valor cru e sinaliza que não governa o semáforo agora", () => {
     const entry = { spamRatePct: 0.02, recordedAt: "2026-07-01T00:00:00.000Z", producedBy: "auto" as const }; // recordedAt bem velho
     const signal = resolveSpamSignal({ ...entry, date: "2026-07-01" }, NOW);

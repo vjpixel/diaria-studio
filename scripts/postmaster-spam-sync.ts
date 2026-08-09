@@ -112,6 +112,22 @@
  * dado que o log distinto já resolve o "silencioso" da lacuna original; um
  * alarme dedicado fica pra quando/se o log sozinho não bastar na prática.
  *
+ * Achado CRITICAL do fleet review pré-merge do #4780, corrigido em #4785: a
+ * query BASE (`queryFeedbackLoopIds`) falhando é um 4º cenário real e
+ * silencioso que o #4780 não cobriu — `campaignResult` ficava no mesmo shape
+ * default do cenário benigno (`{worst: null, attempted: 0, failed: 0,
+ * otherAccountsSeen: 0}`), então a mensagem impressa era "sem campanha
+ * atribuível... segue normal" logo depois do `console.warn` real já emitido
+ * pelo `catch` de `main()` — mascarando o próprio warn. `baseQueryFailed`
+ * (rastreado explicitamente em `main()`) e `describeCampaignSpamCollectionLine`
+ * (seleção de mensagem extraída pra função pura/testável, mesmo padrão de
+ * `describeSpamSignalLine` em `clarice-schedule-ramp.ts`) fecham essa lacuna
+ * com uma 6ª mensagem dedicada — nunca cai no ramo benigno quando a query
+ * base falhou. Contando esse caso, são 3 cenários de `console.warn` (query
+ * base falhou, todas as queries por-campanha falharam, accountId hardcoded
+ * suspeito) e 3 de `console.log` (pico achado — caminho normal/ideal, sem
+ * campanha atribuível, campanhas consultadas sem leitura na janela).
+ *
  * Uso:
  *   npx tsx scripts/postmaster-spam-sync.ts [--window-days 10] [--dry-run]
  *
@@ -373,6 +389,84 @@ export function parseWindowDaysArg(arg: string): number {
   return n;
 }
 
+/**
+ * #4785 (fix do achado CRITICAL do fleet review pré-merge do #4780): decide
+ * qual das 6 mensagens de diagnóstico imprimir sobre a coleta de spam
+ * por-campanha — extraído do corpo de `main()` pra ser testável sem mockar
+ * `console.*`/rede (mesmo padrão de `describeSpamSignalLine` em
+ * `clarice-schedule-ramp.ts`).
+ *
+ * Quando a query BASE (`queryFeedbackLoopIds`, dentro de
+ * `collectWorstCampaignSpam`) lança, `main()` já loga um `console.warn` real
+ * no `catch` externo ("falha ao coletar spam por campanha... seguindo só com
+ * a média de domínio") — mas `campaignResult` fica no valor default
+ * `{worst: null, attempted: 0, failed: 0, otherAccountsSeen: 0}`, um shape
+ * IDÊNTICO ao do cenário benigno "sem campanha atribuível na janela". Sem o
+ * parâmetro `baseQueryFailed`, esta função cairia no ramo benigno e
+ * imprimiria uma 2ª linha contradizendo o warn que acabou de sair — a última
+ * linha do log pareceria dizer que está tudo bem justamente no cenário mais
+ * grave. `baseQueryFailed` intercepta esse caso ANTES do resto da seleção e
+ * retorna uma 6ª mensagem dedicada, nunca a benigna.
+ */
+export interface CampaignSpamCollectionLine {
+  level: "warn" | "log";
+  message: string;
+}
+
+export function describeCampaignSpamCollectionLine(
+  result: CollectWorstCampaignSpamResult,
+  baseQueryFailed: boolean,
+): CampaignSpamCollectionLine {
+  const { worst, attempted, failed, otherAccountsSeen } = result;
+  if (baseQueryFailed) {
+    return {
+      level: "warn",
+      message:
+        "[postmaster-spam-sync] coleta por-campanha OFFLINE nesta execução (query base de FEEDBACK_LOOP_ID falhou — ver o warn " +
+        "acima com o motivo) — não é \"sem campanha atribuível\", é falha real (#4785). Breaker segue usando só a média de domínio.",
+    };
+  }
+  if (worst) {
+    return {
+      level: "log",
+      message:
+        `[postmaster-spam-sync] pior campanha na janela: feedback_loop_id="${worst.feedbackLoopId}" ` +
+        `pico=${worst.spamRatePct.toFixed(3)}% em ${worst.date} (cobertura: ${worst.daysWithData} dia(s) com dado) — ` +
+        `este valor governa o breaker (precedência sobre a média de domínio).`,
+    };
+  }
+  if (attempted > 0 && failed === attempted) {
+    return {
+      level: "warn",
+      message:
+        `[postmaster-spam-sync] TODAS as ${attempted} campanha(s) atribuível(is) na janela falharam na query de FEEDBACK_LOOP_SPAM_RATE ` +
+        `(#4780) — enriquecimento por-campanha ficou OFFLINE nesta execução (não é "sem campanha", é falha real). ` +
+        `Breaker segue usando só a média de domínio.`,
+    };
+  }
+  if (attempted === 0 && otherAccountsSeen > 0) {
+    return {
+      level: "warn",
+      message:
+        `[postmaster-spam-sync] ${otherAccountsSeen} campanha(s) com feedback_loop_id de OUTRA conta ESP apareceram na janela, ` +
+        `nenhuma da conta configurada (DEFAULT_POSTMASTER_ACCOUNT_ID="${DEFAULT_POSTMASTER_ACCOUNT_ID}") — este valor hardcoded pode estar ` +
+        `desatualizado (#4780). Breaker segue usando só a média de domínio.`,
+    };
+  }
+  if (attempted === 0) {
+    return {
+      level: "log",
+      message: "[postmaster-spam-sync] sem campanha atribuível na janela (#4705) — breaker segue usando a média de domínio.",
+    };
+  }
+  return {
+    level: "log",
+    message:
+      `[postmaster-spam-sync] ${attempted - failed}/${attempted} campanha(s) consultada(s) com sucesso, mas nenhuma teve leitura de ` +
+      `FEEDBACK_LOOP_SPAM_RATE na janela — breaker segue usando a média de domínio.`,
+  };
+}
+
 async function main(): Promise<void> {
   const isDryRun = hasFlag(process.argv, "dry-run");
   const windowArg = getArg(process.argv, "window-days");
@@ -422,48 +516,33 @@ async function main(): Promise<void> {
       gFetch,
     );
   let campaignResult: CollectWorstCampaignSpamResult = { worst: null, attempted: 0, failed: 0, otherAccountsSeen: 0 };
+  // #4785: rastreado explicitamente pra `describeCampaignSpamCollectionLine`
+  // nunca confundir "query base falhou" (real, já logado abaixo) com "sem
+  // campanha atribuível" (benigno) — os dois deixavam `campaignResult` no
+  // mesmo shape default antes deste fix (achado CRITICAL do fleet review
+  // pré-merge do #4780).
+  let baseQueryFailed = false;
   try {
     campaignResult = await collectWorstCampaignSpam(range, DEFAULT_POSTMASTER_ACCOUNT_ID, queryFeedbackLoopIds, queryCampaignSpamRate);
   } catch (e) {
+    baseQueryFailed = true;
     console.warn(
       `[postmaster-spam-sync] falha ao coletar spam por campanha (#4705) — seguindo só com a média de domínio: ` +
         `${e instanceof Error ? e.message : String(e)}`,
     );
   }
-  const { worst: worstCampaign, attempted, failed, otherAccountsSeen } = campaignResult;
+  const { worst: worstCampaign } = campaignResult;
 
-  // #4780: 5 mensagens distintas em vez do log único "sem campanha
-  // atribuível" que antes valia pros 3 cenários da issue — só os 2 primeiros
-  // (pico achado / todas as queries falharam) e o de accountId suspeito são
-  // `console.warn`/`console.log` de ATENÇÃO; os outros 2 são o caminho
-  // normal/benigno.
-  if (worstCampaign) {
-    console.log(
-      `[postmaster-spam-sync] pior campanha na janela: feedback_loop_id="${worstCampaign.feedbackLoopId}" ` +
-        `pico=${worstCampaign.spamRatePct.toFixed(3)}% em ${worstCampaign.date} (cobertura: ${worstCampaign.daysWithData} dia(s) com dado) — ` +
-        `este valor governa o breaker (precedência sobre a média de domínio).`,
-    );
-  } else if (attempted > 0 && failed === attempted) {
-    console.warn(
-      `[postmaster-spam-sync] TODAS as ${attempted} campanha(s) atribuível(is) na janela falharam na query de FEEDBACK_LOOP_SPAM_RATE ` +
-        `(#4780) — enriquecimento por-campanha ficou OFFLINE nesta execução (não é "sem campanha", é falha real). ` +
-        `Breaker segue usando só a média de domínio.`,
-    );
-  } else if (attempted === 0 && otherAccountsSeen > 0) {
-    console.warn(
-      `[postmaster-spam-sync] ${otherAccountsSeen} campanha(s) com feedback_loop_id de OUTRA conta ESP apareceram na janela, ` +
-        `nenhuma da conta configurada (DEFAULT_POSTMASTER_ACCOUNT_ID="${DEFAULT_POSTMASTER_ACCOUNT_ID}") — este valor hardcoded pode estar ` +
-        `desatualizado (#4780). Breaker segue usando só a média de domínio.`,
-    );
-  } else if (attempted === 0) {
-    console.log(
-      "[postmaster-spam-sync] sem campanha atribuível na janela (#4705) — breaker segue usando a média de domínio.",
-    );
+  // #4780/#4785: seleção da mensagem de diagnóstico é pura/testável (ver
+  // `describeCampaignSpamCollectionLine`) — 3 casos benignos (`console.log`:
+  // pico achado, sem campanha na janela, campanhas consultadas sem leitura)
+  // e 3 casos reais de ATENÇÃO (`console.warn`: todas as queries por-campanha
+  // falharam, accountId hardcoded suspeito, query BASE falhou).
+  const collectionLine = describeCampaignSpamCollectionLine(campaignResult, baseQueryFailed);
+  if (collectionLine.level === "warn") {
+    console.warn(collectionLine.message);
   } else {
-    console.log(
-      `[postmaster-spam-sync] ${attempted - failed}/${attempted} campanha(s) consultada(s) com sucesso, mas nenhuma teve leitura de ` +
-        `FEEDBACK_LOOP_SPAM_RATE na janela — breaker segue usando a média de domínio.`,
-    );
+    console.log(collectionLine.message);
   }
 
   const entry = buildAveragedEntry(readings, now, daysProbed, worstCampaign);

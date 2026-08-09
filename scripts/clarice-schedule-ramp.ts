@@ -421,10 +421,17 @@ export function describeSpamSignalLine(
     );
   }
   const worst = spamEntry.worstCampaignSpamRatePct;
-  const usesCampaignPeak =
-    typeof worst === "number" && Number.isFinite(worst) && worst >= spamEntry.spamRatePct && spamSignal.ratePct === worst;
+  // #4785 (comment-analyzer, fleet review pré-merge do #4780): a comparação
+  // `worst >= spamEntry.spamRatePct` que existia aqui era redundante com
+  // `spamSignal.ratePct === worst` — se o `Math.max` de `resolveSpamSignal`
+  // escolheu `worst`, `worst >= domínio` já é necessariamente verdade;
+  // manter as duas checagens duplicava parte da lógica de lá (inofensivo,
+  // mas contradizia o "não duplicada" do parágrafo acima). Removida.
+  const usesCampaignPeak = typeof worst === "number" && Number.isFinite(worst) && spamSignal.ratePct === worst;
   const coverageSuffix =
-    usesCampaignPeak && typeof spamEntry.worstCampaignDaysWithData === "number"
+    usesCampaignPeak &&
+    typeof spamEntry.worstCampaignDaysWithData === "number" &&
+    Number.isFinite(spamEntry.worstCampaignDaysWithData)
       ? ` (${spamEntry.worstCampaignDaysWithData} dia(s) com dado)`
       : "";
   const originLabel = usesCampaignPeak
