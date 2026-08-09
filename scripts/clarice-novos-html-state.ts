@@ -49,6 +49,7 @@ import {
   NOVOS_CAMPAIGN_NAME_PREFIX,
   type NovosCampaignSentCount,
 } from "./lib/clarice-novos-state.ts";
+import { groupKeyFromCampaignName } from "./lib/clarice-wave-plan.ts";
 
 interface BrevoCampaignListItem {
   id: number;
@@ -63,14 +64,23 @@ interface BrevoCampaignDetail {
 
 /**
  * Busca (paginado, `GET /v3/emailCampaigns?status=sent`) todas as campanhas
- * JÁ ENVIADAS cujo nome começa com `prefix`, com o `sent` de cada uma
+ * JÁ ENVIADAS cuja KEY (extraída do nome REAL via `groupKeyFromCampaignName`
+ * — `Clarice {yymm} grupo:{key}`, `campaignNameFor` em
+ * `clarice-schedule-group.ts`) começa com `prefix`, com o `sent` de cada uma
  * (`statistics.globalStats.sent` — mesmo campo/endpoint que
- * `clarice-guardrail-alarm.ts` já usa pra este mesmo API key). Uma campanha
- * sem stats ainda (`status === 404` no detalhe, raro) entra com `sent: 0` em
- * vez de quebrar a paginação inteira — a soma final só fica levemente baixa,
- * nunca lança.
+ * `clarice-guardrail-alarm.ts` já usa pra este mesmo API key).
+ *
+ * **Não** compara `prefix` contra o nome inteiro — nenhuma campanha real
+ * começa literalmente com `"novos-"` (esse é o nome da KEY, não da
+ * campanha); comparar o nome inteiro faz este filtro nunca casar nada,
+ * mesmo bug de raiz do #4082 em `clarice-reapply-scheduled-html.ts`, já
+ * corrigido lá com o mesmo helper. Campanha cujo nome não tem o sufixo
+ * `grupo:...` reconhecível (`groupKeyFromCampaignName` retorna `null`) é
+ * ignorada. Uma campanha sem stats ainda (`status === 404` no detalhe, raro)
+ * entra com `sent: 0` em vez de quebrar a paginação inteira — a soma final
+ * só fica levemente baixa, nunca lança.
  */
-async function fetchSentCampaignsByPrefix(apiKey: string, prefix: string): Promise<NovosCampaignSentCount[]> {
+export async function fetchSentCampaignsByPrefix(apiKey: string, prefix: string): Promise<NovosCampaignSentCount[]> {
   const out: NovosCampaignSentCount[] = [];
   let offset = 0;
   const limit = 50;
@@ -78,7 +88,8 @@ async function fetchSentCampaignsByPrefix(apiKey: string, prefix: string): Promi
     const { body } = await brevoGet(apiKey, `/emailCampaigns?status=sent&limit=${limit}&offset=${offset}&sort=desc`);
     const campaigns = (body as BrevoCampaignsListResponse)?.campaigns ?? [];
     for (const c of campaigns) {
-      if (!c.name.startsWith(prefix)) continue;
+      const key = groupKeyFromCampaignName(c.name);
+      if (key == null || !key.startsWith(prefix)) continue;
       const { status, body: detailBody } = await brevoGet(apiKey, `/emailCampaigns/${c.id}?statistics=globalStats`);
       const gs = status === 404 ? undefined : (detailBody as BrevoCampaignDetail)?.statistics?.globalStats;
       out.push({ name: c.name, sent: gs?.sent ?? 0 });
@@ -109,7 +120,10 @@ async function reconcileSentCountAgainstBrevo(expected: number): Promise<void> {
     const result = reconcileNovosSentCount(expected, campaigns);
     console.error(result.detail);
   } catch (e) {
-    console.error(`↷ reconciliação de sentCount (#4788) falhou — não bloqueia --finalize: ${(e as Error).message}`);
+    const err = e as Error;
+    console.error(
+      `↷ reconciliação de sentCount (#4788) falhou — não bloqueia --finalize: ${err.name ?? "Error"}: ${err.message}`,
+    );
   }
 }
 
@@ -247,6 +261,18 @@ export async function runReconcile(argv: string[]): Promise<void> {
           : "↷";
   console.error(`${icon} ${result.detail}`);
   console.log(JSON.stringify({ action: result.action, state: result.state }, null, 2));
+
+  // #4788: `--finalize` (main()) não é o ÚNICO caminho que incrementa
+  // `sentCount` — `--reconcile` também soma quando o disparo agendado é
+  // confirmado (branch "finalized" acima). Sem esta chamada, uma rodada que
+  // SEMPRE agenda (`--finalize-scheduled` -> `--reconcile`, nunca
+  // `--finalize` direto) nunca disparava a auditoria — mitigado na prática
+  // porque a comparação é all-time (a próxima `--finalize` regular de
+  // qualquer rodada pega a mesma divergência), mas cobrir os 2 caminhos que
+  // incrementam `sentCount` fecha o gap sem esperar por essa outra rodada.
+  // Mesmo padrão fire-and-forget do branch `--finalize` de `main()` acima —
+  // best-effort, nunca bloqueia o retorno de `runReconcile`.
+  if (result.action === "finalized") void reconcileSentCountAgainstBrevo(result.state.sentCount);
 }
 
 if (isMainModule(import.meta.url)) {

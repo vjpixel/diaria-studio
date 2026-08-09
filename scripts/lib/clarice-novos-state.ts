@@ -35,6 +35,7 @@ import { resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { writeFileAtomic } from "./atomic-write.ts";
 import { CLARICE_BASE } from "./clarice-paths.ts";
+import { groupKeyFromCampaignName } from "./clarice-wave-plan.ts";
 
 /**
  * Envio agendado ainda NÃO confirmado como disparado (#4670). Existe entre o
@@ -255,41 +256,69 @@ export function buildFinalizeState(prev: NovosState | null, opts: FinalizeOption
 
 /** Uma campanha Brevo já enviada, reduzida ao que a reconciliação precisa. */
 export interface NovosCampaignSentCount {
-  name: string;
+  /**
+   * Nome REAL da campanha na Brevo, ex: `"Clarice 2607 grupo:novos-260731"`
+   * (gerado por `campaignNameFor` em `clarice-schedule-group.ts`) — NÃO a
+   * key isolada (`novos-260731`). `reconcileNovosSentCount` extrai a key via
+   * `groupKeyFromCampaignName` antes de comparar contra o prefixo — nenhum
+   * nome real de campanha começa literalmente com `"novos-"`.
+   */
+  readonly name: string;
   /** `statistics.globalStats.sent` da campanha (tentativas de envio — mesmo campo que `clarice-guardrail-alarm.ts` usa como denominador de taxa). */
-  sent: number;
+  readonly sent: number;
 }
 
 export interface NovosSentCountReconciliation {
-  expected: number;
-  actual: number;
-  /** Quantas campanhas `novos-*` entraram na soma — 0 é informativo (ex: 1ª rodada, ou nenhuma campanha `sent` ainda). */
-  matchedCampaigns: number;
-  matches: boolean;
+  readonly expected: number;
+  readonly actual: number;
+  /** Quantas campanhas com KEY `novos-*` (extraída do nome real via `groupKeyFromCampaignName`) entraram na soma — 0 volta a ser um caso de borda genuíno pós-fix (1ª rodada, ou nenhuma campanha `sent` ainda), não mais o resultado permanente do bug original (ver docstring de `reconcileNovosSentCount`). */
+  readonly matchedCampaigns: number;
+  readonly matches: boolean;
   /** Mensagem legível pra log — inclui o ⚠/✓ e a issue de referência na divergência. */
-  detail: string;
+  readonly detail: string;
 }
 
-/** Prefixo de nome usado por TODAS as campanhas do grupo `novos` — mesmo usado por `resolveNovosKey` (`novos-{AAMMDD}[-N]`). */
+/**
+ * Prefixo usado por TODAS as KEYS do grupo `novos` — mesmo usado por
+ * `resolveNovosKey` (`novos-{AAMMDD}[-N]`). **Não** é um prefixo do nome
+ * literal da campanha na Brevo — o nome real é `Clarice {yymm} grupo:{key}`
+ * (`campaignNameFor` em `clarice-schedule-group.ts`), então nenhuma campanha
+ * de verdade começa com `"novos-"`. Comparar contra este prefixo só faz
+ * sentido depois de extrair a key do nome via `groupKeyFromCampaignName` —
+ * ver `reconcileNovosSentCount` abaixo.
+ */
 export const NOVOS_CAMPAIGN_NAME_PREFIX = "novos-";
 
 /**
  * Reconcilia `sentCount` (acumulador local) contra a soma real das campanhas
- * `novos-*` já enviadas na Brevo (#4788). PURA — recebe a lista de campanhas
- * já buscada (o caller resolve a chamada de rede, mesma separação usada em
- * `reconcilePendingSend` acima). Filtra por prefixo de nome porque a Brevo não
- * tem um conceito de "grupo" nativo pra filtrar na própria API.
+ * do grupo `novos` já enviadas na Brevo (#4788). PURA — recebe a lista de
+ * campanhas já buscada (o caller resolve a chamada de rede, mesma separação
+ * usada em `reconcilePendingSend` acima).
+ *
+ * A Brevo não tem um conceito de "grupo" nativo pra filtrar na própria API,
+ * então o pertencimento é inferido do NOME real da campanha
+ * (`Clarice {yymm} grupo:{key}`, `campaignNameFor` em
+ * `clarice-schedule-group.ts`) — nunca comparado como prefixo do nome
+ * inteiro. `groupKeyFromCampaignName` (`clarice-wave-plan.ts`, mesmo helper
+ * que corrigiu o bug análogo do #4082 em `clarice-reapply-scheduled-html.ts`)
+ * extrai a KEY (`novos-{AAMMDD}[-N]`) do nome; só então ela é comparada
+ * contra `NOVOS_CAMPAIGN_NAME_PREFIX`. Campanha cujo nome não tem o sufixo
+ * `grupo:...` reconhecível (`groupKeyFromCampaignName` retorna `null`) não
+ * entra na soma.
  */
 export function reconcileNovosSentCount(
   expected: number,
   campaigns: readonly NovosCampaignSentCount[],
 ): NovosSentCountReconciliation {
-  const relevant = campaigns.filter((c) => c.name.startsWith(NOVOS_CAMPAIGN_NAME_PREFIX));
+  const relevant = campaigns.filter((c) => {
+    const key = groupKeyFromCampaignName(c.name);
+    return key != null && key.startsWith(NOVOS_CAMPAIGN_NAME_PREFIX);
+  });
   const actual = relevant.reduce((sum, c) => sum + c.sent, 0);
   const matches = actual === expected;
   const detail = matches
-    ? `✓ sentCount (${expected}) bate com a soma das ${relevant.length} campanhas "${NOVOS_CAMPAIGN_NAME_PREFIX}*" enviadas na Brevo.`
-    : `⚠ sentCount local (${expected}) DIVERGE da soma real das ${relevant.length} campanhas "${NOVOS_CAMPAIGN_NAME_PREFIX}*" enviadas na Brevo (${actual}) — diferença de ${actual - expected}. Ver #4788.`;
+    ? `✓ sentCount (${expected}) bate com a soma das ${relevant.length} campanhas do grupo "${NOVOS_CAMPAIGN_NAME_PREFIX}*" enviadas na Brevo.`
+    : `⚠ sentCount local (${expected}) DIVERGE da soma real das ${relevant.length} campanhas do grupo "${NOVOS_CAMPAIGN_NAME_PREFIX}*" enviadas na Brevo (${actual}) — diferença de ${actual - expected}. Ver #4788.`;
   return { expected, actual, matchedCampaigns: relevant.length, matches, detail };
 }
 
