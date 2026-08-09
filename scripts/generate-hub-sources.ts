@@ -37,6 +37,7 @@ import { fileURLToPath } from "node:url";
 
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { resolvePublishDate } from "./lib/beehiiv-publish-date.ts";
 import type { RawCachedPost } from "./generate-arquivo-titles.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -44,7 +45,8 @@ const POSTS_DIR = resolve(ROOT, "data/beehiiv-cache/posts");
 const HUBS_DIR = resolve(ROOT, "scripts/lib/hubs");
 
 export interface HubSourceEntry {
-  /** `YYYY-MM-DD`, BRT. */
+  /** `YYYY-MM-DD`, BRT — via `resolvePublishDate` (`lib/beehiiv-publish-date.ts`,
+   * #4796): override por slug primeiro, senão `publish_date` bruto. */
   date: string;
   /** Slug da EDIÇÃO no Beehiiv — nome deliberadamente distinto de
    * `HubContent.slug` (o slug do HUB, em `hub-page.ts`) pra não confundir
@@ -71,12 +73,6 @@ export const HUB_KEYWORD_PATTERNS: Record<string, RegExp> = {
 
 function stripAccents(s: string): string {
   return s.normalize("NFD").replace(/[̀-ͯ]/g, "");
-}
-
-function toDateBrt(unixSeconds: number): string {
-  // Mesmo ajuste BRT (UTC-3) de generate-arquivo-titles.ts/monthly-relink-to-diaria.ts.
-  const d = new Date((unixSeconds - 3 * 3600) * 1000);
-  return d.toISOString().slice(0, 10);
 }
 
 export interface CollectHubSourcesResult {
@@ -111,12 +107,14 @@ export function collectHubSources(
       warnings.push(`post confirmado e casado, mas sem slug resolvível: "${where}"`);
       continue;
     }
-    if (!post.publish_date) {
+    // #4796: override por slug primeiro, cai no publish_date bruto pra todo o resto.
+    const date = resolvePublishDate(post.slug, post.publish_date);
+    if (!date) {
       warnings.push(`slug "${post.slug}" confirmado e casado, mas sem publish_date — pulado`);
       continue;
     }
     rows.push({
-      date: toDateBrt(post.publish_date),
+      date,
       editionSlug: post.slug,
       url: `https://diar.ia.br/p/${post.slug}`,
       matchedHeadlines: matched,
