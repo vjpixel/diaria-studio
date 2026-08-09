@@ -14,7 +14,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { main, runReconcile } from "../scripts/clarice-novos-html-state.ts";
+import { main, runReconcile, fetchSentCampaignsByPrefix } from "../scripts/clarice-novos-html-state.ts";
+import { NOVOS_CAMPAIGN_NAME_PREFIX } from "../scripts/lib/clarice-novos-state.ts";
 
 function captureAll(fn: () => void): { logs: string[]; errs: string[]; exitCode: number | undefined } {
   const logs: string[] = [];
@@ -159,6 +160,53 @@ test("runReconcile: state SEM pendingSend -> 'no-pending', mesmo sem API key def
   } finally {
     if (savedClarice !== undefined) process.env.BREVO_CLARICE_API_KEY = savedClarice;
     if (savedBase !== undefined) process.env.BREVO_API_KEY = savedBase;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// fetchSentCampaignsByPrefix (#4788, achado do fleet review da PR #4791) —
+// mocka `globalThis.fetch` (mesmo padrão de test/brevo-2314-2307-regression.test.ts)
+// pra provar que o filtro casa contra a KEY extraída do nome REAL da
+// campanha (`Clarice {yymm} grupo:{key}`), não contra o nome inteiro — o
+// fixture original deste bug usava a key sozinha como nome
+// (`{ name: "novos-260731" }`) e por isso nunca teria pego a regressão.
+// ---------------------------------------------------------------------------
+
+test("fetchSentCampaignsByPrefix: casa pela KEY extraída do nome real, ignora campanhas de outro grupo", async () => {
+  const origFetch = globalThis.fetch;
+  const detailCalls: string[] = [];
+  globalThis.fetch = (async (input: unknown) => {
+    const url = String(input);
+    if (url.includes("/emailCampaigns?status=sent")) {
+      return new Response(
+        JSON.stringify({
+          campaigns: [
+            { id: 1, name: "Clarice 2607 grupo:novos-260731" },
+            { id: 2, name: "Clarice 2607 grupo:ramp-warm-T1-W3" }, // outro grupo — não deve entrar
+            { id: 3, name: "Clarice News 2607 envio 8B" }, // sem "grupo:" — idem
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    if (url.includes("/emailCampaigns/1?statistics=globalStats")) {
+      detailCalls.push(url);
+      return new Response(JSON.stringify({ statistics: { globalStats: { sent: 164 } } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    throw new Error(`chamada de fetch inesperada no teste: ${url}`);
+  }) as unknown as typeof globalThis.fetch;
+
+  try {
+    const result = await fetchSentCampaignsByPrefix("fake-key", NOVOS_CAMPAIGN_NAME_PREFIX);
+    assert.deepEqual(result, [{ name: "Clarice 2607 grupo:novos-260731", sent: 164 }]);
+    // só buscou o detalhe da campanha que de fato casou — prova que o filtro
+    // roda ANTES da chamada de detalhe (custo de rede evitado pras outras 2).
+    assert.equal(detailCalls.length, 1);
+  } finally {
+    globalThis.fetch = origFetch;
   }
 });
 

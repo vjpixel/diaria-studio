@@ -36,7 +36,7 @@ import { resolve } from "node:path";
 import { getArg, getIntArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { monthlyDir } from "./lib/mensal/monthly-paths.ts";
-import { brevoGetCampaign } from "./lib/brevo-client.ts";
+import { brevoGetCampaign, brevoGet } from "./lib/brevo-client.ts";
 import {
   readNovosState,
   writeNovosState,
@@ -45,7 +45,87 @@ import {
   buildFinalizeScheduledState,
   buildFinalizeState,
   reconcilePendingSend,
+  reconcileNovosSentCount,
+  NOVOS_CAMPAIGN_NAME_PREFIX,
+  type NovosCampaignSentCount,
 } from "./lib/clarice-novos-state.ts";
+import { groupKeyFromCampaignName } from "./lib/clarice-wave-plan.ts";
+
+interface BrevoCampaignListItem {
+  id: number;
+  name: string;
+}
+interface BrevoCampaignsListResponse {
+  campaigns?: BrevoCampaignListItem[];
+}
+interface BrevoCampaignDetail {
+  statistics?: { globalStats?: Record<string, number> };
+}
+
+/**
+ * Busca (paginado, `GET /v3/emailCampaigns?status=sent`) todas as campanhas
+ * JÁ ENVIADAS cuja KEY (extraída do nome REAL via `groupKeyFromCampaignName`
+ * — `Clarice {yymm} grupo:{key}`, `campaignNameFor` em
+ * `clarice-schedule-group.ts`) começa com `prefix`, com o `sent` de cada uma
+ * (`statistics.globalStats.sent` — mesmo campo/endpoint que
+ * `clarice-guardrail-alarm.ts` já usa pra este mesmo API key).
+ *
+ * **Não** compara `prefix` contra o nome inteiro — nenhuma campanha real
+ * começa literalmente com `"novos-"` (esse é o nome da KEY, não da
+ * campanha); comparar o nome inteiro faz este filtro nunca casar nada,
+ * mesmo bug de raiz do #4082 em `clarice-reapply-scheduled-html.ts`, já
+ * corrigido lá com o mesmo helper. Campanha cujo nome não tem o sufixo
+ * `grupo:...` reconhecível (`groupKeyFromCampaignName` retorna `null`) é
+ * ignorada. Uma campanha sem stats ainda (`status === 404` no detalhe, raro)
+ * entra com `sent: 0` em vez de quebrar a paginação inteira — a soma final
+ * só fica levemente baixa, nunca lança.
+ */
+export async function fetchSentCampaignsByPrefix(apiKey: string, prefix: string): Promise<NovosCampaignSentCount[]> {
+  const out: NovosCampaignSentCount[] = [];
+  let offset = 0;
+  const limit = 50;
+  for (;;) {
+    const { body } = await brevoGet(apiKey, `/emailCampaigns?status=sent&limit=${limit}&offset=${offset}&sort=desc`);
+    const campaigns = (body as BrevoCampaignsListResponse)?.campaigns ?? [];
+    for (const c of campaigns) {
+      const key = groupKeyFromCampaignName(c.name);
+      if (key == null || !key.startsWith(prefix)) continue;
+      const { status, body: detailBody } = await brevoGet(apiKey, `/emailCampaigns/${c.id}?statistics=globalStats`);
+      const gs = status === 404 ? undefined : (detailBody as BrevoCampaignDetail)?.statistics?.globalStats;
+      out.push({ name: c.name, sent: gs?.sent ?? 0 });
+    }
+    if (campaigns.length < limit) break;
+    offset += limit;
+  }
+  return out;
+}
+
+/**
+ * #4788 — reconcilia `sentCount` (já gravado no state por `--finalize`)
+ * contra a soma real das campanhas `novos-*` na Brevo. Best-effort e
+ * FAIL-SOFT por inteiro: sem API key configurada, ou qualquer falha de rede,
+ * só avisa (nunca lança, nunca chama `process.exit`) — `--finalize` já
+ * terminou com sucesso no momento em que esta função roda, e o contador que
+ * ela audita não é lido por nenhum gate/decisão de volume hoje (issue #4788,
+ * seção "Prioridade").
+ */
+async function reconcileSentCountAgainstBrevo(expected: number): Promise<void> {
+  const apiKey = process.env.BREVO_CLARICE_API_KEY ?? process.env.BREVO_API_KEY ?? "";
+  if (!apiKey) {
+    console.error("↷ reconciliação de sentCount (#4788) pulada — BREVO_CLARICE_API_KEY/BREVO_API_KEY não definido.");
+    return;
+  }
+  try {
+    const campaigns = await fetchSentCampaignsByPrefix(apiKey, NOVOS_CAMPAIGN_NAME_PREFIX);
+    const result = reconcileNovosSentCount(expected, campaigns);
+    console.error(result.detail);
+  } catch (e) {
+    const err = e as Error;
+    console.error(
+      `↷ reconciliação de sentCount (#4788) falhou — não bloqueia --finalize: ${err.name ?? "Error"}: ${err.message}`,
+    );
+  }
+}
 
 export function main(argv: string[] = process.argv.slice(2)): void {
   const cycle = getArg(argv, "cycle");
@@ -123,6 +203,16 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     writeNovosState(state, dataRootArg);
     console.error(`✓ state gravado — lastCycle=${state.lastCycle} sentCount=${state.sentCount}`);
     console.log(JSON.stringify(state, null, 2));
+    // #4788: reconciliação contra a Brevo é ASSÍNCRONA e disparada em
+    // background (não `await`ada) — `main()` continua síncrona de propósito
+    // (mesma razão do `runReconcile` separado: os testes existentes chamam
+    // `main()` via captureAll SÍNCRONO, e um throw dentro de função `async`
+    // nunca propaga sincronamente pro caller — ver docstring de
+    // `captureAllAsync` em test/clarice-novos-html-state-4347.test.ts). O
+    // processo Node não termina até essa promise assentar (fetch pendente =
+    // handle ativo), então o log da reconciliação ainda sai antes do CLI
+    // encerrar — só não bloqueia o `return` síncrono de `main()`.
+    void reconcileSentCountAgainstBrevo(state.sentCount);
     return;
   }
 
@@ -171,6 +261,18 @@ export async function runReconcile(argv: string[]): Promise<void> {
           : "↷";
   console.error(`${icon} ${result.detail}`);
   console.log(JSON.stringify({ action: result.action, state: result.state }, null, 2));
+
+  // #4788: `--finalize` (main()) não é o ÚNICO caminho que incrementa
+  // `sentCount` — `--reconcile` também soma quando o disparo agendado é
+  // confirmado (branch "finalized" acima). Sem esta chamada, uma rodada que
+  // SEMPRE agenda (`--finalize-scheduled` -> `--reconcile`, nunca
+  // `--finalize` direto) nunca disparava a auditoria — mitigado na prática
+  // porque a comparação é all-time (a próxima `--finalize` regular de
+  // qualquer rodada pega a mesma divergência), mas cobrir os 2 caminhos que
+  // incrementam `sentCount` fecha o gap sem esperar por essa outra rodada.
+  // Mesmo padrão fire-and-forget do branch `--finalize` de `main()` acima —
+  // best-effort, nunca bloqueia o retorno de `runReconcile`.
+  if (result.action === "finalized") void reconcileSentCountAgainstBrevo(result.state.sentCount);
 }
 
 if (isMainModule(import.meta.url)) {

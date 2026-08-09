@@ -19,7 +19,9 @@ import {
   buildFinalizeScheduledState,
   buildFinalizeState,
   reconcilePendingSend,
+  reconcileNovosSentCount,
   type NovosState,
+  type NovosCampaignSentCount,
 } from "../scripts/lib/clarice-novos-state.ts";
 
 // ---------------------------------------------------------------------------
@@ -450,4 +452,76 @@ test("reconcilePendingSend (dupla finalização não conta 2×): 2ª chamada ap�
   const second = await reconcilePendingSend(first.state, async () => ({ status: "sent" }));
   assert.equal(second.action, "no-pending");
   assert.equal(second.state.sentCount, 270); // inalterado — não somou de novo
+});
+
+// ---------------------------------------------------------------------------
+// reconcileNovosSentCount (#4788) — reconciliação de sentCount contra a soma
+// real das campanhas novos-* na Brevo. Caso real da issue: state gravava 350,
+// as 5 campanhas novos-* realmente enviadas somavam 440 (90 de diferença,
+// nunca detectados porque nada comparava os dois lados).
+//
+// Fixtures usam o nome REAL de campanha (`Clarice {yymm} grupo:{key}`,
+// `campaignNameFor` em `clarice-schedule-group.ts`), NUNCA a key isolada
+// (`novos-{AAMMDD}`) — os testes originais deste bloco usavam a key como se
+// fosse o nome (`{ name: "novos-260731", ... }`) e por isso não pegaram o bug
+// de `c.name.startsWith(NOVOS_CAMPAIGN_NAME_PREFIX)` nunca casar com um nome
+// real. Ver `groupKeyFromCampaignName` em `scripts/lib/clarice-wave-plan.ts`.
+// ---------------------------------------------------------------------------
+
+test("reconcileNovosSentCount: reproduz o caso real #4788 — 350 gravado vs 440 real -> matches=false, detail nomeia a diferença", () => {
+  const campaigns: NovosCampaignSentCount[] = [
+    { name: "Clarice 2607 grupo:novos-260731", sent: 164 },
+    { name: "Clarice 2608 grupo:novos-260805", sent: 75 },
+    { name: "Clarice 2608 grupo:novos-260806", sent: 88 },
+    { name: "Clarice 2608 grupo:novos-260807", sent: 57 },
+    { name: "Clarice 2608 grupo:novos-260808", sent: 56 },
+  ];
+  const result = reconcileNovosSentCount(350, campaigns);
+  assert.equal(result.actual, 440);
+  assert.equal(result.expected, 350);
+  assert.equal(result.matchedCampaigns, 5);
+  assert.equal(result.matches, false);
+  assert.ok(/DIVERGE/.test(result.detail));
+  assert.ok(/440/.test(result.detail));
+  assert.ok(/90/.test(result.detail)); // diferença nomeada, não só os dois totais
+});
+
+test("reconcileNovosSentCount: soma bate -> matches=true, detail com ✓", () => {
+  const campaigns: NovosCampaignSentCount[] = [
+    { name: "Clarice 2608 grupo:novos-260805", sent: 75 },
+    { name: "Clarice 2608 grupo:novos-260806", sent: 88 },
+  ];
+  const result = reconcileNovosSentCount(163, campaigns);
+  assert.equal(result.actual, 163);
+  assert.equal(result.matches, true);
+  assert.ok(/✓/.test(result.detail));
+});
+
+test("reconcileNovosSentCount: actual < expected (diferença negativa) -> matches=false, diferença nomeada com sinal", () => {
+  const campaigns: NovosCampaignSentCount[] = [{ name: "Clarice 2608 grupo:novos-260805", sent: 40 }];
+  const result = reconcileNovosSentCount(75, campaigns);
+  assert.equal(result.actual, 40);
+  assert.equal(result.expected, 75);
+  assert.equal(result.matches, false);
+  assert.ok(/DIVERGE/.test(result.detail));
+  assert.ok(/-35/.test(result.detail)); // actual - expected = 40 - 75 = -35
+});
+
+test("reconcileNovosSentCount: ignora campanhas de OUTROS grupos (key com outro prefixo)", () => {
+  const campaigns: NovosCampaignSentCount[] = [
+    { name: "Clarice 2608 grupo:novos-260805", sent: 75 },
+    { name: "Clarice 2607 grupo:ramp-warm-T1-W3", sent: 9999 }, // outro grupo — não deve entrar na soma
+    { name: "Clarice News 2607 envio 8B", sent: 6687 }, // digest mensal, sem "grupo:" — idem
+  ];
+  const result = reconcileNovosSentCount(75, campaigns);
+  assert.equal(result.matchedCampaigns, 1);
+  assert.equal(result.actual, 75);
+  assert.equal(result.matches, true);
+});
+
+test("reconcileNovosSentCount: nenhuma campanha novos-* ainda (1ª rodada) -> actual=0, compara contra expected=0", () => {
+  const result = reconcileNovosSentCount(0, []);
+  assert.equal(result.matchedCampaigns, 0);
+  assert.equal(result.actual, 0);
+  assert.equal(result.matches, true);
 });
