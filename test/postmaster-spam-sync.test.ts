@@ -28,6 +28,8 @@ import {
   buildAveragedEntry,
   parseWindowDaysArg,
   collectWorstCampaignSpam,
+  describeCampaignSpamCollectionLine,
+  type CollectWorstCampaignSpamResult,
 } from "../scripts/postmaster-spam-sync.ts";
 import type { QueryDomainStatsResponseV2 } from "../scripts/lib/postmaster-v2-client.ts";
 import type { WorstCampaignSpam } from "../scripts/lib/postmaster-campaign-spam.ts";
@@ -225,20 +227,23 @@ function mkWorstCampaign(overrides: Partial<WorstCampaignSpam> = {}): WorstCampa
     feedbackLoopId: "11130585_107",
     spamRatePct: 1.39,
     date: "2026-08-02",
+    daysWithData: 1,
     ...overrides,
   };
 }
 
-test("buildAveragedEntry — sem worstCampaign (default, chamadas pré-#4705 com 3 args) não grava os 2 campos novos", () => {
+test("buildAveragedEntry — sem worstCampaign (default, chamadas pré-#4705 com 3 args) não grava os 3 campos novos", () => {
   const entry = buildAveragedEntry([{ date: "2026-07-30", ratio: 0.01 }], NOW, 1);
   assert.equal(entry?.worstCampaignSpamRatePct, undefined);
   assert.equal(entry?.worstCampaignFeedbackLoopId, undefined);
+  assert.equal(entry?.worstCampaignDaysWithData, undefined);
 });
 
-test("buildAveragedEntry — com worstCampaign presente, grava worstCampaignSpamRatePct/worstCampaignFeedbackLoopId (#4705)", () => {
-  const entry = buildAveragedEntry([{ date: "2026-07-30", ratio: 0.0008 }], NOW, 1, mkWorstCampaign());
+test("buildAveragedEntry — com worstCampaign presente, grava worstCampaignSpamRatePct/worstCampaignFeedbackLoopId/worstCampaignDaysWithData (#4705, #4780)", () => {
+  const entry = buildAveragedEntry([{ date: "2026-07-30", ratio: 0.0008 }], NOW, 1, mkWorstCampaign({ daysWithData: 3 }));
   assert.equal(entry?.worstCampaignSpamRatePct, 1.39);
   assert.equal(entry?.worstCampaignFeedbackLoopId, "11130585_107");
+  assert.equal(entry?.worstCampaignDaysWithData, 3);
   // a média de domínio continua gravada normalmente ao lado do pico — os 2
   // números convivem na mesma entry, é resolveSpamSignal quem escolhe.
   assert.equal(entry?.spamRatePct, 0.08);
@@ -282,34 +287,85 @@ test("collectWorstCampaignSpam — reflete o cenário real do #4705: acha o pico
     if (parsed.campaignId === 107) return campaignSpamResponse([{ day: 2, floatValue: 0.0139 }]); // 1,39% — a pior
     return campaignSpamResponse([{ day: 2, floatValue: 0.001 }]); // 0,1% — as outras
   };
-  const worst = await collectWorstCampaignSpam(RANGE, "11130585", queryFeedbackLoopIds, queryCampaignSpamRate);
-  assert.equal(worst?.campaignId, 107);
-  assert.equal(worst?.feedbackLoopId, "11130585_107");
-  assert.equal(worst?.spamRatePct, 1.39);
+  const result = await collectWorstCampaignSpam(RANGE, "11130585", queryFeedbackLoopIds, queryCampaignSpamRate);
+  assert.equal(result.worst?.campaignId, 107);
+  assert.equal(result.worst?.feedbackLoopId, "11130585_107");
+  assert.equal(result.worst?.spamRatePct, 1.39);
+  // #4780: daysWithData da campanha VENCEDORA (1 leitura nesta fixture).
+  assert.equal(result.worst?.daysWithData, 1);
+  assert.equal(result.attempted, 3, "3 campanhas da conta 11130585 (105, 106, 107) — a conta sozinha e o IP não contam");
+  assert.equal(result.failed, 0);
+  assert.equal(result.otherAccountsSeen, 0);
 });
 
-test("collectWorstCampaignSpam — nenhuma campanha atribuível na janela devolve null (fallback pro domínio no chamador)", async () => {
+// #4780: cenário benigno original (issue) — nenhuma campanha, de nenhuma
+// conta, apareceu na janela. `attempted===0` e `otherAccountsSeen===0`
+// juntos são o sinal de "sem campanha atribuível", não confundível com o
+// caso de accountId suspeito abaixo.
+test("collectWorstCampaignSpam — nenhuma campanha atribuível na janela devolve worst=null com attempted=0/otherAccountsSeen=0 (#4780, cenário benigno)", async () => {
   const queryFeedbackLoopIds = async () => feedbackLoopIdResponse([["11130585", "77.32.148.101"]]);
   const queryCampaignSpamRate = async () => campaignSpamResponse([]);
-  const worst = await collectWorstCampaignSpam(RANGE, "11130585", queryFeedbackLoopIds, queryCampaignSpamRate);
-  assert.equal(worst, null);
+  const result = await collectWorstCampaignSpam(RANGE, "11130585", queryFeedbackLoopIds, queryCampaignSpamRate);
+  assert.equal(result.worst, null);
+  assert.equal(result.attempted, 0);
+  assert.equal(result.failed, 0);
+  assert.equal(result.otherAccountsSeen, 0);
 });
 
-test("collectWorstCampaignSpam — accountId filtra campanhas de outra conta ESP", async () => {
+// #4780: cenário "accountId hardcoded desatualizado" — havia campanha
+// atribuível na resposta bruta, só que de OUTRA conta ESP. Antes desta
+// issue, isto produzia o MESMO `null` do cenário benigno acima; agora
+// `otherAccountsSeen>0` com `attempted===0` distingue os dois.
+test("collectWorstCampaignSpam — accountId filtra campanhas de outra conta ESP, mas otherAccountsSeen sinaliza que existiam (#4780)", async () => {
   const queryFeedbackLoopIds = async () => feedbackLoopIdResponse([["99999999_50"]]);
   const queryCampaignSpamRate = async () => campaignSpamResponse([{ day: 1, floatValue: 0.05 }]);
-  const worst = await collectWorstCampaignSpam(RANGE, "11130585", queryFeedbackLoopIds, queryCampaignSpamRate);
-  assert.equal(worst, null);
+  const result = await collectWorstCampaignSpam(RANGE, "11130585", queryFeedbackLoopIds, queryCampaignSpamRate);
+  assert.equal(result.worst, null);
+  assert.equal(result.attempted, 0);
+  assert.equal(result.otherAccountsSeen, 1, "1 campanha (_50) da conta 99999999 apareceu na janela, nenhuma da conta 11130585");
 });
 
-test("collectWorstCampaignSpam — falha numa query de campanha específica é pulada (fail-soft), resto da coleta segue", async () => {
+test("collectWorstCampaignSpam — falha numa query de campanha específica é pulada (fail-soft), resto da coleta segue, failed conta só a que falhou", async () => {
   const queryFeedbackLoopIds = async () => feedbackLoopIdResponse([["11130585_105", "11130585_107"]]);
   const queryCampaignSpamRate = async (parsed: { campaignId: number }) => {
     if (parsed.campaignId === 105) throw new Error("HTTP 429");
     return campaignSpamResponse([{ day: 1, floatValue: 0.02 }]);
   };
-  const worst = await collectWorstCampaignSpam(RANGE, "11130585", queryFeedbackLoopIds, queryCampaignSpamRate);
-  assert.equal(worst?.campaignId, 107, "a campanha que falhou (105) é ignorada, a que respondeu (107) governa");
+  const result = await collectWorstCampaignSpam(RANGE, "11130585", queryFeedbackLoopIds, queryCampaignSpamRate);
+  assert.equal(result.worst?.campaignId, 107, "a campanha que falhou (105) é ignorada, a que respondeu (107) governa");
+  assert.equal(result.attempted, 2);
+  assert.equal(result.failed, 1);
+});
+
+// #4780: CRITICAL do fleet review do #4779 — o cenário "TODAS as queries
+// por-campanha falharam" é real e silencioso, distinto do benigno "sem
+// campanha na janela". `attempted>0 && failed===attempted` com `worst===null`
+// é a assinatura que `main()` usa pra logar diferente (console.warn, não log).
+test("collectWorstCampaignSpam — TODAS as queries de campanha falham: worst=null mas attempted>0 e failed===attempted (#4780, achado CRITICAL)", async () => {
+  const queryFeedbackLoopIds = async () => feedbackLoopIdResponse([["11130585_105", "11130585_107"]]);
+  const queryCampaignSpamRate = async () => {
+    throw new Error("HTTP 429");
+  };
+  const result = await collectWorstCampaignSpam(RANGE, "11130585", queryFeedbackLoopIds, queryCampaignSpamRate);
+  assert.equal(result.worst, null);
+  assert.equal(result.attempted, 2);
+  assert.equal(result.failed, 2, "falha real e silenciosa — não confundir com 'sem campanha na janela'");
+});
+
+// #4785 (pr-test-analyzer, gap do fleet review pré-merge do #4780): todas as
+// queries por-campanha TÊM SUCESSO mas nenhuma produz agregado válido
+// (campaignSpamResponse([]) pra todas) — distinto do "falha" acima (aqui
+// `failed===0`) e do "sem campanha" (aqui `attempted>0`). É o gatilho do
+// ramo de `main()`/`describeCampaignSpamCollectionLine` "N/M campanha(s)
+// consultada(s) com sucesso, mas nenhuma teve leitura na janela".
+test("collectWorstCampaignSpam — todas as queries de campanha têm sucesso mas nenhuma tem leitura na janela: worst=null, attempted>0, failed=0 (#4785)", async () => {
+  const queryFeedbackLoopIds = async () => feedbackLoopIdResponse([["11130585_105", "11130585_107"]]);
+  const queryCampaignSpamRate = async () => campaignSpamResponse([]);
+  const result = await collectWorstCampaignSpam(RANGE, "11130585", queryFeedbackLoopIds, queryCampaignSpamRate);
+  assert.equal(result.worst, null);
+  assert.equal(result.attempted, 2);
+  assert.equal(result.failed, 0, "as queries tiveram sucesso — não é falha, é ausência de leitura na janela");
+  assert.equal(result.otherAccountsSeen, 0);
 });
 
 test("collectWorstCampaignSpam — falha na query BASE de FEEDBACK_LOOP_ID propaga (o chamador, main(), decide o fail-soft de nível superior)", async () => {
@@ -321,6 +377,67 @@ test("collectWorstCampaignSpam — falha na query BASE de FEEDBACK_LOOP_ID propa
     () => collectWorstCampaignSpam(RANGE, "11130585", queryFeedbackLoopIds, queryCampaignSpamRate),
     /SERVICE_DISABLED/,
   );
+});
+
+// ── describeCampaignSpamCollectionLine (#4785, fix do achado CRITICAL do
+// fleet review pré-merge do #4780) ──
+
+const BENIGN_DEFAULT: CollectWorstCampaignSpamResult = { worst: null, attempted: 0, failed: 0, otherAccountsSeen: 0 };
+
+test("describeCampaignSpamCollectionLine — baseQueryFailed=true NUNCA cai no ramo benigno, mesmo com o shape default de campaignResult (#4785, CRITICAL)", () => {
+  // Este é exatamente o shape que `campaignResult` assume quando a query
+  // BASE (queryFeedbackLoopIds) lança dentro de collectWorstCampaignSpam —
+  // idêntico ao cenário benigno "sem campanha atribuível". Sem o parâmetro
+  // baseQueryFailed, isto cairia no ramo `attempted === 0` e mascararia o
+  // console.warn real já emitido pelo catch de main().
+  const line = describeCampaignSpamCollectionLine(BENIGN_DEFAULT, true);
+  assert.equal(line.level, "warn");
+  assert.doesNotMatch(
+    line.message,
+    /^\[postmaster-spam-sync\] sem campanha atribuível/,
+    "não pode reusar literalmente a mensagem benigna 'sem campanha atribuível na janela'",
+  );
+  assert.match(line.message, /query base de FEEDBACK_LOOP_ID falhou/);
+  assert.match(line.message, /falha real/);
+});
+
+test("describeCampaignSpamCollectionLine — baseQueryFailed=false + attempted===0 + otherAccountsSeen===0 → mensagem benigna 'sem campanha atribuível'", () => {
+  const line = describeCampaignSpamCollectionLine(BENIGN_DEFAULT, false);
+  assert.equal(line.level, "log");
+  assert.match(line.message, /sem campanha atribuível/);
+});
+
+test("describeCampaignSpamCollectionLine — worst presente → mensagem de pico achado (console.log, caminho normal)", () => {
+  const result: CollectWorstCampaignSpamResult = {
+    worst: { campaignId: 107, feedbackLoopId: "11130585_107", spamRatePct: 1.39, date: "2026-08-02", daysWithData: 1 },
+    attempted: 3,
+    failed: 0,
+    otherAccountsSeen: 0,
+  };
+  const line = describeCampaignSpamCollectionLine(result, false);
+  assert.equal(line.level, "log");
+  assert.match(line.message, /pior campanha na janela.*11130585_107.*1\.390%/s);
+});
+
+test("describeCampaignSpamCollectionLine — attempted>0 && failed===attempted → warn 'TODAS as queries falharam'", () => {
+  const result: CollectWorstCampaignSpamResult = { worst: null, attempted: 2, failed: 2, otherAccountsSeen: 0 };
+  const line = describeCampaignSpamCollectionLine(result, false);
+  assert.equal(line.level, "warn");
+  assert.match(line.message, /TODAS as 2 campanha/);
+});
+
+test("describeCampaignSpamCollectionLine — attempted===0 && otherAccountsSeen>0 → warn 'accountId hardcoded desatualizado'", () => {
+  const result: CollectWorstCampaignSpamResult = { worst: null, attempted: 0, failed: 0, otherAccountsSeen: 1 };
+  const line = describeCampaignSpamCollectionLine(result, false);
+  assert.equal(line.level, "warn");
+  assert.match(line.message, /OUTRA conta ESP/);
+});
+
+test("describeCampaignSpamCollectionLine — attempted>0, failed<attempted, worst===null → log 'consultadas com sucesso, sem leitura'", () => {
+  const result: CollectWorstCampaignSpamResult = { worst: null, attempted: 3, failed: 1, otherAccountsSeen: 0 };
+  const line = describeCampaignSpamCollectionLine(result, false);
+  assert.equal(line.level, "log");
+  assert.match(line.message, /2\/3 campanha\(s\) consultada\(s\) com sucesso/);
 });
 
 // ── parseWindowDaysArg ──

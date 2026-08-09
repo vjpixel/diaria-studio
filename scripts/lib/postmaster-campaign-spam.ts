@@ -162,6 +162,17 @@ export interface WorstCampaignSpam {
   spamRatePct: number;
   /** YYYY-MM-DD do dia em que o pico ocorreu (`peakDate` da campanha vencedora). */
   date: string;
+  /**
+   * #4780: cobertura da janela da campanha VENCEDORA (`daysWithData` de
+   * `CampaignSpamAggregate`, 1 linha acima) — sem isso, um pico de 1 dia
+   * isolado de uma campanha pequena grava `worstCampaignSpamRatePct` com a
+   * mesma confiança visual de um pico sustentado por vários dias, e não há
+   * jeito de diferenciar os dois olhando só o número. Não é um GUARD (não
+   * descarta nem rebaixa o pico) — é dado de auditoria pro editor decidir,
+   * espelhando o campo equivalente que já existe pro agregado de domínio
+   * (`PostmasterSpamEntry.daysWithData`).
+   */
+  daysWithData: number;
 }
 
 /**
@@ -181,5 +192,6 @@ export function findWorstCampaignSpam(aggregates: CampaignSpamAggregate[]): Wors
     feedbackLoopId: worst.feedbackLoopId,
     spamRatePct: worst.peakSpamRatePct,
     date: worst.peakDate,
+    daysWithData: worst.daysWithData,
   };
 }
