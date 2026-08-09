@@ -323,4 +323,40 @@ describe("buildUpstreamErrorCampaignsJsonFallback (#4251) — /api/campaigns", (
     const body = await resp!.json();
     assert.strictEqual(body.length, 2);
   });
+
+  // #4786: includeScheduled anexa `scheduled` (status=queued) do mesmo
+  // payload stale -- default (ausente/false) preserva o shape de sempre.
+  it("includeScheduled=false (default) NÃO anexa scheduled, mesmo presente no KV", async () => {
+    const kv = makeKv({
+      [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
+        campaigns: [staleCampaign],
+        scheduled: [{ ...staleCampaign, id: 999, status: "queued", sentDate: null, scheduledAt: "2026-08-12T09:00:00Z" }],
+      }),
+    });
+    const resp = await buildUpstreamErrorCampaignsJsonFallback({ STATS_CACHE: kv }, 5, 403);
+    const body = await resp!.json();
+    assert.strictEqual(body.length, 1, "sem includeScheduled, só a campanha enviada deve aparecer");
+  });
+
+  it("includeScheduled=true anexa scheduled do mesmo payload stale", async () => {
+    const kv = makeKv({
+      [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
+        campaigns: [staleCampaign],
+        scheduled: [{ ...staleCampaign, id: 999, status: "queued", sentDate: null, scheduledAt: "2026-08-12T09:00:00Z" }],
+      }),
+    });
+    const resp = await buildUpstreamErrorCampaignsJsonFallback({ STATS_CACHE: kv }, 5, 403, true);
+    const body = await resp!.json();
+    assert.strictEqual(body.length, 2, "com includeScheduled, enviada + agendada devem aparecer");
+    assert.ok(body.some((c: { id: number }) => c.id === 999), "a campanha agendada (id 999) deveria estar presente");
+  });
+
+  it("includeScheduled=true com scheduled ausente/não-array no KV → nunca lança, só não anexa nada", async () => {
+    const kv = makeKv({
+      [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({ campaigns: [staleCampaign] }), // sem `scheduled`
+    });
+    const resp = await buildUpstreamErrorCampaignsJsonFallback({ STATS_CACHE: kv }, 5, 403, true);
+    const body = await resp!.json();
+    assert.strictEqual(body.length, 1);
+  });
 });

@@ -60,6 +60,7 @@ import {
   proposeVolumes,
   recommendAbcAction,
   renderWaveProposal,
+  summarizeAvailableFirstSendByCohort,
   summarizeCycleSends,
   summarizeMvBacklog,
   type WaveProposal,
@@ -157,7 +158,13 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
   const apiKey = process.env.BREVO_CLARICE_API_KEY;
 
   // 1. Dashboard ao vivo — fonte primária, nunca memória de sessão.
-  const res = await fetch(`${opts.dashboardUrl}/api/campaigns?limit=${DEFAULT_DASHBOARD_LIMIT}`);
+  // #4786: `includeScheduled=1` — sem isso, `/api/campaigns` só devolve
+  // `status=sent` (filtro deliberado do dashboard, ver docstring de
+  // `buildCampaignsResponse` no Worker) e `state.scheduledCount` fica
+  // estruturalmente sempre 0, mesmo com campanha `queued` real agendada —
+  // a verificação final da skill nunca enxergava a própria onda que acabou
+  // de agendar.
+  const res = await fetch(`${opts.dashboardUrl}/api/campaigns?limit=${DEFAULT_DASHBOARD_LIMIT}&includeScheduled=1`);
   if (!res.ok) {
     throw new Error(
       `GET ${opts.dashboardUrl}/api/campaigns falhou (${res.status}). ` +
@@ -213,7 +220,11 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
     // Sem chave a checagem nem foi tentada — mesma consequência prática.
     committedLookupFailed = true;
   }
-  const availableFirstSend = excludeCommittedToQueuedCampaigns(segmentRampWarm(rows), committed).length;
+  const availableFirstSendRows = excludeCommittedToQueuedCampaigns(segmentRampWarm(rows), committed);
+  const availableFirstSend = availableFirstSendRows.length;
+  // #4787: composição por safra da MESMA fila que `availableFirstSend` conta
+  // — alimenta o gatilho proativo de inversão de safra em buildWaveProposal.
+  const availableFirstSendByCohort = summarizeAvailableFirstSendByCohort(availableFirstSendRows);
 
   // 5. Crédito Brevo — validado ANTES de qualquer proposta de escrita.
   let brevoCredits: number | null = null;
@@ -240,6 +251,7 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
     abc,
     state,
     availableFirstSend,
+    availableFirstSendByCohort,
     mvBacklog: summarizeMvBacklog(rows),
     nonOpeners: measureNonOpenerExposure(rows),
     brevoCredits,

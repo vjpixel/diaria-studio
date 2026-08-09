@@ -1278,20 +1278,28 @@ export async function buildUpstreamErrorFallback(
  * (`isNetworkOrTimeoutError`), que por definição não tem status HTTP real (a
  * requisição nunca chegou a receber uma Response). `X-Dashboard-Upstream-Status`
  * carrega esse literal nesse caso, em vez de inventar um número enganoso.
+ *
+ * `includeScheduled` (#4786): mesmo racional/mecanismo de
+ * `buildInflightCoalescedCampaignsJson` -- anexa `scheduled` do mesmo payload
+ * stale quando `true`. `false` (default) preserva o shape de antes.
  */
 export async function buildUpstreamErrorCampaignsJsonFallback(
   env: Pick<Env, "STATS_CACHE">,
   limit: number,
   status: number | "network_error",
+  includeScheduled = false,
 ): Promise<Response | null> {
   if (!env.STATS_CACHE) return null;
   const staleCampaignsRaw = (await env.STATS_CACHE
     .get(LASTGOOD_CAMPAIGNS_KEY, "json")
-    .catch(() => null)) as { campaigns?: unknown[]; generatedAt?: unknown } | null;
+    .catch(() => null)) as { campaigns?: unknown[]; scheduled?: unknown[]; generatedAt?: unknown } | null;
   const rawCampaigns = staleCampaignsRaw?.campaigns;
   if (!Array.isArray(rawCampaigns) || rawCampaigns.length === 0) return null;
+  const rawScheduled =
+    includeScheduled && Array.isArray(staleCampaignsRaw?.scheduled) ? staleCampaignsRaw!.scheduled! : [];
   const staleGeneratedAt = typeof staleCampaignsRaw?.generatedAt === "string" ? staleCampaignsRaw.generatedAt : null;
-  return new Response(JSON.stringify(rawCampaigns.slice(0, limit), null, 2), {
+  const merged = [...rawCampaigns.slice(0, limit), ...rawScheduled];
+  return new Response(JSON.stringify(merged, null, 2), {
     headers: {
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
@@ -1518,18 +1526,30 @@ export async function buildInflightCoalescedFallback(
  * `dash:lastgood:campaigns` pela rota `/` -- mesmo shape (`CampaignRow[]`),
  * já que ambas as rotas chamam `fetchRecentCampaigns`. `null` quando não há
  * stale bom (caller deve prosseguir com o live-fetch, fail-open).
+ *
+ * `includeScheduled` (#4786): quando `true`, anexa também `scheduled`
+ * (campanhas `status=queued`) do MESMO payload stale -- já gravado ali pela
+ * rota `/`, ver `LastGoodCampaignsPayload`. Ausente/não-array vira `[]`
+ * silenciosamente (degradação aceitável: servir só as enviadas no caminho
+ * stale nunca é PIOR que o comportamento pré-#4786). `false` (default)
+ * preserva o shape exato de antes -- consumidor que não pediu agendadas não
+ * as vê aparecer por baixo dos panos.
  */
 export async function buildInflightCoalescedCampaignsJson(
   env: Pick<Env, "STATS_CACHE">,
   limit: number,
+  includeScheduled = false,
 ): Promise<Response | null> {
   if (!env.STATS_CACHE) return null;
   const staleCampaignsRaw = (await env.STATS_CACHE
     .get(LASTGOOD_CAMPAIGNS_KEY, "json")
-    .catch(() => null)) as { campaigns?: unknown[] } | null;
+    .catch(() => null)) as { campaigns?: unknown[]; scheduled?: unknown[] } | null;
   const rawCampaigns = staleCampaignsRaw?.campaigns;
   if (!Array.isArray(rawCampaigns) || rawCampaigns.length === 0) return null;
-  return new Response(JSON.stringify(rawCampaigns.slice(0, limit), null, 2), {
+  const rawScheduled =
+    includeScheduled && Array.isArray(staleCampaignsRaw?.scheduled) ? staleCampaignsRaw!.scheduled! : [];
+  const merged = [...rawCampaigns.slice(0, limit), ...rawScheduled];
+  return new Response(JSON.stringify(merged, null, 2), {
     headers: {
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
