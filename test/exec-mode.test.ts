@@ -15,7 +15,12 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { detectExecMode, detectTaskScheduler, type ExecMode } from "../scripts/lib/exec-mode.ts";
+import {
+  detectExecMode,
+  detectTaskScheduler,
+  commandExistsSync,
+  type ExecMode,
+} from "../scripts/lib/exec-mode.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers de mock
@@ -139,6 +144,68 @@ describe("detectTaskScheduler (#4800)", () => {
   it("usa process.platform e checagem real quando opções são omitidas — não quebra", () => {
     const result = detectTaskScheduler();
     assert.ok(["windows-task-scheduler", "systemd", "none"].includes(result));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Testes do helper commandExistsSync (#4811 — achado 3 do silent-failure-hunter)
+// ---------------------------------------------------------------------------
+
+describe("commandExistsSync (#4811)", () => {
+  it("execução bem-sucedida → true, sem warning", () => {
+    let warned = false;
+    const result = commandExistsSync(
+      "schtasks",
+      () => undefined,
+      () => {
+        warned = true;
+      },
+    );
+    assert.equal(result, true);
+    assert.equal(warned, false);
+  });
+
+  it("ENOENT (comando ausente) → false, sem warning", () => {
+    let warned = false;
+    const execFn = () => {
+      const err = new Error("mock ENOENT") as NodeJS.ErrnoException;
+      err.code = "ENOENT";
+      throw err;
+    };
+    const result = commandExistsSync("schtasks", execFn, () => {
+      warned = true;
+    });
+    assert.equal(result, false);
+    assert.equal(warned, false);
+  });
+
+  it("erro não-ENOENT (ex: EACCES) → true, MAS loga warning em vez de engolir o erro em silêncio", () => {
+    let warnedMessage: string | null = null;
+    const execFn = () => {
+      const err = new Error("mock EACCES") as NodeJS.ErrnoException;
+      err.code = "EACCES";
+      throw err;
+    };
+    const result = commandExistsSync("schtasks", execFn, (message) => {
+      warnedMessage = message;
+    });
+    assert.equal(result, true);
+    assert.ok(warnedMessage !== null, "esperava que warnFn fosse chamado");
+    assert.match(warnedMessage!, /schtasks/);
+    assert.match(warnedMessage!, /EACCES/);
+  });
+
+  it("erro sem .code (ex: exit code != 0) → true, warning nomeia 'desconhecido'", () => {
+    let warnedMessage: string | null = null;
+    const execFn = () => {
+      throw new Error("mock exit code 1, sem .code");
+    };
+    const result = commandExistsSync("systemctl", execFn, (message) => {
+      warnedMessage = message;
+    });
+    assert.equal(result, true);
+    assert.ok(warnedMessage !== null);
+    assert.match(warnedMessage!, /desconhecido/);
   });
 });
 

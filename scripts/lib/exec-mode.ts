@@ -93,11 +93,16 @@ export function detectExecMode(opts: ExecModeOptions = {}): ExecMode {
  *
  * A confusão dos dois eixos era a causa raiz do #4800: numa máquina Linux
  * com `data/` presente (OneDrive via symlink), `detectExecMode()` responde
- * `'local'` corretamente, mas dois consumidores (`check-watchdog-armed.ts`,
- * `pending-scheduled-tasks.ts`) inferiam dali "então é Windows" e tentavam
- * `schtasks`/`Get-ScheduledTask`, que não existem lá — dando um falso
+ * `'local'` corretamente, mas `check-watchdog-armed.ts` inferia dali "então
+ * é Windows" e tentava `schtasks`, que não existe lá — dando um falso
  * negativo ("watchdog não armado") quando a verdade era "não foi possível
- * verificar nesta plataforma".
+ * verificar nesta plataforma". `pending-scheduled-tasks.ts` (`Get-ScheduledTask`)
+ * **não** tinha esse bug de falso-negativo — seu fail-soft já distinguia
+ * "consulta falhou" (`pending: null`) de "0 pendências" (`pending: []`, #738)
+ * antes deste eixo existir. Ele não usa `detectTaskScheduler()` pelo mesmo
+ * motivo que nunca precisou dele: ganho é só de paridade de MENSAGEM (dizer
+ * "esta máquina roda systemd" em vez de um genérico "PowerShell
+ * indisponível"), não correção de um bug de correção que não existia lá.
  */
 export type TaskSchedulerKind = "windows-task-scheduler" | "systemd" | "none";
 
@@ -118,20 +123,40 @@ const COMMAND_PROBE_ARGS: Record<string, string[]> = {
   systemctl: ["--version"],
 };
 
+/** Substituto injetável de `execFileSync` para testar `commandExistsSync`
+ * sem spawnar processos reais. Em runtime, omitir (usa `execFileSync` real). */
+export type ExecFileSyncFn = (cmd: string, args: string[], opts: { stdio: "ignore" }) => unknown;
+
 /**
  * Checa se `cmd` existe no PATH tentando executá-lo com um argumento de
  * sondagem inofensivo. `ENOENT` (comando não encontrado) → `false`; qualquer
  * outro resultado (sucesso, ou erro de exit code != 0 por argumento
  * inesperado) → `true`, porque nesse caso o binário FOI encontrado e
  * executado — só a sondagem em si não necessariamente retornou 0.
+ *
+ * `execFn`/`warnFn` são injetáveis só para teste (ver `test/exec-mode.test.ts`
+ * — cobre o branch não-ENOENT, #4811); em runtime, omitir ambos.
  */
-function commandExistsSync(cmd: string): boolean {
+export function commandExistsSync(
+  cmd: string,
+  execFn: ExecFileSyncFn = execFileSync as unknown as ExecFileSyncFn,
+  warnFn: (message: string) => void = console.warn,
+): boolean {
   try {
-    execFileSync(cmd, COMMAND_PROBE_ARGS[cmd] ?? [], { stdio: "ignore" });
+    execFn(cmd, COMMAND_PROBE_ARGS[cmd] ?? [], { stdio: "ignore" });
     return true;
   } catch (e: unknown) {
     const err = e as { code?: string };
-    return err.code !== "ENOENT";
+    if (err.code === "ENOENT") return false;
+    // Encontrado no PATH mas a sondagem falhou por outro motivo (EACCES,
+    // EPERM de política de execução restrita, binário corrompido, exit code
+    // != 0 inesperado). Ainda conta como "comando existe" — só não deixar o
+    // erro passar em silêncio, porque um probe assim pode mascarar um
+    // agendador reportado incorretamente como disponível (ver #4800).
+    warnFn(
+      `[exec-mode] sondagem de '${cmd}' falhou por motivo não-ENOENT (${err.code ?? "desconhecido"}) — tratando como "comando existe" (encontrado, mas não invocável de forma limpa).`,
+    );
+    return true;
   }
 }
 
