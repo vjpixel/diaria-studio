@@ -128,6 +128,8 @@ export function renderGeoFaqStyles(): string {
   .geo-faq-item h2 { font-family: Georgia, 'Times New Roman', serif; font-size: 20px; font-weight: 600;
     line-height: 1.3; margin: 0 0 8px; color: var(--ink); }
   .geo-faq-item p { font-size: 16px; line-height: 1.6; margin: 0; color: var(--ink); }
+  .geo-faq-item p a { color: var(--teal); text-decoration: underline; text-decoration-color: var(--rule); text-underline-offset: 2px; }
+  .geo-faq-item p a:hover { text-decoration-color: var(--teal); }
   .geo-byline { font-size: 13px; color: var(--ink); margin: 8px 0 0; }
   .geo-byline a { color: var(--teal); text-decoration: none; }
   .geo-byline a:hover { text-decoration: underline; }

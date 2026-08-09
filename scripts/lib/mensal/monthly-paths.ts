@@ -37,6 +37,7 @@ import { getArg, parseArgs } from "../cli-args.ts";
 import {
   isValidCycle,
   clariceCycleDir,
+  clariceSegmentsDir,
   cycleHasClariceActivity,
   listClariceCycleDirs,
 } from "../clarice-paths.ts";
@@ -290,38 +291,140 @@ export function hasEiaGabarito(cycle: string): boolean {
 }
 
 /**
+ * Lê e valida um array de entradas de campanha (`{subject?}`) de `path` —
+ * base compartilhada por `resolveSubjectFromCampaignsSummary` (lê
+ * `campaigns-summary.json`) e `resolveSubjectFromGroupCampaigns` (lê
+ * `group-campaigns.json`). Arquivo genuinamente ausente é sinal VÁLIDO
+ * ("ainda não tem dado", ex: ciclo novo, ou empate no A/B/C sem vencedor
+ * ainda) e devolve `undefined` sem lançar. JSON corrompido/truncado ou
+ * shape != array é uma anomalia DIFERENTE (arquivo escrito pela metade,
+ * permissão, disco cheio) e LANÇA — mesmo padrão que `clarice-schedule-group.ts`
+ * (linha ~880) já aplica ao reler o MESMO arquivo `group-campaigns.json`
+ * (`throw new Error(\`group-campaigns.json corrompido...\`)`).
+ *
+ * #4794 achado 1 (fleet review da #4783): a versão anterior desta função
+ * envolvia TUDO — `existsSync`, `readFileSync`, `JSON.parse`, a contagem —
+ * num único `try { } catch { return undefined; }`, colapsando "corrompido",
+ * "erro de permissão", "shape inesperado" e "arquivo ausente" no MESMO
+ * `undefined` que também significa "empate no A/B/C" — 3 sinais bem
+ * diferentes indistinguíveis pelo caller, numa pipeline (`/diaria-clarice-novos`)
+ * que roda SEM gate humano. Separar aqui permite o caller no boundary
+ * (`clarice-novos-resolve-cycle.ts`) decidir se propaga/aborta — a
+ * biblioteca não decide isso vários níveis abaixo.
+ */
+function readCampaignEntriesOrThrow(path: string): Array<{ subject?: unknown }> | undefined {
+  if (!existsSync(path)) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (e) {
+    throw new Error(`arquivo de campanhas corrompido (JSON inválido): ${path}\n${String(e)}`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`arquivo de campanhas com shape inesperado (esperava array): ${path}`);
+  }
+  return parsed as Array<{ subject?: unknown }>;
+}
+
+/**
+ * Conta `entries` por `subject` e exige **pluralidade estrita** (o vencedor
+ * precisa ter contagem ESTRITAMENTE MAIOR que o 2º colocado) — decisão de
+ * design deliberada, não "mais frequente" ingênuo: durante a fase balanceada
+ * de um teste A/B/C as células empatam (ex: 5 campanhas por variante em
+ * 2607-08 d1–d5) e nesse momento ninguém — automação inclusa — deveria
+ * decidir sozinho qual "venceu". Só depois que uma variante abre vantagem
+ * clara (rollout solo, ex: A ficou 8×5×5 em d6–d8) é que resolve
+ * automaticamente. Sem pluralidade estrita (empate, ou nenhuma entrada com
+ * `subject`) -> `undefined`, mesmo resultado de "assunto desconhecido" que
+ * o caller já trata (mantém o abort do #4621 pedindo `--subject`).
+ *
+ * Compartilhada pelas duas funções de leitura abaixo (#4794 achado 4 do
+ * fleet review — a versão original de `resolveSubjectFromCampaignsSummary`
+ * usava "mais frequente, o primeiro que bater o máximo vence", SEM essa
+ * proteção, deixando o mesmo cenário de decidir sozinho num empate A/B/C
+ * possível pelo caminho canônico, tentado primeiro por `resolveSubjectForCycle`).
+ *
+ * Entradas sem `subject` são contadas e reportadas via `console.error` — o
+ * schema de escrita (`CampaignEntry.subject: string`, obrigatório) garante
+ * que isso não deveria acontecer em dado são, então uma entrada sem
+ * `subject` é ela mesma sinal de anomalia; descartá-la em silêncio poderia
+ * inflar artificialmente a pluralidade de um vencedor (#4794 achado 2).
+ * Não aborta — só torna o descarte visível.
+ */
+function resolveWinningSubjectByStrictPlurality(entries: Array<{ subject?: unknown }>, path: string): string | undefined {
+  const counts = new Map<string, number>();
+  let skipped = 0;
+  for (const c of entries) {
+    const s = typeof c.subject === "string" ? c.subject.trim() : "";
+    if (!s) {
+      skipped++;
+      continue;
+    }
+    counts.set(s, (counts.get(s) ?? 0) + 1);
+  }
+  if (skipped > 0) {
+    console.error(`⚠️  ${skipped} entrada(s) sem 'subject' ignorada(s) ao resolver assunto vencedor em ${path}`);
+  }
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  if (sorted.length === 0) return undefined;
+  const [bestSubject, bestCount] = sorted[0];
+  const secondCount = sorted.length > 1 ? sorted[1][1] : 0;
+  return bestCount > secondCount ? bestSubject : undefined; // empate (sem pluralidade estrita) — não resolve
+}
+
+/**
  * Resolve o assunto vencedor A/B/C já usado nos envios canônicos do ciclo —
  * lê `{ciclo}/sends/cells/campaigns-summary.json` (escrito por
  * `clarice-schedule-sends.ts --create`, ver `CampaignEntry.subject`) e
- * devolve o assunto mais frequente entre as entradas (as campanhas de um
- * mesmo ciclo compartilham o mesmo assunto vencedor, salvo blocos-célula
- * A/B/C ainda não resolvidos). `undefined` se o arquivo não existir, estiver
- * vazio, ou nenhuma entrada tiver `subject`.
+ * devolve o assunto vencedor por pluralidade estrita (ver
+ * `resolveWinningSubjectByStrictPlurality`). `undefined` se o arquivo não
+ * existir, estiver vazio, ou não houver vencedor por pluralidade estrita.
+ * JSON corrompido/shape inesperado LANÇA — ver `readCampaignEntriesOrThrow`.
+ *
+ * `baseDir` opcional (default = `CLARICE_BASE` real) — só pra teste apontar
+ * pra um tmpdir isolado, mesmo padrão de `clariceCycleDir(cycle, baseDir?)`
+ * (#4207).
  */
-export function resolveSubjectFromCampaignsSummary(cycle: string): string | undefined {
-  try {
-    const path = resolve(clariceCycleDir(cycle), "sends", "cells", "campaigns-summary.json");
-    if (!existsSync(path)) return undefined;
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as Array<{ subject?: string }>;
-    if (!Array.isArray(parsed)) return undefined;
-    const counts = new Map<string, number>();
-    for (const c of parsed) {
-      const s = (c.subject ?? "").trim();
-      if (!s) continue;
-      counts.set(s, (counts.get(s) ?? 0) + 1);
-    }
-    let best: string | undefined;
-    let bestCount = 0;
-    for (const [s, n] of counts) {
-      if (n > bestCount) {
-        best = s;
-        bestCount = n;
-      }
-    }
-    return best;
-  } catch {
-    return undefined;
-  }
+export function resolveSubjectFromCampaignsSummary(cycle: string, baseDir?: string): string | undefined {
+  const path = resolve(clariceCycleDir(cycle, baseDir), "sends", "cells", "campaigns-summary.json");
+  const entries = readCampaignEntriesOrThrow(path);
+  if (!entries) return undefined;
+  return resolveWinningSubjectByStrictPlurality(entries, path);
+}
+
+/**
+ * Resolve o assunto vencedor a partir de `{ciclo}/segments/group-campaigns.json`
+ * (escrito por `clarice-schedule-group.ts --create`, ver `CampaignEntry.subject`
+ * em `clarice-schedule-group.ts`) — o fluxo `--group` NUNCA escreve em
+ * `campaigns-summary.json` (#4783, achado ao vivo 260808: ciclo `2607-08`
+ * montado inteiro via `--group` abortava toda rodada de `/diaria-clarice-novos`
+ * pedindo `--subject` explícito). Vencedor por pluralidade estrita — ver
+ * `resolveWinningSubjectByStrictPlurality`. JSON corrompido/shape inesperado
+ * LANÇA — ver `readCampaignEntriesOrThrow`.
+ *
+ * `baseDir` opcional — ver docstring de `resolveSubjectFromCampaignsSummary`.
+ */
+export function resolveSubjectFromGroupCampaigns(cycle: string, baseDir?: string): string | undefined {
+  const path = resolve(clariceSegmentsDir(cycle, baseDir), "group-campaigns.json");
+  const entries = readCampaignEntriesOrThrow(path);
+  if (!entries) return undefined;
+  return resolveWinningSubjectByStrictPlurality(entries, path);
+}
+
+/**
+ * Resolve o assunto do ciclo com a PRECEDÊNCIA correta entre os dois fluxos
+ * de envio (#4783): `campaigns-summary.json` (pipeline canônico multi-bloco,
+ * `clarice-schedule-sends.ts --create`) vence quando existir e tiver
+ * `subject` — o fallback pra `group-campaigns.json` (fluxo `--group`,
+ * `clarice-schedule-group.ts --create`) só entra quando o primeiro está
+ * ausente/incompleto. Único ponto usado por `resolveLatestMonthlyCycleDeps`
+ * (produção) — mantém as duas funções de leitura acima testáveis/chamáveis
+ * isoladamente.
+ *
+ * `baseDir` opcional — ver docstring de `resolveSubjectFromCampaignsSummary`.
+ */
+export function resolveSubjectForCycle(cycle: string, baseDir?: string): string | undefined {
+  return resolveSubjectFromCampaignsSummary(cycle, baseDir) ?? resolveSubjectFromGroupCampaigns(cycle, baseDir);
 }
 
 export interface MonthlyCycleReadiness {
@@ -378,7 +481,7 @@ export function resolveLatestMonthlyCycle(
     const reasons: string[] = [];
     if (!hasPreview) reasons.push("cloudflare-preview.html ausente/vazio/sem {{ unsubscribe }}");
     if (!hasEia) reasons.push("gabarito É IA? não gravado");
-    if (!subject) reasons.push("assunto desconhecido (sem --subject nem campanha prévia em campaigns-summary.json)");
+    if (!subject) reasons.push("assunto desconhecido (sem --subject, sem campanha prévia em campaigns-summary.json, e group-campaigns.json sem vencedor por pluralidade estrita)");
     const ready = hasPreview && hasEia && !!subject;
     checked.push({ cycle, ready, hasPreview, hasEiaGabarito: hasEia, subject, reasons });
     if (ready) {
@@ -403,7 +506,7 @@ export function resolveLatestMonthlyCycleDeps(): ResolveLatestMonthlyCycleDeps {
     },
     hasPreviewWithUnsubscribe: hasReadyPreviewHtml,
     hasEiaGabarito: hasEiaGabarito,
-    resolveSubject: resolveSubjectFromCampaignsSummary,
+    resolveSubject: resolveSubjectForCycle,
   };
 }
 
