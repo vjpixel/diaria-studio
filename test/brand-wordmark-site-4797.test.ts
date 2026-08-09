@@ -96,6 +96,26 @@ describe("renderHubPage — introParagraph ganha o wordmark (#4797)", () => {
   });
 });
 
+describe("renderHubPage — metaDescription NUNCA ganha o wordmark (#4797, achado do fleet review pré-merge da PR #4822)", () => {
+  it("metaDescription com 'diar.ia.br' vira texto plano no atributo content= — sem <strong>/<span> quebrando a tag", () => {
+    const hub = minimalHub("Intro sem menção à marca.");
+    hub.metaDescription = "A diar.ia.br cobre inteligência artificial todos os dias.";
+    const html = renderHubPage(hub);
+    const metaDescriptionTag = html.match(/<meta name="description" content="[^"]*">/)?.[0];
+    const ogDescriptionTag = html.match(/<meta property="og:description" content="[^"]*">/)?.[0];
+    assert.ok(metaDescriptionTag, "tag <meta name=\"description\"> deve existir");
+    assert.ok(ogDescriptionTag, "tag <meta property=\"og:description\"> deve existir");
+    assert.equal(
+      metaDescriptionTag,
+      '<meta name="description" content="A diar.ia.br cobre inteligência artificial todos os dias.">',
+    );
+    for (const tag of [metaDescriptionTag!, ogDescriptionTag!]) {
+      assert.ok(!tag.includes("<strong>"), `${tag} não deve conter <strong> — quebraria o atributo content=`);
+      assert.ok(!tag.includes('<span style'), `${tag} não deve conter <span style — quebraria o atributo content=`);
+    }
+  });
+});
+
 describe("mecanismo de garantia por superfície (#4797) — hub, arquivo, livros, cursos", () => {
   it("hub temático: FAQ (geo-faq.ts) e rodapé (curadoria-page.ts) carregam o wordmark", () => {
     const html = renderHubPage(minimalHub("Intro sem menção à marca."));
