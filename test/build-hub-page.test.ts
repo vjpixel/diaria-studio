@@ -252,8 +252,8 @@ describe("buildOpenaiChatgptFaq (#4790 achado 1) — regression: manchete de inc
     const faq = buildOpenaiChatgptFaq(openaiChatgptSourcesRaw as never);
     const gpt5xFaq = faq.find((f) => f.question.includes("Quantas versões do GPT-5"));
     assert.ok(gpt5xFaq, 'FAQ não tem a pergunta "Quantas versões do GPT-5..."');
-    assert.match(gpt5xFaq.answer, /A diária contou 6 manchetes/);
-    assert.doesNotMatch(gpt5xFaq.answer, /A diária contou 7 manchetes/);
+    assert.match(gpt5xFaq.answer, /A diar\.ia\.br contou 6 manchetes/);
+    assert.doesNotMatch(gpt5xFaq.answer, /A diar\.ia\.br contou 7 manchetes/);
   });
 
   it("com fixture sintético: uma manchete de incidente de segurança não conta como lançamento de versão", () => {
@@ -278,6 +278,6 @@ describe("buildOpenaiChatgptFaq (#4790 achado 1) — regression: manchete de inc
     const faq = buildOpenaiChatgptFaq(synthetic);
     const gpt5xFaq = faq.find((f) => f.question.includes("Quantas versões do GPT-5"));
     assert.ok(gpt5xFaq);
-    assert.match(gpt5xFaq.answer, /A diária contou 1 manchetes/);
+    assert.match(gpt5xFaq.answer, /A diar\.ia\.br contou 1 manchetes/);
   });
 });
