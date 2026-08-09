@@ -15,6 +15,8 @@
 // chat drawer + `/diaria-develop` digitado direto), e o preview ficou órfão
 // sem a execução real por trás.
 
+import { issuesFilterActive, prsFilterActive } from "./triagem-filters.js";
+
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
   fetchLabel: document.getElementById("fetch-label"),
@@ -202,8 +204,7 @@ function renderIssuesTable() {
       (!filters.dispatch || i.dispatchTrack === filters.dispatch),
   );
   el.issuesCount.textContent = String(filtered.length);
-  const issuesFilterActive = Boolean(filters.priority || filters.dispatch || filters.labels.size > 0);
-  updateEmptyState(el.issuesEmpty, filtered.length, data.issues.length, issuesFilterActive, "Nenhuma issue aberta.");
+  updateEmptyState(el.issuesEmpty, filtered.length, data.issues.length, issuesFilterActive(filters), "Nenhuma issue aberta.");
   el.issuesBody.innerHTML = "";
   for (const i of filtered) {
     const tr = document.createElement("tr");
@@ -228,8 +229,7 @@ function renderPrsTable() {
       (!filters.track || p.track === filters.track),
   );
   el.prsCount.textContent = String(filtered.length);
-  const prsFilterActive = Boolean(filters.track || filters.labels.size > 0);
-  updateEmptyState(el.prsEmpty, filtered.length, data.prs.length, prsFilterActive, "Nenhum PR aberto.");
+  updateEmptyState(el.prsEmpty, filtered.length, data.prs.length, prsFilterActive(filters), "Nenhum PR aberto.");
   el.prsBody.innerHTML = "";
   for (const p of filtered) {
     const tr = document.createElement("tr");
