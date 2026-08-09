@@ -36,6 +36,12 @@ import { fileURLToPath } from "node:url";
 
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import {
+  loadPublishDateOverrides,
+  resolvePublishDate,
+  unixSecondsToBrtDate,
+  type PublishDateOverridesResult,
+} from "./lib/beehiiv-publish-date.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POSTS_DIR = resolve(ROOT, "data/beehiiv-cache/posts");
@@ -59,9 +65,10 @@ export interface RawCachedPost {
 
 export interface ArquivoTitleEntry {
   title: string;
-  /** `YYYY-MM-DD`, derivado de `publish_date` (Unix seconds) ajustado pra
-   * BRT (UTC-3) — mesmo padrão de `monthly-relink-to-diaria.ts` — pra não
-   * cruzar o dia errado perto da meia-noite UTC. */
+  /** `YYYY-MM-DD` — via `resolvePublishDate` (`lib/beehiiv-publish-date.ts`,
+   * #4796): override por slug primeiro, senão `publish_date` (Unix seconds)
+   * ajustado pra BRT (UTC-3), mesmo padrão de `monthly-relink-to-diaria.ts`
+   * — pra não cruzar o dia errado perto da meia-noite UTC. */
   publishDate: string;
 }
 
@@ -82,12 +89,10 @@ function slugFromUrl(url: string): string | null {
 }
 
 /** Converte `publish_date` (Unix seconds) num rótulo `YYYY-MM-DD` ajustado
- * pra BRT (UTC-3) — mesma correção usada em `monthly-relink-to-diaria.ts`
- * pra publicações de madrugada não vazarem pro dia UTC seguinte/anterior. */
-export function publishDateLabel(publishDateUnixSeconds: number): string {
-  const d = new Date(publishDateUnixSeconds * 1000 - 3 * 3600 * 1000);
-  return d.toISOString().slice(0, 10);
-}
+ * pra BRT (UTC-3). Alias de `unixSecondsToBrtDate` (`lib/beehiiv-publish-date.ts`,
+ * #4796) mantido aqui pra não quebrar imports/testes existentes deste
+ * módulo — a lógica de fato vive só no helper compartilhado. */
+export const publishDateLabel = unixSecondsToBrtDate;
 
 /**
  * Pure: constrói o mapa slug → {title, publishDate} a partir dos posts crus
@@ -95,17 +100,32 @@ export function publishDateLabel(publishDateUnixSeconds: number): string {
  * sem slug resolvível, sem título (nem `title` nem `subject`) ou sem
  * `publish_date` — todos os 3 campos são necessários pro Worker usar a
  * entrada (item 1 exige título real + data de publicação juntos).
+ *
+ * @param overridesResult   Injetável pra testes (confirma que a função
+ *                           propaga um override presente/erro/descarte real
+ *                           — #4803); default é `loadPublishDateOverrides()`,
+ *                           o arquivo committado.
  */
 export function buildTitlesCache(
   posts: RawCachedPost[],
+  overridesResult: PublishDateOverridesResult = loadPublishDateOverrides(),
 ): { cache: TitlesCache; warnings: string[] } {
   const cache: TitlesCache = {};
   const warnings: string[] = [];
 
+  // #4803: falha ao ler/validar o override NÃO pode ficar só em stderr — um
+  // erro de sintaxe do editor reverteria silenciosamente pro `publish_date`
+  // bruto que a #4796 existe pra corrigir.
+  if (overridesResult.error) {
+    warnings.push(
+      `beehiiv-publish-date-overrides.json malformado (${overridesResult.error}) — seguindo SEM nenhum override; slugs afetados voltam pro publish_date bruto (comportamento pré-#4796)`,
+    );
+  }
+  for (const w of overridesResult.discarded) warnings.push(`beehiiv-publish-date-overrides.json: ${w}`);
+
   for (const post of posts) {
     const slug = post.slug ?? (post.web_url ? slugFromUrl(post.web_url) : null);
     const title = post.title ?? post.subject;
-    const publishDate = post.publish_date;
 
     if (!slug) {
       warnings.push(`post sem slug resolvível (web_url=${post.web_url ?? "ausente"})`);
@@ -115,12 +135,15 @@ export function buildTitlesCache(
       warnings.push(`slug "${slug}" sem title/subject — pulado`);
       continue;
     }
+
+    // #4796: override por slug primeiro, cai no publish_date bruto pra todo o resto.
+    const publishDate = resolvePublishDate(slug, post.publish_date, overridesResult.overrides);
     if (!publishDate) {
       warnings.push(`slug "${slug}" sem publish_date — pulado`);
       continue;
     }
 
-    cache[slug] = { title, publishDate: publishDateLabel(publishDate) };
+    cache[slug] = { title, publishDate };
   }
 
   return { cache, warnings };

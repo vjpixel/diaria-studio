@@ -119,3 +119,51 @@ describe("buildTitlesCache (#4265 item 1)", () => {
     assert.equal(warnings.length, 1);
   });
 });
+
+describe("buildTitlesCache — propagação do override de data (#4803)", () => {
+  it("um override presente e válido vence o publish_date bruto no cache final", () => {
+    const posts: RawCachedPost[] = [
+      {
+        slug: "edicao-antiga",
+        title: "Edição antiga",
+        // publish_date aponta pro dia do import em lote — bem depois da
+        // data real que o override corrige.
+        publish_date: Date.UTC(2025, 8, 3, 18, 0, 0) / 1000,
+      },
+    ];
+    const { cache, warnings } = buildTitlesCache(posts, {
+      overrides: { "edicao-antiga": "2025-06-15" },
+      discarded: [],
+    });
+    assert.equal(cache["edicao-antiga"]?.publishDate, "2025-06-15");
+    assert.deepEqual(warnings, []);
+  });
+
+  it("overridesResult.error (arquivo malformado) vira warning visível — não silencioso em stderr só", () => {
+    const posts: RawCachedPost[] = [
+      { slug: "edicao-x", title: "Edição X", publish_date: Date.UTC(2026, 6, 1, 18) / 1000 },
+    ];
+    const { cache, warnings } = buildTitlesCache(posts, {
+      overrides: {},
+      error: "Unexpected token } in JSON at position 12",
+      discarded: [],
+    });
+    // Sem override utilizável, cai no publish_date bruto normalmente — o
+    // erro não bloqueia o resto do processamento.
+    assert.equal(cache["edicao-x"]?.publishDate, "2026-07-01");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /malformado/);
+  });
+
+  it("overridesResult.discarded (entrada de formato inválido) vira warning visível", () => {
+    const posts: RawCachedPost[] = [
+      { slug: "edicao-y", title: "Edição Y", publish_date: Date.UTC(2026, 6, 1, 18) / 1000 },
+    ];
+    const { warnings } = buildTitlesCache(posts, {
+      overrides: {},
+      discarded: [`slug "edicao-y": valor de override inválido (esperado "YYYY-MM-DD", recebido "2025-13-45")`],
+    });
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /edicao-y/);
+  });
+});

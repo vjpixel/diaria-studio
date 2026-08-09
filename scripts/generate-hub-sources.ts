@@ -37,6 +37,11 @@ import { fileURLToPath } from "node:url";
 
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import {
+  loadPublishDateOverrides,
+  resolvePublishDate,
+  type PublishDateOverridesResult,
+} from "./lib/beehiiv-publish-date.ts";
 import type { RawCachedPost } from "./generate-arquivo-titles.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -44,7 +49,8 @@ const POSTS_DIR = resolve(ROOT, "data/beehiiv-cache/posts");
 const HUBS_DIR = resolve(ROOT, "scripts/lib/hubs");
 
 export interface HubSourceEntry {
-  /** `YYYY-MM-DD`, BRT. */
+  /** `YYYY-MM-DD`, BRT — via `resolvePublishDate` (`lib/beehiiv-publish-date.ts`,
+   * #4796): override por slug primeiro, senão `publish_date` bruto. */
   date: string;
   /** Slug da EDIÇÃO no Beehiiv — nome deliberadamente distinto de
    * `HubContent.slug` (o slug do HUB, em `hub-page.ts`) pra não confundir
@@ -73,12 +79,6 @@ function stripAccents(s: string): string {
   return s.normalize("NFD").replace(/[̀-ͯ]/g, "");
 }
 
-function toDateBrt(unixSeconds: number): string {
-  // Mesmo ajuste BRT (UTC-3) de generate-arquivo-titles.ts/monthly-relink-to-diaria.ts.
-  const d = new Date((unixSeconds - 3 * 3600) * 1000);
-  return d.toISOString().slice(0, 10);
-}
-
 export interface CollectHubSourcesResult {
   rows: HubSourceEntry[];
   /** Posts confirmados que bateram a palavra-chave mas foram PULADOS por
@@ -88,15 +88,33 @@ export interface CollectHubSourcesResult {
   warnings: string[];
 }
 
-/** Pure: varre os posts confirmados e devolve as entradas que casam
+/**
+ * Pure: varre os posts confirmados e devolve as entradas que casam
  * `pattern`, mais os warnings de qualquer post pulado. Ordenado por data
- * crescente. */
+ * crescente.
+ *
+ * @param overridesResult   Injetável pra testes (confirma que a função
+ *                           propaga um override presente/erro/descarte real
+ *                           — #4803); default é `loadPublishDateOverrides()`,
+ *                           o arquivo committado.
+ */
 export function collectHubSources(
   posts: RawCachedPost[],
   pattern: RegExp,
+  overridesResult: PublishDateOverridesResult = loadPublishDateOverrides(),
 ): CollectHubSourcesResult {
   const rows: HubSourceEntry[] = [];
   const warnings: string[] = [];
+
+  // #4803: mesmo racional de generate-arquivo-titles.ts::buildTitlesCache —
+  // falha de override não pode ficar só em stderr.
+  if (overridesResult.error) {
+    warnings.push(
+      `beehiiv-publish-date-overrides.json malformado (${overridesResult.error}) — seguindo SEM nenhum override; slugs afetados voltam pro publish_date bruto (comportamento pré-#4796)`,
+    );
+  }
+  for (const w of overridesResult.discarded) warnings.push(`beehiiv-publish-date-overrides.json: ${w}`);
+
   for (const post of posts) {
     if (post.status !== "confirmed") continue;
     const destaques = [post.title, ...(post.subtitle ? post.subtitle.split("|").map((s) => s.trim()) : [])].filter(
@@ -111,12 +129,14 @@ export function collectHubSources(
       warnings.push(`post confirmado e casado, mas sem slug resolvível: "${where}"`);
       continue;
     }
-    if (!post.publish_date) {
+    // #4796: override por slug primeiro, cai no publish_date bruto pra todo o resto.
+    const date = resolvePublishDate(post.slug, post.publish_date, overridesResult.overrides);
+    if (!date) {
       warnings.push(`slug "${post.slug}" confirmado e casado, mas sem publish_date — pulado`);
       continue;
     }
     rows.push({
-      date: toDateBrt(post.publish_date),
+      date,
       editionSlug: post.slug,
       url: `https://diar.ia.br/p/${post.slug}`,
       matchedHeadlines: matched,
