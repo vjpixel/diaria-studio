@@ -59,10 +59,40 @@ export interface PlanIssue {
   [key: string]: unknown;
 }
 
+/**
+ * `issues` aceita os dois shapes observados na prática (#4817):
+ * - **array** (`/diaria-overnight`, documentado no SKILL.md) — `[{ number, ... }, ...]`.
+ * - **dict** (`/diaria-develop`, observado ao vivo em `data/develop/260808b/plan.json`
+ *   apesar do SKILL.md dizer "reusa o schema do overnight") — `{ "4800": {...}, "4783": {...} }`,
+ *   chaveado pelo número da issue como string, com entradas que tipicamente NÃO têm o
+ *   campo `number` (é implícito na chave) nem `batch`/`timeline` (usam `onda`/outros campos
+ *   do schema de desbloqueio do develop).
+ * `normalizeIssues` (abaixo) resolve os dois formatos para `PlanIssue[]` — nenhum outro
+ * ponto do módulo deve ler `plan.issues` diretamente.
+ */
 export interface Plan {
   started_at?: string;
-  issues: PlanIssue[];
+  issues: PlanIssue[] | Record<string, Partial<PlanIssue>>;
   [key: string]: unknown;
+}
+
+/**
+ * Normaliza `plan.issues` para array, agnóstico de o `plan.json` de origem ter
+ * gravado array (overnight) ou dict chaveado por número (develop, #4817). Uma
+ * entrada de dict sem `number` recebe o número derivado da própria chave —
+ * `Object.entries` preserva a ordem de inserção para chaves não-numéricas, mas
+ * chaves inteiras (o caso aqui) são reordenadas pelo motor JS em ordem numérica
+ * ascendente; é uma propriedade do próprio dict do develop, não algo que este
+ * normalizador consiga (ou deva) corrigir.
+ */
+export function normalizeIssues(plan: Plan): PlanIssue[] {
+  const raw = plan.issues;
+  if (Array.isArray(raw)) return raw;
+  if (!raw || typeof raw !== "object") return [];
+  return Object.entries(raw).map(([key, issue]) => {
+    const number = typeof issue?.number === "number" ? issue.number : Number(key);
+    return { ...(issue as object), number } as PlanIssue;
+  });
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -194,10 +224,12 @@ export interface TimelineRow {
  * Uma única passagem sobre plan.issues (agrupamento via Map por batch).
  */
 export function buildTimelineRows(plan: Plan): TimelineRow[] {
+  const issues = normalizeIssues(plan);
+
   // ── Passo 1: agrupar issues por batch (manter Set de batches já emitidos) ──
   const batchMap = new Map<string, PlanIssue[]>();
 
-  for (const issue of plan.issues) {
+  for (const issue of issues) {
     const batch = issue.batch;
     if (batch && batch !== "null") {
       const list = batchMap.get(batch);
@@ -255,7 +287,7 @@ export function buildTimelineRows(plan: Plan): TimelineRow[] {
   //    do lote, ignorar as demais). Preserva ordem cronológica do plano. ───────
   const emittedBatches = new Set<string>();
 
-  for (const issue of plan.issues) {
+  for (const issue of issues) {
     const batch = issue.batch;
 
     if (!batch || batch === "null") {
@@ -293,7 +325,7 @@ function buildRodadaTotal(plan: Plan): string {
 
   // Último timestamp de fim entre todas as issues
   let latestEnd: Date | null = null;
-  for (const issue of plan.issues) {
+  for (const issue of normalizeIssues(plan)) {
     const endStr = getEnd(issue.timeline);
     const d = parseISO(endStr);
     if (d && (!latestEnd || d > latestEnd)) latestEnd = d;
