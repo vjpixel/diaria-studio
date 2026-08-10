@@ -392,6 +392,12 @@ export const HUB_GOOGLE_GEMINI_FOOTER_NAV_UTM = {
   medium: "footer-nav",
 } as const;
 
+/** Mesmo padrão acima, pro 4º hub temático publicado (`scripts/lib/hubs/meta-ai.ts`, #4558 develop 260810). */
+export const HUB_META_AI_FOOTER_NAV_UTM = {
+  source: "hub-meta-ai",
+  medium: "footer-nav",
+} as const;
+
 /** Link "Arquivo completo em {url}" do post semanal do Instagram
  * (`scripts/lib/format-weekly-social.ts`, #4537 item 1) — o #4295 cobriu os
  * links que a pipeline DIÁRIA publica; o post semanal ficou fora do escopo
@@ -1002,6 +1008,18 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     description:
       'Link "diar.ia.br" no rodapé de navegação cruzada do hub temático Google/Gemini ' +
       "(#4558, leva de hubs de empresa — decisão do editor 260808).",
+    status: "ativo",
+  },
+  {
+    id: "hub-meta-ai-footer-nav",
+    label: "Hub Meta/Meta AI — link de rodapé pra diar.ia.br",
+    source: HUB_META_AI_FOOTER_NAV_UTM.source,
+    medium: HUB_META_AI_FOOTER_NAV_UTM.medium,
+    campaignPattern: "hub-meta-ai-footer-nav",
+    originFile: "scripts/lib/hubs/meta-ai.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada do hub temático Meta/Meta AI ' +
+      "(#4558, 4º hub temático — sessão develop 260810).",
     status: "ativo",
   },
 ] as const;

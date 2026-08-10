@@ -14,9 +14,11 @@
 import { HUB_HTML_ANTHROPIC_CLAUDE } from "./anthropic-claude.generated.ts";
 import { HUB_HTML_OPENAI_CHATGPT } from "./openai-chatgpt.generated.ts";
 import { HUB_HTML_GOOGLE_GEMINI } from "./google-gemini.generated.ts";
+import { HUB_HTML_META_AI } from "./meta-ai.generated.ts";
 
 export const HUB_REGISTRY: Record<string, string> = {
   "anthropic-claude": HUB_HTML_ANTHROPIC_CLAUDE,
   "openai-chatgpt": HUB_HTML_OPENAI_CHATGPT,
   "google-gemini": HUB_HTML_GOOGLE_GEMINI,
+  "meta-ai": HUB_HTML_META_AI,
 };
