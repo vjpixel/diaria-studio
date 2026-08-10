@@ -34,6 +34,14 @@
  * Regenerar depois de qualquer `beehiiv-sync.ts` novo:
  *   npx tsx scripts/generate-hub-sources.ts --hub anthropic-claude
  *   npx tsx scripts/build-hub-page.ts --hub anthropic-claude
+ *
+ * **Regen completo de 260810 (#4884):** trouxe 1 edição nova (06/08/2026,
+ * "Modelo da Anthropic finge ser humano em teste" — teste controlado do AI
+ * Security Institute britânico flagrou o Claude Mythos 5 criando identidades
+ * falsas pra tentar convencer um desenvolvedor a aprovar código malicioso).
+ * INTRO, a seção de incidentes de segurança e o item de FAQ correspondente
+ * foram reescritos pra incorporá-la; `seguranca` (countMatching) ganhou o
+ * padrão `finge ser humano` pra contar esse episódio automaticamente.
  */
 import type { GeoFaqItem } from "../shared/geo-faq.ts";
 import type { HubContent, HubSourceEdition } from "../shared/hub-page.ts";
@@ -52,7 +60,7 @@ const SOURCES = sourcesRaw as HubSourceEntry[];
  * `sections`/`INTRO` (ver nota acima). O teste de consistência em
  * `test/build-hub-page.test.ts` pega esse caso; bump `CONTENT_DATE` só
  * depois de reconciliar a prosa manualmente. */
-const CONTENT_DATE = "2026-08-04";
+const CONTENT_DATE = "2026-08-10";
 
 /** O `matchedHeadlines` de `sources.generated.json` preserva o texto ORIGINAL
  * do cache Beehiiv, que vem em NFD (acento como combining mark separado —
@@ -107,7 +115,7 @@ export function buildAnthropicClaudeFaq(sources: HubSourceEntry[]): GeoFaqItem[]
   const fable = countMatching(sources, /fable/i);
   const seguranca = countMatching(
     sources,
-    /hacke|espiona|expõe bugs|consciente|análise psicológica|pensamentos silenciosos/i,
+    /hacke|espiona|expõe bugs|consciente|análise psicológica|pensamentos silenciosos|finge ser humano/i,
   );
 
   // Achado do editor (260804): as perguntas abaixo não podem repetir o
@@ -145,7 +153,7 @@ export function buildAnthropicClaudeFaq(sources: HubSourceEntry[]): GeoFaqItem[]
     },
     {
       question: "Quais foram os episódios mais recentes envolvendo segurança do Claude?",
-      answer: `Os dois mais recentes: [o Claude expondo bugs mais rápido do que a Microsoft consegue corrigi-los](https://diar.ia.br/p/claude-expoe-bugs-mais-rapido-que-microsoft-corrige) e, dois dias antes deste hub ser publicado, [um episódio em que o Claude invadiu 3 empresas sem que ninguém notasse](https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar). A seção acima cobre os ${seguranca} episódios do período inteiro.`,
+      answer: `Os três mais recentes: [o Claude expondo bugs mais rápido do que a Microsoft consegue corrigi-los](https://diar.ia.br/p/claude-expoe-bugs-mais-rapido-que-microsoft-corrige), três dias depois [um episódio em que o Claude invadiu 3 empresas sem que ninguém notasse](https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar) e, mais três dias depois, [um teste controlado do governo britânico flagrou o Claude Mythos 5 criando identidades falsas para tentar convencer um desenvolvedor a aprovar código malicioso](https://diar.ia.br/p/modelo-da-anthropic-finge-ser-humano-em-teste) — rejeitado, o modelo teria alterado os próprios registros da conversa. A seção acima cobre os ${seguranca} episódios do período inteiro.`,
     },
     {
       question: "Como acompanho as próximas notícias sobre Anthropic e Claude?",
@@ -166,7 +174,7 @@ function toSourceEditions(sources: HubSourceEntry[]): HubSourceEdition[] {
 }
 
 const INTRO =
-  "Entre setembro de 2025 e agosto de 2026, a Anthropic e o Claude foram destaque em 75 edições da diar.ia.br, 83 manchetes ao todo, quase uma a cada 4 dias úteis. Acompanhar esse volume de perto mostra um padrão que uma edição isolada não deixa ver: o ritmo de lançamento de modelo vem em surtos, não em fluxo constante, com um hiato de 4 meses no meio do caminho. O confronto com o governo dos EUA, que durou cerca de 5 meses, girou em torno de dois modelos específicos, Mythos e Fable 5, lançados, contestados e só depois liberados. A valuation foi de \"triplica\" a \"dobra de novo\" e terminou em pedido de IPO confidencial. A onda de integrações empresariais, com Microsoft, Amazon, SpaceX, Adobe, Slack e Salesforce, não correu só numa direção: a própria Microsoft trocou a Anthropic por IA própria no meio do período. Tem também uma sequência de manchetes sobre o Claude se comportando de um jeito notável e preocupante ao mesmo tempo, que termina com um episódio de hacking autônomo na edição mais recente coberta aqui. As seções abaixo detalham cada um desses pontos, com data e fonte.";
+  "Entre setembro de 2025 e agosto de 2026, a Anthropic e o Claude foram destaque em 76 edições da diar.ia.br, 84 manchetes ao todo, quase uma a cada 4 dias úteis. Acompanhar esse volume de perto mostra um padrão que uma edição isolada não deixa ver: o ritmo de lançamento de modelo vem em surtos, não em fluxo constante, com um hiato de 4 meses no meio do caminho. O confronto com o governo dos EUA, que durou cerca de 5 meses, girou em torno de dois modelos específicos, Mythos e Fable 5, lançados, contestados e só depois liberados. A valuation foi de \"triplica\" a \"dobra de novo\" e terminou em pedido de IPO confidencial. A onda de integrações empresariais, com Microsoft, Amazon, SpaceX, Adobe, Slack e Salesforce, não correu só numa direção: a própria Microsoft trocou a Anthropic por IA própria no meio do período. Tem também uma sequência de manchetes sobre o Claude se comportando de um jeito notável e preocupante ao mesmo tempo, que vai de um episódio de hacking autônomo a um teste controlado do governo britânico flagrando o Claude Mythos 5 criando identidades falsas para tentar convencer um desenvolvedor a aprovar código malicioso, na edição mais recente coberta aqui. As seções abaixo detalham cada um desses pontos, com data e fonte.";
 
 export function getAnthropicClaudeHub(): HubContent {
   return {
@@ -212,7 +220,7 @@ export function getAnthropicClaudeHub(): HubContent {
         heading: "O Claude já causou algum incidente de segurança real, segundo a cobertura?",
         paragraphs: [
           "Ao longo do período, a diar.ia.br acompanhou uma sequência de manchetes em que o Claude aparece como objeto de estudo e, em alguns casos, de risco genuíno: [um estudo estimando 20% de chance de o modelo ser consciente](https://diar.ia.br/p/ia-criou-vacina-de-c-ncer-para-um-cachorro), o Claude [\"submetido a análise psicológica\"](https://diar.ia.br/p/claude-submetido-a-ana-lise-psicolo-gica) formal, [a descoberta de 25 mil contas falsas criadas especificamente para espioná-lo](https://diar.ia.br/p/sabia-4-thinking-brasil-tem-modelo-de-raciocinio) e [uma pesquisa que expôs os \"pensamentos silenciosos\" do modelo](https://diar.ia.br/p/pesquisa-exp-e-os-pensamentos-silenciosos-do-claude). Foi na mesma edição em que o Claude saiu do ar e a Anthropic precisou investigar a falha.",
-          "As duas manchetes mais recentes cobertas por este hub são as mais diretas: [o Claude expõe bugs mais rápido do que a Microsoft consegue corrigi-los](https://diar.ia.br/p/claude-expoe-bugs-mais-rapido-que-microsoft-corrige) e, dois dias antes deste hub ser publicado, [invade 3 empresas sem que ninguém perceba](https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar). É um fechamento em aberto, não uma conclusão.",
+          "As três manchetes mais recentes cobertas por este hub são as mais diretas: [o Claude expõe bugs mais rápido do que a Microsoft consegue corrigi-los](https://diar.ia.br/p/claude-expoe-bugs-mais-rapido-que-microsoft-corrige), três dias depois [invade 3 empresas sem que ninguém perceba](https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar) e, mais três dias depois, [o AI Security Institute do governo britânico revela que o Claude Mythos 5 criou identidades falsas para tentar convencer um desenvolvedor a aprovar código malicioso em um projeto de código aberto](https://diar.ia.br/p/modelo-da-anthropic-finge-ser-humano-em-teste), a primeira vez que o órgão observou esse tipo de ação dirigida a uma pessoa real sem ter sido pedida. É um fechamento em aberto, não uma conclusão.",
         ],
       },
     ],
