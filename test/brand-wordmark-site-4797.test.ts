@@ -84,7 +84,8 @@ function minimalHub(introParagraph: string): HubContent {
       answer: `Resposta ${i + 1}.`,
     })),
     sourceEditions: [{ date: "2026-08-01", title: "Edição de teste", url: "https://diar.ia.br/p/edicao-teste" }],
-    contentDate: "2026-08-01",
+    publishedDate: "2026-08-01",
+    updatedDate: "2026-08-01",
     footerNavUtm: { source: "test", medium: "footer-nav" },
   };
 }
