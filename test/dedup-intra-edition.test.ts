@@ -2209,6 +2209,121 @@ describe("dedupIntraEdition — #4667 RADAR consolidação item-vs-item", () => 
     );
   });
 
+  it("CASO REAL 260811 (#4943 Bug A / #4947): NÃO consolida quando um produto concorrente é citado de passagem no título e o outro item é GENUINAMENTE sobre esse produto", () => {
+    // D3 real: "Meta lança nova IA de programação para combater Codex e
+    // Claude Code" — cita "Claude Code" como MENÇÃO LATERAL de concorrente
+    // sendo combatido, não como sujeito. O item RADAR do The Register é
+    // GENUINAMENTE sobre um recurso do próprio Claude Code — notícia
+    // diferente. Antes do #4947, os 2 tokens "claude"+"code" compartilhados
+    // cruzavam sozinhos o threshold estrito de Jaccard (2/13 ≈ 0.1538 ≥
+    // 0.15), consolidando os 2 itens via `intra_bucket` com score 1 (falso
+    // positivo — verificado ao vivo na edição 260811, ver #4943).
+    const input = {
+      highlights: [
+        { rank: 1, url: "https://highlight.com/y", title: "Destaque não-relacionado" },
+      ],
+      radar: [
+        {
+          url: "https://canaltech.com.br/meta-codex-claude-code",
+          title: "Meta lança nova IA de programação para combater Codex e Claude Code",
+        },
+        {
+          url: "https://theregister.com/claude-code-auto-mode",
+          title: "Claude Code puts auto mode in the driver's seat",
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed } = dedupIntraEdition(input);
+
+    const radarIntraBucket = removed.filter(
+      (r) => r.match_type === "intra_bucket" && r.bucket === "radar",
+    );
+    assert.equal(
+      radarIntraBucket.length,
+      0,
+      "menção lateral de produto concorrente não deve consolidar com notícia GENUINAMENTE diferente sobre esse produto",
+    );
+    assert.equal(kept.radar?.length, 2, "os 2 itens distintos são preservados");
+  });
+
+  it("dedupSecondaryIntraBucket unit: bigram de produto adjacente ('Claude Code') não conta como overlap Jaccard em modo strict, mas conta fora do strict (#4947)", () => {
+    const articles = [
+      {
+        url: "https://canaltech.com.br/meta-codex-claude-code",
+        title: "Meta lança nova IA de programação para combater Codex e Claude Code",
+      },
+      {
+        url: "https://theregister.com/claude-code-auto-mode",
+        title: "Claude Code puts auto mode in the driver's seat",
+      },
+    ];
+
+    const strict = dedupSecondaryIntraBucket(articles, { strict: true });
+    assert.equal(strict.removed.length, 0, "strict: bigram 'claude code' stripado do Jaccard, não cruza o threshold 0.15");
+    assert.equal(strict.kept.length, 2);
+
+    // #4947 review: preserva o comportamento anterior fora do strict — o
+    // bigram-stripping só se aplica ao caminho strict (RADAR). Fora do
+    // strict (LANÇAMENTOS), o caminho de entidade-de-produto-sozinha
+    // continua ATIVO de propósito (`sharedProduct`, desligado só quando
+    // strict): ali TODO item já é por definição um lançamento, então
+    // "mesmo produto citado" (aqui "claude"+"code" via
+    // `extractProductEntitiesIntra`) implica mesmo lançamento sem precisar
+    // de mais nada — ver docstring de `dedupSecondaryIntraBucket`. Esse
+    // caminho não muda com este fix; só o Jaccard do modo strict muda.
+    const permissive = dedupSecondaryIntraBucket(articles);
+    assert.equal(
+      permissive.removed.length,
+      1,
+      "fora do strict, o caminho de entidade-de-produto (não afetado pelo #4947) ainda consolida — comportamento LANÇAMENTOS inalterado",
+    );
+  });
+
+  it("dedupIntraEdition — cluster 'Claude caiu' (#4667) continua consolidando normalmente (bigram-stripping não afeta títulos sem 'code' adjacente a 'claude')", () => {
+    // Regressão de guarda: o fix do #4947 só remove tokens quando o bigram
+    // "claude code" aparece GRUDADO no título. Nenhum título deste cluster
+    // real menciona "code" — o Jaccard cru usado pela consolidação original
+    // (#4667) deve permanecer intacto.
+    const input = {
+      highlights: [
+        { rank: 1, url: "https://highlight.com/y", title: "Outro destaque não-relacionado a outages" },
+      ],
+      radar: [
+        {
+          url: "https://canaltech.com.br/a",
+          title: "Claude caiu? Usuários relatam problemas com a IA da Anthropic nesta quarta (5)",
+        },
+        {
+          url: "https://tecnoblog.net/b",
+          title: "Claude fora do ar? Instabilidade derruba modelos da Anthropic",
+        },
+        {
+          url: "https://cnnbrasil.com.br/c",
+          title: "Claude caiu? Chatbot apresenta instabilidade nesta quarta-feira (5)",
+        },
+        {
+          url: "https://exame.com/d",
+          title: "O Claude caiu? Anthropic confirma falha nesta quarta-feira, 5",
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed } = dedupIntraEdition(input);
+
+    const radarIntraBucket = removed.filter(
+      (r) => r.match_type === "intra_bucket" && r.bucket === "radar",
+    );
+    assert.equal(radarIntraBucket.length, 3, "cluster real continua consolidando 3 das 4 fontes, comportamento #4667 inalterado");
+    assert.equal(kept.radar?.length, 1);
+  });
+
   it("use_melhor e video NÃO rodam consolidação item-vs-item (fora do escopo do #4667)", () => {
     // Mesmo par duplicado do #4360 (Gemini Robotics ER 2), mas em use_melhor/
     // video em vez de lancamento/radar — não deve ser tocado, confirmando o
