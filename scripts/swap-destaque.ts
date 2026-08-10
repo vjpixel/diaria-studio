@@ -294,6 +294,22 @@ export function deleteDestaquePrompts(
  *   back to the source bucket at index 0 (prepended)
  *
  * Returns info about what was swapped.
+ *
+ * #4865: `promotedItem` is copied VERBATIM from `sourceBucket[promoteIdx]` into
+ * `highlights[demotePos]` — no re-derivation of `url` from `article.url` happens
+ * here, unlike `buildHighlight()` in `apply-gate-edits.ts`. This is safe by
+ * construction rather than by an added check: `01-approved.json` is written
+ * exclusively by `apply-gate-edits.ts` (`highlights[]` via `buildHighlight()`,
+ * `runners_up[]` via `normalizeRunnerUp()`), and every OTHER bucket
+ * (`radar`/`lancamento`/`use_melhor`/`video`) is a flat `Article[]` with a
+ * single `url` field — no nested `article.url` to diverge from. Every possible
+ * `promoteBucket` therefore already has `url === article.url` (or no nested
+ * `article` at all) by the time it reaches this function — there is no write
+ * path that could hand `swapInApprovedJson` a divergent item. Adding a
+ * redundant post-swap check here would duplicate `url-matches-article-url`
+ * (`scripts/lib/invariant-checks/stage-1.ts`) without covering any gap it
+ * doesn't already close upstream — deliberately not added (see #4865 scope
+ * item 3).
  */
 export function swapInApprovedJson(
   data: Record<string, unknown>,

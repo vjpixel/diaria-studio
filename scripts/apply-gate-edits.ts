@@ -235,6 +235,27 @@ export function computeGateProvenance(
   };
 }
 
+/**
+ * #4865: normaliza `url` === `article.url` em itens de `runners_up[]`,
+ * espelhando a normalização que `buildHighlight()` já aplica a `highlights[]`
+ * desde #4837. Diferente de `highlights` (reconstruído aqui via `findArticle()`
+ * a partir do MD), `runners_up[]` é copiado VERBATIM de `data.runners_up` — a
+ * saída do `scorer-select` (um LLM escrevendo `tmp-selection.json`). A mesma
+ * classe de divergência pode aparecer ali por um caminho diferente (o agent
+ * gravando `url` e `article.url` textualmente distintos), sem passar por
+ * `findArticle()`/canonicalização nenhuma — mas a correção é a mesma:
+ * `article.url` é o valor autoritativo (downstream sempre lê `article`, nunca
+ * o `url` top-level). No-op quando o item não tem `article.url` (shape flat,
+ * ou runner-up degenerado sem article nested).
+ */
+export function normalizeRunnerUp(item: Highlight): Highlight {
+  const article = item.article as Article | undefined;
+  if (article && typeof article.url === "string" && article.url.length > 0 && item.url !== article.url) {
+    return { ...item, url: article.url };
+  }
+  return item;
+}
+
 function findArticle(
   url: string,
   pools: Article[][],
@@ -387,7 +408,9 @@ function main() {
   const videoResolved = resolveBucket(sections.video);
   const approved: ApprovedJson = {
     highlights,
-    runners_up: data.runners_up ?? [],
+    // #4865: normaliza url === article.url também aqui — antes era copiado
+    // verbatim (ver normalizeRunnerUp() acima).
+    runners_up: (data.runners_up ?? []).map(normalizeRunnerUp),
     lancamento: resolveBucket(sections.lancamento),
     radar: resolveBucket(sections.radar),
     use_melhor: useMelhorResolved, // sempre array — consumers não precisam de ?? [] (#328)
@@ -449,10 +472,11 @@ function main() {
   }
 
   // #1863: limpa sufixo de markdown (`)=`, `]=`, `)` solto) de TODO campo `url`
-  // do 01-approved.json — highlights + runners_up (copiados verbatim de
-  // data.runners_up) + buckets — DEPOIS de toda a resolução por URL (canonicalize
-  // match acima). Garante que o link público no gate/publicação é válido. Caso
-  // 260605: URL Meta `…/meta-business-agent/)=` (artefato de parse do agent).
+  // do 01-approved.json — highlights + runners_up (#4865: normalizados via
+  // normalizeRunnerUp() acima, não mais verbatim) + buckets — DEPOIS de toda a
+  // resolução por URL (canonicalize match acima). Garante que o link público
+  // no gate/publicação é válido. Caso 260605: URL Meta
+  // `…/meta-business-agent/)=` (artefato de parse do agent).
   sanitizeUrlsDeep(approved);
 
   writeFileSync(outPath, JSON.stringify(approved, null, 2), "utf8");
