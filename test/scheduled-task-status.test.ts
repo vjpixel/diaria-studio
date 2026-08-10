@@ -116,6 +116,24 @@ describe("queryTaskArmed (#4799)", () => {
     assert.match(result.note ?? "", /schtasks indisponível/);
   });
 
+  it("Windows: task presente (schtasks /query ok) mas consulta verbose falha -> cannot_verify, NUNCA armed (#4833 achado 1)", () => {
+    const exec = ((cmd: string, args: string[]) => {
+      if (args.includes("/v")) {
+        const err: { code: string } = { code: "ENOENT" };
+        throw err;
+      }
+      return ""; // /query sem /v -> sucesso (exit 0, sem lançar) — task existe
+    }) as unknown as typeof import("node:child_process").execFileSync;
+    const result = queryTaskArmed("Diaria-Clarice-Sync", {
+      execFn: exec,
+      taskSchedulerFn: () => "windows-task-scheduler",
+    });
+    // Regressão do incidente #2944: presença sozinha NUNCA vira "armed" —
+    // sem a consulta verbose não há como saber se está habilitada.
+    assert.equal(result.state, "cannot_verify");
+    assert.match(result.note ?? "", /verbose/i);
+  });
+
   it("Linux/systemd: is-enabled 'enabled' -> armed", () => {
     const exec = (() => "enabled\n") as unknown as typeof import("node:child_process").execFileSync;
     const result = queryTaskArmed("Diaria-Apoios-Diff-Alarm", { execFn: exec, taskSchedulerFn: () => "systemd" });
@@ -138,7 +156,7 @@ describe("queryTaskArmed (#4799)", () => {
     assert.equal(result.state, "disabled");
   });
 
-  it("Linux/systemd: unit não encontrada (exit != 0, sem stdout reconhecido) -> not_armed", () => {
+  it("Linux/systemd: unit não encontrada (exit != 0, sem stdout reconhecido) -> cannot_verify (#4833 achado 2 — não é mais um not_armed assumido)", () => {
     const exec = (() => {
       const err: { status: number; stdout: string; stderr: string } = {
         status: 1,
@@ -148,7 +166,23 @@ describe("queryTaskArmed (#4799)", () => {
       throw err;
     }) as unknown as typeof import("node:child_process").execFileSync;
     const result = queryTaskArmed("Diaria-Apoios-Diff-Alarm", { execFn: exec, taskSchedulerFn: () => "systemd" });
-    assert.equal(result.state, "not_armed");
+    assert.equal(result.state, "cannot_verify");
+  });
+
+  it("Linux/systemd: exceção genuinamente não reconhecida do systemctl (ex: permissão) -> cannot_verify, NUNCA not_armed (#4833 achado 2)", () => {
+    const exec = (() => {
+      const err: { status: number; stdout: string; stderr: string } = {
+        status: 1,
+        stdout: "",
+        stderr: "Permission denied while talking to systemd\n",
+      };
+      throw err;
+    }) as unknown as typeof import("node:child_process").execFileSync;
+    const result = queryTaskArmed("Diaria-Apoios-Diff-Alarm", { execFn: exec, taskSchedulerFn: () => "systemd" });
+    // Erro inesperado não é fato verificado de "não armada" — é honesto
+    // reportar "não sei", não uma afirmação positiva inventada.
+    assert.equal(result.state, "cannot_verify");
+    assert.match(result.note ?? "", /erro inesperado/i);
   });
 
   it("Linux/systemd: sem bus de sessão -> cannot_verify (não confundir com not_armed)", () => {

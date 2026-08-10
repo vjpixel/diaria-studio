@@ -66,7 +66,7 @@ import {
   parseWatchdogTaskState,
 } from "./check-watchdog-armed.ts";
 import { unitBaseName } from "./systemd-units.ts";
-import { BRT_TIMEZONE } from "./next-edition-date.ts";
+import { BRT_TIMEZONE, zonedTimeToUtc } from "./next-edition-date.ts";
 import type { ScheduledTaskDefinition, ScheduledTaskSchedule, WeekDay } from "./scheduled-tasks.ts";
 
 // ---------------------------------------------------------------------------
@@ -99,7 +99,15 @@ function queryWindowsTaskArmed(taskName: string, execFn: typeof execFileSync): T
   }
   const verbose = queryWatchdogTaskVerboseOutput(execFn, taskName);
   if (!verbose) {
-    return { scheduler, state: "armed", note: "presença confirmada; detalhe de habilitação indisponível nesta consulta." };
+    // A consulta simples confirmou que a task EXISTE, mas a consulta verbose
+    // (que é a única fonte de "habilitada ou não") falhou — mesmo padrão do
+    // incidente #2944: nunca inventar "armed" a partir só da presença.
+    // Ninguém sabe se está habilitada ou desabilitada nesta consulta.
+    return {
+      scheduler,
+      state: "cannot_verify",
+      note: "presença confirmada, mas a consulta verbose (schtasks /v) falhou — não foi possível confirmar se a task está habilitada ou desabilitada.",
+    };
   }
   const parsed = parseWatchdogTaskState(verbose);
   if (parsed.enabled === false) {
@@ -141,10 +149,20 @@ function queryLinuxTaskArmed(taskName: string, execFn: typeof execFileSync): Tas
         note: "sessão systemd --user indisponível neste processo (sem bus de sessão) — não é a mesma coisa que 'não armada'.",
       };
     }
-    // Caso comum: unit não encontrada (`systemctl --user is-enabled` sai !=0
-    // com stderr "Failed to get unit file state for X: No such file or
-    // directory") — a task nunca foi copiada/armada nesta máquina.
-    return { scheduler, state: "not_armed", note: null };
+    // Qualquer outro erro (inclusive o caso comum de unit não encontrada,
+    // stderr "Failed to get unit file state for X: No such file or
+    // directory") NÃO é confirmação positiva de "não armada" — é só um erro
+    // do systemctl que este módulo não reconhece com certeza suficiente pra
+    // afirmar um estado. Antes desta correção (#4833, achado 2 do fleet
+    // review pré-merge da PR #4833) um erro genuinamente inesperado (ex:
+    // permissão) caía neste mesmo caminho e era mal-relatado como "não
+    // armada" — mesma classe do incidente #2944, mas do lado Linux. Honesto
+    // é reportar `cannot_verify` e deixar o stderr bruto (truncado) no note.
+    return {
+      scheduler,
+      state: "cannot_verify",
+      note: `systemctl retornou erro inesperado ao consultar '${unit}' — não é possível confirmar se está armada (stderr: ${stderrText.trim().slice(0, 200) || "vazio"}).`,
+    };
   }
 }
 
@@ -458,18 +476,6 @@ function brtWallTimeOf(date: Date): BrtWallTime {
 }
 
 /**
- * Constrói o `Date` UTC correspondente a ano/mês/dia/hora/minuto EM BRT.
- * Premissa: BRT = UTC-3 fixo desde 2019 (sem horário de verão) — mesma
- * premissa já documentada e usada por `systemd-units.ts`
- * (`scheduleToOnCalendar`, que embute `America/Sao_Paulo` no `OnCalendar=`
- * e deixa o `tzdata` real do systemd resolver; aqui, sem `tzdata`
- * disponível em JS puro, o offset fixo é a forma equivalente). @pure
- */
-function brtToUtc(year: number, month: number, day: number, hour: number, minute: number): Date {
-  return new Date(Date.UTC(year, month - 1, day, hour + 3, minute, 0, 0));
-}
-
-/**
  * A ocorrência agendada mais recente que é `<= before` — base tanto de
  * `computeNextRunAtOrAfter` quanto de `isTaskOverdue`. Não se aplica a
  * `schedule.kind === "interval"` (sem âncora de calendário fixa — "a cada
@@ -486,7 +492,7 @@ export function computeMostRecentScheduledOccurrence(schedule: ScheduledTaskSche
   }
   const wall = brtWallTimeOf(before);
   if (schedule.kind === "daily") {
-    let candidate = brtToUtc(wall.year, wall.month, wall.day, schedule.hour, schedule.minute);
+    let candidate = zonedTimeToUtc(wall.year, wall.month, wall.day, schedule.hour, schedule.minute, 0, BRT_TIMEZONE);
     if (candidate.getTime() > before.getTime()) {
       candidate = new Date(candidate.getTime() - 24 * 3600 * 1000);
     }
@@ -497,7 +503,8 @@ export function computeMostRecentScheduledOccurrence(schedule: ScheduledTaskSche
   const targetIdx = WEEKDAY_ORDER.indexOf(schedule.dayOfWeek);
   const deltaDays = (todayIdx - targetIdx + 7) % 7;
   let candidate = new Date(
-    brtToUtc(wall.year, wall.month, wall.day, schedule.hour, schedule.minute).getTime() - deltaDays * 24 * 3600 * 1000,
+    zonedTimeToUtc(wall.year, wall.month, wall.day, schedule.hour, schedule.minute, 0, BRT_TIMEZONE).getTime() -
+      deltaDays * 24 * 3600 * 1000,
   );
   if (candidate.getTime() > before.getTime()) {
     candidate = new Date(candidate.getTime() - 7 * 24 * 3600 * 1000);
