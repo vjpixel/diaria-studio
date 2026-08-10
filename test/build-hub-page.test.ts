@@ -359,6 +359,19 @@ describe("editionTitle na bibliografia (#4918 Conserto 2)", () => {
     assert.equal(sourceEditionLabel(e), "Mesmo texto");
   });
 
+  it("sourceEditionLabel: editionTitle igual a UMA das manchetes do join \" · \" (2+ manchetes casadas na mesma edição) não duplica — regression do self-review: comparar só contra a string inteira deixava passar \"A · B (edição: A)\"", () => {
+    const e = {
+      date: "2026-01-01",
+      title: "Claude Mythos: o modelo mais perigoso do mundo · Anthropic vence o Pentágono na Justiça",
+      editionTitle: "Claude Mythos: o modelo mais perigoso do mundo",
+      url: "https://diar.ia.br/p/claude-mythos-o-modelo-mais-perigoso-do-mundo",
+    };
+    assert.equal(
+      sourceEditionLabel(e),
+      "Claude Mythos: o modelo mais perigoso do mundo · Anthropic vence o Pentágono na Justiça",
+    );
+  });
+
   it("sourceEditionLabel: editionTitle presente e distinto aparece junto da manchete — regression do achado #4918 (\"Anthropic triplica valuation\" apontando pra uma edição sobre outro assunto)", () => {
     const e = {
       date: "2026-01-01",

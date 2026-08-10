@@ -69,13 +69,16 @@ export interface HubSourceEdition {
 
 /** Rótulo textual de uma fonte citada — usado tanto no `<li>` visível
  * quanto no `name` do `ListItem` do JSON-LD (paridade, #4558 Parte B). Sem
- * `editionTitle` (ou quando é idêntico à manchete casada), cai no
- * comportamento antigo: só a manchete. Com `editionTitle` presente e
- * distinto, mostra os dois — a manchete que casou a palavra-chave E a
- * edição real pra onde o link aponta (issue #4918: "o item não diz de qual
- * edição veio"). */
+ * `editionTitle`, cai no comportamento antigo: só a manchete. Com
+ * `editionTitle` presente, mostra os dois — a manchete que casou a
+ * palavra-chave E a edição real pra onde o link aponta (issue #4918: "o
+ * item não diz de qual edição veio") — EXCETO quando `editionTitle` já
+ * aparece dentro de `title` (idêntico, ou uma das manchetes do join " · "
+ * nos ~8 itens por hub que casam 2+ manchetes na mesma edição — achado do
+ * self-review: comparar só contra a string inteira deixava passar
+ * "A · B (edição: A)" quando `editionTitle` era exatamente a manchete A). */
 export function sourceEditionLabel(e: HubSourceEdition): string {
-  if (e.editionTitle && e.editionTitle !== e.title) {
+  if (e.editionTitle && !e.title.split(" · ").includes(e.editionTitle)) {
     return `${e.title} (edição: ${e.editionTitle})`;
   }
   return e.title;
