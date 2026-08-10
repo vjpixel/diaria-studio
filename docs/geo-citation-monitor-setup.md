@@ -1,0 +1,84 @@
+# Monitor semanal de citação por assistente de IA
+
+Issue: [#4558](https://github.com/vjpixel/diaria-studio/issues/4558) (Parte C).
+
+Pergunta a cada provedor de LLM com API key configurada as perguntas fixas de
+`GEO_QUESTIONS` (ex: "Qual a melhor newsletter diária sobre inteligência
+artificial em português?") e registra se a diar.ia.br foi citada — série de
+tendência sobre GEO (Generative Engine Optimization).
+
+## Por que a task existe
+
+O monitor foi mergeado no #4616 e ficou sem NUNCA ter rodado — `data/geo-citations/`
+não existia no disco até 07/ago, e nenhum `.ps1`/workflow/task o invocava,
+enquanto todas as outras tasks agendadas do repo já seguiam esse padrão. Sem
+cadência o histórico nunca acumula.
+
+## Baseline medido em 07/ago
+
+**0 de 16 consultas citaram** — 8 perguntas × OpenAI + Gemini, sendo 15
+respondidas + 1 erro de rede; `ANTHROPIC_API_KEY` ausente do `.env`, provedor
+pulado por fail-soft. Zero não é veredito: o hub tinha 3 dias e ficou órfão
+de link interno até o #4749.
+
+## Cadência: semanal, não diário
+
+Citação por assistente muda em escala de semanas e a série só vale como
+tendência — diário gastaria 7× pra ler ruído. Roda **segundas 10:30**. Não
+colide com `Diaria-SEO-Weekly` (segundas 04:10).
+
+Custo por execução **nunca foi medido**; OpenAI/Anthropic cobram por token,
+mas a Gemini tem free tier que 8 chamadas/semana plausivelmente não estouram.
+Conferir fatura antes de afirmar custo.
+
+## Exit code honesto sob `--strict` (#4754)
+
+Rodado **na mão**, o monitor continua saindo 0 mesmo sem key configurada —
+"sem key" é estado válido, decisão deliberada do #4616 que não foi revertida.
+
+Rodado **pela task** (o wrapper passa `--strict`):
+- sai **2** se nenhum provider está configurado (caminho que não escreve nada
+  em `history.jsonl`).
+- sai **1** se 100% das consultas falham (ali o exit 0 seria mentira, a task
+  marcaria verde para sempre enquanto a série congelava).
+- falha **parcial** continua 0 nos dois modos (o fail-soft por provedor é
+  desenhado).
+- **exceção**: 100% de HTTP **429** sai 0 com aviso, não 1 — as 8 perguntas
+  de um provider saem em sequência com um único retry de 1,5s, e num free
+  tier de RPM baixo (o Gemini é o caso concreto) isso pode dar 429 em todas
+  TODA semana sem nada estar quebrado; alarme falso recorrente treina o
+  editor a ignorar o alarme.
+
+Erro de outra natureza nomeia a causa dominante (`HTTP 401 (8)`,
+`network (8)`) em vez de um genérico "verifique as keys". A decisão vive em
+`resolveStrictOutcome`, função pura exportada e testada — não embutida no
+`main()`, que não tem ponto de injeção.
+
+## Log
+
+`data/geo-citations/.monitor.log` (append-only).
+
+## Staleness
+
+O guard `test/pending-scheduled-tasks.test.ts` descobre esta task pelo nome,
+mas cobre só o registro inicial — não checa `State`/`LastTaskResult`. Uma
+task registrada e depois **desabilitada** passa nele em silêncio. O alarme
+que fecha essa lacuna é a #4755 — ver `docs/geo-citation-staleness-alarm-setup.md`.
+
+## Setup (ação local one-time do editor)
+
+`local` — precisa do junction `data/` (OneDrive) + ao menos UMA de
+`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`GEMINI_API_KEY`.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-geo-citation-monitor-schedule.ps1
+```
+
+Isso registra a task `Diaria-Geo-Citation-Monitor` (segundas 10:30).
+Idempotente — re-executar atualiza a task. Remover: mesmo comando com
+`-Unregister`.
+
+**Registro da task não feito em nenhuma unidade de worktree isolado** (mesma
+disciplina do #4320/#4382/#4490/#4534/#4723) — mas, diferente daquelas, a
+**1ª execução do monitor em si já rodou ao vivo** (baseline acima, comentado
+na #4558); o que falta é só a cadência.
