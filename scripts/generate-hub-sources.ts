@@ -73,6 +73,18 @@ export const HUB_KEYWORD_PATTERNS: Record<string, RegExp> = {
   "anthropic-claude": /anthropic|\bclaude\b|\bopus\b|\bsonnet\b|\bmythos\b|\bfable\b/i,
   "openai-chatgpt": /openai|\bchatgpt\b|\bgpt-?\d|\bsora\b|sam altman/i,
   "google-gemini": /\bgoogle\b|\bgemini\b|deepmind|\bveo\b|\bnano banana\b|sundar pichai/i,
+  // #4558 (develop 260810, 4º hub, leva de empresa). `\bmeta\b` sozinho
+  // arrisca casar o substantivo comum ("atinge a meta de", "metas
+  // ambiciosas") — verificado ao vivo contra as 242 edições confirmadas do
+  // cache real (`data/beehiiv-cache/posts`) no momento em que este pattern
+  // foi escrito: nenhum destaque real usa "meta" como substantivo comum
+  // isolado (todo destaque que bate começa com "Meta" maiúsculo, nome da
+  // empresa) — é uma aposta textual verificada contra o dado de hoje, não
+  // uma garantia estrutural; se uma edição futura usar "bateu a meta
+  // trimestral" como destaque, ela entraria aqui por engano.
+  // `\bllama\b`/`zuckerberg` são defensivos (nenhum destaque real depende
+  // deles hoje — ver docstring de `scripts/lib/hubs/meta-ai.ts`).
+  "meta-ai": /\bmeta\b|\bllama\b|zuckerberg/i,
 };
 
 function stripAccents(s: string): string {
