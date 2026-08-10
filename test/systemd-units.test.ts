@@ -10,6 +10,7 @@
  */
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -27,25 +28,87 @@ describe("unitBaseName", () => {
 });
 
 describe("scheduleToOnCalendar", () => {
-  it("daily -> *-*-* HH:MM:00, com zero-padding", () => {
-    assert.equal(scheduleToOnCalendar({ kind: "daily", hour: 8, minute: 5 }), "*-*-* 08:05:00");
-    assert.equal(scheduleToOnCalendar({ kind: "daily", hour: 23, minute: 59 }), "*-*-* 23:59:00");
+  it("daily -> *-*-* HH:MM:00 <fuso>, com zero-padding", () => {
+    assert.equal(scheduleToOnCalendar({ kind: "daily", hour: 8, minute: 5 }), "*-*-* 08:05:00 America/Sao_Paulo");
+    assert.equal(scheduleToOnCalendar({ kind: "daily", hour: 23, minute: 59 }), "*-*-* 23:59:00 America/Sao_Paulo");
   });
 
-  it("weekly -> <Weekday abreviado> *-*-* HH:MM:00", () => {
+  it("weekly -> <Weekday abreviado> *-*-* HH:MM:00 <fuso>", () => {
     assert.equal(
       scheduleToOnCalendar({ kind: "weekly", dayOfWeek: "Monday", hour: 10, minute: 30 }),
-      "Mon *-*-* 10:30:00",
+      "Mon *-*-* 10:30:00 America/Sao_Paulo",
     );
     assert.equal(
       scheduleToOnCalendar({ kind: "weekly", dayOfWeek: "Sunday", hour: 0, minute: 0 }),
-      "Sun *-*-* 00:00:00",
+      "Sun *-*-* 00:00:00 America/Sao_Paulo",
     );
   });
 
-  it("interval -> *-*-* 0/N:00:00", () => {
-    assert.equal(scheduleToOnCalendar({ kind: "interval", hours: 4 }), "*-*-* 0/4:00:00");
-    assert.equal(scheduleToOnCalendar({ kind: "interval", hours: 12 }), "*-*-* 0/12:00:00");
+  it("interval -> *-*-* 0/N:00:00 <fuso>", () => {
+    assert.equal(scheduleToOnCalendar({ kind: "interval", hours: 4 }), "*-*-* 0/4:00:00 America/Sao_Paulo");
+    assert.equal(scheduleToOnCalendar({ kind: "interval", hours: 12 }), "*-*-* 0/12:00:00 America/Sao_Paulo");
+  });
+
+  // Achado ao vivo (#4807, 260810, cross-session): predator roda em Etc/UTC.
+  // Sem fuso explícito no OnCalendar=, systemd interpreta as horas do
+  // registry (pensadas em BRT) como se já fossem UTC -- Diaria-Clarice-Sync
+  // (registry: 08:30) disparava às 08:30 UTC = 05:30 BRT, 30min ANTES do
+  // envio canônico das 06:00 BRT, reintroduzindo em silêncio a regressão do
+  // #2932 (onda do dia invisível pro store, --group repete gente). Mesmo
+  // problema quebraria Diaria-Brevo-Diaria-Evaluate (precisa rodar ANTES das
+  // 06:00 BRT -- a Brevo congela destinatários no agendamento).
+  it("achado ao vivo #4807: toda variante inclui America/Sao_Paulo explícito, nunca depende do fuso do sistema", () => {
+    assert.match(scheduleToOnCalendar({ kind: "daily", hour: 8, minute: 30 }), /\bAmerica\/Sao_Paulo$/);
+    assert.match(
+      scheduleToOnCalendar({ kind: "weekly", dayOfWeek: "Monday", hour: 4, minute: 10 }),
+      /\bAmerica\/Sao_Paulo$/,
+    );
+    assert.match(scheduleToOnCalendar({ kind: "interval", hours: 6 }), /\bAmerica\/Sao_Paulo$/);
+  });
+
+  // Primeira tentativa de correção (mesma sessão) tentou uma chave
+  // `Timezone=` separada em [Timer] -- não existe em systemd.timer;
+  // systemd 259 ignora silenciosamente com warning no journal ("Unknown
+  // key 'Timezone' in section [Timer]"). O fuso tem que estar embutido no
+  // próprio valor de OnCalendar=, nunca numa chave à parte.
+  it("nunca emite uma chave 'Timezone=' -- não existe em systemd.timer, é ignorada em silêncio", () => {
+    for (const t of SCHEDULED_TASKS) {
+      const { timerContent } = buildSystemdUnitFiles(t, "/home/editor/diaria-studio");
+      assert.doesNotMatch(timerContent, /^Timezone=/m, `${t.name}: chave Timezone= inválida encontrada`);
+    }
+  });
+});
+
+describe("scheduleToOnCalendar — validação real via systemd-analyze (quando disponível)", () => {
+  // Complementa os testes de string acima com a validação AUTORITATIVA: o
+  // próprio parser do systemd aceita o valor gerado, e o horário calculado
+  // bate com a intenção do registry (não só "parece certo"). Achado ao vivo
+  // #4807: string bem-formada não é garantia de comportamento certo -- a
+  // primeira tentativa (chave `Timezone=` separada) também "parecia certa"
+  // e passava despercebida sem essa checagem.
+  let hasSystemdAnalyze = false;
+  try {
+    execFileSync("systemd-analyze", ["--version"], { stdio: "ignore" });
+    hasSystemdAnalyze = true;
+  } catch {
+    hasSystemdAnalyze = false;
+  }
+
+  it("Diaria-Clarice-Sync (08:30 registry) calcula next-elapse em 08:30 BRT = 11:30 UTC, nunca 08:30 UTC", { skip: !hasSystemdAnalyze }, () => {
+    const task = getScheduledTaskByName("Diaria-Clarice-Sync")!;
+    const onCalendar = scheduleToOnCalendar(task.schedule);
+    const out = execFileSync("systemd-analyze", ["calendar", "--iterations=1", onCalendar], { encoding: "utf8" });
+    assert.match(out, /Next elapse: .* 11:30:00 UTC/, `saída completa: ${out}`);
+  });
+
+  it("todo SCHEDULED_TASKS gera um valor de OnCalendar= aceito pelo parser do systemd", { skip: !hasSystemdAnalyze }, () => {
+    for (const t of SCHEDULED_TASKS) {
+      const onCalendar = scheduleToOnCalendar(t.schedule);
+      assert.doesNotThrow(
+        () => execFileSync("systemd-analyze", ["calendar", onCalendar], { stdio: "pipe" }),
+        `${t.name}: "${onCalendar}" rejeitado pelo systemd-analyze`,
+      );
+    }
   });
 });
 
@@ -70,8 +133,8 @@ describe("buildSystemdUnitFiles", () => {
     );
   });
 
-  it("timer: OnCalendar + Persistent=true + Unit aponta pro .service + WantedBy=timers.target", () => {
-    assert.match(files.timerContent, /OnCalendar=\*-\*-\* 09:45:00/);
+  it("timer: OnCalendar (com fuso) + Persistent=true + Unit aponta pro .service + WantedBy=timers.target", () => {
+    assert.match(files.timerContent, /OnCalendar=\*-\*-\* 09:45:00 America\/Sao_Paulo/);
     assert.match(files.timerContent, /Persistent=true/);
     assert.match(files.timerContent, /Unit=diaria-apoios-diff-alarm\.service/);
     assert.match(files.timerContent, /WantedBy=timers\.target/);
