@@ -30,6 +30,7 @@ import { renderHubPage, type HubContent } from "./lib/shared/hub-page.ts";
 import { getAnthropicClaudeHub } from "./lib/hubs/anthropic-claude.ts";
 import { getOpenaiChatgptHub } from "./lib/hubs/openai-chatgpt.ts";
 import { getGoogleGeminiHub } from "./lib/hubs/google-gemini.ts";
+import { getMetaAiHub } from "./lib/hubs/meta-ai.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -44,6 +45,7 @@ export const HUB_LOADERS: Record<string, () => HubContent> = {
   "anthropic-claude": getAnthropicClaudeHub,
   "openai-chatgpt": getOpenaiChatgptHub,
   "google-gemini": getGoogleGeminiHub,
+  "meta-ai": getMetaAiHub,
 };
 
 function outPathFor(slug: string): string {

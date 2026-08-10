@@ -76,6 +76,16 @@ janela 18:00→09:00 (cadência que cruza a meia-noite) e a invocação direta d
 `overnight-watchdog.ts` (sem passar por `run-task.ts`) não cabem no schema
 `ScheduledTaskSchedule` hoje (`daily`/`weekly`/`interval` simples).
 
+**As outras 14 tasks (registry) têm o passo de armar automatizado desde o
+#4828** — `npx tsx scripts/arm-systemd-timers.ts [--task <Nome>]
+[--rearm-stopped]` copia os units gerados por `setup-systemd-timers.ts` pra
+`~/.config/systemd/user/`, roda `daemon-reload` e `enable --now`, com um
+guard: um `.timer` que já existe e está `ActiveState=inactive` (parado
+deliberadamente via `systemctl --user stop`) é **preservado por padrão** —
+o script avisa e pula, só religando com `--rearm-stopped` explícito. O
+watchdog em si continua fora desse script (fora do registry, ver acima) —
+o arme dele segue manual, passo 2 abaixo.
+
 **1. Gerar os units** (só escreve arquivos, nunca chama `systemctl`):
 
 ```bash
