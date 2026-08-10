@@ -518,6 +518,30 @@ describe("summarizePlan (#3555)", () => {
     }
   });
 
+  it("plan.json.issues em formato dict (sessão develop, #4881) não reporta totalIssues: 0/counts vazios", () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      const planPath = join(root, "data", "develop", "260808b", "plan.json");
+      mkdirSync(join(planPath, ".."), { recursive: true });
+      writeFileSync(
+        planPath,
+        JSON.stringify({
+          started_at: "2026-08-08T01:00:00Z",
+          issues: {
+            "4800": { status: "merged" },
+            "4783": { status: "pulada" },
+          },
+        }),
+      );
+      const summary = summarizePlan(root, planPath);
+      assert.ok(summary);
+      assert.equal(summary!.totalIssues, 2);
+      assert.deepEqual(summary!.counts, { merged: 1, pulada: 1 });
+    } finally {
+      cleanup();
+    }
+  });
+
   it("JSON corrompido retorna null, nunca lança (fail-soft)", () => {
     const { root, cleanup } = setupRoot();
     try {

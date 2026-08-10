@@ -31,6 +31,7 @@ import { resolve, relative } from "node:path";
 import { enumerateEditionDirs, findEditionsInProgress } from "../lib/find-current-edition.ts";
 import { loadDoc, STAGE_LABELS, type StageStatusDoc } from "../update-stage-status.ts";
 import { listPendingPermissionRequests, type PendingPermissionSummary } from "./studio-chat.ts";
+import { normalizeIssues } from "../lib/plan-issues-normalize.ts"; // #4881: plan.issues também pode ser dict (develop)
 
 export type CurrentStage = number | "done" | "unknown";
 
@@ -360,14 +361,19 @@ export function resolveStartedAt(
 /** Resume um `plan.json` (formato overnight/develop) em contagens por status.
  * Fail-soft: JSON corrompido/shape inesperado retorna null em vez de lançar
  * — este é um endpoint de leitura best-effort, nunca deve derrubar `/api/state`.
+ *
+ * `raw.issues` pode ser array (overnight) OU dict chaveado por número
+ * (develop, #4860/#4881) — sempre passar por `normalizeIssues`, nunca ler
+ * `raw.issues` diretamente (senão sessões develop reportam silenciosamente
+ * `totalIssues: 0`/`counts: {}`, #4881).
  */
 export function summarizePlan(rootDir: string, planPathAbs: string): PlanSummary | null {
   try {
     const raw = JSON.parse(readFileSync(planPathAbs, "utf8")) as {
       started_at?: string;
-      issues?: Array<{ status?: string }>;
+      issues?: Array<{ status?: string }> | Record<string, { status?: string }>;
     };
-    const issues = Array.isArray(raw.issues) ? raw.issues : [];
+    const issues = normalizeIssues(raw);
     const counts: Record<string, number> = {};
     for (const issue of issues) {
       const status = typeof issue.status === "string" ? issue.status : "unknown";
