@@ -44,12 +44,17 @@ import type { HubSourceEntry } from "../../generate-hub-sources.ts";
 
 const SOURCES = sourcesRaw as HubSourceEntry[];
 
-/** `YYYY-MM-DD` estático — data em que a síntese abaixo foi escrita. Ver nota
- * de `hub-page.ts` sobre por que não pode ser `new Date()`. Bump manual
- * quando a prosa for reescrita de forma substancial — uma regeneração
- * rotineira de `sources.generated.json` NÃO invalida a data sozinha (mesma
- * ressalva dos 3 hubs anteriores). */
-const CONTENT_DATE = "2026-08-10";
+/** `YYYY-MM-DD` estático — dia em que a página nasceu (PR #4926, mesma
+ * sessão que introduziu `publishedDate`/`updatedDate` como campos separados,
+ * #4911). Ver nota de `hub-page.ts` e `anthropic-claude.ts` sobre por que
+ * não pode ser `new Date()` e por que os dois campos existem em separado. */
+const PUBLISHED_DATE = "2026-08-10";
+
+/** `YYYY-MM-DD` estático — dia em que o CORPO (síntese abaixo) foi revisado
+ * por último. Bump manual quando a prosa for reescrita de forma
+ * substancial — nunca cosmético (mesma ressalva de `anthropic-claude.ts`).
+ * Nasce igual a `PUBLISHED_DATE` (hub recém-criado, nunca revisado ainda). */
+const UPDATED_DATE = "2026-08-10";
 
 /** Mesma normalização NFC de `anthropic-claude.ts::countMatching` — o
  * `matchedHeadlines` de `sources.generated.json` preserva o texto ORIGINAL
@@ -150,6 +155,7 @@ function toSourceEditions(sources: HubSourceEntry[]): HubSourceEdition[] {
       date: s.date,
       title: s.matchedHeadlines.join(" · "),
       url: s.url,
+      editionTitle: s.editionTitle,
     }));
 }
 
@@ -205,7 +211,8 @@ export function getMetaAiHub(): HubContent {
     ],
     faq: buildMetaAiFaq(SOURCES),
     sourceEditions: toSourceEditions(SOURCES),
-    contentDate: CONTENT_DATE,
+    publishedDate: PUBLISHED_DATE,
+    updatedDate: UPDATED_DATE,
     footerNavUtm: HUB_META_AI_FOOTER_NAV_UTM,
   };
 }

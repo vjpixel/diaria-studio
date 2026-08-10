@@ -3,14 +3,23 @@
  *
  * Guard: TODO Worker com host público num domínio proxiado pela Cloudflare
  * (`[[routes]] custom_domain = true` em `workers/*​/wrangler.toml`) precisa
- * servir um `/robots.txt` PRÓPRIO — sem isso, o Worker nasce servindo o
+ * servir um `/robots.txt` PRÓPRIO — sem isso, o Worker nasce servindo só o
  * default gerenciado pela Cloudflare, que bloqueia os 7 crawlers de
  * assistente/treino contra a decisão do editor de 03/ago (CLAUDE.md,
- * "Crawlers de IA ficam liberados nas nossas superfícies"). Aconteceu 3
- * vezes sem que ninguém reparasse (#4546: cursos/livros/arquivo; #4777:
- * poll/artigo-mensal/artigos) antes deste teste existir — o objetivo é que
- * o QUARTO Worker com custom_domain novo falhe aqui até ganhar seu próprio
- * handler, em vez de precisar de outro `curl` manual pra descobrir.
+ * "Crawlers de IA ficam liberados nas nossas superfícies"). **Correção
+ * (#4910): mesmo servindo o próprio, o default gerenciado NÃO some — ele é
+ * ANEXADO antes do bloco do Worker no mesmo arquivo, e como grupo nomeado
+ * vence o curinga `*` (RFC 9309), os 7 crawlers continuam bloqueados pelo
+ * bloco da Cloudflare independente deste teste passar; ver a docstring de
+ * `scripts/lib/shared/robots-txt.ts` pro comportamento completo e por que
+ * isso não quebra o objetivo de citação do #4546.** Este guard garante só
+ * que o Worker declara SUA PARTE corretamente (`CURADORIA_BLOCKED_BOTS`) —
+ * não que o arquivo final servido esteja livre do bloco gerenciado.
+ * Aconteceu 3 vezes sem que ninguém reparasse (#4546: cursos/livros/
+ * arquivo; #4777: poll/artigo-mensal/artigos) antes deste teste existir —
+ * o objetivo é que o QUARTO Worker com custom_domain novo falhe aqui até
+ * ganhar seu próprio handler, em vez de precisar de outro `curl` manual
+ * pra descobrir.
  *
  * Descoberta 100% automática via `discoverWorkerPublicHosts`
  * (`scripts/lib/worker-public-hosts.ts`) — sem lista hardcoded de hosts, o

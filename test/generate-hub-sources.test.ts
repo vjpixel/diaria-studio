@@ -14,7 +14,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { collectHubSources } from "../scripts/generate-hub-sources.ts";
+import { collectHubSources, backfillEditionTitles, type HubSourceEntry } from "../scripts/generate-hub-sources.ts";
 import type { RawCachedPost } from "../scripts/generate-arquivo-titles.ts";
 
 // Termo acentuado ("análise") de propósito — diferente de HUB_KEYWORD_PATTERNS
@@ -155,5 +155,66 @@ describe("collectHubSources — propagação do override de data (#4803)", () =>
     });
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /edicao-y/);
+  });
+});
+
+describe("collectHubSources — editionTitle, caminho ideal (#4918 Conserto 2)", () => {
+  it("preenche editionTitle com post.title (já em escopo pra montar destaques)", () => {
+    const posts: RawCachedPost[] = [
+      { slug: "edicao-x", title: "Anthropic lança algo", status: "confirmed", publish_date: 1753000000 },
+    ];
+    const { rows } = collectHubSources(posts, PATTERN);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].editionTitle, "Anthropic lança algo");
+  });
+});
+
+describe('backfillEditionTitles (#4918 Conserto 2, "caminho barato") — pure, sem junction data/', () => {
+  it("preenche editionTitle a partir do titlesCache quando ausente na linha", () => {
+    const rows: HubSourceEntry[] = [
+      {
+        date: "2025-09-03",
+        editionSlug: "brasil-pretende-investir-r-23-bilh-es-em-ia",
+        url: "https://diar.ia.br/p/brasil-pretende-investir-r-23-bilh-es-em-ia",
+        matchedHeadlines: ["Anthropic triplica valuation"],
+      },
+    ];
+    const titlesCache = {
+      "brasil-pretende-investir-r-23-bilh-es-em-ia": {
+        title: "Brasil pretende investir R$ 23 bi em IA",
+        publishDate: "2025-09-03",
+      },
+    };
+    const filled = backfillEditionTitles(rows, titlesCache);
+    assert.equal(filled[0].editionTitle, "Brasil pretende investir R$ 23 bi em IA");
+    // Pure: não muta o array/objetos originais.
+    assert.equal(rows[0].editionTitle, undefined);
+  });
+
+  it("não sobrescreve editionTitle já presente na linha (caminho ideal já rodou)", () => {
+    const rows: HubSourceEntry[] = [
+      {
+        date: "2026-01-01",
+        editionSlug: "edicao-1",
+        url: "https://diar.ia.br/p/edicao-1",
+        matchedHeadlines: ["Manchete"],
+        editionTitle: "Título já preenchido",
+      },
+    ];
+    const filled = backfillEditionTitles(rows, { "edicao-1": { title: "Outro título", publishDate: "2026-01-01" } });
+    assert.equal(filled[0].editionTitle, "Título já preenchido");
+  });
+
+  it("slug ausente do titlesCache: linha fica sem editionTitle (fallback ativo do lado do renderer, sem lançar)", () => {
+    const rows: HubSourceEntry[] = [
+      {
+        date: "2026-01-01",
+        editionSlug: "slug-nao-no-cache",
+        url: "https://diar.ia.br/p/slug-nao-no-cache",
+        matchedHeadlines: ["Manchete"],
+      },
+    ];
+    const filled = backfillEditionTitles(rows, {});
+    assert.equal(filled[0].editionTitle, undefined);
   });
 });
