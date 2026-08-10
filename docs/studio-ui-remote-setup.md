@@ -102,13 +102,13 @@ Mesmos 6 passos conceituais do Windows (instalar → login → criar tunnel → 
 - **Autenticação via token de conector** (`cloudflared tunnel token`), não `credentials-file` — funciona mesmo que o tunnel tenha sido criado originalmente noutra máquina (ex: migrando do Windows). O token vai pra `~/.cloudflared/token` (`chmod 600`, nunca no repo) e a unit systemd usa `--token-file` — **nunca `--token <valor>` inline**, que vazaria o segredo em `ps`/`systemctl status` (achado ao vivo, #4808).
 - **`systemd --user`** em vez de Task Scheduler: `diaria-studio-tunnel.service`, com `Restart=always` (equivalente ao `RestartCount`/`RestartInterval` do Windows) e `Requires=diaria-studio-server.service` (o tunnel só sobe depois do server local estar de pé).
 
-### 3. Configurar o Cloudflare Access
+### 4. Configurar o Cloudflare Access
 
 **Isso é feito inteiramente no painel Cloudflare — não há script pra essa parte** (é configuração de conta, não código do repo).
 
 1. Acesse [dash.cloudflare.com](https://dash.cloudflare.com) → **Zero Trust** → **Access** → **Applications**.
 2. **Add an application** → tipo **Self-hosted**.
-3. **Application domain**: o hostname configurado no passo 2 (ex: `studio.diar.ia.br`).
+3. **Application domain**: o hostname configurado no passo 3 (ex: `studio.diar.ia.br`).
 4. **Session duration**: sugestão 24h (o editor reautentica 1x por dia via celular).
 5. **Policy**:
    - **Action**: Allow.
@@ -118,11 +118,11 @@ Mesmos 6 passos conceituais do Windows (instalar → login → criar tunnel → 
 
 A partir daqui, **qualquer requisição** pro hostname público passa pelo Access antes de chegar no tunnel. Sem OTP/login válido, o Access responde com a própria página de login (ou redireciona pra ela) — o `studio-server` nunca vê a requisição.
 
-### 4. Verificar do celular
+### 5. Verificar do celular
 
 Abra `https://studio.diar.ia.br` no navegador do celular. Deve aparecer a tela de login do Access (pedindo e-mail → OTP). Depois do OTP, o Studio real deve carregar normalmente, com os gates (fatias 3/4) funcionando como no desktop.
 
-### 5. Verificação de segurança (smoke-test)
+### 6. Verificação de segurança (smoke-test)
 
 Depois de tudo ativado, rode o smoke-test que confirma que **nada vaza sem autenticação**:
 

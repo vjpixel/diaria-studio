@@ -76,8 +76,12 @@ describe("setup-remote-tunnel-linux.sh (#4808)", () => {
     const unitHeredoc = source.split("cat > \"$UNIT_FILE\"")[1] ?? "";
     assert.match(unitHeredoc, /--token-file \$TOKEN_PATH/, "unit deveria usar --token-file");
     assert.doesNotMatch(
+      // Flag "s" (dotall): ExecStart pode ser quebrado em múltiplas linhas com
+      // "\" de continuação (jeito idiomático de manter uma linha longa
+      // legível) -- sem dotall, "." não cruza newline e um --token reintroduzido
+      // numa linha de continuação passaria pelo teste sem ser pego.
       unitHeredoc,
-      /ExecStart=.*--token[^-]/,
+      /ExecStart=.*--token[^-]/s,
       "ExecStart não deve conter --token com valor inline (vaza em ps/systemctl status)",
     );
   });
@@ -98,6 +102,34 @@ describe("setup-remote-tunnel-linux.sh (#4808)", () => {
     assert.match(source, /GUARD/i);
     assert.match(source, /CONNECTOR ID/, "guard deveria checar a saída de 'tunnel info' por conectores ativos");
     assert.match(source, /FORCE.*!=.*"1"/, "guard deveria ser pulável só com --force explícito");
+
+    // Não basta o texto aparecer em algum lugar do arquivo -- isola o bloco
+    // `if ... fi` que de fato faz a checagem (mesmo padrão de
+    // .split(...)[1]?.split("fi")[0] usado pelos testes de --unregister acima)
+    // e confirma que HÁ um `exit 1` de verdade dentro dele, não comentado nem
+    // neutralizado por um `if false`/condição sempre-falsa. Uma regressão que
+    // desliga o guard (ex: troca a condição por `if false && ...`, ou troca
+    // `exit 1` por um simples aviso) deve fazer este assert falhar.
+    const grepIdx = source.indexOf('grep -q "CONNECTOR ID"');
+    assert.ok(grepIdx > -1, "guard deveria conter o grep por CONNECTOR ID");
+    const ifStart = source.lastIndexOf("if ", grepIdx);
+    assert.ok(ifStart > -1, "esperava encontrar o 'if' que abre o bloco do guard");
+    const guardIfBlock = source.slice(ifStart).split("fi")[0];
+
+    assert.doesNotMatch(
+      guardIfBlock,
+      /if\s+false/,
+      "condição do guard não pode estar neutralizada com 'if false'",
+    );
+    assert.match(guardIfBlock, /FORCE.*!=.*"1"/, "condição isolada deveria checar --force");
+
+    // A linha precisa ser o COMANDO `exit 1` de verdade (início da linha,
+    // ignorando indentação) -- não basta a substring aparecer dentro do texto
+    // de um `echo "..."` de aviso, senão um regressão que troca o exit por um
+    // simples aviso mencionando "exit 1" na mensagem passaria despercebida.
+    const exitLine = guardIfBlock.split("\n").find((l) => /^\s*exit 1\b/.test(l));
+    assert.ok(exitLine, "bloco do guard deveria conter um comando 'exit 1' real, não só a substring em outro lugar");
+    assert.doesNotMatch(exitLine!, /^\s*#/, "'exit 1' do guard não pode estar comentado");
   });
 
   it("--unregister não desfaz o tunnel nem o DNS na Cloudflare (só a unit local)", () => {

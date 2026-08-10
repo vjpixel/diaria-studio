@@ -33,6 +33,10 @@
 # Este script CHECA `cloudflared tunnel info <nome>` antes de iniciar o
 # service e recusa prosseguir se já houver um conector de outra origem --
 # use --force pra pular o guard (só depois de desarmar manualmente o outro lado).
+# Achado ao vivo: o guard só roda quando `diaria-studio-tunnel.service` NÃO
+# está ativo nesta máquina -- se já estiver, a checagem é pulada (senão
+# re-rodar o script pra mudar --hostname/rotacionar token falso-positivaria
+# contra o PRÓPRIO conector, contradizendo a idempotência prometida acima).
 #
 # Uso:
 #   ./scripts/studio/setup-remote-tunnel-linux.sh --hostname studio.diar.ia.br [--port 4174] [--dry-run]
@@ -142,20 +146,28 @@ fi
 echo "Tunnel ID: $TUNNEL_ID"
 
 step "GUARD — checando conectores ativos de outra origem"
-ACTIVE="$("$CLOUDFLARED_BIN" tunnel info "$TUNNEL_NAME" 2>&1 || true)"
-if echo "$ACTIVE" | grep -q "CONNECTOR ID" && [ "$FORCE" != "1" ]; then
-  echo "$ACTIVE"
-  echo ""
-  echo "AVISO: já existe conector ativo pra este tunnel (acima). Subir outro aqui" >&2
-  echo "  arrisca roteamento imprevisivel do hostname entre as duas maquinas." >&2
-  echo "  Desarme o outro lado primeiro (ver #4806/#4808) e rode de novo, ou passe" >&2
-  echo "  --force se ja tiver certeza de que o outro conector foi desativado" >&2
-  echo "  (a listagem pode ter alguns segundos de delay de propagacao)." >&2
-  exit 1
+if systemctl --user is-active --quiet diaria-studio-tunnel.service 2>/dev/null; then
+  echo "'diaria-studio-tunnel.service' já está ativo NESTA máquina — guard pulado."
+  echo "(a decisão de segurança já foi tomada quando o service subiu da primeira vez;"
+  echo " checar 'tunnel info' agora só falso-positivaria contra o próprio conector,"
+  echo " quebrando a idempotência de re-rodar este script pra mudar --hostname/token.)"
+else
+  ACTIVE="$("$CLOUDFLARED_BIN" tunnel info "$TUNNEL_NAME" 2>&1 || true)"
+  if echo "$ACTIVE" | grep -q "CONNECTOR ID" && [ "$FORCE" != "1" ]; then
+    echo "$ACTIVE"
+    echo ""
+    echo "AVISO: já existe conector ativo pra este tunnel (acima). Subir outro aqui" >&2
+    echo "  arrisca roteamento imprevisivel do hostname entre as duas maquinas." >&2
+    echo "  Desarme o outro lado primeiro (ver #4806/#4808) e rode de novo, ou passe" >&2
+    echo "  --force se ja tiver certeza de que o outro conector foi desativado" >&2
+    echo "  (a listagem pode ter alguns segundos de delay de propagacao)." >&2
+    exit 1
+  fi
+  echo "Nenhum conector ativo de outra origem (ou --force). Prosseguindo."
 fi
-echo "Nenhum conector ativo de outra origem (ou --force). Prosseguindo."
 
 step "4/7 — Gerando $CONFIG_PATH"
+umask 077
 mkdir -p "$CLOUDFLARED_DIR"
 INGRESS_LINE="  # (defina --hostname e rode de novo pra preencher a linha de ingress abaixo)
   # - hostname: studio.diar.ia.br
@@ -190,7 +202,6 @@ else
 fi
 
 step "6/7 — Token do conector"
-umask 077
 "$CLOUDFLARED_BIN" tunnel token "$TUNNEL_NAME" > "$TOKEN_PATH"
 chmod 600 "$TOKEN_PATH"
 echo "Token gravado em $TOKEN_PATH (chmod 600, nunca no repo, nunca em argv)."
