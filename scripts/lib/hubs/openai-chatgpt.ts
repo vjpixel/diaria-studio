@@ -1,6 +1,12 @@
 /**
  * openai-chatgpt.ts (#4558, 2º hub temático publicado)
  *
+ * ⚠️ EDITOU ESTE ARQUIVO? Rode antes de commitar:
+ *   npx tsx scripts/build-hub-page.ts --hub openai-chatgpt
+ * Sem isso, `workers/arquivo/src/hubs/openai-chatgpt.generated.ts` fica
+ * defasado e `test/hub-page-drift.test.ts` quebra o CI (#4897 — já
+ * aconteceu 3x na mesma sessão antes deste aviso existir).
+ *
  * Conteúdo editorial do hub OpenAI/ChatGPT. Mesmo molde estrutural e mesmo
  * critério de qualidade de `anthropic-claude.ts` (#4558, 1º hub temático) —
  * ver aquele arquivo pro histórico completo da decisão. Resumo do critério

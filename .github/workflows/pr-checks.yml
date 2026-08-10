@@ -5,6 +5,10 @@ name: PR Checks (#970)
 # 2. Regression test gate: PR de bugfix exige teste novo (ou label `no-regression-test` + justificativa)
 # 3. Seed/HTML sync: seed de página estática (cursos/livros) mudou sem o HTML
 #    gerado correspondente no mesmo PR — sinal de que o build step não rodou (#3105)
+# 4. Hub page drift: scripts/lib/hubs/*.ts editado sem regenerar o
+#    workers/arquivo/src/hubs/*.generated.ts correspondente. Roda isolado do
+#    job `test` completo (~5min) do ci.yml pra pegar o drift em segundos
+#    (#4897 — o padrão pegou o CI de surpresa 3x na mesma sessão develop).
 #
 # Não substitui ci.yml — roda em paralelo com escopo focado.
 
@@ -85,3 +89,16 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: npx tsx scripts/check-seed-html-sync.ts
+
+  hub-page-drift:
+    name: Hub page drift (workers/arquivo/src/hubs, #4897)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run test/hub-page-drift.test.ts
+        run: npx tsx --test test/hub-page-drift.test.ts
