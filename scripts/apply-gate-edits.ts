@@ -210,12 +210,22 @@ function buildHighlight(
   originalHighlights: Highlight[],
 ): Highlight {
   const orig = originalHighlights.find((h) => h.url === url);
+  // #4837: `url` (parâmetro) é a string de BUSCA usada por findArticle() pra
+  // localizar `article` — texto literal parseado do MD, ou `h.url` do scorer
+  // no fill-loop de resolveDestaques — e o match contra o pool é feito via
+  // canonicalizeUrl (tolerante a tracking params, trailing slash etc., #439).
+  // Preservar a string de busca original em `url` produzia um highlight com
+  // `url !== article.url` sempre que as duas divergiam textualmente (mesmo
+  // sendo a MESMA URL canonicamente) — 8 highlights em 5 edições jul/ago
+  // (#4837). `article.url` é o valor AUTORITATIVO (writer-destaque/publish
+  // downstream sempre leem `article`, nunca o `url` top-level) — derivar
+  // `url` dele garante os dois campos sempre idênticos no highlight final.
   return {
     rank,
     score: article.score ?? orig?.score ?? 0,
     bucket,
     reason: orig?.reason ?? "selecionado pelo editor no gate",
-    url,
+    url: article.url || url,
     article,
   };
 }

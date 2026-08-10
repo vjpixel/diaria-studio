@@ -331,6 +331,58 @@ function checkNoPlaceholderTitleHighlights(editionDir: string): InvariantViolati
   ];
 }
 
+/**
+ * #4837: `url` (top-level) e `article.url` (nested) de um highlight são duas
+ * referências à MESMA URL do artigo — nunca deveriam divergir. Downstream
+ * (writer-destaque, publish) sempre lê `article.url`, então quando os dois
+ * campos divergem, `url` fica um valor "fantasma" desatualizado que não
+ * corresponde ao que de fato foi publicado — contaminando qualquer análise
+ * feita sobre `01-approved.json` a partir do campo `url` (caso real: medição
+ * de recall do scorer, 8 highlights em 5 edições jul/ago 260702/260723/
+ * 260727/260804/260807).
+ *
+ * A causa raiz exata da escrita que introduziu a divergência histórica NÃO
+ * foi confirmada com certeza (diagnóstico por leitura de código, sem acesso
+ * a `data/` real — ver PR #4837). `apply-gate-edits.ts`, o único ponto de
+ * escrita de `01-approved.json`, foi corrigido para sempre derivar `url` de
+ * `article.url` na construção do highlight (`buildHighlight()`) — este guard
+ * é a rede de segurança determinística independente da causa raiz, cobrindo
+ * qualquer caminho de escrita futuro que reintroduza o padrão.
+ */
+function isUrlArticleUrlMismatch(h: HighlightLike): boolean {
+  const topUrl = h.url;
+  const nestedUrl = h.article?.url;
+  return typeof topUrl === "string" && typeof nestedUrl === "string" && topUrl !== nestedUrl;
+}
+
+function checkUrlMatchesArticleUrl(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", "01-approved.json");
+  if (!existsSync(path)) return []; // coberto por approved-exists
+  let data: ApprovedJson;
+  try {
+    data = JSON.parse(readFileSync(path, "utf8")) as ApprovedJson;
+  } catch {
+    return []; // coberto por approved-parseable
+  }
+  const highlights = Array.isArray(data.highlights) ? data.highlights : [];
+  const offenders = highlights.filter(isUrlArticleUrlMismatch);
+  if (offenders.length === 0) return [];
+  const details = offenders.map((h) => `"${h.url}" ≠ "${h.article?.url}"`).join("; ");
+  return [
+    {
+      rule: "url-matches-article-url",
+      message:
+        `${offenders.length} highlight(s) com url !== article.url em highlights[] — ${details}. ` +
+        `As duas referências deveriam sempre apontar pra mesma URL do artigo — article.url é o valor ` +
+        `de fato publicado (writer/publish leem article, não o url top-level). Sempre bug de pipeline, ` +
+        `nunca decisão editorial legítima (#4837).`,
+      source_issue: "#4837",
+      severity: "error",
+      file: path,
+    },
+  ];
+}
+
 export const STAGE_1_RULES: InvariantRule[] = [
   {
     id: "approved-has-3-highlights",
@@ -374,6 +426,13 @@ export const STAGE_1_RULES: InvariantRule[] = [
     stage: 1,
     run: checkNoPlaceholderTitleHighlights,
   },
+  {
+    id: "url-matches-article-url",
+    description: "url === article.url em todo highlight de highlights[] (#4837)",
+    source_issue: "#4837",
+    stage: 1,
+    run: checkUrlMatchesArticleUrl,
+  },
 ];
 
 export {
@@ -386,4 +445,6 @@ export {
   isNegativeImpactHighlight,
   checkNoPlaceholderTitleHighlights,
   isPlaceholderTitleHighlight,
+  checkUrlMatchesArticleUrl,
+  isUrlArticleUrlMismatch,
 };

@@ -23,6 +23,7 @@ import {
   checkNoUseMelhorHighlights,
   checkHasNegativeImpactHighlight,
   checkNoPlaceholderTitleHighlights,
+  checkUrlMatchesArticleUrl,
 } from "../scripts/lib/invariant-checks/stage-1.ts";
 import {
   checkReviewedPassesAllLints,
@@ -103,6 +104,13 @@ describe("invariant-checks registry (#1007)", () => {
     const entry = ALL_INVARIANT_RULES.find((r) => r.id === "no-placeholder-title-highlights");
     assert.ok(entry !== undefined, "ALL_INVARIANT_RULES deve conter 'no-placeholder-title-highlights'");
     assert.equal(entry!.stage, 1);
+  });
+
+  it("#4837 registry contém entry url-matches-article-url no stage 1 (severity error)", () => {
+    const entry = ALL_INVARIANT_RULES.find((r) => r.id === "url-matches-article-url");
+    assert.ok(entry !== undefined, "ALL_INVARIANT_RULES deve conter 'url-matches-article-url'");
+    assert.equal(entry!.stage, 1);
+    assert.equal(entry!.source_issue, "#4837");
   });
 
   it("#3213 registry contém entry use-melhor-beginner-minimum no stage 2", () => {
@@ -640,6 +648,74 @@ describe("Stage 1 invariants", () => {
   it("no-placeholder-title-highlights sem violation quando JSON malformado (coberto por approved-parseable)", () => {
     writeFileSync(join(fixture, "_internal", "01-approved.json"), "{ not valid json");
     const v = checkNoPlaceholderTitleHighlights(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  // --- #4837: url === article.url em todo highlight ---
+
+  it("url-matches-article-url sem violation quando 01-approved.json ausente", () => {
+    const v = checkUrlMatchesArticleUrl(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("url-matches-article-url passa quando url === article.url em todos os highlights", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          { bucket: "radar", url: "https://a.com", article: { url: "https://a.com", title: "A" } },
+          { bucket: "lancamento", url: "https://b.com", article: { url: "https://b.com", title: "B" } },
+        ],
+      }),
+    );
+    const v = checkUrlMatchesArticleUrl(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  // Caso real (#4837): 8 highlights em 5 edições (260702, 260723, 260727,
+  // 260804, 260807) tinham url divergente de article.url — o publicado
+  // sempre seguia article.url.
+  it("url-matches-article-url falha (error) quando url e article.url divergem", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          {
+            bucket: "radar",
+            url: "https://a.com/foo?utm_source=newsletter",
+            article: { url: "https://a.com/foo", title: "Foo" },
+          },
+        ],
+      }),
+    );
+    const v = checkUrlMatchesArticleUrl(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "url-matches-article-url");
+    assert.equal(v[0].severity, "error", "url !== article.url é sempre bug de pipeline — hard block");
+    assert.equal(v[0].source_issue, "#4837");
+    assert.match(v[0].message, /utm_source=newsletter/);
+    assert.match(v[0].message, /a\.com\/foo/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("url-matches-article-url não falso-positiva quando article ausente (highlight flat, sem nested article)", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [{ bucket: "radar", url: "https://a.com" }],
+      }),
+    );
+    const v = checkUrlMatchesArticleUrl(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("url-matches-article-url sem violation quando JSON malformado (coberto por approved-parseable)", () => {
+    writeFileSync(join(fixture, "_internal", "01-approved.json"), "{ not valid json");
+    const v = checkUrlMatchesArticleUrl(fixture);
     assert.equal(v.length, 0);
     rmSync(fixture, { recursive: true, force: true });
   });

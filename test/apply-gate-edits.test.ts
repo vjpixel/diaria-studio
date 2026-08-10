@@ -633,4 +633,71 @@ describe("apply-gate-edits CLI --auto (#3459)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // #4837: 8 highlights em 5 edições (260702, 260723, 260727, 260804, 260807)
+  // tinham url !== article.url em 01-approved.json — o publicado sempre seguia
+  // article.url, então url ficava um valor "fantasma" que contaminava análise
+  // (recall do scorer). Reproduz o mecanismo real: o editor move uma linha do
+  // MD pra ## Destaques com uma variação TEXTUAL (mas canonicamente idêntica,
+  // #439) da URL armazenada no artigo do pool (aqui: tracking param
+  // utm_source, que canonicalizeUrl() ignora) — findArticle() localiza o
+  // artigo certo via match canonicalizado, mas antes do fix o highlight final
+  // preservava a string de busca em `url` em vez do `article.url` de fato
+  // encontrado.
+  it("#4837: MD com URL textualmente diferente (mas canonicamente igual) do artigo do pool → url === article.url no output", () => {
+    const dir = mkdtempSync(join(tmpdir(), "apply-gate-edits-url-article-url-"));
+    try {
+      const jsonPath = join(dir, "01-categorized.json");
+      const mdPath = join(dir, "01-categorized.md");
+      const outPath = join(dir, "01-approved.json");
+
+      const categorized = {
+        highlights: [],
+        runners_up: [],
+        lancamento: [],
+        // Artigo armazenado no pool com URL LIMPA.
+        radar: [{ url: "https://example.com/foo", title: "Foo Title", score: 85, category: "radar" }],
+        use_melhor: [],
+        video: [],
+      };
+      writeFileSync(jsonPath, JSON.stringify(categorized), "utf8");
+
+      // Editor moveu a linha pra Destaques — a URL física no MD carrega um
+      // tracking param que a URL do artigo no pool não tem (variação real:
+      // copy-paste de um link com utm_source, mobile autocomplete, etc).
+      const md = [
+        "## Destaques",
+        "",
+        "1. [85] Foo Title — https://example.com/foo?utm_source=newsletter — 2026-08-01",
+        "",
+        "## Lançamentos",
+        "",
+        "## Radar",
+        "",
+        "## Use melhor",
+        "",
+        "## Vídeos",
+        "",
+      ].join("\n");
+      writeFileSync(mdPath, md, "utf8");
+
+      const r = runCli(["--md", mdPath, "--json", jsonPath, "--out", outPath]);
+      assert.equal(r.status, 0, `CLI falhou: ${r.stderr}`);
+
+      const approved = JSON.parse(readFileSync(outPath, "utf8"));
+      assert.equal(approved.highlights.length, 1);
+      const h = approved.highlights[0];
+      assert.equal(
+        h.url,
+        h.article.url,
+        `#4837 regressão: url (${h.url}) deve ser idêntico a article.url (${h.article.url})`,
+      );
+      // article.url é o valor autoritativo (o que de fato é publicado) — a URL
+      // limpa do pool, não a variante com tracking param do MD.
+      assert.equal(h.article.url, "https://example.com/foo");
+      assert.equal(h.url, "https://example.com/foo");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
