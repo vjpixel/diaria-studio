@@ -32,7 +32,7 @@ import { resolve } from "node:path";
 import Papa from "papaparse";
 import { canonicalize } from "./lib/url-utils.ts";
 import { dateToEdition, type CtrRow, recordToCtrRow } from "./analyze-scorer-impact.ts";
-import { isAprofundeAnchor } from "./lib/ctr-utils.ts";
+import { isAprofundeAnchor, isNonEditorialHost } from "./lib/ctr-utils.ts";
 import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -208,10 +208,16 @@ export function loadScorerHighlights(
 // ─── Carrega CTR table ──────────────────────────────────────────────────────
 
 /**
- * Lê e parseia o CTR CSV. Filtra rows Aprofunde (regime pré-mar/2026) — mesma
- * lógica de update-audience.ts (#1564). O filtro é aplicado ANTES da conversão
- * para CtrRow (lendo o campo `anchor` do record bruto do papaparse), pois CtrRow
- * não expõe `anchor`. Retorna lista de CtrRow ou [] se arquivo ausente.
+ * Lê e parseia o CTR CSV. Filtra rows Aprofunde (regime pré-mar/2026) e rows de
+ * hosts não-editoriais (#4839 — rodapé social, crédito de imagem, afiliado,
+ * links de casa, apoio) — mesma lógica de update-audience.ts (#1564/#4839),
+ * via os mesmos helpers puros de `lib/ctr-utils.ts`. **Os dois têm que mudar
+ * juntos**: este arquivo alimenta `data/scorer-ctr-history.jsonl`, cuja
+ * tendência o profile também imprime — filtro divergente faria o profile
+ * publicar tabela e série sobre populações diferentes (armadilha nomeada na
+ * #4839). O filtro é aplicado ANTES da conversão para CtrRow (lendo os campos
+ * `anchor`/`domain` do record bruto do papaparse), pois CtrRow não expõe
+ * `anchor`. Retorna lista de CtrRow ou [] se arquivo ausente.
  * Defensivo: se o CSV não existe, retorna [] com log de aviso (não crasha).
  */
 export function loadCtrRowsH4(ctrPath: string): CtrRow[] {
@@ -229,6 +235,7 @@ export function loadCtrRowsH4(ctrPath: string): CtrRow[] {
   });
   return data
     .filter((rec) => !isAprofundeAnchor(rec.anchor ?? "")) // filtra regime pré-mar/2026
+    .filter((rec) => !isNonEditorialHost(rec.domain ?? "")) // filtra hosts não-editoriais (#4839)
     .map(recordToCtrRow)
     .filter((r): r is CtrRow => r !== null);
 }

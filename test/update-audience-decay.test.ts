@@ -8,6 +8,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   isAprofundeAnchor,
+  isNonEditorialHost,
   decayWeight,
   DECAY_HALF_LIFE_DAYS,
   parseCtrFromCsv,
@@ -49,6 +50,69 @@ describe("isAprofundeAnchor", () => {
   it("rejeita anchor vazio ou undefined-like", () => {
     assert.equal(isAprofundeAnchor(""), false);
     assert.equal(isAprofundeAnchor("   "), false);
+  });
+});
+
+// #4839: hosts que aparecem no CTR table mas nunca passam pelo pipeline
+// editorial — rodapé social, crédito de imagem do "É IA?", afiliado, links
+// de casa, apoio. Lista exata da issue (auditoria retrospectiva 260810).
+describe("isNonEditorialHost", () => {
+  it("exclui linkedin.com (rodapé social)", () => {
+    assert.equal(isNonEditorialHost("linkedin.com"), true);
+  });
+
+  it("exclui commons.wikimedia.org (crédito de imagem do É IA?)", () => {
+    assert.equal(isNonEditorialHost("commons.wikimedia.org"), true);
+  });
+
+  it("exclui pt.wikipedia.org e en.wikipedia.org", () => {
+    assert.equal(isNonEditorialHost("pt.wikipedia.org"), true);
+    assert.equal(isNonEditorialHost("en.wikipedia.org"), true);
+  });
+
+  it("exclui wikidata.org", () => {
+    assert.equal(isNonEditorialHost("wikidata.org"), true);
+  });
+
+  it("exclui link.amazon (afiliado — domínio literal sem TLD no CTR real)", () => {
+    assert.equal(isNonEditorialHost("link.amazon"), true);
+  });
+
+  it("exclui diar.ia.br e subdomínios de casa (livros., cursos.)", () => {
+    assert.equal(isNonEditorialHost("diar.ia.br"), true);
+    assert.equal(isNonEditorialHost("livros.diar.ia.br"), true);
+    assert.equal(isNonEditorialHost("cursos.diar.ia.br"), true);
+  });
+
+  it("exclui apoia.se", () => {
+    assert.equal(isNonEditorialHost("apoia.se"), true);
+  });
+
+  it("é case-insensitive e ignora www.", () => {
+    assert.equal(isNonEditorialHost("LinkedIn.com"), true);
+    assert.equal(isNonEditorialHost("www.linkedin.com"), true);
+  });
+
+  it("mantém hosts editoriais normais (não excluídos)", () => {
+    assert.equal(isNonEditorialHost("techcrunch.com"), false);
+    assert.equal(isNonEditorialHost("g1.globo.com"), false);
+    assert.equal(isNonEditorialHost("openai.com"), false);
+  });
+
+  it("NÃO captura cobertura de imprensa sobre Wikipedia/Wikimedia (diff.wikimedia.org, enterprise.wikimedia.com) — só o crédito de imagem em commons", () => {
+    assert.equal(isNonEditorialHost("diff.wikimedia.org"), false);
+    assert.equal(isNonEditorialHost("enterprise.wikimedia.com"), false);
+  });
+
+  it("NÃO captura amazon.com editorial (aws.amazon.com, aboutamazon.com) — só link.amazon (afiliado)", () => {
+    assert.equal(isNonEditorialHost("aws.amazon.com"), false);
+    assert.equal(isNonEditorialHost("aboutamazon.com"), false);
+    assert.equal(isNonEditorialHost("amazon.com"), false);
+  });
+
+  it("rejeita domain vazio", () => {
+    assert.equal(isNonEditorialHost(""), false);
+    assert.equal(isNonEditorialHost("   "), false);
   });
 });
 
@@ -173,5 +237,49 @@ describe("parseCtrFromCsv — Aprofunde filter robusto a vírgulas (regressão #
     assert.equal(r.totalLinks, 1);
 
     assert.equal(parseCtrFromCsv(CTR_HEADER, today), null); // só header → sem dados
+  });
+});
+
+// #4839: linhas de hosts não-editoriais (rodapé LinkedIn, crédito de imagem
+// Wikimedia/Wikidata, afiliado Amazon, links de casa, apoia.se) não podem
+// contaminar o CTR de categoria/origem/domínio — regressão #633.
+describe("parseCtrFromCsv — filtra hosts não-editoriais (#4839)", () => {
+  const today = new Date("2026-08-10");
+
+  it("linha com host da lista de exclusão é filtrada; linha com host editorial normal é mantida", () => {
+    const csv = [
+      CTR_HEADER,
+      // Excluída: rodapé LinkedIn
+      "2026-08-09,Edição,Rodapé,Siga no LinkedIn,https://linkedin.com/company/diaria,linkedin.com,100,10,10,10.00,Outro,BR",
+      // Excluída: crédito de imagem do É IA?
+      "2026-08-09,Edição,É IA?,Crédito,https://commons.wikimedia.org/wiki/File:x.jpg,commons.wikimedia.org,100,3,3,3.00,Curiosidade,INT",
+      // Mantida: host editorial normal
+      "2026-08-09,Edição,Destaque,GPT-6 chega,https://techcrunch.com/gpt-6,techcrunch.com,100,8,8,8.00,Lançamento,INT",
+    ].join("\n");
+
+    const r = parseCtrFromCsv(csv, today)!;
+
+    assert.equal(r.filteredNonEditorial, 2);
+    assert.equal(r.totalLinks, 1); // 3 rows - 2 não-editoriais
+    // A categoria da row filtrada (Curiosidade) não recebe crédito da row de imagem
+    assert.equal(r.byCategory.get("Curiosidade"), undefined);
+    // A row editorial normal é agregada normalmente
+    assert.equal(r.byCategory.get("Lançamento")?.count, 1);
+    assert.equal(r.byDomain.has("linkedin.com"), false);
+    assert.equal(r.byDomain.has("commons.wikimedia.org"), false);
+    assert.equal(r.byDomain.get("techcrunch.com")?.count, 1);
+  });
+
+  it("filtro Aprofunde e filtro de host não-editorial contam separadamente", () => {
+    const csv = [
+      CTR_HEADER,
+      '2026-08-09,Edição,Seção,Aprofunde,https://a.com,a.com,100,2,2,2.00,Mercado,BR',
+      "2026-08-09,Edição,Rodapé,Siga,https://apoia.se/diaria,apoia.se,100,1,1,1.00,Outro,BR",
+      "2026-08-09,Edição,Destaque,Título normal,https://d.com,d.com,100,4,4,4.00,Tendência,INT",
+    ].join("\n");
+    const r = parseCtrFromCsv(csv, today)!;
+    assert.equal(r.filteredAprofunde, 1);
+    assert.equal(r.filteredNonEditorial, 1);
+    assert.equal(r.totalLinks, 1);
   });
 });
