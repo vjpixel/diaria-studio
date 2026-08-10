@@ -702,6 +702,8 @@ Exit 0 sempre. O JSON gerado é lido no gate (item 4 abaixo) para exibição. Se
 
 ### 1x. GATE HUMANO
 
+**Se `auto_approve = true`** (`/diaria-edicao` roda Stages 1-3 sempre pre-gate, #1523 — vale com ou sem `--no-gates`; ou `/diaria-1-pesquisa --no-gates` isolado): **pule esta seção inteira.** Não apresente nenhum resumo nem pergunta ao usuário — vá direto para §1y e use o caminho `apply-gate-edits.ts --auto`. Emitir apenas `[AUTO] Stage 1 auto-approved` no log/output, per `orchestrator.md` § Princípios item 2 (#4942).
+
 Apresentar ao usuário:
 
 1. **Instrução de revisão** — não renderizar a lista no terminal. Apenas informar:

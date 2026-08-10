@@ -918,3 +918,46 @@ describe("#4505 item 3: critic pass social opcional (§4c.6d)", () => {
     );
   });
 });
+
+describe("#4942: §1x (GATE HUMANO) guarda contra auto_approve", () => {
+  // Antes do #4942, §1x nunca mencionava auto_approve — o executor
+  // apresentava o gate humano incondicionalmente, inclusive em
+  // /diaria-edicao modo pre-gate (#1523, Stages 1-3 sempre
+  // auto_approve=true) e em /diaria-1-pesquisa --no-gates isolado. Guard:
+  // a nota logo após o header ### 1x precisa instruir explicitamente o
+  // skip da seção inteira quando auto_approve=true, no mesmo padrão já
+  // usado em §6c (orchestrator-stage-6.md) e no gate de fact-check de
+  // orchestrator-stage-4.md.
+  const content = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-1-research.md"), "utf8");
+  const section1x = content.slice(
+    content.indexOf("### 1x. GATE HUMANO"),
+    content.indexOf("### 1y. Pós-gate"),
+  );
+
+  it("§1x existe e foi isolada corretamente para o slice do teste", () => {
+    assert.ok(section1x.length > 0, "slice de §1x vazio — âncoras de indexOf não bateram");
+  });
+
+  it("§1x menciona auto_approve na guarda logo após o header (antes do passo 1 'Apresentar ao usuário')", () => {
+    const passo1Idx = section1x.indexOf("1. **Instrução de revisão**");
+    assert.ok(passo1Idx !== -1, "§1x deve conter o passo 1 'Instrução de revisão'");
+    const guardText = section1x.slice(0, passo1Idx);
+    assert.ok(
+      /auto_approve\s*=\s*true/.test(guardText),
+      "§1x precisa checar 'auto_approve = true' ANTES do passo 1 (apresentação do gate) — senão o executor apresenta o gate incondicionalmente",
+    );
+  });
+
+  it("a guarda instrui pular a seção inteira e ir direto para §1y via apply-gate-edits.ts --auto", () => {
+    const passo1Idx = section1x.indexOf("1. **Instrução de revisão**");
+    const guardText = section1x.slice(0, passo1Idx);
+    assert.ok(
+      /pule esta seção inteira/i.test(guardText),
+      "a guarda precisa instruir explicitamente pular a seção inteira (não só 'omitir X')",
+    );
+    assert.ok(
+      guardText.includes("§1y") && guardText.includes("apply-gate-edits.ts --auto"),
+      "a guarda precisa apontar pro caminho pós-gate correto (§1y, apply-gate-edits.ts --auto) — não deixar o executor sem próximo passo",
+    );
+  });
+});
