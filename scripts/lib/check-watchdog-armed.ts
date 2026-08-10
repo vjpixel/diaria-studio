@@ -120,6 +120,7 @@ import { resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { detectExecMode, detectTaskScheduler, type ExecMode, type TaskSchedulerKind } from "./exec-mode.ts";
 import { isMainModule } from "./cli-args.ts";
+import { unitBaseName } from "./systemd-units.ts";
 
 /** Nome exato da scheduled task, conforme `setup-watchdog-schedule.ps1`. */
 export const WATCHDOG_TASK_NAME = "Diaria-Overnight-Watchdog";
@@ -212,29 +213,44 @@ export function buildWatchdogWarningMessage(): string {
 }
 
 /**
- * Mensagem para `armedStatus: "cannot_verify"` (#4800) — quando esta máquina
- * não roda o Task Scheduler do Windows (ou `schtasks` não está no PATH).
- * Regra dura, do próprio #4800: esta mensagem NUNCA sugere um comando de
- * arme específico de plataforma. Diz explicitamente "não dá pra verificar
- * daqui", não "não está armado" — os dois pedem reações opostas do editor.
- * Para `systemd`, nomeia o #4798 (verificação via systemd, ainda não
- * implementada) em vez de inventar uma instrução que não existe; para
- * `'none'` (nenhum agendador reconhecido), só registra a ausência.
+ * Mensagem para `armedStatus: "cannot_verify"` (#4800) quando esta máquina
+ * não roda um agendador de tarefas RECONHECIDO — hoje só o caso
+ * `schedulerKind === "none"` (nem `schtasks` nem `systemctl` no PATH desta
+ * plataforma). Regra dura, do próprio #4800: esta mensagem NUNCA sugere um
+ * comando de arme específico de plataforma. Diz explicitamente "não dá pra
+ * verificar daqui", não "não está armado" — os dois pedem reações opostas do
+ * editor.
+ *
+ * **`schedulerKind === "systemd"` não passa mais por aqui desde o #4857** —
+ * `checkWatchdogArmed` ganhou um branch systemd de verdade (`queryLinuxTimerArmed`
+ * abaixo), então "cannot_verify" em Linux hoje só ocorre quando a consulta ao
+ * `systemctl` em si falhou (ver `buildWatchdogLinuxCannotVerifyMessage`, que
+ * carrega o motivo específico daquela consulta) — não mais "verificação via
+ * systemd não implementada". O branch `"systemd"` é mantido aqui só por
+ * retrocompatibilidade do tipo de entrada (`TaskSchedulerKind` continua tendo
+ * 3 valores) e testado diretamente (`test/check-watchdog-armed.test.ts`), sem
+ * mentir sobre o estado do #4798 (que agora cobre Windows E Linux).
  */
 export function buildWatchdogCannotVerifyMessage(schedulerKind: TaskSchedulerKind): string {
   const platformNote =
     schedulerKind === "systemd"
       ? "esta máquina roda systemd, não o Task Scheduler do Windows"
       : "não foi possível detectar um agendador de tarefas suportado nesta máquina";
+  const capabilityNote =
+    schedulerKind === "systemd"
+      ? "esta checagem (`check-watchdog-armed.ts`) sabe consultar tanto o Task Scheduler " +
+        "do Windows (`schtasks`) quanto o systemd (`systemctl`, #4857)"
+      : "esta checagem (`check-watchdog-armed.ts`) só sabe consultar o Task Scheduler do " +
+        "Windows (`schtasks`) e o systemd (`systemctl`, #4857) — nenhum dos dois foi detectado aqui";
   const followUp =
     schedulerKind === "systemd"
-      ? "Verificação via systemd é escopo do #4798, ainda não implementada — " +
-        "sem instrução de arme para esta plataforma por ora."
+      ? "Verificação via systemd é suportada desde o #4857 (parte da épica #4798) — " +
+        "esta mensagem genérica só aparece se a consulta específica ao systemctl falhar " +
+        "por um motivo não coberto pelo branch dedicado."
       : "Sem agendador de tarefas reconhecido — sem instrução de arme aplicável.";
   return (
     `Watchdog overnight (#2688) NÃO PÔDE SER VERIFICADO nesta máquina — ${platformNote}, ` +
-    `e esta checagem (\`check-watchdog-armed.ts\`) só sabe consultar o Task Scheduler do ` +
-    `Windows (\`schtasks\`). Isto é diferente de "não armado": o watchdog pode estar ` +
+    `e ${capabilityNote}. Isto é diferente de "não armado": o watchdog pode estar ` +
     `corretamente armado, só não dá pra confirmar a partir desta máquina (#4800). ${followUp}`
   );
 }
@@ -499,6 +515,161 @@ export function queryWatchdogTaskVerboseOutput(
   }
 }
 
+// ---------------------------------------------------------------------------
+// I/O: consulta real ao systemd, Linux (#4857 — equivalente do bloco schtasks acima)
+// ---------------------------------------------------------------------------
+
+/**
+ * Estado "armada?" via `systemctl --user is-enabled` — deliberadamente mais
+ * raso que `WatchdogArmedStatus` (o enum rico do bloco schtasks acima, que
+ * distingue `armed_but_stale`/`armed_but_never_run` a partir de `Last
+ * Result`/`Last Run Time`). `systemctl is-enabled` não expõe essa
+ * granularidade (isso viveria em `systemctl --user status`/`journalctl`,
+ * fora de escopo desta issue — ver #4857 item 4, gap documentado
+ * explicitamente em vez de fingido coberto). `"disabled"` cobre o único caso
+ * de "presente mas inútil" que dá pra detectar por este caminho — o mesmo
+ * caso central do incidente #2944 (falsa confiança de task registrada e
+ * desabilitada).
+ */
+export type LinuxWatchdogArmedState = "armed" | "disabled" | "not_armed" | "cannot_verify";
+
+export interface LinuxWatchdogArmedResult {
+  state: LinuxWatchdogArmedState;
+  /** Detalhe textual do motivo de `cannot_verify` — `null` nos demais estados
+   * (autoexplicativos). Nunca contém segredo (só nomes de comando/unit). */
+  note: string | null;
+}
+
+/**
+ * Consulta `systemctl --user is-enabled <unit>.timer` — equivalente Linux de
+ * `queryWatchdogTaskExitCode`/`queryWatchdogTaskVerboseOutput` acima,
+ * generalizado por `taskName` pelo MESMO motivo do #4799 (permitir reuso por
+ * qualquer consumidor que precise do arme-status de uma task systemd por
+ * nome, não só o watchdog — `unitBaseName` é a mesma tradução nome→unit que
+ * `scripts/lib/systemd-units.ts` usa pra gerar os units de verdade).
+ *
+ * `exec` injetável (default = `execFileSync` real) pelo mesmo motivo de
+ * `queryWatchdogTaskExitCode` — testar sem spawnar `systemctl` de verdade
+ * (ver `test/check-watchdog-armed.test.ts`).
+ *
+ * Fail-soft: qualquer erro que não seja "unit ausente"/"disabled" reconhecido
+ * vira `cannot_verify` com o `note` carregando o motivo — nunca inventa
+ * `"armed"` nem `"not_armed"` a partir de um erro que este módulo não
+ * reconhece com certeza suficiente (mesma disciplina do #2944/#4800).
+ */
+export function queryLinuxTimerArmed(
+  taskName: string = WATCHDOG_TASK_NAME,
+  exec: typeof execFileSync = execFileSync,
+): LinuxWatchdogArmedResult {
+  const unit = `${unitBaseName(taskName)}.timer`;
+  try {
+    const out = exec("systemctl", ["--user", "is-enabled", unit], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }) as unknown as string;
+    const value = String(out ?? "").trim();
+    if (value === "disabled") return { state: "disabled", note: null };
+    if (value === "" || value === "not-found") return { state: "not_armed", note: null };
+    // "enabled", "enabled-runtime", "static", "alias", etc. — qualquer valor
+    // que não seja explicitamente "disabled"/ausente é tratado como armado
+    // (fail-soft: preferimos um "armed" espúrio a um "not_armed" espúrio pra
+    // um valor de saída do systemctl que este módulo não previu).
+    return { state: "armed", note: null };
+  } catch (e: unknown) {
+    const err = e as { status?: number | null; code?: string; stdout?: string; stderr?: string };
+    if (err.code === "ENOENT") {
+      return { state: "cannot_verify", note: "systemctl indisponível (ENOENT) nesta consulta." };
+    }
+    // Achado AO VIVO nesta unidade (#4857, validado contra `systemctl` real
+    // — não só fixture): `systemctl --user is-enabled <unit ausente>` sai
+    // com exit code != 0 (4, nesta máquina) E stdout "not-found\n" — ou
+    // seja, o caso "não armada" É reportado por EXCEÇÃO, não pelo caminho de
+    // sucesso acima (que só vê stdout limpo quando o exit code É 0). Sem
+    // este branch, uma unit genuinamente ausente caía no "erro não
+    // reconhecido" abaixo e virava `cannot_verify` — um falso "não deu pra
+    // verificar" pro caso mais comum e mais importante deste código (a
+    // pergunta que #4857 existe pra responder: "a unit está aí ou não?").
+    const stdoutTrim = String(err.stdout ?? "").trim();
+    if (stdoutTrim === "disabled") {
+      return { state: "disabled", note: null };
+    }
+    // Só o literal "not-found" é tratado como ausência confirmada — stdout
+    // VAZIO na exceção NÃO é o mesmo sinal (ao contrário do caminho de
+    // sucesso acima, onde stdout vazio com exit 0 É "not_armed"): um erro
+    // que falhou ANTES de imprimir nada (bus indisponível, permissão negada)
+    // também tem stdout vazio, e tratar isso como "ausente" inventaria uma
+    // resposta que este módulo não tem certeza suficiente pra dar.
+    if (stdoutTrim === "not-found") {
+      return { state: "not_armed", note: null };
+    }
+    const stderrText = String(err.stderr ?? "");
+    if (/failed to connect to bus/i.test(stderrText)) {
+      return {
+        state: "cannot_verify",
+        note: "sessão systemd --user indisponível neste processo (sem bus de sessão) — não é a mesma coisa que 'não armada'.",
+      };
+    }
+    // Erro genuinamente não reconhecido (ex: permissão, unit malformada) —
+    // honesto é reportar cannot_verify com o stderr (truncado) no note, não
+    // inferir "não armada" a partir de um erro que este módulo não entende
+    // com certeza suficiente (mesma disciplina do achado #4833 do lado
+    // gêmeo deste código, scheduled-task-status.ts).
+    return {
+      state: "cannot_verify",
+      note: `systemctl retornou erro inesperado ao consultar '${unit}' — não foi possível confirmar se está armada (stderr: ${stderrText.trim().slice(0, 200) || "vazio"}).`,
+    };
+  }
+}
+
+/** Nome do unit `.timer` do watchdog nesta máquina — usado nas mensagens
+ * abaixo e por quem quiser o nome exato pra rodar `systemctl` na mão. */
+export function watchdogTimerUnitName(): string {
+  return `${unitBaseName(WATCHDOG_TASK_NAME)}.timer`;
+}
+
+/** Mensagem para `armedStatus: "not_armed"` no caminho systemd (#4857) —
+ * equivalente Linux de `buildWatchdogWarningMessage` (que é Windows-específica,
+ * cita o `.ps1`). Aponta pro gerador de units + os 2 comandos de arme. */
+export function buildWatchdogLinuxNotArmedMessage(): string {
+  const unit = watchdogTimerUnitName();
+  return (
+    `Watchdog overnight (#2688) NÃO está armado no systemd desta máquina (unit "${unit}" ` +
+    `ausente/não encontrada). Sem ele, um stall silencioso total (nenhum evento chega ao ` +
+    `coordenador) só é descoberto manualmente — foi a causa raiz #1 do incidente #2768. ` +
+    `Gere os units com: npx tsx scripts/overnight/setup-watchdog-schedule-systemd.ts ` +
+    `(escreve em .systemd-units/), depois copie pra ~/.config/systemd/user/ e rode: ` +
+    `systemctl --user daemon-reload && systemctl --user enable --now ${unit} (#4857).`
+  );
+}
+
+/** Mensagem para `armedStatus: "armed_but_disabled"` no caminho systemd
+ * (#4857) — equivalente Linux de `buildWatchdogHealthWarningMessage`'s caso
+ * `armed_but_disabled` (que usa `schtasks /change /enable`, Windows-específico). */
+export function buildWatchdogLinuxDisabledMessage(): string {
+  const unit = watchdogTimerUnitName();
+  return (
+    `Watchdog overnight (#2688) unit "${unit}" está PRESENTE mas DESABILITADA no systemd ` +
+    `desta máquina — falsa confiança da MESMA classe do incidente #2944 (task registrada não ` +
+    `protege se estiver desabilitada). Reative com: systemctl --user enable --now ${unit}`
+  );
+}
+
+/** Mensagem para `armedStatus: "cannot_verify"` no caminho systemd (#4857) —
+ * quando a PRÓPRIA consulta `systemctl --user is-enabled` falhou por um
+ * motivo que `queryLinuxTimerArmed` não conseguiu classificar como
+ * armada/desabilitada/ausente. Diferente de `buildWatchdogCannotVerifyMessage`
+ * (que cobre "esta máquina não tem NENHUM agendador reconhecido") — aqui o
+ * agendador FOI reconhecido (é systemd), só a consulta específica falhou. */
+export function buildWatchdogLinuxCannotVerifyMessage(note: string | null): string {
+  const detail = note ? ` (${note})` : "";
+  return (
+    `Watchdog overnight (#2688) NÃO PÔDE SER VERIFICADO via systemd nesta consulta${detail} — ` +
+    `isto é diferente de "não armado": o watchdog pode estar corretamente armado, só não deu ` +
+    `pra confirmar agora. Tente novamente ou verifique manualmente: ` +
+    `systemctl --user list-timers ${watchdogTimerUnitName()} (#4857).`
+  );
+}
+
 /**
  * `eventMessage` distingue, no run-log, "confirmei que não está armado"
  * (`"watchdog_not_armed"`, o default histórico) de "não deu pra verificar
@@ -582,11 +753,67 @@ export interface CheckWatchdogArmedResult {
  * chamar `schtasks`/PowerShell real nem spawnar `npx tsx log-event.ts` de
  * verdade em teste (ver `test/check-watchdog-armed.test.ts`). Em runtime,
  * omitir — usa as funções reais.
+ *
+ * `queryLinuxTimerArmedFn` (#4857) segue o MESMO espírito, mas — diferente
+ * do caminho Windows (que optou por NUNCA injetar `queryWatchdogTaskExitCode`/
+ * `queryWatchdogTaskVerboseOutput` dentro de `checkWatchdogArmed`, testando-as
+ * só isoladamente — ver nota em `test/check-watchdog-armed.test.ts`) — este
+ * parâmetro EXISTE desde o início porque a issue #4857 pede explicitamente
+ * cobertura de teste do ROTEAMENTO "timer armado/não-armado/desabilitado"
+ * (#633), não só da função de consulta isolada.
  */
 export interface CheckWatchdogArmedOptions {
   execModeFn?: () => ExecMode;
   taskSchedulerFn?: () => TaskSchedulerKind;
   emitWarn?: (message: string, eventMessage?: string) => void;
+  queryLinuxTimerArmedFn?: (taskName?: string) => LinuxWatchdogArmedResult;
+}
+
+/**
+ * Roteamento systemd de `checkWatchdogArmed` (#4857) — extraído como função
+ * própria só por legibilidade (o corpo de `checkWatchdogArmed` já tinha 2
+ * caminhos grandes — Windows e "sem agendador reconhecido" — antes deste
+ * 3º). Espelha a estrutura de decisão do bloco Windows (armed / disabled ~
+ * armed_but_disabled / ausente ~ not_armed / consulta falhou ~
+ * cannot_verify), mas com granularidade menor — `queryLinuxTimerArmed` não
+ * distingue `armed_but_stale`/`armed_but_never_run` (ver docstring de
+ * `LinuxWatchdogArmedResult`, gap documentado, não escondido).
+ */
+function checkWatchdogArmedSystemd(
+  mode: ExecMode,
+  queryLinuxTimerArmedFn: (taskName?: string) => LinuxWatchdogArmedResult,
+  emitWarn: (message: string, eventMessage?: string) => void,
+): CheckWatchdogArmedResult {
+  const result = queryLinuxTimerArmedFn(WATCHDOG_TASK_NAME);
+
+  if (result.state === "armed") {
+    return {
+      mode,
+      armed: true,
+      action: "armed",
+      message: `Watchdog armado (unit systemd "${watchdogTimerUnitName()}" habilitada).`,
+      armedStatus: "armed",
+      taskState: null,
+    };
+  }
+
+  if (result.state === "disabled") {
+    const message = buildWatchdogLinuxDisabledMessage();
+    emitWarn(message);
+    return { mode, armed: false, action: "not_armed_warn", message, armedStatus: "armed_but_disabled", taskState: null };
+  }
+
+  if (result.state === "not_armed") {
+    const message = buildWatchdogLinuxNotArmedMessage();
+    emitWarn(message);
+    return { mode, armed: false, action: "not_armed_warn", message, armedStatus: "not_armed", taskState: null };
+  }
+
+  // "cannot_verify" — a consulta em si falhou por um motivo não classificado
+  // como armada/desabilitada/ausente (ver queryLinuxTimerArmed).
+  const message = buildWatchdogLinuxCannotVerifyMessage(result.note);
+  emitWarn(message, "watchdog_cannot_verify");
+  return { mode, armed: false, action: "cannot_verify_warn", message, armedStatus: "cannot_verify", taskState: null };
 }
 
 export function checkWatchdogArmed(opts: CheckWatchdogArmedOptions = {}): CheckWatchdogArmedResult {
@@ -594,6 +821,7 @@ export function checkWatchdogArmed(opts: CheckWatchdogArmedOptions = {}): CheckW
     execModeFn = detectExecMode,
     taskSchedulerFn = detectTaskScheduler,
     emitWarn = emitWarnEvent,
+    queryLinuxTimerArmedFn = queryLinuxTimerArmed,
   } = opts;
   const mode = execModeFn();
 
@@ -611,6 +839,15 @@ export function checkWatchdogArmed(opts: CheckWatchdogArmedOptions = {}): CheckW
   // #4800: consultar o eixo do agendador ANTES de escolher `schtasks` — em
   // vez de assumir que `mode === "local"` implica Windows Task Scheduler.
   const schedulerKind = taskSchedulerFn();
+
+  // #4857: branch systemd de verdade — antes disto, QUALQUER schedulerKind
+  // != "windows-task-scheduler" (incluindo "systemd") caía direto no
+  // cannot_verify genérico abaixo. Agora só "none" (nenhum agendador
+  // reconhecido nesta máquina) cai nesse caminho.
+  if (schedulerKind === "systemd") {
+    return checkWatchdogArmedSystemd(mode, queryLinuxTimerArmedFn, emitWarn);
+  }
+
   if (schedulerKind !== "windows-task-scheduler") {
     const message = buildWatchdogCannotVerifyMessage(schedulerKind);
     emitWarn(message, "watchdog_cannot_verify");

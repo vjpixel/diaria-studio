@@ -64,10 +64,81 @@ powershell -NoProfile -ExecutionPolicy Bypass `
     -File scripts\overnight\setup-watchdog-schedule.ps1 -Unregister
 ```
 
+---
+
+## Setup no Linux (systemd) — #4857
+
+Par Linux do fluxo Windows acima. Diferente das outras 14 tasks agendadas do
+repo (registro declarativo em `scripts/lib/scheduled-tasks.ts` + geração via
+`scripts/setup-systemd-timers.ts`, épica #4798), o watchdog fica **fora** do
+registry — decisão documentada em `scripts/lib/watchdog-systemd-units.ts`: a
+janela 18:00→09:00 (cadência que cruza a meia-noite) e a invocação direta de
+`overnight-watchdog.ts` (sem passar por `run-task.ts`) não cabem no schema
+`ScheduledTaskSchedule` hoje (`daily`/`weekly`/`interval` simples).
+
+**1. Gerar os units** (só escreve arquivos, nunca chama `systemctl`):
+
+```bash
+npx tsx scripts/overnight/setup-watchdog-schedule-systemd.ts
+# escreve .systemd-units/diaria-overnight-watchdog.{service,timer}
+```
+
+**2. Armar** (ação manual na máquina real):
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp .systemd-units/diaria-overnight-watchdog.service .systemd-units/diaria-overnight-watchdog.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now diaria-overnight-watchdog.timer
+```
+
+**3. Verificar:**
+
+```bash
+systemctl --user list-timers diaria-overnight-watchdog.timer
+npx tsx scripts/lib/check-watchdog-armed.ts
+```
+
+`check-watchdog-armed.ts` (usado pela Fase 0 de `/diaria-overnight`/`/diaria-develop`)
+detecta o agendador desta máquina automaticamente (`schtasks` no Windows,
+`systemctl` no Linux, via `detectTaskScheduler()`) e reporta `armed` /
+`armed_but_disabled` / `not_armed` / `cannot_verify` — o último caso (consulta
+ao `systemctl` falhou, ex: sem sessão `--user`/bus de sessão) é distinto de
+"não armado" e nunca sugere um comando de arme específico de plataforma.
+
+**Reativar** (unit presente mas desabilitado):
+
+```bash
+systemctl --user enable --now diaria-overnight-watchdog.timer
+```
+
+**Remover:**
+
+```bash
+systemctl --user disable --now diaria-overnight-watchdog.timer
+rm ~/.config/systemd/user/diaria-overnight-watchdog.{service,timer}
+systemctl --user daemon-reload
+```
+
+**Nota de validação (#4857):** esta issue foi implementada num worktree
+isolado, sem systemd real disponível para testar contra o binário de
+verdade — toda a cobertura de teste (`test/watchdog-systemd-units.test.ts`,
+`test/check-watchdog-armed.test.ts`) usa `execFileSync`/`systemctl`
+mockados, nunca chamando o comando real. A expressão `OnCalendar=` gerada
+(`00..08,18..23:00/10:00 America/Sao_Paulo`) reproduz literalmente a que foi
+validada AO VIVO no arme manual desta máquina em 260810 (comentário de
+fechamento da issue #4857: `systemctl --user enable --now` + run de teste
+confirmaram exit 0 e log real). O par de units gerado por este script
+**não foi comparado byte-a-byte** com o que já está armado manualmente em
+`~/.config/systemd/user/` nesta máquina — ação pendente do editor (mesma
+disciplina do #4320/#4382/#4490/#4534/#4723/#4740/#4750, ver CLAUDE.md).
+
 ### Testar manualmente (dry-run)
 
-```powershell
-npx tsx scripts\overnight-watchdog.ts --dry-run
+Comando cross-platform (Windows/Linux) — `overnight-watchdog.ts` não depende de qual agendador armou a task:
+
+```bash
+npx tsx scripts/overnight-watchdog.ts --dry-run
 ```
 
 Saída esperada quando não há rodada ativa:
@@ -85,9 +156,9 @@ Saída com rodada ativa e sem stall (ex: 5 min de inatividade com limiar 60 min)
 
 ### Forçar detecção com limiar baixo (teste real)
 
-```powershell
+```bash
 # Se houver rodada ativa com > 2 min de inatividade, detecta e alerta:
-npx tsx scripts\overnight-watchdog.ts --threshold 2 --dry-run
+npx tsx scripts/overnight-watchdog.ts --threshold 2 --dry-run
 ```
 
 ---
@@ -196,6 +267,11 @@ echo "# relatório gerado manualmente (fase 2 falhou)" > data\overnight\{AAMMDD}
 | Arquivo | Função |
 |---|---|
 | `scripts/overnight-watchdog.ts` | Script principal do watchdog |
-| `scripts/overnight/setup-watchdog-schedule.ps1` | Setup da task no Task Scheduler |
+| `scripts/overnight/setup-watchdog-schedule.ps1` | Setup da task no Task Scheduler (Windows) |
+| `scripts/lib/watchdog-systemd-units.ts` | Gera o conteúdo dos units systemd (Linux, #4857) |
+| `scripts/overnight/setup-watchdog-schedule-systemd.ts` | CLI que escreve os units systemd em disco (Linux, #4857) |
+| `scripts/lib/check-watchdog-armed.ts` | Checagem cross-platform (schtasks/systemd) usada pela Fase 0 do overnight/develop |
 | `docs/overnight-watchdog-setup.md` | Esta documentação |
 | `test/overnight-watchdog.test.ts` | Testes de regressão da lógica de detecção (#633) |
+| `test/watchdog-systemd-units.test.ts` | Testes dos units systemd + CLI de geração (#4857) |
+| `test/check-watchdog-armed.test.ts` | Testes da checagem cross-platform, inclusive o branch systemd (#4857) |
