@@ -334,6 +334,32 @@ export const JOGAR_RODAPE_UTM = {
 } as const;
 
 /**
+ * Link contextual do hub temático DENTRO do corpo do destaque (#4907) —
+ * direção newsletter → hub, emitido só quando as manchetes do dia casam
+ * `HUB_KEYWORD_PATTERNS` de um dos hubs existentes
+ * (`scripts/lib/hub-match.ts::matchEditionHub`). Distinto de dois emissores
+ * já existentes com quem seria fácil confundir:
+ *   - `HUB_*_FOOTER_NAV_UTM` acima (`hub-anthropic-claude`/etc.) é a direção
+ *     OPOSTA — link "diar.ia.br" no rodapé do PRÓPRIO hub, não link pro hub
+ *     saindo da newsletter;
+ *   - `ARQUIVO_RODAPE_UTM` é a pill fixa "Arquivo" do PARA ENCERRAR, sempre
+ *     pra RAIZ do arquivo — este UTM aqui aponta pro hub temático
+ *     específico do dia, nunca pra pill (issue #4907: "não colocar isso em
+ *     CURADORIA_PILLS" — a pill é bloco fixo, #4413, o link de hub é
+ *     variável por edição).
+ * `campaign` varia por hub (`hub-{slug}-contextual`) — `{slug}` é o único
+ * placeholder desta entry, mesmo padrão de `WHATSAPP_SHARE_UTM.campaignPattern`
+ * (`"{edition}"`) acima: o valor literal só existe no call site
+ * (`buildHubContextualUrl`), o registry guarda o PADRÃO pra `/utms`
+ * reconhecer qualquer campanha `hub-*-contextual` que chegar da Beehiiv.
+ */
+export const HUB_CONTEXTUAL_UTM = {
+  source: "newsletter",
+  medium: "email",
+  campaignPattern: "hub-{slug}-contextual",
+} as const;
+
+/**
  * Post/story dedicado de divulgação do "/jogar" fora da edição (#4550, 2ª das
  * 3 superfícies) — conteúdo publicado manualmente pelo editor em qualquer
  * rede social; QUAL plataforma e QUANDO publicar são decisão 100% editorial,
@@ -856,6 +882,21 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "'cursos-rodape'/'livros-rodape'/'arquivo-rodape' acima. Antes desta issue o " +
       "jogo não tinha NENHUM link de entrada a partir do rodapé da newsletter " +
       "(a única menção, o link de arquivo do gabarito, mora em 'eia-arquivo-newsletter').",
+    status: "ativo",
+  },
+  {
+    id: "hub-contextual-newsletter",
+    label: "Link contextual do hub temático (corpo do destaque)",
+    source: HUB_CONTEXTUAL_UTM.source,
+    medium: HUB_CONTEXTUAL_UTM.medium,
+    campaignPattern: HUB_CONTEXTUAL_UTM.campaignPattern,
+    originFile: "scripts/lib/hub-match.ts",
+    description:
+      "Link pro hub temático (`arquivo.diar.ia.br/temas/{slug}`) injetado no corpo do " +
+      "destaque cujas manchetes casaram `HUB_KEYWORD_PATTERNS` de um hub existente " +
+      "(#4907 — antes desta issue nenhuma edição linkava um hub, só o índice do " +
+      "próprio arquivo linkava os hubs). Emitido só quando exatamente 1 hub casa; " +
+      "ambíguo (0 ou 2+) sai sem link, mesmo comportamento de hoje.",
     status: "ativo",
   },
   {

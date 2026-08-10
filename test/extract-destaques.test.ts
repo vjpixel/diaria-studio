@@ -695,3 +695,106 @@ describe("parseDestaques — bloco Aprofunde (#3920)", () => {
     assert.equal(d[0].aprofunde?.[0].source, "");
   });
 });
+
+describe("parseDestaques — bloco 'Saiba mais:' (link contextual de hub, #4907)", () => {
+  it("extrai hubLink e mantém why limpo (sem Aprofunde)", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "Título d1",
+      "https://example.com/d1",
+      "",
+      "Corpo do destaque.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Impacto prático em 2 frases.",
+      "",
+      "Saiba mais:",
+      "",
+      "[Anthropic e Claude](https://arquivo.diar.ia.br/temas/anthropic-claude?utm_source=newsletter)",
+      "",
+      "---",
+      "DESTAQUE 2 | PESQUISA",
+      "Título d2",
+      "https://example.com/d2",
+      "",
+      "Corpo d2.",
+      "",
+      "Por que isso importa:",
+      "Impacto d2.",
+    ].join("\n");
+
+    const d = parseDestaques(md);
+    assert.equal(d.length, 2);
+    // why NÃO inclui o bloco "Saiba mais:"
+    assert.equal(d[0].why, "Impacto prático em 2 frases.");
+    assert.ok(!d[0].why.includes("Saiba mais"));
+    assert.deepEqual(d[0].hubLink, {
+      label: "Anthropic e Claude",
+      url: "https://arquivo.diar.ia.br/temas/anthropic-claude?utm_source=newsletter",
+    });
+    // d2 sem match não ganha o campo
+    assert.equal(d[1].hubLink, undefined);
+    assert.equal(Object.prototype.hasOwnProperty.call(d[1], "hubLink"), false);
+  });
+
+  it("coexiste com Aprofunde — 'Saiba mais:' vem DEPOIS e fecha o bloco Aprofunde corretamente", () => {
+    const md = [
+      "DESTAQUE 1 | LANÇAMENTO",
+      "Título d1",
+      "https://example.com/d1",
+      "",
+      "Corpo.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Impacto.",
+      "",
+      "Aprofunde:",
+      "",
+      "* [Cobertura X](https://x.com/a) - X",
+      "",
+      "Saiba mais:",
+      "",
+      "[Google e Gemini](https://arquivo.diar.ia.br/temas/google-gemini)",
+      "",
+      "---",
+      "DESTAQUE 2 | PESQUISA",
+      "Título d2",
+      "https://example.com/d2",
+      "",
+      "Corpo d2.",
+      "",
+      "Por que isso importa:",
+      "Impacto d2.",
+    ].join("\n");
+
+    const d = parseDestaques(md);
+    // Aprofunde não foi poluído pela linha "Saiba mais:"/link (regressão do
+    // achado #4907: sem o corte de aprofundeEnd em hubLinkIdx, a linha do
+    // link de hub seria avaliada como item malformado — este teste não cobre
+    // o lint diretamente, mas garante que o parser real não a absorve).
+    assert.equal(d[0].aprofunde?.length, 1);
+    assert.equal(d[0].aprofunde?.[0].url, "https://x.com/a");
+    assert.deepEqual(d[0].hubLink, {
+      label: "Google e Gemini",
+      url: "https://arquivo.diar.ia.br/temas/google-gemini",
+    });
+  });
+
+  it("destaque sem 'Saiba mais:' não ganha o campo (comportamento atual preservado)", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "Título d1",
+      "https://example.com/d1",
+      "",
+      "Corpo.",
+      "",
+      "Por que isso importa:",
+      "Impacto.",
+    ].join("\n");
+    const d = parseDestaques(md);
+    assert.equal(d[0].hubLink, undefined);
+    assert.equal(Object.prototype.hasOwnProperty.call(d[0], "hubLink"), false);
+  });
+});

@@ -1994,3 +1994,172 @@ describe("#4274 — stitchNewsletter() end-to-end: override paraEncerrar via Sti
     }
   });
 });
+
+describe("stitchNewsletter — #4907 link contextual de hub temático", () => {
+  function setupEdition() {
+    const dir = mkdtempSync(join(tmpdir(), "stitch-hub-"));
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    return { dir, internalDir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  it("edição cujo D2 casa um hub -> 'Saiba mais:' aparece DENTRO do bloco de D2, com URL/UTM do hub", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(
+        join(internalDir, "02-d1-draft.md"),
+        "**DESTAQUE 1 | 🚀 LANÇAMENTO**\n\n**[Governo anuncia política de dados](https://example.com/d1)**\n\nbody1\n\nPor que isso importa:\n\nwhy1",
+      );
+      writeFileSync(
+        join(internalDir, "02-d2-draft.md"),
+        "**DESTAQUE 2 | 💰 MERCADO**\n\n**[OpenAI atualiza o ChatGPT com novo recurso](https://example.com/d2)**\n\nbody2\n\nPor que isso importa:\n\nwhy2",
+      );
+      writeFileSync(
+        join(internalDir, "02-d3-draft.md"),
+        "**DESTAQUE 3 | 🔬 PESQUISA**\n\n**[Notícia qualquer sem tema de hub](https://example.com/d3)**\n\nbody3\n\nPor que isso importa:\n\nwhy3",
+      );
+      writeFileSync(
+        join(internalDir, "01-approved-capped.json"),
+        JSON.stringify({ coverage: { line: "Coverage." } }),
+      );
+      const out = stitchNewsletter({
+        d1Path: join(internalDir, "02-d1-draft.md"),
+        d2Path: join(internalDir, "02-d2-draft.md"),
+        d3Path: join(internalDir, "02-d3-draft.md"),
+        approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+        editionDir: dir,
+        sponsor: false,
+      });
+
+      assert.match(out, /Saiba mais:/, "link contextual do hub deve aparecer no MD final");
+      assert.match(
+        out,
+        /\[OpenAI e ChatGPT\]\(https:\/\/arquivo\.diar\.ia\.br\/temas\/openai-chatgpt\?utm_source=newsletter&utm_medium=email&utm_campaign=hub-openai-chatgpt-contextual\)/,
+      );
+
+      // "Saiba mais:" precisa estar DENTRO do bloco de D2 — depois do
+      // header/why de D2, antes do `---` que fecha D2 e antes de D3.
+      const d2Pos = out.indexOf("DESTAQUE 2");
+      const saibaMaisPos = out.indexOf("Saiba mais:");
+      const d3Pos = out.indexOf("DESTAQUE 3");
+      assert.ok(d2Pos < saibaMaisPos && saibaMaisPos < d3Pos, "Saiba mais: deve ficar entre D2 e D3");
+
+      // D1 e D3 não casaram hub nenhum — sem link nos blocos deles.
+      const d1Block = out.slice(out.indexOf("DESTAQUE 1"), d2Pos);
+      const d3Block = out.slice(d3Pos);
+      assert.ok(!d1Block.includes("Saiba mais:"), "D1 não deve ganhar o link (não casou)");
+      assert.ok(
+        d3Block.indexOf("Saiba mais:") === -1 || d3Block.indexOf("Saiba mais:") > d3Block.indexOf("PARA ENCERRAR"),
+        "D3 não deve ganhar o link (não casou) — a única 'Saiba mais' aceitável ali seria fora do escopo do destaque",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("edição sem NENHUM destaque casando hub -> comportamento atual preservado (sem 'Saiba mais:', sem regressão)", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(
+        join(internalDir, "02-d1-draft.md"),
+        "**DESTAQUE 1 | 🚀 LANÇAMENTO**\n\n**[Governo anuncia política de dados](https://example.com/d1)**\n\nbody1",
+      );
+      writeFileSync(
+        join(internalDir, "02-d2-draft.md"),
+        "**DESTAQUE 2 | ⚖️ REGULAÇÃO**\n\n**[Senado aprova novo marco regulatório](https://example.com/d2)**\n\nbody2",
+      );
+      writeFileSync(
+        join(internalDir, "01-approved-capped.json"),
+        JSON.stringify({ coverage: { line: "Coverage." } }),
+      );
+      const out = stitchNewsletter({
+        d1Path: join(internalDir, "02-d1-draft.md"),
+        d2Path: join(internalDir, "02-d2-draft.md"),
+        approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+        editionDir: dir,
+        sponsor: false,
+      });
+
+      assert.doesNotMatch(out, /Saiba mais:/);
+      assert.doesNotMatch(out, /arquivo\.diar\.ia\.br\/temas\//);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("coexiste com box de divulgação REAL no mesmo slot (D1 casa hub + slot1 configurado): os dois sobrevivem sem interferência mútua", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(
+        join(internalDir, "02-d1-draft.md"),
+        "**DESTAQUE 1 | 💰 MERCADO**\n\n**[Anthropic levanta rodada bilionária](https://example.com/d1)**\n\nbody1\n\nPor que isso importa:\n\nwhy1",
+      );
+      writeFileSync(
+        join(internalDir, "02-d2-draft.md"),
+        "**DESTAQUE 2 | ⚖️ REGULAÇÃO**\n\n**[Senado aprova novo marco regulatório](https://example.com/d2)**\n\nbody2",
+      );
+      writeFileSync(
+        join(internalDir, "01-approved-capped.json"),
+        JSON.stringify({ coverage: { line: "Coverage." } }),
+      );
+      const out = stitchNewsletter({
+        d1Path: join(internalDir, "02-d1-draft.md"),
+        d2Path: join(internalDir, "02-d2-draft.md"),
+        approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+        editionDir: dir,
+        boxesDivulgacao: { slot1: STABLE_SLOT1_FILE, slot2: null, slot3: null },
+      });
+
+      // O link de hub sobrevive DENTRO do bloco de D1 (ele mesmo, não confundido
+      // com box de divulgação — extractBoxDivulgacao1 só reconhece marcador
+      // bold-line/cart, "Saiba mais:" não bate nenhum dos dois).
+      assert.match(out, /Saiba mais:/);
+      assert.match(out, /\[Anthropic e Claude\]\(https:\/\/arquivo\.diar\.ia\.br\/temas\/anthropic-claude/);
+
+      // O box de divulgação do slot1 (Recomendação de leitura) sobrevive
+      // intacto — o link de hub, colado ao FINAL de d1, não é confundido com
+      // ele nem o desloca.
+      const slot1 = extractBoxDivulgacao1(out);
+      assert.ok(slot1, "slot1 continua injetado mesmo com hub link em D1");
+      assert.match(slot1!, STABLE_SLOT1_ANCHOR);
+
+      // Ordem: D1 (com Saiba mais dentro) > box do slot1 > D2.
+      const d1Pos = out.indexOf("DESTAQUE 1");
+      const saibaMaisPos = out.indexOf("Saiba mais:");
+      const slot1Pos = out.search(STABLE_SLOT1_ANCHOR);
+      const d2Pos = out.indexOf("DESTAQUE 2");
+      assert.ok(d1Pos < saibaMaisPos && saibaMaisPos < slot1Pos && slot1Pos < d2Pos);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("2+ destaques casando hubs DIFERENTES -> ambíguo, nenhum link (regra explícita #4907)", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(
+        join(internalDir, "02-d1-draft.md"),
+        "**DESTAQUE 1 | 🚀 LANÇAMENTO**\n\n**[Anthropic lança novo modelo Claude](https://example.com/d1)**\n\nbody1",
+      );
+      writeFileSync(
+        join(internalDir, "02-d2-draft.md"),
+        "**DESTAQUE 2 | 🌐 PRODUTO**\n\n**[Google atualiza o Gemini com nova versão](https://example.com/d2)**\n\nbody2",
+      );
+      writeFileSync(
+        join(internalDir, "01-approved-capped.json"),
+        JSON.stringify({ coverage: { line: "Coverage." } }),
+      );
+      const out = stitchNewsletter({
+        d1Path: join(internalDir, "02-d1-draft.md"),
+        d2Path: join(internalDir, "02-d2-draft.md"),
+        approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+        editionDir: dir,
+        sponsor: false,
+      });
+
+      assert.doesNotMatch(out, /Saiba mais:/);
+    } finally {
+      cleanup();
+    }
+  });
+});

@@ -90,4 +90,31 @@ describe("checkAprofundeFormat (#3920)", () => {
     const r = checkAprofundeFormat(md);
     assert.equal(r.ok, true, JSON.stringify(r.errors));
   });
+
+  it("#4907: 'Saiba mais:' (link de hub) DEPOIS de Aprofunde bem-formado não gera malformed_item", () => {
+    // Regressão: sem o closeBlock() no encontro de HUB_LINK_HEADER_RE, a
+    // linha "Saiba mais:" e o link seguinte seriam avaliados (e rejeitados)
+    // como itens do Aprofunde ainda aberto.
+    const md = wrap(
+      [
+        "Aprofunde:",
+        "",
+        "* [Cobertura A](https://a.com/x) - Fonte A",
+        "",
+        "Saiba mais:",
+        "",
+        "[Anthropic e Claude](https://arquivo.diar.ia.br/temas/anthropic-claude)",
+      ].join("\n"),
+    );
+    const r = checkAprofundeFormat(md);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
+
+  it("#4907: 'Saiba mais:' sem Aprofunde nunca dispara erro (nada pra fechar)", () => {
+    const md = wrap(
+      ["Saiba mais:", "", "[Anthropic e Claude](https://arquivo.diar.ia.br/temas/anthropic-claude)"].join("\n"),
+    );
+    const r = checkAprofundeFormat(md);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
 });

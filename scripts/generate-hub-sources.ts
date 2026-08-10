@@ -99,7 +99,11 @@ export const HUB_KEYWORD_PATTERNS: Record<string, RegExp> = {
   "meta-ai": /\bmeta\b|\bllama\b|zuckerberg/i,
 };
 
-function stripAccents(s: string): string {
+/** Exportado (#4907) — `scripts/lib/hub-match.ts` reusa esta mesma
+ * normalização pra decidir, na hora da escrita da edição, se as manchetes
+ * do dia casam `HUB_KEYWORD_PATTERNS` de algum hub existente. Nunca duplicar
+ * a lógica de strip de acento num 2º lugar. */
+export function stripAccents(s: string): string {
   return s.normalize("NFD").replace(/[̀-ͯ]/g, "");
 }
 

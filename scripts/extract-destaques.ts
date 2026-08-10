@@ -37,16 +37,28 @@ export interface AprofundeItem {
   source: string;
 }
 
+export interface HubLink {
+  label: string;
+  url: string;
+}
+
 export interface Destaque {
   n: 1 | 2 | 3;
   category: string;
   title: string;
   body: string;          // paragraphs before "Por que isso importa:"
-  why: string;           // paragraphs after "Por que isso importa:" (exclui Aprofunde)
+  why: string;           // paragraphs after "Por que isso importa:" (exclui Aprofunde/Saiba mais)
   url: string;
   // #3920: bloco "Aprofunde:" — fontes do cluster same-story. Presente só
   // quando o destaque tem cluster_sources. NÃO conta no char-limit do destaque.
   aprofunde?: AprofundeItem[];
+  // #4907: link contextual pro hub temático (`arquivo.diar.ia.br/temas/{slug}`)
+  // — presente só quando `scripts/lib/hub-match.ts::matchEditionHub` casou
+  // este destaque contra `HUB_KEYWORD_PATTERNS` na hora do stitch. SEMPRE o
+  // ÚLTIMO elemento do bloco (depois de "Aprofunde:", se presente). NÃO conta
+  // no char-limit do destaque (mesma regra do Aprofunde, ver stripHubLink em
+  // measure-highlights.ts).
+  hubLink?: HubLink;
 }
 
 // #3920: header + item do bloco "Aprofunde:".
@@ -54,6 +66,14 @@ export interface Destaque {
 //
 //   * [Título do artigo](URL) - Fonte
 export const APROFUNDE_HEADER_RE = /^Aprofunde:\s*$/i;
+
+// #4907: header do link contextual de hub temático — injetado por
+// `scripts/stitch-newsletter.ts` (via `scripts/lib/hub-match.ts`) quando as
+// manchetes do dia casam `HUB_KEYWORD_PATTERNS` de um hub existente.
+//   Saiba mais:
+//
+//   [Anthropic e Claude — hub temático da diar.ia.br](URL)
+export const HUB_LINK_HEADER_RE = /^Saiba mais:\s*$/i;
 // bullet (* ou -) + inline-link (bold opcional, parênteses balanceados no path)
 // + separador (- – —) + fonte. A fonte é opcional (defensivo).
 export const APROFUNDE_ITEM_RE =
@@ -114,6 +134,10 @@ export function parseDestaques(raw: string): Destaque[] {
     // #3920: "Aprofunde:" marker (bloco de fontes do cluster). Fica DEPOIS do
     // why; delimita o fim do why e o início dos itens Aprofunde.
     const aprofundeIdx = lines.findIndex(l => APROFUNDE_HEADER_RE.test(l.trim()));
+
+    // #4907: "Saiba mais:" marker (link contextual de hub temático) — sempre
+    // o ÚLTIMO elemento do bloco, depois de "Aprofunde:" quando presente.
+    const hubLinkIdx = lines.findIndex(l => HUB_LINK_HEADER_RE.test(l.trim()));
 
     // Coletar todas as http-lines (linhas iniciando com http://) com seus índices.
     // A URL canônica é uma das duas posições válidas:
@@ -213,6 +237,12 @@ export function parseDestaques(raw: string): Destaque[] {
     if (aprofundeIdx !== -1 && aprofundeIdx >= bodyStart && aprofundeIdx < bodyEnd) {
       bodyEnd = aprofundeIdx;
     }
+    // #4907: mesma proteção pro link de hub — só relevante quando não há
+    // "Por que isso importa" NEM Aprofunde antes dele (caso raro, mas o guard
+    // é barato e espelha o de cima).
+    if (hubLinkIdx !== -1 && hubLinkIdx >= bodyStart && hubLinkIdx < bodyEnd) {
+      bodyEnd = hubLinkIdx;
+    }
 
     const body = lines.slice(bodyStart, bodyEnd).join('\n').trim();
 
@@ -223,6 +253,11 @@ export function parseDestaques(raw: string): Destaque[] {
     if (aprofundeIdx !== -1 && aprofundeIdx > whyIdx && aprofundeIdx < whyEnd) {
       whyEnd = aprofundeIdx;
     }
+    // #4907: mesma proteção pro link de hub — cobre o caso sem Aprofunde
+    // (hubLinkIdx viria logo após o why nesse caso).
+    if (hubLinkIdx !== -1 && hubLinkIdx > whyIdx && hubLinkIdx < whyEnd) {
+      whyEnd = hubLinkIdx;
+    }
     const why = whyIdx !== -1 ? lines.slice(whyIdx + 1, whyEnd).join('\n').trim() : '';
 
     const url = isInlineFormat
@@ -232,13 +267,38 @@ export function parseDestaques(raw: string): Destaque[] {
     // #3920: itens do bloco Aprofunde (do header até a URL legacy final ou fim).
     let aprofunde: AprofundeItem[] | undefined;
     if (aprofundeIdx !== -1) {
-      const aprofundeEnd =
+      let aprofundeEnd =
         (urlIdx !== -1 && !isNewFormat && urlIdx > aprofundeIdx) ? urlIdx : lines.length;
+      // #4907: "Saiba mais:" vem SEMPRE depois de "Aprofunde:" quando os dois
+      // coexistem — sem este corte, a linha do link de hub seria avaliada
+      // (e rejeitada) como item malformado do Aprofunde.
+      if (hubLinkIdx !== -1 && hubLinkIdx > aprofundeIdx && hubLinkIdx < aprofundeEnd) {
+        aprofundeEnd = hubLinkIdx;
+      }
       const items = parseAprofundeItems(lines, aprofundeIdx + 1, aprofundeEnd);
       if (items.length > 0) aprofunde = items;
     }
 
-    destaques.push({ n, category, title, body, why, url, ...(aprofunde ? { aprofunde } : {}) });
+    // #4907: link de hub — 1ª linha não-vazia após o header "Saiba mais:" que
+    // é um inline link puro (`[label](url)`, formato compartilhado com o
+    // título via `parseInlineLink`). Qualquer coisa que não bata o formato é
+    // ignorada (defensivo — nunca lança, mesmo espírito do resto do parser).
+    let hubLink: HubLink | undefined;
+    if (hubLinkIdx !== -1) {
+      for (let i = hubLinkIdx + 1; i < lines.length; i++) {
+        const t = lines[i].trim();
+        if (!t) continue;
+        const parsed = parseInlineLink(t);
+        if (parsed) hubLink = { label: parsed.title, url: parsed.url };
+        break;
+      }
+    }
+
+    destaques.push({
+      n, category, title, body, why, url,
+      ...(aprofunde ? { aprofunde } : {}),
+      ...(hubLink ? { hubLink } : {}),
+    });
   }
 
   // Sort by n to guarantee d1, d2, d3 order.

@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   renderAprofundeInner,
+  renderHubLinkInner,
   renderDestaque,
 } from "../scripts/lib/newsletter-render-html.ts";
 import { extractLinks } from "../scripts/build-link-ctr.ts";
@@ -72,5 +73,57 @@ describe("renderDestaque + Aprofunde → CTR distingue título vs Aprofunde (#39
     assert.equal(resolveNewsletterSection(canonico!.sectionTitle), "Destaque");
     assert.equal(resolveNewsletterSection(extraA!.sectionTitle), "Aprofunde");
     assert.equal(resolveNewsletterSection(extraB!.sectionTitle), "Aprofunde");
+  });
+});
+
+describe("renderHubLinkInner (#4907)", () => {
+  const hubLink = { label: "Anthropic e Claude", url: "https://arquivo.diar.ia.br/temas/anthropic-claude?utm_source=newsletter" };
+
+  it("vazio/undefined → string vazia (destaque sem match é idêntico a hoje)", () => {
+    assert.equal(renderHubLinkInner(undefined), "");
+  });
+
+  it("emite kicker 'Saiba mais' + link do hub", () => {
+    const html = renderHubLinkInner(hubLink);
+    assert.match(html, /SAIBA MAIS|Saiba mais/);
+    assert.ok(html.includes(hubLink.url));
+    assert.ok(html.includes("Anthropic e Claude"));
+  });
+
+  it("label escapado (sem HTML injetável cru)", () => {
+    const html = renderHubLinkInner({ label: "T<script>", url: "https://a.com/x" });
+    assert.ok(!html.includes("<script>"));
+    assert.ok(html.includes("&lt;script&gt;") || html.includes("&lt;"));
+  });
+});
+
+describe("renderDestaque + hub link → CTR distingue título vs Saiba mais (#4907)", () => {
+  const d: RenderDestaque = {
+    n: 1,
+    category: "MERCADO",
+    emoji: "🚀",
+    title: "Título do destaque",
+    url: "https://canonico.com/x",
+    body: "Corpo do destaque.",
+    why: "Impacto prático em duas frases claras.",
+    hubLink: { label: "Anthropic e Claude", url: "https://arquivo.diar.ia.br/temas/anthropic-claude?utm_source=newsletter" },
+  };
+
+  it("destaque sem hubLink renderiza igual a antes (sem o bloco extra)", () => {
+    const { hubLink: _omit, ...semHub } = d;
+    const html = renderDestaque(semHub as RenderDestaque);
+    assert.ok(!html.includes("Saiba mais"));
+  });
+
+  it("o link-título resolve para 'Destaque' e o link de hub é extraído com a URL correta", () => {
+    const html = renderDestaque(d);
+    const links = extractLinks(html);
+    const byUrl = new Map(links.map((l) => [l.baseUrl, l]));
+
+    const canonico = byUrl.get("https://canonico.com/x");
+    const hub = byUrl.get("https://arquivo.diar.ia.br/temas/anthropic-claude");
+    assert.ok(canonico, "link canônico deve ser extraído");
+    assert.ok(hub, "link do hub deve ser extraído");
+    assert.equal(resolveNewsletterSection(canonico!.sectionTitle), "Destaque");
   });
 });
