@@ -48,15 +48,18 @@ const RELATIVE_SURVEY_JSON = "data/audience-raw.json";
  *   normalizados 0-1 (ver implementação).
  * - `matched` — lista de sinais que contribuíram (para explicabilidade / `reason`
  *   dos agentes scorers). Inclui `"hands_on:true"` quando detectado (#2143).
- * - `hands_on` — sinal "hands-on curto" detectado deterministicamente (#2143).
- *   `true` quando o artigo tem ≥2 sinais de tutorial hands-on (passos numerados,
- *   tempo estimado, setup mínimo, ferramenta consumer PT-BR/casual). Quando
- *   `true`, o scorer deve adicionar +8 pontos ao score do artigo (ver rubrica
- *   em scorer.md e scorer-chunk.md). Sinal puro de texto — não depende de dados
- *   de audiência. Computado dentro de `annotateAudienceAffinity`, portanto **não**
- *   disponível quando `signals.loaded === false` (retorno `null`). Se hands_on
- *   independente de dados de audiência for necessário, chamar `detectHandsOnShort`
- *   diretamente.
+ * - `hands_on` — sinal "hands-on curto" detectado deterministicamente (#2143),
+ *   **agnóstico de bucket desde #4843** (auditoria de cliques 260810: o lift
+ *   de CTR de hands-on é do conteúdo, não da seção — 2,75× no Use Melhor,
+ *   2,18× no Radar). `true` quando o artigo tem ≥2 sinais de tutorial
+ *   hands-on (passos numerados, tempo estimado, setup mínimo, ferramenta
+ *   consumer PT-BR/casual). Quando `true`, o scorer deve adicionar +8 pontos
+ *   ao score do artigo, independente do bucket (ver rubrica em scorer.md e
+ *   scorer-chunk.md). Sinal puro de texto — não depende de dados de
+ *   audiência. Computado dentro de `annotateAudienceAffinity` (via
+ *   `annotateUseMelhorBucket`, restrito a `use_melhor` e a `signals.loaded`)
+ *   ou, para os demais buckets / independente de `signals.loaded`, via
+ *   `annotateHandsOnAllBuckets` (chama `detectHandsOnShort` diretamente).
  *
  * O campo é `null` quando não há dados de audiência disponíveis — o scorer
  * ignora a anotação nesse caso (comportamento pré-#2063).
@@ -559,6 +562,60 @@ export function annotateUseMelhorBucket(
   for (const item of items) {
     item.audience_affinity = annotateAudienceAffinity(item, signals);
     if (item.audience_affinity !== null) count++;
+  }
+  return count;
+}
+
+/**
+ * Anota o sinal "hands-on curto" (#2143, agnóstico de bucket desde #4843) em
+ * TODOS os buckets do categorizer — não só `use_melhor`.
+ *
+ * Auditoria de cliques 260810 (#4843): dentro do Use Melhor, item hands-on
+ * rende 2,75× [1,75; 4,39]; no Radar, onde o bônus não incidia, rende
+ * 2,18× [1,11; 4,01] — o sinal é do CONTEÚDO, não do bucket em que o artigo
+ * caiu. `detectHandsOnShort` é puro e determinístico (não depende de
+ * `AudienceSignals`/CTR), então este helper roda independente de
+ * `signals.loaded` — diferente de `annotateUseMelhorBucket`, que só cobre o
+ * bônus CTR-based (`affinity`, `academy`, `howto_br`), esses sim específicos
+ * da seção Use Melhor.
+ *
+ * Idempotente com `annotateUseMelhorBucket`: se o item já tem
+ * `audience_affinity` (ex: use_melhor já anotado antes por essa outra
+ * função), só faz merge do sinal hands-on — nunca sobrescreve `affinity`/
+ * `matched` de CTR/survey já computados.
+ *
+ * @param categorized  Objeto de buckets (`{ lancamento, radar, use_melhor, video }`)
+ * @returns            Número de artigos com `hands_on: true` anotados/atualizados
+ */
+export function annotateHandsOnAllBuckets(
+  categorized: Record<string, Array<{ url?: string; title?: string; summary?: string; audience_affinity?: AudienceAffinity | null; [key: string]: unknown }>>,
+): number {
+  let count = 0;
+  for (const bucket of Object.keys(categorized)) {
+    const items = categorized[bucket] ?? [];
+    for (const item of items) {
+      const { isHandsOn, signals: hoSignals } = detectHandsOnShort(item);
+      if (!isHandsOn) continue;
+
+      if (item.audience_affinity) {
+        // Já anotado (ex: use_melhor via annotateUseMelhorBucket) — o campo
+        // hands_on já foi computado ali por annotateAudienceAffinity. Só
+        // garante consistência caso essa função rode antes por engano.
+        if (!item.audience_affinity.hands_on) {
+          item.audience_affinity.hands_on = true;
+          if (!item.audience_affinity.matched.includes("hands_on:true")) {
+            item.audience_affinity.matched.push("hands_on:true", ...hoSignals.map((s) => `ho:${s}`));
+          }
+        }
+      } else {
+        item.audience_affinity = {
+          affinity: 0,
+          matched: ["hands_on:true", ...hoSignals.map((s) => `ho:${s}`)],
+          hands_on: true,
+        };
+      }
+      count++;
+    }
   }
   return count;
 }

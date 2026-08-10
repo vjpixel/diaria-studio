@@ -38,7 +38,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { annotateUseMelhorBucket, loadAudienceSignals } from "./lib/audience-affinity.ts"; // #2063
+import { annotateUseMelhorBucket, annotateHandsOnAllBuckets, loadAudienceSignals } from "./lib/audience-affinity.ts"; // #2063, #4843
 import { dedupeUseMelhorBucket } from "./lib/use-melhor-curation.ts"; // #2276
 import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 
@@ -172,6 +172,19 @@ export function main(): void {
     }
   } catch (e) {
     console.error(`[split-articles-for-scoring] WARN: audience_affinity falhou (${(e as Error).message}) — seguindo sem anotação`);
+  }
+
+  // #4843: anotar hands_on em TODOS os buckets (não só use_melhor) — sinal
+  // determinístico de texto, independente de audience_affinity/signals.loaded.
+  // Auditoria de cliques 260810: o lift de hands-on também aparece no Radar
+  // (2,18×), onde o bônus não incidia até aqui.
+  try {
+    const handsOnAnnotated = annotateHandsOnAllBuckets(categorized);
+    if (handsOnAnnotated > 0) {
+      console.error(`[split-articles-for-scoring] hands_on anotado em ${handsOnAnnotated} artigo(s) (todos os buckets)`);
+    }
+  } catch (e) {
+    console.error(`[split-articles-for-scoring] WARN: hands_on annotation falhou (${(e as Error).message}) — seguindo sem anotação`);
   }
 
   // #2276: de-dup temático + cap por domínio antes de distribuir nos chunks.

@@ -10,6 +10,8 @@ import {
   renderLine,
   buildHighlightUrls,
   buildRunnerUpUrls,
+  buildSecondaryShortlistUrls,
+  SECONDARY_SHORTLIST_SIZE,
   renderEaiBlock,
   renderSection,
   computeTotalConsidered,
@@ -478,6 +480,97 @@ describe("buildRunnerUpUrls (#104)", () => {
     assert.equal(r.size, 2);
     // Sem overlap
     for (const url of r) assert.ok(!h.has(url));
+  });
+});
+
+describe("buildSecondaryShortlistUrls (#4844 — shortlist ampliado 6→12)", () => {
+  it("SECONDARY_SHORTLIST_SIZE é 6 (constante exportada, #4844)", () => {
+    assert.equal(SECONDARY_SHORTLIST_SIZE, 6);
+  });
+
+  it("usa runners_up[] explícito primeiro, na ordem dada (hierarquia do seletor)", () => {
+    const data = {
+      runners_up: [{ url: "https://r.com/1" }, { url: "https://r.com/2" }],
+      lancamento: [],
+      radar: [],
+    };
+    const urls = buildSecondaryShortlistUrls(data, new Set());
+    assert.deepEqual([...urls], ["https://r.com/1", "https://r.com/2"]);
+  });
+
+  it("backfill por score quando runners_up[] tem menos que 6 (#4844 caso real: guidance atual é '1-2')", () => {
+    const data = {
+      runners_up: [{ url: "https://r.com/1" }], // só 1 explícito
+      lancamento: [
+        { url: "https://a.com/1", title: "A1", score: 90 },
+        { url: "https://a.com/2", title: "A2", score: 40 },
+      ],
+      radar: [
+        { url: "https://b.com/1", title: "B1", score: 85 },
+        { url: "https://b.com/2", title: "B2", score: 80 },
+        { url: "https://b.com/3", title: "B3", score: 75 },
+        { url: "https://b.com/4", title: "B4", score: 70 },
+        { url: "https://b.com/5", title: "B5", score: 10 },
+      ],
+    };
+    const urls = buildSecondaryShortlistUrls(data, new Set());
+    assert.equal(urls.size, 6, "deve completar até 6 via backfill");
+    assert.ok(urls.has("https://r.com/1"), "runners_up explícito sempre entra primeiro");
+    // Backfill pelos 5 maiores scores restantes (90, 85, 80, 75, 70) — exclui 40 e 10.
+    assert.ok(urls.has("https://a.com/1"));
+    assert.ok(urls.has("https://b.com/1"));
+    assert.ok(urls.has("https://b.com/2"));
+    assert.ok(urls.has("https://b.com/3"));
+    assert.ok(urls.has("https://b.com/4"));
+    assert.ok(!urls.has("https://a.com/2"), "score 40 não deve entrar (só os 5 maiores completam o backfill)");
+    assert.ok(!urls.has("https://b.com/5"), "score 10 não deve entrar");
+  });
+
+  it("exclui highlights[] do backfill", () => {
+    const data = {
+      lancamento: [{ url: "https://h.com/1", title: "H", score: 99 }],
+      radar: [{ url: "https://b.com/1", title: "B", score: 50 }],
+    };
+    const highlightUrls = new Set(["https://h.com/1"]);
+    const urls = buildSecondaryShortlistUrls(data, highlightUrls);
+    assert.ok(!urls.has("https://h.com/1"), "highlight nunca entra no shortlist secundário");
+    assert.ok(urls.has("https://b.com/1"));
+  });
+
+  it("nunca duplica um runners_up já incluído durante o backfill", () => {
+    const data = {
+      runners_up: [{ url: "https://b.com/1" }],
+      radar: [
+        { url: "https://b.com/1", title: "B1", score: 99 }, // mesmo artigo, presente no bucket também
+        { url: "https://b.com/2", title: "B2", score: 50 },
+      ],
+    };
+    const urls = buildSecondaryShortlistUrls(data, new Set());
+    assert.equal(urls.size, 2);
+    assert.ok(urls.has("https://b.com/1"));
+    assert.ok(urls.has("https://b.com/2"));
+  });
+
+  it("respeita limit customizado", () => {
+    const data = {
+      radar: [
+        { url: "https://b.com/1", score: 90 },
+        { url: "https://b.com/2", score: 80 },
+        { url: "https://b.com/3", score: 70 },
+      ],
+    };
+    const urls = buildSecondaryShortlistUrls(data, new Set(), 2);
+    assert.equal(urls.size, 2);
+    assert.ok(urls.has("https://b.com/1"));
+    assert.ok(urls.has("https://b.com/2"));
+  });
+
+  it("pool total insuficiente (< 6 candidatos fora dos highlights) → retorna o que houver, sem erro", () => {
+    const data = {
+      radar: [{ url: "https://b.com/1", score: 50 }],
+    };
+    const urls = buildSecondaryShortlistUrls(data, new Set());
+    assert.equal(urls.size, 1);
   });
 });
 

@@ -302,6 +302,71 @@ export function buildRunnerUpUrls(data: CategorizedJson): Set<string> {
   return urls;
 }
 
+/**
+ * Tamanho do shortlist secundário (✨) do gate do Stage 1 (#4844).
+ *
+ * Decisão do editor (260810): ampliar de 6 marcados (só os ⭐ de
+ * `highlights[]`) para 12 — os 6 ⭐ + 6 ✨. Auditoria de cliques 260810:
+ * recall da escolha final do editor sobe de 89,0% (6 estrelados) para
+ * 93,0% olhando o top-15 bruto do ranking do scorer. Não vai para 15
+ * chapado (marcar todos os finalistas faz a marca deixar de discriminar) —
+ * ver `context/editorial-rules.md`/issue #4844 pro racional completo.
+ */
+export const SECONDARY_SHORTLIST_SIZE = 6;
+
+/**
+ * Coleta URLs do shortlist secundário (✨) do gate do Stage 1 — os próximos
+ * melhores candidatos fora de `highlights[]` (#4844, ampliação do #104).
+ *
+ * Duas camadas, nessa ordem de prioridade:
+ *   1. `runners_up[]` do `scorer-select` (via `buildRunnerUpUrls`) — a
+ *      hierarquia que o seletor holístico já produziu é preservada primeiro
+ *      (decisão do editor: "a hierarquia produzida pelo seletor é
+ *      informação").
+ *   2. Backfill por score bruto: quando `runners_up[]` tem menos que
+ *      `limit` candidatos (a guidance atual de `scorer-select.md` é só
+ *      "1-2"), completa até `limit` com os próximos maiores `score` do pool
+ *      inteiro (todos os buckets, já reintegrados por `mergeScores` antes de
+ *      este helper rodar), excluindo `highlights[]` e o que já entrou no
+ *      passo 1. **Escopo desta função é só `render-categorized-md.ts`**
+ *      (#4844) — não depende de `scorer-select.md` produzir mais runners_up.
+ *
+ * @param data           JSON categorizado (com scores já mesclados via mergeScores).
+ * @param highlightUrls  URLs já nos 6 destaques — nunca entram no shortlist secundário.
+ * @param limit          Tamanho do shortlist secundário (default `SECONDARY_SHORTLIST_SIZE`).
+ */
+export function buildSecondaryShortlistUrls(
+  data: CategorizedJson,
+  highlightUrls: Set<string>,
+  limit: number = SECONDARY_SHORTLIST_SIZE,
+): Set<string> {
+  const result = new Set<string>();
+
+  for (const url of buildRunnerUpUrls(data)) {
+    if (result.size >= limit) break;
+    if (highlightUrls.has(url)) continue;
+    result.add(url);
+  }
+
+  if (result.size < limit) {
+    const candidates: Array<{ url: string; score: number }> = [];
+    for (const bucket of [data.lancamento, data.radar, data.use_melhor, data.video]) {
+      for (const a of bucket ?? []) {
+        if (!a.url || highlightUrls.has(a.url) || result.has(a.url)) continue;
+        const score = typeof a.score === "number" ? a.score : -Infinity;
+        candidates.push({ url: a.url, score });
+      }
+    }
+    candidates.sort((a, b) => b.score - a.score);
+    for (const c of candidates) {
+      if (result.size >= limit) break;
+      result.add(c.url);
+    }
+  }
+
+  return result;
+}
+
 export function renderSection(
   title: string,
   articles: Article[],
@@ -621,7 +686,9 @@ function main() {
   }
 
   const highlightUrls = buildHighlightUrls(data);
-  const runnerUpUrls = buildRunnerUpUrls(data);
+  // #4844: shortlist secundário ampliado de "runners_up[] crus (1-2)" para
+  // até SECONDARY_SHORTLIST_SIZE (6) — ver buildSecondaryShortlistUrls.
+  const runnerUpUrls = buildSecondaryShortlistUrls(data, highlightUrls);
 
   // #477, #592: métricas de cobertura — X submissões / Y descobertos / Z selecionados.
   const totalSelected =
@@ -684,9 +751,9 @@ function main() {
 
   const header = `# diar.ia.br — Edição ${cli.edition} — Research\n`;
   const instructions =
-    `> Candidatos recomendados pelo scorer:\n` +
-    `>   - ⭐ — top do scorer (highlights[]).\n` +
-    `>   - ✨ — runners-up (próximos da lista, considerar se top não couber).\n` +
+    `> Candidatos recomendados pelo scorer (shortlist de 12, #4844):\n` +
+    `>   - ⭐ — top 6 do scorer (highlights[]).\n` +
+    `>   - ✨ — próximos 6 melhores fora do top (runners-up do scorer-select + backfill por score — considerar se o top não couber).\n` +
     `>   - 🆕 — artigo novo desde a última curadoria (não estava no MD anterior).\n` +
     `> Mova **exatamente 3** linhas para a seção **Destaques** (a ordem define D1, D2, D3).\n` +
     `> Marcador \`⚠️\` indica que a data de publicação não pôde ser verificada automaticamente.\n`;
