@@ -4,15 +4,18 @@ Issue: [#4064](https://github.com/vjpixel/diaria-studio/issues/4064) (agendament
 
 Avalia, ~10h após cada envio, se algum guardrail de saúde do ramp de migração
 Clarice (abertura/bounce/unsub/spam) foi rompido — e, se sim, avisa o editor
-a tempo de agir, já que uma campanha Brevo agendada é **imutável via API**
-(só cancelável manualmente no painel).
+a tempo de agir. **Correção (#4935, 260810):** uma campanha Brevo agendada
+**não é imutável** — dá pra cancelar via API (`PUT /emailCampaigns/{id}/status`,
+`status: cancel` ou `suspended`) ou pelo painel, e recriar com as
+características desejadas. O alarme continua útil porque a janela até o
+disparo é real e cancelar/recriar exige atenção do editor a tempo.
 
 ## O que ele faz
 
 `scripts/run-clarice-guardrail-alarm.ps1` → `scripts/clarice-guardrail-alarm.ts`,
 rodando a cada 4h via Task Scheduler. Quando um guardrail está rompido, envia
 e-mail ao editor via Gmail API nomeando o próximo envio agendado e o prazo
-pra suspendê-lo manualmente.
+pra cancelá-lo.
 
 ## Idempotência
 

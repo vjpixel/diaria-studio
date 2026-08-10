@@ -289,7 +289,7 @@ export async function runScheduleLoop(
       );
     }
 
-    await deps.putFn(c); // brevoPut REAL — agendamento aceito e imutável na Brevo a partir daqui
+    await deps.putFn(c); // brevoPut REAL — agendamento aceito na Brevo a partir daqui (cancelável via API/painel + recriação, #4935, mas não é gratuito)
 
     // #3658: persiste ESTA campanha IMEDIATAMENTE — se a PRÓXIMA falhar, o
     // registro local desta já está gravado, não some junto com a exceção.

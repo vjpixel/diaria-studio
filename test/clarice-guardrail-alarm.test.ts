@@ -165,7 +165,7 @@ test("describeBreaches — spam usa CTA_SPAM_BREACH_YELLOW_PCT (0,1%) no texto, 
   assert.doesNotMatch(spamLine!, /limite: <0\.3%/);
 });
 
-test("buildGuardrailAlarmEmail — SEMPRE nomeia o próximo envio agendado e o prazo de suspensão quando existe (requisito explícito da issue)", () => {
+test("buildGuardrailAlarmEmail — SEMPRE nomeia o próximo envio agendado e o prazo de cancelamento quando existe (requisito explícito da issue)", () => {
   const guardrail = evaluateSendGuardrails(mkCampaign({ delivered: 6600, uniqueViews: Math.round(6600 * 0.111) }));
   const nextScheduled = { name: "envio 9B", scheduledAt: "2026-07-24T09:00:00.000Z" };
   const { subject, body } = buildGuardrailAlarmEmail("envio 8B", guardrail, nextScheduled, NOW);
@@ -173,11 +173,27 @@ test("buildGuardrailAlarmEmail — SEMPRE nomeia o próximo envio agendado e o p
   assert.match(body, /Abertura 11\.1%/);
   assert.match(body, /envio 9B/);
   assert.match(body, /2026-07-24T09:00:00\.000Z/);
-  assert.match(body, /imutável/i);
+  assert.match(body, /cancele antes de/i);
 });
 
 test("buildGuardrailAlarmEmail — sem próximo agendamento, avisa explicitamente (não afirma um prazo inexistente)", () => {
   const guardrail = evaluateSendGuardrails(mkCampaign({ delivered: 6600, uniqueViews: Math.round(6600 * 0.111) }));
   const { body } = buildGuardrailAlarmEmail("envio 8B", guardrail, null, NOW);
   assert.match(body, /Nenhum próximo envio agendado/);
+});
+
+test("buildGuardrailAlarmEmail — REGRESSÃO #4935: não afirma que campanha agendada é imutável na Brevo, e orienta cancelamento via API/painel", () => {
+  // Correção factual do editor (#4935): campanha agendada NÃO é estado
+  // terminal — sempre dá pra cancelar (painel OU API, PUT
+  // /emailCampaigns/{id}/status com status "cancel"/"suspended") e recriar.
+  // O texto do e-mail é o que o editor lê de verdade sob pressão de tempo —
+  // não pode instruir "suspenda MANUALMENTE" como se fosse o único caminho,
+  // nem afirmar "IMUTÁVEL (não deleta/desagenda via API)".
+  const guardrail = evaluateSendGuardrails(mkCampaign({ delivered: 6600, uniqueViews: Math.round(6600 * 0.111) }));
+  const nextScheduled = { name: "envio 9B", scheduledAt: "2026-07-24T09:00:00.000Z" };
+  const { body } = buildGuardrailAlarmEmail("envio 8B", guardrail, nextScheduled, NOW);
+  assert.match(body, /NÃO é imutável/i);
+  assert.doesNotMatch(body, /suspenda MANUALMENTE/i);
+  assert.match(body, /PUT \/emailCampaigns\/\{id\}\/status/);
+  assert.match(body, /cancel/i);
 });

@@ -11,9 +11,13 @@ esta skill distribui a mesma edição em ondas sucessivas pela base.
 
 **Blast radius alto.** Uma invocação errada manda dezenas de milhares de
 e-mails e queima a reputação do domínio `clarice.ai`, que é do PARCEIRO. Por
-isso: nada é escrito na Brevo antes do gate de confirmação, e **campanha
-agendada na Brevo é IMUTÁVEL** (incidente 260703) — o que passar pelo gate
-não volta atrás por API.
+isso: nada é escrito na Brevo antes do gate de confirmação. **Correção
+(#4935, 260810): campanha agendada na Brevo NÃO é imutável** — dá pra
+cancelar via API (`PUT /emailCampaigns/{id}/status`, `status: cancel` ou
+`suspended`) ou pelo painel, e recriar com as características corretas. O
+que passar pelo gate ainda tem custo real de reverter (janela até o disparo,
+possível reputação de duplicar envio) — a confirmação continua obrigatória —
+mas não é mais um estado terminal sem saída (incidente 260703).
 
 ## Argumentos
 

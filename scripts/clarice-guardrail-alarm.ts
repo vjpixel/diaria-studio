@@ -13,7 +13,9 @@
  * Caso concreto que motivou a issue (#4061, ver docstring da lib): o braço B
  * fechou o envio 8 com 11,1% de abertura (limiar 15%) e o envio 9B saiu no
  * dia seguinte mesmo assim. O e-mail SEMPRE nomeia o próximo envio agendado e
- * até quando dá pra suspender (campanha agendada na Brevo é imutável).
+ * até quando dá pra cancelar (campanha agendada na Brevo NÃO é imutável —
+ * #4935 — dá pra cancelar via API ou painel e recriar; a janela até o
+ * disparo é o que importa aqui).
  *
  * Escopo explícito (decisão do editor, 260727): SÓ o alarme. Nada bloqueia
  * nada — a trava no pré-flight do agendamento fica pra depois de ver o

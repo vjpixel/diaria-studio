@@ -78,15 +78,18 @@ const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
  * (e mesma justificativa) de `scheduledAtFor` em `clarice-schedule-sends.ts`
  * e `clarice-schedule-ramp.ts`. Não usar `toLocaleString` com timeZone aqui:
  * o resultado dependeria do ICU da máquina, e este valor vira `scheduledAt`
- * imutável na Brevo.
+ * de uma campanha real na Brevo — corrigir depois de agendado exige cancelar
+ * (API ou painel) e recriar, não é gratuito (#4935).
  */
 export const SEND_HOUR_UTC = 9;
 
 /**
  * `YYYY-MM-DD` → ISO UTC do horário canônico de envio. Lança em data
  * malformada ou inexistente (ex: `2026-02-31`) — nunca devolve uma data
- * "corrigida" em silêncio, porque campanha Brevo agendada é IMUTÁVEL
- * (incidente 260703) e um off-by-one aqui só é descoberto depois do disparo.
+ * "corrigida" em silêncio — campanha Brevo agendada é cancelável e
+ * recriável via API/painel (#4935), mas não é gratuito, e um off-by-one
+ * aqui só é descoberto depois do disparo (incidente 260703), quando o
+ * envio já saiu de verdade e aí sim não tem volta.
  */
 export function scheduledAtForDate(date: string): string {
   const m = ISO_DATE_RE.exec(date);
@@ -162,7 +165,11 @@ export interface CycleSendState {
   volumeComplete: boolean;
   /** Ondas cuja última data de envio já passou (`now`). */
   sentCount: number;
-  /** Ondas ainda agendadas pro futuro — imutáveis na Brevo. */
+  /**
+   * Ondas ainda agendadas pro futuro. Não são estado terminal (#4935 — dá
+   * pra cancelar via API/painel e recriar), mas os destinatários já estão
+   * fixados na campanha corrente até alguém agir.
+   */
   scheduledCount: number;
   /**
    * Campanhas com naming `grupo:` que NÃO puderam ser atribuídas a ciclo
@@ -1124,7 +1131,7 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
     );
   }
   if (input.brevoCredits === null) {
-    blockers.push("Crédito Brevo não consultado — nunca agendar sem validar o crédito ANTES (campanha agendada é imutável).");
+    blockers.push("Crédito Brevo não consultado — nunca agendar sem validar o crédito ANTES (evita agendar uma onda que falha por falta de crédito e exige cancelar/recriar, #4935).");
   }
   // #4787: gatilho PROATIVO — dispara mesmo sem déficit de fila total.
   // Diferente do blocker de déficit acima (que é sobre VOLUME), isto é sobre
@@ -1147,7 +1154,7 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
   }
   if (input.state.scheduledCount > 0) {
     warnings.push(
-      `${input.state.scheduledCount} campanha(s) deste ciclo ainda AGENDADA(s) e não disparada(s) — na Brevo elas são imutáveis, e seus destinatários já estão congelados.`,
+      `${input.state.scheduledCount} campanha(s) deste ciclo ainda AGENDADA(s) e não disparada(s) — desfazer exige cancelar via API/painel Brevo e recriar (#4935), e seus destinatários já estão fixados até alguém agir.`,
     );
   }
   if (!input.state.volumeComplete && input.state.waves.length > 0) {

@@ -1009,9 +1009,11 @@ export interface ScheduleLoopDeps {
  * as views cujo `putFn` teve sucesso em `toVerify` e só chamava
  * `applyVerifyResults` UMA VEZ, depois do loop inteiro terminar — se a wave N
  * lançasse, a exceção propagava ANTES da persistência rodar, perdendo o
- * rastro local das waves 1..N-1 cujo agendamento JÁ foi aceito (imutável) na
- * Brevo. Mesma classe de bug que o #3643 bug 4 eliminou, só que via um
- * gatilho diferente (não coberto por `checkAllCampaignsCreated`).
+ * rastro local das waves 1..N-1 cujo agendamento JÁ foi aceito na Brevo —
+ * reverter exigiria cancelar via API/painel e recriar (#4935), não é
+ * gratuito mesmo não sendo mais estado terminal. Mesma classe de bug que o
+ * #3643 bug 4 eliminou, só que via um gatilho diferente (não coberto por
+ * `checkAllCampaignsCreated`).
  *
  * Agora: cada wave é PUT + GET-verify + persistida antes de seguir pra
  * próxima. Se `putFn` de uma wave lançar, a exceção ainda propaga (mesmo
@@ -1040,7 +1042,7 @@ export async function runScheduleLoop(
       throw new Error(`--schedule: ${view.key} (campanha #${view.campaignId}) tem scheduledAt no passado/presente (${view.scheduledAt}).`);
     }
 
-    await deps.putFn(view); // brevoPut REAL — agendamento aceito e imutável na Brevo a partir daqui
+    await deps.putFn(view); // brevoPut REAL — agendamento aceito na Brevo a partir daqui (cancelável via API/painel + recriação, #4935, mas não é gratuito)
 
     // #3652 bug 2: persiste ESTA wave IMEDIATAMENTE — se a PRÓXIMA falhar, o
     // registro local desta já está gravado, não some junto com a exceção.

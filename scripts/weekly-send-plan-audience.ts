@@ -22,8 +22,9 @@
  * filtro/ordem.
  *
  * Valida crédito Brevo do ciclo (`GET /v3/account`) cobre a soma dos volumes
- * ANTES de escrever qualquer coisa — nunca dimensionar depois do fato
- * (mesmo racional do guardrail "brevo-scheduled-campaigns-immutable").
+ * ANTES de escrever qualquer coisa — nunca dimensionar depois do fato (evita
+ * agendar uma campanha que precisaria ser cancelada e recriada por falta de
+ * crédito, #4935; não é gratuito mesmo não sendo mais estado terminal).
  *
  * SEGURANÇA: só LÊ o store e ESCREVE CSVs locais — nunca envia/agenda nada.
  * dry-run por padrão (só imprime o plano); `--write` grava os arquivos.
@@ -168,7 +169,8 @@ async function run(
   // #2994/#3682 (P0/P1): contatos em listas com campanha AGENDADA (queued) OU
   // JÁ DISPARADA (sent) do ciclo precisam ser excluídos ANTES de fatiar
   // volumes — `sends_count=0` sozinho não distingue "nunca agendado" de
-  // "agendado, ainda não disparado" (campanha Brevo agendada é imutável, ver
+  // "agendado, ainda não disparado" (duplicar o envio exigiria depois
+  // cancelar/recriar a campanha via API/painel, #4935 — não é gratuito, ver
   // incidente 260706), NEM "nunca recebeu" de "recebeu, mas o sync
   // incremental do store ainda não propagou o incremento" (lag observado de
   // até ~1 dia, incidente 260716-260721: envios 4-5 do mensal 2606

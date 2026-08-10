@@ -58,8 +58,9 @@ describe("scheduledAtForDate (#4657)", () => {
   });
 
   it("REGRESSÃO: data inexistente no calendário lança, nunca é 'corrigida' em silêncio", () => {
-    // `new Date("2026-02-31")` vira 03/03 sem erro. Uma campanha Brevo
-    // agendada é imutável — um off-by-one aqui só apareceria pós-disparo.
+    // `new Date("2026-02-31")` vira 03/03 sem erro. Corrigir depois exige
+    // cancelar/recriar a campanha via API/painel (#4935, não é gratuito) —
+    // um off-by-one aqui só apareceria pós-disparo.
     assert.throws(() => scheduledAtForDate("2026-02-31"), /inexistente no calendário/);
     // Mês 14 nem chega no round-trip — `Date.parse` já devolve NaN e o guard
     // anterior pega. Rejeição por qualquer um dos dois caminhos serve; o que
@@ -1399,11 +1400,11 @@ describe("buildWaveProposal (#4657)", () => {
     assert.match(p.warnings.join(" "), /3\.2h stale/);
   });
 
-  it("AVISA sobre campanha ainda agendada (imutável na Brevo)", () => {
+  it("AVISA sobre campanha ainda agendada (cancelável+recriável, não gratuito — #4935)", () => {
     const p = buildWaveProposal(
       proposalInput({ state: { ...proposalInput().state, scheduledCount: 3 } }),
     );
-    assert.match(p.warnings.join(" "), /imutáveis/);
+    assert.match(p.warnings.join(" "), /cancelar via API\/painel Brevo e recriar/);
   });
 
   it("propaga as ressalvas do A/B/C pros avisos", () => {

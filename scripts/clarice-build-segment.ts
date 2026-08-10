@@ -652,7 +652,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // falhar (ou sem a key); escrita real ABORTA — nunca escreve um grupo sem
   // essa checagem passar, senão duas rodadas próximas (a cadência de ~4×/semana
   // que a #4347 introduz) podem re-selecionar quem já está comprometido com uma
-  // campanha AGENDADA, que na Brevo é imutável.
+  // campanha AGENDADA — corrigir depois exigiria cancelar/recriar via
+  // API/painel (#4935), não é gratuito.
   const apiKey = process.env.BREVO_CLARICE_API_KEY;
   const guardScope = NAMED_GROUPS[group].guardScope;
   // Nome neutro de propósito: o conteúdo é `queued` OU `queued ∪ sent` conforme
