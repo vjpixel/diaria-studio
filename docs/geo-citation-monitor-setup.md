@@ -65,6 +65,35 @@ mas cobre só o registro inicial — não checa `State`/`LastTaskResult`. Uma
 task registrada e depois **desabilitada** passa nele em silêncio. O alarme
 que fecha essa lacuna é a #4755 — ver `docs/geo-citation-staleness-alarm-setup.md`.
 
+## Painel temático, alarme de queda de provedor, aviso de conflito OneDrive (#4900)
+
+Três defeitos achados na auditoria de 10/ago, endereçados por código nesta
+issue (a documentação completa do achado — incluindo o paper que embasa a
+cadência semanal — vive no corpo da própria issue, não duplicada aqui):
+
+- **`--panel geral|hubs`** (default `geral`, comportamento inalterado). O
+  painel `hubs` (`GEO_HUB_QUESTIONS`) cobre o que as páginas
+  `arquivo.diar.ia.br/temas/{slug}` respondem (Anthropic/Claude, OpenAI/
+  ChatGPT, Google/Gemini) — série SEPARADA de `GEO_QUESTIONS`, nunca uma
+  substituição (trocar as perguntas originais depois de já ter série medida
+  invalidaria o baseline de 07/ago). **Deliberadamente fora do cron por
+  enquanto** — ativar antes de fechar o duplo escritor (item abaixo / épica
+  #4798) multiplicaria o registro perdido a cada rodada nova.
+- **Aviso de queda de provedor.** Se a rodada atual roda com menos providers
+  configurados que a rodada anterior do mesmo painel (ex: `GEMINI_API_KEY`
+  ficou vazia nesta máquina), o log imprime um `AVISO` explícito — antes,
+  "rodou sem esse provedor" só era recuperável contando linha por linha em
+  `history.jsonl` a mão. Não muda o exit code; é sinal, não alarme por
+  e-mail (ver issue #4900 item b pro desenho completo do alarme, ainda não
+  implementado).
+- **Aviso de conflito de escrita OneDrive.** Se `data/geo-citations/`
+  contiver algum arquivo `*-safeBackup-*` (padrão do cliente OneDrive Linux
+  quando 2 máquinas escrevem `history.jsonl` na mesma janela — achado ao
+  vivo: `history-predator-safeBackup-0001.jsonl`, 8 registros órfãos), o
+  monitor avisa a cada execução. **Só detecta, não reconcilia** — mesclar o
+  arquivo órfão de volta é operação manual sobre dado real de produção. A
+  causa raiz (2 máquinas rodando a mesma task) fecha com a épica #4798.
+
 ## Setup (ação local one-time do editor)
 
 `local` — precisa do junction `data/` (OneDrive) + ao menos UMA de

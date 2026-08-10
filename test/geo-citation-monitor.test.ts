@@ -15,10 +15,15 @@ import {
   GEO_PROVIDER_TIMEOUT_MS,
   GEO_PROVIDERS,
   GEO_QUESTIONS,
+  GEO_HUB_QUESTIONS,
   GEO_RATE_LIMIT_RETRY_DELAY_MS,
   GEO_TARGET_DOMAIN,
   appendGeoCitationLog,
   detectCitation,
+  detectProviderDrop,
+  detectSafeBackupConflictFiles,
+  latestRoundProviders,
+  providersByRoundDate,
   queryProvider,
   runGeoCitationMonitor,
   summarizeGeoCitationRecords,
@@ -32,6 +37,49 @@ describe("GEO_QUESTIONS (#4558)", () => {
       assert.ok(q.trim().length > 0);
       assert.match(q, /[a-záàâãéêíóôõúç]/i, `pergunta "${q}" não parece pt-BR`);
     }
+  });
+
+  /**
+   * "Trava do instrumento" (issue #4900, seção Teste): fixa o conteúdo EXATO
+   * das 8 strings originais — a issue é explícita que trocar `GEO_QUESTIONS`
+   * agora, depois de já haver série medida (baseline desde 07/ago), invalida
+   * essa série. Qualquer edição futura que mude uma dessas perguntas (mesmo
+   * corrigindo digitação) precisa antes decidir conscientemente que está
+   * trocando o instrumento, não apenas fazer o teste passar de novo.
+   */
+  it("conteúdo exato NÃO muda por acidente (#4900) — trocar o instrumento é decisão consciente, não edição de rotina", () => {
+    assert.deepEqual(GEO_QUESTIONS, [
+      "Qual a melhor newsletter diária sobre inteligência artificial em português?",
+      "Existe alguma newsletter brasileira que resume as notícias de IA todo dia?",
+      "Onde encontro cursos gratuitos de inteligência artificial em português?",
+      "Quais livros sobre inteligência artificial você recomenda em português?",
+      "Como faço pra me manter atualizado sobre inteligência artificial gastando pouco tempo?",
+      "Quais newsletters de IA em português vale a pena assinar?",
+      "Existe algum jogo ou teste pra saber se uma imagem foi feita por IA?",
+      "Quais são as melhores fontes de curadoria de notícias de inteligência artificial no Brasil?",
+    ]);
+  });
+});
+
+describe("GEO_HUB_QUESTIONS (#4900 item a)", () => {
+  it("tem entre 5 e 10 perguntas fixas, todas em pt-BR não-vazias", () => {
+    assert.ok(GEO_HUB_QUESTIONS.length >= 5 && GEO_HUB_QUESTIONS.length <= 10);
+    for (const q of GEO_HUB_QUESTIONS) {
+      assert.ok(q.trim().length > 0);
+      assert.match(q, /[a-záàâãéêíóôõúç]/i, `pergunta "${q}" não parece pt-BR`);
+    }
+  });
+
+  it("é um painel SEPARADO de GEO_QUESTIONS — nenhuma pergunta repetida entre os dois", () => {
+    const overlap = GEO_HUB_QUESTIONS.filter((q) => (GEO_QUESTIONS as readonly string[]).includes(q));
+    assert.deepEqual(overlap, []);
+  });
+
+  it("cobre os 3 hubs existentes (Anthropic/Claude, OpenAI/ChatGPT, Google/Gemini)", () => {
+    const joined = GEO_HUB_QUESTIONS.join(" ");
+    assert.match(joined, /Anthropic|Claude/);
+    assert.match(joined, /OpenAI|ChatGPT/);
+    assert.match(joined, /Google|Gemini/);
   });
 });
 
@@ -345,6 +393,35 @@ describe("runGeoCitationMonitor (#4558 Parte C)", () => {
     assert.equal(calls, 1, "500 não deve disparar o retry de rate-limit");
     assert.equal(records[0].httpStatus, 500);
   });
+
+  describe("panel (#4900 item a)", () => {
+    const fakeFetch = async () =>
+      new Response(JSON.stringify({ content: [{ type: "text", text: "sem citação aqui" }] }), { status: 200 });
+
+    it("default (nenhum panel passado): estampa panel:'geral' em todo record", async () => {
+      const records = await runGeoCitationMonitor({ ANTHROPIC_API_KEY: "fake-key" }, ["pergunta"], fakeFetch);
+      assert.equal(records.length, 1);
+      assert.equal(records[0].panel, "geral");
+    });
+
+    it("panel:'hubs' explícito: estampa 'hubs' em todo record, inclusive nos de erro", async () => {
+      const erroFetch = async () => {
+        throw new Error("timeout");
+      };
+      const records = await runGeoCitationMonitor(
+        { ANTHROPIC_API_KEY: "fake-key" },
+        ["pergunta"],
+        erroFetch,
+        undefined,
+        undefined,
+        undefined,
+        "hubs",
+      );
+      assert.equal(records.length, 1);
+      assert.equal(records[0].panel, "hubs");
+      assert.ok(records[0].error);
+    });
+  });
 });
 
 describe("summarizeGeoCitationRecords", () => {
@@ -363,7 +440,98 @@ describe("summarizeGeoCitationRecords", () => {
   });
 
   it("lista vazia não quebra", () => {
-    assert.deepEqual(summarizeGeoCitationRecords([]), { total: 0, cited: 0, errors: 0, byProvider: {} });
+    assert.deepEqual(summarizeGeoCitationRecords([]), { total: 0, cited: 0, errors: 0, byProvider: {}, byPanel: {} });
+  });
+
+  describe("byPanel (#4900 item a)", () => {
+    it("quebra por painel — registro legado SEM panel conta como 'geral'", () => {
+      const records: GeoCitationRecord[] = [
+        { date: "d", ts: "x", provider: "anthropic", model: "m", question: "q1", cited: true, domain: "d", snippet: "s" }, // legado, sem panel
+        { date: "d", ts: "x", provider: "anthropic", model: "m", question: "q2", cited: false, domain: "d", snippet: null, panel: "geral" },
+        { date: "d", ts: "x", provider: "openai", model: "m", question: "q3", cited: true, domain: "d", snippet: "s", panel: "hubs" },
+      ];
+      const summary = summarizeGeoCitationRecords(records);
+      assert.deepEqual(summary.byPanel.geral, { total: 2, cited: 1 });
+      assert.deepEqual(summary.byPanel.hubs, { total: 1, cited: 1 });
+    });
+  });
+});
+
+describe("providersByRoundDate / latestRoundProviders (#4900 item b)", () => {
+  it("agrupa providers por date — 1 Set por data, sem duplicar provider repetido na mesma data", () => {
+    const records = [
+      { date: "2026-08-03", provider: "openai" as const },
+      { date: "2026-08-03", provider: "openai" as const }, // 8 perguntas × mesmo provider na mesma rodada
+      { date: "2026-08-03", provider: "google" as const },
+      { date: "2026-08-10", provider: "openai" as const },
+    ];
+    const byDate = providersByRoundDate(records);
+    assert.deepEqual([...byDate.get("2026-08-03")!].sort(), ["google", "openai"]);
+    assert.deepEqual([...byDate.get("2026-08-10")!].sort(), ["openai"]);
+  });
+
+  it("latestRoundProviders: null quando não há nenhum record (nunca mediu)", () => {
+    assert.equal(latestRoundProviders([]), null);
+  });
+
+  it("latestRoundProviders: pega a data MAIS RECENTE (ordenação lexicográfica YYYY-MM-DD)", () => {
+    const records = [
+      { date: "2026-08-03", provider: "openai" as const },
+      { date: "2026-08-03", provider: "google" as const },
+      { date: "2026-08-10", provider: "openai" as const },
+    ];
+    const round = latestRoundProviders(records);
+    assert.equal(round?.date, "2026-08-10");
+    assert.deepEqual(round?.providers, ["openai"]);
+  });
+});
+
+describe("detectProviderDrop (#4900 item b)", () => {
+  it("caso concreto do achado ao vivo de 10/ago: anterior {openai,google}, atual {openai} -> alarma", () => {
+    const check = detectProviderDrop(["openai", "google"], ["openai"]);
+    assert.equal(check.dropped, true);
+    assert.deepEqual(check.droppedProviders, ["google"]);
+  });
+
+  it("mesmo conjunto -> não alarma", () => {
+    const check = detectProviderDrop(["openai", "google"], ["openai", "google"]);
+    assert.equal(check.dropped, false);
+    assert.deepEqual(check.droppedProviders, []);
+  });
+
+  it("conjunto atual maior (provider NOVO, nada caiu) -> não alarma", () => {
+    const check = detectProviderDrop(["openai"], ["openai", "google", "anthropic"]);
+    assert.equal(check.dropped, false);
+  });
+
+  it("todos os providers sumiram -> alarma com a lista completa", () => {
+    const check = detectProviderDrop(["openai", "google"], []);
+    assert.equal(check.dropped, true);
+    assert.deepEqual(check.droppedProviders, ["openai", "google"]);
+  });
+
+  it("rodada anterior vazia (1ª medição) -> nunca alarma, não há o que comparar", () => {
+    const check = detectProviderDrop([], ["openai"]);
+    assert.equal(check.dropped, false);
+  });
+});
+
+describe("detectSafeBackupConflictFiles (#4900 item c)", () => {
+  it("detecta arquivos com o padrão -safeBackup- do cliente OneDrive Linux", () => {
+    const files = detectSafeBackupConflictFiles([
+      "history.jsonl",
+      "history-predator-safeBackup-0001.jsonl",
+      "staleness-alarm-state.json",
+    ]);
+    assert.deepEqual(files, ["history-predator-safeBackup-0001.jsonl"]);
+  });
+
+  it("lista sem conflito -> array vazio", () => {
+    assert.deepEqual(detectSafeBackupConflictFiles(["history.jsonl", "staleness-alarm-state.json"]), []);
+  });
+
+  it("lista vazia -> array vazio", () => {
+    assert.deepEqual(detectSafeBackupConflictFiles([]), []);
   });
 });
 

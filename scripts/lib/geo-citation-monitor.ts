@@ -62,6 +62,40 @@ export const GEO_QUESTIONS: readonly string[] = [
   "Quais são as melhores fontes de curadoria de notícias de inteligência artificial no Brasil?",
 ] as const;
 
+/** Painel de perguntas — `"geral"` são as 8 originais acima (posicionamento
+ * da diar.ia.br); `"hubs"` é o painel novo (#4900 item a), temático,
+ * derivado das perguntas frequentes que as páginas `arquivo.diar.ia.br/temas/{slug}`
+ * já respondem (`scripts/lib/hubs/*.ts`). Um registro sem `panel` (escrito
+ * antes desta mudança) é lido como `"geral"` por default — ver `panel` em
+ * `GeoCitationRecord` e `summarizeGeoCitationRecords`. */
+export type GeoQuestionPanel = "geral" | "hubs";
+
+/**
+ * Perguntas fixas, pt-BR, do painel TEMÁTICO (#4900 item a) — cobrem
+ * exatamente o que as 3 páginas de hub existentes (`scripts/lib/hubs/anthropic-claude.ts`,
+ * `openai-chatgpt.ts`, `google-gemini.ts`) respondem: cronologia recente de
+ * cada empresa. Deliberadamente um painel SEPARADO de `GEO_QUESTIONS`, não
+ * uma adição a ele — trocar o instrumento original depois de já ter visto o
+ * resultado da série (24 registros de `GEO_QUESTIONS`, baseline desde 07/ago)
+ * invalidaria essa série (achado #4900, citando o comentário de 07/ago na
+ * #4558 que já tinha amarrado as 8 perguntas originais à decisão antes do
+ * resultado). Baseline/data de início própria deste painel: ver comentário
+ * do F-17 (#4558) — registrado lá antes da 1ª rodada real. **Não fica ativo
+ * no cron por padrão ainda** — a ativação depende do #4900 item c/#4798
+ * (fechar o duplo escritor primeiro, senão cada painel novo multiplica
+ * registro perdido); ver `--panel` em `scripts/geo-citation-monitor.ts`.
+ * Sem Meta/Meta AI: não existe hub `meta-*` em `scripts/lib/hubs/` hoje. */
+export const GEO_HUB_QUESTIONS: readonly string[] = [
+  "O que aconteceu com a Anthropic em 2026?",
+  "Quando saiu o Claude Opus 5?",
+  "O que aconteceu com a OpenAI e o ChatGPT em 2026?",
+  "Quanto vale a OpenAI hoje?",
+  "O que aconteceu com o Google Gemini em 2026?",
+  "O Gemini já superou o ChatGPT em algum ranking?",
+  "Como está a disputa entre OpenAI, Google e Anthropic em 2026?",
+  "Qual foi o maior investimento em infraestrutura de IA anunciado em 2026?",
+] as const;
+
 /** Domínio checado nas respostas (sem protocolo/path — substring match). */
 export const GEO_TARGET_DOMAIN = "diar.ia.br";
 
@@ -274,6 +308,13 @@ export interface GeoCitationRecord {
    * lançou (regressão de contrato — a função é documentada como pura e
    * defensiva, nunca deveria lançar). */
   errorKind?: "http" | "network" | "parse" | "extract";
+  /** Painel de origem da pergunta (#4900 item a) — `"geral"` (`GEO_QUESTIONS`)
+   * ou `"hubs"` (`GEO_HUB_QUESTIONS`). **Opcional de propósito**: registros
+   * escritos antes desta mudança não têm o campo — leitores tratam ausência
+   * como `"geral"` (ver `summarizeGeoCitationRecords`), nunca migram o
+   * arquivo. Registros novos sempre vêm com o campo populado
+   * (`runGeoCitationMonitor` estampa em todo record que produz). */
+  panel?: GeoQuestionPanel;
 }
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
@@ -354,6 +395,12 @@ export const GEO_RATE_LIMIT_RETRY_DELAY_MS = 1_500;
  * um backoff geral (outros erros — rede/parse/extract — não são retentados;
  * ver docstring do módulo pra rationale de escopo). `sleepFn` é injetável em
  * teste pra não esperar o delay real.
+ *
+ * `panel` (#4900 item a, default `"geral"`) é estampado em TODO record
+ * produzido — não inferido do conteúdo da pergunta, porque `questions` já
+ * determina o painel no caller (`GEO_QUESTIONS` vs `GEO_HUB_QUESTIONS`).
+ * Parâmetro novo no FIM da lista de propósito, pra não quebrar chamadas
+ * posicionais existentes que já passam `undefined` pra pular `now`/`providers`.
  */
 export async function runGeoCitationMonitor(
   env: Record<string, string | undefined>,
@@ -362,6 +409,7 @@ export async function runGeoCitationMonitor(
   now: () => Date = () => new Date(),
   providers: readonly GeoProviderDef[] = GEO_PROVIDERS,
   sleepFn: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+  panel: GeoQuestionPanel = "geral",
 ): Promise<GeoCitationRecord[]> {
   const records: GeoCitationRecord[] = [];
   for (const provider of providers) {
@@ -388,6 +436,7 @@ export async function runGeoCitationMonitor(
           snippet: null,
           error: result.error,
           errorKind: result.errorKind,
+          panel,
           ...(result.httpStatus !== undefined ? { httpStatus: result.httpStatus } : {}),
         });
         continue;
@@ -402,6 +451,7 @@ export async function runGeoCitationMonitor(
         cited: detection.cited,
         domain: GEO_TARGET_DOMAIN,
         snippet: detection.snippet,
+        panel,
       });
     }
   }
@@ -445,21 +495,115 @@ export interface GeoCitationSummary {
   cited: number;
   errors: number;
   byProvider: Record<string, { total: number; cited: number }>;
+  /** Quebra por painel (#4900 item a) — chave `"geral"` inclui registros sem
+   * `panel` (legado, lido como `"geral"` por default). */
+  byPanel: Record<string, { total: number; cited: number }>;
 }
 
 /** Resume um lote de records — usado pro print de fim de execução. Pure. */
 export function summarizeGeoCitationRecords(records: GeoCitationRecord[]): GeoCitationSummary {
   const byProvider: Record<string, { total: number; cited: number }> = {};
+  const byPanel: Record<string, { total: number; cited: number }> = {};
   let cited = 0;
   let errors = 0;
   for (const r of records) {
     if (!byProvider[r.provider]) byProvider[r.provider] = { total: 0, cited: 0 };
     byProvider[r.provider].total += 1;
+    const panel = r.panel ?? "geral";
+    if (!byPanel[panel]) byPanel[panel] = { total: 0, cited: 0 };
+    byPanel[panel].total += 1;
     if (r.cited) {
       byProvider[r.provider].cited += 1;
+      byPanel[panel].cited += 1;
       cited += 1;
     }
     if (r.error) errors += 1;
   }
-  return { total: records.length, cited, errors, byProvider };
+  return { total: records.length, cited, errors, byProvider, byPanel };
+}
+
+// ---------------------------------------------------------------------------
+// #4900 — provedor que some da rodada não alarma em silêncio (item b) +
+// detecção (não-resolução) de conflito de escrita OneDrive (item c).
+// ---------------------------------------------------------------------------
+
+/**
+ * Agrupa os providers que produziram >=1 registro por `date` (`YYYY-MM-DD`)
+ * — reconstrói quais providers RODARAM em cada rodada sem precisar de um
+ * arquivo de manifest separado: um provider sem key configurada não produz
+ * NENHUM record naquela data (`runGeoCitationMonitor` pula em silêncio,
+ * fail-soft), então "provider ausente do dia" já É o sinal de "rodou sem
+ * essa key" — faltava uma função que lesse isso de forma automática em vez
+ * de contar linha por linha (achado #4900: "24 openai + 16 google + 0
+ * anthropic", contado a mão). Pure. */
+export function providersByRoundDate(
+  records: readonly Pick<GeoCitationRecord, "date" | "provider">[],
+): Map<string, Set<GeoProviderId>> {
+  const byDate = new Map<string, Set<GeoProviderId>>();
+  for (const r of records) {
+    if (!byDate.has(r.date)) byDate.set(r.date, new Set());
+    byDate.get(r.date)!.add(r.provider);
+  }
+  return byDate;
+}
+
+export interface LatestRoundProviders {
+  date: string;
+  providers: GeoProviderId[];
+}
+
+/** Pure: a partir de um array de records (ordem qualquer), devolve a data
+ * mais recente presente e o conjunto de providers que produziram registro
+ * nela — a "rodada mais recente conhecida". `null` quando `records` está
+ * vazio (nunca mediu nada). Datas `YYYY-MM-DD` ordenam lexicograficamente,
+ * então um sort simples basta. */
+export function latestRoundProviders(
+  records: readonly Pick<GeoCitationRecord, "date" | "provider">[],
+): LatestRoundProviders | null {
+  if (records.length === 0) return null;
+  const byDate = providersByRoundDate(records);
+  const dates = [...byDate.keys()].sort();
+  const date = dates[dates.length - 1];
+  return { date, providers: [...(byDate.get(date) ?? new Set())] };
+}
+
+export interface ProviderDropCheck {
+  /** `true` quando `currentProviders` é um subconjunto PRÓPRIO de
+   * `previousProviders` — a rodada atual rodou com menos providers que a
+   * anterior. */
+  dropped: boolean;
+  /** Providers presentes na rodada anterior e ausentes na atual. */
+  droppedProviders: GeoProviderId[];
+}
+
+/**
+ * Pure: detecta queda de provedor entre duas rodadas (#4900 item b, "o
+ * sub-item mais barato e mais valioso" da issue). Não confundir com
+ * staleness (`geo-citation-staleness-alarm.ts`, #4755): staleness mede
+ * silêncio TOTAL (nenhum registro novo há N dias); isto mede uma rodada que
+ * ACONTECEU mas encolheu — o sintoma observado ao vivo em 10/ago (rodada
+ * anterior `{openai, google}`, rodada atual `{openai}` porque `GEMINI_API_KEY`
+ * ficou vazia numa das duas máquinas) passava em silêncio antes deste guard.
+ */
+export function detectProviderDrop(
+  previousProviders: readonly GeoProviderId[],
+  currentProviders: readonly GeoProviderId[],
+): ProviderDropCheck {
+  const currentSet = new Set(currentProviders);
+  const droppedProviders = previousProviders.filter((p) => !currentSet.has(p));
+  return { dropped: droppedProviders.length > 0, droppedProviders };
+}
+
+/**
+ * Pure: filtra nomes de arquivo que batem o padrão de conflito de escrita
+ * do cliente OneDrive Linux (abraunegg, `-safeBackup-`) — sinal de que 2+
+ * máquinas escreveram o mesmo log JSONL na mesma janela e o OneDrive
+ * resolveu RENOMEANDO em vez de mesclar ou avisar (#4900 item c, achado ao
+ * vivo: `history-predator-safeBackup-0001.jsonl` com 8 registros órfãos que
+ * só existem nesse arquivo). Esta função só DETECTA — reconciliar os dados
+ * é operação manual sobre dado real de produção, deliberadamente fora de
+ * escopo de qualquer PR de código (ver docstring de `listSafeBackupConflictFiles`
+ * em `scripts/geo-citation-monitor.ts` pro wrapper de I/O). */
+export function detectSafeBackupConflictFiles(filenames: readonly string[]): string[] {
+  return filenames.filter((f) => f.includes("-safeBackup-"));
 }
