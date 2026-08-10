@@ -321,7 +321,9 @@ npx tsx scripts/verify-clicks-enrichment.ts \
 ```
 Cruza cada post_id que o manifest pediu e que o agent NÃO listou em `failed_posts` (ou seja, alegou sucesso) contra o mtime real de `data/beehiiv-cache/posts/{post_id}.json` — write atômico de `apply-mcp-clicks.ts` sempre atualiza o mtime, mesmo quando o array de clicks aplicado é `[]` (post sem clicks reais é resultado legítimo, não falha). Um post `ok` cujo cache não mudou desde `dispatchedAt` é a MESMA classe de bug do caso real 260807: o agent alegou sucesso, o disco discorda.
 
-Exit 1 do script (JSON `{ok:false, mismatches:[...]}`) → logar `level: warn` (evento real, **nunca** `--informational` — suprimiria o sinal do `collect-edition-signals.ts`, o próprio ponto cego que permitiu o #4732 passar despercebido) citando quantos posts o agent alegou processar vs. quantos de fato mudaram no disco. **Não aborta o pipeline** — mesmo padrão fail-soft do resto do bloco 0h (CTR sem enrichment completo ainda funciona, só é menos preciso).
+**Segundo check, independente do mtime (#4836):** o script também cruza `stats.email.verified_clicks`/`unique_verified_clicks` contra `stats.clicks` do estado ATUAL em disco pra cada post claimed ok — `agregado > 0 ⟹ stats.clicks não-vazio`. Isso pega um caso que o mtime SOZINHO não pega: o cache foi tocado nesta run (mtime passa), mas o conteúdo escrito é um array vazio por cima de um agregado positivo — a assinatura exata do incidente #4836 (22 posts, 2026-08-05, `unique_verified_clicks` 6-28 com `stats.clicks: []`). Aparece em `invariant_violations` no JSON de saída, separado de `mismatches`.
+
+Exit 1 do script (JSON `{ok:false, mismatches:[...], invariant_violations:[...]}`) → logar `level: warn` (evento real, **nunca** `--informational` — suprimiria o sinal do `collect-edition-signals.ts`, o próprio ponto cego que permitiu o #4732 passar despercebido) citando quantos posts o agent alegou processar vs. quantos de fato mudaram no disco, E quantos violam o invariante de conteúdo. **Não aborta o pipeline** — mesmo padrão fail-soft do resto do bloco 0h (CTR sem enrichment completo ainda funciona, só é menos preciso).
 
 **0h.3 — Build CTR table**
 
