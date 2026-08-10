@@ -23,8 +23,14 @@ import { categorize, resolveNewsletterSection } from './lib/link-ctr-categorize.
 import { isMainModule } from "./lib/cli-args.ts";
 import { DIARIA_FACEBOOK_PAGE_SLUG, DIARIA_LINKEDIN_PAGE_SLUG, DIARIA_INSTAGRAM_SLUG } from './lib/canonical-urls.ts'; // #2695/#2790 fonte única
 import { MIN_AGE_DAYS_FOR_CLICKS } from './lib/shared/ctr-config.ts'; // #3146: fonte única do cutoff de estabilização (era duplicado local aqui)
-// #4836: guarda contra `--full` destrutivo — ver docstring do módulo.
-import { assessClickLoss, parseClickCountsFromCsv, formatClickLossAbort } from './lib/shared/ctr-rebuild-guard.ts';
+// #4836: guarda contra reescrita destrutiva do CSV — ver docstring do módulo.
+import {
+  assessClickLoss,
+  parseClickCountsFromCsv,
+  formatClickLossAbort,
+  formatUntrustedCsvAbort,
+  ALLOW_CLICK_LOSS_FLAG,
+} from './lib/shared/ctr-rebuild-guard.ts';
 
 const POSTS_DIR = path.join(process.cwd(), 'data/beehiiv-cache/posts');
 const OUT_CSV = path.join(process.cwd(), 'data/link-ctr-table.csv');
@@ -429,7 +435,18 @@ function main() {
   // gates both shouldSkipPost (process every post, no incremental skip) and
   // whether existingLines gets seeded (below, guarded by `!isBootstrap`), so
   // the CSV is fully rewritten from the cached posts instead of appended to.
-  const isBootstrap = process.argv.includes('--full') || !fs.existsSync(OUT_CSV);
+  //
+  // #4836 (review do PR #4850): era `const`, e isso abria um buraco na guarda.
+  // O ramo de "schema changed" abaixo TAMBÉM reescreve tudo (descarta
+  // existingLines, zera lastDate/processedKeys → shouldSkipPost não pula nada),
+  // mas não marcava esta flag — então a guarda, que dependia dela, nunca
+  // rodava ali. Pior: esse caminho não exige `--full`, é alcançável pelo passo
+  // 0h do Stage 0 que roda em toda edição, e o gatilho não precisa ser mudança
+  // de coluna — `split('\n')` deixa o `\r` grudado no cabeçalho, então CRLF
+  // sozinho basta (e `data/` sincroniza entre Windows/macOS/Linux via OneDrive).
+  // Reproduzido ao vivo: 10 cliques → 0, exit 0, sem backup, logando
+  // "Done (incremental)". Agora é `let` e o ramo abaixo a promove.
+  let isBootstrap = process.argv.includes('--full') || !fs.existsSync(OUT_CSV);
 
   if (!isBootstrap) {
     const rawExisting = fs.readFileSync(OUT_CSV, 'utf8');
@@ -438,6 +455,10 @@ function main() {
     // If column schema changed (e.g. removed 'url' column), re-bootstrap
     if (oldHeader !== header.join(',')) {
       console.log('CSV schema changed — re-bootstrapping.');
+      // #4836: isto É um bootstrap — o CSV inteiro será reescrito a partir do
+      // cache. Marcar a flag aciona a guarda de perda de cliques abaixo e
+      // corrige o rótulo do resumo final (antes dizia "Done (incremental)").
+      isBootstrap = true;
     } else {
       existingLines = existing.slice(1).filter(Boolean); // skip header
       // Find most recent date in existing data (first column)
@@ -553,10 +574,22 @@ function main() {
   // EXISTENTE pode perder dado — o incremental apenas apenda. Compara o que
   // seria escrito contra o que já está lá e recusa se alguma edição perder
   // cliques; ver docstring de lib/shared/ctr-rebuild-guard.ts.
-  const allowClickLoss = process.argv.includes('--allow-click-loss');
+  const allowClickLoss = process.argv.includes(ALLOW_CLICK_LOSS_FLAG);
   if (isBootstrap && fs.existsSync(OUT_CSV)) {
     const existingCsv = fs.readFileSync(OUT_CSV, 'utf8');
-    const report = assessClickLoss(parseClickCountsFromCsv(existingCsv), newRows);
+    const parsed = parseClickCountsFromCsv(existingCsv);
+
+    // #4836: "não consegui ler" NÃO é "não há nada a perder". Sem confiar na
+    // contagem atual, não dá pra afirmar que a reescrita preserva dado — e
+    // tratar os dois casos igual era a mesma falha silenciosa que a guarda
+    // existe pra impedir, dentro da guarda (review do PR #4850).
+    if (!parsed.trusted && !allowClickLoss) {
+      console.error(formatUntrustedCsvAbort(parsed.reason ?? 'motivo não informado'));
+      process.exitCode = 3;
+      return;
+    }
+
+    const report = assessClickLoss(parsed.rows, newRows);
 
     if (!report.safe && !allowClickLoss) {
       console.error(formatClickLossAbort(report));
@@ -564,19 +597,48 @@ function main() {
       return;
     }
 
-    // Backup ANTES de sobrescrever, mesmo quando a guarda passa: um rebuild
-    // seguro pelo critério de cliques ainda pode perder linhas por outro
-    // motivo, e o CSV não tem histórico (data/ é gitignored).
+    // Backup ANTES de sobrescrever, mesmo quando a guarda passa: uma reescrita
+    // segura pelo critério de cliques ainda pode perder linhas por outro
+    // motivo, e o CSV não tem histórico (data/ é gitignored). Poda dos antigos
+    // seguindo o padrão já estabelecido no repo (#288,
+    // render-categorized-md.ts): ordenar por nome (timestamp ISO →
+    // lexicográfico = cronológico) e manter só os últimos MAX_BACKUPS.
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const backupPath = `${OUT_CSV}.bak-${stamp}`;
-    fs.writeFileSync(backupPath, existingCsv, 'utf8');
-    console.log(`Backup do CSV anterior: ${backupPath}`);
+    try {
+      const backupDir = path.dirname(OUT_CSV);
+      const baseName = path.basename(OUT_CSV);
+      const existingBackups = fs.readdirSync(backupDir)
+        .filter(f => f.startsWith(`${baseName}.bak-`))
+        .sort();
+      const MAX_BACKUPS = 3;
+      for (let i = 0; i < existingBackups.length - MAX_BACKUPS; i++) {
+        try { fs.unlinkSync(path.join(backupDir, existingBackups[i])); } catch { /* ignore */ }
+      }
+      fs.writeFileSync(backupPath, existingCsv, 'utf8');
+      console.log(`Backup do CSV anterior: ${backupPath}`);
+    } catch (err) {
+      // Diferente do backup de render-categorized-md.ts (#288), que é defensivo
+      // e fail-soft: aqui o backup é a ÚNICA rede sob uma escrita destrutiva
+      // que estamos prestes a autorizar. Sem ele, abortar é o certo.
+      console.error(
+        `[build-link-ctr] backup falhou, abortando antes de sobrescrever: ${(err as Error).message}`
+      );
+      process.exitCode = 3;
+      return;
+    }
 
     if (!report.safe && allowClickLoss) {
       const perdidos = -report.editionsLosing.reduce((s, e) => s + e.delta, 0);
       console.warn(
-        `⚠️  --allow-click-loss ativo: seguindo com perda de ${perdidos} cliques ` +
+        `⚠️  ${ALLOW_CLICK_LOSS_FLAG} ativo: seguindo com perda de ${perdidos} cliques ` +
         `em ${report.editionsLosing.length} edições (backup acima).`
+      );
+    }
+    if (!parsed.trusted && allowClickLoss) {
+      console.warn(
+        `⚠️  ${ALLOW_CLICK_LOSS_FLAG} ativo: CSV atual ilegível (${parsed.reason}), ` +
+        `seguindo sem poder medir a perda (backup acima).`
       );
     }
   }

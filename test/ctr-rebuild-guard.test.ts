@@ -16,7 +16,9 @@ import {
   assessClickLoss,
   parseClickCountsFromCsv,
   formatClickLossAbort,
+  formatUntrustedCsvAbort,
   editionKey,
+  ALLOW_CLICK_LOSS_FLAG,
   type ClickCountRow,
 } from "../scripts/lib/shared/ctr-rebuild-guard.ts";
 
@@ -95,7 +97,7 @@ describe("assessClickLoss", () => {
     const depois: ClickCountRow[] = [];
     let esperado = 0;
     for (let i = 0; i < 22; i++) {
-      const clicks = 6 + (i % 23); // 6..28, a faixa observada
+      const clicks = 6 + (i % 18); // 6..23, a faixa medida nos 22 posts da janela
       antes.push(row(`2026-04-${String(i + 1).padStart(2, "0")}`, `Edição ${i}`, clicks));
       depois.push(row(`2026-04-${String(i + 1).padStart(2, "0")}`, `Edição ${i}`, 0));
       esperado += clicks;
@@ -116,7 +118,12 @@ describe("assessClickLoss", () => {
     const antes = [row("2026-05-01", "A", 2), row("2026-05-01", "A", 3)];
     const depois = [row("2026-05-01", "A", 5)];
 
-    assert.equal(assessClickLoss(antes, depois).safe, true);
+    const r = assessClickLoss(antes, depois);
+    assert.equal(r.safe, true);
+    // Sem estes dois, um tally() que duplicasse a soma passaria despercebido:
+    // super-contar ainda lê como "seguro".
+    assert.equal(r.totalBefore, 5);
+    assert.equal(r.totalAfter, 5);
   });
 
   it("trata CSV inexistente/vazio como seguro (bootstrap legítimo)", () => {
@@ -146,24 +153,28 @@ describe("parseClickCountsFromCsv", () => {
       `2026-05-01,"IA, robôs e você",,âncora,https://x.com/a,x.com,100,9,7,0.70,Outro,Destaque,BR`,
     ].join("\n");
 
-    const rows = parseClickCountsFromCsv(csv);
+    const { rows, trusted } = parseClickCountsFromCsv(csv);
 
+    assert.equal(trusted, true);
     assert.equal(rows.length, 1);
     assert.equal(rows[0].post_title, "IA, robôs e você");
     assert.equal(rows[0].unique_verified_clicks, 7, "vírgula no título não pode deslocar a coluna");
   });
 
-  it("devolve vazio para CSV vazio ou só cabeçalho", () => {
-    assert.deepEqual(parseClickCountsFromCsv(""), []);
-    assert.deepEqual(parseClickCountsFromCsv("   "), []);
-    assert.deepEqual(parseClickCountsFromCsv(header), []);
+  it("CSV vazio ou só cabeçalho é CONFIÁVEL e vazio (bootstrap legítimo)", () => {
+    for (const entrada of ["", "   ", header]) {
+      const r = parseClickCountsFromCsv(entrada);
+      assert.deepEqual(r.rows, [], `entrada: ${JSON.stringify(entrada.slice(0, 20))}`);
+      assert.equal(r.trusted, true, "vazio legítimo não pode bloquear o bootstrap");
+    }
   });
 
   it("trata clique ausente/não-numérico como zero em vez de NaN", () => {
     const csv = [header, `2026-05-01,A,,anc,https://x.com/a,x.com,100,,,,Outro,Destaque,BR`].join("\n");
 
-    const rows = parseClickCountsFromCsv(csv);
+    const { rows, trusted } = parseClickCountsFromCsv(csv);
 
+    assert.equal(trusted, true, "linha isolada sem clique é normal, não é CSV ilegível");
     assert.equal(rows[0].unique_verified_clicks, 0);
     assert.ok(!Number.isNaN(rows[0].unique_verified_clicks));
   });
@@ -187,5 +198,66 @@ describe("formatClickLossAbort", () => {
     const msg = formatClickLossAbort(assessClickLoss(antes, depois));
 
     assert.match(msg, /e mais 4 edições/);
+  });
+});
+
+describe("parseClickCountsFromCsv — distinção entre vazio e ILEGÍVEL (#4850 review)", () => {
+  const header =
+    "date,post_title,section_title,anchor,base_url,domain,unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,section,origin";
+
+  it("coluna de cliques renomeada => untrusted (senão todo clique lê como zero)", () => {
+    // Antes deste guard: as linhas parseavam, `unique_verified_clicks` virava 0
+    // em TODAS, `assessClickLoss` comparava contra zero e nunca acusava perda.
+    const renomeada = header.replace("unique_verified_clicks", "clicks_unique");
+    const csv = [renomeada, "2026-05-01,A,,anc,https://x.com/a,x.com,100,9,7,0.70,Outro,Destaque,BR"].join("\n");
+
+    const r = parseClickCountsFromCsv(csv);
+
+    assert.equal(r.trusted, false);
+    assert.deepEqual(r.rows, []);
+    assert.match(r.reason ?? "", /unique_verified_clicks/);
+  });
+
+  it("coluna date ausente => untrusted", () => {
+    const csv = ["post_title,unique_verified_clicks", "A,7"].join("\n");
+    assert.equal(parseClickCountsFromCsv(csv).trusted, false);
+  });
+
+  it("CSV com conteúdo mas nenhuma linha legível => untrusted, não 'vazio'", () => {
+    // Assinatura de UTF-16LE lido como utf8: NUL intercalado, nenhum rec.date bate.
+    const utf16 = Buffer.from(`${header}\n2026-05-01,A,,,,,,,7,,,,\n`, "utf16le").toString("utf8");
+
+    const r = parseClickCountsFromCsv(utf16);
+
+    assert.equal(r.trusted, false, "CSV ilegível não pode ser tratado como bootstrap");
+    assert.match(r.reason ?? "", /NUL|UTF-16|encoding/i);
+  });
+
+  it("BOM UTF-8 continua confiável (Papa normaliza) — não superdiagnosticar", () => {
+    const csv = `﻿${header}\n2026-05-01,A,,anc,https://x.com/a,x.com,100,9,7,0.70,Outro,Destaque,BR`;
+
+    const r = parseClickCountsFromCsv(csv);
+
+    assert.equal(r.trusted, true);
+    assert.equal(r.rows[0].unique_verified_clicks, 7);
+  });
+
+  it("CRLF continua confiável no parser (o gatilho de rebuild é outro)", () => {
+    const csv = `${header}\r\n2026-05-01,A,,anc,https://x.com/a,x.com,100,9,7,0.70,Outro,Destaque,BR\r\n`;
+
+    const r = parseClickCountsFromCsv(csv);
+
+    assert.equal(r.trusted, true);
+    assert.equal(r.rows[0].unique_verified_clicks, 7);
+  });
+});
+
+describe("formatUntrustedCsvAbort", () => {
+  it("nomeia o motivo e a saída de escape", () => {
+    const msg = formatUntrustedCsvAbort("cabeçalho sem `unique_verified_clicks`");
+
+    assert.match(msg, /REBUILD ABORTADO/);
+    assert.match(msg, /unique_verified_clicks/);
+    assert.match(msg, new RegExp(ALLOW_CLICK_LOSS_FLAG));
   });
 });
