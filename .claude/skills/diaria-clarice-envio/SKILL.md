@@ -11,9 +11,13 @@ esta skill distribui a mesma edição em ondas sucessivas pela base.
 
 **Blast radius alto.** Uma invocação errada manda dezenas de milhares de
 e-mails e queima a reputação do domínio `clarice.ai`, que é do PARCEIRO. Por
-isso: nada é escrito na Brevo antes do gate de confirmação, e **campanha
-agendada na Brevo é IMUTÁVEL** (incidente 260703) — o que passar pelo gate
-não volta atrás por API.
+isso: nada é escrito na Brevo antes do gate de confirmação. **Correção
+(#4935, 260810): campanha agendada na Brevo NÃO é imutável** — dá pra
+cancelar via API (`PUT /emailCampaigns/{id}/status`, `status: cancel` ou
+`suspended`) ou pelo painel, e recriar com as características corretas. O
+que passar pelo gate ainda tem custo real de reverter (janela até o disparo,
+possível reputação de duplicar envio) — a confirmação continua obrigatória —
+mas não é mais um estado terminal sem saída (incidente 260703).
 
 ## Argumentos
 
@@ -66,8 +70,10 @@ Saída (`WaveProposal`) traz, entre outras coisas:
   volume, status e data.
 - `state.volumeComplete` — `false` significa que o total já enviado é um
   **piso**, não um número exato. Nunca apresentar como exato nesse caso.
-- `state.scheduledCount` — campanhas ainda agendadas. Imutáveis; seus
-  destinatários já estão congelados.
+- `state.scheduledCount` — campanhas ainda agendadas. Editáveis via API
+  (`PUT /emailCampaigns/{id}`, inclusive `scheduledAt`) ou canceláveis
+  (`PUT .../status` com `cancel`/`suspended`) — não são estado terminal,
+  ver #4935 — mas seus destinatários já estão congelados no agendamento.
 - `staleNote` — preenchido quando o dashboard serviu **cache**. A idade real
   vem junto (`~3.2h stale`). Reportar sempre ao editor — nunca decidir volume
   sobre cache sem dizer que é cache.

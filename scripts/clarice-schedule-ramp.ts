@@ -963,8 +963,10 @@ export interface CampaignsReadyCheck {
  * chegar na wave sem campanha — e como `applyVerifyResults` (que persiste
  * `status: "scheduled"`) só roda UMA VEZ após o loop inteiro, as waves já
  * agendadas no Brevo nunca tinham seu estado local atualizado (campanhas
- * agendadas são imutáveis na Brevo — um retry tentaria re-agendar via PUT
- * algo que já foi aceito). Um `--create` incompleto agora bloqueia
+ * agendadas SÃO editáveis via `PUT /emailCampaigns/{id}` na Brevo, #4935 —
+ * um retry indevido tentaria re-PUTar via API algo que já foi aceito, o que
+ * não falha mas é redundante e confunde o rastro de estado local). Um
+ * `--create` incompleto agora bloqueia
  * `--schedule` pra TODAS as waves com um erro claro upfront, em vez de
  * agendar parcialmente e perder o rastro do estado. Pura, testável.
  */
@@ -1009,9 +1011,11 @@ export interface ScheduleLoopDeps {
  * as views cujo `putFn` teve sucesso em `toVerify` e só chamava
  * `applyVerifyResults` UMA VEZ, depois do loop inteiro terminar — se a wave N
  * lançasse, a exceção propagava ANTES da persistência rodar, perdendo o
- * rastro local das waves 1..N-1 cujo agendamento JÁ foi aceito (imutável) na
- * Brevo. Mesma classe de bug que o #3643 bug 4 eliminou, só que via um
- * gatilho diferente (não coberto por `checkAllCampaignsCreated`).
+ * rastro local das waves 1..N-1 cujo agendamento JÁ foi aceito na Brevo —
+ * reverter exigiria cancelar via API/painel e recriar (#4935), não é
+ * gratuito mesmo não sendo mais estado terminal. Mesma classe de bug que o
+ * #3643 bug 4 eliminou, só que via um gatilho diferente (não coberto por
+ * `checkAllCampaignsCreated`).
  *
  * Agora: cada wave é PUT + GET-verify + persistida antes de seguir pra
  * próxima. Se `putFn` de uma wave lançar, a exceção ainda propaga (mesmo
@@ -1040,7 +1044,7 @@ export async function runScheduleLoop(
       throw new Error(`--schedule: ${view.key} (campanha #${view.campaignId}) tem scheduledAt no passado/presente (${view.scheduledAt}).`);
     }
 
-    await deps.putFn(view); // brevoPut REAL — agendamento aceito e imutável na Brevo a partir daqui
+    await deps.putFn(view); // brevoPut REAL — agendamento aceito na Brevo a partir daqui (cancelável via API/painel + recriação, #4935, mas não é gratuito)
 
     // #3652 bug 2: persiste ESTA wave IMEDIATAMENTE — se a PRÓXIMA falhar, o
     // registro local desta já está gravado, não some junto com a exceção.
@@ -1438,8 +1442,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       // ao chegar na wave sem campanha — e como `applyVerifyResults` só roda
       // UMA VEZ após o loop inteiro, as waves já agendadas no Brevo nunca
       // tinham seu `status: "scheduled"` persistido localmente (campanhas
-      // agendadas são imutáveis na Brevo — um retry tentaria re-PUTar algo
-      // já aceito). Um --create incompleto agora bloqueia --schedule pra
+      // agendadas SÃO editáveis via PUT na Brevo, #4935 — um retry indevido
+      // tentaria re-PUTar algo já aceito, redundante mas não fatal). Um
+      // --create incompleto agora bloqueia --schedule pra
       // TODAS as waves com um erro claro upfront, antes de qualquer chamada real.
       const readyCheck = checkAllCampaignsCreated(campaignsView);
       if (!readyCheck.ready) {

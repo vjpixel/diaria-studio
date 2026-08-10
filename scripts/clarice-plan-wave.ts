@@ -14,8 +14,9 @@
  * o de maior blast radius do projeto (dezenas de milhares de e-mails, e a
  * reputação do domínio `clarice.ai`, que é do PARCEIRO). Um script que
  * propõe e agenda na mesma invocação transforma um erro de digitação em
- * campanha agendada — e campanha agendada na Brevo é IMUTÁVEL (incidente
- * 260703).
+ * campanha agendada, que só se corrige cancelando (API ou painel) e
+ * recriando — não é gratuito, mesmo não sendo mais tratado como estado
+ * terminal sem saída (#4935, incidente original 260703).
  *
  * Toda a lógica de decisão mora em `scripts/lib/clarice-wave-plan.ts` (puro,
  * testável). Aqui só há I/O e a montagem dos argumentos.

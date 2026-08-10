@@ -9,8 +9,10 @@
  * fechou o envio 8 com 11,1% de abertura (limiar: 15%) e o envio 9B saiu no
  * dia seguinte mesmo assim (2,0% de abertura) — o sinal existia, estava
  * medido, mas nada notificava o editor a tempo de suspender o envio seguinte
- * (campanha agendada na Brevo é IMUTÁVEL — não deleta/desagenda via API
- * depois de "scheduled").
+ * (correção #4935: campanha agendada na Brevo NÃO é imutável — dá pra
+ * cancelar via API, `PUT /emailCampaigns/{id}/status` com `status: cancel`
+ * ou `suspended`, e recriar; a urgência do alarme continua válida porque
+ * cancelar/recriar é uma ação que precisa da atenção do editor a tempo).
  *
  * Decisão do editor (260727, janela ajustada pra 10h em #4475): job roda
  * ~10h após CADA envio (`GUARDRAIL_EVAL_WINDOW_MS` — abertura já estabilizou,
@@ -151,7 +153,8 @@ export interface ScheduledSendInfo {
 /**
  * Encontra o próximo envio agendado (o mais próximo no FUTURO, relativo a
  * `now`) entre campanhas `queued` — é o que o alarme precisa nomear, já que
- * campanha agendada na Brevo é imutável (suspender é ação manual, com prazo).
+ * cancelar/recriar exige ação do editor (via API ou painel Brevo) antes do
+ * horário de disparo (#4935 — não é estado terminal, mas o prazo é real).
  * `null` se não houver nenhum agendamento futuro.
  */
 export function resolveNextScheduledSend<T extends { name: string; scheduledAt: string | null }>(
@@ -207,9 +210,11 @@ export function describeBreaches(
 
 /**
  * Monta o e-mail de alarme (pura/testável). Precisa SEMPRE: (a) nomear qual
- * é o próximo envio agendado e (b) até quando dá pra suspender — requisito
- * explícito da decisão do editor, já que a suspensão é ação manual e a
- * campanha agendada na Brevo é imutável via API.
+ * é o próximo envio agendado e (b) até quando dá pra cancelar — requisito
+ * explícito da decisão do editor. Campanha agendada na Brevo NÃO é imutável
+ * (#4935): cancelar via API (`PUT /emailCampaigns/{id}/status`, `status:
+ * cancel`/`suspended`) e recriar é sempre possível, mas o prazo até o
+ * disparo continua real e é isso que o alarme comunica.
  */
 export function buildGuardrailAlarmEmail(
   campaignName: string,
@@ -229,8 +234,9 @@ export function buildGuardrailAlarmEmail(
   if (nextScheduled) {
     lines.push(
       `Próximo envio agendado: "${nextScheduled.name}", para ${nextScheduled.scheduledAt}.`,
-      "Campanha agendada na Brevo é IMUTÁVEL (não deleta/desagenda via API depois de \"scheduled\") — " +
-        `se decidir não seguir com ele, suspenda MANUALMENTE no painel Brevo antes de ${nextScheduled.scheduledAt}.`,
+      "Campanha agendada na Brevo NÃO é imutável — dá pra cancelar (painel Brevo, ou via API com " +
+        "PUT /emailCampaigns/{id}/status, status: cancel ou suspended) e recriar com outras características — " +
+        `se decidir não seguir com ele, cancele antes de ${nextScheduled.scheduledAt}.`,
     );
   } else {
     lines.push(

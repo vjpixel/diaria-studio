@@ -248,8 +248,9 @@ export interface ScheduleLoopDeps {
  * acumulando em `toVerify`, e só chamava `applyVerifyResults` UMA VEZ, depois
  * do loop inteiro terminar. Se `brevoPut` lançasse (timeout, 5xx,
  * rate-limit transiente) na campanha N, a exceção propagava ANTES de
- * `applyVerifyResults` rodar — as campanhas 1..N-1, já agendadas de verdade e
- * imutáveis na Brevo, nunca tinham seu status local (`campaigns-summary.json`)
+ * `applyVerifyResults` rodar — as campanhas 1..N-1, já agendadas de verdade
+ * na Brevo (editáveis via API, #4935 — não imutáveis), nunca tinham seu
+ * status local (`campaigns-summary.json`)
  * atualizado pra "scheduled". Um retry subsequente re-tentaria agendar
  * campanhas já agendadas (o guard `status === "scheduled"` não protegia, pois
  * o status local nunca foi persistido).
@@ -289,7 +290,7 @@ export async function runScheduleLoop(
       );
     }
 
-    await deps.putFn(c); // brevoPut REAL — agendamento aceito e imutável na Brevo a partir daqui
+    await deps.putFn(c); // brevoPut REAL — agendamento aceito na Brevo a partir daqui (cancelável via API/painel + recriação, #4935, mas não é gratuito)
 
     // #3658: persiste ESTA campanha IMEDIATAMENTE — se a PRÓXIMA falhar, o
     // registro local desta já está gravado, não some junto com a exceção.
@@ -618,7 +619,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // pra próxima — não mais "PUT todas, verifica/persiste no fim" (ver
     // docstring de `runScheduleLoop`). Falha de `putFn` na campanha N não
     // perde mais o registro local das campanhas 1..N-1 já agendadas de
-    // verdade (e imutáveis) na Brevo.
+    // verdade na Brevo (editáveis via API, #4935 — não imutáveis).
     await runScheduleLoop(campaigns, keysInScope, campaignsPath, {
       putFn: async (c) => { await brevoPut(apiKey, `/emailCampaigns/${c.campaignId}`, { scheduledAt: c.scheduledAt }); },
       verifyFn: (c) => brevoGetCampaign(apiKey, c.campaignId),

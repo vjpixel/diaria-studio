@@ -126,7 +126,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const manifestPath = resolve(dir, cellManifestFileName(groupKey));
 
   // Guarda de idempotência: um manifest já existente pode ter sido IMPORTADO
-  // na Brevo, e campanha agendada é imutável. Sobrescrever em silêncio num
+  // na Brevo, e desfazer uma campanha já agendada exige cancelar (API ou
+  // painel) e recriar (#4935) — não é gratuito. Sobrescrever em silêncio num
   // retry pós-falha-parcial perderia o registro local de quais listas estão no
   // ar — e trocar de modo (3 células → 1 lista) no mesmo groupKey deixaria os
   // CSVs antigos órfãos, sem nada ligando as listas já criadas ao novo plano.
@@ -135,7 +136,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     console.error(
       `❌ manifest já existe: ${manifestPath}\n` +
         `   ${prev.length} entrada(s): ${prev.map((e) => e.key).join(", ")}\n` +
-        `   Pode já ter sido importado na Brevo (campanha agendada é IMUTÁVEL). Confira as listas no painel antes.\n` +
+        `   Pode já ter sido importado na Brevo (desfazer exige cancelar/recriar a campanha via API/painel, #4935 — não é gratuito). Confira as listas no painel antes.\n` +
         `   Se o redo é intencional e nada foi importado ainda, repita com --force.`,
     );
     process.exit(1);

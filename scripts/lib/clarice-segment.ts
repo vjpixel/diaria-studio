@@ -325,9 +325,9 @@ export function parseBrevoListIds(raw: string | null | undefined): string[] {
  * recebeu" — um contato cujo envio já foi AGENDADO (mas ainda não disparado)
  * continua com `sends_count=0` (só incrementa depois do envio de fato), então
  * a seleção atual o trataria como "fresh" e o selecionaria de novo pro
- * PRÓXIMO envio agendado antes do primeiro sair. Como campanha agendada no
- * Brevo é IMUTÁVEL (não dá pra desagendar/deletar depois), esse duplicado só
- * seria descoberto tarde demais.
+ * PRÓXIMO envio agendado antes do primeiro sair. Corrigir depois exigiria
+ * cancelar a campanha via API/painel e recriar (#4935) — não é gratuito, e
+ * sem este guard esse duplicado só seria descoberto tarde demais.
  *
  * `queuedListIds` vem de uma consulta FRESCA à Brevo (`GET /v3/emailCampaigns
  * ?status=queued` → `recipients.lists` de cada campanha) — ver
@@ -614,7 +614,8 @@ export interface NamedGroupContext {
  *                 `sent`. Medido em 260731: 15.123 de 15.123 engajados
  *                 excluídos, 0 deles por campanha agendada. A proteção real
  *                 que o guard oferece a estes grupos (não duplicar um envio já
- *                 AGENDADO, que na Brevo é imutável) é preservada — só a parte
+ *                 AGENDADO — corrigir depois exigiria cancelar/recriar via
+ *                 API/painel, #4935, não é gratuito) é preservada — só a parte
  *                 `sent`, que aqui não descreve risco nenhum, sai.
  */
 export type CommittedGuardScope = "committed" | "queued";

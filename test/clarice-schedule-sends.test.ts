@@ -527,7 +527,8 @@ describe('scheduledAt passado em --schedule — guard simétrico (#2101 finding 
 
 // Regressão #3658 (mesma classe do #3652 bug 2 em clarice-schedule-ramp.ts):
 // falha de putFn na campanha N não deve impedir que as campanhas 1..N-1
-// (já agendadas de verdade e imutáveis na Brevo) tenham seu status local
+// (já agendadas de verdade na Brevo, editáveis via API — não imutáveis,
+// #4935) tenham seu status local
 // persistido como "scheduled" — antes, o loop só persistia UMA VEZ no fim,
 // então uma exceção no meio do loop perdia o rastro de todo o progresso
 // já feito.

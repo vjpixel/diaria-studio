@@ -973,7 +973,8 @@ test("REGRESSÃO main(): 'reativacao' também ignora `sent` — mas continua exc
     "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket, brevo_list_ids, brevo_modified_at) VALUES ('nao-abriu-em-sent@x.com','N',2,0,3,'verified','[\"70\"]','2026-06-01T00:00:00Z')",
   ).run();
   // Mesmo perfil, mas numa lista com campanha AGENDADA — esse tem de sair,
-  // senão o envio agendado (imutável na Brevo) duplicaria.
+  // senão duplicaria o envio (desfazer exigiria cancelar/recriar via
+  // API/painel, #4935 — não é gratuito).
   db.prepare(
     "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket, brevo_list_ids, brevo_modified_at) VALUES ('nao-abriu-em-queued@x.com','Q',2,0,3,'verified','[\"71\"]','2026-06-01T00:00:00Z')",
   ).run();

@@ -600,7 +600,8 @@ describe("regressão #2915 — buildSends recebe só o plano EM ESCOPO (não o p
 // contato com sends_count=0 (ainda "1º envio") cuja `brevo_list_ids` inclui
 // uma lista vinculada a uma campanha Brevo `queued` deve ser excluído ANTES
 // de entrar em `buildSends` — senão o script duplica o envio numa campanha
-// agendada imutável.
+// já agendada (editável via API, mas duplicar o envio é o problema real
+// aqui, não imutabilidade — #4935).
 // ---------------------------------------------------------------------------
 
 describe("#3015: guard de campanha queued aplicado sobre a fila de clarice-build-edition-sends.ts", () => {
