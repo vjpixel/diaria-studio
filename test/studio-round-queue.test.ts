@@ -178,6 +178,36 @@ describe("buildRoundQueue (#3561)", () => {
     assert.equal(queue.fora.length, 2);
     assert.equal(queue.pendente.length, 0);
   });
+
+  it("#4860: plan.issues em shape DICT (develop, #4817) é lido de verdade — antes virava 3 arrays vazios silenciosamente", () => {
+    const queue = buildRoundQueue({
+      issues: {
+        "4800": { priority: "P2", status: "mergeada" },
+        "4801": { priority: "P0", status: "pendente", block_category: "A" },
+        "4802": { priority: "P3", status: "pulada", motivo: "not-this-week" },
+      },
+    } as never);
+    assert.deepEqual(
+      queue.entram.map((r) => r.number),
+      [4800],
+    );
+    assert.deepEqual(
+      queue.pendente.map((r) => r.number),
+      [4801],
+    );
+    assert.deepEqual(
+      queue.fora.map((r) => r.number),
+      [4802],
+    );
+  });
+
+  it("#4860: dict sem `number` explícito deriva o número da chave", () => {
+    const queue = buildRoundQueue({
+      issues: { "4900": { priority: "P1", status: "elegivel" } },
+    } as never);
+    assert.equal(queue.entram.length, 1);
+    assert.equal(queue.entram[0].number, 4900);
+  });
 });
 
 describe("deriveQueueLabels (#3561)", () => {

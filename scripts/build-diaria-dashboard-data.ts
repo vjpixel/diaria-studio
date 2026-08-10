@@ -58,6 +58,7 @@ import { ALL_SECTION_NAMES_PATTERN } from "./lib/section-naming.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 import { buildTimelineRows } from "./render-overnight-timeline.ts";
 import { EPIC_DEFERRED_STATUS } from "./overnight-statusline.ts"; // #3072 (review do #3071)
+import { normalizeIssues } from "./lib/plan-issues-normalize.ts"; // #4860: plan.issues também pode ser dict (develop)
 import type {
   DashboardData,
   SourceHealthEntry,
@@ -356,16 +357,23 @@ function buildCtrSummary(
 
 // ─── Fonte 3: Timeline overnight ──────────────────────────────────────────────
 
+interface PlanJsonIssue {
+  number: number;
+  priority?: string;
+  status?: string;
+  batch?: string | null;
+  pr?: number | null;
+  timeline?: Record<string, string | undefined>;
+}
+
 interface PlanJson {
   started_at?: string;
-  issues?: Array<{
-    number: number;
-    priority?: string;
-    status?: string;
-    batch?: string | null;
-    pr?: number | null;
-    timeline?: Record<string, string | undefined>;
-  }>;
+  /**
+   * Aceita os dois shapes observados na prática (#4817/#4860): array
+   * (overnight) ou dict chaveado por número da issue (develop). Ler via
+   * `normalizeIssues`, nunca `plan.issues` diretamente.
+   */
+  issues?: PlanJsonIssue[] | Record<string, Partial<PlanJsonIssue>>;
   [key: string]: unknown;
 }
 
@@ -443,7 +451,7 @@ function buildOvernightSummary(): DashboardData["overnight"] {
       continue;
     }
 
-    const issues = plan.issues ?? [];
+    const issues = normalizeIssues(plan);
     let merged = 0;
     let draft = 0;
     let pulada = 0;

@@ -31,6 +31,7 @@ import { resolve } from "node:path";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { fmtTimeBrt } from "./lib/format.ts";
 import { EPIC_DEFERRED_STATUS } from "./overnight-statusline.ts"; // #3072 (review do #3071)
+import { normalizeIssues } from "./lib/plan-issues-normalize.ts"; // #4860 (extraído daqui pelo #4817)
 
 // ─── tipos ──────────────────────────────────────────────────────────────────
 
@@ -77,23 +78,13 @@ export interface Plan {
 }
 
 /**
- * Normaliza `plan.issues` para array, agnóstico de o `plan.json` de origem ter
- * gravado array (overnight) ou dict chaveado por número (develop, #4817). Uma
- * entrada de dict sem `number` recebe o número derivado da própria chave —
- * `Object.entries` preserva a ordem de inserção para chaves não-numéricas, mas
- * chaves inteiras (o caso aqui) são reordenadas pelo motor JS em ordem numérica
- * ascendente; é uma propriedade do próprio dict do develop, não algo que este
- * normalizador consiga (ou deva) corrigir.
+ * `normalizeIssues` foi promovido pra `scripts/lib/plan-issues-normalize.ts`
+ * no #4860 (generalizado pra servir outros consumidores de `plan.issues`,
+ * cada um com seu próprio shape de `PlanIssue`) — re-exportado aqui pra não
+ * quebrar quem já importa deste módulo (`test/render-overnight-timeline.test.ts`).
+ * Ver docstring completa no módulo de origem.
  */
-export function normalizeIssues(plan: Plan): PlanIssue[] {
-  const raw = plan.issues;
-  if (Array.isArray(raw)) return raw;
-  if (!raw || typeof raw !== "object") return [];
-  return Object.entries(raw).map(([key, issue]) => {
-    const number = typeof issue?.number === "number" ? issue.number : Number(key);
-    return { ...(issue as object), number } as PlanIssue;
-  });
-}
+export { normalizeIssues };
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 

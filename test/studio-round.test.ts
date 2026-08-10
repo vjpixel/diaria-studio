@@ -90,6 +90,48 @@ describe("buildRoundPayload (#3561)", () => {
     assert.equal(merged?.duracao, "1h00m");
   });
 
+  it("#4860: plan.issues em shape DICT (develop, #4817) monta fila + timeline de verdade, não arrays vazios", () => {
+    const r = makeRoot();
+    const dir = join(r, "data", "develop", "260810");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "plan.json"),
+      JSON.stringify({
+        started_at: "2026-08-10T10:00:00Z",
+        issues: {
+          "3212": {
+            priority: "P2",
+            status: "mergeada",
+            batch: null,
+            pr: 3505,
+            timeline: { dispatch: "2026-08-10T10:05:00Z", merged: "2026-08-10T11:05:00Z" },
+          },
+          "3500": {
+            priority: "P2",
+            status: "pulada",
+            motivo: "bloqueio-externo",
+            in_round: false,
+            timeline: { pulada: "2026-08-10T12:00:00Z" },
+          },
+        },
+      }),
+    );
+
+    const payload = buildRoundPayload(r, "develop");
+    assert.equal(payload.found, true);
+    assert.equal(payload.error, null);
+
+    assert.equal(payload.queue.entram.length, 1, "dict deveria popular 'entram', não ficar vazio");
+    assert.equal(payload.queue.entram[0].number, 3212);
+    assert.equal(payload.queue.fora.length, 1);
+    assert.equal(payload.queue.fora[0].number, 3500);
+
+    assert.equal(payload.timeline.length, 2, "dict deveria popular a timeline, não ficar vazia");
+    const merged = payload.timeline.find((t) => t.unidade.includes("3212"));
+    assert.ok(merged);
+    assert.equal(merged?.duracao, "1h00m");
+  });
+
   it("develop: campos block_category/what_unblocks/status 'pendente' fluem pro bucket 'pendente'", () => {
     const r = makeRoot();
     const dir = join(r, "data", "develop", "260716");
@@ -378,5 +420,24 @@ describe("listRoundSummaries (#3841)", () => {
   it("nenhuma sessão em nenhum kind -> array vazio", () => {
     const r = makeRoot();
     assert.deepEqual(listRoundSummaries(r), []);
+  });
+
+  it("#4860: plan.issues em shape DICT (develop, #4817) conta totalIssues/counts de verdade — antes virava 0 silenciosamente", () => {
+    const r = makeRoot();
+    const dir = join(r, "data", "develop", "260810");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "plan.json"), JSON.stringify({
+      started_at: "2026-08-10T13:40:00.000Z",
+      issues: {
+        "4800": { priority: "P2", status: "mergeada" },
+        "4783": { priority: "P1", status: "pulada" },
+      },
+    }));
+
+    const rounds = listRoundSummaries(r);
+    assert.equal(rounds.length, 1);
+    assert.equal(rounds[0].totalIssues, 2, "dict com 2 entradas não deveria mais contar como 0");
+    assert.equal(rounds[0].counts["mergeada"], 1);
+    assert.equal(rounds[0].counts["pulada"], 1);
   });
 });

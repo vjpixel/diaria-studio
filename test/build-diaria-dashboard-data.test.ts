@@ -180,6 +180,46 @@ describe("buildOvernightSummary (interno)", () => {
   });
 });
 
+// #4860 (self-review do #4817/#4859): `buildOvernightSummary` lia
+// `plan.issues ?? []` — um dict (shape develop, #4817) é truthy, então NUNCA
+// caía no fallback `[]`, mas também nunca era iterado como array esperado,
+// perdendo o dado silenciosamente. O fix troca por `normalizeIssues(plan)`.
+// Este teste exercita o mesmo caminho que `buildOvernightSummary` percorre
+// internamente (`normalizeIssues` + `bucketOvernightIssue` por issue) contra
+// um `plan.issues` em shape dict, sem depender do diretório `data/overnight/`
+// real (a função interna não é exportada nem parametrizável por rootDir).
+describe("buildOvernightSummary — plan.issues shape DICT (#4860)", () => {
+  test("normalizeIssues + bucketOvernightIssue classificam corretamente um plan.json em shape dict (develop)", async () => {
+    const { normalizeIssues } = await import("../scripts/lib/plan-issues-normalize.ts");
+    const { bucketOvernightIssue } = await import("../scripts/build-diaria-dashboard-data.ts");
+
+    // Shape observado ao vivo em sessões develop (#4817) — dict chaveado por
+    // número da issue, sem `number` explícito na maioria das entradas.
+    const plan = {
+      started_at: "2026-08-08T13:40:00.000Z",
+      issues: {
+        "2100": { status: "merged", timeline: { merged: "2026-08-08T14:00:00.000Z" } },
+        "2101": { status: "pulada", timeline: { pulada: "2026-08-08T14:10:00.000Z" } },
+        "2102": { status: "elegivel", timeline: {} },
+      },
+    };
+
+    const issues = normalizeIssues(plan as Parameters<typeof normalizeIssues>[0]);
+    assert.equal(issues.length, 3, "dict com 3 entradas deve normalizar pra array de 3 (antes: [] ou objeto não-iterável)");
+
+    let merged = 0, pulada = 0, in_progress = 0;
+    for (const issue of issues) {
+      const bucket = bucketOvernightIssue(issue as { status?: string; timeline?: Record<string, string | undefined> });
+      if (bucket === "merged") merged++;
+      else if (bucket === "pulada") pulada++;
+      else in_progress++;
+    }
+    assert.equal(merged, 1);
+    assert.equal(pulada, 1);
+    assert.equal(in_progress, 1);
+  });
+});
+
 // #3072 (review do #3071): EPIC deliberadamente deferido (status
 // "elegivel_especial") nunca tem timeline preenchido, mas não é trabalho
 // pendente real — sem o fix, o dashboard (fonte autoritativa pra decisões,
