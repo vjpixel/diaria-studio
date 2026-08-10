@@ -1,0 +1,45 @@
+/* tarefas.css (#4799) — página de status das tarefas agendadas. Reusa
+   .table-scroll/.triage-table/.filter-field/.panel-header-row de
+   triagem.css e .state-badge/.reachable-subtext/.probe-error de
+   integracoes.css (ambos já linkados em tarefas.html) — só os estados
+   NOVOS (armed/desabilitada/não-armada/não-sei-verificar do agendador,
+   resultado do último run, atraso, e o excerpt de log expansível) são
+   específicos desta página. */
+
+/* armada? (SchedulerArmedState — scheduled-task-status.ts) */
+.state-armed { background: var(--status-ok); color: var(--on-status); border-color: var(--status-ok); }
+.state-disabled { background: var(--status-warn); color: var(--status-warn-ink); border-color: var(--status-warn); }
+.state-not_armed { background: var(--status-danger); color: var(--on-status); border-color: var(--status-danger); }
+.state-cannot_verify { background: var(--paper-alt); opacity: 0.75; }
+
+/* resultado da última execução (TaskRunOutcome — scheduled-task-status.ts) */
+.state-outcome-ok { background: var(--status-ok); color: var(--on-status); border-color: var(--status-ok); }
+.state-outcome-failed { background: var(--status-danger); color: var(--on-status); border-color: var(--status-danger); }
+.state-outcome-guard_skip { background: var(--paper-alt); opacity: 0.75; }
+.state-outcome-unknown { background: var(--paper-alt); opacity: 0.55; }
+
+/* atraso — sinal que a issue #4799 chama de "hoje não existe em lugar nenhum" */
+.state-overdue { background: var(--status-danger); color: var(--on-status); border-color: var(--status-danger); }
+
+tr.row-overdue { background: color-mix(in srgb, var(--status-danger) 8%, transparent); }
+
+.log-excerpt {
+  margin-top: 0.3rem;
+  font-size: 0.72rem;
+}
+.log-excerpt summary {
+  cursor: pointer;
+  opacity: 0.8;
+}
+.log-excerpt pre {
+  max-width: 34rem;
+  max-height: 16rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--paper-alt);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 0.4rem 0.5rem;
+  margin-top: 0.25rem;
+}

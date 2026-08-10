@@ -102,6 +102,17 @@
  * @see scripts/overnight/setup-watchdog-schedule.ps1
  * @see scripts/lib/exec-mode.ts (#2643)
  * @see .claude/skills/diaria-overnight/SKILL.md § Fase 0 passo 1, § Stall passivo
+ *
+ * **#4799 (Studio "Tarefas"):** `queryWatchdogTaskExitCode` e
+ * `queryWatchdogTaskVerboseOutput` ganharam um 2º parâmetro opcional
+ * `taskName` (default `WATCHDOG_TASK_NAME`, preserva 100% do comportamento
+ * existente — todo call site antigo continua passando só `exec`) — permite
+ * que `scripts/lib/scheduled-task-status.ts` REUSE a mesma consulta
+ * `schtasks` locale-agnóstica (#2814) pra QUALQUER task do registro
+ * declarativo (`scripts/lib/scheduled-tasks.ts`), não só o watchdog.
+ * `parseWatchdogTaskState`/`classifyWatchdogTaskHealth` já eram funções
+ * puras genéricas (operam sobre texto/`WatchdogTaskState`, nunca sobre o
+ * nome da task) — reusadas sem nenhuma mudança.
  */
 
 import { execFileSync } from "node:child_process";
@@ -259,12 +270,18 @@ export function buildWatchdogCannotVerifyMessage(schedulerKind: TaskSchedulerKin
  * sem chamar `schtasks` de verdade nem depender de module-mocking experimental
  * do Node (`node:test`'s `mock.module` requer `--experimental-test-module-mocks`,
  * flag que não está no `npm test` deste repo).
+ *
+ * `taskName` (#4799, default `WATCHDOG_TASK_NAME`) — 2º parâmetro opcional
+ * que generaliza a consulta pra QUALQUER task do Task Scheduler, não só o
+ * watchdog. Todo call site pré-#4799 continua passando só `exec` e recebe o
+ * comportamento idêntico de antes.
  */
 export function queryWatchdogTaskExitCode(
   exec: typeof execFileSync = execFileSync,
+  taskName: string = WATCHDOG_TASK_NAME,
 ): number | null {
   try {
-    exec("schtasks", ["/query", "/tn", WATCHDOG_TASK_NAME], {
+    exec("schtasks", ["/query", "/tn", taskName], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -462,14 +479,18 @@ export function buildWatchdogHealthWarningMessage(
  * fail-soft: ausência de detalhe de saúde nunca derruba `armed` para
  * `not_armed`, só impede a checagem mais fina (ver `classifyWatchdogTaskHealth`).
  * `exec` injetável pelo mesmo motivo de `queryWatchdogTaskExitCode`.
+ *
+ * `taskName` (#4799, default `WATCHDOG_TASK_NAME`) — mesma generalização de
+ * `queryWatchdogTaskExitCode` acima.
  */
 export function queryWatchdogTaskVerboseOutput(
   exec: typeof execFileSync = execFileSync,
+  taskName: string = WATCHDOG_TASK_NAME,
 ): string | null {
   try {
     const out = exec(
       "schtasks",
-      ["/query", "/tn", WATCHDOG_TASK_NAME, "/v", "/fo", "LIST"],
+      ["/query", "/tn", taskName, "/v", "/fo", "LIST"],
       { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
     ) as unknown as string | Buffer;
     return typeof out === "string" ? out : out.toString("utf-8");

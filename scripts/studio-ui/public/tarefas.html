@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>diar.ia.br Studio — Tarefas</title>
+  <link rel="stylesheet" href="/tokens.generated.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/nav.css" />
+  <link rel="stylesheet" href="/triagem.css" />
+  <link rel="stylesheet" href="/integracoes.css" />
+  <link rel="stylesheet" href="/tarefas.css" />
+  <link rel="stylesheet" href="/chat-drawer.css" />
+</head>
+<body>
+  <header class="statusbar">
+    <nav id="app-nav" class="app-nav" aria-label="Navegação do Studio"></nav>
+    <div class="statusbar-item">
+      <span class="label">Tarefas</span>
+      <span class="value" id="exec-mode-value">—</span>
+    </div>
+    <div class="statusbar-item conn" id="fetch-status">
+      <span class="dot" id="fetch-dot"></span>
+      <span id="fetch-label">carregando…</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h1>Tarefas agendadas</h1>
+      <p class="hint">
+        Status de todas as tasks agendadas do projeto (alarmes, syncs,
+        guardrails — <code>scripts/lib/scheduled-tasks.ts</code>), num só
+        lugar: armada no agendador desta máquina? última execução (quando,
+        quanto durou, resultado)? próxima execução prevista? atrasada? Só
+        leitura nesta versão — nenhuma ação (rodar agora/habilitar/
+        desabilitar) daqui. "Armada?" reflete o agendador da máquina ONDE
+        este studio-server roda (Windows Task Scheduler ou systemd) — se não
+        for nenhum dos dois, ou a consulta falhar, aparece "não sei
+        verificar", nunca "desarmada" por engano.
+      </p>
+      <div id="tasks-error" class="panel alert-banner" role="alert" hidden></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header-row">
+        <h2>Tarefas (<span id="tasks-count">0</span>)</h2>
+        <label class="filter-field">
+          <span class="label">Status</span>
+          <select id="filter-status">
+            <option value="">Todos</option>
+            <option value="overdue">Atrasadas</option>
+            <option value="not_armed">Não armadas</option>
+            <option value="disabled">Desabilitadas</option>
+            <option value="failed">Última execução falhou</option>
+          </select>
+        </label>
+        <button id="refresh-btn" type="button">Atualizar</button>
+        <span id="last-updated" class="hint"></span>
+      </div>
+      <div id="tasks-empty" class="hint" hidden>Nenhuma tarefa agendada.</div>
+      <div class="table-scroll">
+        <table class="triage-table">
+          <thead>
+            <tr>
+              <th>Tarefa</th>
+              <th>Agenda</th>
+              <th>Armada?</th>
+              <th>Última execução</th>
+              <th>Resultado</th>
+              <th>Próxima prevista</th>
+              <th>Atraso?</th>
+            </tr>
+          </thead>
+          <tbody id="tasks-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>window.STUDIO_PAGE = "tarefas";</script>
+  <script src="/nav.js" type="module"></script>
+  <script src="/tarefas.js" type="module"></script>
+  <script src="/chat-drawer.js" type="module"></script>
+</body>
+</html>
