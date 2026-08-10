@@ -259,6 +259,30 @@ export function extractLinks(html: string): LinkEntry[] {
     .replace(/<style[\s\S]*?<\/style>/gi, '')
     .replace(/<head[\s\S]*?<\/head>/gi, '');
 
+  // #4834: shared by the top-level <a> branch below AND by the <b>-interior
+  // rescan (a <b> that wraps an <a href> is not a heading). Extracted so the
+  // href/dedup/context logic lives in exactly one place.
+  function tryPushAnchor(attrs: string, innerHtml: string, absoluteIdx: number): void {
+    const hrefMatch = attrs.match(/href=["']([^"']+)["']/i);
+    if (!hrefMatch) return;
+    const rawUrl = hrefMatch[1].trim();
+    if (!rawUrl || rawUrl.startsWith('mailto:') || rawUrl.startsWith('#')) return;
+    if (!isEditorial(rawUrl)) return;
+
+    const bu = baseUrl(rawUrl);
+    if (seen.has(bu)) return;
+    seen.add(bu);
+
+    const anchor = cleanText(innerHtml);
+
+    // Extract surrounding paragraph context (400 chars before / 200 after link in bodyHtml)
+    const ctxStart = Math.max(0, absoluteIdx - 400);
+    const ctxEnd = Math.min(bodyHtml.length, absoluteIdx + 200);
+    const context = cleanText(bodyHtml.substring(ctxStart, ctxEnd));
+
+    entries.push({ url: rawUrl, baseUrl: bu, anchor, sectionTitle: currentSection, context });
+  }
+
   // Build a token stream: alternating between <b> tags, kicker <td> headings,
   // and <a> tags, in document order (needed for "nearest heading above the link").
   // (?=[\s>\/]) ensures we match <b> and <a> but NOT <base>, <body>, <aside>, etc.
@@ -271,6 +295,7 @@ export function extractLinks(html: string): LinkEntry[] {
     String.raw`|<a(?=[\s>\/])([^>]*)>([\s\S]*?)<\/a>`,
     'gi',
   );
+  const innerAnchorRegex = /<a(?=[\s>\/])([^>]*)>([\s\S]*?)<\/a>/gi;
   let currentSection = '';
   let match: RegExpExecArray | null;
 
@@ -278,6 +303,27 @@ export function extractLinks(html: string): LinkEntry[] {
     const [, bInner, kickerInner, aAttrs, aInner] = match;
 
     if (bInner !== undefined) {
+      // #4834: a <b> that WRAPS an <a href> is not a section heading — it's
+      // inline bold styling. Concretely this happens in mdInlineToHtml()
+      // (newsletter-render-html.ts) when markdown bold wraps a markdown link
+      // (`**[texto](url)**`): the `**` → `<b>` regex runs LAST over the
+      // already-linkified string, so it matches across the `<a>...</a>` in
+      // between and produces `<b><a href="url">texto</a></b>`. The old code
+      // treated the whole <b>...</b> block as heading text and consumed the
+      // <a> inside it, silently dropping the link — biased toward links near
+      // the top of the newsletter, where bold-wrapped links are common
+      // (manchete-style emphasis). Re-scan the interior for <a> tags instead
+      // of treating the block as a heading whenever it contains one.
+      innerAnchorRegex.lastIndex = 0;
+      let innerMatch: RegExpExecArray | null;
+      let hasAnchor = false;
+      const bInnerStart = match.index! + match[0].indexOf('>') + 1;
+      while ((innerMatch = innerAnchorRegex.exec(bInner)) !== null) {
+        hasAnchor = true;
+        tryPushAnchor(innerMatch[1], innerMatch[2], bInnerStart + innerMatch.index);
+      }
+      if (hasAnchor) continue;
+
       const text = cleanText(bInner);
       const lower = text.toLowerCase();
       // Accept as section title if:
@@ -314,25 +360,7 @@ export function extractLinks(html: string): LinkEntry[] {
     }
 
     // <a> tag
-    const hrefMatch = aAttrs.match(/href=["']([^"']+)["']/i);
-    if (!hrefMatch) continue;
-    const rawUrl = hrefMatch[1].trim();
-    if (!rawUrl || rawUrl.startsWith('mailto:') || rawUrl.startsWith('#')) continue;
-    if (!isEditorial(rawUrl)) continue;
-
-    const bu = baseUrl(rawUrl);
-    if (seen.has(bu)) continue;
-    seen.add(bu);
-
-    const anchor = cleanText(aInner);
-
-    // Extract surrounding paragraph context (300 chars before link in bodyHtml)
-    const linkIdx = match.index!;
-    const ctxStart = Math.max(0, linkIdx - 400);
-    const ctxEnd = Math.min(bodyHtml.length, linkIdx + 200);
-    const context = cleanText(bodyHtml.substring(ctxStart, ctxEnd));
-
-    entries.push({ url: rawUrl, baseUrl: bu, anchor, sectionTitle: currentSection, context });
+    tryPushAnchor(aAttrs, aInner, match.index!);
   }
 
   return entries;
@@ -533,9 +561,14 @@ function main() {
 
     for (const link of links) {
       const clickStat = matchClick(link.baseUrl, clicks);
+      // #4834: unique_opens=0 é denominador AUSENTE, não uma taxa medida de 0%
+      // — gravar "0.00" fazia esses 79 rows (post sem `unique_opens` populado)
+      // indistinguíveis de um link real com CTR zero. Downstream já trata
+      // célula vazia como null e não como 0 (build-diaria-dashboard-data.ts,
+      // "célula ctr_pct em branco NÃO é 0% medido").
       const ctr = uniqueOpens > 0
         ? ((clickStat.unique_verified_clicks / uniqueOpens) * 100).toFixed(2)
-        : '0.00';
+        : '';
 
       let domain = '';
       try { domain = new URL(link.baseUrl).hostname.replace(/^www\./, ''); } catch {}
