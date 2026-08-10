@@ -11,11 +11,13 @@
  * "Diar.ia" (`test/reader-facing-no-legacy-brand-4424.test.ts`) — impede a
  * forma errada de voltar via edição futura do conteúdo do hub.
  *
- * Escopo: só os 3 arquivos de conteúdo de hub temático existentes no momento
- * deste guard (#4558 Partes A-C, #4627). Um hub novo precisa ser adicionado
- * à mão ao array `HUBS` abaixo — não é descoberto automaticamente — senão
- * escapa deste guard em silêncio. Comentários de código (docstrings, notas de
- * implementação) também NÃO são cobertos — não aparecem em nenhuma página,
+ * Escopo: TODOS os hubs de `HUB_LOADERS` (#4899). Até 10/08/2026 este guard
+ * tinha um array `HUBS` escrito à mão com os 3 hubs de então, e o aviso "um
+ * hub novo precisa ser adicionado à mão, senão escapa em silêncio" — foi
+ * exatamente o que aconteceu: a #4926 publicou o 4º hub (`meta-ai`) e ele
+ * ficou fora deste guard sem ninguém notar. Iterar o registry é o que faz
+ * hub futuro nascer coberto. Comentários de código (docstrings, notas de
+ * implementação) continuam NÃO cobertos — não aparecem em nenhuma página,
  * trocar é opcional (ver corpo da #4795).
  *
  * `NICKNAME_RE` exige que não haja letra imediatamente antes de "a"/"A"
@@ -28,39 +30,19 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { getAnthropicClaudeHub } from "../scripts/lib/hubs/anthropic-claude.ts";
-import { getOpenaiChatgptHub } from "../scripts/lib/hubs/openai-chatgpt.ts";
-import { getGoogleGeminiHub } from "../scripts/lib/hubs/google-gemini.ts";
-import type { HubContent } from "../scripts/lib/shared/hub-page.ts";
+import { HUB_LOADERS } from "../scripts/build-hub-page.ts";
+import { collectReaderFacingStrings } from "../scripts/lib/shared/hub-page.ts";
 
 const NICKNAME_RE = /(?<![\p{L}])[Aa] diária/u;
 
-const HUBS: { slug: string; content: HubContent }[] = [
-  { slug: "anthropic-claude", content: getAnthropicClaudeHub() },
-  { slug: "openai-chatgpt", content: getOpenaiChatgptHub() },
-  { slug: "google-gemini", content: getGoogleGeminiHub() },
-];
+const HUBS = Object.entries(HUB_LOADERS).map(([slug, load]) => ({ slug, content: load() }));
 
-function collectReaderFacingStrings(content: HubContent): { field: string; value: string }[] {
-  const out: { field: string; value: string }[] = [];
-  out.push({ field: "title", value: content.title });
-  out.push({ field: "metaDescription", value: content.metaDescription });
-  out.push({ field: "introHeading", value: content.introHeading });
-  out.push({ field: "introParagraph", value: content.introParagraph });
-  content.sections.forEach((section, sIdx) => {
-    out.push({ field: `sections[${sIdx}].heading`, value: section.heading });
-    section.paragraphs.forEach((p, pIdx) => {
-      out.push({ field: `sections[${sIdx}].paragraphs[${pIdx}]`, value: p });
-    });
-  });
-  content.faq.forEach((item, fIdx) => {
-    out.push({ field: `faq[${fIdx}].question`, value: item.question });
-    out.push({ field: `faq[${fIdx}].answer`, value: item.answer });
-  });
-  return out;
-}
 
 describe("#4795 — hubs temáticos usam 'a diar.ia.br', nunca o apelido 'a diária', no texto reader-facing", () => {
+  it("cobre TODO hub de HUB_LOADERS, não uma lista escrita à mão (#4899)", () => {
+    assert.ok(HUBS.length >= 4, `esperado >= 4 hubs, veio ${HUBS.length} — o registry regrediu?`);
+  });
+
   for (const { slug, content } of HUBS) {
     it(`${slug}: question/answer/heading/paragraphs/intro sem 'a diária'`, () => {
       const strings = collectReaderFacingStrings(content);

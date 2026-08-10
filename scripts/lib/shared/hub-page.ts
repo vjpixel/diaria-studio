@@ -141,6 +141,54 @@ function pageUrl(slug: string): string {
   return `${DIARIA_ARQUIVO_URL}/temas/${slug}`;
 }
 
+/**
+ * Rótulo "mês de ANO a mês de ANO" da janela coberta por um hub, DERIVADO do
+ * dataset — nunca digitado na prosa (#4917 item 1).
+ *
+ * Aceita `{ date }[]` em vez de `HubSourceEntry[]` de propósito: aquele tipo
+ * mora em `scripts/generate-hub-sources.ts`, que importa daqui — tipar pelo
+ * campo evita o ciclo. Não assume ordenação: varre min/max, porque
+ * `sourceEditions` é ordenado decrescente e `SOURCES` crescente, e um hub
+ * novo pode escolher qualquer um dos dois.
+ *
+ * **Por que derivar, e não corrigir o literal:** em 10/08/2026, DOIS dos 4
+ * hubs afirmavam uma janela que exclui a própria edição mais antiga que
+ * citam — `anthropic-claude` e `openai-chatgpt` diziam "setembro de 2025"
+ * com a primeira fonte em 29/08 e 27/08/2025. Escrever a janela como literal
+ * é justamente o que produz esse erro: o dataset se move a cada regen
+ * (`generate-hub-sources.ts`) e a prosa não. O mesmo defeito já tinha sido
+ * consertado uma vez no `google-gemini` (#4895/#4896) e voltou nos gêmeos.
+ */
+export function hubCoverageWindow(sources: readonly { date: string }[]): {
+  firstDate: string;
+  lastDate: string;
+  /** ex: "agosto de 2025 e agosto de 2026" — para "entre {…}". */
+  between: string;
+  /** ex: "agosto de 2025" — para "desde {…}". */
+  since: string;
+  /** ex: "27 de agosto de 2025 e 30 de julho de 2026" — forma longa, com
+   * dia. O `google-gemini` usa esta (é o formato que a #4895 travou em
+   * `test/hub-google-gemini-start-date-4895.test.ts`). */
+  betweenLong: string;
+} {
+  if (sources.length === 0) throw new Error("hubCoverageWindow: sources vazio");
+  let firstDate = sources[0].date;
+  let lastDate = sources[0].date;
+  for (const s of sources) {
+    if (s.date < firstDate) firstDate = s.date;
+    if (s.date > lastDate) lastDate = s.date;
+  }
+  const since = formatMonthYear(firstDate);
+  const long = (iso: string) => `${Number(iso.slice(8, 10))} de ${formatMonthYear(iso)}`;
+  return {
+    firstDate,
+    lastDate,
+    between: `${since} e ${formatMonthYear(lastDate)}`,
+    since,
+    betweenLong: `${long(firstDate)} e ${long(lastDate)}`,
+  };
+}
+
 /** CSS específico do corpo narrativo do hub (seções + lista de fontes) — o
  * que NÃO é coberto por `curadoria-page.ts` (grid de cards) nem por
  * `geo-faq.ts` (bloco de FAQ, reusado tal qual). */
@@ -194,15 +242,158 @@ function renderHubBodyStyles(): string {
 
 const SUBSCRIBE_URL = "https://diar.ia.br/subscribe";
 
+/** Um campo reader-facing de `HubContent`, com o caminho pra mensagem de
+ * erro e a natureza do campo. `kind: "heading"` é superfície de casamento
+ * com consulta (H2, pergunta de FAQ — a de FAQ ainda é reemitida como
+ * `Question.name` no JSON-LD por `geo-faq.ts`); `kind: "prose"` é corpo de
+ * texto. As regras do contrato (`HUB_PROSE_RULES`) se aplicam por `kind`.
+ *
+ * Promovido de `test/hub-content-no-diaria-nickname-4795.test.ts` (#4899):
+ * era helper local de um teste, e por isso cada guard novo reescrevia a
+ * própria travessia — e o guard do #4795 ainda tem um array `HUBS`
+ * hand-written que não descobriu o 4º hub (#4926) sozinho. */
+export function collectReaderFacingStrings(
+  hub: HubContent,
+): { field: string; value: string; kind: "heading" | "prose" }[] {
+  const out: { field: string; value: string; kind: "heading" | "prose" }[] = [];
+  out.push({ field: "title", value: hub.title, kind: "heading" });
+  out.push({ field: "metaDescription", value: hub.metaDescription, kind: "prose" });
+  out.push({ field: "introHeading", value: hub.introHeading, kind: "heading" });
+  out.push({ field: "introParagraph", value: hub.introParagraph, kind: "prose" });
+  hub.sections.forEach((section, sIdx) => {
+    out.push({ field: `sections[${sIdx}].heading`, value: section.heading, kind: "heading" });
+    section.paragraphs.forEach((p, pIdx) => {
+      out.push({ field: `sections[${sIdx}].paragraphs[${pIdx}]`, value: p, kind: "prose" });
+    });
+  });
+  hub.faq.forEach((item, fIdx) => {
+    out.push({ field: `faq[${fIdx}].question`, value: item.question, kind: "heading" });
+    out.push({ field: `faq[${fIdx}].answer`, value: item.answer, kind: "prose" });
+  });
+  return out;
+}
+
+export interface HubProseRule {
+  readonly id: string;
+  /** Onde a regra se aplica. `heading` inclui `title`, `introHeading`,
+   * `sections[].heading` e `faq[].question`; `prose` inclui
+   * `metaDescription`, `introParagraph`, `sections[].paragraphs` e
+   * `faq[].answer`. */
+  readonly appliesTo: "heading" | "prose";
+  readonly pattern: RegExp;
+  /** Mensagem de violação — diz o que fazer, não só o que está errado. */
+  readonly message: string;
+}
+
+/**
+ * **O contrato de prosa dos hubs (#4899).** Cada regra saiu de um achado da
+ * auditoria de GEO de 10/08/2026 (#4558) e vale pros hubs de hoje e pra todo
+ * hub futuro: `validateHubContent` roda sobre `collectReaderFacingStrings`, e
+ * os testes que iteram `HUB_LOADERS` (`test/hub-page-drift.test.ts`,
+ * `test/build-hub-page.test.ts`) exercem hub novo sem trabalho extra.
+ *
+ * **Por que existe:** a #4926 publicou o 4º hub um dia depois da auditoria,
+ * com este contrato aberto, e ele nasceu com as 5 violações abaixo — 3
+ * headings de marca, 3 sujeitos, 6 dêiticos e 8 ponteiros, mais ponteiro que
+ * qualquer hub anterior. Ninguém errou de propósito: o docstring dele diz
+ * "mesmo molde estrutural dos 3 anteriores". É o molde que carrega o defeito,
+ * então o conserto tem de estar no gerador e não em checklist.
+ *
+ * **O contrato proíbe CONSTRUÇÕES, nunca palavras.** Afirmação sobre o
+ * próprio arquivo — "em 76 edições ao longo de 11 meses, o ritmo veio em
+ * surtos" — é o que a página tem de próprio e passa limpa de propósito; é
+ * a razão de o hub existir. O que as regras pegam é a publicação ocupando o
+ * lugar de sujeito que o fato deveria ter, e a edição usada como moldura
+ * organizadora. O critério, quando um caso novo for duvidoso: **a cobertura
+ * é o assunto, ou é o recipiente?** Assunto fica; recipiente sai. Um lint de
+ * frequência de menção mataria justamente o que justifica a página, e por
+ * isso nunca deve ser adicionado aqui.
+ *
+ * **Descartado pela auditoria, não reintroduzir:** âncora `#id` por bloco e
+ * índice navegável (scroll-to-text casa texto, não id — justificativa
+ * auto-refutante), reorganização de hierarquia de heading ("edições só de
+ * formatação têm pouco impacto"), `BreadcrumbList`, `sameAs`, expansão do
+ * FAQPage (o rich result de FAQ foi aposentado em 07/05/2026; o
+ * quasi-experimento da Ahrefs mediu −4,6% em AI Overviews com schema) e
+ * llms.txt (97% dos arquivos com zero requisições em 137 mil domínios).
+ *
+ * **Força da evidência, para não prometer o que não se mede:** o survey
+ * arXiv 2607.14035 conclui que nenhuma técnica de GEO revisada mostra efeito
+ * causal estável sobre descoberta, e não há estudo sobre moldura atributiva.
+ * Isto é qualidade de prosa com trava durável, não promessa de citação — o
+ * gargalo medido da página é recuperação (#4903, #4909), não seleção.
+ */
+export const HUB_PROSE_RULES: readonly HubProseRule[] = [
+  {
+    // #4914. Forma AMPLA de propósito: a regex original da issue
+    // (/segundo a (diar\.ia\.br|cobertura)/) deixava passar 3 headings que
+    // nomeiam a marca sem essa construção — "Em quantas edições a diar.ia.br
+    // destacou algo sobre X?", um em cada hub do trio original.
+    id: "heading-sem-marca",
+    appliesTo: "heading",
+    pattern: /diar\.ia\.br|segundo a cobertura/i,
+    message:
+      "heading nomeia a publicação — ninguém digita o nome do veículo na pergunta. " +
+      "Pergunte o que o leitor pergunta e abra a resposta pela base de evidência " +
+      '(ex: "Nas 84 manchetes acompanhadas entre X e Y, ...").',
+  },
+  {
+    // #4930. `metaDescription` está no escopo de propósito: a #4914 isentou
+    // esse campo da regra de HEADING (marca ali é rótulo de documento, e é
+    // legítima), mas o defeito aqui é outro — a construção que gasta a
+    // abertura do trecho mais reaproveitado da página com o veículo.
+    id: "prosa-sem-publicacao-como-sujeito",
+    appliesTo: "prose",
+    pattern: /\ba diar\.ia\.br (cobriu|noticiou|publicou|registrou|acompanhou|destacou|passou a|nunca)\b/i,
+    message:
+      "a publicação está no lugar de sujeito de um verbo de cobertura — o fato vira predicado " +
+      "da cobertura. Ponha o fato no sujeito. Afirmação sobre o próprio arquivo " +
+      '("em 76 edições, o ritmo veio em surtos") é permitida e não casa esta regra.',
+  },
+  {
+    // #4930. Ligar dois fatos porque compartilharam uma edição é uma relação
+    // que não existe fora da newsletter — a edição é artefato do calendário
+    // de publicação, a data é o fato.
+    id: "prosa-sem-moldura-de-edicao",
+    appliesTo: "prose",
+    pattern: /n[ao] mesma edição|na edição de |uma edição inteira/i,
+    message:
+      "a edição está sendo usada como moldura organizadora. Use a DATA: dois fatos que " +
+      'saíram na mesma edição saíram "no mesmo dia", que é o que de fato os relaciona.',
+  },
+  {
+    // #4917. Parágrafo que diz "este hub" é incompleto lido isolado — e o
+    // JSON-LD reproduz respostas de FAQ com os links removidos
+    // (`stripMarkdownLinks`, geo-faq.ts), então o dêitico viaja sem resolução.
+    id: "prosa-sem-deixis",
+    appliesTo: "prose",
+    pattern: /\b(este|deste|neste) hub\b|\besta página\b/i,
+    message:
+      'dêixis não resolvida ("este hub" / "esta página"): nomeie a entidade e o intervalo. ' +
+      "O trecho precisa se bastar lido fora da página.",
+  },
+  {
+    // #4917 item 7 / #4915. Forma FROUXA obrigatória: a estrita
+    // (/seç(ão|ões) (acima|abaixo)/) perde "a seção sobre segurança acima",
+    // que é justamente a variante que o 4º hub usou nas 8 ocorrências dele.
+    id: "prosa-sem-ponteiro-de-secao",
+    appliesTo: "prose",
+    pattern: /seç(ão|ões)[^.]{0,60}\s(acima|abaixo)\b/i,
+    message:
+      'ponteiro para outro trecho ("seção acima/abaixo") — irresolvível: os assets não têm ' +
+      "nenhum href de âncora, e âncora foi descartada pela auditoria. Repita o fato no lugar.",
+  },
+];
+
 /**
  * Valida os invariantes de `HubContent` que a issue #4558 e o próprio
  * módulo documentam mas o TYPE não consegue expressar sozinho (contagem de
- * FAQ, formato de data, não-vazio de listas). Pure, devolve a lista de
+ * FAQ, formato de data, não-vazio de listas), MAIS o contrato de prosa da
+ * auditoria de GEO (`HUB_PROSE_RULES`, #4899). Pure, devolve a lista de
  * violações (vazia = válido) — nunca lança sozinha, quem chama decide.
- * Existe pra que um 2º/3º hub (decisão do editor: hubs coexistem, mais
- * temas virão) herde essas garantias automaticamente em vez de depender de
- * um teste hand-written por hub (achado do fleet review — hoje só
- * `anthropic-claude` tem essa cobertura via teste, não via estrutura).
+ * Existe pra que um hub novo (decisão do editor: hubs coexistem, mais temas
+ * virão) herde essas garantias automaticamente em vez de depender de um
+ * teste hand-written por hub.
  */
 export function validateHubContent(hub: HubContent): string[] {
   const errors: string[] = [];
@@ -250,6 +441,18 @@ export function validateHubContent(hub: HubContent): string[] {
   }
   if (hub.sections.length === 0) {
     errors.push("sections está vazio — hub sem nenhuma seção narrativa");
+  }
+  // Contrato de prosa (#4899). Roda por último: as violações acima são
+  // estruturais (o hub está malformado), estas são editoriais (o hub está
+  // formado mas escrito do jeito que a auditoria de GEO catalogou).
+  for (const { field, value, kind } of collectReaderFacingStrings(hub)) {
+    for (const rule of HUB_PROSE_RULES) {
+      if (rule.appliesTo !== kind) continue;
+      const hit = rule.pattern.exec(value);
+      if (hit) {
+        errors.push(`${field} viola ${rule.id}: "${hit[0]}" — ${rule.message}`);
+      }
+    }
   }
   return errors;
 }

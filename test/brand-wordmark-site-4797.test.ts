@@ -92,8 +92,13 @@ function minimalHub(introParagraph: string): HubContent {
 
 describe("renderHubPage — introParagraph ganha o wordmark (#4797)", () => {
   it("introParagraph com 'diar.ia.br' em prosa vira <strong>/<span> teal", () => {
-    const html = renderHubPage(minimalHub("Esta página resume o que a diar.ia.br cobriu sobre o tema."));
-    assert.match(html, new RegExp(`geo-intro">Esta página resume o que a ${WM.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} cobriu`));
+    // O fixture cita a marca SEM as construções que o contrato de prosa
+    // proíbe (#4899): a publicação como sujeito de verbo de cobertura e a
+    // dêixis "esta página". `renderHubPage` valida antes de renderizar, então
+    // o texto antigo ("Esta página resume o que a diar.ia.br cobriu…") passou
+    // a lançar. O que este teste garante é o wordmark, não a frase.
+    const html = renderHubPage(minimalHub("Em 76 edições da diar.ia.br, o tema apareceu 84 vezes."));
+    assert.match(html, new RegExp(`geo-intro">Em 76 edições da ${WM.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, o tema`));
   });
 });
 
