@@ -81,15 +81,25 @@ describe("wrapEmail — shell de marca co-brand Clarice × diar.ia.br (#2645)", 
     assert.ok(!html.includes("<img"), "sem asset de logo ainda — header deve ser textual, não <img> (decisão do editor 260701)");
   });
 
-  it("renderSocialFooter emite os 4 canais sociais configurados (Facebook/LinkedIn/Instagram/Threads)", () => {
+  it("renderSocialFooter emite os 6 canais sociais configurados, na ordem LinkedIn/Instagram/Threads/Facebook/X/YouTube (#4829)", () => {
     const html = renderSocialFooter();
-    for (const label of ["Facebook", "LinkedIn", "Instagram", "Threads"]) {
+    const labels = ["LinkedIn", "Instagram", "Threads", "Facebook", "X", "YouTube"];
+    for (const label of labels) {
       assert.ok(html.includes(label), `canal ${label} ausente no footer: ${html}`);
     }
-    assert.ok(html.includes("facebook.com/diar.ia.br"), "URL do Facebook ausente/incorreta");
+    // ordem: cada label aparece depois do anterior no HTML gerado
+    let lastIndex = -1;
+    for (const label of labels) {
+      const idx = html.indexOf(`>${label}<`);
+      assert.ok(idx > lastIndex, `canal ${label} fora de ordem no footer: ${html}`);
+      lastIndex = idx;
+    }
     assert.ok(html.includes("linkedin.com/company/diar.ia.br"), "URL do LinkedIn ausente/incorreta");
     assert.ok(html.includes("instagram.com/diar.ia.br"), "URL do Instagram ausente/incorreta");
     assert.ok(html.includes("threads.net/@diar.ia.br"), "URL do Threads ausente/incorreta");
+    assert.ok(html.includes("facebook.com/diar.ia.br"), "URL do Facebook ausente/incorreta");
+    assert.ok(html.includes("x.com/diariabr"), "URL do X ausente/incorreta");
+    assert.ok(html.includes("youtube.com/@diariabr"), "URL do YouTube ausente/incorreta");
   });
 
   it("wrapEmail NÃO inclui header co-brand nem footer social (removidos a pedido do editor 260703)", () => {
