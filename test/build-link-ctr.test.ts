@@ -7,10 +7,14 @@
  * G — isEditorial deve filtrar links de infra própria / utilitários
  *     (poll Workers, Google Meet, Creative Commons) que vazavam como "Outro".
  */
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { matchClick, isEditorial, classifyOrigin, postKey, shouldSkipPost, extractLinks } from "../scripts/build-link-ctr.ts";
-import { renderKicker } from "../scripts/lib/newsletter-render-html.ts";
+import { renderKicker, mdInlineToHtml } from "../scripts/lib/newsletter-render-html.ts";
+import { spawnNpx } from "./_helpers/spawn-npx.ts";
 
 describe("matchClick — soma variantes split do mesmo base_url (#1567 finding C)", () => {
   it("soma unique_verified/verified/unique de todas as rows que colapsam pro mesmo base", () => {
@@ -163,6 +167,115 @@ describe("extractLinks — sectionTitle reconhece o kicker <td> real do Beehiiv 
     assert.equal(links.length, 2);
     assert.equal(links[0].sectionTitle, "RADAR");
     assert.equal(links[1].sectionTitle, "NOTÍCIAS");
+  });
+});
+
+describe("extractLinks — <b> que embrulha <a href> não é heading (#4834)", () => {
+  it("repro literal da issue: link some quando embrulhado em <b>, mas passa direto sem <b>", () => {
+    // Antes do fix: extractLinks('<b><a href="...">t</a></b>') retornava [].
+    const semB = extractLinks('<a href="https://example.com/abc">t</a>');
+    assert.equal(semB.length, 1);
+    assert.equal(semB[0].baseUrl, "https://example.com/abc");
+
+    const comB = extractLinks('<b><a href="https://example.com/abc">t</a></b>');
+    assert.equal(comB.length, 1, "o link não pode sumir só por estar dentro de <b>");
+    assert.equal(comB[0].baseUrl, "https://example.com/abc");
+    assert.equal(comB[0].anchor, "t");
+  });
+
+  it("cenário real de produção: mdInlineToHtml('**[texto](url)**') gera <b><a>...</a></b> (o `**` roda DEPOIS da linkificação)", () => {
+    // Mecanismo real do bug (SORTEIO/PARA ENCERRAR, mdInlineToHtml): o regex de
+    // bold `**...**` roda por último sobre a string JÁ linkificada, então
+    // markdown bold em volta de um link markdown produz literalmente
+    // <b><a href="...">texto</a></b> — não é um caso sintético.
+    const html = mdInlineToHtml("Confira **[a novidade](https://exemplo.com/novidade)** hoje.");
+    assert.match(html, /<b><a[^>]*href="https:\/\/exemplo\.com\/novidade"[^>]*>a novidade<\/a><\/b>/);
+
+    const links = extractLinks(html);
+    assert.equal(links.length, 1, "o link bold-wrapped precisa ser extraído");
+    assert.equal(links[0].baseUrl, "https://exemplo.com/novidade");
+    assert.equal(links[0].anchor, "a novidade");
+  });
+
+  it("<h1><b><a>manchete</a></b></h1> (forma citada na issue): link extraído, section heading não vira o texto da manchete", () => {
+    const html = `
+      ${renderKicker("DESTAQUE")}
+      <h1><b><a href="https://exemplo.com/manchete">Manchete de destaque</a></b></h1>
+      <a href="https://exemplo.com/segundo-link">segundo link</a>
+    `;
+    const links = extractLinks(html);
+    assert.equal(links.length, 2);
+    assert.equal(links[0].baseUrl, "https://exemplo.com/manchete");
+    assert.equal(links[0].anchor, "Manchete de destaque");
+    // A seção continua "DESTAQUE" (do kicker) — o <b><a> não deveria ter
+    // sobrescrito currentSection com o texto da manchete.
+    assert.equal(links[0].sectionTitle, "DESTAQUE");
+    assert.equal(links[1].sectionTitle, "DESTAQUE");
+  });
+
+  it("<b> SEM <a> dentro continua funcionando como heading (comportamento pré-existente preservado)", () => {
+    const html = `
+      <b>Rodada De Investimento Bilionária</b>
+      <a href="https://exemplo.com/x">link</a>
+    `;
+    const links = extractLinks(html);
+    assert.equal(links.length, 1);
+    assert.equal(links[0].sectionTitle, "Rodada De Investimento Bilionária");
+  });
+
+  it("dois links bold-wrapped em sequência: ambos extraídos, dedup por baseUrl continua valendo", () => {
+    const html =
+      '<b><a href="https://exemplo.com/a">um</a></b>' +
+      '<b><a href="https://exemplo.com/a">um de novo</a></b>' + // mesmo baseUrl → dedup
+      '<b><a href="https://exemplo.com/b">dois</a></b>';
+    const links = extractLinks(html);
+    assert.equal(links.length, 2);
+    assert.deepEqual(links.map(l => l.baseUrl), ["https://exemplo.com/a", "https://exemplo.com/b"]);
+  });
+});
+
+describe("build-link-ctr CLI — ctr_pct fica vazio quando unique_opens=0 (#4834 item 2)", () => {
+  let tmpRoot: string;
+
+  before(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "link-ctr-open0-"));
+  });
+
+  after(() => {
+    try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it("post confirmado com unique_opens=0 grava ctr_pct='' (não '0.00' — denominador ausente, não taxa zero medida)", () => {
+    const dir = tmpRoot;
+    fs.mkdirSync(path.join(dir, "data", "beehiiv-cache", "posts"), { recursive: true });
+
+    const post = {
+      id: "p-sem-opens",
+      title: "Edição sem opens registrados",
+      status: "confirmed",
+      // publicado bem no passado, satisfaz o cutoff de estabilização de cliques
+      publish_date: Math.floor(Date.parse("2026-05-01T00:00:00Z") / 1000),
+      content: { free: { email: '<a href="https://exemplo.com/sem-opens">Matéria</a>' } },
+      stats: { email: { unique_opens: 0 }, clicks: [] },
+    };
+    fs.writeFileSync(
+      path.join(dir, "data", "beehiiv-cache", "posts", "p-sem-opens.json"),
+      JSON.stringify(post),
+      "utf8",
+    );
+
+    const script = path.resolve(import.meta.dirname, "..", "scripts", "build-link-ctr.ts");
+    const r = spawnNpx(["tsx", script], { cwd: dir, encoding: "utf8" });
+    assert.equal(r.status, 0, `esperado exit 0. stderr: ${r.stderr}`);
+
+    const csv = fs.readFileSync(path.join(dir, "data", "link-ctr-table.csv"), "utf8");
+    const lines = csv.trim().split("\n");
+    const header = lines[0].split(",");
+    const dataLine = lines.find(l => l.includes("sem-opens"));
+    assert.ok(dataLine, `linha do link não encontrada no CSV: ${csv}`);
+    const cells = dataLine!.split(",");
+    const ctrIdx = header.indexOf("ctr_pct");
+    assert.equal(cells[ctrIdx], "", "ctr_pct deve ficar vazio, não '0.00', quando unique_opens=0");
   });
 });
 
