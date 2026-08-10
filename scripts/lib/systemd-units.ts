@@ -14,6 +14,7 @@
  * @see scripts/lib/scheduled-tasks.ts (fonte dos dados traduzidos aqui)
  */
 
+import { BRT_TIMEZONE } from "./next-edition-date.ts";
 import type { ScheduledTaskDefinition, ScheduledTaskSchedule, WeekDay } from "./scheduled-tasks.ts";
 
 const WEEKDAY_ABBR: Record<WeekDay, string> = {
@@ -53,14 +54,38 @@ function pad2(n: number): string {
  * exata do primeiro `systemctl enable --now` (irrelevante pra tasks
  * idempotentes/best-effort como as 14 deste registro).
  */
+// Achado ao vivo (#4807, 260810): sem fuso explícito, o systemd interpreta
+// OnCalendar= no fuso do SISTEMA (Etc/UTC em predator) -- as horas do
+// registry são pensadas em BRT (mesma convenção do CLAUDE.md e dos .ps1
+// legados no Windows). Sem isso, Diaria-Clarice-Sync (registry: 08:30)
+// dispararia às 08:30 UTC = 05:30 BRT -- 30min ANTES do envio canônico das
+// 06:00 BRT, reintroduzindo em silêncio a MESMA regressão que motivou mudar
+// 03:40->08:30 no #2932. Mesmo problema bloquearia Diaria-Brevo-Diaria-
+// Evaluate (precisa rodar ANTES das 06:00 BRT -- a Brevo congela
+// destinatários no agendamento). scheduled-task-registration.test.ts não
+// pega isso: ele valida o registry (correto), a informação de fuso se perde
+// só aqui, na emissão do OnCalendar=.
+//
+// NÃO existe uma chave `Timezone=` separada em systemd.timer (achado ao
+// vivo, primeira tentativa: systemd 259 ignora silenciosamente com um
+// warning no journal, "Unknown key 'Timezone' in section [Timer]") -- o
+// fuso é um campo OPCIONAL anexado ao final do próprio valor do calendário
+// (systemd.time(7)): `OnCalendar=*-*-* HH:MM:00 America/Sao_Paulo`.
+// Verificado com `systemd-analyze calendar` antes de fixar. BRT_TIMEZONE
+// reusado de next-edition-date.ts -- não duplicar o literal.
+
 export function scheduleToOnCalendar(schedule: ScheduledTaskSchedule): string {
   switch (schedule.kind) {
     case "daily":
-      return `*-*-* ${pad2(schedule.hour)}:${pad2(schedule.minute)}:00`;
+      return `*-*-* ${pad2(schedule.hour)}:${pad2(schedule.minute)}:00 ${BRT_TIMEZONE}`;
     case "weekly":
-      return `${WEEKDAY_ABBR[schedule.dayOfWeek]} *-*-* ${pad2(schedule.hour)}:${pad2(schedule.minute)}:00`;
+      return `${WEEKDAY_ABBR[schedule.dayOfWeek]} *-*-* ${pad2(schedule.hour)}:${pad2(schedule.minute)}:00 ${BRT_TIMEZONE}`;
     case "interval":
-      return `*-*-* 0/${schedule.hours}:00:00`;
+      // Cadência "a cada Nh" (ver docstring da função abaixo) -- fuso não
+      // afeta o intervalo em si (Nh depois de meia-noite é Nh depois de
+      // meia-noite em qualquer fuso), mas anexar o mesmo BRT_TIMEZONE mantém
+      // a âncora de "meia-noite" consistente com BRT, não UTC.
+      return `*-*-* 0/${schedule.hours}:00:00 ${BRT_TIMEZONE}`;
     default: {
       const exhaustive: never = schedule;
       throw new Error(`schedule.kind desconhecido: ${JSON.stringify(exhaustive)}`);
@@ -108,6 +133,8 @@ export function buildSystemdUnitFiles(task: ScheduledTaskDefinition, repoRootAbs
     `Description=diar.ia.br: ${task.description} (timer)`,
     "",
     "[Timer]",
+    // Fuso já embutido no valor de onCalendar (ver scheduleToOnCalendar) --
+    // não existe uma chave `Timezone=` separada em systemd.timer.
     `OnCalendar=${onCalendar}`,
     // Equivalente ao StartWhenAvailable do Windows: se a máquina estava
     // desligada/dormindo no horário do disparo, roda assim que possível no

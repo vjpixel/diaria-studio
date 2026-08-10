@@ -18,5 +18,10 @@
   // RAIZ (knip.json não declara "workspaces" pra reconhecer o package.json próprio
   // do worker). Falso-positivo: a dep está corretamente listada em
   // workers/brevo-dashboard/package.json (devDependencies), só não no root.
-  "ignoreDependencies": ["@cloudflare/workers-types"]
+  "ignoreDependencies": ["@cloudflare/workers-types"],
+  // test/systemd-units.test.ts (#4807) faz shell-out condicional pro parser
+  // real do systemd (`systemd-analyze calendar`) pra validar o OnCalendar=
+  // gerado -- binário do sistema (Linux), nunca uma dependência npm; o teste
+  // já faz skip gracioso se ausente (CI/macOS/Windows).
+  "ignoreBinaries": ["systemd-analyze"]
 }
