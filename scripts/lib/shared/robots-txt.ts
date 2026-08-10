@@ -2,14 +2,42 @@
  * robots-txt.ts (#4546)
  *
  * `robots.txt` PRÓPRIO pros Workers de curadoria (cursos, livros, arquivo) —
- * substitui o robots.txt DEFAULT gerenciado pela Cloudflare, que bloqueia 9
- * crawlers via `Disallow: /` sem que ninguém tenha escolhido isso: é o
+ * roda ao lado do robots.txt DEFAULT gerenciado pela Cloudflare, que bloqueia
+ * 9 crawlers via `Disallow: /` sem que ninguém tenha escolhido isso: é o
  * comportamento nativo de qualquer Worker num domínio proxiado pela
  * Cloudflare (ver CLAUDE.md, princípio "Crawlers de IA ficam liberados nas
  * nossas superfícies"). Confirmado ao vivo em `cursos.diar.ia.br/robots.txt`
  * (#4546): `Disallow: /` pra Amazonbot, Applebot-Extended, Bytespider,
  * CCBot, ClaudeBot, CloudflareBrowserRenderingCrawler, Google-Extended,
  * GPTBot e meta-externalagent.
+ *
+ * **Correção (#4910, 10/08/2026): este robots.txt NÃO substitui o bloco
+ * gerenciado da Cloudflare — é ANEXADO depois dele, no mesmo arquivo
+ * servido.** Verificado ao vivo nos 6 Workers com host público: os 6
+ * respondem HTTP 200 e servem o delimitador `# BEGIN Cloudflare Managed
+ * content`, com 11 linhas `Disallow: /` no total, nesta ordem — as 9 do
+ * bloco gerenciado da Cloudflare vêm PRIMEIRO, as 2 deste módulo
+ * (`CURADORIA_BLOCKED_BOTS`, abaixo) vêm DEPOIS. Como um grupo
+ * `User-agent:` nomeado vence o curinga `*` por especificidade (RFC 9309),
+ * os 7 crawlers que o #4546 quis liberar (GPTBot, ClaudeBot, CCBot,
+ * Google-Extended, Bytespider, meta-externalagent, Applebot-Extended)
+ * continuam com `Disallow: /` vindo do bloco da Cloudflare — servir este
+ * arquivo próprio não desfaz isso; os dois blocos convivem, e o arquivo
+ * final chega a ter dois grupos `User-agent: *` com `Content-Signal`
+ * contraditório entre si (`ai-train=no` no da Cloudflare, `ai-train=yes`
+ * no deste módulo).
+ *
+ * Por que o efeito prático de #4546 não quebra mesmo assim: o objetivo
+ * daquela decisão nunca foi "destravar citação" — quem de fato governa
+ * recuperação/citação por assistente (OAI-SearchBot, Claude-SearchBot,
+ * PerplexityBot, Googlebot, Bingbot) não está bloqueado em nenhum dos dois
+ * blocos, então cai no `User-agent: *` com `Allow: /` e lê o conteúdo
+ * normalmente. O que de fato NÃO se concretiza é a intenção declarada
+ * sobre corpus de treino/Common Crawl pros 7 crawlers acima — bloqueio de
+ * plataforma, não deste código, que só um desligamento do robots.txt
+ * gerenciado nas configurações da zona Cloudflare resolve (ação de
+ * dashboard do editor, fora deste módulo; ver #4910 pra um smoke-test
+ * agendado que audita o arquivo SERVIDO, não só o que este módulo produz).
  *
  * Decisão do editor (#4546, comentário 03/ago): liberar os 7 crawlers de
  * assistente/treino nos subdomínios de curadoria, alinhando com o host

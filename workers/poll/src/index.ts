@@ -1569,10 +1569,15 @@ export async function handleImage(path: string, env: Env): Promise<Response> {
 /**
  * `robots.txt` PRÓPRIO pro domínio de marca `eia.diar.ia.br` — mesmo
  * mecanismo/racional de `workers/arquivo` (`renderCuradoriaRobotsTxt`,
- * `scripts/lib/shared/robots-txt.ts`, #4546): substitui o robots.txt DEFAULT
- * gerenciado pela Cloudflare, que bloqueava os 7 crawlers de assistente/
- * treino contra a decisão do editor de 03/ago (CLAUDE.md, "Crawlers de IA
- * ficam liberados nas nossas superfícies").
+ * `scripts/lib/shared/robots-txt.ts`, #4546). **Correção (#4910): este
+ * bloco NÃO substitui o robots.txt DEFAULT gerenciado pela Cloudflare — é
+ * ANEXADO depois dele no mesmo arquivo servido, e como grupo nomeado vence
+ * o curinga `*` (RFC 9309) os 7 crawlers de assistente/treino continuam
+ * bloqueados pelo bloco da Cloudflare independente deste código.** Ver a
+ * docstring completa em `scripts/lib/shared/robots-txt.ts` pro achado ao
+ * vivo e por que isso não quebra o objetivo de citação da decisão do
+ * editor de 03/ago (CLAUDE.md, "Crawlers de IA ficam liberados nas nossas
+ * superfícies").
  *
  * Sem `Sitemap:` — este Worker não tem `/sitemap.xml` próprio (jogo dinâmico
  * por edição, não índice de conteúdo estático); `renderCuradoriaRobotsTxt`
