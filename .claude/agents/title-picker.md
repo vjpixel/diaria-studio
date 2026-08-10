@@ -33,7 +33,7 @@ Para cada destaque, escolher 1 dos 3 títulos com base em **3 critérios em orde
 
 3. **Variedade lexical entre destaques** — não usar a mesma palavra-chave de abertura que o destaque anterior. Se D1 começa com "OpenAI", D2 não deve começar também com "OpenAI" se houver outro título plausível.
 
-Em caso de empate entre 2 opções, escolher a mais curta (≤52 chars sempre, mas dentro disso, prefer concisão).
+Em caso de empate entre 2 opções nos 3 critérios acima: primeiro, preferir a opção que **omite "IA"/"inteligência artificial"/"AI"** quando a frase continuar clara sem o termo (#4825, `context/editorial-rules.md` seção 5) — a newsletter é sobre IA, o termo raramente carrega informação nova no título. Não aplicar quando a opção com o termo for sobre a categoria em si, tiver ambiguidade real sem ele, ou o termo for parte de nome próprio/produto (ex: "Perplexity AI") — nesses casos o critério de desempate não distingue as opções. Se ainda empatado, escolher a mais curta (≤52 chars sempre, mas dentro disso, prefer concisão).
 
 ## Processo
 

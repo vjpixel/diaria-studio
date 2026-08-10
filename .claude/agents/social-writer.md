@@ -46,7 +46,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
    - Até 5 hashtags relevantes ao tema. Regras (#367): sempre incluir `#InteligenciaArtificial`; nunca usar `#Tecnologia` (genérica demais — substituir por hashtags específicas como `#MachineLearning`, `#Agentes`, `#Automacao`); hashtags em português quando possível. **As hashtags formam um bloco CONTÍGUO no final do texto** — uma ou mais linhas, só tokens `#hashtag` separados por espaço, sem texto misturado. Esse bloco é o delimitador determinístico que o publisher usa (`scripts/lib/social-cta-lines.ts`, `splitBodyAndTags`) pra saber onde injetar a linha de canal — SEMPRE entre o corpo editorial e as hashtags, nunca depois delas nem misturado no meio.
    - 600–900 caracteres no corpo editorial (sem contar hashtags).
    - Tom coloquial, frases curtas, sem jargão não explicado. Não repetir o mesmo hook entre os 3 destaques.
-   - Evitar "IA" e "inteligência artificial" sempre que possível — usar o sujeito concreto.
+   - **Evitar "IA"/"inteligência artificial"/"AI" sempre que possível — inclusive no hook (#4825).** Usar o sujeito concreto (empresa, modelo, produto) em vez da categoria. Exceções legítimas: o texto é sobre a categoria em si, ambiguidade real sem o termo, ou nome próprio/citação/nome de produto (ex: "Perplexity AI") — ver `context/editorial-rules.md` seção 5.
    - Zero emojis no hook; no máximo 1–2 emojis no corpo se adicionarem clareza (tolerância maior que LinkedIn/Facebook, mas não como decoração vazia).
 
    ### 3b. Post pessoal standalone de D1 (`## post_pixel`) — #1690
@@ -122,5 +122,5 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 - O arquivo temporário deve conter **apenas** os separadores `## d1`, `## d2`, `## d3`, `## post_pixel` e o conteúdo dos textos. Sem comentários HTML além do `char_count`/`destaque` opcionais, sem linhas `Post N —`, sem cabeçalhos internos de nenhum tipo, sem `# Social` embutido (só `merge-social-md.ts` escreve esse header) — qualquer linha além do separador e do texto aparecerá publicada.
 - Cada texto deve funcionar de forma independente — não referenciar os outros destaques.
 - Não repetir o mesmo hook entre os 3 textos genéricos.
-- Evitar "IA" e "inteligência artificial" sempre que possível — usar o sujeito concreto.
+- Evitar "IA"/"inteligência artificial"/"AI" sempre que possível — inclusive no hook (#4825) — usar o sujeito concreto. Exceções: ver §3a.
 - **NUNCA** escrever "assine grátis", "receba por e-mail", "cadastre-se", "inscreva-se", "link na bio", "segue @..." ou qualquer variante de CTA/menção de canal no texto genérico — viola o invariante channel-neutral (#3991).

@@ -61,7 +61,7 @@ Recebido pelo coordenador (não vem como arquivo):
 
      **[Título opção 3 — máx 52 chars](https://url-canonica)**
      ```
-     Todas 3 apontam pra mesma URL. Editor poda 2 no gate.
+     Todas 3 apontam pra mesma URL. Editor poda 2 no gate. **Evitar "IA"/"inteligência artificial"/"AI" no título sempre que a frase continuar clara sem o termo (#4825)** — nomeie o agente concreto (empresa, modelo, produto) em vez da categoria. Exceções legítimas: manchete sobre a categoria em si ("regulação de IA na UE"), ambiguidade real sem o termo, ou nome próprio/citação/nome de produto que já carrega "AI" (ex: "Perplexity AI"). Backstop: lint warning-only (`--check title-mentions-ia`), nunca bloqueia — a decisão é do editor.
 
    - **Body** (2-4 parágrafos curtos):
      - 3-4 parágrafos cobrindo: o quê, onde/quando, por quê, consequência concreta.
