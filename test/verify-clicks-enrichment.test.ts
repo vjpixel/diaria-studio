@@ -9,10 +9,14 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { resolve, join } from "node:path";
 import {
   verifyClicksApplied,
   extractManifestPostIds,
   findInvariantViolations,
+  makeFsCacheStatsReader,
   type CacheMetaReader,
   type CacheStatsReader,
 } from "../scripts/verify-clicks-enrichment.ts";
@@ -147,6 +151,62 @@ describe("findInvariantViolations (#4836)", () => {
       post_zero: { emailAggregate: 0, clicksLength: 0 },
     });
     assert.deepEqual(findInvariantViolations(["post_ok", "post_bad", "post_zero"], reader), ["post_bad"]);
+  });
+});
+
+describe("makeFsCacheStatsReader — cadeia de fallback do agregado (#4836)", () => {
+  function setup() {
+    const dir = mkdtempSync(join(tmpdir(), "verify-clicks-stats-"));
+    const postsDir = resolve(dir, "posts");
+    mkdirSync(postsDir, { recursive: true });
+    return postsDir;
+  }
+
+  it("prefere verified_clicks quando presente", () => {
+    const postsDir = setup();
+    writeFileSync(resolve(postsDir, "post_a.json"), JSON.stringify({
+      stats: { email: { verified_clicks: 30, unique_verified_clicks: 20, clicks: 50 }, clicks: [] },
+    }));
+    const reader = makeFsCacheStatsReader(postsDir);
+    assert.deepEqual(reader("post_a"), { emailAggregate: 30, clicksLength: 0 });
+  });
+
+  it("cai pra unique_verified_clicks quando verified_clicks ausente", () => {
+    const postsDir = setup();
+    writeFileSync(resolve(postsDir, "post_a.json"), JSON.stringify({
+      stats: { email: { unique_verified_clicks: 20, clicks: 50 }, clicks: [] },
+    }));
+    const reader = makeFsCacheStatsReader(postsDir);
+    assert.deepEqual(reader("post_a"), { emailAggregate: 20, clicksLength: 0 });
+  });
+
+  it("cai pro agregado bruto email.clicks quando nem verified nem unique_verified existem — mesma cadeia de identifyPostsNeedingClicks em beehiiv-sync.ts", () => {
+    const postsDir = setup();
+    writeFileSync(resolve(postsDir, "post_a.json"), JSON.stringify({
+      stats: { email: { clicks: 50 }, clicks: [] },
+    }));
+    const reader = makeFsCacheStatsReader(postsDir);
+    assert.deepEqual(reader("post_a"), { emailAggregate: 50, clicksLength: 0 });
+  });
+
+  it("cache sem nenhum campo de email → agregado 0, não violação", () => {
+    const postsDir = setup();
+    writeFileSync(resolve(postsDir, "post_a.json"), JSON.stringify({ stats: { clicks: [] } }));
+    const reader = makeFsCacheStatsReader(postsDir);
+    assert.deepEqual(reader("post_a"), { emailAggregate: 0, clicksLength: 0 });
+  });
+
+  it("post ausente do disco → null", () => {
+    const postsDir = setup();
+    const reader = makeFsCacheStatsReader(postsDir);
+    assert.equal(reader("post_never_synced"), null);
+  });
+
+  it("JSON corrompido → null, não lança", () => {
+    const postsDir = setup();
+    writeFileSync(resolve(postsDir, "post_a.json"), "{ not valid json");
+    const reader = makeFsCacheStatsReader(postsDir);
+    assert.equal(reader("post_a"), null);
   });
 });
 

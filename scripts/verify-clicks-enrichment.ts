@@ -105,7 +105,7 @@ export function makeFsCacheMetaReader(postsDir: string): CacheMetaReader {
  * mtime separadamente — o check de invariante não duplica esse sinal).
  */
 export interface ClickInvariantStats {
-  /** `stats.email.verified_clicks` preferido, fallback `unique_verified_clicks` — mesmo denominador de `click-cache-completeness.ts`. */
+  /** `stats.email.verified_clicks` preferido, fallback `unique_verified_clicks`, fallback bruto `clicks` — mesma cadeia de denominador de `beehiiv-sync.ts` (`identifyPostsNeedingClicks`) e `click-cache-completeness.ts`. */
   emailAggregate: number;
   clicksLength: number;
 }
@@ -119,11 +119,11 @@ export function makeFsCacheStatsReader(postsDir: string): CacheStatsReader {
     if (!existsSync(path)) return null;
     try {
       const cache = JSON.parse(readFileSync(path, "utf8")) as {
-        stats?: { clicks?: unknown[]; email?: { verified_clicks?: number; unique_verified_clicks?: number } };
+        stats?: { clicks?: unknown[]; email?: { clicks?: number; verified_clicks?: number; unique_verified_clicks?: number } };
       };
       const email = cache.stats?.email ?? {};
       return {
-        emailAggregate: email.verified_clicks ?? email.unique_verified_clicks ?? 0,
+        emailAggregate: email.verified_clicks ?? email.unique_verified_clicks ?? email.clicks ?? 0,
         clicksLength: Array.isArray(cache.stats?.clicks) ? (cache.stats!.clicks as unknown[]).length : 0,
       };
     } catch {
