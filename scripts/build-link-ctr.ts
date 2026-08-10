@@ -23,6 +23,8 @@ import { categorize, resolveNewsletterSection } from './lib/link-ctr-categorize.
 import { isMainModule } from "./lib/cli-args.ts";
 import { DIARIA_FACEBOOK_PAGE_SLUG, DIARIA_LINKEDIN_PAGE_SLUG, DIARIA_INSTAGRAM_SLUG } from './lib/canonical-urls.ts'; // #2695/#2790 fonte única
 import { MIN_AGE_DAYS_FOR_CLICKS } from './lib/shared/ctr-config.ts'; // #3146: fonte única do cutoff de estabilização (era duplicado local aqui)
+// #4836: guarda contra `--full` destrutivo — ver docstring do módulo.
+import { assessClickLoss, parseClickCountsFromCsv, formatClickLossAbort } from './lib/shared/ctr-rebuild-guard.ts';
 
 const POSTS_DIR = path.join(process.cwd(), 'data/beehiiv-cache/posts');
 const OUT_CSV = path.join(process.cwd(), 'data/link-ctr-table.csv');
@@ -546,6 +548,38 @@ function main() {
     r.unique_opens, r.verified_clicks, r.unique_verified_clicks, r.ctr_pct, r.category,
     r.section, r.origin
   ].map(csvEscape).join(','));
+
+  // #4836: guarda contra rebuild destrutivo. Só o modo bootstrap sobre um CSV
+  // EXISTENTE pode perder dado — o incremental apenas apenda. Compara o que
+  // seria escrito contra o que já está lá e recusa se alguma edição perder
+  // cliques; ver docstring de lib/shared/ctr-rebuild-guard.ts.
+  const allowClickLoss = process.argv.includes('--allow-click-loss');
+  if (isBootstrap && fs.existsSync(OUT_CSV)) {
+    const existingCsv = fs.readFileSync(OUT_CSV, 'utf8');
+    const report = assessClickLoss(parseClickCountsFromCsv(existingCsv), newRows);
+
+    if (!report.safe && !allowClickLoss) {
+      console.error(formatClickLossAbort(report));
+      process.exitCode = 3;
+      return;
+    }
+
+    // Backup ANTES de sobrescrever, mesmo quando a guarda passa: um rebuild
+    // seguro pelo critério de cliques ainda pode perder linhas por outro
+    // motivo, e o CSV não tem histórico (data/ é gitignored).
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupPath = `${OUT_CSV}.bak-${stamp}`;
+    fs.writeFileSync(backupPath, existingCsv, 'utf8');
+    console.log(`Backup do CSV anterior: ${backupPath}`);
+
+    if (!report.safe && allowClickLoss) {
+      const perdidos = -report.editionsLosing.reduce((s, e) => s + e.delta, 0);
+      console.warn(
+        `⚠️  --allow-click-loss ativo: seguindo com perda de ${perdidos} cliques ` +
+        `em ${report.editionsLosing.length} edições (backup acima).`
+      );
+    }
+  }
 
   const allLines = [header.join(','), ...existingLines, ...newCsvLines];
   fs.writeFileSync(OUT_CSV, allLines.join('\n'), 'utf8');
