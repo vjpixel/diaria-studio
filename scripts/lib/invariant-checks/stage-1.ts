@@ -348,6 +348,16 @@ function checkNoPlaceholderTitleHighlights(editionDir: string): InvariantViolati
  * `article.url` na construção do highlight (`buildHighlight()`) — este guard
  * é a rede de segurança determinística independente da causa raiz, cobrindo
  * qualquer caminho de escrita futuro que reintroduza o padrão.
+ *
+ * #4865: `runners_up[]` tem o MESMO shape nested (rank/score/bucket/url/
+ * article) e a mesma classe de bug pode chegar por um caminho diferente — é
+ * copiado (agora normalizado, ver `normalizeRunnerUp()` em
+ * `apply-gate-edits.ts`) direto da saída do `scorer-select` (LLM), sem passar
+ * por `findArticle()`/canonicalização como `highlights[]`. `swap-destaque.ts`
+ * promove itens de `runners_up[]` (e de outros buckets) diretamente pra
+ * `highlights[]` — sem essa cobertura, um item divergente em `runners_up[]`
+ * reintroduziria o bug do #4837 por um caminho que a invariante original não
+ * enxergava (self-review do #4864/#4837).
  */
 function isUrlArticleUrlMismatch(h: HighlightLike): boolean {
   const topUrl = h.url;
@@ -365,17 +375,23 @@ function checkUrlMatchesArticleUrl(editionDir: string): InvariantViolation[] {
     return []; // coberto por approved-parseable
   }
   const highlights = Array.isArray(data.highlights) ? data.highlights : [];
-  const offenders = highlights.filter(isUrlArticleUrlMismatch);
-  if (offenders.length === 0) return [];
-  const details = offenders.map((h) => `"${h.url}" ≠ "${h.article?.url}"`).join("; ");
+  const runnersUp = Array.isArray(data.runners_up) ? data.runners_up : [];
+  const highlightOffenders = highlights.filter(isUrlArticleUrlMismatch);
+  const runnerUpOffenders = runnersUp.filter(isUrlArticleUrlMismatch);
+  if (highlightOffenders.length === 0 && runnerUpOffenders.length === 0) return [];
+  const details = [
+    ...highlightOffenders.map((h) => `highlights[]: "${h.url}" ≠ "${h.article?.url}"`),
+    ...runnerUpOffenders.map((h) => `runners_up[]: "${h.url}" ≠ "${h.article?.url}"`),
+  ].join("; ");
   return [
     {
       rule: "url-matches-article-url",
       message:
-        `${offenders.length} highlight(s) com url !== article.url em highlights[] — ${details}. ` +
-        `As duas referências deveriam sempre apontar pra mesma URL do artigo — article.url é o valor ` +
-        `de fato publicado (writer/publish leem article, não o url top-level). Sempre bug de pipeline, ` +
-        `nunca decisão editorial legítima (#4837).`,
+        `${highlightOffenders.length + runnerUpOffenders.length} item(ns) com url !== article.url em ` +
+        `highlights[]/runners_up[] — ${details}. As duas referências deveriam sempre apontar pra mesma ` +
+        `URL do artigo — article.url é o valor de fato publicado/promovido (writer/publish/swap-destaque ` +
+        `leem article, não o url top-level). Sempre bug de pipeline, nunca decisão editorial legítima ` +
+        `(#4837, #4865).`,
       source_issue: "#4837",
       severity: "error",
       file: path,
@@ -428,7 +444,7 @@ export const STAGE_1_RULES: InvariantRule[] = [
   },
   {
     id: "url-matches-article-url",
-    description: "url === article.url em todo highlight de highlights[] (#4837)",
+    description: "url === article.url em todo item de highlights[] e runners_up[] (#4837, #4865)",
     source_issue: "#4837",
     stage: 1,
     run: checkUrlMatchesArticleUrl,

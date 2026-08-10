@@ -6,6 +6,7 @@ import {
   canonicalizeUrl,
   resolveDestaques,
   computeGateProvenance,
+  normalizeRunnerUp,
 } from "../scripts/apply-gate-edits.ts";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
@@ -705,6 +706,81 @@ describe("apply-gate-edits CLI --auto (#3459)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // #4865: mesmo gap do #4837, mas em runners_up[] — copiado verbatim de
+  // data.runners_up (saída do scorer-select), sem passar por findArticle()/
+  // buildHighlight(). Reproduz via --auto (runners_up não depende do MD).
+  it("#4865: runners_up[] com url !== article.url → normalizado no output (url derivado de article.url)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "apply-gate-edits-runners-up-url-"));
+    try {
+      const jsonPath = join(dir, "01-categorized.json");
+      const outPath = join(dir, "01-approved.json");
+
+      const categorized = {
+        ...makeCategorizedWithSixHighlights(),
+        // scorer-select gravou url != article.url no runner-up (mesma classe
+        // de bug do #4837, caminho diferente — sem MD, sem canonicalização).
+        runners_up: [
+          {
+            rank: 7,
+            score: 60,
+            bucket: "radar",
+            url: "https://runner.example/1?utm_source=newsletter",
+            article: { url: "https://runner.example/1", title: "Runner Title" },
+          },
+        ],
+      };
+      writeFileSync(jsonPath, JSON.stringify(categorized), "utf8");
+
+      const r = runCli(["--auto", "--json", jsonPath, "--out", outPath]);
+      assert.equal(r.status, 0, `CLI falhou: ${r.stderr}`);
+
+      const approved = JSON.parse(readFileSync(outPath, "utf8"));
+      assert.equal(approved.runners_up.length, 1);
+      const ru = approved.runners_up[0];
+      assert.equal(
+        ru.url,
+        ru.article.url,
+        `#4865 regressão: url (${ru.url}) deve ser idêntico a article.url (${ru.article.url})`,
+      );
+      assert.equal(ru.article.url, "https://runner.example/1");
+      assert.equal(ru.url, "https://runner.example/1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("normalizeRunnerUp (#4865)", () => {
+  it("deriva url de article.url quando os dois divergem", () => {
+    const item = {
+      rank: 7,
+      score: 60,
+      bucket: "radar",
+      url: "https://runner.example/1?utm_source=newsletter",
+      article: { url: "https://runner.example/1", title: "Runner Title" },
+    };
+    const out = normalizeRunnerUp(item);
+    assert.equal(out.url, "https://runner.example/1");
+    assert.equal(out.article!.url, "https://runner.example/1");
+  });
+
+  it("no-op quando url já === article.url", () => {
+    const item = {
+      rank: 7,
+      url: "https://runner.example/1",
+      article: { url: "https://runner.example/1", title: "Runner Title" },
+    };
+    const out = normalizeRunnerUp(item);
+    assert.equal(out.url, "https://runner.example/1");
+  });
+
+  it("no-op quando article ausente (shape flat, sem nested article)", () => {
+    const item = { rank: 7, url: "https://runner.example/1" };
+    const out = normalizeRunnerUp(item);
+    assert.equal(out.url, "https://runner.example/1");
+    assert.equal(out.article, undefined);
   });
 });
 

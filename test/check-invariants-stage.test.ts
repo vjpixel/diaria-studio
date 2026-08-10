@@ -719,6 +719,67 @@ describe("Stage 1 invariants", () => {
     assert.equal(v.length, 0);
     rmSync(fixture, { recursive: true, force: true });
   });
+
+  // --- #4865: mesma checagem também cobre runners_up[] ---
+
+  it("url-matches-article-url falha (error) quando url e article.url divergem em runners_up[]", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          { bucket: "radar", url: "https://a.com", article: { url: "https://a.com", title: "A" } },
+        ],
+        runners_up: [
+          {
+            bucket: "radar",
+            url: "https://runner.example/1?utm_source=newsletter",
+            article: { url: "https://runner.example/1", title: "Runner" },
+          },
+        ],
+      }),
+    );
+    const v = checkUrlMatchesArticleUrl(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "url-matches-article-url");
+    assert.equal(v[0].severity, "error");
+    assert.match(v[0].message, /runners_up/);
+    assert.match(v[0].message, /utm_source=newsletter/);
+    assert.match(v[0].message, /runner\.example\/1/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("url-matches-article-url passa quando runners_up[] tem url === article.url", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [],
+        runners_up: [
+          { bucket: "radar", url: "https://runner.example/1", article: { url: "https://runner.example/1" } },
+        ],
+      }),
+    );
+    const v = checkUrlMatchesArticleUrl(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("url-matches-article-url reporta highlights[] E runners_up[] juntos quando ambos divergem", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          { bucket: "radar", url: "https://a.com?x=1", article: { url: "https://a.com", title: "A" } },
+        ],
+        runners_up: [
+          { bucket: "radar", url: "https://b.com?x=1", article: { url: "https://b.com", title: "B" } },
+        ],
+      }),
+    );
+    const v = checkUrlMatchesArticleUrl(fixture);
+    assert.equal(v.length, 1, "1 violation agregada, não 1 por item");
+    assert.match(v[0].message, /2 item/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
 });
 
 describe("Stage 2 invariants", () => {
