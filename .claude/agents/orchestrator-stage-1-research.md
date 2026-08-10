@@ -216,7 +216,15 @@ npx tsx scripts/record-agent-costs.ts --edition-dir {EDITION_DIR}/ --edition {AA
 ```
 Persiste breakdown por agent_type em `_internal/cost.json` — complementa o total do stage já capturado em `stage-status.json` (#3441), que não quebra por agente. Falha não-bloqueante (logar warn e seguir).
 
-Artigos de researchers com `status != ok` **não entram** na lista agregada (mas a saúde fica registrada).
+### 1g-ter. Montar o pool inicial (`tmp-articles-raw.json`) — script, não manual (#4955)
+
+**⛔ NUNCA montar `tmp-articles-raw.json` manualmente (retype campo a campo)** — causa raiz do #4955, [histórico](../../docs/orchestrator-stage-1-research-historia.md#4955-summary-sumindo-do-pool).
+```bash
+npx tsx scripts/assemble-research-pool.ts \
+  --runs {EDITION_DIR}/_internal/researcher-results.json \
+  --out {EDITION_DIR}/_internal/tmp-articles-raw.json
+```
+Achata `articles[]` de runs `outcome`/`status` "ok"/"empty" (`fail`/`timeout` fora), preservando TODOS os campos verbatim (inclusive `summary`) + garante `source` presente. Merge-safe (URL já em `--out` não é sobrescrita). Output: `{ runs_total, runs_ok, articles_from_runs, already_in_pool, injected, total_pool_size }`.
 
 ### 1g-bis. Carry-over de candidatos não-selecionados (#655)
 

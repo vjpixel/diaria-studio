@@ -70,6 +70,17 @@ Edição 260727: D2 apontava pro Tecnoblog enquanto o anúncio oficial da
 Anthropic (score 72) estava no RADAR, a um bucket de distância — passou
 batido pelos guards existentes.
 
+### 4955 summary sumindo do pool
+
+Edição 260811 ao vivo: 9 de 10 artigos chegaram ao Stage 4 sem `summary`,
+bloqueando o gate (`secondary-items-have-summary`). O campo existia em
+`researcher-results.json` mas já estava ausente no PRIMEIRO snapshot do pool
+(`tmp-articles-raw.json`) — a montagem era um passo implícito do orchestrator
+(LLM), sem schema explícito, o que permitiu reconstrução manual do artigo
+campo a campo em vez de repasse verbatim. Mesmo racional de
+`assemble-scored.ts` (#1611/#720): assemblar em TS evita pedir pro agent
+copiar array grande verbatim.
+
 ### 4b 4678 caso real
 
 260806: item resgatado com `category: "lancamento"` fixo era na verdade
