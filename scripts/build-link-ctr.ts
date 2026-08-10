@@ -23,6 +23,8 @@ import { categorize, resolveNewsletterSection } from './lib/link-ctr-categorize.
 import { isMainModule } from "./lib/cli-args.ts";
 import { DIARIA_FACEBOOK_PAGE_SLUG, DIARIA_LINKEDIN_PAGE_SLUG, DIARIA_INSTAGRAM_SLUG } from './lib/canonical-urls.ts'; // #2695/#2790 fonte única
 import { MIN_AGE_DAYS_FOR_CLICKS } from './lib/shared/ctr-config.ts'; // #3146: fonte única do cutoff de estabilização (era duplicado local aqui)
+// #4836 item 3: distingue "nunca tentei buscar clicks" de "tentei e confirmei zero" — ver docstring do módulo.
+import { resolveEnrichmentState, type EnrichmentState } from './lib/shared/enrichment-state.ts';
 // #4836: guarda contra reescrita destrutiva do CSV — ver docstring do módulo.
 import {
   assessClickLoss,
@@ -438,6 +440,10 @@ interface Row {
   // Vídeo/Outro/''), derivada de section_title via resolveNewsletterSection().
   section: string;
   origin: 'BR' | 'INT';
+  // #4836 item 3: estado de enrichment do POST inteiro (repetido em cada link
+  // dele) — `never_enriched` sinaliza que verified_clicks/unique_verified_clicks
+  // desta linha são dado AUSENTE, não um zero medido. Ver enrichment-state.ts.
+  enrichment_state: EnrichmentState;
 }
 
 function main() {
@@ -450,7 +456,8 @@ function main() {
     'date', 'post_title', 'section_title', 'anchor', 'base_url', 'domain',
     'unique_opens', 'verified_clicks', 'unique_verified_clicks', 'ctr_pct', 'category',
     'section', // #3145
-    'origin'
+    'origin',
+    'enrichment_state', // #4836 item 3
   ];
 
   // Incremental: read existing CSV to find the most recent date already processed
@@ -553,6 +560,10 @@ function main() {
     }
     const uniqueOpens = post.stats?.email?.unique_opens ?? 0;
     const clicks = post.stats?.clicks ?? [];
+    // #4836 item 3: `never_enriched` significa que nenhuma tentativa de
+    // buscar per-link clicks rodou pra este post — verified_clicks/
+    // unique_verified_clicks abaixo são dado AUSENTE, não zero medido.
+    const enrichmentState = resolveEnrichmentState(post.stats?.enrichment_state, clicks.length);
 
     const html = post.content?.free?.email ?? post.content?.free?.web ?? '';
     if (!html) { skipped++; continue; }
@@ -566,7 +577,10 @@ function main() {
       // indistinguíveis de um link real com CTR zero. Downstream já trata
       // célula vazia como null e não como 0 (build-diaria-dashboard-data.ts,
       // "célula ctr_pct em branco NÃO é 0% medido").
-      const ctr = uniqueOpens > 0
+      // #4836 item 3: mesmo tratamento quando o post inteiro nunca teve
+      // clicks buscados — o numerador é tão ausente quanto o denominador
+      // no caso unique_opens=0 acima.
+      const ctr = uniqueOpens > 0 && enrichmentState !== 'never_enriched'
         ? ((clickStat.unique_verified_clicks / uniqueOpens) * 100).toFixed(2)
         : '';
 
@@ -590,6 +604,7 @@ function main() {
         // #1567 finding B: NÃO incluir `title` (manchete do post) — ele vazava o
         // ângulo BR do lead pra todos os links. Origem vem da evidência por-link + domínio.
         origin: classifyOrigin(link.anchor + ' ' + link.sectionTitle + ' ' + link.context, domain),
+        enrichment_state: enrichmentState, // #4836 item 3
       });
     }
 
@@ -600,7 +615,7 @@ function main() {
   const newCsvLines = newRows.map(r => [
     r.date, r.post_title, r.section_title, r.anchor, r.base_url, r.domain,
     r.unique_opens, r.verified_clicks, r.unique_verified_clicks, r.ctr_pct, r.category,
-    r.section, r.origin
+    r.section, r.origin, r.enrichment_state
   ].map(csvEscape).join(','));
 
   // #4836: guarda contra rebuild destrutivo. Só o modo bootstrap sobre um CSV
@@ -697,11 +712,20 @@ function main() {
   // Summary stats for new rows only
   if (newRows.length > 0) {
     const byCategory: Record<string, { count: number; clicks: number; opens: number }> = {};
+    let neverEnrichedSkipped = 0;
     for (const r of newRows) {
+      // #4836 item 3: link de post `never_enriched` não entra na média de CTR
+      // por categoria — o numerador é dado AUSENTE, não zero medido. Incluí-lo
+      // como zero é exatamente o bug que este campo existe pra evitar (um post
+      // nunca enriquecido puxaria a média pra baixo como se tivesse CTR real).
+      if (r.enrichment_state === 'never_enriched') { neverEnrichedSkipped++; continue; }
       if (!byCategory[r.category]) byCategory[r.category] = { count: 0, clicks: 0, opens: 0 };
       byCategory[r.category].count++;
       byCategory[r.category].clicks += r.unique_verified_clicks;
       byCategory[r.category].opens += r.unique_opens;
+    }
+    if (neverEnrichedSkipped > 0) {
+      console.log(`\n  (${neverEnrichedSkipped} link(s) de post(s) never_enriched excluído(s) da média de CTR por categoria — dado ausente, não zero)`);
     }
 
     console.log('\nNovas links por categoria:');

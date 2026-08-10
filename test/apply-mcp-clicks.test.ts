@@ -229,3 +229,71 @@ describe("applyClicks — guard REPLACE-vazio (#4836)", () => {
     assert.equal(result.after_count, 1, "clique existente preservado, nada novo pra somar");
   });
 });
+
+describe("applyClicks — enrichment_state (#4836 item 3)", () => {
+  function setup() {
+    const dir = mkdtempSync(join(tmpdir(), "apply-mcp-clicks-enrichment-"));
+    const postsDir = resolve(dir, "posts");
+    mkdirSync(postsDir, { recursive: true });
+    return { dir, postsDir };
+  }
+
+  it("payload não-vazio → grava enrichment_state=enriched_n", () => {
+    const { postsDir } = setup();
+    const postId = "post_enrich_001";
+    const cachePath = resolve(postsDir, `${postId}.json`);
+    writeFileSync(cachePath, JSON.stringify({ id: postId, stats: { clicks: [] } }));
+
+    const result = applyClicks(
+      JSON.stringify({ clicks: [{ url: "https://a.com/", email: { total_clicked_verified: 3 } }] }),
+      { postId, append: false, postsDir },
+    );
+    assert.equal(result.enrichment_state, "enriched_n");
+
+    const written = JSON.parse(readFileSync(cachePath, "utf8"));
+    assert.equal(written.stats.enrichment_state, "enriched_n");
+  });
+
+  it("payload vazio sobre cache já vazio → grava enrichment_state=enriched_zero (tentativa real, resultado confirmado)", () => {
+    const { postsDir } = setup();
+    const postId = "post_enrich_002";
+    const cachePath = resolve(postsDir, `${postId}.json`);
+    // Cache nasce sem o campo (legado) — a chamada abaixo é a 1ª tentativa real.
+    writeFileSync(cachePath, JSON.stringify({ id: postId, stats: { clicks: [] } }));
+
+    const result = applyClicks('{"clicks":[]}', { postId, append: false, postsDir });
+    assert.equal(result.enrichment_state, "enriched_zero");
+
+    const written = JSON.parse(readFileSync(cachePath, "utf8"));
+    assert.equal(written.stats.enrichment_state, "enriched_zero");
+  });
+
+  it("--allow-empty-replace sobre cache não-vazio → enrichment_state cai pra enriched_zero (resultado confirmado desta tentativa, não herda o rótulo anterior)", () => {
+    const { postsDir } = setup();
+    const postId = "post_enrich_003";
+    const cachePath = resolve(postsDir, `${postId}.json`);
+    writeFileSync(cachePath, JSON.stringify({
+      id: postId,
+      stats: { clicks: [{ url: "https://old.com/", email: { verified_clicks: 6 } }], enrichment_state: "enriched_n" },
+    }));
+
+    const result = applyClicks('{"clicks":[]}', { postId, append: false, postsDir, allowEmptyReplace: true });
+    assert.equal(result.enrichment_state, "enriched_zero");
+
+    const written = JSON.parse(readFileSync(cachePath, "utf8"));
+    assert.equal(written.stats.enrichment_state, "enriched_zero");
+  });
+
+  it("--append com resultado final não-vazio → enriched_n mesmo que o payload incoming estivesse vazio", () => {
+    const { postsDir } = setup();
+    const postId = "post_enrich_004";
+    const cachePath = resolve(postsDir, `${postId}.json`);
+    writeFileSync(cachePath, JSON.stringify({
+      id: postId,
+      stats: { clicks: [{ url: "https://a.com/", email: { verified_clicks: 6 } }] },
+    }));
+
+    const result = applyClicks('{"clicks":[]}', { postId, append: true, postsDir });
+    assert.equal(result.enrichment_state, "enriched_n", "array final não-vazio (preservado) → enriched_n");
+  });
+});
