@@ -569,7 +569,7 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     assert.match(body, /<h1>Anthropic e Claude/);
   });
 
-  it("GET /temas/{slug} → Last-Modified (do contentDate do hub) e ETag (#4909)", async () => {
+  it("GET /temas/{slug} → Last-Modified (do updatedDate do hub) e ETag (#4909)", async () => {
     globalThis.fetch = (async () => {
       throw new Error("/temas/{slug} não deveria depender de rede");
     }) as unknown as typeof fetch;
@@ -578,7 +578,7 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     assert.equal(res.status, 200);
     const lastMod = res.headers.get("Last-Modified");
     assert.ok(lastMod, "esperava header Last-Modified");
-    // Deriva do MESMO contentDate exposto em HUB_LASTMOD — nunca um valor
+    // Deriva do MESMO updatedDate exposto em HUB_LASTMOD — nunca um valor
     // divergente/inventado à parte.
     assert.equal(new Date(lastMod!).toISOString().slice(0, 10), HUB_LASTMOD["anthropic-claude"]);
     const etag = res.headers.get("ETag");
@@ -627,7 +627,7 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     assert.match(body, /<loc>https:\/\/arquivo\.diar\.ia\.br\/temas\/anthropic-claude<\/loc>/);
   });
 
-  it("GET /sitemap.xml — cada <url> de hub traz <lastmod> com o contentDate do hub (#4909)", async () => {
+  it("GET /sitemap.xml — cada <url> de hub traz <lastmod> com o updatedDate do hub (#4909)", async () => {
     globalThis.fetch = (async () => {
       throw new Error("/sitemap.xml não deveria depender do sitemap remoto");
     }) as unknown as typeof fetch;

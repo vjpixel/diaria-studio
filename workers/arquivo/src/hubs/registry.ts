@@ -24,12 +24,13 @@ export const HUB_REGISTRY: Record<string, string> = {
 };
 
 /**
- * slug → `contentDate` (`YYYY-MM-DD`) do hub — mesmo valor que já alimenta o
- * JSON-LD `dateModified`/`dateModified` de cada hub (`hub-page.ts`), agora
- * também consumido pelo Worker pra `<lastmod>` do sitemap e pelo header
- * `Last-Modified` de `GET /temas/{slug}` (#4909). Vem de graça de cada
- * `*.generated.ts` — nenhum registro manual novo além da linha de import
- * acima (mesma fronteira de `HUB_REGISTRY`).
+ * slug → `updatedDate` (`YYYY-MM-DD`) do hub (#4911) — mesmo valor que já
+ * alimenta o JSON-LD `dateModified` de cada hub (`hub-page.ts`; NÃO
+ * `publishedDate`, que alimenta `datePublished` — `<lastmod>`/`Last-Modified`
+ * descrevem quando o conteúdo mudou), agora também consumido pelo Worker pra
+ * `<lastmod>` do sitemap e pelo header `Last-Modified` de `GET /temas/{slug}`
+ * (#4909). Vem de graça de cada `*.generated.ts` — nenhum registro manual
+ * novo além da linha de import acima (mesma fronteira de `HUB_REGISTRY`).
  */
 export const HUB_LASTMOD: Record<string, string> = {
   "anthropic-claude": HUB_LASTMOD_ANTHROPIC_CLAUDE,
