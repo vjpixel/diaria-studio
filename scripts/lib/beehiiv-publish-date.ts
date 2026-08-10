@@ -18,9 +18,10 @@
  * só sai do editor (Gmail pessoal/memória, issue #4796 passo 1).
  * `beehiiv-publish-date-overrides.json` guarda a correção `slug →
  * "YYYY-MM-DD"` (aninhado dentro da chave `"overrides"`), consultada ANTES
- * de cair no `publish_date` bruto. O arquivo nasce VAZIO (aguardando as 6
- * datas reais) — popular uma entrada não muda nenhuma outra edição, só
- * o(s) slug(s) presente(s) nele.
+ * de cair no `publish_date` bruto. As 6 datas reais foram derivadas em
+ * 260810 da caixa de e-mail (Gmail, ver docstring do próprio JSON) e já
+ * estão populadas — popular/alterar uma entrada não muda nenhuma outra
+ * edição, só o(s) slug(s) presente(s) nele.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
