@@ -19,6 +19,7 @@
 import {
   APROFUNDE_HEADER_RE,
   APROFUNDE_ITEM_RE,
+  HUB_LINK_HEADER_RE,
 } from "../../extract-destaques.ts";
 
 const DESTAQUE_HEADER_RE = /^(?:\*\*)?DESTAQUE\s+([123])\s*\|/;
@@ -83,6 +84,15 @@ export function checkAprofundeFormat(md: string): AprofundeFormatReport {
 
     if (WHY_RE.test(t)) {
       sawWhy = true;
+      continue;
+    }
+
+    // #4907: "Saiba mais:" (link contextual de hub temático) fecha um bloco
+    // Aprofunde aberto — sem isso, a linha do link de hub seria avaliada (e
+    // rejeitada) como item malformado do Aprofunde quando os dois coexistem
+    // no mesmo destaque.
+    if (HUB_LINK_HEADER_RE.test(t)) {
+      closeBlock();
       continue;
     }
 

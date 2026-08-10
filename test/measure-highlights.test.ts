@@ -314,6 +314,78 @@ Aprofunde:
       `com Aprofunde (${cCom}) deve igualar sem Aprofunde (${cSem}) — bloco excluído do char-count`,
     );
   });
+
+  it("#4907: bloco 'Saiba mais:' (link contextual de hub) não conta no char-limit — mede igual sem ele", () => {
+    const semHubLink = `DESTAQUE 1 | SEGURANÇA
+Título do destaque.
+
+Corpo do destaque com algum texto pra medir o tamanho real.
+
+Por que isso importa:
+
+Parágrafo de impacto.
+
+---
+`;
+    const comHubLink = `DESTAQUE 1 | SEGURANÇA
+Título do destaque.
+
+Corpo do destaque com algum texto pra medir o tamanho real.
+
+Por que isso importa:
+
+Parágrafo de impacto.
+
+Saiba mais:
+
+[Anthropic e Claude](https://arquivo.diar.ia.br/temas/anthropic-claude?utm_source=newsletter&utm_medium=email&utm_campaign=hub-anthropic-claude-contextual)
+
+---
+`;
+    const cSem = parseHighlights(semHubLink).highlights[0].chars;
+    const cCom = parseHighlights(comHubLink).highlights[0].chars;
+    assert.equal(
+      cCom,
+      cSem,
+      `com hub link (${cCom}) deve igualar sem hub link (${cSem}) — bloco excluído do char-count`,
+    );
+  });
+
+  it("#4907: bloco 'Saiba mais:' DEPOIS de Aprofunde não conta no char-limit (os dois coexistindo)", () => {
+    const comAmbos = `DESTAQUE 1 | SEGURANÇA
+Título do destaque.
+
+Corpo do destaque com algum texto pra medir o tamanho real.
+
+Por que isso importa:
+
+Parágrafo de impacto.
+
+Aprofunde:
+
+* [Título do artigo A](https://a.com/1) - Fonte A
+
+Saiba mais:
+
+[Anthropic e Claude](https://arquivo.diar.ia.br/temas/anthropic-claude)
+
+---
+`;
+    const semNenhum = `DESTAQUE 1 | SEGURANÇA
+Título do destaque.
+
+Corpo do destaque com algum texto pra medir o tamanho real.
+
+Por que isso importa:
+
+Parágrafo de impacto.
+
+---
+`;
+    const cCom = parseHighlights(comAmbos).highlights[0].chars;
+    const cSem = parseHighlights(semNenhum).highlights[0].chars;
+    assert.equal(cCom, cSem, `com Aprofunde+hub link (${cCom}) deve igualar sem nenhum dos dois (${cSem})`);
+  });
 });
 
 describe("flagOutOfRange — warnings out-of-range (#739)", () => {

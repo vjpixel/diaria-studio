@@ -46,6 +46,7 @@ import {
   writeSnippetBodyHashManifest,
 } from "./lib/lint-checks/snippet-staleness.ts"; // #4150: grava hash do corpo pós-cabeçalho dos snippets usados, pro guard de staleness distinguir edição de metadado de edição de conteúdo
 import { resolveBoxesForEdition } from "./select-boxes-by-clicks.ts"; // #4626: seleção automática de boxes 1/2/3 por cliques+tendência+anti-repetição — só afeta main() (CLI), stitchNewsletter() em si permanece pura/sem I/O de auto-seleção
+import { matchEditionHub, extractBoldLinkTitles } from "./lib/hub-match.ts"; // #4907: link contextual pro hub temático quando as manchetes do dia casam HUB_KEYWORD_PATTERNS
 
 interface ArticleLike {
   url?: string;
@@ -629,6 +630,23 @@ export function stitchNewsletter(input: StitchInput): string {
     ? loadDivulgacaoSnippet(boxesCfg.slot0)
     : null;
 
+  // #4907: link contextual pro hub temático — calculado a partir das opções
+  // de título dos destaques ORIGINAIS (d1/d2/d3, pré-injeção), depois de toda
+  // a detecção de box de divulgação acima (que já rodou sobre esses mesmos
+  // d1/d2/d3 e não deve enxergar o link injetado). Aplicado só na montagem
+  // final de `parts` abaixo, via d1Final/d2Final/d3Final — ver
+  // `scripts/lib/hub-match.ts` pra regra de match/ambiguidade.
+  const hubMatch = matchEditionHub(
+    (d3 !== null ? [d1, d2, d3] : [d1, d2]).map(extractBoldLinkTitles),
+  );
+  function withHubLink(draft: string, idx: number): string {
+    if (!hubMatch || hubMatch.destaqueIndex !== idx) return draft;
+    return `${draft}\n\nSaiba mais:\n\n[${hubMatch.label}](${hubMatch.url})`;
+  }
+  const d1Final = withHubLink(d1, 0);
+  const d2Final = withHubLink(d2, 1);
+  const d3Final = d3 !== null ? withHubLink(d3, 2) : null;
+
   const parts: string[] = [
     coverageLine,
     "",
@@ -651,7 +669,7 @@ export function stitchNewsletter(input: StitchInput): string {
   parts.push(
     "---",
     "",
-    d1,
+    d1Final,
     "",
     "---",
     "",
@@ -660,7 +678,7 @@ export function stitchNewsletter(input: StitchInput): string {
     parts.push(slot1Box, "", "---", "");
   }
   parts.push(
-    d2,
+    d2Final,
     "",
     "---",
     "",
@@ -669,9 +687,9 @@ export function stitchNewsletter(input: StitchInput): string {
     parts.push(slot2Box, "", "---", "");
   }
   // #2343: D3 is optional. For 2-destaque editions, omit the D3 block entirely.
-  if (d3 !== null) {
+  if (d3Final !== null) {
     parts.push(
-      d3,
+      d3Final,
       "",
       "---",
       "",

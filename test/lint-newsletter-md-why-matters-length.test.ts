@@ -31,7 +31,7 @@ function makeDestaqueMd(
   num: number,
   category: string,
   whyChars: number,
-  opts?: { aprofunde?: boolean; multiSentence?: boolean },
+  opts?: { aprofunde?: boolean; multiSentence?: boolean; hubLink?: boolean },
 ): string {
   let why: string;
   if (opts?.multiSentence) {
@@ -61,6 +61,14 @@ function makeDestaqueMd(
       "Aprofunde:",
       "",
       `* [Fonte extra](https://example.com/${num}/extra) - Veículo X`,
+    );
+  }
+  if (opts?.hubLink) {
+    lines.push(
+      "",
+      "Saiba mais:",
+      "",
+      `[Anthropic e Claude](https://arquivo.diar.ia.br/temas/anthropic-claude?utm_source=newsletter)`,
     );
   }
   lines.push("");
@@ -129,6 +137,22 @@ describe("checkWhyMattersLength (#3993) — helper puro", () => {
     const md = makeDestaqueMd(1, "PRODUTO", 220, { aprofunde: true });
     const r = checkWhyMattersLength(md);
     assert.equal(r.highlights[0].chars, 220, "Aprofunde vazou pra contagem do why");
+    assert.equal(r.ok, true);
+  });
+
+  it("bloco 'Saiba mais:' (link contextual de hub, #4907) logo após o why NÃO conta na medição", () => {
+    // Mesma lógica de proteção do teste do Aprofunde acima — se o link de
+    // hub vazasse pra contagem, o destaque falharia por excesso.
+    const md = makeDestaqueMd(1, "PRODUTO", 220, { hubLink: true });
+    const r = checkWhyMattersLength(md);
+    assert.equal(r.highlights[0].chars, 220, "link de hub vazou pra contagem do why");
+    assert.equal(r.ok, true);
+  });
+
+  it("Aprofunde + 'Saiba mais:' coexistindo: nenhum dos dois conta na medição", () => {
+    const md = makeDestaqueMd(1, "PRODUTO", 220, { aprofunde: true, hubLink: true });
+    const r = checkWhyMattersLength(md);
+    assert.equal(r.highlights[0].chars, 220);
     assert.equal(r.ok, true);
   });
 

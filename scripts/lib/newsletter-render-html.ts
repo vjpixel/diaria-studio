@@ -32,7 +32,7 @@ import { EIA_ARCHIVE_UTM, WHATSAPP_SHARE_UTM } from "./shared/utm-registry.ts"; 
 import { SOCIAL_INVITE } from "./shared/encerramento-snippet.ts"; // #4413: convite social fixo — detecção do CTA box não depende mais só de prefixo hardcoded
 import { VOTE_TOKEN_DOMAIN } from "./shared/poll-token.ts"; // #4487: domínio reservado do token opaco de voto
 import { deriveEditionUrl, appendUtmToEditionUrl } from "./edition-url.ts"; // #4570: bloco WhatsApp aponta pra URL da edição (seoSlug(D1)), não mais pra home
-import type { AprofundeItem } from "../extract-destaques.ts"; // #3920
+import type { AprofundeItem, HubLink } from "../extract-destaques.ts"; // #3920 / #4907
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -1074,6 +1074,24 @@ export function renderAprofundeInner(items?: AprofundeItem[]): string {
   </td></tr></table>`;
 }
 
+/**
+ * #4907: link contextual pro hub temático (`arquivo.diar.ia.br/temas/{slug}`)
+ * — presente só quando `scripts/lib/hub-match.ts::matchEditionHub` casou este
+ * destaque contra `HUB_KEYWORD_PATTERNS` na hora do stitch (`stitch-newsletter.ts`).
+ * Mesmo molde visual de `renderAprofundeInner` acima (kicker + `<p>` com
+ * link), sempre o ÚLTIMO elemento do destaque. Retorna "" quando ausente —
+ * destaque sem match é idêntico ao comportamento de hoje (#4907: antes desta
+ * issue NENHUMA edição linkava um hub).
+ */
+export function renderHubLinkInner(hubLink?: HubLink): string {
+  if (!hubLink) return "";
+  const link = `<a href="${esc(hubLink.url)}" style="color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:1px;text-underline-offset:2px;" target="_blank" rel="noopener noreferrer">${esc(hubLink.label)}</a>`;
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:24px;border-collapse:separate;border-spacing:0"><tr><td>
+    ${renderKicker("Saiba mais")}
+    <p style="margin:8px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.5;color:${TEXT_COLOR};">Cobertura completa da diar.ia.br sobre o tema: ${link}</p>
+  </td></tr></table>`;
+}
+
 export function renderDestaque(d: RenderDestaque): string {
   // #1936 (DS email template): seção = uma linha padded (32px lateral). Estrutura:
   // kicker (●+régua) → manchete Georgia 26px (underline teal) → imagem hero
@@ -1090,6 +1108,7 @@ export function renderDestaque(d: RenderDestaque): string {
     renderBodyParasInner(d.body),
     renderWhyBoxInner(d.why),
     renderAprofundeInner(d.aprofunde), // #3920
+    renderHubLinkInner(d.hubLink), // #4907
   ].filter(Boolean).join("\n  ");
   return `<!-- Destaque ${d.n} -->
 <tr><td class="pad" style="padding:${pad};">

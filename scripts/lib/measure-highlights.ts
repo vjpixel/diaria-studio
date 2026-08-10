@@ -93,6 +93,25 @@ function stripAprofunde(body: string): string {
 }
 
 /**
+ * #4907: marca o início do bloco "Saiba mais:" (link contextual de hub
+ * temático, `scripts/lib/hub-match.ts`). Mesmo regex de `HUB_LINK_HEADER_RE`
+ * em `extract-destaques.ts` — duplicado aqui pelo mesmo motivo de
+ * `APROFUNDE_HEADER_RE` acima (unidade de medição separada). NÃO conta no
+ * char-limit do destaque, mesma regra do Aprofunde.
+ */
+const HUB_LINK_HEADER_RE = /^Saiba mais:\s*$/im;
+
+/** #4907: corta o corpo do destaque antes do bloco "Saiba mais:", se
+ * presente — sempre chamado DEPOIS de `stripAprofunde` (o link de hub vem
+ * depois do Aprofunde quando os dois coexistem, então esta chamada é no-op
+ * nesse caso; sem Aprofunde, corta no próprio marcador). */
+function stripHubLink(body: string): string {
+  const m = HUB_LINK_HEADER_RE.exec(body);
+  if (!m) return body;
+  return body.slice(0, m.index);
+}
+
+/**
  * #1709: remove TODAS as opções de título iniciais do bloco do destaque,
  * deixando só o CORPO. Decisão editorial (2026-06-02): medir o corpo separado
  * do título — o corpo tem os limites originais (D1 1000-1200, D2/D3 900-1000,
@@ -173,7 +192,7 @@ export function parseHighlights(reviewedMd: string): MeasureResult {
     const category = m[2].trim();
     // #1709: mede o CORPO sozinho (sem as opções de título — validadas à parte
     // por title-length ≤52). Casa com o que o writer escreve → alvo estável.
-    const body = stripAprofunde(stripTitleOptions(m[3]));
+    const body = stripHubLink(stripAprofunde(stripTitleOptions(m[3])));
 
     // Remove URLs antes de medir
     const bodyNoUrls = body.replace(URL_RE, "");
