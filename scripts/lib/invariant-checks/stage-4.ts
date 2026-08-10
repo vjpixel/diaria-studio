@@ -33,6 +33,7 @@ import {
   checkTitleTrailingPeriod,
 } from "../lint-checks/title-normalization.ts";
 import { checkNoTrailingEllipsis } from "../lint-checks/no-trailing-ellipsis.ts";
+import { checkTitleMentionsIA } from "../lint-checks/ia-in-title.ts"; // #4825
 import { isTruncatedSummary } from "../truncated-summary.ts";
 import { sectionHeaderRegex } from "../section-naming.ts";
 import {
@@ -965,6 +966,34 @@ function checkTitleTrailingPeriodInvariant(editionDir: string): InvariantViolati
 }
 
 /**
+ * #4825: título de DESTAQUE menciona "IA"/"AI"/"inteligência artificial".
+ * WARN-ONLY por decisão do editor — há exceções legítimas (manchete sobre a
+ * categoria em si, ambiguidade real, nome próprio/citação/nome de produto,
+ * ver `context/editorial-rules.md` seção 5) frequentes o bastante pra um
+ * lint bloqueante virar atrito toda edição. Ver docstring de
+ * `checkTitleMentionsIA` em `lint-checks/ia-in-title.ts` pro racional
+ * completo e o escopo (só títulos de DESTAQUE, não seções secundárias).
+ */
+function checkTitleMentionsIaInvariant(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(path)) return [];
+  const md = readFileSync(path, "utf8");
+  const result = checkTitleMentionsIA(md);
+  if (result.ok) return [];
+  return result.errors.map((e) => ({
+    rule: "title-mentions-ia",
+    message:
+      `DESTAQUE ${e.destaque} (${e.category}) linha ${e.line}: título menciona "${e.matched}": "${e.title}". ` +
+      `A newsletter é sobre IA — o termo raramente carrega informação nova no título; prefira nomear o agente ` +
+      `concreto (empresa, modelo, produto). Exceção legítima? Ver context/editorial-rules.md seção 5.`,
+    source_issue: "#4825",
+    severity: "warning",
+    file: path,
+    line: e.line,
+  }));
+}
+
+/**
  * #2881: backstop pra `sanitizeTrailingEllipsis` (roda em `enrich-inbox-
  * articles.ts`, Stage 1). Diferente de `checkTruncatedSecondaryItemSummary`
  * (#2596, que só flagra quando o texto ANTES da reticência parece ter
@@ -1388,6 +1417,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkNoTrailingEllipsisInvariant,
   },
   {
+    id: "title-mentions-ia",
+    description: "título de destaque sem menção a 'IA'/'AI'/'inteligência artificial' quando evitável (#4825, warning-only)",
+    source_issue: "#4825",
+    stage: 4,
+    run: checkTitleMentionsIaInvariant,
+  },
+  {
     id: "capture-failed-submission-count",
     description: "captura de newsletters (0b-bis) falhou — coverage line não pode afirmar '0 submissões' (#2878)",
     source_issue: "#2878",
@@ -1459,6 +1495,7 @@ export {
   checkTitlePublisherSuffixInvariant,
   checkTitleTrailingPeriodInvariant,
   checkNoTrailingEllipsisInvariant,
+  checkTitleMentionsIaInvariant,
   checkCaptureFailedSubmissionCount,
   checkCropReviewWarnings,
   checkBoxDivulgacaoAltMissing,

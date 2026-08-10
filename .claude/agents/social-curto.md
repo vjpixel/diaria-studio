@@ -79,6 +79,6 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 - O arquivo temporário deve conter **apenas** os separadores `## d1`, `## d2`, `## d3` e o conteúdo dos textos. Sem comentários HTML além do `char_count` opcional, sem linhas `Post N —`, sem cabeçalhos internos — qualquer linha além do separador e do texto aparecerá publicada.
 - Cada texto deve funcionar de forma independente — não referenciar os outros destaques.
 - Não repetir o mesmo hook entre os 3 textos, nem repetir literalmente o hook já usado no LinkedIn/Facebook/Instagram — ângulo próprio, mesmo compacto.
-- Evitar "IA" e "inteligência artificial" sempre que possível — usar o sujeito concreto (o orçamento de caracteres torna isso ainda mais importante que nos outros canais).
+- **Evitar "IA"/"inteligência artificial"/"AI" sempre que possível — inclusive no hook (#4825)** — usar o sujeito concreto (o orçamento de caracteres torna isso ainda mais importante que nos outros canais). Exceções legítimas: o texto é sobre a categoria em si, ambiguidade real sem o termo, ou nome próprio/citação/nome de produto (ex: "Perplexity AI") — ver `context/editorial-rules.md` seção 5.
 - Zero emojis — o orçamento de 280 chars não sobra espaço pra decoração.
 - **Se qualquer texto ultrapassar o orçamento ponderado (URL=23), corte conteúdo (nunca o link `{edition_url}` nem pelo menos 1 hashtag) até caber.** Ordem de sacrifício: corpo → hashtags extras. Nunca entregue um texto acima do limite torcendo pro publisher truncar — truncar corta a última palavra no meio e quebra o CTA.
