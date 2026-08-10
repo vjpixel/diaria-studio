@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import {
   annotateAudienceAffinity,
   annotateUseMelhorBucket,
+  annotateHandsOnAllBuckets,
   checkFreshness,
   normalizeTool,
   extractSurveyTools,
@@ -270,6 +271,76 @@ describe("annotateUseMelhorBucket", () => {
   it("bucket use_melhor vazio → retorna 0", () => {
     const count = annotateUseMelhorBucket({ use_melhor: [] }, signals);
     assert.equal(count, 0);
+  });
+});
+
+// ─── annotateHandsOnAllBuckets (#4843 — hands-on agnóstico de bucket) ──────────
+
+describe("annotateHandsOnAllBuckets (#4843)", () => {
+  const handsOnArticle = {
+    url: "https://exemplo.com.br/tutorial-notebooklm",
+    title: "NotebookLM em 20 minutos: guia prático passo a passo",
+    summary: "Tutorial rápido para iniciantes em português",
+  };
+  const newsArticle = {
+    url: "https://techcrunch.com/2026/06/12/openai-raises-funding",
+    title: "OpenAI anuncia nova rodada de captação de US$ 10 bilhões",
+    summary: "A empresa deve usar os recursos para expandir infraestrutura",
+  };
+
+  it("anota hands_on:true no bucket radar (antes não coberto, #4843)", () => {
+    const categorized: Record<string, Array<{
+      url?: string; title?: string; summary?: string;
+      audience_affinity?: { affinity: number; matched: string[]; hands_on: boolean } | null;
+    }>> = {
+      radar: [{ ...handsOnArticle }],
+      lancamento: [{ ...newsArticle }],
+    };
+    const count = annotateHandsOnAllBuckets(categorized);
+    assert.equal(count, 1, "deve anotar 1 artigo hands-on");
+    assert.equal(categorized.radar[0].audience_affinity?.hands_on, true);
+    assert.ok(categorized.radar[0].audience_affinity?.matched.includes("hands_on:true"));
+    assert.equal(categorized.lancamento[0].audience_affinity, undefined, "notícia sem sinais hands-on não deve ser anotada");
+  });
+
+  it("não depende de signals.loaded — roda sem AudienceSignals nenhum", () => {
+    // Assinatura da função não recebe signals — só categorized. Este teste
+    // documenta o contrato: hands_on é puro/determinístico (#2143).
+    const categorized = { video: [{ ...handsOnArticle }] };
+    const count = annotateHandsOnAllBuckets(categorized);
+    assert.equal(count, 1);
+  });
+
+  it("item já anotado por annotateUseMelhorBucket (use_melhor) não perde affinity/matched de CTR", () => {
+    const categorized: Record<string, Array<{
+      url?: string; title?: string; summary?: string;
+      audience_affinity?: { affinity: number; matched: string[]; hands_on: boolean } | null;
+    }>> = {
+      use_melhor: [{ ...handsOnArticle }],
+    };
+    // Primeiro passa pelo annotateUseMelhorBucket (CTR/survey/hands_on/academy/howto).
+    annotateUseMelhorBucket(categorized, signals);
+    const affinityBefore = categorized.use_melhor[0].audience_affinity?.affinity;
+    const matchedBefore = [...(categorized.use_melhor[0].audience_affinity?.matched ?? [])];
+
+    // Depois roda o annotator agnóstico de bucket — não deve sobrescrever CTR.
+    annotateHandsOnAllBuckets(categorized);
+    assert.equal(categorized.use_melhor[0].audience_affinity?.affinity, affinityBefore, "affinity CTR não deve mudar");
+    assert.deepEqual(categorized.use_melhor[0].audience_affinity?.matched, matchedBefore, "matched não deve mudar quando hands_on já estava presente");
+    assert.equal(categorized.use_melhor[0].audience_affinity?.hands_on, true);
+  });
+
+  it("artigo sem sinais hands-on não é anotado em nenhum bucket", () => {
+    const categorized = { radar: [{ ...newsArticle }], video: [{ ...newsArticle }] };
+    const count = annotateHandsOnAllBuckets(categorized);
+    assert.equal(count, 0);
+    assert.equal(categorized.radar[0].audience_affinity, undefined);
+    assert.equal(categorized.video[0].audience_affinity, undefined);
+  });
+
+  it("bucket ausente/vazio → não lança, retorna 0", () => {
+    assert.equal(annotateHandsOnAllBuckets({}), 0);
+    assert.equal(annotateHandsOnAllBuckets({ radar: [] }), 0);
   });
 });
 

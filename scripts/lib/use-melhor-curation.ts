@@ -54,7 +54,12 @@ const TUTORIAL_ACADEMY_PATHS: Array<{ host: string; pathPrefix: string }> = [
   { host: "github.com", pathPrefix: "/openai/openai-cookbook" },
   { host: "cookbook.openai.com", pathPrefix: "/" },
   { host: "developers.openai.com", pathPrefix: "/cookbook" },
-  { host: "langchain.com", pathPrefix: "/blog" },
+  // "langchain.com" (pathPrefix "/blog") removida (#4843, auditoria 260810): 13/121
+  // itens do Use Melhor (10,7%) rendendo só 3/130 cliques (2,3%) — CTR 0,17-0,21%
+  // contra 1,07% da seção (5-6× pior), 10 de 13 com zero clique. A hipótese de que
+  // o bônus "academy" subsidiava a fonte foi refutada (publica a taxas equivalentes
+  // aos demais, sem lift de score). Auditar pelo mesmo critério antes de remover:
+  // cookbook.openai.com, wandb.ai/fully-connected, pinecone.io/learn.
   { host: "pinecone.io", pathPrefix: "/learn" },
   { host: "wandb.ai", pathPrefix: "/fully-connected" },
   { host: "learn.microsoft.com", pathPrefix: "/en-us/training" },

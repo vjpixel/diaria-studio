@@ -96,6 +96,28 @@ describe("isTutorialAcademy (#2276)", () => {
   it("reconhece Alura (BR)", () => {
     assert.ok(isTutorialAcademy("https://cursos.alura.com.br/course/chatgpt-api", "ChatGPT API"));
   });
+
+  it("NÃO reconhece langchain.com/blog só pelo path (#4843 — removido de TUTORIAL_ACADEMY_PATHS)", () => {
+    // Auditoria de cliques 260810: 13/121 itens do Use Melhor (10,7%) rendendo
+    // só 3/130 cliques (2,3%) — CTR 5-6× pior que a seção. A entrada
+    // { host: "langchain.com", pathPrefix: "/blog" } foi removida; título
+    // genérico (sem "curso/trilha/bootcamp/...") não deve mais qualificar.
+    assert.ok(!isTutorialAcademy(
+      "https://langchain.com/blog/how-to-build-agents-with-langgraph",
+      "How to build agents with LangGraph",
+    ));
+    assert.ok(!isTutorialAcademy(
+      "https://www.langchain.com/blog/deep-agents-v0-7",
+      "Deep Agents v0.7",
+    ));
+  });
+
+  it("langchain.com/blog AINDA qualifica se o título tiver sinal de curso/trilha (via TUTORIAL_ACADEMY_TITLE_RE, não do path)", () => {
+    assert.ok(isTutorialAcademy(
+      "https://langchain.com/blog/curso-completo-de-agentes",
+      "Curso completo de agentes com LangChain",
+    ));
+  });
 });
 
 // ---------------------------------------------------------------------------
