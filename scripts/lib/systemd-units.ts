@@ -14,6 +14,7 @@
  * @see scripts/lib/scheduled-tasks.ts (fonte dos dados traduzidos aqui)
  */
 
+import { BRT_TIMEZONE } from "./next-edition-date.ts";
 import type { ScheduledTaskDefinition, ScheduledTaskSchedule, WeekDay } from "./scheduled-tasks.ts";
 
 const WEEKDAY_ABBR: Record<WeekDay, string> = {
@@ -70,21 +71,21 @@ function pad2(n: number): string {
 // warning no journal, "Unknown key 'Timezone' in section [Timer]") -- o
 // fuso é um campo OPCIONAL anexado ao final do próprio valor do calendário
 // (systemd.time(7)): `OnCalendar=*-*-* HH:MM:00 America/Sao_Paulo`.
-// Verificado com `systemd-analyze calendar` antes de fixar.
-const TIMEZONE = "America/Sao_Paulo";
+// Verificado com `systemd-analyze calendar` antes de fixar. BRT_TIMEZONE
+// reusado de next-edition-date.ts -- não duplicar o literal.
 
 export function scheduleToOnCalendar(schedule: ScheduledTaskSchedule): string {
   switch (schedule.kind) {
     case "daily":
-      return `*-*-* ${pad2(schedule.hour)}:${pad2(schedule.minute)}:00 ${TIMEZONE}`;
+      return `*-*-* ${pad2(schedule.hour)}:${pad2(schedule.minute)}:00 ${BRT_TIMEZONE}`;
     case "weekly":
-      return `${WEEKDAY_ABBR[schedule.dayOfWeek]} *-*-* ${pad2(schedule.hour)}:${pad2(schedule.minute)}:00 ${TIMEZONE}`;
+      return `${WEEKDAY_ABBR[schedule.dayOfWeek]} *-*-* ${pad2(schedule.hour)}:${pad2(schedule.minute)}:00 ${BRT_TIMEZONE}`;
     case "interval":
       // Cadência "a cada Nh" (ver docstring da função abaixo) -- fuso não
       // afeta o intervalo em si (Nh depois de meia-noite é Nh depois de
-      // meia-noite em qualquer fuso), mas anexar o mesmo TIMEZONE mantém a
-      // âncora de "meia-noite" consistente com BRT, não UTC.
-      return `*-*-* 0/${schedule.hours}:00:00 ${TIMEZONE}`;
+      // meia-noite em qualquer fuso), mas anexar o mesmo BRT_TIMEZONE mantém
+      // a âncora de "meia-noite" consistente com BRT, não UTC.
+      return `*-*-* 0/${schedule.hours}:00:00 ${BRT_TIMEZONE}`;
     default: {
       const exhaustive: never = schedule;
       throw new Error(`schedule.kind desconhecido: ${JSON.stringify(exhaustive)}`);
