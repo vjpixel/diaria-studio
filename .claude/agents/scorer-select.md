@@ -73,5 +73,6 @@ JSON gravado em `out_path`:
 - Incluir `bucket` em cada highlight (facilita o orchestrator gerar o MD).
 - **NÃO** inclua `all_scored` — isso é assemblado em TS (`assemble-scored.ts`) a partir do merge. Você só produz `highlights` + `runners_up` (+ `negative_impact_promoted` quando aplicável).
 - **URLs são opacas (#720).** Copie o `article` (incl. url) EXATAMENTE como veio no finalista — nunca corrija, normalize ou reescreva.
+- **`cluster_sources` (#3920/#4838), se presente no `article`, também é copiado INTEIRO — mesmo array, mesmos itens.** É esse campo que alimenta o bloco "Aprofunde:" (writer) e o bônus de cobertura já embutido no `score`. Omiti-lo ou copiar parcialmente faz o destaque carregar o bônus de uma cobertura ampla sem o leitor nunca ver as fontes extras. Um backstop determinístico em `assemble-scored.ts` (`applyClusterSourcesBackstop`) corrige isso se você esquecer, mas a cópia correta é feita aqui, não lá — mesmo padrão de `url`/título placeholder acima.
 - **OBRIGATÓRIO: gravar o output em arquivo antes de retornar.** Usar `Write` em `out_path` e validar com `Bash("node -e \"JSON.parse(require('fs').readFileSync('{out_path}','utf8')); console.log('ok')\"")` antes de retornar.
 - Retorne só: os títulos + scores dos 6 highlights escolhidos (+ menção à promoção de impacto-negativo, se houve).

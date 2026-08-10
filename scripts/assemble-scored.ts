@@ -28,6 +28,7 @@ import type { ScorePair } from "./merge-scored-chunks.ts";
 import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 import { ensureNegativeImpactHighlight, type FinalistLike } from "./lib/negative-impact-promotion.ts"; // #3916, #3918
 import { demotePlaceholderTitleHighlights, type PlaceholderDemotion } from "./lib/placeholder-title-guard.ts"; // #4102
+import { reconcileClusterSources, type ClusterSourcesRestoration } from "./lib/cluster-sources-backstop.ts"; // #4838
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -69,6 +70,10 @@ export interface AssembledOutput {
   // #4102: presente só quando o backstop demoveu ≥1 highlight com título
   // placeholder (ex: "(newsletter:...)", "(inbox)").
   placeholder_title_demoted?: PlaceholderDemotion[];
+  // #4838: presente só quando o backstop restaurou `cluster_sources[]` de
+  // ≥1 highlight a partir do finalist correspondente (scorer-select não
+  // preservou o campo ao copiar o article).
+  cluster_sources_restored?: ClusterSourcesRestoration[];
 }
 
 /**
@@ -135,6 +140,33 @@ export function applyPlaceholderTitleBackstop(
   };
 }
 
+/**
+ * #4838: backstop determinístico — `article.cluster_sources[]` de cada
+ * highlight final tem que bater com o `cluster_sources[]` que o dedup
+ * atribuiu ao mesmo artigo em `finalists`. `scorer-select` (LLM) é instruído
+ * a copiar o `article` EXATAMENTE como veio no finalista, mas
+ * `cluster_sources[]` nunca é mencionado no prompt do agent — campo aninhado,
+ * pouco saliente, fácil de "esquecer" ao retranscrever um JSON grande. Sem
+ * este backstop, o bônus de cobertura (já somado ao score rio acima, em
+ * `merge-scored-chunks.ts`, antes do scorer-select rodar) pode sobreviver
+ * intacto enquanto o bloco "Aprofunde:" nunca chega a ser emitido — bônus
+ * ativo, entrega que não existe (#4838). Ordem: roda independente dos 2
+ * backstops acima (não interage com QUAL highlight foi escolhido, só
+ * completa um campo do `article` já selecionado).
+ */
+export function applyClusterSourcesBackstop(
+  assembled: AssembledOutput,
+  finalists: FinalistLike[],
+): AssembledOutput {
+  const result = reconcileClusterSources(assembled.highlights, finalists);
+  if (result.restorations.length === 0) return assembled;
+  return {
+    ...assembled,
+    highlights: result.highlights,
+    cluster_sources_restored: result.restorations,
+  };
+}
+
 export function main(): void {
   const args = parseArgs(process.argv.slice(2));
   const selectionPath = args.selection;
@@ -186,6 +218,19 @@ export function main(): void {
         );
       }
     }
+
+    // #4838: independente da ordem dos 2 backstops acima — só completa o
+    // campo `cluster_sources` do `article` já escolhido, nunca troca QUAL
+    // highlight foi selecionado.
+    assembled = applyClusterSourcesBackstop(assembled, finalists);
+    if (assembled.cluster_sources_restored) {
+      for (const r of assembled.cluster_sources_restored) {
+        console.error(
+          `[assemble-scored] backstop determinístico restaurou cluster_sources[] (${r.restored_count} fonte(s)) ` +
+            `em ${r.url} — ${r.reason}`,
+        );
+      }
+    }
   }
 
   writeFileSync(resolve(ROOT, outPath), JSON.stringify(assembled, null, 2), "utf8");
@@ -197,6 +242,7 @@ export function main(): void {
       all_scored: assembled.all_scored.length,
       ...(assembled.negative_impact_promoted ? { negative_impact_promoted: true } : {}),
       ...(assembled.placeholder_title_demoted ? { placeholder_title_demoted: assembled.placeholder_title_demoted.length } : {}),
+      ...(assembled.cluster_sources_restored ? { cluster_sources_restored: assembled.cluster_sources_restored.length } : {}),
     }) + "\n",
   );
 }
