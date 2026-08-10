@@ -82,38 +82,41 @@ O p90 continua protegido nos dois limiares: PRs grandes seguem no fleet.
 
 ---
 
-## 2. `CLAUDE.md` — 75KB carregados incondicionalmente (MEDIDO, inédito)
+## 2. `CLAUDE.md` — já cortado uma vez, e voltou a crescer (MEDIDO — atualizado 260810)
 
-Nenhum dos três docs de julho mediu o `CLAUDE.md`, que é o **único** arquivo
-de prompt carregado em toda sessão e em todo dispatch de subagente.
+**Correção sobre a própria medição desta seção:** a versão original (escrita
+com o estado de 260809) media 75.726 bytes e listava o corte como
+recomendação aberta (Prioridade #2 da Seção 6). **O corte já aconteceu** — é
+o mesmo achado, já fechado: #4814 (mesmos 21.418→75.726 bytes, mesma lista de
+7 parágrafos de tarefa agendada duplicando runbook em `docs/`) foi fechado
+pelo PR #4851 ("enxugar CLAUDE.md de 75KB pra ~55KB"), mergeado
+**2026-08-10T05:29:41Z** — antes deste doc ter sido commitado (21:39Z do
+mesmo dia). A Prioridade #2 original está removida da Seção 6 por este
+motivo.
 
 | Data | Bytes |
 |---|---:|
 | 2026-06-01 | 21.418 |
-| 2026-08-09 | **75.726** |
+| 2026-08-09 (antes do corte #4851) | 75.726 |
+| 2026-08-10 (após #4851, medição atual) | **58.414** |
 
-**3,5× em ~70 dias (~1,5KB/dia de crescimento contínuo.)** A ~19k tokens
-estimados, uma noite de 19 dispatches paga ~360k tokens só de preâmbulo.
-
-Composição:
+O corte reduziu 75.726→58.414 (-23%), abaixo do alvo de ~55KB do título do
+PR — restam ~3,4KB de folga antes de reincidir. Composição pós-corte:
 
 | Seção | Bytes |
 |---|---:|
-| `## Como usar` | 33.307 |
-| `## Princípios operacionais invariáveis` | 29.987 |
+| `## Princípios operacionais invariáveis` | 30.850 |
+| `## Como usar` | 15.276 |
+| `## Otimização de tokens` | 3.717 |
 | `## Pipeline` | 3.458 |
-| `## Otimização de tokens` | 3.455 |
-| resto | ~5.500 |
+| `## Estrutura` | 1.674 |
+| `## Regras invariáveis` | 1.310 |
+| `## Estado atual` | 336 |
 
-Dentro disso, **13 parágrafos de tarefa agendada somam 25.177 bytes** — e 7
-já têm runbook dedicado em `docs/`, com o conteúdo duplicado:
-`overnight-watchdog`, `hub-drift-check`, `worker-drift-check`,
-`cursos-worker-alarm`, `evaluate-brevo-diaria`,
-`clarice-opens-catchup-alarm`, `geo-citation-staleness-alarm` (todos
-`-setup.md`).
-
-Trocar cada parágrafo por nome + cadência + link devolve ~20KB / ~5k tokens
-por sessão **e por subagente**, sem perda de informação.
+`Princípios operacionais invariáveis` já é 53% do arquivo e é a seção que
+mais cresce por commit (histórico de incidente + decisão editorial
+acumulando) — candidata mais provável a reincidir primeiro, não
+`Como usar` (que foi o alvo principal do #4851).
 
 ---
 
@@ -154,12 +157,16 @@ Sem instrumentação de token na pipeline editorial. Por tamanho de arquivo:
 | `.claude/agents/review-test-email.md` | 50.399 |
 | `.claude/agents/orchestrator-stage-5.md` | 35.059 |
 
-Somados ao `CLAUDE.md`, uma edição completa carrega **~370KB ≈ 92k tokens**
-de playbook antes de produzir uma linha de newsletter. O padrão é o mesmo do
-`CLAUDE.md`: instrução operacional misturada com narrativa histórica de
-incidente. A ressalva do #3438 sobre não cortar às cegas vale para o conteúdo
-operacional (seletor de Chrome sem teste de regressão); não vale para a
-narrativa ao redor dele.
+Os 5 `orchestrator-stage-*.md` somam 299.623 bytes — `review-test-email.md`
+fica fora dessa soma porque é playbook de subagente (Stage 5), não do
+orchestrator top-level, e não roda em toda edição. Somados ao `CLAUDE.md`
+(medição atual, pós-#4851, seção 2): **299.623 + 58.414 = 358.037 bytes ≈
+90k tokens** de playbook antes de produzir uma linha de newsletter — a
+tabela acima lista os 6 arquivos para referência, mas a conta soma só os 5
+`orchestrator-stage-*`. O padrão é o mesmo do `CLAUDE.md`: instrução
+operacional misturada com narrativa histórica de incidente. A ressalva do
+#3438 sobre não cortar às cegas vale para o conteúdo operacional (seletor de
+Chrome sem teste de regressão); não vale para a narrativa ao redor dele.
 
 ---
 
@@ -186,9 +193,12 @@ corte feito a partir daqui.
 1. **Effort do review por tamanho de diff** — ~3–4,5M tokens/dia, o único
    item de escala de milhões. Trade-off real custo × qualidade: decisão do
    editor, a constante já foi nos dois sentidos (#2754 → #3326 → #4234).
-2. **Enxugar `CLAUDE.md`** — ~5k tokens por sessão e por subagente, risco
-   zero (conteúdo já duplicado em `docs/`), e para o crescimento de 1,5KB/dia.
+2. ~~Enxugar `CLAUDE.md`~~ — **já feito** (#4814/#4851, mergeado
+   2026-08-10T05:29Z, ver Seção 2). Continua valendo como item de vigilância
+   recorrente — cresceu ~1,5KB/dia antes do corte e a folga atual é só
+   ~3,4KB — mas não é mais item de execução pendente.
 3. **Tabela de custo obrigatória no relatório de sessão** — barato, e sem
    isso as próximas decisões voltam a ser estimativa.
 4. **Separar narrativa histórica dos playbooks de stage** — maior volume de
-   bytes depois do #1, mas sem medição de token que justifique a ordem.
+   bytes depois do #1, mas sem medição de token que justifique a ordem
+   (#4816, aberta).
