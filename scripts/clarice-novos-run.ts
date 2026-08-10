@@ -39,7 +39,7 @@
  *
  * Uso:
  *   npx tsx scripts/clarice-novos-run.ts [--since YYYY-MM-DD] [--dry-run] \
- *     [--force] [--subject "Assunto explícito"] [--confirm] [--data-root DIR]
+ *     [--force] [--subject "Assunto explícito"] [--confirm]
  *
  * `--dry-run` roda os Passos 0-3 (delta Stripe em modo preview, MV pulado —
  * custo real, nunca gasto sem intenção — e o grupo `novos` construído com
@@ -63,8 +63,11 @@ import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { detectExecMode } from "./lib/exec-mode.ts";
 import { isClariceNovosEnabled } from "./lib/clarice-novos-enabled.ts";
 import { clariceActivityDepsFromDisk, mostRecentActiveClariceCycle } from "./lib/mensal/monthly-paths.ts";
+import type { ResolveLatestMonthlyCycleResult } from "./lib/mensal/monthly-paths.ts";
 import { datePartsInTz, toAammdd, BRT_TIMEZONE, type DateParts } from "./lib/next-edition-date.ts";
 import { registerReport } from "./studio-ui/studio-reports.ts";
+import type { InvocationSummary } from "./clarice-schedule-group.ts";
+import type { ResolveFolderResult } from "./clarice-resolve-folder.ts";
 
 const ROOT = resolve(new URL("..", import.meta.url).pathname);
 
@@ -100,11 +103,13 @@ export function realExec(rootDir: string): ExecFn {
   };
 }
 
-/** Extrai o ÚLTIMO bloco JSON válido de stdout — todo sub-script deste
- * fluxo imprime logs humano-legíveis em stderr e o resumo JSON (só) em
- * stdout via `console.log(JSON.stringify(...))`, então stdout inteiro
- * normalmente já É o JSON; a busca pelo último `{`/`[` é defesa extra
- * contra qualquer linha perdida antes dele. */
+/** Extrai o bloco JSON de stdout a partir do PRIMEIRO `{`/`[` — todo
+ * sub-script deste fluxo imprime logs humano-legíveis em stderr e o resumo
+ * JSON (só) em stdout via `console.log(JSON.stringify(...))`, então stdout
+ * inteiro normalmente já É o JSON; localizar o primeiro `{`/`[` e parsear
+ * até o fim é defesa extra contra qualquer prefixo perdido antes dele
+ * (não protege contra sufixo — nenhum sub-script deste fluxo imprime nada
+ * em stdout depois do JSON). */
 export function parseStepJson<T = unknown>(stdout: string): T | undefined {
   const trimmed = stdout.trim();
   if (!trimmed) return undefined;
@@ -121,12 +126,16 @@ export function parseStepJson<T = unknown>(stdout: string): T | undefined {
 // Abort tipado — carrega o motivo até o relatório final.
 // ---------------------------------------------------------------------------
 
+/** Sempre `code: 1` — o exit code 2 ("disparo incerto") NUNCA passa por
+ * exceção, é um `return` antecipado dentro de `runNovos` (o desfecho não é
+ * um erro, é um resultado ambíguo que a rodada de amanhã reconcilia
+ * sozinha). Um `1 | 2` no tipo aqui sugeria uma uniformidade que não
+ * existe no controle de fluxo real — achado do review do #4949. */
 export class NovosAbort extends Error {
-  readonly code: 1 | 2;
-  constructor(reason: string, code: 1 | 2 = 1) {
+  readonly code = 1 as const;
+  constructor(reason: string) {
     super(reason);
     this.name = "NovosAbort";
-    this.code = code;
   }
 }
 
@@ -177,7 +186,7 @@ export interface NovosRunDeps {
   rootDir: string;
   now: () => Date;
   exec: ExecFn;
-  isEnabled: (rootDir: string) => boolean;
+  isEnabled: () => boolean;
   resolveEnvioCycle: () => string | undefined;
   /** Injetável (não `detectExecMode` direto) — testes rodam num `rootDir`
    * temporário sem junction `data/` real, e o sinal de exec-mode não deve
@@ -190,7 +199,7 @@ export function productionDeps(rootDir: string = ROOT): NovosRunDeps {
     rootDir,
     now: () => new Date(),
     exec: realExec(rootDir),
-    isEnabled: isClariceNovosEnabled,
+    isEnabled: () => isClariceNovosEnabled(rootDir),
     resolveEnvioCycle: () => mostRecentActiveClariceCycle(clariceActivityDepsFromDisk()),
     execMode: () => detectExecMode({ projectRoot: rootDir }),
   };
@@ -275,7 +284,7 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
   const report = new ReportBuilder(`diar.ia.br Clarice novos ${aammdd}`);
 
   // --- Kill switch (#4941 E3) — ANTES de qualquer chamada externa. ---
-  if (!deps.isEnabled(deps.rootDir)) {
+  if (!deps.isEnabled()) {
     report.note(
       "⏸️  automação PAUSADA (data/clarice-novos-enabled.json ausente ou {enabled:false}) — " +
         "nenhuma chamada Stripe/MV/Brevo feita. Rode `npx tsx scripts/lib/clarice-novos-enabled.ts --set enabled` pra liberar.",
@@ -406,7 +415,7 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
     if (!key) throw new NovosAbort("❌ clarice-novos-resolve-key não devolveu 'key' no resumo JSON.");
     report.note(`key resolvida: ${key}`);
 
-    const folderStep = step<{ folderId: number }>(
+    const folderStep = step<ResolveFolderResult>(
       deps,
       report,
       "clarice-resolve-folder",
@@ -427,8 +436,15 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
         "novos",
         "--key",
         key,
+        // #4949 review (achado 1, correctness): --label precisa carregar a
+        // MESMA key resolvida acima, não só a data — sem isso, um retry no
+        // mesmo dia (resolveNovosKey já sufixa -2/-3) gera o mesmo nome de
+        // lista Brevo da 1ª tentativa (label + wave.key + wave.desc do
+        // grupo 'novos' são todos constantes por dia em resolveListName), e
+        // o pré-flight de idempotência de clarice-import-waves.ts aborta
+        // com "lista já existe" — derrotando o propósito do sufixo de key.
         "--label",
-        `Novos ${ddmm(todayPartsBrt(now))}`,
+        `Novos ${ddmm(todayPartsBrt(now))} (${key})`,
         "--folder-id",
         String(folderId),
         "--execute",
@@ -437,7 +453,7 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
 
     // --- Passo 5: resolver a edição + criar a campanha (sem data) ---
     report.section("Passo 5 — Resolver edição + criar campanha");
-    const cycleStep = step<{ cycle: string; subject: string; fallback: boolean }>(
+    const cycleStep = step<ResolveLatestMonthlyCycleResult>(
       deps,
       report,
       "clarice-novos-resolve-cycle",
@@ -468,7 +484,12 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
       "scripts/clarice-novos-html-state.ts",
       ["--cycle", cicloMensal],
     );
-    if (htmlState.json?.shouldSendTest) {
+    // #4949 review (silent-failure, achado 3): default TRUE quando o JSON
+    // não parseou (`?? true`) — D12 é só uma otimização (pular test email
+    // redundante), nunca uma trava de segurança; na dúvida, mandar o test
+    // email A MAIS é o lado seguro, o oposto de pular silenciosamente um
+    // teste que devia ter rodado.
+    if (htmlState.json?.shouldSendTest ?? true) {
       step(
         deps,
         report,
@@ -491,7 +512,8 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
       "--send-now",
     ]);
     if (sendNow.stderr.trim()) console.error(sendNow.stderr.trim());
-    const sendJson = parseStepJson<{ status?: string; listId?: number; campaignId?: number }>(sendNow.stdout);
+    const sendJson = parseStepJson<InvocationSummary>(sendNow.stdout);
+    const reportIdSent = key; // key já inclui o prefixo "novos-" (resolveNovosKey)
 
     if (sendNow.code === 2) {
       report.note(
@@ -499,43 +521,81 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
           `(status="${sendJson?.status ?? "?"}"). NÃO declarado como sucesso. A rodada de amanhã reconcilia ` +
           `(idempotente por key/campanha, re-tentar --send-now é seguro).`,
       );
-      const reportId = key; // key já inclui o prefixo "novos-" (resolveNovosKey)
-      writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice novos ${aammdd} — disparo incerto`, report.build());
-      return { code: 2, reportId, reportMarkdown: report.build() };
+      writeAndRegisterReport(deps, reportIdSent, `diar.ia.br Clarice novos ${aammdd} — disparo incerto`, report.build());
+      return { code: 2, reportId: reportIdSent, reportMarkdown: report.build() };
     }
     if (sendNow.code !== 0) {
       throw new NovosAbort(`❌ clarice-schedule-group --send-now falhou (exit ${sendNow.code}): ${sendNow.stderr.trim().split("\n").slice(-6).join(" | ")}`);
     }
-    report.note(`✅ disparo confirmado (status="${sendJson?.status ?? "sent"}") — ${selected} contato(s).`);
+    // #4949 review (correctness, achado 2): exit 0 do sub-script não é, por
+    // si só, garantia de "sent" — `checkSendNowGuard` pode devolver exit 0
+    // sem re-disparar quando o status AO VIVO já é "queued" (retry manual
+    // da MESMA key/campanha, fora do fluxo deste orquestrador — que sempre
+    // resolve uma key nova, mas um chamador direto de
+    // clarice-schedule-group.ts poderia). Tratar como incerto (código 2) em
+    // vez de assumir sucesso — nunca declarar "confirmado" sem o status
+    // literal "sent" no resumo.
+    if (sendJson?.status !== "sent") {
+      report.note(
+        `⚠️  --send-now saiu exit 0 mas status="${sendJson?.status ?? "desconhecido"}" (esperado "sent") — ` +
+          `tratando como disparo INCERTO por segurança, não declarando sucesso.`,
+      );
+      writeAndRegisterReport(deps, reportIdSent, `diar.ia.br Clarice novos ${aammdd} — disparo incerto`, report.build());
+      return { code: 2, reportId: reportIdSent, reportMarkdown: report.build() };
+    }
+    report.note(`✅ disparo confirmado (status="sent") — ${selected} contato(s).`);
 
     if (!sendJson?.listId || !sendJson?.campaignId) {
-      throw new NovosAbort(
-        `❌ disparo confirmado mas o resumo de --send-now não trouxe listId/campaignId ` +
-          `(listId=${sendJson?.listId}, campaignId=${sendJson?.campaignId}) — não dá pra gravar --finalize sem eles. ` +
-          `Rode manualmente: clarice-novos-html-state.ts --cycle ${cicloMensal} --finalize --list-id N --campaign-id N --sent-count ${selected}`,
+      // #4949 review (silent-failure, achado 2): NÃO usar NovosAbort aqui —
+      // o disparo já aconteceu (irreversível), então o resultado desta
+      // rodada é SUCESSO, mesmo que o --finalize não tenha os dados pra
+      // rodar. Lançar faria o catch externo reportar "abortado", misreportando
+      // um envio real como falha.
+      report.note(
+        `⚠️  disparo confirmado mas o resumo de --send-now não trouxe listId/campaignId ` +
+          `(listId=${sendJson?.listId}, campaignId=${sendJson?.campaignId}) — --finalize NÃO rodado nesta ` +
+          `rodada (state fica com o SHA/sentCount desatualizados, sem afetar o envio já feito). Rode manualmente: ` +
+          `clarice-novos-html-state.ts --cycle ${cicloMensal} --finalize --list-id N --campaign-id N --sent-count ${selected}`,
+      );
+      writeAndRegisterReport(deps, reportIdSent, `diar.ia.br Clarice novos ${aammdd} — ${selected} contato(s)`, report.build());
+      return { code: 0, reportId: reportIdSent, reportMarkdown: report.build() };
+    }
+
+    // #4949 review (silent-failure, achado 2): --finalize é uma escrita
+    // LOCAL de state (SHA/sentCount/D12) — se ela falhar depois do disparo
+    // já confirmado, o resultado da rodada continua sendo SUCESSO (o envio
+    // real já aconteceu e é irreversível). Capturado localmente, nunca
+    // propagado pro catch externo (que reportaria "abortado" por cima de
+    // um envio bem-sucedido).
+    try {
+      step(
+        deps,
+        report,
+        "clarice-novos-html-state --finalize",
+        "scripts/clarice-novos-html-state.ts",
+        [
+          "--cycle",
+          cicloMensal,
+          "--finalize",
+          "--list-id",
+          String(sendJson.listId),
+          "--campaign-id",
+          String(sendJson.campaignId),
+          "--sent-count",
+          String(selected),
+        ],
+      );
+    } catch (finalizeError) {
+      report.note(
+        `⚠️  disparo confirmado (${selected} contato(s)) mas --finalize falhou: ` +
+          `${(finalizeError as Error).message} — state (SHA/sentCount) fica desatualizado, sem afetar o ` +
+          `envio já feito. Rode manualmente: clarice-novos-html-state.ts --cycle ${cicloMensal} --finalize ` +
+          `--list-id ${sendJson.listId} --campaign-id ${sendJson.campaignId} --sent-count ${selected}`,
       );
     }
-    step(
-      deps,
-      report,
-      "clarice-novos-html-state --finalize",
-      "scripts/clarice-novos-html-state.ts",
-      [
-        "--cycle",
-        cicloMensal,
-        "--finalize",
-        "--list-id",
-        String(sendJson.listId),
-        "--campaign-id",
-        String(sendJson.campaignId),
-        "--sent-count",
-        String(selected),
-      ],
-    );
 
-    const reportId = key; // key já inclui o prefixo "novos-" (resolveNovosKey)
-    writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice novos ${aammdd} — ${selected} contato(s)`, report.build());
-    return { code: 0, reportId, reportMarkdown: report.build() };
+    writeAndRegisterReport(deps, reportIdSent, `diar.ia.br Clarice novos ${aammdd} — ${selected} contato(s)`, report.build());
+    return { code: 0, reportId: reportIdSent, reportMarkdown: report.build() };
   } catch (e) {
     const abort = e instanceof NovosAbort ? e : new NovosAbort(`❌ erro inesperado: ${(e as Error).message}`);
     report.note(abort.message);
@@ -553,10 +613,18 @@ if (isMainModule(import.meta.url)) {
   const deps = productionDeps(ROOT);
   runNovos(process.argv.slice(2), deps)
     .then((r) => {
-      process.exit(r.code);
+      // #4949 review (silent-failure, achado 1, HIGH): `process.exit()` no
+      // sucesso força o shutdown do libuv ANTES do fetch pendente do e-mail
+      // de notificação (fire-and-forget em writeAndRegisterReport) assentar
+      // — mesma classe de bug já corrigida caso a caso neste repo (#1401,
+      // #4638, #4651, consolidada em `runMain`/exit-handler.ts #4653).
+      // `process.exitCode` deixa o event loop drenar sozinho: o processo
+      // termina com o código certo assim que não sobrar handle pendente,
+      // sem matar o e-mail no meio do caminho.
+      process.exitCode = r.code;
     })
     .catch((e) => {
       console.error(String((e as Error)?.stack || e));
-      process.exit(1);
+      process.exitCode = 1;
     });
 }

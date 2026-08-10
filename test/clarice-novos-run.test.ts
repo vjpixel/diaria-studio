@@ -469,6 +469,82 @@ describe("clarice-novos-run (#4941)", () => {
       assert.ok(!calls.some((c) => c.script === "scripts/clarice-novos-html-state.ts" && c.args.includes("--finalize")));
       rmSync(root, { recursive: true, force: true });
     });
+
+    it("exit 0 mas status!=='sent' (#4949 achado 2) -> tratado como INCERTO (code=2), NUNCA chama --finalize", async () => {
+      root = freshRoot();
+      const handlers = goldenHandlers();
+      handlers["scripts/clarice-schedule-group.ts"] = [
+        jsonResult({ key: "novos-260810", listId: 99, campaignId: 555, phase: "create", status: "draft" }),
+        jsonResult({ key: "novos-260810", listId: 99, campaignId: 555, phase: "send-test" }),
+        // exit 0 (POST aceito) mas status ainda "queued" — checkSendNowGuard
+        // pode devolver isso sem re-disparar quando a campanha já está queued.
+        jsonResult({ key: "novos-260810", listId: 99, campaignId: 555, phase: "send-now", status: "queued" }, 0),
+      ];
+      const { exec, calls } = makeFakeExec(handlers);
+      const deps = baseDeps(root, { exec });
+      const result = await runNovos([], deps);
+      assert.equal(result.code, 2);
+      assert.ok(!calls.some((c) => c.script === "scripts/clarice-novos-html-state.ts" && c.args.includes("--finalize")));
+      assert.match(result.reportMarkdown, /INCERTO/);
+      rmSync(root, { recursive: true, force: true });
+    });
+  });
+
+  describe("--finalize falha após --send-now confirmado (#4949 achado 2)", () => {
+    it("--finalize lança -> resultado continua SUCESSO (code=0), não vira 'abortado' por cima de um envio real", async () => {
+      root = freshRoot();
+      const handlers = goldenHandlers();
+      // 1ª chamada de clarice-novos-html-state.ts (checagem shouldSendTest) ok;
+      // 2ª chamada (--finalize) falha com exit != 0.
+      handlers["scripts/clarice-novos-html-state.ts"] = [
+        jsonResult({ htmlSha256: "abc", shouldSendTest: true, previousState: null }),
+        textResult("disco cheio", 1),
+      ];
+      const { exec, calls } = makeFakeExec(handlers);
+      const deps = baseDeps(root, { exec });
+      const result = await runNovos([], deps);
+      assert.equal(result.code, 0, result.reportMarkdown);
+      assert.equal(result.reportId, "novos-260810", "reportId continua sendo a key da campanha, não 'abort'");
+      assert.match(result.reportMarkdown, /disparo confirmado/);
+      assert.match(result.reportMarkdown, /--finalize falhou/);
+      const finalizeCalls = calls.filter((c) => c.script === "scripts/clarice-novos-html-state.ts" && c.args.includes("--finalize"));
+      assert.equal(finalizeCalls.length, 1, "--finalize DEVE ser tentado, só a falha dele não derruba o resultado");
+      rmSync(root, { recursive: true, force: true });
+    });
+  });
+
+  describe("Passo 0: store derivado stale (#4949 achado 3, agente de test-coverage)", () => {
+    it("clarice-check-derived-stale devolve 'stale' -> roda clarice-build-db extra ANTES do delta Stripe", async () => {
+      root = freshRoot();
+      const handlers = goldenHandlers();
+      handlers["scripts/clarice-check-derived-stale.ts"] = textResult("stale");
+      const { exec, calls } = makeFakeExec(handlers);
+      const deps = baseDeps(root, { exec });
+      const result = await runNovos([], deps);
+      assert.equal(result.code, 0, result.reportMarkdown);
+      const scripts = calls.map((c) => c.script);
+      // stale -> check-derived-stale, build-db(pré-stale), stripe-delta, build-db(pós-delta), ...
+      assert.deepEqual(scripts.slice(0, 4), [
+        "scripts/clarice-check-derived-stale.ts",
+        "scripts/clarice-build-db.ts",
+        "scripts/clarice-stripe-delta.ts",
+        "scripts/clarice-build-db.ts",
+      ]);
+      assert.match(result.reportMarkdown, /stale/);
+      rmSync(root, { recursive: true, force: true });
+    });
+  });
+
+  describe("--label carrega a key resolvida, não só a data (#4949 achado 1, idempotência de retry no mesmo dia)", () => {
+    it("clarice-import-waves recebe --label com a key embutida", async () => {
+      root = freshRoot();
+      const { exec, calls } = makeFakeExec(goldenHandlers());
+      const deps = baseDeps(root, { exec });
+      await runNovos([], deps);
+      const importCall = calls.find((c) => c.script === "scripts/clarice-import-waves.ts")!;
+      const label = importCall.args[importCall.args.indexOf("--label") + 1];
+      assert.match(label, /novos-260810/, `--label deveria carregar a key resolvida, veio: "${label}"`);
+    });
   });
 
   // ── relatório sempre gravado ─────────────────────────────────────────────
@@ -489,10 +565,8 @@ describe("clarice-novos-run (#4941)", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("NovosAbort carrega code=1 por default", () => {
+  it("NovosAbort sempre carrega code=1 (o código 2 nunca passa por exceção, ver #4949)", () => {
     const e = new NovosAbort("x");
     assert.equal(e.code, 1);
-    const e2 = new NovosAbort("y", 2);
-    assert.equal(e2.code, 2);
   });
 });
