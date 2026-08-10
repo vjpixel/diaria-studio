@@ -88,7 +88,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "powershell -NoProfile -Command \"(New-Object Media.SoundPlayer 'C:\\Windows\\Media\\Windows Notify System Generic.wav').PlaySync()\""
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/notify-sound.mjs\" notification",
+            "shell": "bash"
           }
         ]
       }
@@ -98,7 +99,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "powershell -NoProfile -Command \"(New-Object Media.SoundPlayer 'C:\\Windows\\Media\\Windows Notify Messaging.wav').PlaySync()\""
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/notify-sound.mjs\" stop",
+            "shell": "bash"
           }
         ]
       }
