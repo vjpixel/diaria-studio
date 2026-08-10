@@ -70,8 +70,10 @@ Saída (`WaveProposal`) traz, entre outras coisas:
   volume, status e data.
 - `state.volumeComplete` — `false` significa que o total já enviado é um
   **piso**, não um número exato. Nunca apresentar como exato nesse caso.
-- `state.scheduledCount` — campanhas ainda agendadas. Imutáveis; seus
-  destinatários já estão congelados.
+- `state.scheduledCount` — campanhas ainda agendadas. Editáveis via API
+  (`PUT /emailCampaigns/{id}`, inclusive `scheduledAt`) ou canceláveis
+  (`PUT .../status` com `cancel`/`suspended`) — não são estado terminal,
+  ver #4935 — mas seus destinatários já estão congelados no agendamento.
 - `staleNote` — preenchido quando o dashboard serviu **cache**. A idade real
   vem junto (`~3.2h stale`). Reportar sempre ao editor — nunca decidir volume
   sobre cache sem dizer que é cache.

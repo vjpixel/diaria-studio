@@ -963,8 +963,10 @@ export interface CampaignsReadyCheck {
  * chegar na wave sem campanha — e como `applyVerifyResults` (que persiste
  * `status: "scheduled"`) só roda UMA VEZ após o loop inteiro, as waves já
  * agendadas no Brevo nunca tinham seu estado local atualizado (campanhas
- * agendadas são imutáveis na Brevo — um retry tentaria re-agendar via PUT
- * algo que já foi aceito). Um `--create` incompleto agora bloqueia
+ * agendadas SÃO editáveis via `PUT /emailCampaigns/{id}` na Brevo, #4935 —
+ * um retry indevido tentaria re-PUTar via API algo que já foi aceito, o que
+ * não falha mas é redundante e confunde o rastro de estado local). Um
+ * `--create` incompleto agora bloqueia
  * `--schedule` pra TODAS as waves com um erro claro upfront, em vez de
  * agendar parcialmente e perder o rastro do estado. Pura, testável.
  */
@@ -1440,8 +1442,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       // ao chegar na wave sem campanha — e como `applyVerifyResults` só roda
       // UMA VEZ após o loop inteiro, as waves já agendadas no Brevo nunca
       // tinham seu `status: "scheduled"` persistido localmente (campanhas
-      // agendadas são imutáveis na Brevo — um retry tentaria re-PUTar algo
-      // já aceito). Um --create incompleto agora bloqueia --schedule pra
+      // agendadas SÃO editáveis via PUT na Brevo, #4935 — um retry indevido
+      // tentaria re-PUTar algo já aceito, redundante mas não fatal). Um
+      // --create incompleto agora bloqueia --schedule pra
       // TODAS as waves com um erro claro upfront, antes de qualquer chamada real.
       const readyCheck = checkAllCampaignsCreated(campaignsView);
       if (!readyCheck.ready) {
