@@ -24,11 +24,13 @@
  * `--panel` (#4900 item a, default `geral`): qual conjunto de perguntas
  * rodar — `geral` são as 8 originais (`GEO_QUESTIONS`, posicionamento da
  * diar.ia.br); `hubs` é o painel temático novo (`GEO_HUB_QUESTIONS`, cobre
- * o que as páginas `arquivo.diar.ia.br/temas/{slug}` respondem). **`hubs`
- * fica de fora do cron da task `Diaria-Geo-Citation-Monitor` por padrão
- * ainda** — o mecanismo já existe e é testável, mas ativar um 2º painel
- * antes de fechar o duplo escritor (#4900 item c / épica #4798) multiplica
- * o registro perdido a cada rodada. Ver docstring de `GEO_HUB_QUESTIONS`.
+ * o que as páginas `arquivo.diar.ia.br/temas/{slug}` respondem). **Desde
+ * 10/08/2026 os DOIS painéis rodam no cron** da task
+ * `Diaria-Geo-Citation-Monitor`, como 2 passos independentes — o duplo
+ * escritor que segurava a ativação foi fechado (#4806/#4807) e o arquivo de
+ * conflito, investigado e removido (#4900 item c). Ver docstring de
+ * `GEO_HUB_QUESTIONS` pro porquê de a lista de perguntas NÃO ser derivada
+ * do registry de hubs.
  *
  * Exit (invocação manual, default): 0 sempre que rodar sem exceção
  * não-tratada (mesmo se todos os providers estiverem sem key — isso é

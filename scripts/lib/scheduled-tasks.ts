@@ -217,7 +217,17 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-Geo-Citation-Monitor",
     description: "monitor semanal de citacao por assistente de IA",
-    steps: [{ key: "monitor", script: "scripts/geo-citation-monitor.ts", args: ["--strict"] }],
+    // Dois painéis, dois passos independentes (#4900 item a). O passo `hubs`
+    // foi ativado em 10/08/2026: ele estava pronto e desligado esperando o
+    // fim do duplo escritor (#4806/#4807, ambas fechadas) e a resolução do
+    // arquivo de conflito (item c — investigado, era subconjunto estrito do
+    // arquivo bom, removido). Passos separados e não um flag só porque cada
+    // painel tem a própria série e o próprio baseline: se um provedor cair
+    // no `geral`, o `hubs` daquela semana ainda é registrado.
+    steps: [
+      { key: "monitor", script: "scripts/geo-citation-monitor.ts", args: ["--strict"] },
+      { key: "monitor-hubs", script: "scripts/geo-citation-monitor.ts", args: ["--panel", "hubs", "--strict"] },
+    ],
     logPath: "geo-citations/.monitor.log",
     // Domingo 07:00 (mudou de segunda 10:30, decisão do editor 260810 —
     // consolidar as semanais na manhã de domingo): ainda depois do
@@ -225,7 +235,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // (08:30, roda todo dia incl. domingo) — sem colisão de horário.
     schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 7, minute: 0 },
     legacySetupScript: "scripts/setup-geo-citation-monitor-schedule.ps1",
-    issue: "#4558 Parte C, #4754",
+    issue: "#4558 Parte C, #4754, #4900",
   },
   {
     name: "Diaria-Geo-Citation-Staleness-Alarm",

@@ -80,11 +80,30 @@ export type GeoQuestionPanel = "geral" | "hubs";
  * invalidaria essa série (achado #4900, citando o comentário de 07/ago na
  * #4558 que já tinha amarrado as 8 perguntas originais à decisão antes do
  * resultado). Baseline/data de início própria deste painel: ver comentário
- * do F-17 (#4558) — registrado lá antes da 1ª rodada real. **Não fica ativo
- * no cron por padrão ainda** — a ativação depende do #4900 item c/#4798
- * (fechar o duplo escritor primeiro, senão cada painel novo multiplica
- * registro perdido); ver `--panel` em `scripts/geo-citation-monitor.ts`.
- * Sem Meta/Meta AI: não existe hub `meta-*` em `scripts/lib/hubs/` hoje. */
+ * do F-17 (#4558) — registrado lá antes da 1ª rodada real.
+ *
+ * **Ativo no cron desde 10/08/2026** (#4900). A ativação estava condicionada
+ * a fechar o duplo escritor primeiro (item c / épica #4798), senão cada
+ * painel novo multiplicaria registro perdido a cada rodada. Condição
+ * cumprida: #4806 desarmou as tasks do Windows e #4807 armou as do Linux, e
+ * a investigação do item c mostrou que o arquivo de conflito era subconjunto
+ * estrito do bom (nenhuma medição perdida) — os dois arquivos de conflito
+ * foram removidos.
+ *
+ * **A lista é escrita à mão de propósito, e NÃO deve ser derivada de
+ * `HUB_META`/`HUB_LOADERS`.** É contraintuitivo — o contrato de prosa do
+ * #4899 fez exatamente o contrário, iterando o registry pra que hub futuro
+ * nascesse coberto —, mas aqui o efeito seria o oposto do desejado:
+ * publicar um hub novo passaria a MUTAR o instrumento de medição no meio da
+ * série, que é precisamente o que a regra de parada de outubro proíbe
+ * (comentário de 07/08 na #4558: trocar as perguntas depois de ver o
+ * resultado invalida a comparação). Um lint que ADICIONA pergunta sozinho
+ * contamina a série; um que AVISA que falta pergunta, não. Por isso a
+ * cobertura é garantida por guard, não por derivação — ver
+ * `test/geo-hub-questions-cobrem-hubs-4900.test.ts`, que reprova quando
+ * `HUB_META` tem hub sem pergunta correspondente. Quando esse teste
+ * quebrar, a decisão é do editor: acrescentar as perguntas e RESETAR o
+ * baseline, ou registrar que o hub novo fica fora da série corrente. */
 export const GEO_HUB_QUESTIONS: readonly string[] = [
   "O que aconteceu com a Anthropic em 2026?",
   "Quando saiu o Claude Opus 5?",
@@ -92,6 +111,11 @@ export const GEO_HUB_QUESTIONS: readonly string[] = [
   "Quanto vale a OpenAI hoje?",
   "O que aconteceu com o Google Gemini em 2026?",
   "O Gemini já superou o ChatGPT em algum ranking?",
+  // #4900: o hub Meta/Meta AI foi publicado em 10/08 (#4926) e o painel
+  // ficou sem pergunta pra ele — acrescentadas ANTES da 1ª rodada real, que
+  // é a única janela em que dá pra mexer sem invalidar a série.
+  "O que aconteceu com a Meta e a IA em 2026?",
+  "Por que a Meta abandonou o open source do Llama?",
   "Como está a disputa entre OpenAI, Google e Anthropic em 2026?",
   "Qual foi o maior investimento em infraestrutura de IA anunciado em 2026?",
 ] as const;
