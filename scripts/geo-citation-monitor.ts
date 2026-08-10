@@ -15,11 +15,20 @@
  * contra documentação ao vivo (Anthropic foi, via a skill `claude-api`).
  *
  * Uso:
- *   npx tsx scripts/geo-citation-monitor.ts [--dry-run] [--out <path>]
+ *   npx tsx scripts/geo-citation-monitor.ts [--dry-run] [--out <path>] [--panel geral|hubs]
  *
  * `--dry-run`: não faz nenhuma chamada de rede nem escreve o log — só
  * imprime quais providers estão configurados (key presente) e as perguntas
  * que seriam consultadas. Útil pra verificar o mecanismo sem gastar tokens.
+ *
+ * `--panel` (#4900 item a, default `geral`): qual conjunto de perguntas
+ * rodar — `geral` são as 8 originais (`GEO_QUESTIONS`, posicionamento da
+ * diar.ia.br); `hubs` é o painel temático novo (`GEO_HUB_QUESTIONS`, cobre
+ * o que as páginas `arquivo.diar.ia.br/temas/{slug}` respondem). **`hubs`
+ * fica de fora do cron da task `Diaria-Geo-Citation-Monitor` por padrão
+ * ainda** — o mecanismo já existe e é testável, mas ativar um 2º painel
+ * antes de fechar o duplo escritor (#4900 item c / épica #4798) multiplica
+ * o registro perdido a cada rodada. Ver docstring de `GEO_HUB_QUESTIONS`.
  *
  * Exit (invocação manual, default): 0 sempre que rodar sem exceção
  * não-tratada (mesmo se todos os providers estiverem sem key — isso é
@@ -38,14 +47,21 @@
  * `run-geo-citation-monitor.ps1`, e só ele.
  */
 import "dotenv/config";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import {
   GEO_PROVIDERS,
   GEO_QUESTIONS,
+  GEO_HUB_QUESTIONS,
   DEFAULT_GEO_CITATIONS_LOG_PATH,
   appendGeoCitationLog,
   runGeoCitationMonitor,
   summarizeGeoCitationRecords,
+  latestRoundProviders,
+  detectProviderDrop,
+  detectSafeBackupConflictFiles,
+  type GeoQuestionPanel,
 } from "./lib/geo-citation-monitor.ts";
 import type { GeoCitationRecord } from "./lib/geo-citation-monitor.ts";
 
@@ -115,6 +131,58 @@ export function resolveStrictOutcome(
   };
 }
 
+/**
+ * Lê `history.jsonl` e devolve só `{date, provider}` dos registros do painel
+ * pedido (#4900 item b) — legado sem `panel` conta como `"geral"`, mesma
+ * regra de leitura do resto do módulo. Fail-soft linha a linha (uma linha
+ * corrompida não invalida as outras, mesmo espírito de `readLatestGeoCitationTs`
+ * em `scripts/geo-citation-staleness-alarm.ts`). Exportada pra teste direto
+ * via arquivo temporário real (mesmo padrão de `readLatestGeoCitationTs`).
+ */
+export function readHistoryRecordsForPanel(
+  historyPath: string,
+  panel: GeoQuestionPanel,
+): Array<Pick<GeoCitationRecord, "date" | "provider">> {
+  if (!existsSync(historyPath)) return [];
+  let raw: string;
+  try {
+    raw = readFileSync(historyPath, "utf8");
+  } catch {
+    return [];
+  }
+  const out: Array<Pick<GeoCitationRecord, "date" | "provider">> = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const r = JSON.parse(line) as Partial<GeoCitationRecord>;
+      if (typeof r.date !== "string" || typeof r.provider !== "string") continue;
+      const recordPanel: GeoQuestionPanel = r.panel === "hubs" ? "hubs" : "geral";
+      if (recordPanel !== panel) continue;
+      out.push({ date: r.date, provider: r.provider });
+    } catch {
+      continue;
+    }
+  }
+  return out;
+}
+
+/**
+ * Lista, no diretório do log, arquivos que batem o padrão de conflito de
+ * escrita do cliente OneDrive (#4900 item c) — wrapper de I/O em volta de
+ * `detectSafeBackupConflictFiles` (pure). Fail-soft: diretório ausente (ex:
+ * sessão cloud sem o junction `data/`) devolve `[]`, nunca lança. Exportada
+ * pra teste via diretório temporário real.
+ */
+export function listSafeBackupConflictFiles(logPath: string): string[] {
+  let entries: string[];
+  try {
+    entries = readdirSync(dirname(logPath));
+  } catch {
+    return [];
+  }
+  return detectSafeBackupConflictFiles(entries);
+}
+
 async function main(): Promise<number> {
   const { flags, values } = parseCliArgs(process.argv.slice(2));
   const dryRun = flags.has("dry-run");
@@ -122,11 +190,15 @@ async function main(): Promise<number> {
   // válido (#4616), mas no caminho agendado exit 0 sem medição é mentira.
   const strict = flags.has("strict");
   const outPath = values["out"] ?? DEFAULT_GEO_CITATIONS_LOG_PATH;
+  // #4900 item a: painel "geral" (default, GEO_QUESTIONS) ou "hubs"
+  // (GEO_HUB_QUESTIONS) — qualquer outro valor cai em "geral".
+  const panel: GeoQuestionPanel = values["panel"] === "hubs" ? "hubs" : "geral";
+  const questions = panel === "hubs" ? GEO_HUB_QUESTIONS : GEO_QUESTIONS;
 
   const configured = GEO_PROVIDERS.filter((p) => Boolean(process.env[p.envKey]));
   const missing = GEO_PROVIDERS.filter((p) => !process.env[p.envKey]);
 
-  console.log(`[geo-citation-monitor] ${GEO_QUESTIONS.length} perguntas fixas configuradas.`);
+  console.log(`[geo-citation-monitor] painel "${panel}": ${questions.length} perguntas fixas configuradas.`);
   console.log(
     `[geo-citation-monitor] providers com API key: ${configured.length ? configured.map((p) => p.label).join(", ") : "nenhum"}.`,
   );
@@ -136,9 +208,21 @@ async function main(): Promise<number> {
     );
   }
 
+  // #4900 item c: aviso (NÃO resolução) de conflito de escrita OneDrive —
+  // roda sempre, inclusive em --dry-run, porque é barato e independe de
+  // fazer alguma chamada de rede nesta execução.
+  const conflictFiles = listSafeBackupConflictFiles(outPath);
+  if (conflictFiles.length > 0) {
+    console.warn(
+      `[geo-citation-monitor] AVISO: arquivo(s) de conflito de escrita OneDrive em ${dirname(outPath)}: ${conflictFiles.join(", ")}. ` +
+        "Indica 2+ máquinas escrevendo o log na mesma janela — dado pode estar órfão nesse(s) arquivo(s) (#4900 item c). " +
+        "NÃO resolvido automaticamente; reconciliar manualmente antes de confiar na série.",
+    );
+  }
+
   if (dryRun) {
     console.log("[geo-citation-monitor] --dry-run: nenhuma chamada de rede, nenhuma escrita. Perguntas:");
-    for (const q of GEO_QUESTIONS) console.log(`  - ${q}`);
+    for (const q of questions) console.log(`  - ${q}`);
     return 0;
   }
 
@@ -160,7 +244,12 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  const records = await runGeoCitationMonitor(process.env);
+  // #4900 item b: providers da rodada anterior deste MESMO painel, lidos
+  // ANTES de anexar os registros desta rodada — senão a rodada atual se
+  // compararia contra si mesma.
+  const previousRound = latestRoundProviders(readHistoryRecordsForPanel(outPath, panel));
+
+  const records = await runGeoCitationMonitor(process.env, questions, undefined, undefined, undefined, undefined, panel);
   appendGeoCitationLog(records, outPath);
 
   const summary = summarizeGeoCitationRecords(records);
@@ -169,6 +258,23 @@ async function main(): Promise<number> {
   );
   for (const [providerId, s] of Object.entries(summary.byProvider)) {
     console.log(`  - ${providerId}: ${s.cited}/${s.total} citaram`);
+  }
+
+  // #4900 item b: a rodada atual RODOU (chegou até aqui, então >=1 provider
+  // configurado) mas com menos providers que a rodada anterior do mesmo
+  // painel — sinal que hoje só era recuperável contando linha por linha em
+  // history.jsonl. Não é fatal (nunca muda o exit code) — é um aviso, no
+  // molde do aviso de 429 acima, capturado pelo mesmo `.monitor.log`.
+  if (previousRound) {
+    const currentProviderIds = configured.map((p) => p.id);
+    const dropCheck = detectProviderDrop(previousRound.providers, currentProviderIds);
+    if (dropCheck.dropped) {
+      console.warn(
+        `[geo-citation-monitor] AVISO: rodada atual (painel "${panel}") tem MENOS providers que a rodada anterior de ${previousRound.date} ` +
+          `(${previousRound.providers.join(", ")}) — faltando: ${dropCheck.droppedProviders.join(", ")}. ` +
+          "Verifique as API keys nesta máquina (#4900 item b).",
+      );
+    }
   }
 
   // Falha TOTAL (100% das consultas erraram) sob `--strict`. Key expirada,

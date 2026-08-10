@@ -10,11 +10,17 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { resolve, dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-import { main, resolveStrictOutcome } from "../scripts/geo-citation-monitor.ts";
+import {
+  main,
+  resolveStrictOutcome,
+  readHistoryRecordsForPanel,
+  listSafeBackupConflictFiles,
+} from "../scripts/geo-citation-monitor.ts";
 import { GEO_PROVIDERS } from "../scripts/lib/geo-citation-monitor.ts";
 import type { GeoCitationRecord } from "../scripts/lib/geo-citation-monitor.ts";
 
@@ -91,6 +97,103 @@ describe("scripts/geo-citation-monitor.ts main() (#4558 Parte C)", () => {
     const code = await main();
     assert.equal(code, 0);
     assert.ok(logs.some((l) => l.includes("Claude (Anthropic)")));
+  });
+
+  describe("--panel (#4900 item a)", () => {
+    it("--dry-run --panel hubs imprime as perguntas do painel de hubs, não as de GEO_QUESTIONS", async () => {
+      process.argv = ["node", "geo-citation-monitor.ts", "--dry-run", "--panel", "hubs"];
+      const code = await main();
+      assert.equal(code, 0);
+      assert.ok(logs.some((l) => l.includes('painel "hubs"')));
+      assert.ok(logs.some((l) => l.includes("Anthropic")), "esperava alguma pergunta do painel de hubs mencionando Anthropic");
+      assert.ok(!logs.some((l) => l.includes("newsletter diária")), "não deveria imprimir pergunta do painel 'geral'");
+    });
+
+    it("sem --panel: default continua 'geral' (comportamento pré-#4900 preservado)", async () => {
+      process.argv = ["node", "geo-citation-monitor.ts", "--dry-run"];
+      const code = await main();
+      assert.equal(code, 0);
+      assert.ok(logs.some((l) => l.includes('painel "geral"')));
+    });
+
+    it("--panel com valor inválido cai em 'geral', não quebra", async () => {
+      process.argv = ["node", "geo-citation-monitor.ts", "--dry-run", "--panel", "lixo"];
+      const code = await main();
+      assert.equal(code, 0);
+      assert.ok(logs.some((l) => l.includes('painel "geral"')));
+    });
+  });
+});
+
+describe("readHistoryRecordsForPanel (scripts/geo-citation-monitor.ts, I/O real via tmpdir — #4900 item b)", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "geo-citation-history-panel-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("arquivo inexistente -> []", () => {
+    assert.deepEqual(readHistoryRecordsForPanel(resolve(tmpDir, "nao-existe.jsonl"), "geral"), []);
+  });
+
+  it("filtra pelo painel pedido; registro legado sem 'panel' conta como 'geral'", () => {
+    const path = resolve(tmpDir, "history.jsonl");
+    const lines = [
+      JSON.stringify({ date: "2026-08-03", provider: "openai" }), // legado, sem panel
+      JSON.stringify({ date: "2026-08-03", provider: "google", panel: "geral" }),
+      JSON.stringify({ date: "2026-08-03", provider: "anthropic", panel: "hubs" }),
+    ];
+    writeFileSync(path, lines.join("\n") + "\n");
+
+    const geral = readHistoryRecordsForPanel(path, "geral");
+    assert.equal(geral.length, 2);
+    assert.deepEqual(
+      geral.map((r) => r.provider).sort(),
+      ["google", "openai"],
+    );
+
+    const hubs = readHistoryRecordsForPanel(path, "hubs");
+    assert.equal(hubs.length, 1);
+    assert.equal(hubs[0].provider, "anthropic");
+  });
+
+  it("linha corrompida não invalida as outras (fail-soft linha a linha)", () => {
+    const path = resolve(tmpDir, "history.jsonl");
+    writeFileSync(path, "não é json\n" + JSON.stringify({ date: "2026-08-03", provider: "openai" }) + "\n");
+    assert.deepEqual(readHistoryRecordsForPanel(path, "geral"), [{ date: "2026-08-03", provider: "openai" }]);
+  });
+});
+
+describe("listSafeBackupConflictFiles (scripts/geo-citation-monitor.ts, I/O real via tmpdir — #4900 item c)", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "geo-citation-conflict-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("diretório sem conflito -> []", () => {
+    writeFileSync(resolve(tmpDir, "history.jsonl"), "");
+    assert.deepEqual(listSafeBackupConflictFiles(resolve(tmpDir, "history.jsonl")), []);
+  });
+
+  it("diretório com arquivo -safeBackup- -> devolve o nome do arquivo", () => {
+    writeFileSync(resolve(tmpDir, "history.jsonl"), "");
+    writeFileSync(resolve(tmpDir, "history-predator-safeBackup-0001.jsonl"), "");
+    assert.deepEqual(listSafeBackupConflictFiles(resolve(tmpDir, "history.jsonl")), [
+      "history-predator-safeBackup-0001.jsonl",
+    ]);
+  });
+
+  it("diretório inexistente -> [] (fail-soft, ex: sessão cloud sem o junction data/)", () => {
+    assert.deepEqual(listSafeBackupConflictFiles(resolve(tmpDir, "subdir-inexistente", "history.jsonl")), []);
   });
 });
 
