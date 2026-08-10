@@ -38,7 +38,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `has-negative-impact-highlight` | ≥1 destaque tagueado negative_impact:true (#3916, #3918, warning-only) | #3916 |
 | `no-placeholder-title-highlights` | highlights[] nunca contém item com título placeholder não-enriquecido (#4102) | #4102 |
 | `no-use-melhor-highlights` | highlights[] nunca contém item do bucket USE MELHOR/tutorial (#3436) | #3436 |
-| `url-matches-article-url` | url === article.url em todo highlight de highlights[] (#4837) | #4837 |
+| `url-matches-article-url` | url === article.url em todo item de highlights[] e runners_up[] (#4837, #4865) | #4837 |
 
 ## Stage 2 — Escrita
 
