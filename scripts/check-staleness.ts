@@ -35,7 +35,7 @@
  *   1 = stale detectado (orchestrator decide: re-rodar upstream ou continuar)
  *   2 = erro (edition-dir não existe, args inválidos)
  *
- * Refs #120, #1710, #2287.
+ * Refs #120, #1710, #2287, #4832.
  */
 
 import { existsSync, statSync, readFileSync } from "node:fs";
@@ -52,6 +52,7 @@ import {
   REQUIRED_IMAGES_BASE,
   REQUIRED_IMAGES_D3,
 } from "./lib/invariant-checks/stage-3.ts";
+import { parseDestaques, type Destaque } from "./extract-destaques.ts";
 
 // ---------------------------------------------------------------------------
 // Params de tracking que a versão local (normalizeUrl pré-#2308) stripava
@@ -286,12 +287,25 @@ export function lagMinutes(downstreamMs: number, upstreamMs: number): number {
  *                       imagem serve o artigo atual (URL match via prompt
  *                       frontmatter) → suprimir falso-positivo de mtime.
  *                       Omitido = nunca suprimir (comportamento pré-#2287).
+ * @param getTextContentFresh  Getter de freshness de CONTEÚDO (#4832), análogo
+ *                       a `getImageFresh` mas para downstream de texto (hoje só
+ *                       `03-social.md`). mtime continua sendo o gatilho barato:
+ *                       este getter só é consultado quando o downstream JÁ foi
+ *                       flagueado stale por mtime, e retorna true quando o
+ *                       conteúdo dos destaques D1/D2/D3 (extraído de
+ *                       `02-reviewed.md`) ainda bate com as seções `## dN`
+ *                       correspondentes em `03-social.md` — ou seja, a
+ *                       divergência de mtime veio de uma edição COSMÉTICA fora
+ *                       dos destaques (#4832), não de um destaque genuinamente
+ *                       alterado. Omitido = nunca suprimir (comportamento
+ *                       pré-#4832).
  */
 export function evaluateStaleness(
   checks: StageCheck[],
   getMtime: (relPath: string) => number | null,
   toleranceMs = 1000,
   getImageFresh?: (relPath: string) => boolean,
+  getTextContentFresh?: (relPath: string) => boolean,
 ): StaleEntry[] {
   const stale: StaleEntry[] = [];
   for (const check of checks) {
@@ -306,6 +320,16 @@ export function evaluateStaleness(
       if (getImageFresh && isImagePath(check.downstream)) {
         if (getImageFresh(check.downstream)) {
           continue; // imagem fresca — FP de mtime suprimido
+        }
+      }
+
+      // #4832: para texto (não-imagem), suprimir FP de mtime quando o
+      // conteúdo dos destaques ainda bate entre downstream e upstream —
+      // mtime segue como gatilho barato: só chega aqui quando isStale() já
+      // vai avaliar true logo abaixo.
+      if (getTextContentFresh && !isImagePath(check.downstream)) {
+        if (getTextContentFresh(check.downstream)) {
+          continue; // conteúdo dos destaques ainda bate — FP de mtime suprimido
         }
       }
 
@@ -388,6 +412,187 @@ export function buildGetImageFresh(
 }
 
 // ---------------------------------------------------------------------------
+// social-content-fresh helpers (#4832)
+// ---------------------------------------------------------------------------
+
+/**
+ * Comprimento mínimo (chars) de token considerado "significativo" para o
+ * overlap de conteúdo (#4832). Um corte simples por tamanho — sem lista de
+ * stopwords pt-BR dedicada — já exclui a esmagadora maioria de artigos/
+ * preposições/conjunções curtas ("a", "o", "de", "em", "que", "com") e não
+ * precisa de manutenção.
+ */
+const SIGNIFICANT_TOKEN_MIN_LEN = 5;
+
+/**
+ * Fração mínima de tokens significativos do destaque (título+corpo+why, de
+ * `02-reviewed.md`) que precisam aparecer na seção `## dN` correspondente de
+ * `03-social.md` para considerar o conteúdo "ainda em sincronia" (#4832). O
+ * texto social é uma reescrita, nunca uma cópia literal — o limiar é
+ * calibrado para tolerar paráfrase normal (troca de conectivos, resumo)
+ * mantendo os fatos/entidades centrais, mas ainda pegar um destaque
+ * genuinamente trocado (zero overlap de vocabulário).
+ */
+export const SOCIAL_CONTENT_OVERLAP_THRESHOLD = 0.3;
+
+/**
+ * Extrai o conjunto de tokens "significativos" (>= SIGNIFICANT_TOKEN_MIN_LEN
+ * chars) de um texto — lowercase, sequências de letras Unicode. Usado tanto
+ * para o lado `02-reviewed.md` (vocabulário de referência) quanto para o
+ * lado `03-social.md` (texto onde procuramos esse vocabulário).
+ */
+export function significantTokens(text: string): Set<string> {
+  const words = text.toLowerCase().match(/\p{L}+/gu) ?? [];
+  return new Set(words.filter((w) => w.length >= SIGNIFICANT_TOKEN_MIN_LEN));
+}
+
+/**
+ * Fração dos tokens de `reviewedTokens` que aparecem em `socialText`
+ * (recall — o quanto do vocabulário do destaque sobrevive na versão social).
+ * `reviewedTokens` vazio retorna 0 (nada pra comparar — tratado como
+ * "não fresco" pelo caller, conservador).
+ */
+export function contentOverlapRatio(
+  reviewedTokens: Set<string>,
+  socialText: string,
+): number {
+  if (reviewedTokens.size === 0) return 0;
+  const socialTokens = significantTokens(socialText);
+  let matched = 0;
+  for (const t of reviewedTokens) {
+    if (socialTokens.has(t)) matched++;
+  }
+  return matched / reviewedTokens.size;
+}
+
+/**
+ * True se o conteúdo do destaque (`title`+`body`+`why`, extraído de
+ * `02-reviewed.md` via `parseDestaques`) ainda está refletido na seção
+ * `## dN` correspondente de `03-social.md` — overlap de vocabulário
+ * significativo >= `SOCIAL_CONTENT_OVERLAP_THRESHOLD`.
+ */
+export function destaqueContentMatches(
+  destaque: Pick<Destaque, "title" | "body" | "why">,
+  socialSectionText: string,
+  threshold = SOCIAL_CONTENT_OVERLAP_THRESHOLD,
+): boolean {
+  const reviewedTokens = significantTokens(
+    `${destaque.title} ${destaque.body} ${destaque.why}`,
+  );
+  if (reviewedTokens.size === 0) return true; // nada significativo pra comparar — não bloquear
+  return contentOverlapRatio(reviewedTokens, socialSectionText) >= threshold;
+}
+
+/**
+ * Extrai as seções `## d1` / `## d2` / `## d3` de dentro do bloco `# Social`
+ * de `03-social.md` (#4832). Escopado ao `# Social` de propósito: o arquivo
+ * também tem um bloco `# Curto` mais abaixo com as MESMAS chaves `## d1/d2/d3`
+ * (texto curto Twitter/Threads, #3992) — sem esse escopo, a última ocorrência
+ * de cada chave (a do `# Curto`) sobrescreveria a do `# Social`, que é a que
+ * de fato deriva do corpo/why do destaque.
+ *
+ * Para de coletar assim que encontra outro heading de nível 1 (`# `) depois
+ * do `# Social` — é o que delimita o fim do bloco.
+ */
+export function extractSocialDestaqueSections(
+  socialMd: string,
+): Record<string, string> {
+  const lines = socialMd.replace(/\r\n/g, "\n").split("\n");
+  const sections: Record<string, string> = {};
+  let insideSocialBlock = false;
+  let currentSlot: string | null = null;
+  let buf: string[] = [];
+
+  const flush = () => {
+    if (currentSlot) sections[currentSlot] = buf.join("\n").trim();
+    currentSlot = null;
+    buf = [];
+  };
+
+  for (const line of lines) {
+    const topLevelHeading = line.match(/^#\s+(.+?)\s*$/);
+    if (topLevelHeading) {
+      flush();
+      if (/^social$/i.test(topLevelHeading[1].trim())) {
+        insideSocialBlock = true;
+        continue;
+      }
+      // Qualquer outro heading nível 1 (ex: "# Curto") fecha a coleta — só
+      // nos importa o PRIMEIRO bloco "# Social" do arquivo.
+      if (insideSocialBlock) break;
+      continue;
+    }
+    if (!insideSocialBlock) continue;
+
+    const slotHeading = line.match(/^##\s+(d[123])\s*$/i);
+    if (slotHeading) {
+      flush();
+      currentSlot = slotHeading[1].toLowerCase();
+      continue;
+    }
+    if (/^##\s+/.test(line)) {
+      // Outra subseção (## eia, ## post_pixel, ...) fecha o slot em progresso.
+      flush();
+      continue;
+    }
+    if (currentSlot) buf.push(line);
+  }
+  flush();
+
+  return sections;
+}
+
+/**
+ * Constrói um `getTextContentFresh` (#4832) a partir do editionDir — o
+ * irmão texto de `buildGetImageFresh`. Extrai os destaques D1/D2/D3 de
+ * `02-reviewed.md` (via `parseDestaques`, extract-destaques.ts) e as seções
+ * `## dN` correspondentes de `03-social.md`, e retorna true (suprimir FP de
+ * mtime) somente quando TODOS os destaques comparáveis ainda batem
+ * conteúdo-a-conteúdo.
+ *
+ * Conservador: qualquer coisa que impeça a comparação (arquivo ausente,
+ * ilegível, sem destaques extraíveis, nenhuma seção correspondente
+ * encontrada) retorna `undefined` — degrada para mtime puro, igual ao
+ * comportamento pré-#4832, em vez de arriscar suprimir um falso-negativo.
+ */
+export function buildGetSocialContentFresh(
+  editionDir: string,
+): ((relPath: string) => boolean) | undefined {
+  const reviewedPath = resolve(editionDir, "02-reviewed.md");
+  const socialPath = resolve(editionDir, "03-social.md");
+  if (!existsSync(reviewedPath) || !existsSync(socialPath)) return undefined;
+
+  let destaques: Destaque[];
+  let socialSections: Record<string, string>;
+  try {
+    destaques = parseDestaques(readFileSync(reviewedPath, "utf8"));
+    socialSections = extractSocialDestaqueSections(
+      readFileSync(socialPath, "utf8"),
+    );
+  } catch {
+    return undefined; // reviewed/social ilegíveis → degradação
+  }
+  if (destaques.length === 0) return undefined;
+
+  const slots = ["d1", "d2", "d3"] as const;
+  let comparedAny = false;
+  let allMatch = true;
+  for (let i = 0; i < destaques.length && i < slots.length; i++) {
+    const socialText = socialSections[slots[i]];
+    if (socialText === undefined) continue; // seção ausente — não dá pra comparar esse slot
+    comparedAny = true;
+    if (!destaqueContentMatches(destaques[i], socialText)) {
+      allMatch = false;
+      break;
+    }
+  }
+  if (!comparedAny) return undefined; // nada comparável — degradar pra mtime puro
+
+  const fresh = allMatch;
+  return (relPath: string) => relPath === "03-social.md" && fresh;
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
@@ -433,7 +638,13 @@ function main(): void {
   // sem destaque_url → getImageFresh = undefined → fallback para mtime puro.
   const getImageFresh = buildGetImageFresh(editionDir);
 
-  const stale = evaluateStaleness(checks, getMtime, 1000, getImageFresh);
+  // #4832: suprimir FP de mtime em 03-social.md quando o conteúdo dos
+  // destaques D1/D2/D3 ainda bate com 02-reviewed.md — mtime lag pode vir de
+  // uma edição cosmética em OUTRA parte do reviewed.md (ex: box "Vale a pena
+  // conhecer"), não de um destaque de fato alterado.
+  const getSocialContentFresh = buildGetSocialContentFresh(editionDir);
+
+  const stale = evaluateStaleness(checks, getMtime, 1000, getImageFresh, getSocialContentFresh);
   const result: StalenessResult = {
     ok: stale.length === 0,
     stage: parsed.stage,

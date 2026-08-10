@@ -13,6 +13,12 @@ import {
   extractPromptUrlLocal,
   imageUrlsMatch,
   buildGetImageFresh,
+  significantTokens,
+  contentOverlapRatio,
+  destaqueContentMatches,
+  extractSocialDestaqueSections,
+  buildGetSocialContentFresh,
+  SOCIAL_CONTENT_OVERLAP_THRESHOLD,
 } from "../scripts/check-staleness.ts";
 
 describe("isStale (#120)", () => {
@@ -985,6 +991,341 @@ describe("getStageChecksForEdition #2366 — 2-destaque sem d3 FP", () => {
       );
     } finally {
       cleanup();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4832 — comparação de CONTEÚDO (não só mtime) entre 03-social.md e os
+// destaques de 02-reviewed.md
+// ---------------------------------------------------------------------------
+
+describe("significantTokens / contentOverlapRatio (#4832)", () => {
+  it("significantTokens filtra palavras curtas (< 5 chars) e normaliza case", () => {
+    const tokens = significantTokens("A Anthropic fechou uma rodada de bilhões");
+    assert.ok(tokens.has("anthropic"));
+    assert.ok(tokens.has("fechou"));
+    assert.ok(tokens.has("rodada"));
+    assert.ok(tokens.has("bilhões"));
+    assert.ok(!tokens.has("a"), "artigo curto não deve entrar");
+    assert.ok(!tokens.has("de"), "preposição curta não deve entrar");
+    assert.ok(!tokens.has("uma"), "3 chars não deve entrar");
+  });
+
+  it("contentOverlapRatio: 100% dos tokens presentes → 1.0", () => {
+    const tokens = significantTokens("Anthropic fechou rodada bilhões");
+    const ratio = contentOverlapRatio(
+      tokens,
+      "A Anthropic realmente fechou uma nova rodada de bilhões em investimento",
+    );
+    assert.equal(ratio, 1);
+  });
+
+  it("contentOverlapRatio: zero overlap → 0", () => {
+    const tokens = significantTokens("Anthropic fechou rodada bilhões");
+    const ratio = contentOverlapRatio(tokens, "Google lançou atualização do Gemini hoje");
+    assert.equal(ratio, 0);
+  });
+
+  it("contentOverlapRatio: reviewedTokens vazio → 0 (conservador)", () => {
+    assert.equal(contentOverlapRatio(new Set(), "qualquer texto"), 0);
+  });
+});
+
+describe("destaqueContentMatches (#4832)", () => {
+  it("overlap alto (paráfrase normal, mesmos fatos) → match", () => {
+    const destaque = {
+      title: "Anthropic levanta rodada de US$ 2 bilhões",
+      body: "A Anthropic fechou uma rodada liderada por Google e Amazon, elevando o valuation para dezoito bilhões de dólares.",
+      why: "Cada rodada desse tamanho redefine as apostas do mercado sobre qual laboratório vai liderar.",
+    };
+    const socialText =
+      "A Anthropic fechou uma rodada bilionária com Google e Amazon como investidores, elevando o valuation da empresa. Cada rodada nesse tamanho redefine as apostas do mercado.";
+    assert.equal(destaqueContentMatches(destaque, socialText), true);
+  });
+
+  it("overlap baixo (destaque trocado por outro tópico) → não match", () => {
+    const destaque = {
+      title: "Meta lança Llama 5 com foco em código aberto",
+      body: "A Meta anunciou o lançamento do Llama 5, modelo de peso aberto voltado para pesquisadores acadêmicos.",
+      why: "O lançamento não envolve investimento externo nem parceria com bancos.",
+    };
+    const socialText =
+      "A Anthropic fechou uma rodada bilionária com Google e Amazon como investidores, elevando o valuation da empresa.";
+    assert.equal(destaqueContentMatches(destaque, socialText), false);
+  });
+
+  it("threshold é exportado e usado por padrão", () => {
+    assert.ok(SOCIAL_CONTENT_OVERLAP_THRESHOLD > 0 && SOCIAL_CONTENT_OVERLAP_THRESHOLD < 1);
+  });
+});
+
+describe("extractSocialDestaqueSections (#4832)", () => {
+  it("extrai ## d1/d2/d3 de dentro do bloco # Social", () => {
+    const md = [
+      "# Social",
+      "",
+      "## d1",
+      "",
+      "Texto do post d1.",
+      "",
+      "## d2",
+      "",
+      "Texto do post d2.",
+      "",
+      "## eia",
+      "",
+      "Texto do É IA?, não deve vazar pro d2.",
+    ].join("\n");
+    const sections = extractSocialDestaqueSections(md);
+    assert.equal(sections.d1, "Texto do post d1.");
+    assert.equal(sections.d2, "Texto do post d2.");
+    assert.equal(sections.d3, undefined);
+  });
+
+  it("#4832: NÃO deixa o bloco # Curto (mesmas chaves ## d1/d2/d3) sobrescrever o # Social", () => {
+    const md = [
+      "# Social",
+      "",
+      "## d1",
+      "",
+      "Texto longo do post social d1.",
+      "",
+      "# Curto",
+      "",
+      "## d1",
+      "",
+      "Texto curto twitter d1.",
+    ].join("\n");
+    const sections = extractSocialDestaqueSections(md);
+    assert.equal(
+      sections.d1,
+      "Texto longo do post social d1.",
+      "a seção d1 do # Social deve prevalecer sobre a homônima do # Curto",
+    );
+  });
+});
+
+// Fixture realista: destaque com corpo+why substanciais, no formato
+// **DESTAQUE N | categoria** + **[título](url)** já usado pelos demais
+// testes deste arquivo (makeReviewedMd/makeReviewedMd3 acima).
+function makeReviewedMdWithBody(opts: {
+  d1: { title: string; url: string; body: string; why: string };
+  d2: { title: string; url: string; body: string; why: string };
+  introText?: string;
+}): string {
+  const lines: string[] = [];
+  if (opts.introText) {
+    // Precisa do "---" separando a intro do 1º destaque — sem ele,
+    // parseDestaques (que faz split por /^---$/m) trataria intro+DESTAQUE1
+    // como uma seção só, e a intro "vazaria" pro título do destaque.
+    lines.push(opts.introText, "", "---", "");
+  }
+  lines.push(
+    "**DESTAQUE 1 | 💰 MERCADO**",
+    "",
+    `**[${opts.d1.title}](${opts.d1.url})**`,
+    "",
+    opts.d1.body,
+    "",
+    "Por que isso importa:",
+    "",
+    opts.d1.why,
+    "",
+    "---",
+    "",
+    "**DESTAQUE 2 | 🚀 PRODUTO**",
+    "",
+    `**[${opts.d2.title}](${opts.d2.url})**`,
+    "",
+    opts.d2.body,
+    "",
+    "Por que isso importa:",
+    "",
+    opts.d2.why,
+  );
+  return lines.join("\n");
+}
+
+function makeSocialMd(opts: { d1: string; d2: string }): string {
+  return [
+    "# Social",
+    "",
+    "## d1",
+    "",
+    opts.d1,
+    "",
+    "## d2",
+    "",
+    opts.d2,
+    "",
+    "# Curto",
+    "",
+    "## d1",
+    "",
+    "Texto curto d1.",
+    "",
+    "## d2",
+    "",
+    "Texto curto d2.",
+  ].join("\n");
+}
+
+describe("buildGetSocialContentFresh — integração com fs real (#4832)", () => {
+  // Conteúdo compartilhado pelos dois cenários: D1 sobre a rodada da
+  // Anthropic, D2 sobre o lançamento do GPT-5. O social.md abaixo deriva
+  // desse mesmo conteúdo (paráfrase, não cópia literal).
+  const anthropicBody =
+    "A Anthropic fechou uma rodada de investimento liderada por Google e Amazon, elevando o valuation da empresa para dezoito bilhões de dólares. Investidores citam segurança como diferencial competitivo em contratos governamentais.";
+  const anthropicWhy =
+    "Cada rodada de capital nesse tamanho redefine as apostas do mercado sobre qual laboratório vai liderar a próxima geração de modelos de linguagem.";
+  const gpt5Body =
+    "O GPT-5 chega com melhorias em raciocínio multimodal e supera o GPT-4o em noventa por cento dos benchmarks avaliados pela OpenAI.";
+  const gpt5Why =
+    "Desenvolvedores que usam GPT-4o em produção precisam reavaliar custos e performance na próxima semana.";
+
+  const socialMd = makeSocialMd({
+    d1: "A Anthropic fechou uma rodada bilionária com Google e Amazon como investidores, elevando o valuation da empresa. O diferencial citado pelos investidores é segurança, ativo valorizado em contratos governamentais.",
+    d2: "O GPT-5 chegou com melhorias em raciocínio multimodal, superando o GPT-4o em boa parte dos benchmarks avaliados pela OpenAI. Quem usa GPT-4o em produção deve reavaliar custos.",
+  });
+
+  it("edição cosmética em 02-reviewed.md FORA dos destaques → ok:true (FP de mtime suprimido)", () => {
+    // Cenário do #4832: 02-reviewed.md recebeu edições tardias (ex: box
+    // "Vale a pena conhecer") que não têm nada a ver com D1/D2 — o conteúdo
+    // que de fato é espelhado em 03-social.md permanece idêntico.
+    const dir = mkdtempSync(join(tmpdir(), "check-staleness-4832-"));
+    try {
+      const reviewedMd = makeReviewedMdWithBody({
+        introText:
+          "Para esta edição, eu (o editor) enviei 5 artigos e a diar.ia.br encontrou outros 20. " +
+          "EDIÇÃO CIRÚRGICA TARDIA: ajuste cosmético na intro que não toca nenhum destaque.",
+        d1: {
+          title: "Anthropic levanta rodada de US$ 2 bilhões",
+          url: "https://example.com/anthropic-funding",
+          body: anthropicBody,
+          why: anthropicWhy,
+        },
+        d2: {
+          title: "OpenAI lança GPT-5 com foco em raciocínio",
+          url: "https://example.com/gpt5-launch",
+          body: gpt5Body,
+          why: gpt5Why,
+        },
+      });
+      writeFileSync(join(dir, "02-reviewed.md"), reviewedMd);
+      writeFileSync(join(dir, "03-social.md"), socialMd);
+
+      const getSocialContentFresh = buildGetSocialContentFresh(dir);
+      assert.ok(getSocialContentFresh !== undefined, "deve conseguir comparar conteúdo");
+      assert.equal(
+        getSocialContentFresh!("03-social.md"),
+        true,
+        "conteúdo dos destaques ainda bate — cosmético fora dos destaques não deve contar",
+      );
+
+      // Confirmar end-to-end: mtime aponta stale (social mais antigo que
+      // reviewed), mas o content-check suprime o FP → ok:true.
+      const socialOld = Date.parse("2026-08-10T10:00:00Z");
+      const reviewedNew = Date.parse("2026-08-10T10:41:00Z"); // 41min de lag, caso real da issue
+      const getMtime = (rel: string) => {
+        if (rel === "03-social.md") return socialOld;
+        if (rel === "02-reviewed.md") return reviewedNew;
+        return null;
+      };
+      const checks = [{ downstream: "03-social.md", upstreams: ["02-reviewed.md"] }];
+      const stale = evaluateStaleness(checks, getMtime, 1000, undefined, getSocialContentFresh);
+      assert.deepEqual(
+        stale,
+        [],
+        "edição cosmética fora dos destaques → ok:true (sem entrada stale)",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("mudança REAL em D1/D2/D3 → ok:false (stale genuinamente reportado)", () => {
+    // D1 trocado para um tópico completamente diferente (Meta/Llama) — o
+    // social.md continua descrevendo a rodada da Anthropic. Zero overlap de
+    // vocabulário significativo → conteúdo genuinamente divergiu.
+    const dir = mkdtempSync(join(tmpdir(), "check-staleness-4832-"));
+    try {
+      const reviewedMd = makeReviewedMdWithBody({
+        d1: {
+          title: "Meta lança Llama 5 com foco em código aberto",
+          url: "https://example.com/llama-5-launch",
+          body: "A Meta anunciou o lançamento do Llama 5, um modelo de peso aberto voltado para pesquisadores acadêmicos. O lançamento não envolve investimento externo nem parceria com bancos.",
+          why: "Times acadêmicos ganham acesso a um modelo competitivo sem custo de licenciamento.",
+        },
+        d2: {
+          title: "OpenAI lança GPT-5 com foco em raciocínio",
+          url: "https://example.com/gpt5-launch",
+          body: gpt5Body,
+          why: gpt5Why,
+        },
+      });
+      writeFileSync(join(dir, "02-reviewed.md"), reviewedMd);
+      writeFileSync(join(dir, "03-social.md"), socialMd); // continua descrevendo Anthropic em d1
+
+      const getSocialContentFresh = buildGetSocialContentFresh(dir);
+      assert.ok(getSocialContentFresh !== undefined, "deve conseguir comparar conteúdo");
+      assert.equal(
+        getSocialContentFresh!("03-social.md"),
+        false,
+        "D1 mudou de tópico — social.md ficou desatualizado, não deve suprimir",
+      );
+
+      const socialOld = Date.parse("2026-08-10T10:00:00Z");
+      const reviewedNew = Date.parse("2026-08-10T10:41:00Z");
+      const getMtime = (rel: string) => {
+        if (rel === "03-social.md") return socialOld;
+        if (rel === "02-reviewed.md") return reviewedNew;
+        return null;
+      };
+      const checks = [{ downstream: "03-social.md", upstreams: ["02-reviewed.md"] }];
+      const stale = evaluateStaleness(checks, getMtime, 1000, undefined, getSocialContentFresh);
+      assert.equal(
+        stale.length,
+        1,
+        "mudança real em D1 deve reportar staleness (não suprimir)",
+      );
+      assert.equal(stale[0].downstream, "03-social.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("02-reviewed.md ausente → undefined (degradação, mtime puro)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "check-staleness-4832-"));
+    try {
+      writeFileSync(join(dir, "03-social.md"), socialMd);
+      assert.equal(buildGetSocialContentFresh(dir), undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("03-social.md ausente → undefined (degradação, mtime puro)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "check-staleness-4832-"));
+    try {
+      const reviewedMd = makeReviewedMdWithBody({
+        d1: {
+          title: "Anthropic levanta rodada de US$ 2 bilhões",
+          url: "https://example.com/anthropic-funding",
+          body: anthropicBody,
+          why: anthropicWhy,
+        },
+        d2: {
+          title: "OpenAI lança GPT-5 com foco em raciocínio",
+          url: "https://example.com/gpt5-launch",
+          body: gpt5Body,
+          why: gpt5Why,
+        },
+      });
+      writeFileSync(join(dir, "02-reviewed.md"), reviewedMd);
+      assert.equal(buildGetSocialContentFresh(dir), undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

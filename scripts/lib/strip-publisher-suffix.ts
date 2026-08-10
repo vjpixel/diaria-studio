@@ -47,10 +47,27 @@
  *   Ver docstring de normalizeItemTitle() abaixo para os dois casos reais
  *   (#2664) que motivam o sandwich de 3 passos.
  *
+ * ## Wrapper "Watch "..." on YouTube" (#4826)
+ *
+ *   Alguns scrapers/clientes de captura de link (inbox editorial, RSS de
+ *   canal) embrulham o título de vídeo do YouTube num wrapper de client:
+ *
+ *     'Watch "AI just created a brand new virus. Should we be scared? | BBC News" on YouTube'
+ *       → "AI just created a brand new virus. Should we be scared?"
+ *
+ *   `stripYoutubeWatchWrapper` remove o wrapper `Watch "..." on YouTube`
+ *   (ou a variante sem o sufixo `on YouTube`, com o canal colado fora das
+ *   aspas: `Watch "..." | Canal`), mantendo só o conteúdo entre aspas. O
+ *   sufixo de canal colado DENTRO das aspas (` | BBC News` no exemplo acima)
+ *   sobra exposto após esse strip e é removido pelo passo seguinte de
+ *   `stripPublisherSuffix` (mesma pipeline de `normalizeItemTitle`) — não
+ *   duplicamos a lógica de sufixo de canal aqui.
+ *
  * ## Funções exportadas
  *   - `stripPublisherSuffix(title)` — sufixo ` | ` + ` - ` / ` — ` / ` • ` (lista, #2984)
  *   - `stripTrailingPeriod(title)` — ponto final único
- *   - `normalizeItemTitle(title)` — sufixo + ponto, na ordem correta
+ *   - `stripYoutubeWatchWrapper(title)` — wrapper `Watch "..." on YouTube` (#4826)
+ *   - `normalizeItemTitle(title)` — wrapper + sufixo + ponto, na ordem correta
  *   - `KNOWN_DASH_PUBLISHERS` — set de veículos (lowercase) para traço/travessão
  *   - `MIN_PREFIX_LEN` — constante de boundary para testes
  */
@@ -289,6 +306,38 @@ export function stripTrailingPeriod(title: string): string {
 }
 
 /**
+ * Remove o wrapper `Watch "..." on YouTube` que alguns scrapers/clientes de
+ * captura de link adicionam ao extrair metadata de vídeos do YouTube (#4826).
+ * Mantém apenas o conteúdo entre aspas — qualquer texto após a aspa de
+ * fechamento (` on YouTube`, ou um sufixo de canal colado fora das aspas,
+ * ex: `Watch "..." | BBC News`) é boilerplate do wrapper e é descartado.
+ *
+ * Aceita aspas retas (`"`) e curvas (`"` `"`). Âncora a string INTEIRA
+ * (início `^` e fim `$`) — um título real que só *começa* com `Watch "..."`
+ * mas continua com prosa própria depois da aspa de fechamento (ex: título de
+ * artigo sobre uma série chamada assim) não bate o padrão e fica intacto,
+ * porque o texto remanescente não é nem `on YouTube` nem um sufixo `| Canal`.
+ *
+ * Sufixo de canal colado DENTRO das aspas (`Watch "Título | Canal" on
+ * YouTube`) sobra exposto no resultado — removido depois por
+ * `stripPublisherSuffix` dentro de `normalizeItemTitle`, não aqui (mantém
+ * a lógica de sufixo de canal num único lugar).
+ *
+ * Títulos que não batem o padrão retornam inalterados.
+ *
+ * @pure
+ */
+export function stripYoutubeWatchWrapper(title: string): string {
+  const trimmed = title.trim();
+  const match = trimmed.match(
+    /^watch\s+["“]([\s\S]+)["”]\s*(?:on\s+youtube\.?|\|\s*\S.*)?\s*$/i,
+  );
+  if (!match) return title;
+  const inner = match[1].trim();
+  return inner.length > 0 ? inner : title;
+}
+
+/**
  * Teto de iterações do loop de `normalizeItemTitle` (defensivo — nenhum título
  * real deveria ter dezenas de sufixos de veículo encadeados; existe só pra
  * nunca travar em input patológico).
@@ -323,6 +372,14 @@ const MAX_NORMALIZE_ITERATIONS = 10;
  * numa única chamada — o contrato `@pure`/idempotente já documentado aqui
  * passa a valer sem depender de o chamador invocar 2x.
  *
+ * #4826: `stripYoutubeWatchWrapper` roda PRIMEIRO, antes do sandwich de ponto
+ * final / sufixo de veículo — o wrapper `Watch "..." on YouTube` embrulha o
+ * título inteiro (não é um sufixo colado no fim), então precisa ser removido
+ * antes que o resto da pipeline veja o título real. Um sufixo de canal colado
+ * DENTRO das aspas do wrapper (`Watch "Título | Canal" on YouTube`) sobra
+ * exposto após esse primeiro passo e é pego pelo `stripPublisherSuffix` na
+ * mesma iteração do loop — sem precisar de uma segunda passada dedicada.
+ *
  * @param title - Título bruto (de og:title / <title> / pipeline).
  * @returns Título normalizado (todas as camadas de sufixo de veículo removidas).
  *
@@ -331,7 +388,9 @@ const MAX_NORMALIZE_ITERATIONS = 10;
 export function normalizeItemTitle(title: string): string {
   let current = title;
   for (let i = 0; i < MAX_NORMALIZE_ITERATIONS; i++) {
-    const next = stripTrailingPeriod(stripPublisherSuffix(stripTrailingPeriod(current)));
+    const next = stripTrailingPeriod(
+      stripPublisherSuffix(stripTrailingPeriod(stripYoutubeWatchWrapper(current))),
+    );
     if (next === current) return next;
     current = next;
   }

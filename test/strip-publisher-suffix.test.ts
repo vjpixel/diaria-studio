@@ -31,6 +31,7 @@ import assert from "node:assert/strict";
 import {
   stripPublisherSuffix,
   stripTrailingPeriod,
+  stripYoutubeWatchWrapper,
   normalizeItemTitle,
   MIN_PREFIX_LEN,
   KNOWN_DASH_PUBLISHERS,
@@ -411,5 +412,74 @@ describe("normalizeItemTitle — chain completo (#2664 + #2672)", () => {
     const twice = normalizeItemTitle(once);
     assert.equal(twice, once, "uma 2ª chamada não deve remover mais nenhuma camada");
     assert.equal(once, "Empresa anuncia resultado importante");
+  });
+});
+
+// ===========================================================================
+// stripYoutubeWatchWrapper (#4826)
+// ===========================================================================
+
+describe("stripYoutubeWatchWrapper (#4826)", () => {
+  it("caso real da issue: wrapper + sufixo de canal dentro das aspas", () => {
+    assert.equal(
+      stripYoutubeWatchWrapper(
+        'Watch "AI just created a brand new virus. Should we be scared? | BBC News" on YouTube',
+      ),
+      "AI just created a brand new virus. Should we be scared? | BBC News",
+    );
+  });
+
+  it("wrapper simples sem sufixo de canal", () => {
+    assert.equal(
+      stripYoutubeWatchWrapper('Watch "OpenAI apresenta o novo modelo" on YouTube'),
+      "OpenAI apresenta o novo modelo",
+    );
+  });
+
+  it("variante sem 'on YouTube': canal colado FORA das aspas com pipe", () => {
+    assert.equal(
+      stripYoutubeWatchWrapper('Watch "Como a IA vai mudar tudo" | CNN Brasil'),
+      "Como a IA vai mudar tudo",
+    );
+  });
+
+  it("aspas curvas (“ ”) também são reconhecidas", () => {
+    assert.equal(
+      stripYoutubeWatchWrapper("Watch “Demonstração ao vivo do Gemini” on YouTube"),
+      "Demonstração ao vivo do Gemini",
+    );
+  });
+
+  it("case-insensitive em 'Watch'/'on YouTube'", () => {
+    assert.equal(
+      stripYoutubeWatchWrapper('WATCH "Título do vídeo" ON YOUTUBE'),
+      "Título do vídeo",
+    );
+  });
+
+  it("título normal (sem wrapper) → intocado", () => {
+    const input = "Google anuncia novidades no I/O 2026";
+    assert.equal(stripYoutubeWatchWrapper(input), input);
+  });
+
+  it("anti-FP: título real que apenas COMEÇA com 'Watch \"X\"' mas continua com prosa própria → intocado", () => {
+    // O texto após a aspa de fechamento não é boilerplate reconhecido
+    // ('on YouTube' ou '| Canal') — não é seguro assumir que é wrapper.
+    const input = 'Watch "The Office" cast reunites for anniversary special';
+    assert.equal(stripYoutubeWatchWrapper(input), input);
+  });
+
+  it("integra com normalizeItemTitle: wrapper + sufixo de canal removidos numa única chamada (#4826)", () => {
+    assert.equal(
+      normalizeItemTitle(
+        'Watch "AI just created a brand new virus. Should we be scared? | BBC News" on YouTube',
+      ),
+      "AI just created a brand new virus. Should we be scared?",
+    );
+  });
+
+  it("normalizeItemTitle: título normal (sem wrapper) segue intocado (#4826, sem regressão)", () => {
+    const input = "Especialistas debatem regulamentação da IA no Brasil";
+    assert.equal(normalizeItemTitle(input), input);
   });
 });
