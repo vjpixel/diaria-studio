@@ -31,6 +31,10 @@
 //     token-sensível, e o guard existe porque naming é convenção frágil
 //     (incidente #3321, 260710: ~50 PRs, zero com o prefixo, gating nunca
 //     disparou a noite inteira);
+//   - #4813 (260810): pra QUALQUER PR sem sinal de overnight, o effort passou a
+//     ser resolvido por tamanho de diff (ver `EFFORT_DIFF_LINE_THRESHOLD`) — não
+//     mais direto pelo `DEFAULT_EFFORT`. `DEFAULT_EFFORT` virou o fallback de
+//     "tamanho de diff desconhecido", ver o docblock dele;
 //   - estado genuinamente indeterminado (gh indisponível, número de PR não
 //     parseável, guard lançando erro) resolve `max` como fail-safe, também
 //     independente do default;
@@ -167,7 +171,13 @@ export function isOvernightRoundActive(
 
 /**
  * Effort do review por PR quando NÃO há sinal de rodada overnight (branch sem
- * prefixo `overnight/*` e sem sessão ativa nesta máquina).
+ * prefixo `overnight/*` e sem sessão ativa nesta máquina) **e** o tamanho do
+ * diff não pôde ser determinado (`getDiffLineCount` retornou `null` — gh
+ * indisponível, JSON malformado, etc). Desde #4813 (260810) este NÃO é mais o
+ * default do caminho "sem sinal de overnight" em geral — esse caminho agora
+ * resolve por tamanho de diff (`EFFORT_DIFF_LINE_THRESHOLD`, ver abaixo).
+ * `DEFAULT_EFFORT` ficou reduzido a um fallback: "tamanho de diff desconhecido,
+ * sem sinal de overnight" — o mesmo valor histórico, papel mais estreito.
  *
  * Histórico curto: #2754 usava `max` aqui com desconto pra overnight; #3326
  * (260711) inverteu pra `low` geral, motivado pelo PR #3324 (~1,5M tokens de
@@ -176,12 +186,19 @@ export function isOvernightRoundActive(
  * depois de `max` passar a significar algo distinto de `low` (fleet de 5
  * agentes do pr-review-toolkit em paralelo, contra 1 agente no `low`; antes do
  * #4234 os dois efforts mandavam o MESMO rubrico e diferiam só numa frase).
+ * #4813 (260810): generalizou o limiar de tamanho (#4243) do piso barato de
+ * diffs triviais pro critério PRIMÁRIO de todo o caminho sem sinal de
+ * overnight — `DEFAULT_EFFORT` deixou de decidir o caso geral e passou a
+ * decidir só o caso "tamanho desconhecido".
  *
  * Voltar ao comportamento do #3326 é trocar esta constante por `"low"` — uma
  * linha, de propósito, porque a decisão é temporária. O desconto de `low` pra
  * overnight (#2754/#3322) NÃO passa por aqui e segue intacto: rodada overnight
  * é o caminho token-sensível e continua em 1 agente. Na prática isto restaura
- * a semântica pré-#3326: `max` geral, `low` pra overnight.
+ * a semântica pré-#3326: `max` geral, `low` pra overnight — só que, pós-#4813,
+ * "geral" já não passa mais por `DEFAULT_EFFORT` na maioria dos PRs (a maioria
+ * tem tamanho de diff conhecido, então resolve por `EFFORT_DIFF_LINE_THRESHOLD`
+ * antes de chegar aqui).
  *
  * AO TROCAR ESTA CONSTANTE, varrer o arquivo por cópias do valor antigo:
  * `grep -nE "default (geral|low|max)|#3326 default|token-discount"`. O #4234
@@ -193,21 +210,31 @@ export function isOvernightRoundActive(
 export const DEFAULT_EFFORT = "max";
 
 /**
- * #4243: piso barato pro fleet de 5 agentes que `DEFAULT_EFFORT=max` (#4234)
- * passou a disparar em TODA PR sem sinal de overnight — inclusive diffs
- * triviais (docs-only, 1 linha de comentário) onde 4 dos 5 agentes do fleet
- * não têm o que analisar. Espelha o limiar já documentado como convenção de
- * "diff trivial" em `.claude/skills/diaria-overnight/SKILL.md` (~50 linhas,
- * usado ali pra decidir se a Fase 1.5 roda o review consolidado).
+ * #4813 (260810): decide `low`/`max` para QUALQUER PR sem sinal de rodada
+ * overnight (branch sem prefixo `overnight/*` e sem sessão ativa nesta
+ * máquina) — generaliza o "piso barato pro fleet" que o #4243 introduziu só
+ * pra diffs triviais (<50 linhas). Motivação da issue: o fleet review por PR
+ * já era ~2/3 do gasto diário de tokens de desenvolvimento (~11,4M/dia
+ * medidos), e a medição feita na própria #4813 mostrou mediana de 497 linhas e
+ * p90 de 1.375 linhas por PR — com um piso de 50, quase todo PR real caía no
+ * fleet de 5 agentes de qualquer jeito; **34% dos PRs recentes tinham menos de
+ * 300 linhas**, faixa que agora se qualifica pro review de 1 agente. O editor
+ * decidiu pelo limiar mais conservador (300, não 500 — a outra opção discutida
+ * na issue): ver a decisão registrada em
+ * https://github.com/vjpixel/diaria-studio/issues/4813#issuecomment-5235991770.
+ *
+ * Isto SUBSTITUI o antigo `TRIVIAL_DIFF_LINE_THRESHOLD` (50) — não é um
+ * segundo limiar rodando ao lado do primeiro; todo diff <50 já é <300, então
+ * não há duas checagens de tamanho sobrepostas.
  */
-export const TRIVIAL_DIFF_LINE_THRESHOLD = 50;
+export const EFFORT_DIFF_LINE_THRESHOLD = 300;
 
 /**
  * Soma additions+deletions do PR via `gh pr view --json additions,deletions`.
  * Retorna `null` em QUALQUER falha (gh indisponível, JSON malformado, campos
  * não-numéricos) — o caller trata `null` como "não dá pra saber o tamanho do
- * diff" e nunca deixa isso virar "pular o review" (#4243 parte 2: fail-soft
- * obrigatório).
+ * diff" e nunca deixa isso virar "pular o review" (#4243/#4813: fail-soft
+ * obrigatório, sempre cai no `DEFAULT_EFFORT`).
  */
 function getDiffLineCount(num, execFn) {
   try {
@@ -229,18 +256,22 @@ function getDiffLineCount(num, execFn) {
  * `checkRoundActive` é injetável (default = isOvernightRoundActive real) pra ser
  * testável sem tocar `data/overnight/` no disco real.
  *
- * Default geral: `DEFAULT_EFFORT` (ver acima). Caminhos com sinal de overnight
- * — prefixo `overnight/*` (#2754) ou sessão ativa nesta máquina (#3322) —
- * continuam resolvendo `low` explicitamente, independente do default.
+ * Caminhos com sinal de overnight — prefixo `overnight/*` (#2754) ou sessão
+ * ativa nesta máquina (#3322) — continuam resolvendo `low` explicitamente,
+ * independente de tamanho de diff ou do `DEFAULT_EFFORT`.
  *
- * #4243: quando NENHUM sinal de overnight se aplica, um diff trivial (soma de
- * additions+deletions < `TRIVIAL_DIFF_LINE_THRESHOLD`) também rebaixa pra
- * `low`, independente do `DEFAULT_EFFORT` vigente — mesma lógica de "4 dos 5
- * agentes do fleet não têm o que analisar" que já vale pra Fase 1.5 do
- * overnight/develop. Fail-soft: se `getDiffLineCount` não conseguir determinar
- * o tamanho (gh indisponível, JSON malformado), este ramo é ignorado e o fluxo
- * cai no `DEFAULT_EFFORT` normal — nunca pula o review por não saber o tamanho
- * do diff.
+ * #4813 (260810, generaliza #4243): quando NENHUM sinal de overnight se
+ * aplica, effort passa a ser resolvido por TAMANHO DE DIFF — critério
+ * primário, não mais o `DEFAULT_EFFORT` direto. Diff pequeno (soma de
+ * additions+deletions < `EFFORT_DIFF_LINE_THRESHOLD`) rebaixa pra `low`; diff
+ * de tamanho CONHECIDO e ≥ limiar resolve `max` explicitamente (`reason:
+ * "diff_grande"`) — decisão baseada em tamanho, não mais "default genérico".
+ * Só quando o tamanho é DESCONHECIDO (`getDiffLineCount` retornou `null` — gh
+ * indisponível, JSON malformado, campos não-numéricos) o fluxo cai no
+ * `DEFAULT_EFFORT` (`reason: "default"`) como fail-safe — nunca pula o review
+ * por não saber o tamanho do diff. Antes do #4813 só o caso trivial (<50
+ * linhas) tinha esse tratamento especial; o resto do range (inclusive diffs
+ * médios de 50-299 linhas) caía direto no `DEFAULT_EFFORT`/fleet de 5 agentes.
  *
  * Fail-safe: em estado genuinamente indeterminado — gh indisponível, PR sem
  * número reconhecível na URL, `checkRoundActive` lançando erro — mantém `max`.
@@ -260,11 +291,17 @@ function getDiffLineCount(num, execFn) {
  * tornou visível ao coordenador, em vez de passar em silêncio (era justamente
  * esse silêncio que atrasou a detecção do #3321).
  *
- * `reason` (#4252): código curto e estável identificando QUAL ramo decidiu —
- * `pr_sem_numero` | `branch_overnight` | `sessao_overnight_ativa` |
- * `diff_trivial` | `default` | `estado_indeterminado`. Campo aditivo: nenhum
- * teste existente inspeciona o objeto inteiro (só `.effort`/`.warning`), então
- * adicioná-lo não quebra nada. Existe só pra alimentar o log de instrumentação
+ * `reason` (#4252, ramos de tamanho reformulados em #4813): código curto e
+ * estável identificando QUAL ramo decidiu — `pr_sem_numero` |
+ * `branch_overnight` | `sessao_overnight_ativa` | `diff_pequeno` |
+ * `diff_grande` | `default` | `estado_indeterminado`. `diff_pequeno` e
+ * `diff_grande` (tamanho CONHECIDO, dos dois lados do limiar) substituem o
+ * antigo `diff_trivial`; `default` agora significa especificamente "tamanho
+ * DESCONHECIDO, caiu no fallback" — distinção que existe pra instrumentação
+ * (`logEffortDecision`) conseguir separar "grande de propósito" de
+ * "desconhecido, caiu no fallback". Campo aditivo: nenhum teste existente
+ * inspeciona o objeto inteiro (só `.effort`/`.warning`), então adicioná-lo não
+ * quebra nada. Existe só pra alimentar o log de instrumentação
  * (`logEffortDecision`, chamado no entrypoint CLI abaixo — nunca aqui dentro,
  * pra manter `resolveEffort` livre de I/O e os ~20 call sites do teste
  * existentes hermeticamente intocados) — descoberto como lacuna na própria
@@ -296,14 +333,22 @@ export function resolveEffort(prUrl, execFn = execFileSync, checkRoundActive = i
         reason: "sessao_overnight_ativa",
       };
     }
-    // Sem sinal de overnight/rodada-ativa: diff trivial rebaixa pra low
-    // independente do DEFAULT_EFFORT (#4243). getDiffLineCount() retornando
-    // `null` (falha de qualquer tipo) faz este ramo ser ignorado de propósito.
+    // Sem sinal de overnight/rodada-ativa: effort resolve por tamanho de diff
+    // (#4813). getDiffLineCount() retornando `null` (falha de qualquer tipo)
+    // faz os dois ramos de tamanho abaixo serem ignorados de propósito.
     const diffLineCount = getDiffLineCount(num, execFn);
-    if (diffLineCount !== null && diffLineCount < TRIVIAL_DIFF_LINE_THRESHOLD) {
-      return { effort: "low", warning: null, reason: "diff_trivial" };
+    if (diffLineCount !== null && diffLineCount < EFFORT_DIFF_LINE_THRESHOLD) {
+      return { effort: "low", warning: null, reason: "diff_pequeno" };
     }
-    // Sem sinal de overnight/rodada-ativa/diff-trivial → default geral (ver DEFAULT_EFFORT).
+    // Diff de tamanho CONHECIDO e ≥ limiar → max explícito (não é mais
+    // "default geral" — é uma decisão baseada em tamanho, #4813). Diff de
+    // tamanho DESCONHECIDO (getDiffLineCount retornou null, ex: gh
+    // indisponível) também cai aqui embaixo, mas por motivo diferente:
+    // fail-safe pro DEFAULT_EFFORT vigente, nunca "pular o review" (mesma
+    // garantia do #4243).
+    if (diffLineCount !== null) {
+      return { effort: "max", warning: null, reason: "diff_grande" };
+    }
     return { effort: DEFAULT_EFFORT, warning: null, reason: "default" };
   } catch {
     // fail-safe: estado desconhecido (gh indisponível, timeout, checkRoundActive
