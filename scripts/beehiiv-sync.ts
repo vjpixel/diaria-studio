@@ -48,6 +48,7 @@ import { parseListPostsResponse } from "./lib/schemas/beehiiv.ts";
 import { loadBeehiivConfig, type BeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { MIN_AGE_DAYS_FOR_CLICKS } from "./lib/shared/ctr-config.ts";
 import { isClickCacheComplete, type ClickCacheRow } from "./lib/shared/click-cache-completeness.ts";
+import { resolveEnrichmentState, type EnrichmentState } from "./lib/shared/enrichment-state.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -181,6 +182,35 @@ export function needsUpdate(
   return false;
 }
 
+/** Estado preservado de `stats.clicks`/`stats.enrichment_state` do cache anterior de um post — ver `resolvePreservedClickState`. */
+export interface PreservedClickState {
+  clicks: unknown[];
+  enrichment_state: EnrichmentState;
+}
+
+/**
+ * Pure: decide o que preservar de `stats.clicks`/`stats.enrichment_state`
+ * (#4836 item 3) ao re-buscar o detalhe de um post já cacheado. Extraída de
+ * `syncBeehiiv()` pra ser testável sem mockar `fetch`.
+ *
+ * `cachedRaw` é o JSON bruto do cache anterior (`undefined` quando não existe
+ * — post novo, nunca sincronizado). `enrichment_state` usa
+ * `resolveEnrichmentState` — carrega o rótulo anterior adiante quando
+ * consistente com o array preservado, ou deriva um default conservador
+ * quando o cache é legado (sem o campo) ou o JSON está corrompido.
+ */
+export function resolvePreservedClickState(cachedRaw: string | undefined): PreservedClickState {
+  if (!cachedRaw) return { clicks: [], enrichment_state: "never_enriched" };
+  try {
+    const cached = JSON.parse(cachedRaw) as { stats?: { clicks?: unknown[]; enrichment_state?: unknown } };
+    const clicks = cached?.stats?.clicks ?? [];
+    return { clicks, enrichment_state: resolveEnrichmentState(cached?.stats?.enrichment_state, clicks.length) };
+  } catch {
+    // cache corrompido — sem dado confiável pra preservar, mesmo fallback de "nunca sincronizado".
+    return { clicks: [], enrichment_state: "never_enriched" };
+  }
+}
+
 interface ListPostsPage {
   data: Array<{
     id: string;
@@ -200,7 +230,7 @@ interface PostDetailResponse {
     id: string;
     status?: string;
     publish_date?: number | null;
-    stats?: { email?: Record<string, unknown>; web?: Record<string, unknown>; clicks?: unknown[] };
+    stats?: { email?: Record<string, unknown>; web?: Record<string, unknown>; clicks?: unknown[]; enrichment_state?: EnrichmentState };
     content?: { free?: { web?: string; email?: string } };
     [k: string]: unknown;
   };
@@ -357,17 +387,19 @@ export async function syncBeehiiv(opts: SyncOpts): Promise<SyncResult> {
       // Per-link clicks NÃO são buscadas aqui — endpoint REST `/posts/{id}/clicks`
       // não existe mais na API pública. Preservar clicks enriquecidos via
       // MCP em runs anteriores (sobrescrever só perde dado caro de buscar).
+      // #4836 item 3: junto com `stats.clicks`, preserva/deriva
+      // `stats.enrichment_state` — post novo (sem cache anterior) nasce
+      // `never_enriched`; post já sincronizado carrega o estado anterior
+      // adiante (auto-cura cache legado sem o campo via resolveEnrichmentState).
       const cachedPath = resolve(POSTS_DIR, `${s.id}.json`);
-      let preservedClicks: unknown[] = [];
-      if (existsSync(cachedPath)) {
-        try {
-          const cached = JSON.parse(readFileSync(cachedPath, "utf8"));
-          preservedClicks = cached?.stats?.clicks ?? [];
-        } catch {
-          // cache corrompido — ignora, vai sobrescrever com array vazio
-        }
+      let cachedRaw: string | undefined;
+      try {
+        cachedRaw = existsSync(cachedPath) ? readFileSync(cachedPath, "utf8") : undefined;
+      } catch {
+        cachedRaw = undefined; // leitura falhou — resolvePreservedClickState trata como "sem cache anterior"
       }
-      detail.stats = { ...(detail.stats ?? {}), clicks: preservedClicks };
+      const preserved = resolvePreservedClickState(cachedRaw);
+      detail.stats = { ...(detail.stats ?? {}), clicks: preserved.clicks, enrichment_state: preserved.enrichment_state };
 
       // Also expose content.free.{web,email} layout que build-link-ctr lê
       // — alguns posts retornam `free_web_content`/`free_email_content` no top

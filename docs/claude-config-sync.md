@@ -98,12 +98,38 @@ o hook funciona" nesta issue. Corrigido: `commands/` saiu do que o
 e o bootstrap passou a clonar `re-plan` em `~/Projects/Re-plan` + rodar
 `npm install && npm run install-skills`, mesmo padrão do `humanizador`.
 
-**Pendente (ação do editor, mesma disciplina do restante deste documento
-pra tarefas `local`):**
-1. Re-rodar `bootstrap.ps1` na máquina Windows — precisa remover o symlink
-   antigo `~/.claude/commands` (apontava pro `claude-config`, que não tem
-   mais essa pasta) e deixar o `re-plan` popular `~/.claude/commands/` de
-   verdade via `npm run install-skills`.
+**Pendente em 260809 (ação do editor):**
+1. Re-rodar `bootstrap.ps1` na máquina Windows — **feito e confirmado ao
+   vivo pelo editor** ainda em 260809 (ver issue #4804): symlink antigo de
+   `commands/` removido, `re-plan` populando `~/.claude/commands/`,
+   `/sprint-start`/`/day-plan`/etc. e a statusline funcionando após reiniciar
+   o Claude Code.
 2. Rodar `bootstrap.sh`/`bootstrap.ps1` nas demais máquinas (incluindo
-   `predator`) e **confirmar ao vivo** que os comandos de sprint e a
-   statusline continuam funcionando.
+   `predator`) e **confirmar ao vivo**.
+
+## Atualização (260810 — sessão `/diaria-develop`)
+
+`predator` confirmado ao vivo: `bootstrap.sh` re-rodado, todos os itens já
+symlinkados (`settings.json`, `agents/`, `statusline-wrapper.cjs`), `re-plan`
+popula `~/.claude/commands/` com os 5 comandos, `ccusage` instalado,
+`statusline-wrapper.cjs` executado manualmente contra um payload de
+statusline válido e respondeu sem erro. Item 2 acima está satisfeito para
+as duas máquinas conhecidas do editor (Windows + `predator`); resta apenas
+se houver uma terceira máquina no futuro.
+
+**Achado no caminho, corrigido:** o `settings.json` local em `predator`
+tinha `model`/`effortLevel` divergentes do valor committed no
+`claude-config`, sem nenhum aviso — como o arquivo é um symlink direto pro
+repo git, qualquer edição ao vivo da sessão escreve através do symlink pro
+working tree do repo, e `git pull --ff-only` não detecta (nem alerta sobre)
+working tree dirty quando o remoto não tem commit novo — a divergência
+ficaria invisível indefinidamente. `bootstrap.sh`/`bootstrap.ps1` agora
+rodam `git status --porcelain` no repo antes do pull e avisam (sem
+bloquear) com o diff resumido e as duas ações possíveis: commit+push (vira
+config permanente, compartilhada) ou `git checkout -- .` (descarta,
+mantém a máquina de origem como única fonte de verdade). **Qual das duas
+fazer com o drift específico achado em `predator` (260810) segue como
+decisão em aberto do editor** — não foi resolvido nesta sessão.
+
+Política de `memory/` continua manual, sem mudança (ver seção acima) —
+não revisitada nesta sessão de propósito, é decisão de produto do editor.

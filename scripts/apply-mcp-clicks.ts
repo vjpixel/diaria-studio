@@ -47,7 +47,14 @@
  * bom silenciosamente. Post genuinamente sem cliques nunca teve linhas pra
  * começo de conversa (`existing.length === 0`) — não aciona o guard.
  *
- * Output (stdout): JSON `{ post_id, before_count, after_count, mapped }`.
+ * `enrichment_state` (#4836 item 3): toda chamada bem-sucedida também grava
+ * `stats.enrichment_state` — `enriched_n` se `finalClicks.length > 0`,
+ * `enriched_zero` caso contrário. Distingue "tentei e confirmei zero" (dado
+ * confiável) de "nunca tentei" (`never_enriched`, default de
+ * `beehiiv-sync.ts` pra post sem cache anterior) — ver
+ * `scripts/lib/shared/enrichment-state.ts`.
+ *
+ * Output (stdout): JSON `{ post_id, before_count, after_count, mapped, enrichment_state }`.
  * Stderr: warnings.
  *
  * Exit codes: 0=sucesso, 1=erro IO/parse, 2=args inválidos, 3=guard —
@@ -58,6 +65,7 @@ import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
+import type { EnrichmentState } from "./lib/shared/enrichment-state.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POSTS_DIR = resolve(ROOT, "data/beehiiv-cache/posts");
@@ -161,6 +169,8 @@ export interface ApplyResult {
   after_count: number;
   mapped: number;
   appended: boolean;
+  /** #4836 item 3 — estado gravado em `stats.enrichment_state` após este apply. */
+  enrichment_state: EnrichmentState;
 }
 
 export function applyClicks(stdinJson: string, opts: ApplyOpts): ApplyResult {
@@ -197,7 +207,14 @@ export function applyClicks(stdinJson: string, opts: ApplyOpts): ApplyResult {
     finalClicks = mapped;
   }
 
-  cache.stats = { ...(cache.stats ?? {}), clicks: finalClicks };
+  // #4836 item 3: toda invocação deste script é uma tentativa REAL de
+  // enrichment via MCP — o campo é sempre recalculado a partir do array
+  // final, nunca herdado do que já estava no cache (diferente de
+  // `beehiiv-sync.ts`, que só PRESERVA o estado anterior porque não busca
+  // clicks). `enriched_zero` é tão válido quanto `enriched_n`: os dois
+  // representam um resultado CONFIRMADO, distinto de `never_enriched`.
+  const enrichmentState: EnrichmentState = finalClicks.length > 0 ? "enriched_n" : "enriched_zero";
+  cache.stats = { ...(cache.stats ?? {}), clicks: finalClicks, enrichment_state: enrichmentState };
 
   const tmp = `${cachePath}.tmp`;
   writeFileSync(tmp, JSON.stringify(cache, null, 2), "utf8");
@@ -209,6 +226,7 @@ export function applyClicks(stdinJson: string, opts: ApplyOpts): ApplyResult {
     after_count: finalClicks.length,
     mapped: mapped.length,
     appended: opts.append,
+    enrichment_state: enrichmentState,
   };
 }
 

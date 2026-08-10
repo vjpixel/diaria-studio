@@ -102,6 +102,21 @@ export const DIARIA_X_SLUG = "x.com/diariabr";
 export const DIARIA_X_URL = `https://${DIARIA_X_SLUG}`;
 
 /**
+ * Slug/URL canônicos do canal da diar.ia.br no YouTube (#4829). Handle
+ * `@diariabr` — o YouTube recusou `diar.ia.br` como nome de canal ("Esse nome
+ * não pode ser usado no seu canal do YouTube", #4424/`docs/utm-superficies-externas.md`),
+ * então o canal usa o mesmo handle já em uso no X (`diariabr`) acima.
+ * NOTA: `scripts/build-link-ctr.ts` (`ownChannels`, filtro de ruído do CTR)
+ * ainda referencia `youtube.com/@diaria` hardcoded — drift pré-existente, fora
+ * do escopo desta issue (o footer social do rodapé é o item aqui; alinhar o
+ * filtro de CTR é follow-up separado).
+ */
+export const DIARIA_YOUTUBE_SLUG = "youtube.com/@diariabr";
+
+/** URL completa (com protocolo + `www.`) derivada do slug acima. */
+export const DIARIA_YOUTUBE_URL = `https://www.${DIARIA_YOUTUBE_SLUG}`;
+
+/**
  * URL canônica de apoio financeiro via Apoia.se (#3219) — CTA de apoio à
  * curadoria no bloco ENCERRAMENTO/PARA ENCERRAR (diário e mensal). Ver
  * `context/snippets/encerramento-social-apoio.md`.

@@ -4,6 +4,7 @@ import {
   assemble,
   applyNegativeImpactBackstop,
   applyPlaceholderTitleBackstop,
+  applyClusterSourcesBackstop,
   type Selection,
   type AllScoredFile,
   type AssembledOutput,
@@ -202,3 +203,51 @@ function isPlaceholderTitleOf(h: { article?: { title?: string } }): boolean {
   const t = (h.article?.title ?? "").trim();
   return t === "" || /^\((?:inbox|no title|sem t[ií]tulo|newsletter:.*)\)$/i.test(t);
 }
+
+// #4838 — backstop determinístico: cluster_sources[] do highlight final tem
+// que bater com o cluster_sources[] que o dedup atribuiu no finalist.
+describe("applyClusterSourcesBackstop", () => {
+  const clusterSources = [
+    { url: "https://theverge.com/x", title: "Cobertura The Verge", source: "The Verge" },
+    { url: "https://techcrunch.com/x", title: "Cobertura TechCrunch", source: "TechCrunch" },
+  ];
+  const finalists: FinalistLike[] = [
+    { url: "a", score: 90, bucket: "radar", article: { url: "a", title: "Destaque com cluster", cluster_sources: clusterSources } },
+    { url: "b", score: 80, bucket: "radar", article: { url: "b", title: "Destaque de fonte única" } },
+  ];
+
+  it("no-op quando o highlight já preserva cluster_sources intacto", () => {
+    const assembled: AssembledOutput = {
+      highlights: [{ rank: 1, url: "a", score: 90, article: { url: "a", title: "Destaque com cluster", cluster_sources: clusterSources } }],
+      runners_up: [],
+      all_scored: [],
+    };
+    const out = applyClusterSourcesBackstop(assembled, finalists);
+    assert.equal(out, assembled, "deve retornar a MESMA referência quando não restaura (no-op)");
+    assert.equal(out.cluster_sources_restored, undefined);
+  });
+
+  it("no-op quando o finalist não tem cluster (destaque de fonte única, comportamento idêntico ao de hoje)", () => {
+    const assembled: AssembledOutput = {
+      highlights: [{ rank: 1, url: "b", score: 80, article: { url: "b", title: "Destaque de fonte única" } }],
+      runners_up: [],
+      all_scored: [],
+    };
+    const out = applyClusterSourcesBackstop(assembled, finalists);
+    assert.equal(out, assembled);
+  });
+
+  it("CASO REAL (#4838): scorer-select copiou o article mas 'esqueceu' cluster_sources — backstop restaura", () => {
+    const assembled: AssembledOutput = {
+      highlights: [{ rank: 1, url: "a", score: 90, article: { url: "a", title: "Destaque com cluster" } }],
+      runners_up: [],
+      all_scored: [],
+    };
+    const out = applyClusterSourcesBackstop(assembled, finalists);
+    assert.ok(out.cluster_sources_restored, "backstop deve ter restaurado");
+    assert.equal(out.cluster_sources_restored!.length, 1);
+    assert.equal(out.cluster_sources_restored![0].url, "a");
+    assert.equal(out.cluster_sources_restored![0].restored_count, 2);
+    assert.deepEqual(out.highlights[0].article?.cluster_sources, clusterSources);
+  });
+});

@@ -320,6 +320,99 @@ describe("build-link-ctr CLI — ctr_pct fica vazio quando unique_opens=0 (#4834
   });
 });
 
+describe("build-link-ctr CLI — enrichment_state distingue os 3 casos (#4836 item 3)", () => {
+  let tmpRoot: string;
+
+  before(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "link-ctr-enrichment-state-"));
+  });
+
+  after(() => {
+    try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it("never_enriched (sem campo, clicks vazio) → ctr_pct vazio (dado ausente, não zero); enriched_zero explícito → ctr_pct='0.00' (zero confirmado); enriched_n → CTR real calculado", () => {
+    const dir = tmpRoot;
+    fs.mkdirSync(path.join(dir, "data", "beehiiv-cache", "posts"), { recursive: true });
+
+    const publishDate = Math.floor(Date.parse("2026-05-01T00:00:00Z") / 1000);
+
+    const postNeverEnriched = {
+      id: "p-never-enriched",
+      title: "Edição nunca enriquecida",
+      status: "confirmed",
+      publish_date: publishDate,
+      content: { free: { email: '<a href="https://exemplo.com/never-enriched">Matéria A</a>' } },
+      // Sem stats.enrichment_state (cache legado) e clicks vazio — nenhuma
+      // tentativa de MCP rodou pra este post ainda.
+      stats: { email: { unique_opens: 100 }, clicks: [] },
+    };
+    const postEnrichedZero = {
+      id: "p-enriched-zero",
+      title: "Edição com zero confirmado",
+      status: "confirmed",
+      publish_date: publishDate,
+      content: { free: { email: '<a href="https://exemplo.com/enriched-zero">Matéria B</a>' } },
+      // enrichment_state explícito: uma tentativa REAL rodou e confirmou zero.
+      stats: { email: { unique_opens: 80 }, clicks: [], enrichment_state: "enriched_zero" },
+    };
+    const postEnrichedN = {
+      id: "p-enriched-n",
+      title: "Edição com cliques reais",
+      status: "confirmed",
+      publish_date: publishDate,
+      content: { free: { email: '<a href="https://exemplo.com/enriched-n">Matéria C</a>' } },
+      stats: {
+        email: { unique_opens: 60 },
+        clicks: [{ url: "https://exemplo.com/enriched-n", email: { verified_clicks: 5, unique_verified_clicks: 5, unique_clicks: 5 } }],
+      },
+    };
+    for (const post of [postNeverEnriched, postEnrichedZero, postEnrichedN]) {
+      fs.writeFileSync(
+        path.join(dir, "data", "beehiiv-cache", "posts", `${post.id}.json`),
+        JSON.stringify(post),
+        "utf8",
+      );
+    }
+
+    const script = path.resolve(import.meta.dirname, "..", "scripts", "build-link-ctr.ts");
+    const r = spawnNpx(["tsx", script], { cwd: dir, encoding: "utf8" });
+    assert.equal(r.status, 0, `esperado exit 0. stderr: ${r.stderr}`);
+
+    const csv = fs.readFileSync(path.join(dir, "data", "link-ctr-table.csv"), "utf8");
+    const lines = csv.trim().split("\n");
+    const header = lines[0].split(",");
+    const enrichmentIdx = header.indexOf("enrichment_state");
+    const ctrIdx = header.indexOf("ctr_pct");
+    assert.ok(enrichmentIdx >= 0, "coluna enrichment_state precisa existir no CSV");
+
+    const cellsFor = (needle: string) => {
+      const line = lines.find(l => l.includes(needle));
+      assert.ok(line, `linha não encontrada pra ${needle}: ${csv}`);
+      return line!.split(",");
+    };
+
+    const neverCells = cellsFor("never-enriched");
+    assert.equal(neverCells[enrichmentIdx], "never_enriched");
+    assert.equal(neverCells[ctrIdx], "", "never_enriched: ctr_pct vazio, não '0.00' — numerador ausente");
+
+    const zeroCells = cellsFor("enriched-zero");
+    assert.equal(zeroCells[enrichmentIdx], "enriched_zero");
+    assert.equal(zeroCells[ctrIdx], "0.00", "enriched_zero: zero CONFIRMADO, ctr_pct é '0.00' de verdade");
+
+    const nCells = cellsFor("enriched-n");
+    assert.equal(nCells[enrichmentIdx], "enriched_n");
+    assert.equal(nCells[ctrIdx], "8.33", "5/60 * 100 = 8.33%");
+
+    // O resumo por categoria não pode contar o link never_enriched como zero medido.
+    assert.match(
+      r.stdout ?? "",
+      /1 link\(s\) de post\(s\) never_enriched exclu[ií]do/,
+      "stdout deve sinalizar que o link never_enriched foi excluído da média de CTR",
+    );
+  });
+});
+
 describe("shouldSkipPost — incremental skip por identidade (#1567 finding H)", () => {
   const processedKeys = new Set<string>([
     postKey("2026-05-20", "Edição A de 20/05"), // irmã A já no CSV
