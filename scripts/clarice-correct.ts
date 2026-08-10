@@ -29,12 +29,16 @@
  *     [--stage N]             # (#2798) default 2 — só usado se --edition/--retry
  *     [--agent nome]          # (#2798) default "clarice-correct-rest"
  *
- * Observabilidade (#2798): com --retry, cada tentativa (sucesso, retry por
- * timeout/5xx, ou falha fatal por 4xx) é logada em data/run-log.jsonl via
- * scripts/lib/run-log.ts com message "clarice_rest_attempt" e details
- * { attempt, maxAttempts, elapsedMs, payloadBytes, outcome, status?, errorMessage? }.
- * Isso permite diagnosticar padrões como "timeout consistente em payloads >5k
- * chars" (ver #2320, #2798) direto no run-log, sem precisar reproduzir o skip.
+ * Observabilidade (#2798, campo chunksInFlight adicionado em #4952): com
+ * --retry, cada tentativa (sucesso, retry por timeout/5xx, ou falha fatal por
+ * 4xx) é logada em data/run-log.jsonl via scripts/lib/run-log.ts com message
+ * "clarice_rest_attempt" e details { attempt, maxAttempts, elapsedMs,
+ * payloadBytes, outcome, status?, errorMessage?, chunksInFlight? }.
+ * `chunksInFlight` (só presente em chamadas chunked) é o número de OUTROS
+ * chunks com request em voo no cortex.clarice.ai no momento desta tentativa —
+ * permite correlacionar timeout com concorrência alta direto no run-log (#4952:
+ * refutou o diagnóstico anterior de "timeout consistente em payloads >5k chars",
+ * #2320/#2798 — a causa real era concorrência de dispatch, não tamanho).
  *
  * Saída:
  *   --out: JSON array de `{ from, to, rule?, explanation? }` — lista plana de todas as
@@ -130,18 +134,53 @@ export interface ChunkedRetryResult extends ChunkedResult {
 }
 
 /**
- * Teto de concorrência para dispatch de chunks (#2701 item 1 do self-review #2700).
+ * Resolve o teto de concorrência do dispatch de chunks (#4952), lido do env
+ * `CLARICE_CHUNK_CONCURRENCY` — inteiro positivo válido honra o override;
+ * ausente ou inválido (0, negativo, decimal, não-numérico) cai no default 1.
  *
- * O dispatch sequencial original (1 chunk por vez) multiplicava o wall-clock pelo
- * número de chunks (ex: edição de 3 chunks ≈ 3× a latência de 1 request). Concorrência
- * total (`Promise.all` sem teto) foi descartada porque o Clarice REST pode ter
- * rate-limit por-segundo não documentado — uma edição de 5+ chunks disparando tudo de
- * uma vez arriscaria 429s que o `withClariceRetry` trataria como 4xx→fast-fail (sem
- * retry), piorando a confiabilidade em vez de melhorá-la. Teto de 3 é um meio-termo:
- * cobre o caso comum (2-3 chunks) com paralelismo total, e limita o burst para
- * edições excepcionalmente longas.
+ * Exportada (não só interna) pra permitir teste de regressão direto sem
+ * precisar de módulo cache-busting — `CLARICE_CHUNK_CONCURRENCY` abaixo é
+ * resolvida uma vez no module-load, então testar o default/override exige
+ * chamar esta função pura isoladamente com `process.env.CLARICE_CHUNK_CONCURRENCY`
+ * mockado.
  */
-export const CLARICE_CHUNK_CONCURRENCY = 3;
+export function resolveChunkConcurrency(): number {
+  const raw = process.env.CLARICE_CHUNK_CONCURRENCY;
+  if (raw === undefined) return 1;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : 1;
+}
+
+/**
+ * Teto de concorrência para dispatch de chunks (#2701 item 1 do self-review #2700,
+ * revertido pro default serial em #4952).
+ *
+ * Histórico: o dispatch sequencial original (1 chunk por vez) multiplicava o
+ * wall-clock pelo número de chunks (ex: edição de 3 chunks ≈ 3× a latência de 1
+ * request). O #2701 subiu o default pra 3 como meio-termo entre "cobre o caso
+ * comum (2-3 chunks) com paralelismo total" e "limita o burst pra não estourar
+ * rate-limit não documentado do lado do servidor".
+ *
+ * #4952 (260810): esse meio-termo nunca funcionou na prática. Padrão observado em
+ * `data/run-log.jsonl` (260807/10/11): `elapsedMs` batendo quase exatamente no
+ * timeout do cliente (60s REST / 30s MCP) INDEPENDENTE do tamanho do payload
+ * (inclusive chunks de 740B, muito abaixo do threshold de chunking), múltiplas
+ * tentativas com `elapsedMs` quase idêntico no mesmo round de retry, `504 Gateway
+ * Timeout` ocasional do lado do servidor, e o fato de que um pedido MANUAL isolado
+ * (nunca concorrente) sempre funciona enquanto a pipeline (sempre rajada de até 3)
+ * sempre falha. Isso refuta o diagnóstico do #2798 (tamanho de payload) — baixar o
+ * threshold 9k→4.5k naquele fix não resolveu porque reduzir tamanho de chunk não
+ * reduz CONCORRÊNCIA, só aumenta o número de chunks disparados em paralelo. Ver
+ * comentário atualizado em `scripts/lib/clarice-chunk.ts` (CLARICE_CHUNK_THRESHOLD).
+ *
+ * Default agora é 1 (serial): o "melhor caso" da concorrência 3 nunca era
+ * alcançado — era sempre timeout garantido + halt manual + retry, que já é mais
+ * lento que serial bem-sucedido. Overridável via env `CLARICE_CHUNK_CONCURRENCY`
+ * (ver `resolveChunkConcurrency` acima) pra quem quiser re-testar concorrência
+ * mais alta sem mudar código, uma vez que o problema do lado do servidor seja
+ * investigado/resolvido.
+ */
+export const CLARICE_CHUNK_CONCURRENCY = resolveChunkConcurrency();
 
 /**
  * Executa `fn` sobre `items` com um teto de concorrência (#2701 item 1).
@@ -157,30 +196,42 @@ export const CLARICE_CHUNK_CONCURRENCY = 3;
  * em segundo plano (não canceladas), mas seus resultados são descartados porque o
  * caller trata qualquer erro como fail-clean (ver JSDoc de `correctTextChunked`) — não
  * há resultado parcial a preservar.
+ *
+ * `fn` recebe um 3º argumento `getInFlight()` (#4952) — lido a qualquer momento
+ * dentro de `fn`, retorna quantas chamadas de `fn` estão em voo agora, INCLUINDO
+ * a própria (mínimo 1 enquanto `fn` roda). Usado por `withClariceRetryChunked`
+ * pra anexar o estado real de concorrência a cada tentativa logada em
+ * `clarice_rest_attempt` (subtraindo 1 pra reportar só as OUTRAS chamadas —
+ * ver `AttemptLogEntry.chunksInFlight`).
  */
 async function mapWithConcurrencyLimit<T, R>(
   items: readonly T[],
   limit: number,
-  fn: (item: T, index: number) => Promise<R>,
+  fn: (item: T, index: number, getInFlight: () => number) => Promise<R>,
 ): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let nextIndex = 0;
   let hasError = false;
   let firstError: unknown;
+  let inFlight = 0;
+  const getInFlight = (): number => inFlight;
 
   async function worker(): Promise<void> {
     for (;;) {
       if (hasError) return;
       const i = nextIndex++;
       if (i >= items.length) return;
+      inFlight++;
       try {
-        results[i] = await fn(items[i], i);
+        results[i] = await fn(items[i], i, getInFlight);
       } catch (e) {
         if (!hasError) {
           hasError = true;
           firstError = e;
         }
         return;
+      } finally {
+        inFlight--;
       }
     }
   }
@@ -212,7 +263,10 @@ async function runChunked<Extra>(
   text: string,
   chunkThreshold: number,
   concurrency: number,
-  perChunk: (chunk: TextChunk) => Promise<{ suggestions: ClariceSuggestions; extra: Extra }>,
+  perChunk: (
+    chunk: TextChunk,
+    getInFlight: () => number,
+  ) => Promise<{ suggestions: ClariceSuggestions; extra: Extra }>,
 ): Promise<{
   correctedText: string;
   rawSuggestions: ClariceSuggestions;
@@ -221,8 +275,8 @@ async function runChunked<Extra>(
 }> {
   const chunks = splitIntoChunks(text, chunkThreshold);
 
-  const perChunkResults = await mapWithConcurrencyLimit(chunks, concurrency, async (chunk) => {
-    const { suggestions, extra } = await perChunk(chunk);
+  const perChunkResults = await mapWithConcurrencyLimit(chunks, concurrency, async (chunk, _i, getInFlight) => {
+    const { suggestions, extra } = await perChunk(chunk, getInFlight);
     return { chunk, suggestions, extra };
   });
 
@@ -312,8 +366,19 @@ export async function withClariceRetryChunked(
   chunkThreshold = CLARICE_CHUNK_THRESHOLD,
   concurrency = CLARICE_CHUNK_CONCURRENCY,
 ): Promise<ChunkedRetryResult> {
-  const result = await runChunked(opts.text, chunkThreshold, concurrency, async (chunk) => {
-    const retryResult = await withClariceRetry({ ...opts, text: chunk.text }, policy, sleepFn);
+  const result = await runChunked(opts.text, chunkThreshold, concurrency, async (chunk, getInFlight) => {
+    // #4952 — anexa o número de OUTROS chunks em voo no momento de cada tentativa
+    // ao AttemptLogEntry, sem alterar o comportamento do onAttempt original do
+    // caller (chama-o normalmente, só enriquece o payload antes).
+    const chunkOpts: CorrectOptions = opts.onAttempt
+      ? {
+          ...opts,
+          text: chunk.text,
+          onAttempt: (entry) =>
+            opts.onAttempt!({ ...entry, chunksInFlight: Math.max(0, getInFlight() - 1) }),
+        }
+      : { ...opts, text: chunk.text };
+    const retryResult = await withClariceRetry(chunkOpts, policy, sleepFn);
     return { suggestions: retryResult.suggestions, extra: retryResult.attempts };
   });
 

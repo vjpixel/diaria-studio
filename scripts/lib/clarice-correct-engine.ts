@@ -68,6 +68,16 @@ export interface AttemptLogEntry {
   /** HTTP status quando disponível (ClariceHttpError). */
   status?: number;
   errorMessage?: string;
+  /**
+   * #4952 — número de OUTROS chunks com request em voo no cortex.clarice.ai no
+   * momento em que esta tentativa foi disparada (não inclui a própria). Só
+   * populado pelo caller chunked (`withClariceRetryChunked`, que enxerga o
+   * estado de concorrência do dispatch); `undefined` em chamadas single-chunk
+   * diretas de `withClariceRetry`, onde não há noção de "outros chunks".
+   * Existe pra permitir correlacionar diretamente no run-log se um timeout
+   * coincide com concorrência alta — evidência central do #4952.
+   */
+  chunksInFlight?: number;
 }
 
 /**
