@@ -104,14 +104,17 @@ export const DIARIA_X_URL = `https://${DIARIA_X_SLUG}`;
 /**
  * Slug/URL canônicos do canal da diar.ia.br no YouTube (#4829). Handle
  * `@diariabr` — mesmo padrão de handle já usado no X (`DIARIA_X_SLUG` acima).
- * Com `www.` (como Facebook/LinkedIn/Instagram/Threads, diferente do X).
+ * Slug SEM `www.` (mesma convenção de `DIARIA_FACEBOOK_PAGE_SLUG`/
+ * `DIARIA_LINKEDIN_PAGE_SLUG`/`DIARIA_INSTAGRAM_SLUG`/`DIARIA_THREADS_SLUG`
+ * acima — `www.` entra só no template do `_URL`, nunca embutido no slug;
+ * `DIARIA_X_SLUG` é a exceção nesse ponto, por não usar `www.` nenhum).
  * Editor confirmou a URL ao vivo em sessão develop 260810c — canal sem
  * conteúdo publicado ainda no momento do cadastro, mas o link já é válido.
  */
-export const DIARIA_YOUTUBE_SLUG = "www.youtube.com/@diariabr";
+export const DIARIA_YOUTUBE_SLUG = "youtube.com/@diariabr";
 
-/** URL completa (com protocolo) derivada do slug acima. */
-export const DIARIA_YOUTUBE_URL = `https://${DIARIA_YOUTUBE_SLUG}`;
+/** URL completa (com protocolo e `www.`) derivada do slug acima. */
+export const DIARIA_YOUTUBE_URL = `https://www.${DIARIA_YOUTUBE_SLUG}`;
 
 /**
  * URL canônica de apoio financeiro via Apoia.se (#3219) — CTA de apoio à

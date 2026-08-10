@@ -1224,8 +1224,8 @@ export function parseHeaderChunk(chunk: string): {
 /**
  * #2645/#2790: URLs canônicas dos canais sociais da marca diar.ia.br, reusadas no
  * rodapé co-brand do shell mensal. Vêm de `canonical-urls.ts`
- * (`DIARIA_{FACEBOOK,LINKEDIN,INSTAGRAM,THREADS}_PAGE_URL`/`_URL`) — fonte
- * única compartilhada com `build-link-ctr.ts`, `stitch-newsletter.ts` e
+ * (`DIARIA_{FACEBOOK,LINKEDIN,INSTAGRAM,THREADS,X,YOUTUBE}_PAGE_URL`/`_URL`) —
+ * fonte única compartilhada com `build-link-ctr.ts`, `stitch-newsletter.ts` e
  * `lint-social-md.ts` (#2790 substituiu os literais hardcoded que existiam
  * aqui antes, cada um copiado independentemente nesses outros pontos).
  *
