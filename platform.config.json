@@ -98,6 +98,10 @@
     "enabled": false,
     "note": "#4505 item 3 — critic pass opcional (subagente social-critic) sobre 03-social.md final no Stage 4, antes do gate humano. Default desligado (custo extra de Sonnet por edição); ativar setando enabled:true. Ver scripts/run-social-critic.ts e .claude/agents/social-critic.md."
   },
+  "experiment_d3_radar": {
+    "enabled": false,
+    "note": "#4846 — experimento de randomização 1:1 por edição: braço A (controle) mantém o 3º destaque como D3, braço B move o mesmo item pro 1º slot do RADAR (edição sai com 2 destaques). Roda no Stage 1, pós-gate humano, via scripts/experiment-d3-radar.ts — seed determinístico por edição, registrado em _internal/.experiment-d3.json. Default DESLIGADO: esta unidade implementa só o mecanismo (randomização + registro); ativar em produção é decisão separada do editor (ver docs/experiments/d3-radar-4846.md, pré-registro obrigatório antes da 1ª edição randomizada, e o pré-requisito #4841 — link-layout.json/published-links.json — já mergeado)."
+  },
   "logging": {
     "path": "data/run-log.jsonl"
   },

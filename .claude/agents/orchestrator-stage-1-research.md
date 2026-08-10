@@ -794,6 +794,14 @@ Apresentar ao usuário:
   ```
   Roda todos os checks de Stage 1 (incluindo `categorized-has-eia-section` e `approved-has-3-highlights` + `coverage-line-present`). Exit 1 = bug downstream — logar warn e seguir; o sentinel ainda é escrito.
 
+- **Experimento D3 vs slot 1 do Radar (#4846, opcional, DESLIGADO por padrão).** Rodar sempre — o script decide sozinho se o experimento está ativo:
+  ```bash
+  npx tsx scripts/experiment-d3-radar.ts \
+    --edition {AAMMDD} \
+    --approved {EDITION_DIR}/_internal/01-approved.json
+  ```
+  Exit 2 = desabilitado (`platform.config.json` → `experiment_d3_radar.enabled !== true`, default) — pular silenciosamente, não é falha. Exit 0 = braço sorteado (determinístico por edição, nunca re-sorteado em resumes) e, se braço B, aplicado — o item de rank 3 (D3) sai de `highlights` e o mesmo artigo entra como 1º item de `radar[]`; registrado em `_internal/.experiment-d3.json`. Exit 1 = erro — logar warn e seguir sem randomizar (experimento opcional nunca bloqueia o gate). Pré-registro completo do desenho: `docs/experiments/d3-radar-4846.md`.
+
 - **Escrever sentinel de conclusão do Stage 1:**
   ```bash
   npx tsx scripts/pipeline-sentinel.ts write \
