@@ -37,6 +37,7 @@ import {
 } from "./studio-state.ts";
 import { buildRoundQueue, type RawPlan, type RoundQueue } from "./studio-round-queue.ts";
 import { buildTimelineRows, type TimelineRow, type Plan as TimelinePlan } from "../render-overnight-timeline.ts";
+import { normalizeIssues } from "../lib/plan-issues-normalize.ts"; // #4860: plan.issues também pode ser dict (develop)
 
 export type RoundKind = "overnight" | "develop";
 
@@ -252,7 +253,7 @@ export function listRoundSummaries(rootDir: string): RoundListEntry[] {
       } catch {
         continue; // corrompido — omite da lista, best-effort
       }
-      const issues = Array.isArray(plan.issues) ? plan.issues : [];
+      const issues = normalizeIssues(plan);
       const counts: Record<string, number> = {};
       for (const issue of issues) {
         const status = typeof issue.status === "string" ? issue.status : "unknown";

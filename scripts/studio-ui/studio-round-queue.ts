@@ -39,6 +39,8 @@
  * é bool, nunca o secret) — este módulo só repassa o que já está lá.
  */
 
+import { normalizeIssues } from "../lib/plan-issues-normalize.ts"; // #4860: plan.issues também pode ser dict (develop)
+
 export type QueueBucket = "entram" | "pendente" | "fora";
 
 /** Shape cru de uma entry de `plan.json.issues[]` — schema-tolerant
@@ -61,7 +63,12 @@ export interface RawPlanIssue {
 /** Shape cru mínimo de `plan.json` — só os campos que este módulo lê. */
 export interface RawPlan {
   started_at?: string | null;
-  issues?: RawPlanIssue[];
+  /**
+   * Aceita os dois shapes observados na prática (#4817/#4860): array
+   * (overnight) ou dict chaveado por número da issue (develop). Ler via
+   * `normalizeIssues`, nunca `plan.issues` diretamente.
+   */
+  issues?: RawPlanIssue[] | Record<string, Partial<RawPlanIssue>>;
   [key: string]: unknown;
 }
 
@@ -168,7 +175,7 @@ function sortRows(rows: QueueRow[]): QueueRow[] {
  * parseado. Fail-soft: `issues` ausente/malformado vira 3 arrays vazios —
  * nunca lança. */
 export function buildRoundQueue(plan: RawPlan): RoundQueue {
-  const issues = Array.isArray(plan.issues) ? plan.issues : [];
+  const issues = normalizeIssues(plan);
   const rows = issues.map(classifyQueueRow);
   return {
     entram: sortRows(rows.filter((r) => r.bucket === "entram")),

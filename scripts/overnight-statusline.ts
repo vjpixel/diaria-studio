@@ -84,6 +84,7 @@ import { isMainModule } from "./lib/cli-args.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 import { isValidEditionDir } from "./lib/edition-utils.ts"; // #3054: rejeita sentinels calendário-inválidos (ex: 260999)
 import { getMachineId } from "./lib/machine-id.ts"; // #3033: filtra plan.json de develop de OUTRA máquina
+import { normalizeIssues } from "./lib/plan-issues-normalize.ts"; // #4860: plan.issues também pode ser dict (develop)
 
 // ─── tipos ────────────────────────────────────────────────────────────────────
 
@@ -130,7 +131,13 @@ export interface PlanIssue {
 }
 
 export interface Plan {
-  issues: PlanIssue[];
+  /**
+   * Aceita os dois shapes observados na prática (#4817/#4860): array
+   * (overnight) ou dict chaveado por número da issue (develop). Todo
+   * consumidor deste campo deve passar por `normalizeIssues` — nunca ler
+   * `plan.issues` diretamente.
+   */
+  issues: PlanIssue[] | Record<string, Partial<PlanIssue>>;
   /**
    * Nível atual da cadeia de re-entrada de findings.
    * 0 = fila principal, 1 = mini-rodada 1, 2 = mini-rodada 2.
@@ -207,14 +214,15 @@ export function isTerminalForBar(status: string): boolean {
  *
  * Retorna `false` (nunca concluído) quando:
  *   - `plan` é null/undefined
- *   - `plan.issues` é ausente ou não-array
+ *   - `plan.issues` é ausente, array vazio, dict vazio, ou qualquer shape
+ *     não reconhecido por `normalizeIssues` (#4860)
  *   - não há issues relevantes após o filtro `in_round` (fila vazia não é "concluída",
  *     é "não iniciada" — mesmo contrato de `renderOvernightBar`, que também
  *     retorna "" nesse caso em vez de tratar como encerrada)
  */
 export function isPlanConcluded(plan: Plan | null | undefined): boolean {
-  if (!plan || !Array.isArray(plan.issues)) return false;
-  const issues = plan.issues.filter((i) => i?.in_round !== false);
+  if (!plan) return false;
+  const issues = normalizeIssues(plan).filter((i) => i?.in_round !== false);
   if (issues.length === 0) return false;
   const done = issues.filter((i) => isTerminalForBar(String(i?.status ?? ""))).length;
   return done >= issues.length;
@@ -381,7 +389,7 @@ export function cycleLabel(plan: Plan | null | undefined): string {
   if (!plan) return "fila principal";
 
   const depth = typeof plan.findings_depth === "number" ? plan.findings_depth : 0;
-  const issues = Array.isArray(plan.issues) ? plan.issues : [];
+  const issues = normalizeIssues(plan);
 
   // Filtra issues relevantes para o depth atual.
   // depth 0: issues sem source "finding-depth-*" (initial, mid-round, ou sem campo source)
@@ -440,7 +448,8 @@ export function cycleLabel(plan: Plan | null | undefined): string {
  *
  * Retorna "" quando:
  *   - plan é null/undefined
- *   - plan.issues é ausente ou não-array
+ *   - plan.issues é ausente ou vazio (array vazio, dict vazio, ou shape não
+ *     reconhecido por `normalizeIssues`, #4860)
  *   - issues.length === 0 (após filtrar por `in_round !== false`, #3131 — ver abaixo)
  *
  * Fix #2246 pt3: quando done >= total (rodada encerrada), mostra 100% e permanece
@@ -458,8 +467,7 @@ export function cycleLabel(plan: Plan | null | undefined): string {
 export function renderOvernightBar(plan: Plan | null | undefined): string {
   // Degrada graciosamente: plan ausente ou malformado
   if (!plan) return "";
-  if (!Array.isArray(plan.issues)) return "";
-  const issues = plan.issues.filter((i) => i?.in_round !== false);
+  const issues = normalizeIssues(plan).filter((i) => i?.in_round !== false);
   if (issues.length === 0) return "";
 
   const total = issues.length;
@@ -578,7 +586,7 @@ export function readTodayPlan(cwd: string): Plan | null {
       const planPath = join(overnightDir, dirName, "plan.json");
       const plan = readPlanFromDir(planPath);
       if (!plan) continue;
-      if (!Array.isArray(plan.issues) || plan.issues.length === 0) continue;
+      if (normalizeIssues(plan).length === 0) continue;
       // First entry that passes → this is the current/latest run
       return plan;
     }
@@ -733,7 +741,7 @@ export function readTodayDevelopPlan(
       const planPath = join(developDir, dirName, "plan.json");
       const plan = readPlanFromDir(planPath);
       if (!plan) continue;
-      if (!Array.isArray(plan.issues) || plan.issues.length === 0) continue;
+      if (normalizeIssues(plan).length === 0) continue;
       if (isStaleDevelopPlan(planPath, now)) continue; // #2800/#2803: zumbi — não sequestra a barra
       if (isForeignDevelopPlan(plan, localMachineId)) continue; // #3033: sessão de OUTRA máquina
       return { id: dirName, plan };
