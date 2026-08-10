@@ -1,5 +1,11 @@
 # `/diaria-develop` — análise de consumo de tokens (#3328)
 
+> **Medições refeitas em 260809 — ver `docs/token-usage-audit-260809.md`.**
+> Este doc é de 260711 e era declaradamente especulativo por falta de dados de
+> rodada real. Agosto tem dados reais (`develop/260804`, `260806b`, `260808`) e
+> aponta o fleet review por PR — não o boilerplate de dispatch — como o gasto
+> dominante.
+
 **Status:** levantamento concluído. **Necessariamente mais especulativo que
 a análise irmã de `/diaria-overnight` (#3327, `docs/overnight-token-analysis-3327.md`)**
 — não existe, até o momento, um dataset real de uma rodada `/diaria-develop`
