@@ -17,8 +17,8 @@
  *
  * ─── Por que ~3 semanas, não 1 execução perdida ────────────────────────────
  *
- * A task é SEMANAL (segundas 10:30) — perder 1 execução (máquina desligada
- * naquela segunda, rede fora) não é sinal de nada quebrado. `STALENESS_THRESHOLD_DAYS`
+ * A task é SEMANAL (domingos 07:00) — perder 1 execução (máquina desligada
+ * naquele domingo, rede fora) não é sinal de nada quebrado. `STALENESS_THRESHOLD_DAYS`
  * cobre 2 execuções semanais perdidas + folga, análogo ao raciocínio de
  * `CONSECUTIVE_FAILURE_THRESHOLD` em `clarice-opens-catchup-alarm.ts` (1
  * falha isolada é normal, N seguidas é sinal real) — só que medido em TEMPO
@@ -38,7 +38,7 @@
  */
 
 /** Dias sem registro novo até alarmar — ~3 semanas (2 execuções semanais
- * perdidas + folga; a task roda segundas 10:30). */
+ * perdidas + folga; a task roda domingos 07:00). */
 export const STALENESS_THRESHOLD_DAYS = 21;
 
 /** Fingerprint sentinela usado quando não há NENHUM registro legível em
@@ -153,7 +153,7 @@ export function buildGeoCitationStalenessAlarmEmail(
       `O último registro em data/geo-citations/history.jsonl é de ${latestRecordTs}`,
       `(${staleDays} dia(s) atrás) — mais do que os ${STALENESS_THRESHOLD_DAYS} dias`,
       "esperados (2 execuções semanais perdidas + folga) pra task",
-      "\"Diaria-Geo-Citation-Monitor\" (segundas 10:30).",
+      "\"Diaria-Geo-Citation-Monitor\" (domingos 07:00).",
     );
   }
 

@@ -2,20 +2,22 @@
 .SYNOPSIS
     Registra (ou remove) a task "Diaria-Postmaster-Spam-Sync" no Task
     Scheduler -- sync automatico do spamRate do Google Postmaster Tools
-    (#4154), a cada 12h.
+    (#4154), diaria as 12:30.
 
 .DESCRIPTION
     Cria uma tarefa agendada que roda `run-postmaster-spam-sync.ps1` (que
-    chama `postmaster-spam-sync.ts`) a cada 12h. Sem essa task, a leitura do
+    chama `postmaster-spam-sync.ts`) todo dia as 12:30 (mudou de "a cada 12h"
+    pra diaria, decisao do editor 260810). Sem essa task, a leitura do
     Postmaster continua dependendo do editor abrir o painel manualmente antes
     de cada envio (scripts/postmaster-spam-entry.ts) -- funcional, mas facil
     de esquecer, e o esquecimento trava o escalonamento de volume do ramp
     (sinal vira `indeterminate` apos 48h sem leitura fresca).
 
     Cadencia: a leitura e uma MEDIA sobre HEALTH_SAMPLE_DAYS (mesma janela das
-    outras metricas da aba Rampa, pedido do editor 260730), entao 1x/dia ja
-    bastaria -- 12h da margem contra maquina desligada/execucao perdida sem
-    custo real (a chamada e leve, poucas requests por dia da janela).
+    outras metricas da aba Rampa, pedido do editor 260730) -- o dado fonte em
+    si so muda em granularidade diaria, entao rodar 2x/dia (cadencia antiga)
+    nao lia nada mais fresco, so gastava a chamada a toa. 1x/dia as 12:30
+    basta; StartWhenAvailable ja cobre execucao perdida por maquina desligada.
     recordedAt e sempre "agora" no momento da gravacao, entao cada run
     bem-sucedida reseta a janela de staleness de 48h do breaker
     (POSTMASTER_STALE_MS em thresholds.ts).
@@ -57,7 +59,7 @@ $RepoRoot   = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 $WrapperPs1 = Join-Path $RepoRoot "scripts\run-postmaster-spam-sync.ps1"
 
 $TaskName = "Diaria-Postmaster-Spam-Sync"
-$TaskDesc = "diar.ia.br: sync automatico do spamRate do Google Postmaster Tools (#4154) - a cada 12h."
+$TaskDesc = "diar.ia.br: sync automatico do spamRate do Google Postmaster Tools (#4154) - diaria 12:30."
 
 if (-not (Test-Path $WrapperPs1)) {
     Write-Error "Wrapper nao encontrado: $WrapperPs1"
@@ -86,12 +88,8 @@ $Action = New-ScheduledTaskAction `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$WrapperPs1`"" `
     -WorkingDirectory $RepoRoot
 
-# A cada 12h, comecando agora, indefinidamente.
-# -Once e SWITCH, nao aceita valor posicional: o instante inicial vai em -At
-# (ver #4155 -- sem -At explicito o registro falha em silencio).
-# -RepetitionDuration OMITIDO de proposito: sem ele a repeticao e indefinida
-# (ver #4155 -- TimeSpan::MaxValue quebra o XML do Task Scheduler).
-$Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 12)
+# Diaria, 12:30. Ver .DESCRIPTION pro porque de nao ser mais "a cada 12h".
+$Trigger = New-ScheduledTaskTrigger -Daily -At (Get-Date -Hour 12 -Minute 30 -Second 0)
 
 $Settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit   (New-TimeSpan -Minutes 15) `
@@ -130,7 +128,7 @@ Write-Output ""
 Write-Output "Configuracao:"
 Write-Output "  Wrapper : $WrapperPs1"
 Write-Output "  Repo    : $RepoRoot"
-Write-Output "  Cadencia: a cada 12h"
+Write-Output "  Cadencia: diaria 12:30"
 Write-Output "  Log     : data\clarice-subscribers\.postmaster-spam-sync.log"
 Write-Output ""
 Write-Output "Verificar: Get-ScheduledTask -TaskName '$TaskName' | Get-ScheduledTaskInfo"

@@ -2,13 +2,15 @@
 .SYNOPSIS
     Registra (ou remove) a task "Diaria-Geo-Citation-Monitor" no Task
     Scheduler -- monitor SEMANAL de citacao por assistente de IA (#4558
-    Parte C), segundas 10:30.
+    Parte C), domingos 07:00.
 
 .DESCRIPTION
     Cria uma tarefa agendada que roda `run-geo-citation-monitor.ps1` (que
-    chama `geo-citation-monitor.ts`) toda segunda as 10:30 -- depois das
-    tasks diarias de sync (08:30 Clarice, 09:15 cursos KV, 09:45 apoios), pra
-    nao concorrer pelo mesmo horario de rede/CPU local.
+    chama `geo-citation-monitor.ts`) todo domingo as 07:00 (mudou de segunda
+    10:30 pra domingo 07:00, decisao do editor 260810 -- consolidar as tasks
+    semanais na manha de domingo) -- ainda antes das tasks diarias de sync
+    (08:30 Clarice, 09:15 cursos KV, 09:45 apoios, que rodam todo dia incl.
+    domingo), pra nao concorrer pelo mesmo horario de rede/CPU local.
 
     O monitor pergunta a cada provedor configurado as perguntas fixas de
     GEO_QUESTIONS ("Qual a melhor newsletter diaria sobre inteligencia
@@ -87,7 +89,7 @@ $RepoRoot   = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 $WrapperPs1 = Join-Path $RepoRoot "scripts\run-geo-citation-monitor.ps1"
 
 $TaskName = "Diaria-Geo-Citation-Monitor"
-$TaskDesc = "diar.ia.br: monitor semanal de citacao por assistente de IA (#4558 Parte C) - segundas 10:30."
+$TaskDesc = "diar.ia.br: monitor semanal de citacao por assistente de IA (#4558 Parte C) - domingos 07:00."
 
 if (-not (Test-Path $WrapperPs1)) {
     Write-Error "Wrapper nao encontrado: $WrapperPs1"
@@ -116,8 +118,8 @@ $Action = New-ScheduledTaskAction `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$WrapperPs1`"" `
     -WorkingDirectory $RepoRoot
 
-# Semanal, segundas 10:30. Ver docstring pro racional de semanal vs diario.
-$Trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At (Get-Date -Hour 10 -Minute 30 -Second 0)
+# Semanal, domingos 07:00. Ver docstring pro racional de semanal vs diario.
+$Trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At (Get-Date -Hour 7 -Minute 0 -Second 0)
 
 $Settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit   (New-TimeSpan -Hours 1) `
@@ -157,7 +159,7 @@ Write-Output ""
 Write-Output "Configuracao:"
 Write-Output "  Wrapper : $WrapperPs1"
 Write-Output "  Repo    : $RepoRoot"
-Write-Output "  Horario : segundas 10:30 (semanal)"
+Write-Output "  Horario : domingos 07:00 (semanal)"
 Write-Output "  Log     : data\geo-citations\.monitor.log"
 Write-Output "  Serie   : data\geo-citations\history.jsonl"
 Write-Output ""

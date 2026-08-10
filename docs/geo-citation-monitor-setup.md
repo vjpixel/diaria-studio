@@ -45,8 +45,10 @@ não por um script que corta produção sozinho ao bater checkpoint.
 ## Cadência: semanal, não diário
 
 Citação por assistente muda em escala de semanas e a série só vale como
-tendência — diário gastaria 7× pra ler ruído. Roda **segundas 10:30**. Não
-colide com `Diaria-SEO-Weekly` (segundas 04:10).
+tendência — diário gastaria 7× pra ler ruído. Roda **domingos 07:00**
+(mudou de segundas 10:30, decisão do editor 260810 — consolidar as tasks
+semanais na manhã de domingo). Não colide com `Diaria-SEO-Weekly` (domingos
+04:10) nem com as diárias que começam às 05:30.
 
 Custo por execução **nunca foi medido**; OpenAI/Anthropic cobram por token,
 mas a Gemini tem free tier que 8 chamadas/semana plausivelmente não estouram.
@@ -124,7 +126,7 @@ cadência semanal — vive no corpo da própria issue, não duplicada aqui):
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-geo-citation-monitor-schedule.ps1
 ```
 
-Isso registra a task `Diaria-Geo-Citation-Monitor` (segundas 10:30).
+Isso registra a task `Diaria-Geo-Citation-Monitor` (domingos 07:00).
 Idempotente — re-executar atualiza a task. Remover: mesmo comando com
 `-Unregister`.
 

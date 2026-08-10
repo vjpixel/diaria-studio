@@ -1,14 +1,16 @@
 ﻿<#
 .SYNOPSIS
     Registra (ou remove) a task "Diaria-SEO-Weekly" no Task Scheduler — loop de
-    SEO semanal, segunda-feira as 04:10.
+    SEO semanal, domingo as 04:10.
 
 .DESCRIPTION
     Cria uma tarefa agendada que roda `run-seo-weekly.ps1` (seo-index-check +
-    seo-pull) toda segunda as 04:10 — off-peak, e sem disputa com o sync
-    Clarice, que roda as 08:30 (03:40 ate 260727, depois 07:30, agora 08:30;
-    mudou pra cair DEPOIS do envio canonico das 06:00 BRT). As duas tasks nao
-    se cruzam mais: a de SEO roda horas antes, nao mais logo depois.
+    seo-pull) todo domingo as 04:10 (mudou de segunda pra domingo, decisao do
+    editor 260810 — consolidar as tasks semanais na manha de domingo; horario
+    do dia inalterado) — off-peak, e sem disputa com o sync Clarice, que roda
+    as 08:30 todo dia (03:40 ate 260727, depois 07:30, agora 08:30; mudou pra
+    cair DEPOIS do envio canonico das 06:00 BRT). As duas tasks nao se cruzam:
+    a de SEO roda horas antes, nao logo depois.
 
     Semanal (nao diario) de proposito: indexacao se move em dias/semanas, e a
     URL Inspection API tem quota de 2.000/dia. Uma rodada gasta ~223.
@@ -48,7 +50,7 @@ $RepoRoot   = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 $WrapperPs1 = Join-Path $RepoRoot "scripts\run-seo-weekly.ps1"
 
 $TaskName = "Diaria-SEO-Weekly"
-$TaskDesc = "diar.ia.br: loop de SEO semanal (#4105) - segunda 04:10, cobertura de indexacao + Search Analytics."
+$TaskDesc = "diar.ia.br: loop de SEO semanal (#4105) - domingo 04:10, cobertura de indexacao + Search Analytics."
 
 if (-not (Test-Path $WrapperPs1)) {
     Write-Error "Wrapper nao encontrado: $WrapperPs1"
@@ -71,8 +73,8 @@ $Action = New-ScheduledTaskAction `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$WrapperPs1`"" `
     -WorkingDirectory $RepoRoot
 
-# Segunda-feira as 04:10 (semanal; ver .DESCRIPTION pra o porque de nao ser diario).
-$Trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At (Get-Date -Hour 4 -Minute 10 -Second 0)
+# Domingo as 04:10 (semanal; ver .DESCRIPTION pra o porque de nao ser diario).
+$Trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At (Get-Date -Hour 4 -Minute 10 -Second 0)
 
 $Settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit   (New-TimeSpan -Hours 2) `
@@ -109,6 +111,6 @@ Write-Output ""
 Write-Output "Configuracao:"
 Write-Output "  Wrapper : $WrapperPs1"
 Write-Output "  Repo    : $RepoRoot"
-Write-Output "  Horario : segunda-feira 04:10 (semanal)"
+Write-Output "  Horario : domingo 04:10 (semanal)"
 Write-Output "  Log     : data\seo\.seo-weekly.log"
 Write-Output "  Saidas  : data\seo\index-status-{data}.{json,md}, gsc-{data}.json"

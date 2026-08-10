@@ -2,13 +2,15 @@
 .SYNOPSIS
     Registra (ou remove) a task "Diaria-Geo-Citation-Staleness-Alarm" no Task
     Scheduler -- alarme de staleness do monitor de citacao GEO (#4755),
-    segundas 14:00.
+    domingos 10:30.
 
 .DESCRIPTION
     Cria uma tarefa agendada que roda `run-geo-citation-staleness-alarm.ps1`
-    (que chama `geo-citation-staleness-alarm.ts`) toda segunda as 14:00 --
-    algumas horas depois da task "Diaria-Geo-Citation-Monitor" (segundas
-    10:30), que e quem escreve data/geo-citations/history.jsonl.
+    (que chama `geo-citation-staleness-alarm.ts`) todo domingo as 10:30
+    (mudou de segunda 14:00 pra domingo 10:30, decisao do editor 260810 --
+    consolidar as tasks semanais na manha de domingo) -- 3h30 depois da task
+    "Diaria-Geo-Citation-Monitor" (domingos 07:00), que e quem escreve
+    data/geo-citations/history.jsonl.
 
     `geo-citation-staleness-alarm.ts` le o `ts` do registro mais recente do
     history.jsonl e, se fizer mais de ~3 semanas (2 execucoes semanais
@@ -77,7 +79,7 @@ $RepoRoot   = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 $WrapperPs1 = Join-Path $RepoRoot "scripts\run-geo-citation-staleness-alarm.ps1"
 
 $TaskName = "Diaria-Geo-Citation-Staleness-Alarm"
-$TaskDesc = "diar.ia.br: alarme de staleness do monitor de citacao GEO (#4755) - segundas 14:00, so e-mail, nunca chama provider nem escreve na Brevo/Beehiiv."
+$TaskDesc = "diar.ia.br: alarme de staleness do monitor de citacao GEO (#4755) - domingos 10:30, so e-mail, nunca chama provider nem escreve na Brevo/Beehiiv."
 
 if (-not (Test-Path $WrapperPs1)) {
     Write-Error "Wrapper nao encontrado: $WrapperPs1"
@@ -106,9 +108,9 @@ $Action = New-ScheduledTaskAction `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$WrapperPs1`"" `
     -WorkingDirectory $RepoRoot
 
-# Semanal, segundas 14:00 -- algumas horas depois do monitor (segundas 10:30),
+# Semanal, domingos 10:30 -- 3h30 depois do monitor (domingos 07:00),
 # que e quem escreve o history.jsonl que este alarme le.
-$Trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At (Get-Date -Hour 14 -Minute 0 -Second 0)
+$Trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At (Get-Date -Hour 10 -Minute 30 -Second 0)
 
 $Settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit   (New-TimeSpan -Minutes 30) `
@@ -148,7 +150,7 @@ Write-Output ""
 Write-Output "Configuracao:"
 Write-Output "  Wrapper : $WrapperPs1"
 Write-Output "  Repo    : $RepoRoot"
-Write-Output "  Horario : segundas 14:00 (semanal)"
+Write-Output "  Horario : domingos 10:30 (semanal)"
 Write-Output "  Log     : data\geo-citations\.staleness-alarm.log"
 Write-Output "  Le      : data\geo-citations\history.jsonl"
 Write-Output ""
