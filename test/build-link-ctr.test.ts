@@ -14,6 +14,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { matchClick, isEditorial, classifyOrigin, postKey, shouldSkipPost, extractLinks } from "../scripts/build-link-ctr.ts";
 import { renderKicker, mdInlineToHtml } from "../scripts/lib/newsletter-render-html.ts";
+import { resolveNewsletterSection } from "../scripts/lib/link-ctr-categorize.ts";
 import { spawnNpx } from "./_helpers/spawn-npx.ts";
 
 describe("matchClick — soma variantes split do mesmo base_url (#1567 finding C)", () => {
@@ -167,6 +168,46 @@ describe("extractLinks — sectionTitle reconhece o kicker <td> real do Beehiiv 
     assert.equal(links.length, 2);
     assert.equal(links[0].sectionTitle, "RADAR");
     assert.equal(links[1].sectionTitle, "NOTÍCIAS");
+  });
+});
+
+// #4835: renderKicker() emite o bullet como entidade HTML (`&#9679;`, via
+// tealDot()) — cleanText() já removia essa forma. Mas a Beehiiv re-serve o
+// HTML CACHEADO com o CARACTERE LITERAL ● (U+25CF), não a entidade — fixture
+// abaixo espelha exatamente o que o cache real contém (mesmo shape do <td>
+// estilizado testado acima, só trocando a entidade pelo char literal),
+// reproduzindo o bug ao vivo (260810): 82% das seções do CSV de CTR saíam
+// mal-rotuladas como 'Destaque'.
+describe("extractLinks + resolveNewsletterSection — bullet ● literal do cache Beehiiv (#4835)", () => {
+  it("kicker com ● literal (não &#9679;): sectionTitle preserva o bullet, resolveNewsletterSection ainda resolve 'Radar'", () => {
+    const realHtmlWithLiteralBullet =
+      '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>' +
+      '<td style="font-family:sans-serif;font-size:12px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;color:#00A0A0;white-space:nowrap;padding-right:12px;">' +
+      '<span style="color:#00A0A0;">●</span>&nbsp;RADAR</td>' +
+      '<td style="width:100%;border-bottom:1px solid #EBE5D0;font-size:0;line-height:0;">&nbsp;</td>' +
+      '</tr></table>' +
+      '<a href="https://noticia.example.com/x">link de teste</a>';
+    const links = extractLinks(realHtmlWithLiteralBullet);
+    assert.equal(links.length, 1);
+    // cleanText só remove a entidade &#9679;, não o char literal — o bullet
+    // chega intacto no sectionTitle bruto (comportamento inalterado por este fix).
+    assert.equal(links[0].sectionTitle, "● RADAR");
+    // ANTES do fix: resolveNewsletterSection('● RADAR') => 'Destaque' (errado).
+    assert.equal(resolveNewsletterSection(links[0].sectionTitle), "Radar");
+  });
+
+  it("mesma fixture pra USE MELHOR com ● literal", () => {
+    const realHtmlWithLiteralBullet =
+      '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>' +
+      '<td style="font-family:sans-serif;font-size:12px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;color:#00A0A0;white-space:nowrap;padding-right:12px;">' +
+      '<span style="color:#00A0A0;">●</span>&nbsp;USE MELHOR</td>' +
+      '<td style="width:100%;border-bottom:1px solid #EBE5D0;font-size:0;line-height:0;">&nbsp;</td>' +
+      '</tr></table>' +
+      '<a href="https://tool.example.com/x">link de teste</a>';
+    const links = extractLinks(realHtmlWithLiteralBullet);
+    assert.equal(links.length, 1);
+    assert.equal(links[0].sectionTitle, "● USE MELHOR");
+    assert.equal(resolveNewsletterSection(links[0].sectionTitle), "Use Melhor");
   });
 });
 

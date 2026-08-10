@@ -102,6 +102,22 @@ describe("stripEmojiPrefix", () => {
     assert.equal(stripEmojiPrefix("👨‍💻 USE MELHOR"), "USE MELHOR"); // ZWJ
     assert.equal(stripEmojiPrefix("🙋🏼‍♀️ LANÇAMENTOS"), "LANÇAMENTOS"); // skin-tone+ZWJ
   });
+
+  // #4835: o kicker do DS usa o ponto ● (U+25CF, bloco Geometric Shapes) via
+  // tealDot() — fora dos ranges 1F300-1FAFF/2600-27BF cobertos acima. A
+  // entidade `&#9679;` já era removida por cleanText() em build-link-ctr.ts,
+  // mas a Beehiiv re-serve o HTML cacheado com o CARACTERE LITERAL.
+  it("remove o bullet ● (U+25CF) do kicker DS — #4835", () => {
+    assert.equal(stripEmojiPrefix("● RADAR"), "RADAR");
+    assert.equal(stripEmojiPrefix("● USE MELHOR"), "USE MELHOR");
+  });
+
+  it("remove outros bullets fora dos ranges de emoji — #4835 (varredura)", () => {
+    assert.equal(stripEmojiPrefix("• RADAR"), "RADAR"); // U+2022 Bullet
+    assert.equal(stripEmojiPrefix("‣ RADAR"), "RADAR"); // U+2023 Triangular Bullet
+    assert.equal(stripEmojiPrefix("▪ RADAR"), "RADAR"); // U+25AA Black Small Square
+    assert.equal(stripEmojiPrefix("◦ RADAR"), "RADAR"); // U+25E6 White Bullet
+  });
 });
 
 describe("displaySectionName — orquestrador (#1324, #1328)", () => {
