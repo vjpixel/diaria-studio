@@ -255,12 +255,26 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     description: "loop de SEO semanal (cobertura de indexacao + Search Analytics)",
     steps: [
       { key: "index", script: "scripts/seo-index-check.ts", args: ["--only-posts", "--limit", "250"] },
+      // #4909: /temas/{slug} (host arquivo.diar.ia.br) nunca entrou nesta
+      // checagem — a propriedade GSC verificada é sc-domain:diar.ia.br
+      // (cobre o subdomínio, sem --site próprio necessário), e o sitemap
+      // deste host tem só ~5 URLs (a raiz + 4 hubs), então SEM --only-posts
+      // (o filtro é /\/p\//, que zeraria tudo aqui — ver filterPosts em
+      // seo-index-check.ts) e com --limit pequeno. --out-suffix evita que
+      // esta rodada colida no mesmo index-status-{data}.json/.md do passo
+      // "index" acima (achado do #4909 — o .md era path fixo, não
+      // sobrescrevível por --out).
+      {
+        key: "index-arquivo",
+        script: "scripts/seo-index-check.ts",
+        args: ["--sitemap", "https://arquivo.diar.ia.br/sitemap.xml", "--limit", "10", "--out-suffix", "arquivo"],
+      },
       { key: "pull", script: "scripts/seo-pull.ts", args: ["--days", "28"] },
     ],
     logPath: "seo/.seo-weekly.log",
     schedule: { kind: "weekly", dayOfWeek: "Monday", hour: 4, minute: 10 },
     legacySetupScript: "scripts/setup-seo-schedule.ps1",
-    issue: "#4105, #1896, #1989",
+    issue: "#4105, #1896, #1989, #4909",
   },
   {
     name: "Diaria-Worker-Drift-Check",

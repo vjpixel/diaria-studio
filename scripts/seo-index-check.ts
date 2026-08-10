@@ -21,8 +21,21 @@
  *   npx tsx scripts/seo-index-check.ts [--site sc-domain:diar.ia.br]
  *     [--sitemap https://diar.ia.br/sitemap.xml] [--limit 200] [--concurrency 4]
  *     [--only-posts] [--out data/seo/index-status-{YYYY-MM-DD}.json]
+ *     [--out-md data/seo/index-status-{YYYY-MM-DD}.md] [--out-suffix nome]
  *
- * Exit: 0 ok (grava JSON + index-status-{data}.md); 1 erro de API/rede; 2 uso.
+ * Exit: 0 ok (grava JSON + .md); 1 erro de API/rede; 2 uso.
+ *
+ * **`--out-md`/`--out-suffix` (#4909).** O `.md` era escrito em path FIXO
+ * (`index-status-{data}.md`), não sobrescrevível — só o JSON aceitava `--out`.
+ * Rodar 2 sitemaps diferentes no mesmo dia (ex: host principal + o sitemap
+ * de `arquivo.diar.ia.br`, que só tem `/temas/*`, sem `--only-posts`) com
+ * `--out` distintos ainda colidia no `.md`, apagando o relatório da 1ª
+ * rodada. `--out-md` sobrescreve o `.md` explicitamente; sem ele, o `.md` é
+ * derivado do path do JSON (`--out` explícito OU o default), então dois
+ * `--out` diferentes já bastam pra não colidir. `--out-suffix` é o atalho
+ * pro caso comum (2ª fonte no mesmo dia): gera
+ * `index-status-{suffix}-{data}.json`/`.md` sem precisar escrever os 2 paths
+ * à mão — ignorado se `--out` for passado.
  */
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -146,6 +159,29 @@ export function filterPosts(urls: string[]): string[] {
 }
 
 /**
+ * Path default do JSON de saída (#4909). `suffix` distingue rodadas do
+ * mesmo dia sobre sitemaps diferentes (ex: `"arquivo"` pro sitemap de
+ * `arquivo.diar.ia.br`) — sem ele, duas rodadas no mesmo dia escrevem no
+ * MESMO `index-status-{data}.json`, a 2ª apagando a 1ª.
+ */
+export function defaultJsonOutPath(seoDir: string, date: string, suffix?: string): string {
+  const suffixSegment = suffix ? `-${suffix}` : "";
+  return resolve(seoDir, `index-status${suffixSegment}-${date}.json`);
+}
+
+/**
+ * Path do `.md` (#4909). Prioridade: `explicitMdPath` (`--out-md`) > derivado
+ * de `jsonPath` (troca `.json` por `.md`). Antes o `.md` era sempre
+ * `index-status-{data}.md`, um path FIXO que não seguia `--out` — duas
+ * rodadas no mesmo dia com `--out` diferentes (JSON não colidia) ainda
+ * colidiam no `.md`, apagando o relatório da 1ª rodada.
+ */
+export function resolveMdPath(jsonPath: string, explicitMdPath?: string): string {
+  if (explicitMdPath) return explicitMdPath;
+  return jsonPath.endsWith(".json") ? `${jsonPath.slice(0, -".json".length)}.md` : `${jsonPath}.md`;
+}
+
+/**
  * Roda `worker` sobre `items` com no máximo `concurrency` em voo. Mantém a
  * ordem da entrada no resultado.
  */
@@ -245,10 +281,12 @@ async function main(nowMs: number): Promise<number> {
 
   const seoDir = resolve(ROOT, "data", "seo");
   if (!existsSync(seoDir)) mkdirSync(seoDir, { recursive: true });
-  const jsonPath = String(values["out"] ?? resolve(seoDir, `index-status-${date}.json`));
+  const outSuffix = values["out-suffix"] !== undefined ? String(values["out-suffix"]) : undefined;
+  const jsonPath = String(values["out"] ?? defaultJsonOutPath(seoDir, date, outSuffix));
+  const mdPath = resolveMdPath(jsonPath, values["out-md"] !== undefined ? String(values["out-md"]) : undefined);
   writeFileSync(jsonPath, JSON.stringify({ site, date, sitemap: sitemapUrl, summary: sum, rows }, null, 2));
-  writeFileSync(resolve(seoDir, `index-status-${date}.md`), renderMd(rows, sum, site, date));
-  console.log(JSON.stringify({ site, date, ...sum, out: jsonPath }, null, 2));
+  writeFileSync(mdPath, renderMd(rows, sum, site, date));
+  console.log(JSON.stringify({ site, date, ...sum, out: jsonPath, outMd: mdPath }, null, 2));
   if (rows.length === 0 && limit !== 0) {
     console.error(`[seo-index-check] nenhuma URL inspecionada — o sitemap ${sitemapUrl} não rendeu URL alguma após o filtro`);
   }

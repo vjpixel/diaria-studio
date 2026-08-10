@@ -7,7 +7,19 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GSC_DEFAULT_SITE } from "../scripts/lib/gsc.ts";
-import { parseInspection, summarize, filterPosts, mapLimit, renderMd, parseIntFlag, resolveExitCode, type IndexStatus } from "../scripts/seo-index-check.ts";
+import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
+import {
+  parseInspection,
+  summarize,
+  filterPosts,
+  mapLimit,
+  renderMd,
+  parseIntFlag,
+  resolveExitCode,
+  defaultJsonOutPath,
+  resolveMdPath,
+  type IndexStatus,
+} from "../scripts/seo-index-check.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -210,6 +222,76 @@ describe("resolveExitCode + parseIntFlag (code-review PR #4106)", () => {
     assert.equal(parseIntFlag("abc", 200), 200);
     assert.equal(parseIntFlag("-5", 200), 200);
     assert.equal(parseIntFlag(undefined, 200), 200);
+  });
+});
+
+describe("defaultJsonOutPath + resolveMdPath (#4909 — .md não pode mais colidir entre rodadas do mesmo dia)", () => {
+  it("defaultJsonOutPath sem suffix é o path histórico index-status-{data}.json", () => {
+    assert.equal(
+      defaultJsonOutPath("/repo/data/seo", "2026-08-10"),
+      "/repo/data/seo/index-status-2026-08-10.json",
+    );
+  });
+
+  it("defaultJsonOutPath com suffix insere -{suffix} antes da data (2ª fonte no mesmo dia)", () => {
+    assert.equal(
+      defaultJsonOutPath("/repo/data/seo", "2026-08-10", "arquivo"),
+      "/repo/data/seo/index-status-arquivo-2026-08-10.json",
+    );
+  });
+
+  it("resolveMdPath sem --out-md deriva do jsonPath trocando .json por .md", () => {
+    assert.equal(
+      resolveMdPath("/repo/data/seo/index-status-2026-08-10.json"),
+      "/repo/data/seo/index-status-2026-08-10.md",
+    );
+  });
+
+  it("resolveMdPath: --out-md explícito sempre vence", () => {
+    assert.equal(
+      resolveMdPath("/repo/data/seo/index-status-2026-08-10.json", "/tmp/relatorio-custom.md"),
+      "/tmp/relatorio-custom.md",
+    );
+  });
+
+  it("regressão do #4909: duas rodadas no mesmo dia com --out diferentes não colidem mais no .md", () => {
+    // Antes do fix, o .md era SEMPRE index-status-{data}.md (path fixo) —
+    // rodar o host principal e depois o host arquivo no mesmo dia com --out
+    // diferentes ainda apagava o relatório .md da 1ª rodada.
+    const jsonMain = defaultJsonOutPath("/repo/data/seo", "2026-08-10");
+    const jsonArquivo = defaultJsonOutPath("/repo/data/seo", "2026-08-10", "arquivo");
+    const mdMain = resolveMdPath(jsonMain);
+    const mdArquivo = resolveMdPath(jsonArquivo);
+    assert.notEqual(jsonMain, jsonArquivo);
+    assert.notEqual(mdMain, mdArquivo);
+  });
+
+  it("jsonPath sem extensão .json (--out custom) ainda produz um .md distinto, sem lançar", () => {
+    assert.equal(resolveMdPath("/repo/data/seo/relatorio-sem-extensao"), "/repo/data/seo/relatorio-sem-extensao.md");
+  });
+});
+
+describe("Diaria-SEO-Weekly inclui /temas/ na checagem de indexação (#4909)", () => {
+  it("tem um step 'index-arquivo' pro sitemap de arquivo.diar.ia.br", () => {
+    const task = getScheduledTaskByName("Diaria-SEO-Weekly");
+    assert.ok(task, "task Diaria-SEO-Weekly não encontrada no registro");
+    const step = task!.steps.find((s) => s.key === "index-arquivo");
+    assert.ok(step, "step 'index-arquivo' ausente — /temas/ ainda fora da checagem de indexação");
+    assert.equal(step!.script, "scripts/seo-index-check.ts");
+    assert.ok(step!.args?.includes("https://arquivo.diar.ia.br/sitemap.xml"));
+    // --only-posts filtraria por /\/p\//, que zeraria TODAS as URLs de
+    // /temas/{slug} (achado do #4909 — armadilha explícita).
+    assert.ok(!step!.args?.includes("--only-posts"), "--only-posts zeraria /temas/* (filtro é /\\/p\\//)");
+    // --out-suffix evita colidir com o index-status-{data}.json/.md do
+    // step "index" (host principal) rodando no mesmo dia.
+    assert.ok(step!.args?.includes("--out-suffix"));
+  });
+
+  it("o step 'index-arquivo' roda DEPOIS do 'index' do host principal (não substitui, adiciona)", () => {
+    const task = getScheduledTaskByName("Diaria-SEO-Weekly");
+    const keys = task!.steps.map((s) => s.key);
+    assert.ok(keys.includes("index"), "step 'index' original (host principal) não pode sumir — #3527/#4106");
+    assert.ok(keys.indexOf("index") < keys.indexOf("index-arquivo"));
   });
 });
 

@@ -17,13 +17,13 @@
  * renderiza on-the-fly. `Cache-Control: public, max-age=3600` + edge cache
  * do Cloudflare absorvem o resto (o sitemap não muda mais que 1x/dia).
  *
- * Rotas: GET / → HTML completo. GET /sitemap.xml → sitemap estático de 1
- * `<url>` (a própria página, #4546 — descoberta pelo Google; sem `[assets]`
- * neste Worker, então é a rota que precisa servir o XML, diferente de
- * cursos/livros, que servem via `public/sitemap.xml` estático). GET
- * /robots.txt → mesmo raciocínio, mesmo motivo de não poder ser estático
- * (`scripts/lib/shared/robots-txt.ts`, compartilhado com cursos/livros —
- * ver #4546). Qualquer outro path → 404.
+ * Rotas: GET / → HTML completo. GET /sitemap.xml → 1 `<url>` pra esta página
+ * (#4546) + 1 `<url>` por hub temático publicado, cada um com `<lastmod>`
+ * (#4909 — sem `[assets]` neste Worker, então é a rota que precisa servir o
+ * XML, diferente de cursos/livros, que servem via `public/sitemap.xml`
+ * estático). GET /robots.txt → mesmo raciocínio, mesmo motivo de não poder
+ * ser estático (`scripts/lib/shared/robots-txt.ts`, compartilhado com
+ * cursos/livros — ver #4546). Qualquer outro path → 404.
  *
  * Falha de fetch/parse do sitemap NUNCA lança sem tratamento — cai numa
  * página de erro simples (502), nunca crash.
@@ -36,7 +36,22 @@ import { parseSitemap } from "../../../scripts/lib/fetch-sitemap.ts";
 import { renderCuradoriaRobotsTxt } from "../../../scripts/lib/shared/robots-txt.ts";
 import { matchAiReferrerHost, logAiReferrerHit } from "../../../scripts/lib/shared/ai-referrer-log.ts"; // #4558 Parte C
 import { buildArchiveHtml, PAGE_URL } from "./render-archive.ts";
-import { HUB_REGISTRY } from "./hubs/registry.ts"; // #4558 Parte A: hubs temáticos em /temas/{slug}
+import { HUB_REGISTRY, HUB_LASTMOD } from "./hubs/registry.ts"; // #4558 Parte A: hubs temáticos em /temas/{slug}
+
+/**
+ * `<lastmod>` da raiz do sitemap (#4909): a data mais recente entre os hubs
+ * publicados — não `new Date()` (o HTML dos hubs é gerado e COMMITADO, ver
+ * nota de `hub-page.ts`; um valor dinâmico aqui declararia a página
+ * "mudou hoje" mesmo em deploys que não tocaram conteúdo nenhum, o mesmo
+ * problema que motivou `contentDate` ser estático). Comparação lexicográfica
+ * funciona porque as datas são sempre `YYYY-MM-DD`. `undefined` só se algum
+ * dia não houver hub nenhum publicado (nunca aconteceu — `HUB_REGISTRY`
+ * nasceu com o primeiro hub).
+ */
+const ROOT_LASTMOD: string | undefined = Object.values(HUB_LASTMOD).reduce<string | undefined>(
+  (max, d) => (max === undefined || d > max ? d : max),
+  undefined,
+);
 
 /**
  * Sitemap PRÓPRIO desta página (#4546) — `PAGE_URL` + 1 `<url>` por hub
@@ -46,14 +61,19 @@ import { HUB_REGISTRY } from "./hubs/registry.ts"; // #4558 Parte A: hubs temát
  * `https://diar.ia.br/sitemap.xml`, consumido acima via `fetchSitemapXml`)
  * — o objetivo aqui é só dar ao Google um caminho de descoberta pra ESTAS
  * páginas, que por sua vez listam `<a href>` reais pra cada edição.
+ * `<lastmod>` por `<url>` (#4909) vem de `HUB_LASTMOD` — mesmo `contentDate`
+ * que já alimenta o JSON-LD de cada hub, nunca um valor inventado à parte.
  */
 const ARQUIVO_SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>${PAGE_URL}</loc>
+    <loc>${PAGE_URL}</loc>${ROOT_LASTMOD ? `\n    <lastmod>${ROOT_LASTMOD}</lastmod>` : ""}
   </url>
 ${Object.keys(HUB_REGISTRY)
-  .map((slug) => `  <url>\n    <loc>${PAGE_URL}temas/${slug}</loc>\n  </url>`)
+  .map((slug) => {
+    const lastmod = HUB_LASTMOD[slug];
+    return `  <url>\n    <loc>${PAGE_URL}temas/${slug}</loc>${lastmod ? `\n    <lastmod>${lastmod}</lastmod>` : ""}\n  </url>`;
+  })
   .join("\n")}
 </urlset>
 `;
@@ -90,14 +110,46 @@ const SITEMAP_URL = "https://diar.ia.br/sitemap.xml";
 const USER_AGENT = "DiariaBot/1.0 (+https://diar.ia.br)";
 const FETCH_TIMEOUT_MS = 10_000;
 
-function htmlResponse(body: string, status = 200): Response {
-  return new Response(body, {
-    status,
-    headers: {
-      "Content-Type": "text/html;charset=utf-8",
-      ...(status === 200 ? { "Cache-Control": "public, max-age=3600" } : {}),
-    },
-  });
+/**
+ * Hash não-criptográfico (FNV-1a 32-bit) do corpo, pra `ETag` (#4909). Não
+ * precisa ser à prova de colisão adversarial — só precisa mudar quando o
+ * conteúdo muda, pra um `If-None-Match` de crawler funcionar. Puramente em
+ * JS (sem `crypto.subtle`, que é assíncrono, nem `node:crypto`, que exigiria
+ * `nodejs_compat` só pra isto) — mantém `htmlResponse` síncrona.
+ */
+function fnv1aHex(input: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+/** `YYYY-MM-DD` → formato RFC 7231 (`Last-Modified`/`If-Modified-Since`).
+ * Meia-noite UTC — mesma disciplina de data ESTÁTICA de `hub-page.ts`: não é
+ * hora real de publicação, é o dia do `contentDate`. */
+function toHttpDate(isoDate: string): string {
+  return new Date(`${isoDate}T00:00:00Z`).toUTCString();
+}
+
+interface HtmlResponseOptions {
+  /** `YYYY-MM-DD` do `contentDate` do hub — vira header `Last-Modified`. */
+  lastModified?: string;
+  /** `true` pra emitir `ETag` (hash do `body`). */
+  etag?: boolean;
+}
+
+function htmlResponse(body: string, status = 200, opts?: HtmlResponseOptions): Response {
+  const headers: Record<string, string> = {
+    "Content-Type": "text/html;charset=utf-8",
+  };
+  if (status === 200) {
+    headers["Cache-Control"] = "public, max-age=3600";
+    if (opts?.lastModified) headers["Last-Modified"] = toHttpDate(opts.lastModified);
+    if (opts?.etag) headers["ETag"] = `"${fnv1aHex(body)}"`;
+  }
+  return new Response(body, { status, headers });
 }
 
 function errorPage(): Response {
@@ -171,7 +223,10 @@ export default {
     if (url.pathname.startsWith("/temas/")) {
       const slug = url.pathname.slice("/temas/".length).replace(/\/$/, "");
       if (!Object.hasOwn(HUB_REGISTRY, slug)) return new Response("Not found", { status: 404 });
-      return htmlResponse(HUB_REGISTRY[slug]);
+      // #4909: Last-Modified deriva do MESMO contentDate do hub (nunca um
+      // valor separado) + ETag do conteúdo — sinal de rastreio pra
+      // crawler/cache, não fator de citação declarado por nenhum fabricante.
+      return htmlResponse(HUB_REGISTRY[slug], 200, { lastModified: HUB_LASTMOD[slug], etag: true });
     }
     if (url.pathname !== "/") {
       return new Response("Not found", { status: 404 });

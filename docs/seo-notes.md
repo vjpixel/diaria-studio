@@ -66,6 +66,38 @@ setembro ainda houver 10 (ou mais) nesse estado com `lastCrawlTime` **recente**
 (pós-agosto), aí sim vira investigação — `lastCrawlTime` antigo persistindo é
 esperado, `lastCrawlTime` novo com o mesmo sintoma não seria.
 
+## Fato 3 — `/temas/` ganhou `lastmod`/`Last-Modified`/`ETag` e entrou na checagem de indexação; Bing WMT segue pendente (10/ago/2026, #4909)
+
+Achado de auditoria (#4909, Refs #4558): o sitemap do Worker `arquivo`
+(`arquivo.diar.ia.br/sitemap.xml`) não emitia `<lastmod>`, `GET
+/temas/{slug}` não emitia `Last-Modified`/`ETag`, e as URLs `/temas/*`
+nunca entravam na medição de `seo-index-check.ts` — ficavam fora de toda
+medição de indexação do projeto.
+
+**Implementado nesta sessão (`develop/fix-4909`):**
+
+- `<lastmod>` por `<url>` no sitemap do `arquivo` (raiz = data mais recente
+  entre os hubs; cada hub = seu `contentDate`, o mesmo valor já usado no
+  JSON-LD — nunca uma fonte de data nova/paralela).
+- `Last-Modified` + `ETag` em `GET /temas/{slug}`.
+- Novo step `index-arquivo` em `Diaria-SEO-Weekly` (`scripts/seo-index-check.ts
+  --sitemap https://arquivo.diar.ia.br/sitemap.xml --out-suffix arquivo`,
+  **sem** `--only-posts` — esse filtro é `/\/p\//` e zeraria `/temas/*`
+  inteiro). `--out-suffix`/`--out-md` novos no script evitam a colisão que o
+  `.md` do host principal teria sofrido (path antes era fixo, não
+  sobrescrevível por `--out`).
+
+**Ainda PENDENTE (item 3 do #4909, bloqueio externo — `external-blocker` +
+`local`):** verificar `arquivo.diar.ia.br` no Bing Webmaster Tools e usar
+"AI Performance" como espinha dorsal da medição first-party de citação —
+única fonte gratuita/first-party que mostra QUAIS URLs foram citadas. O
+editor está criando a conta Bing WMT fora desta sessão; sem ela, os itens
+já implementados aqui produzem sinal que ninguém lê ainda (mesmo raciocínio
+do achado original — "o item 3 destrava a leitura dos outros"). Próxima
+sessão com as credenciais coladas: seguir o item 3 do corpo da #4909.
+IndexNow (item 2 da issue original) segue fora de escopo — não pedido pelo
+editor nesta rodada.
+
 ## Quando adicionar entry aqui
 
 Mesmo critério de `context/agents-known-issues.md`, aplicado a dado de SEO em
