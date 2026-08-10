@@ -126,7 +126,7 @@ export function buildGoogleGeminiFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
     },
     {
       question: "O Gemini já \"venceu\" o ChatGPT?",
-      answer: `A palavra "ChatGPT" apareceu ao lado do Gemini em ${chatgpt} manchetes diferentes, incluindo uma pergunta direta, ["O Gemini venceu o ChatGPT?"](https://diar.ia.br/p/o-gemini-venceu-o-chatgpt), que nunca foi respondida com um "sim" categórico. A narrativa vai do Google "ameaçado" pela OpenAI em novembro de 2025 à disputa ampliada para Meta e DeepSeek em abril de 2026.`,
+      answer: `A palavra "ChatGPT" apareceu ao lado do Gemini em ${chatgpt} manchetes diferentes, incluindo uma pergunta direta, ["O Gemini venceu o ChatGPT?"](https://diar.ia.br/p/o-gemini-venceu-o-chatgpt), que nunca foi respondida com um "sim" categórico. A narrativa vai da OpenAI se dizendo ameaçada pelos resultados do Google, em novembro de 2025, à disputa ampliada para Meta e DeepSeek, em abril de 2026.`,
     },
     {
       question: "Quantas vezes o Gemini foi anunciado como novidade chegando ao Brasil?",

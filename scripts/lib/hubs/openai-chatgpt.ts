@@ -127,7 +127,7 @@ export function buildOpenaiChatgptFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
     },
     {
       question: "Quantas versões do GPT-5 a OpenAI lançou depois do 5.1?",
-      answer: `Foram ${gpt5x} manchetes citando um GPT-5.x específico (5.2, 5.4, 5.5, 5.5 Instant, 5.6 Sol/Terra/Luna e a versão "mais rápida e barata" do 5.6) entre dezembro de 2025 e julho de 2026 — numeração avançando quase mensalmente. Antes deles vieram o o1, o GPT-5.1 e o GPT-5.2, num ritmo de um lançamento a cada 3-4 semanas.`,
+      answer: `Foram ${gpt5x} manchetes citando um GPT-5.x específico (5.2, 5.4, 5.5, 5.5 Instant, 5.6 Sol/Terra/Luna e a versão "mais rápida e barata" do 5.6) entre dezembro de 2025 e julho de 2026 — numeração avançando quase mensalmente. Antes deles vieram o o1 e o GPT-5.1, num ritmo de um lançamento a cada 3-4 semanas.`,
     },
     {
       question: "O Codex já foi adotado por alguma empresa grande?",
@@ -147,7 +147,7 @@ export function buildOpenaiChatgptFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
     },
     {
       question: "A OpenAI já foi processada judicialmente?",
-      answer: `Sim, ${processos} vezes: logo em 27 de agosto de 2025, [processada por suicídio de um adolescente](https://diar.ia.br/p/openai-processada-por-suic-dio-de-adolescente), e, dias depois, [nomeada em um processo movido por X e xAI contra ela e a Apple](https://diar.ia.br/p/google-lan-a-gemini-2-5-flash-image). Depois vieram um alerta sobre aconselhamento de suicídio, um filtro de idade e uma investigação por danos a menores.`,
+      answer: `Sim, ${processos} vezes, e as duas logo na abertura do período: em 27 de agosto de 2025, [nomeada num processo movido por X e xAI contra ela e a Apple](https://diar.ia.br/p/google-lan-a-gemini-2-5-flash-image) e, no dia seguinte, [processada por suicídio de um adolescente](https://diar.ia.br/p/openai-processada-por-suic-dio-de-adolescente). Depois vieram um alerta sobre aconselhamento de suicídio, um filtro de idade e uma investigação por danos a menores.`,
     },
     {
       question: "Como acompanho as próximas notícias sobre OpenAI e ChatGPT?",

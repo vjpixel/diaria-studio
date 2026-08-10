@@ -270,6 +270,14 @@ export function collectReaderFacingStrings(
     out.push({ field: `faq[${fIdx}].question`, value: item.question, kind: "heading" });
     out.push({ field: `faq[${fIdx}].answer`, value: item.answer, kind: "prose" });
   });
+  // `sourceEditions[].title`/`.editionTitle` ficam FORA de propósito, apesar de
+  // serem reader-facing (viram o rótulo do <li> e o `name` do ItemList no
+  // JSON-LD). O motivo: esse texto é MANCHETE REAL vinda do cache Beehiiv via
+  // `generate-hub-sources.ts`, não prosa que alguém escreveu aqui. Uma
+  // manchete histórica que por acaso contenha uma das construções proibidas
+  // faria `renderHubPage` lançar num regen de dataset — quebrando o build por
+  // causa de um texto que ninguém pode reescrever sem falsificar a citação.
+  // Levantado no review da PR #4938; a exclusão é deliberada, não esquecimento.
   return out;
 }
 
@@ -344,11 +352,34 @@ export const HUB_PROSE_RULES: readonly HubProseRule[] = [
     // abertura do trecho mais reaproveitado da página com o veículo.
     id: "prosa-sem-publicacao-como-sujeito",
     appliesTo: "prose",
-    pattern: /\ba diar\.ia\.br (cobriu|noticiou|publicou|registrou|acompanhou|destacou|passou a|nunca)\b/i,
+    // O `(?:\S+\s){0,2}` absorve advérbio/auxiliar interposto entre sujeito e
+    // verbo ("a diar.ia.br JÁ cobriu", "VEM cobrindo", "SEGUE cobrindo") — sem
+    // ele a âncora quebrava e a construção passava (achado do review).
+    // A lista de verbos é deliberadamente ampla e inclui as formas no
+    // presente: o defeito é a publicação no lugar de sujeito, não o tempo
+    // verbal. Ainda é uma denylist e por construção não é exaustiva — o
+    // limite conhecido está travado por teste.
+    pattern:
+      /\ba diar\.ia\.br (?:\S+\s){0,2}(cobr|notici|public|registr|acompanh|destac|inform|relat|flagr|revel|document|report|mostr|mencion)(?:ou|a|am|ando|indo|iu|e|aram)?\b|\ba diar\.ia\.br (?:nunca|jamais|passou a)\b/i,
     message:
       "a publicação está no lugar de sujeito de um verbo de cobertura — o fato vira predicado " +
       "da cobertura. Ponha o fato no sujeito. Afirmação sobre o próprio arquivo " +
       '("em 76 edições, o ritmo veio em surtos") é permitida e não casa esta regra.',
+  },
+  {
+    // #4930. O gêmeo em PROSA da regra de heading acima. Sem ela,
+    // "Segundo a diar.ia.br, o modelo foi lançado em julho" passava — e essa
+    // moldura atributiva é MAIS provável em prosa corrida do que num H2
+    // (achado do review da PR #4938). Mesma tese da regra de sujeito: o
+    // qualificador diz de quem é a evidência sem dizer QUAL é. A forma
+    // recomendada — "Nas 84 manchetes acompanhadas entre X e Y, ..." — não
+    // casa esta regra de propósito.
+    id: "prosa-sem-qualificador-atributivo",
+    appliesTo: "prose",
+    pattern: /\bsegundo a (cobertura|diar\.ia\.br)|\bconforme a cobertura|\bde acordo com a diar\.ia\.br/i,
+    message:
+      "qualificador atributivo de marca — diz de QUEM é a evidência sem dizer QUAL é ela. " +
+      'Troque pela base de evidência ("Nas 84 manchetes acompanhadas entre X e Y, ...").',
   },
   {
     // #4930. Ligar dois fatos porque compartilharam uma edição é uma relação
@@ -356,7 +387,10 @@ export const HUB_PROSE_RULES: readonly HubProseRule[] = [
     // de publicação, a data é o fato.
     id: "prosa-sem-moldura-de-edicao",
     appliesTo: "prose",
-    pattern: /n[ao] mesma edição|na edição de |uma edição inteira/i,
+    // "nessa/naquela mesma edição" e "na edição seguinte/anterior" são a
+    // MESMA moldura e escapavam da forma original (achado do review).
+    pattern:
+      /\b(n[ao]|ness[ae]|naquel[ae]|mesm[ao]) mesma edição|\bn[ao] mesma edição|\bna edição (de |seguinte|anterior)|uma edição inteira/i,
     message:
       "a edição está sendo usada como moldura organizadora. Use a DATA: dois fatos que " +
       'saíram na mesma edição saíram "no mesmo dia", que é o que de fato os relaciona.',
@@ -367,7 +401,10 @@ export const HUB_PROSE_RULES: readonly HubProseRule[] = [
     // (`stripMarkdownLinks`, geo-faq.ts), então o dêitico viaja sem resolução.
     id: "prosa-sem-deixis",
     appliesTo: "prose",
-    pattern: /\b(este|deste|neste) hub\b|\besta página\b/i,
+    // `\besta página\b` NÃO casava "nesta página" — não há fronteira de
+    // palavra entre "n" e "esta" (achado do review), e "nesta página" é a
+    // forma mais natural em português. `(?<![\p{L}])` resolve sem afrouxar.
+    pattern: /\b(este|deste|neste) hub\b|(?<![\p{L}])(n?est[ae]|ness[ae]) página\b|(?<![\p{L}])(n?esta|nessa) seção\b/iu,
     message:
       'dêixis não resolvida ("este hub" / "esta página"): nomeie a entidade e o intervalo. ' +
       "O trecho precisa se bastar lido fora da página.",
@@ -378,7 +415,11 @@ export const HUB_PROSE_RULES: readonly HubProseRule[] = [
     // que é justamente a variante que o 4º hub usou nas 8 ocorrências dele.
     id: "prosa-sem-ponteiro-de-secao",
     appliesTo: "prose",
-    pattern: /seç(ão|ões)[^.]{0,60}\s(acima|abaixo)\b/i,
+    // `(?!\s+d[aeo])` mata o falso positivo comparativo que o review
+    // demonstrou — "a seção X, com crescimento acima DA média" é dado, não
+    // ponteiro. Ponteiro real ("a seção sobre segurança acima traz") nunca é
+    // seguido de artigo.
+    pattern: /seç(ão|ões)[^.]{0,60}\s(acima|abaixo)\b(?!\s+d[aeo]\b)/i,
     message:
       'ponteiro para outro trecho ("seção acima/abaixo") — irresolvível: os assets não têm ' +
       "nenhum href de âncora, e âncora foi descartada pela auditoria. Repita o fato no lugar.",
@@ -448,8 +489,14 @@ export function validateHubContent(hub: HubContent): string[] {
   for (const { field, value, kind } of collectReaderFacingStrings(hub)) {
     for (const rule of HUB_PROSE_RULES) {
       if (rule.appliesTo !== kind) continue;
-      const hit = rule.pattern.exec(value);
-      if (hit) {
+      // `matchAll` e não `exec`: um parágrafo de 1500 caracteres repete a
+      // mesma construção com frequência, e reportar só a 1ª fazia o autor
+      // "consertar" o campo e descobrir a 2ª na rodada seguinte — whack-a-mole
+      // desnecessário (achado do review da PR #4938).
+      const seen = new Set<string>();
+      for (const hit of value.matchAll(new RegExp(rule.pattern.source, rule.pattern.flags + "g"))) {
+        if (seen.has(hit[0].toLowerCase())) continue;
+        seen.add(hit[0].toLowerCase());
         errors.push(`${field} viola ${rule.id}: "${hit[0]}" — ${rule.message}`);
       }
     }
