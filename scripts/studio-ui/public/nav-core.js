@@ -71,6 +71,11 @@ export const NAV_ITEMS = [
   // Integrações/UTMs — mesma natureza "sistema": inventário de superfície
   // técnica, não conteúdo editorial.
   { id: "skills", label: "Skills", href: "/skills", pageIds: ["skills"], group: "sistema" },
+  // #4799: status das tasks agendadas (registro declarativo
+  // scripts/lib/scheduled-tasks.ts) — armada? última execução? próxima
+  // prevista? atraso? Vizinha de Integrações/UTMs/Skills — mesma natureza
+  // "sistema": inventário de superfície técnica de infraestrutura.
+  { id: "tarefas", label: "Tarefas", href: "/tarefas", pageIds: ["tarefas"], group: "sistema" },
 ];
 
 /** Documentos autocontidos (ver docstring acima) — sempre abrem em nova aba,

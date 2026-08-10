@@ -160,6 +160,16 @@
  *     (sem cache, sem lista paralela) — ver `studio-skills.ts` pro parser.
  *   - `GET /skills` (#4270) — catálogo de skills: mesma estratégia de
  *     rewrite, servindo `public/skills.html`. Consome `GET /api/skills`.
+ *   - `GET /api/tasks` (#4799) — status de todas as `SCHEDULED_TASKS`
+ *     (`scripts/lib/scheduled-tasks.ts`, registro declarativo #4805): armada
+ *     no agendador desta máquina (Windows Task Scheduler ou systemd)?
+ *     última execução (quando/duração/resultado/trecho de log, lido de
+ *     `data/{logPath}`)? próxima execução prevista? atrasada? Só leitura
+ *     (issue #4799 escopo — ações "rodar agora"/habilitar/desabilitar ficam
+ *     pra uma 2ª fatia opcional). `?refresh=1` bypassa o cache de 2min. Ver
+ *     `studio-tasks.ts`/`scripts/lib/scheduled-task-status.ts` pro detalhe.
+ *   - `GET /tarefas` (#4799) — página de tasks agendadas: mesma estratégia
+ *     de rewrite, servindo `public/tarefas.html`. Consome `GET /api/tasks`.
  *   - `POST /api/painel/eia/refresh` (#3861) — botão "Atualizar É IA?" da
  *     dashboard diária embutida (`GET /painel/diaria`, `dashboard-diaria.ts`):
  *     regenera SÓ `data/poll-eia-summary.json` local a partir dos endpoints
@@ -403,6 +413,10 @@ import { buildUtmsData, saveUtmMetadata } from "./studio-utms.ts";
 // #4270: catálogo read-only das skills versionadas (.claude/skills/*/SKILL.md),
 // gerado do filesystem — ver studio-skills.ts.
 import { buildSkillsData } from "./studio-skills.ts";
+// #4799: status de todas as tasks agendadas (registro declarativo
+// scripts/lib/scheduled-tasks.ts) — armada? última execução? próxima
+// prevista? atraso? Ver studio-tasks.ts.
+import { buildTasksData } from "./studio-tasks.ts";
 // #3861: botão "Atualizar É IA?" da dashboard diária embutida — reusa a
 // função exportada de build-poll-eia-data.ts (mesmo módulo do CLI --push),
 // mas SÓ a metade local (nunca o push pro KV do clarice-dashboard). Ver
@@ -1678,6 +1692,22 @@ function handleApiSkills(rootDir: string, res: ServerResponse): void {
   }
 }
 
+// ── #4799: status de todas as tasks agendadas (registro declarativo) ──
+
+/** `GET /api/tasks` — status de TODAS as `SCHEDULED_TASKS` (#4799): armada?
+ * última execução (quando/duração/resultado/trecho de log)? próxima
+ * prevista? atraso? Sempre 200: `buildTasksData` é fail-soft por task
+ * (mesmo padrão de `handleApiIntegrations`/`buildIntegrationsData`).
+ * `?refresh=1` bypassa o cache de 2min (botão "Atualizar" da UI). */
+function handleApiTasks(rootDir: string, req: IncomingMessage, res: ServerResponse): void {
+  try {
+    const forceRefresh = new URL(req.url ?? "/", "http://localhost").searchParams.get("refresh") === "1";
+    sendJson(res, 200, buildTasksData(rootDir, { forceRefresh }));
+  } catch (e) {
+    sendJson(res, 500, { error: (e as Error).message });
+  }
+}
+
 /** `POST /api/painel/eia/refresh` — botão "Atualizar É IA?" (#3861): regenera
  * SÓ `data/poll-eia-summary.json` local a partir dos endpoints públicos do
  * worker poll (`refreshPollEiaSummaryLocal`) — NUNCA dispara o push paralelo
@@ -1989,6 +2019,11 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         handleApiSkills(rootDir, res);
         return;
       }
+      // #4799: status de todas as tasks agendadas.
+      if (urlPath === "/api/tasks") {
+        handleApiTasks(rootDir, req, res);
+        return;
+      }
       // #3924: seção "Caixas" — GET (PUT de save já tratado acima, antes do
       // guard de método). Lista checada antes do get-por-slug pra não colidir
       // (regex de slug `[^/]+` casaria "boxes" também se checado depois, mas
@@ -2148,6 +2183,15 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // #4270: mesma estratégia de rewrite — a página busca /api/skills.
       if (urlPath === "/skills" || urlPath === "/skills/") {
         const served = serveStaticFile(PUBLIC_DIR, "/skills.html", res, req);
+        if (!served) {
+          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Not found");
+        }
+        return;
+      }
+      // #4799: mesma estratégia de rewrite — a página busca /api/tasks.
+      if (urlPath === "/tarefas" || urlPath === "/tarefas/") {
+        const served = serveStaticFile(PUBLIC_DIR, "/tarefas.html", res, req);
         if (!served) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found");
