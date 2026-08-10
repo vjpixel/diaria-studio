@@ -15,10 +15,12 @@ Duas peças, cada uma numa camada diferente:
 
 ## Pré-requisitos
 
-- Windows (a máquina do editor).
+- Windows OU Linux (a máquina do editor, ou o servidor Linux 24/7 — #4808 estendeu o fluxo pra Linux via `systemd --user`; passos específicos por OS marcados abaixo).
 - Domínio `diar.ia.br` já numa zona Cloudflare (é o caso — usado por outros Workers do projeto).
 - Conta Cloudflare com acesso a essa zona (mesma conta usada pra `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_API_TOKEN` do `.env.local`, mas **este fluxo usa login interativo via browser, não a API token** — são credenciais separadas).
-- `studio-server` já rodando localmente (`npm run studio`) quando você for testar do celular.
+- `studio-server` já rodando localmente (`npm run studio`, ou via `setup-studio-service-linux.sh` no Linux) quando você for testar do celular.
+- **Linux apenas**: Node ≥22.5 (ver [#4823](https://github.com/vjpixel/diaria-studio/issues/4823) — `node:sqlite` não existe em versões anteriores; o Node do pacote da distro pode estar desatualizado) e `loginctl enable-linger $USER` rodado 1x (sudo) — sem isso o service para quando a última sessão de login encerra.
+- **Guard de blast-radius (#4808):** se o tunnel já tiver um conector ativo rodando noutra máquina (ex: migrando do Windows pro Linux), suba o novo só depois de desarmar o antigo — dois conectores ativos pro mesmo tunnel roteiam o hostname de forma imprevisível entre as duas máquinas. `setup-remote-tunnel-linux.sh` checa isso automaticamente antes de iniciar (recusa sem `--force`).
 
 ---
 
@@ -26,16 +28,35 @@ Duas peças, cada uma numa camada diferente:
 
 ### 1. Instalar o `cloudflared`
 
+**Windows:**
 ```powershell
 winget install --id Cloudflare.cloudflared
 ```
-
 Alternativa sem winget: baixar o binário em [github.com/cloudflare/cloudflared/releases/latest](https://github.com/cloudflare/cloudflared/releases/latest) e colocar no PATH.
 
 Reabra o terminal depois de instalar (o PATH precisa recarregar).
 
-### 2. Rodar o script de setup
+**Linux (sem sudo — binário direto):**
+```bash
+mkdir -p ~/.local/bin
+curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o ~/.local/bin/cloudflared
+chmod +x ~/.local/bin/cloudflared
+```
+Garanta que `~/.local/bin` está no `PATH`.
 
+### 2. Subir o `studio-server` como serviço (Linux) / rodar via `npm run studio` (Windows)
+
+**Linux apenas** (no Windows, o `studio-server` sobe pela task `Diaria-Studio-Server`, ver `scripts/studio/setup-studio-service.ps1` — nada muda aqui):
+```bash
+./scripts/studio/setup-studio-service-linux.sh --dry-run   # ver o plano primeiro
+./scripts/studio/setup-studio-service-linux.sh             # registrar + habilitar
+systemctl --user start diaria-studio-server.service        # iniciar agora
+```
+Requer `loginctl enable-linger $USER` já feito (ver Pré-requisitos) — senão o service para no logout.
+
+### 3. Rodar o script de setup do tunnel
+
+**Windows:**
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
     -File scripts\studio\setup-remote-tunnel.ps1 -Hostname studio.diar.ia.br
@@ -69,13 +90,25 @@ Pra iniciar a task imediatamente sem esperar o próximo logon:
 Start-ScheduledTask -TaskName "Diaria-Studio-Tunnel"
 ```
 
-### 3. Configurar o Cloudflare Access
+**Linux:**
+```bash
+./scripts/studio/setup-remote-tunnel-linux.sh --hostname studio.diar.ia.br --dry-run   # ver o plano
+./scripts/studio/setup-remote-tunnel-linux.sh --hostname studio.diar.ia.br             # executar
+systemctl --user start diaria-studio-tunnel.service                                    # iniciar agora
+```
+
+Mesmos 6 passos conceituais do Windows (instalar → login → criar tunnel → gerar config → DNS → armar o processo de longa duração), com 2 diferenças por causa da autenticação e do gerenciador de serviço:
+
+- **Autenticação via token de conector** (`cloudflared tunnel token`), não `credentials-file` — funciona mesmo que o tunnel tenha sido criado originalmente noutra máquina (ex: migrando do Windows). O token vai pra `~/.cloudflared/token` (`chmod 600`, nunca no repo) e a unit systemd usa `--token-file` — **nunca `--token <valor>` inline**, que vazaria o segredo em `ps`/`systemctl status` (achado ao vivo, #4808).
+- **`systemd --user`** em vez de Task Scheduler: `diaria-studio-tunnel.service`, com `Restart=always` (equivalente ao `RestartCount`/`RestartInterval` do Windows) e `Requires=diaria-studio-server.service` (o tunnel só sobe depois do server local estar de pé).
+
+### 4. Configurar o Cloudflare Access
 
 **Isso é feito inteiramente no painel Cloudflare — não há script pra essa parte** (é configuração de conta, não código do repo).
 
 1. Acesse [dash.cloudflare.com](https://dash.cloudflare.com) → **Zero Trust** → **Access** → **Applications**.
 2. **Add an application** → tipo **Self-hosted**.
-3. **Application domain**: o hostname configurado no passo 2 (ex: `studio.diar.ia.br`).
+3. **Application domain**: o hostname configurado no passo 3 (ex: `studio.diar.ia.br`).
 4. **Session duration**: sugestão 24h (o editor reautentica 1x por dia via celular).
 5. **Policy**:
    - **Action**: Allow.
@@ -85,11 +118,11 @@ Start-ScheduledTask -TaskName "Diaria-Studio-Tunnel"
 
 A partir daqui, **qualquer requisição** pro hostname público passa pelo Access antes de chegar no tunnel. Sem OTP/login válido, o Access responde com a própria página de login (ou redireciona pra ela) — o `studio-server` nunca vê a requisição.
 
-### 4. Verificar do celular
+### 5. Verificar do celular
 
 Abra `https://studio.diar.ia.br` no navegador do celular. Deve aparecer a tela de login do Access (pedindo e-mail → OTP). Depois do OTP, o Studio real deve carregar normalmente, com os gates (fatias 3/4) funcionando como no desktop.
 
-### 5. Verificação de segurança (smoke-test)
+### 6. Verificação de segurança (smoke-test)
 
 Depois de tudo ativado, rode o smoke-test que confirma que **nada vaza sem autenticação**:
 
@@ -115,11 +148,15 @@ O `studio-server` (`scripts/studio-ui/server.ts`) faz bind exclusivo em `127.0.0
 
 ## Remover / desativar
 
-Remover a task do Task Scheduler (não desfaz o tunnel nem o DNS na Cloudflare):
+Remover a task do Task Scheduler (Windows) ou a unit systemd (Linux) — nenhum dos dois desfaz o tunnel nem o DNS na Cloudflare:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
     -File scripts\studio\setup-remote-tunnel.ps1 -Unregister
+```
+```bash
+./scripts/studio/setup-remote-tunnel-linux.sh --unregister
+./scripts/studio/setup-studio-service-linux.sh --unregister   # se quiser derrubar o studio-server também
 ```
 
 Desfazer o tunnel e o DNS de vez:
@@ -138,13 +175,14 @@ E remover a Access Application correspondente no painel Cloudflare (Zero Trust �
 | Item | Status |
 |---|---|
 | `studio-server` bind loopback-only | ✅ Já era assim desde #3555 (confirmado, não precisou mudar) |
-| Script de setup (`scripts/studio/setup-remote-tunnel.ps1`) | ✅ Pronto — prepara config, cria tunnel/DNS/task quando executado pelo editor |
+| Script de setup — Windows (`scripts/studio/setup-remote-tunnel.ps1`) | ✅ Pronto — prepara config, cria tunnel/DNS/task quando executado pelo editor |
+| Script de setup — Linux (`scripts/studio/setup-remote-tunnel-linux.sh`, `setup-studio-service-linux.sh`, #4808) | ✅ Pronto e **ativado ao vivo em `predator`** (260810) — Studio server + tunnel systemd `enabled`, `studio.diar.ia.br` respondendo 302 → Cloudflare Access |
 | Smoke-test de verificação (`scripts/studio/verify-remote-tunnel.ts`) | ✅ Pronto, com testes unitários |
 | Este doc | ✅ Pronto |
-| Instalar `cloudflared` | ⬜ Ação do editor (`winget install` ou download) |
-| `cloudflared tunnel login` (OAuth na conta CF) | ⬜ Ação do editor — não automatizável |
-| Rodar o script de setup (cria tunnel + DNS + task) | ⬜ Ação do editor — muta recursos reais na conta Cloudflare |
-| Configurar o Cloudflare Access (allowlist + policy) | ⬜ Ação do editor no painel CF |
-| Rodar o smoke-test pós-ativação | ⬜ Ação do editor, depois dos itens acima |
+| Instalar `cloudflared` | ⬜ Windows: ação do editor (`winget install` ou download). ✅ Linux (`predator`): feito |
+| `cloudflared tunnel login` (OAuth na conta CF) | ⬜ Ação do editor — não automatizável, por máquina. ✅ Linux (`predator`): feito |
+| Rodar o script de setup (cria tunnel + DNS + task/service) | ⬜ Ação do editor por máquina — muta recursos reais na conta Cloudflare. ✅ Linux (`predator`): feito |
+| Configurar o Cloudflare Access (allowlist + policy) | ✅ Já configurado (mesma Access Application cobre qualquer conector do tunnel, independente da máquina) |
+| Rodar o smoke-test pós-ativação | ✅ Rodado contra `predator` (260810) — `exit 0`, Access bloqueando corretamente |
 
-Este PR entrega código/doc/script — a ativação real (label `local`, [#2643](https://github.com/vjpixel/diaria-studio/issues/2643)) fica pro editor rodar na própria máquina/conta.
+Ativação Windows fica pro editor rodar na própria máquina/conta quando quiser reativar aquele lado (hoje desarmado de propósito, #4808 — dois conectores ativos pro mesmo tunnel simultaneamente causam roteamento imprevisível).
