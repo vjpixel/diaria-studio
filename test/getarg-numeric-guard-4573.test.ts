@@ -108,14 +108,14 @@ export function findDangerousGetArgUsages(dir: string): DangerousMatch[] {
  */
 const ALLOWLIST: readonly DangerousMatch[] = [
   { file: "scripts/clarice-sync-brevo.ts", line: 446 }, // #4722: linha deslocada de novo (fix do coordenador ao flush() em lote inseriu comentário/código acima)
-  { file: "scripts/clarice-engagement-cohorts.ts", line: 552 },
+  { file: "scripts/clarice-engagement-cohorts.ts", line: 562 }, // #4451 cutover formalize: docstring novo (+10 linhas) deslocou 552→562
   // #4451 follow-up (fleet review #4479 achado 4): a entrada da linha 648
   // (--refetch-window-days) foi MIGRADA pra getIntArg neste PR — "se sumiu,
   // ótimo, remova a entrada" (comentário original desta allowlist). Só
   // --concurrency (abaixo) continua no padrão antigo, fora de escopo aqui —
-  // linha deslocada de 639→671→684 (fix do achado 7/sends_count>0 no #4451
-  // adicionou linhas acima dela).
-  { file: "scripts/clarice-engagement-cohorts-v2.ts", line: 684 },
+  // linha deslocada de 639→671→684→707 (fix do achado 7/sends_count>0 no #4451
+  // e depois o docstring de cutover formalize adicionaram linhas acima dela).
+  { file: "scripts/clarice-engagement-cohorts-v2.ts", line: 707 },
 ] as const;
 
 function isAllowlisted(m: DangerousMatch): boolean {
