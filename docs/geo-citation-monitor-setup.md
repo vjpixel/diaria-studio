@@ -14,12 +14,33 @@ não existia no disco até 07/ago, e nenhum `.ps1`/workflow/task o invocava,
 enquanto todas as outras tasks agendadas do repo já seguiam esse padrão. Sem
 cadência o histórico nunca acumula.
 
-## Baseline medido em 07/ago
+## Baseline medido em 07/ago (histórico)
 
 **0 de 16 consultas citaram** — 8 perguntas × OpenAI + Gemini, sendo 15
 respondidas + 1 erro de rede; `ANTHROPIC_API_KEY` ausente do `.env`, provedor
 pulado por fail-soft. Zero não é veredito: o hub tinha 3 dias e ficou órfão
 de link interno até o #4749.
+
+Este número fica como registro histórico do ponto de partida da série — não
+recitar como veredito. Ver "Critério de decisão" abaixo pro que orienta ação
+hoje.
+
+## Critério de decisão: acompanhamento contínuo, não gate de parada (#4901)
+
+O comentário de 07/ago na #4558 fixava um checkpoint binário pra ~07/out:
+"se em 2 meses nenhuma das 8 perguntas citar a diar.ia.br, parar de produzir
+hub novo". **Retratado em 10/ago** (comentário do editor na #4558, decisão
+registrada na #4901) — o próprio survey citado como base do checkpoint
+(arXiv 2607.14035, 45 estudos, nov/2023–jul/2026) conclui que nenhuma técnica
+de GEO revisada mostra efeito causal estável, longitudinal e cross-platform;
+não dá pra validar em 2 meses o que a literatura de referência não valida em
+quase 3 anos de estudos.
+
+Critério substituto: a série semanal roda **sem data de corte**. Qualquer
+decisão de pausar ou continuar a produção de hub compara a tendência
+acumulada de citação contra o crescimento do acervo indexado — nunca um
+snapshot isolado numa data fixa — e passa por decisão explícita do editor,
+não por um script que corta produção sozinho ao bater checkpoint.
 
 ## Cadência: semanal, não diário
 
@@ -107,7 +128,13 @@ Isso registra a task `Diaria-Geo-Citation-Monitor` (segundas 10:30).
 Idempotente — re-executar atualiza a task. Remover: mesmo comando com
 `-Unregister`.
 
-**Registro da task não feito em nenhuma unidade de worktree isolado** (mesma
-disciplina do #4320/#4382/#4490/#4534/#4723) — mas, diferente daquelas, a
-**1ª execução do monitor em si já rodou ao vivo** (baseline acima, comentado
-na #4558); o que falta é só a cadência.
+**Task armada e confirmada ativa (#4901, 10/ago)** — `systemctl --user
+is-active diaria-geo-citation-monitor.timer` retorna `active`, com disparo
+real registrado em 10/ago 13:30 UTC e próximo agendado pra 17/ago. O comando
+de arme em si (`setup-geo-citation-monitor-schedule.ps1` no Windows,
+`scripts/setup-systemd-timers.ts` no Linux, via o registro declarativo
+`scripts/lib/scheduled-tasks.ts`) **não roda em unidade de worktree isolado**
+(mesma disciplina do #4320/#4382/#4490/#4534/#4723, credencial/estado de
+máquina fica fora do worktree do subagente) — mas, diferente do estado
+descrito em rodadas anteriores, aqui não falta cadência: a task já existe, já
+disparou e já tem histórico real acumulado nesta máquina.
