@@ -82,10 +82,6 @@ interface CtrAgg {
   opens: number;
 }
 
-function ctrPct(a: CtrAgg): string {
-  return a.opens > 0 ? ((a.clicks / a.opens) * 100).toFixed(2) : "0.00";
-}
-
 /**
  * Pure: exponential decay weight com time constant de DECAY_TIME_CONSTANT_DAYS.
  * `weight = exp(-days / T)` onde T=90 → weight cai pra 1/e (~0.37) em 90d;
@@ -490,51 +486,53 @@ function main() {
       lines.push("");
     }
 
-    // By category + origin (top performers)
+    // By category + origin (top performers) — #4880: encolhido igual
+    // byCategory/byDomain (#4840). O n aqui é tipicamente MENOR que o de
+    // byCategory (interseção categoria×origem), então o problema estatístico
+    // que motivou o #4840 é ainda mais grave sem encolhimento.
     lines.push(
       "",
       "### Destaques por categoria + origem",
       "",
-      "Top 10 combinações com maior CTR (mínimo 5 links):",
+      `Top 10 combinações com maior CTR encolhido (mínimo 5 links, k=${CTR_SHRINKAGE_K}):`,
       "",
     );
 
     const catOrEntries = [...ctr.byCatOrigin.entries()]
       .filter(([, a]) => a.count >= 5)
-      .sort((a, b) => {
-        const ctrA = a[1].opens > 0 ? a[1].clicks / a[1].opens : 0;
-        const ctrB = b[1].opens > 0 ? b[1].clicks / b[1].opens : 0;
-        return ctrB - ctrA;
-      })
+      .map(([key, agg]) => ({ key, agg, shrunk: shrinkCtr(agg.clicks, agg.opens, globalRate) }))
+      .sort((a, b) => b.shrunk.rate - a.shrunk.rate)
       .slice(0, 10);
 
-    for (const [key, agg] of catOrEntries) {
+    for (const { key, agg, shrunk } of catOrEntries) {
       const [cat, origin] = key.split("|");
-      lines.push(`- **${cat} ${origin}** — CTR ${ctrPct(agg)}% | ${agg.count} links`);
+      lines.push(`- **${cat} ${origin}** — CTR ${(shrunk.rate * 100).toFixed(2)}% (encolhida) | ${agg.count} links`);
     }
 
-    // By origin
+    // By origin — #4880: mesmo encolhimento (empírico-Bayes, mesma k/globalRate)
     lines.push("", "### Engajamento por origem", "");
 
-    for (const [origin, agg] of [...ctr.byOrigin.entries()].sort((a, b) => {
-      const ctrA = a[1].opens > 0 ? a[1].clicks / a[1].opens : 0;
-      const ctrB = b[1].opens > 0 ? b[1].clicks / b[1].opens : 0;
-      return ctrB - ctrA;
-    })) {
+    const originEntries = [...ctr.byOrigin.entries()]
+      .map(([origin, agg]) => ({ origin, agg, shrunk: shrinkCtr(agg.clicks, agg.opens, globalRate) }))
+      .sort((a, b) => b.shrunk.rate - a.shrunk.rate);
+
+    for (const { origin, agg, shrunk } of originEntries) {
       const pctLinks = ((agg.count / ctr.totalLinks) * 100).toFixed(1);
-      lines.push(`- **${origin}** — CTR ${ctrPct(agg)}% | ${agg.count} links (${pctLinks}% do total)`);
+      lines.push(`- **${origin}** — CTR ${(shrunk.rate * 100).toFixed(2)}% (encolhida) | ${agg.count} links (${pctLinks}% do total)`);
     }
 
     // #1564: derivar annotation BR vs INT da data atual em vez de hardcoded.
     // Pre-mudança assumia BR > INT (era verdade no regime antigo); pós-mudança
     // o ranking pode ter virado. Annotation derivada evita stale claim.
+    // #4880: usa a mesma taxa encolhida da lista acima (era CTR bruto antes),
+    // pra não afirmar uma diferença BR×INT que o encolhimento já descartou.
     const brCtr = (() => {
       const a = ctr.byOrigin.get("BR");
-      return a && a.opens > 0 ? (a.clicks / a.opens) * 100 : 0;
+      return a && a.opens > 0 ? shrinkCtr(a.clicks, a.opens, globalRate).rate * 100 : 0;
     })();
     const intCtr = (() => {
       const a = ctr.byOrigin.get("INT");
-      return a && a.opens > 0 ? (a.clicks / a.opens) * 100 : 0;
+      return a && a.opens > 0 ? shrinkCtr(a.clicks, a.opens, globalRate).rate * 100 : 0;
     })();
     const originHint = (() => {
       if (brCtr === 0 || intCtr === 0) return "Sem dados suficientes pra comparar BR vs INT.";
