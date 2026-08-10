@@ -122,7 +122,7 @@ export function buildGoogleGeminiFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
     },
     {
       question: "Quantos lançamentos de modelo ou ferramenta o Google teve nesse período?",
-      answer: `Foram ${launches} lançamentos entre 27/08/2025 e 22/07/2026, em 3 surtos separados por hiatos: 5 modelos em 107 dias até dezembro de 2025, depois 2 em 6 dias em fevereiro de 2026, e 3 em 62 dias a partir de maio. Os hiatos entre eles foram de 63 e de 84 dias — este o mais longo do período.`,
+      answer: `Foram ${launches} lançamentos entre 27/08/2025 e 22/07/2026, em 3 surtos separados por hiatos: 5 modelos em 114 dias até dezembro de 2025, depois 2 em 6 dias em fevereiro de 2026, e 3 em 62 dias a partir de maio. Os hiatos entre eles foram de 63 e de 84 dias — este o mais longo do período.`,
     },
     {
       question: "O Gemini já \"venceu\" o ChatGPT?",
@@ -194,7 +194,7 @@ export function getGoogleGeminiHub(): HubContent {
       {
         heading: "Com que ritmo o Google lança modelo novo de Gemini (e de Nano Banana)?",
         paragraphs: [
-          "O Google lançou 10 modelos ou ferramentas entre 27 de agosto de 2025 e 22 de julho de 2026, mas o ritmo não foi constante: vieram em 3 surtos separados por 2 hiatos, um deles o mais longo de todo o período. No primeiro surto, 5 lançamentos couberam em 107 dias: [Gemini 2.5 Flash Image](https://diar.ia.br/p/google-lan-a-gemini-2-5-flash-image), [o Veo 3.1](https://diar.ia.br/p/google-veo-3-1), [o próprio Gemini 3](https://diar.ia.br/p/tudo-sobre-gemini-3), [Nano Banana Pro](https://diar.ia.br/p/sao-paulo-oferece-cursos-de-ia-gratuitos) e [Gemini 3 Flash](https://diar.ia.br/p/openai-cria-treinamento-gratuito-para-jornalistas).",
+          "O Google lançou 10 modelos ou ferramentas entre 27 de agosto de 2025 e 22 de julho de 2026, mas o ritmo não foi constante: vieram em 3 surtos separados por 2 hiatos, um deles o mais longo de todo o período. No primeiro surto, 5 lançamentos couberam em 114 dias: [Gemini 2.5 Flash Image](https://diar.ia.br/p/google-lan-a-gemini-2-5-flash-image), [o Veo 3.1](https://diar.ia.br/p/google-veo-3-1), [o próprio Gemini 3](https://diar.ia.br/p/tudo-sobre-gemini-3), [Nano Banana Pro](https://diar.ia.br/p/sao-paulo-oferece-cursos-de-ia-gratuitos) e [Gemini 3 Flash](https://diar.ia.br/p/openai-cria-treinamento-gratuito-para-jornalistas).",
           "Depois veio um hiato de 63 dias sem nenhum lançamento novo, de 19 de dezembro de 2025 a 20 de fevereiro de 2026. Nessa janela as manchetes giraram em torno da disputa com o ChatGPT, não de produto novo. O segundo surto foi o mais compacto de todos: [Gemini 3.1 Pro](https://diar.ia.br/p/novo-curso-de-ia-do-google) e [Nano Banana 2](https://diar.ia.br/p/claude-opus-3-se-aposenta-e-vira-blogueiro) saíram com apenas 6 dias de diferença entre si.",
           "O hiato seguinte foi o mais longo do período: 84 dias entre o Nano Banana 2 e o [lançamento do Gemini Omni no Google I/O](https://diar.ia.br/p/google-lan-a-gemini-omni-no-google-i-o), em 21 de maio de 2026. O terceiro e último surto fechou num ritmo parecido com o primeiro: [Nano Banana 2 Lite](https://diar.ia.br/p/anthropic-lan-a-sonnet-5), 41 dias depois do Omni, e o [lançamento em trio de Gemini 3.6 e 3.5 Flash](https://diar.ia.br/p/google-lanca-trio-gemini-3-6-e-3-5-flash), mais 21 dias depois: 3 lançamentos em 62 dias.",
         ],
