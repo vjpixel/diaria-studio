@@ -65,6 +65,48 @@ export function fingerprintFor(latestRecordTs: string | null): string {
   return latestRecordTs ?? NEVER_MEASURED_FINGERPRINT;
 }
 
+/** Staleness de UM painel: o rótulo mais o `ts` do registro mais recente
+ * dele. Ver `computeMultiPanelStaleness`. */
+export interface PanelStaleness {
+  panel: string;
+  latestRecordTs: string | null;
+  check: StalenessCheck;
+}
+
+/**
+ * Pure: avalia staleness POR PAINEL e devolve o veredito agregado (#4900).
+ *
+ * **Por que por painel, e não pelo arquivo inteiro.** Até 10/08/2026 só
+ * existia um painel, então "history.jsonl tem registro fresco" e "o monitor
+ * está saudável" eram a mesma coisa, e olhar a última linha bastava. Com o
+ * painel temático ativo, deixam de ser: se o passo `hubs` quebrar de forma
+ * sustentada e o `geral` continuar rodando, `history.jsonl` segue recebendo
+ * registro fresco toda semana e o alarme nunca dispara — o painel quebrado
+ * fica invisível. É o mesmo modo de falha que a auditoria de GEO encontrou
+ * no próprio monitor (rodou com 1 de 3 provedores sem alarmar, #4900 item b)
+ * e que motivou este alarme (#4755); repeti-lo num nível acima seria
+ * gratuito.
+ *
+ * Alarma se QUALQUER painel estiver stale. Painel sem nenhum registro conta
+ * como stale, mesma semântica que `computeStaleness` já dá ao arquivo vazio —
+ * e não gera falso positivo de bootstrap porque o monitor e o alarme rodam do
+ * MESMO checkout: ou os dois conhecem o painel novo, ou nenhum conhece.
+ */
+export function computeMultiPanelStaleness(
+  latestByPanel: readonly PanelStaleness[],
+): { isStale: boolean; stalePanels: PanelStaleness[]; fingerprint: string } {
+  const stalePanels = latestByPanel.filter((p) => p.check.isStale);
+  // Fingerprint composto: cobre TODOS os painéis, não só os stale. Sem isso,
+  // alarmar por `geral` gravaria um fingerprint que também suprimiria o
+  // primeiro alarme de `hubs` (e vice-versa) — os dois painéis
+  // compartilham um único `lastAlarmedFingerprint` no state.
+  const fingerprint = [...latestByPanel]
+    .sort((a, b) => a.panel.localeCompare(b.panel))
+    .map((p) => `${p.panel}:${p.latestRecordTs ?? NEVER_MEASURED_FINGERPRINT}`)
+    .join("|");
+  return { isStale: stalePanels.length > 0, stalePanels, fingerprint };
+}
+
 export interface StalenessCheck {
   isStale: boolean;
   /** Dias desde o último registro, ou `null` quando não há nenhum registro
@@ -121,7 +163,11 @@ export function shouldAlarm(
 export function buildGeoCitationStalenessAlarmEmail(
   latestRecordTs: string | null,
   staleDays: number | null,
+  /** #4900: qual painel está stale. `undefined` preserva o texto de antes do
+   * 2º painel existir (usado só pelos testes legados do alarme). */
+  panel?: string,
 ): { subject: string; body: string } {
+  const panelSuffix = panel ? ` (painel "${panel}")` : "";
   // `staleDays === null` também cobre o caso de `latestRecordTs` NÃO-null mas
   // ilegível (data corrompida — `computeStaleness` já trata isso como
   // "nunca medido", ver docstring) — sem este OR, o ramo `else` abaixo
@@ -130,8 +176,8 @@ export function buildGeoCitationStalenessAlarmEmail(
   // test/geo-citation-staleness-alarm.test.ts).
   const neverMeasured = latestRecordTs === null || staleDays === null;
   const subject = neverMeasured
-    ? "[diar.ia.br] monitor de citação GEO nunca registrou nenhuma medição"
-    : `[diar.ia.br] monitor de citação GEO sem medição nova há ${staleDays} dias`;
+    ? `[diar.ia.br] monitor de citação GEO nunca registrou nenhuma medição${panelSuffix}`
+    : `[diar.ia.br] monitor de citação GEO sem medição nova há ${staleDays} dias${panelSuffix}`;
 
   const lines: string[] = [];
   if (neverMeasured) {

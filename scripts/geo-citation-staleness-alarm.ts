@@ -43,6 +43,7 @@ import { DEFAULT_GEO_CITATIONS_LOG_PATH } from "./lib/geo-citation-monitor.ts";
 import {
   emptyGeoCitationStalenessAlarmState,
   computeStaleness,
+  computeMultiPanelStaleness,
   fingerprintFor,
   advanceState,
   shouldAlarm,
@@ -84,7 +85,15 @@ export function saveState(state: GeoCitationStalenessAlarmState, statePath: stri
  * Retorna `null` quando o arquivo não existe, está vazio, ou nenhuma linha é
  * um JSON válido com `ts` string.
  */
-export function readLatestGeoCitationTs(historyPath: string = HISTORY_PATH): string | null {
+export function readLatestGeoCitationTs(
+  historyPath: string = HISTORY_PATH,
+  /** #4900: quando informado, considera só os registros DESTE painel.
+   * Registro legado sem campo `panel` conta como `"geral"` — mesma regra de
+   * leitura de `readHistoryRecordsForPanel` em `lib/geo-citation-monitor.ts`.
+   * Sem o parâmetro, o comportamento é o de antes (última linha legível,
+   * qualquer painel). */
+  panel?: string,
+): string | null {
   if (!existsSync(historyPath)) return null;
   let raw: string;
   try {
@@ -95,8 +104,13 @@ export function readLatestGeoCitationTs(historyPath: string = HISTORY_PATH): str
   const lines = raw.split("\n").filter((line) => line.trim().length > 0);
   for (let i = lines.length - 1; i >= 0; i--) {
     try {
-      const record = JSON.parse(lines[i]) as { ts?: unknown };
-      if (typeof record.ts === "string" && record.ts.length > 0) return record.ts;
+      const record = JSON.parse(lines[i]) as { ts?: unknown; panel?: unknown };
+      if (typeof record.ts !== "string" || record.ts.length === 0) continue;
+      if (panel !== undefined) {
+        const recPanel = typeof record.panel === "string" && record.panel.length > 0 ? record.panel : "geral";
+        if (recPanel !== panel) continue;
+      }
+      return record.ts;
     } catch {
       continue;
     }
@@ -104,25 +118,47 @@ export function readLatestGeoCitationTs(historyPath: string = HISTORY_PATH): str
   return null;
 }
 
+/** Painéis que a task `Diaria-Geo-Citation-Monitor` roda hoje — precisa
+ * espelhar os `steps` de `scripts/lib/scheduled-tasks.ts`. Literal e não
+ * derivado do registry de propósito: derivar acoplaria o alarme ao formato
+ * dos args da task, e um painel removido da task deve continuar sendo
+ * checado até alguém decidir explicitamente que a série dele acabou. */
+const MONITORED_PANELS = ["geral", "hubs"] as const;
+
 async function main(): Promise<void> {
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
   const isDryRun = hasFlag(argv, "dry-run");
   const toOverride = getArg(argv, "to");
 
-  const latestRecordTs = readLatestGeoCitationTs();
   const now = new Date();
-  const check = computeStaleness(latestRecordTs, now);
-  const fingerprint = fingerprintFor(latestRecordTs);
+  // #4900: um painel por vez. Com 2 painéis ativos, olhar só a última linha
+  // do arquivo esconderia um painel quebrado atrás do outro saudável — ver
+  // docstring de `computeMultiPanelStaleness`.
+  const perPanel = MONITORED_PANELS.map((panel) => {
+    const latestRecordTs = readLatestGeoCitationTs(HISTORY_PATH, panel);
+    return { panel, latestRecordTs, check: computeStaleness(latestRecordTs, now) };
+  });
+  const agg = computeMultiPanelStaleness(perPanel);
   const state = loadState();
 
-  console.log(
-    `${LOG_PREFIX} último registro: ${latestRecordTs ?? "nenhum"} ` +
-      `(${check.staleDays ?? "?"} dia(s), stale=${check.isStale}; última checagem: ${state.lastCheckedAt ?? "nunca"}).`,
-  );
+  for (const p of perPanel) {
+    console.log(
+      `${LOG_PREFIX} painel "${p.panel}": último registro ${p.latestRecordTs ?? "nenhum"} ` +
+        `(${p.check.staleDays ?? "?"} dia(s), stale=${p.check.isStale}).`,
+    );
+  }
+  console.log(`${LOG_PREFIX} última checagem: ${state.lastCheckedAt ?? "nunca"}.`);
 
+  const check = { isStale: agg.isStale, staleDays: agg.stalePanels[0]?.check.staleDays ?? null };
+  const fingerprint = agg.fingerprint;
   if (shouldAlarm(state, check, fingerprint)) {
-    const { subject, body } = buildGeoCitationStalenessAlarmEmail(latestRecordTs, check.staleDays);
+    const worst = agg.stalePanels[0];
+    const { subject, body } = buildGeoCitationStalenessAlarmEmail(
+      worst.latestRecordTs,
+      worst.check.staleDays,
+      agg.stalePanels.map((p) => p.panel).join(", "),
+    );
     const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     if (isDryRun) {
       console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
