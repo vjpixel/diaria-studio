@@ -219,7 +219,11 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     description: "monitor semanal de citacao por assistente de IA",
     steps: [{ key: "monitor", script: "scripts/geo-citation-monitor.ts", args: ["--strict"] }],
     logPath: "geo-citations/.monitor.log",
-    schedule: { kind: "weekly", dayOfWeek: "Monday", hour: 10, minute: 30 },
+    // Domingo 07:00 (mudou de segunda 10:30, decisão do editor 260810 —
+    // consolidar as semanais na manhã de domingo): ainda depois do
+    // Brevo-Diaria-Evaluate diário (05:30) e antes do Clarice-Sync diário
+    // (08:30, roda todo dia incl. domingo) — sem colisão de horário.
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 7, minute: 0 },
     legacySetupScript: "scripts/setup-geo-citation-monitor-schedule.ps1",
     issue: "#4558 Parte C, #4754",
   },
@@ -228,7 +232,10 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     description: "alarme de staleness do monitor de citacao GEO",
     steps: [{ key: "alarm", script: "scripts/geo-citation-staleness-alarm.ts" }],
     logPath: "geo-citations/.staleness-alarm.log",
-    schedule: { kind: "weekly", dayOfWeek: "Monday", hour: 14, minute: 0 },
+    // Domingo 10:30 (mudou de segunda 14:00, decisão do editor 260810):
+    // continua depois do Geo-Citation-Monitor (domingo 07:00) — 3h30 de
+    // folga, mesma ordem de grandeza do gap original (10:30 -> 14:00).
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 10, minute: 30 },
     legacySetupScript: "scripts/setup-geo-citation-staleness-alarm-schedule.ps1",
     issue: "#4755",
   },
@@ -246,7 +253,11 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     description: "sync automatico do spamRate do Google Postmaster Tools",
     steps: [{ key: "sync", script: "scripts/postmaster-spam-sync.ts" }],
     logPath: "clarice-subscribers/.postmaster-spam-sync.log",
-    schedule: { kind: "interval", hours: 12 },
+    // Diária 12:30 (mudou de "a cada 12h", decisão do editor 260810): a
+    // leitura já é uma MÉDIA sobre HEALTH_SAMPLE_DAYS, 1x/dia basta — a
+    // cadência de 12h nunca teve razão de ser além de folga extra contra
+    // execução perdida, ver docs/postmaster-spam-sync-setup.md.
+    schedule: { kind: "daily", hour: 12, minute: 30 },
     legacySetupScript: "scripts/setup-postmaster-spam-sync-schedule.ps1",
     issue: "#4154",
   },
@@ -272,7 +283,10 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
       { key: "pull", script: "scripts/seo-pull.ts", args: ["--days", "28"] },
     ],
     logPath: "seo/.seo-weekly.log",
-    schedule: { kind: "weekly", dayOfWeek: "Monday", hour: 4, minute: 10 },
+    // Domingo 04:10 (mudou de segunda 04:10, decisão do editor 260810 —
+    // mesmo horário, só o dia mudou). Continua antes de tudo (nenhuma daily
+    // roda antes das 05:30).
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 4, minute: 10 },
     legacySetupScript: "scripts/setup-seo-schedule.ps1",
     issue: "#4105, #1896, #1989, #4909",
   },

@@ -68,7 +68,7 @@ O fluxo editorial é modelado como 6 etapas com gate humano em 2 delas (Stage 4:
 
 **Alarme de guardrail furado do ramp Clarice (#4064, agendamento #4131 finding 1):** task `Diaria-Clarice-Guardrail-Alarm`, a cada 4h. Arme: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-clarice-guardrail-alarm-schedule.ps1`. Detalhes: `docs/clarice-guardrail-alarm-setup.md`.
 
-**Sync automático do spamRate do Google Postmaster Tools (#4154):** task `Diaria-Postmaster-Spam-Sync`, a cada 12h. Arme: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-postmaster-spam-sync-schedule.ps1`. Detalhes: `docs/postmaster-spam-sync-setup.md`.
+**Sync automático do spamRate do Google Postmaster Tools (#4154):** task `Diaria-Postmaster-Spam-Sync`, diária às 12:30 (mudou de "a cada 12h" — decisão do editor 260810, o dado fonte só muda em granularidade diária). Arme: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-postmaster-spam-sync-schedule.ps1`. Detalhes: `docs/postmaster-spam-sync-setup.md`.
 
 **Alarme de erro do worker `cursos` + sync do KV de assinantes (#4320, redesign #4382):** tasks `Diaria-Cursos-Error-Alarm` (a cada 2h) e `Diaria-Cursos-Kv-Sync` (diária, 09:15). Arme: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-cursos-error-alarm-schedule.ps1` e `...\setup-cursos-kv-sync-schedule.ps1`. Detalhes: `docs/cursos-worker-alarm-setup.md`.
 
@@ -82,9 +82,9 @@ O fluxo editorial é modelado como 6 etapas com gate humano em 2 delas (Stage 4:
 
 **Alarme de falha sustentada do catch-up de opens da Clarice (#4740, item 4 do #4722):** task `Diaria-Clarice-Opens-Catchup-Alarm`, diária às 09:00 (depois do sync das 08:30). Arme: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-clarice-opens-catchup-alarm-schedule.ps1`. Detalhes: `docs/clarice-opens-catchup-alarm-setup.md`.
 
-**Monitor semanal de citação por assistente de IA (#4558 Parte C):** task `Diaria-Geo-Citation-Monitor`, segundas 10:30. Arme: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-geo-citation-monitor-schedule.ps1`. Detalhes (baseline, exit codes `--strict` #4754): `docs/geo-citation-monitor-setup.md`.
+**Monitor semanal de citação por assistente de IA (#4558 Parte C):** task `Diaria-Geo-Citation-Monitor`, domingos 07:00 (mudou de segundas 10:30 — decisão do editor 260810, semanais consolidadas na manhã de domingo). Arme: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-geo-citation-monitor-schedule.ps1`. Detalhes (baseline, exit codes `--strict` #4754): `docs/geo-citation-monitor-setup.md`.
 
-**Alarme de staleness do monitor de citação GEO (#4755):** task `Diaria-Geo-Citation-Staleness-Alarm`, segundas 14:00 (depois da task do monitor acima). Arme: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-geo-citation-staleness-alarm-schedule.ps1`. Detalhes: `docs/geo-citation-staleness-alarm-setup.md`.
+**Alarme de staleness do monitor de citação GEO (#4755):** task `Diaria-Geo-Citation-Staleness-Alarm`, domingos 10:30 (mudou de segundas 14:00 — decisão do editor 260810; segue depois da task do monitor acima). Arme: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-geo-citation-staleness-alarm-schedule.ps1`. Detalhes: `docs/geo-citation-staleness-alarm-setup.md`.
 
 **Smoke-test de drift entre HUB_META e o Worker `arquivo` publicado (#4750, follow-up do fleet review da PR #4749):** task `Diaria-Hub-Drift-Check`, a cada 6h. Arme: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-hub-drift-check-schedule.ps1`. Detalhes: `docs/hub-drift-check-setup.md`.
 

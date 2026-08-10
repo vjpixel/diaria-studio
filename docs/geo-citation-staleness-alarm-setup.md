@@ -2,7 +2,7 @@
 
 Issue: [#4755](https://github.com/vjpixel/diaria-studio/issues/4755) (achado do fleet review da [#4754](https://github.com/vjpixel/diaria-studio/pull/4754), spun off do [#4558](https://github.com/vjpixel/diaria-studio/issues/4558) Parte C).
 
-O monitor semanal de citação GEO (`geo-citation-monitor.ts`, task `Diaria-Geo-Citation-Monitor`, segundas 10:30) registra em `data/geo-citations/history.jsonl` se `diar.ia.br` foi citada pelos assistentes de IA configurados. Mas nada avisava quando essa task **para de produzir medição** — task desabilitada manualmente, task removida, máquina do editor fora do ar por semanas, ou todo provider (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`GEMINI_API_KEY`) sem key configurada. Todos esses motivos colapsam no MESMO sintoma observável: `history.jsonl` para de crescer.
+O monitor semanal de citação GEO (`geo-citation-monitor.ts`, task `Diaria-Geo-Citation-Monitor`, domingos 07:00) registra em `data/geo-citations/history.jsonl` se `diar.ia.br` foi citada pelos assistentes de IA configurados. Mas nada avisava quando essa task **para de produzir medição** — task desabilitada manualmente, task removida, máquina do editor fora do ar por semanas, ou todo provider (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`GEMINI_API_KEY`) sem key configurada. Todos esses motivos colapsam no MESMO sintoma observável: `history.jsonl` para de crescer.
 
 ## Por que não basta `test/pending-scheduled-tasks.test.ts`
 
@@ -39,6 +39,6 @@ Requer Windows + Task Scheduler + junction `data/` (OneDrive) + `data/.credentia
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-geo-citation-staleness-alarm-schedule.ps1
 ```
 
-Isso registra a task `Diaria-Geo-Citation-Staleness-Alarm` (semanal, segundas 14:00 — algumas horas depois do monitor das 10:30). Idempotente — re-executar atualiza a task. Remover: mesmo comando com `-Unregister`.
+Isso registra a task `Diaria-Geo-Citation-Staleness-Alarm` (semanal, domingos 10:30 — mudou de segundas 14:00, decisão do editor 260810; 3h30 depois do monitor das 07:00). Idempotente — re-executar atualiza a task. Remover: mesmo comando com `-Unregister`.
 
 **Registro da task + 1ª execução ao vivo não feitos nesta unidade** (worktree isolado, sem Task Scheduler real nem `data/.credentials.json`/Gmail ao vivo, mesma disciplina do #4320/#4382/#4490/#4534/#4723). Validado só via testes da lógica pura + do reader string-safe (`test/geo-citation-staleness-alarm.test.ts`).

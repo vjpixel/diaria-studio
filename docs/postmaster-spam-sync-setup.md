@@ -9,7 +9,10 @@ automático.
 ## O que ele faz
 
 `scripts/run-postmaster-spam-sync.ps1` → `scripts/postmaster-spam-sync.ts`,
-rodando a cada 12h via Task Scheduler. Grava a MÉDIA do
+rodando diariamente às 12:30 (mudou de "a cada 12h", decisão do editor
+260810 — a leitura já é uma MÉDIA sobre uma janela de dias, 1x/dia basta; a
+cadência de 12h nunca leu nada mais fresco, só gastava a chamada à toa).
+Grava a MÉDIA do
 `userReportedSpamRatio` de `clarice.ai` sobre uma janela de dias (mesma
 janela — `HEALTH_SAMPLE_DAYS` — das outras métricas da aba Rampa, #4345) na
 mesma chave KV (`postmaster:spam`) que o breaker de spam da Rampa consome
@@ -34,5 +37,5 @@ com o scope `postmaster.readonly` + `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_WORKERS_
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-postmaster-spam-sync-schedule.ps1
 ```
 
-Isso registra a task `Diaria-Postmaster-Spam-Sync` (a cada 12h). Idempotente
+Isso registra a task `Diaria-Postmaster-Spam-Sync` (diária, 12:30). Idempotente
 — re-executar atualiza a task. Remover: mesmo comando com `-Unregister`.
