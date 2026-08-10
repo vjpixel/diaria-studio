@@ -45,10 +45,13 @@ describe("buildAnthropicClaudeFaq (#4558 Parte A) — regression do bug NFD/NFC"
     // Busca pelo conteúdo da resposta, não pelo texto da pergunta — a
     // pergunta foi reformulada (achado do editor 260804: FAQ não pode
     // duplicar o H2 de uma section) e não pode mais ser um prefixo estável.
-    const launchFaq = faq.find((f) => /noticiou \d+ lançamentos/.test(f.answer));
+    // #4899 reescreveu a redação ("A diar.ia.br noticiou N" → "Foram N"):
+    // a publicação não pode ser sujeito de verbo de cobertura. O que o teste
+    // garante continua sendo o mesmo — a contagem DERIVADA, não a frase.
+    const launchFaq = faq.find((f) => /Foram \d+ lançamentos/.test(f.answer));
     assert.ok(launchFaq);
-    assert.doesNotMatch(launchFaq.answer, /noticiou 0 lançamentos/);
-    assert.match(launchFaq.answer, /noticiou 12 lançamentos/);
+    assert.doesNotMatch(launchFaq.answer, /Foram 0 lançamentos/);
+    assert.match(launchFaq.answer, /Foram 12 lançamentos/);
   });
 
   it("cada resposta do FAQ aparece idêntica no corpo visível da página (paridade com o JSON-LD)", () => {
@@ -82,9 +85,9 @@ describe("buildAnthropicClaudeFaq (#4558 Parte A) — regression do bug NFD/NFC"
       },
     ];
     const syntheticFaq = buildAnthropicClaudeFaq(synthetic);
-    const launchFaq = syntheticFaq.find((f) => /noticiou \d+ lançamentos/.test(f.answer));
+    const launchFaq = syntheticFaq.find((f) => /Foram \d+ lançamentos/.test(f.answer));
     assert.ok(launchFaq);
-    assert.match(launchFaq.answer, /noticiou 2 lançamentos/);
+    assert.match(launchFaq.answer, /Foram 2 lançamentos/);
     const mythosFaq = syntheticFaq.find((f) => f.question.includes("Mythos"));
     assert.ok(mythosFaq);
     assert.match(mythosFaq.answer, /citado em 1 edições/);
@@ -113,12 +116,13 @@ describe("consistência FAQ × prosa das sections/INTRO (#4558 Parte A)", () => 
   });
 
   it("a seção de cadência de lançamento cita o mesmo número que o FAQ computa", () => {
-    const launchFaq = faq.find((f) => /noticiou \d+ lançamentos/.test(f.answer));
-    const launchMatch = /noticiou (\d+) lançamentos/.exec(launchFaq?.answer ?? "");
+    const launchFaq = faq.find((f) => /Foram \d+ lançamentos/.test(f.answer));
+    const launchMatch = /Foram (\d+) lançamentos/.exec(launchFaq?.answer ?? "");
     assert.ok(launchMatch, "FAQ não tem a contagem de lançamentos no formato esperado");
     const launchSection = hub.sections.find((s) => s.heading.startsWith("Com que frequência"));
     assert.ok(launchSection);
-    assert.match(launchSection.paragraphs[0], new RegExp(`noticiou ${launchMatch[1]} lançamentos`));
+    // A prosa agora diz "A Anthropic lançou N modelos ou ferramentas".
+    assert.match(launchSection.paragraphs[0], new RegExp(`lançou ${launchMatch[1]} modelos ou ferramentas`));
   });
 });
 
@@ -256,8 +260,8 @@ describe("buildOpenaiChatgptFaq (#4790 achado 1) — regression: manchete de inc
     const faq = buildOpenaiChatgptFaq(openaiChatgptSourcesRaw as never);
     const gpt5xFaq = faq.find((f) => f.question.includes("Quantas versões do GPT-5"));
     assert.ok(gpt5xFaq, 'FAQ não tem a pergunta "Quantas versões do GPT-5..."');
-    assert.match(gpt5xFaq.answer, /A diar\.ia\.br contou 6 manchetes/);
-    assert.doesNotMatch(gpt5xFaq.answer, /A diar\.ia\.br contou 7 manchetes/);
+    assert.match(gpt5xFaq.answer, /Foram 6 manchetes/);
+    assert.doesNotMatch(gpt5xFaq.answer, /Foram 7 manchetes/);
   });
 
   it("com fixture sintético: uma manchete de incidente de segurança não conta como lançamento de versão", () => {
@@ -282,7 +286,7 @@ describe("buildOpenaiChatgptFaq (#4790 achado 1) — regression: manchete de inc
     const faq = buildOpenaiChatgptFaq(synthetic);
     const gpt5xFaq = faq.find((f) => f.question.includes("Quantas versões do GPT-5"));
     assert.ok(gpt5xFaq);
-    assert.match(gpt5xFaq.answer, /A diar\.ia\.br contou 1 manchetes/);
+    assert.match(gpt5xFaq.answer, /Foram 1 manchetes/);
   });
 });
 

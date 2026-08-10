@@ -108,7 +108,10 @@ describe("#4895 — google-gemini.ts cita a data de início real do hub", () => 
   });
 
   it("FAQ de lançamentos cita a data real de início (forma curta)", () => {
-    const launchFaq = hub.faq.find((f) => /noticiou \d+ lançamentos/.test(f.answer));
+    // #4899 trocou "A diar.ia.br noticiou N" por "Foram N" (a publicação não
+    // pode ser sujeito de verbo de cobertura). O que se garante aqui segue
+    // sendo a DATA derivada, não a frase.
+    const launchFaq = hub.faq.find((f) => /Foram \d+ lançamentos/.test(f.answer));
     assert.ok(launchFaq, "sanity: FAQ de lançamentos não encontrado");
     assert.ok(
       launchFaq!.answer.includes(`entre ${shortDate}`),

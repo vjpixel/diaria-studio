@@ -92,15 +92,23 @@ function minimalHub(introParagraph: string): HubContent {
 
 describe("renderHubPage — introParagraph ganha o wordmark (#4797)", () => {
   it("introParagraph com 'diar.ia.br' em prosa vira <strong>/<span> teal", () => {
-    const html = renderHubPage(minimalHub("Esta página resume o que a diar.ia.br cobriu sobre o tema."));
-    assert.match(html, new RegExp(`geo-intro">Esta página resume o que a ${WM.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} cobriu`));
+    // O fixture cita a marca SEM as construções que o contrato de prosa
+    // proíbe (#4899): a publicação como sujeito de verbo de cobertura e a
+    // dêixis "esta página". `renderHubPage` valida antes de renderizar, então
+    // o texto antigo ("Esta página resume o que a diar.ia.br cobriu…") passou
+    // a lançar. O que este teste garante é o wordmark, não a frase.
+    const html = renderHubPage(minimalHub("Em 76 edições da diar.ia.br, o tema apareceu 84 vezes."));
+    assert.match(html, new RegExp(`geo-intro">Em 76 edições da ${WM.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, o tema`));
   });
 });
 
 describe("renderHubPage — metaDescription NUNCA ganha o wordmark (#4797, achado do fleet review pré-merge da PR #4822)", () => {
   it("metaDescription com 'diar.ia.br' vira texto plano no atributo content= — sem <strong>/<span> quebrando a tag", () => {
     const hub = minimalHub("Intro sem menção à marca.");
-    hub.metaDescription = "A diar.ia.br cobre inteligência artificial todos os dias.";
+    // Cita a marca SEM a construção que o contrato de prosa proíbe (#4899):
+    // a publicação como sujeito de verbo de cobertura. O que este teste
+    // garante é que a marca NÃO ganha wordmark no atributo, não a frase.
+    hub.metaDescription = "Inteligência artificial todos os dias, na diar.ia.br.";
     const html = renderHubPage(hub);
     const metaDescriptionTag = html.match(/<meta name="description" content="[^"]*">/)?.[0];
     const ogDescriptionTag = html.match(/<meta property="og:description" content="[^"]*">/)?.[0];
@@ -108,7 +116,7 @@ describe("renderHubPage — metaDescription NUNCA ganha o wordmark (#4797, achad
     assert.ok(ogDescriptionTag, "tag <meta property=\"og:description\"> deve existir");
     assert.equal(
       metaDescriptionTag,
-      '<meta name="description" content="A diar.ia.br cobre inteligência artificial todos os dias.">',
+      '<meta name="description" content="Inteligência artificial todos os dias, na diar.ia.br.">',
     );
     for (const tag of [metaDescriptionTag!, ogDescriptionTag!]) {
       assert.ok(!tag.includes("<strong>"), `${tag} não deve conter <strong> — quebraria o atributo content=`);

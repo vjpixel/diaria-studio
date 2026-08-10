@@ -1,0 +1,287 @@
+/**
+ * test/hub-prose-contract-4899.test.ts (#4899)
+ *
+ * O contrato de prosa dos hubs temáticos, exercido em três direções:
+ *
+ * 1. **Cada regra reprova** um `HubContent` sintético que a viole — inclusive
+ *    nas variantes que a auditoria mostrou que uma regex ingênua perde.
+ * 2. **Os hubs reais passam**, todos, iterando `HUB_LOADERS` em vez de uma
+ *    lista escrita à mão (foi a lista à mão do #4795 que deixou o 4º hub
+ *    escapar de um guard por horas, #4926).
+ * 3. **Um hub fictício violando cada regra reprova** — é isto, e não o item 2,
+ *    que garante que a cobertura é DO CONTRATO e não dos hubs de hoje. Sem
+ *    ele, apagar uma regra de `HUB_PROSE_RULES` deixaria a suíte verde.
+ *
+ * E um caso negativo que vale tanto quanto os positivos: **afirmação sobre o
+ * próprio arquivo tem de passar limpa.** "Em 76 edições, o ritmo veio em
+ * surtos" é o que a página tem de próprio; um lint que a reprovasse teria
+ * virado teto de menção de marca, que é exatamente o desenho que o contrato
+ * proíbe (ver docstring de `HUB_PROSE_RULES`).
+ */
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { HUB_LOADERS } from "../scripts/build-hub-page.ts";
+import {
+  HUB_PROSE_RULES,
+  hubCoverageWindow,
+  validateHubContent,
+  type HubContent,
+} from "../scripts/lib/shared/hub-page.ts";
+
+/** Base VÁLIDA mínima — satisfaz os invariantes estruturais (datas, 6-10
+ * perguntas, fontes ordenadas e no domínio de marca) para que qualquer
+ * violação reportada venha da prosa, não de outra coisa. */
+function baseHub(over: Partial<HubContent> = {}): HubContent {
+  return {
+    slug: "fixture",
+    title: "Tema de Teste",
+    metaDescription: "Um tema qualquer no arquivo, de janeiro a fevereiro de 2026: fatos e datas.",
+    introHeading: "O que aconteceu com o tema de teste em 2026?",
+    introParagraph: "Entre janeiro e fevereiro de 2026, o tema apareceu duas vezes, com um mês de intervalo.",
+    sections: [{ heading: "O que mudou no período?", paragraphs: ["Em 15 de janeiro de 2026, algo mudou."] }],
+    faq: Array.from({ length: 6 }, (_, i) => ({
+      question: `Pergunta ${i + 1} sobre o tema?`,
+      answer: `Resposta ${i + 1}, com data absoluta: 15 de janeiro de 2026.`,
+    })),
+    sourceEditions: [{ date: "2026-02-15", title: "Manchete", url: "https://diar.ia.br/p/edicao" }],
+    publishedDate: "2026-02-16",
+    updatedDate: "2026-02-16",
+    footerNavUtm: { source: "fixture", medium: "test" },
+    ...over,
+  };
+}
+
+const proseErrors = (hub: HubContent, ruleId?: string) =>
+  validateHubContent(hub).filter((e) => e.includes(ruleId ? ` viola ${ruleId}:` : " viola "));
+
+describe("#4899 — contrato de prosa dos hubs", () => {
+  it("a base do fixture é válida (senão os casos abaixo testariam outra coisa)", () => {
+    assert.deepEqual(validateHubContent(baseHub()), []);
+  });
+
+  describe("cada regra reprova o que deve reprovar", () => {
+    it("heading-sem-marca: marca no H2, na pergunta de FAQ e no introHeading", () => {
+      for (const over of [
+        { introHeading: "O que aconteceu com o tema, segundo a diar.ia.br?" },
+        { sections: [{ heading: "Quanto vale, segundo a cobertura?", paragraphs: ["Fato."] }] } as Partial<HubContent>,
+        { faq: baseHub().faq.map((f, i) => (i ? f : { ...f, question: "Em quantas edições a diar.ia.br falou disso?" })) },
+      ]) {
+        assert.equal(proseErrors(baseHub(over), "heading-sem-marca").length, 1, JSON.stringify(over).slice(0, 90));
+      }
+    });
+
+    it("heading-sem-marca pega a marca SEM a construção 'segundo a' — o vão da regex original da #4914", () => {
+      const hub = baseHub({ faq: baseHub().faq.map((f, i) => (i ? f : { ...f, question: "Em quantas edições a diar.ia.br destacou o tema?" })) });
+      assert.equal(proseErrors(hub, "heading-sem-marca").length, 1);
+    });
+
+    it("prosa-sem-publicacao-como-sujeito: verbo de cobertura com a publicação no sujeito", () => {
+      for (const p of [
+        "A diar.ia.br cobriu uma escalada entre as duas empresas.",
+        "Em 2026, a diar.ia.br noticiou o lançamento.",
+        "A diar.ia.br nunca publicou o número absoluto.",
+      ]) {
+        const hub = baseHub({ sections: [{ heading: "O que mudou?", paragraphs: [p] }] });
+        assert.equal(proseErrors(hub, "prosa-sem-publicacao-como-sujeito").length, 1, p);
+      }
+    });
+
+    it("prosa-sem-qualificador-atributivo: a moldura 'segundo a…' em PROSA, não só em heading", () => {
+      // O gêmeo em heading já existia; em prosa não havia regra, e é onde a
+      // construção é mais provável (achado do review da PR #4938).
+      for (const p of [
+        "Segundo a diar.ia.br, o modelo foi lançado em julho de 2026.",
+        "Segundo a cobertura, houve três incidentes no período.",
+        "De acordo com a diar.ia.br, a empresa dobrou de valor.",
+      ]) {
+        const hub = baseHub({ sections: [{ heading: "O que mudou?", paragraphs: [p] }] });
+        assert.equal(proseErrors(hub, "prosa-sem-qualificador-atributivo").length, 1, p);
+      }
+    });
+
+    it("as variantes que a forma ingênua de cada regra perdia (achados do review)", () => {
+      const cases: [string, string][] = [
+        // verbo no presente e advérbio/auxiliar interposto
+        ["A diar.ia.br cobre o caso desde o início.", "prosa-sem-publicacao-como-sujeito"],
+        ["A diar.ia.br já cobriu esse tema antes.", "prosa-sem-publicacao-como-sujeito"],
+        ["A diar.ia.br vem cobrindo o caso desde então.", "prosa-sem-publicacao-como-sujeito"],
+        ["A diar.ia.br relatou o incidente na semana seguinte.", "prosa-sem-publicacao-como-sujeito"],
+        // determinante diferente na moldura de edição
+        ["Nessa mesma edição, o modelo foi lançado.", "prosa-sem-moldura-de-edicao"],
+        ["Naquela mesma edição, saiu a notícia.", "prosa-sem-moldura-de-edicao"],
+        ["Na edição seguinte, o caso teve desdobramento.", "prosa-sem-moldura-de-edicao"],
+        // fronteira de palavra: "nesta" não tem \b entre "n" e "esta"
+        ["O conteúdo está descrito nesta página.", "prosa-sem-deixis"],
+        ["Nesta seção, os fatos aparecem completos.", "prosa-sem-deixis"],
+      ];
+      for (const [p, ruleId] of cases) {
+        const hub = baseHub({ sections: [{ heading: "O que mudou?", paragraphs: [p] }] });
+        assert.equal(proseErrors(hub, ruleId).length, 1, `${ruleId} deveria pegar: ${p}`);
+      }
+    });
+
+    it("prosa-sem-ponteiro-de-secao NÃO pega comparação estatística ('acima da média')", () => {
+      // Falso positivo demonstrado no review: prosa densa e numérica é o tom
+      // editorial destes hubs, e "acima da média" perto de "seção" não é
+      // ponteiro nenhum.
+      for (const p of [
+        "A seção sobre segurança, cujo crescimento ficou muito acima da média do arquivo, fecha o tema.",
+        "A seção trouxe alta de 12%, valor acima da meta anual definida em janeiro.",
+      ]) {
+        const hub = baseHub({ sections: [{ heading: "O que mudou?", paragraphs: [p] }] });
+        assert.deepEqual(proseErrors(hub, "prosa-sem-ponteiro-de-secao"), [], p);
+      }
+    });
+
+    it("reporta TODAS as ocorrências no mesmo campo, não só a primeira", () => {
+      // Com `.exec` o autor consertava a 1ª e descobria a 2ª na rodada
+      // seguinte — whack-a-mole (achado do review).
+      const hub = baseHub({
+        sections: [
+          {
+            heading: "O que mudou?",
+            paragraphs: ["Este hub cobre o início. Mais adiante, neste hub também aparece o fim."],
+          },
+        ],
+      });
+      assert.equal(proseErrors(hub, "prosa-sem-deixis").length, 2);
+    });
+
+    it("prosa-sem-moldura-de-edicao: fatos ligados pelo recipiente em vez da data", () => {
+      for (const p of [
+        "Na mesma edição em que saiu o modelo, a empresa venceu na Justiça.",
+        "Uma edição inteira tratou do assunto.",
+      ]) {
+        const hub = baseHub({ sections: [{ heading: "O que mudou?", paragraphs: [p] }] });
+        assert.equal(proseErrors(hub, "prosa-sem-moldura-de-edicao").length, 1, p);
+      }
+    });
+
+    it("prosa-sem-deixis: 'este hub' e 'esta página'", () => {
+      for (const p of ["O período coberto por este hub termina aí.", "Esta página é atualizada às vezes."]) {
+        const hub = baseHub({ sections: [{ heading: "O que mudou?", paragraphs: [p] }] });
+        assert.equal(proseErrors(hub, "prosa-sem-deixis").length, 1, p);
+      }
+    });
+
+    it("prosa-sem-ponteiro-de-secao pega a forma FROUXA, com palavra entre 'seção' e 'acima'", () => {
+      // A forma estrita (/seç(ão|ões) (acima|abaixo)/) perde a 2ª e a 3ª —
+      // e eram justamente as 8 do 4º hub (#4926).
+      for (const p of [
+        "A seção acima detalha a cronologia.",
+        "A seção sobre segurança e moderação acima traz o histórico.",
+        "As seções abaixo detalham cada ponto.",
+      ]) {
+        const hub = baseHub({ faq: baseHub().faq.map((f, i) => (i ? f : { ...f, answer: p })) });
+        assert.equal(proseErrors(hub, "prosa-sem-ponteiro-de-secao").length, 1, p);
+      }
+    });
+  });
+
+  it("CASO NEGATIVO: afirmação sobre o próprio arquivo passa limpa", () => {
+    // Se este teste algum dia falhar, a regra virou teto de menção de marca —
+    // que mata o que justifica a existência do hub. Ver docstring de
+    // HUB_PROSE_RULES: o contrato proíbe CONSTRUÇÕES, nunca palavras.
+    const hub = baseHub({
+      sections: [
+        {
+          heading: "Com que frequência o tema vira notícia?",
+          paragraphs: [
+            "Em 76 edições da diar.ia.br ao longo de 11 meses, 84 manchetes: o ritmo de lançamento vem em surtos, não em fluxo constante.",
+            "Nas 84 manchetes acompanhadas entre agosto de 2025 e agosto de 2026, o padrão se repete.",
+          ],
+        },
+      ],
+    });
+    assert.deepEqual(proseErrors(hub), []);
+  });
+
+  it("um hub fictício que viola TODAS as regras reprova em todas elas", () => {
+    // Trava a cobertura no CONTRATO, não nos hubs de hoje: apagar uma regra
+    // de HUB_PROSE_RULES faz este teste cair.
+    const hub = baseHub({
+      introHeading: "O que aconteceu, segundo a diar.ia.br?",
+      sections: [
+        {
+          heading: "Quanto vale, segundo a cobertura?",
+          paragraphs: [
+            "A diar.ia.br cobriu o caso na mesma edição em que saiu o modelo, e a seção sobre isso acima detalha o período coberto por este hub.",
+            "Segundo a diar.ia.br, o modelo foi lançado em julho de 2026.",
+          ],
+        },
+      ],
+    });
+    // A lista é LITERAL de propósito. Derivá-la de `HUB_PROSE_RULES` tornava
+    // este teste tautológico: `validateHubContent` itera o mesmo array, então
+    // apagar uma regra encolhia os dois lados e a asserção passava verde —
+    // exatamente o contrário do que o teste promete (achado do review da PR
+    // #4938). Regra nova no contrato = uma linha aqui, de propósito.
+    const EXPECTED_RULE_IDS = [
+      "heading-sem-marca",
+      "prosa-sem-publicacao-como-sujeito",
+      "prosa-sem-qualificador-atributivo",
+      "prosa-sem-moldura-de-edicao",
+      "prosa-sem-deixis",
+      "prosa-sem-ponteiro-de-secao",
+    ];
+    assert.deepEqual(
+      HUB_PROSE_RULES.map((r) => r.id).sort(),
+      [...EXPECTED_RULE_IDS].sort(),
+      "HUB_PROSE_RULES mudou — atualize EXPECTED_RULE_IDS e o fixture que exercita cada regra",
+    );
+    const hit = new Set(
+      proseErrors(hub)
+        .map((e) => EXPECTED_RULE_IDS.find((id) => e.includes(` viola ${id}:`)))
+        .filter(Boolean) as string[],
+    );
+    assert.deepEqual([...hit].sort(), [...EXPECTED_RULE_IDS].sort(), "toda regra do contrato precisa de um caso que a exercite");
+  });
+
+  describe("os hubs reais cumprem o contrato — todos os de HUB_LOADERS", () => {
+    const slugs = Object.keys(HUB_LOADERS);
+    it("o registry tem os hubs esperados", () => {
+      assert.ok(slugs.length >= 4, `esperado >= 4 hubs em HUB_LOADERS, veio ${slugs.length}`);
+    });
+    for (const [slug, load] of Object.entries(HUB_LOADERS)) {
+      it(`${slug}: zero violação de prosa`, () => {
+        assert.deepEqual(proseErrors(load()), []);
+      });
+    }
+  });
+
+  describe("#4917 — a janela de cobertura é DERIVADA, nunca digitada", () => {
+    it("hubCoverageWindow acha min/max sem depender da ordenação", () => {
+      const asc = hubCoverageWindow([{ date: "2025-08-29" }, { date: "2026-08-06" }]);
+      const desc = hubCoverageWindow([{ date: "2026-08-06" }, { date: "2025-08-29" }]);
+      assert.deepEqual(asc, desc);
+      assert.equal(asc.between, "agosto de 2025 e agosto de 2026");
+      assert.equal(asc.since, "agosto de 2025");
+    });
+
+    for (const [slug, load] of Object.entries(HUB_LOADERS)) {
+      it(`${slug}: a janela citada em intro/heading/meta bate com a primeira fonte real`, () => {
+        // Reprovava antes deste commit em anthropic-claude e openai-chatgpt:
+        // os dois diziam "setembro de 2025" com a primeira fonte em 29/08 e
+        // 27/08/2025. É o mesmo defeito que a #4895/#4896 consertou uma vez
+        // no google-gemini e que voltou nos gêmeos — por isso o guard cobre
+        // os 3 campos, não só o parágrafo (o #4896 aprendeu isso na marca).
+        const hub = load();
+        const { since, firstDate } = hubCoverageWindow(hub.sourceEditions);
+        const [y, m, d] = firstDate.split("-");
+        // Duas formas aceitas: "agosto de 2025" (mês por extenso) e
+        // "27/08/2025" (o google-gemini usa data cheia na intro).
+        const accepted = [since, `${d}/${m}/${y}`];
+        for (const [field, value] of [
+          ["introParagraph", hub.introParagraph],
+          ["introHeading", hub.introHeading],
+          ["metaDescription", hub.metaDescription],
+        ] as const) {
+          assert.ok(
+            accepted.some((f) => value.includes(f)),
+            `${slug}.${field} não cita a data da primeira fonte (${accepted.join(" ou ")}): "${value.slice(0, 130)}…"`,
+          );
+        }
+      });
+    }
+  });
+});
