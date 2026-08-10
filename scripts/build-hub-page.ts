@@ -57,8 +57,19 @@ function constNameFor(slug: string): string {
   return `HUB_HTML_${slug.replace(/-/g, "_").toUpperCase()}`;
 }
 
-export function renderGeneratedModule(slug: string, html: string): string {
+/** Nome da constante de `<lastmod>` exportada — `HUB_LASTMOD` + slug em
+ * SCREAMING_SNAKE_CASE (#4909). Vem de graça do mesmo módulo gerado que já
+ * carrega o HTML — nenhum registro manual novo. Valor é `hub.updatedDate`
+ * (#4911 — NÃO `publishedDate`: `<lastmod>`/`Last-Modified` descrevem quando
+ * o conteúdo mudou, o mesmo campo que já alimenta `dateModified` no JSON-LD;
+ * ver docstring de `scripts/lib/shared/hub-page.ts`). */
+function lastmodConstNameFor(slug: string): string {
+  return `HUB_LASTMOD_${slug.replace(/-/g, "_").toUpperCase()}`;
+}
+
+export function renderGeneratedModule(slug: string, html: string, updatedDate: string): string {
   const constName = constNameFor(slug);
+  const lastmodConstName = lastmodConstNameFor(slug);
   return `/**
  * ${slug}.generated.ts (#4558) — GERADO, NÃO EDITAR À MÃO.
  *
@@ -71,6 +82,7 @@ export function renderGeneratedModule(slug: string, html: string): string {
  * test/hub-page-drift.test.ts garante que este arquivo reflete o conteúdo.
  */
 export const ${constName} = ${JSON.stringify(html)};
+export const ${lastmodConstName} = ${JSON.stringify(updatedDate)};
 `;
 }
 
@@ -88,7 +100,7 @@ function buildOne(slug: string, check: boolean): void {
     return;
   }
   mkdirSync(dirname(outPath), { recursive: true });
-  writeFileAtomic(outPath, renderGeneratedModule(slug, html));
+  writeFileAtomic(outPath, renderGeneratedModule(slug, html, hub.updatedDate));
   process.stderr.write(`[build-hub-page] ${slug}: escrito em ${outPath}\n`);
   console.log(outPath);
 }

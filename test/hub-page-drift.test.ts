@@ -34,7 +34,8 @@ for (const slug of Object.keys(HUB_LOADERS)) {
     });
 
     it("o módulo committed bate com um render fresco do conteúdo", () => {
-      const fresh = renderGeneratedModule(slug, renderHubPage(HUB_LOADERS[slug]()));
+      const hub = HUB_LOADERS[slug]();
+      const fresh = renderGeneratedModule(slug, renderHubPage(hub), hub.updatedDate);
       const committed = readFileSync(asset, "utf8");
       assert.equal(
         committed,

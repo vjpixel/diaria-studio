@@ -11,14 +11,30 @@
  * (dado gerado, importado estático, zero dependência do gerador Node em
  * runtime).
  */
-import { HUB_HTML_ANTHROPIC_CLAUDE } from "./anthropic-claude.generated.ts";
-import { HUB_HTML_OPENAI_CHATGPT } from "./openai-chatgpt.generated.ts";
-import { HUB_HTML_GOOGLE_GEMINI } from "./google-gemini.generated.ts";
-import { HUB_HTML_META_AI } from "./meta-ai.generated.ts";
+import { HUB_HTML_ANTHROPIC_CLAUDE, HUB_LASTMOD_ANTHROPIC_CLAUDE } from "./anthropic-claude.generated.ts";
+import { HUB_HTML_OPENAI_CHATGPT, HUB_LASTMOD_OPENAI_CHATGPT } from "./openai-chatgpt.generated.ts";
+import { HUB_HTML_GOOGLE_GEMINI, HUB_LASTMOD_GOOGLE_GEMINI } from "./google-gemini.generated.ts";
+import { HUB_HTML_META_AI, HUB_LASTMOD_META_AI } from "./meta-ai.generated.ts";
 
 export const HUB_REGISTRY: Record<string, string> = {
   "anthropic-claude": HUB_HTML_ANTHROPIC_CLAUDE,
   "openai-chatgpt": HUB_HTML_OPENAI_CHATGPT,
   "google-gemini": HUB_HTML_GOOGLE_GEMINI,
   "meta-ai": HUB_HTML_META_AI,
+};
+
+/**
+ * slug → `updatedDate` (`YYYY-MM-DD`) do hub (#4911) — mesmo valor que já
+ * alimenta o JSON-LD `dateModified` de cada hub (`hub-page.ts`; NÃO
+ * `publishedDate`, que alimenta `datePublished` — `<lastmod>`/`Last-Modified`
+ * descrevem quando o conteúdo mudou), agora também consumido pelo Worker pra
+ * `<lastmod>` do sitemap e pelo header `Last-Modified` de `GET /temas/{slug}`
+ * (#4909). Vem de graça de cada `*.generated.ts` — nenhum registro manual
+ * novo além da linha de import acima (mesma fronteira de `HUB_REGISTRY`).
+ */
+export const HUB_LASTMOD: Record<string, string> = {
+  "anthropic-claude": HUB_LASTMOD_ANTHROPIC_CLAUDE,
+  "openai-chatgpt": HUB_LASTMOD_OPENAI_CHATGPT,
+  "google-gemini": HUB_LASTMOD_GOOGLE_GEMINI,
+  "meta-ai": HUB_LASTMOD_META_AI,
 };
