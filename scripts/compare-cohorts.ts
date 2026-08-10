@@ -8,12 +8,19 @@
  * issue #4451 ("comparar output de computeCohorts() do v2 contra o v1 —
  * empírico. só trocar a task agendada depois de baterem").
  *
- * NÃO EXECUTADO AO VIVO NESTA SESSÃO: gerar os dois arquivos de input exige
- * rodar v1 (`--dry-run --all`/`--dry-run`, ainda ~horas de crawl per-contato)
- * e v2 (`--out`) contra a Brevo real com `BREVO_CLARICE_API_KEY` — fora do
- * guard desta sessão de `/diaria-develop` (sem chamada de rede à Brevo além
- * de leitura já documentada na issue). Esta tooling deixa a comparação
- * pronta pra rodar numa sessão supervisionada com credenciais reais:
+ * EXECUTADO AO VIVO em 260808/260809 (sessão `/diaria-develop`, leitura,
+ * `BREVO_CLARICE_API_KEY` real) — 2 tentativas contra o baseline v1 de 260807
+ * (universo 142.646): 260808 teve 12/82 campanhas com 429 (comparação fora da
+ * tolerância, majoritariamente pelas falhas); 260809 (retry, 0 falhas) ainda
+ * ficou fora da tolerância de 2% em 8/9 campos, mas com desvio 100%
+ * consistente com crescimento orgânico entre as 2 datas de medição (nenhum
+ * campo inverte direção). O editor aceitou esse padrão como evidência
+ * suficiente em 260810 — ver docstring de topo de
+ * `clarice-engagement-cohorts-v2.ts` ("CUTOVER: DESIGN VALIDADO") e
+ * `docs/cohorts-schedule.md` para o resumo operacional e a tabela de números.
+ * Esta tooling continua válida pra qualquer comparação futura (ex: quando a
+ * troca da task `DiariaCohortsCrawl` — ainda pendente, decisão separada — for
+ * revisitada, ou pra checagens periódicas pós-cutover):
  *
  *   npx tsx scripts/clarice-engagement-cohorts.ts --dry-run > /tmp/v1.json
  *   npx tsx scripts/clarice-engagement-cohorts-v2.ts --out /tmp/v2.json

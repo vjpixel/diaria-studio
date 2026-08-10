@@ -97,7 +97,7 @@ de backup.
 `data/clarice-subscribers/cohorts/` guarda `checkpoint.json` (some no sucesso),
 `status.json` e os logs. Mora no OneDrive junto com o resto de `data/`.
 
-## Redesenho v2 em andamento — Fase 1 + Fase 2 feitas, cutover pendente (#4451)
+## Redesenho v2 — design VALIDADO (#4451, 260810); troca de task ainda NÃO feita
 
 O crawl per-contato acima (v1) tem um limite estrutural: o universo cresceu
 pra ~129k contatos, o que exige ~21,5h ESTIMADAS de crawl contínuo (129.251 ÷
@@ -116,8 +116,53 @@ fechado via leitura do store local (`clarice-users.db`, sem custo de API
 adicional). `scripts/compare-cohorts.ts` compara o output das duas coortes
 campo a campo dentro de uma tolerância.
 
-**SEMPRE dry-run** nesta fase — v2 nunca grava no KV nem toca a task agendada
-`DiariaCohortsCrawl` acima. Falta, antes do cutover: rodar v1 e v2 lado a lado
-contra a Brevo real (`BREVO_CLARICE_API_KEY`) e comparar via
-`scripts/compare-cohorts.ts` — só trocar a task pro v2 depois de baterem
-dentro da tolerância. Ver issue #4451 para o plano de execução completo.
+**SEMPRE dry-run** — v2 nunca grava no KV nem toca a task agendada
+`DiariaCohortsCrawl` acima; isso não muda com a validação abaixo.
+
+### Comparação empírica v1×v2 (260808/260809) — 2 tentativas, aceitas pelo editor em 260810
+
+A Fase 3 rodou AO VIVO contra a Brevo real (leitura, `exportRecipients` por
+campanha) duas vezes, comparando contra o baseline v1 completo de 260807
+(universo 142.646, `data/clarice-subscribers/cohorts/.v1-baseline-260807.log`):
+
+- **Tentativa 1 (260808, ~23:52 UTC):** 12/82 campanhas falharam com 429
+  (rate limit) — comparação fora da tolerância em 8/9 campos, majoritariamente
+  atribuível às campanhas que falharam.
+- **Tentativa 2 (260809, ~17:49 UTC):** 0 campanhas falharam (46 em cache +
+  37 novas). Comparação AINDA fora da tolerância (2%) em 8/9 campos, mas o
+  padrão do desvio é **100% consistente com crescimento orgânico** entre as
+  datas de medição — universo, aberturas e exits sobem todos na direção
+  esperada ("mais gente recebeu e mais gente abriu 2 dias depois"), nenhum
+  campo inverte. Uma comparação limpa exigiria rodar v1 e v2 no MESMO
+  instante (v1 leva ~2,5h medidas), custo alto demais para repetir na sessão.
+
+**Decisão do editor (briefing overnight 260810):** aceitar esse padrão de
+desvio como evidência suficiente de que o design v2 está correto, sem esperar
+a tolerância de 2% ser atingida numa comparação assíncrona — a tolerância foi
+calibrada pra pegar divergência de LÓGICA, não deriva temporal de dias entre
+as duas leituras. **v2 passa a ser considerado VALIDADO.** v1 continua no
+repo como **fallback documentado** (não removido, não desativado).
+
+**O que isso NÃO decide (formalização deliberadamente parcial):**
+
+- **Troca da task `DiariaCohortsCrawl`** pro v2 continua **não feita** — é uma
+  decisão separada e futura do editor, fora do escopo desta formalização
+  (explicitamente vetada nesta unidade de trabalho). O crawl agendado acima
+  continua sendo o v1.
+- **Item 2 do fleet review de #4479** ("campanha sem `sentDate` nunca entra no
+  cache permanente, checar a distribuição real quando a Fase 3 rodar") **segue
+  não verificado** — a Fase 3 que rodou não checou a distribuição de
+  `sentDate` ausente entre as campanhas reais; a postura conservadora do
+  código (trata ausência como "sempre dentro da janela de re-fetch") continua
+  valendo sem confirmação empírica de quão cara ela é no regime permanente.
+- **Item 1 do fleet review de #4479** ("`forceRefresh=true` sem fallback pro
+  cache antigo em falha de export") continua **sem decisão** — comportamento
+  atual (campanha que falha o export dentro da janela de re-fetch é excluída
+  do agregado da rodada, mesmo com cache válido em disco) é o documentado e
+  testado; trocar para fallback silencioso é uma escolha de comportamento que
+  ainda não foi pedida por ninguém, não um bug — ver docstring de
+  `getOrFetchCampaignCache`/`isWithinRefetchWindow` em
+  `scripts/clarice-engagement-cohorts-v2.ts`.
+
+Ver issue #4451 para o histórico completo (fases 1-3) e os números da
+comparação lado a lado.
