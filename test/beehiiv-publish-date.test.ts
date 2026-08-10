@@ -14,6 +14,10 @@
  * `loadPublishDateOverrides`/`resolvePublishDate`). Os testes de "arquivo
  * malformado"/"entrada inválida" usam `overridesPath` injetável pra apontar
  * pra um fixture temporário — nunca tocam nem cacheiam o arquivo committado.
+ *
+ * Desde 260810 (fecha #4796) o arquivo committado tem as 6 entradas reais
+ * populadas — o teste "carrega o arquivo committado" abaixo passou a
+ * verificar essas 6 entradas específicas em vez de `overrides: {}`.
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -86,10 +90,17 @@ describe("resolvePublishDate (#4796)", () => {
 });
 
 describe("loadPublishDateOverrides (#4796)", () => {
-  it("carrega o arquivo committado sem lançar e devolve overrides vazio (hoje, aguardando as 6 datas reais)", () => {
+  it("carrega o arquivo committado sem lançar e devolve as 6 datas reais derivadas do Gmail (260810)", () => {
     const result = loadPublishDateOverrides();
     assert.equal(typeof result, "object");
-    assert.deepEqual(result.overrides, {});
+    assert.deepEqual(result.overrides, {
+      "google-lan-a-gemini-2-5-flash-image": "2025-08-27",
+      "openai-processada-por-suic-dio-de-adolescente": "2025-08-28",
+      "microsoft-lan-a-ia-pr-pria": "2025-08-29",
+      "xai-processa-ex-engenheiro-por-roubo-de-segredos-comerciais": "2025-09-01",
+      "china-implementa-lei-obrigat-ria-de-rotulagem-de-conte-do-gerado-por-ia": "2025-09-02",
+      "brasil-pretende-investir-r-23-bilh-es-em-ia": "2025-09-03",
+    });
     assert.equal(result.error, undefined);
     assert.deepEqual(result.discarded, []);
   });
@@ -187,8 +198,9 @@ describe("loadPublishDateOverrides — arquivo custom (#4803)", () => {
     const second = loadPublishDateOverrides(path);
     assert.deepEqual(second.overrides, { s2: "2025-07-01" });
 
-    // O path default (arquivo committado, vazio) continua intocado por essas chamadas.
+    // O path default (arquivo committado, com as 6 entradas reais desde
+    // 260810) continua intocado por essas chamadas de path custom.
     const defaultResult = loadPublishDateOverrides();
-    assert.deepEqual(defaultResult.overrides, {});
+    assert.equal(Object.keys(defaultResult.overrides).length, 6);
   });
 });
