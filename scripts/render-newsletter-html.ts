@@ -96,7 +96,7 @@ export {
 export { singularizeSectionName } from "./lib/section-naming.ts";
 
 // ── Imports for main() ─────────────────────────────────────────────────
-import { extractContent } from "./lib/newsletter-parse.ts";
+import { extractContent, type NewsletterContent } from "./lib/newsletter-parse.ts";
 import {
   renderHTML,
   renderEiaStandalone,
@@ -105,6 +105,11 @@ import {
   type Esp,
 } from "./lib/newsletter-render-html.ts";
 import { applyPatronosBoxes } from "./lib/newsletter-patronos.ts"; // #4275
+import {
+  buildLinkLayout,
+  buildPublishedLinks,
+  readScoredUrls,
+} from "./lib/link-layout.ts"; // #4841
 
 // #4266 — fonte única do conjunto válido; deriva mensagem de uso/erro do CLI
 // em vez de repetir o union literal (ver doc comment de `Esp`). `Record<Esp,
@@ -145,6 +150,30 @@ function writeRenderWarningsFile(resolvedDir: string): void {
         `${warningsPath} (#4673) — ver checkRenderWarnings no gate do Stage 4.`,
     );
   }
+}
+
+/**
+ * #4841: grava, a cada render, os dois artefatos de instrumentação de
+ * posição/proveniência de link — `link-layout.json` (posição: bloco +
+ * ordinal local + ordinal global) e `published-links.json` (proveniência:
+ * scored vs writer_inserted, cruzando contra `01-approved.json`). Ambos
+ * derivados diretamente da `NewsletterContent` já parseada (nunca reparsam
+ * HTML) — ver docstring completa em `scripts/lib/link-layout.ts`. Escreve
+ * SEMPRE (mesmo padrão de `writeRenderWarningsFile` acima, #4673) — nunca
+ * deixa uma entrada STALE de uma rodada anterior sobreviver a um
+ * re-render/retomada da mesma edição.
+ */
+function writeLinkInstrumentationFiles(resolvedDir: string, content: NewsletterContent): void {
+  const internalDir = resolve(resolvedDir, "_internal");
+  mkdirSync(internalDir, { recursive: true });
+  const layout = buildLinkLayout(content);
+  writeFileSync(resolve(internalDir, "link-layout.json"), JSON.stringify(layout, null, 2) + "\n");
+  const scoredUrls = readScoredUrls(resolvedDir);
+  const published = buildPublishedLinks(layout, scoredUrls);
+  writeFileSync(
+    resolve(internalDir, "published-links.json"),
+    JSON.stringify(published, null, 2) + "\n",
+  );
 }
 
 function main(): void {
@@ -220,6 +249,12 @@ function main(): void {
   // ambos sem duplicar a checagem da flag.
   const patronos = flags.has("patronos");
   const content = patronos ? applyPatronosBoxes(baseContent) : baseContent;
+
+  // #4841 — grava link-layout.json + published-links.json a partir do MESMO
+  // `content` estruturado que os 2 branches abaixo (split/non-split) usam pra
+  // renderizar — independe de --format/--split, então roda uma única vez
+  // aqui, antes de qualquer branch.
+  writeLinkInstrumentationFiles(resolvedDir, content);
 
   // #1046 — Modo split: produz 2 arquivos pro paste híbrido (body via
   // ClipboardEvent + È IA? via insertContent). --format json incompatível;
