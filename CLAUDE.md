@@ -14,6 +14,7 @@ O fluxo editorial é modelado como 6 etapas com gate humano em 2 delas (Stage 4:
    [Environment]::SetEnvironmentVariable("CLARICE_API_KEY", "SEU_TOKEN_AQUI", "User")
    ```
    Sem ela o invariant `clarice-key-set` **halta a pipeline no Stage 0**. Veja `.env.example`.
+1a. **Node ≥22.5 (recomendado: Node 24, `.nvmrc` do repo — mesma versão do CI).** `node:sqlite` (`scripts/lib/clarice-db.ts`, usado pelo dashboard Clarice/Brevo e pelo Studio) é builtin só a partir daí; Node do sistema/distro costuma vir mais antigo (achado ao vivo #4823: Ubuntu com Node 20.20.2 via `apt` derrubou o Studio server com erro nativo opaco). Use `nvm use`/`fnm use`/`asdf install` antes de `npm install`.
 2. `npm install` no diretório.
 2a. `npm run setup-hooks` — instala hook que regenera `context/sources.md` automaticamente ao editar `seed/sources.csv`.
 2b. **`data/` mora no OneDrive, não no repo.** A pasta `data/` é uma *directory junction* local apontando para `~/OneDrive/Documentos/diaria-studio-data` (sync entre máquinas, business-sensitive não vai pro GH). Criar 1x por máquina, **antes de rodar qualquer skill** (`data/` não existe num clone fresco — scripts que tentarem escrever ali vão falhar):
