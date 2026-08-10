@@ -65,12 +65,24 @@ export interface ApplyResult {
 
 /**
  * Threshold padrão de chars para ativar chunking.
- * #2798: baixado de 9.000 → 4.500 — o cortex.clarice.ai dá timeout consistente
- * (`rest_exit3_timeout`) em textos >5k, então seções secundárias de 5–9k ficavam
- * ABAIXO do threshold antigo (enviadas inteiras num request) e estouravam as 3
- * tentativas. Com 4.500, qualquer seção >4.5k é dividida em chunks menores que o
- * endpoint processa dentro do timeout. Reincidiu (#2320 fechado como one-off,
- * reapareceu em 260702) — a causa era tamanho de request, não flakiness pura.
+ * #2798 (260702): baixado de 9.000 → 4.500 — na época, a hipótese era que o
+ * cortex.clarice.ai dava timeout consistente (`rest_exit3_timeout`) em textos
+ * >5k chars, então seções secundárias de 5–9k ficavam ABAIXO do threshold antigo
+ * (enviadas inteiras num request) e estouravam as 3 tentativas. Com 4.500,
+ * qualquer seção >4.5k passou a ser dividida em chunks menores.
+ *
+ * #4952 (260810) — esse diagnóstico não se sustenta: o padrão real observado em
+ * `data/run-log.jsonl` é `elapsedMs` batendo no timeout do cliente INDEPENDENTE
+ * do tamanho do payload (chunks de 740B falhando igual a chunks de 4-5k), e um
+ * pedido manual isolado (nunca concorrente) sempre funciona enquanto a pipeline
+ * (rajada de até `CLARICE_CHUNK_CONCURRENCY` chunks simultâneos) sempre falha —
+ * ou seja, a causa é CONCORRÊNCIA no dispatch, não tamanho de request. Baixar o
+ * threshold aqui não resolveu porque chunk menor não reduz concorrência, só
+ * aumenta o número de chunks disparados em paralelo (pode até ter piorado). O
+ * fix de causa raiz é `CLARICE_CHUNK_CONCURRENCY` em `scripts/clarice-correct.ts`
+ * (default agora serial, ver comentário lá). O valor deste threshold permanece
+ * 4.500 por ora — ainda é razoável dividir textos grandes em chunks menores por
+ * request, só não é mais o motivo pelo qual os timeouts recorrentes aconteciam.
  */
 export const CLARICE_CHUNK_THRESHOLD = 4_500;
 
