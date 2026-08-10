@@ -669,6 +669,29 @@ describe("loadCtrRowsH4", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // #4839: mesmo filtro de hosts não-editoriais de update-audience.ts —
+  // os dois têm que mudar juntos (armadilha nomeada na issue), senão o
+  // profile publica tabela e série (H4) sobre populações diferentes.
+  it("filtra rows de hosts não-editoriais (#4839) — linha excluída some, linha editorial normal fica", () => {
+    const dir = mkdtempSync(join(tmpdir(), "h4-ctr-non-editorial-"));
+    try {
+      const csv = [
+        CTR_HEADER,
+        // Excluída: rodapé LinkedIn
+        "2026-08-09,Título A,Rodapé,Siga no LinkedIn,https://linkedin.com/company/diaria,linkedin.com,100,10,10,10.00,Outro,BR",
+        // Mantida: host editorial normal
+        "2026-08-09,Título B,Seção,Acesse,https://techcrunch.com/x,techcrunch.com,100,5,5,5.00,Aplicação,INT",
+      ].join("\n");
+      const p = join(dir, "ctr.csv");
+      writeFileSync(p, csv);
+      const rows = loadCtrRowsH4(p.replace(/\\/g, "/"));
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].base_url, "https://techcrunch.com/x");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ─── formatH4Trend ──────────────────────────────────────────────────────────

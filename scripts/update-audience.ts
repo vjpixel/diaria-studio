@@ -29,9 +29,9 @@ import { editionsRoot } from "./lib/edition-paths.ts";
 // isAprofundeAnchor foi movido pra lib/ctr-utils.ts pra quebrar ciclo ESM com
 // analyze-h4.ts. Importado para uso interno + re-exportado para manter
 // compatibilidade com testes e importadores externos.
-import { isAprofundeAnchor } from "./lib/ctr-utils.ts";
+import { isAprofundeAnchor, isNonEditorialHost } from "./lib/ctr-utils.ts";
 import { isMainModule } from "./lib/cli-args.ts";
-export { isAprofundeAnchor };
+export { isAprofundeAnchor, isNonEditorialHost };
 import {
   loadCtrRowsH4,
   loadHistoryEditions,
@@ -116,6 +116,7 @@ export interface CtrParseResult {
   totalLinks: number;
   totalEditions: number;
   filteredAprofunde: number;
+  filteredNonEditorial: number;
 }
 
 /**
@@ -144,6 +145,7 @@ export function parseCtrFromCsv(csv: string, today: Date = new Date()): CtrParse
   const byDomain = new Map<string, CtrAgg>();
   const dates = new Set<string>();
   let filteredAprofunde = 0;
+  let filteredNonEditorial = 0;
 
   const num = (s: string | undefined): number => {
     const v = parseFloat(s ?? "");
@@ -152,6 +154,7 @@ export function parseCtrFromCsv(csv: string, today: Date = new Date()): CtrParse
 
   for (const rec of data) {
     const anchor = (rec.anchor ?? "").trim();
+    const domain = (rec.domain ?? "").trim();
 
     // #1564: skip Aprofunde rows (regime antigo de destaque)
     if (isAprofundeAnchor(anchor)) {
@@ -159,10 +162,18 @@ export function parseCtrFromCsv(csv: string, today: Date = new Date()): CtrParse
       continue;
     }
 
+    // #4839: skip rows de hosts não-editoriais (rodapé social, crédito de
+    // imagem do "É IA?", afiliado, links de casa, apoio) — nunca passam pelo
+    // pipeline editorial, mas inflavam/desinflavam CTR de categorias por
+    // ruído (18-22% do CSV na auditoria retrospectiva 260810).
+    if (isNonEditorialHost(domain)) {
+      filteredNonEditorial++;
+      continue;
+    }
+
     const date = (rec.date ?? "").trim();
     const origin = (rec.origin ?? "").trim();
     const category = (rec.category ?? "").trim();
-    const domain = (rec.domain ?? "").trim();
     const uniqueOpens = num(rec.unique_opens);
     const uniqueVerifiedClicks = num(rec.unique_verified_clicks);
 
@@ -190,9 +201,10 @@ export function parseCtrFromCsv(csv: string, today: Date = new Date()): CtrParse
     byCatOrigin,
     byOrigin,
     byDomain,
-    totalLinks: data.length - filteredAprofunde,
+    totalLinks: data.length - filteredAprofunde - filteredNonEditorial,
     totalEditions: dates.size,
     filteredAprofunde,
+    filteredNonEditorial,
   };
 }
 
@@ -339,7 +351,7 @@ function main() {
     ...(ctr
       ? [
           `**links analisados:** ${ctr.totalLinks} (${ctr.totalEditions} edições, 7+ dias de idade)`,
-          `**filtros aplicados (#1564):** ${ctr.filteredAprofunde} rows com anchor "Aprofunde" excluídas (regime pré-mar/2026), exponential decay com time constant ${DECAY_TIME_CONSTANT_DAYS}d aplicado (half-life ~${Math.round(DECAY_TIME_CONSTANT_DAYS * Math.log(2))}d)`,
+          `**filtros aplicados (#1564):** ${ctr.filteredAprofunde} rows com anchor "Aprofunde" excluídas (regime pré-mar/2026); **(#4839):** ${ctr.filteredNonEditorial} rows de hosts não-editoriais excluídas (rodapé LinkedIn, crédito de imagem Wikimedia/Wikidata, afiliado Amazon, links de casa, apoia.se); exponential decay com time constant ${DECAY_TIME_CONSTANT_DAYS}d aplicado (half-life ~${Math.round(DECAY_TIME_CONSTANT_DAYS * Math.log(2))}d)`,
         ]
       : []),
   ];
