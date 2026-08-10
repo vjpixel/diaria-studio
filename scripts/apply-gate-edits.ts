@@ -147,6 +147,17 @@ export function canonicalizeUrl(url: string): string {
 }
 
 /**
+ * Um candidato do scorer foi pulado no fill-loop de `resolveDestaques` porque
+ * sua URL não está (mais) em nenhum bucket do MD — tipicamente porque
+ * `dedup-intra-edition.ts` (Stage 1 §1u-bis, roda ANTES do gate) removeu a
+ * cópia do destaque no bucket secundário. Ver #4943.
+ */
+export interface DestaqueSkip {
+  rank: number;
+  url: string;
+}
+
+/**
  * Resolve a lista final de URLs para a seção Destaques (#663, #2333).
  *
  * Se o editor deixou 0 ou 1 destaque, completa com candidatos do scorer
@@ -156,11 +167,20 @@ export function canonicalizeUrl(url: string): string {
  * Se o editor deixou 2 destaques (demoção intencional de D3, #2316), essa
  * decisão é preservada: não se completa até 3. O piso editorial válido é 2.
  *
+ * `onSkip` (#4943), quando fornecido, é chamado para cada candidato do
+ * scorer que foi pulado no fill-loop por sua URL não estar em nenhum bucket
+ * do MD. Em modo `--auto` (sem edição humana, `sections.destaques` sempre
+ * vazio), isso NÃO significa "editor removeu de propósito" — pode ser um
+ * artigo que `dedup-intra-edition.ts` removeu do bucket por engano (falso
+ * positivo de entidade). O chamador decide se/como logar; esta função só
+ * reporta o fato.
+ *
  * Retorna array de 0–3 URLs na ordem editorial.
  */
 export function resolveDestaques(
   sections: Record<BucketName, string[]>,
   originalHighlights: Array<{ rank?: number; url?: string; article?: { url?: string } | null }>,
+  onSkip?: (skip: DestaqueSkip) => void,
 ): string[] {
   let destaquesUrls = [...sections.destaques];
 
@@ -179,8 +199,11 @@ export function resolveDestaques(
     for (const h of scorerRanked) {
       if (destaquesUrls.length >= 3) break;
       const url = h.url ?? (h.article as { url?: string } | null)?.url;
-      if (url && !destaquesUrls.includes(url) && mdBucketUrls.has(url)) {
+      if (!url || destaquesUrls.includes(url)) continue;
+      if (mdBucketUrls.has(url)) {
         destaquesUrls.push(url);
+      } else {
+        onSkip?.({ rank: h.rank ?? 0, url });
       }
     }
   } else if (destaquesUrls.length > 3) {
@@ -203,8 +226,14 @@ export function resolveDestaques(
  *
  * `itens_movidos` conta quantos destaques finais NÃO estão entre os top-3
  * originais do scorer (por rank) — i.e., substituições reais feitas pelo
- * editor no gate. Sob `--auto` é sempre 0 por construção (destaquesUrls é
- * exatamente o fill dos top-3 originais).
+ * editor no gate. Sob `--auto` costumava ser sempre 0 por construção
+ * (destaquesUrls seria exatamente o fill dos top-3 originais) — **isso não é
+ * mais verdade (#4943)**: se `dedup-intra-edition.ts` removeu a cópia de um
+ * top-3 do bucket antes do gate (falso positivo de entidade), o fill-loop de
+ * `resolveDestaques` pula esse rank e promove o próximo — produzindo
+ * `itens_movidos > 0` mesmo em `--auto`, sem nenhuma edição humana. Ver o
+ * warn emitido em `main()` via `resolveDestaques(..., onSkip)` para o sinal
+ * explícito desse cenário.
  */
 export interface GateProvenance {
   auto_approved: boolean;
@@ -347,7 +376,22 @@ function main() {
     : parseSections(readFileSync(mdPath!, "utf8"));
 
   // ---- Destaques ---------------------------------------------------------
-  const destaquesUrls = resolveDestaques(sections, originalHighlights);
+  // #4943: coleta candidatos do scorer pulados no fill-loop por sua URL não
+  // estar (mais) em nenhum bucket do MD — sinal explícito quando isso
+  // acontece sob `--auto` (sem editor: só pode ser dedup upstream removendo
+  // a cópia do destaque, nunca uma decisão editorial de descarte).
+  const skippedDestaques: DestaqueSkip[] = [];
+  const destaquesUrls = resolveDestaques(sections, originalHighlights, (skip) => {
+    skippedDestaques.push(skip);
+  });
+
+  if (autoMode) {
+    for (const skip of skippedDestaques) {
+      console.error(
+        `[apply-gate-edits] WARN --auto: destaque rank ${skip.rank} pulado — URL não encontrada nos buckets (provável remoção por dedup-intra-edition, falso positivo de entidade — #4943): ${skip.url}`,
+      );
+    }
+  }
 
   if (sections.destaques.length > 3) {
     console.error(
