@@ -11,7 +11,7 @@ import {
   REVIEW_AGENT,
   REVIEW_FLEET_MAX,
   DEFAULT_EFFORT,
-  TRIVIAL_DIFF_LINE_THRESHOLD,
+  EFFORT_DIFF_LINE_THRESHOLD,
 } from "../.claude/hooks/pr-create-review.mjs";
 
 // #2754/#3322/#3326: overnight (token-sensitive) sempre resolveu /code-review
@@ -50,21 +50,30 @@ describe("resolveEffort (#2754)", () => {
   });
 
   // #3326 tinha fixado `low` aqui; #4234 devolveu o default pra `max` a pedido
-  // do editor ("por enquanto"). Estes dois casos asseguram apenas que o caminho
-  // "sem sinal de overnight" segue o DEFAULT_EFFORT vigente — trocar a constante
-  // não deve exigir reescrever teste, só o caso que trava o valor dela.
-  it("branch develop/fix-1234, sem rodada ativa → DEFAULT_EFFORT", () => {
+  // do editor ("por enquanto"). Desde #4813, o caminho "sem sinal de overnight"
+  // não vai mais direto pro DEFAULT_EFFORT — resolve por tamanho de diff. Estes
+  // dois fixtures usam um `execFn` de UM só argumento (ignora `args`), então a
+  // MESMA string de branch também é devolvida pra chamada de
+  // `additions,deletions` — não é JSON válido, `getDiffLineCount` cai no catch
+  // e retorna `null`, e É ISSO que faz o teste cair no ramo "tamanho
+  // desconhecido" (reason "default"), não um diff grande implícito. Deixado
+  // explícito via a asserção de `reason` abaixo — sem ela, um bug que fizesse
+  // `getDiffLineCount` interpretar a string do branch como diff "grande" por
+  // acidente passaria batido aqui.
+  it("branch develop/fix-1234, sem rodada ativa, tamanho de diff desconhecido → DEFAULT_EFFORT", () => {
     const execFn = () => "develop/fix-1234\n";
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
     assert.equal(result.effort, DEFAULT_EFFORT);
     assert.equal(result.warning, null);
+    assert.equal(result.reason, "default");
   });
 
-  it("branch sem prefixo especial (manual), sem rodada ativa → DEFAULT_EFFORT", () => {
+  it("branch sem prefixo especial (manual), sem rodada ativa, tamanho de diff desconhecido → DEFAULT_EFFORT", () => {
     const execFn = () => "fix-something\n";
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
     assert.equal(result.effort, DEFAULT_EFFORT);
     assert.equal(result.warning, null);
+    assert.equal(result.reason, "default");
   });
 
   // #4234: trava o VALOR da constante. É o único teste que precisa mudar quando
@@ -159,18 +168,23 @@ describe("resolveEffort (#2754)", () => {
   });
 });
 
-// #4243: DEFAULT_EFFORT=max (#4234) passou a disparar o fleet de 5 agentes em
-// toda PR sem sinal de overnight — inclusive diffs triviais (docs-only, 1
-// linha de comentário) onde 4 dos 5 agentes não têm o que analisar. Este
-// bloco trava o piso barato: diff pequeno rebaixa pra low independente do
-// DEFAULT_EFFORT vigente, e qualquer falha ao obter o tamanho do diff cai no
-// DEFAULT_EFFORT normal — nunca em "pular o review".
+// #4813 (generaliza #4243): effort por tamanho de diff virou o critério
+// PRIMÁRIO pra toda PR sem sinal de overnight, não mais um piso barato só pra
+// diffs triviais. Limiar 300 (EFFORT_DIFF_LINE_THRESHOLD), decisão do editor
+// registrada em
+// https://github.com/vjpixel/diaria-studio/issues/4813#issuecomment-5235991770
+// — mediana de 497 linhas / p90 1.375 medidos na própria issue, 34% dos PRs
+// recentes abaixo de 300 linhas. Este bloco trava: diff pequeno (< limiar) →
+// low; diff grande CONHECIDO (≥ limiar) → max explícito com reason
+// "diff_grande" (distinto de "default"); e qualquer falha ao obter o tamanho
+// do diff cai no DEFAULT_EFFORT normal (reason "default") — nunca em "pular o
+// review".
 //
 // `execFn` aqui precisa discriminar por chamada (branch vs. diff stats),
 // diferente dos mocks acima (que ignoram os args): resolveEffort agora faz
 // duas chamadas de `gh` quando não há sinal de overnight.
-describe("resolveEffort — diff trivial (#4243)", () => {
-  function makeExecFn({ branch = "develop/fix-4243\n", diff } = {}) {
+describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243)", () => {
+  function makeExecFn({ branch = "develop/fix-4813\n", diff } = {}) {
     return (_cmd, args) => {
       if (args.includes("additions,deletions")) {
         if (diff === undefined) throw new Error("gh pr view --json additions,deletions failed");
@@ -186,39 +200,68 @@ describe("resolveEffort — diff trivial (#4243)", () => {
     assert.equal(result.effort, "low");
     assert.notEqual(result.effort, DEFAULT_EFFORT);
     assert.equal(result.warning, null);
+    assert.equal(result.reason, "diff_pequeno");
   });
 
-  it("diff exatamente no limiar → NÃO é trivial (limiar é exclusivo), resolve DEFAULT_EFFORT", () => {
+  // Regressão de comportamento mais importante do #4813: a faixa 50-299
+  // linhas, que ANTES caía direto no DEFAULT_EFFORT/fleet de 5 agentes (só o
+  // piso <50 do #4243 rebaixava pra low), agora resolve `low` — prova que o
+  // alargamento do limiar de fato mudou o comportamento da faixa média, não
+  // só preservou o antigo piso.
+  it("diff de 50-299 linhas (faixa que ANTES caía em DEFAULT_EFFORT, agora em low) → low", () => {
+    const execFn = makeExecFn({ diff: JSON.stringify({ additions: 150, deletions: 40 }) });
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, "low");
+    assert.equal(result.reason, "diff_pequeno");
+  });
+
+  it("diff de exatamente 299 linhas (1 abaixo do limiar) → low, reason diff_pequeno", () => {
     const execFn = makeExecFn({
-      diff: JSON.stringify({ additions: TRIVIAL_DIFF_LINE_THRESHOLD, deletions: 0 }),
+      diff: JSON.stringify({ additions: EFFORT_DIFF_LINE_THRESHOLD - 1, deletions: 0 }),
     });
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
-    assert.equal(result.effort, DEFAULT_EFFORT);
+    assert.equal(result.effort, "low");
+    assert.equal(result.reason, "diff_pequeno");
   });
 
-  it("diff grande (≥ limiar) → resolve o DEFAULT_EFFORT normal (max)", () => {
-    const execFn = makeExecFn({ diff: JSON.stringify({ additions: 200, deletions: 50 }) });
+  it("diff exatamente no limiar (300 linhas) → NÃO é pequeno (limiar é exclusivo), resolve max/DEFAULT_EFFORT explícito por tamanho", () => {
+    const execFn = makeExecFn({
+      diff: JSON.stringify({ additions: EFFORT_DIFF_LINE_THRESHOLD, deletions: 0 }),
+    });
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, "max");
     assert.equal(result.effort, DEFAULT_EFFORT);
-    assert.equal(result.warning, null);
+    assert.equal(result.reason, "diff_grande");
   });
 
-  it("falha ao obter o tamanho do diff (gh lança erro) → resolve o DEFAULT_EFFORT, nunca 'skip'", () => {
+  it("diff grande com tamanho conhecido (1000 linhas) → max, reason diff_grande (distinto de default)", () => {
+    const execFn = makeExecFn({ diff: JSON.stringify({ additions: 700, deletions: 300 }) });
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, "max");
+    assert.equal(result.warning, null);
+    assert.equal(result.reason, "diff_grande");
+    assert.notEqual(result.reason, "default");
+  });
+
+  it("falha ao obter o tamanho do diff (gh lança erro) → resolve o DEFAULT_EFFORT, reason default, nunca 'skip'", () => {
     const execFn = makeExecFn({}); // diff undefined → a chamada de stats lança
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
     assert.equal(result.effort, DEFAULT_EFFORT);
+    assert.equal(result.reason, "default");
   });
 
-  it("falha ao obter o tamanho do diff (JSON malformado) → resolve o DEFAULT_EFFORT, nunca 'skip'", () => {
-    const execFn = (_cmd, args) => (args.includes("additions,deletions") ? "not valid json" : "develop/fix-4243\n");
+  it("falha ao obter o tamanho do diff (JSON malformado) → resolve o DEFAULT_EFFORT, reason default, nunca 'skip'", () => {
+    const execFn = (_cmd, args) => (args.includes("additions,deletions") ? "not valid json" : "develop/fix-4813\n");
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
     assert.equal(result.effort, DEFAULT_EFFORT);
+    assert.equal(result.reason, "default");
   });
 
-  it("campos additions/deletions não-numéricos → tratado como falha, resolve o DEFAULT_EFFORT", () => {
+  it("campos additions/deletions não-numéricos → tratado como falha, resolve o DEFAULT_EFFORT, reason default", () => {
     const execFn = makeExecFn({ diff: JSON.stringify({ additions: "n/a", deletions: null }) });
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
     assert.equal(result.effort, DEFAULT_EFFORT);
+    assert.equal(result.reason, "default");
   });
 
   it("branch overnight/* já resolve low sem sequer checar o tamanho do diff", () => {
@@ -497,25 +540,25 @@ describe("resolveEffort — campo `reason` (#4252)", () => {
     assert.equal(result.reason, "sessao_overnight_ativa");
   });
 
-  it("diff trivial (< limiar) → low, reason diff_trivial", () => {
+  it("diff pequeno (< limiar) → low, reason diff_pequeno", () => {
     const execFn = (_cmd, args) =>
       args.includes("additions,deletions")
         ? JSON.stringify({ additions: 1, deletions: 0 })
-        : "develop/fix-4243\n";
+        : "develop/fix-4813\n";
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
     assert.equal(result.effort, "low");
-    assert.equal(result.reason, "diff_trivial");
+    assert.equal(result.reason, "diff_pequeno");
   });
 
-  it("branch normal, sem rodada ativa, diff grande → DEFAULT_EFFORT (max), reason default", () => {
+  it("branch normal, sem rodada ativa, diff grande CONHECIDO (≥ limiar) → max, reason diff_grande", () => {
     const execFn = (_cmd, args) =>
       args.includes("additions,deletions")
-        ? JSON.stringify({ additions: 200, deletions: 50 })
-        : "develop/fix-4243\n";
+        ? JSON.stringify({ additions: 700, deletions: 300 })
+        : "develop/fix-4813\n";
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
     assert.equal(result.effort, DEFAULT_EFFORT);
     assert.equal(result.effort, "max");
-    assert.equal(result.reason, "default");
+    assert.equal(result.reason, "diff_grande");
   });
 
   it("URL sem número de PR → max, reason pr_sem_numero", () => {
@@ -602,7 +645,7 @@ describe("logEffortDecision (#4252)", () => {
 
   it("é append-only — duas chamadas escrevem duas linhas, sem sobrescrever a anterior", () => {
     const root = freshRoot();
-    logEffortDecision({ prUrl: "https://github.com/o/r/pull/1", effort: "low", reason: "diff_trivial" }, { repoRoot: root });
+    logEffortDecision({ prUrl: "https://github.com/o/r/pull/1", effort: "low", reason: "diff_pequeno" }, { repoRoot: root });
     logEffortDecision({ prUrl: "https://github.com/o/r/pull/2", effort: "max", reason: "default" }, { repoRoot: root });
     const events = readLoggedEvents(root);
     assert.equal(events.length, 2);
@@ -687,7 +730,7 @@ describe("resolveEffort + logEffortDecision — cenários fim-a-fim (#4252)", ()
     assert.deepEqual(event.details, { pr: "100", effort: "low", motivo: "branch_overnight", agentes: 1 });
   });
 
-  it("diff trivial (<50 linhas) → low, evento loga motivo=diff_trivial agentes=1", () => {
+  it("diff pequeno (<300 linhas, #4813) → low, evento loga motivo=diff_pequeno agentes=1", () => {
     const root = freshRoot();
     const execFn = (_cmd, args) =>
       args.includes("additions,deletions")
@@ -696,19 +739,19 @@ describe("resolveEffort + logEffortDecision — cenários fim-a-fim (#4252)", ()
     const effort = runAndLog("https://github.com/o/r/pull/101", execFn, noActiveRound, root);
     assert.equal(effort, "low");
     const event = readLoggedEvent(root);
-    assert.deepEqual(event.details, { pr: "101", effort: "low", motivo: "diff_trivial", agentes: 1 });
+    assert.deepEqual(event.details, { pr: "101", effort: "low", motivo: "diff_pequeno", agentes: 1 });
   });
 
-  it("branch normal com diff grande, sem rodada ativa → max, evento loga motivo=default agentes=5", () => {
+  it("branch normal com diff grande CONHECIDO (≥300 linhas, #4813), sem rodada ativa → max, evento loga motivo=diff_grande agentes=5", () => {
     const root = freshRoot();
     const execFn = (_cmd, args) =>
       args.includes("additions,deletions")
-        ? JSON.stringify({ additions: 300, deletions: 100 })
+        ? JSON.stringify({ additions: 700, deletions: 300 })
         : "fix-something-manual\n";
     const effort = runAndLog("https://github.com/o/r/pull/102", execFn, noActiveRound, root);
     assert.equal(effort, "max");
     const event = readLoggedEvent(root);
-    assert.deepEqual(event.details, { pr: "102", effort: "max", motivo: "default", agentes: 5 });
+    assert.deepEqual(event.details, { pr: "102", effort: "max", motivo: "diff_grande", agentes: 5 });
   });
 
   it("estado indeterminado (gh indisponível) → max, evento loga motivo=estado_indeterminado agentes=5", () => {
