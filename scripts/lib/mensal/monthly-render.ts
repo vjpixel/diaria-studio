@@ -33,6 +33,8 @@ import {
   DIARIA_LINKEDIN_PAGE_URL,
   DIARIA_INSTAGRAM_URL,
   DIARIA_THREADS_URL,
+  DIARIA_X_URL, // #4829
+  DIARIA_YOUTUBE_URL, // #4829
   DIARIA_EIA_URL, // #3904
 } from "../canonical-urls.ts"; // #2645/#2790 — reusa as URLs canônicas (mesmas que a diária)
 
@@ -1220,18 +1222,26 @@ export function parseHeaderChunk(chunk: string): {
 }
 
 /**
- * #2645/#2790: URLs canônicas dos canais sociais da marca diar.ia.br, reusadas no
- * rodapé co-brand do shell mensal. As 4 vêm de `canonical-urls.ts`
- * (`DIARIA_{FACEBOOK,LINKEDIN,INSTAGRAM,THREADS}_PAGE_URL`/`_URL`) — fonte
- * única compartilhada com `build-link-ctr.ts`, `stitch-newsletter.ts` e
+ * #2645/#2790/#4829: URLs canônicas dos canais sociais da marca diar.ia.br,
+ * reusadas no rodapé co-brand do shell mensal. Vêm de `canonical-urls.ts`
+ * (`DIARIA_{FACEBOOK,LINKEDIN,INSTAGRAM,THREADS,X,YOUTUBE}_PAGE_URL`/`_URL`) —
+ * fonte única compartilhada com `build-link-ctr.ts`, `stitch-newsletter.ts` e
  * `lint-social-md.ts` (#2790 substituiu os literais hardcoded que existiam
  * aqui antes, cada um copiado independentemente nesses outros pontos).
+ *
+ * Ordem (#4829, alinhada ao rodapé configurado na UI do Beehiiv da diária):
+ * LinkedIn → Instagram → Threads → Facebook → X → YouTube. Alinhamento
+ * preventivo — `renderSocialFooter()` está exportada mas não usada hoje (ver
+ * docstring da função abaixo), então esta mudança não altera nenhum e-mail
+ * enviado.
  */
 const SOCIAL_LINKS: ReadonlyArray<{ label: string; url: string }> = [
-  { label: "Facebook", url: DIARIA_FACEBOOK_PAGE_URL },
   { label: "LinkedIn", url: DIARIA_LINKEDIN_PAGE_URL },
   { label: "Instagram", url: DIARIA_INSTAGRAM_URL },
   { label: "Threads", url: DIARIA_THREADS_URL },
+  { label: "Facebook", url: DIARIA_FACEBOOK_PAGE_URL },
+  { label: "X", url: DIARIA_X_URL },
+  { label: "YouTube", url: DIARIA_YOUTUBE_URL },
 ];
 
 /**
@@ -1269,11 +1279,11 @@ export function renderCobrandHeader(): string {
 }
 
 /**
- * Footer do shell mensal (#2645): ícones sociais (Facebook/LinkedIn/Instagram/
- * Threads — a lista fixa em `SOCIAL_LINKS` acima, NÃO derivada de
- * `platform.config.json#socials` em runtime — #2790: comentário anterior aqui
- * afirmava o contrário; se o editor desabilitar um canal no config, este
- * footer não reflete automaticamente) que o Brevo não anexa automaticamente
+ * Footer do shell mensal (#2645): ícones sociais (LinkedIn/Instagram/Threads/
+ * Facebook/X/YouTube, ordem #4829 — a lista fixa em `SOCIAL_LINKS` acima, NÃO
+ * derivada de `platform.config.json#socials` em runtime — #2790: comentário
+ * anterior aqui afirmava o contrário; se o editor desabilitar um canal no
+ * config, este footer não reflete automaticamente) que o Brevo não anexa automaticamente
  * (diferente do Beehiiv, que envolve a diária no seu shell configurável de
  * publicação, com esses ícones no footer). Renderizados
  * como pills outline (mesmo idioma visual de `renderEncerramento`/`renderCtaButton`

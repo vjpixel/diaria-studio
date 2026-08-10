@@ -81,15 +81,36 @@ describe("wrapEmail — shell de marca co-brand Clarice × diar.ia.br (#2645)", 
     assert.ok(!html.includes("<img"), "sem asset de logo ainda — header deve ser textual, não <img> (decisão do editor 260701)");
   });
 
-  it("renderSocialFooter emite os 4 canais sociais configurados (Facebook/LinkedIn/Instagram/Threads)", () => {
+  it("renderSocialFooter emite os 6 canais sociais configurados (LinkedIn/Instagram/Threads/Facebook/X/YouTube)", () => {
     const html = renderSocialFooter();
-    for (const label of ["Facebook", "LinkedIn", "Instagram", "Threads"]) {
+    for (const label of ["LinkedIn", "Instagram", "Threads", "Facebook", "X", "YouTube"]) {
       assert.ok(html.includes(label), `canal ${label} ausente no footer: ${html}`);
     }
     assert.ok(html.includes("facebook.com/diar.ia.br"), "URL do Facebook ausente/incorreta");
     assert.ok(html.includes("linkedin.com/company/diar.ia.br"), "URL do LinkedIn ausente/incorreta");
     assert.ok(html.includes("instagram.com/diar.ia.br"), "URL do Instagram ausente/incorreta");
     assert.ok(html.includes("threads.net/@diar.ia.br"), "URL do Threads ausente/incorreta");
+    assert.ok(html.includes("x.com/diariabr"), "URL do X ausente/incorreta");
+    assert.ok(html.includes("youtube.com/@diariabr"), "URL do YouTube ausente/incorreta");
+  });
+
+  // #4829: reordenação pedida na issue (rodapé do Beehiiv da diária) — não
+  // muda nenhum e-mail enviado (renderSocialFooter não é chamada no
+  // wrapEmail hoje, ver teste "wrapEmail NÃO inclui..." abaixo), mas trava a
+  // ordem de SOCIAL_LINKS pra quando a função voltar a ser usada.
+  it("#4829: renderSocialFooter emite os pills na ordem LinkedIn → Instagram → Threads → Facebook → X → YouTube", () => {
+    const html = renderSocialFooter();
+    const order = ["LinkedIn", "Instagram", "Threads", "Facebook", "X", "YouTube"];
+    const positions = order.map((label) => html.indexOf(`>${label}<`));
+    for (const [i, pos] of positions.entries()) {
+      assert.notEqual(pos, -1, `pill "${order[i]}" não encontrado no HTML: ${html}`);
+    }
+    for (let i = 1; i < positions.length; i++) {
+      assert.ok(
+        positions[i] > positions[i - 1],
+        `ordem incorreta: "${order[i]}" (pos ${positions[i]}) deveria vir depois de "${order[i - 1]}" (pos ${positions[i - 1]})`,
+      );
+    }
   });
 
   it("wrapEmail NÃO inclui header co-brand nem footer social (removidos a pedido do editor 260703)", () => {

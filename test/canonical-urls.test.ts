@@ -16,6 +16,8 @@ import {
   DIARIA_INSTAGRAM_URL,
   DIARIA_THREADS_SLUG,
   DIARIA_THREADS_URL,
+  DIARIA_YOUTUBE_SLUG,
+  DIARIA_YOUTUBE_URL,
   DIARIA_CURSOS_URL,
   DIARIA_LIVROS_URL,
 } from "../scripts/lib/canonical-urls.ts";
@@ -258,6 +260,11 @@ describe("URLs canônicas LinkedIn/Instagram/Threads (#2790)", () => {
   it("DIARIA_THREADS_SLUG/URL têm o handle canônico", () => {
     assert.equal(DIARIA_THREADS_SLUG, "threads.net/@diar.ia.br");
     assert.equal(DIARIA_THREADS_URL, "https://www.threads.net/@diar.ia.br");
+  });
+
+  it("#4829: DIARIA_YOUTUBE_SLUG/URL têm o handle canônico (@diariabr — YouTube recusou 'diar.ia.br' como nome de canal, #4424)", () => {
+    assert.equal(DIARIA_YOUTUBE_SLUG, "youtube.com/@diariabr");
+    assert.equal(DIARIA_YOUTUBE_URL, "https://www.youtube.com/@diariabr");
   });
 
   it("platform.config.json espelha DIARIA_LINKEDIN_PAGE_URL EXATAMENTE (não só o slug — reforça o drift-guard de lint-social-md.test.ts)", () => {
