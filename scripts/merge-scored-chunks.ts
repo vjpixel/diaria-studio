@@ -49,6 +49,15 @@ const ROOT = resolve(import.meta.dirname, "..");
 export interface ScorePair {
   url: string;
   score: number;
+  // #4842: decomposição do score para auditoria retroativa do rubrico.
+  // score_base = nota antes de qualquer bônus/penalidade itemizado (relevância
+  // + atualidade); bonuses_applied = entradas "<slug>:+N"/"<slug>:-N" pelos
+  // bônus/penalidades que o scorer-chunk (LLM) de fato aplicou. Ambos
+  // opcionais no input do chunk (compat com agentes/versões antigas que não
+  // decompõem) — merge-scored-chunks sempre normaliza score_base pra um valor
+  // presente no output final (ver mergeChunks).
+  score_base?: number;
+  bonuses_applied?: string[];
   // #3916/#3918: artigo documenta impacto NEGATIVO real da IA (tag do
   // scorer-chunk/scorer). Opcional — omitido/false para o resto do pool.
   negative_impact?: boolean;
@@ -131,7 +140,7 @@ export function loadChunks(
   return { chunks, failed };
 }
 
-/** Extrai os pares {url, score, negative_impact?} de um chunk (aceita `all_scored` ou `scored`). */
+/** Extrai os pares {url, score, score_base?, bonuses_applied?, negative_impact?} de um chunk (aceita `all_scored` ou `scored`). */
 export function extractScores(chunk: ChunkScoreFile): ScorePair[] {
   const arr = chunk.all_scored ?? chunk.scored ?? [];
   return arr
@@ -139,6 +148,12 @@ export function extractScores(chunk: ChunkScoreFile): ScorePair[] {
     .map((p) => ({
       url: p.url,
       score: typeof p.score === "number" ? p.score : 0,
+      // #4842: propaga só quando o chunk de fato forneceu — merge-scored-chunks
+      // (mergeChunks) normaliza score_base ausente com fallback pro próprio score.
+      ...(typeof p.score_base === "number" ? { score_base: p.score_base } : {}),
+      ...(Array.isArray(p.bonuses_applied) && p.bonuses_applied.length > 0
+        ? { bonuses_applied: p.bonuses_applied }
+        : {}),
       // #3916/#3918: só propaga quando explicitamente `true` — omitido/false
       // não deve virar `negative_impact: false` explícito no output (ruído).
       ...(p.negative_impact === true ? { negative_impact: true as const } : {}),
@@ -161,13 +176,22 @@ export function mergeChunks(
   const pool = flattenCategorized(categorized);
 
   const scoreByUrl = new Map<string, number>();
+  // #4842: decomposição do score do chunk (LLM), atrelada ao MESMO pair que
+  // venceu o score (maior score entre chunks) — mantém score_base/bonuses
+  // consistentes com o score que de fato prevaleceu.
+  const scoreBaseByUrl = new Map<string, number>();
+  const bonusesByUrl = new Map<string, string[]>();
   // #3916/#3918: tag de impacto-negativo por URL, OR-ed entre chunks (URL
   // não deveria aparecer em >1 chunk, mas OR é o combinador seguro se acontecer).
   const negativeImpactByUrl = new Map<string, boolean>();
   for (const chunk of chunks) {
-    for (const { url, score, negative_impact } of extractScores(chunk)) {
+    for (const { url, score, score_base, bonuses_applied, negative_impact } of extractScores(chunk)) {
       const prev = scoreByUrl.get(url);
-      if (prev == null || score > prev) scoreByUrl.set(url, score);
+      if (prev == null || score > prev) {
+        scoreByUrl.set(url, score);
+        scoreBaseByUrl.set(url, typeof score_base === "number" ? score_base : score);
+        bonusesByUrl.set(url, bonuses_applied ?? []);
+      }
       if (negative_impact === true) negativeImpactByUrl.set(url, true);
     }
   }
@@ -186,8 +210,19 @@ export function mergeChunks(
     const bonus = coverageBonus(extraSources);
     const score = baseScore + bonus;
     if (bonus > 0) {
-      (article as { score_base?: number }).score_base = baseScore;
       (article as { score_bonus_coverage?: number }).score_bonus_coverage = bonus;
+    }
+    // #4842: score_base generalizado — SEMPRE presente (não só quando há bônus
+    // de cobertura), reconstituído a partir do que o scorer-chunk decompôs
+    // (fallback pro score do chunk quando o chunk não decompôs). bonuses_applied
+    // acumula os bônus itemizados do LLM (scorer-chunk) + o bônus determinístico
+    // de cobertura calculado aqui, numa única lista auditável.
+    const chunkScoreBase = scoreBaseByUrl.get(article.url) ?? baseScore;
+    const chunkBonuses = bonusesByUrl.get(article.url) ?? [];
+    const bonusesApplied = bonus > 0 ? [...chunkBonuses, `coverage:+${bonus}`] : chunkBonuses;
+    (article as { score_base?: number }).score_base = chunkScoreBase;
+    if (bonusesApplied.length > 0) {
+      (article as { bonuses_applied?: string[] }).bonuses_applied = bonusesApplied;
     }
     // #3916/#3918: propaga a tag pro artigo — finalists[].article carrega pro
     // scorer-select; all_scored carrega pro join em finalize-stage1.ts (que
@@ -196,14 +231,27 @@ export function mergeChunks(
     if (negativeImpact) {
       (article as { negative_impact?: boolean }).negative_impact = true;
     }
-    return { article, url: article.url, score, bucket: bucketOf(article), negativeImpact };
+    return {
+      article,
+      url: article.url,
+      score,
+      bucket: bucketOf(article),
+      negativeImpact,
+      scoreBase: chunkScoreBase,
+      bonusesApplied,
+    };
   });
 
   enriched.sort((a, b) => b.score - a.score);
 
+  // #4842: score_base/bonuses_applied também vão pro all_scored — é o join
+  // que finalize-stage1.ts usa pra propagar auditoria até artigos que NÃO
+  // viraram finalist (all_scored cobre o pool INTEIRO, finalists só o top-N).
   const all_scored: ScorePair[] = enriched.map((e) => ({
     url: e.url,
     score: e.score,
+    score_base: e.scoreBase,
+    ...(e.bonusesApplied.length > 0 ? { bonuses_applied: e.bonusesApplied } : {}),
     ...(e.negativeImpact ? { negative_impact: true as const } : {}),
   }));
   const finalists: Finalist[] = enriched.map(({ article, url, score, bucket }) => ({ article, url, score, bucket })).slice(0, Math.max(0, topN));

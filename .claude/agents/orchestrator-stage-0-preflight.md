@@ -343,6 +343,12 @@ npx tsx scripts/update-audience.ts
 ```
 Regenera `context/audience-profile.md` combinando CTR comportamental (`data/link-ctr-table.csv`, primário) e survey declarativo (`data/audience-raw.json`, secundário). Resultado silencioso — logar apenas se falhar (`level: warn`, não aborta pipeline). Survey data é atualizada manualmente via `/diaria-atualiza-audiencia`.
 
+**Snapshot por edição (#4842).** Logo em seguida, arquivar a versão do profile que esta edição de fato usa:
+```bash
+npx tsx scripts/snapshot-audience-profile.ts --edition-dir {EDITION_DIR}
+```
+Copia `context/audience-profile.md` (que acabou de ser regerado) para `{EDITION_DIR}/_internal/audience-profile-snapshot.md`. O profile é regerado toda edição e pode derivar rápido (medido: 9 de 17 posições em 5 dias) — sem esse snapshot não dá pra saber retroativamente qual tabela de CTR/audiência o `scorer`/`scorer-chunk` desta edição efetivamente leu. Fail-soft (mesmo padrão do `update-audience.ts` acima) — sai 0 e loga warning se o profile fonte não existir; nunca aborta o Stage 0.
+
 ### 0j. Pending issue drafts (#90)
 
 Check drafts do `auto-reporter` órfãos de edições anteriores:
