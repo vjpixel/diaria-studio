@@ -115,4 +115,29 @@ describe("#4895 — google-gemini.ts cita a data de início real do hub", () => 
       `esperado "entre ${shortDate}" na resposta do FAQ de lançamentos, veio: "${launchFaq!.answer}"`,
     );
   });
+
+  // A forma original do bug nesses 2 campos não tinha o dia ("entre/desde
+  // setembro de 2025", sem "3 de") — o assert genérico de "03/09/2025"/"3 de
+  // setembro de 2025" acima não o pegaria. Trava explícita contra o mês.
+  it("metaDescription cita o mês real de início (agosto), não o mês desatualizado (setembro)", () => {
+    assert.ok(
+      hub.metaDescription.includes("agosto de 2025"),
+      `esperado "agosto de 2025" em metaDescription, veio: "${hub.metaDescription}"`,
+    );
+    assert.ok(
+      !hub.metaDescription.includes("setembro de 2025"),
+      `metaDescription ainda cita "setembro de 2025": "${hub.metaDescription}"`,
+    );
+  });
+
+  it("introHeading cita o mês real de início (agosto), não o mês desatualizado (setembro)", () => {
+    assert.ok(
+      hub.introHeading.includes("agosto de 2025"),
+      `esperado "agosto de 2025" em introHeading, veio: "${hub.introHeading}"`,
+    );
+    assert.ok(
+      !hub.introHeading.includes("setembro de 2025"),
+      `introHeading ainda cita "setembro de 2025": "${hub.introHeading}"`,
+    );
+  });
 });
