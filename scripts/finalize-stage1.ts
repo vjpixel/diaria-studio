@@ -126,6 +126,12 @@ export function joinScore(
         // scorer-chunk normalmente) também carregam negative_impact até
         // 01-categorized.json/01-approved.json.
         ...(byUrl.negative_impact === true ? { negative_impact: true } : {}),
+        // #4842: idem para score_base/bonuses_applied — auditoria do rubrico
+        // precisa chegar em TODO artigo aprovado, não só em highlights/finalists.
+        ...(typeof byUrl.score_base === "number" ? { score_base: byUrl.score_base } : {}),
+        ...(Array.isArray(byUrl.bonuses_applied) && (byUrl.bonuses_applied as unknown[]).length > 0
+          ? { bonuses_applied: byUrl.bonuses_applied }
+          : {}),
       },
       url_mismatch: false,
     };
@@ -142,6 +148,10 @@ export function joinScore(
           score: byTitle.score,
           score_recovered: true,
           ...(byTitle.negative_impact === true ? { negative_impact: true } : {}),
+          ...(typeof byTitle.score_base === "number" ? { score_base: byTitle.score_base } : {}),
+          ...(Array.isArray(byTitle.bonuses_applied) && (byTitle.bonuses_applied as unknown[]).length > 0
+            ? { bonuses_applied: byTitle.bonuses_applied }
+            : {}),
         },
         url_mismatch: true,
       };
@@ -528,16 +538,24 @@ export function finalizeStage1(
         titleIndex,
       );
       // #3920: audit do bônus de cobertura no artigo final do bucket. O score
-      // já vem BOOSTADO do all_scored (bônus somado em merge-scored-chunks);
-      // aqui só registramos os campos separados (score_base = score − bônus)
-      // pra auditoria no 01-approved.json / gate. Recompute determinístico a
-      // partir do cluster_sources (mesmo helper), sem re-somar.
+      // já vem BOOSTADO do all_scored (bônus somado em merge-scored-chunks).
+      // Recompute determinístico a partir do cluster_sources (mesmo helper),
+      // sem re-somar — mantido só pra `score_bonus_coverage` (compat).
       const clusterSources = (enrichedArticle as { cluster_sources?: unknown[] }).cluster_sources;
       const extraSources = Array.isArray(clusterSources) ? clusterSources.length : 0;
       const score = enrichedArticle.score as number | null | undefined;
       if (extraSources > 0 && typeof score === "number") {
         const bonus = coverageBonus(extraSources);
         (enrichedArticle as { score_bonus_coverage?: number }).score_bonus_coverage = bonus;
+      }
+      // #4842: score_base já foi propagado por joinScore a partir de
+      // all_scored (decomposição completa: score_base do scorer-chunk +
+      // bonuses_applied, coverage incluso). Só cai no fallback abaixo quando
+      // all_scored não trouxe decomposição (all_scored de edição/versão
+      // anterior ao #4842) — nesse caso o único bônus rastreável é o de
+      // cobertura, recomputado acima.
+      if (typeof enrichedArticle.score_base !== "number" && typeof score === "number") {
+        const bonus = extraSources > 0 ? coverageBonus(extraSources) : 0;
         (enrichedArticle as { score_base?: number }).score_base = score - bonus;
       }
       joined.push(enrichedArticle);

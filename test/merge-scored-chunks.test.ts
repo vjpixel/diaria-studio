@@ -445,6 +445,97 @@ describe("mergeChunks — bônus de cobertura (#3920)", () => {
   });
 });
 
+// #4842 — auditabilidade do scoring: bonuses_applied[] generalizado +
+// score_base sempre presente (antes só stampado quando havia bônus de
+// cobertura). Cobre item 1 do escopo da issue.
+describe("mergeChunks — score_base/bonuses_applied generalizados (#4842)", () => {
+  it("score_base é SEMPRE presente no artigo do finalist, mesmo sem nenhum bônus", () => {
+    const cat: Categorized = {
+      lancamento: [],
+      radar: [{ url: "plain", title: "plain", category: "radar" }],
+      use_melhor: [],
+    };
+    const chunks: ChunkScoreFile[] = [{ all_scored: [{ url: "plain", score: 42 }] }];
+    const r = mergeChunks(cat, chunks, 15);
+    const f = r.finalists[0];
+    assert.equal((f.article as { score_base?: number }).score_base, 42);
+    assert.equal(r.all_scored[0].score_base, 42);
+    assert.equal((f.article as { bonuses_applied?: string[] }).bonuses_applied, undefined, "sem bônus → campo omitido, não array vazio");
+  });
+
+  it("propaga bonuses_applied do scorer-chunk pro article do finalist e pro all_scored", () => {
+    const cat: Categorized = {
+      lancamento: [],
+      radar: [{ url: "hit", title: "hit", category: "radar" }],
+      use_melhor: [],
+    };
+    const chunks: ChunkScoreFile[] = [
+      {
+        all_scored: [
+          {
+            url: "hit",
+            score: 87,
+            score_base: 62,
+            bonuses_applied: ["impact_routine:+10", "impact_routine_br:+5", "audience_affinity:+10"],
+          },
+        ],
+      },
+    ];
+    const r = mergeChunks(cat, chunks, 15);
+    const f = r.finalists.find((f) => f.url === "hit")!;
+    assert.equal(f.score, 87);
+    assert.equal((f.article as { score_base?: number }).score_base, 62);
+    assert.deepEqual((f.article as { bonuses_applied?: string[] }).bonuses_applied, [
+      "impact_routine:+10",
+      "impact_routine_br:+5",
+      "audience_affinity:+10",
+    ]);
+    const entry = r.all_scored.find((s) => s.url === "hit")!;
+    assert.equal(entry.score_base, 62);
+    assert.deepEqual(entry.bonuses_applied, ["impact_routine:+10", "impact_routine_br:+5", "audience_affinity:+10"]);
+  });
+
+  it("bônus de cobertura entra em bonuses_applied como entrada coverage:+N (cumulativo com os do chunk)", () => {
+    const cat: Categorized = {
+      lancamento: [],
+      radar: [
+        {
+          url: "cov",
+          title: "cov",
+          category: "radar",
+          cluster_sources: [{ url: "cov-src0" }, { url: "cov-src1" }], // 2 extras → +10
+        },
+      ],
+      use_melhor: [],
+    };
+    const chunks: ChunkScoreFile[] = [
+      { all_scored: [{ url: "cov", score: 50, score_base: 44, bonuses_applied: ["academy:+6"] }] },
+    ];
+    const r = mergeChunks(cat, chunks, 15);
+    const f = r.finalists[0];
+    // score do chunk (50, já incluindo o +6 de academy) + 10 de cobertura = 60
+    assert.equal(f.score, 60);
+    assert.equal((f.article as { score_base?: number }).score_base, 44, "score_base é o do CHUNK (antes das bônus itemizadas), não score-totalBonus");
+    assert.deepEqual((f.article as { bonuses_applied?: string[] }).bonuses_applied, ["academy:+6", "coverage:+10"]);
+    // invariante: score == score_base + soma dos valores de bonuses_applied
+    assert.equal(f.score, 44 + 6 + 10);
+  });
+
+  it("chunk que não decompõe (score_base/bonuses_applied ausentes) cai no fallback: score_base = score, sem bonuses_applied", () => {
+    const cat: Categorized = {
+      lancamento: [],
+      radar: [{ url: "legacy", title: "legacy", category: "radar" }],
+      use_melhor: [],
+    };
+    // chunk "antigo" (pré-#4842) só manda {url, score} — compat retroativa.
+    const chunks: ChunkScoreFile[] = [{ all_scored: [{ url: "legacy", score: 55 }] }];
+    const r = mergeChunks(cat, chunks, 15);
+    const f = r.finalists[0];
+    assert.equal((f.article as { score_base?: number }).score_base, 55);
+    assert.equal((f.article as { bonuses_applied?: string[] }).bonuses_applied, undefined);
+  });
+});
+
 // #3916/#3918 — propagação da tag negative_impact do scorer-chunk até
 // all_scored + article do finalist (join final acontece em finalize-stage1.ts).
 describe("mergeChunks — propagação de negative_impact (#3916, #3918)", () => {

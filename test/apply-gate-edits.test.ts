@@ -1,8 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseSections, mergeWithNewJson, canonicalizeUrl, resolveDestaques } from "../scripts/apply-gate-edits.ts";
+import {
+  parseSections,
+  mergeWithNewJson,
+  canonicalizeUrl,
+  resolveDestaques,
+  computeGateProvenance,
+} from "../scripts/apply-gate-edits.ts";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -696,6 +702,199 @@ describe("apply-gate-edits CLI --auto (#3459)", () => {
       // limpa do pool, não a variante com tracking param do MD.
       assert.equal(h.article.url, "https://example.com/foo");
       assert.equal(h.url, "https://example.com/foo");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// #4842 item 3 — proveniência determinística do gate do Stage 1.
+//
+// Antes disso, o único sinal de "auto vs editor" era grep em run-log — que
+// também captura mensagens de OUTROS gates (Stage 4/6), gerando falsos
+// positivos: 10 de 32 edições marcadas "auto" tinham substituição de destaque
+// registrada, mecanicamente impossível sob --auto. Estes testes travam que
+// `computeGateProvenance`/`.step-1-gate.json` refletem a realidade
+// determinística do próprio apply-gate-edits.ts.
+describe("computeGateProvenance (#4842)", () => {
+  const originalHighlights = [
+    { rank: 1, url: "https://a.com/1" },
+    { rank: 2, url: "https://a.com/2" },
+    { rank: 3, url: "https://a.com/3" },
+  ];
+
+  it("--auto: origem '--no-gates', auto_approved true, itens_movidos SEMPRE 0", () => {
+    const g = computeGateProvenance(true, ["https://a.com/1", "https://a.com/2", "https://a.com/3"], originalHighlights);
+    assert.equal(g.auto_approved, true);
+    assert.equal(g.origem, "--no-gates");
+    assert.equal(g.itens_movidos, 0);
+    assert.ok(g.generated_at.length > 0);
+  });
+
+  it("editor manteve os mesmos top-3 (só reordenou) → itens_movidos 0", () => {
+    const g = computeGateProvenance(
+      false,
+      ["https://a.com/2", "https://a.com/1", "https://a.com/3"],
+      originalHighlights,
+    );
+    assert.equal(g.origem, "editor");
+    assert.equal(g.itens_movidos, 0, "reordenar os mesmos 3 não é substituição");
+  });
+
+  it("editor substituiu 1 destaque por um candidato fora do top-3 → itens_movidos 1", () => {
+    const g = computeGateProvenance(
+      false,
+      ["https://a.com/1", "https://a.com/2", "https://a.com/999-promovido"],
+      originalHighlights,
+    );
+    assert.equal(g.itens_movidos, 1);
+  });
+
+  it("editor substituiu os 3 → itens_movidos 3", () => {
+    const g = computeGateProvenance(
+      false,
+      ["https://x.com/1", "https://x.com/2", "https://x.com/3"],
+      originalHighlights,
+    );
+    assert.equal(g.itens_movidos, 3);
+  });
+
+  it("URLs comparadas via canonicalizeUrl — variação de tracking param não conta como substituição (#439)", () => {
+    const g = computeGateProvenance(
+      false,
+      ["https://a.com/1?utm_source=x", "https://a.com/2", "https://a.com/3"],
+      originalHighlights,
+    );
+    assert.equal(g.itens_movidos, 0);
+  });
+});
+
+describe("apply-gate-edits CLI — grava _internal/.step-1-gate.json (#4842)", () => {
+  function runCli(args: string[]) {
+    const projectRoot = join(import.meta.dirname, "..");
+    const scriptPath = join(projectRoot, "scripts", "apply-gate-edits.ts");
+    return spawnSync(process.execPath, ["--import", "tsx", scriptPath, ...args], {
+      cwd: projectRoot,
+      encoding: "utf8",
+      timeout: 15000,
+    });
+  }
+
+  function makeCategorized(highlightUrls: string[]) {
+    const highlights = highlightUrls.map((url, i) => ({
+      rank: i + 1,
+      score: 90 - i,
+      bucket: "radar",
+      url,
+    }));
+    return {
+      highlights,
+      runners_up: [],
+      lancamento: [],
+      radar: highlights.map((h) => ({ url: h.url, title: `Título ${h.rank}`, score: h.score })),
+      use_melhor: [],
+      video: [],
+    };
+  }
+
+  it("--auto grava .step-1-gate.json com origem '--no-gates' e itens_movidos: 0", () => {
+    const dir = mkdtempSync(join(tmpdir(), "apply-gate-edits-gate-auto-"));
+    try {
+      const jsonPath = join(dir, "01-categorized.json");
+      const outPath = join(dir, "_internal", "01-approved.json");
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(jsonPath, JSON.stringify(makeCategorized(["https://scorer.example/1", "https://scorer.example/2", "https://scorer.example/3"])), "utf8");
+
+      const r = runCli(["--auto", "--json", jsonPath, "--out", outPath]);
+      assert.equal(r.status, 0, `CLI falhou: ${r.stderr}`);
+
+      const gatePath = join(dir, "_internal", ".step-1-gate.json");
+      assert.ok(readFileSync(gatePath, "utf8").length > 0, ".step-1-gate.json deveria existir ao lado de --out por default");
+      const gate = JSON.parse(readFileSync(gatePath, "utf8"));
+      assert.equal(gate.auto_approved, true);
+      assert.equal(gate.origem, "--no-gates");
+      assert.equal(gate.itens_movidos, 0);
+      assert.ok(gate.generated_at);
+
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.gate_out, gatePath);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("gate humano com substituição real de destaque → itens_movidos reflete a substituição (não fica preso em 0 como o grep antigo)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "apply-gate-edits-gate-editor-"));
+    try {
+      const jsonPath = join(dir, "01-categorized.json");
+      const mdPath = join(dir, "01-categorized.md");
+      const outPath = join(dir, "_internal", "01-approved.json");
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+
+      const categorized = {
+        highlights: [
+          { rank: 1, url: "https://scorer.example/1", score: 90, bucket: "radar" },
+          { rank: 2, url: "https://scorer.example/2", score: 89, bucket: "radar" },
+          { rank: 3, url: "https://scorer.example/3", score: 88, bucket: "radar" },
+        ],
+        runners_up: [],
+        lancamento: [],
+        radar: [
+          { url: "https://scorer.example/1", title: "Um", score: 90, category: "radar" },
+          { url: "https://scorer.example/2", title: "Dois", score: 89, category: "radar" },
+          { url: "https://scorer.example/3", title: "Três", score: 88, category: "radar" },
+          { url: "https://scorer.example/promovido", title: "Promovido pelo editor", score: 70, category: "radar" },
+        ],
+        use_melhor: [],
+        video: [],
+      };
+      writeFileSync(jsonPath, JSON.stringify(categorized), "utf8");
+
+      // Editor mantém D1/D2 mas troca D3 por um item promovido do Radar.
+      const md = [
+        "## Destaques",
+        "",
+        "1. [90] Um — https://scorer.example/1 — 2026-08-01",
+        "2. [89] Dois — https://scorer.example/2 — 2026-08-01",
+        "3. [70] Promovido pelo editor — https://scorer.example/promovido — 2026-08-01",
+        "",
+        "## Lançamentos",
+        "",
+        "## Radar",
+        "",
+        "1. [88] Três — https://scorer.example/3 — 2026-08-01",
+        "",
+        "## Use melhor",
+        "",
+        "## Vídeos",
+        "",
+      ].join("\n");
+      writeFileSync(mdPath, md, "utf8");
+
+      const r = runCli(["--md", mdPath, "--json", jsonPath, "--out", outPath]);
+      assert.equal(r.status, 0, `CLI falhou: ${r.stderr}`);
+
+      const gatePath = join(dir, "_internal", ".step-1-gate.json");
+      const gate = JSON.parse(readFileSync(gatePath, "utf8"));
+      assert.equal(gate.auto_approved, false);
+      assert.equal(gate.origem, "editor");
+      assert.equal(gate.itens_movidos, 1, "1 substituição real (D3 trocado) deve aparecer — não pode ficar em 0");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--gate-out explícito sobrepõe o default ao lado de --out", () => {
+    const dir = mkdtempSync(join(tmpdir(), "apply-gate-edits-gate-out-"));
+    try {
+      const jsonPath = join(dir, "01-categorized.json");
+      const outPath = join(dir, "01-approved.json");
+      const gateOutPath = join(dir, "custom-gate.json");
+      writeFileSync(jsonPath, JSON.stringify(makeCategorized(["https://scorer.example/1", "https://scorer.example/2", "https://scorer.example/3"])), "utf8");
+
+      const r = runCli(["--auto", "--json", jsonPath, "--out", outPath, "--gate-out", gateOutPath]);
+      assert.equal(r.status, 0, `CLI falhou: ${r.stderr}`);
+      assert.ok(readFileSync(gateOutPath, "utf8").length > 0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

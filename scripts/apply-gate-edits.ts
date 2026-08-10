@@ -190,6 +190,51 @@ export function resolveDestaques(
   return destaquesUrls;
 }
 
+/**
+ * #4842: proveniência determinística do gate humano do Stage 1.
+ *
+ * Antes disso, o único sinal de "auto vs editor" era grep em mensagens do
+ * run-log — que também captura mensagens de OUTROS gates (Stage 4/6),
+ * produzindo falsos positivos: 10 de 32 edições marcadas "auto" tinham
+ * substituição de destaque registrada, o que é mecanicamente IMPOSSÍVEL sob
+ * `--auto` (a seção Destaques do MD simulado é sempre vazia; `resolveDestaques`
+ * só PREENCHE por rank do scorer nesse modo, nunca substitui). Calculado aqui,
+ * na fonte determinística (este script), em vez de inferido depois por grep.
+ *
+ * `itens_movidos` conta quantos destaques finais NÃO estão entre os top-3
+ * originais do scorer (por rank) — i.e., substituições reais feitas pelo
+ * editor no gate. Sob `--auto` é sempre 0 por construção (destaquesUrls é
+ * exatamente o fill dos top-3 originais).
+ */
+export interface GateProvenance {
+  auto_approved: boolean;
+  origem: "editor" | "--no-gates";
+  itens_movidos: number;
+  generated_at: string;
+}
+
+export function computeGateProvenance(
+  autoMode: boolean,
+  destaquesUrls: string[],
+  originalHighlights: Array<{ rank?: number; url?: string; article?: { url?: string } | null }>,
+): GateProvenance {
+  const canonOriginalTop3 = new Set(
+    [...originalHighlights]
+      .sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0))
+      .slice(0, 3)
+      .map((h) => h.url ?? h.article?.url)
+      .filter((u): u is string => Boolean(u))
+      .map(canonicalizeUrl),
+  );
+  const itensMovidos = destaquesUrls.filter((u) => !canonOriginalTop3.has(canonicalizeUrl(u))).length;
+  return {
+    auto_approved: autoMode,
+    origem: autoMode ? "--no-gates" : "editor",
+    itens_movidos: itensMovidos,
+    generated_at: new Date().toISOString(),
+  };
+}
+
 function findArticle(
   url: string,
   pools: Article[][],
@@ -254,7 +299,7 @@ function main() {
 
   if (!jsonPath || !outPath || (!autoMode && !mdPath)) {
     console.error(
-      "Uso: apply-gate-edits.ts --json <categorized.json> --out <approved.json> (--md <categorized.md> | --auto) [--inbox-md <path>]",
+      "Uso: apply-gate-edits.ts --json <categorized.json> --out <approved.json> (--md <categorized.md> | --auto) [--inbox-md <path>] [--gate-out <path>]",
     );
     process.exit(1);
   }
@@ -412,6 +457,12 @@ function main() {
 
   writeFileSync(outPath, JSON.stringify(approved, null, 2), "utf8");
 
+  // #4842: proveniência determinística do gate — grava ao lado de outPath por
+  // default (mesmo `_internal/`), a menos que --gate-out explicite outro path.
+  const gateOutPath = args["gate-out"] ?? resolve(dirname(outPath), ".step-1-gate.json");
+  const gateProvenance = computeGateProvenance(autoMode, destaquesUrls, originalHighlights);
+  writeFileSync(gateOutPath, JSON.stringify(gateProvenance, null, 2) + "\n", "utf8");
+
   const origTotals = `L=${originalBuckets.lancamento.length} R=${originalBuckets.radar.length} U=${originalBuckets.use_melhor.length} V=${originalBuckets.video.length}`;
   const approvedTotals = `L=${approved.lancamento.length} R=${approved.radar.length} U=${approved.use_melhor?.length ?? 0} V=${approved.video?.length ?? 0}`;
   console.error(
@@ -425,6 +476,8 @@ function main() {
       radar: approved.radar.length,
       use_melhor: approved.use_melhor?.length ?? 0,
       video: approved.video?.length ?? 0,
+      gate_out: gateOutPath,
+      gate_provenance: gateProvenance,
     }) + "\n",
   );
 }

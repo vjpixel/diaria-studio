@@ -44,10 +44,19 @@ export interface Article {
   // ---- Scoring (set pelo scorer) -------------------------------------------
   /** Score 0-100 atribuído pelo scorer. */
   score?: number;
-  /** #3920: score antes do bônus de cobertura (auditoria). */
+  /**
+   * #4842 (generaliza #3920): score antes de QUALQUER bônus/penalidade
+   * itemizado (relevância + atualidade só). Sempre presente pós merge-scored-chunks.
+   */
   score_base?: number;
   /** #3920: bônus de cobertura aplicado (= +5 × cluster_sources.length, sem teto). */
   score_bonus_coverage?: number;
+  /**
+   * #4842: decomposição auditável de `score - score_base`, uma entrada
+   * "<slug>:+N"/"<slug>:-N" por bônus/penalidade aplicado (scorer-chunk LLM +
+   * bônus determinístico de cobertura). Ausente/omitido quando nenhum se aplicou.
+   */
+  bonuses_applied?: string[];
   /** Marcador inline de destaque (formato legado pré-#229). */
   highlight?: boolean;
   /** Rank 1..6 do scorer (formato inline). */

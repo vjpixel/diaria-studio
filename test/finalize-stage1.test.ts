@@ -185,6 +185,72 @@ describe("#3916/#3918 — joinScore propaga negative_impact", () => {
 });
 
 // ---------------------------------------------------------------------------
+// #4842 — joinScore propaga score_base/bonuses_applied do all_scored pro
+// artigo final — cobre TODO artigo aprovado, não só highlights/finalists (o
+// merge-scored-chunks só stampa esses campos nos finalists top-N; buckets
+// inteiros passam por este join).
+// ---------------------------------------------------------------------------
+
+describe("#4842 — joinScore propaga score_base/bonuses_applied", () => {
+  it("score_base e bonuses_applied do ScoredEntry propagam pro artigo (join por URL)", () => {
+    const url = "https://exemplo.com/how-to-notebooklm";
+    const article: Article = { url, title: "Como usar NotebookLM" };
+    const scored: ScoredEntry = {
+      url,
+      score: 78,
+      score_base: 62,
+      bonuses_applied: ["hands_on:+8", "howto_br:+5", "howto_br_source:+3"],
+    };
+    const { scoreMap, titleIndex } = buildScoreIndexes([scored]);
+
+    const result = joinScore(article, scoreMap, [scored], titleIndex);
+
+    assert.equal(result.article.score, 78);
+    assert.equal((result.article as { score_base?: number }).score_base, 62);
+    assert.deepEqual((result.article as { bonuses_applied?: string[] }).bonuses_applied, [
+      "hands_on:+8",
+      "howto_br:+5",
+      "howto_br_source:+3",
+    ]);
+  });
+
+  it("score_base ausente no ScoredEntry (all_scored legado) não aparece explícito no artigo", () => {
+    const url = "https://exemplo.com/lancamento-normal";
+    const article: Article = { url, title: "Lançamento normal" };
+    const scored: ScoredEntry = { url, score: 65 };
+    const { scoreMap, titleIndex } = buildScoreIndexes([scored]);
+
+    const result = joinScore(article, scoreMap, [scored], titleIndex);
+
+    assert.equal(result.article.score, 65);
+    assert.equal((result.article as { score_base?: number }).score_base, undefined);
+    assert.equal((result.article as { bonuses_applied?: string[] }).bonuses_applied, undefined);
+  });
+
+  it("score_base/bonuses_applied propagam também via recovery por título (URL mismatch)", () => {
+    const poolUrl = "https://a.com/x";
+    const scoredUrl = "https://a.com/y";
+    const title = "Guia de academia oficial de IA";
+
+    const article: Article = { url: poolUrl, title };
+    const scored: ScoredEntry = {
+      url: scoredUrl,
+      score: 68,
+      title,
+      score_base: 62,
+      bonuses_applied: ["academy:+6"],
+    };
+    const { scoreMap, titleIndex } = buildScoreIndexes([scored]);
+
+    const result = joinScore(article, scoreMap, [scored], titleIndex);
+
+    assert.equal(result.url_mismatch, true);
+    assert.equal((result.article as { score_base?: number }).score_base, 62);
+    assert.deepEqual((result.article as { bonuses_applied?: string[] }).bonuses_applied, ["academy:+6"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #721 — editor_submitted bypass
 // ---------------------------------------------------------------------------
 
