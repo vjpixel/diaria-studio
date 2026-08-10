@@ -145,3 +145,15 @@ DEPOIS do `gh pr create` — nenhuma dessas pertence ao escopo do subagente
 implementador, mesmo que o prompt de dispatch não repita isso explicitamente
 toda vez (citar este arquivo já deveria bastar; registrar aqui a regra
 explícita fecha a lacuna que permitiu o incidente).
+
+## 12. Tocou `invariant-checks/*.ts`? Regenerar `docs/editorial-invariants.md` (#4877)
+
+Se você adicionar, editar ou remover uma invariante em
+`scripts/lib/invariant-checks/stage-*.ts`, rode
+`npx tsx scripts/list-invariants.ts --out docs/editorial-invariants.md`
+**antes de abrir o PR** — esse arquivo é derivado e travado por
+`test/list-invariants.test.ts`; abrir o PR sem regenerá-lo dá CI vermelho
+("arquivo committed bate com registry atual") e exige um fix-iteration extra
+do coordenador (2 ocorrências na mesma rodada overnight 260810: PRs #4864 e
+#4876). Commitar o `docs/editorial-invariants.md` regenerado junto com a
+mudança em `invariant-checks/`.
