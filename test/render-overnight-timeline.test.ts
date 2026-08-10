@@ -10,6 +10,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildTimelineRows,
+  normalizeIssues,
   renderOvernightTimeline,
   renderTimeline,
   type Plan,
@@ -844,6 +845,73 @@ describe("renderTimeline — rótulos de sessão develop (#2637)", () => {
     const output = renderTimeline(plan, { title: "Timeline da sessão" });
     assert.ok(output.includes("## Timeline da sessão"));
     assert.ok(output.includes("nenhuma unidade registrada"));
+  });
+
+  // #4817 — `data/develop/260808b/plan.json` (e todo plan.json real de sessão
+  // develop observado até aqui) grava `issues` como DICT chaveado pelo número
+  // da issue, não array. `buildTimelineRows` fazia `for (const issue of
+  // plan.issues)`, que lança `TypeError: plan.issues is not iterable` contra
+  // um objeto. Fix: `normalizeIssues` converte os dois shapes pra array antes
+  // de qualquer iteração.
+  it("plan.json no shape DICT do develop (#4817): não lança e resolve número via chave", () => {
+    const plan = {
+      started_at: "2026-08-08T13:40:00.000Z",
+      issues: {
+        "4800": {
+          priority: "P2",
+          onda: "1a",
+          block_category: null,
+          unblock_status: "desbloqueada-validada",
+          status: "mergeada",
+          note: "fix aplicado",
+          pr: 4900,
+          branch: "develop/fix-4800",
+          fleet_review: "done",
+          source: "fresh-scan",
+        },
+        "4783": {
+          priority: "P1",
+          onda: "1a",
+          status: "pulada",
+          pr: null,
+          branch: null,
+          source: "inherited-overnight",
+        },
+      },
+    } as unknown as Plan;
+
+    assert.doesNotThrow(() => buildTimelineRows(plan));
+    const rows = buildTimelineRows(plan);
+    assert.equal(rows.length, 2);
+    // Ordem: dict chaveado por número inteiro é reordenado pelo motor JS em
+    // ordem numérica ascendente (propriedade da linguagem, não do normalizador).
+    assert.equal(rows[0].unidade, "#4783");
+    assert.equal(rows[1].unidade, "#4800");
+  });
+
+  it("normalizeIssues: dict sem campo `number` explícito deriva o número da chave", () => {
+    const plan = {
+      started_at: "2026-08-08T13:40:00.000Z",
+      issues: {
+        "4800": { priority: "P2", status: "mergeada", pr: 4900 },
+      },
+    } as unknown as Plan;
+    const issues = normalizeIssues(plan);
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].number, 4800);
+    assert.equal(issues[0].status, "mergeada");
+  });
+
+  it("normalizeIssues: array (shape overnight) passa através sem alteração", () => {
+    const plan = makePlan([{ number: 9999, batch: null }]);
+    const issues = normalizeIssues(plan);
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].number, 9999);
+  });
+
+  it("normalizeIssues: dict vazio ou issues ausente retorna array vazio", () => {
+    const planEmptyDict = { started_at: "2026-08-08T13:40:00.000Z", issues: {} } as unknown as Plan;
+    assert.deepEqual(normalizeIssues(planEmptyDict), []);
   });
 
   it("plan.json no estilo develop (campos extras de desbloqueio) renderiza a tabela normalmente", () => {
