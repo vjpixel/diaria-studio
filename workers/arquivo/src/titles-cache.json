@@ -81,7 +81,7 @@
   },
   "microsoft-lan-a-ia-pr-pria": {
     "title": "Microsoft lança IA própria",
-    "publishDate": "2025-09-03"
+    "publishDate": "2025-08-29"
   },
   "ia-no-combate-ao-desmatamento": {
     "title": "IA no combate ao desmatamento",
@@ -146,6 +146,10 @@
   "rob-humanoide-escoltado-por-policiais-em-macau": {
     "title": "Robô humanoide escoltado por policiais em Macau",
     "publishDate": "2026-03-19"
+  },
+  "claude-expoe-bugs-mais-rapido-que-microsoft-corrige": {
+    "title": "Claude expõe bugs mais rápido que Microsoft corrige",
+    "publishDate": "2026-07-31"
   },
   "openai-cria-treinamento-gratuito-para-jornalistas": {
     "title": "OpenAI cria treinamento gratuito para jornalistas",
@@ -319,6 +323,10 @@
     "title": "Especial: Cursos gratuitos de IA",
     "publishDate": "2025-12-14"
   },
+  "modelo-da-anthropic-finge-ser-humano-em-teste": {
+    "title": "Modelo da Anthropic finge ser humano em teste",
+    "publishDate": "2026-08-06"
+  },
   "o-gemini-venceu-o-chatgpt": {
     "title": "O Gemini venceu o ChatGPT?",
     "publishDate": "2025-12-26"
@@ -453,7 +461,7 @@
   },
   "openai-processada-por-suic-dio-de-adolescente": {
     "title": "OpenAI processada por suicídio de adolescente",
-    "publishDate": "2025-09-03"
+    "publishDate": "2025-08-28"
   },
   "profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-c17eeec20f174": {
     "title": "Quero pedir sua ajuda, leva só 1 minuto =)",
@@ -505,7 +513,7 @@
   },
   "xai-processa-ex-engenheiro-por-roubo-de-segredos-comerciais": {
     "title": "xAI processa ex-engenheiro por roubo de segredos comerciais",
-    "publishDate": "2025-09-03"
+    "publishDate": "2025-09-01"
   },
   "enter-vira-o-1-unic-rnio-de-ia-da-am-rica-latina": {
     "title": "Enter vira o 1o unicórnio de IA da América Latina",
@@ -641,7 +649,7 @@
   },
   "google-lan-a-gemini-2-5-flash-image": {
     "title": "Google lança Gemini 2.5 Flash Image",
-    "publishDate": "2025-09-03"
+    "publishDate": "2025-08-27"
   },
   "profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-42c8c67e9a29a": {
     "title": "IA pode aumentar comércio global em 40%",
@@ -653,11 +661,15 @@
   },
   "china-implementa-lei-obrigat-ria-de-rotulagem-de-conte-do-gerado-por-ia": {
     "title": "China implementa lei obrigatória de rotulagem de conteúdo gerado por IA",
-    "publishDate": "2025-09-03"
+    "publishDate": "2025-09-02"
   },
   "google-da-curso-gratuito-de-ia-no-sabado": {
     "title": "Google dá curso gratuito de IA no sábado",
     "publishDate": "2025-12-02"
+  },
+  "claude-hackeou-3-empresas-sem-ninguem-notar": {
+    "title": "Claude hackeou 3 empresas sem ninguém notar",
+    "publishDate": "2026-08-03"
   },
   "o-maior-estudo-j-feito-com-usu-rios-de-ia": {
     "title": "O maior estudo já feito com usuários de IA",
@@ -674,6 +686,10 @@
   "qualcomm-chips-datacenter": {
     "title": "Qualcomm entra na concorrência de data centers",
     "publishDate": "2025-10-27"
+  },
+  "hacker-chines-usa-deepseek-em-ataques-autonomos": {
+    "title": "Hacker chinês usa DeepSeek em ataques autônomos",
+    "publishDate": "2026-08-04"
   },
   "50-dos-empregos-mudam-em-3-anos-diz-estudo": {
     "title": "50% dos empregos mudam em 3 anos, diz estudo",
@@ -847,6 +863,10 @@
     "title": "Altman admite: a IA trará ameaças",
     "publishDate": "2026-03-26"
   },
+  "ia-por-tras-de-50-dos-cibercrimes-africanos": {
+    "title": "IA por trás de +50% dos cibercrimes africanos",
+    "publishDate": "2026-08-05"
+  },
   "varejo-se-torna-dependente-de-ia": {
     "title": "Varejo se torna dependente de IA",
     "publishDate": "2026-01-14"
@@ -882,6 +902,10 @@
   "a-pole-mica-em-torno-de-tilly-norwood": {
     "title": "A polêmica em torno de Tilly Norwood",
     "publishDate": "2025-10-02"
+  },
+  "meta-lucrou-com-anuncios-de-abuso-infantil-por-ia": {
+    "title": "Meta lucrou com anúncios de abuso infantil por IA",
+    "publishDate": "2026-08-07"
   },
   "estudo-revela-falha-em-llms-por-meio-de-poemas": {
     "title": "Estudo revela falha em LLMs por meio de poemas",

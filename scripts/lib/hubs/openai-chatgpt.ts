@@ -29,6 +29,13 @@
  * Regenerar depois de qualquer `beehiiv-sync.ts` novo:
  *   npx tsx scripts/generate-hub-sources.ts --hub openai-chatgpt
  *   npx tsx scripts/build-hub-page.ts --hub openai-chatgpt
+ *
+ * **Regen completo de 260810 (#4884):** trouxe 1 edição nova (07/08/2026,
+ * "ChatGPT libera mensagens ilimitadas no gratuito" — o teto de mensagens do
+ * plano gratuito caiu, junto da troca do modelo padrão do ChatGPT pro
+ * GPT-5.6 Luna, atendendo pagantes e não pagantes na mesma versão). INTRO e
+ * a seção sobre negócio de agentes/anúncios foram atualizadas pra
+ * incorporá-la.
  */
 import type { GeoFaqItem } from "../shared/geo-faq.ts";
 import type { HubContent, HubSourceEdition } from "../shared/hub-page.ts";
@@ -43,7 +50,7 @@ const SOURCES = sourcesRaw as HubSourceEntry[];
  * quando a prosa for reescrita de forma substancial — uma regeneração
  * rotineira de `sources.generated.json` NÃO invalida a data sozinha (mesma
  * ressalva de `anthropic-claude.ts`). */
-const CONTENT_DATE = "2026-08-09";
+const CONTENT_DATE = "2026-08-10";
 
 /** Mesma normalização NFC de `anthropic-claude.ts::countMatching` — o
  * `matchedHeadlines` de `sources.generated.json` preserva o texto ORIGINAL
@@ -150,7 +157,7 @@ function toSourceEditions(sources: HubSourceEntry[]): HubSourceEdition[] {
 }
 
 const INTRO =
-  "Entre setembro de 2025 e agosto de 2026, a OpenAI e o ChatGPT foram destaque em 95 edições da diar.ia.br, 103 manchetes ao todo. É o tema mais recorrente do arquivo nesse período, aparecendo a cada 3-4 dias em média. Acompanhar esse volume de perto revela um padrão que uma edição isolada não deixa ver: a OpenAI lançou modelo ou produto novo 15 vezes em pouco mais de 10 meses, num ritmo quase mensal com duas pausas mais longas, uma delas de 53 dias. A rivalidade com o Google/Gemini passou de \"OpenAI sente ameaça\" (novembro de 2025) a \"ChatGPT perde terreno para rivais menores\" (junho de 2026), com a Microsoft trocando tanto OpenAI quanto Anthropic por IA própria pelo meio do caminho. O dinheiro seguiu uma escalada visível, de \"vale US\\$ 500 bi\" a \"maior captação da história\" e, por fim, um pedido de abertura de capital nos EUA, junto de contratos bilionários de infraestrutura com Oracle, Nvidia e Amazon. O Codex deixou de ser lançamento e virou ferramenta usada por Dell, Samsung e a Big Four da consultoria, no mesmo período em que o ChatGPT passou a rodar anúncios. Uma sequência de episódios de segurança, que começou com processos judiciais e terminou com o próprio agente da OpenAI invadindo sistemas sem supervisão, fecha o período coberto por este hub em aberto, não resolvido. As seções abaixo detalham cada um desses pontos, com data e fonte de cada manchete.";
+  "Entre setembro de 2025 e agosto de 2026, a OpenAI e o ChatGPT foram destaque em 96 edições da diar.ia.br, 104 manchetes ao todo. É o tema mais recorrente do arquivo nesse período, aparecendo a cada 3-4 dias em média. Acompanhar esse volume de perto revela um padrão que uma edição isolada não deixa ver: a OpenAI lançou modelo ou produto novo 15 vezes em pouco mais de 10 meses, num ritmo quase mensal com duas pausas mais longas, uma delas de 53 dias. A rivalidade com o Google/Gemini passou de \"OpenAI sente ameaça\" (novembro de 2025) a \"ChatGPT perde terreno para rivais menores\" (junho de 2026), com a Microsoft trocando tanto OpenAI quanto Anthropic por IA própria pelo meio do caminho. O dinheiro seguiu uma escalada visível, de \"vale US\\$ 500 bi\" a \"maior captação da história\" e, por fim, um pedido de abertura de capital nos EUA, junto de contratos bilionários de infraestrutura com Oracle, Nvidia e Amazon. O Codex deixou de ser lançamento e virou ferramenta usada por Dell, Samsung e a Big Four da consultoria, no mesmo período em que o ChatGPT passou a rodar anúncios e, dias depois de testar anúncios no Brasil, removeu o teto de mensagens do plano gratuito. Uma sequência de episódios de segurança, que começou com processos judiciais e terminou com o próprio agente da OpenAI invadindo sistemas sem supervisão, fecha o período coberto por este hub em aberto, não resolvido. As seções abaixo detalham cada um desses pontos, com data e fonte de cada manchete.";
 
 export function getOpenaiChatgptHub(): HubContent {
   return {
@@ -188,7 +195,7 @@ export function getOpenaiChatgptHub(): HubContent {
         heading: "Como o ChatGPT deixou de ser só um chatbot e virou negócio de agentes e anúncios?",
         paragraphs: [
           "Ao longo de 2026, a cobertura registrou uma virada clara de posicionamento: de assistente de conversa para ferramenta de trabalho. Em fevereiro, [o Codex ganhou foco em multiagentes](https://diar.ia.br/p/tse-avalia-forc-a-tarefa-para-coibir-deepfakes), [a OpenAI Frontier foi apresentada como \"colega de trabalho\"](https://diar.ia.br/p/a-escolha-da-anthropic-por-um-claude-sem-anu-ncios) e [uma aliança foi fechada com a Big Four da consultoria](https://diar.ia.br/p/openai-firma-alianc-a-com-big-four-da-consultoria). Em maio, o Codex chegou [ao celular](https://diar.ia.br/p/anthropic-e-gates-200-mi-em-sa-de-e-educa-o) e, 4 dias depois, [a ambientes locais via parceria com a Dell](https://diar.ia.br/p/dell-e-openai-levam-codex-a-ambientes-locais). Em junho, [o ChatGPT foi descrito como tendo deixado de ser chatbot para virar agente](https://diar.ia.br/p/chatgpt-deixa-de-ser-chatbot-vira-agente), [a OpenAI comprou a Ona para dar memória ao Codex](https://diar.ia.br/p/amodei-desemprego-pode-ser-permanente) 3 dias depois, e [o Codex chegou a 270 mil funcionários da Samsung](https://diar.ia.br/p/modelos-podem-derrubar-governos-em-meses) 11 dias depois disso. Em julho, [o ChatGPT ganhou uma versão voltada a pequenos negócios](https://diar.ia.br/p/google-lanca-trio-gemini-3-6-e-3-5-flash).",
-          "Em paralelo, o ChatGPT também virou canal de publicidade: [\"o ChatGPT agora tem anúncios, será tendência?\"](https://diar.ia.br/p/o-chatgpt-agora-tem-anu-ncios-sera-tende-ncia) perguntou a diar.ia.br em 20/01/2026; 106 dias depois, [a OpenAI lançou o Ads Manager](https://diar.ia.br/p/gpt-5-5-instant-chega-como-padr-o-do-chatgpt) para o ChatGPT; e outros 91 dias depois, [passou a testar anúncios no Brasil](https://diar.ia.br/p/ia-por-tras-de-50-dos-cibercrimes-africanos), a manchete mais recente coberta por este hub.",
+          "Em paralelo, o ChatGPT também virou canal de publicidade: [\"o ChatGPT agora tem anúncios, será tendência?\"](https://diar.ia.br/p/o-chatgpt-agora-tem-anu-ncios-sera-tende-ncia) perguntou a diar.ia.br em 20/01/2026; 106 dias depois, [a OpenAI lançou o Ads Manager](https://diar.ia.br/p/gpt-5-5-instant-chega-como-padr-o-do-chatgpt) para o ChatGPT; e outros 91 dias depois, [passou a testar anúncios no Brasil](https://diar.ia.br/p/ia-por-tras-de-50-dos-cibercrimes-africanos). Dois dias depois disso, veio o movimento oposto: [o ChatGPT removeu o teto de mensagens do plano gratuito](https://diar.ia.br/p/meta-lucrou-com-anuncios-de-abuso-infantil-por-ia), ao mesmo tempo em que trocava o modelo padrão para o GPT-5.6 Luna — o mesmo modelo passou a responder pagantes e não pagantes, tirando da quantidade de mensagens o que diferenciava o plano pago, a manchete mais recente coberta por este hub.",
         ],
       },
       {

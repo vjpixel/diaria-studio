@@ -1,22 +1,6 @@
 [
   {
-    "date": "2025-09-03",
-    "editionSlug": "microsoft-lan-a-ia-pr-pria",
-    "url": "https://diar.ia.br/p/microsoft-lan-a-ia-pr-pria",
-    "matchedHeadlines": [
-      "OpenAI e Anthropic fazem avaliação conjunta de segurança"
-    ]
-  },
-  {
-    "date": "2025-09-03",
-    "editionSlug": "openai-processada-por-suic-dio-de-adolescente",
-    "url": "https://diar.ia.br/p/openai-processada-por-suic-dio-de-adolescente",
-    "matchedHeadlines": [
-      "OpenAI processada por suicídio de adolescente"
-    ]
-  },
-  {
-    "date": "2025-09-03",
+    "date": "2025-08-27",
     "editionSlug": "google-lan-a-gemini-2-5-flash-image",
     "url": "https://diar.ia.br/p/google-lan-a-gemini-2-5-flash-image",
     "matchedHeadlines": [
@@ -24,7 +8,23 @@
     ]
   },
   {
-    "date": "2025-09-03",
+    "date": "2025-08-28",
+    "editionSlug": "openai-processada-por-suic-dio-de-adolescente",
+    "url": "https://diar.ia.br/p/openai-processada-por-suic-dio-de-adolescente",
+    "matchedHeadlines": [
+      "OpenAI processada por suicídio de adolescente"
+    ]
+  },
+  {
+    "date": "2025-08-29",
+    "editionSlug": "microsoft-lan-a-ia-pr-pria",
+    "url": "https://diar.ia.br/p/microsoft-lan-a-ia-pr-pria",
+    "matchedHeadlines": [
+      "OpenAI e Anthropic fazem avaliação conjunta de segurança"
+    ]
+  },
+  {
+    "date": "2025-09-02",
     "editionSlug": "china-implementa-lei-obrigat-ria-de-rotulagem-de-conte-do-gerado-por-ia",
     "url": "https://diar.ia.br/p/china-implementa-lei-obrigat-ria-de-rotulagem-de-conte-do-gerado-por-ia",
     "matchedHeadlines": [
@@ -765,6 +765,14 @@
     "url": "https://diar.ia.br/p/ia-por-tras-de-50-dos-cibercrimes-africanos",
     "matchedHeadlines": [
       "OpenAI testa anúncios no Brasil"
+    ]
+  },
+  {
+    "date": "2026-08-07",
+    "editionSlug": "meta-lucrou-com-anuncios-de-abuso-infantil-por-ia",
+    "url": "https://diar.ia.br/p/meta-lucrou-com-anuncios-de-abuso-infantil-por-ia",
+    "matchedHeadlines": [
+      "ChatGPT libera mensagens ilimitadas no gratuito"
     ]
   }
 ]
