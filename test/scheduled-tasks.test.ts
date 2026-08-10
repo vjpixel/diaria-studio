@@ -185,6 +185,7 @@ describe("registro <-> scripts/run-*.ps1: mesmos scripts .ts invocados (ordem pr
     "Diaria-Apoios-Diff-Alarm": "scripts/run-apoios-diff-alarm.ps1",
     "Diaria-Brevo-Diaria-Guardrail": "scripts/run-check-brevo-diaria-guardrail.ps1",
     "Diaria-Clarice-Guardrail-Alarm": "scripts/run-clarice-guardrail-alarm.ps1",
+    "Diaria-Clarice-Novos": "scripts/run-clarice-novos.ps1",
     "Diaria-Clarice-Opens-Catchup-Alarm": "scripts/run-clarice-opens-catchup-alarm.ps1",
     "Diaria-Clarice-Sync": "scripts/run-clarice-sync-daily.ps1",
     "Diaria-Cursos-Error-Alarm": "scripts/run-cursos-error-alarm.ps1",

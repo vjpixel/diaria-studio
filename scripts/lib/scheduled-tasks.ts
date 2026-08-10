@@ -249,6 +249,32 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4750",
   },
   {
+    name: "Diaria-Clarice-Novos",
+    description: "envio diario aos cadastros novos da Clarice (Stripe -> MV -> campanha)",
+    // Kill switch dedicado (#4941 E3): ANTES de qualquer chamada externa,
+    // clarice-novos-run.ts checa data/clarice-novos-enabled.json (default
+    // `enabled: false` quando ausente — lado seguro, ao contrário do guard
+    // abaixo, que é sinal de "data/ ainda não montada"). Os dois convivem:
+    // este guard cobre "junction ainda não sincronizou"; o toggle cobre "o
+    // editor pausou a automação de propósito".
+    steps: [{ key: "run", script: "scripts/clarice-novos-run.ts" }],
+    logPath: "clarice-subscribers/.novos-run.log",
+    // 17:00 BRT (decisão do editor, #4941) — sem colisão com nenhuma outra
+    // task armada (a mais próxima do horário é o ciclo de 4h do
+    // Diaria-Clarice-Guardrail-Alarm). Supera a decisão D5 do #4347
+    // ("~4×/semana, invocação manual") — a skill manual continua existindo,
+    // delegando pro mesmo orquestrador (ver .claude/skills/diaria-clarice-novos).
+    schedule: { kind: "daily", hour: 17, minute: 0 },
+    guard: {
+      requiredFile: "clarice-subscribers/clarice-users.db",
+      abortMessage:
+        "clarice-users.db nao encontrado (data/clarice-subscribers/clarice-users.db) -- provavel junction " +
+        "data/ nao montada ainda; abortando por seguranca, sem tocar Stripe/MV/Brevo.",
+    },
+    legacySetupScript: "scripts/setup-clarice-novos-schedule.ps1",
+    issue: "#4347, #4941",
+  },
+  {
     name: "Diaria-Postmaster-Spam-Sync",
     description: "sync automatico do spamRate do Google Postmaster Tools",
     steps: [{ key: "sync", script: "scripts/postmaster-spam-sync.ts" }],

@@ -112,7 +112,12 @@ describe("buildTasksData (#4799) — orquestração fim-a-fim", () => {
     const root = makeRoot();
     try {
       const data = buildTasksData(root, {
-        now: () => new Date("2026-08-10T20:00:00.000Z"), // bem depois de qualquer daily/weekly do dia
+        // #4941: Diaria-Clarice-Novos passou a rodar às 17:00 BRT — 20:00 UTC
+        // colidia exatamente com o `mostRecent` dela (grace de 60min fazia
+        // ela sozinha reportar overdue=false enquanto as demais davam true).
+        // 23:00 UTC (20:00 BRT) fica depois de TODA daily/weekly + o grace,
+        // inclusive a mais tardia (17:00).
+        now: () => new Date("2026-08-10T23:00:00.000Z"), // bem depois de qualquer daily/weekly do dia
         queryArmedFn: () => ({ scheduler: "systemd", state: "disabled", note: null }),
         readLastRunFn: () => ({ ...NEVER_RUN }),
       });
