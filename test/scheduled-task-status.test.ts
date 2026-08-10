@@ -169,6 +169,29 @@ describe("queryTaskArmed (#4799)", () => {
     assert.equal(result.state, "cannot_verify");
   });
 
+  it("Linux/systemd: unit ausente via exceção com stdout 'not-found' (comportamento REAL observado ao vivo, #4857) -> not_armed, NÃO cannot_verify", () => {
+    // Achado ao vivo desta unidade (#4857, validado contra `systemctl` real
+    // — não a fixture especulativa do teste acima): `systemctl --user
+    // is-enabled <unit ausente>.timer` sai != 0 (4, nesta máquina) E stdout
+    // "not-found\n", stderr vazio — DIFERENTE do fixture "Failed to get unit
+    // file state..." do teste anterior (#4833 achado 2), que pode
+    // representar outro caminho de erro (ex: `systemctl status`/`show`) mas
+    // não é o que `is-enabled` reporta pra unit ausente nesta versão real do
+    // systemd (259). Sem este branch, o caso MAIS COMUM (unit simplesmente
+    // nunca armada) virava `cannot_verify` — um falso "não deu pra
+    // verificar" bem no caso central que esta função existe pra responder.
+    const exec = (() => {
+      const err: { status: number; stdout: string; stderr: string } = {
+        status: 4,
+        stdout: "not-found\n",
+        stderr: "",
+      };
+      throw err;
+    }) as unknown as typeof import("node:child_process").execFileSync;
+    const result = queryTaskArmed("Diaria-Apoios-Diff-Alarm", { execFn: exec, taskSchedulerFn: () => "systemd" });
+    assert.equal(result.state, "not_armed");
+  });
+
   it("Linux/systemd: exceção genuinamente não reconhecida do systemctl (ex: permissão) -> cannot_verify, NUNCA not_armed (#4833 achado 2)", () => {
     const exec = (() => {
       const err: { status: number; stdout: string; stderr: string } = {

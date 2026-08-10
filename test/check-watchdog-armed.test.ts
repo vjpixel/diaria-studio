@@ -19,6 +19,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import {
   isWatchdogTaskScheduled,
   decideWatchdogArmingAction,
@@ -32,6 +33,12 @@ import {
   queryWatchdogTaskVerboseOutput,
   buildWatchdogCannotVerifyMessage,
   checkWatchdogArmed,
+  queryLinuxTimerArmed,
+  watchdogTimerUnitName,
+  buildWatchdogLinuxNotArmedMessage,
+  buildWatchdogLinuxDisabledMessage,
+  buildWatchdogLinuxCannotVerifyMessage,
+  type LinuxWatchdogArmedResult,
 } from "../scripts/lib/check-watchdog-armed.ts";
 
 // ---------------------------------------------------------------------------
@@ -481,17 +488,6 @@ describe("checkWatchdogArmed roteamento por agendador (#4800 regressão)", () =>
     assert.equal(emitted[0].eventMessage, "watchdog_cannot_verify");
   });
 
-  it("Linux com systemd disponível (schedulerKind='systemd') → cannot_verify, nomeia o #4798", () => {
-    const result = checkWatchdogArmed({
-      execModeFn: () => "local",
-      taskSchedulerFn: () => "systemd",
-      emitWarn: () => {},
-    });
-    assert.equal(result.armedStatus, "cannot_verify");
-    assert.equal(result.action, "cannot_verify_warn");
-    assert.match(result.message, /#4798/);
-  });
-
   it("modo cloud → skip_cloud independente do agendador (taskSchedulerFn nem é chamado)", () => {
     let taskSchedulerCalled = false;
     const result = checkWatchdogArmed({
@@ -529,5 +525,227 @@ describe("queryWatchdogTaskVerboseOutput (#2944)", () => {
       throw new Error("comando falhou");
     }) as unknown as typeof import("node:child_process").execFileSync;
     assert.equal(queryWatchdogTaskVerboseOutput(mockExec), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// queryLinuxTimerArmed / branch systemd de checkWatchdogArmed (#4857)
+//
+// NUNCA chama `systemctl` real — todo caso passa um mock de `exec`
+// (`queryLinuxTimerArmed`) ou de `queryLinuxTimerArmedFn`
+// (`checkWatchdogArmed`), mesma disciplina de fixture-only do resto deste
+// arquivo. `watchdogTimerUnitName()` == "diaria-overnight-watchdog.timer" —
+// travado contra `unitBaseName(WATCHDOG_TASK_NAME)` pra nunca divergir em
+// silêncio do que `scripts/lib/systemd-units.ts`/`watchdog-systemd-units.ts`
+// geram.
+// ---------------------------------------------------------------------------
+
+describe("watchdogTimerUnitName (#4857)", () => {
+  it("deriva o nome do unit a partir de WATCHDOG_TASK_NAME (kebab-case + .timer)", () => {
+    assert.equal(watchdogTimerUnitName(), "diaria-overnight-watchdog.timer");
+  });
+});
+
+describe("queryLinuxTimerArmed (#4857)", () => {
+  it("'enabled' → armed", () => {
+    const mockExec = (() => "enabled\n") as unknown as typeof import("node:child_process").execFileSync;
+    assert.deepEqual(queryLinuxTimerArmed(WATCHDOG_TASK_NAME, mockExec), { state: "armed", note: null });
+  });
+
+  it("'disabled' (stdout, exit 0) → disabled", () => {
+    const mockExec = (() => "disabled\n") as unknown as typeof import("node:child_process").execFileSync;
+    assert.deepEqual(queryLinuxTimerArmed(WATCHDOG_TASK_NAME, mockExec), { state: "disabled", note: null });
+  });
+
+  it("'disabled' via exceção com stdout (variante real do systemctl: is-enabled sai != 0 pra disabled)", () => {
+    const mockExec = (() => {
+      throw Object.assign(new Error("exit 1"), { status: 1, stdout: "disabled\n", stderr: "" });
+    }) as unknown as typeof import("node:child_process").execFileSync;
+    assert.deepEqual(queryLinuxTimerArmed(WATCHDOG_TASK_NAME, mockExec), { state: "disabled", note: null });
+  });
+
+  it("unit ausente ('not-found', caminho de sucesso hipotético) → not_armed", () => {
+    const mockExec = (() => "not-found\n") as unknown as typeof import("node:child_process").execFileSync;
+    assert.deepEqual(queryLinuxTimerArmed(WATCHDOG_TASK_NAME, mockExec), { state: "not_armed", note: null });
+  });
+
+  it("unit ausente via exceção com stdout 'not-found' — REGRESSÃO (#4857, achado ao vivo): " +
+    "systemctl --user is-enabled real sai != 0 (não 0) pra unit ausente, com 'not-found' em stdout do ERRO, " +
+    "não do caminho de sucesso. Sem este branch, virava cannot_verify.", () => {
+    const mockExec = (() => {
+      throw Object.assign(new Error("Command failed"), { status: 4, stdout: "not-found\n", stderr: "" });
+    }) as unknown as typeof import("node:child_process").execFileSync;
+    assert.deepEqual(queryLinuxTimerArmed(WATCHDOG_TASK_NAME, mockExec), { state: "not_armed", note: null });
+  });
+
+  it("stdout vazio → not_armed", () => {
+    const mockExec = (() => "") as unknown as typeof import("node:child_process").execFileSync;
+    assert.deepEqual(queryLinuxTimerArmed(WATCHDOG_TASK_NAME, mockExec), { state: "not_armed", note: null });
+  });
+
+  it("systemctl ausente (ENOENT) → cannot_verify, note explica o motivo", () => {
+    const mockExec = (() => {
+      throw Object.assign(new Error("spawn systemctl ENOENT"), { code: "ENOENT" });
+    }) as unknown as typeof import("node:child_process").execFileSync;
+    const result = queryLinuxTimerArmed(WATCHDOG_TASK_NAME, mockExec);
+    assert.equal(result.state, "cannot_verify");
+    assert.match(result.note ?? "", /ENOENT/);
+  });
+
+  it("sessão --user indisponível ('Failed to connect to bus') → cannot_verify, nunca not_armed", () => {
+    const mockExec = (() => {
+      throw Object.assign(new Error("exit 1"), {
+        status: 1,
+        stdout: "",
+        stderr: "Failed to connect to bus: No such file or directory\n",
+      });
+    }) as unknown as typeof import("node:child_process").execFileSync;
+    const result = queryLinuxTimerArmed(WATCHDOG_TASK_NAME, mockExec);
+    assert.equal(result.state, "cannot_verify");
+    assert.notEqual(result.state, "not_armed");
+  });
+
+  it("erro inesperado não reconhecido → cannot_verify (conservador — nunca inventa armed/not_armed)", () => {
+    const mockExec = (() => {
+      throw Object.assign(new Error("exit 3"), { status: 3, stdout: "", stderr: "Permission denied\n" });
+    }) as unknown as typeof import("node:child_process").execFileSync;
+    const result = queryLinuxTimerArmed(WATCHDOG_TASK_NAME, mockExec);
+    assert.equal(result.state, "cannot_verify");
+    assert.match(result.note ?? "", /Permission denied/);
+  });
+
+  it("usa unitBaseName(taskName) — outra task além do watchdog resolve pra outro unit", () => {
+    let calledUnit: string | undefined;
+    const mockExec = ((_cmd: string, args: string[]) => {
+      calledUnit = args[2];
+      return "enabled\n";
+    }) as unknown as typeof import("node:child_process").execFileSync;
+    queryLinuxTimerArmed("Diaria-Apoios-Diff-Alarm", mockExec);
+    assert.equal(calledUnit, "diaria-apoios-diff-alarm.timer");
+  });
+});
+
+describe("queryLinuxTimerArmed — validação real via systemctl (quando disponível, #4857)", () => {
+  // Complementa os mocks acima com a validação AUTORITATIVA que encontrou o
+  // achado ao vivo desta unidade: bater o `systemctl` DE VERDADE (sessão
+  // `--user` desta máquina) contra uma unit garantidamente inexistente —
+  // read-only, nunca cria/altera/habilita nenhuma unit — e confirmar que o
+  // resultado é `not_armed`, nunca `cannot_verify`. Skip gracioso se
+  // `systemctl --user` não responder (ex: CI sem sessão de usuário/bus).
+  let userSystemctlWorks = false;
+  try {
+    execFileSync("systemctl", ["--user", "is-enabled", "diaria-4857-unit-que-nunca-existe.timer"], {
+      stdio: "pipe",
+    });
+    userSystemctlWorks = true; // não deveria chegar aqui (unit não existe)
+  } catch (e: unknown) {
+    const err = e as { code?: string; stdout?: string; stderr?: string };
+    // "Funciona" = o systemctl respondeu de forma reconhecível (stdout
+    // "not-found"), não necessariamente com exit 0. Só ENOENT/bus
+    // indisponível desqualifica a validação.
+    userSystemctlWorks =
+      err.code !== "ENOENT" && String(err.stdout ?? "").trim() === "not-found";
+  }
+
+  it("unit garantidamente inexistente → not_armed (nunca cannot_verify)", { skip: !userSystemctlWorks }, () => {
+    const result = queryLinuxTimerArmed("Diaria-4857-Unit-Que-Nunca-Existe");
+    assert.equal(result.state, "not_armed");
+  });
+});
+
+describe("buildWatchdogLinux*Message (#4857)", () => {
+  it("not_armed menciona o unit, o gerador de units e o comando enable --now", () => {
+    const msg = buildWatchdogLinuxNotArmedMessage();
+    assert.match(msg, /diaria-overnight-watchdog\.timer/);
+    assert.match(msg, /setup-watchdog-schedule-systemd\.ts/);
+    assert.match(msg, /systemctl --user enable --now/);
+  });
+
+  it("disabled menciona DESABILITADA, o #2944 e o comando de reativação", () => {
+    const msg = buildWatchdogLinuxDisabledMessage();
+    assert.match(msg, /DESABILITADA/);
+    assert.match(msg, /#2944/);
+    assert.match(msg, /systemctl --user enable --now diaria-overnight-watchdog\.timer/);
+  });
+
+  it("cannot_verify inclui o note quando presente, e nunca afirma 'não armado'", () => {
+    const msg = buildWatchdogLinuxCannotVerifyMessage("systemctl indisponível (ENOENT) nesta consulta.");
+    assert.match(msg, /ENOENT/);
+    assert.doesNotMatch(msg, /^Watchdog.*NÃO está armado/);
+  });
+
+  it("cannot_verify sem note ainda produz mensagem coerente", () => {
+    const msg = buildWatchdogLinuxCannotVerifyMessage(null);
+    assert.match(msg, /NÃO PÔDE SER VERIFICADO via systemd/);
+  });
+});
+
+describe("checkWatchdogArmed — roteamento systemd (#4857, #633)", () => {
+  const injected = (result: LinuxWatchdogArmedResult) => ({
+    execModeFn: () => "local" as const,
+    taskSchedulerFn: () => "systemd" as const,
+    queryLinuxTimerArmedFn: () => result,
+  });
+
+  it("timer armado → armed:true, action:'armed', armedStatus:'armed', sem emitir warning", () => {
+    const emitted: unknown[] = [];
+    const result = checkWatchdogArmed({
+      ...injected({ state: "armed", note: null }),
+      emitWarn: (...args) => emitted.push(args),
+    });
+    assert.equal(result.mode, "local");
+    assert.equal(result.armed, true);
+    assert.equal(result.action, "armed");
+    assert.equal(result.armedStatus, "armed");
+    assert.equal(result.taskState, null);
+    assert.equal(emitted.length, 0);
+  });
+
+  it("unit ausente → armed:false, action:'not_armed_warn', armedStatus:'not_armed', emite warning", () => {
+    const emitted: Array<{ message: string; eventMessage?: string }> = [];
+    const result = checkWatchdogArmed({
+      ...injected({ state: "not_armed", note: null }),
+      emitWarn: (message, eventMessage) => emitted.push({ message, eventMessage }),
+    });
+    assert.equal(result.armed, false);
+    assert.equal(result.action, "not_armed_warn");
+    assert.equal(result.armedStatus, "not_armed");
+    assert.match(result.message, /setup-watchdog-schedule-systemd\.ts/);
+    assert.equal(emitted.length, 1);
+  });
+
+  it("unit desabilitada → armedStatus:'armed_but_disabled', action:'not_armed_warn' (mesma classe do #2944)", () => {
+    const result = checkWatchdogArmed({
+      ...injected({ state: "disabled", note: null }),
+      emitWarn: () => {},
+    });
+    assert.equal(result.armed, false);
+    assert.equal(result.action, "not_armed_warn");
+    assert.equal(result.armedStatus, "armed_but_disabled");
+    assert.match(result.message, /DESABILITADA/);
+  });
+
+  it("consulta falha (cannot_verify) → armedStatus:'cannot_verify', NUNCA not_armed", () => {
+    const emitted: Array<{ message: string; eventMessage?: string }> = [];
+    const result = checkWatchdogArmed({
+      ...injected({ state: "cannot_verify", note: "sessão systemd --user indisponível." }),
+      emitWarn: (message, eventMessage) => emitted.push({ message, eventMessage }),
+    });
+    assert.equal(result.action, "cannot_verify_warn");
+    assert.equal(result.armedStatus, "cannot_verify");
+    assert.notEqual(result.armedStatus, "not_armed");
+    assert.match(result.message, /indisponível/);
+    assert.equal(emitted[0]?.eventMessage, "watchdog_cannot_verify");
+  });
+
+  it("default (sem queryLinuxTimerArmedFn) usa a função real — não exercitado aqui de propósito (chamaria systemctl real)", () => {
+    // Nenhuma asserção de comportamento aqui — este teste documenta a
+    // omissão: `checkWatchdogArmed({ taskSchedulerFn: () => "systemd" })`
+    // SEM `queryLinuxTimerArmedFn` chamaria `queryLinuxTimerArmed` real (que
+    // spawna `systemctl` de verdade) — mesmo motivo pelo qual o caminho
+    // Windows já omite esse tipo de teste end-to-end (ver nota acima, describe
+    // "checkWatchdogArmed roteamento por agendador"). A cobertura do
+    // ROTEAMENTO fica inteiramente nos testes acima, via injeção.
+    assert.ok(true);
   });
 });

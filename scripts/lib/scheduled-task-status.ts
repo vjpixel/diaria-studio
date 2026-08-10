@@ -141,6 +141,20 @@ function queryLinuxTaskArmed(taskName: string, execFn: typeof execFileSync): Tas
     if (stdoutTrim === "disabled") {
       return { scheduler, state: "disabled", note: null };
     }
+    // Achado AO VIVO (#4857, validado contra `systemctl` real, não só
+    // fixture): `systemctl --user is-enabled <unit ausente>` sai com exit
+    // code != 0 (4, verificado nesta máquina) E stdout "not-found\n" — o
+    // caso "não armada" chega por EXCEÇÃO, não pelo caminho de sucesso
+    // acima. Sem este branch, o caso MAIS COMUM (unit simplesmente ausente)
+    // caía no "erro não reconhecido" abaixo e virava `cannot_verify` — um
+    // falso "não deu pra verificar" bem no caso que esta função existe pra
+    // responder. Distinto de stdout VAZIO na exceção (não tratado aqui como
+    // not_armed): um erro que falhou antes de imprimir nada (bus
+    // indisponível, permissão negada) também zera o stdout, e inferir
+    // "ausente" dali inventaria uma resposta sem certeza suficiente.
+    if (stdoutTrim === "not-found") {
+      return { scheduler, state: "not_armed", note: null };
+    }
     const stderrText = String(err.stderr ?? "");
     if (/failed to connect to bus/i.test(stderrText)) {
       return {
@@ -149,13 +163,12 @@ function queryLinuxTaskArmed(taskName: string, execFn: typeof execFileSync): Tas
         note: "sessão systemd --user indisponível neste processo (sem bus de sessão) — não é a mesma coisa que 'não armada'.",
       };
     }
-    // Qualquer outro erro (inclusive o caso comum de unit não encontrada,
-    // stderr "Failed to get unit file state for X: No such file or
-    // directory") NÃO é confirmação positiva de "não armada" — é só um erro
-    // do systemctl que este módulo não reconhece com certeza suficiente pra
-    // afirmar um estado. Antes desta correção (#4833, achado 2 do fleet
-    // review pré-merge da PR #4833) um erro genuinamente inesperado (ex:
-    // permissão) caía neste mesmo caminho e era mal-relatado como "não
+    // Qualquer OUTRO erro não reconhecido (stderr sem "not-found" em stdout,
+    // sem bus indisponível) NÃO é confirmação positiva de "não armada" — é
+    // só um erro do systemctl que este módulo não reconhece com certeza
+    // suficiente pra afirmar um estado. Antes da correção do #4833 (achado 2
+    // do fleet review pré-merge da PR #4833) um erro genuinamente inesperado
+    // (ex: permissão) caía neste mesmo caminho e era mal-relatado como "não
     // armada" — mesma classe do incidente #2944, mas do lado Linux. Honesto
     // é reportar `cannot_verify` e deixar o stderr bruto (truncado) no note.
     return {
