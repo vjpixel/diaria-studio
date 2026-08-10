@@ -141,11 +141,11 @@ describe("orchestrator-prompt (#634)", () => {
       // em §0l + resolução da edição referenciada em §0-replies). Teto bumped
       // de 520→535 com headroom (era 521 medido pós-#3530).
       "orchestrator-stage-0-preflight.md": 535,
-      // #4135 item 3: +10 linhas (novo guard 1v-quinquies — cross-check
-      // destaque-imprensa × oficial no pool da mesma edição). Arquivo tinha
-      // 791 linhas (headroom original de 795 já quase esgotado desde #3842).
-      // Teto bumped de 795→810 com headroom (era 801 medido pós-#4135).
-      "orchestrator-stage-1-research.md": 810,
+      // #4846: +9 linhas (novo passo 1y-bis — dispatch opcional/desligado
+      // por padrão de scripts/experiment-d3-radar.ts logo após os invariants
+      // pós-gate-apply, antes do sentinel do Stage 1). Teto bumped de
+      // 810→825 com headroom (era 813 medido pós-#4846).
+      "orchestrator-stage-1-research.md": 825,
       // #3929: +11 linhas (snapshot pós-humanizador/pré-Clarice + diff legível
       // do social em §2c, 4º arg opcional de pré-Humanizador no clarice-diff.ts
       // da newsletter em §2b, e menção ao novo diff no gate §2d — decorrelaciona
