@@ -2525,20 +2525,20 @@ describe("CLI --stage N", () => {
     }
   });
 
-  it("--stage 0 carrega .env.local via DIARIA_PROJECT_ROOT (#1010 item 4)", () => {
-    // E2E real: escreve .env.local em tmp dir, invoca CLI com
-    // DIARIA_PROJECT_ROOT apontando pra ele, valida que loadProjectEnv()
-    // foi chamado (BEEHIIV_API_KEY do disco satisfaz beehiiv-key-set).
-    // Cobre o gap onde testes anteriores setavam process.env manual e nunca
-    // exercitavam o caminho de leitura do disco no CLI.
+  it("--stage 0 carrega .env via DIARIA_PROJECT_ROOT (#1010 item 4, #4820)", () => {
+    // E2E real: escreve .env em tmp dir, invoca CLI com DIARIA_PROJECT_ROOT
+    // apontando pra ele, valida que loadProjectEnv() foi chamado
+    // (BEEHIIV_API_KEY do disco satisfaz beehiiv-key-set). Cobre o gap onde
+    // testes anteriores setavam process.env manual e nunca exercitavam o
+    // caminho de leitura do disco no CLI.
     const tmpRoot = mkdtempSync(join(tmpdir(), "diaria-cli-env-"));
     try {
       writeFileSync(
-        join(tmpRoot, ".env.local"),
-        "BEEHIIV_API_KEY=from-env-local\n",
+        join(tmpRoot, ".env"),
+        "BEEHIIV_API_KEY=from-env\n",
       );
       // dotenv usa override:false → BEEHIIV_API_KEY precisa estar AUSENTE
-      // (não vazio) no env do subprocess pra que .env.local consiga setá-lo.
+      // (não vazio) no env do subprocess pra que .env consiga setá-lo.
       // Construímos um env limpo sem BEEHIIV_API_KEY herdado do shell parent.
       const scriptPath = join(PROJECT_ROOT, "scripts", "check-invariants.ts");
       const cleanEnv: Record<string, string> = {};
@@ -2558,7 +2558,7 @@ describe("CLI --stage N", () => {
       assert.equal(
         beehivViolations.length,
         0,
-        `BEEHIIV_API_KEY do .env.local deveria satisfazer regra; achei ${JSON.stringify(beehivViolations)} (stderr: ${r.stderr})`,
+        `BEEHIIV_API_KEY do .env deveria satisfazer regra; achei ${JSON.stringify(beehivViolations)} (stderr: ${r.stderr})`,
       );
       assert.ok(out.rules_run.includes("beehiiv-key-set"));
     } finally {

@@ -27,7 +27,7 @@
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 
-loadProjectEnv(); // carrega .env/.env.local antes de ler process.env
+loadProjectEnv(); // carrega .env antes de ler process.env
 
 // ── Cloudflare API v4 endpoint de verificação ─────────────────────────────────
 // GET /user/tokens/verify — 200 + { result: { status: "active" } } = válido

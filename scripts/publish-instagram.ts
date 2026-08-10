@@ -46,7 +46,7 @@
  */
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
-loadProjectEnv(); // carrega .env.local + .env antes de process.env access
+loadProjectEnv(); // carrega .env antes de process.env access
 
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -353,7 +353,7 @@ async function main() {
           "",
           "A API do Instagram não agenda nativamente (#3817) — sem o Worker",
           "não há como agendar. Resolução:",
-          "  1. Confirmar .env.local com DIARIA_LINKEDIN_CRON_TOKEN",
+          "  1. Confirmar .env com DIARIA_LINKEDIN_CRON_TOKEN",
           "  2. Confirmar platform.config.json (ou env DIARIA_LINKEDIN_CRON_URL)",
           "     com cloudflare_worker_url em publishing.social.linkedin (ou .instagram)",
           "  3. OU rodar SEM --schedule pra publicar imediatamente conscientemente",
@@ -383,7 +383,7 @@ async function main() {
       .join(", ");
     console.warn(
       `SKIP: ${missing} ausente(s) — Instagram não publicado nesta edição.\n` +
-        "Configure em .env.local para habilitar o Instagram.\n" +
+        "Configure em .env para habilitar o Instagram.\n" +
         "  INSTAGRAM_BUSINESS_ACCOUNT_ID: developers.facebook.com/apps/ → Instagram → Business Account ID\n" +
         "  INSTAGRAM_ACCESS_TOKEN: developers.facebook.com/tools/explorer/ (escopos: instagram_basic, instagram_content_publish)",
     );

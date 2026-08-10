@@ -23,7 +23,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #3904
 
-loadProjectEnv(); // #1219 — carrega .env/.env.local antes de ler process.env.
+loadProjectEnv(); // #1219 — carrega .env antes de ler process.env.
 
 const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? DIARIA_EIA_URL;
 

@@ -27,7 +27,7 @@
  */
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
-loadProjectEnv(); // #1157 — carrega .env.local + .env antes de process.env access (CLOUDFLARE_*)
+loadProjectEnv(); // #1157 — carrega .env antes de process.env access (CLOUDFLARE_*)
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";

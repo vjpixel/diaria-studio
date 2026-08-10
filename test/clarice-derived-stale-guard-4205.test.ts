@@ -143,7 +143,7 @@ async function withMockedExit<T>(
 }
 
 // #4347: isola de um BREVO_CLARICE_API_KEY real que `loadProjectEnv()` possa
-// ter carregado de `.env.local` na máquina do editor — sem isso, o guard
+// ter carregado de `.env` na máquina do editor — sem isso, o guard
 // queued/sent novo bateria na rede de verdade num teste. Mesmo helper de
 // test/clarice-build-segment.test.ts.
 async function withoutBrevoKey<T>(fn: () => Promise<T>): Promise<T> {

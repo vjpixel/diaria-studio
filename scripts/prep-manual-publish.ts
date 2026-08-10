@@ -36,7 +36,7 @@ import { dohFetch } from "./lib/doh-fetch.ts"; // #2551: stats fetch via DoH qua
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #3904
 
-loadProjectEnv(); // #1219 — carrega .env/.env.local antes de ler process.env.
+loadProjectEnv(); // #1219 — carrega .env antes de ler process.env.
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POLL_WORKER_URL =

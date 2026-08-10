@@ -77,7 +77,7 @@
 // abaixo SEMPRE deleta CLOUDFLARE_API_TOKEN/CLOUDFLARE_ACCOUNT_ID do env do
 // FILHO antes de invocar, incondicionalmente — não importa como essas vars
 // chegaram em `process.env` deste processo (dotenv, shell export,
-// .env.local), o strip acontece do mesmo jeito. dotenv passou a ser
+// .env), o strip acontece do mesmo jeito. dotenv passou a ser
 // necessário porque #4474 introduziu um 2º caminho de auth neste script —
 // ADMIN_SECRET/POLL_ADMIN_SECRET (mesmas vars que `close-poll.ts` já lê do
 // .env) — pra assinar `POST /admin/purge-score-do` e apagar o storage do DO

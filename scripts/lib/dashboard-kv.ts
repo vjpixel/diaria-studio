@@ -4,7 +4,7 @@
  * Módulo SEM efeitos colaterais (nenhum `loadProjectEnv()` ou I/O no top-level):
  * importar daqui não polui `process.env` nem toca disco. Extraído de
  * `clarice-mv-status.ts` (#2743) — aquele arquivo roda `loadProjectEnv()` no
- * nível de módulo, então importar a constante de lá vazava o `.env.local` pra
+ * nível de módulo, então importar a constante de lá vazava o `.env` pra
  * qualquer consumidor (inclusive testes), quebrando o isolamento.
  *
  * Namespace KV único compartilhado por todas as chaves do dashboard

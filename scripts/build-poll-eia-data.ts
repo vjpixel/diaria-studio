@@ -556,7 +556,7 @@ function parseArgs(argv: string[]): { push: boolean; workerUrl: string } {
 
 async function main(): Promise<void> {
   // #2738: CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_WORKERS_TOKEN (usados por
-  // pushEiaEngagementToBrevoKv) vêm de .env.local — sem isso, o push falha
+  // pushEiaEngagementToBrevoKv) vêm de .env — sem isso, o push falha
   // silenciosamente (fail-soft) mesmo com os secrets configurados na máquina
   // (mesmo padrão de stripe-coupon-usage.ts/clarice-mv-status.ts/clarice-db-summary.ts).
   loadProjectEnv();

@@ -116,7 +116,7 @@ export function readApoiaSeEnv(env: NodeJS.ProcessEnv = process.env): ApoiaSeEnv
   if (missing.length > 0) {
     throw new Error(
       `apoia.se: variável(is) de ambiente ausente(s): ${missing.join(", ")}. ` +
-        `Configure em .env.local (ver .env.example) — nunca hardcode a credencial no código.`,
+        `Configure em .env (ver .env.example) — nunca hardcode a credencial no código.`,
     );
   }
   return { apiKey, apiSecret, campaign };
@@ -347,7 +347,7 @@ async function fetchBackerStatus(
         // corpo não-JSON — mantém a mensagem default
       }
       throw new ApoiaSeAuthError(
-        `apoia.se: 401 (${message}) — verifique APOIA_SE_API_KEY/APOIA_SE_API_SECRET em .env.local.`,
+        `apoia.se: 401 (${message}) — verifique APOIA_SE_API_KEY/APOIA_SE_API_SECRET em .env.`,
       );
     }
 

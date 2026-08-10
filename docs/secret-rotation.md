@@ -213,7 +213,7 @@ Calendário sugerido — colar no calendário do editor:
 
 Todos gitignored (verificar `.gitignore`):
 
-- `.env` / `.env.local` — env vars locais.
+- `.env` — env vars locais (`.env.local` gitignored mas não mais lido, #4820 — migrar conteúdo pra `.env` se ainda existir localmente).
 - `data/.credentials.json` — Google OAuth.
 - `data/.fb-credentials.json` — Facebook Page token.
 - `data/inbox.md` / `data/inbox-cursor.json` — pode conter PII (#102).

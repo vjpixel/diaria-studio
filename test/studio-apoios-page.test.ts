@@ -9,7 +9,7 @@
  * As 3 env vars da apoia.se são deliberadamente limpas em `before`/restauradas
  * em `after` — garante que `GET /api/apoios` cai no caminho fail-soft
  * "credenciais ausentes" (sem nenhuma tentativa de rede real), mesmo que a
- * máquina rodando o teste tenha `.env.local` com credenciais válidas
+ * máquina rodando o teste tenha `.env` com credenciais válidas
  * carregado em outro ponto do processo de teste.
  *
  * A página em si (fetch + forms + `<dialog>`) roda no browser sem harness de

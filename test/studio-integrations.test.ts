@@ -31,7 +31,7 @@
  *      (#3602): env vars reais são deliberadamente limpas em
  *      `before`/restauradas em `after`, e `integrationsFetchImpl` injetado
  *      nunca bate em rede real — dupla proteção mesmo que a máquina rodando
- *      o teste tenha `.env.local`/env persistido com credenciais válidas.
+ *      o teste tenha `.env`/env persistido com credenciais válidas.
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";

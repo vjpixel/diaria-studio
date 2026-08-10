@@ -50,7 +50,7 @@ loadProjectEnv();
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // BEEHIIV_API_URL override permite testes apontarem para mock server. Getter
 // lazy chamado AQUI, pós loadProjectEnv() — crítico pra honrar overrides
-// carregados via .env/.env.local (#2850).
+// carregados via .env (#2850).
 const BEEHIIV_API = beehiivApiBase(); // #2834/#2850: base URL centralizada em lib/beehiiv-config.ts
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────

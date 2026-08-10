@@ -15,7 +15,7 @@ O watchdog detecta stall em rodadas overnight de forma independente do coordenad
    - Registra entrada em `stall_events` no `plan.json` (com dedup: não repete na mesma janela de 30 min).
    - Emite evento `stall_detected` no `data/run-log.jsonl`.
    - Exibe halt banner no terminal/log da task.
-   - (Opcional) Envia alerta Telegram se `TELEGRAM_BOT_TOKEN` + `TELEGRAM_WATCHDOG_CHAT_ID` estiverem no `.env.local`.
+   - (Opcional) Envia alerta Telegram se `TELEGRAM_BOT_TOKEN` + `TELEGRAM_WATCHDOG_CHAT_ID` estiverem no `.env`.
 
 ---
 
@@ -94,7 +94,7 @@ npx tsx scripts\overnight-watchdog.ts --threshold 2 --dry-run
 
 ## Configuração de alerta Telegram (opcional)
 
-O watchdog envia alerta direto pelo Bot API do Telegram se as variáveis abaixo estiverem no `.env.local`:
+O watchdog envia alerta direto pelo Bot API do Telegram se as variáveis abaixo estiverem no `.env`:
 
 ```env
 # Token do bot criado via @BotFather (mesmo do docs/telegram-setup.md)
@@ -116,7 +116,7 @@ Sem essas variáveis, o watchdog funciona normalmente mas não envia Telegram �
 Limiar padrão: 60 min. Para alterar:
 
 ```env
-# Em .env.local:
+# Em .env:
 OVERNIGHT_WATCHDOG_STALL_MIN=45
 ```
 

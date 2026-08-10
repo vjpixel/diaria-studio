@@ -198,7 +198,7 @@ async function main(): Promise<void> {
   if (!url) {
     process.stderr.write(
       "Uso: verify-remote-tunnel.ts --url https://studio.diar.ia.br [--marker STRING] [--timeout-ms N]\n" +
-        "(ou defina STUDIO_REMOTE_URL no ambiente/.env.local)\n\n" +
+        "(ou defina STUDIO_REMOTE_URL no ambiente/.env)\n\n" +
         "Só funciona DEPOIS que o tunnel + Access foram ativados pelo editor —\n" +
         "ver docs/studio-ui-remote-setup.md e scripts/studio/setup-remote-tunnel.ps1.\n",
     );

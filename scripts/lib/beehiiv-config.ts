@@ -20,7 +20,7 @@
  * estáticos avaliam antes do corpo do módulo importador, então em scripts
  * que carregam env via chamada de função `loadProjectEnv()` (em vez de
  * `import "dotenv/config"` como side-effect), a const capturaria
- * `process.env.BEEHIIV_API_URL` antes do `.env`/`.env.local` existir em
+ * `process.env.BEEHIIV_API_URL` antes do `.env` existir em
  * `process.env` — override silenciosamente ignorado. O getter lê o env no
  * primeiro uso (call site), não no import.
  */

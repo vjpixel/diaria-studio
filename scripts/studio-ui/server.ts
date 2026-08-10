@@ -293,7 +293,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "../lib/env-loader.ts";
-// #3867: chamada explícita — hoje `.env`/`.env.local` já carregam de forma
+// #3867: chamada explícita — hoje `.env` já carrega de forma
 // TRANSITIVA porque `dashboard-clarice.ts` (importado abaixo) chama
 // `loadProjectEnv()` no próprio topo (#3563); um lazy-import ou split futuro
 // desse módulo quebraria isso em silêncio (`GET/POST /api/apoios*` voltam a

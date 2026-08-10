@@ -1,7 +1,7 @@
 /**
- * Tests for `scripts/lib/env-loader.ts` (#923).
+ * Tests for `scripts/lib/env-loader.ts` (#923, consolidado pra arquivo único em #4820).
  *
- * Reproduz o cenário 2026-05-07: scripts standalone não carregavam .env.local
+ * Reproduz o cenário 2026-05-07: scripts standalone não carregavam .env
  * → process.env.DIARIA_LINKEDIN_CRON_TOKEN ficava undefined → publish-linkedin
  * fazia fallback silencioso pra fire-now em vez de agendar.
  */
@@ -17,9 +17,8 @@ describe("#923 loadProjectEnv", () => {
   let tmpRoot: string;
   // Salvar e restaurar process.env entre tests
   const SAVED_KEYS = [
-    "TEST_ENV_LOADER_LOCAL",
     "TEST_ENV_LOADER_FALLBACK",
-    "TEST_ENV_LOADER_PRECEDENCE",
+    "TEST_ENV_LOADER_LOCAL_ONLY",
     "TEST_ENV_LOADER_PROCESS_WIN",
   ];
   const saved: Record<string, string | undefined> = {};
@@ -35,20 +34,8 @@ describe("#923 loadProjectEnv", () => {
     }
   });
 
-  it("carrega .env.local quando existe", () => {
+  it("carrega .env quando existe", () => {
     tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-1-"));
-    writeFileSync(resolve(tmpRoot, ".env.local"), "TEST_ENV_LOADER_LOCAL=hello-local\n");
-    delete process.env.TEST_ENV_LOADER_LOCAL;
-
-    const loaded = loadProjectEnv(tmpRoot);
-    assert.equal(process.env.TEST_ENV_LOADER_LOCAL, "hello-local");
-    assert.ok(loaded.some((p) => p.endsWith(".env.local")));
-
-    rmSync(tmpRoot, { recursive: true, force: true });
-  });
-
-  it("cai para .env quando .env.local ausente", () => {
-    tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-2-"));
     writeFileSync(resolve(tmpRoot, ".env"), "TEST_ENV_LOADER_FALLBACK=hello-env\n");
     delete process.env.TEST_ENV_LOADER_FALLBACK;
 
@@ -59,22 +46,25 @@ describe("#923 loadProjectEnv", () => {
     rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  it(".env.local tem precedência sobre .env (precedência local-over-shared)", () => {
-    tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-3-"));
-    writeFileSync(resolve(tmpRoot, ".env"), "TEST_ENV_LOADER_PRECEDENCE=from-env\n");
-    writeFileSync(resolve(tmpRoot, ".env.local"), "TEST_ENV_LOADER_PRECEDENCE=from-local\n");
-    delete process.env.TEST_ENV_LOADER_PRECEDENCE;
+  it("#4820 — .env.local NÃO é mais carregado (regressão: só .env é lido)", () => {
+    tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-2-"));
+    writeFileSync(
+      resolve(tmpRoot, ".env.local"),
+      "TEST_ENV_LOADER_LOCAL_ONLY=from-local-only\n",
+    );
+    delete process.env.TEST_ENV_LOADER_LOCAL_ONLY;
 
-    loadProjectEnv(tmpRoot);
-    assert.equal(process.env.TEST_ENV_LOADER_PRECEDENCE, "from-local");
+    const loaded = loadProjectEnv(tmpRoot);
+    assert.equal(process.env.TEST_ENV_LOADER_LOCAL_ONLY, undefined);
+    assert.ok(!loaded.some((p) => p.endsWith(".env.local")));
 
     rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  it("não sobrescreve var já presente em process.env (real env > .env.local)", () => {
-    tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-4-"));
+  it("não sobrescreve var já presente em process.env (real env > .env)", () => {
+    tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-3-"));
     writeFileSync(
-      resolve(tmpRoot, ".env.local"),
+      resolve(tmpRoot, ".env"),
       "TEST_ENV_LOADER_PROCESS_WIN=from-file\n",
     );
     process.env.TEST_ENV_LOADER_PROCESS_WIN = "from-process";
@@ -86,7 +76,7 @@ describe("#923 loadProjectEnv", () => {
   });
 
   it("idempotente — chamar 2× não erra", () => {
-    tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-5-"));
+    tmpRoot = mkdtempSync(resolve(tmpdir(), "env-loader-4-"));
     writeFileSync(resolve(tmpRoot, ".env"), "DUMMY=ok\n");
 
     loadProjectEnv(tmpRoot);

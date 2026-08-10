@@ -116,7 +116,7 @@ Pra evitar abuso, filtre `action=comment` no scenario inteiro:
 
 ### Passo 2.5 — Configurar Worker secret
 
-A URL do webhook Pixel **fica só no Worker** (Worker é quem dispara). Localmente em `.env.local` é opcional — pode deixar vazio.
+A URL do webhook Pixel **fica só no Worker** (Worker é quem dispara). Localmente em `.env` é opcional — pode deixar vazio.
 
 ```bash
 cd workers/linkedin-cron
@@ -129,7 +129,7 @@ echo "https://hook.us2.make.com/SEU_WEBHOOK_PIXEL_URL" | wrangler secret put MAK
 
 `make_webhook_pixel_url` fica **sempre `""`** em código versionado — mesma regra do `make_webhook_url` (#3903). Este campo é puramente documentário (`publish-linkedin` não lê a URL daqui, só o Worker secret do Passo 2.5 é usado de fato) — não há motivo pra versionar o valor real e todo motivo pra não fazer isso (repo público).
 
-### Passo 2.7 — Atualizar `.env.local` (opcional)
+### Passo 2.7 — Atualizar `.env` (opcional)
 
 ```bash
 MAKE_LINKEDIN_PIXEL_WEBHOOK_URL=https://hook.us2.make.com/SEU_WEBHOOK_PIXEL_URL

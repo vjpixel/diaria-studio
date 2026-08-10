@@ -147,6 +147,6 @@ Write-Output "Para verificar: Get-ScheduledTask -TaskName '$TaskName' | Get-Sche
 Write-Output "Para remover  : .\scripts\overnight\setup-watchdog-schedule.ps1 -Unregister"
 Write-Output ""
 Write-Output "Alerta Telegram (opcional):"
-Write-Output "  Setar TELEGRAM_BOT_TOKEN e TELEGRAM_WATCHDOG_CHAT_ID no .env.local"
+Write-Output "  Setar TELEGRAM_BOT_TOKEN e TELEGRAM_WATCHDOG_CHAT_ID no .env"
 Write-Output "  O mesmo bot do telegram-setup.md — adicionar TELEGRAM_WATCHDOG_CHAT_ID"
 Write-Output "  com o chat_id do seu DM com o bot (via https://api.telegram.org/bot{token}/getUpdates)."

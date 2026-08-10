@@ -86,8 +86,8 @@ import { COHORT_ASSINANTES_ATIVOS, isMvExemptCohort } from "./lib/cohorts.ts";
 import { resolveCohortArg } from "./lib/clarice-segment.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 
-// .env.local (precedência) + .env — loader canônico do projeto (#923).
-// Bare `dotenv/config` não carrega .env.local, onde os secrets costumam morar.
+// .env — loader canônico do projeto (#923, consolidado pra arquivo único #4820).
+// Bare `dotenv/config` não carrega .env, onde os secrets costumam morar.
 loadProjectEnv();
 const API_BASE = "https://api.millionverifier.com/api/v3";
 

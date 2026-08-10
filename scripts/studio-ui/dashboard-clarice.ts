@@ -30,7 +30,7 @@
  *
  *   - campanhas enviadas/agendadas → Brevo API direto (`fetchRecentCampaigns`/
  *     `fetchScheduledCampaigns`/`fetchPlanCredits` de brevo-api.ts, com
- *     `BREVO_CLARICE_API_KEY` do `.env.local`) — dado vivo, não snapshot KV.
+ *     `BREVO_CLARICE_API_KEY` do `.env`) — dado vivo, não snapshot KV.
  *   - `contactsSummary` (aba Contatos) → store SQLite LOCAL direto
  *     (`scripts/lib/clarice-db.ts` + `computeStoreSummary` de
  *     `scripts/clarice-db-summary.ts`) — MELHOR que o snapshot KV (#3553): não
@@ -260,7 +260,7 @@ function notConfiguredHtml(): string {
 <head><meta charset="utf-8"><title>Painel Clarice — não configurado</title></head>
 <body style="font-family:sans-serif;max-width:640px;margin:60px auto;padding:0 20px">
 <h1>Painel Clarice (local)</h1>
-<p>Requer <code>BREVO_CLARICE_API_KEY</code> no ambiente ou em <code>.env.local</code> — sem ela, este painel não faz nenhuma chamada à Brevo API.</p>
+<p>Requer <code>BREVO_CLARICE_API_KEY</code> no ambiente ou em <code>.env</code> — sem ela, este painel não faz nenhuma chamada à Brevo API.</p>
 <p>Ver <code>CLAUDE.md</code> §Setup, passo 1.</p>
 </body></html>`;
 }

@@ -92,7 +92,7 @@ Triggers
 
 ## Passo 5 — Configurar a diar.ia.br
 
-Em `.env.local` (gitignored, recomendado):
+Em `.env` (gitignored, recomendado):
 
 ```bash
 DIARIA_LINKEDIN_CRON_URL=https://diaria-linkedin-cron.diaria.workers.dev

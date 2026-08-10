@@ -5,14 +5,14 @@
  * Probe/CLI pra validar a integração com a API pública da apoia.se AO VIVO —
  * é o `--dry-run` do desbloqueio de credencial (#573): o COORDENADOR roda
  * isto (nunca um subagente autônomo) pra confirmar que `APOIA_SE_API_KEY` /
- * `APOIA_SE_API_SECRET` / `APOIA_SE_CAMPAIGN` (em `.env.local`) estão
+ * `APOIA_SE_API_SECRET` / `APOIA_SE_CAMPAIGN` (em `.env`) estão
  * corretos, antes de qualquer integração consumir `checkBacker`.
  *
  * Uso:
  *   npx tsx scripts/apoia-se-probe.ts --email foo@bar.com
  *   npx tsx scripts/apoia-se-probe.ts --email foo@bar.com --cache-dir /tmp/x  # override p/ debug/teste
  *
- * Env (obrigatórios, .env.local — ver .env.example):
+ * Env (obrigatórios, .env — ver .env.example):
  *   APOIA_SE_API_KEY
  *   APOIA_SE_API_SECRET
  *   APOIA_SE_CAMPAIGN
@@ -33,7 +33,7 @@ import {
 } from "./lib/apoia-se.ts";
 import { getArg, isMainModule } from "./lib/cli-args.ts";
 
-// .env.local (precedência) + .env — loader canônico do projeto (#923).
+// .env — loader canônico do projeto (#923, consolidado pra arquivo único #4820).
 loadProjectEnv();
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
@@ -48,7 +48,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   } catch (e) {
     console.error(`❌ ${(e as Error).message}`);
     console.error(
-      "   configure APOIA_SE_API_KEY, APOIA_SE_API_SECRET e APOIA_SE_CAMPAIGN no .env.local (ver .env.example).",
+      "   configure APOIA_SE_API_KEY, APOIA_SE_API_SECRET e APOIA_SE_CAMPAIGN no .env (ver .env.example).",
     );
     process.exit(1);
     return;

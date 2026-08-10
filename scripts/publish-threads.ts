@@ -69,7 +69,7 @@
  */
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
-loadProjectEnv(); // carrega .env.local + .env antes de process.env access
+loadProjectEnv(); // carrega .env antes de process.env access
 
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -491,7 +491,7 @@ async function main() {
       .join(", ");
     console.warn(
       `SKIP: ${missing} ausente(s) — Threads não publicado nesta edição.\n` +
-        "Configure em .env.local para habilitar o Threads.\n" +
+        "Configure em .env para habilitar o Threads.\n" +
         "  THREADS_USER_ID: Threads user ID da conta @diar.ia.br\n" +
         "  THREADS_ACCESS_TOKEN: token de longa duração do app Threads da Meta",
     );

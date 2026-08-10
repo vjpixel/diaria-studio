@@ -36,7 +36,7 @@ function runCli(args: string[], env: Record<string, string | undefined>): {
   stderr: string;
   exitCode: number;
 } {
-  // Limpar env vars de Worker pra simular .env.local não carregado.
+  // Limpar env vars de Worker pra simular .env não carregado.
   const cleanEnv = { ...process.env, ...env };
   const result = spawnSync(
     NPX,
@@ -67,7 +67,7 @@ describe("#923 publish-linkedin.ts fail-fast em --schedule sem Worker", () => {
       {
         // Webhook URL presente (caso contrário script aborta antes do fail-fast)
         MAKE_LINKEDIN_WEBHOOK_URL: "https://hook.example.com/test",
-        // Worker URL + token AUSENTES — simula .env.local não carregado
+        // Worker URL + token AUSENTES — simula .env não carregado
         DIARIA_LINKEDIN_CRON_URL: "",
         DIARIA_LINKEDIN_CRON_TOKEN: "",
       },
@@ -78,7 +78,7 @@ describe("#923 publish-linkedin.ts fail-fast em --schedule sem Worker", () => {
     assert.equal(result.exitCode, 2, `esperava exit 2, recebeu ${result.exitCode}. stderr=${result.stderr}`);
     assert.match(result.stderr, /--schedule passado mas Cloudflare Worker não está configurado/);
     assert.match(result.stderr, /MISSING/);
-    assert.match(result.stderr, /\.env\.local não carregada/);
+    assert.match(result.stderr, /\.env não carregado/);
   });
 
   it("NÃO aborta quando --schedule + Worker configurado (caminho feliz alcançável)", () => {

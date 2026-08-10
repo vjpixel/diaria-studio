@@ -219,7 +219,7 @@ async function captureLogs(fn: () => void | Promise<void>): Promise<string[]> {
 // (fetchCommittedCampaignListIds) antes de qualquer escrita real — nunca
 // deve bater na rede de verdade num teste. `withoutBrevoKey`/`withFakeBrevoFetch`
 // isolam esse comportamento de qualquer `BREVO_CLARICE_API_KEY` real que
-// `loadProjectEnv()` possa ter carregado de `.env.local` na máquina do editor.
+// `loadProjectEnv()` possa ter carregado de `.env` na máquina do editor.
 async function withoutBrevoKey<T>(fn: () => Promise<T>): Promise<T> {
   const prev = process.env.BREVO_CLARICE_API_KEY;
   delete process.env.BREVO_CLARICE_API_KEY;
