@@ -55,6 +55,11 @@ Para cada post no input:
    - Capture exit code; se != 0, log erro e prossiga (não aborta o batch inteiro).
    - **Exit code 3 (#4836) é um caso distinto de exit 1**: o script recusou substituir um `stats.clicks` NÃO-VAZIO pelo payload vazio que a MCP retornou. **NÃO** reinvoque com `--allow-empty-replace` por conta própria — você não tem como distinguir "MCP genuinamente confirmou zero cliques agora" de "resposta truncada/malformada" (foi exatamente essa ambiguidade que apagou 109 cliques em 2026-08-05). Trate como `fail` no summary com o motivo `guard-empty-replace`, deixando a decisão pro orchestrator/editor.
 
+3.5. **OBRIGATÓRIO — confirme a persistência lendo o disco de volta (#4958).** Exit code 0 do `apply-mcp-clicks.ts` significa só que o script rodou sem erro — **não** é prova de que o write aconteceu. Caso real (#4958): um dispatch de 24 posts reportou "24/24 ok" no summary, mas a verificação determinística mostrou que só 1 dos 24 tinha sido de fato persistido no disco. Depois de CADA chamada do passo 3, leia `data/beehiiv-cache/posts/{post_id}.json` de volta e confirme:
+   - `stats.clicks.length` bate com `allClicks.length` que você acabou de enviar; OU
+   - está genuinamente vazio (`allClicks.length === 0` E a resposta da MCP era mesmo vazia) — não confundir "MCP não tinha clicks" com "eu não escrevi".
+   Só marque `ok` no summary do post depois dessa confirmação de leitura na mão. Se o arquivo não mudou (ou o `stats.clicks.length` não bate e não é o caso vazio legítimo acima), trate como `fail` com o motivo `write-not-persisted` — mesmo padrão do guard de exit-code-3 do passo 3: nunca aceite "exit 0" sozinho como prova de sucesso.
+
 4. **Logar progresso conciso** em stderr — uma linha por post:
    ```
    ok 1/117 post_4cc31ef5 → 19 clicks

@@ -44,14 +44,18 @@ editor e pare — não há o que publicar.
 **Não é mais opcional.** Antes de qualquer preview de campanha nova, esta
 skill SEMPRE roda esta reavaliação — não é uma sugestão que o editor aceita
 ou recusa, é parte fixa do fluxo (decisão do editor, comentário 260806 da
-issue #4637, consolidando a #4725). Motivo: a task agendada que faria isso
-automaticamente antes do envio canônico das 06:00
-(`Diaria-Brevo-Diaria-Evaluate`, 05:30 BRT, #4534) ainda não foi armada em
-produção segundo o CLAUDE.md — sem rodar aqui, a campanha nova sai pra gente
-que já deveria ter sido promovida/suprimida. Não é cosmético: na execução da
-edição 260807 (260806), rodar isto antes resolveu 3 contatos que receberiam
-mais um envio Pending indevidamente (1 auto-confirmado + 2 promovidos por
-abertura).
+issue #4637, consolidando a #4725). Motivo: mesmo com a task
+`Diaria-Brevo-Diaria-Evaluate` armada e rodando diariamente (05:30 BRT,
+#4534 — ver `docs/evaluate-brevo-diaria-setup.md`), nenhum cron consegue
+preceder de forma confiável um clique manual em horário arbitrário —
+`publish-daily-brevo.ts` nunca agenda a campanha via API, quem agenda é o
+editor, num clique manual no painel da Brevo que pode acontecer minutos ou
+horas antes das 05:30. Esta skill é o único ponto do fluxo que roda logo
+antes do freeze de verdade (aqui, no Passo 1, imediatamente antes de criar o
+rascunho no Passo 6 — mesma sessão em que o editor vai agendar). Não é
+cosmético: na execução da edição 260807 (260806), rodar isto antes resolveu 3
+contatos que receberiam mais um envio Pending indevidamente (1
+auto-confirmado + 2 promovidos por abertura).
 
 Rode o dry-run primeiro:
 

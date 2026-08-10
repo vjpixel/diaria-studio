@@ -20,9 +20,26 @@ Toda ação que remove alguém da avaliação futura (promoção, supressão, de
 
 Ver o cabeçalho de `scripts/evaluate-brevo-diaria.ts` para o histórico completo do desenho (issues #4266/#4476/#4488/#4538) — não duplicado aqui.
 
-## Horário: 05:30 BRT, antes do envio das 06:00
+## Horário: 05:30 BRT
 
-Não é preferência — é restrição real. A Brevo **congela os destinatários no agendamento da campanha**, não no envio (ver memória de sessão "Brevo: snapshot de destinatários"). Se o evaluate rodar depois da campanha do dia já ter sido criada/agendada, o unlink de quem foi promovido/suprimido não tem efeito nesse envio específico — a pessoa recebe mesmo assim, só sai a partir do dia seguinte.
+O valor do cron diário é **higiene contínua da lista** — descadastro nativo,
+auto-confirmação e promoção/supressão por engajamento rodando todo dia,
+independente de haver campanha nova nesse dia. Isso reduz o número de
+contatos desatualizados que a skill `/diaria-brevo-diaria` (Passo 1) precisa
+resolver na hora, mas **não substitui** aquele passo: a Brevo congela os
+destinatários no **agendamento da campanha**, não no envio (ver memória de
+sessão "Brevo: snapshot de destinatários"), e `publish-daily-brevo.ts` nunca
+agenda a campanha via API — quem agenda é sempre um clique manual do editor
+no painel da Brevo, em horário arbitrário, que pode acontecer horas antes das
+05:30. Um cron de horário fixo não tem como garantir que roda antes de um
+clique sem horário fixo — por isso o Passo 1 da skill roda a mesma
+reavaliação de novo, na mesma sessão em que a campanha é criada/agendada
+(ver `.claude/skills/diaria-brevo-diaria/SKILL.md` Passo 1).
+
+**Em aberto:** não está decidido se vale a pena manter o cron especificamente
+às 05:30 (relação com o envio canônico das 06:00) ou se qualquer horário
+diário serviria igualmente bem para o propósito de higiene contínua — ver
+#4937 para o contexto completo.
 
 ## Fuso horário
 

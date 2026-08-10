@@ -104,7 +104,7 @@ Substitui o forward manual que o editor fazia diariamente.
 6. Logar resultado quando o background completar (info). Falha não bloqueia (warn only).
 7. **Guard determinístico (#1756):** se `threads_found > 0` (do summary do passo 3) mas `captured-newsletters.json` ficou **ausente/vazio**, logar **WARN loud** — sinal de que o script falhou silenciosamente. O Stage 1 (1h inject-inbox-urls) deve re-checar: se `captured_newsletter_count: 0` no marker mas `threads_found > 0`, repetir o WARN antes do gate (o editor decide re-capturar/re-rodar). A linha de cobertura sairia com X subcontado caso contrário.
 
-Se `fetch-newsletter-threads.ts` retornar exit 1 (credenciais inválidas, OAuth expirado, sem acesso à rede): skip do passo (logar `info "0b-bis skipped: fetch-newsletter-threads falhou"`). Esse é o **único** skip legítimo (#1756). **Não usar `mcp__claude_ai_Gmail__get_thread` como fallback** — o volume de HTML no contexto é o problema que este corte resolve. **Não é mais silencioso pro resto da pipeline (#2878):** o próprio script grava `_internal/.capture-newsletter-failed.json` (`{ failed: true, error, at }`) antes de sair 1 — `inject-inbox-urls.ts` (Stage 1 §1h) lê esse sentinel e propaga `capture_failed`/`capture_error` pro marker `.marker-inject-inbox-urls.json`. Sem isso, `captured_newsletter_count: 0` era indistinguível de "editor genuinamente não enviou newsletter nenhuma" — a coverage line (Stage 2) e o gate do Stage 4 checam esse sinal e trocam "X submissões" por um aviso `⚠️ contagem de submissões indisponível` em vez de afirmar "0 submissões" (caso real: 260703, 2º dia seguido de `invalid_client`).
+Se `fetch-newsletter-threads.ts` retornar exit 1 (credenciais inválidas, OAuth expirado, sem acesso à rede): skip do passo (logar `info "0b-bis skipped: fetch-newsletter-threads falhou"`). Esse é o **único** skip legítimo (#1756). **Não usar `mcp__claude_ai_Gmail__get_thread` como fallback** — o volume de HTML no contexto é o problema que este corte resolve. **Não é mais silencioso pro resto da pipeline (#2878):** o próprio script grava `_internal/.capture-newsletter-failed.json` (`{ failed: true, error, at }`) antes de sair 1 — `inject-inbox-urls.ts` (Stage 1 §1h) lê esse sentinel e propaga `capture_failed`/`capture_error` pro marker `.marker-inject-inbox-urls.json`. Sem isso, `captured_newsletter_count: 0` era indistinguível de "editor genuinamente não enviou newsletter nenhuma" — a coverage line (Stage 2) e o gate do Stage 4 checam esse sinal e trocam "X submissões" por um aviso `⚠️ contagem de submissões indisponível` em vez de afirmar "0 submissões" (histórico: `docs/stage-0-incident-history.md` §0b-bis).
 
 ### 0c. Inicialização de log + stage-status (#1217 — removed cost.md)
 
@@ -176,7 +176,7 @@ Se `fetch-newsletter-threads.ts` retornar exit 1 (credenciais inválidas, OAuth 
 ### 0d. Refresh automático de dedup (#895)
 
 Rodar `scripts/refresh-dedup.ts` via Bash. O script:
-- Usa a Beehiiv REST API direto (token em `BEEHIIV_API_KEY`); sem dependência de MCP ou subagente (#895 — o agent legado `refresh-dedup-runner` apontava pra UUID antigo de MCP que não existe mais; rodar inline no top-level pulava a regen do MD, regredindo #162).
+- Usa a Beehiiv REST API direto (token em `BEEHIIV_API_KEY`); sem dependência de MCP ou subagente (#895; histórico: `docs/stage-0-incident-history.md` §0d).
 - Detecta bootstrap (raw não existe) vs incremental (raw existe → busca só edições mais novas que `max(published_at)` do raw).
 - **Sempre regenera `data/past-editions.md`** — mesmo com 0 novos posts (cobre o caso de `git pull` ter resetado o tracked file enquanto o raw, gitignored, ficou intacto; #162).
 - Popula `links[]` resolvendo tracking URLs do Beehiiv (#234) e lendo `_internal/01-approved.json` local quando disponível (#238).
@@ -200,7 +200,7 @@ O Worker `poll` rejeita votos pra editions que **não estão** no set `valid_edi
 npx tsx scripts/maintain-valid-editions-window.ts --current {AAMMDD} --window-days 7
 ```
 
-Substitui o legacy `add-valid-edition.ts` (que só adicionava a edição corrente — em set vazio criava state degenerate `[hoje]`, ativando o gate com APENAS hoje e rejeitando todas anteriores; caso real #1233 em 2026-05-13).
+Substitui o legacy `add-valid-edition.ts` (histórico do #1233: `docs/stage-0-incident-history.md` §0d.bis).
 
 O script lê `data/past-editions-raw.json` (mantido por refresh-dedup no passo 0d acima), filtra por janela de 7 dias, une com `--current`, escreve set ordenado no KV via `wrangler kv key put`. Idempotente — re-rodar com mesmos parâmetros é no-op se nada mudou.
 
@@ -211,7 +211,7 @@ Exit codes:
 - `2` (#1234 review) → `read_failed=true`: wrangler retornou null. Pode ser (a) KV virgem (primeira execução, raro pós-#1233) ou (b) wrangler down. Conservador: NÃO escreve pra evitar destruir entries manuais em transient failure.
 - `!=0` outro → erro inesperado (wrangler crashed, etc).
 
-**HALT obrigatório em exit 2 (#1366).** Antes (até 260518) este caso era tratado como warn-and-continue, mas isso permitia silently rejection de **todos os votos** da edição em produção (caso real 260519: 482 subscribers receberiam email com botões A/B que retornariam 410 "Essa edição não aceita mais votos"). Agora é halt obrigatório:
+**HALT obrigatório em exit 2 (#1366; histórico: `docs/stage-0-incident-history.md` §0d.bis).** Warn-and-continue permitia silently rejection de **todos os votos** da edição em produção. Agora é halt obrigatório:
 
 ```bash
 npx tsx scripts/render-halt-banner.ts --stage "0 — Preflight" \
