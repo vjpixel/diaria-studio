@@ -493,6 +493,73 @@ describe("resolveDestaques (#2333) — editor demove D3 para Radar (3→2)", () 
   });
 });
 
+describe("resolveDestaques (#4943) — onSkip reporta candidato pulado por remoção upstream", () => {
+  // Cenário exato da issue #4943: dedup-intra-edition removeu (por falso
+  // positivo de entidade) a cópia do rank-3 do scorer no bucket secundário
+  // — sem nenhuma decisão editorial envolvida. O fill-loop de --auto pula
+  // esse rank e promove o rank-4, mas isso precisa ficar visível via onSkip.
+  const highlights = [
+    { rank: 1, url: "https://a.com/d1" },
+    { rank: 2, url: "https://b.com/d2" },
+    { rank: 3, url: "https://canaltech.com.br/meta-lanca-nova-ia-de-programacao" }, // removido do bucket pelo dedup
+    { rank: 4, url: "https://d.com/medical-students" },
+  ];
+
+  it("rank 3 sem cópia em nenhum bucket → onSkip é chamado com {rank:3, url} e rank 4 é promovido", () => {
+    const sections = {
+      destaques: [], // --auto: sem edição humana, sempre vazio
+      lancamento: [],
+      // rank-3 NÃO está presente (dedup-intra-edition removeu a cópia) — só 1, 2 e 4.
+      radar: ["https://a.com/d1", "https://b.com/d2", "https://d.com/medical-students"],
+      use_melhor: [],
+      video: [],
+    };
+
+    const skipped: Array<{ rank: number; url: string }> = [];
+    const result = resolveDestaques(sections, highlights, (skip) => skipped.push(skip));
+
+    assert.deepEqual(
+      result,
+      ["https://a.com/d1", "https://b.com/d2", "https://d.com/medical-students"],
+      "rank 4 deve preencher a vaga deixada pelo rank 3 ausente",
+    );
+    assert.equal(skipped.length, 1, "exatamente 1 candidato pulado");
+    assert.deepEqual(skipped[0], {
+      rank: 3,
+      url: "https://canaltech.com.br/meta-lanca-nova-ia-de-programacao",
+    });
+  });
+
+  it("sem onSkip fornecido → comportamento idêntico (callback é opcional, sem regressão)", () => {
+    const sections = {
+      destaques: [],
+      lancamento: [],
+      radar: ["https://a.com/d1", "https://b.com/d2", "https://d.com/medical-students"],
+      use_melhor: [],
+      video: [],
+    };
+    const result = resolveDestaques(sections, highlights);
+    assert.deepEqual(result, [
+      "https://a.com/d1",
+      "https://b.com/d2",
+      "https://d.com/medical-students",
+    ]);
+  });
+
+  it("rank presente no bucket → onSkip NÃO é chamado pra ele (só candidatos genuinamente ausentes)", () => {
+    const sections = {
+      destaques: [],
+      lancamento: [],
+      radar: highlights.map((h) => h.url), // todos os 4 presentes — nenhum skip
+      use_melhor: [],
+      video: [],
+    };
+    const skipped: Array<{ rank: number; url: string }> = [];
+    resolveDestaques(sections, highlights, (skip) => skipped.push(skip));
+    assert.equal(skipped.length, 0, "nenhum skip quando o rank 1/2/3 já preenche os 3 destaques");
+  });
+});
+
 describe("apply-gate-edits CLI --auto (#3459)", () => {
   // Antes do fix, o modo auto-approve (--no-gates) copiava _internal/01-categorized.json
   // literal pra _internal/01-approved.json, preservando os 6 highlights do scorer em vez
@@ -552,6 +619,78 @@ describe("apply-gate-edits CLI --auto (#3459)", () => {
     const r = runCli(["--auto"]);
     assert.notEqual(r.status, 0);
     assert.match(r.stderr, /Uso:/);
+  });
+
+  // #4943: reproduz o cenário exato da edição 260811 — dedup-intra-edition
+  // removeu (falso positivo de entidade) a cópia do destaque rank-3 no bucket
+  // secundário ANTES do gate. Sob --auto (sem editor), o fill-loop de
+  // resolveDestaques pula esse rank e promove o rank-4 SEM aviso nenhum antes
+  // do fix. Trava que agora emite um WARN explícito em stderr — e que o
+  // destaque efetivamente aprovado é o rank-4, não o rank-3 original.
+  it("#4943: rank-3 sem cópia no bucket (dedup upstream) → WARN explícito em stderr + rank-4 promovido", () => {
+    const dir = mkdtempSync(join(tmpdir(), "apply-gate-edits-4943-"));
+    try {
+      const jsonPath = join(dir, "01-categorized.json");
+      const outPath = join(dir, "01-approved.json");
+
+      const rank3Url = "https://canaltech.com.br/meta-lanca-nova-ia-de-programacao";
+      const rank4Url = "https://d.com/medical-students";
+      const categorized = {
+        highlights: [
+          { rank: 1, score: 92, bucket: "radar", url: "https://a.com/d1" },
+          { rank: 2, score: 90, bucket: "radar", url: "https://b.com/d2" },
+          { rank: 3, score: 88, bucket: "radar", url: rank3Url },
+          { rank: 4, score: 86, bucket: "radar", url: rank4Url },
+        ],
+        runners_up: [],
+        lancamento: [],
+        // rank-3 (Meta/Canaltech) NÃO está no bucket — dedup-intra-edition já
+        // removeu essa cópia como "falso positivo de entidade" antes deste
+        // script rodar. Só rank 1, 2 e 4 sobrevivem.
+        radar: [
+          { url: "https://a.com/d1", title: "D1 Título", score: 92 },
+          { url: "https://b.com/d2", title: "D2 Título", score: 90 },
+          { url: rank4Url, title: "What happens when medical students rely on AI", score: 86 },
+        ],
+        use_melhor: [],
+        video: [],
+      };
+      writeFileSync(jsonPath, JSON.stringify(categorized), "utf8");
+
+      const r = runCli(["--auto", "--json", jsonPath, "--out", outPath]);
+      assert.equal(r.status, 0, `CLI falhou: ${r.stderr}`);
+
+      // O bug: antes do fix, nada em stderr indicava a substituição.
+      assert.match(
+        r.stderr,
+        /WARN --auto: destaque rank 3 pulado/,
+        "deve logar WARN explícito quando um rank do top-3 some do bucket sob --auto",
+      );
+      assert.ok(
+        r.stderr.includes(rank3Url),
+        "WARN deve citar a URL do candidato pulado, pra o editor conseguir investigar",
+      );
+
+      const approved = JSON.parse(readFileSync(outPath, "utf8"));
+      assert.equal(approved.highlights.length, 3);
+      assert.deepEqual(
+        approved.highlights.map((h: { url: string }) => h.url),
+        ["https://a.com/d1", "https://b.com/d2", rank4Url],
+        "rank-4 deve preencher a vaga do rank-3 ausente (comportamento correto — só o silêncio era o bug)",
+      );
+
+      // gate_provenance.itens_movidos > 0 mesmo sob --auto (#4943: a
+      // asserção antiga de "sempre 0 por construção" era incorreta).
+      const gate = JSON.parse(readFileSync(join(dir, ".step-1-gate.json"), "utf8"));
+      assert.equal(gate.auto_approved, true);
+      assert.equal(
+        gate.itens_movidos,
+        1,
+        "#4943: itens_movidos deve refletir a substituição mecânica, mesmo sem editor",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   // #3709: mesmo guard que #2878 já aplica em sync-coverage-line.ts (Stage 2),
