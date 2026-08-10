@@ -15,7 +15,7 @@ Beehiiv newsletter = 1 comando + 1 paste JS:
 1. `npx tsx scripts/upload-html-public.ts --edition AAMMDD --no-wrap` — sobe o fragmento HTML **bruto** pro Worker (sem wrapper de preview, preservando a merge tag de identidade do voto — `{{poll_token}}`, #4487; era `{{email}}` até então). **A URL retornada contém hash do conteúdo** (#1494) — ex: `draft.diaria.workers.dev/260527-3415df`. Usar essa URL (não montar manualmente).
 2. Single `javascript_tool` no Chrome (`fetch(url)` + `tr.insertText(html, snippetPos+1)`) — ver §5.2 Fase 3. Helper: `buildInsertTextJs(url)` de `scripts/lib/beehiiv-insert-text.ts`.
 
-Resto: Title + Subtitle + cover via Chrome MCP (3-4 calls visuais), depois Send test email.
+Resto: Slug (Web step) primeiro, cover em seguida, Title + Subtitle **por último** — nessa ordem, #4831 — via Chrome MCP (4-5 calls visuais), depois Send test email.
 
 **Total ~7-8 passos, ~5K tokens.** Nunca 15+. O caminho chunked legacy (apêndice) existe como fallback se o Worker ou o fetch falharem.
 
@@ -301,30 +301,22 @@ Ler `platform.config.json` → bloco `publishing.newsletter`:
 
 ### 4. Preencher cabeçalho
 
-- **Title** = `title` (do JSON extraído no passo 1)
-- **Subtitle** = `subtitle` (se houver campo)
+**⚠️ Ordem obrigatória (#4831, achado ao vivo 260810):** navegar entre os steps
+Compose e Web (ex: pra setar o slug em Settings → SEO) reverte Title/Subtitle
+pro valor stale herdado do template (#2283) — mesmo já tendo sido setados e
+confirmados antes da navegação. O mesmo revert atingiu o Slug numa navegação
+subsequente. **Workaround: inverter a ordem** — Slug (que exige ir pro step
+Web) é setado **primeiro**; Title/Subtitle são setados **por último**, depois
+de qualquer navegação Compose↔Web já ter acontecido, com re-leitura
+obrigatória via DOM antes de declarar sucesso. A Cover (nativa do Compose, sem
+navegação) fica no meio, entre os dois.
+
+- **Slug** (Web step) = `seoSlug(title)` — ver §4a, setar **PRIMEIRO**.
 - **Cover image** = upload de `{edition_dir}/04-d1-2x1.jpg` (1600×800) — ver §4b.
+- **Title** = `title` (do JSON extraído no passo 1) — ver §4c, setar **POR ÚLTIMO**.
+- **Subtitle** = `subtitle` (se houver campo) — ver §4c, setar **POR ÚLTIMO**.
 
-#### 4a. Setar Title/Subtitle (helper atômico #1423)
-
-**⚠️ NUNCA chamar `execCommand('insertText')` direto pra setar Title/Subtitle.** Em 260520 isso produziu title duplicado silenciosamente (race entre `select()` e `insertText()`). Use sempre o helper `buildSetFieldJs` que faz a sequência atômica `focus → select → delete → insertText → blur`:
-
-```typescript
-import { buildSetFieldJs, isFieldVerified } from "scripts/lib/beehiiv-set-field.ts";
-// Dispatch via javascript_tool:
-mcp__claude-in-chrome__javascript_tool({ code: buildSetFieldJs("post-title", newTitle) });
-// Aguardar autosave (5-8s) + verify via API:
-sleep(8_000);
-const post = await mcp__claude_ai_Beehiiv__get_post({ post_id });
-if (!isFieldVerified(post.title, newTitle)) {
-  // Retry 1× — autosave latency #1198 pode pegar valor stale brevemente
-  mcp__claude-in-chrome__javascript_tool({ code: buildSetFieldJs("post-title", newTitle) });
-}
-```
-
-**⚠️ Title autosave latency** (#1198, 2026-05-12): inputs Title/Subtitle do Beehiiv não persistem no backend imediatamente — UI e `document.title` atualizam, mas `GET /posts/{id}` via API pode retornar `"New post"` por minutos. O `isFieldVerified` cobre isso. Sem esse guard, Audience/Review steps usam título errado e o Subject line default herda `"New post"`.
-
-#### 4a-bis. Setar slug SEO acent-correto (#1989)
+#### 4a. Setar slug SEO acent-correto — PRIMEIRO passo do cabeçalho (#1989, reordenado #4831)
 
 Se não setado, a Beehiiv auto-deriva o slug do título e **mangla acentos PT-BR** (`automação` → `automa-o`, `pânico` → `p-nico`) — slug quebrado prejudica SEO/UX/compartilhamento. **Desde #4570 isso deixou de ser só SEO**: o bloco encaminhável por WhatsApp (entre D1/D2, §5.2 abaixo) tem `https://diar.ia.br/p/{slug}` baked in no HTML — slug errado quebra um link já enviado, não só o ranking de busca. Computar o slug acent-correto e setá-lo em **Settings → SEO/URL slug** do post:
 
@@ -336,6 +328,8 @@ const metaDesc = seoMetaDescription(title, subtitle); // ≤155ch
 ```
 
 (Opcional mas recomendado; o campo de slug fica em post settings. Medição do impacto via `scripts/seo-pull.ts` — GSC, ver #1896/#1989.)
+
+**Após setar o slug, navegar de volta pro step Compose (Web → Compose) — esta é a ÚLTIMA navegação entre steps dentro do §4.** Não navegar pra Web de novo antes de completar §4b e §4c abaixo (cada navegação extra reabre a janela de revert do #4831).
 
 #### 4b. Aplicar a cover image — DataTransfer (#1801 / #1500)
 
@@ -453,6 +447,39 @@ Falha de cover **não bloqueia** teste de email nem publicação — Beehiiv usa
 
 **⚠️ DEPRECATED (#2283) — `buildCoverReplaceJs` legado:** combina remoção + upload num único call e causa CDP timeout (45s) quando há cover existente. Usar `buildCoverDataTransferJs` (#1500) como primário (cover nova e replace); só usar `buildCoverReplaceStep1_RemoveExistingJs` + `buildCoverReplaceStep2_UploadJs` separados como fallback quando #1500 retornar `applied:false`.
 
+#### 4c. Setar Title/Subtitle — POR ÚLTIMO, após a navegação final (helper atômico #1423, reordenado + guard de reversão #4831)
+
+**⚠️ Ordem obrigatória (#4831):** este é o ÚLTIMO passo de §4 — só executar depois de §4a (slug) e §4b (cover) estarem concluídos, e depois de qualquer navegação Compose↔Web já ter acontecido (a última delas é o "Web → Compose" no fim de §4a). Motivo: navegar entre os steps Compose e Web reverte Title/Subtitle pro valor stale herdado do template — mesmo já tendo sido setados e confirmados via API antes da navegação (#4831, achado ao vivo 260810, `post_7dac0980-cd63-4b59-a95e-826754a040d4`). Setar por último elimina, dentro deste fluxo, a janela onde isso pode acontecer. **Não navegar pra Web de novo depois deste passo** antes de completar §5 (corpo).
+
+**⚠️ NUNCA chamar `execCommand('insertText')` direto pra setar Title/Subtitle.** Em 260520 isso produziu title duplicado silenciosamente (race entre `select()` e `insertText()`). Use sempre o helper `buildSetFieldJs` que faz a sequência atômica `focus → select → delete → insertText → blur`:
+
+```typescript
+import { buildSetFieldJs, isFieldVerified } from "scripts/lib/beehiiv-set-field.ts";
+// Dispatch via javascript_tool:
+mcp__claude-in-chrome__javascript_tool({ code: buildSetFieldJs("post-title", newTitle) });
+// Aguardar autosave (5-8s) + verify via API:
+sleep(8_000);
+const post = await mcp__claude_ai_Beehiiv__get_post({ post_id });
+if (!isFieldVerified(post.title, newTitle)) {
+  // Retry 1× — autosave latency #1198 pode pegar valor stale brevemente
+  mcp__claude-in-chrome__javascript_tool({ code: buildSetFieldJs("post-title", newTitle) });
+}
+```
+
+**⚠️ Title autosave latency** (#1198, 2026-05-12): inputs Title/Subtitle do Beehiiv não persistem no backend imediatamente — UI e `document.title` atualizam, mas `GET /posts/{id}` via API pode retornar `"New post"` por minutos. O `isFieldVerified` cobre isso. Sem esse guard, Audience/Review steps usam título errado e o Subject line default herda `"New post"`.
+
+**Guard de re-leitura obrigatória via DOM antes de declarar sucesso (#4831):** além da verificação via API (`isFieldVerified`, acima), ler o valor **diretamente do DOM** logo em seguida — mais rápido que esperar o autosave, e é o sinal que expôs o revert em #4831 (o revert acontece no DOM antes de qualquer chamada à API). Rodar isto **imediatamente após** setar Title e Subtitle via `buildSetFieldJs`, antes de prosseguir pro §5:
+
+```js
+(() => ({
+  titleField: document.querySelector('textarea[name="post-title"]')?.value ?? null,
+  documentTitle: document.title,
+  subtitleField: document.querySelector('textarea[name="post-subtitle"]')?.value ?? null,
+}))()
+```
+
+Comparar `titleField` e `documentTitle` contra `{title}` esperado, e `subtitleField` contra `{subtitle}` esperado (trim whitespace, mesma lógica de `isFieldVerified`). **Se qualquer um divergir do esperado (reversão detectada), re-setar via `buildSetFieldJs` e re-ler** — até 3 tentativas. Só declarar Title/Subtitle concluído quando os três valores (`titleField`, `documentTitle`, `subtitleField`) baterem com o esperado. Se após 3 tentativas ainda divergir, registrar em `unfixed_issues[]` com `reason: "title_subtitle_revert_unresolved"` e prosseguir com warning explícito — não bloquear o resto do §4/§5 (§6.6 mais adiante é um segundo guard, redundante de propósito, que roda de novo antes do test email — cobre reversão introduzida por navegações POSTERIORES, ex: a ida até Settings/Email do §6.5).
+
 ### 5. Preencher corpo — Custom HTML block (#74 fluxo novo)
 
 **Fluxo drasticamente simplificado** vs versão anterior. Em vez de N blocos separados (destaques, É IA?, seções), um único bloco Custom HTML recebe todo o corpo.
@@ -487,7 +514,7 @@ Se o template "HTML" não estiver na library (heading "HTML" não encontrada), a
 #### 5.2 Colar HTML — paste híbrido (#1046, validado em #1054)
 
 > **⚠️ SLUG CANÔNICO OBRIGATÓRIO (#4570) — conferir ANTES de colar:**
-> `{slug_canônico}` = **`{seoSlug(título_d1)}`** (§4a-bis acima já computou e
+> `{slug_canônico}` = **`{seoSlug(título_d1)}`** (§4a acima já computou e
 > setou este valor — conferir aqui de novo antes do paste, não só confiar que
 > passou). O HTML que você está prestes a colar já contém, entre D1 e D2, um
 > bloco encaminhável por WhatsApp com a URL `https://diar.ia.br/p/{slug_canônico}`
@@ -825,8 +852,8 @@ Esta URL é necessária pelo `publish-linkedin.ts` (Step 5c-3 do orchestrator-st
 npx tsx scripts/resolve-edition-url.ts \
   --edition-dir {edition_dir} \
   --title "{title}"
-# {title} = título D1 extraído no passo 1 (mesmo usado em §4a-bis pra setar o slug SEO).
-# O script computa seoSlug(title) — algoritmo idêntico ao §4a-bis — e grava:
+# {title} = título D1 extraído no passo 1 (mesmo usado em §4a pra setar o slug SEO).
+# O script computa seoSlug(title) — algoritmo idêntico ao §4a — e grava:
 #   _internal/05-edition-url.txt = "https://diar.ia.br/p/{slug}"
 ```
 
@@ -838,7 +865,7 @@ cat {edition_dir}/_internal/05-edition-url.txt
 ```
 
 **Se o título contiver acentos PT-BR:** o algoritmo `seoSlug` no script remove diacríticos corretamente
-(ex: "automação" → "automacao", "pânico" → "panico") — mesmo algoritmo de §4a-bis, logo a URL prevista
+(ex: "automação" → "automacao", "pânico" → "panico") — mesmo algoritmo de §4a, logo a URL prevista
 bate com o slug que o playbook setou no campo SEO/URL slug do post.
 
 ### 6.5. Setar Subject line do email (#610)
@@ -1031,7 +1058,7 @@ Sem tooling dedicado — é a mesma checklist a cada mês, aberta aqui pra não 
 
 ### 9. Verificar slug pós-Schedule (#2011, #3449) — GATE-BLOCKING desde #4570
 
-**⚠️ Bug confirmado 260610**: o wizard de Schedule do Beehiiv re-deriva o slug do título e **mangla acentos PT-BR** (`automação` → `automa-o`, `pânico` → `p-nico`), desfazendo o slug correto setado no passo 4a-bis (#1989). O Schedule acontece manualmente — depois que o editor clicar Schedule, verificar e corrigir o slug.
+**⚠️ Bug confirmado 260610**: o wizard de Schedule do Beehiiv re-deriva o slug do título e **mangla acentos PT-BR** (`automação` → `automa-o`, `pânico` → `p-nico`), desfazendo o slug correto setado no passo 4a (#1989). O Schedule acontece manualmente — depois que o editor clicar Schedule, verificar e corrigir o slug.
 
 **#4570 — não é mais só "corrija se puder":** o bloco encaminhável por WhatsApp (entre D1/D2) tem a URL `https://diar.ia.br/p/{seoSlug(título_d1)}` baked in no HTML já enviado — se o slug real divergir, esse link 404 pra sempre pra quem já recebeu o e-mail. `orchestrator-stage-6.md` §6d roda `scripts/check-whatsapp-slug-guard.ts` (wrapper de `checkWhatsappSlugMatch`, `scripts/lib/whatsapp-slug-guard.ts`) e trata divergência como **GATE-BLOCKING** — não prossegue pro resto do Stage 6 até o slug bater. Os passos 1-3 abaixo continuam sendo o MECANISMO de verificação/correção; o que mudou é que o orchestrator agora se recusa a seguir em frente sem essa confirmação.
 
