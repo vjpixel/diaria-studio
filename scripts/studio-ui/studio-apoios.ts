@@ -25,7 +25,7 @@
  * cache — `readPastMonthSnapshots` lê os arquivos de meses anteriores
  * diretamente (sem nova consulta à API).
  *
- * **Fail-soft**: sem junction `data/`, sem `.env.local` (credenciais
+ * **Fail-soft**: sem junction `data/`, sem `.env` (credenciais
  * apoia.se ausentes), ou falha de auth na API — o painel nunca crasha, só
  * reporta o erro no campo `error` do payload (mesmo padrão de
  * `studio-issues.ts::fetchTriageData`).
@@ -1019,7 +1019,7 @@ export interface BuildApoiosDataOptions {
   now?: Date;
   /** Injetável pra testes — evita I/O de `contacts.jsonl` real. */
   contacts?: ApoioContact[];
-  /** Injetável pra testes — evita ler `.env.local` real. */
+  /** Injetável pra testes — evita ler `.env` real. */
   env?: ApoiaSeEnv;
   cacheDir?: string;
   fetchImpl?: typeof fetch;

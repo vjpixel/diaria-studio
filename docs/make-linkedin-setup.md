@@ -8,7 +8,7 @@ One-time setup to enable programmatic LinkedIn publishing via Make.com webhook i
 
 - Conta Make.com (free tier basta — 1.000 ops/mês, ~270 usadas por mês)
 - LinkedIn autorizado no Make.com (OAuth one-time)
-- Acesso ao `platform.config.json` ou `.env.local`
+- Acesso ao `platform.config.json` ou `.env`
 
 ---
 
@@ -41,13 +41,13 @@ One-time setup to enable programmatic LinkedIn publishing via Make.com webhook i
 
 > **(#3903) A URL do webhook NUNCA vai commitada em texto puro.** A postura anterior deste doc ("URL pública é aceitável", já que a defesa primária seria o token `X-Diaria-Token` do Worker) se provou errada na prática: bots que monitoram commits do GitHub encontraram a URL commitada em `platform.config.json` e passaram a visitá-la periodicamente — um POST bem-formado direto no webhook Make posta na company page **sem passar pelo Worker nem pelo token** (o Make webhook em si nunca teve auth). `platform.config.json` → `publishing.social.linkedin.make_webhook_url` fica **sempre `""`** em código versionado.
 
-### Opção A — `.env.local` (recomendado)
+### Opção A — `.env` (recomendado)
 
 ```bash
 MAKE_LINKEDIN_WEBHOOK_URL=https://hook.eu2.make.com/SEU_WEBHOOK_ID
 ```
 
-`.env.local` é gitignored e tem precedência sobre `platform.config.json` (ver `scripts/publish-linkedin.ts` ~L652).
+`.env` é gitignored e tem precedência sobre `platform.config.json` (ver `scripts/publish-linkedin.ts` ~L652). (#4820 — `.env.local` deixou de ser suportado; se você tinha essa var só ali, mova pra `.env`.)
 
 ### Opção B — Worker secret (caminho real de scheduling)
 
@@ -61,7 +61,7 @@ echo "https://hook.eu2.make.com/SEU_WEBHOOK_ID" | wrangler secret put MAKE_WEBHO
 O módulo **Webhooks → Custom webhook** do Make suporta `authenticationMethod` (header `x-make-apikey`) — o scenario ANTERIOR (`2270381`) já tinha isso configurado. Se você habilitar auth no scenario atual, configure o mesmo valor em:
 
 ```bash
-MAKE_WEBHOOK_API_KEY=sua-chave-aqui                                  # .env.local (script)
+MAKE_WEBHOOK_API_KEY=sua-chave-aqui                                  # .env (script)
 echo "sua-chave-aqui" | wrangler secret put MAKE_WEBHOOK_API_KEY     # Worker
 ```
 
@@ -120,7 +120,7 @@ Resume-aware: posts já com `status: "draft"` ou `"scheduled"` são pulados.
 
 ## Rotação do webhook (caso URL vaze)
 
-`platform.config.json` fica sempre com `make_webhook_url: ""` (#3903) — a URL real só existe em `.env.local` (gitignored) e/ou no Worker secret, nunca em texto commitado. Se houver suspeita de uso indevido (volume Make.com inflando, posts inesperados na company page, GET/POST não-identificados no scenario):
+`platform.config.json` fica sempre com `make_webhook_url: ""` (#3903) — a URL real só existe em `.env` (gitignored) e/ou no Worker secret, nunca em texto commitado. Se houver suspeita de uso indevido (volume Make.com inflando, posts inesperados na company page, GET/POST não-identificados no scenario):
 
 1. **Criar novo webhook no Make**: abra o scenario `Integration LinkedIn`, no módulo `Custom webhook` clique em `Add` → gera URL nova (substitui a antiga no scenario, mas a antiga continua válida no servidor Make até deletar).
 2. **Habilitar auth no módulo** (se ainda não estiver — ver seção "Auth do webhook" acima) e gerar/copiar a API key.
@@ -130,7 +130,7 @@ Resume-aware: posts já com `status: "draft"` ou `"scheduled"` são pulados.
    echo "https://hook.us2.make.com/<NEW>" | wrangler secret put MAKE_WEBHOOK_URL
    echo "<NOVA_API_KEY>" | wrangler secret put MAKE_WEBHOOK_API_KEY
    ```
-4. **Atualizar `.env.local`** (`MAKE_LINKEDIN_WEBHOOK_URL` e `MAKE_WEBHOOK_API_KEY`) para quem roda `publish-linkedin.ts` localmente. `platform.config.json` **não muda** — continua vazio.
+4. **Atualizar `.env`** (`MAKE_LINKEDIN_WEBHOOK_URL` e `MAKE_WEBHOOK_API_KEY`) para quem roda `publish-linkedin.ts` localmente. `platform.config.json` **não muda** — continua vazio.
 5. **Deletar a URL antiga no Make UI** (módulo webhook → `Stop` → `Remove`). Até este passo, a antiga continua aceitando POSTs — fazer por último, depois de confirmar que a nova está em produção.
 
 > Com auth habilitada (`x-make-apikey`), o webhook deixa de aceitar POST anônimo — a defesa deixa de depender só do token `X-Diaria-Token` do Worker (que protege apenas o caminho `worker_queue`, não o fire-now direto).

@@ -12,10 +12,10 @@
  * resolve a raiz do projeto a partir do PRÓPRIO `import.meta.url` do
  * arquivo, sem override — `server.ts` (mesmo padrão de dashboard-clarice.ts
  * e studio-integrations.ts) chama a versão SEM argumento, então não há
- * como redirecionar o carregamento pra um `.env.local` de fixture isolado
- * sem escrever no `.env.local` REAL do projeto (anti-padrão já documentado
+ * como redirecionar o carregamento pra um `.env` de fixture isolado
+ * sem escrever no `.env` REAL do projeto (anti-padrão já documentado
  * em scripts/check-invariants.ts: "DIARIA_PROJECT_ROOT permite override pra
- * teste e2e sem hijack do .env.local real do projeto", #1010 item 4). E
+ * teste e2e sem hijack do .env real do projeto", #1010 item 4). E
  * mesmo que escrevêssemos lá, a garantia de ordenação de execução de módulos
  * ESM (todo módulo estaticamente importado termina de rodar ANTES do corpo
  * do módulo importador, independente de onde a chamada aparece no arquivo)

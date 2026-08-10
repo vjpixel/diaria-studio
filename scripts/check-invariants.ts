@@ -323,10 +323,10 @@ function walkMd(dir: string, visit: (path: string) => void): void {
 }
 
 async function main(): Promise<void> {
-  // Load .env.local antes de checar env vars (#923) — Stage 0 e 4 dependem
-  // de BEEHIIV_API_KEY, FACEBOOK_*, DIARIA_LINKEDIN_CRON_*.
+  // Load .env antes de checar env vars (#923, consolidado #4820) — Stage 0 e 4
+  // dependem de BEEHIIV_API_KEY, FACEBOOK_*, DIARIA_LINKEDIN_CRON_*.
   // DIARIA_PROJECT_ROOT permite override pra teste e2e sem hijack do
-  // `.env.local` real do projeto (#1010 item 4).
+  // `.env` real do projeto (#1010 item 4).
   loadProjectEnv(process.env.DIARIA_PROJECT_ROOT);
   const argv = process.argv.slice(2);
   const isStatic = argv.includes("--static");

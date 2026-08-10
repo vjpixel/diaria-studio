@@ -3,7 +3,7 @@
  *
  * Regression test: scripts standalone que leem secrets de process.env
  * devem chamar loadProjectEnv() ou importar dotenv/config no topo, senão
- * env vars de .env/.env.local não carregam quando o script roda via
+ * env vars de .env não carregam quando o script roda via
  * `npx tsx` sem prefix manual.
  *
  * Caso real #1204: close-poll.ts não carregava .env, ADMIN_SECRET ficava

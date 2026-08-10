@@ -68,7 +68,7 @@ import { resolveBeehiivConfig } from "../lib/beehiiv-config.ts";
 import { brevoGet } from "../lib/brevo-client.ts";
 
 // Mesmo racional de `studio-integrations.ts`/`dashboard-clarice.ts`: garante
-// `.env.local`/`.env` carregados mesmo sem passar por um entrypoint que já
+// `.env` carregado mesmo sem passar por um entrypoint que já
 // chamou isso. Idempotente, nunca sobrescreve var já presente.
 loadProjectEnv();
 

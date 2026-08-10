@@ -61,7 +61,7 @@ function checkBeehiivKeySet(): InvariantViolation[] {
       {
         rule: "beehiiv-key-set",
         message:
-          "BEEHIIV_API_KEY não definida no env. Configure em .env.local ou exporte no shell. " +
+          "BEEHIIV_API_KEY não definida no env. Configure em .env ou exporte no shell. " +
           "Sem ela, refresh-dedup, fetch-poll-stats e collect-monthly falham.",
         source_issue: "#895",
         severity: "error",

@@ -53,7 +53,7 @@
  * **`local` vs `cloud` (#2643)**: o campo `execMode` no topo do payload
  * (`detectExecMode`, `../lib/exec-mode.ts`) deixa explícito que os
  * status refletem o ambiente ONDE O STUDIO-SERVER RODA — num clone cloud
- * sem o junction `data/` nem `.env.local`, quase tudo aparece
+ * sem o junction `data/` nem `.env`, quase tudo aparece
  * "não configurado", o que é esperado, não um bug.
  *
  * **Fail-soft total**: nenhum probe pode derrubar a página — qualquer
@@ -74,7 +74,7 @@ import { beehiivApiBase } from "../lib/beehiiv-config.ts";
 import { checkCloudflareToken, type CloudflareTokenHealth } from "../check-cloudflare-token.ts";
 import { checkClariceHealth } from "../clarice-healthcheck.ts";
 
-// Garante que `.env.local`/`.env` estão carregados mesmo quando
+// Garante que `.env` está carregado mesmo quando
 // `studio-integrations.ts` é importado sem o processo ter passado por um
 // entrypoint que já chamou isso — mesmo padrão de `dashboard-clarice.ts`
 // (#3563). Idempotente, nunca sobrescreve vars já presentes.

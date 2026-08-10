@@ -54,7 +54,7 @@
  */
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
-loadProjectEnv(); // #923 — carregar .env.local antes de qualquer process.env access
+loadProjectEnv(); // #923 — carregar .env antes de qualquer process.env access
 
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -757,7 +757,7 @@ async function main(): Promise<void> {
   const useWorkerForScheduled = workerUrl !== "" && workerToken !== "";
 
   // #923 fail-fast: --schedule sem Worker = silent fire-now bug. Aborta.
-  // Bug histórico (2026-05-07): .env.local não carregava → workerToken="" →
+  // Bug histórico (2026-05-07): .env não carregava → workerToken="" →
   // useWorkerForScheduled=false → fallback pra Make.com fire-now → 3 posts
   // postados imediatamente em vez de agendados. Pra evitar repetição, qualquer
   // --schedule sem Worker config aborta com mensagem clara.
@@ -768,14 +768,14 @@ async function main(): Promise<void> {
       "  DIARIA_LINKEDIN_CRON_TOKEN: " +
         (workerToken
           ? "set (length=" + workerToken.length + ")"
-          : "MISSING — provavelmente .env.local não carregada"),
+          : "MISSING — provavelmente .env não carregado"),
       "",
       "Sem o Worker, --schedule cairia em fire-now via Make.com (publica",
       "IMEDIATAMENTE, ignora scheduled_at). Pra evitar publicação acidental,",
       "este script aborta.",
       "",
       "Resolução:",
-      "  1. Confirmar que .env.local existe e contém DIARIA_LINKEDIN_CRON_TOKEN",
+      "  1. Confirmar que .env existe e contém DIARIA_LINKEDIN_CRON_TOKEN",
       "  2. Confirmar platform.config.json (ou env DIARIA_LINKEDIN_CRON_URL)",
       "     com cloudflare_worker_url",
       "  3. OU rodar SEM --schedule pra postar imediatamente conscientemente",

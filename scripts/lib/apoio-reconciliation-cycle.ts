@@ -182,7 +182,7 @@ export interface ApoioReconciliationCycleOptions {
   /** Injetável pra testes — evita I/O real de `pending-promises.jsonl`.
    * Default: lido do store via `pendingPromisesPath(rootDir, env.campaign)`. */
   pendingPromises?: PendingPromise[];
-  /** Injetável pra testes — evita ler `.env.local`/`APOIA_SE_*` reais.
+  /** Injetável pra testes — evita ler `.env`/`APOIA_SE_*` reais.
    * Default: `readApoiaSeEnv()`. */
   env?: ApoiaSeEnv;
   /** Repassado a `checkBacker` (via `reconcilePendingPromises`) — `fetchImpl`,

@@ -61,7 +61,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { computePollToken, pollTokenKvKey, type PollToken } from "./lib/shared/poll-token.ts";
 import { putTextToWorkerKV, type CloudflareKVConfig } from "./lib/cloudflare-kv-upload.ts";
 
-loadProjectEnv(); // #1219 — carrega .env/.env.local antes de ler process.env.
+loadProjectEnv(); // #1219 — carrega .env antes de ler process.env.
 
 const FIELD_TOKEN = "poll_token";
 const CONCURRENCY = 3;

@@ -58,7 +58,7 @@ loadProjectEnv();
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // #2834/#2850: base URL centralizada em lib/beehiiv-config.ts (`BEEHIIV_API_URL`
 // override pra tests continua honrado lá). Getter lazy chamado AQUI, pós
-// loadProjectEnv() — critico pra honrar overrides carregados via .env/.env.local.
+// loadProjectEnv() — critico pra honrar overrides carregados via .env.
 const BEEHIIV_API = beehiivApiBase();
 
 // ── Config ────────────────────────────────────────────────────────────────────

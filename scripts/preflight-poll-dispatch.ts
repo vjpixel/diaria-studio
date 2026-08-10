@@ -30,7 +30,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
-import { loadProjectEnv } from "./lib/env-loader.ts"; // #1803 review: .env + .env.local (precedência)
+import { loadProjectEnv } from "./lib/env-loader.ts"; // #1803 review: .env
 import { renderHaltBanner } from "./lib/gate-banner.ts";
 import { runTsx } from "./lib/run-tsx.ts"; // #1811
 import { isValidEditionDir } from "./lib/edition-utils.ts"; // #1811: rejeita data inválida
@@ -39,7 +39,7 @@ import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #4125 item 8: defau
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-loadProjectEnv(); // carrega .env/.env.local antes de qualquer leitura de process.env
+loadProjectEnv(); // carrega .env antes de qualquer leitura de process.env
 
 export type StepName =
   | "maintain-valid-editions"

@@ -51,7 +51,7 @@ import { resolve } from "node:path";
 import { exec } from "node:child_process";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 
-loadProjectEnv(); // #1219 — carrega .env/.env.local antes de ler process.env.
+loadProjectEnv(); // #1219 — carrega .env antes de ler process.env.
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CREDENTIALS_PATH = resolve(ROOT, "data", ".credentials.json");

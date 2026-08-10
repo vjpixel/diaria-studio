@@ -16,7 +16,7 @@
  *
  * Env:
  *   STRIPE_API_KEY  chave restrita (read-only: Coupons, Promotion Codes,
- *                   Customers, Subscriptions, Charges = Read). Valor em .env.local.
+ *                   Customers, Subscriptions, Charges = Read). Valor em .env.
  *
  * Output:
  *   data/stripe-coupon-usage-YYYY-MM-DD.csv  (gitignored via data/; pulado c/ --no-pii)
@@ -190,7 +190,7 @@ async function main(): Promise<void> {
   if (!apiKey) {
     console.error(
       "Erro: STRIPE_API_KEY não definida.\n" +
-        "Defina a chave restrita (read-only) em .env.local — ver .env.example.",
+        "Defina a chave restrita (read-only) em .env — ver .env.example.",
     );
     process.exit(1);
   }

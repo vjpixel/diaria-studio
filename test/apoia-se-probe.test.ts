@@ -93,7 +93,7 @@ describe("apoia-se-probe main()", () => {
     await assert.rejects(main(["--email", "foo@bar.com"]), /exit:1/);
     assert.equal(fetchCalled, false);
     assert.ok(errors.some((e) => /APOIA_SE_API_KEY/.test(e)));
-    assert.ok(errors.some((e) => /\.env\.local/.test(e)));
+    assert.ok(errors.some((e) => /\.env/.test(e)));
   });
 
   it("status ok (200 pagante) → imprime o status certo e não sai com erro", async () => {

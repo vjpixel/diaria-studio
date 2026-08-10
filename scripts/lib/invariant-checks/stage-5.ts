@@ -67,7 +67,7 @@ function checkFbPageIdSet(): InvariantViolation[] {
         rule: "facebook-page-id-set",
         message:
           "FACEBOOK_PAGE_ID env var ausente — publish-facebook vai falhar. " +
-          "Configure em .env.local.",
+          "Configure em .env.",
         source_issue: "#facebook",
         severity: "error",
       },
@@ -117,7 +117,7 @@ function checkInstagramCredsSet(): InvariantViolation[] {
       rule: "instagram-business-account-id-set",
       message:
         "INSTAGRAM_BUSINESS_ACCOUNT_ID ausente — publish-instagram vai pular " +
-        "(Instagram não será publicado). Configure em .env.local pra habilitar.",
+        "(Instagram não será publicado). Configure em .env pra habilitar.",
       source_issue: "#49",
       severity: "warning",
     });
@@ -130,7 +130,7 @@ function checkInstagramCredsSet(): InvariantViolation[] {
       rule: "instagram-access-token-set",
       message:
         "INSTAGRAM_ACCESS_TOKEN ausente — publish-instagram vai pular " +
-        "(Instagram não será publicado). Configure em .env.local pra habilitar.",
+        "(Instagram não será publicado). Configure em .env pra habilitar.",
       source_issue: "#49",
       severity: "warning",
     });
@@ -157,7 +157,7 @@ function checkThreadsCredsSet(): InvariantViolation[] {
       rule: "threads-user-id-set",
       message:
         "THREADS_USER_ID ausente — publish-threads vai pular " +
-        "(Threads não será publicado). Configure em .env.local pra habilitar.",
+        "(Threads não será publicado). Configure em .env pra habilitar.",
       source_issue: "#2479",
       severity: "warning",
     });
@@ -170,7 +170,7 @@ function checkThreadsCredsSet(): InvariantViolation[] {
       rule: "threads-access-token-set",
       message:
         "THREADS_ACCESS_TOKEN ausente — publish-threads vai pular " +
-        "(Threads não será publicado). Configure em .env.local pra habilitar.",
+        "(Threads não será publicado). Configure em .env pra habilitar.",
       source_issue: "#2479",
       severity: "warning",
     });
@@ -241,7 +241,7 @@ function checkLinkedinWorkerUrlSet(): InvariantViolation[] {
         rule: "linkedin-worker-url-set",
         message:
           "DIARIA_LINKEDIN_CRON_URL env var ausente — publish-linkedin cai pra Make webhook " +
-          "(post imediato, sem agendamento). Configure em .env.local pra evitar.",
+          "(post imediato, sem agendamento). Configure em .env pra evitar.",
         source_issue: "#971",
         severity: "warning",
       },

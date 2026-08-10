@@ -49,7 +49,7 @@ fetch na Stripe** (fail-fast, sem gastar quota) e nunca escreve no KV.
 ## Disparo manual
 
 - GitHub UI: **Actions > Refresh Coupons KV > Run workflow** (roda com `--no-pii`).
-- Local (com os envs setados no shell / `.env.local`, Node 24 como no CI):
+- Local (com os envs setados no shell / `.env`, Node 24 como no CI):
   `npx tsx scripts/stripe-coupon-usage.ts --write-kv`
   (localmente, sem `--no-pii`, imprime e-mails e grava o CSV em `data/` — ok na
   máquina do editor; **não** use assim em ambiente compartilhado).

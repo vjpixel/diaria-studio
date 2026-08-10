@@ -27,7 +27,7 @@
  */
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
-loadProjectEnv(); // #923 — carrega .env.local + .env (precedência) antes de process.env access
+loadProjectEnv(); // #923 — carrega .env antes de process.env access
 
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";

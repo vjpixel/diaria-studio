@@ -17,7 +17,7 @@ Duas peças, cada uma numa camada diferente:
 
 - Windows OU Linux (a máquina do editor, ou o servidor Linux 24/7 — #4808 estendeu o fluxo pra Linux via `systemd --user`; passos específicos por OS marcados abaixo).
 - Domínio `diar.ia.br` já numa zona Cloudflare (é o caso — usado por outros Workers do projeto).
-- Conta Cloudflare com acesso a essa zona (mesma conta usada pra `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_API_TOKEN` do `.env.local`, mas **este fluxo usa login interativo via browser, não a API token** — são credenciais separadas).
+- Conta Cloudflare com acesso a essa zona (mesma conta usada pra `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_API_TOKEN` do `.env`, mas **este fluxo usa login interativo via browser, não a API token** — são credenciais separadas).
 - `studio-server` já rodando localmente (`npm run studio`, ou via `setup-studio-service-linux.sh` no Linux) quando você for testar do celular.
 - **Linux apenas**: Node ≥22.5 (ver [#4823](https://github.com/vjpixel/diaria-studio/issues/4823) — `node:sqlite` não existe em versões anteriores; o Node do pacote da distro pode estar desatualizado) e `loginctl enable-linger $USER` rodado 1x (sudo) — sem isso o service para quando a última sessão de login encerra.
 - **Guard de blast-radius (#4808):** se o tunnel já tiver um conector ativo rodando noutra máquina (ex: migrando do Windows pro Linux), suba o novo só depois de desarmar o antigo — dois conectores ativos pro mesmo tunnel roteiam o hostname de forma imprevisível entre as duas máquinas. `setup-remote-tunnel-linux.sh` checa isso automaticamente antes de iniciar (recusa sem `--force`).

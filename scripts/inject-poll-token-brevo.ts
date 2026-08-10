@@ -56,7 +56,7 @@ import { computePollToken, pollTokenKvKey, type PollToken } from "./lib/shared/p
 import { putTextToWorkerKV, type CloudflareKVConfig } from "./lib/cloudflare-kv-upload.ts";
 import { brevoGet, brevoPost, brevoPut } from "./lib/brevo-client.ts";
 
-loadProjectEnv(); // #1219 — carrega .env/.env.local antes de ler process.env.
+loadProjectEnv(); // #1219 — carrega .env antes de ler process.env.
 
 const ATTR_NAME = "POLL_TOKEN";
 const CONCURRENCY = 3;
