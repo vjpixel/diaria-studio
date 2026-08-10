@@ -12,7 +12,9 @@ import assert from "node:assert/strict";
 import {
   verifyClicksApplied,
   extractManifestPostIds,
+  findInvariantViolations,
   type CacheMetaReader,
+  type CacheStatsReader,
 } from "../scripts/verify-clicks-enrichment.ts";
 
 const DISPATCHED_AT = "2026-08-07T10:00:00.000Z";
@@ -104,6 +106,113 @@ describe("verifyClicksApplied (#4732)", () => {
       reader,
     );
     assert.equal(result.ok, false, "timestamp inválido deve reprovar, não passar por acidente");
+  });
+});
+
+function fakeStatsReader(meta: Record<string, { emailAggregate: number; clicksLength: number } | null>): CacheStatsReader {
+  return (postId) => (postId in meta ? meta[postId] : null);
+}
+
+describe("findInvariantViolations (#4836)", () => {
+  it("caso real do incidente: unique_verified_clicks entre 6-28 mas stats.clicks vazio → violação", () => {
+    const reader = fakeStatsReader({
+      post_a: { emailAggregate: 22, clicksLength: 0 },
+    });
+    assert.deepEqual(findInvariantViolations(["post_a"], reader), ["post_a"]);
+  });
+
+  it("post genuinamente sem clicks (agregado 0, array vazio) NÃO é violação", () => {
+    const reader = fakeStatsReader({
+      post_a: { emailAggregate: 0, clicksLength: 0 },
+    });
+    assert.deepEqual(findInvariantViolations(["post_a"], reader), []);
+  });
+
+  it("post saudável (agregado > 0, array populado) não é violação", () => {
+    const reader = fakeStatsReader({
+      post_a: { emailAggregate: 22, clicksLength: 8 },
+    });
+    assert.deepEqual(findInvariantViolations(["post_a"], reader), []);
+  });
+
+  it("cache ilegível/ausente (null) não é tratado como violação — mtime check já cobre isso", () => {
+    const reader = fakeStatsReader({ post_a: null });
+    assert.deepEqual(findInvariantViolations(["post_a"], reader), []);
+  });
+
+  it("mistura de posts: só o que viola entra na lista", () => {
+    const reader = fakeStatsReader({
+      post_ok: { emailAggregate: 10, clicksLength: 5 },
+      post_bad: { emailAggregate: 15, clicksLength: 0 },
+      post_zero: { emailAggregate: 0, clicksLength: 0 },
+    });
+    assert.deepEqual(findInvariantViolations(["post_ok", "post_bad", "post_zero"], reader), ["post_bad"]);
+  });
+});
+
+describe("verifyClicksApplied — integração do invariante de conteúdo (#4836)", () => {
+  it("mtime ok mas invariante violado → ok=false, aparece em invariant_violations, não em mismatches", () => {
+    const metaReader = fakeReader({
+      post_a: { exists: true, mtimeMs: AFTER_DISPATCH_MS },
+    });
+    const statsReader = fakeStatsReader({
+      post_a: { emailAggregate: 20, clicksLength: 0 },
+    });
+    const result = verifyClicksApplied(
+      { manifestPostIds: ["post_a"], failedPosts: [], dispatchedAt: DISPATCHED_AT },
+      metaReader,
+      statsReader,
+    );
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.mismatches, []);
+    assert.deepEqual(result.invariant_violations, ["post_a"]);
+    assert.equal(result.verified_ok_count, 0);
+  });
+
+  it("mtime ok e invariante ok → ok=true", () => {
+    const metaReader = fakeReader({
+      post_a: { exists: true, mtimeMs: AFTER_DISPATCH_MS },
+    });
+    const statsReader = fakeStatsReader({
+      post_a: { emailAggregate: 20, clicksLength: 8 },
+    });
+    const result = verifyClicksApplied(
+      { manifestPostIds: ["post_a"], failedPosts: [], dispatchedAt: DISPATCHED_AT },
+      metaReader,
+      statsReader,
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.verified_ok_count, 1);
+  });
+
+  it("sem readCacheStats (chamada antiga, 2 argumentos) — invariant_violations sempre [], comportamento pré-#4836 preservado", () => {
+    const metaReader = fakeReader({
+      post_a: { exists: true, mtimeMs: AFTER_DISPATCH_MS },
+    });
+    const result = verifyClicksApplied(
+      { manifestPostIds: ["post_a"], failedPosts: [], dispatchedAt: DISPATCHED_AT },
+      metaReader,
+    );
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.invariant_violations, []);
+  });
+
+  it("post em ambos mismatches e invariant_violations não é contado 2x em verified_ok_count", () => {
+    const metaReader = fakeReader({
+      post_a: { exists: true, mtimeMs: BEFORE_DISPATCH_MS }, // mtime mismatch
+    });
+    const statsReader = fakeStatsReader({
+      post_a: { emailAggregate: 20, clicksLength: 0 }, // também viola invariante
+    });
+    const result = verifyClicksApplied(
+      { manifestPostIds: ["post_a"], failedPosts: [], dispatchedAt: DISPATCHED_AT },
+      metaReader,
+      statsReader,
+    );
+    assert.equal(result.claimed_ok_count, 1);
+    assert.equal(result.verified_ok_count, 0);
+    assert.deepEqual(result.mismatches, ["post_a"]);
+    assert.deepEqual(result.invariant_violations, ["post_a"]);
   });
 });
 

@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { mapClick, extractClicksArray, applyClicks } from "../scripts/apply-mcp-clicks.ts";
+import { mapClick, extractClicksArray, applyClicks, EmptyReplaceGuardError } from "../scripts/apply-mcp-clicks.ts";
 
 describe("mapClick — MCP shape → legacy", () => {
   it("mapeia campos verified preferencialmente", () => {
@@ -142,5 +142,90 @@ describe("applyClicks — integration", () => {
       () => applyClicks('{"clicks":[]}', { postId: "post_nonexistent", append: false, postsDir }),
       /cache miss/,
     );
+  });
+});
+
+describe("applyClicks — guard REPLACE-vazio (#4836)", () => {
+  function setup() {
+    const dir = mkdtempSync(join(tmpdir(), "apply-mcp-clicks-guard-"));
+    const postsDir = resolve(dir, "posts");
+    mkdirSync(postsDir, { recursive: true });
+    return { dir, postsDir };
+  }
+
+  function writeCacheWithClicks(postsDir: string, postId: string, clicks: unknown[]) {
+    const cachePath = resolve(postsDir, `${postId}.json`);
+    writeFileSync(cachePath, JSON.stringify({
+      id: postId,
+      stats: { email: { unique_verified_clicks: 12 }, clicks },
+    }));
+    return cachePath;
+  }
+
+  it("caso real 260805: REPLACE com payload vazio sobre cache não-vazio recusa por padrão", () => {
+    const { postsDir } = setup();
+    const postId = "post_test_guard_001";
+    const cachePath = writeCacheWithClicks(postsDir, postId, [
+      { url: "https://a.com/", email: { verified_clicks: 6 } },
+    ]);
+
+    assert.throws(
+      () => applyClicks('{"clicks":[]}', { postId, append: false, postsDir }),
+      EmptyReplaceGuardError,
+    );
+
+    // Cache em disco não foi tocado — o guard recusa ANTES do write.
+    const stillThere = JSON.parse(readFileSync(cachePath, "utf8"));
+    assert.equal(stillThere.stats.clicks.length, 1, "guard não deve apagar o array existente");
+  });
+
+  it("--allow-empty-replace explícito permite o replace vazio", () => {
+    const { postsDir } = setup();
+    const postId = "post_test_guard_002";
+    const cachePath = writeCacheWithClicks(postsDir, postId, [
+      { url: "https://a.com/", email: { verified_clicks: 6 } },
+    ]);
+
+    const result = applyClicks('{"clicks":[]}', { postId, append: false, postsDir, allowEmptyReplace: true });
+    assert.equal(result.after_count, 0);
+
+    const written = JSON.parse(readFileSync(cachePath, "utf8"));
+    assert.equal(written.stats.clicks.length, 0);
+  });
+
+  it("REPLACE vazio sobre cache JÁ vazio não aciona o guard (nada a perder)", () => {
+    const { postsDir } = setup();
+    const postId = "post_test_guard_003";
+    writeCacheWithClicks(postsDir, postId, []);
+
+    const result = applyClicks('{"clicks":[]}', { postId, append: false, postsDir });
+    assert.equal(result.after_count, 0);
+    assert.equal(result.before_count, 0);
+  });
+
+  it("REPLACE com payload não-vazio nunca aciona o guard, mesmo substituindo conteúdo existente", () => {
+    const { postsDir } = setup();
+    const postId = "post_test_guard_004";
+    writeCacheWithClicks(postsDir, postId, [
+      { url: "https://old.com/", email: { verified_clicks: 6 } },
+    ]);
+
+    const result = applyClicks(
+      JSON.stringify({ clicks: [{ url: "https://new.com/", email: { total_clicked_verified: 9 } }] }),
+      { postId, append: false, postsDir },
+    );
+    assert.equal(result.after_count, 1);
+  });
+
+  it("--append nunca aciona o guard (semântica é aditiva, não pode apagar por design)", () => {
+    const { postsDir } = setup();
+    const postId = "post_test_guard_005";
+    writeCacheWithClicks(postsDir, postId, [
+      { url: "https://a.com/", email: { verified_clicks: 6 } },
+    ]);
+
+    // payload vazio em modo append é um no-op, não um apagamento — não deve lançar.
+    const result = applyClicks('{"clicks":[]}', { postId, append: true, postsDir });
+    assert.equal(result.after_count, 1, "clique existente preservado, nada novo pra somar");
   });
 });

@@ -23,11 +23,29 @@
  * Um post alegado `ok` cujo cache não mudou desde o dispatch é uma
  * divergência real: o agent disse que aplicou, o disco discorda.
  *
- * Não usamos "stats.clicks não-vazio" como sinal — um post genuinamente sem
- * clicks (404 ou zero clicks) aplica `[]` e isso é um resultado LEGÍTIMO
- * (documentado no próprio `beehiiv-clicks-enricher.md` §Robustez), não uma
- * falha. Só o mtime distingue "tentei e apliquei (mesmo que vazio)" de "nunca
- * toquei o arquivo".
+ * Não usamos "stats.clicks não-vazio" como sinal SOZINHO — um post
+ * genuinamente sem clicks (404 ou zero clicks) aplica `[]` e isso é um
+ * resultado LEGÍTIMO (documentado no próprio `beehiiv-clicks-enricher.md`
+ * §Robustez), não uma falha. Só o mtime distingue "tentei e apliquei (mesmo
+ * que vazio)" de "nunca toquei o arquivo" — por isso o check de mismatch
+ * acima permanece mtime-only.
+ *
+ * INVARIANTE DE CONTEÚDO (#4836): separado do check de mtime, comparamos
+ * `stats.email.verified_clicks`/`unique_verified_clicks` (agregado — o
+ * mesmo denominador que `scripts/lib/shared/click-cache-completeness.ts`
+ * usa) contra `stats.clicks` (per-link) de cada post CLAIMED OK, no estado
+ * ATUAL do arquivo em disco: `agregado > 0 ⟹ stats.clicks não-vazio`. Um
+ * post com aberturas/cliques verificados no agregado mas sem NENHUMA linha
+ * per-link é exatamente a assinatura do incidente #4836 (22 posts,
+ * 2026-08-05: `unique_verified_clicks` entre 6 e 28, `stats.clicks: []`) —
+ * diferente do "post genuinamente sem clicks" do parágrafo acima, onde o
+ * agregado também é zero. Isto é aditivo ao check de mtime, não o substitui:
+ * um post pode passar no mtime (arquivo foi tocado nesta run) e ainda assim
+ * violar o invariante (o agent aplicou um payload vazio por cima de um
+ * agregado positivo — o próprio cenário que `apply-mcp-clicks.ts` agora
+ * recusa por padrão via `EmptyReplaceGuardError`, mas que pode ter sido
+ * escrito antes desse guard existir, ou via `--allow-empty-replace`
+ * incorreto).
  *
  * Uso:
  *   npx tsx scripts/verify-clicks-enrichment.ts \
@@ -36,10 +54,11 @@
  *     --dispatched-at <ISO timestamp capturado antes do Agent(...) dispatch> \
  *     [--posts-dir data/beehiiv-cache/posts]
  *
- * Output (stdout): JSON `{ ok, claimed_ok_count, verified_ok_count, mismatches }`.
- * Exit code: 0 quando ok (sem divergência), 1 quando há mismatch — o
- * orchestrator trata como `level: warn` real (nunca `--informational`), NUNCA
- * aborta o pipeline (mesmo padrão fail-soft do resto do bloco 0h).
+ * Output (stdout): JSON `{ ok, claimed_ok_count, verified_ok_count, mismatches, invariant_violations }`.
+ * Exit code: 0 quando ok (sem divergência de mtime nem violação de invariante),
+ * 1 caso contrário — o orchestrator trata como `level: warn` real (nunca
+ * `--informational`), NUNCA aborta o pipeline (mesmo padrão fail-soft do
+ * resto do bloco 0h).
  */
 
 import { readFileSync, existsSync, statSync } from "node:fs";
@@ -64,6 +83,8 @@ export interface ClicksVerifyResult {
   claimed_ok_count: number;
   verified_ok_count: number;
   mismatches: string[];
+  /** Posts claimed ok cujo agregado de email verificado é > 0 mas `stats.clicks` está vazio (#4836). */
+  invariant_violations: string[];
 }
 
 /** Injetável pra teste — default lê mtime real via `statSync`. */
@@ -78,14 +99,74 @@ export function makeFsCacheMetaReader(postsDir: string): CacheMetaReader {
 }
 
 /**
+ * Estado de conteúdo relevante pro invariante (#4836) — agregado de email
+ * verificado do post vs. tamanho do `stats.clicks` per-link. `null` quando o
+ * cache não existe ou não pôde ser lido (esses casos já viram mismatch de
+ * mtime separadamente — o check de invariante não duplica esse sinal).
+ */
+export interface ClickInvariantStats {
+  /** `stats.email.verified_clicks` preferido, fallback `unique_verified_clicks` — mesmo denominador de `click-cache-completeness.ts`. */
+  emailAggregate: number;
+  clicksLength: number;
+}
+
+/** Injetável pra teste — default lê e faz parse do JSON real via `readFileSync`. */
+export type CacheStatsReader = (postId: string) => ClickInvariantStats | null;
+
+export function makeFsCacheStatsReader(postsDir: string): CacheStatsReader {
+  return (postId: string) => {
+    const path = join(postsDir, `${postId}.json`);
+    if (!existsSync(path)) return null;
+    try {
+      const cache = JSON.parse(readFileSync(path, "utf8")) as {
+        stats?: { clicks?: unknown[]; email?: { verified_clicks?: number; unique_verified_clicks?: number } };
+      };
+      const email = cache.stats?.email ?? {};
+      return {
+        emailAggregate: email.verified_clicks ?? email.unique_verified_clicks ?? 0,
+        clicksLength: Array.isArray(cache.stats?.clicks) ? (cache.stats!.clicks as unknown[]).length : 0,
+      };
+    } catch {
+      // JSON corrompido/ilegível — não é o que este check mede (mtime já cobre "arquivo ausente/intocado").
+      return null;
+    }
+  };
+}
+
+/**
+ * Pure: cruza posts CLAIMED OK contra o invariante de conteúdo
+ * `emailAggregate > 0 ⟹ clicksLength > 0` (#4836). Não distingue "cache
+ * ilegível" de "invariante ok" — ambos silenciosos aqui porque o mtime check
+ * já cobre ausência/staleness de arquivo separadamente; duplicar o sinal só
+ * confundiria qual dos dois checks pegou o quê.
+ */
+export function findInvariantViolations(claimedOk: string[], readStats: CacheStatsReader): string[] {
+  const violations: string[] = [];
+  for (const id of claimedOk) {
+    const stats = readStats(id);
+    if (!stats) continue;
+    if (stats.emailAggregate > 0 && stats.clicksLength === 0) {
+      violations.push(id);
+    }
+  }
+  return violations;
+}
+
+/**
  * Pure: cruza o manifest + summary contra o estado real em disco (via
  * `readCacheMeta`, injetável). Post claimed `ok` (não está em `failedPosts`)
  * cujo cache está ausente OU não foi tocado desde `dispatchedAt` vira
  * mismatch.
+ *
+ * `readCacheStats` (opcional, #4836) roda o segundo check — invariante de
+ * CONTEÚDO (`emailAggregate > 0 ⟹ stats.clicks não-vazio`), independente do
+ * mtime. Omitido (chamadas antigas, 2 argumentos) => `invariant_violations`
+ * sempre `[]`, comportamento idêntico ao pré-#4836.
  */
 export function verifyClicksApplied(
   input: ClicksVerifyInput,
   readCacheMeta: CacheMetaReader,
+  readCacheStats?: CacheStatsReader,
 ): ClicksVerifyResult {
   const dispatchedAtMs = Date.parse(input.dispatchedAt);
   const failedSet = new Set(input.failedPosts);
@@ -105,11 +186,15 @@ export function verifyClicksApplied(
     }
   }
 
+  const invariantViolations = readCacheStats ? findInvariantViolations(claimedOk, readCacheStats) : [];
+  const failing = new Set([...mismatches, ...invariantViolations]);
+
   return {
-    ok: mismatches.length === 0,
+    ok: mismatches.length === 0 && invariantViolations.length === 0,
     claimed_ok_count: claimedOk.length,
-    verified_ok_count: claimedOk.length - mismatches.length,
+    verified_ok_count: claimedOk.length - failing.size,
     mismatches,
+    invariant_violations: invariantViolations,
   };
 }
 
@@ -161,12 +246,20 @@ function main(): void {
   const result = verifyClicksApplied(
     { manifestPostIds, failedPosts, dispatchedAt },
     makeFsCacheMetaReader(postsDir),
+    makeFsCacheStatsReader(postsDir),
   );
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) {
-    console.error(
-      `[verify-clicks-enrichment] ${result.mismatches.length} post(s) alegado(s) ok pelo agent mas sem escrita real no cache desde o dispatch: ${result.mismatches.join(", ")}`,
-    );
+    if (result.mismatches.length > 0) {
+      console.error(
+        `[verify-clicks-enrichment] ${result.mismatches.length} post(s) alegado(s) ok pelo agent mas sem escrita real no cache desde o dispatch: ${result.mismatches.join(", ")}`,
+      );
+    }
+    if (result.invariant_violations.length > 0) {
+      console.error(
+        `[verify-clicks-enrichment] ${result.invariant_violations.length} post(s) com agregado de email verificado > 0 mas stats.clicks vazio (#4836): ${result.invariant_violations.join(", ")}`,
+      );
+    }
     process.exit(1);
   }
 }

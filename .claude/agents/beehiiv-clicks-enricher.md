@@ -53,6 +53,7 @@ Para cada post no input:
    - Use `--append` somente se você fez fetch em múltiplas chamadas E quer acumular (na prática, junte tudo em `allClicks` antes do apply e use replace, é mais simples).
    - Set `PATH` se necessário (Windows: `export PATH="/c/Program Files/nodejs:$PATH"`).
    - Capture exit code; se != 0, log erro e prossiga (não aborta o batch inteiro).
+   - **Exit code 3 (#4836) é um caso distinto de exit 1**: o script recusou substituir um `stats.clicks` NÃO-VAZIO pelo payload vazio que a MCP retornou. **NÃO** reinvoque com `--allow-empty-replace` por conta própria — você não tem como distinguir "MCP genuinamente confirmou zero cliques agora" de "resposta truncada/malformada" (foi exatamente essa ambiguidade que apagou 109 cliques em 2026-08-05). Trate como `fail` no summary com o motivo `guard-empty-replace`, deixando a decisão pro orchestrator/editor.
 
 4. **Logar progresso conciso** em stderr — uma linha por post:
    ```
@@ -72,7 +73,7 @@ Para cada post no input:
 ## Robustez
 
 - **MCP rate-limit (429)**: aguarde 30-60s antes de retry. Se 3 retries falham, marca post como fail e segue.
-- **Post sem dados (404 ou clicks vazio)**: aceita resposta vazia, aplica array `[]`, log como ok com 0 clicks.
+- **Post sem dados (404 ou clicks vazio)**: aceita resposta vazia, aplica array `[]`, log como ok com 0 clicks. **Só se aplica quando o cache local já estava vazio antes** — se o cache já tinha linhas (post enriquecido antes, re-invocação nesta run retornando vazio), `apply-mcp-clicks.ts` recusa por padrão (guard #4836, exit 3 — ver Processo passo 3) em vez de apagar silenciosamente; trate como `fail`, nunca force o override.
 - **Cache miss em apply**: log fail, segue. NÃO tente recriar o cache (responsabilidade do `beehiiv-sync.ts`).
 - **Manifest muito grande**: não chunke artificialmente — processe tudo em sequência. Cap de tempo é ~60s por post no pior caso.
 

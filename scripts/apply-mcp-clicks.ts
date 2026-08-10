@@ -34,10 +34,24 @@
  *   { "data": [...] }       — alternativo
  *   [...]                   — array nu
  *
+ * GUARD (#4836): modo REPLACE (default, sem `--append`) recusa sobrescrever
+ * um `stats.clicks` NÃO-VAZIO com um array vazio, a menos que
+ * `--allow-empty-replace` seja passado explicitamente. Incidente que motivou:
+ * em 2026-08-05, entre 18:19:29 e 18:19:53, 22 posts tiveram `stats.clicks`
+ * apagado (`[]`) por uma invocação REPLACE deste script enquanto
+ * `stats.email.unique_verified_clicks` seguia entre 6 e 28 — 109 cliques
+ * perdidos, sem sinal de erro (write atômico via tmp+rename "funcionou",
+ * só que com o array errado). Um MCP `list_post_clicks` que responde vazio
+ * (rede, rate limit, resposta malformada da paginação) é justamente esse
+ * caso: sucesso aparente, payload vazio, e sem o guard o REPLACE apaga dado
+ * bom silenciosamente. Post genuinamente sem cliques nunca teve linhas pra
+ * começo de conversa (`existing.length === 0`) — não aciona o guard.
+ *
  * Output (stdout): JSON `{ post_id, before_count, after_count, mapped }`.
  * Stderr: warnings.
  *
- * Exit codes: 0=sucesso, 1=erro IO/parse, 2=args inválidos.
+ * Exit codes: 0=sucesso, 1=erro IO/parse, 2=args inválidos, 3=guard —
+ * replace apagaria stats.clicks não-vazio sem --allow-empty-replace.
  */
 
 import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
@@ -117,9 +131,26 @@ export function extractClicksArray(raw: unknown): McpClick[] {
   return [];
 }
 
+/** Flag de override do guard de replace-vazio. Fonte única — CLI e testes referenciam esta constante. */
+export const ALLOW_EMPTY_REPLACE_FLAG = "--allow-empty-replace";
+
+/** Erro do guard REPLACE-vazio (#4836) — distinto de erro de IO/parse pra permitir exit code próprio. */
+export class EmptyReplaceGuardError extends Error {
+  constructor(postId: string, lostCount: number) {
+    super(
+      `guard: REPLACE apagaria ${lostCount} click(s) existente(s) de ${postId} ` +
+        `(stats.clicks não-vazio → payload vazio). Se isso é esperado (ex: MCP confirmou ` +
+        `0 cliques reais pro post), rode de novo com ${ALLOW_EMPTY_REPLACE_FLAG}.`,
+    );
+    this.name = "EmptyReplaceGuardError";
+  }
+}
+
 export interface ApplyOpts {
   postId: string;
   append: boolean;
+  /** Override do guard REPLACE-vazio (#4836) — default false, recusa por padrão. */
+  allowEmptyReplace?: boolean;
   /** Override paths para testes. */
   postsDir?: string;
 }
@@ -159,6 +190,10 @@ export function applyClicks(stdinJson: string, opts: ApplyOpts): ApplyResult {
     for (const c of mapped) seen.set(c.url, c); // incoming wins se mesma url
     finalClicks = [...seen.values()];
   } else {
+    // Guard (#4836): REPLACE nunca apaga um array não-vazio silenciosamente.
+    if (beforeCount > 0 && mapped.length === 0 && !opts.allowEmptyReplace) {
+      throw new EmptyReplaceGuardError(opts.postId, beforeCount);
+    }
     finalClicks = mapped;
   }
 
@@ -197,6 +232,7 @@ async function main(): Promise<void> {
   const opts: ApplyOpts = {
     postId: argv[postIdIdx + 1],
     append: argv.includes("--append"),
+    allowEmptyReplace: argv.includes(ALLOW_EMPTY_REPLACE_FLAG),
   };
 
   const stdinJson = await readStdin();
@@ -210,7 +246,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(result));
   } catch (e) {
     console.error(e instanceof Error ? e.message : String(e));
-    process.exit(1);
+    process.exit(e instanceof EmptyReplaceGuardError ? 3 : 1);
   }
 }
 
