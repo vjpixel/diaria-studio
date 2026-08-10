@@ -49,6 +49,7 @@ import { resolve, dirname } from "node:path";
 import {
   tokenizeForJaccard,
   jaccardSimilarity,
+  normalizeTitle,
 } from "./dedup.ts";
 import { detectLaunchCandidate, detectDomainMismatchCandidate } from "./lib/launch-detect.ts";
 import { SECONDARY_BUCKETS } from "./check-secondary-themes.ts";
@@ -151,6 +152,63 @@ const GENERIC_STOPWORDS_INTRA = new Set([
   "janeiro", "fevereiro", "marco", "abril", "maio", "junho",
   "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
 ]);
+
+/**
+ * #4947: nomes de produto de DUAS PALAVRAS cujos tokens individuais também
+ * são palavras comuns o bastante para aparecerem em títulos SEM relação
+ * nenhuma com o produto (ex: "code" é palavra genérica em manchete de
+ * tecnologia). Sem tratamento, um título que cita o produto como MENÇÃO
+ * LATERAL de concorrente/comparação (ex: "Meta lança IA para combater Codex
+ * e Claude Code") compartilha os 2 tokens "claude"+"code" com um artigo
+ * GENUINAMENTE diferente cujo SUJEITO é esse mesmo produto (ex: "Claude Code
+ * puts auto mode in the driver's seat") — o suficiente pra cruzar sozinho o
+ * threshold estrito de Jaccard (`SECONDARY_INTRA_BUCKET_STRICT_JACCARD_THRESHOLD`
+ * = 0.15) mesmo sem nenhuma outra palavra em comum (caso real 260811, #4943
+ * Bug A / #4947).
+ *
+ * Diferente das listas de palavra ÚNICA acima (`COMPANY_STOPWORDS_INTRA`/
+ * `PRODUCT_STOPWORDS_INTRA`, que excluem o token em QUALQUER título), aqui o
+ * gatilho é a ADJACÊNCIA: só remove os 2 tokens quando aparecem GRUDADOS
+ * (bigram) no título normalizado, preservando o comportamento em títulos
+ * onde as palavras aparecem soltas/não-adjacentes — ex: o cluster real
+ * "Claude caiu" (#4667) nunca menciona "code", então não é afetado; um
+ * título hipotético "Claude é usado para gerar código" também não colide,
+ * porque "código"/"code" não está imediatamente após "claude" no título
+ * normalizado.
+ *
+ * Aplicado SÓ ao Jaccard do modo `strict` de `dedupSecondaryIntraBucket`
+ * (RADAR item-vs-item) — o caminho exato onde o falso positivo ocorreu.
+ * Escopo deliberadamente mínimo: 1 bigram, adicionado sob demanda como as
+ * listas de stopword acima, não uma heurística genérica de "sujeito vs
+ * menção lateral" (que exigiria NLP real e arriscaria reabrir os falsos
+ * negativos já calibrados nesta função — ver docstring de
+ * `dedupSecondaryIntraBucket`).
+ */
+const PRODUCT_BIGRAM_STOPWORDS_INTRA: ReadonlyArray<readonly [string, string]> = [
+  ["claude", "code"],
+];
+
+/**
+ * Remove, de um set de tokens Jaccard, as palavras de um bigram de produto
+ * conhecido (`PRODUCT_BIGRAM_STOPWORDS_INTRA`) quando o bigram aparece
+ * GRUDADO no título original normalizado — ver docstring da constante acima.
+ * `title` deve ser o título já com sufixo de veículo stripado (mesmo input
+ * usado para gerar `tokens` via `tokenizeForJaccard`), para a checagem de
+ * adjacência bater com o mesmo texto que produziu os tokens.
+ */
+function stripAdjacentProductBigrams(
+  strippedTitle: string,
+  tokens: Set<string>,
+): Set<string> {
+  const normalized = normalizeTitle(strippedTitle);
+  let result = tokens;
+  for (const [w1, w2] of PRODUCT_BIGRAM_STOPWORDS_INTRA) {
+    if (normalized.includes(`${w1} ${w2}`)) {
+      result = new Set([...result].filter((t) => t !== w1 && t !== w2));
+    }
+  }
+  return result;
+}
 
 /**
  * #3099: termos genéricos de manchete (verbos de atribuição jornalística,
@@ -1126,9 +1184,20 @@ export function dedupSecondaryIntraBucket(
       if (removedUrls.has(b.url) || removedUrls.has(a.url) || !b.title) continue;
       if (a.url === b.url) continue;
 
-      const aTokens = tokenizeForJaccard(stripVehicleSuffix(a.title));
-      const bTokens = tokenizeForJaccard(stripVehicleSuffix(b.title));
-      const jaccard = jaccardSimilarity(aTokens, bTokens);
+      const aStrippedTitle = stripVehicleSuffix(a.title);
+      const bStrippedTitle = stripVehicleSuffix(b.title);
+      const aTokens = tokenizeForJaccard(aStrippedTitle);
+      const bTokens = tokenizeForJaccard(bStrippedTitle);
+      // #4947: em modo strict, remove bigrams de produto conhecidos
+      // (`PRODUCT_BIGRAM_STOPWORDS_INTRA`) do Jaccard ANTES de comparar — ver
+      // docstring da constante. Fora do strict, comportamento inalterado
+      // (LANÇAMENTOS já tolera produto-sozinho via `sharedProduct` abaixo).
+      const jaccard = options.strict
+        ? jaccardSimilarity(
+            stripAdjacentProductBigrams(aStrippedTitle, aTokens),
+            stripAdjacentProductBigrams(bStrippedTitle, bTokens),
+          )
+        : jaccardSimilarity(aTokens, bTokens);
 
       // #4675 review: em modo `strict` (buckets ≠ lancamento), o caminho de
       // entidade-sozinha fica fora do critério — só Jaccard decide. Evita
