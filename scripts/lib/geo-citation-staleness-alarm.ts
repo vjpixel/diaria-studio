@@ -91,20 +91,41 @@ export interface PanelStaleness {
  * como stale, mesma semântica que `computeStaleness` já dá ao arquivo vazio —
  * e não gera falso positivo de bootstrap porque o monitor e o alarme rodam do
  * MESMO checkout: ou os dois conhecem o painel novo, ou nenhum conhece.
+ *
+ * **Fingerprint cobre só os painéis STALE (#4961).** Uma versão anterior
+ * compunha o fingerprint com TODOS os painéis monitorados, saudáveis
+ * inclusive — a intenção era não deixar o 1º alarme de `hubs` ser suprimido
+ * por já ter alarmado `geral` antes (os dois painéis compartilham um único
+ * `lastAlarmedFingerprint` no state). Isso resolvia aquele problema, mas
+ * criava um pior: com `hubs` travado (mesmo `ts` toda semana) e `geral`
+ * saudável avançando normalmente, o `ts` de `geral` entrava no fingerprint
+ * composto e o mudava toda semana mesmo sem nada mudar em `hubs` —
+ * `shouldAlarm` reenviava o mesmo alarme de `hubs` indefinidamente, quebrando
+ * a idempotência que este módulo promete (ver docstring do arquivo).
+ * Restringir o fingerprint aos painéis em `stalePanels` resolve os dois ao
+ * mesmo tempo: um painel saudável nunca entra no fingerprint (não pode mais
+ * causar reenvio espúrio), e quando um painel ADICIONAL fica stale ele entra
+ * no conjunto e muda o fingerprint (não é suprimido pelo alarme anterior,
+ * que cobria um conjunto de painéis stale diferente).
  */
 export function computeMultiPanelStaleness(
   latestByPanel: readonly PanelStaleness[],
 ): { isStale: boolean; stalePanels: PanelStaleness[]; fingerprint: string } {
   const stalePanels = latestByPanel.filter((p) => p.check.isStale);
-  // Fingerprint composto: cobre TODOS os painéis, não só os stale. Sem isso,
-  // alarmar por `geral` gravaria um fingerprint que também suprimiria o
-  // primeiro alarme de `hubs` (e vice-versa) — os dois painéis
-  // compartilham um único `lastAlarmedFingerprint` no state.
-  const fingerprint = [...latestByPanel]
+  const fingerprint = [...stalePanels]
     .sort((a, b) => a.panel.localeCompare(b.panel))
     .map((p) => `${p.panel}:${p.latestRecordTs ?? NEVER_MEASURED_FINGERPRINT}`)
     .join("|");
-  return { isStale: stalePanels.length > 0, stalePanels, fingerprint };
+  // #4961 achado secundário: ordena por staleDays desc (pior primeiro) antes
+  // de devolver — o caller usa `stalePanels[0]` como "o painel mais grave"
+  // (ver `scripts/geo-citation-staleness-alarm.ts`), e a ordem de entrada
+  // aqui é a de `MONITORED_PANELS`, não a de gravidade. `staleDays: null`
+  // (nunca medido) é pelo menos tão grave quanto qualquer valor numérico —
+  // tratado como pior de todos (Infinity) pra ordenação.
+  const sortedStalePanels = [...stalePanels].sort(
+    (a, b) => (b.check.staleDays ?? Infinity) - (a.check.staleDays ?? Infinity),
+  );
+  return { isStale: stalePanels.length > 0, stalePanels: sortedStalePanels, fingerprint };
 }
 
 export interface StalenessCheck {
