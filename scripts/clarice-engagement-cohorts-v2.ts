@@ -16,18 +16,41 @@
  * ESCOPO DESTE ARQUIVO:
  *   1. Backfill completo por campanha + cache local permanente. (Fase 1, #4457)
  *   2. Janela de re-fetch de campanhas recentes + fechamento do gap de
- *      blacklist administrativo via store local. ← AQUI (Fase 2, #4451)
+ *      blacklist administrativo via store local. (Fase 2, #4451/#4479)
  *   3. Comparar output de computeCohorts() do v2 contra o v1 (empírico) —
- *      tooling pronta em `scripts/compare-cohorts.ts`, mas a EXECUÇÃO ao
- *      vivo (rodar v1 --dry-run e v2 lado a lado contra a Brevo real) fica
- *      pendente — precisa de sessão com `BREVO_CLARICE_API_KEY` e tempo pro
- *      v1 (ainda ~21h de crawl) completar, ou pelo menos uma amostra
- *      representativa. Não executado nesta sessão (guard de dispatch: sem
- *      chamada de rede à Brevo além de leitura documentada).
+ *      EXECUTADO ao vivo 260808/260809 (2 tentativas, ver
+ *      CUTOVER: DESIGN VALIDADO abaixo). Tooling em `scripts/compare-cohorts.ts`.
  *   4. Trocar a task agendada `DiariaCohortsCrawl` pro script novo + aposentar
- *      v1 — SÓ depois do passo 3 bater. Não feito.
- * Fases 3-4 continuam follow-up, agora com a tooling de comparação pronta
- * (`scripts/compare-cohorts.ts`) — falta só a RODADA empírica supervisionada.
+ *      v1 — decisão SEPARADA do editor, ainda NÃO feita (fora do escopo da
+ *      formalização de 260810 — ver seção abaixo). v1
+ *      (`clarice-engagement-cohorts.ts`) segue sendo o crawl agendado hoje.
+ *
+ * CUTOVER: DESIGN VALIDADO (#4451, 260810 — decisão do editor, briefing
+ * overnight) — troca de TASK ainda pendente. A Fase 3 rodou ao vivo contra a
+ * Brevo real (leitura) 2x: 260808 (12/82 campanhas com 429, comparação fora
+ * da tolerância majoritariamente por causa das falhas) e 260809 (0 falhas,
+ * comparação ainda fora da tolerância de 2% em 8/9 campos, MAS o padrão do
+ * desvio é 100% consistente com crescimento orgânico entre as duas datas de
+ * medição — universo/aberturas/exits todos sobem na direção esperada, nenhum
+ * campo inverte; uma comparação exata exigiria rodar v1 e v2 no mesmo
+ * instante, ~2,5h de custo, não repetido). O editor aceitou esse padrão como
+ * evidência suficiente de que o DESIGN está correto, sem esperar a tolerância
+ * numérica bater numa comparação assíncrona de dias — v2 passa a ser
+ * considerado VALIDADO; v1 permanece no repo como fallback documentado (não
+ * removido). O que isso NÃO resolve, honestamente: item 2 do fleet review de
+ * #4479 (distribuição real de campanhas sem `sentDate` — nunca checada, ver
+ * `isWithinRefetchWindow` abaixo) e item 1 (fallback pro cache antigo em
+ * falha de export — decisão de comportamento ainda em aberto, ver
+ * `getOrFetchCampaignCache` abaixo) seguem SEM validação/decisão. Item 1 não
+ * bloqueou a validação porque a tentativa que "bateu" o suficiente (260809)
+ * teve 0 falhas de export — nada pra cair no fallback ausente. Item 2
+ * continua uma lacuna REAL e não verificada: `CampaignCache` não persiste
+ * `sentDate` (só `campaignId`/`campaignName`/`exportedAt`/`recipients`), então
+ * nem as 2 rodadas ao vivo nem esta formalização confirmam a distribuição de
+ * campanhas sem `sentDate` — a postura conservadora do código continua sendo
+ * a única proteção, sem dado empírico por trás. Detalhes completos e a
+ * tabela de números: issue #4451, comentários de 260809/260810;
+ * `docs/cohorts-schedule.md` tem o resumo operacional.
  *
  * `computeCohorts()` (de clarice-engagement-cohorts.ts) NÃO MUDA — só a
  * ORIGEM do `ContactEngagement` por e-mail muda (per-campanha em vez de

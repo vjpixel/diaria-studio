@@ -35,6 +35,16 @@
  * per-contato (`statistics.opened`) sobrevive — mesmo motivo do GET individual
  * do antigo clarice-build-waves.ts (removido em #2844/260702).
  *
+ * STATUS (#4451, 260810): este é o v1 — GET per-contato, ~21,5h de crawl pra
+ * ~129k contatos. O redesenho `clarice-engagement-cohorts-v2.ts` (export por
+ * CAMPANHA, minutos em vez de horas) foi VALIDADO empiricamente (comparação
+ * ao vivo 260808/260809, desvio consistente com crescimento orgânico, ver
+ * docstring de topo do v2) e é a direção preferida daqui pra frente. Este
+ * arquivo (v1) continua sendo o crawl agendado pela task `DiariaCohortsCrawl`
+ * hoje e é mantido no repo como FALLBACK DOCUMENTADO — a troca da task pro v2
+ * é uma decisão separada do editor, ainda pendente (ver `docs/cohorts-schedule.md`).
+ * Não tratar como legado/código morto sem checar essa decisão primeiro.
+ *
  * Env:
  *   BREVO_CLARICE_API_KEY     obrigatório (lê statistics per-contato)
  *   CLOUDFLARE_ACCOUNT_ID     obrigatório p/ upload KV
