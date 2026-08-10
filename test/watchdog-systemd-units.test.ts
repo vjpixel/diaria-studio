@@ -187,6 +187,51 @@ describe("setup-watchdog-schedule-systemd.ts main() — CLI", () => {
     const entries = readdirSync(join(base, "custom-units")).sort();
     assert.deepEqual(entries, ["diaria-overnight-watchdog.service", "diaria-overnight-watchdog.timer"]);
   });
+
+  // #4857 reconciliação 260810: ExecStart= baka process.execPath — Node do
+  // shell que gerou o unit, não um valor descoberto/pinado. Achado ao vivo
+  // nesta máquina: um shell sem `~/.local/node/bin` no PATH gera com o Node
+  // 20.20.2 do sistema (mesmo binário do incidente #4823) em vez do Node 24
+  // do `.nvmrc` já armado manualmente. main() nunca BLOQUEIA nesse caso
+  // (fail-soft) — só avisa alto em stderr antes do editor copiar pra
+  // ~/.config/systemd/user/.
+  it("Node do shell abaixo do mínimo do projeto -> ainda retorna 0, mas avisa em console.warn", () => {
+    outDir = mkdtempSync(join(tmpdir(), "watchdog-systemd-cli-oldnode-"));
+    const originalLog = console.log;
+    const originalWarn = console.warn;
+    console.log = () => {};
+    const warnCalls: string[] = [];
+    console.warn = (msg: string) => warnCalls.push(msg);
+    let code: number;
+    try {
+      code = setupWatchdogSystemdMain([], outDir, "v20.20.2");
+    } finally {
+      console.log = originalLog;
+      console.warn = originalWarn;
+    }
+    assert.equal(code, 0);
+    assert.equal(warnCalls.length, 1);
+    assert.match(warnCalls[0], /Node.*20\.20\.2/);
+    assert.match(warnCalls[0], /EMBUTIDO/);
+  });
+
+  it("Node do shell no mínimo do projeto (ou acima) -> nenhum aviso emitido", () => {
+    outDir = mkdtempSync(join(tmpdir(), "watchdog-systemd-cli-okvernode-"));
+    const originalLog = console.log;
+    const originalWarn = console.warn;
+    console.log = () => {};
+    const warnCalls: string[] = [];
+    console.warn = (msg: string) => warnCalls.push(msg);
+    let code: number;
+    try {
+      code = setupWatchdogSystemdMain([], outDir, "v24.19.0");
+    } finally {
+      console.log = originalLog;
+      console.warn = originalWarn;
+    }
+    assert.equal(code, 0);
+    assert.equal(warnCalls.length, 0);
+  });
 });
 
 describe("#4857: nenhum dos dois módulos executa systemctl (ARMAR é ação manual, fora de escopo)", () => {

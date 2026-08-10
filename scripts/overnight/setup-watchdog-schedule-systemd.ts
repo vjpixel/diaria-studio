@@ -25,11 +25,29 @@
  *            diretório que `scripts/setup-systemd-timers.ts` usa pras 14
  *            tasks do registry, git-ignorado — permite copiar tudo de uma
  *            vez pra `~/.config/systemd/user/`).
+ *
+ * **Achado ao vivo (#4857, reconciliação 260810):** `buildWatchdogSystemdUnitFiles`
+ * embute `process.execPath` — o Node que RODOU este comando — literalmente no
+ * `ExecStart=` gerado. Isso é reproduzível (mesmo binário sempre que a mesma
+ * versão gerar) mas silenciosamente frágil: rodar este gerador de um shell
+ * sem o Node correto do projeto ativado (nvm/fnm apontando pro `.nvmrc`) baka
+ * o Node ERRADO no unit — sem sinal nenhum no output normal. Reproduzido ao
+ * vivo nesta máquina: um shell de agente sem `~/.local/node/bin` no PATH gerou
+ * `ExecStart=` apontando pro Node 20.20.2 do sistema (`/usr/bin/node`, mesmo
+ * binário do incidente #4823), enquanto o arme manual original (260810, feito
+ * do shell correto do editor) usa o Node 24 do `.nvmrc`
+ * (`/home/vjpixel/.local/node/bin/node`). `overnight-watchdog.ts` em si não
+ * importa `node:sqlite` (não quebraria no Node 20), mas diverge da política
+ * do projeto (Node ≥22.5/24, CLAUDE.md item 1a) — daí o warning abaixo, que
+ * NUNCA bloqueia a geração (fail-soft, mesma disciplina de
+ * `checkNodeVersion`), só avisa alto antes do editor copiar pra
+ * `~/.config/systemd/user/`.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getStringArg, isMainModule } from "../lib/cli-args.ts";
+import { checkNodeVersion } from "../lib/check-node-version.ts";
 import { buildWatchdogSystemdUnitFiles, WATCHDOG_UNIT_NAME } from "../lib/watchdog-systemd-units.ts";
 
 const DEFAULT_OUT_DIR = ".systemd-units";
@@ -49,7 +67,7 @@ export function generateWatchdogSystemdUnits(repoRootAbs: string, outDirAbs: str
   return [servicePath, timerPath];
 }
 
-export function main(argv: string[], repoRootAbs: string): number {
+export function main(argv: string[], repoRootAbs: string, execNodeVersion: string = process.version): number {
   let outDirArg: string | undefined;
   try {
     outDirArg = getStringArg(argv, "out-dir", { example: DEFAULT_OUT_DIR });
@@ -73,6 +91,19 @@ export function main(argv: string[], repoRootAbs: string): number {
       `  systemctl --user list-timers ${WATCHDOG_UNIT_NAME}.timer\n` +
       `  npx tsx scripts/lib/check-watchdog-armed.ts\n`,
   );
+
+  const nodeCheck = checkNodeVersion(execNodeVersion);
+  if (!nodeCheck.ok) {
+    console.warn(
+      `\n[aviso] ExecStart= foi gerado com o Node deste shell (${execNodeVersion}, ` +
+        `process.execPath=${process.execPath}) — esse caminho fica EMBUTIDO literalmente ` +
+        "no unit, não se atualiza sozinho depois. " +
+        `${nodeCheck.message} ` +
+        "Se este não for o Node que o projeto usa (nvm use / fnm use no .nvmrc), " +
+        "reative a versão correta e gere de novo ANTES de copiar pra ~/.config/systemd/user/.\n",
+    );
+  }
+
   return 0;
 }
 

@@ -116,7 +116,13 @@ export function buildWatchdogSystemdUnitFiles(repoRootAbs: string): SystemdUnitF
 
   const timerContent = [
     "[Unit]",
-    "Description=diar.ia.br: watchdog de stall overnight (#2688) (timer)",
+    // Sufixo com janela/intervalo é literal (não derivado dos args de
+    // buildWatchdogOnCalendar) — reproduz a Description já usada no arme
+    // manual desta máquina (260810, reconciliação #4857). Só serve pra
+    // `systemctl --user list-timers`/journalctl ficarem auto-descritivos sem
+    // abrir a docs; se os defaults de buildWatchdogOnCalendar() mudarem,
+    // atualizar este literal junto.
+    "Description=diar.ia.br: watchdog de stall overnight (#2688) (timer) — a cada 10 min, 18:00-09:00 BRT",
     "",
     "[Timer]",
     // Fuso já embutido no valor de onCalendar (mesmo achado ao vivo do
