@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Pipeline Claude Code para produção da newsletter diar.ia.br",
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "scripts": {
     "knip": "knip --reporter compact",
     "sync-sources": "tsx scripts/sync-sources.ts",

@@ -24,8 +24,22 @@
  * `scripts/clarice-optin.ts`.
  */
 
-import { DatabaseSync } from "node:sqlite";
+// #4823: `import type` (não `import`) — apagado na compilação, então NUNCA
+// tenta resolver "node:sqlite" em runtime. Um `import { DatabaseSync } from
+// "node:sqlite"` estático aqui falharia pra TODO o módulo (mesmo quem só
+// usa este arquivo por tipo, sem nunca chamar openClariceDb) com o erro
+// nativo opaco `ERR_UNKNOWN_BUILTIN_MODULE` — e falharia na fase de LINK do
+// grafo ES module, ANTES de qualquer código deste arquivo rodar, tornando
+// inútil qualquer guard escrito no corpo do módulo (verificado ao vivo:
+// nem um import posicionado textualmente antes deste intercepta, porque
+// resolução de especificador roda pro grafo inteiro antes da fase de
+// avaliação começar em qualquer módulo). `openClariceDb` abaixo carrega o
+// valor real via `createRequire` (CJS, resolvido só quando a função roda),
+// depois de `assertSupportedNodeVersion()` já ter dado a mensagem clara.
+import type { DatabaseSync } from "node:sqlite";
+import { createRequire } from "node:module";
 import { resolve } from "node:path";
+import { assertSupportedNodeVersion } from "./check-node-version.ts";
 import type { BrevoColumns } from "./brevo-stats.ts";
 import { deriveLeadCohort } from "./clarice-segment.ts";
 import {
@@ -151,7 +165,14 @@ CREATE INDEX IF NOT EXISTS idx_users_points       ON clarice_users(priority_poin
 
 /** Abre (ou cria) o DB e garante o schema. */
 export function openClariceDb(dbPath: string = DEFAULT_DB_PATH): DatabaseSync {
-  const db = new DatabaseSync(dbPath);
+  // #4823: falha cedo e clara se o Node não suportar node:sqlite (builtin só
+  // a partir de ≥22.5), em vez do ERR_UNKNOWN_BUILTIN_MODULE opaco do require
+  // logo abaixo.
+  assertSupportedNodeVersion();
+  const { DatabaseSync: DatabaseSyncCtor } = createRequire(import.meta.url)(
+    "node:sqlite",
+  ) as { DatabaseSync: typeof DatabaseSync };
+  const db = new DatabaseSyncCtor(dbPath);
   db.exec("PRAGMA journal_mode = WAL;");
   // #3021: sem busy_timeout, um reader que colide com a janela de escrita da
   // task diária (Diaria-Clarice-Sync, 08:30) recebe SQLITE_BUSY imediatamente
