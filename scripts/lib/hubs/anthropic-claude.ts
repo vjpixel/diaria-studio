@@ -1,6 +1,12 @@
 /**
  * anthropic-claude.ts (#4558 Parte A)
  *
+ * ⚠️ EDITOU ESTE ARQUIVO? Rode antes de commitar:
+ *   npx tsx scripts/build-hub-page.ts --hub anthropic-claude
+ * Sem isso, `workers/arquivo/src/hubs/anthropic-claude.generated.ts` fica
+ * defasado e `test/hub-page-drift.test.ts` quebra o CI (#4897 — já
+ * aconteceu 3x na mesma sessão antes deste aviso existir).
+ *
  * Conteúdo editorial do 1º hub temático — Anthropic/Claude. Decisão do
  * editor (260804): hubs de empresa e hubs temáticos coexistem, mas só este
  * entra nesta rodada; os demais candidatos da proposta (artefato da sessão)

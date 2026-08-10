@@ -1,6 +1,12 @@
 /**
  * google-gemini.ts (#4558, 3º hub temático publicado)
  *
+ * ⚠️ EDITOU ESTE ARQUIVO? Rode antes de commitar:
+ *   npx tsx scripts/build-hub-page.ts --hub google-gemini
+ * Sem isso, `workers/arquivo/src/hubs/google-gemini.generated.ts` fica
+ * defasado e `test/hub-page-drift.test.ts` quebra o CI (#4897 — já
+ * aconteceu 3x na mesma sessão antes deste aviso existir).
+ *
  * Conteúdo editorial do 3º hub temático — Google/Gemini. Segue o mesmo
  * template estrutural e de qualidade de `anthropic-claude.ts` (#4558, 1º hub
  * temático): mesmo shape de `HubContent`, mesma `countMatching` com normalização
