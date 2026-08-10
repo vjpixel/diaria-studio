@@ -115,3 +115,54 @@ describe("resolveNewsletterSection (#3145)", () => {
     assert.equal(resolveNewsletterSection("BRASIL"), "Destaque");
   });
 });
+
+// #4835: repro ao vivo (260810) — resolveNewsletterSection('● RADAR') caía no
+// fallthrough 'Destaque' porque stripEmojiPrefix não cobria o bullet ●
+// (U+25CF), fora dos ranges 1F300-1FAFF/2600-27BF. 82% das seções do CSV de
+// CTR saíam mal-rotuladas (`&#9679;` era removido por cleanText, mas a
+// Beehiiv re-serve o HTML cacheado com o caractere literal, não a entidade).
+describe("resolveNewsletterSection (#4835 — bullet ● não reconhecido)", () => {
+  it("'● RADAR' → 'Radar' (era 'Destaque' antes do fix)", () => {
+    assert.equal(resolveNewsletterSection("● RADAR"), "Radar");
+  });
+
+  it("'● USE MELHOR' → 'Use Melhor' (era 'Destaque' antes do fix)", () => {
+    assert.equal(resolveNewsletterSection("● USE MELHOR"), "Use Melhor");
+  });
+
+  it("'RADAR' sem bullet continua 'Radar' (não regride)", () => {
+    assert.equal(resolveNewsletterSection("RADAR"), "Radar");
+  });
+
+  it("kicker de bloco não-editorial com bullet ainda resolve 'Outro'", () => {
+    assert.equal(resolveNewsletterSection("● DIVULGAÇÃO"), "Outro");
+    assert.equal(resolveNewsletterSection("● SORTEIO"), "Outro");
+  });
+
+  it("categoria editorial de destaque com bullet continua 'Destaque'", () => {
+    assert.equal(resolveNewsletterSection("● REGULAÇÃO"), "Destaque");
+  });
+});
+
+// #4835 escopo item 2: o fallthrough 'Destaque' (~L988) só deve disparar
+// quando o heading TEM CARA de kicker real (categoria editorial — sempre 1
+// palavra 100% maiúscula, cf. CATEGORY_EMOJI). Headings vazados de <b> de
+// corpo (heurística legacy em extractLinks()) ou de artefato de render
+// ("____") não têm essa forma e não devem virar 'Destaque'.
+describe("resolveNewsletterSection (#4835 — fallthrough não dispara sem cara de kicker)", () => {
+  it("linha divisória '____' → '' (não 'Destaque')", () => {
+    assert.equal(resolveNewsletterSection("____"), "");
+  });
+
+  it("frase de corpo em negrito (case mista) → '' (não 'Destaque')", () => {
+    assert.equal(
+      resolveNewsletterSection("Isso muda tudo para o mercado de trabalho"),
+      "",
+    );
+  });
+
+  it("texto vazado só com pontuação/dígitos → '' (não 'Destaque')", () => {
+    assert.equal(resolveNewsletterSection("---"), "");
+    assert.equal(resolveNewsletterSection("2026"), "");
+  });
+});

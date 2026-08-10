@@ -82,10 +82,21 @@ export function sectionEmojiPrefix(name: string): string {
  * FE0F/ZWJ/skin-tone/range). Mantém consistência: o que o header regex casa como
  * prefixo, este strip remove — antes o strip era tight (só 1 FE0F) e um header
  * com emoji composto (👨‍💻) casava no header mas não singularizava.
+ *
+ * #4835: também cobre bullets — o kicker do DS (`renderKicker()`) usa o ponto
+ * ● (U+25CF, bloco Geometric Shapes) via `tealDot()`, não um emoji do range
+ * acima. `&#9679;` (entidade) já era removido por `cleanText()` em
+ * `build-link-ctr.ts`, mas a Beehiiv re-serve o HTML cacheado com o CARACTERE
+ * LITERAL — que chegava intacto até aqui e quebrava `resolveNewsletterSection`
+ * (82% das seções mal-rotuladas, medido ao vivo em 260810). Alternativa
+ * separada (sem os modificadores FE0F/ZWJ/skin-tone, que não fazem sentido
+ * pra bullet): bloco Geometric Shapes inteiro (U+25A0–U+25FF, cobre ● ▪ ◦ ■
+ * □ etc.) + • (Bullet, U+2022) + ‣ (Triangular Bullet, U+2023) — sweep
+ * generoso pra não repetir o mesmo buraco com o próximo bullet.
  */
 export function stripEmojiPrefix(name: string): string {
   return name.replace(
-    /^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]*\s+/u,
+    /^(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}][\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]*|[\u{2022}\u{2023}\u{25A0}-\u{25FF}])\s+/u,
     "",
   );
 }

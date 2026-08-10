@@ -956,10 +956,17 @@ const SECONDARY_SECTION_LABELS: Array<{ re: RegExp; label: string }> = [
  *   Esse texto é livre e não é enumerado aqui: qualquer heading não
  *   reconhecido como seção secundária, não-vazio, e não um kicker de bloco
  *   não-editorial é assumido como Destaque — única outra origem de kicker com
- *   link editorial no template.
+ *   link editorial no template. #4835: essa suposição só se sustenta quando o
+ *   texto TEM CARA de categoria editorial real — todas as 14 chaves de
+ *   `CATEGORY_EMOJI` são uma única palavra 100% maiúscula. `sectionTitle` vem
+ *   de `extractLinks()`, que também aceita `<b>` de corpo como heurística
+ *   legacy (pre-DS-kicker) — texto de corpo em negrito ou artefato de render
+ *   ("____") não é maiúsculo-puro e NÃO deve contaminar a métrica Destaque.
+ *   Ver o gate `KICKER_LABEL_RE` abaixo.
  * - Kickers de blocos sem conteúdo editorial (É IA?, Divulgação, Sorteio,
  *   Para encerrar) retornam 'Outro' em vez de 'Destaque' incorreto.
- * - Heading vazio (post antigo pré-#3043, sem match de kicker) → ''.
+ * - Heading vazio, ou não-vazio mas sem cara de kicker real (post antigo
+ *   pré-#3043, `<b>` de corpo, divisor "____") → ''.
  *
  * Limitação conhecida (ambiguidade estrutural, não um bug de parsing): 2 das
  * 14 categorias editoriais de Destaque colidem textualmente com o singular de
@@ -973,6 +980,13 @@ const SECONDARY_SECTION_LABELS: Array<{ re: RegExp; label: string }> = [
  * TENDÊNCIA/INDÚSTRIA/CULTURA/BRASIL/OPINIÃO/DADOS/CONCEITO/NOTÍCIA) não há
  * colisão — resolvem corretamente pra 'Destaque'.
  */
+// #4835: uma categoria editorial de Destaque real (CATEGORY_EMOJI) é sempre
+// uma única palavra 100% maiúscula (com acento — Ç/Ã/Í/Ú são \p{Lu}). Heading
+// vazado de `<b>` de corpo (frase normal) ou de artefato de render ("____")
+// não bate esse formato — gate do fallthrough abaixo, não das seções
+// secundárias/não-editoriais (que já casam antes de chegar aqui).
+const KICKER_LABEL_RE = /^\p{Lu}+$/u;
+
 export function resolveNewsletterSection(sectionTitle: string): string {
   const bare = stripEmojiPrefix(sectionTitle ?? '').trim();
   if (!bare) return '';
@@ -985,5 +999,5 @@ export function resolveNewsletterSection(sectionTitle: string): string {
   for (const { re, label } of SECONDARY_SECTION_LABELS) {
     if (re.test(upper)) return label;
   }
-  return 'Destaque';
+  return KICKER_LABEL_RE.test(bare) ? 'Destaque' : '';
 }
