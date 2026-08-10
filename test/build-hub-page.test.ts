@@ -14,7 +14,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { renderGeneratedModule, HUB_LOADERS } from "../scripts/build-hub-page.ts";
-import { renderHubPage } from "../scripts/lib/shared/hub-page.ts";
+import { renderHubPage, sourceEditionLabel, validateHubContent, type HubContent } from "../scripts/lib/shared/hub-page.ts";
 import { buildAnthropicClaudeFaq, getAnthropicClaudeHub } from "../scripts/lib/hubs/anthropic-claude.ts";
 import { buildOpenaiChatgptFaq } from "../scripts/lib/hubs/openai-chatgpt.ts";
 import { knownUtmSources, HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM } from "../scripts/lib/shared/utm-registry.ts";
@@ -138,8 +138,9 @@ describe("getAnthropicClaudeHub (#4558 Parte A)", () => {
     }
   });
 
-  it("contentDate é um literal estático YYYY-MM-DD (não Date.now())", () => {
-    assert.match(hub.contentDate, /^\d{4}-\d{2}-\d{2}$/);
+  it("publishedDate e updatedDate são literais estáticos YYYY-MM-DD (não Date.now())", () => {
+    assert.match(hub.publishedDate, /^\d{4}-\d{2}-\d{2}$/);
+    assert.match(hub.updatedDate, /^\d{4}-\d{2}-\d{2}$/);
   });
 });
 
@@ -156,7 +157,10 @@ describe("ItemList do JSON-LD espelha hub.sourceEditions (#4558 Parte B — refo
     assert.equal(listNode.itemListElement.length, hub.sourceEditions.length);
     for (let i = 0; i < hub.sourceEditions.length; i++) {
       assert.equal(listNode.itemListElement[i].position, i + 1);
-      assert.equal(listNode.itemListElement[i].name, hub.sourceEditions[i].title);
+      // #4918: name usa sourceEditionLabel (manchete + título da edição
+      // quando presente e distinto), não mais `.title` cru — a paridade real
+      // é entre o schema e o rótulo efetivamente composto pelo renderer.
+      assert.equal(listNode.itemListElement[i].name, sourceEditionLabel(hub.sourceEditions[i]));
       assert.equal(listNode.itemListElement[i].url, hub.sourceEditions[i].url);
     }
   });
@@ -280,4 +284,155 @@ describe("buildOpenaiChatgptFaq (#4790 achado 1) — regression: manchete de inc
     assert.ok(gpt5xFaq);
     assert.match(gpt5xFaq.answer, /A diar\.ia\.br contou 1 manchetes/);
   });
+});
+
+/** Extrai `{dateLabel, titleLabel}` de cada `<li>` da bibliografia
+ * (`.hub-sources`) do HTML renderizado — usado pelas regressões #4918/#4911
+ * abaixo, que precisam inspecionar o texto efetivamente visível, não só o
+ * campo `HubSourceEdition.title` isolado. */
+function extractSourceListItems(html: string): { dateLabel: string; sep: string; titleLabel: string }[] {
+  const items: { dateLabel: string; sep: string; titleLabel: string }[] = [];
+  const re = /<li><a href="[^"]*"><span class="li-date">([^<]*)<\/span>(.*?)<\/a><\/li>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) {
+    const dateLabel = m[1];
+    const rest = m[2];
+    const sepMatch = /^(\s*—\s*|\s+)/.exec(rest);
+    const sep = sepMatch ? sepMatch[0] : "";
+    items.push({ dateLabel, sep, titleLabel: rest.slice(sep.length) });
+  }
+  return items;
+}
+
+describe("bibliografia dos hubs — separador data/título (#4918 Conserto 1)", () => {
+  // Regression: antes do fix, `<span class="li-date">06/08/2026</span>` era
+  // seguido IMEDIATAMENTE do título, sem nenhum caractere entre os dois — a
+  // separação era só visual (margin-right no CSS). Quem extrai o texto do
+  // HTML (assistente, leitor de tela, colagem) recebia os dois colados.
+  for (const slug of Object.keys(HUB_LOADERS)) {
+    it(`hub "${slug}": todo item da bibliografia tem separador textual entre data e título`, () => {
+      const html = renderHubPage(HUB_LOADERS[slug]());
+      const items = extractSourceListItems(html);
+      assert.ok(items.length > 0, `hub "${slug}" sem itens de bibliografia extraídos — regex de teste desatualizada?`);
+      for (const item of items) {
+        assert.ok(
+          item.sep.length > 0,
+          `item "${item.dateLabel}${item.titleLabel}" do hub "${slug}" não tem separador entre data e título`,
+        );
+      }
+    });
+  }
+});
+
+describe("bibliografia dos hubs — data com ano (#4911 item 4)", () => {
+  // Regression: rótulo saía truncado em DD/MM (sem ano) — ambíguo num
+  // intervalo que cruza virada de ano e cresce a cada regeneração.
+  for (const slug of Object.keys(HUB_LOADERS)) {
+    it(`hub "${slug}": todo rótulo de data da bibliografia é DD/MM/AAAA`, () => {
+      const html = renderHubPage(HUB_LOADERS[slug]());
+      const items = extractSourceListItems(html);
+      assert.ok(items.length > 0);
+      for (const item of items) {
+        assert.match(
+          item.dateLabel,
+          /^\d{2}\/\d{2}\/\d{4}$/,
+          `rótulo de data "${item.dateLabel}" do hub "${slug}" não é DD/MM/AAAA`,
+        );
+      }
+    });
+  }
+});
+
+describe("editionTitle na bibliografia (#4918 Conserto 2)", () => {
+  it("sourceEditionLabel: sem editionTitle cai no rótulo antigo (só a manchete casada)", () => {
+    const e = { date: "2026-01-01", title: "Manchete casada", url: "https://diar.ia.br/p/edicao-1" };
+    assert.equal(sourceEditionLabel(e), "Manchete casada");
+  });
+
+  it("sourceEditionLabel: editionTitle igual à manchete não duplica", () => {
+    const e = {
+      date: "2026-01-01",
+      title: "Mesmo texto",
+      editionTitle: "Mesmo texto",
+      url: "https://diar.ia.br/p/edicao-1",
+    };
+    assert.equal(sourceEditionLabel(e), "Mesmo texto");
+  });
+
+  it("sourceEditionLabel: editionTitle presente e distinto aparece junto da manchete — regression do achado #4918 (\"Anthropic triplica valuation\" apontando pra uma edição sobre outro assunto)", () => {
+    const e = {
+      date: "2026-01-01",
+      title: "Anthropic triplica valuation",
+      editionTitle: "Brasil pretende investir R$ 23 bi em IA",
+      url: "https://diar.ia.br/p/brasil-pretende-investir-r-23-bilh-es-em-ia",
+    };
+    const label = sourceEditionLabel(e);
+    assert.match(label, /Anthropic triplica valuation/);
+    assert.match(label, /Brasil pretende investir R\$ 23 bi em IA/);
+  });
+
+  it("contra o dataset real: pelo menos 1 hub tem editionTitle populado divergindo da manchete casada (prova que o backfill via titles-cache.json rodou, não só o fallback sintético)", () => {
+    let foundDivergent = false;
+    for (const slug of Object.keys(HUB_LOADERS)) {
+      const hub = HUB_LOADERS[slug]();
+      for (const e of hub.sourceEditions) {
+        if (e.editionTitle && e.editionTitle !== e.title) foundDivergent = true;
+      }
+    }
+    assert.ok(foundDivergent, "nenhum hub tem sourceEdition com editionTitle divergente da manchete — backfill não rodou?");
+  });
+});
+
+describe("validateHubContent — publishedDate/updatedDate (#4911)", () => {
+  const base: HubContent = {
+    slug: "teste-datas",
+    title: "Teste",
+    metaDescription: "Descrição.",
+    introHeading: "Pergunta?",
+    introParagraph: "Intro.",
+    sections: [{ heading: "Seção", paragraphs: ["Parágrafo."] }],
+    faq: Array.from({ length: 6 }, (_, i) => ({ question: `P${i}?`, answer: `R${i}.` })),
+    sourceEditions: [{ date: "2026-08-01", title: "Edição", url: "https://diar.ia.br/p/edicao-teste" }],
+    publishedDate: "2026-08-01",
+    updatedDate: "2026-08-01",
+    footerNavUtm: { source: "test", medium: "footer-nav" },
+  };
+
+  it("aceita publishedDate === updatedDate", () => {
+    assert.deepEqual(validateHubContent(base), []);
+  });
+
+  it("rejeita updatedDate < publishedDate — regression: campo único não conseguia expressar essa violação", () => {
+    const hub: HubContent = { ...base, publishedDate: "2026-08-05", updatedDate: "2026-08-01" };
+    const errors = validateHubContent(hub);
+    assert.ok(errors.some((e) => /updatedDate .* anterior a publishedDate/.test(e)), errors.join("; "));
+  });
+
+  it("rejeita updatedDate anterior à edição mais recente citada em sourceEditions", () => {
+    const hub: HubContent = {
+      ...base,
+      updatedDate: "2026-07-01",
+      sourceEditions: [{ date: "2026-08-01", title: "Edição", url: "https://diar.ia.br/p/edicao-teste" }],
+    };
+    const errors = validateHubContent(hub);
+    assert.ok(errors.some((e) => /anterior à edição mais recente citada/.test(e)), errors.join("; "));
+  });
+
+  it("aceita updatedDate posterior a publishedDate e à fonte mais recente", () => {
+    const hub: HubContent = { ...base, publishedDate: "2026-08-01", updatedDate: "2026-08-10" };
+    assert.deepEqual(validateHubContent(hub), []);
+  });
+});
+
+describe("datePublished/dateModified do JSON-LD divergem quando publishedDate ≠ updatedDate (#4911) — regression ao vivo do dateModified falso", () => {
+  for (const slug of Object.keys(HUB_LOADERS)) {
+    it(`hub "${slug}": datePublished/dateModified do schema batem com publishedDate/updatedDate do HubContent`, () => {
+      const hub = HUB_LOADERS[slug]();
+      const html = renderHubPage(hub);
+      const m = /"datePublished":"([^"]*)","dateModified":"([^"]*)"/.exec(html);
+      assert.ok(m, `hub "${slug}" sem datePublished/dateModified no JSON-LD`);
+      assert.equal(m![1], hub.publishedDate);
+      assert.equal(m![2], hub.updatedDate);
+    });
+  }
 });

@@ -57,16 +57,21 @@ import type { HubSourceEntry } from "../../generate-hub-sources.ts";
 
 const SOURCES = sourcesRaw as HubSourceEntry[];
 
-/** `YYYY-MM-DD` estático — data em que a síntese abaixo foi escrita. Ver
- * nota de `hub-page.ts` sobre por que não pode ser `new Date()`. Bump manual
- * quando a prosa for reescrita de forma substancial. **Atenção:** uma
- * regeneração rotineira de `sources.generated.json` (edição nova entrando
- * na cauda da lista) NÃO invalida a data — mas PODE desincronizar os
- * números computados do `faq` dos números transcritos à mão em
- * `sections`/`INTRO` (ver nota acima). O teste de consistência em
- * `test/build-hub-page.test.ts` pega esse caso; bump `CONTENT_DATE` só
- * depois de reconciliar a prosa manualmente. */
-const CONTENT_DATE = "2026-08-10";
+/** `YYYY-MM-DD` estático — dia em que a página nasceu (`36bf204f`, #4627).
+ * Ver nota de `hub-page.ts` sobre por que não pode ser `new Date()`, e sobre
+ * por que é campo SEPARADO de `UPDATED_DATE` (#4911). */
+const PUBLISHED_DATE = "2026-08-04";
+
+/** `YYYY-MM-DD` estático — dia em que o CORPO (síntese abaixo) foi revisado
+ * por último. Bump manual quando a prosa for reescrita de forma
+ * substancial — nunca cosmético (#4911: bump sem mudança de corpo é o
+ * padrão que a issue desaconselha). **Atenção:** uma regeneração rotineira
+ * de `sources.generated.json` (edição nova entrando na cauda da lista) NÃO
+ * invalida a data — mas PODE desincronizar os números computados do `faq`
+ * dos números transcritos à mão em `sections`/`INTRO` (ver nota acima). O
+ * teste de consistência em `test/build-hub-page.test.ts` pega esse caso;
+ * bump `UPDATED_DATE` só depois de reconciliar a prosa manualmente. */
+const UPDATED_DATE = "2026-08-10";
 
 /** O `matchedHeadlines` de `sources.generated.json` preserva o texto ORIGINAL
  * do cache Beehiiv, que vem em NFD (acento como combining mark separado —
@@ -175,6 +180,7 @@ function toSourceEditions(sources: HubSourceEntry[]): HubSourceEdition[] {
     .map((s) => ({
       date: s.date,
       title: s.matchedHeadlines.join(" · "),
+      editionTitle: s.editionTitle,
       url: s.url,
     }));
 }
@@ -232,7 +238,8 @@ export function getAnthropicClaudeHub(): HubContent {
     ],
     faq: buildAnthropicClaudeFaq(SOURCES),
     sourceEditions: toSourceEditions(SOURCES),
-    contentDate: CONTENT_DATE,
+    publishedDate: PUBLISHED_DATE,
+    updatedDate: UPDATED_DATE,
     footerNavUtm: HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM,
   };
 }

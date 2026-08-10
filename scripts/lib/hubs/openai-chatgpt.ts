@@ -51,12 +51,17 @@ import type { HubSourceEntry } from "../../generate-hub-sources.ts";
 
 const SOURCES = sourcesRaw as HubSourceEntry[];
 
-/** `YYYY-MM-DD` estático — data em que a síntese abaixo foi escrita. Ver nota
- * de `hub-page.ts` sobre por que não pode ser `new Date()`. Bump manual
- * quando a prosa for reescrita de forma substancial — uma regeneração
- * rotineira de `sources.generated.json` NÃO invalida a data sozinha (mesma
- * ressalva de `anthropic-claude.ts`). */
-const CONTENT_DATE = "2026-08-10";
+/** `YYYY-MM-DD` estático — dia em que a página nasceu (`72ad89f2`, #4790).
+ * Ver nota de `hub-page.ts` sobre por que não pode ser `new Date()`, e sobre
+ * por que é campo SEPARADO de `UPDATED_DATE` (#4911). */
+const PUBLISHED_DATE = "2026-08-09";
+
+/** `YYYY-MM-DD` estático — dia em que o CORPO foi revisado por último. Bump
+ * manual quando a prosa for reescrita de forma substancial — uma
+ * regeneração rotineira de `sources.generated.json` NÃO invalida a data
+ * sozinha (mesma ressalva de `anthropic-claude.ts`), e um bump sem mudança
+ * de corpo é o padrão que o #4911 desaconselha. */
+const UPDATED_DATE = "2026-08-10";
 
 /** Mesma normalização NFC de `anthropic-claude.ts::countMatching` — o
  * `matchedHeadlines` de `sources.generated.json` preserva o texto ORIGINAL
@@ -158,6 +163,7 @@ function toSourceEditions(sources: HubSourceEntry[]): HubSourceEdition[] {
     .map((s) => ({
       date: s.date,
       title: s.matchedHeadlines.join(" · "),
+      editionTitle: s.editionTitle,
       url: s.url,
     }));
 }
@@ -214,7 +220,8 @@ export function getOpenaiChatgptHub(): HubContent {
     ],
     faq: buildOpenaiChatgptFaq(SOURCES),
     sourceEditions: toSourceEditions(SOURCES),
-    contentDate: CONTENT_DATE,
+    publishedDate: PUBLISHED_DATE,
+    updatedDate: UPDATED_DATE,
     footerNavUtm: HUB_OPENAI_CHATGPT_FOOTER_NAV_UTM,
   };
 }

@@ -15,6 +15,13 @@
  *
  *   npx tsx scripts/generate-hub-sources.ts --hub anthropic-claude
  *
+ * **`--backfill-titles` (#4918 Conserto 2) — preenche `editionTitle` sem
+ * precisar do junction `data/`.** Modo separado que lê o JSON JÁ commitado
+ * e casa `editionSlug` contra `workers/arquivo/src/titles-cache.json`
+ * (também commitado) — roda em sessão cloud:
+ *
+ *   npx tsx scripts/generate-hub-sources.ts --hub anthropic-claude --backfill-titles
+ *
  * **Normalização de acento (NFD, strip de combining marks) — defensiva, não
  * corrige um bug já observado neste pattern.** `HUB_KEYWORD_PATTERNS` de
  * hoje (`anthropic-claude`) não tem nenhum caractere acentuado, então
@@ -61,6 +68,11 @@ export interface HubSourceEntry {
   url: string;
   /** Só os destaques (título e/ou trechos do subtítulo) que bateram a palavra-chave. */
   matchedHeadlines: string[];
+  /** Título real da edição (`post.title`, ou fallback via `titles-cache.json`
+   * — ver `backfillEditionTitles`). Opcional: hub renderer cai no rótulo
+   * antigo (só a manchete casada) quando ausente (#4918 Conserto 2, "o item
+   * não diz de qual edição veio"). */
+  editionTitle?: string;
 }
 
 /** Registro de palavra-chave por hub — espelha os padrões usados na proposta
@@ -140,6 +152,10 @@ export function collectHubSources(
       editionSlug: post.slug,
       url: `https://diar.ia.br/p/${post.slug}`,
       matchedHeadlines: matched,
+      // #4918 Conserto 2, "caminho ideal": `post.title` já está em escopo
+      // (usado acima pra montar `destaques`) — guardar aqui em vez de
+      // descartar depois de casar o pattern.
+      editionTitle: post.title || undefined,
     });
   }
   rows.sort((a, b) => a.date.localeCompare(b.date));
@@ -168,6 +184,63 @@ function loadPosts(): RawCachedPost[] {
   return posts;
 }
 
+const TITLES_CACHE_PATH = resolve(ROOT, "workers/arquivo/src/titles-cache.json");
+
+export interface TitlesCacheEntry {
+  title: string;
+  publishDate: string;
+}
+
+/** Lê `workers/arquivo/src/titles-cache.json` (COMMITADO, gerado por
+ * `generate-arquivo-titles.ts` — que sim exige o junction `data/`). Usado só
+ * como FALLBACK por `backfillEditionTitles` — fail-soft: cache ausente ou
+ * malformado devolve `{}` (backfill vira no-op, nunca aborta). */
+export function loadTitlesCache(path: string = TITLES_CACHE_PATH): Record<string, TitlesCacheEntry> {
+  if (!existsSync(path)) return {};
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as Record<string, TitlesCacheEntry>;
+  } catch (e) {
+    process.stderr.write(
+      `[generate-hub-sources] ⚠ falha ao parsear ${path}: ${e instanceof Error ? e.message : e} — seguindo sem cache de títulos\n`,
+    );
+    return {};
+  }
+}
+
+/**
+ * Pure: preenche `editionTitle` das linhas que ainda não têm, casando
+ * `editionSlug` contra `titlesCache` (#4918 Conserto 2, "caminho barato" —
+ * roda sem o junction `data/`, porque tanto `rows` quanto `titlesCache`
+ * já são commitados no repo). Linha que já tem `editionTitle` (caminho
+ * ideal já rodou) não é sobrescrita. Linha sem entrada correspondente no
+ * cache fica como estava — sem `editionTitle`, o renderer cai no rótulo
+ * antigo (fallback, ver `sourceEditionLabel` em `hub-page.ts`).
+ */
+export function backfillEditionTitles(
+  rows: readonly HubSourceEntry[],
+  titlesCache: Record<string, TitlesCacheEntry>,
+): HubSourceEntry[] {
+  return rows.map((row) => (row.editionTitle ? row : { ...row, editionTitle: titlesCache[row.editionSlug]?.title }));
+}
+
+function runBackfillTitles(hub: string): void {
+  const path = resolve(HUBS_DIR, `${hub}-sources.generated.json`);
+  if (!existsSync(path)) {
+    console.error(`[generate-hub-sources] ${path} não existe — rode sem --backfill-titles primeiro`);
+    process.exit(2);
+  }
+  const rows = JSON.parse(readFileSync(path, "utf8")) as HubSourceEntry[];
+  const titlesCache = loadTitlesCache();
+  const filled = backfillEditionTitles(rows, titlesCache);
+  const before = rows.filter((r) => r.editionTitle).length;
+  const after = filled.filter((r) => r.editionTitle).length;
+  writeFileAtomic(path, `${JSON.stringify(filled, null, 2)}\n`);
+  process.stderr.write(
+    `[generate-hub-sources] ${hub}: editionTitle preenchido em ${after}/${filled.length} (${after - before} novos via titles-cache.json) -> ${path}\n`,
+  );
+  console.log(path);
+}
+
 function main(): void {
   const argv = process.argv.slice(2);
   const hubIdx = argv.indexOf("--hub");
@@ -177,6 +250,16 @@ function main(): void {
       `[generate-hub-sources] --hub obrigatório, um de: ${Object.keys(HUB_KEYWORD_PATTERNS).join(", ")}`,
     );
     process.exit(2);
+  }
+
+  // #4918 Conserto 2, "caminho barato": preenche `editionTitle` no JSON já
+  // commitado a partir de `titles-cache.json` (também commitado) — NÃO
+  // precisa do junction `data/`, roda em sessão cloud. Modo separado do
+  // fluxo normal (que precisa de `data/beehiiv-cache/posts`, ver
+  // `loadPosts` abaixo) — sai antes de checar `POSTS_DIR`.
+  if (argv.includes("--backfill-titles")) {
+    runBackfillTitles(hub);
+    return;
   }
 
   const posts = loadPosts();
