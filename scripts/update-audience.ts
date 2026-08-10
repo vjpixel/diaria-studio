@@ -108,6 +108,93 @@ export function decayWeight(rowDate: string, today: Date = new Date()): number {
   return Math.exp(-days / DECAY_TIME_CONSTANT_DAYS);
 }
 
+// ─── Encolhimento empírico-Bayes + bandas (#4840) ───────────────────────────
+//
+// Auditoria retrospectiva 260810 (#4840): um ranking de 17 categorias
+// ordenadas por CTR bruto com 2 casas decimais implica precisão que os dados
+// não sustentam — só 6/17 sobrevivem a Benjamini-Hochberg FDR 5%, o IC95 do
+// POSTO cobre ~metade das 17 posições, e fora da amostra (151 edições) a
+// tabela sem encolhimento não prevê melhor que a média global. O encolhimento
+// (não o decay, já validado em #1564/#1619) é o que produz poder preditivo
+// medido: Δdeviance −75,7 [−147,7; −15,1] fora da amostra (k≈850, ótimo
+// achatado entre 700-1000).
+
+/**
+ * Constante de encolhimento (#4840), em unidade de "aberturas de prior" —
+ * mesma unidade do denominador `opens`. Curva de deviance fora da amostra é
+ * achatada entre k=700 e k=1000; 850 é o centro dessa faixa (medição da
+ * auditoria retrospectiva 260810, ligada à issue de origem #4840).
+ *
+ * Risco documentado na própria issue: k foi varrido nas mesmas edições em que
+ * o ganho foi medido (hiperparâmetro in-sample) — validação aninhada que
+ * reverta o ganho fora da varredura invalidaria esta escolha. Reusado também
+ * pra encolher CTR por domínio (seção "CTR por fonte"): a issue mediu k=200
+ * como levemente melhor ali, mas k=850 também bate a taxa bruta por margem
+ * ampla (−117,5 [−203; −49] de deviance) — optamos por 1 constante única em
+ * vez de 2 hiperparâmetros afinados in-sample separadamente.
+ */
+export const CTR_SHRINKAGE_K = 850;
+
+/** Limiar padrão (~95%) do teste-z aproximado usado por `classifyCtrBand`. */
+export const CTR_BAND_Z_THRESHOLD = 1.96;
+
+export interface ShrunkCtr {
+  /** Taxa encolhida, em fração 0..1 (não em %). */
+  rate: number;
+  /** Erro padrão aproximado da estimativa encolhida (mesma unidade fracionária). */
+  se: number;
+  /** `opens` (aberturas, já com decay #1564 aplicado — mesma unidade que os aggregates de `parseCtrFromCsv`) da linha — nunca omitir ao publicar. */
+  n: number;
+}
+
+/**
+ * Pure: encolhimento empírico-Bayes (aproximação beta-binomial) de uma taxa
+ * observada rumo à média global, puxando proporcionalmente a `k` "aberturas
+ * de prior" — quanto menor `opens` em relação a `k`, mais a estimativa é
+ * puxada pra `globalRate`. `opens=0` retorna a própria `globalRate` (sem
+ * dado, sem informação pra desviar). `k=0` retorna a taxa observada crua
+ * (degenera pro comportamento pré-#4840 — útil em teste).
+ *
+ * O erro padrão usa o denominador efetivo `opens + k` — aproximação padrão
+ * de posterior beta-binomial suficiente pra decidir banda (não um IC
+ * bayesiano exato nem um p-valor publicável).
+ */
+export function shrinkCtr(
+  clicks: number,
+  opens: number,
+  globalRate: number,
+  k: number = CTR_SHRINKAGE_K,
+): ShrunkCtr {
+  const effectiveN = opens + k;
+  const rate = effectiveN > 0 ? (clicks + k * globalRate) / effectiveN : globalRate;
+  const se = effectiveN > 0 ? Math.sqrt(Math.max(rate * (1 - rate), 0) / effectiveN) : 0;
+  return { rate, se, n: opens };
+}
+
+export type CtrBand = "acima" | "sem_sinal" | "abaixo";
+
+/**
+ * Pure: classifica uma taxa encolhida em banda relativa à média global via
+ * teste-z aproximado (`zThreshold` ≈ 1.96 → ~95%). Com `n` baixo, `opens+k`
+ * fica dominado por `k`, o encolhimento puxa `rate` perto de `globalRate` E
+ * `se` fica relativamente grande (denominador efetivo ainda pequeno frente à
+ * variância) — as duas forças colaboram pra colapsar a banda em "sem_sinal"
+ * quando o dado não sustenta afirmar direção. Com `n` alto, o encolhimento
+ * quase não move `rate` (comportamento ~idêntico ao CTR bruto) e `se` fica
+ * pequeno, então uma diferença real cruza o limiar normalmente.
+ */
+export function classifyCtrBand(
+  shrunk: ShrunkCtr,
+  globalRate: number,
+  zThreshold: number = CTR_BAND_Z_THRESHOLD,
+): CtrBand {
+  if (shrunk.se <= 0) return "sem_sinal";
+  const z = (shrunk.rate - globalRate) / shrunk.se;
+  if (z > zThreshold) return "acima";
+  if (z < -zThreshold) return "abaixo";
+  return "sem_sinal";
+}
+
 export interface CtrParseResult {
   byCategory: Map<string, CtrAgg>;
   byCatOrigin: Map<string, CtrAgg>;
@@ -362,7 +449,8 @@ function main() {
     // Compute overall average CTR
     const totalClicks = [...ctr.byCategory.values()].reduce((s, a) => s + a.clicks, 0);
     const totalOpens = [...ctr.byCategory.values()].reduce((s, a) => s + a.opens, 0);
-    const avgCtr = totalOpens > 0 ? (totalClicks / totalOpens) * 100 : 0;
+    const globalRate = totalOpens > 0 ? totalClicks / totalOpens : 0; // fração 0..1
+    const avgCtr = globalRate * 100;
 
     lines.push(
       "",
@@ -371,20 +459,35 @@ function main() {
       `Fonte primária: comportamento de ${subscribers || "N"} subscribers em ${ctr.totalEditions} edições.`,
       `CTR médio geral: ${avgCtr.toFixed(2)}%`,
       "",
+      `**Método (#4840):** cada categoria abaixo tem CTR encolhido empírico-Bayes rumo à média geral (k=${CTR_SHRINKAGE_K} "aberturas de prior" — quanto menor o n da categoria, mais a estimativa é puxada pra média). Categorias são agrupadas em 3 bandas em vez de ordenadas por posição — um ranking de posição não é sustentado pelo n típico destas categorias (validação: split cronológico com Spearman ≈0,06 fora da amostra, IC95 do posto cobrindo boa parte das 17 posições). O n (links + aberturas) de cada categoria é sempre publicado, mesmo quando ela cai em "sem sinal".`,
+      "",
     );
 
-    // By category, sorted by CTR desc
-    const catEntries = [...ctr.byCategory.entries()].sort((a, b) => {
-      const ctrA = a[1].opens > 0 ? a[1].clicks / a[1].opens : 0;
-      const ctrB = b[1].opens > 0 ? b[1].clicks / b[1].opens : 0;
-      return ctrB - ctrA;
+    // #4840: encolhimento empírico-Bayes + 3 bandas em vez de ranking por posição.
+    const catRows = [...ctr.byCategory.entries()].map(([cat, agg]) => {
+      const shrunk = shrinkCtr(agg.clicks, agg.opens, globalRate);
+      return { cat, agg, shrunk, band: classifyCtrBand(shrunk, globalRate) };
     });
 
-    for (const [cat, agg] of catEntries) {
-      const pct = ctrPct(agg);
-      const vs = +pct - avgCtr;
-      const tag = vs > 0.15 ? " (acima da média)" : vs < -0.15 ? " (abaixo da média)" : "";
-      lines.push(`- **${cat}** — CTR ${pct}% | ${agg.count} links${tag}`);
+    const BAND_ORDER: CtrBand[] = ["acima", "sem_sinal", "abaixo"];
+    const BAND_LABEL: Record<CtrBand, string> = {
+      acima: "Acima da média (IC95 exclui a média — sinal)",
+      sem_sinal: "Sem sinal (não distinguível da média no IC95)",
+      abaixo: "Abaixo da média (IC95 exclui a média — sinal)",
+    };
+
+    for (const band of BAND_ORDER) {
+      const rows = catRows
+        .filter((r) => r.band === band)
+        .sort((a, b) => a.cat.localeCompare(b.cat, "pt-BR")); // alfabético — nunca por CTR (evita implicar ranking)
+      if (rows.length === 0) continue;
+      lines.push(`**${BAND_LABEL[band]}:**`, "");
+      for (const { cat, agg, shrunk } of rows) {
+        lines.push(
+          `- **${cat}** — CTR ${(shrunk.rate * 100).toFixed(1)}% (encolhida) | ${agg.count} links | ${Math.round(agg.opens)} aberturas`,
+        );
+      }
+      lines.push("");
     }
 
     // By category + origin (top performers)
@@ -442,46 +545,41 @@ function main() {
     })();
     lines.push(
       "",
-      "> **Como usar:** categorias com CTR acima da média devem receber bônus de score.",
+      `> **Como usar:** só a banda "acima" deve receber bônus de score; "sem sinal" não deve mover pontuação em nenhuma direção; "abaixo" é candidata a leve penalidade. Nenhuma banda deve ser lida como ranking fino entre categorias vizinhas — o encolhimento existe justamente pra não afirmar diferença que o n não sustenta.`,
       `> ${originHint}`,
     );
 
-    // By domain (source quality)
+    // By domain (source quality) — #4840: mantida (não removida), mas
+    // também encolhida (mesma k, mesma globalRate). A lista antiga de
+    // "fontes com CTR 0.00%" foi removida: era artefato de cold-start (poucos
+    // cliques observados) que o encolhimento já resolve — domínio com pouco
+    // histórico agora aparece perto da média, não em 0.00% isolado.
     const MIN_LINKS_DOMAIN = 3;
     const domainEntries = [...ctr.byDomain.entries()]
       .filter(([, a]) => a.count >= MIN_LINKS_DOMAIN)
-      .map(([dom, a]) => ({ dom, ...a, ctr: a.opens > 0 ? (a.clicks / a.opens) * 100 : 0 }))
+      .map(([dom, a]) => {
+        const shrunk = shrinkCtr(a.clicks, a.opens, globalRate);
+        return { dom, ...a, ctr: shrunk.rate * 100 };
+      })
       .sort((a, b) => b.ctr - a.ctr);
 
     if (domainEntries.length > 0) {
       lines.push(
         "",
-        "### CTR por fonte (mínimo 3 links)",
+        `### CTR por fonte (mínimo 3 links, encolhido k=${CTR_SHRINKAGE_K})`,
         "",
-        "Top 15 fontes com maior engajamento:",
+        "Top 15 fontes com maior engajamento (CTR encolhido rumo à média geral):",
         "",
       );
 
       for (const e of domainEntries.slice(0, 15)) {
-        lines.push(`- **${e.dom}** — CTR ${e.ctr.toFixed(2)}% | ${e.count} links`);
-      }
-
-      const bottom = domainEntries.filter(e => e.ctr === 0 && e.count >= MIN_LINKS_DOMAIN);
-      if (bottom.length > 0) {
-        lines.push(
-          "",
-          `Fontes com CTR 0.00% (${bottom.length} fontes, ${MIN_LINKS_DOMAIN}+ links):`,
-          "",
-        );
-        for (const e of bottom) {
-          lines.push(`- ${e.dom} (${e.count} links)`);
-        }
+        lines.push(`- **${e.dom}** — CTR ${e.ctr.toFixed(1)}% (encolhida) | ${e.count} links | ${Math.round(e.opens)} aberturas`);
       }
 
       lines.push(
         "",
-        "> **Como usar:** fontes com CTR alto indicam conteúdo que a audiência valoriza.",
-        "> Fontes com CTR 0.00% podem ter paywall ou conteúdo genérico — considerar na curadoria.",
+        "> **Como usar:** fontes com CTR encolhido acima da média indicam conteúdo que a audiência valoriza.",
+        "> Fontes com poucos links (perto do mínimo de 3) aparecem puxadas pra média — isso é esperado (encolhimento), não indica baixa qualidade por si só.",
       );
     }
   }
