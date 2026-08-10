@@ -120,18 +120,28 @@ rm ~/.config/systemd/user/diaria-overnight-watchdog.{service,timer}
 systemctl --user daemon-reload
 ```
 
-**Nota de validação (#4857):** esta issue foi implementada num worktree
-isolado, sem systemd real disponível para testar contra o binário de
-verdade — toda a cobertura de teste (`test/watchdog-systemd-units.test.ts`,
-`test/check-watchdog-armed.test.ts`) usa `execFileSync`/`systemctl`
-mockados, nunca chamando o comando real. A expressão `OnCalendar=` gerada
-(`00..08,18..23:00/10:00 America/Sao_Paulo`) reproduz literalmente a que foi
-validada AO VIVO no arme manual desta máquina em 260810 (comentário de
-fechamento da issue #4857: `systemctl --user enable --now` + run de teste
-confirmaram exit 0 e log real). O par de units gerado por este script
-**não foi comparado byte-a-byte** com o que já está armado manualmente em
-`~/.config/systemd/user/` nesta máquina — ação pendente do editor (mesma
-disciplina do #4320/#4382/#4490/#4534/#4723/#4740/#4750, ver CLAUDE.md).
+**Nota de validação (#4857, reconciliação 260810):** o par gerado por
+`setup-watchdog-schedule-systemd.ts` foi comparado byte-a-byte com o que
+estava armado manualmente em `~/.config/systemd/user/` nesta máquina
+(`predator`, arme original 260810 ~06:52 UTC) — **idêntico**, quando gerado
+com o mesmo Node do `.nvmrc` (v24) que o arme manual usou. A expressão
+`OnCalendar=` gerada (`00..08,18..23:00/10:00 America/Sao_Paulo`) foi validada
+tanto pelo parser real (`systemd-analyze calendar`, sem lançar, próxima
+ocorrência dentro da janela esperada) quanto por um disparo real do serviço
+(`systemctl --user start diaria-overnight-watchdog.service`): `Result=success`,
+`ExecMainStatus=0`, log real em `journalctl --user -u
+diaria-overnight-watchdog.service` (detectou e alertou uma rodada overnight
+genuinamente parada, confirmando o caminho de alerta ponta-a-ponta).
+
+**Achado ao vivo durante a reconciliação:** `ExecStart=` embute
+`process.execPath` — o Node que rodou o *gerador*, não um valor descoberto ou
+pinado. Um shell sem `~/.local/node/bin` no PATH (comum em sessão de agente)
+gera com o Node 20.20.2 do sistema — mesmo binário do incidente #4823 — em vez
+do Node 24 do projeto. Isso não quebra `overnight-watchdog.ts` em si (não usa
+`node:sqlite`), mas diverge da política do projeto. `setup-watchdog-schedule-systemd.ts`
+agora avisa (`console.warn`, fail-soft, nunca bloqueia) quando o Node que gerou
+os units está abaixo do mínimo do projeto — rode sempre com `nvm use`/`fnm use`
+ativado no `.nvmrc` antes de gerar, e preste atenção no aviso se ele aparecer.
 
 ### Testar manualmente (dry-run)
 
