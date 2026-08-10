@@ -1,5 +1,12 @@
 # Auditoria de context caching — `context/` (#3438)
 
+> **Medições refeitas em 260809 — ver `docs/token-usage-audit-260809.md`.**
+> `context/` passou de 24 arquivos / 204.888 bytes para 36 / 277.077 (+35% em
+> 24 dias); o veredito "nenhum invalidador de cache real" foi revalidado. O
+> refresh também corrige uma premissa: `context/` **não** entra no prompt de
+> toda chamada (é lido sob demanda) — quem entra é o `CLAUDE.md`, que triplicou
+> no período e nunca foi medido aqui.
+
 **Status:** levantamento concluído. Ferramenta reutilizável adicionada
 (`scripts/audit-context-tokens.ts`); nenhum corte de conteúdo foi aplicado —
 ver seção 4 pra justificativa.

@@ -1,5 +1,11 @@
 # `/diaria-overnight` — análise de consumo de tokens (#3327)
 
+> **Medições refeitas em 260809 — ver `docs/token-usage-audit-260809.md`.**
+> Os números abaixo são da rodada 260711, sob o regime `DEFAULT_EFFORT = "low"`
+> do #3326 (1 agente de review por PR). O #4234 (260728) devolveu `max` (fleet
+> de 5), que hoje responde por ~2/3 do orçamento de subagente — mudança que
+> este doc não captura.
+
 **Status:** levantamento concluído, baseado em dados reais da rodada 260711 (a
 própria rodada que gerou esta issue). Não implementa nenhum corte de código —
 produz o mapeamento de onde os tokens realmente foram e recomendações
