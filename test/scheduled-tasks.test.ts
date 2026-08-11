@@ -249,3 +249,30 @@ describe("#5005 — Diaria-Beehiiv-Home-Meta-Check registrada, systemd-only (sem
     assert.equal(t!.legacySetupScript, undefined);
   });
 });
+
+describe("#4451 — Diaria-Clarice-Cohorts-Crawl registrada, roda o v2, systemd-only (sem .ps1 legado)", () => {
+  it("está presente no registro, com o step apontando pro script v2 (não o v1)", () => {
+    const t = getScheduledTaskByName("Diaria-Clarice-Cohorts-Crawl");
+    assert.ok(t, "Diaria-Clarice-Cohorts-Crawl ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/clarice-engagement-cohorts-v2.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 21, minute: 0 });
+  });
+
+  it("o step passa --out apontando para dentro de data/ (path explícito, cwd é a raiz do repo)", () => {
+    const t = getScheduledTaskByName("Diaria-Clarice-Cohorts-Crawl");
+    assert.ok(t);
+    const args = t!.steps[0].args ?? [];
+    const outIdx = args.indexOf("--out");
+    assert.ok(outIdx >= 0, "--out ausente dos args do step");
+    assert.match(args[outIdx + 1], /^data\//, "--out precisa começar com data/ (cwd do step é a raiz do repo)");
+  });
+
+  it("NÃO tem legacySetupScript (a task Windows DiariaCohortsCrawl nunca existiu neste registro — registro do zero pro v2, #4451)", () => {
+    const t = getScheduledTaskByName("Diaria-Clarice-Cohorts-Crawl");
+    assert.ok(t);
+    assert.equal(t!.legacySetupScript, undefined);
+  });
+});

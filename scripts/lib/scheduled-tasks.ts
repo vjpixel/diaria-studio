@@ -170,6 +170,54 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4476 item 9",
   },
   {
+    name: "Diaria-Clarice-Cohorts-Crawl",
+    // #4451 (decisão do editor, 260811): a task Windows legada
+    // `DiariaCohortsCrawl` (crawl per-contato via `clarice-engagement-cohorts.ts`,
+    // v1 — ver docs/cohorts-schedule.md) NUNCA existiu neste registro nem tem
+    // timer systemd nesta máquina (`grep -n "CohortsCrawl\|cohorts"` no
+    // registro pré-#4451 e `systemctl --user list-timers` vazios) — não é
+    // troca de ponteiro v1→v2 de uma task existente, é registro do ZERO já
+    // apontando pro v2 (`clarice-engagement-cohorts-v2.ts`, redesenho #4451
+    // Fases 1-2, #4457/#4479, validado empiricamente 260808/260809 ao vivo
+    // contra a Brevo, ver issue #4451 comentário 260810/docs/cohorts-schedule.md
+    // §"Redesenho v2"). O período de sobreposição v1×v2 do item 6 do plano
+    // original da issue foi deliberadamente PULADO por decisão do editor —
+    // não falta, não vai acontecer.
+    //
+    // ATENÇÃO — v2 é SEMPRE dry-run POR DESIGN (não há flag `--push`/`--kv`;
+    // ver docstring de clarice-engagement-cohorts-v2.ts): esta task NUNCA
+    // grava o KV `cohorts:engagement` que o dashboard clarice-dashboard lê —
+    // só refresca o artefato local `--out` (cohorts + diagnostics, consumido
+    // hoje só por `scripts/compare-cohorts.ts` / inspeção manual). O v1
+    // continua sendo o único caminho que atualiza o KV do dashboard, e o v1
+    // não tem task agendada aqui (nem no Windows nesta máquina) — logo, até
+    // uma decisão SEPARADA (adicionar escrita de KV ao v2, ou reagendar o
+    // v1), o snapshot "Coortes de engajamento" do dashboard segue congelado
+    // no último sucesso manual do v1, independente desta task rodar. Ver
+    // issue de acompanhamento #5015 (P1) — aberta por esta unidade,
+    // documentando exatamente esse gap.
+    description: "crawl periodico de coortes de engajamento via v2 (export por campanha) -- NAO grava KV, so refresca o artefato local --out",
+    steps: [
+      {
+        key: "crawl",
+        script: "scripts/clarice-engagement-cohorts-v2.ts",
+        args: ["--out", "data/clarice-subscribers/cohorts/v2-latest.json"],
+      },
+    ],
+    logPath: "clarice-subscribers/.cohorts-v2-crawl.log",
+    // Diaria 21:00 BRT -- mesmo horario historico do v1 (docs/cohorts-schedule.md,
+    // decisao 2026-06-19), sem colisao com nenhuma outra daily do registro
+    // (todas as outras dailies ficam entre 05:30 e 17:00).
+    schedule: { kind: "daily", hour: 21, minute: 0 },
+    // Sem `legacySetupScript` de proposito -- mesmo padrao de
+    // Diaria-Beehiiv-Home-Meta-Check (#5005): task registrada depois do
+    // cutover systemd (epica #4798), sem contraparte Windows/.ps1 (o antigo
+    // `DiariaCohortsCrawl` do Windows nunca foi migrado pra este registro --
+    // era via `docs/cohorts-schedule.md` diretamente, apontando pro v1, e
+    // segue existindo so como doc historico, nao como entrada aqui).
+    issue: "#4451",
+  },
+  {
     name: "Diaria-Clarice-Guardrail-Alarm",
     description: "alarme de guardrail furado do ramp Clarice",
     steps: [{ key: "alarm", script: "scripts/clarice-guardrail-alarm.ts" }],
