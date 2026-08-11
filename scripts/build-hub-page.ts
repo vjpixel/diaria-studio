@@ -31,6 +31,7 @@ import { getAnthropicClaudeHub } from "./lib/hubs/anthropic-claude.ts";
 import { getOpenaiChatgptHub } from "./lib/hubs/openai-chatgpt.ts";
 import { getGoogleGeminiHub } from "./lib/hubs/google-gemini.ts";
 import { getMetaAiHub } from "./lib/hubs/meta-ai.ts";
+import { getBrasilRegulacaoHub } from "./lib/hubs/brasil-regulacao.ts";
 // #4913 item 1: só o builder (Node-side) enumera todos os hubs pra montar a
 // nav "Outros temas" — `scripts/lib/shared/hub-page.ts` NÃO importa
 // `HUB_META` diretamente (inverteria a fronteira que a docstring de
@@ -51,6 +52,7 @@ export const HUB_LOADERS: Record<string, () => HubContent> = {
   "openai-chatgpt": getOpenaiChatgptHub,
   "google-gemini": getGoogleGeminiHub,
   "meta-ai": getMetaAiHub,
+  "brasil-regulacao": getBrasilRegulacaoHub,
 };
 
 function outPathFor(slug: string): string {

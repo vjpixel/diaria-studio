@@ -142,6 +142,21 @@ export const GEO_HUB_QUESTIONS: readonly string[] = [
   "Por que a Meta abandonou o open source do Llama?",
   "Como está a disputa entre OpenAI, Google e Anthropic em 2026?",
   "Qual foi o maior investimento em infraestrutura de IA anunciado em 2026?",
+  // #4558 (5º hub, brasil-regulacao, sessão develop 260811) —
+  // acrescentadas por `test/geo-hub-questions-cobrem-hubs-4900.test.ts`
+  // (guard que exige 1+ pergunta por hub publicado). DIFERENTE do caso do
+  // Meta/Meta AI acima: aquele hub entrou ANTES da 1ª rodada real do
+  // monitor, a única janela em que o próprio teste documenta como segura
+  // pra mexer sem invalidar a série. `Diaria-Geo-Citation-Monitor` já roda
+  // semanalmente desde o baseline de 07/08/2026 (#4901/#4905) — esta adição
+  // é, portanto, MID-SÉRIE. Corrigir o CI (o guard bloqueia merge sem
+  // pergunta pro hub novo) sem decidir sozinho se o baseline precisa
+  // resetar: essa parte fica para o editor/coordenador, com acesso a
+  // `data/geo-citations/` (fora deste worktree isolado) — ver a decisão
+  // #4901 ("acompanhamento contínuo, sem gate binário de data") sobre como
+  // ler a série depois de uma mudança de instrumento no meio dela.
+  "Como funciona a regulação de IA no Brasil?",
+  "O que é o Marco Legal da IA (PL 2338/23)?",
 ] as const;
 
 /** Domínio checado nas respostas (sem protocolo/path — substring match). */
