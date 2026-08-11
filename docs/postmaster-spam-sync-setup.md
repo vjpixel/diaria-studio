@@ -18,6 +18,17 @@ janela — `HEALTH_SAMPLE_DAYS` — das outras métricas da aba Rampa, #4345) na
 mesma chave KV (`postmaster:spam`) que o breaker de spam da Rampa consome
 (`resolveSpamSignal` em `workers/brevo-dashboard/src/thresholds.ts`).
 
+**#4973 (260811): também sonda `diar.ia.br`**, domínio do canal
+`brevo_diaria` — grava numa chave KV SEPARADA (`postmaster:spam:diar.ia.br`,
+via `additionalPostmasterSpamKvKey`), nunca a chave legada acima (zero
+mudança pro breaker da Rampa). Cobertura rala (dias sem publicação) é
+NORMAL pra este domínio, não um erro — o dashboard mostra "aguardando
+publicação" explícito na aba `brevo_diaria`. Sem coleta por-campanha (sem
+`FEEDBACK_LOOP_ID` atribuível pra este domínio) e **sem nenhum breaker
+ligado** neste canal ainda — só observação (ver checklist da issue). Ver
+`PostmasterDomainConfig`/`POSTMASTER_DOMAINS` no topo de
+`scripts/postmaster-spam-sync.ts` pro racional completo.
+
 **Histórico completo** do bloqueio original, da correção do erro de HTTP vs.
 "dado ainda não publicado" e da semântica de `userReportedSpamRatio` AUSENTE
 (#4154/#4345 — a interpretação mudou; ver a data do commit antes de confiar
