@@ -23,6 +23,7 @@ import assert from "node:assert/strict";
 import { HUB_LOADERS } from "../scripts/build-hub-page.ts";
 import {
   HUB_PROSE_RULES,
+  formatDateLong,
   hubCoverageWindow,
   validateHubContent,
   type HubContent,
@@ -54,6 +55,31 @@ function baseHub(over: Partial<HubContent> = {}): HubContent {
 
 const proseErrors = (hub: HubContent, ruleId?: string) =>
   validateHubContent(hub).filter((e) => e.includes(ruleId ? ` viola ${ruleId}:` : " viola "));
+
+/**
+ * #4944 item 1 — checa se `date` aparece no campo `value` no PAPEL de início
+ * de janela ("desde {date}", "entre {date} e ...", "de {date} a ...") em vez
+ * de só EM QUALQUER LUGAR do texto. Substitui o `value.includes(f)` solto que
+ * o teste `#4917` abaixo usava: esse `includes` marcava como correto um campo
+ * que citasse a janela ERRADA mas mencionasse a data certa em outro contexto
+ * do mesmo campo — furo concreto, não hipotético (a issue #4944 aponta que os
+ * `introParagraph` já citam várias datas sem relação com a janela).
+ *
+ * Duas formas aceitas, cobrindo as 3 construções que os 4 hubs reais usam:
+ * - `\b(desde|entre)\b[^.]{0,40}{date}` — "desde {date}?" (introHeading) e
+ *   "Entre {date} e ..." / "Entre {dia} de {date}, ..." (introParagraph, a
+ *   forma longa do google-gemini inclusa: a janela de 40 chars cobre o "27 de"
+ *   entre "Entre" e o mês/ano).
+ * - `\bde\s+{date}` — "..., de {date} a {until}: ..." (metaDescription), só
+ *   com "de" IMEDIATAMENTE antes da data (sem janela de distância) — um "de"
+ *   a 40 chars de distância é comum demais em prosa corrida pra servir de
+ *   âncora confiável (qualquer "X de {mês} de {ano}" anterior no mesmo campo
+ *   colaria com uma janela larga).
+ */
+function citesWindowDate(value: string, date: string): boolean {
+  const escaped = date.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\b(desde|entre)\\b[^.]{0,40}${escaped}|\\bde\\s+${escaped}`, "i").test(value);
+}
 
 describe("#4899 — contrato de prosa dos hubs", () => {
   it("a base do fixture é válida (senão os casos abaixo testariam outra coisa)", () => {
@@ -322,12 +348,130 @@ describe("#4899 — contrato de prosa dos hubs", () => {
           ["introHeading", hub.introHeading],
           ["metaDescription", hub.metaDescription],
         ] as const) {
+          // #4944 item 1: `citesWindowDate` (não `includes` solto) — a data
+          // precisa ocupar o papel de "desde"/"entre"/"de" da alegação de
+          // cobertura, não só aparecer em algum lugar do campo.
           assert.ok(
-            accepted.some((f) => value.includes(f)),
-            `${slug}.${field} não cita a data da primeira fonte (${accepted.join(" ou ")}): "${value.slice(0, 130)}…"`,
+            accepted.some((f) => citesWindowDate(value, f)),
+            `${slug}.${field} não cita a data da primeira fonte no papel de "desde"/"entre"/"de" (${accepted.join(" ou ")}): "${value.slice(0, 130)}…"`,
           );
         }
       });
     }
+
+    describe("#4944 item 1 — REGRESSÃO: citesWindowDate reprova o furo do includes solto", () => {
+      it("aceita as 3 construções reais que os 4 hubs usam, inclusive a forma longa com dia (google-gemini)", () => {
+        const since = "agosto de 2025";
+        assert.ok(citesWindowDate(`O que aconteceu com o tema desde ${since}?`, since));
+        assert.ok(citesWindowDate(`Tema no arquivo, de ${since} a agosto de 2026: fatos.`, since));
+        assert.ok(citesWindowDate(`Entre ${since} e agosto de 2026, o tema apareceu.`, since));
+        assert.ok(citesWindowDate(`Entre 27 de ${since}, o tema apareceu.`, since)); // forma longa (betweenLong)
+      });
+
+      it("reprova um HubContent sintético que cita a janela errada mas menciona a data certa fora do papel de desde/entre/de", () => {
+        // Mesmo defeito que a #4917 achou ao vivo em anthropic-claude/
+        // openai-chatgpt (janela errada), mas com a data certa TAMBÉM
+        // presente no campo — fora do papel de início. A versão antiga desta
+        // checagem (`value.includes(f)`) marcava os 3 campos abaixo como
+        // corretos; é exatamente o furo que a issue #4944 item 1 pede pra
+        // fechar. Critério de pronto da issue: este teste precisa REPROVAR.
+        const sourceEditions = [
+          { date: "2025-08-27", title: "Manchete antiga", url: "https://diar.ia.br/p/antiga" },
+          { date: "2026-03-10", title: "Manchete recente", url: "https://diar.ia.br/p/recente" },
+        ];
+        const hub = baseHub({
+          sourceEditions,
+          // Janela ALEGADA errada ("setembro de 2025") nos 3 campos — a
+          // fonte mais antiga real é agosto de 2025.
+          introHeading: "O que aconteceu com o tema desde setembro de 2025?",
+          introParagraph:
+            "Em agosto de 2025 o tema quase não apareceu; entre setembro de 2025 e março de 2026 a cobertura decolou.",
+          metaDescription:
+            "Tema no arquivo: em agosto de 2025 a cobertura ainda não existia; entre setembro de 2025 e março de 2026, fatos.",
+        });
+        const { since } = hubCoverageWindow(hub.sourceEditions);
+        assert.equal(since, "agosto de 2025");
+        for (const [field, value] of [
+          ["introHeading", hub.introHeading],
+          ["introParagraph", hub.introParagraph],
+          ["metaDescription", hub.metaDescription],
+        ] as const) {
+          assert.equal(
+            citesWindowDate(value, since),
+            false,
+            `${field} deveria REPROVAR: cita a janela errada e "${since}" só aparece fora do papel de desde/entre/de: "${value}"`,
+          );
+        }
+      });
+    });
+  });
+
+  describe("#4944 item 2 — hubCoverageWindow colapsa janela de 1 mês (sem 'X e X')", () => {
+    it("between colapsa quando since === until (mesmo mês/ano, dias diferentes)", () => {
+      const { between, isSingleMonth } = hubCoverageWindow([{ date: "2025-08-05" }, { date: "2025-08-20" }]);
+      assert.equal(between, "agosto de 2025");
+      assert.equal(isSingleMonth, true);
+    });
+
+    it("between colapsa com 1 fonte só na lista", () => {
+      const { between, isSingleMonth } = hubCoverageWindow([{ date: "2025-08-05" }]);
+      assert.equal(between, "agosto de 2025");
+      assert.equal(isSingleMonth, true);
+    });
+
+    it("between NÃO colapsa quando since !== until (comportamento antigo preservado)", () => {
+      const { between, isSingleMonth } = hubCoverageWindow([{ date: "2025-08-05" }, { date: "2026-01-09" }]);
+      assert.equal(between, "agosto de 2025 e janeiro de 2026");
+      assert.equal(isSingleMonth, false);
+    });
+
+    it("os 4 hubs reais não caem no caso de mês único (isSingleMonth false) — não é alcançável hoje, a issue confirma", () => {
+      for (const [slug, load] of Object.entries(HUB_LOADERS)) {
+        const hub = load();
+        assert.equal(
+          hubCoverageWindow(hub.sourceEditions).isSingleMonth,
+          false,
+          `${slug}: caiu no caso de mês único inesperadamente`,
+        );
+      }
+    });
+  });
+
+  describe("#4944 item 3 — betweenLong tem teste unitário próprio (não só indireto via google-gemini)", () => {
+    it("formatDateLong: dia SEM zero à esquerda", () => {
+      assert.equal(formatDateLong("2025-08-05"), "5 de agosto de 2025");
+      assert.equal(formatDateLong("2026-01-09"), "9 de janeiro de 2026");
+      assert.equal(formatDateLong("2026-01-15"), "15 de janeiro de 2026"); // dia de 2 dígitos não quebra
+    });
+
+    it("hubCoverageWindow.betweenLong: forma longa com dia, sem zero à esquerda em nenhuma borda", () => {
+      const { betweenLong } = hubCoverageWindow([{ date: "2025-08-05" }, { date: "2026-01-09" }]);
+      assert.equal(betweenLong, "5 de agosto de 2025 e 9 de janeiro de 2026");
+    });
+
+    it("hubCoverageWindow.betweenLong colapsa pra uma data única quando firstDate === lastDate", () => {
+      const { betweenLong } = hubCoverageWindow([{ date: "2025-08-05" }]);
+      assert.equal(betweenLong, "5 de agosto de 2025");
+    });
+  });
+
+  describe("#4944 item 4 — limite conhecido da denylist prosa-sem-publicacao-como-sujeito", () => {
+    it("DOCUMENTA (não é bug): 'apurou'/'checou'/'levantou' escapam da denylist hoje", () => {
+      // A regra é denylist por desenho (ver docstring de HUB_PROSE_RULES):
+      // não pode virar allowlist de verbo, porque proibir a marca perto de
+      // QUALQUER verbo pegaria as afirmações legítimas sobre o próprio
+      // arquivo que o contrato protege de propósito (ver "CASO NEGATIVO"
+      // acima). Os verbos abaixo não estão na lista do pattern
+      // (cobr|notici|public|registr|acompanh|destac|inform|relat|flagr|
+      // revel|document|report|mostr|mencion) — isso é ACEITO, não um furo a
+      // fechar; este teste só existe pra deixar o limite conhecido em vez de
+      // implícito (issue #4944 item 4).
+      for (const verbo of ["apurou", "checou", "levantou"]) {
+        const hub = baseHub({
+          sections: [{ heading: "O que mudou?", paragraphs: [`A diar.ia.br ${verbo} o caso com fontes próprias.`] }],
+        });
+        assert.deepEqual(proseErrors(hub, "prosa-sem-publicacao-como-sujeito"), []);
+      }
+    });
   });
 });
