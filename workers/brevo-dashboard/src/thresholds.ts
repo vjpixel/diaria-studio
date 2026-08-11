@@ -312,7 +312,7 @@ export type EnvioSpamCellState = "rate" | "pending" | "unavailable";
  */
 export type EnvioSpamCell =
   | {
-      state: "rate";
+      state: Extract<EnvioSpamCellState, "rate">;
       /** O PICO da campanha (mesmo racional de pico > média usado no resto do enriquecimento por-campanha). */
       ratePct: number;
       /** Cobertura (dias com leitura válida, acumulada entre execuções) da campanha. */
@@ -323,7 +323,7 @@ export type EnvioSpamCell =
       breach: boolean;
     }
   | {
-      state: "pending" | "unavailable";
+      state: Extract<EnvioSpamCellState, "pending" | "unavailable">;
       breach: false;
     };
 
