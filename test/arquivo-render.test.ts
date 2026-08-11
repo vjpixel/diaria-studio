@@ -584,6 +584,41 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     assert.equal(res.status, 200);
   });
 
+  it("GET /{INDEXNOW_KEY}.txt → 200 texto puro com a própria chave, quando a var está configurada (#4909 item 2)", async () => {
+    globalThis.fetch = (async () => {
+      throw new Error("arquivo de chave do IndexNow não deveria depender de rede");
+    }) as unknown as typeof fetch;
+
+    const res = await worker.fetch(
+      new Request("https://arquivo.diar.ia.br/minha-chave-opaca.txt"),
+      { INDEXNOW_KEY: "minha-chave-opaca" },
+    );
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("Content-Type") ?? "", /text\/plain/);
+    assert.equal(await res.text(), "minha-chave-opaca");
+  });
+
+  it("GET /{INDEXNOW_KEY}.txt com chave errada → 404 (não vaza aceitando qualquer .txt)", async () => {
+    globalThis.fetch = (async () => {
+      throw new Error("não deveria fazer fetch nenhum");
+    }) as unknown as typeof fetch;
+
+    const res = await worker.fetch(
+      new Request("https://arquivo.diar.ia.br/chave-errada.txt"),
+      { INDEXNOW_KEY: "minha-chave-opaca" },
+    );
+    assert.equal(res.status, 404);
+  });
+
+  it("sem INDEXNOW_KEY configurada, qualquer /*.txt cai no 404 normal (comportamento idêntico a antes)", async () => {
+    globalThis.fetch = (async () => {
+      throw new Error("não deveria fazer fetch nenhum");
+    }) as unknown as typeof fetch;
+
+    const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/qualquer-coisa.txt"), {});
+    assert.equal(res.status, 404);
+  });
+
   it("GET /robots.txt → 200 texto com Allow: /, Sitemap: própria e sem fetch externo (#4546)", async () => {
     globalThis.fetch = (async () => {
       throw new Error("/robots.txt não deveria depender de rede nenhuma");

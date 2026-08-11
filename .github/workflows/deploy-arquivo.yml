@@ -8,7 +8,21 @@ name: Deploy arquivo Worker
 #
 # Worker deliberadamente simples (sem KV, sem secrets) — reusa os mesmos 2
 # secrets de repo já configurados pros outros workers (CLOUDFLARE_WORKERS_TOKEN,
-# CLOUDFLARE_ACCOUNT_ID), nenhum secret novo necessário.
+# CLOUDFLARE_ACCOUNT_ID), nenhum secret novo necessário pro deploy em si.
+#
+# #4909 item 2: depois do deploy, pinga o IndexNow (protocolo aberto —
+# Google NÃO participa, só Bing/Yandex/Seznam) SE o push mudou pelo menos um
+# `workers/arquivo/src/hubs/*.generated.ts` — o mesmo sinal de "hub mudou de
+# conteúdo" que já governa o `<lastmod>` do sitemap (#4909 item 1). Pingar
+# uma URL que não mudou é o mesmo argumento de erosão de confiança citado
+# pro `<lastmod>` — por isso o gate roda ANTES de invocar
+# scripts/ping-indexnow.ts, não dentro dele (defesa em profundidade: o
+# script também fecha sozinho se a lista recebida não tiver `.generated.ts`,
+# mas o gate aqui evita nem montar/logar a lista à toa). Requer o secret
+# `INDEXNOW_KEY` (gerado pelo editor em indexnow.org/documentation,
+# provisionado aqui E como Worker var — ver Env.INDEXNOW_KEY em
+# workers/arquivo/src/index.ts); sem o secret, o step roda e sai 0 sem
+# pingar (`ping-indexnow.ts` trata chave ausente como gate fechado).
 
 on:
   push:
@@ -28,6 +42,12 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          # #4909 item 2: precisa do commit ANTERIOR ao push localmente pra
+          # `git diff --name-only ${{ github.event.before }} ${{ github.sha }}`
+          # funcionar no step de detecção abaixo — fetch-depth 1 (default)
+          # só traz o HEAD.
+          fetch-depth: 2
 
       - uses: actions/setup-node@v4
         with:
@@ -46,3 +66,38 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npm run deploy
+
+      - name: Detect changed hub .generated.ts files
+        id: hub-diff
+        # workflow_dispatch não tem github.event.before (evento manual, sem
+        # "push anterior") — gate fecha e o step de ping seguinte não roda
+        # (condição abaixo checa outputs.changed != ''). Push com before
+        # zerado (ex: branch novo — nunca acontece em push pra master, mas
+        # defensivo) trata do mesmo jeito.
+        run: |
+          BEFORE="${{ github.event.before }}"
+          ZERO="0000000000000000000000000000000000000000"
+          if [ "${{ github.event_name }}" = "push" ] && [ -n "$BEFORE" ] && [ "$BEFORE" != "$ZERO" ]; then
+            CHANGED=$(git diff --name-only "$BEFORE" "${{ github.sha }}" -- 'workers/arquivo/src/hubs/*.generated.ts' || true)
+          else
+            CHANGED=""
+          fi
+          {
+            echo "changed<<INDEXNOW_EOF"
+            echo "$CHANGED"
+            echo "INDEXNOW_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Ping IndexNow (só quando um hub .generated.ts mudou)
+        if: steps.hub-diff.outputs.changed != ''
+        env:
+          INDEXNOW_KEY: ${{ secrets.INDEXNOW_KEY }}
+          # Indireção via env (não interpolar ${{ }} direto no corpo do
+          # `run:`) — mesma prática recomendada pelo GitHub pra evitar que
+          # o valor do output vire texto de script; aqui o conteúdo é só
+          # path de arquivo do nosso próprio diff, sem risco real, mas o
+          # padrão é gratuito e evita reabrir a discussão depois.
+          CHANGED_HUB_FILES: ${{ steps.hub-diff.outputs.changed }}
+        run: |
+          printf '%s\n' "$CHANGED_HUB_FILES" > "$RUNNER_TEMP/changed-hub-files.txt"
+          npx tsx scripts/ping-indexnow.ts --changed-files-file "$RUNNER_TEMP/changed-hub-files.txt"

@@ -195,6 +195,7 @@ describe("registro <-> scripts/run-*.ps1: mesmos scripts .ts invocados (ordem pr
     "Diaria-Geo-Citation-Staleness-Alarm": "scripts/run-geo-citation-staleness-alarm.ps1",
     "Diaria-Hub-Drift-Check": "scripts/run-hub-drift-check.ps1",
     "Diaria-Postmaster-Spam-Sync": "scripts/run-postmaster-spam-sync.ps1",
+    "Diaria-Robots-Txt-Drift-Check": "scripts/run-robots-txt-drift-check.ps1",
     "Diaria-SEO-Weekly": "scripts/run-seo-weekly.ps1",
     "Diaria-Worker-Drift-Check": "scripts/run-worker-drift-check.ps1",
   };
