@@ -31,14 +31,28 @@
  * módulo cobrem o CONTRATO interno (parsing determinístico de uma resposta
  * fixture), não a forma exata da API real.
  *
- * **`ANTHROPIC_API_KEY` fica deliberadamente ausente (decisão do editor,
- * 11/ago/2026, #4904).** O provider `anthropic` continua no código —
- * `fail-soft`, pulado sem key igual sempre foi — mas isto não é mais um gap
- * temporário esperando credencial: é a configuração pretendida. Rodadas
- * reais rodam só com `OPENAI_API_KEY`/`GEMINI_API_KEY` (ambas já no `.env`
- * do editor) desde então. Ver `docs/geo-citation-monitor-setup.md` § "Captura
- * de usage e teto de custo" pro raciocínio completo e `GEO_NON_ANTHROPIC_TOKEN_PRICING`
- * (abaixo) pro custo real medido nos outros dois.
+ * **`ANTHROPIC_API_KEY` está ativa desde 11/ago/2026 (#4904).** Chegou a
+ * ficar deliberadamente ausente por decisão do editor (evitar o setup de
+ * uma key de Console pay-as-you-go — sistema de billing separado da
+ * assinatura do Claude Code, mesmo login, mesma identidade), mas a decisão
+ * foi revertida no mesmo dia: o editor criou a org no Console
+ * (`console.anthropic.com`), comprou
+ * US$5 de crédito e gerou a key. Os 3 providers (`OPENAI_API_KEY`,
+ * `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, todos no `.env`) rodam de verdade
+ * agora. **Achado ao vivo que ainda importa:** a Anthropic tem latência
+ * MUITO mais variável que OpenAI/Google — mesma pergunta isolada deu 25s,
+ * 60s (timeout), 25s, e depois 180s (timeout, mesmo com `max_uses`
+ * reduzido) em tentativas separadas fora do código shipado (um script de
+ * teste avulso, timeout maior que o valor que foi pro código de produção —
+ * o próprio `timeoutMs: 120_000` da Anthropic aborta antes dos 180s, então
+ * essa tentativa específica não é reproduzível pelo caminho real).
+ * `GeoProviderDef.timeoutMs` (120s) e `max_uses: 2` (redução de custo, não
+ * de latência — ver as duas docstrings) são a resposta pragmática: falhas
+ * ocasionais da Anthropic
+ * são esperadas e tratadas fail-soft, não um bug a perseguir. Ver
+ * `docs/geo-citation-monitor-setup.md` § "Captura de usage e teto de
+ * custo" pro raciocínio completo e `GEO_NON_ANTHROPIC_TOKEN_PRICING`
+ * (abaixo) pro custo real medido em OpenAI/Google.
  *
  * **Resiliência (#4616, fleet review da PR #4616 que introduziu este
  * módulo):** `queryProvider` tem timeout explícito (`GEO_PROVIDER_TIMEOUT_MS`,
@@ -152,7 +166,9 @@ export interface GeoProviderUsage {
   cacheReadInputTokens?: number;
   /** Contagem de buscas server-side executadas nesta chamada, quando o
    * provider expõe (ex: Anthropic `usage.server_tool_use.web_search_requests`
-   * — cada chamada habilita até `max_uses: 5`, #4904). Cada busca é cobrada
+   * — cada chamada habilita até `max_uses: 2`, #4904 — reduzido de 5 por
+   * custo, não por latência (ver docstring de `GeoProviderDef.timeoutMs`
+   * pra por que reduzir não resolveu os timeouts). Cada busca é cobrada
    * à parte do token (US$10/1000 na Anthropic) — `estimateCallCostUsd`
    * (`pricing.ts`) NÃO inclui esse custo, só token; ver `estimatedCostUsd`
    * em `GeoCitationRecord` pro aviso de que o valor é um PISO. */
@@ -178,6 +194,54 @@ export interface GeoProviderDef {
    * um provider sem `extractUsage` simplesmente não tem usage capturado
    * (`queryProvider` trata a ausência como `undefined`, nunca lança). */
   extractUsage?(json: unknown): GeoProviderUsage | undefined;
+  /** Override de timeout por provider (#4904 item 4, achado ao vivo
+   * 11/ago/2026) — `undefined` usa `GEO_PROVIDER_TIMEOUT_MS`. Existe porque
+   * a Anthropic estourou os 25s padrão em 8/8 chamadas de uma rodada real:
+   * `web_search` pode encadear buscas server-side antes de responder,
+   * sequência bem mais lenta e mais VARIÁVEL que a busca single-shot da
+   * OpenAI/Google.
+   *
+   * **A variância é real e não é explicada só por `max_uses`** — medido ao
+   * vivo (11/ago/2026), várias chamadas isoladas com a MESMA pergunta, via
+   * script de teste avulso com timeout configurável (não o código de
+   * produção): 25s (sucesso), 60s (timeout), 25s (sucesso, `max_uses:5`),
+   * e depois de reduzir pra `max_uses:2` (esperando latência mais
+   * previsível), o script de teste rodando com um timeout de 180s (maior
+   * que o valor que foi pro código de produção) ainda deu timeout. Reduzir
+   * `max_uses` cortou o teto de buscas sequenciais mas NÃO eliminou os
+   * timeouts — a causa provável é variância do lado do servidor (fila,
+   * carga, ou fator da conta nova), não proporcional ao número de buscas.
+   * **Não há timeout que elimine essa falha com certeza** — a skill
+   * `claude-api` documenta o timeout DEFAULT do próprio SDK como 10min
+   * exatamente por causa desse padrão em chamadas com tool server-side, e
+   * mesmo esse valor é só uma margem, não uma garantia.
+   *
+   * 120s é a escolha pragmática: succeeds na maioria das chamadas
+   * observadas (25-90s), falha rápido o bastante pra não travar a rodada
+   * inteira numa única chamada pendurada (roda em background semanal, sem
+   * usuário esperando), e o teto de US$10/mês configurado na ORG do
+   * Console (console.anthropic.com → Billing → Spend limits — mecanismo
+   * separado, não o `--max-monthly-usd` deste script, que hoje não é
+   * passado pela task agendada — ver `SCHEDULED_TASKS` em
+   * `scripts/lib/scheduled-tasks.ts`) limita o custo de falhas repetidas
+   * como último recurso. **Falhas ocasionais são esperadas e tratadas
+   * como fail-soft** (viram `errorKind: "network"` no registro, nunca
+   * derrubam a rodada) — não é bug a corrigir, é a natureza da chamada.
+   *
+   * **O abort do `AbortController` é só do lado do CLIENTE** — o servidor
+   * já processou (e cobrou) o que rodou até o corte: só a rodada de 8/8
+   * timeouts em 25s gastou US$0,36 em créditos reais sem produzir UM
+   * registro de citação sequer, confirmado no dashboard de billing do
+   * Console. Timeout curto demais pra esta chamada não é só "falha rápida
+   * e barata" como é pra rede/HTTP comuns — é dinheiro queimado por nada.
+   *
+   * **Obrigatório de propósito (não `?:`)** — achado do type-design review
+   * desta PR (#4904): opcional deixava um 4º provider futuro herdar os 25s
+   * default em silêncio, exatamente o jeito de errar que motivou este
+   * campo. Provider sem tool server-side (a maioria) só copia
+   * `GEO_PROVIDER_TIMEOUT_MS` explicitamente — sem custo de runtime, o
+   * TypeScript força quem adicionar um provider novo a decidir o valor. */
+  timeoutMs: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -200,7 +264,15 @@ function anthropicRequest(question: string, apiKey: string, model: string) {
         model,
         max_tokens: 1024,
         messages: [{ role: "user", content: question }],
-        tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 5 }],
+        // max_uses: 2, não 5 — ver docstring de GeoProviderDef.timeoutMs pro
+        // histórico completo. Uma rodada real com max_uses:5 (11/ago/2026)
+        // gastou até 121k tokens de INPUT numa única chamada (conteúdo de
+        // busca). Reduzir pra 2 NÃO eliminou os timeouts (testado ao vivo,
+        // ainda falhou) — mas limita o teto de custo por chamada bem-sucedida
+        // (menos conteúdo de busca acumulado), sem comprometer o propósito da
+        // medição (checar citação, não pesquisa profunda). Mantido como
+        // redução de custo, não como fix de latência.
+        tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 2 }],
       }),
     } satisfies RequestInit,
   };
@@ -369,6 +441,20 @@ function googleExtractUsage(json: unknown): GeoProviderUsage | undefined {
 
 // ---------------------------------------------------------------------------
 
+/** Timeout DEFAULT por chamada de provider (usado por OpenAI/Google) —
+ * mesma referência de 25s já usada pro fetch in-page do Beehiiv
+ * (`DEFAULT_FETCH_TIMEOUT_MS`, `scripts/lib/beehiiv-insert-text.ts`,
+ * documentado em `context/publishers/beehiiv-playbook.md` §Fase 3). Sem
+ * isso, até 24 chamadas seriais (3 providers × 8 perguntas) podiam travar
+ * o processo inteiro numa conexão pendurada (achado #4616 do fleet
+ * review). **Anthropic usa um valor maior** (`GeoProviderDef.timeoutMs`,
+ * `GEO_PROVIDERS` logo abaixo) — 25s estourava em 8/8 chamadas reais, ver
+ * docstring do campo. Declarada ANTES de `GEO_PROVIDERS` de propósito —
+ * OpenAI/Google referenciam esta constante diretamente no literal do
+ * array (timeoutMs agora é campo obrigatório, #4904), então a ordem
+ * importa: TDZ de `const` quebraria se ficasse depois. */
+export const GEO_PROVIDER_TIMEOUT_MS = 25_000;
+
 export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
   {
     id: "anthropic",
@@ -378,6 +464,8 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
     buildRequest: anthropicRequest,
     extractText: anthropicExtractText,
     extractUsage: anthropicExtractUsage,
+    // 120s, não os 25s default — ver docstring de GeoProviderDef.timeoutMs.
+    timeoutMs: 120_000,
   },
   {
     id: "openai",
@@ -387,6 +475,10 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
     buildRequest: openaiRequest,
     extractText: openaiExtractText,
     extractUsage: openaiExtractUsage,
+    // Sem tool com latência multi-hop tipo o web_search da Anthropic — o
+    // default global serve. Explícito de propósito, ver docstring de
+    // GeoProviderDef.timeoutMs.
+    timeoutMs: GEO_PROVIDER_TIMEOUT_MS,
   },
   {
     id: "google",
@@ -396,16 +488,18 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
     buildRequest: googleRequest,
     extractText: googleExtractText,
     extractUsage: googleExtractUsage,
+    // Mesmo raciocínio do OpenAI acima.
+    timeoutMs: GEO_PROVIDER_TIMEOUT_MS,
   },
 ];
 
 /**
- * Tabela de pricing de TOKEN pra OpenAI/Google (#4904 item 4, caminho
- * alternativo — o editor decidiu não usar `ANTHROPIC_API_KEY` pra este
- * monitor, então a Anthropic nunca vai gerar `estimatedCostUsd` aqui;
- * medir os outros dois provedores é o que sobra pra tirar a frase "custo
- * nunca foi medido" de `docs/geo-citation-monitor-setup.md`, PARCIALMENTE
- * verdadeira daqui em diante — ver a decisão registrada lá).
+ * Tabela de pricing de TOKEN pra OpenAI/Google (#4904 item 4). Nasceu como
+ * caminho alternativo enquanto a Anthropic ficou de fora do monitor por
+ * decisão do editor (revertida no mesmo dia, 11/ago/2026 — ver docstring
+ * do módulo) — mantida mesmo com a Anthropic de volta, porque a tabela de
+ * pricing do Claude (`pricing.ts`) é Claude-only por design, e OpenAI/
+ * Google continuam sem tabela nenhuma sem isto aqui.
  *
  * Separada de `scripts/lib/pricing.ts` de propósito: aquele módulo é
  * SÓ Claude, compartilhado com `capture-stage-usage.ts`/`aggregate-costs.ts`
@@ -522,25 +616,17 @@ export interface GeoCitationRecord {
    * das duas tabelas precifica a busca server-side em si — só o token. Na
    * Anthropic isso é US$10/1000 buscas; na OpenAI, US$10/1000 chamadas de
    * `web_search`; no Google, grátis até 500-1.500 requisições/dia e depois
-   * US$35/1000 (ver a tabela pra data de verificação). **Anthropic nunca
-   * roda de fato neste monitor** — `ANTHROPIC_API_KEY` fica
-   * deliberadamente ausente por decisão do editor (11/ago/2026, #4904):
-   * este campo continua definido pro provider por completude de tipo, mas
-   * na prática só OpenAI/Google produzem valor aqui. Ver
+   * US$35/1000 (ver a tabela pra data de verificação). **A Anthropic roda
+   * de verdade desde 11/ago/2026** (#4904, `ANTHROPIC_API_KEY` ativa) —
+   * mas com latência bem mais variável que OpenAI/Google (ver docstring de
+   * `GeoProviderDef.timeoutMs`), então uma fração das chamadas termina em
+   * timeout e não gera este campo (fail-soft, não é bug). Ver
    * `docs/geo-citation-monitor-setup.md` § "Captura de usage e teto de
    * custo" pro raciocínio completo. */
   estimatedCostUsd?: number;
 }
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
-
-/** Timeout por chamada de provider — mesma referência de 25s já usada pro
- * fetch in-page do Beehiiv (`DEFAULT_FETCH_TIMEOUT_MS`,
- * `scripts/lib/beehiiv-insert-text.ts`, documentado em
- * `context/publishers/beehiiv-playbook.md` §Fase 3). Sem isso, até 24
- * chamadas seriais (3 providers × 8 perguntas) podiam travar o processo
- * inteiro numa conexão pendurada (achado #4616 do fleet review). */
-export const GEO_PROVIDER_TIMEOUT_MS = 25_000;
 
 type QueryProviderResult =
   | { ok: true; text: string; usage?: GeoProviderUsage }
@@ -614,9 +700,9 @@ export async function queryProvider(
  * pros 3 providers, cada um com sua tabela: Anthropic via
  * `estimateCallCostUsd` (`pricing.ts`, cobre cache read/write), OpenAI e
  * Google via `estimateNonAnthropicCostUsd` (`GEO_NON_ANTHROPIC_TOKEN_PRICING`
- * acima, #4904 item 4 — caminho alternativo à medição ao vivo da Anthropic,
- * que o editor decidiu não usar). Model fora de qualquer tabela → campo
- * fica `undefined`, nunca um preço inventado.
+ * acima, #4904 item 4 — tabela própria porque `pricing.ts` é Claude-only).
+ * Model fora de qualquer tabela → campo fica `undefined`, nunca um preço
+ * inventado.
  * `usage === undefined` (provider sem `extractUsage`, ou a resposta não
  * bateu a forma esperada) devolve `{}` — nenhum campo populado, nunca um
  * objeto com zeros inventados.
@@ -696,10 +782,10 @@ export async function runGeoCitationMonitor(
     if (!apiKey) continue; // sem key → pula esse provider, fail-soft
     const model = env[`${provider.envKey}_MODEL`] || provider.defaultModel;
     for (const question of questions) {
-      let result = await queryProvider(provider, question, apiKey, model, fetchImpl);
+      let result = await queryProvider(provider, question, apiKey, model, fetchImpl, provider.timeoutMs);
       if (!result.ok && result.errorKind === "http" && result.httpStatus === 429) {
         await sleepFn(GEO_RATE_LIMIT_RETRY_DELAY_MS);
-        result = await queryProvider(provider, question, apiKey, model, fetchImpl);
+        result = await queryProvider(provider, question, apiKey, model, fetchImpl, provider.timeoutMs);
       }
       const ts = now().toISOString();
       const date = ts.slice(0, 10);
@@ -774,7 +860,16 @@ export interface GeoCitationSummary {
   total: number;
   cited: number;
   errors: number;
-  byProvider: Record<string, { total: number; cited: number }>;
+  /** `errors` por provider (#4904, achado do silent-failure-hunter desta
+   * PR): antes só existia o agregado dos 3 providers — um provider
+   * permanentemente quebrado (key revogada, org errada, rate-limit
+   * persistente) ficava indistinguível de "rodou certinho, nunca foi
+   * citado" no log e no exit code, já que `--strict` só falha quando
+   * TODOS os providers configurados erram 100% (`resolveStrictOutcome`),
+   * e OpenAI/Google seguem estáveis o bastante pra nunca cruzar esse
+   * limiar sozinhos. Ver `detectProviderTotalFailure` pro alarme que usa
+   * este campo. */
+  byProvider: Record<string, { total: number; cited: number; errors: number }>;
   /** Quebra por painel (#4900 item a) — chave `"geral"` inclui registros sem
    * `panel` (legado, lido como `"geral"` por default). */
   byPanel: Record<string, { total: number; cited: number }>;
@@ -782,12 +877,12 @@ export interface GeoCitationSummary {
 
 /** Resume um lote de records — usado pro print de fim de execução. Pure. */
 export function summarizeGeoCitationRecords(records: GeoCitationRecord[]): GeoCitationSummary {
-  const byProvider: Record<string, { total: number; cited: number }> = {};
+  const byProvider: Record<string, { total: number; cited: number; errors: number }> = {};
   const byPanel: Record<string, { total: number; cited: number }> = {};
   let cited = 0;
   let errors = 0;
   for (const r of records) {
-    if (!byProvider[r.provider]) byProvider[r.provider] = { total: 0, cited: 0 };
+    if (!byProvider[r.provider]) byProvider[r.provider] = { total: 0, cited: 0, errors: 0 };
     byProvider[r.provider].total += 1;
     const panel = r.panel ?? "geral";
     if (!byPanel[panel]) byPanel[panel] = { total: 0, cited: 0 };
@@ -797,9 +892,29 @@ export function summarizeGeoCitationRecords(records: GeoCitationRecord[]): GeoCi
       byPanel[panel].cited += 1;
       cited += 1;
     }
-    if (r.error) errors += 1;
+    if (r.error) {
+      byProvider[r.provider].errors += 1;
+      errors += 1;
+    }
   }
   return { total: records.length, cited, errors, byProvider, byPanel };
+}
+
+/**
+ * Pure: lista providers cujas TODAS as consultas desta rodada erraram
+ * (#4904, achado do silent-failure-hunter — ver docstring de
+ * `GeoCitationSummary.byProvider`). Diferente de `resolveStrictOutcome`
+ * (que olha o agregado dos 3 providers) — isto pega o caso onde 1 provider
+ * está sistemicamente quebrado mas os outros 2 continuam saudáveis o
+ * bastante pra manter o exit code verde. Não decide exit code sozinho —
+ * o caller decide se isso vira WARN (comportamento atual, mesmo nível de
+ * `detectProviderDrop`) ou algo mais forte; a função só detecta. */
+export function detectProviderTotalFailure(
+  byProvider: Record<string, { total: number; cited: number; errors: number }>,
+): string[] {
+  return Object.entries(byProvider)
+    .filter(([, s]) => s.total > 0 && s.errors === s.total)
+    .map(([providerId]) => providerId);
 }
 
 // ---------------------------------------------------------------------------

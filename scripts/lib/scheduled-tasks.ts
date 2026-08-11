@@ -295,9 +295,25 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // arquivo bom, removido). Passos separados e não um flag só porque cada
     // painel tem a própria série e o próprio baseline: se um provedor cair
     // no `geral`, o `hubs` daquela semana ainda é registrado.
+    //
+    // `--max-monthly-usd 8` (#4904, achado do silent-failure-hunter da PR
+    // que reativou a Anthropic): antes NENHUM guard de custo rodava na task
+    // real — o único freio era o teto de US$10/mês configurado direto na
+    // org do Console (console.anthropic.com → Billing → Spend limits),
+    // opaco pra este repo (sem log, sem registro em history.jsonl, sem
+    // alarme daqui se for atingido). US$8 fica DELIBERADAMENTE abaixo dos
+    // US$10 do Console — o guard daqui é um PISO que não conta chamadas da
+    // Anthropic que deram timeout mas foram cobradas mesmo assim (ver
+    // docstring de `sumMonthToDateCostUsd`), então precisa de folga pra
+    // disparar ANTES do teto rígido do Console, com uma mensagem clara em
+    // vez de um erro de pagamento cru.
     steps: [
-      { key: "monitor", script: "scripts/geo-citation-monitor.ts", args: ["--strict"] },
-      { key: "monitor-hubs", script: "scripts/geo-citation-monitor.ts", args: ["--panel", "hubs", "--strict"] },
+      { key: "monitor", script: "scripts/geo-citation-monitor.ts", args: ["--strict", "--max-monthly-usd", "8"] },
+      {
+        key: "monitor-hubs",
+        script: "scripts/geo-citation-monitor.ts",
+        args: ["--panel", "hubs", "--strict", "--max-monthly-usd", "8"],
+      },
     ],
     logPath: "geo-citations/.monitor.log",
     // Domingo 07:00 (mudou de segunda 10:30, decisão do editor 260810 —

@@ -7,11 +7,23 @@
  * oficial e checa se `diar.ia.br` aparece na resposta. Resultado persiste em
  * `data/geo-citations/history.jsonl` (append-only).
  *
- * **`ANTHROPIC_API_KEY` fica deliberadamente ausente** (decisão do editor,
- * 11/ago/2026, #4904) — o provider Claude nunca roda de fato neste monitor;
- * rodadas reais rodam só com `OPENAI_API_KEY`/`GEMINI_API_KEY` (ambas
- * verificadas ao vivo, incl. `estimatedCostUsd` — ver docstring de
- * `scripts/lib/geo-citation-monitor.ts` § `GEO_NON_ANTHROPIC_TOKEN_PRICING`).
+ * **`ANTHROPIC_API_KEY` está configurada e ATIVA desde 11/ago/2026** (#4904)
+ * — os 3 providers (Claude/ChatGPT/Gemini) rodam de verdade toda semana.
+ * Histórico: a chave chegou a ficar deliberadamente ausente por decisão do
+ * editor (custo/setup de uma key de Console separada da assinatura), mas
+ * essa decisão foi revertida no mesmo dia — o editor gerou a key
+ * (console.anthropic.com, org própria, US$5 de crédito, teto de gasto
+ * mensal US$10) e decidiu incluir a Anthropic na medição. **A Anthropic tem
+ * timeout (`GeoProviderDef.timeoutMs`) e `max_uses` de busca próprios,
+ * DIFERENTES do resto** — timeout MAIOR (120s vs 25s default) e `max_uses`
+ * MENOR (2, sem equivalente em OpenAI/Google). Ver as duas docstrings em
+ * `scripts/lib/geo-citation-monitor.ts` pro achado ao vivo de latência
+ * variável (mesma pergunta, tentativas isoladas fora do código shipado:
+ * 25s, 60s de timeout, 25s, e depois 180s de timeout de novo mesmo com
+ * menos buscas por chamada — o 180s veio de um script de teste avulso com
+ * timeout maior que o valor shipado, não é algo que o código em produção
+ * consegue reproduzir, já que ele aborta em 120s) — falhas ocasionais são
+ * esperadas e tratadas fail-soft, não são bug.
  *
  * Uso:
  *   npx tsx scripts/geo-citation-monitor.ts [--dry-run] [--out <path>] [--panel geral|hubs]
@@ -25,9 +37,8 @@
  * disparar a 1ª chamada da rodada, soma `estimatedCostUsd` de todos os
  * registros do MÊS CORRENTE já em `history.jsonl` (Anthropic via
  * `scripts/lib/pricing.ts`, OpenAI/Google via `GEO_NON_ANTHROPIC_TOKEN_PRICING`
- * — os 3 providers populam o campo desde #4904 item 4; NA PRÁTICA só
- * OpenAI/Google produzem valor, porque a Anthropic não roda, ver acima) e
- * aborta (exit 3) se o total já cruzou o teto. **Fail-open explícito quando
+ * — os 3 providers populam o campo desde #4904 item 4, e os 3 rodam de
+ * verdade) e aborta (exit 3) se o total já cruzou o teto. **Fail-open explícito quando
  * não há dado de custo** (mês sem nenhum registro com `estimatedCostUsd` —
  * hoje só acontece na 1ª rodada de um mês novo, já que OpenAI/Google rodam
  * toda semana e sempre produzem o campo): a rodada segue, mas com um AVISO
@@ -80,6 +91,7 @@ import {
   summarizeGeoCitationRecords,
   latestRoundProviders,
   detectProviderDrop,
+  detectProviderTotalFailure,
   detectSafeBackupConflictFiles,
   type GeoQuestionPanel,
 } from "./lib/geo-citation-monitor.ts";
@@ -237,10 +249,12 @@ export interface MonthToDateCost {
  * começa com `monthPrefix` (YYYY-MM). Não distingue provider — o teto de
  * custo é do projeto inteiro (#4904 item 5). Os 3 providers têm tabela de
  * pricing (Anthropic via `scripts/lib/pricing.ts`, OpenAI/Google via
- * `GEO_NON_ANTHROPIC_TOKEN_PRICING` desde #4904 item 4), mas NA PRÁTICA a
- * soma é implicitamente "só OpenAI/Google": `ANTHROPIC_API_KEY` fica
- * deliberadamente ausente (decisão do editor, 11/ago/2026), então o
- * provider Claude nunca gera registro nem contribui pra esta soma.
+ * `GEO_NON_ANTHROPIC_TOKEN_PRICING` desde #4904 item 4) e os 3 rodam de
+ * verdade (`ANTHROPIC_API_KEY` ativa desde 11/ago/2026) — a soma cobre os
+ * 3, inclusive as chamadas da Anthropic que falharem em timeout (essas não
+ * geram `estimatedCostUsd`, mas foram cobradas mesmo assim — ver a
+ * ressalva sobre abort ser só client-side na docstring de
+ * `GeoProviderDef.timeoutMs`).
  */
 export function sumMonthToDateCostUsd(
   records: readonly Pick<GeoCitationRecord, "date" | "estimatedCostUsd">[],
@@ -438,7 +452,27 @@ async function main(): Promise<number> {
     `[geo-citation-monitor] ${summary.total} consultas, ${summary.cited} citaram diar.ia.br, ${summary.errors} erro(s). Log: ${outPath}`,
   );
   for (const [providerId, s] of Object.entries(summary.byProvider)) {
-    console.log(`  - ${providerId}: ${s.cited}/${s.total} citaram`);
+    console.log(`  - ${providerId}: ${s.cited}/${s.total} citaram` + (s.errors > 0 ? `, ${s.errors} erro(s)` : ""));
+  }
+
+  // #4904, achado do silent-failure-hunter desta PR: um provider quebrado
+  // 100% (key revogada, timeout persistente, etc.) ficava indistinguível de
+  // "rodou certinho, nunca foi citado" — `--strict` só falha quando os 3
+  // providers erram 100% juntos, e OpenAI/Google seguem estáveis o
+  // bastante pra nunca cruzar esse limiar sozinhos, escondendo uma
+  // Anthropic sistemicamente quebrada por meses. Mesmo nível de severidade
+  // do alarme de provider drop acima — WARN, não muda o exit code (uma
+  // rodada ruim isolada da Anthropic é esperada, ver docstring de
+  // GeoProviderDef.timeoutMs; o valor está em NUNCA mais passar em
+  // silêncio quando isso persistir).
+  const totalFailures = detectProviderTotalFailure(summary.byProvider);
+  if (totalFailures.length > 0) {
+    console.warn(
+      `[geo-citation-monitor] AVISO: provider(s) com 100% de erro nesta rodada (painel "${panel}"): ` +
+        `${totalFailures.join(", ")}. Pode ser falha transitória (ver docstring de GeoProviderDef.timeoutMs pra` +
+        " Anthropic especificamente) ou algo sistêmico (key revogada, org errada, rate-limit persistente) —" +
+        " se persistir rodada após rodada, investigar.",
+    );
   }
 
   // #4900 item b: a rodada atual RODOU (chegou até aqui, então >=1 provider
