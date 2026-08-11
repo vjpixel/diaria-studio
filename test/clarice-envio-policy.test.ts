@@ -124,6 +124,29 @@ describe("#4705 — regressão da catraca: abertura NUNCA freia volume", () => {
     assert.equal(decideBrake(HEALTHY, SPAM_OK).level, "ok");
     assert.ok(adaptiveStep(HEALTHY, SPAM_OK) > 0);
   });
+
+  it("REGRESSÃO (Finding 1, silent-failure-hunter): sem NENHUM envio na janela, spam saudável não pode virar 'ok' fabricado", () => {
+    // Antes do fix: sent=0 zera as 3 métricas de e-mail (nada pra dividir), e
+    // se o Postmaster (sinal de DOMÍNIO, independente de `sent` desta janela)
+    // calhar de vir saudável no mesmo dia, maxUtil ficava baixo e o freio
+    // liberava 'ok' + passo positivo SEM NENHUMA evidência de envio real —
+    // o mesmo "ok fabricado" que este módulo existe pra evitar, só que por
+    // ausência de dado em vez de NaN. Este é o cenário exato do achado.
+    const noSends: RiskMetrics = { hardBounceRatePct: 0, bounceRatePct: 0, unsubRatePct: 0, sent: 0, delivered: 0 };
+    const brake = decideBrake(noSends, SPAM_OK);
+    assert.equal(brake.level, "hold", "sem dado suficiente NUNCA pode resultar em 'ok'");
+    assert.equal(adaptiveStep(noSends, SPAM_OK), 0, "sem dado suficiente NUNCA escala");
+    assert.ok(
+      brake.reasons.some((r) => r.includes("sem NENHUM envio na janela")),
+      "a razão principal precisa nomear a falta de envio, não só aparecer como aviso lateral",
+    );
+  });
+
+  it("mas um spam REAL e ruim ainda para a onda mesmo sem envio na janela (spam é sinal de domínio, não da janela)", () => {
+    const noSends: RiskMetrics = { hardBounceRatePct: 0, bounceRatePct: 0, unsubRatePct: 0, sent: 0, delivered: 0 };
+    const badSpam: SpamSignalLike = { source: "postmaster", ratePct: 0.5 }; // acima do limiar de 0,3%
+    assert.equal(decideBrake(noSends, badSpam).level, "stop");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -171,8 +194,16 @@ describe("riskUtilization", () => {
     assert.deepEqual(u.noDataMetrics, []);
   });
 
-  it("source 'postmaster' com ratePct null cai no mesmo tratamento de indeterminado", () => {
-    const u = riskUtilization(HEALTHY, { source: "postmaster", ratePct: null });
+  it("source 'postmaster' com ratePct null (estado que a união discriminada não representa mais, mas o runtime ainda defende) cai no mesmo tratamento de indeterminado", () => {
+    // `SpamSignalLike` virou união discriminada no review da PR — este shape
+    // não compila mais como literal válido (é exatamente o estado impossível
+    // que a união elimina). O cast força o cenário mesmo assim: a defesa em
+    // profundidade dentro de `riskUtilization` (comentário "ratePct===null
+    // tratado como indeterminado") continua no código por precaução — este
+    // teste garante que ela não apodrece silenciosamente se alguém a remover
+    // achando "o tipo já impede isso".
+    const illegal = { source: "postmaster", ratePct: null } as unknown as SpamSignalLike;
+    const u = riskUtilization(HEALTHY, illegal);
     assert.equal(u.byMetric.spam, INDETERMINATE_SPAM_UTIL);
   });
 
@@ -209,6 +240,19 @@ describe("riskUtilization", () => {
     assert.equal(u.byMetric.hardBounce, 0);
     assert.ok(u.noDataMetrics.includes("hardBounce"));
     assert.ok(Number.isFinite(u.maxUtil));
+  });
+
+  it("Finding 4 (silent-failure-hunter): valor NEGATIVO é sem-dado, não '-2,5× o limiar'", () => {
+    const u = riskUtilization(risk({ hardBounceRatePct: -5 }), SPAM_OK);
+    assert.equal(u.byMetric.hardBounce, 0, "negativo nunca vira utilização negativa");
+    assert.ok(u.noDataMetrics.includes("hardBounce"), "negativo precisa aparecer como sem-dado, não como saudável");
+  });
+
+  it("sufficientData reflete `hasSent` — false só quando sent<=0/não-finito", () => {
+    assert.equal(riskUtilization(HEALTHY, SPAM_OK).sufficientData, true);
+    assert.equal(riskUtilization(risk({ sent: 0 }), SPAM_OK).sufficientData, false);
+    assert.equal(riskUtilization(risk({ sent: -1 }), SPAM_OK).sufficientData, false);
+    assert.equal(riskUtilization(risk({ sent: Number.NaN }), SPAM_OK).sufficientData, false);
   });
 });
 
@@ -272,6 +316,21 @@ describe("decideBrake — só risco de ISP", () => {
     // 3 métricas ótimas + 1 estourada => stop.
     const b = decideBrake(risk({ unsubRatePct: 3.6 }), SPAM_OK);
     assert.equal(b.level, "stop");
+  });
+
+  it("Finding 2 (silent-failure-hunter): valor NaN/Infinity nunca vaza pro texto de 'reasons' — nunca 'NaN%'", () => {
+    // worst resolve pra uma métrica corrompida (NaN) enquanto as outras 3
+    // ficam em 0 (spam limpo, sem nenhuma flagged >= HOLD_UTIL) — o caminho
+    // que monta o texto do 'caso feliz' (reasons.length === 0 antes de
+    // entrar no if) é o que tinha o vazamento.
+    const b = decideBrake(risk({ hardBounceRatePct: Number.NaN, bounceRatePct: 0, unsubRatePct: 0 }), {
+      source: "postmaster",
+      ratePct: 0,
+    });
+    for (const r of b.reasons) {
+      assert.ok(!/nan/i.test(r), `reason vazou valor não-finito: "${r}"`);
+      assert.ok(!/infinity/i.test(r), `reason vazou valor não-finito: "${r}"`);
+    }
   });
 });
 
@@ -341,7 +400,10 @@ describe("proposeNextVolume", () => {
     assert.ok(r.note.includes("1161"));
   });
 
-  it("cappedBy 'brake' — stop zera", () => {
+  it("cappedBy 'stop' — freio stop zera", () => {
+    // cappedBy tem um valor DEDICADO pra stop (não colapsado em "brake" — ver
+    // NextVolumeDecision, achado do type-design-analyzer): um consumidor que
+    // persista só este objeto ainda sabe se foi stop ou hold sem parsear `note`.
     const r = proposeNextVolume({
       baseVolume: 10_000,
       step: 0.25,
@@ -350,11 +412,11 @@ describe("proposeNextVolume", () => {
       creditAvailable: null,
     });
     assert.equal(r.volume, 0);
-    assert.equal(r.cappedBy, "brake");
+    assert.equal(r.cappedBy, "stop");
     assert.ok(r.note.includes("cancelar"));
   });
 
-  it("cappedBy 'brake' — hold repete a base SEM escalar (e sem cortar)", () => {
+  it("cappedBy 'hold' — freio hold repete a base SEM escalar (e sem cortar)", () => {
     const r = proposeNextVolume({
       baseVolume: 10_000,
       step: 0.25,
@@ -363,7 +425,7 @@ describe("proposeNextVolume", () => {
       creditAvailable: null,
     });
     assert.equal(r.volume, 10_000, "hold mantém — a poda de 30% do motor antigo não existe mais");
-    assert.equal(r.cappedBy, "brake");
+    assert.equal(r.cappedBy, "hold");
   });
 
   it("cappedBy 'queue' — fila menor que o proposto", () => {
@@ -458,6 +520,41 @@ describe("proposeNextVolume", () => {
     assert.equal(r.volume, 125_000);
     assert.equal(r.cappedBy, "step");
   });
+
+  it("Finding 5 (pr-test-analyzer): fila E crédito cortam JUNTOS — crédito manda por último, mas a nota registra os dois cortes", () => {
+    // Antes deste teste, fila e crédito só eram testados isoladamente (um
+    // sempre com o outro em "não limita"). Aqui os DOIS são mais restritivos
+    // que o proposto: base 1000 × 1,25 = 1250 -> fila corta pra 900 -> crédito
+    // corta de novo pra 500. cappedBy é o ÚLTIMO corte a agir (documentado no
+    // tipo); a nota precisa mencionar os dois, não só o vencedor.
+    const r = proposeNextVolume({
+      baseVolume: 1_000,
+      step: 0.25,
+      brake: "ok",
+      queueAvailable: 900,
+      creditAvailable: 500,
+    });
+    assert.equal(r.volume, 500);
+    assert.equal(r.cappedBy, "credit");
+    assert.ok(r.note.includes("fila"), "nota precisa registrar que a fila TAMBÉM cortou");
+    assert.ok(r.note.includes("crédito"), "nota precisa registrar o corte final do crédito");
+  });
+
+  it("hold combinado com fila mais apertada que a base — cappedBy vira 'queue', não fica preso em 'hold'", () => {
+    // Achado do type-design-analyzer: o caminho hold cai nos MESMOS ifs de
+    // fila/crédito abaixo — uma fila mais apertada que a base PRECISA
+    // sobrescrever cappedBy, senão o consumidor acha que agendou a base
+    // inteira quando na real a fila não comportava.
+    const r = proposeNextVolume({
+      baseVolume: 1_000,
+      step: 0.25,
+      brake: "hold",
+      queueAvailable: 300,
+      creditAvailable: null,
+    });
+    assert.equal(r.volume, 300);
+    assert.equal(r.cappedBy, "queue");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -483,6 +580,17 @@ describe("shouldSunsetNonOpener (#4430)", () => {
 
   it("muitos envios e nenhuma abertura => sunset", () => {
     assert.equal(shouldSunsetNonOpener({ sendsCount: 17, opensCount: 0 }), true);
+  });
+
+  it("Finding 3 (silent-failure-hunter): opensCount corrompido (NaN) NUNCA decide sunset — sunset é permanente, dado ruim tem que ficar seguro", () => {
+    // Versão anterior tratava opensCount=NaN como 0 (mesmo default de
+    // sendsCount), o que combinado com sendsCount>=2 produzia sunset=true —
+    // "não sei quantas aberturas teve" virando "confirmado que nunca abriu".
+    // Sunset corta de vez (#4430); o único lado seguro pra dado corrompido é
+    // NUNCA cortar, nos dois campos.
+    assert.equal(shouldSunsetNonOpener({ sendsCount: 5, opensCount: Number.NaN }), false);
+    assert.equal(shouldSunsetNonOpener({ sendsCount: Number.NaN, opensCount: 5 }), false);
+    assert.equal(shouldSunsetNonOpener({ sendsCount: Number.NaN, opensCount: Number.NaN }), false);
   });
 });
 

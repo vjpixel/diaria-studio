@@ -34,12 +34,26 @@
  * TIPOS DE ENTRADA AUTOCONTIDOS de propósito: as interfaces abaixo
  * (`RiskMetrics`, `SpamSignalLike`, `SendDayLike`, `OpenRateTrendPoint`) são
  * ESTRUTURAIS — nada aqui importa `BrevoCampaign` nem `SpamSignal` do worker
- * Cloudflare. Um `SpamSignal` de `resolveSpamSignal` satisfaz `SpamSignalLike`
- * por estrutura, e um `BrevoCampaign` satisfaz `SendDayLike`, então o call site
- * passa os objetos do worker direto, sem adaptador — mas este módulo continua
- * carregável (e testável) sem arrastar a cadeia de render do dashboard
- * (`sections-core` → `render-links` → `sections-kv`) pra dentro de uma task
- * Node que roda todo dia às 19:00.
+ * Cloudflare. Um `BrevoCampaign` satisfaz `SendDayLike` por estrutura, então o
+ * call site passa o objeto do worker direto, sem adaptador. `SpamSignalLike`
+ * é a ÚNICA exceção deliberada (achado do type-design-analyzer no review da
+ * PR): é uma união discriminada (`{source:"postmaster", ratePct:number} |
+ * {source:"indeterminate", ratePct:null}`), enquanto `SpamSignal` do worker
+ * (`resolveSpamSignal`) é um shape FLAT (`ratePct: number | null`
+ * independente de `source`) — os dois estados impossíveis que a união
+ * discriminada elimina em tempo de compilação (`postmaster` com `ratePct`
+ * nulo, `indeterminate` com `ratePct` numérico) o `SpamSignal` flat permite
+ * representar, mesmo que `resolveSpamSignal` nunca os produza na prática. Por
+ * isso `SpamSignal` NÃO satisfaz `SpamSignalLike` por estrutura — o call site
+ * precisa de um adaptador de 1 linha (`spam.source === "postmaster" &&
+ * spam.ratePct !== null ? {source:"postmaster", ratePct:spam.ratePct} :
+ * {source:"indeterminate", ratePct:null}`), documentado onde ele é usado
+ * (`scripts/clarice-envio-risk.ts`). Esse custo pontual compra uma garantia
+ * de compilador em vez de defesa em tempo de execução — decisão tomada
+ * enquanto este módulo ainda tinha ZERO call sites (o momento mais barato
+ * possível pra essa troca), continua carregável/testável sem arrastar a
+ * cadeia de render do dashboard (`sections-core` → `render-links` →
+ * `sections-kv`) pra dentro de uma task Node que roda todo dia às 19:00.
  *
  * A ÚNICA coisa importada do worker é o objeto de limiares, e de propósito: os
  * números do doc "Parceria Editorial Clarice.ai × Diar.ia" já têm fonte única
@@ -100,11 +114,11 @@ export const SEND_WINDOWS = {
  * dashboard inteiro.
  */
 export interface RiskMetrics {
-  hardBounceRatePct: number;
-  bounceRatePct: number;
-  unsubRatePct: number;
-  sent: number;
-  delivered: number;
+  readonly hardBounceRatePct: number;
+  readonly bounceRatePct: number;
+  readonly unsubRatePct: number;
+  readonly sent: number;
+  readonly delivered: number;
 }
 
 /**
@@ -119,11 +133,21 @@ export interface RiskMetrics {
  * este tipo não tem um campo "spam da Brevo": ele não existe como entrada
  * legítima deste motor.
  */
-export interface SpamSignalLike {
-  source: "postmaster" | "indeterminate";
-  /** % da leitura do Postmaster. `null` quando indeterminado. */
-  ratePct: number | null;
-}
+/**
+ * União discriminada (não um flat `{source, ratePct}`) — achado do
+ * type-design-analyzer no review da PR: um shape flat permite os estados
+ * IMPOSSÍVEIS `{source:"indeterminate", ratePct: <número>}` e
+ * `{source:"postmaster", ratePct: null}`, que o código então precisava
+ * "defender em tempo de execução" (ver o comentário de `riskUtilization`
+ * sobre `ratePct === null` com `source==="postmaster"`, um estado que o tipo
+ * ANTIGO permitia mas `resolveSpamSignal` nunca produzia). Com a união, os
+ * dois estados impossíveis não compilam — a defesa em profundidade no código
+ * continua (nunca custa mais uma checagem), mas o tipo já não MENTE sobre o
+ * que é representável.
+ */
+export type SpamSignalLike =
+  | { readonly source: "postmaster"; readonly ratePct: number }
+  | { readonly source: "indeterminate"; readonly ratePct: null };
 
 /** Chaves das métricas de risco — a ordem aqui é o desempate de `worst`. */
 export const RISK_METRIC_KEYS = ["hardBounce", "bounce", "unsub", "spam"] as const;
@@ -131,10 +155,10 @@ export type RiskMetricKey = (typeof RISK_METRIC_KEYS)[number];
 
 /** Limiar VERMELHO (o breaker) de cada métrica de risco, em pontos percentuais. */
 export interface RiskThresholdsPct {
-  hardBounce: number;
-  bounce: number;
-  unsub: number;
-  spam: number;
+  readonly hardBounce: number;
+  readonly bounce: number;
+  readonly unsub: number;
+  readonly spam: number;
 }
 
 /**
@@ -171,11 +195,11 @@ export const INDETERMINATE_SPAM_UTIL = 0.7;
 
 export interface RiskUtilization {
   /** Maior utilização entre as 4 métricas — é ela que decide freio e passo. */
-  maxUtil: number;
+  readonly maxUtil: number;
   /** Utilização por métrica (`valor ÷ limiar vermelho`). */
-  byMetric: Record<string, number>;
+  readonly byMetric: Readonly<Record<string, number>>;
   /** Métrica que produziu `maxUtil` (empate desempatado por `RISK_METRIC_KEYS`). */
-  worst: string;
+  readonly worst: string;
   /**
    * Métricas cuja utilização é 0 por FALTA DE DADO, não por saúde: denominador
    * zero (`sent === 0`) ou valor não-finito, e spam indeterminado NÃO entra
@@ -186,13 +210,31 @@ export interface RiskUtilization {
    * editor precisa ver no relatório antes de confiar num `ok` (mesmo racional
    * do "—" vs "0.000%" que o #3081 introduziu no dashboard).
    */
-  noDataMetrics: string[];
+  readonly noDataMetrics: readonly string[];
+  /**
+   * `false` quando a janela de e-mail (hard bounce/bounce/unsub) não teve
+   * NENHUM envio (`sent === 0`/não-finito) — achado CRITICAL do
+   * silent-failure-hunter no review da PR: com `sent === 0` as 3 métricas de
+   * e-mail zeram (nada pra dividir), e se a leitura do Postmaster ESSE DIA
+   * calhar de vir saudável (spam é sinal de DOMÍNIO, independente de `sent`
+   * desta janela — ver comentário abaixo), `maxUtil` ficava baixo e
+   * `decideBrake`/`adaptiveStep` liberavam escalada **sem nenhuma evidência
+   * de envio real na janela** — o exato "ok fabricado" que este módulo diz
+   * evitar, só que por ausência de dado em vez de `NaN`. Consumido por
+   * `decideBrake` (nunca `ok` sem dado suficiente) e `adaptiveStep` (nunca
+   * escala sem dado suficiente) — `true` só quando `hasSent` é `true`.
+   */
+  readonly sufficientData: boolean;
 }
 
-/** Divide protegendo contra denominador ≤ 0 / valor não-finito. `null` = sem dado. */
+/** Divide protegendo contra denominador ≤ 0 / valor não-finito/negativo. `null` = sem dado.
+ * Negativo é tratado como SEM DADO (não como "-2,5× o limiar", achado do
+ * silent-failure-hunter): um percentual nunca é legitimamente negativo — só
+ * corrupção upstream (sinal trocado, unidade errada) produz isso, e aceitar
+ * o valor faria essa métrica parecer artificialmente mais saudável que 0%. */
 function utilOf(valuePct: number, limitPct: number, hasDenominator: boolean): number | null {
   if (!hasDenominator) return null;
-  if (!Number.isFinite(valuePct)) return null;
+  if (!Number.isFinite(valuePct) || valuePct < 0) return null;
   if (!Number.isFinite(limitPct) || limitPct <= 0) return null;
   return valuePct / limitPct;
 }
@@ -256,7 +298,7 @@ export function riskUtilization(
     if (byMetric[k] > byMetric[worst]) worst = k;
   }
 
-  return { maxUtil: byMetric[worst], byMetric, worst, noDataMetrics };
+  return { maxUtil: byMetric[worst], byMetric, worst, noDataMetrics, sufficientData: hasSent };
 }
 
 // ---------------------------------------------------------------------------
@@ -272,10 +314,10 @@ export const STOP_UTIL = 1.0;
 export const HOLD_UTIL = 0.7;
 
 export interface BrakeDecision {
-  level: BrakeLevel;
+  readonly level: BrakeLevel;
   /** Explicação pt-BR, legível, citando métrica e valor vs limiar. */
-  reasons: string[];
-  maxUtil: number;
+  readonly reasons: readonly string[];
+  readonly maxUtil: number;
 }
 
 /** "1,40%" — formatação pt-BR determinística (sem ICU, pra teste estável). */
@@ -308,8 +350,22 @@ function observedValue(
  * dias de envio — use `selectLastSendDays` pra montá-la).
  *
  * `stop` (util ≥ 1,0) = não agenda; se já houver onda agendada pra amanhã, o
- * call site cancela. `hold` (util ≥ 0,7) = agenda o MESMO volume de ontem, sem
- * escalar. `ok` = livre pra escalar o quanto `adaptiveStep` liberar.
+ * call site cancela. `hold` (util ≥ 0,7, OU sem dado suficiente na janela —
+ * ver abaixo) = agenda o MESMO volume do último dia enviado, sem escalar
+ * (não necessariamente "ontem" — ver `NextVolumeInput.baseVolume`, mesma
+ * terminologia deliberada por causa de gaps de envio). `ok` = livre pra
+ * escalar o quanto `adaptiveStep` liberar.
+ *
+ * **`sufficientData: false` NUNCA produz `ok`** (achado CRITICAL do
+ * silent-failure-hunter no review da PR): `sent === 0` na janela zera as 3
+ * métricas de e-mail por falta de denominador, e se a leitura do Postmaster
+ * (independente de `sent` — é sinal de DOMÍNIO) calhar de vir saudável nesse
+ * mesmo dia, `maxUtil` ficava baixo e o freio liberava `ok` **sem nenhuma
+ * evidência de envio real na janela** — o "ok fabricado" que este módulo
+ * existe pra evitar, só que por ausência de dado em vez de `NaN`. `stop`
+ * continua alcançável mesmo sem `sent` na janela: um spam do Postmaster
+ * genuinamente ruim é sinal real e independente, nunca deve ser mascarado
+ * por "não enviamos nada esta semana".
  *
  * ABERTURA NÃO ENTRA AQUI, por decisão do editor (#4705) — e nem tem como
  * entrar: `RiskMetrics` não carrega o número, e `RiskThresholdsPct` não tem
@@ -323,7 +379,11 @@ export function decideBrake(
 ): BrakeDecision {
   const util = riskUtilization(freshRisk, spam, t);
   const level: BrakeLevel =
-    util.maxUtil >= STOP_UTIL ? "stop" : util.maxUtil >= HOLD_UTIL ? "hold" : "ok";
+    util.maxUtil >= STOP_UTIL
+      ? "stop"
+      : util.maxUtil >= HOLD_UTIL || !util.sufficientData
+        ? "hold"
+        : "ok";
 
   // Uma linha por métrica que já chegou na zona de atenção, da pior pra menos
   // pior — o editor lê o relatório e sabe na hora QUEM segurou a onda.
@@ -332,6 +392,17 @@ export function decideBrake(
   );
 
   const reasons: string[] = [];
+
+  // Sem envio na janela é a razão PRINCIPAL quando é ela que segura o freio
+  // em hold (level "hold" mas nenhuma métrica isolada bateu HOLD_UTIL) —
+  // reason dedicada em vez de deixar o editor inferir isso só do aviso de
+  // noDataMetrics no fim (Finding 1 do review).
+  if (!util.sufficientData && flagged.length === 0) {
+    reasons.push(
+      "sem NENHUM envio na janela do freio — segurando por falta de dado, nunca escalando sobre 'não sabemos'.",
+    );
+  }
+
   for (const k of flagged) {
     const value = observedValue(k, freshRisk, spam);
     const pctOfLimit = Math.round(util.byMetric[k] * 100);
@@ -341,9 +412,13 @@ export function decideBrake(
       );
       continue;
     }
+    // Finding 2 (silent-failure-hunter): valor não-finito (NaN/Infinity) nunca
+    // vaza pro texto — "NaN% de 2,00%" no relatório automatizado é pior que
+    // omitir o número (o objetivo do texto é ser auditável, não garbled).
     const verb = util.byMetric[k] >= STOP_UTIL ? "estourou o limiar" : "está em";
+    const valueText = value !== null && Number.isFinite(value) ? fmtPct(value) : "sem leitura válida";
     reasons.push(
-      `${RISK_METRIC_LABEL[k]}: ${fmtPct(value as number)} ${verb} ${fmtPct(t[k])} (${pctOfLimit}% do limiar).`,
+      `${RISK_METRIC_LABEL[k]}: ${valueText} ${verb} ${fmtPct(t[k])} (${pctOfLimit}% do limiar).`,
     );
   }
 
@@ -351,7 +426,7 @@ export function decideBrake(
     const w = util.worst as RiskMetricKey;
     const value = observedValue(w, freshRisk, spam);
     const detail =
-      value === null
+      value === null || !Number.isFinite(value)
         ? ""
         : ` (${fmtPct(value)} de ${fmtPct(t[w])}, ${Math.round(util.maxUtil * 100)}% do limiar)`;
     reasons.push(`risco de ISP dentro dos limiares — pior métrica é ${RISK_METRIC_LABEL[w]}${detail}.`);
@@ -403,6 +478,11 @@ function round4(n: number): number {
  * agir. Resultado sempre em [0, MAX_DAILY_STEP], monotonicamente decrescente em
  * `maxUtil`.
  *
+ * **`sufficientData: false` ⇒ passo 0** (mesmo achado CRITICAL do
+ * `decideBrake`, Finding 1 do review): sem NENHUM envio na janela de 30 dias,
+ * as métricas de e-mail zeram por falta de denominador — escalar sobre isso
+ * seria crescer sem UMA evidência real de saúde, não "risco zero confirmado".
+ *
  * Abertura não entra aqui pelo mesmo motivo de `decideBrake` — é o núcleo do
  * #4705.
  */
@@ -411,8 +491,8 @@ export function adaptiveStep(
   spam: SpamSignalLike,
   t: RiskThresholdsPct = RED_RISK_THRESHOLDS,
 ): number {
-  const { maxUtil } = riskUtilization(accelRisk, spam, t);
-  if (!Number.isFinite(maxUtil) || maxUtil >= HOLD_UTIL) return 0;
+  const { maxUtil, sufficientData } = riskUtilization(accelRisk, spam, t);
+  if (!sufficientData || !Number.isFinite(maxUtil) || maxUtil >= HOLD_UTIL) return 0;
   const step = MAX_DAILY_STEP * (1 - Math.max(0, maxUtil) / HOLD_UTIL);
   return Math.min(MAX_DAILY_STEP, Math.max(0, round4(step)));
 }
@@ -427,28 +507,46 @@ export interface NextVolumeInput {
    * escala dali. Ver `baseVolumeFromLastSendDay` (weekly-plan.ts), que soma as
    * células A/B/C do último dia; pegar só uma célula subestimaria a base em ~⅓.
    */
-  baseVolume: number;
+  readonly baseVolume: number;
   /** Passo do dia (`adaptiveStep`). */
-  step: number;
+  readonly step: number;
   /** Freio do dia (`decideBrake().level`). */
-  brake: BrakeLevel;
+  readonly brake: BrakeLevel;
   /** Contatos elegíveis e ainda não comprometidos (fila de 1º envio). */
-  queueAvailable: number;
-  /** Crédito Brevo restante no ciclo. `null` = não consultado (não limita). */
-  creditAvailable: number | null;
+  readonly queueAvailable: number;
+  /**
+   * Crédito Brevo restante no ciclo. `null` = NÃO CONSULTADO, não limita
+   * (fail-OPEN — a única exceção no módulo à disciplina fail-CLOSED do
+   * resto: `queueAvailable`/`baseVolume` inválidos sempre viram 0, nunca
+   * "sem limite". Deliberado: falhar fechado aqui faria uma falha de rede ao
+   * consultar crédito abortar a onda inteira por padrão; o call site que
+   * genuinamente não consultou crédito (ex: `BREVO_CLARICE_API_KEY`
+   * ausente) decide, não este motor). `0` é diferente de `null` — `0` É um
+   * teto real (crédito esgotado), sempre limita.
+   */
+  readonly creditAvailable: number | null;
 }
 
 export interface NextVolumeDecision {
-  volume: number;
+  readonly volume: number;
   /**
-   * O que DETERMINOU o número final:
-   * - `"brake"`: freio `stop` (volume 0) ou `hold` (repetiu a base, sem escalar);
+   * O que DETERMINOU o número final — cada valor é um caso distinto, NUNCA
+   * colapsado (achado do type-design-analyzer no review da PR: um `"brake"`
+   * único para `stop` E `hold` obrigava quem consumisse só `cappedBy` a
+   * fazer `note.includes("cancelar")` pra saber qual dos dois era — prosa
+   * substring-matched em vez de tipo):
+   * - `"stop"`: freio `stop` — volume 0, cancelar onda já agendada;
+   * - `"hold"`: freio `hold` — repetiu a base, sem escalar;
    * - `"step"`: caminho normal — o passo adaptativo definiu o volume;
-   * - `"queue"` / `"credit"`: a fila ou o crédito cortaram abaixo do proposto;
+   * - `"queue"` / `"credit"`: a fila ou o crédito cortaram abaixo do proposto
+   *   (quando os DOIS cortam, `cappedBy` é o ÚLTIMO a agir — `"credit"`, já
+   *   que crédito é checado depois da fila — mas `note` sempre registra os
+   *   dois cortes em ordem, nunca só o último; ver teste "queue E credit
+   *   cortam juntos");
    * - `null`: não havia base pra escalar (`baseVolume ≤ 0`).
    */
-  cappedBy: "brake" | "queue" | "credit" | "step" | null;
-  note: string;
+  readonly cappedBy: "stop" | "hold" | "queue" | "credit" | "step" | null;
+  readonly note: string;
 }
 
 /** Normaliza um teto: não-finito ou negativo vira 0 (fail-closed). */
@@ -487,7 +585,7 @@ export function proposeNextVolume(input: NextVolumeInput): NextVolumeDecision {
   if (brake === "stop") {
     return {
       volume: 0,
-      cappedBy: "brake",
+      cappedBy: "stop",
       note: "Freio em STOP (risco de ISP no limiar ou acima) — não agendar; cancelar onda já agendada.",
     };
   }
@@ -498,7 +596,7 @@ export function proposeNextVolume(input: NextVolumeInput): NextVolumeDecision {
 
   if (brake === "hold") {
     volume = base;
-    cappedBy = "brake";
+    cappedBy = "hold";
     note = `Freio em HOLD — repete o volume do último dia (${base}) sem escalar.`;
   } else {
     volume = Math.round(base * (1 + step));
@@ -549,10 +647,19 @@ export function proposeNextVolume(input: NextVolumeInput): NextVolumeDecision {
  * esse guard o sunset cortaria gente que nunca foi medida. Esta função é pura e
  * só olha os dois contadores: o guard de "foi medido?" mora no filtro de quem
  * chega aqui, de propósito (mantém a regra testável sem arrastar `StoreRow`).
- */
+ *
+ * `sendsCount`/`opensCount` corrompidos (`NaN`/`undefined`/infinito) NUNCA
+ * decidem sunset (Finding 3 do silent-failure-hunter no review da PR): a
+ * versão anterior tratava `sendsCount` corrompido como `0` (mantém — lado
+ * seguro) mas `opensCount` corrompido TAMBÉM como `0` (sunset se
+ * `sendsCount ≥ 2` — lado ERRADO: "não sei quantas aberturas teve" virava
+ * "confirmado que nunca abriu", cortando de vez um assinante real por dado
+ * ruim). Sunset é permanente ("cortar de vez", não um hold reversível) — o
+ * único lado seguro pra dado corrompido é NUNCA cortar. */
 export function shouldSunsetNonOpener(c: { sendsCount: number; opensCount: number }): boolean {
-  const sends = Number.isFinite(c.sendsCount) ? c.sendsCount : 0;
-  const opens = Number.isFinite(c.opensCount) ? c.opensCount : 0;
+  if (!Number.isFinite(c.sendsCount) || !Number.isFinite(c.opensCount)) return false;
+  const sends = c.sendsCount;
+  const opens = c.opensCount;
   return sends >= 2 && opens <= 0;
 }
 
@@ -562,21 +669,28 @@ export function shouldSunsetNonOpener(c: { sendsCount: number; opensCount: numbe
 
 export interface OpenRateTrendPoint {
   /** Dia-calendário BRT (`YYYY-MM-DD`) — ver `brtDayKey`. */
-  dayKey: string;
-  delivered: number;
-  uniqueViews: number;
+  readonly dayKey: string;
+  readonly delivered: number;
+  readonly uniqueViews: number;
 }
 
+/**
+ * Resultado SÓ-RELATÓRIO — deliberadamente um tipo SEM NENHUMA semelhança
+ * estrutural com `RiskMetrics`/`BrakeDecision` (nenhum campo em comum além de
+ * nomes genéricos como `current`), então nada aqui passaria despercebido se
+ * alguém tentasse enfiar isto em `decideBrake`/`adaptiveStep` — o TypeScript
+ * recusaria pela forma, não só pela convenção documentada 3× no módulo.
+ */
 export interface OpenRateTrendResult {
   /** Abertura % ponderada por `delivered` da metade MAIS RECENTE da janela. */
-  current: number;
+  readonly current: number;
   /** Idem, da metade MAIS ANTIGA. */
-  previous: number;
+  readonly previous: number;
   /** `current − previous`, em PONTOS PERCENTUAIS. */
-  deltaPp: number;
-  verdict: "estavel" | "queda" | "alta";
+  readonly deltaPp: number;
+  readonly verdict: "estavel" | "queda" | "alta";
   /** Dias com `delivered > 0` de fato usados na comparação. */
-  sampleDays: number;
+  readonly sampleDays: number;
 }
 
 /** Queda relevante: −5 pontos percentuais entre as metades da janela. */
