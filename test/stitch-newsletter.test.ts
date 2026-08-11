@@ -779,6 +779,18 @@ describe("#3820 — VÍDEOS antes de LANÇAMENTOS (ordem canônica permanente, d
   });
 });
 
+// #4993: nem todo snippet de slot é bold-wrap por design — `apoio-divulgacao.md`
+// (e a família `patronos-*`) é multi-parágrafo e documenta isso EXPLICITAMENTE
+// no comentário de header (#3373: "Sem `**...**` embrulhando o BLOCO INTEIRO...
+// Multi-parágrafo, não passa pelo bold-wrap de bloco só-texto."). O sinal mora
+// no header do próprio snippet (mesmo padrão de leitura raw já usado pelo teste
+// "nenhum slot vigente aponta pra snippet marcado RASCUNHO" abaixo) — não numa
+// allowlist hardcoded de nomes de arquivo, que divergiria do snippet assim que
+// alguém editasse um dos dois sem lembrar do outro. Cobre as duas fraseologias
+// já em uso nos headers reais (`patronos-*`: "SEM bold-wrap"; `apoio-divulgacao.md`:
+// "não passa pelo bold-wrap").
+const NO_BOLD_WRAP_MARKER = /sem\s+bold-wrap|não\s+passa\s+pel[oa]\s+bold-wrap/i;
+
 describe("snippets dos slots vigentes — guardas de forma (rotação editorial 260727)", () => {
   const ROOT_DIR = join(import.meta.dirname ?? new URL(".", import.meta.url).pathname, "..");
   const cfg = JSON.parse(readFileSync(join(ROOT_DIR, "platform.config.json"), "utf8")) as {
@@ -787,6 +799,7 @@ describe("snippets dos slots vigentes — guardas de forma (rotação editorial 
   const slots = Object.entries(cfg.boxes_divulgacao ?? {}).filter(([, f]) => Boolean(f)) as [string, string][];
   const bodyOf = (file: string) =>
     readFileSync(join(ROOT_DIR, "context", "snippets", file), "utf8").replace(/<!--[\s\S]*?-->/g, "").trim();
+  const rawOf = (file: string) => readFileSync(join(ROOT_DIR, "context", "snippets", file), "utf8");
 
   it("os slots configurados apontam pra snippets que existem", () => {
     assert.ok(slots.length > 0, "platform.config.json deveria ter ao menos 1 slot configurado");
@@ -831,9 +844,103 @@ describe("snippets dos slots vigentes — guardas de forma (rotação editorial 
     // O #3475 tirou os marcadores emoji; o negrito do título virou o único
     // sinal visual de kicker. Um snippet novo que esqueça o `**` sai com o
     // título indistinguível do corpo no e-mail.
+    //
+    // #4993: exceto pros snippets que o próprio header declara multi-parágrafo
+    // sem bold-wrap por design (`apoio-divulgacao.md` e a família `patronos-*`,
+    // ver NO_BOLD_WRAP_MARKER acima) — esses nunca tiveram `**` na 1ª linha e
+    // não deveriam ter; a asserção de negrito só faz sentido pro formato
+    // bold-line/callout.
     for (const [slot, file] of slots) {
+      if (NO_BOLD_WRAP_MARKER.test(rawOf(file))) continue;
       const firstLine = bodyOf(file).split("\n")[0].trim();
       assert.match(firstLine, /^\*\*/, `${slot} (${file}) deveria abrir com kicker em negrito; achou: ${firstLine.slice(0, 60)}`);
+    }
+  });
+});
+
+// #4993: regressão isolada da lógica de skip acima, via fixtures sintéticas —
+// não depende do que platform.config.json aponta HOJE (mesma disciplina do
+// bloco #4083 no topo do arquivo). Prova as duas metades do comportamento:
+// (a) um snippet SEM `**` na 1ª linha mas com o header "multi-parágrafo/sem
+// bold-wrap" não deveria quebrar o teste acima quando promovido a slot — e
+// hoje quebraria, sem este fix, assim que `apoio-divulgacao.md` (ou
+// `patronos-*`) virasse `slot1`/`slot2` (a issue #4993 nasceu exatamente
+// desse cenário, hoje só evitado porque nenhum slot vigente aponta pra lá);
+// (b) um snippet comum, sem o marcador, continua exigindo `**`.
+describe("#4993 — NO_BOLD_WRAP_MARKER: snippet multi-parágrafo (header explícito) pula a asserção de bold", () => {
+  function writeSnippet(dir: string, name: string, raw: string): string {
+    const path = join(dir, name);
+    writeFileSync(path, raw, "utf8");
+    return path;
+  }
+
+  it("header com 'não passa pelo bold-wrap' (fraseologia real de apoio-divulgacao.md) → NO_BOLD_WRAP_MARKER casa, sem exigir **", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stitch-noboldwrap-"));
+    try {
+      const path = writeSnippet(
+        dir,
+        "apoio-fixture.md",
+        "<!--\nSem `**...**` embrulhando o BLOCO INTEIRO. Multi-parágrafo, não passa pelo bold-wrap de bloco só-texto.\n-->\n\nApoie a diar.ia.br\n\nCorpo sem bold.\n",
+      );
+      const raw = readFileSync(path, "utf8");
+      assert.match(raw, NO_BOLD_WRAP_MARKER, "marker deveria casar com a fraseologia real de apoio-divulgacao.md");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("header com 'SEM bold-wrap' (fraseologia real da família patronos-*) → NO_BOLD_WRAP_MARKER casa", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stitch-noboldwrap-"));
+    try {
+      const path = writeSnippet(
+        dir,
+        "patronos-fixture.md",
+        "<!--\nFormato: SEM bold-wrap do bloco inteiro (mesma convenção do slot padrão).\n-->\n\nAcesso antecipado\n\nCorpo sem bold.\n",
+      );
+      const raw = readFileSync(path, "utf8");
+      assert.match(raw, NO_BOLD_WRAP_MARKER);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("snippet SEM o marcador no header → NO_BOLD_WRAP_MARKER NÃO casa (comportamento normal preservado)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stitch-noboldwrap-"));
+    try {
+      const path = writeSnippet(
+        dir,
+        "bold-line-fixture.md",
+        "<!--\nnome: Recomendação de leitura\ncategoria: Leitura\n-->\n\n**Recomendação de leitura**\n\nCorpo com bold no kicker.\n",
+      );
+      const raw = readFileSync(path, "utf8");
+      assert.doesNotMatch(raw, NO_BOLD_WRAP_MARKER);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("simulação e2e do loop de teste: slot apontando pra snippet multi-parágrafo (sem **) não lança quando o marker é respeitado; slot comum sem ** e sem marker lança", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stitch-noboldwrap-"));
+    try {
+      const multiParaPath = writeSnippet(
+        dir,
+        "multi-para.md",
+        "<!--\nSem `**...**` embrulhando o BLOCO INTEIRO. Multi-parágrafo, não passa pelo bold-wrap de bloco só-texto.\n-->\n\nApoie a diar.ia.br\n\nCorpo sem bold.\n",
+      );
+      const brokenPath = writeSnippet(dir, "esqueceu-o-bold.md", "<!--\nnome: Snippet novo\n-->\n\nTítulo sem negrito por engano\n\nCorpo.\n");
+
+      const runCheck = (path: string): void => {
+        const raw = readFileSync(path, "utf8");
+        if (NO_BOLD_WRAP_MARKER.test(raw)) return; // mesma lógica do teste de produção acima
+        const body = raw.replace(/<!--[\s\S]*?-->/g, "").trim();
+        const firstLine = body.split("\n")[0].trim();
+        assert.match(firstLine, /^\*\*/, `deveria abrir com kicker em negrito; achou: ${firstLine.slice(0, 60)}`);
+      };
+
+      assert.doesNotThrow(() => runCheck(multiParaPath), "snippet multi-parágrafo com header explícito não deveria exigir **");
+      assert.throws(() => runCheck(brokenPath), "snippet sem ** e sem marker deveria continuar lançando");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

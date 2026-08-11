@@ -670,7 +670,7 @@ Checar os seguintes itens no conteúdo do email:
 7. **Encoding.** Verificar que caracteres especiais (ã, ç, í, ê, ó, ú, etc.) estão renderizados corretamente (não aparecem como `?` ou boxes). Se corrompidos: `"email:encoding_broken: caracteres especiais corrompidos em '{contexto}'"`.
 
 8. **Visual formatting (#753 — subset relevante pro mensal).** Inspecionar HTML do email pra verificar formatação de elementos chave:
-   - **Itálico no crédito** (se houver linha de crédito/caption equivalente ao É IA?): `<i>`, `<em>`, ou `font-style:italic`. Se ausente: `"email:formatting: crédito não está em itálico"`.
+   - **Crédito/caption do É IA? — sans SEM itálico é CORRETO (DS #1936), mesmo padrão do diário (#4977).** `renderEia` (`scripts/lib/mensal/monthly-render.ts`) renderiza o parágrafo "Crédito" em `font-family:${FONT_SANS}` 12px sem `font-style:italic` — confirmado idêntico ao equivalente diário (`renderEIA` em `scripts/lib/newsletter-render-html.ts`, também `FONT_BODY`/12px sem itálico). **NÃO flagar "crédito não está em itálico"** — falso-positivo, mesma classe do #1949 já corrigida no item 11 do checklist diário.
    - **Tamanho de fonte dos títulos de DESTAQUE**: devem ser visivelmente maiores que o corpo (≥18px vs 14-16px). Se sem hierarquia: `"email:formatting: D{N} título sem hierarquia visual de tamanho"`.
 
    Outros checks de visual formatting (negrito títulos, sublinhado links, fonte consistente, label categoria) **não se aplicam** ao mensal — estrutura é diferente do diário.
