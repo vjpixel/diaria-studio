@@ -124,11 +124,16 @@ export interface QueryDomainStatsResponseV2 {
  * Pura/testável: monta o corpo de `domains.domainStats.query` pra 1+ métricas
  * sobre um único DateRange, granularidade DAILY (um `DomainStatV2` por dia —
  * mesmo grão que a v1 sondava dia a dia, mas numa chamada só).
+ *
+ * `pageToken` (#4972): a API pagina por ENTRADAS, não por dias — passar o
+ * `nextPageToken` da página anterior aqui é o que permite `queryDomainStatsV2`
+ * drenar todas as páginas de uma janela. Omitido na 1ª página.
  */
 export function buildDomainStatsQueryBody(
   domain: string,
   metricDefinitions: MetricDefinitionV2[],
   range: DateRangeV2,
+  pageToken?: string,
 ): Record<string, unknown> {
   if (metricDefinitions.length === 0) {
     throw new Error("[postmaster-v2-client] metricDefinitions vazio — pelo menos 1 métrica é obrigatória.");
@@ -148,6 +153,7 @@ export function buildDomainStatsQueryBody(
       baseMetric: { standardMetric: m.standardMetric },
       ...(m.filter ? { filter: m.filter } : {}),
     })),
+    ...(pageToken ? { pageToken } : {}),
   };
 }
 
@@ -187,20 +193,30 @@ function describeQueryFailure(status: number, body: string): string {
 type PostmasterV2FetchImpl = (url: string, init?: RequestInit) => Promise<Response>;
 
 /**
- * I/O: chama `domains.domainStats.query`. `fetchImpl` é injetável (mesmo
- * padrão de `postmaster-register-domain.ts`) — produção passa `gFetch`, os
- * testes passam um fake pra não bater rede/token real.
+ * Teto de páginas drenadas por chamada de `queryDomainStatsV2` (#4972). A API
+ * pagina por ENTRADAS (não por dias): confirmado ao vivo que uma janela de 21
+ * dias devolveu 10 entradas na página 1 (com `nextPageToken`) + 3 na página 2
+ * (sem token) — 13 no total, mas sem drenar o loop parava em 10, comendo
+ * sempre os dias MAIS RECENTES (a resposta vem do mais antigo pro mais novo).
+ * Este teto é só uma proteção contra um bug de paginação da API que nunca
+ * pare de devolver `nextPageToken` — nunca deveria ser atingido em uso normal
+ * (produção usa janelas de 10-30 dias, ordens de grandeza abaixo de
+ * 100 × tamanho de página).
  */
-export async function queryDomainStatsV2(
+const MAX_DOMAIN_STATS_PAGES = 100;
+
+/** I/O de UMA página de `domains.domainStats.query` — usado em loop por `queryDomainStatsV2`. */
+async function fetchDomainStatsPage(
   domain: string,
   metricDefinitions: MetricDefinitionV2[],
   range: DateRangeV2,
   fetchImpl: PostmasterV2FetchImpl,
+  pageToken: string | undefined,
 ): Promise<QueryDomainStatsResponseV2> {
   const res = await fetchImpl(`${POSTMASTER_V2_BASE}/domains/${encodeURIComponent(domain)}/domainStats:query`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(buildDomainStatsQueryBody(domain, metricDefinitions, range)),
+    body: JSON.stringify(buildDomainStatsQueryBody(domain, metricDefinitions, range, pageToken)),
   });
   const bodyText = await res.text();
   if (!res.ok) {
@@ -213,6 +229,41 @@ export async function queryDomainStatsV2(
     throw new Error(`[postmaster-v2-client] resposta 2xx não é JSON válido: ${bodyText.slice(0, 300)}`);
   }
   return { domainStats: parsed.domainStats ?? [], nextPageToken: parsed.nextPageToken };
+}
+
+/**
+ * I/O: chama `domains.domainStats.query`, drenando `nextPageToken` em loop
+ * até a API não devolver mais token — a API pagina por ENTRADAS, não por
+ * dias, então parar na 1ª página corta sempre os dias MAIS RECENTES da janela
+ * (#4972, ver docstring de `MAX_DOMAIN_STATS_PAGES`). `fetchImpl` é injetável
+ * (mesmo padrão de `postmaster-register-domain.ts`) — produção passa
+ * `gFetch`, os testes passam um fake pra não bater rede/token real.
+ *
+ * Todos os callers (`postmaster-spam-sync.ts`, `postmaster-campaign-spam-report.ts`)
+ * herdam a drenagem automaticamente — nenhum precisa saber que a API pagina.
+ */
+export async function queryDomainStatsV2(
+  domain: string,
+  metricDefinitions: MetricDefinitionV2[],
+  range: DateRangeV2,
+  fetchImpl: PostmasterV2FetchImpl,
+): Promise<QueryDomainStatsResponseV2> {
+  const allDomainStats: DomainStatV2[] = [];
+  let pageToken: string | undefined;
+  let pagesFetched = 0;
+  do {
+    const page = await fetchDomainStatsPage(domain, metricDefinitions, range, fetchImpl, pageToken);
+    allDomainStats.push(...page.domainStats);
+    pageToken = page.nextPageToken;
+    pagesFetched += 1;
+    if (pageToken && pagesFetched >= MAX_DOMAIN_STATS_PAGES) {
+      console.warn(
+        `[postmaster-v2-client] domainStats.query pra domains/${domain} atingiu o teto de ${MAX_DOMAIN_STATS_PAGES} páginas ainda com nextPageToken presente — parando a drenagem (possível bug de paginação na API). Resultado agregado com ${allDomainStats.length} entradas pode estar incompleto.`,
+      );
+      break;
+    }
+  } while (pageToken);
+  return { domainStats: allDomainStats, nextPageToken: pageToken };
 }
 
 /** `CalendarDate` → `YYYY-MM-DD`, mesmo formato de `PostmasterSpamEntry.date` em postmaster-spam-sync.ts. */

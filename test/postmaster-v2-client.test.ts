@@ -289,3 +289,130 @@ test("queryDomainStatsV2 — domainStats ausente na resposta 200 vira array vazi
   );
   assert.deepEqual(result.domainStats, []);
 });
+
+// ── queryDomainStatsV2 — paginação (#4972: nextPageToken nunca era drenado, janela > 10 dias perdia os dias MAIS RECENTES) ──
+
+test("queryDomainStatsV2 — sem paginação (resposta cabe numa página, sem nextPageToken) faz exatamente 1 chamada e não muda o comportamento anterior", async () => {
+  let calls = 0;
+  const fake = (async () => {
+    calls += 1;
+    return new Response(
+      JSON.stringify({
+        domainStats: [
+          { metric: "spam_rate", date: { year: 2026, month: 8, day: 1 }, value: { floatValue: 0 } },
+          { metric: "spam_rate", date: { year: 2026, month: 8, day: 2 }, value: { floatValue: 0.01 } },
+        ],
+      }),
+      { status: 200 },
+    );
+  }) as unknown as typeof fetch;
+
+  const result = await queryDomainStatsV2(
+    "clarice.ai",
+    [{ name: "spam_rate", standardMetric: "SPAM_RATE" }],
+    { start: { year: 2026, month: 8, day: 1 }, end: { year: 2026, month: 8, day: 2 } },
+    fake,
+  );
+
+  assert.equal(calls, 1, "resposta sem nextPageToken não deve disparar uma 2ª chamada");
+  assert.equal(result.domainStats.length, 2);
+  assert.equal(result.nextPageToken, undefined, "totalmente drenado — nextPageToken final deve ser undefined");
+});
+
+test("queryDomainStatsV2 — drena TODAS as páginas até nextPageToken vazio, agregando entradas de todas elas — incluindo os dias MAIS RECENTES que ficariam de fora sem o fix (#4972)", async () => {
+  // Réplica do achado ao vivo: janela grande devolve N páginas pequenas, mais
+  // antiga → mais nova. Sem drenar, os dias 11-13/08 (última página, sem
+  // token) nunca apareceriam no resultado.
+  const pages = [
+    {
+      domainStats: Array.from({ length: 10 }, (_, i) => ({
+        metric: "spam_rate",
+        date: { year: 2026, month: 8, day: i + 1 },
+        value: { floatValue: 0.001 * (i + 1) },
+      })),
+      nextPageToken: "page-2-token",
+    },
+    {
+      domainStats: Array.from({ length: 10 }, (_, i) => ({
+        metric: "spam_rate",
+        date: { year: 2026, month: 8, day: i + 11 },
+        value: { floatValue: 0.001 * (i + 11) },
+      })),
+      nextPageToken: "page-3-token",
+    },
+    {
+      // Última página: SEM nextPageToken — carrega os dias mais recentes da janela (21/08 = dia 21).
+      domainStats: Array.from({ length: 3 }, (_, i) => ({
+        metric: "spam_rate",
+        date: { year: 2026, month: 8, day: i + 19 },
+        value: { floatValue: 0.001 * (i + 19) },
+      })),
+    },
+  ];
+
+  const requestedPageTokens: (string | undefined)[] = [];
+  let callIndex = 0;
+  const fake = (async (_url: string, init?: RequestInit) => {
+    const body = JSON.parse((init?.body as string) ?? "{}");
+    requestedPageTokens.push(body.pageToken);
+    const page = pages[callIndex];
+    callIndex += 1;
+    return new Response(JSON.stringify(page), { status: 200 });
+  }) as unknown as typeof fetch;
+
+  const result = await queryDomainStatsV2(
+    "clarice.ai",
+    [{ name: "spam_rate", standardMetric: "SPAM_RATE" }],
+    { start: { year: 2026, month: 8, day: 1 }, end: { year: 2026, month: 8, day: 21 } },
+    fake,
+  );
+
+  assert.equal(callIndex, 3, "deve ter feito exatamente 3 chamadas — 1 por página");
+  assert.equal(result.domainStats.length, 23, "10 + 10 + 3 = 23 entradas de TODAS as páginas agregadas");
+  assert.equal(result.nextPageToken, undefined, "totalmente drenado — nextPageToken final deve ser undefined");
+
+  // Confirma que o pageToken de cada resposta é reenviado na próxima chamada.
+  assert.deepEqual(requestedPageTokens, [undefined, "page-2-token", "page-3-token"]);
+
+  // O achado central do #4972: os dias MAIS RECENTES (só presentes na última
+  // página, que não tem nextPageToken) precisam aparecer no resultado final.
+  const readings = extractSpamRateReadingsV2(result, "spam_rate");
+  assert.ok(readings.some((r) => r.date === "2026-08-19"));
+  assert.ok(readings.some((r) => r.date === "2026-08-20"));
+  assert.ok(readings.some((r) => r.date === "2026-08-21"), "dia mais recente da janela — o que sumia antes do fix");
+});
+
+test("queryDomainStatsV2 — guard de sanidade: teto de páginas evita loop infinito se a API nunca parar de devolver nextPageToken, e loga warning (nunca trava silenciosamente, #4972)", async () => {
+  let calls = 0;
+  const fake = (async () => {
+    calls += 1;
+    return new Response(
+      JSON.stringify({
+        domainStats: [{ metric: "spam_rate", date: { year: 2026, month: 8, day: 1 }, value: { floatValue: 0 } }],
+        nextPageToken: `token-${calls}`, // nunca fica vazio — simula bug de paginação da API
+      }),
+      { status: 200 },
+    );
+  }) as unknown as typeof fetch;
+
+  const originalWarn = console.warn;
+  const warnCalls: unknown[][] = [];
+  console.warn = (...args: unknown[]) => {
+    warnCalls.push(args);
+  };
+  try {
+    const result = await queryDomainStatsV2(
+      "clarice.ai",
+      [{ name: "spam_rate", standardMetric: "SPAM_RATE" }],
+      { start: { year: 2026, month: 8, day: 1 }, end: { year: 2026, month: 8, day: 1 } },
+      fake,
+    );
+    assert.equal(calls, 100, "deve parar exatamente no teto, nunca rodar indefinidamente");
+    assert.equal(result.domainStats.length, 100, "acumula as entradas de todas as páginas drenadas até o teto");
+    assert.equal(result.nextPageToken, "token-100", "sinaliza que a drenagem NÃO terminou (token ainda presente)");
+    assert.equal(warnCalls.length, 1, "loga exatamente 1 warning ao bater o teto");
+    assert.match(String(warnCalls[0][0]), /teto de 100 páginas/);
+  } finally {
+    console.warn = originalWarn;
+  }
+});
