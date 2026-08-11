@@ -749,7 +749,14 @@ async function main(): Promise<void> {
   // #4973: N domínios, sondados sequencialmente (não em paralelo) — mantém o
   // log legível por domínio e evita qualquer preocupação de concorrência
   // sobre a MESMA quota de API do Postmaster (mesma conta OAuth pros 2
-  // domínios). Um erro NUM domínio nunca derruba a sondagem dos demais.
+  // domínios). Um erro NUM domínio nunca derruba a sondagem dos demais —
+  // mas o exit code final continua honesto (#4973 self-review): uma falha
+  // real (ex: 403 de escopo insuficiente, outage) é registrada e propagada
+  // via process.exit(1) só depois de TODOS os domínios terem sido
+  // tentados, preservando o contrato pré-#4973 documentado em
+  // run-postmaster-spam-sync.ps1 (silêncio no exit code seria pior que o
+  // warning de cobertura baixa que já existia).
+  let hadDomainFailure = false;
   for (const config of POSTMASTER_DOMAINS) {
     const deps: SyncDomainDeps = {
       queryDomainSpam: (range) =>
@@ -779,6 +786,7 @@ async function main(): Promise<void> {
       console.error(
         `[postmaster-spam-sync] domínio ${config.domain}: erro inesperado na sondagem — pulando este domínio, seguindo com os demais: ${e instanceof Error ? e.message : String(e)}`,
       );
+      hadDomainFailure = true;
       continue;
     }
 
@@ -804,6 +812,14 @@ async function main(): Promise<void> {
     console.log(
       `[postmaster-spam-sync] domínio ${config.domain}: KV atualizado: ${result.kvKey} (spamRatePct=${result.entry.spamRatePct.toFixed(3)}, date=${result.entry.date}, ${result.entry.daysWithData ?? 0}/${result.entry.daysProbed ?? 0} dias).`,
     );
+  }
+
+  // Propaga a falha só DEPOIS de tentar todos os domínios (#4973 self-review)
+  // — nenhum domínio saudável perde seu write por causa de outro quebrado,
+  // mas o processo não sai silenciosamente com 0 se algo real falhou.
+  if (hadDomainFailure) {
+    console.error("[postmaster-spam-sync] pelo menos 1 domínio falhou na sondagem — ver erros acima.");
+    process.exitCode = 1;
   }
 }
 
