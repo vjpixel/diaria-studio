@@ -393,6 +393,17 @@ describe("queryProvider (fetchImpl injetado — nunca rede real)", () => {
   it("GEO_PROVIDER_TIMEOUT_MS é o default (25s, mesma referência do fetch in-page do Beehiiv, #4616 achado 2)", () => {
     assert.equal(GEO_PROVIDER_TIMEOUT_MS, 25_000);
   });
+
+  it("#4904 achado ao vivo 11/ago/2026: Anthropic tem timeoutMs próprio (120s), maior que o default — 25s estourou em 8/8 chamadas reais, US$0,36 gastos sem 1 registro útil", () => {
+    const anthropicDef = GEO_PROVIDERS.find((p) => p.id === "anthropic")!;
+    assert.equal(anthropicDef.timeoutMs, 120_000);
+    assert.ok(anthropicDef.timeoutMs! > GEO_PROVIDER_TIMEOUT_MS);
+    // OpenAI/Google continuam no default global — não têm o mesmo padrão de
+    // latência (web_search multi-busca) que motivou o override.
+    for (const id of ["openai", "google"] as const) {
+      assert.equal(GEO_PROVIDERS.find((p) => p.id === id)!.timeoutMs, undefined);
+    }
+  });
 });
 
 describe("runGeoCitationMonitor (#4558 Parte C)", () => {
@@ -492,6 +503,36 @@ describe("runGeoCitationMonitor (#4558 Parte C)", () => {
     const records = await runGeoCitationMonitor({ ANTHROPIC_API_KEY: "fake-key" }, ["pergunta"], fakeFetch);
     assert.equal(records[0].inputTokens, undefined);
     assert.equal(records[0].estimatedCostUsd, undefined);
+  });
+
+  it("#4904 achado ao vivo 11/ago/2026: honra provider.timeoutMs (override), não só o GEO_PROVIDER_TIMEOUT_MS global", async () => {
+    // fetchImpl que só resolve/rejeita quando o signal abortar — mesma técnica
+    // do teste de queryProvider, mas aqui via runGeoCitationMonitor, pra provar
+    // que o timeoutMs do PROVIDER (não um valor fixo interno) é o que chega no
+    // AbortController. timeoutMs pequeno (15ms) pra manter o teste rápido —
+    // se a wiring quebrar e cair no default de 25_000ms, o teste falha por
+    // estourar o próprio timeout do runner antes de decidir nada.
+    const hangingFetch = (_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const err = new Error("The operation was aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      });
+    const anthropicWithShortTimeout = { ...GEO_PROVIDERS.find((p) => p.id === "anthropic")!, timeoutMs: 15 };
+    const start = Date.now();
+    const records = await runGeoCitationMonitor(
+      { ANTHROPIC_API_KEY: "fake-key" },
+      ["pergunta"],
+      hangingFetch,
+      undefined,
+      [anthropicWithShortTimeout],
+    );
+    const elapsed = Date.now() - start;
+    assert.equal(records.length, 1);
+    assert.equal(records[0].errorKind, "network");
+    assert.ok(elapsed < 2000, `esperava abort em ~15ms (override honrado), levou ${elapsed}ms`);
   });
 
   it("propaga errorKind/httpStatus pro record (#4616 achado 1)", async () => {
