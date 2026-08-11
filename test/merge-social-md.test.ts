@@ -478,6 +478,92 @@ describe("merge-social-md CLI (#3991 — formato unificado # Social)", () => {
   });
 });
 
+// ── #4987: tool-call XML syntax vazando ENTRE posts (não só no fim) ──
+describe("merge-social-md CLI — guard de tool-call artifact mid-document (#4987)", () => {
+  it("tag de fechamento crua (</invoke>) entre o fim de ## d1 e o header ## d2 → exit 1, 03-social.md NÃO gravado", () => {
+    const dir = makeEditionDir();
+    try {
+      writeFileSync(
+        join(dir, "_internal", "03-social.tmp.md"),
+        "## d1\n\nTexto genérico d1\n\n</invoke>\n\n## d2\n\nTexto genérico d2\n",
+      );
+
+      const r = runScript(dir);
+      assert.equal(r.status, 1);
+      assert.ok(r.stderr.includes("tool-call"), `stderr deveria mencionar tool-call: ${r.stderr}`);
+      assert.ok(r.stderr.includes("</invoke>"), `stderr deveria apontar a linha exata: ${r.stderr}`);
+      assert.equal(existsSync(join(dir, "03-social.md")), false);
+      // Tmp preservado (mesma disciplina de rollback do caso de comment malformado).
+      assert.equal(existsSync(join(dir, "_internal", "03-social.tmp.md")), true);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("bloco completo de tool-call (<invoke>/<parameter>/</invoke>) vazado entre posts → exit 1", () => {
+    const dir = makeEditionDir();
+    try {
+      writeFileSync(
+        join(dir, "_internal", "03-social.tmp.md"),
+        [
+          "## d1",
+          "",
+          "Texto genérico d1",
+          "",
+          '<invoke name="Write">',
+          '<parameter name="file_path">/tmp/foo.md</parameter>',
+          "</invoke>",
+          "",
+          "## d2",
+          "",
+          "Texto genérico d2",
+          "",
+        ].join("\n"),
+      );
+
+      const r = runScript(dir);
+      assert.equal(r.status, 1);
+      assert.equal(existsSync(join(dir, "03-social.md")), false);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("vazamento no tmp OPCIONAL de Curto também é pego (não só no social principal)", () => {
+    const dir = makeEditionDir();
+    try {
+      writeFileSync(join(dir, "_internal", "03-social.tmp.md"), "## d1\n\nTexto genérico d1\n");
+      writeFileSync(
+        join(dir, "_internal", "03-curto.tmp.md"),
+        "## d1\n\nTexto curto d1\n\n</function_calls>\n\n## d2\n\nTexto curto d2\n",
+      );
+
+      const r = runScript(dir);
+      assert.equal(r.status, 1);
+      assert.equal(existsSync(join(dir, "03-social.md")), false);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("NÃO acusa quando o texto editorial menciona tags tool-call no MEIO de uma frase (mesmo cuidado de falso-positivo do #4077)", () => {
+    const dir = makeEditionDir();
+    try {
+      writeFileSync(
+        join(dir, "_internal", "03-social.tmp.md"),
+        "## d1\n\nO agente de IA chama a ferramenta usando um bloco <invoke name=\"X\">...</invoke> — sintaxe crua exposta na resposta de um assistente foi o tema do artigo.\n",
+      );
+
+      const r = runScript(dir);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      const out = readFileSync(join(dir, "03-social.md"), "utf8");
+      assert.ok(out.includes("sintaxe crua exposta"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+});
+
 // ── #3471: seção "## eia" (posto social do "É IA?" pra publicação manual) ──
 
 // Réplica minimal do formato real gerado por `eia-compose.ts` `buildEiaMd`
