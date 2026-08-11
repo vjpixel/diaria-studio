@@ -8,9 +8,10 @@
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   runEnvio,
   parseStepJson,
@@ -551,6 +552,60 @@ describe("clarice-envio-run (#5026)", () => {
       const r = await runEnvio(baseDeps(root, { exec }));
       assert.equal(r.code, 1);
       rmSync(root, { recursive: true, force: true });
+    });
+  });
+
+  // ── #5048: mesmo achado do #4983, script irmão ──────────────────────────
+  //
+  // Achado ao vivo na 1ª invocação real da task agendada (260811 22:00 UTC):
+  // este orquestrador nunca chamava `loadProjectEnv()` — igual ao #4983 em
+  // `clarice-novos-run.ts`, mas ninguém replicou o fix aqui quando o script
+  // foi escrito. Sob systemd --user (sem herdar o `.env` do shell), o
+  // preflight abortava com "BREVO_CLARICE_API_KEY não definida" mesmo com a
+  // key presente em `.env` — a onda do dia seguinte não era planejada.
+  //
+  // Teste ESTÁTICO (regex sobre o source), não comportamental — mesmo
+  // racional do #4983: `loadProjectEnv()` resolve a raiz do projeto a partir
+  // do próprio `import.meta.url` do env-loader, sem ponto de override, e a
+  // execução de módulo ESM (corpo do módulo roda inteiro na 1ª importação)
+  // faria um teste comportamental passar mesmo com a chamada movida pra
+  // depois do preflight — porque a essa altura o módulo já carregou. O
+  // invariante real é sintático: a chamada aparece ANTES do bloco que lê
+  // `process.env.BREVO_CLARICE_API_KEY`.
+  describe("#5048 — loadProjectEnv() no orquestrador (não só nos sub-scripts)", () => {
+    const SCRIPT_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "clarice-envio-run.ts");
+    const src = readFileSync(SCRIPT_PATH, "utf8");
+
+    it("importa loadProjectEnv de lib/env-loader.ts", () => {
+      assert.match(
+        src,
+        /import\s+\{\s*loadProjectEnv\s*\}\s+from\s+["']\.\/lib\/env-loader\.ts["']/,
+        "scripts/clarice-envio-run.ts deve importar loadProjectEnv de ./lib/env-loader.ts",
+      );
+    });
+
+    it("chama loadProjectEnv() em scope top-level (não dentro de runEnvio/função)", () => {
+      assert.match(
+        src,
+        /^loadProjectEnv\(\);?\s*$/m,
+        "scripts/clarice-envio-run.ts deve chamar loadProjectEnv() em scope top-level — guarda contra " +
+          "remoção acidental (ex: mover pra dentro de runEnvio, ou apagar achando redundante).",
+      );
+    });
+
+    it("a chamada de loadProjectEnv() aparece ANTES do bloco de preflight que lê " +
+      "process.env.BREVO_CLARICE_API_KEY — trava a ORDEM, não só o comportamento final", () => {
+      const callMatch = src.match(/^loadProjectEnv\(\);?\s*$/m);
+      const preflightMatch = src.match(/if\s*\(\s*!process\.env\.BREVO_CLARICE_API_KEY\s*\)/);
+      assert.ok(callMatch, "chamada explícita loadProjectEnv() não encontrada");
+      assert.ok(preflightMatch, "bloco de preflight (if (!process.env.BREVO_CLARICE_API_KEY)) não encontrado — arquivo mudou de forma inesperada?");
+      assert.ok(
+        (callMatch!.index as number) < (preflightMatch!.index as number),
+        "loadProjectEnv() deve vir ANTES do bloco de preflight no arquivo — uma reordenação de " +
+          "imports/código que mova a chamada pra depois do preflight desfaz o fix do #5048 sem quebrar " +
+          "nenhum teste comportamental (os outros testes desta suíte setam a key direto em process.env, " +
+          "não via .env).",
+      );
     });
   });
 });
