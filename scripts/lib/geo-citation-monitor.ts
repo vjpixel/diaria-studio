@@ -31,6 +31,15 @@
  * módulo cobrem o CONTRATO interno (parsing determinístico de uma resposta
  * fixture), não a forma exata da API real.
  *
+ * **`ANTHROPIC_API_KEY` fica deliberadamente ausente (decisão do editor,
+ * 11/ago/2026, #4904).** O provider `anthropic` continua no código —
+ * `fail-soft`, pulado sem key igual sempre foi — mas isto não é mais um gap
+ * temporário esperando credencial: é a configuração pretendida. Rodadas
+ * reais rodam só com `OPENAI_API_KEY`/`GEMINI_API_KEY` (ambas já no `.env`
+ * do editor) desde então. Ver `docs/geo-citation-monitor-setup.md` § "Captura
+ * de usage e teto de custo" pro raciocínio completo e `GEO_NON_ANTHROPIC_TOKEN_PRICING`
+ * (abaixo) pro custo real medido nos outros dois.
+ *
  * **Resiliência (#4616, fleet review da PR #4616 que introduziu este
  * módulo):** `queryProvider` tem timeout explícito (`GEO_PROVIDER_TIMEOUT_MS`,
  * 25s — mesma referência de `DEFAULT_FETCH_TIMEOUT_MS` do fetch in-page do
@@ -390,6 +399,57 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
   },
 ];
 
+/**
+ * Tabela de pricing de TOKEN pra OpenAI/Google (#4904 item 4, caminho
+ * alternativo — o editor decidiu não usar `ANTHROPIC_API_KEY` pra este
+ * monitor, então a Anthropic nunca vai gerar `estimatedCostUsd` aqui;
+ * medir os outros dois provedores é o que sobra pra tirar a frase "custo
+ * nunca foi medido" de `docs/geo-citation-monitor-setup.md`, PARCIALMENTE
+ * verdadeira daqui em diante — ver a decisão registrada lá).
+ *
+ * Separada de `scripts/lib/pricing.ts` de propósito: aquele módulo é
+ * SÓ Claude, compartilhado com `capture-stage-usage.ts`/`aggregate-costs.ts`
+ * (custo do próprio Claude Code, assunto diferente de custo de provider
+ * terceiro consultado por este monitor) — misturar as duas tabelas ali
+ * seria conflation, não reuso.
+ *
+ * Preços por 1M tokens, verificados AO VIVO em 11/ago/2026 (nunca de
+ * memória — disciplina #1172):
+ * - `developers.openai.com/api/docs/pricing`: gpt-4.1 = $2.00 input /
+ *   $8.00 output. Existe também uma taxa fixa de $10.00/1000 chamadas pro
+ *   tool `web_search` (cobrada além do token) — **não incluída aqui**, pelo
+ *   MESMO motivo que a busca da Anthropic não entra na conta dela: o campo
+ *   é um PISO de token, documentado como tal (ver `estimatedCostUsd`).
+ * - `ai.google.dev/gemini-api/docs/pricing`: gemini-2.5-flash = $0.30
+ *   input (texto) / $2.50 output. Grounding (`google_search`) é gratuito
+ *   até 500 (tier free) ou 1.500 (tier pago) requisições/dia, depois
+ *   $35.00/1000 — o volume desta rodada (8-16 chamadas/semana) fica bem
+ *   abaixo de qualquer um dos dois limiares, então a omissão do custo de
+ *   grounding aqui tende a ser exata, não só um piso, mas TRATADA como
+ *   piso mesmo assim (mesma disciplina — nunca assumir tier/cota de quem
+ *   vai rodar o script).
+ *
+ * Só estes 2 models (os `defaultModel` de `GEO_PROVIDERS`) — um override
+ * via `{ENVKEY}_MODEL` (ver `main()`) pra um model fora desta tabela cai em
+ * `undefined`, nunca um preço inventado por aproximação de nome.
+ */
+const GEO_NON_ANTHROPIC_TOKEN_PRICING: Readonly<Record<string, { inputPer1M: number; outputPer1M: number }>> = {
+  "gpt-4.1": { inputPer1M: 2.0, outputPer1M: 8.0 },
+  "gemini-2.5-flash": { inputPer1M: 0.3, outputPer1M: 2.5 },
+};
+
+/** Pure. `undefined` quando o model não está na tabela — nunca um preço
+ * aproximado por prefixo/substring (diferente de `resolvePricing` do
+ * `pricing.ts`, que casa por tier Claude porque tier Claude É uma família;
+ * aqui cada model tem preço próprio, sem família a generalizar). */
+function estimateNonAnthropicCostUsd(model: string, inputTokens: number | undefined, outputTokens: number | undefined): number | undefined {
+  const pricing = GEO_NON_ANTHROPIC_TOKEN_PRICING[model];
+  if (!pricing) return undefined;
+  const input = inputTokens ?? 0;
+  const output = outputTokens ?? 0;
+  return (input / 1_000_000) * pricing.inputPer1M + (output / 1_000_000) * pricing.outputPer1M;
+}
+
 export interface CitationDetection {
   cited: boolean;
   /** ~160 chars ao redor da 1ª ocorrência do domínio, ou `null` se não citado. */
@@ -452,13 +512,23 @@ export interface GeoCitationRecord {
   /** Contagem de buscas server-side desta chamada, quando o provider expõe
    * (hoje só a Anthropic). */
   searchCount?: number;
-  /** Custo estimado em USD desta chamada — calculado **só pro provider
-   * Anthropic** (`estimateCallCostUsd`, `scripts/lib/pricing.ts` — única
-   * tabela de pricing confiável disponível no projeto; OpenAI/Google não
-   * têm tabela e o campo fica `undefined` pra eles, nunca um número
-   * inventado). **É um PISO, não o custo total**: `estimateCallCostUsd`
-   * precifica só TOKEN — a busca server-side em si (US$10/1000 na
-   * Anthropic) não entra nesta conta. Ver item 3 do corpo do #4904. */
+  /** Custo estimado em USD desta chamada — token-only, pros 3 providers
+   * (#4904 item 4): Anthropic via `estimateCallCostUsd`
+   * (`scripts/lib/pricing.ts`), OpenAI/Google via
+   * `estimateNonAnthropicCostUsd`/`GEO_NON_ANTHROPIC_TOKEN_PRICING` (acima
+   * neste arquivo — módulo separado de `pricing.ts` de propósito, ver
+   * docstring da tabela). Model fora de qualquer tabela → `undefined`,
+   * nunca um número inventado. **É um PISO, não o custo total**: nenhuma
+   * das duas tabelas precifica a busca server-side em si — só o token. Na
+   * Anthropic isso é US$10/1000 buscas; na OpenAI, US$10/1000 chamadas de
+   * `web_search`; no Google, grátis até 500-1.500 requisições/dia e depois
+   * US$35/1000 (ver a tabela pra data de verificação). **Anthropic nunca
+   * roda de fato neste monitor** — `ANTHROPIC_API_KEY` fica
+   * deliberadamente ausente por decisão do editor (11/ago/2026, #4904):
+   * este campo continua definido pro provider por completude de tipo, mas
+   * na prática só OpenAI/Google produzem valor aqui. Ver
+   * `docs/geo-citation-monitor-setup.md` § "Captura de usage e teto de
+   * custo" pro raciocínio completo. */
   estimatedCostUsd?: number;
 }
 
@@ -541,15 +611,21 @@ export async function queryProvider(
  * Pure: converte `GeoProviderUsage` (extraído por `provider.extractUsage`)
  * nos campos de usage de `GeoCitationRecord` (#4904) — `inputTokens`/
  * `outputTokens`/`searchCount` sempre que presentes, e `estimatedCostUsd`
- * só quando `providerId === "anthropic"` (única tabela de pricing
- * confiável, ver docstring de `GeoCitationRecord.estimatedCostUsd`).
+ * pros 3 providers, cada um com sua tabela: Anthropic via
+ * `estimateCallCostUsd` (`pricing.ts`, cobre cache read/write), OpenAI e
+ * Google via `estimateNonAnthropicCostUsd` (`GEO_NON_ANTHROPIC_TOKEN_PRICING`
+ * acima, #4904 item 4 — caminho alternativo à medição ao vivo da Anthropic,
+ * que o editor decidiu não usar). Model fora de qualquer tabela → campo
+ * fica `undefined`, nunca um preço inventado.
  * `usage === undefined` (provider sem `extractUsage`, ou a resposta não
  * bateu a forma esperada) devolve `{}` — nenhum campo populado, nunca um
  * objeto com zeros inventados.
  *
- * `tsForCost` (ISO 8601) resolve o pricing intro-vs-standard por data
- * (`estimateCallCostUsd` → `resolvePricing`) — mesma data do record
- * (`ts`), nunca `Date.now()` no momento da LEITURA.
+ * `tsForCost` (ISO 8601) resolve o pricing intro-vs-standard da Anthropic
+ * por data (`estimateCallCostUsd` → `resolvePricing`) — mesma data do
+ * record (`ts`), nunca `Date.now()` no momento da LEITURA. OpenAI/Google
+ * não têm pricing sensível a data nesta tabela, então `tsForCost` não afeta
+ * o cálculo deles.
  */
 export function buildUsageRecordFields(
   providerId: GeoProviderId,
@@ -575,6 +651,9 @@ export function buildUsageRecordFields(
       Number.isFinite(dateMs) ? dateMs : null,
     );
     if (cost !== null) out.estimatedCostUsd = cost;
+  } else {
+    const cost = estimateNonAnthropicCostUsd(model, usage.inputTokens, usage.outputTokens);
+    if (cost !== undefined) out.estimatedCostUsd = cost;
   }
   return out;
 }

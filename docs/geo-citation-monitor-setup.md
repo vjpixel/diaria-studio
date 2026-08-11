@@ -50,17 +50,51 @@ tendência — diário gastaria 7× pra ler ruído. Roda **domingos 07:00**
 semanais na manhã de domingo). Não colide com `Diaria-SEO-Weekly` (domingos
 04:10) nem com as diárias que começam às 05:30.
 
-Custo por execução **nunca foi medido**; OpenAI/Anthropic cobram por token,
-mas a Gemini tem free tier que 8 chamadas/semana plausivelmente não estouram.
-Conferir fatura antes de afirmar custo. **Esta frase segue como está —
-ver "Captura de usage e teto de custo" abaixo pro porquê**.
+Custo por execução **medido ao vivo em 11/ago/2026** (rodada real, os dois
+painéis — `geral` 8 perguntas + `hubs` 10 perguntas = 18 perguntas × 2
+provedores = 36 chamadas, a MESMA carga de uma semana normal da task): ver
+"Captura de usage e teto de custo" abaixo pro número e pra decisão sobre
+Anthropic.
 
 ## Captura de usage e teto de custo (#4904)
 
-O mecanismo de medição existe desde esta issue, mas **nenhuma rodada real
-com as 3 keys já foi executada** — a frase acima ("nunca foi medido")
-continua verdadeira até essa rodada acontecer (ação manual do editor,
-`.env` com `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`GEMINI_API_KEY` reais).
+**Decisão do editor (11/ago/2026): a Anthropic não entra nesta medição.**
+`ANTHROPIC_API_KEY` fica deliberadamente ausente do `.env` — não é mais um
+gap temporário esperando credencial, é a configuração pretendida (ver
+docstring do módulo, `scripts/lib/geo-citation-monitor.ts`). O provider
+`anthropic` continua no código, fail-soft, pulado sem key como sempre foi.
+Item 4 original desta issue pedia medir com as 3 keys; o caminho
+alternativo abaixo mede as 2 que rodam de fato.
+
+**Rodada real, 11/ago/2026, `data/geo-citations/history.jsonl` (36 registros,
+35 com `estimatedCostUsd`, 1 erro de rede sem usage):**
+
+| Provider | Chamadas | Tokens in | Tokens out | Custo (PISO, só token) |
+|---|---|---|---|---|
+| OpenAI (`gpt-4.1`) | 18 | 278.300 | 16.353 | US$ 0,687 |
+| Google (`gemini-2.5-flash`) | 18 | 246 | 12.420 | US$ 0,031 |
+| **Total (1 rodada = 1 semana)** | **36** | **278.546** | **28.773** | **US$ 0,719** |
+
+Isso já responde a suspeita original da issue: o input da OpenAI é
+desproporcionalmente maior (278k vs 246 tokens) porque o conteúdo retornado
+pela busca server-side do `web_search` entra como token de INPUT na conta
+("search content tokens billed at model rates", confirmado na doc oficial)
+— o Google conta grounding à parte do `usageMetadata` lido aqui.
+
+**O PISO não é o custo total** — falta a taxa fixa da ferramenta de busca em
+si, que este monitor não paga (não está no orçamento medido acima, só
+projetada a partir da doc oficial, verificada ao vivo em 11/ago/2026):
+- OpenAI: US$10,00/1.000 chamadas de `web_search` — 18 chamadas/semana ≈
+  US$0,18/semana adicional.
+- Google: grounding grátis até 500 (tier free) ou 1.500 (tier pago)
+  requisições/dia — 18/semana fica muito abaixo dos dois limiares, então a
+  omissão tende a ser exata (US$0) nesta cadência, não só piso.
+
+**Estimativa total por rodada semanal (as 2 chamadas do `SCHEDULED_TASKS`,
+`geral` + `hubs`): ~US$0,90** (US$0,719 medido + US$0,18 taxa fixa OpenAI
+projetada) → **~US$3,90/mês** (×4,33 semanas). Bem dentro da folga de
+"dezenas de dólares por mês" do #4466 — não é preciso reduzir cadência nem
+cortar pergunta.
 
 `queryProvider` (`scripts/lib/geo-citation-monitor.ts`) chama
 `provider.extractUsage` (opcional por provedor, mesmo contrato puro/
@@ -68,29 +102,33 @@ defensivo de `extractText`) e grava campos NOVOS e OPCIONAIS em cada
 `GeoCitationRecord`: `inputTokens`, `outputTokens`, `searchCount` (contagem
 de buscas server-side, quando o provedor expõe) e `estimatedCostUsd`.
 
-- **Anthropic**: os 4 campos são populados — `estimatedCostUsd` reusa
-  `scripts/lib/pricing.ts::estimateCallCostUsd` (única tabela de pricing do
-  projeto), mas é um **PISO**: precifica só TOKEN, não a busca server-side
-  em si (US$10/1000 buscas na Anthropic — não incluído).
-- **OpenAI/Google**: `inputTokens`/`outputTokens` são populados quando a
-  resposta bate o shape esperado (não verificado ao vivo — mesma ressalva
-  de `extractText`); `estimatedCostUsd` fica sempre `undefined` — não há
-  tabela de pricing pra esses dois provedores no projeto, e inventar um
-  número seria pior que não ter.
-- Registros escritos ANTES desta mudança (os 40 já existentes) não têm
-  nenhum destes campos — leitores (`summarizeGeoCitationRecords`, o alarme
-  de staleness) continuam funcionando sem eles.
+- **Anthropic**: os 4 campos seriam populados — `estimatedCostUsd` reusa
+  `scripts/lib/pricing.ts::estimateCallCostUsd` (tabela de pricing do
+  próprio Claude Code, não deste monitor) — **mas na prática nunca roda**
+  (decisão acima).
+- **OpenAI/Google** (#4904 item 4, caminho alternativo): `inputTokens`/
+  `outputTokens`/`estimatedCostUsd` são populados via
+  `GEO_NON_ANTHROPIC_TOKEN_PRICING` (`scripts/lib/geo-citation-monitor.ts`
+  — tabela própria, separada da Claude, verificada ao vivo em 11/ago/2026
+  contra `developers.openai.com/api/docs/pricing` e
+  `ai.google.dev/gemini-api/docs/pricing`). Model fora da tabela (ex:
+  override via `{ENVKEY}_MODEL` pra um model não catalogado) → `undefined`,
+  nunca um número inventado.
+- Registros escritos ANTES do #4904 (os 40 originais) não têm nenhum destes
+  campos — leitores (`summarizeGeoCitationRecords`, o alarme de staleness)
+  continuam funcionando sem eles.
 
 **Teto de gasto mensal** (`--max-monthly-usd <usd>`, CLI): antes de disparar
 a 1ª chamada da rodada, soma `estimatedCostUsd` de todos os registros do MÊS
 CORRENTE já em `history.jsonl` e aborta (exit 3) se o total já cruzou o
 teto — independe de `--strict`. Fail-open EXPLÍCITO (nunca silencioso)
-quando o mês não tem nenhum registro com `estimatedCostUsd` (ex: só
-openai/google rodaram, ou é a 1ª rodada do mês): a rodada segue, mas com um
-AVISO no log — ausência de dado nunca é tratada como "gastou zero".
-`SCHEDULED_TASKS` (`scripts/lib/scheduled-tasks.ts`) ainda **não** passa
-`--max-monthly-usd` — se/quando o teto virar argumento fixo da task
-`Diaria-Geo-Citation-Monitor`, ele se declara em `steps[].args` (fonte
+quando o mês não tem nenhum registro com `estimatedCostUsd` (ex: 1ª rodada
+do mês): a rodada segue, mas com um AVISO no log — ausência de dado nunca é
+tratada como "gastou zero". Com o número real acima (~US$3,90/mês
+projetado), um teto de US$10/mês dá folga de ~2,5× sem travar a cadência
+normal — mas `SCHEDULED_TASKS` (`scripts/lib/scheduled-tasks.ts`) ainda
+**não** passa `--max-monthly-usd`; se/quando o teto virar argumento fixo da
+task `Diaria-Geo-Citation-Monitor`, ele se declara em `steps[].args` (fonte
 única, `scripts/run-task.ts` resolve em runtime).
 
 ## Exit code honesto sob `--strict` (#4754)
