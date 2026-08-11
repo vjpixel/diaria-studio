@@ -1041,7 +1041,7 @@ describe("renderWaveProposal — composição por safra (#4787)", () => {
   });
 });
 
-describe("measureNonOpenerExposure (#4657 — lacuna do sunset #4430)", () => {
+describe("measureNonOpenerExposure (#4657 — lacuna do sunset #4430, fechada pelo #5041)", () => {
   const measured = "2026-06-01T00:00:00Z"; // #4688: hasMeasuredOpens exige brevo_modified_at != null
 
   it("conta elegíveis com N+ envios e zero aberturas", () => {
@@ -1389,10 +1389,10 @@ describe("buildWaveProposal (#4657)", () => {
     assert.match(p.warnings.join(" "), /não trocar o público pra reenvio/);
   });
 
-  it("AVISA sobre não-abridores acumulados (sunset #4430 nunca implementado)", () => {
+  it("AVISA sobre não-abridores acumulados ainda elegíveis (canário pós-sunset #5041)", () => {
     const p = buildWaveProposal(proposalInput({ nonOpeners: { count: 112_172, fraction: 0.675, minSends: 2 } }));
     assert.match(p.warnings.join(" "), /NUNCA abrir/);
-    assert.match(p.warnings.join(" "), /#4430/);
+    assert.match(p.warnings.join(" "), /#5041/);
   });
 
   it("AVISA sobre dado stale do dashboard com a idade real", () => {

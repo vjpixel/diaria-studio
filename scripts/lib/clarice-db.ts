@@ -41,7 +41,8 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { assertSupportedNodeVersion } from "./check-node-version.ts";
 import type { BrevoColumns } from "./brevo-stats.ts";
-import { deriveLeadCohort } from "./clarice-segment.ts";
+import { deriveLeadCohort, hasMeasuredOpens } from "./clarice-segment.ts";
+import { shouldSunsetNonOpener } from "./clarice-envio-policy.ts";
 import {
   COHORT_ASSINANTES_ATIVOS,
   COHORT_EX_ASSINANTES,
@@ -409,7 +410,11 @@ export type IneligibleReason =
   // nada sobre ELA) — são efeito de uma linha IRMÃ na mesma caixa Gmail
   // (`canonicalizeGmail`, #1969: ponto/+tag ignorados, mesmo inbox físico).
   | "mailbox_suppressed" // linha irmã tem unsubscribed/blacklist/complaint
-  | "duplicate_mailbox"; // linha irmã venceu o desempate de duplicata
+  | "duplicate_mailbox" // linha irmã venceu o desempate de duplicata
+  // #5041: corte INDIVIDUAL e PERMANENTE de não-abridor reincidente
+  // (`shouldSunsetNonOpener`, clarice-envio-policy.ts — ≥2 envios, 0
+  // aberturas). Ver o guard completo no ponto de chamada abaixo.
+  | "sunset_non_opener";
 
 export interface EligibilityInput {
   email_blacklisted: boolean;
@@ -446,6 +451,21 @@ export interface EligibilityInput {
    * distinção.
    */
   cohort: string | null | undefined;
+  /**
+   * #5041: `sends_count`/`opens_count`/`brevo_modified_at` do contato — usados
+   * SÓ pelo corte de sunset de não-abridor reincidente
+   * (`shouldSunsetNonOpener`, clarice-envio-policy.ts, ver o guard completo no
+   * corpo de `classifyEligibility` abaixo). Opcionais e default seguro: omitir
+   * qualquer um dos três preserva o comportamento anterior a #5041 (nenhum
+   * corte de sunset é aplicado) — os call sites que já existiam antes desta
+   * issue (testes com `CLEAN`, `clarice-mailbox-dryrun.ts` "antes") continuam
+   * válidos sem tocar. `hasMeasuredOpens` (clarice-segment.ts) trata
+   * `brevo_modified_at` ausente/undefined como "nunca sincronizado" — mesma
+   * leitura de `undefined != null` que já vale pro `StoreRow` opcional.
+   */
+  sends_count?: number;
+  opens_count?: number;
+  brevo_modified_at?: string | null;
 }
 
 export function classifyEligibility(i: EligibilityInput): {
@@ -473,6 +493,38 @@ export function classifyEligibility(i: EligibilityInput): {
   // de consentimento/entrega real (unsubscribed/blacklist/hard_bounce/
   // complaint) continuam valendo sempre — checadas ANTES, não são afetadas.
   const mvExempt = isMvExemptCohort(i.cohort);
+  // #5041: SUNSET de não-abridor reincidente (`shouldSunsetNonOpener`,
+  // clarice-envio-policy.ts) — a peça que faltava pra fechar o laço de
+  // realimentação descrito no docstring daquele módulo (#4705): quem recebe
+  // ≥2 envios e nunca abre é candidato a marcar spam; cortar aqui, por
+  // contato, é o que permite tirar abertura do freio AGREGADO (`decideBrake`)
+  // sem ficar cego ao não-abridor individual.
+  //
+  // Isento: cohort `assinantes-ativos` (mesma isenção de #3819/`mvExempt`
+  // acima) — quem paga não perde acesso ao produto por não abrir um digest
+  // mensal informativo; o invariante "assinante ativo é SEMPRE send_eligible"
+  // já vale para TODOS os outros cortes deste módulo (mv_rejected/mv_unknown/
+  // mv_unverified), e um corte comportamental permanente seria a única
+  // exceção sem justificativa própria — a issue #5041 não pede isso, e nada
+  // no #4705 menciona reabrir a isenção pra este caso específico.
+  //
+  // Guard `hasMeasuredOpens` (#4688, mesmo racional de `isReativacao` em
+  // clarice-segment.ts): sem ele, um contato NUNCA sincronizado pela Brevo
+  // (`opens_count=0` só pelo `DEFAULT 0` do schema) seria tratado como
+  // "confirmado não-abridor" por acidente de dado, não por comportamento
+  // real — `brevo_modified_at` ausente/undefined faz `hasMeasuredOpens`
+  // devolver `false`, e o corte não se aplica.
+  //
+  // `shouldSunsetNonOpener` já é NaN-safe por conta própria (nunca corta
+  // sobre `sends_count`/`opens_count` corrompido) — `?? 0`/`?? null` aqui só
+  // cobrem a ausência OPCIONAL do campo neste tipo (ver doc de
+  // `EligibilityInput` acima), não dado corrompido.
+  if (
+    !mvExempt &&
+    hasMeasuredOpens({ brevo_modified_at: i.brevo_modified_at ?? null }) &&
+    shouldSunsetNonOpener({ sendsCount: i.sends_count ?? 0, opensCount: i.opens_count ?? 0 })
+  )
+    return { send_eligible: false, ineligible_reason: "sunset_non_opener" };
   if (i.mv_bucket === "rejected" && !engaged && !mvExempt)
     return { send_eligible: false, ineligible_reason: "mv_rejected" };
   // MV inconclusivo (unknown/reverify/unverified/error, #2735) — mesma lógica
@@ -841,6 +893,10 @@ export function resolveMailboxCoherence(
           soft_bounce_count: r.soft_bounce_count,
           priority_points: r.priority_points,
           cohort: resolvedCohort.get(r.email) ?? null,
+          // #5041: mesmos 3 campos do sunset — `r` já os carrega (MailboxRow).
+          sends_count: r.sends_count,
+          opens_count: r.opens_count,
+          brevo_modified_at: r.brevo_modified_at,
         }),
       );
     }
@@ -973,7 +1029,8 @@ export function recomputeDerived(
   const rows = db
     .prepare(
       `SELECT email, opens_count, sends_count, soft_bounce_count, dispute_losses,
-              mv_bucket, email_blacklisted, unsubscribed, hard_bounced, complained, created, tier, cohort, stripe_ids
+              mv_bucket, email_blacklisted, unsubscribed, hard_bounced, complained, created, tier, cohort, stripe_ids,
+              brevo_modified_at
        FROM clarice_users`,
     )
     .all() as Array<{
@@ -991,6 +1048,9 @@ export function recomputeDerived(
     tier: number | null;
     cohort: string | null;
     stripe_ids: string | null;
+    // #5041: só pro guard `hasMeasuredOpens` do corte de sunset — ver
+    // EligibilityInput/classifyEligibility acima.
+    brevo_modified_at: string | null;
   }>;
 
   const update = db.prepare(
@@ -1049,6 +1109,8 @@ export function recomputeDerived(
         mv_bucket: r.mv_bucket,
         dispute_losses: r.dispute_losses ?? 0,
         soft_bounce_count: r.soft_bounce_count ?? 0,
+        // #5041: só pro guard `hasMeasuredOpens` do corte de sunset.
+        brevo_modified_at: r.brevo_modified_at,
         isOptin,
       });
     }
