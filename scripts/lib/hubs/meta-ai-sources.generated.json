@@ -6,6 +6,9 @@
     "matchedHeadlines": [
       "Meta REFRAG: Aceleração de 30x em contexto longo"
     ],
+    "primarySourceUrls": [
+      "https://content.techgig.com/technology/refrag-llm-acceleration-meta-ai/articleshow/123768867.cms"
+    ],
     "editionTitle": "OpenAI anuncia apoio ao longa \"Critterz\", mirando Cannes"
   },
   {
@@ -32,6 +35,9 @@
     "url": "https://diar.ia.br/p/openai-lanc-a-instant-checkout-no-chatgpt",
     "matchedHeadlines": [
       "Meta AI chega ao Brasil"
+    ],
+    "primarySourceUrls": [
+      "https://openai.com/index/buy-it-in-chatgpt/"
     ],
     "editionTitle": "OpenAI lança Instant Checkout no ChatGPT"
   },
@@ -60,6 +66,9 @@
     "matchedHeadlines": [
       "Chefe de IA da Meta é “inexperiente”?"
     ],
+    "primarySourceUrls": [
+      "https://apublica.org/2026/01/inteligencia-artificial-e-desinformacao-nas-eleicoes-de-2026/"
+    ],
     "editionTitle": "IA nas eleições: prepare-se para os deepfakes"
   },
   {
@@ -77,6 +86,9 @@
     "url": "https://diar.ia.br/p/ia-escreveu-ao-pesquisador-que-estuda-ias-conscientes",
     "matchedHeadlines": [
       "Meta pode cortar 20% da equipe"
+    ],
+    "primarySourceUrls": [
+      "https://www.cnbc.com/2026/03/14/meta-planning-sweeping-layoffs-as-ai-costs-mount-reuters.html"
     ],
     "editionTitle": "IA escreveu ao pesquisador que estuda IAs conscientes"
   },
@@ -96,6 +108,9 @@
     "matchedHeadlines": [
       "A aposta do Google contra Meta e DeepSeek"
     ],
+    "primarySourceUrls": [
+      "https://blog.google/innovation-and-ai/technology/developers-tools/gemma-4/"
+    ],
     "editionTitle": "Irã mira o maior datacenter de IA fora dos EUA"
   },
   {
@@ -114,6 +129,9 @@
     "matchedHeadlines": [
       "Meta perde Manus por ordem de Pequim"
     ],
+    "primarySourceUrls": [
+      "https://www.forte.jor.br/2026/04/27/china-manda-desfazer-aquisicao-de-startup-de-ia-pela-meta-e-eleva-pressao-sobre-investimentos-estrangeiros-em-tecnologia/"
+    ],
     "editionTitle": "Meta perde Manus por ordem de Pequim"
   },
   {
@@ -122,6 +140,9 @@
     "url": "https://diar.ia.br/p/meta-compra-startup-para-construir-rob-humanoide",
     "matchedHeadlines": [
       "Meta compra startup para construir robô humanoide"
+    ],
+    "primarySourceUrls": [
+      "https://techcrunch.com/2026/05/01/meta-buys-robotics-startup-to-bolster-its-humanoid-ai-ambitions"
     ],
     "editionTitle": "Meta compra startup para construir robô humanoide"
   },
@@ -132,6 +153,9 @@
     "matchedHeadlines": [
       "Meta demite 8 mil para dobrar em IA"
     ],
+    "primarySourceUrls": [
+      "https://www.cnnbrasil.com.br/economia/negocios/meta-inicia-demissao-de-8-mil-funcionarios-para-focar-em-ia-diz-bloomberg/"
+    ],
     "editionTitle": "Google lança Gemini Omni no Google I/O"
   },
   {
@@ -140,6 +164,9 @@
     "url": "https://diar.ia.br/p/meta-ai-deu-acesso-a-contas-do-instagram-a-hackers",
     "matchedHeadlines": [
       "Meta AI deu acesso a contas do Instagram a hackers"
+    ],
+    "primarySourceUrls": [
+      "https://www.404media.co/hackers-simply-asked-meta-ai-to-give-them-access-to-high-profile-instagram-accounts-it-worked/"
     ],
     "editionTitle": "Meta AI deu acesso a contas do Instagram a hackers"
   },
@@ -150,6 +177,9 @@
     "matchedHeadlines": [
       "Meta desfaz compra de US$ 2 bi por ordem da China"
     ],
+    "primarySourceUrls": [
+      "https://canaltech.com.br/mercado/meta-desiste-da-ia-manus-apos-china-barrar-compra-que-custou-us-2-bilhoes/"
+    ],
     "editionTitle": "Amodei: desemprego pode ser permanente"
   },
   {
@@ -158,6 +188,9 @@
     "url": "https://diar.ia.br/p/governo-dos-eua-pode-virar-socio-da-openai",
     "matchedHeadlines": [
       "Meta Business Agent terá cobrança por uso"
+    ],
+    "primarySourceUrls": [
+      "https://canaltech.com.br/inteligencia-artificial/ia-que-responde-por-sua-empresa-no-whatsapp-tera-cobranca-por-uso-explica-meta/"
     ],
     "editionTitle": "Governo dos EUA pode virar sócio da OpenAI"
   },
@@ -168,6 +201,9 @@
     "matchedHeadlines": [
       "Meta é acusada de demitir doentes com IA"
     ],
+    "primarySourceUrls": [
+      "https://canaltech.com.br/mercado/meta-e-acusada-de-usar-ia-para-escolher-e-demitir-funcionarios-doentes/"
+    ],
     "editionTitle": "IBM admite atraso em IA e ação despenca 25%"
   },
   {
@@ -177,6 +213,9 @@
     "matchedHeadlines": [
       "Meta lucrou com anúncios de abuso infantil por IA"
     ],
+    "primarySourceUrls": [
+      "https://www.wired.com/story/meta-ran-ads-that-contained-ai-generated-child-sexual-abuse-imagery/"
+    ],
     "editionTitle": "Meta lucrou com anúncios de abuso infantil por IA"
   },
   {
@@ -185,6 +224,7 @@
     "url": "https://diar.ia.br/p/ia-de-stanford-cria-virus-funcional-em-lab",
     "matchedHeadlines": [
       "Meta é a terceira empresa de IA a relatar invasão"
-    ]
+    ],
+    "editionTitle": "IA de Stanford cria vírus funcional em lab"
   }
 ]

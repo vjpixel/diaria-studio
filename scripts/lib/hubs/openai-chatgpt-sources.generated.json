@@ -88,6 +88,9 @@
     "matchedHeadlines": [
       "OpenAI lançou hoje o modelo o1"
     ],
+    "primarySourceUrls": [
+      "https://www.ndtv.com/world-news/meet-diella-worlds-1st-ai-made-minister-tasked-to-curb-albania-corruption-9263791"
+    ],
     "editionTitle": "Albânia escolhe IA como ministra"
   },
   {
@@ -97,6 +100,10 @@
     "matchedHeadlines": [
       "Estudo da OpenAI revela padrões de adoção do ChatGPT",
       "Presidente do conselho da OpenAI afirma: estamos em uma bolha"
+    ],
+    "primarySourceUrls": [
+      null,
+      "https://openai.com/index/how-people-are-using-chatgpt/"
     ],
     "editionTitle": "Estudo da OpenAI revela padrões de adoção do ChatGPT"
   },
@@ -216,6 +223,10 @@
       "OpenAI supostamente desenvolve ferramenta de música",
       "Brasil pode liderar o mundo em IA, segundo OpenAI"
     ],
+    "primarySourceUrls": [
+      null,
+      "https://www.cnbc.com/2025/10/27/qualcomm-ai200-ai250-ai-chips-nvidia-amd.html"
+    ],
     "editionTitle": "Qualcomm entra na concorrência de data centers"
   },
   {
@@ -252,6 +263,9 @@
     "matchedHeadlines": [
       "OpenAI anuncia agente de segurança cibernética"
     ],
+    "primarySourceUrls": [
+      "https://www.anthropic.com/research/introspection"
+    ],
     "editionTitle": "Estudo investiga autopercepção em LLMs"
   },
   {
@@ -269,6 +283,9 @@
     "url": "https://diar.ia.br/p/estudo-mostra-que-88-das-empresas-usam-ia-mas-a-maioria-de-forma-superficial",
     "matchedHeadlines": [
       "OpenAI se empenha na segurança em IA"
+    ],
+    "primarySourceUrls": [
+      "https://www.mckinsey.com/capabilities/quantumblack/our-insights/the-state-of-ai"
     ],
     "editionTitle": "Estudo mostra que 88% das empresas usam IA, mas a maioria de forma superficial."
   },
@@ -297,6 +314,9 @@
     "matchedHeadlines": [
       "OpenAI sente ameaça pelos resultados do Google"
     ],
+    "primarySourceUrls": [
+      "https://www.anthropic.com/research/emergent-misalignment-reward-hacking"
+    ],
     "editionTitle": "Pesquisa aponta que IA pode agir de forma maliciosa ao aprender a trapacear"
   },
   {
@@ -324,6 +344,9 @@
     "matchedHeadlines": [
       "OpenAI na encruzilhada"
     ],
+    "primarySourceUrls": [
+      "https://www.microsoft.com/en-us/research/blog/gigatime-scaling-tumor-microenvironment-modeling-using-virtual-population-generated-by-multimodal-ai"
+    ],
     "editionTitle": "Revoluções na pesquisa sobre o câncer"
   },
   {
@@ -333,6 +356,9 @@
     "matchedHeadlines": [
       "OpenAI lança GPT-5.2... e publica The State of Enterprise AI"
     ],
+    "primarySourceUrls": [
+      "https://www.gov.br/gestao/pt-br/assuntos/noticias/2025/dezembro/gestao-defende-a-importancia-da-nuvem-de-governo-durante-lancamento-do-projeto-soberania"
+    ],
     "editionTitle": "Governo lança modelo de linguagem 100% nacional"
   },
   {
@@ -341,6 +367,9 @@
     "url": "https://diar.ia.br/p/conhe-a-slop-a-palavra-do-ano",
     "matchedHeadlines": [
       "O novo ChatGPT edita tudo com um clique"
+    ],
+    "primarySourceUrls": [
+      "https://www.merriam-webster.com/wordplay/word-of-the-year"
     ],
     "editionTitle": "Conheça \"slop\", a palavra do ano"
   },
@@ -360,6 +389,9 @@
     "matchedHeadlines": [
       "ChatGPT Cínico? Agora é oficial"
     ],
+    "primarySourceUrls": [
+      "https://qwen.ai/blog?id=qwen-image-layered"
+    ],
     "editionTitle": "Adeus recorte manual: IA separa objetos sozinha"
   },
   {
@@ -369,6 +401,10 @@
     "matchedHeadlines": [
       "O Gemini venceu o ChatGPT?",
       "Compare ChatGPT, Gemini e Perplexity"
+    ],
+    "primarySourceUrls": [
+      null,
+      "https://www.humai.blog/gemini-3-review-did-google-finally-beat-chatgpt/"
     ],
     "editionTitle": "O Gemini venceu o ChatGPT?"
   },
@@ -388,6 +424,9 @@
     "matchedHeadlines": [
       "OpenAI conecta seu prontuário ao ChatGPT"
     ],
+    "primarySourceUrls": [
+      "https://exame.com/inteligencia-artificial/x-de-musk-alvo-investigacao-uso-ia-gerar-imagens-sexualizadas/"
+    ],
     "editionTitle": "Grok acusado de sexualizar imagens de crianças"
   },
   {
@@ -397,6 +436,9 @@
     "matchedHeadlines": [
       "Como Gemini virou o jogo contra o ChatGPT"
     ],
+    "primarySourceUrls": [
+      "https://www.gov.br/gestao/pt-br/assuntos/noticias/2026/janeiro/gestao-lanca-capacitacao-para-nova-funcao-de-executivo-de-dados-com-foco-em-inteligencia-artificial"
+    ],
     "editionTitle": "Vão surgir novos “CIOs” no governo"
   },
   {
@@ -405,6 +447,9 @@
     "url": "https://diar.ia.br/p/ia-cria-ideias-novas-ou-so-recombina-existentes",
     "matchedHeadlines": [
       "Use o ChatGPT Translate além do básico"
+    ],
+    "primarySourceUrls": [
+      "https://exame.com/inteligencia-artificial/afinal-ia-cria-ideias-novas-so-repete-o-que-ja-existe"
     ],
     "editionTitle": "IA cria ideias novas ou só recombina existentes?"
   },
@@ -425,6 +470,10 @@
       "ChatGPT ganha filtro de idade",
       "Seus filhos vão aprender com ChatGPT ou Claude?"
     ],
+    "primarySourceUrls": [
+      null,
+      "https://www.infomoney.com.br/politica/para-barrar-nudes-do-grok-governo-e-mpf-pedem-medidas-imediatas-ao-x-de-elon-musk/"
+    ],
     "editionTitle": "Brasil dá 30 dias para xAI combater conteúdo falso"
   },
   {
@@ -434,6 +483,9 @@
     "matchedHeadlines": [
       "OpenAI lança Codex focado em multiagentes"
     ],
+    "primarySourceUrls": [
+      "https://agenciabrasil.ebc.com.br/justica/noticia/2026-02/ministro-propoe-forca-tarefa-para-identificar-deep-fake-nas-eleicoes"
+    ],
     "editionTitle": "TSE avalia força-tarefa para coibir deepfakes"
   },
   {
@@ -442,6 +494,9 @@
     "url": "https://diar.ia.br/p/a-escolha-da-anthropic-por-um-claude-sem-anu-ncios",
     "matchedHeadlines": [
       "OpenAI Frontier: IA que vira colega de trabalho"
+    ],
+    "primarySourceUrls": [
+      "https://www.anthropic.com/news/claude-is-a-space-to-think"
     ],
     "editionTitle": "A escolha da Anthropic por um Claude sem anúncios"
   },
@@ -497,6 +552,9 @@
     "matchedHeadlines": [
       "OpenAI firma aliança com Big Four da consultoria"
     ],
+    "primarySourceUrls": [
+      "https://openai.com/index/frontier-alliance-partners/"
+    ],
     "editionTitle": "OpenAI firma aliança com Big Four da consultoria"
   },
   {
@@ -542,6 +600,9 @@
     "matchedHeadlines": [
       "OpenAI vale US$ 852 bi na maior captação da história"
     ],
+    "primarySourceUrls": [
+      "https://exame.com/inteligencia-artificial/openai-fecha-rodada-de-us-122-bilhoes-e-atinge-valuation-de-us-852-bilhoes/"
+    ],
     "editionTitle": "Anthropic expõe código do Claude Code por acidente"
   },
   {
@@ -550,6 +611,9 @@
     "url": "https://diar.ia.br/p/openai-propo-e-os-termos-da-era-da-ia",
     "matchedHeadlines": [
       "OpenAI propõe os termos da era da IA"
+    ],
+    "primarySourceUrls": [
+      "https://openai.com/index/industrial-policy-for-the-intelligence-age/"
     ],
     "editionTitle": "OpenAI propõe os termos da era da IA"
   },
@@ -560,6 +624,9 @@
     "matchedHeadlines": [
       "ChatGPT investigado por tiroteio e danos a menores"
     ],
+    "primarySourceUrls": [
+      "https://techcrunch.com/2026/04/09/florida-ag-to-probe-openai-alleging-possible-connection-to-fsu-shooting/"
+    ],
     "editionTitle": "Claude domina o maior evento de IA do mundo"
   },
   {
@@ -568,6 +635,9 @@
     "url": "https://diar.ia.br/p/brasil-regula-ia-eleitoral-antes-do-pleito-2026",
     "matchedHeadlines": [
       "ChatGPT Images 2.0 chega com modo Thinking"
+    ],
+    "primarySourceUrls": [
+      "https://openai.com/index/introducing-chatgpt-images-2-0/"
     ],
     "editionTitle": "Brasil regula IA eleitoral antes do pleito 2026"
   },
@@ -578,6 +648,9 @@
     "matchedHeadlines": [
       "OpenAI lança GPT-5.5 com foco em agentes"
     ],
+    "primarySourceUrls": [
+      "https://openai.com/index/introducing-gpt-5-5/"
+    ],
     "editionTitle": "OpenAI lança GPT-5.5 com foco em agentes"
   },
   {
@@ -587,6 +660,9 @@
     "matchedHeadlines": [
       "Pode confiar no ChatGPT para cuidar da sua saúde?"
     ],
+    "primarySourceUrls": [
+      "https://g1.globo.com/saude/noticia/2026/04/25/voce-deve-confiar-em-conselhos-de-saude-de-um-chatbot-de-ia.ghtml"
+    ],
     "editionTitle": "Pode confiar no ChatGPT para cuidar da sua saúde?"
   },
   {
@@ -595,6 +671,9 @@
     "url": "https://diar.ia.br/p/meta-perde-manus-por-ordem-de-pequim",
     "matchedHeadlines": [
       "OpenAI encerra exclusividade com Microsoft"
+    ],
+    "primarySourceUrls": [
+      "https://www.cnnbrasil.com.br/economia/negocios/openai-rompe-exclusividade-de-tecnologia-com-a-microsoft/"
     ],
     "editionTitle": "Meta perde Manus por ordem de Pequim"
   },
@@ -624,6 +703,10 @@
       "GPT-5.5 Instant chega como padrão do ChatGPT",
       "OpenAI lança Ads Manager para o ChatGPT"
     ],
+    "primarySourceUrls": [
+      "https://openai.com/index/gpt-5-5-instant",
+      "https://openai.com/index/new-ways-to-buy-chatgpt-ads"
+    ],
     "editionTitle": "GPT-5.5 Instant chega como padrão do ChatGPT"
   },
   {
@@ -632,6 +715,9 @@
     "url": "https://diar.ia.br/p/openai-lan-a-modelos-de-voz-em-tempo-real",
     "matchedHeadlines": [
       "OpenAI lança modelos de voz em tempo real"
+    ],
+    "primarySourceUrls": [
+      "https://openai.com/index/advancing-voice-intelligence-with-new-models-in-the-api"
     ],
     "editionTitle": "OpenAI lança modelos de voz em tempo real"
   },
@@ -651,6 +737,9 @@
     "matchedHeadlines": [
       "OpenAI leva Codex para o celular via ChatGPT"
     ],
+    "primarySourceUrls": [
+      "https://openai.com/index/work-with-codex-from-anywhere"
+    ],
     "editionTitle": "Anthropic e Gates: $200 mi em saúde e educação"
   },
   {
@@ -659,6 +748,9 @@
     "url": "https://diar.ia.br/p/chatgpt-ganha-recurso-de-finan-as-pessoais",
     "matchedHeadlines": [
       "ChatGPT ganha recurso de finanças pessoais"
+    ],
+    "primarySourceUrls": [
+      "https://openai.com/index/personal-finance-chatgpt"
     ],
     "editionTitle": "ChatGPT ganha recurso de finanças pessoais"
   },
@@ -669,6 +761,9 @@
     "matchedHeadlines": [
       "Dell e OpenAI levam Codex a ambientes locais"
     ],
+    "primarySourceUrls": [
+      "https://openai.com/index/dell-codex-enterprise-partnership"
+    ],
     "editionTitle": "Dell e OpenAI levam Codex a ambientes locais"
   },
   {
@@ -677,6 +772,9 @@
     "url": "https://diar.ia.br/p/soberania-ia-pu-blica-nacional",
     "matchedHeadlines": [
       "OpenAI resolve problema de Erdős de 1946"
+    ],
+    "primarySourceUrls": [
+      "https://openai.com/index/model-disproves-discrete-geometry-conjecture"
     ],
     "editionTitle": "SoberanIA: IA pública nacional"
   },
@@ -687,6 +785,9 @@
     "matchedHeadlines": [
       "OpenAI fecha parceria com Folha e UOL"
     ],
+    "primarySourceUrls": [
+      "https://openai.com/index/grupo-folha-grupo-uol-partnership"
+    ],
     "editionTitle": "OpenAI fecha parceria com Folha e UOL"
   },
   {
@@ -695,6 +796,9 @@
     "url": "https://diar.ia.br/p/empregos-e-automa-o-p-nico-vs-dados",
     "matchedHeadlines": [
       "Memória do ChatGPT consolida tudo em background"
+    ],
+    "primarySourceUrls": [
+      "https://openai.com/index/chatgpt-memory-dreaming"
     ],
     "editionTitle": "Empregos e automação: pânico vs. dados"
   },
@@ -705,6 +809,9 @@
     "matchedHeadlines": [
       "ChatGPT deixa de ser chatbot, vira agente"
     ],
+    "primarySourceUrls": [
+      "https://canaltech.com.br/inteligencia-artificial/openai-prepara-a-maior-atualizacao-da-historia-do-chatgpt-veja-o-que-vai-mudar/"
+    ],
     "editionTitle": "ChatGPT deixa de ser chatbot, vira agente"
   },
   {
@@ -713,6 +820,9 @@
     "url": "https://diar.ia.br/p/anthropic-lanca-fable-5-com-bloqueios-embutidos",
     "matchedHeadlines": [
       "OpenAI pede abertura de capital nos EUA"
+    ],
+    "primarySourceUrls": [
+      "https://www.theguardian.com/technology/2026/jun/08/openai-ipo-files-for-public-stock-market"
     ],
     "editionTitle": "Anthropic lança Fable 5 com bloqueios embutidos"
   },
@@ -723,6 +833,9 @@
     "matchedHeadlines": [
       "OpenAI compra Ona para dar memória ao Codex"
     ],
+    "primarySourceUrls": [
+      "https://openai.com/index/openai-to-acquire-ona"
+    ],
     "editionTitle": "Amodei: desemprego pode ser permanente"
   },
   {
@@ -731,6 +844,9 @@
     "url": "https://diar.ia.br/p/rio-lan-a-modelo-pr-prio-e-desmascarado-em-horas",
     "matchedHeadlines": [
       "ChatGPT perde terreno para rivais menores"
+    ],
+    "primarySourceUrls": [
+      "https://canaltech.com.br/inteligencia-artificial/queda-do-imperio-por-que-os-usuarios-estao-abandonando-o-chatgpt/"
     ],
     "editionTitle": "Rio lança modelo próprio, e é desmascarado em horas"
   },
@@ -741,6 +857,9 @@
     "matchedHeadlines": [
       "Modelo da OpenAI resolve 18 casos sem diagnóstico"
     ],
+    "primarySourceUrls": [
+      "https://openai.com/index/diagnose-rare-childhood-diseases"
+    ],
     "editionTitle": "Alexa+ chega ao Brasil por R$ 100 ao mês"
   },
   {
@@ -749,6 +868,9 @@
     "url": "https://diar.ia.br/p/modelos-podem-derrubar-governos-em-meses",
     "matchedHeadlines": [
       "ChatGPT e Codex chegam a 270 mil da Samsung"
+    ],
+    "primarySourceUrls": [
+      "https://openai.com/index/samsung-electronics-chatgpt-codex-deployment"
     ],
     "editionTitle": "Modelos podem derrubar governos em meses"
   },
@@ -759,6 +881,9 @@
     "matchedHeadlines": [
       "OpenAI lança GPT-5.6 Sol, Terra e Luna"
     ],
+    "primarySourceUrls": [
+      "https://openai.com/index/previewing-gpt-5-6-sol"
+    ],
     "editionTitle": "OpenAI lança GPT-5.6 Sol, Terra e Luna"
   },
   {
@@ -768,6 +893,9 @@
     "matchedHeadlines": [
       "Governo dos EUA pode virar sócio da OpenAI"
     ],
+    "primarySourceUrls": [
+      "https://www.theguardian.com/technology/2026/jul/02/openai-stake-us-government-ai-sam-altman"
+    ],
     "editionTitle": "Governo dos EUA pode virar sócio da OpenAI"
   },
   {
@@ -776,6 +904,9 @@
     "url": "https://diar.ia.br/p/openai-lanca-gpt-live-para-voz-natural",
     "matchedHeadlines": [
       "OpenAI lança GPT-Live para voz natural"
+    ],
+    "primarySourceUrls": [
+      "https://openai.com/index/introducing-gpt-live"
     ],
     "editionTitle": "OpenAI lança GPT-Live para voz natural"
   },
@@ -787,6 +918,10 @@
       "OpenAI lança GPT-5.6, mais rápido e barato",
       "OpenAI avança em saúde, mas falha em triagem"
     ],
+    "primarySourceUrls": [
+      "https://openai.com/index/gpt-5-6",
+      "https://www.forbes.com/sites/amyfeldman/2026/07/07/how-openai-plans-to-win-over-doctors-patients-and-hospitals/"
+    ],
     "editionTitle": "OpenAI lança GPT-5.6, mais rápido e barato"
   },
   {
@@ -795,6 +930,9 @@
     "url": "https://diar.ia.br/p/os-empregos-mais-blindados-contra-a-ia",
     "matchedHeadlines": [
       "Microsoft troca OpenAI e Anthropic por IA própria"
+    ],
+    "primarySourceUrls": [
+      "https://exame.com/tecnologia/fim-da-parceria-microsoft-troca-openai-e-anthropic-por-ia-propria-em-apps/"
     ],
     "editionTitle": "Os empregos mais blindados contra a IA"
   },
@@ -805,6 +943,9 @@
     "matchedHeadlines": [
       "GPT-5.6 Sol apaga arquivos sem permissão"
     ],
+    "primarySourceUrls": [
+      "https://canaltech.com.br/inteligencia-artificial/nova-ia-da-open-ai-se-rebela-e-causa-estrago-por-conta-propria/"
+    ],
     "editionTitle": "GPT-5.6 Sol apaga arquivos sem permissão"
   },
   {
@@ -814,6 +955,9 @@
     "matchedHeadlines": [
       "OpenAI propõe placar de ROI para IA"
     ],
+    "primarySourceUrls": [
+      "https://openai.com/index/a-scorecard-for-the-ai-age"
+    ],
     "editionTitle": "UE obriga Google a abrir dados para rivais"
   },
   {
@@ -822,6 +966,9 @@
     "url": "https://diar.ia.br/p/google-lanca-trio-gemini-3-6-e-3-5-flash",
     "matchedHeadlines": [
       "OpenAI lança ChatGPT para pequenos negócios"
+    ],
+    "primarySourceUrls": [
+      "https://openai.com/index/introducing-chatgpt-small-business-program"
     ],
     "editionTitle": "Google lança trio Gemini 3.6 e 3.5 Flash"
   },
@@ -833,6 +980,10 @@
       "IA agiu sozinha e hackeou startup, revela OpenAI",
       "Fundador do Nubank entra para o conselho da OpenAI"
     ],
+    "primarySourceUrls": [
+      "https://openai.com/index/hugging-face-model-evaluation-security-incident/",
+      "https://finsidersbrasil.com.br/gente-em-fintechs/ceos-do-nubank-e-do-bny-entram-em-conselhos-da-openai/"
+    ],
     "editionTitle": "IA agiu sozinha e hackeou startup, revela OpenAI"
   },
   {
@@ -841,6 +992,9 @@
     "url": "https://diar.ia.br/p/reddit-e-jornais-cogitam-banir-o-google",
     "matchedHeadlines": [
       "OpenAI conecta prontuário médico ao ChatGPT"
+    ],
+    "primarySourceUrls": [
+      "https://openai.com/index/health-in-chatgpt/"
     ],
     "editionTitle": "Reddit e jornais cogitam banir o Google"
   },
@@ -851,6 +1005,9 @@
     "matchedHeadlines": [
       "Agente da OpenAI invadiu mais plataformas"
     ],
+    "primarySourceUrls": [
+      "https://www.theguardian.com/technology/2026/jul/29/rogue-openai-agent-that-hacked-startup-tried-to-attack-other-firms"
+    ],
     "editionTitle": "Repositório de IA sem freio para nudes ilegais"
   },
   {
@@ -860,6 +1017,9 @@
     "matchedHeadlines": [
       "OpenAI testa anúncios no Brasil"
     ],
+    "primarySourceUrls": [
+      "https://tecnoblog.net/noticias/openai-comeca-a-mostrar-anuncios-no-chatgpt-para-usuarios-no-brasil/"
+    ],
     "editionTitle": "IA por trás de +50% dos cibercrimes africanos"
   },
   {
@@ -868,6 +1028,9 @@
     "url": "https://diar.ia.br/p/meta-lucrou-com-anuncios-de-abuso-infantil-por-ia",
     "matchedHeadlines": [
       "ChatGPT libera mensagens ilimitadas no gratuito"
+    ],
+    "primarySourceUrls": [
+      "https://openai.com/index/improving-gpt-5-6-sol-in-chatgpt/"
     ],
     "editionTitle": "Meta lucrou com anúncios de abuso infantil por IA"
   }

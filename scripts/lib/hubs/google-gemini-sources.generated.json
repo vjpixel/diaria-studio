@@ -60,6 +60,9 @@
     "matchedHeadlines": [
       "Modo IA do Google chega ao Brasil"
     ],
+    "primarySourceUrls": [
+      "https://openai.com/index/openai-nvidia-systems-partnership/"
+    ],
     "editionTitle": "Nvidia anuncia investimento de US$ 100 bi na OpenAI"
   },
   {
@@ -87,6 +90,10 @@
     "matchedHeadlines": [
       "Google lança AI para controle autônomo de browsers",
       "Google AI Plus chega ao Brasil"
+    ],
+    "primarySourceUrls": [
+      null,
+      "https://blog.google/technology/google-deepmind/gemini-computer-use-model/"
     ],
     "editionTitle": "Google lança AI para controle autônomo de browsers"
   },
@@ -117,6 +124,10 @@
       "Gemini 3.0 confirmado para 2025",
       "Google Maps adicionado à API do Gemini"
     ],
+    "primarySourceUrls": [
+      null,
+      "https://www.reuters.com/business/retail-consumer/amazons-cloud-unit-reports-outage-several-websites-down-2025-10-20"
+    ],
     "editionTitle": "AWS sofre queda que paralisa inúmeros serviços online"
   },
   {
@@ -145,6 +156,9 @@
     "matchedHeadlines": [
       "Google aumenta as capacidades do Workspace"
     ],
+    "primarySourceUrls": [
+      "https://microsoft.ai/news/towards-humanist-superintelligence"
+    ],
     "editionTitle": "Microsoft em busca da Superinteligência"
   },
   {
@@ -163,6 +177,9 @@
     "matchedHeadlines": [
       "Nano Banana Pro revoluciona a criação de imagens"
     ],
+    "primarySourceUrls": [
+      "https://sbtnews.sbt.com.br/noticia/brasil/estado-sao-paulo-1-milhao-vagas-gratuitas-cursos-inteligencia-artificial"
+    ],
     "editionTitle": "São Paulo oferece cursos de IA gratuitos"
   },
   {
@@ -171,6 +188,9 @@
     "url": "https://diar.ia.br/p/pesquisa-aponta-que-ia-pode-agir-de-forma-maliciosa-ao-aprender-a-trapacear",
     "matchedHeadlines": [
       "OpenAI sente ameaça pelos resultados do Google"
+    ],
+    "primarySourceUrls": [
+      "https://www.anthropic.com/research/emergent-misalignment-reward-hacking"
     ],
     "editionTitle": "Pesquisa aponta que IA pode agir de forma maliciosa ao aprender a trapacear"
   },
@@ -200,6 +220,9 @@
     "matchedHeadlines": [
       "Lançamentos: Gemini 3 Flash e Manus 1.6 Max"
     ],
+    "primarySourceUrls": [
+      "https://openai.com/index/openai-academy-for-news-organizations/"
+    ],
     "editionTitle": "OpenAI cria treinamento gratuito para jornalistas"
   },
   {
@@ -209,6 +232,10 @@
     "matchedHeadlines": [
       "O Gemini venceu o ChatGPT?",
       "Compare ChatGPT, Gemini e Perplexity"
+    ],
+    "primarySourceUrls": [
+      null,
+      "https://www.humai.blog/gemini-3-review-did-google-finally-beat-chatgpt/"
     ],
     "editionTitle": "O Gemini venceu o ChatGPT?"
   },
@@ -237,6 +264,9 @@
     "matchedHeadlines": [
       "Como Gemini virou o jogo contra o ChatGPT"
     ],
+    "primarySourceUrls": [
+      "https://www.gov.br/gestao/pt-br/assuntos/noticias/2026/janeiro/gestao-lanca-capacitacao-para-nova-funcao-de-executivo-de-dados-com-foco-em-inteligencia-artificial"
+    ],
     "editionTitle": "Vão surgir novos “CIOs” no governo"
   },
   {
@@ -254,6 +284,9 @@
     "url": "https://diar.ia.br/p/mckinsey-candidatos-devem-dominar-prompts",
     "matchedHeadlines": [
       "Gemini entende toda a sua vida digital"
+    ],
+    "primarySourceUrls": [
+      "https://exame.com/inteligencia-artificial/qual-e-o-seu-prompt-para-esse-problema-como-essa-consultoria-escolhe-seus-novos-talentos/"
     ],
     "editionTitle": "McKinsey: candidatos devem dominar prompts"
   },
@@ -273,6 +306,10 @@
     "matchedHeadlines": [
       "Google, Nvidia e Bezos investem na Humans&",
       "Prism: o “Google Docs científico” gratuito"
+    ],
+    "primarySourceUrls": [
+      null,
+      "https://www.reuters.com/business/ai-startup-humans-raises-480-million-45-billion-valuation-seed-round-2026-01-20/"
     ],
     "editionTitle": "Google, Nvidia e Bezos investem na Humans&"
   },
@@ -320,6 +357,9 @@
     "matchedHeadlines": [
       "Nano Banana 2: melhor e mais rápido"
     ],
+    "primarySourceUrls": [
+      "https://blog.google/innovation-and-ai/technology/ai/nano-banana-2/"
+    ],
     "editionTitle": "Claude Opus 3 se aposenta e vira blogueiro"
   },
   {
@@ -347,6 +387,9 @@
     "matchedHeadlines": [
       "A aposta do Google contra Meta e DeepSeek"
     ],
+    "primarySourceUrls": [
+      "https://blog.google/innovation-and-ai/technology/developers-tools/gemma-4/"
+    ],
     "editionTitle": "Irã mira o maior datacenter de IA fora dos EUA"
   },
   {
@@ -355,6 +398,9 @@
     "url": "https://diar.ia.br/p/stanford-ia-avan-a-mais-r-pido-que-qualquer-tecnologia",
     "matchedHeadlines": [
       "Gemini com personalização chega ao Brasil"
+    ],
+    "primarySourceUrls": [
+      "https://www.cnnbrasil.com.br/tecnologia/google-lanca-inteligencia-personalizada-do-gemini-no-brasil-veja-como-usar/"
     ],
     "editionTitle": "Stanford: IA avança mais rápido que qualquer tecnologia"
   },
@@ -374,6 +420,9 @@
     "matchedHeadlines": [
       "Gemini app ganha 8 funções no Drop de abril"
     ],
+    "primarySourceUrls": [
+      "https://blog.google/innovation-and-ai/products/gemini-app/gemini-drop-april-2026/"
+    ],
     "editionTitle": "Pode confiar no ChatGPT para cuidar da sua saúde?"
   },
   {
@@ -382,6 +431,9 @@
     "url": "https://diar.ia.br/p/openai-lan-a-modelos-de-voz-em-tempo-real",
     "matchedHeadlines": [
       "Gemini no centro: antecipando o Google I/O"
+    ],
+    "primarySourceUrls": [
+      "https://gd.eurisko.com.br/2026/05/09/tudo-o-que-sabemos-sobre-o-google-i-o-2026/"
     ],
     "editionTitle": "OpenAI lança modelos de voz em tempo real"
   },
@@ -392,6 +444,9 @@
     "matchedHeadlines": [
       "Google: ciberataques com IA escalam em 3 meses"
     ],
+    "primarySourceUrls": [
+      "https://www.theguardian.com/technology/2026/may/11/ai-powered-hacking-industrial-scale-threat-three-months-google"
+    ],
     "editionTitle": "Brasil: 70% da Geração Z usa ChatGPT todo mês"
   },
   {
@@ -400,6 +455,9 @@
     "url": "https://diar.ia.br/p/karpathy-entra-no-time-de-pr-treino-da-anthropic",
     "matchedHeadlines": [
       "Google I/O: Gemini 3.5, Omni e agentes no Search"
+    ],
+    "primarySourceUrls": [
+      "https://blog.google/innovation-and-ai/sundar-pichai-io-2026/"
     ],
     "editionTitle": "Google I/O: Gemini 3.5, Omni e agentes no Search"
   },
@@ -410,6 +468,9 @@
     "matchedHeadlines": [
       "Google lança Gemini Omni no Google I/O"
     ],
+    "primarySourceUrls": [
+      "https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-omni/"
+    ],
     "editionTitle": "Google lança Gemini Omni no Google I/O"
   },
   {
@@ -418,6 +479,9 @@
     "url": "https://diar.ia.br/p/gemini-chega-ao-chrome-sem-abrir-aba-nova",
     "matchedHeadlines": [
       "Gemini chega ao Chrome sem abrir aba nova"
+    ],
+    "primarySourceUrls": [
+      "https://canaltech.com.br/software/gemini-integrado-no-chrome-veja-como-usar-a-ia-sem-abrir-o-app-ou-uma-nova-aba"
     ],
     "editionTitle": "Gemini chega ao Chrome sem abrir aba nova"
   },
@@ -428,6 +492,9 @@
     "matchedHeadlines": [
       "Google e Monashees criam fundo de IA no Brasil"
     ],
+    "primarySourceUrls": [
+      "https://finsidersbrasil.com.br/tecnologia-para-fintechs/google-e-monashees-lancam-fundo-de-us-2-mi-para-startups-de-ia/"
+    ],
     "editionTitle": "SP vai mapear surtos de dengue por bairro"
   },
   {
@@ -436,6 +503,9 @@
     "url": "https://diar.ia.br/p/sistema-do-google-iguala-m-dicos-em-teste",
     "matchedHeadlines": [
       "Sistema do Google iguala médicos em teste"
+    ],
+    "primarySourceUrls": [
+      "https://blog.google/innovation-and-ai/models-and-research/google-research/amie-for-disease-management-in-nature/"
     ],
     "editionTitle": "Sistema do Google iguala médicos em teste"
   },
@@ -446,6 +516,9 @@
     "matchedHeadlines": [
       "Google AI Plus de graça na Vivo"
     ],
+    "primarySourceUrls": [
+      "https://tecnoblog.net/noticias/vivo-libera-ia-premium-do-google-de-graca-por-ate-12-meses/"
+    ],
     "editionTitle": "Google AI Plus de graça na Vivo"
   },
   {
@@ -454,6 +527,9 @@
     "url": "https://diar.ia.br/p/gemini-3-5-flash-agora-controla-seu-computador",
     "matchedHeadlines": [
       "Gemini 3.5 Flash agora controla seu computador"
+    ],
+    "primarySourceUrls": [
+      "https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-computer-use-gemini-3-5-flash/"
     ],
     "editionTitle": "Gemini 3.5 Flash agora controla seu computador"
   },
@@ -464,6 +540,9 @@
     "matchedHeadlines": [
       "Google lança cadernos de estudo no Gemini"
     ],
+    "primarySourceUrls": [
+      "https://blog.google/innovation-and-ai/products/gemini-app/gemini-study-notebooks/"
+    ],
     "editionTitle": "Sabiá 4 Thinking: Brasil tem modelo de raciocínio"
   },
   {
@@ -473,6 +552,9 @@
     "matchedHeadlines": [
       "Nano Banana 2 Lite: geração de imagem barata"
     ],
+    "primarySourceUrls": [
+      "https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-omni-flash-nano-banana-2-lite/"
+    ],
     "editionTitle": "Anthropic lança Sonnet 5"
   },
   {
@@ -481,6 +563,9 @@
     "url": "https://diar.ia.br/p/testei-a-alexa-por-uma-semana-o-que-mudou",
     "matchedHeadlines": [
       "Nano Banana 2 Lite gera imagem em 4 segundos"
+    ],
+    "primarySourceUrls": [
+      "https://canaltech.com.br/inteligencia-artificial/google-lanca-ia-que-cria-imagens-em-4-segundos-e-edita-videos-por-voz/"
     ],
     "editionTitle": "Testei a Alexa+ por uma semana: o que mudou"
   },
@@ -500,6 +585,9 @@
     "matchedHeadlines": [
       "Google libera IA em entrevistas técnicas"
     ],
+    "primarySourceUrls": [
+      "https://exame.com/carreira/google-vai-liberar-ia-em-entrevistas-e-muda-o-que-espera-dos-candidatos/"
+    ],
     "editionTitle": "IBM admite atraso em IA e ação despenca 25%"
   },
   {
@@ -508,6 +596,9 @@
     "url": "https://diar.ia.br/p/gpt-5-6-sol-apaga-arquivos-sem-permissao",
     "matchedHeadlines": [
       "NotebookLM vira Gemini Notebook"
+    ],
+    "primarySourceUrls": [
+      "https://blog.google/innovation-and-ai/products/gemini-notebook/notebooklm-gemini-notebook/"
     ],
     "editionTitle": "GPT-5.6 Sol apaga arquivos sem permissão"
   },
@@ -518,6 +609,9 @@
     "matchedHeadlines": [
       "UE obriga Google a abrir dados para rivais"
     ],
+    "primarySourceUrls": [
+      "https://canaltech.com.br/mercado/google-e-forcado-a-compartilhar-dados-com-rivais-de-ia-entenda-o-motivo/"
+    ],
     "editionTitle": "UE obriga Google a abrir dados para rivais"
   },
   {
@@ -526,6 +620,9 @@
     "url": "https://diar.ia.br/p/google-lanca-trio-gemini-3-6-e-3-5-flash",
     "matchedHeadlines": [
       "Google lança trio Gemini 3.6 e 3.5 Flash"
+    ],
+    "primarySourceUrls": [
+      "https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-3-6-flash-3-5-flash-lite-3-5-flash-cyber"
     ],
     "editionTitle": "Google lança trio Gemini 3.6 e 3.5 Flash"
   },
@@ -536,6 +633,9 @@
     "matchedHeadlines": [
       "Reddit e jornais cogitam banir o Google"
     ],
+    "primarySourceUrls": [
+      "https://nypost.com/2026/07/22/business/reddit-news-outlets-weigh-cutting-google-off-as-ai-summaries-kill-traffic-report/"
+    ],
     "editionTitle": "Reddit e jornais cogitam banir o Google"
   },
   {
@@ -545,6 +645,9 @@
     "matchedHeadlines": [
       "IA do Google já domina 43% das buscas nos EUA"
     ],
+    "primarySourceUrls": [
+      "https://canaltech.com.br/internet-e-redes-sociais/com-escalada-da-ia-buscas-no-google-viram-destino-final-dos-usuarios/"
+    ],
     "editionTitle": "1.134 funcionários da IA pedem freio ao setor"
   },
   {
@@ -553,6 +656,9 @@
     "url": "https://diar.ia.br/p/repositorio-de-ia-sem-freio-para-nudes-ilegais",
     "matchedHeadlines": [
       "Gemini lê comentários e edita o Docs por você"
+    ],
+    "primarySourceUrls": [
+      "https://canaltech.com.br/inteligencia-artificial/chega-de-digitar-ia-le-e-altera-documentos-do-google-docs-para-voce/"
     ],
     "editionTitle": "Repositório de IA sem freio para nudes ilegais"
   }
