@@ -7,7 +7,11 @@ description: Empacota o envio da edição diária pelo canal Brevo próprio do e
 
 Empacota `scripts/publish-daily-brevo.ts` (#4266) — hoje só invocável manualmente
 via CLI — no mesmo padrão de skill manual já usado por `/diaria-mensal-apoiadores`:
-preview obrigatório, gate humano explícito, e nunca agenda/envia sozinho (#4580).
+preview obrigatório e gate humano explícito antes de criar o rascunho.
+**Agendamento (Passo 7) pode ser feito por esta skill desde 260811 (#4980)** —
+decisão do editor que revoga o guard anterior ("nunca agenda/envia sozinho",
+#4580); o `scheduledAt` em si continua exigindo confirmação explícita do
+editor a cada execução (ver Passo 7), só a proibição categórica saiu.
 
 **Canal Pending, não o canal principal.** O envio-padrão da edição (Beehiiv,
 lista completa de assinantes confirmados) continua saindo pelo fluxo normal de
@@ -44,18 +48,14 @@ editor e pare — não há o que publicar.
 **Não é mais opcional.** Antes de qualquer preview de campanha nova, esta
 skill SEMPRE roda esta reavaliação — não é uma sugestão que o editor aceita
 ou recusa, é parte fixa do fluxo (decisão do editor, comentário 260806 da
-issue #4637, consolidando a #4725). Motivo: mesmo com a task
-`Diaria-Brevo-Diaria-Evaluate` armada e rodando diariamente (05:30 BRT,
-#4534 — ver `docs/evaluate-brevo-diaria-setup.md`), nenhum cron consegue
-preceder de forma confiável um clique manual em horário arbitrário —
-`publish-daily-brevo.ts` nunca agenda a campanha via API, quem agenda é o
-editor, num clique manual no painel da Brevo que pode acontecer minutos ou
-horas antes das 05:30. Esta skill é o único ponto do fluxo que roda logo
-antes do freeze de verdade (aqui, no Passo 1, imediatamente antes de criar o
-rascunho no Passo 6 — mesma sessão em que o editor vai agendar). Não é
-cosmético: na execução da edição 260807 (260806), rodar isto antes resolveu 3
-contatos que receberiam mais um envio Pending indevidamente (1
-auto-confirmado + 2 promovidos por abertura).
+issue #4637, consolidando a #4725). Motivo: a task agendada que faria isso
+automaticamente antes do envio canônico das 06:00
+(`Diaria-Brevo-Diaria-Evaluate`, 05:30 BRT, #4534) ainda não foi armada em
+produção segundo o CLAUDE.md — sem rodar aqui, a campanha nova sai pra gente
+que já deveria ter sido promovida/suprimida. Não é cosmético: na execução da
+edição 260807 (260806), rodar isto antes resolveu 3 contatos que receberiam
+mais um envio Pending indevidamente (1 auto-confirmado + 2 promovidos por
+abertura).
 
 Rode o dry-run primeiro:
 
@@ -213,14 +213,11 @@ Só depois da confirmação explícita do Passo 5:
 npx tsx scripts/publish-daily-brevo.ts <edition-dir> --i-reviewed-the-copy
 ```
 
-A campanha sai **sempre como rascunho** — o script nunca agenda nem envia
-sozinho (mesma cautela do publisher mensal, `publish-monthly.ts`). Reporte ao
-editor:
+A campanha sai **sempre como rascunho** neste passo — o script em si não
+agenda (ainda não existe flag `--schedule-at`/`--send-now` em
+`publish-daily-brevo.ts`; ver Passo 7 pro caminho atual). Reporte ao editor:
 
 - **Campaign id** (`campanha criada: id=N ...`, impresso no stderr).
-- Lembrete explícito: **schedule/send final é ação manual no painel Brevo**
-  (`app.brevo.com`) — esta skill não faz isso, e não existe flag
-  `--schedule-at`/`--send-now` em `publish-daily-brevo.ts` hoje.
 - Se o editor quiser mandar um e-mail de teste antes de agendar: **gap
   conhecido** — `publish-daily-brevo.ts` não tem `--send-test` (diferente de
   `publish-monthly.ts`, que já tem essa flag). O caminho hoje é chamar a API
@@ -228,6 +225,31 @@ editor:
   UI do painel — não inventar um mecanismo novo aqui, só informar a lacuna
   (ver comentário 2026-08-04 da issue #4580 — fechar esse gap é unidade de
   trabalho separada, não desta skill).
+
+## Passo 7 — Agendar a campanha (#4980, 260811)
+
+**Mudança de política (260811, #4980):** até aqui, agendar/disparar era
+proibido categoricamente pra esta skill ("guard de publicação, invariante do
+CLAUDE.md"). O editor revogou essa proibição ao vivo na execução da edição
+`260811` — a instrução anterior estava, nas palavras dele, "desatualizada".
+**O que NÃO mudou:** o `scheduledAt` continua sendo uma decisão do editor, não
+um default silencioso — pergunte a data/hora explicitamente a cada execução
+(mesma disciplina de "data da edição é sempre explícita" do CLAUDE.md). Uma
+campanha agendada na Brevo é **imutável** (`brevo-scheduled-campaigns-immutable`)
+e este canal manda pro segmento Pending (não confirmado) — errar aqui não tem
+volta, então confirme o horário por escrito antes de agendar, mesmo que o
+editor já tenha dito "pode agendar" de forma genérica.
+
+Não existe script dedicado ainda (unidade de trabalho separada, ver "Escopo
+possível" na issue #4980 — `--schedule-at` em `publish-daily-brevo.ts`
+reusando `brevoSendNow`/`pollTerminalSendStatus` de
+`scripts/lib/brevo-client.ts`). Até isso ser implementado, agende via chamada
+direta à API Brevo (`PUT /emailCampaigns/{id}` com `{"scheduledAt": "<ISO
+8601>"}`, `api-key: $BREVO_DIARIA_API_KEY`), seguido de um GET de verificação
+confirmando `status` e `scheduledAt` na resposta — mesmo padrão de
+releitura pós-mutação usado em `ingestContactToBrevo`
+(`scripts/sync-pending-to-brevo.ts`). Reporte ao editor o `scheduledAt`
+confirmado por essa releitura, não o que foi enviado no PUT.
 
 ## Fora de escopo desta skill
 
@@ -237,6 +259,6 @@ editor:
   Passo 2 pro estado atual e a mitigação manual).
 - Adicionar `--send-test` a `publish-daily-brevo.ts` — gap conhecido (ver
   Passo 6), não fechado aqui.
-- Agendar ou disparar a campanha de fato — sempre ação manual do editor no
-  painel Brevo, nunca automatizada por esta skill (guard de publicação,
-  invariante do CLAUDE.md).
+- Adicionar `--schedule-at` a `publish-daily-brevo.ts` — gap conhecido (ver
+  Passo 7 e issue #4980), não fechado aqui; o agendamento hoje passa por
+  chamada direta à API, não pelo script.
