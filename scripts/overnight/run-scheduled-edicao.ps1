@@ -2,13 +2,15 @@
 .SYNOPSIS
     Runner agendado da pipeline diar.ia.br — roda /diaria-edicao D+1 (Stages 0-3 + pré-render Stage 4).
 
-    *** STATUS (260711, #3259): dormente — a task "Diaria-Edicao-Diaria" que
-    invocava este runner foi desregistrada do Task Scheduler por decisão do
-    editor. Arquivo mantido (não deletado) como via de reativação futura; ver
-    scripts/overnight/setup-edicao-schedule.ps1 e docs/scheduled-edicao-setup.md.
+    *** STATUS (260811, #4998): REATIVADA a pedido do editor — horário
+    16:00 (era 14:00) e um guard de idempotência novo (ver Passo 2a abaixo):
+    se a edição do dia já foi iniciada, este runner pula sem invocar
+    `claude`. Histórico: desregistrada do Task Scheduler em 260711 (#3259);
+    ver scripts/overnight/setup-edicao-schedule.ps1 e
+    docs/scheduled-edicao-setup.md.
 
 .DESCRIPTION
-    Invocado pelo Task Scheduler (Windows) de dom-qui às 14:00 BRT.
+    Invocado pelo Task Scheduler (Windows) de dom-qui às 16:00 BRT.
     Calcula AAMMDD = amanhã em America/Sao_Paulo, invoca claude -p com
     --permission-mode acceptEdits e --max-turns.
 
@@ -142,6 +144,25 @@ Write-Log `
     -Level       "info" `
     -RunMsg      "scheduled-edicao: início" `
     -Details     "{`"edition`":`"$Aammdd`",`"trigger`":`"task-scheduler`"}"
+
+# ---------------------------------------------------------------------------
+# 6a. Guard de idempotência (#4998): pular se a edição já foi iniciada.
+#     data/editions/{AAMMDD}/ existir significa que o editor já rodou
+#     /diaria-edicao (ou uma run agendada anterior) para esta data — nunca
+#     disparar de novo. A resumabilidade normal do orchestrator já cobre
+#     retomar uma run incompleta; este guard é só sobre não iniciar outra.
+# ---------------------------------------------------------------------------
+$EditionDir = Join-Path $DataDir "editions\$Aammdd"
+if (Test-Path $EditionDir) {
+    $RunEnd = Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz"
+    Write-Log `
+        -ScheduleMsg "SKIP  edition=$Aammdd reason=already-started end=$RunEnd" `
+        -Level       "info" `
+        -RunMsg      "scheduled-edicao: pulado (edição já iniciada)" `
+        -Details     "{`"edition`":`"$Aammdd`",`"reason`":`"already-started`"}"
+    Write-Output "[$RunEnd] SKIP — $EditionDir já existe, edição já foi iniciada. Nada a fazer."
+    exit 0
+}
 
 # ---------------------------------------------------------------------------
 # 7. Verificar se claude está no PATH

@@ -2,15 +2,17 @@
 .SYNOPSIS
     Registra (ou atualiza/remove) a task "Diaria-Edicao-Diaria" no Task Scheduler.
 
-    *** STATUS (260711, #3259): task desregistrada por decisão do editor. ***
-    Este script foi mantido (não deletado) só como via de reativação futura
-    caso o editor mude de ideia — rodar sem -Unregister recria a task com o
-    schedule original (dom-qui 14:00). Ver docs/scheduled-edicao-setup.md
-    para o histórico completo da decisão.
+    *** STATUS (260811, #4998): REATIVADA a pedido do editor, com dois
+    ajustes em relação ao original: horário 16:00 (era 14:00) e um guard de
+    idempotência no runner — se a edição do dia já foi iniciada (manualmente
+    ou por uma run anterior), o runner pula sem invocar `claude` (ver
+    run-scheduled-edicao.ps1). Histórico: a task tinha sido desregistrada em
+    260711 (#3259, decisão do editor); ver docs/scheduled-edicao-setup.md
+    para o histórico completo.
 
 .DESCRIPTION
     Cria uma tarefa agendada que roda run-scheduled-edicao.ps1 de domingo a
-    quinta-feira às 14:00 (horário local da máquina = BRT).
+    quinta-feira às 16:00 (horário local da máquina = BRT).
 
     Idempotente: re-executar substitui a task existente. Use -Unregister para
     remover a task.
@@ -55,7 +57,7 @@ $RepoRoot   = (Resolve-Path (Join-Path $ScriptDir "../..")).Path
 $RunnerPath = Join-Path $ScriptDir "run-scheduled-edicao.ps1"
 
 $TaskName   = "Diaria-Edicao-Diaria"
-$TaskDesc   = "diar.ia.br: roda /diaria-edicao D+1 de dom-qui 14:00 BRT (Stages 0-3 + pre-render)."
+$TaskDesc   = "diar.ia.br: roda /diaria-edicao D+1 de dom-qui 16:00 BRT (Stages 0-3 + pre-render), pula se a edicao ja foi iniciada."
 
 # ---------------------------------------------------------------------------
 # Guard: garantir que o runner existe no path derivado
@@ -89,12 +91,12 @@ $Action = New-ScheduledTaskAction `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$RunnerPath`"" `
     -WorkingDirectory $RepoRoot
 
-# Trigger: semanal, dias dom (0), seg (1), ter (2), qua (3), qui (4), 14:00
+# Trigger: semanal, dias dom (0), seg (1), ter (2), qua (3), qui (4), 16:00
 # DaysOfWeek bitmask: Sunday=1, Monday=2, Tuesday=4, Wednesday=8, Thursday=16
 $Trigger = New-ScheduledTaskTrigger `
     -Weekly `
     -DaysOfWeek Sunday,Monday,Tuesday,Wednesday,Thursday `
-    -At "14:00"
+    -At "16:00"
 
 # Settings
 $Settings = New-ScheduledTaskSettingsSet `
@@ -136,7 +138,8 @@ Write-Output ""
 Write-Output "Configuração:"
 Write-Output "  Runner  : $RunnerPath"
 Write-Output "  Repo    : $RepoRoot"
-Write-Output "  Horário : dom-qui 14:00 (fuso local da máquina; ajustar se não for BRT)"
+Write-Output "  Horário : dom-qui 16:00 (fuso local da máquina; ajustar se não for BRT)"
+Write-Output "  Guard   : pula sem rodar se data/editions/{AAMMDD}/ já existir (edição já iniciada)"
 Write-Output "  Duração : máx 3 h por execução"
 Write-Output ""
 Write-Output "Para verificar: Get-ScheduledTask -TaskName '$TaskName' | Get-ScheduledTaskInfo"
