@@ -206,7 +206,13 @@ describe("reconcileStoreWithBrevoList — orquestração fetch+diff+log, nunca e
   });
 
   it("nenhum órfão → log informativo, sem ALERTA", async () => {
-    globalThis.fetch = (async () => jsonRes(200, { contacts: [{ email: "known@a.com" }] })) as typeof fetch;
+    // #4982: a lista mockada precisa incluir EDITOR_SEED_EMAILS também —
+    // senão a nova checagem de seeds ausentes (#4982) dispara ALERTA aqui,
+    // que é exatamente o que este teste garante que NÃO acontece pro caso
+    // "tudo consistente". Ver `evaluate-brevo-diaria-4982.test.ts` pro
+    // comportamento da checagem de seeds propriamente dito.
+    globalThis.fetch = (async () =>
+      jsonRes(200, { contacts: [{ email: "known@a.com" }, ...EDITOR_SEED_EMAILS.map((email) => ({ email }))] })) as typeof fetch;
     const logs: string[] = [];
     try {
       const store = storeOf([contact("known@a.com")]);

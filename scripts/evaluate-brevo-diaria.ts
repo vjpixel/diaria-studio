@@ -266,6 +266,33 @@
  * adicionar, é assinante ativo, sem motivo pra remover) mas essa resolução
  * não generaliza pra qualquer órfão futuro sem revisão humana.
  *
+ * ## Reconciliação de seeds ausentes (#4982)
+ *
+ * `EDITOR_SEED_EMAILS` (`scripts/lib/editor-copy.ts`) são a sonda de
+ * deliverability cross-provedor deste canal — 5 endereços, um por provedor,
+ * vinculados MANUALMENTE à lista Brevo (nunca via CSV import; ver
+ * `ensureEditorCopyRow` no mesmo módulo, que é o mecanismo pro fluxo Clarice,
+ * não pro `brevo_diaria`). Ficarem **fora** do store por desenho é
+ * INTENCIONAL — não é lacuna: são sinal técnico de onde a mensagem caiu
+ * (Principal/Promoções/Spam por provedor), não assinantes reais, e
+ * `findOrphanContacts` já os trata como "conhecidos" precisamente pra nunca
+ * competir pelo cap de envio (`checkDailySendCap`, `publish-daily-brevo.ts`
+ * #4631) nem passar pela avaliação de abertura (`runEvaluation` só itera
+ * `status === "in_brevo"` do store — os seeds nunca entram ali).
+ *
+ * O que NÃO existia até esta issue: nenhuma checagem confirmava que os 5
+ * ainda estavam de fato vinculados à lista — 2 já caíram sem detecção
+ * (achado da issue). `findMissingSeedEmails` fecha esse gap simetricamente à
+ * reconciliação de órfãos acima: mesmo `brevoListEmails` já buscado por
+ * `fetchBrevoListEmails` (nenhuma chamada extra à Brevo), mas o diff roda no
+ * sentido OPOSTO — em vez de "que e-mail da lista Brevo não está no store"
+ * (órfão), pergunta "que seed esperado NÃO está na lista Brevo" (sonda
+ * perdida). **Decisão do editor (briefing 260811b): alerta apenas** — mesma
+ * disciplina de `reconcileStoreWithBrevoList` acima, nunca reingere o
+ * contato na lista sozinho (reingestão automática exigiria uma escrita ao
+ * vivo contra a Brevo fora do fluxo de CSV import já auditado; o editor
+ * decide reingerir manualmente quando o alerta aparecer).
+ *
  * ## Uso
  *
  *   npx tsx scripts/evaluate-brevo-diaria.ts           # dry-run (default)
@@ -843,9 +870,33 @@ export function findOrphanContacts(
   return orphans;
 }
 
+/**
+ * Pura — diff no sentido OPOSTO de `findOrphanContacts` (#4982): em vez de
+ * achar e-mails na lista Brevo ausentes do store, acha `seedEmails`
+ * (default `EDITOR_SEED_EMAILS`) ausentes da lista Brevo — a sonda de
+ * deliverability caiu da lista sem que ninguém percebesse (achado da issue:
+ * 2 dos 5 já sumiram silenciosamente). Normaliza (case/trim) antes de
+ * comparar, mesmo critério de `findOrphanContacts`/`normalizeEmail`. Ordem
+ * do retorno segue a ordem de `seedEmails`, não a da lista Brevo.
+ */
+export function findMissingSeedEmails(
+  brevoListEmails: string[],
+  seedEmails: readonly string[] = EDITOR_SEED_EMAILS,
+): string[] {
+  const present = new Set(brevoListEmails.map((e) => normalizeEmail(e)).filter(Boolean));
+  const missing: string[] = [];
+  for (const raw of seedEmails) {
+    const email = normalizeEmail(raw);
+    if (email && !present.has(email)) missing.push(email);
+  }
+  return missing;
+}
+
 export interface OrphanReconciliationSummary {
   brevoListCount: number;
   orphanEmails: string[];
+  /** #4982 — `EDITOR_SEED_EMAILS` esperados na lista Brevo mas ausentes (sonda caiu). */
+  missingSeedEmails: string[];
 }
 
 /**
@@ -880,7 +931,24 @@ export async function reconcileStoreWithBrevoList(params: {
       `reconciliação (#4579): ${brevoListEmails.length} contato(s) na lista Brevo ${listId}, nenhum órfão — store consistente.`,
     );
   }
-  return { brevoListCount: brevoListEmails.length, orphanEmails };
+
+  // #4982 — sentido OPOSTO: EDITOR_SEED_EMAILS esperados na lista Brevo mas
+  // ausentes (a sonda de deliverability caiu sem detecção, já aconteceu com
+  // 2 dos 5). Alerta apenas — nunca reingere sozinho (decisão do editor, ver
+  // docstring do módulo).
+  const missingSeedEmails = findMissingSeedEmails(brevoListEmails);
+  if (missingSeedEmails.length > 0) {
+    log(
+      `ALERTA reconciliação (#4982): ${missingSeedEmails.length} EDITOR_SEED_EMAILS ausente(s) da lista Brevo ` +
+        `${listId} — sonda de deliverability cross-provedor comprometida: ${missingSeedEmails.join(", ")}. ` +
+        "Readicionar manualmente na lista Brevo (os seeds ficam fora do store/CSV import por desenho, #4982) " +
+        "— este guard só alerta, nunca reingere sozinho.",
+    );
+  } else {
+    log(`reconciliação de seeds (#4982): ${EDITOR_SEED_EMAILS.length} EDITOR_SEED_EMAILS presentes na lista Brevo ${listId}.`);
+  }
+
+  return { brevoListCount: brevoListEmails.length, orphanEmails, missingSeedEmails };
 }
 
 // ── orquestração testável (#4398 review — pr-test-analyzer: main() precisa
