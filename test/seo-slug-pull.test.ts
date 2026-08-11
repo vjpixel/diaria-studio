@@ -4,7 +4,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { slugify, seoSlug, seoMetaDescription, formatManualSlugFixInstructions } from "../scripts/lib/slug.ts";
-import { scoreOpportunities, parseGscResponse, isoDate, type GscRow } from "../scripts/seo-pull.ts";
+import { scoreOpportunities, parseGscResponse, isoDate, buildSeoPullOutput, type GscRow } from "../scripts/seo-pull.ts";
 
 describe("slug acent-correto (#1989)", () => {
   it("slugify: strip de acentos PT-BR (o bug do auto-slug do Beehiiv)", () => {
@@ -130,5 +130,35 @@ describe("parseGscResponse + isoDate (#1989)", () => {
 
   it("isoDate: epoch ms → YYYY-MM-DD", () => {
     assert.equal(isoDate(Date.UTC(2026, 5, 9, 12, 0, 0)), "2026-06-09");
+  });
+});
+
+describe("buildSeoPullOutput (#4908 item 1)", () => {
+  const row = (o: Partial<GscRow>): GscRow => ({ page: "p", clicks: 0, impressions: 10, ctr: 0.01, position: 8, ...o });
+
+  it("inclui as N rows de entrada na saída, e total_rows bate com N", () => {
+    const rows = [row({ page: "a" }), row({ page: "b" }), row({ page: "c" })];
+    const out = buildSeoPullOutput(rows, "sc-domain:diar.ia.br", "2026-07-13_2026-08-10");
+    assert.equal(out.total_rows, 3);
+    assert.equal(out.rows.length, 3);
+    assert.deepEqual(out.rows, rows);
+  });
+
+  it("rows vazio → total_rows 0 e rows []", () => {
+    const out = buildSeoPullOutput([], "sc-domain:diar.ia.br", "p");
+    assert.equal(out.total_rows, 0);
+    assert.deepEqual(out.rows, []);
+  });
+
+  it("site/period são repassados tal qual, sem transformação", () => {
+    const out = buildSeoPullOutput([], "sc-domain:x.com", "2026-01-01_2026-01-28");
+    assert.equal(out.site, "sc-domain:x.com");
+    assert.equal(out.period, "2026-01-01_2026-01-28");
+  });
+
+  it("opportunities continua derivado de scoreOpportunities — mesmo resultado, sem duplicar lógica", () => {
+    const rows = [row({ position: 2, ctr: 0.01, impressions: 500 })];
+    const out = buildSeoPullOutput(rows, "s", "p");
+    assert.deepEqual(out.opportunities, scoreOpportunities(rows));
   });
 });
