@@ -1,0 +1,799 @@
+/**
+ * clarice-envio-policy.ts (#4705) — MOTOR DE DECISÃO PURO do envio diário
+ * automatizado pra base Clarice News (task 19:00 BRT planeja/agenda a onda do
+ * dia seguinte às 06:00 BRT = 09:00 UTC).
+ *
+ * POR QUE ESTE MÓDULO EXISTE (a catraca):
+ * O planejador atual (`clarice-wave-plan.ts` → `computeWeekPlan`/`decideSemaphore`
+ * do worker) decide volume pelo SEMÁFORO, e o semáforo inclui ABERTURA
+ * (`openRate < 15% ⇒ 🔴 ⇒ corta 30%`). Isso funciona pra uma base quente; pra
+ * uma base de 1º envio ~96% fria, que abre ~1%, é uma CATRACA: todo dia cai no
+ * vermelho por definição, todo dia corta 30%, e o volume implode sozinho.
+ * Observado ao vivo: 10.014 → 322 → 1.053 → 817 e-mails/dia. O freio não estava
+ * protegendo reputação nenhuma — estava zerando o alcance por causa de uma
+ * métrica que a própria natureza da base garante que fica baixa.
+ *
+ * DECISÃO DO EDITOR (11/08/2026, NÃO reabrir aqui):
+ *   1. ABERTURA SAI DO FREIO. Vira métrica de OBSERVAÇÃO/TENDÊNCIA (janela 60d,
+ *      `openRateTrend` abaixo) — nunca corta volume, nunca entra em
+ *      `decideBrake`/`adaptiveStep`.
+ *   2. FREIO = SÓ RISCO DE ISP: hard bounce ≥2%, bounce total (hard+soft) ≥5%,
+ *      unsub ≥3%, spam do Postmaster ≥0,3%. Limiares MANTIDOS exatamente como
+ *      já estão em `workers/brevo-dashboard/src/thresholds.ts` (importados
+ *      daqui, nunca redigitados — ver `RED_RISK_THRESHOLDS`).
+ *   3. ESCALADA ADAPTATIVA pela folga até os limiares (substitui o +10% fixo do
+ *      `DEFAULT_WEEK_STEP`), com teto de +25%/dia.
+ *   4. SEM teto absoluto de volume — limitam só a fila, o crédito Brevo e o freio.
+ *   5. SUNSET de não-abridores (`shouldSunsetNonOpener`): ≥2 envios e 0 aberturas
+ *      vira inelegível, cortando o laço que alimenta spam.
+ *
+ * TUDO AQUI É PURO: sem rede, sem disco, sem `new Date()` interno (todo `now` é
+ * parâmetro injetado — mesma disciplina de `clarice-wave-plan.ts` e
+ * `weekly-plan.ts`, e o que torna a decisão testável sem bater na Brevo).
+ *
+ * TIPOS DE ENTRADA AUTOCONTIDOS de propósito: as interfaces abaixo
+ * (`RiskMetrics`, `SpamSignalLike`, `SendDayLike`, `OpenRateTrendPoint`) são
+ * ESTRUTURAIS — nada aqui importa `BrevoCampaign` nem `SpamSignal` do worker
+ * Cloudflare. Um `SpamSignal` de `resolveSpamSignal` satisfaz `SpamSignalLike`
+ * por estrutura, e um `BrevoCampaign` satisfaz `SendDayLike`, então o call site
+ * passa os objetos do worker direto, sem adaptador — mas este módulo continua
+ * carregável (e testável) sem arrastar a cadeia de render do dashboard
+ * (`sections-core` → `render-links` → `sections-kv`) pra dentro de uma task
+ * Node que roda todo dia às 19:00.
+ *
+ * A ÚNICA coisa importada do worker é o objeto de limiares, e de propósito: os
+ * números do doc "Parceria Editorial Clarice.ai × Diar.ia" já têm fonte única
+ * desde #3078 (`thresholds.ts`), e manter uma 2ª cópia aqui é exatamente a
+ * classe de bug que o #3078 apagou — dois números divergindo em silêncio, cada
+ * superfície com seu breaker.
+ */
+
+import { DEFAULT_HEALTH_THRESHOLDS } from "../../workers/brevo-dashboard/src/thresholds.ts";
+
+// ---------------------------------------------------------------------------
+// 1. Janelas de observação
+// ---------------------------------------------------------------------------
+
+/**
+ * As 3 janelas do motor, cada uma com um PORQUÊ próprio — não são três
+ * variações arbitrárias do mesmo número:
+ *
+ * - `brakeSendDays: 3` — o FREIO olha os últimos **3 dias de envio** (dias com
+ *   envio, não dias de calendário; um dia de teste A/B/C conta como 1). Por que
+ *   tão curto: bounce e unsub já estão FINAIS em ~T+13h (o ISP responde na
+ *   hora; não é como abertura, que sobe por 48h). Uma janela longa aqui
+ *   DILUIRIA um pico de hard bounce de hoje entre semanas boas — que é
+ *   exatamente o que o freio precisa enxergar pra frear ANTES do ISP reagir.
+ *
+ * - `accelDays: 30` — o ACELERADOR olha 30 dias corridos. Por que mais longo:
+ *   acelerar é uma aposta sobre reputação SUSTENTADA, não sobre o dia bom de
+ *   ontem. Escalar +25% em cima de 3 dias bons é como confundir sorte com
+ *   tendência; 30 dias já engloba um ciclo de envio inteiro.
+ *
+ * - `trendDays: 60` — a TENDÊNCIA de abertura (relatório, `openRateTrend`) usa
+ *   60 dias corridos porque abertura de base fria se move devagar e em números
+ *   pequenos (~1%): abaixo de ~2 meses a metade recente vs a antiga é ruído de
+ *   amostra, não sinal. **Esta janela NUNCA alimenta decisão de volume** — é a
+ *   consequência direta da decisão 1 do editor lá em cima.
+ */
+export const SEND_WINDOWS = {
+  brakeSendDays: 3,
+  accelDays: 30,
+  trendDays: 60,
+} as const;
+
+// ---------------------------------------------------------------------------
+// 2. Utilização de risco — "quanto do limiar já foi gasto"
+// ---------------------------------------------------------------------------
+
+/**
+ * Métricas de risco de ISP agregadas de uma janela. Percentuais em pontos
+ * PERCENTUAIS (2 = 2%), mesma convenção de `HealthAggregate` (weekly-plan.ts) —
+ * um `HealthAggregate` NÃO satisfaz este tipo por acidente (nomes diferentes de
+ * propósito: `hardBounceRatePct` vs `hardBounceRate`), pra que o call site
+ * tenha que mapear conscientemente e não passe um agregado com abertura junto
+ * achando que ela conta pra alguma coisa aqui.
+ *
+ * `delivered` entra pra CONTEXTO/relatório (é o denominador da abertura, que
+ * este motor observa mas não usa pra frear) — nenhuma utilização é calculada
+ * sobre ele. Os 3 percentuais têm `sent` como denominador, mesma convenção do
+ * dashboard inteiro.
+ */
+export interface RiskMetrics {
+  hardBounceRatePct: number;
+  bounceRatePct: number;
+  unsubRatePct: number;
+  sent: number;
+  delivered: number;
+}
+
+/**
+ * Formato estrutural do sinal de spam. `SpamSignal` de
+ * `workers/brevo-dashboard/src/thresholds.ts` (`resolveSpamSignal`) satisfaz
+ * isto por estrutura — o call site passa direto, sem conversão nem import do
+ * worker aqui dentro.
+ *
+ * A leitura que vale é SEMPRE a do Google Postmaster Tools. O `complaints` da
+ * Brevo subconta o spam real em ~50× (só enxerga feedback loop; o "marcar como
+ * spam" do Gmail não passa por FBL e 73% da base é Gmail) — #4063. Por isso
+ * este tipo não tem um campo "spam da Brevo": ele não existe como entrada
+ * legítima deste motor.
+ */
+export interface SpamSignalLike {
+  source: "postmaster" | "indeterminate";
+  /** % da leitura do Postmaster. `null` quando indeterminado. */
+  ratePct: number | null;
+}
+
+/** Chaves das métricas de risco — a ordem aqui é o desempate de `worst`. */
+export const RISK_METRIC_KEYS = ["hardBounce", "bounce", "unsub", "spam"] as const;
+export type RiskMetricKey = (typeof RISK_METRIC_KEYS)[number];
+
+/** Limiar VERMELHO (o breaker) de cada métrica de risco, em pontos percentuais. */
+export interface RiskThresholdsPct {
+  hardBounce: number;
+  bounce: number;
+  unsub: number;
+  spam: number;
+}
+
+/**
+ * Os 4 breakers, DERIVADOS de `DEFAULT_HEALTH_THRESHOLDS` — nunca redigitados.
+ * A faixa `.yellow` de cada métrica "menor é melhor" É o breaker do doc
+ * (`classifyMetric` classifica `>= yellow` como 🔴; ver thresholds.ts): hard
+ * bounce ≥2%, bounce total ≥5%, unsub ≥3%, spam ≥0,3% (limiar oficial do
+ * Postmaster desde #4154).
+ *
+ * `openRate` de `DEFAULT_HEALTH_THRESHOLDS` é deliberadamente IGNORADO aqui —
+ * é a decisão 1 do editor, e a ausência do campo neste tipo é o que torna
+ * impossível reintroduzir a catraca por descuido: não há onde encaixar
+ * abertura numa `RiskThresholdsPct`.
+ */
+export const RED_RISK_THRESHOLDS: RiskThresholdsPct = {
+  hardBounce: DEFAULT_HEALTH_THRESHOLDS.hardBounceRate.yellow,
+  bounce: DEFAULT_HEALTH_THRESHOLDS.bounceRate.yellow,
+  unsub: DEFAULT_HEALTH_THRESHOLDS.unsubRate.yellow,
+  spam: DEFAULT_HEALTH_THRESHOLDS.spamRate.yellow,
+};
+
+/**
+ * Utilização atribuída ao spam quando NÃO há leitura confiável do Postmaster
+ * (`source === "indeterminate"`: entry ausente, malformada, stale de gravação,
+ * stale de medição ou cobertura baixa — as 5 causas de `resolveSpamSignal`).
+ *
+ * 0,7 é exatamente `HOLD_UTIL`, e isso é proposital: espelha a semântica que já
+ * vale hoje no dashboard (`classifySpamSignal`: indeterminado ⇒ 🟡 ⇒ mantém
+ * volume). Sem leitura, o motor NUNCA acelera (0,7 zera `adaptiveStep`) e NUNCA
+ * para (0,7 < 1,0, não vira `stop`) — segurar onde está é a única postura
+ * honesta quando o sinal que governa o breaker de spam não pôde ser lido.
+ */
+export const INDETERMINATE_SPAM_UTIL = 0.7;
+
+export interface RiskUtilization {
+  /** Maior utilização entre as 4 métricas — é ela que decide freio e passo. */
+  maxUtil: number;
+  /** Utilização por métrica (`valor ÷ limiar vermelho`). */
+  byMetric: Record<string, number>;
+  /** Métrica que produziu `maxUtil` (empate desempatado por `RISK_METRIC_KEYS`). */
+  worst: string;
+  /**
+   * Métricas cuja utilização é 0 por FALTA DE DADO, não por saúde: denominador
+   * zero (`sent === 0`) ou valor não-finito, e spam indeterminado NÃO entra
+   * aqui (indeterminado tem tratamento próprio, `INDETERMINATE_SPAM_UTIL`).
+   *
+   * Existe porque "0% de hard bounce" e "não enviamos nada, logo não sabemos"
+   * são estados diferentes que colapsam no mesmo número — e é o segundo que o
+   * editor precisa ver no relatório antes de confiar num `ok` (mesmo racional
+   * do "—" vs "0.000%" que o #3081 introduziu no dashboard).
+   */
+  noDataMetrics: string[];
+}
+
+/** Divide protegendo contra denominador ≤ 0 / valor não-finito. `null` = sem dado. */
+function utilOf(valuePct: number, limitPct: number, hasDenominator: boolean): number | null {
+  if (!hasDenominator) return null;
+  if (!Number.isFinite(valuePct)) return null;
+  if (!Number.isFinite(limitPct) || limitPct <= 0) return null;
+  return valuePct / limitPct;
+}
+
+/**
+ * Quanto de cada limiar VERMELHO já foi consumido, em fração (1,0 = está
+ * exatamente no breaker). Nenhuma decisão aqui — só a medida que
+ * `decideBrake` e `adaptiveStep` consomem, pra que as duas nunca divirjam
+ * sobre "quão perto do limite estamos" (2 cálculos paralelos do mesmo fato é a
+ * classe de bug do #4658).
+ *
+ * Regras de borda, todas deliberadas:
+ * - `sent === 0` (nenhum envio na janela) ⇒ util 0 nas 3 métricas de e-mail, e
+ *   as 3 são reportadas em `noDataMetrics`. NUNCA divide por zero, e nunca
+ *   deixa um `NaN` vazar pra uma comparação (`NaN >= 1` é `false`, ou seja: um
+ *   NaN silencioso viraria um `ok` fabricado — o pior default possível num
+ *   motor que decide disparar e-mail).
+ * - spam `indeterminate` ⇒ util fixa `INDETERMINATE_SPAM_UTIL` (0,7).
+ * - spam `postmaster` com `ratePct === null` (estado que o tipo permite mas
+ *   `resolveSpamSignal` nunca produz) é tratado como indeterminado — defesa em
+ *   profundidade, nunca como "0% de spam confirmado".
+ */
+export function riskUtilization(
+  m: RiskMetrics,
+  spam: SpamSignalLike,
+  t: RiskThresholdsPct = RED_RISK_THRESHOLDS,
+): RiskUtilization {
+  const hasSent = Number.isFinite(m.sent) && m.sent > 0;
+
+  const raw: Record<RiskMetricKey, number | null> = {
+    hardBounce: utilOf(m.hardBounceRatePct, t.hardBounce, hasSent),
+    bounce: utilOf(m.bounceRatePct, t.bounce, hasSent),
+    unsub: utilOf(m.unsubRatePct, t.unsub, hasSent),
+    spam: null,
+  };
+
+  // Spam: a leitura do Postmaster é independente do nosso `sent` (é uma medida
+  // do domínio no ISP, não uma razão sobre esta janela de envio) — por isso não
+  // participa do guard `hasSent` acima.
+  const spamUsable = spam.source === "postmaster" && spam.ratePct !== null;
+  raw.spam = spamUsable ? utilOf(spam.ratePct as number, t.spam, true) : INDETERMINATE_SPAM_UTIL;
+
+  const byMetric: Record<string, number> = {};
+  const noDataMetrics: string[] = [];
+  for (const k of RISK_METRIC_KEYS) {
+    const v = raw[k];
+    if (v === null) {
+      byMetric[k] = 0;
+      noDataMetrics.push(k);
+    } else {
+      byMetric[k] = v;
+    }
+  }
+
+  // `worst` = maior utilização; empate resolvido pela ordem de
+  // RISK_METRIC_KEYS (hard bounce primeiro — é o breaker mais caro de estourar).
+  // Com tudo zerado, `worst` continua sendo uma chave válida (nunca `undefined`),
+  // e `noDataMetrics` é quem conta a história real.
+  let worst: RiskMetricKey = RISK_METRIC_KEYS[0];
+  for (const k of RISK_METRIC_KEYS) {
+    if (byMetric[k] > byMetric[worst]) worst = k;
+  }
+
+  return { maxUtil: byMetric[worst], byMetric, worst, noDataMetrics };
+}
+
+// ---------------------------------------------------------------------------
+// 3. Freio — só risco de ISP, nunca abertura
+// ---------------------------------------------------------------------------
+
+export type BrakeLevel = "ok" | "hold" | "stop";
+
+/** Utilização a partir da qual o motor PARA (não agenda / cancela o agendado). */
+export const STOP_UTIL = 1.0;
+
+/** Utilização a partir da qual o motor SEGURA (agenda, mas não escala). */
+export const HOLD_UTIL = 0.7;
+
+export interface BrakeDecision {
+  level: BrakeLevel;
+  /** Explicação pt-BR, legível, citando métrica e valor vs limiar. */
+  reasons: string[];
+  maxUtil: number;
+}
+
+/** "1,40%" — formatação pt-BR determinística (sem ICU, pra teste estável). */
+function fmtPct(n: number, decimals = 2): string {
+  return `${n.toFixed(decimals).replace(".", ",")}%`;
+}
+
+/** Rótulo humano de cada métrica, pros `reasons`. */
+const RISK_METRIC_LABEL: Record<RiskMetricKey, string> = {
+  hardBounce: "hard bounce",
+  bounce: "bounce total (hard+soft)",
+  unsub: "descadastro",
+  spam: "spam (Postmaster)",
+};
+
+/** Valor observado de cada métrica, pro texto do `reason`. `null` = sem leitura. */
+function observedValue(
+  key: RiskMetricKey,
+  m: RiskMetrics,
+  spam: SpamSignalLike,
+): number | null {
+  if (key === "hardBounce") return m.hardBounceRatePct;
+  if (key === "bounce") return m.bounceRatePct;
+  if (key === "unsub") return m.unsubRatePct;
+  return spam.source === "postmaster" ? spam.ratePct : null;
+}
+
+/**
+ * Decide o FREIO sobre a janela CURTA (`SEND_WINDOWS.brakeSendDays` = últimos 3
+ * dias de envio — use `selectLastSendDays` pra montá-la).
+ *
+ * `stop` (util ≥ 1,0) = não agenda; se já houver onda agendada pra amanhã, o
+ * call site cancela. `hold` (util ≥ 0,7) = agenda o MESMO volume de ontem, sem
+ * escalar. `ok` = livre pra escalar o quanto `adaptiveStep` liberar.
+ *
+ * ABERTURA NÃO ENTRA AQUI, por decisão do editor (#4705) — e nem tem como
+ * entrar: `RiskMetrics` não carrega o número, e `RiskThresholdsPct` não tem
+ * campo pra ele. Se alguém um dia quiser reintroduzir a catraca, vai ter que
+ * mudar os dois tipos de propósito, não por descuido num `if`.
+ */
+export function decideBrake(
+  freshRisk: RiskMetrics,
+  spam: SpamSignalLike,
+  t: RiskThresholdsPct = RED_RISK_THRESHOLDS,
+): BrakeDecision {
+  const util = riskUtilization(freshRisk, spam, t);
+  const level: BrakeLevel =
+    util.maxUtil >= STOP_UTIL ? "stop" : util.maxUtil >= HOLD_UTIL ? "hold" : "ok";
+
+  // Uma linha por métrica que já chegou na zona de atenção, da pior pra menos
+  // pior — o editor lê o relatório e sabe na hora QUEM segurou a onda.
+  const flagged = RISK_METRIC_KEYS.filter((k) => util.byMetric[k] >= HOLD_UTIL).sort(
+    (a, b) => util.byMetric[b] - util.byMetric[a],
+  );
+
+  const reasons: string[] = [];
+  for (const k of flagged) {
+    const value = observedValue(k, freshRisk, spam);
+    const pctOfLimit = Math.round(util.byMetric[k] * 100);
+    if (k === "spam" && value === null) {
+      reasons.push(
+        `spam (Postmaster): sem leitura confiável — assume ${pctOfLimit}% do limiar de ${fmtPct(t.spam)} (nunca acelera, nunca para).`,
+      );
+      continue;
+    }
+    const verb = util.byMetric[k] >= STOP_UTIL ? "estourou o limiar" : "está em";
+    reasons.push(
+      `${RISK_METRIC_LABEL[k]}: ${fmtPct(value as number)} ${verb} ${fmtPct(t[k])} (${pctOfLimit}% do limiar).`,
+    );
+  }
+
+  if (reasons.length === 0) {
+    const w = util.worst as RiskMetricKey;
+    const value = observedValue(w, freshRisk, spam);
+    const detail =
+      value === null
+        ? ""
+        : ` (${fmtPct(value)} de ${fmtPct(t[w])}, ${Math.round(util.maxUtil * 100)}% do limiar)`;
+    reasons.push(`risco de ISP dentro dos limiares — pior métrica é ${RISK_METRIC_LABEL[w]}${detail}.`);
+  }
+
+  if (util.noDataMetrics.length > 0) {
+    reasons.push(
+      `sem dado na janela pra: ${util.noDataMetrics.join(", ")} — utilização 0 por AUSÊNCIA de envio/leitura, não por saúde confirmada.`,
+    );
+  }
+
+  return { level, reasons, maxUtil: util.maxUtil };
+}
+
+// ---------------------------------------------------------------------------
+// 4. Escalada adaptativa — pela folga até o limiar, não +10% fixo
+// ---------------------------------------------------------------------------
+
+/**
+ * Teto de crescimento por dia (+25%). Substitui o `DEFAULT_WEEK_STEP` (+10%
+ * fixo) do worker: o passo fixo ignorava completamente QUANTA folga existe até
+ * o breaker — dava o mesmo +10% com hard bounce em 0,1% e em 1,9%.
+ *
+ * 25%/dia é agressivo de propósito (a base fria precisa de alcance) mas ainda
+ * dentro do que aquecimento de IP tolera; e só é atingível com risco
+ * praticamente zerado (`maxUtil ≈ 0`), porque o passo decai LINEARMENTE com a
+ * utilização.
+ */
+export const MAX_DAILY_STEP = 0.25;
+
+/** Arredonda a 4 casas — passo é fração, e 4 casas já é 0,01% de volume. */
+function round4(n: number): number {
+  return Math.round(n * 10000) / 10000;
+}
+
+/**
+ * Passo de crescimento do dia, calculado sobre a janela LONGA
+ * (`SEND_WINDOWS.accelDays` = 30 dias corridos — use `selectWithinDays`).
+ *
+ * Janela diferente da do freio de propósito: FREAR é urgente (3 dias, pega o
+ * pico de hoje), ACELERAR é uma aposta sobre reputação sustentada (30 dias, não
+ * confunde 3 dias bons com tendência).
+ *
+ *   maxUtil ≥ 0,7  ⇒ 0 (zona de atenção: mantém, nunca cresce)
+ *   maxUtil < 0,7  ⇒ MAX_DAILY_STEP × (1 − maxUtil/0,7)
+ *
+ * Ou seja: risco zero libera os 25% cheios; metade da folga gasta libera ~12,5%;
+ * chegando em 0,7 o passo já é 0 — o crescimento morre ANTES do freio precisar
+ * agir. Resultado sempre em [0, MAX_DAILY_STEP], monotonicamente decrescente em
+ * `maxUtil`.
+ *
+ * Abertura não entra aqui pelo mesmo motivo de `decideBrake` — é o núcleo do
+ * #4705.
+ */
+export function adaptiveStep(
+  accelRisk: RiskMetrics,
+  spam: SpamSignalLike,
+  t: RiskThresholdsPct = RED_RISK_THRESHOLDS,
+): number {
+  const { maxUtil } = riskUtilization(accelRisk, spam, t);
+  if (!Number.isFinite(maxUtil) || maxUtil >= HOLD_UTIL) return 0;
+  const step = MAX_DAILY_STEP * (1 - Math.max(0, maxUtil) / HOLD_UTIL);
+  return Math.min(MAX_DAILY_STEP, Math.max(0, round4(step)));
+}
+
+// ---------------------------------------------------------------------------
+// 5. Volume proposto — freio, depois passo, depois os tetos REAIS
+// ---------------------------------------------------------------------------
+
+export interface NextVolumeInput {
+  /**
+   * Volume do ÚLTIMO DIA ENVIADO (não um reset, não uma média) — a rampa
+   * escala dali. Ver `baseVolumeFromLastSendDay` (weekly-plan.ts), que soma as
+   * células A/B/C do último dia; pegar só uma célula subestimaria a base em ~⅓.
+   */
+  baseVolume: number;
+  /** Passo do dia (`adaptiveStep`). */
+  step: number;
+  /** Freio do dia (`decideBrake().level`). */
+  brake: BrakeLevel;
+  /** Contatos elegíveis e ainda não comprometidos (fila de 1º envio). */
+  queueAvailable: number;
+  /** Crédito Brevo restante no ciclo. `null` = não consultado (não limita). */
+  creditAvailable: number | null;
+}
+
+export interface NextVolumeDecision {
+  volume: number;
+  /**
+   * O que DETERMINOU o número final:
+   * - `"brake"`: freio `stop` (volume 0) ou `hold` (repetiu a base, sem escalar);
+   * - `"step"`: caminho normal — o passo adaptativo definiu o volume;
+   * - `"queue"` / `"credit"`: a fila ou o crédito cortaram abaixo do proposto;
+   * - `null`: não havia base pra escalar (`baseVolume ≤ 0`).
+   */
+  cappedBy: "brake" | "queue" | "credit" | "step" | null;
+  note: string;
+}
+
+/** Normaliza um teto: não-finito ou negativo vira 0 (fail-closed). */
+function normalizeCap(n: number): number {
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+/**
+ * Volume da próxima onda. Ordem: freio → passo → tetos REAIS.
+ *
+ * NÃO EXISTE TETO ABSOLUTO DE VOLUME (decisão do editor, #4705): o que limita é
+ * a fila (quantos contatos elegíveis ainda não receberam), o crédito Brevo, e o
+ * freio. Um número mágico do tipo "no máximo 5.000/dia" seria uma segunda
+ * catraca, agora fixa — o mesmo erro do `openRate` no semáforo, com outra roupa.
+ *
+ * `baseVolume ≤ 0` (ou não-finito) devolve 0 com nota explicando — nunca `NaN`,
+ * porque um `NaN` aqui vira `scheduledAt` de campanha real e só é descoberto
+ * depois do disparo.
+ */
+export function proposeNextVolume(input: NextVolumeInput): NextVolumeDecision {
+  const { brake } = input;
+  const base = Number.isFinite(input.baseVolume) ? Math.floor(input.baseVolume) : 0;
+  const step = Number.isFinite(input.step) ? Math.max(0, input.step) : 0;
+  const queue = normalizeCap(input.queueAvailable);
+  const hasCredit = input.creditAvailable !== null && input.creditAvailable !== undefined;
+  const credit = hasCredit ? normalizeCap(input.creditAvailable as number) : null;
+
+  if (base <= 0) {
+    return {
+      volume: 0,
+      cappedBy: null,
+      note: `Sem volume-base do último dia enviado (recebido: ${input.baseVolume}) — nada pra escalar. Definir volume explícito antes de agendar.`,
+    };
+  }
+
+  if (brake === "stop") {
+    return {
+      volume: 0,
+      cappedBy: "brake",
+      note: "Freio em STOP (risco de ISP no limiar ou acima) — não agendar; cancelar onda já agendada.",
+    };
+  }
+
+  let volume: number;
+  let cappedBy: NextVolumeDecision["cappedBy"];
+  let note: string;
+
+  if (brake === "hold") {
+    volume = base;
+    cappedBy = "brake";
+    note = `Freio em HOLD — repete o volume do último dia (${base}) sem escalar.`;
+  } else {
+    volume = Math.round(base * (1 + step));
+    cappedBy = "step";
+    note = `Base ${base} × (1 + ${step.toFixed(4).replace(".", ",")}) = ${volume}.`;
+  }
+
+  if (queue < volume) {
+    note += ` Limitado pela fila de 1º envio (${queue} disponíveis, proposto ${volume}).`;
+    volume = queue;
+    cappedBy = "queue";
+  }
+
+  if (credit !== null && credit < volume) {
+    note += ` Limitado pelo crédito Brevo (${credit} restantes, proposto ${volume}).`;
+    volume = credit;
+    cappedBy = "credit";
+  }
+
+  if (credit === null) note += " Crédito Brevo não consultado — não limitou.";
+
+  return { volume, cappedBy, note };
+}
+
+// ---------------------------------------------------------------------------
+// 6. Sunset de não-abridores
+// ---------------------------------------------------------------------------
+
+/**
+ * Decide se um contato sai da elegibilidade por SUNSET: já recebeu ≥2 envios e
+ * nunca abriu nenhum.
+ *
+ * A #4430 propôs isso e foi fechada sem implementação — `computeEligibility`
+ * (clarice-db.ts) nunca teve esse corte, então o não-abridor reincidente volta
+ * pra fila a cada onda (`measureNonOpenerExposure`, em clarice-wave-plan.ts, só
+ * MEDE o estoque). Decisão do editor no #4705: cortar de vez.
+ *
+ * O porquê é o LAÇO DE REALIMENTAÇÃO, não a métrica de abertura: quem recebe e
+ * nunca abre é o candidato natural a marcar spam; o spam sobe; o spam é uma das
+ * 4 métricas que FREIAM o volume (`decideBrake`); o alcance cai. O motor come o
+ * próprio alcance alimentando um público que nunca leu. Cortar aqui é o que
+ * permite tirar abertura do freio sem ficar cego — a abertura deixa de frear
+ * TODO MUNDO e passa a desqualificar INDIVIDUALMENTE quem de fato não lê.
+ *
+ * Cuidado do call site (#4688): só aplicar a contatos com abertura JÁ MEDIDA
+ * (`hasMeasuredOpens`, clarice-segment.ts). Um contato nunca sincronizado tem
+ * `opens_count = 0` pelo `DEFAULT 0` do schema, não por comportamento — sem
+ * esse guard o sunset cortaria gente que nunca foi medida. Esta função é pura e
+ * só olha os dois contadores: o guard de "foi medido?" mora no filtro de quem
+ * chega aqui, de propósito (mantém a regra testável sem arrastar `StoreRow`).
+ */
+export function shouldSunsetNonOpener(c: { sendsCount: number; opensCount: number }): boolean {
+  const sends = Number.isFinite(c.sendsCount) ? c.sendsCount : 0;
+  const opens = Number.isFinite(c.opensCount) ? c.opensCount : 0;
+  return sends >= 2 && opens <= 0;
+}
+
+// ---------------------------------------------------------------------------
+// 7. Tendência de abertura — SÓ RELATÓRIO
+// ---------------------------------------------------------------------------
+
+export interface OpenRateTrendPoint {
+  /** Dia-calendário BRT (`YYYY-MM-DD`) — ver `brtDayKey`. */
+  dayKey: string;
+  delivered: number;
+  uniqueViews: number;
+}
+
+export interface OpenRateTrendResult {
+  /** Abertura % ponderada por `delivered` da metade MAIS RECENTE da janela. */
+  current: number;
+  /** Idem, da metade MAIS ANTIGA. */
+  previous: number;
+  /** `current − previous`, em PONTOS PERCENTUAIS. */
+  deltaPp: number;
+  verdict: "estavel" | "queda" | "alta";
+  /** Dias com `delivered > 0` de fato usados na comparação. */
+  sampleDays: number;
+}
+
+/** Queda relevante: −5 pontos percentuais entre as metades da janela. */
+export const OPEN_TREND_DROP_PP = -5;
+/** Alta relevante: +5 pontos percentuais. */
+export const OPEN_TREND_RISE_PP = 5;
+/** Mínimo de dias úteis (2 por metade) pra sequer comparar as metades. */
+export const OPEN_TREND_MIN_DAYS = 4;
+
+function weightedOpenRatePct(points: OpenRateTrendPoint[]): { rate: number; delivered: number } {
+  let delivered = 0;
+  let views = 0;
+  for (const p of points) {
+    delivered += p.delivered;
+    views += p.uniqueViews;
+  }
+  return { rate: delivered > 0 ? (views / delivered) * 100 : 0, delivered };
+}
+
+/**
+ * Tendência de abertura na janela de `SEND_WINDOWS.trendDays` (60 dias):
+ * compara a metade MAIS RECENTE contra a MAIS ANTIGA, cada uma ponderada por
+ * `delivered` (dia grande pesa mais que dia pequeno — média de médias mentiria).
+ *
+ * **ISTO NUNCA ENTRA EM `decideBrake` NEM EM `adaptiveStep`.** É a decisão 1 do
+ * editor no #4705, e é o núcleo da issue: a base de 1º envio é ~96% fria e abre
+ * ~1%; usar abertura como freio produziu a catraca 10.014 → 322 → 1.053 → 817.
+ * A abertura continua sendo informação valiosa — sobre CONTEÚDO e sobre a
+ * qualidade das safras que estão entrando — só não é mais autorizada a cortar
+ * volume. Quem cuida de abertura no nível do INDIVÍDUO é
+ * `shouldSunsetNonOpener`, não um corte coletivo de 30%.
+ *
+ * Dias sem `delivered` são descartados (não carregam sinal e distorceriam a
+ * divisão das metades). Com número ímpar de dias úteis, o dia do MEIO é
+ * descartado — nunca contado nas duas metades, o que inflaria artificialmente a
+ * estabilidade.
+ *
+ * Amostra insuficiente (`< OPEN_TREND_MIN_DAYS` dias úteis, ou uma das metades
+ * sem `delivered`) devolve `deltaPp: 0` / `verdict: "estavel"` com
+ * `previous === current`: sem base pra comparação, o relatório NUNCA afirma
+ * queda nem alta. `sampleDays` é o campo que denuncia a amostra curta.
+ */
+export function openRateTrend(
+  points: OpenRateTrendPoint[],
+  opts: { minDays?: number; dropPp?: number; risePp?: number } = {},
+): OpenRateTrendResult {
+  const minDays = opts.minDays ?? OPEN_TREND_MIN_DAYS;
+  const dropPp = opts.dropPp ?? OPEN_TREND_DROP_PP;
+  const risePp = opts.risePp ?? OPEN_TREND_RISE_PP;
+
+  const usable = points
+    .filter(
+      (p) =>
+        Number.isFinite(p.delivered) &&
+        p.delivered > 0 &&
+        Number.isFinite(p.uniqueViews) &&
+        p.uniqueViews >= 0,
+    )
+    .sort((a, b) => a.dayKey.localeCompare(b.dayKey));
+
+  const sampleDays = usable.length;
+  const overall = weightedOpenRatePct(usable).rate;
+
+  if (sampleDays < minDays) {
+    return { current: overall, previous: overall, deltaPp: 0, verdict: "estavel", sampleDays };
+  }
+
+  const half = Math.floor(sampleDays / 2);
+  const older = usable.slice(0, half);
+  const recent = usable.slice(sampleDays - half);
+
+  const prev = weightedOpenRatePct(older);
+  const curr = weightedOpenRatePct(recent);
+  if (prev.delivered <= 0 || curr.delivered <= 0) {
+    return { current: overall, previous: overall, deltaPp: 0, verdict: "estavel", sampleDays };
+  }
+
+  const deltaPp = curr.rate - prev.rate;
+  const verdict: OpenRateTrendResult["verdict"] =
+    deltaPp <= dropPp ? "queda" : deltaPp >= risePp ? "alta" : "estavel";
+
+  return { current: curr.rate, previous: prev.rate, deltaPp, verdict, sampleDays };
+}
+
+// ---------------------------------------------------------------------------
+// 8. Seleção de janela — dias DE ENVIO vs dias CORRIDOS
+// ---------------------------------------------------------------------------
+
+/** Entrada estrutural mínima de uma campanha; `BrevoCampaign` satisfaz. */
+export interface SendDayLike {
+  sentDate: string | null;
+}
+
+/**
+ * Chave de dia-calendário BRT (`YYYY-MM-DD`) de um timestamp de envio.
+ *
+ * Mesma fórmula de `brtDayKey` em `workers/brevo-dashboard/src/weekly-plan.ts`
+ * (`toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" })`) —
+ * reimplementada aqui, e não importada, por 2 motivos: a do worker é privada
+ * (não exportada) e `groupByBrtDay`, que a expõe indiretamente, é tipada em
+ * `BrevoCampaign` — o que impediria a assinatura genérica que este módulo
+ * precisa. `test/clarice-envio-policy.test.ts` TRAVA a paridade comparando o
+ * agrupamento das duas implementações sobre as mesmas campanhas; divergir
+ * quebra o teste.
+ */
+export function brtDayKey(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+}
+
+/** Agrupa por dia-calendário BRT. Sem `sentDate` válido = fora de todo grupo. */
+export function groupByBrtDay<T extends SendDayLike>(campaigns: T[]): Map<string, T[]> {
+  const byDay = new Map<string, T[]>();
+  for (const c of campaigns) {
+    const day = brtDayKey(c.sentDate);
+    if (!day) continue;
+    const arr = byDay.get(day);
+    if (arr) arr.push(c);
+    else byDay.set(day, [c]);
+  }
+  return byDay;
+}
+
+/** `YYYY-MM-DD` deslocado em N dias (aritmética UTC pura, sem ICU). */
+function shiftDayKey(dayKey: string, deltaDays: number): string {
+  const [y, m, d] = dayKey.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d) + deltaDays * 86_400_000).toISOString().slice(0, 10);
+}
+
+/**
+ * JANELA DO FREIO — as campanhas dos últimos `opts.days` **DIAS DE ENVIO**
+ * (dias-calendário BRT em que houve envio), não as N campanhas mais recentes.
+ *
+ * A distinção não é cosmética: um dia de teste A/B/C são 3 campanhas do MESMO
+ * dia. "Últimas 3 campanhas" seria 1 único dia de envio disfarçado de 3 —
+ * amostra 3× menor que a pretendida bem no cálculo que decide frear. Mesmo
+ * critério (e mesmo motivo) do `HEALTH_SAMPLE_DAYS` do worker.
+ *
+ * Envio com data no FUTURO é excluído (campanha agendada que vazou pro array):
+ * métrica de risco de e-mail que ainda não saiu é sempre zero, e incluir isso
+ * DILUIRIA a janela — um `hold`/`stop` legítimo viraria `ok` por diluição.
+ *
+ * Diferente do worker, aqui NÃO há filtro de maturação de 48h: bounce e unsub
+ * já estão finais em ~T+13h, e esperar 48h pra reagir a um pico de hard bounce
+ * é reagir depois que o ISP já reagiu. Maturação de 48h existia por causa da
+ * ABERTURA, que saiu do freio (#4705).
+ */
+export function selectLastSendDays<T extends SendDayLike>(
+  campaigns: T[],
+  now: Date,
+  opts: { days: number },
+): T[] {
+  const days = opts.days;
+  if (!Number.isInteger(days) || days <= 0) return [];
+  const nowMs = now.getTime();
+
+  const past = campaigns.filter((c) => {
+    const ms = c.sentDate ? Date.parse(c.sentDate) : NaN;
+    return Number.isFinite(ms) && ms <= nowMs;
+  });
+
+  const byDay = groupByBrtDay(past);
+  const topDays = new Set(
+    [...byDay.keys()].sort((a, b) => b.localeCompare(a)).slice(0, days),
+  );
+
+  return past.filter((c) => {
+    const day = brtDayKey(c.sentDate);
+    return day !== null && topDays.has(day);
+  });
+}
+
+/**
+ * JANELA DO ACELERADOR (30d) E DA TENDÊNCIA (60d) — dias CORRIDOS, não dias de
+ * envio.
+ *
+ * Aqui a semântica correta é oposta à de `selectLastSendDays`: acelerar é
+ * apostar em reputação SUSTENTADA NO TEMPO. Se o projeto ficou 3 semanas sem
+ * enviar, "os últimos 30 dias de envio" abrangeriam meses de histórico e
+ * afirmariam uma estabilidade que o calendário não sustenta — enquanto "os
+ * últimos 30 dias corridos" corretamente mostram pouca ou nenhuma amostra
+ * recente, e o motor não acelera sobre passado distante.
+ *
+ * `opts.byCalendarDay` alterna a fronteira:
+ * - `false` (default): janela ROLANTE de `days × 24h` a partir de `now`;
+ * - `true`: dias-calendário BRT — de hoje até `days - 1` dias atrás, inclusive.
+ *   Use quando a janela precisar casar exatamente com as chaves de
+ *   `OpenRateTrendPoint.dayKey` (relatório por dia).
+ *
+ * Futuro excluído nos dois modos, pelo mesmo motivo de `selectLastSendDays`.
+ */
+export function selectWithinDays<T extends SendDayLike>(
+  campaigns: T[],
+  now: Date,
+  opts: { days: number; byCalendarDay?: boolean },
+): T[] {
+  const days = opts.days;
+  if (!Number.isInteger(days) || days <= 0) return [];
+  const nowMs = now.getTime();
+
+  if (opts.byCalendarDay) {
+    const todayKey = brtDayKey(now.toISOString());
+    if (!todayKey) return [];
+    const cutoffKey = shiftDayKey(todayKey, -(days - 1));
+    return campaigns.filter((c) => {
+      const ms = c.sentDate ? Date.parse(c.sentDate) : NaN;
+      if (!Number.isFinite(ms) || ms > nowMs) return false;
+      const day = brtDayKey(c.sentDate);
+      return day !== null && day >= cutoffKey && day <= todayKey;
+    });
+  }
+
+  const cutoffMs = nowMs - days * 86_400_000;
+  return campaigns.filter((c) => {
+    const ms = c.sentDate ? Date.parse(c.sentDate) : NaN;
+    return Number.isFinite(ms) && ms <= nowMs && ms >= cutoffMs;
+  });
+}
