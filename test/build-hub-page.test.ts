@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 
 import { renderGeneratedModule, HUB_LOADERS } from "../scripts/build-hub-page.ts";
 import { renderHubPage, sourceEditionLabel, validateHubContent, type HubContent } from "../scripts/lib/shared/hub-page.ts";
+import { findParagraphLinks } from "../scripts/lib/shared/markdown-links.ts";
 import { buildAnthropicClaudeFaq, getAnthropicClaudeHub } from "../scripts/lib/hubs/anthropic-claude.ts";
 import { buildOpenaiChatgptFaq } from "../scripts/lib/hubs/openai-chatgpt.ts";
 import { knownUtmSources, HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM } from "../scripts/lib/shared/utm-registry.ts";
@@ -709,4 +710,71 @@ describe("scripts/build-hub-page.ts preenche relatedHubs com os hubs IRMÃOS rea
       );
     });
   }
+});
+
+describe("links de fonte primária na prosa das 5 seções (#4919 item 8, Fase C)", () => {
+  // Cada `[texto](url)` de `sections[].paragraphs` cujo destino NÃO é
+  // `diar.ia.br` (o domínio de marca usado pelos links internos existentes,
+  // ver `toSourceEditions`) é, por construção, um link de FONTE PRIMÁRIA —
+  // adicionado por esta fase a partir de `primarySourceUrls`
+  // (`generate-hub-sources.ts`, Fase A/B). O rótulo fixo `fonte primária`
+  // (não um label narrativo) é o marcador usado pra anexar a citação
+  // imediatamente após o link interno da manchete correspondente, sem
+  // remover/substituir esse link interno — ver docstring do #4919 item 8 no
+  // dispatch da rodada 260811b (branch `overnight/fix-4919-primary-source-prose`).
+  function externalLinksInSections(hub: HubContent): { url: string; label: string }[] {
+    const out: { url: string; label: string }[] = [];
+    for (const section of hub.sections) {
+      for (const paragraph of section.paragraphs) {
+        for (const link of findParagraphLinks(paragraph)) {
+          if (!link.url.startsWith("https://diar.ia.br/")) out.push({ url: link.url, label: link.label });
+        }
+      }
+    }
+    return out;
+  }
+
+  for (const slug of Object.keys(HUB_LOADERS)) {
+    it(`hub "${slug}": todo link de fonte primária nas seções aponta pra um domínio externo (nunca diar.ia.br)`, () => {
+      const hub = HUB_LOADERS[slug]();
+      const external = externalLinksInSections(hub);
+      for (const { url } of external) {
+        const host = new URL(url).host;
+        assert.notEqual(host, "diar.ia.br", `link "${url}" deveria ser fonte primária externa, não o domínio de marca`);
+        assert.equal(new URL(url).protocol, "https:", `link "${url}" não é https:`);
+      }
+    });
+  }
+
+  it('hub "anthropic-claude": tem pelo menos 1 link de fonte primária externo nas 5 seções', () => {
+    const external = externalLinksInSections(HUB_LOADERS["anthropic-claude"]());
+    assert.ok(external.length > 0, "esperava >0 links de fonte primária em anthropic-claude — o hub com maior cobertura medida (54/84)");
+  });
+
+  it('hub "openai-chatgpt": tem pelo menos 1 link de fonte primária externo nas 5 seções', () => {
+    const external = externalLinksInSections(HUB_LOADERS["openai-chatgpt"]());
+    assert.ok(external.length > 0, "esperava >0 links de fonte primária em openai-chatgpt — 2º hub com maior cobertura medida (55/104)");
+  });
+
+  it("nenhum link de fonte primária tem rótulo com verbo de atribuição, aspas ou nome de executivo (decisão registrada na issue #4919 — 'Fora de escopo')", () => {
+    // Guard leve, não semântico: o rótulo usado por ESTA fase é sempre o
+    // marcador fixo "fonte primária" — nunca prosa livre gerada por
+    // heurística. Se algum link externo aparecer com outro rótulo, ou é
+    // uma citação pré-existente (ok, não é desta fase) ou um jeito
+    // acidental de reintroduzir atribuição narrativa (não ok) — o teste
+    // não distingue os dois casos automaticamente, então só documenta o
+    // marcador fixo esperado pra `fonte primária` especificamente.
+    for (const slug of Object.keys(HUB_LOADERS)) {
+      const hub = HUB_LOADERS[slug]();
+      for (const section of hub.sections) {
+        for (const paragraph of section.paragraphs) {
+          for (const link of findParagraphLinks(paragraph)) {
+            if (link.url.startsWith("https://diar.ia.br/")) continue;
+            if (link.label !== "fonte primária") continue; // rótulo de OUTRA fase/origem — fora do escopo deste guard
+            assert.doesNotMatch(link.label, /disse|afirmou|declarou|segundo|de acordo com/i);
+          }
+        }
+      }
+    }
+  });
 });
