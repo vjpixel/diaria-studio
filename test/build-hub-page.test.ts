@@ -365,38 +365,68 @@ describe("buildOpenaiChatgptFaq (#4790 achado 1) — regression: manchete de inc
   });
 });
 
-/** Extrai `{dateLabel, titleLabel}` de cada `<li>` da bibliografia
- * (`.hub-sources`) do HTML renderizado — usado pelas regressões #4918/#4911
- * abaixo, que precisam inspecionar o texto efetivamente visível, não só o
- * campo `HubSourceEdition.title` isolado. */
-function extractSourceListItems(html: string): { dateLabel: string; sep: string; titleLabel: string }[] {
-  const items: { dateLabel: string; sep: string; titleLabel: string }[] = [];
-  const re = /<li><a href="[^"]*"><span class="li-date">([^<]*)<\/span>(.*?)<\/a><\/li>/g;
+/** Extrai `{dateLabel, titleLabel}` de cada LINHA da tabela de bibliografia
+ * (`.hub-sources table`) do HTML renderizado — usado pelas regressões
+ * #4911/#4918/#4921 abaixo, que precisam inspecionar o texto efetivamente
+ * visível, não só o campo `HubSourceEdition.title` isolado.
+ *
+ * #4921 Onda 1 trocou `<ul>/<li>` por `<table>`: data e manchete agora vêm de
+ * `<td>` DISTINTOS (1º e 2º da linha) — o regex só casa quando essa
+ * separação estrutural existe, então uma regressão futura que volte a
+ * concatenar os dois num `<td>` único faz `rows.length` cair (linhas
+ * esperadas != linhas extraídas), não passar silenciosamente. */
+function extractSourceTableRows(html: string): { dateLabel: string; titleLabel: string }[] {
+  const items: { dateLabel: string; titleLabel: string }[] = [];
+  const re = /<tr><td>([^<]*)<\/td><td>([^<]*)<\/td><td><a[^>]*>[^<]*<\/a><\/td><\/tr>/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(html))) {
-    const dateLabel = m[1];
-    const rest = m[2];
-    const sepMatch = /^(\s*—\s*|\s+)/.exec(rest);
-    const sep = sepMatch ? sepMatch[0] : "";
-    items.push({ dateLabel, sep, titleLabel: rest.slice(sep.length) });
+    items.push({ dateLabel: m[1], titleLabel: m[2] });
   }
   return items;
 }
 
-describe("bibliografia dos hubs — separador data/título (#4918 Conserto 1)", () => {
-  // Regression: antes do fix, `<span class="li-date">06/08/2026</span>` era
-  // seguido IMEDIATAMENTE do título, sem nenhum caractere entre os dois — a
-  // separação era só visual (margin-right no CSS). Quem extrai o texto do
-  // HTML (assistente, leitor de tela, colagem) recebia os dois colados.
+describe("bibliografia dos hubs — <table> com 1 linha por manchete (#4921)", () => {
   for (const slug of Object.keys(HUB_LOADERS)) {
-    it(`hub "${slug}": todo item da bibliografia tem separador textual entre data e título`, () => {
+    it(`hub "${slug}": exatamente 1 <table> na seção de fontes, <thead> presente, corpo com 1 linha por manchete`, () => {
+      const hub = HUB_LOADERS[slug]();
+      const html = renderHubPage(hub);
+      const sourcesSectionMatch = /<section class="hub-sources"[\s\S]*?<\/section>/.exec(html);
+      assert.ok(sourcesSectionMatch, `hub "${slug}": seção .hub-sources não encontrada`);
+      const sourcesHtml = sourcesSectionMatch![0];
+      const tableCount = (sourcesHtml.match(/<table>/g) ?? []).length;
+      assert.equal(tableCount, 1, `hub "${slug}": esperado 1 <table> na seção de fontes, achou ${tableCount}`);
+      assert.match(sourcesHtml, /<thead>/, `hub "${slug}": <table> sem <thead>`);
+      // Esperado DERIVADO do próprio dataset (nunca literal — as contagens
+      // mudam a cada regen, ver docstring da issue #4921): `title` é
+      // `matchedHeadlines.join(" · ")`, então a soma dos splits por " · "
+      // sobre `hub.sourceEditions` é o total de manchetes casadas.
+      const expectedRows = hub.sourceEditions.reduce((n, e) => n + e.title.split(" · ").length, 0);
+      const rows = extractSourceTableRows(html);
+      assert.equal(
+        rows.length,
+        expectedRows,
+        `hub "${slug}": linhas da tabela (${rows.length}) != manchetes esperadas (${expectedRows})`,
+      );
+    });
+  }
+});
+
+describe("bibliografia dos hubs — data e manchete em <td> distintos, nunca concatenados (#4921, resolve por construção o #4918 Conserto 1)", () => {
+  // Regression: no formato <li> anterior, `<span class="li-date">06/08/2026</span>`
+  // sem separador textual virava "06/08/2026Modelo da Anthropic finge ser
+  // humano em teste" pra quem extraía o texto (assistente, leitor de tela,
+  // colagem). Com `<td>` distintos a concatenação deixa de ser possível por
+  // construção — este teste garante isso diretamente: o texto bruto de
+  // `${dateLabel}${titleLabel}` (a forma colada) nunca aparece no HTML.
+  for (const slug of Object.keys(HUB_LOADERS)) {
+    it(`hub "${slug}": nenhuma linha da bibliografia concatena data e manchete no mesmo texto`, () => {
       const html = renderHubPage(HUB_LOADERS[slug]());
-      const items = extractSourceListItems(html);
-      assert.ok(items.length > 0, `hub "${slug}" sem itens de bibliografia extraídos — regex de teste desatualizada?`);
-      for (const item of items) {
+      const rows = extractSourceTableRows(html);
+      assert.ok(rows.length > 0, `hub "${slug}" sem linhas de bibliografia extraídas — regex de teste desatualizada?`);
+      for (const row of rows) {
         assert.ok(
-          item.sep.length > 0,
-          `item "${item.dateLabel}${item.titleLabel}" do hub "${slug}" não tem separador entre data e título`,
+          !html.includes(`${row.dateLabel}${row.titleLabel}`),
+          `linha "${row.dateLabel}" / "${row.titleLabel}" do hub "${slug}" concatena data e manchete sem separação estrutural`,
         );
       }
     });
@@ -409,7 +439,7 @@ describe("bibliografia dos hubs — data com ano (#4911 item 4)", () => {
   for (const slug of Object.keys(HUB_LOADERS)) {
     it(`hub "${slug}": todo rótulo de data da bibliografia é DD/MM/AAAA`, () => {
       const html = renderHubPage(HUB_LOADERS[slug]());
-      const items = extractSourceListItems(html);
+      const items = extractSourceTableRows(html);
       assert.ok(items.length > 0);
       for (const item of items) {
         assert.match(
