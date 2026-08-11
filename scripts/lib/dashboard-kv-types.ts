@@ -328,6 +328,29 @@ export interface PostmasterCampaignSpamRecord {
 }
 
 /**
+ * #4973: chave KV pra um domínio ADICIONAL sondado pelo Postmaster Tools —
+ * generaliza `scripts/postmaster-spam-sync.ts` de 1 domínio hardcoded
+ * (`clarice.ai`) pra N. O domínio ORIGINAL continua usando a chave literal
+ * `"postmaster:spam"` (declarada separadamente como `POSTMASTER_SPAM_KV_KEY`
+ * em `scripts/postmaster-spam-entry.ts` e `workers/brevo-dashboard/src/types.ts`
+ * — INTOCADA por esta função, de propósito: preservar essa chave exata, sem
+ * sufixo de domínio, é o que garante migração zero pro breaker existente
+ * (`resolveSpamSignal`, thresholds.ts) — nenhuma entry precisa mover, nenhum
+ * consumidor muda de leitura). Esta função serve só domínios NOVOS
+ * (ex: `"diar.ia.br"`, #4973): `postmaster:spam:{domain}`, um namespace que
+ * nunca colide com a chave legada (que não tem `:` depois de `spam`).
+ *
+ * Fonte única entre o produtor (`postmaster-spam-sync.ts`) e o consumidor
+ * (`workers/brevo-dashboard/src/brevo-diaria.ts`) — os dois importam esta
+ * função em vez de cada um hardcodar o formato da chave separadamente,
+ * eliminando o risco de drift (mesmo racional de `PostmasterProducer`, acima,
+ * pro par produtor/consumidor de `producedBy`).
+ */
+export function additionalPostmasterSpamKvKey(domain: string): string {
+  return `postmaster:spam:${domain}`;
+}
+
+/**
  * #4184: seção editorial de origem de um link dentro do digest MENSAL.
  * Fonte: `data/monthly/{ciclo}/prioritized.md` — a estrutura de seções MUDA
  * por ciclo (corrigido na 2ª rodada da #4184, depois de generalizar errado a

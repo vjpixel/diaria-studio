@@ -29,8 +29,14 @@ import {
   parseWindowDaysArg,
   collectWorstCampaignSpam,
   describeCampaignSpamCollectionLine,
+  syncDomain,
+  POSTMASTER_DOMAINS,
   type CollectWorstCampaignSpamResult,
+  type PostmasterDomainConfig,
+  type SyncDomainDeps,
 } from "../scripts/postmaster-spam-sync.ts";
+import { POSTMASTER_SPAM_KV_KEY } from "../scripts/postmaster-spam-entry.ts";
+import { additionalPostmasterSpamKvKey } from "../scripts/lib/dashboard-kv-types.ts";
 import type { QueryDomainStatsResponseV2 } from "../scripts/lib/postmaster-v2-client.ts";
 import type { WorstCampaignSpam } from "../scripts/lib/postmaster-campaign-spam.ts";
 
@@ -496,4 +502,173 @@ test("parseWindowDaysArg — não-numérico ou < 1 lança erro explícito", () =
   assert.throws(() => parseWindowDaysArg("abc"), /inválido/);
   assert.throws(() => parseWindowDaysArg("0"), /inválido/);
   assert.throws(() => parseWindowDaysArg("-3"), /inválido/);
+});
+
+// ── #4973: POSTMASTER_DOMAINS / syncDomain — generalização pra N domínios ──
+
+test("POSTMASTER_DOMAINS — clarice.ai preserva a chave KV LEGADA (postmaster:spam) intocada, diar.ia.br usa um namespace novo que nunca colide", () => {
+  const clarice = POSTMASTER_DOMAINS.find((d) => d.domain === "clarice.ai");
+  const diaria = POSTMASTER_DOMAINS.find((d) => d.domain === "diar.ia.br");
+  assert.ok(clarice, "clarice.ai precisa continuar configurado");
+  assert.ok(diaria, "diar.ia.br precisa estar configurado (#4973)");
+  assert.equal(clarice!.kvKey, "postmaster:spam", "chave EXATA que o breaker da Rampa lê hoje — nenhuma migração");
+  assert.equal(clarice!.kvKey, POSTMASTER_SPAM_KV_KEY);
+  assert.equal(clarice!.collectCampaignSpam, true, "clarice.ai continua coletando spam por-campanha (comportamento pré-#4973)");
+  assert.equal(diaria!.kvKey, additionalPostmasterSpamKvKey("diar.ia.br"));
+  assert.notEqual(diaria!.kvKey, POSTMASTER_SPAM_KV_KEY, "namespace novo nunca colide com a chave legada");
+  assert.equal(diaria!.collectCampaignSpam, false, "sem FEEDBACK_LOOP_ID atribuível conhecido pra este domínio (#4973)");
+});
+
+const SYNC_NOW = new Date("2026-08-06T09:00:00.000Z");
+
+/** Deps que NUNCA deveriam ser chamadas — usadas pra provar "pulado", não "chamado e ignorado". */
+function unreachableDeps(): Pick<SyncDomainDeps, "queryFeedbackLoopIds" | "queryCampaignSpamRate" | "readPreviousCampaignSpam"> {
+  return {
+    queryFeedbackLoopIds: async () => {
+      throw new Error("não deveria ser chamada — collectCampaignSpam:false");
+    },
+    queryCampaignSpamRate: async () => {
+      throw new Error("não deveria ser chamada — collectCampaignSpam:false");
+    },
+    readPreviousCampaignSpam: async () => {
+      throw new Error("não deveria ser chamada — collectCampaignSpam:false");
+    },
+  };
+}
+
+function clariceDomainResponse(): QueryDomainStatsResponseV2 {
+  return {
+    domainStats: [
+      { metric: "spam_rate", date: { year: 2026, month: 8, day: 1 }, value: { floatValue: 0 } },
+      { metric: "spam_rate", date: { year: 2026, month: 8, day: 2 }, value: { floatValue: 0.0041067763 } },
+      { metric: "spam_rate", date: { year: 2026, month: 8, day: 3 }, value: { floatValue: 0 } },
+    ],
+  };
+}
+
+function clariceFeedbackLoopIdsResponse(): QueryDomainStatsResponseV2 {
+  return {
+    domainStats: [
+      {
+        metric: "feedback_loop_id",
+        date: { year: 2026, month: 8, day: 2 },
+        value: { stringList: ["11130585", "11130585_105", "11130585_106", "11130585_107", "77.32.148.101"] },
+      },
+    ],
+  };
+}
+
+function clariceCampaignSpamRate(parsed: { campaignId: number }): QueryDomainStatsResponseV2 {
+  const floatValue = parsed.campaignId === 107 ? 0.0139 : 0.001;
+  return { domainStats: [{ metric: "campaign_spam_rate", date: { year: 2026, month: 8, day: 2 }, value: { floatValue } }] };
+}
+
+function clariceDeps(): SyncDomainDeps {
+  return {
+    queryDomainSpam: async () => clariceDomainResponse(),
+    queryFeedbackLoopIds: async () => clariceFeedbackLoopIdsResponse(),
+    queryCampaignSpamRate: async (parsed) => clariceCampaignSpamRate(parsed),
+    readPreviousCampaignSpam: async () => null,
+  };
+}
+
+test("syncDomain — fixture com 2 domínios: clarice.ai (dado completo) sai IDÊNTICO ao comportamento pré-#4973 (regressão zero pro breaker) (#4973)", async () => {
+  const clariceConfig = POSTMASTER_DOMAINS.find((d) => d.domain === "clarice.ai")!;
+  const diariaConfig = POSTMASTER_DOMAINS.find((d) => d.domain === "diar.ia.br")!;
+
+  // diar.ia.br roda PRIMEIRO na mesma "sondagem" — prova que sua presença
+  // não contamina o resultado de clarice.ai (deps totalmente independentes).
+  const diariaDeps: SyncDomainDeps = {
+    queryDomainSpam: async () => ({ domainStats: [] }),
+    ...unreachableDeps(),
+  };
+  await syncDomain(diariaConfig, 10, SYNC_NOW, diariaDeps);
+
+  const clariceResult = await syncDomain(clariceConfig, 10, SYNC_NOW, clariceDeps());
+
+  // Chave KV: EXATA e igual à pré-#4973 (nenhuma migração).
+  assert.equal(clariceResult.kvKey, "postmaster:spam");
+  assert.equal(clariceResult.domain, "clarice.ai");
+
+  // Entry: mesmos valores que o cenário real 260806 (pré-#4973) já cobria —
+  // ver teste "cenário real 260806 (v2)" acima, mesma fixture de domínio.
+  const entry = clariceResult.entry;
+  assert.ok(entry, "clarice.ai tem 3 dias de leitura — entry não pode ser null");
+  assert.equal(entry!.date, "2026-08-03");
+  assert.ok(Math.abs(entry!.spamRatePct - 0.13689254333333334) < 1e-9);
+  assert.equal(entry!.daysWithData, 3);
+  assert.equal(entry!.daysProbed, 10);
+  assert.equal(entry!.producedBy, "auto");
+  // #4705: pico por-campanha continua sendo coletado normalmente pra clarice.ai.
+  assert.equal(entry!.worstCampaignSpamRatePct, 1.39);
+  assert.equal(entry!.worstCampaignFeedbackLoopId, "11130585_107");
+  // #4970: mapa por-campanha com as 3 campanhas encontradas na janela.
+  assert.deepEqual(Object.keys(entry!.campaignSpam ?? {}).sort(), ["105", "106", "107"]);
+});
+
+test("syncDomain — diar.ia.br sem nenhum dia publicado na janela → entry null com log INFORMATIVO ('aguardando publicação'), nunca warn/error, nunca lança (#4973)", async () => {
+  const diariaConfig = POSTMASTER_DOMAINS.find((d) => d.domain === "diar.ia.br")!;
+  const deps: SyncDomainDeps = {
+    queryDomainSpam: async () => ({ domainStats: [] }), // cobertura rala — 0 dias publicados nesta janela
+    ...unreachableDeps(),
+  };
+
+  const result = await syncDomain(diariaConfig, 10, SYNC_NOW, deps);
+
+  assert.equal(result.entry, null, "sem leitura na janela — main() não escreve no KV, mantém a última leitura válida");
+  assert.equal(result.domain, "diar.ia.br");
+  assert.ok(result.logLines.length > 0, "sempre loga algo, nunca fica silencioso");
+  assert.ok(
+    result.logLines.every((l) => l.level === "log"),
+    "cobertura rala é NORMAL pra este domínio (#4973) — nenhuma linha deve ser warn/error",
+  );
+  assert.ok(
+    result.logLines.some((l) => /nenhuma leitura válida/.test(l.message) && /diar\.ia\.br/.test(l.message)),
+    "mensagem menciona explicitamente o domínio e a ausência de leitura",
+  );
+});
+
+test("syncDomain — collectCampaignSpam:false pula a coleta por-campanha INTEIRA: nunca chama queryFeedbackLoopIds/queryCampaignSpamRate/readPreviousCampaignSpam (#4973)", async () => {
+  const diariaConfig = POSTMASTER_DOMAINS.find((d) => d.domain === "diar.ia.br")!;
+  assert.equal(diariaConfig.collectCampaignSpam, false);
+
+  let feedbackLoopCalls = 0;
+  let campaignSpamRateCalls = 0;
+  let readPreviousCalls = 0;
+  const deps: SyncDomainDeps = {
+    queryDomainSpam: async () => clariceDomainResponse(), // conteúdo não importa pra este teste — só a coleta por-campanha é o alvo
+    queryFeedbackLoopIds: async () => {
+      feedbackLoopCalls++;
+      return { domainStats: [] };
+    },
+    queryCampaignSpamRate: async () => {
+      campaignSpamRateCalls++;
+      return { domainStats: [] };
+    },
+    readPreviousCampaignSpam: async () => {
+      readPreviousCalls++;
+      return null;
+    },
+  };
+
+  await syncDomain(diariaConfig, 10, SYNC_NOW, deps);
+
+  assert.equal(feedbackLoopCalls, 0, "query BASE de FEEDBACK_LOOP_ID nunca é tentada pra este domínio");
+  assert.equal(campaignSpamRateCalls, 0, "nenhuma das N queries de FEEDBACK_LOOP_SPAM_RATE por campanha é tentada");
+  assert.equal(readPreviousCalls, 0, "nem a leitura do mapa por-campanha anterior no KV é tentada — não há nada pra mesclar");
+});
+
+test("syncDomain — collectCampaignSpam:true (clarice.ai) SEGUE chamando as queries de campanha normalmente (contraste com o teste acima)", async () => {
+  const clariceConfig = POSTMASTER_DOMAINS.find((d) => d.domain === "clarice.ai")!;
+  let feedbackLoopCalls = 0;
+  const deps = clariceDeps();
+  const wrapped: SyncDomainDeps = {
+    ...deps,
+    queryFeedbackLoopIds: async (range) => {
+      feedbackLoopCalls++;
+      return deps.queryFeedbackLoopIds(range);
+    },
+  };
+  await syncDomain(clariceConfig, 10, SYNC_NOW, wrapped);
+  assert.equal(feedbackLoopCalls, 1, "clarice.ai continua tentando a query base normalmente");
 });

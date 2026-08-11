@@ -64,16 +64,22 @@
  * como opcional/condicional, não bloqueante). Documentado aqui E na própria
  * aba (nota inline) em vez de silenciosamente omitido.
  */
-import type { Env, BrevoCampaign, BrevoGlobalStats } from "./types.ts";
+import type { Env, BrevoCampaign, BrevoGlobalStats, PostmasterSpamEntry } from "./types.ts";
 import { RECENT_STATS_TTL } from "./types.ts";
 import {
   brevoFetchWithApiKey,
   withRateLimitRetry,
   mapLimit,
   isImmutableCampaign,
+  normalizePostmasterSpamEntry,
 } from "./brevo-api.ts";
 import { DEFAULT_HEALTH_THRESHOLDS, isBounceBreach, type HealthThresholds } from "./thresholds.ts";
 import { DS, pct, cellClass, fmtTimeBRT, brevoReportLink } from "./render-links.ts";
+// #4973: chave KV compartilhada com o produtor (scripts/postmaster-spam-sync.ts)
+// — fonte única, ver docstring de `additionalPostmasterSpamKvKey`
+// (dashboard-kv-types.ts) pro racional completo de por que este import
+// existe em vez de cada lado hardcodar o formato da chave.
+import { additionalPostmasterSpamKvKey } from "../../../scripts/lib/dashboard-kv-types.ts";
 // NOTA (mesmo padrão de render-links.ts, comentário #2832): import circular
 // com sections-core.ts (escHtml é definido lá; sections-core.ts importa
 // renderBrevoDiariaTabPanel/BrevoDiariaTabData daqui). Seguro — todo uso
@@ -100,6 +106,16 @@ const BREVO_DIARIA_LASTGOOD_TTL = 24 * 3600; // 24h — mesma folga de LASTGOOD_
  */
 export const BREVO_DIARIA_FETCH_LIMIT = 20;
 
+/**
+ * #4973: domínio deste canal no Google Postmaster Tools — confirmado VERIFIED
+ * com tráfego publicado na sondagem da issue (3 dias/21, todos 0,00% spam).
+ * Chave KV via `additionalPostmasterSpamKvKey` (fonte única com o produtor,
+ * `scripts/postmaster-spam-sync.ts`) — NUNCA a chave legada `postmaster:spam`
+ * (essa é `clarice.ai`, lida pelo breaker da Rampa).
+ */
+export const BREVO_DIARIA_POSTMASTER_DOMAIN = "diar.ia.br";
+export const BREVO_DIARIA_POSTMASTER_SPAM_KV_KEY = additionalPostmasterSpamKvKey(BREVO_DIARIA_POSTMASTER_DOMAIN);
+
 export type BrevoDiariaCampaignRow = BrevoCampaign & { listName?: string };
 
 export interface BrevoDiariaTabData {
@@ -110,6 +126,21 @@ export interface BrevoDiariaTabData {
   stale?: boolean;
   /** Mensagem de erro do live fetch — presente em `stale:true` OU quando não há stale disponível (`campaigns: []`). */
   error?: string;
+  /**
+   * #4973: leitura do Google Postmaster Tools pro domínio `diar.ia.br`
+   * (`scripts/postmaster-spam-sync.ts`, chave `BREVO_DIARIA_POSTMASTER_SPAM_KV_KEY`)
+   * — INDEPENDENTE do sucesso/falha do fetch de campanhas acima (lida sempre
+   * que a aba está habilitada, mesmo quando `campaigns`/`stale`/`error` vêm
+   * de um caminho de falha). `null` = sem leitura no KV — cobertura rala
+   * (comum aqui, ver docstring do produtor) ou 1ª execução antes do sync
+   * rodar; `renderBrevoDiariaPostmasterSpam` trata isso como "aguardando
+   * publicação" explícito, nunca célula vazia/omitida. Opcional no TYPE
+   * (`?`, não só `| null`) pra não quebrar literais de teste pré-#4973 que
+   * constroem `BrevoDiariaTabData` sem este campo — `undefined` e `null`
+   * significam a MESMA coisa pro render ("sem leitura"), nunca tratados como
+   * estados distintos.
+   */
+  postmasterSpam?: PostmasterSpamEntry | null;
 }
 
 /**
@@ -227,6 +258,24 @@ export async function fetchBrevoDiariaCampaigns(
 }
 
 /**
+ * #4973: lê a leitura do Postmaster pro domínio deste canal
+ * (`BREVO_DIARIA_POSTMASTER_SPAM_KV_KEY`) — FAIL-SOFT (nunca lança, mesmo
+ * padrão do resto do módulo): sem `STATS_CACHE`, KV miss (comum — cobertura
+ * rala, ver docstring do produtor), ou payload corrompido, retorna `null`
+ * (tratado pelo render como "aguardando publicação", não como erro).
+ * Deliberadamente INDEPENDENTE da busca de campanhas acima — uma falha na
+ * API Brevo (rede, rate-limit) não deve impedir a aba de mostrar a leitura
+ * do Postmaster, e vice-versa.
+ */
+async function fetchBrevoDiariaPostmasterSpam(
+  env: Pick<Env, "STATS_CACHE">,
+): Promise<PostmasterSpamEntry | null> {
+  if (!env.STATS_CACHE) return null;
+  const raw = await env.STATS_CACHE.get(BREVO_DIARIA_POSTMASTER_SPAM_KV_KEY, "json").catch(() => null);
+  return normalizePostmasterSpamEntry(raw);
+}
+
+/**
  * Orquestração de topo pra esta aba — NUNCA lança. `null` quando o secret
  * `BREVO_DIARIA_API_KEY` não está configurado (aba oculta, ver
  * `RenderDashboardOptions.brevoDiaria` em sections-core.ts). Qualquer falha
@@ -235,6 +284,9 @@ export async function fetchBrevoDiariaCampaigns(
  * `LASTGOOD_CAMPAIGNS_KEY` na Clarice); sem stale disponível, retorna
  * `campaigns: []` com `error` preenchido (o painel mostra um banner
  * explícito em vez de esconder a falha).
+ *
+ * `postmasterSpam` (#4973) é buscado em TODOS os caminhos de retorno — ver
+ * `fetchBrevoDiariaPostmasterSpam` (independente do resultado das campanhas).
  */
 export async function fetchBrevoDiariaTabData(
   env: Pick<Env, "BREVO_DIARIA_API_KEY" | "STATS_CACHE">,
@@ -245,6 +297,7 @@ export async function fetchBrevoDiariaTabData(
   _fetchFn: typeof brevoFetchWithApiKey = brevoFetchWithApiKey,
 ): Promise<BrevoDiariaTabData | null> {
   if (!env.BREVO_DIARIA_API_KEY) return null;
+  const postmasterSpam = await fetchBrevoDiariaPostmasterSpam(env);
   try {
     const campaigns = await fetchBrevoDiariaCampaigns(env, BREVO_DIARIA_FETCH_LIMIT, isFresh, _fetchFn);
     const generatedAt = new Date().toISOString();
@@ -255,7 +308,7 @@ export async function fetchBrevoDiariaTabData(
         })
         .catch(() => { /* erro de KV nunca bloqueia o render */ });
     }
-    return { campaigns, generatedAt };
+    return { campaigns, generatedAt, postmasterSpam };
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e);
     console.error("[#4515] fetchBrevoDiariaTabData: live fetch falhou, tentando fallback stale:", errMsg);
@@ -265,9 +318,9 @@ export async function fetchBrevoDiariaTabData(
           .catch(() => null)
       : null;
     if (cached) {
-      return { campaigns: cached.campaigns, generatedAt: cached.generatedAt, stale: true, error: errMsg };
+      return { campaigns: cached.campaigns, generatedAt: cached.generatedAt, stale: true, error: errMsg, postmasterSpam };
     }
-    return { campaigns: [], generatedAt: new Date().toISOString(), error: errMsg };
+    return { campaigns: [], generatedAt: new Date().toISOString(), error: errMsg, postmasterSpam };
   }
 }
 
@@ -334,6 +387,26 @@ function renderBrevoDiariaRow(c: BrevoDiariaCampaignRow, t: HealthThresholds): s
 }
 
 /**
+ * #4973: painel da leitura do Postmaster pro domínio deste canal
+ * (`diar.ia.br`) — pura/testável, separada de `renderBrevoDiariaTabPanel`
+ * (mesmo padrão de `renderBrevoDiariaRow` acima). `entry` ausente/`null`
+ * NUNCA vira célula/seção vazia — mostra "aguardando publicação" explícito
+ * (mesmo padrão de estado explícito já usado por #4970 na tabela Envios da
+ * Clarice), porque cobertura rala é o caso COMUM aqui (3 dias em 21 na
+ * sondagem original da #4973), não uma falha a esconder.
+ */
+export function renderBrevoDiariaPostmasterSpam(entry: PostmasterSpamEntry | null | undefined): string {
+  if (!entry) {
+    return `<p class="section-note" id="brevodiaria-postmaster-spam">📊 Google Postmaster Tools (<code>${BREVO_DIARIA_POSTMASTER_DOMAIN}</code>): <strong>aguardando publicação</strong> — o Google só publica quando o volume do dia passa o mínimo dele; cobertura rala é o esperado pra este canal, não um erro.</p>`;
+  }
+  const daysDetail =
+    entry.daysWithData != null && entry.daysProbed != null
+      ? ` (${entry.daysWithData}/${entry.daysProbed} dias com dado na janela)`
+      : "";
+  return `<p class="section-note" id="brevodiaria-postmaster-spam">📊 Google Postmaster Tools (<code>${BREVO_DIARIA_POSTMASTER_DOMAIN}</code>): <strong>${entry.spamRatePct.toFixed(3)}%</strong> de spam em ${escHtml(entry.date)}${escHtml(daysDetail)} — só diagnóstico nesta aba (#4973): cobertura ainda insuficiente pra sustentar um circuit breaker automático aqui (ver checklist da issue).</p>`;
+}
+
+/**
  * Renderiza o conteúdo da aba `brevo_diaria` (#4515). `null` → string vazia
  * (a aba inteira — radio/label/panel — some no template de
  * `sections-core.ts`, mesmo tratamento que a aba Cupons dá a
@@ -352,7 +425,8 @@ export function renderBrevoDiariaTabPanel(
   const rows = data.campaigns.map((c) => renderBrevoDiariaRow(c, t)).join("\n");
   return `${banner}<section class="phase2-section" id="brevodiaria-campaigns-table">
   <h2 class="section-title">Campanhas — brevo_diaria</h2>
-  <p class="section-note">Conta Brevo PRÓPRIA do editor (#4266/#4476), SEPARADA da parceria Clarice mostrada nas demais abas — segmento Pending da Beehiiv reativado por este canal. Circuit breakers: mesmos limiares da aba Agendamento (abertura&lt;${t.openRate.yellow}%, bounce duro≥${t.hardBounceRate.yellow}%, bounce total≥${t.bounceRate.yellow}%, spam≥${t.spamRate.yellow}%, unsub≥${t.unsubRate.yellow}%). <strong>Diferente da tabela Envios da Clarice, aqui o spam É colorido</strong> — não há leitura do Google Postmaster Tools pro domínio diar.ia.br ainda, então o número vem do <code>complaints</code> bruto da Brevo, que pode subcontar o spam real (mesma ressalva do #4063 pra Clarice); tratar como sinal, não medida definitiva.</p>
+  <p class="section-note">Conta Brevo PRÓPRIA do editor (#4266/#4476), SEPARADA da parceria Clarice mostrada nas demais abas — segmento Pending da Beehiiv reativado por este canal. Circuit breakers: mesmos limiares da aba Agendamento (abertura&lt;${t.openRate.yellow}%, bounce duro≥${t.hardBounceRate.yellow}%, bounce total≥${t.bounceRate.yellow}%, spam≥${t.spamRate.yellow}%, unsub≥${t.unsubRate.yellow}%). <strong>Diferente da tabela Envios da Clarice, aqui o spam É colorido</strong> — a leitura do Google Postmaster Tools pro domínio diar.ia.br (painel abaixo, #4973) ainda não é atribuída POR CAMPANHA (sem FEEDBACK_LOOP_ID pra este domínio), então a coluna Spam desta tabela continua usando o <code>complaints</code> bruto da Brevo, que pode subcontar o spam real (mesma ressalva do #4063 pra Clarice); tratar como sinal, não medida definitiva.</p>
+  ${renderBrevoDiariaPostmasterSpam(data.postmasterSpam)}
   <div class="table-wrap">
   <table id="brevodiaria-table">
   <thead><tr>

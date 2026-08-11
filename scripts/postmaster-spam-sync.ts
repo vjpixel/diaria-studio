@@ -146,6 +146,33 @@
  * enriquecimento por-campanha): falhar nunca derruba a sync, só degrada pra
  * "sem mapa anterior" (grava só o lote desta execução).
  *
+ * ── N domínios, chave KV por domínio (#4973) ──
+ *
+ * Até esta versão, o produtor sondava só `clarice.ai` (hardcoded) — o canal
+ * `brevo_diaria` (#4515, domínio `diar.ia.br`) ficava completamente cego de
+ * entregabilidade. `POSTMASTER_DOMAINS` generaliza pra uma lista de
+ * `PostmasterDomainConfig` ({domain, kvKey, collectCampaignSpam}); `syncDomain`
+ * (extraído do antigo corpo monolítico de `main()`) roda 1 vez por domínio,
+ * sequencialmente. `clarice.ai` continua gravando na chave LITERAL
+ * `postmaster:spam` (`POSTMASTER_SPAM_KV_KEY`, INTOCADA — o breaker da Rampa,
+ * `resolveSpamSignal`, não muda nada) — só domínios novos usam
+ * `additionalPostmasterSpamKvKey(domain)` (`postmaster:spam:{domain}`, fonte
+ * única com o consumidor em `workers/brevo-dashboard/src/brevo-diaria.ts`).
+ *
+ * `diar.ia.br` tem 2 particularidades, ambas confirmadas ao vivo na sondagem
+ * da #4973: (1) cobertura RALA (3 dias publicados em 21) é o caso NORMAL, não
+ * uma falha — `syncDomain` trata "nenhuma leitura na janela" com
+ * `console.log` (nunca warn/error) pra qualquer domínio, e o dashboard
+ * (`renderBrevoDiariaPostmasterSpam`) mostra "aguardando publicação"
+ * explícito em vez de célula vazia; (2) a query de `FEEDBACK_LOOP_ID` devolve
+ * ZERO dias pra este domínio — `collectCampaignSpam: false` pula a coleta
+ * por-campanha INTEIRA (nem a query base é tentada), nunca gastando N
+ * queries que sempre voltariam vazias. Também vale notar: `lastVerifyTime` do
+ * domínio vem como epoch zero (`1970-01-01`) mesmo com `verificationState:
+ * VERIFIED` — nenhum código deste módulo lê esse campo (não é usado pra
+ * decidir nada aqui), citado só pra quem for estender esta sondagem no
+ * futuro não confiar nele como timestamp real.
+ *
  * Uso:
  *   npx tsx scripts/postmaster-spam-sync.ts [--window-days 10] [--dry-run]
  *
@@ -165,6 +192,7 @@ import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
 import { POSTMASTER_SPAM_KV_KEY } from "./postmaster-spam-entry.ts";
 import { HEALTH_SAMPLE_DAYS } from "../workers/brevo-dashboard/src/weekly-plan.ts";
+import { additionalPostmasterSpamKvKey } from "./lib/dashboard-kv-types.ts";
 import type { PostmasterSpamEntry, PostmasterCampaignSpamRecord } from "./lib/dashboard-kv-types.ts";
 import {
   queryDomainStatsV2,
@@ -188,7 +216,6 @@ import {
 
 loadProjectEnv();
 
-const POSTMASTER_DOMAIN = "clarice.ai";
 /** Mesma janela das outras métricas da aba Rampa (HEALTH_SAMPLE_DAYS) — pedido do editor, 260730. */
 const DEFAULT_WINDOW_DAYS = HEALTH_SAMPLE_DAYS;
 /** Nome arbitrário ecoado de volta em `DomainStatV2.metric` — só precisa bater entre a query e `extractSpamRateReadingsV2`. */
@@ -197,6 +224,35 @@ const SPAM_RATE_METRIC_NAME = "spam_rate";
 const FEEDBACK_LOOP_ID_METRIC_NAME = "feedback_loop_id";
 /** Idem, pra `FEEDBACK_LOOP_SPAM_RATE` por campanha (#4705). */
 const CAMPAIGN_SPAM_RATE_METRIC_NAME = "campaign_spam_rate";
+
+/**
+ * #4973: 1 domínio sondado por execução deste produtor — generaliza o antigo
+ * `POSTMASTER_DOMAIN` hardcoded (`clarice.ai`) pra uma lista.
+ */
+export interface PostmasterDomainConfig {
+  domain: string;
+  /** Chave KV onde a leitura deste domínio é gravada — `clarice.ai` usa a chave legada (`POSTMASTER_SPAM_KV_KEY`, INTOCADA); domínios novos usam `additionalPostmasterSpamKvKey`. */
+  kvKey: string;
+  /**
+   * `false` pula a coleta por-campanha INTEIRA pra este domínio — nunca chama
+   * `collectWorstCampaignSpam` (nem a query base de `FEEDBACK_LOOP_ID`, nem
+   * as N queries de `FEEDBACK_LOOP_SPAM_RATE` por campanha que ela dispararia
+   * em cascata). `diar.ia.br` (#4973): a sondagem que motivou esta issue
+   * confirmou que a query de `FEEDBACK_LOOP_ID` devolve ZERO dias pra este
+   * domínio — não há hoje nenhuma campanha atribuível por feedback loop,
+   * então tentar de novo a cada execução só gastaria 1 chamada de API que
+   * sempre volta vazia. Diferente de `attempted===0` (que `collectWorstCampaignSpam`
+   * já trata sozinho quando a query DEVOLVE zero campanhas) — aqui a decisão
+   * de nem tentar é tomada ANTES da chamada, por configuração estática, não
+   * por resultado observado nesta execução.
+   */
+  collectCampaignSpam: boolean;
+}
+
+export const POSTMASTER_DOMAINS: PostmasterDomainConfig[] = [
+  { domain: "clarice.ai", kvKey: POSTMASTER_SPAM_KV_KEY, collectCampaignSpam: true },
+  { domain: "diar.ia.br", kvKey: additionalPostmasterSpamKvKey("diar.ia.br"), collectCampaignSpam: false },
+];
 
 /** `Date` → `CalendarDate` (UTC) — formato de fronteira de range da v2 (`domainStats:query`). */
 export function toCalendarDate(d: Date): CalendarDate {
@@ -505,6 +561,176 @@ export function describeCampaignSpamCollectionLine(
   };
 }
 
+/** 1 linha de log produzida por `syncDomain` — `main()` decide o console.* certo, mantendo `syncDomain` puro/testável (mesmo padrão de `CampaignSpamCollectionLine`). */
+export interface SyncLogLine {
+  level: "log" | "warn";
+  message: string;
+}
+
+/** Dependências I/O de `syncDomain`, todas injetáveis (mesmo padrão do resto do arquivo) — produção passa as reais (ver `main()`), testes passam fakes sem bater rede/KV real. */
+export interface SyncDomainDeps {
+  queryDomainSpam: (range: DateRangeV2) => Promise<QueryDomainStatsResponseV2>;
+  queryFeedbackLoopIds: (range: DateRangeV2) => Promise<QueryDomainStatsResponseV2>;
+  queryCampaignSpamRate: (parsed: ParsedFeedbackLoopId, range: DateRangeV2) => Promise<QueryDomainStatsResponseV2>;
+  /** Lê o mapa `campaignSpam` já gravado no KV deste domínio (ou lança — `syncDomain` trata a falha como fail-soft, mesmo padrão do `main()` anterior ao #4973). `null`/ausente = "sem mapa anterior". */
+  readPreviousCampaignSpam: () => Promise<Record<string, PostmasterCampaignSpamRecord> | null>;
+}
+
+export interface SyncDomainResult {
+  domain: string;
+  kvKey: string;
+  /** `null` = nenhuma leitura válida na janela (comum pra domínios de cobertura rala, ex: `diar.ia.br` — #4973) — `main()` NÃO escreve no KV neste caso, preservando a última leitura válida (mesmo comportamento pré-#4973). */
+  entry: PostmasterSpamEntry | null;
+  logLines: SyncLogLine[];
+}
+
+/**
+ * #4973: coleta + monta a `PostmasterSpamEntry` de UM domínio — extraído do
+ * corpo de `main()` (que antes só conhecia `clarice.ai` hardcoded) pra ser
+ * reusável por N domínios com deps injetáveis, testável sem I/O real. Toda a
+ * lógica de negócio é idêntica à versão pré-#4973 pra `clarice.ai`
+ * (`config.collectCampaignSpam: true`) — só parametrizada por `config` em vez
+ * de constantes de módulo, então o resultado pra `clarice.ai` não muda em
+ * nada (ver teste de regressão "clarice.ai idêntico ao comportamento
+ * pré-#4973").
+ *
+ * `config.collectCampaignSpam === false` (ex: `diar.ia.br`, sem
+ * `FEEDBACK_LOOP_ID` atribuível conhecido) pula a coleta por-campanha
+ * INTEIRA — nem a query base (`queryFeedbackLoopIds`) é chamada, então
+ * `deps.queryFeedbackLoopIds`/`deps.queryCampaignSpamRate` nunca são
+ * invocadas pra esse domínio (ver teste "collectCampaignSpam:false nunca
+ * chama as queries de campanha").
+ */
+export async function syncDomain(
+  config: PostmasterDomainConfig,
+  windowDays: number,
+  now: Date,
+  deps: SyncDomainDeps,
+): Promise<SyncDomainResult> {
+  const logLines: SyncLogLine[] = [];
+  const log = (message: string) => logLines.push({ level: "log", message });
+  const warn = (message: string) => logLines.push({ level: "warn", message });
+  const tag = `[postmaster-spam-sync] domínio ${config.domain}:`;
+
+  const { readings, daysProbed } = await collectSpamReadingsV2(windowDays, now, deps.queryDomainSpam);
+  const range = buildWindowRange(windowDays, now);
+
+  // #4705: pico de spam POR CAMPANHA na MESMA janela do domínio — fail-soft
+  // (ver docstring do módulo): uma falha aqui nunca derruba a sync principal,
+  // só deixa a entry sem os 2 campos novos (fallback pro comportamento
+  // anterior ao #4705, resolveSpamSignal usa a média de domínio).
+  let campaignResult: CollectWorstCampaignSpamResult = {
+    worst: null,
+    aggregates: [],
+    attempted: 0,
+    failed: 0,
+    otherAccountsSeen: 0,
+  };
+  let previousCampaignSpam: Record<string, PostmasterCampaignSpamRecord> | null = null;
+
+  if (config.collectCampaignSpam) {
+    // #4785: rastreado explicitamente pra `describeCampaignSpamCollectionLine`
+    // nunca confundir "query base falhou" (real, já logado abaixo) com "sem
+    // campanha atribuível" (benigno) — os dois deixavam `campaignResult` no
+    // mesmo shape default antes deste fix (achado CRITICAL do fleet review
+    // pré-merge do #4780).
+    let baseQueryFailed = false;
+    try {
+      campaignResult = await collectWorstCampaignSpam(range, DEFAULT_POSTMASTER_ACCOUNT_ID, deps.queryFeedbackLoopIds, deps.queryCampaignSpamRate);
+    } catch (e) {
+      baseQueryFailed = true;
+      warn(`${tag} falha ao coletar spam por campanha (#4705) — seguindo só com a média de domínio: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // #4780/#4785: seleção da mensagem de diagnóstico é pura/testável (ver
+    // `describeCampaignSpamCollectionLine`) — 3 casos benignos (`console.log`:
+    // pico achado, sem campanha na janela, campanhas consultadas sem leitura)
+    // e 3 casos reais de ATENÇÃO (`console.warn`: todas as queries por-campanha
+    // falharam, accountId hardcoded suspeito, query BASE falhou).
+    const collectionLine = describeCampaignSpamCollectionLine(campaignResult, baseQueryFailed);
+    (collectionLine.level === "warn" ? warn : log)(`${tag} ${collectionLine.message}`);
+
+    // #4970: mescla o mapa por-campanha desta execução com o que já está
+    // gravado no KV — sem isso, cada execução reescreveria o mapa do zero e só
+    // as campanhas dentro da janela sondada (HEALTH_SAMPLE_DAYS, ~10 dias)
+    // reteriam valor, apagando silenciosamente o histórico das ~90 dias que a
+    // tabela Envios mostra (ver docstring de `PostmasterSpamEntry.campaignSpam`,
+    // dashboard-kv-types.ts, pro racional completo). FAIL-SOFT na leitura
+    // (mesmo padrão do resto do enriquecimento por-campanha, #4705/#4780):
+    // credenciais ausentes, rede, KV vazio (1ª execução pós-#4970) ou JSON
+    // corrompido nunca derrubam a sync — degradam pra "sem mapa anterior",
+    // que ainda assim grava o lote desta execução (nunca perde o que acabou
+    // de coletar por causa de uma leitura que falhou).
+    try {
+      previousCampaignSpam = await deps.readPreviousCampaignSpam();
+    } catch (e) {
+      warn(`${tag} falha ao ler o mapa por-campanha anterior do KV (#4970) — seguindo sem merge, gravando só o lote desta execução: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  } else {
+    // #4973: domínio configurado SEM atribuição por FEEDBACK_LOOP_ID conhecida
+    // (ex: diar.ia.br) — nem a query base é tentada, nunca N queries que
+    // sempre voltam vazias (ver docstring de `PostmasterDomainConfig.collectCampaignSpam`).
+    log(`${tag} coleta por-campanha pulada (#4973) — sem atribuição por FEEDBACK_LOOP_ID conhecida pra este domínio, breaker/tabela seguem só com a média de domínio.`);
+  }
+
+  const { worst: worstCampaign } = campaignResult;
+  const freshCampaignSpam = toCampaignSpamRecords(campaignResult.aggregates, now);
+  const mergedCampaignSpam = mergeCampaignSpamRecords(previousCampaignSpam, freshCampaignSpam);
+  if (config.collectCampaignSpam) {
+    log(
+      `${tag} mapa por-campanha (#4970): ${Object.keys(freshCampaignSpam).length} campanha(s) nesta execução, ` +
+        `${previousCampaignSpam ? Object.keys(previousCampaignSpam).length : 0} preservada(s) do KV anterior, ` +
+        `${Object.keys(mergedCampaignSpam).length} no total após merge.`,
+    );
+  }
+
+  const entry = buildAveragedEntry(readings, now, daysProbed, worstCampaign, mergedCampaignSpam);
+
+  if (!entry) {
+    // #4973: pra domínios de cobertura rala (diar.ia.br), este é o caso
+    // COMUM, não uma exceção — a mensagem é `console.log` (nunca warn/error)
+    // de propósito, e o dashboard trata a ausência de entry como "aguardando
+    // publicação" explícito (ver renderBrevoDiariaPostmasterSpam), nunca como
+    // erro. `main()` não escreve no KV neste caso — mantém a última leitura
+    // válida (expira em 48h e vira indeterminate, nunca verde falso).
+    log(`${tag} nenhuma leitura válida na janela sondada (${daysProbed} dias, nenhum dia com dado publicado ainda). NÃO escrevendo no KV — mantendo a última leitura válida (expira em 48h e vira indeterminate, nunca verde falso).`);
+    return { domain: config.domain, kvKey: config.kvKey, entry: null, logLines };
+  }
+
+  if (!entry.dailyReadings || entry.dailyReadings.length === 0) {
+    // `buildAveragedEntry` sempre popula `dailyReadings` quando `entry` não é
+    // `null` (guard acima) — chegar aqui vazio seria um bug de regressão
+    // naquela função, não um caso normal. `dailyReadings` continua opcional
+    // no TYPE (schema evolution, entries manuais/pré-#4704), então o
+    // acesso abaixo não pode assumir presença via non-null assertion (#4716).
+    warn(`${tag} entry sem dailyReadings apesar de ter leituras — inesperado, buildAveragedEntry deveria sempre populá-lo.`);
+  }
+  const daysDetail = (entry.dailyReadings ?? []).map((r) => `${r.date}=${r.spamRatePct.toFixed(3)}%`).join(", ");
+  log(`${tag} média de ${readings.length}/${daysProbed} dias da janela: ${daysDetail}`);
+
+  return { domain: config.domain, kvKey: config.kvKey, entry, logLines };
+}
+
+/** I/O real de `SyncDomainDeps.readPreviousCampaignSpam` — produção passa isto pra `syncDomain` (ver `main()`); testes injetam um fake. */
+function makeReadPreviousCampaignSpam(kvKey: string): SyncDomainDeps["readPreviousCampaignSpam"] {
+  return async () => {
+    const rawPrevious = await getTextFromWorkerKV(kvKey, {
+      kvNamespaceId: DASHBOARD_KV_NAMESPACE_ID,
+      accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
+      token: process.env.CLOUDFLARE_WORKERS_TOKEN ?? "",
+    });
+    if (!rawPrevious) return null;
+    const parsedPrevious: unknown = JSON.parse(rawPrevious);
+    const candidate =
+      parsedPrevious && typeof parsedPrevious === "object"
+        ? (parsedPrevious as { campaignSpam?: unknown }).campaignSpam
+        : undefined;
+    return candidate && typeof candidate === "object" && !Array.isArray(candidate)
+      ? (candidate as Record<string, PostmasterCampaignSpamRecord>)
+      : null;
+  };
+}
+
 async function main(): Promise<void> {
   const isDryRun = hasFlag(process.argv, "dry-run");
   const windowArg = getArg(process.argv, "window-days");
@@ -519,158 +745,66 @@ async function main(): Promise<void> {
   }
 
   const now = new Date();
-  const query = (range: DateRangeV2) =>
-    queryDomainStatsV2(
-      POSTMASTER_DOMAIN,
-      [{ name: SPAM_RATE_METRIC_NAME, standardMetric: "SPAM_RATE" }],
-      range,
-      gFetch,
-    );
-  const { readings, daysProbed } = await collectSpamReadingsV2(windowDays, now, query);
 
-  // #4705: pico de spam POR CAMPANHA na MESMA janela do domínio — fail-soft
-  // (ver docstring do módulo): uma falha aqui nunca derruba a sync principal,
-  // só deixa a entry sem os 2 campos novos (fallback pro comportamento
-  // anterior ao #4705, resolveSpamSignal usa a média de domínio).
-  const range = buildWindowRange(windowDays, now);
-  const queryFeedbackLoopIds = (r: DateRangeV2) =>
-    queryDomainStatsV2(
-      POSTMASTER_DOMAIN,
-      [{ name: FEEDBACK_LOOP_ID_METRIC_NAME, standardMetric: "FEEDBACK_LOOP_ID" }],
-      r,
-      gFetch,
-    );
-  const queryCampaignSpamRate = (parsed: ParsedFeedbackLoopId, r: DateRangeV2) =>
-    queryDomainStatsV2(
-      POSTMASTER_DOMAIN,
-      [
-        {
-          name: CAMPAIGN_SPAM_RATE_METRIC_NAME,
-          standardMetric: "FEEDBACK_LOOP_SPAM_RATE",
-          filter: `feedback_loop_id="${parsed.feedbackLoopId}"`,
-        },
-      ],
-      r,
-      gFetch,
-    );
-  let campaignResult: CollectWorstCampaignSpamResult = {
-    worst: null,
-    aggregates: [],
-    attempted: 0,
-    failed: 0,
-    otherAccountsSeen: 0,
-  };
-  // #4785: rastreado explicitamente pra `describeCampaignSpamCollectionLine`
-  // nunca confundir "query base falhou" (real, já logado abaixo) com "sem
-  // campanha atribuível" (benigno) — os dois deixavam `campaignResult` no
-  // mesmo shape default antes deste fix (achado CRITICAL do fleet review
-  // pré-merge do #4780).
-  let baseQueryFailed = false;
-  try {
-    campaignResult = await collectWorstCampaignSpam(range, DEFAULT_POSTMASTER_ACCOUNT_ID, queryFeedbackLoopIds, queryCampaignSpamRate);
-  } catch (e) {
-    baseQueryFailed = true;
-    console.warn(
-      `[postmaster-spam-sync] falha ao coletar spam por campanha (#4705) — seguindo só com a média de domínio: ` +
-        `${e instanceof Error ? e.message : String(e)}`,
-    );
-  }
-  const { worst: worstCampaign } = campaignResult;
+  // #4973: N domínios, sondados sequencialmente (não em paralelo) — mantém o
+  // log legível por domínio e evita qualquer preocupação de concorrência
+  // sobre a MESMA quota de API do Postmaster (mesma conta OAuth pros 2
+  // domínios). Um erro NUM domínio nunca derruba a sondagem dos demais.
+  for (const config of POSTMASTER_DOMAINS) {
+    const deps: SyncDomainDeps = {
+      queryDomainSpam: (range) =>
+        queryDomainStatsV2(config.domain, [{ name: SPAM_RATE_METRIC_NAME, standardMetric: "SPAM_RATE" }], range, gFetch),
+      queryFeedbackLoopIds: (range) =>
+        queryDomainStatsV2(config.domain, [{ name: FEEDBACK_LOOP_ID_METRIC_NAME, standardMetric: "FEEDBACK_LOOP_ID" }], range, gFetch),
+      queryCampaignSpamRate: (parsed, range) =>
+        queryDomainStatsV2(
+          config.domain,
+          [
+            {
+              name: CAMPAIGN_SPAM_RATE_METRIC_NAME,
+              standardMetric: "FEEDBACK_LOOP_SPAM_RATE",
+              filter: `feedback_loop_id="${parsed.feedbackLoopId}"`,
+            },
+          ],
+          range,
+          gFetch,
+        ),
+      readPreviousCampaignSpam: makeReadPreviousCampaignSpam(config.kvKey),
+    };
 
-  // #4780/#4785: seleção da mensagem de diagnóstico é pura/testável (ver
-  // `describeCampaignSpamCollectionLine`) — 3 casos benignos (`console.log`:
-  // pico achado, sem campanha na janela, campanhas consultadas sem leitura)
-  // e 3 casos reais de ATENÇÃO (`console.warn`: todas as queries por-campanha
-  // falharam, accountId hardcoded suspeito, query BASE falhou).
-  const collectionLine = describeCampaignSpamCollectionLine(campaignResult, baseQueryFailed);
-  if (collectionLine.level === "warn") {
-    console.warn(collectionLine.message);
-  } else {
-    console.log(collectionLine.message);
-  }
+    let result: SyncDomainResult;
+    try {
+      result = await syncDomain(config, windowDays, now, deps);
+    } catch (e) {
+      console.error(
+        `[postmaster-spam-sync] domínio ${config.domain}: erro inesperado na sondagem — pulando este domínio, seguindo com os demais: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      continue;
+    }
 
-  // #4970: mescla o mapa por-campanha desta execução com o que já está
-  // gravado no KV — sem isso, cada execução reescreveria o mapa do zero e só
-  // as campanhas dentro da janela sondada (HEALTH_SAMPLE_DAYS, ~10 dias)
-  // reteriam valor, apagando silenciosamente o histórico das ~90 dias que a
-  // tabela Envios mostra (ver docstring de `PostmasterSpamEntry.campaignSpam`,
-  // dashboard-kv-types.ts, pro racional completo). FAIL-SOFT na leitura
-  // (mesmo padrão do resto do enriquecimento por-campanha, #4705/#4780):
-  // credenciais ausentes, rede, KV vazio (1ª execução pós-#4970) ou JSON
-  // corrompido nunca derrubam a sync — degradam pra "sem mapa anterior",
-  // que ainda assim grava o lote desta execução (nunca perde o que acabou
-  // de coletar por causa de uma leitura que falhou).
-  let previousCampaignSpam: Record<string, PostmasterCampaignSpamRecord> | null = null;
-  try {
-    const rawPrevious = await getTextFromWorkerKV(POSTMASTER_SPAM_KV_KEY, {
+    for (const line of result.logLines) {
+      (line.level === "warn" ? console.warn : console.log)(line.message);
+    }
+
+    if (!result.entry) continue;
+
+    const json = JSON.stringify(result.entry, null, 2);
+    console.log(`[postmaster-spam-sync] domínio ${config.domain}: leitura: ${json}`);
+
+    if (isDryRun) {
+      console.log(`[postmaster-spam-sync] domínio ${config.domain}: --dry-run: não gravou no KV.`);
+      continue;
+    }
+
+    await uploadTextToWorkerKV(json, result.kvKey, {
       kvNamespaceId: DASHBOARD_KV_NAMESPACE_ID,
       accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
       token: process.env.CLOUDFLARE_WORKERS_TOKEN ?? "",
     });
-    if (rawPrevious) {
-      const parsedPrevious: unknown = JSON.parse(rawPrevious);
-      const candidate =
-        parsedPrevious && typeof parsedPrevious === "object"
-          ? (parsedPrevious as { campaignSpam?: unknown }).campaignSpam
-          : undefined;
-      if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
-        previousCampaignSpam = candidate as Record<string, PostmasterCampaignSpamRecord>;
-      }
-    }
-  } catch (e) {
-    console.warn(
-      `[postmaster-spam-sync] falha ao ler o mapa por-campanha anterior do KV (#4970) — seguindo sem merge, gravando só o lote desta execução: ` +
-        `${e instanceof Error ? e.message : String(e)}`,
-    );
-  }
-  const freshCampaignSpam = toCampaignSpamRecords(campaignResult.aggregates, now);
-  const mergedCampaignSpam = mergeCampaignSpamRecords(previousCampaignSpam, freshCampaignSpam);
-  console.log(
-    `[postmaster-spam-sync] mapa por-campanha (#4970): ${Object.keys(freshCampaignSpam).length} campanha(s) nesta execução, ` +
-      `${previousCampaignSpam ? Object.keys(previousCampaignSpam).length : 0} preservada(s) do KV anterior, ` +
-      `${Object.keys(mergedCampaignSpam).length} no total após merge.`,
-  );
-
-  const entry = buildAveragedEntry(readings, now, daysProbed, worstCampaign, mergedCampaignSpam);
-
-  if (!entry) {
     console.log(
-      `[postmaster-spam-sync] Nenhuma leitura válida na janela sondada (${daysProbed} dias, nenhum dia com dado publicado ainda). ` +
-        "NÃO escrevendo no KV — mantendo a última leitura válida (expira em 48h e vira indeterminate, nunca verde falso).",
-    );
-    return;
-  }
-
-  if (!entry.dailyReadings || entry.dailyReadings.length === 0) {
-    // `buildAveragedEntry` sempre popula `dailyReadings` quando `entry` não é
-    // `null` (guard acima) — chegar aqui vazio seria um bug de regressão
-    // naquela função, não um caso normal. `dailyReadings` continua opcional
-    // no TYPE (schema evolution, entries manuais/pré-#4704), então o
-    // acesso abaixo não pode assumir presença via non-null assertion (#4716).
-    console.warn(
-      "[postmaster-spam-sync] entry sem dailyReadings apesar de ter leituras — inesperado, buildAveragedEntry deveria sempre populá-lo.",
+      `[postmaster-spam-sync] domínio ${config.domain}: KV atualizado: ${result.kvKey} (spamRatePct=${result.entry.spamRatePct.toFixed(3)}, date=${result.entry.date}, ${result.entry.daysWithData ?? 0}/${result.entry.daysProbed ?? 0} dias).`,
     );
   }
-  const daysDetail = (entry.dailyReadings ?? []).map((r) => `${r.date}=${r.spamRatePct.toFixed(3)}%`).join(", ");
-  console.log(
-    `[postmaster-spam-sync] média de ${readings.length}/${daysProbed} dias da janela: ${daysDetail}`,
-  );
-  const json = JSON.stringify(entry, null, 2);
-  console.log(`[postmaster-spam-sync] leitura: ${json}`);
-
-  if (isDryRun) {
-    console.log("[postmaster-spam-sync] --dry-run: não gravou no KV.");
-    return;
-  }
-
-  await uploadTextToWorkerKV(json, POSTMASTER_SPAM_KV_KEY, {
-    kvNamespaceId: DASHBOARD_KV_NAMESPACE_ID,
-    accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
-    token: process.env.CLOUDFLARE_WORKERS_TOKEN ?? "",
-  });
-  console.log(
-    `[postmaster-spam-sync] KV atualizado: ${POSTMASTER_SPAM_KV_KEY} (spamRatePct=${entry.spamRatePct.toFixed(3)}, date=${entry.date}, média de ${readings.length}/${daysProbed} dias).`,
-  );
 }
 
 if (isMainModule(import.meta.url)) {
