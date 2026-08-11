@@ -198,7 +198,12 @@ function pageUrl(slug: string): string {
 export function hubCoverageWindow(sources: readonly { date: string }[]): {
   firstDate: string;
   lastDate: string;
-  /** ex: "agosto de 2025 e agosto de 2026" — para "entre {…}". */
+  /** ex: "agosto de 2025 e agosto de 2026" — para "entre {…}". Quando
+   * `since`/`until` caem no MESMO mês/ano, colapsa pro mês único sem "e"
+   * repetido (ex: "agosto de 2025", não "agosto de 2025 e agosto de 2025"
+   * — #4944 item 2). Ver `isSingleMonth` abaixo: quem monta a frase decide
+   * o prefixo ("Em"/"Entre") com esse flag, este campo só evita a
+   * duplicação textual. */
   between: string;
   /** ex: "agosto de 2025" — para "desde {…}". */
   since: string;
@@ -210,8 +215,22 @@ export function hubCoverageWindow(sources: readonly { date: string }[]): {
   /** ex: "27 de agosto de 2025 e 30 de julho de 2026" — forma longa, com
    * dia. O `google-gemini` usa esta (é o formato que a #4895 travou em
    * `test/hub-google-gemini-start-date-4895.test.ts`, absorvido pelo teste
-   * genérico no #4922). */
+   * genérico no #4922). Colapsa pra uma data única quando `firstDate ===
+   * lastDate` (1 fonte só, ou todas na mesma data — #4944 item 2) — nesse
+   * caso não há dois dias distintos pra separar com "e".
+   */
   betweenLong: string;
+  /** `since === until` — janela de 1 mês só (#4944 item 2). Nenhum dos 4
+   * hubs reais cai neste caso hoje (é o piso de ~8 itens de lastro que
+   * torna improvável, não impossível — um 5º hub com poucas edições
+   * concentradas num mês poderia). `between`/`betweenLong` já colapsam a
+   * forma textual sozinhos; este flag existe pra quem MONTA a frase ao
+   * redor (ex: `` `Entre ${between}, ...` `` em cada `buildIntro`) trocar o
+   * prefixo pra "Em" quando true — "Entre agosto de 2025, ..." lido sozinho
+   * soa quebrado mesmo sem a duplicação de mês. Nenhum caller troca esse
+   * prefixo ainda porque nenhum hub real precisa; o flag deixa a decisão
+   * pronta pro dia em que precisar. */
+  isSingleMonth: boolean;
 } {
   if (sources.length === 0) throw new Error("hubCoverageWindow: sources vazio");
   let firstDate = sources[0].date;
@@ -222,13 +241,16 @@ export function hubCoverageWindow(sources: readonly { date: string }[]): {
   }
   const since = formatMonthYear(firstDate);
   const until = formatMonthYear(lastDate);
+  const isSingleMonth = since === until;
+  const isSingleDate = firstDate === lastDate;
   return {
     firstDate,
     lastDate,
-    between: `${since} e ${until}`,
+    between: isSingleMonth ? since : `${since} e ${until}`,
     since,
     until,
-    betweenLong: `${formatDateLong(firstDate)} e ${formatDateLong(lastDate)}`,
+    betweenLong: isSingleDate ? formatDateLong(firstDate) : `${formatDateLong(firstDate)} e ${formatDateLong(lastDate)}`,
+    isSingleMonth,
   };
 }
 
