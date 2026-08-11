@@ -147,6 +147,27 @@ describe("getAnthropicClaudeHub (#4558 Parte A)", () => {
     assert.match(hub.publishedDate, /^\d{4}-\d{2}-\d{2}$/);
     assert.match(hub.updatedDate, /^\d{4}-\d{2}-\d{2}$/);
   });
+
+  // #4917 item 4 — S3 (valuation), S4 (produtos/parcerias) e S5 (segurança)
+  // tinham 9 de 13 parágrafos sem NENHUMA data absoluta (549 palavras). Cada
+  // parágrafo de cada seção agora carrega pelo menos um "DD de mês[ de AAAA]"
+  // — não trava a prosa exata (#495: edições cirúrgicas, texto muda), só que
+  // a lacuna de data não reapareça silenciosamente numa reescrita futura.
+  it("#4917 item 4 — S3/S4/S5 têm ≥1 data absoluta em CADA parágrafo", () => {
+    const absoluteDateRe = /\d{1,2}º? de (?:janeiro|fevereiro|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)/i;
+    const sectionIndexByHeading: Record<string, number> = {
+      "Como a valuation da Anthropic evoluiu no período?": 2,
+      "Em quais produtos e parcerias o Claude já apareceu?": 3,
+      "O Claude já causou algum incidente de segurança real?": 4,
+    };
+    for (const [heading, expectedIndex] of Object.entries(sectionIndexByHeading)) {
+      const section = hub.sections[expectedIndex];
+      assert.equal(section.heading, heading, `seção no índice ${expectedIndex} mudou de heading — atualizar o mapa do teste`);
+      for (const [i, paragraph] of section.paragraphs.entries()) {
+        assert.match(paragraph, absoluteDateRe, `"${heading}" parágrafo ${i + 1} sem data absoluta`);
+      }
+    }
+  });
 });
 
 describe("ItemList do JSON-LD espelha hub.sourceEditions (#4558 Parte B — reforço de estrutura GEO nos hubs)", () => {
