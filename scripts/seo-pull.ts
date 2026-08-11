@@ -144,6 +144,23 @@ async function pullGsc(site: string, startDate: string, endDate: string): Promis
   return parseGscResponse(await res.json());
 }
 
+/**
+ * Payload pure (#4908 item 1): monta o objeto gravado em `data/seo/gsc-*.json`.
+ * Extraído de `main()` pra ter ponto de injeção testável — antes o `writeFileSync`
+ * descartava `rows` (só gravava `site`/`period`/`total_rows`/`opportunities`),
+ * então nenhuma rodada semanal deixava rastro de query em pt-BR pra medir
+ * demanda (#4908). `rows` entra na saída; `opportunities` continua derivado
+ * de `scoreOpportunities` (sem mudar esse contrato — #4908 item 1 é só
+ * parar de jogar fora o dado já buscado).
+ */
+export function buildSeoPullOutput(
+  rows: GscRow[],
+  site: string,
+  period: string,
+): { site: string; period: string; total_rows: number; rows: GscRow[]; opportunities: SeoOpportunity[] } {
+  return { site, period, total_rows: rows.length, rows, opportunities: scoreOpportunities(rows) };
+}
+
 function renderOpportunitiesMd(opps: SeoOpportunity[], site: string, period: string): string {
   const lines = [`# Oportunidades SEO — ${site} (${period})`, "", `${opps.length} oportunidades (≥50 impressões).`, ""];
   for (const o of opps.slice(0, 50)) {
@@ -169,14 +186,14 @@ async function main(nowMs: number): Promise<number> {
     console.error(`[seo-pull] ${(e as Error).message}`);
     return 1;
   }
-  const opps = scoreOpportunities(rows);
   const seoDir = resolve(ROOT, "data", "seo");
   if (!existsSync(seoDir)) mkdirSync(seoDir, { recursive: true });
   const period = `${startDate}_${endDate}`;
   const jsonPath = String(values["out"] ?? resolve(seoDir, `gsc-${endDate}.json`));
-  writeFileSync(jsonPath, JSON.stringify({ site, period, total_rows: rows.length, opportunities: opps }, null, 2));
-  writeFileSync(resolve(seoDir, `opportunities-${endDate}.md`), renderOpportunitiesMd(opps, site, period));
-  console.log(JSON.stringify({ site, period, total_rows: rows.length, opportunities: opps.length, out: jsonPath }, null, 2));
+  const output = buildSeoPullOutput(rows, site, period);
+  writeFileSync(jsonPath, JSON.stringify(output, null, 2));
+  writeFileSync(resolve(seoDir, `opportunities-${endDate}.md`), renderOpportunitiesMd(output.opportunities, site, period));
+  console.log(JSON.stringify({ site, period, total_rows: output.total_rows, opportunities: output.opportunities.length, out: jsonPath }, null, 2));
   return 0;
 }
 
