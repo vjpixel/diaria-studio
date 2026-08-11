@@ -9,13 +9,24 @@ aqui aplicado à leitura do checkpoint de citação por assistente de ~07/out.
 Até 10/08/2026 havia a opção de tratar `anthropic-claude` como hub "tratado"
 e manter `openai-chatgpt`/`google-gemini` congelados como grupo de controle
 até o checkpoint. **O editor decidiu, em 10/08/2026, que todas as regras
-desta auditoria GEO valem para os 3 hubs existentes — `anthropic-claude`,
+desta auditoria GEO valem para os hubs existentes — `anthropic-claude`,
 `openai-chatgpt`, `google-gemini` — e para qualquer hub futuro.** Não há
 grupo de controle, e não vai haver.
 
+**Achado da Fase 1.5 (rodada overnight 260811):** `meta-ai`, o 4º hub, já
+existia no repo desde as 14:40 de 10/08/2026 (commit `19ca96a0`) — antes
+até do `base_sha` desta rodada — quando este documento foi escrito às
+23:27 do mesmo dia. Não é "hub futuro": já era hub presente, e a decisão
+do editor o cobre pela mesma cláusula "e para qualquer hub futuro" (que
+por definição inclui qualquer hub que já não fosse um dos 3 nomeados
+explicitamente). O motivo estrutural da seção seguinte (renderer/lint
+compartilhados) já se aplicava a ele desde que nasceu. Referências a "3
+hubs" abaixo refletem a contagem no momento da decisão original — a
+decisão em si vale para os 4.
+
 Consequência direta: nada no corpus de hubs fica congelado como referência.
 Qualquer achado da auditoria (prosa, FAQ, JSON-LD, sitemap, etc.) se aplica
-igualmente aos 3.
+igualmente a todos eles.
 
 ## O que isso já não permitiria medir, mesmo antes da decisão
 

@@ -862,10 +862,12 @@ ${s.paragraphs.map((p) => `        <p>${renderInlineLinks(p)}</p>`).join("\n")}
           <tbody>
 ${hub.sourceEditions
   .flatMap((e) => {
-    const dm = /^(\d{4})-(\d{2})-(\d{2})/.exec(e.date);
     // #4911 item 4: com ano (DD/MM/AAAA) — o intervalo cruza virada de ano,
     // e sem ano dois rótulos "03/09" podem mapear pra anos distintos.
-    const label = dm ? `${dm[3]}/${dm[2]}/${dm[1]}` : e.date;
+    // `formatDateShort` (achado da Fase 1.5 desta rodada — este bloco
+    // reimplementava a mesma regex inline em vez de reusar o helper já
+    // extraído no #4922, no mesmo arquivo).
+    const label = formatDateShort(e.date);
     const headlines = e.title.split(" · ");
     return headlines.map((headline) => {
       // Coluna "Edição": editionTitle real quando presente e distinto da
