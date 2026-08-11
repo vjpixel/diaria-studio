@@ -81,6 +81,33 @@ campo a campo em vez de repasse verbatim. Mesmo racional de
 `assemble-scored.ts` (#1611/#720): assemblar em TS evita pedir pro agent
 copiar array grande verbatim.
 
+### 4985 contrato pool-flatten
+
+Detalhe completo do contrato de `assemble-research-pool.ts` (#4985 — a versão
+resumida vive em §1g-ter do playbook):
+1. **Entra:** `researcher-results.json` — `RunRecordLike[]` (`{ source, outcome?/status?, articles?: Array<Record<string, unknown>> }`), um record por `source-researcher`/`discovery-searcher`/RSS/websearch dispatchado no passo 1f/1g.
+2. **Sai:** `tmp-articles-raw.json` — `PoolArticle[]` flat (`{ url, [demais campos do artigo] }`), achatado de todos os `articles[]`.
+3. **Campos garantidos preservados:** TODOS os campos originais de cada artigo, verbatim — via spread (`{ ...a, url: a.url, source: ... }`), nunca reconstrução campo a campo. Isso inclui `summary`, `title`, `published_at`, `author`, `type_hint` e qualquer campo futuro que um researcher venha a adicionar (não há allowlist de campos).
+4. **Transformações aplicadas:** (a) só runs com `outcome`/`status` "ok" ou "empty" entram (`fail`/`timeout` descartados); (b) `source` é preenchido a partir do próprio artigo se já tiver (Path A/Brave), senão herdado do `source` do RunRecord (Path B/agents); (c) merge-safe — se `--out` já existir (resume), URLs já presentes são preservadas como estão, só URLs novas são anexadas.
+
+### 4986 checkpoint de integridade
+
+#4988/#4985/#4986 foram os outros 3 relatos do auto-reporter pro MESMO
+incidente 260811 acima (#4955) — 2 duplicatas de causa raiz (#4988: 8/9
+LANÇAMENTOS/RADAR sem `summary`; #4986: D1 especificamente) + 1 pedido de
+documentação (#4985, resolvido acima em §1g-ter). A causa raiz já estava
+corrigida por `assemble-research-pool.ts` quando esses 3 foram triados — o
+trabalho restante foi (a) confirmar com teste de ponta-a-ponta
+(`test/stage1-summary-pipeline-integration.test.ts`) que o pipeline real
+(`dedup.ts`/`categorize.ts`/`merge-scored-chunks.ts`, todos scripts TS que já
+preservam campos via spread) não reintroduz a perda em nenhum passo
+intermediário, e (b) adicionar o backstop determinístico pedido pelo #4986
+item 3 — `scripts/verify-summary-integrity.ts`, rodado em 1m-bis (pós
+dedup+categorize) e 1q.3-bis (pós merge de finalists). Loga violação em
+`data/run-log.jsonl` via `logEvent` (padrão já existente no repo) — não um
+arquivo `invariant-violations.jsonl` dedicado, que não existe em nenhum outro
+ponto do pipeline.
+
 ### 4b 4678 caso real
 
 260806: item resgatado com `category: "lancamento"` fixo era na verdade
