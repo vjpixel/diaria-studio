@@ -24,6 +24,7 @@ import {
 } from "../scripts/clarice-envio-run.ts";
 import type { WaveProposal, WaveState } from "../scripts/lib/clarice-wave-plan.ts";
 import type { ResolveLatestMonthlyCycleResult } from "../scripts/lib/mensal/monthly-paths.ts";
+import { acquireEnvioLock } from "../scripts/lib/clarice-envio-lock.ts";
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -333,6 +334,22 @@ describe("clarice-envio-run (#5026)", () => {
       assert.ok(!calls.some((c) => c.script === "scripts/clarice-build-segment.ts"));
       rmSync(root, { recursive: true, force: true });
     });
+
+    it("lock detido por outra rodada => aborta ANTES do Passo 1 (code 1), zero exec, guard #4765", async () => {
+      // Fecha o gap de teste do pr-test-analyzer: a trava de concorrência
+      // (scripts/lib/clarice-envio-lock.ts) existe especificamente pra
+      // prevenir o incidente real do #4765 (52/1.963 contatos escaparam do
+      // dedup por escrita concorrente) — mas nunca tinha teste de ponta a
+      // ponta confirmando que runEnvio de fato respeita o lock.
+      const root = freshRoot();
+      acquireEnvioLock(root, CYCLE, "sessao-manual-concorrente", new Date(NOW.getTime() - 60_000));
+      const { exec, calls } = makeFakeExec({ "scripts/clarice-check-derived-stale.ts": textResult("fresh") });
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 1);
+      assert.match(r.reportMarkdown, /concorrente/);
+      assert.ok(!calls.some((c) => c.script === "scripts/clarice-plan-wave.ts"), "lock detido aborta ANTES de qualquer chamada de rede");
+      rmSync(root, { recursive: true, force: true });
+    });
   });
 
   describe("runEnvio — caminho feliz completo", () => {
@@ -350,6 +367,53 @@ describe("clarice-envio-run (#5026)", () => {
 
       const schedule = calls.filter((c) => c.script === "scripts/clarice-schedule-group.ts" && c.args.includes("--schedule") && !c.args.includes("--create"));
       assert.equal(schedule.length, 1, "1 célula = 1 chamada --schedule");
+
+      // Achado do pr-test-analyzer no review da PR: verificar SÓ que o script
+      // foi chamado não pega um --budget/--no-cells invertido num refactor
+      // futuro — checar os argumentos exatos de cada sub-script do Passo 6.
+      // Volume esperado: baseVolume 3005 × (1 + step 0.15) = round(3455,75) = 3456
+      // (sem cap de fila/crédito nesta fixture, ambos bem acima).
+      const segment = calls.find((c) => c.script === "scripts/clarice-build-segment.ts");
+      assert.ok(segment);
+      assert.deepEqual(segment!.args, ["--group", "ramp-warm", "--cycle", CYCLE, "--budget", "3456"]);
+
+      const split = calls.find((c) => c.script === "scripts/clarice-split-group-cells.ts");
+      assert.ok(split);
+      assert.ok(split!.args.includes("--no-cells"), "travar => 1 lista só, --no-cells presente");
+      assert.deepEqual(split!.args, ["--cycle", CYCLE, "--wave", "12", "--date", SEND_DATE, "--from", "segments/ramp-warm.csv", "--no-cells"]);
+
+      const importCall = calls.find((c) => c.script === "scripts/clarice-import-waves.ts");
+      assert.ok(importCall);
+      assert.deepEqual(importCall!.args, ["--cycle", CYCLE, "--group", "d12-qua12", "--label", `${CYCLE} d12-qua12`, "--execute"]);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("continuar (3 células): --no-cells AUSENTE em clarice-split-group-cells.ts", async () => {
+      const root = freshRoot();
+      const proposal = goldenProposal({
+        abc: { action: "continuar", metric: "abertura", winner: null, caveats: [], rationale: "teste em curso" },
+        state: {
+          cycle: CYCLE,
+          waves: [
+            wave({ key: "d11-ter11-A", subject: "Sub A" }),
+            wave({ key: "d11-ter11-B", subject: "Sub B" }),
+            wave({ key: "d11-ter11-C", subject: "Sub C" }),
+          ],
+          volumeSum: 1, volumeComplete: true, sentCount: 3, scheduledCount: 0, unscopedCount: 0,
+        },
+        waves: [{ n: 12, date: SEND_DATE, scheduledAt: `${SEND_DATE}T09:00:00.000Z`, volume: 3450, keys: ["d12-qua12-A", "d12-qua12-B", "d12-qua12-C"] }],
+      });
+      const scheduleGroupHandler: Handler = (args) => {
+        const key = args[args.indexOf("--key") + 1] ?? "?";
+        return args.includes("--create")
+          ? jsonResult({ key, listId: 1, campaignId: 1, phase: "create", status: "draft" })
+          : jsonResult({ key, listId: 1, campaignId: 1, phase: "schedule", status: "scheduled" });
+      };
+      const { exec, calls } = makeFakeExec({ ...goldenHandlers({ proposal }), "scripts/clarice-schedule-group.ts": scheduleGroupHandler });
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      const split = calls.find((c) => c.script === "scripts/clarice-split-group-cells.ts");
+      assert.ok(split && !split.args.includes("--no-cells"), "continuar (3 células) NUNCA passa --no-cells");
       rmSync(root, { recursive: true, force: true });
     });
 

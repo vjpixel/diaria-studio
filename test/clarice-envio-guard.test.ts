@@ -13,6 +13,7 @@ import { join, resolve } from "node:path";
 import { runEnvioGuard, findPendingWavesToday, type EnvioGuardDeps } from "../scripts/clarice-envio-guard.ts";
 import type { StepResult, ExecFn } from "../scripts/clarice-envio-run.ts";
 import type { WaveState } from "../scripts/lib/clarice-wave-plan.ts";
+import { acquireEnvioLock } from "../scripts/lib/clarice-envio-lock.ts";
 
 type Handler = StepResult | ((args: string[]) => StepResult);
 
@@ -89,6 +90,19 @@ describe("clarice-envio-guard (#5026)", () => {
   after(() => {
     if (savedApiKey === undefined) delete process.env.BREVO_CLARICE_API_KEY;
     else process.env.BREVO_CLARICE_API_KEY = savedApiKey;
+  });
+
+  it("lock detido por outra rodada => aborta (code 1), zero exec — mesma trava do #4765 usada por runEnvio", async () => {
+    const root = freshRoot();
+    // Guard resolve o ciclo via now-24h (fix do achado de virada de mês) —
+    // o lock precisa estar sob o MESMO ciclo pra este teste ser realista.
+    acquireEnvioLock(root, CYCLE, "run-19h-em-curso", new Date(NOW.getTime() - 60_000));
+    const { exec, calls } = makeFakeExec({});
+    const r = await runEnvioGuard(baseDeps(root, { exec }));
+    assert.equal(r.code, 1);
+    assert.match(r.reportMarkdown, /concorrente/);
+    assert.equal(calls.length, 0, "lock detido aborta ANTES de qualquer chamada");
+    rmSync(root, { recursive: true, force: true });
   });
 
   it("kill switch desligado => pausa sem chamar exec", async () => {
