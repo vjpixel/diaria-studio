@@ -97,6 +97,11 @@ const MYTHOS_PATTERN = /mythos/i;
 const FABLE_PATTERN = /fable/i;
 const SEGURANCA_PATTERN =
   /hacke|espiona|expõe bugs|consciente|análise psicológica|pensamentos silenciosos|finge ser humano/i;
+/** #4923 item 2 — S4 ("Em quais produtos e parcerias o Claude já apareceu?")
+ * é a seção mais linkada do hub (15 links) e não tinha porta de entrada em
+ * formato de pergunta no FAQ. Só usado no FAQ (não entra em
+ * `deriveAnthropicClaudeFacts`: intro/sections não citam este número). */
+const INTEGRATIONS_PATTERN = /microsoft|amazon|slack|adobe|spacex|salesforce|excel|copilot|nvidia|amd/i;
 
 /**
  * Fatos derivados de `sources` (#4922 item 1) — o objeto único que
@@ -132,6 +137,7 @@ export function buildAnthropicClaudeFaq(sources: HubSourceEntry[]): GeoFaqItem[]
   const gapDays = launchGap?.gapDays ?? 0;
   const gapFromLong = launchGap ? formatDateLong(launchGap.fromDate) : "";
   const gapToLong = launchGap ? formatDateLong(launchGap.toDate) : "";
+  const integrations = countMatching(sources, INTEGRATIONS_PATTERN);
 
   // Achado do editor (260804): as perguntas abaixo não podem repetir o
   // texto literal do H2 de nenhuma `section` (fariam o mesmo trabalho 2x).
@@ -171,9 +177,10 @@ export function buildAnthropicClaudeFaq(sources: HubSourceEntry[]): GeoFaqItem[]
       answer: `Os três mais recentes: [o Claude expondo bugs mais rápido do que a Microsoft consegue corrigi-los](https://diar.ia.br/p/claude-expoe-bugs-mais-rapido-que-microsoft-corrige), três dias depois [um episódio em que o Claude invadiu 3 empresas sem que ninguém notasse](https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar) e, mais três dias depois, [um teste controlado do governo britânico flagrou o Claude Mythos 5 criando identidades falsas para tentar convencer um desenvolvedor a aprovar código malicioso](https://diar.ia.br/p/modelo-da-anthropic-finge-ser-humano-em-teste) — rejeitado, o modelo teria alterado os próprios registros da conversa. Ao todo foram ${seguranca} episódios desse tipo no período, de estudo sobre o comportamento do modelo a incidente de segurança concreto.`,
     },
     {
-      question: "Como acompanho as próximas notícias sobre Anthropic e Claude?",
-      answer:
-        "Assine a diar.ia.br. A newsletter cobre lançamentos, disputas regulatórias e movimentos de mercado da Anthropic conforme acontecem, de segunda a sexta, e o arquivo temático é atualizado periodicamente para refletir a cobertura mais recente.",
+      // #4923 item 1+2: substitui o CTA-sem-dado (header/rodapé já têm CTA
+      // próprio) pela pergunta ausente sobre a seção mais linkada do hub.
+      question: "Em quais produtos de outras empresas o Claude já foi integrado?",
+      answer: `Claude apareceu ao lado do nome de outra empresa em ${integrations} manchetes do período — a maioria integrações reais, não só menções: [o Microsoft Copilot](https://diar.ia.br/p/90-dos-desenvolvedores-usam-ia-mas-na-o-confiam-totalmente), [o Excel](https://diar.ia.br/p/brasil-pote-ncia-em-ia-travada-por-falta-de-talentos), [Adobe e Blender](https://diar.ia.br/p/anthropic-conecta-claude-a-adobe-e-blender), [a SpaceX](https://diar.ia.br/p/anthropic-eleva-limites-e-fecha-parceria-com-spacex), [o Slack](https://diar.ia.br/p/a-anthropic-coloca-claude-dentro-do-slack) e [um acordo bilionário com a AMD](https://diar.ia.br/p/ia-agiu-sozinha-e-hackeou-startup-revela-openai), além de [uma parceria de 3 vias com Microsoft e Nvidia](https://diar.ia.br/p/tudo-sobre-gemini-3) e [a Salesforce trocando parte da equipe de engenharia por "tokens da Anthropic"](https://diar.ia.br/p/karpathy-entra-no-time-de-pr-treino-da-anthropic). Nem toda menção foi parceria: em 13 de julho de 2026, [a própria Microsoft trocou tanto Claude quanto a OpenAI por IA própria](https://diar.ia.br/p/os-empregos-mais-blindados-contra-a-ia) em parte de seus produtos.`,
     },
   ];
 }

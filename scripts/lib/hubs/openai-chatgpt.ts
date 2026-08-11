@@ -106,6 +106,10 @@ export function buildOpenaiChatgptFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
   const microsoft = countMatching(sources, /microsoft/i);
   const financeiro = countMatching(sources, /vale US\$|capta|IPO|abertura de capital/i);
   const processos = countMatching(sources, /process/i);
+  // #4923 item 1: substitui o CTA-sem-dado por uma pergunta factual — a
+  // Seção 5 ("Que episódios de segurança e saúde marcaram a cobertura do
+  // ChatGPT?") já narra esses 6 eventos sem ter porta de entrada no FAQ.
+  const saude = countMatching(sources, /sa[úu]de|prontu[áa]rio|diagn[óo]stico/i);
 
   return [
     {
@@ -140,9 +144,8 @@ export function buildOpenaiChatgptFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
       answer: `Sim, ${processos} vezes, e as duas logo na abertura do período: em 27 de agosto de 2025, [nomeada num processo movido por X e xAI contra ela e a Apple](https://diar.ia.br/p/google-lan-a-gemini-2-5-flash-image) e, no dia seguinte, [processada por suicídio de um adolescente](https://diar.ia.br/p/openai-processada-por-suic-dio-de-adolescente). Depois vieram um alerta sobre aconselhamento de suicídio, um filtro de idade e uma investigação por danos a menores.`,
     },
     {
-      question: "Como acompanho as próximas notícias sobre OpenAI e ChatGPT?",
-      answer:
-        "Assine a diar.ia.br. A newsletter cobre lançamentos de modelo, movimentos financeiros e episódios de segurança da OpenAI conforme acontecem, de segunda a sexta, e o arquivo temático é atualizado periodicamente para refletir a cobertura mais recente.",
+      question: "Quantas vezes a saúde apareceu como tema da cobertura do ChatGPT?",
+      answer: `Foram ${saude} manchetes ligando o ChatGPT à saúde, com resultado misto: [medidas de cuidado com saúde mental](https://diar.ia.br/p/chatgpt-aplica-medidas-para-cuidado-com-saude-mental) em outubro de 2025, [conexão com prontuário médico](https://diar.ia.br/p/grok-acusado-de-sexualizar-imagens-de-crianc-as) em janeiro de 2026, a pergunta se [dava pra confiar no ChatGPT pra cuidar da própria saúde](https://diar.ia.br/p/pode-confiar-no-chatgpt-para-cuidar-da-sua-sau-de), [um modelo da OpenAI resolvendo 18 casos sem diagnóstico](https://diar.ia.br/p/alexa-chega-ao-brasil-por-r-100-ao-mes), [avanço em saúde acompanhado de falha em triagem](https://diar.ia.br/p/openai-lanca-gpt-5-6-mais-rapido-e-barato) e [a conexão a prontuário médico voltando a ser notícia](https://diar.ia.br/p/reddit-e-jornais-cogitam-banir-o-google), em julho de 2026.`,
     },
   ];
 }

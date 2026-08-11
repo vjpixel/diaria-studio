@@ -101,6 +101,11 @@ export function buildMetaAiFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
   // genuínas (achado ao escrever este hub, verificado contra o dataset
   // real antes do merge).
   const aquisicoes = countMatching(sources, /^Meta compra/i);
+  // #4923 item 1: substitui o CTA-sem-dado por uma pergunta factual. A
+  // Seção 6 ("Além dos óculos, como a Meta AI chegou ao dia a dia de quem
+  // usa WhatsApp e Instagram?") já narra estes lançamentos sem porta de
+  // entrada no FAQ.
+  const alcanceConsumo = countMatching(sources, /óculos|ray-ban|meta ai chega|business agent/i);
 
   return [
     {
@@ -133,9 +138,8 @@ export function buildMetaAiFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
       answer: `${aquisicoes} aquisições diretas de empresas de IA: [a Moltbook, rede social feita só pra agentes de IA interagirem entre si](https://diar.ia.br/p/meta-compra-rede-social-feita-s-para-agentes-de-ia), e [a Assured Robot Intelligence, pra reforçar os modelos que vão operar os robôs humanoides da Meta](https://diar.ia.br/p/meta-compra-startup-para-construir-rob-humanoide). Um terceiro negócio, a compra da Manus por US\$ 2 bilhões, também apareceu na cobertura — mas por um motivo diferente: o governo chinês obrigou a Meta a desfazer o negócio, em abril de 2026.`,
     },
     {
-      question: "Como acompanho as próximas notícias sobre Meta e IA?",
-      answer:
-        "Assine a diar.ia.br. A newsletter cobre lançamentos de produto, movimentos de liderança e episódios de segurança da Meta conforme acontecem, de segunda a sexta, e o arquivo temático é atualizado periodicamente para refletir a cobertura mais recente.",
+      question: "Em quantos produtos de consumo a Meta AI já apareceu, dos óculos ao WhatsApp corporativo?",
+      answer: `${alcanceConsumo} lançamentos e mudanças de produto levaram a Meta AI ao dia a dia de quem usa os produtos da empresa: [os óculos com AR anunciados no Meta Connect 2025](https://diar.ia.br/p/profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-42c8c67e9a29a), [o Ray-Ban Display detalhado em edição especial](https://diar.ia.br/p/profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-cc179f705a79d), [o Meta AI chegando ao Brasil](https://diar.ia.br/p/openai-lanc-a-instant-checkout-no-chatgpt) e, quase 10 meses depois, [a cobrança por uso do Meta Business Agent no WhatsApp](https://diar.ia.br/p/governo-dos-eua-pode-virar-socio-da-openai).`,
     },
   ];
 }
