@@ -21,7 +21,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { renderHubPage } from "../scripts/lib/shared/hub-page.ts";
-import { renderGeneratedModule, HUB_LOADERS } from "../scripts/build-hub-page.ts";
+import { renderGeneratedModule, HUB_LOADERS, loadHubContent } from "../scripts/build-hub-page.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -34,7 +34,12 @@ for (const slug of Object.keys(HUB_LOADERS)) {
     });
 
     it("o módulo committed bate com um render fresco do conteúdo", () => {
-      const hub = HUB_LOADERS[slug]();
+      // #4913: `loadHubContent`, não `HUB_LOADERS[slug]()` cru — o segundo
+      // pula o pós-processamento de `relatedHubs` (nav "Outros temas") que
+      // `buildOne` aplica antes de escrever o asset, o que fazia este teste
+      // acusar divergência falsa (asset committed COM a nav, render fresco
+      // SEM ela) mesmo com o conteúdo do hub correto.
+      const hub = loadHubContent(slug);
       const fresh = renderGeneratedModule(slug, renderHubPage(hub), hub.updatedDate);
       const committed = readFileSync(asset, "utf8");
       assert.equal(

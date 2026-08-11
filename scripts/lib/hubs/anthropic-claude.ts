@@ -215,7 +215,9 @@ export function getAnthropicClaudeHub(): HubContent {
     // #4912: H1 carrega o intervalo coberto (o `<title>`/`og:title` continua
     // só `title`, montado em `renderHubPage` — não duplicam o período).
     h1: `Anthropic e Claude — de ${since} a ${until}`,
-    metaDescription: `Anthropic e Claude no arquivo da diar.ia.br, de ${since} a ${until}: lançamentos de modelo, o confronto com o governo dos EUA, valuation, integrações e incidentes de segurança.`,
+    // #4913: ≤160 chars (validateHubContent) — trecho final enxuto de propósito,
+    // ver `deriveAnthropicClaudeFacts`/`sections` para a versão completa.
+    metaDescription: `Anthropic e Claude no arquivo da diar.ia.br, de ${since} a ${until}: lançamentos, embate com o governo dos EUA, valuation e segurança.`,
     introHeading: `O que aconteceu com a Anthropic e o Claude desde ${since}?`,
     introParagraph: buildIntro(SOURCES),
     sections: [

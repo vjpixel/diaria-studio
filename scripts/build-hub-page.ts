@@ -31,6 +31,11 @@ import { getAnthropicClaudeHub } from "./lib/hubs/anthropic-claude.ts";
 import { getOpenaiChatgptHub } from "./lib/hubs/openai-chatgpt.ts";
 import { getGoogleGeminiHub } from "./lib/hubs/google-gemini.ts";
 import { getMetaAiHub } from "./lib/hubs/meta-ai.ts";
+// #4913 item 1: só o builder (Node-side) enumera todos os hubs pra montar a
+// nav "Outros temas" — `scripts/lib/shared/hub-page.ts` NÃO importa
+// `HUB_META` diretamente (inverteria a fronteira que a docstring de
+// `meta.ts` estabelece; ver nota de `relatedHubs` em `hub-page.ts`).
+import { HUB_META } from "../workers/arquivo/src/hubs/meta.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -86,13 +91,31 @@ export const ${lastmodConstName} = ${JSON.stringify(updatedDate)};
 `;
 }
 
-function buildOne(slug: string, check: boolean): void {
+/** Carrega o `HubContent` completo de um slug — loader do hub (`get{Hub}Hub()`)
+ * MAIS o pós-processamento que só o builder pode fazer (#4913 itens 1/3: nav
+ * "Outros temas" com os hubs irmãos, própria página excluída — preenchido
+ * aqui, não em `get{Hub}Hub()`, porque só quem enumera `HUB_LOADERS` conhece
+ * o registry completo). Exportado pra `test/hub-page-drift.test.ts` chamar o
+ * MESMO caminho que `buildOne` usa — sem isso o teste de drift comparava o
+ * asset committed (COM a nav, escrito por `buildOne`) contra um render fresco
+ * que pulava esse pós-processamento (SEM a nav), acusando divergência falsa
+ * toda vez que o conteúdo de um hub estivesse correto. */
+export function loadHubContent(slug: string): HubContent {
   const loader = HUB_LOADERS[slug];
   if (!loader) {
+    throw new Error(`[build-hub-page] hub desconhecido: "${slug}". Disponíveis: ${Object.keys(HUB_LOADERS).join(", ")}`);
+  }
+  const baseHub = loader();
+  const relatedHubs = HUB_META.filter((m) => m.slug !== slug);
+  return { ...baseHub, relatedHubs };
+}
+
+function buildOne(slug: string, check: boolean): void {
+  if (!HUB_LOADERS[slug]) {
     console.error(`[build-hub-page] hub desconhecido: "${slug}". Disponíveis: ${Object.keys(HUB_LOADERS).join(", ")}`);
     process.exit(2);
   }
-  const hub = loader();
+  const hub = loadHubContent(slug);
   const html = renderHubPage(hub);
   const outPath = outPathFor(slug);
   if (check) {

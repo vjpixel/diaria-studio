@@ -18,6 +18,7 @@ import { renderHubPage, sourceEditionLabel, validateHubContent, type HubContent 
 import { buildAnthropicClaudeFaq, getAnthropicClaudeHub } from "../scripts/lib/hubs/anthropic-claude.ts";
 import { buildOpenaiChatgptFaq } from "../scripts/lib/hubs/openai-chatgpt.ts";
 import { knownUtmSources, HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM } from "../scripts/lib/shared/utm-registry.ts";
+import { HUB_META } from "../workers/arquivo/src/hubs/meta.ts";
 import sourcesRaw from "../scripts/lib/hubs/anthropic-claude-sources.generated.json" with { type: "json" };
 import openaiChatgptSourcesRaw from "../scripts/lib/hubs/openai-chatgpt-sources.generated.json" with { type: "json" };
 
@@ -525,6 +526,136 @@ describe("datePublished/dateModified do JSON-LD divergem quando publishedDate �
       assert.ok(m, `hub "${slug}" sem datePublished/dateModified no JSON-LD`);
       assert.equal(m![1], hub.publishedDate);
       assert.equal(m![2], hub.updatedDate);
+    });
+  }
+});
+
+/** Fixture mínima reusada pelos testes de metaDescription/nav abaixo (#4913)
+ * — cópia deliberada da `base` local de "validateHubContent —
+ * publishedDate/updatedDate (#4911)" acima: aquele `const base` é escopado
+ * DENTRO do describe, não exportado pro módulo, então cada bloco novo que
+ * precisa de um `HubContent` sintético mínimo declara o próprio (mesmo
+ * padrão já usado pelo arquivo — nenhum describe reusa a `base` de outro). */
+const METADESC_TEST_HUB_BASE: HubContent = {
+  slug: "teste-4913",
+  title: "Teste",
+  metaDescription: "Descrição.",
+  introHeading: "Pergunta?",
+  introParagraph: "Intro.",
+  sections: [{ heading: "Seção", paragraphs: ["Parágrafo."] }],
+  faq: Array.from({ length: 6 }, (_, i) => ({ question: `P${i}?`, answer: `R${i}.` })),
+  sourceEditions: [{ date: "2026-08-01", title: "Edição", url: "https://diar.ia.br/p/edicao-teste" }],
+  publishedDate: "2026-08-01",
+  updatedDate: "2026-08-01",
+  footerNavUtm: { source: "hub-teste-4913", medium: "footer-nav" },
+  methodologyNote:
+    "O levantamento vem de 1 edição publicada em agosto de 2026; os números saem do arquivo da diar.ia.br, não de verificação independente junto às empresas.",
+};
+
+describe("validateHubContent — metaDescription ≤160 chars (#4913 item 2)", () => {
+  it("aceita metaDescription com exatamente 160 caracteres", () => {
+    const hub: HubContent = { ...METADESC_TEST_HUB_BASE, metaDescription: "x".repeat(160) };
+    assert.deepEqual(validateHubContent(hub), []);
+  });
+
+  it("rejeita metaDescription com 161 caracteres — mensagem nomeia o campo e o comprimento medido", () => {
+    const hub: HubContent = { ...METADESC_TEST_HUB_BASE, metaDescription: "x".repeat(161) };
+    const errors = validateHubContent(hub);
+    assert.ok(
+      errors.some((e) => e.includes("metaDescription") && e.includes("161") && /máximo 160/.test(e)),
+      errors.join("; "),
+    );
+  });
+});
+
+describe("metaDescription dos 4 hubs reais está dentro do limite de 160 chars (#4913) — guard sobre HUB_LOADERS", () => {
+  // Sem este guard, a validação só protegeria hub FUTURO — os 4 hubs de hoje
+  // (175/200/211 chars medidos na issue #4913, antes do encurtamento do
+  // item 1) passariam despercebidos até alguém tentar regenerar o build.
+  for (const slug of Object.keys(HUB_LOADERS)) {
+    it(`hub "${slug}": metaDescription ≤ 160 caracteres`, () => {
+      const hub = HUB_LOADERS[slug]();
+      assert.ok(
+        hub.metaDescription.length <= 160,
+        `hub "${slug}": metaDescription tem ${hub.metaDescription.length} caracteres — "${hub.metaDescription}"`,
+      );
+    });
+  }
+});
+
+describe('nav "Outros temas" no rodapé do hub (#4913 itens 1/3/4)', () => {
+  it("com N irmãos: HTML contém o href /temas/ de cada irmão, NÃO contém o próprio slug na nav, e cross-linka de volta pro índice reusando footerNavUtm", () => {
+    const hub: HubContent = {
+      ...METADESC_TEST_HUB_BASE,
+      slug: "propria-pagina",
+      footerNavUtm: { source: "hub-propria-pagina", medium: "footer-nav" },
+      relatedHubs: [
+        { slug: "irmao-a", label: "Irmão A" },
+        { slug: "irmao-b", label: "Irmão B" },
+      ],
+    };
+    const html = renderHubPage(hub);
+    const navMatch = /<nav class="hub-related-nav"[\s\S]*?<\/nav>/.exec(html);
+    assert.ok(navMatch, 'nav "hub-related-nav" ausente do HTML renderizado');
+    const navHtml = navMatch![0];
+    assert.match(navHtml, /href="https:\/\/arquivo\.diar\.ia\.br\/temas\/irmao-a"/);
+    assert.match(navHtml, /href="https:\/\/arquivo\.diar\.ia\.br\/temas\/irmao-b"/);
+    // `propria-pagina` é o próprio slug do hub — não pode aparecer como link
+    // DENTRO da nav (a página tem outros hrefs legítimos pro próprio slug
+    // fora dela, ex: <link rel="canonical">/og:url — checar o HTML inteiro
+    // daria falso positivo, por isso o escopo é só `navHtml`).
+    assert.doesNotMatch(navHtml, /href="https:\/\/arquivo\.diar\.ia\.br\/temas\/propria-pagina"/);
+    // item 4: cross-link de volta pro índice do arquivo, reusando o MESMO
+    // footerNavUtm já usado pelo link "diar.ia.br" (nenhuma entrada nova no
+    // registry de UTM).
+    assert.match(
+      navHtml,
+      /href="https:\/\/arquivo\.diar\.ia\.br\/\?utm_source=hub-propria-pagina&amp;utm_medium=footer-nav"/,
+    );
+  });
+
+  it("com 0 irmãos (hub único): a seção inteira não é emitida", () => {
+    const hub: HubContent = { ...METADESC_TEST_HUB_BASE, relatedHubs: [] };
+    const html = renderHubPage(hub);
+    assert.doesNotMatch(html, /class="hub-related-nav"/);
+  });
+
+  it("relatedHubs ausente (campo opcional não preenchido): a seção não é emitida", () => {
+    const html = renderHubPage(METADESC_TEST_HUB_BASE);
+    assert.doesNotMatch(html, /class="hub-related-nav"/);
+  });
+
+});
+
+describe("scripts/build-hub-page.ts preenche relatedHubs com os hubs IRMÃOS reais de HUB_META (#4913 item 3)", () => {
+  // `HUB_LOADERS[slug]()` sozinho NUNCA popula `relatedHubs` — é
+  // `scripts/build-hub-page.ts` (`buildOne`) quem faz `HUB_META.filter((m) =>
+  // m.slug !== slug)` antes de renderizar (ver docstring do campo em
+  // `hub-page.ts`). Este teste replica exatamente esse cálculo pra garantir
+  // que, pra CADA um dos 4 hubs reais, a nav lista os outros e nunca o
+  // próprio slug — sem isso a cobertura acima só provaria o mecanismo
+  // genérico, não que os 4 hubs de hoje o exercitam corretamente.
+  for (const slug of Object.keys(HUB_LOADERS)) {
+    it(`hub "${slug}": nav lista todo HUB_META exceto o próprio slug`, () => {
+      const relatedHubs = HUB_META.filter((m) => m.slug !== slug);
+      assert.ok(relatedHubs.length > 0, "HUB_META tem 1 único hub — nada pra testar aqui");
+      const hub: HubContent = { ...HUB_LOADERS[slug](), relatedHubs };
+      const html = renderHubPage(hub);
+      const navMatch = /<nav class="hub-related-nav"[\s\S]*?<\/nav>/.exec(html);
+      assert.ok(navMatch, `hub "${slug}" sem nav "Outros temas" no HTML renderizado`);
+      const navHtml = navMatch![0];
+      for (const sibling of relatedHubs) {
+        assert.match(
+          navHtml,
+          new RegExp(`href="https://arquivo\\.diar\\.ia\\.br/temas/${sibling.slug}"`),
+          `nav do hub "${slug}" não linka o irmão "${sibling.slug}"`,
+        );
+      }
+      assert.doesNotMatch(
+        navHtml,
+        new RegExp(`href="https://arquivo\\.diar\\.ia\\.br/temas/${slug}"`),
+        `nav do hub "${slug}" linka o próprio slug`,
+      );
     });
   }
 });
