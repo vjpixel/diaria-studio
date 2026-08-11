@@ -757,6 +757,39 @@ test("eligibility #5041: unsubscribed tem prioridade sobre sunset (consentimento
 });
 
 // ---------------------------------------------------------------------------
+// eligibility #5046 — override de `engaged` (priority_points > 0) sobre o
+// corte de sunset_non_opener, alinhando ao mesmo padrão já usado por
+// mv_rejected/mv_unknown (#2876). Cenário exato reproduzido na issue: contato
+// opt-in (priority_optin → +40 pontos via computePriorityPoints), sends=2,
+// opens=0 — tinha priority_points=20 (>0, "engaged") mas era banido
+// PERMANENTEMENTE pelo sunset mesmo assim, antes deste fix.
+// ---------------------------------------------------------------------------
+
+test("eligibility #5046: opt-in engajado (priority_points>0), sends=2, opens=0 → ELEGÍVEL (override sobrepõe sunset)", () => {
+  const r = classifyEligibility({
+    ...CLEAN,
+    priority_points: 20,
+    sends_count: 2,
+    opens_count: 0,
+    brevo_modified_at: "2026-08-01T09:00:00Z",
+  });
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
+});
+
+test("eligibility #5046: MESMO perfil SEM opt-in (priority_points<=0) → SEGUE sunset_non_opener (zero regressão do #5041)", () => {
+  const r = classifyEligibility({
+    ...CLEAN,
+    priority_points: 0,
+    sends_count: 2,
+    opens_count: 0,
+    brevo_modified_at: "2026-08-01T09:00:00Z",
+  });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "sunset_non_opener");
+});
+
+// ---------------------------------------------------------------------------
 // recomputeDerived — integração com SQLite in-memory
 // ---------------------------------------------------------------------------
 

@@ -508,6 +508,19 @@ export function classifyEligibility(i: EligibilityInput): {
   // exceção sem justificativa própria — a issue #5041 não pede isso, e nada
   // no #4705 menciona reabrir a isenção pra este caso específico.
   //
+  // Isento também: `engaged` (`priority_points > 0`), o mesmo override que já
+  // vale pra mv_rejected/mv_unknown logo abaixo (#2876: "pontuação positiva
+  // sobrepõe o veredito estático do MV" — inclui opt-in explícito, +40
+  // pontos, como "prova de INTENÇÃO"). O #5041 tinha deixado o corte de
+  // sunset mais estrito que os cortes de MV ao lado dos quais foi
+  // deliberadamente posicionado: um contato opt-in que ainda não abriu nada
+  // (`sends_count` 2-3, `opens_count=0`) tem `priority_points > 0` pela
+  // mesma fórmula (`computePriorityPoints`) e era banido PERMANENTEMENTE —
+  // ao contrário de `mv_unknown`, `sunset_non_opener` não tem caminho de
+  // volta. Achado #5046 (review 1.5b, rodada 260811b): a sobreposição com
+  // engajado/opt-in não tinha justificativa registrada nem cobertura de
+  // teste — era descuido, não decisão; alinhado aqui ao mesmo padrão.
+  //
   // Guard `hasMeasuredOpens` (#4688, mesmo racional de `isReativacao` em
   // clarice-segment.ts): sem ele, um contato NUNCA sincronizado pela Brevo
   // (`opens_count=0` só pelo `DEFAULT 0` do schema) seria tratado como
@@ -520,6 +533,7 @@ export function classifyEligibility(i: EligibilityInput): {
   // cobrem a ausência OPCIONAL do campo neste tipo (ver doc de
   // `EligibilityInput` acima), não dado corrompido.
   if (
+    !engaged &&
     !mvExempt &&
     hasMeasuredOpens({ brevo_modified_at: i.brevo_modified_at ?? null }) &&
     shouldSunsetNonOpener({ sendsCount: i.sends_count ?? 0, opensCount: i.opens_count ?? 0 })
