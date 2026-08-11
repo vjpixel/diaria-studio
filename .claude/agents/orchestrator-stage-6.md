@@ -480,6 +480,19 @@ nota la).
 construção; esta nota cobre falha do próprio `send-edition-report.ts`, ex: edition-dir
 inacessível).
 
+### 6b-9. Checagem de staleness dos hubs temáticos (#4924 item 5)
+
+Informacional, **nunca bloqueia** — roda após 6b-8: `npx tsx scripts/hub-staleness-check.ts`.
+
+Audita `data/beehiiv-cache/posts/*.json` contra `scripts/lib/hubs/*-sources.generated.json` e
+imprime, se alguma edição confirmada casar `HUB_KEYWORD_PATTERNS` sem estar no dataset do hub,
+a lista + comandos de regen sugeridos. **Fail-soft** (label `local`, #2643) — sem
+`data/beehiiv-cache/posts` (cloud), stdout vazio, exit 0.
+
+Stdout vazio → omitir do resumo. Não-vazio → colar o bloco literal sob `⚠ Hubs temáticos
+defasados` — informacional, editor decide se roda os comandos (regen nunca é automático,
+#4924 item 2). **Nunca rodar os comandos sugeridos automaticamente.**
+
 ---
 
 ## Resumo final (apos auto-reporter + relatorio)
@@ -487,5 +500,7 @@ inacessível).
 Apos auto-reporter, apresentar resumo consolidado da edicao. **Nao enumerar as issues criadas pelo auto-reporter (#1825)** — reportar so a contagem. Se alguma parte foi pulada, incluir bloco de retomada explicito.
 
 **#3714:** incluir a linha `Relatório: {studio_report_url}` (valor lido do summary JSON de 6b-8) — é o link primário do relatório desta edição agora que o draft de Gmail foi removido. Se `studio_report_url` vier `null` (registro falhou, fail-soft), reportar `Relatório: só local (_internal/edition-report.html) — registro no Studio falhou, ver warn acima` em vez de omitir a linha.
+
+**#4924:** se 6b-9 imprimiu algo, incluir `⚠ Hubs temáticos defasados` no resumo, após a linha do Relatório. Stdout vazio → omitir a seção (sem afirmar "hubs em dia").
 
 Se nenhum stage foi pulado, omitir esse bloco — so listar outputs e metricas finais.

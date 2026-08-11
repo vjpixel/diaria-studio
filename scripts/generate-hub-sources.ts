@@ -181,8 +181,10 @@ export function collectHubSources(
 /** Lê `data/beehiiv-cache/posts/*.json`, isolando falha de parse POR ARQUIVO
  * (mesmo padrão de `loadRawPosts` em `generate-arquivo-titles.ts`) — um JSON
  * truncado/corrompido em um post não pode abortar a geração inteira sem
- * dizer qual arquivo é o culpado. */
-function loadPosts(): RawCachedPost[] {
+ * dizer qual arquivo é o culpado. Exportado (#4924) — `scripts/lib/hub-staleness-check.ts`
+ * reusa esta mesma leitura pra auditar TODOS os hubs de uma vez, em vez de
+ * duplicar a leitura de `POSTS_DIR`. */
+export function loadPosts(): RawCachedPost[] {
   if (!existsSync(POSTS_DIR)) {
     throw new Error(
       `${POSTS_DIR} ausente — precisa do junction data/ (OneDrive) populado por beehiiv-sync.ts. Ver CLAUDE.md label "local".`,
