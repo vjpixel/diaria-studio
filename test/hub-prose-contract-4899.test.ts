@@ -25,6 +25,10 @@ import {
   HUB_PROSE_RULES,
   formatDateLong,
   hubCoverageWindow,
+  hubMentionCadenceDays,
+  hubTotals,
+  matchingDates,
+  maxDateGap,
   validateHubContent,
   type HubContent,
 } from "../scripts/lib/shared/hub-page.ts";
@@ -472,6 +476,106 @@ describe("#4899 — contrato de prosa dos hubs", () => {
         });
         assert.deepEqual(proseErrors(hub, "prosa-sem-publicacao-como-sujeito"), []);
       }
+    });
+  });
+});
+
+/**
+ * #5007 — os 4 helpers irmãos derivados no #4922 (`hubTotals`,
+ * `hubMentionCadenceDays`, `maxDateGap`, `matchingDates`) só eram exercitados
+ * INDIRETAMENTE, via os 4 hubs reais (`test/build-hub-page.test.ts`/
+ * `test/hub-page-drift.test.ts`) — nenhum tinha teste unitário direto contra
+ * os casos de borda documentados no próprio docstring (lista vazia, lista de
+ * 1 item, e — pra `maxDateGap` — hiato empatado com tie-break "primeira
+ * ocorrência"). Nenhum dos 4 hubs reais aciona esses casos hoje (é
+ * exatamente por isso que a lacuna não foi pega pelos testes indiretos); um
+ * 5º hub futuro, ou uma regeneração que reduza drasticamente o dataset de um
+ * hub existente, pode acionar um deles pela 1ª vez em produção sem rede de
+ * segurança.
+ */
+describe("#5007 — testes unitários diretos: hubTotals / hubMentionCadenceDays / maxDateGap / matchingDates", () => {
+  describe("hubTotals", () => {
+    it("lista vazia -> { totalEditions: 0, totalMentions: 0 }", () => {
+      assert.deepEqual(hubTotals([]), { totalEditions: 0, totalMentions: 0 });
+    });
+
+    it("lista de 1 item -> totalEditions 1, totalMentions = tamanho de matchedHeadlines desse item", () => {
+      assert.deepEqual(hubTotals([{ matchedHeadlines: ["a", "b", "c"] }]), {
+        totalEditions: 1,
+        totalMentions: 3,
+      });
+    });
+
+    it("lista de 1 item sem manchetes -> totalMentions 0", () => {
+      assert.deepEqual(hubTotals([{ matchedHeadlines: [] }]), { totalEditions: 1, totalMentions: 0 });
+    });
+  });
+
+  describe("hubMentionCadenceDays", () => {
+    it("lista vazia -> lança (delega em hubCoverageWindow, que rejeita sources vazio)", () => {
+      assert.throws(() => hubMentionCadenceDays([]), /sources vazio/);
+    });
+
+    it("lista de 1 item -> 0 dias (firstDate === lastDate, sem intervalo pra dividir)", () => {
+      assert.equal(hubMentionCadenceDays([{ date: "2026-01-15", matchedHeadlines: ["a"] }]), 0);
+    });
+  });
+
+  describe("matchingDates", () => {
+    it("lista vazia -> []", () => {
+      assert.deepEqual(matchingDates([], /x/), []);
+    });
+
+    it("lista de 1 item, manchete casa o padrão -> [date] daquele item", () => {
+      assert.deepEqual(
+        matchingDates([{ date: "2026-01-15", matchedHeadlines: ["lançou um modelo novo"] }], /lançou/),
+        ["2026-01-15"],
+      );
+    });
+
+    it("lista de 1 item, manchete NÃO casa o padrão -> []", () => {
+      assert.deepEqual(
+        matchingDates([{ date: "2026-01-15", matchedHeadlines: ["assunto qualquer"] }], /lançou/),
+        [],
+      );
+    });
+  });
+
+  describe("maxDateGap", () => {
+    it("lista vazia -> null (documentado no docstring, nunca antes verificado — #5007)", () => {
+      assert.equal(maxDateGap([]), null);
+    });
+
+    it("lista de 1 item -> null (1 data não tem hiato, documentado, nunca antes verificado — #5007)", () => {
+      assert.equal(maxDateGap(["2026-01-15"]), null);
+    });
+
+    it("2 datas -> 1 gap, from/to/gapDays corretos", () => {
+      assert.deepEqual(maxDateGap(["2026-01-01", "2026-01-11"]), {
+        fromDate: "2026-01-01",
+        toDate: "2026-01-11",
+        gapDays: 10,
+      });
+    });
+
+    it("hiato empatado (3 datas, 2 gaps de 10 dias cada) -> tie-break é a PRIMEIRA ocorrência do máximo (documentado, nunca antes verificado — #5007)", () => {
+      // gaps: 01-01->01-11 (10d), 01-11->01-21 (10d) -- empatados; `best` só
+      // troca com `>`, nunca `>=`, então o 1º vence.
+      assert.deepEqual(maxDateGap(["2026-01-01", "2026-01-11", "2026-01-21"]), {
+        fromDate: "2026-01-01",
+        toDate: "2026-01-11",
+        gapDays: 10,
+      });
+    });
+
+    it("hiato empatado no meio de uma lista maior (gaps 5/20/20/3) -> o 1º trecho de tamanho máximo vence", () => {
+      // gaps: 01-01->01-06 (5d), 01-06->01-26 (20d), 01-26->02-15 (20d), 02-15->02-18 (3d)
+      // -- os dois "20" empatam; o 1º (entre a 2ª e a 3ª data) vence, mesmo
+      // aparecendo antes do 2º candidato empatado na varredura.
+      assert.deepEqual(
+        maxDateGap(["2026-01-01", "2026-01-06", "2026-01-26", "2026-02-15", "2026-02-18"]),
+        { fromDate: "2026-01-06", toDate: "2026-01-26", gapDays: 20 },
+      );
     });
   });
 });
