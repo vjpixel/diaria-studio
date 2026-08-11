@@ -536,7 +536,7 @@ describe("datePublished/dateModified do JSON-LD divergem quando publishedDate �
  * DENTRO do describe, não exportado pro módulo, então cada bloco novo que
  * precisa de um `HubContent` sintético mínimo declara o próprio (mesmo
  * padrão já usado pelo arquivo — nenhum describe reusa a `base` de outro). */
-const METADESC_TEST_HUB_BASE: HubContent = {
+const HUB_4913_TEST_BASE: HubContent = {
   slug: "teste-4913",
   title: "Teste",
   metaDescription: "Descrição.",
@@ -554,12 +554,12 @@ const METADESC_TEST_HUB_BASE: HubContent = {
 
 describe("validateHubContent — metaDescription ≤160 chars (#4913 item 2)", () => {
   it("aceita metaDescription com exatamente 160 caracteres", () => {
-    const hub: HubContent = { ...METADESC_TEST_HUB_BASE, metaDescription: "x".repeat(160) };
+    const hub: HubContent = { ...HUB_4913_TEST_BASE, metaDescription: "x".repeat(160) };
     assert.deepEqual(validateHubContent(hub), []);
   });
 
   it("rejeita metaDescription com 161 caracteres — mensagem nomeia o campo e o comprimento medido", () => {
-    const hub: HubContent = { ...METADESC_TEST_HUB_BASE, metaDescription: "x".repeat(161) };
+    const hub: HubContent = { ...HUB_4913_TEST_BASE, metaDescription: "x".repeat(161) };
     const errors = validateHubContent(hub);
     assert.ok(
       errors.some((e) => e.includes("metaDescription") && e.includes("161") && /máximo 160/.test(e)),
@@ -586,7 +586,7 @@ describe("metaDescription dos 4 hubs reais está dentro do limite de 160 chars (
 describe('nav "Outros temas" no rodapé do hub (#4913 itens 1/3/4)', () => {
   it("com N irmãos: HTML contém o href /temas/ de cada irmão, NÃO contém o próprio slug na nav, e cross-linka de volta pro índice reusando footerNavUtm", () => {
     const hub: HubContent = {
-      ...METADESC_TEST_HUB_BASE,
+      ...HUB_4913_TEST_BASE,
       slug: "propria-pagina",
       footerNavUtm: { source: "hub-propria-pagina", medium: "footer-nav" },
       relatedHubs: [
@@ -615,13 +615,13 @@ describe('nav "Outros temas" no rodapé do hub (#4913 itens 1/3/4)', () => {
   });
 
   it("com 0 irmãos (hub único): a seção inteira não é emitida", () => {
-    const hub: HubContent = { ...METADESC_TEST_HUB_BASE, relatedHubs: [] };
+    const hub: HubContent = { ...HUB_4913_TEST_BASE, relatedHubs: [] };
     const html = renderHubPage(hub);
     assert.doesNotMatch(html, /class="hub-related-nav"/);
   });
 
   it("relatedHubs ausente (campo opcional não preenchido): a seção não é emitida", () => {
-    const html = renderHubPage(METADESC_TEST_HUB_BASE);
+    const html = renderHubPage(HUB_4913_TEST_BASE);
     assert.doesNotMatch(html, /class="hub-related-nav"/);
   });
 

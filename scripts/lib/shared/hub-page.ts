@@ -902,8 +902,7 @@ ${sectionsHtml}
      bloco de FAQ idêntico ao de .hub-sections logo acima. -->
 ${renderGeoFaqSection(hub.faq, { sectionId: `faq-${hub.slug}`, heading: "Perguntas rápidas" })}
 ${sourcesHtml}
-${methodologyHtml}
-${relatedHubsHtml}
+${methodologyHtml}${relatedHubsHtml ? `\n${relatedHubsHtml}` : ""}
     </div>
   </main>
   ${renderCuradoriaFooter(
