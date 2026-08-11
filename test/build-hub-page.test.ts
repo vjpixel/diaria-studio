@@ -14,7 +14,12 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { renderGeneratedModule, HUB_LOADERS } from "../scripts/build-hub-page.ts";
-import { renderHubPage, sourceEditionLabel, validateHubContent, type HubContent } from "../scripts/lib/shared/hub-page.ts";
+import {
+  renderHubPage,
+  sourceEditionLabel,
+  validateHubContent,
+  type HubContent,
+} from "../scripts/lib/shared/hub-page.ts";
 import { findParagraphLinks } from "../scripts/lib/shared/markdown-links.ts";
 import { buildAnthropicClaudeFaq, getAnthropicClaudeHub } from "../scripts/lib/hubs/anthropic-claude.ts";
 import { buildOpenaiChatgptFaq } from "../scripts/lib/hubs/openai-chatgpt.ts";
@@ -776,5 +781,164 @@ describe("links de fonte primária na prosa das 5 seções (#4919 item 8, Fase C
         }
       }
     }
+  });
+});
+
+describe("validateHubContent — table.rows aridade (#4921 Onda 2 item 9)", () => {
+  const base: HubContent = {
+    ...HUB_4913_TEST_BASE,
+    slug: "teste-4921-table",
+    sections: [
+      {
+        heading: "Seção com tabela",
+        paragraphs: ["Parágrafo."],
+        table: {
+          caption: "Tabela de teste",
+          methodology: "Nota de metodologia.",
+          headers: ["A", "B"],
+          rows: [["1", "2"]],
+        },
+      },
+    ],
+  };
+
+  it("aceita rows com aridade igual a headers", () => {
+    assert.deepEqual(validateHubContent(base), []);
+  });
+
+  it("rejeita table.rows vazio — mensagem nomeia hub e seção", () => {
+    const hub: HubContent = {
+      ...base,
+      sections: [{ ...base.sections[0], table: { ...base.sections[0].table!, rows: [] } }],
+    };
+    const errors = validateHubContent(hub);
+    assert.ok(
+      errors.some(
+        (e) => e.includes('hub "teste-4921-table"') && e.includes('"Seção com tabela"') && /rows está vazio/.test(e),
+      ),
+      errors.join("; "),
+    );
+  });
+
+  it("rejeita linha com aridade diferente do header — mensagem nomeia hub, seção e o índice da linha", () => {
+    const hub: HubContent = {
+      ...base,
+      sections: [
+        {
+          ...base.sections[0],
+          table: { ...base.sections[0].table!, rows: [["1", "2"], ["só uma célula"]] },
+        },
+      ],
+    };
+    const errors = validateHubContent(hub);
+    assert.ok(
+      errors.some(
+        (e) =>
+          e.includes('hub "teste-4921-table"') &&
+          e.includes('"Seção com tabela"') &&
+          /rows\[1\] tem 1 célula/.test(e) &&
+          /headers tem 2/.test(e),
+      ),
+      errors.join("; "),
+    );
+  });
+
+  it("seção sem table (campo opcional ausente) não é validada — regression: opcional não pode virar obrigatório por acidente", () => {
+    const hub: HubContent = { ...base, sections: [{ heading: "Sem tabela", paragraphs: ["Parágrafo."] }] };
+    assert.deepEqual(validateHubContent(hub), []);
+  });
+});
+
+describe("cronologia de lançamento (S1.table) do hub anthropic-claude — derivada de SOURCES, nunca transcrita (#4921 Onda 2)", () => {
+  // Molde do bloco "consistência FAQ × prosa" já existente no arquivo
+  // (linha ~99 e ~314): não reimplementa o cálculo de dentro de
+  // anthropic-claude.ts (LAUNCH_PATTERN é privado do módulo, de propósito —
+  // não exportado só pra um teste ler), e sim cruza DOIS números que já são
+  // computados de formas independentes dentro do próprio hub — a contagem/
+  // hiato que o FAQ deriva (`buildAnthropicClaudeFaq`) contra as linhas da
+  // tabela que `getAnthropicClaudeHub` monta (`buildLaunchChronologyTable`).
+  // Se os dois algum dia divergirem — regen que atualiza um sem o outro,
+  // edição manual futura — este teste quebra.
+  const hub = getAnthropicClaudeHub();
+  const faq = buildAnthropicClaudeFaq(sourcesRaw as never);
+  const launchFaqAnswer = faq.find((f) => /Foram \d+ lançamentos/.test(f.answer))?.answer ?? "";
+  const launchSection = hub.sections.find((s) => s.heading.startsWith("Com que frequência"));
+
+  it("S1 carrega uma table (#4921 Onda 2 aplicada)", () => {
+    assert.ok(launchSection, "seção S1 não encontrada");
+    assert.ok(launchSection!.table, "S1 sem table — #4921 Onda 2 não aplicada");
+  });
+
+  it("1 linha por lançamento — mesmo N que o FAQ computa (\"Foram N lançamentos\")", () => {
+    const launchMatch = /Foram (\d+) lançamentos/.exec(launchFaqAnswer);
+    assert.ok(launchMatch, 'FAQ não tem a contagem de lançamentos no formato "Foram N lançamentos"');
+    assert.equal(launchSection!.table!.rows.length, Number(launchMatch![1]));
+  });
+
+  it("headers e cada row têm a mesma aridade (4 colunas: Lançamento, Data, Dias desde o anterior, Edição)", () => {
+    const { headers, rows } = launchSection!.table!;
+    assert.equal(headers.length, 4);
+    for (const row of rows) assert.equal(row.length, headers.length);
+  });
+
+  it("linhas em ordem cronológica ASCENDENTE por data (coluna 2, DD/MM/AAAA)", () => {
+    const rows = launchSection!.table!.rows;
+    const toIso = (label: string) => {
+      const [d, m, y] = label.split("/");
+      return `${y}-${m}-${d}`;
+    };
+    for (let i = 1; i < rows.length; i++) {
+      assert.ok(
+        toIso(rows[i][1]) >= toIso(rows[i - 1][1]),
+        `linha ${i} ("${rows[i][1]}") vem antes da linha ${i - 1} ("${rows[i - 1][1]}") — deveria ser ascendente`,
+      );
+    }
+  });
+
+  it('primeira linha não tem "dias desde o anterior" (sem lançamento anterior pra comparar) — usa "—"', () => {
+    assert.equal(launchSection!.table!.rows[0][2], "—");
+  });
+
+  it(
+    "o MAIOR valor de \"dias desde o anterior\" bate com o hiato que o FAQ cita em prosa — resolve por construção " +
+      "a divergência hiato/dias que a auditoria #4921 catalogou (achado M-07: INTRO dizia meses, S1/FAQ diziam dias, " +
+      "sem nada religando os dois; a tabela deriva do MESMO array de datas ordenadas que alimenta o hiato do FAQ, " +
+      "então não há como um número mudar sem o outro acompanhar)",
+    () => {
+      const gapMatch = /hiato de (\d+) dias/.exec(launchFaqAnswer);
+      assert.ok(gapMatch, 'FAQ não cita "hiato de N dias" no formato esperado');
+      const rows = launchSection!.table!.rows;
+      const gaps = rows.slice(1).map((r) => Number(r[2]));
+      assert.ok(gaps.length > 0, "tabela com <2 linhas — não há gap pra comparar");
+      assert.equal(Math.max(...gaps), Number(gapMatch![1]));
+    },
+  );
+
+  it("coluna 'Edição' é sempre um link markdown pra diar.ia.br (nunca prosa solta)", () => {
+    for (const row of launchSection!.table!.rows) {
+      assert.match(row[3], /^\[Ver edição\]\(https:\/\/diar\.ia\.br\/p\/[^)]+\)$/);
+    }
+  });
+
+  it("methodology cita o total REAL de edições e manchetes de sourcesRaw (nunca literal — muda a cada regen)", () => {
+    const totalEditions = (sourcesRaw as unknown[]).length;
+    const totalMentions = (sourcesRaw as { matchedHeadlines: string[] }[]).reduce(
+      (n, s) => n + s.matchedHeadlines.length,
+      0,
+    );
+    assert.match(launchSection!.table!.methodology, new RegExp(`${totalEditions} edições`));
+    assert.match(launchSection!.table!.methodology, new RegExp(`${totalMentions} manchetes`));
+  });
+
+  it("a tabela renderiza no HTML final dentro de .hub-section, com <caption>/<thead>/1 <tr> por linha", () => {
+    const html = renderHubPage(hub);
+    const sectionMatch = /<article class="hub-section">\s*<h2>Com que frequência[\s\S]*?<\/article>/.exec(html);
+    assert.ok(sectionMatch, "seção S1 não encontrada no HTML renderizado");
+    const sectionHtml = sectionMatch![0];
+    assert.match(sectionHtml, /<div class="hub-section-table-wrap">/);
+    assert.match(sectionHtml, /<caption>Cronologia de lançamento/);
+    assert.match(sectionHtml, /<thead>/);
+    const trCount = (sectionHtml.match(/<tbody>[\s\S]*?<\/tbody>/)![0].match(/<tr>/g) ?? []).length;
+    assert.equal(trCount, launchSection!.table!.rows.length);
   });
 });

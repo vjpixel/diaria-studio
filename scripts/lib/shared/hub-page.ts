@@ -84,6 +84,36 @@ export function sourceEditionLabel(e: HubSourceEdition): string {
   return e.title;
 }
 
+/** Bloco de tabela opcional de uma `HubSection` (#4921 Onda 2) — dado
+ * tabular específico da seção, DERIVADO de `SOURCES` em build-time e jamais
+ * transcrito à mão (mesma disciplina de `deriveAnthropicClaudeFacts` em
+ * `scripts/lib/hubs/anthropic-claude.ts`: um número que existe em dois
+ * lugares e só um deles é fórmula é exatamente o padrão que produziu a
+ * divergência hiato/dias que a auditoria #4558 catalogou como achado M-07).
+ * Onda 1 (bibliografia, `.hub-sources`) já é `<table>` — este é o SEGUNDO
+ * lugar da página que ganha tabela, um por seção, sempre opcional. */
+export interface HubSectionTable {
+  /** Legenda curta — vira `<caption>` (a11y: leitor de tela anuncia antes do
+   * conteúdo da tabela). NÃO repete o H2 da seção — a seção já pergunta, a
+   * legenda nomeia o que a tabela especificamente cobre. */
+  caption: string;
+  /** Nota de proveniência da amostra — janela, tamanho e o que é contado
+   * (issue #4921 item 8). SEMPRE derivada via `defaultTableMethodologyNote`
+   * (ou equivalente que leia `sources` diretamente) — nunca texto livre;
+   * ver a mesma exigência em `HubContent.methodologyNote`. */
+  methodology: string;
+  /** Cabeçalho das colunas — vira `<th>`. */
+  headers: readonly string[];
+  /** Corpo da tabela — cada linha é uma tupla de células com a MESMA
+   * aridade de `headers` (validado por `validateHubContent`, issue item 9).
+   * Suporta o mesmo subset de markdown `[texto](url)`
+   * (`renderInlineLinks`) que `paragraphs` já aceita — decisão explícita
+   * (issue item 6, "decidir"): a coluna final de uma tabela derivada de
+   * `SOURCES` é tipicamente um link pra edição, então célula só-texto
+   * (`esc()` puro) obrigaria achatar esse link pra fora da tabela. */
+  rows: readonly (readonly string[])[];
+}
+
 /** Uma seção narrativa do hub — H2 em formato de pergunta literal (issue
  * item 2) + 1 ou mais parágrafos de síntese editorial (item 1/6: dado
  * próprio, não reempacote de manchete). */
@@ -102,6 +132,13 @@ export interface HubSection {
    * não, porque vira valor de atributo (`<meta content="...">`/`og:description`
    * via `renderSeoMeta`), onde HTML cru quebraria o atributo. */
   paragraphs: [string, ...string[]];
+  /** Bloco de tabela OPCIONAL (#4921 Onda 2) — a candidata explícita da
+   * issue é a cronologia de lançamento de `anthropic-claude` (S1), mas o
+   * campo é genérico: qualquer seção de qualquer hub pode ganhar uma tabela
+   * própria quando o dado subjacente for tabular e derivável. **Não
+   * estender a outros hubs nesta onda** sem remedir — a issue documenta
+   * isso como fora de escopo (`google-gemini` tem forma diferente). */
+  table?: HubSectionTable;
 }
 
 export interface HubContent {
@@ -322,6 +359,25 @@ export function defaultMethodologyNote(
 }
 
 /**
+ * Texto padrão da nota de metodologia de uma `HubSectionTable` (#4921 Onda
+ * 2, issue item 8) — DERIVADO de `sources` como `defaultMethodologyNote`,
+ * mas cita também o total de manchetes ("o que é contado"), que
+ * `defaultMethodologyNote` omite de propósito (a nota do rodapé do hub
+ * inteiro fala só de edições; a nota de uma tabela de seção — cujas linhas
+ * tipicamente vêm de `matchedHeadlines` filtradas por um padrão — precisa
+ * dizer também quantas manchetes formam a amostra). Os 3 números (janela,
+ * edições, manchetes) saem de `hubCoverageWindow`/`hubTotals` — nenhum é
+ * literal, todos mudam a cada regen de `sources.generated.json`.
+ */
+export function defaultTableMethodologyNote(
+  sources: readonly { date: string; matchedHeadlines: readonly string[] }[],
+): string {
+  const { between } = hubCoverageWindow(sources);
+  const { totalEditions, totalMentions } = hubTotals(sources);
+  return `Levantamento sobre ${totalEditions} edições publicadas entre ${between}, somando ${totalMentions} manchetes; os números saem do arquivo da diar.ia.br.`;
+}
+
+/**
  * Cadência média de menção de um hub, em dias corridos, arredondada (#4922
  * item 1) — `Math.round(calendarDaysBetween(firstDate, lastDate) /
  * totalMentions)`. Cobre tanto a prosa que diz "dias corridos"
@@ -451,6 +507,23 @@ function renderHubBodyStyles(): string {
   .hub-section p a { color: var(--teal); text-decoration: underline; text-decoration-color: var(--rule); text-underline-offset: 2px; }
   .hub-section p a:hover { text-decoration-color: var(--teal); }
   .hub-section p:last-child { margin-bottom: 0; }
+  /* #4921 Onda 2: tabela opcional DENTRO de uma seção (.hub-section, já
+     720px) — mais compacta que a bibliografia (.hub-sources abaixo, que é a
+     página inteira de fontes). overflow-x:auto pelo mesmo motivo da Onda 1:
+     não é testável automaticamente, só CSS (issue item 4/9). */
+  .hub-section-table-wrap { overflow-x: auto; margin: 4px 0 16px; border-top: 1px solid var(--rule); }
+  .hub-section-table-wrap table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  .hub-section-table-wrap caption { text-align: left; font-family: Georgia, 'Times New Roman', serif;
+    font-size: 13px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--teal);
+    padding: 10px 0 8px; }
+  .hub-section-table-wrap thead th { text-align: left; padding: 8px; font-family: Georgia, 'Times New Roman', serif;
+    font-weight: 700; font-size: 13px; letter-spacing: 0.02em; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+  .hub-section-table-wrap tbody td { padding: 9px 8px; border-bottom: 1px solid var(--rule); color: var(--ink);
+    line-height: 1.45; vertical-align: top; }
+  .hub-section-table-wrap tbody td a { color: var(--teal); text-decoration: underline;
+    text-decoration-color: var(--rule); text-underline-offset: 2px; }
+  .hub-section-table-wrap tbody td a:hover { text-decoration-color: var(--teal); }
+  .hub-section-table-methodology { font-size: 13px; line-height: 1.55; color: var(--ink); opacity: 0.72; margin: 0 0 14px; }
   .hub-sources { margin: 48px 0 0; padding: 32px 0 0; border-top: 1px solid var(--rule); max-width: 720px; }
   /* #4558: .geo-faq vem de geo-faq.ts (compartilhado com livros/cursos/arquivo,
      sem max-width — lá o conteúdo ao redor já é largo, grid de cards ou lista
@@ -528,6 +601,17 @@ export function collectReaderFacingStrings(
     section.paragraphs.forEach((p, pIdx) => {
       out.push({ field: `sections[${sIdx}].paragraphs[${pIdx}]`, value: p, kind: "prose" });
     });
+    // #4921 Onda 2: `table.caption`/`table.methodology` são texto lido pelo
+    // leitor (caption/nota de proveniência), então passam pelo MESMO
+    // contrato de prosa que heading/parágrafo. `headers`/`rows` ficam FORA
+    // de propósito — são dado tabular curto (rótulo de coluna, data, nome de
+    // modelo, "Ver edição"), não prosa narrativa; aplicar HUB_PROSE_RULES
+    // ali arriscaria falso positivo sem examinar nenhuma construção real que
+    // a auditoria tenha catalogado.
+    if (section.table) {
+      out.push({ field: `sections[${sIdx}].table.caption`, value: section.table.caption, kind: "heading" });
+      out.push({ field: `sections[${sIdx}].table.methodology`, value: section.table.methodology, kind: "prose" });
+    }
   });
   hub.faq.forEach((item, fIdx) => {
     out.push({ field: `faq[${fIdx}].question`, value: item.question, kind: "heading" });
@@ -767,6 +851,25 @@ export function validateHubContent(hub: HubContent): string[] {
   if (hub.sections.length === 0) {
     errors.push("sections está vazio — hub sem nenhuma seção narrativa");
   }
+  // #4921 Onda 2 item 9: `table` é opcional, mas quando presente precisa de
+  // pelo menos 1 linha e aridade igual entre `headers` e CADA linha — sem
+  // isso `renderHubSectionTable` emitiria uma `<tr>` com número de `<td>`
+  // diferente do número de `<th>`, quebrando a leitura por leitor de tela e
+  // qualquer parser tabular. Mensagem nomeia hub + seção (issue item 9).
+  hub.sections.forEach((section, sIdx) => {
+    if (!section.table) return;
+    const { headers, rows } = section.table;
+    if (rows.length === 0) {
+      errors.push(`hub "${hub.slug}" seção "${section.heading}" (sections[${sIdx}].table): rows está vazio`);
+    }
+    rows.forEach((row, rIdx) => {
+      if (row.length !== headers.length) {
+        errors.push(
+          `hub "${hub.slug}" seção "${section.heading}" (sections[${sIdx}].table): rows[${rIdx}] tem ${row.length} célula(s), headers tem ${headers.length}`,
+        );
+      }
+    });
+  });
   // #4939: methodologyNote é OBRIGATÓRIO — hub futuro nasce sem, senão (a
   // issue documenta essa preocupação explicitamente). Mesmo padrão dos
   // checks acima (`sections`/`sourceEditions` vazios): o TYPE não consegue
@@ -808,6 +911,26 @@ export function validateHubContent(hub: HubContent): string[] {
   return errors;
 }
 
+/** Renderiza o bloco de tabela opcional de uma `HubSection` (#4921 Onda 2).
+ * Célula em texto puro passa por `renderInlineLinks` (não `esc()` puro) —
+ * ver decisão registrada na docstring de `HubSectionTable.rows`. */
+function renderHubSectionTable(table: HubSectionTable): string {
+  return `        <div class="hub-section-table-wrap">
+          <table>
+            <caption>${esc(table.caption)}</caption>
+            <thead>
+              <tr>${table.headers.map((h) => `<th scope="col">${esc(h)}</th>`).join("")}</tr>
+            </thead>
+            <tbody>
+${table.rows
+  .map((row) => `              <tr>${row.map((cell) => `<td>${renderInlineLinks(cell)}</td>`).join("")}</tr>`)
+  .join("\n")}
+            </tbody>
+          </table>
+        </div>
+        <p class="hub-section-table-methodology">${renderInlineLinks(table.methodology)}</p>`;
+}
+
 /** Renderiza o HTML completo de um hub temático. Pure — sem I/O, sem
  * `Date.now()`. Lança se `validateHubContent` encontrar violação (fail-fast
  * — melhor quebrar o build do que publicar um hub malformado). Chamada por
@@ -836,7 +959,7 @@ ${hub.sections
   .map(
     (s) => `      <article class="hub-section">
         <h2>${esc(s.heading)}</h2>
-${s.paragraphs.map((p) => `        <p>${renderInlineLinks(p)}</p>`).join("\n")}
+${s.paragraphs.map((p) => `        <p>${renderInlineLinks(p)}</p>`).join("\n")}${s.table ? `\n${renderHubSectionTable(s.table)}` : ""}
       </article>`,
   )
   .join("\n")}
