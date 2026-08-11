@@ -447,6 +447,7 @@ describe("validateHubContent — publishedDate/updatedDate (#4911)", () => {
     publishedDate: "2026-08-01",
     updatedDate: "2026-08-01",
     footerNavUtm: { source: "test", medium: "footer-nav" },
+    methodologyNote: "O levantamento vem de 1 edição publicada em agosto de 2026; os números saem do arquivo da diar.ia.br, não de verificação independente junto às empresas.",
   };
 
   it("aceita publishedDate === updatedDate", () => {

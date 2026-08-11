@@ -53,6 +53,7 @@ import {
   hubTotals,
   countMatching,
   formatDateShort,
+  defaultMethodologyNote,
   type HubContent,
   type HubSourceEdition,
 } from "../shared/hub-page.ts";
@@ -218,5 +219,6 @@ export function getOpenaiChatgptHub(): HubContent {
     publishedDate: PUBLISHED_DATE,
     updatedDate: UPDATED_DATE,
     footerNavUtm: HUB_OPENAI_CHATGPT_FOOTER_NAV_UTM,
+    methodologyNote: defaultMethodologyNote(SOURCES),
   };
 }

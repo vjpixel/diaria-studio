@@ -47,6 +47,7 @@ function baseHub(over: Partial<HubContent> = {}): HubContent {
     publishedDate: "2026-02-16",
     updatedDate: "2026-02-16",
     footerNavUtm: { source: "fixture", medium: "test" },
+    methodologyNote: "O levantamento vem de 1 edição publicada em fevereiro de 2026; os números saem do arquivo da diar.ia.br, não de verificação independente junto às empresas.",
     ...over,
   };
 }
@@ -247,6 +248,51 @@ describe("#4899 — contrato de prosa dos hubs", () => {
         assert.deepEqual(proseErrors(load()), []);
       });
     }
+  });
+
+  describe("#4939 — methodologyNote: isenção de prosa-sem-deixis é POR CAMPO, não afrouxamento da regra", () => {
+    it("dêixis ('esta página') passa limpa dentro de methodologyNote", () => {
+      const hub = baseHub({
+        methodologyNote: "Os números desta página vêm do arquivo da diar.ia.br, não de verificação independente.",
+      });
+      assert.deepEqual(proseErrors(hub, "prosa-sem-deixis"), []);
+    });
+
+    it("a MESMA dêixis continua reprovando em introParagraph/sections/faq — a regex não afrouxou", () => {
+      for (const over of [
+        { introParagraph: "O conteúdo está descrito nesta página, com fatos e datas." },
+        { sections: [{ heading: "O que mudou?", paragraphs: ["Nesta seção, os fatos aparecem completos."] }] },
+        { faq: baseHub().faq.map((f, i) => (i ? f : { ...f, answer: "Está descrito nesta página." })) },
+      ] as Partial<HubContent>[]) {
+        assert.equal(proseErrors(baseHub(over), "prosa-sem-deixis").length, 1, JSON.stringify(over).slice(0, 90));
+      }
+    });
+
+    it("outras regras do contrato (não a isenta) continuam valendo em methodologyNote", () => {
+      const hub = baseHub({
+        methodologyNote: "A diar.ia.br cobriu o tema com base no próprio arquivo, não em checagem externa.",
+      });
+      assert.equal(proseErrors(hub, "prosa-sem-publicacao-como-sujeito").length, 1);
+    });
+
+    it("validateHubContent reprova um HubContent sem methodologyNote (vazio)", () => {
+      const hub = baseHub({ methodologyNote: "" });
+      const errors = validateHubContent(hub);
+      assert.ok(errors.some((e) => /methodologyNote está vazio/.test(e)), errors.join("; "));
+    });
+
+    it("os 4 hubs reais têm methodologyNote não-vazio e derivado de SOURCES (N/janela nunca digitados)", () => {
+      for (const [slug, load] of Object.entries(HUB_LOADERS)) {
+        const hub = load();
+        assert.ok(hub.methodologyNote.trim().length > 0, `${slug}: methodologyNote vazio`);
+        const { between } = hubCoverageWindow(hub.sourceEditions);
+        assert.match(
+          hub.methodologyNote,
+          new RegExp(`${hub.sourceEditions.length} edições publicadas entre ${between.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+          `${slug}: methodologyNote não cita N/janela computados de SOURCES: "${hub.methodologyNote}"`,
+        );
+      }
+    });
   });
 
   describe("#4917 — a janela de cobertura é DERIVADA, nunca digitada", () => {
