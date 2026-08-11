@@ -107,7 +107,7 @@ e o bootstrap passou a clonar `re-plan` em `~/Projects/Re-plan` + rodar
 2. Rodar `bootstrap.sh`/`bootstrap.ps1` nas demais máquinas (incluindo
    `predator`) e **confirmar ao vivo**.
 
-## Atualização (260810 — sessão `/diaria-develop`)
+## Atualização (260810 — sessão `/diaria-develop`; fechamento em 260811 — overnight)
 
 `predator` confirmado ao vivo: `bootstrap.sh` re-rodado, todos os itens já
 symlinkados (`settings.json`, `agents/`, `statusline-wrapper.cjs`), `re-plan`
