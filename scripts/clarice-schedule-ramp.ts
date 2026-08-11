@@ -125,7 +125,7 @@ import {
   computeWeekPlan,
   type Semaphore,
 } from "../workers/brevo-dashboard/src/weekly-plan.ts";
-import { resolveSpamSignal, type SpamSignal } from "../workers/brevo-dashboard/src/thresholds.ts"; // #4063
+import { resolveSpamSignal, describeSpamSignalOrigin, type SpamSignal } from "../workers/brevo-dashboard/src/thresholds.ts"; // #4063
 import type { BrevoCampaign } from "../workers/brevo-dashboard/src/types.ts";
 import type { PostmasterSpamEntry } from "./lib/dashboard-kv-types.ts"; // #4131 finding 4
 
@@ -420,22 +420,19 @@ export function describeSpamSignalLine(
       `indeterminate p/ o semáforo${spamSignal.reason ? ` (${spamSignal.reason})` : ""}, nunca verde às cegas.`
     );
   }
-  const worst = spamEntry.worstCampaignSpamRatePct;
-  // #4785 (comment-analyzer, fleet review pré-merge do #4780): a comparação
-  // `worst >= spamEntry.spamRatePct` que existia aqui era redundante com
-  // `spamSignal.ratePct === worst` — se o `Math.max` de `resolveSpamSignal`
-  // escolheu `worst`, `worst >= domínio` já é necessariamente verdade;
-  // manter as duas checagens duplicava parte da lógica de lá (inofensivo,
-  // mas contradizia o "não duplicada" do parágrafo acima). Removida.
-  const usesCampaignPeak = typeof worst === "number" && Number.isFinite(worst) && spamSignal.ratePct === worst;
+  // #4974: comparação `spamSignal.ratePct === worst` (e a extração da
+  // cobertura) movida pro helper compartilhado `describeSpamSignalOrigin`
+  // (`thresholds.ts`), reusado pelo dashboard (`buildMetricRows`,
+  // `weekly-plan.ts`) — mesma lógica, um lugar só, não diverge se
+  // `resolveSpamSignal` mudar o critério do `Math.max` (preocupação já
+  // registrada aqui desde o #4780/#4785).
+  const origin = describeSpamSignalOrigin(spamEntry, spamSignal);
   const coverageSuffix =
-    usesCampaignPeak &&
-    typeof spamEntry.worstCampaignDaysWithData === "number" &&
-    Number.isFinite(spamEntry.worstCampaignDaysWithData)
-      ? ` (${spamEntry.worstCampaignDaysWithData} dia(s) com dado)`
+    origin.usesCampaignPeak && typeof origin.worstCampaignDaysWithData === "number"
+      ? ` (${origin.worstCampaignDaysWithData} dia(s) com dado)`
       : "";
-  const originLabel = usesCampaignPeak
-    ? `pico da campanha ${spamEntry.worstCampaignFeedbackLoopId ?? "?"}${coverageSuffix}`
+  const originLabel = origin.usesCampaignPeak
+    ? `pico da campanha ${origin.worstCampaignFeedbackLoopId ?? "?"}${coverageSuffix}`
     : "média de domínio";
   return (
     `   leitura Postmaster${spamSourceLabel}: ${spamSignal.ratePct.toFixed(3)}% — origem: ${originLabel} ` +

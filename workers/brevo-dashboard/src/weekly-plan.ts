@@ -35,15 +35,17 @@ import { renderScheduledSection } from "./sections-kv.ts";
 import {
   DEFAULT_HEALTH_THRESHOLDS,
   resolveSpamSignal,
+  describeSpamSignalOrigin,
   POSTMASTER_STALE_MS,
   POSTMASTER_DATA_STALE_MS,
   POSTMASTER_MIN_COVERAGE_RATIO,
   type HealthThresholds,
   type SpamSignal,
   type SpamSignalIndeterminateReason,
+  type SpamSignalOrigin,
 } from "./thresholds.ts";
-export { DEFAULT_HEALTH_THRESHOLDS, resolveSpamSignal, POSTMASTER_STALE_MS, POSTMASTER_DATA_STALE_MS, POSTMASTER_MIN_COVERAGE_RATIO };
-export type { HealthThresholds, SpamSignal, SpamSignalIndeterminateReason };
+export { DEFAULT_HEALTH_THRESHOLDS, resolveSpamSignal, describeSpamSignalOrigin, POSTMASTER_STALE_MS, POSTMASTER_DATA_STALE_MS, POSTMASTER_MIN_COVERAGE_RATIO };
+export type { HealthThresholds, SpamSignal, SpamSignalIndeterminateReason, SpamSignalOrigin };
 
 /** Janela de maturação — envios mais recentes que isso ficam fora do agregado. */
 export const MATURATION_MS = 48 * 60 * 60 * 1000;
@@ -543,7 +545,18 @@ const SPAM_INDETERMINATE_REASON_LABEL: Record<SpamSignalIndeterminateReason, str
   "low-coverage": `Cobertura da janela sondada abaixo de ${Math.round(POSTMASTER_MIN_COVERAGE_RATIO * 100)}% (daysWithData/daysProbed).`,
 };
 
-function buildMetricRows(health: HealthAggregate, spamSignal: SpamSignal): string {
+function buildMetricRows(
+  health: HealthAggregate,
+  spamSignal: SpamSignal,
+  // #4974 (item 3 do escopo): entry crua do Postmaster, só pra extrair a
+  // ORIGEM do valor que governa o semáforo (domínio vs. pico por campanha) e
+  // a cobertura do pico quando ele governa — mesmo dado que o CLI já mostra
+  // (`describeSpamSignalLine`, `scripts/clarice-schedule-ramp.ts`, #4780 item
+  // 2), agora também no dashboard. `undefined`/`null` preserva o
+  // comportamento anterior (sem tooltip de origem) — nenhum call site
+  // existente quebra.
+  spamEntry?: Pick<PostmasterSpamEntry, "worstCampaignSpamRatePct" | "worstCampaignFeedbackLoopId" | "worstCampaignDaysWithData"> | null,
+): string {
   const T = DEFAULT_HEALTH_THRESHOLDS;
   // #3081 (achados do code-review low no PR #3166): a checagem de "sem dado"
   // é por MÉTRICA, não hardcoded pro rótulo "Spam" — Abertura usa `delivered`
@@ -598,9 +611,29 @@ function buildMetricRows(health: HealthAggregate, spamSignal: SpamSignal): strin
   // quando `source==="indeterminate"`; sem ele (call site pré-#4544 que ainda
   // não passa por resolveSpamSignal, ou teste que constrói o objeto à mão),
   // a célula fica sem `title=` — degrada pro comportamento anterior, nunca quebra.
-  const spamPostmasterTitleAttr = spamSignal.source !== "postmaster" && spamSignal.reason
-    ? ` title="${escHtml(SPAM_INDETERMINATE_REASON_LABEL[spamSignal.reason])}"`
+  // #4974 (item 3): quando a leitura governa (`source === "postmaster"`) E é
+  // o pico por campanha (não a média de domínio) que o `Math.max` de
+  // `resolveSpamSignal` escolheu, o tooltip mostra a origem + cobertura —
+  // mesmo par de dados que `describeSpamSignalLine` já imprime no CLI, via o
+  // helper puro compartilhado `describeSpamSignalOrigin` (não recalcula a
+  // comparação `ratePct === worst`, só decide o rótulo). Decisão registrada
+  // na #4974: sem piso de cobertura pro pico (arriscaria mascarar de novo o
+  // sinal que ele existe pra capturar, #4704) — a cobertura fica VISÍVEL
+  // aqui em vez disso, pro editor julgar a confiança do dado olhando o
+  // semáforo.
+  const spamOrigin = describeSpamSignalOrigin(spamEntry, spamSignal);
+  const spamOriginTitle = spamOrigin.usesCampaignPeak
+    ? `Origem: pico da campanha ${spamOrigin.worstCampaignFeedbackLoopId ?? "?"}` +
+      (typeof spamOrigin.worstCampaignDaysWithData === "number"
+        ? ` (${spamOrigin.worstCampaignDaysWithData} dia(s) com dado — sem piso mínimo de cobertura, #4974).`
+        : " (cobertura não registrada — entry legada).")
     : "";
+  const spamPostmasterTitleAttr =
+    spamSignal.source !== "postmaster" && spamSignal.reason
+      ? ` title="${escHtml(SPAM_INDETERMINATE_REASON_LABEL[spamSignal.reason])}"`
+      : spamOriginTitle
+        ? ` title="${escHtml(spamOriginTitle)}"`
+        : "";
   // #4400: rótulo simplificado pra estático "Spam (Postmaster)" — era
   // "Spam (Postmaster{, automático|, manual} — governa o semáforo)", com
   // sufixo dinâmico por `spamSignal.producedBy` via SPAM_SOURCE_LABEL
@@ -721,7 +754,7 @@ ${scheduledSection}`;
   <p class="section-note"><code>npx tsx scripts/weekly-send-plan-audience.ts --volumes ${state.plan.volumes.join(",")} [--write]</code></p>`
     : `<p class="section-note">Sem envio maduro (&gt;48h) da semana anterior ainda — plano indisponível até maturar.</p>`;
 
-  const metricRows = buildMetricRows(state.health!, state.spamSignal!);
+  const metricRows = buildMetricRows(state.health!, state.spamSignal!, postmasterSpam);
 
   return `
 <section class="phase2-section" id="weekly-plan">
@@ -804,7 +837,7 @@ ${waitRows}
   }
 
   const { label: semLabel, note: semNote } = describeSemaphore(state.semaphore!);
-  const metricRows = buildMetricRows(state.health!, state.spamSignal!);
+  const metricRows = buildMetricRows(state.health!, state.spamSignal!, postmasterSpam);
 
   return `
 <section class="phase2-section" id="weekly-plan-health">

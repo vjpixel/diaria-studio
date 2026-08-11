@@ -252,6 +252,22 @@ export function resolveSpamSignal(
   if (!Number.isFinite(dateMs) || now.getTime() - dateMs > POSTMASTER_DATA_STALE_MS) {
     return { source: "indeterminate", ratePct: null, breach: false, reason: "date-stale" };
   }
+  // #4544: este guard só avalia `daysWithData`/`daysProbed` de DOMÍNIO —
+  // deliberadamente não existe guard equivalente pro `worstCampaignDaysWithData`
+  // do pico por campanha (#4974, decisão do editor "opção 3" entre as 4
+  // levantadas na issue: nenhum piso de cobertura pro pico, cobertura fica
+  // VISÍVEL na superfície de decisão em vez de silenciar o sinal). Motivo:
+  // o pico por campanha existe justamente porque a média de domínio MASCARAVA
+  // um spam concentrado (#4704) — campanha ruim aparece em poucos dias por
+  // construção (evento pontual, não fluxo contínuo como o domínio), então um
+  // piso ali arriscava apagar de novo o sinal que o pico foi criado pra
+  // capturar. `worstCampaignDaysWithData` continua sendo propagado (não
+  // descartado) até o CLI (`describeSpamSignalLine`,
+  // `scripts/clarice-schedule-ramp.ts`) e o dashboard (`buildMetricRows`,
+  // `weekly-plan.ts`) via `describeSpamSignalOrigin` abaixo — quem lê o
+  // semáforo vê "pico da campanha X (1 dia com dado)" ao lado do vermelho, e
+  // julga a confiança do dado com esse contexto, em vez do sistema decidir
+  // sozinho que 1 dia isolado não conta.
   if (
     typeof entry.daysWithData === "number" &&
     typeof entry.daysProbed === "number" &&
@@ -274,6 +290,49 @@ export function resolveSpamSignal(
     ratePct: effectiveRatePct,
     producedBy: entry.producedBy,
     breach: effectiveRatePct >= t.spamRate.yellow,
+  };
+}
+
+/** Resultado de {@link describeSpamSignalOrigin} — qual leitura decidiu `spamSignal.ratePct` e, quando foi o pico por campanha, a cobertura dele (#4974). */
+export interface SpamSignalOrigin {
+  /** `true` quando o `Math.max` de `resolveSpamSignal` escolheu o pico por campanha (não a média de domínio). */
+  usesCampaignPeak: boolean;
+  /** `feedback_loop_id` da campanha vencedora — só presente quando `usesCampaignPeak`. */
+  worstCampaignFeedbackLoopId?: string;
+  /** Cobertura (dias com leitura) do pico vencedor — só presente quando `usesCampaignPeak` E a entry carrega o campo (`undefined` em entry legada pré-#4780, ver #4785). */
+  worstCampaignDaysWithData?: number;
+}
+
+/**
+ * #4974 (item 3 do escopo — CLI e dashboard precisam mostrar a MESMA origem):
+ * extraída de `describeSpamSignalLine` (`scripts/clarice-schedule-ramp.ts`,
+ * #4780 item 2) pra ser reusada também pelo dashboard (`buildMetricRows`,
+ * `weekly-plan.ts`) sem duplicar a comparação `spamSignal.ratePct === worst`
+ * — duplicar arriscava divergir se `resolveSpamSignal` mudar o critério do
+ * `Math.max` no futuro (preocupação já registrada na docstring original de
+ * `describeSpamSignalLine`).
+ *
+ * Pura: recebe a entry crua (só os 3 campos de pico) E o `spamSignal` já
+ * resolvido — não recalcula `resolveSpamSignal`, só decide qual dos dois
+ * números (domínio vs. campanha) ele escolheu, pra rotular a origem.
+ */
+export function describeSpamSignalOrigin(
+  entry:
+    | Pick<PostmasterSpamEntry, "worstCampaignSpamRatePct" | "worstCampaignFeedbackLoopId" | "worstCampaignDaysWithData">
+    | null
+    | undefined,
+  spamSignal: Pick<SpamSignal, "ratePct">,
+): SpamSignalOrigin {
+  const worst = entry?.worstCampaignSpamRatePct;
+  const usesCampaignPeak = typeof worst === "number" && Number.isFinite(worst) && spamSignal.ratePct === worst;
+  if (!usesCampaignPeak) return { usesCampaignPeak: false };
+  return {
+    usesCampaignPeak: true,
+    worstCampaignFeedbackLoopId: entry?.worstCampaignFeedbackLoopId,
+    worstCampaignDaysWithData:
+      typeof entry?.worstCampaignDaysWithData === "number" && Number.isFinite(entry.worstCampaignDaysWithData)
+        ? entry.worstCampaignDaysWithData
+        : undefined,
   };
 }
 

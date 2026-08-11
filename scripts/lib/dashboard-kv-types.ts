@@ -252,10 +252,17 @@ export interface PostmasterSpamEntry extends PostmasterReputationSignal {
    * campo, um pico por-campanha de 1 dia isolado (baixa cobertura) fica
    * indistinguível de um pico sustentado pela janela inteira — nenhum dos 2
    * outros campos (`worstCampaignSpamRatePct`/`worstCampaignFeedbackLoopId`)
-   * carrega esse sinal. Só informativo (auditoria/log/CLI), nunca entra em
-   * `resolveSpamSignal` — não existe hoje um guard de cobertura mínima
-   * equivalente ao `POSTMASTER_MIN_COVERAGE_RATIO` do domínio pro pico por
-   * campanha (fora de escopo do #4780, ver issue). `undefined` quando não há
+   * carrega esse sinal. Só informativo (auditoria/log/CLI e, desde #4974,
+   * dashboard), nunca entra em `resolveSpamSignal` — decisão do editor
+   * (#4974, "opção 3" entre as 4 levantadas): NENHUM guard de cobertura
+   * mínima equivalente ao `POSTMASTER_MIN_COVERAGE_RATIO` do domínio pro
+   * pico por campanha, de propósito (fora de escopo do #4780, resolvido no
+   * #4974) — um piso ali arriscava mascarar de novo o sinal que o pico foi
+   * criado pra capturar (#4704). Em vez de um piso, este campo é propagado
+   * até a superfície de decisão (CLI via `describeSpamSignalLine`, dashboard
+   * via `buildMetricRows`/`describeSpamSignalOrigin`, ambos em
+   * `workers/brevo-dashboard/src/`) pra o editor julgar a confiança do dado
+   * com o número na frente. `undefined` quando não há
    * campanha atribuível na janela ou em entries pré-#4780.
    */
   worstCampaignDaysWithData?: number;

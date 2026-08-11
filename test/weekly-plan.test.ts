@@ -16,6 +16,7 @@ import {
   classifyMetric,
   classifySpamSignal,
   resolveSpamSignal,
+  describeSpamSignalOrigin,
   POSTMASTER_STALE_MS,
   POSTMASTER_DATA_STALE_MS,
   POSTMASTER_MIN_COVERAGE_RATIO,
@@ -1046,4 +1047,110 @@ test("renderWeeklyPlanTabPanel — rótulo do Postmaster é estático 'Spam (Pos
     assert.doesNotMatch(html, /Spam \(Postmaster, (automático|manual)/, `producedBy=${producedBy}`);
     assert.doesNotMatch(html, /governa o semáforo/, `producedBy=${producedBy}`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// #4974 — decisão do editor ("opção 3" das 4 levantadas na issue): sem piso
+// de cobertura pro pico por campanha, mas a origem (domínio vs. campanha) e a
+// cobertura do pico, quando ele governa, ficam VISÍVEIS na superfície de
+// decisão — o CLI já mostrava isso desde o #4780 (`describeSpamSignalLine`);
+// aqui é o dashboard, via o helper puro compartilhado `describeSpamSignalOrigin`.
+// ---------------------------------------------------------------------------
+
+test("describeSpamSignalOrigin — média de domínio governa (sem pico por campanha) → usesCampaignPeak=false, sem campos de origem (#4974)", () => {
+  const signal = resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.02 }), NOW);
+  const origin = describeSpamSignalOrigin(mkPostmasterEntry({ spamRatePct: 0.02 }), signal);
+  assert.equal(origin.usesCampaignPeak, false);
+  assert.equal(origin.worstCampaignFeedbackLoopId, undefined);
+  assert.equal(origin.worstCampaignDaysWithData, undefined);
+});
+
+test("describeSpamSignalOrigin — pico por campanha governa (Math.max) → usesCampaignPeak=true + feedbackLoopId + cobertura (#4974)", () => {
+  const entry = mkPostmasterEntry({
+    spamRatePct: 0.02, // domínio: baixa
+    worstCampaignSpamRatePct: 1.39, // campanha: bem mais alta
+    worstCampaignFeedbackLoopId: "11130585_107",
+    worstCampaignDaysWithData: 1,
+  });
+  const signal = resolveSpamSignal(entry, NOW);
+  const origin = describeSpamSignalOrigin(entry, signal);
+  assert.equal(origin.usesCampaignPeak, true);
+  assert.equal(origin.worstCampaignFeedbackLoopId, "11130585_107");
+  assert.equal(origin.worstCampaignDaysWithData, 1);
+});
+
+test("describeSpamSignalOrigin — domínio pior que o pico por campanha → Math.max escolhe o domínio, usesCampaignPeak=false (não mascara o pior sinal) (#4974)", () => {
+  const entry = mkPostmasterEntry({
+    spamRatePct: 0.5, // domínio pior
+    worstCampaignSpamRatePct: 0.1, // campanha melhor
+    worstCampaignFeedbackLoopId: "11130585_107",
+    worstCampaignDaysWithData: 5,
+  });
+  const signal = resolveSpamSignal(entry, NOW);
+  const origin = describeSpamSignalOrigin(entry, signal);
+  assert.equal(origin.usesCampaignPeak, false);
+});
+
+test("describeSpamSignalOrigin — pico governa mas worstCampaignDaysWithData ausente (entry legada pré-#4780) → usesCampaignPeak=true, cobertura undefined, sem quebrar (#4974)", () => {
+  const entry = mkPostmasterEntry({
+    spamRatePct: 0.02,
+    worstCampaignSpamRatePct: 1.39,
+    worstCampaignFeedbackLoopId: "11130585_107",
+    // worstCampaignDaysWithData intencionalmente ausente
+  });
+  const signal = resolveSpamSignal(entry, NOW);
+  const origin = describeSpamSignalOrigin(entry, signal);
+  assert.equal(origin.usesCampaignPeak, true);
+  assert.equal(origin.worstCampaignDaysWithData, undefined);
+});
+
+test("describeSpamSignalOrigin — entry ausente (null/undefined) → usesCampaignPeak=false, nunca lança (#4974)", () => {
+  const signal = resolveSpamSignal(null, NOW);
+  assert.deepEqual(describeSpamSignalOrigin(null, signal), { usesCampaignPeak: false });
+  assert.deepEqual(describeSpamSignalOrigin(undefined, signal), { usesCampaignPeak: false });
+});
+
+// #4974 item 3: mesmo par de dados (origem + cobertura do pico) que o CLI já
+// mostra desde o #4780, agora também no dashboard — tooltip `title=` na
+// célula "Spam (Postmaster)" quando o pico por campanha governa o valor.
+test("renderWeeklyPlanTabPanel — pico por campanha governa → title= mostra origem + cobertura (#4974)", () => {
+  const camps = [
+    campaignSentHoursAgo(60, { statistics: statsFor({ sent: 3000, delivered: 2990, uniqueViews: 600, complaints: 0 }) }),
+  ];
+  const entry = mkPostmasterEntry({
+    spamRatePct: 0.02, // domínio: baixa
+    worstCampaignSpamRatePct: 1.39, // campanha: bem mais alta, governa o Math.max
+    worstCampaignFeedbackLoopId: "11130585_107",
+    worstCampaignDaysWithData: 1,
+  });
+  const html = renderWeeklyPlanTabPanel(camps, NOW, [], entry);
+  const row = html.match(/<tr><td>Spam \(Postmaster[\s\S]*?<\/tr>/)?.[0];
+  assert.ok(row);
+  assert.match(row!, /title="Origem: pico da campanha 11130585_107 \(1 dia\(s\) com dado/);
+});
+
+test("renderWeeklyPlanTabPanel — média de domínio governa (sem pico atribuível) → sem title= de origem", () => {
+  const camps = [
+    campaignSentHoursAgo(60, { statistics: statsFor({ sent: 3000, delivered: 2990, uniqueViews: 600, complaints: 0 }) }),
+  ];
+  const html = renderWeeklyPlanTabPanel(camps, NOW, [], mkPostmasterEntry({ spamRatePct: 0.05 }));
+  const row = html.match(/<tr><td>Spam \(Postmaster[\s\S]*?<\/tr>/)?.[0];
+  assert.ok(row);
+  assert.doesNotMatch(row!, /title=/);
+});
+
+test("renderHealthSection — pico por campanha governa → title= de origem também aparece na variante scoped (#3415/#4974)", () => {
+  const camps = [
+    campaignSentHoursAgo(60, { statistics: statsFor({ sent: 3000, delivered: 2990, uniqueViews: 600, complaints: 0 }) }),
+  ];
+  const entry = mkPostmasterEntry({
+    spamRatePct: 0.02,
+    worstCampaignSpamRatePct: 1.39,
+    worstCampaignFeedbackLoopId: "11130585_107",
+    worstCampaignDaysWithData: 3,
+  });
+  const html = renderHealthSection(camps, NOW, { title: "Saúde" }, entry);
+  const row = html.match(/<tr><td>Spam \(Postmaster[\s\S]*?<\/tr>/)?.[0];
+  assert.ok(row);
+  assert.match(row!, /title="Origem: pico da campanha 11130585_107 \(3 dia\(s\) com dado/);
 });
