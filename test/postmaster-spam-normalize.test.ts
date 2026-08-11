@@ -279,3 +279,90 @@ describe("normalizePostmasterSpamEntry — worstCampaignDaysWithData passa pelo 
     assert.equal(entry?.worstCampaignFeedbackLoopId, "11130585_107");
   });
 });
+
+// #4970: `campaignSpam` (mapa por-campanha da tabela Envios) é a MESMA classe
+// de risco de novo — sem copiar/validar no boundary, a coluna Spam da
+// tabela Envios nunca veria o dado, mesmo com o KV gravado corretamente pelo
+// sync. Validação em 2 níveis (mapa inteiro + cada registro) — espelha o
+// filtro item-a-item já usado em `dailyReadings` acima.
+describe("normalizePostmasterSpamEntry — campaignSpam passa pelo boundary do KV, validado por registro (#4970)", () => {
+  const validRecord = {
+    campaignId: 107,
+    feedbackLoopId: "11130585_107",
+    avgSpamRatePct: 0.9,
+    peakSpamRatePct: 1.39,
+    peakDate: "2026-08-02",
+    daysWithData: 3,
+    updatedAt: "2026-08-06T09:00:00.000Z",
+  };
+
+  it("mapa bem formado com 1 registro válido é preservado", () => {
+    const entry = normalizePostmasterSpamEntry({
+      date: "2026-08-03",
+      spamRatePct: 0.137,
+      recordedAt: "2026-08-06T09:00:00.000Z",
+      campaignSpam: { "107": validRecord },
+    });
+    assert.deepEqual(entry?.campaignSpam, { "107": validRecord });
+  });
+
+  it("campaignSpam ausente (entry manual ou pré-#4970) vira undefined, nunca inferido", () => {
+    const entry = normalizePostmasterSpamEntry({
+      date: "2026-07-30",
+      spamRatePct: 0.05,
+      recordedAt: "2026-07-30T09:00:00.000Z",
+    });
+    assert.equal(entry?.campaignSpam, undefined);
+  });
+
+  it("campaignSpam={} (objeto vazio) vira undefined, nunca um mapa vazio inventado (mesma disciplina de dailyReadings)", () => {
+    const entry = normalizePostmasterSpamEntry({
+      date: "2026-07-30",
+      spamRatePct: 0.05,
+      recordedAt: "2026-07-30T09:00:00.000Z",
+      campaignSpam: {},
+    });
+    assert.equal(entry?.campaignSpam, undefined);
+  });
+
+  it("campaignSpam não-objeto (array, string) não é confiado cegamente", () => {
+    const asArray = normalizePostmasterSpamEntry({
+      date: "2026-07-30",
+      spamRatePct: 0.05,
+      recordedAt: "2026-07-30T09:00:00.000Z",
+      campaignSpam: [validRecord],
+    });
+    assert.equal(asArray?.campaignSpam, undefined);
+
+    const asString = normalizePostmasterSpamEntry({
+      date: "2026-07-30",
+      spamRatePct: 0.05,
+      recordedAt: "2026-07-30T09:00:00.000Z",
+      campaignSpam: "não é objeto",
+    });
+    assert.equal(asString?.campaignSpam, undefined);
+  });
+
+  it("registro individual malformado é OMITIDO, sem derrubar o mapa inteiro (mesmo espírito do filtro de dailyReadings)", () => {
+    const entry = normalizePostmasterSpamEntry({
+      date: "2026-08-03",
+      spamRatePct: 0.137,
+      recordedAt: "2026-08-06T09:00:00.000Z",
+      campaignSpam: {
+        "107": validRecord,
+        "999": { ...validRecord, campaignId: "não é número" }, // corrompido
+      },
+    });
+    assert.deepEqual(entry?.campaignSpam, { "107": validRecord }, "só o registro válido sobrevive");
+  });
+
+  it("mapa onde TODOS os registros são inválidos vira undefined (equivalente a mapa vazio)", () => {
+    const entry = normalizePostmasterSpamEntry({
+      date: "2026-08-03",
+      spamRatePct: 0.137,
+      recordedAt: "2026-08-06T09:00:00.000Z",
+      campaignSpam: { "999": { campaignId: "lixo" } },
+    });
+    assert.equal(entry?.campaignSpam, undefined);
+  });
+});

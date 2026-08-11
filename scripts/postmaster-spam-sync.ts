@@ -128,6 +128,24 @@
  * suspeito) e 3 de `console.log` (pico achado — caminho normal/ideal, sem
  * campanha atribuível, campanhas consultadas sem leitura na janela).
  *
+ * ── Mapa por-campanha ACUMULADO alimenta a coluna Spam da tabela Envios (#4970) ──
+ *
+ * Até esta versão, o único dado por-campanha gravado no KV era o PICO da
+ * janela sondada (`worstCampaignSpamRatePct`/`worstCampaignFeedbackLoopId`,
+ * #4705) — suficiente pro breaker da aba Rampa, que só precisa de 1 número,
+ * mas insuficiente pra tabela Envios (#4970), que precisa de 1 leitura POR
+ * LINHA/campanha. Esta versão do produtor "auto" também grava
+ * `PostmasterSpamEntry.campaignSpam` — um mapa `campaignId(string) →
+ * PostmasterCampaignSpamRecord` — ACUMULADO entre execuções (`main()` lê o
+ * mapa já gravado no KV via `getTextFromWorkerKV`, mescla com o lote desta
+ * execução via `mergeCampaignSpamRecords`, grava o resultado): a janela
+ * sondada por execução é `HEALTH_SAMPLE_DAYS` (10 dias), mas a tabela Envios
+ * mostra ~90 dias de campanhas — sem o merge, cada execução reescreveria o
+ * mapa do zero e apagaria silenciosamente o histórico de campanhas fora da
+ * janela atual. Leitura do KV anterior é FAIL-SOFT (mesmo padrão do resto do
+ * enriquecimento por-campanha): falhar nunca derruba a sync, só degrada pra
+ * "sem mapa anterior" (grava só o lote desta execução).
+ *
  * Uso:
  *   npx tsx scripts/postmaster-spam-sync.ts [--window-days 10] [--dry-run]
  *
@@ -141,13 +159,13 @@
  */
 
 import { gFetch } from "./google-auth.ts";
-import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
+import { uploadTextToWorkerKV, getTextFromWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
 import { POSTMASTER_SPAM_KV_KEY } from "./postmaster-spam-entry.ts";
 import { HEALTH_SAMPLE_DAYS } from "../workers/brevo-dashboard/src/weekly-plan.ts";
-import type { PostmasterSpamEntry } from "./lib/dashboard-kv-types.ts";
+import type { PostmasterSpamEntry, PostmasterCampaignSpamRecord } from "./lib/dashboard-kv-types.ts";
 import {
   queryDomainStatsV2,
   extractSpamRateReadingsV2,
@@ -160,6 +178,8 @@ import {
   collectCampaignFeedbackLoopIds,
   aggregateCampaignSpamReadings,
   findWorstCampaignSpam,
+  toCampaignSpamRecords,
+  mergeCampaignSpamRecords,
   DEFAULT_POSTMASTER_ACCOUNT_ID,
   type CampaignSpamAggregate,
   type ParsedFeedbackLoopId,
@@ -263,12 +283,21 @@ export async function collectSpamReadingsV2(
  * quando o chamador achou pelo menos 1 campanha atribuível na janela — ver
  * `findWorstCampaignSpam`. Ausência (`null`) nunca grava os campos (schema
  * evolution: `undefined`, não um valor inventado).
+ *
+ * #4970: `campaignSpam` (opcional, `null` por default — mesma disciplina de
+ * `worstCampaign` acima) grava o mapa por-campanha JÁ MESCLADO (ver
+ * `mergeCampaignSpamRecords` — o chamador, `main()`, faz o merge ANTES de
+ * chegar aqui; esta função só copia o resultado pra dentro da entry). Um
+ * objeto vazio (`{}`, ex: 1ª execução sem KV anterior e sem campanha nesta
+ * janela) também vira `undefined` — nunca gravar um mapa vazio onde
+ * `undefined` já comunica "sem dado" (mesma disciplina do resto do módulo).
  */
 export function buildAveragedEntry(
   readings: DayReading[],
   now: Date,
   daysProbed: number,
   worstCampaign: WorstCampaignSpam | null = null,
+  campaignSpam: Record<string, PostmasterCampaignSpamRecord> | null = null,
 ): PostmasterSpamEntry | null {
   if (readings.length === 0) return null;
   const avgRatio = readings.reduce((sum, r) => sum + r.ratio, 0) / readings.length;
@@ -293,6 +322,7 @@ export function buildAveragedEntry(
           worstCampaignDaysWithData: worstCampaign.daysWithData,
         }
       : {}),
+    ...(campaignSpam && Object.keys(campaignSpam).length > 0 ? { campaignSpam } : {}),
   };
 }
 
@@ -307,6 +337,14 @@ export function buildAveragedEntry(
 export interface CollectWorstCampaignSpamResult {
   /** Pico de spam por campanha na janela — `null` quando nenhuma campanha atribuível teve leitura (`attempted===0`) OU todas as queries tentadas falharam/vieram vazias. */
   worst: WorstCampaignSpam | null;
+  /**
+   * #4970: TODOS os agregados válidos desta execução (não só o pior) — base
+   * do mapa por-campanha da tabela Envios (`PostmasterSpamEntry.campaignSpam`,
+   * via `toCampaignSpamRecords`). Superset de `worst` (derivado deste mesmo
+   * array via `findWorstCampaignSpam`) — campo separado em vez de recalculado
+   * a partir de `worst`, que já descarta a identidade das demais campanhas.
+   */
+  aggregates: CampaignSpamAggregate[];
   /** Quantas campanhas (da conta `accountId` configurada) foram encontradas na janela e tiveram uma query de `FEEDBACK_LOOP_SPAM_RATE` tentada. `0` = nenhuma campanha atribuível a esta conta — ver `otherAccountsSeen` pra distinguir "não houve campanha na janela" de "accountId hardcoded desatualizado". */
   attempted: number;
   /** Dentre as `attempted`, quantas queries de `FEEDBACK_LOOP_SPAM_RATE` lançaram (429/5xx/timeout) — cada uma já foi pulada e logada via `console.warn` no momento da falha (fail-soft por campanha, preservado). `attempted>0 && failed===attempted` é o cenário "toda query por-campanha falhou" da issue #4780 — real, não deveria virar o mesmo log do caso benigno. */
@@ -352,7 +390,7 @@ export async function collectWorstCampaignSpam(
   const otherAccountsSeen = allAccountsCampaigns.length - campaigns.length;
 
   if (campaigns.length === 0) {
-    return { worst: null, attempted: 0, failed: 0, otherAccountsSeen };
+    return { worst: null, aggregates: [], attempted: 0, failed: 0, otherAccountsSeen };
   }
 
   const aggregates: CampaignSpamAggregate[] = [];
@@ -371,7 +409,7 @@ export async function collectWorstCampaignSpam(
       );
     }
   }
-  return { worst: findWorstCampaignSpam(aggregates), attempted: campaigns.length, failed, otherAccountsSeen };
+  return { worst: findWorstCampaignSpam(aggregates), aggregates, attempted: campaigns.length, failed, otherAccountsSeen };
 }
 
 /**
@@ -515,7 +553,13 @@ async function main(): Promise<void> {
       r,
       gFetch,
     );
-  let campaignResult: CollectWorstCampaignSpamResult = { worst: null, attempted: 0, failed: 0, otherAccountsSeen: 0 };
+  let campaignResult: CollectWorstCampaignSpamResult = {
+    worst: null,
+    aggregates: [],
+    attempted: 0,
+    failed: 0,
+    otherAccountsSeen: 0,
+  };
   // #4785: rastreado explicitamente pra `describeCampaignSpamCollectionLine`
   // nunca confundir "query base falhou" (real, já logado abaixo) com "sem
   // campanha atribuível" (benigno) — os dois deixavam `campaignResult` no
@@ -545,7 +589,49 @@ async function main(): Promise<void> {
     console.log(collectionLine.message);
   }
 
-  const entry = buildAveragedEntry(readings, now, daysProbed, worstCampaign);
+  // #4970: mescla o mapa por-campanha desta execução com o que já está
+  // gravado no KV — sem isso, cada execução reescreveria o mapa do zero e só
+  // as campanhas dentro da janela sondada (HEALTH_SAMPLE_DAYS, ~10 dias)
+  // reteriam valor, apagando silenciosamente o histórico das ~90 dias que a
+  // tabela Envios mostra (ver docstring de `PostmasterSpamEntry.campaignSpam`,
+  // dashboard-kv-types.ts, pro racional completo). FAIL-SOFT na leitura
+  // (mesmo padrão do resto do enriquecimento por-campanha, #4705/#4780):
+  // credenciais ausentes, rede, KV vazio (1ª execução pós-#4970) ou JSON
+  // corrompido nunca derrubam a sync — degradam pra "sem mapa anterior",
+  // que ainda assim grava o lote desta execução (nunca perde o que acabou
+  // de coletar por causa de uma leitura que falhou).
+  let previousCampaignSpam: Record<string, PostmasterCampaignSpamRecord> | null = null;
+  try {
+    const rawPrevious = await getTextFromWorkerKV(POSTMASTER_SPAM_KV_KEY, {
+      kvNamespaceId: DASHBOARD_KV_NAMESPACE_ID,
+      accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
+      token: process.env.CLOUDFLARE_WORKERS_TOKEN ?? "",
+    });
+    if (rawPrevious) {
+      const parsedPrevious: unknown = JSON.parse(rawPrevious);
+      const candidate =
+        parsedPrevious && typeof parsedPrevious === "object"
+          ? (parsedPrevious as { campaignSpam?: unknown }).campaignSpam
+          : undefined;
+      if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+        previousCampaignSpam = candidate as Record<string, PostmasterCampaignSpamRecord>;
+      }
+    }
+  } catch (e) {
+    console.warn(
+      `[postmaster-spam-sync] falha ao ler o mapa por-campanha anterior do KV (#4970) — seguindo sem merge, gravando só o lote desta execução: ` +
+        `${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  const freshCampaignSpam = toCampaignSpamRecords(campaignResult.aggregates, now);
+  const mergedCampaignSpam = mergeCampaignSpamRecords(previousCampaignSpam, freshCampaignSpam);
+  console.log(
+    `[postmaster-spam-sync] mapa por-campanha (#4970): ${Object.keys(freshCampaignSpam).length} campanha(s) nesta execução, ` +
+      `${previousCampaignSpam ? Object.keys(previousCampaignSpam).length : 0} preservada(s) do KV anterior, ` +
+      `${Object.keys(mergedCampaignSpam).length} no total após merge.`,
+  );
+
+  const entry = buildAveragedEntry(readings, now, daysProbed, worstCampaign, mergedCampaignSpam);
 
   if (!entry) {
     console.log(

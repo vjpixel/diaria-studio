@@ -29,9 +29,22 @@
  * janela), então `aggregateCampaignSpamReadings` reporta os dois: a média (pra
  * comparabilidade) e o PICO com a data em que ocorreu (o sinal que de fato
  * importa pra decidir se uma variante específica tem problema).
+ *
+ * ── Mapa por-campanha ACUMULADO (#4970, coluna Spam da tabela Envios) ──
+ *
+ * `findWorstCampaignSpam` (abaixo) resolve só o PIOR — suficiente pro breaker
+ * da aba Rampa (#4705), que só precisa de 1 número. A tabela Envios (#4970)
+ * precisa de 1 leitura POR LINHA (campanha) — `toCampaignSpamRecords`/
+ * `mergeCampaignSpamRecords` fecham essa lacuna: a 1ª converte os agregados
+ * desta execução num mapa `campaignId → PostmasterCampaignSpamRecord`; a 2ª
+ * mescla esse mapa com o que já estava gravado no KV, preservando campanhas
+ * que caíram fora da janela sondada NESTA execução (ver docstring de
+ * `PostmasterSpamEntry.campaignSpam`, dashboard-kv-types.ts, pro racional
+ * completo do "por que acumular").
  */
 
 import type { DayReadingV2 } from "./postmaster-v2-client.ts";
+import type { PostmasterCampaignSpamRecord } from "./dashboard-kv-types.ts";
 
 /**
  * Confirmado ao vivo (#4704, 260806, comentário do editor): prefixo de conta
@@ -194,4 +207,56 @@ export function findWorstCampaignSpam(aggregates: CampaignSpamAggregate[]): Wors
     date: worst.peakDate,
     daysWithData: worst.daysWithData,
   };
+}
+
+/**
+ * Pura (#4970): converte os agregados desta execução num mapa `campaignId
+ * (string) → PostmasterCampaignSpamRecord`, pronto pra ser mesclado via
+ * `mergeCampaignSpamRecords`. `now` é injetado (não `new Date()` interno)
+ * pra determinismo em teste — vira `updatedAt` de todo registro do lote
+ * (todos calculados na MESMA execução).
+ */
+export function toCampaignSpamRecords(
+  aggregates: CampaignSpamAggregate[],
+  now: Date,
+): Record<string, PostmasterCampaignSpamRecord> {
+  const updatedAt = now.toISOString();
+  const out: Record<string, PostmasterCampaignSpamRecord> = {};
+  for (const a of aggregates) {
+    out[String(a.campaignId)] = {
+      campaignId: a.campaignId,
+      feedbackLoopId: a.feedbackLoopId,
+      avgSpamRatePct: a.avgSpamRatePct,
+      peakSpamRatePct: a.peakSpamRatePct,
+      peakDate: a.peakDate,
+      daysWithData: a.daysWithData,
+      updatedAt,
+    };
+  }
+  return out;
+}
+
+/**
+ * Pura (#4970): mescla o mapa por-campanha JÁ GRAVADO no KV (`previous`, lido
+ * pelo chamador ANTES de escrever) com o lote desta execução (`fresh`, já no
+ * formato de mapa via `toCampaignSpamRecords`).
+ *
+ * Semântica ACUMULAR, não overwrite (ver docstring de
+ * `PostmasterSpamEntry.campaignSpam`, dashboard-kv-types.ts, pro racional
+ * completo): toda chave de `fresh` SUBSTITUI a entrada equivalente em
+ * `previous` (a leitura desta execução é assumida mais completa — mesma
+ * campanha, mais dias cobertos, contanto que ainda esteja dentro da janela
+ * sondada); toda chave de `previous` AUSENTE em `fresh` é PRESERVADA
+ * intacta (campanha caiu fora da janela sondada nesta execução, mas seu
+ * valor histórico continua válido — o Postmaster não republica dado antigo).
+ *
+ * `previous` ausente/`undefined` (1ª execução após o deploy do #4970, ou KV
+ * vazio) é tratado como mapa vazio — nunca lança. Não muta nenhum dos dois
+ * argumentos (retorna um objeto novo).
+ */
+export function mergeCampaignSpamRecords(
+  previous: Record<string, PostmasterCampaignSpamRecord> | null | undefined,
+  fresh: Record<string, PostmasterCampaignSpamRecord>,
+): Record<string, PostmasterCampaignSpamRecord> {
+  return { ...(previous ?? {}), ...fresh };
 }
