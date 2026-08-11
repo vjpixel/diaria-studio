@@ -97,7 +97,45 @@ de backup.
 `data/clarice-subscribers/cohorts/` guarda `checkpoint.json` (some no sucesso),
 `status.json` e os logs. Mora no OneDrive junto com o resto de `data/`.
 
-## Redesenho v2 — design VALIDADO (#4451, 260810); troca de task ainda NÃO feita
+## Cutover para v2 (#4451, 260811) — task registrada, KV do dashboard ainda NÃO atualiza
+
+Decisão do editor (260811): trocar a task agendada para o v2 agora, **sem**
+o período de sobreposição v1×v2 previsto no item 6 do plano original da
+issue (pulado deliberadamente). Achado ao verificar o estado real desta
+máquina: `DiariaCohortsCrawl` (a task Windows acima, v1) **nunca existiu**
+no registro declarativo (`scripts/lib/scheduled-tasks.ts`) nem como timer
+systemd — então não é uma troca de ponteiro de uma task existente, é
+**registro do zero** já apontando pro v2. `Diaria-Clarice-Cohorts-Crawl`
+(nome escolhido seguindo o padrão hifenizado dominante do registro, `Diaria-X-Y`)
+roda `scripts/clarice-engagement-cohorts-v2.ts --out data/clarice-subscribers/cohorts/v2-latest.json`
+diariamente às 21:00 BRT (mesmo horário histórico do v1 acima, sem colisão
+com nenhuma outra daily do registro).
+
+**Armar de verdade (ação do coordenador/editor, sessão local, fora desta
+unidade — #4451):**
+
+```bash
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Cohorts-Crawl
+systemctl --user daemon-reload
+systemctl --user enable --now diaria-clarice-cohorts-crawl.timer
+```
+
+**ATENÇÃO — isso NÃO resolve o problema de dashboard desatualizado que
+motivou a issue #4451 originalmente.** `clarice-engagement-cohorts-v2.ts` é
+**sempre dry-run por design** (não existe flag `--push`/`--kv` no script —
+ver docstring do arquivo): a task só refresca o artefato local `--out`
+(cohorts + diagnostics, hoje consumido só por `scripts/compare-cohorts.ts`
+ou inspeção manual), **nunca grava a chave `cohorts:engagement` do KV** que
+`clarice-dashboard` lê. Só o v1 (`clarice-engagement-cohorts.ts`, sem
+`--dry-run`) escreve nessa chave — e o v1 não tem task agendada nesta
+máquina (nem Windows nem systemd). Ou seja: a seção "Coortes de engajamento"
+do dashboard segue **congelada** no último sucesso manual do v1 (baseline de
+260807), independente de `Diaria-Clarice-Cohorts-Crawl` rodar ou não. Issue
+de acompanhamento aberta para fechar esse gap: #5015 (P1) — decidir entre
+(a) adicionar escrita de KV ao v2, ou (b) reagendar o v1 como ponte
+temporária, é decisão separada e ainda em aberto.
+
+## Redesenho v2 — design VALIDADO (#4451, 260810); histórico da decisão de cutover (ver seção acima para o estado atual da task)
 
 O crawl per-contato acima (v1) tem um limite estrutural: o universo cresceu
 pra ~129k contatos, o que exige ~21,5h ESTIMADAS de crawl contínuo (129.251 ÷
@@ -116,8 +154,9 @@ fechado via leitura do store local (`clarice-users.db`, sem custo de API
 adicional). `scripts/compare-cohorts.ts` compara o output das duas coortes
 campo a campo dentro de uma tolerância.
 
-**SEMPRE dry-run** — v2 nunca grava no KV nem toca a task agendada
-`DiariaCohortsCrawl` acima; isso não muda com a validação abaixo.
+**SEMPRE dry-run** — v2 nunca grava no KV; isso não muda com a validação
+abaixo, nem com o registro da task `Diaria-Clarice-Cohorts-Crawl` (ver seção
+acima) — a task só automatiza o refresh do artefato local, não escreve KV.
 
 ### Comparação empírica v1×v2 (260808/260809) — 2 tentativas, aceitas pelo editor em 260810
 
@@ -143,12 +182,14 @@ calibrada pra pegar divergência de LÓGICA, não deriva temporal de dias entre
 as duas leituras. **v2 passa a ser considerado VALIDADO.** v1 continua no
 repo como **fallback documentado** (não removido, não desativado).
 
-**O que isso NÃO decide (formalização deliberadamente parcial):**
+**O que isso NÃO decide (formalização deliberadamente parcial, na época):**
 
-- **Troca da task `DiariaCohortsCrawl`** pro v2 continua **não feita** — é uma
-  decisão separada e futura do editor, fora do escopo desta formalização
-  (explicitamente vetada nesta unidade de trabalho). O crawl agendado acima
-  continua sendo o v1.
+- **Troca da task pro v2** continuava não feita nesta formalização de
+  260810 — decisão separada e futura do editor, explicitamente vetada
+  naquela unidade de trabalho. **Atualização 260811: já feita** — ver a
+  seção "Cutover para v2" acima (`Diaria-Clarice-Cohorts-Crawl`, registro do
+  zero, já que `DiariaCohortsCrawl` v1 nunca chegou a ser registrada nesta
+  máquina).
 - **Item 2 do fleet review de #4479** ("campanha sem `sentDate` nunca entra no
   cache permanente, checar a distribuição real quando a Fase 3 rodar") **segue
   não verificado** — a Fase 3 que rodou não checou a distribuição de
