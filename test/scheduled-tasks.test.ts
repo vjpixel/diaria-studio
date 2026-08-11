@@ -270,6 +270,13 @@ describe("#4451 — Diaria-Clarice-Cohorts-Crawl registrada, roda o v2, systemd-
     assert.match(args[outIdx + 1], /^data\//, "--out precisa começar com data/ (cwd do step é a raiz do repo)");
   });
 
+  it("o step passa --push (#5015 — sem isso a task roda mas nunca atualiza o KV que o dashboard lê)", () => {
+    const t = getScheduledTaskByName("Diaria-Clarice-Cohorts-Crawl");
+    assert.ok(t);
+    const args = t!.steps[0].args ?? [];
+    assert.ok(args.includes("--push"), "--push ausente dos args do step");
+  });
+
   it("NÃO tem legacySetupScript (a task Windows DiariaCohortsCrawl nunca existiu neste registro — registro do zero pro v2, #4451)", () => {
     const t = getScheduledTaskByName("Diaria-Clarice-Cohorts-Crawl");
     assert.ok(t);

@@ -24,6 +24,9 @@
  *      v1 — decisão SEPARADA do editor, ainda NÃO feita (fora do escopo da
  *      formalização de 260810 — ver seção abaixo). v1
  *      (`clarice-engagement-cohorts.ts`) segue sendo o crawl agendado hoje.
+ *      #5015 (260811) fechou só a METADE "este script sabe escrever no KV"
+ *      (flag `--push`, ver acima) — v1 segue no repo como fallback
+ *      documentado, não removido; "aposentar v1" continua em aberto.
  *
  * CUTOVER: DESIGN VALIDADO (#4451, 260810 — decisão do editor, briefing
  * overnight) — troca de TASK ainda pendente. A Fase 3 rodou ao vivo contra a
@@ -56,10 +59,16 @@
  * ORIGEM do `ContactEngagement` por e-mail muda (per-campanha em vez de
  * per-contato). v1 não é tocado por este arquivo.
  *
- * SEMPRE DRY-RUN: este script NUNCA escreve no KV do worker
- * `clarice-dashboard` nem troca a task agendada `DiariaCohortsCrawl` — só
- * produz output local (stdout + opcionalmente `--out arquivo.json`) pro
- * editor inspecionar. Cutover real é Fase 4, fora deste arquivo.
+ * DRY-RUN POR PADRÃO; `--push` GRAVA NO KV (#5015): sem `--push`, o
+ * comportamento é o mesmo de sempre — só produz output local (stdout +
+ * opcionalmente `--out arquivo.json`) pro editor inspecionar, nunca toca o
+ * KV. Com `--push`, grava o `EngagementCohorts` computado na MESMA chave
+ * KV que o v1 grava (`COHORTS_KV_KEY = "cohorts:engagement"`, mesmo
+ * namespace `DASHBOARD_KV_NAMESPACE_ID`, mesmo shape — `computeCohorts()`
+ * não mudou entre v1/v2) via `pushCohortsToKV`, que porta a MESMA proteção
+ * anti-clobber do v1 (`clarice-engagement-cohorts.ts`): nunca sobrescreve o
+ * KV quando `cohorts.universe === 0`. Este script NUNCA troca a task
+ * agendada por si só (isso é config estática em `scheduled-tasks.ts`).
  *
  * CACHE "SKIP FOREVER" COM JANELA DE RE-FETCH (#4451 Fase 2): campanha fora
  * da janela de re-fetch (`--refetch-window-days`, default 30 — chute inicial
@@ -110,11 +119,17 @@
  * `isWithinRefetchWindow`).
  *
  * Env:
- *   BREVO_CLARICE_API_KEY  obrigatório
+ *   BREVO_CLARICE_API_KEY     obrigatório
+ *   CLOUDFLARE_ACCOUNT_ID     obrigatório só com --push (grava no KV)
+ *   CLOUDFLARE_WORKERS_TOKEN  obrigatório só com --push (grava no KV)
  *
- * Uso CLI (sempre dry-run, nunca grava KV nem toca a task agendada):
- *   npx tsx scripts/clarice-engagement-cohorts-v2.ts [--concurrency N] [--limit N] [--out arquivo.json] [--refetch-window-days N] [--no-admin-optouts]
+ * Uso CLI (dry-run por padrão; --push grava no KV, #5015):
+ *   npx tsx scripts/clarice-engagement-cohorts-v2.ts [--push] [--concurrency N] [--limit N] [--out arquivo.json] [--refetch-window-days N] [--no-admin-optouts]
  *
+ *   --push                 grava o EngagementCohorts computado na chave KV `cohorts:engagement`
+ *                          do worker clarice-dashboard (mesma chave/shape do v1), com a mesma
+ *                          proteção anti-clobber (nunca sobrescreve com universe=0). Sem esta
+ *                          flag, comportamento é dry-run puro (nunca toca o KV).
  *   --concurrency        campanhas processadas em paralelo (default 2 — throttling conservador).
  *   --limit               processa só as N campanhas mais recentes (útil pra validar sem rodar a história inteira).
  *   --out                 além do stdout, grava cohorts+diagnostics (CohortsV2Artifact) neste path.
@@ -132,9 +147,12 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import { buildCohortsV2Artifact } from "./lib/cohorts-v2-artifact.ts";
+import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts"; // #5015
 import {
   computeCohorts,
   COHORTS_STATE_DIR,
+  COHORTS_KV_KEY,
+  DASHBOARD_KV_NAMESPACE_ID,
   type ContactEngagement,
   type EngagementCohorts,
 } from "./clarice-engagement-cohorts.ts";
@@ -699,14 +717,62 @@ export async function buildCohortsV2(
   };
 }
 
-// ─── CLI (SEMPRE dry-run — não grava KV, não toca a task agendada) ──────────
+// ─── Escrita no KV (#5015 — porta a lógica de clarice-engagement-cohorts.ts) ─
+
+/** Resultado de `pushCohortsToKV` — `pushed: false` sinaliza o guard anti-clobber (não é erro de rede). */
+export interface PushCohortsResult {
+  pushed: boolean;
+  /** só definido quando `pushed=false` — motivo do guard (hoje só "universe 0"). */
+  reason?: string;
+}
+
+/**
+ * Grava o `EngagementCohorts` computado no KV do worker `clarice-dashboard`,
+ * na MESMA chave (`COHORTS_KV_KEY = "cohorts:engagement"`) e MESMO namespace
+ * (`DASHBOARD_KV_NAMESPACE_ID`) que `clarice-engagement-cohorts.ts` (v1)
+ * grava — o shape gravado é o `EngagementCohorts` puro, sem wrapper: o
+ * worker lê `env.STATS_CACHE.get(COHORTS_KV_KEY, "json")` e espera esse
+ * shape direto, não `CohortsV2Artifact` (que é só pro `--out` local,
+ * consumido por `compare-cohorts.ts`). `computeCohorts()` não mudou entre
+ * v1/v2 — só a ORIGEM do `ContactEngagement` por e-mail muda — então o
+ * payload é estruturalmente idêntico ao que o v1 sempre gravou.
+ *
+ * Anti-clobber (#5015, PORTADO de v1 linha por linha — mesmo guard, mesma
+ * mensagem de intenção): nunca sobrescreve o KV quando `cohorts.universe ===
+ * 0` — um universo zerado é sinal de falha upstream (export vazio, store
+ * administrativo corrompido etc.), não um dado bom pra publicar por cima do
+ * snapshot existente. Retorna `{pushed: false, reason}` em vez de lançar —
+ * o caller (`main`) decide como reportar/sair.
+ *
+ * `uploadFn` injetável (default `uploadTextToWorkerKV`) — mesmo padrão de
+ * `CampaignExportClient` acima, pra ser testável sem rede real (#633).
+ */
+export async function pushCohortsToKV(
+  cohorts: EngagementCohorts,
+  cfg: { accountId: string; token: string },
+  uploadFn: typeof uploadTextToWorkerKV = uploadTextToWorkerKV,
+): Promise<PushCohortsResult> {
+  if (cohorts.universe === 0) {
+    return { pushed: false, reason: "universe 0 — abortado para não sobrescrever o KV com zeros" };
+  }
+  await uploadFn(JSON.stringify(cohorts), COHORTS_KV_KEY, {
+    kvNamespaceId: DASHBOARD_KV_NAMESPACE_ID,
+    accountId: cfg.accountId,
+    token: cfg.token,
+    contentType: "application/json",
+  });
+  return { pushed: true };
+}
+
+// ─── CLI (dry-run por padrão; --push grava no KV, #5015) ────────────────────
 
 // exportado (#4497) só pra permitir teste direto da validação de --limit sem
-// invocar via CLI real — continua SEMPRE dry-run, nenhuma mudança de comportamento.
+// invocar via CLI real.
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const concurrency = Number(getArg(argv, "concurrency") || "2") || 2;
   // getIntArg (#4497) — ausente vira undefined ("sem limite", processa todas
-  // as campanhas — script é SEMPRE dry-run, blast radius baixo); um typo no
+  // as campanhas — blast radius baixo mesmo sem limite, já que sem --push o
+  // comportamento é dry-run puro); um typo no
   // VALOR (ex: "--limit abc") LANÇA (via main().catch no fim do arquivo) em
   // vez de colapsar silenciosamente no mesmo undefined (antes: `limitArg ?
   // Number(limitArg) : undefined` não validava o resultado de Number(), então
@@ -724,6 +790,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // (→ lança, nunca "0 abc" virando NaN→default em silêncio).
   const refetchWindowDays = getIntArg(argv, "refetch-window-days") ?? DEFAULT_REFETCH_WINDOW_DAYS;
   const includeAdminOptOuts = !hasFlag(argv, "no-admin-optouts");
+  const push = hasFlag(argv, "push"); // #5015
 
   const apiKey = process.env.BREVO_CLARICE_API_KEY;
   if (!apiKey) {
@@ -731,8 +798,25 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     process.exit(1);
   }
 
+  // #5015: fail-fast nas credenciais Cloudflare ANTES do backfill por
+  // campanha — mesmo racional do v1 (clarice-engagement-cohorts.ts): sem
+  // isso, a falta de credencial só seria detectada DEPOIS de gastar a quota
+  // de export da Brevo. Sem --push, o script segue dry-run puro e não
+  // precisa dessas credenciais.
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const token = process.env.CLOUDFLARE_WORKERS_TOKEN;
+  if (push && (!accountId || !token)) {
+    console.error(
+      "CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_WORKERS_TOKEN não definidos — necessários " +
+        "para gravar no KV com --push. Configure as credenciais (ou rode sem --push) antes do backfill.",
+    );
+    process.exit(1);
+  }
+
   console.error(
-    `🚧 v2 (#4451 Fase 2) — SEMPRE dry-run: não grava KV, não altera a task agendada DiariaCohortsCrawl.`,
+    push
+      ? `🚧 v2 (#5015) — --push: vai gravar o KV cohorts:engagement ao final do backfill.`
+      : `🚧 v2 (#4451 Fase 2) — dry-run: não grava KV (rode com --push pra gravar).`,
   );
   console.error(
     `🔎 Backfill por campanha (concorrência ${concurrency}${limit ? `, limit ${limit}` : ""}, ` +
@@ -750,7 +834,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   });
 
   console.error(
-    `\n✅ v2 (dry-run): universo ${result.cohorts.universe} — campanhas: ${result.campaignsTotal} ` +
+    `\n✅ v2${push ? "" : " (dry-run)"}: universo ${result.cohorts.universe} — campanhas: ${result.campaignsTotal} ` +
       `(cache: ${result.campaignsFromCache}, novas: ${result.campaignsFetched}, falhas: ${result.campaignsFailed.length}).`,
   );
   console.error(
@@ -777,7 +861,26 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // compare-cohorts.ts, que já sabe ler o wrapper.
     const artifact = buildCohortsV2Artifact(result);
     writeFileAtomic(resolve(outPath), JSON.stringify(artifact, null, 2), { fsync: false });
-    console.error(`📝 Output também salvo em ${outPath} (cohorts + diagnostics; nada gravado no KV).`);
+    console.error(`📝 Output também salvo em ${outPath} (cohorts + diagnostics; escrita local, não é o --push do KV).`);
+  }
+
+  // #5015: --push grava no KV por ÚLTIMO, DEPOIS do stdout/--out já terem
+  // sido escritos (mesma ordem do v1: computa e reporta tudo, só então
+  // escreve). Deliberado: no caminho de falha do anti-clobber (universe=0),
+  // o operador ainda precisa do JSON/diagnostics pra investigar — sair mais
+  // cedo (antes do stdout/--out) esconderia exatamente o dado necessário
+  // pra depurar. accountId/token já validados acima (fail-fast) quando
+  // push=true — não-null assertion segura aqui.
+  if (push) {
+    const pushResult = await pushCohortsToKV(result.cohorts, { accountId: accountId!, token: token! });
+    if (pushResult.pushed) {
+      console.error(`📤 KV atualizado: ${COHORTS_KV_KEY} (namespace ${DASHBOARD_KV_NAMESPACE_ID}).`);
+    } else {
+      console.error(`⚠️  ${pushResult.reason} — KV NÃO atualizado.`);
+      process.exit(1);
+    }
+  } else {
+    console.error("(sem --push) KV não atualizado.");
   }
 }
 
