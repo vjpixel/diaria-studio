@@ -94,7 +94,7 @@ export interface SetupScriptTaskName {
  * Extrai TODOS os nomes de task declarados num `setup-*-schedule.ps1`, na
  * ordem em que aparecem no source.
  *
- * Até 260811 a suposição era 1 script de setup ⇒ 1 task, e o parser lia só
+ * Até #5027 a suposição era 1 script de setup ⇒ 1 task, e o parser lia só
  * `$TaskName`. `scripts/setup-clarice-envio-schedule.ps1` (automação do envio
  * Clarice) quebrou essa suposição de propósito: ele registra o PAR
  * `Diaria-Clarice-Envio` (19:00, planeja+agenda) e `Diaria-Clarice-Envio-Guard`
@@ -125,13 +125,32 @@ export function parseTaskNamesFromSetupScript(source: string, scriptPathForError
 /**
  * Primeiro nome de task declarado num `setup-*-schedule.ps1` — conveniência
  * sobre `parseTaskNamesFromSetupScript` pros callers que sabem estar diante
- * de um script de task única. **Lança** nas mesmas condições dela.
+ * de um script de task única. **Lança** nas mesmas condições dela, E TAMBÉM
+ * quando o script declara MAIS de 1 nome (achado do type-design-analyzer no
+ * review do #5027): antes, um script multi-task passando por aqui perdia a
+ * 2ª task em silêncio — `[0]` sem checar `length` é o mesmo "mente por
+ * omissão" que este módulo inteiro existe pra evitar, só que num lugar
+ * novo.
  *
- * Não usar em caminho de descoberta/diff: num script multi-task ela enxerga
- * só a primeira e volta a esconder as demais (ver docstring acima).
+ * Ainda é o caminho usado por `fromLegacyScan` em `listExpectedScheduledTasks`
+ * — mas nunca recebe um script multi-task em produção, porque
+ * `scripts/setup-clarice-envio-schedule.ps1` (o único hoje) é coberto pelo
+ * registro (`fromRegistry`, 2 entradas com o mesmo `legacySetupScript`) e
+ * fica de fora do scan legado via `registeredScriptPaths`. O guard acima
+ * existe pro próximo script multi-task que ainda não tiver entrada no
+ * registro — sem ele, a 2ª+ task desse script ficaria invisível em silêncio
+ * dentro do `fromLegacyScan`.
  */
 export function parseTaskNameFromSetupScript(source: string, scriptPathForError: string): string {
-  return parseTaskNamesFromSetupScript(source, scriptPathForError)[0];
+  const names = parseTaskNamesFromSetupScript(source, scriptPathForError);
+  if (names.length > 1) {
+    throw new Error(
+      `[pending-scheduled-tasks] ${scriptPathForError} declara ${names.length} tasks (${names.join(", ")}) ` +
+        `mas parseTaskNameFromSetupScript espera exatamente 1 — use parseTaskNamesFromSetupScript no ` +
+        `caminho de descoberta/diff (senão a 2ª+ task fica invisível em silêncio).`,
+    );
+  }
+  return names[0];
 }
 
 /** Lista `.ps1` recursivamente sob `dir` cujo basename bate `setup-*-schedule.ps1`
@@ -175,24 +194,40 @@ function setupScheduleFilesUnder(dir: string): string[] {
 export function listExpectedScheduledTasks(rootDir: string): SetupScriptTaskName[] {
   const rootAbs = resolve(rootDir);
 
-  const fromRegistry: SetupScriptTaskName[] = SCHEDULED_TASKS.filter((t) =>
-    existsSync(resolve(rootAbs, ...t.legacySetupScript.split("/"))),
-  ).map((t) => ({ scriptPath: t.legacySetupScript, taskName: t.name }));
+  // #5005: `legacySetupScript` é opcional (task registrada depois do
+  // cutover systemd não tem `.ps1` legado) — essas entradas nunca entram em
+  // `fromRegistry` por design: o check "task esperada ausente do Task
+  // Scheduler" pressupõe uma contraparte Windows que não existe pra elas.
+  const fromRegistry: SetupScriptTaskName[] = [];
+  for (const t of SCHEDULED_TASKS) {
+    if (!t.legacySetupScript) continue;
+    if (existsSync(resolve(rootAbs, ...t.legacySetupScript.split("/")))) {
+      fromRegistry.push({ scriptPath: t.legacySetupScript, taskName: t.name });
+    }
+  }
   const registeredScriptPaths = new Set(fromRegistry.map((t) => t.scriptPath));
 
   const scriptsDir = resolve(rootAbs, "scripts");
   const files = setupScheduleFilesUnder(scriptsDir);
+  // #5027: filtra os arquivos JÁ cobertos pelo registro ANTES de parsear —
+  // não depois. Um script coberto pelo registro pode declarar mais de 1 task
+  // (setup-clarice-envio-schedule.ps1 tem $TaskName E $GuardTaskName) e a
+  // singular `parseTaskNameFromSetupScript` LANÇA nesse caso (guard do
+  // #5027, ver docstring da função) — se o filtro rodasse só depois do
+  // `.map()` como antes, o próprio scan real do repo quebraria tentando
+  // reparsear um arquivo que o registro já resolveu corretamente.
   const fromLegacyScan: SetupScriptTaskName[] = files
-    .flatMap((full): SetupScriptTaskName[] => {
+    .filter((full) => {
+      const rel = full.startsWith(rootAbs + sep) ? full.slice(rootAbs.length + 1) : full;
+      return !registeredScriptPaths.has(rel.split(sep).join("/"));
+    })
+    .map((full): SetupScriptTaskName => {
       const rel = full.startsWith(rootAbs + sep) ? full.slice(rootAbs.length + 1) : full;
       const scriptPath = rel.split(sep).join("/");
       const source = readFileSync(full, "utf8");
-      // flatMap e não map: um script de setup pode registrar MAIS DE UMA task
-      // (ver parseTaskNamesFromSetupScript). Uma entrada por task, senão a 2ª
-      // some do diff de pendências.
-      return parseTaskNamesFromSetupScript(source, scriptPath).map((taskName) => ({ scriptPath, taskName }));
-    })
-    .filter((t) => !registeredScriptPaths.has(t.scriptPath));
+      const taskName = parseTaskNameFromSetupScript(source, scriptPath);
+      return { scriptPath, taskName };
+    });
 
   return [...fromRegistry, ...fromLegacyScan].sort((a, b) => a.taskName.localeCompare(b.taskName));
 }

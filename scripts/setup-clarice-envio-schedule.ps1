@@ -9,7 +9,7 @@
     Um script, DUAS tasks -- de proposito: elas sao um par indivisivel. A
     task das 19:00 planeja a onda do dia seguinte e AGENDA a campanha pras
     06:00 BRT (09:00 UTC); a das 05:00 reavalia o freio de risco de ISP com
-    ~13h de bounce/unsub/spam novos e e a ultima chance de segurar o disparo.
+    ~11h de bounce/unsub/spam novos e e a ultima chance de segurar o disparo.
     Armar uma sem a outra e uma configuracao que ninguem quer: so a das 19:00
     agenda sem rede de seguranca, so a das 05:00 vigia uma onda que nunca e
     agendada.

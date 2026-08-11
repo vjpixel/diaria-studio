@@ -8,7 +8,7 @@
     em data/clarice-subscribers/.envio-guard.log. Segunda metade do par
     Diaria-Clarice-Envio: a onda e planejada e AGENDADA as 19:00 do dia
     anterior, e a Brevo congela destinatarios no AGENDAMENTO, nao no envio.
-    Entre 19:00 e 06:00 chegam ~13h de bounce/unsub/spam da onda ANTERIOR --
+    Entre 19:00 e 06:00 chegam ~11h de bounce/unsub/spam da onda ANTERIOR --
     as 05:00 este passo reavalia o freio de risco de ISP com esse dado fresco
     e e a ultima chance de segurar o disparo das 06:00.
 

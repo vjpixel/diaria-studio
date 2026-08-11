@@ -11,7 +11,7 @@ import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   parseTaskNameFromSetupScript,
@@ -76,46 +76,58 @@ describe("parseTaskNameFromSetupScript — ponto frágil (#4708): lança, nunca 
     const source = `$TaskName = 'Diaria-Aspas-Simples'\n`;
     assert.throws(() => parseTaskNameFromSetupScript(source, "fixture.ps1"));
   });
+
+  it("#5027: script MULTI-task -> lança (nunca trunca em silêncio pro primeiro nome)", () => {
+    // PoC do risco descrito na docstring: antes do #5027, `[0]` sem checar
+    // `length` faria isto retornar só "Diaria-Clarice-Envio" e a 2ª task
+    // ficaria invisível pro caller — a mesma classe de "mente por omissão"
+    // que este módulo inteiro existe pra evitar.
+    const source = `$TaskName = "Diaria-Clarice-Envio"\n$GuardTaskName = "Diaria-Clarice-Envio-Guard"\n`;
+    assert.throws(
+      () => parseTaskNameFromSetupScript(source, "scripts/setup-clarice-envio-schedule.ps1"),
+      /declara 2 tasks/,
+    );
+  });
 });
 
-describe("parseTaskNamesFromSetupScript — script de setup que registra MAIS DE UMA task (260811)", () => {
-  it("script de task única -> lista de 1 (mesmo comportamento de sempre)", () => {
+describe("parseTaskNamesFromSetupScript (plural, #5027) — fonte primária, cobre script multi-task", () => {
+  it("extrai UM nome de um script de task única (mesmo caso do parser singular)", () => {
     const source = `$TaskName = "Diaria-Apoios-Diff-Alarm"\n`;
     assert.deepEqual(parseTaskNamesFromSetupScript(source, "fixture.ps1"), ["Diaria-Apoios-Diff-Alarm"]);
   });
 
-  it("par 19:00 + 05:00 ($TaskName + $GuardTaskName) -> os DOIS nomes, na ordem do source", () => {
-    const source = [
-      `$TaskName      = "Diaria-Clarice-Envio"`,
-      `$TaskDesc      = "diar.ia.br: planeja e agenda a onda Clarice"`,
-      `$GuardTaskName = "Diaria-Clarice-Envio-Guard"`,
-      `$GuardTaskDesc = "diar.ia.br: guard matinal"`,
-      ``,
-    ].join("\n");
+  it("extrai OS DOIS nomes de um script multi-task, na ordem em que aparecem ($TaskName antes de $GuardTaskName)", () => {
+    const source = `$TaskName = "Diaria-Clarice-Envio"\n$GuardTaskName = "Diaria-Clarice-Envio-Guard"\n`;
     assert.deepEqual(parseTaskNamesFromSetupScript(source, "fixture.ps1"), [
       "Diaria-Clarice-Envio",
       "Diaria-Clarice-Envio-Guard",
     ]);
   });
 
-  it("PoC do risco: a task-guard ficaria INVISÍVEL se o parser lesse só a primeira", () => {
-    const source = `$TaskName = "Diaria-Clarice-Envio"\n$GuardTaskName = "Diaria-Clarice-Envio-Guard"\n`;
-    // parseTaskNameFromSetupScript (singular) segue existindo e devolvendo a
-    // primeira — por isso ela NÃO deve ser usada no caminho de descoberta.
-    assert.equal(parseTaskNameFromSetupScript(source, "fixture.ps1"), "Diaria-Clarice-Envio");
-    assert.ok(parseTaskNamesFromSetupScript(source, "fixture.ps1").includes("Diaria-Clarice-Envio-Guard"));
+  it("aceita qualquer prefixo antes de TaskName (regex $\\w*TaskName, não só $TaskName/$GuardTaskName literal)", () => {
+    const source = `$FooTaskName = "Diaria-Foo"\n$BarTaskName = "Diaria-Bar"\n`;
+    assert.deepEqual(parseTaskNamesFromSetupScript(source, "fixture.ps1"), ["Diaria-Foo", "Diaria-Bar"]);
   });
 
-  it("nenhum nome encontrado -> LANÇA (nunca [] silencioso)", () => {
+  it("near-miss $TaskDesc NÃO é confundido com $TaskName (sufixo Desc, não TaskName)", () => {
+    const source = `$TaskName = "Diaria-Real"\n$TaskDesc = "descricao qualquer"\n`;
+    assert.deepEqual(parseTaskNamesFromSetupScript(source, "fixture.ps1"), ["Diaria-Real"]);
+  });
+
+  it("nenhum nome encontrado -> lança (mesmo comportamento fail-loud da singular)", () => {
+    const source = `# script sem nenhum TaskName\nWrite-Output "oi"\n`;
     assert.throws(
-      () => parseTaskNamesFromSetupScript(`Write-Output "oi"\n`, "scripts/setup-quebrado-schedule.ps1"),
+      () => parseTaskNamesFromSetupScript(source, "scripts/setup-quebrado-schedule.ps1"),
       /não encontrei/,
     );
   });
 
-  it("variável parecida mas que não termina em TaskName é ignorada (ex: $TaskDesc)", () => {
-    const source = `$TaskDesc = "Diaria-Nao-Sou-Nome"\n$TaskName = "Diaria-Sou"\n`;
-    assert.deepEqual(parseTaskNamesFromSetupScript(source, "fixture.ps1"), ["Diaria-Sou"]);
+  it("real: scripts/setup-clarice-envio-schedule.ps1 (repo de verdade) declara os 2 nomes do par, nesta ordem", () => {
+    const source = readFileSync(join(REPO_ROOT, "scripts", "setup-clarice-envio-schedule.ps1"), "utf8");
+    assert.deepEqual(parseTaskNamesFromSetupScript(source, "scripts/setup-clarice-envio-schedule.ps1"), [
+      "Diaria-Clarice-Envio",
+      "Diaria-Clarice-Envio-Guard",
+    ]);
   });
 });
 
@@ -131,7 +143,13 @@ describe("listExpectedScheduledTasks — varredura real do repo", () => {
     });
   });
 
-  it("sanity: a varredura recursiva cobre exatamente os mesmos scripts que um scan manual de scripts/**/setup-*-schedule.ps1", () => {
+  it("sanity: a varredura recursiva cobre o mesmo CONJUNTO DE ARQUIVOS que um scan manual de scripts/**/setup-*-schedule.ps1", () => {
+    // Compara por scriptPath ÚNICO, não por contagem crua de tasks: desde
+    // #5027 um `.ps1` pode declarar MAIS de 1 task
+    // (setup-clarice-envio-schedule.ps1 -> Diaria-Clarice-Envio +
+    // Diaria-Clarice-Envio-Guard), então `viaLib.length` (tasks) pode ser
+    // MAIOR que `manual.length` (arquivos) de propósito — comparar os
+    // lengths direto quebraria aqui sem sinalizar problema real nenhum.
     function scan(dir: string): string[] {
       const out: string[] = [];
       for (const name of readdirSync(dir)) {
@@ -142,38 +160,10 @@ describe("listExpectedScheduledTasks — varredura real do repo", () => {
       }
       return out;
     }
-    const manual = scan(join(REPO_ROOT, "scripts"))
-      .map((f) => f.slice(REPO_ROOT.length + 1).split("\\").join("/"))
-      .sort();
-    // Comparação por CONJUNTO DE SCRIPTS, não por contagem de tasks: desde
-    // 260811 um mesmo setup-*.ps1 pode declarar mais de uma task
-    // (setup-clarice-envio-schedule.ps1 registra o par 19:00 + 05:00), então
-    // `viaLib.length === manual.length` deixou de ser a expressão correta de
-    // "a varredura não perdeu nem inventou script".
-    const viaLib = [...new Set(listExpectedScheduledTasks(REPO_ROOT).map((t) => t.scriptPath))].sort();
-    assert.deepEqual(viaLib, manual);
-  });
-
-  it("um script de setup que declara N tasks produz N entradas (nenhuma some do diff)", () => {
-    const r = makeRoot();
-    mkdirSync(join(r, "scripts"), { recursive: true });
-    writeFileSync(
-      join(r, "scripts", "setup-par-schedule.ps1"),
-      `$TaskName = "Diaria-Par-Um"\n$GuardTaskName = "Diaria-Par-Dois"\n`,
-    );
-    // `listExpectedScheduledTasks` ordena por taskName (output determinístico),
-    // não pela ordem de declaração no .ps1 — daí "Dois" antes de "Um".
-    const tasks = listExpectedScheduledTasks(r);
-    assert.deepEqual(
-      tasks.map((t) => t.taskName),
-      ["Diaria-Par-Dois", "Diaria-Par-Um"],
-    );
-    // as duas apontam pro MESMO script de setup — é assim que o relatório de
-    // pendências diz ao editor qual comando rodar pra armar a que faltou
-    assert.deepEqual(
-      [...new Set(tasks.map((t) => t.scriptPath))],
-      ["scripts/setup-par-schedule.ps1"],
-    );
+    const manual = scan(join(REPO_ROOT, "scripts")).map((f) => f.slice(REPO_ROOT.length + 1).split(sep).join("/"));
+    const viaLib = listExpectedScheduledTasks(REPO_ROOT);
+    const viaLibFiles = new Set(viaLib.map((t) => t.scriptPath));
+    assert.deepEqual([...viaLibFiles].sort(), [...manual].sort());
   });
 
   it("resultado é ordenado por taskName (output determinístico)", () => {
