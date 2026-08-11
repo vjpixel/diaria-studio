@@ -259,6 +259,18 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4750",
   },
   {
+    name: "Diaria-Robots-Txt-Drift-Check",
+    description: "smoke-test do robots.txt SERVIDO pelos Workers de curadoria (bloco gerenciado da Cloudflare + bots fora do esperado)",
+    steps: [{ key: "check", script: "scripts/robots-txt-drift-check.ts" }],
+    logPath: "robots-txt-drift-check/.drift-check.log",
+    // Mesma cadência de Diaria-Hub-Drift-Check (#4750) — mesma classe de
+    // smoke-test (config publicada divergindo do que o código pretende),
+    // aplicada ao robots.txt em vez dos hubs temáticos.
+    schedule: { kind: "interval", hours: 6 },
+    legacySetupScript: "scripts/setup-robots-txt-drift-check-schedule.ps1",
+    issue: "#4910",
+  },
+  {
     name: "Diaria-Clarice-Novos",
     description: "envio diario aos cadastros novos da Clarice (Stripe -> MV -> campanha)",
     // Kill switch dedicado (#4941 E3): ANTES de qualquer chamada externa,

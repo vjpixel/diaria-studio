@@ -95,8 +95,20 @@ editor está criando a conta Bing WMT fora desta sessão; sem ela, os itens
 já implementados aqui produzem sinal que ninguém lê ainda (mesmo raciocínio
 do achado original — "o item 3 destrava a leitura dos outros"). Próxima
 sessão com as credenciais coladas: seguir o item 3 do corpo da #4909.
-IndexNow (item 2 da issue original) segue fora de escopo — não pedido pelo
-editor nesta rodada.
+**IndexNow (item 2 da issue original) — implementado nesta rodada
+(`overnight/batch-geo-discovery`, 11/ago/2026):** builder puro do payload +
+gate "mudou desde o último deploy" (`scripts/lib/indexnow.ts`), CLI de ping
+(`scripts/ping-indexnow.ts`, POST nunca executado ao vivo nesta sessão —
+guard do dispatch), rota de arquivo de chave no Worker `arquivo` (`GET
+/{INDEXNOW_KEY}.txt`) e step condicional em
+`.github/workflows/deploy-arquivo.yml` (só pinga quando o diff do push toca
+`workers/arquivo/src/hubs/*.generated.ts`). **Ainda PENDENTE:** o editor
+gerar a chave em indexnow.org/documentation e provisioná-la em dois lugares
+que precisam bater — o secret de repo `INDEXNOW_KEY` (consumido pelo
+workflow) e a Worker var `INDEXNOW_KEY` (consumida pela rota do arquivo de
+chave, `wrangler secret put` ou `[vars]` em `workers/arquivo/wrangler.toml`).
+Sem isso o step do workflow roda e sai 0 sem pingar (gate fechado por chave
+ausente) — nunca quebra o deploy, só não pinga ainda.
 
 ## Quando adicionar entry aqui
 

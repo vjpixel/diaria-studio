@@ -23,7 +23,10 @@
  * XML, diferente de cursos/livros, que servem via `public/sitemap.xml`
  * estático). GET /robots.txt → mesmo raciocínio, mesmo motivo de não poder
  * ser estático (`scripts/lib/shared/robots-txt.ts`, compartilhado com
- * cursos/livros — ver #4546). Qualquer outro path → 404.
+ * cursos/livros — ver #4546). GET /{INDEXNOW_KEY}.txt → arquivo de chave do
+ * IndexNow (#4909 item 2), só quando a var `INDEXNOW_KEY` está configurada
+ * — sem ela, path nenhum casa e o comportamento é idêntico a antes.
+ * Qualquer outro path → 404.
  *
  * Falha de fetch/parse do sitemap NUNCA lança sem tratamento — cai numa
  * página de erro simples (502), nunca crash.
@@ -57,6 +60,18 @@ import { HUB_REGISTRY, HUB_LASTMOD } from "./hubs/registry.ts"; // #4558 Parte A
  */
 export interface Env {
   CURSOS_SUBSCRIBERS?: KVNamespace;
+  /**
+   * Chave IndexNow (#4909 item 2) — string opaca gerada pelo editor em
+   * indexnow.org/documentation, provisionada como Worker var (`wrangler
+   * secret put INDEXNOW_KEY` ou `[vars]`, fora deste repo). Serve o arquivo
+   * de chave em `GET /{INDEXNOW_KEY}.txt` (ver `indexNowKeyResponse`
+   * abaixo) — é assim que o Bing confirma que quem pinga
+   * `api.indexnow.org` é dono do host. `undefined`/ausente: a rota
+   * simplesmente não casa com nenhum path (nenhum comportamento novo),
+   * mesma disciplina defensiva de `CURSOS_SUBSCRIBERS` acima — permite o
+   * Worker rodar sem a var configurada até o editor provisionar a chave.
+   */
+  INDEXNOW_KEY?: string;
 }
 
 /**
@@ -121,6 +136,25 @@ const ARQUIVO_ROBOTS_TXT = renderCuradoriaRobotsTxt(`${PAGE_URL}sitemap.xml`);
 
 function robotsResponse(): Response {
   return new Response(ARQUIVO_ROBOTS_TXT, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/plain;charset=utf-8",
+      "Cache-Control": "public, max-age=3600",
+    },
+  });
+}
+
+/**
+ * Arquivo de chave do IndexNow (#4909 item 2) — `GET /{env.INDEXNOW_KEY}.txt`
+ * devolve a própria chave em texto puro, exatamente como o protocolo exige
+ * (indexnow.org/documentation: "the key location... must simply contain the
+ * key"). Mesmo padrão dinâmico de `/sitemap.xml`/`/robots.txt` (Worker sem
+ * `[assets]`, então qualquer arquivo estático precisa de rota em código).
+ * `key` sempre não-vazia aqui (o dispatch já checou `env.INDEXNOW_KEY`
+ * truthy antes de chamar isto).
+ */
+function indexNowKeyResponse(key: string): Response {
+  return new Response(key, {
     status: 200,
     headers: {
       "Content-Type": "text/plain;charset=utf-8",
@@ -264,6 +298,12 @@ export default {
     }
     if (url.pathname === "/robots.txt") {
       return robotsResponse();
+    }
+    // #4909 item 2: arquivo de chave do IndexNow — só casa quando a var
+    // está configurada (ver docstring de Env.INDEXNOW_KEY); sem ela, este
+    // `if` nunca é verdadeiro e o pathname cai no 404 normal, igual antes.
+    if (env.INDEXNOW_KEY && url.pathname === `/${env.INDEXNOW_KEY}.txt`) {
+      return indexNowKeyResponse(env.INDEXNOW_KEY);
     }
     // #4558 Parte A: hubs temáticos — HTML já gerado e commitado
     // (`hubs/registry.ts`), servido tal qual, sem fetch/render em runtime.
