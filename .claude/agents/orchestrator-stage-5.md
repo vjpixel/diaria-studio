@@ -85,6 +85,14 @@ Nunca aguardar passivamente. Este stage depende de claude-in-chrome (newsletter)
   ```
   Exit 1 = pausar com violations no stderr. Editor corrige (rodar `upload-images-public.ts` se imagens faltam, configurar env vars) e re-roda.
 
+  **`pending-research-unresolved` (#4990) — WARNING explícito, nunca pausa.** Se a lista de violations incluir essa regra, é o sinal de que o editor pediu pesquisa nova (USE MELHOR ou outro bucket) no gate do Stage 4 e ela ainda não foi integrada — ver marker `_internal/pending-research.json` (`scripts/lib/pending-research.ts`, escrito por `orchestrator-stage-4.md` §4d.1 passo 0). Diferente das demais violations desta seção (que o editor corrige e re-roda), esta é sempre logada e sempre segue no dispatch — o objetivo é só garantir que a lacuna NUNCA fique silenciosa (incidente #4990, edição 260811: seção sumiu da edição publicada sem nenhum aviso até o Stage 6). Ação obrigatória quando aparecer:
+  ```bash
+  npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level warn \
+    --message "pending-research-unresolved: pesquisa pedida no gate Stage 4 ainda nao integrada" \
+    --details '{"kind":"pending_research_unresolved"}'
+  ```
+  Incluir a mesma mensagem (bucket + pedido original, do texto da violation) como linha explícita no resumo final "Publicação dispatchada" (§ "Resumo apos Stage 5" no fim deste arquivo) — ex: `⚠️ Pesquisa pendente: {bucket} — "{pedido}" (pedida {timestamp}) — seção pode ter saído incompleta.`
+
 ### 5a-poll-preflight. Gate de poll ANTES do envio — SEMPRE (#1803)
 
 **Roda em TODO entry path, antes de qualquer pre-render/dispatch.** Resolve o P1 #1803: num resume direto pro Stage 5, o passo de poll do Stage 0 (§0d.bis `maintain-valid-editions`) nao roda e o "E IA?" quebra ao vivo (410) pra todos os subscribers — silenciosamente. Como esta no inicio do Stage 5, **um resume sempre o atravessa**. O script faz FIX idempotente (maintain, warn-only) → VERIFY (smoke-test, **gate duro**), bloqueando o envio antes da newsletter sair — nao depois. **#1186:** `inject-poll-sig` foi removido — modo merge-tag, sem sig HMAC.
@@ -424,3 +432,10 @@ Quando o MCP estiver ativo, rodar:
 ```
 
 Se nenhum stage foi pulado, omitir esse bloco — so listar outputs e status do dispatch.
+
+**#4990 — se `pending-research-unresolved` apareceu em §5a, incluir SEMPRE esta linha** (nunca omitir por brevidade — é justamente o aviso que faltava no incidente original):
+
+```
+⚠️ Pesquisa pendente: {bucket} — "{pedido}" (pedida {timestamp})
+   Secao pode ter publicado incompleta/ausente. Ver _internal/pending-research.json.
+```

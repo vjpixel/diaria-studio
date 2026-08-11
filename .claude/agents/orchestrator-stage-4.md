@@ -599,6 +599,13 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
 
 **Fluxo:**
 
+0. **Pedido de PESQUISA NOVA, não edição de texto (#4990) — checar antes de tratar como ajuste.** Pedido de conteúdo AINDA INEXISTENTE (ex: "busca mais 2 tutoriais pro USE MELHOR") ≠ editar texto já escrito (passos 1-4). Melhor esforço dentro do orçamento da sessão (ex: 1-2 dispatches de `discovery-searcher`, integração manual cirúrgica #495 em `01-approved.json`/`02-reviewed.md`) — reabrir o pipeline Stage 1 completo pra re-integrar automaticamente é fora de escopo desta unidade (#4990 item 1). **Sempre registrar o pedido**, mesmo se a busca acima teve sucesso — é o único jeito da lacuna nunca sumir em silêncio se a sessão for interrompida antes da pesquisa terminar (incidente #4990, edição 260811):
+   ```bash
+   npx tsx scripts/check-pending-research.ts --write --edition-dir {EDITION_DIR}/ \
+     --bucket {use_melhor|radar|lancamento|video} --request "{o que o editor pediu}"
+   ```
+   Bucket populado → `--check` auto-resolve sozinho no Stage 5 (sem `--resolve` manual). Editor desiste do pedido → resolver pra não gerar warning falso: `npx tsx scripts/check-pending-research.ts --resolve --edition-dir {EDITION_DIR}/ --reason "{motivo}"`. Nunca bloqueia o gate — só garante aviso explícito no Stage 5 se a lacuna persistir (invariant `pending-research-unresolved`, warning).
+
 1. **Arquivos já estão localmente atualizados** — sem round-trip externo a aguardar antes de editar (Studio, se usado pelo editor pra revisão fora do terminal, grava direto no arquivo local).
 2. **Aplicar edição cirúrgica** em `02-reviewed.md` seguindo #495: substituições linha-a-linha mínimas via `Edit` com `old_string` mínimo. Nunca substituir blocos grandes.
 
