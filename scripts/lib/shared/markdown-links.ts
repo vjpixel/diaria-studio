@@ -48,6 +48,24 @@ export interface ParsedLink {
 }
 
 /**
+ * Só `https:` passa. Guard de esquema (#4919 item 7) — defesa em
+ * profundidade: até aqui todo `url` de `[texto](url)` vinha de prosa
+ * escrita à mão (editor/writer agent), sempre `https:`. Com `primarySourceUrl`
+ * (`scripts/generate-hub-sources.ts`) o dado passa a vir de `href` extraído
+ * de HTML de TERCEIRO (`content.free.web` do cache Beehiiv) — a primeira
+ * URL `http:`/`javascript:`/outro esquema não pode ser a que descobre esse
+ * gap. `URL` lança em input malformado — tratado como esquema inseguro
+ * (nunca deixa passar por engano de parse).
+ */
+export function isSafeUrlScheme(url: string): boolean {
+  try {
+    return new URL(url).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Acha links markdown `[texto](url)` numa string, com parênteses
  * balanceados na URL (mesmo algoritmo de `findMarkdownLinks` em
  * `scripts/lib/newsletter-render-html.ts` — ver nota do módulo sobre por
@@ -57,7 +75,9 @@ export interface ParsedLink {
  * `mdInlineToHtml`/`processInlineLinks` na função original — "preserva
  * texto bruto") — sem isso, um typo comum ao digitar link à mão vira um
  * `href=""` silencioso (link morto, sem erro nenhum; achado do fleet
- * review da PR #4635).
+ * review da PR #4635). Mesmo tratamento pra URL de esquema não-`https:`
+ * (#4919 item 7, `isSafeUrlScheme`) — preserva texto bruto em vez de virar
+ * `<a href="javascript:...">`.
  *
  * **O label não aceita `[` aninhado** (`[^\[\]]+`, não `[^\]]+` como o
  * original em `newsletter-render-html.ts`) — achado do fleet review da PR
@@ -87,6 +107,7 @@ export function findParagraphLinks(s: string): ParsedLink[] {
     if (j >= s.length) continue; // sem `)` de fechamento — não é link válido
     const url = s.slice(destStart, j).trim();
     if (!url) continue; // `[texto]()` — URL vazia, preserva texto bruto (não vira <a href="">)
+    if (!isSafeUrlScheme(url)) continue; // esquema não-https — preserva texto bruto (#4919 item 7)
     out.push({ url, label, start: m.index, end: j + 1 });
     linkStart.lastIndex = j + 1;
   }

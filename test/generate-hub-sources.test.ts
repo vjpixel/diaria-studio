@@ -111,6 +111,81 @@ describe("collectHubSources (#4558 Parte A)", () => {
   });
 });
 
+describe("collectHubSources — primarySourceUrls (#4919 Parte A)", () => {
+  it("post sem content.free.web: linha sai sem o campo primarySourceUrls", () => {
+    const posts: RawCachedPost[] = [
+      { slug: "sem-content", title: "Claude faz algo", status: "confirmed", publish_date: 1753000000 },
+    ];
+    const { rows } = collectHubSources(posts, PATTERN);
+    assert.equal(rows.length, 1);
+    assert.equal("primarySourceUrls" in rows[0], false);
+  });
+
+  it("âncora de texto idêntico casada: primarySourceUrls alinhado por índice com matchedHeadlines, UTM removido", () => {
+    const posts: RawCachedPost[] = [
+      {
+        slug: "com-fonte",
+        title: "Claude faz algo",
+        status: "confirmed",
+        publish_date: 1753000000,
+        content: {
+          free: {
+            web: `<a class="headline" href="https://anthropic.com/index/x?utm_source=diaria.beehiiv.com">Claude faz algo</a>`,
+          },
+        },
+      },
+    ];
+    const { rows } = collectHubSources(posts, PATTERN);
+    assert.deepEqual(rows[0].matchedHeadlines, ["Claude faz algo"]);
+    assert.deepEqual(rows[0].primarySourceUrls, ["https://anthropic.com/index/x"]);
+  });
+
+  it("regressão do erro medido: manchete sem âncora + link de patrocinador logo depois — sai SEM o campo, nunca herda o link vizinho", () => {
+    const posts: RawCachedPost[] = [
+      {
+        slug: "sem-fonte-com-patrocinador",
+        title: "Claude faz algo",
+        status: "confirmed",
+        publish_date: 1753000000,
+        content: {
+          free: {
+            web: `
+              <h3>Claude faz algo</h3>
+              <p>Texto sem CTA de aprofundamento.</p>
+              <p><a href="https://deel.com/patrocinador?utm_source=diaria.beehiiv.com">Saiba mais sobre a Deel</a></p>
+            `,
+          },
+        },
+      },
+    ];
+    const { rows } = collectHubSources(posts, PATTERN);
+    assert.equal(rows.length, 1);
+    // Nenhuma posição achou fonte -> campo inteiro fica ausente (array de
+    // só null não carregaria informação nova), nunca o href do patrocinador.
+    assert.equal("primarySourceUrls" in rows[0], false);
+  });
+
+  it("2 manchetes casadas na mesma edição: 1 encontra âncora, a outra não — array preserva alinhamento com null", () => {
+    const posts: RawCachedPost[] = [
+      {
+        slug: "duas-manchetes",
+        title: "Anthropic lança Claude Opus 5",
+        subtitle: "Anthropic triplica valuation",
+        status: "confirmed",
+        publish_date: 1753000000,
+        content: {
+          free: {
+            web: `<a class="headline" href="https://anthropic.com/opus-5?utm_source=diar.ia.br">Anthropic lança Claude Opus 5</a>`,
+          },
+        },
+      },
+    ];
+    const { rows } = collectHubSources(posts, PATTERN);
+    assert.deepEqual(rows[0].matchedHeadlines, ["Anthropic lança Claude Opus 5", "Anthropic triplica valuation"]);
+    assert.deepEqual(rows[0].primarySourceUrls, ["https://anthropic.com/opus-5", null]);
+  });
+});
+
 describe("collectHubSources — propagação do override de data (#4803)", () => {
   it("um override presente e válido vence o publish_date bruto na entrada final", () => {
     const posts: RawCachedPost[] = [
