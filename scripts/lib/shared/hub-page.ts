@@ -135,6 +135,18 @@ export interface HubContent {
    * constante registrada em `utm-registry.ts` (nunca um literal solto aqui;
    * ver `HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM`). */
   footerNavUtm: { readonly source: string; readonly medium: string };
+  /** Ressalva epistêmica do hub — de onde vem o levantamento e o que ele NÃO
+   * é (#4939/#4930). Campo OBRIGATÓRIO de propósito: a #4938 removeu do corpo
+   * do texto as ~103 construções em que a publicação ocupava o lugar de
+   * sujeito ou servia de moldura ("a diar.ia.br cobriu...", "segundo a
+   * diar.ia.br..."), e este campo é o único lugar que sobrou pra dizer qual é
+   * a base de evidência da página — não só de quem ela é. Opcional reabriria
+   * o mesmo buraco que o contrato de prosa veio fechar: hub futuro nasceria
+   * sem, porque nada obriga a preencher. Use `defaultMethodologyNote(SOURCES)`
+   * pra derivar o texto padrão — nunca digitar N/início/fim à mão (mesma
+   * disciplina de `hubCoverageWindow`). Ver nota de `HUB_PROSE_RULES` sobre a
+   * isenção de `prosa-sem-deixis` que este campo recebe. */
+  methodologyNote: string;
 }
 
 function pageUrl(slug: string): string {
@@ -242,6 +254,25 @@ export function hubTotals(sources: readonly { matchedHeadlines: readonly string[
     totalEditions: sources.length,
     totalMentions: sources.reduce((n, s) => n + s.matchedHeadlines.length, 0),
   };
+}
+
+/**
+ * Texto padrão do bloco de metodologia (#4939/#4930), DERIVADO de `sources`
+ * via `hubCoverageWindow`/`hubTotals` — nunca digitado. Forma canônica da
+ * issue #4930: diz QUAL é a base de evidência (arquivo da diar.ia.br, não
+ * fato-checagem independente), não só de quem ela é — mais forte que o
+ * "segundo a diar.ia.br" que o contrato de prosa (#4899) proíbe no corpo do
+ * texto. Cada `scripts/lib/hubs/{slug}.ts` chama isto com o próprio `SOURCES`
+ * em vez de escrever a frase à mão; um hub que precisar de nota diferente
+ * escreve a própria string (o tipo aceita qualquer `string`), mas o default
+ * cobre os 4 hubs de hoje sem trabalho editorial extra.
+ */
+export function defaultMethodologyNote(
+  sources: readonly { date: string; matchedHeadlines: readonly string[] }[],
+): string {
+  const { between } = hubCoverageWindow(sources);
+  const { totalEditions } = hubTotals(sources);
+  return `O levantamento vem de ${totalEditions} edições publicadas entre ${between}; os números saem do arquivo da diar.ia.br, não de verificação independente junto às empresas.`;
 }
 
 /**
@@ -391,6 +422,11 @@ function renderHubBodyStyles(): string {
     color: var(--ink); text-decoration: none; }
   .hub-sources li a:hover { color: var(--teal); }
   .hub-sources .li-date { color: var(--teal); font-weight: 700; margin-right: 8px; font-size: 13px; }
+  .hub-methodology { margin: 32px 0 0; padding: 24px 0 0; border-top: 1px solid var(--rule); max-width: 720px; }
+  .hub-methodology h2 { font-family: Georgia, 'Times New Roman', serif; font-size: 13px; font-weight: 700;
+    letter-spacing: 0.08em; text-transform: uppercase; color: var(--teal); margin: 0 0 10px; }
+  .hub-methodology p { font-size: 14px; line-height: 1.6; color: var(--ink); opacity: 0.72; margin: 0; }
+  .hub-methodology p a { color: var(--teal); text-decoration: underline; text-decoration-color: var(--rule); text-underline-offset: 2px; }
   .subscribe-cta { margin: 20px 0 0; }
   .subscribe-cta a { font-size: 15px; font-weight: 700; color: var(--teal); text-decoration: none;
     border-bottom: 1px solid var(--teal); padding-bottom: 2px; }
@@ -403,7 +439,10 @@ const SUBSCRIBE_URL = "https://diar.ia.br/subscribe";
  * erro e a natureza do campo. `kind: "heading"` é superfície de casamento
  * com consulta (H2, pergunta de FAQ — a de FAQ ainda é reemitida como
  * `Question.name` no JSON-LD por `geo-faq.ts`); `kind: "prose"` é corpo de
- * texto. As regras do contrato (`HUB_PROSE_RULES`) se aplicam por `kind`.
+ * texto. As regras do contrato (`HUB_PROSE_RULES`) se aplicam por `kind`,
+ * EXCETO as listadas em `exemptFrom` (#4939) — isenção por campo, nunca por
+ * afrouxamento da regex da regra em si (ver nota de `methodologyNote` em
+ * `HUB_PROSE_RULES`).
  *
  * Promovido de `test/hub-content-no-diaria-nickname-4795.test.ts` (#4899):
  * era helper local de um teste, e por isso cada guard novo reescrevia a
@@ -411,8 +450,8 @@ const SUBSCRIBE_URL = "https://diar.ia.br/subscribe";
  * hand-written que não descobriu o 4º hub (#4926) sozinho. */
 export function collectReaderFacingStrings(
   hub: HubContent,
-): { field: string; value: string; kind: "heading" | "prose" }[] {
-  const out: { field: string; value: string; kind: "heading" | "prose" }[] = [];
+): { field: string; value: string; kind: "heading" | "prose"; exemptFrom?: readonly string[] }[] {
+  const out: { field: string; value: string; kind: "heading" | "prose"; exemptFrom?: readonly string[] }[] = [];
   out.push({ field: "title", value: hub.title, kind: "heading" });
   out.push({ field: "metaDescription", value: hub.metaDescription, kind: "prose" });
   out.push({ field: "introHeading", value: hub.introHeading, kind: "heading" });
@@ -435,6 +474,12 @@ export function collectReaderFacingStrings(
   // faria `renderHubPage` lançar num regen de dataset — quebrando o build por
   // causa de um texto que ninguém pode reescrever sem falsificar a citação.
   // Levantado no review da PR #4938; a exclusão é deliberada, não esquecimento.
+  // `methodologyNote` (#4939): kind "prose" — as regras de sujeito/moldura/
+  // ponteiro continuam valendo (o bloco não deixa de ser prosa comum só por
+  // falar da página). Só `prosa-sem-deixis` é isenta: é o único campo em que
+  // "esta página"/"este hub" é o sujeito CORRETO — ver docstring de
+  // `HUB_PROSE_RULES`.
+  out.push({ field: "methodologyNote", value: hub.methodologyNote, kind: "prose", exemptFrom: ["prosa-sem-deixis"] });
   return out;
 }
 
@@ -487,6 +532,17 @@ export interface HubProseRule {
  * causal estável sobre descoberta, e não há estudo sobre moldura atributiva.
  * Isto é qualidade de prosa com trava durável, não promessa de citação — o
  * gargalo medido da página é recuperação (#4903, #4909), não seleção.
+ *
+ * **A ressalva epistêmica não desapareceu — mudou de endereço (#4939).** As
+ * 103 construções que este contrato tirou do corpo do texto ("a diar.ia.br
+ * cobriu...", "segundo a diar.ia.br...") não eram só enfeite: diziam de onde
+ * vinha a informação. Tirar a moldura sem repor nada transformaria reportagem
+ * hedgeada em afirmação categórica. O destino é `HubContent.methodologyNote`
+ * — bloco próprio, fora de `sections`/`introParagraph`, que `validateHubContent`
+ * exige em todo hub e isenta da regra `prosa-sem-deixis` (é o único lugar da
+ * página em que "esta página" é o sujeito correto). Ler esta seção e concluir
+ * que a procedência não deve aparecer em lugar nenhum é o erro que este
+ * parágrafo existe pra prevenir.
  */
 export const HUB_PROSE_RULES: readonly HubProseRule[] = [
   {
@@ -556,6 +612,10 @@ export const HUB_PROSE_RULES: readonly HubProseRule[] = [
     // #4917. Parágrafo que diz "este hub" é incompleto lido isolado — e o
     // JSON-LD reproduz respostas de FAQ com os links removidos
     // (`stripMarkdownLinks`, geo-faq.ts), então o dêitico viaja sem resolução.
+    // Isenta em `methodologyNote` (#4939, ver `collectReaderFacingStrings`) —
+    // é o único campo em que "esta página"/"este hub" é o sujeito correto, e
+    // a isenção é por CAMPO (marcada em `exemptFrom`), não um afrouxamento
+    // desta regex.
     id: "prosa-sem-deixis",
     appliesTo: "prose",
     // `\besta página\b` NÃO casava "nesta página" — não há fronteira de
@@ -640,12 +700,20 @@ export function validateHubContent(hub: HubContent): string[] {
   if (hub.sections.length === 0) {
     errors.push("sections está vazio — hub sem nenhuma seção narrativa");
   }
+  // #4939: methodologyNote é OBRIGATÓRIO — hub futuro nasce sem, senão (a
+  // issue documenta essa preocupação explicitamente). Mesmo padrão dos
+  // checks acima (`sections`/`sourceEditions` vazios): o TYPE não consegue
+  // expressar "string não-vazia", então o guard é em runtime.
+  if (hub.methodologyNote.trim().length === 0) {
+    errors.push("methodologyNote está vazio — hub sem a ressalva de procedência (#4939)");
+  }
   // Contrato de prosa (#4899). Roda por último: as violações acima são
   // estruturais (o hub está malformado), estas são editoriais (o hub está
   // formado mas escrito do jeito que a auditoria de GEO catalogou).
-  for (const { field, value, kind } of collectReaderFacingStrings(hub)) {
+  for (const { field, value, kind, exemptFrom } of collectReaderFacingStrings(hub)) {
     for (const rule of HUB_PROSE_RULES) {
       if (rule.appliesTo !== kind) continue;
+      if (exemptFrom?.includes(rule.id)) continue;
       // `matchAll` e não `exec`: um parágrafo de 1500 caracteres repete a
       // mesma construção com frequência, e reportar só a 1ª fazia o autor
       // "consertar" o campo e descobrir a 2ª na rodada seguinte — whack-a-mole
@@ -716,6 +784,15 @@ ${hub.sourceEditions
       </ul>
     </section>`;
 
+  // #4939/#4930: bloco próprio, logo depois da bibliografia — é onde o
+  // leitor já está olhando para a procedência dos dados. Destino da
+  // ressalva epistêmica que o contrato de prosa (#4899) removeu do corpo do
+  // texto (ver docstring de `HUB_PROSE_RULES`).
+  const methodologyHtml = `    <section class="hub-methodology" aria-labelledby="metodologia-heading">
+      <h2 id="metodologia-heading">Metodologia</h2>
+      <p>${renderInlineLinks(hub.methodologyNote)}</p>
+    </section>`;
+
   return `<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -761,6 +838,7 @@ ${sectionsHtml}
      bloco de FAQ idêntico ao de .hub-sections logo acima. -->
 ${renderGeoFaqSection(hub.faq, { sectionId: `faq-${hub.slug}`, heading: "Perguntas rápidas" })}
 ${sourcesHtml}
+${methodologyHtml}
     </div>
   </main>
   ${renderCuradoriaFooter(

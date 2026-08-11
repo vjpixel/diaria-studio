@@ -47,6 +47,7 @@ import {
   hubMentionCadenceDays,
   countMatching,
   formatDateShort,
+  defaultMethodologyNote,
   type HubContent,
   type HubSourceEdition,
 } from "../shared/hub-page.ts";
@@ -212,5 +213,6 @@ export function getMetaAiHub(): HubContent {
     publishedDate: PUBLISHED_DATE,
     updatedDate: UPDATED_DATE,
     footerNavUtm: HUB_META_AI_FOOTER_NAV_UTM,
+    methodologyNote: defaultMethodologyNote(SOURCES),
   };
 }

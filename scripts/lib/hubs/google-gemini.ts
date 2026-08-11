@@ -57,6 +57,7 @@ import {
   calendarDaysBetween,
   formatDateShort,
   formatDateLong,
+  defaultMethodologyNote,
   type HubContent,
   type HubSourceEdition,
 } from "../shared/hub-page.ts";
@@ -341,5 +342,6 @@ export function getGoogleGeminiHub(): HubContent {
     publishedDate: PUBLISHED_DATE,
     updatedDate: UPDATED_DATE,
     footerNavUtm: HUB_GOOGLE_GEMINI_FOOTER_NAV_UTM,
+    methodologyNote: defaultMethodologyNote(SOURCES),
   };
 }

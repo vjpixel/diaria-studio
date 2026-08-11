@@ -61,6 +61,7 @@ import {
   maxDateGap,
   formatDateShort,
   formatDateLong,
+  defaultMethodologyNote,
   type HubContent,
   type HubSourceEdition,
 } from "../shared/hub-page.ts";
@@ -259,5 +260,6 @@ export function getAnthropicClaudeHub(): HubContent {
     publishedDate: PUBLISHED_DATE,
     updatedDate: UPDATED_DATE,
     footerNavUtm: HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM,
+    methodologyNote: defaultMethodologyNote(SOURCES),
   };
 }
