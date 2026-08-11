@@ -69,6 +69,7 @@ export {
   unescapeMd,
   joinMultilineLinks,
   pickErroIntencionalReveal,
+  findEiaAnchorSection, // #4991
 } from "./lib/newsletter-parse.ts";
 
 export {

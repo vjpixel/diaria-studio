@@ -92,6 +92,13 @@ export interface NewsletterContent {
   destaques: RenderDestaque[];
   eia: EIA;
   sections: Section[];
+  /** #4991: índice em `sections` após o qual É IA? deve renderizar, derivado
+   * de onde o mirror `**É IA?**` aparece de fato no reviewed.md (ver
+   * `findEiaAnchorSection`). `null` = mirror ausente, `renderHTML` cai no
+   * fallback #3476 (após USE MELHOR). `-1` = mirror presente mas nenhuma
+   * seção o precede (renderiza antes de todas). `i` (≥0) = após
+   * `sections[i]`. */
+  eiaAnchorSectionIdx?: number | null;
   /** #1076: bloco 🎁 SORTEIO parseado do reviewed.md (texto bruto, ou null se ausente). */
   sorteio?: string | null;
   /** #1076: bloco 🙋🏼‍♀️ PARA ENCERRAR parseado do reviewed.md. */
@@ -1148,6 +1155,66 @@ export function parseEiaMirrorBlock(block: string, editionDir: string): EIA {
 }
 
 /**
+ * #4991: reimplementação de um fix perdido (commit `3bd161f9`, branch
+ * `fix/4956-eia-anchor-section-reverte-3476` — validado ao vivo na edição
+ * 260811, mas o worktree foi removido antes do push). Deriva onde É IA?
+ * deve renderizar a partir de onde o mirror `**É IA?**` aparece de fato em
+ * `02-reviewed.md`, em vez do hardcode fixo "sempre após USE MELHOR" do
+ * #3476 — o editor pediu ao vivo (260811) mover É IA? para depois de VÍDEO.
+ *
+ * Retorno:
+ *   - `null`  → mirror ausente (comportamento antigo, maioria das edições
+ *     históricas). O chamador (`renderHTML`) deve cair no fallback #3476
+ *     (após USE MELHOR, ou antes das seções secundárias se não houver
+ *     USE MELHOR) — regressão zero pra qualquer edição que nunca reordenou
+ *     nada.
+ *   - `-1`    → mirror presente, mas nenhuma seção secundária vem antes
+ *     dele no md (mesma posição relativa do fallback "sem USE MELHOR",
+ *     #1085: É IA? nunca desaparece, renderiza antes das seções).
+ *   - `i` (≥0) → mirror presente e deve renderizar logo APÓS
+ *     `sections[i]` (índice no array retornado por `parseSections`, MESMO
+ *     critério de filtragem — nome bate `SECTION_HEADER_RE` E tem ≥1 item).
+ *
+ * Reusa o MESMO split por `---` que `parseSections`/`extractEiaMirrorBlock`
+ * usam, pra garantir que a posição do mirror seja calculada sobre os
+ * MESMOS blocos que produziram `sections` (nenhum desvio de parsing entre
+ * os dois lados).
+ */
+export function findEiaAnchorSection(text: string): number | null {
+  const normalized = text.replace(/\r\n/g, "\n");
+  const blocks = normalized.split(/^---$/m).map((s) => s.trim()).filter(Boolean);
+
+  let eiaBlockIdx = -1;
+  for (let i = 0; i < blocks.length; i++) {
+    const firstLine = blocks[i].split("\n")[0]?.trim() ?? "";
+    if (EIA_HEADER_RE.test(firstLine)) {
+      eiaBlockIdx = i;
+      break;
+    }
+  }
+  if (eiaBlockIdx === -1) return null; // sem mirror — fallback pro comportamento antigo
+
+  // Conta quantas seções REAIS (mesmo critério de `parseSections`: header
+  // bate `SECTION_HEADER_RE` e o body tem ≥1 item) aparecem ANTES do bloco
+  // do mirror, na ordem do texto. Esse total, menos 1, é o índice em
+  // `content.sections` da seção que precede o mirror — exatamente o mesmo
+  // formato que `useMelhorIdx` já usa em `newsletter-render-html.ts`
+  // (-1 = nenhuma seção antes).
+  let sectionsBeforeMirror = 0;
+  for (let i = 0; i < eiaBlockIdx; i++) {
+    const block = blocks[i];
+    const sectionMatch = block.match(SECTION_HEADER_RE);
+    if (!sectionMatch) continue;
+    const afterHeader = truncateAtSectionTerminator(
+      block.replace(SECTION_HEADER_RE, "").trim(),
+    );
+    const items = parseListItems(afterHeader);
+    if (items.length > 0) sectionsBeforeMirror++;
+  }
+  return sectionsBeforeMirror - 1;
+}
+
+/**
  * #3476: localiza o box de divulgação do slot 3 — SEMPRE posicionado após o
  * ÚLTIMO destaque (D3 em edições de 3 destaques, D2 em edições de 2), antes
  * de USE MELHOR/É IA?/qualquer outra seção. Diferente de `locateBoxInGap`
@@ -1836,6 +1903,10 @@ export function extractContent(editionDir: string): NewsletterContent {
   // Sections: parsed here (extract-destaques doesn't handle these)
   const sections = parseSections(reviewedText);
 
+  // #4991: posição real do mirror **É IA?** no reviewed.md (null = ausente,
+  // cai no fallback #3476 dentro de renderHTML).
+  const eiaAnchorSectionIdx = findEiaAnchorSection(reviewedText);
+
   // É IA?
   const eia = existsSync(eiaPath)
     ? parseEIA(readFileSync(eiaPath, "utf8"), editionDir)
@@ -1957,6 +2028,7 @@ export function extractContent(editionDir: string): NewsletterContent {
     destaques,
     eia,
     sections,
+    eiaAnchorSectionIdx,
     sorteio,
     encerrar,
     erroIntencional,
