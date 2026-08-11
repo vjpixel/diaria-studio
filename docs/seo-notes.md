@@ -66,7 +66,7 @@ setembro ainda houver 10 (ou mais) nesse estado com `lastCrawlTime` **recente**
 (pós-agosto), aí sim vira investigação — `lastCrawlTime` antigo persistindo é
 esperado, `lastCrawlTime` novo com o mesmo sintoma não seria.
 
-## Fato 3 — `/temas/` ganhou `lastmod`/`Last-Modified`/`ETag` e entrou na checagem de indexação; Bing WMT segue pendente (10/ago/2026, #4909)
+## Fato 3 — `/temas/` ganhou `lastmod`/`Last-Modified`/`ETag`, entrou na checagem de indexação, Bing WMT fechou ao vivo; IndexNow segue com o ping automático de deploy pendente (10-11/ago/2026, #4909)
 
 Achado de auditoria (#4909, Refs #4558): o sitemap do Worker `arquivo`
 (`arquivo.diar.ia.br/sitemap.xml`) não emitia `<lastmod>`, `GET
@@ -74,7 +74,7 @@ Achado de auditoria (#4909, Refs #4558): o sitemap do Worker `arquivo`
 nunca entravam na medição de `seo-index-check.ts` — ficavam fora de toda
 medição de indexação do projeto.
 
-**Implementado nesta sessão (`develop/fix-4909`):**
+**Implementado em `develop/fix-4909` (10/ago/2026):**
 
 - `<lastmod>` por `<url>` no sitemap do `arquivo` (raiz = data mais recente
   entre os hubs; cada hub = seu `contentDate`, o mesmo valor já usado no
@@ -87,28 +87,65 @@ medição de indexação do projeto.
   `.md` do host principal teria sofrido (path antes era fixo, não
   sobrescrevível por `--out`).
 
-**Ainda PENDENTE (item 3 do #4909, bloqueio externo — `external-blocker` +
-`local`):** verificar `arquivo.diar.ia.br` no Bing Webmaster Tools e usar
-"AI Performance" como espinha dorsal da medição first-party de citação —
-única fonte gratuita/first-party que mostra QUAIS URLs foram citadas. O
-editor está criando a conta Bing WMT fora desta sessão; sem ela, os itens
-já implementados aqui produzem sinal que ninguém lê ainda (mesmo raciocínio
-do achado original — "o item 3 destrava a leitura dos outros"). Próxima
-sessão com as credenciais coladas: seguir o item 3 do corpo da #4909.
-**IndexNow (item 2 da issue original) — implementado nesta rodada
-(`overnight/batch-geo-discovery`, 11/ago/2026):** builder puro do payload +
-gate "mudou desde o último deploy" (`scripts/lib/indexnow.ts`), CLI de ping
-(`scripts/ping-indexnow.ts`, POST nunca executado ao vivo nesta sessão —
-guard do dispatch), rota de arquivo de chave no Worker `arquivo` (`GET
-/{INDEXNOW_KEY}.txt`) e step condicional em
+**IndexNow (item 2 da issue original) — implementado em `overnight/batch-geo-discovery`
+(11/ago/2026); metade verificada ao vivo, metade AINDA PENDENTE:** builder puro
+do payload + gate "mudou desde o último deploy" (`scripts/lib/indexnow.ts`),
+CLI de ping (`scripts/ping-indexnow.ts`), rota de arquivo de chave no Worker
+`arquivo` (`GET /{INDEXNOW_KEY}.txt`) e step condicional em
 `.github/workflows/deploy-arquivo.yml` (só pinga quando o diff do push toca
-`workers/arquivo/src/hubs/*.generated.ts`). **Ainda PENDENTE:** o editor
-gerar a chave em indexnow.org/documentation e provisioná-la em dois lugares
-que precisam bater — o secret de repo `INDEXNOW_KEY` (consumido pelo
-workflow) e a Worker var `INDEXNOW_KEY` (consumida pela rota do arquivo de
-chave, `wrangler secret put` ou `[vars]` em `workers/arquivo/wrangler.toml`).
-Sem isso o step do workflow roda e sai 0 sem pingar (gate fechado por chave
-ausente) — nunca quebra o deploy, só não pinga ainda.
+`workers/arquivo/src/hubs/*.generated.ts`).
+
+O editor provisionou `INDEXNOW_KEY` como **secret do Worker** (via `wrangler
+secret put`) — chave de 32 hex auto-declarada, IndexNow não exige emissão por
+terceiro. `GET https://arquivo.diar.ia.br/{chave}.txt` → 200 com o corpo
+esperado (armadilha: o primeiro `curl` logo após o `secret put` deu 404 —
+propagação de var pelo edge, ~1 min; não é bug). O ping **manual** via CLI das
+4 URLs de hub foi testado ao vivo → `api.indexnow.org` respondeu 202 (aceito).
+
+**O que ainda falta, e é a única pendência real desta issue:** o workflow
+(`deploy-arquivo.yml:94`) lê a chave de `${{ secrets.INDEXNOW_KEY }}` — um
+**secret separado do repositório no GitHub Actions**, não o secret do Worker
+acima (são dois lugares distintos que precisam da MESMA string, achado
+original do #4909). Confirmado em 11/ago/2026 via `gh secret list`: esse
+secret **não existe** no repo. Resultado: todo deploy de `arquivo` que tocar
+um `.generated.ts` cai no gate "`INDEXNOW_KEY` ausente" e sai sem pingar,
+silenciosamente (não quebra o deploy — só não pinga). O ping automático a
+cada deploy, que é o item 2 pedido pela issue original, **não está
+funcional ainda** — só o CLI manual foi validado. Ação: `gh secret set
+INDEXNOW_KEY` com o MESMO valor usado no `wrangler secret put` do Worker (o
+valor não está recuperável do Worker, que é write-only — se ele não estiver
+anotado em algum lugar seguro, mais simples gerar uma chave nova e
+reprovisionar as duas pontas juntas).
+
+**Item 3 (Bing Webmaster Tools) — fechado ao vivo (11/ago/2026):** o import do
+GSC não funcionou (a conta só tinha propriedade de domínio `sc-domain:`, que o
+import do BWT não enxerga — descoberto por consulta à API do Search Console).
+Caminho que funcionou: "Adicionar site manualmente" no BWT + verificação por
+DNS (CNAME), com os registros criados via API da Cloudflare (o token do
+projeto escreve DNS na zona — achado que também serve de referência geral,
+não é exclusivo desta issue). Resultado, confirmado via `GetUserSites` da API
+do BWT: `https://arquivo.diar.ia.br/` e `https://diar.ia.br/` ambos
+`IsVerified: true`. Sitemap submetido nos dois hosts via `SubmitFeed`
+(`https://arquivo.diar.ia.br/sitemap.xml`, status `Pending`, 0 erros).
+
+Três armadilhas da API do BWT que valem ficar registradas (quem for
+automatizar isto de novo cai nelas):
+
+1. O método chama-se `SubmitFeed` (campo `feedUrl`) — `SubmitSitemap` não
+   existe e devolve 404 com corpo HTML, não JSON de erro.
+2. **O código de verificação DNS é por site, não por conta** — cada host
+   pediu um token diferente. Um CNAME criado por hipótese errada (código
+   único por conta) nunca serviu pra nada e foi removido; não replicar esse
+   padrão.
+3. `AddSite` com barra final no host devolve `202` mas o site não aparece em
+   `GetUserSites`; sem a barra devolve `200` e aparece. Não tratar `202` como
+   confirmação — sempre conferir com `GetUserSites`.
+
+`BING_WEBMASTER_API_KEY` está no `.env` do editor (gitignored) e documentada
+em `.env.example`. Item 3 (Bing WMT) e item 1 (lastmod/ETag) fechados sem
+pendência. **Item 2 (IndexNow) segue com uma pendência real** — ver acima:
+falta o secret `INDEXNOW_KEY` no GitHub Actions do repo pro ping automático
+de deploy funcionar.
 
 ## Quando adicionar entry aqui
 
