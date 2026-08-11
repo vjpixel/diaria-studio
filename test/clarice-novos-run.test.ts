@@ -16,7 +16,8 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   runNovos,
   parseNovosRunArgs,
@@ -196,6 +197,72 @@ describe("clarice-novos-run (#4941)", () => {
         else process.env.STRIPE_API_KEY = saved;
         rmSync(root, { recursive: true, force: true });
       }
+    });
+  });
+
+  // ── #4983: preflight lia process.env do orquestrador (que nunca lê .env) ──
+  //
+  // Achado ao vivo na 1ª invocação real da task agendada (260811): o
+  // orquestrador (este arquivo) nunca chamava `loadProjectEnv()` — só os
+  // sub-scripts SPAWNADOS carregavam `.env` sozinhos. O preflight do Passo 0
+  // abortava mesmo com as 3 keys presentes em `.env`, porque `process.env`
+  // nunca era populado a partir dele.
+  //
+  // Por que um teste ESTÁTICO (regex sobre o source), e não um teste
+  // comportamental que escreve um `.env` temporário e espera o preflight
+  // passar: `loadProjectEnv()` (scripts/lib/env-loader.ts), chamada aqui SEM
+  // argumento, resolve a raiz do projeto a partir do PRÓPRIO
+  // `import.meta.url` do env-loader — não há como redirecionar o
+  // carregamento pra um `.env` de fixture isolado sem escrever no `.env`
+  // REAL do projeto (mesmo trade-off documentado em
+  // `test/studio-server-env-loading.test.ts` #3867 pro mesmo padrão de
+  // chamada sem override). E mesmo escrevendo lá, a garantia de execução de
+  // módulo ESM (o corpo do módulo roda inteiro na primeira importação,
+  // antes de qualquer teste rodar) faria um teste "comportamental" passar
+  // mesmo que a chamada fosse movida pra DEPOIS do preflight dentro de
+  // `runNovos` — porque o preflight só roda quando `runNovos()` é invocado
+  // por um teste, e a essa altura o módulo (com ou sem a chamada correta)
+  // já terminou de carregar. O invariante real que #4983 pede é sintático:
+  // "a chamada de `loadProjectEnv()` aparece no source ANTES do bloco do
+  // preflight que lê `process.env[...]`" — é essa ORDEM textual que uma
+  // reordenação de imports/código poderia desfazer sem quebrar nenhum teste
+  // comportamental existente (os outros testes desta suíte já setam as 3
+  // keys direto em `process.env`, no `before()` do arquivo — nunca exercitam
+  // o carregamento via `.env`).
+  describe("#4983 — loadProjectEnv() no orquestrador (não só nos sub-scripts)", () => {
+    const SCRIPT_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "clarice-novos-run.ts");
+    const src = readFileSync(SCRIPT_PATH, "utf8");
+
+    it("importa loadProjectEnv de lib/env-loader.ts", () => {
+      assert.match(
+        src,
+        /import\s+\{\s*loadProjectEnv\s*\}\s+from\s+["']\.\/lib\/env-loader\.ts["']/,
+        "scripts/clarice-novos-run.ts deve importar loadProjectEnv de ./lib/env-loader.ts",
+      );
+    });
+
+    it("chama loadProjectEnv() em scope top-level (não dentro de runNovos/função)", () => {
+      assert.match(
+        src,
+        /^loadProjectEnv\(\);?\s*$/m,
+        "scripts/clarice-novos-run.ts deve chamar loadProjectEnv() em scope top-level — guarda contra " +
+          "remoção acidental (ex: mover pra dentro de runNovos, ou apagar achando redundante).",
+      );
+    });
+
+    it("a chamada de loadProjectEnv() aparece ANTES do bloco de preflight que lê process.env[...] — " +
+      "trava a ORDEM, não só o comportamento final", () => {
+      const callMatch = src.match(/^loadProjectEnv\(\);?\s*$/m);
+      const preflightMatch = src.match(/for\s*\(\s*const\s+envVar\s+of\s*\[\s*["']STRIPE_API_KEY["']/);
+      assert.ok(callMatch, "chamada explícita loadProjectEnv() não encontrada");
+      assert.ok(preflightMatch, "bloco de preflight (for envVar of [...]) não encontrado — arquivo mudou de forma inesperada?");
+      assert.ok(
+        (callMatch!.index as number) < (preflightMatch!.index as number),
+        "loadProjectEnv() deve vir ANTES do bloco de preflight no arquivo — uma reordenação de " +
+          "imports/código que mova a chamada pra depois do preflight desfaz o fix do #4983 sem quebrar " +
+          "nenhum teste comportamental (os outros testes desta suíte setam as 3 keys direto em " +
+          "process.env, não via .env).",
+      );
     });
   });
 

@@ -62,12 +62,26 @@ import { resolve } from "node:path";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { detectExecMode } from "./lib/exec-mode.ts";
 import { isClariceNovosEnabled } from "./lib/clarice-novos-enabled.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts";
 import { clariceActivityDepsFromDisk, mostRecentActiveClariceCycle } from "./lib/mensal/monthly-paths.ts";
 import type { ResolveLatestMonthlyCycleResult } from "./lib/mensal/monthly-paths.ts";
 import { datePartsInTz, toAammdd, BRT_TIMEZONE, type DateParts } from "./lib/next-edition-date.ts";
 import { registerReport } from "./studio-ui/studio-reports.ts";
 import type { InvocationSummary } from "./clarice-schedule-group.ts";
 import type { ResolveFolderResult } from "./clarice-resolve-folder.ts";
+
+// #4983 — achado ao vivo na 1ª invocação real da task agendada (260811): o
+// preflight do Passo 0 (abaixo) lê `process.env` diretamente, mas este é o
+// processo ORQUESTRADOR — só os sub-scripts SPAWNADOS (clarice-stripe-delta.ts
+// e ~8 outros) chamavam `loadProjectEnv()` para carregar `.env`. O
+// orquestrador nunca lia `.env` sozinho, então o preflight abortava mesmo com
+// as 3 keys presentes em `.env` — barrando na porta um fluxo que teria
+// funcionado inteiro (cada sub-script já carregava o próprio `.env`
+// corretamente). Chamada em module scope, ANTES de qualquer outro código,
+// para que `process.env` já esteja populado quando `runNovos` checar as keys
+// no Passo 0 — ver `test/clarice-novos-run.test.ts` para o teste que trava
+// essa ORDEM (não só o comportamento final).
+loadProjectEnv();
 
 const ROOT = resolve(new URL("..", import.meta.url).pathname);
 
