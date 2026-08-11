@@ -7,12 +7,11 @@
  * oficial e checa se `diar.ia.br` aparece na resposta. Resultado persiste em
  * `data/geo-citations/history.jsonl` (append-only).
  *
- * **Não executado ao vivo nesta sessão** — sem `ANTHROPIC_API_KEY`/
- * `OPENAI_API_KEY`/`GEMINI_API_KEY` reais no worktree isolado. Mecanismo
- * pronto, testável via injeção de dependência — ver docstring de
- * `scripts/lib/geo-citation-monitor.ts` pro detalhe de cada shape de
- * request/response e o aviso sobre OpenAI/Google não terem sido verificados
- * contra documentação ao vivo (Anthropic foi, via a skill `claude-api`).
+ * **`ANTHROPIC_API_KEY` fica deliberadamente ausente** (decisão do editor,
+ * 11/ago/2026, #4904) — o provider Claude nunca roda de fato neste monitor;
+ * rodadas reais rodam só com `OPENAI_API_KEY`/`GEMINI_API_KEY` (ambas
+ * verificadas ao vivo, incl. `estimatedCostUsd` — ver docstring de
+ * `scripts/lib/geo-citation-monitor.ts` § `GEO_NON_ANTHROPIC_TOKEN_PRICING`).
  *
  * Uso:
  *   npx tsx scripts/geo-citation-monitor.ts [--dry-run] [--out <path>] [--panel geral|hubs]
@@ -24,11 +23,14 @@
  *
  * `--max-monthly-usd` (#4904): teto de gasto mensal, em USD. Antes de
  * disparar a 1ª chamada da rodada, soma `estimatedCostUsd` de todos os
- * registros do MÊS CORRENTE já em `history.jsonl` (só a Anthropic popula
- * esse campo hoje — ver `scripts/lib/pricing.ts`) e aborta (exit 3) se o
- * total já cruzou o teto. **Fail-open explícito quando não há dado de
- * custo** (mês sem nenhum registro com `estimatedCostUsd` — ex: só
- * openai/google rodaram até agora): a rodada segue, mas com um AVISO
+ * registros do MÊS CORRENTE já em `history.jsonl` (Anthropic via
+ * `scripts/lib/pricing.ts`, OpenAI/Google via `GEO_NON_ANTHROPIC_TOKEN_PRICING`
+ * — os 3 providers populam o campo desde #4904 item 4; NA PRÁTICA só
+ * OpenAI/Google produzem valor, porque a Anthropic não roda, ver acima) e
+ * aborta (exit 3) se o total já cruzou o teto. **Fail-open explícito quando
+ * não há dado de custo** (mês sem nenhum registro com `estimatedCostUsd` —
+ * hoje só acontece na 1ª rodada de um mês novo, já que OpenAI/Google rodam
+ * toda semana e sempre produzem o campo): a rodada segue, mas com um AVISO
  * (nunca decide silenciosamente "custo é zero"). Sem `--max-monthly-usd`,
  * nenhum teto é aplicado (comportamento inalterado). Decisão pura e
  * testável em `resolveMonthlyCostGuardOutcome` (não embutida no `main()`).
@@ -222,20 +224,23 @@ export interface MonthToDateCost {
    * dado"). */
   totalUsd: number;
   /** `true` quando >=1 registro do mês tinha `estimatedCostUsd` presente —
-   * `false` quando o mês inteiro não tem NENHUM dado de custo (ex: só
-   * openai/google rodaram até agora, ou o mês ainda não teve nenhuma
-   * rodada). `resolveMonthlyCostGuardOutcome` usa isto pra decidir
-   * fail-open EXPLÍCITO em vez de silenciosamente tratar ausência de dado
-   * como "gastou zero". */
+   * `false` quando o mês inteiro não tem NENHUM dado de custo (hoje isso só
+   * acontece na 1ª rodada de um mês novo: OpenAI/Google produzem o campo
+   * toda vez que rodam, #4904 item 4, e rodam toda semana). `resolveMonthlyCostGuardOutcome`
+   * usa isto pra decidir fail-open EXPLÍCITO em vez de silenciosamente
+   * tratar ausência de dado como "gastou zero". */
   hasCostData: boolean;
 }
 
 /**
  * Pure: soma `estimatedCostUsd` dos registros cujo `date` (YYYY-MM-DD)
  * começa com `monthPrefix` (YYYY-MM). Não distingue provider — o teto de
- * custo é do projeto inteiro (#4904 item 5), e hoje só a Anthropic popula
- * `estimatedCostUsd`, então a soma já é implicitamente "só Anthropic" até
- * que OpenAI/Google ganhem tabela de pricing própria.
+ * custo é do projeto inteiro (#4904 item 5). Os 3 providers têm tabela de
+ * pricing (Anthropic via `scripts/lib/pricing.ts`, OpenAI/Google via
+ * `GEO_NON_ANTHROPIC_TOKEN_PRICING` desde #4904 item 4), mas NA PRÁTICA a
+ * soma é implicitamente "só OpenAI/Google": `ANTHROPIC_API_KEY` fica
+ * deliberadamente ausente (decisão do editor, 11/ago/2026), então o
+ * provider Claude nunca gera registro nem contribui pra esta soma.
  */
 export function sumMonthToDateCostUsd(
   records: readonly Pick<GeoCitationRecord, "date" | "estimatedCostUsd">[],
@@ -289,9 +294,9 @@ export function resolveMonthlyCostGuardOutcome(
       allowed: true,
       reason: "no-cost-data",
       message:
-        `[geo-citation-monitor] AVISO: nenhum registro do mês corrente tem estimatedCostUsd (ex: só openai/google ` +
-        `rodaram até agora, ou é a 1ª rodada do mês) — seguindo mesmo com --max-monthly-usd ${maxMonthlyUsd} ` +
-        "configurado (fail-open explícito: ausência de dado não é o mesmo que custo zero).",
+        `[geo-citation-monitor] AVISO: nenhum registro do mês corrente tem estimatedCostUsd (esperado só na 1ª ` +
+        `rodada de um mês novo — OpenAI/Google produzem o campo toda vez que rodam) — seguindo mesmo com ` +
+        `--max-monthly-usd ${maxMonthlyUsd} configurado (fail-open explícito: ausência de dado não é o mesmo que custo zero).`,
     };
   }
   if (monthToDate.totalUsd >= maxMonthlyUsd) {

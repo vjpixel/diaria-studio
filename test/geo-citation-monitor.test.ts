@@ -264,14 +264,29 @@ describe("buildUsageRecordFields (#4904)", () => {
     assert.ok(fields.estimatedCostUsd! > 0);
   });
 
-  it("openai/google: popula tokens, mas NUNCA estimatedCostUsd (sem tabela de pricing)", () => {
-    const fieldsOpenai = buildUsageRecordFields("openai", { inputTokens: 100, outputTokens: 50 }, "gpt-4.1", "2026-08-11T12:00:00.000Z");
-    assert.equal(fieldsOpenai.inputTokens, 100);
-    assert.equal(fieldsOpenai.outputTokens, 50);
-    assert.equal(fieldsOpenai.estimatedCostUsd, undefined);
+  it("openai/google: popula tokens E estimatedCostUsd via GEO_NON_ANTHROPIC_TOKEN_PRICING (#4904 item 4)", () => {
+    // gpt-4.1: $2.00/1M input, $8.00/1M output (verificado 11/ago/2026,
+    // developers.openai.com/api/docs/pricing).
+    const fieldsOpenai = buildUsageRecordFields("openai", { inputTokens: 1_000_000, outputTokens: 1_000_000 }, "gpt-4.1", "2026-08-11T12:00:00.000Z");
+    assert.equal(fieldsOpenai.inputTokens, 1_000_000);
+    assert.equal(fieldsOpenai.outputTokens, 1_000_000);
+    assert.ok(Math.abs(fieldsOpenai.estimatedCostUsd! - 10.0) < 1e-9); // 2 + 8
 
-    const fieldsGoogle = buildUsageRecordFields("google", { inputTokens: 100, outputTokens: 50 }, "gemini-2.5-flash", "2026-08-11T12:00:00.000Z");
-    assert.equal(fieldsGoogle.estimatedCostUsd, undefined);
+    // gemini-2.5-flash: $0.30/1M input, $2.50/1M output (verificado
+    // 11/ago/2026, ai.google.dev/gemini-api/docs/pricing).
+    const fieldsGoogle = buildUsageRecordFields("google", { inputTokens: 1_000_000, outputTokens: 1_000_000 }, "gemini-2.5-flash", "2026-08-11T12:00:00.000Z");
+    assert.ok(Math.abs(fieldsGoogle.estimatedCostUsd! - 2.8) < 1e-9); // 0.3 + 2.5
+  });
+
+  it("openai/google: model fora da tabela → estimatedCostUsd undefined, nunca preço inventado", () => {
+    const fields = buildUsageRecordFields("openai", { inputTokens: 100, outputTokens: 50 }, "gpt-5-hipotetico", "2026-08-11T12:00:00.000Z");
+    assert.equal(fields.inputTokens, 100); // tokens continuam populados
+    assert.equal(fields.estimatedCostUsd, undefined);
+  });
+
+  it("openai/google: usage sem tokens (só searchCount, hipotético) → custo 0, não undefined (mesma semântica da Anthropic)", () => {
+    const fields = buildUsageRecordFields("google", { searchCount: 1 }, "gemini-2.5-flash", "2026-08-11T12:00:00.000Z");
+    assert.equal(fields.estimatedCostUsd, 0);
   });
 
   it("anthropic sem tokens (usage só com searchCount) → sem estimatedCostUsd (pricing não tem o que estimar)", () => {
