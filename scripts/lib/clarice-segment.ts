@@ -38,6 +38,10 @@ import {
   INTERNAL_EMAILS,
   isTestAccount,
 } from "./cohorts.ts";
+// isJuridicoEmail: mesmo módulo dependency-free/Workers-safe usado por
+// clarice-hold.ts — seguro importar aqui pelo mesmo motivo (ver docstring de
+// clarice-sector.ts: "dá pra importar do worker sem arrastar node:fs/sqlite").
+import { isJuridicoEmail } from "./clarice-sector.ts";
 
 export interface StoreRow {
   email: string;
@@ -796,4 +800,186 @@ export function resolveCohortArg(input: string): string {
       `a forma canônica YYYY-MM (ex: ${COHORT_EPOCH_YEAR}-06) ou um slug da ` +
       `taxonomia (ex: assinantes-ativos, leads-2025h2).`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Waterfall multi-tier (#4979) — composição declarativa de múltiplos
+// predicados com budget COMPARTILHADO, waterfall (cada tier consome o que
+// sobrar do budget na ordem declarada). Generaliza o script one-off
+// `clarice-build-wave-260812-especial.ts` (nunca commitado — decisão do
+// editor #4979, "vira feature — implementar") pra uma composição orientada a
+// DADO (JSON, via `--tiers` em `clarice-build-segment.ts`) em vez de um `.ts`
+// novo por onda custom. Os 6 tiers daquele one-off (jurídico; não-jurídico
+// engajado; 3 cohorts score=0; 1 cohort score=0 ordenado por `created` DESC)
+// são todos expressáveis com os eixos abaixo — nenhum eixo novo foi inventado
+// além do que aquele caso concreto precisou.
+//
+// Reusa os MESMOS guards que os NAMED_GROUPS já passam (dedup por ciclo,
+// recência automática, campanha comprometida, `--hold`) — a composição de
+// tiers entra SOBRE o universo já guardado (mesmo ponto de entrada de
+// `buildSegmentArtifact`, ver `clarice-build-segment.ts`), nunca os
+// substitui ou bypassa. Este módulo só sabe filtrar+ordenar+cortar por
+// budget — puro, sem I/O, mesmo padrão do resto do arquivo.
+// ---------------------------------------------------------------------------
+
+/** Filtro de score dentro de um tier: "positive" = priority_points>0; "zero" = ===0. Omitido = qualquer valor. */
+export type WaterfallScoreFilter = "positive" | "zero";
+
+/** Ordem dentro de um tier. Default (omitido): priority_points DESC. Email ASC sempre desempata. */
+export type WaterfallOrderBy = "priority_points_desc" | "created_desc";
+
+export interface WaterfallTierSpec {
+  /** Rótulo do tier — só para relatório/auditoria (`tier_stats` no summary), não participa do predicado. */
+  name: string;
+  /** true = só jurídico (isJuridicoEmail); false = exclui jurídico; omitido = ambos. */
+  juridico?: boolean;
+  /** Restringe à coluna `cohort` (igualdade exata). Omitido = qualquer cohort. */
+  cohort?: string;
+  /** Filtro por priority_points. Omitido = qualquer valor. */
+  score?: WaterfallScoreFilter;
+  /** Ordem do tier. Default: priority_points_desc. */
+  orderBy?: WaterfallOrderBy;
+}
+
+/** `r` casa com os eixos declarados de `spec`? Eixos omitidos sempre casam (predicado permissivo por omissão). */
+export function matchesWaterfallTier(
+  r: Pick<StoreRow, "email" | "cohort" | "priority_points">,
+  spec: Pick<WaterfallTierSpec, "juridico" | "cohort" | "score">,
+): boolean {
+  if (spec.juridico === true && !isJuridicoEmail(r.email)) return false;
+  if (spec.juridico === false && isJuridicoEmail(r.email)) return false;
+  if (spec.cohort !== undefined && (r.cohort ?? null) !== spec.cohort) return false;
+  if (spec.score === "positive" && !((r.priority_points ?? 0) > 0)) return false;
+  if (spec.score === "zero" && (r.priority_points ?? 0) !== 0) return false;
+  return true;
+}
+
+/**
+ * Ordena um tier já filtrado. `orderBy` default (omitido): priority_points
+ * DESC — mesmo eixo default de `segmentEngajados`/`priorityQueue`. Email ASC
+ * desempata sempre (mesmo padrão determinístico do resto do módulo).
+ */
+export function orderWaterfallTier<T extends Pick<StoreRow, "email" | "priority_points" | "created">>(
+  rows: T[],
+  orderBy?: WaterfallOrderBy,
+): T[] {
+  const sorted = rows.slice();
+  if (orderBy === "created_desc") {
+    sorted.sort((a, b) => {
+      const ta = a.created ? Date.parse(a.created) : -Infinity;
+      const tb = b.created ? Date.parse(b.created) : -Infinity;
+      if (ta !== tb) return tb - ta;
+      return a.email.localeCompare(b.email);
+    });
+    return sorted;
+  }
+  sorted.sort(
+    (a, b) => (b.priority_points ?? 0) - (a.priority_points ?? 0) || a.email.localeCompare(b.email),
+  );
+  return sorted;
+}
+
+export interface WaterfallTierStat {
+  name: string;
+  /** Quantos casaram o predicado do tier, ANTES do corte de budget. */
+  available: number;
+  /** Quantos o waterfall de fato tomou deste tier (≤ available, sujeito ao budget restante). */
+  taken: number;
+}
+
+export interface WaterfallResult<T> {
+  selected: T[];
+  tierStats: WaterfallTierStat[];
+  /** budget pedido (0 = sem teto — cada tier entra inteiro). */
+  budget: number;
+  totalSelected: number;
+}
+
+/**
+ * Waterfall multi-tier: aplica cada `WaterfallTierSpec`, NA ORDEM declarada,
+ * sobre `rows` (já pós-guards) — cada tier consome o que sobrar do `budget`
+ * COMPARTILHADO (mesmo mecanismo do one-off #4979: tier 1 pega o que precisar
+ * primeiro, tier 2 pega do resto, etc., até o budget zerar ou os tiers
+ * acabarem). `budget<=0` = sem teto (cada tier entra inteiro, nenhum corte).
+ * Um contato já selecionado por um tier anterior NUNCA é contado 2× num tier
+ * seguinte (guard defensivo — tiers bem desenhados são disjuntos por
+ * construção via `cohort`/`juridico`/`score`, mas overlap acidental não
+ * deveria inflar a contagem nem duplicar a linha no CSV de saída).
+ */
+export function buildWaterfallSelection<T extends StoreRow>(
+  rows: T[],
+  tiers: WaterfallTierSpec[],
+  budget: number,
+): WaterfallResult<T> {
+  let remaining = budget > 0 ? budget : Infinity;
+  const selected: T[] = [];
+  const seen = new Set<string>();
+  const tierStats: WaterfallTierStat[] = [];
+
+  for (const spec of tiers) {
+    const matched = rows.filter((r) => matchesWaterfallTier(r, spec));
+    const ordered = orderWaterfallTier(matched, spec.orderBy);
+    const take = Number.isFinite(remaining) ? Math.max(0, Math.min(ordered.length, remaining)) : ordered.length;
+    let taken = 0;
+    for (const r of ordered) {
+      if (taken >= take) break;
+      const key = r.email.trim().toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      selected.push(r);
+      taken++;
+    }
+    if (Number.isFinite(remaining)) remaining -= taken;
+    tierStats.push({ name: spec.name, available: ordered.length, taken });
+  }
+
+  return { selected, tierStats, budget, totalSelected: selected.length };
+}
+
+/**
+ * Valida a forma de um plano de tiers cru (JSON parseado, tipo `unknown` —
+ * vem de `--tiers <arquivo.json>` em `clarice-build-segment.ts`) e devolve
+ * `WaterfallTierSpec[]` tipado. Lança com mensagem específica no primeiro
+ * problema encontrado — nunca degrada um tier malformado em silêncio (mesma
+ * disciplina de `parseHoldArg`/`resolveCohortArg` neste módulo).
+ */
+export function validateWaterfallTiers(tiers: unknown): WaterfallTierSpec[] {
+  if (!Array.isArray(tiers) || tiers.length === 0) {
+    throw new Error("plano de tiers vazio ou 'tiers' não é um array — ver formato esperado em --tiers.");
+  }
+  const seenNames = new Set<string>();
+  const out: WaterfallTierSpec[] = [];
+  for (const [i, raw] of tiers.entries()) {
+    if (!raw || typeof raw !== "object") {
+      throw new Error(`tier[${i}] não é um objeto.`);
+    }
+    const t = raw as Record<string, unknown>;
+    if (typeof t.name !== "string" || t.name.trim() === "") {
+      throw new Error(`tier[${i}] sem 'name' (string não-vazia obrigatória).`);
+    }
+    if (seenNames.has(t.name)) {
+      throw new Error(`tier '${t.name}' duplicado — nomes de tier devem ser únicos.`);
+    }
+    seenNames.add(t.name);
+    if (t.juridico !== undefined && typeof t.juridico !== "boolean") {
+      throw new Error(`tier '${t.name}': 'juridico' deve ser boolean.`);
+    }
+    if (t.cohort !== undefined && typeof t.cohort !== "string") {
+      throw new Error(`tier '${t.name}': 'cohort' deve ser string.`);
+    }
+    if (t.score !== undefined && t.score !== "positive" && t.score !== "zero") {
+      throw new Error(`tier '${t.name}': 'score' deve ser "positive" ou "zero".`);
+    }
+    if (t.orderBy !== undefined && t.orderBy !== "priority_points_desc" && t.orderBy !== "created_desc") {
+      throw new Error(`tier '${t.name}': 'orderBy' deve ser "priority_points_desc" ou "created_desc".`);
+    }
+    out.push({
+      name: t.name,
+      juridico: t.juridico as boolean | undefined,
+      cohort: t.cohort as string | undefined,
+      score: t.score as WaterfallScoreFilter | undefined,
+      orderBy: t.orderBy as WaterfallOrderBy | undefined,
+    });
+  }
+  return out;
 }
