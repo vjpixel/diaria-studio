@@ -105,6 +105,59 @@ export function resolveRatio(rawRatio: string | undefined, destaque: string): Ra
   return { ratio, wide, portrait45, master, width, height };
 }
 
+export type WideImageIntegrityAction =
+  | { kind: "skip" }
+  | { kind: "derive-1x1-from-2x1" }
+  | { kind: "regenerate" };
+
+/**
+ * resolveWideImageIntegrity (#4989)
+ *
+ * Extraído de `main()` (mesmo padrão de `resolveRatio`, #4093) pra ser
+ * testável sem tocar disco nem chamar o gerador de imagem real.
+ *
+ * Caso real (#4989, edição 260811): o editor promove D3 → D1 movendo
+ * `04-d3-*.jpg` → `04-d1-*.jpg` no filesystem, FORA do pipeline (não via
+ * `swap-destaque.ts`, que já teria apagado as imagens antigas de propósito
+ * pra forçar Stage 3 a rodar de novo). Se esse `mv` manual mover só um dos
+ * dois arquivos do par wide (ex: `-2x1.jpg` mas não `-1x1.jpg`, ou
+ * vice-versa — um `mv 04-d3-*.jpg 04-d1-*.jpg` com glob parcial, erro de
+ * digitação, ou apenas o editor não sabendo que o par É atômico), o check
+ * de idempotência ANTERIOR (`existsSync(2x1) && existsSync(1x1)`) tratava
+ * "só um dos dois presente" exatamente igual a "nenhum presente": caía pro
+ * fluxo de geração NOVA via IA (Gemini/ComfyUI), que ao final faz
+ * `renameSync(outJpgPath, wideJpgPath)` — e `renameSync` SOBRESCREVE o
+ * destino em silêncio se ele já existir. Resultado: o `04-d1-2x1.jpg`
+ * recém-promovido pelo editor era APAGADO por uma imagem nova gerada do
+ * zero, sem NENHUM erro ou aviso nos logs — exatamente o sintoma relatado
+ * ("os arquivos desaparecem... sem erro nos logs").
+ *
+ * Fix: distinguir os 3 estados possíveis do par.
+ *   - Ambos presentes → `skip` (idempotência, comportamento pré-#4989 preservado).
+ *   - Só o 2x1 presente → `derive-1x1-from-2x1`: o 1x1 é sempre um crop
+ *     determinístico do 2x1 (ver o resto de `main()`), então ele pode ser
+ *     RE-DERIVADO sem chamar o gerador de imagem — zero custo, zero risco
+ *     de sobrescrever o 2x1 promovido (nunca é tocado nesse caminho).
+ *   - Só o 1x1 presente, ou nenhum presente → `regenerate`: não existe forma
+ *     de derivar um 2x1 a partir de um 1x1 (perderia informação), então a
+ *     geração nova é genuinamente necessária. Nesse caminho `wideJpgPath`
+ *     (o 2x1) está confirmadamente AUSENTE, então o `renameSync` posterior
+ *     não sobrescreve nada — o overwrite silencioso só acontecia na lacuna
+ *     do estado "só o 2x1 existe", agora coberta pelo branch anterior.
+ *   - `--force` sempre força `regenerate` (comportamento explícito do editor,
+ *     inalterado).
+ */
+export function resolveWideImageIntegrity(
+  wide2x1Exists: boolean,
+  wide1x1Exists: boolean,
+  force: boolean,
+): WideImageIntegrityAction {
+  if (force) return { kind: "regenerate" };
+  if (wide2x1Exists && wide1x1Exists) return { kind: "skip" };
+  if (wide2x1Exists && !wide1x1Exists) return { kind: "derive-1x1-from-2x1" };
+  return { kind: "regenerate" };
+}
+
 function buildPositivePrompt(editorialText: string): string {
   // Remove markdown formatting (headings, bold, links) and get clean scene description
   const scene = editorialText
@@ -180,18 +233,74 @@ function main() {
       : `${normalizedOutDir}04-${destaque}-1x1.jpg`;
   const filenamePrefix = `diaria_${destaque}_`;
 
-  // Idempotence: pular se imagem final já existe (re-run sem intenção de regenerar).
-  // Wide: exige AMBOS 2x1 e 1x1 — se só 2x1 existe (crash antes do crop), não pula.
+  // Idempotence (#4989): pular se imagem final já existe (re-run sem intenção
+  // de regenerar) — NUNCA regenerar/sobrescrever um arquivo já presente e
+  // correto. Logging explícito de "esperado X, encontrado: sim/não" ANTES de
+  // qualquer decisão, pra tornar auditável (nos logs) o que o script viu no
+  // disco no momento da checagem — sem isso, um overwrite silencioso (como o
+  // bug real do #4989) não deixa nenhum rastro.
   const widePath2x1 = `${normalizedOutDir}04-${destaque}-2x1.jpg`;
   const widePath1x1 = `${normalizedOutDir}04-${destaque}-1x1.jpg`;
-  const checkExistPath = wide
-    ? (existsSync(widePath2x1) && existsSync(widePath1x1) ? widePath2x1 : null)
-    : (existsSync(outJpgPath) ? outJpgPath : null);
-  if (checkExistPath && !force) {
-    console.error(`Imagem ${checkExistPath} já existe — use --force pra regenerar.`);
-    process.stdout.write((wide ? widePath2x1 : outJpgPath) + "\n");
-    if (wide) process.stdout.write(widePath1x1 + "\n");
-    process.exit(0);
+  const cropScript = resolve(ROOT, "scripts", "crop-resize.ts");
+
+  function cropToSquare(sourcePath: string, destPath: string): void {
+    execFileSync(
+      process.execPath,
+      ["--import", "tsx", cropScript, sourcePath, destPath, "--width", "800", "--height", "800"],
+      { stdio: "inherit", cwd: ROOT },
+    );
+  }
+
+  if (wide) {
+    const wide2x1Exists = existsSync(widePath2x1);
+    const wide1x1Exists = existsSync(widePath1x1);
+    console.error(
+      `image-generate: verificando integridade — ${widePath2x1}: ${wide2x1Exists ? "encontrado" : "ausente"}`,
+    );
+    console.error(
+      `image-generate: verificando integridade — ${widePath1x1}: ${wide1x1Exists ? "encontrado" : "ausente"}`,
+    );
+
+    const action = resolveWideImageIntegrity(wide2x1Exists, wide1x1Exists, force);
+
+    if (action.kind === "skip") {
+      console.error(`Imagem ${widePath2x1} já existe — use --force pra regenerar.`);
+      process.stdout.write(widePath2x1 + "\n");
+      process.stdout.write(widePath1x1 + "\n");
+      process.exit(0);
+    }
+
+    if (action.kind === "derive-1x1-from-2x1") {
+      console.error(
+        `image-generate: ${widePath2x1} já existe mas ${widePath1x1} está ausente — ` +
+          `derivando via crop a partir do 2x1 existente, SEM chamar o gerador de imagem ` +
+          `(#4989 — nunca sobrescrever um arquivo já promovido/presente).`,
+      );
+      try {
+        cropToSquare(widePath2x1, widePath1x1);
+      } catch (e: unknown) {
+        const code = (e as { status?: number }).status ?? 1;
+        console.error(`crop-resize falhou com código ${code}`);
+        process.exit(code);
+      }
+      console.error(`${destaque} square derivado: ${widePath1x1} (800×800)`);
+      process.stdout.write(widePath2x1 + "\n");
+      process.stdout.write(widePath1x1 + "\n");
+      process.exit(0);
+    }
+    // action.kind === "regenerate": widePath2x1 está confirmadamente ausente
+    // neste ponto (ou --force pedido explicitamente) — segue pro fluxo normal
+    // abaixo, sem risco de sobrescrever um 2x1 promovido em silêncio.
+  } else {
+    const outExists = existsSync(outJpgPath);
+    console.error(
+      `image-generate: verificando integridade — ${outJpgPath}: ${outExists ? "encontrado" : "ausente"}`,
+    );
+    if (outExists && !force) {
+      console.error(`Imagem ${outJpgPath} já existe — use --force pra regenerar.`);
+      process.stdout.write(outJpgPath + "\n");
+      process.exit(0);
+    }
   }
 
   writeFileSync(sdPromptPath, JSON.stringify(sdPrompt, null, 2), "utf8");
@@ -227,23 +336,27 @@ function main() {
 
   // Wide: salvar 1600×800 como 04-d{N}-2x1.jpg, crop centro 800×800 como 04-d{N}-1x1.jpg
   if (wide) {
-    const wideJpgPath = `${normalizedOutDir}04-${destaque}-2x1.jpg`;
-    const squareJpgPath = `${normalizedOutDir}04-${destaque}-1x1.jpg`;
-    const cropScript = resolve(ROOT, "scripts", "crop-resize.ts");
+    const wideJpgPath = widePath2x1;
+    const squareJpgPath = widePath1x1;
+
+    // #4989: essa rename SÓ é alcançada quando resolveWideImageIntegrity()
+    // decidiu "regenerate" — ou seja, widePath2x1 estava confirmadamente
+    // ausente (ou --force pedido explicitamente). Log explícito aqui deixa
+    // rastreável, em qualquer investigação futura, que o script SABIA se ia
+    // sobrescrever um arquivo pré-existente ou não — nunca mais um overwrite
+    // silencioso sem nenhuma linha no log apontando pra ele.
+    const willOverwrite = existsSync(wideJpgPath);
+    console.error(
+      `image-generate: gravando ${wideJpgPath} — ${willOverwrite ? "SOBRESCREVENDO arquivo existente (--force)" : "arquivo novo"}.`,
+    );
 
     // Renomear o output original (1600×800) para -2x1
     renameSync(outJpgPath, wideJpgPath);
     console.error(`${destaque} wide: ${wideJpgPath} (1600×800)`);
 
     // Crop centro para 1:1 (800×800).
-    // Usa process.execPath + --import tsx (em vez de npx + shell:true) pra
-    // preservar args com espaços e evitar DEP0190 — mesmo pattern do #213.
     try {
-      execFileSync(
-        process.execPath,
-        ["--import", "tsx", cropScript, wideJpgPath, squareJpgPath, "--width", "800", "--height", "800"],
-        { stdio: "inherit", cwd: ROOT }
-      );
+      cropToSquare(wideJpgPath, squareJpgPath);
       console.error(`${destaque} square: ${squareJpgPath} (800×800)`);
     } catch (e: unknown) {
       const code = (e as { status?: number }).status ?? 1;

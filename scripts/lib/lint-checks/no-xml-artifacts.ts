@@ -97,3 +97,77 @@ export function checkNoXmlArtifacts(md: string): NoXmlArtifactsReport {
   if (!found) return { ok: true, errors: [] };
   return { ok: false, errors: [{ artifact: found.artifact }] };
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// #4987: variante MEIO-DE-DOCUMENTO — tag de tool-call crua ENTRE seções,
+// não só ancorada no fim.
+//
+// Caso real (#4987, edição 260811): `03-social.md` apareceu com tag(s) de
+// fechamento de tool-call cruas entre o fim do texto de um post e o header
+// `## dN` do próximo — `detectTrailingToolCallArtifact` acima não pega esse
+// caso porque está ancorado em `$` (fim absoluto do documento). Além disso,
+// nenhum caller do merge (`merge-social-md.ts`) rodava QUALQUER checagem de
+// artefato de tool-call antes de escrever o arquivo final — `no-xml-artifacts`
+// só existia como lint do Stage 4 (gate humano), depois do arquivo já
+// publicável ter sido gravado em disco.
+//
+// Escopo continua deliberadamente estreito (mesma cautela do #4077 original,
+// ver `test/lint-social-md-no-xml-artifacts.test.ts` — "NÃO acusa quando o
+// texto menciona <content>/</content> no meio de uma frase"): só dispara
+// quando uma tag ocupa uma LINHA INTEIRA sozinha (depois de trim) — o padrão
+// estrutural real do vazamento (uma tag de tool-call nunca aparece embutida
+// no meio de uma frase de prosa editorial). Cobre tanto tags de fechamento
+// quanto de abertura (`<invoke ...>`, `<function_calls>`, `<parameter ...>`)
+// porque o vazamento observado inclui o bloco INTEIRO do tool-call, não só
+// o fechamento — e também a forma de 1 linha só de `<parameter name="...">
+// valor</parameter>`, que é o formato mais comum de um parâmetro simples.
+// `parameter` entra na lista aqui (não em `TOOL_CALL_CLOSING_TAGS`, que é o
+// contrato já travado por `test/lint-*-no-xml-artifacts.test.ts` para o
+// caso trailing) porque um `<invoke>` vazado quase sempre carrega
+// `<parameter>` filhos — mesma classe de risco, sem tocar o comportamento
+// já testado do detector trailing.
+// ─────────────────────────────────────────────────────────────────────────
+
+const STANDALONE_TAG_NAMES = [...TOOL_CALL_CLOSING_TAGS, "parameter"] as const;
+
+const STANDALONE_CLOSING_RE = new RegExp(
+  `^</(?:${STANDALONE_TAG_NAMES.join("|")})>$`,
+  "i",
+);
+const STANDALONE_OPENING_RE = new RegExp(
+  `^<(?:invoke|function_calls|parameter)(?:\\s[^>]*)?>$`,
+  "i",
+);
+// Forma de 1 linha só: `<parameter name="x">valor</parameter>` — comum para
+// parâmetros de string simples (sem quebra de linha no valor).
+const STANDALONE_PARAMETER_INLINE_RE = /^<parameter\s+name="[^"]*">.*<\/parameter>$/i;
+
+export interface ToolCallArtifactMatch {
+  /** Número da linha (1-based) onde o artefato foi encontrado. */
+  line: number;
+  /** Conteúdo da linha, já trimada. */
+  text: string;
+}
+
+/**
+ * Varre TODO o documento (não só o fim) em busca de linhas que sejam,
+ * sozinhas, uma tag crua de tool-call — abertura, fechamento, ou um
+ * `<parameter>` de 1 linha só. Retorna todos os matches (não só o primeiro)
+ * pra dar visibilidade completa de onde a corrupção está no documento.
+ */
+export function detectToolCallArtifactsAnywhere(content: string): ToolCallArtifactMatch[] {
+  const lines = content.split(/\r?\n/);
+  const matches: ToolCallArtifactMatch[] = [];
+  lines.forEach((rawLine, idx) => {
+    const line = rawLine.trim();
+    if (!line) return;
+    if (
+      STANDALONE_CLOSING_RE.test(line) ||
+      STANDALONE_OPENING_RE.test(line) ||
+      STANDALONE_PARAMETER_INLINE_RE.test(line)
+    ) {
+      matches.push({ line: idx + 1, text: line });
+    }
+  });
+  return matches;
+}

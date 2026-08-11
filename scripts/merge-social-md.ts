@@ -56,6 +56,7 @@
  * Exit codes:
  *   0 — merge OK + tmps deletados
  *   1 — tmp obrigatório (social-writer) ausente/vazio, comments mal-formados,
+ *       sintaxe de tool-call crua detectada no conteúdo mesclado (#4987),
  *       ou falha de FS
  */
 
@@ -70,6 +71,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hashFromApprovedFile } from "./lib/social-source-hash.ts";
 import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
+import { detectToolCallArtifactsAnywhere } from "./lib/lint-checks/no-xml-artifacts.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -490,6 +492,31 @@ function main(): void {
   const curtoSection = curtoStripped !== null ? `\n\n# Curto\n\n${curtoStripped}` : "";
   const merged = `${socialHeader}\n${socialStripped}${curtoSection}\n`;
   const outPath = resolve(editionDir, "03-social.md");
+
+  // #4987: validação defensiva — tag(s) de tool-call crua vazando ENTRE
+  // seções (não só no fim do documento, caso já coberto pelo lint
+  // GATE-BLOCKING de Stage 4 via checkNoXmlArtifacts). Sem checagem alguma
+  // aqui, o arquivo publicável saía do merge já corrompido, e a única rede
+  // de segurança era o lint do Stage 4 rodando DEPOIS — este guard falha
+  // ALTO no próprio merge, antes de qualquer escrita, em vez de deixar
+  // passar silenciosamente pro 03-social.md final (edição 260811: tags de
+  // fechamento cruas apareceram entre o fim de um post e o header da
+  // próxima seção).
+  const toolCallArtifacts = detectToolCallArtifactsAnywhere(merged);
+  if (toolCallArtifacts.length > 0) {
+    console.error(
+      `merge-social-md: FALHOU — sintaxe de tool-call crua detectada no conteúdo mesclado (#4987):`,
+    );
+    for (const artifact of toolCallArtifacts) {
+      console.error(`  linha ${artifact.line}: ${artifact.text}`);
+    }
+    console.error(
+      `\nO agent social-writer (ou social-curto) provavelmente vazou sintaxe de tool-call no ` +
+        `próprio texto gerado. 03-social.md NÃO foi gravado — corrija o(s) tmp file(s) em ` +
+        `_internal/ e re-rode o merge. Re-rodar: /diaria-2-escrita {AAMMDD} social`,
+    );
+    process.exit(1);
+  }
 
   try {
     writeFileSync(outPath, merged, "utf8");
