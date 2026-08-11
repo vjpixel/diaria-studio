@@ -347,11 +347,12 @@ describe("#4530 — canal Brevo Pending (reativar/evaluate) entra no inventário
 });
 
 describe("#4536/#4537/#4553 — pills do PARA ENCERRAR + resíduos de UTM/fixture", () => {
-  it("os 5 novos ids estão presentes em UTM_EMITTERS", () => {
+  it("os 6 ids estão presentes em UTM_EMITTERS (5 originais + equipamentos-rodape, #4968)", () => {
     const ids = shared.UTM_EMITTERS.map((e) => e.id);
     for (const id of [
       "cursos-rodape",
       "livros-rodape",
+      "equipamentos-rodape",
       "arquivo-rodape",
       "livros-footer-nav",
       "instagram-weekly-archive",
@@ -360,19 +361,33 @@ describe("#4536/#4537/#4553 — pills do PARA ENCERRAR + resíduos de UTM/fixtur
     }
   });
 
-  it("cursos-rodape/livros-rodape/arquivo-rodape: mesmo source/medium ('newsletter'/'email'), campaign único por pill (#4553)", () => {
+  it("cursos-rodape/livros-rodape/equipamentos-rodape/arquivo-rodape: mesmo source/medium ('newsletter'/'email'), campaign único por pill (#4553/#4968)", () => {
     assert.equal(shared.CURSOS_RODAPE_UTM.source, "newsletter");
     assert.equal(shared.LIVROS_RODAPE_UTM.source, "newsletter");
+    assert.equal(shared.EQUIPAMENTOS_RODAPE_UTM.source, "newsletter");
     assert.equal(shared.ARQUIVO_RODAPE_UTM.source, "newsletter");
     assert.equal(shared.CURSOS_RODAPE_UTM.medium, "email");
     assert.equal(shared.LIVROS_RODAPE_UTM.medium, "email");
+    assert.equal(shared.EQUIPAMENTOS_RODAPE_UTM.medium, "email");
     assert.equal(shared.ARQUIVO_RODAPE_UTM.medium, "email");
     const campaigns = [
       shared.CURSOS_RODAPE_UTM.campaign,
       shared.LIVROS_RODAPE_UTM.campaign,
+      shared.EQUIPAMENTOS_RODAPE_UTM.campaign,
       shared.ARQUIVO_RODAPE_UTM.campaign,
     ];
     assert.equal(new Set(campaigns).size, campaigns.length, "campaign deveria ser único por pill");
+  });
+
+  it("#4968: EQUIPAMENTOS_RODAPE_UTM.campaign === 'equipamentos-rodape' — não renomeia os campaigns existentes das outras pills", () => {
+    assert.equal(shared.EQUIPAMENTOS_RODAPE_UTM.campaign, "equipamentos-rodape");
+    // Restrição explícita do #4968: cursos-rodape/livros-rodape/arquivo-rodape/
+    // jogar-rodape continuam com o MESMO utm_campaign de sempre — só o texto
+    // visível das pills mudou, não a série histórica de cliques.
+    assert.equal(shared.CURSOS_RODAPE_UTM.campaign, "cursos-rodape");
+    assert.equal(shared.LIVROS_RODAPE_UTM.campaign, "livros-rodape");
+    assert.equal(shared.ARQUIVO_RODAPE_UTM.campaign, "arquivo-rodape");
+    assert.equal(shared.JOGAR_RODAPE_UTM.campaign, "jogar-rodape");
   });
 
   it("livros-footer-nav: mesmo triplo (source='livros', medium='footer-nav') de cursos-footer-nav/arquivo-footer-nav", () => {

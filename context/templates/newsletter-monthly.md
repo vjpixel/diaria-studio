@@ -121,7 +121,7 @@ da diária vieram pela mensal; desde 260723 o diar.ia.br está no Cloudflare e
 o redirect preserva a query string, então diar.ia.br voltou a ser o href
 canônico — ver #2457 e #2613).
 
-Seguido de, nesta ordem (#3219/#4413/#4411 — cada peça tem fonte única
+Seguido de, nesta ordem (#3219/#4413/#4411/#4968 — cada peça tem fonte única
 compartilhada com o diário em `scripts/lib/shared/encerramento-snippet.ts`,
 nunca reescrever de memória):
 
@@ -129,24 +129,38 @@ nunca reescrever de memória):
    apoio à curadoria via Apoia.se (recompensas em negrito) e créditos das
    ferramentas usadas na produção (Claude Code, Gemini, Wispr Flow, MCP
    Clarice, Beehiiv).
-2. A lista de pílulas de curadoria (`CURADORIA_PILLS`) — SEM label manual
-   "Acesse nossas curadorias:" antes dela, só a lista, sempre nesta ordem e
-   com estes labels exatos, EXATAMENTE como abaixo (#4411/#4536/#4553, decisão
-   do editor: labels curtos, mesma ordem do diário; o UTM embutido nas URLs de
-   Cursos/Livros/Arquivo é sobrescrito pelo próprio render mensal —
-   `normalizeKnownUrl`/`withClariceUtm` — não reescrever os parâmetros):
+2. A lista de pílulas de curadoria (`CURADORIA_PILLS`), EM DOIS GRUPOS
+   ROTULADOS (#4968) — cada rótulo (`Curadorias:`/`Da diar.ia.br:`) já vem
+   EMBUTIDO no bloco abaixo, na linha imediatamente anterior à sua lista;
+   nunca reescrever/omitir os rótulos nem inserir um diferente. Sempre nesta
+   ordem e com estes labels exatos, EXATAMENTE como abaixo (#4411/#4536/
+   #4553/#4968, decisão do editor: labels curtos, mesma ordem do diário; o
+   UTM embutido nas URLs de Cursos/Livros/Equipamentos/Edições anteriores é
+   sobrescrito pelo próprio render mensal — `normalizeKnownUrl`/
+   `withClariceUtm` — não reescrever os parâmetros):
 
+Curadorias:
 - [Cursos](https://cursos.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=cursos-rodape)
 - [Livros](https://livros.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=livros-rodape)
-- [Equipamentos](https://www.amazon.com.br/shop/vjpixel)
-- [Arquivo](https://arquivo.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape)
-- [É IA?](https://eia.diar.ia.br/jogar?utm_source=newsletter&utm_medium=email&utm_campaign=jogar-rodape)
+- [Equipamentos](https://www.amazon.com.br/shop/vjpixel?utm_source=newsletter&utm_medium=email&utm_campaign=equipamentos-rodape)
 
-   `monthly-render.ts` gera o label sozinho ao detectar uma lista de links
-   nessa posição (mesmo padrão do diário, `FIXED_BLOCKS.para_encerrar_curadorias`
-   em stitch-newsletter.ts — os dois lados agora leem a mesma constante
-   `CURADORIA_PILLS`) — um label escrito à mão duplica o texto no render
-   (achado ao vivo, ciclo 2607-08: "Acesse nossas curadorias:" saiu 2×).
+Da diar.ia.br:
+- [Edições anteriores](https://arquivo.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape)
+- [Jogar É IA?](https://eia.diar.ia.br/jogar?utm_source=newsletter&utm_medium=email&utm_campaign=jogar-rodape)
+
+   `monthly-render.ts` reconhece o parágrafo curto terminado em `:`
+   imediatamente antes de cada lista como o rótulo DAQUELA lista (consumido,
+   não renderizado como corpo) — mesmo padrão do diário,
+   `FIXED_BLOCKS.para_encerrar_curadorias` em stitch-newsletter.ts, os dois
+   lados leem a mesma constante `CURADORIA_PILLS`. Uma lista SEM rótulo
+   embutido cai no fallback genérico "Acesse nossas curadorias:" — não é o
+   caso aqui, os dois rótulos acima já vêm no bloco. Antes do #4968, o guard
+   contra label duplicado (#3181/#3183) descartava QUALQUER linha não-link
+   antes de uma lista de pills — inclusive um rótulo legítimo (achado ao
+   vivo, ciclo 2607-08: escrever "Acesse nossas curadorias:" à mão duplicava
+   o texto porque o render já emitia o seu próprio). Agora o guard só
+   descarta linhas que NÃO terminam em `:` — um rótulo bem formado nunca é
+   removido.
 3. O convite social (`SOCIAL_INVITE`) — texto FIXO, idêntico ao diário,
    nunca parafrasear, EXATAMENTE como abaixo, numa linha só (#4413, decisão
    do editor 260801 — substitui o "convite pra interagir em

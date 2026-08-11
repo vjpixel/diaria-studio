@@ -83,9 +83,10 @@ customizar.)
 ## 3. Chamada no rodapé da edição
 
 Já implementada como pill (não é um rascunho de texto solto — o label é
-fixo, "É IA?", dentro da lista `CURADORIA_PILLS` em
-`scripts/lib/shared/encerramento-snippet.ts`, ao lado de Cursos/Livros/
-Equipamentos/Arquivo). Alcance: ~548 leitores/dia (mesma base usada pra
+fixo, "Jogar É IA?" desde o #4968 (era "É IA?"), dentro da lista
+`CURADORIA_PILLS` em `scripts/lib/shared/encerramento-snippet.ts`, no grupo
+"Da diar.ia.br:", separado do grupo "Curadorias:" que reúne Cursos/Livros/
+Equipamentos). Alcance: ~548 leitores/dia (mesma base usada pra
 medir as outras pills, #4553). Não precisa de rascunho de copy adicional —
 citado aqui só pra fechar o inventário das 3 superfícies acordadas no
 briefing overnight.

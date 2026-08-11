@@ -41,9 +41,10 @@ import {
 import {
   CURSOS_RODAPE_UTM,
   LIVROS_RODAPE_UTM,
+  EQUIPAMENTOS_RODAPE_UTM,
   ARQUIVO_RODAPE_UTM,
   JOGAR_RODAPE_UTM,
-} from "./utm-registry.ts"; // #4536/#4553 — UTM da direção newsletter → curadoria; JOGAR_RODAPE_UTM #4550
+} from "./utm-registry.ts"; // #4536/#4553 — UTM da direção newsletter → curadoria; JOGAR_RODAPE_UTM #4550; EQUIPAMENTOS_RODAPE_UTM #4968
 
 /**
  * #4413: convite social FIXO — texto único, idêntico em diário e mensal,
@@ -82,35 +83,58 @@ function withRodapeUtm(
 }
 
 /**
- * #4411: lista de pílulas "Acesse nossas curadorias" — navegação estrutural
- * FIXA, idêntica em diário e mensal (labels curtos: Cursos/Livros/
- * Equipamentos/Arquivo). SEM label manual — o render de cada formato
- * (`newsletter-render-html.ts`/`monthly-render.ts`) gera o label "Acesse
- * nossas curadorias:" sozinho ao detectar esta lista na posição certa.
+ * #4411: lista de pílulas de navegação estrutural FIXA do PARA ENCERRAR,
+ * idêntica em diário e mensal.
  *
- * #4536 (pill nova "Arquivo" — antes desta issue `arquivo.diar.ia.br` não
- * tinha NENHUM link de entrada a partir da newsletter) + #4553 (UTM nas 3
+ * #4968 (260811, decisão do editor): reorganizada em DOIS GRUPOS ROTULADOS —
+ * o label único "Acesse nossas curadorias:" (gerado hardcoded pelo render)
+ * mentia sobre parte da lista: descrevia Cursos/Livros mas não o Arquivo
+ * (conteúdo próprio) nem o É IA? (jogo). Cada grupo agora carrega o próprio
+ * rótulo EMBUTIDO NO TEXTO — um parágrafo curto terminado em `:`
+ * imediatamente antes do respectivo `- [...]`. O render de cada formato
+ * (`renderEncerrar` em `newsletter-render-html.ts`, `renderEncerramento` em
+ * `monthly-render.ts`) reconhece esse parágrafo como o label DAQUELA lista
+ * (consumido, não renderizado como corpo) — não é mais hardcoded, e suporta
+ * N listas rotuladas na mesma seção. Uma `- [...]` SEM parágrafo-label
+ * imediatamente anterior cai no fallback "Acesse nossas curadorias:" (mesmo
+ * texto de antes — compatibilidade com edições já stitchadas/overrides de
+ * teste que ainda não têm o parágrafo-label).
+ *
+ * Também #4968: as 3 pills também tiveram nome revisto — "Equipamentos"
+ * mantido (decisão do editor: o grupo "Curadorias:" já dá o contexto que
+ * faltava no rótulo solto), "Arquivo" → "Edições anteriores" (diz
+ * literalmente o que tem lá) e "É IA?" → "Jogar É IA?" (o verbo separa da
+ * seção homônima da própria edição e sinaliza que é jogo).
+ *
+ * #4536 (pill original "Arquivo" — antes dessa issue `arquivo.diar.ia.br`
+ * não tinha NENHUM link de entrada a partir da newsletter) + #4553 (UTM nas
  * pills que apontam pra domínio próprio — Cursos/Livros/Arquivo — na direção
  * newsletter → curadoria; convenção `source: newsletter, medium: email,
- * campaign` único por pill, ver `utm-registry.ts`). "Equipamentos" fica de
- * fora do UTM — link de afiliado direto à Amazon, fora do escopo do #4553.
+ * campaign` único por pill, ver `utm-registry.ts`). #4968 estende esse UTM
+ * pra "Equipamentos" também (`EQUIPAMENTOS_RODAPE_UTM`) — antes ficava de
+ * fora por estar fora do escopo original do #4553, não por impossibilidade
+ * técnica; ver docstring de `EQUIPAMENTOS_RODAPE_UTM`/`CURSOS_RODAPE_UTM`
+ * em `utm-registry.ts` pro que isso compra de verdade (desambiguação entre
+ * colocações do mesmo storefront, não analytics do lado da Amazon).
  *
- * #4550 (pill nova "É IA?", 260804): distribuição própria do jogo — decisão
- * do editor de dar tratamento de produto ao "É IA?" (motor de divulgação
- * inteiro construído, ~8 votos/edição, "ninguém chega na porta"). Esta é 1
- * das 3 superfícies acordadas no briefing overnight do #4550 (rodapé +
- * post/story dedicado + link em bio — ver `jogar-promo-urls.ts` pras outras
- * 2). "Ao lado das pills de curadoria" na issue original vira, na prática,
- * a MESMA lista: `renderEncerrar` (`newsletter-render-html.ts`) só reconhece
- * 1 bloco de lista por seção, sempre rotulado "Acesse nossas curadorias:" —
- * uma 2ª lista separada duplicaria esse rótulo. Replicar o padrão como pill
- * nova dá UTM + render consistente sem precisar de um 2º mecanismo de lista.
+ * #4550 (pill original "É IA?", 260804): distribuição própria do jogo —
+ * decisão do editor de dar tratamento de produto ao "É IA?" (motor de
+ * divulgação inteiro construído, ~8 votos/edição, "ninguém chega na porta").
+ * Esta é 1 das 3 superfícies acordadas no briefing overnight do #4550
+ * (rodapé + post/story dedicado + link em bio — ver `jogar-promo-urls.ts`
+ * pras outras 2). Desde #4968, mora no grupo "Da diar.ia.br:" (conteúdo/
+ * produto da própria newsletter, não curadoria de terceiro) — separado das
+ * pills de curadoria (Cursos/Livros/Equipamentos), que ficam no grupo
+ * "Curadorias:".
  */
-export const CURADORIA_PILLS = `- [Cursos](${withRodapeUtm(DIARIA_CURSOS_URL, CURSOS_RODAPE_UTM)})
+export const CURADORIA_PILLS = `Curadorias:
+- [Cursos](${withRodapeUtm(DIARIA_CURSOS_URL, CURSOS_RODAPE_UTM)})
 - [Livros](${withRodapeUtm(DIARIA_LIVROS_URL, LIVROS_RODAPE_UTM)})
-- [Equipamentos](${DIARIA_AMAZON_LOJA_URL})
-- [Arquivo](${withRodapeUtm(DIARIA_ARQUIVO_URL, ARQUIVO_RODAPE_UTM)})
-- [É IA?](${withRodapeUtm(`${DIARIA_EIA_URL}/jogar`, JOGAR_RODAPE_UTM)})`;
+- [Equipamentos](${withRodapeUtm(DIARIA_AMAZON_LOJA_URL, EQUIPAMENTOS_RODAPE_UTM)})
+
+Da diar.ia.br:
+- [Edições anteriores](${withRodapeUtm(DIARIA_ARQUIVO_URL, ARQUIVO_RODAPE_UTM)})
+- [Jogar É IA?](${withRodapeUtm(`${DIARIA_EIA_URL}/jogar`, JOGAR_RODAPE_UTM)})`;
 
 /**
  * Cláusula de abertura do parágrafo de apoio pro DIÁRIO — vazia, porque o

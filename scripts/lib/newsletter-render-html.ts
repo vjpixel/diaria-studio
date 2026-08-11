@@ -1699,8 +1699,8 @@ export function renderEncerrar(text: string): string {
   const mainBlocks = isAgoraCta ? blocks.slice(0, -1) : blocks;
   const ctaBlock = isAgoraCta ? lastBlock : null;
 
-  // DS: lista `- [label](url)` vira PILLS (borda bege, radius 999px) precedidas
-  // do rótulo "Acesse:". Parágrafos = sans ink com links underline teal.
+  // DS: lista `- [label](url)` vira PILLS (borda bege, radius 999px).
+  // Parágrafos = sans ink com links underline teal.
   // #2138: font-size 12→16px (CTA no tamanho do corpo, alinhado c/ #2079).
   // #2139: centralizado via align="center" + margin:0 auto (Outlook word-renderer
   // ignora align= em <table> — ambos os atributos garantem centralização cross-client).
@@ -1708,7 +1708,31 @@ export function renderEncerrar(text: string): string {
   // Layout: pills ficam dentro de um único <td> como inline-block — o navegador/cliente
   // faz wrap natural quando a linha encher. Não usamos nowrap, não forçamos uma linha só.
   const pillStyle = `display:inline-block;border:1px solid ${RULE};border-radius:999px;padding:10px 14px;margin:0 6px 8px 0;font-family:${FONT_LABEL};font-size:16px;font-weight:bold;color:${TEXT_COLOR};text-decoration:none;`;
-  const renderBlock = (b: { type: "p" | "ul"; content: string[] }) => {
+
+  // #4968: cada `ul` carrega o PRÓPRIO rótulo — o parágrafo curto
+  // imediatamente anterior a ele, terminado em `:`, vira o label DAQUELA
+  // lista (consumido, não renderizado como corpo). Sem parágrafo-label
+  // anterior (ou o anterior não termina em `:`), cai no fallback histórico
+  // "Acesse nossas curadorias:" — preserva compatibilidade com edições já
+  // stitchadas e overrides de teste que ainda não têm o parágrafo-label.
+  // Suporta N listas rotuladas na mesma seção (antes só reconhecia 1 bloco
+  // de lista, sempre com o mesmo rótulo hardcoded).
+  const DEFAULT_CURADORIA_LABEL = "Acesse nossas curadorias:";
+  const ulLabels = new Map<number, string>();
+  const consumedLabelIdx = new Set<number>();
+  mainBlocks.forEach((b, idx) => {
+    if (b.type !== "ul") return;
+    const prev = mainBlocks[idx - 1];
+    const prevText = prev?.type === "p" ? prev.content.join(" ").trim() : "";
+    if (prev?.type === "p" && prevText.endsWith(":")) {
+      ulLabels.set(idx, prevText);
+      consumedLabelIdx.add(idx - 1);
+    } else {
+      ulLabels.set(idx, DEFAULT_CURADORIA_LABEL);
+    }
+  });
+
+  const renderBlock = (b: { type: "p" | "ul"; content: string[] }, idx: number) => {
     if (b.type === "ul") {
       const pills = b.content.map((c) => {
         const m = c.match(/^\[([^\]]+)\]\((.+)\)$/);
@@ -1719,13 +1743,16 @@ export function renderEncerrar(text: string): string {
           : `<span style="${pillStyle}">${mdInlineToHtml(c)}</span>`;
       }).join("");
       // Pills numa única <td> permitem wrap natural — não forçamos nowrap.
-      return `<p style="margin:22px 0 8px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${TEXT_COLOR};">Acesse nossas curadorias:</p>
+      return `<p style="margin:22px 0 8px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${TEXT_COLOR};">${esc(ulLabels.get(idx)!)}</p>
   <table role="presentation" align="center" cellpadding="0" cellspacing="0" style="margin:0 auto;"><tr><td>${pills}</td></tr></table>`;
     }
     return bodyP("22px 0 0", mdInlineToHtml(b.content.join(" ")));
   };
 
-  const html = mainBlocks.map(renderBlock).join("\n  ");
+  const html = mainBlocks
+    .map((b, idx) => (consumedLabelIdx.has(idx) ? null : renderBlock(b, idx)))
+    .filter((s): s is string => s !== null)
+    .join("\n  ");
 
   // CTA final (convite social, `SOCIAL_INVITE`) = box "painel" do DS.
   const ctaBox = ctaBlock

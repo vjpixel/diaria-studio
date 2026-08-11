@@ -291,9 +291,13 @@ export const CURSOS_FOOTER_NAV_UTM = {
  * `ARQUIVO_FOOTER_NAV_UTM` acima (curadoria → `diar.ia.br`). Antes desta
  * fatia as 3 pills saíam cruas, sem UTM — impossível medir quantos cliques
  * cada uma gera a partir do e-mail diário (~548 leitores/dia, #4553). Mesmo
- * `source`/`medium` nas 3 (o leitor clicou dentro do e-mail da newsletter),
- * `campaign` único por pill. A pill "Equipamentos" (Amazon, `DIARIA_AMAZON_LOJA_URL`)
- * fica de fora — link de afiliado direto a terceiro, fora do escopo do #4553.
+ * `source`/`medium` nas pills (o leitor clicou dentro do e-mail da
+ * newsletter), `campaign` único por pill. A pill "Equipamentos" (Amazon,
+ * `DIARIA_AMAZON_LOJA_URL`) ficou de fora até o #4968 — o clique já era
+ * mensurável pela Beehiiv via URL completo, mas colapsava com qualquer outra
+ * colocação do mesmo storefront (mensal, post social); `EQUIPAMENTOS_RODAPE_UTM`
+ * abaixo fecha essa desambiguação sem depender do destino (a Amazon não
+ * devolve analytics pra gente).
  */
 export const CURSOS_RODAPE_UTM = {
   source: "newsletter",
@@ -308,7 +312,14 @@ export const LIVROS_RODAPE_UTM = {
   campaign: "livros-rodape",
 } as const;
 
-/** Pill "Arquivo" do PARA ENCERRAR (#4536, pill nova) — ver `CURSOS_RODAPE_UTM` acima. */
+/** Pill "Equipamentos" do PARA ENCERRAR (#4968) — ver `CURSOS_RODAPE_UTM` acima. */
+export const EQUIPAMENTOS_RODAPE_UTM = {
+  source: "newsletter",
+  medium: "email",
+  campaign: "equipamentos-rodape",
+} as const;
+
+/** Pill "Edições anteriores" do PARA ENCERRAR (renomeada de "Arquivo" no #4968; #4536, pill original) — ver `CURSOS_RODAPE_UTM` acima. */
 export const ARQUIVO_RODAPE_UTM = {
   source: "newsletter",
   medium: "email",
@@ -316,8 +327,9 @@ export const ARQUIVO_RODAPE_UTM = {
 } as const;
 
 /**
- * Pill "É IA?" do PARA ENCERRAR (#4550, pill nova, 1ª das 3 superfícies de
- * distribuição própria do jogo) — mesmo padrão de `CURSOS_RODAPE_UTM`/
+ * Pill "Jogar É IA?" do PARA ENCERRAR (renomeada de "É IA?" no #4968; #4550,
+ * pill original, 1ª das 3 superfícies de distribuição própria do jogo) —
+ * mesmo padrão de `CURSOS_RODAPE_UTM`/
  * `LIVROS_RODAPE_UTM`/`ARQUIVO_RODAPE_UTM` acima (direção newsletter →
  * `/jogar`). Decisão do editor (comentários do #4550, 260804): o "É IA?" tem
  * o motor de divulgação inteiro construído (card assinado, ranking público,
@@ -859,27 +871,40 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     status: "ativo",
   },
   {
+    id: "equipamentos-rodape",
+    label: "Pill 'Equipamentos' do PARA ENCERRAR (e-mail diário)",
+    source: EQUIPAMENTOS_RODAPE_UTM.source,
+    medium: EQUIPAMENTOS_RODAPE_UTM.medium,
+    campaignPattern: EQUIPAMENTOS_RODAPE_UTM.campaign,
+    originFile: "scripts/lib/shared/encerramento-snippet.ts",
+    description:
+      "Pill 'Equipamentos' (link de afiliado Amazon) do PARA ENCERRAR — ficou de fora do " +
+      "UTM até o #4968. O clique já era mensurável pela Beehiiv via URL completo; o campaign " +
+      "próprio desambigua esta colocação de qualquer outra do mesmo storefront (mensal, post social).",
+    status: "ativo",
+  },
+  {
     id: "arquivo-rodape",
-    label: "Pill 'Arquivo' do PARA ENCERRAR (e-mail diário)",
+    label: "Pill 'Edições anteriores' do PARA ENCERRAR (e-mail diário, renomeada de 'Arquivo' no #4968)",
     source: ARQUIVO_RODAPE_UTM.source,
     medium: ARQUIVO_RODAPE_UTM.medium,
     campaignPattern: ARQUIVO_RODAPE_UTM.campaign,
     originFile: "scripts/lib/shared/encerramento-snippet.ts",
     description:
-      "Pill 'Arquivo' (4ª pill, nova — #4536) do PARA ENCERRAR — antes desta issue " +
+      "Pill 'Edições anteriores' (4ª pill, nova — #4536) do PARA ENCERRAR — antes desta issue " +
       "o arquivo.diar.ia.br não tinha NENHUM link de entrada a partir da newsletter.",
     status: "ativo",
   },
   {
     id: "jogar-rodape",
-    label: "Pill 'É IA?' do PARA ENCERRAR (e-mail diário)",
+    label: "Pill 'Jogar É IA?' do PARA ENCERRAR (e-mail diário, renomeada de 'É IA?' no #4968)",
     source: JOGAR_RODAPE_UTM.source,
     medium: JOGAR_RODAPE_UTM.medium,
     campaignPattern: JOGAR_RODAPE_UTM.campaign,
     originFile: "scripts/lib/shared/encerramento-snippet.ts",
     description:
-      "Pill 'É IA?' (5ª pill, nova — #4550) do PARA ENCERRAR — mesmo padrão de " +
-      "'cursos-rodape'/'livros-rodape'/'arquivo-rodape' acima. Antes desta issue o " +
+      "Pill 'Jogar É IA?' (5ª pill, nova — #4550) do PARA ENCERRAR — mesmo padrão de " +
+      "'cursos-rodape'/'livros-rodape'/'equipamentos-rodape'/'arquivo-rodape' acima. Antes desta issue o " +
       "jogo não tinha NENHUM link de entrada a partir do rodapé da newsletter " +
       "(a única menção, o link de arquivo do gabarito, mora em 'eia-arquivo-newsletter').",
     status: "ativo",
