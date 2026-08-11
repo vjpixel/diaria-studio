@@ -166,9 +166,15 @@ export function hubCoverageWindow(sources: readonly { date: string }[]): {
   between: string;
   /** ex: "agosto de 2025" — para "desde {…}". */
   since: string;
+  /** ex: "agosto de 2026" — mês/ano de `lastDate`, gêmeo de `since` (#4922
+   * item 1): `metaDescription`/`introHeading` de todo hub citam "de {since}
+   * a {until}" — antes só `since` tinha rótulo pronto, `until` era montado
+   * ad-hoc com `formatMonthYear(lastDate)` direto onde precisava. */
+  until: string;
   /** ex: "27 de agosto de 2025 e 30 de julho de 2026" — forma longa, com
    * dia. O `google-gemini` usa esta (é o formato que a #4895 travou em
-   * `test/hub-google-gemini-start-date-4895.test.ts`). */
+   * `test/hub-google-gemini-start-date-4895.test.ts`, absorvido pelo teste
+   * genérico no #4922). */
   betweenLong: string;
 } {
   if (sources.length === 0) throw new Error("hubCoverageWindow: sources vazio");
@@ -179,14 +185,165 @@ export function hubCoverageWindow(sources: readonly { date: string }[]): {
     if (s.date > lastDate) lastDate = s.date;
   }
   const since = formatMonthYear(firstDate);
-  const long = (iso: string) => `${Number(iso.slice(8, 10))} de ${formatMonthYear(iso)}`;
+  const until = formatMonthYear(lastDate);
   return {
     firstDate,
     lastDate,
-    between: `${since} e ${formatMonthYear(lastDate)}`,
+    between: `${since} e ${until}`,
     since,
-    betweenLong: `${long(firstDate)} e ${long(lastDate)}`,
+    until,
+    betweenLong: `${formatDateLong(firstDate)} e ${formatDateLong(lastDate)}`,
   };
+}
+
+/** `YYYY-MM-DD` → "DD/MM/AAAA" (#4922 item 1) — mesma função que cada
+ * `scripts/lib/hubs/{slug}.ts` reimplementava localmente como
+ * `formatDateLabel`. Consolidada aqui pra virar a MESMA formatação usada
+ * pelas datas derivadas novas (`maxDateGap`, `matchingDates`) — sem isso um
+ * hub novo reimplementaria a função pela 5ª vez. */
+export function formatDateShort(dateIso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateIso);
+  if (!m) return dateIso;
+  return `${m[3]}/${m[2]}/${m[1]}`;
+}
+
+/** `YYYY-MM-DD` → "D de mês de AAAA" (#4922 item 1) — extraído do helper
+ * inline que só `hubCoverageWindow` tinha (`betweenLong`); exportado pra
+ * formatar as bordas de um hiato derivado (`maxDateGap`) com o mesmo rótulo
+ * longo que a prosa de cada hub já usa pra citar data de início/fim. */
+export function formatDateLong(dateIso: string): string {
+  return `${Number(dateIso.slice(8, 10))} de ${formatMonthYear(dateIso)}`;
+}
+
+/** Dias corridos (calendário) entre duas datas `YYYY-MM-DD`, `to - from`
+ * (#4922 item 1). Usa `Date.UTC` — mesmo racional do helper equivalente que
+ * `test/hub-google-gemini-launch-gap-4945.test.ts` já tinha local (não
+ * reimplementado aqui: o teste continua com a própria cópia de propósito,
+ * pra ficar uma verificação INDEPENDENTE do código de produção — ver nota no
+ * próprio teste). Não valida ordem: `to` anterior a `from` devolve negativo. */
+export function calendarDaysBetween(fromIso: string, toIso: string): number {
+  const [fy, fm, fd] = fromIso.split("-").map(Number);
+  const [ty, tm, td] = toIso.split("-").map(Number);
+  return Math.round((Date.UTC(ty, tm - 1, td) - Date.UTC(fy, fm - 1, fd)) / 86400000);
+}
+
+/** `{ totalEditions, totalMentions }` de um hub, DERIVADO do dataset (#4922
+ * item 1) — o motor único que `buildXxxFaq`/`buildIntro` de cada
+ * `scripts/lib/hubs/{slug}.ts` computavam em paralelo, cada um com a própria
+ * cópia do mesmo `reduce`. Não é o bug que a issue #4922 documenta (as duas
+ * cópias sempre concordavam, mesma fórmula) — é a duplicação de código que a
+ * issue pede pra eliminar: "a FAQ já é o motor de derivação, falta o resto
+ * consumir o MESMO objeto". */
+export function hubTotals(sources: readonly { matchedHeadlines: readonly string[] }[]): {
+  totalEditions: number;
+  totalMentions: number;
+} {
+  return {
+    totalEditions: sources.length,
+    totalMentions: sources.reduce((n, s) => n + s.matchedHeadlines.length, 0),
+  };
+}
+
+/**
+ * Cadência média de menção de um hub, em dias corridos, arredondada (#4922
+ * item 1) — `Math.round(calendarDaysBetween(firstDate, lastDate) /
+ * totalMentions)`. Cobre tanto a prosa que diz "dias corridos"
+ * (`google-gemini`, `meta-ai`) quanto a que diz "dias úteis"
+ * (`anthropic-claude`) — a fórmula manuscrita original de todo hub sempre
+ * foi dias corridos / total de manchetes (conferido ao vivo contra os 3
+ * hubs que citam um número único de cadência antes deste commit: o rótulo
+ * "dias úteis" da prosa da Anthropic é só o nome que o texto dá ao intervalo
+ * típico entre edições — a diar.ia.br só publica em dias úteis —, não uma
+ * fórmula de contagem de dias úteis à parte). `openai-chatgpt` cita uma
+ * FAIXA ("3-4 dias"), não um número único — não usa este helper, permanece
+ * literal (#4922 item 4: faixa não é um fato único derivável).
+ */
+export function hubMentionCadenceDays(sources: readonly { date: string; matchedHeadlines: readonly string[] }[]): number {
+  const { firstDate, lastDate } = hubCoverageWindow(sources);
+  const { totalMentions } = hubTotals(sources);
+  return Math.round(calendarDaysBetween(firstDate, lastDate) / totalMentions);
+}
+
+/**
+ * Conta quantas manchetes de `sources` casam `pattern` (#4922 item 1) — o
+ * `countMatching` que os 4 módulos de `scripts/lib/hubs/` reimplementavam
+ * localmente, byte a byte idêntico entre `anthropic-claude.ts`/
+ * `google-gemini.ts`/`meta-ai.ts` (só `openai-chatgpt.ts` tinha a variante
+ * com `excludePattern`, preservada aqui). Normaliza pra NFC antes do teste —
+ * `matchedHeadlines` vem em NFD do cache Beehiiv (ver nota original em
+ * `anthropic-claude.ts`). Recebe `sources` por parâmetro sempre — nunca lê
+ * um `SOURCES` de módulo — mesma disciplina que manteve `buildXxxFaq` puro e
+ * testável com fixture sintético.
+ */
+export function countMatching(
+  sources: readonly { matchedHeadlines: readonly string[] }[],
+  pattern: RegExp,
+  excludePattern?: RegExp,
+): number {
+  let n = 0;
+  for (const s of sources) {
+    for (const h of s.matchedHeadlines) {
+      const normalized = h.normalize("NFC");
+      if (pattern.test(normalized) && !(excludePattern && excludePattern.test(normalized))) n++;
+    }
+  }
+  return n;
+}
+
+/**
+ * Datas (`YYYY-MM-DD`) das manchetes de `sources` que casam `pattern`, uma
+ * entrada por manchete casada (não por fonte — uma fonte com 2 manchetes
+ * casadas contribui a MESMA data 2x), ordenadas ascendente (#4922 item 1).
+ * Base pra `maxDateGap`/hiatos entre lançamentos: antes deste commit, o
+ * único jeito de saber a duração de um hiato era transcrever as duas datas
+ * de borda à mão pra prosa (ex: "125 dias, de 5 de dezembro de 2025 a 9 de
+ * abril de 2026" em `anthropic-claude.ts`) — sem nada religando esse número
+ * ao dataset. Mesma normalização NFC de `countMatching`.
+ */
+export function matchingDates(
+  sources: readonly { date: string; matchedHeadlines: readonly string[] }[],
+  pattern: RegExp,
+  excludePattern?: RegExp,
+): string[] {
+  const dates: string[] = [];
+  for (const s of sources) {
+    for (const h of s.matchedHeadlines) {
+      const normalized = h.normalize("NFC");
+      if (pattern.test(normalized) && !(excludePattern && excludePattern.test(normalized))) dates.push(s.date);
+    }
+  }
+  return dates.sort();
+}
+
+/** Gaps em dias corridos entre datas CONSECUTIVAS de uma lista já ordenada
+ * ascendente (ex: saída de `matchingDates`) — `gaps[i] = dates[i+1] -
+ * dates[i]` (#4922 item 1). `dates.length` entradas produzem
+ * `dates.length - 1` gaps; lista com 0 ou 1 data produz `[]`. Base pra
+ * `maxDateGap` e pra qualquer hiato/vão específico que a prosa cite por
+ * posição (ex: `google-gemini.ts` cita o 1º e o 2º hiato entre 3 surtos de
+ * lançamento — `gaps[4]`/`gaps[6]` no dataset atual — em vez de só o maior). */
+export function consecutiveGapDays(dates: readonly string[]): number[] {
+  const gaps: number[] = [];
+  for (let i = 1; i < dates.length; i++) gaps.push(calendarDaysBetween(dates[i - 1], dates[i]));
+  return gaps;
+}
+
+/** O maior gap em dias corridos entre datas consecutivas de `dates` (#4922
+ * item 1) — usa `consecutiveGapDays` e devolve também as duas datas de
+ * borda do gap vencedor (pra interpolar tanto o número quanto as datas que a
+ * prosa cita ao lado dele, ex: "hiato de 125 dias... de 5 de dezembro de
+ * 2025 a 9 de abril de 2026"). `null` se `dates` tiver menos de 2 entradas
+ * (nenhum gap possível). Em empate, fica com a PRIMEIRA ocorrência do
+ * máximo — determinístico, mesmo resultado a cada regen com o mesmo
+ * dataset. */
+export function maxDateGap(dates: readonly string[]): { fromDate: string; toDate: string; gapDays: number } | null {
+  if (dates.length < 2) return null;
+  let best = { fromDate: dates[0], toDate: dates[1], gapDays: calendarDaysBetween(dates[0], dates[1]) };
+  for (let i = 2; i < dates.length; i++) {
+    const gapDays = calendarDaysBetween(dates[i - 1], dates[i]);
+    if (gapDays > best.gapDays) best = { fromDate: dates[i - 1], toDate: dates[i], gapDays };
+  }
+  return best;
 }
 
 /** CSS específico do corpo narrativo do hub (seções + lista de fontes) — o

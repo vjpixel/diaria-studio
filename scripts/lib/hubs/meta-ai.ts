@@ -16,15 +16,19 @@
  * está em WhatsApp/Instagram/Facebook e nos óculos Ray-Ban — o produto que
  * a cobertura mais cita ao lado do nome da empresa.
  *
- * **Precisão do escopo "número computado, nunca solto"** — mesma ressalva
- * dos 3 hubs anteriores: só as respostas do `faq` são de fato COMPUTADAS em
- * runtime, via `countMatching`/`buildMetaAiFaq` sobre `SOURCES`. Os números
- * na prosa de `sections`/`INTRO` (datas, contagens) foram TRANSCRITOS À MÃO
- * a partir do mesmo dataset — verificados contra `SOURCES` real ao
- * escrever, mas não recalculados a cada regeneração de
- * `sources.generated.json`. Se `test/build-hub-page.test.ts` (bloco
- * genérico que itera `HUB_LOADERS`) quebrar depois de um
- * `generate-hub-sources.ts` novo, é a prosa que precisa de revisão manual.
+ * **Escopo do #4922 item 1** (substitui a nota anterior, mesma ressalva dos
+ * 3 hubs anteriores): total de edições/manchetes, a janela de cobertura e a
+ * cadência de menção agora vêm de `hubTotals`/`hubCoverageWindow`/
+ * `hubMentionCadenceDays` (`scripts/lib/shared/hub-page.ts`), usados tanto
+ * pelo `faq` quanto por `introParagraph`/`metaDescription`/`introHeading` —
+ * não mais recalculados em paralelo. Os demais números da prosa de
+ * `sections`/`INTRO` deste hub (ex: "quatro rodadas", "duas empresas") são
+ * formas POR EXTENSO, não dígitos — interpolar aqui trocaria "quatro" por
+ * "4", o que é reescrita de estilo, não substituição de fato (item 4 da
+ * issue: fora do escopo "só o número muda"); permanecem TRANSCRITOS À MÃO.
+ * Se `test/build-hub-page.test.ts` (bloco genérico que itera `HUB_LOADERS`)
+ * quebrar depois de um `generate-hub-sources.ts` novo, é a prosa que
+ * precisa de revisão manual.
  *
  * **Fonte é a cobertura da diária, não fato-checado contra a Meta real** —
  * este módulo sintetiza o que a diar.ia.br noticiou sobre o tema, no
@@ -37,7 +41,15 @@
  *   npx tsx scripts/build-hub-page.ts --hub meta-ai
  */
 import type { GeoFaqItem } from "../shared/geo-faq.ts";
-import { hubCoverageWindow, type HubContent, type HubSourceEdition } from "../shared/hub-page.ts";
+import {
+  hubCoverageWindow,
+  hubTotals,
+  hubMentionCadenceDays,
+  countMatching,
+  formatDateShort,
+  type HubContent,
+  type HubSourceEdition,
+} from "../shared/hub-page.ts";
 import { HUB_META_AI_FOOTER_NAV_UTM } from "../shared/utm-registry.ts";
 import sourcesRaw from "./meta-ai-sources.generated.json" with { type: "json" };
 import type { HubSourceEntry } from "../../generate-hub-sources.ts";
@@ -56,31 +68,11 @@ const PUBLISHED_DATE = "2026-08-10";
  * Nasce igual a `PUBLISHED_DATE` (hub recém-criado, nunca revisado ainda). */
 const UPDATED_DATE = "2026-08-10";
 
-/** Mesma normalização NFC de `anthropic-claude.ts::countMatching` — o
- * `matchedHeadlines` de `sources.generated.json` preserva o texto ORIGINAL
- * do cache Beehiiv em NFD (acento como combining mark separado), e um regex
- * acentuado escrito à mão usa NFC por padrão ("óculos" tem acento; sem a
- * normalização o pattern de óculos abaixo bateria 0 contra o dado real,
- * mesma classe de bug documentada no hub Anthropic). Recebe `sources` como
- * parâmetro (nunca lê a constante `SOURCES` do módulo direto) — mesmo
- * achado do fleet review original: só assim a função fica de fato pura e
- * testável com um fixture sintético em vez de sempre refletir produção.
- */
-function countMatching(sources: HubSourceEntry[], pattern: RegExp): number {
-  let n = 0;
-  for (const s of sources) {
-    for (const h of s.matchedHeadlines) {
-      if (pattern.test(h.normalize("NFC"))) n++;
-    }
-  }
-  return n;
-}
-
-function formatDateLabel(dateIso: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateIso);
-  if (!m) return dateIso;
-  return `${m[3]}/${m[2]}/${m[1]}`;
-}
+/** `matchedHeadlines` vem em NFD ("óculos" tem acento; sem a normalização o
+ * pattern de óculos abaixo bateria 0 contra o dado real, mesma classe de bug
+ * documentada no hub Anthropic) — ver a nota completa em `countMatching`,
+ * agora em `scripts/lib/shared/hub-page.ts` (#4922 item 1: motor único
+ * reusado pelos 4 hubs, não reimplementado aqui). */
 
 /**
  * Monta o FAQ (issue #4558 item 3/6: 6-10 perguntas, números reais). Pure —
@@ -93,10 +85,9 @@ function formatDateLabel(dateIso: string): string {
  * de volta pra seção pro relato completo.
  */
 export function buildMetaAiFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
-  const totalMentions = sources.reduce((n, s) => n + s.matchedHeadlines.length, 0);
-  const totalEditions = sources.length;
-  const oldest = sources[0]?.date;
-  const newest = sources[sources.length - 1]?.date;
+  const { totalEditions, totalMentions } = hubTotals(sources);
+  const { firstDate: oldest, lastDate: newest } = hubCoverageWindow(sources);
+  const cadenceDays = hubMentionCadenceDays(sources);
   const cortes = countMatching(sources, /demit|cortar/i);
   const china = countMatching(sources, /pequim|ordem da china/i);
   const seguranca = countMatching(sources, /hackers|invas|abuso infantil/i);
@@ -113,7 +104,7 @@ export function buildMetaAiFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
   return [
     {
       question: "Com que frequência a Meta vira notícia por causa de IA?",
-      answer: `Entre ${formatDateLabel(oldest ?? "")} e ${formatDateLabel(newest ?? "")}, a Meta apareceu como destaque em ${totalEditions} edições da diar.ia.br, somando ${totalMentions} manchetes — uma a cada 16 dias corridos, em média.`,
+      answer: `Entre ${formatDateShort(oldest ?? "")} e ${formatDateShort(newest ?? "")}, a Meta apareceu como destaque em ${totalEditions} edições da diar.ia.br, somando ${totalMentions} manchetes — uma a cada ${cadenceDays} dias corridos, em média.`,
     },
     {
       question: "Quantas vezes a Meta cortou ou demitiu equipe de IA nesse período?",
@@ -164,18 +155,18 @@ function toSourceEditions(sources: HubSourceEntry[]): HubSourceEdition[] {
  * é o que impede que ela pare de estar no próximo regen. */
 function buildIntro(sources: HubSourceEntry[]): string {
   const { between } = hubCoverageWindow(sources);
-  const totalEditions = sources.length;
-  const totalMentions = sources.reduce((n, s) => n + s.matchedHeadlines.length, 0);
-  return `Entre ${between}, a Meta foi destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo, em média uma a cada 16 dias. Acompanhar esse volume de perto mostra uma empresa em crise de identidade sobre a própria estratégia de IA: a liderança técnica virou um caos público, com o ex-chefe de IA Yann LeCun chamando o sucessor de 29 anos, Alexandr Wang, de "jovem" e "inexperiente" logo depois de uma polêmica de manipulação de benchmark do Llama 4, num período que também trouxe quatro rodadas de corte ou demissão ligadas à área de IA, incluindo um processo judicial recente. Meses depois, sob a liderança de Wang, a Meta lançou o Muse Spark — seu primeiro modelo proprietário, abandonando a estratégia open source que definiu o Llama. A Meta também comprou pelo menos duas empresas de IA (uma rede social só para agentes, uma startup de robótica humanoide) e teve um terceiro negócio, avaliado em US$ 2 bilhões, desfeito à força pelo governo chinês — o mesmo tipo de bloqueio regulatório que Washington aplica contra empresas chinesas, na direção oposta. Uma sequência de falhas de segurança e moderação, da conta do Instagram invadida via bot de suporte a anúncios de abuso infantil que passaram pela revisão automática, termina em episódio ainda mais recente: o próprio modelo da Meta invadindo os sistemas de outra empresa. Cada um desses pontos aparece detalhado adiante, com data e link para a edição que o registrou.`;
+  const { totalEditions, totalMentions } = hubTotals(sources);
+  const cadenceDays = hubMentionCadenceDays(sources);
+  return `Entre ${between}, a Meta foi destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo, em média uma a cada ${cadenceDays} dias. Acompanhar esse volume de perto mostra uma empresa em crise de identidade sobre a própria estratégia de IA: a liderança técnica virou um caos público, com o ex-chefe de IA Yann LeCun chamando o sucessor de 29 anos, Alexandr Wang, de "jovem" e "inexperiente" logo depois de uma polêmica de manipulação de benchmark do Llama 4, num período que também trouxe quatro rodadas de corte ou demissão ligadas à área de IA, incluindo um processo judicial recente. Meses depois, sob a liderança de Wang, a Meta lançou o Muse Spark — seu primeiro modelo proprietário, abandonando a estratégia open source que definiu o Llama. A Meta também comprou pelo menos duas empresas de IA (uma rede social só para agentes, uma startup de robótica humanoide) e teve um terceiro negócio, avaliado em US$ 2 bilhões, desfeito à força pelo governo chinês — o mesmo tipo de bloqueio regulatório que Washington aplica contra empresas chinesas, na direção oposta. Uma sequência de falhas de segurança e moderação, da conta do Instagram invadida via bot de suporte a anúncios de abuso infantil que passaram pela revisão automática, termina em episódio ainda mais recente: o próprio modelo da Meta invadindo os sistemas de outra empresa. Cada um desses pontos aparece detalhado adiante, com data e link para a edição que o registrou.`;
 }
 
 export function getMetaAiHub(): HubContent {
+  const { since, until } = hubCoverageWindow(SOURCES);
   return {
     slug: "meta-ai",
     title: "Meta e Meta AI",
-    metaDescription:
-      "Meta e Meta AI no arquivo da diar.ia.br, de setembro de 2025 a agosto de 2026: a crise de liderança técnica, a virada para modelo proprietário, o conflito com a China e uma sequência de falhas de segurança.",
-    introHeading: "O que aconteceu com a Meta e a IA desde setembro de 2025?",
+    metaDescription: `Meta e Meta AI no arquivo da diar.ia.br, de ${since} a ${until}: a crise de liderança técnica, a virada para modelo proprietário, o conflito com a China e uma sequência de falhas de segurança.`,
+    introHeading: `O que aconteceu com a Meta e a IA desde ${since}?`,
     introParagraph: buildIntro(SOURCES),
     sections: [
       {

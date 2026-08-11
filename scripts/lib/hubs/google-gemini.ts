@@ -19,16 +19,23 @@
  * olhando o ARQUIVO inteiro, não uma edição isolada) — não reempacotam
  * manchete.
  *
- * **Precisão do escopo "número computado, nunca solto":** só as respostas
- * do `faq` são de fato COMPUTADAS em runtime, via `countMatching`/
- * `buildGoogleGeminiFaq` sobre `SOURCES`. Os números na prosa de
- * `sections`/`INTRO` (datas, contagens, hiatos em dias) são TRANSCRITOS À
- * MÃO a partir do mesmo dataset no momento em que a prosa foi escrita —
- * corretos hoje (verificado ao vivo contra `SOURCES`, um a um, com script
- * de apoio antes de escrever qualquer frase), mas não recalculados a cada
- * regeneração de `sources.generated.json`. Ver a nota equivalente em
- * `anthropic-claude.ts` sobre o teste de consistência de
- * `test/build-hub-page.test.ts` — mesma disciplina se aplica aqui.
+ * **Escopo do #4922 item 1** (substitui a nota anterior — este era o hub
+ * com mais números transcritos à mão dos 4, e o com o histórico mais
+ * concreto de regressão: #4895/#4896/#4945): total de edições/manchetes, a
+ * janela de cobertura, a cadência, a janela e a contagem de lançamento, o
+ * total de menções ao Brasil/educação e os 3 surtos de lançamento (com os
+ * hiatos e vãos entre eles) agora vêm de um único objeto derivado
+ * (`deriveGoogleGeminiFacts`), consumido por `buildIntro`,
+ * `buildGoogleGeminiFaq` e `getGoogleGeminiHub` (`sections`). Os hiatos
+ * entre surtos são derivados por POSIÇÃO no array de datas de lançamento
+ * ordenado — ver a nota na própria função sobre a fragilidade dessa
+ * premissa se a estrutura "5+2+3 surtos" mudar num regen futuro. O que
+ * continua literal, de propósito (item 4 da issue): a contagem de
+ * investimento em `sections` ("4 manchetes de escala bilionária ou
+ * nacional") é uma curadoria manual mais ampla que o padrão `investe`
+ * (que conta só 2) — não é o mesmo fato, então não interpola o mesmo
+ * número. `test/build-hub-page.test.ts`/`test/hub-google-gemini-launch-gap-4945.test.ts`
+ * seguem cobrindo este hub.
  *
  * **Fonte é a cobertura da diária, não fato-checado contra o Google
  * real** — este módulo sintetiza o que a diar.ia.br noticiou sobre o tema,
@@ -41,7 +48,18 @@
  *   npx tsx scripts/build-hub-page.ts --hub google-gemini
  */
 import type { GeoFaqItem } from "../shared/geo-faq.ts";
-import { hubCoverageWindow, type HubContent, type HubSourceEdition } from "../shared/hub-page.ts";
+import {
+  hubCoverageWindow,
+  hubTotals,
+  hubMentionCadenceDays,
+  countMatching,
+  matchingDates,
+  calendarDaysBetween,
+  formatDateShort,
+  formatDateLong,
+  type HubContent,
+  type HubSourceEdition,
+} from "../shared/hub-page.ts";
 import { HUB_GOOGLE_GEMINI_FOOTER_NAV_UTM } from "../shared/utm-registry.ts";
 import sourcesRaw from "./google-gemini-sources.generated.json" with { type: "json" };
 import type { HubSourceEntry } from "../../generate-hub-sources.ts";
@@ -62,53 +80,120 @@ const PUBLISHED_DATE = "2026-08-09";
  * desaconselha. */
 const UPDATED_DATE = "2026-08-10";
 
-/** Mesma normalização NFC de `anthropic-claude.ts` — o `matchedHeadlines`
- * de `sources.generated.json` vem em NFD (acento como combining mark
- * separado). Recebe `sources` como parâmetro (não lê `SOURCES` do módulo
- * direto) para que `buildGoogleGeminiFaq` continue inteiramente pura e
- * testável com fixture sintético. */
-function countMatching(sources: HubSourceEntry[], pattern: RegExp): number {
-  let n = 0;
-  for (const s of sources) {
-    for (const h of s.matchedHeadlines) {
-      if (pattern.test(h.normalize("NFC"))) n++;
-    }
-  }
-  return n;
-}
+/** `matchedHeadlines` vem em NFD (mesmo achado de `anthropic-claude.ts`) —
+ * ver a nota completa em `countMatching`/`matchingDates`, agora em
+ * `scripts/lib/shared/hub-page.ts` (#4922 item 1: motor único reusado pelos
+ * 4 hubs, não reimplementado aqui). */
+const LAUNCH_PATTERN =
+  /gemini 2[.,]5 flash image|novo modelo de v[íi]deo|^tudo sobre gemini 3$|nano banana pro|gemini 3 flash e manus|gemini 3\.1 pro|nano banana 2: melhor|gemini omni|nano banana 2 lite: gera[çc][ãa]o|trio gemini 3\.6/i;
+const CHATGPT_PATTERN = /chatgpt/i;
+const BRASIL_PATTERN = /brasil/i;
+const NANO_BANANA_PATTERN = /nano banana/i;
+const SAUDE_PATTERN = /\bsus\b|c[âa]ncer|m[eé]dicos/i;
+const EDUCACAO_PATTERN = /curso|treinamento/i;
+const INVESTE_PATTERN = /investe/i;
+const REGULATORIO_PATTERN = /banir|ue obriga|domina.*buscas/i;
 
-function formatDateLabel(dateIso: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateIso);
-  if (!m) return dateIso;
-  return `${m[3]}/${m[2]}/${m[1]}`;
+/**
+ * Fatos derivados de `sources` (#4922 item 1) — o objeto único que
+ * `buildIntro`, `buildGoogleGeminiFaq` e `getGoogleGeminiHub` (`sections`)
+ * agora consomem em vez de cada um recalcular ou transcrever à mão o mesmo
+ * número. Inclui os 3 surtos de lançamento — cada padrões abaixo foi
+ * desenhado e testado ao vivo (script de apoio, não commitado) contra
+ * `google-gemini-sources.generated.json` até bater exatamente o número
+ * citado na prosa; os HIATOS/vãos entre datas de lançamento específicas
+ * (`gap1`/`gap2`/`spanSurge1`/`spanSurge3`/`gapWithinSurge2`/
+ * `gapWithinSurge3a`/`gapWithinSurge3b`) são derivados por POSIÇÃO no array
+ * de datas ordenado (`launchDates`) — estável enquanto o número e a ordem
+ * dos 3 surtos não mudar; um regen que altere a estrutura dos surtos exige
+ * revisão manual da prosa (e das posições usadas aqui), não só do dataset.
+ */
+function deriveGoogleGeminiFacts(sources: HubSourceEntry[]) {
+  const { totalEditions, totalMentions } = hubTotals(sources);
+  const { firstDate: oldest, lastDate: newest } = hubCoverageWindow(sources);
+  const cadenceDays = hubMentionCadenceDays(sources);
+  const launches = countMatching(sources, LAUNCH_PATTERN);
+  const launchDates = matchingDates(sources, LAUNCH_PATTERN);
+  const launchWindow = { first: launchDates[0] ?? oldest, last: launchDates[launchDates.length - 1] ?? newest };
+  const chatgpt = countMatching(sources, CHATGPT_PATTERN);
+  const brasil = countMatching(sources, BRASIL_PATTERN);
+  const nanoBanana = countMatching(sources, NANO_BANANA_PATTERN);
+  const saude = countMatching(sources, SAUDE_PATTERN);
+  const educacao = countMatching(sources, EDUCACAO_PATTERN);
+  const investe = countMatching(sources, INVESTE_PATTERN);
+  const regulatorio = countMatching(sources, REGULATORIO_PATTERN);
+  // Dataset real: 10 datas de lançamento em 3 surtos de 5+2+3, índices
+  // 0-4/5-6/7-9 — ver docstring acima sobre a fragilidade dessa premissa.
+  const d = launchDates;
+  const surges =
+    d.length >= 10
+      ? {
+          spanSurge1: calendarDaysBetween(d[0], d[4]),
+          gap1: calendarDaysBetween(d[4], d[5]),
+          gapWithinSurge2: calendarDaysBetween(d[5], d[6]),
+          gap2: calendarDaysBetween(d[6], d[7]),
+          gapWithinSurge3a: calendarDaysBetween(d[7], d[8]),
+          gapWithinSurge3b: calendarDaysBetween(d[8], d[9]),
+          spanSurge3: calendarDaysBetween(d[7], d[9]),
+          surge1End: d[4],
+          surge2Start: d[5],
+          surge3Start: d[7],
+        }
+      : null;
+  return {
+    totalEditions,
+    totalMentions,
+    oldest,
+    newest,
+    cadenceDays,
+    launches,
+    launchWindow,
+    chatgpt,
+    brasil,
+    nanoBanana,
+    saude,
+    educacao,
+    investe,
+    regulatorio,
+    surges,
+  };
 }
 
 /**
  * Monta o FAQ (issue #4558 item 3/6: 6-10 perguntas, números reais). Pure —
  * testável sem IO, opera inteiramente sobre o `sources` recebido (nunca lê
- * `SOURCES` do módulo direto — ver nota de `countMatching`).
+ * `SOURCES` do módulo direto — ver nota de `deriveGoogleGeminiFacts`).
  */
 export function buildGoogleGeminiFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
-  const totalMentions = sources.reduce((n, s) => n + s.matchedHeadlines.length, 0);
-  const totalEditions = sources.length;
-  const oldest = sources[0]?.date;
-  const newest = sources[sources.length - 1]?.date;
-
-  // Cada padrão abaixo foi desenhado e testado ao vivo (script de apoio,
-  // não commitado) contra `google-gemini-sources.generated.json` até bater
-  // exatamente o número citado na prosa da `section` correspondente — a
-  // mesma disciplina do `anthropic-claude.ts` original.
-  const launches = countMatching(
-    sources,
-    /gemini 2[.,]5 flash image|novo modelo de v[íi]deo|^tudo sobre gemini 3$|nano banana pro|gemini 3 flash e manus|gemini 3\.1 pro|nano banana 2: melhor|gemini omni|nano banana 2 lite: gera[çc][ãa]o|trio gemini 3\.6/i,
-  );
-  const chatgpt = countMatching(sources, /chatgpt/i);
-  const brasil = countMatching(sources, /brasil/i);
-  const nanoBanana = countMatching(sources, /nano banana/i);
-  const saude = countMatching(sources, /\bsus\b|c[âa]ncer|m[eé]dicos/i);
-  const educacao = countMatching(sources, /curso|treinamento/i);
-  const investe = countMatching(sources, /investe/i);
-  const regulatorio = countMatching(sources, /banir|ue obriga|domina.*buscas/i);
+  const {
+    totalEditions,
+    totalMentions,
+    oldest,
+    newest,
+    launches,
+    launchWindow,
+    chatgpt,
+    brasil,
+    nanoBanana,
+    saude,
+    educacao,
+    investe,
+    regulatorio,
+    surges,
+  } = deriveGoogleGeminiFacts(sources);
+  // Fixture sintético (< 10 datas de lançamento) não tem os 3 surtos — o
+  // texto do FAQ #2 abaixo é específico do dataset real de produção (mesma
+  // ressalva de `anthropic-claude.ts`: a narrativa "5+2+3" não generaliza
+  // pra qualquer tamanho de sources), então cai pra 0 nesse caso.
+  const s = surges ?? {
+    spanSurge1: 0,
+    gap1: 0,
+    gapWithinSurge2: 0,
+    gap2: 0,
+    gapWithinSurge3a: 0,
+    gapWithinSurge3b: 0,
+    spanSurge3: 0,
+  };
 
   // Achado do editor no hub anterior (260804), replicado aqui: as perguntas
   // abaixo não podem repetir o texto literal do H2 de nenhuma `section`.
@@ -118,11 +203,11 @@ export function buildGoogleGeminiFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
   return [
     {
       question: "Com que frequência o Google ou o Gemini viram notícia?",
-      answer: `Entre ${formatDateLabel(oldest ?? "")} e ${formatDateLabel(newest ?? "")}, o Google ou o Gemini apareceram em ${totalEditions} edições da diar.ia.br, somando ${totalMentions} manchetes: quase uma menção a cada 5 dias corridos ao longo de 11 meses.`,
+      answer: `Entre ${formatDateShort(oldest ?? "")} e ${formatDateShort(newest ?? "")}, o Google ou o Gemini apareceram em ${totalEditions} edições da diar.ia.br, somando ${totalMentions} manchetes: quase uma menção a cada 5 dias corridos ao longo de 11 meses.`,
     },
     {
       question: "Quantos lançamentos de modelo ou ferramenta o Google teve nesse período?",
-      answer: `Foram ${launches} lançamentos entre 27/08/2025 e 22/07/2026, em 3 surtos separados por hiatos: 5 modelos em 114 dias até dezembro de 2025, depois 2 em 6 dias em fevereiro de 2026, e 3 em 62 dias a partir de maio. Os hiatos entre eles foram de 63 e de 84 dias — este o mais longo do período.`,
+      answer: `Foram ${launches} lançamentos entre ${formatDateShort(launchWindow.first)} e ${formatDateShort(launchWindow.last)}, em 3 surtos separados por hiatos: 5 modelos em ${s.spanSurge1} dias até dezembro de 2025, depois 2 em ${s.gapWithinSurge2} dias em fevereiro de 2026, e 3 em ${s.spanSurge3} dias a partir de maio. Os hiatos entre eles foram de ${s.gap1} e de ${s.gap2} dias — este o mais longo do período.`,
     },
     {
       question: "O Gemini já \"venceu\" o ChatGPT?",
@@ -177,32 +262,45 @@ function toSourceEditions(sources: HubSourceEntry[]): HubSourceEdition[] {
  * próximo regen, que foi o que aconteceu nos dois gêmeos. */
 function buildIntro(sources: HubSourceEntry[]): string {
   const { betweenLong } = hubCoverageWindow(sources);
-  const totalEditions = sources.length;
-  const totalMentions = sources.reduce((n, s) => n + s.matchedHeadlines.length, 0);
-  return `Entre ${betweenLong}, o Google e o Gemini foram destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo, quase uma menção a cada 5 dias corridos ao longo de 11 meses. Olhando o arquivo inteiro, não uma edição isolada, um padrão salta aos olhos: os lançamentos de modelo não vêm num fluxo parelho, vêm em 3 surtos separados por hiatos, o mais longo deles de 84 dias entre fevereiro e maio de 2026. Houve também uma inversão de narrativa: um Google descrito como ameaçado pelos resultados da OpenAI em novembro de 2025 virou, cerca de 4 meses e meio depois, um Google apostando abertamente contra Meta e DeepSeek também. No Brasil, o Gemini foi anunciado como novidade em pelo menos 6 manchetes diferentes, do AI Mode em setembro de 2025 a um fundo de investimento local em junho de 2026, incluindo um caso em que a mesma função chegou ao país duas vezes, com nomes diferentes, em 2 semanas de intervalo. Do lado da aplicação prática, o Gemini foi de "resolve o insolúvel na ciência" a detectar câncer raro dentro do SUS. O período termina em tensão: em 9 dias de julho de 2026 vieram a União Europeia forçando o Google a abrir dados para rivais, editoras cogitando banir o buscador e um estudo mostrando que a IA do Google já domina 43% das buscas nos EUA. Cada um desses pontos aparece detalhado adiante, com data e link para a edição que o registrou.`;
+  const { totalEditions, totalMentions, brasil, surges } = deriveGoogleGeminiFacts(sources);
+  const gap2 = surges?.gap2 ?? 0;
+  return `Entre ${betweenLong}, o Google e o Gemini foram destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo, quase uma menção a cada 5 dias corridos ao longo de 11 meses. Olhando o arquivo inteiro, não uma edição isolada, um padrão salta aos olhos: os lançamentos de modelo não vêm num fluxo parelho, vêm em 3 surtos separados por hiatos, o mais longo deles de ${gap2} dias entre fevereiro e maio de 2026. Houve também uma inversão de narrativa: um Google descrito como ameaçado pelos resultados da OpenAI em novembro de 2025 virou, cerca de 4 meses e meio depois, um Google apostando abertamente contra Meta e DeepSeek também. No Brasil, o Gemini foi anunciado como novidade em pelo menos ${brasil} manchetes diferentes, do AI Mode em setembro de 2025 a um fundo de investimento local em junho de 2026, incluindo um caso em que a mesma função chegou ao país duas vezes, com nomes diferentes, em 2 semanas de intervalo. Do lado da aplicação prática, o Gemini foi de "resolve o insolúvel na ciência" a detectar câncer raro dentro do SUS. O período termina em tensão: em 9 dias de julho de 2026 vieram a União Europeia forçando o Google a abrir dados para rivais, editoras cogitando banir o buscador e um estudo mostrando que a IA do Google já domina 43% das buscas nos EUA. Cada um desses pontos aparece detalhado adiante, com data e link para a edição que o registrou.`;
 }
 
 export function getGoogleGeminiHub(): HubContent {
+  const { since, until } = hubCoverageWindow(SOURCES);
+  const { launches, launchWindow, brasil, educacao, surges } = deriveGoogleGeminiFacts(SOURCES);
+  const s = surges ?? {
+    spanSurge1: 0,
+    gap1: 0,
+    gapWithinSurge2: 0,
+    gap2: 0,
+    gapWithinSurge3a: 0,
+    gapWithinSurge3b: 0,
+    spanSurge3: 0,
+    surge1End: launchWindow.first,
+    surge2Start: launchWindow.first,
+    surge3Start: launchWindow.first,
+  };
   return {
     slug: "google-gemini",
     title: "Google e Gemini",
-    metaDescription:
-      "Google e Gemini no arquivo da diar.ia.br, de agosto de 2025 a julho de 2026: ritmo de lançamento de modelo, expansão pelo Brasil, a disputa com o ChatGPT, usos em saúde e o início do alarme regulatório.",
-    introHeading: "O que aconteceu com o Google e o Gemini desde agosto de 2025?",
+    metaDescription: `Google e Gemini no arquivo da diar.ia.br, de ${since} a ${until}: ritmo de lançamento de modelo, expansão pelo Brasil, a disputa com o ChatGPT, usos em saúde e o início do alarme regulatório.`,
+    introHeading: `O que aconteceu com o Google e o Gemini desde ${since}?`,
     introParagraph: buildIntro(SOURCES),
     sections: [
       {
         heading: "Com que ritmo o Google lança modelo novo de Gemini (e de Nano Banana)?",
         paragraphs: [
-          "O Google lançou 10 modelos ou ferramentas entre 27 de agosto de 2025 e 22 de julho de 2026, mas o ritmo não foi constante: vieram em 3 surtos separados por 2 hiatos, um deles o mais longo de todo o período. No primeiro surto, 5 lançamentos couberam em 114 dias: [Gemini 2.5 Flash Image](https://diar.ia.br/p/google-lan-a-gemini-2-5-flash-image), [o Veo 3.1](https://diar.ia.br/p/google-veo-3-1), [o próprio Gemini 3](https://diar.ia.br/p/tudo-sobre-gemini-3), [Nano Banana Pro](https://diar.ia.br/p/sao-paulo-oferece-cursos-de-ia-gratuitos) e [Gemini 3 Flash](https://diar.ia.br/p/openai-cria-treinamento-gratuito-para-jornalistas).",
-          "Depois veio um hiato de 63 dias sem nenhum lançamento novo, de 19 de dezembro de 2025 a 20 de fevereiro de 2026. Nessa janela as manchetes giraram em torno da disputa com o ChatGPT, não de produto novo. O segundo surto foi o mais compacto de todos: [Gemini 3.1 Pro](https://diar.ia.br/p/novo-curso-de-ia-do-google) e [Nano Banana 2](https://diar.ia.br/p/claude-opus-3-se-aposenta-e-vira-blogueiro) saíram com apenas 6 dias de diferença entre si.",
-          "O hiato seguinte foi o mais longo do período: 84 dias entre o Nano Banana 2 e o [lançamento do Gemini Omni no Google I/O](https://diar.ia.br/p/google-lan-a-gemini-omni-no-google-i-o), em 21 de maio de 2026. O terceiro e último surto fechou num ritmo parecido com o primeiro: [Nano Banana 2 Lite](https://diar.ia.br/p/anthropic-lan-a-sonnet-5), 41 dias depois do Omni, e o [lançamento em trio de Gemini 3.6 e 3.5 Flash](https://diar.ia.br/p/google-lanca-trio-gemini-3-6-e-3-5-flash), mais 21 dias depois: 3 lançamentos em 62 dias.",
+          `O Google lançou ${launches} modelos ou ferramentas entre ${formatDateLong(launchWindow.first)} e ${formatDateLong(launchWindow.last)}, mas o ritmo não foi constante: vieram em 3 surtos separados por 2 hiatos, um deles o mais longo de todo o período. No primeiro surto, 5 lançamentos couberam em ${s.spanSurge1} dias: [Gemini 2.5 Flash Image](https://diar.ia.br/p/google-lan-a-gemini-2-5-flash-image), [o Veo 3.1](https://diar.ia.br/p/google-veo-3-1), [o próprio Gemini 3](https://diar.ia.br/p/tudo-sobre-gemini-3), [Nano Banana Pro](https://diar.ia.br/p/sao-paulo-oferece-cursos-de-ia-gratuitos) e [Gemini 3 Flash](https://diar.ia.br/p/openai-cria-treinamento-gratuito-para-jornalistas).`,
+          `Depois veio um hiato de ${s.gap1} dias sem nenhum lançamento novo, de ${formatDateLong(s.surge1End)} a ${formatDateLong(s.surge2Start)}. Nessa janela as manchetes giraram em torno da disputa com o ChatGPT, não de produto novo. O segundo surto foi o mais compacto de todos: [Gemini 3.1 Pro](https://diar.ia.br/p/novo-curso-de-ia-do-google) e [Nano Banana 2](https://diar.ia.br/p/claude-opus-3-se-aposenta-e-vira-blogueiro) saíram com apenas ${s.gapWithinSurge2} dias de diferença entre si.`,
+          `O hiato seguinte foi o mais longo do período: ${s.gap2} dias entre o Nano Banana 2 e o [lançamento do Gemini Omni no Google I/O](https://diar.ia.br/p/google-lan-a-gemini-omni-no-google-i-o), em ${formatDateLong(s.surge3Start)}. O terceiro e último surto fechou num ritmo parecido com o primeiro: [Nano Banana 2 Lite](https://diar.ia.br/p/anthropic-lan-a-sonnet-5), ${s.gapWithinSurge3a} dias depois do Omni, e o [lançamento em trio de Gemini 3.6 e 3.5 Flash](https://diar.ia.br/p/google-lanca-trio-gemini-3-6-e-3-5-flash), mais ${s.gapWithinSurge3b} dias depois: 3 lançamentos em ${s.spanSurge3} dias.`,
         ],
       },
       {
         heading: "Como o Gemini foi se espalhando pelos produtos do dia a dia e pelo Brasil?",
         paragraphs: [
-          'O Gemini apareceu como novidade chegando ao Brasil em pelo menos 6 manchetes diferentes ao longo do período. A mais chamativa delas é uma repetição: [o Google AI Mode chegou ao Brasil](https://diar.ia.br/p/openai-anuncia-apoio-ao-longa-critterz-mirando-cannes) em 9 de setembro de 2025 e, 14 dias depois, ["o Modo IA do Google" chegou ao Brasil de novo](https://diar.ia.br/p/nvidia-anuncia-investimento-de-us-100-bi-na-openai), mesma função com nome diferente. Quinze dias depois veio [o Google AI Plus](https://diar.ia.br/p/google-lan-a-ai-para-controle-aut-nomo-de-browsers); já em 2026, 190 dias mais tarde, [a personalização do Gemini chegou ao Brasil](https://diar.ia.br/p/stanford-ia-avan-a-mais-r-pido-que-qualquer-tecnologia), seguida 61 dias depois por [um fundo de investimento em IA feito ao lado da Monashees](https://diar.ia.br/p/sp-vai-mapear-surtos-de-dengue-por-bairro) e, mais 6 dias depois, [o Google AI Plus de graça para clientes da Vivo](https://diar.ia.br/p/google-ai-plus-de-gra-a-na-vivo).',
+          `O Gemini apareceu como novidade chegando ao Brasil em pelo menos ${brasil} manchetes diferentes ao longo do período. A mais chamativa delas é uma repetição: [o Google AI Mode chegou ao Brasil](https://diar.ia.br/p/openai-anuncia-apoio-ao-longa-critterz-mirando-cannes) em 9 de setembro de 2025 e, 14 dias depois, ["o Modo IA do Google" chegou ao Brasil de novo](https://diar.ia.br/p/nvidia-anuncia-investimento-de-us-100-bi-na-openai), mesma função com nome diferente. Quinze dias depois veio [o Google AI Plus](https://diar.ia.br/p/google-lan-a-ai-para-controle-aut-nomo-de-browsers); já em 2026, 190 dias mais tarde, [a personalização do Gemini chegou ao Brasil](https://diar.ia.br/p/stanford-ia-avan-a-mais-r-pido-que-qualquer-tecnologia), seguida 61 dias depois por [um fundo de investimento em IA feito ao lado da Monashees](https://diar.ia.br/p/sp-vai-mapear-surtos-de-dengue-por-bairro) e, mais 6 dias depois, [o Google AI Plus de graça para clientes da Vivo](https://diar.ia.br/p/google-ai-plus-de-gra-a-na-vivo).`,
           'Fora do Brasil especificamente, a integração cresceu em quase todo produto do ecossistema Google: [o Gemini embarcou no Chrome](https://diar.ia.br/p/profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-798f898c74970), [o Google Maps ganhou a API do Gemini](https://diar.ia.br/p/aws-sofre-queda) e, um dia depois de [a Apple trazer o Gemini para dentro da Siri e do próprio Google Maps](https://diar.ia.br/p/siri-agora-tera-gemini), [o Workspace ganhou mais capacidades](https://diar.ia.br/p/microsoft-em-busca-da-superinteligencia). Já em 2026, veio a vez do [Gmail](https://diar.ia.br/p/grok-sendo-investigado-internacionalmente) e, 3 dias depois, de uma cobertura sobre [o Gemini "entendendo toda a vida digital" do usuário](https://diar.ia.br/p/mckinsey-candidatos-devem-dominar-prompts). Mais recentemente, [o Gemini voltou ao Chrome, agora sem precisar abrir aba nova](https://diar.ia.br/p/gemini-chega-ao-chrome-sem-abrir-aba-nova), [ganhou cadernos de estudo](https://diar.ia.br/p/sabia-4-thinking-brasil-tem-modelo-de-raciocinio) 16 dias depois, viu o [NotebookLM ser rebatizado de Gemini Notebook](https://diar.ia.br/p/gpt-5-6-sol-apaga-arquivos-sem-permissao) 21 dias mais tarde, e fechou o período [editando o Google Docs por conta própria](https://diar.ia.br/p/repositorio-de-ia-sem-freio-para-nudes-ilegais), 13 dias depois disso.',
           "Um fio à parte, mas revelador, é o avanço da autonomia do próprio Gemini: em outubro de 2025, [o Google lançou uma IA para controle autônomo de navegadores](https://diar.ia.br/p/google-lan-a-ai-para-controle-aut-nomo-de-browsers); 260 dias depois, [o Gemini 3.5 Flash passou a controlar o computador inteiro do usuário](https://diar.ia.br/p/gemini-3-5-flash-agora-controla-seu-computador), não só o navegador.",
         ],
@@ -211,7 +309,7 @@ export function getGoogleGeminiHub(): HubContent {
         heading: "Que aposta em educação o Google fez em IA no Brasil?",
         paragraphs: [
           'O compromisso do Google com formação em IA no Brasil aparece primeiro como discurso, não produto: [o CEO do Google DeepMind definiu "aprender contínuo" como habilidade essencial](https://diar.ia.br/p/profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-3c7f661e00f75) em 15 de setembro de 2025. No dia seguinte veio o produto: [treinamento de IA em cinemas do Brasil](https://diar.ia.br/p/profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-d28fd72dae9b7).',
-          "Depois vieram, em sequência, [o Google Skills, uma plataforma com cursos de IA gratuitos](https://diar.ia.br/p/google-skills-plataforma-com-cursos-de-ia-gratuitos), 37 dias depois; [um curso gratuito aos sábados](https://diar.ia.br/p/google-da-curso-gratuito-de-ia-no-sabado), 40 dias mais tarde; e [mais um curso novo de IA](https://diar.ia.br/p/novo-curso-de-ia-do-google), 80 dias depois disso: 4 iniciativas de formação espalhadas ao longo de 5 meses.",
+          `Depois vieram, em sequência, [o Google Skills, uma plataforma com cursos de IA gratuitos](https://diar.ia.br/p/google-skills-plataforma-com-cursos-de-ia-gratuitos), 37 dias depois; [um curso gratuito aos sábados](https://diar.ia.br/p/google-da-curso-gratuito-de-ia-no-sabado), 40 dias mais tarde; e [mais um curso novo de IA](https://diar.ia.br/p/novo-curso-de-ia-do-google), 80 dias depois disso: ${educacao} iniciativas de formação espalhadas ao longo de 5 meses.`,
           "O arco fecha 146 dias depois do último curso, e de um jeito quase irônico: [o Google passou a liberar o uso de IA dentro das próprias entrevistas técnicas de emprego](https://diar.ia.br/p/ibm-admite-atraso-em-ia-e-acao-despenca-25). O candidato que aprendeu com os cursos gratuitos do Google agora pode usar essa mesma IA para tentar entrar na empresa.",
         ],
       },
