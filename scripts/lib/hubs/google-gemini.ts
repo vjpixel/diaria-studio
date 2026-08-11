@@ -195,6 +195,11 @@ export function buildGoogleGeminiFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
     gapWithinSurge3b: 0,
     spanSurge3: 0,
   };
+  // #4923 item 1: substitui o CTA-sem-dado (obrigatório aqui — o hub já
+  // está no teto de 10 perguntas do validador) por uma pergunta factual. A
+  // Seção 2 ("Como o Gemini foi se espalhando pelos produtos do dia a dia e
+  // pelo Brasil?") já narra essas integrações sem porta de entrada no FAQ.
+  const integracaoProdutos = countMatching(sources, /chrome|maps|workspace|gmail|docs|siri|copilot/i);
 
   // Achado do editor no hub anterior (260804), replicado aqui: as perguntas
   // abaixo não podem repetir o texto literal do H2 de nenhuma `section`.
@@ -239,9 +244,8 @@ export function buildGoogleGeminiFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
       answer: `Em 9 dias de julho de 2026 saíram ${regulatorio} manchetes que, lidas juntas, explicam o alarme: a União Europeia forçando o Google a abrir dados para rivais, editoras cogitando banir o buscador e um estudo mostrando a IA do Google dominando 43% das buscas nos EUA.`,
     },
     {
-      question: "Como acompanho as próximas notícias sobre Google e Gemini?",
-      answer:
-        "Assine a diar.ia.br. A newsletter cobre lançamentos, expansão de produto e movimentos regulatórios do Google conforme acontecem, de segunda a sexta, e o arquivo temático é atualizado periodicamente para refletir a cobertura mais recente.",
+      question: "Em quantos produtos do dia a dia, além do buscador, o Gemini já foi integrado?",
+      answer: `Pelo menos ${integracaoProdutos} manchetes cobriram uma integração do Gemini fora do próprio buscador: [o Chrome](https://diar.ia.br/p/profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-798f898c74970), [o Google Maps](https://diar.ia.br/p/aws-sofre-queda), [a Siri, via parceria com a Apple](https://diar.ia.br/p/siri-agora-tera-gemini), [o Workspace](https://diar.ia.br/p/microsoft-em-busca-da-superinteligencia), [o Gmail](https://diar.ia.br/p/grok-sendo-investigado-internacionalmente) e [o Google Docs, editado pelo próprio Gemini](https://diar.ia.br/p/repositorio-de-ia-sem-freio-para-nudes-ilegais), entre outras.`,
     },
   ];
 }
