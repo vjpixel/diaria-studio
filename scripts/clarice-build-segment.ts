@@ -53,10 +53,48 @@
  * campanhas comprometidas — queued/sent — é pulada com aviso se ausente ou se
  * a consulta falhar) mas OBRIGATÓRIA pra escrita real (aborta sem ela).
  *
- * Uso:
+ * MODO WATERFALL MULTI-TIER (#4979): alternativa a `--group` pra composições
+ * custom que nenhum NAMED_GROUP cobre (ex: "jurídico + vários cohorts score=0,
+ * waterfall até um budget fixo" — a campanha própria que motivou a issue,
+ * generalizando o one-off `clarice-build-wave-260812-especial.ts`, nunca
+ * commitado). `--group` e `--tiers` são MUTUAMENTE EXCLUSIVOS — exatamente um
+ * dos dois é obrigatório por invocação. Os guards (dedup por ciclo, recência
+ * automática, campanha comprometida, `--hold`) são os MESMOS dos 4 grupos
+ * nomeados — o modo tiers entra DEPOIS deles, nunca os bypassa.
+ *
+ *   npx tsx scripts/clarice-build-segment.ts --tiers plano.json --key d12-especial --cycle 2607-08 --budget 3000 --exact-budget --dry-run
+ *   --tiers ARQUIVO.json  composição declarativa: `{ "tiers": [ {...}, ... ] }`,
+ *                cada tier um `WaterfallTierSpec` (clarice-segment.ts):
+ *                  name (obrigatório, único), juridico? (bool), cohort? (string,
+ *                  igualdade exata), score? ("positive" | "zero" — filtra por
+ *                  priority_points), orderBy? ("priority_points_desc" [default]
+ *                  | "created_desc"). Eixo omitido = qualquer valor casa.
+ *                Cada tier consome o que sobrar do `--budget` COMPARTILHADO, na
+ *                ORDEM declarada (waterfall) — tier 1 pega o que precisar
+ *                primeiro, tier 2 pega do resto, etc.
+ *   --key X      OBRIGATÓRIO com --tiers — slug de saída (equivalente ao nome
+ *                do grupo nos NAMED_GROUPS: nomeia `{key}.csv`/
+ *                `{key}-manifest.json`/entrada em sent-or-queued.json).
+ *                Minúsculas/dígitos/hífen (ex: "d12-especial").
+ *   --desc X     OPCIONAL com --tiers — `desc` do manifest. Default:
+ *                "Waterfall multi-tier ({key})".
+ *   --guard-scope committed|queued   OPCIONAL com --tiers (ver CommittedGuardScope
+ *                em clarice-segment.ts) — default "committed" (queued ∪ sent,
+ *                o escopo mais seguro pra composição que mistura re-envio e
+ *                1º envio, mesmo escopo do one-off de referência).
+ *   --exact-budget   OPCIONAL com --tiers — se `--budget` não fechar
+ *                EXATO, aborta sem escrever nada (mesma disciplina do one-off:
+ *                "se o universo pós-guards não fechar N exatamente, aborta").
+ *                Sem a flag, `--budget` com --tiers tem semântica de TETO
+ *                (mesma dos NAMED_GROUPS) — escreve o que der, mesmo que menos
+ *                que o pedido.
+ *   --cohort e --min-score/--score NÃO são suportados com --tiers — declare
+ *                `cohort`/`score` DENTRO de cada tier do plano.
+ *
+ * MODO GRUPO NOMEADO (comportamento pré-#4979, inalterado):
  *   npx tsx scripts/clarice-build-segment.ts --group engajados --cycle 2606-07 [--budget N] [--min-score N] [--dry-run]
- *   --group X    OBRIGATÓRIO — um dos grupos nomeados (ver NAMED_GROUPS em clarice-segment.ts).
- *   --cycle X    OBRIGATÓRIO — {conteúdo}-{envio} (destino dos artefatos, ver clarice-paths.ts).
+ *   --group X    um dos 4 grupos nomeados (ver NAMED_GROUPS em clarice-segment.ts).
+ *   --cycle X    OBRIGATÓRIO (os dois modos) — {conteúdo}-{envio} (destino dos artefatos, ver clarice-paths.ts).
  *   --budget N   OPCIONAL (>0) — teto do grupo; pega o TOPO da ordem (pós-sort).
  *                Sem a flag, o grupo inteiro é escrito.
  *   --min-score N / --score N   OPCIONAL (#2973 — "score" é o termo do editor
@@ -226,9 +264,14 @@ import {
   isNamedGroupKey,
   excludeCommittedToQueuedCampaigns,
   resolveCohortArg,
+  buildWaterfallSelection,
+  validateWaterfallTiers,
   type NamedGroupKey,
   type NamedGroupContext,
   type StoreRow,
+  type CommittedGuardScope,
+  type WaterfallTierSpec,
+  type WaterfallTierStat,
 } from "./lib/clarice-segment.ts";
 import { clariceSegmentsDir, cycleSendMonthStartIso, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
 import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
@@ -367,7 +410,13 @@ export function checkRoundSizeCap(
 // QUAL grupo — ver docstring do topo do arquivo pro raciocínio completo.
 
 export interface SentOrQueuedHistoryEntry {
-  group: NamedGroupKey;
+  // string (não NamedGroupKey) desde #4979: o modo `--tiers` grava aqui o
+  // `--key` do plano de tiers (slug livre, não um dos 4 NAMED_GROUPS) — o
+  // guard cycle-wide (ver docstring do topo do arquivo) é CICLO-WIDE por
+  // design e precisa enxergar os dois modos igualmente. NamedGroupKey
+  // continua sendo um subtipo válido de string, então nenhum call site do
+  // modo --group precisa mudar.
+  group: string;
   /** Quantidade de emails NOVOS adicionados por esta entrada (não cumulativo). */
   count: number;
   /** ISO timestamp da invocação que gravou esta entrada. */
@@ -433,7 +482,7 @@ export function excludeSentOrQueued<T extends { email: string }>(
 export function appendSentOrQueuedEmails(
   segmentsDir: string,
   cycle: string,
-  group: NamedGroupKey,
+  group: string,
   newEmails: string[],
 ): void {
   ensureDir(segmentsDir);
@@ -466,19 +515,112 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const cycle = requireCycleArg(argv);
   const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
 
+  // #4979: --group e --tiers são MUTUAMENTE EXCLUSIVOS — exatamente um dos
+  // dois modos por invocação. `groupArg` fica "" (getArg, mesmo padrão de
+  // sempre) quando ausente; `tiersPathArg` fica undefined (getStringArg).
   const groupArg = getArg(argv, "group");
-  if (!groupArg || !isNamedGroupKey(groupArg)) {
+  let tiersPathArg: string | undefined;
+  try {
+    tiersPathArg = getStringArg(argv, "tiers", { example: "plano.json" });
+  } catch (e) {
+    console.error(`❌ ${(e as Error).message}`);
+    process.exit(1);
+  }
+  if (groupArg && tiersPathArg) {
+    console.error("❌ --group e --tiers são mutuamente exclusivos — escolha um modo por invocação (#4979).");
+    process.exit(1);
+  }
+  if (!groupArg && !tiersPathArg) {
     console.error(
-      `❌ --group é obrigatório — um dos grupos nomeados: ${Object.keys(NAMED_GROUPS).join(", ")}. ` +
-        `Ex: --group engajados.`,
+      `❌ é obrigatório passar --group (um dos grupos nomeados: ${Object.keys(NAMED_GROUPS).join(", ")}) ` +
+        `OU --tiers <arquivo.json> (composição multi-tier, #4979). Ex: --group engajados.`,
     );
     process.exit(1);
   }
-  const group: NamedGroupKey = groupArg;
+  if (groupArg && !isNamedGroupKey(groupArg)) {
+    console.error(
+      `❌ --group inválido — um dos grupos nomeados: ${Object.keys(NAMED_GROUPS).join(", ")}. Ex: --group engajados.`,
+    );
+    process.exit(1);
+  }
+  // `group` é null no modo --tiers — todo uso abaixo trata os dois modos.
+  const group: NamedGroupKey | null = groupArg ? (groupArg as NamedGroupKey) : null;
+
+  // #4979: --cohort/--min-score/--score presumem UM predicado só — no modo
+  // --tiers cada tier já declara seu próprio `cohort`/`score`, então misturar
+  // os dois seria ambíguo (qual predicado vale?). Checagem de PRESENÇA aqui
+  // (getArg nunca lança) — a validação de FORMA de --cohort roda mais abaixo,
+  // igual antes, só que agora condicionada a `!tiersPathArg`.
+  if (tiersPathArg && (getArg(argv, "cohort") || getArg(argv, "min-score") || getArg(argv, "score"))) {
+    console.error(
+      "❌ --cohort/--min-score/--score não são suportados com --tiers — declare 'cohort'/'score' DENTRO de cada tier do plano.",
+    );
+    process.exit(1);
+  }
+
+  // #4979: plano de tiers — lido, parseado e validado cedo (falha antes de
+  // qualquer query no store), mesmo padrão de --cohort/--hold abaixo.
+  let tierSpecs: WaterfallTierSpec[] = [];
+  let tiersKey: string | null = null;
+  let tiersDesc = "";
+  let tiersGuardScope: CommittedGuardScope = "committed";
+  let exactBudget = false;
+  if (tiersPathArg) {
+    let keyArg: string | undefined;
+    try {
+      keyArg = getStringArg(argv, "key", { example: "d12-especial" });
+    } catch (e) {
+      console.error(`❌ ${(e as Error).message}`);
+      process.exit(1);
+    }
+    if (!keyArg) {
+      console.error(
+        "❌ --tiers requer --key <slug> — identifica o artefato de saída (equivalente ao nome do grupo nos NAMED_GROUPS).",
+      );
+      process.exit(1);
+    }
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(keyArg)) {
+      console.error(`❌ --key "${keyArg}" inválido — use minúsculas/dígitos/hífen (ex: "d12-especial").`);
+      process.exit(1);
+    }
+    tiersKey = keyArg;
+
+    let rawTiersFile: unknown;
+    try {
+      rawTiersFile = JSON.parse(readFileSync(resolve(tiersPathArg), "utf8"));
+    } catch (e) {
+      console.error(`❌ falha ao ler/parsear --tiers "${tiersPathArg}": ${(e as Error).message}`);
+      process.exit(1);
+    }
+    try {
+      tierSpecs = validateWaterfallTiers((rawTiersFile as { tiers?: unknown } | null)?.tiers);
+    } catch (e) {
+      console.error(`❌ ${(e as Error).message}`);
+      process.exit(1);
+    }
+
+    let guardScopeRaw: string | undefined;
+    let descArg: string | undefined;
+    try {
+      guardScopeRaw = getStringArg(argv, "guard-scope", { example: "committed" });
+      descArg = getStringArg(argv, "desc", { example: "Onda especial" });
+    } catch (e) {
+      console.error(`❌ ${(e as Error).message}`);
+      process.exit(1);
+    }
+    if (guardScopeRaw !== undefined && guardScopeRaw !== "committed" && guardScopeRaw !== "queued") {
+      console.error(`❌ --guard-scope inválido: "${guardScopeRaw}" — use "committed" ou "queued".`);
+      process.exit(1);
+    }
+    tiersGuardScope = (guardScopeRaw as CommittedGuardScope | undefined) ?? "committed";
+    tiersDesc = descArg ?? `Waterfall multi-tier (${tiersKey})`;
+    exactBudget = hasFlag(argv, "exact-budget");
+  }
 
   // #4347: `novos` exige --since YYYY-MM-DD (janela do laço Stripe→MV→envio).
   // Validação de FORMA aqui (semântica de data delegada ao Date.parse dentro
-  // de isNovos/segmentNovos, via ctx.sinceIso) — os outros 3 grupos ignoram.
+  // de isNovos/segmentNovos, via ctx.sinceIso) — os outros 3 grupos (e o modo
+  // --tiers) ignoram.
   let ctx: NamedGroupContext | undefined;
   const forceCap = hasFlag(argv, "force");
   if (group === "novos") {
@@ -503,6 +645,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       process.exit(1);
     }
     budget = n;
+  }
+
+  // #4979: --exact-budget SEM --budget não tem alvo pra comparar — sem esta
+  // checagem, a flag simplesmente não fazia nada (achado do self-review),
+  // silenciosamente diferente do "aborta se não fechar o número pedido" que
+  // o nome promete.
+  if (tiersPathArg && exactBudget && budget <= 0) {
+    console.error("❌ --exact-budget requer --budget N (>0) — sem alvo pra comparar. Omita --exact-budget, ou passe --budget junto.");
+    process.exit(1);
   }
 
   // #2973: --min-score / --score são ALIASES do mesmo corte (score := priority_points,
@@ -568,11 +719,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // rate-limit/Ctrl+C ANTES do recompute final — ou um caminho futuro que
   // bypasse recomputeDerived — recria o problema silenciosamente. Abortar aqui
   // troca "onda menor sem aviso" por uma instrução clara de como destravar.
-  if (group === "engajados" && isDerivedStale(db)) {
+  // #4979: o modo --tiers também fica exposto ao #4205 sempre que algum tier
+  // filtra por `score: "positive"` (mesmo eixo de priority_points que
+  // 'engajados' usa) — mesmo guard, gatilho generalizado.
+  const scoreSensitive = tiersPathArg ? tierSpecs.some((t) => t.score === "positive") : group === "engajados";
+  if (scoreSensitive && isDerivedStale(db)) {
     db.close();
     console.error(
       "❌ store defasado (#4205): existem contatos com engajamento Brevo mais " +
-        "recente que o último recompute de priority_points — o grupo 'engajados' " +
+        "recente que o último recompute de priority_points — a seleção " +
         "sairia menor do que deveria, silenciosamente. Rode " +
         "`npx tsx scripts/clarice-build-db.ts` (ou `clarice-sync-brevo.ts` até o " +
         "fim, sem interrupção) antes de montar esta onda.",
@@ -655,7 +810,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // campanha AGENDADA — corrigir depois exigiria cancelar/recriar via
   // API/painel (#4935), não é gratuito.
   const apiKey = process.env.BREVO_CLARICE_API_KEY;
-  const guardScope = NAMED_GROUPS[group].guardScope;
+  // #4979: no modo --tiers o escopo vem de --guard-scope (default "committed"
+  // — ver docstring do topo do arquivo); no modo --group, do NAMED_GROUPS
+  // como sempre.
+  const guardScope: CommittedGuardScope = tiersPathArg ? tiersGuardScope : NAMED_GROUPS[group as NamedGroupKey].guardScope;
   // Nome neutro de propósito: o conteúdo é `queued` OU `queued ∪ sent` conforme
   // `guardScope` — chamá-lo de "committed" induziria a ler `sent` onde não há.
   let guardListIds: Set<string> = new Set();
@@ -722,17 +880,58 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
   const holdResult = applyHolds(universe, holds);
 
-  const { csv, manifestEntry, selected } = buildSegmentArtifact(holdResult.kept, group, budget, minScore, ctx);
+  // #4979: fonte ÚNICA pros dois modos — o `nameByEmail`/`Papa.unparse` do
+  // modo --tiers espelha exatamente o que `buildSegmentArtifact` já faz pro
+  // modo --group (mesmas colunas de CSV, mesmo shape de manifest). `rows`
+  // (não `inputRows`) porque o nome precisa vir do universo COMPLETO, mesmo
+  // padrão de `buildSegmentArtifact`.
+  function computeArtifact(inputRows: SegmentRow[]): {
+    csv: string;
+    manifestEntry: SegmentManifestEntry;
+    selected: SegmentRow[];
+    tierStats?: WaterfallTierStat[];
+  } {
+    if (tiersPathArg) {
+      const wf = buildWaterfallSelection(inputRows, tierSpecs, budget);
+      const nameByEmail = new Map(rows.map((r) => [r.email, firstName(r.name)]));
+      const csvRows = wf.selected.map((r) => ({ email: r.email, NOME: nameByEmail.get(r.email) ?? "" }));
+      const file = `${tiersKey}.csv`;
+      const csvOut = Papa.unparse({ fields: ["email", "NOME"], data: csvRows });
+      return {
+        csv: csvOut,
+        manifestEntry: { key: tiersKey as string, file, desc: tiersDesc, count: wf.selected.length },
+        selected: wf.selected,
+        tierStats: wf.tierStats,
+      };
+    }
+    return buildSegmentArtifact(inputRows, group as NamedGroupKey, budget, minScore, ctx);
+  }
+
+  const { csv, manifestEntry, selected, tierStats } = computeArtifact(holdResult.kept);
+
+  // #4979: mesma disciplina do one-off de referência — se o operador pediu
+  // budget EXATO (`--exact-budget`) e o universo pós-guards não fechar esse
+  // número, aborta SEM escrever nada em vez de encolher/expandir o pedido em
+  // silêncio. Só se aplica ao modo --tiers (o modo --group nunca teve essa
+  // semântica — `--budget` ali sempre foi TETO, comportamento inalterado).
+  if (tiersPathArg && exactBudget && budget > 0 && manifestEntry.count !== budget) {
+    console.error(
+      `❌ waterfall não fechou ${budget} exato(s) (deu ${manifestEntry.count}) — abortando sem escrever ` +
+        `(--exact-budget ativo). Universo mudou desde a última prévia (guards ao vivo/novos registros) — ` +
+        `revisar composição com o editor, ou omitir --exact-budget pra aceitar um total menor.`,
+    );
+    process.exit(1);
+  }
 
   // O número que importa pro operador não é quantos contatos do segmento
   // existem no universo (a maioria nem seria selecionada), e sim quantos a
   // reserva TIROU DESTA seleção. Só o segundo responde "o que eu deixei de
   // mandar hoje". Calculado rodando a mesma seleção sem a reserva —
-  // buildSegmentArtifact é puro (não escreve; a escrita é do main), então o
+  // computeArtifact é puro (não escreve; a escrita é do main), então o
   // custo é uma passada em memória, e só quando há reserva ativa.
   let heldFromSelection = 0;
   if (holdResult.heldTotal > 0) {
-    const semReserva = buildSegmentArtifact(universe, group, budget, minScore, ctx);
+    const semReserva = computeArtifact(universe);
     heldFromSelection = semReserva.manifestEntry.count - manifestEntry.count;
     console.error(
       `🔒 reserva (--hold ${holds.join(",")}): ${heldFromSelection} contato(s) a menos NESTA seleção ` +
@@ -754,13 +953,22 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
   }
 
+  // #4979: identificador único do artefato nos dois modos — nome do grupo no
+  // modo --group, --key no modo --tiers. Usado pra nomear arquivos, a entrada
+  // em sent-or-queued.json, e as mensagens de log/erro abaixo.
+  const artifactKey: string = group ?? (tiersKey as string);
+
   const summary = {
     cycle,
-    group,
-    label: NAMED_GROUPS[group].label,
-    source: "store-driven, grupo nomeado (#2885)",
+    mode: tiersPathArg ? "waterfall-tiers" : "named-group",
+    group: group ?? undefined,
+    tiers_key: tiersPathArg ? tiersKey : undefined,
+    tiers_path: tiersPathArg || undefined,
+    label: tiersPathArg ? tiersDesc : NAMED_GROUPS[group as NamedGroupKey].label,
+    source: tiersPathArg ? "waterfall multi-tier (#4979)" : "store-driven, grupo nomeado (#2885)",
     budget: budget || undefined,
-    min_score: minScore || undefined,
+    exact_budget: tiersPathArg && exactBudget ? true : undefined,
+    min_score: !tiersPathArg ? minScore || undefined : undefined,
     since: ctx?.sinceIso || undefined,
     // #4622: auditoria — undefined vira ausente no JSON (não escreve `null` ruidoso).
     cohort: cohort ?? undefined,
@@ -791,6 +999,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     /** Quantos do segmento existem no universo (contexto, quase sempre maior). */
     held_in_universe: holdResult.heldTotal || undefined,
     held_by_segment: holdResult.heldTotal > 0 ? holdResult.heldBySegment : undefined,
+    // #4979: por tier — só presente no modo --tiers, pra auditar "quanto cada
+    // tier disponibilizou vs. quanto o waterfall de fato tomou" sem precisar
+    // recalcular manualmente.
+    tier_stats: tierStats,
     selected: manifestEntry.count,
   };
 
@@ -807,7 +1019,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       return;
     }
     console.error(
-      `❌ 0 contato(s) no grupo '${group}' — verifique o predicado (send_eligible/histórico/mv_bucket) contra o store, ` +
+      `❌ 0 contato(s) selecionado(s) (${tiersPathArg ? `plano de tiers '${artifactKey}'` : `grupo '${artifactKey}'`}) — ` +
+        `verifique o(s) predicado(s) (send_eligible/histórico/mv_bucket${tiersPathArg ? "/juridico/cohort/score dos tiers" : ""}) contra o store, ` +
         `se todo o universo elegível já foi selecionado por outra invocação deste ciclo ` +
         `(${alreadyTracked} excluído(s) via sent-or-queued.json)` +
         (cohort ? `, se a safra '${cohort}' (--cohort) tem contatos elegíveis pro predicado` : "") +
@@ -825,19 +1038,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // SEPARADO do CSV de transporte (ver buildPrioritySnapshotCsv), mesmos
     // `selected` que foram pro CSV acima.
     writeFileSync(
-      resolve(dir, `${group}-priority-snapshot.csv`),
+      resolve(dir, `${artifactKey}-priority-snapshot.csv`),
       buildPrioritySnapshotCsv(selected),
       "utf8",
     );
     writeFileSync(
-      resolve(dir, `${group}-manifest.json`),
+      resolve(dir, `${artifactKey}-manifest.json`),
       JSON.stringify([manifestEntry], null, 2),
       "utf8",
     );
-    appendSentOrQueuedEmails(dir, cycle, group, selected.map((r) => r.email));
-    console.error(`✅ ${manifestEntry.count} contato(s) do grupo '${group}' em ${resolve(dir, manifestEntry.file)}`);
+    appendSentOrQueuedEmails(dir, cycle, artifactKey, selected.map((r) => r.email));
+    console.error(`✅ ${manifestEntry.count} contato(s) de '${artifactKey}' em ${resolve(dir, manifestEntry.file)}`);
   } else {
-    console.error(`ℹ️  dry-run — nada escrito. ${manifestEntry.count} contato(s) no grupo '${group}'.`);
+    console.error(`ℹ️  dry-run — nada escrito. ${manifestEntry.count} contato(s) em '${artifactKey}'.`);
   }
   console.log(JSON.stringify(summary, null, 2));
 }
