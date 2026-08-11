@@ -6,6 +6,7 @@ import { join, sep } from "node:path";
 import {
   listNameFor,
   groupCellListNameFor,
+  MAX_BREVO_LIST_NAME_LENGTH,
   isGroupCellWave,
   resolveListName,
   countRows,
@@ -162,6 +163,48 @@ describe("listNameFor", () => {
     assert.equal(listNameFor(w1, "Jun/2026"), "Clarice Jun/2026 W1 — re-envio (engajado)");
     assert.equal(listNameFor(w3, "Jun/2026"), "Clarice Jun/2026 W3 — 1º envio (T06+)");
   });
+
+  // #4976: nome de lista longo demais falhava só depois do POST, com um 400
+  // opaco da Brevo ("List name is invalid", sem dizer o limite). O guard
+  // precisa disparar ANTES de qualquer chamada de rede — este teste não
+  // mocka HTTP nenhum: se `listNameFor` chamasse a Brevo, o teste teria que
+  // fazer isso, e não faz.
+  it("nome dentro do limite (~48 chars, confirmado bom em produção) não lança", () => {
+    const w: WaveDef = {
+      key: "W1",
+      file: "w1.csv",
+      desc: "re-envio (engajado)", // "Clarice Jun/2026 W1 — re-envio (engajado)" = 42 chars
+    };
+    assert.doesNotThrow(() => listNameFor(w, "Jun/2026"));
+  });
+
+  it("nome que excede MAX_BREVO_LIST_NAME_LENGTH lança ANTES de qualquer rede, com mensagem acionável", () => {
+    const w: WaveDef = {
+      key: "W1",
+      file: "w1.csv",
+      desc: "x".repeat(MAX_BREVO_LIST_NAME_LENGTH), // sozinho já estoura o limite total do nome
+    };
+    assert.throws(
+      () => listNameFor(w, "Jun/2026"),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.match(err.message, /excede \d+ caracteres \(Brevo\)/);
+        assert.match(err.message, /encurte --label ou o desc do manifest/);
+        return true;
+      },
+    );
+  });
+
+  it("nome exatamente no limite (MAX_BREVO_LIST_NAME_LENGTH chars) não lança — o guard é > (estrito), não >=", () => {
+    // Constrói um WaveDef cujo nome final ("Clarice L d — " + desc) bate
+    // exatamente no limite, ajustando o tamanho do desc pro fixo em volta.
+    const fixedLen = "Clarice L d — ".length;
+    const desc = "x".repeat(MAX_BREVO_LIST_NAME_LENGTH - fixedLen);
+    const w: WaveDef = { key: "d", file: "f.csv", desc };
+    const name = listNameFor(w, "L");
+    assert.equal(name.length, MAX_BREVO_LIST_NAME_LENGTH);
+    assert.doesNotThrow(() => listNameFor(w, "L"));
+  });
 });
 
 // #4449 item 3 / #4471: até o #4449, o nome da LISTA do braço COM CÉLULA do
@@ -186,6 +229,16 @@ describe("groupCellListNameFor (#4449 item 3 — gerador determinístico do nome
 
   it("key sem sufixo -A/-B/-C (ex: grupo sem célula) → lança em vez de gerar nome enganoso", () => {
     assert.throws(() => groupCellListNameFor("2607-08", "d1-sab01-interno"));
+  });
+
+  // #4976: mesmo guard de comprimento de listNameFor se aplica aqui — o
+  // braço com célula do --group também cria lista real na Brevo.
+  it("key comprida o suficiente pra estourar o limite → lança com mensagem acionável, antes de qualquer rede", () => {
+    const longKey = `d1-${"x".repeat(MAX_BREVO_LIST_NAME_LENGTH)}-A`;
+    assert.throws(
+      () => groupCellListNameFor("2607-08", longKey),
+      /excede \d+ caracteres \(Brevo\)/,
+    );
   });
 
   it("round-trip isolado (paridade gerador + parser): campaignNameFor + groupCellListNameFor recuperam ciclo/célula corretos via parseAbcAudienceCampaign, pras 3 células", () => {

@@ -184,9 +184,47 @@ export function loadWaveDefs(dir: string, group: string | null = null): WaveDef[
 // Pure helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * #4976: limite seguro de comprimento pro nome de uma lista Brevo
+ * (`POST /contacts/lists` → `name`). A Brevo NÃO documenta um `maxLength`
+ * explícito no schema público (`developers.brevo.com/reference/create-list`,
+ * checado 260811) — quando o nome excede o limite real, ela responde
+ * `400 {"code":"invalid_parameter","message":"List name is invalid"}`, sem
+ * dizer o número. Valor aqui é uma estimativa CONSERVADORA calibrada por
+ * evidência conhecida, não o limite exato documentado:
+ *   - ~130 caracteres FALHOU (#4976, o incidente que originou esta issue).
+ *   - ~48 caracteres FUNCIONOU (medição citada na própria issue).
+ *   - "Clarice Retenção Jun/2026 engajados — Engajados (retenção)" (58
+ *     chars) é o exemplo CANÔNICO de uso documentado no header deste arquivo
+ *     (`--group engajados --label "Retenção Jun/2026"`) — precisa continuar
+ *     válido, então o limite não pode ficar abaixo disso.
+ * 100 fica bem acima do maior nome real conhecido (58) e com folga
+ * confortável abaixo do menor valor confirmado ruim (130) — se a Brevo
+ * revelar o número exato no futuro, ajustar esta constante (e o comentário)
+ * em vez de inventar precisão que não temos.
+ */
+export const MAX_BREVO_LIST_NAME_LENGTH = 100;
+
+/**
+ * Valida `name` contra `MAX_BREVO_LIST_NAME_LENGTH` ANTES de qualquer POST —
+ * sem isso, um nome longo demais só falha depois do `createList` já ter ido
+ * pra rede, com o 400 opaco da Brevo (#4976). Lança com o comprimento real +
+ * o limite + uma ação concreta (a mensagem de erro do 400 da Brevo não diz
+ * nem uma coisa nem outra).
+ */
+function assertListNameLength(name: string): string {
+  if (name.length > MAX_BREVO_LIST_NAME_LENGTH) {
+    throw new Error(
+      `nome de lista excede ${MAX_BREVO_LIST_NAME_LENGTH} caracteres (Brevo) — encurte --label ou o desc do ` +
+        `manifest. Tamanho atual: ${name.length}. Nome: "${name}"`,
+    );
+  }
+  return name;
+}
+
 /** Nome determinístico da lista Brevo. Ex: "Clarice Jun/2026 W1 — T1 abriu". */
 export function listNameFor(wave: WaveDef, label: string): string {
-  return `Clarice ${label} ${wave.key} — ${wave.desc}`;
+  return assertListNameLength(`Clarice ${label} ${wave.key} — ${wave.desc}`);
 }
 
 /**
@@ -236,7 +274,7 @@ export function groupCellListNameFor(cycle: string, key: string): string {
     );
   }
   const cell = m[1].toUpperCase();
-  return `Clarice ${cycle} ${key} — célula ${cell}`;
+  return assertListNameLength(`Clarice ${cycle} ${key} — célula ${cell}`);
 }
 
 /**
@@ -281,7 +319,7 @@ export function resolveListName(wave: WaveDef, label: string, cycle: string, gro
   // grupos nomeados (`engajados`, `ramp-warm`) não casam `^d\d+-` e seguem
   // com o naming de sempre, sem blast radius.
   if (group && /^d\d+-/.test(wave.key)) {
-    return `Clarice ${cycle} ${wave.key} — ${wave.desc}`;
+    return assertListNameLength(`Clarice ${cycle} ${wave.key} — ${wave.desc}`);
   }
   return listNameFor(wave, label);
 }
