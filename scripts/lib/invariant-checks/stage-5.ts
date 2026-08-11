@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
+import { checkPendingResearch, PENDING_RESEARCH_FILENAME } from "../pending-research.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -845,6 +846,50 @@ function checkEditionUrlFile(editionDir: string): InvariantViolation[] {
   return [];
 }
 
+/**
+ * #4990: incidente 260811 — editor pediu pesquisa adicional (mais tutoriais
+ * pra USE MELHOR) no gate do Stage 4, a pesquisa nunca foi completada
+ * naquela sessão, `use_melhor:[]` seguiu vazio e a seção sumiu da edição
+ * publicada sem NENHUM aviso — só foi notado no Stage 6 (auto-reporter),
+ * por um humano lendo o resultado final.
+ *
+ * Este check consome o marker `_internal/pending-research.json` (gravado
+ * pelo orchestrator no Stage 4 §4d.1 "ajustar" quando reconhece um pedido de
+ * pesquisa nova — ver `scripts/lib/pending-research.ts`). Se o marker segue
+ * `status: "pending"` e o bucket alvo ainda está vazio em `01-approved.json`
+ * neste ponto (entrada do Stage 5 — exatamente o momento que a issue #4990
+ * pede pra avisar), emite warning — nunca bloqueia (decisão #4990 item 2:
+ * "avisar explicitamente", não "impedir publicação"; retry automático de
+ * pesquisa — item 1 — é maior escopo, deliberadamente fora desta unidade).
+ *
+ * `severity: "warning"` roda em QUALQUER fase (não `postDispatchOnly`) —
+ * tanto em §5a (pré-dispatch, quando o aviso ainda pode influenciar a
+ * decisão do editor sobre publicar ou pausar) quanto em §5i (pós-dispatch,
+ * auditoria). Read-only (não depende de nenhum artefato que só existe
+ * depois do dispatch), então seguro em ambas as fases.
+ */
+function checkPendingResearchUnresolved(editionDir: string): InvariantViolation[] {
+  const result = checkPendingResearch(editionDir);
+  if (!result.pending) return [];
+  const { marker, bucketCount } = result;
+  return [
+    {
+      rule: "pending-research-unresolved",
+      message:
+        `Pesquisa pendente NÃO resolvida: o editor pediu conteúdo novo pra "${marker.bucket}" ` +
+        `no gate do Stage 4 (${marker.requestedAt}: "${marker.request}"), mas o bucket segue ` +
+        `com ${bucketCount} item(ns) em 01-approved.json. A seção pode publicar vazia/ausente ` +
+        `sem que ninguém tenha percebido (incidente #4990, edição 260811). ` +
+        `Ação: completar a pesquisa e integrar ao bucket, ou rodar ` +
+        `"npx tsx scripts/check-pending-research.ts --resolve --edition-dir ${editionDir} --reason <motivo>" ` +
+        `se o editor decidiu não perseguir.`,
+      source_issue: "#4990",
+      severity: "warning",
+      file: resolve(editionDir, "_internal", PENDING_RESEARCH_FILENAME),
+    },
+  ];
+}
+
 export const STAGE_5_RULES: InvariantRule[] = [
   {
     id: "step-4-sentinel-exists",
@@ -970,6 +1015,14 @@ export const STAGE_5_RULES: InvariantRule[] = [
     run: checkEditionUrlFile,
   },
   {
+    id: "pending-research-unresolved",
+    description:
+      "pesquisa pedida pelo editor no gate do Stage 4 mas ainda não integrada ao bucket alvo (#4990)",
+    source_issue: "#4990",
+    stage: 5,
+    run: checkPendingResearchUnresolved,
+  },
+  {
     id: "consent-binding",
     description: "canais com consent=auto devem ter dispatch real (#1575)",
     source_issue: "#1575",
@@ -1006,4 +1059,5 @@ export {
   checkInstagramCredsSet,
   checkThreadsCredsSet,
   checkTwitterCredsSet,
+  checkPendingResearchUnresolved,
 };
