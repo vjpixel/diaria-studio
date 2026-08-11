@@ -17,18 +17,20 @@
  * possível olhando o ARQUIVO inteiro, não uma edição isolada) — não
  * reempacotam manchete.
  *
- * **Precisão do escopo "número computado, nunca solto" (achado do fleet
- * review — o texto anterior aqui superestimava isso):** só as respostas do
- * `faq` são de fato COMPUTADAS em runtime, via `countMatching`/
- * `buildAnthropicClaudeFaq` sobre `SOURCES`. Os números na prosa de
- * `sections`/`INTRO` (datas, contagens como "12 lançamentos"/"75 edições")
- * são TRANSCRITOS À MÃO a partir do mesmo dataset no momento em que a
- * prosa foi escrita — corretos hoje (verificado contra `SOURCES` real ao
- * escrever), mas não recalculados a cada regeneração de
- * `sources.generated.json`. `test/build-hub-page.test.ts` tem um teste de
- * consistência que falha se esses números divergirem dos computados pelo
- * FAQ — rode a suíte depois de qualquer `generate-hub-sources.ts` novo, e
- * se ela quebrar, é a prosa que precisa de revisão manual, não o teste.
+ * **Escopo do #4922 item 1 (substitui a nota anterior, que ficou
+ * desatualizada por número transcrito à mão — achado da própria issue):**
+ * total de edições/manchetes, a janela de cobertura, a cadência, o hiato de
+ * lançamento e a contagem de cada padrão (`launches`/`mythos`/`fable`/
+ * `seguranca`) agora são um ÚNICO objeto derivado
+ * (`deriveAnthropicClaudeFacts`) que `buildIntro`, `buildAnthropicClaudeFaq`
+ * e `getAnthropicClaudeHub` (`sections`) consomem — nada disso é mais
+ * transcrito à mão. O que continua literal, de propósito (item 4 da issue:
+ * não derivável de `SOURCES`), são cifras de terceiro ("US$ 380 bi", "20%
+ * de chance") e datas específicas de eventos individuais dentro da
+ * narrativa (ex: "17 dias mais tarde" entre duas manchetes escolhidas à
+ * mão). `test/build-hub-page.test.ts` itera `HUB_LOADERS` e re-deriva os
+ * fatos comuns de `SOURCES` pra pegar divergência — rode a suíte depois de
+ * qualquer `generate-hub-sources.ts` novo.
  *
  * **Fonte é a cobertura da diária, não fato-checado contra a Anthropic
  * real** — este módulo sintetiza o que a diar.ia.br noticiou sobre o tema,
@@ -50,7 +52,18 @@
  * padrão `finge ser humano` pra contar esse episódio automaticamente.
  */
 import type { GeoFaqItem } from "../shared/geo-faq.ts";
-import { hubCoverageWindow, type HubContent, type HubSourceEdition } from "../shared/hub-page.ts";
+import {
+  hubCoverageWindow,
+  hubTotals,
+  hubMentionCadenceDays,
+  countMatching,
+  matchingDates,
+  maxDateGap,
+  formatDateShort,
+  formatDateLong,
+  type HubContent,
+  type HubSourceEdition,
+} from "../shared/hub-page.ts";
 import { HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM } from "../shared/utm-registry.ts";
 import sourcesRaw from "./anthropic-claude-sources.generated.json" with { type: "json" };
 import type { HubSourceEntry } from "../../generate-hub-sources.ts";
@@ -73,61 +86,51 @@ const PUBLISHED_DATE = "2026-08-04";
  * bump `UPDATED_DATE` só depois de reconciliar a prosa manualmente. */
 const UPDATED_DATE = "2026-08-10";
 
-/** O `matchedHeadlines` de `sources.generated.json` preserva o texto ORIGINAL
- * do cache Beehiiv, que vem em NFD (acento como combining mark separado —
- * "ç" é "c" + U+0327, não o "ç" precomposto U+00E7 que um regex literal usa
- * por padrão). Testar um regex acentuado direto contra esse texto falha
- * silenciosamente (achado ao vivo: `/anthropic lanç/i` batia 0 das 12
- * manchetes reais). `countMatching` normaliza pra NFC antes do teste — os
- * PATTERNS abaixo continuam escritos com acento normal (legíveis), a
- * normalização acontece só no lado do dado. Compare com `stripAccents()` em
- * `generate-hub-sources.ts` — normalização na direção OPOSTA (NFD+strip),
- * porque `HUB_KEYWORD_PATTERNS` de lá não tem acento nenhum hoje (é
- * defensiva pra um hub futuro, não corrige um bug já visto ali); aqui os
- * PATTERNS têm acento de verdade, então NFC é o que resolve.
- *
- * **Recebe `sources` como parâmetro (achado do fleet review) — antes lia a
- * constante `SOURCES` do módulo direto, ignorando qualquer `sources`
- * passado por quem chama.** Isso tornava `buildAnthropicClaudeFaq` só
- * PARCIALMENTE pura: `totalMentions`/`totalEditions`/`oldest`/`newest`
- * respeitavam o argumento, mas `launches`/`mythos`/`fable`/`seguranca`
- * sempre refletiam o dado real de produção — um teste com fixture
- * sintético (ex: array vazio, ou 1 headline construída à mão) passaria
- * "por acidente" comparando contra o número de produção, não contra o
- * fixture. */
-function countMatching(sources: HubSourceEntry[], pattern: RegExp): number {
-  let n = 0;
-  for (const s of sources) {
-    for (const h of s.matchedHeadlines) {
-      if (pattern.test(h.normalize("NFC"))) n++;
-    }
-  }
-  return n;
-}
+/** `matchedHeadlines` vem em NFD (achado original ao vivo: `/anthropic
+ * lanç/i` batia 0 das 12 manchetes reais antes da normalização NFC) — ver a
+ * nota completa em `countMatching`/`matchingDates`, agora em
+ * `scripts/lib/shared/hub-page.ts` (#4922 item 1: motor único reusado pelos
+ * 4 hubs, não reimplementado aqui). */
+const LAUNCH_PATTERN = /anthropic lanç|lançado o claude|recebe aval.*lançar/i;
+const MYTHOS_PATTERN = /mythos/i;
+const FABLE_PATTERN = /fable/i;
+const SEGURANCA_PATTERN =
+  /hacke|espiona|expõe bugs|consciente|análise psicológica|pensamentos silenciosos|finge ser humano/i;
 
-function formatDateLabel(dateIso: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateIso);
-  if (!m) return dateIso;
-  return `${m[3]}/${m[2]}/${m[1]}`;
+/**
+ * Fatos derivados de `sources` (#4922 item 1) — o objeto único que
+ * `buildIntro`, `buildAnthropicClaudeFaq` e `getAnthropicClaudeHub`
+ * (`sections`) agora consomem em vez de cada um recalcular ou transcrever à
+ * mão o mesmo número. Pure — recebe `sources` por parâmetro, nunca lê a
+ * constante `SOURCES` do módulo direto (mesma disciplina que já valia pra
+ * `buildAnthropicClaudeFaq`, agora estendida a TODO número derivável desta
+ * página, não só aos do FAQ).
+ */
+function deriveAnthropicClaudeFacts(sources: HubSourceEntry[]) {
+  const { totalEditions, totalMentions } = hubTotals(sources);
+  const { firstDate: oldest, lastDate: newest } = hubCoverageWindow(sources);
+  const cadenceDays = hubMentionCadenceDays(sources);
+  const launches = countMatching(sources, LAUNCH_PATTERN);
+  const launchDates = matchingDates(sources, LAUNCH_PATTERN);
+  const launchWindow = { first: launchDates[0] ?? oldest, last: launchDates[launchDates.length - 1] ?? newest };
+  const launchGap = maxDateGap(launchDates);
+  const mythos = countMatching(sources, MYTHOS_PATTERN);
+  const fable = countMatching(sources, FABLE_PATTERN);
+  const seguranca = countMatching(sources, SEGURANCA_PATTERN);
+  return { totalEditions, totalMentions, oldest, newest, cadenceDays, launches, launchWindow, launchGap, mythos, fable, seguranca };
 }
 
 /**
  * Monta o FAQ (issue #4558 item 3/6: 6-10 perguntas, números reais). Pure —
  * testável sem IO, opera inteiramente sobre o `sources` recebido (nunca lê
- * `SOURCES` do módulo direto — ver nota de `countMatching`).
+ * `SOURCES` do módulo direto — ver nota de `deriveAnthropicClaudeFacts`).
  */
 export function buildAnthropicClaudeFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
-  const totalMentions = sources.reduce((n, s) => n + s.matchedHeadlines.length, 0);
-  const totalEditions = sources.length;
-  const oldest = sources[0]?.date;
-  const newest = sources[sources.length - 1]?.date;
-  const launches = countMatching(sources, /anthropic lanç|lançado o claude|recebe aval.*lançar/i);
-  const mythos = countMatching(sources, /mythos/i);
-  const fable = countMatching(sources, /fable/i);
-  const seguranca = countMatching(
-    sources,
-    /hacke|espiona|expõe bugs|consciente|análise psicológica|pensamentos silenciosos|finge ser humano/i,
-  );
+  const { totalEditions, totalMentions, oldest, newest, cadenceDays, launches, launchWindow, launchGap, mythos, fable, seguranca } =
+    deriveAnthropicClaudeFacts(sources);
+  const gapDays = launchGap?.gapDays ?? 0;
+  const gapFromLong = launchGap ? formatDateLong(launchGap.fromDate) : "";
+  const gapToLong = launchGap ? formatDateLong(launchGap.toDate) : "";
 
   // Achado do editor (260804): as perguntas abaixo não podem repetir o
   // texto literal do H2 de nenhuma `section` (fariam o mesmo trabalho 2x).
@@ -138,11 +141,11 @@ export function buildAnthropicClaudeFaq(sources: HubSourceEntry[]): GeoFaqItem[]
   return [
     {
       question: "Com que frequência a Anthropic ou o Claude viram notícia?",
-      answer: `Entre ${formatDateLabel(oldest ?? "")} e ${formatDateLabel(newest ?? "")}, a Anthropic ou o Claude apareceram como destaque em ${totalEditions} edições da diar.ia.br, somando ${totalMentions} manchetes. Em média, o tema apareceu a cada 4 dias úteis.`,
+      answer: `Entre ${formatDateShort(oldest ?? "")} e ${formatDateShort(newest ?? "")}, a Anthropic ou o Claude apareceram como destaque em ${totalEditions} edições da diar.ia.br, somando ${totalMentions} manchetes. Em média, o tema apareceu a cada ${cadenceDays} dias úteis.`,
     },
     {
       question: "Quantos lançamentos de modelo ou ferramenta a Anthropic teve nesse período?",
-      answer: `Foram ${launches} lançamentos entre 30/09/2025 e 27/07/2026, e não em ritmo constante: 5 deles couberam em 66 dias, até 5 de dezembro de 2025; depois veio um hiato de 125 dias sem nenhum produto novo; e os 7 restantes saíram em 15 semanas, de 9 de abril a 27 de julho de 2026.`,
+      answer: `Foram ${launches} lançamentos entre ${formatDateShort(launchWindow.first)} e ${formatDateShort(launchWindow.last)}, e não em ritmo constante: 5 deles couberam em 66 dias, até ${gapFromLong}; depois veio um hiato de ${gapDays} dias sem nenhum produto novo; e os 7 restantes saíram em 15 semanas, de 9 de abril a 27 de julho de 2026.`,
     },
     {
       question: "A Anthropic teve conflito com o governo dos EUA?",
@@ -185,32 +188,38 @@ function toSourceEditions(sources: HubSourceEntry[]): HubSourceEdition[] {
     }));
 }
 
-/** INTRO derivada de `sources` (#4917 item 1): a janela de cobertura e as
- * duas contagens saem do dataset, nunca de literal na prosa. Antes deste
- * commit o texto dizia "setembro de 2025" com a primeira fonte em 29/08/2025
- * — erro factual ao vivo em produção, o mesmo que a #4895/#4896 já tinha
- * consertado no `google-gemini` e que voltou aqui e no `openai-chatgpt`. */
+/** INTRO derivada de `sources` (#4917 item 1, cadência e hiato de
+ * lançamento estendidos no #4922 item 1): a janela de cobertura, as duas
+ * contagens, a cadência e o hiato de lançamento saem do dataset, nunca de
+ * literal na prosa. Antes do #4917 o texto dizia "setembro de 2025" com a
+ * primeira fonte em 29/08/2025 — erro factual ao vivo em produção, o mesmo
+ * que a #4895/#4896 já tinha consertado no `google-gemini` e que voltou
+ * aqui e no `openai-chatgpt`. */
 function buildIntro(sources: HubSourceEntry[]): string {
   const { between, lastDate } = hubCoverageWindow(sources);
-  const totalEditions = sources.length;
-  const totalMentions = sources.reduce((n, s) => n + s.matchedHeadlines.length, 0);
-  return `Entre ${between}, a Anthropic e o Claude foram destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo, quase uma a cada 4 dias úteis. Acompanhar esse volume de perto mostra um padrão que uma edição isolada não deixa ver: o ritmo de lançamento de modelo vem em surtos, não em fluxo constante, com um hiato de 125 dias no meio do caminho. O confronto com o governo dos EUA durou pouco mais de 4 meses e girou em torno de dois modelos específicos, Mythos e Fable 5, lançados, contestados e só depois liberados. A valuation foi de "triplica" a "dobra de novo" e terminou em pedido de IPO confidencial. A onda de integrações empresariais, com Microsoft, Amazon, SpaceX, Adobe, Slack e Salesforce, não correu só numa direção: a própria Microsoft trocou a Anthropic por IA própria no meio do período. Há também uma sequência de episódios em que o Claude se comporta de um jeito notável e preocupante ao mesmo tempo, que vai de um caso de hacking autônomo a um teste controlado do governo britânico flagrando o Claude Mythos 5 criando identidades falsas para tentar convencer um desenvolvedor a aprovar código malicioso, em ${formatDateLabel(lastDate)}. Cada um desses pontos aparece detalhado adiante, com data e link para a edição que o registrou.`;
+  const { totalEditions, totalMentions, cadenceDays, launchGap } = deriveAnthropicClaudeFacts(sources);
+  const gapDays = launchGap?.gapDays ?? 0;
+  return `Entre ${between}, a Anthropic e o Claude foram destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo, quase uma a cada ${cadenceDays} dias úteis. Acompanhar esse volume de perto mostra um padrão que uma edição isolada não deixa ver: o ritmo de lançamento de modelo vem em surtos, não em fluxo constante, com um hiato de ${gapDays} dias no meio do caminho. O confronto com o governo dos EUA durou pouco mais de 4 meses e girou em torno de dois modelos específicos, Mythos e Fable 5, lançados, contestados e só depois liberados. A valuation foi de "triplica" a "dobra de novo" e terminou em pedido de IPO confidencial. A onda de integrações empresariais, com Microsoft, Amazon, SpaceX, Adobe, Slack e Salesforce, não correu só numa direção: a própria Microsoft trocou a Anthropic por IA própria no meio do período. Há também uma sequência de episódios em que o Claude se comporta de um jeito notável e preocupante ao mesmo tempo, que vai de um caso de hacking autônomo a um teste controlado do governo britânico flagrando o Claude Mythos 5 criando identidades falsas para tentar convencer um desenvolvedor a aprovar código malicioso, em ${formatDateShort(lastDate)}. Cada um desses pontos aparece detalhado adiante, com data e link para a edição que o registrou.`;
 }
 
 export function getAnthropicClaudeHub(): HubContent {
+  const { since, until } = hubCoverageWindow(SOURCES);
+  const { launches, launchWindow, launchGap } = deriveAnthropicClaudeFacts(SOURCES);
+  const gapDays = launchGap?.gapDays ?? 0;
+  const gapFromLong = launchGap ? formatDateLong(launchGap.fromDate) : "";
+  const gapToLong = launchGap ? formatDateLong(launchGap.toDate) : "";
   return {
     slug: "anthropic-claude",
     title: "Anthropic e Claude",
-    metaDescription:
-      "Anthropic e Claude no arquivo da diar.ia.br, de agosto de 2025 a agosto de 2026: lançamentos de modelo, o confronto com o governo dos EUA, valuation, integrações e incidentes de segurança.",
-    introHeading: "O que aconteceu com a Anthropic e o Claude desde agosto de 2025?",
+    metaDescription: `Anthropic e Claude no arquivo da diar.ia.br, de ${since} a ${until}: lançamentos de modelo, o confronto com o governo dos EUA, valuation, integrações e incidentes de segurança.`,
+    introHeading: `O que aconteceu com a Anthropic e o Claude desde ${since}?`,
     introParagraph: buildIntro(SOURCES),
     sections: [
       {
         heading: "Com que frequência a Anthropic lança um modelo novo de Claude?",
         paragraphs: [
-          "A Anthropic lançou 12 modelos ou ferramentas próprios entre 30/09/2025 e 27/07/2026, mas o ritmo não foi constante: teve 2 surtos separados por um hiato longo. No primeiro, 5 lançamentos couberam em 66 dias: [Claude Sonnet 4.5](https://diar.ia.br/p/openai-lanc-a-instant-checkout-no-chatgpt), um [modelo compacto e acessível](https://diar.ia.br/p/google-veo-3-1), a ferramenta [Claude Skills](https://diar.ia.br/p/lancamento-claude-skills) para empresas, um [modelo para pesquisa biomédica](https://diar.ia.br/p/restricoes-sora-2-hollywood) e uma [plataforma de pesquisa sociológica](https://diar.ia.br/p/anthropic-lanc-a-plataforma-de-pesquisa-sociolo-gica).",
-          "Depois veio um hiato de exatos 125 dias sem nenhum lançamento novo, de 5 de dezembro de 2025 a 9 de abril de 2026, período em que a cobertura girou em torno de valuation, parcerias e do início do confronto com o governo dos EUA, não de produto novo.",
+          `A Anthropic lançou ${launches} modelos ou ferramentas próprios entre ${formatDateShort(launchWindow.first)} e ${formatDateShort(launchWindow.last)}, mas o ritmo não foi constante: teve 2 surtos separados por um hiato longo. No primeiro, 5 lançamentos couberam em 66 dias: [Claude Sonnet 4.5](https://diar.ia.br/p/openai-lanc-a-instant-checkout-no-chatgpt), um [modelo compacto e acessível](https://diar.ia.br/p/google-veo-3-1), a ferramenta [Claude Skills](https://diar.ia.br/p/lancamento-claude-skills) para empresas, um [modelo para pesquisa biomédica](https://diar.ia.br/p/restricoes-sora-2-hollywood) e uma [plataforma de pesquisa sociológica](https://diar.ia.br/p/anthropic-lanc-a-plataforma-de-pesquisa-sociolo-gica).`,
+          `Depois veio um hiato de exatos ${gapDays} dias sem nenhum lançamento novo, de ${gapFromLong} a ${gapToLong}, período em que a cobertura girou em torno de valuation, parcerias e do início do confronto com o governo dos EUA, não de produto novo.`,
           "O segundo surto foi mais denso: 7 lançamentos em 15 semanas, entre 9 de abril e 27 de julho de 2026. Nessa janela saíram a [fábrica de agentes](https://diar.ia.br/p/50-dos-empregos-mudam-em-3-anos-diz-estudo), [Claude Opus 4.7](https://diar.ia.br/p/anthropic-lan-a-claude-opus-4-7), o [Project Deal](https://diar.ia.br/p/openai-lanc-a-gpt-5-5-com-foco-em-agentes), [Fable 5](https://diar.ia.br/p/anthropic-lanca-fable-5-com-bloqueios-embutidos), o [aval dos EUA para lançar o Mythos](https://diar.ia.br/p/openai-lan-a-gpt-5-6-sol-terra-e-luna), [Sonnet 5](https://diar.ia.br/p/anthropic-lan-a-sonnet-5) e [Claude Opus 5](https://diar.ia.br/p/anthropic-lan-a-o-claude-opus-5), este último fechando a série de lançamentos do período, em 27 de julho de 2026.",
         ],
       },

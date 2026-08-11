@@ -15,16 +15,20 @@
  * manchete sem síntese própria é conteúdo fino — não ganha citação e ainda
  * arrasta o domínio."
  *
- * **Precisão do escopo "número computado, nunca solto"** — mesma ressalva de
- * `anthropic-claude.ts`: só as respostas do `faq` são de fato COMPUTADAS em
- * runtime, via `countMatching`/`buildOpenaiChatgptFaq` sobre `SOURCES`. Os
- * números na prosa de `sections`/`INTRO` (datas, contagens, hiatos em dias)
- * foram TRANSCRITOS À MÃO a partir do mesmo dataset — verificados contra
- * `SOURCES` real ao escrever (inclusive os hiatos em dias, calculados por
- * script, não de cabeça), mas não recalculados a cada regeneração de
- * `sources.generated.json`. Se `test/build-hub-page.test.ts` tiver um teste
- * de consistência análogo ao do hub Anthropic e ele quebrar depois de um
- * `generate-hub-sources.ts` novo, é a prosa que precisa de revisão manual.
+ * **Escopo do #4922 item 1** (substitui a nota anterior, mesma ressalva de
+ * `anthropic-claude.ts`): total de edições/manchetes e a janela de cobertura
+ * agora vêm de `hubTotals`/`hubCoverageWindow` (`scripts/lib/shared/hub-page.ts`),
+ * usados tanto pelo `faq` quanto por `introParagraph`/`metaDescription`/
+ * `introHeading` — não mais recalculados em paralelo. Este hub NÃO tem um
+ * padrão `countMatching` pra "lançamentos" (diferente de `anthropic-claude.ts`/
+ * `google-gemini.ts`) — os números específicos de cadência de lançamento em
+ * `sections` (15 modelos, hiatos de 53/49 dias) continuam TRANSCRITOS À MÃO
+ * (item 4 da issue: inventar um regex novo só pra este número é o risco que
+ * o #4790 achado 1 já materializou uma vez — reusar um padrão existente é
+ * seguro, criar um novo sem padrão-espelho no FAQ para verificação cruzada
+ * não é). Se `test/build-hub-page.test.ts`/`test/hub-prose-contract-4899.test.ts`
+ * quebrarem depois de um `generate-hub-sources.ts` novo, é a prosa que
+ * precisa de revisão manual.
  *
  * **Fonte é a cobertura da diária, não fato-checado contra a OpenAI real** —
  * este módulo sintetiza o que a diar.ia.br noticiou sobre o tema, no
@@ -44,7 +48,14 @@
  * incorporá-la.
  */
 import type { GeoFaqItem } from "../shared/geo-faq.ts";
-import { hubCoverageWindow, type HubContent, type HubSourceEdition } from "../shared/hub-page.ts";
+import {
+  hubCoverageWindow,
+  hubTotals,
+  countMatching,
+  formatDateShort,
+  type HubContent,
+  type HubSourceEdition,
+} from "../shared/hub-page.ts";
 import { HUB_OPENAI_CHATGPT_FOOTER_NAV_UTM } from "../shared/utm-registry.ts";
 import sourcesRaw from "./openai-chatgpt-sources.generated.json" with { type: "json" };
 import type { HubSourceEntry } from "../../generate-hub-sources.ts";
@@ -63,13 +74,10 @@ const PUBLISHED_DATE = "2026-08-09";
  * de corpo é o padrão que o #4911 desaconselha. */
 const UPDATED_DATE = "2026-08-10";
 
-/** Mesma normalização NFC de `anthropic-claude.ts::countMatching` — o
- * `matchedHeadlines` de `sources.generated.json` preserva o texto ORIGINAL
- * do cache Beehiiv em NFD (acento como combining mark separado), e um regex
- * acentuado escrito à mão usa NFC por padrão. Recebe `sources` como
- * parâmetro (nunca lê a constante `SOURCES` do módulo direto) — mesmo
- * achado do fleet review original: só assim a função fica de fato pura e
- * testável com um fixture sintético em vez de sempre refletir produção.
+/** `matchedHeadlines` vem em NFD (mesmo achado de `anthropic-claude.ts`) —
+ * ver a nota completa em `countMatching`, agora em
+ * `scripts/lib/shared/hub-page.ts` (#4922 item 1: motor único reusado pelos
+ * 4 hubs, não reimplementado aqui).
  *
  * `excludePattern` opcional (fleet review #4790 achado 1): `pattern` sozinho
  * casa manchete por FORMATO de versão, não por SEMÂNTICA de lançamento —
@@ -77,26 +85,6 @@ const UPDATED_DATE = "2026-08-10";
  * segurança sobre um modelo já lançado) também bate `/GPT-?5\.\d/i` sem ser
  * um release novo. Usado só onde essa ambiguidade existe de fato.
  */
-function countMatching(
-  sources: HubSourceEntry[],
-  pattern: RegExp,
-  excludePattern?: RegExp,
-): number {
-  let n = 0;
-  for (const s of sources) {
-    for (const h of s.matchedHeadlines) {
-      const normalized = h.normalize("NFC");
-      if (pattern.test(normalized) && !(excludePattern && excludePattern.test(normalized))) n++;
-    }
-  }
-  return n;
-}
-
-function formatDateLabel(dateIso: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateIso);
-  if (!m) return dateIso;
-  return `${m[3]}/${m[2]}/${m[1]}`;
-}
 
 /**
  * Monta o FAQ (issue #4558 item 3/6: 6-10 perguntas, números reais). Pure —
@@ -109,10 +97,8 @@ function formatDateLabel(dateIso: string): string {
  * de volta pra seção pro relato completo.
  */
 export function buildOpenaiChatgptFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
-  const totalMentions = sources.reduce((n, s) => n + s.matchedHeadlines.length, 0);
-  const totalEditions = sources.length;
-  const oldest = sources[0]?.date;
-  const newest = sources[sources.length - 1]?.date;
+  const { totalEditions, totalMentions } = hubTotals(sources);
+  const { firstDate: oldest, lastDate: newest } = hubCoverageWindow(sources);
   const gpt5x = countMatching(sources, /GPT-?5\.\d/i, /apaga arquivos sem permiss[ãa]o/i);
   const codex = countMatching(sources, /codex/i);
   const hackAutonomo = countMatching(sources, /hacke|invad/i);
@@ -123,7 +109,10 @@ export function buildOpenaiChatgptFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
   return [
     {
       question: "Com que frequência a OpenAI ou o ChatGPT viram notícia?",
-      answer: `Entre ${formatDateLabel(oldest ?? "")} e ${formatDateLabel(newest ?? "")}, a OpenAI ou o ChatGPT apareceram como destaque em ${totalEditions} edições da diar.ia.br, somando ${totalMentions} manchetes. Em média, saiu uma edição a cada 3-4 dias, o tema mais recorrente do arquivo no período.`,
+      // #4922 item 4: "3-4 dias" é uma FAIXA, não um fato único derivável —
+      // permanece literal (mesmo racional já usado nesta issue pra cifra de
+      // terceiro/data histórica externa).
+      answer: `Entre ${formatDateShort(oldest ?? "")} e ${formatDateShort(newest ?? "")}, a OpenAI ou o ChatGPT apareceram como destaque em ${totalEditions} edições da diar.ia.br, somando ${totalMentions} manchetes. Em média, saiu uma edição a cada 3-4 dias, o tema mais recorrente do arquivo no período.`,
     },
     {
       question: "Quantas versões do GPT-5 a OpenAI lançou depois do 5.1?",
@@ -173,18 +162,17 @@ function toSourceEditions(sources: HubSourceEntry[]): HubSourceEdition[] {
  * dizia "setembro de 2025" com a primeira fonte em 27/08/2025. */
 function buildIntro(sources: HubSourceEntry[]): string {
   const { between } = hubCoverageWindow(sources);
-  const totalEditions = sources.length;
-  const totalMentions = sources.reduce((n, s) => n + s.matchedHeadlines.length, 0);
+  const { totalEditions, totalMentions } = hubTotals(sources);
   return `Entre ${between}, a OpenAI e o ChatGPT foram destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo. É o tema mais recorrente do arquivo nesse período, aparecendo a cada 3-4 dias em média. Acompanhar esse volume de perto revela um padrão que uma edição isolada não deixa ver: a OpenAI lançou modelo ou produto novo 15 vezes em pouco mais de 10 meses, num ritmo quase mensal com duas pausas mais longas, uma delas de 53 dias. A rivalidade com o Google/Gemini passou de "OpenAI sente ameaça" (novembro de 2025) a "ChatGPT perde terreno para rivais menores" (junho de 2026), com a Microsoft trocando tanto OpenAI quanto Anthropic por IA própria pelo meio do caminho. O dinheiro seguiu uma escalada visível, de "vale US\\$ 500 bi" a "maior captação da história" e, por fim, um pedido de abertura de capital nos EUA, junto de contratos bilionários de infraestrutura com Oracle, Nvidia e Amazon. O Codex deixou de ser lançamento e virou ferramenta usada por Dell, Samsung e a Big Four da consultoria, no mesmo período em que o ChatGPT passou a rodar anúncios e, dias depois de testar anúncios no Brasil, removeu o teto de mensagens do plano gratuito. Uma sequência de episódios de segurança, que começou com processos judiciais e terminou com o próprio agente da OpenAI invadindo sistemas sem supervisão, fecha o período em aberto, não resolvido. Cada um desses pontos aparece detalhado adiante, com data e link para a edição que o registrou.`;
 }
 
 export function getOpenaiChatgptHub(): HubContent {
+  const { since, until } = hubCoverageWindow(SOURCES);
   return {
     slug: "openai-chatgpt",
     title: "OpenAI e ChatGPT",
-    metaDescription:
-      "OpenAI e ChatGPT no arquivo da diar.ia.br, de agosto de 2025 a agosto de 2026: ritmo de lançamento de modelo, rivalidade com o Google, valuation, Codex empresarial e episódios de segurança.",
-    introHeading: "O que aconteceu com a OpenAI e o ChatGPT desde agosto de 2025?",
+    metaDescription: `OpenAI e ChatGPT no arquivo da diar.ia.br, de ${since} a ${until}: ritmo de lançamento de modelo, rivalidade com o Google, valuation, Codex empresarial e episódios de segurança.`,
+    introHeading: `O que aconteceu com a OpenAI e o ChatGPT desde ${since}?`,
     introParagraph: buildIntro(SOURCES),
     sections: [
       {

@@ -248,6 +248,40 @@ for (const slug of Object.keys(HUB_LOADERS)) {
   });
 }
 
+describe("consistência FAQ × prosa da S1 de lançamento — generalizado sobre HUB_LOADERS (#4922 item 1)", () => {
+  // Generalização do bloco Anthropic-específico acima: nos hubs que citam
+  // "Foram N lançamentos" no FAQ (anthropic-claude, google-gemini — os 2
+  // que têm um padrão countMatching pra "lançamento"; openai-chatgpt e
+  // meta-ai não, ver docstring dos respectivos módulos), a S1 abre com
+  // "[Empresa] lançou N modelos/ferramentas" citando o MESMO N. Antes do
+  // #4922, os dois números eram independentes (um computado, um
+  // transcrito à mão) — agora ambos leem do mesmo objeto derivado, então
+  // este teste é a rede que pega se algum dos dois voltar a divergir (ex:
+  // edição manual futura que mexa só num dos dois lugares).
+  let matched = 0;
+  for (const slug of Object.keys(HUB_LOADERS)) {
+    const hub = HUB_LOADERS[slug]();
+    const launchFaq = hub.faq.find((f) => /Foram \d+ lançamentos/.test(f.answer));
+    if (!launchFaq) continue; // hub sem contagem de lançamento computada (openai-chatgpt, meta-ai)
+    const launchMatch = /Foram (\d+) lançamentos/.exec(launchFaq.answer);
+    const s1Match = hub.sections
+      .map((s) => /lançou (\d+) (?:modelos?|produtos?) ou (?:ferramentas?|produtos?)/.exec(s.paragraphs[0]))
+      .find((m) => m !== null);
+    if (!launchMatch || !s1Match) continue;
+    matched++;
+    it(`hub "${slug}": S1 cita o mesmo N de lançamentos que o FAQ computa`, () => {
+      assert.equal(
+        s1Match![1],
+        launchMatch![1],
+        `hub "${slug}": FAQ computa ${launchMatch![1]} lançamentos, S1 diz ${s1Match![1]}`,
+      );
+    });
+  }
+  it("sanity: pelo menos 2 hubs foram cobertos por este bloco (senão a generalização parou de proteger algo)", () => {
+    assert.ok(matched >= 2, `só ${matched} hub(s) casaram os 2 padrões — checar se a prosa mudou de formato`);
+  });
+});
+
 describe("buildOpenaiChatgptFaq (#4790 achado 1) — regression: manchete de incidente não é lançamento", () => {
   it("contra o dataset real: gpt5x bate 6 (os releases enumerados no parêntese), não 7", () => {
     // Antes do fix, `countMatching(sources, /GPT-?5\.\d/i)` também casava
