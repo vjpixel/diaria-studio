@@ -49,6 +49,8 @@ import {
   resolvePublishDate,
   type PublishDateOverridesResult,
 } from "./lib/beehiiv-publish-date.ts";
+import { findPrimarySourceUrl, stripTrackingParams } from "./lib/hub-primary-source.ts";
+import { isSafeUrlScheme } from "./lib/shared/markdown-links.ts";
 import type { RawCachedPost } from "./generate-arquivo-titles.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -68,6 +70,30 @@ export interface HubSourceEntry {
   url: string;
   /** Só os destaques (título e/ou trechos do subtítulo) que bateram a palavra-chave. */
   matchedHeadlines: string[];
+  /** URL de fonte primária de cada manchete em `matchedHeadlines`, ALINHADA
+   * POR ÍNDICE (`primarySourceUrls[i]` corresponde a `matchedHeadlines[i]`)
+   * — #4919. Array paralelo em vez de virar `matchedHeadlines` numa lista
+   * de objetos `{headline, primarySourceUrl}`: ~15 call sites já leem
+   * `matchedHeadlines` como `string[]` puro (`hub-page.ts::hubTotals`/
+   * `hubMentionCadenceDays`/`countMatching`, `hub-staleness-check.ts`, os 4
+   * módulos de conteúdo `scripts/lib/hubs/*.ts`, testes) — trocar o tipo
+   * quebraria todos eles pra um campo que a Fase A desta issue nem consome
+   * ainda (consumo em prosa é item 8, fase B). Decisão de formato
+   * registrada no PR.
+   *
+   * `null` (não `undefined`) na posição em que a Regra A/B de
+   * `findPrimarySourceUrl` não achou âncora — nunca por fallback
+   * posicional (issue #4919: "melhor a entrada sair sem `primarySourceUrl`
+   * do que com atribuição suspeita"). `null` em vez de `undefined` porque é
+   * assim que o elemento sobrevive ao round-trip por `JSON.stringify`
+   * (array com posição `undefined` vira `null` na serialização; declarar
+   * o tipo como `null` evita a discrepância entre o objeto em memória e o
+   * que o arquivo `.generated.json` de fato contém depois de escrito+lido).
+   * Campo OMITIDO (não um array de só `null`) quando o post não tem
+   * `content.free.web` no cache, ou quando NENHUMA manchete da linha achou
+   * âncora — no primeiro caso não há dado pra tentar; no segundo o array
+   * não carregaria informação nova. */
+  primarySourceUrls?: (string | null)[];
   /** Título real da edição (`post.title`, ou fallback via `titles-cache.json`
    * — ver `backfillEditionTitles`). Opcional: hub renderer cai no rótulo
    * antigo (só a manchete casada) quando ausente (#4918 Conserto 2, "o item
@@ -105,6 +131,38 @@ export const HUB_KEYWORD_PATTERNS: Record<string, RegExp> = {
  * a lógica de strip de acento num 2º lugar. */
 export function stripAccents(s: string): string {
   return s.normalize("NFD").replace(/[̀-ͯ]/g, "");
+}
+
+/**
+ * Resolve `primarySourceUrls` (#4919) pra um post já casado: pra cada
+ * manchete em `matched`, tenta `findPrimarySourceUrl` contra
+ * `content.free.web` (Regra A: âncora de texto idêntico; Regra B: rótulo
+ * "Aprofunde"/"Saiba mais" limitado à janela até a próxima manchete —
+ * NUNCA fallback posicional, ver docstring de `hub-primary-source.ts`).
+ * URL achada passa por `stripTrackingParams` (remove `utm_*`, inclusive de
+ * terceiro) e pelo guard de esquema `isSafeUrlScheme` (só `https:`) antes
+ * de entrar no array — falha em qualquer um dos dois vira `null` na
+ * posição, nunca lança e nunca é substituída por outra âncora.
+ *
+ * Retorna `undefined` (campo OMITIDO na entrada) quando o post não tem
+ * `content.free.web` no cache, ou quando toda posição do array resultante
+ * ficaria `null` (nenhuma manchete achou fonte — array de só `null` não
+ * carrega informação nova).
+ */
+function computePrimarySourceUrls(
+  post: RawCachedPost,
+  matched: readonly string[],
+  allHeadlines: readonly string[],
+): (string | null)[] | undefined {
+  const html = post.content?.free?.web;
+  if (!html) return undefined;
+  const urls = matched.map((headline) => {
+    const raw = findPrimarySourceUrl(html, headline, allHeadlines);
+    if (!raw) return null;
+    const normalized = stripTrackingParams(raw);
+    return isSafeUrlScheme(normalized) ? normalized : null;
+  });
+  return urls.some((u) => u !== null) ? urls : undefined;
 }
 
 export interface CollectHubSourcesResult {
@@ -163,11 +221,19 @@ export function collectHubSources(
       warnings.push(`slug "${post.slug}" confirmado e casado, mas sem publish_date — pulado`);
       continue;
     }
+    // #4919: alinhado por índice com `matched` — ver docstring do campo.
+    // Spread condicional (não `primarySourceUrls: undefined`): o campo
+    // precisa ficar de fato AUSENTE do objeto (não presente com valor
+    // undefined) — `JSON.stringify` trataria os dois casos igual na
+    // serialização, mas testes com `assert.deepStrictEqual` sobre o objeto
+    // em memória, não.
+    const primarySourceUrls = computePrimarySourceUrls(post, matched, destaques);
     rows.push({
       date,
       editionSlug: post.slug,
       url: `https://diar.ia.br/p/${post.slug}`,
       matchedHeadlines: matched,
+      ...(primarySourceUrls ? { primarySourceUrls } : {}),
       // #4918 Conserto 2, "caminho ideal": `post.title` já está em escopo
       // (usado acima pra montar `destaques`) — guardar aqui em vez de
       // descartar depois de casar o pattern.

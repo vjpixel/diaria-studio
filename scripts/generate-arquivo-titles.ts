@@ -61,6 +61,16 @@ export interface RawCachedPost {
   web_url?: string;
   publish_date?: number | null;
   status?: string;
+  /** HTML da edição publicada — só o corpo `free.web` interessa aqui (o
+   * cache também traz `free.email`, não declarado por não ter consumidor
+   * ainda). Usado por `generate-hub-sources.ts` (#4919 Parte A) pra achar,
+   * por casamento EXATO de texto de âncora, o link de fonte primária de
+   * cada manchete casada — nunca por posição (ver `HubSourceEntry.primarySourceUrls`). */
+  content?: {
+    free?: {
+      web?: string;
+    };
+  };
 }
 
 export interface ArquivoTitleEntry {

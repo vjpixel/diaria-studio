@@ -15,7 +15,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { findParagraphLinks, renderInlineLinks, stripMarkdownLinks } from "../scripts/lib/shared/markdown-links.ts";
+import {
+  findParagraphLinks,
+  renderInlineLinks,
+  stripMarkdownLinks,
+  isSafeUrlScheme,
+} from "../scripts/lib/shared/markdown-links.ts";
 
 describe("findParagraphLinks (#4558 Parte A)", () => {
   it("acha um link simples", () => {
@@ -67,6 +72,23 @@ describe("findParagraphLinks (#4558 Parte A)", () => {
   it("parágrafo sem nenhum link retorna array vazio", () => {
     assert.deepEqual(findParagraphLinks("texto sem link nenhum"), []);
   });
+
+  it("URL de esquema não-https é rejeitada, mesmo tratamento do guard de URL vazia (#4919 item 7)", () => {
+    assert.deepEqual(findParagraphLinks("[clique](javascript:alert(1))"), []);
+    assert.deepEqual(findParagraphLinks("[clique](http://exemplo.com)"), []);
+  });
+});
+
+describe("isSafeUrlScheme (#4919 item 7)", () => {
+  it("aceita https:", () => {
+    assert.equal(isSafeUrlScheme("https://diar.ia.br/p/x"), true);
+  });
+
+  it("rejeita http:, javascript: e URL malformada", () => {
+    assert.equal(isSafeUrlScheme("http://diar.ia.br"), false);
+    assert.equal(isSafeUrlScheme("javascript:alert(1)"), false);
+    assert.equal(isSafeUrlScheme("não é uma url"), false);
+  });
 });
 
 describe("renderInlineLinks (#4558 Parte A)", () => {
@@ -96,6 +118,12 @@ describe("renderInlineLinks (#4558 Parte A)", () => {
     const html = renderInlineLinks("[A](https://a) e [B](https://b)");
     assert.match(html, /<a href="https:\/\/a">A<\/a>/);
     assert.match(html, /<a href="https:\/\/b">B<\/a>/);
+  });
+
+  it("URL javascript: renderiza texto plano, nunca <a href=\"javascript:...\"> (#4919 item 7)", () => {
+    const html = renderInlineLinks("[clique](javascript:alert(1)) aqui");
+    assert.doesNotMatch(html, /<a /);
+    assert.match(html, /\[clique\]\(javascript:alert\(1\)\) aqui/);
   });
 });
 
