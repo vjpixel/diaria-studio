@@ -663,6 +663,100 @@ test("eligibility #2876: soft_bounce >= limite + priority_points > 0 → SEGUE s
 });
 
 // ---------------------------------------------------------------------------
+// eligibility #5041 — SUNSET de não-abridor reincidente (shouldSunsetNonOpener,
+// clarice-envio-policy.ts) wired em classifyEligibility. O predicado puro já
+// tinha cobertura própria em test/clarice-envio-policy.test.ts — aqui só o
+// WIRING: o call site novo dispara na hora certa, respeita o guard
+// hasMeasuredOpens, e não sunseta quem não devia (assinante-ativo, dado
+// ausente/omitido).
+// ---------------------------------------------------------------------------
+
+test("eligibility #5041: sends>=2 e opens<=0, JÁ medido → sunset_non_opener", () => {
+  const r = classifyEligibility({
+    ...CLEAN,
+    sends_count: 2,
+    opens_count: 0,
+    brevo_modified_at: "2026-08-01T09:00:00Z",
+  });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "sunset_non_opener");
+});
+
+test("eligibility #5041: sends=1 (só 1 envio) → NÃO sunseta, mesmo já medido e opens=0", () => {
+  const r = classifyEligibility({
+    ...CLEAN,
+    sends_count: 1,
+    opens_count: 0,
+    brevo_modified_at: "2026-08-01T09:00:00Z",
+  });
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
+});
+
+test("eligibility #5041: sends>=2 mas abriu pelo menos 1 → NÃO sunseta", () => {
+  const r = classifyEligibility({
+    ...CLEAN,
+    sends_count: 3,
+    opens_count: 1,
+    brevo_modified_at: "2026-08-01T09:00:00Z",
+  });
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
+});
+
+test("eligibility #5041 (#4688 guard): sends>=2/opens<=0 mas brevo_modified_at ausente (nunca sincronizado) → NÃO sunseta", () => {
+  const r = classifyEligibility({
+    ...CLEAN,
+    sends_count: 2,
+    opens_count: 0,
+    // brevo_modified_at omitido de propósito — nunca sincronizado pela Brevo.
+  });
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
+});
+
+test("eligibility #5041 (#4688 guard): brevo_modified_at explicitamente null tem o mesmo efeito de omitido", () => {
+  const r = classifyEligibility({
+    ...CLEAN,
+    sends_count: 5,
+    opens_count: 0,
+    brevo_modified_at: null,
+  });
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
+});
+
+test("eligibility #5041: cohort assinantes-ativos é ISENTO do sunset (mesma isenção de #3819 — pagante nunca perde acesso ao produto por não abrir)", () => {
+  const r = classifyEligibility({
+    ...CLEAN,
+    cohort: "assinantes-ativos",
+    sends_count: 10,
+    opens_count: 0,
+    brevo_modified_at: "2026-08-01T09:00:00Z",
+  });
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
+});
+
+test("eligibility #5041: sends_count/opens_count OMITIDOS (call site legado, pré-#5041) nunca sunseta — default seguro", () => {
+  const r = classifyEligibility({ ...CLEAN, brevo_modified_at: "2026-08-01T09:00:00Z" });
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
+});
+
+test("eligibility #5041: unsubscribed tem prioridade sobre sunset (consentimento/entrega real sempre vence)", () => {
+  const r = classifyEligibility({
+    ...CLEAN,
+    unsubscribed: true,
+    sends_count: 4,
+    opens_count: 0,
+    brevo_modified_at: "2026-08-01T09:00:00Z",
+  });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "unsubscribed");
+});
+
+// ---------------------------------------------------------------------------
 // recomputeDerived — integração com SQLite in-memory
 // ---------------------------------------------------------------------------
 

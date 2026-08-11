@@ -749,7 +749,9 @@ export function planMvOnDemand(
 }
 
 // ---------------------------------------------------------------------------
-// Não-abridor reincidente — a lacuna que o sunset (#4430) nunca fechou
+// Não-abridor reincidente — a lacuna que o sunset (#4430) deixou aberta,
+// fechada pelo #5041 (`shouldSunsetNonOpener` ligado em `classifyEligibility`,
+// clarice-db.ts). Esta medição continua existindo pós-#5041 como canário.
 // ---------------------------------------------------------------------------
 
 export interface NonOpenerExposure {
@@ -763,13 +765,20 @@ export interface NonOpenerExposure {
 /**
  * Mede quantos contatos ELEGÍVEIS já receberam `minSends`+ envios sem NUNCA
  * abrir. A #4430 (sunset) propunha cortá-los da elegibilidade e foi fechada
- * sem implementação — `computeEligibility` (`clarice-db.ts`) não tem esse
- * corte, então eles continuam voltando pra fila a cada onda.
+ * sem implementação — o #5041 fechou essa lacuna (`shouldSunsetNonOpener`
+ * agora ligado em `classifyEligibility`, clarice-db.ts, corte
+ * `sunset_non_opener`). Só quem já foi excluído (`send_eligible=0`) por essa
+ * razão SAI da contagem abaixo (o filtro `send_eligible !== 1` no topo do
+ * loop já cuida disso) — num store recém-recomputado, esta função deve
+ * tender a 0: ela vira canário operacional (acusa se um contato desse perfil
+ * ainda está elegível — store desatualizado, exceção legítima como
+ * assinante-ativo, ou uma regressão no corte).
  *
  * Reportar isso é o mínimo que dá pra fazer sem reabrir a decisão de produto:
  * é esse estoque que alimenta a reclamação de spam, que por sua vez faz
  * `decideSemaphore` FREAR o volume das ondas seguintes. O laço se fecha
- * contra o próprio alcance, e hoje ele é invisível na hora de decidir a onda.
+ * contra o próprio alcance — antes do #5041, era invisível na hora de decidir
+ * a onda; agora é o sinal de que o corte automático está fazendo o trabalho.
  *
  * #4688: só conta como não-abridor quem `hasMeasuredOpens` (já foi
  * sincronizado pela Brevo ao menos 1x) — sem isso, um contato nunca
@@ -1170,7 +1179,7 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
   }
   if (input.nonOpeners.count > 0) {
     warnings.push(
-      `${fmt(input.nonOpeners.count)} contatos elegíveis (${(input.nonOpeners.fraction * 100).toFixed(1)}% da base elegível) já receberam ${input.nonOpeners.minSends}+ envios sem NUNCA abrir — o sunset da #4430 nunca foi implementado, então eles voltam pra fila a cada onda e alimentam a reclamação de spam que depois freia o volume.`,
+      `${fmt(input.nonOpeners.count)} contatos elegíveis (${(input.nonOpeners.fraction * 100).toFixed(1)}% da base elegível) já receberam ${input.nonOpeners.minSends}+ envios sem NUNCA abrir — o sunset (#5041) deveria ter cortado esses contatos da elegibilidade; se ainda aparecem aqui, o store pode estar desatualizado (rode clarice-build-db.ts) ou são exceções legítimas (ex: assinante-ativo, isento). Enquanto isso não for investigado, eles continuam voltando pra fila a cada onda e alimentando a reclamação de spam que depois freia o volume.`,
     );
   }
   if (input.state.unscopedCount > 0) {

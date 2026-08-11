@@ -41,6 +41,11 @@ interface RawRow {
   hard_bounced: number;
   complained: number;
   priority_optin: number;
+  // #5041: só pro guard `hasMeasuredOpens` do corte de sunset — sem ela, este
+  // dry-run divergiria de `recomputeDerived` (que já seleciona a coluna),
+  // quebrando a garantia "MESMA função, dry-run e efeito real nunca
+  // divergem" documentada em `resolveMailboxCoherence`.
+  brevo_modified_at: string | null;
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
@@ -53,7 +58,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     .prepare(
       `SELECT email, cohort, tier, created, opens_count, sends_count,
               soft_bounce_count, dispute_losses, mv_bucket, email_blacklisted,
-              unsubscribed, hard_bounced, complained, priority_optin
+              unsubscribed, hard_bounced, complained, priority_optin,
+              brevo_modified_at
          FROM clarice_users`,
     )
     .all() as unknown as RawRow[];
@@ -88,6 +94,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     mv_bucket: r.mv_bucket,
     dispute_losses: r.dispute_losses ?? 0,
     soft_bounce_count: r.soft_bounce_count ?? 0,
+    brevo_modified_at: r.brevo_modified_at,
   }));
 
   const report = computeMailboxDryrunReport(rows);

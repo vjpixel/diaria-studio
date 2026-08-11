@@ -263,6 +263,72 @@ test("loadStoreRows + segmentFromStore: mv_result=unknown fica FORA de toda wave
   db.close();
 });
 
+// ---------------------------------------------------------------------------
+// #5041 — SUNSET de não-abridor reincidente, caminho COMPLETO: INSERT no
+// SQLite real → recomputeDerived (classifyEligibility + shouldSunsetNonOpener,
+// clarice-db.ts) → loadStoreRows → segmentFromStore/priorityQueue. O predicado
+// puro (shouldSunsetNonOpener) e o wiring isolado (classifyEligibility) já
+// têm cobertura própria — este teste é o "de ponta a ponta" pedido pela issue:
+// prova que um não-abridor reincidente sai da FILA DE ELEGÍVEIS de fato, não
+// só que uma coluna do store mudou de valor.
+// ---------------------------------------------------------------------------
+
+test("#5041 end-to-end: não-abridor reincidente (≥2 envios, 0 aberturas, já sincronizado) sai da fila de elegíveis na próxima rodada", () => {
+  const db = openClariceDb(":memory:");
+  // não-abridor reincidente: 3 envios, 0 aberturas, JÁ sincronizado pela
+  // Brevo (brevo_modified_at não-null) — satisfaz o guard hasMeasuredOpens.
+  db.prepare(
+    `INSERT INTO clarice_users (email, tier, sends_count, opens_count, mv_bucket, brevo_modified_at)
+     VALUES (?, 4, 3, 0, 'verified', '2026-08-01T09:00:00Z')`,
+  ).run("nunca.abre@x.com");
+  // controle A: mesmo perfil, mas AINDA NÃO sincronizado (brevo_modified_at
+  // NULL) — não pode ser rotulado "confirmado não-abridor" por acidente de
+  // dado (#4688). Continua elegível (re-envio).
+  db.prepare(
+    `INSERT INTO clarice_users (email, tier, sends_count, opens_count, mv_bucket)
+     VALUES (?, 4, 3, 0, 'verified')`,
+  ).run("ainda.nao.sincronizado@x.com");
+  // controle B: mesmo perfil de sends/opens, mas é assinante-ativo (tier 1) —
+  // isento (mesma isenção de #3819). Continua elegível.
+  db.prepare(
+    `INSERT INTO clarice_users (email, tier, sends_count, opens_count, mv_bucket, brevo_modified_at)
+     VALUES (?, 1, 3, 0, 'verified', '2026-08-01T09:00:00Z')`,
+  ).run("pagante.nao.abre@x.com");
+  // controle C: engajado de verdade (abriu) — nunca deveria sunsetar.
+  db.prepare(
+    `INSERT INTO clarice_users (email, tier, sends_count, opens_count, mv_bucket, brevo_modified_at)
+     VALUES (?, 4, 3, 2, 'verified', '2026-08-01T09:00:00Z')`,
+  ).run("engajado@x.com");
+
+  recomputeDerived(db);
+
+  const rows = loadStoreRows(db);
+  const sunsetado = rows.find((r) => r.email === "nunca.abre@x.com")!;
+  assert.equal(sunsetado.send_eligible, 0);
+  assert.equal(sunsetado.ineligible_reason, "sunset_non_opener");
+
+  const s = segmentFromStore(rows);
+  // saiu de fato da fila — não aparece nem em reSend nem em firstSend.
+  assert.ok(!s.reSend.some((r) => r.email === "nunca.abre@x.com"));
+  assert.ok(!s.firstSend.some((r) => r.email === "nunca.abre@x.com"));
+  assert.ok(
+    s.excluded.some((e) => e.email === "nunca.abre@x.com" && e.reason === "sunset_non_opener"),
+  );
+
+  // a mesma checagem, na fila de prioridade que a wave real fatia de fato.
+  const queue = priorityQueue(s);
+  assert.ok(!queue.some((r) => r.email === "nunca.abre@x.com"), "não-abridor sunsetado nunca aparece na fila de envio");
+
+  // os 3 controles continuam elegíveis e presentes na fila (re-envio).
+  for (const email of ["ainda.nao.sincronizado@x.com", "pagante.nao.abre@x.com", "engajado@x.com"]) {
+    const row = rows.find((r) => r.email === email)!;
+    assert.equal(row.send_eligible, 1, `${email} deveria continuar elegível`);
+    assert.ok(queue.some((r) => r.email === email), `${email} deveria continuar na fila`);
+  }
+
+  db.close();
+});
+
 test("loadStoreRows + segmentFromStore #3819: mv_bucket=unknown NÃO exclui assinante-ativo (tier 1 → cohort isento de MV)", () => {
   const db = openClariceDb(":memory:");
   // tier 1 (assinante ativo) com mv_bucket='unknown' herdado de vida anterior

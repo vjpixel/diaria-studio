@@ -969,14 +969,21 @@ test("REGRESSÃO main(): 'reativacao' também ignora `sent` — mas continua exc
   // `reativacao`: recebeu e NUNCA abriu (opens_count=0). brevo_modified_at
   // populado (#4688: hasMeasuredOpens) — simula contato JÁ sincronizado pela
   // Brevo, opens_count=0 é medição real, não o DEFAULT 0 de nunca-sincronizado.
+  // `sends_count=1` (não 3, #5041): reativacao é o 1º re-tentativa de um
+  // não-abridor — sends_count>=2 com opens=0 agora dispara o SUNSET
+  // permanente (`shouldSunsetNonOpener`, decisão do editor #4705, ligado em
+  // classifyEligibility). Este teste verifica o guard de campanha
+  // sent/queued, não o sunset — 1 envio prévio mantém o contato elegível pra
+  // reativacao sem cruzar o limiar de sunset, preservando o que o teste de
+  // fato exercita.
   db.prepare(
-    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket, brevo_list_ids, brevo_modified_at) VALUES ('nao-abriu-em-sent@x.com','N',2,0,3,'verified','[\"70\"]','2026-06-01T00:00:00Z')",
+    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket, brevo_list_ids, brevo_modified_at) VALUES ('nao-abriu-em-sent@x.com','N',2,0,1,'verified','[\"70\"]','2026-06-01T00:00:00Z')",
   ).run();
   // Mesmo perfil, mas numa lista com campanha AGENDADA — esse tem de sair,
   // senão duplicaria o envio (desfazer exigiria cancelar/recriar via
   // API/painel, #4935 — não é gratuito).
   db.prepare(
-    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket, brevo_list_ids, brevo_modified_at) VALUES ('nao-abriu-em-queued@x.com','Q',2,0,3,'verified','[\"71\"]','2026-06-01T00:00:00Z')",
+    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket, brevo_list_ids, brevo_modified_at) VALUES ('nao-abriu-em-queued@x.com','Q',2,0,1,'verified','[\"71\"]','2026-06-01T00:00:00Z')",
   ).run();
   recomputeDerived(db);
   db.close();
@@ -993,4 +1000,34 @@ test("REGRESSÃO main(): 'reativacao' também ignora `sent` — mas continua exc
   // Sobra só o de lista `sent`; o de lista `queued` foi excluído.
   assert.equal(out.selected, 1);
   assert.equal(out.already_committed_brevo, 1);
+});
+
+test("REGRESSÃO main(): 'reativacao' sobrevive a sends_count=1 (1ª retentativa), mas sends_count=2 é cortado por SUNSET (#5041) — interação não documentada antes deste teste", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-reativacao-sunset-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  // `reativacao` exige sends_count>0 && opens_count===0 (isReativacao,
+  // clarice-segment.ts). `shouldSunsetNonOpener` (clarice-envio-policy.ts,
+  // ligado em classifyEligibility por #5041) corta send_eligible=false pra
+  // sends_count>=2 && opens_count<=0 — as duas populações se sobrepõem
+  // inteiramente a partir de sends_count=2. Sem este teste, a interação
+  // ficava implícita e só um regen de fixture (#5041 self-review, PR #5044)
+  // a revelou.
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket, brevo_modified_at) VALUES ('primeira-tentativa@x.com','P',2,0,1,'verified','2026-06-01T00:00:00Z')",
+  ).run();
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket, brevo_modified_at) VALUES ('sunset-permanente@x.com','S',2,0,2,'verified','2026-06-01T00:00:00Z')",
+  ).run();
+  recomputeDerived(db);
+  db.close();
+
+  const logs = await withBrevoFetch(
+    () => jsonResponse({ campaigns: [] }),
+    () => captureLogs(() => main(["--cycle", "2606-07", "--db", dbPath, "--group", "reativacao", "--dry-run", "--data-root", dir])),
+  );
+  const out = JSON.parse(logs.join("\n"));
+  // Só o de sends_count=1 sobrevive — o de sends_count=2 foi permanentemente
+  // desqualificado por sunset ANTES de chegar ao predicado de reativacao.
+  assert.equal(out.selected, 1);
 });

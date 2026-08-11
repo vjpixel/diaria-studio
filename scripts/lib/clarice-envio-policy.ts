@@ -629,10 +629,12 @@ export function proposeNextVolume(input: NextVolumeInput): NextVolumeDecision {
  * Decide se um contato sai da elegibilidade por SUNSET: já recebeu ≥2 envios e
  * nunca abriu nenhum.
  *
- * A #4430 propôs isso e foi fechada sem implementação — `computeEligibility`
- * (clarice-db.ts) nunca teve esse corte, então o não-abridor reincidente volta
- * pra fila a cada onda (`measureNonOpenerExposure`, em clarice-wave-plan.ts, só
- * MEDE o estoque). Decisão do editor no #4705: cortar de vez.
+ * A #4430 propôs isso e foi fechada sem implementação. Decisão do editor no
+ * #4705: cortar de vez — fechada pelo #5041, que ligou esta função em
+ * `classifyEligibility` (clarice-db.ts, corte `sunset_non_opener`). Até lá o
+ * não-abridor reincidente voltava pra fila a cada onda;
+ * `measureNonOpenerExposure` (clarice-wave-plan.ts) segue existindo pós-#5041
+ * como canário operacional — deve tender a 0 num store recém-recomputado.
  *
  * O porquê é o LAÇO DE REALIMENTAÇÃO, não a métrica de abertura: quem recebe e
  * nunca abre é o candidato natural a marcar spam; o spam sobe; o spam é uma das
