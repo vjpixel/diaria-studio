@@ -120,8 +120,16 @@ export interface ScheduledTaskDefinition {
   /** Path (relativo à raiz do repo, POSIX) do `setup-*-schedule.ps1` legado
    * que esta entrada espelha — usado só por
    * `scripts/lib/pending-scheduled-tasks.ts` pra checar existência/parity,
-   * NUNCA lido em runtime pelo executor. */
-  legacySetupScript: string;
+   * NUNCA lido em runtime pelo executor. **Opcional desde #5005**: o cutover
+   * pra systemd (épica #4798) fechou antes desta task ser registrada —
+   * `Diaria-Beehiiv-Home-Meta-Check` é a 1ª entrada sem `.ps1` legado de
+   * propósito (não criar um novo `.ps1` só pra preencher este campo); a via
+   * de execução real em Linux é exclusivamente o par `.service`/`.timer`
+   * gerado por `scripts/setup-systemd-timers.ts` a partir do registro. Uma
+   * entrada sem este campo fica de fora de `listExpectedScheduledTasks`
+   * (`pending-scheduled-tasks.ts`) — o check de "task esperada ausente do
+   * Task Scheduler" não se aplica a task sem contraparte Windows. */
+  legacySetupScript?: string;
   /** Issue(s) de origem, só pra rastreabilidade em docs/erros. */
   issue: string;
 }
@@ -135,6 +143,22 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     schedule: { kind: "daily", hour: 9, minute: 45 },
     legacySetupScript: "scripts/setup-apoios-diff-alarm-schedule.ps1",
     issue: "#4485 item 2",
+  },
+  {
+    name: "Diaria-Beehiiv-Home-Meta-Check",
+    description: "smoke-test dos 3 eixos de drift da home Beehiiv (og:title, self-links http, rotulos EN)",
+    steps: [{ key: "check", script: "scripts/beehiiv-home-meta-check.ts" }],
+    logPath: "beehiiv-home-meta-check/.meta-check.log",
+    // Mesma cadência dos outros drift-checks de superfície pública
+    // (Diaria-Hub-Drift-Check #4750, Diaria-Robots-Txt-Drift-Check #4910) —
+    // mesma classe de smoke-test (config publicada divergindo do que o
+    // código/o painel pretende), 6h é folga suficiente sem atrasar demais a
+    // detecção de uma regressão que ninguém nota olhando a home todo dia.
+    schedule: { kind: "interval", hours: 6 },
+    // Sem `legacySetupScript` de propósito — ver docstring do campo acima
+    // (#5005: 1ª task registrada depois do cutover systemd da épica #4798,
+    // sem contraparte Windows/.ps1).
+    issue: "#4557, #5005",
   },
   {
     name: "Diaria-Brevo-Diaria-Guardrail",

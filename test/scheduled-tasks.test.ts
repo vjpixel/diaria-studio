@@ -60,8 +60,11 @@ describe("SCHEDULED_TASKS — estrutura do registro", () => {
     }
   });
 
-  it("todo legacySetupScript referencia um .ps1 que existe de verdade no repo", () => {
+  it("todo legacySetupScript (quando presente) referencia um .ps1 que existe de verdade no repo", () => {
+    // #5005: legacySetupScript é opcional pra task registrada depois do
+    // cutover systemd (épica #4798) — sem contraparte Windows/.ps1.
     for (const t of SCHEDULED_TASKS) {
+      if (!t.legacySetupScript) continue;
       const abs = resolve(ROOT, ...t.legacySetupScript.split("/"));
       assert.ok(existsSync(abs), `task "${t.name}": legacySetupScript não encontrado: ${t.legacySetupScript}`);
     }
@@ -125,7 +128,10 @@ describe("getScheduledTaskByName / listScheduledTaskNames", () => {
 });
 
 describe("paridade registro <-> .ps1 legado (evita divergência silenciosa)", () => {
+  // #5005: task sem legacySetupScript (registrada depois do cutover
+  // systemd) não tem .ps1 pra comparar — sem parity a checar.
   for (const t of SCHEDULED_TASKS) {
+    if (!t.legacySetupScript) continue;
     it(`${t.name}: o $TaskName do .ps1 legado bate com task.name`, () => {
       const source = readFileSync(resolve(ROOT, ...t.legacySetupScript.split("/")), "utf8");
       const parsedName = parseTaskNameFromSetupScript(source, t.legacySetupScript);
@@ -200,8 +206,11 @@ describe("registro <-> scripts/run-*.ps1: mesmos scripts .ts invocados (ordem pr
     "Diaria-Worker-Drift-Check": "scripts/run-worker-drift-check.ps1",
   };
 
-  it("todo SCHEDULED_TASKS tem um run-*.ps1 mapeado neste teste (nenhum órfão)", () => {
+  it("toda task COM legacySetupScript tem um run-*.ps1 mapeado neste teste (nenhum órfão)", () => {
+    // #5005: task sem legacySetupScript não tem `.ps1` nenhum — nem
+    // setup nem run — por design (ver docstring do campo).
     for (const t of SCHEDULED_TASKS) {
+      if (!t.legacySetupScript) continue;
       assert.ok(RUNNER_BY_TASK[t.name], `task "${t.name}" sem run-*.ps1 mapeado em RUNNER_BY_TASK`);
     }
   });
@@ -221,4 +230,22 @@ describe("registro <-> scripts/run-*.ps1: mesmos scripts .ts invocados (ordem pr
       }
     });
   }
+});
+
+describe("#5005 — Diaria-Beehiiv-Home-Meta-Check registrada, systemd-only (sem .ps1 legado)", () => {
+  it("está presente no registro, com o step apontando pro script correto", () => {
+    const t = getScheduledTaskByName("Diaria-Beehiiv-Home-Meta-Check");
+    assert.ok(t, "Diaria-Beehiiv-Home-Meta-Check ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/beehiiv-home-meta-check.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "interval", hours: 6 });
+  });
+
+  it("NÃO tem legacySetupScript (task registrada depois do cutover systemd, épica #4798)", () => {
+    const t = getScheduledTaskByName("Diaria-Beehiiv-Home-Meta-Check");
+    assert.ok(t);
+    assert.equal(t!.legacySetupScript, undefined);
+  });
 });

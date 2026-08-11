@@ -74,13 +74,32 @@ jobs:
         # (condição abaixo checa outputs.changed != ''). Push com before
         # zerado (ex: branch novo — nunca acontece em push pra master, mas
         # defensivo) trata do mesmo jeito.
+        #
+        # #5006: `git diff` pode FALHAR (não só "dar vazio") quando o push
+        # tem mais de 1 commit — `fetch-depth: 2` só traz HEAD + 1 pai, então
+        # $BEFORE cai fora do histórico raso local nesse caso. O exit code do
+        # `git diff` é capturado SEPARADO da atribuição (`set +e` em volta,
+        # não `|| true` colado no comando) justamente pra distinguir "o
+        # comando falhou" (log explícito via `::warning::`, silenciosamente
+        # tratado como CHANGED="" antes disso) de "o comando rodou e o diff
+        # deu vazio" (nenhum log, comportamento normal) — o job continua
+        # verde nos dois casos (o ping do IndexNow é best-effort, não deve
+        # reprovar o deploy), mas agora o run log distingue os dois motivos.
         run: |
           BEFORE="${{ github.event.before }}"
           ZERO="0000000000000000000000000000000000000000"
+          CHANGED=""
           if [ "${{ github.event_name }}" = "push" ] && [ -n "$BEFORE" ] && [ "$BEFORE" != "$ZERO" ]; then
-            CHANGED=$(git diff --name-only "$BEFORE" "${{ github.sha }}" -- 'workers/arquivo/src/hubs/*.generated.ts' || true)
+            set +e
+            CHANGED=$(git diff --name-only "$BEFORE" "${{ github.sha }}" -- 'workers/arquivo/src/hubs/*.generated.ts')
+            DIFF_EXIT=$?
+            set -e
+            if [ "$DIFF_EXIT" -ne 0 ]; then
+              echo "::warning::git diff $BEFORE..${{ github.sha }} falhou (exit $DIFF_EXIT) -- provavelmente $BEFORE está fora do histórico raso (fetch-depth: 2, push com mais de 1 commit). Tratando como 'nenhum hub mudou' por segurança -- o IndexNow pode ter sido pulado incorretamente neste push, confira manualmente se algum workers/arquivo/src/hubs/*.generated.ts mudou."
+              CHANGED=""
+            fi
           else
-            CHANGED=""
+            echo "::notice::sem commit anterior utilizável (workflow_dispatch, ou push sem github.event.before) -- pulando diff de hubs; IndexNow não será pingado nesta execução."
           fi
           {
             echo "changed<<INDEXNOW_EOF"

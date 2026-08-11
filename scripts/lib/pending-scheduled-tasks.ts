@@ -150,9 +150,17 @@ function setupScheduleFilesUnder(dir: string): string[] {
 export function listExpectedScheduledTasks(rootDir: string): SetupScriptTaskName[] {
   const rootAbs = resolve(rootDir);
 
-  const fromRegistry: SetupScriptTaskName[] = SCHEDULED_TASKS.filter((t) =>
-    existsSync(resolve(rootAbs, ...t.legacySetupScript.split("/"))),
-  ).map((t) => ({ scriptPath: t.legacySetupScript, taskName: t.name }));
+  // #5005: `legacySetupScript` é opcional (task registrada depois do
+  // cutover systemd não tem `.ps1` legado) — essas entradas nunca entram em
+  // `fromRegistry` por design: o check "task esperada ausente do Task
+  // Scheduler" pressupõe uma contraparte Windows que não existe pra elas.
+  const fromRegistry: SetupScriptTaskName[] = [];
+  for (const t of SCHEDULED_TASKS) {
+    if (!t.legacySetupScript) continue;
+    if (existsSync(resolve(rootAbs, ...t.legacySetupScript.split("/")))) {
+      fromRegistry.push({ scriptPath: t.legacySetupScript, taskName: t.name });
+    }
+  }
   const registeredScriptPaths = new Set(fromRegistry.map((t) => t.scriptPath));
 
   const scriptsDir = resolve(rootAbs, "scripts");
