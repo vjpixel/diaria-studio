@@ -1,6 +1,6 @@
 ---
 name: diaria-clarice-envio
-description: Planeja e agenda a próxima onda de envio da edição mensal pra base Clarice News. Levanta o estado dos últimos envios, avalia o teste A/B/C de assunto, puxa os cadastros novos, propõe volume por dia e só agenda depois de confirmação explícita de TODOS os valores. Uso — `/diaria-clarice-envio --cycle YYMM-MM --dates YYYY-MM-DD[,...]`.
+description: Caminho MANUAL/ad-hoc do envio Clarice News — desde #5026 os scripts existem pra rodar automaticamente todo dia às 19:00 BRT via a task `Diaria-Clarice-Envio` (arme da task, #5027 — até lá, este é o único caminho); esta skill invoca o MESMO orquestrador (`scripts/clarice-envio-run.ts`), nunca reimplementa. Uso — `/diaria-clarice-envio` (sem args — ciclo e data são resolvidos deterministicamente, nunca digitados).
 ---
 
 # /diaria-clarice-envio
@@ -9,29 +9,87 @@ Decide **pra quem** a edição mensal já pronta vai, e agenda. Complementa
 `/diaria-mensal` (que produz a edição e para no rascunho da campanha) —
 esta skill distribui a mesma edição em ondas sucessivas pela base.
 
+**Desde #5026 o orquestrador existe pra rodar todo dia às 19:00 BRT** via a
+task `Diaria-Clarice-Envio` (planeja + agenda a onda do dia seguinte,
+06:00 BRT) com o par `Diaria-Clarice-Envio-Guard` (05:00 BRT, reavalia o
+freio na véspera imediata do disparo) — **o ARME dessas duas tasks é o
+#5027, que pode não ter mergeado ainda** (checar `scripts/lib/scheduled-tasks.ts`
+por uma entrada `Diaria-Clarice-Envio` antes de assumir que a automação já
+está em produção). Até lá, `npx tsx scripts/clarice-envio-run.ts` (abaixo) é
+o único caminho — o mesmo comando que a task vai rodar quando armada. **Esta
+skill é o caminho manual/ad-hoc**: rodar fora do horário, investigar um
+abort, ou destravar um cenário que a automação recusa por decisão de design
+(ver tabela abaixo).
+
+**Os dois caminhos rodam o MESMO código — `scripts/clarice-envio-run.ts`.**
+Antes do #5026, os 8 passos abaixo eram prosa que o LLM executava manualmente
+(extrair valor do JSON de um passo, decidir ramo condicional, injetar no
+próximo comando) — incompatível com uma task agendada sem editor presente
+(regra #573). `clarice-envio-run.ts` é esse *glue* em código, testado
+(`test/clarice-envio-run.test.ts`). **Esta skill nunca reimplementa o
+fluxo — apenas invoca:**
+
+```bash
+npx tsx scripts/clarice-envio-run.ts
+```
+
+Sem argumentos — ver "O que mudou" abaixo pra entender por quê.
+
 **Blast radius alto.** Uma invocação errada manda dezenas de milhares de
 e-mails e queima a reputação do domínio `clarice.ai`, que é do PARCEIRO. Por
-isso: nada é escrito na Brevo antes do gate de confirmação. **Correção
-(#4935, 260810): campanha agendada na Brevo NÃO é imutável** — dá pra
-cancelar via API (`PUT /emailCampaigns/{id}/status`, `status: cancel` ou
-`suspended`) ou pelo painel, e recriar com as características corretas. O
-que passar pelo gate ainda tem custo real de reverter (janela até o disparo,
-possível reputação de duplicar envio) — a confirmação continua obrigatória —
-mas não é mais um estado terminal sem saída (incidente 260703).
+isso a automação é toda guiada por guards DETERMINÍSTICOS (tabela abaixo),
+não por um gate de confirmação humana — a decisão do editor (260811) foi
+substituir "nada escreve sem o editor aprovar" por "nada escreve se algum
+guard não passar", com reversibilidade real como rede de segurança: campanha
+agendada na Brevo NÃO é imutável (#4935, 260810) — dá pra cancelar via API
+(`PUT /emailCampaigns/{id}/status`, `status: "suspended"`) até o disparo, e
+é exatamente isso que `Diaria-Clarice-Envio-Guard` faz quando o risco piora
+entre 19:00 e 06:00.
 
-## Argumentos
+## O que mudou em relação ao fluxo descrito no resto deste documento
 
-- `--cycle {conteúdo}-{envio}` — **obrigatório**. Ex: `--cycle 2607-08`
-  (conteúdo de julho, enviado em agosto).
-- `--dates YYYY-MM-DD[,...]` — **obrigatório**. Datas explícitas, uma por dia
-  de envio. O número de datas define o horizonte da onda.
+O restante deste arquivo (Passos 0-8) documenta o fluxo ORIGINAL, manual,
+`--cycle`/`--dates` explícitos — continua válido como REFERÊNCIA de
+mecanismo (o que cada sub-script faz, os formatos de arquivo, as armadilhas
+já batidas), mas **não é mais o que se digita**. `clarice-envio-run.ts`
+resolve tudo isso sozinho:
 
-  **Nunca inferir** a partir de `today()`, de dia-da-semana, ou da última
-  onda — "data é sempre explícita" é princípio invariável do CLAUDE.md.
-  Se o editor não passar, perguntar (Passo 3 abaixo), sugerindo os próximos
-  dias como atalho mas exigindo confirmação.
-- `--locked-subject "…"` — opcional. Assunto único já travado num ciclo
-  anterior; força a recomendação A/B/C pra "travar" sem recalcular.
+| Antes (prosa/manual) | Agora (`clarice-envio-run.ts`) |
+|---|---|
+| `--cycle` digitado | `computeExpectedEnvioCycle(hoje)` (calendário) comparado contra `resolveLatestMonthlyCycleFromDisk()` (conteúdo pronto) — só prossegue se baterem; senão PARA (nunca cai pro ciclo antigo em silêncio, decisão do editor 260811). |
+| `--dates` digitado, horizonte de N dias | Sempre **1 data** = hoje+1 BRT — uma rodada planeja um dia, com dado fresco a cada execução. |
+| Volume: semáforo do dashboard (inclui abertura) | Motor novo (#5025, `scripts/lib/clarice-envio-policy.ts`) — abertura NUNCA freia; freio = só risco de ISP (hard bounce/bounce/unsub/spam Postmaster), escalada adaptativa pela folga. |
+| Teste A/B/C: skill propõe, editor confirma (#4657) | Decide sozinha pra `continuar`/`travar` (cálculo já determinístico); `iniciar` (exige 3 assuntos novos) PARA e pede o editor — não foi revogado, só automatizado onde já era mecânico. |
+| `--subject`/assunto digitado | Herdado da onda anterior do mesmo ciclo (`resolveInheritedSubjects`) — nunca digitado. |
+| `--send-test` + agente `review-test-email` | Removido do caminho (decisão do editor 260811) — o HTML é o mesmo da edição inteira do ciclo, já revisado na Etapa 4 do `/diaria-mensal`; era o último LLM no caminho de um envio irreversível. |
+| `close-poll.ts` rodado aqui | Fora do caminho — o guard `checkEiaGuard` (dentro de `clarice-schedule-group.ts --schedule`) só CONFERE que o marker existe; populá-lo é responsabilidade do `/diaria-mensal`, 1× por ciclo. |
+| Passo 7 — gate humano `sim/ajustar/abortar` | Substituído pelos guards determinísticos abaixo — nenhum é aviso, todos abortam (exit ≠ 0) fora dos caminhos de parada limpa (exit 0). |
+| Sem trava de concorrência | `scripts/lib/clarice-envio-lock.ts` — task e skill manual não podem montar a mesma onda ao mesmo tempo. |
+| Nenhum guard pra "onda esperada não disparou" | `detectMissedWaveToday` (#4975) — se a onda de hoje deveria ter saído e não saiu, a rodada reporta e não escala volume até resolver. |
+
+**Guards determinísticos e seus exit codes — nunca "sim/ajustar/abortar", sempre uma
+decisão automática (a maioria PARA limpo com `exit 0`; só uma minoria é erro duro `exit 1`):**
+
+| Guard | Condição | Exit |
+|---|---|---|
+| Kill switch | `data/clarice-envio-enabled.json` = `{enabled:false}` → pausa intencional. | `0` |
+| exec-mode | `!= "local"` → precisa do junction `data/`. | `1` |
+| `BREVO_CLARICE_API_KEY` | ausente. | `1` |
+| Ciclo | calendário ≠ conteúdo pronto mais recente → "sem-ciclo-elegivel". | `0` |
+| `.step-4-done.json` | ausente pro ciclo resolvido. | `1` |
+| Lock | rodada concorrente em curso (`LockHeldError`). | `1` |
+| `committedLookupFailed` | consulta de campanhas comprometidas na Brevo falhou. | `1` |
+| `novosFreshness` | `never-run`/`blocker` (>48h) aborta; `warning` (12-48h) segue, registrado. | `1`/— |
+| `brevoCredits === null` | crédito não consultado. | `1` |
+| `abc.action === "iniciar"` | exige 3 assuntos do editor. | `0` |
+| Assunto não herdável | `travar` sem onda-base NEM onda da célula vencedora (`abc.winner`); `continuar` faltando o precedente de alguma célula. | `1` |
+| Fila insuficiente pós-MV | mesmo após MV sob demanda, fila não cobre o volume desejado — nunca troca de público, nunca envia menos sem avisar antes. | `0` |
+| Agendamento incerto | POST aceito, GET-verify não confirma em ≥1 célula. | `2` |
+| Onda parcialmente montada | falha no meio do loop de células (`continuar`) — as já confirmadas SÃO campanhas reais e disparam; relatório torna isso explícito. | `1` |
+| Agendamento incerto | POST aceito, GET-verify não confirma → `exit 2` (não é erro nem sucesso; reconciliável na próxima rodada). |
+
+**Zero volume final** (freio `stop`, ou base ≤ 0) → sai limpo, grava
+relatório, **exit 0** (não é erro).
 
 ---
 
