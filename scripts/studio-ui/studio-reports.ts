@@ -81,9 +81,13 @@ import { acquireLock, releaseLock } from "../lib/file-lock.ts"; // #4677 — loc
 
 // #4347: "clarice-novos" — relatório da skill /diaria-clarice-novos (rodada
 // sem gate humano do laço cadastro-novo→envio-imediato, D14).
-export type ReportKind = "edicao" | "overnight" | "develop" | "mensal" | "clarice-novos";
+// #5026: "clarice-envio" — relatório da task diária Diaria-Clarice-Envio
+// (19:00, planeja+agenda) e do guard Diaria-Clarice-Envio-Guard (05:00,
+// cancela/reagenda) — mesmo kind pros dois, `sessionId` distingue
+// (`envio-{AAMMDD}...` vs `envio-{AAMMDD}-guard...`).
+export type ReportKind = "edicao" | "overnight" | "develop" | "mensal" | "clarice-novos" | "clarice-envio";
 
-const VALID_KINDS: ReportKind[] = ["edicao", "overnight", "develop", "mensal", "clarice-novos"];
+const VALID_KINDS: ReportKind[] = ["edicao", "overnight", "develop", "mensal", "clarice-novos", "clarice-envio"];
 
 export function isReportKind(value: string): value is ReportKind {
   return (VALID_KINDS as string[]).includes(value);
