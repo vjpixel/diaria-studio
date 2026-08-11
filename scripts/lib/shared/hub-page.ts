@@ -440,12 +440,22 @@ function renderHubBodyStyles(): string {
   main .geo-faq { max-width: 720px; }
   .hub-sources h2 { font-family: Georgia, 'Times New Roman', serif; font-size: 15px; font-weight: 700;
     letter-spacing: 0.08em; text-transform: uppercase; color: var(--teal); margin: 0 0 20px; }
-  .hub-sources ul { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule); }
-  .hub-sources li { border-bottom: 1px solid var(--rule); }
-  .hub-sources li a { display: block; padding: 11px 2px; font-size: 15px; line-height: 1.4;
-    color: var(--ink); text-decoration: none; }
-  .hub-sources li a:hover { color: var(--teal); }
-  .hub-sources .li-date { color: var(--teal); font-weight: 700; margin-right: 8px; font-size: 13px; }
+  /* #4921 Onda 1: <ul>/<li> virou <table> (Data | Manchete | Edição, 1 linha
+     por manchete casada — issue #4558 item 2, "é o que faz a tabela contar o
+     que a página afirma contar"). Wrapper com overflow-x:auto porque 3
+     colunas não cabem sempre nos 720px de .hub-sources em telas estreitas —
+     a tabela rola horizontalmente em vez de quebrar o layout da página
+     (issue #4558 item 4: "não é testável automaticamente"). */
+  .hub-sources-table-wrap { overflow-x: auto; border-top: 1px solid var(--rule); }
+  .hub-sources table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  .hub-sources thead th { text-align: left; padding: 10px 8px; font-family: Georgia, 'Times New Roman', serif;
+    font-weight: 700; font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--teal);
+    border-bottom: 1px solid var(--rule); white-space: nowrap; }
+  .hub-sources tbody td { padding: 11px 8px; border-bottom: 1px solid var(--rule); color: var(--ink);
+    line-height: 1.4; vertical-align: top; }
+  .hub-sources tbody td:first-child { white-space: nowrap; font-weight: 700; color: var(--teal); font-size: 13px; }
+  .hub-sources tbody td a { color: var(--ink); text-decoration: none; }
+  .hub-sources tbody td a:hover { color: var(--teal); text-decoration: underline; }
   .hub-methodology { margin: 32px 0 0; padding: 24px 0 0; border-top: 1px solid var(--rule); max-width: 720px; }
   .hub-methodology h2 { font-family: Georgia, 'Times New Roman', serif; font-size: 13px; font-weight: 700;
     letter-spacing: 0.08em; text-transform: uppercase; color: var(--teal); margin: 0 0 10px; }
@@ -810,25 +820,45 @@ ${s.paragraphs.map((p) => `        <p>${renderInlineLinks(p)}</p>`).join("\n")}
   .join("\n")}
     </section>`;
 
+  // #4921 Onda 1: <table> Data | Manchete | Edição em vez de <ul>/<li> — uma
+  // LINHA POR MANCHETE (issue #4558 item 2), não por HubSourceEdition: 8 das
+  // entradas casam 2 manchetes na mesma edição (`title` é
+  // `matchedHeadlines.join(" · ")`, ver `toSourceEditions` em cada
+  // `scripts/lib/hubs/{slug}.ts`), e repetir a data nas duas linhas é "o que
+  // faz a tabela contar o que a página afirma contar" — mesma convenção de
+  // split que `sourceEditionLabel` já assume ao comparar `editionTitle`
+  // contra `title.split(" · ")`. Resolve por construção o #4918 Conserto 1
+  // (concatenação "06/08Modelo da Anthropic...") — data e manchete agora
+  // vivem em `<td>` DISTINTOS, não precisa mais de separador textual manual.
   const sourcesHtml = `    <section class="hub-sources" aria-labelledby="fontes-heading">
       <h2 id="fontes-heading">Edições da diar.ia.br citadas nesta página</h2>
-      <ul>
+      <div class="hub-sources-table-wrap">
+        <table>
+          <thead>
+            <tr><th scope="col">Data</th><th scope="col">Manchete</th><th scope="col">Edição</th></tr>
+          </thead>
+          <tbody>
 ${hub.sourceEditions
-  .map((e) => {
+  .flatMap((e) => {
     const dm = /^(\d{4})-(\d{2})-(\d{2})/.exec(e.date);
     // #4911 item 4: com ano (DD/MM/AAAA) — o intervalo cruza virada de ano,
     // e sem ano dois rótulos "03/09" podem mapear pra anos distintos.
     const label = dm ? `${dm[3]}/${dm[2]}/${dm[1]}` : e.date;
-    // #4918 Conserto 1: separador textual explícito entre data e título —
-    // sem isso, quem extrai o texto do <li> (assistente, leitor de tela,
-    // colagem) recebe "06/08/2026Modelo da Anthropic..." colado, sem
-    // fronteira nenhuma (a separação era só visual, via margin-right). Um
-    // espaço solto não sobrevive a colapso de whitespace na extração — por
-    // isso " — " (travessão) e não `&nbsp;`/espaço puro.
-    return `        <li><a href="${esc(e.url)}"><span class="li-date">${esc(label)}</span> — ${esc(sourceEditionLabel(e))}</a></li>`;
+    const headlines = e.title.split(" · ");
+    return headlines.map((headline) => {
+      // Coluna "Edição": editionTitle real quando presente e distinto da
+      // manchete casada (mesma condição de `sourceEditionLabel`, #4918
+      // Conserto 2 — "a manchete casada é frequentemente um destaque
+      // secundário da edição"); sem editionTitle, cai no fallback antigo de
+      // repetir a própria manchete como rótulo do link.
+      const editionLabel = e.editionTitle && e.editionTitle !== headline ? e.editionTitle : headline;
+      return `            <tr><td>${esc(label)}</td><td>${esc(headline)}</td><td><a href="${esc(e.url)}">${esc(editionLabel)}</a></td></tr>`;
+    });
   })
   .join("\n")}
-      </ul>
+          </tbody>
+        </table>
+      </div>
     </section>`;
 
   // #4939/#4930: bloco próprio, logo depois da bibliografia — é onde o
