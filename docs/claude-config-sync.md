@@ -127,9 +127,20 @@ ficaria invisível indefinidamente. `bootstrap.sh`/`bootstrap.ps1` agora
 rodam `git status --porcelain` no repo antes do pull e avisam (sem
 bloquear) com o diff resumido e as duas ações possíveis: commit+push (vira
 config permanente, compartilhada) ou `git checkout -- .` (descarta,
-mantém a máquina de origem como única fonte de verdade). **Qual das duas
-fazer com o drift específico achado em `predator` (260810) segue como
-decisão em aberto do editor** — não foi resolvido nesta sessão.
+mantém a máquina de origem como única fonte de verdade).
 
-Política de `memory/` continua manual, sem mudança (ver seção acima) —
-não revisitada nesta sessão de propósito, é decisão de produto do editor.
+O drift específico achado em `predator` (260810) foi verificado como
+resolvido organicamente numa sessão overnight posterior (260811) —
+`git status --porcelain` em `~/claude-config` veio limpo, sem working tree
+dirty. Não houve decisão explícita a tomar; o `git pull --ff-only` de uma
+sessão seguinte parece ter resolvido sozinho (ou o editor já tinha feito
+`git checkout -- .`/commit manualmente).
+
+**Política de `memory/`, decidida pelo editor em 260811: nunca commitar.**
+Confirma o comportamento já vigente (exclusão de propósito, ver seção
+acima) — não é mudança de mecanismo, é o fechamento formal da decisão que
+estava marcada como "não revisitada"/pendente. `memory/` segue de sync
+manual (copiar o arquivo à mão quando precisar levar uma memória
+específica pra outra máquina); a alternativa de um mecanismo assistido
+(diff + confirmação antes de empurrar) continua não implementada, sem
+urgência.
