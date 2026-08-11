@@ -91,22 +91,66 @@ export interface SetupScriptTaskName {
 // ---------------------------------------------------------------------------
 
 /**
- * Extrai o valor de `$TaskName = "..."` do source de um `setup-*-schedule.ps1`.
- * **Lança** (não retorna `null`) quando o padrão não é encontrado — ver
- * docstring do módulo: este é o ponto frágil que a issue #4708 pediu pra
- * nunca falhar em silêncio.
+ * Extrai TODOS os nomes de task declarados num `setup-*-schedule.ps1`, na
+ * ordem em que aparecem no source.
+ *
+ * Até #5027 a suposição era 1 script de setup ⇒ 1 task, e o parser lia só
+ * `$TaskName`. `scripts/setup-clarice-envio-schedule.ps1` (automação do envio
+ * Clarice) quebrou essa suposição de propósito: ele registra o PAR
+ * `Diaria-Clarice-Envio` (19:00, planeja+agenda) e `Diaria-Clarice-Envio-Guard`
+ * (05:00, reavalia o freio antes do disparo) num script só, porque armar uma
+ * sem a outra é uma configuração que ninguém quer. Se o parser continuasse
+ * lendo só a primeira, a task-guard ficaria invisível pro diff do #4708 —
+ * exatamente o modo de falha "mente por omissão" que este módulo existe pra
+ * impedir.
+ *
+ * O padrão aceito é `$<qualquer coisa>TaskName = "..."` (aspas duplas):
+ * `$TaskName` no script de task única, `$TaskName` + `$GuardTaskName` no
+ * script do par. **Lança** (não retorna `[]`) quando NENHUM nome é
+ * encontrado — ver docstring do módulo.
  */
-export function parseTaskNameFromSetupScript(source: string, scriptPathForError: string): string {
-  const m = source.match(/\$TaskName\s*=\s*"([^"]+)"/);
-  if (!m) {
+export function parseTaskNamesFromSetupScript(source: string, scriptPathForError: string): string[] {
+  const names = [...source.matchAll(/\$\w*TaskName\s*=\s*"([^"]+)"/g)].map((m) => m[1]);
+  if (names.length === 0) {
     throw new Error(
       `[pending-scheduled-tasks] não encontrei '$TaskName = "..."' em ${scriptPathForError} — ` +
         `o parser depende desse padrão literal (aspas duplas). Se o script mudou de convenção, ` +
-        `atualize o regex em parseTaskNameFromSetupScript (scripts/lib/pending-scheduled-tasks.ts); ` +
+        `atualize o regex em parseTaskNamesFromSetupScript (scripts/lib/pending-scheduled-tasks.ts); ` +
         `sem isso o diff de tasks pendentes fica vazio SILENCIOSAMENTE e o relatório mente por omissão.`,
     );
   }
-  return m[1];
+  return names;
+}
+
+/**
+ * Primeiro nome de task declarado num `setup-*-schedule.ps1` — conveniência
+ * sobre `parseTaskNamesFromSetupScript` pros callers que sabem estar diante
+ * de um script de task única. **Lança** nas mesmas condições dela, E TAMBÉM
+ * quando o script declara MAIS de 1 nome (achado do type-design-analyzer no
+ * review do #5027): antes, um script multi-task passando por aqui perdia a
+ * 2ª task em silêncio — `[0]` sem checar `length` é o mesmo "mente por
+ * omissão" que este módulo inteiro existe pra evitar, só que num lugar
+ * novo.
+ *
+ * Ainda é o caminho usado por `fromLegacyScan` em `listExpectedScheduledTasks`
+ * — mas nunca recebe um script multi-task em produção, porque
+ * `scripts/setup-clarice-envio-schedule.ps1` (o único hoje) é coberto pelo
+ * registro (`fromRegistry`, 2 entradas com o mesmo `legacySetupScript`) e
+ * fica de fora do scan legado via `registeredScriptPaths`. O guard acima
+ * existe pro próximo script multi-task que ainda não tiver entrada no
+ * registro — sem ele, a 2ª+ task desse script ficaria invisível em silêncio
+ * dentro do `fromLegacyScan`.
+ */
+export function parseTaskNameFromSetupScript(source: string, scriptPathForError: string): string {
+  const names = parseTaskNamesFromSetupScript(source, scriptPathForError);
+  if (names.length > 1) {
+    throw new Error(
+      `[pending-scheduled-tasks] ${scriptPathForError} declara ${names.length} tasks (${names.join(", ")}) ` +
+        `mas parseTaskNameFromSetupScript espera exatamente 1 — use parseTaskNamesFromSetupScript no ` +
+        `caminho de descoberta/diff (senão a 2ª+ task fica invisível em silêncio).`,
+    );
+  }
+  return names[0];
 }
 
 /** Lista `.ps1` recursivamente sob `dir` cujo basename bate `setup-*-schedule.ps1`
@@ -165,15 +209,25 @@ export function listExpectedScheduledTasks(rootDir: string): SetupScriptTaskName
 
   const scriptsDir = resolve(rootAbs, "scripts");
   const files = setupScheduleFilesUnder(scriptsDir);
+  // #5027: filtra os arquivos JÁ cobertos pelo registro ANTES de parsear —
+  // não depois. Um script coberto pelo registro pode declarar mais de 1 task
+  // (setup-clarice-envio-schedule.ps1 tem $TaskName E $GuardTaskName) e a
+  // singular `parseTaskNameFromSetupScript` LANÇA nesse caso (guard do
+  // #5027, ver docstring da função) — se o filtro rodasse só depois do
+  // `.map()` como antes, o próprio scan real do repo quebraria tentando
+  // reparsear um arquivo que o registro já resolveu corretamente.
   const fromLegacyScan: SetupScriptTaskName[] = files
+    .filter((full) => {
+      const rel = full.startsWith(rootAbs + sep) ? full.slice(rootAbs.length + 1) : full;
+      return !registeredScriptPaths.has(rel.split(sep).join("/"));
+    })
     .map((full): SetupScriptTaskName => {
       const rel = full.startsWith(rootAbs + sep) ? full.slice(rootAbs.length + 1) : full;
       const scriptPath = rel.split(sep).join("/");
       const source = readFileSync(full, "utf8");
       const taskName = parseTaskNameFromSetupScript(source, scriptPath);
       return { scriptPath, taskName };
-    })
-    .filter((t) => !registeredScriptPaths.has(t.scriptPath));
+    });
 
   return [...fromRegistry, ...fromLegacyScan].sort((a, b) => a.taskName.localeCompare(b.taskName));
 }

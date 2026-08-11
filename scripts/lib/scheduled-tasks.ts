@@ -64,11 +64,13 @@ export type ScheduledTaskSchedule =
   | { kind: "interval"; hours: number };
 
 /**
- * Guard opcional rodado ANTES de qualquer step — hoje só
- * `Diaria-Brevo-Diaria-Evaluate` tem um (achado HIGH do review #4552): abortar
- * sem rodar nada quando um arquivo esperado (tipicamente um store que o
- * junction `data/` do OneDrive ainda não sincronizou) está ausente, pra não
- * gravar um estado vazio por cima de dado real.
+ * Guard opcional rodado ANTES de qualquer step (achado HIGH do review #4552,
+ * `Diaria-Brevo-Diaria-Evaluate` foi a 1ª): abortar sem rodar nada quando um
+ * arquivo esperado (tipicamente um store que o junction `data/` do OneDrive
+ * ainda não sincronizou) está ausente, pra não gravar um estado vazio por
+ * cima de dado real. Várias tasks já usam este guard (Clarice-Novos,
+ * Clarice-Envio, entre outras) — checar `guard?` em cada entrada, não contar
+ * com uma lista fixa aqui.
  */
 export interface ScheduledTaskGuard {
   /** Path relativo a `data/` (POSIX), checado com `existsSync` — MESMA
@@ -382,6 +384,62 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     },
     legacySetupScript: "scripts/setup-clarice-novos-schedule.ps1",
     issue: "#4347, #4941",
+  },
+  {
+    name: "Diaria-Clarice-Envio",
+    description: "planeja e agenda a onda Clarice do dia seguinte (06:00 BRT) - freio por risco de ISP + escalada adaptativa",
+    // Kill switch dedicado: ANTES de qualquer chamada Brevo,
+    // clarice-envio-run.ts checa data/clarice-envio-enabled.json. **O
+    // default deste toggle é o INVERSO do Diaria-Clarice-Novos**: arquivo
+    // ausente significa LIGADO (decisão do editor 260811, "ligada desde o
+    // início" — a rampa já roda manualmente todo dia, a automação substitui
+    // trabalho existente em vez de estrear canal novo). Ver
+    // scripts/lib/clarice-envio-enabled.ts pro risco que esse default cobra.
+    steps: [{ key: "run", script: "scripts/clarice-envio-run.ts" }],
+    logPath: "clarice-subscribers/.envio-run.log",
+    // 19:00 BRT (decisão do editor 260811): planeja e AGENDA a onda de
+    // amanhã 06:00 BRT (09:00 UTC). Roda depois do Diaria-Clarice-Novos
+    // (17:00) de propósito — os cadastros novos do dia já entraram no store
+    // antes do planejamento da onda. Sem colisão com nenhuma outra task
+    // armada (a mais próxima é o ciclo de 4h do Clarice-Guardrail-Alarm).
+    schedule: { kind: "daily", hour: 19, minute: 0 },
+    // Mesmo guard do Diaria-Clarice-Novos (#4552/#4941): sem o store, o
+    // planejamento leria uma base vazia e derivaria volume/freio de nada —
+    // pior que não rodar. Independente do kill switch acima: este cobre
+    // "junction data/ ainda não montada", o toggle cobre "o editor pausou".
+    guard: {
+      requiredFile: "clarice-subscribers/clarice-users.db",
+      abortMessage:
+        "clarice-users.db nao encontrado (data/clarice-subscribers/clarice-users.db) -- provavel junction " +
+        "data/ nao montada ainda; abortando por seguranca, sem planejar nem agendar onda.",
+    },
+    legacySetupScript: "scripts/setup-clarice-envio-schedule.ps1",
+    issue: "#5025, #5026, #5027 (decisões do editor 260811)",
+  },
+  {
+    name: "Diaria-Clarice-Envio-Guard",
+    description: "guard matinal da onda Clarice ja agendada - reavalia o freio de risco de ISP antes do disparo das 06:00",
+    // Segunda metade do par: a onda é agendada às 19:00 do dia anterior, e a
+    // Brevo congela destinatários no AGENDAMENTO, não no envio (memória do
+    // projeto: brevo-recipients-snapshot). Entre 19:00 e 06:00 chegam ~11h de
+    // bounce/unsub/spam da onda ANTERIOR — este passo reavalia o freio com
+    // esse dado fresco e é a última chance de segurar o disparo.
+    steps: [{ key: "guard", script: "scripts/clarice-envio-guard.ts" }],
+    logPath: "clarice-subscribers/.envio-guard.log",
+    // 05:00 BRT (decisão do editor 260811): 1h de folga antes do disparo das
+    // 06:00, e 30min antes do Diaria-Brevo-Diaria-Evaluate (05:30) — mesma
+    // classe de restrição do #4534 (tem que rodar ANTES do envio, senão a
+    // ação não afeta a campanha do dia), com margem maior porque aqui o
+    // desfecho possível é cancelar uma campanha, não só desvincular contato.
+    schedule: { kind: "daily", hour: 5, minute: 0 },
+    // SEM guard de requiredFile de propósito: este passo é a rede de
+    // segurança do par, e um guard de pré-condição que aborta a rodada
+    // suprimiria justamente a checagem que pode segurar um disparo ruim. Se
+    // ele precisar do store, quem implementar clarice-envio-guard.ts decide
+    // como tratar a ausência DENTRO do script (onde dá pra distinguir "não
+    // consegui checar" de "checado, está tudo bem" — #738).
+    legacySetupScript: "scripts/setup-clarice-envio-schedule.ps1",
+    issue: "#5025, #5026, #5027 (decisões do editor 260811)",
   },
   {
     name: "Diaria-Postmaster-Spam-Sync",

@@ -11,10 +11,11 @@ import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   parseTaskNameFromSetupScript,
+  parseTaskNamesFromSetupScript,
   listExpectedScheduledTasks,
   computePendingScheduledTasksDiff,
   buildPendingScheduledTasksSection,
@@ -75,6 +76,59 @@ describe("parseTaskNameFromSetupScript — ponto frágil (#4708): lança, nunca 
     const source = `$TaskName = 'Diaria-Aspas-Simples'\n`;
     assert.throws(() => parseTaskNameFromSetupScript(source, "fixture.ps1"));
   });
+
+  it("#5027: script MULTI-task -> lança (nunca trunca em silêncio pro primeiro nome)", () => {
+    // PoC do risco descrito na docstring: antes do #5027, `[0]` sem checar
+    // `length` faria isto retornar só "Diaria-Clarice-Envio" e a 2ª task
+    // ficaria invisível pro caller — a mesma classe de "mente por omissão"
+    // que este módulo inteiro existe pra evitar.
+    const source = `$TaskName = "Diaria-Clarice-Envio"\n$GuardTaskName = "Diaria-Clarice-Envio-Guard"\n`;
+    assert.throws(
+      () => parseTaskNameFromSetupScript(source, "scripts/setup-clarice-envio-schedule.ps1"),
+      /declara 2 tasks/,
+    );
+  });
+});
+
+describe("parseTaskNamesFromSetupScript (plural, #5027) — fonte primária, cobre script multi-task", () => {
+  it("extrai UM nome de um script de task única (mesmo caso do parser singular)", () => {
+    const source = `$TaskName = "Diaria-Apoios-Diff-Alarm"\n`;
+    assert.deepEqual(parseTaskNamesFromSetupScript(source, "fixture.ps1"), ["Diaria-Apoios-Diff-Alarm"]);
+  });
+
+  it("extrai OS DOIS nomes de um script multi-task, na ordem em que aparecem ($TaskName antes de $GuardTaskName)", () => {
+    const source = `$TaskName = "Diaria-Clarice-Envio"\n$GuardTaskName = "Diaria-Clarice-Envio-Guard"\n`;
+    assert.deepEqual(parseTaskNamesFromSetupScript(source, "fixture.ps1"), [
+      "Diaria-Clarice-Envio",
+      "Diaria-Clarice-Envio-Guard",
+    ]);
+  });
+
+  it("aceita qualquer prefixo antes de TaskName (regex $\\w*TaskName, não só $TaskName/$GuardTaskName literal)", () => {
+    const source = `$FooTaskName = "Diaria-Foo"\n$BarTaskName = "Diaria-Bar"\n`;
+    assert.deepEqual(parseTaskNamesFromSetupScript(source, "fixture.ps1"), ["Diaria-Foo", "Diaria-Bar"]);
+  });
+
+  it("near-miss $TaskDesc NÃO é confundido com $TaskName (sufixo Desc, não TaskName)", () => {
+    const source = `$TaskName = "Diaria-Real"\n$TaskDesc = "descricao qualquer"\n`;
+    assert.deepEqual(parseTaskNamesFromSetupScript(source, "fixture.ps1"), ["Diaria-Real"]);
+  });
+
+  it("nenhum nome encontrado -> lança (mesmo comportamento fail-loud da singular)", () => {
+    const source = `# script sem nenhum TaskName\nWrite-Output "oi"\n`;
+    assert.throws(
+      () => parseTaskNamesFromSetupScript(source, "scripts/setup-quebrado-schedule.ps1"),
+      /não encontrei/,
+    );
+  });
+
+  it("real: scripts/setup-clarice-envio-schedule.ps1 (repo de verdade) declara os 2 nomes do par, nesta ordem", () => {
+    const source = readFileSync(join(REPO_ROOT, "scripts", "setup-clarice-envio-schedule.ps1"), "utf8");
+    assert.deepEqual(parseTaskNamesFromSetupScript(source, "scripts/setup-clarice-envio-schedule.ps1"), [
+      "Diaria-Clarice-Envio",
+      "Diaria-Clarice-Envio-Guard",
+    ]);
+  });
 });
 
 describe("listExpectedScheduledTasks — varredura real do repo", () => {
@@ -89,7 +143,13 @@ describe("listExpectedScheduledTasks — varredura real do repo", () => {
     });
   });
 
-  it("sanity: a varredura recursiva encontra o mesmo conjunto que um scan manual de scripts/**/setup-*-schedule.ps1", () => {
+  it("sanity: a varredura recursiva cobre o mesmo CONJUNTO DE ARQUIVOS que um scan manual de scripts/**/setup-*-schedule.ps1", () => {
+    // Compara por scriptPath ÚNICO, não por contagem crua de tasks: desde
+    // #5027 um `.ps1` pode declarar MAIS de 1 task
+    // (setup-clarice-envio-schedule.ps1 -> Diaria-Clarice-Envio +
+    // Diaria-Clarice-Envio-Guard), então `viaLib.length` (tasks) pode ser
+    // MAIOR que `manual.length` (arquivos) de propósito — comparar os
+    // lengths direto quebraria aqui sem sinalizar problema real nenhum.
     function scan(dir: string): string[] {
       const out: string[] = [];
       for (const name of readdirSync(dir)) {
@@ -100,9 +160,10 @@ describe("listExpectedScheduledTasks — varredura real do repo", () => {
       }
       return out;
     }
-    const manual = scan(join(REPO_ROOT, "scripts"));
+    const manual = scan(join(REPO_ROOT, "scripts")).map((f) => f.slice(REPO_ROOT.length + 1).split(sep).join("/"));
     const viaLib = listExpectedScheduledTasks(REPO_ROOT);
-    assert.equal(viaLib.length, manual.length);
+    const viaLibFiles = new Set(viaLib.map((t) => t.scriptPath));
+    assert.deepEqual([...viaLibFiles].sort(), [...manual].sort());
   });
 
   it("resultado é ordenado por taskName (output determinístico)", () => {
