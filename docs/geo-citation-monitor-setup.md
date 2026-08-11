@@ -92,7 +92,7 @@ tentativas separadas no mesmo dia:
 | 2 | Timeout aos 60s | sem sucesso mesmo com 2,4x o timeout default |
 | 3 | Sucesso, 25s | 3 buscas |
 | Rodada completa (8 perguntas, `max_uses:5`, timeout 120s) | 3/8 sucesso, 5/8 timeout | custos dos 3 sucessos: US$0,167 / US$0,284 / US$0,065 (input 70k-121k tokens — busca retorna MUITO conteúdo) |
-| 4 (após reduzir `max_uses` pra 2, esperando latência mais previsível) | Timeout aos 180s | reduzir `max_uses` NÃO eliminou o timeout — não é proporcional ao número de buscas |
+| 4 (após reduzir `max_uses` pra 2, esperando latência mais previsível — script de teste avulso com timeout de 180s, maior que os 120s shipados) | Timeout aos 180s | reduzir `max_uses` NÃO eliminou o timeout — não é proporcional ao número de buscas. O código de produção aborta em 120s, então esta tentativa específica (180s) não é reproduzível pelo caminho real — foi só pra confirmar que o problema não era o teto de tempo. |
 
 **O que isso significa pra custo real:** uma chamada bem-sucedida da
 Anthropic custa entre US$0,065 e US$0,284 (PISO, só token — variação de ~4x
@@ -159,15 +159,22 @@ CORRENTE já em `history.jsonl` e aborta (exit 3) se o total já cruzou o
 teto — independe de `--strict`. Fail-open EXPLÍCITO (nunca silencioso)
 quando o mês não tem nenhum registro com `estimatedCostUsd` (ex: 1ª rodada
 do mês): a rodada segue, mas com um AVISO no log — ausência de dado nunca é
-tratada como "gastou zero". Com a faixa medida acima (OpenAI+Google
-~US$3,90/mês estável + Anthropic ~US$2-10/mês variável), um teto de
-US$10/mês neste script — separado do teto de US$10/mês já configurado na
-org do Console — dá alguma folga no cenário comum, mas pode apertar no pior
-caso observado da Anthropic; vale revisar depois de acumular mais semanas
-de dado real. `SCHEDULED_TASKS` (`scripts/lib/scheduled-tasks.ts`) ainda
-**não** passa `--max-monthly-usd`; se/quando o teto virar argumento fixo da
-task `Diaria-Geo-Citation-Monitor`, ele se declara em `steps[].args` (fonte
-única, `scripts/run-task.ts` resolve em runtime).
+tratada como "gastou zero".
+
+**Wired na task real desde #4904** (achado do silent-failure-hunter: até
+então nenhum guard de custo rodava de fato — o único freio era o teto de
+US$10/mês configurado direto na org do Console, opaco pra este repo, sem
+log nem registro se fosse atingido). `SCHEDULED_TASKS`
+(`scripts/lib/scheduled-tasks.ts`) passa `--max-monthly-usd 8` nos dois
+steps (`geral` e `hubs`) — deliberadamente ABAIXO dos US$10 do Console,
+porque este guard é um PISO (não conta chamadas da Anthropic que deram
+timeout mas foram cobradas mesmo assim — ver tabela acima) e precisa de
+folga pra disparar ANTES do teto rígido do Console, com uma mensagem clara
+em vez de um erro de pagamento cru. Com a faixa medida acima (OpenAI+Google
+~US$3,90/mês estável + Anthropic ~US$2-10/mês variável), US$8 pode apertar
+no pior caso observado da Anthropic — vale revisar depois de acumular mais
+semanas de dado real (o próprio guard avisa via `--strict` se isso
+acontecer, não falha em silêncio).
 
 ## Exit code honesto sob `--strict` (#4754)
 

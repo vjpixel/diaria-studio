@@ -15,11 +15,15 @@
  * (console.anthropic.com, org própria, US$5 de crédito, teto de gasto
  * mensal US$10) e decidiu incluir a Anthropic na medição. **A Anthropic tem
  * timeout (`GeoProviderDef.timeoutMs`) e `max_uses` de busca próprios,
- * MENORES/DIFERENTES do resto** — ver as duas docstrings em
+ * DIFERENTES do resto** — timeout MAIOR (120s vs 25s default) e `max_uses`
+ * MENOR (2, sem equivalente em OpenAI/Google). Ver as duas docstrings em
  * `scripts/lib/geo-citation-monitor.ts` pro achado ao vivo de latência
- * variável (mesma pergunta: 25s, 60s de timeout, 25s, e depois 180s de
- * timeout de novo mesmo com menos buscas por chamada) — falhas ocasionais
- * são esperadas e tratadas fail-soft, não são bug.
+ * variável (mesma pergunta, tentativas isoladas fora do código shipado:
+ * 25s, 60s de timeout, 25s, e depois 180s de timeout de novo mesmo com
+ * menos buscas por chamada — o 180s veio de um script de teste avulso com
+ * timeout maior que o valor shipado, não é algo que o código em produção
+ * consegue reproduzir, já que ele aborta em 120s) — falhas ocasionais são
+ * esperadas e tratadas fail-soft, não são bug.
  *
  * Uso:
  *   npx tsx scripts/geo-citation-monitor.ts [--dry-run] [--out <path>] [--panel geral|hubs]
@@ -87,6 +91,7 @@ import {
   summarizeGeoCitationRecords,
   latestRoundProviders,
   detectProviderDrop,
+  detectProviderTotalFailure,
   detectSafeBackupConflictFiles,
   type GeoQuestionPanel,
 } from "./lib/geo-citation-monitor.ts";
@@ -447,7 +452,27 @@ async function main(): Promise<number> {
     `[geo-citation-monitor] ${summary.total} consultas, ${summary.cited} citaram diar.ia.br, ${summary.errors} erro(s). Log: ${outPath}`,
   );
   for (const [providerId, s] of Object.entries(summary.byProvider)) {
-    console.log(`  - ${providerId}: ${s.cited}/${s.total} citaram`);
+    console.log(`  - ${providerId}: ${s.cited}/${s.total} citaram` + (s.errors > 0 ? `, ${s.errors} erro(s)` : ""));
+  }
+
+  // #4904, achado do silent-failure-hunter desta PR: um provider quebrado
+  // 100% (key revogada, timeout persistente, etc.) ficava indistinguível de
+  // "rodou certinho, nunca foi citado" — `--strict` só falha quando os 3
+  // providers erram 100% juntos, e OpenAI/Google seguem estáveis o
+  // bastante pra nunca cruzar esse limiar sozinhos, escondendo uma
+  // Anthropic sistemicamente quebrada por meses. Mesmo nível de severidade
+  // do alarme de provider drop acima — WARN, não muda o exit code (uma
+  // rodada ruim isolada da Anthropic é esperada, ver docstring de
+  // GeoProviderDef.timeoutMs; o valor está em NUNCA mais passar em
+  // silêncio quando isso persistir).
+  const totalFailures = detectProviderTotalFailure(summary.byProvider);
+  if (totalFailures.length > 0) {
+    console.warn(
+      `[geo-citation-monitor] AVISO: provider(s) com 100% de erro nesta rodada (painel "${panel}"): ` +
+        `${totalFailures.join(", ")}. Pode ser falha transitória (ver docstring de GeoProviderDef.timeoutMs pra` +
+        " Anthropic especificamente) ou algo sistêmico (key revogada, org errada, rate-limit persistente) —" +
+        " se persistir rodada após rodada, investigar.",
+    );
   }
 
   // #4900 item b: a rodada atual RODOU (chegou até aqui, então >=1 provider

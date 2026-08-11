@@ -22,6 +22,7 @@ import {
   buildUsageRecordFields,
   detectCitation,
   detectProviderDrop,
+  detectProviderTotalFailure,
   detectSafeBackupConflictFiles,
   latestRoundProviders,
   providersByRoundDate,
@@ -135,6 +136,14 @@ describe("GEO_PROVIDERS — extractText por provider (fixtures)", () => {
     assert.equal(anthropic.extractText({}), "");
     assert.equal(anthropic.extractText(null), "");
     assert.equal(anthropic.extractText("string crua"), "");
+  });
+
+  it("anthropic: buildRequest usa max_uses:2 no tool web_search (#4904, reduzido de 5 por custo — achado do comment-analyzer desta PR: sem isso, um regresso pra 5 passa despercebido)", () => {
+    const { init } = anthropic.buildRequest("pergunta", "fake-key", "claude-sonnet-5");
+    const body = JSON.parse(init.body as string);
+    assert.equal(body.tools.length, 1);
+    assert.equal(body.tools[0].type, "web_search_20260209");
+    assert.equal(body.tools[0].max_uses, 2);
   });
 
   it("openai: usa output_text quando presente", () => {
@@ -397,11 +406,13 @@ describe("queryProvider (fetchImpl injetado — nunca rede real)", () => {
   it("#4904 achado ao vivo 11/ago/2026: Anthropic tem timeoutMs próprio (120s), maior que o default — 25s estourou em 8/8 chamadas reais, US$0,36 gastos sem 1 registro útil", () => {
     const anthropicDef = GEO_PROVIDERS.find((p) => p.id === "anthropic")!;
     assert.equal(anthropicDef.timeoutMs, 120_000);
-    assert.ok(anthropicDef.timeoutMs! > GEO_PROVIDER_TIMEOUT_MS);
-    // OpenAI/Google continuam no default global — não têm o mesmo padrão de
-    // latência (web_search multi-busca) que motivou o override.
+    assert.ok(anthropicDef.timeoutMs > GEO_PROVIDER_TIMEOUT_MS);
+    // OpenAI/Google copiam o default global EXPLICITAMENTE (timeoutMs é
+    // campo obrigatório, achado do type-design review desta PR — nenhum
+    // provider novo pode herdar um timeout em silêncio) — não têm o mesmo
+    // padrão de latência (web_search multi-busca) que motivou o override.
     for (const id of ["openai", "google"] as const) {
-      assert.equal(GEO_PROVIDERS.find((p) => p.id === id)!.timeoutMs, undefined);
+      assert.equal(GEO_PROVIDERS.find((p) => p.id === id)!.timeoutMs, GEO_PROVIDER_TIMEOUT_MS);
     }
   });
 });
@@ -535,6 +546,49 @@ describe("runGeoCitationMonitor (#4558 Parte C)", () => {
     assert.ok(elapsed < 2000, `esperava abort em ~15ms (override honrado), levou ${elapsed}ms`);
   });
 
+  it("#4904 achado do review desta PR: o RETRY de 429 também honra provider.timeoutMs, não só o dispatch inicial", async () => {
+    // O teste acima só prova o 1º call site (dispatch inicial) — se alguém
+    // remover provider.timeoutMs SÓ do 2º call site (o retry de 429), esse
+    // teste passa mesmo assim e a regressão passa despercebida (achado do
+    // pr-test-analyzer nesta PR). Este teste força o caminho do retry: a
+    // 1ª chamada devolve 429 rápido, a 2ª (retry) pendura até abortar —
+    // com um timeoutMs custom bem menor que o global, pra provar que É o
+    // override do provider que chega no AbortController da chamada de retry.
+    let callCount = 0;
+    const fetchImpl = (_url: string, init?: RequestInit) => {
+      callCount++;
+      if (callCount === 1) {
+        return Promise.resolve(new Response("rate limited", { status: 429 }));
+      }
+      // 2ª chamada (retry): pendura até o signal abortar.
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const err = new Error("The operation was aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      });
+    };
+    const anthropicWithShortTimeout = { ...GEO_PROVIDERS.find((p) => p.id === "anthropic")!, timeoutMs: 15 };
+    const start = Date.now();
+    const records = await runGeoCitationMonitor(
+      { ANTHROPIC_API_KEY: "fake-key" },
+      ["pergunta"],
+      fetchImpl,
+      undefined,
+      [anthropicWithShortTimeout],
+      () => Promise.resolve(), // sleepFn instantâneo — não esperar o backoff real de 1,5s
+    );
+    const elapsed = Date.now() - start;
+    assert.equal(callCount, 2, "esperava exatamente 2 chamadas: dispatch inicial (429) + 1 retry");
+    assert.equal(records.length, 1);
+    assert.equal(records[0].errorKind, "network");
+    assert.ok(
+      elapsed < 2000,
+      `esperava o retry abortar em ~15ms (override honrado no 2º call site), levou ${elapsed}ms — se isso falhar, o retry caiu no default de 25_000ms`,
+    );
+  });
+
   it("propaga errorKind/httpStatus pro record (#4616 achado 1)", async () => {
     const fakeFetch = async () => new Response("nope", { status: 500 });
     const records = await runGeoCitationMonitor({ ANTHROPIC_API_KEY: "fake-key" }, ["pergunta"], fakeFetch);
@@ -640,8 +694,8 @@ describe("summarizeGeoCitationRecords", () => {
     assert.equal(summary.total, 3);
     assert.equal(summary.cited, 1);
     assert.equal(summary.errors, 1);
-    assert.deepEqual(summary.byProvider.anthropic, { total: 2, cited: 1 });
-    assert.deepEqual(summary.byProvider.openai, { total: 1, cited: 0 });
+    assert.deepEqual(summary.byProvider.anthropic, { total: 2, cited: 1, errors: 0 });
+    assert.deepEqual(summary.byProvider.openai, { total: 1, cited: 0, errors: 1 });
   });
 
   it("lista vazia não quebra", () => {
@@ -659,7 +713,7 @@ describe("summarizeGeoCitationRecords", () => {
     const summary = summarizeGeoCitationRecords([legacyLine]);
     assert.equal(summary.total, 1);
     assert.equal(summary.cited, 0);
-    assert.deepEqual(summary.byProvider.openai, { total: 1, cited: 0 });
+    assert.deepEqual(summary.byProvider.openai, { total: 1, cited: 0, errors: 0 });
   });
 
   describe("byPanel (#4900 item a)", () => {
@@ -732,6 +786,42 @@ describe("detectProviderDrop (#4900 item b)", () => {
   it("rodada anterior vazia (1ª medição) -> nunca alarma, não há o que comparar", () => {
     const check = detectProviderDrop([], ["openai"]);
     assert.equal(check.dropped, false);
+  });
+});
+
+describe("detectProviderTotalFailure (#4904, achado do silent-failure-hunter)", () => {
+  it("caso concreto que motivou o achado: Anthropic 100% erro, OpenAI/Google saudáveis -> pega só a Anthropic", () => {
+    const byProvider = {
+      anthropic: { total: 8, cited: 0, errors: 8 },
+      openai: { total: 8, cited: 0, errors: 0 },
+      google: { total: 8, cited: 1, errors: 0 },
+    };
+    assert.deepEqual(detectProviderTotalFailure(byProvider), ["anthropic"]);
+  });
+
+  it("nenhum provider com 100% de erro -> lista vazia", () => {
+    const byProvider = {
+      anthropic: { total: 8, cited: 0, errors: 3 },
+      openai: { total: 8, cited: 1, errors: 0 },
+    };
+    assert.deepEqual(detectProviderTotalFailure(byProvider), []);
+  });
+
+  it("todos os providers com 100% de erro -> lista todos (esse caso também é pego por resolveStrictOutcome, mas a função não sabe disso — é só detecção)", () => {
+    const byProvider = {
+      anthropic: { total: 2, cited: 0, errors: 2 },
+      openai: { total: 2, cited: 0, errors: 2 },
+    };
+    assert.deepEqual(detectProviderTotalFailure(byProvider), ["anthropic", "openai"]);
+  });
+
+  it("provider sem nenhuma consulta (total:0) -> nunca conta como falha total (nada rodou, não é a mesma coisa que tudo ter falhado)", () => {
+    const byProvider = { anthropic: { total: 0, cited: 0, errors: 0 } };
+    assert.deepEqual(detectProviderTotalFailure(byProvider), []);
+  });
+
+  it("objeto vazio -> lista vazia", () => {
+    assert.deepEqual(detectProviderTotalFailure({}), []);
   });
 });
 
