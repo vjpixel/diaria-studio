@@ -526,6 +526,64 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     }
   });
 
+  function makeFakeKv() {
+    const m = new Map<string, string>();
+    return {
+      async get(key: string) {
+        return m.get(key) ?? null;
+      },
+      async put(key: string, value: string) {
+        m.set(key, value);
+      },
+      async delete(key: string) {
+        m.delete(key);
+      },
+      _map: m,
+    } as unknown as KVNamespace & { _map: Map<string, string> };
+  }
+
+  it("User-Agent de bot nomeado → incrementa o contador ai-fetch no KV (#4902)", async () => {
+    const fakeSitemap = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>`;
+    globalThis.fetch = (async () => new Response(fakeSitemap, { status: 200 })) as unknown as typeof fetch;
+    const kv = makeFakeKv();
+    const req = new Request("https://arquivo.diar.ia.br/", { headers: { "User-Agent": "OAI-SearchBot/1.0; +https://openai.com/searchbot" } });
+    const res = await worker.fetch(req, { CURSOS_SUBSCRIBERS: kv });
+    assert.equal(res.status, 200);
+    const day = new Date().toISOString().slice(0, 10);
+    assert.equal(kv._map.get(`counter:ai-fetch:bot:OAI-SearchBot:${day}`), "1");
+  });
+
+  it("User-Agent de bot de TREINO (GPTBot) → NÃO incrementa o contador ai-fetch (só recuperação, não treino)", async () => {
+    const fakeSitemap = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>`;
+    globalThis.fetch = (async () => new Response(fakeSitemap, { status: 200 })) as unknown as typeof fetch;
+    const kv = makeFakeKv();
+    const req = new Request("https://arquivo.diar.ia.br/", { headers: { "User-Agent": "GPTBot/1.1" } });
+    await worker.fetch(req, { CURSOS_SUBSCRIBERS: kv });
+    assert.equal(kv._map.size, 0);
+  });
+
+  it("Referer de assistente de IA → também incrementa o contador ai-fetch:referrer no KV (#4902 item 2)", async () => {
+    const fakeSitemap = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>`;
+    globalThis.fetch = (async () => new Response(fakeSitemap, { status: 200 })) as unknown as typeof fetch;
+    const kv = makeFakeKv();
+    const req = new Request("https://arquivo.diar.ia.br/", { headers: { Referer: "https://claude.ai/chat/abc" } });
+    await worker.fetch(req, { CURSOS_SUBSCRIBERS: kv });
+    const day = new Date().toISOString().slice(0, 10);
+    assert.equal(kv._map.get(`counter:ai-fetch:referrer:claude.ai:${day}`), "1");
+  });
+
+  it("sem binding CURSOS_SUBSCRIBERS (env vazio) → não lança, página responde normalmente (fail-soft)", async () => {
+    const fakeSitemap = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>`;
+    globalThis.fetch = (async () => new Response(fakeSitemap, { status: 200 })) as unknown as typeof fetch;
+    const req = new Request("https://arquivo.diar.ia.br/", { headers: { "User-Agent": "Googlebot/2.1" } });
+    const res = await worker.fetch(req, {});
+    assert.equal(res.status, 200);
+  });
+
   it("GET /robots.txt → 200 texto com Allow: /, Sitemap: própria e sem fetch externo (#4546)", async () => {
     globalThis.fetch = (async () => {
       throw new Error("/robots.txt não deveria depender de rede nenhuma");

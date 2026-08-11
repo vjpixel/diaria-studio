@@ -6,10 +6,16 @@
     Roda, em sequencia, no repo root:
       1. seo-index-check.ts --only-posts  -> cobertura de indexacao (KPI primario
          enquanto o Search Analytics nao tem historico).
-      2. seo-pull.ts --days 28            -> CTR/posicao + oportunidades.
-    Ambos gravam em data/seo/ com a data no nome, entao a serie temporal se
+      2. seo-index-check.ts --sitemap arquivo.diar.ia.br/sitemap.xml -> cobertura
+         de /temas/{slug} (#4903 item 2 — antes so o host principal era medido;
+         sem --only-posts, que zeraria essas 4 URLs). --out-suffix "arquivo"
+         evita colidir com o JSON/MD do passo 1 (#4909).
+      3. seo-pull.ts --days 28            -> CTR/posicao + oportunidades.
+    Gravam em data/seo/ com a data no nome, entao a serie temporal se
     acumula sozinha. Registrado pela task "Diaria-SEO-Weekly"
-    (setup-seo-schedule.ps1).
+    (setup-seo-schedule.ps1) — mesmos 3 passos de SCHEDULED_TASKS
+    (scripts/lib/scheduled-tasks.ts), espelhados aqui porque este .ps1
+    continua sendo a via de execucao real no Windows (ver CLAUDE.md).
 
     Log: mesmo padrao do #4047 — a run inteira e escrita num arquivo temporario
     FORA de data/ (que e junction pro OneDrive e trava intermitentemente) e so
@@ -53,13 +59,22 @@ Write-TempLogLine "----- seo-index-check --only-posts -----"
 & npx tsx "$IndexCheckScript" --only-posts --limit 250 2>&1 | ForEach-Object { $_.ToString() } | Out-File -FilePath $TempLogPath -Append -Encoding utf8
 $indexCode = $LASTEXITCODE
 
-# 2. Search Analytics (CTR/posicao). Sem historico ainda retorna 0 linhas — ok,
+# 2. Cobertura de /temas/{slug} em arquivo.diar.ia.br (#4903 item 2). SEM
+#    --only-posts (o filtro e /\/p\//, que zeraria as 4 URLs deste sitemap —
+#    armadilha ja documentada no #4909) e com --out-suffix "arquivo" pra nao
+#    colidir com o JSON/MD do passo 1 no mesmo dia. Mesmos args do step
+#    "index-arquivo" em scripts/lib/scheduled-tasks.ts.
+Write-TempLogLine "----- seo-index-check --sitemap arquivo.diar.ia.br -----"
+& npx tsx "$IndexCheckScript" --sitemap "https://arquivo.diar.ia.br/sitemap.xml" --limit 10 --out-suffix "arquivo" 2>&1 | ForEach-Object { $_.ToString() } | Out-File -FilePath $TempLogPath -Append -Encoding utf8
+$indexArquivoCode = $LASTEXITCODE
+
+# 3. Search Analytics (CTR/posicao). Sem historico ainda retorna 0 linhas — ok,
 #    nao e erro; o exit code so reprova em falha de API.
 Write-TempLogLine "----- seo-pull --days 28 -----"
 & npx tsx "$PullScript" --days 28 2>&1 | ForEach-Object { $_.ToString() } | Out-File -FilePath $TempLogPath -Append -Encoding utf8
 $pullCode = $LASTEXITCODE
 
-Write-TempLogLine "===== fim (index=$indexCode pull=$pullCode) ====="
+Write-TempLogLine "===== fim (index=$indexCode index-arquivo=$indexArquivoCode pull=$pullCode) ====="
 
 $logAppendOk = $false
 $lastLogError = $null
@@ -87,5 +102,5 @@ if ($logAppendOk) {
     Write-Host "AVISO: falha ao gravar o log final em $LogPath apos 3 tentativas ($lastLogError). Log temporario preservado em $TempLogPath."
 }
 
-$code = if ($indexCode -ne 0) { $indexCode } elseif ($pullCode -ne 0) { $pullCode } elseif (-not $logAppendOk) { 1 } else { 0 }
+$code = if ($indexCode -ne 0) { $indexCode } elseif ($indexArquivoCode -ne 0) { $indexArquivoCode } elseif ($pullCode -ne 0) { $pullCode } elseif (-not $logAppendOk) { 1 } else { 0 }
 exit $code

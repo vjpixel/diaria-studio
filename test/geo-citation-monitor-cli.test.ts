@@ -19,6 +19,9 @@ import {
   main,
   resolveStrictOutcome,
   readHistoryRecordsForPanel,
+  readHistoryRecordsForCostGuard,
+  sumMonthToDateCostUsd,
+  resolveMonthlyCostGuardOutcome,
   listSafeBackupConflictFiles,
 } from "../scripts/geo-citation-monitor.ts";
 import { GEO_PROVIDERS } from "../scripts/lib/geo-citation-monitor.ts";
@@ -123,6 +126,98 @@ describe("scripts/geo-citation-monitor.ts main() (#4558 Parte C)", () => {
       assert.ok(logs.some((l) => l.includes('painel "geral"')));
     });
   });
+
+  describe("--max-monthly-usd (#4904 item 5)", () => {
+    let tmpDir: string;
+    let originalFetch: typeof fetch;
+    let originalError: typeof console.error;
+    let errors: string[];
+
+    beforeEach(() => {
+      tmpDir = mkdtempSync(join(tmpdir(), "geo-citation-cost-guard-"));
+      // main() NUNCA pode chegar a chamar fetch quando o guard bloqueia —
+      // troca o fetch global por um que sempre lança, então se o guard
+      // falhar em bloquear, o teste falha rápido e explicitamente (em vez
+      // de tentar uma chamada de rede real de verdade, proibida nesta sessão).
+      originalFetch = global.fetch;
+      global.fetch = (async () => {
+        throw new Error("main() chamou fetch — o guard de custo deveria ter abortado antes (#4904)");
+      }) as typeof fetch;
+      originalError = console.error;
+      errors = [];
+      console.error = (...args: unknown[]) => errors.push(args.map(String).join(" "));
+    });
+
+    afterEach(() => {
+      rmSync(tmpDir, { recursive: true, force: true });
+      global.fetch = originalFetch;
+      console.error = originalError;
+    });
+
+    it("--max-monthly-usd inválido (não-numérico) -> exit 2, nunca chega ao guard", async () => {
+      process.argv = ["node", "geo-citation-monitor.ts", "--dry-run", "--max-monthly-usd", "lixo"];
+      const code = await main();
+      assert.equal(code, 2);
+    });
+
+    it("--max-monthly-usd negativo -> exit 2", async () => {
+      process.argv = ["node", "geo-citation-monitor.ts", "--dry-run", "--max-monthly-usd", "-1"];
+      const code = await main();
+      assert.equal(code, 2);
+    });
+
+    it("teto já cruzado no mês corrente -> exit 3, NUNCA chama fetch (guard bloqueia antes da 1ª chamada)", async () => {
+      const outPath = resolve(tmpDir, "history.jsonl");
+      const today = new Date().toISOString().slice(0, 10);
+      writeFileSync(outPath, JSON.stringify({ date: today, provider: "anthropic", estimatedCostUsd: 5 }) + "\n");
+      process.env.ANTHROPIC_API_KEY = "fake-key";
+      process.argv = ["node", "geo-citation-monitor.ts", "--out", outPath, "--max-monthly-usd", "1"];
+      const code = await main();
+      assert.equal(code, 3);
+      assert.ok(errors.some((l) => l.includes("cruzou")));
+    });
+
+    it("sem dado de custo no mês (arquivo ausente) -> NÃO bloqueia (fail-open explícito) — segue até tentar a chamada de rede", async () => {
+      const outPath = resolve(tmpDir, "history-vazio.jsonl");
+      process.env.ANTHROPIC_API_KEY = "fake-key";
+      process.argv = ["node", "geo-citation-monitor.ts", "--out", outPath, "--max-monthly-usd", "1"];
+      const code = await main();
+      // Não é exit 3 (o guard não bloqueou) — o fetch mockado lança um erro
+      // de rede tratado (errorKind:"network"), então a rodada termina 0
+      // (sem --strict) com 1 registro de erro, não um crash.
+      assert.notEqual(code, 3);
+    });
+
+    it("custo abaixo do teto -> NÃO bloqueia", async () => {
+      const outPath = resolve(tmpDir, "history.jsonl");
+      const today = new Date().toISOString().slice(0, 10);
+      writeFileSync(outPath, JSON.stringify({ date: today, provider: "anthropic", estimatedCostUsd: 0.1 }) + "\n");
+      process.env.ANTHROPIC_API_KEY = "fake-key";
+      process.argv = ["node", "geo-citation-monitor.ts", "--out", outPath, "--max-monthly-usd", "10"];
+      const code = await main();
+      assert.notEqual(code, 3);
+    });
+
+    it("--max-monthly-usd ausente -> sem teto, comportamento inalterado (nunca exit 3)", async () => {
+      const outPath = resolve(tmpDir, "history.jsonl");
+      const today = new Date().toISOString().slice(0, 10);
+      writeFileSync(outPath, JSON.stringify({ date: today, provider: "anthropic", estimatedCostUsd: 999 }) + "\n");
+      process.env.ANTHROPIC_API_KEY = "fake-key";
+      process.argv = ["node", "geo-citation-monitor.ts", "--out", outPath];
+      const code = await main();
+      assert.notEqual(code, 3);
+    });
+
+    it("registro de outro mês não conta pro teto do mês corrente", async () => {
+      const outPath = resolve(tmpDir, "history.jsonl");
+      // Data de janeiro/2020 — nunca é o mês corrente em nenhuma execução real.
+      writeFileSync(outPath, JSON.stringify({ date: "2020-01-15", provider: "anthropic", estimatedCostUsd: 999 }) + "\n");
+      process.env.ANTHROPIC_API_KEY = "fake-key";
+      process.argv = ["node", "geo-citation-monitor.ts", "--out", outPath, "--max-monthly-usd", "1"];
+      const code = await main();
+      assert.notEqual(code, 3, "custo de um mês passado não pode bloquear o mês corrente");
+    });
+  });
 });
 
 describe("readHistoryRecordsForPanel (scripts/geo-citation-monitor.ts, I/O real via tmpdir — #4900 item b)", () => {
@@ -165,6 +260,121 @@ describe("readHistoryRecordsForPanel (scripts/geo-citation-monitor.ts, I/O real 
     const path = resolve(tmpDir, "history.jsonl");
     writeFileSync(path, "não é json\n" + JSON.stringify({ date: "2026-08-03", provider: "openai" }) + "\n");
     assert.deepEqual(readHistoryRecordsForPanel(path, "geral"), [{ date: "2026-08-03", provider: "openai" }]);
+  });
+});
+
+describe("readHistoryRecordsForCostGuard (scripts/geo-citation-monitor.ts, I/O real via tmpdir — #4904)", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "geo-citation-history-cost-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("arquivo inexistente -> []", () => {
+    assert.deepEqual(readHistoryRecordsForCostGuard(resolve(tmpDir, "nao-existe.jsonl")), []);
+  });
+
+  it("lê date + estimatedCostUsd de todo provider/painel (não filtra por panel, ao contrário de readHistoryRecordsForPanel)", () => {
+    const path = resolve(tmpDir, "history.jsonl");
+    const lines = [
+      JSON.stringify({ date: "2026-08-03", provider: "anthropic", panel: "geral", estimatedCostUsd: 0.02 }),
+      JSON.stringify({ date: "2026-08-03", provider: "anthropic", panel: "hubs", estimatedCostUsd: 0.03 }),
+      JSON.stringify({ date: "2026-08-03", provider: "openai" }), // sem estimatedCostUsd (sem tabela de pricing)
+    ];
+    writeFileSync(path, lines.join("\n") + "\n");
+    const records = readHistoryRecordsForCostGuard(path);
+    assert.equal(records.length, 3);
+    assert.equal(records[0].estimatedCostUsd, 0.02);
+    assert.equal(records[1].estimatedCostUsd, 0.03);
+    assert.equal(records[2].estimatedCostUsd, undefined);
+  });
+
+  it("linha corrompida não invalida as outras (fail-soft linha a linha)", () => {
+    const path = resolve(tmpDir, "history.jsonl");
+    writeFileSync(path, "não é json\n" + JSON.stringify({ date: "2026-08-03", estimatedCostUsd: 1 }) + "\n");
+    assert.deepEqual(readHistoryRecordsForCostGuard(path), [{ date: "2026-08-03", estimatedCostUsd: 1 }]);
+  });
+});
+
+describe("sumMonthToDateCostUsd (#4904)", () => {
+  it("soma só os registros do mês pedido, ignora outros meses", () => {
+    const result = sumMonthToDateCostUsd(
+      [
+        { date: "2026-08-01", estimatedCostUsd: 0.5 },
+        { date: "2026-08-10", estimatedCostUsd: 0.25 },
+        { date: "2026-07-31", estimatedCostUsd: 999 }, // mês anterior — não conta
+        { date: "2026-09-01", estimatedCostUsd: 999 }, // mês seguinte — não conta
+      ],
+      "2026-08",
+    );
+    assert.equal(result.totalUsd, 0.75);
+    assert.equal(result.hasCostData, true);
+  });
+
+  it("registro sem estimatedCostUsd não conta pra soma nem pra hasCostData", () => {
+    const result = sumMonthToDateCostUsd([{ date: "2026-08-01", estimatedCostUsd: undefined }], "2026-08");
+    assert.equal(result.totalUsd, 0);
+    assert.equal(result.hasCostData, false);
+  });
+
+  it("mês sem NENHUM registro -> totalUsd 0, hasCostData false (distinguível de 'gastou zero')", () => {
+    const result = sumMonthToDateCostUsd([], "2026-08");
+    assert.equal(result.totalUsd, 0);
+    assert.equal(result.hasCostData, false);
+  });
+
+  it("registros mistos (com e sem custo) no mesmo mês → soma só os com custo, hasCostData true", () => {
+    const result = sumMonthToDateCostUsd(
+      [
+        { date: "2026-08-01", estimatedCostUsd: 1 },
+        { date: "2026-08-02", estimatedCostUsd: undefined },
+      ],
+      "2026-08",
+    );
+    assert.equal(result.totalUsd, 1);
+    assert.equal(result.hasCostData, true);
+  });
+});
+
+describe("resolveMonthlyCostGuardOutcome (#4904 item 5)", () => {
+  it("maxMonthlyUsd ausente -> sempre allowed, reason no-limit-configured", () => {
+    const outcome = resolveMonthlyCostGuardOutcome({ totalUsd: 999, hasCostData: true }, undefined);
+    assert.equal(outcome.allowed, true);
+    assert.equal(outcome.reason, "no-limit-configured");
+  });
+
+  it("sem dado de custo no mês -> allowed (fail-open explícito), reason no-cost-data", () => {
+    const outcome = resolveMonthlyCostGuardOutcome({ totalUsd: 0, hasCostData: false }, 1);
+    assert.equal(outcome.allowed, true);
+    assert.equal(outcome.reason, "no-cost-data");
+    assert.match(outcome.message, /fail-open/);
+  });
+
+  it("total >= teto -> BLOQUEIA, reason over-limit", () => {
+    const outcome = resolveMonthlyCostGuardOutcome({ totalUsd: 5, hasCostData: true }, 5);
+    assert.equal(outcome.allowed, false);
+    assert.equal(outcome.reason, "over-limit");
+  });
+
+  it("total > teto -> BLOQUEIA", () => {
+    const outcome = resolveMonthlyCostGuardOutcome({ totalUsd: 6, hasCostData: true }, 5);
+    assert.equal(outcome.allowed, false);
+  });
+
+  it("total < teto -> permite, reason under-limit", () => {
+    const outcome = resolveMonthlyCostGuardOutcome({ totalUsd: 4.99, hasCostData: true }, 5);
+    assert.equal(outcome.allowed, true);
+    assert.equal(outcome.reason, "under-limit");
+  });
+
+  it("é pure — mesma entrada produz sempre o mesmo resultado", () => {
+    const a = resolveMonthlyCostGuardOutcome({ totalUsd: 2, hasCostData: true }, 5);
+    const b = resolveMonthlyCostGuardOutcome({ totalUsd: 2, hasCostData: true }, 5);
+    assert.deepEqual(a, b);
   });
 });
 

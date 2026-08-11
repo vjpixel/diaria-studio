@@ -315,6 +315,21 @@ describe("agendamento semanal .ps1 (#4105)", () => {
     assert.match(src, /--only-posts/);
   });
 
+  it("#4903 item 2: o wrapper também chama seo-index-check pro sitemap de arquivo.diar.ia.br", () => {
+    // Espelha o step "index-arquivo" de SCHEDULED_TASKS (scripts/lib/scheduled-tasks.ts)
+    // — sem isso, a task no Windows (via este .ps1, ainda a via de execução
+    // real) mede só o host principal, deixando /temas/{slug} sem cobertura
+    // mesmo depois do registro declarativo ganhar o step.
+    const src = readFileSync(resolve(ROOT, "scripts/run-seo-weekly.ps1"), "utf8");
+    assert.match(src, /arquivo\.diar\.ia\.br\/sitemap\.xml/);
+    assert.match(src, /--out-suffix\s+"arquivo"/);
+    // Não pode herdar --only-posts nesta chamada — zeraria as 4 URLs de
+    // /temas/* (o filtro é /\/p\//, achado do #4909).
+    const arquivoCallMatch = src.match(/--sitemap "https:\/\/arquivo\.diar\.ia\.br\/sitemap\.xml"[^\n]*/);
+    assert.ok(arquivoCallMatch, "chamada --sitemap arquivo.diar.ia.br não encontrada");
+    assert.ok(!arquivoCallMatch![0].includes("--only-posts"), "--only-posts na chamada de arquivo zeraria /temas/*");
+  });
+
   it("setup registra com Register-ScheduledTask -Force, não Set-ScheduledTask (#3757)", () => {
     const src = readFileSync(resolve(ROOT, "scripts/setup-seo-schedule.ps1"), "utf8");
     assert.match(src, /Register-ScheduledTask/);

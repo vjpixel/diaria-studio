@@ -19,6 +19,7 @@ import {
   GEO_RATE_LIMIT_RETRY_DELAY_MS,
   GEO_TARGET_DOMAIN,
   appendGeoCitationLog,
+  buildUsageRecordFields,
   detectCitation,
   detectProviderDrop,
   detectSafeBackupConflictFiles,
@@ -167,6 +168,125 @@ describe("GEO_PROVIDERS — extractText por provider (fixtures)", () => {
   it("google: forma inesperada não lança", () => {
     assert.doesNotThrow(() => google.extractText({}));
     assert.equal(google.extractText({ candidates: [] }), "");
+  });
+});
+
+describe("GEO_PROVIDERS — extractUsage por provider (#4904, fixtures)", () => {
+  const anthropic = GEO_PROVIDERS.find((p) => p.id === "anthropic")!;
+  const openai = GEO_PROVIDERS.find((p) => p.id === "openai")!;
+  const google = GEO_PROVIDERS.find((p) => p.id === "google")!;
+
+  it("todos os 3 providers têm extractUsage definido", () => {
+    assert.equal(typeof anthropic.extractUsage, "function");
+    assert.equal(typeof openai.extractUsage, "function");
+    assert.equal(typeof google.extractUsage, "function");
+  });
+
+  it("anthropic: lê input/output tokens + cache + searchCount de usage.server_tool_use.web_search_requests", () => {
+    const fixture = {
+      usage: {
+        input_tokens: 120,
+        output_tokens: 340,
+        cache_creation_input_tokens: 10,
+        cache_read_input_tokens: 5,
+        server_tool_use: { web_search_requests: 2 },
+      },
+    };
+    const usage = anthropic.extractUsage!(fixture);
+    assert.deepEqual(usage, {
+      inputTokens: 120,
+      outputTokens: 340,
+      cacheCreationInputTokens: 10,
+      cacheReadInputTokens: 5,
+      searchCount: 2,
+    });
+  });
+
+  it("anthropic: usage sem server_tool_use → searchCount undefined, resto presente", () => {
+    const usage = anthropic.extractUsage!({ usage: { input_tokens: 10, output_tokens: 20 } });
+    assert.equal(usage?.inputTokens, 10);
+    assert.equal(usage?.outputTokens, 20);
+    assert.equal(usage?.searchCount, undefined);
+  });
+
+  it("anthropic: forma inesperada (sem usage, ou usage não-objeto) → undefined, nunca lança", () => {
+    assert.doesNotThrow(() => anthropic.extractUsage!({}));
+    assert.equal(anthropic.extractUsage!({}), undefined);
+    assert.equal(anthropic.extractUsage!(null), undefined);
+    assert.equal(anthropic.extractUsage!({ usage: "não é objeto" }), undefined);
+    assert.equal(anthropic.extractUsage!({ usage: {} }), undefined);
+  });
+
+  it("openai: lê usage.input_tokens/output_tokens quando presentes", () => {
+    const usage = openai.extractUsage!({ usage: { input_tokens: 50, output_tokens: 100 } });
+    assert.deepEqual(usage, { inputTokens: 50, outputTokens: 100 });
+  });
+
+  it("openai: nunca populate searchCount (sem campo confirmado nesta API)", () => {
+    const usage = openai.extractUsage!({ usage: { input_tokens: 1, output_tokens: 1 } });
+    assert.equal(usage?.searchCount, undefined);
+  });
+
+  it("openai: forma inesperada → undefined, nunca lança", () => {
+    assert.doesNotThrow(() => openai.extractUsage!({}));
+    assert.equal(openai.extractUsage!({}), undefined);
+    assert.equal(openai.extractUsage!(null), undefined);
+  });
+
+  it("google: lê usageMetadata.{promptTokenCount,candidatesTokenCount}", () => {
+    const usage = google.extractUsage!({ usageMetadata: { promptTokenCount: 30, candidatesTokenCount: 60 } });
+    assert.deepEqual(usage, { inputTokens: 30, outputTokens: 60 });
+  });
+
+  it("google: forma inesperada → undefined, nunca lança", () => {
+    assert.doesNotThrow(() => google.extractUsage!({}));
+    assert.equal(google.extractUsage!({}), undefined);
+    assert.equal(google.extractUsage!(null), undefined);
+  });
+});
+
+describe("buildUsageRecordFields (#4904)", () => {
+  it("usage undefined → {} (nenhum campo populado)", () => {
+    assert.deepEqual(buildUsageRecordFields("anthropic", undefined, "claude-sonnet-5", "2026-08-11T12:00:00.000Z"), {});
+  });
+
+  it("anthropic: popula tokens/searchCount E estimatedCostUsd (única tabela de pricing confiável)", () => {
+    const fields = buildUsageRecordFields(
+      "anthropic",
+      { inputTokens: 1000, outputTokens: 500, searchCount: 2 },
+      "claude-sonnet-5",
+      "2026-08-11T12:00:00.000Z",
+    );
+    assert.equal(fields.inputTokens, 1000);
+    assert.equal(fields.outputTokens, 500);
+    assert.equal(fields.searchCount, 2);
+    assert.equal(typeof fields.estimatedCostUsd, "number");
+    assert.ok(fields.estimatedCostUsd! > 0);
+  });
+
+  it("openai/google: popula tokens, mas NUNCA estimatedCostUsd (sem tabela de pricing)", () => {
+    const fieldsOpenai = buildUsageRecordFields("openai", { inputTokens: 100, outputTokens: 50 }, "gpt-4.1", "2026-08-11T12:00:00.000Z");
+    assert.equal(fieldsOpenai.inputTokens, 100);
+    assert.equal(fieldsOpenai.outputTokens, 50);
+    assert.equal(fieldsOpenai.estimatedCostUsd, undefined);
+
+    const fieldsGoogle = buildUsageRecordFields("google", { inputTokens: 100, outputTokens: 50 }, "gemini-2.5-flash", "2026-08-11T12:00:00.000Z");
+    assert.equal(fieldsGoogle.estimatedCostUsd, undefined);
+  });
+
+  it("anthropic sem tokens (usage só com searchCount) → sem estimatedCostUsd (pricing não tem o que estimar)", () => {
+    // estimateCallCostUsd trata tokens ausentes como 0 — custo sai 0, um
+    // número válido (não undefined). Ainda assim documenta o caso: o campo
+    // É populado (0), porque resolvePricing("claude-sonnet-5", ...) resolve
+    // normalmente — só NÃO seria populado se o model não fosse Claude.
+    const fields = buildUsageRecordFields("anthropic", { searchCount: 1 }, "claude-sonnet-5", "2026-08-11T12:00:00.000Z");
+    assert.equal(fields.searchCount, 1);
+    assert.equal(fields.estimatedCostUsd, 0);
+  });
+
+  it("anthropic com model não-Claude (não deveria acontecer, mas defensivo) → sem estimatedCostUsd", () => {
+    const fields = buildUsageRecordFields("anthropic", { inputTokens: 100, outputTokens: 50 }, "modelo-desconhecido", "2026-08-11T12:00:00.000Z");
+    assert.equal(fields.estimatedCostUsd, undefined);
   });
 });
 
@@ -330,6 +450,35 @@ describe("runGeoCitationMonitor (#4558 Parte C)", () => {
     assert.equal(seenModels[1], "claude-opus-5"); // override via env
   });
 
+  it("#4904: propaga usage (tokens + custo estimado) pro record quando o provider é anthropic", async () => {
+    const fakeFetch = async () =>
+      new Response(
+        JSON.stringify({
+          content: [{ type: "text", text: "veja diar.ia.br" }],
+          usage: { input_tokens: 200, output_tokens: 80, server_tool_use: { web_search_requests: 1 } },
+        }),
+        { status: 200 },
+      );
+    const records = await runGeoCitationMonitor(
+      { ANTHROPIC_API_KEY: "fake-key" },
+      ["pergunta"],
+      fakeFetch,
+      () => new Date("2026-08-11T12:00:00.000Z"),
+    );
+    assert.equal(records.length, 1);
+    assert.equal(records[0].inputTokens, 200);
+    assert.equal(records[0].outputTokens, 80);
+    assert.equal(records[0].searchCount, 1);
+    assert.equal(typeof records[0].estimatedCostUsd, "number");
+  });
+
+  it("#4904: registro de ERRO nunca carrega campos de usage (extractUsage nem roda nesse caminho)", async () => {
+    const fakeFetch = async () => new Response("nope", { status: 500 });
+    const records = await runGeoCitationMonitor({ ANTHROPIC_API_KEY: "fake-key" }, ["pergunta"], fakeFetch);
+    assert.equal(records[0].inputTokens, undefined);
+    assert.equal(records[0].estimatedCostUsd, undefined);
+  });
+
   it("propaga errorKind/httpStatus pro record (#4616 achado 1)", async () => {
     const fakeFetch = async () => new Response("nope", { status: 500 });
     const records = await runGeoCitationMonitor({ ANTHROPIC_API_KEY: "fake-key" }, ["pergunta"], fakeFetch);
@@ -441,6 +590,20 @@ describe("summarizeGeoCitationRecords", () => {
 
   it("lista vazia não quebra", () => {
     assert.deepEqual(summarizeGeoCitationRecords([]), { total: 0, cited: 0, errors: 0, byProvider: {}, byPanel: {} });
+  });
+
+  it("#4904: registro LEGADO (linha antiga de history.jsonl, sem nenhum campo de usage) é lido sem erro", () => {
+    // Simula uma linha real escrita ANTES do #4904 — parseada de JSON puro,
+    // não construída com o type GeoCitationRecord (que já tem os campos
+    // novos como optional no editor, o que mascararia o cenário real).
+    const legacyLine = JSON.parse(
+      '{"date":"2026-08-07","ts":"2026-08-07T10:00:00.000Z","provider":"openai","model":"gpt-4.1","question":"q","cited":false,"domain":"diar.ia.br","snippet":null}',
+    ) as GeoCitationRecord;
+    assert.doesNotThrow(() => summarizeGeoCitationRecords([legacyLine]));
+    const summary = summarizeGeoCitationRecords([legacyLine]);
+    assert.equal(summary.total, 1);
+    assert.equal(summary.cited, 0);
+    assert.deepEqual(summary.byProvider.openai, { total: 1, cited: 0 });
   });
 
   describe("byPanel (#4900 item a)", () => {
