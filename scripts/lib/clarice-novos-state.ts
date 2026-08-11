@@ -331,8 +331,12 @@ export function reconcileNovosSentCount(
 // (nunca "cancelled" por omissão, ver `UNKNOWN_SEND_STATUS` mais abaixo).
 // ---------------------------------------------------------------------------
 
-/** Confirma disparo — mesma semântica de `isTerminalSendStatus` em `brevo-client.ts`. */
-const CONFIRMED_SENT_STATUSES = new Set(["sent", "inProcess"]);
+/**
+ * Confirma disparo — mesma semântica de `isTerminalSendStatus` em
+ * `brevo-client.ts`, incluindo o fix do #5050 (`"in_process"` snake_case é o
+ * valor real observado ao vivo da Brevo, não só `"inProcess"` camelCase).
+ */
+const CONFIRMED_SENT_STATUSES = new Set(["sent", "inProcess", "in_process"]);
 /**
  * Ainda não terminou, mas NÃO é cancelamento — nem confirmado, nem cancelado:
  *   - "queued"/"scheduled": agendada-não-enviada. A Brevo reporta um ou outro

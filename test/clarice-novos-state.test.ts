@@ -338,6 +338,21 @@ test("reconcilePendingSend: status inProcess TAMBÉM confirma disparo (mesma sem
   assert.equal(result.state.sentCount, 3);
 });
 
+test("REGRESSÃO (#5050): reconcilePendingSend com status 'in_process' [snake_case, valor real da Brevo] TAMBÉM confirma disparo", async () => {
+  const prev: NovosState = {
+    lastRunAt: "x",
+    lastHtmlSha256: null,
+    lastCycle: null,
+    lastListId: null,
+    lastCampaignId: null,
+    sentCount: 0,
+    pendingSend: { campaignId: 132, listId: 123, scheduledAt: "2026-08-11T20:00:00-03:00", contactCount: 55 },
+  };
+  const result = await reconcilePendingSend(prev, async () => ({ status: "in_process" }));
+  assert.equal(result.action, "finalized");
+  assert.equal(result.state.sentCount, 55);
+});
+
 test("reconcilePendingSend: status queued -> 'still-pending', state INALTERADO (não confirma, não cancela)", async () => {
   const prev: NovosState = {
     lastRunAt: "2026-08-05T12:00:00.000Z",

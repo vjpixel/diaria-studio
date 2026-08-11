@@ -41,6 +41,10 @@ test("isTerminalSendStatus: 'sent' e 'inProcess' são terminais; 'draft'/'queued
   assert.equal(isTerminalSendStatus("scheduled"), false);
 });
 
+test("REGRESSÃO (#5050): isTerminalSendStatus('in_process') [snake_case] também é terminal — valor real observado ao vivo da Brevo pra campanha CONFIRMADAMENTE enviada (#132, 260811)", () => {
+  assert.equal(isTerminalSendStatus("in_process"), true);
+});
+
 // ---------------------------------------------------------------------------
 // describeUncertainSendStatus (#4364) — mensagem específica pra 'in_review'
 // ---------------------------------------------------------------------------
