@@ -322,7 +322,7 @@ export function matchingDates(
  * `maxDateGap` e pra qualquer hiato/vão específico que a prosa cite por
  * posição (ex: `google-gemini.ts` cita o 1º e o 2º hiato entre 3 surtos de
  * lançamento — `gaps[4]`/`gaps[6]` no dataset atual — em vez de só o maior). */
-export function consecutiveGapDays(dates: readonly string[]): number[] {
+function consecutiveGapDays(dates: readonly string[]): number[] {
   const gaps: number[] = [];
   for (let i = 1; i < dates.length; i++) gaps.push(calendarDaysBetween(dates[i - 1], dates[i]));
   return gaps;
