@@ -120,16 +120,8 @@ export interface ScheduledTaskDefinition {
   /** Path (relativo à raiz do repo, POSIX) do `setup-*-schedule.ps1` legado
    * que esta entrada espelha — usado só por
    * `scripts/lib/pending-scheduled-tasks.ts` pra checar existência/parity,
-   * NUNCA lido em runtime pelo executor. **Opcional desde #5005**: o cutover
-   * pra systemd (épica #4798) fechou antes desta task ser registrada —
-   * `Diaria-Beehiiv-Home-Meta-Check` é a 1ª entrada sem `.ps1` legado de
-   * propósito (não criar um novo `.ps1` só pra preencher este campo); a via
-   * de execução real em Linux é exclusivamente o par `.service`/`.timer`
-   * gerado por `scripts/setup-systemd-timers.ts` a partir do registro. Uma
-   * entrada sem este campo fica de fora de `listExpectedScheduledTasks`
-   * (`pending-scheduled-tasks.ts`) — o check de "task esperada ausente do
-   * Task Scheduler" não se aplica a task sem contraparte Windows. */
-  legacySetupScript?: string;
+   * NUNCA lido em runtime pelo executor. */
+  legacySetupScript: string;
   /** Issue(s) de origem, só pra rastreabilidade em docs/erros. */
   issue: string;
 }
@@ -145,22 +137,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4485 item 2",
   },
   {
-    name: "Diaria-Beehiiv-Home-Meta-Check",
-    description: "smoke-test dos 3 eixos de drift da home Beehiiv (og:title, self-links http, rotulos EN)",
-    steps: [{ key: "check", script: "scripts/beehiiv-home-meta-check.ts" }],
-    logPath: "beehiiv-home-meta-check/.meta-check.log",
-    // Mesma cadência dos outros drift-checks de superfície pública
-    // (Diaria-Hub-Drift-Check #4750, Diaria-Robots-Txt-Drift-Check #4910) —
-    // mesma classe de smoke-test (config publicada divergindo do que o
-    // código/o painel pretende), 6h é folga suficiente sem atrasar demais a
-    // detecção de uma regressão que ninguém nota olhando a home todo dia.
-    schedule: { kind: "interval", hours: 6 },
-    // Sem `legacySetupScript` de propósito — ver docstring do campo acima
-    // (#5005: 1ª task registrada depois do cutover systemd da épica #4798,
-    // sem contraparte Windows/.ps1).
-    issue: "#4557, #5005",
-  },
-  {
     name: "Diaria-Brevo-Diaria-Guardrail",
     description: "circuit breaker de campanha do canal brevo_diaria",
     steps: [{ key: "check", script: "scripts/check-brevo-diaria-guardrail.ts" }],
@@ -168,53 +144,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     schedule: { kind: "interval", hours: 4 },
     legacySetupScript: "scripts/setup-check-brevo-diaria-guardrail-schedule.ps1",
     issue: "#4476 item 9",
-  },
-  {
-    name: "Diaria-Clarice-Cohorts-Crawl",
-    // #4451 (decisão do editor, 260811): a task Windows legada
-    // `DiariaCohortsCrawl` (crawl per-contato via `clarice-engagement-cohorts.ts`,
-    // v1 — ver docs/cohorts-schedule.md) NUNCA existiu neste registro nem tem
-    // timer systemd nesta máquina (`grep -n "CohortsCrawl\|cohorts"` no
-    // registro pré-#4451 e `systemctl --user list-timers` vazios) — não é
-    // troca de ponteiro v1→v2 de uma task existente, é registro do ZERO já
-    // apontando pro v2 (`clarice-engagement-cohorts-v2.ts`, redesenho #4451
-    // Fases 1-2, #4457/#4479, validado empiricamente 260808/260809 ao vivo
-    // contra a Brevo, ver issue #4451 comentário 260810/docs/cohorts-schedule.md
-    // §"Redesenho v2"). O período de sobreposição v1×v2 do item 6 do plano
-    // original da issue foi deliberadamente PULADO por decisão do editor —
-    // não falta, não vai acontecer.
-    //
-    // #5015 (fechado): v2 agora sabe escrever no KV atrás da flag `--push`
-    // (`pushCohortsToKV`, porta a MESMA proteção anti-clobber do v1 — nunca
-    // sobrescreve `cohorts:engagement` com universe=0). Este step passa
-    // `--push` nos args, então esta task ATUALIZA de fato o snapshot
-    // "Coortes de engajamento" do dashboard clarice-dashboard a cada
-    // disparo (21:00 BRT) — antes do #5015, o step só refrescava o
-    // artefato local `--out` e o KV ficava congelado no último sucesso
-    // manual do v1 (`clarice-engagement-cohorts.ts`, que não tem task
-    // agendada nesta máquina). `--out` continua presente: o artefato local
-    // (cohorts + diagnostics) segue útil pra `scripts/compare-cohorts.ts` /
-    // inspeção manual, independente do `--push`.
-    description: "crawl periodico de coortes de engajamento via v2 (export por campanha) -- grava KV via --push (#5015) e refresca o artefato local --out",
-    steps: [
-      {
-        key: "crawl",
-        script: "scripts/clarice-engagement-cohorts-v2.ts",
-        args: ["--push", "--out", "data/clarice-subscribers/cohorts/v2-latest.json"],
-      },
-    ],
-    logPath: "clarice-subscribers/.cohorts-v2-crawl.log",
-    // Diaria 21:00 BRT -- mesmo horario historico do v1 (docs/cohorts-schedule.md,
-    // decisao 2026-06-19), sem colisao com nenhuma outra daily do registro
-    // (todas as outras dailies ficam entre 05:30 e 17:00).
-    schedule: { kind: "daily", hour: 21, minute: 0 },
-    // Sem `legacySetupScript` de proposito -- mesmo padrao de
-    // Diaria-Beehiiv-Home-Meta-Check (#5005): task registrada depois do
-    // cutover systemd (epica #4798), sem contraparte Windows/.ps1 (o antigo
-    // `DiariaCohortsCrawl` do Windows nunca foi migrado pra este registro --
-    // era via `docs/cohorts-schedule.md` diretamente, apontando pro v1, e
-    // segue existindo so como doc historico, nao como entrada aqui).
-    issue: "#4451",
   },
   {
     name: "Diaria-Clarice-Guardrail-Alarm",
@@ -366,6 +295,63 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     },
     legacySetupScript: "scripts/setup-clarice-novos-schedule.ps1",
     issue: "#4347, #4941",
+  },
+  {
+    name: "Diaria-Clarice-Envio",
+    description: "planeja e agenda a onda Clarice do dia seguinte (06:00 BRT) - freio por risco de ISP + escalada adaptativa",
+    // Kill switch dedicado: ANTES de qualquer chamada Brevo,
+    // clarice-envio-run.ts checa data/clarice-envio-enabled.json. **O
+    // default deste toggle é o INVERSO do Diaria-Clarice-Novos**: arquivo
+    // ausente significa LIGADO (decisão do editor 260811, "ligada desde o
+    // início" — a rampa já roda manualmente todo dia, a automação substitui
+    // trabalho existente em vez de estrear canal novo). Ver
+    // scripts/lib/clarice-envio-enabled.ts pro risco que esse default cobra.
+    steps: [{ key: "run", script: "scripts/clarice-envio-run.ts" }],
+    logPath: "clarice-subscribers/.envio-run.log",
+    // 19:00 BRT (decisão do editor 260811): planeja e AGENDA a onda de
+    // amanhã 06:00 BRT (09:00 UTC). Roda depois do Diaria-Clarice-Novos
+    // (17:00) de propósito — os cadastros novos do dia já entraram no store
+    // antes do planejamento da onda. Sem colisão com nenhuma outra task
+    // armada (a mais próxima é o ciclo de 4h do Clarice-Guardrail-Alarm).
+    schedule: { kind: "daily", hour: 19, minute: 0 },
+    // Mesmo guard do Diaria-Clarice-Novos (#4552/#4941): sem o store, o
+    // planejamento leria uma base vazia e derivaria volume/freio de nada —
+    // pior que não rodar. Independente do kill switch acima: este cobre
+    // "junction data/ ainda não montada", o toggle cobre "o editor pausou".
+    guard: {
+      requiredFile: "clarice-subscribers/clarice-users.db",
+      abortMessage:
+        "clarice-users.db nao encontrado (data/clarice-subscribers/clarice-users.db) -- provavel junction " +
+        "data/ nao montada ainda; abortando por seguranca, sem planejar nem agendar onda.",
+    },
+    legacySetupScript: "scripts/setup-clarice-envio-schedule.ps1",
+    issue: "decisoes do editor 260811 (automacao do envio Clarice)",
+  },
+  {
+    name: "Diaria-Clarice-Envio-Guard",
+    description: "guard matinal da onda Clarice ja agendada - reavalia o freio de risco de ISP antes do disparo das 06:00",
+    // Segunda metade do par: a onda é agendada às 19:00 do dia anterior, e a
+    // Brevo congela destinatários no AGENDAMENTO, não no envio (memória do
+    // projeto: brevo-recipients-snapshot). Entre 19:00 e 06:00 chegam ~13h de
+    // bounce/unsub/spam da onda ANTERIOR — este passo reavalia o freio com
+    // esse dado fresco e é a última chance de segurar o disparo.
+    steps: [{ key: "guard", script: "scripts/clarice-envio-guard.ts" }],
+    logPath: "clarice-subscribers/.envio-guard.log",
+    // 05:00 BRT (decisão do editor 260811): 1h de folga antes do disparo das
+    // 06:00, e 30min antes do Diaria-Brevo-Diaria-Evaluate (05:30) — mesma
+    // classe de restrição do #4534 (tem que rodar ANTES do envio, senão a
+    // ação não afeta a campanha do dia), com margem maior porque aqui o
+    // desfecho possível é cancelar/reagendar uma campanha, não só desvincular
+    // contato.
+    schedule: { kind: "daily", hour: 5, minute: 0 },
+    // SEM guard de requiredFile de propósito: este passo é a rede de
+    // segurança do par, e um guard de pré-condição que aborta a rodada
+    // suprimiria justamente a checagem que pode segurar um disparo ruim. Se
+    // ele precisar do store, quem implementar clarice-envio-guard.ts decide
+    // como tratar a ausência DENTRO do script (onde dá pra distinguir "não
+    // consegui checar" de "checado, está tudo bem" — #738).
+    legacySetupScript: "scripts/setup-clarice-envio-schedule.ps1",
+    issue: "decisoes do editor 260811 (automacao do envio Clarice)",
   },
   {
     name: "Diaria-Postmaster-Spam-Sync",

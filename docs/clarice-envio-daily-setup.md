@@ -1,0 +1,71 @@
+# Par de tasks diárias: envio automático da rampa Clarice
+
+Issue: [#5027](https://github.com/vjpixel/diaria-studio/issues/5027) (arme das tasks agendadas — depende de [#5026](https://github.com/vjpixel/diaria-studio/issues/5026), orquestrador, e [#5025](https://github.com/vjpixel/diaria-studio/issues/5025), motor de decisão).
+
+## O que o par faz
+
+Um script de setup, **DUAS tasks indivisíveis** (decisão do editor 260811 — armar uma sem a outra é uma configuração que ninguém quer):
+
+- **`Diaria-Clarice-Envio`** — diária **19:00 BRT**. `scripts/run-clarice-envio.ps1` (Windows) / unit `diaria-clarice-envio` (Linux) → `npx tsx scripts/clarice-envio-run.ts`. Levanta o risco de ISP fresco (freio = últimos 3 dias de envio; acelerador = 30 dias corridos — nunca abertura, ver #5025), planeja o volume da onda de amanhã e AGENDA a campanha pras 06:00 BRT (09:00 UTC) do dia seguinte.
+- **`Diaria-Clarice-Envio-Guard`** — diária **05:00 BRT**. `scripts/run-clarice-envio-guard.ps1` (Windows) / unit `diaria-clarice-envio-guard` (Linux) → `npx tsx scripts/clarice-envio-guard.ts`. Relê o risco com ~11h de dado fresco (bounce/unsub/spam da onda que saiu ontem de manhã) e **cancela** (`status: suspended`) a onda pendente de hoje se o freio virou STOP entre 19:00 e 05:00. Escopo desta 1ª versão: cancela, não recria uma onda menor — ver docstring de `clarice-envio-guard.ts`.
+
+`clarice-envio-run.ts`/`clarice-envio-guard.ts` são o *glue* determinístico que substitui os 8 passos em prosa de `.claude/skills/diaria-clarice-envio/SKILL.md` (mesmo padrão do #4941/`clarice-novos-run.ts`) — a skill manual passa a só invocar o mesmo orquestrador, nunca reimplementar.
+
+## Kill switch — `data/clarice-envio-enabled.json` (compartilhado pelas DUAS tasks)
+
+**Default `enabled: true`** quando o arquivo não existe — **INVERSO** do `clarice-novos-enabled.ts`. Decisão explícita do editor ("ligada desde o início"): a rampa Clarice já roda hoje manualmente todo dia; a automação substitui um trabalho que já acontece, não estreia um canal novo. Arquivo **corrompido/ilegível** é tratado como `disabled` (é sinal de problema, não de intenção — ver docstring de `clarice-envio-enabled.ts` pro racional completo e o risco aceito desse default invertido).
+
+```bash
+npx tsx scripts/lib/clarice-envio-enabled.ts --set disabled  # pausa o par inteiro
+npx tsx scripts/lib/clarice-envio-enabled.ts --set enabled   # religa
+npx tsx scripts/lib/clarice-envio-enabled.ts                 # imprime "enabled"/"disabled"
+```
+
+## Guards de pré-condição (não são o kill switch — os dois convivem)
+
+- `clarice-users.db` ausente (junction `data/` ainda não montou) → task `Diaria-Clarice-Envio` aborta ANTES de tocar Brevo.
+- `Diaria-Clarice-Envio-Guard` **não** tem esse guard de propósito — se ele precisar do store, o próprio script decide como tratar a ausência (é a rede de segurança do par; um guard de pré-condição que aborta a rodada suprimiria justamente a checagem que pode segurar um disparo ruim).
+- Ciclo divergente do calendário, `.step-4-done.json` ausente, lock detido, blockers estruturais (crédito não consultado, `/diaria-clarice-novos` nunca rodou, etc.) — todos guards INTERNOS de `clarice-envio-run.ts`, documentados na tabela do cabeçalho de `.claude/skills/diaria-clarice-envio/SKILL.md`.
+
+## Trava de concorrência
+
+`scripts/lib/clarice-envio-lock.ts` — lock por CICLO em `data/clarice-subscribers/{cycle}/.envio-run.lock`, compartilhado pelas duas tasks E pela invocação manual da skill (que delega pro mesmo script). Detecção de abandono: lock mais velho que 30min é tratado como órfão e substituído.
+
+## Log
+
+`data/clarice-subscribers/.envio-run.log` (task das 19:00) e `.envio-guard.log` (task das 05:00) — append-only, gerados pelo runner declarativo (`scripts/lib/task-runner.ts`).
+
+## Relatório por rodada
+
+Toda invocação (sucesso, pausada, ciclo não pronto, fila insuficiente, sem volume, abortada por qualquer guard) grava relatório em `data/clarice-subscribers/envio-reports/{id}.md` e registra na superfície `/relatorios` do Studio (`data/reports/index.jsonl`, `kind: "clarice-envio"`) — com notificação por e-mail completa já no default (`registerReport`, decisão do editor #4708). Uma rodada agendada que aborta em silêncio ficaria indistinguível de uma que não rodou; por isso o registro acontece em TODOS os caminhos, não só no sucesso.
+
+## Setup (ação local one-time do editor)
+
+`local` — precisa do junction `data/` (OneDrive) + `BREVO_CLARICE_API_KEY`.
+
+**Windows (Task Scheduler) — registra o PAR:**
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-clarice-envio-schedule.ps1
+```
+
+Idempotente — re-executar atualiza as duas tasks. Remover as duas: mesmo comando com `-Unregister`.
+
+**Linux (systemd, via o registro declarativo `scripts/lib/scheduled-tasks.ts`, épica #4798) — gera e arma cada task do par:**
+
+```bash
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Envio
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Envio-Guard
+npx tsx scripts/arm-systemd-timers.ts --task Diaria-Clarice-Envio
+npx tsx scripts/arm-systemd-timers.ts --task Diaria-Clarice-Envio-Guard
+```
+
+Confirmar: `systemctl --user list-timers | grep clarice-envio` deve listar as duas, com o próximo disparo em `America/Sao_Paulo` (19:00 e 05:00 BRT respectivamente — `setup-systemd-timers.ts` já embute o fuso no `OnCalendar`, confirmado ao vivo na geração desta issue).
+
+## Armar em UMA máquina só
+
+`data/` é junction do OneDrive sincronizada entre máquinas. Duas máquinas armadas resolvem o mesmo dia na mesma janela de latência de sync e podem agendar a MESMA onda duas vezes — envio duplicado real, num domínio que é do **parceiro** (`clarice.ai`). Sem lock cross-máquina pra isso (o lock de `clarice-envio-lock.ts` é por processo/arquivo local, não distribuído) — se for armar numa 2ª máquina, desarme a 1ª antes.
+
+**Máquina escolhida pelo editor (260811): `predator`** — mesma máquina do sync das 08:30 (`Diaria-Clarice-Sync`) e do `Diaria-Clarice-Novos` das 17:00, o que elimina o atraso do OneDrive na leitura do store pra este par e mantém as três tasks Clarice na mesma máquina.
+
+**Ordem relativa a `Diaria-Clarice-Novos` (17:00):** de propósito, a 19:00 roda DEPOIS — os cadastros novos do dia já entraram no store antes do planejamento da onda. `novosFreshness` (guard interno de `clarice-envio-run.ts`) confirma isso a cada rodada.

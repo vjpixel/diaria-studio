@@ -91,22 +91,47 @@ export interface SetupScriptTaskName {
 // ---------------------------------------------------------------------------
 
 /**
- * Extrai o valor de `$TaskName = "..."` do source de um `setup-*-schedule.ps1`.
- * **Lança** (não retorna `null`) quando o padrão não é encontrado — ver
- * docstring do módulo: este é o ponto frágil que a issue #4708 pediu pra
- * nunca falhar em silêncio.
+ * Extrai TODOS os nomes de task declarados num `setup-*-schedule.ps1`, na
+ * ordem em que aparecem no source.
+ *
+ * Até 260811 a suposição era 1 script de setup ⇒ 1 task, e o parser lia só
+ * `$TaskName`. `scripts/setup-clarice-envio-schedule.ps1` (automação do envio
+ * Clarice) quebrou essa suposição de propósito: ele registra o PAR
+ * `Diaria-Clarice-Envio` (19:00, planeja+agenda) e `Diaria-Clarice-Envio-Guard`
+ * (05:00, reavalia o freio antes do disparo) num script só, porque armar uma
+ * sem a outra é uma configuração que ninguém quer. Se o parser continuasse
+ * lendo só a primeira, a task-guard ficaria invisível pro diff do #4708 —
+ * exatamente o modo de falha "mente por omissão" que este módulo existe pra
+ * impedir.
+ *
+ * O padrão aceito é `$<qualquer coisa>TaskName = "..."` (aspas duplas):
+ * `$TaskName` no script de task única, `$TaskName` + `$GuardTaskName` no
+ * script do par. **Lança** (não retorna `[]`) quando NENHUM nome é
+ * encontrado — ver docstring do módulo.
  */
-export function parseTaskNameFromSetupScript(source: string, scriptPathForError: string): string {
-  const m = source.match(/\$TaskName\s*=\s*"([^"]+)"/);
-  if (!m) {
+export function parseTaskNamesFromSetupScript(source: string, scriptPathForError: string): string[] {
+  const names = [...source.matchAll(/\$\w*TaskName\s*=\s*"([^"]+)"/g)].map((m) => m[1]);
+  if (names.length === 0) {
     throw new Error(
       `[pending-scheduled-tasks] não encontrei '$TaskName = "..."' em ${scriptPathForError} — ` +
         `o parser depende desse padrão literal (aspas duplas). Se o script mudou de convenção, ` +
-        `atualize o regex em parseTaskNameFromSetupScript (scripts/lib/pending-scheduled-tasks.ts); ` +
+        `atualize o regex em parseTaskNamesFromSetupScript (scripts/lib/pending-scheduled-tasks.ts); ` +
         `sem isso o diff de tasks pendentes fica vazio SILENCIOSAMENTE e o relatório mente por omissão.`,
     );
   }
-  return m[1];
+  return names;
+}
+
+/**
+ * Primeiro nome de task declarado num `setup-*-schedule.ps1` — conveniência
+ * sobre `parseTaskNamesFromSetupScript` pros callers que sabem estar diante
+ * de um script de task única. **Lança** nas mesmas condições dela.
+ *
+ * Não usar em caminho de descoberta/diff: num script multi-task ela enxerga
+ * só a primeira e volta a esconder as demais (ver docstring acima).
+ */
+export function parseTaskNameFromSetupScript(source: string, scriptPathForError: string): string {
+  return parseTaskNamesFromSetupScript(source, scriptPathForError)[0];
 }
 
 /** Lista `.ps1` recursivamente sob `dir` cujo basename bate `setup-*-schedule.ps1`
@@ -150,28 +175,22 @@ function setupScheduleFilesUnder(dir: string): string[] {
 export function listExpectedScheduledTasks(rootDir: string): SetupScriptTaskName[] {
   const rootAbs = resolve(rootDir);
 
-  // #5005: `legacySetupScript` é opcional (task registrada depois do
-  // cutover systemd não tem `.ps1` legado) — essas entradas nunca entram em
-  // `fromRegistry` por design: o check "task esperada ausente do Task
-  // Scheduler" pressupõe uma contraparte Windows que não existe pra elas.
-  const fromRegistry: SetupScriptTaskName[] = [];
-  for (const t of SCHEDULED_TASKS) {
-    if (!t.legacySetupScript) continue;
-    if (existsSync(resolve(rootAbs, ...t.legacySetupScript.split("/")))) {
-      fromRegistry.push({ scriptPath: t.legacySetupScript, taskName: t.name });
-    }
-  }
+  const fromRegistry: SetupScriptTaskName[] = SCHEDULED_TASKS.filter((t) =>
+    existsSync(resolve(rootAbs, ...t.legacySetupScript.split("/"))),
+  ).map((t) => ({ scriptPath: t.legacySetupScript, taskName: t.name }));
   const registeredScriptPaths = new Set(fromRegistry.map((t) => t.scriptPath));
 
   const scriptsDir = resolve(rootAbs, "scripts");
   const files = setupScheduleFilesUnder(scriptsDir);
   const fromLegacyScan: SetupScriptTaskName[] = files
-    .map((full): SetupScriptTaskName => {
+    .flatMap((full): SetupScriptTaskName[] => {
       const rel = full.startsWith(rootAbs + sep) ? full.slice(rootAbs.length + 1) : full;
       const scriptPath = rel.split(sep).join("/");
       const source = readFileSync(full, "utf8");
-      const taskName = parseTaskNameFromSetupScript(source, scriptPath);
-      return { scriptPath, taskName };
+      // flatMap e não map: um script de setup pode registrar MAIS DE UMA task
+      // (ver parseTaskNamesFromSetupScript). Uma entrada por task, senão a 2ª
+      // some do diff de pendências.
+      return parseTaskNamesFromSetupScript(source, scriptPath).map((taskName) => ({ scriptPath, taskName }));
     })
     .filter((t) => !registeredScriptPaths.has(t.scriptPath));
 

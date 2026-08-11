@@ -18,7 +18,7 @@ import {
   SCHEDULED_TASKS,
   type WeekDay,
 } from "../scripts/lib/scheduled-tasks.ts";
-import { parseTaskNameFromSetupScript } from "../scripts/lib/pending-scheduled-tasks.ts";
+import { parseTaskNamesFromSetupScript } from "../scripts/lib/pending-scheduled-tasks.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -27,6 +27,14 @@ function logicalLines(source: string): string[] {
     .replace(/`\r?\n\s*/g, " ") // colapsa continuações de linha do PowerShell
     .split(/\r?\n/)
     .filter((l) => !/^\s*#/.test(l));
+}
+
+/** Todas as linhas de `New-ScheduledTaskTrigger` do script — plural desde
+ * 260811, quando `setup-clarice-envio-schedule.ps1` passou a registrar DUAS
+ * tasks (19:00 + 05:00) no mesmo arquivo. Enquanto o script tem uma task só,
+ * a lista tem 1 elemento e as asserções abaixo valem exatamente como antes. */
+function triggerLines(source: string): string[] {
+  return logicalLines(source).filter((l) => /New-ScheduledTaskTrigger/i.test(l));
 }
 
 describe("SCHEDULED_TASKS — estrutura do registro", () => {
@@ -60,11 +68,8 @@ describe("SCHEDULED_TASKS — estrutura do registro", () => {
     }
   });
 
-  it("todo legacySetupScript (quando presente) referencia um .ps1 que existe de verdade no repo", () => {
-    // #5005: legacySetupScript é opcional pra task registrada depois do
-    // cutover systemd (épica #4798) — sem contraparte Windows/.ps1.
+  it("todo legacySetupScript referencia um .ps1 que existe de verdade no repo", () => {
     for (const t of SCHEDULED_TASKS) {
-      if (!t.legacySetupScript) continue;
       const abs = resolve(ROOT, ...t.legacySetupScript.split("/"));
       assert.ok(existsSync(abs), `task "${t.name}": legacySetupScript não encontrado: ${t.legacySetupScript}`);
     }
@@ -128,58 +133,150 @@ describe("getScheduledTaskByName / listScheduledTaskNames", () => {
 });
 
 describe("paridade registro <-> .ps1 legado (evita divergência silenciosa)", () => {
-  // #5005: task sem legacySetupScript (registrada depois do cutover
-  // systemd) não tem .ps1 pra comparar — sem parity a checar.
   for (const t of SCHEDULED_TASKS) {
-    if (!t.legacySetupScript) continue;
-    it(`${t.name}: o $TaskName do .ps1 legado bate com task.name`, () => {
+    it(`${t.name}: o .ps1 legado declara um $TaskName igual a task.name`, () => {
       const source = readFileSync(resolve(ROOT, ...t.legacySetupScript.split("/")), "utf8");
-      const parsedName = parseTaskNameFromSetupScript(source, t.legacySetupScript);
-      assert.equal(parsedName, t.name);
+      // `includes` e não igualdade com o PRIMEIRO nome: um script de setup
+      // pode registrar mais de uma task (setup-clarice-envio-schedule.ps1
+      // registra o par 19:00 + 05:00). Pra script de task única a lista tem 1
+      // elemento e a asserção é a mesma de antes.
+      const parsedNames = parseTaskNamesFromSetupScript(source, t.legacySetupScript);
+      assert.ok(
+        parsedNames.includes(t.name),
+        `"${t.name}" não aparece entre os $TaskName de ${t.legacySetupScript} (achei: ${parsedNames.join(", ")})`,
+      );
     });
 
     if (t.schedule.kind === "daily") {
-      it(`${t.name}: schedule daily bate com New-ScheduledTaskTrigger -Daily -At Hour/Minute do .ps1`, () => {
+      it(`${t.name}: schedule daily bate com algum New-ScheduledTaskTrigger -Daily -At Hour/Minute do .ps1`, () => {
         const source = readFileSync(resolve(ROOT, ...t.legacySetupScript.split("/")), "utf8");
-        const trigger = logicalLines(source).find((l) => /New-ScheduledTaskTrigger/i.test(l));
-        assert.ok(trigger, "nenhum New-ScheduledTaskTrigger encontrado");
-        assert.match(trigger!, /-Daily\b/);
-        const hour = Number((trigger!.match(/-Hour\s+(\d+)/i) ?? [])[1]);
-        const minute = Number((trigger!.match(/-Minute\s+(\d+)/i) ?? [])[1]);
-        assert.equal(hour, t.schedule.hour, `hora: registro=${t.schedule.hour} .ps1=${hour}`);
-        assert.equal(minute, t.schedule.minute, `minuto: registro=${t.schedule.minute} .ps1=${minute}`);
+        const triggers = triggerLines(source);
+        assert.ok(triggers.length > 0, "nenhum New-ScheduledTaskTrigger encontrado");
+        const schedule = t.schedule;
+        const match = triggers.find(
+          (trigger) =>
+            /-Daily\b/.test(trigger) &&
+            Number((trigger.match(/-Hour\s+(\d+)/i) ?? [])[1]) === schedule.hour &&
+            Number((trigger.match(/-Minute\s+(\d+)/i) ?? [])[1]) === schedule.minute,
+        );
+        assert.ok(
+          match,
+          `nenhum trigger -Daily às ${schedule.hour}:${String(schedule.minute).padStart(2, "0")} ` +
+            `em ${t.legacySetupScript}. Triggers do script:\n${triggers.map((l) => l.trim()).join("\n")}`,
+        );
       });
     }
 
     if (t.schedule.kind === "weekly") {
-      it(`${t.name}: schedule weekly bate com New-ScheduledTaskTrigger -Weekly -DaysOfWeek/-At do .ps1`, () => {
+      it(`${t.name}: schedule weekly bate com algum New-ScheduledTaskTrigger -Weekly -DaysOfWeek/-At do .ps1`, () => {
         const source = readFileSync(resolve(ROOT, ...t.legacySetupScript.split("/")), "utf8");
-        const trigger = logicalLines(source).find((l) => /New-ScheduledTaskTrigger/i.test(l));
-        assert.ok(trigger, "nenhum New-ScheduledTaskTrigger encontrado");
-        assert.match(trigger!, /-Weekly\b/);
-        assert.match(
-          trigger!,
-          new RegExp(`-DaysOfWeek\\s+${t.schedule.dayOfWeek}\\b`),
-          `dayOfWeek: registro=${t.schedule.dayOfWeek}, trigger=${trigger}`,
+        const triggers = triggerLines(source);
+        assert.ok(triggers.length > 0, "nenhum New-ScheduledTaskTrigger encontrado");
+        const schedule = t.schedule;
+        const match = triggers.find(
+          (trigger) =>
+            /-Weekly\b/.test(trigger) &&
+            new RegExp(`-DaysOfWeek\\s+${schedule.dayOfWeek}\\b`).test(trigger) &&
+            Number((trigger.match(/-Hour\s+(\d+)/i) ?? [])[1]) === schedule.hour &&
+            Number((trigger.match(/-Minute\s+(\d+)/i) ?? [])[1]) === schedule.minute,
         );
-        const hour = Number((trigger!.match(/-Hour\s+(\d+)/i) ?? [])[1]);
-        const minute = Number((trigger!.match(/-Minute\s+(\d+)/i) ?? [])[1]);
-        assert.equal(hour, t.schedule.hour, `hora: registro=${t.schedule.hour} .ps1=${hour}`);
-        assert.equal(minute, t.schedule.minute, `minuto: registro=${t.schedule.minute} .ps1=${minute}`);
+        assert.ok(
+          match,
+          `nenhum trigger -Weekly ${schedule.dayOfWeek} às ${schedule.hour}:${String(schedule.minute).padStart(2, "0")} ` +
+            `em ${t.legacySetupScript}. Triggers do script:\n${triggers.map((l) => l.trim()).join("\n")}`,
+        );
       });
     }
 
     if (t.schedule.kind === "interval") {
-      it(`${t.name}: schedule interval bate com -RepetitionInterval (New-TimeSpan -Hours N) do .ps1`, () => {
+      it(`${t.name}: schedule interval bate com algum -RepetitionInterval (New-TimeSpan -Hours N) do .ps1`, () => {
         const source = readFileSync(resolve(ROOT, ...t.legacySetupScript.split("/")), "utf8");
-        const trigger = logicalLines(source).find((l) => /New-ScheduledTaskTrigger/i.test(l));
-        assert.ok(trigger, "nenhum New-ScheduledTaskTrigger encontrado");
-        assert.match(trigger!, /-Once\b/);
-        const hours = Number((trigger!.match(/-RepetitionInterval\s+\(New-TimeSpan\s+-Hours\s+(\d+)\)/i) ?? [])[1]);
-        assert.equal(hours, t.schedule.hours, `interval: registro=${t.schedule.hours}h .ps1=${hours}h`);
+        const triggers = triggerLines(source);
+        assert.ok(triggers.length > 0, "nenhum New-ScheduledTaskTrigger encontrado");
+        const schedule = t.schedule;
+        const match = triggers.find(
+          (trigger) =>
+            /-Once\b/.test(trigger) &&
+            Number((trigger.match(/-RepetitionInterval\s+\(New-TimeSpan\s+-Hours\s+(\d+)\)/i) ?? [])[1]) ===
+              schedule.hours,
+        );
+        assert.ok(
+          match,
+          `nenhum trigger -Once com -RepetitionInterval de ${schedule.hours}h em ${t.legacySetupScript}. ` +
+            `Triggers do script:\n${triggers.map((l) => l.trim()).join("\n")}`,
+        );
       });
     }
   }
+});
+
+describe("setup-*.ps1 que registram MAIS DE UMA task (260811)", () => {
+  // A busca "algum trigger bate" do bloco acima é suficiente pra script de
+  // task única (1 trigger), mas num script multi-task ela deixaria passar uma
+  // TROCA de horário entre as duas tasks (cada asserção acharia o trigger da
+  // outra). Estas checagens fecham esse buraco estruturalmente.
+  const byScript = new Map<string, string[]>();
+  for (const t of SCHEDULED_TASKS) {
+    byScript.set(t.legacySetupScript, [...(byScript.get(t.legacySetupScript) ?? []), t.name]);
+  }
+  const shared = [...byScript.entries()].filter(([, names]) => names.length > 1);
+
+  it("hoje só setup-clarice-envio-schedule.ps1 registra mais de uma task (par 19:00 + 05:00)", () => {
+    assert.deepEqual(
+      shared.map(([script]) => script),
+      ["scripts/setup-clarice-envio-schedule.ps1"],
+      "se um script novo passou a registrar N tasks, confirme que ele declara N triggers distintos " +
+        "e acrescente a regressão de horário por variável abaixo",
+    );
+  });
+
+  for (const [script, names] of shared) {
+    it(`${script}: declara pelo menos ${names.length} triggers (um por task: ${names.join(", ")})`, () => {
+      const source = readFileSync(resolve(ROOT, ...script.split("/")), "utf8");
+      assert.ok(
+        triggerLines(source).length >= names.length,
+        `${names.length} tasks compartilham este script mas ele tem ${triggerLines(source).length} trigger(s) — ` +
+          `duas tasks com horários diferentes não podem sair do mesmo New-ScheduledTaskTrigger`,
+      );
+    });
+  }
+
+  it("setup-clarice-envio-schedule.ps1: $Trigger é o das 19:00 e $GuardTrigger o das 05:00 (não trocados)", () => {
+    const source = readFileSync(resolve(ROOT, "scripts", "setup-clarice-envio-schedule.ps1"), "utf8");
+    const lines = logicalLines(source);
+    const main = lines.find((l) => /^\s*\$Trigger\s*=.*New-ScheduledTaskTrigger/i.test(l));
+    const guard = lines.find((l) => /^\s*\$GuardTrigger\s*=.*New-ScheduledTaskTrigger/i.test(l));
+    assert.ok(main, "não achei a atribuição de $Trigger");
+    assert.ok(guard, "não achei a atribuição de $GuardTrigger");
+    assert.match(main!, /-Hour\s+19\b/, `$Trigger deveria ser 19:00 (planeja+agenda): ${main!.trim()}`);
+    assert.match(guard!, /-Hour\s+5\b/, `$GuardTrigger deveria ser 05:00 (antes do disparo das 06:00): ${guard!.trim()}`);
+  });
+
+  it("o guard das 05:00 roda ANTES do disparo canônico das 06:00 BRT", () => {
+    const guard = getScheduledTaskByName("Diaria-Clarice-Envio-Guard");
+    assert.ok(guard);
+    assert.equal(guard!.schedule.kind, "daily");
+    if (guard!.schedule.kind !== "daily") return;
+    assert.ok(
+      guard!.schedule.hour * 60 + guard!.schedule.minute < 6 * 60,
+      "a Brevo congela destinatários no AGENDAMENTO, não no envio — um guard que roda depois das " +
+        "06:00 não segura mais o disparo do dia (mesma restrição do #4534)",
+    );
+  });
+
+  it("o planejamento das 19:00 roda DEPOIS do Diaria-Clarice-Novos (17:00)", () => {
+    const envio = getScheduledTaskByName("Diaria-Clarice-Envio");
+    const novos = getScheduledTaskByName("Diaria-Clarice-Novos");
+    assert.ok(envio && novos);
+    assert.equal(envio!.schedule.kind, "daily");
+    assert.equal(novos!.schedule.kind, "daily");
+    if (envio!.schedule.kind !== "daily" || novos!.schedule.kind !== "daily") return;
+    assert.ok(
+      envio!.schedule.hour * 60 + envio!.schedule.minute >
+        novos!.schedule.hour * 60 + novos!.schedule.minute,
+      "os cadastros novos do dia precisam já estar no store quando a onda do dia seguinte é planejada",
+    );
+  });
 });
 
 describe("registro <-> scripts/run-*.ps1: mesmos scripts .ts invocados (ordem preservada)", () => {
@@ -191,6 +288,8 @@ describe("registro <-> scripts/run-*.ps1: mesmos scripts .ts invocados (ordem pr
     "Diaria-Apoios-Diff-Alarm": "scripts/run-apoios-diff-alarm.ps1",
     "Diaria-Brevo-Diaria-Guardrail": "scripts/run-check-brevo-diaria-guardrail.ps1",
     "Diaria-Clarice-Guardrail-Alarm": "scripts/run-clarice-guardrail-alarm.ps1",
+    "Diaria-Clarice-Envio": "scripts/run-clarice-envio.ps1",
+    "Diaria-Clarice-Envio-Guard": "scripts/run-clarice-envio-guard.ps1",
     "Diaria-Clarice-Novos": "scripts/run-clarice-novos.ps1",
     "Diaria-Clarice-Opens-Catchup-Alarm": "scripts/run-clarice-opens-catchup-alarm.ps1",
     "Diaria-Clarice-Sync": "scripts/run-clarice-sync-daily.ps1",
@@ -206,11 +305,8 @@ describe("registro <-> scripts/run-*.ps1: mesmos scripts .ts invocados (ordem pr
     "Diaria-Worker-Drift-Check": "scripts/run-worker-drift-check.ps1",
   };
 
-  it("toda task COM legacySetupScript tem um run-*.ps1 mapeado neste teste (nenhum órfão)", () => {
-    // #5005: task sem legacySetupScript não tem `.ps1` nenhum — nem
-    // setup nem run — por design (ver docstring do campo).
+  it("todo SCHEDULED_TASKS tem um run-*.ps1 mapeado neste teste (nenhum órfão)", () => {
     for (const t of SCHEDULED_TASKS) {
-      if (!t.legacySetupScript) continue;
       assert.ok(RUNNER_BY_TASK[t.name], `task "${t.name}" sem run-*.ps1 mapeado em RUNNER_BY_TASK`);
     }
   });
@@ -230,56 +326,4 @@ describe("registro <-> scripts/run-*.ps1: mesmos scripts .ts invocados (ordem pr
       }
     });
   }
-});
-
-describe("#5005 — Diaria-Beehiiv-Home-Meta-Check registrada, systemd-only (sem .ps1 legado)", () => {
-  it("está presente no registro, com o step apontando pro script correto", () => {
-    const t = getScheduledTaskByName("Diaria-Beehiiv-Home-Meta-Check");
-    assert.ok(t, "Diaria-Beehiiv-Home-Meta-Check ausente de SCHEDULED_TASKS");
-    assert.deepEqual(
-      t!.steps.map((s) => s.script),
-      ["scripts/beehiiv-home-meta-check.ts"],
-    );
-    assert.deepEqual(t!.schedule, { kind: "interval", hours: 6 });
-  });
-
-  it("NÃO tem legacySetupScript (task registrada depois do cutover systemd, épica #4798)", () => {
-    const t = getScheduledTaskByName("Diaria-Beehiiv-Home-Meta-Check");
-    assert.ok(t);
-    assert.equal(t!.legacySetupScript, undefined);
-  });
-});
-
-describe("#4451 — Diaria-Clarice-Cohorts-Crawl registrada, roda o v2, systemd-only (sem .ps1 legado)", () => {
-  it("está presente no registro, com o step apontando pro script v2 (não o v1)", () => {
-    const t = getScheduledTaskByName("Diaria-Clarice-Cohorts-Crawl");
-    assert.ok(t, "Diaria-Clarice-Cohorts-Crawl ausente de SCHEDULED_TASKS");
-    assert.deepEqual(
-      t!.steps.map((s) => s.script),
-      ["scripts/clarice-engagement-cohorts-v2.ts"],
-    );
-    assert.deepEqual(t!.schedule, { kind: "daily", hour: 21, minute: 0 });
-  });
-
-  it("o step passa --out apontando para dentro de data/ (path explícito, cwd é a raiz do repo)", () => {
-    const t = getScheduledTaskByName("Diaria-Clarice-Cohorts-Crawl");
-    assert.ok(t);
-    const args = t!.steps[0].args ?? [];
-    const outIdx = args.indexOf("--out");
-    assert.ok(outIdx >= 0, "--out ausente dos args do step");
-    assert.match(args[outIdx + 1], /^data\//, "--out precisa começar com data/ (cwd do step é a raiz do repo)");
-  });
-
-  it("o step passa --push (#5015 — sem isso a task roda mas nunca atualiza o KV que o dashboard lê)", () => {
-    const t = getScheduledTaskByName("Diaria-Clarice-Cohorts-Crawl");
-    assert.ok(t);
-    const args = t!.steps[0].args ?? [];
-    assert.ok(args.includes("--push"), "--push ausente dos args do step");
-  });
-
-  it("NÃO tem legacySetupScript (a task Windows DiariaCohortsCrawl nunca existiu neste registro — registro do zero pro v2, #4451)", () => {
-    const t = getScheduledTaskByName("Diaria-Clarice-Cohorts-Crawl");
-    assert.ok(t);
-    assert.equal(t!.legacySetupScript, undefined);
-  });
 });
