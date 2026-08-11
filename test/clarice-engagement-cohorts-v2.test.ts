@@ -689,7 +689,7 @@ test("buildCohortsV2: processa campanhas listadas, agrega e roda computeCohorts 
       },
     });
 
-    const result = await buildCohortsV2(client, GEN, { cacheDir: dir, concurrency: 2 });
+    const result = await buildCohortsV2(client, GEN, { cacheDir: dir, concurrency: 2, includeAdminOptOuts: false });
     assert.equal(result.campaignsTotal, 2);
     assert.equal(result.campaignsFetched, 2);
     assert.equal(result.campaignsFromCache, 0);
@@ -712,7 +712,7 @@ test("buildCohortsV2: --limit corta a lista de campanhas ANTES de exportar (nunc
       ],
       downloadCsv: async () => "Email_ID,Delivered_Date,Total Opens\na@x.com,2026-07-01,0\n",
     });
-    const result = await buildCohortsV2(client, GEN, { cacheDir: dir, limit: 1 });
+    const result = await buildCohortsV2(client, GEN, { cacheDir: dir, limit: 1, includeAdminOptOuts: false });
     assert.equal(result.campaignsTotal, 1);
     assert.equal(calls.exportRecipients, 1);
   });
