@@ -166,6 +166,9 @@ export function getMetaAiHub(): HubContent {
   return {
     slug: "meta-ai",
     title: "Meta e Meta AI",
+    // #4912: H1 carrega o intervalo coberto (o `<title>`/`og:title` continua
+    // só `title`, montado em `renderHubPage` — não duplicam o período).
+    h1: `Meta e Meta AI — de ${since} a ${until}`,
     metaDescription: `Meta e Meta AI no arquivo da diar.ia.br, de ${since} a ${until}: a crise de liderança técnica, a virada para modelo proprietário, o conflito com a China e uma sequência de falhas de segurança.`,
     introHeading: `O que aconteceu com a Meta e a IA desde ${since}?`,
     introParagraph: buildIntro(SOURCES),
