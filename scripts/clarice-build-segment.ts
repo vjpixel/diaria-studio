@@ -647,6 +647,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     budget = n;
   }
 
+  // #4979: --exact-budget SEM --budget não tem alvo pra comparar — sem esta
+  // checagem, a flag simplesmente não fazia nada (achado do self-review),
+  // silenciosamente diferente do "aborta se não fechar o número pedido" que
+  // o nome promete.
+  if (tiersPathArg && exactBudget && budget <= 0) {
+    console.error("❌ --exact-budget requer --budget N (>0) — sem alvo pra comparar. Omita --exact-budget, ou passe --budget junto.");
+    process.exit(1);
+  }
+
   // #2973: --min-score / --score são ALIASES do mesmo corte (score := priority_points,
   // vocabulário do editor no dia a dia — não o score/OPEN_PROBABILITY legado morto em #2647).
   // --min-score vence se ambos forem passados.

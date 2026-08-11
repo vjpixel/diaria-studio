@@ -453,6 +453,24 @@ test("main --tiers --exact-budget: aborta sem escrever se o total não fechar o 
   assert.equal(code, 1);
 });
 
+test("main --tiers --exact-budget: NÃO aborta quando o total fecha exato — escreve normalmente", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "waterfall-exact-ok-"));
+  const dbPath = storeParaWaterfall(dir);
+  const tiersFile = writeTiersPlan(dir);
+
+  const logs = await semBrevoKey(() =>
+    captureLogs(() =>
+      main([
+        "--cycle", "2607-08", "--db", dbPath, "--data-root", dir,
+        "--tiers", tiersFile, "--key", "d12-exact-ok", "--budget", "8", "--exact-budget", "--dry-run",
+      ]),
+    ),
+  );
+  const out = JSON.parse(logs.join("\n"));
+  assert.equal(out.selected, 8);
+  assert.equal(out.exact_budget, true);
+});
+
 test("main --tiers SEM --exact-budget: budget vira TETO — escreve o que der, mesmo menor que o pedido", async () => {
   const dir = mkdtempSync(resolve(tmpdir(), "waterfall-teto-"));
   const dbPath = storeParaWaterfall(dir);
@@ -468,6 +486,24 @@ test("main --tiers SEM --exact-budget: budget vira TETO — escreve o que der, m
   );
   const out = JSON.parse(logs.join("\n"));
   assert.equal(out.selected, 8, "universo inteiro (8) — budget 999 nunca corta, sem --exact-budget não aborta");
+});
+
+test("main --tiers --exact-budget SEM --budget ABORTA (sem alvo pra comparar)", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "waterfall-exact-sembudget-"));
+  const dbPath = storeParaWaterfall(dir);
+  const tiersFile = writeTiersPlan(dir);
+
+  const code = await captureExit(() =>
+    semBrevoKey(() =>
+      captureLogs(() =>
+        main([
+          "--cycle", "2607-08", "--db", dbPath, "--data-root", dir,
+          "--tiers", tiersFile, "--key", "d12-exact-nobudget", "--exact-budget", "--dry-run",
+        ]),
+      ),
+    ),
+  );
+  assert.equal(code, 1);
 });
 
 test("main: --group e --tiers são mutuamente exclusivos", async () => {
