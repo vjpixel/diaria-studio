@@ -142,10 +142,8 @@ automatizar isto de novo cai nelas):
    confirmação — sempre conferir com `GetUserSites`.
 
 `BING_WEBMASTER_API_KEY` está no `.env` do editor (gitignored) e documentada
-em `.env.example`. Item 3 (Bing WMT) e item 1 (lastmod/ETag) fechados sem
-pendência. **Item 2 (IndexNow) segue com uma pendência real** — ver acima:
-falta o secret `INDEXNOW_KEY` no GitHub Actions do repo pro ping automático
-de deploy funcionar.
+em `.env.example`. Item 3 (Bing WMT), item 1 (lastmod/ETag) e item 2
+(IndexNow, ver acima) fechados sem pendência.
 
 ## Quando adicionar entry aqui
 
