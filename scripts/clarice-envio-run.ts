@@ -68,6 +68,7 @@ import { resolve } from "node:path";
 import { isMainModule } from "./lib/cli-args.ts";
 import { detectExecMode } from "./lib/exec-mode.ts";
 import { isClariceEnvioEnabled } from "./lib/clarice-envio-enabled.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts";
 import { acquireEnvioLock, releaseEnvioLock, LockHeldError } from "./lib/clarice-envio-lock.ts";
 import { computeExpectedEnvioCycle } from "./lib/clarice-envio-cycle.ts";
 import {
@@ -80,6 +81,17 @@ import { waveKey, scheduledAtForDate, type WaveProposal, type WaveState } from "
 import { proposeNextVolume, brtDayKey, type NextVolumeDecision } from "./lib/clarice-envio-policy.ts";
 import type { RiskSnapshot } from "./clarice-envio-risk.ts";
 import type { InvocationSummary } from "./clarice-schedule-group.ts";
+
+// #5048 — mesmo achado do #4983 (script irmão clarice-novos-run.ts): este é o
+// processo ORQUESTRADOR, invocado sob systemd --user (task Diaria-Clarice-Envio,
+// 19:00 BRT), que não herda o `.env` do shell interativo. O preflight do Passo 0
+// (abaixo) lê `process.env.BREVO_CLARICE_API_KEY` diretamente — sem esta chamada
+// em module scope, ANTES de qualquer outro código, a 1ª execução real sob
+// systemd falha com "BREVO_CLARICE_API_KEY não definida" mesmo com a key
+// presente em `.env` (achado ao vivo 260811 22:00 UTC — a onda de amanhã não
+// foi planejada). Ver test/clarice-envio-run.test.ts para o teste que trava
+// essa ORDEM (não só o comportamento final), mesmo padrão do #4983.
+loadProjectEnv();
 
 const ROOT = resolve(new URL("..", import.meta.url).pathname);
 
