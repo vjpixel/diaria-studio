@@ -175,7 +175,8 @@ export function getOpenaiChatgptHub(): HubContent {
     // #4912: H1 carrega o intervalo coberto (o `<title>`/`og:title` continua
     // só `title`, montado em `renderHubPage` — não duplicam o período).
     h1: `OpenAI e ChatGPT — de ${since} a ${until}`,
-    metaDescription: `OpenAI e ChatGPT no arquivo da diar.ia.br, de ${since} a ${until}: ritmo de lançamento de modelo, rivalidade com o Google, valuation, Codex empresarial e episódios de segurança.`,
+    // #4913: ≤160 chars (validateHubContent) — trecho final enxuto de propósito.
+    metaDescription: `OpenAI e ChatGPT no arquivo da diar.ia.br, de ${since} a ${until}: lançamentos, rivalidade com o Google, valuation e episódios de segurança.`,
     introHeading: `O que aconteceu com a OpenAI e o ChatGPT desde ${since}?`,
     introParagraph: buildIntro(SOURCES),
     sections: [

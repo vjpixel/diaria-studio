@@ -160,6 +160,17 @@ export interface HubContent {
    * disciplina de `hubCoverageWindow`). Ver nota de `HUB_PROSE_RULES` sobre a
    * isenção de `prosa-sem-deixis` que este campo recebe. */
   methodologyNote: string;
+  /** Hubs irmãos pra nav "Outros temas" do rodapé (#4913 item 1 — os hubs
+   * eram ilhas, só o índice do arquivo linkava pra eles, nunca o inverso).
+   * OPCIONAL e preenchido por `scripts/build-hub-page.ts` (nunca pelo próprio
+   * `get{Hub}Hub()` de `scripts/lib/hubs/{slug}.ts`) — é ele quem já enumera
+   * `HUB_LOADERS`/importa `HUB_META` e filtra o slug atual. `hub-page.ts`
+   * (este módulo) NÃO importa `workers/arquivo/src/hubs/meta.ts` diretamente,
+   * de propósito: inverteria a fronteira que a docstring de `meta.ts`
+   * estabelece (cada consumidor importa só o que consome; `test/lib-boundary.test.ts`
+   * não pegaria essa direção, mas a razão aqui é de desenho, não de lint).
+   * Ausente/vazio (hub único, ou fixture de teste) não emite a seção. */
+  relatedHubs?: readonly { readonly slug: string; readonly label: string }[];
 }
 
 function pageUrl(slug: string): string {
@@ -440,6 +451,13 @@ function renderHubBodyStyles(): string {
     letter-spacing: 0.08em; text-transform: uppercase; color: var(--teal); margin: 0 0 10px; }
   .hub-methodology p { font-size: 14px; line-height: 1.6; color: var(--ink); opacity: 0.72; margin: 0; }
   .hub-methodology p a { color: var(--teal); text-decoration: underline; text-decoration-color: var(--rule); text-underline-offset: 2px; }
+  .hub-related-nav { margin: 32px 0 0; padding: 24px 0 0; border-top: 1px solid var(--rule); max-width: 720px; }
+  .hub-related-nav h2 { font-family: Georgia, 'Times New Roman', serif; font-size: 13px; font-weight: 700;
+    letter-spacing: 0.08em; text-transform: uppercase; color: var(--teal); margin: 0 0 12px; }
+  .hub-related-nav ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px 20px; }
+  .hub-related-nav li a { font-size: 14px; color: var(--teal); text-decoration: underline;
+    text-decoration-color: var(--rule); text-underline-offset: 2px; }
+  .hub-related-nav li a:hover { text-decoration-color: var(--teal); }
   .subscribe-cta { margin: 20px 0 0; }
   .subscribe-cta a { font-size: 15px; font-weight: 700; color: var(--teal); text-decoration: none;
     border-bottom: 1px solid var(--teal); padding-bottom: 2px; }
@@ -724,6 +742,18 @@ export function validateHubContent(hub: HubContent): string[] {
   if (hub.methodologyNote.trim().length === 0) {
     errors.push("methodologyNote está vazio — hub sem a ressalva de procedência (#4939)");
   }
+  // #4913: metaDescription vira `<meta content="...">`/og:description/
+  // twitter:description via `renderSeoMeta` (esc() puro, valor de atributo —
+  // não suporta markdown link). `seo-meta.ts:32` documenta ~150-160 chars
+  // como ideal; 160 é o teto que este guard trava. Checagem fica aqui, não em
+  // `renderSeoMeta`/`seo-meta.ts` — aquele módulo serve 5 famílias de página
+  // (cursos, livros, hub, arquivo, poll) e este limite é escopo só dos hubs.
+  const HUB_META_DESCRIPTION_MAX_LENGTH = 160;
+  if (hub.metaDescription.length > HUB_META_DESCRIPTION_MAX_LENGTH) {
+    errors.push(
+      `metaDescription tem ${hub.metaDescription.length} caracteres — máximo ${HUB_META_DESCRIPTION_MAX_LENGTH} (seo-meta.ts:32 documenta ~150-160 ideal)`,
+    );
+  }
   // Contrato de prosa (#4899). Roda por último: as violações acima são
   // estruturais (o hub está malformado), estas são editoriais (o hub está
   // formado mas escrito do jeito que a auditoria de GEO catalogou).
@@ -810,6 +840,23 @@ ${hub.sourceEditions
       <p>${renderInlineLinks(hub.methodologyNote)}</p>
     </section>`;
 
+  // #4913 itens 1/4: nav "Outros temas" — os hubs eram ilhas (só o índice do
+  // arquivo linkava pra eles, nunca o inverso). `relatedHubs` vem já
+  // filtrado (sem o próprio slug) de `scripts/build-hub-page.ts`; ausente/
+  // vazio (hub único, fixture de teste) não emite a seção nenhuma — inclusive
+  // sem o cross-link de volta pro índice, que mora na MESMA nav (item 4) e
+  // reusa `footerNavUtm` (não é um UTM novo no registry).
+  const relatedHubsHtml =
+    hub.relatedHubs && hub.relatedHubs.length > 0
+      ? `    <nav class="hub-related-nav" aria-labelledby="outros-temas-heading">
+      <h2 id="outros-temas-heading">Outros temas</h2>
+      <ul>
+${hub.relatedHubs.map((r) => `        <li><a href="${esc(pageUrl(r.slug))}">${esc(r.label)}</a></li>`).join("\n")}
+        <li><a href="${esc(`${DIARIA_ARQUIVO_URL}/?utm_source=${hub.footerNavUtm.source}&utm_medium=${hub.footerNavUtm.medium}`)}">Ver todos os temas no arquivo</a></li>
+      </ul>
+    </nav>`
+      : "";
+
   return `<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -855,7 +902,7 @@ ${sectionsHtml}
      bloco de FAQ idêntico ao de .hub-sections logo acima. -->
 ${renderGeoFaqSection(hub.faq, { sectionId: `faq-${hub.slug}`, heading: "Perguntas rápidas" })}
 ${sourcesHtml}
-${methodologyHtml}
+${methodologyHtml}${relatedHubsHtml ? `\n${relatedHubsHtml}` : ""}
     </div>
   </main>
   ${renderCuradoriaFooter(
