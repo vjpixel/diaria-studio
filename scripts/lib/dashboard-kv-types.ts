@@ -255,7 +255,13 @@ export interface PostmasterSpamEntry extends PostmasterReputationSignal {
    * carrega esse sinal. Só informativo (auditoria/log/CLI), nunca entra em
    * `resolveSpamSignal` — não existe hoje um guard de cobertura mínima
    * equivalente ao `POSTMASTER_MIN_COVERAGE_RATIO` do domínio pro pico por
-   * campanha (fora de escopo do #4780, ver issue). `undefined` quando não há
+   * campanha, e a #4974 (que discutiu as 4 opções pra isso) decidiu
+   * explicitamente NÃO adicionar um: o semáforo continua disparando com 1
+   * dia, mas este campo agora chega até a superfície de decisão (CLI
+   * `clarice-schedule-ramp.ts`/`clarice-wave-plan.ts` e o dashboard, via
+   * `SpamSignal.worstCampaignDaysWithData` em
+   * `workers/brevo-dashboard/src/thresholds.ts`), deixando o julgamento com
+   * o editor em vez de um piso automático. `undefined` quando não há
    * campanha atribuível na janela ou em entries pré-#4780.
    */
   worstCampaignDaysWithData?: number;

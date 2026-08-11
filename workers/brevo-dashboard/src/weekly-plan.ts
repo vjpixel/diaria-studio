@@ -601,6 +601,24 @@ function buildMetricRows(health: HealthAggregate, spamSignal: SpamSignal): strin
   const spamPostmasterTitleAttr = spamSignal.source !== "postmaster" && spamSignal.reason
     ? ` title="${escHtml(SPAM_INDETERMINATE_REASON_LABEL[spamSignal.reason])}"`
     : "";
+  // #4974: quando o PICO por campanha governa (`Math.max` de
+  // `resolveSpamSignal` escolheu o pico, não a média de domínio),
+  // `spamSignal.worstCampaignDaysWithData` mostra a cobertura da janela que
+  // produziu o número exibido — sem isso, um pico sustentado pela janela
+  // inteira ficava indistinguível de um artefato de 1 dia isolado (a
+  // assimetria que motivou a issue: o lado de domínio já tinha um guard de
+  // cobertura mínima, o pico por campanha não tinha NENHUMA sinalização).
+  // Decisão do editor (#4974, opção 3): sem piso de cobertura no pico — o
+  // semáforo continua disparando com 1 dia — mas a cobertura fica VISÍVEL ao
+  // lado do número, deixando o julgamento com o editor. `resolveSpamSignal`
+  // só popula este campo quando o pico de fato governou (ver thresholds.ts),
+  // então checar sua presença já basta — sem recalcular a comparação aqui.
+  const spamPostmasterCoverageSuffix =
+    spamSignal.source === "postmaster" &&
+    typeof spamSignal.worstCampaignDaysWithData === "number" &&
+    Number.isFinite(spamSignal.worstCampaignDaysWithData)
+      ? ` <span style="opacity:0.65;font-weight:400;font-size:0.85em">(pico de campanha, ${spamSignal.worstCampaignDaysWithData} dia(s) com dado)</span>`
+      : "";
   // #4400: rótulo simplificado pra estático "Spam (Postmaster)" — era
   // "Spam (Postmaster{, automático|, manual} — governa o semáforo)", com
   // sufixo dinâmico por `spamSignal.producedBy` via SPAM_SOURCE_LABEL
@@ -611,7 +629,7 @@ function buildMetricRows(health: HealthAggregate, spamSignal: SpamSignal): strin
   // precisar do dado, só não aparece mais nesta linha da tabela; a docstring
   // acima desta função (e o código logo abaixo) continuam sendo a fonte de
   // verdade de que esta É a linha que governa o semáforo.
-  const spamPostmasterRow = `<tr><td>Spam (Postmaster)</td><td style="${spamPostmasterStyle}"${spamPostmasterTitleAttr}>${spamPostmasterValueFmt}</td><td style="opacity:0.7">&lt;${T.spamRate.green}%</td><td style="opacity:0.7">&lt;${T.spamRate.yellow}%</td></tr>`;
+  const spamPostmasterRow = `<tr><td>Spam (Postmaster)</td><td style="${spamPostmasterStyle}"${spamPostmasterTitleAttr}>${spamPostmasterValueFmt}${spamPostmasterCoverageSuffix}</td><td style="opacity:0.7">&lt;${T.spamRate.green}%</td><td style="opacity:0.7">&lt;${T.spamRate.yellow}%</td></tr>`;
 
   // Ordem: abertura, hard bounce, bounce total, os 2 de spam (Postmaster antes
   // do Brevo — é o que governa), unsub.

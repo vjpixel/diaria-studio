@@ -1473,4 +1473,35 @@ describe("renderWaveProposal (#4657)", () => {
     );
     assert.match(out, /indeterminado/);
   });
+
+  // #4974: quando o pico por campanha governa `spamSignal.ratePct`,
+  // `worstCampaignDaysWithData` leva a cobertura da leitura até esta tela —
+  // a mesma superfície onde o editor confirma o agendamento da onda. Sem
+  // isso, um pico de 1 dia isolado e um pico sustentado pela janela inteira
+  // apareciam idênticos aqui.
+  it("pico por campanha governa → mostra a cobertura ao lado do número (#4974)", () => {
+    const out = renderWaveProposal(
+      buildWaveProposal(
+        proposalInput({
+          volumes: {
+            ...proposalInput().volumes,
+            spamSignal: {
+              source: "postmaster",
+              ratePct: 1.39,
+              breach: true,
+              worstCampaignFeedbackLoopId: "11130585_107",
+              worstCampaignDaysWithData: 1,
+            },
+          },
+        }),
+      ),
+    );
+    assert.match(out, /1\.390%/);
+    assert.match(out, /pico de campanha, 1 dia\(s\) com dado/);
+  });
+
+  it("média de domínio governa (sem pico por campanha) → não inventa sufixo de cobertura (#4974)", () => {
+    const out = renderWaveProposal(buildWaveProposal(proposalInput()));
+    assert.doesNotMatch(out, /pico de campanha/);
+  });
 });
