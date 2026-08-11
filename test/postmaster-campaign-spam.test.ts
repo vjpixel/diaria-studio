@@ -15,8 +15,11 @@ import {
   aggregateCampaignSpamReadings,
   sortCampaignSpamReport,
   findWorstCampaignSpam,
+  toCampaignSpamRecords,
+  mergeCampaignSpamRecords,
   type CampaignSpamAggregate,
 } from "../scripts/lib/postmaster-campaign-spam.ts";
+import type { PostmasterCampaignSpamRecord } from "../scripts/lib/dashboard-kv-types.ts";
 
 // ── parseFeedbackLoopId ──
 
@@ -198,4 +201,103 @@ test("findWorstCampaignSpam — propaga daysWithData da campanha vencedora (#478
   const worst = findWorstCampaignSpam(aggregates);
   assert.equal(worst?.campaignId, 2);
   assert.equal(worst?.daysWithData, 1, "cobertura da campanha vencedora (campanha 2), não da 1");
+});
+
+// ── toCampaignSpamRecords / mergeCampaignSpamRecords (#4970) ──
+
+const NOW_4970 = new Date("2026-08-11T12:00:00.000Z");
+
+test("toCampaignSpamRecords — converte agregados num mapa campaignId(string) -> record, com updatedAt=now", () => {
+  const aggregates: CampaignSpamAggregate[] = [
+    { campaignId: 107, feedbackLoopId: "11130585_107", avgSpamRatePct: 0.9, peakSpamRatePct: 1.39, peakDate: "2026-08-02", daysWithData: 3, dailyReadings: [] },
+    { campaignId: 105, feedbackLoopId: "11130585_105", avgSpamRatePct: 0.1, peakSpamRatePct: 0.1, peakDate: "2026-08-01", daysWithData: 1, dailyReadings: [] },
+  ];
+  const map = toCampaignSpamRecords(aggregates, NOW_4970);
+  assert.deepEqual(Object.keys(map).sort(), ["105", "107"]);
+  assert.equal(map["107"].campaignId, 107);
+  assert.equal(map["107"].feedbackLoopId, "11130585_107");
+  assert.equal(map["107"].peakSpamRatePct, 1.39);
+  assert.equal(map["107"].avgSpamRatePct, 0.9);
+  assert.equal(map["107"].peakDate, "2026-08-02");
+  assert.equal(map["107"].daysWithData, 3);
+  assert.equal(map["107"].updatedAt, NOW_4970.toISOString());
+});
+
+test("toCampaignSpamRecords — array vazio vira mapa vazio (nunca lança)", () => {
+  assert.deepEqual(toCampaignSpamRecords([], NOW_4970), {});
+});
+
+function mkRecord(overrides: Partial<PostmasterCampaignSpamRecord> = {}): PostmasterCampaignSpamRecord {
+  return {
+    campaignId: 107,
+    feedbackLoopId: "11130585_107",
+    avgSpamRatePct: 0.5,
+    peakSpamRatePct: 1.0,
+    peakDate: "2026-08-01",
+    daysWithData: 1,
+    updatedAt: "2026-08-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+test("mergeCampaignSpamRecords — chave nova em fresh é adicionada ao resultado", () => {
+  const previous = { "105": mkRecord({ campaignId: 105, feedbackLoopId: "11130585_105" }) };
+  const fresh = { "107": mkRecord({ campaignId: 107 }) };
+  const merged = mergeCampaignSpamRecords(previous, fresh);
+  assert.deepEqual(Object.keys(merged).sort(), ["105", "107"]);
+});
+
+test("mergeCampaignSpamRecords — chave ausente em fresh mas presente em previous é PRESERVADA intacta (#4970 core do 'acumular')", () => {
+  // Cenário real: campanha 105 caiu fora da janela de 10 dias sondada nesta
+  // execução (foi enviada há mais tempo), mas seu valor histórico continua
+  // válido — o Postmaster não republica dado de campanha antiga.
+  const previous = { "105": mkRecord({ campaignId: 105, feedbackLoopId: "11130585_105", peakSpamRatePct: 2.5 }) };
+  const fresh = { "107": mkRecord({ campaignId: 107 }) };
+  const merged = mergeCampaignSpamRecords(previous, fresh);
+  assert.deepEqual(merged["105"], previous["105"], "campanha 105 preservada byte-a-byte, mesmo sem aparecer nesta execução");
+  assert.equal(merged["107"].campaignId, 107);
+});
+
+test("mergeCampaignSpamRecords — chave presente nos DOIS é SUBSTITUÍDA pela versão fresh (mais cobertura, dentro da janela)", () => {
+  const previous = { "107": mkRecord({ daysWithData: 1, peakSpamRatePct: 1.0, updatedAt: "2026-08-01T00:00:00.000Z" }) };
+  const fresh = { "107": mkRecord({ daysWithData: 3, peakSpamRatePct: 1.39, updatedAt: "2026-08-05T00:00:00.000Z" }) };
+  const merged = mergeCampaignSpamRecords(previous, fresh);
+  assert.deepEqual(merged["107"], fresh["107"], "fresh vence — mais dias de cobertura acumulados dentro da mesma janela");
+});
+
+test("mergeCampaignSpamRecords — previous null/undefined é tratado como mapa vazio (1ª execução pós-#4970, ou KV vazio)", () => {
+  const fresh = { "107": mkRecord() };
+  assert.deepEqual(mergeCampaignSpamRecords(null, fresh), fresh);
+  assert.deepEqual(mergeCampaignSpamRecords(undefined, fresh), fresh);
+});
+
+test("mergeCampaignSpamRecords — não muta nenhum dos 2 argumentos", () => {
+  const previous = { "105": mkRecord({ campaignId: 105 }) };
+  const fresh = { "107": mkRecord({ campaignId: 107 }) };
+  const previousSnapshot = JSON.parse(JSON.stringify(previous));
+  const freshSnapshot = JSON.parse(JSON.stringify(fresh));
+  mergeCampaignSpamRecords(previous, fresh);
+  assert.deepEqual(previous, previousSnapshot);
+  assert.deepEqual(fresh, freshSnapshot);
+});
+
+test("mergeCampaignSpamRecords — acumulação real em 3 'execuções' sucessivas nunca perde uma campanha antiga (regressão #4970)", () => {
+  // Simula 3 syncs seguidos: cada um só vê as campanhas da sua janela (10
+  // dias), mas a tabela Envios precisa reter TODAS (~90 dias). Sem o merge,
+  // a execução 3 apagaria as campanhas 100/101 (só vistas na execução 1).
+  const exec1 = mergeCampaignSpamRecords(null, {
+    "100": mkRecord({ campaignId: 100 }),
+    "101": mkRecord({ campaignId: 101 }),
+  });
+  const exec2 = mergeCampaignSpamRecords(exec1, {
+    "102": mkRecord({ campaignId: 102 }),
+  });
+  const exec3 = mergeCampaignSpamRecords(exec2, {
+    "103": mkRecord({ campaignId: 103 }),
+  });
+  assert.deepEqual(
+    Object.keys(exec3).sort(),
+    ["100", "101", "102", "103"],
+    "3 execuções depois, campanhas 100/101 (só vistas na 1ª execução) continuam no mapa",
+  );
 });

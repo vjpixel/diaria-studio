@@ -1,4 +1,4 @@
-import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, MvGroupStatus, ContactsSummary, EiaEngagementSummary, EiaEngagementEdition, CohortStatsRow, PostmasterSpamEntry, LinkSectionMap } from "./types.ts";
+import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, MvGroupStatus, ContactsSummary, EiaEngagementSummary, EiaEngagementEdition, CohortStatsRow, PostmasterSpamEntry, PostmasterCampaignSpamRecord, LinkSectionMap } from "./types.ts"; // #4970: PostmasterCampaignSpamRecord
 import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEMENT_KV_KEY, POSTMASTER_SPAM_KV_KEY, RECENT_STATS_TTL, linkSectionsKvKey, linkTitlesKvKey } from "./types.ts"; // #4198: linkTitlesKvKey
 import { fetchCouponUsage, type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles } from "./sections-core.ts"; // #4184: collectMonthlyLinkCycles
@@ -907,6 +907,14 @@ export function normalizeEiaEngagement(raw: unknown): EiaEngagementSummary | nul
  * copiar aqui, a cobertura do pico por campanha (item 3 do fleet review
  * pré-merge do #4779) nunca chegaria ao CLI de agendamento da ramp
  * (`scripts/clarice-schedule-ramp.ts`), mesmo com o KV populado pelo produtor.
+ *
+ * `campaignSpam` (#4970): mesma classe de risco de novo — sem copiar aqui, o
+ * mapa por-campanha acumulado que alimenta a coluna Spam da tabela Envios
+ * seria descartado silenciosamente pra todo consumidor que lê via este
+ * choke point, mesmo com o KV populado pelo sync. Validação em 2 níveis (o
+ * MAPA em si, e cada REGISTRO dentro dele) — um registro malformado nunca
+ * derruba o mapa inteiro, só é omitido individualmente (mesmo espírito do
+ * filtro de `dailyReadings` acima).
  */
 export function normalizePostmasterSpamEntry(raw: unknown): PostmasterSpamEntry | null {
   if (!raw || typeof raw !== "object") return null;
@@ -945,6 +953,38 @@ export function normalizePostmasterSpamEntry(raw: unknown): PostmasterSpamEntry 
     typeof s.worstCampaignDaysWithData === "number" && Number.isFinite(s.worstCampaignDaysWithData)
       ? s.worstCampaignDaysWithData
       : undefined;
+  // #4970: mapa por-campanha da tabela Envios — cada CHAVE precisa ser o
+  // `campaignId` como string (mesma convenção do produtor, `String(campaignId)`)
+  // e cada VALOR precisa ter os campos numéricos/string mínimos pra ser
+  // consultável (`peakSpamRatePct`/`daysWithData`, os 2 usados pelo render).
+  // Um registro malformado é omitido individualmente (não invalida o mapa
+  // inteiro) — mesmo espírito do filtro de `dailyReadings` acima.
+  const rawCampaignSpam = s.campaignSpam;
+  let campaignSpam: Record<string, PostmasterCampaignSpamRecord> | undefined;
+  if (rawCampaignSpam && typeof rawCampaignSpam === "object" && !Array.isArray(rawCampaignSpam)) {
+    const validated: Record<string, PostmasterCampaignSpamRecord> = {};
+    for (const [key, value] of Object.entries(rawCampaignSpam as Record<string, unknown>)) {
+      if (!value || typeof value !== "object") continue;
+      const v = value as Record<string, unknown>;
+      if (typeof v.campaignId !== "number" || !Number.isFinite(v.campaignId)) continue;
+      if (typeof v.feedbackLoopId !== "string" || !v.feedbackLoopId) continue;
+      if (typeof v.avgSpamRatePct !== "number" || !Number.isFinite(v.avgSpamRatePct)) continue;
+      if (typeof v.peakSpamRatePct !== "number" || !Number.isFinite(v.peakSpamRatePct)) continue;
+      if (typeof v.peakDate !== "string" || !v.peakDate) continue;
+      if (typeof v.daysWithData !== "number" || !Number.isFinite(v.daysWithData)) continue;
+      if (typeof v.updatedAt !== "string" || !v.updatedAt) continue;
+      validated[key] = {
+        campaignId: v.campaignId,
+        feedbackLoopId: v.feedbackLoopId,
+        avgSpamRatePct: v.avgSpamRatePct,
+        peakSpamRatePct: v.peakSpamRatePct,
+        peakDate: v.peakDate,
+        daysWithData: v.daysWithData,
+        updatedAt: v.updatedAt,
+      };
+    }
+    if (Object.keys(validated).length > 0) campaignSpam = validated;
+  }
   return {
     date: typeof s.date === "string" ? s.date : "",
     spamRatePct: s.spamRatePct,
@@ -956,6 +996,7 @@ export function normalizePostmasterSpamEntry(raw: unknown): PostmasterSpamEntry 
     worstCampaignSpamRatePct,
     worstCampaignFeedbackLoopId,
     worstCampaignDaysWithData,
+    campaignSpam,
   };
 }
 

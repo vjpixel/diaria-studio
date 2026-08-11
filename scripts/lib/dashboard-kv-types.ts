@@ -259,6 +259,72 @@ export interface PostmasterSpamEntry extends PostmasterReputationSignal {
    * campanha atribuível na janela ou em entries pré-#4780.
    */
   worstCampaignDaysWithData?: number;
+  /**
+   * #4970: mapa por-campanha (chave = `campaignId` da Brevo, COMO STRING —
+   * limitação de `Record`/JSON, que só aceita chaves string) de TODA
+   * campanha atribuível vista em QUALQUER execução do produtor "auto" — não
+   * só a pior da janela sondada (`worstCampaignSpamRatePct`/
+   * `worstCampaignFeedbackLoopId`/`worstCampaignDaysWithData` acima, que
+   * continuam existindo tal como estão — servem só o breaker da aba Rampa,
+   * que precisa do PIOR, não de um mapa completo). A tabela Envios (#4970)
+   * precisa de UMA leitura por LINHA (campanha), não só a pior de toda a
+   * janela — daí este mapa.
+   *
+   * Chave é `campaignId` puro (não `feedback_loop_id`, que também carrega o
+   * prefixo de conta ESP, ex: `"11130585_107"`) de propósito — o consumidor
+   * (`sections-core.ts`, tabela Envios) já tem `campaignId` disponível
+   * (`BrevoCampaign.id`) sem precisar conhecer `DEFAULT_POSTMASTER_ACCOUNT_ID`
+   * (constante hardcoded em `scripts/lib/postmaster-campaign-spam.ts`, um
+   * módulo Node-only que o Worker não importa). `feedbackLoopId` continua
+   * disponível DENTRO de cada registro (auditoria/debug), só não é mais a
+   * chave do mapa.
+   *
+   * ACUMULA entre execuções (merge, nunca overwrite) — ver
+   * `mergeCampaignSpamRecords` em `scripts/lib/postmaster-campaign-spam.ts`.
+   * A janela sondada por execução é `HEALTH_SAMPLE_DAYS` (10 dias), mas a
+   * tabela Envios mostra ~90 dias de campanhas — sem merge, só as ~10
+   * campanhas mais recentes ganhariam valor a cada execução, e o resto
+   * ficaria permanentemente vazio (o Postmaster nunca re-sonda uma janela já
+   * passada). `postmaster-spam-sync.ts` lê o mapa atual do KV ANTES de
+   * escrever, mescla com o lote desta execução (chaves da execução atual
+   * SUBSTITUEM a entrada antiga — a mesma campanha só ganha mais cobertura
+   * com o tempo enquanto está dentro da janela sondada; chaves ausentes
+   * nesta execução mas presentes no KV são PRESERVADAS intactas).
+   *
+   * `undefined` em entries pré-#4970 (schema evolution) ou quando a coleta
+   * por-campanha desta execução não achou NENHUMA campanha nova E o KV
+   * também não tinha nada anterior — nunca um objeto vazio inventado onde
+   * cabe `undefined`.
+   */
+  campaignSpam?: Record<string, PostmasterCampaignSpamRecord>;
+}
+
+/**
+ * #4970: um registro do mapa `PostmasterSpamEntry.campaignSpam` — espelha os
+ * campos de `CampaignSpamAggregate` (`scripts/lib/postmaster-campaign-spam.ts`)
+ * que fazem sentido persistir por campanha (a série `dailyReadings` completa
+ * fica de fora — cobertura já basta como sinal auditável, e persistir todos os
+ * dias de TODAS as campanhas cresceria o payload do KV sem limite conforme o
+ * histórico acumula). Tipo próprio aqui (não um import de
+ * `CampaignSpamAggregate`) porque este arquivo é dependency-free/Workers-safe
+ * por convenção (ver docstring do módulo) — `postmaster-campaign-spam.ts` é
+ * Node-only (importa `postmaster-v2-client.ts` → `postmaster-register-domain.ts`).
+ */
+export interface PostmasterCampaignSpamRecord {
+  /** Redundante com a chave do mapa (`String(campaignId) === chave`) — mantido no valor pra o registro ficar auto-descritivo fora do contexto do mapa (ex: log, export avulso). */
+  campaignId: number;
+  /** `{conta}_{campanha}` — só informativo (debug/auditoria), nunca entra em nenhuma decisão de classificação. */
+  feedbackLoopId: string;
+  /** Média simples do ratio diário da campanha na(s) janela(s) sondada(s) em que apareceu. */
+  avgSpamRatePct: number;
+  /** PICO diário da campanha — é este número que a tabela Envios exibe/colore (mesmo racional de `worstCampaignSpamRatePct`: o pico é o sinal de risco real, a média dilui). */
+  peakSpamRatePct: number;
+  /** YYYY-MM-DD do dia em que o pico ocorreu. */
+  peakDate: string;
+  /** Quantos dias (cumulativos, entre TODAS as execuções que capturaram esta campanha) tiveram leitura válida — cresce conforme o Postmaster publica mais dias e o sync roda de novo, nunca encolhe (merge nunca descarta cobertura já vista). */
+  daysWithData: number;
+  /** ISO timestamp de quando este registro foi calculado (recomputado) pela última vez — só diagnóstico/auditoria, nunca entra em nenhuma decisão de classificação (diferente de `PostmasterSpamEntry.recordedAt`, que governa staleness do agregado de DOMÍNIO). */
+  updatedAt: string;
 }
 
 /**

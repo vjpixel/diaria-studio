@@ -116,6 +116,7 @@ export type {
   CohortStatsRow,
   PostmasterSpamEntry,
   PostmasterProducer,
+  PostmasterCampaignSpamRecord, // #4970
   LinkSectionName, // #4184
   LinkSectionMap, // #4184
 } from "../../../scripts/lib/dashboard-kv-types.ts";

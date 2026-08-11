@@ -254,6 +254,39 @@ test("buildAveragedEntry — worstCampaign null explícito é equivalente a omit
   assert.equal(entry?.worstCampaignSpamRatePct, undefined);
 });
 
+// ── buildAveragedEntry + campaignSpam (#4970) ──
+
+test("buildAveragedEntry — sem campaignSpam (default, chamadas pré-#4970 com 4 args) não grava o campo", () => {
+  const entry = buildAveragedEntry([{ date: "2026-07-30", ratio: 0.01 }], NOW, 1, mkWorstCampaign());
+  assert.equal(entry?.campaignSpam, undefined);
+});
+
+test("buildAveragedEntry — campaignSpam com pelo menos 1 registro é gravado tal como veio (já mesclado pelo chamador)", () => {
+  const campaignSpam = {
+    "107": {
+      campaignId: 107,
+      feedbackLoopId: "11130585_107",
+      avgSpamRatePct: 0.9,
+      peakSpamRatePct: 1.39,
+      peakDate: "2026-08-02",
+      daysWithData: 3,
+      updatedAt: NOW.toISOString(),
+    },
+  };
+  const entry = buildAveragedEntry([{ date: "2026-07-30", ratio: 0.01 }], NOW, 1, null, campaignSpam);
+  assert.deepEqual(entry?.campaignSpam, campaignSpam);
+});
+
+test("buildAveragedEntry — campaignSpam={} (objeto vazio) vira undefined, nunca um mapa vazio inventado (#4970, mesma disciplina de worstCampaign)", () => {
+  const entry = buildAveragedEntry([{ date: "2026-07-30", ratio: 0.01 }], NOW, 1, null, {});
+  assert.equal(entry?.campaignSpam, undefined);
+});
+
+test("buildAveragedEntry — campaignSpam null explícito é equivalente a omitir o argumento", () => {
+  const entry = buildAveragedEntry([{ date: "2026-07-30", ratio: 0.01 }], NOW, 1, null, null);
+  assert.equal(entry?.campaignSpam, undefined);
+});
+
 // ── collectWorstCampaignSpam (#4705) ──
 
 function feedbackLoopIdResponse(idsByDay: string[][]): QueryDomainStatsResponseV2 {
@@ -296,6 +329,15 @@ test("collectWorstCampaignSpam — reflete o cenário real do #4705: acha o pico
   assert.equal(result.attempted, 3, "3 campanhas da conta 11130585 (105, 106, 107) — a conta sozinha e o IP não contam");
   assert.equal(result.failed, 0);
   assert.equal(result.otherAccountsSeen, 0);
+  // #4970: `aggregates` traz TODAS as 3 campanhas (não só a pior) — base do
+  // mapa por-campanha da tabela Envios.
+  assert.equal(result.aggregates.length, 3);
+  assert.deepEqual(
+    result.aggregates.map((a) => a.campaignId).sort((a, b) => a - b),
+    [105, 106, 107],
+  );
+  const winner = result.aggregates.find((a) => a.campaignId === 107);
+  assert.equal(winner?.peakSpamRatePct, 1.39);
 });
 
 // #4780: cenário benigno original (issue) — nenhuma campanha, de nenhuma

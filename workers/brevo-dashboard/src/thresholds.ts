@@ -3,13 +3,17 @@
  * Diar.ia" (métricas de reavaliação definidas pelo editor) — FONTE ÚNICA
  * (#3078) consumida pela aba Rampa (`weekly-plan.ts`), pela tabela Envios
  * (`sections-core.ts`) e por "Totais por mês" (`sections-kv.ts`) — EXCETO
- * `spamRate`, que desde #4154 é exceção nesta "fonte única": Envios/Totais
- * NUNCA mais coloriram spam (o número ali vem de `complaints` da Brevo, que
- * subconta ~50× — só a leitura do Postmaster, exclusiva da aba Rampa, é
- * confiável o bastante pra colorir), e o guardrail por braço do experimento
- * CTA (`experiment-cta.ts::CTA_SPAM_BREACH_YELLOW_PCT`) mantém seu próprio
- * valor fixo, deliberadamente desacoplado deste. `spamRate` aqui governa
- * SÓ a aba Rampa.
+ * `spamRate`, que desde #4154 é exceção parcial nesta "fonte única": "Totais
+ * por mês" NUNCA colore spam (o número ali segue vindo de `complaints` da
+ * Brevo, que subconta o spam real em ~120× — medido em #4972, era ~50× na
+ * medição original do #4063 — e não tem granularidade por campanha pra
+ * trocar de fonte, ver `sections-kv.ts`), e o guardrail por braço do
+ * experimento CTA (`experiment-cta.ts::CTA_SPAM_BREACH_YELLOW_PCT`) mantém
+ * seu próprio valor fixo, deliberadamente desacoplado deste. A tabela Envios
+ * migrou (#4970): a coluna Spam agora lê o PICO por campanha do Postmaster
+ * v2 (`resolveEnvioCampaignSpamCell` abaixo) em vez de `complaints`, e
+ * `spamRate` aqui passou a governar TANTO a aba Rampa QUANTO a tabela
+ * Envios — não mais só a Rampa.
  *
  * Antes do #3078 cada superfície fixava o threshold de bounce por conta
  * própria: a Rampa usava os 2 breakers reais do doc (hard ≥2%, total
@@ -20,7 +24,7 @@
  * Extraído de `weekly-plan.ts` (que reexporta os mesmos nomes pra não quebrar
  * consumidores existentes).
  */
-import type { PostmasterSpamEntry, PostmasterProducer } from "./types.ts";
+import type { PostmasterSpamEntry, PostmasterProducer, PostmasterCampaignSpamRecord } from "./types.ts";
 
 export interface HealthThresholds {
   /** Abertura: >= green é 🟢; >= yellow (e < green) é 🟡; abaixo de yellow é 🔴. Maior é melhor. */
@@ -271,4 +275,91 @@ export function resolveSpamSignal(
     producedBy: entry.producedBy,
     breach: effectiveRatePct >= t.spamRate.yellow,
   };
+}
+
+/**
+ * #4970: o Google Postmaster Tools publica dado com ~2-3 dias de atraso
+ * (confirmado ao vivo em várias docstrings deste módulo/`postmaster-spam-sync.ts`
+ * — dia ausente na resposta da API é "não publicado ainda", nunca 0%). Uma
+ * campanha enviada há menos tempo que isto SEM registro em `campaignSpam`
+ * está "aguardando publicação" (estado pending) — mais tempo que isto SEM
+ * registro é "sem dado atribuível" (estado unavailable, ver
+ * `resolveEnvioCampaignSpamCell`). Folga de 5 dias (não 2-3 cravado) pelo
+ * mesmo motivo de `POSTMASTER_DATA_STALE_MS`: cobre fim de semana + 1-2
+ * ciclos de sync perdidos sem virar "sem dado" precocemente. Constante
+ * PRÓPRIA (mesmo valor de `POSTMASTER_DATA_STALE_MS`, mas nome/propósito
+ * distintos) — aquela governa staleness do agregado de DOMÍNIO (1 entry),
+ * esta classifica o estado de UMA LINHA da tabela Envios por campanha.
+ */
+export const ENVIO_SPAM_PENDING_WINDOW_MS = 5 * 24 * 60 * 60 * 1000;
+
+/**
+ * #4970: os 3 estados possíveis da célula Spam de UMA linha da tabela Envios
+ * — nunca célula em branco (regra da issue #4970 item 4: em branco se
+ * confunde com zero, e as linhas mais recentes, que são as mais olhadas, são
+ * justamente as que mais caem nos 2 estados sem valor numérico).
+ */
+export type EnvioSpamCellState = "rate" | "pending" | "unavailable";
+
+/**
+ * União discriminada por `state` (não uma interface achatada com campos
+ * opcionais) — `ratePct`/`daysWithData`/`peakDate` só EXISTEM no branch
+ * `"rate"`; o compilador impede acesso fora dele sem checar `state` primeiro
+ * (`spamCell.ratePct` fora de um narrowing por `state === "rate"` é erro de
+ * tipo, não um `undefined` silencioso em runtime). `breach` é sempre `false`
+ * fora de `"rate"` — refletido no próprio tipo (literal `false`, não
+ * `boolean`), não só em comentário.
+ */
+export type EnvioSpamCell =
+  | {
+      state: Extract<EnvioSpamCellState, "rate">;
+      /** O PICO da campanha (mesmo racional de pico > média usado no resto do enriquecimento por-campanha). */
+      ratePct: number;
+      /** Cobertura (dias com leitura válida, acumulada entre execuções) da campanha. */
+      daysWithData: number;
+      /** YYYY-MM-DD do dia em que o pico ocorreu. */
+      peakDate: string;
+      /** `true` quando `ratePct` cruzou `thresholds.spamRate.yellow`. */
+      breach: boolean;
+    }
+  | {
+      state: Extract<EnvioSpamCellState, "pending" | "unavailable">;
+      breach: false;
+    };
+
+/**
+ * Pura/testável (#4970): resolve o estado da célula Spam de UMA linha da
+ * tabela Envios a partir do mapa por-campanha (`PostmasterSpamEntry.campaignSpam`,
+ * já mesclado entre execuções por `postmaster-spam-sync.ts`).
+ *
+ * `campaignId` é o id numérico da campanha na Brevo (`BrevoCampaign.id`) —
+ * a chave de busca no mapa é `String(campaignId)` (mesma convenção do
+ * produtor, ver `toCampaignSpamRecords`). `sentOrScheduledIso` é
+ * `c.sentDate ?? c.scheduledAt` (mesma fonte de "quando" já usada pro resto
+ * da linha em `sections-core.ts`) — usado só pra decidir `pending` vs
+ * `unavailable` quando não há registro; `null`/não-parseável degrada pra
+ * `unavailable` (sem data confiável, não dá pra afirmar "ainda aguardando").
+ */
+export function resolveEnvioCampaignSpamCell(
+  campaignId: number,
+  sentOrScheduledIso: string | null,
+  campaignSpam: Record<string, PostmasterCampaignSpamRecord> | null | undefined,
+  now: Date,
+  t: HealthThresholds = DEFAULT_HEALTH_THRESHOLDS,
+): EnvioSpamCell {
+  const record = campaignSpam?.[String(campaignId)];
+  if (record) {
+    return {
+      state: "rate",
+      ratePct: record.peakSpamRatePct,
+      daysWithData: record.daysWithData,
+      peakDate: record.peakDate,
+      breach: record.peakSpamRatePct >= t.spamRate.yellow,
+    };
+  }
+  const sentMs = sentOrScheduledIso ? Date.parse(sentOrScheduledIso) : NaN;
+  if (Number.isFinite(sentMs) && now.getTime() - sentMs < ENVIO_SPAM_PENDING_WINDOW_MS) {
+    return { state: "pending", breach: false };
+  }
+  return { state: "unavailable", breach: false };
 }

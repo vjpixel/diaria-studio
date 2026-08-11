@@ -28,7 +28,7 @@ import {
   renderTopWeekdaysSection,
   deriveEditionName,
 } from "./weekly-plan.ts";
-import { isBounceBreach } from "./thresholds.ts";
+import { isBounceBreach, resolveEnvioCampaignSpamCell } from "./thresholds.ts"; // #4970: resolveEnvioCampaignSpamCell
 // #3884: painel de avaliação de experimentos A/B (CTA-01) + registro
 // "Experimento vigente" — import circular com este módulo (pickStats/escHtml
 // usados lá, funções de render importadas aqui), mesmo padrão já documentado
@@ -328,6 +328,13 @@ export function renderDashboardHtml(
   const linkSectionsByCycle = opts.linkSectionsByCycle ?? null;
   // #4198: mapa de título editorial por ciclo mensal (ver RenderDashboardOptions).
   const linkTitlesByCycle = opts.linkTitlesByCycle ?? null;
+  // #3011/#4970: movido pra ANTES de `rows` (era declarado só depois, mais
+  // abaixo) — a célula Spam de cada linha (#4970) precisa do mesmo instante
+  // usado no resto da página pra decidir "aguardando publicação" vs "sem
+  // dado atribuível" (ver `resolveEnvioCampaignSpamCell`). Segue sendo o
+  // MESMO instante do cabeçalho ("Dados em tempo real — carregado às ${now}
+  // BRT"), só computado mais cedo — nenhum outro uso downstream muda.
+  const nowDate = new Date();
   const sortedCampaigns = [...campaigns].sort((a, b) => toSortableTime(b) - toSortableTime(a));
   const rows = sortedCampaigns
     .map((c) => {
@@ -381,12 +388,18 @@ export function renderDashboardHtml(
       // (não `delivered`). Pequena diferença na prática (sent ≈ delivered +
       // bounces), mas mantém consistência com a doc operacional.
       const unsubRate = pct(s.unsubscriptions, s.sent);
-      // #3081: 3 casas (não 1) — com 1 casa, 0.049% arredondaria pra "0.0%" e
-      // mascararia diferenças pequenas. Mesma precisão aplicada em "Totais por
-      // mês" (sections-kv.ts). #4154: este número (Brevo/complaints) NUNCA é
-      // usado como veredito de breach nesta tabela — ver comentário na célula
-      // abaixo.
-      const spamRate = pct(s.complaints, s.sent, 3);
+      // #4970: coluna Spam não usa mais `complaints` da Brevo (subconta o
+      // spam real em ~120×, #4063/#4972) — lê o PICO por campanha do
+      // Postmaster v2 via `resolveEnvioCampaignSpamCell` (thresholds.ts),
+      // que já decide os 3 estados possíveis (valor real / aguardando
+      // publicação / sem dado atribuível — nunca célula em branco). Ver a
+      // construção da célula perto do fim do template literal abaixo.
+      const spamCell = resolveEnvioCampaignSpamCell(
+        c.id,
+        c.sentDate ?? c.scheduledAt,
+        postmasterSpam?.campaignSpam,
+        nowDate,
+      );
 
       // Numeric versions pra comparar contra thresholds dos circuit breakers
       // (CLAUDE.md: doc operacional 2026-05-12). Alerta visual quando crossado.
@@ -432,6 +445,15 @@ export function renderDashboardHtml(
         campaignSectionMap, // #4184
         campaignTitleMap, // #4198
       );
+      // #4970: célula Spam com os 3 estados de `resolveEnvioCampaignSpamCell`
+      // — "rate" colore como as demais métricas (nunca ganhava `alert` antes
+      // do #4970: era `complaints` da Brevo, subcontado); "pending"/
+      // "unavailable" nunca ficam em branco (regra explícita da issue), com o
+      // mesmo estilo mudo/itálico já usado na linha "sem stats" acima.
+      const spamCellHtml =
+        spamCell.state === "rate"
+          ? `<td${cellClass(spamCell.breach && "alert")}>${spamCell.ratePct.toFixed(3)}%<br><small>${spamCell.daysWithData}d · pico ${escHtml(spamCell.peakDate)}</small></td>`
+          : `<td style="color:${DS.ink};opacity:0.6;font-style:italic;">${spamCell.state === "pending" ? "Aguardando publicação" : "Sem dado atribuível"}</td>`;
       return `<tr>
         <td>${brevoReportLink(c.id)}</td>
         <td><strong>${escHtml(cleanListName)}</strong>${editionLabel ? `<br><small>${escHtml(editionLabel)}</small>` : ""}</td>
@@ -442,17 +464,17 @@ export function renderDashboardHtml(
         <td${cellClass("metric")}>${ctor}<br><small>${s.uniqueClicks}</small></td>
         <td${cellClass(bounceAlert && "alert")}>${bounceRate}<br><small>${s.hardBounces + s.softBounces}</small></td>
         <td${cellClass(unsubAlert && "alert")}>${unsubRate}<br><small>${s.unsubscriptions}</small></td>
-        <td>${spamRate}<br><small>${s.complaints}</small></td>
+        ${spamCellHtml}
       </tr>
       <tr class="links-row"><td colspan="10" class="links-cell">${linksHtml}</td></tr>`;
     })
     .join("\n");
 
-  // #3011: `nowDate` é o mesmo instante do cabeçalho ("Dados em tempo real —
-  // carregado às ${now} BRT") — passado às seções com dado pré-computado (KV)
-  // pra decidir (via shouldShowStalenessNote) se a nota de "atualizado em X"
-  // deve aparecer (dado diverge do cabeçalho) ou ficar oculta (dado coincide).
-  const nowDate = new Date();
+  // #3011: `nowDate` (declarado mais acima, antes de `rows` — ver #4970) é o
+  // mesmo instante do cabeçalho ("Dados em tempo real — carregado às ${now}
+  // BRT") — passado às seções com dado pré-computado (KV) pra decidir (via
+  // shouldShowStalenessNote) se a nota de "atualizado em X" deve aparecer
+  // (dado diverge do cabeçalho) ou ficar oculta (dado coincide).
   const now = nowDate.toLocaleString("pt-BR", {
     timeZone: "America/Sao_Paulo",
     day: "2-digit",
@@ -1174,7 +1196,7 @@ ${couponTabHtml}
 <p class="footer">Dados com cache de até 5 min — <a href="?fresh=1" style="color:var(--brand)">?fresh=1</a> força atualização imediata.<br>
 Open rate calculado sobre <em>delivered</em>; CTOR = cliques únicos ÷ <em>aberturas</em> (opens); bounce, unsub e spam sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
 Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses (quando há dado de MPP), a taxa sem Apple MPP (ainda pode incluir outros bots) e, quando disponível, a taxa trackable — aberturas com pixel real (trackableViews ÷ delivered), sinal mais limpo de engajamento real por excluir MPP e outros bots que não disparam pixel. Dados brutos em <code>/api/campaigns</code>.<br>
-Cells em <span class="alert-label">vermelho</span> indicam que a métrica cruzou o threshold de circuit breaker (open <15%, bounce hard ≥2% ou total ≥5%, unsub ≥3%). <strong>Vermelho sempre significa "ruim"</strong> em toda a página — inclusive na aba Contatos, tabela Cohorts, onde o critério é desvio desfavorável de mais de ${COHORT_DEVIATION_THRESHOLD_PP}pp da média da coluna em vez de circuit breaker (ver nota da própria tabela). Spam (nesta tabela) NUNCA é colorida — o número vem da Brevo/complaints, que subconta o spam real em ~50× (#4063); o breaker de spam de verdade é a leitura do Google Postmaster Tools, na aba Rampa.</p>
+Cells em <span class="alert-label">vermelho</span> indicam que a métrica cruzou o threshold de circuit breaker (open <15%, bounce hard ≥2% ou total ≥5%, unsub ≥3%, spam ≥0,3%). <strong>Vermelho sempre significa "ruim"</strong> em toda a página — inclusive na aba Contatos, tabela Cohorts, onde o critério é desvio desfavorável de mais de ${COHORT_DEVIATION_THRESHOLD_PP}pp da média da coluna em vez de circuit breaker (ver nota da própria tabela). Spam (nesta tabela, desde #4970) é o PICO por campanha lido do Google Postmaster Tools v2 — não mais <em>complaints</em> da Brevo, que subconta o spam real em ~120× (#4063/#4972) e por isso nunca colorira aqui antes do #4970. "Aguardando publicação" = campanha recente demais pro Postmaster já ter publicado (~2-3 dias de atraso); "Sem dado atribuível" = campanha antiga sem leitura encontrada — nenhum dos dois é 0% inventado.</p>
 <script>
 /* #2622: progressive enhancement — deep-link (hash<->aba) + aria-selected. Sem JS, o CSS-only puro segue funcionando. */
 (function () {
@@ -1280,7 +1302,7 @@ export const ENVIOS_COLUMNS: Array<{ label: string; tooltip: string }> = [
   {
     label: "Spam",
     tooltip:
-      "Marcações de spam via complaints da Brevo — subconta o spam real em ~50× (#4063), NUNCA colorida aqui. O breaker de verdade é a leitura do Google Postmaster Tools na aba Rampa.",
+      "Pico de spam POR CAMPANHA lido do Google Postmaster Tools v2 (#4970) — não mais complaints da Brevo, que subconta o spam real em ~120× (#4063/#4972). Colorida como as demais métricas (≥0,3% = alerta). \"Aguardando publicação\" = campanha recente demais pro Postmaster já ter publicado (~2-3 dias de atraso); \"Sem dado atribuível\" = campanha antiga sem leitura encontrada — nunca 0% inventado.",
   },
 ];
 
