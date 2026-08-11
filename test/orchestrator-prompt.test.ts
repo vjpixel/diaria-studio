@@ -215,7 +215,10 @@ describe("orchestrator-prompt (#634)", () => {
       // linhas pós-fix do #4574 (guard de slug ganhou --out + log-event +
       // fail-closed de get_post + comando exato de halt banner + nota em
       // §6g). Teto com headroom pequeno, mesmo padrão dos demais.
-      "orchestrator-stage-6.md": 510,
+      // #4966: +34 linhas (§6b2 — revisão de pedidos editoriais registrados
+      // no gate 6, novo passo entre §6b e §6c). Arquivo foi a 545 linhas.
+      // Teto bumped de 510→560 com headroom pequeno.
+      "orchestrator-stage-6.md": 560,
     };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       const budget = PER_FILE_LINE_BUDGET[file];

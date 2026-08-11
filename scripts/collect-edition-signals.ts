@@ -39,6 +39,7 @@ import { resolveReadPath } from "./lib/edition-paths.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import { isHardFailure } from "./lib/source-runs.ts";
 import { parseSourcesMd } from "./list-active-sources.ts";
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 // #2834: parseArgs local era byte-idêntico (exceto `positional`, não usado
 // aqui) ao helper genérico de lib/cli-args.ts — migrado.
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -74,7 +75,8 @@ export interface Signal {
     | "runtime_fix"
     | "clarice_skip"
     | "placeholder_guard_warning"
-    | "test_email_unconfirmed";
+    | "test_email_unconfirmed"
+    | "recurring_editor_request";
   severity: Severity;
   title: string;
   details: Record<string, unknown>;
@@ -160,6 +162,190 @@ export interface IssuesDraft {
   edition: string | null;
   collected_at: string;
   signals: Signal[];
+}
+
+// ===========================================================================
+// Signal 7 (#4966): recurring_editor_request — pedidos editoriais recorrentes
+// (troca de título, promoção/corte de destaque, reescrita de lead, etc) que o
+// editor faz repetidamente edição após edição. Diferente de todo signal
+// acima, a leitura é CROSS-EDIÇÃO: agrega `_internal/editor-requests.jsonl`
+// das 7 edições mais recentes (a atual + 6 anteriores), não só a corrente.
+// ===========================================================================
+
+/** Espelha `EditorRequestEntry` de `log-editor-request.ts` (import type-only
+ *  evitado de propósito — este módulo não depende do CLI, só do formato de
+ *  linha que ele escreve, mesmo padrão de `RuntimeFixEntry` acima). */
+interface EditorRequestEntry {
+  timestamp: string;
+  edition: string;
+  stage: number;
+  request_type: string;
+  target: string;
+  description: string;
+  resolution: "accepted" | "partial" | "declined";
+  context?: Record<string, unknown>;
+}
+
+/**
+ * Mapa `request_type` → artefato candidato a alterar (#4966, tabela da
+ * issue). Usado pra montar `suggested_action` — a issue proposta nomeia o
+ * arquivo/prompt/rubrico a mexer, não só descreve o padrão.
+ *
+ * `eia-choice` não estava na tabela original da issue — mapeado aqui pro
+ * artefato mais próximo (fluxo de seleção do Stage 3 É IA?) pra manter a
+ * taxonomia inteira cobrível; `other` nunca chega aqui (filtrado antes, ver
+ * `signalsFromRecurringEditorRequests`).
+ */
+export const REQUEST_TYPE_ARTIFACT_MAP: Record<string, string> = {
+  "title-choice": ".claude/agents/title-picker.md + regra de título em context/editorial-rules.md",
+  "title-length": ".claude/agents/title-picker.md + regra de título em context/editorial-rules.md",
+  "destaque-swap": "rubrico do scorer / .claude/agents/scorer-select.md",
+  "destaque-promote": "rubrico do scorer / .claude/agents/scorer-select.md",
+  "destaque-cut": "rubrico do scorer / .claude/agents/scorer-select.md",
+  "lead-rewrite": ".claude/agents/writer-destaque.md + context/templates/newsletter.md",
+  "tone": ".claude/agents/writer-destaque.md + context/templates/newsletter.md",
+  "length-cut": ".claude/agents/writer-destaque.md + context/templates/newsletter.md",
+  "link-swap": "context/editorial-rules.md (regras de fonte) ou seed/sources.csv",
+  "image-redo": "prompt de imagem no Stage 3 / .claude/agents/image-crop-reviewer.md",
+  "image-crop": "prompt de imagem no Stage 3 / .claude/agents/image-crop-reviewer.md",
+  "section-order": "context/templates/newsletter.md",
+  "eia-choice": "fluxo de seleção do Stage 3 (É IA?) / .claude/agents/orchestrator-stage-3.md",
+  "social-rewrite": ".claude/agents/social-writer.md / .claude/agents/social-curto.md",
+  "factual-correction": ".claude/agents/fact-checker.md",
+};
+
+const RECURRING_REQUEST_MIN_EDITIONS = 3;
+
+/**
+ * Seleciona a janela de edições a considerar na detecção de recorrência:
+ * a edição atual + até `window - 1` anteriores (7 no total, por decisão do
+ * editor #4966). Pura (sem IO) — recebe o índice já enumerado
+ * (`enumerateEditionDirs`) e devolve a lista ordenada da mais recente pra
+ * mais antiga, garantindo que `currentEdition` (se informado) sempre entre
+ * mesmo que ainda não apareça no índice (edição sendo processada agora).
+ *
+ * Ordenação lexicográfica em AAMMDD == ordenação cronológica (formato fixo,
+ * mesmo padrão usado no resto do repo — ex: `findEditionsInProgress`).
+ */
+export function selectRecentEditions(
+  editionDirsByAammdd: Map<string, string>,
+  currentEdition: string | null,
+  currentEditionDir: string,
+  window = 7,
+): Array<{ edition: string; dir: string }> {
+  const merged = new Map(editionDirsByAammdd);
+  if (currentEdition && !merged.has(currentEdition)) {
+    merged.set(currentEdition, currentEditionDir);
+  }
+  const keysDesc = Array.from(merged.keys()).sort().reverse();
+  const startIdx = currentEdition ? Math.max(0, keysDesc.indexOf(currentEdition)) : 0;
+  return keysDesc
+    .slice(startIdx, startIdx + window)
+    .map((edition) => ({ edition, dir: merged.get(edition)! }));
+}
+
+/**
+ * Lê `_internal/editor-requests.jsonl` de cada edição da janela. Linhas
+ * malformadas são ignoradas (mesmo padrão tolerante de `signalsFromRuntimeFixes`).
+ * Retorna só edições com ≥1 entrada válida.
+ */
+export function readEditorRequestsForEditions(
+  editions: Array<{ edition: string; dir: string }>,
+): Record<string, EditorRequestEntry[]> {
+  const out: Record<string, EditorRequestEntry[]> = {};
+  for (const { edition, dir } of editions) {
+    const path = resolve(dir, "_internal/editor-requests.jsonl");
+    if (!existsSync(path)) continue;
+    let content: string;
+    try {
+      content = readFileSync(path, "utf8");
+    } catch {
+      continue;
+    }
+    const entries: EditorRequestEntry[] = [];
+    for (const line of content.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        entries.push(JSON.parse(line));
+      } catch {
+        // ignore malformed line
+      }
+    }
+    if (entries.length > 0) out[edition] = entries;
+  }
+  return out;
+}
+
+/**
+ * Detecta `request_type` recorrente: ≥3 edições DISTINTAS nas últimas 7 (não
+ * ocorrências totais — 3 pedidos do mesmo tipo na MESMA edição contam como 1
+ * edição). Só `resolution` `accepted`/`partial` conta — `declined` é pedido
+ * que o editor aceitou não fazer, não é padrão a corrigir. `other` nunca
+ * dispara (não participa da taxonomia de agrupamento, #4966).
+ *
+ * Título do signal é ESTÁVEL entre chamadas com contagens diferentes (nunca
+ * inclui `edition_count`/`3×` no título) — o dedup do auto-reporter
+ * (`auto-reporter-dedup.ts`) casa por título, e um título que varia por
+ * contagem furaria esse dedup a cada edição nova que reforça o padrão.
+ */
+export function signalsFromRecurringEditorRequests(
+  entriesByEdition: Record<string, EditorRequestEntry[]>,
+  minEditions = RECURRING_REQUEST_MIN_EDITIONS,
+): Signal[] {
+  // request_type -> edition -> entries dessa edição com esse tipo
+  const byType = new Map<string, Map<string, EditorRequestEntry[]>>();
+  for (const [edition, entries] of Object.entries(entriesByEdition)) {
+    for (const e of entries) {
+      if (e.request_type === "other") continue;
+      if (e.resolution !== "accepted" && e.resolution !== "partial") continue;
+      let byEdition = byType.get(e.request_type);
+      if (!byEdition) {
+        byEdition = new Map();
+        byType.set(e.request_type, byEdition);
+      }
+      const arr = byEdition.get(edition) ?? [];
+      arr.push(e);
+      byEdition.set(edition, arr);
+    }
+  }
+
+  const out: Signal[] = [];
+  for (const [requestType, byEdition] of byType) {
+    const editions = Array.from(byEdition.keys()).sort();
+    if (editions.length < minEditions) continue;
+
+    const evidence: Array<{ edition: string; target: string; description: string }> = [];
+    for (const edition of editions) {
+      for (const e of byEdition.get(edition)!) {
+        evidence.push({ edition, target: e.target, description: e.description });
+      }
+    }
+
+    const artifact = REQUEST_TYPE_ARTIFACT_MAP[requestType]
+      ?? "artefato ainda não mapeado — ver taxonomia em scripts/log-editor-request.ts";
+
+    out.push({
+      kind: "recurring_editor_request",
+      severity: editions.length >= 5 ? "high" : "medium",
+      // Estável — NUNCA incluir contagem (#4966, ver docstring acima).
+      title: `Pedido recorrente do editor: ${requestType}`,
+      details: {
+        request_type: requestType,
+        edition_count: editions.length,
+        editions,
+        evidence,
+        artifact_candidate: artifact,
+      },
+      suggested_action:
+        `Editor pediu "${requestType}" em ${editions.length} das últimas edições revisadas — ` +
+        `considerar ajustar ${artifact}. Evidência: ` +
+        evidence
+          .slice(0, 3)
+          .map((e) => `[${e.edition}] ${e.description}`)
+          .join(" | "),
+    });
+  }
+  return out;
 }
 
 // ===========================================================================
@@ -1083,6 +1269,19 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
     }
   }
 
+  // Signal 7 (#4966): recurring_editor_request — cross-edição, últimas 7
+  // (atual + 6 anteriores). Fail-soft: erro de IO/parse nunca derruba o
+  // resto da coleta.
+  try {
+    const editionsRoot = resolve(rootDir, "data/editions");
+    const editionDirsByAammdd = enumerateEditionDirs(editionsRoot);
+    const recentEditions = selectRecentEditions(editionDirsByAammdd, edition, editionDir);
+    const entriesByEdition = readEditorRequestsForEditions(recentEditions);
+    signals.push(...signalsFromRecurringEditorRequests(entriesByEdition));
+  } catch {
+    // ignore
+  }
+
   return {
     edition,
     collected_at: now.toISOString(),
@@ -1147,6 +1346,7 @@ function main(): void {
           test_warning: draft.signals.filter((s) => s.kind === "test_warning").length,
           runtime_fix: draft.signals.filter((s) => s.kind === "runtime_fix").length,
           test_email_unconfirmed: draft.signals.filter((s) => s.kind === "test_email_unconfirmed").length,
+          recurring_editor_request: draft.signals.filter((s) => s.kind === "recurring_editor_request").length,
         },
       },
       null,

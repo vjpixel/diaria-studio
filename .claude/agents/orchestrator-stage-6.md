@@ -65,6 +65,44 @@ Compor o resumo que sera exibido no gate:
 - **Social agendado:** horarios LinkedIn + Facebook por destaque (D1/D2/D3).
 - **Achados do review-test-email** (se `review_final_issues` nao vazio ou `review_status !== "ok"`).
 
+### 6b2. Revisao de pedidos editoriais registrados (#4966)
+
+Ler `{EDITION_DIR}/_internal/editor-requests.jsonl` (escrito ao longo da edicao via `npx tsx scripts/log-editor-request.ts`, ver `.claude/agents/orchestrator.md` secao "Pedidos editoriais do editor"). **Se o arquivo nao existir ou estiver vazio, pular esta secao inteira** — nada a revisar.
+
+**Se `--no-gates` (`auto_approve = true`):** aceitar a lista como registrada, sem perguntar (nao ha editor presente pra revisar). Logar a origem, mesmo espirito de `_internal/05-publish-consent.json`:
+```bash
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level info \
+  --message "editor requests aceitos sem revisao via --no-gates" \
+  --details '{"source":"auto_approve_default","count":{N}}'
+```
+Prosseguir para §6c sem exibir o bloco abaixo.
+
+**Se modo interativo:** apresentar a lista antes do gate de Schedule (pode ser no mesmo turno, acima do bloco `📅 AGENDAMENTO`):
+
+```
+📋 PEDIDOS EDITORIAIS DESTA EDICAO — {AAMMDD}
+
+1. [{stage}] {request_type} · {target} — "{description resumida a ~80 chars}" ({resolution})
+2. [{stage}] {request_type} · {target} — "{description resumida a ~80 chars}" ({resolution})
+...
+
+Confirmar tudo, corrigir uma entrada, ou descartar alguma?
+
+  confirmar         → aceita a lista como esta
+  corrigir N campo=valor → reescreve o campo (request_type|target|resolution|description) da entrada N
+  descartar N       → remove a entrada N (registrada indevidamente)
+  Qualquer outra entrada → repetir a lista (fail-closed)
+```
+
+Aguardar resposta. `corrigir`/`descartar` reescrevem `_internal/editor-requests.jsonl` inteiro (regravar todas as linhas com a entrada N alterada/removida) e voltam a exibir a lista atualizada — repetir ate o editor responder `confirmar`. `corrigir` com `request_type`/`target`/`resolution` fora da taxonomia valida de `scripts/log-editor-request.ts` e rejeitado, mostrando os valores aceitos, sem aplicar a mudanca.
+
+Ao confirmar, logar a origem:
+```bash
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level info \
+  --message "editor requests confirmados no gate 6" \
+  --details '{"source":"editor_confirmed","count":{N},"corrections":{M}}'
+```
+
 ### 6c. GATE HUMANO — Schedule Beehiiv
 
 **Se `--no-gates` (`auto_approve = true`):** pular o gate, usar default (amanha 06:00 BRT). Logar:

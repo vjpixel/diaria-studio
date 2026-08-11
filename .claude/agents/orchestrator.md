@@ -108,6 +108,23 @@ Padrão: P2 (vira issue automática via auto-reporter). P3 = cleanup que não va
 
 **Quando logar**: sempre que o orchestrator executar código de remediação não-prescrito pelo playbook. Sem o log, fixes in-flight escapam do auto-reporter (gap arquitetural identificado em #1210).
 
+### Pedidos editoriais do editor — log quando o editor pedir mudança de conteúdo (#4966)
+
+Lado oposto do runtime fix acima: quando o **editor** pede uma mudança de **conteúdo** durante qualquer stage — em gate ou ad-hoc no meio da conversa (troca de título, promoção/corte/swap de destaque, reescrita de lead, tom, corte de tamanho, troca de link, refazer imagem/crop, reordenar seção, escolha do É IA?, reescrita de social, correção factual) — **logar via, antes de aplicar a mudança:**
+
+```bash
+npx tsx scripts/log-editor-request.ts \
+  --edition {AAMMDD} --stage N \
+  --request-type title-choice|title-length|destaque-swap|destaque-cut|destaque-promote|lead-rewrite|tone|length-cut|link-swap|image-redo|image-crop|section-order|eia-choice|social-rewrite|factual-correction|other \
+  --target d1|d2|d3|eia|radar|use-melhor|lancamentos|social|newsletter \
+  --description "..." \
+  --resolution accepted|partial|declined
+```
+
+**Quando NÃO logar**: pedido de PROCESSO/mecânica ("roda o Stage 3 de novo", "pula o Facebook", "espera eu confirmar") fica fora do escopo — só conteúdo da edição entra. Na dúvida, é conteúdo se a mudança altera o que vai ao ar (texto, imagem, seleção, ordem); é processo se altera só como/quando o pipeline roda.
+
+`resolution` reflete o que o orchestrator de fato fez: `accepted` (aplicou o pedido como veio), `partial` (aplicou parcialmente/com ajuste), `declined` (não aplicou — editor concordou em não fazer). Grava em `{EDITION_DIR}/_internal/editor-requests.jsonl`. Revisado pelo editor no gate do Stage 6 (§6c de `orchestrator-stage-6.md`) antes de fechar a edição. `collect-edition-signals.ts` lê cross-edição (últimas 7) pra detectar `request_type` recorrente (≥3 edições distintas) e propor o artefato a ajustar via signal `recurring_editor_request`.
+
 ### Cost + timing tracking (#1217, #3441)
 
 `stage-status.md` (#960) é o **single source of truth** pra timing + custo + tokens + modelos por stage. Atualizar incrementalmente via `scripts/update-stage-status.ts` ao começar (`--status running --start ISO`) e ao terminar (`--status done --end ISO --duration-ms X`) cada stage. JSON sidecar em `_internal/stage-status.json` (canonical, gitignored); MD na raiz da edição (presentation).
