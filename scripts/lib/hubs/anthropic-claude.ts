@@ -50,6 +50,13 @@
  * INTRO, a seção de incidentes de segurança e o item de FAQ correspondente
  * foram reescritos pra incorporá-la; `seguranca` (countMatching) ganhou o
  * padrão `finge ser humano` pra contar esse episódio automaticamente.
+ *
+ * **#4921 Onda 2:** S1 ganhou `table` — cronologia de lançamento (modelo,
+ * data, dias desde o anterior, edição), derivada de `SOURCES` via
+ * `buildLaunchChronologyTable` (mesma fonte de dados de
+ * `deriveAnthropicClaudeFacts`, nunca transcrita). Onda 1 (bibliografia
+ * inteira como `<table>`) já tinha entrado antes desta mudança —
+ * `scripts/lib/shared/hub-page.ts:855+`.
  */
 import type { GeoFaqItem } from "../shared/geo-faq.ts";
 import {
@@ -59,11 +66,14 @@ import {
   countMatching,
   matchingDates,
   maxDateGap,
+  calendarDaysBetween,
   formatDateShort,
   formatDateLong,
   defaultMethodologyNote,
+  defaultTableMethodologyNote,
   type HubContent,
   type HubSourceEdition,
+  type HubSectionTable,
 } from "../shared/hub-page.ts";
 import { HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM } from "../shared/utm-registry.ts";
 import sourcesRaw from "./anthropic-claude-sources.generated.json" with { type: "json" };
@@ -85,7 +95,7 @@ const PUBLISHED_DATE = "2026-08-04";
  * dos números transcritos à mão em `sections`/`INTRO` (ver nota acima). O
  * teste de consistência em `test/build-hub-page.test.ts` pega esse caso;
  * bump `UPDATED_DATE` só depois de reconciliar a prosa manualmente. */
-const UPDATED_DATE = "2026-08-10";
+const UPDATED_DATE = "2026-08-11";
 
 /** `matchedHeadlines` vem em NFD (achado original ao vivo: `/anthropic
  * lanç/i` batia 0 das 12 manchetes reais antes da normalização NFC) — ver a
@@ -124,6 +134,47 @@ function deriveAnthropicClaudeFacts(sources: HubSourceEntry[]) {
   const fable = countMatching(sources, FABLE_PATTERN);
   const seguranca = countMatching(sources, SEGURANCA_PATTERN);
   return { totalEditions, totalMentions, oldest, newest, cadenceDays, launches, launchWindow, launchGap, mythos, fable, seguranca };
+}
+
+/**
+ * Cronologia de lançamento — tabela opcional de S1 (#4921 Onda 2, issue
+ * itens 6-8). Modelo/ferramenta | data | dias desde o anterior | edição, UMA
+ * linha por manchete que casa `LAUNCH_PATTERN`, na mesma ordem cronológica
+ * (ascendente) que `deriveAnthropicClaudeFacts` usa pra computar
+ * `launches`/`launchWindow`/`launchGap`. Pure — recebe `sources` por
+ * parâmetro, nunca lê `SOURCES` do módulo (mesma disciplina de
+ * `deriveAnthropicClaudeFacts`).
+ *
+ * **Genuinamente derivada, nada transcrito à mão:** a coluna "Lançamento" é
+ * a própria manchete casada (texto real do dataset, não um nome de modelo
+ * digitado à parte); "Dias desde o anterior" é `calendarDaysBetween` entre
+ * duas datas consecutivas da MESMA lista que alimenta `maxDateGap` (o maior
+ * valor desta coluna é, por construção, igual a `launchGap.gapDays` — não há
+ * como esta tabela divergir do hiato que `buildIntro`/S1/FAQ citam, porque é
+ * o mesmo cálculo sobre o mesmo array de datas); "Edição" é sempre o rótulo
+ * fixo "Ver edição" linkando `s.url` — nenhuma prosa por linha, só o link.
+ */
+function buildLaunchChronologyTable(sources: HubSourceEntry[]): HubSectionTable {
+  const matches: { date: string; headline: string; url: string }[] = [];
+  for (const s of sources) {
+    for (const h of s.matchedHeadlines) {
+      const normalized = h.normalize("NFC");
+      if (LAUNCH_PATTERN.test(normalized)) matches.push({ date: s.date, headline: normalized, url: s.url });
+    }
+  }
+  matches.sort((a, b) => a.date.localeCompare(b.date));
+  const rows = matches.map((m, i) => [
+    m.headline,
+    formatDateShort(m.date),
+    i === 0 ? "—" : String(calendarDaysBetween(matches[i - 1].date, m.date)),
+    `[Ver edição](${m.url})`,
+  ]);
+  return {
+    caption: "Cronologia de lançamento: modelo ou ferramenta, data, dias desde o anterior, edição",
+    methodology: defaultTableMethodologyNote(sources),
+    headers: ["Lançamento", "Data", "Dias desde o anterior", "Edição"],
+    rows,
+  };
 }
 
 /**
@@ -235,6 +286,12 @@ export function getAnthropicClaudeHub(): HubContent {
           `Depois veio um hiato de exatos ${gapDays} dias sem nenhum lançamento novo, de ${gapFromLong} a ${gapToLong}, período em que a cobertura girou em torno de valuation, parcerias e do início do confronto com o governo dos EUA, não de produto novo.`,
           "O segundo surto foi mais denso: 7 lançamentos em 15 semanas, entre 9 de abril e 27 de julho de 2026. Nessa janela saíram a [fábrica de agentes](https://diar.ia.br/p/50-dos-empregos-mudam-em-3-anos-diz-estudo) [fonte primária](https://www.anthropic.com/engineering/managed-agents), [Claude Opus 4.7](https://diar.ia.br/p/anthropic-lan-a-claude-opus-4-7) [fonte primária](https://www.anthropic.com/news/claude-opus-4-7), o [Project Deal](https://diar.ia.br/p/openai-lanc-a-gpt-5-5-com-foco-em-agentes), [Fable 5](https://diar.ia.br/p/anthropic-lanca-fable-5-com-bloqueios-embutidos) [fonte primária](https://www.anthropic.com/news/claude-fable-5-mythos-5), o [aval dos EUA para lançar o Mythos](https://diar.ia.br/p/openai-lan-a-gpt-5-6-sol-terra-e-luna) [fonte primária](https://www.cnnbrasil.com.br/economia/negocios/eua-autorizam-anthropic-a-divulgar-modelo-que-gerou-temor-sobre-seguranca/), [Sonnet 5](https://diar.ia.br/p/anthropic-lan-a-sonnet-5) [fonte primária](https://www.anthropic.com/news/claude-sonnet-5) e [Claude Opus 5](https://diar.ia.br/p/anthropic-lan-a-o-claude-opus-5) [fonte primária](https://www.anthropic.com/news/claude-opus-5), este último fechando a série de lançamentos do período, em 27 de julho de 2026.",
         ],
+        // #4921 Onda 2: cronologia derivada de SOURCES — os dois surtos e o
+        // hiato entre eles, hoje só afirmados em prosa acima, também aparecem
+        // linha a linha aqui. Mesmo cálculo de `deriveAnthropicClaudeFacts`
+        // (ver docstring de `buildLaunchChronologyTable`): não há como esta
+        // tabela divergir do "hiato de N dias" citado na prosa.
+        table: buildLaunchChronologyTable(SOURCES),
       },
       {
         heading: "Por que a Anthropic entrou em conflito com o governo dos EUA?",
