@@ -467,6 +467,36 @@ describe("clarice-envio-run (#5026)", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
+    it("corte por crédito Brevo (volume > 0) => rodada SEGUE e agenda o volume reduzido, sem parar (#5042)", async () => {
+      // Cobre a assimetria documentada no Passo 4/5 de clarice-envio-run.ts:
+      // fila insuficiente PARA a rodada (teste acima); crédito insuficiente
+      // (mas > 0) é só um corte de volume dentro do MESMO público já
+      // elegível — a rodada segue e agenda o volume reduzido. Antes deste
+      // teste, esse caminho só era exercitado nos testes puros de
+      // `proposeNextVolume` (clarice-envio-policy.test.ts), nunca no
+      // orquestrador.
+      const root = freshRoot();
+      // baseVolume 3005, step 0.15 (healthyRisk) => volume proposto = 3456.
+      // availableFirstSend bem acima (não corta pela fila) — só o crédito,
+      // deliberadamente abaixo do proposto, corta.
+      const proposal = goldenProposal({ availableFirstSend: 5000, brevoCredits: 2000 });
+      const { exec, calls } = makeFakeExec(goldenHandlers({ proposal }));
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+
+      // A rodada SEGUIU: chegou a segmentar/montar a onda (não parou como no
+      // caminho "fila insuficiente").
+      const segment = calls.find((c) => c.script === "scripts/clarice-build-segment.ts");
+      assert.ok(segment, "corte por crédito não deveria parar a rodada — deveria segmentar com o volume reduzido");
+      assert.deepEqual(segment!.args, ["--group", "ramp-warm", "--cycle", CYCLE, "--budget", "2000"]);
+
+      const schedule = calls.filter((c) => c.script === "scripts/clarice-schedule-group.ts" && c.args.includes("--schedule") && !c.args.includes("--create"));
+      assert.equal(schedule.length, 1, "onda com o volume cortado por crédito ainda é agendada");
+
+      assert.match(r.reportMarkdown, /cappedBy: credit/, "relatório registra que o crédito foi quem cortou o volume final");
+      rmSync(root, { recursive: true, force: true });
+    });
+
     it("MV on-demand roda quando a fila não cobre mas há backlog verificável, e a rodada segue com a fila atualizada", async () => {
       const root = freshRoot();
       process.env.MILLION_VERIFIER_API_KEY = "test-key";

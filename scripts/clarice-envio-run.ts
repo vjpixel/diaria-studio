@@ -533,6 +533,28 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
     else if (noEscalationReason && risk.step > 0) report.note(`passo adaptativo calculado seria +${(risk.step * 100).toFixed(1)}%, zerado por ${noEscalationReason}.`);
 
     // --- Passo 4: fila de 1º envio — MV sob demanda se insuficiente, senão PARA (decisão do editor). ---
+    //
+    // Assimetria DELIBERADA entre este passo e o Passo 5 (#5042, achado do
+    // review consolidado 260811b): fila insuficiente PARA a rodada com aviso
+    // (abaixo); crédito Brevo insuficiente (Passo 5, `cappedBy === "credit"`)
+    // SEGUE agendando o volume reduzido, só registrando uma nota no
+    // relatório pós-fato. As duas situações são "não dá pra mandar o volume
+    // calculado", mas não são o mesmo problema:
+    //   - Fila insuficiente significa TROCAR DE PÚBLICO — o público elegível
+    //     hoje (assinantes-ativos + fila de leads/ex-assinantes já
+    //     verificada) não tem gente suficiente pro volume proposto. Completar
+    //     exigiria puxar contatos de outra categoria/cohort — decisão de
+    //     público que a automação não toma sozinha (ver "decisão do editor"
+    //     acima).
+    //   - Crédito raso é só um CORTE DE VOLUME dentro do MESMO público já
+    //     elegível — a Brevo aceita menos envios este ciclo, mas quem seria
+    //     enviado continua sendo exatamente o recorte que já passou pelos
+    //     guards de elegibilidade (fila, freio, passo adaptativo). Não há
+    //     decisão de público pra tomar aqui, só um teto numérico mais baixo
+    //     — por isso a rodada segue em vez de parar.
+    // Se esse racional deixar de valer (ex.: crédito baixo virar sinal de
+    // parar por outro motivo de negócio), reabrir #5042 com o editor antes
+    // de mudar o comportamento — nunca alinhar os dois caminhos em silêncio.
     report.section("Passo 4 — Fila de 1º envio");
     const probe = proposeNextVolume({
       baseVolume: proposal.volumes.baseVolume,
@@ -612,7 +634,10 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
       return { code: 0, reportId, reportMarkdown: report.build() };
     }
 
-    // --- Passo 5: volume final. ---
+    // --- Passo 5: volume final. Corte por crédito (`cappedBy: "credit"`)
+    // SEGUE a rodada e agenda o volume reduzido — não é um esquecimento,
+    // ver o racional da assimetria fila×crédito no comentário do Passo 4
+    // acima (#5042). ---
     const decision: NextVolumeDecision = proposeNextVolume({
       baseVolume: proposal.volumes.baseVolume,
       step: effectiveStep,
