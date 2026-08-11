@@ -11,7 +11,8 @@
 # do sitemap (`https://diar.ia.br/sitemap.xml`, parseado por
 # `scripts/lib/fetch-sitemap.ts`).
 #
-# Worker deliberadamente simples: sem KV, sem secrets, sem [assets] — src/index.ts
+# Worker deliberadamente simples: sem [assets] — src/index.ts (KV/secret
+# entraram no #4902/#4909, ver bindings abaixo; achado da Fase 1.5 desta rodada)
 # faz fetch do sitemap a cada request e renderiza on-the-fly (Cache-Control
 # de 1h absorve o resto via edge cache do Cloudflare).
 name = "arquivo"

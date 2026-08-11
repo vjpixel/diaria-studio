@@ -12,7 +12,9 @@
  * reusando a mesma fonte de dados do sitemap oficial (#761,
  * `scripts/lib/fetch-sitemap.ts`).
  *
- * Deliberadamente simples: sem KV, sem secrets, sem `[assets]` — busca o
+ * Deliberadamente simples: sem `[assets]` (o Worker ganhou 1 binding KV no
+ * #4902 e a var `INDEXNOW_KEY` no #4909 — não é mais "sem KV, sem secrets"
+ * como dizia aqui antes; achado da Fase 1.5 desta rodada) — busca o
  * sitemap a cada request (fetch server-side, sem auth, é público) e
  * renderiza on-the-fly. `Cache-Control: public, max-age=3600` + edge cache
  * do Cloudflare absorvem o resto (o sitemap não muda mais que 1x/dia).
