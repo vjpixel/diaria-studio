@@ -248,6 +248,46 @@ for (const slug of Object.keys(HUB_LOADERS)) {
   });
 }
 
+describe("H1 carrega o intervalo coberto pelo hub, derivado — nunca escrito à mão (#4912)", () => {
+  for (const slug of Object.keys(HUB_LOADERS)) {
+    it(`hub "${slug}": <h1> renderizado contém o ano da fonte mais antiga e da mais recente`, () => {
+      const hub = HUB_LOADERS[slug]();
+      assert.ok(hub.sourceEditions.length > 0, `hub "${slug}" sem sourceEditions`);
+      // sourceEditions é o MESMO dataset de SOURCES, só reordenado
+      // mais-recente-primeiro (invariante checado por validateHubContent) —
+      // então o índice 0 e o último dão o mesmo par min/max de data que
+      // `hubCoverageWindow(SOURCES)` computa dentro de `get{Hub}Hub()`.
+      const newestYear = hub.sourceEditions[0].date.slice(0, 4);
+      const oldestYear = hub.sourceEditions[hub.sourceEditions.length - 1].date.slice(0, 4);
+      const html = renderHubPage(hub);
+      const h1Match = /<h1>(.*?)<span class="dot"/s.exec(html);
+      assert.ok(h1Match, `hub "${slug}": <h1> não encontrado no HTML renderizado`);
+      const h1Text = h1Match![1];
+      assert.ok(
+        h1Text.includes(oldestYear),
+        `H1 do hub "${slug}" não contém o ano mais antigo (${oldestYear}): "${h1Text}"`,
+      );
+      assert.ok(
+        h1Text.includes(newestYear),
+        `H1 do hub "${slug}" não contém o ano mais recente (${newestYear}): "${h1Text}"`,
+      );
+    });
+  }
+});
+
+describe('tagline não aparece entre <h1> e <h2 class="geo-h2"> (#4912)', () => {
+  for (const slug of Object.keys(HUB_LOADERS)) {
+    it(`hub "${slug}": tagline vem depois do H2 da intro, não entre ele e o H1`, () => {
+      const html = renderHubPage(HUB_LOADERS[slug]());
+      const taglineIdx = html.indexOf('class="tagline"');
+      const geoH2Idx = html.indexOf("geo-h2");
+      assert.ok(taglineIdx > -1, `tagline ausente do hub "${slug}"`);
+      assert.ok(geoH2Idx > -1, `geo-h2 ausente do hub "${slug}"`);
+      assert.ok(taglineIdx > geoH2Idx, `tagline aparece antes do geo-h2 no hub "${slug}" (esperado: depois)`);
+    });
+  }
+});
+
 describe("consistência FAQ × prosa da S1 de lançamento — generalizado sobre HUB_LOADERS (#4922 item 1)", () => {
   // Generalização do bloco Anthropic-específico acima: nos hubs que citam
   // "Foram N lançamentos" no FAQ (anthropic-claude, google-gemini — os 2

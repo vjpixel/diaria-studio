@@ -107,8 +107,21 @@ export interface HubSection {
 export interface HubContent {
   /** Usado na rota (`/temas/{slug}`) e no path do arquivo gerado. */
   slug: string;
-  /** `<title>` / H1 curto (ex: "Anthropic e Claude"). */
+  /** `<title>` (via `pageTitle`, montado em `renderHubPage`) e rótulo curto
+   * usado por `og:title`/`workers/arquivo/src/hubs/meta.ts`. Ex: "Anthropic
+   * e Claude". Continua a ÚNICA fonte desses dois consumidores — `h1` abaixo
+   * não os substitui, só o `<h1>` visível. */
   title: string;
+  /** `<h1>` visível da página — opcional, default para `title` quando
+   * ausente (#4912: hub que ainda não foi migrado continua funcionando sem
+   * mudança). Existe pra separar o rótulo curto de navegação/`<title>`
+   * (`title`, acima) do heading que carrega o intervalo coberto na prosa
+   * (ex: "Anthropic e Claude — de agosto de 2025 a agosto de 2026") sem
+   * duplicar esse período no `<title>`/`og:title`. Deriva o intervalo de
+   * `hubCoverageWindow(SOURCES)` no `get{Hub}Hub()` de cada
+   * `scripts/lib/hubs/{slug}.ts` — nunca hardcoded (mesma disciplina de
+   * `metaDescription`/`introHeading`). */
+  h1?: string;
   metaDescription: string;
   /** H2 em formato de pergunta literal do bloco intro (issue item 2). */
   introHeading: string;
@@ -453,6 +466,10 @@ export function collectReaderFacingStrings(
 ): { field: string; value: string; kind: "heading" | "prose"; exemptFrom?: readonly string[] }[] {
   const out: { field: string; value: string; kind: "heading" | "prose"; exemptFrom?: readonly string[] }[] = [];
   out.push({ field: "title", value: hub.title, kind: "heading" });
+  // #4912: `h1` é opcional (default `title` — ver docstring do campo), mas
+  // quando presente é o texto que de fato renderiza no `<h1>` visível, então
+  // passa pelo mesmo contrato de prosa que qualquer outro heading.
+  if (hub.h1 !== undefined) out.push({ field: "h1", value: hub.h1, kind: "heading" });
   out.push({ field: "metaDescription", value: hub.metaDescription, kind: "prose" });
   out.push({ field: "introHeading", value: hub.introHeading, kind: "heading" });
   out.push({ field: "introParagraph", value: hub.introParagraph, kind: "prose" });
@@ -818,13 +835,13 @@ ${renderCuradoriaFooterStyles()}
     <div class="wrap">
       <p class="eyebrow">diar.ia.br · Arquivo · Temas</p>
       <hr class="rule">
-      <h1>${esc(hub.title)}<span class="dot" aria-hidden="true">.</span></h1>
-      <p class="tagline">5 minutos diários pra se manter atualizado e usar melhor as IAs</p>
+      <h1>${esc(hub.h1 ?? hub.title)}<span class="dot" aria-hidden="true">.</span></h1>
       <div class="geo-intro-wrap">
         <h2 class="geo-h2">${esc(hub.introHeading)}</h2>
         <p class="geo-intro">${applyBrandWordmark(esc(hub.introParagraph))}</p>
 ${renderGeoByline(undefined, `atualizado em ${formatMonthYear(hub.updatedDate)}`)}
       </div>
+      <p class="tagline">5 minutos diários pra se manter atualizado e usar melhor as IAs</p>
       <p class="subscribe-cta"><a href="${esc(SUBSCRIBE_URL)}">Assine a diar.ia.br →</a></p>
     </div>
   </header>

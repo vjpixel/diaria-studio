@@ -286,6 +286,9 @@ export function getGoogleGeminiHub(): HubContent {
   return {
     slug: "google-gemini",
     title: "Google e Gemini",
+    // #4912: H1 carrega o intervalo coberto (o `<title>`/`og:title` continua
+    // só `title`, montado em `renderHubPage` — não duplicam o período).
+    h1: `Google e Gemini — de ${since} a ${until}`,
     metaDescription: `Google e Gemini no arquivo da diar.ia.br, de ${since} a ${until}: ritmo de lançamento de modelo, expansão pelo Brasil, a disputa com o ChatGPT, usos em saúde e o início do alarme regulatório.`,
     introHeading: `O que aconteceu com o Google e o Gemini desde ${since}?`,
     introParagraph: buildIntro(SOURCES),
