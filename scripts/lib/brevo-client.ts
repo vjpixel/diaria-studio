@@ -476,13 +476,23 @@ export async function brevoSendNow(
 
 /**
  * Status TERMINAL de um disparo imediato — `sent` (já processado) OU
- * `inProcess` (a Brevo aceitou e está enviando; "terminal" aqui significa
- * "confirmadamente em curso", não necessariamente concluído — distinto de
- * `draft`/`queued`, que indicariam que o `sendNow` NÃO pegou). Usado pelo
- * GET-verify pós-`sendNow` — nunca confiar só no 2xx do POST (#4347).
+ * `inProcess`/`in_process` (a Brevo aceitou e está enviando; "terminal" aqui
+ * significa "confirmadamente em curso", não necessariamente concluído —
+ * distinto de `draft`/`queued`, que indicariam que o `sendNow` NÃO pegou).
+ * Usado pelo GET-verify pós-`sendNow` — nunca confiar só no 2xx do POST (#4347).
+ *
+ * #5050 — achado ao vivo (260811): a Brevo devolveu `"in_process"`
+ * (snake_case) pra uma campanha CONFIRMADAMENTE enviada (campanha #132,
+ * editor recebeu cópia) — só `"inProcess"` (camelCase) era reconhecido, então
+ * todo `sendNow` bem-sucedido por este caminho caía no branch de "disparo
+ * incerto", e pior: `checkSendNowGuard` (clarice-schedule-group.ts) usa esta
+ * mesma função pro guard anti-reenvio — com `"in_process"` não reconhecido
+ * como terminal, o guard não barrava um 2º POST `sendNow` na mesma campanha.
+ * Aceita as duas grafias (defensivo — sem garantia de que a Brevo é
+ * consistente entre endpoints/versões da API).
  */
 export function isTerminalSendStatus(status: string): boolean {
-  return status === "sent" || status === "inProcess";
+  return status === "sent" || status === "inProcess" || status === "in_process";
 }
 
 /**

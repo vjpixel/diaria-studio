@@ -72,6 +72,14 @@ test("REGRESSÃO (#4718): local 'draft' + Brevo ao vivo 'inProcess' -> recusa (t
   assert.equal(result.syncLocalAsSent, true);
 });
 
+test("REGRESSÃO (#5050): local 'draft' + Brevo ao vivo 'in_process' [snake_case] -> recusa e sincroniza — sem o fix, caía no branch 'send: true' e permitia 2º POST sendNow numa campanha já em disparo", () => {
+  const result = checkSendNowGuard("draft", "in_process");
+  assert.equal(result.send, false);
+  if (result.send) throw new Error("unreachable");
+  assert.match(result.reason, /já disparada na Brevo/);
+  assert.equal(result.syncLocalAsSent, true);
+});
+
 test("REGRESSÃO (#4718 — cenário exato da issue): local 'draft' + Brevo ao vivo 'queued' -> recusa SEM marcar sent (ainda pode virar outra coisa)", () => {
   const result = checkSendNowGuard("draft", "queued");
   assert.equal(result.send, false);
