@@ -220,11 +220,9 @@ Persiste breakdown por agent_type em `_internal/cost.json` — complementa o tot
 
 **⛔ NUNCA montar `tmp-articles-raw.json` manualmente (retype campo a campo)** — causa raiz do #4955, [histórico](../../docs/orchestrator-stage-1-research-historia.md#4955-summary-sumindo-do-pool).
 ```bash
-npx tsx scripts/assemble-research-pool.ts \
-  --runs {EDITION_DIR}/_internal/researcher-results.json \
-  --out {EDITION_DIR}/_internal/tmp-articles-raw.json
+npx tsx scripts/assemble-research-pool.ts --runs {EDITION_DIR}/_internal/researcher-results.json --out {EDITION_DIR}/_internal/tmp-articles-raw.json
 ```
-Achata `articles[]` de runs `outcome`/`status` "ok"/"empty" (`fail`/`timeout` fora), preservando TODOS os campos verbatim (inclusive `summary`) + garante `source` presente. Merge-safe (URL já em `--out` não é sobrescrita). Output: `{ runs_total, runs_ok, articles_from_runs, already_in_pool, injected, total_pool_size }`.
+Contrato da transformação (#4985, [detalhe completo](../../docs/orchestrator-stage-1-research-historia.md#4985-contrato-pool-flatten)): **entra** `RunRecordLike[]`; **sai** `PoolArticle[]` flat; **preserva** TODOS os campos verbatim via spread (inclusive `summary` — sem allowlist); **transforma** filtrando `fail`/`timeout`, preenchendo `source` ausente, mergeando merge-safe. Output: `{ runs_total, runs_ok, articles_from_runs, already_in_pool, injected, total_pool_size }`.
 
 ### 1g-bis. Carry-over de candidatos não-selecionados (#655)
 
@@ -357,6 +355,8 @@ npx tsx scripts/enrich-primary-source.ts \
 ```
 In-place. Loga no stderr `N/M notícia(s) sinalizadas` e nunca falha. Ler `{EDITION_DIR}/_internal/tmp-categorized.json` como `{ lancamento, radar, use_melhor, video }` (#1629) para usar daqui em diante.
 
+**1m-bis. Checkpoint de integridade (#4986):** `npx tsx scripts/verify-summary-integrity.ts --raw {EDITION_DIR}/_internal/tmp-articles-raw.json --check {EDITION_DIR}/_internal/tmp-categorized.json --edition {AAMMDD} --label tmp-categorized.json` — backstop determinístico pro #4955/#4988 ([detalhe](../../docs/orchestrator-stage-1-research-historia.md#4986-checkpoint-de-integridade)). Exit 1 = regressão de pipeline (nunca editorial) — investigar `dedup.ts`/`categorize.ts` antes de seguir.
+
 **1m-ter. Busca ATIVA de fonte primária (#1699).** O `enrich-primary-source` só sinaliza; #1699 manda buscar de fato. Para cada artigo em `radar` com `launch_candidate: true` (e `suggested_primary_domain`), o orchestrator:
 
 1. **Buscar** o anúncio oficial — disparar `discovery-searcher` com a query `site:{suggested_primary_domain} {núcleo do título, sem o nome do veículo de imprensa}`. (Um `discovery-searcher` por candidato; rodar em paralelo se houver vários.)
@@ -485,6 +485,8 @@ echo "merge-scored-chunks exit: $MERGE_EXIT"   # 0 = ok/incompleto-recuperável 
 - **exit 1** (erro de invocação — args malformados — ou `tmp-scoring-pool.json` ausente/corrompido, ex: split rodou sem `--pool-out`; **nenhum output novo foi escrito**): **HALT — NÃO seguir.** Os `tmp-finalists.json`/`tmp-allscored.json` podem estar stale de um run anterior; **não** consumir em 1q.4/1q.5. Corrigir os args/input (confirmar que 1q.1 passou `--pool-out`) e re-rodar, ou cair no 1q-fallback. Logar `level: error`.
 - **exit 0 + `incomplete: true`** (gap ≤ 2 artigos): logar `level: warn` e seguir — os artigos sem score viraram 0 e serão filtrados em 1s (ruído recuperável).
 - **exit 0** (sem `incomplete`): seguir normalmente.
+
+**1q.3-bis. Checkpoint de integridade (#4986), só se `$MERGE_EXIT` != 1:** `npx tsx scripts/verify-summary-integrity.ts --raw {EDITION_DIR}/_internal/tmp-articles-raw.json --check {EDITION_DIR}/_internal/tmp-finalists.json --edition {AAMMDD} --label tmp-finalists.json` — mesmo backstop do 1m-bis, no ponto exato onde o D1 do #4986 perdeu `summary` ao vivo. Exit 1 → investigar `split-articles-for-scoring.ts`/`merge-scored-chunks.ts` antes do `scorer-select` (1q.4).
 
 **1q.4 — Seleção.** Disparar 1 agent `scorer-select`: input = `tmp-finalists.json`, out_path = `tmp-selection.json`. Retorna `highlights[]` (≤6, ordem editorial) + `runners_up[]`.
 

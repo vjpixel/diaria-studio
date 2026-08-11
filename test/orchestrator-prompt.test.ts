@@ -145,7 +145,12 @@ describe("orchestrator-prompt (#634)", () => {
       // por padrão de scripts/experiment-d3-radar.ts logo após os invariants
       // pós-gate-apply, antes do sentinel do Stage 1). Teto bumped de
       // 810→825 com headroom (era 813 medido pós-#4846).
-      "orchestrator-stage-1-research.md": 825,
+      // #4988/#4985/#4986: +2 linhas líquidas (contrato explícito da
+      // transformação pool-flatten em §1g-ter + 2 checkpoints determinísticos
+      // de integridade de `summary`, 1m-bis e 1q.3-bis — detalhe completo
+      // movido pro histórico pra caber no budget). Teto bumped de 825→835
+      // com headroom (era 826 medido pós-#4988/#4985/#4986).
+      "orchestrator-stage-1-research.md": 835,
       // #3929: +11 linhas (snapshot pós-humanizador/pré-Clarice + diff legível
       // do social em §2c, 4º arg opcional de pré-Humanizador no clarice-diff.ts
       // da newsletter em §2b, e menção ao novo diff no gate §2d — decorrelaciona
