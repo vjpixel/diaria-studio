@@ -963,6 +963,107 @@ test("resolveSpamSignal — guards de staleness/cobertura continuam avaliados so
   assert.deepEqual(signal, { source: "indeterminate", ratePct: null, breach: false, reason: "recorded-stale" });
 });
 
+// -----------------------------------------------------------------------------
+// #4974 — `resolveSpamSignal` leva a ORIGEM/cobertura do pico por campanha até
+// `SpamSignal`, não só o número já resolvido pelo `Math.max`. Antes desta
+// issue, a assimetria (domínio tem guard de cobertura mínima, pico por
+// campanha não tem NENHUMA sinalização) ficava invisível pra qualquer
+// consumidor que só olhasse `ratePct`/`breach` — um pico de 1 dia isolado e
+// um pico sustentado pela janela inteira produziam o MESMO `SpamSignal`. A
+// issue não adiciona um piso (decisão do editor, opção 3): só torna a
+// cobertura visível onde o número aparece.
+// -----------------------------------------------------------------------------
+
+test("resolveSpamSignal — pico por campanha governa → SpamSignal carrega worstCampaignFeedbackLoopId/worstCampaignDaysWithData (#4974)", () => {
+  const signal = resolveSpamSignal(
+    mkPostmasterEntry({
+      spamRatePct: 0.02, // média de domínio: baixa, não seria ela a governar
+      worstCampaignSpamRatePct: 1.39,
+      worstCampaignFeedbackLoopId: "11130585_107",
+      worstCampaignDaysWithData: 1,
+    }),
+    NOW,
+  );
+  assert.equal(signal.ratePct, 1.39, "usa o pico da campanha, não a média de domínio");
+  assert.equal(signal.worstCampaignFeedbackLoopId, "11130585_107");
+  assert.equal(signal.worstCampaignDaysWithData, 1, "cobertura de 1 dia chega até o SpamSignal, sem piso que a esconda");
+});
+
+test("resolveSpamSignal — média de domínio governa (pico por campanha pior não venceu o Math.max) → worstCampaignFeedbackLoopId/worstCampaignDaysWithData ficam undefined (#4974)", () => {
+  const signal = resolveSpamSignal(
+    mkPostmasterEntry({
+      spamRatePct: 0.45, // domínio pior — é ele que governa
+      worstCampaignSpamRatePct: 0.08,
+      worstCampaignFeedbackLoopId: "11130585_999",
+      worstCampaignDaysWithData: 5,
+    }),
+    NOW,
+  );
+  assert.equal(signal.ratePct, 0.45);
+  assert.equal(signal.worstCampaignFeedbackLoopId, undefined, "domínio governa — não deve carregar origem de campanha");
+  assert.equal(signal.worstCampaignDaysWithData, undefined);
+});
+
+test("resolveSpamSignal — pico por campanha governa mas worstCampaignDaysWithData ausente (entry legada pré-#4780) → worstCampaignFeedbackLoopId presente, cobertura undefined, sem quebrar (#4974)", () => {
+  const signal = resolveSpamSignal(
+    mkPostmasterEntry({
+      spamRatePct: 0.02,
+      worstCampaignSpamRatePct: 1.39,
+      worstCampaignFeedbackLoopId: "11130585_107",
+      // worstCampaignDaysWithData intencionalmente ausente
+    }),
+    NOW,
+  );
+  assert.equal(signal.worstCampaignFeedbackLoopId, "11130585_107");
+  assert.equal(signal.worstCampaignDaysWithData, undefined);
+});
+
+test("resolveSpamSignal — sem worstCampaignSpamRatePct (schema evolution) → worstCampaignFeedbackLoopId/worstCampaignDaysWithData ficam undefined (#4974)", () => {
+  const signal = resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.05 }), NOW);
+  assert.equal(signal.worstCampaignFeedbackLoopId, undefined);
+  assert.equal(signal.worstCampaignDaysWithData, undefined);
+});
+
+// Regressão (#633): antes desta issue, a linha "Spam (Postmaster)" do
+// dashboard mostrava só o número — nunca a cobertura do pico que o produziu.
+// Prova que a cobertura agora chega até a superfície de decisão (o gap que a
+// #4974 fechou; o CLI `clarice-schedule-ramp.ts` já tinha esse dado desde o
+// #4780/#4785, este teste cobre o lado que ainda faltava).
+test("renderWeeklyPlanTabPanel — pico por campanha governa → linha 'Spam (Postmaster)' mostra a cobertura do pico (#4974)", () => {
+  const camps = [
+    campaignSentHoursAgo(60, {
+      statistics: statsFor({ sent: 3000, delivered: 2990, uniqueViews: 600, complaints: 0 }),
+    }),
+  ];
+  const html = renderWeeklyPlanTabPanel(
+    camps,
+    NOW,
+    [],
+    mkPostmasterEntry({
+      spamRatePct: 0.02,
+      worstCampaignSpamRatePct: 1.39,
+      worstCampaignFeedbackLoopId: "11130585_107",
+      worstCampaignDaysWithData: 1,
+    }),
+  );
+  const spamPostmasterRow = html.match(/<tr><td>Spam \(Postmaster[\s\S]*?<\/tr>/)?.[0];
+  assert.ok(spamPostmasterRow);
+  assert.match(spamPostmasterRow!, /1\.390%/, "mostra o valor EFETIVO (pico), não a média de domínio");
+  assert.match(spamPostmasterRow!, /pico de campanha, 1 dia\(s\) com dado/, "cobertura do pico (#4974) deve aparecer na linha");
+});
+
+test("renderWeeklyPlanTabPanel — média de domínio governa → linha 'Spam (Postmaster)' NÃO mostra sufixo de cobertura de campanha (#4974)", () => {
+  const camps = [
+    campaignSentHoursAgo(60, {
+      statistics: statsFor({ sent: 3000, delivered: 2990, uniqueViews: 600, complaints: 0 }),
+    }),
+  ];
+  const html = renderWeeklyPlanTabPanel(camps, NOW, [], mkPostmasterEntry({ spamRatePct: 0.02 }));
+  const spamPostmasterRow = html.match(/<tr><td>Spam \(Postmaster[\s\S]*?<\/tr>/)?.[0];
+  assert.ok(spamPostmasterRow);
+  assert.doesNotMatch(spamPostmasterRow!, /pico de campanha/, "sem pico por campanha governando, não deve inventar cobertura");
+});
+
 test("renderWeeklyPlanTabPanel — com leitura de Postmaster acima do limite, semáforo geral é vermelho MESMO com tudo mais saudável e complaints da Brevo em zero (#4063 fim-a-fim)", () => {
   const camps = [
     campaignSentHoursAgo(60, {

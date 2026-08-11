@@ -1264,8 +1264,20 @@ export function renderWaveProposal(p: WaveProposal): string {
   L.push(
     `  Abertura ${p.volumes.health.openRate.toFixed(1)}% · hard bounce ${p.volumes.health.hardBounceRate.toFixed(2)}% · bounce total ${p.volumes.health.bounceRate.toFixed(2)}% · unsub ${p.volumes.health.unsubRate.toFixed(2)}%`,
   );
+  // #4974: quando o PICO por campanha governa `ratePct` (Math.max de
+  // `resolveSpamSignal` escolheu o pico, não a média de domínio),
+  // `worstCampaignDaysWithData` leva a cobertura da janela até esta tela —
+  // sem isso, um pico sustentado pela janela inteira ficava indistinguível
+  // de um artefato de 1 dia isolado na única superfície onde o editor
+  // confirma o envio. Decisão do editor (opção 3 da issue): sem piso de
+  // cobertura no pico — o semáforo continua disparando com 1 dia — mas a
+  // cobertura fica visível ao lado do número.
+  const spamCoverageNote =
+    p.volumes.spamSignal.source === "postmaster" && typeof p.volumes.spamSignal.worstCampaignDaysWithData === "number"
+      ? ` (pico de campanha, ${p.volumes.spamSignal.worstCampaignDaysWithData} dia(s) com dado)`
+      : "";
   L.push(
-    `  Spam (Postmaster): ${p.volumes.spamSignal.source === "indeterminate" ? "indeterminado — o semáforo nunca fica verde às cegas" : `${p.volumes.spamSignal.ratePct?.toFixed(3)}%${p.volumes.spamSignal.breach ? " — BREAKER ESTOURADO" : ""}`}`,
+    `  Spam (Postmaster): ${p.volumes.spamSignal.source === "indeterminate" ? "indeterminado — o semáforo nunca fica verde às cegas" : `${p.volumes.spamSignal.ratePct?.toFixed(3)}%${p.volumes.spamSignal.breach ? " — BREAKER ESTOURADO" : ""}${spamCoverageNote}`}`,
   );
   L.push("");
 
