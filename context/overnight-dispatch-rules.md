@@ -98,6 +98,16 @@ não seguir sozinho até o merge.
 Seguir as convenções de commit/PR do `CLAUDE.md`. PR abre com `Closes #NNNN` (um
 `closes` por issue do lote). Título com `(#NNNN)` / `(#A, #B, ...)`.
 
+**`Closes` é obrigatório POR ISSUE totalmente resolvida — nunca ambíguo (#5010).**
+Confirmado ao vivo na rodada 260811: 4 de ~13 PRs saíram sem nenhum `Closes` no
+body, deixando issues já resolvidas presas abertas até triagem manual na rodada
+seguinte. Para CADA issue do lote, o PR body precisa conter OU `Closes #NNNN`
+(issue totalmente resolvida por este diff) OU a declaração explícita
+`REFS #NNNN, NÃO CLOSES ({motivo})` (escopo genuinamente parcial). Nunca deixar
+a ausência do `Closes` ambígua entre "esqueci" e "decidi que não fecha" — o
+padrão correto já existe no repo (PR #4969, lote geo-baratos): seguir esse
+exemplo.
+
 ## 10. Nunca `git stash` dentro do worktree (#4459)
 
 `git worktree add` isola a working tree e o índice, mas **não** isola
