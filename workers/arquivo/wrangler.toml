@@ -25,3 +25,11 @@ workers_dev = true
 [[routes]]
 pattern = "arquivo.diar.ia.br"
 custom_domain = true
+
+# #4902: 1º binding deste Worker — reusa o namespace CURSOS_SUBSCRIBERS já
+# existente (mesmo id de workers/cursos/wrangler.toml) com prefixo próprio
+# ("counter:ai-fetch:") em vez de criar um namespace dedicado. Ver
+# scripts/lib/shared/ai-fetch-counters.ts pro racional.
+[[kv_namespaces]]
+binding = "CURSOS_SUBSCRIBERS"
+id = "a3415c3bf4b840d6975dbac290b99153"

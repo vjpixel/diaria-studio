@@ -16,10 +16,22 @@
  *
  * Uso:
  *   npx tsx scripts/geo-citation-monitor.ts [--dry-run] [--out <path>] [--panel geral|hubs]
+ *     [--max-monthly-usd <n>]
  *
  * `--dry-run`: não faz nenhuma chamada de rede nem escreve o log — só
  * imprime quais providers estão configurados (key presente) e as perguntas
  * que seriam consultadas. Útil pra verificar o mecanismo sem gastar tokens.
+ *
+ * `--max-monthly-usd` (#4904): teto de gasto mensal, em USD. Antes de
+ * disparar a 1ª chamada da rodada, soma `estimatedCostUsd` de todos os
+ * registros do MÊS CORRENTE já em `history.jsonl` (só a Anthropic popula
+ * esse campo hoje — ver `scripts/lib/pricing.ts`) e aborta (exit 3) se o
+ * total já cruzou o teto. **Fail-open explícito quando não há dado de
+ * custo** (mês sem nenhum registro com `estimatedCostUsd` — ex: só
+ * openai/google rodaram até agora): a rodada segue, mas com um AVISO
+ * (nunca decide silenciosamente "custo é zero"). Sem `--max-monthly-usd`,
+ * nenhum teto é aplicado (comportamento inalterado). Decisão pura e
+ * testável em `resolveMonthlyCostGuardOutcome` (não embutida no `main()`).
  *
  * `--panel` (#4900 item a, default `geral`): qual conjunto de perguntas
  * rodar — `geral` são as 8 originais (`GEO_QUESTIONS`, posicionamento da
@@ -40,6 +52,10 @@
  * `--strict` (#4754): sai != 0 quando NENHUMA medição foi registrada —
  * 2 se nenhum provider está configurado, 1 se 100% das consultas falharam.
  * Falha parcial continua saindo 0 (o fail-soft por provedor é desenhado).
+ *
+ * `--max-monthly-usd` (#4904): sai 3 se o teto já foi cruzado ANTES desta
+ * rodada — independe de `--strict` (é um guard de orçamento, não de saúde
+ * da medição; ativo sempre que a flag é passada, com ou sem `--strict`).
  *
  * Por que a rigidez é opcional em vez de virar o default: na mão, "sem key
  * configurada" é mesmo um estado válido e o comportamento acima é deliberado
@@ -169,6 +185,132 @@ export function readHistoryRecordsForPanel(
 }
 
 /**
+ * Lê `history.jsonl` e devolve só `{date, estimatedCostUsd}` de TODOS os
+ * registros (qualquer provider/painel) — usado só pelo guard de custo
+ * mensal (#4904), que soma `estimatedCostUsd` independente de painel (o
+ * teto é do PROJETO, não por painel). Mesma disciplina fail-soft de
+ * `readHistoryRecordsForPanel`: arquivo ausente ou linha corrompida nunca
+ * lançam, só são ignorados.
+ */
+export function readHistoryRecordsForCostGuard(
+  historyPath: string,
+): Array<Pick<GeoCitationRecord, "date" | "estimatedCostUsd">> {
+  if (!existsSync(historyPath)) return [];
+  let raw: string;
+  try {
+    raw = readFileSync(historyPath, "utf8");
+  } catch {
+    return [];
+  }
+  const out: Array<Pick<GeoCitationRecord, "date" | "estimatedCostUsd">> = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const r = JSON.parse(line) as Partial<GeoCitationRecord>;
+      if (typeof r.date !== "string") continue;
+      out.push({ date: r.date, estimatedCostUsd: typeof r.estimatedCostUsd === "number" ? r.estimatedCostUsd : undefined });
+    } catch {
+      continue;
+    }
+  }
+  return out;
+}
+
+export interface MonthToDateCost {
+  /** Soma de `estimatedCostUsd` dos registros do mês, 0 se nenhum registro
+   * tinha o campo (ver `hasCostData` pra distinguir "gastou 0" de "sem
+   * dado"). */
+  totalUsd: number;
+  /** `true` quando >=1 registro do mês tinha `estimatedCostUsd` presente —
+   * `false` quando o mês inteiro não tem NENHUM dado de custo (ex: só
+   * openai/google rodaram até agora, ou o mês ainda não teve nenhuma
+   * rodada). `resolveMonthlyCostGuardOutcome` usa isto pra decidir
+   * fail-open EXPLÍCITO em vez de silenciosamente tratar ausência de dado
+   * como "gastou zero". */
+  hasCostData: boolean;
+}
+
+/**
+ * Pure: soma `estimatedCostUsd` dos registros cujo `date` (YYYY-MM-DD)
+ * começa com `monthPrefix` (YYYY-MM). Não distingue provider — o teto de
+ * custo é do projeto inteiro (#4904 item 5), e hoje só a Anthropic popula
+ * `estimatedCostUsd`, então a soma já é implicitamente "só Anthropic" até
+ * que OpenAI/Google ganhem tabela de pricing própria.
+ */
+export function sumMonthToDateCostUsd(
+  records: readonly Pick<GeoCitationRecord, "date" | "estimatedCostUsd">[],
+  monthPrefix: string,
+): MonthToDateCost {
+  let totalUsd = 0;
+  let hasCostData = false;
+  for (const r of records) {
+    if (!r.date.startsWith(monthPrefix)) continue;
+    if (typeof r.estimatedCostUsd === "number") {
+      totalUsd += r.estimatedCostUsd;
+      hasCostData = true;
+    }
+  }
+  return { totalUsd, hasCostData };
+}
+
+export interface MonthlyCostGuardOutcome {
+  /** `false` só quando o teto foi CONFIGURADO, HÁ dado de custo, e o total
+   * já cruzou o teto — os outros 3 casos sempre permitem a rodada. */
+  allowed: boolean;
+  reason: "no-limit-configured" | "under-limit" | "over-limit" | "no-cost-data";
+  message: string;
+}
+
+/**
+ * Pure: decide se a rodada pode disparar chamadas de rede, a partir do
+ * custo já acumulado no mês corrente vs. `maxMonthlyUsd` (#4904 item 5).
+ *
+ * 4 caminhos, cobrindo exatamente o que o item 5 da issue pede:
+ *   1. `maxMonthlyUsd` ausente (flag não passada) → sempre permite, sem teto.
+ *   2. Teto configurado mas SEM dado de custo no mês → permite, mas com
+ *      AVISO explícito (fail-open, nunca silencioso — não confundir "não
+ *      sei quanto gastei" com "gastei zero").
+ *   3. Teto configurado, com dado, total >= teto → BLOQUEIA.
+ *   4. Teto configurado, com dado, total < teto → permite, informativo.
+ */
+export function resolveMonthlyCostGuardOutcome(
+  monthToDate: MonthToDateCost,
+  maxMonthlyUsd: number | undefined,
+): MonthlyCostGuardOutcome {
+  if (maxMonthlyUsd === undefined) {
+    return {
+      allowed: true,
+      reason: "no-limit-configured",
+      message: "[geo-citation-monitor] --max-monthly-usd não configurado — nenhum teto de custo aplicado.",
+    };
+  }
+  if (!monthToDate.hasCostData) {
+    return {
+      allowed: true,
+      reason: "no-cost-data",
+      message:
+        `[geo-citation-monitor] AVISO: nenhum registro do mês corrente tem estimatedCostUsd (ex: só openai/google ` +
+        `rodaram até agora, ou é a 1ª rodada do mês) — seguindo mesmo com --max-monthly-usd ${maxMonthlyUsd} ` +
+        "configurado (fail-open explícito: ausência de dado não é o mesmo que custo zero).",
+    };
+  }
+  if (monthToDate.totalUsd >= maxMonthlyUsd) {
+    return {
+      allowed: false,
+      reason: "over-limit",
+      message:
+        `[geo-citation-monitor] ERRO: custo estimado do mês corrente (US$ ${monthToDate.totalUsd.toFixed(4)}) já cruzou ` +
+        `--max-monthly-usd ${maxMonthlyUsd} — abortando ANTES de disparar a 1ª chamada desta rodada.`,
+    };
+  }
+  return {
+    allowed: true,
+    reason: "under-limit",
+    message: `[geo-citation-monitor] custo estimado do mês corrente: US$ ${monthToDate.totalUsd.toFixed(4)} (teto --max-monthly-usd ${maxMonthlyUsd}).`,
+  };
+}
+
+/**
  * Lista, no diretório do log, arquivos que batem o padrão de conflito de
  * escrita do cliente OneDrive (#4900 item c) — wrapper de I/O em volta de
  * `detectSafeBackupConflictFiles` (pure). Fail-soft: diretório ausente (ex:
@@ -196,6 +338,19 @@ async function main(): Promise<number> {
   // (GEO_HUB_QUESTIONS) — qualquer outro valor cai em "geral".
   const panel: GeoQuestionPanel = values["panel"] === "hubs" ? "hubs" : "geral";
   const questions = panel === "hubs" ? GEO_HUB_QUESTIONS : GEO_QUESTIONS;
+  // #4904 item 5: teto de gasto mensal — undefined = sem teto (comportamento
+  // inalterado). Validado aqui (não em resolveMonthlyCostGuardOutcome, que é
+  // pura e recebe um número já válido ou undefined).
+  const maxMonthlyUsdRaw = values["max-monthly-usd"];
+  let maxMonthlyUsd: number | undefined;
+  if (maxMonthlyUsdRaw !== undefined) {
+    const n = Number(maxMonthlyUsdRaw);
+    if (!Number.isFinite(n) || n < 0) {
+      console.error(`[geo-citation-monitor] --max-monthly-usd inválido: "${maxMonthlyUsdRaw}" (esperado número >= 0).`);
+      return 2;
+    }
+    maxMonthlyUsd = n;
+  }
 
   const configured = GEO_PROVIDERS.filter((p) => Boolean(process.env[p.envKey]));
   const missing = GEO_PROVIDERS.filter((p) => !process.env[p.envKey]);
@@ -244,6 +399,25 @@ async function main(): Promise<number> {
     }
     console.log(msg);
     return 0;
+  }
+
+  // #4904 item 5: teto de gasto mensal — checado ANTES de disparar a 1ª
+  // chamada de rede desta rodada (nunca depois, o guard existe justamente
+  // pra não gastar). Independe de --strict (é orçamento, não saúde da
+  // medição). Lê o mês-corrente em UTC (mesma granularidade `date` de
+  // GeoCitationRecord).
+  const monthPrefix = new Date().toISOString().slice(0, 7);
+  const monthToDate = sumMonthToDateCostUsd(readHistoryRecordsForCostGuard(outPath), monthPrefix);
+  const costGuard = resolveMonthlyCostGuardOutcome(monthToDate, maxMonthlyUsd);
+  if (costGuard.reason === "over-limit") {
+    console.error(costGuard.message);
+    return 3;
+  }
+  if (costGuard.reason !== "no-limit-configured") {
+    // "no-cost-data" (aviso) e "under-limit" (informativo) — nenhum dos
+    // dois bloqueia, mas ambos merecem aparecer no log da rodada.
+    if (costGuard.reason === "no-cost-data") console.warn(costGuard.message);
+    else console.log(costGuard.message);
   }
 
   // #4900 item b: providers da rodada anterior deste MESMO painel, lidos

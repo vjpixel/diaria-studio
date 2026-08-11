@@ -35,8 +35,29 @@
 import { parseSitemap } from "../../../scripts/lib/fetch-sitemap.ts";
 import { renderCuradoriaRobotsTxt } from "../../../scripts/lib/shared/robots-txt.ts";
 import { matchAiReferrerHost, logAiReferrerHit } from "../../../scripts/lib/shared/ai-referrer-log.ts"; // #4558 Parte C
+import {
+  matchAiFetchBot,
+  aiFetchBotCounterKey,
+  aiFetchReferrerCounterKey,
+  incrementAiFetchCounter,
+} from "../../../scripts/lib/shared/ai-fetch-counters.ts"; // #4902, F-17 do #4558
 import { buildArchiveHtml, PAGE_URL } from "./render-archive.ts";
 import { HUB_REGISTRY, HUB_LASTMOD } from "./hubs/registry.ts"; // #4558 Parte A: hubs temáticos em /temas/{slug}
+
+/**
+ * Env do Worker `arquivo` (#4902) — o Worker nasceu "sem KV, sem secrets,
+ * sem [assets]" (ver docstring do topo) e este é o 1º binding que ele
+ * ganha: reusa `CURSOS_SUBSCRIBERS` (mesmo namespace de `workers/cursos`,
+ * `id` em `wrangler.toml`), com prefixo próprio `counter:ai-fetch:` — sem
+ * criar namespace novo (ver `scripts/lib/shared/ai-fetch-counters.ts` pro
+ * porquê). `KVNamespace | undefined` (não obrigatório): defensivo contra um
+ * binding ainda não propagado num ambiente (`workers_dev` preview, etc.) —
+ * `incrementAiFetchCounter` é NO-OP silencioso nesse caso, nunca derruba a
+ * resposta.
+ */
+export interface Env {
+  CURSOS_SUBSCRIBERS?: KVNamespace;
+}
 
 /**
  * `<lastmod>` da raiz do sitemap (#4909): a data mais recente entre os hubs
@@ -193,7 +214,12 @@ async function fetchSitemapXml(): Promise<string> {
 }
 
 export default {
-  async fetch(request: Request): Promise<Response> {
+  // `env = {}` (default, não obrigatório): `test/arquivo-render.test.ts`
+  // chama `worker.fetch(new Request(...))` com 1 argumento só (Env não
+  // existia antes do #4902) — default vazio preserva isso sem exigir que
+  // cada call site passe um `env` explícito, e casa com o resto do módulo
+  // (`incrementAiFetchCounter` já trata KV ausente como no-op).
+  async fetch(request: Request, env: Env = {}): Promise<Response> {
     const url = new URL(request.url);
     // #4558 Parte C: log estruturado (Workers Logs) quando o Referer aponta
     // pra um dos 4 assistentes de IA — complemento barato ao monitor de
@@ -202,10 +228,36 @@ export default {
     // Nunca bloqueia a resposta (try/catch isolado, fail-soft).
     try {
       const aiHost = matchAiReferrerHost(request.headers.get("Referer"));
-      if (aiHost) logAiReferrerHit("arquivo", aiHost, url.pathname);
+      if (aiHost) {
+        logAiReferrerHit("arquivo", aiHost, url.pathname);
+        // #4902 item 2: persiste o hit que o log acima já detecta mas não
+        // retém (console.log nunca é lido depois — wrangler tail só mostra
+        // ao vivo).
+        const day = new Date().toISOString().slice(0, 10);
+        // await (não fire-and-forget): sem `ctx.waitUntil`, uma promise solta
+        // pode ser cancelada quando o execution context termina — mesmo
+        // padrão (await direto) de `incrementKvCounter` em
+        // `workers/cursos/src/index.ts`.
+        await incrementAiFetchCounter(env.CURSOS_SUBSCRIBERS, aiFetchReferrerCounterKey(aiHost, day));
+      }
     } catch {
       // logging nunca derruba a página — ver mesma disciplina do
       // catch genérico em handleIndex de workers/cursos/src/index.ts.
+    }
+    // #4902 item 1: contador de FETCH por bot de recuperação nomeado
+    // (OAI-SearchBot, ChatGPT-User, Claude-User, Claude-SearchBot,
+    // PerplexityBot, Perplexity-User, Googlebot, bingbot) — complementa o
+    // log de Referer acima, que só capta a MINORIA do tráfego de assistente
+    // que chega com Referer preenchido. Mesmo bloco fail-soft, try/catch
+    // isolado — nunca bloqueia a resposta.
+    try {
+      const bot = matchAiFetchBot(request.headers.get("User-Agent"));
+      if (bot) {
+        const day = new Date().toISOString().slice(0, 10);
+        await incrementAiFetchCounter(env.CURSOS_SUBSCRIBERS, aiFetchBotCounterKey(bot, day));
+      }
+    } catch {
+      // mesma disciplina fail-soft do bloco de Referer acima.
     }
     if (url.pathname === "/sitemap.xml") {
       return sitemapResponse();

@@ -46,6 +46,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { appendFileWithRetry } from "./source-runs.ts";
+import { estimateCallCostUsd } from "./pricing.ts";
 
 /** Perguntas fixas, pt-BR, relevantes ao posicionamento da diar.ia.br —
  * newsletter diária de IA, cursos, livros, jogo "É IA?". Fixo de propósito
@@ -125,6 +126,30 @@ export const GEO_TARGET_DOMAIN = "diar.ia.br";
 
 export type GeoProviderId = "anthropic" | "openai" | "google";
 
+/**
+ * Usage bruto de UMA chamada, extraído da resposta (#4904). Todos os campos
+ * opcionais — cada provider expõe um subconjunto diferente (só a Anthropic
+ * foi verificada contra doc oficial ao vivo, ver docstring do módulo).
+ * `cacheCreationInputTokens`/`cacheReadInputTokens` existem só pra permitir
+ * repassar o usage da Anthropic pra `estimateCallCostUsd` (`pricing.ts`,
+ * que já aplica os multiplicadores de cache) sem perder precisão — OpenAI/
+ * Google nunca os populam (não têm o conceito de prompt caching na mesma
+ * forma), e ficam sempre `undefined` nesses dois.
+ */
+export interface GeoProviderUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
+  /** Contagem de buscas server-side executadas nesta chamada, quando o
+   * provider expõe (ex: Anthropic `usage.server_tool_use.web_search_requests`
+   * — cada chamada habilita até `max_uses: 5`, #4904). Cada busca é cobrada
+   * à parte do token (US$10/1000 na Anthropic) — `estimateCallCostUsd`
+   * (`pricing.ts`) NÃO inclui esse custo, só token; ver `estimatedCostUsd`
+   * em `GeoCitationRecord` pro aviso de que o valor é um PISO. */
+  searchCount?: number;
+}
+
 export interface GeoProviderDef {
   id: GeoProviderId;
   label: string;
@@ -137,6 +162,13 @@ export interface GeoProviderDef {
   /** Extrai o texto concatenado de uma resposta JSON já parseada. Pure,
    * defensivo — nunca lança, retorna string vazia se a forma não bater. */
   extractText(json: unknown): string;
+  /** Extrai o usage bruto (#4904) — MESMO contrato de `extractText`: pure,
+   * defensivo, nunca lança; retorna `undefined` (não um objeto zerado) se a
+   * forma não bater ou nenhum campo estiver presente, pra distinguir "não
+   * consegui ler usage desta resposta" de "usage leu como zero". Opcional —
+   * um provider sem `extractUsage` simplesmente não tem usage capturado
+   * (`queryProvider` trata a ausência como `undefined`, nunca lança). */
+  extractUsage?(json: unknown): GeoProviderUsage | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +213,38 @@ function anthropicExtractText(json: unknown): string {
   const textParts = blocks.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text as string);
   const citationUrls = blocks.flatMap((b) => (Array.isArray(b.citations) ? b.citations.map((c) => c.url ?? "") : []));
   return [...textParts, ...citationUrls].join("\n");
+}
+
+/**
+ * Extrai `usage` da Messages API (#4904). `usage.server_tool_use.web_search_requests`
+ * é a contagem de buscas server-side desta chamada — verificado contra a
+ * skill `claude-api` (Server Tools). Único provider com pricing de TOKEN
+ * verificado (`scripts/lib/pricing.ts`) — a busca em si (US$10/1000) não
+ * entra na estimativa de custo, ver docstring de `GeoProviderUsage.searchCount`.
+ */
+function anthropicExtractUsage(json: unknown): GeoProviderUsage | undefined {
+  const usage = (json as { usage?: unknown })?.usage;
+  if (!usage || typeof usage !== "object") return undefined;
+  const u = usage as Record<string, unknown>;
+  const inputTokens = typeof u.input_tokens === "number" ? u.input_tokens : undefined;
+  const outputTokens = typeof u.output_tokens === "number" ? u.output_tokens : undefined;
+  const cacheCreationInputTokens = typeof u.cache_creation_input_tokens === "number" ? u.cache_creation_input_tokens : undefined;
+  const cacheReadInputTokens = typeof u.cache_read_input_tokens === "number" ? u.cache_read_input_tokens : undefined;
+  const serverToolUse = u.server_tool_use;
+  const searchCount =
+    serverToolUse && typeof serverToolUse === "object" && typeof (serverToolUse as Record<string, unknown>).web_search_requests === "number"
+      ? ((serverToolUse as Record<string, unknown>).web_search_requests as number)
+      : undefined;
+  if (
+    inputTokens === undefined &&
+    outputTokens === undefined &&
+    cacheCreationInputTokens === undefined &&
+    cacheReadInputTokens === undefined &&
+    searchCount === undefined
+  ) {
+    return undefined;
+  }
+  return { inputTokens, outputTokens, cacheCreationInputTokens, cacheReadInputTokens, searchCount };
 }
 
 // ---------------------------------------------------------------------------
@@ -229,6 +293,23 @@ function openaiExtractText(json: unknown): string {
   return parts.join("\n");
 }
 
+/**
+ * Extrai `usage.{input_tokens,output_tokens}` da Responses API (#4904).
+ * Shape best-effort — não verificada ao vivo (ver docstring do módulo). Sem
+ * `searchCount`: não há campo conhecido/verificado que conte buscas
+ * server-side nesta API; melhor ficar `undefined` (honesto) do que inventar
+ * um caminho de leitura não confirmado.
+ */
+function openaiExtractUsage(json: unknown): GeoProviderUsage | undefined {
+  const usage = (json as { usage?: unknown })?.usage;
+  if (!usage || typeof usage !== "object") return undefined;
+  const u = usage as Record<string, unknown>;
+  const inputTokens = typeof u.input_tokens === "number" ? u.input_tokens : undefined;
+  const outputTokens = typeof u.output_tokens === "number" ? u.output_tokens : undefined;
+  if (inputTokens === undefined && outputTokens === undefined) return undefined;
+  return { inputTokens, outputTokens };
+}
+
 // ---------------------------------------------------------------------------
 // Google — Gemini generateContent + google_search tool (grounding). Shape
 // best-effort (ver docstring do módulo).
@@ -259,6 +340,24 @@ function googleExtractText(json: unknown): string {
     .join("\n");
 }
 
+/**
+ * Extrai `usageMetadata.{promptTokenCount,candidatesTokenCount}` do
+ * `generateContent` (#4904). Shape best-effort — não verificada ao vivo.
+ * Sem `searchCount`: `groundingMetadata.webSearchQueries` (quando existe)
+ * fica DENTRO de cada `candidates[]`, não em `usageMetadata` — misturar os
+ * dois exigiria assumir mais forma não confirmada; melhor deixar
+ * `searchCount` `undefined` aqui também (mesmo raciocínio de `openaiExtractUsage`).
+ */
+function googleExtractUsage(json: unknown): GeoProviderUsage | undefined {
+  const usageMetadata = (json as { usageMetadata?: unknown })?.usageMetadata;
+  if (!usageMetadata || typeof usageMetadata !== "object") return undefined;
+  const u = usageMetadata as Record<string, unknown>;
+  const inputTokens = typeof u.promptTokenCount === "number" ? u.promptTokenCount : undefined;
+  const outputTokens = typeof u.candidatesTokenCount === "number" ? u.candidatesTokenCount : undefined;
+  if (inputTokens === undefined && outputTokens === undefined) return undefined;
+  return { inputTokens, outputTokens };
+}
+
 // ---------------------------------------------------------------------------
 
 export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
@@ -269,6 +368,7 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
     defaultModel: "claude-sonnet-5",
     buildRequest: anthropicRequest,
     extractText: anthropicExtractText,
+    extractUsage: anthropicExtractUsage,
   },
   {
     id: "openai",
@@ -277,6 +377,7 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
     defaultModel: "gpt-4.1",
     buildRequest: openaiRequest,
     extractText: openaiExtractText,
+    extractUsage: openaiExtractUsage,
   },
   {
     id: "google",
@@ -285,6 +386,7 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
     defaultModel: "gemini-2.5-flash",
     buildRequest: googleRequest,
     extractText: googleExtractText,
+    extractUsage: googleExtractUsage,
   },
 ];
 
@@ -339,6 +441,25 @@ export interface GeoCitationRecord {
    * arquivo. Registros novos sempre vêm com o campo populado
    * (`runGeoCitationMonitor` estampa em todo record que produz). */
   panel?: GeoQuestionPanel;
+  /** Usage bruto (#4904) — **opcional de propósito**, mesma disciplina de
+   * `panel`: os 40 registros escritos antes desta mudança não têm nenhum
+   * destes campos, e leitores (`summarizeGeoCitationRecords`, o alarme de
+   * staleness) continuam funcionando sem eles — nunca migram o arquivo.
+   * Populados só quando `provider.extractUsage` existir E a resposta bater
+   * a forma esperada (ver `GeoProviderUsage`). */
+  inputTokens?: number;
+  outputTokens?: number;
+  /** Contagem de buscas server-side desta chamada, quando o provider expõe
+   * (hoje só a Anthropic). */
+  searchCount?: number;
+  /** Custo estimado em USD desta chamada — calculado **só pro provider
+   * Anthropic** (`estimateCallCostUsd`, `scripts/lib/pricing.ts` — única
+   * tabela de pricing confiável disponível no projeto; OpenAI/Google não
+   * têm tabela e o campo fica `undefined` pra eles, nunca um número
+   * inventado). **É um PISO, não o custo total**: `estimateCallCostUsd`
+   * precifica só TOKEN — a busca server-side em si (US$10/1000 na
+   * Anthropic) não entra nesta conta. Ver item 3 do corpo do #4904. */
+  estimatedCostUsd?: number;
 }
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
@@ -352,7 +473,7 @@ type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 export const GEO_PROVIDER_TIMEOUT_MS = 25_000;
 
 type QueryProviderResult =
-  | { ok: true; text: string }
+  | { ok: true; text: string; usage?: GeoProviderUsage }
   | { ok: false; error: string; errorKind: "http" | "network" | "parse" | "extract"; httpStatus?: number };
 
 /** Consulta 1 provider com 1 pergunta e devolve o texto extraído (ou erro).
@@ -397,10 +518,65 @@ export async function queryProvider(
   // errorKind:"extract" torna essa regressão de código visível em vez de
   // se disfarçar de falha de rede/parse transitória.
   try {
-    return { ok: true, text: provider.extractText(json) };
+    const text = provider.extractText(json);
+    // #4904: extractUsage é instrumentação, não o dado principal desta
+    // função (a citação em `text`) — um catch PRÓPRIO, separado do catch de
+    // extractText acima, garante que uma regressão em extractUsage nunca
+    // derruba a medição de citação que já teve sucesso (mesmo raciocínio de
+    // separar rede/parse/extract, achado #4616, aplicado a um 3º extrator
+    // opcional).
+    let usage: GeoProviderUsage | undefined;
+    try {
+      usage = provider.extractUsage?.(json);
+    } catch {
+      usage = undefined;
+    }
+    return { ok: true, text, usage };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e), errorKind: "extract" };
   }
+}
+
+/**
+ * Pure: converte `GeoProviderUsage` (extraído por `provider.extractUsage`)
+ * nos campos de usage de `GeoCitationRecord` (#4904) — `inputTokens`/
+ * `outputTokens`/`searchCount` sempre que presentes, e `estimatedCostUsd`
+ * só quando `providerId === "anthropic"` (única tabela de pricing
+ * confiável, ver docstring de `GeoCitationRecord.estimatedCostUsd`).
+ * `usage === undefined` (provider sem `extractUsage`, ou a resposta não
+ * bateu a forma esperada) devolve `{}` — nenhum campo populado, nunca um
+ * objeto com zeros inventados.
+ *
+ * `tsForCost` (ISO 8601) resolve o pricing intro-vs-standard por data
+ * (`estimateCallCostUsd` → `resolvePricing`) — mesma data do record
+ * (`ts`), nunca `Date.now()` no momento da LEITURA.
+ */
+export function buildUsageRecordFields(
+  providerId: GeoProviderId,
+  usage: GeoProviderUsage | undefined,
+  model: string,
+  tsForCost: string,
+): Pick<GeoCitationRecord, "inputTokens" | "outputTokens" | "searchCount" | "estimatedCostUsd"> {
+  if (!usage) return {};
+  const out: Pick<GeoCitationRecord, "inputTokens" | "outputTokens" | "searchCount" | "estimatedCostUsd"> = {};
+  if (usage.inputTokens !== undefined) out.inputTokens = usage.inputTokens;
+  if (usage.outputTokens !== undefined) out.outputTokens = usage.outputTokens;
+  if (usage.searchCount !== undefined) out.searchCount = usage.searchCount;
+  if (providerId === "anthropic") {
+    const dateMs = Date.parse(tsForCost);
+    const cost = estimateCallCostUsd(
+      {
+        input_tokens: usage.inputTokens,
+        output_tokens: usage.outputTokens,
+        cache_creation_input_tokens: usage.cacheCreationInputTokens,
+        cache_read_input_tokens: usage.cacheReadInputTokens,
+      },
+      model,
+      Number.isFinite(dateMs) ? dateMs : null,
+    );
+    if (cost !== null) out.estimatedCostUsd = cost;
+  }
+  return out;
 }
 
 /** Delay do único retry de rate-limit (item 4 do achado #4616) — curto de
@@ -476,6 +652,7 @@ export async function runGeoCitationMonitor(
         domain: GEO_TARGET_DOMAIN,
         snippet: detection.snippet,
         panel,
+        ...buildUsageRecordFields(provider.id, result.usage, model, ts),
       });
     }
   }
