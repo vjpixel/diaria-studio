@@ -18,6 +18,8 @@ import {
   severityFromDuration,
   filterLinesSince,
   readRunStartedAt,
+  selectRecentEditions,
+  readEditorRequestsForEditions,
 } from "../scripts/collect-edition-signals.ts";
 
 describe("signalsFromSourceHealth", () => {
@@ -1422,6 +1424,144 @@ describe("collectSignals + writeDraft — integração", () => {
       assert.equal(
         draftDefault.signals.filter((s) => s.kind === "test_warning").length,
         0,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("selectRecentEditions (#4966)", () => {
+  it("janela = edição atual + até window-1 anteriores, ordem desc", () => {
+    const map = new Map<string, string>([
+      ["260805", "/a/260805"],
+      ["260806", "/a/260806"],
+      ["260807", "/a/260807"],
+      ["260808", "/a/260808"],
+      ["260809", "/a/260809"],
+      ["260810", "/a/260810"],
+      ["260811", "/a/260811"],
+      ["260812", "/a/260812"], // fora da janela (window=7, âncora=260811)
+    ]);
+    const result = selectRecentEditions(map, "260811", "/a/260811", 7);
+    assert.deepEqual(
+      result.map((r) => r.edition),
+      ["260811", "260810", "260809", "260808", "260807", "260806", "260805"],
+    );
+  });
+
+  it("inclui currentEdition mesmo se ausente do índice (edição sendo processada agora)", () => {
+    const map = new Map<string, string>([
+      ["260810", "/a/260810"],
+      ["260809", "/a/260809"],
+    ]);
+    const result = selectRecentEditions(map, "260811", "/a/260811", 7);
+    assert.equal(result[0].edition, "260811");
+    assert.equal(result[0].dir, "/a/260811");
+  });
+});
+
+describe("readEditorRequestsForEditions (#4966)", () => {
+  it("lê editor-requests.jsonl de cada edição da janela, ignora ausentes", () => {
+    const root = mkdtempSync(join(tmpdir(), "editor-req-read-"));
+    try {
+      const ed1 = join(root, "260811");
+      const ed2 = join(root, "260810");
+      mkdirSync(join(ed1, "_internal"), { recursive: true });
+      mkdirSync(ed2, { recursive: true }); // sem _internal — deve ser ignorada
+      writeFileSync(
+        join(ed1, "_internal/editor-requests.jsonl"),
+        JSON.stringify({
+          timestamp: "t1", edition: "260811", stage: 4, request_type: "title-length",
+          target: "d1", description: "A", resolution: "accepted",
+        }) + "\n",
+      );
+      const result = readEditorRequestsForEditions([
+        { edition: "260811", dir: ed1 },
+        { edition: "260810", dir: ed2 },
+      ]);
+      assert.deepEqual(Object.keys(result), ["260811"]);
+      assert.equal(result["260811"].length, 1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("collectSignals — recurring_editor_request cross-edição (#4966)", () => {
+  function writeEditorRequest(
+    editionDir: string,
+    edition: string,
+    requestType: string,
+    resolution: "accepted" | "partial" | "declined",
+  ): void {
+    mkdirSync(join(editionDir, "_internal"), { recursive: true });
+    const line = JSON.stringify({
+      timestamp: `${edition}T00:00:00Z`,
+      edition,
+      stage: 4,
+      request_type: requestType,
+      target: "d1",
+      description: `pedido em ${edition}`,
+      resolution,
+    });
+    writeFileSync(join(editionDir, "_internal/editor-requests.jsonl"), line + "\n");
+  }
+
+  it("agrega editor-requests.jsonl das 7 edições mais recentes e emite o signal", () => {
+    const root = mkdtempSync(join(tmpdir(), "diaria-signals-recurring-"));
+    try {
+      const editionsRoot = join(root, "data/editions");
+      mkdirSync(editionsRoot, { recursive: true });
+
+      const editions = ["260805", "260807", "260809", "260811"];
+      for (const ed of editions) {
+        const dir = join(editionsRoot, ed);
+        mkdirSync(dir, { recursive: true });
+        writeEditorRequest(dir, ed, "title-length", "accepted");
+      }
+      const currentDir = join(editionsRoot, "260811");
+
+      const draft = collectSignals({ rootDir: root, editionDir: currentDir });
+      const recurring = draft.signals.filter((s) => s.kind === "recurring_editor_request");
+      assert.equal(recurring.length, 1);
+      assert.equal(recurring[0].details.request_type, "title-length");
+      assert.equal(recurring[0].details.edition_count, 4);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("edição fora da janela de 7 não conta para a recorrência", () => {
+    const root = mkdtempSync(join(tmpdir(), "diaria-signals-recurring-window-"));
+    try {
+      const editionsRoot = join(root, "data/editions");
+      mkdirSync(editionsRoot, { recursive: true });
+
+      // 9 edições no total: 260811 (âncora) até 260803. Janela de 7 cobre
+      // 260811..260805 (7 edições, índices 0-6) — 260804 e 260803 ficam
+      // FORA da janela (índices 7 e 8).
+      const allEditions = [
+        "260811", "260810", "260809", "260808", "260807", "260806", "260805",
+        "260804", "260803",
+      ];
+      for (const ed of allEditions) {
+        mkdirSync(join(editionsRoot, ed), { recursive: true });
+      }
+      // "tone" só aparece em 3 edições no total: 1 dentro da janela (260811)
+      // + 2 fora (260804, 260803). Sem o corte de janela, isso bateria o
+      // threshold de 3 e disparia — o teste prova que o corte impede isso.
+      writeEditorRequest(join(editionsRoot, "260811"), "260811", "tone", "accepted");
+      writeEditorRequest(join(editionsRoot, "260804"), "260804", "tone", "accepted");
+      writeEditorRequest(join(editionsRoot, "260803"), "260803", "tone", "accepted");
+      const currentDir = join(editionsRoot, "260811");
+
+      const draft = collectSignals({ rootDir: root, editionDir: currentDir });
+      const recurring = draft.signals.filter((s) => s.kind === "recurring_editor_request");
+      assert.equal(
+        recurring.length,
+        0,
+        "só 1 edição dentro da janela de 7 tem 'tone' — as 2 fora da janela (260804, 260803) não podem elevar a contagem até o threshold de 3",
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
