@@ -968,47 +968,68 @@ function renderPillLink(
   return `<a href="${escHtml(url)}" style="display:inline-block;background:${background};border:1px solid ${BEGE};border-radius:999px;padding:${padding};margin:0 8px 10px 0;font-family:${FONT_SANS};font-size:${fontSize}px;font-weight:bold;color:${INK};text-decoration:none;">${escHtml(label)}</a>`;
 }
 
+/** Fallback histórico quando uma lista de pills não tem parágrafo-label
+ *  próprio imediatamente anterior (#4968) — mesmo texto de sempre. */
+const DEFAULT_CURADORIA_LABEL = "Acesse nossas curadorias:";
+
 /**
  * Encerramento no padrão da diária (#DS Tier 3): kicker "Para encerrar" + texto
  * de fechamento numa caixa bege; curadorias (bullets `- [texto](url)`) viram
  * pills outline. Degrada pra só kicker + caixa bege quando o conteúdo é simples.
+ *
+ * #4968: suporta N grupos de pills rotulados na mesma seção (antes só existia
+ * 1 grupo, com label hardcoded). Cada bloco (separado por linha em branco no
+ * `body`) que contém pelo menos 1 bullet-link vira o próprio grupo — as
+ * linhas não-link DESSE MESMO bloco (ex: "Curadorias:" numa linha logo acima
+ * dos bullets, sem linha em branco entre as duas) formam o candidato a label:
+ * se terminar em `:`, vira o rótulo daquele grupo (consumido, não renderizado
+ * como prose); senão (ou se não houver linha não-link nenhuma), cai no
+ * fallback `DEFAULT_CURADORIA_LABEL` — mesmo guard de sempre contra label
+ * duplicado (#3181/#3183: uma linha solta tipo "Acesse:" nunca vira prose).
  */
 export function renderEncerramento(body: string): string {
   const blocks = body.split(/\n\n+/).map((b) => b.trim()).filter(Boolean);
   const proseBlocks: string[] = [];
-  const pills: string[] = [];
+  type PillGroup = { label: string; pills: string[] };
+  const pillGroups: PillGroup[] = [];
   for (const block of blocks) {
     const lines = block.split("\n").map((l) => l.trim()).filter(Boolean);
     const nonLink: string[] = [];
-    let hadPill = false;
+    const groupPills: string[] = [];
     for (const line of lines) {
       const m = line.match(/^[-*]\s+\[(.+?)\]\((https?:\/\/[^)]+)\)\s*$/);
       if (m) {
         // Posição por RÓTULO (`pill-cursos-de-ia`, `pill-livros-sobre-ia`): com
         // o `pill` genérico as duas curadorias caíam no mesmo utm_campaign e
         // eram indistinguíveis — que é justamente o que se quer medir aqui.
-        pills.push(renderPillLink(m[1], normalizeKnownUrl(m[2], `pill-${slugifySecao(m[1])}`)));
-        hadPill = true;
+        groupPills.push(renderPillLink(m[1], normalizeKnownUrl(m[2], `pill-${slugifySecao(m[1])}`)));
       } else {
         nonLink.push(line);
       }
     }
-    // "Acesse:" e afins (linhas não-link de um bloco de pills) são descartadas —
-    // o label das pills vem fixo abaixo. Blocos sem pills viram prose.
-    if (!hadPill && nonLink.length) proseBlocks.push(nonLink.join(" "));
+    if (groupPills.length) {
+      // Candidato a label = as linhas não-link DESTE bloco. Só vira rótulo se
+      // terminar em ":" — qualquer outra coisa ("Acesse:" legado, redação
+      // livre) é descartada como sempre (guard #3181/#3183 preservado).
+      const candidateLabel = nonLink.join(" ").trim();
+      const label = candidateLabel.endsWith(":") ? candidateLabel : DEFAULT_CURADORIA_LABEL;
+      pillGroups.push({ label, pills: groupPills });
+    } else if (nonLink.length) {
+      proseBlocks.push(nonLink.join(" "));
+    }
   }
 
   const parts: string[] = [renderKicker("Para encerrar")];
   const head = proseBlocks.slice(0, -1);
   const last = proseBlocks.length ? proseBlocks[proseBlocks.length - 1] : "";
   for (const p of head) parts.push(`<p style="margin:0 0 16px 0;font-family:${FONT_SANS};">${renderInline(p)}</p>`);
-  if (pills.length) {
+  for (const group of pillGroups) {
     parts.push(
-      `<p style="margin:16px 0 8px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${INK};">Acesse nossas curadorias:</p>`,
+      `<p style="margin:16px 0 8px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${INK};">${escHtml(group.label)}</p>`,
     );
     // #2139: centralizar via table align="center" + margin:0 auto (Outlook word-renderer
     // ignora align= em <table> — margin:auto garante centralização no Outlook 2007–2019).
-    parts.push(`<table role="presentation" align="center" cellpadding="0" cellspacing="0" style="margin:0 auto;"><tr><td style="text-align:center;">${pills.join("")}</td></tr></table>`);
+    parts.push(`<table role="presentation" align="center" cellpadding="0" cellspacing="0" style="margin:0 auto;"><tr><td style="text-align:center;">${group.pills.join("")}</td></tr></table>`);
   }
   if (last) {
     parts.push(

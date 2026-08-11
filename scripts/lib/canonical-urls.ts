@@ -143,7 +143,7 @@ export const DIARIA_LIVROS_URL = "https://livros.diar.ia.br";
 
 /**
  * URL da vitrine de equipamentos do editor na Amazon (#4356) — pill
- * "Equipamentos" na linha "Acesse nossas curadorias" do PARA ENCERRAR.
+ * "Equipamentos" do grupo "Curadorias:" do PARA ENCERRAR (#4968).
  * DIFERENTE de `DIARIA_CURSOS_URL`/`DIARIA_LIVROS_URL` acima: decisão
  * explícita do editor (overnight 260731, comentário do #4356) foi linkar
  * DIRETO pro Amazon, sem camada de redirect via Worker (`equipamentos.diar.ia.br`

@@ -208,20 +208,36 @@ describe("SOCIAL_INVITE / CURADORIA_PILLS — blocos fixos, mesma constante em d
     }
   });
 
-  it("CURADORIA_PILLS tem exatamente 5 pills, nesta ordem: Cursos, Livros, Equipamentos, Arquivo, É IA? (#4536/#4550)", () => {
+  it("CURADORIA_PILLS tem exatamente 5 pills, nesta ordem: Cursos, Livros, Equipamentos, Edições anteriores, Jogar É IA? (#4536/#4550/#4968)", () => {
     const idxCursos = CURADORIA_PILLS.indexOf("[Cursos]");
     const idxLivros = CURADORIA_PILLS.indexOf("[Livros]");
     const idxEquip = CURADORIA_PILLS.indexOf("[Equipamentos]");
-    const idxArquivo = CURADORIA_PILLS.indexOf("[Arquivo]");
-    const idxEia = CURADORIA_PILLS.indexOf("[É IA?]");
+    const idxEdicoes = CURADORIA_PILLS.indexOf("[Edições anteriores]");
+    const idxJogar = CURADORIA_PILLS.indexOf("[Jogar É IA?]");
     assert.ok(
-      idxCursos >= 0 && idxLivros > idxCursos && idxEquip > idxLivros && idxArquivo > idxEquip && idxEia > idxArquivo,
+      idxCursos >= 0 && idxLivros > idxCursos && idxEquip > idxLivros && idxEdicoes > idxEquip && idxJogar > idxEdicoes,
       "ordem/labels das pills incorretos",
     );
-    assert.equal(CURADORIA_PILLS.split("\n").length, 5, "deveriam existir exatamente 5 linhas de pill");
+    const pillLines = CURADORIA_PILLS.split("\n").filter((l) => /^- \[/.test(l));
+    assert.equal(pillLines.length, 5, "deveriam existir exatamente 5 linhas de pill (label lines não contam)");
   });
 
-  it("Cursos/Livros/Arquivo/É IA? levam UTM (newsletter→curadoria/jogo); Equipamentos fica sem, #4553/#4550)", () => {
+  it("#4968: dois grupos rotulados — 'Curadorias:' (Cursos/Livros/Equipamentos) e 'Da diar.ia.br:' (Edições anteriores/Jogar É IA?)", () => {
+    const idxCuradoriasLabel = CURADORIA_PILLS.indexOf("Curadorias:");
+    const idxDaLabel = CURADORIA_PILLS.indexOf("Da diar.ia.br:");
+    const idxCursos = CURADORIA_PILLS.indexOf("[Cursos]");
+    const idxEquip = CURADORIA_PILLS.indexOf("[Equipamentos]");
+    const idxEdicoes = CURADORIA_PILLS.indexOf("[Edições anteriores]");
+    const idxJogar = CURADORIA_PILLS.indexOf("[Jogar É IA?]");
+    assert.ok(idxCuradoriasLabel >= 0, "'Curadorias:' ausente");
+    assert.ok(idxDaLabel >= 0, "'Da diar.ia.br:' ausente");
+    // "Curadorias:" precede Cursos/Livros/Equipamentos; "Da diar.ia.br:" vem
+    // depois de Equipamentos e precede Edições anteriores/Jogar É IA?.
+    assert.ok(idxCuradoriasLabel < idxCursos && idxCursos < idxEquip && idxEquip < idxDaLabel, "grupo 'Curadorias:' fora de ordem");
+    assert.ok(idxDaLabel < idxEdicoes && idxEdicoes < idxJogar, "grupo 'Da diar.ia.br:' fora de ordem");
+  });
+
+  it("todas as 5 pills levam UTM (newsletter→curadoria/jogo) — Equipamentos passou a levar UTM no #4968 (#4553/#4550)", () => {
     assert.match(
       CURADORIA_PILLS,
       /\[Cursos\]\(https:\/\/cursos\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=cursos-rodape\)/,
@@ -232,13 +248,16 @@ describe("SOCIAL_INVITE / CURADORIA_PILLS — blocos fixos, mesma constante em d
     );
     assert.match(
       CURADORIA_PILLS,
-      /\[Arquivo\]\(https:\/\/arquivo\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape\)/,
+      /\[Edições anteriores\]\(https:\/\/arquivo\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape\)/,
     );
     assert.match(
       CURADORIA_PILLS,
-      /\[É IA\?\]\(https:\/\/eia\.diar\.ia\.br\/jogar\?utm_source=newsletter&utm_medium=email&utm_campaign=jogar-rodape\)/,
+      /\[Jogar É IA\?\]\(https:\/\/eia\.diar\.ia\.br\/jogar\?utm_source=newsletter&utm_medium=email&utm_campaign=jogar-rodape\)/,
     );
-    assert.match(CURADORIA_PILLS, /\[Equipamentos\]\(https:\/\/www\.amazon\.com\.br\/shop\/vjpixel\)/);
+    assert.match(
+      CURADORIA_PILLS,
+      /\[Equipamentos\]\(https:\/\/www\.amazon\.com\.br\/shop\/vjpixel\?utm_source=newsletter&utm_medium=email&utm_campaign=equipamentos-rodape\)/,
+    );
   });
 
   it("buildParaEncerrar() (diária) usa exatamente SOCIAL_INVITE como último parágrafo", () => {
@@ -277,13 +296,17 @@ describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartil
     assert.match(out, /\*\*🙋🏼‍♀️ PARA ENCERRAR\*\*/);
     assert.match(out, /usei Claude Code para automatizar parte da pesquisa/);
     // #4411: labels curtos ("Cursos de IA"/"Livros sobre IA" → "Cursos"/"Livros").
-    // #4536/#4553: Cursos/Livros/Arquivo levam UTM newsletter→curadoria; Equipamentos não.
-    // #4550: pill nova "É IA?" (distribuição própria do jogo).
+    // #4536/#4553: Cursos/Livros/Edições anteriores levam UTM newsletter→curadoria.
+    // #4550: pill "Jogar É IA?" (distribuição própria do jogo, renomeada no #4968).
+    // #4968: Equipamentos passou a levar UTM também; Arquivo→Edições anteriores.
     assert.match(out, /- \[Cursos\]\(https:\/\/cursos\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=cursos-rodape\)/);
     assert.match(out, /- \[Livros\]\(https:\/\/livros\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=livros-rodape\)/);
-    assert.match(out, /- \[Equipamentos\]\(https:\/\/www\.amazon\.com\.br\/shop\/vjpixel\)/);
-    assert.match(out, /- \[Arquivo\]\(https:\/\/arquivo\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape\)/);
-    assert.match(out, /- \[É IA\?\]\(https:\/\/eia\.diar\.ia\.br\/jogar\?utm_source=newsletter&utm_medium=email&utm_campaign=jogar-rodape\)/);
+    assert.match(out, /- \[Equipamentos\]\(https:\/\/www\.amazon\.com\.br\/shop\/vjpixel\?utm_source=newsletter&utm_medium=email&utm_campaign=equipamentos-rodape\)/);
+    assert.match(out, /- \[Edições anteriores\]\(https:\/\/arquivo\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape\)/);
+    assert.match(out, /- \[Jogar É IA\?\]\(https:\/\/eia\.diar\.ia\.br\/jogar\?utm_source=newsletter&utm_medium=email&utm_campaign=jogar-rodape\)/);
+    // #4968: dois grupos rotulados embutidos no bloco fixo.
+    assert.match(out, /Curadorias:\n- \[Cursos\]/);
+    assert.match(out, /Da diar\.ia\.br:\n- \[Edições anteriores\]/);
   });
 
   it("#4357: override de para_encerrar.slot_a (texto arbitrário, sem lista) NÃO apaga a linha de pills 'Acesse nossas curadorias'", () => {
@@ -298,9 +321,9 @@ describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartil
     assert.equal((out.match(/\[Cursos\]/g) ?? []).length, 1, "não deveria haver duplicação — só 1 ocorrência da pill");
     assert.match(out, /- \[Cursos\]\(https:\/\/cursos\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=cursos-rodape\)/);
     assert.match(out, /- \[Livros\]\(https:\/\/livros\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=livros-rodape\)/);
-    assert.match(out, /- \[Equipamentos\]\(https:\/\/www\.amazon\.com\.br\/shop\/vjpixel\)/);
-    assert.match(out, /- \[Arquivo\]\(https:\/\/arquivo\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape\)/);
-    assert.match(out, /- \[É IA\?\]\(https:\/\/eia\.diar\.ia\.br\/jogar\?utm_source=newsletter&utm_medium=email&utm_campaign=jogar-rodape\)/);
+    assert.match(out, /- \[Equipamentos\]\(https:\/\/www\.amazon\.com\.br\/shop\/vjpixel\?utm_source=newsletter&utm_medium=email&utm_campaign=equipamentos-rodape\)/);
+    assert.match(out, /- \[Edições anteriores\]\(https:\/\/arquivo\.diar\.ia\.br\?utm_source=newsletter&utm_medium=email&utm_campaign=arquivo-rodape\)/);
+    assert.match(out, /- \[Jogar É IA\?\]\(https:\/\/eia\.diar\.ia\.br\/jogar\?utm_source=newsletter&utm_medium=email&utm_campaign=jogar-rodape\)/);
   });
 
   it("#4413: um eventual slot_b em platform.config.json/override (config legado) é ignorado — convite social nunca varia", () => {
@@ -455,6 +478,54 @@ describe("integração de render — mensal (renderEncerramento processa o novo 
       // encerramento padrão pré-existente continua presente — não foi substituído
       assert.match(html, /assine em/);
     });
+  });
+});
+
+describe("#4968 — DUAS listas rotuladas na mesma seção (regressão do bug de label duplicado do ciclo 2607-08)", () => {
+  it("diário (renderEncerrar): cada ul emite SEU PRÓPRIO label, uma única vez cada, na ordem certa — nenhum vazamento cruzado", () => {
+    const html = renderEncerrar(CURADORIA_PILLS);
+    // Cada label aparece exatamente 1x.
+    assert.equal((html.match(/Curadorias:/g) ?? []).length, 1, "'Curadorias:' deveria aparecer exatamente 1x");
+    assert.equal((html.match(/Da diar\.ia\.br:/g) ?? []).length, 1, "'Da diar.ia.br:' deveria aparecer exatamente 1x");
+    // O fallback genérico NUNCA aparece — as 2 listas têm label próprio.
+    assert.doesNotMatch(html, /Acesse nossas curadorias:/, "fallback não deveria aparecer quando ambos os grupos têm label embutido");
+    // 'Curadorias:' precede Cursos/Livros/Equipamentos; 'Da diar.ia.br:' precede Edições anteriores/Jogar É IA?.
+    const idxCuradorias = html.indexOf("Curadorias:");
+    const idxDa = html.indexOf("Da diar.ia.br:");
+    const idxCursosHref = html.indexOf("cursos.diar.ia.br");
+    const idxEdicoesHref = html.indexOf("arquivo.diar.ia.br");
+    assert.ok(idxCuradorias < idxCursosHref && idxCursosHref < idxDa, "'Curadorias:' deveria preceder a pill Cursos e vir antes de 'Da diar.ia.br:'");
+    assert.ok(idxDa < idxEdicoesHref, "'Da diar.ia.br:' deveria preceder a pill Edições anteriores");
+    // Exatamente 2 tables de pills (1 por grupo).
+    assert.equal((html.match(/<table role="presentation" align="center"/g) ?? []).length, 2, "deveriam existir exatamente 2 tables de pills, uma por grupo");
+  });
+
+  it("mensal (renderEncerramento): cada grupo de pills emite SEU PRÓPRIO label, uma única vez cada — guard de duplicação não remove o 2º label legítimo", () => {
+    const html = renderEncerramento(CURADORIA_PILLS);
+    assert.equal((html.match(/Curadorias:/g) ?? []).length, 1, "'Curadorias:' deveria aparecer exatamente 1x");
+    assert.equal((html.match(/Da diar\.ia\.br:/g) ?? []).length, 1, "'Da diar.ia.br:' deveria aparecer exatamente 1x");
+    assert.doesNotMatch(html, /Acesse nossas curadorias:/, "fallback não deveria aparecer quando ambos os grupos têm label embutido");
+    const idxCuradorias = html.indexOf("Curadorias:");
+    const idxDa = html.indexOf("Da diar.ia.br:");
+    assert.ok(idxCuradorias >= 0 && idxDa > idxCuradorias, "'Curadorias:' deveria vir antes de 'Da diar.ia.br:'");
+  });
+
+  it("diário (renderEncerrar): fallback preservado — ul SEM parágrafo-label anterior continua caindo no texto genérico de sempre", () => {
+    const html = renderEncerrar("- [Curso X](https://x.example/curso)\n- [Livro Y](https://x.example/livro)");
+    assert.match(html, /Acesse nossas curadorias:/);
+    assert.equal((html.match(/Acesse nossas curadorias:/g) ?? []).length, 1);
+  });
+
+  it("mensal (renderEncerramento): fallback preservado — bloco de pills sem label embutido continua caindo no texto genérico de sempre", () => {
+    const html = renderEncerramento("- [Curso X](https://x.example/curso)");
+    assert.match(html, /Acesse nossas curadorias:/);
+  });
+
+  it("diário (renderEncerrar): parágrafo terminado em ':' que NÃO precede uma lista não é tratado como label (some do output? não — continua prosa normal)", () => {
+    const html = renderEncerrar("Algum aviso importante:\n\nOutro parágrafo qualquer.");
+    // Nenhum `ul` no texto — nada deveria ser consumido; ambos os parágrafos aparecem como prosa.
+    assert.match(html, /Algum aviso importante:/);
+    assert.match(html, /Outro parágrafo qualquer/);
   });
 });
 
