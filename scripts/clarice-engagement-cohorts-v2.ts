@@ -849,21 +849,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
   }
 
-  // #5015: --push grava no KV DEPOIS de todo o backfill (mesma ordem do v1
-  // — computa tudo, só então escreve). accountId/token já validados acima
-  // (fail-fast) quando push=true — não-null assertion segura aqui.
-  if (push) {
-    const pushResult = await pushCohortsToKV(result.cohorts, { accountId: accountId!, token: token! });
-    if (pushResult.pushed) {
-      console.error(`📤 KV atualizado: ${COHORTS_KV_KEY} (namespace ${DASHBOARD_KV_NAMESPACE_ID}).`);
-    } else {
-      console.error(`⚠️  ${pushResult.reason} — KV NÃO atualizado.`);
-      process.exit(1);
-    }
-  } else {
-    console.error("(sem --push) KV não atualizado.");
-  }
-
   const output = JSON.stringify(result.cohorts, null, 2);
   console.log(output);
 
@@ -877,6 +862,25 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     const artifact = buildCohortsV2Artifact(result);
     writeFileAtomic(resolve(outPath), JSON.stringify(artifact, null, 2), { fsync: false });
     console.error(`📝 Output também salvo em ${outPath} (cohorts + diagnostics; escrita local, não é o --push do KV).`);
+  }
+
+  // #5015: --push grava no KV por ÚLTIMO, DEPOIS do stdout/--out já terem
+  // sido escritos (mesma ordem do v1: computa e reporta tudo, só então
+  // escreve). Deliberado: no caminho de falha do anti-clobber (universe=0),
+  // o operador ainda precisa do JSON/diagnostics pra investigar — sair mais
+  // cedo (antes do stdout/--out) esconderia exatamente o dado necessário
+  // pra depurar. accountId/token já validados acima (fail-fast) quando
+  // push=true — não-null assertion segura aqui.
+  if (push) {
+    const pushResult = await pushCohortsToKV(result.cohorts, { accountId: accountId!, token: token! });
+    if (pushResult.pushed) {
+      console.error(`📤 KV atualizado: ${COHORTS_KV_KEY} (namespace ${DASHBOARD_KV_NAMESPACE_ID}).`);
+    } else {
+      console.error(`⚠️  ${pushResult.reason} — KV NÃO atualizado.`);
+      process.exit(1);
+    }
+  } else {
+    console.error("(sem --push) KV não atualizado.");
   }
 }
 
