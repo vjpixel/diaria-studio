@@ -1,6 +1,6 @@
 ---
 name: diaria-clarice-envio
-description: Caminho MANUAL/ad-hoc do envio Clarice News — a task diária `Diaria-Clarice-Envio` (19:00 BRT, #5026) roda o mesmo fluxo automaticamente todo dia; esta skill invoca o MESMO orquestrador (`scripts/clarice-envio-run.ts`), nunca reimplementa. Uso — `/diaria-clarice-envio` (sem args — ciclo e data são resolvidos deterministicamente, nunca digitados).
+description: Caminho MANUAL/ad-hoc do envio Clarice News — desde #5026 os scripts existem pra rodar automaticamente todo dia às 19:00 BRT via a task `Diaria-Clarice-Envio` (arme da task, #5027 — até lá, este é o único caminho); esta skill invoca o MESMO orquestrador (`scripts/clarice-envio-run.ts`), nunca reimplementa. Uso — `/diaria-clarice-envio` (sem args — ciclo e data são resolvidos deterministicamente, nunca digitados).
 ---
 
 # /diaria-clarice-envio
@@ -9,12 +9,17 @@ Decide **pra quem** a edição mensal já pronta vai, e agenda. Complementa
 `/diaria-mensal` (que produz a edição e para no rascunho da campanha) —
 esta skill distribui a mesma edição em ondas sucessivas pela base.
 
-**Desde #5026, o fluxo roda AUTOMATICAMENTE todo dia às 19:00 BRT** via a
+**Desde #5026 o orquestrador existe pra rodar todo dia às 19:00 BRT** via a
 task `Diaria-Clarice-Envio` (planeja + agenda a onda do dia seguinte,
 06:00 BRT) com o par `Diaria-Clarice-Envio-Guard` (05:00 BRT, reavalia o
-freio na véspera imediata do disparo) — ver #5027. **Esta skill é o caminho
-manual/ad-hoc**: rodar fora do horário, investigar um abort, ou destravar um
-cenário que a automação recusa por decisão de design (ver tabela abaixo).
+freio na véspera imediata do disparo) — **o ARME dessas duas tasks é o
+#5027, que pode não ter mergeado ainda** (checar `scripts/lib/scheduled-tasks.ts`
+por uma entrada `Diaria-Clarice-Envio` antes de assumir que a automação já
+está em produção). Até lá, `npx tsx scripts/clarice-envio-run.ts` (abaixo) é
+o único caminho — o mesmo comando que a task vai rodar quando armada. **Esta
+skill é o caminho manual/ad-hoc**: rodar fora do horário, investigar um
+abort, ou destravar um cenário que a automação recusa por decisão de design
+(ver tabela abaixo).
 
 **Os dois caminhos rodam o MESMO código — `scripts/clarice-envio-run.ts`.**
 Antes do #5026, os 8 passos abaixo eram prosa que o LLM executava manualmente
@@ -62,22 +67,25 @@ resolve tudo isso sozinho:
 | Sem trava de concorrência | `scripts/lib/clarice-envio-lock.ts` — task e skill manual não podem montar a mesma onda ao mesmo tempo. |
 | Nenhum guard pra "onda esperada não disparou" | `detectMissedWaveToday` (#4975) — se a onda de hoje deveria ter saído e não saiu, a rodada reporta e não escala volume até resolver. |
 
-**Guards que abortam (`exit 1`) — nunca "sim/ajustar/abortar", sempre abortar de verdade:**
+**Guards determinísticos e seus exit codes — nunca "sim/ajustar/abortar", sempre uma
+decisão automática (a maioria PARA limpo com `exit 0`; só uma minoria é erro duro `exit 1`):**
 
-| Guard | Condição |
-|---|---|
-| Kill switch | `data/clarice-envio-enabled.json` = `{enabled:false}` → PARA limpo (`exit 0`, não é erro — é pausa intencional). |
-| exec-mode | `!= "local"` → aborta (precisa do junction `data/`). |
-| `BREVO_CLARICE_API_KEY` | ausente → aborta. |
-| Ciclo | calendário ≠ conteúdo pronto mais recente → PARA limpo (`exit 0` — "sem-ciclo-elegivel", nunca erro). |
-| `.step-4-done.json` | ausente pro ciclo resolvido → aborta. |
-| Lock | rodada concorrente em curso → aborta (`LockHeldError`). |
-| `committedLookupFailed` | consulta de campanhas comprometidas na Brevo falhou → aborta. |
-| `novosFreshness` | `never-run`/`blocker` (>48h) → aborta. `warning` (12-48h) → segue, registrado. |
-| `brevoCredits === null` | crédito não consultado → aborta. |
-| `abc.action === "iniciar"` | exige 3 assuntos do editor → PARA limpo (`exit 0`). |
-| Assunto não herdável | onda anterior sem a célula/onda-base esperada → aborta. |
-| Fila insuficiente pós-MV | mesmo após MV sob demanda, fila não cobre o volume desejado → PARA limpo (`exit 0` — nunca troca de público, nunca envia menos sem avisar antes). |
+| Guard | Condição | Exit |
+|---|---|---|
+| Kill switch | `data/clarice-envio-enabled.json` = `{enabled:false}` → pausa intencional. | `0` |
+| exec-mode | `!= "local"` → precisa do junction `data/`. | `1` |
+| `BREVO_CLARICE_API_KEY` | ausente. | `1` |
+| Ciclo | calendário ≠ conteúdo pronto mais recente → "sem-ciclo-elegivel". | `0` |
+| `.step-4-done.json` | ausente pro ciclo resolvido. | `1` |
+| Lock | rodada concorrente em curso (`LockHeldError`). | `1` |
+| `committedLookupFailed` | consulta de campanhas comprometidas na Brevo falhou. | `1` |
+| `novosFreshness` | `never-run`/`blocker` (>48h) aborta; `warning` (12-48h) segue, registrado. | `1`/— |
+| `brevoCredits === null` | crédito não consultado. | `1` |
+| `abc.action === "iniciar"` | exige 3 assuntos do editor. | `0` |
+| Assunto não herdável | `travar` sem onda-base NEM onda da célula vencedora (`abc.winner`); `continuar` faltando o precedente de alguma célula. | `1` |
+| Fila insuficiente pós-MV | mesmo após MV sob demanda, fila não cobre o volume desejado — nunca troca de público, nunca envia menos sem avisar antes. | `0` |
+| Agendamento incerto | POST aceito, GET-verify não confirma em ≥1 célula. | `2` |
+| Onda parcialmente montada | falha no meio do loop de células (`continuar`) — as já confirmadas SÃO campanhas reais e disparam; relatório torna isso explícito. | `1` |
 | Agendamento incerto | POST aceito, GET-verify não confirma → `exit 2` (não é erro nem sucesso; reconciliável na próxima rodada). |
 
 **Zero volume final** (freio `stop`, ou base ≤ 0) → sai limpo, grava

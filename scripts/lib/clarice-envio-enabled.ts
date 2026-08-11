@@ -3,7 +3,9 @@
  * 260811)
  *
  * Toggle explícito "automação de envio ativa/pausada" do par de tasks
- * diárias que passou a governar a rampa Clarice:
+ * diárias que VAI governar a rampa Clarice (arme pendente, #5027 —
+ * `clarice-envio-run.ts`/`clarice-envio-guard.ts` já checam este toggle
+ * mesmo antes de armado; até o #5027 mergear, invocação é só manual):
  *   - `Diaria-Clarice-Envio` (19:00 BRT) — planeja a onda do dia seguinte e
  *     agenda a campanha pras 06:00 BRT (09:00 UTC);
  *   - `Diaria-Clarice-Envio-Guard` (05:00 BRT) — reavalia o freio de risco de
@@ -87,7 +89,8 @@
  *
  * @see scripts/lib/clarice-novos-enabled.ts (#4941 — molde direto)
  * @see scripts/lib/studio-chat-enabled.ts (#4078 — molde original)
- * @see docs/clarice-envio-daily-setup.md
+ * @see #5027 (doc de arme, docs/clarice-envio-daily-setup.md — pode ainda
+ *      não ter mergeado; confira antes de assumir que o link resolve)
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";

@@ -59,12 +59,13 @@
  *
  * @see .claude/skills/diaria-clarice-envio/SKILL.md (fluxo manual — delega pra cá)
  * @see scripts/clarice-novos-run.ts (molde de orquestrador)
- * @see scripts/lib/scheduled-tasks.ts (entrada "Diaria-Clarice-Envio")
+ * @see #5027 (entrada "Diaria-Clarice-Envio" em scripts/lib/scheduled-tasks.ts —
+ *      pode ainda não ter mergeado; confira o arquivo antes de assumir que já existe)
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { getArg, isMainModule } from "./lib/cli-args.ts";
+import { isMainModule } from "./lib/cli-args.ts";
 import { detectExecMode } from "./lib/exec-mode.ts";
 import { isClariceEnvioEnabled } from "./lib/clarice-envio-enabled.ts";
 import { acquireEnvioLock, releaseEnvioLock, LockHeldError } from "./lib/clarice-envio-lock.ts";
@@ -251,8 +252,16 @@ function parseWave(key: string): ParsedWaveKey | null {
   return { n: Number(m[1]), cell: (m[2] as "A" | "B" | "C" | undefined) ?? null };
 }
 
+// União discriminada por `mode` (achado do type-design-analyzer no review da
+// PR): a versão anterior tinha `single`/`byCell` como opcionais INDEPENDENTES
+// dentro do mesmo `ok:true` — permitia estados impossíveis (`{ok:true}` vazio,
+// os dois presentes ao mesmo tempo) e obrigava o call site a usar `!` (non-null
+// assertion) reconstruindo a correlação certa/errada a partir de `abcAction`
+// em vez de deixar o PRÓPRIO tipo garantir isso. Com `mode`, o call site troca
+// os dois `!` por um `switch`/ternário exaustivo sobre `inherited.mode`.
 export type InheritedSubjects =
-  | { ok: true; single?: string; byCell?: Record<"A" | "B" | "C", string> }
+  | { ok: true; mode: "single"; subject: string }
+  | { ok: true; mode: "byCell"; subjects: Record<"A" | "B" | "C", string> }
   | { ok: false; reason: string };
 
 /**
@@ -262,12 +271,29 @@ export type InheritedSubjects =
  * aparecia ali; aqui ele tem fonte determinística única).
  *
  * `travar` — pega o assunto da onda SEM célula (key sem sufixo -A/-B/-C) de
- * maior `n`. `continuar` — pega, POR CÉLULA, a onda com aquela célula de
- * maior `n`; se QUALQUER célula não tiver precedente, falha (não inventa).
+ * maior `n`. Se não houver NENHUMA onda sem célula ainda (ver `winner`
+ * abaixo), cai pro assunto da CÉLULA VENCEDORA. `continuar` — pega, POR
+ * CÉLULA, a onda com aquela célula de maior `n`; se QUALQUER célula não
+ * tiver precedente, falha (não inventa).
+ *
+ * `winner` — achado HIGH do code-reviewer no review da PR: sem este
+ * fallback, a automação TRAVA PRA SEMPRE no exato momento em que um teste
+ * A/B/C conclui. A 1ª vez que `recommendAbcAction` devolve `"travar"`,
+ * `state.waves` só tem entradas `-A/-B/-C` (o não-célula que este ramo
+ * procura só existe DEPOIS de uma rodada `travar` bem-sucedida) — sem
+ * `--locked-subject` sendo repassado pra `clarice-plan-wave.ts` (não é,
+ * de propósito, pra não travar o teste artificialmente), o dia seguinte
+ * recalcularia o MESMO `travar` e falharia da MESMA forma outra vez: um
+ * deadlock de bootstrap, não um erro de 1 dia. `winner` (`proposal.abc.
+ * winner`) é um precedente REAL e testado — a célula que já provou ser a
+ * vencedora — então usar o assunto dela pra "destravar" o teste é
+ * consistente com a decisão #4657 (o cálculo já é determinístico; só a
+ * ESCRITA de um assunto NOVO exige o editor).
  */
 export function resolveInheritedSubjects(
   waves: ReadonlyArray<Pick<WaveState, "key" | "subject">>,
   abcAction: "continuar" | "travar",
+  winner: "A" | "B" | "C" | null = null,
 ): InheritedSubjects {
   if (abcAction === "travar") {
     let best: { n: number; subject: string } | null = null;
@@ -276,10 +302,24 @@ export function resolveInheritedSubjects(
       if (!parsed || parsed.cell !== null || !w.subject) continue;
       if (!best || parsed.n > best.n) best = { n: parsed.n, subject: w.subject };
     }
-    if (!best) {
-      return { ok: false, reason: "travar: nenhuma onda anterior SEM célula encontrada neste ciclo pra herdar assunto." };
+    if (best) return { ok: true, mode: "single", subject: best.subject };
+
+    if (winner) {
+      let bestCell: { n: number; subject: string } | null = null;
+      for (const w of waves) {
+        const parsed = parseWave(w.key);
+        if (!parsed || parsed.cell !== winner || !w.subject) continue;
+        if (!bestCell || parsed.n > bestCell.n) bestCell = { n: parsed.n, subject: w.subject };
+      }
+      if (bestCell) return { ok: true, mode: "single", subject: bestCell.subject };
     }
-    return { ok: true, single: best.subject };
+
+    return {
+      ok: false,
+      reason:
+        `travar: nenhuma onda anterior SEM célula, nem da célula vencedora ` +
+        `(${winner ?? "desconhecida"}), encontrada neste ciclo pra herdar assunto.`,
+    };
   }
 
   const bestByCell: Record<"A" | "B" | "C", { n: number; subject: string } | null> = { A: null, B: null, C: null };
@@ -298,7 +338,8 @@ export function resolveInheritedSubjects(
   }
   return {
     ok: true,
-    byCell: { A: bestByCell.A!.subject, B: bestByCell.B!.subject, C: bestByCell.C!.subject },
+    mode: "byCell",
+    subjects: { A: bestByCell.A!.subject, B: bestByCell.B!.subject, C: bestByCell.C!.subject },
   };
 }
 
@@ -472,7 +513,7 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
     }
 
     // --- Assunto(s) herdado(s). ---
-    const inherited = resolveInheritedSubjects(proposal.state.waves, abcAction);
+    const inherited = resolveInheritedSubjects(proposal.state.waves, abcAction, proposal.abc.winner);
     if (!inherited.ok) throw new EnvioAbort(`❌ ${inherited.reason}`);
 
     // --- Passo 3: risco de ISP (motor novo — abertura NUNCA freia, #5025). ---
@@ -524,6 +565,37 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
           queueAvailable = replan.json.availableFirstSend;
           proposal = replan.json;
           report.note(`fila após MV sob demanda: ${queueAvailable}.`);
+          // Achado do code-reviewer no review da PR: os guards estruturais
+          // do Passo 1 (crédito/committed-lookup/novosFreshness) só eram
+          // checados na 1ª chamada — `proposal` é REASSIGNADO aqui pro
+          // resultado da 2ª, e `creditAvailable:null` é fail-OPEN por
+          // desenho (proposeNextVolume trata "não consultado" como "não
+          // limita"). Sem revalidar, uma falha transitória de crédito
+          // bem depois do MV+build-db (rate-limit da Brevo é documentado
+          // como frequente neste projeto) viraria "sem limite" em vez de
+          // abortar — o oposto do que o guard original garante.
+          if (proposal.committedLookupFailed) {
+            throw new EnvioAbort("❌ (pós-MV) consulta de campanhas comprometidas na Brevo falhou — nunca planejar sobre fila superestimada.");
+          }
+          if (proposal.novosFreshness.status === "never-run") {
+            throw new EnvioAbort("❌ (pós-MV) /diaria-clarice-novos nunca rodou neste ciclo.");
+          }
+          if (proposal.novosFreshness.status === "blocker") {
+            throw new EnvioAbort(`❌ (pós-MV) /diaria-clarice-novos rodou há mais de 48h (${proposal.novosFreshness.ageHours?.toFixed(1)}h).`);
+          }
+          if (proposal.brevoCredits === null) {
+            throw new EnvioAbort("❌ (pós-MV) crédito Brevo não consultado — nunca agendar sem validar antes.");
+          }
+        } else {
+          // Achado HIGH do silent-failure-hunter: a versão anterior não
+          // fazia NADA aqui — seguia com a fila PRÉ-MV em silêncio, mesmo
+          // já tendo gasto crédito real de MillionVerifier na verificação
+          // que acabou de rodar. Reportar é o mínimo; nunca fingir que o
+          // replan aconteceu quando o JSON veio vazio/malformado.
+          report.note(
+            "⚠️  replan pós-MV não devolveu JSON parseável — seguindo com a fila PRÉ-MV " +
+              "(a verificação MillionVerifier já gastou crédito real nesta rodada e pode ter sido desperdiçada; o volume final abaixo NÃO reflete o resultado do MV).",
+          );
         }
       }
     }
@@ -582,33 +654,61 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
     // --- Passo 7: criar + agendar cada célula (ou a onda única). ---
     report.section("Passo 7 — Criar e agendar");
     const scheduledAt = scheduledAtForDate(sendDate);
+    // Narrado por `inherited.mode` (não mais por `abcAction`) — achado do
+    // type-design-analyzer: o tipo discriminado elimina os `!` non-null
+    // assertions que existiam aqui antes.
     const cells: Array<{ key: string; cell: "A" | "B" | "C" | null; subject: string }> =
-      abcAction === "travar"
-        ? [{ key: waveKeyBase, cell: null, subject: inherited.single! }]
-        : (["A", "B", "C"] as const).map((c) => ({ key: `${waveKeyBase}-${c}`, cell: c, subject: inherited.byCell![c] }));
+      inherited.mode === "single"
+        ? [{ key: waveKeyBase, cell: null, subject: inherited.subject }]
+        : (["A", "B", "C"] as const).map((c) => ({ key: `${waveKeyBase}-${c}`, cell: c, subject: inherited.subjects[c] }));
 
     let anyUncertain = false;
+    let scheduledCount = 0;
     const summaries: InvocationSummary[] = [];
-    for (const { key, cell, subject } of cells) {
-      const keyArgs = cell ? ["--key", key] : [];
-      step<InvocationSummary>(deps, report, `clarice-schedule-group --create (${key})`, "scripts/clarice-schedule-group.ts", [
-        "--cycle", cycle, "--group", waveKeyBase, ...keyArgs, "--subject", subject, "--schedule-at", scheduledAt, "--create",
-      ]);
+    try {
+      for (const { key, cell, subject } of cells) {
+        const keyArgs = cell ? ["--key", key] : [];
+        step<InvocationSummary>(deps, report, `clarice-schedule-group --create (${key})`, "scripts/clarice-schedule-group.ts", [
+          "--cycle", cycle, "--group", waveKeyBase, ...keyArgs, "--subject", subject, "--schedule-at", scheduledAt, "--create",
+        ]);
 
-      const scheduleResult = deps.exec("scripts/clarice-schedule-group.ts", [
-        "--cycle", cycle, "--group", waveKeyBase, ...keyArgs, "--schedule",
-      ]);
-      if (scheduleResult.stderr.trim()) console.error(scheduleResult.stderr.trim());
-      const scheduleJson = parseStepJson<InvocationSummary>(scheduleResult.stdout);
-      if (scheduleResult.code === 2) {
-        anyUncertain = true;
-        report.note(`⚠️  "${key}": agendamento INCERTO — POST aceito mas GET-verify não confirmou (status="${scheduleJson?.status ?? "?"}"). Reconciliável amanhã.`);
-      } else if (scheduleResult.code !== 0) {
-        throw new EnvioAbort(`❌ clarice-schedule-group --schedule ("${key}") falhou (exit ${scheduleResult.code}): ${scheduleResult.stderr.trim().split("\n").slice(-6).join(" | ")}`);
-      } else {
-        report.note(`✅ "${key}" agendada pra ${scheduledAt} (status="${scheduleJson?.status ?? "?"}").`);
+        const scheduleResult = deps.exec("scripts/clarice-schedule-group.ts", [
+          "--cycle", cycle, "--group", waveKeyBase, ...keyArgs, "--schedule",
+        ]);
+        if (scheduleResult.stderr.trim()) console.error(scheduleResult.stderr.trim());
+        const scheduleJson = parseStepJson<InvocationSummary>(scheduleResult.stdout);
+        if (scheduleResult.code === 2) {
+          anyUncertain = true;
+          report.note(`⚠️  "${key}": agendamento INCERTO — POST aceito mas GET-verify não confirmou (status="${scheduleJson?.status ?? "?"}"). Reconciliável amanhã.`);
+        } else if (scheduleResult.code !== 0) {
+          throw new EnvioAbort(`❌ clarice-schedule-group --schedule ("${key}") falhou (exit ${scheduleResult.code}): ${scheduleResult.stderr.trim().split("\n").slice(-6).join(" | ")}`);
+        } else {
+          report.note(`✅ "${key}" agendada pra ${scheduledAt} (status="${scheduleJson?.status ?? "?"}").`);
+        }
+        if (scheduleJson) summaries.push(scheduleJson);
+        scheduledCount++;
       }
-      if (scheduleJson) summaries.push(scheduleJson);
+    } catch (cellError) {
+      // Achado MEDIUM do code-reviewer: com >1 célula (continuar), uma
+      // falha na célula B depois da A já ter sido criada+agendada com
+      // sucesso deixava a onda num estado MISTO (A é campanha real na
+      // Brevo, vai disparar amanhã) sem NENHUM sinal disso no relatório —
+      // "abortado" parecia "nada foi escrito", quando na verdade ~1/3 do
+      // volume já estava. Torna isso explícito antes de propagar o erro
+      // pro catch externo (que ainda reporta "abortado" — code 1 continua
+      // certo, só o CONTEÚDO do relatório passa a não esconder o estado
+      // parcial).
+      if (scheduledCount > 0) {
+        const done = cells.slice(0, scheduledCount).map((c) => c.key);
+        const pendingCells = cells.slice(scheduledCount).map((c) => c.key);
+        report.note(
+          `⚠️  ONDA PARCIALMENTE MONTADA: ${scheduledCount} de ${cells.length} célula(s) já confirmada(s) ANTES ` +
+            `deste erro — ${done.join(", ")} já são campanhas REAIS na Brevo e vão disparar amanhã às 06:00 do ` +
+            `jeito que estão. NÃO reiniciar do zero na próxima rodada — as células restantes (${pendingCells.join(", ")}) ` +
+            "precisam ser reconciliadas manualmente ou na próxima invocação (clarice-import-waves/clarice-schedule-group são idempotentes por key).",
+        );
+      }
+      throw cellError;
     }
 
     const reportId = `envio-${aammdd}`;

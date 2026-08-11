@@ -37,8 +37,17 @@
  *
  * Uso: `npx tsx scripts/clarice-envio-guard.ts` — SEM args.
  *
- * Exit codes: 0 — sucesso (nada a fazer / cancelado com sucesso / pausado);
- * 1 — erro duro (guard abortou, lock detido, exceção inesperada).
+ * Exit codes: 0 — sucesso (nada a fazer / cancelado e CONFIRMADO com sucesso
+ * / pausado); 1 — erro duro (guard abortou, lock detido, exceção inesperada);
+ * 2 — CANCELAMENTO INCOMPLETO — pelo menos 1 onda pendente NÃO foi confirmada
+ * suspensa (falha da API Brevo, ou `campaignId` desconhecido por ausência/
+ * corrupção do registro local). **Achado CRITICAL do silent-failure-hunter no
+ * review da PR**: a versão anterior retornava `0` mesmo quando NENHUMA onda
+ * fosse de fato cancelada — o único sinal externo (exit code) mentia
+ * "sucesso" exatamente no cenário mais perigoso (freio disse STOP, e a onda
+ * dispara mesmo assim às 06:00, sem que ninguém seja alertado porque a task
+ * "rodou com sucesso"). `2` nunca é confundido com `0` por quem monitora só
+ * o exit code.
  *
  * @see scripts/clarice-envio-run.ts (a metade das 19:00, mesmo padrão de orquestração)
  * @see scripts/clarice-reapply-scheduled-html.ts (setCampaignStatus, reusado aqui)
@@ -80,7 +89,13 @@ export interface EnvioGuardDeps {
   exec: ExecFn;
   isEnabled: () => boolean;
   execMode: () => "local" | "cloud";
-  setCampaignStatus: (apiKey: string, campaignId: number, status: string) => Promise<unknown>;
+  /** `status` estreitado ao literal usado (achado do type-design-analyzer no
+   * review da PR) — este guard só CANCELA (nunca reagenda, ver docstring do
+   * arquivo), então um typo tipo `"supsended"` vira erro de compilação em vez
+   * de falha silenciosa em produção às 05:00, sem ninguém olhando.
+   * Contravariante: a função real (`setCampaignStatus`, `status: string`)
+   * continua atribuível aqui sem wrapper. */
+  setCampaignStatus: (apiKey: string, campaignId: number, status: "suspended") => Promise<unknown>;
 }
 
 export function productionGuardDeps(rootDir: string = ROOT): EnvioGuardDeps {
@@ -130,11 +145,19 @@ function writeAndRegisterReport(deps: EnvioGuardDeps, reportId: string, title: s
   const relPath = `data/clarice-subscribers/envio-reports/${reportId}.md`;
   try {
     writeFileAtomic(resolve(deps.rootDir, relPath), markdown);
-  } catch {
+  } catch (e) {
     // dir pode não existir ainda numa 1ª rodada — writeFileAtomic não cria
     // diretório; fallback simples via mkdirSync+retry evitado aqui de
     // propósito (mesma disciplina fail-soft do registro abaixo: o pior
     // resultado é o relatório não persistir, nunca a rodada travar por isso).
+    // Achado MEDIUM do silent-failure-hunter no review da PR: este catch
+    // ficava mudo (nem console.error) — contradizia o próprio princípio
+    // declarado no header do arquivo ("silêncio total... seria pior que um
+    // relatório vazio"). `report.note()` já ecoou cada linha operacional em
+    // stderr no momento em que foi adicionada, então o log da task não
+    // perde o conteúdo — mas a falha de PERSISTIR o .md em si precisa
+    // aparecer também.
+    console.error(`[clarice-envio-guard] aviso: falha ao persistir o relatório em disco: ${(e as Error).message}`);
   }
   const result = registerReport(deps.rootDir, { kind: "clarice-envio", sessionId: reportId, title, htmlPath: relPath });
   if (!result.ok) console.error(`[clarice-envio-guard] aviso: registro do relatório falhou (fail-soft, #3714): ${result.error}`);
@@ -164,12 +187,27 @@ export function findPendingWavesToday(
   return pending;
 }
 
-function readCampaignEntries(rootDir: string, cycle: string): CampaignEntry[] {
+/**
+ * `onInvalid` — achado HIGH do silent-failure-hunter no review da PR: um
+ * `group-campaigns.json` corrompido (escrita interrompida, conflito de sync
+ * do OneDrive) produzia o MESMO `[]` que "esta onda nunca teve campanha
+ * nenhuma registrada" — downstream, toda onda pendente caía no ramo
+ * "campaignId desconhecido", e o operador não tinha como saber que o
+ * problema era um arquivo local corrompido, não uma onda nunca registrada.
+ * Ausência (arquivo nunca existiu) continua silenciosa — legítimo, é o
+ * caso normal do 1º dia de um ciclo.
+ */
+function readCampaignEntries(rootDir: string, cycle: string, onInvalid: (msg: string) => void): CampaignEntry[] {
   const p = resolve(clariceSegmentsDir(cycle, resolve(rootDir, "data", "clarice-subscribers")), "group-campaigns.json");
   if (!existsSync(p)) return [];
   try {
     return JSON.parse(readFileSync(p, "utf8")) as CampaignEntry[];
-  } catch {
+  } catch (e) {
+    onInvalid(
+      `⚠️  ${p} existe mas não deu pra ler/parsear (${(e as Error).message}) — tratando como SEM entradas, ` +
+        `mas isso é um arquivo CORROMPIDO, não "onda nunca registrada". Investigar antes de confiar no ` +
+        `"campaignId desconhecido" que vai aparecer abaixo pra cada onda pendente.`,
+    );
     return [];
   }
 }
@@ -184,7 +222,8 @@ function writeCampaignEntries(rootDir: string, cycle: string, entries: CampaignE
 // ---------------------------------------------------------------------------
 
 export interface EnvioGuardResult {
-  code: 0 | 1;
+  /** `2` = cancelamento INCOMPLETO (ver docstring do módulo) — nunca colapsado em `0`. */
+  code: 0 | 1 | 2;
   reportId: string;
   reportMarkdown: string;
 }
@@ -206,7 +245,19 @@ export async function runEnvioGuard(deps: EnvioGuardDeps): Promise<EnvioGuardRes
     if (deps.execMode() !== "local") throw new EnvioGuardAbort("❌ exec-mode != local — precisa do junction data/.");
     if (!process.env.BREVO_CLARICE_API_KEY) throw new EnvioGuardAbort("❌ BREVO_CLARICE_API_KEY não definida.");
 
-    const cycle = computeExpectedEnvioCycle(now);
+    // Achado do code-reviewer no review da PR (confiança 88%): o ciclo NÃO
+    // pode ser recomputado a partir do `now` do GUARD — `clarice-envio-run.ts`
+    // fixou o ciclo ONTEM às 19:00 (mês de ONTEM) pra uma onda que dispara
+    // HOJE; na virada de mês (ex: planejado 31/08, dispara 01/09),
+    // `computeExpectedEnvioCycle(now)` aqui devolveria o ciclo de SETEMBRO,
+    // enquanto a campanha pendente está registrada sob o ciclo de AGOSTO —
+    // `findPendingWavesToday` não encontraria nada, e o guard reportaria
+    // "nada a fazer" bem na noite de maior risco (1ª onda de um ciclo novo,
+    // sem histórico). Subtrair 24h dá o dia-calendário BRT em que
+    // `clarice-envio-run.ts` rodou (19:00 é sempre o MESMO dia-calendário
+    // BRT que 05:00 do dia seguinte menos 24h, já que BRT não tem DST) —
+    // sempre o ciclo correto, cruzando virada de mês ou não.
+    const cycle = computeExpectedEnvioCycle(new Date(now.getTime() - 24 * 60 * 60 * 1000));
     lockPath = acquireEnvioLock(deps.rootDir, cycle, `envio-guard-${aammdd}`, now);
     report.note(`lock adquirido: ${lockPath}`);
 
@@ -247,29 +298,44 @@ export async function runEnvioGuard(deps: EnvioGuardDeps): Promise<EnvioGuardRes
     }
 
     report.note("⚠️  freio em STOP com dado fresco — cancelando a(s) onda(s) pendente(s) pra hoje (escopo reduzido: cancela, não recria — ver docstring do arquivo).");
-    const entries = readCampaignEntries(deps.rootDir, cycle);
+    const entries = readCampaignEntries(deps.rootDir, cycle, (msg) => report.note(msg));
     const apiKey = process.env.BREVO_CLARICE_API_KEY!;
-    let anyCancelled = false;
+    // Achado CRITICAL do silent-failure-hunter (ver docstring do módulo,
+    // "Exit codes"): rastreia CONFIRMAÇÃO por onda, não só "tentei". `code`
+    // só é 0 quando TODA onda pendente foi de fato suspensa — uma falha de
+    // API ou um campaignId desconhecido em QUALQUER onda vira `code: 2`,
+    // nunca colapsado no mesmo 0 do caminho feliz.
+    let allConfirmed = true;
+    let anySucceeded = false;
     for (const p of pending) {
       const entry = entries.find((e) => e.key === p.key);
       if (!entry) {
         report.note(`⚠️  "${p.key}": pendente segundo clarice-plan-wave, mas sem entrada em group-campaigns.json — não foi possível cancelar (campaignId desconhecido). Cancelar manualmente pelo painel Brevo.`);
+        allConfirmed = false;
         continue;
       }
       try {
         await deps.setCampaignStatus(apiKey, entry.campaignId, "suspended");
         entry.status = "draft"; // reflete localmente que não é mais "scheduled" — evita que a próxima rodada a trate como comprometida
-        anyCancelled = true;
+        anySucceeded = true;
         report.note(`✅ "${p.key}" (campaignId ${entry.campaignId}) suspensa.`);
       } catch (e) {
         report.note(`❌ "${p.key}" (campaignId ${entry.campaignId}): falha ao suspender — ${(e as Error).message}. Cancelar manualmente pelo painel Brevo.`);
+        allConfirmed = false;
       }
     }
-    if (anyCancelled) writeCampaignEntries(deps.rootDir, cycle, entries);
+    if (anySucceeded) writeCampaignEntries(deps.rootDir, cycle, entries);
 
-    const reportId = `envio-${aammdd}-guard-cancelou`;
-    writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice envio guard ${aammdd} — onda cancelada (freio STOP)`, report.build());
-    return { code: 0, reportId, reportMarkdown: report.build() };
+    const code = allConfirmed ? 0 : 2;
+    const reportId = allConfirmed ? `envio-${aammdd}-guard-cancelou` : `envio-${aammdd}-guard-cancelamento-incompleto`;
+    const title = allConfirmed
+      ? `diar.ia.br Clarice envio guard ${aammdd} — onda cancelada (freio STOP)`
+      : `diar.ia.br Clarice envio guard ${aammdd} — ⚠️ CANCELAMENTO INCOMPLETO, agir manualmente`;
+    if (!allConfirmed) {
+      report.note("⚠️  NEM TODA onda pendente foi confirmada suspensa — a campanha pode disparar às 06:00 mesmo com o freio em STOP. Verificar o painel Brevo manualmente antes do disparo.");
+    }
+    writeAndRegisterReport(deps, reportId, title, report.build());
+    return { code, reportId, reportMarkdown: report.build() };
   } catch (e) {
     if (e instanceof LockHeldError) {
       report.note(e.message);

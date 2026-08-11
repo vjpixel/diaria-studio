@@ -55,7 +55,7 @@ import {
   type OpenRateTrendResult,
   type OpenRateTrendPoint,
 } from "./lib/clarice-envio-policy.ts";
-import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { getArg, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 
 loadProjectEnv();

@@ -181,12 +181,36 @@ describe("clarice-envio-run (#5026)", () => {
         wave({ key: "d12-qua12", subject: "Mais recente sem célula" }),
       ];
       const r = resolveInheritedSubjects(waves, "travar");
-      assert.deepEqual(r, { ok: true, single: "Mais recente sem célula" });
+      assert.deepEqual(r, { ok: true, mode: "single", subject: "Mais recente sem célula" });
     });
 
-    it("travar: sem onda anterior sem célula => falha (nunca inventa)", () => {
+    it("travar: sem onda anterior sem célula E sem winner => falha (nunca inventa)", () => {
       const r = resolveInheritedSubjects([wave({ key: "d10-seg10-A", subject: "x" })], "travar");
       assert.equal(r.ok, false);
+    });
+
+    it("REGRESSÃO (achado do code-reviewer): travar SEM precedente sem-célula, mas COM winner, herda da célula vencedora (destrava o bootstrap do teste A/B/C)", () => {
+      // Cenário exato do deadlock: a 1ª vez que abc.action vira 'travar',
+      // state.waves só tem entradas -A/-B/-C (o não-célula que o ramo
+      // 'travar' normalmente procura só existiria DEPOIS de uma rodada
+      // 'travar' bem-sucedida) — sem este fallback, a automação abortaria
+      // pra sempre nesse ponto.
+      const waves = [
+        wave({ key: "d5-seg05-A", subject: "Perdedor A" }),
+        wave({ key: "d5-seg05-B", subject: "Vencedor B" }),
+        wave({ key: "d5-seg05-C", subject: "Perdedor C" }),
+      ];
+      const r = resolveInheritedSubjects(waves, "travar", "B");
+      assert.deepEqual(r, { ok: true, mode: "single", subject: "Vencedor B" });
+    });
+
+    it("travar: onda sem-célula (mais recente) vence sobre o winner quando os dois existem", () => {
+      const waves = [
+        wave({ key: "d5-seg05-B", subject: "Assunto da célula B (antigo)" }),
+        wave({ key: "d7-qui07", subject: "Assunto travado mais recente" }),
+      ];
+      const r = resolveInheritedSubjects(waves, "travar", "B");
+      assert.deepEqual(r, { ok: true, mode: "single", subject: "Assunto travado mais recente" });
     });
 
     it("continuar: herda por CÉLULA, cada uma da sua onda de maior n", () => {
@@ -197,7 +221,7 @@ describe("clarice-envio-run (#5026)", () => {
         wave({ key: "d6-ter06-C", subject: "C novo" }),
       ];
       const r = resolveInheritedSubjects(waves, "continuar");
-      assert.deepEqual(r, { ok: true, byCell: { A: "A novo", B: "B novo", C: "C novo" } });
+      assert.deepEqual(r, { ok: true, mode: "byCell", subjects: { A: "A novo", B: "B novo", C: "C novo" } });
     });
 
     it("continuar: falta 1 célula (ex: C nunca rodou) => falha, nunca inventa a 3ª", () => {

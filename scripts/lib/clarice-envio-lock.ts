@@ -14,11 +14,16 @@
  * NÃO reusa `scripts/lib/file-lock.ts` (`acquireLock`/`releaseLock`) direto:
  * aquele helper é pra seções críticas CURTAS (read-modify-write de um
  * arquivo, timeout default 10s com spin-wait). Uma rodada de
- * `clarice-envio-run.ts` faz VÁRIAS chamadas de rede (dashboard, Brevo) ao
- * longo de minutos — segurar esse lock por toda a rodada com spin-wait de
- * 50ms seria queimar CPU à toa, e um timeout curto abortaria retries
- * legítimos de rate-limit da Brevo (SKILL.md documenta esperas de até
- * ~32min). Este módulo é uma trava de ESCOPO LARGO com detecção de
+ * `clarice-envio-run.ts` faz VÁRIAS chamadas de rede sequenciais
+ * (dashboard, MV sob demanda, Brevo × até 3 células) que legitimamente
+ * levam minutos — segurar esse lock com spin-wait de 50ms por toda a
+ * rodada queimaria CPU à toa. **Achado do comment-analyzer no review da PR:
+ * este módulo NÃO cobre retry automático de 429 da Brevo** — `step()` em
+ * `clarice-envio-run.ts` chama `deps.exec()` uma única vez e lança
+ * `EnvioAbort` de imediato se o exit code não bater; os ~32min de espera
+ * que o SKILL.md documenta são um humano re-rodando o comando manualmente
+ * no fluxo antigo, não algo que a rodada atual retenta sozinha segurando
+ * este lock. Este módulo é uma trava de ESCOPO LARGO com detecção de
  * abandono (lock "stale" — processo morreu sem liberar), não uma seção
  * crítica.
  *

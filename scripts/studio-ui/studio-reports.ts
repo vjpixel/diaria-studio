@@ -83,8 +83,9 @@ import { acquireLock, releaseLock } from "../lib/file-lock.ts"; // #4677 — loc
 // sem gate humano do laço cadastro-novo→envio-imediato, D14).
 // #5026: "clarice-envio" — relatório da task diária Diaria-Clarice-Envio
 // (19:00, planeja+agenda) e do guard Diaria-Clarice-Envio-Guard (05:00,
-// cancela/reagenda) — mesmo kind pros dois, `sessionId` distingue
-// (`envio-{AAMMDD}...` vs `envio-{AAMMDD}-guard...`).
+// cancela — recriar uma onda podada é follow-up NÃO implementado nesta
+// versão, ver docstring de clarice-envio-guard.ts) — mesmo kind pros dois,
+// `sessionId` distingue (`envio-{AAMMDD}...` vs `envio-{AAMMDD}-guard...`).
 export type ReportKind = "edicao" | "overnight" | "develop" | "mensal" | "clarice-novos" | "clarice-envio";
 
 const VALID_KINDS: ReportKind[] = ["edicao", "overnight", "develop", "mensal", "clarice-novos", "clarice-envio"];
