@@ -36,12 +36,19 @@ import {
   makeRealCampaignExportClient,
   DEFAULT_REFETCH_WINDOW_DAYS,
   DOWNLOAD_CSV_TIMEOUT_MS,
+  pushCohortsToKV, // #5015
   main,
   type CampaignExportClient,
   type CampaignCache,
   type SentCampaignRef,
 } from "../scripts/clarice-engagement-cohorts-v2.ts";
-import { computeCohorts, type ContactEngagement } from "../scripts/clarice-engagement-cohorts.ts";
+import {
+  computeCohorts,
+  COHORTS_KV_KEY,
+  DASHBOARD_KV_NAMESPACE_ID,
+  type ContactEngagement,
+  type EngagementCohorts,
+} from "../scripts/clarice-engagement-cohorts.ts";
 import { openClariceDb } from "../scripts/lib/clarice-db.ts";
 
 const GEN = "2026-08-02T00:00:00.000Z";
@@ -829,4 +836,171 @@ test("buildCohortsV2: campanha que falha no export não derruba as demais (isola
     // A campanha OK ainda entra no agregado final.
     assert.equal(result.cohorts.universe, 1);
   });
+});
+
+// ─── pushCohortsToKV (#5015 — porta a lógica de escrita KV do v1) ─────────
+
+function makeCohorts(overrides: Partial<EngagementCohorts> = {}): EngagementCohorts {
+  return {
+    generatedAt: GEN,
+    universe: 0,
+    opened2plus: 0,
+    opened1: 0,
+    received1_opened0: 0,
+    received2_opened0: 0,
+    exits: 0,
+    exitsBreakdown: { bounced: 0, optedOut: 0 },
+    maxReceived: 0,
+    ...overrides,
+  };
+}
+
+test("pushCohortsToKV: universe=0 NÃO chama uploadFn — mesmo guard anti-clobber do v1", async () => {
+  const cohorts = makeCohorts({ universe: 0 });
+  let uploadCalls = 0;
+  const uploadFn = (async () => {
+    uploadCalls++;
+  }) as typeof import("../scripts/lib/cloudflare-kv-upload.ts").uploadTextToWorkerKV;
+  const result = await pushCohortsToKV(cohorts, { accountId: "acc", token: "tok" }, uploadFn);
+  assert.equal(result.pushed, false);
+  assert.match(result.reason ?? "", /universe 0/);
+  assert.equal(uploadCalls, 0);
+});
+
+test("pushCohortsToKV: universe>0 chama uploadFn com a MESMA chave/namespace/shape gravados pelo v1", async () => {
+  const cohorts = makeCohorts({
+    universe: 3,
+    opened2plus: 1,
+    opened1: 1,
+    received1_opened0: 1,
+    maxReceived: 2,
+  });
+  const calls: { value: string; key: string; cfg: any }[] = [];
+  const uploadFn = (async (value: string, key: string, cfg: any) => {
+    calls.push({ value, key, cfg });
+  }) as typeof import("../scripts/lib/cloudflare-kv-upload.ts").uploadTextToWorkerKV;
+  const result = await pushCohortsToKV(cohorts, { accountId: "acc-123", token: "tok-456" }, uploadFn);
+  assert.equal(result.pushed, true);
+  assert.equal(calls.length, 1);
+  // Mesma chave KV que o v1 (clarice-engagement-cohorts.ts) grava — o worker
+  // clarice-dashboard lê essa chave sem saber se foi v1 ou v2 quem escreveu.
+  assert.equal(calls[0].key, COHORTS_KV_KEY);
+  assert.equal(calls[0].cfg.kvNamespaceId, DASHBOARD_KV_NAMESPACE_ID);
+  assert.equal(calls[0].cfg.accountId, "acc-123");
+  assert.equal(calls[0].cfg.token, "tok-456");
+  assert.equal(calls[0].cfg.contentType, "application/json");
+  // Payload é o EngagementCohorts puro (sem wrapper de diagnostics — isso é
+  // só pro --out local/compare-cohorts.ts, nunca pro KV real).
+  assert.deepEqual(JSON.parse(calls[0].value), cohorts);
+});
+
+test("pushCohortsToKV: erro do uploadFn propaga (nunca engole silenciosamente)", async () => {
+  const cohorts = makeCohorts({ universe: 1, received1_opened0: 1 });
+  const uploadFn = (async () => {
+    throw new Error("Cloudflare KV upload de 'cohorts:engagement' falhou (500): boom");
+  }) as typeof import("../scripts/lib/cloudflare-kv-upload.ts").uploadTextToWorkerKV;
+  await assert.rejects(
+    pushCohortsToKV(cohorts, { accountId: "acc", token: "tok" }, uploadFn),
+    /falhou \(500\)/,
+  );
+});
+
+// ─── main + --push, fim-a-fim com fetch mockado (#5015) ───────────────────
+//
+// `fetch` global é mockado (mesmo padrão já usado pelos testes de
+// downloadCsv acima) pra servir uma lista de campanhas VAZIA — o backfill
+// completa em 0 campanhas (universe=0), sem nenhum export/poll/download
+// real. `uploadTextToWorkerKV` usa `node:https` (não `fetch`), então mesmo
+// com --push nenhum desses 2 testes chega a tocar rede de escrita real: o
+// caminho sem --push nunca invoca pushCohortsToKV, e o caminho com --push
+// aciona o guard anti-clobber (universe=0) ANTES de chamar uploadFn.
+
+function withEnv(vars: Record<string, string | undefined>, fn: () => Promise<void>): Promise<void> {
+  const originals: Record<string, string | undefined> = {};
+  for (const k of Object.keys(vars)) originals[k] = process.env[k];
+  for (const [k, v] of Object.entries(vars)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  return fn().finally(() => {
+    for (const [k, v] of Object.entries(originals)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+}
+
+test("main: sem --push, backfill real (mockado) completa sem NUNCA acionar o guard/escrita de KV — dry-run preservado (#5015)", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ campaigns: [] }), { status: 200 })) as typeof fetch;
+  try {
+    await withEnv(
+      { BREVO_CLARICE_API_KEY: "fake-key-test", CLOUDFLARE_ACCOUNT_ID: undefined, CLOUDFLARE_WORKERS_TOKEN: undefined },
+      async () => {
+        // Sem --push, o guard de credenciais Cloudflare (que lançaria) nem é
+        // avaliado — completa normalmente mesmo com as credenciais ausentes.
+        await main([]);
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("main: --push com backfill vazio (universe=0) aciona o guard anti-clobber e sai (exit 1) — nunca chega a gravar no KV (#5015)", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ campaigns: [] }), { status: 200 })) as typeof fetch;
+  let exitCode: number | undefined;
+  const originalExit = process.exit;
+  // @ts-expect-error — mock de process.exit só para este teste
+  process.exit = (code?: number) => {
+    exitCode = code;
+    throw new Error("__exit__");
+  };
+  try {
+    await withEnv(
+      {
+        BREVO_CLARICE_API_KEY: "fake-key-test",
+        CLOUDFLARE_ACCOUNT_ID: "fake-account",
+        CLOUDFLARE_WORKERS_TOKEN: "fake-token",
+      },
+      async () => {
+        await assert.rejects(main(["--push"]), /__exit__/);
+      },
+    );
+    assert.equal(exitCode, 1);
+  } finally {
+    process.exit = originalExit;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("main: --push sem CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_WORKERS_TOKEN falha ANTES do backfill (fail-fast, mesmo racional do v1)", async () => {
+  let exitCode: number | undefined;
+  const originalExit = process.exit;
+  // @ts-expect-error — mock de process.exit só para este teste
+  process.exit = (code?: number) => {
+    exitCode = code;
+    throw new Error("__exit__");
+  };
+  try {
+    await withEnv(
+      {
+        BREVO_CLARICE_API_KEY: "fake-key-test",
+        CLOUDFLARE_ACCOUNT_ID: undefined,
+        CLOUDFLARE_WORKERS_TOKEN: undefined,
+      },
+      async () => {
+        // Sem mock de fetch: se o código chegasse a tentar o backfill, este
+        // teste falharia por rede real indisponível/lenta — a ausência do
+        // mock É a prova de que o fail-fast acontece antes de qualquer rede.
+        await assert.rejects(main(["--push"]), /__exit__/);
+      },
+    );
+    assert.equal(exitCode, 1);
+  } finally {
+    process.exit = originalExit;
+  }
 });

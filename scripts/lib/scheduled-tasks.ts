@@ -184,24 +184,23 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // original da issue foi deliberadamente PULADO por decisão do editor —
     // não falta, não vai acontecer.
     //
-    // ATENÇÃO — v2 é SEMPRE dry-run POR DESIGN (não há flag `--push`/`--kv`;
-    // ver docstring de clarice-engagement-cohorts-v2.ts): esta task NUNCA
-    // grava o KV `cohorts:engagement` que o dashboard clarice-dashboard lê —
-    // só refresca o artefato local `--out` (cohorts + diagnostics, consumido
-    // hoje só por `scripts/compare-cohorts.ts` / inspeção manual). O v1
-    // continua sendo o único caminho que atualiza o KV do dashboard, e o v1
-    // não tem task agendada aqui (nem no Windows nesta máquina) — logo, até
-    // uma decisão SEPARADA (adicionar escrita de KV ao v2, ou reagendar o
-    // v1), o snapshot "Coortes de engajamento" do dashboard segue congelado
-    // no último sucesso manual do v1, independente desta task rodar. Ver
-    // issue de acompanhamento #5015 (P1) — aberta por esta unidade,
-    // documentando exatamente esse gap.
-    description: "crawl periodico de coortes de engajamento via v2 (export por campanha) -- NAO grava KV, so refresca o artefato local --out",
+    // #5015 (fechado): v2 agora sabe escrever no KV atrás da flag `--push`
+    // (`pushCohortsToKV`, porta a MESMA proteção anti-clobber do v1 — nunca
+    // sobrescreve `cohorts:engagement` com universe=0). Este step passa
+    // `--push` nos args, então esta task ATUALIZA de fato o snapshot
+    // "Coortes de engajamento" do dashboard clarice-dashboard a cada
+    // disparo (21:00 BRT) — antes do #5015, o step só refrescava o
+    // artefato local `--out` e o KV ficava congelado no último sucesso
+    // manual do v1 (`clarice-engagement-cohorts.ts`, que não tem task
+    // agendada nesta máquina). `--out` continua presente: o artefato local
+    // (cohorts + diagnostics) segue útil pra `scripts/compare-cohorts.ts` /
+    // inspeção manual, independente do `--push`.
+    description: "crawl periodico de coortes de engajamento via v2 (export por campanha) -- grava KV via --push (#5015) e refresca o artefato local --out",
     steps: [
       {
         key: "crawl",
         script: "scripts/clarice-engagement-cohorts-v2.ts",
-        args: ["--out", "data/clarice-subscribers/cohorts/v2-latest.json"],
+        args: ["--push", "--out", "data/clarice-subscribers/cohorts/v2-latest.json"],
       },
     ],
     logPath: "clarice-subscribers/.cohorts-v2-crawl.log",

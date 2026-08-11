@@ -97,7 +97,7 @@ de backup.
 `data/clarice-subscribers/cohorts/` guarda `checkpoint.json` (some no sucesso),
 `status.json` e os logs. Mora no OneDrive junto com o resto de `data/`.
 
-## Cutover para v2 (#4451, 260811) — task registrada, KV do dashboard ainda NÃO atualiza
+## Cutover para v2 (#4451, 260811) — task registrada, KV do dashboard ATUALIZA via --push (#5015)
 
 Decisão do editor (260811): trocar a task agendada para o v2 agora, **sem**
 o período de sobreposição v1×v2 previsto no item 6 do plano original da
@@ -107,9 +107,12 @@ no registro declarativo (`scripts/lib/scheduled-tasks.ts`) nem como timer
 systemd — então não é uma troca de ponteiro de uma task existente, é
 **registro do zero** já apontando pro v2. `Diaria-Clarice-Cohorts-Crawl`
 (nome escolhido seguindo o padrão hifenizado dominante do registro, `Diaria-X-Y`)
-roda `scripts/clarice-engagement-cohorts-v2.ts --out data/clarice-subscribers/cohorts/v2-latest.json`
+roda `scripts/clarice-engagement-cohorts-v2.ts --push --out data/clarice-subscribers/cohorts/v2-latest.json`
 diariamente às 21:00 BRT (mesmo horário histórico do v1 acima, sem colisão
-com nenhuma outra daily do registro).
+com nenhuma outra daily do registro). O `--push` foi adicionado em #5015
+(260811) — antes disso o step só passava `--out` (ver "ATENÇÃO" abaixo, texto
+histórico mantido pra registrar o gap que existiu entre 260811 (registro da
+task) e o fechamento do #5015 na mesma data).
 
 **Armar de verdade (ação do coordenador/editor, sessão local, fora desta
 unidade — #4451):**
@@ -120,20 +123,19 @@ systemctl --user daemon-reload
 systemctl --user enable --now diaria-clarice-cohorts-crawl.timer
 ```
 
-**ATENÇÃO — isso NÃO resolve o problema de dashboard desatualizado que
-motivou a issue #4451 originalmente.** `clarice-engagement-cohorts-v2.ts` é
-**sempre dry-run por design** (não existe flag `--push`/`--kv` no script —
-ver docstring do arquivo): a task só refresca o artefato local `--out`
-(cohorts + diagnostics, hoje consumido só por `scripts/compare-cohorts.ts`
-ou inspeção manual), **nunca grava a chave `cohorts:engagement` do KV** que
-`clarice-dashboard` lê. Só o v1 (`clarice-engagement-cohorts.ts`, sem
-`--dry-run`) escreve nessa chave — e o v1 não tem task agendada nesta
-máquina (nem Windows nem systemd). Ou seja: a seção "Coortes de engajamento"
-do dashboard segue **congelada** no último sucesso manual do v1 (baseline de
-260807), independente de `Diaria-Clarice-Cohorts-Crawl` rodar ou não. Issue
-de acompanhamento aberta para fechar esse gap: #5015 (P1) — decidir entre
-(a) adicionar escrita de KV ao v2, ou (b) reagendar o v1 como ponte
-temporária, é decisão separada e ainda em aberto.
+**ATENÇÃO (histórico — fechado em #5015, mesmo dia 260811):** por um período
+curto dentro do próprio 260811, entre o registro desta task e o fechamento
+do #5015, o gap abaixo existiu de fato. `clarice-engagement-cohorts-v2.ts`
+era **sempre dry-run por design** (sem flag `--push`/`--kv`): a task só
+refrescava o artefato local `--out`, **nunca gravava a chave
+`cohorts:engagement`** do KV que `clarice-dashboard` lê — só o v1
+(`clarice-engagement-cohorts.ts`, sem `--dry-run`) escrevia nessa chave, e o
+v1 não tinha task agendada nesta máquina. **Estado atual, pós-#5015:** v2
+ganhou a flag `--push` (`pushCohortsToKV`, mesma proteção anti-clobber do
+v1 — nunca sobrescreve `cohorts:engagement` com universe=0), e o step desta
+task já passa `--push` (ver comando acima) — o snapshot "Coortes de
+engajamento" do dashboard volta a atualizar a cada disparo (21:00 BRT), sem
+depender de rodada manual do v1.
 
 ## Redesenho v2 — design VALIDADO (#4451, 260810); histórico da decisão de cutover (ver seção acima para o estado atual da task)
 
@@ -154,9 +156,10 @@ fechado via leitura do store local (`clarice-users.db`, sem custo de API
 adicional). `scripts/compare-cohorts.ts` compara o output das duas coortes
 campo a campo dentro de uma tolerância.
 
-**SEMPRE dry-run** — v2 nunca grava no KV; isso não muda com a validação
-abaixo, nem com o registro da task `Diaria-Clarice-Cohorts-Crawl` (ver seção
-acima) — a task só automatiza o refresh do artefato local, não escreve KV.
+**Dry-run por padrão; `--push` grava no KV (#5015)** — v2 nasceu sempre
+dry-run; isso mudou em #5015 (260811, ver seção "Cutover para v2" acima),
+que portou a proteção anti-clobber do v1 atrás da flag `--push`. A task
+`Diaria-Clarice-Cohorts-Crawl` já roda com `--push` nos args.
 
 ### Comparação empírica v1×v2 (260808/260809) — 2 tentativas, aceitas pelo editor em 260810
 
