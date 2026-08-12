@@ -106,6 +106,40 @@ describe("buildTitlesCache (#4265 item 1)", () => {
     assert.match(warnings[0], /sem publish_date/);
   });
 
+  it("#5101 item 3.2: título em NFD (acento decomposto) sai normalizado em NFC no cache", () => {
+    // "Educação" com "ç" e "ã" DECOMPOSTOS (base + diacrítico combinante
+    // separado) — mesma causa-raiz do slug quebrado do #5101 item 3.1,
+    // mas aqui do lado do TÍTULO exibido pelo Worker `arquivo` (não do slug,
+    // que já está imutável uma vez publicado).
+    const nfdTitle = "Nova regra de educa̧ão de IA".normalize("NFD");
+    assert.notEqual(nfdTitle, nfdTitle.normalize("NFC")); // pré-condição: fixture é NFD
+
+    const posts: RawCachedPost[] = [
+      {
+        slug: "nova-regra-educacao-ia",
+        title: nfdTitle,
+        publish_date: Date.UTC(2026, 6, 28, 18, 0, 0) / 1000,
+      },
+    ];
+    const { cache } = buildTitlesCache(posts);
+    assert.equal(cache["nova-regra-educacao-ia"]?.title, nfdTitle.normalize("NFC"));
+  });
+
+  it("#5101 item 3.2: título já em NFC (caso comum) passa inalterado", () => {
+    const nfcTitle = "Nova regra de educação de IA";
+    assert.equal(nfcTitle, nfcTitle.normalize("NFC")); // pré-condição: já é NFC
+
+    const posts: RawCachedPost[] = [
+      {
+        slug: "nova-regra-educacao-ia-2",
+        title: nfcTitle,
+        publish_date: Date.UTC(2026, 6, 28, 18, 0, 0) / 1000,
+      },
+    ];
+    const { cache } = buildTitlesCache(posts);
+    assert.equal(cache["nova-regra-educacao-ia-2"]?.title, nfcTitle);
+  });
+
   it("processa uma mistura de posts válidos e inválidos sem lançar — só os válidos entram no cache", () => {
     const posts: RawCachedPost[] = [
       { slug: "valido-1", title: "Válido 1", publish_date: Date.UTC(2026, 6, 1, 18) / 1000 },

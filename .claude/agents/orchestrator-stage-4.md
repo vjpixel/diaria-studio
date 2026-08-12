@@ -180,6 +180,15 @@ Coletar e organizar todas as informações da edição final para apresentar ao 
   ```
   Capturar como `{whatsapp_url}` — incluído no gate (§4d). Se o editor mudar o título do D1 via "ajustar" (§4d.1), recomputar antes de re-apresentar o gate (mesma cascata de re-render já disparada pela mudança de título).
 
+**4c.1c — Sugestão de meta description do D1 (#5101 item 2):** o preview text da Beehiiv (teaser de e-mail, geralmente sobre D2/D3) também alimenta `description`/`og:description`/`twitter:description` da página web publicada — funciona como preheader, mas produz um snippet de busca/card social que descreve as OUTRAS matérias, não a do título da página (D1). Computar a sugestão (pura, determinística, sem LLM):
+  ```bash
+  npx tsx -e "
+    import { buildMetaDescriptionSuggestion } from './scripts/lib/meta-description.ts';
+    console.log(buildMetaDescriptionSuggestion({ body: {corpo_d1_json_stringificado} }));
+  "
+  ```
+  Capturar como `{meta_description_suggestion}` — incluído no gate (§4d), puramente informativo. **Não decidir sozinho trocar o preview text em produção** — é decisão do editor (trade-off contra a taxa de abertura do e-mail): o editor cola esta sugestão no campo de SEO description da Beehiiv **se esse campo existir separado do preview text** — não confirmado a partir daqui (sem acesso à UI da Beehiiv nesta sessão; checar manualmente e registrar em `docs/seo-notes.md` se ainda não estiver lá). Se `{corpo_d1}` estiver vazio (ex: falha de parse), `buildMetaDescriptionSuggestion` retorna string vazia — mostrar `⚠️ sugestão indisponível` nesse caso, sem bloquear o gate.
+
 **4c.2 — Lints consolidados:**
 ```bash
 npx tsx scripts/validate-lancamentos.ts {EDITION_DIR}/02-reviewed.md
@@ -504,6 +513,11 @@ Apresentar ao editor numa visualização limpa:
    ⚠️ URL prevista — só é garantida se o slug do post na Beehiiv bater com
    isso no Stage 6 (o post ainda não existe agora). Ver #4570.
 
+🔎 Meta description sugerida (D1, #5101): "{meta_description_suggestion}"
+   Cole no campo de SEO description da Beehiiv SE ele existir separado do
+   preview text (não confirmado — ver docs/seo-notes.md). O preview text
+   atual (preheader do e-mail) segue sobre D2/D3 — trocá-lo é decisão sua.
+
 ━━━ DESTAQUES ━━━━━━━━━━━━━━━━━━━━━━
 
 D1  "{título_d1}"  [{verify_verdict_d1}]
@@ -565,6 +579,7 @@ Regras de apresentação:
 - Títulos dos posts sociais: primeira linha não-vazia de cada post no `03-social.md` (o "hook").
 - Se pré-render falhou em algum passo (newsletter HTML, social HTML), indicar `⚠️ preview indisponível` com motivo.
 - `{whatsapp_url}` (#4570) = saída de `buildWhatsappEditionUrl` (§4c.1b) — a URL que já está baked-in no bloco WhatsApp entre D1/D2. Puramente informativa aqui (nunca bloqueia o gate) — o guard que de fato BLOQUEIA quando essa previsão não bate com o slug real do post roda no Stage 6 (`scripts/check-whatsapp-slug-guard.ts`, ver `orchestrator-stage-6.md` §6d), porque o post só existe na Beehiiv a partir do Stage 5.
+- `{meta_description_suggestion}` (#5101 item 2) = saída de `buildMetaDescriptionSuggestion` (§4c.1c) — sugestão pura, sem LLM, derivada do 1º parágrafo do corpo do D1. Puramente informativa (nunca bloqueia o gate); string vazia → mostrar `⚠️ sugestão indisponível`.
 
 Logar a resposta:
 ```bash
