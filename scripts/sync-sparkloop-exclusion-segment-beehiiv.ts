@@ -36,9 +36,9 @@
  * `scripts/lib/apoio-segments-canonical.ts` documenta que os 6 segmentos
  * `Apoio — *` foram criados/corrigidos manualmente pela UI da Beehiiv — na
  * época (260802), a leitura era que segmentos não eram programáveis via API
- * pública. Confirmado ao vivo AGORA (260812, consulta à documentação pública
- * `developers.beehiiv.com/api-reference/segments/create`) que existe sim um
- * endpoint de escrita:
+ * pública. Confirmado por leitura da documentação pública AGORA (260812,
+ * consulta a `developers.beehiiv.com/api-reference/segments/create`) que
+ * existe sim um endpoint de escrita:
  *
  *   POST /publications/{pub}/segments
  *   body: {
@@ -55,7 +55,12 @@
  * custom field, ex. "RH_SOURCE"), não o `custom_field('<uuid>')` por ID que
  * `get_segment`/`save_segment` (MCP) devolvem depois de salvo — não precisa
  * resolver o ID do campo antes de criar (`list_custom_fields` não é chamado
- * por este script).
+ * por este script). ATENÇÃO: essa leitura de dialeto vem só da documentação
+ * pública — ainda NÃO-VERIFICADA contra a API real (nenhum `--push` rodou
+ * até agora, ver seção abaixo). Se o nome de exibição divergir do valor
+ * usado internamente pela Beehiiv, o 1º `--push` real falharia ou criaria um
+ * segmento com condição vazia — o operador deve conferir o `total_results`
+ * do segmento recém-criado contra o preview do dry-run antes de confiar nele.
  *
  * Segmento é DINÂMICO (`type: "dynamic"`, default) — a Beehiiv recalcula a
  * pertinência sozinha sempre que a condição casar um assinante novo (ex:
@@ -121,6 +126,16 @@ const RATE_LIMIT_DELAY_MS = 300;
 const MAX_RETRIES = 3;
 const PER_PAGE = 100;
 
+/** Fallback de espera (ms) quando o header `Retry-After` está ausente ou não
+ * é um inteiro de segundos válido (a spec permite HTTP-date além de delay em
+ * segundos — `parseInt` de uma data vira `NaN`, ver `computeRetryDelayMs`). */
+const RETRY_AFTER_FALLBACK_SECONDS = 60;
+const RETRY_MIN_DELAY_MS = 30_000;
+
+function log(msg: string): void {
+  process.stderr.write(`${LOG_PREFIX} ${msg}\n`);
+}
+
 /** Nome do segmento — mesma convenção de `apoio-segments-canonical.ts`
  * ("{Categoria} — {detalhe}", em dash), escopado ao NOME DA INTEGRAÇÃO
  * (não ao parceiro individual — ver cabeçalho do módulo). */
@@ -128,7 +143,9 @@ export const EXCLUSION_SEGMENT_NAME = "Exclusão — SparkLoop Upscribe";
 
 /** Custom field escrito pela integração SparkLoop/RewardHero em todo
  * cadastro vindo dela — já existe na publicação, este script nunca cria
- * custom field, só lê. */
+ * custom field, só lê. O nome de exibição usado aqui ("RH_SOURCE") é a
+ * suposição não-verificada de que ele bate com o nome que o endpoint de
+ * criação de segmento espera — ver caveat no cabeçalho do módulo. */
 export const RH_SOURCE_FIELD_NAME = "RH_SOURCE";
 
 /** Valor observado no burst investigado em #5095 — identifica a integração
@@ -151,7 +168,11 @@ interface BeehiivCustomFieldRaw {
 
 interface BeehiivSubscriptionApi {
   id: string;
-  email: string;
+  /** `unknown`, não `string` — narrowing explícito em `fetchActiveSubscriptions`
+   * (mesmo padrão de `BeehiivSegmentApi` abaixo). Se a API devolver um
+   * assinante sem e-mail (ausente/null), a entrada é descartada com log em
+   * vez de lançar `TypeError` em `.trim()`. */
+  email: unknown;
   status: string;
   custom_fields?: BeehiivCustomFieldRaw[];
 }
@@ -244,6 +265,33 @@ export function findExistingExclusionSegment(
   return segments.find((s) => s.name === EXCLUSION_SEGMENT_NAME) ?? null;
 }
 
+export type SyncAction = "skip-existing" | "dry-run" | "create";
+
+/** Pure: decide a ação de `main()` a partir do estado observado — as DUAS
+ * garantias de segurança centrais do script ("se o segmento já existe, não
+ * faz nada" e "sem --push, nunca cria"), extraídas pra função exportada e
+ * testável (#5098 item 6). Sem isso, `main()` não é exportada nem parametrizável
+ * e nenhum teste consegue exercitar essa lógica — uma regressão que remova o
+ * early-return de idempotência passaria em todos os testes existentes e
+ * criaria um segmento duplicado numa conta Beehiiv real. */
+export function resolveSyncAction(existing: ExistingSegmentMatch | null, pushRequested: boolean): SyncAction {
+  if (existing) return "skip-existing";
+  return pushRequested ? "create" : "dry-run";
+}
+
+/** Pure: calcula o delay de retry (ms) pra um 429, a partir do header
+ * `Retry-After` cru. Extraída de `apiRequest` pra ser testável sem esperar o
+ * `sleep` real (#5098 item 8). A spec HTTP permite `Retry-After` em segundos
+ * OU em HTTP-date — `parseInt` de uma data produz `NaN`; sem o guard
+ * `Number.isFinite`, `Math.max(NaN, RETRY_MIN_DELAY_MS)` também é `NaN` e o
+ * backoff colapsa pra ~0ms exatamente no cenário (429 storm) onde mais
+ * importa (#5098 item 3). */
+export function computeRetryDelayMs(retryAfterHeader: string | null): number {
+  const parsed = retryAfterHeader != null ? parseInt(retryAfterHeader, 10) : NaN;
+  const seconds = Number.isFinite(parsed) ? parsed : RETRY_AFTER_FALLBACK_SECONDS;
+  return Math.max(seconds * 1000, RETRY_MIN_DELAY_MS);
+}
+
 // ── I/O — leitura paginada ──────────────────────────────────────────────
 
 function sleep(ms: number): Promise<void> {
@@ -268,8 +316,9 @@ async function apiRequest<T>(
     },
   });
   if (res.status === 429 && retries < MAX_RETRIES) {
-    const retryAfter = parseInt(res.headers.get("Retry-After") ?? "60", 10);
-    await sleep(Math.max(retryAfter * 1000, 30_000));
+    const delayMs = computeRetryDelayMs(res.headers.get("Retry-After"));
+    log(`HTTP 429 em ${path} — tentativa ${retries + 1}/${MAX_RETRIES}, aguardando ${delayMs}ms antes de retry…`);
+    await sleep(delayMs);
     return apiRequest<T>(path, apiKey, fetchImpl, init, retries + 1);
   }
   if (!res.ok) return { ok: false, status: res.status, body: null };
@@ -292,6 +341,13 @@ export async function fetchActiveSubscriptions(
   fetchImpl: typeof fetch = fetch,
 ): Promise<BeehiivSubscriptionSnapshot[]> {
   const out: BeehiivSubscriptionSnapshot[] = [];
+  // Contador RAW (itens recebidos por página, antes do filtro de e-mail
+  // malformado abaixo) — precisa ser distinto de `out.length` pela mesma
+  // razão documentada em `fetchExistingSegments`: se algum item vier sem
+  // `email` válido e for descartado, `out.length` ficaria menor que o total
+  // de itens VISTOS, e `hasMorePages`/o guard de truncamento abaixo têm que
+  // comparar contra o total VISTO, não o total ACEITO.
+  let rawCollected = 0;
   let page = 1;
   let more = true;
   let totalResults: number | null = null;
@@ -304,18 +360,24 @@ export async function fetchActiveSubscriptions(
     if (!res.ok) {
       throw new Error(`Beehiiv API ${res.status} em /subscriptions (página ${page})`);
     }
-    const body = res.body!;
+    const body = res.body ?? {};
     const got = body.data ?? [];
     for (const s of got) {
+      const email = typeof s.email === "string" ? s.email.trim().toLowerCase() : null;
+      if (email === null) {
+        log(`entrada malformada descartada em /subscriptions (página ${page}, id ${s.id}): campo "email" ausente/não-string.`);
+        continue;
+      }
       out.push({
         subscriptionId: s.id,
-        email: s.email.trim().toLowerCase(),
+        email,
         rhSource: extractCustomFieldValue(s.custom_fields, RH_SOURCE_FIELD_NAME),
       });
     }
+    rawCollected += got.length;
     if (body.total_results != null) totalResults = body.total_results;
     more = hasMorePages({
-      collected: out.length,
+      collected: rawCollected,
       gotLength: got.length,
       totalResults: body.total_results,
       effectiveLimit: body.limit,
@@ -323,9 +385,9 @@ export async function fetchActiveSubscriptions(
     });
     page++;
   }
-  if (totalResults != null && totalResults > 0 && out.length < totalResults) {
+  if (totalResults != null && totalResults > 0 && rawCollected < totalResults) {
     throw new Error(
-      `paginação de /subscriptions terminou cedo: coletado ${out.length} de ${totalResults} ` +
+      `paginação de /subscriptions terminou cedo: coletado ${rawCollected} de ${totalResults} ` +
         "reportado pela API — leitura truncada não alimenta o preview.",
     );
   }
@@ -334,7 +396,12 @@ export async function fetchActiveSubscriptions(
 
 /** Pagina `GET /publications/{pub}/segments` (mesmo endpoint de
  * `backup-beehiiv.ts`) — usado só pra checagem de idempotência (casar
- * `EXCLUSION_SEGMENT_NAME` antes de criar). */
+ * `EXCLUSION_SEGMENT_NAME` antes de criar). Única fonte da checagem de
+ * idempotência (`findExistingExclusionSegment` é chamado só sobre o
+ * resultado desta função) — uma leitura truncada aqui faria `main()`
+ * concluir erroneamente "segmento não existe" e criar um DUPLICADO via
+ * `--push`, então o guard de anti-truncamento abaixo é tão crítico quanto o
+ * de `fetchActiveSubscriptions`. */
 export async function fetchExistingSegments(
   publicationId: string,
   apiKey: string,
@@ -349,6 +416,7 @@ export async function fetchExistingSegments(
   // sempre (a API devolveria a última página de novo). `hasMorePages`
   // compara contra o total de itens VISTOS, não o total de itens ACEITOS.
   let rawCollected = 0;
+  let totalResults: number | null = null;
   let page = 1;
   let more = true;
   while (more) {
@@ -360,7 +428,7 @@ export async function fetchExistingSegments(
     if (!res.ok) {
       throw new Error(`Beehiiv API ${res.status} em /segments (página ${page})`);
     }
-    const body = res.body!;
+    const body = res.body ?? {};
     const got = body.data ?? [];
     for (const s of got) {
       if (typeof s.id === "string" && typeof s.name === "string") {
@@ -369,9 +437,12 @@ export async function fetchExistingSegments(
           name: s.name,
           totalResults: typeof s.total_results === "number" ? s.total_results : null,
         });
+      } else {
+        log(`entrada malformada descartada em /segments (página ${page}): ${JSON.stringify(s)}`);
       }
     }
     rawCollected += got.length;
+    if (body.total_results != null) totalResults = body.total_results;
     more = hasMorePages({
       collected: rawCollected,
       gotLength: got.length,
@@ -380,6 +451,12 @@ export async function fetchExistingSegments(
       requestedPerPage: PER_PAGE,
     });
     page++;
+  }
+  if (totalResults != null && totalResults > 0 && rawCollected < totalResults) {
+    throw new Error(
+      `paginação de /segments terminou cedo: coletado ${rawCollected} de ${totalResults} ` +
+        "reportado pela API — checagem de idempotência não pode confiar numa lista truncada.",
+    );
   }
   return out;
 }
@@ -425,13 +502,13 @@ async function main(): Promise<void> {
   loadProjectEnv(ROOT);
 
   const { apiKey, publicationId } = loadBeehiivConfig(LOG_PREFIX);
-  const log = (msg: string) => process.stderr.write(`${LOG_PREFIX} ${msg}\n`);
 
   log("buscando segmentos existentes (checagem de idempotência)…");
   const existingSegments = await fetchExistingSegments(publicationId, apiKey);
   const existing = findExistingExclusionSegment(existingSegments);
+  const action = resolveSyncAction(existing, hasFlag(argv, "push"));
 
-  if (existing) {
+  if (action === "skip-existing" && existing) {
     // Idempotente: se o segmento já existe, nada a fazer — e nem vale a
     // pena pagar a paginação completa de /subscriptions só pra um preview
     // que ninguém vai usar (rodar este script de novo depois do --push tem
@@ -457,7 +534,7 @@ async function main(): Promise<void> {
   log(`corpo do POST /publications/${publicationId}/segments:`);
   log(`  ${JSON.stringify(body)}`);
 
-  if (!hasFlag(argv, "push")) {
+  if (action === "dry-run") {
     log(
       `segmento "${EXCLUSION_SEGMENT_NAME}" ainda não existe. dry-run (default) — NENHUMA mutação aplicada. ` +
         "Use --push para criar de verdade.",

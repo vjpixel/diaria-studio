@@ -20,6 +20,8 @@ import {
   filterSparkloopContacts,
   buildCreateSegmentBody,
   findExistingExclusionSegment,
+  resolveSyncAction,
+  computeRetryDelayMs,
   fetchActiveSubscriptions,
   fetchExistingSegments,
   createExclusionSegment,
@@ -27,6 +29,7 @@ import {
   RH_SOURCE_FIELD_NAME,
   RH_SOURCE_SPARKLOOP_UPSCRIBE_VALUE,
   type BeehiivSubscriptionSnapshot,
+  type ExistingSegmentMatch,
 } from "../scripts/sync-sparkloop-exclusion-segment-beehiiv.ts";
 
 // ── mock de fetch sequencial (mesmo padrão de test/sync-apoio-nivel-beehiiv.test.ts) ──
@@ -189,6 +192,47 @@ describe("findExistingExclusionSegment", () => {
   });
 });
 
+// ── resolveSyncAction (idempotência/dry-run — #5098 item 6) ──────────────
+
+describe("resolveSyncAction", () => {
+  const existingMatch: ExistingSegmentMatch = { id: "seg-1", name: EXCLUSION_SEGMENT_NAME, totalResults: 17 };
+
+  it("skip-existing quando o segmento já existe, independente de --push", () => {
+    assert.equal(resolveSyncAction(existingMatch, false), "skip-existing");
+    assert.equal(resolveSyncAction(existingMatch, true), "skip-existing");
+  });
+
+  it("dry-run quando o segmento não existe e --push não foi passado", () => {
+    assert.equal(resolveSyncAction(null, false), "dry-run");
+  });
+
+  it("create quando o segmento não existe e --push foi passado", () => {
+    assert.equal(resolveSyncAction(null, true), "create");
+  });
+});
+
+// ── computeRetryDelayMs (retry 429 — #5098 itens 3 e 8) ───────────────────
+
+describe("computeRetryDelayMs", () => {
+  it("header numérico válido acima do mínimo — usa o valor do header", () => {
+    assert.equal(computeRetryDelayMs("120"), 120_000);
+  });
+
+  it("header numérico válido abaixo do mínimo — usa o piso de 30s", () => {
+    assert.equal(computeRetryDelayMs("5"), 30_000);
+  });
+
+  it("header ausente (null) — cai no fallback de 60s", () => {
+    assert.equal(computeRetryDelayMs(null), 60_000);
+  });
+
+  it("header inválido/não-numérico (ex: HTTP-date) — cai no fallback de 60s, nunca NaN", () => {
+    const delay = computeRetryDelayMs("Wed, 21 Oct 2026 07:28:00 GMT");
+    assert.equal(delay, 60_000);
+    assert.ok(Number.isFinite(delay), "delay nunca pode ser NaN — backoff colapsaria pra ~0ms");
+  });
+});
+
 // ── fetchActiveSubscriptions (I/O mockado — paginação + custom field) ────
 
 describe("fetchActiveSubscriptions", () => {
@@ -231,6 +275,28 @@ describe("fetchActiveSubscriptions", () => {
     const { fetchImpl } = mockFetchSeq([{ status: 200, body: { data: [], total_results: 5, limit: 100 } }]);
     await assert.rejects(fetchActiveSubscriptions("pub-1", "key", fetchImpl), /leitura truncada/);
   });
+
+  it("200 sem corpo (body undefined) — devolve lista vazia, nunca lança (res.body ?? {} — #5098 item 5)", async () => {
+    const { fetchImpl } = mockFetchSeq([{ status: 200, body: undefined }]);
+    const result = await fetchActiveSubscriptions("pub-1", "key", fetchImpl);
+    assert.deepEqual(result, []);
+  });
+
+  it("descarta entrada com email ausente/não-string, loga e não conta como 'coletado' pra hasMorePages (#5098 item 4)", async () => {
+    const { fetchImpl } = mockFetchSeq([
+      {
+        status: 200,
+        body: {
+          data: [sub("ok@x.com", "sparkloop-upscribe"), { id: "sub-sem-email", status: "active", custom_fields: [] }],
+          total_results: 2,
+          limit: 100,
+        },
+      },
+    ]);
+    const result = await fetchActiveSubscriptions("pub-1", "key", fetchImpl);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].email, "ok@x.com");
+  });
 });
 
 // ── fetchExistingSegments (I/O mockado — paginação) ──────────────────────
@@ -261,6 +327,39 @@ describe("fetchExistingSegments", () => {
   it("falha loud quando a API responde não-ok", async () => {
     const { fetchImpl } = mockFetchSeq([{ status: 403 }]);
     await assert.rejects(fetchExistingSegments("pub-1", "key", fetchImpl), /Beehiiv API 403/);
+  });
+
+  it("200 sem corpo (body undefined) — devolve lista vazia, nunca lança (res.body ?? {} — #5098 item 5)", async () => {
+    const { fetchImpl } = mockFetchSeq([{ status: 200, body: undefined }]);
+    const result = await fetchExistingSegments("pub-1", "key", fetchImpl);
+    assert.deepEqual(result, []);
+  });
+
+  it("falha loud quando a paginação termina cedo (total_results reportado > coletado) — #5098 item 1", async () => {
+    const { fetchImpl } = mockFetchSeq([{ status: 200, body: { data: [], total_results: 3, limit: 100 } }]);
+    await assert.rejects(fetchExistingSegments("pub-1", "key", fetchImpl), /paginação de \/segments terminou cedo/);
+  });
+
+  it("pagina 2+ páginas com entrada malformada na página 1 — acumula corretamente e termina no número certo de chamadas (#5098 item 7)", async () => {
+    const { fetchImpl, calls } = mockFetchSeq([
+      {
+        // Página 1: 1 segmento válido + 1 malformado (sem `id`). `rawCollected`
+        // conta os 2 itens VISTOS (não só o 1 aceito) — é isso que garante que
+        // hasMorePages não fique pedindo página extra pra sempre.
+        status: 200,
+        body: { data: [{ id: "seg-1", name: "Apoio — Todos", total_results: 10 }, { name: "sem-id" }], total_results: 3, limit: 2 },
+      },
+      {
+        status: 200,
+        body: { data: [{ id: "seg-2", name: EXCLUSION_SEGMENT_NAME, total_results: 17 }], total_results: 3, limit: 2 },
+      },
+    ]);
+    const result = await fetchExistingSegments("pub-1", "key", fetchImpl);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(result, [
+      { id: "seg-1", name: "Apoio — Todos", totalResults: 10 },
+      { id: "seg-2", name: EXCLUSION_SEGMENT_NAME, totalResults: 17 },
+    ]);
   });
 });
 
