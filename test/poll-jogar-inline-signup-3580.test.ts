@@ -12,7 +12,8 @@
  *   - e-mail inválido é rejeitado (server-side)
  *   - honeypot preenchido é descartado (200 fake-success, sem assinar)
  *   - rate-limit por IP bloqueia flood
- *   - respeita double opt-in (não manda `double_opt_override`)
+ *   - isenta este fluxo do double opt-in da publicação
+ *     (`double_opt_override: "off"`, #5095 — antes era o inverso, ver o teste)
  *   - segredo Beehiiv ausente → 503 amigável (não 500)
  *   - regressão: não quebra o CTA-link #3518 nem o voto/quiz
  */

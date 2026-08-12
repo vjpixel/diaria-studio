@@ -23,10 +23,23 @@
  * (`Diaria-Brevo-Diaria-Evaluate`), então a regressão seria silenciosa, diária
  * e cumulativa — a pior combinação possível.
  *
- * Um comentário em CLAUDE.md não impede um call site novo de nascer errado.
- * Este teste impede: acrescentar um POST de criação sem o override quebra o
- * CI, e acrescentar um call site NOVO (mesmo correto) também quebra, forçando
- * a atualização consciente do inventário abaixo.
+ * ## Por que a detecção é grosseira DE PROPÓSITO (revisão da PR #5096)
+ *
+ * A 1ª versão deste guard procurava `method: "POST"` numa janela de 400 chars
+ * depois da URL. O review mostrou, com repro, que isso FALHA ABERTO: some a
+ * detecção se o autor escrever `const opts = { method: "POST" }` antes da URL,
+ * usar `{ method }` como variável, ou tiver um corpo grande o bastante pra
+ * empurrar o token pra fora da janela. Todas são formas ordinárias de escrever
+ * o mesmo fetch — e o modo de falha era o pior possível: o call site novo não
+ * entrava em `found`, o `deepEqual` continuava passando dos dois lados, e o CI
+ * ficava verde exatamente no cenário que o guard existe pra pegar.
+ *
+ * A regra agora não tenta entender a chamada. Ela é: **um arquivo que menciona
+ * o endpoint de subscriptions E contém o token "POST" em qualquer lugar tem
+ * que estar classificado** — ou como call site de criação (e aí carrega o
+ * override), ou na allowlist de POST-pra-outro-endpoint, com motivo escrito.
+ * Isso erra pro lado de exigir classificação a mais, nunca a menos: não existe
+ * jeito de criar subscription sem a string "POST" e sem citar o endpoint.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -36,20 +49,32 @@ import { join, relative } from "node:path";
 const REPO_ROOT = new URL("..", import.meta.url).pathname;
 
 /**
- * Inventário fechado dos caminhos que criam subscription. Crescer esta lista é
- * uma decisão consciente: todo caminho novo precisa (a) mandar o override, ou
- * (b) ser deliberadamente sujeito ao double opt-in — e nesse caso sair daqui
- * com justificativa no PR.
+ * Caminhos que CRIAM subscription. Cada um DEVE mandar
+ * `double_opt_override: "off"` — sem isso o contato entra em `pending` e nunca
+ * mais recebe e-mail, sem volta programática.
  */
-const EXPECTED_CREATE_CALL_SITES = [
+const CREATE_CALL_SITES = [
   "scripts/evaluate-brevo-diaria.ts",
   "workers/cursos/src/subscribe.ts",
   "workers/poll/src/subscribe.ts",
   "workers/reativar/src/index.ts",
 ].sort();
 
+/**
+ * Arquivos que citam o endpoint de subscriptions e contêm "POST", mas cujo
+ * POST vai pra OUTRO endpoint. Entrar aqui exige motivo verificável.
+ */
+const POST_TO_OTHER_ENDPOINT: Record<string, string> = {
+  // O único POST deste script é `/custom_fields` (cria o campo `poll_token`,
+  // idempotente). Sobre subscriptions ele só faz GET paginado e PATCH.
+  "scripts/inject-poll-token.ts": "POST vai pra /custom_fields, não /subscriptions",
+};
+
 /** Diretórios varridos. `test/` fica de fora de propósito — mock não é call site. */
 const SCAN_ROOTS = ["scripts", "workers"];
+
+/** Menção ao endpoint de subscriptions, em qualquer método. */
+const SUBSCRIPTIONS_ENDPOINT_RE = /\/publications\/\$\{[^}]+\}\/subscriptions/;
 
 function walk(dir: string, out: string[] = []): string[] {
   let entries: string[];
@@ -67,50 +92,42 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
+/** Remove linhas de docstring (`  * ...`) — comentário não é implementação. */
+function stripDocstringLines(source: string): string {
+  return source.replace(/^\s*\*.*$/gm, "");
+}
+
 /**
- * Detecta um POST de CRIAÇÃO de subscription. Precisa casar os dois sinais na
- * mesma janela de texto porque o endpoint `/subscriptions` também é lido (GET
- * paginado) e deletado (DELETE por id) em vários scripts — só a criação
- * importa aqui.
- *
- * A janela de 400 chars cobre a distância real entre a URL e o `method` nos 4
- * call sites atuais (o maior gap é ~120 chars). Um call site que escreva o
- * fetch de forma muito mais espalhada escaparia da detecção — é por isso que o
- * inventário acima é uma lista fechada e não só um filtro: se a heurística
- * falhar em achar um dos 4 conhecidos, o teste de inventário quebra.
+ * Um arquivo entra no radar do guard se cita o endpoint de subscriptions E
+ * contém o token "POST". Grosseiro de propósito — ver docstring do topo.
  */
-function hasSubscriptionCreatePost(source: string): boolean {
-  const stripped = source.replace(/^\s*\*.*$/gm, ""); // ignora blocos de docstring
-  const urlRe = /\/publications\/\$\{[^}]+\}\/subscriptions`/g;
-  let match: RegExpExecArray | null;
-  while ((match = urlRe.exec(stripped)) !== null) {
-    const window = stripped.slice(match.index, match.index + 400);
-    if (/method:\s*"POST"/.test(window)) return true;
-  }
-  return false;
+function touchesSubscriptionsWithPost(source: string): boolean {
+  const code = stripDocstringLines(source);
+  return SUBSCRIPTIONS_ENDPOINT_RE.test(code) && /"POST"/.test(code);
 }
 
 describe("#5095 — double_opt_override em todo POST de criação de subscription", () => {
-  const found = SCAN_ROOTS.flatMap((root) => walk(join(REPO_ROOT, root)))
-    .filter((file) => hasSubscriptionCreatePost(readFileSync(file, "utf8")))
+  const flagged = SCAN_ROOTS.flatMap((root) => walk(join(REPO_ROOT, root)))
+    .filter((file) => touchesSubscriptionsWithPost(readFileSync(file, "utf8")))
     .map((file) => relative(REPO_ROOT, file).replace(/\\/g, "/"))
     .sort();
 
-  it("o inventário de call sites que CRIAM subscription não mudou sem revisão", () => {
+  it("todo arquivo que POSTa perto do endpoint de subscriptions está classificado", () => {
+    const classified = [...CREATE_CALL_SITES, ...Object.keys(POST_TO_OTHER_ENDPOINT)].sort();
     assert.deepEqual(
-      found,
-      EXPECTED_CREATE_CALL_SITES,
-      "Um caminho que cria subscription na Beehiiv foi adicionado ou removido. " +
-        "Se for novo: ele DEVE mandar `double_opt_override: \"off\"` (senão o " +
-        "contato entra em `pending` e nunca mais recebe e-mail, sem volta " +
-        "programática). Depois de decidir, atualize EXPECTED_CREATE_CALL_SITES.",
+      flagged,
+      classified,
+      "Um arquivo passou a mencionar /subscriptions com um POST e não está classificado. " +
+        "Se ele CRIA subscription: mande `double_opt_override: \"off\"` (senão o contato " +
+        "entra em `pending` e nunca mais recebe e-mail, sem volta programática) e some a " +
+        "CREATE_CALL_SITES. Se o POST vai pra outro endpoint: some a POST_TO_OTHER_ENDPOINT " +
+        "com o motivo.",
     );
   });
 
-  for (const callSite of EXPECTED_CREATE_CALL_SITES) {
+  for (const callSite of CREATE_CALL_SITES) {
     it(`${callSite} manda double_opt_override: "off"`, () => {
-      const source = readFileSync(join(REPO_ROOT, callSite), "utf8");
-      const code = source.replace(/^\s*\*.*$/gm, ""); // docstring não conta como implementação
+      const code = stripDocstringLines(readFileSync(join(REPO_ROOT, callSite), "utf8"));
       assert.match(
         code,
         /double_opt_override:\s*"off"/,
@@ -119,16 +136,34 @@ describe("#5095 — double_opt_override em todo POST de criação de subscriptio
     });
   }
 
-  it("a heurística de detecção realmente detecta (não passa vazia por acidente)", () => {
-    assert.equal(found.length > 0, true, "nenhum call site detectado — a heurística quebrou");
-    assert.equal(
-      hasSubscriptionCreatePost('await fetch(`${base}/publications/${pubId}/subscriptions`, { method: "POST" })'),
-      true,
-    );
-    // GET paginado e DELETE por id no MESMO endpoint não podem contar.
-    assert.equal(
-      hasSubscriptionCreatePost('await fetch(`${base}/publications/${pubId}/subscriptions?page=1`, { method: "GET" })'),
-      false,
-    );
+  it("a detecção pega as formas que a versão anterior deixava passar (#5096 review)", () => {
+    // Estas 3 são as variações que o review provou que escapavam da heurística
+    // de proximidade. Todas têm que ser detectadas agora.
+    const methodBeforeUrl = `const opts = { method: "POST", body };
+      await fetchImpl(\`\${base}/publications/\${pubId}/subscriptions\`, opts);`;
+    const longBodyPushesMethodOut = `await fetchImpl(\`\${base}/publications/\${pubId}/subscriptions\`, {
+      body: JSON.stringify({ ${"x".repeat(500)} }),
+      method: "POST",
+    });`;
+    for (const [label, src] of [
+      ["method antes da URL", methodBeforeUrl],
+      ["corpo grande empurra o method pra longe", longBodyPushesMethodOut],
+    ] as const) {
+      assert.equal(touchesSubscriptionsWithPost(src), true, `não detectou: ${label}`);
+    }
+  });
+
+  it("não dispara em arquivo que só LÊ o endpoint (sem POST)", () => {
+    const readOnly = `await fetchImpl(\`\${base}/publications/\${pubId}/subscriptions?page=1\`);`;
+    assert.equal(touchesSubscriptionsWithPost(readOnly), false);
+  });
+
+  it("não dispara em POST que não tem nada a ver com subscriptions", () => {
+    const otherEndpoint = `await fetchImpl(\`\${base}/publications/\${pubId}/custom_fields\`, { method: "POST" });`;
+    assert.equal(touchesSubscriptionsWithPost(otherEndpoint), false);
+  });
+
+  it("a varredura realmente encontra algo (não passa vazia por acidente)", () => {
+    assert.equal(flagged.length > 0, true, "nenhum arquivo detectado — a varredura quebrou");
   });
 });
