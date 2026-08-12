@@ -4,10 +4,12 @@ import {
   TIER_TO_COHORT,
   COHORT_ASSINANTES_ATIVOS,
   COHORT_EX_ASSINANTES,
+  COHORT_JURIDICO,
   COHORT_LEADS_CAUDAO,
   cohortFromTier,
   cohortFromSafra,
   cohortSendRank,
+  compareContactRecency,
   cohortDisplayLabel,
   isKnownCohortSlug,
   isTestAccount,
@@ -120,6 +122,67 @@ describe("cohortSendRank", () => {
         );
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// compareContactRecency — desempate dentro do bucket por recência real (#5169)
+// ---------------------------------------------------------------------------
+
+describe("compareContactRecency", () => {
+  it("REGRESSÃO #5169: leads-2023h2 (mais recente) já vence leads-2022h1 no nível de BUCKET — cohortSendRank sozinho já acerta, sem mudança de comportamento aqui", () => {
+    const antigo = { email: "a@x.com", cohort: "leads-2022h1", created: "2022-01-15T00:00:00Z" };
+    const novo = { email: "b@x.com", cohort: "leads-2023h2", created: "2023-08-01T00:00:00Z" };
+    assert.ok(compareContactRecency(novo, antigo) < 0, "leads-2023h2 deve vir ANTES de leads-2022h1");
+  });
+
+  it("REGRESSÃO #5169 (caso concreto da issue): DENTRO do mesmo bucket leads-2023h2, quem se cadastrou por último vence — não mais desempate alfabético por e-mail", () => {
+    // Antes do #5169, os dois abaixo empatavam em cohortSendRank e o
+    // desempate era e-mail alfabético — "aaa..." venceria "zzz..." mesmo
+    // sendo o cadastro MAIS ANTIGO do bucket. Nomeados de propósito pra essa
+    // ordem alfabética ser o oposto da ordem de recência esperada.
+    const maisAntigoNoBucket = {
+      email: "aaa-cadastrou-primeiro@x.com",
+      cohort: "leads-2023h2",
+      created: "2023-07-02T00:00:00Z",
+    };
+    const maisRecenteNoBucket = {
+      email: "zzz-cadastrou-por-ultimo@x.com",
+      cohort: "leads-2023h2",
+      created: "2023-12-30T00:00:00Z",
+    };
+    assert.ok(
+      compareContactRecency(maisRecenteNoBucket, maisAntigoNoBucket) < 0,
+      "dentro do mesmo bucket, cadastro mais recente deve vir primeiro — não o alfabético",
+    );
+  });
+
+  it("cohorts ESTRUTURAIS (assinantes-ativos/ex-assinantes/juridico) também desempatam por created DESC dentro do mesmo cohort — mesmo comportamento que segmentNovos já tinha antes do #5169", () => {
+    const antigo = { email: "payer-antigo@x.com", cohort: COHORT_ASSINANTES_ATIVOS, created: "2024-01-01T00:00:00Z" };
+    const recente = { email: "payer-recente@x.com", cohort: COHORT_ASSINANTES_ATIVOS, created: "2026-06-01T00:00:00Z" };
+    assert.ok(compareContactRecency(recente, antigo) < 0);
+  });
+
+  it("cohort estrutural sempre vence lead, mesmo com created muito mais antigo — não é uma medida de recência de cadastro comparável entre as duas categorias", () => {
+    const payerAntigo = { email: "payer@x.com", cohort: COHORT_ASSINANTES_ATIVOS, created: "2020-01-01T00:00:00Z" };
+    const leadRecente = { email: "lead@x.com", cohort: "leads-2026h1", created: "2026-07-01T00:00:00Z" };
+    assert.ok(compareContactRecency(payerAntigo, leadRecente) < 0, "assinante-ativo sempre na frente, mesmo cadastro mais antigo");
+    // juridico também — rank estrutural fixo (#4406), não compete por created.
+    const juridico = { email: "j@x.com", cohort: COHORT_JURIDICO, created: "2020-01-01T00:00:00Z" };
+    assert.ok(compareContactRecency(juridico, leadRecente) < 0);
+  });
+
+  it("created ausente/inválido nos dois lados cai no desempate final por e-mail — nunca lança, nunca produz NaN", () => {
+    const a = { email: "a@x.com", cohort: "leads-2023h2", created: null };
+    const b = { email: "b@x.com", cohort: "leads-2023h2", created: "não-é-data" };
+    assert.doesNotThrow(() => compareContactRecency(a, b));
+    assert.ok(compareContactRecency(a, b) < 0, "e-mail ASC como desempate final");
+  });
+
+  it("created conhecido bate created ausente/inválido, mesmo bucket", () => {
+    const semData = { email: "z@x.com", cohort: "leads-2023h2", created: undefined };
+    const comData = { email: "a@x.com", cohort: "leads-2023h2", created: "2023-08-01T00:00:00Z" };
+    assert.ok(compareContactRecency(comData, semData) < 0, "created conhecido vence, mesmo que o e-mail perderia alfabeticamente");
   });
 });
 

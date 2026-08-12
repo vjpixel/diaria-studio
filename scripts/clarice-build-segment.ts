@@ -127,11 +127,21 @@
  *                com predicado errado.
  *   --since YYYY-MM-DD   OBRIGATÓRIO só pro grupo `novos` (#4347) — janela de
  *                "cadastrou desde". Ignorado pelos outros 3 grupos.
- *   --force      OPCIONAL — só pro grupo `novos` (#4347, D13): destrava a
+ *   --force      OPCIONAL. (a) Grupo `novos` (#4347, D13): destrava a
  *                escrita quando o grupo selecionou mais que
  *                `NOVOS_ROUND_SIZE_CAP` (500) contatos. Sem a flag, a rodada
  *                aborta ANTES de escrever (substitui o gate humano que a
- *                skill `/diaria-clarice-novos` não tem — D6).
+ *                skill `/diaria-clarice-novos` não tem — D6). (b) Grupos
+ *                `ramp-warm`/`novos` (#5169): destrava a escrita quando a
+ *                seleção viola a monotonicidade de recência real (um contato
+ *                mais antigo entrou enquanto um mais novo, ainda elegível,
+ *                ficou de fora) — ver `assertRecencySelectionMonotonic`,
+ *                clarice-segment.ts. Sem a flag, a rodada aborta ANTES de
+ *                escrever — inclusive na task diária automatizada
+ *                `Diaria-Clarice-Envio`, que roda `--group ramp-warm` sem
+ *                revisão humana (não é "operado manualmente pelo editor" pra
+ *                este guard específico, apesar do que a seção do teto de
+ *                `novos` acima documenta pros OUTROS 3 grupos).
  *   --data-root DIR   OPCIONAL, uso interno de teste (#4207, generaliza o
  *                `--segments-dir` pontual do #4176) — substitui `CLARICE_BASE`
  *                (raiz fixa `data/clarice-subscribers`) na resolução de
@@ -266,12 +276,14 @@ import {
   resolveCohortArg,
   buildWaterfallSelection,
   validateWaterfallTiers,
+  assertRecencySelectionMonotonic,
   type NamedGroupKey,
   type NamedGroupContext,
   type StoreRow,
   type CommittedGuardScope,
   type WaterfallTierSpec,
   type WaterfallTierStat,
+  type RecencyMonotonicityViolation,
 } from "./lib/clarice-segment.ts";
 import { clariceSegmentsDir, cycleSendMonthStartIso, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
 import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
@@ -304,9 +316,28 @@ function firstName(name: string | null): string {
 }
 
 /**
+ * Grupos cuja ordem é governada por recência de cadastro (`ramp-warm`/
+ * `novos` — 1º envio, `contactRecencyRank` em cohorts.ts) — os únicos aos
+ * quais `assertRecencySelectionMonotonic` (#5169) se aplica. `engajados`/
+ * `reativacao` ordenam por engajamento (priority_points/last_sent_at), um
+ * eixo diferente onde "mais novo" não é sequer o critério — checar
+ * monotonicidade de recência ali produziria "violações" sem sentido.
+ */
+const RECENCY_ORDERED_GROUPS: ReadonlySet<NamedGroupKey> = new Set(["ramp-warm", "novos"]);
+
+/**
  * Monta o CSV + manifest do grupo (puro: retorna os artefatos, não escreve).
  * `budget > 0` corta o TOPO da fila já filtrada+ordenada por `NAMED_GROUPS[group].segment`
  * (não uma fatia arbitrária — o corte acontece DEPOIS do sort).
+ *
+ * #5169: pros grupos de 1º envio (`ramp-warm`/`novos`), também computa
+ * `recencyViolations` — `assertRecencySelectionMonotonic` sobre o MESMO
+ * `ordered` que gerou `selected` (prefixo) e o restante (`ordered.slice(budget)`,
+ * sufixo). Como os dois vêm de fatiar o mesmo array já ordenado por
+ * `contactRecencyRank`, isto é uma tautologia SOB OPERAÇÃO CORRETA — nunca
+ * deveria disparar; existe como guard de regressão (ex: se `def.segment`
+ * voltar a ordenar só por bucket de cohort no futuro), não como filtro ativo
+ * aqui. `main()` decide se bloqueia a escrita (mesmo padrão de `checkRoundSizeCap`).
  */
 export function buildSegmentArtifact(
   rows: SegmentRow[],
@@ -314,7 +345,7 @@ export function buildSegmentArtifact(
   budget: number,
   minScore = 0,
   ctx?: NamedGroupContext,
-): { csv: string; manifestEntry: SegmentManifestEntry; selected: SegmentRow[] } {
+): { csv: string; manifestEntry: SegmentManifestEntry; selected: SegmentRow[]; recencyViolations: RecencyMonotonicityViolation[] } {
   const def = NAMED_GROUPS[group];
   const nameByEmail = new Map(rows.map((r) => [r.email, firstName(r.name)]));
   // #2973: "score" = alias do editor pra `priority_points` (NÃO o score/
@@ -327,13 +358,16 @@ export function buildSegmentArtifact(
   // `ctx` (#4347): só o grupo `novos` precisa (sinceIso) — os outros 3 ignoram.
   const ordered = def.segment(scoped, ctx) as SegmentRow[];
   const selected = budget > 0 ? ordered.slice(0, budget) : ordered;
+  const recencyViolations = RECENCY_ORDERED_GROUPS.has(group)
+    ? assertRecencySelectionMonotonic(selected, ordered.slice(selected.length))
+    : [];
 
   const csvRows = selected.map((r) => ({ email: r.email, NOME: nameByEmail.get(r.email) ?? "" }));
   const file = `${group}.csv`;
   const csv = Papa.unparse({ fields: ["email", "NOME"], data: csvRows });
   const manifestEntry: SegmentManifestEntry = { key: group, file, desc: def.label, count: selected.length };
 
-  return { csv, manifestEntry, selected };
+  return { csv, manifestEntry, selected, recencyViolations };
 }
 
 /**
@@ -890,6 +924,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     manifestEntry: SegmentManifestEntry;
     selected: SegmentRow[];
     tierStats?: WaterfallTierStat[];
+    // #5169: só o modo --group (buildSegmentArtifact) computa isto — o modo
+    // --tiers usa uma seleção waterfall diferente, fora do escopo da issue
+    // (que nomeia especificamente segmentRampWarm/firstSend.sort). Ausente
+    // (não `[]`) no branch --tiers pra deixar explícito que não foi checado,
+    // não que passou vazio.
+    recencyViolations?: RecencyMonotonicityViolation[];
   } {
     if (tiersPathArg) {
       const wf = buildWaterfallSelection(inputRows, tierSpecs, budget);
@@ -907,7 +947,31 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     return buildSegmentArtifact(inputRows, group as NamedGroupKey, budget, minScore, ctx);
   }
 
-  const { csv, manifestEntry, selected, tierStats } = computeArtifact(holdResult.kept);
+  const { csv, manifestEntry, selected, tierStats, recencyViolations } = computeArtifact(holdResult.kept);
+
+  // #5169: guard de monotonicidade de recência — só grupos `ramp-warm`/
+  // `novos` (RECENCY_ORDERED_GROUPS, clarice-segment.ts) produzem
+  // `recencyViolations`; ausente (--tiers) ou vazio (ordem correta) não
+  // bloqueia. Checado ANTES de qualquer escrita, mesmo padrão de
+  // `checkRoundSizeCap` acima — `--force` destrava (o editor já olhou e
+  // decidiu prosseguir mesmo assim). Sob operação normal isto é uma
+  // tautologia matemática (ver docstring de `buildSegmentArtifact`) — só
+  // dispara se uma regressão futura reintroduzir ordenação só por bucket de
+  // cohort, inclusive na task diária automatizada (`--group ramp-warm`, sem
+  // humano presente pra passar `--force`) — é justamente aí que travar em
+  // vez de enviar fora de ordem importa mais.
+  if (recencyViolations && recencyViolations.length > 0 && !forceCap) {
+    const [first] = recencyViolations;
+    console.error(
+      `❌ grupo '${group}' violou a monotonicidade de recência (#5169): ${recencyViolations.length} contato(s) ` +
+        `mais antigo(s) entraram na onda enquanto contato(s) mais novo(s), ainda elegível(is), ficaram de fora. ` +
+        `Exemplo: ${first.selectedEmail} (cohort ${first.selectedCohort ?? "?"}, cadastro ${first.selectedCreated ?? "desconhecido"}) ` +
+        `entrou na frente de ${first.excludedEmail} (cohort ${first.excludedCohort ?? "?"}, cadastro ${first.excludedCreated ?? "desconhecido"}), ` +
+        `que deveria ter entrado primeiro. Sob operação normal isto nunca deveria acontecer — investigue antes de prosseguir. ` +
+        `Use --force pra destravar depois de olhar.`,
+    );
+    process.exit(1);
+  }
 
   // #4979: mesma disciplina do one-off de referência — se o operador pediu
   // budget EXATO (`--exact-budget`) e o universo pós-guards não fechar esse

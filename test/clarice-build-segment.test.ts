@@ -129,6 +129,26 @@ test("buildSegmentArtifact: grupo 'ramp-warm' — mv_bucket='verified' OU cohort
   );
 });
 
+test("buildSegmentArtifact: #5169 — 'ramp-warm'/'novos' sob operação normal produzem recencyViolations=[] (tautológico: selected é sempre o prefixo topo de ordered, compareContactRecency já garante o corte)", () => {
+  const rows: SegmentRow[] = [
+    row({ email: "novo@x.com", sends_count: 0, cohort: "leads-2023h2", created: "2023-08-01T00:00:00Z", mv_bucket: "verified" }),
+    row({ email: "medio@x.com", sends_count: 0, cohort: "leads-2022h2", created: "2022-09-01T00:00:00Z", mv_bucket: "verified" }),
+    row({ email: "antigo@x.com", sends_count: 0, cohort: "leads-2022h1", created: "2022-01-15T00:00:00Z", mv_bucket: "verified" }),
+  ];
+  const rampWarm = buildSegmentArtifact(rows, "ramp-warm", 2);
+  assert.deepEqual(rampWarm.recencyViolations, []);
+  assert.equal(rampWarm.selected.length, 2);
+});
+
+test("buildSegmentArtifact: #5169 — grupos 'engajados'/'reativacao' NÃO computam recencyViolations (fora do escopo — ordenam por engajamento, não por recência de cadastro)", () => {
+  const rows: SegmentRow[] = [
+    row({ email: "a@x.com", sends_count: 2, priority_points: 90 }),
+    row({ email: "b@x.com", sends_count: 2, priority_points: 10 }),
+  ];
+  const engajados = buildSegmentArtifact(rows, "engajados", 0);
+  assert.deepEqual(engajados.recencyViolations, [], "vazio (grupo fora do escopo, nunca computado de verdade)");
+});
+
 test("buildSegmentArtifact: 1º nome tira vírgula (Azevedo, Ana → Azevedo)", () => {
   const rows: SegmentRow[] = [row({ email: "x@x.com", sends_count: 2, priority_points: 10, name: "Azevedo, Ana" })];
   const { csv } = buildSegmentArtifact(rows, "engajados", 0);

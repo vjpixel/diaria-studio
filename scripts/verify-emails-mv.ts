@@ -202,6 +202,21 @@ class FatalApiError extends Error {}
  * Retorna linhas no mesmo shape que `splitRows`/`Papa.unparse` esperam
  * (Record<string,string>) — colunas fixas `email` + `name` (o que o store
  * tem disponível; `OPEN_PROBABILITY` do CSV legado não existe mais aqui).
+ *
+ * #5169: `ORDER BY created DESC` (achado ao vivo 12/08/2026) — antes desta
+ * mudança a query não tinha ORDER BY nenhum, então dentro de um cohort a
+ * ordem era a de rowid do SQLite (arbitrária em relação a recência de
+ * cadastro). `runMvOnDemandPlan` (clarice-mv-ondemand.ts) chama esta função
+ * e corta as `alloc.count` primeiras (`verifyCohortList`, `todo.slice(0,
+ * limit)`) — pra um cohort GIGANTE (dezenas de milhares) só parcialmente
+ * coberto pelo déficit diário (~1-5k), QUAIS contatos entram na fatia de
+ * hoje não tinha relação nenhuma com recência real, mesmo já ordenando os
+ * COHORTS certos (`cohortSendRank`/`planMvOnDemand`) do mais novo pro mais
+ * antigo — a mesma classe de lacuna que `contactRecencyRank`
+ * (`scripts/lib/cohorts.ts`) fecha do lado da fila de envio
+ * (`segmentRampWarm`). `created` NULL fica por último em `DESC` (semântica
+ * padrão do SQLite) — contato sem data de cadastro conhecida nunca fura a
+ * frente de quem tem. `email ASC` como desempate determinístico final.
  */
 export function readStoreCandidates(
   db: DatabaseSync,
@@ -209,7 +224,7 @@ export function readStoreCandidates(
 ): { rows: Record<string, string>[]; fields: string[]; emailKey: string } {
   const raw = db
     .prepare(
-      `SELECT email, name FROM clarice_users WHERE cohort = ? AND ${MV_NEVER_VERIFIED_SQL}`,
+      `SELECT email, name FROM clarice_users WHERE cohort = ? AND ${MV_NEVER_VERIFIED_SQL} ORDER BY created DESC, email ASC`,
     )
     .all(cohort) as Array<{ email: string; name: string | null }>;
   const rows = raw
@@ -222,7 +237,10 @@ export function readStoreCandidates(
  * #4347 Etapa 2d — variante de `readStoreCandidates` restrita a `created >=
  * sinceIso` (janela do laço Stripe→MV→envio da skill `/diaria-clarice-novos`).
  * Mesma semântica "skip forever" (`MV_NEVER_VERIFIED_SQL`) — nunca re-verifica
- * quem já tem `mv_bucket` preenchido de QUALQUER ciclo anterior.
+ * quem já tem `mv_bucket` preenchido de QUALQUER ciclo anterior. `ORDER BY
+ * created DESC` (#5169) pelo mesmo motivo de `readStoreCandidates` — aqui o
+ * impacto prático é menor (janela já estreita, poucos dias), mas mantém a
+ * mesma garantia sem custo real.
  */
 export function readStoreCandidatesSince(
   db: DatabaseSync,
@@ -231,7 +249,7 @@ export function readStoreCandidatesSince(
 ): { rows: Record<string, string>[]; fields: string[]; emailKey: string } {
   const raw = db
     .prepare(
-      `SELECT email, name FROM clarice_users WHERE cohort = ? AND created >= ? AND ${MV_NEVER_VERIFIED_SQL}`,
+      `SELECT email, name FROM clarice_users WHERE cohort = ? AND created >= ? AND ${MV_NEVER_VERIFIED_SQL} ORDER BY created DESC, email ASC`,
     )
     .all(cohort, sinceIso) as Array<{ email: string; name: string | null }>;
   const rows = raw
