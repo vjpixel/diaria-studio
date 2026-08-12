@@ -1,7 +1,7 @@
 /**
  * whatsapp-slug-guard.ts (#4570)
  *
- * O bloco encaminhável por WhatsApp (entre D1 e D2, ver
+ * O bloco encaminhável por WhatsApp (dentro do D1 desde #5152, ver
  * `newsletter-render-html.ts::buildWhatsappEditionUrl`) tem sua URL BAKED IN
  * no HTML final ANTES do Schedule — `https://diar.ia.br/p/{seoSlug(D1)}`,
  * previsto no Stage 4 sem nenhuma chamada à API Beehiiv (o post ainda nem
@@ -103,7 +103,7 @@ export function checkWhatsappSlugMatch(
     `[check-whatsapp-slug-guard] (#4570) Slug do post diverge do previsto pelo ` +
     `bloco WhatsApp: esperado "${expectedSlug}" (seoSlug do título do D1), ` +
     `atual "${normalizedActual ?? "(ausente)"}". O link do bloco WhatsApp ` +
-    `(entre D1 e D2) já está BAKED IN no corpo do e-mail apontando pra ` +
+    `(dentro do D1, #5152) já está BAKED IN no corpo do e-mail apontando pra ` +
     `"${expectedSlug}" — se o post ficar com outro slug, esse link 404 pra ` +
     `todo mundo que abrir o e-mail. Corrigir o slug do post ANTES do envio:\n\n` +
     formatManualSlugFixInstructions(postId, expectedSlug);

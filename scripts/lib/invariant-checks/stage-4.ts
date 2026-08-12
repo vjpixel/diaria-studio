@@ -1271,19 +1271,21 @@ function checkCard4x5UploadMismatch(editionDir: string): InvariantViolation[] {
 
 /**
  * #4673: `render-newsletter-html.ts` (via `renderHTML`/`getRenderWarnings`,
- * scripts/lib/newsletter-render-html.ts) emite 2 eventos estruturados quando
+ * scripts/lib/newsletter-render-html.ts) emite eventos estruturados quando
  * conteúdo editorial/comercial some silenciosamente do render — caixa de
- * divulgação sem lacuna livre (`divulgacao_box_dropped_no_gap`, #4624) e
- * bloco WhatsApp sem D1 (`whatsapp_share_no_d1`). Antes deste check, os dois
- * ficavam só no `console.error` de qualquer terminal que por acaso estava
- * rodando o render — nunca chegavam no resumo consolidado do gate que o
- * editor de fato revisa antes de publicar. O CLI (§4b step 2 do orchestrator)
- * grava esses eventos em `_internal/render-warnings.json` a cada chamada
- * (sempre — mesmo array vazio, pra nunca deixar warning STALE de uma rodada
- * anterior sobreviver). Warning-only, nunca bloqueia (mesmo padrão de
- * `image-crop-warn`/`card-4x5-upload-missing` acima) — a decisão de como
- * corrigir (reduzir caixas configuradas, promover/demover destaque) é
- * editorial, não mecânica.
+ * divulgação sem lacuna livre (`divulgacao_box_dropped_no_gap`, #4624),
+ * bloco WhatsApp sem D1 (`whatsapp_share_no_d1`), e — desde #5152 —
+ * divergência entre os dois sinais que decidem "isto é D1"
+ * (`whatsapp_share_d1_mismatch`, nunca deveria disparar, guard defensivo).
+ * Antes deste check, ficavam só no `console.error` de qualquer terminal que
+ * por acaso estava rodando o render — nunca chegavam no resumo consolidado
+ * do gate que o editor de fato revisa antes de publicar. O CLI (§4b step 2
+ * do orchestrator) grava esses eventos em `_internal/render-warnings.json` a
+ * cada chamada (sempre — mesmo array vazio, pra nunca deixar warning STALE
+ * de uma rodada anterior sobreviver). Warning-only, nunca bloqueia (mesmo
+ * padrão de `image-crop-warn`/`card-4x5-upload-missing` acima) — a decisão
+ * de como corrigir (reduzir caixas configuradas, promover/demover destaque)
+ * é editorial, não mecânica.
  *
  * Se o arquivo não existe (edição pré-#4673, ou render ainda não rodou nesta
  * retomada), não é violação — o arquivo é escrito pelo pré-render, que roda
@@ -1323,6 +1325,20 @@ function checkRenderWarnings(editionDir: string): InvariantViolation[] {
           `depende de D1 pra existir). Fix: confirmar que 02-reviewed.md tem ao menos 1 ` +
           `destaque antes de publicar.`,
         source_issue: "#4673",
+        severity: "warning",
+        file: path,
+      });
+    } else if (w.event === "whatsapp_share_d1_mismatch") {
+      violations.push({
+        rule: "whatsapp-share-d1-mismatch",
+        message:
+          `Bloco "Compartilhe no WhatsApp" pode ter sumido do e-mail publicado — o ` +
+          `render detectou que o 1º destaque no array (posição usada pra decidir ONDE ` +
+          `injetar o bloco) não tem \`n === 1\` (usado pra decidir SE injeta). Os dois ` +
+          `sinais deveriam sempre concordar; divergiram, e o bloco não foi incluído no ` +
+          `D1. Fix: investigar por que o array de destaques não está na ordem 1, 2, 3 — ` +
+          `provável bug no parsing/extração de 02-reviewed.md, não algo pra corrigir manualmente na edição.`,
+        source_issue: "#5152",
         severity: "warning",
         file: path,
       });
@@ -1467,7 +1483,7 @@ export const STAGE_4_RULES: InvariantRule[] = [
   },
   {
     id: "render-warnings-consumed",
-    description: "eventos estruturados de render-newsletter-html.ts (divulgacao_box_dropped_no_gap / whatsapp_share_no_d1) surfaced no gate (#4673, warning-only)",
+    description: "eventos estruturados de render-newsletter-html.ts (divulgacao_box_dropped_no_gap / whatsapp_share_no_d1 / whatsapp_share_d1_mismatch) surfaced no gate (#4673, warning-only)",
     source_issue: "#4673",
     stage: 4,
     run: checkRenderWarnings,

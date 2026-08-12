@@ -318,7 +318,7 @@ navegação) fica no meio, entre os dois.
 
 #### 4a. Setar slug SEO acent-correto — PRIMEIRO passo do cabeçalho (#1989, reordenado #4831)
 
-Se não setado, a Beehiiv auto-deriva o slug do título e **mangla acentos PT-BR** (`automação` → `automa-o`, `pânico` → `p-nico`) — slug quebrado prejudica SEO/UX/compartilhamento. **Desde #4570 isso deixou de ser só SEO**: o bloco encaminhável por WhatsApp (entre D1/D2, §5.2 abaixo) tem `https://diar.ia.br/p/{slug}` baked in no HTML — slug errado quebra um link já enviado, não só o ranking de busca. Computar o slug acent-correto e setá-lo em **Settings → SEO/URL slug** do post:
+Se não setado, a Beehiiv auto-deriva o slug do título e **mangla acentos PT-BR** (`automação` → `automa-o`, `pânico` → `p-nico`) — slug quebrado prejudica SEO/UX/compartilhamento. **Desde #4570 isso deixou de ser só SEO**: o bloco encaminhável por WhatsApp (dentro do D1 desde #5152, §5.2 abaixo) tem `https://diar.ia.br/p/{slug}` baked in no HTML — slug errado quebra um link já enviado, não só o ranking de busca. Computar o slug acent-correto e setá-lo em **Settings → SEO/URL slug** do post:
 
 ```typescript
 import { seoSlug, seoMetaDescription } from "scripts/lib/slug.ts";
@@ -516,8 +516,8 @@ Se o template "HTML" não estiver na library (heading "HTML" não encontrada), a
 > **⚠️ SLUG CANÔNICO OBRIGATÓRIO (#4570) — conferir ANTES de colar:**
 > `{slug_canônico}` = **`{seoSlug(título_d1)}`** (§4a acima já computou e
 > setou este valor — conferir aqui de novo antes do paste, não só confiar que
-> passou). O HTML que você está prestes a colar já contém, entre D1 e D2, um
-> bloco encaminhável por WhatsApp com a URL `https://diar.ia.br/p/{slug_canônico}`
+> passou). O HTML que você está prestes a colar já contém, dentro do D1
+> (#5152 — era entre D1 e D2 antes), um bloco encaminhável por WhatsApp com a URL `https://diar.ia.br/p/{slug_canônico}`
 > BAKED IN — texto literal, não um link dinâmico. Se o slug real do post
 > divergir disso (mangling PT-BR do Beehiiv, #1989, ou o wizard de Schedule
 > re-derivando o slug do título, #2011), esse link já enviado no corpo do
@@ -1060,7 +1060,7 @@ Sem tooling dedicado — é a mesma checklist a cada mês, aberta aqui pra não 
 
 **⚠️ Bug confirmado 260610**: o wizard de Schedule do Beehiiv re-deriva o slug do título e **mangla acentos PT-BR** (`automação` → `automa-o`, `pânico` → `p-nico`), desfazendo o slug correto setado no passo 4a (#1989). O Schedule acontece manualmente — depois que o editor clicar Schedule, verificar e corrigir o slug.
 
-**#4570 — não é mais só "corrija se puder":** o bloco encaminhável por WhatsApp (entre D1/D2) tem a URL `https://diar.ia.br/p/{seoSlug(título_d1)}` baked in no HTML já enviado — se o slug real divergir, esse link 404 pra sempre pra quem já recebeu o e-mail. `orchestrator-stage-6.md` §6d roda `scripts/check-whatsapp-slug-guard.ts` (wrapper de `checkWhatsappSlugMatch`, `scripts/lib/whatsapp-slug-guard.ts`) e trata divergência como **GATE-BLOCKING** — não prossegue pro resto do Stage 6 até o slug bater. Os passos 1-3 abaixo continuam sendo o MECANISMO de verificação/correção; o que mudou é que o orchestrator agora se recusa a seguir em frente sem essa confirmação.
+**#4570 — não é mais só "corrija se puder":** o bloco encaminhável por WhatsApp (dentro do D1 desde #5152) tem a URL `https://diar.ia.br/p/{seoSlug(título_d1)}` baked in no HTML já enviado — se o slug real divergir, esse link 404 pra sempre pra quem já recebeu o e-mail. `orchestrator-stage-6.md` §6d roda `scripts/check-whatsapp-slug-guard.ts` (wrapper de `checkWhatsappSlugMatch`, `scripts/lib/whatsapp-slug-guard.ts`) e trata divergência como **GATE-BLOCKING** — não prossegue pro resto do Stage 6 até o slug bater. Os passos 1-3 abaixo continuam sendo o MECANISMO de verificação/correção; o que mudou é que o orchestrator agora se recusa a seguir em frente sem essa confirmação.
 
 **⚠️ #3449 (confirmado 260714, edição real): a correção via API está permanentemente bloqueada no plano atual.** `fix-post-slug.ts --execute` retornou `403 SEND_API_NOT_ENTERPRISE_PLAN` — o mesmo gate de plano que já bloqueava `edit_post` via MCP (#1705) cobre o PATCH direto de `web_settings.slug` também. **Não é transitório** — não vale a pena re-tentar via API em edições futuras até um eventual upgrade de plano (ver #2501 pra decisão de custo). O caminho viável é a correção manual via UI (passo 3 abaixo), direto — sem passar pela tentativa de API primeiro.
 

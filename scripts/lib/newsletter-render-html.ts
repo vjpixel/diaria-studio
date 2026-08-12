@@ -105,7 +105,7 @@ export const EIA_ARCHIVE_UTM_CAMPAIGN = EIA_ARCHIVE_UTM.campaign;
  * `image-crop-warn`/`card-4x5-upload-missing`).
  */
 export interface RenderWarningEvent {
-  event: "divulgacao_box_dropped_no_gap" | "whatsapp_share_no_d1";
+  event: "divulgacao_box_dropped_no_gap" | "whatsapp_share_no_d1" | "whatsapp_share_d1_mismatch";
   edition: string;
   slot?: number;
 }
@@ -1095,10 +1095,12 @@ export function renderHubLinkInner(hubLink?: HubLink): string {
 /**
  * `whatsappShareHtml` (#5152, 260813): conteúdo INNER de `renderWhatsappShare`
  * — só é injetado quando `d.n === 1` (guard defensivo redundante com o
- * caller, que só passa o argumento pro D1; mesma disciplina anti-vazamento
- * do #4519, que garante que o bloco WhatsApp nunca aparece em D2/D3). Entra
- * logo após "Por que isso importa" — posição pedida pelo editor na revisão
- * da edição 260812.
+ * caller, que só passa o argumento pro D1; no mesmo espírito anti-vazamento
+ * do #4519 — aquela issue evitava que título de D2/D3 vazasse pro TEXTO do
+ * bloco WhatsApp; este guard evita que o BLOCO INTEIRO vaze pra dentro de
+ * D2/D3, um risco novo que só existe porque o bloco passou a viver dentro
+ * de um destaque, #5152). Entra logo após "Por que isso importa" — posição
+ * pedida pelo editor na revisão da edição 260812.
  */
 export function renderDestaque(d: RenderDestaque, whatsappShareHtml = ""): string {
   // #1936 (DS email template): seção = uma linha padded (32px lateral). Estrutura:
@@ -1970,11 +1972,11 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   const includeEia = !!(!opts.excludeEia && content.eia.credit);
   let eiaInserted = false;
 
-  // #4570: bloco encaminhável por WhatsApp — SEMPRE na lacuna D1/D2 (após D1)
-  // quando D1 existe. Permanente/fixo por decisão do editor (ver doc comment
-  // de `renderWhatsappShare`); calculado uma vez aqui (fora do loop) pra
-  // `assignDivulgacaoGaps` (#4624) saber se essa lacuna já está ocupada antes
-  // de alocar as caixas de divulgação.
+  // #4570/#5152: bloco encaminhável por WhatsApp — renderiza DENTRO do D1
+  // (ver docstring de `renderWhatsappShare`/`renderDestaque`), calculado uma
+  // vez aqui (fora do loop) e injetado só quando `i === 0` no loop abaixo.
+  // Não ocupa mais lacuna nenhuma entre destaques — `assignDivulgacaoGaps`
+  // (#4624) não recebe mais um `whatsappPresent` (removido em #5152).
   const whatsappShare = renderWhatsappShare(content.destaques, content.eia.edition);
 
   // #2978/#3476/#4624: caixas de divulgação configuradas (slot 1/2/3), na
@@ -2041,6 +2043,20 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     // D1 e D2 — `renderDestaque` só injeta quando `i === 0`. Histórico de
     // posição: pé do e-mail (#4486) → entre D1 e D2, como box (#4570) →
     // dentro do D1, sem box (#5152).
+    //
+    // Achado silent-failure-hunter (review desta PR): o caller decide "isto
+    // é D1" por POSIÇÃO (`i === 0`), enquanto `renderDestaque` decide
+    // independentemente por `d.n === 1` — hoje os dois sinais sempre
+    // concordam (destaques vêm sempre na ordem 1..3), mas se um dia
+    // divergirem (bug de parsing/reordenação upstream), o guard interno de
+    // `renderDestaque` engoliria o bloco em silêncio, sem log nenhum — a
+    // mesma classe de falha que #4512/#3809 já corrigiram pro caso "sem D1
+    // nenhum" (`whatsapp_share_no_d1`). Este check espelha aquele: nunca
+    // deveria disparar, mas se disparar, aponta o bug em vez de esconder o
+    // sintoma (bloco ausente do e-mail publicado).
+    if (i === 0 && whatsappShare && content.destaques[i].n !== 1) {
+      emitRenderWarning({ event: "whatsapp_share_d1_mismatch", edition: content.eia.edition });
+    }
     parts.push(renderDestaque(content.destaques[i], i === 0 ? whatsappShare : ""));
 
     // #4624: caixa de divulgação alocada pra esta lacuna (slot original ou

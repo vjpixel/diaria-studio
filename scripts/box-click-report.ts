@@ -303,6 +303,13 @@ export interface UnmatchedBox {
   aammdd: string;
   slot: BoxSlot;
   reason: string;
+  /** #5153 (achado silent-failure-hunter): arquivo do snippet, quando
+   * conhecido — sem isto não dava pra cruzar uma entrada desta lista com a
+   * linha do ranking que ela afeta (ex: qual box tem uma edição não-medida
+   * no meio do histórico). `null` só nos 2 casos em que o snippet nunca foi
+   * identificado (sem link mensurável, ou link que não bate com nenhum
+   * snippet cadastrado). */
+  snippet: string | null;
 }
 
 export interface BoxClickReport {
@@ -314,7 +321,17 @@ export interface BoxClickReport {
    * post completa 7 dias e o gate diário de `beehiiv-sync.ts` o enriquece),
    * diferente de "nunca vai ter dado" (sem post cacheado, sem link
    * mensurável). NUNCA entra em `total_verified_clicks`/
-   * `total_unique_verified_clicks` — dado ausente, não zero. */
+   * `total_unique_verified_clicks` — dado ausente, não zero.
+   *
+   * Mesmo shape de `UnmatchedBox` (achado type-design-analyzer, review desta
+   * PR — considerado, mas não implementado: TypeScript é estrutural, então
+   * um alias/interface nominal aqui NÃO impediria `[...unmatchedBoxes,
+   * ...neverEnrichedBoxes]` de type-checkar — só uma marca discriminante de
+   * verdade faria isso, custo desproporcional pro único call site real de
+   * hoje). A proteção prática contra misturar as duas listas é o `reason`
+   * (sempre nomeia "never_enriched"/"7 dias" explicitamente, ver
+   * `renderNeverEnrichedNote`) e o fato de `main()` renderizar as duas
+   * seções separadas, nunca concatenadas. */
   neverEnrichedBoxes: UnmatchedBox[];
 }
 
@@ -353,13 +370,14 @@ export function buildBoxClickReport(opts: BuildReportOpts): BoxClickReport {
 
     for (const usage of usages) {
       if (!usage.url) {
-        unmatchedBoxes.push({ aammdd, slot: usage.slot, reason: "box sem link (texto puro, não mensurável)" });
+        unmatchedBoxes.push({ aammdd, slot: usage.slot, snippet: null, reason: "box sem link (texto puro, não mensurável)" });
         continue;
       }
       if (!usage.snippet) {
         unmatchedBoxes.push({
           aammdd,
           slot: usage.slot,
+          snippet: null,
           reason: "sem snippet correspondente em context/snippets/ (link não bate com nenhum snippet cadastrado)",
         });
         continue;
@@ -372,28 +390,39 @@ export function buildBoxClickReport(opts: BuildReportOpts): BoxClickReport {
         verified: 0,
         uniqueVerified: 0,
       };
-      entry.editions.add(aammdd);
 
       if (post) {
         // #5153: post `never_enriched` (fora da janela de 7 dias) não soma
         // como zero — o dado real é DESCONHECIDO, não confirmado-zero.
-        // Mesmo tratamento de "sem post cacheado" abaixo, categoria à parte
-        // (`neverEnrichedBoxes`) porque a causa é temporária.
+        // **Achado silent-failure-hunter (review desta mesma PR):** não
+        // basta excluir do NUMERADOR (verified/uniqueVerified) — precisa
+        // excluir do DENOMINADOR também (`entry.editions`, usado por
+        // `avg_unique_verified_clicks` abaixo). Sem isso, uma edição
+        // never_enriched ainda inflava `editions.size` sem contribuir
+        // clique nenhum, diluindo a média pra baixo silenciosamente — o
+        // mesmo bug de raiz, um passo adiante. Diferente do caso "sem post
+        // cacheado" (branch `else` abaixo), que MANTÉM a semântica
+        // pré-#5153 de contar como aparição (comportamento já coberto por
+        // teste dedicado — "apareceu, mesmo sem dado de clique").
         if (isPostNeverEnriched(post)) {
           neverEnrichedBoxes.push({
             aammdd,
             slot: usage.slot,
+            snippet: key,
             reason: `edição fora da janela de 7 dias (enrichment_state: never_enriched) — cliques ainda não medidos, NÃO conta como zero`,
           });
         } else {
+          entry.editions.add(aammdd);
           const sum = sumClicksForUrl(usage.url, post.stats?.clicks ?? []);
           entry.verified += sum.verified_clicks;
           entry.uniqueVerified += sum.unique_verified_clicks;
         }
       } else {
+        entry.editions.add(aammdd);
         unmatchedBoxes.push({
           aammdd,
           slot: usage.slot,
+          snippet: key,
           reason: `snippet '${usage.snippet.file}' usado, mas nenhum post Beehiiv cacheado bate com a data ${aammdd} (cache incompleto ou edição ainda não sincronizada)`,
         });
       }

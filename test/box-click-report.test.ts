@@ -420,10 +420,20 @@ describe("buildBoxClickReport", () => {
     // Só a edição madura entra na soma — a never_enriched NÃO conta como 0.
     assert.equal(rows[0].total_verified_clicks, 10);
     assert.equal(rows[0].total_unique_verified_clicks, 9);
+    // Achado silent-failure-hunter (review desta PR): não bastava excluir do
+    // numerador — o DENOMINADOR (editions_appeared, base de
+    // avg_unique_verified_clicks) também não pode contar a edição
+    // never_enriched. Sem este fix, editions_appeared viria 2 (não 1) e
+    // avg_unique_verified_clicks viria 4.5 (9/2), diluindo silenciosamente
+    // a média de um box só porque ele foi reusado numa edição recente.
+    assert.equal(rows[0].editions_appeared, 1, "só a edição medida conta como aparição pro denominador da média");
+    assert.deepEqual(rows[0].editions, ["260731"]);
+    assert.equal(rows[0].avg_unique_verified_clicks, 9, "média deve ser 9 (só a edição medida), não 4.5 (9/2 diluído pela never_enriched)");
 
     assert.equal(unmatchedBoxes.length, 0, "never_enriched não é a mesma categoria de 'sem post cacheado'");
     assert.equal(neverEnrichedBoxes.length, 1);
     assert.equal(neverEnrichedBoxes[0].aammdd, "260810");
+    assert.equal(neverEnrichedBoxes[0].snippet, "clarice-divulgacao.md", "rastreável até a linha do ranking que afeta");
     assert.match(neverEnrichedBoxes[0].reason, /never_enriched/);
     assert.match(neverEnrichedBoxes[0].reason, /7 dias/);
     assert.match(neverEnrichedBoxes[0].reason, /NÃO conta como zero/);

@@ -45,7 +45,8 @@
  *     utm_medium=share, utm_campaign={AAMMDD}) — mantida por decisão
  *     explícita do coordenador no #4570 (atribuição de assinante novo).
  *   - URL aponta pra EDIÇÃO (diar.ia.br/p/{seoSlug(D1)}), não mais pra home.
- *   - Renderiza no HTML final, posicionado ENTRE D1 e D2.
+ *   - Renderiza no HTML final, DENTRO da seção do D1 (após "Por que isso
+ *     importa" — #5152), entre o título do D1 e o do D2.
  */
 
 import { describe, it } from "node:test";
@@ -354,6 +355,32 @@ describe("#4570/#5152 — posição no corpo da newsletter: DENTRO do D1, entre 
     );
   });
 
+  it("#5152 (achado silent-failure-hunter): sem divergência entre os 2 sinais de D1, nenhum evento whatsapp_share_d1_mismatch é coletado", () => {
+    resetRenderWarnings();
+    renderHTML(content);
+    assert.deepEqual(
+      getRenderWarnings().filter((w) => w.event === "whatsapp_share_d1_mismatch"),
+      [],
+      "caso normal (destaques[0].n === 1) não deve produzir esse evento",
+    );
+  });
+
+  it("#5152 (achado silent-failure-hunter): destaques[0].n !== 1 (dado malformado, nunca deveria acontecer) dispara whatsapp_share_d1_mismatch em vez de sumir em silêncio", () => {
+    const malformedContent: NewsletterContent = {
+      ...content,
+      // Simula os 2 sinais divergindo — posição 0 (o que decide ONDE
+      // injetar) com n=2 (o que decide SE injeta). Nunca deveria acontecer
+      // com dado real (destaques sempre vêm na ordem 1..3), mas o guard
+      // defensivo precisa AVISAR, não só engolir o bloco.
+      destaques: [makeD1({ n: 2 }), makeD2({ n: 1 })],
+    };
+    resetRenderWarnings();
+    renderHTML(malformedContent);
+    const warnings = getRenderWarnings().filter((w) => w.event === "whatsapp_share_d1_mismatch");
+    assert.equal(warnings.length, 1, "divergência entre i===0 e d.n===1 deve emitir exatamente 1 evento");
+    assert.equal(warnings[0].edition, EDITION);
+  });
+
   it("#4512 (achado pr-test-analyzer, preservado no #4570): bloco WhatsApp aparece ANTES do reveal do ERRO INTENCIONAL (que continua entre SORTEIO e 'Para encerrar')", () => {
     const contentComReveal: NewsletterContent = {
       ...content,
@@ -402,7 +429,7 @@ describe("#5152 — renderDestaque(d, whatsappShareHtml): injeção restrita ao 
     assert.ok(html.includes("Compartilhar no WhatsApp"), "bloco WhatsApp ausente do D1 quando passado explicitamente");
   });
 
-  it("d.n === 2: whatsappShareHtml é ignorado mesmo se passado (guard defensivo, mesma disciplina do #4519)", () => {
+  it("d.n === 2: whatsappShareHtml é ignorado mesmo se passado (guard defensivo, no mesmo espírito anti-vazamento do #4519)", () => {
     const html = renderDestaque(makeD2(), whatsappHtml);
     assert.ok(!html.includes("Compartilhar no WhatsApp"), "bloco WhatsApp nunca deve aparecer em D2, mesmo se o caller passar por engano");
   });

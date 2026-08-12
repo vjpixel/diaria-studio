@@ -54,6 +54,7 @@ import type { SourceEntry } from "./lib/source-runs.ts";
 import { canonicalize } from "./lib/url-utils.ts";
 import { URL_WITH_BALANCED_PARENS_RE_PART } from "./lib/lint-checks/section-item-format.ts";
 import { isAprofundeAnchor } from "./lib/ctr-utils.ts";
+import type { EnrichmentState } from "./lib/shared/enrichment-state.ts"; // #5153
 import { ALL_SECTION_NAMES_PATTERN } from "./lib/section-naming.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 import { buildTimelineRows } from "./render-overnight-timeline.ts";
@@ -234,9 +235,17 @@ interface CsvRow {
   // verified_clicks/unique_verified_clicks/ctr_pct desta linha são dado
   // AUSENTE (post fora da janela de 7 dias), não um zero medido. Coluna
   // pode estar ausente em CSVs gerados antes do #4836 — `row.enrichment_state`
-  // vem `undefined` nesse caso, tratado como "não never_enriched" (mesmo
-  // default conservador-pra-trás de resolveEnrichmentState).
-  enrichment_state?: string;
+  // vem `undefined` nesse caso, tratado como "não never_enriched" (comportamento
+  // IDÊNTICO ao pré-#5153 pra CSVs antigos — achado comment-analyzer, review
+  // do #5153: isto NÃO é o mesmo default de `resolveEnrichmentState`, que
+  // resolveria ambiguidade pro lado OPOSTO — aqui não há como recuperar
+  // `clicksLength` a partir de uma row de CSV já agregada, então a única
+  // opção sã é preservar o comportamento antigo em vez de inventar um). Tipado com o
+  // union compartilhado, não `string` solto — um valor gravado errado por um
+  // writer futuro do CSV vira erro de compilação aqui, não um `=== "never_
+  // enrichd"` que falha em silêncio (achado do type-design-analyzer, review
+  // do #5153).
+  enrichment_state?: EnrichmentState;
 }
 
 /**

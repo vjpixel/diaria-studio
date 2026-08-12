@@ -489,8 +489,8 @@ export const JOGAR_IDENTIFY_INLINE_UTM = {
   campaign: "eia-jogar-identify-signup",
 } as const;
 
-/** Bloco encaminhável por WhatsApp, entre D1 e D2 de cada edição diária
- * (#4486, posição/conteúdo revisados em #4570) — `utm_campaign` traz o
+/** Bloco encaminhável por WhatsApp, dentro do D1 de cada edição diária
+ * (#4486, posição/conteúdo revisados em #4570, #5152) — `utm_campaign` traz o
  * AAMMDD da edição que gerou o encaminhamento. Desde #4570 a URL aponta pra
  * PÁGINA DA EDIÇÃO (`diar.ia.br/p/{seoSlug(D1)}`), não mais direto pra home —
  * a UTM foi mantida por decisão explícita (#4570): preserva a atribuição de
@@ -992,9 +992,9 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     originFile: "scripts/lib/newsletter-render-html.ts",
     description:
       "Link pra página da edição (diar.ia.br/p/{seoSlug(D1)}) dentro do bloco " +
-      "fixo entre D1 e D2, pensado pra colar/encaminhar no WhatsApp (#4486, " +
-      "posição/conteúdo revisados em #4570) — utm_campaign = AAMMDD da " +
-      "edição que gerou o encaminhamento.",
+      "fixo pensado pra colar/encaminhar no WhatsApp — dentro do D1 desde " +
+      "#5152, era entre D1 e D2 (#4486, posição/conteúdo revisados em " +
+      "#4570) — utm_campaign = AAMMDD da edição que gerou o encaminhamento.",
     status: "ativo",
   },
   {
