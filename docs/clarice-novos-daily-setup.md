@@ -68,4 +68,17 @@ npx tsx scripts/arm-systemd-timers.ts --task Diaria-Clarice-Novos     # arma de 
 >
 > **Copiar só o `.timer`, nunca o `.service` junto.** O `ExecStart` gerado embute o caminho do Node que rodou o comando; em `predator` o service instalado usa `~/.local/node/bin/node` e uma sessão com `nvm` ativo gera `~/.nvm/versions/node/vX/bin/node`. A mudança de horário vive inteira no `.timer` — trocar o `.service` junto substitui o binário por outro sem necessidade.
 >
-> **⚠️ `Persistent=true` dispara catch-up no re-arme.** Se o horário novo já passou no dia, o `restart` executa a task NA HORA, porque o systemd a trata como execução perdida. Foi o que aconteceu em 260812: o re-arme às 16:00 BRT disparou a rodada `novos-260812` imediatamente (67 contatos, `sent` confirmado — rodada legítima do dia, só adiantada, sem duplicação). Para um horário que ainda não passou, o re-arme é inócuo. Para evitar o catch-up de vez: `systemctl --user stop` antes de trocar o unit e `start` só depois do horário novo.
+> **⚠️ `Persistent=true` dispara catch-up no re-arme.** Aconteceu em 260812: o re-arme às 16:00 BRT disparou a rodada `novos-260812` na hora (67 contatos, `sent` confirmado — rodada legítima do dia, só adiantada, sem duplicação).
+>
+> A regra é sobre o **carimbo**, não sobre o relógio. Existe `~/.local/share/systemd/timers/stamp-diaria-clarice-novos.timer`, cujo mtime é o último disparo real (confirmado: bate com `LastTriggerUSec`). Ao iniciar o timer, o systemd dispara imediatamente se alguma ocorrência do `OnCalendar` cai em `(carimbo, agora]`.
+>
+> Duas armadilhas que decorrem disso:
+>
+> - **`stop` não consome o carimbo.** Parar o timer e só dar `start` no dia seguinte **não evita nada** — a ocorrência perdida continua devida e dispara na hora do `start`.
+> - **Rearmar "depois do horário novo" é o caso ruim**, não a fuga dele. Foi exatamente a sequência do incidente: horário novo 11:00, re-arme às 16:00.
+>
+> Saídas que de fato funcionam:
+>
+> 1. Rearmar **antes** de a próxima ocorrência do horário novo acontecer — a janela entre o último disparo e o horário novo.
+> 2. Usar o kill switch desta task: `npx tsx scripts/lib/clarice-novos-enabled.ts --set disabled`, rearmar, deixar o catch-up sair no vazio, religar com `--set enabled`. É a opção mais segura aqui, porque o switch existe justamente para isso.
+> 3. `touch` no arquivo de carimbo antes do `start` — declara "já disparou agora", e não sobra ocorrência devida.
