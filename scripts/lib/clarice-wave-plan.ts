@@ -1116,6 +1116,22 @@ export interface WaveProposalInput {
   /** Índice do 1º dia da onda (continua a numeração do ciclo). */
   startingWaveNumber: number;
   /**
+   * #5140 — horas BRT do teste de HORÁRIO, quando ATIVO
+   * (`data/clarice-hour-test.json`). `undefined`/vazio = sem teste, e a
+   * proposta sai como sempre.
+   *
+   * Existe pra que a PRÉVIA não minta: sem isto, `buildWaveProposal` derivava
+   * as chaves só de `abc.action` e, num dia com o teste ligado, mostraria
+   * "1 lista" enquanto a execução criaria 2 campanhas em 2 horários. É a
+   * mesma classe do #5025 ("`renderWaveProposal` mostra todo valor que vira
+   * escrita na Brevo", mas o assunto nunca aparecia ali) — o editor aprova
+   * lendo esta prévia.
+   *
+   * Ignorado quando o A/B/C de assunto NÃO está travado, espelhando o guard
+   * de dimensão única de `clarice-envio-run.ts`.
+   */
+  hourCellsBrt?: number[];
+  /**
    * `true` quando a consulta de campanhas comprometidas (`queued` ∪ `sent`)
    * FALHOU. Vira bloqueio, nunca aviso: `fetchCommittedCampaignListIds` é
    * documentada pra "falhar alto" justamente porque, sem ela, o set de
@@ -1188,11 +1204,21 @@ export function buildWaveProposal(input: WaveProposalInput): WaveProposal {
   }
 
   const withCells = input.abc.action !== "travar";
+  // #5140: o teste de HORÁRIO só vale com o de assunto travado — mesma
+  // pré-condição que `clarice-envio-run.ts` aplica na execução. Replicada
+  // aqui de propósito: se a PRÉVIA e a EXECUÇÃO discordassem sobre quantas
+  // listas saem, a prévia viraria exatamente o tipo de mentira que o #5025
+  // corrigiu (o editor aprova lendo isto).
+  const hourCells = !withCells && input.hourCellsBrt && input.hourCellsBrt.length >= 2
+    ? input.hourCellsBrt
+    : null;
   const waves: PlannedWave[] = input.dates.map((date, i) => {
     const n = input.startingWaveNumber + i;
-    const keys = withCells
-      ? (["A", "B", "C"] as const).map((cell) => waveKey(n, date, cell))
-      : [waveKey(n, date)];
+    const keys = hourCells
+      ? hourCells.map((h) => waveKey(n, date, hourCellLabel(h)))
+      : withCells
+        ? (["A", "B", "C"] as const).map((cell) => waveKey(n, date, cell))
+        : [waveKey(n, date)];
     return { n, date, scheduledAt: scheduledAtForDate(date), volume: input.volumes.perDay[i], keys };
   });
 
@@ -1410,8 +1436,21 @@ export function renderWaveProposal(p: WaveProposal): string {
 
   L.push("── Onda proposta ──");
   for (const w of p.waves) {
-    L.push(`  d${w.n} · ${w.date} 06:00 BRT · ${fmt(w.volume)} contatos`);
-    for (const k of w.keys) L.push(`       lista: Clarice ${p.cycle} ${k}${k.match(/-[ABC]$/) ? ` — célula ${k.slice(-1)}` : ""}`);
+    // #5140: com teste de horário a onda NÃO tem um horário só — dizer
+    // "06:00 BRT" no cabeçalho seria falso justamente na linha que o editor
+    // usa pra conferir quando o envio sai. Nesse caso o horário migra pra
+    // linha de cada lista, onde ele de fato varia.
+    const hourCellKeys = w.keys.filter((k) => /-H\d{2}$/.test(k));
+    const header = hourCellKeys.length > 0
+      ? `  d${w.n} · ${w.date} · ${fmt(w.volume)} contatos · TESTE DE HORÁRIO (#5140)`
+      : `  d${w.n} · ${w.date} 06:00 BRT · ${fmt(w.volume)} contatos`;
+    L.push(header);
+    for (const k of w.keys) {
+      const abc = k.match(/-([ABC])$/);
+      const hour = k.match(/-H(\d{2})$/);
+      const anota = abc ? ` — célula ${abc[1]}` : hour ? ` — hora ${hour[1]}:00 BRT` : "";
+      L.push(`       lista: Clarice ${p.cycle} ${k}${anota}`);
+    }
   }
   L.push(`  TOTAL: ${fmt(p.volumes.total)} contatos em ${p.waves.length} dia(s)`);
   if (p.brevoCredits !== null) {

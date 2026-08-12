@@ -1024,10 +1024,13 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
     //   mode "single"      → 1 onda, 1 horário (o canônico).
     //   senão              → A/B/C de assunto, 3 assuntos, MESMO horário.
     //
-    // O assunto do teste de horário vem de `lockedSubjectOf(inherited)` e não
-    // de `inherited.subjects` — quando o teste roda, o A/B/C está travado por
-    // definição (guard no Passo 6), então existe um assunto único. Usar
-    // qualquer outra fonte faria as duas células divergirem em DUAS variáveis.
+    // O assunto é o MESMO nas duas células — senão os braços divergiriam em
+    // duas variáveis e o teste não mediria horário nenhum. Quando `hourCells`
+    // é truthy o A/B/C está travado (guard no Passo 6) e
+    // `resolveInheritedSubjects` devolve `mode: "single"`, então o ramo
+    // `.subjects.A` é inalcançável hoje — está ali porque a correlação
+    // "hourCells ⇒ single" vive no fluxo, não no tipo, e um `subjects[c]`
+    // solto seria pior que um fallback explícito se alguém afrouxar o guard.
     const cells: Array<{ key: string; cell: WaveCell | null; subject: string; scheduleAt: string }> =
       hourCells
         ? hourCells.map((hourBrt) => {

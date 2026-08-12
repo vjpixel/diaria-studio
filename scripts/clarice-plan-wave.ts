@@ -58,7 +58,8 @@ import {
 import { brevoGet, fetchCommittedCampaignListIds, fetchDraftCampaigns } from "./lib/brevo-client.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { requireCycleArg, CLARICE_BASE } from "./lib/clarice-paths.ts";
+import { requireCycleArg, CLARICE_BASE, REPO_ROOT } from "./lib/clarice-paths.ts";
+import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
 import { readClariceAbcState, lockedSubjectFromState, describeAbcState } from "./lib/clarice-abc-state.ts";
 import { readNovosState } from "./lib/clarice-novos-state.ts";
 import {
@@ -200,6 +201,8 @@ export interface PlanWaveOptions {
   /** #4664 — override de teste da raiz de `novos-state.json` (mesmo padrão
    *  `--data-root` do resto do projeto). Default = `CLARICE_BASE` (produção). */
   novosStateBaseDir?: string;
+  /** #5140 — raiz do repo pra ler `data/clarice-hour-test.json`. Injetável em teste. */
+  hourTestRootDir?: string;
   /** #5058 — seam de teste (mesmo padrão de `resolveAutoRampVolumes` em
    *  clarice-schedule-ramp.ts). Default = `fetch` global (produção). */
   fetchImpl?: typeof fetch;
@@ -338,12 +341,18 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
   const novosState = readNovosState(opts.novosStateBaseDir ?? CLARICE_BASE);
   const novosFreshness = measureNovosFreshness(novosState?.lastRunAt ?? null, now);
 
+  // #5140: mesma leitura fail-soft do estado que `clarice-envio-run.ts` faz.
+  // Sem isto a PRÉVIA mostraria 1 lista num dia em que a execução criaria 2
+  // campanhas em horários diferentes — a prévia é o que o editor aprova.
+  const hourTest = readClariceHourTestState(opts.hourTestRootDir ?? REPO_ROOT);
+
   return buildWaveProposal({
     cycle: opts.cycle,
     dates: opts.dates,
     volumes: volumeResult.proposal,
     abc,
     state,
+    hourCellsBrt: hourTest.status === "ativo" ? hourTest.hoursBrt : undefined,
     availableFirstSend,
     availableFirstSendByCohort,
     mvBacklog: summarizeMvBacklog(rows),

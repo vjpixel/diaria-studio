@@ -34,7 +34,10 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg } from "./cli-args.ts";
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+/** Raiz do repo. Exportada desde o #5140 — `clarice-plan-wave.ts` precisa
+ *  dela pra ler `data/clarice-hour-test.json` (o estado mora em `data/`, não
+ *  em `data/clarice-subscribers/`, então `CLARICE_BASE` não serve). */
+export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 /** Raiz da base Clarice (junction → OneDrive). Inputs-base + tiers moram aqui. */
 export const CLARICE_BASE = resolve(REPO_ROOT, "data/clarice-subscribers");

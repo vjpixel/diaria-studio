@@ -575,6 +575,144 @@ describe("clarice-envio-run (#5026)", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
+    // -----------------------------------------------------------------------
+    // #5140 — teste de HORÁRIO no orquestrador
+    // -----------------------------------------------------------------------
+
+    it("#5140: sem data/clarice-hour-test.json, NADA muda — o no-op é o claim central da PR", async () => {
+      // Se este teste quebrar, a feature deixou de ser desligada por default e
+      // passou a mexer numa onda real de ~4.000 destinatários sem ninguém ter
+      // ligado nada.
+      const root = freshRoot();
+      const proposal = goldenProposal({
+        abc: { action: "travar", metric: "nenhuma", winner: null, caveats: [], rationale: "assunto travado" },
+      });
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": jsonResult(proposal),
+      });
+      const r = await runEnvio(baseDeps(root, { exec, readAbcState: () => abcEncerrado("Assunto travado") }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+
+      const split = calls.find((c) => c.script === "scripts/clarice-split-group-cells.ts");
+      assert.ok(split!.args.includes("--no-cells"), "sem teste de horário => 1 lista só, como antes");
+      assert.ok(!split!.args.includes("--hour-cells"), "--hour-cells não pode aparecer com o teste inativo");
+      assert.ok(!/teste de horário/i.test(r.reportMarkdown), "nada sobre horário no relatório quando o teste está inativo");
+
+      const creates = calls.filter((c) => c.script === "scripts/clarice-schedule-group.ts" && c.args.includes("--create"));
+      assert.equal(creates.length, 1, "1 campanha, como sempre");
+      assert.equal(
+        creates[0].args[creates[0].args.indexOf("--schedule-at") + 1],
+        `${SEND_DATE}T09:00:00.000Z`,
+        "horário canônico 06:00 BRT preservado",
+      );
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#5140: teste ATIVO com A/B/C travado => 2 células, MESMO assunto, horários distintos", async () => {
+      const root = freshRoot();
+      writeFileSync(
+        resolve(root, "data", "clarice-hour-test.json"),
+        JSON.stringify({ status: "ativo", hoursBrt: [6, 10], startedAt: "2026-08-13T00:00:00.000Z", startedBy: "editor" }),
+        "utf8",
+      );
+      const proposal = goldenProposal({
+        abc: { action: "travar", metric: "nenhuma", winner: null, caveats: [], rationale: "assunto travado" },
+      });
+      const scheduleGroupHandler = (args: string[]) => {
+        const key = args[args.indexOf("--key") + 1] ?? "?";
+        if (args.includes("--create")) return jsonResult({ key, listId: 1, campaignId: 1, phase: "create", status: "draft" });
+        return jsonResult({ key, listId: 1, campaignId: 1, phase: "schedule", status: "scheduled" });
+      };
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": jsonResult(proposal),
+        "scripts/clarice-schedule-group.ts": scheduleGroupHandler,
+      });
+      const r = await runEnvio(baseDeps(root, { exec, readAbcState: () => abcEncerrado("Assunto travado") }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+
+      const split = calls.find((c) => c.script === "scripts/clarice-split-group-cells.ts");
+      assert.equal(split!.args[split!.args.indexOf("--hour-cells") + 1], "6,10");
+      assert.ok(!split!.args.includes("--no-cells"), "--no-cells e --hour-cells são mutuamente exclusivos");
+
+      const creates = calls.filter((c) => c.script === "scripts/clarice-schedule-group.ts" && c.args.includes("--create"));
+      assert.equal(creates.length, 2, "um --create por braço");
+      const horarios = creates.map((c) => c.args[c.args.indexOf("--schedule-at") + 1]);
+      assert.deepEqual(horarios, [`${SEND_DATE}T09:00:00.000Z`, `${SEND_DATE}T13:00:00.000Z`], "06:00 e 10:00 BRT");
+      const assuntos = new Set(creates.map((c) => c.args[c.args.indexOf("--subject") + 1]));
+      assert.equal(assuntos.size, 1, "assunto IDÊNTICO nos dois braços — senão o teste mede duas variáveis");
+      const keys = creates.map((c) => c.args[c.args.indexOf("--key") + 1]);
+      assert.deepEqual(keys, ["d12-qua12-H06", "d12-qua12-H10"]);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#5140: teste ATIVO com A/B/C ABERTO => horário PULADO com aviso, nunca 3×N células", async () => {
+      // Duas dimensões na mesma onda fragmentariam a base e confundiriam os
+      // efeitos. O guard tem que PULAR e dizer por quê — pular calado seria
+      // indistinguível de a feature não existir.
+      const root = freshRoot();
+      writeFileSync(
+        resolve(root, "data", "clarice-hour-test.json"),
+        JSON.stringify({ status: "ativo", hoursBrt: [6, 10], startedAt: "2026-08-13T00:00:00.000Z", startedBy: "editor" }),
+        "utf8",
+      );
+      // A/B/C aberto => a onda sai com 3 células, então o handler precisa
+      // responder N vezes (mesma forma do teste "continuar (3 células)").
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        // `goldenProposal()` default é `travar` — aqui o ponto é justamente o
+        // A/B/C EM CURSO, então a ação precisa ser explícita.
+        "scripts/clarice-plan-wave.ts": jsonResult(
+          goldenProposal({
+            abc: { action: "continuar", metric: "abertura", winner: null, caveats: [], rationale: "teste em curso" },
+            // `continuar` exige assunto herdável por célula — mesmo fixture do
+            // teste "continuar (3 células)" logo abaixo.
+            state: {
+              cycle: CYCLE,
+              waves: [
+                wave({ key: "d11-ter11-A", subject: "Sub A" }),
+                wave({ key: "d11-ter11-B", subject: "Sub B" }),
+                wave({ key: "d11-ter11-C", subject: "Sub C" }),
+              ],
+              volumeSum: 1, volumeComplete: true, sentCount: 3, scheduledCount: 0, unscopedCount: 0,
+            },
+            waves: [{ n: 12, date: SEND_DATE, scheduledAt: `${SEND_DATE}T09:00:00.000Z`, volume: 3450, keys: ["d12-qua12-A", "d12-qua12-B", "d12-qua12-C"] }],
+          }),
+        ),
+        "scripts/clarice-schedule-group.ts": (args: string[]) => {
+          const key = args[args.indexOf("--key") + 1] ?? "?";
+          if (args.includes("--create")) return jsonResult({ key, listId: 1, campaignId: 1, phase: "create", status: "draft" });
+          return jsonResult({ key, listId: 1, campaignId: 1, phase: "schedule", status: "scheduled" });
+        },
+      });
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+
+      const split = calls.find((c) => c.script === "scripts/clarice-split-group-cells.ts");
+      assert.ok(!split!.args.includes("--hour-cells"), "A/B/C aberto => teste de horário não entra");
+      assert.match(r.reportMarkdown, /teste de horário ATIVO mas o A\/B\/C/i, "o relatório precisa dizer por que pulou");
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#5140: estado corrompido => segue SEM teste de horário e AVISA", async () => {
+      const root = freshRoot();
+      writeFileSync(resolve(root, "data", "clarice-hour-test.json"), "{ nao é json", "utf8");
+      const proposal = goldenProposal({
+        abc: { action: "travar", metric: "nenhuma", winner: null, caveats: [], rationale: "assunto travado" },
+      });
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": jsonResult(proposal),
+      });
+      const r = await runEnvio(baseDeps(root, { exec, readAbcState: () => abcEncerrado("Assunto travado") }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      const split = calls.find((c) => c.script === "scripts/clarice-split-group-cells.ts");
+      assert.ok(split!.args.includes("--no-cells"), "fail-soft aponta pro lado que NÃO divide a onda");
+      assert.match(r.reportMarkdown, /estado do teste de horário ilegível/i);
+      rmSync(root, { recursive: true, force: true });
+    });
+
     it('#5055: estado ENCERRADO + planejador devolvendo "iniciar" => ABORTA com diagnóstico, não pausa em silêncio', async () => {
       // Achado HIGH do silent-failure-hunter no review da PR #5057: o ramo
       // `iniciar` retornava code 0 ANTES do guard, e `iniciar` é justamente o
