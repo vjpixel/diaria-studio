@@ -3,8 +3,9 @@
 Issue: [#4064](https://github.com/vjpixel/diaria-studio/issues/4064) (agendamento [#4131](https://github.com/vjpixel/diaria-studio/issues/4131) finding 1).
 
 Avalia, ~10h após cada envio, se algum guardrail de saúde do ramp de migração
-Clarice (abertura/bounce/unsub/spam) foi rompido — e, se sim, avisa o editor
-a tempo de agir. **Correção (#4935, 260810):** uma campanha Brevo agendada
+Clarice (bounce/unsub/spam — abertura aparece só como contexto no e-mail,
+nunca gatilha, #5166) foi rompido — e, se sim, avisa o editor a tempo de agir.
+**Correção (#4935, 260810):** uma campanha Brevo agendada
 **não é imutável** — dá pra cancelar via API (`PUT /emailCampaigns/{id}/status`,
 `status: cancel` ou `suspended`) ou pelo painel, e recriar com as
 características desejadas. O alarme continua útil porque a janela até o
