@@ -66,6 +66,13 @@ const DS = DS_COLORS;
 
 export interface Env {
   DASHBOARD_DATA: KVNamespace;
+  /**
+   * #5133: token compartilhado que gate-ia TODO o Worker (HTML + JSON).
+   * Secret (`wrangler secret put AUTH_TOKEN`), nunca var — mesmo padrão
+   * fail-CLOSED do brevo-dashboard (#2748): ausente → nega acesso a todo
+   * mundo, nunca libera. Ver `docs/diaria-dashboard-access-setup.md`.
+   */
+  AUTH_TOKEN?: string;
 }
 
 // ─── Re-export types para testes ─────────────────────────────────────────────
@@ -691,7 +698,7 @@ export function renderPollEiaSection(data: DashboardData, opts: RenderDashboardO
   <h2 class="section-title">É IA? (poll)</h2>
   ${refreshButtonHtml}
   <p class="section-note">${editions.length} edições com dados de poll · Atualizado: ${updatedAt} · Fonte: <code>${escHtml(poll.source)}</code></p>
-  <p class="section-note muted">Votos de teste do editor excluídos (pixel@memelab.com.br + vjpixel@gmail.com).</p>
+  <p class="section-note muted">Votos de teste do editor excluídos.</p>
 
   <h3 class="subsection-title">Por edição</h3>
   ${editionsSection}
@@ -1330,6 +1337,143 @@ function renderEiaRefreshScript(): string {
 </script>`;
 }
 
+// ─── Auth (#5133) ──────────────────────────────────────────────────────────
+//
+// Achado de segurança #5133: este Worker servia HTML + JSON operacional
+// (histórico de rodadas, payload agregado inteiro, espelho de superfície
+// pré-publicação) sem NENHUMA autenticação — `X-Robots-Tag: noindex` (#5097)
+// impede indexação, não impede ACESSO. Quem tivesse a URL lia tudo.
+//
+// Modelo escolhido: token compartilhado por header OU cookie, mesmo padrão
+// já em produção em workers/brevo-dashboard (#2748/#3081) — reuso
+// deliberado de um design já revisado, não uma invenção nova:
+//   - `X-Dashboard-Token: <token>` — caminho pra automação/scripts (curl,
+//     smoke tests) sem passar pelo fluxo de cookie.
+//   - Cookie `diaria-dash-auth` (HttpOnly, Secure, SameSite=Strict, 30d) —
+//     caminho pro editor no browser. Setado por `POST /login` (form-body,
+//     não querystring — o token nunca aparece em URL/access-log/histórico
+//     do browser, ao contrário de um fluxo `?token=`).
+// Fail-CLOSED (#2748): `AUTH_TOKEN` ausente nega acesso a TODO mundo, nunca
+// libera — um secret esquecido no deploy não pode virar leak silencioso.
+// Toda rota protegida devolve 401 (não 404/200 diferenciado) pra não
+// distinguir "recurso existe, token errado" de "recurso não existe" —
+// `/healthz`, `/robots.txt` e `/login` ficam de fora do gate por design
+// (liveness probe, diretiva pública, e o próprio ponto de entrada de login).
+const AUTH_COOKIE = "diaria-dash-auth";
+const AUTH_HEADER = "X-Dashboard-Token";
+
+/**
+ * Comparação timing-safe entre 2 strings — mesma técnica de
+ * workers/brevo-dashboard (#3081): o runtime de Workers não expõe
+ * `crypto.subtle.timingSafeEqual` (API Node-only), então normaliza via
+ * SHA-256 (tamanho fixo, remove a dependência do tamanho da string
+ * original) e compara os digests com XOR de tempo constante, sem
+ * early-return no primeiro byte diferente.
+ */
+async function timingSafeEqualStr(a: string, b: string): Promise<boolean> {
+  const enc = new TextEncoder();
+  const [digestA, digestB] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(a)),
+    crypto.subtle.digest("SHA-256", enc.encode(b)),
+  ]);
+  const viewA = new Uint8Array(digestA);
+  const viewB = new Uint8Array(digestB);
+  let diff = 0;
+  for (let i = 0; i < viewA.length; i++) diff |= viewA[i] ^ viewB[i];
+  return diff === 0;
+}
+
+/**
+ * `true` se a request carrega um token válido — via header (automação) OU
+ * cookie de sessão (browser). Fail-CLOSED: `AUTH_TOKEN` ausente → sempre
+ * `false`, independente do que a request carregue.
+ */
+export async function isAuthenticated(request: Request, env: Env): Promise<boolean> {
+  if (!env.AUTH_TOKEN) return false;
+
+  const headerToken = request.headers.get(AUTH_HEADER);
+  if (headerToken && (await timingSafeEqualStr(headerToken, env.AUTH_TOKEN))) return true;
+
+  const cookie = request.headers.get("Cookie") ?? "";
+  const cookieToken = cookie
+    .split(";")
+    .map((c) => c.trim())
+    .find((c) => c.startsWith(`${AUTH_COOKIE}=`))
+    ?.slice(`${AUTH_COOKIE}=`.length);
+  if (cookieToken === undefined) return false;
+  return timingSafeEqualStr(cookieToken, env.AUTH_TOKEN);
+}
+
+/**
+ * Página de login (form-body POST, token nunca em querystring) — também
+ * usada como resposta uniforme de "acesso negado" pra qualquer rota
+ * protegida (mesmo corpo/status independente do path pedido, então a
+ * resposta não vaza se o recurso existe). `status` 401 no caso de gate
+ * (padrão desta issue); 200 só na visita GET /login inicial.
+ */
+export function loginPage(status: 200 | 401 = 401, error = false): Response {
+  const html = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>diar.ia.br Dashboard — login</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:${DSF.sans};display:flex;height:100dvh;align-items:center;justify-content:center;background:${DS.paper}}
+form{background:${DS.paperEmail};padding:2rem;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.12);display:flex;flex-direction:column;gap:.75rem;width:min(340px,90vw)}
+h1{font-size:1.1rem;font-weight:600;color:${DS.ink}}
+input[type=password]{padding:.5rem .75rem;border:1px solid ${DS.rule};border-radius:6px;font-size:.9rem;width:100%}
+input[type=password]:focus{outline:2px solid ${DS.brand};outline-offset:1px;border-color:${DS.brand}}
+button{padding:.5rem 1rem;background:${DS.brand};color:#fff;border:none;border-radius:6px;font-size:.9rem;cursor:pointer;font-weight:500}
+button:hover{filter:brightness(0.9)}
+.err{color:#C00000;font-size:.82rem}
+</style></head>
+<body>
+<form method="POST" action="/login">
+<h1>diar.ia.br Dashboard</h1>
+${error ? '<p class="err">Token inválido. Tente novamente.</p>' : ""}
+<input type="password" name="token" placeholder="Token de acesso" required autofocus autocomplete="current-password">
+<button type="submit">Entrar</button>
+</form>
+</body></html>`;
+  return new Response(html, {
+    status,
+    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+  });
+}
+
+/**
+ * `GET /login` → form; `POST /login` → valida o token do form-body e, se
+ * correto, seta o cookie de sessão + redireciona pra `/`. Mesmo racional de
+ * status do brevo-dashboard (#2748/#3081): `AUTH_TOKEN` ausente → 403
+ * genérico (não 500 nomeando a causa — um scanner externo não deve
+ * conseguir distinguir "nunca configurado" de "configurado, token errado").
+ */
+async function handleLoginRoute(request: Request, env: Env): Promise<Response> {
+  if (request.method === "GET") return loginPage(200);
+  if (request.method === "POST") {
+    const body = await request.formData();
+    const rawToken = body.get("token");
+    const token = typeof rawToken === "string" ? rawToken : null;
+    if (!env.AUTH_TOKEN) return new Response("Acesso negado.", { status: 403 });
+    if (/[;\r\n]/.test(env.AUTH_TOKEN)) {
+      return new Response("Invalid AUTH_TOKEN configuration", { status: 500 });
+    }
+    if (token && (await timingSafeEqualStr(token, env.AUTH_TOKEN))) {
+      const maxAge = 30 * 24 * 60 * 60; // 30 dias
+      return new Response(null, {
+        status: 302,
+        headers: {
+          Location: "/",
+          "Set-Cookie": `${AUTH_COOKIE}=${env.AUTH_TOKEN}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`,
+          "Cache-Control": "no-store",
+        },
+      });
+    }
+    return loginPage(401, true);
+  }
+  return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET, POST" } });
+}
+
 // ─── Fetch handler ────────────────────────────────────────────────────────────
 
 const KV_KEY = "dashboard";
@@ -1409,6 +1553,19 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
 
   if (path === "/healthz") {
     return new Response("ok", { headers: { "Content-Type": "text/plain" } });
+  }
+
+  if (path === "/login") {
+    return handleLoginRoute(request, env);
+  }
+
+  // #5133: gate de auth pra TODO o resto — HTML e JSON. Colocado antes de
+  // qualquer lookup de rota/KV de propósito: uma rota que não existe e uma
+  // rota que existe mas está protegida devolvem a MESMA resposta (401 +
+  // loginPage) quando não autenticado, então a ausência de token nunca
+  // revela se o path pedido é real.
+  if (!(await isAuthenticated(request, env))) {
+    return loginPage(401);
   }
 
   // Cache de borda 5min (mesmo padrão do brevo-dashboard #2144)
@@ -1509,9 +1666,22 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
  */
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const response = await routeRequest(request, env);
+    // #5133: `HEAD /` devolvia 500 — `routeRequest` roteia `/` como
+    // cacheável e chama `cache.put(request, ...)`; a Cache API dos Workers
+    // lança pra requests não-GET ("Cannot cache response to non-GET
+    // request"), e nada capturava essa exceção. Reescreve o método pra GET
+    // ANTES de entrar em `routeRequest` (roteamento/cache/auth idênticos a
+    // um GET normal) e, na saída, devolve a resposta com o mesmo
+    // status/headers mas body vazio — semântica HTTP padrão de HEAD.
+    const isHead = request.method === "HEAD";
+    const effectiveRequest = isHead ? new Request(request, { method: "GET" }) : request;
+    const response = await routeRequest(effectiveRequest, env);
     const headers = new Headers(response.headers);
     headers.set("X-Robots-Tag", "noindex");
-    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+    return new Response(isHead ? null : response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
   },
 };

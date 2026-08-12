@@ -500,8 +500,12 @@ describe("renderPollEiaSection (#2475)", () => {
     assert.ok(html.includes("João"), "deve incluir 1º do leaderboard");
     assert.ok(html.includes("🔥3"), "deve incluir streak de João");
 
-    // Nota de votos de teste excluídos
-    assert.ok(html.includes("vjpixel@gmail.com") || html.includes("pixel@memelab"), "deve mencionar exclusão de votos de teste");
+    // Nota de votos de teste excluídos — #5133: o HTML NÃO deve mais expor os
+    // e-mails pessoais do editor em texto claro (achado de segurança), só a
+    // menção genérica de que votos de teste foram excluídos.
+    assert.ok(html.includes("Votos de teste do editor excluídos"), "deve mencionar exclusão de votos de teste");
+    assert.ok(!html.includes("vjpixel@gmail.com"), "#5133: não deve vazar o e-mail pessoal do editor");
+    assert.ok(!html.includes("pixel@memelab"), "#5133: não deve vazar o e-mail pessoal do editor");
 
     // pct_correct null → "—"
     assert.ok(html.includes("—"), "edição sem pct_correct deve renderizar '—'");
