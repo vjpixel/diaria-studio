@@ -3,27 +3,38 @@
  *
  * Bloco <head> de SEO/compartilhamento compartilhado entre as páginas públicas
  * estáticas da diar.ia.br geradas por script (`build-cursos-page.ts`,
- * `build-livros-page.ts`). Cada página tem title/description próprios;
- * `renderSeoMeta` monta description + Open Graph + Twitter card + canonical +
- * favicon (SVG inline via data-URI — zero asset externo, zero custo).
+ * `build-livros-page.ts`, `hub-page.ts`, `render-archive.ts`). Cada página tem
+ * title/description próprios; `renderSeoMeta` monta description + Open Graph +
+ * Twitter card + canonical + favicon (SVG inline via data-URI — zero asset
+ * externo, zero custo) + og:image opcional (abaixo) + feed RSS opcional
+ * (abaixo).
  *
- * Por que NÃO há og:image/twitter:image (decisão #3106, documentada também no
- * corpo do PR): nenhuma das 3 páginas afetadas (cursos, livros, poll
- * leaderboard) tem asset de marca estático versionado no repo — sem favicon,
- * logo ou capa em `context/`, `seed/` ou `workers/{worker}/public/` reutilizável.
- * Gerar uma imagem 1200×630 nova está fora de escopo desta issue (custo +
- * dependência de serviço externo — contra o princípio de zero-custo-recorrente
- * do CLAUDE.md). Um SVG inline via data-URI FUNCIONA bem como favicon
- * (`<link rel="icon">` — todo browser moderno decodifica data: URIs), mas
- * og:image/twitter:image são diferentes: os crawlers de unfurling
- * (WhatsApp/LinkedIn/Facebook/Slack) fazem um GET HTTP(S) SEPARADO na URL
- * declarada em `content` para baixar a imagem — um `data:` URI não é uma "URL"
- * buscável nesse sentido e é tipicamente ignorado ou rejeitado por esses
- * crawlers (spec do Open Graph assume `http`/`https`). Declarar um og:image
- * que nenhum unfurler consegue buscar teria pior UX que omiti-lo (card com
- * campo de imagem "morto" vs. card compacto sem imagem). Decisão: omitir
- * og:image/twitter:image; usar `twitter:card=summary` (sem imagem grande) —
- * title + description continuam aparecendo normalmente no preview.
+ * **og:image/twitter:image — decisão #3106 REABERTA em #5131 (12/ago/2026).**
+ * A decisão original (permanece documentada aqui pra não se perder o
+ * histórico) foi omitir os dois: nenhuma das 3 páginas afetadas na época
+ * (cursos, livros, poll leaderboard) tinha asset de marca estático
+ * versionado no repo, e gerar uma imagem nova estava fora de escopo (custo +
+ * dependência de serviço externo, contra zero-custo-recorrente do
+ * CLAUDE.md). As DUAS premissas que embasaram isso caducaram: `sharp` já é
+ * dependência do repo, e o pipeline diário gera e hospeda capas 1600×800
+ * (`data/editions/{ed}/_internal/06-public-images.json` → `images.cover.url`)
+ * todo dia — o asset que faltava em #3106 já existe como subproduto de
+ * outro trabalho. Decisão do #5131: emitir `og:image`/`twitter:image`
+ * QUANDO uma imagem estiver disponível (parâmetro `image`, opcional — ver
+ * `SeoMetaOptions.image` abaixo), com `twitter:card=summary_large_image` no
+ * lugar de `summary`. Omitir `image` preserva o comportamento antigo
+ * byte-a-byte (nenhum teste de `seo-meta.test.ts`/`poll-*` que já passava
+ * sem passar `image` deveria mudar). **`especial.diar.ia.br` já emite
+ * `og:image` desde antes (#5126) — mas por um caminho PARALELO, HTML
+ * estático commitado à mão (`workers/artigos/public/2026/o-agente/index.html`),
+ * sem passar por este módulo.** Registrado aqui porque, sem essa nota, a
+ * próxima sessão que ler este docstring concluiria que ninguém no projeto
+ * emite `og:image` — o que já era falso antes mesmo do #5131.
+ *
+ * Continua não usando o favicon SVG data-URI como og:image — a mesma
+ * limitação de sempre (unfurlers fazem GET HTTP(S) separado na URL
+ * declarada; `data:` URI não é uma URL buscável nesse sentido) segue valendo
+ * pro favicon, só não é mais a única imagem disponível.
  */
 
 export interface SeoMetaOptions {
@@ -37,6 +48,33 @@ export interface SeoMetaOptions {
   siteName?: string;
   /** og:locale. Default "pt_BR". */
   locale?: string;
+  /**
+   * Imagem de compartilhamento (#5131) — QUANDO presente, emite
+   * `og:image`/`twitter:image` (+ `og:image:width`/`og:image:height` se
+   * `width`/`height` vierem) e troca `twitter:card` de `summary` pra
+   * `summary_large_image`. `url` precisa ser http(s) buscável por unfurler
+   * (nunca um `data:` URI — ver nota do módulo). Omitido (default):
+   * comportamento idêntico a antes do #5131 — sem og:image/twitter:image,
+   * `twitter:card=summary`.
+   */
+  image?: {
+    url: string;
+    width?: number;
+    height?: number;
+  };
+  /**
+   * Feed RSS/Atom desta página (#5127) — QUANDO presente, declara
+   * `<link rel="alternate" type="application/rss+xml">` no `<head>`, pra
+   * leitores/agregadores descobrirem o feed sem depender só do
+   * `robots.txt`. Omitido (default): nenhum `<link rel="alternate">` é
+   * emitido — comportamento idêntico a antes do #5127.
+   */
+  feed?: {
+    url: string;
+    /** `title` do `<link>` — texto que o leitor de feed mostra na lista de
+     * assinaturas. Default: "{siteName} — Feed RSS". */
+    title?: string;
+  };
 }
 
 function escAttr(s: string): string {
@@ -63,24 +101,33 @@ export const FAVICON_DATA_URI =
 /**
  * Monta o bloco de tags `<head>` de SEO/compartilhamento. Pure — devolve uma
  * string pronta pra interpolar dentro de `<head>...</head>`, entre `<title>`
- * e `<style>`. Ver nota do módulo sobre a ausência intencional de
- * og:image/twitter:image.
+ * e `<style>`. Ver nota do módulo sobre `image`/`feed` (opcionais, #5131/#5127)
+ * e a ausência de og:image/twitter:image quando `image` não é passado.
  */
 export function renderSeoMeta(opts: SeoMetaOptions): string {
-  const { title, description, url, siteName = "diar.ia.br", locale = "pt_BR" } = opts;
+  const { title, description, url, siteName = "diar.ia.br", locale = "pt_BR", image, feed } = opts;
   const t = escAttr(title);
   const d = escAttr(description);
   const u = escAttr(url);
+  const imageTags = image
+    ? `\n<meta property="og:image" content="${escAttr(image.url)}">` +
+      (image.width ? `\n<meta property="og:image:width" content="${image.width}">` : "") +
+      (image.height ? `\n<meta property="og:image:height" content="${image.height}">` : "") +
+      `\n<meta name="twitter:image" content="${escAttr(image.url)}">`
+    : "";
+  const feedTag = feed
+    ? `\n<link rel="alternate" type="application/rss+xml" title="${escAttr(feed.title ?? `${siteName} — Feed RSS`)}" href="${escAttr(feed.url)}">`
+    : "";
   return `<meta name="description" content="${d}">
 <link rel="canonical" href="${u}">
-<link rel="icon" href="${FAVICON_DATA_URI}">
+<link rel="icon" href="${FAVICON_DATA_URI}">${feedTag}
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="${escAttr(siteName)}">
 <meta property="og:locale" content="${escAttr(locale)}">
 <meta property="og:title" content="${t}">
 <meta property="og:description" content="${d}">
-<meta property="og:url" content="${u}">
-<meta name="twitter:card" content="summary">
+<meta property="og:url" content="${u}">${imageTags}
+<meta name="twitter:card" content="${image ? "summary_large_image" : "summary"}">
 <meta name="twitter:title" content="${t}">
 <meta name="twitter:description" content="${d}">`;
 }

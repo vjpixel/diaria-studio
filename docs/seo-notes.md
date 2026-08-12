@@ -463,6 +463,51 @@ pro Google — mesma disciplina de erosão de confiança do `<lastmod>`/IndexNow
 (Fato 3). Rodar de novo só se um sitemap NOVO entrar na lista
 `CURADORIA_SITEMAPS`.
 
+## Fato 10 — decisão negativa sobre Google News/Publisher Center, Bing News PubHub e MSN Partner Hub (12/ago/2026, #5132)
+
+**Não perseguir Google News/Publisher Center.** Investigação exaustiva do
+histórico do repo (`gh issue list --state all`) não achou nenhuma issue
+prévia mencionando "Google News" ou "Publisher Center" — a porta nunca foi
+avaliada por mérito, só nunca tentada. Quatro motivos fecham essa avaliação:
+
+1. **Publisher Center parou de aceitar cadastro manual em 18/dez/2024** —
+   elegibilidade hoje é automática, não existe etapa a cumprir. Ou o Google
+   considera o site elegível, ou não; não há ação nossa que force a entrada.
+2. **Não há forma ToS-safe de verificar pertencimento** a News ou Discover.
+   Não existe API oficial de leitura, e consultar `news.google.com` por
+   fetch seria automação de site de terceiro (proibido por princípio, ver
+   CLAUDE.md). A única leitura autoritativa é o relatório Discover do
+   próprio GSC — que só aparece quando há impressões, e resultado vazio **é**
+   resposta. É por isso que o #5119 item 4 (fechado) puxa `type: "discover"`/
+   `"news"` nas dimensões da chamada — é o caminho legítimo de resposta.
+3. Os requisitos técnicos do Discover (`max-image-preview:large`, imagem
+   ≥1200px, `NewsArticle`, autor identificável) moram todos no HTML do
+   **apex** (`diar.ia.br/p/...`, servido pela Beehiiv), onde este repo não
+   tem alavanca — mesma classe de bloqueio do Fato 6 acima.
+4. **Achado novo aproveitável:** o sitemap da Beehiiv já emite markup válido
+   de Google News por conta própria — `xmlns:news` declarado e
+   `<news:news>` presente nas 2 URLs mais recentes (janela de 48h da spec),
+   com `<news:language>pt</news:language>`. Isso **contradiz** o
+   `<html lang="en">` do Fato 6 — a mesma plataforma declara `pt` no sitemap
+   e serve `en` no HTML da página. Levado como munição concreta ao #5101
+   item 1 (comentário postado, ver abaixo).
+
+**Discover não está descartado, só não é acionável no apex hoje.** Se a
+decisão do #5125 for construir uma superfície própria (fora do apex Beehiiv),
+os requisitos técnicos do item 3 passam a ser implementáveis lá, e a leitura
+de resultado segue vindo do #5119 item 4.
+
+**Mesma família de descarte, dois agregadores de notícia adicionais** (bloqueio
+externo, não omissão nossa):
+
+- **Bing News PubHub** — aposentado para novos publishers em 2025, sem
+  formulário de inscrição disponível.
+- **MSN Partner Hub** — exige código de convite; não tem inscrição
+  self-service.
+
+Nenhuma linha de código muda por este Fato — decisão de escrita pura, para
+que a frente Discover/News da épica #5116 pare de reabrir a cada auditoria.
+
 ## Quando adicionar entry aqui
 
 Mesmo critério de `context/agents-known-issues.md`, aplicado a dado de SEO em

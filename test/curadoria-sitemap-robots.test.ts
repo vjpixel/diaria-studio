@@ -104,6 +104,33 @@ describe("renderCuradoriaRobotsTxt (#4546)", () => {
   });
 });
 
+describe("renderCuradoriaRobotsTxt — feedUrl (#5127)", () => {
+  it("sem feedUrl: nenhuma linha Feed: aparece (comportamento idêntico a antes)", () => {
+    const out = renderCuradoriaRobotsTxt("https://x.example/sitemap.xml");
+    assert.doesNotMatch(out, /^Feed:/m);
+  });
+
+  it("com feedUrl: declara Feed: junto do Sitemap:, feed depois", () => {
+    const out = renderCuradoriaRobotsTxt("https://arquivo.diar.ia.br/sitemap.xml", {
+      feedUrl: "https://arquivo.diar.ia.br/feed.xml",
+    });
+    assert.match(out, /Sitemap: https:\/\/arquivo\.diar\.ia\.br\/sitemap\.xml\nFeed: https:\/\/arquivo\.diar\.ia\.br\/feed\.xml/);
+  });
+
+  it("lança se feedUrl não for uma URL absoluta http(s)", () => {
+    assert.throws(
+      () => renderCuradoriaRobotsTxt(undefined, { feedUrl: "arquivo.diar.ia.br/feed.xml" }),
+      /feedUrl deve ser uma URL absoluta/,
+    );
+  });
+
+  it("feedUrl sem sitemapUrl também funciona (Feed: sozinho)", () => {
+    const out = renderCuradoriaRobotsTxt(undefined, { feedUrl: "https://x.example/feed.xml" });
+    assert.match(out, /Feed: https:\/\/x\.example\/feed\.xml/);
+    assert.doesNotMatch(out, /Sitemap:/);
+  });
+});
+
 describe("renderCuradoriaRobotsTxt — validação de forma (#4782 achado 5)", () => {
   it("lança se algum extraDisallowPath não começar com '/' — regressão concreta do achado", () => {
     // Sem a validação, "vote" (sem barra) virava `Disallow: vote` — um path

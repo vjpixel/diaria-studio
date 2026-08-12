@@ -25,6 +25,19 @@
  * `scripts/lib/exec-mode.ts`). Rodar numa sessão local após qualquer sync
  * novo de posts e commitar o JSON resultante.
  *
+ * **#5131 (12/ago/2026): ganhou `coverImageUrl` opcional por entrada.**
+ * Mesmo script, mesmo dataset (`data/beehiiv-cache/posts/*.json`) — só
+ * passou a ler `thumbnail_url` de cada post pra alimentar `og:image`/
+ * `twitter:image` do arquivo e dos hubs (`render-archive.ts`/`hub-page.ts`
+ * via `scripts/build-hub-page.ts`). Ver docstring de `RawCachedPost.thumbnail_url`
+ * pra origem/rationale. **Esta sessão (overnight, cloud) não teve acesso a
+ * `data/` pra rodar o gerador de verdade** — o campo é código correto e
+ * testado (`buildTitlesCache`), mas `titles-cache.json` committado ainda
+ * NÃO tem `coverImageUrl` em nenhuma entrada até uma sessão local rodar
+ * este script de novo e commitar o resultado (mesma disciplina que o
+ * `title`/`publishDate` originais já seguiam desde #4265 — regenerar
+ * localmente é sempre o próximo passo depois de mudar este script).
+ *
  * Uso:
  *   npx tsx scripts/generate-arquivo-titles.ts
  *   npx tsx scripts/generate-arquivo-titles.ts --out workers/arquivo/src/titles-cache.json
@@ -61,6 +74,19 @@ export interface RawCachedPost {
   web_url?: string;
   publish_date?: number | null;
   status?: string;
+  /** URL da cover/thumbnail do post, se a Beehiiv tiver uma associada —
+   * mesmo campo `get_post.thumbnail_url` que `beehiiv-cover-upload.ts` já lê
+   * como verificação READ-only pós-upload (#2341). Alimenta `coverImageUrl`
+   * abaixo (#5131) — reusa o MESMO dataset já lido por este script em vez de
+   * abrir um 2º pipeline contra `data/editions/{ed}/_internal/06-public-images.json`
+   * (que exigiria cruzar publishDate↔pasta de edição, e nem toda edição
+   * antiga tem esse arquivo — 77/101 no momento do #5131). Como
+   * `06-public-images.json.images.cover.url` é o que se sobe como thumbnail
+   * (#2341, `beehiiv-cover-upload.ts`), `thumbnail_url` É essa mesma imagem,
+   * só espelhada pelo CDN da Beehiiv em vez de `eia.diar.ia.br` — decisão
+   * de engenharia registrada aqui, não um desvio silencioso do que a issue
+   * pedia ("host nosso"). */
+  thumbnail_url?: string;
   /** HTML da edição publicada — só o corpo `free.web` interessa aqui (o
    * cache também traz `free.email`, não declarado por não ter consumidor
    * ainda). Usado por `generate-hub-sources.ts` (#4919 Parte A) pra achar,
@@ -80,6 +106,16 @@ export interface ArquivoTitleEntry {
    * ajustado pra BRT (UTC-3), mesmo padrão de `monthly-relink-to-diaria.ts`
    * — pra não cruzar o dia errado perto da meia-noite UTC. */
   publishDate: string;
+  /** URL da capa da edição (#5131), pra `og:image`/`twitter:image` do
+   * arquivo/hubs — ver nota de `RawCachedPost.thumbnail_url` acima sobre a
+   * origem. Sempre `1600×800` (dimensão fixa do D1 2x1 gerado pelo
+   * pipeline — ver `scripts/image-generate.ts` — que é a imagem uploadada
+   * como thumbnail via #2341; nenhum campo de dimensão vem do Beehiiv em
+   * si, então o Worker que consome isto assume esse valor fixo em vez de o
+   * cache carregar `width`/`height` redundantes). Ausente quando o post não
+   * tinha thumbnail no momento do sync (nunca bloqueia — og:image vira
+   * opcional no Worker consumidor). */
+  coverImageUrl?: string;
 }
 
 export type TitlesCache = Record<string, ArquivoTitleEntry>;
@@ -162,7 +198,14 @@ export function buildTitlesCache(
       continue;
     }
 
-    cache[slug] = { title, publishDate };
+    // #5131: só string não-vazia vira coverImageUrl — um `thumbnail_url`
+    // ausente/vazio no post cru não deve virar `""` no cache (o Worker
+    // consumidor checa truthiness, mas manter a invariante "presente =
+    // não-vazia" evita um `<meta property="og:image" content="">` morto se
+    // algum consumidor futuro checar só `!== undefined`).
+    const coverImageUrl = post.thumbnail_url ? post.thumbnail_url : undefined;
+
+    cache[slug] = { title, publishDate, ...(coverImageUrl ? { coverImageUrl } : {}) };
   }
 
   return { cache, warnings };
