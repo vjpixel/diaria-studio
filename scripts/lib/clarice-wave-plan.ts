@@ -144,15 +144,92 @@ export function waveDateFragment(date: string): string {
 }
 
 /**
+ * Célula do teste de HORÁRIO (#5140) — `H` + hora BRT zero-padded (`H06`,
+ * `H10`). Dimensão distinta do A/B/C **de propósito**, não por estética:
+ *
+ *   - `parseAbcAudienceCampaign` (dashboard) casa `([ABC])\b`, então `H06`
+ *     nunca é lido como célula de assunto. Sem isso, um teste de horário
+ *     apareceria no painel rotulado como teste de assunto — a confusão que a
+ *     #5140 lista como guardrail.
+ *   - `clarice-abc-state.json` continua `encerrado` sem que este teste o
+ *     toque. Reabri-lo traria de volta a ressalva de poder baixo do #4559,
+ *     que zera o passo adaptativo de volume (ver docs/clarice-envio-daily-setup.md).
+ */
+export type HourCell = `H${string}`;
+
+/** Célula de assunto (`A`/`B`/`C`, #4449) ou de horário (`H06`…, #5140).
+ *  O nome `AbcCell` NÃO é reexportado aqui de propósito — ele já é dono de
+ *  `clarice-abc-state.ts`, e dois tipos homônimos em módulos irmãos é a
+ *  espécie de ambiguidade que faz alguém importar do lugar errado. */
+export type WaveCell = "A" | "B" | "C" | HourCell;
+
+/** Hora BRT (0–23) → rótulo de célula de horário (`6` → `H06`). */
+export function hourCellLabel(hourBrt: number): HourCell {
+  if (!Number.isInteger(hourBrt) || hourBrt < 0 || hourBrt > 23) {
+    throw new Error(`hora BRT inválida: ${hourBrt} — esperado inteiro entre 0 e 23.`);
+  }
+  return `H${String(hourBrt).padStart(2, "0")}`;
+}
+
+/**
+ * Hora BRT → hora UTC do MESMO dia-calendário (BRT = UTC-3, fixo o ano todo).
+ *
+ * LANÇA a partir de 21:00 BRT, que em UTC já é o dia seguinte. Sem este
+ * guard, `scheduledAtForDate(date, (h + 3) % 24)` montaria o ISO no dia
+ * ERRADO — 22:00 BRT viraria 01:00 UTC do próprio `date`, ou seja 22:00 BRT
+ * do dia ANTERIOR: uma campanha real agendada 24h antes do pretendido, e o
+ * tipo de erro que só aparece depois do disparo (mesma classe do incidente
+ * 260703 citado em `scheduledAtForDate`).
+ *
+ * Restringir em vez de fazer a aritmética de data completa é deliberado: a
+ * janela útil do teste de horário é diurna (a análise da #5140 mostra a
+ * conversão concentrada entre 09h e 17h), então 21:00+ não é um caso que se
+ * queira suportar — é um caso que se quer recusar alto.
+ */
+export function brtHourToUtcHourSameDay(hourBrt: number): number {
+  if (!Number.isInteger(hourBrt) || hourBrt < 0 || hourBrt > 23) {
+    throw new Error(`hora BRT inválida: ${hourBrt} — esperado inteiro entre 0 e 23.`);
+  }
+  if (hourBrt > 20) {
+    throw new Error(
+      `hora BRT ${hourBrt}:00 cai no dia seguinte em UTC (${hourBrt + 3 - 24}:00) e agendaria a campanha no dia errado. ` +
+        "O teste de horário suporta 00:00–20:00 BRT.",
+    );
+  }
+  return hourBrt + 3;
+}
+
+/** `H06` → `6`; qualquer outra coisa → null (não é célula de horário). */
+export function parseHourCell(cell: string): number | null {
+  const m = /^H(\d{2})$/.exec(cell);
+  if (!m) return null;
+  const h = Number(m[1]);
+  return h >= 0 && h <= 23 ? h : null;
+}
+
+const ABC_CELLS: readonly string[] = ["A", "B", "C"];
+
+/**
  * Chave determinística de uma onda: `d{N}-{dia}{DD}` (ex: `d6-qui06`) —
  * mesmo formato que o ciclo 2607-08 usou à mão (`d1-sab01` … `d5-qua05`),
- * agora GERADO. `cell` sufixa `-A`/`-B`/`-C` quando a onda tem teste, o que
- * é exatamente o que `groupCellListNameFor` exige pra derivar a célula do
- * nome da lista (nunca digitar o sufixo à parte — ver #4449/#4471).
+ * agora GERADO. `cell` sufixa `-A`/`-B`/`-C` (assunto) ou `-H06`/`-H10`
+ * (horário, #5140), que é exatamente o que `groupCellListNameFor` exige pra
+ * derivar a célula do nome da lista (nunca digitar o sufixo à parte — ver
+ * #4449/#4471).
+ *
+ * A célula é VALIDADA aqui: esta chave vira nome de lista e de campanha
+ * Brevo, e um sufixo fora dos dois formatos conhecidos passaria por
+ * `isGroupCellWave` como "sem célula", colapsando duas células na mesma
+ * lista — falha silenciosa, descoberta só depois do disparo.
  */
-export function waveKey(n: number, date: string, cell?: "A" | "B" | "C"): string {
+export function waveKey(n: number, date: string, cell?: WaveCell): string {
   if (!Number.isInteger(n) || n <= 0) {
     throw new Error(`número de onda inválido: ${n} — esperado inteiro > 0.`);
+  }
+  if (cell !== undefined && !ABC_CELLS.includes(cell) && parseHourCell(cell) === null) {
+    throw new Error(
+      `célula inválida: "${cell}" — esperado "A"/"B"/"C" (assunto) ou "H{00-23}" (horário, #5140).`,
+    );
   }
   const base = `d${n}-${waveDateFragment(date)}`;
   return cell ? `${base}-${cell}` : base;

@@ -266,15 +266,23 @@ export function listNameFor(wave: WaveDef, label: string): string {
  * ex: sufixo "-interno", não usam este helper; nomeie a lista via `listNameFor`).
  */
 export function groupCellListNameFor(cycle: string, key: string): string {
-  const m = /-([ABC])$/i.exec(key);
-  if (!m) {
-    throw new Error(
-      `groupCellListNameFor: key "${key}" não termina em -A/-B/-C — não é uma célula de teste A/B/C ` +
-        `(grupos sem célula não usam este helper).`,
-    );
+  const abc = /-([ABC])$/i.exec(key);
+  if (abc) {
+    const cell = abc[1].toUpperCase();
+    return assertListNameLength(`Clarice ${cycle} ${key} — célula ${cell}`);
   }
-  const cell = m[1].toUpperCase();
-  return assertListNameLength(`Clarice ${cycle} ${key} — célula ${cell}`);
+  // #5140: célula de HORÁRIO. Rótulo "hora HH:00" e não "célula H06" de
+  // propósito — `parseAbcAudienceCampaign` casa `([ABC])\b` e portanto já
+  // ignoraria `H06`, mas um humano lendo a lista no painel da Brevo precisa
+  // ver o que distingue os dois braços sem decorar o código do sufixo.
+  const hour = /-H(\d{2})$/.exec(key);
+  if (hour) {
+    return assertListNameLength(`Clarice ${cycle} ${key} — hora ${hour[1]}:00 BRT`);
+  }
+  throw new Error(
+    `groupCellListNameFor: key "${key}" não termina em -A/-B/-C (assunto) nem -H{00-23} (horário) — ` +
+      `não é uma célula de teste (grupos sem célula não usam este helper).`,
+  );
 }
 
 /**
@@ -292,7 +300,14 @@ export function groupCellListNameFor(cycle: string, key: string): string {
  * também estivesse rodando via `--group`, o que não acontece hoje.
  */
 export function isGroupCellWave(group: string | null, waveKey: string): boolean {
-  return Boolean(group) && /-[ABC]$/i.test(waveKey);
+  // #5140: células de HORÁRIO (`-H06`/`-H10`) entram no MESMO ramo que as de
+  // assunto. Não é conveniência — é o que garante que cada braço vire uma
+  // lista Brevo distinta via `groupCellListNameFor`. Se caíssem no ramo "sem
+  // célula", `resolveListName` daria o mesmo nome aos dois e `resolveRegistryKey`
+  // sobrescreveria `wave.key` com a key de campanha, colapsando os dois braços
+  // — o teste sairia com as duas metades na mesma lista, e o defeito só
+  // apareceria na leitura dos resultados, depois do disparo.
+  return Boolean(group) && (/-[ABC]$/i.test(waveKey) || /-H\d{2}$/.test(waveKey));
 }
 
 /**
