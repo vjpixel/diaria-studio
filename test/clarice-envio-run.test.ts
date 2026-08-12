@@ -205,12 +205,12 @@ describe("clarice-envio-run (#5026)", () => {
         wave({ key: "d11-ter11-A", subject: "Nunca (é célula)" }),
         wave({ key: "d12-qua12", subject: "Mais recente sem célula" }),
       ];
-      const r = resolveInheritedSubjects(waves, "travar");
+      const r = resolveInheritedSubjects({ waves, abcAction: "travar" });
       assert.deepEqual(r, { ok: true, mode: "single", subject: "Mais recente sem célula" });
     });
 
     it("travar: sem onda anterior sem célula E sem winner => falha (nunca inventa)", () => {
-      const r = resolveInheritedSubjects([wave({ key: "d10-seg10-A", subject: "x" })], "travar");
+      const r = resolveInheritedSubjects({ waves: [wave({ key: "d10-seg10-A", subject: "x" })], abcAction: "travar" });
       assert.equal(r.ok, false);
     });
 
@@ -225,7 +225,7 @@ describe("clarice-envio-run (#5026)", () => {
         wave({ key: "d5-seg05-B", subject: "Vencedor B" }),
         wave({ key: "d5-seg05-C", subject: "Perdedor C" }),
       ];
-      const r = resolveInheritedSubjects(waves, "travar", "B");
+      const r = resolveInheritedSubjects({ waves, abcAction: "travar", winner: "B" });
       assert.deepEqual(r, { ok: true, mode: "single", subject: "Vencedor B" });
     });
 
@@ -234,16 +234,32 @@ describe("clarice-envio-run (#5026)", () => {
         wave({ key: "d5-seg05-B", subject: "Assunto da célula B" }),
         wave({ key: "d7-qui07", subject: "Assunto herdado da onda sem célula" }),
       ];
-      const r = resolveInheritedSubjects(waves, "travar", "B", "Assunto travado pelo editor");
+      const r = resolveInheritedSubjects({ waves, abcAction: "travar", winner: "B", lockedSubject: "Assunto travado pelo editor" });
       assert.deepEqual(r, { ok: true, mode: "single", subject: "Assunto travado pelo editor" });
+    });
+
+    it('#5055: lockedSubject é IGNORADO no ramo "continuar" — pinado porque o guard de divergência é a única defesa', () => {
+      // Achado do pr-test-analyzer no review da PR #5057: esta combinação é
+      // inalcançável em produção (o guard bidirecional de `runEnvio` aborta
+      // antes), mas se alguém enfraquecer o guard num refactor, esta função
+      // NÃO é um segundo backstop — ela devolve 3 assuntos por célula mesmo
+      // com o teste encerrado. Pinar isso deixa a rede de proteção visível:
+      // quem mudar o guard tem que ler este teste.
+      const waves = [
+        wave({ key: "d5-seg05-A", subject: "Sub A" }),
+        wave({ key: "d5-seg05-B", subject: "Sub B" }),
+        wave({ key: "d5-seg05-C", subject: "Sub C" }),
+      ];
+      const r = resolveInheritedSubjects({ waves, abcAction: "continuar", lockedSubject: "Assunto travado" });
+      assert.deepEqual(r, { ok: true, mode: "byCell", subjects: { A: "Sub A", B: "Sub B", C: "Sub C" } });
     });
 
     it("#5055: com lockedSubject, travar NUNCA falha por falta de precedente (deadlock de bootstrap impossível)", () => {
       // Sem estado gravado este mesmo input falha (teste acima). Com o estado,
       // não há o que herdar — o assunto já é conhecido.
-      const r = resolveInheritedSubjects([], "travar", null, "Assunto travado pelo editor");
+      const r = resolveInheritedSubjects({ waves: [], abcAction: "travar", lockedSubject: "Assunto travado pelo editor" });
       assert.deepEqual(r, { ok: true, mode: "single", subject: "Assunto travado pelo editor" });
-      assert.equal(resolveInheritedSubjects([], "travar", null).ok, false, "pré-condição: sem trava, falharia");
+      assert.equal(resolveInheritedSubjects({ waves: [], abcAction: "travar" }).ok, false, "pré-condição: sem trava, falharia");
     });
 
     it("travar: onda sem-célula (mais recente) vence sobre o winner quando os dois existem", () => {
@@ -251,7 +267,7 @@ describe("clarice-envio-run (#5026)", () => {
         wave({ key: "d5-seg05-B", subject: "Assunto da célula B (antigo)" }),
         wave({ key: "d7-qui07", subject: "Assunto travado mais recente" }),
       ];
-      const r = resolveInheritedSubjects(waves, "travar", "B");
+      const r = resolveInheritedSubjects({ waves, abcAction: "travar", winner: "B" });
       assert.deepEqual(r, { ok: true, mode: "single", subject: "Assunto travado mais recente" });
     });
 
@@ -262,13 +278,13 @@ describe("clarice-envio-run (#5026)", () => {
         wave({ key: "d6-ter06-B", subject: "B novo" }),
         wave({ key: "d6-ter06-C", subject: "C novo" }),
       ];
-      const r = resolveInheritedSubjects(waves, "continuar");
+      const r = resolveInheritedSubjects({ waves, abcAction: "continuar" });
       assert.deepEqual(r, { ok: true, mode: "byCell", subjects: { A: "A novo", B: "B novo", C: "C novo" } });
     });
 
     it("continuar: falta 1 célula (ex: C nunca rodou) => falha, nunca inventa a 3ª", () => {
       const waves = [wave({ key: "d6-ter06-A", subject: "A" }), wave({ key: "d6-ter06-B", subject: "B" })];
-      const r = resolveInheritedSubjects(waves, "continuar");
+      const r = resolveInheritedSubjects({ waves, abcAction: "continuar" });
       assert.equal(r.ok, false);
     });
   });
@@ -434,8 +450,19 @@ describe("clarice-envio-run (#5026)", () => {
     // -----------------------------------------------------------------------
 
     it("#5055: teste ENCERRADO => assunto do estado vence a herança, e a onda sai com --no-cells", async () => {
+      // `metric: "nenhuma"` não é detalhe do fixture: é a ASSINATURA do ramo
+      // `lockedSubject` de `recommendAbcAction`, e é justamente o que o guard
+      // bidirecional compara contra o estado. Um `travar` com `metric:
+      // "clique"` (calculado) junto de um estado encerrado é a divergência que
+      // o guard existe pra pegar — testada logo abaixo.
       const root = freshRoot();
-      const { exec, calls } = makeFakeExec(goldenHandlers());
+      const proposal = goldenProposal({
+        abc: { action: "travar", metric: "nenhuma", winner: null, caveats: [], rationale: "assunto travado em ciclos anteriores" },
+      });
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": jsonResult(proposal),
+      });
       const r = await runEnvio(
         baseDeps(root, { exec, readAbcState: () => abcEncerrado("Assunto travado pelo editor") }),
       );
@@ -447,9 +474,59 @@ describe("clarice-envio-run (#5026)", () => {
         "Assunto travado pelo editor",
         "o assunto do ESTADO vence o herdado da onda anterior ('Assunto travado')",
       );
+      assert.ok(!create!.args.includes("--key"), "onda única não precisa de --key (simetria com o teste 'travar (1 célula)')");
       const split = calls.find((c) => c.script === "scripts/clarice-split-group-cells.ts");
       assert.ok(split!.args.includes("--no-cells"), "teste encerrado => 1 lista só");
       assert.match(r.reportMarkdown, /ENCERRADO/, "o relatório precisa dizer de onde veio a decisão (item 5 da #5055)");
+      assert.match(
+        r.reportMarkdown,
+        /encerrado no chat/,
+        "o MOTIVO registrado pelo editor precisa chegar ao relatório verbatim, não só a palavra ENCERRADO",
+      );
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it('#5055: estado ENCERRADO + planejador devolvendo "iniciar" => ABORTA com diagnóstico, não pausa em silêncio', async () => {
+      // Achado HIGH do silent-failure-hunter no review da PR #5057: o ramo
+      // `iniciar` retornava code 0 ANTES do guard, e `iniciar` é justamente o
+      // que `recommendAbcAction` devolve quando o lock não foi aplicado E o
+      // ciclo ainda não tem 2 células amostradas (estado NORMAL no começo de
+      // um ciclo). A pausa sai com a mesma mensagem da espera rotineira pelo
+      // editor — divergência disfarçada de operação normal. O guard agora
+      // roda ANTES do ramo `iniciar`.
+      const root = freshRoot();
+      const proposal = goldenProposal({
+        abc: { action: "iniciar", metric: "nenhuma", winner: null, caveats: [], rationale: "nenhuma célula amostrada" },
+      });
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": jsonResult(proposal),
+      });
+      const r = await runEnvio(baseDeps(root, { exec, readAbcState: () => abcEncerrado("Assunto travado") }));
+      assert.equal(r.code, 1, "divergência é erro duro, não pausa limpa");
+      assert.match(r.reportMarkdown, /ENCERRADO/);
+      assert.doesNotMatch(r.reportMarkdown, /Pausando/, "não pode sair pela mensagem de espera rotineira");
+      assert.equal(calls.filter((c) => c.script === "scripts/clarice-schedule-group.ts").length, 0);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#5055: planejador travou o assunto mas o estado agora diz ABERTO (reopen concorrente) => ABORTA", async () => {
+      // A outra direção do TOCTOU (achado do code-reviewer): sem este ramo,
+      // `lockedSubject` viria null, o guard antigo não dispararia, e
+      // `resolveInheritedSubjects` reusaria em silêncio o assunto que o editor
+      // ACABOU de destravar.
+      const root = freshRoot();
+      const proposal = goldenProposal({
+        abc: { action: "travar", metric: "nenhuma", winner: null, caveats: [], rationale: "assunto travado" },
+      });
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": jsonResult(proposal),
+      });
+      const r = await runEnvio(baseDeps(root, { exec, readAbcState: () => abcAberto() }));
+      assert.equal(r.code, 1, r.reportMarkdown);
+      assert.match(r.reportMarkdown, /ABERTO/);
+      assert.equal(calls.filter((c) => c.script === "scripts/clarice-schedule-group.ts").length, 0);
       rmSync(root, { recursive: true, force: true });
     });
 

@@ -116,6 +116,20 @@ describe("readClariceAbcState — as três leituras", () => {
     });
   });
 
+  it("subject com espaço sobrando (arquivo hand-edited) é TRIMADO na leitura, não repassado cru", () => {
+    // Achado do silent-failure-hunter: só a escrita trimava, então um arquivo
+    // editado à mão entrava como válido e o espaço ia parar no assunto da
+    // campanha, sem aviso nenhum.
+    withRoot((root) => {
+      writeRaw(root, JSON.stringify({ status: "encerrado", subject: "  Assunto com espaço  " }));
+      const c = collector();
+      const s = readClariceAbcState(root, { onInvalid: c.onInvalid });
+      assert.equal(s.status, "encerrado");
+      assert.equal(s.subject, "Assunto com espaço");
+      assert.deepEqual(c.warns, [], "trimável não é inválido — não avisa, só normaliza");
+    });
+  });
+
   it("arquivo com status aberto explícito → aberto, sem aviso", () => {
     withRoot((root) => {
       reopenClariceAbcTest(root, { rationale: "novo teste em setembro" });

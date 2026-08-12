@@ -323,12 +323,24 @@ export type InheritedSubjects =
  * editor). Continua valendo pro caminho calculado; o `lockedSubject` acima
  * simplesmente torna o deadlock impossível quando há estado gravado.
  */
-export function resolveInheritedSubjects(
-  waves: ReadonlyArray<Pick<WaveState, "key" | "subject">>,
-  abcAction: "continuar" | "travar",
-  winner: "A" | "B" | "C" | null = null,
-  lockedSubject: string | null = null,
-): InheritedSubjects {
+export interface InheritedSubjectsInput {
+  waves: ReadonlyArray<Pick<WaveState, "key" | "subject">>;
+  abcAction: "continuar" | "travar";
+  /** Célula vencedora calculada, quando houver. Ver `winner` na docstring. */
+  winner?: "A" | "B" | "C" | null;
+  /** Assunto travado no estado durável (#5055). Ver acima. */
+  lockedSubject?: string | null;
+}
+
+// Objeto de opções e não 4 posicionais (achado MEDIUM do type-design-analyzer
+// no review da PR #5057): `winner` e `lockedSubject` são ambos
+// nulláveis-e-parecidos, e `f(waves, "travar", "B", "Assunto...")` obrigava a
+// consultar a assinatura pra saber qual é qual. É também a convenção local —
+// `proposeNextVolume({...})` neste mesmo arquivo e `recommendAbcAction(t, {...})`
+// no módulo vizinho já usam opções nomeadas.
+export function resolveInheritedSubjects(input: InheritedSubjectsInput): InheritedSubjects {
+  const { waves, abcAction, winner = null, lockedSubject = null } = input;
+
   if (abcAction === "travar") {
     if (lockedSubject) return { ok: true, mode: "single", subject: lockedSubject };
 
@@ -543,25 +555,47 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
     report.note(describeAbcState(abcState));
     if (abcState.rationale) report.note(`motivo registrado pelo editor: ${abcState.rationale}`);
     report.note(`recomendação: ${proposal.abc.action} (métrica: ${proposal.abc.metric}). ${proposal.abc.rationale}`);
+    // #5055 — divergência entre os DOIS leitores do mesmo arquivo é BUG, não
+    // estado normal, e o guard é BIDIRECIONAL de propósito (achado do review
+    // da PR #5057).
+    //
+    // Há duas leituras separadas no tempo: `clarice-plan-wave.ts` lê cedo, no
+    // início do seu `main()`, e assa a decisão no JSON que devolve; este
+    // processo lê de novo alguns segundos depois (acima). Os DOIS resolvem a
+    // raiz por `import.meta.url` e o spawn fixa `cwd: rootDir`, então a raiz
+    // nunca diverge — o que PODE divergir é o CONTEÚDO, se o editor rodar
+    // `--close`/`--reopen` exatamente na janela entre as duas leituras.
+    //
+    // Checar só "encerrado ⇒ travar" cobria uma direção. A outra é pior de
+    // enxergar: um `--reopen` que cai no meio da rodada deixa o proposal com
+    // `travar` (da leitura velha) e o estado com `aberto` (da nova); sem
+    // `lockedSubject`, `resolveInheritedSubjects` cairia na busca de
+    // precedente e reusaria em silêncio o assunto que o editor ACABOU de
+    // destravar. Por isso comparamos a INTENÇÃO dos dois lados.
+    //
+    // `metric === "nenhuma"` com `action === "travar"` identifica exatamente o
+    // ramo `lockedSubject` de `recommendAbcAction` — um `travar` CALCULADO
+    // sempre declara `metric: "clique"`, e `iniciar` nunca é `travar`.
+    const planWaveUsedLock = proposal.abc.action === "travar" && proposal.abc.metric === "nenhuma";
+    const stateSaysClosed = abcState.status === "encerrado";
+    if (planWaveUsedLock !== stateSaysClosed) {
+      throw new EnvioAbort(
+        stateSaysClosed
+          ? `❌ estado gravado diz teste A/B/C ENCERRADO (assunto "${abcState.subject}"), mas clarice-plan-wave ` +
+              `devolveu abc.action="${proposal.abc.action}" (métrica "${proposal.abc.metric}") — não aplicou a trava. ` +
+              `Não vou mandar 3 assuntos depois de o teste ter sido encerrado. Verifique ` +
+              `data/clarice-abc-state.json e rode de novo (#5055).`
+          : `❌ clarice-plan-wave travou o assunto, mas o estado lido agora diz teste A/B/C ABERTO — o arquivo ` +
+              `mudou no meio da rodada (--close/--reopen concorrente) ou ficou ilegível. Não vou reusar por ` +
+              `inferência um assunto que pode ter acabado de ser destravado. Rode de novo (#5055).`,
+      );
+    }
+
     if (proposal.abc.action === "iniciar") {
       report.note("abc.action=\"iniciar\" exige 3 assuntos novos que só o editor escreve — automação não decide sozinha (#4657/decisão 260811). Pausando.");
       const reportId = `envio-${aammdd}-abc-iniciar`;
       writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice envio ${aammdd} — teste A/B/C precisa do editor`, report.build());
       return { code: 0, reportId, reportMarkdown: report.build() };
-    }
-    // #5055 — divergência entre o estado gravado e a recomendação recebida é
-    // BUG, não estado normal: se o editor encerrou o teste, `plan-wave` (que
-    // lê o mesmo arquivo) tinha que ter devolvido "travar". Chegar aqui com
-    // "continuar" significa que o estado não foi aplicado em algum ponto (cwd
-    // diferente no spawn, arquivo ilegível só do lado de lá, versão velha do
-    // script). Seguir seria mandar 3 assuntos DEPOIS de o editor ter encerrado
-    // o teste — exatamente o que esta issue existe pra impedir. Aborta.
-    if (abcState.status === "encerrado" && proposal.abc.action !== "travar") {
-      throw new EnvioAbort(
-        `❌ estado gravado diz teste A/B/C ENCERRADO (assunto "${abcState.subject}"), mas clarice-plan-wave ` +
-          `devolveu abc.action="${proposal.abc.action}". Não vou mandar 3 assuntos depois de o teste ter sido ` +
-          `encerrado — verifique data/clarice-abc-state.json e a invocação do planejador (#5055).`,
-      );
     }
 
     const abcAction = proposal.abc.action; // "continuar" | "travar"
@@ -572,12 +606,12 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
     }
 
     // --- Assunto(s) herdado(s). ---
-    const inherited = resolveInheritedSubjects(
-      proposal.state.waves,
+    const inherited = resolveInheritedSubjects({
+      waves: proposal.state.waves,
       abcAction,
-      proposal.abc.winner,
-      lockedSubjectFromState(abcState),
-    );
+      winner: proposal.abc.winner,
+      lockedSubject: lockedSubjectFromState(abcState),
+    });
     if (!inherited.ok) throw new EnvioAbort(`❌ ${inherited.reason}`);
 
     // --- Passo 3: risco de ISP (motor novo — abertura NUNCA freia, #5025). ---

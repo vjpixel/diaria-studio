@@ -49,7 +49,12 @@ Leituras possíveis do arquivo:
 
 O fail-soft aponta pra `aberto` — o inverso do kill switch acima, e de propósito: aqui o lado seguro é voltar a recalcular (chato, mas conhecido), nunca confiar num assunto corrompido e mandá-lo pra milhares de pessoas. Por isso um `encerrado` sem `subject` não-vazio é rejeitado.
 
-Se o estado gravado disser `encerrado` mas o planejador devolver `continuar`, a rodada **aborta** em vez de mandar 3 assuntos — é divergência (cwd errado no spawn, arquivo ilegível só de um lado, script defasado), não estado normal.
+**Guard de divergência, nos dois sentidos.** Há duas leituras do arquivo por rodada — o planejador lê cedo e assa a decisão no JSON; o orquestrador lê de novo segundos depois. Se elas discordarem, a rodada **aborta** em vez de agendar:
+
+- estado diz `encerrado` mas o planejador **não** aplicou a trava (devolveu `continuar` **ou** `iniciar`) → abortar, senão sairiam 3 assuntos depois de o teste ter sido encerrado. O caso `iniciar` importa mais do que parece: é o que o cálculo devolve quando o ciclo ainda não tem 2 células amostradas, ou seja, o estado normal no começo de todo ciclo — sem o guard nessa ordem, a divergência sairia como a pausa rotineira "precisa do editor", indistinguível de operação normal;
+- o planejador travou o assunto mas o estado agora diz `aberto` (um `--reopen` concorrente caiu no meio da rodada) → abortar, senão o assunto recém-destravado seria reusado por inferência.
+
+Divergência é bug (arquivo mudou no meio da rodada, ilegível de um lado só, script defasado), não estado normal — por isso é erro duro e não pausa limpa.
 
 ## Guards de pré-condição (não são o kill switch — os dois convivem)
 

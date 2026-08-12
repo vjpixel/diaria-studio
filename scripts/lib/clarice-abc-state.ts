@@ -99,19 +99,8 @@ import { getArg, hasFlag, isMainModule } from "./cli-args.ts";
 export type AbcTestStatus = "aberto" | "encerrado";
 export type AbcCell = "A" | "B" | "C";
 
-export interface ClariceAbcState {
-  /** `aberto` = default de arquivo ausente e de qualquer leitura que falhe.
-   * `encerrado` = o editor encerrou o teste; `subject` é o assunto travado. */
-  status: AbcTestStatus;
-  /** Assunto travado. Não-vazio SEMPRE que `status === "encerrado"` — um
-   * `encerrado` sem assunto é rejeitado na leitura (ver docstring). */
-  subject: string | null;
-  /** Célula vencedora, quando o editor quis registrá-la. OPCIONAL de
-   * propósito: o encerramento de 11/08/2026 foi decisão EDITORIAL sobre um
-   * teste sem significância estatística (p 0,2715) — forçar a declaração de
-   * uma "vencedora" ali seria registrar como veredito do dado algo que o dado
-   * não sustenta. O assunto é o que importa; a célula é anotação. */
-  winner: AbcCell | null;
+/** Campos que não dependem do `status`. */
+interface AbcStateCommon {
   /** ISO da decisão. `null` quando o estado está no default. */
   decidedAt: string | null;
   /** Quem decidiu — sempre `"editor"` na prática; explícito pra que o arquivo
@@ -121,16 +110,56 @@ export interface ClariceAbcState {
   rationale: string | null;
 }
 
-/** Resultado da leitura: o estado + por que ele caiu pro default, se caiu. */
-export interface ClariceAbcStateRead extends ClariceAbcState {
+/**
+ * União DISCRIMINADA por `status` (achado do type-design-analyzer no review
+ * da PR #5057), não um shape flat com `subject: string | null`.
+ *
+ * A invariante "`encerrado` ⇒ assunto não-vazio" já era garantida em tempo de
+ * execução nos dois únicos produtores (`closeClariceAbcTest` valida na
+ * escrita, `readClariceAbcState` rejeita na leitura). O problema do shape flat
+ * é que essa garantia EVAPORAVA no `return`: quem recebia o valor via tinha
+ * `subject: string | null` mesmo dentro de um `if (status === "encerrado")`, e
+ * `describeAbcState` interpolava `${state.subject}` — que teria imprimido a
+ * string `"null"` sem o compilador reclamar. Com a união, a garantia viaja
+ * junto com o valor e o estreitamento é automático em todo call site.
+ *
+ * Mesmo princípio já pago duas vezes neste projeto: `InheritedSubjects`
+ * (discriminada por `mode`, em `clarice-envio-run.ts`) e `SpamSignalLike`
+ * (discriminada por `source`, em `clarice-envio-policy.ts`).
+ *
+ * `aberto` fixa `subject: null` E `winner: null` de propósito: é exatamente o
+ * que os dois produtores escrevem, e impede que um `winner` sobrando de um
+ * `encerrado` anterior vaze pra um estado reaberto.
+ */
+export type ClariceAbcState =
+  | (AbcStateCommon & { status: "aberto"; subject: null; winner: null })
+  | (AbcStateCommon & {
+      status: "encerrado";
+      /** Assunto travado, garantidamente não-vazio. */
+      subject: string;
+      /** Célula vencedora, quando o editor quis registrá-la. OPCIONAL de
+       * propósito: o encerramento de 11/08/2026 foi decisão EDITORIAL sobre um
+       * teste sem significância estatística (p 0,2715) — forçar a declaração
+       * de uma "vencedora" ali seria registrar como veredito do dado algo que
+       * o dado não sustenta. O assunto é o que importa; a célula é anotação. */
+      winner: AbcCell | null;
+    });
+
+/**
+ * Resultado da leitura: o estado + por que ele caiu pro default, se caiu.
+ *
+ * `type … &` e não `interface … extends`: `extends` não aceita união, e a
+ * interseção distribui sobre os dois braços — que é o comportamento desejado.
+ */
+export type ClariceAbcStateRead = ClariceAbcState & {
   /** `null` quando a leitura foi limpa (arquivo ausente ou válido). Texto
    * quando existe arquivo que não deu pra interpretar — o caller registra
    * isso no relatório em vez de deixar a reabertura passar em silêncio. */
   invalidReason: string | null;
-}
+};
 
 /** Arquivo AUSENTE (ou ilegível): teste ABERTO — comportamento pré-#5055. */
-const ABSENT_DEFAULT: ClariceAbcState = {
+const ABSENT_DEFAULT: ClariceAbcState & { status: "aberto" } = {
   status: "aberto",
   subject: null,
   winner: null,
@@ -147,8 +176,17 @@ function asCell(v: unknown): AbcCell | null {
   return v === "A" || v === "B" || v === "C" ? v : null;
 }
 
+/**
+ * Trima na LEITURA também, não só na escrita (achado do silent-failure-hunter
+ * no review da PR #5057): o arquivo é editável à mão, e um `subject` com
+ * espaço sobrando entrava como válido e ia parar no assunto da campanha sem
+ * nenhum aviso. Trimar aqui faz a leitura de um arquivo hand-edited casar com
+ * o que `closeClariceAbcTest` teria gravado.
+ */
 function asStringOrNull(v: unknown): string | null {
-  return typeof v === "string" && v.trim() !== "" ? v : null;
+  if (typeof v !== "string") return null;
+  const trimmed = v.trim();
+  return trimmed === "" ? null : trimmed;
 }
 
 export interface ReadAbcStateOptions {
@@ -312,8 +350,14 @@ if (isMainModule(import.meta.url)) {
   // `ClariceAbcStateRead` de propósito na união: no caminho de LEITURA o
   // `--json` sai com `invalidReason` junto (é o que diz se o "aberto" é
   // intencional ou queda de fail-soft); nos de escrita o campo nem existe.
+  // `invalidReason` é NORMALIZADO pra `null` nos caminhos de escrita (achado
+  // LOW do type-design-analyzer): sem isso o `--json` de `--close`/`--reopen`
+  // omitiria a chave enquanto o de leitura a traz, e um consumidor futuro
+  // (a convenção do repo é ter `--json` scriptável em quase toda CLI) veria
+  // `undefined` em vez de `null`. Nenhum consumidor existe hoje — é 1 linha
+  // pra que nunca precise existir um bug pra descobrir isso.
   const emit = (state: ClariceAbcState | ClariceAbcStateRead): void => {
-    if (json) console.log(JSON.stringify(state, null, 2));
+    if (json) console.log(JSON.stringify({ ...state, invalidReason: (state as ClariceAbcStateRead).invalidReason ?? null }, null, 2));
     else console.log(describeAbcState(state));
   };
 

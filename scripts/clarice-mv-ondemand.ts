@@ -69,6 +69,7 @@
  * numa onda real fica pra sessão supervisionada com o editor presente.
  */
 
+import { resolve } from "node:path";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import {
   readStoreCandidates,
@@ -82,6 +83,10 @@ import { clariceCycleDir, ensureDir, requireCycleArg } from "./lib/clarice-paths
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { DEFAULT_DASHBOARD_URL } from "./clarice-schedule-ramp.ts";
 import { getArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
+import { readClariceAbcState, lockedSubjectFromState } from "./lib/clarice-abc-state.ts";
+
+/** Raiz do repo — não `process.cwd()`, mesmo motivo de `clarice-plan-wave.ts`. */
+const ROOT = resolve(new URL("..", import.meta.url).pathname);
 
 loadProjectEnv();
 
@@ -182,7 +187,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     dates,
     dbPath,
     dashboardUrl,
-    lockedSubject: getArg(argv, "locked-subject") || null,
+    // #5055 (achado do review da PR #5057): 3º caller de `planWave()`, e o
+    // rollout original só cobriu os outros dois. Sem o estado durável aqui,
+    // este script recomputa a proposta como se o teste A/B/C ainda estivesse
+    // aberto — dimensionando a verificação MillionVerifier pra 3 células
+    // quando a onda real vai sair com 1. Não cria nem agenda campanha (o raio
+    // é crédito MV gasto à toa, não envio errado), mas "a MESMA proposta que
+    // o Passo 1 já viu" só é verdade se as duas leem a mesma fonte.
+    lockedSubject: getArg(argv, "locked-subject") || lockedSubjectFromState(readClariceAbcState(ROOT)),
   });
   const plan = proposal.mvOnDemandPlan;
   // #4792 (fleet review, achado #4): `plan.deficit` (desde #4787) é o MAIOR
