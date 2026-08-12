@@ -485,16 +485,25 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     name: "Diaria-SEO-Weekly",
     description: "loop de SEO semanal (cobertura de indexacao + Search Analytics)",
     steps: [
-      { key: "index", script: "scripts/seo-index-check.ts", args: ["--only-posts", "--limit", "250"] },
+      // --limit 2000 (subiu de 250 no #5118 item 1a): a cota real da URL
+      // Inspection API é 2.000/dia contra ~239 URLs/rodada — 250 dava só
+      // ~2,8 semanas de headroom antes de truncar, e o corte descartava as
+      // URLs MAIS ANTIGAS (sitemap newest-first, ver applyLimit em
+      // seo-index-check.ts) sem marca nenhuma no relatório — o KPI de
+      // cobertura inflaria sozinho por composição, não por melhora real.
+      { key: "index", script: "scripts/seo-index-check.ts", args: ["--only-posts", "--limit", "2000"] },
       // #4909: /temas/{slug} (host arquivo.diar.ia.br) nunca entrou nesta
       // checagem — a propriedade GSC verificada é sc-domain:diar.ia.br
       // (cobre o subdomínio, sem --site próprio necessário), e o sitemap
-      // deste host tem só ~5 URLs (a raiz + 4 hubs), então SEM --only-posts
-      // (o filtro é /\/p\//, que zeraria tudo aqui — ver filterPosts em
-      // seo-index-check.ts) e com --limit pequeno. --out-suffix evita que
-      // esta rodada colida no mesmo index-status-{data}.json/.md do passo
-      // "index" acima (achado do #4909 — o .md era path fixo, não
-      // sobrescrevível por --out).
+      // deste host tem hoje 7 URLs (a raiz + 6 hubs — corrigido no #5118/#5120,
+      // dizia "~5 URLs, a raiz + 4 hubs" desatualizado; ver também #5120 item 3
+      // sobre a leitura "1/5 hubs, com 4 nunca rastreados" da medição de
+      // 12/ago, feita ANTES do 6º hub mercado-trabalho entrar), então SEM
+      // --only-posts (o filtro é /\/p\//, que zeraria tudo aqui — ver
+      // filterPosts em seo-index-check.ts) e com --limit pequeno.
+      // --out-suffix evita que esta rodada colida no mesmo
+      // index-status-{data}.json/.md do passo "index" acima (achado do
+      // #4909 — o .md era path fixo, não sobrescrevível por --out).
       {
         key: "index-arquivo",
         script: "scripts/seo-index-check.ts",

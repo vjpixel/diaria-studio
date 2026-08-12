@@ -55,8 +55,11 @@ Write-TempLogLine ""
 Write-TempLogLine "===== $(Get-Date -Format o) - seo weekly ====="
 
 # 1. Cobertura de indexacao (--only-posts: as institucionais poluem a metrica).
+#    --limit 2000 (subiu de 250 no #5118 item 1a) -- a cota real e 2.000/dia
+#    contra ~239 URLs/rodada; 250 truncava descartando as URLs MAIS ANTIGAS
+#    sem marca nenhuma no relatorio (sitemap newest-first).
 Write-TempLogLine "----- seo-index-check --only-posts -----"
-& npx tsx "$IndexCheckScript" --only-posts --limit 250 2>&1 | ForEach-Object { $_.ToString() } | Out-File -FilePath $TempLogPath -Append -Encoding utf8
+& npx tsx "$IndexCheckScript" --only-posts --limit 2000 2>&1 | ForEach-Object { $_.ToString() } | Out-File -FilePath $TempLogPath -Append -Encoding utf8
 $indexCode = $LASTEXITCODE
 
 # 2. Cobertura de /temas/{slug} em arquivo.diar.ia.br (#4903 item 2). SEM

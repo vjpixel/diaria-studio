@@ -5,6 +5,11 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { slugify, seoSlug, seoMetaDescription, formatManualSlugFixInstructions } from "../scripts/lib/slug.ts";
 import { scoreOpportunities, parseGscResponse, isoDate, buildSeoPullOutput, type GscRow } from "../scripts/seo-pull.ts";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 describe("slug acent-correto (#1989)", () => {
   it("slugify: strip de acentos PT-BR (o bug do auto-slug do Beehiiv)", () => {
@@ -160,5 +165,88 @@ describe("buildSeoPullOutput (#4908 item 1)", () => {
     const rows = [row({ position: 2, ctr: 0.01, impressions: 500 })];
     const out = buildSeoPullOutput(rows, "s", "p");
     assert.deepEqual(out.opportunities, scoreOpportunities(rows));
+  });
+
+  it("#5119 item 4: discover/news default pra {total_rows: 0, rows: []} — REGISTRADO, não ausente", () => {
+    const out = buildSeoPullOutput([], "s", "p");
+    assert.deepEqual(out.discover, { total_rows: 0, rows: [] });
+    assert.deepEqual(out.news, { total_rows: 0, rows: [] });
+  });
+
+  it("#5119 item 4: discover/news preenchidos ficam separados de rows/total_rows do web", () => {
+    const webRows = [row({ page: "https://diar.ia.br/p/x" })];
+    const discoverRows = [row({ page: "https://diar.ia.br/p/y", query: undefined })];
+    const newsRows = [row({ page: "https://diar.ia.br/p/z", query: undefined })];
+    const out = buildSeoPullOutput(webRows, "s", "p", discoverRows, newsRows);
+    assert.equal(out.total_rows, 1);
+    assert.deepEqual(out.rows, webRows);
+    assert.equal(out.discover.total_rows, 1);
+    assert.deepEqual(out.discover.rows, discoverRows);
+    assert.equal(out.news.total_rows, 1);
+    assert.deepEqual(out.news.rows, newsRows);
+  });
+});
+
+describe("parseGscResponse — dimensões ampliadas (#5119 item 2/3)", () => {
+  it("dimensions default [page,query] continua funcionando sem mudança de assinatura pro caller antigo", () => {
+    const rows = parseGscResponse({
+      rows: [{ keys: ["https://x.com/p", "como usar ia"], clicks: 5, impressions: 200, ctr: 0.025, position: 7.3 }],
+    });
+    assert.equal(rows[0].page, "https://x.com/p");
+    assert.equal(rows[0].query, "como usar ia");
+    assert.equal(rows[0].date, undefined);
+    assert.equal(rows[0].country, undefined);
+  });
+
+  it("dimensions [page,query,date,country]: keys[] mapeiam na mesma ordem", () => {
+    const rows = parseGscResponse(
+      {
+        rows: [
+          {
+            keys: ["https://diar.ia.br/p/x", "assistente de ia brasileiro", "2026-08-05", "bra"],
+            clicks: 3,
+            impressions: 120,
+            ctr: 0.025,
+            position: 9.1,
+          },
+        ],
+      },
+      ["page", "query", "date", "country"],
+    );
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].page, "https://diar.ia.br/p/x");
+    assert.equal(rows[0].query, "assistente de ia brasileiro");
+    assert.equal(rows[0].date, "2026-08-05");
+    assert.equal(rows[0].country, "bra");
+  });
+
+  it("dimensions [page,date] (discover/news, sem query): query fica undefined, não a data por engano", () => {
+    const rows = parseGscResponse(
+      { rows: [{ keys: ["https://diar.ia.br/p/x", "2026-08-05"], clicks: 0, impressions: 40, ctr: 0, position: 0 }] },
+      ["page", "date"],
+    );
+    assert.equal(rows[0].page, "https://diar.ia.br/p/x");
+    assert.equal(rows[0].date, "2026-08-05");
+    assert.equal(rows[0].query, undefined);
+  });
+
+  it("resposta vazia com dimensions ampliadas ainda retorna []", () => {
+    assert.deepEqual(parseGscResponse({}, ["page", "query", "date", "country"]), []);
+  });
+});
+
+describe("scripts/lib/scheduled-tasks.ts — Diaria-SEO-Weekly usa as dimensões ampliadas (#5119)", () => {
+  it("o step 'pull' (seo-pull.ts) não fixa --dimensions antigo (page,query) que reverteria o #5119", () => {
+    // Não é teste de conteúdo do array de args (o default já cobre isso em
+    // main()) — é guard contra alguém reintroduzir um --dimensions
+    // explícito estreito no registry sem perceber que isso pisa no default
+    // ampliado.
+    const src = readFileSync(resolve(ROOT, "scripts/lib/scheduled-tasks.ts"), "utf8");
+    const pullStepMatch = src.match(/key:\s*"pull"[^}]*args:\s*\[[^\]]*\]/);
+    assert.ok(pullStepMatch, "step 'pull' não encontrado em Diaria-SEO-Weekly");
+    assert.ok(
+      !pullStepMatch![0].includes("--dimensions"),
+      "step 'pull' não deve fixar --dimensions — usar o default ampliado de seo-pull.ts (#5119)",
+    );
   });
 });

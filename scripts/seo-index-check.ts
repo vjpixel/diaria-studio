@@ -36,10 +36,31 @@
  * pro caso comum (2ª fonte no mesmo dia): gera
  * `index-status-{suffix}-{data}.json`/`.md` sem precisar escrever os 2 paths
  * à mão — ignorado se `--out` for passado.
+ *
+ * **3 defeitos corrigidos no #5118:**
+ * 1. `--limit` cortava as URLs MAIS ANTIGAS (sitemap é newest-first — ver
+ *    `applyLimit`) sem deixar marca no output; a cota real (2.000/dia) tinha
+ *    folga de ~8× sobre o `--limit 250` usado pela task semanal. `--limit`
+ *    subiu pra 2000 (`scripts/lib/scheduled-tasks.ts`) e, se um corte ainda
+ *    assim acontecer, `applyLimit` agora descarta as mais NOVAS (que já
+ *    indexam bem) e preserva as mais antigas (o objeto real da medição);
+ *    `truncated: {dropped, limit}` fica gravado no JSON e no `.md`.
+ * 2. `orphan_count` contava o sitemap como "referrer", subcontando orfandade
+ *    em 2,4× (o sitemap é canal de descoberta, não link). `no_html_referrer_count`
+ *    é a métrica nova (nenhum referrer que não seja o sitemap); `orphan_count`
+ *    manteve a definição original (nenhum referrer, ponto) — não foi
+ *    redefinido em silêncio, a série de 4 snapshots já coletada usa essa
+ *    definição.
+ * 3. Regressão de indexação era invisível (o relatório só agregava por
+ *    estado). `computeRegressions` faz o delta URL-a-URL contra o snapshot
+ *    anterior da mesma família (`findPreviousSnapshotPath`); e como duas
+ *    rodadas no mesmo dia sobrescreviam o mesmo JSON (destruindo o par que
+ *    permitiria medir o ruído entre rodadas), `resolveCollisionSafeJsonPath`
+ *    sufixa por HHMM (UTC) quando o path do dia já existe em disco.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { existsSync, mkdirSync, readdirSync, writeFileSync, readFileSync } from "node:fs";
+import { resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { parseSitemap } from "./lib/fetch-sitemap.ts";
@@ -75,8 +96,22 @@ export interface IndexSummary {
   coverage_pct: number;
   /** Contagem por coverageState, pra ver o MOTIVO dominante de não-indexação. */
   by_coverage_state: Record<string, number>;
-  /** URLs sem nenhuma página de referência (só o sitemap aponta pra elas). */
+  /** URLs sem NENHUM referrer (nem sitemap, nem página HTML) — definição
+   * original, inalterada desde #4105 pra não quebrar a série já coletada. */
   orphan_count: number;
+  /** URLs sem nenhum referrer HTML — inclui as que só têm o sitemap.xml
+   * como "referrer" (#5118: a URL Inspection API lista o sitemap dentro de
+   * `referringUrls`, e sitemap é canal de descoberta, não link; contá-lo
+   * como referente subcontava orfandade em 2,4× — 62 vs 147/233 no
+   * snapshot de 10/08). Superset de `orphan_count`. */
+  no_html_referrer_count: number;
+}
+
+/** Sitemap listado como "referrer" pela URL Inspection API — não é link de
+ * página, é canal de descoberta. `/sitemap...\.xml` cobre `sitemap.xml` e
+ * variantes com sufixo (`sitemap-posts.xml`, etc). */
+export function isSitemapReferrer(url: string): boolean {
+  return /\/sitemap[^/]*\.xml(?:[?#].*)?$/i.test(url);
 }
 
 /** Parseia a resposta do urlInspection em IndexStatus (shape achatado). */
@@ -108,6 +143,7 @@ export function summarize(rows: IndexStatus[]): IndexSummary {
   let indexed = 0;
   let errors = 0;
   let orphans = 0;
+  let noHtmlReferrer = 0;
   for (const r of rows) {
     if (r.error) {
       errors++;
@@ -116,7 +152,9 @@ export function summarize(rows: IndexStatus[]): IndexSummary {
     if (r.verdict === "PASS") indexed++;
     const state = r.coverageState ?? "(sem coverageState)";
     byState[state] = (byState[state] ?? 0) + 1;
-    if ((r.referringUrls?.length ?? 0) === 0) orphans++;
+    const refs = r.referringUrls ?? [];
+    if (refs.length === 0) orphans++;
+    if (refs.every(isSitemapReferrer)) noHtmlReferrer++;
   }
   const scored = rows.length - errors;
   return {
@@ -127,6 +165,7 @@ export function summarize(rows: IndexStatus[]): IndexSummary {
     coverage_pct: scored === 0 ? 0 : Math.round((indexed / scored) * 1000) / 10,
     by_coverage_state: byState,
     orphan_count: orphans,
+    no_html_referrer_count: noHtmlReferrer,
   };
 }
 
@@ -159,6 +198,22 @@ export function filterPosts(urls: string[]): string[] {
 }
 
 /**
+ * Aplica `--limit` a `urls` (#5118 item 1). O sitemap é ordenado newest-first
+ * (confirmado medindo os 233 rows do snapshot de 10/08 contra `publish_date`:
+ * 232 pares consecutivos decrescentes, 0 crescentes) — `urls.slice(0, limit)`
+ * (comportamento anterior) mantém as mais NOVAS e descarta as mais ANTIGAS do
+ * final do array, que são exatamente a coorte de pior indexação e o objeto
+ * real desta medição. Corta do início em vez do fim: mantém as mais antigas
+ * (o que queremos medir), descarta as mais novas (que já indexam bem a
+ * 75–80% e não são o motivo do script existir).
+ */
+export function applyLimit(urls: string[], limit: number): { kept: string[]; dropped: number } {
+  const dropped = Math.max(0, urls.length - limit);
+  if (limit <= 0) return { kept: [], dropped };
+  return { kept: dropped > 0 ? urls.slice(dropped) : urls, dropped };
+}
+
+/**
  * Path default do JSON de saída (#4909). `suffix` distingue rodadas do
  * mesmo dia sobre sitemaps diferentes (ex: `"arquivo"` pro sitemap de
  * `arquivo.diar.ia.br`) — sem ele, duas rodadas no mesmo dia escrevem no
@@ -179,6 +234,95 @@ export function defaultJsonOutPath(seoDir: string, date: string, suffix?: string
 export function resolveMdPath(jsonPath: string, explicitMdPath?: string): string {
   if (explicitMdPath) return explicitMdPath;
   return jsonPath.endsWith(".json") ? `${jsonPath.slice(0, -".json".length)}.md` : `${jsonPath}.md`;
+}
+
+/**
+ * Evita colisão quando duas rodadas caem no mesmo dia (#5118 item 3b — achado
+ * ao vivo em 10/08: execuções às 03:01 e 07:10 UTC, resultados diferentes
+ * `orphan_count` 58 vs 62, a 2ª apagou a 1ª e destruiu o par que permitiria
+ * estimar o ruído entre rodadas). Só sufixa (`-HHMM` UTC, antes do `.json`)
+ * quando `jsonPath` já existe em disco — a 1ª rodada do dia mantém o nome
+ * limpo de sempre (`index-status-{data}.json`), preservando a série
+ * histórica; só a 2ª+ rodada do mesmo dia ganha o sufixo.
+ */
+export function resolveCollisionSafeJsonPath(
+  jsonPath: string,
+  nowMs: number,
+  fileExists: (p: string) => boolean = existsSync,
+): string {
+  if (!fileExists(jsonPath)) return jsonPath;
+  const hhmm = new Date(nowMs).toISOString().slice(11, 16).replace(":", "");
+  return jsonPath.endsWith(".json") ? `${jsonPath.slice(0, -".json".length)}-${hhmm}.json` : `${jsonPath}-${hhmm}`;
+}
+
+/**
+ * "Família" de um path de snapshot — o prefixo antes da data, usado pra achar
+ * o snapshot ANTERIOR da mesma fonte (host principal vs `--out-suffix
+ * arquivo` não devem ser comparados entre si). `null` se `jsonPath` não
+ * seguir a convenção `{prefixo}-{YYYY-MM-DD}[-HHMM].json` (ex: `--out`
+ * arbitrário) — nesse caso não há como achar o anterior com segurança, e as
+ * regressões ficam vazias em vez de comparar coisas incomparáveis.
+ */
+export function extractSnapshotFamily(jsonPath: string): string | null {
+  const m = basename(jsonPath).match(/^(.+)-\d{4}-\d{2}-\d{2}(?:-\d{4})?\.json$/);
+  return m ? m[1] : null;
+}
+
+/**
+ * Acha o snapshot anterior mais recente da mesma família em `seoDir` (#5118
+ * item 3a). Os nomes seguem `{prefixo}-{YYYY-MM-DD}[-HHMM].json`, que ordena
+ * lexicograficamente = ordena cronologicamente — não precisa parsear datas.
+ * `currentJsonPath` é excluído mesmo que já exista em disco (idempotência:
+ * re-rodar sobre um snapshot já escrito não deve comparar o arquivo consigo
+ * mesmo).
+ */
+export function findPreviousSnapshotPath(
+  seoDir: string,
+  currentJsonPath: string,
+  listDir: (dir: string) => string[] = (d) => (existsSync(d) ? readdirSync(d) : []),
+): string | null {
+  const family = extractSnapshotFamily(currentJsonPath);
+  if (!family) return null;
+  const escaped = family.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`^${escaped}-\\d{4}-\\d{2}-\\d{2}(?:-\\d{4})?\\.json$`);
+  const currentBase = basename(currentJsonPath);
+  const candidates = listDir(seoDir)
+    .filter((f) => re.test(f) && f !== currentBase)
+    .sort();
+  return candidates.length === 0 ? null : resolve(seoDir, candidates[candidates.length - 1]);
+}
+
+export interface IndexRegression {
+  url: string;
+  /** `coverageState` da rodada anterior (a URL estava indexada — `verdict === "PASS"`). */
+  from: string;
+  /** `coverageState` da rodada atual, ou `erro: ...` se a inspeção falhou desta vez. */
+  to: string;
+}
+
+/**
+ * Delta URL-a-URL entre o snapshot atual e o anterior (#5118 item 3a). O
+ * relatório antigo só agregava por estado — uma URL que perde indexação
+ * (`INDEXADA → outro estado`) nunca aparecia isolada; foi assim que 5 URLs
+ * passaram de "Enviada e indexada" pra "Rastreada, mas não indexada no
+ * momento" entre 05 e 10/08 sem nada alarmar. Só reporta regressão a partir
+ * de indexada (`verdict === "PASS"` na rodada anterior) — não é uma métrica
+ * de "todo mundo que mudou de estado", é especificamente "quem TINHA e
+ * PERDEU indexação".
+ */
+export function computeRegressions(current: IndexStatus[], previous: IndexStatus[]): IndexRegression[] {
+  const prevByUrl = new Map(previous.map((r) => [r.url, r]));
+  const regressions: IndexRegression[] = [];
+  for (const row of current) {
+    const prev = prevByUrl.get(row.url);
+    if (!prev || prev.verdict !== "PASS" || row.verdict === "PASS") continue;
+    regressions.push({
+      url: row.url,
+      from: prev.coverageState ?? "Enviada e indexada",
+      to: row.error ? `erro: ${row.error}` : row.coverageState ?? "(sem coverageState)",
+    });
+  }
+  return regressions;
 }
 
 /**
@@ -224,17 +368,35 @@ async function inspectUrl(site: string, url: string): Promise<IndexStatus> {
   }
 }
 
-export function renderMd(rows: IndexStatus[], sum: IndexSummary, site: string, date: string): string {
+export function renderMd(
+  rows: IndexStatus[],
+  sum: IndexSummary,
+  site: string,
+  date: string,
+  truncated?: { dropped: number; limit: number },
+  regressions?: IndexRegression[],
+): string {
   const lines = [
     `# Cobertura de indexação — ${site} (${date})`,
     "",
-    `**${sum.indexed}/${sum.total - sum.errors} indexadas (${sum.coverage_pct}%)** · ${sum.orphan_count} sem página de referência · ${sum.errors} erro(s).`,
-    "",
-    "## Por estado",
-    "",
+    `**${sum.indexed}/${sum.total - sum.errors} indexadas (${sum.coverage_pct}%)** · ` +
+      `${sum.orphan_count} órfãs (0 referrer) · ${sum.no_html_referrer_count} sem referrer HTML (inclui sitemap-only) · ` +
+      `${sum.errors} erro(s).`,
   ];
+  if (truncated && truncated.dropped > 0) {
+    lines.push(
+      "",
+      `**Truncado:** ${truncated.dropped} URL(s) além de \`--limit ${truncated.limit}\` não foram inspecionadas ` +
+        `nesta rodada — \`coverage_pct\` acima é sobre o conjunto truncado, não o sitemap inteiro.`,
+    );
+  }
+  lines.push("", "## Por estado", "");
   for (const [state, n] of Object.entries(sum.by_coverage_state).sort((a, b) => b[1] - a[1])) {
     lines.push(`- ${n}× ${state}`);
+  }
+  if (regressions && regressions.length) {
+    lines.push("", `## Regressões — perderam indexação desde a rodada anterior (${regressions.length})`, "");
+    for (const r of regressions) lines.push(`- ${r.url} — ${r.from} → ${r.to}`);
   }
   const notIndexed = rows.filter((r) => !r.error && r.verdict !== "PASS");
   if (notIndexed.length) {
@@ -272,9 +434,15 @@ async function main(nowMs: number): Promise<number> {
     return 1;
   }
   if (flags.has("only-posts")) urls = filterPosts(urls);
-  const dropped = Math.max(0, urls.length - limit);
-  urls = urls.slice(0, limit);
-  if (dropped > 0) console.error(`[seo-index-check] aviso: ${dropped} URL(s) além de --limit ${limit} não foram inspecionadas`);
+  const { kept, dropped } = applyLimit(urls, limit);
+  urls = kept;
+  const truncated = { dropped, limit };
+  if (dropped > 0) {
+    console.error(
+      `[seo-index-check] aviso: ${dropped} URL(s) além de --limit ${limit} não foram inspecionadas ` +
+        `(mantidas as mais antigas — ver applyLimit, #5118)`,
+    );
+  }
 
   const rows = await mapLimit(urls, concurrency, (u) => inspectUrl(site, u));
   const sum = summarize(rows);
@@ -282,11 +450,37 @@ async function main(nowMs: number): Promise<number> {
   const seoDir = resolve(ROOT, "data", "seo");
   if (!existsSync(seoDir)) mkdirSync(seoDir, { recursive: true });
   const outSuffix = values["out-suffix"] !== undefined ? String(values["out-suffix"]) : undefined;
-  const jsonPath = String(values["out"] ?? defaultJsonOutPath(seoDir, date, outSuffix));
+  const requestedJsonPath = String(values["out"] ?? defaultJsonOutPath(seoDir, date, outSuffix));
+
+  // Acha o snapshot anterior ANTES de decidir o path final desta rodada —
+  // `extractSnapshotFamily` espera o path "limpo" (sem sufixo de colisão),
+  // e a própria rodada em curso ainda não foi escrita, então nunca aparece
+  // como candidata (#5118 item 3a).
+  let previousRows: IndexStatus[] = [];
+  const previousPath = findPreviousSnapshotPath(seoDir, requestedJsonPath);
+  if (previousPath) {
+    try {
+      const parsed = JSON.parse(readFileSync(previousPath, "utf8")) as { rows?: IndexStatus[] };
+      previousRows = Array.isArray(parsed.rows) ? parsed.rows : [];
+    } catch (e) {
+      console.error(`[seo-index-check] aviso: falha ao ler snapshot anterior ${previousPath}: ${(e as Error).message}`);
+    }
+  }
+  const regressions = computeRegressions(rows, previousRows);
+  if (regressions.length > 0) {
+    console.error(`[seo-index-check] aviso: ${regressions.length} URL(s) perderam indexação desde a rodada anterior`);
+  }
+
+  // #5118 item 3b: só sufixa se `requestedJsonPath` já existir em disco (2ª+
+  // rodada do mesmo dia) — a 1ª rodada do dia mantém o nome limpo de sempre.
+  const jsonPath = resolveCollisionSafeJsonPath(requestedJsonPath, nowMs);
   const mdPath = resolveMdPath(jsonPath, values["out-md"] !== undefined ? String(values["out-md"]) : undefined);
-  writeFileSync(jsonPath, JSON.stringify({ site, date, sitemap: sitemapUrl, summary: sum, rows }, null, 2));
-  writeFileSync(mdPath, renderMd(rows, sum, site, date));
-  console.log(JSON.stringify({ site, date, ...sum, out: jsonPath, outMd: mdPath }, null, 2));
+  writeFileSync(
+    jsonPath,
+    JSON.stringify({ site, date, sitemap: sitemapUrl, summary: sum, truncated, regressions, rows }, null, 2),
+  );
+  writeFileSync(mdPath, renderMd(rows, sum, site, date, truncated, regressions));
+  console.log(JSON.stringify({ site, date, ...sum, truncated, regressions: regressions.length, out: jsonPath, outMd: mdPath }, null, 2));
   if (rows.length === 0 && limit !== 0) {
     console.error(`[seo-index-check] nenhuma URL inspecionada — o sitemap ${sitemapUrl} não rendeu URL alguma após o filtro`);
   }
