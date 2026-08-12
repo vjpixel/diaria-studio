@@ -1,11 +1,11 @@
 ---
 name: diaria-clarice-novos
-description: Fecha o laço cadastro novo no Stripe → verificação MillionVerifier → campanha disparada na hora com a edição mensal mais recente da Clarice. Task diária automática (17:00 BRT, #4941) via `Diaria-Clarice-Novos`; esta skill é o caminho MANUAL/ad-hoc — os dois delegam pro mesmo orquestrador determinístico, SEM gate humano (os guards determinísticos são a única trava — issue #4347).
+description: Fecha o laço cadastro novo no Stripe → verificação MillionVerifier → campanha disparada na hora com a edição mensal mais recente da Clarice. Task diária automática (11:00 BRT, #5140 — antes 17:00, #4941) via `Diaria-Clarice-Novos`; esta skill é o caminho MANUAL/ad-hoc — os dois delegam pro mesmo orquestrador determinístico, SEM gate humano (os guards determinísticos são a única trava — issue #4347).
 ---
 
 # /diaria-clarice-novos [--since YYYY-MM-DD] [--dry-run] [--force] [--subject "…"] [--confirm]
 
-Fecha o laço operacional que a issue #4347 identificou: cadastro novo no Stripe não virava envio sozinho. Desde o #4941, o fluxo (delta Stripe → MV → grupo `novos` → campanha → disparo imediato) roda **automaticamente todo dia às 17:00 BRT** via a task agendada `Diaria-Clarice-Novos` — esta skill é o caminho **manual/ad-hoc** (rodar fora do horário, com `--dry-run` numa máquina nova, ou com `--force`/`--confirm`/`--subject` depois de um abort que precisa de decisão explícita do editor).
+Fecha o laço operacional que a issue #4347 identificou: cadastro novo no Stripe não virava envio sozinho. Desde o #4941, o fluxo (delta Stripe → MV → grupo `novos` → campanha → disparo imediato) roda **automaticamente todo dia às 11:00 BRT** via a task agendada `Diaria-Clarice-Novos` — esta skill é o caminho **manual/ad-hoc** (rodar fora do horário, com `--dry-run` numa máquina nova, ou com `--force`/`--confirm`/`--subject` depois de um abort que precisa de decisão explícita do editor).
 
 **Os dois caminhos rodam o MESMO código — `scripts/clarice-novos-run.ts`.** Até o #4941, os 7 passos abaixo eram prosa que o LLM executava manualmente (extraindo valor do JSON de um passo e injetando no próximo). Isso não dava pra automatizar numa task sem editor presente — julgamento não-determinístico no caminho de um envio de e-mail real e irreversível contraria a regra do #573. `clarice-novos-run.ts` é esse *glue* em código: os 9 guards abaixo, a resolução de `{CICLO_ENVIO}`/`{KEY}`/`{CICLO_MENSAL}`, e a decisão sucesso/vazio/incerto/abort são TODOS determinísticos e testados (`test/clarice-novos-run.test.ts`). Esta skill nunca reimplementa o fluxo — apenas invoca:
 
@@ -45,7 +45,7 @@ npx tsx scripts/lib/clarice-novos-enabled.ts --set enabled   # libera o disparo 
 npx tsx scripts/lib/clarice-novos-enabled.ts --set disabled  # pausa (substitui "não rodar a skill de novo")
 ```
 
-**Isto substitui, pra a rotina automática, o kill switch antigo que dependia de invocação manual** — pausar continua sendo trivial (uma linha de comando, sem terminal na máquina exigido — futuramente um botão no Studio), mas agora precisa ser explícito, porque a task roda sozinha às 17:00 todo dia. Se `Diaria-Clarice-Guardrail-Alarm` disparar depois de uma rodada `novos`, a remediação é `--set disabled` até investigar.
+**Isto substitui, pra a rotina automática, o kill switch antigo que dependia de invocação manual** — pausar continua sendo trivial (uma linha de comando, sem terminal na máquina exigido — futuramente um botão no Studio), mas agora precisa ser explícito, porque a task roda sozinha às 11:00 todo dia. Se `Diaria-Clarice-Guardrail-Alarm` disparar depois de uma rodada `novos`, a remediação é `--set disabled` até investigar.
 
 ---
 
@@ -73,7 +73,7 @@ Passo 7 — Relatório sempre gravado (`data/clarice-subscribers/novos-reports/{
 
 ## Notas operacionais
 
-- **Cadência**: automática, diária, 17:00 BRT (`Diaria-Clarice-Novos`, #4941) — supera a antiga "~4×/semana manual" do #4347. Invocação manual continua disponível pra qualquer horário fora do padrão.
+- **Cadência**: automática, diária, 11:00 BRT (`Diaria-Clarice-Novos`, #5140 — antes 17:00, #4941) — supera a antiga "~4×/semana manual" do #4347. Invocação manual continua disponível pra qualquer horário fora do padrão.
 - **1 máquina só armada** (decisão do editor, #4941 E4) — `data/` é junction do OneDrive; duas máquinas armadas na mesma janela de sync poderiam resolver a mesma `--key` e criar 2 campanhas. Sem lock novo pra isso — se for armar numa 2ª máquina, desarmar a 1ª antes.
 - **Idempotência de campanha**: `--key novos-{AAMMDD}` com sufixo `-2`/`-3`… se a rotina rodar mais de uma vez no mesmo dia (`clarice-novos-resolve-key.ts`). `--create` é idempotente por key (pula se já criada).
 - **Sync do Brevo é 1×/dia (08:30)** — quem fecha o furo de `sends_count` defasado é o guard queued/sent (`fetchSentCampaignListIds`), não a cadência. Nunca pular esse guard mesmo que pareça redundante numa rodada específica.
