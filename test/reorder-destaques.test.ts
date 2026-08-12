@@ -525,6 +525,90 @@ describe("renameDestaqueImages (#5085 — guard pós-rename + 4x5-nativo)", () =
   });
 });
 
+describe("renameDestaqueImages / renameDestaquePrompts (#5087 — rollback best-effort de órfãos TMP)", () => {
+  it("renameDestaqueImages: abort no meio da sequência reverte o rename já aplicado (sem 04-TMP1-* órfão)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-img-rollback-"));
+    try {
+      writeFileSync(join(dir, "04-d1-1x1.jpg"), "data1");
+      writeFileSync(join(dir, "04-d2-1x1.jpg"), "data2");
+      writeFileSync(join(dir, "04-d3-1x1.jpg"), "data3");
+
+      // newOrder [2,1,3]: d1→TMP1 (deve suceder e depois ser revertido),
+      // d2→TMP2 (falha aqui, ANTES de tocar o filesystem — simula um erro
+      // tipo EPERM/ENOENT do próprio renameSync, não um conflito pós-rename
+      // do OneDrive já coberto pelo teste de "guard pós-rename" acima).
+      const fakeDeps: RenameFileDeps = {
+        renameSync: (from, to) => {
+          if (String(to).includes("TMP2")) {
+            throw new Error("simulated EPERM on rename to TMP2");
+          }
+          renameFsSync(from, to);
+        },
+        existsSync,
+      };
+
+      assert.throws(
+        () => renameDestaqueImages(dir, [2, 1, 3], false, fakeDeps),
+        /simulated EPERM on rename to TMP2/,
+      );
+
+      // Rollback: 04-TMP1-* não deve sobrar órfão — deve ter voltado a
+      // 04-d1-1x1.jpg com os bytes originais.
+      assert.ok(
+        !existsSync(join(dir, "04-TMP1-1x1.jpg")),
+        "04-TMP1-1x1.jpg não deveria sobrar órfão no disco após o abort",
+      );
+      assert.ok(
+        existsSync(join(dir, "04-d1-1x1.jpg")),
+        "04-d1-1x1.jpg deveria ter sido restaurado pelo rollback",
+      );
+      assert.equal(
+        readFileSync(join(dir, "04-d1-1x1.jpg"), "utf8"),
+        "data1",
+        "bytes originais preservados pelo rollback",
+      );
+      // d2 nunca chegou a ser tocado pelo fs (a exceção foi lançada antes do
+      // renameSync real) — permanece intacto.
+      assert.ok(existsSync(join(dir, "04-d2-1x1.jpg")));
+      assert.equal(readFileSync(join(dir, "04-d2-1x1.jpg"), "utf8"), "data2");
+      assert.ok(existsSync(join(dir, "04-d3-1x1.jpg")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("renameDestaquePrompts: abort no meio da sequência reverte o rename já aplicado (sem 02-TMP1-* órfão)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-prompts-rollback-"));
+    try {
+      writeFileSync(join(dir, "02-d1-prompt.md"), "p1");
+      writeFileSync(join(dir, "02-d2-prompt.md"), "p2");
+
+      const fakeDeps: RenameFileDeps = {
+        renameSync: (from, to) => {
+          if (String(to).includes("TMP2")) {
+            throw new Error("simulated EPERM on rename to TMP2");
+          }
+          renameFsSync(from, to);
+        },
+        existsSync,
+      };
+
+      assert.throws(
+        () => renameDestaquePrompts(dir, [2, 1, 3], false, fakeDeps),
+        /simulated EPERM on rename to TMP2/,
+      );
+
+      assert.ok(!existsSync(join(dir, "02-TMP1-prompt.md")));
+      assert.ok(existsSync(join(dir, "02-d1-prompt.md")));
+      assert.equal(readFileSync(join(dir, "02-d1-prompt.md"), "utf8"), "p1");
+      assert.ok(existsSync(join(dir, "02-d2-prompt.md")));
+      assert.equal(readFileSync(join(dir, "02-d2-prompt.md"), "utf8"), "p2");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("parseArgs — default editionDir via #3491 (mesma classe de #3483/#3484)", () => {
   // Antes do #3491, sem --edition-dir (comando editor-invocado diretamente,
   // sem caller fixo que sempre passe a flag), o default construía
@@ -832,6 +916,73 @@ describe("reorder-destaques CLI (#3982): validação destaque-max-chars pós-reo
 
       const parsed = JSON.parse(result.stdout);
       assert.equal(parsed.max_chars_warnings.length, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("reorder-destaques CLI (#5087): imagens renomeadas ANTES do texto — abort de imagem não deixa texto mutado", () => {
+  it("falha no rename de imagem (EISDIR real) aborta ANTES de escrever 02-reviewed.md/03-social.md/JSONs", () => {
+    const dir = makeEditionDirFixture();
+    const internalDir = join(dir, "_internal");
+    try {
+      const originalMd = buildReviewedMdFixture({
+        d1Title: "Título Original D1",
+        d1Body: "corpo d1",
+        d2Title: "Título Original D2",
+        d2Body: "corpo d2",
+        d3Title: "Título Original D3",
+        d3Body: "corpo d3",
+      });
+      writeFileSync(join(dir, "02-reviewed.md"), originalMd, "utf8");
+
+      const originalSocial = "## d1\npost d1\n\n## d2\npost d2\n\n## d3\npost d3\n";
+      writeFileSync(join(dir, "03-social.md"), originalSocial, "utf8");
+
+      const originalApprovedCapped = readFileSync(
+        join(internalDir, "01-approved-capped.json"),
+        "utf8",
+      );
+
+      // Imagens reais no edition dir — newOrder [2,1,3] move D1, então o
+      // passo 1 (image rename) tenta 04-d1-1x1.jpg → 04-TMP1-1x1.jpg.
+      writeFileSync(join(dir, "04-d1-1x1.jpg"), "img1");
+      writeFileSync(join(dir, "04-d2-1x1.jpg"), "img2");
+      writeFileSync(join(dir, "04-d3-1x1.jpg"), "img3");
+      // Cria o TARGET do rename como diretório de propósito — força uma
+      // falha REAL de filesystem (EISDIR), sem precisar de dependency
+      // injection (a CLI usa os deps reais de produção).
+      mkdirSync(join(dir, "04-TMP1-1x1.jpg"));
+
+      const result = runReorderCli([
+        "--edition", "999999",
+        "--edition-dir", dir,
+        "--new-order", "2,1,3",
+      ]);
+
+      assert.notEqual(result.status, 0, "CLI deveria sair com erro (EISDIR propagado)");
+      assert.match(result.stderr, /EISDIR|illegal operation on a directory/);
+
+      // #5087: o abort de imagem aconteceu ANTES de qualquer escrita de
+      // texto — 02-reviewed.md, 03-social.md e os JSONs canônicos devem
+      // continuar exatamente como estavam (nunca reordenados), evitando o
+      // estado misto "texto já reordenado, imagem só parcialmente".
+      assert.equal(
+        readFileSync(join(dir, "02-reviewed.md"), "utf8"),
+        originalMd,
+        "02-reviewed.md não deveria ter sido tocado — imagem falhou primeiro",
+      );
+      assert.equal(
+        readFileSync(join(dir, "03-social.md"), "utf8"),
+        originalSocial,
+        "03-social.md não deveria ter sido tocado — imagem falhou primeiro",
+      );
+      assert.equal(
+        readFileSync(join(internalDir, "01-approved-capped.json"), "utf8"),
+        originalApprovedCapped,
+        "01-approved-capped.json não deveria ter sido tocado — imagem falhou primeiro",
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
