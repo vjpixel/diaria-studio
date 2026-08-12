@@ -4,36 +4,25 @@
  * Baixa o snapshot atual do vault Doppler pra `.env`, escrevendo
  * ATOMICAMENTE (tmp + rename) — nunca deixa `.env` truncado numa falha
  * transitória do Doppler (sessão expirada, rede, projeto/config errado).
+ * Achado do code-review do PR #5150 (reproduzido ao vivo ali, não incidente
+ * em produção): `doppler secrets download ... > .env` puro trunca o arquivo
+ * de destino antes do comando rodar, independente do exit code.
  *
- * **Por que isto existe, e não `doppler secrets download ... > .env` puro:**
- * o code-review do PR #5150 achou (e reproduziu ao vivo) que a redireção de
- * shell `>` trunca o arquivo de destino ANTES do comando rodar, independente
- * do exit code — qualquer falha do Doppler zerava as ~40 credenciais em
- * produção. Ver `docs/doppler-env-sync.md`.
+ * **#5155 — incidente em produção**, achado ao rodar pela primeira vez numa
+ * 2ª máquina o `sync-env` do #5150: `ANTHROPIC_API_KEY` — viva só no `.env`
+ * local, nunca posta no vault — foi apagada em silêncio pelo 1º sync
+ * bem-sucedido ali (sem backup, sem checagem de chave só-local). Duas
+ * proteções adicionais, na ordem em que de fato executam (o abort do guard
+ * nunca chega no backup):
  *
- * **#5155 — duas proteções adicionais, achadas na mesma incidência que o
- * #5150 (uma chave viva — `ANTHROPIC_API_KEY` — sobrevivia só no `.env`
- * local, nunca tinha sido posta no vault, e o primeiro `sync-env` bem-
- * sucedido a apagou silenciosamente):**
+ * 1. Guard de chave só-local — aborta com `LocalOnlyEnvKeysError` antes de
+ *    tocar `.env`/`.env.bak` quando alguma chave existe só no `.env` local.
+ * 2. Backup de 1 nível em `.env.bak` (retenção rasa, sobrescreve o
+ *    anterior), escrito atomicamente (tmp + rename), antes de sobrescrever
+ *    `.env` — só roda se o guard acima não abortou.
  *
- * 1. **Backup de 1 nível (`.env.bak`).** Antes de sobrescrever um `.env`
- *    existente, o conteúdo atual é copiado pra `.env.bak` (sobrescrevendo
- *    qualquer backup anterior). Escolha deliberada de retenção rasa — o
- *    caso de uso é "desfazer o ÚLTIMO sync" (rodou por engano, vault estava
- *    desatualizado), não arqueologia de N gerações; um histórico mais fundo
- *    acumularia arquivo sem necessidade real e sem rotação.
- *
- * 2. **Guard de chave só-local.** Antes de sobrescrever, comparamos as
- *    CHAVES (nunca os valores) do `.env` atual contra as do snapshot
- *    baixado. Se alguma chave existe só localmente, o sync ABORTA sem
- *    tocar `.env` — nunca faz merge silencioso nem escolhe sozinho o que
- *    preservar. Optamos por abortar (exigindo `--force` explícito pra
- *    prosseguir mesmo assim) em vez de mesclar automaticamente: merge
- *    esconderia o motivo mais comum do drift (a chave foi de fato removida
- *    do vault de propósito, e o guard estaria mascarando isso indefinidamente
- *    em vez de forçar uma decisão consciente a cada ocorrência). Abortar é
- *    também a opção mais simples de implementar sem introduzir um formato de
- *    merge próprio (comentários do Doppler, ordem de chaves, etc.).
+ * Ver `docs/doppler-env-sync.md` pro mecanismo completo (setup, racional de
+ * abortar em vez de mesclar, caminho inverso pra subir chave pro vault).
  *
  * Uso: `npm run sync-env` (wrapper em package.json). `npm run sync-env -- --force`
  * ignora o guard de chave só-local e sobrescreve mesmo assim (ainda com backup).
@@ -51,7 +40,12 @@ export const defaultDopplerRunner: DopplerRunner = (args) =>
   execFileSync("doppler", args, { encoding: "utf8" });
 
 export interface SyncEnvOptions {
-  /** Ignora o guard de chave só-local e sobrescreve mesmo assim. */
+  /**
+   * Ignora o guard de chave só-local e sobrescreve mesmo assim. O backup em
+   * `.env.bak` acontece de qualquer forma, com `force: true` ou sem — a
+   * chave só-local não sobrevive no `.env` final, mas continua recuperável
+   * no backup.
+   */
   force?: boolean;
 }
 
@@ -61,13 +55,27 @@ export interface SyncEnvOptions {
  * — nunca os valores (podem ser segredos).
  */
 export class LocalOnlyEnvKeysError extends Error {
-  constructor(public readonly keys: string[]) {
+  constructor(public readonly keys: readonly string[]) {
     super(
       `.env local tem ${keys.length} chave(s) ausente(s) no snapshot do Doppler: ${keys.join(", ")}. ` +
         `Sync abortado pra não apagar credencial silenciosamente — adicione a(s) chave(s) ao vault ` +
         `(doppler secrets set) ou rode de novo com --force pra sobrescrever mesmo assim (a(s) chave(s) some(m) do .env, mas fica(m) preservada(s) em .env.bak).`,
     );
     this.name = "LocalOnlyEnvKeysError";
+  }
+}
+
+/**
+ * Lançado quando falha uma operação LOCAL da fase pós-download (ler o
+ * `.env` existente antes do backup, ou escrever `.env.bak`) — nunca uma
+ * falha do Doppler. Distinguir a fase evita mandar o operador investigar
+ * login/rede/config do Doppler por um erro que não tem nada a ver com isso
+ * (ex: `.env.bak` sem permissão de escrita, disco cheio).
+ */
+export class EnvBackupError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EnvBackupError";
   }
 }
 
@@ -91,9 +99,11 @@ function parseEnvKeys(content: string): Set<string> {
  * sucesso — se `runner` lançar, `envPath` fica intocado (nunca truncado).
  *
  * Se `envPath` já existe: (1) aborta com `LocalOnlyEnvKeysError` — sem tocar
- * `envPath` — quando há chave presente só localmente e `options.force` não
- * foi passado; (2) caso contrário, faz backup do conteúdo atual em
- * `${envPath}.bak` antes de sobrescrever.
+ * `envPath`/`.env.bak` — quando há chave presente só localmente e
+ * `options.force` não foi passado; (2) caso contrário, faz backup ATÔMICO
+ * (tmp + rename) do conteúdo atual em `${envPath}.bak` antes de
+ * sobrescrever. Falha lendo o `.env` existente ou escrevendo o backup lança
+ * `EnvBackupError` — fase local, distinta de falha do Doppler (`runner`).
  */
 export function syncEnv(
   envPath: string,
@@ -102,24 +112,44 @@ export function syncEnv(
 ): void {
   const tmpPath = `${envPath}.tmp`;
   const backupPath = `${envPath}.bak`;
+  const backupTmpPath = `${backupPath}.tmp`;
   const content = runner(["secrets", "download", "--no-file", "--format", "env"]);
 
   if (existsSync(envPath)) {
-    const existingContent = readFileSync(envPath, "utf8");
+    let existingContent: string;
+    try {
+      existingContent = readFileSync(envPath, "utf8");
+    } catch (err) {
+      throw new EnvBackupError(
+        `Falha ao ler .env existente em ${envPath} antes do backup: ${err instanceof Error ? err.message : err}`,
+      );
+    }
 
     if (!options.force) {
       const localKeys = parseEnvKeys(existingContent);
       const remoteKeys = parseEnvKeys(content);
       const localOnlyKeys = [...localKeys].filter((key) => !remoteKeys.has(key));
       if (localOnlyKeys.length > 0) {
-        console.warn(
-          `[sync-env] Chave(s) só-local (ausente(s) no Doppler), .env NÃO sobrescrito: ${localOnlyKeys.join(", ")}`,
-        );
         throw new LocalOnlyEnvKeysError(localOnlyKeys);
       }
     }
 
-    writeFileSync(backupPath, existingContent, "utf8");
+    try {
+      writeFileSync(backupTmpPath, existingContent, "utf8");
+      renameSync(backupTmpPath, backupPath);
+    } catch (err) {
+      // Limpeza best-effort do .tmp do backup — nunca deixa uma falha
+      // SECUNDÁRIA aqui (ex: o próprio unlink falhando) mascarar o erro
+      // ORIGINAL do backup, que é o que importa reportar.
+      try {
+        if (existsSync(backupTmpPath)) unlinkSync(backupTmpPath);
+      } catch {
+        // ignorado de propósito — best-effort
+      }
+      throw new EnvBackupError(
+        `Falha ao fazer backup de .env em ${backupPath}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
   }
 
   writeFileSync(tmpPath, content, "utf8");
@@ -139,7 +169,7 @@ async function main() {
     // (cenário raro — writeFileSync/renameSync já são a mesma operação
     // atômica de destino, mas cobre falha entre as duas chamadas).
     if (existsSync(tmpPath)) unlinkSync(tmpPath);
-    if (err instanceof LocalOnlyEnvKeysError) {
+    if (err instanceof LocalOnlyEnvKeysError || err instanceof EnvBackupError) {
       console.error(err.message);
     } else {
       console.error("Falha ao sincronizar .env via Doppler:", err instanceof Error ? err.message : err);

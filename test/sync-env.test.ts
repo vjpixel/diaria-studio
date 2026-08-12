@@ -20,10 +20,10 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LocalOnlyEnvKeysError, syncEnv } from "../scripts/sync-env.ts";
+import { EnvBackupError, LocalOnlyEnvKeysError, syncEnv } from "../scripts/sync-env.ts";
 
 describe("syncEnv", () => {
   it("não sobrescreve .env quando o Doppler falha", () => {
@@ -153,6 +153,102 @@ describe("syncEnv", () => {
         readFileSync(`${envPath}.bak`, "utf8"),
         "CLARICE_API_KEY=old\nANTHROPIC_API_KEY=segredo-local\n",
       );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retenção de .env.bak é rasa (1 geração) — 2º sync sobrescreve o backup do 1º, não acumula", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sync-env-test-"));
+    try {
+      const envPath = join(dir, ".env");
+      writeFileSync(envPath, "V=A\n");
+
+      syncEnv(envPath, () => "V=B\n"); // A -> B
+      assert.equal(readFileSync(`${envPath}.bak`, "utf8"), "V=A\n");
+
+      syncEnv(envPath, () => "V=C\n"); // B -> C
+      assert.equal(readFileSync(`${envPath}.bak`, "utf8"), "V=B\n", "backup deve ser B (geração anterior), não A");
+      assert.equal(readFileSync(envPath, "utf8"), "V=C\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("não aborta quando o Doppler tem chave NOVA que o .env local ainda não tem (remote-only é benigno)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sync-env-test-"));
+    try {
+      const envPath = join(dir, ".env");
+      writeFileSync(envPath, "CLARICE_API_KEY=old\n");
+
+      syncEnv(envPath, () => "CLARICE_API_KEY=old\nNOVA_CHAVE_NO_VAULT=valor\n");
+
+      assert.equal(readFileSync(envPath, "utf8"), "CLARICE_API_KEY=old\nNOVA_CHAVE_NO_VAULT=valor\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("aborta com 2+ chaves só-locais e formata err.keys/mensagem com todas, não só a 1ª", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sync-env-test-"));
+    try {
+      const envPath = join(dir, ".env");
+      writeFileSync(
+        envPath,
+        "CLARICE_API_KEY=old\nANTHROPIC_API_KEY=segredo-1\nOUTRA_CHAVE_LOCAL=segredo-2\n",
+      );
+
+      assert.throws(
+        () => syncEnv(envPath, () => "CLARICE_API_KEY=new\n"),
+        (err: unknown) => {
+          assert.ok(err instanceof LocalOnlyEnvKeysError);
+          assert.deepEqual(err.keys, ["ANTHROPIC_API_KEY", "OUTRA_CHAVE_LOCAL"]);
+          assert.ok(err.message.includes("ANTHROPIC_API_KEY, OUTRA_CHAVE_LOCAL"));
+          assert.ok(!err.message.includes("segredo-1"));
+          assert.ok(!err.message.includes("segredo-2"));
+          return true;
+        },
+      );
+
+      assert.equal(existsSync(`${envPath}.bak`), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("backup atômico (#5155 fleet review finding 1): falha na escrita de .env.bak não deixa .env sobrescrito nem cria .env.bak", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sync-env-test-"));
+    try {
+      const envPath = join(dir, ".env");
+      writeFileSync(envPath, "CLARICE_API_KEY=old\n");
+
+      // Fault injection real (sem mock de módulo — named imports de builtins
+      // não veem monkey-patch de `fs.writeFileSync` sob a transpilação do
+      // tsx, confirmado empiricamente): pré-criar `.env.bak.tmp` como
+      // DIRETÓRIO força o `writeFileSync(backupTmpPath, ...)` do código de
+      // produção a lançar EISDIR de verdade, no mesmo ponto que uma falha
+      // real de disco/permissão atingiria.
+      mkdirSync(`${envPath}.bak.tmp`);
+
+      assert.throws(
+        () => syncEnv(envPath, () => "CLARICE_API_KEY=new\n"),
+        (err: unknown) => {
+          // A falha original (EISDIR na escrita do backup) é reportada como
+          // EnvBackupError — fase local, distinta de falha do Doppler — e
+          // não fica mascarada pela limpeza best-effort do .tmp (que também
+          // falharia aqui, já que o "arquivo" é na verdade um diretório).
+          assert.ok(err instanceof EnvBackupError);
+          return true;
+        },
+      );
+
+      // .env continua com o conteúdo antigo — a falha do backup abortou
+      // ANTES da escrita final (tmp+rename) do .env principal, então o
+      // .env nunca chega a ser tocado.
+      assert.equal(readFileSync(envPath, "utf8"), "CLARICE_API_KEY=old\n");
+      // .env.bak nunca chega a existir — o rename backupTmpPath→backupPath
+      // nunca roda porque a escrita anterior já lançou.
+      assert.equal(existsSync(`${envPath}.bak`), false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
