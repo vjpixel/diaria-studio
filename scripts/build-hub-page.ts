@@ -228,6 +228,13 @@ export type HubFactCheckDecision =
  *   (#573, nunca confiar no `gate` que o agente escreveu) → `abort_blocked`
  *   se bloqueado, `proceed` senão.
  */
+// `reportExists`/`reportIsFresh` ficam como booleans soltos (não uma union
+// discriminada tipo `{ status: "missing" } | { status: "stale" } | { status: "fresh" }`)
+// — avaliação consciente do fleet review (#5102): só existe 1 caller hoje
+// (`runFactCheckGate`), então o encapsulamento extra não paga o custo ainda.
+// Revisitar se um 2º caller aparecer (nesse ponto vale a pena refatorar pra
+// tornar as 3 combinações inválidas — ex: `!exists && isFresh` —
+// irrepresentáveis em vez de só nunca ocorridas na prática).
 export function decideHubFactCheckGate(input: {
   reportExists: boolean;
   reportIsFresh: boolean;
@@ -250,13 +257,14 @@ export function decideHubFactCheckGate(input: {
  * (mesmo padrão de saída de `buildOne`/`checkHubFacts`, #5102 briefing).
  * Separado de `decideHubFactCheckGate` pra manter a decisão pura testável
  * sem precisar mockar `process.exit`. */
-export function reportFactCheckDecision(
-  slug: string,
-  decision: HubFactCheckDecision,
-  manifestPath: string,
-  reportPath: string,
-  approvalsPath: string,
-): void {
+export interface HubFactCheckPaths {
+  manifestPath: string;
+  reportPath: string;
+  approvalsPath: string;
+}
+
+export function reportFactCheckDecision(slug: string, decision: HubFactCheckDecision, paths: HubFactCheckPaths): void {
+  const { manifestPath, reportPath, approvalsPath } = paths;
   const staleness =
     "reason" in decision
       ? decision.reason === "no_report"
@@ -284,6 +292,13 @@ export function reportFactCheckDecision(
       );
       process.exit(2);
       return;
+    default: {
+      // Guard de exaustividade: uma 5ª variante de HubFactCheckDecision cairia
+      // aqui sem tratamento — TS recusa compilar se `decision` não for `never`
+      // neste ponto (todos os `case`s acima cobrindo as variantes conhecidas).
+      const _exhaustive: never = decision;
+      throw new Error(`[build-hub-page] decisão de fact-check não tratada: ${JSON.stringify(_exhaustive)}`);
+    }
   }
 }
 
@@ -301,10 +316,18 @@ function runFactCheckGate(slug: string, skipFactCheck: boolean, dataDirOverride?
   mkdirSync(dataDir, { recursive: true });
 
   const manifestPath = factManifestPath(slug, dataDir);
-  runTsx(resolve(ROOT, "scripts/extract-hub-facts.ts"), ["--hub", slug, "--out", manifestPath], {
-    cwd: ROOT,
-    stdout: "ignore",
-  });
+  try {
+    runTsx(resolve(ROOT, "scripts/extract-hub-facts.ts"), ["--hub", slug, "--out", manifestPath], {
+      cwd: ROOT,
+      stdout: "ignore",
+    });
+  } catch (e) {
+    const err = e as { status?: number | null; message?: string };
+    process.stderr.write(
+      `[build-hub-page] ${slug}: extract-hub-facts.ts falhou (exit ${err.status ?? "?"}) — ${err.message ?? e}\n`,
+    );
+    process.exit(2);
+  }
   const manifestMtimeMs = statSync(manifestPath).mtimeMs;
 
   const reportPath = factReportPath(slug, dataDir);
@@ -314,7 +337,15 @@ function runFactCheckGate(slug: string, skipFactCheck: boolean, dataDirOverride?
   let reportIsFresh = false;
   if (reportExists) {
     reportIsFresh = statSync(reportPath).mtimeMs > manifestMtimeMs;
-    const report = JSON.parse(readFileSync(reportPath, "utf8")) as HubFactCheckReportFile;
+    let report: HubFactCheckReportFile;
+    try {
+      report = JSON.parse(readFileSync(reportPath, "utf8")) as HubFactCheckReportFile;
+    } catch (e) {
+      process.stderr.write(
+        `[build-hub-page] ${slug}: ${reportPath} não é JSON válido — ${(e as Error).message}. Corrija ou apague o arquivo.\n`,
+      );
+      process.exit(2);
+    }
     claims = report.claims ?? [];
     contradictions = report.contradictions ?? [];
   }
@@ -322,12 +353,20 @@ function runFactCheckGate(slug: string, skipFactCheck: boolean, dataDirOverride?
   const approvalsPath = factApprovalsPath(slug, dataDir);
   let approvedClaimIds: string[] = [];
   if (existsSync(approvalsPath)) {
-    const approvals = JSON.parse(readFileSync(approvalsPath, "utf8")) as HubFactCheckApprovalsFile;
+    let approvals: HubFactCheckApprovalsFile;
+    try {
+      approvals = JSON.parse(readFileSync(approvalsPath, "utf8")) as HubFactCheckApprovalsFile;
+    } catch (e) {
+      process.stderr.write(
+        `[build-hub-page] ${slug}: ${approvalsPath} não é JSON válido — ${(e as Error).message}. Corrija ou apague o arquivo.\n`,
+      );
+      process.exit(2);
+    }
     approvedClaimIds = approvals.approved_claim_ids ?? [];
   }
 
   const decision = decideHubFactCheckGate({ reportExists, reportIsFresh, claims, contradictions, approvedClaimIds, skipFactCheck });
-  reportFactCheckDecision(slug, decision, manifestPath, reportPath, approvalsPath);
+  reportFactCheckDecision(slug, decision, { manifestPath, reportPath, approvalsPath });
 }
 
 function main(): void {
