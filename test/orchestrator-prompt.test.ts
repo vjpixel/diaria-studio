@@ -213,7 +213,14 @@ describe("orchestrator-prompt (#634)", () => {
       // scratchpad, orchestrator copia pra `{EDITION_DIR}/_internal/` antes
       // de prosseguir). Arquivo foi a 762 linhas. Teto bumped de 760→765 com
       // headroom pequeno.
-      "orchestrator-stage-4.md": 765,
+      // #5101: +12 linhas — §4c.1c, sugestão de meta description do D1
+      // (`buildMetaDescriptionSuggestion`, pura/determinística, sem LLM) +
+      // captura de `{meta_description_suggestion}` no gate (§4d) + nota no
+      // glossário de variáveis. Puramente informativo, nunca bloqueia — o
+      // editor decide se cola a sugestão (trade-off contra taxa de abertura
+      // do e-mail). Arquivo foi a 777 linhas. Teto bumped de 765→780 com
+      // headroom pequeno.
+      "orchestrator-stage-4.md": 780,
       "orchestrator-stage-5.md": 455,
       // #4574: 1º teto registrado pra este arquivo (nunca tinha entry —
       // ORCHESTRATOR_FILES não o incluía até esta PR). Arquivo tinha 491

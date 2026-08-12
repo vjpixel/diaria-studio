@@ -135,7 +135,16 @@ export function buildTitlesCache(
 
   for (const post of posts) {
     const slug = post.slug ?? (post.web_url ? slugFromUrl(post.web_url) : null);
-    const title = post.title ?? post.subject;
+    // #5101 item 3a: normaliza pra NFC — o título vem direto do cache da API
+    // da Beehiiv (`post.title`/`post.subject`) e pode chegar em NFD (mesma
+    // causa-raiz do item 3a: acento como base+diacrítico separado em vez de
+    // codepoint composto). Não conserta o SLUG (já baked, imutável sem quebrar
+    // link publicado — fora de escopo), mas garante que o TÍTULO exibido pelo
+    // Worker `arquivo` (`render-archive.ts`, via este cache) renderize com
+    // acentos corretos em vez de potencialmente depender de normalização
+    // implícita do runtime. Idempotente — string já NFC passa inalterada.
+    const rawTitle = post.title ?? post.subject;
+    const title = rawTitle?.normalize("NFC");
 
     if (!slug) {
       warnings.push(`post sem slug resolvível (web_url=${post.web_url ?? "ausente"})`);

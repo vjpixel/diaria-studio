@@ -334,6 +334,136 @@ describe("parseDestaques (#172)", () => {
   });
 });
 
+// ── #5101 item 3: título normalizado pra NFC (prevenção de slug quebrado) ──
+
+describe("#5101: título normalizado pra NFC", () => {
+  it("título em NFD (acento decomposto) sai normalizado em NFC", () => {
+    // "produção" com "ç" e "ã" DECOMPOSTOS (base + diacrítico combinante
+    // separado) — a mesma forma que causou slug quebrado na Beehiiv
+    // ("produ-o", ver corpo do #5101 item 3). Construído via NFD explícito
+    // pra não depender de como o editor do arquivo de teste normaliza a
+    // string literal.
+    const nfdTitle = "Nova regra de produ̧ão de IA no Brasil".normalize("NFD");
+    // Confirma pré-condição: a fixture É de fato NFD (decomposta), não NFC.
+    assert.notEqual(nfdTitle, nfdTitle.normalize("NFC"));
+
+    const md = [
+      "DESTAQUE 1 | REGULACAO",
+      nfdTitle,
+      "https://example.com/d1",
+      "",
+      "Corpo.",
+      "",
+      "Por que isso importa:",
+      "Impacto.",
+    ].join("\n");
+
+    const destaques = parseDestaques(md);
+    assert.equal(destaques[0].title, nfdTitle.normalize("NFC"));
+    assert.equal(destaques[0].title, destaques[0].title.normalize("NFC"));
+  });
+
+  it("título já em NFC (caso comum) passa inalterado", () => {
+    const nfcTitle = "Nova regra de produção de IA no Brasil";
+    assert.equal(nfcTitle, nfcTitle.normalize("NFC")); // pré-condição: já é NFC
+
+    const md = [
+      "DESTAQUE 1 | REGULACAO",
+      nfcTitle,
+      "https://example.com/d1",
+      "",
+      "Corpo.",
+      "",
+      "Por que isso importa:",
+      "Impacto.",
+    ].join("\n");
+
+    const destaques = parseDestaques(md);
+    assert.equal(destaques[0].title, nfcTitle);
+  });
+
+  it("título em formato inline-link `[título](URL)` também normaliza pra NFC", () => {
+    const nfdTitle = "IA muda a educa̧ão brasileira".normalize("NFD");
+    const md = [
+      "DESTAQUE 1 | EDUCACAO",
+      `[${nfdTitle}](https://example.com/d1)`,
+      "",
+      "Corpo.",
+      "",
+      "Por que isso importa:",
+      "Impacto.",
+    ].join("\n");
+
+    const destaques = parseDestaques(md);
+    assert.equal(destaques[0].title, nfdTitle.normalize("NFC"));
+  });
+
+  // Achado crítico do fleet review pré-merge: `body`/`why` são extraídos na
+  // MESMA função (`parseDestaques`) e alimentam `buildMetaDescriptionSuggestion`
+  // (meta-description.ts, item 2 deste PR) — sem normalizar `body`/`why`
+  // também, a feature nova podia produzir sugestão de meta description em
+  // NFD, o EXATO defeito que a normalização de título existe pra eliminar.
+
+  it("body em NFD (acento decomposto) sai normalizado em NFC", () => {
+    const nfdBody = "A nova regra de produção de IA muda o setor.".normalize("NFD");
+    assert.notEqual(nfdBody, nfdBody.normalize("NFC")); // pré-condição: fixture é NFD
+
+    const md = [
+      "DESTAQUE 1 | REGULACAO",
+      "Título",
+      "https://example.com/d1",
+      "",
+      nfdBody,
+      "",
+      "Por que isso importa:",
+      "Impacto.",
+    ].join("\n");
+
+    const destaques = parseDestaques(md);
+    assert.equal(destaques[0].body, nfdBody.normalize("NFC"));
+    assert.equal(destaques[0].body, destaques[0].body.normalize("NFC"));
+  });
+
+  it("body já em NFC (caso comum) passa inalterado", () => {
+    const nfcBody = "A nova regra de produção de IA muda o setor.";
+    assert.equal(nfcBody, nfcBody.normalize("NFC")); // pré-condição: já é NFC
+
+    const md = [
+      "DESTAQUE 1 | REGULACAO",
+      "Título",
+      "https://example.com/d1",
+      "",
+      nfcBody,
+      "",
+      "Por que isso importa:",
+      "Impacto.",
+    ].join("\n");
+
+    const destaques = parseDestaques(md);
+    assert.equal(destaques[0].body, nfcBody);
+  });
+
+  it("why em NFD (acento decomposto) também sai normalizado em NFC", () => {
+    const nfdWhy = "Isso afeta a produção e a educação no Brasil.".normalize("NFD");
+    assert.notEqual(nfdWhy, nfdWhy.normalize("NFC")); // pré-condição: fixture é NFD
+
+    const md = [
+      "DESTAQUE 1 | REGULACAO",
+      "Título",
+      "https://example.com/d1",
+      "",
+      "Corpo.",
+      "",
+      "Por que isso importa:",
+      nfdWhy,
+    ].join("\n");
+
+    const destaques = parseDestaques(md);
+    assert.equal(destaques[0].why, nfdWhy.normalize("NFC"));
+    assert.equal(destaques[0].why, destaques[0].why.normalize("NFC"));
+  });
+});
+
 // ── #2316: 2-destaque support ────────────────────────────────────────────────
 
 describe("#2316: parseDestaques aceita 2 destaques", () => {

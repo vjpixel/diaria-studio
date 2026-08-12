@@ -268,6 +268,47 @@ depois de feito. **Re-medir no mesmo checkpoint ~29/set/2026 do Fato 1** com
 nem task nova (a instrumentação já existe); não aumentar a cadência entre
 checkpoints (mesma disciplina do Fato 1).
 
+## Fato 6 — `<html lang="en">` em toda página de edição é bug de plataforma da Beehiiv, não algo que se conserte daqui (12/ago/2026, #5101 item 1)
+
+Toda página de edição publicada (`diar.ia.br/p/{slug}`) serve `<html lang="en"...>`
+no HTML servido, apesar do conteúdo ser 100% pt-BR e de
+`get_publication_settings` (MCP Beehiiv) devolver `"language": "pt"` —
+config certa, HTML errado. Confirmado ao vivo em 12/ago/2026, 3 posts:
+
+| Post | `<html lang>` servido | JSON embutido (`"language"`) |
+|---|---|---|
+| `diar.ia.br/p/empresas-pagam-43-mais-por-habilidades-em-ia` | `en` | `pt` |
+| `diar.ia.br/p/openai-anuncia-controles-parentais-para-chatgpt` | `en` | `pt` |
+| `diar.ia.br/p/microsoft-lan-a-ia-pr-pria` | `en` | `pt` |
+
+(o 3º slug acima também ilustra o Fato do #5101 item 3 — título NFD virou
+slug quebrado, "microsoft-lan-a-ia-pr-pria" em vez de
+"microsoft-lanca-ia-propria"; ver PR que implementa 3a — normalização NFC do
+título na fronteira de escrita — pra prevenção. **3a não fecha o item 3
+inteiro**: o critério de pronto da issue também exige 3c, lint no Stage 4 que
+rejeita título não-NFC, que este PR não implementa — ver checklist do #5101.)
+
+O atributo `lang` do `<html>` renderizado é decidido pelo tema/template da
+página web da Beehiiv, código que não vive neste repo e não é editável via
+API/MCP — **não há workaround no nosso lado**. `edit_post`/`save_post`
+(onde um campo de idioma por post, se existisse, estaria) já é conhecido
+como gated pelo plano Launch/free (ver memory `beehiiv-plano-nao-sobe.md` e
+`context/publishers/beehiiv-playbook.md` #1705/#2501) — mesmo que o campo
+existisse, a mesma parede de plano provavelmente bloquearia a escrita.
+
+**Ação:** nenhuma correção de código possível a partir deste repo. Registrar
+aqui + recomendar que o editor abra ticket no suporte Beehiiv reportando
+`<html lang="en">` servido apesar de `Settings → Publication → Language`
+já estar em português — ação de fora do escopo de código (requer conta/
+suporte da plataforma, mesma classe de bloqueio do "Label `local`"/bloqueio
+externo do CLAUDE.md).
+
+**Não fazer:** não tentar sobrescrever `lang` via JS injetado
+(`javascript_tool`) — mesmo que tecnicamente possível num passo do playbook
+de publicação, alterar o `<html>` renderizado depois do fato não muda o que
+o crawler/bot recebe na 1ª resposta HTTP (SSR), só o DOM pós-hidratação no
+browser — sem efeito real em SEO.
+
 ## Quando adicionar entry aqui
 
 Mesmo critério de `context/agents-known-issues.md`, aplicado a dado de SEO em

@@ -126,7 +126,21 @@ export function parseDestaques(raw: string): Destaque[] {
     // #599 — inline-link format: `[título](URL)` na linha do título.
     // Se bater, extrai title+url do próprio link e pula busca de URL solo.
     const titleInlineLink = parseInlineLink(titleRaw);
-    const title = titleInlineLink?.title ?? titleRaw;
+    // #5101 item 3: normaliza pra NFC (acentos compostos) ANTES de qualquer
+    // coisa que gere slug a partir deste título. Este é o título que o
+    // playbook de publicação seta no campo Title da Beehiiv (ver
+    // beehiiv-playbook.md §4a — "{title} = título D1 extraído no passo 1,
+    // mesmo usado pra setar o slug SEO"), e a Beehiiv deriva o slug
+    // automaticamente do título quando não sobrescrito manualmente. Título em
+    // NFD (acento = base + diacrítico combinante separado, em vez de um único
+    // codepoint composto) faz o slugifier da Beehiiv tratar o diacrítico como
+    // separador de palavra — "produção" (NFD) virou slug "produ-o", partindo
+    // a palavra. `String.prototype.normalize("NFC")` é idempotente (string já
+    // NFC passa inalterada), então isto é seguro rodar sempre, não só quando
+    // a entrada é suspeita de vir de fonte NFD. Não corrige os 43 slugs já
+    // publicados (mudar slug de post já publicado quebra links existentes —
+    // fora de escopo, ver #5101 corpo item 3a) — só previne recorrência.
+    const title = (titleInlineLink?.title ?? titleRaw).normalize("NFC");
 
     // Find "Por que isso importa:" marker.
     const whyIdx = lines.findIndex(l => /^Por que isso importa:/i.test(l.trim()));
@@ -244,7 +258,13 @@ export function parseDestaques(raw: string): Destaque[] {
       bodyEnd = hubLinkIdx;
     }
 
-    const body = lines.slice(bodyStart, bodyEnd).join('\n').trim();
+    // #5101 (fleet review pré-merge, achado crítico): mesma normalização NFC
+    // do título acima (linha ~143) — sem isto, `body` (consumido direto por
+    // `buildMetaDescriptionSuggestion` em meta-description.ts, item 2 deste
+    // PR) podia vazar em NFD pro campo de meta description sugerida, o EXATO
+    // defeito que a normalização de título existe pra eliminar. Idempotente,
+    // mesmo raciocínio.
+    const body = lines.slice(bodyStart, bodyEnd).join('\n').trim().normalize("NFC");
 
     // Why end: até URL legacy (se existe e está depois do whyIdx) OU fim.
     let whyEnd = (urlIdx !== -1 && !isNewFormat && urlIdx > whyIdx) ? urlIdx : lines.length;
@@ -258,7 +278,9 @@ export function parseDestaques(raw: string): Destaque[] {
     if (hubLinkIdx !== -1 && hubLinkIdx > whyIdx && hubLinkIdx < whyEnd) {
       whyEnd = hubLinkIdx;
     }
-    const why = whyIdx !== -1 ? lines.slice(whyIdx + 1, whyEnd).join('\n').trim() : '';
+    // #5101: mesma normalização NFC de `body` acima — `why` é texto livre com
+    // a mesma origem/risco de acento decomposto.
+    const why = whyIdx !== -1 ? lines.slice(whyIdx + 1, whyEnd).join('\n').trim().normalize("NFC") : '';
 
     const url = isInlineFormat
       ? inlineUrl!
