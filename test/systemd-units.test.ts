@@ -49,6 +49,17 @@ describe("scheduleToOnCalendar", () => {
     assert.equal(scheduleToOnCalendar({ kind: "interval", hours: 12 }), "*-*-* 0/12:00:00 America/Sao_Paulo");
   });
 
+  it("monthly (#5128/#5130) -> *-*-DD HH:MM:00 <fuso>, com zero-padding", () => {
+    assert.equal(
+      scheduleToOnCalendar({ kind: "monthly", day: 1, hour: 9, minute: 0 }),
+      "*-*-01 09:00:00 America/Sao_Paulo",
+    );
+    assert.equal(
+      scheduleToOnCalendar({ kind: "monthly", day: 28, hour: 23, minute: 5 }),
+      "*-*-28 23:05:00 America/Sao_Paulo",
+    );
+  });
+
   // Achado ao vivo (#4807, 260810, cross-session): predator roda em Etc/UTC.
   // Sem fuso explícito no OnCalendar=, systemd interpreta as horas do
   // registry (pensadas em BRT) como se já fossem UTC -- Diaria-Clarice-Sync

@@ -80,6 +80,10 @@ export function scheduleToOnCalendar(schedule: ScheduledTaskSchedule): string {
       return `*-*-* ${pad2(schedule.hour)}:${pad2(schedule.minute)}:00 ${BRT_TIMEZONE}`;
     case "weekly":
       return `${WEEKDAY_ABBR[schedule.dayOfWeek]} *-*-* ${pad2(schedule.hour)}:${pad2(schedule.minute)}:00 ${BRT_TIMEZONE}`;
+    case "monthly":
+      // `day` é sempre 1-28 (ver docstring de ScheduledTaskSchedule) —
+      // literal direto no calendário, sem aritmética de fim-de-mês.
+      return `*-*-${pad2(schedule.day)} ${pad2(schedule.hour)}:${pad2(schedule.minute)}:00 ${BRT_TIMEZONE}`;
     case "interval":
       // Cadência "a cada Nh" (ver docstring da função abaixo) -- fuso não
       // afeta o intervalo em si (Nh depois de meia-noite é Nh depois de

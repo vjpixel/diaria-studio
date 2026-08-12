@@ -482,6 +482,24 @@ describe("computeMostRecentScheduledOccurrence (#4799)", () => {
   it("kind 'interval' lança (sem âncora de calendário)", () => {
     assert.throws(() => computeMostRecentScheduledOccurrence({ kind: "interval", hours: 4 }, new Date()));
   });
+
+  it("monthly dia 1, 09:00 BRT (#5128/#5130): 'agora' é meio do mês, depois do dia 1 -> ocorrência DESTE mês", () => {
+    const now = new Date("2026-08-10T14:00:00.000Z");
+    const occ = computeMostRecentScheduledOccurrence({ kind: "monthly", day: 1, hour: 9, minute: 0 }, now);
+    assert.equal(occ.toISOString(), "2026-08-01T12:00:00.000Z"); // 09:00 BRT = 12:00 UTC
+  });
+
+  it("monthly dia 1, 09:00 BRT: 'agora' é dia 1 ANTES do horário -> ocorrência do mês ANTERIOR", () => {
+    const now = new Date("2026-08-01T10:00:00.000Z"); // 07:00 BRT, antes das 09:00
+    const occ = computeMostRecentScheduledOccurrence({ kind: "monthly", day: 1, hour: 9, minute: 0 }, now);
+    assert.equal(occ.toISOString(), "2026-07-01T12:00:00.000Z");
+  });
+
+  it("monthly: rollover de ano (janeiro 'agora' antes do dia 1 -> dezembro do ano anterior)", () => {
+    const now = new Date("2027-01-01T10:00:00.000Z"); // antes das 09:00 BRT do dia 1/jan
+    const occ = computeMostRecentScheduledOccurrence({ kind: "monthly", day: 1, hour: 9, minute: 0 }, now);
+    assert.equal(occ.toISOString(), "2026-12-01T12:00:00.000Z");
+  });
 });
 
 describe("computeNextRunAtOrAfter (#4799)", () => {
@@ -493,6 +511,18 @@ describe("computeNextRunAtOrAfter (#4799)", () => {
 
   it("interval -> null (sem âncora)", () => {
     assert.equal(computeNextRunAtOrAfter({ kind: "interval", hours: 4 }, new Date()), null);
+  });
+
+  it("monthly (#5128/#5130): próxima ocorrência é dia 1 do MÊS SEGUINTE", () => {
+    const after = new Date("2026-08-10T14:00:00.000Z");
+    const next = computeNextRunAtOrAfter({ kind: "monthly", day: 1, hour: 9, minute: 0 }, after);
+    assert.equal(next?.toISOString(), "2026-09-01T12:00:00.000Z");
+  });
+
+  it("monthly: rollover de ano (dezembro -> janeiro do ano seguinte)", () => {
+    const after = new Date("2026-12-15T14:00:00.000Z");
+    const next = computeNextRunAtOrAfter({ kind: "monthly", day: 1, hour: 9, minute: 0 }, after);
+    assert.equal(next?.toISOString(), "2027-01-01T12:00:00.000Z");
   });
 });
 
@@ -536,5 +566,24 @@ describe("isTaskOverdue (#4799)", () => {
     const now = new Date("2026-08-10T15:00:00.000Z");
     const lastRunAt = new Date("2026-08-10T09:00:00.000Z");
     assert.equal(isTaskOverdue({ kind: "interval", hours: 4 }, lastRunAt, now), true);
+  });
+
+  const monthlySchedule = { kind: "monthly" as const, day: 1, hour: 9, minute: 0 };
+
+  it("monthly (#5128/#5130): rodou no dia 1 deste mês, dentro da janela -> não overdue", () => {
+    const lastRunAt = new Date("2026-08-01T12:00:05.000Z");
+    const now = new Date("2026-08-20T00:00:00.000Z");
+    assert.equal(isTaskOverdue(monthlySchedule, lastRunAt, now), false);
+  });
+
+  it("monthly: último run foi no mês PASSADO, já passou do dia 1 deste mês + grace -> overdue", () => {
+    const lastRunAt = new Date("2026-07-01T12:00:00.000Z");
+    const now = new Date("2026-08-01T13:00:00.000Z"); // 1h depois da ocorrência de agosto
+    assert.equal(isTaskOverdue(monthlySchedule, lastRunAt, now), true);
+  });
+
+  it("monthly: nunca rodou -> overdue assim que o grace do mês corrente passa", () => {
+    const now = new Date("2026-08-01T13:00:00.000Z");
+    assert.equal(isTaskOverdue(monthlySchedule, null, now), true);
   });
 });

@@ -50,6 +50,13 @@ describe("describeSchedule (#4799)", () => {
   it("interval -> 'a cada Nh'", () => {
     assert.equal(describeSchedule({ kind: "interval", hours: 4 }), "a cada 4h");
   });
+
+  it("monthly (#5128/#5130) -> 'mensal (dia D) às HH:MM'", () => {
+    assert.equal(
+      describeSchedule({ kind: "monthly", day: 1, hour: 9, minute: 0 }),
+      "mensal (dia 1) às 09:00",
+    );
+  });
 });
 
 describe("buildTasksData (#4799) — orquestração fim-a-fim", () => {
