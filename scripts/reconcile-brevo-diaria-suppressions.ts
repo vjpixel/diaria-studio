@@ -200,8 +200,13 @@ async function main(): Promise<void> {
   const push = hasFlag(argv, "push");
   const log = (msg: string) => process.stderr.write(`[reconcile-brevo-diaria-suppressions] ${msg}\n`);
 
-  const days = getIntArg(argv, "days", { min: 1 }) ?? DEFAULT_LOOKBACK_DAYS;
+  const daysArg = getIntArg(argv, "days", { min: 1 });
+  const days = daysArg ?? DEFAULT_LOOKBACK_DAYS;
   const email = getStringArg(argv, "email", { example: "pessoa@dominio.com" });
+
+  if (email && daysArg !== undefined) {
+    log(`--email fornecido junto com --days — --days (${days}) é ignorado; a busca é restrita ao e-mail informado.`);
+  }
 
   const { apiKey: beehiivApiKey, publicationId } = loadBeehiivConfig("[reconcile-brevo-diaria-suppressions]");
 
