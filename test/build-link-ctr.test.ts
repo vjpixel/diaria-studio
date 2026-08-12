@@ -114,6 +114,34 @@ describe("classifyOrigin — origem por-link, sem vazamento do título (#1567 fi
     // 'usp' cru não dispara mais BR (colidia com unique selling proposition)
     assert.equal(classifyOrigin("the main usp of this product is speed", "producthunt.com"), "INT");
   });
+
+  it("allowlist de veículo BR fora de .br — exame.com (#5110)", () => {
+    assert.equal(
+      classifyOrigin("as profissões que estão contratando pessoas que sabem usar ia", "exame.com"),
+      "BR",
+    );
+  });
+
+  it("allowlist cobre os demais veículos BR de seed/sources.csv fora de .br/.com.br", () => {
+    assert.equal(classifyOrigin("qualquer texto sem keyword BR", "braziljournal.com"), "BR");
+    assert.equal(classifyOrigin("qualquer texto sem keyword BR", "g1.globo.com"), "BR");
+    assert.equal(classifyOrigin("qualquer texto sem keyword BR", "oplanob.com"), "BR");
+    assert.equal(classifyOrigin("qualquer texto sem keyword BR", "startse.com"), "BR");
+    assert.equal(classifyOrigin("qualquer texto sem keyword BR", "tecnoblog.net"), "BR");
+  });
+
+  it("www. é normalizado antes do lookup na allowlist", () => {
+    assert.equal(classifyOrigin("qualquer texto", "www.exame.com"), "BR");
+  });
+
+  it("allowlist não vira porta dos fundos pros falsos-positivos do #1567 — domínio parecido mas NÃO listado continua INT", () => {
+    // 'exame' é só um token do host — não pode casar por substring com um
+    // domínio diferente que contenha o mesmo texto.
+    assert.equal(classifyOrigin("AI startup raises funding", "example.com"), "INT");
+    assert.equal(classifyOrigin("AI startup raises funding", "notexame.com"), "INT");
+    // subdomínio de global.com genérico (não g1.globo.com) continua INT.
+    assert.equal(classifyOrigin("AI startup raises funding", "blog.globo.com"), "INT");
+  });
 });
 
 describe("extractLinks — sectionTitle reconhece o kicker <td> real do Beehiiv (#3043)", () => {

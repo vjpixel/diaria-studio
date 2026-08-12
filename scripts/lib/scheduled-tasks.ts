@@ -362,6 +362,27 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4755",
   },
   {
+    name: "Diaria-LinkedIn-Weekly-Staleness-Alarm",
+    description: "alarme de staleness da newsletter semanal do LinkedIn (ln-{cycle}.json ausente)",
+    steps: [{ key: "alarm", script: "scripts/linkedin-weekly-staleness-alarm.ts" }],
+    logPath: "weekly/.linkedin-staleness-alarm.log",
+    // Domingo 22:00 BRT (#5111): produção normal da skill é domingo (durante
+    // o dia, sem horário fixo — gate humano com 3 textos autorais), então
+    // 22:00 dá folga ampla pro dia inteiro de domingo já ter passado antes
+    // de checar, e ainda sobra a noite inteira + a manhã de segunda (deadline
+    // de publicação ~09:30 BRT) pro editor reagir ao e-mail antes do prazo.
+    // Evita de propósito os 2 outros timers de domingo já registrados
+    // (Diaria-Geo-Citation-Monitor 07:00, Diaria-Geo-Citation-Staleness-Alarm
+    // 10:30) — sem colisão de horário com nenhum dos dois.
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 22, minute: 0 },
+    // Sem `legacySetupScript` de propósito — mesmo caso de
+    // `Diaria-Beehiiv-Home-Meta-Check`/`Diaria-Clarice-Envio-Alarm` (#5005/
+    // #5058): task registrada depois do cutover systemd (épica #4798), sem
+    // contraparte Windows/.ps1 — e nenhuma tarefa `Diaria-*` deve rodar no
+    // Windows de qualquer forma (decisão do editor 260811, #5074).
+    issue: "#5111",
+  },
+  {
     name: "Diaria-Hub-Drift-Check",
     description: "smoke-test de drift entre HUB_META e o Worker arquivo publicado",
     steps: [{ key: "check", script: "scripts/hub-drift-check.ts" }],

@@ -143,10 +143,35 @@ export function isEditorial(url: string): boolean {
  * Tokens ambíguos que geravam falsos positivos ('senado'→'senador americano',
  * ' usp'→"unique selling proposition", ' r$'→"r$ values") foram endurecidos.
  */
+/**
+ * Veículos brasileiros hospedados FORA do TLD `.br` (#5110) — a maioria dos
+ * veículos BR em `seed/sources.csv` já está em `.com.br`/`.org.br` e cai no
+ * override de TLD acima, mas um punhado não (achado ao vivo: `exame.com`
+ * classificado como INT, contaminando a coluna `origin` da tabela de CTR
+ * pra todo clique em matéria da Exame). Lista curta e deliberadamente
+ * ESTÁTICA (mesmo espírito da allowlist de `isCommercialOrOwnLink` em
+ * `weekly-social-click-rank.ts`) — allowlist de DOMÍNIO, nunca afrouxa os
+ * tokens de texto endurecidos pelo audit #1567 finding B. Varrido contra
+ * `seed/sources.csv` (coluna Tipo=Brasil) na origem desta lista — revisar
+ * lá antes de adicionar/remover uma entrada.
+ */
+const BR_VEHICLE_HOST_ALLOWLIST = new Set([
+  'exame.com',
+  'braziljournal.com',
+  'g1.globo.com',
+  'oplanob.com',
+  'startse.com',
+  'tecnoblog.net',
+]);
+
 export function classifyOrigin(signal: string, domain = ''): 'BR' | 'INT' {
   // Domínio .br (.com.br, .gov.br, .org.br …) é sinal forte de fonte/conteúdo BR.
   const host = domain.toLowerCase().replace(/^www\./, '');
   if (/(^|\.)br$/.test(host)) return 'BR';
+  // #5110: veículo BR conhecido hospedado fora de .br — override de domínio,
+  // não de texto (allowlist curta e estática, não abre porta pros falsos
+  // positivos de token que o #1567 fechou).
+  if (BR_VEHICLE_HOST_ALLOWLIST.has(host)) return 'BR';
 
   const s = signal.normalize('NFC').toLowerCase();
   const brStrong = [

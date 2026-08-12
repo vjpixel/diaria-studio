@@ -21,8 +21,21 @@
  * `beehiiv-clicks-enricher` ANTES de rodar a seleção de verdade (sem isso, a
  * 1ª passada rodaria com clicks todos zerados).
  *
+ * **`--picks url1,url2,...`** (#5109): resolve o `pendingGroup` de uma
+ * invocação anterior — quando `selectHeadlines` (`weekly-linkedin-select.ts`)
+ * defere um empate dentro do ruído de 1 clique maior que as vagas restantes
+ * pro editor decidir (ver docstring de `selectHeadlines`), a 1ª invocação
+ * (sem `--picks`) grava `pendingGroup` no output e o `headlines` sai mais
+ * curto que o cap. A skill apresenta o grupo ao editor no gate (Passo 3) e
+ * re-invoca este script com `--picks` (URLs na ordem escolhida) pra
+ * finalizar a seleção. Erro explícito (exit 2) se `--picks` não bater
+ * EXATAMENTE com o `pendingGroup` da rodada mais recente (contagem errada,
+ * URL fora do grupo, repetida) — nunca completa/trunca em silêncio. Passar
+ * `--picks` quando não há `pendingGroup` pendente também é erro.
+ *
  * Uso:
  *   npx tsx scripts/select-linkedin-weekly.ts --publish-monday AAMMDD [--manifest-only]
+ *   npx tsx scripts/select-linkedin-weekly.ts --publish-monday AAMMDD --picks url1,url2
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -46,6 +59,8 @@ import {
   computeHeadlineCap,
   selectHeadlines,
   selectUseMelhor,
+  applyPendingPicks,
+  editorialTiebreakScore,
   type WeeklyRankedCandidate,
 } from "./lib/weekly-linkedin-select.ts";
 import { normalizeUrl } from "./lib/weekly-linkedin-clicks.ts";
@@ -115,9 +130,13 @@ export function main(rootDirOverride?: string) {
   const argv = process.argv.slice(2);
   const publishMonday = getArg(argv, "publish-monday");
   const manifestOnly = hasFlag(argv, "manifest-only");
+  const picksArg = getArg(argv, "picks");
+  const picks = picksArg
+    ? picksArg.split(",").map((s) => s.trim()).filter(Boolean)
+    : null;
 
   if (!publishMonday) {
-    console.error("Uso: select-linkedin-weekly.ts --publish-monday AAMMDD [--manifest-only]");
+    console.error("Uso: select-linkedin-weekly.ts --publish-monday AAMMDD [--manifest-only] [--picks url1,url2]");
     process.exit(2);
   }
 
@@ -171,7 +190,43 @@ export function main(rootDirOverride?: string) {
 
   const headlineCap = computeHeadlineCap(editionsFound.length);
   const headlineResult = selectHeadlines(ranked, headlineCap);
-  const headlineUrls = new Set(headlineResult.selected.map((c) => normalizeUrl(c.url)));
+
+  // #5109: `--picks` resolve o pendingGroup de uma invocação anterior.
+  // Exatidão obrigatória — nunca completa/trunca em silêncio (ver
+  // docstring de `applyPendingPicks`).
+  let finalHeadlines: WeeklyRankedCandidate[] = headlineResult.selected;
+  let pendingGroupForOutput = headlineResult.pendingGroup;
+  if (picks !== null) {
+    if (headlineResult.pendingGroup === null) {
+      console.error(
+        `--picks foi passado mas não há empate pendente nesta seleção (${headlineResult.selected.length}/${headlineCap} manchete(s) já resolvida(s) sem ambiguidade) — rode sem --picks.`,
+      );
+      process.exit(2);
+    }
+    const applied = applyPendingPicks(headlineResult.selected, headlineResult.pendingGroup, headlineResult.pendingSlots, picks);
+    if (applied.error) {
+      console.error(`--picks inválido: ${applied.error}`);
+      process.exit(2);
+    }
+    finalHeadlines = applied.selected;
+    pendingGroupForOutput = null;
+  }
+
+  // #5109: dica de desempate editorial (ângulo Brasil > implicação
+  // profissional > diversidade de categoria) calculada só pra EXIBIÇÃO no
+  // gate — nunca decide automaticamente qual candidato do pendingGroup
+  // entra (ver docstring de `selectHeadlines`).
+  const pendingGroupWithHint = pendingGroupForOutput
+    ? (() => {
+        const selectedCategoriesSoFar = new Set(finalHeadlines.map((c) => c.category.toUpperCase()));
+        return pendingGroupForOutput.map((c) => ({
+          ...c,
+          editorialTiebreakHint: editorialTiebreakScore(c, selectedCategoriesSoFar),
+        }));
+      })()
+    : null;
+
+  const headlineUrls = new Set(finalHeadlines.map((c) => normalizeUrl(c.url)));
 
   const useMelhor = selectUseMelhor(ranked, headlineUrls);
 
@@ -284,7 +339,7 @@ export function main(rootDirOverride?: string) {
   // novo não cadastrado passa despercebido do mesmo jeito que
   // `prepara.com.br` quase virou destaque por engano em julho/2026. Sinaliza
   // pro gate humano (Passo 3 do SKILL.md) — nunca bloqueia automaticamente.
-  const suspiciousPicks = [...headlineResult.selected, ...(useMelhor ? [useMelhor] : [])].filter((c) =>
+  const suspiciousPicks = [...finalHeadlines, ...(useMelhor ? [useMelhor] : [])].filter((c) =>
     hasSuspiciousCommercialLanguage(`${c.title} ${c.body}`),
   );
   for (const c of suspiciousPicks) {
@@ -299,7 +354,12 @@ export function main(rootDirOverride?: string) {
     contentWindow,
     editionsFound: editionsFound.map((e) => e.date),
     editionsMissing,
-    headlines: headlineResult.selected,
+    headlines: finalHeadlines,
+    // #5109: presente (não-null) só quando ainda há empate aguardando escolha
+    // manual do editor (Passo 3 da skill) — `editorialTiebreakHint` é
+    // DICA, não decisor (ver docstring de `selectHeadlines`).
+    pendingGroup: pendingGroupWithHint,
+    pendingSlots: pendingGroupForOutput ? headlineResult.pendingSlots : 0,
     headlineCandidatesRanked: headlineResult.headlineEligible,
     excludedCandidates: headlineResult.excluded,
     useMelhor: useMelhor ?? null,
@@ -314,9 +374,25 @@ export function main(rootDirOverride?: string) {
   const outPath = join(outDir, "ln-selection.json");
   writeFileSync(outPath, JSON.stringify(output, null, 2), "utf8");
 
-  console.log(`OK: ciclo ${cycle} — ${headlineResult.selected.length} manchete(s), Use Melhor ${useMelhor ? "✓" : "✗"}, ${weeklyEditions.length} em Edições da semana → ${outPath}`);
-  for (const h of headlineResult.selected) {
-    console.log(`  [${h.ratePct.toFixed(2)}%] ${h.title} (${h.editionDate}, ${h.section})`);
+  // Colunas de exibição pedidas pelo gate (#5109): taxa, cliques/opens
+  // absolutos ("3cl/177op") e tipo (destaque/section), além de
+  // título/edição/seção já existentes.
+  function fmtCandidate(c: WeeklyRankedCandidate): string {
+    const totalClicks = c.uniqueVerifiedClicks + c.webUniqueClicks;
+    return `[${c.ratePct.toFixed(2)}% · ${totalClicks}cl/${c.opens}op · ${c.kind}] ${c.title} (${c.editionDate}, ${c.section})`;
+  }
+
+  console.log(`OK: ciclo ${cycle} — ${finalHeadlines.length} manchete(s), Use Melhor ${useMelhor ? "✓" : "✗"}, ${weeklyEditions.length} em Edições da semana → ${outPath}`);
+  for (const h of finalHeadlines) {
+    console.log(`  ${fmtCandidate(h)}`);
+  }
+  if (pendingGroupWithHint) {
+    console.log(
+      `\nEmpate pendente — ${headlineResult.pendingSlots} vaga(s) restante(s), ${pendingGroupWithHint.length} candidato(s) disputando (escolha manual no gate, re-rode com --picks url1,url2,...):`,
+    );
+    for (const c of pendingGroupWithHint) {
+      console.log(`  ${fmtCandidate(c)} (dica de desempate editorial: ${c.editorialTiebreakHint})`);
+    }
   }
   if (warnings.length > 0) {
     console.log("\nWarnings:");
