@@ -14,6 +14,7 @@ import {
   writeFileSync,
   existsSync,
   readdirSync,
+  renameSync as renameFsSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -25,8 +26,10 @@ import {
   reorderSocialMd,
   renameDestaqueImages,
   renameDestaquePrompts,
+  renameSyncVerified,
   deriveTituloSubtitulo,
   parseArgs,
+  type RenameFileDeps,
 } from "../scripts/reorder-destaques.ts";
 import { checkIntentionalError } from "../scripts/lib/lint-checks/intentional-error.ts";
 import type { IntentionalErrorJson } from "../scripts/lib/intentional-errors.ts";
@@ -429,6 +432,95 @@ describe("renameDestaquePrompts (#1585)", () => {
       assert.equal(readFileSync(join(dir, "02-d1-sd-prompt.json"), "utf8"), "sd2");
     } finally {
       rmSync(dir, { recursive: true });
+    }
+  });
+});
+
+describe("renameSyncVerified (#5085 — guard pós-rename)", () => {
+  it("rename normal (destino existe depois) não lança", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-verify-ok-"));
+    try {
+      writeFileSync(join(dir, "a.jpg"), "bytes");
+      assert.doesNotThrow(() => renameSyncVerified(join(dir, "a.jpg"), join(dir, "b.jpg")));
+      assert.ok(existsSync(join(dir, "b.jpg")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#5085: destino sumiu logo após renameSync (simula conflito OneDrive) → lança erro claro", () => {
+    // Simula o cenário real reportado na issue: renameSync retorna sem erro,
+    // mas o arquivo de destino não existe mais quando checado logo em seguida
+    // (resolução de conflito de sync descartando a versão "perdedora").
+    const calls: Array<{ from: string; to: string }> = [];
+    const fakeDeps: RenameFileDeps = {
+      renameSync: (from, to) => {
+        calls.push({ from: String(from), to: String(to) });
+        // Não cria o destino de verdade — simula o rename "sumir" depois.
+      },
+      existsSync: () => false,
+    };
+    assert.throws(
+      () => renameSyncVerified("/fake/from.jpg", "/fake/to.jpg", fakeDeps),
+      /rename .* retornou sem erro mas o arquivo de destino não existe/,
+    );
+    assert.equal(calls.length, 1, "renameSync deveria ter sido chamado exatamente 1×");
+  });
+});
+
+describe("renameDestaqueImages (#5085 — guard pós-rename + 4x5-nativo)", () => {
+  it("destino de um rename intermediário sumiu → aborta a sequência inteira (não segue silenciosamente)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-img-vanish-"));
+    try {
+      writeFileSync(join(dir, "04-d1-1x1.jpg"), "data1");
+      writeFileSync(join(dir, "04-d2-1x1.jpg"), "data2");
+      writeFileSync(join(dir, "04-d3-1x1.jpg"), "data3");
+
+      // deps reais, exceto existsSync: sempre reporta ausência do arquivo
+      // TMP recém-renomeado — simula o OneDrive descartando a versão
+      // "perdedora" entre o renameSync e a checagem seguinte.
+      const fakeDeps: RenameFileDeps = {
+        renameSync: (from, to) => {
+          // Executa o rename de verdade (pra poder inspecionar o filesystem
+          // no catch abaixo), mas a verificação subsequente vai reportar
+          // "sumiu" mesmo assim.
+          renameFsSync(from, to);
+        },
+        existsSync: (p) => !String(p).includes("TMP"),
+      };
+
+      assert.throws(
+        () => renameDestaqueImages(dir, [2, 1, 3], false, fakeDeps),
+        /reorder-destaques: rename .* retornou sem erro mas o arquivo de destino não existe/,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("cobre 04-d{N}-4x5-nativo.jpg no rename set (regex antiga excluía por causa do hífen)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-img-nativo-"));
+    try {
+      writeFileSync(join(dir, "04-d1-4x5-nativo.jpg"), "nativo1");
+      writeFileSync(join(dir, "04-d2-4x5-nativo.jpg"), "nativo2");
+
+      const renames = renameDestaqueImages(dir, [2, 1, 3], false);
+
+      assert.ok(
+        renames.some((r) => r.from === "04-d1-4x5-nativo.jpg"),
+        `esperava rename de 04-d1-4x5-nativo.jpg — renames: ${JSON.stringify(renames)}`,
+      );
+      assert.equal(
+        readFileSync(join(dir, "04-d1-4x5-nativo.jpg"), "utf8"),
+        "nativo2",
+        "novo d1-4x5-nativo deve ter os bytes do antigo d2-4x5-nativo",
+      );
+      assert.equal(
+        readFileSync(join(dir, "04-d2-4x5-nativo.jpg"), "utf8"),
+        "nativo1",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

@@ -630,3 +630,90 @@ describe("shouldReuseCachedUpload (#1418)", () => {
     cleanup();
   });
 });
+
+describe("uploadPublicImages — warnings (#5085): spec optional ausente com cache stale", () => {
+  it("arquivo local ausente + entry cacheada pré-existente → warning explícito (não silencioso)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "260812-5085-warn-"));
+    try {
+      // Cache pré-existente pra d2 (upload de uma rodada anterior) — simula o
+      // cenário real: 04-d2-1x1.jpg sumiu do disco DEPOIS desse upload
+      // (rename malsucedido sob junction OneDrive), mas 06-public-images.json
+      // ainda guarda a URL antiga.
+      writeFileSync(
+        join(dir, "06-public-images.json"),
+        JSON.stringify({
+          images: {
+            cover: { file_id: "c", url: "u-cover", target: "cloudflare", md5: "m0" },
+            d1: { file_id: "d1", url: "u-d1", target: "cloudflare", md5: "m1" },
+            eia_a: { file_id: "a", url: "u-a", target: "cloudflare", md5: "m2" },
+            eia_b: { file_id: "b", url: "u-b", target: "cloudflare", md5: "m3" },
+            d2: { file_id: "d2-old", url: "u-d2-old", target: "cloudflare", md5: "m4" },
+          },
+        }),
+        "utf8",
+      );
+      // cover/d1/eia presentes no disco (não bloqueiam); d2 (optional em
+      // mode=newsletter) e d2_2x1 (também optional) estão AUSENTES do disco.
+      for (const f of ["04-d1-2x1.jpg", "04-d1-1x1.jpg", "01-eia-A.jpg", "01-eia-B.jpg"]) {
+        writeFileSync(join(dir, f), `bytes-${f}`, "utf8");
+      }
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(
+        join(dir, "_internal", "01-approved-capped.json"),
+        JSON.stringify({ highlights: [{}, {}, {}] }),
+        "utf8",
+      );
+
+      const result = await uploadPublicImages({
+        editionDir: dir,
+        mode: "newsletter",
+        uploaders: {
+          uploadToCloudflare: async (_imagePath: string, key: string) => `https://x/${key}`,
+        },
+      });
+
+      assert.ok(
+        result.warnings.some((w) => w.includes("d2") && w.includes("ausente")),
+        `esperava warning sobre d2 ausente com cache stale. warnings: ${JSON.stringify(result.warnings)}`,
+      );
+      // Cache antigo de d2 continua servido (comportamento preservado —
+      // só ficou auditável, não silencioso).
+      assert.equal(result.images.d2?.url, "u-d2-old");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("spec optional ausente SEM cache prévio (caso normal) → SEM warning", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "260812-5085-nowarn-"));
+    try {
+      // Nenhum 06-public-images.json prévio — box_slot0_image nunca foi
+      // uploadado (caso comum: a maioria das edições não tem esse box).
+      for (const f of ["04-d1-2x1.jpg", "04-d1-1x1.jpg", "01-eia-A.jpg", "01-eia-B.jpg"]) {
+        writeFileSync(join(dir, f), `bytes-${f}`, "utf8");
+      }
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(
+        join(dir, "_internal", "01-approved-capped.json"),
+        JSON.stringify({ highlights: [{}, {}, {}] }),
+        "utf8",
+      );
+
+      const result = await uploadPublicImages({
+        editionDir: dir,
+        mode: "newsletter",
+        uploaders: {
+          uploadToCloudflare: async (_imagePath: string, key: string) => `https://x/${key}`,
+        },
+      });
+
+      assert.equal(
+        result.warnings.length,
+        0,
+        `não deveria haver warnings sem cache prévio. warnings: ${JSON.stringify(result.warnings)}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

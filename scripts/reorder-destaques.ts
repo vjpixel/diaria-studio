@@ -9,7 +9,10 @@
  *   - `_internal/intentional-error.json` (campo `location`, #3222 — não mora
  *     mais no frontmatter de `02-reviewed.md`)
  *   - `_internal/02-d{N}-prompt.md` (rename files)
- *   - `04-d{N}-*.jpg` (rename files — 2x1 e 1x1)
+ *   - `04-d{N}-*.jpg` (rename files — 2x1, 1x1, 4x5, 4x5-nativo, master; #5085
+ *     cobriu 4x5-nativo, que o regex antigo excluía por causa do hífen no
+ *     sufixo, e adicionou verificação `existsSync` pós-rename — ver
+ *     `renameSyncVerified`)
  *   - `03-social.md` (sections `## d{N}` em cada plataforma)
  *
  * Outputs a JSON com lista de arquivos modificados. NÃO re-uploada imagens
@@ -61,6 +64,52 @@ import {
 import { checkDestaqueMaxChars } from "./lib/lint-checks/destaque-chars.ts"; // #3982
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * Funções de rename/existsSync injetáveis pra teste (#5085, mesmo padrão de
+ * `PlanFileReaders` em `overnight-statusline.ts`).
+ */
+export interface RenameFileDeps {
+  renameSync: typeof renameSync;
+  existsSync: typeof existsSync;
+}
+
+const defaultRenameFileDeps: RenameFileDeps = { renameSync, existsSync };
+
+/**
+ * Rename com verificação pós-rename (#5085 — achado ao vivo edição 260812).
+ *
+ * `renameSync` retornar sem lançar NÃO garante que o arquivo de destino
+ * ainda existe momentos depois: numa pasta sincronizada por um provedor tipo
+ * OneDrive (`data/` é uma directory junction), uma sequência de vários
+ * renames rápidos em 1-2s pode disparar resolução de conflito do provedor de
+ * sync que descarta uma das versões "perdedoras" DEPOIS que a chamada já
+ * retornou com sucesso do ponto de vista do Node — não há como detectar isso
+ * na própria chamada de `renameSync`.
+ *
+ * Verificar `existsSync(to)` logo em seguida fecha essa lacuna: se o destino
+ * não existe, abortamos com erro claro em vez de prosseguir silenciosamente
+ * pro próximo rename da sequência. O bug real: o grupo inteiro de
+ * `04-d2-*.jpg` sumiu do disco (e do OneDrive) sem nenhum sinal de erro no
+ * pipeline — pior que um placeholder óbvio, porque a publicação teria saído
+ * com a imagem de uma edição antiga, não uma imagem ausente.
+ */
+export function renameSyncVerified(
+  from: string,
+  to: string,
+  deps: RenameFileDeps = defaultRenameFileDeps,
+): void {
+  deps.renameSync(from, to);
+  if (!deps.existsSync(to)) {
+    throw new Error(
+      `reorder-destaques: rename ${from} → ${to} retornou sem erro mas o arquivo de destino ` +
+        `não existe no disco logo depois. Provável conflito de sync (OneDrive) descartando uma ` +
+        `versão "perdedora" durante a sequência de renames. Abortando para evitar publicação ` +
+        `com imagem ausente/errada — reexecute reorder-destaques.ts depois de confirmar que o ` +
+        `sync terminou (ou restaure os arquivos a partir do OneDrive antes de retentar).`,
+    );
+  }
+}
 
 export interface CliArgs {
   edition: string;
@@ -293,17 +342,27 @@ export function reorderSocialMd(md: string, newOrder: number[]): string {
  * Estratégia: usar nomes temporários pra evitar colisão (renomeia
  * 04-d1-* → 04-tmp-d1-*, depois 04-tmp-d1-* → 04-d{newPos}-*).
  *
+ * #5085: regex de match do sufixo aceita hífen (`[a-z0-9-]+`, não só
+ * `[a-z0-9]+`) — sem isso, `04-d{N}-4x5-nativo.jpg` (arte nativa gerada por
+ * `image-generate.ts`) nunca era pego pelo filtro e ficava com o número de
+ * destaque ERRADO após um reorder, silenciosamente (nenhum erro, só o
+ * arquivo órfão do slot antigo).
+ *
+ * #5085: cada rename passa por `renameSyncVerified` (existsSync pós-rename),
+ * que lança se o destino não existir — ver docstring de `renameSyncVerified`.
+ *
  * Retorna lista de renames aplicados.
  */
 export function renameDestaqueImages(
   editionDir: string,
   newOrder: number[],
   dryRun: boolean,
+  deps: RenameFileDeps = defaultRenameFileDeps,
 ): Array<{ from: string; to: string }> {
   const renames: Array<{ from: string; to: string }> = [];
-  if (!existsSync(editionDir)) return renames;
+  if (!deps.existsSync(editionDir)) return renames;
   const files = readdirSync(editionDir).filter((f) =>
-    /^04-d[123]-[a-z0-9]+\.(?:jpg|png|jpeg)$/i.test(f),
+    /^04-d[123]-[a-z0-9-]+\.(?:jpg|png|jpeg)$/i.test(f),
   );
   // Build oldN → newN map
   const oldToNew = new Map<number, number>();
@@ -319,14 +378,14 @@ export function renameDestaqueImages(
     if (!newN || newN === oldN) continue;
     const tmpName = f.replace(`04-d${oldN}-`, `04-TMP${oldN}-`);
     if (!dryRun) {
-      renameSync(join(editionDir, f), join(editionDir, tmpName));
+      renameSyncVerified(join(editionDir, f), join(editionDir, tmpName), deps);
     }
     renames.push({ from: f, to: tmpName });
   }
   // Step 2: tmp → final
   if (!dryRun) {
     const tmpFiles = readdirSync(editionDir).filter((f) =>
-      /^04-TMP[123]-[a-z0-9]+\.(?:jpg|png|jpeg)$/i.test(f),
+      /^04-TMP[123]-[a-z0-9-]+\.(?:jpg|png|jpeg)$/i.test(f),
     );
     for (const f of tmpFiles) {
       const m = f.match(/^04-TMP([123])-(.+)$/);
@@ -334,7 +393,7 @@ export function renameDestaqueImages(
       const oldN = parseInt(m[1], 10);
       const newN = oldToNew.get(oldN)!;
       const finalName = `04-d${newN}-${m[2]}`;
-      renameSync(join(editionDir, f), join(editionDir, finalName));
+      renameSyncVerified(join(editionDir, f), join(editionDir, finalName), deps);
       renames.push({ from: f, to: finalName });
     }
   }
@@ -363,14 +422,19 @@ export function deriveTituloSubtitulo(
 
 /**
  * Renomeia arquivos `_internal/02-d{N}-prompt.md` e `_internal/02-d{N}-sd-prompt.json`.
+ *
+ * #5085: mesma proteção `renameSyncVerified` (existsSync pós-rename) do
+ * `renameDestaqueImages` — se um provedor de sync descartar o destino entre
+ * o `renameSync` e a próxima operação, aborta em vez de seguir silenciosamente.
  */
 export function renameDestaquePrompts(
   internalDir: string,
   newOrder: number[],
   dryRun: boolean,
+  deps: RenameFileDeps = defaultRenameFileDeps,
 ): Array<{ from: string; to: string }> {
   const renames: Array<{ from: string; to: string }> = [];
-  if (!existsSync(internalDir)) return renames;
+  if (!deps.existsSync(internalDir)) return renames;
   const files = readdirSync(internalDir).filter((f) =>
     /^02-d[123]-(?:prompt\.md|sd-prompt\.json|draft\.md)$/.test(f),
   );
@@ -387,7 +451,7 @@ export function renameDestaquePrompts(
     if (!newN || newN === oldN) continue;
     const tmpName = f.replace(`02-d${oldN}-`, `02-TMP${oldN}-`);
     if (!dryRun) {
-      renameSync(join(internalDir, f), join(internalDir, tmpName));
+      renameSyncVerified(join(internalDir, f), join(internalDir, tmpName), deps);
     }
     renames.push({ from: f, to: tmpName });
   }
@@ -401,7 +465,7 @@ export function renameDestaquePrompts(
       const oldN = parseInt(m[1], 10);
       const newN = oldToNew.get(oldN)!;
       const finalName = `02-d${newN}-${m[2]}`;
-      renameSync(join(internalDir, f), join(internalDir, finalName));
+      renameSyncVerified(join(internalDir, f), join(internalDir, finalName), deps);
       renames.push({ from: f, to: finalName });
     }
   }
