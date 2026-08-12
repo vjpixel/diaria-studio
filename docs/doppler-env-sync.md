@@ -88,5 +88,8 @@ rodar `npm run sync-env` em cada máquina — substitui o passo de editar
 ## Estado (260812)
 
 Vault confirmado como espelho completo do `.env` desta máquina (nenhuma
-chave só de um lado) no momento da integração. Setup confirmado nesta
-máquina (Linux); pendente no Windows do editor — #5149.
+chave só de um lado) no momento da integração. Setup confirmado ponta a
+ponta nas duas máquinas do editor: Linux (integração original) e Windows
+(`doppler login` já estava feito desde 07/08 — só faltava o `doppler.yaml`
+do repo pra apontar pra ele; `npm run sync-env` gerou as mesmas 41 chaves e
+`loadProjectEnv()` leu `CLARICE_API_KEY` corretamente) — fecha #5149.
