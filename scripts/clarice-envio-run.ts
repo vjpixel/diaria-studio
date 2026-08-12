@@ -550,10 +550,20 @@ export interface ExistingWaveForSendDate {
  *
  * `status === "suspended"` é excluído — é o estado CANCELADO explícito
  * (freio STOP via `clarice-envio-guard.ts`), não uma onda viva competindo
- * pelo mesmo dia; qualquer outro status (`draft`, `queued`, `sent`,
- * `in_process`, ...) conta como "já existe", inclusive uma onda parcialmente
- * montada (ver "ONDA PARCIALMENTE MONTADA" no Passo 7 abaixo) — melhor parar
- * e exigir reconciliação manual do que arriscar dobrar o volume.
+ * pelo mesmo dia; qualquer outro status que `state.waves` de fato carrega
+ * (`queued`, `sent`, `in_process`, ...) conta como "já existe" — melhor
+ * parar e exigir reconciliação manual do que arriscar dobrar o volume.
+ *
+ * Limite conhecido: `/api/campaigns?includeScheduled=1` só devolve
+ * `sent`+`queued` (nunca `draft` — ver `buildCampaignsResponse` no Worker),
+ * então uma onda PARCIALMENTE montada onde só o `--create` rodou (campanha
+ * ainda "draft", `--schedule` não chegou a rodar — ver "ONDA PARCIALMENTE
+ * MONTADA" no Passo 7 abaixo) fica INVISÍVEL pra este guard. Não é uma
+ * lacuna nova deste guard — é o mesmo estado que o comentário do Passo 7 já
+ * documenta como exigindo reconciliação manual; este guard cobre
+ * especificamente o caso que a nota do #5058 descreve (onda `queued`/`sent`
+ * dobrando o volume), não o caso "draft" órfão, que precisa de outro
+ * mecanismo se vier a importar.
  */
 export function detectExistingWaveForSendDate(
   waves: ReadonlyArray<Pick<WaveState, "key" | "status" | "scheduledAt">>,

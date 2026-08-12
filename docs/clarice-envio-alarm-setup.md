@@ -39,7 +39,7 @@ Reconsultar `GET /api/campaigns` ao vivo seria uma 2ª fonte de verdade — e um
 
 1. Abra o relatório citado no e-mail (`data/clarice-subscribers/envio-reports/{reportId}.md`, também na superfície de Relatórios do Studio, `/relatorios`) — a causa exata está lá.
 2. Se for algo que só o editor resolve (crédito Brevo, store desatualizado, teste A/B/C precisa de assunto novo), monte a onda manualmente via `/diaria-clarice-envio` (skill manual) — não espere a task de amanhã sozinha, ela só monta a onda de 1 dia à frente.
-3. Se o relatório for `-no-report` (nenhum relatório encontrado), verifique se a task sequer rodou: `systemctl --user status diaria-clarice-envio.service` / `journalctl --user -u diaria-clarice-envio.service -n 100`.
+3. Se o e-mail disser que **nenhum relatório foi encontrado** (em vez de citar um `reportId`), a task de 19:00 nem chegou a rodar — verifique `systemctl --user status diaria-clarice-envio.service` / `journalctl --user -u diaria-clarice-envio.service -n 100`.
 
 ## Setup (ação local one-time do editor — NÃO feito nesta unidade)
 
