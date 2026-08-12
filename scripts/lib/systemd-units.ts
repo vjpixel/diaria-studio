@@ -139,6 +139,16 @@ export function buildSystemdUnitFiles(task: ScheduledTaskDefinition, repoRootAbs
     // Equivalente ao StartWhenAvailable do Windows: se a máquina estava
     // desligada/dormindo no horário do disparo, roda assim que possível no
     // próximo boot/wake em vez de pular a execução perdida.
+    //
+    // EFEITO COLATERAL no RE-ARME (#5140, visto ao vivo em 260812): "execução
+    // perdida" inclui o caso em que o horário mudou. Mover uma task pra mais
+    // cedo e dar `systemctl restart` no mesmo dia, depois do horário novo,
+    // dispara a task NA HORA — o systemd compara o último disparo com o que o
+    // OnCalendar novo diz que deveria ter acontecido, e conclui que faltou uma.
+    // Pra task que só lê, é ruído; pra `Diaria-Clarice-Novos`, que manda e-mail
+    // e gasta crédito de verificação, é disparo REAL. `scripts/
+    // setup-systemd-timers.ts` avisa disso na saída; a saída segura é rearmar
+    // depois do horário novo, ou `stop` antes de trocar o unit.
     "Persistent=true",
     `Unit=${unitName}.service`,
     "",

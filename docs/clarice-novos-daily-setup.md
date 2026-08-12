@@ -57,9 +57,15 @@ npx tsx scripts/arm-systemd-timers.ts --task Diaria-Clarice-Novos     # arma de 
 
 **Armada e confirmada ativa (#4941, 10/ago)** — `systemctl --user is-active diaria-clarice-novos.timer` retorna `active` na máquina `predator`, `Trigger: Tue 2026-08-11 20:00:00 UTC` (= 11/ago 17:00 BRT, o próximo disparo real). Kill switch confirmado no estado default seguro (`npx tsx scripts/lib/clarice-novos-enabled.ts` → `disabled`) — a 1ª rodada de amanhã sai limpo, sem tocar Stripe/MV/Brevo, até o editor liberar explicitamente. Arme feito fora de worktree isolado (sessão local direta no clone principal), então os passos acima já foram executados nesta máquina — não repetir.
 
-> **Re-arme obrigatório após o #5140 (260812).** O parágrafo acima é registro HISTÓRICO: o `Trigger` de 20:00 UTC descrito ali é o das 17:00 BRT antigas. Mudar `hour` no registry **não** mexe no timer já instalado — o unit em `predator` continua disparando no horário velho até alguém regenerar e recarregar:
+> **Re-arme feito em 260812 (#5140).** O parágrafo acima é registro HISTÓRICO: o `Trigger` de 20:00 UTC descrito ali é o das 17:00 BRT antigas. Mudar `hour` no registry **não** mexe no timer já instalado — o unit precisa ser regenerado e recarregado. Estado atual em `predator`: `active`, próximo disparo `14:00 UTC` (11:00 BRT).
+>
 > ```bash
 > npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Novos
+> cp .systemd-units/diaria-clarice-novos.timer ~/.config/systemd/user/   # SÓ o .timer — ver abaixo
 > systemctl --user daemon-reload && systemctl --user restart diaria-clarice-novos.timer
-> systemctl --user list-timers diaria-clarice-novos.timer   # confere o próximo disparo = 14:00 UTC
+> systemctl --user list-timers diaria-clarice-novos.timer
 > ```
+>
+> **Copiar só o `.timer`, nunca o `.service` junto.** O `ExecStart` gerado embute o caminho do Node que rodou o comando; em `predator` o service instalado usa `~/.local/node/bin/node` e uma sessão com `nvm` ativo gera `~/.nvm/versions/node/vX/bin/node`. A mudança de horário vive inteira no `.timer` — trocar o `.service` junto substitui o binário por outro sem necessidade.
+>
+> **⚠️ `Persistent=true` dispara catch-up no re-arme.** Se o horário novo já passou no dia, o `restart` executa a task NA HORA, porque o systemd a trata como execução perdida. Foi o que aconteceu em 260812: o re-arme às 16:00 BRT disparou a rodada `novos-260812` imediatamente (67 contatos, `sent` confirmado — rodada legítima do dia, só adiantada, sem duplicação). Para um horário que ainda não passou, o re-arme é inócuo. Para evitar o catch-up de vez: `systemctl --user stop` antes de trocar o unit e `start` só depois do horário novo.

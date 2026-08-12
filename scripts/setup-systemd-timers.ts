@@ -87,7 +87,14 @@ export function main(argv: string[], repoRootAbs: string): number {
     "\nARMAR (fora do escopo desta task, #4807): por unit gerado, copiar/linkar pra " +
       "~/.config/systemd/user/ e rodar:\n" +
       "  systemctl --user daemon-reload\n" +
-      "  systemctl --user enable --now <nome>.timer\n",
+      "  systemctl --user enable --now <nome>.timer\n" +
+      "\n⚠️  MUDOU O HORÁRIO DE UMA TASK PRA MAIS CEDO? Os units são gerados com\n" +
+      "   Persistent=true, então habilitar/reiniciar o timer DISPARA A TASK NA HORA\n" +
+      "   se o novo horário já passou hoje — o systemd trata como execução perdida.\n" +
+      "   Para tasks que mandam e-mail, cobram API ou escrevem em serviço externo,\n" +
+      "   isso é um disparo REAL, não um ensaio (aconteceu ao vivo no #5140).\n" +
+      "   Para evitar: rearme DEPOIS do novo horário, ou `systemctl --user stop`\n" +
+      "   antes de trocar o unit e `start` só no dia seguinte.\n",
   );
   return 0;
 }
