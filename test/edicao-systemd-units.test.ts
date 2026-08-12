@@ -83,6 +83,13 @@ describe("buildEdicaoSystemdUnitFiles (#4998)", () => {
     );
   });
 
+  // #5114: `claude -p` (invocado por esta task) sobe sem CLARICE_API_KEY (ou
+  // qualquer outra credencial do .env) no ambiente -- o `.mcp.json` interpola
+  // `${CLARICE_API_KEY}` no momento do LAUNCH do processo Claude Code.
+  it("service: EnvironmentFile= aponta pro .env do repoRootAbs, marcado opcional com '-' (#5114)", () => {
+    assert.match(files.serviceContent, new RegExp(`^EnvironmentFile=-${repoRootAbs}/\\.env$`, "m"));
+  });
+
   it("timer: OnCalendar dom-qui 16:00 BRT + Persistent=true + Unit aponta pro .service + WantedBy=timers.target", () => {
     assert.match(files.timerContent, /OnCalendar=Sun,Mon,Tue,Wed,Thu \*-\*-\* 16:00:00 America\/Sao_Paulo/);
     assert.match(files.timerContent, /Persistent=true/);

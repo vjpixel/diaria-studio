@@ -118,6 +118,12 @@ describe("buildWatchdogSystemdUnitFiles (#4857)", () => {
     assert.doesNotMatch(files.serviceContent, /run-task\.ts/);
   });
 
+  // #5114: consistência com os outros 2 geradores -- nenhum unit deste repo
+  // passava ambiente algum antes deste fix.
+  it("service: EnvironmentFile= aponta pro .env do repoRootAbs, marcado opcional com '-' (#5114)", () => {
+    assert.match(files.serviceContent, new RegExp(`^EnvironmentFile=-${repoRootAbs}/\\.env$`, "m"));
+  });
+
   it("timer: OnCalendar com fuso + Persistent=true + Unit aponta pro .service + WantedBy=timers.target", () => {
     assert.match(files.timerContent, /OnCalendar=\*-\*-\* 00\.\.08,18\.\.23:00\/10:00 America\/Sao_Paulo/);
     assert.match(files.timerContent, /Persistent=true/);

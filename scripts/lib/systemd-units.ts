@@ -128,6 +128,14 @@ export function buildSystemdUnitFiles(task: ScheduledTaskDefinition, repoRootAbs
     "[Service]",
     "Type=oneshot",
     `WorkingDirectory=${repoRootAbs}`,
+    // #5114: sem isto, o unit sobe sem NENHUMA credencial do .env (CLARICE_API_KEY
+    // incluída) — o `${CLARICE_API_KEY}` do .mcp.json é resolvido pelo processo do
+    // Claude Code no MOMENTO DO LAUNCH, a partir do ambiente herdado, e nenhum
+    // loader TS (env-loader.ts) roda a tempo de consertar isso depois. O prefixo
+    // `-` marca o arquivo como OPCIONAL (mesma semântica de "-" em ExecStartPre=)
+    // -- máquina/worktree sem `.env` não impede a task de subir, só sobe sem as
+    // vars (comportamento de hoje, sem regressão pra quem não usa credencial).
+    `EnvironmentFile=-${repoRootAbs}/.env`,
     `ExecStart=${execStart}`,
     "",
   ].join("\n");

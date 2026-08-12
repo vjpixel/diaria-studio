@@ -110,6 +110,14 @@ export function buildWatchdogSystemdUnitFiles(repoRootAbs: string): SystemdUnitF
     "[Service]",
     "Type=oneshot",
     `WorkingDirectory=${repoRootAbs}`,
+    // #5114: mesmo racional de systemd-units.ts/edicao-systemd-units.ts --
+    // `overnight-watchdog.ts` já se auto-carrega via `loadProjectEnv()`
+    // (defense-in-depth pro caso comum: env var faltando é o que o watchdog
+    // detecta em OUTRAS tasks, não em si mesmo), mas nenhum unit gerado neste
+    // repo passava ambiente algum antes deste fix -- adicionar aqui mantém os
+    // 3 geradores consistentes e cobre qualquer script que este watchdog vier
+    // a invocar no futuro sem seu próprio loader.
+    `EnvironmentFile=-${repoRootAbs}/.env`,
     `ExecStart=${execStart}`,
     "",
   ].join("\n");
