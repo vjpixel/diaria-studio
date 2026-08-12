@@ -348,4 +348,26 @@ describe("buildHomeMetaDriftAlarmEmail (#4557)", () => {
     assert.match(body, /og:title: /);
     assert.match(body, /#4557/);
   });
+
+  // #5104 (fleet review): a moldura introdutória do e-mail não pode enumerar
+  // um número fixo de eixos ("3 correções") — quando o alarme dispara
+  // especificamente por `legacy-host-link` (4º eixo, #5099), o corpo precisa
+  // carregar esse contexto, não só uma lista genérica desatualizada no topo.
+  it("quando só legacy-host-link dispara, o corpo menciona esse contexto (não fica preso a '3 correções')", () => {
+    const findings = evaluateHomeMetaDrift(LEGACY_HOST_LINKS_HTML);
+    assert.deepEqual(
+      findings.map((f) => f.check),
+      ["legacy-host-link"],
+      "fixture deveria disparar SÓ o eixo legacy-host-link",
+    );
+    const extract = extractHomeMeta(LEGACY_HOST_LINKS_HTML);
+    const { body } = buildHomeMetaDriftAlarmEmail(findings, extract, "https://diar.ia.br/");
+    assert.match(body, /legacy-host-link/);
+    assert.match(body, /#5099/);
+    assert.doesNotMatch(
+      body,
+      /\(3 correç/i,
+      "a moldura introdutória não deveria enumerar um número fixo de eixos",
+    );
+  });
 });

@@ -235,12 +235,22 @@ pra grafo de link e cópia de host:
 - **Achado 3 — cópia completa e rastreável nos Workers públicos em
   `*.diaria.workers.dev`.** `arquivo`/`cursos`/`livros` respondiam 200 com o
   conteúdo INTEIRO nesse host (canonical cross-host já apontava certo, mas
-  não evitava o crawl). Fechado em código (#5097 item D): 301 incondicional
-  pro host canônico quando `Host` não é o canônico, função pura
-  `resolveWorkersDevRedirect` (`scripts/lib/shared/workers-dev-redirect.ts`),
-  wired nos 3 `fetch` handlers ANTES de qualquer outra lógica.
-  `poll.diaria.workers.dev` fica DE FORA de propósito (compat de voto de
-  ~233 edições publicadas, #3904).
+  não evitava o crawl). Fechado em código (#5097 item D): 301 (métodos
+  seguros `GET`/`HEAD`) ou 308 (demais métodos, #5104 — preserva corpo no
+  retry do cliente) incondicional pro host canônico quando `Host` não é o
+  canônico, função pura `resolveWorkersDevRedirect`
+  (`scripts/lib/shared/workers-dev-redirect.ts`), wired nos `fetch` handlers
+  ANTES de qualquer outra lógica. **`artigo-mensal` (mesmo padrão
+  `workers_dev = true` + `custom_domain`, sem passivo de link-legado)
+  aplicado no mesmo mecanismo em #5104** — blind spot da auditoria original
+  do #5097, não exclusão deliberada. `poll.diaria.workers.dev` fica DE FORA
+  de propósito (compat de voto de ~233 edições publicadas, #3904).
+  **`workers/artigos` também fica FORA — exclusão arquitetural, não blind
+  spot:** é um Worker de static assets PURO (sem `main`/script — `[assets]`
+  serve direto), então não há `fetch` handler pra chamar
+  `resolveWorkersDevRedirect`; fechar esse host exigiria converter o Worker
+  pra ter script (mesmo salto que `livros` deu no #4558 Parte C), fora de
+  escopo de #5097/#5104.
 - **Achado 4 — `diaria-dashboard` era público e indexável.** Servia 156 KB de
   HTML sem `X-Robots-Tag`, `robots.txt` sem nenhum `Disallow`. Fechado em
   código (#5097 item E): `X-Robots-Tag: noindex` em toda resposta +

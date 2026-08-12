@@ -152,14 +152,26 @@ export function detectEnglishLabels(html: string): string[] {
  */
 const ALLOWED_BEEHIIV_PLATFORM_HOSTS = new Set(["media.beehiiv.com", "www.beehiiv.com", "api.beehiiv.com"]);
 
-/** `true` se `host` é um dos nossos hosts legados (#5099): qualquer
+/** `true` se `host` casa o padrão de host legado (#5099): qualquer
  * `*.workers.dev` (cobre `cursos.diaria.workers.dev`, `livros.diaria.workers.dev`
  * etc. sem hardcodar o subdomínio de conta) ou `diaria.beehiiv.com` (host
  * legado da própria publicação, ANTES do cutover pra `diar.ia.br` — #4059).
  * `ALLOWED_BEEHIIV_PLATFORM_HOSTS` acima nunca casa aqui: são hosts
  * DIFERENTES (não substring de `diaria.beehiiv.com`/`.workers.dev`), a
  * checagem por host exato (não substring solta de "beehiiv.com") é o que
- * evita qualquer ambiguidade. */
+ * evita qualquer ambiguidade.
+ *
+ * O match `.workers.dev` é MAIS AMPLO que "nossos hosts legados": casa
+ * QUALQUER `*.workers.dev`, inclusive um de conta de terceiro que nunca foi
+ * nosso (mesmo padrão de `resolveWorkersDevRedirect` em
+ * `workers-dev-redirect.ts`, #5104). Aqui isso é um gap REAL, não inofensivo
+ * como no redirect: a home é conteúdo editorial, e um link legítimo pra um
+ * `*.workers.dev` de terceiro citado numa edição (ex: um projeto open-source
+ * hospedado lá) viraria falso positivo de `legacy-host-link`. Amplo de
+ * propósito mesmo assim — aceita esse risco de falso positivo em troca de
+ * nunca deixar passar uma variante nossa que ninguém pensou em nomear
+ * explicitamente; falso positivo custa 1 linha ignorada no e-mail de alarme,
+ * falso negativo custa um vazamento silencioso como o do #5099. */
 function isLegacyHost(host: string): boolean {
   const h = host.toLowerCase();
   if (ALLOWED_BEEHIIV_PLATFORM_HOSTS.has(h)) return false;
@@ -186,8 +198,8 @@ export function detectLegacyHostLinks(html: string): string[] {
 export type HomeMetaDriftCheck = "og-title-brand" | "http-self-link" | "english-labels" | "legacy-host-link";
 
 export interface HomeMetaDriftFinding {
-  check: HomeMetaDriftCheck;
-  message: string;
+  readonly check: HomeMetaDriftCheck;
+  readonly message: string;
 }
 
 /**
@@ -302,12 +314,13 @@ export function buildHomeMetaDriftAlarmEmail(
 
   const lines: string[] = [
     `O smoke-test de metadata da home pública (${homeUrl}) encontrou drift`,
-    "contra o esperado: og:title com a marca oficial, sem self-link http://,",
-    "sem rótulo residual em inglês.",
+    "num dos eixos monitorados — ver o(s) achado(s) abaixo pro que exatamente",
+    "está errado.",
     "",
-    "Refs #4557 — as 3 correções (og:title, http->https, rótulos EN) são ação",
-    "manual do editor no painel Beehiiv; este alarme só detecta REGRESSÃO",
-    "depois de corrigido (ou aponta o que ainda falta corrigir, na 1ª execução).",
+    "Refs #4557/#5099 — as correções de eixo (og:title, http->https, rótulos",
+    "EN, link pra host legado) são ação manual do editor no painel Beehiiv;",
+    "este alarme só detecta REGRESSÃO depois de corrigido (ou aponta o que",
+    "ainda falta corrigir, na 1ª execução).",
     "",
     `Achado(s) (${findings.length}):`,
   ];

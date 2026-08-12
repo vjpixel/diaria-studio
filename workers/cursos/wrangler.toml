@@ -64,12 +64,24 @@ binding = "ASSETS"
 # não tem asset correspondente. `run_worker_first` força o script a decidir
 # em `/` (e em `/index.html`, o MESMO asset por outro path) — o teaser
 # continua vindo do ASSETS binding, mas só depois de `handleIndex` checar
-# `?email=`/cookie. Esta lista precisa casar com `GATED_INDEX_PATHS` em
-# `src/index.ts`: declarar aqui um path que o `fetch` não roteia pra
-# `handleIndex` faz o script rodar só pra devolver o teaser cru — gate que
-# promete cobertura e não entrega. Travado por
-# `test/cursos-worker-first.test.ts`.
-run_worker_first = ["/", "/index.html"]
+# `?email=`/cookie.
+#
+# #5104 (fleet review do #5097/#5099): mudou de lista (`["/", "/index.html"]`)
+# pra `true` (cobertura total, mesmo padrão de `workers/livros/wrangler.toml`).
+# Motivo: `public/robots.txt`/`public/sitemap.xml` também são assets estáticos
+# — sem o script rodar pra eles, o redirect `.workers.dev`→canônico
+# (`resolveWorkersDevRedirect`, chamado no topo do `fetch` handler) nunca é
+# consultado nesses 2 paths, e `cursos.diaria.workers.dev/robots.txt`/
+# `/sitemap.xml` continuam 200 pra sempre — exatamente o vazamento que o
+# redirect existe pra fechar. A lista antiga precisava casar 1:1 com
+# `GATED_INDEX_PATHS` em `src/index.ts` (travado por
+# `test/cursos-worker-first.test.ts`); `true` dispensa essa sincronia — o
+# script roda pra TODO path, e `GATED_INDEX_PATHS` continua controlando só
+# quais paths passam pelo gate (`/`, `/index.html`); os demais (`/robots.txt`,
+# `/sitemap.xml`, `/gate*`) já caem no fallback `env.ASSETS.fetch`/rota
+# própria no fim do `fetch` handler, sem gate nenhum — comportamento
+# inalterado pra eles, só ganham o redirect check antes.
+run_worker_first = true
 
 # #4052: KV do sync de assinantes ativos (subscriber:{sha256(email)}), fonte
 # PRIMÁRIA de verificação (scripts/sync-cursos-subscribers-kv.ts popula).

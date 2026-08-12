@@ -44,6 +44,12 @@
  * também nunca vaza o e-mail-form/paywall — vira 404 dedicado, distinto do
  * paywall (o leitor já provou ser apoiador; o problema é o conteúdo, não o
  * acesso).
+ *
+ * #5104: qualquer request que chegue por `artigo-mensal.diaria.workers.dev`
+ * (host genérico, não o domínio de marca `artigo.diar.ia.br`) vira 301/308
+ * pro host canônico ANTES de todo o resto — mesmo padrão de
+ * `arquivo`/`cursos`/`livros` (#5097 item D), ver `resolveWorkersDevRedirect`
+ * em `scripts/lib/shared/workers-dev-redirect.ts`.
  */
 
 import { normalizeEmail, parseAllowlist, decideGate } from "./gate.ts";
@@ -54,8 +60,10 @@ import {
   renderMissingCycle,
 } from "./render.ts";
 import { renderCuradoriaRobotsTxt } from "../../../scripts/lib/shared/robots-txt.ts"; // #4777
+import { resolveWorkersDevRedirect } from "../../../scripts/lib/shared/workers-dev-redirect.ts"; // #5104
 
-/** Host público deste Worker — usado só pra montar a `Sitemap:` do robots.txt. */
+/** Host público deste Worker — usado pra montar a `Sitemap:` do robots.txt e
+ * como destino canônico do redirect `.workers.dev` abaixo (#5104). */
 const ARTIGO_MENSAL_HOST = "https://artigo.diar.ia.br";
 
 export interface Env {
@@ -159,6 +167,18 @@ export async function handleGet(url: URL, env: Env): Promise<Response> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    // #5104: fecha o host genérico `artigo-mensal.diaria.workers.dev` — mesmo
+    // padrão de `arquivo`/`cursos`/`livros` (#5097 item D): confirmado que
+    // este Worker tem o MESMO `workers_dev = true` + `custom_domain` sem
+    // nenhum passivo de link-legado (diferente de `poll`), então ficar fora
+    // do #5097 original era blind spot, não exclusão deliberada. Redirect
+    // ANTES de qualquer outra lógica (método, allowlist, KV) — nenhuma delas
+    // deveria rodar quando a resposta certa é só redirecionar.
+    const redirect = resolveWorkersDevRedirect(request.url, new URL(ARTIGO_MENSAL_HOST).host, request.method);
+    if (redirect.shouldRedirect) {
+      return Response.redirect(redirect.location, redirect.status);
+    }
+
     if (request.method !== "GET") {
       return new Response(
         JSON.stringify({ error: "method not allowed", allowed: ["GET"] }),

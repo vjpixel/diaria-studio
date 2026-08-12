@@ -325,12 +325,14 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     // #5097 item D: fecha o host genérico `cursos.diaria.workers.dev` —
     // confirmado ao vivo (#5097) servindo 200 com o conteúdo INTEIRO em
-    // paralelo ao host canônico. 301 ANTES de qualquer outra lógica (gate,
-    // cookie, CORS) — nenhuma delas deveria rodar quando a resposta certa é
-    // só redirecionar.
-    const redirect = resolveWorkersDevRedirect(request.url, new URL(DIARIA_CURSOS_URL).host);
+    // paralelo ao host canônico. Redirect ANTES de qualquer outra lógica
+    // (gate, cookie, CORS) — nenhuma delas deveria rodar quando a resposta
+    // certa é só redirecionar. #5104: método explícito — `POST /gate/verify`/
+    // `/gate/subscribe`/`/gate/logout` precisam de 308 (preserva corpo no
+    // retry do cliente), não 301 (vira GET sem corpo por spec HTTP).
+    const redirect = resolveWorkersDevRedirect(request.url, new URL(DIARIA_CURSOS_URL).host, request.method);
     if (redirect.shouldRedirect) {
-      return Response.redirect(redirect.location!, 301);
+      return Response.redirect(redirect.location, redirect.status);
     }
 
     const url = new URL(request.url);

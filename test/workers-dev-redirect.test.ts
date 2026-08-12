@@ -3,11 +3,9 @@
  *
  * Regressão pura pra `scripts/lib/shared/workers-dev-redirect.ts` —
  * `resolveWorkersDevRedirect` decide (sem I/O) se uma request pra
- * `*.workers.dev` deveria virar um 301 pro host canônico. Ver
- * `test/arquivo-workers-dev-redirect-5097.test.ts` /
- * `test/cursos-workers-dev-redirect-5097.test.ts` /
- * `test/livros-workers-dev-redirect-5097.test.ts` pro comportamento
- * exercitado nos 3 Workers reais.
+ * `*.workers.dev` deveria virar um 301/308 pro host canônico. Ver
+ * `test/workers-dev-redirect-wiring-5097.test.ts` pro comportamento
+ * exercitado nos Workers reais (fetch handler completo, sem rede).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -56,5 +54,40 @@ describe("resolveWorkersDevRedirect (#5097 item D)", () => {
     const decision = resolveWorkersDevRedirect("https://cursos.outraconta.workers.dev/gate", "cursos.diar.ia.br");
     assert.equal(decision.shouldRedirect, true);
     assert.equal(decision.location, "https://cursos.diar.ia.br/gate");
+  });
+
+  // #5104 (fleet review): `resolveWorkersDevRedirect` era cego a método HTTP
+  // — um 301 numa request não-GET/HEAD vira GET sem corpo no retry do
+  // cliente (RFC 9110 §15.4.2). `status` distingue os dois casos.
+  it("método omitido -> default GET -> status 301", () => {
+    const decision = resolveWorkersDevRedirect("https://cursos.diaria.workers.dev/", "cursos.diar.ia.br");
+    assert.equal(decision.shouldRedirect, true);
+    if (decision.shouldRedirect) assert.equal(decision.status, 301);
+  });
+
+  it("GET/HEAD explícitos -> status 301", () => {
+    for (const method of ["GET", "HEAD", "get", "head"]) {
+      const decision = resolveWorkersDevRedirect("https://cursos.diaria.workers.dev/", "cursos.diar.ia.br", method);
+      assert.equal(decision.shouldRedirect, true);
+      if (decision.shouldRedirect) assert.equal(decision.status, 301, `método ${method} deveria dar 301`);
+    }
+  });
+
+  it("POST/PUT/DELETE/PATCH -> status 308 (preserva método+corpo no retry)", () => {
+    for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
+      const decision = resolveWorkersDevRedirect(
+        "https://cursos.diaria.workers.dev/gate/verify",
+        "cursos.diar.ia.br",
+        method,
+      );
+      assert.equal(decision.shouldRedirect, true);
+      if (decision.shouldRedirect) assert.equal(decision.status, 308, `método ${method} deveria dar 308`);
+    }
+  });
+
+  it("host já canônico + método POST -> ainda shouldRedirect false (status não se aplica)", () => {
+    const decision = resolveWorkersDevRedirect("https://cursos.diar.ia.br/gate/verify", "cursos.diar.ia.br", "POST");
+    assert.equal(decision.shouldRedirect, false);
+    assert.equal(decision.location, null);
   });
 });

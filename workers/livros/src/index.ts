@@ -34,11 +34,13 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     // #5097 item D: fecha o host genérico `livros.diaria.workers.dev` —
     // confirmado ao vivo (#5097) servindo 200 com o conteúdo INTEIRO em
-    // paralelo ao host canônico. 301 ANTES de qualquer outra lógica (log de
-    // Referer, delegação pro ASSETS).
-    const redirect = resolveWorkersDevRedirect(request.url, new URL(DIARIA_LIVROS_URL).host);
+    // paralelo ao host canônico. Redirect ANTES de qualquer outra lógica (log
+    // de Referer, delegação pro ASSETS). #5104: método explícito (este
+    // Worker só serve `GET`, mas o helper decide 301/308 corretamente pra
+    // qualquer método futuro).
+    const redirect = resolveWorkersDevRedirect(request.url, new URL(DIARIA_LIVROS_URL).host, request.method);
     if (redirect.shouldRedirect) {
-      return Response.redirect(redirect.location!, 301);
+      return Response.redirect(redirect.location, redirect.status);
     }
 
     try {
