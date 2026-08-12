@@ -355,6 +355,51 @@ describe("clarice-envio-run (#5026)", () => {
     it("array vazio => []", () => {
       assert.deepEqual(detectExistingWaveForSendDate([], SEND_DATE), []);
     });
+
+    // -------------------------------------------------------------------
+    // #5064 — onda em DRAFT (--create rodou, --schedule não): sem
+    // scheduledAt na Brevo, só o fragmento de data embutido na key
+    // identifica pra qual dia ela foi montada.
+    // -------------------------------------------------------------------
+
+    it("onda em DRAFT (sem scheduledAt) casando o fragmento de data do sendDate => detectada (#5064)", () => {
+      const r = detectExistingWaveForSendDate(
+        [wave({ key: "d12-qua12", status: "draft", scheduledAt: null })],
+        SEND_DATE,
+      );
+      assert.equal(r.length, 1);
+      assert.equal(r[0].key, "d12-qua12");
+      assert.equal(r[0].status, "draft");
+      assert.equal(r[0].scheduledAt, null);
+    });
+
+    it("onda em DRAFT com célula (-A/-B/-C) também casa pelo prefixo do fragmento", () => {
+      const r = detectExistingWaveForSendDate(
+        [wave({ key: "d12-qua12-A", status: "draft", scheduledAt: null })],
+        SEND_DATE,
+      );
+      assert.equal(r.length, 1);
+    });
+
+    it("onda em DRAFT pra OUTRO dia (fragmento não bate) => não detectada", () => {
+      const r = detectExistingWaveForSendDate(
+        [wave({ key: "d11-ter11", status: "draft", scheduledAt: null })],
+        SEND_DATE,
+      );
+      assert.equal(r.length, 0);
+    });
+
+    it("status draft-similar mas SEM scheduledAt e status != 'draft' => NÃO cai no fallback (só draft genuíno)", () => {
+      // Defensivo: `w.status` que não seja "draft" nem tenha scheduledAt não é
+      // um estado real que summarizeCycleSends produz hoje (queued/sent sempre
+      // têm scheduledAt ou sentDate), mas o guard não deveria inventar um match
+      // por acidente se isso mudar.
+      const r = detectExistingWaveForSendDate(
+        [wave({ key: "d12-qua12", status: "in_process", scheduledAt: null })],
+        SEND_DATE,
+      );
+      assert.equal(r.length, 0);
+    });
   });
 
   // ── fluxo completo (fake exec) ──────────────────────────────────────
@@ -798,6 +843,41 @@ describe("clarice-envio-run (#5026)", () => {
       const r = await runEnvio(baseDeps(root, { exec }));
       assert.equal(r.code, 0, r.reportMarkdown);
       assert.ok(calls.some((c) => c.script === "scripts/clarice-build-segment.ts"), "onda cancelada não deve travar a rodada");
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("proposal.state.waves tem onda em DRAFT (sem scheduledAt) pra sendDate => PARA a rodada, apontando reconciliação manual (#5064)", async () => {
+      // Simula o incidente descrito na #5064: uma rodada anterior rodou
+      // --create (campanha nasceu draft, apontando pra uma lista já criada
+      // com o cycle no nome — daí `summarizeCycleSends` conseguir atribuí-la)
+      // mas --schedule falhou/nunca rodou. Sem o fix, este `state.waves`
+      // (draft, scheduledAt null) seria invisível pro guard, e a rodada
+      // montaria uma 2ª onda pro mesmo dia.
+      const root = freshRoot();
+      const proposal = goldenProposal({
+        state: {
+          cycle: CYCLE,
+          waves: [
+            wave({ key: "d11-qua11", subject: "Antiga", status: "sent", scheduledAt: "2026-08-11T13:45:00.000Z" }),
+            wave({ key: "d12-qua12", subject: "Onda parcial (só --create rodou)", status: "draft", scheduledAt: null }),
+          ],
+          volumeSum: 100000, volumeComplete: true, sentCount: 10, scheduledCount: 0, unscopedCount: 0,
+        },
+      });
+      const { exec, calls } = makeFakeExec({
+        "scripts/clarice-check-derived-stale.ts": textResult("fresh"),
+        "scripts/clarice-plan-wave.ts": jsonResult(proposal),
+      });
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.match(r.reportMarkdown, /ONDA JÁ EXISTE/);
+      assert.match(r.reportMarkdown, /d12-qua12/);
+      assert.match(r.reportMarkdown, /status="draft"/);
+      assert.match(r.reportMarkdown, /#5064/, "aponta o motivo (draft órfão) e o caminho de reconciliação, não só 'já existe'");
+      assert.ok(
+        !calls.some((c) => c.script === "scripts/clarice-envio-risk.ts" || c.script === "scripts/clarice-build-segment.ts"),
+        "onda em draft pra sendDate deve parar ANTES de calcular risco/volume — nunca monta uma 2ª onda",
+      );
       rmSync(root, { recursive: true, force: true });
     });
   });

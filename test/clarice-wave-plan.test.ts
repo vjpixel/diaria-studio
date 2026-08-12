@@ -11,6 +11,7 @@ import {
   groupKeyFromCampaignName,
   measureNonOpenerExposure,
   measureNovosFreshness,
+  mergeCampaignSources,
   MV_BACKLOG_NO_COHORT_LABEL,
   planMvOnDemand,
   proposeVolumes,
@@ -21,6 +22,7 @@ import {
   summarizeAvailableFirstSendByCohort,
   summarizeCycleSends,
   summarizeMvBacklog,
+  waveDateFragment,
   waveKey,
   MV_COST_PER_EMAIL_USD,
   MV_ONDEMAND_APPROVAL_MARGIN,
@@ -120,6 +122,19 @@ describe("waveKey (#4657 — fecha o item 3 da #4449)", () => {
   });
 });
 
+describe("waveDateFragment (#5064 — extraído de waveKey pro guard de onda em draft)", () => {
+  it("mesmo fragmento que waveKey embute na chave, pra qualquer N/célula", () => {
+    assert.equal(waveDateFragment("2026-08-06"), "qui06");
+    assert.equal(waveDateFragment("2026-08-01"), "sab01");
+    assert.equal(waveKey(6, "2026-08-06"), `d6-${waveDateFragment("2026-08-06")}`);
+    assert.equal(waveKey(1, "2026-08-01", "A"), `d1-${waveDateFragment("2026-08-01")}-A`);
+  });
+
+  it("rejeita data inválida (mesmo guard de scheduledAtForDate)", () => {
+    assert.throws(() => waveDateFragment("2026-02-31"), /inexistente no calendário/);
+  });
+});
+
 describe("parseDatesArg", () => {
   it("aceita lista válida em ordem crescente", () => {
     assert.deepEqual(parseDatesArg("2026-08-06,2026-08-07"), ["2026-08-06", "2026-08-07"]);
@@ -160,6 +175,27 @@ describe("groupKeyFromCampaignName", () => {
   it("devolve null pra campanha fora desse fluxo", () => {
     assert.equal(groupKeyFromCampaignName("cold 2607-08 — A"), null);
     assert.equal(groupKeyFromCampaignName(""), null);
+  });
+});
+
+describe("mergeCampaignSources (#5064)", () => {
+  it("funde sent/queued com draft, preservando ordem (sent/queued primeiro)", () => {
+    const sentOrQueued = [campaign({ id: 1, status: "sent" }), campaign({ id: 2, status: "queued" })];
+    const draft = [campaign({ id: 3, status: "draft" })];
+    const merged = mergeCampaignSources(sentOrQueued, draft);
+    assert.deepEqual(merged.map((c) => c.id), [1, 2, 3]);
+  });
+
+  it("dedup defensivo por id — nunca conta a mesma campanha duas vezes", () => {
+    const sentOrQueued = [campaign({ id: 1, status: "sent" })];
+    const draft = [campaign({ id: 1, status: "draft" })]; // mesmo id, não deveria acontecer de verdade
+    const merged = mergeCampaignSources(sentOrQueued, draft);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].status, "sent", "a 1ª ocorrência (sent/queued) vence");
+  });
+
+  it("arrays vazios => vazio", () => {
+    assert.deepEqual(mergeCampaignSources([], []), []);
   });
 });
 
