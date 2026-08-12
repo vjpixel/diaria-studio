@@ -416,7 +416,8 @@ export function findMismatchedUrls(
  *
  * Considera afiliado qualquer host `clarice.ai` (incluindo `www.` e `app.`),
  * EXENTANDO:
- *   - `cortex.clarice.ai` — endpoint da API de correção, não é link de afiliado.
+ *   - `cortex.clarice.ai` — endpoint da API REST de correção, não é link de afiliado.
+ *   - `mcp.clarice.ai` — endpoint do MCP (#5114), mesma natureza de `cortex.` (API, não leitor).
  *   - protocolos não-http (mailto: `ti@clarice.ai`, etc.).
  *
  * Detecta `via` em qualquer posição da query (`?via=diaria`, `?x=1&via=diaria`).
@@ -431,7 +432,7 @@ export function clariceLinkMissingVia(url: string): boolean {
   if (u.protocol !== "http:" && u.protocol !== "https:") return false;
   const host = u.hostname.toLowerCase().replace(/\.$/, "");
   if (!/(^|\.)clarice\.ai$/.test(host)) return false;
-  if (host === "cortex.clarice.ai") return false; // API, não afiliado
+  if (host === "cortex.clarice.ai" || host === "mcp.clarice.ai") return false; // API, não afiliado
   // case-insensitive + tolera múltiplos `via` (ex: `?via=x&via=diaria`).
   return !u.searchParams.getAll("via").some((v) => v.toLowerCase() === "diaria");
 }

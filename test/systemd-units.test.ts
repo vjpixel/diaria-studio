@@ -144,6 +144,20 @@ describe("buildSystemdUnitFiles", () => {
     );
   });
 
+  // #5114: CLARICE_API_KEY (e demais credenciais do .env) nunca chegava ao
+  // ambiente de nenhum unit gerado -- o `.mcp.json` interpola `${CLARICE_API_KEY}`
+  // no momento do LAUNCH do processo Claude Code, e nenhum loader TS roda a
+  // tempo de consertar isso depois de o processo já ter subido.
+  it("service: EnvironmentFile= aponta pro .env do repoRootAbs, marcado opcional com '-' (#5114)", () => {
+    assert.match(files.serviceContent, new RegExp(`^EnvironmentFile=-${repoRootAbs}/\\.env$`, "m"));
+  });
+
+  it("EnvironmentFile= vem ANTES de ExecStart= (ordem não importa pro systemd, mas documenta a intenção)", () => {
+    const envIdx = files.serviceContent.indexOf("EnvironmentFile=");
+    const execIdx = files.serviceContent.indexOf("ExecStart=");
+    assert.ok(envIdx >= 0 && execIdx >= 0 && envIdx < execIdx);
+  });
+
   it("timer: OnCalendar (com fuso) + Persistent=true + Unit aponta pro .service + WantedBy=timers.target", () => {
     assert.match(files.timerContent, /OnCalendar=\*-\*-\* 09:45:00 America\/Sao_Paulo/);
     assert.match(files.timerContent, /Persistent=true/);
