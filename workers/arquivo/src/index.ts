@@ -87,6 +87,10 @@ export interface Env {
  * funciona porque as datas são sempre `YYYY-MM-DD`. `undefined` só se algum
  * dia não houver hub nenhum publicado (nunca aconteceu — `HUB_REGISTRY`
  * nasceu com o primeiro hub).
+ *
+ * #5124: cada `HUB_LASTMOD[slug]` (usado aqui) é a data de COBERTURA do
+ * hub (edição mais recente citada em `sourceEditions`), não mais
+ * `updatedDate` (revisão de prosa) — ver `hubCoverageDate` em `hub-page.ts`.
  */
 const ROOT_LASTMOD: string | undefined = Object.values(HUB_LASTMOD).reduce<string | undefined>(
   (max, d) => (max === undefined || d > max ? d : max),
@@ -101,9 +105,9 @@ const ROOT_LASTMOD: string | undefined = Object.values(HUB_LASTMOD).reduce<strin
  * `https://diar.ia.br/sitemap.xml`, consumido acima via `fetchSitemapXml`)
  * — o objetivo aqui é só dar ao Google um caminho de descoberta pra ESTAS
  * páginas, que por sua vez listam `<a href>` reais pra cada edição.
- * `<lastmod>` por `<url>` (#4909) vem de `HUB_LASTMOD` — mesmo `updatedDate`
- * que já alimenta `dateModified` no JSON-LD de cada hub (#4911), nunca um
- * valor inventado à parte.
+ * `<lastmod>` por `<url>` (#4909) vem de `HUB_LASTMOD` — mesma data de
+ * COBERTURA (#5124, `hubCoverageDate`) que já alimenta `dateModified` no
+ * JSON-LD de cada hub, nunca um valor inventado à parte.
  */
 const ARQUIVO_SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
@@ -188,13 +192,15 @@ function fnv1aHex(input: string): string {
 
 /** `YYYY-MM-DD` → formato RFC 7231 (`Last-Modified`/`If-Modified-Since`).
  * Meia-noite UTC — mesma disciplina de data ESTÁTICA de `hub-page.ts`: não é
- * hora real de publicação, é o dia do `updatedDate`. */
+ * hora real de publicação, é o dia da data de cobertura (#5124). */
 function toHttpDate(isoDate: string): string {
   return new Date(`${isoDate}T00:00:00Z`).toUTCString();
 }
 
 interface HtmlResponseOptions {
-  /** `YYYY-MM-DD` do `updatedDate` do hub (#4911) — vira header `Last-Modified`. */
+  /** `YYYY-MM-DD` da data de COBERTURA do hub (#5124, `hubCoverageDate` —
+   * era `updatedDate` até o #4911/#4909, corrigido pelo #5124) — vira
+   * header `Last-Modified`. */
   lastModified?: string;
   /** `true` pra emitir `ETag` (hash do `body`). */
   etag?: boolean;
@@ -332,9 +338,10 @@ export default {
     if (url.pathname.startsWith("/temas/")) {
       const slug = url.pathname.slice("/temas/".length).replace(/\/$/, "");
       if (!Object.hasOwn(HUB_REGISTRY, slug)) return new Response("Not found", { status: 404 });
-      // #4909: Last-Modified deriva do MESMO updatedDate do hub (#4911,
-      // nunca um valor separado) + ETag do conteúdo — sinal de rastreio pra
-      // crawler/cache, não fator de citação declarado por nenhum fabricante.
+      // #4909/#5124: Last-Modified deriva da data de COBERTURA do hub
+      // (hubCoverageDate — edição mais recente citada, nunca um valor
+      // separado) + ETag do conteúdo — sinal de rastreio pra crawler/cache,
+      // não fator de citação declarado por nenhum fabricante.
       return htmlResponse(HUB_REGISTRY[slug], 200, { lastModified: HUB_LASTMOD[slug], etag: true });
     }
     if (url.pathname !== "/") {

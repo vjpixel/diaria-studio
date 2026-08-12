@@ -1033,5 +1033,17 @@
       "https://openai.com/index/improving-gpt-5-6-sol-in-chatgpt/"
     ],
     "editionTitle": "Meta lucrou com anúncios de abuso infantil por IA"
+  },
+  {
+    "date": "2026-08-11",
+    "editionSlug": "medicina-teme-formar-medicos-sem-raciocinio",
+    "url": "https://diar.ia.br/p/medicina-teme-formar-medicos-sem-raciocinio",
+    "matchedHeadlines": [
+      "OpenAI freia modelo por risco cibernético"
+    ],
+    "primarySourceUrls": [
+      "https://techcrunch.com/2026/08/07/openai-says-it-slowed-astra-model-development-over-security-concerns/"
+    ],
+    "editionTitle": "Medicina teme formar médicos sem raciocínio"
   }
 ]

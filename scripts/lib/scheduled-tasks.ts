@@ -360,6 +360,23 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4910",
   },
   {
+    name: "Diaria-Hub-Staleness-Check",
+    description: "detecta edições publicadas que casam HUB_KEYWORD_PATTERNS mas não estão no dataset commitado do hub (persiste snapshot diário + alarma se >= 3 dias)",
+    steps: [{ key: "check", script: "scripts/hub-staleness-check.ts" }],
+    logPath: "hubs/.staleness-check.log",
+    // Diária basta (#5123) — o custo é só ler dataset local (sem rede pra
+    // detectar; só o e-mail de alarme, se houver pendência, faz I/O de
+    // rede). Horário: 09:30, entre Diaria-Clarice-Opens-Catchup-Alarm (09:00)
+    // e Diaria-Apoios-Diff-Alarm (09:45) — sem colisão com nenhuma outra
+    // daily do registro.
+    schedule: { kind: "daily", hour: 9, minute: 30 },
+    // Sem `legacySetupScript` de propósito — mesmo caso de
+    // Diaria-Beehiiv-Home-Meta-Check/Diaria-Clarice-Envio-Alarm (#5005/#5058):
+    // 1ª execução registrada depois do cutover systemd (épica #4798), sem
+    // contraparte Windows/.ps1.
+    issue: "#5123, #4924",
+  },
+  {
     name: "Diaria-Clarice-Novos",
     description: "envio diario aos cadastros novos da Clarice (Stripe -> MV -> campanha)",
     // Kill switch dedicado (#4941 E3): ANTES de qualquer chamada externa,

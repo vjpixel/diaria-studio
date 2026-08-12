@@ -18,6 +18,9 @@ import {
   renderHubPage,
   sourceEditionLabel,
   validateHubContent,
+  hubCoverageDate,
+  checkUpdatedDateCeiling,
+  HUB_UPDATED_DATE_CEILING_WARN_DAYS,
   type HubContent,
 } from "../scripts/lib/shared/hub-page.ts";
 import { findParagraphLinks } from "../scripts/lib/shared/markdown-links.ts";
@@ -572,19 +575,124 @@ describe("validateHubContent — publishedDate/updatedDate (#4911)", () => {
     const hub: HubContent = { ...base, publishedDate: "2026-08-01", updatedDate: "2026-08-10" };
     assert.deepEqual(validateHubContent(hub), []);
   });
+
+  // #5124 item 3: teto é SEPARADO de validateHubContent (nunca bloqueia) —
+  // ver checkUpdatedDateCeiling abaixo.
+  it("updatedDate MUITO à frente da fonte mais recente NÃO é erro de validateHubContent (é warning separado, #5124)", () => {
+    const hub: HubContent = { ...base, publishedDate: "2026-08-01", updatedDate: "2026-08-01" };
+    assert.deepEqual(validateHubContent({ ...hub, sourceEditions: [{ date: "2026-06-01", title: "Antiga", url: "https://diar.ia.br/p/antiga" }], updatedDate: "2026-08-01" }), []);
+  });
 });
 
-describe("datePublished/dateModified do JSON-LD divergem quando publishedDate ≠ updatedDate (#4911) — regression ao vivo do dateModified falso", () => {
+describe("checkUpdatedDateCeiling (#5124 item 3) — heurístico, nunca bloqueia", () => {
+  const baseCeiling: Pick<HubContent, "updatedDate" | "sourceEditions"> = {
+    sourceEditions: [{ date: "2026-06-25", title: "Edição", url: "https://diar.ia.br/p/edicao-teste" }],
+    updatedDate: "2026-06-25",
+  };
+
+  it("gap 0 (updatedDate === coverageDate) -> sem warning", () => {
+    assert.deepEqual(checkUpdatedDateCeiling(baseCeiling), []);
+  });
+
+  it(`gap abaixo do limiar (${HUB_UPDATED_DATE_CEILING_WARN_DAYS - 1} dias) -> sem warning`, () => {
+    const hub = { ...baseCeiling, updatedDate: "2026-07-14" }; // 19 dias após 06-25
+    assert.deepEqual(checkUpdatedDateCeiling(hub), []);
+  });
+
+  it("gap NO limiar exato -> warning (>=, não >)", () => {
+    const hub = { ...baseCeiling, updatedDate: "2026-07-16" }; // exatamente 21 dias após 06-25
+    const warnings = checkUpdatedDateCeiling(hub);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /21 dias/);
+  });
+
+  it("gap 48 dias (caso real brasil-regulacao) -> warning nomeando updatedDate e coverageDate", () => {
+    const hub = { ...baseCeiling, updatedDate: "2026-08-12" };
+    const warnings = checkUpdatedDateCeiling(hub);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /2026-08-12/);
+    assert.match(warnings[0], /2026-06-25/);
+    assert.match(warnings[0], /48 dias/);
+  });
+
+  it("sourceEditions vazio -> sem warning (defensivo, coberto por validateHubContent separadamente)", () => {
+    assert.deepEqual(checkUpdatedDateCeiling({ sourceEditions: [], updatedDate: "2026-08-12" }), []);
+  });
+
+  it("updatedDate malformado -> sem warning (defensivo, coberto por validateHubContent separadamente)", () => {
+    assert.deepEqual(checkUpdatedDateCeiling({ ...baseCeiling, updatedDate: "não-é-data" }), []);
+  });
+
+  it("os 6 hubs reais de HUB_LOADERS: só brasil-regulacao dispara warning hoje (48 dias medidos em 12/08/2026, #5124) — os outros 5 ficam dentro do limiar", () => {
+    // #5124 item 5 (decisão do editor, fora de escopo desta issue): o gap do
+    // brasil-regulacao É real — o #5071 genuinamente revisou a prosa
+    // (removeu 6 de 11 links) em 12/08, só que sem fonte nova pra citar. O
+    // warning aqui é o comportamento CORRETO (torna a defasagem visível),
+    // não um bug — não "consertar" mudando updatedDate pra silenciar.
+    for (const slug of Object.keys(HUB_LOADERS)) {
+      const hub = HUB_LOADERS[slug]();
+      const warnings = checkUpdatedDateCeiling(hub);
+      if (slug === "brasil-regulacao") {
+        assert.ok(warnings.length > 0, "brasil-regulacao deveria disparar o warning de teto (gap conhecido, #5124)");
+      } else {
+        assert.deepEqual(warnings, [], `hub "${slug}" tem warning de teto inesperado: ${warnings.join("; ")}`);
+      }
+    }
+  });
+});
+
+describe("datePublished/dateModified do JSON-LD (#4911, dateModified redirecionado pra coverageDate no #5124)", () => {
   for (const slug of Object.keys(HUB_LOADERS)) {
-    it(`hub "${slug}": datePublished/dateModified do schema batem com publishedDate/updatedDate do HubContent`, () => {
+    it(`hub "${slug}": datePublished bate com publishedDate; dateModified bate com hubCoverageDate(sourceEditions), NÃO com updatedDate`, () => {
       const hub = HUB_LOADERS[slug]();
       const html = renderHubPage(hub);
       const m = /"datePublished":"([^"]*)","dateModified":"([^"]*)"/.exec(html);
       assert.ok(m, `hub "${slug}" sem datePublished/dateModified no JSON-LD`);
       assert.equal(m![1], hub.publishedDate);
-      assert.equal(m![2], hub.updatedDate);
+      assert.equal(m![2], hubCoverageDate(hub.sourceEditions));
     });
   }
+});
+
+describe("hubCoverageDate (#5124) — teto: updatedDate pode divergir de dateModified sem que isso vaze pro schema", () => {
+  it("hub sintético com updatedDate MUITO à frente da fonte mais recente (caso brasil-regulacao) — dateModified segue a fonte, não updatedDate", () => {
+    const hub: HubContent = {
+      slug: "teste-coverage-date",
+      title: "Teste",
+      metaDescription: "Descrição.",
+      introHeading: "Pergunta?",
+      introParagraph: "Intro.",
+      sections: [{ heading: "Seção", paragraphs: ["Parágrafo em 25 de junho de 2026."] }],
+      faq: Array.from({ length: 6 }, (_, i) => ({ question: `P${i}?`, answer: `R${i}.` })),
+      sourceEditions: [{ date: "2026-06-25", title: "Edição", url: "https://diar.ia.br/p/edicao-teste" }],
+      publishedDate: "2026-06-25",
+      // Bump cosmético (remove conteúdo, não adiciona fonte) — cenário real
+      // medido em 12/08/2026 no hub brasil-regulacao (#5124), 48 dias à frente.
+      updatedDate: "2026-08-12",
+      footerNavUtm: { source: "test", medium: "footer-nav" },
+      methodologyNote: "O levantamento vem de 1 edição publicada em junho de 2026; os números saem do arquivo da diar.ia.br, não de verificação independente junto às empresas.",
+    };
+    assert.equal(hubCoverageDate(hub.sourceEditions), "2026-06-25");
+    const html = renderHubPage(hub);
+    const m = /"datePublished":"([^"]*)","dateModified":"([^"]*)"/.exec(html);
+    assert.ok(m);
+    assert.equal(m![2], "2026-06-25", "dateModified deveria refletir a cobertura real (06-25), não o bump cosmético (08-12)");
+  });
+
+  it("commit que REMOVE a fonte mais recente (item que sumiu de sourceEditions) não avança coverageDate — nunca avança sozinho, só regride ou fica igual", () => {
+    const before = [
+      { date: "2026-06-25", title: "Mais recente", url: "https://diar.ia.br/p/a" },
+      { date: "2026-05-01", title: "Mais antiga", url: "https://diar.ia.br/p/b" },
+    ];
+    const coverageBefore = hubCoverageDate(before);
+    // "commit" que remove o item mais recente (ex: #5071, "reduz densidade
+    // de fonte primária" removeu itens sem adicionar nada novo).
+    const after = before.filter((e) => e.date !== "2026-06-25");
+    const coverageAfter = hubCoverageDate(after);
+    assert.equal(coverageBefore, "2026-06-25");
+    assert.equal(coverageAfter, "2026-05-01");
+    assert.ok(coverageAfter <= coverageBefore, "remover uma fonte nunca pode fazer coverageDate AVANÇAR");
+  });
 });
 
 /** Fixture mínima reusada pelos testes de metaDescription/nav abaixo (#4913)

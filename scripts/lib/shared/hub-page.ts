@@ -47,6 +47,26 @@
  * nunca podem colapsar num só) precisam ser literais `YYYY-MM-DD` — um
  * valor dinâmico quebraria o teste de asset-drift (compara o HTML
  * committed contra um render fresco).
+ *
+ * **`updatedDate` != frescor de dado, `coverageDate` != data de edição
+ * (#5124).** `updatedDate` (acima) responde "quando a PROSA foi revisada" —
+ * um bump legítimo sem nenhuma fonte nova (typo, reformulação). O que o
+ * Google/JSON-LD/sitemap deveriam ler pra decidir se vale re-rastrear é
+ * outra pergunta: "até quando a COBERTURA vai" — e essa segunda pergunta já
+ * tinha resposta estrutural (a data mais recente em `sourceEditions`, ver
+ * `hubCoverageDate` abaixo), só que `dateModified`/`<lastmod>`/
+ * `Last-Modified` liam `updatedDate` em vez dela. Achado ao vivo em
+ * 12/08/2026: um commit que só REMOVE conteúdo (`brasil-regulacao`, #5071 —
+ * "reduz densidade de fonte primária") bumpou `updatedDate` pra hoje sem
+ * adicionar nenhuma fonte nova; a página passou a declarar `Last-Modified`
+ * de hoje citando uma edição de 48 dias atrás. `hubCoverageDate` é
+ * DERIVADO de `sourceEditions` (nunca um campo próprio em `HubContent`) —
+ * diferente do par `publishedDate`/`updatedDate`, que precisam ser
+ * settáveis independentemente na autoria, `coverageDate` não tem nenhum
+ * grau de liberdade além do dataset: armazená-lo separado reintroduziria
+ * exatamente o risco de divergência que a nota de `publishedDate` acima já
+ * descreve (dois campos que podem, em teoria, discordar do que deveriam
+ * sempre concordar).
  */
 import { escHtml as esc } from "../html-escape.ts";
 import { renderSeoMeta } from "./seo-meta.ts";
@@ -312,6 +332,25 @@ export function hubCoverageWindow(sources: readonly { date: string }[]): {
     betweenLong: isSingleDate ? formatDateLong(firstDate) : `${formatDateLong(firstDate)} e ${formatDateLong(lastDate)}`,
     isSingleMonth,
   };
+}
+
+/**
+ * "Data de cobertura" de um hub (#5124) — a edição mais recente que a
+ * página de fato CITA, `YYYY-MM-DD`. DERIVADA de `sourceEditions` (nunca um
+ * campo próprio em `HubContent`, ver nota do módulo) — é o que
+ * `dateModified`/`<lastmod>`/`Last-Modified` deveriam refletir, em vez de
+ * `updatedDate` (quando a PROSA foi revisada, conceito diferente e às vezes
+ * bem mais recente — ver caso `brasil-regulacao`, #5124).
+ *
+ * Não assume ordenação (mesmo racional de `hubCoverageWindow`, que este
+ * reusa): `sourceEditions` normalmente já vem ordenado mais-recente-primeiro
+ * (invariante de `validateHubContent`), mas esta função não depende disso —
+ * `hubCoverageWindow` varre min/max explicitamente.
+ *
+ * @pure
+ */
+export function hubCoverageDate(sourceEditions: readonly { date: string }[]): string {
+  return hubCoverageWindow(sourceEditions).lastDate;
 }
 
 /** `YYYY-MM-DD` → "DD/MM/AAAA" (#4922 item 1) — mesma função que cada
@@ -944,6 +983,55 @@ export function validateHubContent(hub: HubContent): string[] {
   return errors;
 }
 
+/**
+ * Limiar (dias corridos) que `checkUpdatedDateCeiling` usa pra sinalizar
+ * `updatedDate` suspeito demais à frente de `coverageDate` (#5124 item 3).
+ * Escolha do limiar: 21 dias fica acima de todo gap legítimo medido nos 6
+ * hubs reais em 12/08/2026 (o maior era 11 dias, `google-gemini`) e bem
+ * abaixo do caso que motivou a issue (`brasil-regulacao`, 48 dias) — folga
+ * suficiente pra não alarmar um bump de prosa alguns dias depois da última
+ * fonte (padrão normal de revisão editorial), mas curto o bastante pra
+ * pegar um bump "cosmético" que ficou parado por semanas.
+ */
+export const HUB_UPDATED_DATE_CEILING_WARN_DAYS = 21;
+
+/**
+ * "Teto" de `updatedDate` vs `coverageDate` (#5124 item 3) — SEPARADO de
+ * `validateHubContent` de propósito, NUNCA lança/bloqueia build.
+ *
+ * **Por que warning e não erro, decisão registrada aqui (issue pede
+ * decisão explícita):** `validateHubContent` já tem uma checagem
+ * ESTRUTURAL equivalente ao piso (`updatedDate` não pode ser ANTERIOR à
+ * fonte mais recente — um estado logicamente impossível, "revisei antes de
+ * saber da fonte que citei"). O teto aqui é o oposto: um `updatedDate`
+ * MUITO à frente de `coverageDate` não é impossível nem necessariamente
+ * errado — pode ser um bump de prosa legítimo (typo, reformulação) sem
+ * fonte nova pra citar. É um HEURÍSTICO de "isso parece estranho, confira",
+ * não um invariante estrutural. Colocar isto dentro de `validateHubContent`
+ * (que `renderHubPage` já usa pra `throw`, quebrando os 6 hubs de uma vez —
+ * ver docstring de `renderHubPage`) transformaria um sinal probabilístico
+ * em bloqueio de build; o piso genuíno (`test/hub-page-drift.test.ts`, que
+ * reprova o CI se o `.generated.ts` divergir do fresh render) já é a rede
+ * de segurança que impede publicar sem perceber. `build-hub-page.ts` chama
+ * esta função separadamente e imprime o resultado como aviso (stderr),
+ * nunca como exit code != 0.
+ *
+ * @pure
+ */
+export function checkUpdatedDateCeiling(
+  hub: Pick<HubContent, "updatedDate" | "sourceEditions">,
+): string[] {
+  if (hub.sourceEditions.length === 0) return []; // coberto por validateHubContent
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(hub.updatedDate)) return []; // idem — formato inválido
+  const coverageDate = hubCoverageDate(hub.sourceEditions);
+  const gapDays = calendarDaysBetween(coverageDate, hub.updatedDate);
+  if (gapDays < HUB_UPDATED_DATE_CEILING_WARN_DAYS) return [];
+  return [
+    `updatedDate "${hub.updatedDate}" está ${gapDays} dias à frente da edição mais recente citada ("${coverageDate}") ` +
+      `— confira se o bump reflete cobertura nova, ou é só revisão de prosa sem fonte nova (limiar: ${HUB_UPDATED_DATE_CEILING_WARN_DAYS} dias, #5124)`,
+  ];
+}
+
 /** Renderiza o bloco de tabela opcional de uma `HubSection` (#4921 Onda 2).
  * Célula em texto puro passa por `renderInlineLinks` (não `esc()` puro) —
  * ver decisão registrada na docstring de `HubSectionTable.rows`. */
@@ -1124,7 +1212,9 @@ ${renderGeoJsonLd({
   headline: pageTitle,
   description: hub.metaDescription,
   datePublished: hub.publishedDate,
-  dateModified: hub.updatedDate,
+  // #5124: deriva de `sourceEditions` (coverage), NÃO `hub.updatedDate`
+  // (revisão de prosa) — ver `hubCoverageDate`.
+  dateModified: hubCoverageDate(hub.sourceEditions),
   faq: hub.faq,
   // #4558 Parte B: a lista de fontes já visível em `.hub-sources` (issue
   // item 6, "dados e números próprios") também vira `ItemList` estruturado —
