@@ -115,12 +115,16 @@ describe("buildTasksData (#4799) — orquestração fim-a-fim", () => {
         // #4941: quando Diaria-Clarice-Novos rodava às 17:00 BRT, 20:00 UTC
         // colidia exatamente com o `mostRecent` dela (grace de 60min fazia
         // ela sozinha reportar overdue=false enquanto as demais davam true).
-        // 23:00 UTC (20:00 BRT) fica depois de TODA daily/weekly + o grace.
-        // #5140 moveu essa task pra 11:00, mas o `now` continua deliberadamente
-        // fixado depois da daily MAIS TARDIA do registro — não da task que
-        // motivou o ajuste. Trocar por um horário "só depois das 11:00"
-        // reintroduziria a colisão na próxima task noturna que alguém
-        // registrar.
+        // 23:00 UTC (20:00 BRT) resolve isso — e NÃO porque fica depois de
+        // toda daily do registro (não fica: Clarice-Envio-Alarm às 20:30 e
+        // Cohorts-Crawl às 21:00 são mais tardias). Fica depois pro caso que
+        // importava, e pras demais `computeMostRecentScheduledOccurrence`
+        // envolve pra ocorrência de ONTEM, que somada ao grace já é <= now —
+        // então elas reportam overdue=true do mesmo jeito.
+        // #5140 moveu Clarice-Novos pra 11:00, o que dissolve a colisão
+        // original; o `now` fica como está de propósito, porque afrouxá-lo
+        // pra "só depois das 11:00" reintroduziria o problema na próxima
+        // task vespertina que alguém registrar.
         now: () => new Date("2026-08-10T23:00:00.000Z"), // bem depois de qualquer daily/weekly do dia
         queryArmedFn: () => ({ scheduler: "systemd", state: "disabled", note: null }),
         readLastRunFn: () => ({ ...NEVER_RUN }),

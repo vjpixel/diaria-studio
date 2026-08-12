@@ -56,3 +56,10 @@ npx tsx scripts/arm-systemd-timers.ts --task Diaria-Clarice-Novos     # arma de 
 **Task NÃO armada nesta unidade quando implementada em worktree isolado** — mesma disciplina do #4320/#4382/#4490/#4534/#4723 (credencial/estado de máquina fica fora do worktree do subagente). Se implementada numa sessão local com acesso real à máquina, o arme + a 1ª rodada (pausada pelo toggle) podem acontecer na mesma sessão — ver o PR/commit pra confirmar se isso ocorreu.
 
 **Armada e confirmada ativa (#4941, 10/ago)** — `systemctl --user is-active diaria-clarice-novos.timer` retorna `active` na máquina `predator`, `Trigger: Tue 2026-08-11 20:00:00 UTC` (= 11/ago 17:00 BRT, o próximo disparo real). Kill switch confirmado no estado default seguro (`npx tsx scripts/lib/clarice-novos-enabled.ts` → `disabled`) — a 1ª rodada de amanhã sai limpo, sem tocar Stripe/MV/Brevo, até o editor liberar explicitamente. Arme feito fora de worktree isolado (sessão local direta no clone principal), então os passos acima já foram executados nesta máquina — não repetir.
+
+> **Re-arme obrigatório após o #5140 (260812).** O parágrafo acima é registro HISTÓRICO: o `Trigger` de 20:00 UTC descrito ali é o das 17:00 BRT antigas. Mudar `hour` no registry **não** mexe no timer já instalado — o unit em `predator` continua disparando no horário velho até alguém regenerar e recarregar:
+> ```bash
+> npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Novos
+> systemctl --user daemon-reload && systemctl --user restart diaria-clarice-novos.timer
+> systemctl --user list-timers diaria-clarice-novos.timer   # confere o próximo disparo = 14:00 UTC
+> ```
