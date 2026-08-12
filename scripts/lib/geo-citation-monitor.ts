@@ -157,6 +157,15 @@ export const GEO_HUB_QUESTIONS: readonly string[] = [
   // ler a série depois de uma mudança de instrumento no meio dela.
   "Como funciona a regulação de IA no Brasil?",
   "O que é o Marco Legal da IA (PL 2338/23)?",
+  // #4558 (6º hub, mercado-trabalho, sessão develop 260812) — acrescentadas
+  // por `test/geo-hub-questions-cobrem-hubs-4900.test.ts` (guard que exige
+  // 1+ pergunta por hub publicado), MID-SÉRIE como a adição do
+  // brasil-regulacao acima: `Diaria-Geo-Citation-Monitor` já roda
+  // semanalmente desde 07/08/2026. Mesma decisão de não resetar o baseline
+  // sozinho — fica para o editor/coordenador, ver a nota completa na adição
+  // do brasil-regulacao.
+  "Como a IA está mudando o mercado de trabalho?",
+  "Quantas empresas já demitiram citando a IA como motivo?",
 ] as const;
 
 /** Domínio checado nas respostas (sem protocolo/path — substring match). */

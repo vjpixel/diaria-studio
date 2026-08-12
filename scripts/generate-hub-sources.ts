@@ -183,6 +183,92 @@ export const HUB_KEYWORD_PATTERNS: Record<string, RegExp> = {
   // próprio" — candidatos a um hub futuro de soberania/infra, não este.
   "brasil-regulacao":
     /\banpd\b|marco legal( da| de)? (ia\b|inteligencia artificial)|\bmarco de ia\b|\bpl[ -]?\d{3,4}\b|projeto de lei|\bstf\b|congresso nacional|\bcfm\b|\banatel\b|\btse\b|hugo motta|brasil regula|classifica sistemas de ia por risco|manipular ia do tribunal|(?=.*\bcongresso\b)(?=.*\bia\b)|(?=.*\bsenado\b)(?=.*\bia\b)|(?=.*\bcamara\b)(?=.*\bia\b)/i,
+  // #4558 (6º hub, 2º TEMÁTICO transversal — brasil-regulacao foi o 1º).
+  // Tema é o impacto da IA no mercado de trabalho: demissão/corte atribuído
+  // a IA, estudo de exposição de emprego a automação, mudança de critério de
+  // contratação, requalificação de equipe — não "trabalho"/"carreira" como
+  // rótulo de seção genérico de produtividade pessoal (esse já é o assunto
+  // de boa parte de "USE MELHOR", fora do escopo deste hub). Verificado ao
+  // vivo contra os 248 posts confirmados de `data/beehiiv-cache/posts`
+  // (12/08/2026) — 48 edições, 49 manchetes, cada uma lida no CORPO completo
+  // do post (não só o título) antes de entrar aqui:
+  //   - `\bemprego(s)?\b`/`\bdesemprego\b`/`demiss`/`demit` cobrem a maioria
+  //     das manchetes reais ("Estudo de Harvard estima: 92 mi de empregos
+  //     estão em risco", "Meta demite 8 mil para dobrar em IA", "Amodei:
+  //     desemprego pode ser permanente"). `demit`/`demiss` são raiz solta
+  //     (sem `\b` nas duas pontas) de propósito — cobrem "demitir"/
+  //     "demitiu"/"demitido(s)"/"demissão"/"demissões" com uma entrada só;
+  //     nenhuma palavra do corpus real contém essas raízes fora do sentido
+  //     de corte de emprego (auditado).
+  //   - `\btrabalho(s)?\b`/`\btrabalhador(es)?\b` são intencionalmente SEM
+  //     as formas verbais ("trabalhar"/"trabalha"/"trabalhando") — a sonda
+  //     inicial com raiz `trabalh` solta casou "Agora, o Comet consegue
+  //     TRABALHAR em diversas abas" (recurso de navegador, nada a ver com
+  //     mercado de trabalho); restringir ao substantivo elimina esse falso
+  //     positivo sem perder nenhuma manchete real (todas as 13 do corpus que
+  //     usam a raiz `trabalh` num sentido de mercado de trabalho usam a
+  //     forma substantiva: "carga de trabalho", "colega de trabalho",
+  //     "trabalhador demitido", "trabalho analítico", "impacto da IA no
+  //     mercado de trabalho").
+  //   - `\bcort(ar|am|e|es|ando)\b` (corte de vaga/equipe) é deliberadamente
+  //     SEM a forma `corta` (3ª pessoa do singular) — incluir `\bcorta\b`
+  //     casava "DeepSeek CORTA 75% do preço da API" (corte de preço, não de
+  //     emprego). O único caso real que precisa da 3ª pessoa do singular é
+  //     "Atlassian corta 10% da equipe para financiar IA", coberto pela
+  //     âncora literal `corta 10% da equipe` abaixo em vez de generalizar a
+  //     forma verbal e reabrir o falso positivo do preço.
+  //   - `\bcontratacao\b`/`para contratar`/`recontrat` cobrem contratação
+  //     como TEMA (mudança de critério de seleção, RH, recontratação após
+  //     falha de automação) sem casar "OpenAI CONTRATA criador do OpenClaw"
+  //     (uma contratação pontual de indivíduo, história de empresa, não de
+  //     mercado de trabalho) — a forma nua `\bcontrata\b`/`\bcontratar\b`
+  //     foi descartada de propósito por causa desse caso real; a forma "para
+  //     contratar" (não "contrata" sozinho) é o que aparece nas 2 manchetes
+  //     reais que precisam dela ("Nubank exige... PARA CONTRATAR", "RH usa
+  //     automação PARA CONTRATAR e demitir" — esta already casa via `demit`,
+  //     mas a âncora cobre o caso em que só "contratar" apareceria sozinho).
+  //   - `\bvagas?\b`/`\bcarreira\b`/`mercado de trabalho` são substantivo
+  //     solto sem falso positivo detectado no corpus atual (auditado: toda
+  //     ocorrência de "vaga(s)"/"carreira" nas 248 edições é sobre emprego).
+  //   - As 7 âncoras literais finais (`brasil emprega mais`, `rh
+  //     algoritmico`, `entrevistas tecnicas`, `certificados contra o
+  //     apagao`, `aeroportos automatizam tarifas`, `horas por semana
+  //     corrigindo erros`, `candidatos burlam triagem`, `vies ao contratar`)
+  //     são manchetes específicas cujo corpo confirma impacto de mercado de
+  //     trabalho mas cujo TÍTULO não usa nenhum substantivo genérico da
+  //     lista acima — mesmo racional do anchor `/^Meta compra/i` em
+  //     `meta-ai.ts` e das âncoras literais de `brasil-regulacao.ts`:
+  //     "Brasil emprega mais... em cargos que somem" (jovens brasileiros
+  //     admitidos majoritariamente em funções expostas à automação),
+  //     "47,7% de adesão: o RH algorítmico da Serasa" (RH orientado por
+  //     modelo), "Google libera IA em entrevistas técnicas" (mudança de
+  //     critério de seleção técnica), "Tigre e os 200 mil certificados
+  //     contra o apagão" (requalificação de força de trabalho — "apagão de
+  //     competências", no vocabulário da própria matéria), "Aeroportos
+  //     automatizam tarifas com câmeras com IA" (automação elimina função
+  //     administrativa — o corpo cita explicitamente "IA e emprego"), "6
+  //     horas por semana corrigindo erros de ferramentas" (carga de trabalho
+  //     extra que a automação impõe, medida pela Glean), "RH: candidatos
+  //     burlam triagem com prompts" (seção "MERCADO DE TRABALHO" na própria
+  //     edição), "Modelos superam humanos em viés ao contratar" (seção
+  //     "MERCADO" — viés algorítmico de seleção).
+  //   - Overlap deliberado com hubs de EMPRESA já publicados (ex: "Meta
+  //     demite 8 mil para dobrar em IA" casa `meta-ai` E `mercado-trabalho`)
+  //     — legítimo por design (issue #4558: "um hub pode aparecer em mais de
+  //     um painel temático"), não um bug de sobre-casamento.
+  //   - Não incluído de propósito, por ser sobre CAPACIDADE de produto, não
+  //     sobre impacto no mercado de trabalho: "Claude Code supera equipe de
+  //     engenheiros da Google" (claim de desempenho/benchmark, não notícia
+  //     de mercado de trabalho) e "1.134 funcionários da IA pedem freio ao
+  //     setor" (segurança de IA, não emprego) — ambos só apareceriam se a
+  //     raiz solta `equipe`/`funcionari` tivesse entrado no pattern; não
+  //     entrou por causa desses 2 falsos positivos. "Codex vai além do
+  //     código e mira trabalho analítico" ENTROU (via `trabalho`) porque o
+  //     corpo descreve deslocamento real de função ("disputa... para ocupar
+  //     o centro do trabalho intelectual", analistas/consultores como
+  //     público-alvo direto do produto) — mesmo padrão dos demais itens.
+  "mercado-trabalho":
+    /\bemprego(s)?\b|\bdesemprego\b|demiss|demit|\bvagas?\b|mercado de trabalho|\btrabalho(s)?\b|\btrabalhador(es)?\b|\bcarreira\b|\bcontratacao\b|para contratar|vies ao contratar|recontrat|\bcort(ar|am|e|es|ando)\b|corta 10% da equipe|brasil emprega mais|rh algoritmico|entrevistas tecnicas|certificados contra o apagao|aeroportos automatizam tarifas|horas por semana corrigindo erros|candidatos burlam triagem/i,
 };
 
 /** Exportado (#4907) — `scripts/lib/hub-match.ts` reusa esta mesma

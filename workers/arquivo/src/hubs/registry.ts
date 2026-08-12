@@ -16,6 +16,7 @@ import { HUB_HTML_OPENAI_CHATGPT, HUB_LASTMOD_OPENAI_CHATGPT } from "./openai-ch
 import { HUB_HTML_GOOGLE_GEMINI, HUB_LASTMOD_GOOGLE_GEMINI } from "./google-gemini.generated.ts";
 import { HUB_HTML_META_AI, HUB_LASTMOD_META_AI } from "./meta-ai.generated.ts";
 import { HUB_HTML_BRASIL_REGULACAO, HUB_LASTMOD_BRASIL_REGULACAO } from "./brasil-regulacao.generated.ts";
+import { HUB_HTML_MERCADO_TRABALHO, HUB_LASTMOD_MERCADO_TRABALHO } from "./mercado-trabalho.generated.ts";
 
 export const HUB_REGISTRY: Record<string, string> = {
   "anthropic-claude": HUB_HTML_ANTHROPIC_CLAUDE,
@@ -23,6 +24,7 @@ export const HUB_REGISTRY: Record<string, string> = {
   "google-gemini": HUB_HTML_GOOGLE_GEMINI,
   "meta-ai": HUB_HTML_META_AI,
   "brasil-regulacao": HUB_HTML_BRASIL_REGULACAO,
+  "mercado-trabalho": HUB_HTML_MERCADO_TRABALHO,
 };
 
 /**
@@ -40,4 +42,5 @@ export const HUB_LASTMOD: Record<string, string> = {
   "google-gemini": HUB_LASTMOD_GOOGLE_GEMINI,
   "meta-ai": HUB_LASTMOD_META_AI,
   "brasil-regulacao": HUB_LASTMOD_BRASIL_REGULACAO,
+  "mercado-trabalho": HUB_LASTMOD_MERCADO_TRABALHO,
 };
