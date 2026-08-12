@@ -139,6 +139,29 @@ export function buildSystemdUnitFiles(task: ScheduledTaskDefinition, repoRootAbs
     // Equivalente ao StartWhenAvailable do Windows: se a máquina estava
     // desligada/dormindo no horário do disparo, roda assim que possível no
     // próximo boot/wake em vez de pular a execução perdida.
+    //
+    // EFEITO COLATERAL no RE-ARME (#5140, visto ao vivo em 260812): "execução
+    // perdida" inclui o caso em que o HORÁRIO mudou. A regra do systemd é
+    // sobre o CARIMBO, não sobre o relógio: existe
+    // `~/.local/share/systemd/timers/stamp-<unit>.timer`, cujo mtime é o
+    // último disparo REAL, e ao iniciar o timer o systemd dispara na hora se
+    // alguma ocorrência do OnCalendar cai no intervalo (carimbo, agora].
+    // Confirmado ao vivo: stamp mtime == `LastTriggerUSec`.
+    //
+    // Duas consequências que não são óbvias e que a primeira versão deste
+    // comentário errou (achado do code-review da PR #5145):
+    //   - `stop` NÃO consome o carimbo. Adiar o `start` pro dia seguinte não
+    //     evita nada — a ocorrência perdida continua devida e dispara na hora
+    //     do `start`, seja ele quando for.
+    //   - "Rearmar depois do horário novo" é o caso RUIM, não a fuga dele. Foi
+    //     literalmente a sequência do incidente (horário novo 11:00, re-arme
+    //     às 16:00 → disparou na hora).
+    //
+    // Pra task que só lê, o catch-up é ruído; pra `Diaria-Clarice-Novos`, que
+    // manda e-mail e gasta crédito de MillionVerifier, é disparo REAL. As
+    // saídas que funcionam estão na saída de `scripts/setup-systemd-timers.ts`
+    // (rearmar antes da próxima ocorrência; usar o kill switch da task; ou
+    // `touch` no carimbo antes do start).
     "Persistent=true",
     `Unit=${unitName}.service`,
     "",
