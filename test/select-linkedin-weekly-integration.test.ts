@@ -266,6 +266,9 @@ describe("select→render end-to-end (#4489 finding 4) + gap de cache de clique 
     const html = readFileSync(htmlPath, "utf8");
 
     assert.match(html, /<h2>1\. Matéria A: empregos e automação<\/h2>/);
+    // #5109: linha de proveniência "da edição de DD/MM" sobrevive ao
+    // roundtrip real select→render (editionDate vem de ln-selection.json).
+    assert.match(html, /<em>da edição de 27\/07<\/em>/);
     assert.match(html, /<h2>2\. Matéria A Radar: cobertura complementar<\/h2>/);
     assert.match(html, /Use melhor/);
     assert.match(html, /Tutorial X: como usar melhor o Claude Code/);
@@ -344,6 +347,158 @@ describe("#4492: candidato USE MELHOR com maior clique da semana não vira manch
 
   it("o candidato use_melhor de maior taxa vai pro bloco Use Melhor dedicado, não pra manchete", () => {
     assert.equal(selectionJson.useMelhor?.title, "Tutorial imbatível de clique");
+  });
+});
+
+describe("#5109: --picks resolve o pendingGroup fim-a-fim", () => {
+  let root: string;
+
+  function writeFixture(r: string): void {
+    // 1 única edição na janela → headlineCap = 1 (computeHeadlineCap(1)).
+    // Destaque e item de RADAR com taxa IDÊNTICA (2,5%) — empate dentro do
+    // ruído disputando a única vaga: banda de 2 > 1 vaga restante → pendingGroup.
+    writeEdition(
+      r,
+      "260901",
+      [
+        "**DESTAQUE 1 | 💼 MERCADO**",
+        "",
+        "**[Matéria de mercado](https://exemplo.com/materia-mercado)**",
+        "",
+        "Corpo da matéria de mercado.",
+        "",
+        "Por que isso importa:",
+        "",
+        "Explicação.",
+        "",
+        "---",
+        "",
+        "**📡 RADAR**",
+        "",
+        "**[Matéria do radar](https://exemplo.com/materia-radar)**",
+        "Notícia complementar.",
+        "",
+      ].join("\n"),
+    );
+    writeCachePost(r, "post_901", {
+      id: "post_901",
+      status: "confirmed",
+      publish_date: epochFor("260901"),
+      stats: {
+        email: { clicks: 10, unique_opens: 200 },
+        clicks: [
+          { url: "https://exemplo.com/materia-mercado", base_url: "https://exemplo.com/materia-mercado", email: { unique_verified_clicks: 5 } },
+          { url: "https://exemplo.com/materia-radar", base_url: "https://exemplo.com/materia-radar", email: { unique_verified_clicks: 5 } },
+        ],
+      },
+    });
+  }
+
+  after(() => rmSync(root, { recursive: true, force: true }));
+
+  it("sem --picks: headlines fica vazio, pendingGroup traz os 2 candidatos empatados, pendingSlots=1", () => {
+    root = mkTmpRoot();
+    writeFixture(root);
+    process.argv = ["node", "select-linkedin-weekly.ts", "--publish-monday", "260907"];
+    selectMain(root);
+    const selectionPath = join(root, "data/weekly/26w36/_internal/ln-selection.json");
+    const selectionJson = JSON.parse(readFileSync(selectionPath, "utf8"));
+    assert.equal(selectionJson.headlines.length, 0);
+    assert.equal(selectionJson.pendingGroup?.length, 2);
+    assert.equal(selectionJson.pendingSlots, 1);
+    // dica de desempate editorial calculada pro caller exibir — nunca decide.
+    assert.ok(
+      (selectionJson.pendingGroup as Array<{ editorialTiebreakHint: number }>).every(
+        (c) => typeof c.editorialTiebreakHint === "number",
+      ),
+    );
+  });
+
+  it("com --picks apontando pra 1 dos 2 candidatos: headlines finaliza com 1, pendingGroup limpo", () => {
+    process.argv = [
+      "node",
+      "select-linkedin-weekly.ts",
+      "--publish-monday",
+      "260907",
+      "--picks",
+      "https://exemplo.com/materia-radar",
+    ];
+    selectMain(root);
+    const selectionPath = join(root, "data/weekly/26w36/_internal/ln-selection.json");
+    const selectionJson = JSON.parse(readFileSync(selectionPath, "utf8"));
+    assert.equal(selectionJson.headlines.length, 1);
+    assert.equal(selectionJson.headlines[0].title, "Matéria do radar");
+    assert.equal(selectionJson.pendingGroup, null);
+    assert.equal(selectionJson.pendingSlots, 0);
+  });
+
+  it("--picks com contagem errada aborta com exit 2 ANTES de escrever — output em disco fica intacto (a resolução anterior de 1 headline)", () => {
+    const selectionPath = join(root, "data/weekly/26w36/_internal/ln-selection.json");
+    const before = readFileSync(selectionPath, "utf8");
+    mockProcessExit();
+    try {
+      process.argv = [
+        "node",
+        "select-linkedin-weekly.ts",
+        "--publish-monday",
+        "260907",
+        "--picks",
+        "https://exemplo.com/materia-radar,https://exemplo.com/materia-mercado",
+      ];
+      assert.throws(() => selectMain(root), /__mocked_exit__/);
+      assert.equal(exitCode, 2);
+    } finally {
+      restoreProcessExit();
+    }
+    assert.equal(readFileSync(selectionPath, "utf8"), before, "arquivo não deveria ter sido reescrito quando --picks é inválido");
+  });
+
+  it("--picks sem nenhum pendingGroup pendente aborta com exit 2 (janela sem empate — CTOR já decidiu sozinho)", () => {
+    const cleanRoot = mkTmpRoot();
+    try {
+      // Só 1 candidato elegível na janela — sem banda de empate, CTOR decide
+      // sozinho e `pendingGroup` sai `null` já na 1ª passada.
+      writeEdition(
+        cleanRoot,
+        "260901",
+        [
+          "**DESTAQUE 1 | 💼 MERCADO**",
+          "",
+          "**[Matéria única](https://exemplo.com/materia-unica)**",
+          "",
+          "Corpo.",
+          "",
+          "Por que isso importa:",
+          "",
+          "Explicação.",
+          "",
+        ].join("\n"),
+      );
+      writeCachePost(cleanRoot, "post_901b", {
+        id: "post_901b",
+        status: "confirmed",
+        publish_date: epochFor("260901"),
+        stats: {
+          email: { clicks: 5, unique_opens: 100 },
+          clicks: [{ url: "https://exemplo.com/materia-unica", base_url: "https://exemplo.com/materia-unica", email: { unique_verified_clicks: 5 } }],
+        },
+      });
+
+      mockProcessExit();
+      process.argv = [
+        "node",
+        "select-linkedin-weekly.ts",
+        "--publish-monday",
+        "260907",
+        "--picks",
+        "https://exemplo.com/materia-unica",
+      ];
+      assert.throws(() => selectMain(cleanRoot), /__mocked_exit__/);
+      assert.equal(exitCode, 2);
+    } finally {
+      restoreProcessExit();
+      rmSync(cleanRoot, { recursive: true, force: true });
+    }
   });
 });
 

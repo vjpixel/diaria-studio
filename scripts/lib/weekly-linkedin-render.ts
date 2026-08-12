@@ -109,10 +109,19 @@ const CTA_FIM_LABEL = "Assine grátis, é rapidinho →";
 export interface WeeklyLinkedinHeadlineInput {
   /** Título literal (copiado do bloco de origem — nunca reescrito). */
   title: string;
-  /** Corpo literal (parágrafos separados por linha em branco dupla). */
+  /** Corpo — literal (levantado) OU resumo próprio (autoral, #5108), conforme `textOrigin` na seleção. */
   body: string;
-  /** "Por que isso importa" literal — "" se ausente (candidato de seção, não destaque). */
+  /** "Por que isso importa" — "" se ausente (candidato de seção, não destaque). */
   why: string;
+  /**
+   * `AAMMDD` da edição de origem (#5109) — quando presente, renderiza a
+   * linha "da edição de DD/MM" logo abaixo do título, resolvendo o achado
+   * de que a matéria era alcançável só por 2 saltos não sinalizados (abrir
+   * "Edições da semana" pra achar de qual das 5 edições ela veio).
+   * Opcional só pra não quebrar fixtures de teste antigas sem este campo —
+   * `select-linkedin-weekly.ts`/`render-linkedin-weekly.ts` sempre populam.
+   */
+  editionDate?: string;
 }
 
 export interface WeeklyLinkedinUseMelhorInput {
@@ -266,6 +275,13 @@ export function editionLabel(aammdd: string): string {
   return `Edição de ${dd}/${mm}`;
 }
 
+/** Pure: `AAMMDD` → "da edição de DD/MM" — linha de proveniência sob o título de cada manchete (#5109). Texto puro (não linkado — "Sem link por destaque" segue de pé, decisão do #4456). */
+export function headlineOriginLabel(aammdd: string): string {
+  const dd = aammdd.slice(4, 6);
+  const mm = aammdd.slice(2, 4);
+  return `da edição de ${dd}/${mm}`;
+}
+
 export interface WeeklyLinkedinRenderResult {
   html: string;
   warnings: string[];
@@ -321,6 +337,9 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
 
   function pushHeadline(h: WeeklyLinkedinHeadlineInput, n: number): void {
     parts.push(`<h2>${escapeHtml(numberedTitle(n, h.title))}</h2>`);
+    if (h.editionDate) {
+      parts.push(`<p><em>${escapeHtml(headlineOriginLabel(h.editionDate))}</em></p>`);
+    }
     parts.push(paragraphsHtml(h.body));
     if (h.why.trim()) {
       parts.push(`<p><strong>Por que isso importa:</strong> ${escapeHtml(h.why.trim())}</p>`);

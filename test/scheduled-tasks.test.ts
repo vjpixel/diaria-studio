@@ -175,7 +175,9 @@ describe("#5005 — Diaria-Beehiiv-Home-Meta-Check registrada, systemd-only", ()
       t!.steps.map((s) => s.script),
       ["scripts/beehiiv-home-meta-check.ts"],
     );
-    assert.deepEqual(t!.schedule, { kind: "interval", hours: 6 });
+    // #5113: diária 09:35 (mudou de "a cada 6h"; 09:35 e não 09:30 porque
+    // 09:30 colide com Diaria-Hub-Staleness-Check, #5123).
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 9, minute: 35 });
   });
 });
 

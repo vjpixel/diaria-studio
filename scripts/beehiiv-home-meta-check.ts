@@ -1,47 +1,57 @@
 #!/usr/bin/env node
 /**
- * scripts/beehiiv-home-meta-check.ts (#4557)
+ * scripts/beehiiv-home-meta-check.ts (#4557, #5099, #5106, #5112)
  *
  * Smoke-test de runtime: bate `GET https://diar.ia.br/` (home pública — GET
  * simples, sem autenticação, sem API do Beehiiv, sem MCP — qualquer visitante
  * vê o mesmo HTML, isso NÃO é uma ação de publish/schedule/send) e verifica
- * os 3 eixos de drift da issue #4557: `og:title` sem a marca oficial (ou com
- * a grafia legada "Diar.ia"), self-links `href="http://diar.ia.br..."`
- * (deveria ser https), e rótulos residuais em inglês na UI do tema Beehiiv
- * ("Sign Up", "Login", "N min read"). Se algum eixo der drift, alarma o
- * editor por e-mail.
+ * os eixos de drift documentados em `scripts/lib/beehiiv-home-meta-check.ts`:
+ * `og:title` sem a marca oficial (ou com a grafia legada "Diar.ia"),
+ * self-links `href="http://diar.ia.br..."` (deveria ser https), rótulos
+ * residuais em inglês na UI do tema Beehiiv ("Sign Up", "Login", "N min
+ * read"), links pra host legado (#5099), e — desde #5106 — porta explícita
+ * numa URL reader-facing, checado contra a página da edição mais recente
+ * (não a home; ver `findLatestPostUrl`/`evaluatePostPageDrift`). Se algum
+ * eixo der drift, alarma o editor por e-mail — e, desde #5112, garante uma
+ * issue GitHub por achado (criada ou reusada) e comenta/fecha issues cujo
+ * achado deixou de reproduzir.
  *
  * Contexto: a issue #4557 original pede 3 mudanças de PAINEL Beehiiv e diz
  * explicitamente que não é código — é ação manual do editor no painel. O
  * único pedaço que ela autoriza em código é "um teste/guard que detecte
- * regressão de og:title" (generalizado aqui pros 3 eixos igualmente
- * checáveis a partir do HTML público). Sem este guard, uma regressão nesses
- * 3 eixos (ex: o tema Beehiiv resetar config num update, ou o editor mudar
- * algo sem perceber o efeito colateral) fica invisível — ninguém olha a home
- * pública todo dia.
+ * regressão de og:title" (generalizado aqui pros eixos igualmente checáveis
+ * a partir do HTML público). Sem este guard, uma regressão nesses eixos (ex:
+ * o tema Beehiiv resetar config num update, ou o editor mudar algo sem
+ * perceber o efeito colateral) fica invisível — ninguém olha a home pública
+ * todo dia.
  *
  * Ver `scripts/lib/beehiiv-home-meta-check.ts` pra decisão pura
- * (`evaluateHomeMetaDrift`) + extração de metadata + fingerprint/idempotência
- * do alarme.
+ * (`evaluateHomeMetaDrift`/`evaluatePostPageDrift`) + extração de metadata +
+ * fingerprint/idempotência do alarme, e `scripts/lib/alarm-issues.ts` (#5112)
+ * pro helper genérico de criação/dedup/reconciliação de issue por achado.
  *
  * Uso:
- *   npx tsx scripts/beehiiv-home-meta-check.ts               # avalia + persiste + alarma se NOVO drift
- *   npx tsx scripts/beehiiv-home-meta-check.ts --dry-run      # avalia + imprime, NÃO persiste nem alarma
+ *   npx tsx scripts/beehiiv-home-meta-check.ts               # avalia + persiste + alarma se NOVO drift + reconcilia issues
+ *   npx tsx scripts/beehiiv-home-meta-check.ts --dry-run      # avalia + imprime, NÃO persiste/alarma/toca gh
  *   npx tsx scripts/beehiiv-home-meta-check.ts --to email@x   # override do destinatário do alarme
  *
  * Env: `data/.credentials.json` com o scope `gmail.send` (mesmo requisito
  * dos outros alarmes locais deste repo) — só necessário quando há drift pra
  * de fato enviar o e-mail; a checagem HTTP em si não precisa de credencial
- * nenhuma (GET público, sem auth). Não precisa do junction `data/` pra rodar
- * a checagem em si — só pra persistir o estado de idempotência
- * (`data/beehiiv-home-meta-check/state.json`).
+ * nenhuma (GET público, sem auth). `gh` CLI autenticado — só necessário pra
+ * criar/comentar/fechar issue (#5112); sem ele, `ensureAlarmIssue` falha
+ * fail-soft (o e-mail sai assim mesmo, com o motivo — nunca perde o alarme
+ * por falta de `gh`). Não precisa do junction `data/` pra rodar a checagem
+ * em si — só pra persistir o estado de idempotência
+ * (`data/beehiiv-home-meta-check/state.json` + `alarm-issues.json`).
  *
  * Como os outros alarmes locais deste repo (#4320/#4382/#4490/#4534/#4723/
  * #4740/#4750), o registro da task no Task Scheduler e a 1ª execução ao vivo
  * nunca rodaram nesta unidade (worktree isolado, sem `data/.credentials.json`
  * real; e a regra de dispatch overnight #738/#3453 proíbe qualquer chamada de
  * rede real nesta sessão, mesmo sendo GET público de leitura — ver PR body) —
- * validado só via testes com a lógica pura + fetch mockado (sem rede real).
+ * validado só via testes com a lógica pura + fetch/gh mockados (sem rede
+ * real).
  */
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -55,23 +65,44 @@ import { BEEHIIV_BASE_URL } from "./lib/edition-url.ts";
 import {
   extractHomeMeta,
   evaluateHomeMetaDrift,
+  evaluatePostPageDrift,
+  findLatestPostUrl,
   hasHomeMetaDrift,
   computeHomeMetaFingerprint,
   shouldAlarmHomeMetaDrift,
   advanceHomeMetaAlarmState,
   emptyHomeMetaAlarmState,
   buildHomeMetaDriftAlarmEmail,
+  homeMetaFindingIssueKey,
   type HomeMetaAlarmState,
+  type HomeMetaDriftFinding,
+  type HomeMetaFindingIssueRef,
 } from "./lib/beehiiv-home-meta-check.ts";
+import {
+  planAlarmReconciliation,
+  applyAlarmReconciliation,
+  emptyAlarmIssuesState,
+  type AlarmFinding,
+  type AlarmIssuesState,
+  type AlarmPriority,
+} from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_PATH = resolve(ROOT, "data", "beehiiv-home-meta-check", "state.json");
+const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "beehiiv-home-meta-check", "alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[beehiiv-home-meta-check]";
 const FETCH_TIMEOUT_MS = 15_000;
 const HOME_URL = `${BEEHIIV_BASE_URL}/`;
+/** #5112/#5113: a task virou diária (#5113) — 2 execuções consecutivas sem
+ * o achado = 48h antes de fechar automaticamente (não mais 12h, que era
+ * baseado na cadência antiga de 6h). Ver interação documentada na issue
+ * #5113 ("se a #5112 for implementada antes desta, atualizar o comentário
+ * lá pra dizer 48h" — já nasce correto aqui porque implementamos as duas
+ * juntas). */
+const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
-// ─── Estado (idempotência) — mesmo padrão I/O de hub-drift-check.ts ────────
+// ─── Estado (idempotência do E-MAIL) — mesmo padrão I/O de hub-drift-check.ts ─
 
 export function loadState(statePath: string = STATE_PATH): HomeMetaAlarmState {
   if (!existsSync(statePath)) return emptyHomeMetaAlarmState();
@@ -93,6 +124,71 @@ export function saveState(state: HomeMetaAlarmState, statePath: string = STATE_P
   writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
 }
 
+// ─── Estado (dedup/reconciliação de ISSUE por achado, #5112) ──────────────
+// Arquivo separado de STATE_PATH de propósito: idempotência do E-MAIL
+// (acima) e tracking de ISSUE por achado são preocupações independentes —
+// um achado pode continuar tendo o MESMO e-mail suprimido (fingerprint já
+// alarmado) enquanto sua issue segue sendo reconciliada normalmente.
+
+export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmIssuesState {
+  if (!existsSync(statePath)) return emptyAlarmIssuesState();
+  try {
+    const raw = JSON.parse(readFileSync(statePath, "utf8"));
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
+    return emptyAlarmIssuesState();
+  } catch {
+    return emptyAlarmIssuesState();
+  }
+}
+
+export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string = ALARM_ISSUES_STATE_PATH): void {
+  mkdirSync(dirname(statePath), { recursive: true });
+  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
+}
+
+/** Prioridade por eixo (#5112 item 4 — "o check sabe a gravidade dele").
+ * Todos os eixos deste check são `P2` hoje: nenhum é fire (produção
+ * corrompida/leak, que seria P0) nem tem impacto sem workaround (P1) — são
+ * achados reader-facing com correção manual simples no painel/template.
+ * Mapa nasce vazio de propósito (fallback pro default abaixo) — existe pra
+ * já ter o formato certo no dia que um eixo precisar de prioridade
+ * diferente dos outros. */
+const PRIORITY_BY_CHECK: Partial<Record<HomeMetaDriftFinding["check"], AlarmPriority>> = {};
+
+function priorityForCheck(check: HomeMetaDriftFinding["check"]): AlarmPriority {
+  return PRIORITY_BY_CHECK[check] ?? "P2";
+}
+
+/** Converte um achado de drift no `AlarmFinding` genérico que
+ * `scripts/lib/alarm-issues.ts` consome. O `fingerprint` usa a MESMA
+ * fórmula de `homeMetaFindingIssueKey`/`computeHomeMetaFingerprint` por
+ * item (`${check}:${message}`) — é isso que deixa o e-mail casar
+ * `findingOutcomes` de volta contra cada `HomeMetaDriftFinding` sem
+ * precisar de um id separado. */
+function toAlarmFinding(f: HomeMetaDriftFinding): AlarmFinding {
+  return {
+    check: f.check,
+    fingerprint: homeMetaFindingIssueKey(f),
+    title: `[diar.ia.br] drift na home: ${f.check}`,
+    body: [
+      "Achado automático do smoke-test `Diaria-Beehiiv-Home-Meta-Check`",
+      "(`scripts/beehiiv-home-meta-check.ts`).",
+      "",
+      `Eixo: \`${f.check}\``,
+      `Detalhe: ${f.message}`,
+      "",
+      `Home: ${HOME_URL}`,
+      "",
+      "Refs #4557/#5099/#5106 — a correção é ação manual do editor no",
+      "painel/template Beehiiv, não código deste repo. Esta issue é criada",
+      "automaticamente pelo alarme (#5112) e será comentada/fechada sozinha",
+      "quando o achado deixar de reproduzir por 2 execuções consecutivas.",
+    ].join("\n"),
+    labels: ["bug"],
+    priority: priorityForCheck(f.check),
+  };
+}
+
 // ─── Checagem HTTP (I/O, fail-soft) ────────────────────────────────────────
 
 /**
@@ -111,6 +207,32 @@ export async function fetchHomeHtml(
   } catch (e) {
     return { html: null, fetchError: (e as Error).message };
   }
+}
+
+/**
+ * #5106 — busca a página da edição mais recente (achada via
+ * `findLatestPostUrl` sobre o HTML da home já buscado) e avalia o 5º eixo
+ * (`port-in-url`) contra ela. Fail-soft em toda borda: sem link `/p/` na
+ * home, ou falha ao buscar a página do post, retorna `findings: []` com o
+ * motivo logado — nunca bloqueia a checagem da home, que é o núcleo deste
+ * script desde #4557.
+ */
+export async function checkLatestPostPage(
+  homeHtml: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<{ findings: HomeMetaDriftFinding[]; postUrl: string | null }> {
+  const postUrl = findLatestPostUrl(homeHtml, BEEHIIV_BASE_URL);
+  if (!postUrl) {
+    console.log(`${LOG_PREFIX} nenhum link /p/ encontrado na home — eixo port-in-url pulado nesta execução.`);
+    return { findings: [], postUrl: null };
+  }
+  console.log(`${LOG_PREFIX} checando página da edição mais recente: ${postUrl}`);
+  const { html, fetchError } = await fetchHomeHtml(postUrl, fetchFn);
+  if (fetchError || html === null) {
+    console.error(`${LOG_PREFIX} falha ao buscar ${postUrl}: ${fetchError} — eixo port-in-url pulado nesta execução.`);
+    return { findings: [], postUrl };
+  }
+  return { findings: evaluatePostPageDrift(html), postUrl };
 }
 
 // ─── main ───────────────────────────────────────────────────────────────────
@@ -137,13 +259,53 @@ async function main(): Promise<void> {
   }
 
   const extract = extractHomeMeta(html);
-  const findings = evaluateHomeMetaDrift(html, extract);
+  const homeFindings = evaluateHomeMetaDrift(html, extract);
+  const { findings: postFindings } = await checkLatestPostPage(html);
+  const findings = [...homeFindings, ...postFindings];
 
   if (findings.length === 0) {
-    console.log(`${LOG_PREFIX} nenhum drift — og:title, self-links e rótulos EN estão limpos.`);
+    console.log(`${LOG_PREFIX} nenhum drift — todos os eixos monitorados estão limpos.`);
   } else {
     for (const f of findings) {
       console.log(`${LOG_PREFIX} [${f.check}] ${f.message}`);
+    }
+  }
+
+  // #5112 — reconcilia issue por achado ANTES de montar o e-mail (o e-mail
+  // cita a issue de cada achado pendente). Roda TODA execução não-dry-run,
+  // independente de um e-mail novo disparar ou não nesta rodada — é o que
+  // permite detectar "achado sumiu" prontamente (comment) e fechar depois
+  // de CLOSE_ALARM_ISSUE_AFTER_RUNS execuções limpas consecutivas, mesmo
+  // quando o drift ainda pendente é o MESMO já alarmado antes (sem e-mail
+  // novo). Em --dry-run, só PLANEJA (puro, sem tocar `gh`) e imprime.
+  const alarmFindings = findings.map(toAlarmFinding);
+  const alarmState = loadAlarmIssuesState();
+  let issueRefs: Map<string, HomeMetaFindingIssueRef> | undefined;
+
+  if (isDryRun) {
+    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
+    console.log(
+      `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
+        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado.`,
+    );
+  } else {
+    const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+      cwd: ROOT,
+      closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+    });
+    saveAlarmIssuesState(nextState);
+    issueRefs = new Map(
+      findingOutcomes.map((o) => [
+        o.fingerprint,
+        { issueNumber: o.issueNumber, url: o.url, action: o.action, error: o.error },
+      ]),
+    );
+    for (const o of findingOutcomes) {
+      if (o.action === "failed") {
+        console.error(`${LOG_PREFIX} [${o.check}] issue não criada/reusada: ${o.error}`);
+      } else {
+        console.log(`${LOG_PREFIX} [${o.check}] issue #${o.issueNumber} (${o.action}): ${o.url}`);
+      }
     }
   }
 
@@ -155,7 +317,7 @@ async function main(): Promise<void> {
   );
 
   if (shouldAlarmHomeMetaDrift(state, findings)) {
-    const { subject, body } = buildHomeMetaDriftAlarmEmail(findings, extract, HOME_URL);
+    const { subject, body } = buildHomeMetaDriftAlarmEmail(findings, extract, HOME_URL, issueRefs);
     const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     if (isDryRun) {
       console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);

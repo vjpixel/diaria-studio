@@ -134,17 +134,32 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   },
   {
     name: "Diaria-Beehiiv-Home-Meta-Check",
-    description: "smoke-test dos 3 eixos de drift da home Beehiiv (og:title, self-links http, rotulos EN)",
+    description: "smoke-test dos eixos de drift da home Beehiiv (og:title, self-links http, rotulos EN, host legado, porta na URL)",
     steps: [{ key: "check", script: "scripts/beehiiv-home-meta-check.ts" }],
     logPath: "beehiiv-home-meta-check/.meta-check.log",
-    // Mesma cadência dos outros drift-checks de superfície pública
-    // (Diaria-Hub-Drift-Check #4750, Diaria-Robots-Txt-Drift-Check #4910) —
-    // mesma classe de smoke-test (config publicada divergindo do que o
-    // código/o painel pretende), 6h é folga suficiente sem atrasar demais a
-    // detecção de uma regressão que ninguém nota olhando a home todo dia.
-    schedule: { kind: "interval", hours: 6 },
-    // 1ª task registrada depois do cutover systemd da épica #4798.
-    issue: "#4557, #5005",
+    // Diária 09:35 (#5113, decisão do editor 260812 — mudou de "a cada 6h").
+    // O argumento não é custo (4 GETs numa home pública é irrelevante) — é
+    // que latência de detecção ABAIXO da latência de resposta é
+    // desperdiçada: o conserto destes achados é ação manual do editor no
+    // painel Beehiiv/Cloudflare, e ele age de manhã. Detectar drift às 03:00
+    // não conserta nada às 03:00 — as 4 rodadas/dia colapsavam num único
+    // momento de ação por dia. O que este check vigia muda em escala humana
+    // (editor mexe no painel, vendor atualiza tema), não em escala de
+    // incidente. O 6h nunca foi escolhido pra este check em particular — foi
+    // herdado por pattern-match dos outros dois drift-checks de superfície
+    // pública (Diaria-Hub-Drift-Check #4750, Diaria-Robots-Txt-Drift-Check
+    // #4910), que tiveram exatamente o mesmo raciocínio aplicado ao mesmo
+    // tempo. Precedente: Diaria-Postmaster-Spam-Sync saiu de "a cada 12h"
+    // pra diária 12:30 em 10/08 pelo mesmo motivo. Horário 09:35, não 09:30
+    // como a issue #5113 propôs originalmente: 09:30 colide com
+    // Diaria-Hub-Staleness-Check (#5123, registrada depois da issue ter sido
+    // escrita — ver o teste de colisão dedicado dela em
+    // test/scheduled-tasks.test.ts); 5min de folga preserva a intenção
+    // (banda matinal) sem colidir.
+    schedule: { kind: "daily", hour: 9, minute: 35 },
+    // 1ª task registrada depois do cutover systemd da épica #4798, sem
+    // contraparte Windows/.ps1 (#5005).
+    issue: "#4557, #5005, #5113",
   },
   {
     name: "Diaria-Brevo-Diaria-Guardrail",
@@ -313,23 +328,52 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4755",
   },
   {
+    name: "Diaria-LinkedIn-Weekly-Staleness-Alarm",
+    description: "alarme de staleness da newsletter semanal do LinkedIn (ln-{cycle}.json ausente)",
+    steps: [{ key: "alarm", script: "scripts/linkedin-weekly-staleness-alarm.ts" }],
+    logPath: "weekly/.linkedin-staleness-alarm.log",
+    // Domingo 22:00 BRT (#5111): produção normal da skill é domingo (durante
+    // o dia, sem horário fixo — gate humano com 3 textos autorais), então
+    // 22:00 dá folga ampla pro dia inteiro de domingo já ter passado antes
+    // de checar, e ainda sobra a noite inteira + a manhã de segunda (deadline
+    // de publicação ~09:30 BRT) pro editor reagir ao e-mail antes do prazo.
+    // Evita de propósito os 2 outros timers de domingo já registrados
+    // (Diaria-Geo-Citation-Monitor 07:00, Diaria-Geo-Citation-Staleness-Alarm
+    // 10:30) — sem colisão de horário com nenhum dos dois.
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 22, minute: 0 },
+    // Sem `legacySetupScript` de propósito — mesmo caso de
+    // `Diaria-Beehiiv-Home-Meta-Check`/`Diaria-Clarice-Envio-Alarm` (#5005/
+    // #5058): task registrada depois do cutover systemd (épica #4798), sem
+    // contraparte Windows/.ps1 — e nenhuma tarefa `Diaria-*` deve rodar no
+    // Windows de qualquer forma (decisão do editor 260811, #5074).
+    issue: "#5111",
+  },
+  {
     name: "Diaria-Hub-Drift-Check",
     description: "smoke-test de drift entre HUB_META e o Worker arquivo publicado",
     steps: [{ key: "check", script: "scripts/hub-drift-check.ts" }],
     logPath: "hub-drift-check/.drift-check.log",
-    schedule: { kind: "interval", hours: 6 },
-    issue: "#4750",
+    // Diária 10:00 (#5113, decisão do editor 260812 — mudou de "a cada 6h").
+    // Mesmo raciocínio de Diaria-Beehiiv-Home-Meta-Check acima: o conserto
+    // (deploy do Worker/config do hub) é ação manual do editor de manhã —
+    // latência de detecção abaixo da latência de resposta é desperdiçada. O
+    // 6h nunca foi escolhido pra este check em particular, foi herdado por
+    // pattern-match; ver o comentário do home-meta-check pro raciocínio
+    // completo (os dois se citam em círculo desde a origem).
+    schedule: { kind: "daily", hour: 10, minute: 0 },
+    issue: "#4750, #5113",
   },
   {
     name: "Diaria-Robots-Txt-Drift-Check",
     description: "smoke-test do robots.txt SERVIDO pelos Workers de curadoria (bloco gerenciado da Cloudflare + bots fora do esperado)",
     steps: [{ key: "check", script: "scripts/robots-txt-drift-check.ts" }],
     logPath: "robots-txt-drift-check/.drift-check.log",
-    // Mesma cadência de Diaria-Hub-Drift-Check (#4750) — mesma classe de
-    // smoke-test (config publicada divergindo do que o código pretende),
-    // aplicada ao robots.txt em vez dos hubs temáticos.
-    schedule: { kind: "interval", hours: 6 },
-    issue: "#4910",
+    // Diária 10:15 (#5113, decisão do editor 260812 — mudou de "a cada 6h",
+    // mesmo raciocínio do Diaria-Hub-Drift-Check acima: o conserto é ação
+    // manual de dashboard do editor de manhã, detectar de madrugada não
+    // adianta nada).
+    schedule: { kind: "daily", hour: 10, minute: 15 },
+    issue: "#4910, #5113",
   },
   {
     name: "Diaria-Hub-Staleness-Check",
