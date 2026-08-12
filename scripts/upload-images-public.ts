@@ -79,6 +79,13 @@ export function defaultTargetFor(_mode: UploadMode): UploadTarget {
 export interface PublicImagesOutput {
   out_path: string;
   images: Record<string, PublicImage>;
+  /**
+   * #5085: specs `optional` cujo arquivo local está ausente MAS há uma entry
+   * cacheada pré-existente pra essa key — o cache antigo é mantido (mesmo
+   * comportamento de sempre), mas agora de forma AUDITÁVEL em vez de
+   * silenciosa. Vazio na maioria das rodadas.
+   */
+  warnings: string[];
 }
 
 /**
@@ -488,12 +495,32 @@ export async function uploadPublicImages(
     cfConfig = { kvNamespaceId, workerUrl };
   }
 
+  const warnings: string[] = [];
   for (const spec of specs) {
     const imagePath = resolve(editionDir, spec.filename);
     if (!existsSync(imagePath)) {
       // #1701: specs best-effort (d2/d3 no newsletter mode) pulam quando ausentes
       // — não bloqueiam o upload do que o email de fato usa (cover/d1/eia).
-      if (spec.optional) continue;
+      if (spec.optional) {
+        // #5085: se JÁ existe uma entry cacheada pra essa key (upload anterior
+        // teve sucesso), o `continue` abaixo preserva esse cache antigo sem
+        // NENHUMA reverificação — é exatamente esse silêncio que permitiu o
+        // incidente ao vivo da edição 260812 (arquivo local sumiu após um
+        // rename malsucedido sob junction OneDrive, e o cache stale seguiu
+        // sendo servido como se fosse válido). Não bloqueamos o upload (a
+        // maioria dos specs `optional` legitimamente nunca teve upload nenhum
+        // — `existing[spec.key]` ausente é o caso normal), mas tornamos o
+        // reuse do cache stale AUDITÁVEL em vez de silencioso.
+        if (existing[spec.key]) {
+          warnings.push(
+            `${spec.key} (${spec.filename}): arquivo local ausente, mas 06-public-images.json ` +
+              `tem uma entry cacheada de upload anterior — mantendo essa URL antiga SEM revalidar ` +
+              `hash/existência. Confirme que o arquivo não sumiu por engano (ex: reorder-destaques.ts ` +
+              `sob sync do OneDrive, #5085) antes de publicar.`,
+          );
+        }
+        continue;
+      }
       throw new Error(`Imagem não encontrada: ${imagePath}`);
     }
     const mime = mimeTypeFor(spec.filename);
@@ -558,7 +585,11 @@ export async function uploadPublicImages(
     "utf8",
   );
 
-  return { out_path: cachePath, images };
+  for (const w of warnings) {
+    console.warn(`⚠️  upload-images-public: ${w}`);
+  }
+
+  return { out_path: cachePath, images, warnings };
 }
 
 /**

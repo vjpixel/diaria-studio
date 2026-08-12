@@ -9,7 +9,10 @@
  *   - `_internal/intentional-error.json` (campo `location`, #3222 — não mora
  *     mais no frontmatter de `02-reviewed.md`)
  *   - `_internal/02-d{N}-prompt.md` (rename files)
- *   - `04-d{N}-*.jpg` (rename files — 2x1 e 1x1)
+ *   - `04-d{N}-*.jpg` (rename files — 2x1, 1x1, 4x5, 4x5-nativo, master; #5085
+ *     cobriu 4x5-nativo, que o regex antigo excluía por causa do hífen no
+ *     sufixo, e adicionou verificação `existsSync` pós-rename — ver
+ *     `renameSyncVerified`)
  *   - `03-social.md` (sections `## d{N}` em cada plataforma)
  *
  * Outputs a JSON com lista de arquivos modificados. NÃO re-uploada imagens
@@ -61,6 +64,52 @@ import {
 import { checkDestaqueMaxChars } from "./lib/lint-checks/destaque-chars.ts"; // #3982
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * Funções de rename/existsSync injetáveis pra teste (#5085, mesmo padrão de
+ * `PlanFileReaders` em `overnight-statusline.ts`).
+ */
+export interface RenameFileDeps {
+  renameSync: typeof renameSync;
+  existsSync: typeof existsSync;
+}
+
+const defaultRenameFileDeps: RenameFileDeps = { renameSync, existsSync };
+
+/**
+ * Rename com verificação pós-rename (#5085 — achado ao vivo edição 260812).
+ *
+ * `renameSync` retornar sem lançar NÃO garante que o arquivo de destino
+ * ainda existe momentos depois: numa pasta sincronizada por um provedor tipo
+ * OneDrive (`data/` é uma directory junction), uma sequência de vários
+ * renames rápidos em 1-2s pode disparar resolução de conflito do provedor de
+ * sync que descarta uma das versões "perdedoras" DEPOIS que a chamada já
+ * retornou com sucesso do ponto de vista do Node — não há como detectar isso
+ * na própria chamada de `renameSync`.
+ *
+ * Verificar `existsSync(to)` logo em seguida fecha essa lacuna: se o destino
+ * não existe, abortamos com erro claro em vez de prosseguir silenciosamente
+ * pro próximo rename da sequência. O bug real: o grupo inteiro de
+ * `04-d2-*.jpg` sumiu do disco (e do OneDrive) sem nenhum sinal de erro no
+ * pipeline — pior que um placeholder óbvio, porque a publicação teria saído
+ * com a imagem de uma edição antiga, não uma imagem ausente.
+ */
+export function renameSyncVerified(
+  from: string,
+  to: string,
+  deps: RenameFileDeps = defaultRenameFileDeps,
+): void {
+  deps.renameSync(from, to);
+  if (!deps.existsSync(to)) {
+    throw new Error(
+      `reorder-destaques: rename ${from} → ${to} retornou sem erro mas o arquivo de destino ` +
+        `não existe no disco logo depois. Provável conflito de sync (OneDrive) descartando uma ` +
+        `versão "perdedora" durante a sequência de renames. Abortando para evitar publicação ` +
+        `com imagem ausente/errada — reexecute reorder-destaques.ts depois de confirmar que o ` +
+        `sync terminou (ou restaure os arquivos a partir do OneDrive antes de retentar).`,
+    );
+  }
+}
 
 export interface CliArgs {
   edition: string;
@@ -289,9 +338,55 @@ export function reorderSocialMd(md: string, newOrder: number[]): string {
 }
 
 /**
+ * Reverte best-effort um conjunto de renames "original → TMP{N}-..." já
+ * aplicados quando a sequência de 2 passos (original→TMP→final) abortar no
+ * meio (#5087 self-review finding do #5085 — sem rollback, um
+ * `renameSyncVerified` que lança no meio da sequência deixava arquivos
+ * `TMP{N}-*` órfãos no disco, exigindo que o editor os identificasse e
+ * renomeasse manualmente de volta).
+ *
+ * Best-effort de propósito: usada dentro de um `catch`, então NUNCA lança —
+ * se o próprio rollback falhar (ex: o TMP também já sumiu, mesma classe de
+ * conflito de sync que motivou `renameSyncVerified` em primeiro lugar), a
+ * falha é engolida em silêncio. O objetivo é reduzir lixo órfão, não
+ * garantir reversão perfeita — o erro original (já capturado pelo caller)
+ * é o que de fato chega ao editor.
+ */
+function rollbackTmpRenames(
+  dir: string,
+  applied: Array<{ tmpName: string; originalName: string }>,
+  deps: RenameFileDeps,
+): void {
+  for (const { tmpName, originalName } of applied) {
+    try {
+      const tmpPath = join(dir, tmpName);
+      if (deps.existsSync(tmpPath)) {
+        deps.renameSync(tmpPath, join(dir, originalName));
+      }
+    } catch {
+      // best-effort — nunca lançar por cima do erro original do caller.
+    }
+  }
+}
+
+/**
  * Renomeia arquivos de imagem 04-d{N}-*.jpg conforme newOrder.
  * Estratégia: usar nomes temporários pra evitar colisão (renomeia
  * 04-d1-* → 04-tmp-d1-*, depois 04-tmp-d1-* → 04-d{newPos}-*).
+ *
+ * #5085: regex de match do sufixo aceita hífen (`[a-z0-9-]+`, não só
+ * `[a-z0-9]+`) — sem isso, `04-d{N}-4x5-nativo.jpg` (arte nativa gerada por
+ * `image-generate.ts`) nunca era pego pelo filtro e ficava com o número de
+ * destaque ERRADO após um reorder, silenciosamente (nenhum erro, só o
+ * arquivo órfão do slot antigo).
+ *
+ * #5085: cada rename passa por `renameSyncVerified` (existsSync pós-rename),
+ * que lança se o destino não existir — ver docstring de `renameSyncVerified`.
+ *
+ * #5087 (self-review finding do #5085): se `renameSyncVerified` lançar no
+ * MEIO da sequência de 2 passos, os renames "original → TMP" já aplicados
+ * até ali são revertidos best-effort (`rollbackTmpRenames`) antes de
+ * repropagar o erro — evita órfãos `04-TMP{N}-*` no disco.
  *
  * Retorna lista de renames aplicados.
  */
@@ -299,44 +394,58 @@ export function renameDestaqueImages(
   editionDir: string,
   newOrder: number[],
   dryRun: boolean,
+  deps: RenameFileDeps = defaultRenameFileDeps,
 ): Array<{ from: string; to: string }> {
   const renames: Array<{ from: string; to: string }> = [];
-  if (!existsSync(editionDir)) return renames;
+  if (!deps.existsSync(editionDir)) return renames;
   const files = readdirSync(editionDir).filter((f) =>
-    /^04-d[123]-[a-z0-9]+\.(?:jpg|png|jpeg)$/i.test(f),
+    /^04-d[123]-[a-z0-9-]+\.(?:jpg|png|jpeg)$/i.test(f),
   );
   // Build oldN → newN map
   const oldToNew = new Map<number, number>();
   for (let i = 0; i < newOrder.length; i++) {
     oldToNew.set(newOrder[i], i + 1);
   }
-  // 2-step rename pra evitar colisão
-  for (const f of files) {
-    const m = f.match(/^04-d([123])-(.+)$/);
-    if (!m) continue;
-    const oldN = parseInt(m[1], 10);
-    const newN = oldToNew.get(oldN);
-    if (!newN || newN === oldN) continue;
-    const tmpName = f.replace(`04-d${oldN}-`, `04-TMP${oldN}-`);
-    if (!dryRun) {
-      renameSync(join(editionDir, f), join(editionDir, tmpName));
-    }
-    renames.push({ from: f, to: tmpName });
-  }
-  // Step 2: tmp → final
-  if (!dryRun) {
-    const tmpFiles = readdirSync(editionDir).filter((f) =>
-      /^04-TMP[123]-[a-z0-9]+\.(?:jpg|png|jpeg)$/i.test(f),
-    );
-    for (const f of tmpFiles) {
-      const m = f.match(/^04-TMP([123])-(.+)$/);
+  // Rastreia "original → TMP" já aplicados nesta invocação — usado pro
+  // rollback best-effort (#5087) se algum rename subsequente da sequência
+  // abortar. Entradas são removidas assim que o passo 2 promove o TMP a
+  // nome final (deixa de ser candidato a rollback).
+  const tmpApplied: Array<{ tmpName: string; originalName: string }> = [];
+  try {
+    // 2-step rename pra evitar colisão
+    for (const f of files) {
+      const m = f.match(/^04-d([123])-(.+)$/);
       if (!m) continue;
       const oldN = parseInt(m[1], 10);
-      const newN = oldToNew.get(oldN)!;
-      const finalName = `04-d${newN}-${m[2]}`;
-      renameSync(join(editionDir, f), join(editionDir, finalName));
-      renames.push({ from: f, to: finalName });
+      const newN = oldToNew.get(oldN);
+      if (!newN || newN === oldN) continue;
+      const tmpName = f.replace(`04-d${oldN}-`, `04-TMP${oldN}-`);
+      if (!dryRun) {
+        renameSyncVerified(join(editionDir, f), join(editionDir, tmpName), deps);
+        tmpApplied.push({ tmpName, originalName: f });
+      }
+      renames.push({ from: f, to: tmpName });
     }
+    // Step 2: tmp → final
+    if (!dryRun) {
+      const tmpFiles = readdirSync(editionDir).filter((f) =>
+        /^04-TMP[123]-[a-z0-9-]+\.(?:jpg|png|jpeg)$/i.test(f),
+      );
+      for (const f of tmpFiles) {
+        const m = f.match(/^04-TMP([123])-(.+)$/);
+        if (!m) continue;
+        const oldN = parseInt(m[1], 10);
+        const newN = oldToNew.get(oldN)!;
+        const finalName = `04-d${newN}-${m[2]}`;
+        renameSyncVerified(join(editionDir, f), join(editionDir, finalName), deps);
+        const idx = tmpApplied.findIndex((a) => a.tmpName === f);
+        if (idx >= 0) tmpApplied.splice(idx, 1);
+        renames.push({ from: f, to: finalName });
+      }
+    }
+  } catch (e) {
+    rollbackTmpRenames(editionDir, tmpApplied, deps);
+    throw e;
   }
   return renames;
 }
@@ -363,14 +472,22 @@ export function deriveTituloSubtitulo(
 
 /**
  * Renomeia arquivos `_internal/02-d{N}-prompt.md` e `_internal/02-d{N}-sd-prompt.json`.
+ *
+ * #5085: mesma proteção `renameSyncVerified` (existsSync pós-rename) do
+ * `renameDestaqueImages` — se um provedor de sync descartar o destino entre
+ * o `renameSync` e a próxima operação, aborta em vez de seguir silenciosamente.
+ *
+ * #5087 (self-review finding do #5085): mesmo rollback best-effort de
+ * `renameDestaqueImages` (`rollbackTmpRenames`) pra órfãos `02-TMP{N}-*`.
  */
 export function renameDestaquePrompts(
   internalDir: string,
   newOrder: number[],
   dryRun: boolean,
+  deps: RenameFileDeps = defaultRenameFileDeps,
 ): Array<{ from: string; to: string }> {
   const renames: Array<{ from: string; to: string }> = [];
-  if (!existsSync(internalDir)) return renames;
+  if (!deps.existsSync(internalDir)) return renames;
   const files = readdirSync(internalDir).filter((f) =>
     /^02-d[123]-(?:prompt\.md|sd-prompt\.json|draft\.md)$/.test(f),
   );
@@ -378,32 +495,41 @@ export function renameDestaquePrompts(
   for (let i = 0; i < newOrder.length; i++) {
     oldToNew.set(newOrder[i], i + 1);
   }
-  // 2-step rename
-  for (const f of files) {
-    const m = f.match(/^02-d([123])-(.+)$/);
-    if (!m) continue;
-    const oldN = parseInt(m[1], 10);
-    const newN = oldToNew.get(oldN);
-    if (!newN || newN === oldN) continue;
-    const tmpName = f.replace(`02-d${oldN}-`, `02-TMP${oldN}-`);
-    if (!dryRun) {
-      renameSync(join(internalDir, f), join(internalDir, tmpName));
-    }
-    renames.push({ from: f, to: tmpName });
-  }
-  if (!dryRun) {
-    const tmpFiles = readdirSync(internalDir).filter((f) =>
-      /^02-TMP[123]-/.test(f),
-    );
-    for (const f of tmpFiles) {
-      const m = f.match(/^02-TMP([123])-(.+)$/);
+  const tmpApplied: Array<{ tmpName: string; originalName: string }> = [];
+  try {
+    // 2-step rename
+    for (const f of files) {
+      const m = f.match(/^02-d([123])-(.+)$/);
       if (!m) continue;
       const oldN = parseInt(m[1], 10);
-      const newN = oldToNew.get(oldN)!;
-      const finalName = `02-d${newN}-${m[2]}`;
-      renameSync(join(internalDir, f), join(internalDir, finalName));
-      renames.push({ from: f, to: finalName });
+      const newN = oldToNew.get(oldN);
+      if (!newN || newN === oldN) continue;
+      const tmpName = f.replace(`02-d${oldN}-`, `02-TMP${oldN}-`);
+      if (!dryRun) {
+        renameSyncVerified(join(internalDir, f), join(internalDir, tmpName), deps);
+        tmpApplied.push({ tmpName, originalName: f });
+      }
+      renames.push({ from: f, to: tmpName });
     }
+    if (!dryRun) {
+      const tmpFiles = readdirSync(internalDir).filter((f) =>
+        /^02-TMP[123]-/.test(f),
+      );
+      for (const f of tmpFiles) {
+        const m = f.match(/^02-TMP([123])-(.+)$/);
+        if (!m) continue;
+        const oldN = parseInt(m[1], 10);
+        const newN = oldToNew.get(oldN)!;
+        const finalName = `02-d${newN}-${m[2]}`;
+        renameSyncVerified(join(internalDir, f), join(internalDir, finalName), deps);
+        const idx = tmpApplied.findIndex((a) => a.tmpName === f);
+        if (idx >= 0) tmpApplied.splice(idx, 1);
+        renames.push({ from: f, to: finalName });
+      }
+    }
+  } catch (e) {
+    rollbackTmpRenames(internalDir, tmpApplied, deps);
+    throw e;
   }
   return renames;
 }
@@ -452,7 +578,28 @@ function main(): void {
 
   const modified: FilesModified = { rewritten: [], renamed: [] };
 
-  // 1. JSONs canônicos
+  // 1. Image files + 2. Prompts — RENOMEADOS ANTES de qualquer escrita de
+  // texto (#5087 self-review finding do #5085 reordena esta seção pra cá,
+  // era o passo 4/5 originais, executado DEPOIS dos writes de texto).
+  //
+  // Motivo: `renameDestaqueImages`/`renameDestaquePrompts` são as únicas
+  // operações desta função capazes de abortar no meio de uma sequência
+  // (`renameSyncVerified` lança em conflito de sync — ver docstring).
+  // Rodando-as primeiro, um abort aqui propaga com o disco AINDA no estado
+  // pré-reorder para JSON/md/social — nunca deixa texto já reordenado à
+  // frente de imagens só parcialmente reordenadas (estado misto). As
+  // funções não dependem de nada computado pelas etapas de texto abaixo
+  // (só de `editionDir`/`internalDir`/`args.newOrder`/`args.dryRun`), então
+  // a reordenação é puramente de sequenciamento — sem mudança de
+  // comportamento em nenhum dos dois lados.
+  modified.renamed.push(
+    ...renameDestaqueImages(editionDir, args.newOrder, args.dryRun),
+  );
+  modified.renamed.push(
+    ...renameDestaquePrompts(internalDir, args.newOrder, args.dryRun),
+  );
+
+  // 3. JSONs canônicos
   for (const f of ["01-approved.json", "01-approved-capped.json"]) {
     const path = resolve(internalDir, f);
     if (processJsonFile(path, args.newOrder, args.dryRun)) {
@@ -460,7 +607,7 @@ function main(): void {
     }
   }
 
-  // 2. 02-reviewed.md
+  // 3b. 02-reviewed.md
   const mdPath = resolve(editionDir, "02-reviewed.md");
   // Conteúdo pós-reorder de 02-reviewed.md (em memória, mesmo em --dry-run) —
   // usado pelos passos 2c (#3980) e pela validação max-chars (#3982) abaixo,
@@ -478,7 +625,7 @@ function main(): void {
     reorderedReviewedMd = md;
   }
 
-  // 2b. _internal/intentional-error.json (#3222 — location não mora mais no
+  // 3c. _internal/intentional-error.json (#3222 — location não mora mais no
   // frontmatter de 02-reviewed.md).
   const intentionalErrorPath = intentionalErrorJsonPath(editionDir);
   const intentionalErrorRecord = loadIntentionalErrorJson(intentionalErrorPath);
@@ -493,7 +640,7 @@ function main(): void {
     }
   }
 
-  // 2c. TÍTULO/SUBTÍTULO (#3980): re-derivar do D1/D2/D3 JÁ REORDENADOS.
+  // 3d. TÍTULO/SUBTÍTULO (#3980): re-derivar do D1/D2/D3 JÁ REORDENADOS.
   // Reusa `deriveTituloSubtitulo` (→ insert-titulo-subtitulo.ts, #916) — não
   // duplica a lógica de extração/render. Idempotente: no-op se o bloco já
   // reflete a ordem atual (ex: reorder de um campo que não afeta o header,
@@ -515,7 +662,7 @@ function main(): void {
     }
   }
 
-  // 3. 03-social.md
+  // 4. 03-social.md
   const socialPath = resolve(editionDir, "03-social.md");
   if (existsSync(socialPath)) {
     const md = readFileSync(socialPath, "utf8");
@@ -525,16 +672,6 @@ function main(): void {
       modified.rewritten.push(socialPath);
     }
   }
-
-  // 4. Image files
-  modified.renamed.push(
-    ...renameDestaqueImages(editionDir, args.newOrder, args.dryRun),
-  );
-
-  // 5. Prompts
-  modified.renamed.push(
-    ...renameDestaquePrompts(internalDir, args.newOrder, args.dryRun),
-  );
 
   // #3982: validação PÓS-reorder do limite de chars por slot (D1=1200,
   // D2/D3=1000 — scripts/lib/lint-checks/destaque-chars.ts, mesmo rubrico de
