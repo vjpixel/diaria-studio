@@ -96,7 +96,7 @@ import {
 } from "./lib/mensal/monthly-paths.ts";
 import { datePartsInTz, toAammdd, BRT_TIMEZONE, type DateParts } from "./lib/next-edition-date.ts";
 import { registerReport } from "./studio-ui/studio-reports.ts";
-import { waveKey, scheduledAtForDate, type WaveProposal, type WaveState } from "./lib/clarice-wave-plan.ts";
+import { waveKey, waveDateFragment, scheduledAtForDate, type WaveProposal, type WaveState } from "./lib/clarice-wave-plan.ts";
 import { proposeNextVolume, brtDayKey, type NextVolumeDecision } from "./lib/clarice-envio-policy.ts";
 import type { RiskSnapshot } from "./clarice-envio-risk.ts";
 import type { InvocationSummary } from "./clarice-schedule-group.ts";
@@ -533,7 +533,8 @@ export function detectMissedWaveToday(
 export interface ExistingWaveForSendDate {
   key: string;
   status: string;
-  scheduledAt: string;
+  /** `null` pra onda em DRAFT (#5064) — casada só pelo fragmento de data da `key`. */
+  scheduledAt: string | null;
 }
 
 /**
@@ -554,26 +555,44 @@ export interface ExistingWaveForSendDate {
  * (`queued`, `sent`, `in_process`, ...) conta como "já existe" — melhor
  * parar e exigir reconciliação manual do que arriscar dobrar o volume.
  *
- * Limite conhecido: `/api/campaigns?includeScheduled=1` só devolve
- * `sent`+`queued` (nunca `draft` — ver `buildCampaignsResponse` no Worker),
- * então uma onda PARCIALMENTE montada onde só o `--create` rodou (campanha
- * ainda "draft", `--schedule` não chegou a rodar — ver "ONDA PARCIALMENTE
- * MONTADA" no Passo 7 abaixo) fica INVISÍVEL pra este guard. Não é uma
- * lacuna nova deste guard — é o mesmo estado que o comentário do Passo 7 já
- * documenta como exigindo reconciliação manual; este guard cobre
- * especificamente o caso que a nota do #5058 descreve (onda `queued`/`sent`
- * dobrando o volume), não o caso "draft" órfão, que precisa de outro
- * mecanismo se vier a importar.
+ * **Onda em DRAFT (#5064, fecha o limite conhecido do #5058).**
+ * `/api/campaigns?includeScheduled=1` só devolve `sent`+`queued` (nunca
+ * `draft` — ver `buildCampaignsResponse` no Worker), então uma onda
+ * PARCIALMENTE montada onde só o `--create` rodou (campanha ainda "draft",
+ * `--schedule` não chegou a rodar — ver "ONDA PARCIALMENTE MONTADA" no Passo
+ * 7 abaixo) nunca tem `scheduledAt` (a Brevo só grava isso quando
+ * `--schedule` faz o PUT) — ficaria invisível pro match por data acima.
+ * `clarice-plan-wave.ts` fecha esse buraco buscando campanhas `draft` DIRETO
+ * na Brevo (`fetchDraftCampaigns`, sem depender do dashboard) e fundindo com
+ * sent/queued antes de `summarizeCycleSends`; aqui, uma onda sem
+ * `scheduledAt` cai no fallback: casa pelo FRAGMENTO DE DATA embutido na
+ * própria `key` (`d{N}-{dia}{DD}`, ver `waveDateFragment`) — a mesma parte
+ * que `waveKey` grava na criação, independente de a campanha já ter sido
+ * agendada. Restrito a `status === "draft"` de propósito (nunca um
+ * fallback geral pra "sem scheduledAt") — `sent`/`queued` sempre têm
+ * `scheduledAt` (ou `sentDate`, que `summarizeCycleSends` usa no lugar), só
+ * uma campanha genuinamente nunca agendada nem enviada chega aqui sem data.
  */
 export function detectExistingWaveForSendDate(
   waves: ReadonlyArray<Pick<WaveState, "key" | "status" | "scheduledAt">>,
   sendDate: string,
 ): ExistingWaveForSendDate[] {
   const matches: ExistingWaveForSendDate[] = [];
+  const fragment = waveDateFragment(sendDate);
+  const fragmentRe = new RegExp(`-${fragment}($|-)`);
   for (const w of waves) {
-    if (!w.scheduledAt || w.status === "suspended") continue;
-    if (brtDayKey(w.scheduledAt) !== sendDate) continue;
-    matches.push({ key: w.key, status: w.status, scheduledAt: w.scheduledAt });
+    if (w.status === "suspended") continue;
+    if (w.scheduledAt) {
+      if (brtDayKey(w.scheduledAt) === sendDate) {
+        matches.push({ key: w.key, status: w.status, scheduledAt: w.scheduledAt });
+      }
+      continue;
+    }
+    // #5064 — sem scheduledAt: só cai no fallback por fragmento de data se
+    // for genuinamente DRAFT (ver docstring acima pro porquê da restrição).
+    if (w.status === "draft" && fragmentRe.test(w.key)) {
+      matches.push({ key: w.key, status: w.status, scheduledAt: null });
+    }
   }
   return matches;
 }
@@ -682,7 +701,7 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
       );
     }
 
-    // --- Guard de onda JÁ EXISTENTE pra `sendDate` (#5058, nota relacionada) ---
+    // --- Guard de onda JÁ EXISTENTE pra `sendDate` (#5058; drafts #5064) ---
     // `detectMissedWaveToday` só cobre HOJE (onda que deveria ter saído e não
     // saiu); este é o caso oposto — uma onda que JÁ existe (criada/agendada/
     // enviada) pra AMANHÃ, a data que esta MESMA rodada está prestes a
@@ -694,10 +713,14 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
     // a onda já enfileirada (ainda não propagada ao store local).
     const existingForSendDate = detectExistingWaveForSendDate(proposal.state.waves, sendDate);
     if (existingForSendDate.length > 0) {
+      const anyDraft = existingForSendDate.some((w) => w.status === "draft");
       report.note(
         `⚠️  ONDA JÁ EXISTE pra ${sendDate}: ` +
           existingForSendDate.map((w) => `"${w.key}" (status="${w.status}")`).join(", ") +
-          " — não vou montar uma 2ª onda pro mesmo dia (rodada concorrente/retry já cobriu esta data). Nada a fazer nesta rodada.",
+          " — não vou montar uma 2ª onda pro mesmo dia (rodada concorrente/retry já cobriu esta data). Nada a fazer nesta rodada." +
+          (anyDraft
+            ? " (#5064: ao menos 1 onda em DRAFT — provável --create sem --schedule de uma rodada anterior; reconcilie manualmente: rode --schedule pra essa key ou cancele o draft antes da próxima janela.)"
+            : ""),
       );
       lockPath && releaseEnvioLock(lockPath);
       lockPath = null;

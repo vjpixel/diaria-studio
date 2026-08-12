@@ -442,6 +442,54 @@ export async function fetchCommittedCampaignListIds(apiKey: string): Promise<Set
 }
 
 // ---------------------------------------------------------------------------
+// #5064 — campanhas DRAFT (rascunho: `--create` rodou, `--schedule` ainda
+// não). `/api/campaigns?includeScheduled=1` do dashboard (usado por
+// clarice-plan-wave.ts pra montar `state.waves`) só devolve `sent`+`queued`
+// (ver `buildCampaignsResponse` no Worker) — uma onda PARCIALMENTE MONTADA
+// fica invisível pro guard `detectExistingWaveForSendDate` em
+// clarice-envio-run.ts. Igual a fetchQueuedCampaignListIds/
+// fetchSentCampaignListIds, mas devolvendo os OBJETOS completos (não só
+// list ids): o consumidor precisa de `name`+`recipients` pra que
+// summarizeCycleSends (clarice-wave-plan.ts) consiga atribuir a campanha a
+// uma onda/ciclo, exatamente como já faz pra sent/queued.
+// ---------------------------------------------------------------------------
+
+export interface BrevoDraftCampaignRaw {
+  id?: number;
+  name?: string;
+  subject?: string;
+  status?: string;
+  sentDate?: string | null;
+  scheduledAt?: string | null;
+  createdAt?: string;
+  recipients?: { lists?: number[] };
+}
+interface BrevoDraftCampaignsResponse {
+  campaigns?: BrevoDraftCampaignRaw[];
+}
+
+/**
+ * `GET /v3/emailCampaigns?status=draft`, paginado — todas as campanhas
+ * Brevo em rascunho. Chamada direta à Brevo (mesmo padrão de
+ * `fetchCampaignListIdsByStatus` acima): a key já está disponível
+ * localmente (`BREVO_CLARICE_API_KEY`), então não precisa de nenhum
+ * endpoint novo no Worker `brevo-dashboard` pra fechar este guard.
+ */
+export async function fetchDraftCampaigns(apiKey: string): Promise<BrevoDraftCampaignRaw[]> {
+  const out: BrevoDraftCampaignRaw[] = [];
+  let offset = 0;
+  const limit = 50;
+  for (;;) {
+    const { body } = await brevoGet(apiKey, `/emailCampaigns?status=draft&limit=${limit}&offset=${offset}`);
+    const campaigns = (body as BrevoDraftCampaignsResponse)?.campaigns ?? [];
+    out.push(...campaigns);
+    if (campaigns.length < limit) break;
+    offset += limit;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // brevoSendNow (#4347 G7/D7) — dispara uma campanha IMEDIATAMENTE, sem
 // agendamento. `clarice-schedule-group.ts` (`--send-now`) usa isto no lugar
 // do `--schedule` (PUT scheduledAt) quando a janela é "agora" — laço

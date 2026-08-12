@@ -117,6 +117,19 @@ export function brtDayLabel(date: string): string {
 }
 
 /**
+ * Fragmento `{dia}{DD}` (ex: `qui06`) embutido em toda `waveKey` — extraído
+ * pra cá (#5064) porque o guard de onda em DRAFT
+ * (`detectExistingWaveForSendDate` em clarice-envio-run.ts) precisa comparar
+ * este MESMO fragmento contra a chave de uma campanha sem `scheduledAt`
+ * (rascunho: `--create` rodou, `--schedule` ainda não — só a data embutida
+ * na key identifica pra qual dia ela foi montada).
+ */
+export function waveDateFragment(date: string): string {
+  const dd = ISO_DATE_RE.exec(date)![3];
+  return `${brtDayLabel(date)}${dd}`;
+}
+
+/**
  * Chave determinística de uma onda: `d{N}-{dia}{DD}` (ex: `d6-qui06`) —
  * mesmo formato que o ciclo 2607-08 usou à mão (`d1-sab01` … `d5-qua05`),
  * agora GERADO. `cell` sufixa `-A`/`-B`/`-C` quando a onda tem teste, o que
@@ -127,8 +140,7 @@ export function waveKey(n: number, date: string, cell?: "A" | "B" | "C"): string
   if (!Number.isInteger(n) || n <= 0) {
     throw new Error(`número de onda inválido: ${n} — esperado inteiro > 0.`);
   }
-  const dd = ISO_DATE_RE.exec(date)![3];
-  const base = `d${n}-${brtDayLabel(date)}${dd}`;
+  const base = `d${n}-${waveDateFragment(date)}`;
   return cell ? `${base}-${cell}` : base;
 }
 
@@ -196,6 +208,30 @@ export interface CycleSendState {
 export function groupKeyFromCampaignName(name: string): string | null {
   const m = /grupo:([\w-]+)\s*$/i.exec(name.trim());
   return m ? m[1] : null;
+}
+
+/**
+ * #5064 — funde campanhas SENT/QUEUED (dashboard, `/api/campaigns?includeScheduled=1`)
+ * com campanhas DRAFT (Brevo direto, `fetchDraftCampaigns` em brevo-client.ts)
+ * num único array, pra `summarizeCycleSends` enxergar onda PARCIALMENTE
+ * MONTADA (`--create` rodou, `--schedule` não) junto do resto. `summarizeCycleSends`
+ * já lida com campanha sem `scheduledAt`/`sentDate` (vira `WaveState.scheduledAt:
+ * null`) — nenhuma mudança nela foi necessária, só dar-lhe visibilidade da
+ * campanha. Dedup por `id` é defensivo (uma campanha não deveria aparecer em
+ * dois status ao mesmo tempo), nunca contar a mesma campanha duas vezes.
+ */
+export function mergeCampaignSources(
+  sentOrQueued: ReadonlyArray<BrevoCampaign>,
+  draft: ReadonlyArray<BrevoCampaign>,
+): BrevoCampaign[] {
+  const seen = new Set<number>();
+  const out: BrevoCampaign[] = [];
+  for (const c of [...sentOrQueued, ...draft]) {
+    if (seen.has(c.id)) continue;
+    seen.add(c.id);
+    out.push(c);
+  }
+  return out;
 }
 
 /**

@@ -55,7 +55,7 @@ import {
   segmentRampWarm,
   type StoreRow,
 } from "./lib/clarice-segment.ts";
-import { brevoGet, fetchCommittedCampaignListIds } from "./lib/brevo-client.ts";
+import { brevoGet, fetchCommittedCampaignListIds, fetchDraftCampaigns } from "./lib/brevo-client.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { requireCycleArg, CLARICE_BASE } from "./lib/clarice-paths.ts";
@@ -66,6 +66,7 @@ import {
   computeNextWaveNumber,
   measureNonOpenerExposure,
   measureNovosFreshness,
+  mergeCampaignSources,
   proposeVolumes,
   recommendAbcAction,
   renderWaveProposal,
@@ -236,7 +237,38 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
   const stale = extractDashboardStaleInfo(res);
   const staleNote = stale ? `${stale.kind} (upstream=${stale.upstreamStatus}) — ${describeStaleAge(stale.since)}` : null;
   const rawCampaigns = (await res.json()) as BrevoCampaign[];
-  const campaigns = await enrichWithLists(apiKey, rawCampaigns);
+
+  // #5064 — campanhas DRAFT (`--create` rodou, `--schedule` ainda não) NUNCA
+  // aparecem no dashboard acima (`includeScheduled=1` só devolve sent+queued
+  // — ver docstring de `detectExistingWaveForSendDate` em clarice-envio-run.ts).
+  // Busca direta à Brevo (mesma chave já usada pra crédito/comprometidas
+  // abaixo) — fecha o guard de onda PARCIALMENTE MONTADA sem precisar de
+  // endpoint novo no Worker `brevo-dashboard`. Fail-soft: é uma defesa
+  // SECUNDÁRIA (o guard queued/sent continua sendo a proteção principal
+  // contra dobrar o volume do dia), então uma falha aqui vira aviso, não
+  // aborta a rodada inteira.
+  let draftCampaigns: BrevoCampaign[] = [];
+  if (apiKey) {
+    try {
+      const rawDrafts = await fetchDraftCampaigns(apiKey);
+      draftCampaigns = rawDrafts.map((c) => ({
+        id: c.id ?? -1,
+        name: c.name ?? "",
+        subject: c.subject ?? "",
+        status: c.status ?? "draft",
+        sentDate: c.sentDate ?? null,
+        scheduledAt: c.scheduledAt ?? null,
+        createdAt: c.createdAt ?? "",
+        recipients: { lists: c.recipients?.lists ?? [] },
+      }));
+    } catch (err) {
+      console.error(
+        `⚠️  Consulta de campanhas draft falhou (#5064): ${err instanceof Error ? err.message : err} — ` +
+          "guard de onda parcialmente montada fica cego nesta rodada (defesa secundária; o guard queued/sent continua ativo).",
+      );
+    }
+  }
+  const campaigns = await enrichWithLists(apiKey, mergeCampaignSources(rawCampaigns, draftCampaigns));
 
   // 2. Estado do ciclo + teste A/B/C (ambos reusam máquina existente).
   const state = summarizeCycleSends(campaigns, opts.cycle, now);
