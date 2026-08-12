@@ -609,6 +609,194 @@ describe("renameDestaqueImages / renameDestaquePrompts (#5087 — rollback best-
   });
 });
 
+describe("renameDestaqueImages / renameDestaquePrompts (HOTFIX — rollback não pode sobrescrever uma promoção anterior já bem-sucedida)", () => {
+  // Reproduz EXATAMENTE o cenário do achado do review consolidado: swap
+  // D1↔D2 ([2,1,3]). TMP1 (era D1) PROMOVE com sucesso pro passo 2 (vira
+  // D2). TMP2 (era D2) FALHA ao promover pro passo 2 (deveria virar D1).
+  //
+  // Antes do fix: `rollbackTmpRenames` só recebia os pares "original→TMP"
+  // AINDA pendentes — TMP1 já tinha sido removido da lista de rollback
+  // porque "teve sucesso" ao promover. O rollback então renomeava só TMP2
+  // de volta pro seu `originalName` = "04-d2-*" — que JÁ ESTAVA OCUPADO
+  // pelo conteúdo recém-promovido de D1. `renameSync` sobrescrevia em
+  // silêncio: D1 sumia sem chance de recuperação (nem TMP1 nem d1-*
+  // sobravam no disco com o conteúdo de D1) e D2 voltava a ter o conteúdo
+  // ANTIGO — pior que nunca ter rodado, e sem nenhum sinal de erro extra
+  // além da falha original de promoção.
+  //
+  // Depois do fix: o rollback desfaz TODOS os renames aplicados (passo 1 E
+  // passo 2) em ordem reversa, cada um voltando ao nome que tinha
+  // IMEDIATAMENTE ANTES daquele rename específico — nunca ao "originalName"
+  // genérico do grupo. D1 e D2 devem terminar exatamente como começaram.
+  it("renameDestaqueImages: swap D1↔D2, TMP1 promove OK e TMP2 falha ao promover → D1 e D2 restaurados intactos (nenhum perdido, nenhum sobrescrito)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-img-cyclic-rollback-"));
+    try {
+      writeFileSync(join(dir, "04-d1-1x1.jpg"), "CONTENT_D1");
+      writeFileSync(join(dir, "04-d2-1x1.jpg"), "CONTENT_D2");
+      writeFileSync(join(dir, "04-d3-1x1.jpg"), "CONTENT_D3");
+
+      // Falha só na 1ª chamada que casar o padrão "promoção de TMP2 → final"
+      // (flag `tmp2FailureInjected`) — a promoção original (dentro do try
+      // principal) é a única que deve lançar. Sem a flag, o MESMO padrão
+      // ("from" contém "TMP2", "to" não contém "TMP") também casaria a
+      // chamada de ROLLBACK que tenta mover TMP2 de volta pro seu nome
+      // anterior, fazendo o próprio rollback falhar e mascarar o que
+      // estamos testando.
+      let tmp2FailureInjected = false;
+      const fakeDeps: RenameFileDeps = {
+        renameSync: (from, to) => {
+          const fromStr = String(from);
+          const toStr = String(to);
+          // Só a promoção de TMP2 → final (passo 2) falha. Passo 1
+          // (original→TMP) e a promoção de TMP1 → final seguem normais —
+          // é essa ordem (TMP1 promove ANTES de TMP2 falhar) que exercita
+          // o caminho quebrado: o rollback precisa lidar com uma promoção
+          // JÁ bem-sucedida no meio da pilha de renames aplicados.
+          if (!tmp2FailureInjected && fromStr.includes("TMP2") && !toStr.includes("TMP")) {
+            tmp2FailureInjected = true;
+            throw new Error("simulated failure promoting TMP2 -> final");
+          }
+          renameFsSync(from, to);
+        },
+        existsSync,
+      };
+
+      assert.throws(
+        () => renameDestaqueImages(dir, [2, 1, 3], false, fakeDeps),
+        /simulated failure promoting TMP2 -> final/,
+      );
+
+      // Nenhum TMP{N} órfão sobra no disco.
+      assert.ok(
+        !existsSync(join(dir, "04-TMP1-1x1.jpg")),
+        "04-TMP1-1x1.jpg não deveria sobrar órfão",
+      );
+      assert.ok(
+        !existsSync(join(dir, "04-TMP2-1x1.jpg")),
+        "04-TMP2-1x1.jpg não deveria sobrar órfão",
+      );
+
+      // D1 restaurado com o conteúdo ORIGINAL — o bug fazia D1 desaparecer
+      // completamente (irrecuperável a partir do output da função).
+      assert.ok(
+        existsSync(join(dir, "04-d1-1x1.jpg")),
+        "04-d1-1x1.jpg (D1) deveria existir pós-rollback — antes do fix, sumia",
+      );
+      assert.equal(
+        readFileSync(join(dir, "04-d1-1x1.jpg"), "utf8"),
+        "CONTENT_D1",
+        "04-d1-1x1.jpg deveria ter o conteúdo ORIGINAL de D1 restaurado",
+      );
+
+      // D2 restaurado com o conteúdo ORIGINAL — o bug deixava D2 com o
+      // conteúdo antigo (correto por acidente aqui, mas só porque o
+      // rollback sobrescrevia por cima do D1 promovido — o teste abaixo
+      // fecha o caso em que isso seria detectável como corrupção).
+      assert.ok(existsSync(join(dir, "04-d2-1x1.jpg")));
+      assert.equal(
+        readFileSync(join(dir, "04-d2-1x1.jpg"), "utf8"),
+        "CONTENT_D2",
+        "04-d2-1x1.jpg deveria ter o conteúdo ORIGINAL de D2 restaurado (não o de D1 sobrescrito)",
+      );
+
+      // D3 nunca fez parte do reorder — intacto.
+      assert.ok(existsSync(join(dir, "04-d3-1x1.jpg")));
+      assert.equal(readFileSync(join(dir, "04-d3-1x1.jpg"), "utf8"), "CONTENT_D3");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Mesma classe de bug, ciclo de 3 (rotação, não swap) — exercita o caso
+  // em que DUAS promoções têm sucesso antes de uma terceira falhar, pra
+  // confirmar que o fix generaliza além do swap de 2 documentado no achado
+  // original (self-review deste hotfix).
+  it("renameDestaqueImages: rotação de 3 (newOrder=[3,1,2]), 2 promoções OK e a 3ª falha → D1/D2/D3 todos restaurados intactos", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-img-3cycle-rollback-"));
+    try {
+      writeFileSync(join(dir, "04-d1-1x1.jpg"), "CONTENT_D1");
+      writeFileSync(join(dir, "04-d2-1x1.jpg"), "CONTENT_D2");
+      writeFileSync(join(dir, "04-d3-1x1.jpg"), "CONTENT_D3");
+
+      // newOrder=[3,1,2]: oldToNew = {3→1, 1→2, 2→3}. TMP1 (era D1) promove
+      // pra D2, TMP2 (era D2) promove pra D3 — ambos com sucesso. TMP3
+      // (era D3) falha ao promover pra D1. Mesma flag "só falha 1×" do
+      // teste acima — sem ela, o rollback tentando mover TMP3 de volta
+      // casaria o mesmo padrão e falharia também.
+      let tmp3FailureInjected = false;
+      const fakeDeps: RenameFileDeps = {
+        renameSync: (from, to) => {
+          const fromStr = String(from);
+          const toStr = String(to);
+          if (!tmp3FailureInjected && fromStr.includes("TMP3") && !toStr.includes("TMP")) {
+            tmp3FailureInjected = true;
+            throw new Error("simulated failure promoting TMP3 -> final");
+          }
+          renameFsSync(from, to);
+        },
+        existsSync,
+      };
+
+      assert.throws(
+        () => renameDestaqueImages(dir, [3, 1, 2], false, fakeDeps),
+        /simulated failure promoting TMP3 -> final/,
+      );
+
+      for (const n of [1, 2, 3]) {
+        assert.ok(
+          !existsSync(join(dir, `04-TMP${n}-1x1.jpg`)),
+          `04-TMP${n}-1x1.jpg não deveria sobrar órfão`,
+        );
+      }
+      assert.equal(readFileSync(join(dir, "04-d1-1x1.jpg"), "utf8"), "CONTENT_D1");
+      assert.equal(readFileSync(join(dir, "04-d2-1x1.jpg"), "utf8"), "CONTENT_D2");
+      assert.equal(readFileSync(join(dir, "04-d3-1x1.jpg"), "utf8"), "CONTENT_D3");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Mesmo cenário exato do achado, mas no OUTRO call site que compartilha
+  // `rollbackAppliedRenames` — `renameDestaquePrompts` tinha exatamente a
+  // mesma estrutura de bug (mesma função de rollback, mesmo padrão de
+  // "remover do tracking ao promover").
+  it("renameDestaquePrompts: swap D1↔D2, TMP1 promove OK e TMP2 falha ao promover → D1 e D2 restaurados intactos", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-prompts-cyclic-rollback-"));
+    try {
+      writeFileSync(join(dir, "02-d1-prompt.md"), "CONTENT_D1");
+      writeFileSync(join(dir, "02-d2-prompt.md"), "CONTENT_D2");
+
+      let tmp2FailureInjected = false;
+      const fakeDeps: RenameFileDeps = {
+        renameSync: (from, to) => {
+          const fromStr = String(from);
+          const toStr = String(to);
+          if (!tmp2FailureInjected && fromStr.includes("TMP2") && !toStr.includes("TMP")) {
+            tmp2FailureInjected = true;
+            throw new Error("simulated failure promoting TMP2 -> final");
+          }
+          renameFsSync(from, to);
+        },
+        existsSync,
+      };
+
+      assert.throws(
+        () => renameDestaquePrompts(dir, [2, 1, 3], false, fakeDeps),
+        /simulated failure promoting TMP2 -> final/,
+      );
+
+      assert.ok(!existsSync(join(dir, "02-TMP1-prompt.md")));
+      assert.ok(!existsSync(join(dir, "02-TMP2-prompt.md")));
+      assert.ok(existsSync(join(dir, "02-d1-prompt.md")));
+      assert.equal(readFileSync(join(dir, "02-d1-prompt.md"), "utf8"), "CONTENT_D1");
+      assert.ok(existsSync(join(dir, "02-d2-prompt.md")));
+      assert.equal(readFileSync(join(dir, "02-d2-prompt.md"), "utf8"), "CONTENT_D2");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("parseArgs — default editionDir via #3491 (mesma classe de #3483/#3484)", () => {
   // Antes do #3491, sem --edition-dir (comando editor-invocado diretamente,
   // sem caller fixo que sempre passe a flag), o default construía

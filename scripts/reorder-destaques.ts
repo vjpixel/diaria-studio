@@ -338,33 +338,62 @@ export function reorderSocialMd(md: string, newOrder: number[]): string {
 }
 
 /**
- * Reverte best-effort um conjunto de renames "original → TMP{N}-..." já
- * aplicados quando a sequência de 2 passos (original→TMP→final) abortar no
- * meio (#5087 self-review finding do #5085 — sem rollback, um
+ * Reverte best-effort TODOS os renames de fato aplicados nesta invocação
+ * quando a sequência de 2 passos (original→TMP→final) abortar no meio
+ * (#5087 self-review finding do #5085 — sem rollback, um
  * `renameSyncVerified` que lança no meio da sequência deixava arquivos
- * `TMP{N}-*` órfãos no disco, exigindo que o editor os identificasse e
- * renomeasse manualmente de volta).
+ * `TMP{N}-*` órfãos no disco).
+ *
+ * HOTFIX (achado do review consolidado da rodada overnight que produziu
+ * #5085/#5087): a versão anterior recebia só os pares "original→TMP" AINDA
+ * pendentes (removidos da lista assim que promovidos ao nome final no passo
+ * 2) e revertia cada TMP de volta pro `originalName` do SEU PRÓPRIO grupo.
+ * Isso corrompe dado em qualquer reorder cíclico (todo swap/rotação — o caso
+ * mais comum) onde pelo menos uma promoção do passo 2 tem sucesso antes de
+ * outra falhar: o `originalName` de uma entrada ainda pendente pode já ter
+ * sido REIVINDICADO como `finalName` por uma promoção que teve sucesso —
+ * ex: TMP1 (era D1) promove com sucesso pra D2 (seu novo slot); TMP2 (era
+ * D2) falha ao promover pra D1; o rollback antigo renomeava TMP2 de volta
+ * pra "D2", sobrescrevendo silenciosamente o conteúdo de D1 recém-promovido
+ * ali — D1 desaparecia sem chance de recuperação a partir do próprio
+ * output da função.
+ *
+ * Fix: `applied` agora é a lista CRONOLÓGICA de TODOS os renames realmente
+ * executados nesta invocação (passo 1 E passo 2, nunca removidos da lista
+ * ao promover). O rollback desfaz em ordem REVERSA — cada entrada volta
+ * exatamente ao nome (`from`) que tinha imediatamente ANTES daquele rename
+ * específico, tratando a sequência como uma pilha de operações atômicas a
+ * desfazer uma a uma, em vez de reconstruir "o nome original do grupo".
+ * Isso generaliza pra qualquer ciclo (swap de 2, rotação de 3, ...): cada
+ * `to` só é revertido se ainda existir com aquele nome exato — se uma
+ * operação posterior já moveu o arquivo dali (caso comum quando o mesmo
+ * path é reaproveitado por dois renames em sequência), a entrada mais
+ * recente desfaz primeiro (ordem reversa), liberando o path na ordem certa
+ * pra entrada anterior encontrar o que espera.
  *
  * Best-effort de propósito: usada dentro de um `catch`, então NUNCA lança —
- * se o próprio rollback falhar (ex: o TMP também já sumiu, mesma classe de
- * conflito de sync que motivou `renameSyncVerified` em primeiro lugar), a
- * falha é engolida em silêncio. O objetivo é reduzir lixo órfão, não
- * garantir reversão perfeita — o erro original (já capturado pelo caller)
- * é o que de fato chega ao editor.
+ * se o próprio rollback falhar (ex: o arquivo esperado também já sumiu,
+ * mesma classe de conflito de sync que motivou `renameSyncVerified` em
+ * primeiro lugar), a falha é engolida em silêncio pra aquela entrada e o
+ * loop continua tentando desfazer as demais. O objetivo é reduzir
+ * dado-perdido/órfão, não garantir reversão perfeita — o erro original (já
+ * capturado pelo caller) é o que de fato chega ao editor.
  */
-function rollbackTmpRenames(
+function rollbackAppliedRenames(
   dir: string,
-  applied: Array<{ tmpName: string; originalName: string }>,
+  applied: Array<{ from: string; to: string }>,
   deps: RenameFileDeps,
 ): void {
-  for (const { tmpName, originalName } of applied) {
+  for (let i = applied.length - 1; i >= 0; i--) {
+    const { from, to } = applied[i];
     try {
-      const tmpPath = join(dir, tmpName);
-      if (deps.existsSync(tmpPath)) {
-        deps.renameSync(tmpPath, join(dir, originalName));
+      const toPath = join(dir, to);
+      if (deps.existsSync(toPath)) {
+        deps.renameSync(toPath, join(dir, from));
       }
     } catch {
-      // best-effort — nunca lançar por cima do erro original do caller.
+      // best-effort — nunca lançar por cima do erro original do caller;
+      // segue tentando desfazer as demais entradas da pilha.
     }
   }
 }
@@ -384,9 +413,11 @@ function rollbackTmpRenames(
  * que lança se o destino não existir — ver docstring de `renameSyncVerified`.
  *
  * #5087 (self-review finding do #5085): se `renameSyncVerified` lançar no
- * MEIO da sequência de 2 passos, os renames "original → TMP" já aplicados
- * até ali são revertidos best-effort (`rollbackTmpRenames`) antes de
- * repropagar o erro — evita órfãos `04-TMP{N}-*` no disco.
+ * MEIO da sequência de 2 passos, os renames já aplicados até ali (passo 1 E
+ * passo 2 — ver HOTFIX na docstring de `rollbackAppliedRenames`) são
+ * revertidos best-effort antes de repropagar o erro — evita órfãos
+ * `04-TMP{N}-*` no disco E evita sobrescrever silenciosamente uma promoção
+ * anterior que já tinha tido sucesso no mesmo reorder cíclico.
  *
  * Retorna lista de renames aplicados.
  */
@@ -406,11 +437,12 @@ export function renameDestaqueImages(
   for (let i = 0; i < newOrder.length; i++) {
     oldToNew.set(newOrder[i], i + 1);
   }
-  // Rastreia "original → TMP" já aplicados nesta invocação — usado pro
-  // rollback best-effort (#5087) se algum rename subsequente da sequência
-  // abortar. Entradas são removidas assim que o passo 2 promove o TMP a
-  // nome final (deixa de ser candidato a rollback).
-  const tmpApplied: Array<{ tmpName: string; originalName: string }> = [];
+  // Rastreia TODOS os renames de fato aplicados nesta invocação, em ordem
+  // cronológica — passo 1 (original→TMP) E passo 2 (TMP→final), NUNCA
+  // removidos da lista ao promover (ver HOTFIX na docstring de
+  // `rollbackAppliedRenames` — remover ao promover foi o que causava o
+  // data-loss em reorders cíclicos).
+  const appliedRenames: Array<{ from: string; to: string }> = [];
   try {
     // 2-step rename pra evitar colisão
     for (const f of files) {
@@ -422,7 +454,7 @@ export function renameDestaqueImages(
       const tmpName = f.replace(`04-d${oldN}-`, `04-TMP${oldN}-`);
       if (!dryRun) {
         renameSyncVerified(join(editionDir, f), join(editionDir, tmpName), deps);
-        tmpApplied.push({ tmpName, originalName: f });
+        appliedRenames.push({ from: f, to: tmpName });
       }
       renames.push({ from: f, to: tmpName });
     }
@@ -438,13 +470,12 @@ export function renameDestaqueImages(
         const newN = oldToNew.get(oldN)!;
         const finalName = `04-d${newN}-${m[2]}`;
         renameSyncVerified(join(editionDir, f), join(editionDir, finalName), deps);
-        const idx = tmpApplied.findIndex((a) => a.tmpName === f);
-        if (idx >= 0) tmpApplied.splice(idx, 1);
+        appliedRenames.push({ from: f, to: finalName });
         renames.push({ from: f, to: finalName });
       }
     }
   } catch (e) {
-    rollbackTmpRenames(editionDir, tmpApplied, deps);
+    rollbackAppliedRenames(editionDir, appliedRenames, deps);
     throw e;
   }
   return renames;
@@ -478,7 +509,9 @@ export function deriveTituloSubtitulo(
  * o `renameSync` e a próxima operação, aborta em vez de seguir silenciosamente.
  *
  * #5087 (self-review finding do #5085): mesmo rollback best-effort de
- * `renameDestaqueImages` (`rollbackTmpRenames`) pra órfãos `02-TMP{N}-*`.
+ * `renameDestaqueImages` (`rollbackAppliedRenames`) pra órfãos `02-TMP{N}-*`
+ * — inclusive o HOTFIX de rastrear passo 1 E passo 2 (ver docstring de
+ * `rollbackAppliedRenames`).
  */
 export function renameDestaquePrompts(
   internalDir: string,
@@ -495,7 +528,9 @@ export function renameDestaquePrompts(
   for (let i = 0; i < newOrder.length; i++) {
     oldToNew.set(newOrder[i], i + 1);
   }
-  const tmpApplied: Array<{ tmpName: string; originalName: string }> = [];
+  // Ver comentário equivalente em `renameDestaqueImages` — mesma pilha de
+  // renames aplicados (passo 1 E passo 2), nunca removida ao promover.
+  const appliedRenames: Array<{ from: string; to: string }> = [];
   try {
     // 2-step rename
     for (const f of files) {
@@ -507,7 +542,7 @@ export function renameDestaquePrompts(
       const tmpName = f.replace(`02-d${oldN}-`, `02-TMP${oldN}-`);
       if (!dryRun) {
         renameSyncVerified(join(internalDir, f), join(internalDir, tmpName), deps);
-        tmpApplied.push({ tmpName, originalName: f });
+        appliedRenames.push({ from: f, to: tmpName });
       }
       renames.push({ from: f, to: tmpName });
     }
@@ -522,13 +557,12 @@ export function renameDestaquePrompts(
         const newN = oldToNew.get(oldN)!;
         const finalName = `02-d${newN}-${m[2]}`;
         renameSyncVerified(join(internalDir, f), join(internalDir, finalName), deps);
-        const idx = tmpApplied.findIndex((a) => a.tmpName === f);
-        if (idx >= 0) tmpApplied.splice(idx, 1);
+        appliedRenames.push({ from: f, to: finalName });
         renames.push({ from: f, to: finalName });
       }
     }
   } catch (e) {
-    rollbackTmpRenames(internalDir, tmpApplied, deps);
+    rollbackAppliedRenames(internalDir, appliedRenames, deps);
     throw e;
   }
   return renames;
