@@ -95,7 +95,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { hasFlag, isMainModule, getStringArg } from "./lib/cli-args.ts";
+import { hasFlag, isMainModule, getStringArg, parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 import { extractContent, type NewsletterContent } from "./lib/newsletter-parse.ts";
 import { renderHTMLWithWarnings, type RenderWarningEvent } from "./lib/newsletter-render-html.ts"; // #4687
 import { buildFilenameMap, substituteImagePlaceholders, type PublicImagesFile } from "./substitute-image-urls.ts";
@@ -471,7 +471,14 @@ export async function main(rootDirOverride?: string): Promise<void> {
   const rootDir = rootDirOverride ?? ROOT;
   loadProjectEnv(rootDir);
   const argv = process.argv.slice(2);
-  const editionDirArg = argv.find((a) => !a.startsWith("--"));
+  // #5086 (self-review): `argv.find((a) => !a.startsWith("--"))` — usado aqui
+  // até a introdução da flag de VALOR `--send-test-to <email>` — casava com o
+  // valor de QUALQUER flag de valor que apareça antes do path da edição no
+  // argv (ex: `--send-test-to editor@x.com data/editions/260812` resolvia
+  // editionDirArg como "editor@x.com"). `parseCliArgs` (mesmo parser de
+  // `--send-test-to`) já separa positional de values corretamente — usa isso
+  // em vez de reimplementar a mesma checagem de forma incompleta.
+  const editionDirArg = parseCliArgs(argv).positional[0];
   const dryRun = hasFlag(argv, "dry-run");
   const reviewedCopy = hasFlag(argv, "i-reviewed-the-copy");
   const sendTest = hasFlag(argv, "send-test"); // #5086

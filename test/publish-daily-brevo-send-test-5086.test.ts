@@ -360,6 +360,45 @@ describe("publish-daily-brevo.ts main() — --send-test (#5086)", () => {
     }
   });
 
+  it("#5086 self-review: --send-test-to ANTES do <edition-dir> posicional não rouba o slot do edition-dir (regressão do argv.find ingênuo)", async () => {
+    // Antes deste fix, `editionDirArg = argv.find((a) => !a.startsWith("--"))`
+    // casava com o PRIMEIRO token sem "--" em qualquer posição do argv — com
+    // `--send-test-to <email>` introduzindo o 1º flag-de-valor deste script,
+    // `--send-test-to voce@x.com <edition-dir>` resolvia editionDirArg como
+    // "voce@x.com" (o valor do flag), não o path da edição. Fix: usa
+    // `parseCliArgs(argv).positional[0]`, que já separa flag-values de
+    // positional corretamente (mesmo parser usado por --send-test-to).
+    const root = mkTmpRoot();
+    try {
+      writePlatformConfig(root);
+      writeEdition(root, EDITION_DATE);
+      setAllCredentials();
+      installRouter({ totalSubscribers: 6, contactsPages: [SIX_CONTACTS] });
+      process.argv = [
+        "node",
+        "publish-daily-brevo.ts",
+        "--send-test-to",
+        "override@example.com",
+        `data/editions/${EDITION_DATE}`,
+        "--i-reviewed-the-copy",
+        "--send-test",
+      ];
+      mockProcessExit();
+
+      await main(root);
+
+      assert.equal(exitCode, null, "edition-dir deveria ter sido resolvido corretamente, sem abortar");
+      assert.ok(
+        calls.some((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns"),
+        "campanha deveria ter sido criada — se editionDirArg tivesse virado 'override@example.com', extractContent teria lançado antes de qualquer fetch",
+      );
+      const sendTestCall = calls.find((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns/999/sendTest");
+      assert.deepEqual((sendTestCall!.body as { emailTo: string[] }).emailTo, ["override@example.com"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("sem --send-test: comportamento anterior ao #5086 preservado — nenhum sendTest disparado, nenhum brevo-diaria-published.json escrito", async () => {
     const root = mkTmpRoot();
     try {
