@@ -18,6 +18,8 @@ import {
   extractEditionBoxUsages,
   buildBoxClickReport,
   renderMarkdownTable,
+  isPostNeverEnriched, // #5153
+  renderNeverEnrichedNote, // #5153
   type SnippetInfo,
   type PostCacheLike,
 } from "../scripts/box-click-report.ts";
@@ -377,6 +379,91 @@ describe("buildBoxClickReport", () => {
     assert.deepEqual(rows, []);
     assert.deepEqual(unmatchedBoxes, []);
   });
+
+  // #5153: post fora da janela de 7 dias (never_enriched) não pode contar
+  // como zero cliques — dado AUSENTE, não confirmado-zero.
+  it("#5153: post never_enriched não soma como zero — vai pra neverEnrichedBoxes, nunca pra total_verified_clicks", () => {
+    const readReviewedMd = reviewedMdByEdition({
+      "260810": mdWithClarice, // recém-publicada, fora da janela de 7 dias
+      "260731": mdWithClarice, // já madura, com dado real
+    });
+    const posts: Record<string, PostCacheLike> = {
+      "260810": {
+        id: "p-recente",
+        stats: {
+          // clicks vazio + never_enriched explícito — o ponto central: mesmo
+          // que o e-mail em si tenha tido cliques reais (email.clicks > 0
+          // na Beehiiv), o enrichment por link nunca rodou pra ESTE post, e
+          // isso não pode virar um "0" silencioso no agregado.
+          clicks: [],
+          enrichment_state: "never_enriched",
+        },
+      },
+      "260731": {
+        id: "p-maduro",
+        stats: {
+          clicks: [
+            { url: "https://clarice.ai/precos-planos?bhcl_id=1", email: { verified_clicks: 10, unique_verified_clicks: 9 } },
+          ],
+        },
+      },
+    };
+
+    const { rows, unmatchedBoxes, neverEnrichedBoxes } = buildBoxClickReport({
+      aammddList: ["260810", "260731"],
+      readReviewedMd,
+      snippets,
+      findPost: (aammdd) => posts[aammdd] ?? null,
+    });
+
+    assert.equal(rows.length, 1);
+    // Só a edição madura entra na soma — a never_enriched NÃO conta como 0.
+    assert.equal(rows[0].total_verified_clicks, 10);
+    assert.equal(rows[0].total_unique_verified_clicks, 9);
+    // Achado silent-failure-hunter (review desta PR): não bastava excluir do
+    // numerador — o DENOMINADOR (editions_appeared, base de
+    // avg_unique_verified_clicks) também não pode contar a edição
+    // never_enriched. Sem este fix, editions_appeared viria 2 (não 1) e
+    // avg_unique_verified_clicks viria 4.5 (9/2), diluindo silenciosamente
+    // a média de um box só porque ele foi reusado numa edição recente.
+    assert.equal(rows[0].editions_appeared, 1, "só a edição medida conta como aparição pro denominador da média");
+    assert.deepEqual(rows[0].editions, ["260731"]);
+    assert.equal(rows[0].avg_unique_verified_clicks, 9, "média deve ser 9 (só a edição medida), não 4.5 (9/2 diluído pela never_enriched)");
+
+    assert.equal(unmatchedBoxes.length, 0, "never_enriched não é a mesma categoria de 'sem post cacheado'");
+    assert.equal(neverEnrichedBoxes.length, 1);
+    assert.equal(neverEnrichedBoxes[0].aammdd, "260810");
+    assert.equal(neverEnrichedBoxes[0].snippet, "clarice-divulgacao.md", "rastreável até a linha do ranking que afeta");
+    assert.match(neverEnrichedBoxes[0].reason, /never_enriched/);
+    assert.match(neverEnrichedBoxes[0].reason, /7 dias/);
+    assert.match(neverEnrichedBoxes[0].reason, /NÃO conta como zero/);
+  });
+
+  it("#5153: post COM enrichment_state ausente mas clicks preenchidos (cache legado) continua somando normalmente (resolveEnrichmentState infere enriched_n)", () => {
+    const readReviewedMd = reviewedMdByEdition({ "260731": mdWithClarice });
+    const posts: Record<string, PostCacheLike> = {
+      "260731": {
+        id: "p-legado",
+        stats: {
+          // Sem `enrichment_state` no cache (post de antes do #4836) — mas
+          // `clicks` já populado. `resolveEnrichmentState` deve inferir
+          // enriched_n a partir do array não-vazio, não travar como
+          // never_enriched por ausência do campo.
+          clicks: [
+            { url: "https://clarice.ai/precos-planos?bhcl_id=9", email: { verified_clicks: 3, unique_verified_clicks: 3 } },
+          ],
+        },
+      },
+    };
+    const { rows, neverEnrichedBoxes } = buildBoxClickReport({
+      aammddList: ["260731"],
+      readReviewedMd,
+      snippets,
+      findPost: (aammdd) => posts[aammdd] ?? null,
+    });
+    assert.equal(neverEnrichedBoxes.length, 0);
+    assert.equal(rows[0].total_unique_verified_clicks, 3);
+  });
 });
 
 describe("renderMarkdownTable", () => {
@@ -400,5 +487,44 @@ describe("renderMarkdownTable", () => {
     assert.match(table, /clarice-divulgacao\.md/);
     assert.match(table, /13/);
     assert.match(table, /6\.5/);
+  });
+});
+
+describe("isPostNeverEnriched (#5153, pure)", () => {
+  it("clicks vazio + enrichment_state ausente → true (default conservador, post novo)", () => {
+    assert.equal(isPostNeverEnriched({ stats: { clicks: [] } }), true);
+  });
+
+  it("enrichment_state: never_enriched explícito → true, mesmo com clicks vazio", () => {
+    assert.equal(isPostNeverEnriched({ stats: { clicks: [], enrichment_state: "never_enriched" } }), true);
+  });
+
+  it("enrichment_state: enriched_zero (tentou, confirmou zero) → false — é dado confirmado, não ausente", () => {
+    assert.equal(isPostNeverEnriched({ stats: { clicks: [], enrichment_state: "enriched_zero" } }), false);
+  });
+
+  it("clicks preenchido → false, independente do enrichment_state gravado", () => {
+    assert.equal(
+      isPostNeverEnriched({ stats: { clicks: [{ url: "https://x.com", email: { verified_clicks: 1 } }] } }),
+      false,
+    );
+  });
+
+  it("stats ausente → true (mesmo default conservador de post nunca sincronizado)", () => {
+    assert.equal(isPostNeverEnriched({}), true);
+  });
+});
+
+describe("renderNeverEnrichedNote (#5153, pure)", () => {
+  it("0 never_enriched → string vazia (nada a dizer)", () => {
+    assert.equal(renderNeverEnrichedNote(0, 5), "");
+  });
+
+  it("nomeia a janela de 7 dias explicitamente, com as duas contagens", () => {
+    const note = renderNeverEnrichedNote(2, 5);
+    assert.match(note, /2 edição/);
+    assert.match(note, /7 dias/);
+    assert.match(note, /não conta como zero/i);
+    assert.match(note, /5 edição/);
   });
 });

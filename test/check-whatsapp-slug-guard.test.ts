@@ -3,7 +3,7 @@
  *
  * Testa o guard que fecha o item 3 do critério de pronto da issue #4570:
  * bloquear o Stage 6 (agendamento) quando o slug REAL do post Beehiiv
- * diverge do slug que a URL do bloco WhatsApp (entre D1/D2) já prevê
+ * diverge do slug que a URL do bloco WhatsApp (dentro do D1, #5152) já prevê
  * (`seoSlug(título do D1)`).
  *
  *   (a) checkWhatsappSlugMatch (scripts/lib/whatsapp-slug-guard.ts) —

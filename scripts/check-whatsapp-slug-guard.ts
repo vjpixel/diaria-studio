@@ -3,7 +3,7 @@
  *
  * Guard determinístico que o orchestrator (Stage 6, §6d) chama depois do
  * Schedule ser confirmado — se o slug REAL do post Beehiiv divergir do slug
- * que a URL do bloco WhatsApp (entre D1/D2) já prevê (`seoSlug(D1)`), o link
+ * que a URL do bloco WhatsApp (dentro do D1, #5152) já prevê (`seoSlug(D1)`), o link
  * já enviado no corpo do e-mail 404. Ver `scripts/lib/whatsapp-slug-guard.ts`
  * pra racional completo.
  *

@@ -25,7 +25,17 @@
  *      CTAs do template, agora centralizado — revertendo o botão preenchido
  *      TEAL do #4570.
  *
- * Cobertura do critério de pronto da issue original + #4570 + #4582:
+ * #5152 (260813) mudou 2 coisas, pedido explícito do editor:
+ *   1. Posição: entre D1 e D2 (elemento próprio) → DENTRO do D1, logo após
+ *      "Por que isso importa" (`renderDestaque` injeta via o novo parâmetro
+ *      `whatsappShareHtml`, só quando `d.n === 1`).
+ *   2. Deixa de ser um "box": sem fundo bege (`SURFACE`), sem borda, sem
+ *      padding `24px 28px` — vira conteúdo inner (kicker + manchete +
+ *      botão), mesmo padrão de `renderAprofundeInner`/`renderHubLinkInner`.
+ *   Os helpers puros (`buildWhatsappShareBlock`/`buildWhatsappEditionUrl`/
+ *   `buildWhatsappShareLink`) e a UTM não mudaram.
+ *
+ * Cobertura do critério de pronto da issue original + #4570 + #4582 + #5152:
  *   - Texto sem markdown (`**`, `#`, `- `) — regra "output final sem
  *     markdown" (context/editorial-rules.md) aplicada também aqui.
  *   - Link `wa.me/?text=` bem formado, com o bloco URL-encoded (título + URL
@@ -35,7 +45,8 @@
  *     utm_medium=share, utm_campaign={AAMMDD}) — mantida por decisão
  *     explícita do coordenador no #4570 (atribuição de assinante novo).
  *   - URL aponta pra EDIÇÃO (diar.ia.br/p/{seoSlug(D1)}), não mais pra home.
- *   - Renderiza no HTML final, posicionado ENTRE D1 e D2.
+ *   - Renderiza no HTML final, DENTRO da seção do D1 (após "Por que isso
+ *     importa" — #5152), entre o título do D1 e o do D2.
  */
 
 import { describe, it } from "node:test";
@@ -45,6 +56,7 @@ import {
   buildWhatsappEditionUrl,
   buildWhatsappShareLink,
   renderWhatsappShare,
+  renderDestaque, // #5152
   renderHTML,
   resetRenderWarnings, // #4673
   getRenderWarnings, // #4673
@@ -186,13 +198,20 @@ describe("#4570 — renderWhatsappShare (HTML)", () => {
     assert.match(style, /border-radius:999px/, "botão deve continuar sendo um pill");
   });
 
-  it("botão centralizado dentro do box (#4582 — antes ficava alinhado à esquerda)", () => {
+  it("botão centralizado (#4582 — antes ficava alinhado à esquerda)", () => {
     const html = renderWhatsappShare([makeD1()], EDITION);
     assert.match(
       html,
       /<div style="text-align:center;margin-top:16px;">\s*<a href="https:\/\/wa\.me\/\?text=/,
       "botão deve estar envolto por um wrapper text-align:center",
     );
+  });
+
+  it("#5152: sem container de box (fundo bege, borda, padding 24px 28px) — vira conteúdo inner", () => {
+    const html = renderWhatsappShare([makeD1()], EDITION);
+    assert.ok(!html.includes("padding:24px 28px"), "não deve mais ter o padding do box bege");
+    assert.ok(!/background:#EBE5D0/i.test(html), "não deve mais usar SURFACE (fundo bege do box)");
+    assert.ok(!html.includes('<tr><td class="pad"'), "não deve mais ser uma seção própria (<tr><td class=\"pad\">) — vira conteúdo inner de renderDestaque");
   });
 
   it("manchete em negrito (<strong>), sem a URL como linha visível própria (#4582)", () => {
@@ -278,7 +297,7 @@ describe("#4570 — renderWhatsappShare (HTML)", () => {
   });
 });
 
-describe("#4570 — posição no corpo da newsletter: ENTRE D1 e D2", () => {
+describe("#4570/#5152 — posição no corpo da newsletter: DENTRO do D1, entre D1 e D2", () => {
   const content: NewsletterContent = {
     title: "Edição teste",
     subtitle: "Teste",
@@ -314,6 +333,52 @@ describe("#4570 — posição no corpo da newsletter: ENTRE D1 e D2", () => {
   it("edição de 2 destaques (sem D3): bloco WhatsApp ainda aparece, entre D1 e D2", () => {
     const html = renderHTML(content); // já só tem 2 destaques
     assert.match(html, /Compartilhar no WhatsApp/);
+  });
+
+  it("#5152: bloco WhatsApp aparece DEPOIS de \"Por que isso importa\" do D1 (posição exata pedida pelo editor)", () => {
+    const html = renderHTML(content);
+    const idxWhy = html.indexOf("Por que importa."); // why do D1, ver makeD1()
+    const idxWhatsapp = html.indexOf("Compartilhar no WhatsApp");
+    assert.ok(idxWhy !== -1, "box \"Por que isso importa\" do D1 ausente do render completo");
+    assert.ok(idxWhy < idxWhatsapp, "bloco WhatsApp deve vir DEPOIS do box \"Por que isso importa\"");
+  });
+
+  it("#5152: bloco WhatsApp está DENTRO da seção do D1 — antes do fechamento do <tr> do D1, não é mais uma seção própria entre D1 e D2", () => {
+    const html = renderHTML(content);
+    const idxD1Comment = html.indexOf("<!-- Destaque 1 -->");
+    const idxWhatsapp = html.indexOf("Compartilhar no WhatsApp");
+    const idxD1SectionClose = html.indexOf("</td></tr>", idxD1Comment);
+    assert.ok(idxD1Comment !== -1 && idxWhatsapp !== -1 && idxD1SectionClose !== -1);
+    assert.ok(
+      idxD1Comment < idxWhatsapp && idxWhatsapp < idxD1SectionClose,
+      "bloco WhatsApp deve estar entre a abertura e o fechamento da própria seção <tr> do D1",
+    );
+  });
+
+  it("#5152 (achado silent-failure-hunter): sem divergência entre os 2 sinais de D1, nenhum evento whatsapp_share_d1_mismatch é coletado", () => {
+    resetRenderWarnings();
+    renderHTML(content);
+    assert.deepEqual(
+      getRenderWarnings().filter((w) => w.event === "whatsapp_share_d1_mismatch"),
+      [],
+      "caso normal (destaques[0].n === 1) não deve produzir esse evento",
+    );
+  });
+
+  it("#5152 (achado silent-failure-hunter): destaques[0].n !== 1 (dado malformado, nunca deveria acontecer) dispara whatsapp_share_d1_mismatch em vez de sumir em silêncio", () => {
+    const malformedContent: NewsletterContent = {
+      ...content,
+      // Simula os 2 sinais divergindo — posição 0 (o que decide ONDE
+      // injetar) com n=2 (o que decide SE injeta). Nunca deveria acontecer
+      // com dado real (destaques sempre vêm na ordem 1..3), mas o guard
+      // defensivo precisa AVISAR, não só engolir o bloco.
+      destaques: [makeD1({ n: 2 }), makeD2({ n: 1 })],
+    };
+    resetRenderWarnings();
+    renderHTML(malformedContent);
+    const warnings = getRenderWarnings().filter((w) => w.event === "whatsapp_share_d1_mismatch");
+    assert.equal(warnings.length, 1, "divergência entre i===0 e d.n===1 deve emitir exatamente 1 evento");
+    assert.equal(warnings[0].edition, EDITION);
   });
 
   it("#4512 (achado pr-test-analyzer, preservado no #4570): bloco WhatsApp aparece ANTES do reveal do ERRO INTENCIONAL (que continua entre SORTEIO e 'Para encerrar')", () => {
@@ -353,5 +418,32 @@ describe("#4512 (fleet review round 2, achados comment-analyzer/code-reviewer), 
     const [titleLine] = block.split("\n\n");
     const html = renderWhatsappShare([makeD1()], EDITION);
     assert.ok(html.includes(titleLine), "título renderizado deve ser byte-idêntico à 1ª linha de buildWhatsappShareBlock");
+  });
+});
+
+describe("#5152 — renderDestaque(d, whatsappShareHtml): injeção restrita ao D1", () => {
+  const whatsappHtml = renderWhatsappShare([makeD1()], EDITION);
+
+  it("d.n === 1: o conteúdo passado em whatsappShareHtml aparece no HTML do destaque", () => {
+    const html = renderDestaque(makeD1(), whatsappHtml);
+    assert.ok(html.includes("Compartilhar no WhatsApp"), "bloco WhatsApp ausente do D1 quando passado explicitamente");
+  });
+
+  it("d.n === 2: whatsappShareHtml é ignorado mesmo se passado (guard defensivo, no mesmo espírito anti-vazamento do #4519)", () => {
+    const html = renderDestaque(makeD2(), whatsappHtml);
+    assert.ok(!html.includes("Compartilhar no WhatsApp"), "bloco WhatsApp nunca deve aparecer em D2, mesmo se o caller passar por engano");
+  });
+
+  it("sem 2º argumento: D1 renderiza normalmente, sem bloco WhatsApp (default vazio)", () => {
+    const html = renderDestaque(makeD1());
+    assert.ok(!html.includes("Compartilhar no WhatsApp"), "sem o 2º argumento, nenhum bloco WhatsApp deve aparecer");
+  });
+
+  it("bloco WhatsApp vem DEPOIS de \"Por que isso importa\" dentro do HTML do D1", () => {
+    const html = renderDestaque(makeD1(), whatsappHtml);
+    const idxWhy = html.indexOf("Por que isso importa");
+    const idxWhatsapp = html.indexOf("Compartilhar no WhatsApp");
+    assert.ok(idxWhy !== -1 && idxWhatsapp !== -1);
+    assert.ok(idxWhy < idxWhatsapp, "bloco WhatsApp deve vir depois do kicker \"Por que isso importa\"");
   });
 });

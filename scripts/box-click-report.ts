@@ -64,6 +64,7 @@ import {
 } from "./lib/newsletter-parse.ts";
 import { parseBoxHeaderField, stripHeaderBlock } from "./lib/shared/snippet-header.ts";
 import { URL_WITH_BALANCED_PARENS_RE_PART } from "./lib/lint-checks/section-item-format.ts";
+import { resolveEnrichmentState, type EnrichmentState } from "./lib/shared/enrichment-state.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SNIPPETS_DIR = resolve(ROOT, "context/snippets");
@@ -201,7 +202,24 @@ export function sumClicksForUrl(url: string, clicks: ClickLike[]): ClickSum {
 export interface PostCacheLike {
   id?: string;
   publish_date?: number | null;
-  stats?: { clicks?: ClickLike[] };
+  stats?: { clicks?: ClickLike[]; enrichment_state?: EnrichmentState };
+}
+
+/**
+ * #5153: `true` quando o post ainda não teve NENHUMA tentativa de buscar
+ * cliques por link — normalmente porque a edição está fora da janela de
+ * `MIN_AGE_DAYS_FOR_CLICKS` dias (7, `scripts/lib/shared/ctr-config.ts`) e o
+ * gate diário de enrichment (`scripts/beehiiv-sync.ts`) ainda não rodou pra
+ * ela. `stats.clicks` vem `[]` nesse caso — mas isso é dado AUSENTE, não
+ * cliques confirmados como zero (ver `enriched_zero`, o estado que SIM
+ * confirma zero). Callers que agregam `stats.clicks` por link precisam
+ * checar isto ANTES de somar — nunca tratar `never_enriched` como 0
+ * silenciosamente (achado ao vivo #5153, 260812: uma consulta de cliques
+ * misturou edições medidas e não-medidas na mesma tabela sem aviso).
+ */
+export function isPostNeverEnriched(post: PostCacheLike): boolean {
+  const clicks = post.stats?.clicks ?? [];
+  return resolveEnrichmentState(post.stats?.enrichment_state, clicks.length) === "never_enriched";
 }
 
 /** `publish_date` (unix seconds, UTC) → AAMMDD. Ver docstring do módulo pra
@@ -285,11 +303,36 @@ export interface UnmatchedBox {
   aammdd: string;
   slot: BoxSlot;
   reason: string;
+  /** #5153 (achado silent-failure-hunter): arquivo do snippet, quando
+   * conhecido — sem isto não dava pra cruzar uma entrada desta lista com a
+   * linha do ranking que ela afeta (ex: qual box tem uma edição não-medida
+   * no meio do histórico). `null` só nos 2 casos em que o snippet nunca foi
+   * identificado (sem link mensurável, ou link que não bate com nenhum
+   * snippet cadastrado). */
+  snippet: string | null;
 }
 
 export interface BoxClickReport {
   rows: RankingRow[];
   unmatchedBoxes: UnmatchedBox[];
+  /** #5153: aparições do box num post `never_enriched` (fora da janela de 7
+   * dias, cliques ainda não medidos) — rastreado À PARTE de `unmatchedBoxes`
+   * porque a causa é temporária (resolve sozinha em alguns dias, quando o
+   * post completa 7 dias e o gate diário de `beehiiv-sync.ts` o enriquece),
+   * diferente de "nunca vai ter dado" (sem post cacheado, sem link
+   * mensurável). NUNCA entra em `total_verified_clicks`/
+   * `total_unique_verified_clicks` — dado ausente, não zero.
+   *
+   * Mesmo shape de `UnmatchedBox` (achado type-design-analyzer, review desta
+   * PR — considerado, mas não implementado: TypeScript é estrutural, então
+   * um alias/interface nominal aqui NÃO impediria `[...unmatchedBoxes,
+   * ...neverEnrichedBoxes]` de type-checkar — só uma marca discriminante de
+   * verdade faria isso, custo desproporcional pro único call site real de
+   * hoje). A proteção prática contra misturar as duas listas é o `reason`
+   * (sempre nomeia "never_enriched"/"7 dias" explicitamente, ver
+   * `renderNeverEnrichedNote`) e o fato de `main()` renderizar as duas
+   * seções separadas, nunca concatenadas. */
+  neverEnrichedBoxes: UnmatchedBox[];
 }
 
 export interface BuildReportOpts {
@@ -315,6 +358,7 @@ export function buildBoxClickReport(opts: BuildReportOpts): BoxClickReport {
     { nome: string; editions: Set<string>; verified: number; uniqueVerified: number }
   >();
   const unmatchedBoxes: UnmatchedBox[] = [];
+  const neverEnrichedBoxes: UnmatchedBox[] = []; // #5153
 
   for (const aammdd of opts.aammddList) {
     const md = opts.readReviewedMd(aammdd);
@@ -326,13 +370,14 @@ export function buildBoxClickReport(opts: BuildReportOpts): BoxClickReport {
 
     for (const usage of usages) {
       if (!usage.url) {
-        unmatchedBoxes.push({ aammdd, slot: usage.slot, reason: "box sem link (texto puro, não mensurável)" });
+        unmatchedBoxes.push({ aammdd, slot: usage.slot, snippet: null, reason: "box sem link (texto puro, não mensurável)" });
         continue;
       }
       if (!usage.snippet) {
         unmatchedBoxes.push({
           aammdd,
           slot: usage.slot,
+          snippet: null,
           reason: "sem snippet correspondente em context/snippets/ (link não bate com nenhum snippet cadastrado)",
         });
         continue;
@@ -345,16 +390,39 @@ export function buildBoxClickReport(opts: BuildReportOpts): BoxClickReport {
         verified: 0,
         uniqueVerified: 0,
       };
-      entry.editions.add(aammdd);
 
       if (post) {
-        const sum = sumClicksForUrl(usage.url, post.stats?.clicks ?? []);
-        entry.verified += sum.verified_clicks;
-        entry.uniqueVerified += sum.unique_verified_clicks;
+        // #5153: post `never_enriched` (fora da janela de 7 dias) não soma
+        // como zero — o dado real é DESCONHECIDO, não confirmado-zero.
+        // **Achado silent-failure-hunter (review desta mesma PR):** não
+        // basta excluir do NUMERADOR (verified/uniqueVerified) — precisa
+        // excluir do DENOMINADOR também (`entry.editions`, usado por
+        // `avg_unique_verified_clicks` abaixo). Sem isso, uma edição
+        // never_enriched ainda inflava `editions.size` sem contribuir
+        // clique nenhum, diluindo a média pra baixo silenciosamente — o
+        // mesmo bug de raiz, um passo adiante. Diferente do caso "sem post
+        // cacheado" (branch `else` abaixo), que MANTÉM a semântica
+        // pré-#5153 de contar como aparição (comportamento já coberto por
+        // teste dedicado — "apareceu, mesmo sem dado de clique").
+        if (isPostNeverEnriched(post)) {
+          neverEnrichedBoxes.push({
+            aammdd,
+            slot: usage.slot,
+            snippet: key,
+            reason: `edição fora da janela de 7 dias (enrichment_state: never_enriched) — cliques ainda não medidos, NÃO conta como zero`,
+          });
+        } else {
+          entry.editions.add(aammdd);
+          const sum = sumClicksForUrl(usage.url, post.stats?.clicks ?? []);
+          entry.verified += sum.verified_clicks;
+          entry.uniqueVerified += sum.unique_verified_clicks;
+        }
       } else {
+        entry.editions.add(aammdd);
         unmatchedBoxes.push({
           aammdd,
           slot: usage.slot,
+          snippet: key,
           reason: `snippet '${usage.snippet.file}' usado, mas nenhum post Beehiiv cacheado bate com a data ${aammdd} (cache incompleto ou edição ainda não sincronizada)`,
         });
       }
@@ -374,7 +442,17 @@ export function buildBoxClickReport(opts: BuildReportOpts): BoxClickReport {
   }));
   rows.sort((a, b) => b.total_unique_verified_clicks - a.total_unique_verified_clicks);
 
-  return { rows, unmatchedBoxes };
+  return { rows, unmatchedBoxes, neverEnrichedBoxes };
+}
+
+/**
+ * #5153: nomeia a janela de 7 dias explicitamente — nunca deixa a diferença
+ * "não medido" vs "medido, zero" implícita num número solto. `""` quando não
+ * há nenhuma edição never_enriched na varredura (nada a dizer).
+ */
+export function renderNeverEnrichedNote(neverEnrichedCount: number, measuredEditionsCount: number): string {
+  if (neverEnrichedCount === 0) return "";
+  return `_${neverEnrichedCount} edição(ões) fora da janela de 7 dias (cliques ainda não medidos — não conta como zero), ${measuredEditionsCount} edição(ões) medida(s)._`;
 }
 
 /** Renderiza o ranking como tabela markdown — usada pelo CLI e pelo gate do
@@ -444,7 +522,7 @@ function main(): void {
     }
   };
 
-  const { rows, unmatchedBoxes } = buildBoxClickReport({
+  const { rows, unmatchedBoxes, neverEnrichedBoxes } = buildBoxClickReport({
     aammddList,
     readReviewedMd,
     snippets,
@@ -453,6 +531,21 @@ function main(): void {
 
   console.log(`# Recomendação de boxes de divulgação — últimas ${aammddList.length} edições varridas\n`);
   console.log(renderMarkdownTable(rows));
+
+  // #5153: nomeia a janela de 7 dias explicitamente, ANTES da lista de
+  // unmatched genérica — quem lê precisa saber que parte do "sem dado" é só
+  // temporário (resolve sozinho), não confundir com box que nunca vai medir.
+  if (neverEnrichedBoxes.length > 0) {
+    const neverEnrichedEditions = new Set(neverEnrichedBoxes.map((b) => b.aammdd));
+    const measuredEditions = new Set(rows.flatMap((r) => r.editions));
+    console.log(`\n${renderNeverEnrichedNote(neverEnrichedEditions.size, measuredEditions.size)}`);
+    for (const u of neverEnrichedBoxes.slice(0, 20)) {
+      console.log(`  - ${u.aammdd} slot ${u.slot}: ${u.reason}`);
+    }
+    if (neverEnrichedBoxes.length > 20) {
+      console.log(`  ... e mais ${neverEnrichedBoxes.length - 20}`);
+    }
+  }
 
   if (unmatchedBoxes.length > 0) {
     console.log(`\n_${unmatchedBoxes.length} box(es) sem dado de clique mensurável (não entram no ranking acima):_`);

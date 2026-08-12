@@ -217,7 +217,7 @@ data/past-editions.md regenerado via refresh-dedup.
 
 **Verificar e corrigir slug pos-Schedule (#2011, #3449) — GATE-BLOCKING desde #4570:**
 
-O bloco encaminhavel por WhatsApp (entre D1/D2, ver `context/templates/newsletter.md`)
+O bloco encaminhavel por WhatsApp (dentro do D1 desde #5152, ver `context/templates/newsletter.md`)
 ja tem a URL `https://diar.ia.br/p/{seoSlug(title)}` BAKED IN no corpo do
 e-mail desde o pre-render do Stage 4 — se o slug real do post divergir, esse
 link ja enviado 404 pra quem abrir o e-mail. Por isso esta checagem deixou de

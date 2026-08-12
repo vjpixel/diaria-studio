@@ -151,7 +151,7 @@ function checkWhatsappSlugGuard(editionDir: string): InvariantViolation[] {
         message:
           `_internal/whatsapp-slug-check.json ausente — o guard de slug do bloco WhatsApp ` +
           `(#4570) não rodou (ou rodou sem \`--out\`). GATE-BLOCKING: o link do bloco WhatsApp ` +
-          `(entre D1/D2) já está BAKED IN no corpo do e-mail — sem essa checagem, um slug ` +
+          `(dentro do D1, #5152) já está BAKED IN no corpo do e-mail — sem essa checagem, um slug ` +
           `divergente 404 pra quem abrir o e-mail. Rodar \`npx tsx scripts/check-whatsapp-slug-guard.ts\` ` +
           `(ver \`.claude/agents/orchestrator-stage-6.md\` §6d) antes de aceitar o Stage 6.`,
         source_issue: "#4574",

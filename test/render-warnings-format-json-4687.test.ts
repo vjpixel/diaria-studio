@@ -88,24 +88,35 @@ function readWarnings(dir: string): { warnings: Array<{ event: string }> } {
 }
 
 describe("render-newsletter-html CLI — --format json não deixa render-warnings.json stale (#4687)", () => {
-  it("--format json escreve render-warnings.json com warnings: [] (não sobrevive aviso de render HTML anterior)", () => {
-    const dir = makeEditionDir(buildReviewed({ box1: BOX1, box2: BOX2, box3: BOX3 }));
+  it("--format json escreve render-warnings.json com warnings: [] (não sobrevive aviso de chamada anterior)", () => {
+    const dir = makeEditionDir(buildReviewed({ box1: BOX1 }));
     try {
-      const outPath = join(dir, "_internal", "out.html");
-
-      // 1ª chamada: render HTML normal, slot3 dropped → warning gravado.
-      const r1 = run([dir, "--full", "--out", outPath]);
-      assert.equal(r1.status, 0, `stderr: ${r1.stderr}`);
+      // Simula um render-warnings.json de uma rodada ANTERIOR já com 1
+      // evento — mesmo formato que `writeRenderWarningsFile` grava. #5152
+      // removeu a reserva do WhatsApp na lacuna D1/D2 — com ela, o cenário
+      // "3 caixas configuradas + 3 destaques → slot3 dropped" que este teste
+      // usava pra produzir o warning de verdade deixou de ser alcançável por
+      // uma edição bem-formada (ver render-warnings-signal-4673.test.ts,
+      // que documenta isso em detalhe). O ponto DESTE teste é só o branch
+      // `--format json` do CLI, não a origem do warning — escrever o
+      // arquivo direto, como `render-warnings-invariant-4673.test.ts` já
+      // faz, desacopla o teste de qual evento é reproduzível hoje.
+      writeFileSync(
+        join(dir, "_internal", "render-warnings.json"),
+        JSON.stringify(
+          { generated_at: new Date().toISOString(), warnings: [{ event: "divulgacao_box_dropped_no_gap", edition: "260999", slot: 3 }] },
+          null,
+          2,
+        ),
+        "utf8",
+      );
       assert.equal(readWarnings(dir).warnings.length, 1, "pré-condição: warning presente antes do --format json");
 
-      // Editor corrige a causa (remove a caixa excedente).
-      writeFileSync(join(dir, "02-reviewed.md"), buildReviewed({ box1: BOX1, box2: BOX2 }), "utf8");
-
-      // 2ª chamada: --format json (uso legítimo de inspeção/debug) — antes do
-      // fix, `renderHTML()` nunca rodava neste branch e o arquivo antigo
+      // --format json (uso legítimo de inspeção/debug) — antes do fix do
+      // #4687, `renderHTML()` nunca rodava neste branch e o arquivo antigo
       // (com o warning da causa já corrigida) sobrevivia intocado.
-      const r2 = run([dir, "--format", "json"]);
-      assert.equal(r2.status, 0, `stderr: ${r2.stderr}`);
+      const r = run([dir, "--format", "json"]);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
       assert.ok(existsSync(join(dir, "_internal", "render-warnings.json")), "render-warnings.json deveria existir");
       assert.deepEqual(
         readWarnings(dir).warnings,

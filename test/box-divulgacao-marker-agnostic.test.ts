@@ -122,18 +122,16 @@ Um documentário recente mostra bastidores de produção com IA generativa.
         "conteúdo do box com marcador novo deve aparecer no HTML renderizado",
       );
       assert.ok(html.includes("trailer"), "link do box preservado");
-      // Não deve vazar o destaque D2 nem duplicar conteúdo. #4624: com o
-      // bloco WhatsApp (sempre presente, D1 existe) ocupando a lacuna D1/D2,
-      // e só o slot 1 configurado nesta fixture (slot2/3 vazios), o box
-      // desliza pra próxima lacuna livre (D2/D3) em vez de ficar empilhado
-      // logo abaixo do CTA do WhatsApp — continua entre D1 e D3 (nunca some,
-      // nunca vaza pro corpo de um destaque), só não mais entre D1 e D2.
+      // Não deve vazar o destaque D2 nem duplicar conteúdo. #5152: o
+      // WhatsApp saiu da lacuna D1/D2 (agora vive dentro do D1) — o box
+      // (único slot configurado nesta fixture) volta pra sua lacuna de
+      // ORIGEM, entre D1 e D2.
       const d1Idx = html.indexOf("Título D1");
       const d2Idx = html.indexOf("Título D2");
       const d3Idx = html.indexOf("Título D3");
       const boxIdx = html.indexOf("Assista: como a IA");
       assert.ok(d1Idx !== -1 && d2Idx !== -1 && d3Idx !== -1);
-      assert.ok(boxIdx > d2Idx && boxIdx < d3Idx, "box3204 renderiza na lacuna D2/D3 (deslocado do D1/D2 pelo WhatsApp, #4624)");
+      assert.ok(boxIdx > d1Idx && boxIdx < d2Idx, "box3204 renderiza na lacuna D1/D2, sua posição de origem (#5152 liberou a lacuna)");
     });
   });
 

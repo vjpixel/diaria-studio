@@ -674,25 +674,25 @@ Corpo do box de afiliados.
     });
     const html = renderHTML(content);
 
+    const d1Idx = html.indexOf("Destaque 1");
     const d2Idx = html.indexOf("Destaque 2");
     const d3Idx = html.indexOf("Destaque 3");
 
-    // #4624: com o WhatsApp (sempre presente, D1 existe) ocupando a lacuna
-    // D1/D2, o slot 1 desliza pra lacuna D2/D3 (empurrando o slot 2, que por
-    // sua vez desliza pra pós-D3 — nenhum dos dois some, só trocam de lacuna
-    // em cadeia). slot 1 (box 🛒) continua sem imagem promo (nunca teve esse
-    // recurso — comportamento legado preservado; a paridade nova é só pro
-    // box 📚/📣/🎉 no slot 2). D1 tem sua PRÓPRIA hero image (04-d1-2x1.jpg)
-    // — não checar ausência total de <img> no slice, só que a imagem do box
-    // de afiliados (que não existe pra 🛒) não vaza e o CTA/pill do box
-    // seguem intactos.
-    const slot1Html = html.slice(d2Idx, d3Idx);
+    // #5152: o WhatsApp saiu da lacuna D1/D2 (agora vive dentro do D1) — as
+    // caixas voltam a ocupar sua lacuna de ORIGEM, sem deslocamento em
+    // cadeia: slot 1 fica em D1/D2, slot 2 em D2/D3. slot 1 (box 🛒) continua
+    // sem imagem promo (nunca teve esse recurso — comportamento legado
+    // preservado; a paridade nova é só pro box 📚/📣/🎉 no slot 2). D1 tem sua
+    // PRÓPRIA hero image (04-d1-2x1.jpg) — não checar ausência total de
+    // <img> no slice, só que a imagem do box de afiliados (que não existe
+    // pra 🛒) não vaza e o CTA/pill do box seguem intactos.
+    const slot1Html = html.slice(d1Idx, d2Idx);
     assert.ok(!slot1Html.includes("livros-slot2.jpg"), "slot 1 não deve ter a imagem promo do slot 2");
     assert.ok(slot1Html.includes("border-radius:999px"), "slot 1 (🛒) mantém botão pill");
     assert.ok(slot1Html.includes("Ver ofertas"), "slot 1 (🛒) mantém CTA");
 
-    // slot 2 (agora pós-D3, deslocado pelo slot 1) tem a imagem + pill.
-    const slot2Html = html.slice(d3Idx);
+    // slot 2 (D2/D3, posição de origem) tem a imagem + pill.
+    const slot2Html = html.slice(d2Idx, d3Idx);
     assert.ok(slot2Html.includes("<img"), "slot 2 (📚) deve ter <img>");
     assert.ok(slot2Html.includes("https://img.example/livros-slot2.jpg"), "src correto no slot 2");
     assert.ok(slot2Html.includes("border-radius:999px"), "slot 2 (📚) mantém botão pill");

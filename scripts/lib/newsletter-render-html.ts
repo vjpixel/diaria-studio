@@ -105,7 +105,7 @@ export const EIA_ARCHIVE_UTM_CAMPAIGN = EIA_ARCHIVE_UTM.campaign;
  * `image-crop-warn`/`card-4x5-upload-missing`).
  */
 export interface RenderWarningEvent {
-  event: "divulgacao_box_dropped_no_gap" | "whatsapp_share_no_d1";
+  event: "divulgacao_box_dropped_no_gap" | "whatsapp_share_no_d1" | "whatsapp_share_d1_mismatch";
   edition: string;
   slot?: number;
 }
@@ -1092,13 +1092,24 @@ export function renderHubLinkInner(hubLink?: HubLink): string {
   </td></tr></table>`;
 }
 
-export function renderDestaque(d: RenderDestaque): string {
+/**
+ * `whatsappShareHtml` (#5152, 260813): conteúdo INNER de `renderWhatsappShare`
+ * — só é injetado quando `d.n === 1` (guard defensivo redundante com o
+ * caller, que só passa o argumento pro D1; no mesmo espírito anti-vazamento
+ * do #4519 — aquela issue evitava que título de D2/D3 vazasse pro TEXTO do
+ * bloco WhatsApp; este guard evita que o BLOCO INTEIRO vaze pra dentro de
+ * D2/D3, um risco novo que só existe porque o bloco passou a viver dentro
+ * de um destaque, #5152). Entra logo após "Por que isso importa" — posição
+ * pedida pelo editor na revisão da edição 260812.
+ */
+export function renderDestaque(d: RenderDestaque, whatsappShareHtml = ""): string {
   // #1936 (DS email template): seção = uma linha padded (32px lateral). Estrutura:
   // kicker (●+régua) → manchete Georgia 26px (underline teal) → imagem hero
   // (#1077: D1; #2133/#2141: D1/D2/D3 todos com hero 2:1) → parágrafos sans →
-  // box "Por que isso importa". Sem <hr> separador (cada seção abre com kicker).
-  // Hero usa sempre o arquivo 2:1 — D1 já era "04-d1-2x1.jpg"; D2/D3 passam a
-  // usar "04-d{N}-2x1.jpg" gerado pelo Stage 3 (#2133/#2141).
+  // box "Por que isso importa" → bloco WhatsApp (#5152, só D1). Sem <hr>
+  // separador (cada seção abre com kicker). Hero usa sempre o arquivo 2:1 —
+  // D1 já era "04-d1-2x1.jpg"; D2/D3 passam a usar "04-d{N}-2x1.jpg" gerado
+  // pelo Stage 3 (#2133/#2141).
   const heroFile = `04-d${d.n}-2x1.jpg`;
   const pad = d.n === 1 ? PAD_LEAD : PAD_SECTION;
   const inner = [
@@ -1107,6 +1118,7 @@ export function renderDestaque(d: RenderDestaque): string {
     renderHeroImageInner(heroFile, d.title),
     renderBodyParasInner(d.body),
     renderWhyBoxInner(d.why),
+    d.n === 1 ? whatsappShareHtml : "", // #5152
     renderAprofundeInner(d.aprofunde), // #3920
     renderHubLinkInner(d.hubLink), // #4907
   ].filter(Boolean).join("\n  ");
@@ -1587,25 +1599,34 @@ export function buildWhatsappShareLink(block: string): string {
 }
 
 /**
- * Renderiza o bloco encaminhável por WhatsApp em HTML — mesmo padrão visual
- * "painel" de `renderSorteio`/`renderEIA` (kicker + box bege) — com um botão
- * de compartilhamento abaixo do texto. #4582 (achado ao vivo 260804: a URL
- * visível — crua, com os 3 params UTM — quebrava o layout do box em clientes
- * de e-mail; pedido do editor): a ÚNICA linha visível agora é a manchete do
- * D1 em `<strong>`, sem a URL solta como texto/link. A URL continua existindo
- * — só não é mais renderizada como linha própria — ela segue embutida no
- * texto que vai pro `wa.me/?text=` (`block`, via `buildWhatsappShareBlock`),
- * que é o que de fato importa: quando o leitor encaminha, o link vai junto.
- * `titleLine` é DERIVADO de `block` (`block.split("\n\n")[0]`) — mesma
- * disciplina anti-duplicação do #4512 (nunca um literal separado que pode
- * divergir do texto que alimenta o wa.me).
+ * Renderiza o bloco encaminhável por WhatsApp em HTML — manchete em
+ * `<strong>` + botão de compartilhamento, sem container de caixa própria
+ * (kicker + conteúdo direto, mesmo padrão "inner" de `renderAprofundeInner`/
+ * `renderHubLinkInner`).
  *
- * #4582: botão voltou a seguir o MESMO padrão pill dos demais CTAs do
- * template (fundo `${COLORS.paper}`, borda `${RULE}`, texto `${TEXT_COLOR}`,
- * `border-radius:999px` — ver linhas 446/647/658/930) e ganhou
- * `text-align:center` (antes ficava alinhado à esquerda dentro do box) —
- * revertendo a escolha do #4570 de um botão preenchido TEAL, que o editor
- * pediu pra desfazer nesta mesma sessão.
+ * **#5152 (260813): deixou de ser um box (fundo bege/borda/padding
+ * `24px 28px`) e deixou de ser uma seção de nível newsletter** — pedido
+ * explícito do editor. O HTML retornado aqui não tem mais `<tr><td
+ * class="pad">` própria; é conteúdo INNER, montado por `renderDestaque`
+ * dentro da seção do D1 (ver `content.boxDivulgacao*`/`renderDestaque` — o
+ * caller decide ONDE encaixar, este renderer só produz o miolo). Histórico
+ * de posição: pé do e-mail (#4486) → entre D1 e D2, como box próprio
+ * (#4570) → dentro do D1, sem box (#5152).
+ *
+ * #4582 (achado ao vivo 260804, ainda vale: a URL visível — crua, com os 3
+ * params UTM — quebrava o layout em clientes de e-mail; pedido do editor): a
+ * ÚNICA linha visível é a manchete do D1 em `<strong>`, sem a URL solta como
+ * texto/link. A URL continua existindo — só não é renderizada como linha
+ * própria — ela segue embutida no texto que vai pro `wa.me/?text=` (`block`,
+ * via `buildWhatsappShareBlock`), que é o que de fato importa: quando o
+ * leitor encaminha, o link vai junto. `titleLine` é DERIVADO de `block`
+ * (`block.split("\n\n")[0]`) — mesma disciplina anti-duplicação do #4512
+ * (nunca um literal separado que pode divergir do texto que alimenta o
+ * wa.me).
+ *
+ * Botão segue o MESMO padrão pill dos demais CTAs do template (fundo
+ * `${COLORS.paper}`, borda `${RULE}`, texto `${TEXT_COLOR}`,
+ * `border-radius:999px`), centralizado.
  *
  * `""` quando não há D1 (edição sem destaques — nunca deveria acontecer dado
  * o invariante de 2-3 destaques, `scripts/extract-destaques.ts`, mas
@@ -1626,27 +1647,21 @@ export function renderWhatsappShare(destaques: RenderDestaque[], edition: string
   const block = buildWhatsappShareBlock(d1.title, editionUrl);
   const shareLink = buildWhatsappShareLink(block);
 
-  // Só a manchete é visível no box (#4582) — a URL segue só dentro de `block`
+  // Só a manchete é visível (#4582) — a URL segue só dentro de `block`
   // (texto do wa.me), nunca renderizada como linha própria aqui.
   const [titleLine] = block.split("\n\n");
-  const innerHtml = bodyP("0", `<strong>${esc(titleLine)}</strong>`);
 
-  // #4582: mesmo pill dos demais CTAs (ver linhas 446/647/658/930) —
-  // reverte o botão preenchido TEAL introduzido no #4570.
+  // Mesmo pill dos demais CTAs (ver linhas 446/647/658/930).
   const buttonStyle = `display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;`;
 
   return `<!-- Compartilhe no WhatsApp -->
-<tr><td class="pad" style="padding:${PAD_SECTION};">
-  ${renderKicker("Compartilhe")}
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-collapse:separate;border-spacing:0"><tr>
-    <td style="background:${SURFACE};border-radius:12px;padding:24px 28px;">
-      ${innerHtml}
-      <div style="text-align:center;margin-top:16px;">
-        <a href="${esc(shareLink)}" style="${buttonStyle}" target="_blank" rel="noopener noreferrer">Compartilhar no WhatsApp →</a>
-      </div>
-    </td>
-  </tr></table>
-</td></tr>`;
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:24px;border-collapse:separate;border-spacing:0"><tr><td>
+    ${renderKicker("Compartilhe")}
+    <p style="margin:8px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.5;color:${TEXT_COLOR};"><strong>${esc(titleLine)}</strong></p>
+    <div style="text-align:center;margin-top:16px;">
+      <a href="${esc(shareLink)}" style="${buttonStyle}" target="_blank" rel="noopener noreferrer">Compartilhar no WhatsApp →</a>
+    </div>
+  </td></tr></table>`;
 }
 
 /**
@@ -1786,36 +1801,37 @@ export interface DivulgacaoBoxDef {
 
 /**
  * #4624: calcula em qual lacuna (índice do destaque logo após o qual a caixa
- * renderiza) cada caixa de divulgação configurada deve cair, dado se o bloco
- * WhatsApp (permanente, #4570) está ocupando a lacuna D1/D2 nesta edição.
+ * renderiza) cada caixa de divulgação configurada deve cair.
  *
- * Motivação: antes desta correção, o box de divulgação do slot 1 (configurado
- * por padrão em toda edição) empilhava LOGO ABAIXO do CTA do WhatsApp na
- * MESMA lacuna D1/D2, sem respiro editorial — dois CTAs consecutivos, achado
- * na revisão da edição 260805 (issue #4624).
+ * Motivação original (#4624): antes dessa correção, o box de divulgação do
+ * slot 1 (configurado por padrão em toda edição) empilhava LOGO ABAIXO do
+ * CTA do WhatsApp na MESMA lacuna D1/D2, sem respiro editorial — dois CTAs
+ * consecutivos, achado na revisão da edição 260805.
  *
- * Lacunas possíveis, em ordem: D1/D2 (índice 0 — só fica livre quando NÃO há
- * WhatsApp), D2/D3 (índice 1 — só existe com 2+ destaques), pós-último
- * destaque (índice `destaqueCount - 1` — distinto de D2/D3 só com 3+
- * destaques).
+ * **#5152 (260813): o bloco WhatsApp saiu daqui.** Ele deixou de ser um
+ * elemento de nível newsletter que disputa lacuna entre destaques — agora
+ * vive DENTRO do D1 (`renderDestaque`, logo após "Por que isso importa"),
+ * fora do inventário de lacunas que esta função aloca. **Decisão explícita
+ * do #5152:** a lacuna D1/D2 (índice 0) passa a ficar SEMPRE elegível pra
+ * divulgação — não existe mais motivo pra reservá-la, já que nada mais
+ * ocupa esse espaço fisicamente. Isso desfaz o efeito em cadeia que existia
+ * antes (slot1 sendo empurrado pro D2/D3, slot2 pro pós-último, slot3
+ * ficando sem lacuna quase sempre) — as 3 caixas voltam a ocupar sua lacuna
+ * de origem sempre que os dados estiverem bem-formados.
+ *
+ * Lacunas possíveis, em ordem: D1/D2 (índice 0), D2/D3 (índice 1 — só existe
+ * com 2+ destaques), pós-último destaque (índice `destaqueCount - 1` —
+ * distinto de D2/D3 só com 3+ destaques).
  *
  * Cada caixa tem uma lacuna de origem fixa por slot (slot1→D1/D2, slot2→D2/D3,
  * slot3→pós-último) e só se desloca quando a SUA PRÓPRIA lacuna está ocupada
  * — nunca por conveniência de fila. Isso importa: se só o slot 3 estiver
  * configurado (slot 1/2 ausentes), ele continua na posição pós-último de
- * sempre — não haveria NENHUMA disputa pela lacuna D1/D2 nesse caso, então
- * não há motivo pra adiantá-lo. O deslocamento só é um efeito em CADEIA: o
- * WhatsApp ocupa D1/D2 → slot 1 (se configurado) avança pra próxima lacuna
- * livre em ordem (D2/D3) → se ISSO empurrar o slot 2 (se configurado), o
- * slot 2 avança pra lacuna seguinte (pós-último) → se isso empurrar o slot 3,
- * o slot 3 fica sem lacuna e não renderiza nesta edição (config intacta, só
- * não coube no espaço hoje — mesmo princípio já usado quando o slot 2 não
- * tem lacuna D2/D3 em edições de 2 destaques).
+ * sempre.
  *
- * Sem WhatsApp e com dados bem-formados (slot 2 só configurado quando há D3,
- * convenção já estabelecida — #2978), a lacuna D1/D2 volta a ficar livre e as
- * caixas mantêm suas posições originais (slot1@D1/D2, slot2@D2/D3,
- * slot3@pós-D3) — reduz exatamente ao comportamento pré-#4624.
+ * Com dados bem-formados (slot 2 só configurado quando há D3, convenção já
+ * estabelecida — #2978), as 3 caixas mantêm suas posições originais
+ * (slot1@D1/D2, slot2@D2/D3, slot3@pós-D3).
  *
  * Dois casos degenerados, tratados explicitamente (achados de review #4624):
  *  - `destaqueCount < 1` (edição sem D1, nunca deveria acontecer dado o
@@ -1839,7 +1855,6 @@ export interface DivulgacaoBoxDef {
  * Pure function — não decide o CONTEÚDO das caixas, só a alocação de lacunas.
  */
 export function assignDivulgacaoGaps(
-  whatsappPresent: boolean,
   destaqueCount: number,
   boxes: DivulgacaoBoxDef[],
 ): ReadonlyMap<number, DivulgacaoBoxDef> {
@@ -1868,8 +1883,10 @@ export function assignDivulgacaoGaps(
     3: canonicalGaps.length - 1,
   };
 
+  // #5152: a lacuna D1/D2 (posição 0) não é mais reservada — o WhatsApp saiu
+  // daqui, ver docstring acima. `takenPositions` só cresce à medida que as
+  // próprias caixas vão ocupando lacunas, abaixo.
   const takenPositions = new Set<number>();
-  if (whatsappPresent) takenPositions.add(0); // D1/D2 pertence ao WhatsApp
 
   const assignment = new Map<number, DivulgacaoBoxDef>();
   // Processa em ordem de prioridade (slot 1 > slot 2 > slot 3) — é essa ordem
@@ -1955,11 +1972,11 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   const includeEia = !!(!opts.excludeEia && content.eia.credit);
   let eiaInserted = false;
 
-  // #4570: bloco encaminhável por WhatsApp — SEMPRE na lacuna D1/D2 (após D1)
-  // quando D1 existe. Permanente/fixo por decisão do editor (ver doc comment
-  // de `renderWhatsappShare`); calculado uma vez aqui (fora do loop) pra
-  // `assignDivulgacaoGaps` (#4624) saber se essa lacuna já está ocupada antes
-  // de alocar as caixas de divulgação.
+  // #4570/#5152: bloco encaminhável por WhatsApp — renderiza DENTRO do D1
+  // (ver docstring de `renderWhatsappShare`/`renderDestaque`), calculado uma
+  // vez aqui (fora do loop) e injetado só quando `i === 0` no loop abaixo.
+  // Não ocupa mais lacuna nenhuma entre destaques — `assignDivulgacaoGaps`
+  // (#4624) não recebe mais um `whatsappPresent` (removido em #5152).
   const whatsappShare = renderWhatsappShare(content.destaques, content.eia.edition);
 
   // #2978/#3476/#4624: caixas de divulgação configuradas (slot 1/2/3), na
@@ -2004,7 +2021,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
       imageAlt: content.boxDivulgacaoImageAlt?.[3] ?? null,
     });
   }
-  const divulgacaoGaps = assignDivulgacaoGaps(!!whatsappShare, content.destaques.length, divulgacaoBoxes);
+  const divulgacaoGaps = assignDivulgacaoGaps(content.destaques.length, divulgacaoBoxes); // #5152
   // #4624: caixa que não coube em nenhuma lacuna livre nesta edição — logar
   // pra rastreabilidade (mesmo padrão do `whatsapp_share_no_d1` já existente).
   if (divulgacaoBoxes.length > divulgacaoGaps.size) {
@@ -2021,12 +2038,26 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   }
 
   for (let i = 0; i < content.destaques.length; i++) {
-    parts.push(renderDestaque(content.destaques[i]));
-    // Posição antiga do bloco WhatsApp era ANTES de "Para encerrar" (pé do
-    // e-mail) — mudou por pedido explícito do editor na revisão da edição
-    // 260804 ("deixe o box de whatsapp permanente entre d1 e d2 até que eu
-    // peça para mudar").
-    if (i === 0 && whatsappShare) parts.push(whatsappShare);
+    // #5152 (260813): o bloco WhatsApp entra DENTRO da seção do D1 (logo
+    // após "Por que isso importa"), não mais como elemento próprio entre
+    // D1 e D2 — `renderDestaque` só injeta quando `i === 0`. Histórico de
+    // posição: pé do e-mail (#4486) → entre D1 e D2, como box (#4570) →
+    // dentro do D1, sem box (#5152).
+    //
+    // Achado silent-failure-hunter (review desta PR): o caller decide "isto
+    // é D1" por POSIÇÃO (`i === 0`), enquanto `renderDestaque` decide
+    // independentemente por `d.n === 1` — hoje os dois sinais sempre
+    // concordam (destaques vêm sempre na ordem 1..3), mas se um dia
+    // divergirem (bug de parsing/reordenação upstream), o guard interno de
+    // `renderDestaque` engoliria o bloco em silêncio, sem log nenhum — a
+    // mesma classe de falha que #4512/#3809 já corrigiram pro caso "sem D1
+    // nenhum" (`whatsapp_share_no_d1`). Este check espelha aquele: nunca
+    // deveria disparar, mas se disparar, aponta o bug em vez de esconder o
+    // sintoma (bloco ausente do e-mail publicado).
+    if (i === 0 && whatsappShare && content.destaques[i].n !== 1) {
+      emitRenderWarning({ event: "whatsapp_share_d1_mismatch", edition: content.eia.edition });
+    }
+    parts.push(renderDestaque(content.destaques[i], i === 0 ? whatsappShare : ""));
 
     // #4624: caixa de divulgação alocada pra esta lacuna (slot original ou
     // deslocado por `assignDivulgacaoGaps`, nunca mais de uma por lacuna —

@@ -17,6 +17,24 @@
  *     acontecer" mesmo no nível do CLI).
  *   - edição normal (nada perdido) → não produz ruído (arquivo escrito com
  *     `warnings: []`, nunca ausente — sempre fresco, nunca stale).
+ *
+ * **#5152 (260813) mudou o que é reproduzível aqui.** Antes, `divulgacao_box_
+ * dropped_no_gap` disparava no caso mais comum (3 destaques + 3 caixas
+ * configuradas) porque o bloco WhatsApp reservava a lacuna D1/D2, sobrando
+ * só 2 lacunas pras 3 caixas. O WhatsApp saiu dessa lacuna (agora vive dentro
+ * do D1) — a lacuna D1/D2 volta a ficar livre, e o inventário de lacunas
+ * (D1/D2, D2/D3, pós-D3) volta a bater 1:1 com os 3 slots possíveis. Editando
+ * uma edição BEM-FORMADA (slot2 só configurado quando há D3 — guard `d3 !==
+ * null` em `stitch-newsletter.ts:602`, e o parser (`extractBoxDivulgacao2` →
+ * `locateBoxInGap`) nem consegue extrair um "box2" de um markdown sem D3, a
+ * lacuna D2/D3 simplesmente não existe em `interDestaqueGaps`), o drop
+ * `divulgacao_box_dropped_no_gap` NUNCA dispara mais em produção real. O caso
+ * degenerado que ainda dispara (destaqueCount=2 com slot2 configurado —
+ * "dado inconsistente") só é alcançável construindo um `NewsletterContent`
+ * direto, sem passar pelo parser de markdown — coberto em
+ * test/render-newsletter-html.test.ts (`assignDivulgacaoGaps`/`renderHTML`
+ * describe blocks), não reproduzível neste arquivo (que testa o pipeline
+ * real via CLI + parser).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -44,11 +62,10 @@ Why do D${n}.
 /**
  * Edição de 3 destaques + até 3 caixas de divulgação (slot1 entre D1/D2,
  * slot2 entre D2/D3, slot3 após D3) — mesmo esqueleto de
- * test/box-divulgacao-marker-agnostic.test.ts. Com D1 presente, o bloco
- * WhatsApp (permanente, #4570) ocupa a lacuna D1/D2; com as 3 caixas
- * presentes, sobram só 2 lacunas livres pras 3 caixas (mesmo cenário
- * exercitado por `fixt3()` em test/render-newsletter-html.test.ts) — o slot 3
- * fica sem lacuna e é dropped.
+ * test/box-divulgacao-marker-agnostic.test.ts. Desde #5152, com as 3 caixas
+ * presentes, as 3 lacunas (D1/D2, D2/D3, pós-D3) bastam pras 3 — nada é
+ * dropped (o bloco WhatsApp, #4570, não ocupa mais lacuna nenhuma; vive
+ * dentro do D1).
  */
 function buildReviewed(boxes: { box1?: string | null; box2?: string | null; box3?: string | null }): string {
   const { box1 = null, box2 = null, box3 = null } = boxes;
@@ -102,8 +119,8 @@ function readWarnings(dir: string): { generated_at?: string; warnings: Array<{ e
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-describe("render-newsletter-html CLI — _internal/render-warnings.json (#4673)", () => {
-  it("caixa de divulgação sem lacuna (slot3 dropped) → sinal consumível em render-warnings.json", () => {
+describe("render-newsletter-html CLI — _internal/render-warnings.json (#4673, comportamento pós-#5152)", () => {
+  it("#5152: 3 destaques + 3 caixas de divulgação — todas cabem, render-warnings.json vem com warnings: [] (nada é dropped)", () => {
     const dir = makeEditionDir(buildReviewed({ box1: BOX1, box2: BOX2, box3: BOX3 }));
     try {
       const outPath = join(dir, "_internal", "out.html");
@@ -111,16 +128,15 @@ describe("render-newsletter-html CLI — _internal/render-warnings.json (#4673)"
       assert.equal(r.status, 0, `stderr: ${r.stderr}`);
 
       const path = join(dir, "_internal", "render-warnings.json");
-      assert.ok(existsSync(path), "render-warnings.json deveria ter sido gravado");
+      assert.ok(existsSync(path), "render-warnings.json deveria ter sido gravado, mesmo sem nenhum evento");
       const data = readWarnings(dir);
-      assert.equal(data.warnings.length, 1, `esperado 1 evento, obtido: ${JSON.stringify(data.warnings)}`);
-      assert.equal(data.warnings[0].event, "divulgacao_box_dropped_no_gap");
-      assert.equal(data.warnings[0].slot, 3, "o slot 3 (última caixa configurada) é o que não coube");
+      assert.deepEqual(data.warnings, [], `esperado nenhum warning (as 3 caixas cabem desde #5152), obtido: ${JSON.stringify(data.warnings)}`);
 
-      // Confirma que o conteúdo da caixa dropped de fato não aparece no HTML
-      // final — o sinal reflete um sumiço real, não um falso positivo.
+      // As 3 caixas aparecem no HTML final — nenhuma é dropped.
       const html = readFileSync(outPath, "utf8");
-      assert.ok(!html.includes("Apoie a curadoria"), "conteúdo da caixa dropped não deve aparecer no HTML");
+      assert.ok(html.includes("Confira nossa curadoria"), "conteúdo do slot1 deveria aparecer no HTML");
+      assert.ok(html.includes("Confira nossos livros"), "conteúdo do slot2 deveria aparecer no HTML");
+      assert.ok(html.includes("Apoie a curadoria"), "conteúdo do slot3 deveria aparecer no HTML — não é mais dropped (#5152)");
     } finally {
       rmSync(resolve(dir, ".."), { recursive: true, force: true });
     }
@@ -140,22 +156,27 @@ describe("render-newsletter-html CLI — _internal/render-warnings.json (#4673)"
     }
   });
 
-  it("re-render após corrigir a causa (menos caixas) sobrescreve o arquivo — nunca fica um warning STALE de uma rodada anterior", () => {
-    const dir = makeEditionDir(buildReviewed({ box1: BOX1, box2: BOX2, box3: BOX3 }));
+  it("re-render após mudança no conteúdo sobrescreve o arquivo — nunca fica um estado STALE de uma rodada anterior", () => {
+    const dir = makeEditionDir(buildReviewed({ box1: BOX1 }));
     try {
       const outPath = join(dir, "_internal", "out.html");
 
-      // 1ª rodada: 3 caixas — slot3 dropped, warning gravado.
+      // 1ª rodada: 1 caixa.
       const r1 = run([dir, "--full", "--out", outPath]);
       assert.equal(r1.status, 0, `stderr: ${r1.stderr}`);
-      assert.equal(readWarnings(dir).warnings.length, 1);
+      assert.deepEqual(readWarnings(dir).warnings, []);
+      const html1 = readFileSync(outPath, "utf8");
+      assert.ok(!html1.includes("Confira nossos livros"), "slot2 não deveria aparecer ainda (1ª rodada não o configura)");
 
-      // Editor corrige (remove a caixa excedente) e re-roda o Stage 4 pre-render
-      // — mesmo fluxo de retomada do orchestrator (§4b/§4c.6b).
-      writeFileSync(join(dir, "02-reviewed.md"), buildReviewed({ box1: BOX1, box2: BOX2 }), "utf8");
+      // Editor adiciona mais caixas e re-roda o Stage 4 pre-render — mesmo
+      // fluxo de retomada do orchestrator (§4b/§4c.6b). arquivo deve refletir
+      // o estado FRESCO desta chamada, não a rodada anterior.
+      writeFileSync(join(dir, "02-reviewed.md"), buildReviewed({ box1: BOX1, box2: BOX2, box3: BOX3 }), "utf8");
       const r2 = run([dir, "--full", "--out", outPath]);
       assert.equal(r2.status, 0, `stderr: ${r2.stderr}`);
-      assert.deepEqual(readWarnings(dir).warnings, [], "arquivo deve refletir o estado FRESCO desta chamada, não a rodada anterior");
+      assert.deepEqual(readWarnings(dir).warnings, [], "3 caixas cabem desde #5152 — ainda sem warning");
+      const html2 = readFileSync(outPath, "utf8");
+      assert.ok(html2.includes("Confira nossos livros"), "slot2 deveria aparecer na 2ª rodada, refletindo o conteúdo atualizado");
     } finally {
       rmSync(resolve(dir, ".."), { recursive: true, force: true });
     }
@@ -167,8 +188,7 @@ describe("render-newsletter-html CLI — _internal/render-warnings.json (#4673)"
       const r = run([dir, "--split"]);
       assert.equal(r.status, 0, `stderr: ${r.stderr}`);
       const data = readWarnings(dir);
-      assert.equal(data.warnings.length, 1);
-      assert.equal(data.warnings[0].event, "divulgacao_box_dropped_no_gap");
+      assert.deepEqual(data.warnings, [], "3 caixas cabem desde #5152 — sem warning também no modo --split");
     } finally {
       rmSync(resolve(dir, ".."), { recursive: true, force: true });
     }

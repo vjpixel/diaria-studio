@@ -54,6 +54,7 @@ import type { SourceEntry } from "./lib/source-runs.ts";
 import { canonicalize } from "./lib/url-utils.ts";
 import { URL_WITH_BALANCED_PARENS_RE_PART } from "./lib/lint-checks/section-item-format.ts";
 import { isAprofundeAnchor } from "./lib/ctr-utils.ts";
+import type { EnrichmentState } from "./lib/shared/enrichment-state.ts"; // #5153
 import { ALL_SECTION_NAMES_PATTERN } from "./lib/section-naming.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 import { buildTimelineRows } from "./render-overnight-timeline.ts";
@@ -230,6 +231,21 @@ interface CsvRow {
   ctr_pct: string;
   category: string;
   origin: string;
+  // #4836 item 3, propagado aqui em #5153: 'never_enriched' sinaliza que
+  // verified_clicks/unique_verified_clicks/ctr_pct desta linha são dado
+  // AUSENTE (post fora da janela de 7 dias), não um zero medido. Coluna
+  // pode estar ausente em CSVs gerados antes do #4836 — `row.enrichment_state`
+  // vem `undefined` nesse caso, tratado como "não never_enriched" (comportamento
+  // IDÊNTICO ao pré-#5153 pra CSVs antigos — achado comment-analyzer, review
+  // do #5153: isto NÃO é o mesmo default de `resolveEnrichmentState`, que
+  // resolveria ambiguidade pro lado OPOSTO — aqui não há como recuperar
+  // `clicksLength` a partir de uma row de CSV já agregada, então a única
+  // opção sã é preservar o comportamento antigo em vez de inventar um). Tipado com o
+  // union compartilhado, não `string` solto — um valor gravado errado por um
+  // writer futuro do CSV vira erro de compilação aqui, não um `=== "never_
+  // enrichd"` que falha em silêncio (achado do type-design-analyzer, review
+  // do #5153).
+  enrichment_state?: EnrichmentState;
 }
 
 /**
@@ -259,6 +275,46 @@ export function parseCsvLine(line: string): string[] {
   }
   result.push(current);
   return result;
+}
+
+/**
+ * #5153: agrega `top_categories` a partir das rows já parseadas do CSV —
+ * extraído de `buildCtrSummary` pra ser testável sem tocar disco (mesmo
+ * padrão de `parseCsvLine`, exportado "pra que testes importem em vez de
+ * copiar e colar").
+ *
+ * **Exclui rows `enrichment_state: never_enriched`** da agregação (clicks E
+ * ctr) — post fora da janela de 7 dias tem `unique_verified_clicks="0"` e
+ * `ctr_pct=""` no CSV (`build-link-ctr.ts`), mas isso é dado AUSENTE, não
+ * zero medido. Sem este filtro, `total_clicks`/`avg_ctr_pct` por categoria
+ * ficavam artificialmente puxados pra baixo por edições recentes ainda não
+ * enriquecidas — o mesmo `build-link-ctr.ts` já exclui `never_enriched` do
+ * seu próprio resumo por categoria (`--full`, console); este consumidor
+ * (dashboard) lia o CSV cru e não herdava essa exclusão.
+ */
+export function buildTopCategoriesFromRows(rows: CsvRow[]): CtrByCategoryRow[] {
+  const catMap = new Map<string, { count: number; clicks: number; ctrs: number[] }>();
+  for (const r of rows) {
+    if (r.enrichment_state === "never_enriched") continue; // #5153
+    const cat = r.category || "Outro";
+    const clicks = parseInt(r.unique_verified_clicks, 10) || 0;
+    const ctr = parseFloat(r.ctr_pct) || 0;
+    const existing = catMap.get(cat) ?? { count: 0, clicks: 0, ctrs: [] };
+    existing.count++;
+    existing.clicks += clicks;
+    existing.ctrs.push(ctr);
+    catMap.set(cat, existing);
+  }
+
+  return [...catMap.entries()]
+    .map(([category, v]) => ({
+      category,
+      link_count: v.count,
+      total_clicks: v.clicks,
+      avg_ctr_pct: v.ctrs.length > 0 ? v.ctrs.reduce((a, b) => a + b, 0) / v.ctrs.length : 0,
+      max_ctr_pct: v.ctrs.length > 0 ? Math.max(...v.ctrs) : 0,
+    }))
+    .sort((a, b) => b.avg_ctr_pct - a.avg_ctr_pct);
 }
 
 function buildCtrSummary(
@@ -300,28 +356,7 @@ function buildCtrSummary(
 
   const editions = new Set(rows.map((r) => r.date)).size;
 
-  // Agrega por categoria
-  const catMap = new Map<string, { count: number; clicks: number; ctrs: number[] }>();
-  for (const r of rows) {
-    const cat = r.category || "Outro";
-    const clicks = parseInt(r.unique_verified_clicks, 10) || 0;
-    const ctr = parseFloat(r.ctr_pct) || 0;
-    const existing = catMap.get(cat) ?? { count: 0, clicks: 0, ctrs: [] };
-    existing.count++;
-    existing.clicks += clicks;
-    existing.ctrs.push(ctr);
-    catMap.set(cat, existing);
-  }
-
-  const top_categories: CtrByCategoryRow[] = [...catMap.entries()]
-    .map(([category, v]) => ({
-      category,
-      link_count: v.count,
-      total_clicks: v.clicks,
-      avg_ctr_pct: v.ctrs.length > 0 ? v.ctrs.reduce((a, b) => a + b, 0) / v.ctrs.length : 0,
-      max_ctr_pct: v.ctrs.length > 0 ? Math.max(...v.ctrs) : 0,
-    }))
-    .sort((a, b) => b.avg_ctr_pct - a.avg_ctr_pct);
+  const top_categories = buildTopCategoriesFromRows(rows);
 
   // Top 10 links por CTR
   const top_links = [...rows]
