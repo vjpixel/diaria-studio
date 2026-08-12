@@ -1,11 +1,12 @@
 /**
- * test/beehiiv-home-meta-check.test.ts (#4557)
+ * test/beehiiv-home-meta-check.test.ts (#4557, #5099)
  *
  * Regressão pura pra `scripts/lib/beehiiv-home-meta-check.ts` — extração de
  * og:title/og:description/meta description + os 3 eixos de drift da issue
  * #4557 (og:title sem a marca oficial / grafia legada, self-links
- * `http://diar.ia.br`, rótulos residuais em inglês), fingerprint +
- * idempotência do alarme, e o texto do e-mail. Nenhum teste bate em
+ * `http://diar.ia.br`, rótulos residuais em inglês) + o 4º eixo do #5099
+ * (link reader-facing pra `*.workers.dev`/`diaria.beehiiv.com`), fingerprint
+ * + idempotência do alarme, e o texto do e-mail. Nenhum teste bate em
  * rede/home publicada real — todo HTML é fixture local inline.
  */
 import { describe, it } from "node:test";
@@ -17,6 +18,7 @@ import {
   hasHomeMetaDrift,
   countHttpSelfLinks,
   detectEnglishLabels,
+  detectLegacyHostLinks,
   computeHomeMetaFingerprint,
   emptyHomeMetaAlarmState,
   advanceHomeMetaAlarmState,
@@ -72,6 +74,26 @@ const ENGLISH_LABELS_HTML = CLEAN_HTML.replace(
   '<a href="https://diar.ia.br/inscrever">Inscrever-se</a>\n    <a href="https://diar.ia.br/entrar">Entrar</a>',
   '<a href="https://diar.ia.br/inscrever">Sign Up</a>\n    <a href="https://diar.ia.br/entrar">Login</a>',
 ).replace("Tempo de leitura: 5 min", "5 min read");
+
+/** (f) link(s) reader-facing pra host legado (drift esperado no eixo
+ * legacy-host-link, #5099) — reproduz o vazamento real achado na auditoria:
+ * livros/cursos em `.workers.dev` + o arquivo antigo em `diaria.beehiiv.com`. */
+const LEGACY_HOST_LINKS_HTML = CLEAN_HTML.replace(
+  "</nav>",
+  '  <a href="https://livros.diaria.workers.dev/">Livros</a>\n' +
+    '  <a href="https://cursos.diaria.workers.dev/">Cursos</a>\n' +
+    '  <a href="https://diaria.beehiiv.com/archive">Arquivo</a>\n' +
+    "</nav>",
+);
+
+/** Fixture com os hosts explicitamente FORA de escopo (#5099) — badge da
+ * plataforma + CDN de imagem — não deveriam nunca virar achado. */
+const ALLOWED_PLATFORM_HOSTS_HTML = CLEAN_HTML.replace(
+  "</nav>",
+  '  <a href="https://www.beehiiv.com/?utm_source=diar.ia.br">Powered by beehiiv</a>\n' +
+    '  <a href="https://media.beehiiv.com/uploads/x.jpg">imagem</a>\n' +
+    "</nav>",
+);
 
 // ─── extractHomeMeta ────────────────────────────────────────────────────────
 
@@ -142,6 +164,36 @@ describe("detectEnglishLabels (#4557)", () => {
   });
 });
 
+describe("detectLegacyHostLinks (#5099)", () => {
+  it("vazio no HTML limpo", () => {
+    assert.deepEqual(detectLegacyHostLinks(CLEAN_HTML), []);
+  });
+
+  it("detecta os 3 hosts legados do vazamento real (livros/cursos .workers.dev + diaria.beehiiv.com)", () => {
+    const found = detectLegacyHostLinks(LEGACY_HOST_LINKS_HTML);
+    assert.deepEqual(found, ["cursos.diaria.workers.dev", "diaria.beehiiv.com", "livros.diaria.workers.dev"]);
+  });
+
+  it("deduplica hosts repetidos", () => {
+    const html = `<a href="https://poll.diaria.workers.dev/a">a</a> <a href="https://poll.diaria.workers.dev/b">b</a>`;
+    assert.deepEqual(detectLegacyHostLinks(html), ["poll.diaria.workers.dev"]);
+  });
+
+  it("NUNCA reporta www.beehiiv.com (badge) nem media.beehiiv.com (CDN) — fora de escopo #5099", () => {
+    assert.deepEqual(detectLegacyHostLinks(ALLOWED_PLATFORM_HOSTS_HTML), []);
+  });
+
+  it("qualquer subdomínio .workers.dev conta (não hardcoded pro trio conhecido)", () => {
+    const html = `<a href="https://algum-worker-novo.diaria.workers.dev/">x</a>`;
+    assert.deepEqual(detectLegacyHostLinks(html), ["algum-worker-novo.diaria.workers.dev"]);
+  });
+
+  it("host de marca diar.ia.br nunca casa (substring solta não é o suficiente)", () => {
+    const html = `<a href="https://arquivo.diar.ia.br/">Arquivo</a>`;
+    assert.deepEqual(detectLegacyHostLinks(html), []);
+  });
+});
+
 // ─── evaluateHomeMetaDrift ──────────────────────────────────────────────────
 
 describe("evaluateHomeMetaDrift (#4557)", () => {
@@ -176,10 +228,24 @@ describe("evaluateHomeMetaDrift (#4557)", () => {
     assert.match(finding!.message, /min read/);
   });
 
-  it("(e) fixture limpa nos 3 eixos -> nenhum drift", () => {
+  it("(e) fixture limpa nos 4 eixos -> nenhum drift", () => {
     const findings = evaluateHomeMetaDrift(CLEAN_HTML);
     assert.deepEqual(findings, []);
     assert.equal(hasHomeMetaDrift(findings), false);
+  });
+
+  it("(f) fixture com link pra host legado -> reportado (legacy-host-link, #5099)", () => {
+    const findings = evaluateHomeMetaDrift(LEGACY_HOST_LINKS_HTML);
+    const finding = findings.find((f) => f.check === "legacy-host-link");
+    assert.ok(finding, `esperava achado legacy-host-link: ${JSON.stringify(findings)}`);
+    assert.match(finding!.message, /livros\.diaria\.workers\.dev/);
+    assert.match(finding!.message, /cursos\.diaria\.workers\.dev/);
+    assert.match(finding!.message, /diaria\.beehiiv\.com/);
+  });
+
+  it("hosts de plataforma Beehiiv fora de escopo (badge + CDN) -> sem drift nenhum", () => {
+    const findings = evaluateHomeMetaDrift(ALLOWED_PLATFORM_HOSTS_HTML);
+    assert.deepEqual(findings, []);
   });
 
   it("og:title ausente também conta como drift (sem a marca oficial)", () => {
@@ -194,14 +260,16 @@ describe("evaluateHomeMetaDrift (#4557)", () => {
   });
 
   it("acumula múltiplos achados simultâneos (não é exclusivo)", () => {
-    // combina os 3 eixos quebrados no mesmo HTML
+    // combina os 4 eixos quebrados no mesmo HTML
     const brokenAll = LEGACY_BRAND_HTML.replace(
       '<a href="https://diar.ia.br/arquivo">Arquivo</a>',
       '<a href="http://diar.ia.br/arquivo">Arquivo</a>',
-    ).replace("Tempo de leitura: 5 min", "5 min read");
+    )
+      .replace("Tempo de leitura: 5 min", "5 min read")
+      .replace("</nav>", '  <a href="https://cursos.diaria.workers.dev/">Cursos</a>\n</nav>');
     const findings = evaluateHomeMetaDrift(brokenAll);
     const checks = findings.map((f) => f.check).sort();
-    assert.deepEqual(checks, ["english-labels", "http-self-link", "og-title-brand"]);
+    assert.deepEqual(checks, ["english-labels", "http-self-link", "legacy-host-link", "og-title-brand"]);
   });
 });
 
@@ -279,5 +347,27 @@ describe("buildHomeMetaDriftAlarmEmail (#4557)", () => {
     }
     assert.match(body, /og:title: /);
     assert.match(body, /#4557/);
+  });
+
+  // #5104 (fleet review): a moldura introdutória do e-mail não pode enumerar
+  // um número fixo de eixos ("3 correções") — quando o alarme dispara
+  // especificamente por `legacy-host-link` (4º eixo, #5099), o corpo precisa
+  // carregar esse contexto, não só uma lista genérica desatualizada no topo.
+  it("quando só legacy-host-link dispara, o corpo menciona esse contexto (não fica preso a '3 correções')", () => {
+    const findings = evaluateHomeMetaDrift(LEGACY_HOST_LINKS_HTML);
+    assert.deepEqual(
+      findings.map((f) => f.check),
+      ["legacy-host-link"],
+      "fixture deveria disparar SÓ o eixo legacy-host-link",
+    );
+    const extract = extractHomeMeta(LEGACY_HOST_LINKS_HTML);
+    const { body } = buildHomeMetaDriftAlarmEmail(findings, extract, "https://diar.ia.br/");
+    assert.match(body, /legacy-host-link/);
+    assert.match(body, /#5099/);
+    assert.doesNotMatch(
+      body,
+      /\(3 correç/i,
+      "a moldura introdutória não deveria enumerar um número fixo de eixos",
+    );
   });
 });

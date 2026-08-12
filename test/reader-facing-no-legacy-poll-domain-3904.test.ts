@@ -1,22 +1,34 @@
 /**
- * test/reader-facing-no-legacy-poll-domain-3904.test.ts (#3904)
+ * test/reader-facing-no-legacy-poll-domain-3904.test.ts (#3904, generalizado #5099 item 3)
  *
  * Guard anti-regressão: nenhuma superfície reader-facing (link NOVO que o
- * leitor vê/clica) deve emitir `poll.diaria.workers.dev` — o domínio de marca
- * `eia.diar.ia.br` (Workers Custom Domain, mesmo worker `poll`) é o destino
- * canônico desde #3904. `poll.diaria.workers.dev` segue ativo (`workers_dev =
- * true` em `workers/poll/wrangler.toml`) só por compat de links de VOTO já
- * embutidos em edições enviadas ANTES deste PR — NUNCA como destino de link
- * novo.
+ * leitor vê/clica) deve emitir um host legado — QUALQUER `*.diaria.workers.dev`
+ * (não só `poll.`, ver histórico abaixo) ou `diaria.beehiiv.com`. O domínio
+ * de marca correspondente em `diar.ia.br` (`eia.`/`cursos.`/`livros.`/
+ * `arquivo.`) é o destino canônico pra link NOVO desde as ondas #3698/#3701/
+ * #3904/#4059. Os hosts `*.diaria.workers.dev` seguem ativos
+ * (`workers_dev = true` nos respectivos `wrangler.toml`) só por compat de
+ * links já embutidos em edições enviadas ANTES de cada onda — NUNCA como
+ * destino de link novo.
+ *
+ * Histórico do escopo: nasceu (#3904) cobrindo só `poll.diaria.workers.dev`
+ * — 4 superfícies. Generalizado (#5099 item 3) pra QUALQUER
+ * `*.diaria.workers.dev` + `diaria.beehiiv.com` (a auditoria do #5099 achou
+ * vazamento real de `cursos.`/`livros.diaria.workers.dev` e
+ * `diaria.beehiiv.com` na home — fora do escopo de código deste repo, mas
+ * confirma que o guard de #3904 era estreito demais só pro subdomínio
+ * `poll.`), e a superfície ganhou `hub-page.ts` (renderizado via os hubs
+ * REAIS de `HUB_LOADERS`, mesmo padrão de `test/hub-page-drift.test.ts`).
  *
  * Deliberadamente um teste de COMPORTAMENTO (render de verdade, com fixture
  * mínima) em vez de um grep estático do código-fonte: várias partes legítimas
  * do código (`newsletter-parse.ts` normalizeKnownUrl, `FOOTER_DOMAINS` em
- * canonical-urls.ts, testes de back-compat) precisam continuar CITANDO o
- * literal `poll.diaria.workers.dev` — pra reconhecer/aceitar/allowlistar links
- * legados, não pra emiti-los. Um grep bruto por substring geraria falso-
- * positivo nesses pontos legítimos. Este teste cobre exatamente as 4
- * superfícies reader-facing tocadas por #3904:
+ * canonical-urls.ts, testes de back-compat, `ALLOWED_BEEHIIV_PLATFORM_HOSTS`
+ * em `beehiiv-home-meta-check.ts`) precisam continuar CITANDO os hosts
+ * legados — pra reconhecer/aceitar/allowlistar links legados, não pra
+ * emiti-los. Um grep bruto por substring geraria falso-positivo nesses
+ * pontos legítimos. Este teste cobre as 5 superfícies reader-facing hoje
+ * conhecidas:
  *
  *   1. Newsletter diária (`renderEIA`/`renderHTML`, newsletter-render-html.ts)
  *      — link de VOTO embutido no e-mail (merge-tag `{{email}}`).
@@ -24,6 +36,9 @@
  *   3. Rodapé cruzado Cursos/Livros/É IA? (`renderCuradoriaFooter`, curadoria-page.ts).
  *   4. `platform.config.json` (`poll.worker_url`) — base usada por scripts que
  *      geram/consultam links do jogo (build-poll-eia-data, close-poll, etc).
+ *   5. Hubs temáticos (`renderHubPage`, `hub-page.ts`) — todos os slugs de
+ *      `HUB_LOADERS`, com dado REAL (não fixture sintética — os hubs já são
+ *      commitados e determinísticos).
  *
  * Análogo ao brand-gate de #3615 (comportamento renderizado, não grep de
  * arquivo-fonte) e ao princípio de #2747 (lib-boundary.test.ts) de travar uma
@@ -43,9 +58,26 @@ import type { NewsletterContent, EIA } from "../scripts/lib/newsletter-parse.ts"
 import { renderEia as renderMonthlyEia } from "../scripts/lib/mensal/monthly-render.ts";
 import { CURADORIA_NAV_LINKS, renderCuradoriaFooter } from "../scripts/lib/shared/curadoria-page.ts";
 import { DIARIA_EIA_URL } from "../scripts/lib/canonical-urls.ts";
+import { renderHubPage } from "../scripts/lib/shared/hub-page.ts";
+import { HUB_LOADERS, loadHubContent } from "../scripts/build-hub-page.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const LEGACY_DOMAIN = "poll.diaria.workers.dev";
+
+/** Casa QUALQUER `{subdomínio}.diaria.workers.dev` (não só `poll.`) ou
+ * `diaria.beehiiv.com` — generalização do #5099 item 3 sobre o `LEGACY_DOMAIN`
+ * literal original de #3904. */
+const LEGACY_HOST_RE = /[a-z0-9-]+\.diaria\.workers\.dev|diaria\.beehiiv\.com/i;
+
+/** Mensagem de asserção padronizada — reusa o nome do host casado (se houver)
+ * pra facilitar debug, sem precisar de um `LEGACY_DOMAIN` fixo por chamada. */
+function assertNoLegacyHost(haystack: string, surface: string): void {
+  const match = haystack.match(LEGACY_HOST_RE);
+  assert.equal(
+    match,
+    null,
+    `${surface} emitiu host legado "${match?.[0]}" — regressão de #3904/#5099`,
+  );
+}
 
 const EIA_FIXTURE: EIA = {
   credit: "Foto: Gerado com Gemini.",
@@ -54,20 +86,20 @@ const EIA_FIXTURE: EIA = {
   edition: "260999",
 };
 
-describe("reader-facing NÃO emite o domínio legado do worker poll (#3904)", () => {
-  it("DIARIA_EIA_URL (fonte única) é o domínio de marca, não o legado", () => {
+describe("reader-facing NÃO emite hosts legados *.diaria.workers.dev / diaria.beehiiv.com (#3904, #5099)", () => {
+  it("DIARIA_EIA_URL (fonte única) é o domínio de marca, não um host legado", () => {
     assert.equal(DIARIA_EIA_URL, "https://eia.diar.ia.br");
-    assert.ok(!DIARIA_EIA_URL.includes(LEGACY_DOMAIN));
+    assertNoLegacyHost(DIARIA_EIA_URL, "DIARIA_EIA_URL");
   });
 
-  it("newsletter diária: renderEIA (link de VOTO) não emite o domínio legado", () => {
+  it("newsletter diária: renderEIA (link de VOTO) não emite host legado", () => {
     const html = renderEIA(EIA_FIXTURE);
     assert.ok(html.includes("email={{email}}&edition="), "sanity: vote link deve existir (merge-tag de e-mail cru, #4581)");
-    assert.ok(!html.includes(LEGACY_DOMAIN), `renderEIA emitiu ${LEGACY_DOMAIN} — regressão de #3904`);
+    assertNoLegacyHost(html, "renderEIA");
     assert.ok(html.includes(DIARIA_EIA_URL), "renderEIA deveria emitir o domínio de marca");
   });
 
-  it("newsletter diária: renderHTML (composição completa) não emite o domínio legado", () => {
+  it("newsletter diária: renderHTML (composição completa) não emite host legado", () => {
     const fixture: NewsletterContent = {
       title: "t", subtitle: "s", coverImage: "04-d1-2x1.jpg",
       destaques: [{
@@ -80,16 +112,16 @@ describe("reader-facing NÃO emite o domínio legado do worker poll (#3904)", ()
       encerrar: "fim",
     };
     const html = renderHTML(fixture);
-    assert.ok(!html.includes(LEGACY_DOMAIN), `renderHTML emitiu ${LEGACY_DOMAIN} — regressão de #3904`);
+    assertNoLegacyHost(html, "renderHTML");
   });
 
-  it("digest mensal (Clarice): renderEia (link de VOTO brand=clarice) não emite o domínio legado", () => {
+  it("digest mensal (Clarice): renderEia (link de VOTO brand=clarice) não emite host legado", () => {
     const originalEnv = process.env.POLL_WORKER_URL;
     delete process.env.POLL_WORKER_URL; // força o default (não uma env var de outro teste vazando)
     try {
       const html = renderMonthlyEia("[...]", "2605", "img-a.jpg", "img-b.jpg");
       assert.ok(html.includes("brand=clarice"), "sanity: vote link deve existir");
-      assert.ok(!html.includes(LEGACY_DOMAIN), `renderEia (mensal) emitiu ${LEGACY_DOMAIN} — regressão de #3904`);
+      assertNoLegacyHost(html, "renderEia (mensal)");
       assert.ok(html.includes(DIARIA_EIA_URL), "renderEia (mensal) deveria emitir o domínio de marca");
     } finally {
       if (originalEnv === undefined) delete process.env.POLL_WORKER_URL;
@@ -97,17 +129,17 @@ describe("reader-facing NÃO emite o domínio legado do worker poll (#3904)", ()
     }
   });
 
-  it("rodapé Cursos/Livros (CURADORIA_NAV_LINKS + renderCuradoriaFooter) não emite o domínio legado", () => {
+  it("rodapé Cursos/Livros (CURADORIA_NAV_LINKS + renderCuradoriaFooter) não emite host legado", () => {
     const eiaLink = CURADORIA_NAV_LINKS.find((l) => l.label === "É IA?");
     assert.ok(eiaLink, "link 'É IA?' ausente da nav cruzada");
-    assert.ok(!eiaLink!.url.includes(LEGACY_DOMAIN), `CURADORIA_NAV_LINKS emitiu ${LEGACY_DOMAIN} — regressão de #3904`);
+    assertNoLegacyHost(eiaLink!.url, "CURADORIA_NAV_LINKS");
     assert.ok(eiaLink!.url.startsWith(DIARIA_EIA_URL), "CURADORIA_NAV_LINKS deveria apontar pro domínio de marca");
 
     const footerHtml = renderCuradoriaFooter("crédito");
-    assert.ok(!footerHtml.includes(LEGACY_DOMAIN), `renderCuradoriaFooter emitiu ${LEGACY_DOMAIN} — regressão de #3904`);
+    assertNoLegacyHost(footerHtml, "renderCuradoriaFooter");
   });
 
-  it("workers/cursos e workers/livros public/index.html (build artifacts) não emitem o domínio legado no rodapé", () => {
+  it("workers/cursos e workers/livros public/index.html (build artifacts) não emitem host legado no rodapé", () => {
     // #3904: os HTMLs estáticos servidos por workers/cursos e workers/livros
     // são build artifacts commitados (build-cursos-page.ts/build-livros-page.ts
     // --out) — regenerar via `npx tsx scripts/build-{cursos,livros}-page.ts
@@ -116,20 +148,26 @@ describe("reader-facing NÃO emite o domínio legado do worker poll (#3904)", ()
     // silenciosamente do que os testes acima cobrem (só a função, não o artifact).
     for (const worker of ["cursos", "livros"] as const) {
       const html = readFileSync(resolve(ROOT, `workers/${worker}/public/index.html`), "utf8");
-      assert.ok(
-        !html.includes(LEGACY_DOMAIN),
-        `workers/${worker}/public/index.html emitiu ${LEGACY_DOMAIN} — rode ` +
-          `'npx tsx scripts/build-${worker}-page.ts --out workers/${worker}/public/index.html'`,
-      );
+      assertNoLegacyHost(html, `workers/${worker}/public/index.html`);
     }
   });
 
-  it("platform.config.json: poll.worker_url é o domínio de marca, não o legado", () => {
+  it("platform.config.json: poll.worker_url é o domínio de marca, não um host legado", () => {
     const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
     const url = cfg?.poll?.worker_url;
     assert.equal(typeof url, "string");
-    assert.ok(!String(url).includes(LEGACY_DOMAIN), `platform.config.json poll.worker_url ainda é ${LEGACY_DOMAIN} — regressão de #3904`);
+    assertNoLegacyHost(String(url), "platform.config.json poll.worker_url");
     assert.equal(url, DIARIA_EIA_URL);
+  });
+
+  it("hubs temáticos (renderHubPage, hub-page.ts) — nenhum hub REAL de HUB_LOADERS emite host legado (#5099 item 3)", () => {
+    const slugs = Object.keys(HUB_LOADERS);
+    assert.ok(slugs.length > 0, "sanity: HUB_LOADERS não pode estar vazio");
+    for (const slug of slugs) {
+      const hub = loadHubContent(slug);
+      const html = renderHubPage(hub);
+      assertNoLegacyHost(html, `renderHubPage(${slug})`);
+    }
   });
 
   it("build-link-ctr: o domínio de marca é tratado como infra própria (não editorial) — mesma classe do #1567 finding G", async () => {

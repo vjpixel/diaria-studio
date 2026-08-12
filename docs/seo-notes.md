@@ -205,6 +205,69 @@ funcionando ao vivo nos dois casos, números batendo com o esperado. Não fazer
 nada agora sobre as páginas órfãs de `/temas/` — é dado pro checkpoint, não um
 bug a consertar (mesma disciplina do Fato 1 acima).
 
+## Fato 5 — higiene de host canônico + entrada pros hubs na home (#5097/#5099, 12/ago/2026)
+
+Auditoria ao vivo do #5097 (mesmo dia do Fato 4 acima) confirmou o gargalo já
+enquadrado em `scripts/lib/shared/hub-page.ts:708`: **é recuperação
+(discovery/crawl), não seleção (on-page)** que trava a indexação. O on-page já
+tinha sido auditado nos #4558/#4899/#4909 e está correto; esta rodada olhou só
+pra grafo de link e cópia de host:
+
+- **Diagnóstico agregado (`npx tsx scripts/hub-index-coverage.ts`, 12/ago):**
+  115/310 indexadas somando os 6 hubs (sobreposição de edição entre hubs —
+  não é contagem de URL distinta): `anthropic-claude` 27/76, `openai-chatgpt`
+  36/96, `google-gemini` 23/61, `meta-ai` 7/20, `brasil-regulacao` 5/11,
+  `mercado-trabalho` 17/46. Host `arquivo` isolado: 2/6 (33,3%) — sitemap
+  ainda com só 7 URLs (o hub `mercado-trabalho` entrou depois da rodada
+  anterior).
+- **Achado 1 — a home apontava pros hosts NÃO-canônicos.** `https://diar.ia.br/`
+  (maior autoridade do domínio) linkava `livros.diaria.workers.dev`,
+  `cursos.diaria.workers.dev` e `diaria.beehiiv.com/archive` em vez dos hosts
+  de marca. Ação de PAINEL (editor, Beehiiv UI) — código não alcança a home
+  publicada. Guard fechado em código (#5099 item 2): 4º eixo
+  `legacy-host-link` em `scripts/lib/beehiiv-home-meta-check.ts`
+  (`detectLegacyHostLinks`), na task já armada `Diaria-Beehiiv-Home-Meta-Check`
+  (6h) — mesmo mecanismo do `og:title`/self-link http/rótulos EN do #4557.
+- **Achado 2 — a home não linkava nenhum `/temas/*`.** Cluster de hubs só
+  recebia link do corpo das edições (#4907) e do root do arquivo/entre hubs —
+  nenhum desses é a página de maior autoridade. Ação de painel (bloco "Temas"
+  na home, item C do #5097) — não fechada em código, fica pro editor.
+- **Achado 3 — cópia completa e rastreável nos Workers públicos em
+  `*.diaria.workers.dev`.** `arquivo`/`cursos`/`livros` respondiam 200 com o
+  conteúdo INTEIRO nesse host (canonical cross-host já apontava certo, mas
+  não evitava o crawl). Fechado em código (#5097 item D): 301 (métodos
+  seguros `GET`/`HEAD`) ou 308 (demais métodos, #5104 — preserva corpo no
+  retry do cliente) incondicional pro host canônico quando `Host` não é o
+  canônico, função pura `resolveWorkersDevRedirect`
+  (`scripts/lib/shared/workers-dev-redirect.ts`), wired nos `fetch` handlers
+  ANTES de qualquer outra lógica. **`artigo-mensal` (mesmo padrão
+  `workers_dev = true` + `custom_domain`, sem passivo de link-legado)
+  aplicado no mesmo mecanismo em #5104** — blind spot da auditoria original
+  do #5097, não exclusão deliberada. `poll.diaria.workers.dev` fica DE FORA
+  de propósito (compat de voto de ~233 edições publicadas, #3904).
+  **`workers/artigos` também fica FORA — exclusão arquitetural, não blind
+  spot:** é um Worker de static assets PURO (sem `main`/script — `[assets]`
+  serve direto), então não há `fetch` handler pra chamar
+  `resolveWorkersDevRedirect`; fechar esse host exigiria converter o Worker
+  pra ter script (mesmo salto que `livros` deu no #4558 Parte C), fora de
+  escopo de #5097/#5104.
+- **Achado 4 — `diaria-dashboard` era público e indexável.** Servia 156 KB de
+  HTML sem `X-Robots-Tag`, `robots.txt` sem nenhum `Disallow`. Fechado em
+  código (#5097 item E): `X-Robots-Tag: noindex` em toda resposta +
+  `GET /robots.txt` com `Disallow: /` incondicional.
+- **Contra-verificado, NÃO era problema:** o root do arquivo já linka os 6
+  hubs (`buildTemaNav`, #4749) — `href` relativos (`/temas/{slug}`), então
+  auditoria por grep de URL absoluta concluiria "órfão" errado.
+
+**Ação:** B/D/E (guard da home, redirect dos 3 Workers, noindex do dashboard)
+mergeados com teste nesta mesma sessão — código fechado. A/C (trocar os 3
+links da home, bloco "Temas") são ação de painel Beehiiv, pendentes do editor
+— o eixo novo do home-meta-check é a prova contínua de que A não regride
+depois de feito. **Re-medir no mesmo checkpoint ~29/set/2026 do Fato 1** com
+`seo-index-check.ts` + `hub-index-coverage.ts` — não criar métrica, script
+nem task nova (a instrumentação já existe); não aumentar a cadência entre
+checkpoints (mesma disciplina do Fato 1).
+
 ## Quando adicionar entry aqui
 
 Mesmo critério de `context/agents-known-issues.md`, aplicado a dado de SEO em
