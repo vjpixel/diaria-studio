@@ -123,6 +123,66 @@ export const HUB_KEYWORD_PATTERNS: Record<string, RegExp> = {
   // `\bllama\b`/`zuckerberg` são defensivos (nenhum destaque real depende
   // deles hoje — ver docstring de `scripts/lib/hubs/meta-ai.ts`).
   "meta-ai": /\bmeta\b|\bllama\b|zuckerberg/i,
+  // #4558 (5º hub, 1º TEMÁTICO transversal — os 4 anteriores são hubs de
+  // EMPRESA). Tema é regulação/política pública de IA NO BRASIL — não
+  // "Brasil" genérico. Uma sonda inicial contra `\bbrasil\b` sozinho
+  // estourou muito além do lastro real do tema (casava estatística de
+  // adoção de mercado, "Brasil pretende investir R$ 23 bi", cobertura de
+  // produto chegando ao país — nada disso é REGULAÇÃO), então este pattern
+  // é deliberadamente estreito: nomeia órgão/mecanismo regulatório
+  // brasileiro específico, não o substantivo "Brasil"/"brasileiro" isolado.
+  // Verificado ao vivo contra os 243 posts confirmados de
+  // `data/beehiiv-cache/posts` (11/08/2026) — 13 manchetes em 11 edições,
+  // cada uma lida no corpo completo do post (não só o título) antes de
+  // entrar aqui:
+  //   - "Congresso debate IA generativa e direitos autorais" e "Senado
+  //     debate plano nacional de IA" não citam "Brasil"/"Nacional" no
+  //     título, mas o corpo confirma Câmara dos Deputados (PL 2338/23) e
+  //     Senado Federal — por isso os pares `(?=.*\bcongresso\b)(?=.*\bia\b)`/
+  //     `(?=.*\bsenado\b)(?=.*\bia\b)`/`(?=.*\bcamara\b)(?=.*\bia\b)` (co-
+  //     ocorrência via lookahead, não substring solta — "congresso"/
+  //     "senado"/"câmara" sozinhos arriscam colidir com evento científico ou
+  //     órgão de outro país; exigir "ia" na MESMA manchete restringe ao caso
+  //     real). Auditado: nenhuma outra manchete do corpus usa essas 3
+  //     palavras fora dos casos aqui listados (nenhum falso positivo hoje).
+  //     **Risco latente pra REGENERAÇÕES futuras (achado no fleet review do
+  //     #5056, não afeta o corpus atual):** `\bia\b` com `/i` casa tanto o
+  //     acrônimo "IA" quanto o verbo minúsculo "ia" (pretérito imperfeito de
+  //     "ir" — ex: "Senado ia aprovar reforma tributária"), então os 3 pares
+  //     de co-ocorrência acima podem virar falso positivo numa manchete
+  //     futura que use "ia" como verbo perto de Congresso/Senado/Câmara. Sem
+  //     fix aplicado aqui de propósito — JS não tem modificador de case
+  //     inline por trecho da regex, e reescrever o padrão inteiro sem `/i`
+  //     pra distinguir "IA" maiúsculo quebraria as outras alternativas deste
+  //     mesmo pattern (`marco legal`, `anpd`, etc., que aparecem em
+  //     capitalização mista no corpo). Mitigação real continua sendo a
+  //     verificação manual manchete-a-manchete já praticada aqui — se uma
+  //     regeneração futura trouxer um hit desses 3 pares, conferir o corpo
+  //     antes de aceitar. Mesmo racional pro `\bpl[ -]?\d{3,4}\b` isolado
+  //     (casa qualquer PL de 3-4 dígitos, não só o 2338 do Marco Legal) —
+  //     hoje só casa manchetes que já falam de IA no mesmo contexto (nenhum
+  //     PL não-relacionado no corpus atual), mas não é garantia estrutural.
+  //   - "classifica sistemas de ia por risco" e "manipular ia do tribunal"
+  //     são âncoras literais de 2 manchetes específicas verificadas — o
+  //     corpo confirma "lei brasileira de regulação de sistemas
+  //     automatizados" e "Judiciário brasileiro"/"advogado na Paraíba", mas
+  //     nenhuma das duas manchetes cita um órgão nomeado nem "Brasil" no
+  //     título, então não há keyword genérica que as capture sem
+  //     sobre-casar (mesmo racional do anchor `/^Meta compra/i` em
+  //     `meta-ai.ts`).
+  //   - `\bCFM\b`/`\bAnatel\b`/`\bTSE\b` ficam sem exigir co-ocorrência com
+  //     "ia" porque as 4 manchetes reais que os citam ("CFM normatiza o uso
+  //     da IA na medicina", "Anatel adota nuvem soberana para IA", "TSE
+  //     avalia força-tarefa para coibir deepfakes", "Governo pede ao TSE
+  //     endurecer remoção de perfis") já vêm com contexto de IA/deepfake na
+  //     mesma manchete, e os 3 acrônimos não colidem com nenhum substantivo
+  //     comum em português.
+  // Não incluídos de propósito, por serem tema DIFERENTE (política
+  // industrial/soberania de IA, não regulação): "Governo lança modelo de
+  // linguagem 100% nacional", "SoberanIA no ar: Brasil tem modelo de IA
+  // próprio" — candidatos a um hub futuro de soberania/infra, não este.
+  "brasil-regulacao":
+    /\banpd\b|marco legal( da| de)? (ia\b|inteligencia artificial)|\bmarco de ia\b|\bpl[ -]?\d{3,4}\b|projeto de lei|\bstf\b|congresso nacional|\bcfm\b|\banatel\b|\btse\b|hugo motta|brasil regula|classifica sistemas de ia por risco|manipular ia do tribunal|(?=.*\bcongresso\b)(?=.*\bia\b)|(?=.*\bsenado\b)(?=.*\bia\b)|(?=.*\bcamara\b)(?=.*\bia\b)/i,
 };
 
 /** Exportado (#4907) — `scripts/lib/hub-match.ts` reusa esta mesma

@@ -1,0 +1,124 @@
+[
+  {
+    "date": "2025-09-10",
+    "editionSlug": "estudo-de-harvard-estima-92-mi-de-empregos-esta-o-em-risco",
+    "url": "https://diar.ia.br/p/estudo-de-harvard-estima-92-mi-de-empregos-esta-o-em-risco",
+    "matchedHeadlines": [
+      "Congresso debate IA generativa e direitos autorais"
+    ],
+    "primarySourceUrls": [
+      "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=5425555"
+    ],
+    "editionTitle": "Estudo de Harvard estima: 92 mi de empregos estão em risco"
+  },
+  {
+    "date": "2025-10-21",
+    "editionSlug": "restricoes-sora-2-hollywood",
+    "url": "https://diar.ia.br/p/restricoes-sora-2-hollywood",
+    "matchedHeadlines": [
+      "Senado debate plano nacional de IA"
+    ],
+    "editionTitle": "Restrições no Sora 2 após polemica com Hollywood"
+  },
+  {
+    "date": "2026-02-03",
+    "editionSlug": "tse-avalia-forc-a-tarefa-para-coibir-deepfakes",
+    "url": "https://diar.ia.br/p/tse-avalia-forc-a-tarefa-para-coibir-deepfakes",
+    "matchedHeadlines": [
+      "TSE avalia força-tarefa para coibir deepfakes",
+      "Hugo Motta prioriza Marco Legal da IA"
+    ],
+    "editionTitle": "TSE avalia força-tarefa para coibir deepfakes"
+  },
+  {
+    "date": "2026-02-06",
+    "editionSlug": "li-deres-militares-evitam-regras-para-ia-em-guerras",
+    "url": "https://diar.ia.br/p/li-deres-militares-evitam-regras-para-ia-em-guerras",
+    "matchedHeadlines": [
+      "Governo pede ao TSE endurecer remoção de perfis"
+    ],
+    "editionTitle": "Líderes militares evitam regras para IA em guerras"
+  },
+  {
+    "date": "2026-02-27",
+    "editionSlug": "cfm-normatiza-o-uso-da-ia-na-medicina",
+    "url": "https://diar.ia.br/p/cfm-normatiza-o-uso-da-ia-na-medicina",
+    "matchedHeadlines": [
+      "CFM normatiza o uso da IA na medicina",
+      "Anatel adota nuvem soberana para IA"
+    ],
+    "editionTitle": "CFM normatiza o uso da IA na medicina"
+  },
+  {
+    "date": "2026-04-22",
+    "editionSlug": "brasil-regula-ia-eleitoral-antes-do-pleito-2026",
+    "url": "https://diar.ia.br/p/brasil-regula-ia-eleitoral-antes-do-pleito-2026",
+    "matchedHeadlines": [
+      "Brasil regula IA eleitoral antes do pleito 2026"
+    ],
+    "primarySourceUrls": [
+      "https://www.correio24horas.com.br/politica/eleicoes-2026-veja-como-o-tse-limitara-a-inteligencia-artificial-no-pleito-0426"
+    ],
+    "editionTitle": "Brasil regula IA eleitoral antes do pleito 2026"
+  },
+  {
+    "date": "2026-05-06",
+    "editionSlug": "gpt-5-5-instant-chega-como-padr-o-do-chatgpt",
+    "url": "https://diar.ia.br/p/gpt-5-5-instant-chega-como-padr-o-do-chatgpt",
+    "matchedHeadlines": [
+      "Câmara vota marco legal da IA em 27 de maio"
+    ],
+    "primarySourceUrls": [
+      "https://www.alobrasilia.com.br/2026/05/camara-agenda-votacao-do-marco-legal-da.html"
+    ],
+    "editionTitle": "GPT-5.5 Instant chega como padrão do ChatGPT"
+  },
+  {
+    "date": "2026-05-22",
+    "editionSlug": "soberania-ia-pu-blica-nacional",
+    "url": "https://diar.ia.br/p/soberania-ia-pu-blica-nacional",
+    "matchedHeadlines": [
+      "Senado aprova marco legal da IA no Brasil"
+    ],
+    "primarySourceUrls": [
+      "https://www25.senado.leg.br/web/atividade/materias/-/materia/157233"
+    ],
+    "editionTitle": "SoberanIA: IA pública nacional"
+  },
+  {
+    "date": "2026-05-25",
+    "editionSlug": "deepseek-corta-75-do-pre-o-da-api",
+    "url": "https://diar.ia.br/p/deepseek-corta-75-do-pre-o-da-api",
+    "matchedHeadlines": [
+      "Nova lei classifica sistemas de IA por risco"
+    ],
+    "primarySourceUrls": [
+      "https://exame.com/internacional/regulacao-da-ia-no-brasil-o-que-a-nova-lei-muda-para-sua-empresa/"
+    ],
+    "editionTitle": "DeepSeek corta 75% do preço da API"
+  },
+  {
+    "date": "2026-06-01",
+    "editionSlug": "35-mil-bolsas-pra-virar-creator-com-ia",
+    "url": "https://diar.ia.br/p/35-mil-bolsas-pra-virar-creator-com-ia",
+    "matchedHeadlines": [
+      "Marco de IA vai a voto na Câmara em junho"
+    ],
+    "primarySourceUrls": [
+      "https://www.cnnbrasil.com.br/politica/hugo-quer-votar-ia-em-junho-e-relator-busca-avanco-do-redata-no-senado/"
+    ],
+    "editionTitle": "35 mil bolsas pra virar creator com IA"
+  },
+  {
+    "date": "2026-06-25",
+    "editionSlug": "gemini-3-5-flash-agora-controla-seu-computador",
+    "url": "https://diar.ia.br/p/gemini-3-5-flash-agora-controla-seu-computador",
+    "matchedHeadlines": [
+      "Manipular IA do tribunal sai caro: R$ 32,8 mil"
+    ],
+    "primarySourceUrls": [
+      "https://tecnoblog.net/noticias/advogado-tenta-prompt-injection-de-ia-e-recebe-multa-de-r-328-mil/"
+    ],
+    "editionTitle": "Gemini 3.5 Flash agora controla seu computador"
+  }
+]

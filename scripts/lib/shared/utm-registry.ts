@@ -436,6 +436,15 @@ export const HUB_META_AI_FOOTER_NAV_UTM = {
   medium: "footer-nav",
 } as const;
 
+/** Mesmo padrão acima, pro 5º hub temático publicado — 1º hub TEMÁTICO
+ * transversal (os 4 anteriores são hubs de EMPRESA): regulação/política
+ * pública de IA no Brasil (`scripts/lib/hubs/brasil-regulacao.ts`, #4558
+ * sessão develop 260811). */
+export const HUB_BRASIL_REGULACAO_FOOTER_NAV_UTM = {
+  source: "hub-brasil-regulacao",
+  medium: "footer-nav",
+} as const;
+
 /** Link "Arquivo completo em {url}" do post semanal do Instagram
  * (`scripts/lib/format-weekly-social.ts`, #4537 item 1) — o #4295 cobriu os
  * links que a pipeline DIÁRIA publica; o post semanal ficou fora do escopo
@@ -1086,6 +1095,18 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     description:
       'Link "diar.ia.br" no rodapé de navegação cruzada do hub temático Meta/Meta AI ' +
       "(#4558, 4º hub temático — sessão develop 260810).",
+    status: "ativo",
+  },
+  {
+    id: "hub-brasil-regulacao-footer-nav",
+    label: "Hub Regulação de IA no Brasil — link de rodapé pra diar.ia.br",
+    source: HUB_BRASIL_REGULACAO_FOOTER_NAV_UTM.source,
+    medium: HUB_BRASIL_REGULACAO_FOOTER_NAV_UTM.medium,
+    campaignPattern: "hub-brasil-regulacao-footer-nav",
+    originFile: "scripts/lib/hubs/brasil-regulacao.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada do hub temático Regulação de IA ' +
+      "no Brasil (#4558, 5º hub temático — 1º TEMÁTICO transversal, sessão develop 260811).",
     status: "ativo",
   },
 ] as const;

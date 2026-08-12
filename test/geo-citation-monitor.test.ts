@@ -64,8 +64,18 @@ describe("GEO_QUESTIONS (#4558)", () => {
 });
 
 describe("GEO_HUB_QUESTIONS (#4900 item a)", () => {
-  it("tem entre 5 e 10 perguntas fixas, todas em pt-BR não-vazias", () => {
-    assert.ok(GEO_HUB_QUESTIONS.length >= 5 && GEO_HUB_QUESTIONS.length <= 10);
+  // Teto subiu de 10 pra 20 no #4558 (5º hub, brasil-regulacao, sessão
+  // develop 260811): o painel cresce por HUB (guard de cobertura em
+  // test/geo-hub-questions-cobrem-hubs-4900.test.ts exige 1+ pergunta por
+  // hub publicado), e o roadmap de #4558 já tem ~12 candidatos além dos 5
+  // hubs de hoje — um teto fixo em 10 quebraria de novo no 6º hub. 20 dá
+  // folga pra mais ~5 hubs (2 perguntas cada) sem precisar revisitar este
+  // número a cada publicação. Decisão do editor (sessão 260811): manter o
+  // histórico de data/geo-citations/ ao crescer o painel (não resetar o
+  // baseline) — ver a nota completa sobre esse trade-off no comentário
+  // acima de GEO_HUB_QUESTIONS.
+  it("tem entre 5 e 20 perguntas fixas, todas em pt-BR não-vazias", () => {
+    assert.ok(GEO_HUB_QUESTIONS.length >= 5 && GEO_HUB_QUESTIONS.length <= 20);
     for (const q of GEO_HUB_QUESTIONS) {
       assert.ok(q.trim().length > 0);
       assert.match(q, /[a-záàâãéêíóôõúç]/i, `pergunta "${q}" não parece pt-BR`);

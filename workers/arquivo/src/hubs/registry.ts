@@ -15,12 +15,14 @@ import { HUB_HTML_ANTHROPIC_CLAUDE, HUB_LASTMOD_ANTHROPIC_CLAUDE } from "./anthr
 import { HUB_HTML_OPENAI_CHATGPT, HUB_LASTMOD_OPENAI_CHATGPT } from "./openai-chatgpt.generated.ts";
 import { HUB_HTML_GOOGLE_GEMINI, HUB_LASTMOD_GOOGLE_GEMINI } from "./google-gemini.generated.ts";
 import { HUB_HTML_META_AI, HUB_LASTMOD_META_AI } from "./meta-ai.generated.ts";
+import { HUB_HTML_BRASIL_REGULACAO, HUB_LASTMOD_BRASIL_REGULACAO } from "./brasil-regulacao.generated.ts";
 
 export const HUB_REGISTRY: Record<string, string> = {
   "anthropic-claude": HUB_HTML_ANTHROPIC_CLAUDE,
   "openai-chatgpt": HUB_HTML_OPENAI_CHATGPT,
   "google-gemini": HUB_HTML_GOOGLE_GEMINI,
   "meta-ai": HUB_HTML_META_AI,
+  "brasil-regulacao": HUB_HTML_BRASIL_REGULACAO,
 };
 
 /**
@@ -37,4 +39,5 @@ export const HUB_LASTMOD: Record<string, string> = {
   "openai-chatgpt": HUB_LASTMOD_OPENAI_CHATGPT,
   "google-gemini": HUB_LASTMOD_GOOGLE_GEMINI,
   "meta-ai": HUB_LASTMOD_META_AI,
+  "brasil-regulacao": HUB_LASTMOD_BRASIL_REGULACAO,
 };

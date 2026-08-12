@@ -39,4 +39,5 @@ export const HUB_META: readonly HubMeta[] = [
   { slug: "openai-chatgpt", label: "OpenAI e ChatGPT" },
   { slug: "google-gemini", label: "Google e Gemini" },
   { slug: "meta-ai", label: "Meta e Meta AI" },
+  { slug: "brasil-regulacao", label: "Regulação de IA no Brasil" },
 ];
