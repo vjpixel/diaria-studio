@@ -309,6 +309,51 @@ de publicação, alterar o `<html>` renderizado depois do fato não muda o que
 o crawler/bot recebe na 1ª resposta HTTP (SSR), só o DOM pós-hidratação no
 browser — sem efeito real em SEO.
 
+## Fato 7 — o passo 3 do #4546 (submeter os 3 sitemaps de curadoria no GSC) só executou de verdade em 12/ago/2026
+
+A issue #4546 foi fechada em **04/ago/2026**, mas os 3 sitemaps que
+`scripts/gsc-submit-sitemaps.ts` existe pra submeter (`cursos`, `livros`,
+`arquivo`) **não estavam** na propriedade. Medição direta da API do Search
+Console em 12/ago, antes de qualquer ação desta sessão:
+
+```
+sc-domain:diar.ia.br → 2 sitemaps
+  diar.ia.br/sitemap.xml       submetido 2026-07-27  0 erros
+  arquivo.diar.ia.br/sitemap.xml  submetido 2026-08-11  0 erros
+```
+
+`cursos` e `livros` ausentes; o `arquivo` que estava lá entrou em **11/ago**,
+pela mão do trabalho de Bing WMT (Fato 3 acima, #4909) — **não** pelo script.
+Causa provável do passo nunca ter rodado: o próprio docstring de
+`gsc-submit-sitemaps.ts` avisa que ele falha com 403 até o editor reaprovar o
+OAuth com o scope `webmasters` de escrita (#4546 comentário 03/ago).
+
+**Executado em 12/ago/2026 19:17 UTC** (`npx tsx scripts/gsc-submit-sitemaps.ts`):
+os 3 `PUT` voltaram **HTTP 204**, e o Google baixou os 3 sitemaps entre 1 e 5
+segundos depois, com **0 erros e 0 avisos** em cada. `sc-domain:diar.ia.br`
+passou de 2 pra 4 sitemaps. Os dois novos são pequenos (1 `<loc>` cada, ambos
+HTTP 200 em produção) — o ganho é modesto, mas o passo agora está de fato
+fechado.
+
+**Achado lateral: o aviso de 403 no docstring do script está desatualizado.**
+O token OAuth atual (`data/.credentials.json`) já tem escrita — os 3 `PUT`
+passaram sem nenhuma reaprovação no browser. Quem for ler aquele docstring
+não deve concluir que precisa rodar `oauth-setup.ts` antes de tentar.
+
+**Propriedades do GSC hoje** (mesma consulta, 12/ago): `sc-domain:diar.ia.br`
+(owner, desde 27/jul, #4089), `https://diar.ia.br/` e
+`https://arquivo.diar.ia.br/` (prefixo, criadas em 11/ago durante o #4909 —
+foram elas que dispararam os e-mails "Comece a usar o Search Console" que o
+editor recebeu), e `https://diaria.beehiiv.com/` como `siteUnverifiedUser`
+(host legado; `GET .../sitemaps` nessa devolve **403, e isso é esperado** —
+não é owner, não é bug).
+
+**Não fazer:** não re-submeter os sitemaps periodicamente. O `PUT` é upsert e
+não falha, mas resubmeter sem mudança de conteúdo não acrescenta informação
+pro Google — mesma disciplina de erosão de confiança do `<lastmod>`/IndexNow
+(Fato 3). Rodar de novo só se um sitemap NOVO entrar na lista
+`CURADORIA_SITEMAPS`.
+
 ## Quando adicionar entry aqui
 
 Mesmo critério de `context/agents-known-issues.md`, aplicado a dado de SEO em
