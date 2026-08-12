@@ -17,6 +17,7 @@ import {
   parseStepJson,
   resolveInheritedSubjects,
   detectMissedWaveToday,
+  detectExistingWaveForSendDate,
   sendDateBrt,
   EnvioAbort,
   type EnvioRunDeps,
@@ -148,6 +149,10 @@ function baseDeps(rootDir: string, overrides: Partial<EnvioRunDeps> = {}): Envio
     // de `rootDir`: sem este seam, estes testes leriam `data/clarice-abc-state.json`
     // da máquina real e o assunto travado em produção vazaria pras asserções.
     readAbcState: () => abcAberto(),
+    // #5058 — sleep FAKE que não espera de verdade: resolve na hora, mas
+    // registra a chamada (via override em cada teste que precisa inspecionar
+    // quanto tempo o retry pediu pra esperar).
+    sleep: () => Promise.resolve(),
     ...overrides,
   };
 }
@@ -310,6 +315,45 @@ describe("clarice-envio-run (#5026)", () => {
 
     it("array vazio => null", () => {
       assert.equal(detectMissedWaveToday([], NOW), null);
+    });
+  });
+
+  describe("detectExistingWaveForSendDate (#5058, nota relacionada)", () => {
+    it("onda já agendada pro sendDate (status queued) => detectada", () => {
+      const r = detectExistingWaveForSendDate(
+        [wave({ key: "d12-qua12", status: "queued", scheduledAt: `${SEND_DATE}T09:00:00.000Z` })],
+        SEND_DATE,
+      );
+      assert.equal(r.length, 1);
+      assert.equal(r[0].key, "d12-qua12");
+    });
+
+    it("onda já ENVIADA pro sendDate (status sent) => também detectada — não é só 'agendada'", () => {
+      const r = detectExistingWaveForSendDate(
+        [wave({ key: "d12-qua12", status: "sent", scheduledAt: `${SEND_DATE}T09:00:00.000Z` })],
+        SEND_DATE,
+      );
+      assert.equal(r.length, 1);
+    });
+
+    it("onda CANCELADA (status suspended) pro sendDate => NÃO conta — não é uma onda viva competindo pelo dia", () => {
+      const r = detectExistingWaveForSendDate(
+        [wave({ key: "d12-qua12", status: "suspended", scheduledAt: `${SEND_DATE}T09:00:00.000Z` })],
+        SEND_DATE,
+      );
+      assert.equal(r.length, 0);
+    });
+
+    it("onda pra outro dia => não detectada", () => {
+      const r = detectExistingWaveForSendDate(
+        [wave({ key: "d11-ter11", status: "sent", scheduledAt: "2026-08-11T09:00:00.000Z" })],
+        SEND_DATE,
+      );
+      assert.equal(r.length, 0);
+    });
+
+    it("array vazio => []", () => {
+      assert.deepEqual(detectExistingWaveForSendDate([], SEND_DATE), []);
     });
   });
 
@@ -703,6 +747,137 @@ describe("clarice-envio-run (#5026)", () => {
       assert.ok(calls.some((c) => c.script === "scripts/clarice-mv-ondemand.ts"));
       assert.equal(calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts").length, 2, "replaneja depois do MV");
       delete process.env.MILLION_VERIFIER_API_KEY;
+      rmSync(root, { recursive: true, force: true });
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // #5058 — guard de onda já existente pra `sendDate`
+  // -----------------------------------------------------------------------
+
+  describe("runEnvio — guard de onda JÁ EXISTENTE pra sendDate (#5058)", () => {
+    it("proposal.state.waves já tem onda pra sendDate (queued) => PARA a rodada (code 0), nunca segmenta de novo", async () => {
+      const root = freshRoot();
+      const proposal = goldenProposal({
+        state: {
+          cycle: CYCLE,
+          waves: [
+            wave({ key: "d11-qua11", subject: "Antiga", status: "sent", scheduledAt: "2026-08-11T13:45:00.000Z" }),
+            wave({ key: "d12-qua12", subject: "Já montada nesta janela", status: "queued", scheduledAt: `${SEND_DATE}T09:00:00.000Z` }),
+          ],
+          volumeSum: 100000, volumeComplete: true, sentCount: 10, scheduledCount: 1, unscopedCount: 0,
+        },
+      });
+      const { exec, calls } = makeFakeExec({
+        "scripts/clarice-check-derived-stale.ts": textResult("fresh"),
+        "scripts/clarice-plan-wave.ts": jsonResult(proposal),
+      });
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.match(r.reportMarkdown, /ONDA JÁ EXISTE/);
+      assert.match(r.reportMarkdown, /d12-qua12/);
+      assert.ok(
+        !calls.some((c) => c.script === "scripts/clarice-envio-risk.ts" || c.script === "scripts/clarice-build-segment.ts"),
+        "onda já existente pra sendDate deve parar ANTES de calcular risco/volume — nunca monta uma 2ª onda",
+      );
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("onda existente pro sendDate com status suspended (cancelada) => NÃO bloqueia, segue normal", async () => {
+      const root = freshRoot();
+      const proposal = goldenProposal({
+        state: {
+          cycle: CYCLE,
+          waves: [
+            wave({ key: "d12-qua12", subject: "Cancelada pelo freio", status: "suspended", scheduledAt: `${SEND_DATE}T09:00:00.000Z` }),
+          ],
+          volumeSum: 100000, volumeComplete: true, sentCount: 10, scheduledCount: 0, unscopedCount: 0,
+        },
+      });
+      const { exec, calls } = makeFakeExec({ ...goldenHandlers({ proposal }) });
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.ok(calls.some((c) => c.script === "scripts/clarice-build-segment.ts"), "onda cancelada não deve travar a rodada");
+      rmSync(root, { recursive: true, force: true });
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // #5058 — retry com backoff de clarice-plan-wave transitório (429/503)
+  // -----------------------------------------------------------------------
+
+  describe("runEnvio — retry transitório de clarice-plan-wave (#5058)", () => {
+    function transientResult(retryAfterSecs: number | null, reason = "GET .../api/campaigns falhou (503)"): StepResult {
+      return { code: 3, stdout: JSON.stringify({ transient: true, retryAfterSecs, status: 503, reason }), stderr: reason };
+    }
+
+    it("1ª tentativa TRANSITÓRIA (503) seguida de sucesso => retenta e completa a rodada (code 0), honrando retryAfterSecs no sleep", async () => {
+      const root = freshRoot();
+      const sleeps: number[] = [];
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": [transientResult(5), jsonResult(goldenProposal())],
+      });
+      const r = await runEnvio(baseDeps(root, { exec, sleep: (ms) => { sleeps.push(ms); return Promise.resolve(); } }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.equal(calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts").length, 2, "retentou 1× e a 2ª chamada teve sucesso");
+      assert.deepEqual(sleeps, [5000], "esperou exatamente retryAfterSecs*1000, não um fallback arbitrário");
+      assert.match(r.reportMarkdown, /TRANSITÓRIA/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("retryAfterSecs ausente => usa o fallback (1min), nunca espera 0/undefined", async () => {
+      const root = freshRoot();
+      const sleeps: number[] = [];
+      const { exec } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": [transientResult(null), jsonResult(goldenProposal())],
+      });
+      const r = await runEnvio(baseDeps(root, { exec, sleep: (ms) => { sleeps.push(ms); return Promise.resolve(); } }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.deepEqual(sleeps, [60_000]);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("retryAfterSecs absurdamente alto => capped em 35min, nunca pendura a rodada", async () => {
+      const root = freshRoot();
+      const sleeps: number[] = [];
+      const { exec } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": [transientResult(3600), jsonResult(goldenProposal())], // 1h
+      });
+      const r = await runEnvio(baseDeps(root, { exec, sleep: (ms) => { sleeps.push(ms); return Promise.resolve(); } }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.deepEqual(sleeps, [35 * 60_000], "capped em 35min mesmo com retryAfterSecs de 1h");
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("falha TRANSITÓRIA persiste nas 3 tentativas => desiste (code 1), nunca fica em loop infinito", async () => {
+      const root = freshRoot();
+      let sleepCalls = 0;
+      const { exec, calls } = makeFakeExec({
+        "scripts/clarice-check-derived-stale.ts": textResult("fresh"),
+        "scripts/clarice-plan-wave.ts": [transientResult(1), transientResult(1), transientResult(1)],
+      });
+      const r = await runEnvio(baseDeps(root, { exec, sleep: () => { sleepCalls++; return Promise.resolve(); } }));
+      assert.equal(r.code, 1, r.reportMarkdown);
+      assert.equal(calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts").length, 3, "exatamente 3 tentativas, não mais");
+      assert.equal(sleepCalls, 2, "espera ENTRE tentativas (2 esperas pra 3 tentativas), nunca depois da última");
+      assert.match(r.reportMarkdown, /falha TRANSITÓRIA persistiu/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("falha NÃO-transitória (exit 1 genérico) => aborta na 1ª tentativa, sem retry nem sleep", async () => {
+      const root = freshRoot();
+      let sleepCalls = 0;
+      const { exec, calls } = makeFakeExec({
+        "scripts/clarice-check-derived-stale.ts": textResult("fresh"),
+        "scripts/clarice-plan-wave.ts": textResult("erro de config qualquer", 1),
+      });
+      const r = await runEnvio(baseDeps(root, { exec, sleep: () => { sleepCalls++; return Promise.resolve(); } }));
+      assert.equal(r.code, 1, r.reportMarkdown);
+      assert.equal(calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts").length, 1, "erro não-transitório NUNCA retenta");
+      assert.equal(sleepCalls, 0);
       rmSync(root, { recursive: true, force: true });
     });
   });

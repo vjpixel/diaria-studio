@@ -442,6 +442,33 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5025, #5026, #5027 (decisões do editor 260811)",
   },
   {
+    name: "Diaria-Clarice-Envio-Alarm",
+    description: "alarme de rodada falha do Diaria-Clarice-Envio - le o relatorio do dia e alarma se a onda nao foi agendada",
+    steps: [{ key: "alarm", script: "scripts/clarice-envio-alarm.ts" }],
+    logPath: "clarice-subscribers/.envio-alarm.log",
+    // 20:30 BRT (#5058): 1h30 depois do Diaria-Clarice-Envio das 19:00 --
+    // folga suficiente pro retry-com-backoff embutido em clarice-envio-run.ts
+    // (ate 3 tentativas, cap de 35min cada, ~1h10 no pior caso) esgotar
+    // ANTES desta checagem rodar, senao ela alarmaria em cima de um retry
+    // ainda em curso que teria sucesso minutos depois.
+    schedule: { kind: "daily", hour: 20, minute: 30 },
+    // Mesmo guard das outras 2 tasks Clarice-Envio acima -- sem o store, a
+    // rodada das 19:00 nunca teria rodado de verdade nesta maquina, entao um
+    // alarme "nenhum relatorio encontrado" seria ruido, nao sinal real.
+    guard: {
+      requiredFile: "clarice-subscribers/clarice-users.db",
+      abortMessage:
+        "clarice-users.db nao encontrado (data/clarice-subscribers/clarice-users.db) -- provavel junction " +
+        "data/ nao montada ainda; sem sentido checar relatorio de uma rodada que nunca roda nesta maquina.",
+    },
+    // Sem `.ps1` legado de proposito -- mesmo padrao de
+    // Diaria-Beehiiv-Home-Meta-Check (#5005, 1a task registrada depois do
+    // cutover systemd/epica #4798): nao criar um novo `.ps1` so pra
+    // preencher este campo opcional. Via de execucao real: par
+    // `.service`/`.timer` gerado por scripts/setup-systemd-timers.ts.
+    issue: "#5058",
+  },
+  {
     name: "Diaria-Postmaster-Spam-Sync",
     description: "sync automatico do spamRate do Google Postmaster Tools",
     steps: [{ key: "sync", script: "scripts/postmaster-spam-sync.ts" }],

@@ -40,6 +40,12 @@
  * Env: `BREVO_CLARICE_API_KEY` (crédito + campanhas comprometidas). Sem ela o
  * script AINDA roda, mas a proposta sai com o bloqueio "crédito não
  * consultado" de pé — nunca finge que validou o que não validou.
+ *
+ * Exit codes: 0 sucesso · 2 sucesso com blockers (`proposal.blockers`) · 1 erro
+ * estrutural · 3 falha TRANSITÓRIA (429/503 do dashboard, `#5058`) — imprime
+ * `{transient:true, retryAfterSecs, status, reason}` no STDOUT antes de sair;
+ * quem chama como subprocesso (`clarice-envio-run.ts`) deve retentar com
+ * backoff em vez de abortar a rodada, nunca tratar como erro de lógica.
  */
 
 import { resolve } from "node:path";
@@ -80,6 +86,45 @@ import { extractPlanCredits } from "../workers/brevo-dashboard/src/brevo-api.ts"
 import type { BrevoCampaign } from "../workers/brevo-dashboard/src/types.ts";
 
 loadProjectEnv();
+
+// ---------------------------------------------------------------------------
+// #5058 — falha TRANSITÓRIA (429/503) do dashboard `/api/campaigns` é uma
+// classe DIFERENTE de erro do resto deste script: rate limit da Brevo
+// (`rateLimitResponse` em workers/brevo-dashboard/src/brevo-api.ts sempre
+// devolve 503 + `Retry-After`, nunca 429 puro — mas 429 é aceito aqui também,
+// defensivo) NÃO é um erro de lógica, é "espere e repita". Antes, `!res.ok`
+// caía direto no `throw new Error(...)` genérico logo abaixo — indistinguível
+// de qualquer outro erro estrutural pra quem chama este script como
+// subprocesso (`clarice-envio-run.ts`), que morria na 1ª falha mesmo sabendo
+// (pelo texto da mensagem, nunca pelo tipo) que era rate limit. Achado ao
+// vivo: 260811, a task `Diaria-Clarice-Envio` das 19:00 morreu com
+// `retryAfterSecs: 258` no corpo — 258s = ~4min de espera teria resolvido, e
+// não havia mecanismo pra isso. `TransientDashboardError` é o sinal
+// tipado que `main()` (abaixo) converte em exit code 3 + JSON no stdout, pra
+// que o orquestrador retente com backoff em vez de abortar a rodada inteira.
+// ---------------------------------------------------------------------------
+
+export class TransientDashboardError extends Error {
+  readonly transient = true as const;
+  constructor(
+    message: string,
+    readonly retryAfterSecs: number | null,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "TransientDashboardError";
+  }
+}
+
+const TRANSIENT_DASHBOARD_STATUSES = new Set([429, 503]);
+
+/** `Retry-After` (RFC 7231, delta em segundos) — `rateLimitResponse` sempre o seta quando `retryAfterSecs` é conhecido. `null` = header ausente/inválido, nunca inventa um valor. */
+function parseRetryAfterSecs(headers: Headers): number | null {
+  const raw = headers.get("retry-after");
+  if (raw == null) return null;
+  const v = Number(raw);
+  return Number.isFinite(v) && v >= 0 ? v : null;
+}
 
 /** Parse de `--dates A,B,C` — 1+ datas ISO, sem repetição, em ordem crescente. */
 export function parseDatesArg(raw: string | undefined): string[] {
@@ -154,11 +199,15 @@ export interface PlanWaveOptions {
   /** #4664 — override de teste da raiz de `novos-state.json` (mesmo padrão
    *  `--data-root` do resto do projeto). Default = `CLARICE_BASE` (produção). */
   novosStateBaseDir?: string;
+  /** #5058 — seam de teste (mesmo padrão de `resolveAutoRampVolumes` em
+   *  clarice-schedule-ramp.ts). Default = `fetch` global (produção). */
+  fetchImpl?: typeof fetch;
 }
 
 export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
   const now = new Date();
   const apiKey = process.env.BREVO_CLARICE_API_KEY;
+  const fetchImpl = opts.fetchImpl ?? fetch;
 
   // 1. Dashboard ao vivo — fonte primária, nunca memória de sessão.
   // #4786: `includeScheduled=1` — sem isso, `/api/campaigns` só devolve
@@ -167,11 +216,21 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
   // estruturalmente sempre 0, mesmo com campanha `queued` real agendada —
   // a verificação final da skill nunca enxergava a própria onda que acabou
   // de agendar.
-  const res = await fetch(`${opts.dashboardUrl}/api/campaigns?limit=${DEFAULT_DASHBOARD_LIMIT}&includeScheduled=1`);
+  const res = await fetchImpl(`${opts.dashboardUrl}/api/campaigns?limit=${DEFAULT_DASHBOARD_LIMIT}&includeScheduled=1`);
   if (!res.ok) {
+    // #5058 — 429/503 é TRANSITÓRIO (rate limit da Brevo repassado pelo
+    // dashboard); qualquer outro status é erro estrutural (config, rede,
+    // bug) e continua abortando direto, sem sinalizar retry pro chamador.
+    if (TRANSIENT_DASHBOARD_STATUSES.has(res.status)) {
+      throw new TransientDashboardError(
+        `GET ${opts.dashboardUrl}/api/campaigns falhou (${res.status}) — rate limit da Brevo, transitório.`,
+        parseRetryAfterSecs(res.headers),
+        res.status,
+      );
+    }
     throw new Error(
       `GET ${opts.dashboardUrl}/api/campaigns falhou (${res.status}). ` +
-        `429 = rate limit da Brevo; aguarde e repita — nunca planeje a onda sem o estado real.`,
+        `429/503 = rate limit da Brevo; aguarde e repita — nunca planeje a onda sem o estado real.`,
     );
   }
   const stale = extractDashboardStaleInfo(res);
@@ -306,6 +365,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
 if (isMainModule(import.meta.url)) {
   main().catch((err) => {
+    // #5058 — sinaliza a falha TRANSITÓRIA pro chamador (`clarice-envio-run.ts`)
+    // por DOIS canais: exit code 3 (o chamador decide se retenta SEM parsear
+    // texto) e um JSON de 1 linha no STDOUT (`retryAfterSecs`, quando a Brevo
+    // informou — o chamador honra em vez de inventar um backoff próprio).
+    // `console.error` continua com a mensagem legível pro humano que rodar
+    // este script manualmente (skill /diaria-clarice-envio).
+    if (err instanceof TransientDashboardError) {
+      console.log(JSON.stringify({ transient: true, retryAfterSecs: err.retryAfterSecs, status: err.status, reason: err.message }));
+      console.error(err.message);
+      process.exit(3);
+    }
     console.error(err instanceof Error ? err.message : err);
     process.exit(1);
   });
