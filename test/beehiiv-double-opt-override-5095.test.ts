@@ -68,6 +68,10 @@ const POST_TO_OTHER_ENDPOINT: Record<string, string> = {
   // O único POST deste script é `/custom_fields` (cria o campo `poll_token`,
   // idempotente). Sobre subscriptions ele só faz GET paginado e PATCH.
   "scripts/inject-poll-token.ts": "POST vai pra /custom_fields, não /subscriptions",
+  // O único POST deste script (#5095/#5098) é `/publications/{pub}/segments`
+  // (cria o segmento dinâmico de exclusão). Sobre subscriptions ele só faz
+  // GET paginado — nunca cria/atualiza subscription nenhuma.
+  "scripts/sync-sparkloop-exclusion-segment-beehiiv.ts": "POST vai pra /segments, não /subscriptions",
 };
 
 /** Diretórios varridos. `test/` fica de fora de propósito — mock não é call site. */
