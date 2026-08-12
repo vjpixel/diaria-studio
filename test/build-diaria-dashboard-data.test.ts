@@ -120,6 +120,69 @@ describe("buildCtrSummary (interno)", () => {
     const avg = useMelhorCtrs.reduce((a, b) => a + b, 0) / useMelhorCtrs.length;
     assert.ok(avg > 5, `CTR médio de Use Melhor deve ser > 5 (got ${avg.toFixed(2)})`);
   });
+
+  // #5153: post never_enriched (fora da janela de 7 dias) não pode contar
+  // como 0 cliques/0% CTR na agregação por categoria — dado ausente, não
+  // zero medido.
+  describe("buildTopCategoriesFromRows (#5153)", () => {
+    test("row enrichment_state: never_enriched não entra na agregação, mesmo com unique_verified_clicks='0' e ctr_pct=''", async () => {
+      const { buildTopCategoriesFromRows } = await import("../scripts/build-diaria-dashboard-data.ts");
+      const rows = [
+        {
+          date: "2026-08-05", post_title: "P1", section_title: "", anchor: "a", base_url: "https://x.com/1",
+          domain: "x.com", unique_opens: "100", verified_clicks: "10", unique_verified_clicks: "9",
+          ctr_pct: "9.00", category: "Destaque", origin: "BR",
+        },
+        {
+          // Post recém-publicado, fora da janela de 7 dias — build-link-ctr.ts
+          // escreve verified_clicks/unique_verified_clicks="0" e ctr_pct="",
+          // mas o clique real é DESCONHECIDO.
+          date: "2026-08-10", post_title: "P2", section_title: "", anchor: "b", base_url: "https://x.com/2",
+          domain: "x.com", unique_opens: "100", verified_clicks: "0", unique_verified_clicks: "0",
+          ctr_pct: "", category: "Destaque", origin: "BR", enrichment_state: "never_enriched",
+        },
+      ] as any;
+
+      const cats = buildTopCategoriesFromRows(rows);
+      const destaque = cats.find((c: any) => c.category === "Destaque");
+      assert.ok(destaque);
+      // Só a row medida entra — link_count=1 (não 2), total_clicks=9 (não 9+0
+      // — o que daria o mesmo resultado numérico aqui, mas por acidente; o
+      // teste abaixo cobre o caso em que a diferença é observável), avg_ctr
+      // igual ao ÚNICO valor medido (9.00), não uma média diluída por um 0
+      // fantasma.
+      assert.equal(destaque.link_count, 1, "row never_enriched não deve contar no link_count");
+      assert.equal(destaque.total_clicks, 9);
+      assert.equal(destaque.avg_ctr_pct, 9, "avg_ctr_pct não deve ser diluído por um 0% fantasma de row never_enriched");
+    });
+
+    test("categoria só com rows never_enriched não aparece no resultado (nunca uma categoria fantasma toda-zero)", async () => {
+      const { buildTopCategoriesFromRows } = await import("../scripts/build-diaria-dashboard-data.ts");
+      const rows = [
+        {
+          date: "2026-08-10", post_title: "P2", section_title: "", anchor: "b", base_url: "https://x.com/2",
+          domain: "x.com", unique_opens: "100", verified_clicks: "0", unique_verified_clicks: "0",
+          ctr_pct: "", category: "Radar", origin: "BR", enrichment_state: "never_enriched",
+        },
+      ] as any;
+      const cats = buildTopCategoriesFromRows(rows);
+      assert.equal(cats.length, 0);
+    });
+
+    test("sem coluna enrichment_state (CSV pré-#4836): comportamento idêntico ao anterior, nenhuma row excluída", async () => {
+      const { buildTopCategoriesFromRows } = await import("../scripts/build-diaria-dashboard-data.ts");
+      const rows = [
+        {
+          date: "2026-08-05", post_title: "P1", section_title: "", anchor: "a", base_url: "https://x.com/1",
+          domain: "x.com", unique_opens: "100", verified_clicks: "10", unique_verified_clicks: "9",
+          ctr_pct: "9.00", category: "Destaque", origin: "BR",
+        },
+      ] as any;
+      const cats = buildTopCategoriesFromRows(rows);
+      assert.equal(cats[0].link_count, 1);
+      assert.equal(cats[0].total_clicks, 9);
+    });
+  });
 });
 
 // ─── Testes do agregador: fonte 3 (overnight) ────────────────────────────────

@@ -73,6 +73,7 @@ import {
   DEFAULT_LAST_N,
   extractEditionBoxUsages,
   findPostForEdition,
+  isPostNeverEnriched, // #5153
   loadSnippets,
   sumClicksForUrl,
   type BoxSlot,
@@ -133,6 +134,14 @@ export interface BuildHistoryOpts {
  * incompleto / edição ainda não sincronizada) — mesmo tratamento
  * conservador que `buildBoxClickReport` já dá a esse caso (loga como
  * `unmatchedBoxes`, não conta como 0).
+ *
+ * **#5153: o mesmo vale pra post `never_enriched`** (fora da janela de 7
+ * dias — `MIN_AGE_DAYS_FOR_CLICKS`, `scripts/lib/shared/ctr-config.ts` —,
+ * enrichment ainda não rodou). `stats.clicks` vem `[]` nesse caso, mas isso
+ * é dado AUSENTE, não zero medido — sem este guard, as edições mais RECENTES
+ * (as que mais pesam na janela "recente" de `computeTrend`) entrariam como
+ * aparições fabricadas de 0 cliques, derrubando artificialmente o score de
+ * QUALQUER box que caísse nelas — achado ao vivo #5153, 260812.
  */
 export function buildSnippetHistory(opts: BuildHistoryOpts): Map<string, SnippetHistory> {
   const rotationSlots = opts.rotationSlots ?? ROTATION_SLOTS;
@@ -147,6 +156,7 @@ export function buildSnippetHistory(opts: BuildHistoryOpts): Map<string, Snippet
     if (usages.length === 0) continue;
     const post = opts.findPost(aammdd);
     if (!post) continue; // sem dado de clique pra esta edição — não conta como aparição mensurável
+    if (isPostNeverEnriched(post)) continue; // #5153: fora da janela de 7 dias — idem, não conta como aparição mensurável
     for (const usage of usages) {
       if (!usage.url || !usage.snippet) continue;
       const clicks = sumClicksForUrl(usage.url, post.stats?.clicks ?? []);

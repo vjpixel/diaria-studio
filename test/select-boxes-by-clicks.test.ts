@@ -177,6 +177,42 @@ describe("buildSnippetHistory (#4626)", () => {
     assert.equal(history.get("a.md")!.appearances.length, 1, "só a edição COM post cacheado entra");
   });
 
+  // #5153: post fora da janela de 7 dias (never_enriched) precisa do MESMO
+  // tratamento de "sem post cacheado" acima — nunca vira uma aparição
+  // fabricada de 0 cliques (isso derrubaria artificialmente o score/tendência
+  // de qualquer box que caísse numa edição recente ainda não medida).
+  it("#5153: edição com post never_enriched NÃO vira aparição com 0 (omitida, mesmo com email.clicks > 0 no post real)", () => {
+    const reviewed: Record<string, string> = {
+      "260810": mdWithBox(1, "https://x.com/a"), // recém-publicada, fora da janela de 7 dias
+      "260801": mdWithBox(1, "https://x.com/a"), // já madura, com dado real
+    };
+    const posts: Record<string, PostCacheLike> = {
+      "260810": {
+        id: "p-recente",
+        publish_date: 0,
+        stats: {
+          // O ponto central: mesmo que o post tenha tido cliques reais no
+          // e-mail (email.clicks > 0 na Beehiiv), o enrichment por link
+          // nunca rodou pra ELE — clicks fica [], never_enriched explícito.
+          clicks: [],
+          enrichment_state: "never_enriched",
+        },
+      },
+      "260801": postFor("https://x.com/a", 5),
+    };
+    const history = buildSnippetHistory({
+      aammddList: ["260810", "260801"],
+      readReviewedMd: (a) => reviewed[a] ?? null,
+      snippets: [SNIPPET_A],
+      findPost: (a) => posts[a] ?? null,
+    });
+    const a = history.get("a.md");
+    assert.ok(a);
+    assert.equal(a!.appearances.length, 1, "só a edição madura (com enrichment confirmado) entra no histórico");
+    assert.equal(a!.appearances[0].aammdd, "260801");
+    assert.equal(a!.appearances[0].unique_verified_clicks, 5);
+  });
+
   it("slot 0 nunca entra no histórico (fora de escopo do #4626)", () => {
     const md = `cov\n\n---\n\n${"BOX0_SENTINEL"}\n\n**📚 Título**\n\n[Link](https://x.com/a)\n\n---\n\n**DESTAQUE 1 | 🚀**\n\n[T](https://d1.com)\n\nbody`;
     const history = buildSnippetHistory({
