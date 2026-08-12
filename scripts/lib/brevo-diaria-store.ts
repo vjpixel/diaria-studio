@@ -65,18 +65,34 @@ export interface BrevoDiariaContact {
   suppressed_at?: string; // ISO — quando status virou suppressed
   /** ISO — quando status virou unsubscribed (#4476 item 7). */
   unsubscribed_at?: string;
+  /** ISO — quando `resolution_reason` foi CORRIGIDO por
+   * `applySuppressionReconciliation` (#5077), distinto de `suppressed_at`
+   * (quando a supressão original aconteceu). Preserva as duas datas: "quando
+   * foi suprimido" e "quando a auditoria foi corrigida" são eventos
+   * diferentes e ambos interessam pra reconstruir a timeline real do
+   * contato. */
+  reconciled_at?: string;
   /** Motivo da supressão/promoção/descadastro — auditoria (#4266 self-review:
    * nunca silenciar POR QUE um contato saiu do fluxo). `native_unsubscribe_beehiiv_404`
    * (#4633) é uma variante do descadastro nativo: a propagação pra Beehiiv
    * encontrou HTTP 404 (nenhum registro de subscription pra esse e-mail —
    * falha PERMANENTE, não transitória) — marcado `unsubscribed` mesmo sem a
    * confirmação usual (`verifyUnsubscribedInBeehiiv`), já que não há o que
-   * confirmar; a divergência fica registrada aqui pra auditoria. */
+   * confirmar; a divergência fica registrada aqui pra auditoria.
+   * `self_confirmed_after_suppression` (#5077) é uma CORREÇÃO retroativa de
+   * `score_threshold`: o contato foi suprimido por engajamento baixo, mas
+   * depois (clique tardio numa campanha antiga já na caixa de entrada,
+   * observado fora da janela de avaliação normal) confirmou a subscription
+   * na Beehiiv por conta própria — o `status` continua `suppressed` (não
+   * volta a receber e-mails do canal, o funil funcionou como desenhado), só
+   * o motivo registrado passa a contar a história real em vez de uma foto
+   * tirada antes do desfecho. Ver `applySuppressionReconciliation`. */
   resolution_reason?:
     | "score_threshold"
     | "self_confirmed_beehiiv"
     | "native_unsubscribe"
-    | "native_unsubscribe_beehiiv_404";
+    | "native_unsubscribe_beehiiv_404"
+    | "self_confirmed_after_suppression";
 }
 
 export interface BrevoDiariaStore {
@@ -229,6 +245,48 @@ export function applyNativeUnsubscribe(
     contacts: store.contacts.map((c) => {
       if (c.email !== norm || c.status !== "in_brevo") return c;
       return { ...c, status: "unsubscribed", unsubscribed_at: now, resolution_reason: reason };
+    }),
+  };
+}
+
+/**
+ * Pura — CORRIGE o `resolution_reason` de um contato já `suppressed` por
+ * `score_threshold` quando uma releitura posterior mostra que a pessoa
+ * confirmou a subscription na Beehiiv depois da supressão (#5077 — clique
+ * tardio numa campanha antiga ainda parada na caixa de entrada, horas/dias
+ * depois de `evaluate-brevo-diaria.ts --push` já ter suprimido o contato por
+ * engajamento baixo).
+ *
+ * **NUNCA reverte `status`** — o contato continua `suppressed` (não volta a
+ * receber e-mails deste canal; o funil de reativação já ativou a subscription
+ * na Beehiiv diretamente, por fora deste store, e isso está correto: a
+ * pessoa não precisa das DUAS entregas). Isto é estritamente uma correção de
+ * AUDITORIA: `resolution_reason` passa a contar "confirmou depois de
+ * suprimido" em vez de "score baixo" — a foto tirada ANTES do desfecho real.
+ *
+ * Guard de idempotência/escopo (mesmo padrão dos outros `apply*` acima): só
+ * transiciona contatos com `status === "suppressed"` E
+ * `resolution_reason === "score_threshold"` — um contato ainda `in_brevo`,
+ * já reconciliado (`self_confirmed_after_suppression`), ou suprimido por
+ * qualquer motivo que não seja o score algorítmico (não existe hoje, mas a
+ * guarda é defensiva) fica inalterado. Chamar 2x com o mesmo contato já
+ * reconciliado é noop na 2ª chamada — o `resolution_reason` não bate mais
+ * com `"score_threshold"`.
+ *
+ * `suppressed_at` (quando a supressão original aconteceu) é preservado sem
+ * alteração — `reconciled_at` (novo campo) registra separadamente quando a
+ * auditoria foi corrigida.
+ */
+export function applySuppressionReconciliation(
+  store: BrevoDiariaStore,
+  email: string,
+  now: string = new Date().toISOString(),
+): BrevoDiariaStore {
+  const norm = normalizeEmail(email);
+  return {
+    contacts: store.contacts.map((c) => {
+      if (c.email !== norm || c.status !== "suppressed" || c.resolution_reason !== "score_threshold") return c;
+      return { ...c, reconciled_at: now, resolution_reason: "self_confirmed_after_suppression" };
     }),
   };
 }
