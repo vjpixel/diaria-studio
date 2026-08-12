@@ -48,6 +48,22 @@
  * do rodapé (plataforma, não host legado nosso) e pro CDN `media.beehiiv.com`
  * (imagens, nunca link de leitor) — ambos citados como fora de escopo no
  * corpo da issue.
+ *
+ * ─── 5º eixo: porta explícita numa URL reader-facing (#5106) ──────────────
+ *
+ * Achado adjacente à mesma auditoria (12/08/2026): toda página de edição
+ * (`https://diar.ia.br/p/*`) termina com o bloco "Keep Reading" e um botão
+ * "View more" apontando pra `https://diar.ia.br:3002/archive` — porta 3002,
+ * sobra de ambiente de dev que ficou gravada no template do post no
+ * Website Builder da Beehiiv, link morto nas 236 edições publicadas. A
+ * troca do botão em si é ação manual do editor no template de post da
+ * Beehiiv (fora de escopo aqui) — este 5º eixo (`port-in-url`) é o GUARD:
+ * qualquer `href` com porta explícita numa superfície pública vira drift.
+ * Diferente dos outros 4 eixos, o achado real está numa página `/p/*`, não
+ * na home — por isso `evaluatePostPageDrift` é uma função SEPARADA de
+ * `evaluateHomeMetaDrift`, avaliada pelo script chamador contra o HTML de
+ * uma página de post (a mais recente, descoberta via `findLatestPostUrl`
+ * sobre a própria home já buscada — sem depender de nenhuma fonte nova).
  */
 
 // ─── Extração (pura) ────────────────────────────────────────────────────────
@@ -124,20 +140,52 @@ export function countHttpSelfLinks(html: string): number {
   return (html.match(re) ?? []).length;
 }
 
+/**
+ * Pura — extrai só o texto RENDERIZADO de `html` (#5137): remove
+ * `<script>`/`<style>` inteiros (cobre o JSON de config do builder Beehiiv
+ * quando embutido num bloco de script) e substitui toda tag restante —
+ * ABERTURA COM SEUS ATRIBUTOS incluídos — por um espaço, o que também
+ * descarta qualquer JSON/config guardado como valor de atributo (`data-*`,
+ * etc.) sem precisar tratar isso como caso especial: a tag inteira
+ * `<algo attr="…JSON…">` vira um espaço, sobrando só o texto ENTRE tags.
+ * Não é um parser DOM (regex sobre string, mesmo padrão do resto deste
+ * módulo) — suficiente pra separar "dado de configuração" (nunca visto pelo
+ * leitor) de "texto que o leitor de fato vê", que é o que os rótulos em
+ * inglês deveriam casar contra.
+ */
+export function extractVisibleText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]*>/g, " ");
+}
+
 /** Rótulos em inglês residuais que a UI do tema Beehiiv não deveria mais
- * mostrar (issue #4557, item 3). "N min read" cobre qualquer inteiro
+ * mostrar (issue #4557, item 3). Casados contra `extractVisibleText` (#5137),
+ * não contra o HTML cru — por isso não precisam mais dos delimitadores
+ * `>…<` (o texto já vem sem tags). "N min read" cobre qualquer inteiro
  * ("5 min read", "12 min read", etc.), case-insensitive. */
 const ENGLISH_LABEL_PATTERNS: ReadonlyArray<{ label: string; re: RegExp }> = [
-  { label: '"Sign Up"', re: /Sign Up/ },
-  { label: '">Login<"', re: />Login</ },
+  { label: '"Sign Up"', re: /\bSign Up\b/ },
+  { label: '"Login"', re: /\bLogin\b/ },
   { label: '"N min read"', re: /\b\d+\s*min read\b/i },
 ];
 
-/** Pura — retorna a lista de rótulos em inglês encontrados no HTML (vazio se nenhum). */
+/**
+ * Pura — retorna a lista de rótulos em inglês encontrados no HTML (vazio se
+ * nenhum). #5137: casa contra `extractVisibleText(html)`, não contra o HTML
+ * cru — uma página Beehiiv embute o JSON de configuração do builder inteiro
+ * (ex: `"label":"Sign Up"` no payload da navbar), e qualquer string em
+ * inglês que exista só como DADO de configuração casava igual a texto
+ * visível antes desta correção. "Sign Up" em botão de ação padrão
+ * (`action:"sign_up"`) é ignorado pela Beehiiv e renderizado traduzido
+ * ("Assinar") pelo locale da publicação — o leitor nunca vê a string EN.
+ */
 export function detectEnglishLabels(html: string): string[] {
+  const text = extractVisibleText(html);
   const found: string[] = [];
   for (const { label, re } of ENGLISH_LABEL_PATTERNS) {
-    if (re.test(html)) found.push(label);
+    if (re.test(text)) found.push(label);
   }
   return found;
 }
@@ -195,7 +243,12 @@ export function detectLegacyHostLinks(html: string): string[] {
   return [...found].sort();
 }
 
-export type HomeMetaDriftCheck = "og-title-brand" | "http-self-link" | "english-labels" | "legacy-host-link";
+export type HomeMetaDriftCheck =
+  | "og-title-brand"
+  | "http-self-link"
+  | "english-labels"
+  | "legacy-host-link"
+  | "port-in-url";
 
 export interface HomeMetaDriftFinding {
   readonly check: HomeMetaDriftCheck;
@@ -265,6 +318,61 @@ export function hasHomeMetaDrift(findings: readonly HomeMetaDriftFinding[]): boo
   return findings.length > 0;
 }
 
+// ─── 5º eixo: porta explícita numa URL reader-facing (#5106) ───────────────
+
+/**
+ * Pura — extrai (deduplicado, ordenado) os `href="http(s)://host:PORTA/…"`
+ * de `html` — qualquer porta explícita numa superfície pública é sobra de
+ * dev/config (#5106: o botão "View more" de toda página de edição apontava
+ * pra `https://diar.ia.br:3002/archive`, porta 3002 — link morto nas 236
+ * edições publicadas). Regex sobre string (mesmo padrão do resto deste
+ * módulo); nunca lança.
+ */
+export function detectPortInUrlLinks(html: string): string[] {
+  const found = new Set<string>();
+  const re = /href=["'](https?:\/\/[^"'/?#\s]+:\d+[^"']*)["']/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    found.add(m[1]);
+  }
+  return [...found].sort();
+}
+
+/**
+ * Pura — extrai a URL da edição mais recente a partir do HTML da home
+ * (#5106): a home lista as edições mais recentes primeiro, então o PRIMEIRO
+ * `href="{baseUrl}/p/{slug}"` em ordem de documento já é o post mais
+ * recente — mesmo mecanismo que o check já usa pra obter o HTML da home,
+ * sem depender de nenhuma fonte externa nova (Beehiiv API, cache local).
+ * Retorna `null` se nenhum link `/p/` for encontrado (nunca lança).
+ */
+export function findLatestPostUrl(homeHtml: string, baseUrl: string): string | null {
+  const escapedBase = baseUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`href=["'](${escapedBase}/p/[a-z0-9-]+)["']`, "i");
+  const m = homeHtml.match(re);
+  return m ? m[1] : null;
+}
+
+/**
+ * Pura — avalia o 5º eixo (`port-in-url`, #5106) a partir do HTML de uma
+ * página de POST já buscada (nenhuma chamada de rede aqui) — separado de
+ * `evaluateHomeMetaDrift` porque o achado real mora numa página `/p/*`
+ * ("Keep Reading" → "View more"), não na home; o script chamador busca a
+ * página via `findLatestPostUrl` e passa o HTML aqui. Retorna a lista de
+ * achados — vazia quando limpo.
+ */
+export function evaluatePostPageDrift(html: string): HomeMetaDriftFinding[] {
+  const findings: HomeMetaDriftFinding[] = [];
+  const portLinks = detectPortInUrlLinks(html);
+  if (portLinks.length > 0) {
+    findings.push({
+      check: "port-in-url",
+      message: `link(s) com porta explícita na URL: ${portLinks.join(", ")} — sobra de dev, nunca deveria estar em superfície pública (#5106)`,
+    });
+  }
+  return findings;
+}
+
 // ─── Idempotência do alarme (fingerprint + estado) ─────────────────────────
 // Mesmo padrão de scripts/lib/hub-drift-check.ts/worker-drift-check.ts.
 
@@ -303,12 +411,38 @@ export function advanceHomeMetaAlarmState(fingerprint: string | null, now: Date)
 
 // ─── Corpo do e-mail de alarme (puro) ──────────────────────────────────────
 
+/** Referência de issue GitHub associada a um achado — mesmo shape de
+ * `AlarmFindingOutcome` (`scripts/lib/alarm-issues.ts`, #5112), sem
+ * importar o módulo aqui pra manter este arquivo sem dependência do
+ * subsistema de issues (só o script chamador conecta os dois). */
+export interface HomeMetaFindingIssueRef {
+  issueNumber: number | null;
+  url: string | null;
+  action: "created" | "reused" | "failed";
+  error?: string;
+}
+
+/** Chave estável pra casar um `HomeMetaDriftFinding` com seu
+ * `HomeMetaFindingIssueRef` — mesma fórmula usada por
+ * `computeHomeMetaFingerprint` por item, então o caller pode montar o mapa
+ * direto a partir do `fingerprint` já usado em `AlarmFinding` (#5112). */
+export function homeMetaFindingIssueKey(f: Pick<HomeMetaDriftFinding, "check" | "message">): string {
+  return `${f.check}:${f.message}`;
+}
+
 /** Pura — monta assunto + corpo do e-mail de alarme (texto puro, mesmo
- * padrão de `hub-drift-check.ts`/`worker-drift-check.ts`, sem HTML). */
+ * padrão de `hub-drift-check.ts`/`worker-drift-check.ts`, sem HTML).
+ * `issueRefs` é opcional (#5112) — quando presente, cada achado ganha uma
+ * citação `→ #NNNN (criada)` / `→ #NNNN (existente)` / `→ issue não
+ * criada: {erro}`, com a URL completa da issue (quando houver) pro editor
+ * clicar direto do e-mail. Omitir `issueRefs` preserva o texto de antes
+ * (back-compat com chamadas existentes, mesmo padrão do `guardWarnings`
+ * opcional em `apoios-diff-alarm.ts`). */
 export function buildHomeMetaDriftAlarmEmail(
   findings: readonly HomeMetaDriftFinding[],
   extract: HomeMetaExtract,
   homeUrl: string,
+  issueRefs?: ReadonlyMap<string, HomeMetaFindingIssueRef>,
 ): { subject: string; body: string } {
   const subject = `[diar.ia.br] drift de metadata na home (${findings.length} achado(s))`;
 
@@ -317,16 +451,24 @@ export function buildHomeMetaDriftAlarmEmail(
     "num dos eixos monitorados — ver o(s) achado(s) abaixo pro que exatamente",
     "está errado.",
     "",
-    "Refs #4557/#5099 — as correções de eixo (og:title, http->https, rótulos",
-    "EN, link pra host legado) são ação manual do editor no painel Beehiiv;",
-    "este alarme só detecta REGRESSÃO depois de corrigido (ou aponta o que",
-    "ainda falta corrigir, na 1ª execução).",
+    "Refs #4557/#5099/#5106 — as correções de eixo (og:title, http->https,",
+    "rótulos EN, link pra host legado, porta na URL) são ação manual do",
+    "editor no painel/template Beehiiv; este alarme só detecta REGRESSÃO",
+    "depois de corrigido (ou aponta o que ainda falta corrigir, na 1ª",
+    "execução).",
     "",
     `Achado(s) (${findings.length}):`,
   ];
 
   for (const f of findings) {
-    lines.push(`  - [${f.check}] ${f.message}`);
+    let line = `  - [${f.check}] ${f.message}`;
+    const ref = issueRefs?.get(homeMetaFindingIssueKey(f));
+    if (ref) {
+      if (ref.action === "created") line += ` → #${ref.issueNumber} (criada) — ${ref.url}`;
+      else if (ref.action === "reused") line += ` → #${ref.issueNumber} (existente) — ${ref.url}`;
+      else line += ` → issue não criada: ${ref.error ?? "erro desconhecido"}`;
+    }
+    lines.push(line);
   }
 
   lines.push("");

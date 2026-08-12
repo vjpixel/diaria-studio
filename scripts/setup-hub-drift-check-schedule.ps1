@@ -2,21 +2,24 @@
 .SYNOPSIS
     Registra (ou remove) a task "Diaria-Hub-Drift-Check" no Task Scheduler --
     smoke-test de drift entre HUB_META e o Worker `arquivo` publicado (#4750),
-    a cada 6h.
+    diaria as 10:00.
 
 .DESCRIPTION
     Cria uma tarefa agendada que roda `run-hub-drift-check.ps1` (que chama
-    `hub-drift-check.ts`) a cada 6h. O script le HUB_META
+    `hub-drift-check.ts`) diariamente as 10:00. O script le HUB_META
     (workers/arquivo/src/hubs/meta.ts, sem lista hardcoded), bate
     GET {DIARIA_ARQUIVO_URL}/temas/{slug} em cada hub, e alarma o editor por
     e-mail (Gmail) quando algum hub nao responde 200 (404, 5xx) ou a chamada
     de rede falha -- sinal de que um link interno da navegacao "Por tema" do
     arquivo aponta pra um hub fora do ar.
 
-    Cadencia: 6h, mesma cadencia de scripts/setup-worker-drift-check-schedule.ps1
-    (#4723) -- drift de hub e a mesma classe de problema (deploy/registry
-    divergindo do que esta publicado), so que aplicada ao caso especifico
-    "hub servindo 404" em vez de "codigo velho no ar". E idempotente por
+    Cadencia: diaria as 10:00 (#5113, decisao do editor 260812 -- mudou de
+    "a cada 6h"). O conserto (deploy do Worker/config do hub) e acao manual
+    do editor de manha -- latencia de deteccao abaixo da latencia de
+    resposta e desperdicada; ver o comentario de
+    Diaria-Beehiiv-Home-Meta-Check em scripts/lib/scheduled-tasks.ts pro
+    raciocinio completo (os drift-checks de superficie publica se citavam em
+    circulo desde a origem do 6h, #4723/#4750/#4910). E idempotente por
     fingerprint do conjunto de hubs quebrados (nao reenvia o MESMO e-mail a
     cada execucao -- ver scripts/lib/hub-drift-check.ts).
 
@@ -71,7 +74,7 @@ $RepoRoot   = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 $WrapperPs1 = Join-Path $RepoRoot "scripts\run-hub-drift-check.ps1"
 
 $TaskName = "Diaria-Hub-Drift-Check"
-$TaskDesc = "diar.ia.br: smoke-test de drift entre HUB_META e o Worker arquivo publicado (#4750) - a cada 6h, alarme por e-mail."
+$TaskDesc = "diar.ia.br: smoke-test de drift entre HUB_META e o Worker arquivo publicado (#4750) - diaria as 10:00, alarme por e-mail."
 
 if (-not (Test-Path $WrapperPs1)) {
     Write-Error "Wrapper nao encontrado: $WrapperPs1"
@@ -100,12 +103,8 @@ $Action = New-ScheduledTaskAction `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$WrapperPs1`"" `
     -WorkingDirectory $RepoRoot
 
-# A cada 6h, comecando agora, indefinidamente. -Once e SWITCH (nao aceita
-# valor posicional) -- o instante inicial vai em -At (#4155, mesma armadilha
-# documentada em setup-worker-drift-check-schedule.ps1/setup-cursos-error-alarm-schedule.ps1).
-# -RepetitionDuration OMITIDO de proposito: sem ele a repeticao e indefinida
-# (passar [TimeSpan]::MaxValue quebra o registro, ver #4155).
-$Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 6)
+# Diaria as 10:00 (#5113, mudou de "a cada 6h" -- ver .DESCRIPTION).
+$Trigger = New-ScheduledTaskTrigger -Daily -At (Get-Date -Hour 10 -Minute 0 -Second 0)
 
 $Settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit   (New-TimeSpan -Minutes 30) `
@@ -145,7 +144,7 @@ Write-Output ""
 Write-Output "Configuracao:"
 Write-Output "  Wrapper : $WrapperPs1"
 Write-Output "  Repo    : $RepoRoot"
-Write-Output "  Cadencia: a cada 6h"
+Write-Output "  Cadencia: diaria as 10:00"
 Write-Output "  Log     : data\hub-drift-check\.drift-check.log"
 Write-Output ""
 Write-Output "Verificar: Get-ScheduledTask -TaskName '$TaskName' | Get-ScheduledTaskInfo"

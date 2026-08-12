@@ -2,23 +2,25 @@
 .SYNOPSIS
     Registra (ou remove) a task "Diaria-Robots-Txt-Drift-Check" no Task
     Scheduler -- smoke-test do robots.txt SERVIDO pelos Workers de
-    curadoria (#4910), a cada 6h.
+    curadoria (#4910), diaria as 10:15.
 
 .DESCRIPTION
     Cria uma tarefa agendada que roda `run-robots-txt-drift-check.ps1` (que
-    chama `robots-txt-drift-check.ts`) a cada 6h. O script descobre os hosts
-    publicos via discoverWorkerPublicHosts (workers/*/wrangler.toml, sem
-    lista hardcoded), bate GET https://{host}/robots.txt em cada um, e
-    alarma o editor por e-mail (Gmail) quando o arquivo SERVIDO ainda
-    carrega o bloco gerenciado da Cloudflare (`# BEGIN Cloudflare Managed
-    content`) e/ou bloqueia um bot fora do esperado
-    (CURADORIA_BLOCKED_BOTS) ou um bot de recuperacao/citacao
-    (OAI-SearchBot, Claude-SearchBot, PerplexityBot, Googlebot, Bingbot).
+    chama `robots-txt-drift-check.ts`) diariamente as 10:15. O script
+    descobre os hosts publicos via discoverWorkerPublicHosts
+    (workers/*/wrangler.toml, sem lista hardcoded), bate GET
+    https://{host}/robots.txt em cada um, e alarma o editor por e-mail
+    (Gmail) quando o arquivo SERVIDO ainda carrega o bloco gerenciado da
+    Cloudflare (`# BEGIN Cloudflare Managed content`) e/ou bloqueia um bot
+    fora do esperado (CURADORIA_BLOCKED_BOTS) ou um bot de
+    recuperacao/citacao (OAI-SearchBot, Claude-SearchBot, PerplexityBot,
+    Googlebot, Bingbot).
 
-    Cadencia: 6h, mesma cadencia de scripts/setup-hub-drift-check-schedule.ps1
-    (#4750) -- mesma classe de problema (config publicada divergindo do que
-    o codigo pretende), aqui aplicada ao robots.txt em vez dos hubs
-    tematicos.
+    Cadencia: diaria as 10:15 (#5113, decisao do editor 260812 -- mudou de
+    "a cada 6h"), mesmo raciocinio de
+    scripts/setup-hub-drift-check-schedule.ps1 (#4750) -- o conserto e acao
+    manual de dashboard do editor de manha, detectar de madrugada nao
+    adianta nada.
 
     Fecha o item 3 da issue #4910: nenhum guard existente ate aqui olhava o
     que esta de fato SERVIDO (todos test-time contra renderCuradoriaRobotsTxt)
@@ -77,7 +79,7 @@ $RepoRoot   = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 $WrapperPs1 = Join-Path $RepoRoot "scripts\run-robots-txt-drift-check.ps1"
 
 $TaskName = "Diaria-Robots-Txt-Drift-Check"
-$TaskDesc = "diar.ia.br: smoke-test do robots.txt SERVIDO pelos Workers de curadoria (#4910) - a cada 6h, alarme por e-mail."
+$TaskDesc = "diar.ia.br: smoke-test do robots.txt SERVIDO pelos Workers de curadoria (#4910) - diaria as 10:15, alarme por e-mail."
 
 if (-not (Test-Path $WrapperPs1)) {
     Write-Error "Wrapper nao encontrado: $WrapperPs1"
@@ -106,11 +108,8 @@ $Action = New-ScheduledTaskAction `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$WrapperPs1`"" `
     -WorkingDirectory $RepoRoot
 
-# A cada 6h, comecando agora, indefinidamente. -Once e SWITCH (nao aceita
-# valor posicional) -- o instante inicial vai em -At (#4155, mesma armadilha
-# documentada em setup-worker-drift-check-schedule.ps1/setup-hub-drift-check-schedule.ps1).
-# -RepetitionDuration OMITIDO de proposito: sem ele a repeticao e indefinida.
-$Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 6)
+# Diaria as 10:15 (#5113, mudou de "a cada 6h" -- ver .DESCRIPTION).
+$Trigger = New-ScheduledTaskTrigger -Daily -At (Get-Date -Hour 10 -Minute 15 -Second 0)
 
 $Settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit   (New-TimeSpan -Minutes 30) `
@@ -149,7 +148,7 @@ Write-Output ""
 Write-Output "Configuracao:"
 Write-Output "  Wrapper : $WrapperPs1"
 Write-Output "  Repo    : $RepoRoot"
-Write-Output "  Cadencia: a cada 6h"
+Write-Output "  Cadencia: diaria as 10:15"
 Write-Output "  Log     : data\robots-txt-drift-check\.drift-check.log"
 Write-Output ""
 Write-Output "Verificar: Get-ScheduledTask -TaskName '$TaskName' | Get-ScheduledTaskInfo"

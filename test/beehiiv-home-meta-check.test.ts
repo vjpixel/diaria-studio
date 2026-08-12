@@ -15,10 +15,14 @@ import assert from "node:assert/strict";
 import {
   extractHomeMeta,
   evaluateHomeMetaDrift,
+  evaluatePostPageDrift,
   hasHomeMetaDrift,
   countHttpSelfLinks,
+  extractVisibleText,
   detectEnglishLabels,
   detectLegacyHostLinks,
+  detectPortInUrlLinks,
+  findLatestPostUrl,
   computeHomeMetaFingerprint,
   emptyHomeMetaAlarmState,
   advanceHomeMetaAlarmState,
@@ -95,6 +99,29 @@ const ALLOWED_PLATFORM_HOSTS_HTML = CLEAN_HTML.replace(
     "</nav>",
 );
 
+/** (g) fixture do payload real do #5137: "Sign Up" existe SÓ como dado de
+ * configuração dentro de um `<script>` (payload JSON da navbar do builder
+ * Beehiiv) — nunca como texto renderizado. "Assinar" é o texto que o leitor
+ * de fato vê (a Beehiiv ignora o `label` do JSON em botão de ação padrão e
+ * renderiza traduzido). "4 min read" é achado LEGÍTIMO — texto de verdade. */
+const JSON_CONFIG_SIGN_UP_HTML = CLEAN_HTML.replace(
+  "</head>",
+  '  <script type="application/json">' +
+    '{"type":"navbar_item","attrs":{"id":"0ac46cf0","type":"button","color":"#ffffff",' +
+    '"label":"Sign Up","action":"sign_up"}}' +
+    "</script>\n</head>",
+).replace(
+  '<a href="https://diar.ia.br/inscrever">Inscrever-se</a>',
+  '<a href="https://diar.ia.br/inscrever">Assinar</a>',
+).replace("Tempo de leitura: 5 min", '<span class="_11r14xt1">4 min read</span>');
+
+/** (h) caso inverso do #5137 — "Sign Up" como texto RENDERIZADO (nó de texto
+ * de verdade, não dado de config) continua tendo que alarmar. */
+const RENDERED_SIGN_UP_HTML = CLEAN_HTML.replace(
+  '<a href="https://diar.ia.br/inscrever">Inscrever-se</a>',
+  '<a href="https://diar.ia.br/inscrever">Sign Up</a>',
+);
+
 // ─── extractHomeMeta ────────────────────────────────────────────────────────
 
 describe("extractHomeMeta (#4557)", () => {
@@ -149,18 +176,47 @@ describe("countHttpSelfLinks (#4557)", () => {
   });
 });
 
-describe("detectEnglishLabels (#4557)", () => {
+describe("detectEnglishLabels (#4557, #5137)", () => {
   it("vazio no HTML limpo", () => {
     assert.deepEqual(detectEnglishLabels(CLEAN_HTML), []);
   });
 
-  it("detecta 'Sign Up', '>Login<' e 'N min read' juntos", () => {
+  it("detecta 'Sign Up', 'Login' e 'N min read' juntos", () => {
     const found = detectEnglishLabels(ENGLISH_LABELS_HTML);
-    assert.deepEqual(found.sort(), ['"Sign Up"', '"N min read"', '">Login<"'].sort());
+    assert.deepEqual(found.sort(), ['"Sign Up"', '"N min read"', '"Login"'].sort());
   });
 
   it("'N min read' casa qualquer inteiro, case-insensitive", () => {
     assert.deepEqual(detectEnglishLabels("<p>12 Min Read</p>"), ['"N min read"']);
+  });
+
+  it("#5137: 'Sign Up' só no JSON de config (dentro de <script>) não conta — só o achado legítimo ('4 min read') sobra", () => {
+    assert.deepEqual(detectEnglishLabels(JSON_CONFIG_SIGN_UP_HTML), ['"N min read"']);
+  });
+
+  it("#5137: 'Sign Up' como texto renderizado (não em <script>/atributo) continua alarmando", () => {
+    assert.deepEqual(detectEnglishLabels(RENDERED_SIGN_UP_HTML), ['"Sign Up"']);
+  });
+});
+
+describe("extractVisibleText (#5137)", () => {
+  it("remove <script> e <style> inteiros, inclusive o conteúdo", () => {
+    const html = "<html><head><script>var x = 'Sign Up';</script><style>.a{color:red}</style></head><body>oi</body></html>";
+    const text = extractVisibleText(html);
+    assert.doesNotMatch(text, /Sign Up/);
+    assert.doesNotMatch(text, /color:red/);
+    assert.match(text, /oi/);
+  });
+
+  it("remove tags mas preserva o texto entre elas", () => {
+    const text = extractVisibleText("<p>Tempo de <b>leitura</b>: 5 min</p>");
+    assert.match(text, /Tempo de\s+leitura\s*: 5 min/);
+  });
+
+  it("descarta conteúdo de atributo (a tag inteira vira espaço, inclusive os atributos)", () => {
+    const text = extractVisibleText('<a href="https://x" data-config=\'{"label":"Sign Up"}\'>Assinar</a>');
+    assert.doesNotMatch(text, /Sign Up/);
+    assert.match(text, /Assinar/);
   });
 });
 
@@ -191,6 +247,65 @@ describe("detectLegacyHostLinks (#5099)", () => {
   it("host de marca diar.ia.br nunca casa (substring solta não é o suficiente)", () => {
     const html = `<a href="https://arquivo.diar.ia.br/">Arquivo</a>`;
     assert.deepEqual(detectLegacyHostLinks(html), []);
+  });
+});
+
+describe("detectPortInUrlLinks (#5106)", () => {
+  it("vazio no HTML limpo", () => {
+    assert.deepEqual(detectPortInUrlLinks(CLEAN_HTML), []);
+  });
+
+  it("detecta href com porta explícita (reprodução real: diar.ia.br:3002/archive)", () => {
+    const html = `<a href="https://diar.ia.br:3002/archive">View more</a>`;
+    assert.deepEqual(detectPortInUrlLinks(html), ["https://diar.ia.br:3002/archive"]);
+  });
+
+  it("não conta href sem porta explícita", () => {
+    const html = `<a href="https://diar.ia.br/archive">Arquivo</a>`;
+    assert.deepEqual(detectPortInUrlLinks(html), []);
+  });
+
+  it("deduplica e ordena múltiplos hrefs com porta", () => {
+    const html =
+      `<a href="https://x.com:8080/b">b</a><a href="https://x.com:8080/b">b de novo</a>` +
+      `<a href="https://a.com:3000/a">a</a>`;
+    assert.deepEqual(detectPortInUrlLinks(html), ["https://a.com:3000/a", "https://x.com:8080/b"]);
+  });
+});
+
+describe("findLatestPostUrl (#5106)", () => {
+  const baseUrl = "https://diar.ia.br";
+
+  it("retorna null quando não há nenhum link /p/ na home", () => {
+    assert.equal(findLatestPostUrl(CLEAN_HTML, baseUrl), null);
+  });
+
+  it("extrai o PRIMEIRO link /p/ em ordem de documento (mais recente primeiro na home)", () => {
+    const html =
+      `<a href="https://diar.ia.br/p/edicao-mais-recente">Edição de hoje</a>` +
+      `<a href="https://diar.ia.br/p/edicao-anterior">Edição de ontem</a>`;
+    assert.equal(findLatestPostUrl(html, baseUrl), "https://diar.ia.br/p/edicao-mais-recente");
+  });
+
+  it("nunca lança em HTML vazio/malformado", () => {
+    assert.equal(findLatestPostUrl("", baseUrl), null);
+    assert.equal(findLatestPostUrl("<<<not html", baseUrl), null);
+  });
+});
+
+describe("evaluatePostPageDrift (#5106)", () => {
+  it("sem porta na URL -> nenhum achado", () => {
+    const html = `<a href="https://diar.ia.br/archive">View more</a>`;
+    assert.deepEqual(evaluatePostPageDrift(html), []);
+  });
+
+  it("reprodução real (#5106): botão 'View more' com porta -> achado port-in-url", () => {
+    const html = `<a href="https://diar.ia.br:3002/archive">View more</a>`;
+    const findings = evaluatePostPageDrift(html);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].check, "port-in-url");
+    assert.match(findings[0].message, /diar\.ia\.br:3002\/archive/);
+    assert.match(findings[0].message, /#5106/);
   });
 });
 
@@ -369,5 +484,55 @@ describe("buildHomeMetaDriftAlarmEmail (#4557)", () => {
       /\(3 correç/i,
       "a moldura introdutória não deveria enumerar um número fixo de eixos",
     );
+  });
+
+  // #5112: cada achado passa a citar a issue GitHub associada, quando o
+  // caller passa `issueRefs`. Sem `issueRefs`, comportamento idêntico a
+  // antes (back-compat).
+  describe("#5112 — issueRefs (citação de issue por achado)", () => {
+    it("sem issueRefs, corpo não muda (back-compat)", () => {
+      const findings = evaluateHomeMetaDrift(ENGLISH_LABELS_HTML);
+      const extract = extractHomeMeta(ENGLISH_LABELS_HTML);
+      const { body } = buildHomeMetaDriftAlarmEmail(findings, extract, "https://diar.ia.br/");
+      assert.doesNotMatch(body, /→ #/);
+    });
+
+    it("achado criado -> linha cita '#NNNN (criada)' + a URL completa da issue", () => {
+      const findings = evaluateHomeMetaDrift(ENGLISH_LABELS_HTML);
+      const extract = extractHomeMeta(ENGLISH_LABELS_HTML);
+      const finding = findings.find((f) => f.check === "english-labels")!;
+      const key = `${finding.check}:${finding.message}`;
+      const issueRefs = new Map([
+        [key, { issueNumber: 5101, url: "https://github.com/vjpixel/diaria-studio/issues/5101", action: "created" as const }],
+      ]);
+      const { body } = buildHomeMetaDriftAlarmEmail(findings, extract, "https://diar.ia.br/", issueRefs);
+      assert.match(body, /→ #5101 \(criada\)/);
+      assert.match(body, /https:\/\/github\.com\/vjpixel\/diaria-studio\/issues\/5101/);
+    });
+
+    it("achado reusado -> linha cita '#NNNN (existente)' + a URL", () => {
+      const findings = evaluateHomeMetaDrift(LEGACY_HOST_LINKS_HTML);
+      const extract = extractHomeMeta(LEGACY_HOST_LINKS_HTML);
+      const finding = findings.find((f) => f.check === "legacy-host-link")!;
+      const key = `${finding.check}:${finding.message}`;
+      const issueRefs = new Map([
+        [key, { issueNumber: 5099, url: "https://github.com/vjpixel/diaria-studio/issues/5099", action: "reused" as const }],
+      ]);
+      const { body } = buildHomeMetaDriftAlarmEmail(findings, extract, "https://diar.ia.br/", issueRefs);
+      assert.match(body, /→ #5099 \(existente\)/);
+      assert.match(body, /issues\/5099/);
+    });
+
+    it("falha na criação -> linha cita 'issue não criada: {motivo}', sem número de issue", () => {
+      const findings = evaluateHomeMetaDrift(ENGLISH_LABELS_HTML);
+      const extract = extractHomeMeta(ENGLISH_LABELS_HTML);
+      const finding = findings.find((f) => f.check === "english-labels")!;
+      const key = `${finding.check}:${finding.message}`;
+      const issueRefs = new Map([
+        [key, { issueNumber: null, url: null, action: "failed" as const, error: "gh não autenticado" }],
+      ]);
+      const { body } = buildHomeMetaDriftAlarmEmail(findings, extract, "https://diar.ia.br/", issueRefs);
+      assert.match(body, /issue não criada: gh não autenticado/);
+    });
   });
 });
