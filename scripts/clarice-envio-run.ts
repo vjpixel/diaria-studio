@@ -983,19 +983,31 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
     // Narrado por `inherited.mode` (não mais por `abcAction`) — achado do
     // type-design-analyzer: o tipo discriminado elimina os `!` non-null
     // assertions que existiam aqui antes.
-    const cells: Array<{ key: string; cell: "A" | "B" | "C" | null; subject: string }> =
+    //
+    // `scheduleAt` é POR CÉLULA (#5140) e hoje recebe o mesmo `scheduledAt`
+    // em todas — o valor é uniforme, a ESTRUTURA não é mais. É o gancho do
+    // teste de horário da onda (06:00 × 10:00 BRT): quando o estado durável
+    // do teste existir, só esta expressão muda; o loop abaixo, o relatório e
+    // o aviso de onda parcial já leem do campo certo. Enquanto o teste não
+    // roda, o comportamento é idêntico ao de antes desta mudança.
+    const cells: Array<{ key: string; cell: "A" | "B" | "C" | null; subject: string; scheduleAt: string }> =
       inherited.mode === "single"
-        ? [{ key: waveKeyBase, cell: null, subject: inherited.subject }]
-        : (["A", "B", "C"] as const).map((c) => ({ key: `${waveKeyBase}-${c}`, cell: c, subject: inherited.subjects[c] }));
+        ? [{ key: waveKeyBase, cell: null, subject: inherited.subject, scheduleAt: scheduledAt }]
+        : (["A", "B", "C"] as const).map((c) => ({
+            key: `${waveKeyBase}-${c}`,
+            cell: c,
+            subject: inherited.subjects[c],
+            scheduleAt: scheduledAt,
+          }));
 
     let anyUncertain = false;
     let scheduledCount = 0;
     const summaries: InvocationSummary[] = [];
     try {
-      for (const { key, cell, subject } of cells) {
+      for (const { key, cell, subject, scheduleAt } of cells) {
         const keyArgs = cell ? ["--key", key] : [];
         step<InvocationSummary>(deps, report, `clarice-schedule-group --create (${key})`, "scripts/clarice-schedule-group.ts", [
-          "--cycle", cycle, "--group", waveKeyBase, ...keyArgs, "--subject", subject, "--schedule-at", scheduledAt, "--create",
+          "--cycle", cycle, "--group", waveKeyBase, ...keyArgs, "--subject", subject, "--schedule-at", scheduleAt, "--create",
         ]);
 
         const scheduleResult = deps.exec("scripts/clarice-schedule-group.ts", [
@@ -1009,7 +1021,7 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
         } else if (scheduleResult.code !== 0) {
           throw new EnvioAbort(`❌ clarice-schedule-group --schedule ("${key}") falhou (exit ${scheduleResult.code}): ${scheduleResult.stderr.trim().split("\n").slice(-6).join(" | ")}`);
         } else {
-          report.note(`✅ "${key}" agendada pra ${scheduledAt} (status="${scheduleJson?.status ?? "?"}").`);
+          report.note(`✅ "${key}" agendada pra ${scheduleAt} (status="${scheduleJson?.status ?? "?"}").`);
         }
         if (scheduleJson) summaries.push(scheduleJson);
         scheduledCount++;
@@ -1025,11 +1037,15 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
       // certo, só o CONTEÚDO do relatório passa a não esconder o estado
       // parcial).
       if (scheduledCount > 0) {
-        const done = cells.slice(0, scheduledCount).map((c) => c.key);
+        // `${key} (${scheduleAt})` em vez de um "às 06:00" fixo (#5140): com
+        // horário por célula, uma frase que afirma a hora errada num aviso de
+        // estado PARCIAL é pior que não dizer hora nenhuma — é justamente o
+        // relatório que o editor lê pra decidir se cancela algo na Brevo.
+        const done = cells.slice(0, scheduledCount).map((c) => `${c.key} (${c.scheduleAt})`);
         const pendingCells = cells.slice(scheduledCount).map((c) => c.key);
         report.note(
           `⚠️  ONDA PARCIALMENTE MONTADA: ${scheduledCount} de ${cells.length} célula(s) já confirmada(s) ANTES ` +
-            `deste erro — ${done.join(", ")} já são campanhas REAIS na Brevo e vão disparar amanhã às 06:00 do ` +
+            `deste erro — ${done.join(", ")} já são campanhas REAIS na Brevo e vão disparar do ` +
             `jeito que estão. NÃO reiniciar do zero na próxima rodada — as células restantes (${pendingCells.join(", ")}) ` +
             "precisam ser reconciliadas manualmente ou na próxima invocação (clarice-import-waves/clarice-schedule-group são idempotentes por key).",
         );

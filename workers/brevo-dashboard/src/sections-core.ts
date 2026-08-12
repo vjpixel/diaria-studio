@@ -593,7 +593,29 @@ ${monthlyAbcSectionsByDate}
   // por ciclo mensal distinto (agrupa TODAS as datas de teste do ciclo, ao
   // contrário de `monthlyAbcSection` acima que separa por data). Vem ANTES do
   // detalhe cronológico por data — é a leitura primária pra decidir o teste.
-  const monthlyAbcCycles = [...new Set(monthlyAbcGroups.map((g) => g.cycle))];
+  // #5140: só o ciclo mais RECENTE, não todos os já vistos. Antes, cada ciclo
+  // mensal que um dia teve teste A/B/C ganhava um bloco de 3 tabelas
+  // permanente — em 12/08/2026 o painel ainda servia "Resumo A/B/C por
+  // Audiência (2606-07 · envios de jul/2026)", de um ciclo encerrado, de um
+  // teste que o editor encerrou (#5055). Decisão do editor: manter só as
+  // tabelas do ciclo atual.
+  //
+  // O ciclo aqui é o MENSAL (`2606-07` = {conteúdo}-{envio}), então
+  // `detectActiveCycle` NÃO serve — ela ignora campanhas mensais de propósito
+  // (`parsed.monthly` → continue) e devolve o ciclo do DIÁRIO. O "atual" sai
+  // dos próprios grupos mensais; comparação lexicográfica funciona porque o
+  // formato é zero-padded (`2607-08` > `2606-07`), o mesmo raciocínio que
+  // `detectActiveCycle` já usa no seu `parsed.cycle > latest`.
+  //
+  // Escopo deliberado: isto filtra SÓ o Resumo por Audiência (as duas
+  // renderizações abaixo). As seções cronológicas por data
+  // (`monthlyAbcSectionsByDate`) seguem cobrindo todos os ciclos — não foi o
+  // que o editor apontou, e elas são o detalhe histórico.
+  const latestMonthlyAbcCycle = monthlyAbcGroups.reduce<string | null>(
+    (latest, g) => (latest === null || g.cycle > latest ? g.cycle : latest),
+    null,
+  );
+  const monthlyAbcCycles = latestMonthlyAbcCycle === null ? [] : [latestMonthlyAbcCycle];
   // #3408: 1 cômputo por ciclo, reusado pelas 2 renderizações (completa —
   // Engajamento; só-Agregada — Visão Geral) — evita re-agregar as campanhas
   // do ciclo 2x.
