@@ -96,7 +96,17 @@ import {
 } from "./lib/mensal/monthly-paths.ts";
 import { datePartsInTz, toAammdd, BRT_TIMEZONE, type DateParts } from "./lib/next-edition-date.ts";
 import { registerReport } from "./studio-ui/studio-reports.ts";
-import { waveKey, waveDateFragment, scheduledAtForDate, type WaveProposal, type WaveState } from "./lib/clarice-wave-plan.ts";
+import {
+  brtHourToUtcHourSameDay,
+  hourCellLabel,
+  scheduledAtForDate,
+  waveDateFragment,
+  waveKey,
+  type WaveCell,
+  type WaveProposal,
+  type WaveState,
+} from "./lib/clarice-wave-plan.ts";
+import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
 import { proposeNextVolume, brtDayKey, type NextVolumeDecision } from "./lib/clarice-envio-policy.ts";
 import type { RiskSnapshot } from "./clarice-envio-risk.ts";
 import type { InvocationSummary } from "./clarice-schedule-group.ts";
@@ -968,8 +978,31 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
       "--group", "ramp-warm", "--cycle", cycle, "--budget", String(decision.volume),
     ]);
 
+    // #5140 — teste de HORÁRIO. Só entra quando o de ASSUNTO está travado:
+    // as duas dimensões dividem a MESMA onda, e rodar as duas juntas produz
+    // 3×N células pequenas demais pra qualquer leitura, com os dois efeitos
+    // confundidos. `abcAction === "travar"` é o sinal de que o A/B/C acabou
+    // (hoje vindo do `clarice-abc-state.json` `encerrado`, #5055).
+    const hourTest = readClariceHourTestState(deps.rootDir);
+    if (hourTest.degraded) {
+      report.note(`⚠️  estado do teste de horário ilegível — seguindo SEM teste de horário. ${hourTest.degradedReason}`);
+    }
+    const hourCells = hourTest.status === "ativo" && abcAction === "travar" ? hourTest.hoursBrt : null;
+    if (hourTest.status === "ativo" && abcAction !== "travar") {
+      report.note(
+        "⚠️  teste de horário ATIVO mas o A/B/C de assunto não está travado — teste de horário PULADO nesta onda. " +
+          "Duas dimensões na mesma onda confundem os efeitos e fragmentam a base; encerre o de assunto primeiro " +
+          "(`npx tsx scripts/lib/clarice-abc-state.ts --close ...`).",
+      );
+    }
+
     const splitArgs = ["--cycle", cycle, "--wave", String(n), "--date", sendDate, "--from", "segments/ramp-warm.csv"];
-    if (abcAction === "travar") splitArgs.push("--no-cells");
+    if (hourCells) {
+      splitArgs.push("--hour-cells", hourCells.join(","));
+      report.note(`teste de horário ATIVO — células ${hourCells.map((h) => `${String(h).padStart(2, "0")}:00`).join(" × ")} BRT (#5140).`);
+    } else if (abcAction === "travar") {
+      splitArgs.push("--no-cells");
+    }
     step(deps, report, "clarice-split-group-cells", "scripts/clarice-split-group-cells.ts", splitArgs);
 
     const label = `${cycle} ${waveKeyBase}`;
@@ -984,21 +1017,42 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
     // type-design-analyzer: o tipo discriminado elimina os `!` non-null
     // assertions que existiam aqui antes.
     //
-    // `scheduleAt` é POR CÉLULA (#5140) e hoje recebe o mesmo `scheduledAt`
-    // em todas — o valor é uniforme, a ESTRUTURA não é mais. É o gancho do
-    // teste de horário da onda (06:00 × 10:00 BRT): quando o estado durável
-    // do teste existir, só esta expressão muda; o loop abaixo, o relatório e
-    // o aviso de onda parcial já leem do campo certo. Enquanto o teste não
-    // roda, o comportamento é idêntico ao de antes desta mudança.
-    const cells: Array<{ key: string; cell: "A" | "B" | "C" | null; subject: string; scheduleAt: string }> =
-      inherited.mode === "single"
-        ? [{ key: waveKeyBase, cell: null, subject: inherited.subject, scheduleAt: scheduledAt }]
-        : (["A", "B", "C"] as const).map((c) => ({
-            key: `${waveKeyBase}-${c}`,
-            cell: c,
-            subject: inherited.subjects[c],
-            scheduleAt: scheduledAt,
-          }));
+    // `scheduleAt` é POR CÉLULA (#5140): no teste de horário é ELE que
+    // carrega a variável independente do experimento. As 3 formas possíveis:
+    //
+    //   hourCells != null  → N células, MESMO assunto, horários distintos.
+    //   mode "single"      → 1 onda, 1 horário (o canônico).
+    //   senão              → A/B/C de assunto, 3 assuntos, MESMO horário.
+    //
+    // O assunto é o MESMO nas duas células — senão os braços divergiriam em
+    // duas variáveis e o teste não mediria horário nenhum. Quando `hourCells`
+    // é truthy o A/B/C está travado (guard no Passo 6) e
+    // `resolveInheritedSubjects` devolve `mode: "single"`, então o ramo
+    // `.subjects.A` é inalcançável hoje — está ali porque a correlação
+    // "hourCells ⇒ single" vive no fluxo, não no tipo, e um `subjects[c]`
+    // solto seria pior que um fallback explícito se alguém afrouxar o guard.
+    const cells: Array<{ key: string; cell: WaveCell | null; subject: string; scheduleAt: string }> =
+      hourCells
+        ? hourCells.map((hourBrt) => {
+            const label = hourCellLabel(hourBrt);
+            return {
+              key: `${waveKeyBase}-${label}`,
+              cell: label,
+              subject: inherited.mode === "single" ? inherited.subject : inherited.subjects.A,
+              // `brtHourToUtcHourSameDay` e não `(h + 3) % 24`: o módulo
+              // silenciosamente agendaria 22:00 BRT como 01:00 UTC do MESMO
+              // `sendDate`, ou seja 24h antes do pretendido.
+              scheduleAt: scheduledAtForDate(sendDate, brtHourToUtcHourSameDay(hourBrt)),
+            };
+          })
+        : inherited.mode === "single"
+          ? [{ key: waveKeyBase, cell: null, subject: inherited.subject, scheduleAt: scheduledAt }]
+          : (["A", "B", "C"] as const).map((c) => ({
+              key: `${waveKeyBase}-${c}`,
+              cell: c,
+              subject: inherited.subjects[c],
+              scheduleAt: scheduledAt,
+            }));
 
     let anyUncertain = false;
     let scheduledCount = 0;

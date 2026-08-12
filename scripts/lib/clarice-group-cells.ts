@@ -28,7 +28,7 @@
  */
 
 import { stratify } from "../clarice-build-edition-sends.ts";
-import { waveKey } from "./clarice-wave-plan.ts";
+import { hourCellLabel, waveKey } from "./clarice-wave-plan.ts";
 
 /** Uma entrada de manifest, no shape que `clarice-import-waves.ts` já lê. */
 export interface CellManifestEntry {
@@ -117,6 +117,54 @@ export function buildGroupCells<T>(rows: T[], n: number, date: string): GroupCel
  * `unscopedCount` sempre que o operador esquecesse de digitar o ciclo no
  * `--label`. Nada forçava isso antes (#4660).
  */
+/**
+ * #5140 — variante do teste de HORÁRIO: N células (hoje 2) com o MESMO
+ * assunto, diferindo só no horário de agendamento. Reusa `stratify` pelo
+ * mesmo motivo que `buildGroupCells`: célula enviesada por tier invalidaria o
+ * teste antes de começar, e aqui isso seria pior que no A/B/C — o efeito
+ * esperado do horário (+1 a +3pp de abertura) é da mesma ordem de grandeza da
+ * diferença entre tiers, então um desbalanceio produziria um "vencedor" que
+ * é só composição de audiência.
+ *
+ * O sufixo vem de `hourCellLabel` (`H06`, `H10`), NUNCA digitado — mesma
+ * disciplina do #4449/#4471 pro A/B/C, e o que mantém a célula derivável do
+ * nome da lista por `groupCellListNameFor`.
+ *
+ * `hoursBrt` já chega normalizado por `normalizeHours`
+ * (`clarice-hour-test.ts`); a validação de faixa fica em `hourCellLabel`.
+ */
+export function buildHourCells<T>(
+  rows: T[],
+  n: number,
+  date: string,
+  hoursBrt: readonly number[],
+): GroupCellsArtifact<T> {
+  if (hoursBrt.length < 2) {
+    throw new Error(`buildHourCells exige >= 2 horas — recebido [${hoursBrt.join(", ")}].`);
+  }
+  const total = rows.length;
+  const base = Math.floor(total / hoursBrt.length);
+  const rest = total % hoursBrt.length;
+  const caps = hoursBrt.map((_, i) => base + (i < rest ? 1 : 0));
+  const split = stratify(rows, caps);
+
+  return {
+    groupKey: waveKey(n, date),
+    cells: hoursBrt.map((hour, i) => {
+      const label = hourCellLabel(hour);
+      return {
+        entry: {
+          key: waveKey(n, date, label),
+          file: `${waveKey(n, date, label)}.csv`,
+          desc: `hora ${String(hour).padStart(2, "0")}:00 BRT`,
+          count: split[i].length,
+        },
+        rows: split[i],
+      };
+    }),
+  };
+}
+
 export function buildSingleWave<T>(rows: T[], n: number, date: string): GroupCellsArtifact<T> {
   const groupKey = waveKey(n, date);
   return {
@@ -135,16 +183,66 @@ export function cellManifestFileName(groupKey: string): string {
   return `${groupKey}-manifest.json`;
 }
 
-export type CellStrategy = "single" | "cells";
+/**
+ * #5140: união discriminada em vez do antigo `"single" | "cells"`. O teste de
+ * horário traz um 3º caminho que CARREGA DADO (as horas), e um par
+ * `(strategy, hours)` solto no chamador é exatamente a assimetria que o
+ * `CellsWithRows` deste arquivo já combate: nada no tipo impediria
+ * `"single"` com horas preenchidas, ou `"hours"` sem elas.
+ */
+export type CellStrategy =
+  | { kind: "single" }
+  | { kind: "cells" }
+  | { kind: "hours"; hoursBrt: number[] };
 
 /**
- * Decide entre onda única e teste A/B/C a partir do argv. PURA e exportada de
- * propósito: é a única lógica com consequência de produção no CLI (define se
- * saem 1 ou 3 listas na Brevo pra um envio real) e, sem extrair, ficava sem
- * teste nenhum — achado do analisador de testes no PR #4660 (risco 9/10).
+ * Decide entre onda única, teste A/B/C e teste de HORÁRIO a partir do argv.
+ * PURA e exportada de propósito: é a única lógica com consequência de
+ * produção no CLI (define quantas listas saem na Brevo pra um envio real) e,
+ * sem extrair, ficava sem teste nenhum — achado do analisador de testes no PR
+ * #4660 (risco 9/10).
+ *
+ * `--no-cells` + `--hour-cells` juntos ABORTA em vez de eleger um vencedor
+ * silencioso: as duas flags exprimem intenções incompatíveis ("uma lista só"
+ * × "duas listas por horário"), e adivinhar qual vale reintroduziria a classe
+ * de bug do #4660 — fragmentar (ou não) a audiência de um envio real sem que
+ * nada no log distinga isso do caminho pedido.
  */
 export function resolveCellStrategy(argv: string[]): CellStrategy {
-  return argv.includes("--no-cells") ? "single" : "cells";
+  const noCells = argv.includes("--no-cells");
+  const raw = readFlagValue(argv, "hour-cells");
+
+  if (raw !== null && noCells) {
+    throw new Error(
+      "--no-cells e --hour-cells são mutuamente exclusivos (uma lista só × uma lista por horário). " +
+        "Passe só um dos dois.",
+    );
+  }
+  if (raw !== null) {
+    const hoursBrt = raw.split(",").map((s) => {
+      const n = Number(s.trim());
+      if (!Number.isInteger(n) || n < 0 || n > 23) {
+        throw new Error(`--hour-cells: hora BRT inválida "${s.trim()}" — esperado inteiro entre 0 e 23.`);
+      }
+      return n;
+    });
+    const uniq = [...new Set(hoursBrt)].sort((a, b) => a - b);
+    if (uniq.length < 2) {
+      throw new Error(`--hour-cells exige >= 2 horas distintas — recebido "${raw}".`);
+    }
+    return { kind: "hours", hoursBrt: uniq };
+  }
+  return noCells ? { kind: "single" } : { kind: "cells" };
+}
+
+/** Lê `--nome valor` ou `--nome=valor` do argv. Devolve null se ausente. */
+function readFlagValue(argv: string[], name: string): string | null {
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === `--${name}`) return argv[i + 1] ?? null;
+    if (a.startsWith(`--${name}=`)) return a.slice(name.length + 3);
+  }
+  return null;
 }
 
 /**

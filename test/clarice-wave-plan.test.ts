@@ -401,9 +401,32 @@ describe("buildGroupCells (#4657 — fecha o item 3 da #4449)", () => {
   it("resolveCellStrategy: --no-cells escolhe onda única; ausência escolhe A/B/C", () => {
     // Única lógica com consequência de produção no CLI (1 ou 3 listas na
     // Brevo pra um envio real) e antes sem teste nenhum.
-    assert.equal(resolveCellStrategy(["--cycle", "2607-08", "--no-cells"]), "single");
-    assert.equal(resolveCellStrategy(["--cycle", "2607-08"]), "cells");
-    assert.equal(resolveCellStrategy(["--no-cells", "--dry-run"]), "single");
+    assert.deepEqual(resolveCellStrategy(["--cycle", "2607-08", "--no-cells"]), { kind: "single" });
+    assert.deepEqual(resolveCellStrategy(["--cycle", "2607-08"]), { kind: "cells" });
+    assert.deepEqual(resolveCellStrategy(["--no-cells", "--dry-run"]), { kind: "single" });
+  });
+
+  it("#5140: --hour-cells escolhe teste de horário, ordenado e sem repetição", () => {
+    assert.deepEqual(resolveCellStrategy(["--hour-cells", "6,10"]), { kind: "hours", hoursBrt: [6, 10] });
+    assert.deepEqual(resolveCellStrategy(["--hour-cells=10,6"]), { kind: "hours", hoursBrt: [6, 10] });
+    assert.deepEqual(resolveCellStrategy(["--hour-cells", "10,6,10"]), { kind: "hours", hoursBrt: [6, 10] });
+  });
+
+  it("#5140: --no-cells + --hour-cells ABORTA em vez de eleger um vencedor silencioso", () => {
+    // As duas flags exprimem intenções incompatíveis. Adivinhar qual vale
+    // reintroduziria a classe do #4660: fragmentar (ou não) a audiência de um
+    // envio real sem nada no log distinguindo isso do caminho pedido.
+    assert.throws(
+      () => resolveCellStrategy(["--no-cells", "--hour-cells", "6,10"]),
+      /mutuamente exclusivos/,
+    );
+  });
+
+  it("#5140: --hour-cells inválido lança — o valor vira scheduledAt de campanha real", () => {
+    assert.throws(() => resolveCellStrategy(["--hour-cells", "6"]), />= 2 horas distintas/);
+    assert.throws(() => resolveCellStrategy(["--hour-cells", "6,25"]), /hora BRT inválida/);
+    assert.throws(() => resolveCellStrategy(["--hour-cells", "6,abc"]), /hora BRT inválida/);
+    assert.throws(() => resolveCellStrategy(["--hour-cells", "6,10.5"]), /hora BRT inválida/);
   });
 
   it("REGRESSÃO: typo em --no-cells é REJEITADO, nunca cai em 3 células calado", () => {

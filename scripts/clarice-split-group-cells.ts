@@ -40,6 +40,7 @@ import { clariceCycleDir, clariceSegmentsDir, ensureDir, requireCycleArg } from 
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import {
   buildGroupCells,
+  buildHourCells,
   buildSingleWave,
   cellManifestFileName,
   manifestOf,
@@ -98,7 +99,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   const strategy = resolveCellStrategy(argv);
-  const artifact = strategy === "single" ? buildSingleWave(rows, wave, date) : buildGroupCells(rows, wave, date);
+  const artifact =
+    strategy.kind === "single"
+      ? buildSingleWave(rows, wave, date)
+      : strategy.kind === "hours"
+        ? buildHourCells(rows, wave, date, strategy.hoursBrt)
+        : buildGroupCells(rows, wave, date);
   const { groupKey, cells } = artifact;
   const manifest = manifestOf(artifact);
   const fields = parsed.meta.fields ?? Object.keys(rows[0]);
@@ -113,7 +119,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   // O modo escolhido SEMPRE aparece — sem isso, "3 células" e "1 lista" só se
   // distinguem contando linhas do log.
-  console.log(`Modo: ${strategy === "single" ? "ONDA ÚNICA (assunto travado, sem A/B/C)" : "TESTE A/B/C (3 células)"}`);
+  const modoLabel =
+    strategy.kind === "single"
+      ? "ONDA ÚNICA (assunto travado, sem A/B/C)"
+      : strategy.kind === "hours"
+        ? `TESTE DE HORÁRIO (${strategy.hoursBrt.length} células: ${strategy.hoursBrt.map((h) => `${String(h).padStart(2, "0")}:00`).join(" × ")} BRT)`
+        : "TESTE A/B/C (3 células)";
+  console.log(`Modo: ${modoLabel}`);
   console.log(`Onda d${wave} · ${date} · grupo '${groupKey}' · ${rows.length} contatos`);
   for (const e of manifest) console.log(`  ${e.key.padEnd(16)} ${String(e.count).padStart(6)} contatos → ${e.file}`);
 

@@ -56,6 +56,32 @@ O fail-soft aponta pra `aberto` — o inverso do kill switch acima, e de propós
 
 Divergência é bug (arquivo mudou no meio da rodada, ilegível de um lado só, script defasado), não estado normal — por isso é erro duro e não pausa limpa.
 
+## Estado do teste de HORÁRIO — `data/clarice-hour-test.json` (#5140)
+
+Dimensão **separada** do A/B/C de assunto acima. Testa a hora de disparo da onda: hoje 06:00 BRT, herdado e nunca testado. A análise da #5140 indica que esse horário é ruim para os dois objetivos de conversão do e-mail, porque a decisão não acontece na leitura (mediana do clique 7,6h, p75 37,9h) e, quando acontece, cai em horário comercial — 06:00 põe a janela de ação imediata em 06h–10h, o trecho mais morto da curva de compra.
+
+**Default `inativo`** quando o arquivo não existe: a onda sai como sempre, num horário só. Fail-soft de estado corrompido também aponta para `inativo` — o custo de não testar hoje é um dia a menos de amostra; o de dividir errado é uma onda real mal formada.
+
+```bash
+npx tsx scripts/lib/clarice-hour-test.ts                          # imprime o estado
+npx tsx scripts/lib/clarice-hour-test.ts --start --hours 6,10     # inicia (2 braços)
+npx tsx scripts/lib/clarice-hour-test.ts --close --winner 10 \
+  --rationale "clique +2pp, p<0,05"                               # encerra com veredito
+npx tsx scripts/lib/clarice-hour-test.ts --close --winner none \
+  --rationale "sem significância em 7 dias"                       # encerra sem veredito
+```
+
+**Pré-condição: o A/B/C de assunto tem que estar travado.** As duas dimensões dividem a MESMA onda. Com o teste de assunto aberto, `clarice-envio-run.ts` **pula** o de horário e avisa no relatório, em vez de produzir 3×N células pequenas demais com os dois efeitos confundidos.
+
+**Por que sufixo próprio (`H06`/`H10`) e não `A`/`B`:**
+
+1. `parseAbcAudienceCampaign` (dashboard) casa `([ABC])\b`. Reusar `A`/`B` faria o painel exibir o teste de horário rotulado como teste de **assunto** — passaria a afirmar algo falso sobre o que está sendo medido.
+2. `clarice-abc-state.json` precisa continuar `encerrado`. Reabri-lo devolve a ressalva de poder baixo do #4559, que **zera o passo adaptativo de volume** — o laço "base pequena → poder baixo → passo zerado → base nunca cresce" descrito acima. Um teste de horário que congela o volume da rampa como efeito colateral mediria a coisa errada com a base errada.
+
+**Faixa suportada: 00:00–20:00 BRT.** A partir de 21:00 BRT o horário cai no dia seguinte em UTC, e `brtHourToUtcHourSameDay` **lança** em vez de montar o ISO no dia errado — o modo de falha seria uma campanha agendada 24h antes do pretendido, visível só depois do disparo. A janela útil do teste é diurna de qualquer forma.
+
+**Leitura do resultado:** cada braço é uma campanha Brevo distinta (`Clarice {ciclo} d{N}-{dia}-H06 — hora 06:00 BRT`), então as métricas saem por campanha na lista do painel. Uma seção dedicada de comparação no dashboard **ainda não existe** — é o passo seguinte da #5140.
+
 ## Guards de pré-condição (não são o kill switch — os dois convivem)
 
 - `clarice-users.db` ausente (junction `data/` ainda não montou) → task `Diaria-Clarice-Envio` aborta ANTES de tocar Brevo.
