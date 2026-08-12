@@ -13,9 +13,12 @@
  * segurança os array literals de `paragraphs: [...]` dentro do `.ts` (a
  * prosa contém aspas escapadas, template literals com `${...}`, links
  * markdown com parênteses aninhados — terreno fértil pra um LLM "quase
- * acertar" a extração). Este script roda ANTES do dispatch do fact-checker
- * (pelo orchestrator/skill top-level, que TEM Bash) e grava o manifesto num
- * path que o agente só precisa `Read`.
+ * acertar" a extração). Este script é PENSADO pra rodar ANTES do dispatch do
+ * fact-checker (pelo orchestrator/skill top-level, que TEM Bash), gravando o
+ * manifesto num path que o agente só precisa `Read` — mas esse dispatch
+ * ainda NÃO existe (260812): nenhum orchestrator/skill/CI chama este script
+ * ou o `fact-checker` em `mode: "hub"` hoje. É invocação 100% manual até que
+ * o wiring seja feito (follow-up necessário, não opcional — ver #5060).
  *
  * Para cada parágrafo de seção e cada resposta de FAQ, extrai os links
  * markdown `[texto](url)` presentes (via `findParagraphLinks`, o mesmo
@@ -45,24 +48,28 @@ import type { HubSourceEntry } from "./generate-hub-sources.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-export interface ExtractedLink {
-  label: string;
-  url: string;
-  kind: "edition" | "external";
-  /** Só presente quando `kind === "edition"` E a URL bate com uma entrada
-   * do dataset de fontes (match por `url` — a prosa cita a URL final, não
-   * o `editionSlug`, que é metadado interno do dataset). */
-  matchedSource?: {
-    date: string;
-    editionSlug: string;
-    matchedHeadlines: string[];
-    /** Passa adiante exatamente como está no dataset — pode conter `null`
-     * nas posições em que `generate-hub-sources.ts` não achou âncora pra
-     * aquela manchete (ver docstring de `HubSourceEntry.primarySourceUrls`).
-     * O consumidor (agente `fact-checker`) pula posições `null`. */
-    primarySourceUrls: (string | null)[];
-  };
+/** Só presente em links `kind === "edition"` E cuja URL bate com uma entrada
+ * do dataset de fontes (match por `url` — a prosa cita a URL final, não o
+ * `editionSlug`, que é metadado interno do dataset). */
+export interface MatchedSource {
+  date: string;
+  editionSlug: string;
+  matchedHeadlines: string[];
+  /** Passa adiante exatamente como está no dataset — pode conter `null`
+   * nas posições em que `generate-hub-sources.ts` não achou âncora pra
+   * aquela manchete (ver docstring de `HubSourceEntry.primarySourceUrls`).
+   * O consumidor (agente `fact-checker`) pula posições `null`. */
+  primarySourceUrls: (string | null)[];
 }
+
+/** União discriminada por `kind` — só links `"edition"` podem carregar
+ * `matchedSource` (e mesmo assim é opcional: só presente quando a URL bate
+ * com uma entrada do dataset). Antes disso, `kind`/`matchedSource` eram só
+ * acoplados por convenção — nada impedia construir
+ * `{kind: "external", matchedSource: {...}}` (#5060 fleet review item 6). */
+export type ExtractedLink =
+  | { label: string; url: string; kind: "external" }
+  | { label: string; url: string; kind: "edition"; matchedSource?: MatchedSource };
 
 export interface ExtractedParagraph {
   index: number;
@@ -99,6 +106,22 @@ function loadSourceEntries(slug: string): HubSourceEntry[] {
   return JSON.parse(readFileSync(path, "utf8")) as HubSourceEntry[];
 }
 
+/** `true` só para `https://diar.ia.br/p/...` — parsing real de URL, não
+ * substring matching. `.includes("diar.ia.br/p/")` (versão anterior, #5060
+ * fleet review item 5) classificaria erroneamente um link redirecionador/
+ * UTM-wrapped que contivesse essa substring em qualquer parte da URL (ex:
+ * `https://tracker.example/go?dest=https://diar.ia.br/p/foo`) como
+ * "edition". URL malformada (não parseável) nunca é "edition" — cai no
+ * `catch` e o caller trata como "external". */
+function isEditionUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.hostname === "diar.ia.br" && u.pathname.startsWith("/p/");
+  } catch {
+    return false;
+  }
+}
+
 /** Exportada (não só interna) — testável isoladamente com um `sourceEntries`
  * sintético, sem precisar de um hub real no disco (`extractHubFacts` cobre
  * a integração real; este export cobre os modos de falha de classificação
@@ -107,7 +130,7 @@ function loadSourceEntries(slug: string): HubSourceEntry[] {
 export function classifyLinks(text: string, sourceEntries: HubSourceEntry[]): ExtractedLink[] {
   const byUrl = new Map(sourceEntries.map((s) => [s.url, s]));
   return findParagraphLinks(text).map((l): ExtractedLink => {
-    if (!l.url.includes("diar.ia.br/p/")) {
+    if (!isEditionUrl(l.url)) {
       return { label: l.label, url: l.url, kind: "external" };
     }
     const matched = byUrl.get(l.url);

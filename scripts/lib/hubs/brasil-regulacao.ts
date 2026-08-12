@@ -48,8 +48,9 @@
  * status estático ("Aprovada pelo Plenário") como evento do dia, quando
  * essa aprovação já era passado havia mais de um ano. A tramitação real,
  * desde então, é NA Câmara (relator Aguinaldo Ribeiro, PP-PB), que só
- * devolve o texto ao Senado se o emendar. A seção 1 e o FAQ abaixo narram
- * essa cronologia corrigida, com as fontes oficiais linkadas.
+ * devolve o texto ao Senado se o emendar. A prosa do hub abaixo — intro,
+ * seção 1, seção 2 e FAQ — narra essa cronologia corrigida, com as fontes
+ * oficiais linkadas.
  *
  * Regenerar depois de qualquer `beehiiv-sync.ts` novo:
  *   npx tsx scripts/generate-hub-sources.ts --hub brasil-regulacao
@@ -130,7 +131,7 @@ export function buildBrasilRegulacaoFaq(sources: HubSourceEntry[]): GeoFaqItem[]
     },
     {
       question: "Quantas manchetes acompanharam o trâmite do Marco Legal da IA entre a Câmara e o Senado?",
-      answer: `Foram ${marcoLegal} manchetes só sobre a tramitação do Marco Legal (PL 2338/23) entre fevereiro e junho de 2026: [Hugo Motta priorizando o texto](https://diar.ia.br/p/tse-avalia-forc-a-tarefa-para-coibir-deepfakes), [a Câmara agendando voto para 27 de maio](https://diar.ia.br/p/gpt-5-5-instant-chega-como-padr-o-do-chatgpt), [uma edição que descreveu o Senado aprovando o texto em 22 de maio](https://diar.ia.br/p/soberania-ia-pu-blica-nacional) — checagem contra o rastreamento oficial do Senado (matéria 157233) mostra que essa aprovação já tinha ocorrido em dezembro de 2024, antes de fevereiro de 2026 (início do período coberto aqui), e que o texto está na Câmara desde março de 2025 — e [a Câmara buscando nova data em junho, articulada com o Redata no Senado](https://diar.ia.br/p/35-mil-bolsas-pra-virar-creator-com-ia).`,
+      answer: `Foram ${marcoLegal} manchetes só sobre a tramitação do Marco Legal (PL 2338/23) entre fevereiro e junho de 2026: [Hugo Motta priorizando o texto](https://diar.ia.br/p/tse-avalia-forc-a-tarefa-para-coibir-deepfakes), [a Câmara agendando voto para 27 de maio](https://diar.ia.br/p/gpt-5-5-instant-chega-como-padr-o-do-chatgpt), [uma edição que descreveu o Senado aprovando o texto em 22 de maio](https://diar.ia.br/p/soberania-ia-pu-blica-nacional) — checagem contra o rastreamento oficial do Senado (matéria 157233) mostra que essa aprovação já tinha ocorrido em dezembro de 2024, antes de fevereiro de 2026 — o início do intervalo fevereiro-junho de 2026 usado para contar essas manchetes —, e que o texto está na Câmara desde março de 2025 — e [a Câmara buscando nova data em junho, articulada com o Redata no Senado](https://diar.ia.br/p/35-mil-bolsas-pra-virar-creator-com-ia).`,
     },
     {
       question: "O Marco Legal da IA já tem autoridade reguladora definida?",

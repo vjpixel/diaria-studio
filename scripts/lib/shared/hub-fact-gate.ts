@@ -483,3 +483,84 @@ export function checkHubFacts(hub: HubContent): string[] {
     ...checkChronologyConsistency(hub),
   ];
 }
+
+// ---------------------------------------------------------------------------
+// recomputeHubFactGate (#5060 fleet review item 3) — recálculo determinístico
+// do gate BLOQUEANTE do fact-checker em `mode: "hub"`.
+// ---------------------------------------------------------------------------
+
+/** Subconjunto de `claims[]` no output do fact-checker (`mode: "hub"`,
+ * `.claude/agents/fact-checker.md` Passo 6) relevante pro gate — só
+ * `claim_id`/`verdict` importam pra aritmética, o resto (`text`,
+ * `source_url`, etc.) é irrelevante aqui. */
+export interface HubFactGateClaim {
+  claim_id: string;
+  verdict: "SUSTAINED" | "DIVERGENT" | "NOT_FOUND_IN_SOURCE" | "SOURCE_UNREACHABLE" | "INFERRED";
+}
+
+/** Subconjunto de `contradictions[]` relevante pro gate. `resolvable_with_source_url`
+ * é aceito no tipo (o output do agente sempre carrega o campo, é dado útil
+ * pro editor triar) mas **deliberadamente não entra na aritmética** — ver
+ * docstring de `recomputeHubFactGate` abaixo e `.claude/agents/fact-checker.md`
+ * Passo 5. */
+export interface HubFactGateContradiction {
+  claim_id: string;
+  resolvable_with_source_url: string | null;
+}
+
+export interface HubFactGateResult {
+  blocked: boolean;
+  blocking_items: string[];
+}
+
+/**
+ * Recalcula `gate.blocked`/`gate.blocking_items` deterministicamente a
+ * partir do JSON que o agente `fact-checker` (`mode: "hub"`) produz — mesma
+ * disciplina do #573 (`resolveBeehiivState`/`resolveLinkedInState` em
+ * `scripts/lib/publish-state.ts`): o Passo 5 de `.claude/agents/fact-checker.md`
+ * descreve uma regra 100% mecânica (aritmética sobre `claims[]`/
+ * `contradictions[]`/`approved_claim_ids`) que o LLM calcula sozinho antes de
+ * gravar o output — exatamente o tipo de afirmação de estado que não deve
+ * ser confiada sem revalidação em TS. Um erro de contagem do agente passaria
+ * sem detecção se o CALLER só lesse `gate.blocked` do JSON.
+ *
+ * **Contrato: o CALLER roda isto sobre o output do agente e trata o
+ * resultado daqui — não o `gate.blocked` que o agente escreveu — como
+ * autoritativo** antes de decidir bloquear/liberar um build ou deploy de hub
+ * (ver nota "ainda NÃO conectado a nada" no prompt do fact-checker — este
+ * helper existe pro dia em que esse wiring for feito).
+ *
+ * Regra (espelha `.claude/agents/fact-checker.md` Passo 5, pós-#5060 fleet
+ * review item 2 — a condição `resolvable_with_source_url: null` FOI REMOVIDA
+ * do predicado de bloqueio de contradição):
+ * - bloqueia se existir qualquer claim com `verdict` ≠ `SUSTAINED`/`INFERRED`
+ *   E `claim_id` ausente de `approvedClaimIds`.
+ * - bloqueia se existir QUALQUER entrada em `contradictions` cujo `claim_id`
+ *   esteja ausente de `approvedClaimIds` — independente de
+ *   `resolvable_with_source_url`. Achar uma fonte que resolve qual versão é
+ *   correta não prova que a prosa errada foi removida da página (o agente
+ *   não tem `Edit`/`Bash`) — só o editor, via aprovação explícita, destrava.
+ *
+ * Pure — nunca lança, `approvedClaimIds` já resolvido pelo caller (o
+ * `{approvals_path}` em si é I/O de arquivo, fora do escopo deste helper —
+ * mesma separação leitura/aritmética de `checkHubFacts` acima).
+ */
+export function recomputeHubFactGate(
+  claims: HubFactGateClaim[],
+  contradictions: HubFactGateContradiction[],
+  approvedClaimIds: string[],
+): HubFactGateResult {
+  const approved = new Set(approvedClaimIds);
+  const blockingItems: string[] = [];
+  for (const claim of claims) {
+    if (claim.verdict !== "SUSTAINED" && claim.verdict !== "INFERRED" && !approved.has(claim.claim_id)) {
+      blockingItems.push(claim.claim_id);
+    }
+  }
+  for (const contradiction of contradictions) {
+    if (!approved.has(contradiction.claim_id)) {
+      blockingItems.push(contradiction.claim_id);
+    }
+  }
+  return { blocked: blockingItems.length > 0, blocking_items: blockingItems };
+}

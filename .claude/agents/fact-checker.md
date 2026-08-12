@@ -135,6 +135,8 @@ Isso garante que um superlativo NOT_FOUND_IN_SOURCE é contado UMA vez (como sup
 
 ## Modo hub (#5060 Parte B2)
 
+**⚠️ Ainda NÃO conectado a nada (260812).** Nenhum orchestrator/skill/CI hoje chama `scripts/extract-hub-facts.ts` ou dispatcha este agente com `mode: "hub"` automaticamente — `scripts/build-hub-page.ts` (o build path real de um hub) só roda o gate MECÂNICO `checkHubFacts` (`scripts/lib/shared/hub-fact-gate.ts`), sem relação com este mecanismo. Tudo abaixo, incluindo "BLOQUEANTE por padrão", descreve o design de um mecanismo 100% opt-in/manual hoje: quem publica/edita um hub sem invocar isto manualmente não é impedido por nada. Wiring real (chamar isto automaticamente no fluxo de criação/edição de hub) é follow-up necessário, não opcional — ver issue de origem.
+
 Verifica fatos + auto-consistência de UM hub temático (`scripts/lib/hubs/{slug}.ts`) antes de publicar uma página NOVA ou uma revisão substancial. Diferença fundamental em relação a `daily`/`monthly`: aqueles cobrem uma edição efêmera (erro se corrige na próxima edição); um hub é conteúdo PERMANENTE e citável por assistente de IA (GEO) — o gate aqui é **BLOQUEANTE por padrão** (ver "Regras adicionais" abaixo). Este modo não substitui o gate mecânico já existente em `scripts/lib/shared/hub-fact-gate.ts` (`checkHubFacts`, roda em TODO `build-hub-page.ts` — cronologia derivada, link↔fonte, âncora de data, data futura, sem LLM) — é a camada de cima: fato-checagem contra o mundo real e contradição editorial, que só julgamento resolve.
 
 Diferenças de invocação (`newsletter_path`/`social_path`/`approved_json_path` do modo `daily` não se aplicam aqui — omitir todos):
@@ -169,10 +171,12 @@ Para cada contradição encontrada, registrar em `contradictions[]`: `claim_id` 
 
 Calcular `gate.blocked`:
 - `true` se existir qualquer claim com verdict ≠ `SUSTAINED`/`INFERRED` E `claim_id` ausente de `approved_claim_ids` (de `{approvals_path}`, se fornecido).
-- `true` se existir qualquer entrada em `contradictions[]` com `resolvable_with_source_url: null` E `claim_id` ausente de `approved_claim_ids`.
+- `true` se existir QUALQUER entrada em `contradictions[]` cujo `claim_id` esteja ausente de `approved_claim_ids` — **independente de `resolvable_with_source_url`**. Achar uma fonte que resolve qual versão é correta não é o mesmo que a prosa errada ter sido de fato removida da página (você não tem `Edit`/`Bash` — só `Read/Write/WebFetch` — não consegue verificar isso); `resolvable_with_source_url` continua populado como valor informativo/triagem para o editor, mas não isenta a entrada do gate.
 - `false` só quando nenhuma das duas condições acima disparar.
 
 Você **grava o output normalmente mesmo com `gate.blocked: true`** — não é você quem impede o build/deploy, é o CALLER (orchestrator/skill/sessão que te dispatchou) que lê `gate.blocked` e recusa prosseguir sem confirmação humana explícita. Popular `gate.blocking_items` com a lista de `claim_id`/`contradiction{m}` que causaram o bloqueio.
+
+**O `gate.blocked`/`gate.blocking_items` que você calcula é um rascunho, não a fonte de verdade (#573, #5060 fleet review item 3).** A regra acima é 100% mecânica (aritmética sobre `claims[]`/`contradictions[]`/`approved_claim_ids`) — exatamente o tipo de afirmação de estado que o CLAUDE.md manda validar via TS determinístico antes de confiar, mesmo princípio de `resolveBeehiivState`/`resolveLinkedInState`. **O CALLER deve rodar `recomputeHubFactGate(claims, contradictions, approvedClaimIds)`** (`scripts/lib/shared/hub-fact-gate.ts`) sobre o `{out_path}` que você gravou e tratar o RESULTADO DESSA FUNÇÃO — não o `gate` que você escreveu — como autoritativo antes de bloquear ou liberar. Um erro de contagem seu passaria sem detecção se o caller só lesse o `gate` do JSON direto.
 
 ### Passo 6 — Gravar output
 

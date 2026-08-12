@@ -72,6 +72,23 @@ describe("#5060 Parte B2 — classifyLinks", () => {
   it("texto sem nenhum link -> []", () => {
     assert.deepEqual(classifyLinks("Um parágrafo qualquer sem link nenhum.", [sourceEntry()]), []);
   });
+
+  it("#5060 fleet review item 5 — link redirecionador/UTM-wrapped contendo 'diar.ia.br/p/' como SUBSTRING (não como host+path real) é classificado 'external', não 'edition'", () => {
+    const text = "[Link rastreado](https://tracker.example/go?dest=https://diar.ia.br/p/foo)";
+    const links = classifyLinks(text, [sourceEntry()]);
+    assert.equal(links.length, 1);
+    assert.equal(links[0].kind, "external");
+    assert.equal("matchedSource" in links[0], false);
+  });
+
+  it("URL malformada (não parseável) nunca é classificada 'edition'", () => {
+    const text = "[Link quebrado](not a valid url diar.ia.br/p/foo)";
+    const links = classifyLinks(text, [sourceEntry()]);
+    // findParagraphLinks pode ou não extrair algo daqui — se extrair, tem que
+    // ser "external" (isEditionUrl nunca lança nem retorna true pra input
+    // não-parseável pelo construtor URL).
+    for (const link of links) assert.equal(link.kind, "external");
+  });
 });
 
 describe("#5060 Parte B2 — extractHubFacts contra o hub REAL brasil-regulacao", () => {
