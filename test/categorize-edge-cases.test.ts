@@ -754,6 +754,34 @@ describe("categorizeArticles() — gate de relevância-IA em buckets secundário
     const result = categorizeArticles([art]);
     assert.equal(result.lancamento.length, 1);
   });
+
+  it("#5080 CASO REAL: item editor_submitted sem sinal de IA sobrevive ao gate #2986 (theregister.com, 260811)", () => {
+    // Antes do #5080, `flag: "editor_submitted"` não isentava o gate #2986,
+    // ao contrário de dedup.ts Pass-1d (#4192) e filter-date-window.ts
+    // (#4656) — submissão do editor era dropada silenciosamente.
+    const art: Article = {
+      url: "https://www.theregister.com/2026/08/11/some_generic_headline/",
+      title: "Some generic headline without AI keywords",
+      summary: "A generic summary without any AI-relevant terms whatsoever.",
+      flag: "editor_submitted",
+    };
+    const result = categorizeArticles([art]);
+    const all = [...result.lancamento, ...result.radar, ...result.use_melhor, ...result.video];
+    assert.equal(all.length, 1, "item editor_submitted não deve ser dropado pelo gate #2986");
+    assert.equal(all[0].url, art.url);
+  });
+
+  it("#5080 sem-regressão: item editor_submitted SEM sinal de IA continua isento mesmo com summary vazio", () => {
+    const art: Article = {
+      url: "https://example.com/editor-link",
+      title: "Editor link title",
+      summary: "",
+      flag: "editor_submitted",
+    };
+    const result = categorizeArticles([art]);
+    const all = [...result.lancamento, ...result.radar, ...result.use_melhor, ...result.video];
+    assert.equal(all.length, 1);
+  });
 });
 
 // ---------------------------------------------------------------------------

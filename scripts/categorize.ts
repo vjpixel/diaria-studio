@@ -179,8 +179,21 @@ export function categorizeArticles(articles: Article[]): BucketedArticles {
     // (isArxivRelevant) dentro de categorize(); reforçar aqui duplicaria sem
     // necessidade e ampliaria a superfície de falso-positivo.
     if (cat === "noticias" && !isArticleAIRelevant(article)) {
-      console.error(`[categorize] #2986 dropping non-AI-relevant item (noticias): ${article.url}`);
-      continue;
+      // #5080: `flag: "editor_submitted"` isenta do gate #2986, mesmo
+      // precedente de dedup.ts Pass-1d (#4192) e filter-date-window.ts
+      // (#4656) — o editor já exerceu curadoria ao enviar o link; ausência
+      // de keyword de IA explícita no título/summary (comum quando o
+      // enrich não populou bem o conteúdo) não deve sobrepor essa decisão
+      // editorial. Caso real 260811: submissão do editor (theregister.com)
+      // foi dropada silenciosamente por este gate.
+      if (article.flag === "editor_submitted") {
+        console.warn(
+          `[categorize] #5080: #2986 spared editor_submitted item (would have dropped as non-AI-relevant): ${article.url}`,
+        );
+      } else {
+        console.error(`[categorize] #2986 dropping non-AI-relevant item (noticias): ${article.url}`);
+        continue;
+      }
     }
     const bucket = categoryToBucket(cat);
     result[bucket].push({ ...article, category: cat });

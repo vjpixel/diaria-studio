@@ -116,7 +116,10 @@ function isSectionHeaderLine(line: string): boolean {
 export function extractUrlsBySection(
   md: string,
 ): Record<string, Array<{ url: string; line: number }>> {
-  const lines = md.split("\n");
+  // #5084: normaliza CRLF→LF antes do split — sem isso, uma linha com \r
+  // sobrando no fim quebra HIGHLIGHT_HEADER_RE (que usa `$` sem /m, exigindo
+  // fim de string exato; `.` não casa \r).
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
   const out: Record<string, Array<{ url: string; line: number }>> = {};
 
   let currentSection: SectionMapping | null = null;

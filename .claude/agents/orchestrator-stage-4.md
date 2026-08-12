@@ -299,7 +299,9 @@ Agent("fact-checker", {
 })
 ```
 
-Após o subagente concluir (gravar `_internal/fact-check.json`), formatar o gate summary e checar bloqueio (#4361):
+**Fallback de ENOENT sob a junction OneDrive (#5083).** O subagente pode reportar que o Write direto em `_internal/fact-check.json` falhou com `ENOENT` (harness, ver `.claude/agents/fact-checker.md` §4) e gravou o JSON no scratchpad da própria sessão em vez disso. Se isso acontecer, copiar o arquivo do path reportado para `{EDITION_DIR}/_internal/fact-check.json` (`cp` ou `Write` do nível top — não sofre do mesmo bug) antes de prosseguir para o passo 2 abaixo.
+
+Após o subagente concluir (gravar `_internal/fact-check.json`, direto ou via fallback acima), formatar o gate summary e checar bloqueio (#4361):
 ```bash
 # 2. Formatar seção pro gate e checar claims GATE-BLOCKING (--check-blocking, #4361):
 npx tsx scripts/run-fact-checker.ts --edition-dir {EDITION_DIR}/ \

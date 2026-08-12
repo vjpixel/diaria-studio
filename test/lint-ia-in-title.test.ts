@@ -103,4 +103,12 @@ describe("checkTitleMentionsIA (#4825)", () => {
     assert.equal(result.errors.length, 1);
     assert.equal(result.errors[0].destaque, 2);
   });
+
+  it("#5084: CRLF line-endings não quebram a detecção do header DESTAQUE", () => {
+    const md = destaqueMd("Nova IA da Anthropic escreve código sozinha").replace(/\n/g, "\r\n");
+    const result = checkTitleMentionsIA(md);
+    assert.equal(result.ok, false, "header DESTAQUE precisa ser detectado mesmo com \\r\\n");
+    assert.equal(result.errors.length, 1);
+    assert.equal(result.errors[0].matched, "IA");
+  });
 });

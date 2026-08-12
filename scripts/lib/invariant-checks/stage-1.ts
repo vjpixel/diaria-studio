@@ -332,6 +332,58 @@ function checkNoPlaceholderTitleHighlights(editionDir: string): InvariantViolati
 }
 
 /**
+ * #5081: destaque sem `article.summary` chega ao writer-destaque sem base de
+ * conteúdo — `.claude/agents/writer-destaque.md` proíbe explicitamente
+ * inventar fato/comparação além do que está em `destaque.summary`/`title`
+ * (#4000), então um summary undefined/vazio é pior que um título placeholder
+ * silencioso: o writer ou trava (nada pra escrever) ou preenche com
+ * suposição, exatamente o que #4000 já documentou como erro real.
+ *
+ * Causa suspeita (não confirmada com certeza — ver PR #5081): cache-miss em
+ * `enrich-inbox-articles.ts` pra artigo NÃO-inbox (fallback bounded por
+ * `NON_INBOX_FALLBACK_FETCH_CAP`, #2545) deixa `summary` ausente e só
+ * registra a falha em `outcomes[]`/stdout — nunca gate-blocking. Esta
+ * invariante é a rede de segurança determinística independente da causa
+ * raiz exata: falha cedo e alto (gate Stage 1) em vez de deixar o campo
+ * ausente atravessar silenciosamente até o writer. Caso real: D3
+ * (about.fb.com/news/2026/08/the-future-is-for-everyone) chegou ao
+ * highlight com `article.summary` undefined, 1ª ocorrência 2026-08-11.
+ */
+function isMissingSummaryHighlight(h: HighlightLike): boolean {
+  const summary = h.article?.summary ?? h.summary;
+  return typeof summary !== "string" || summary.trim().length === 0;
+}
+
+function checkNoMissingSummaryHighlights(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", "01-approved.json");
+  if (!existsSync(path)) return []; // covered by approved-exists
+  let data: ApprovedJson;
+  try {
+    data = JSON.parse(readFileSync(path, "utf8")) as ApprovedJson;
+  } catch {
+    return []; // covered by approved-parseable
+  }
+  const highlights = Array.isArray(data.highlights) ? data.highlights : [];
+  const offenders = highlights.filter(isMissingSummaryHighlight);
+  if (offenders.length === 0) return [];
+  const urls = offenders.map((h) => h.url ?? h.article?.url ?? "(sem url)").join("; ");
+  return [
+    {
+      rule: "no-missing-summary-highlights",
+      message:
+        `${offenders.length} destaque(s) sem article.summary (undefined/vazio) em highlights[] — ` +
+        `URLs: ${urls}. writer-destaque não tem WebFetch e é proibido inventar conteúdo além do ` +
+        `summary (#4000) — sem ele não há base pra escrever o destaque. Provável cache-miss silencioso ` +
+        `em enrich-inbox-articles.ts (#5081). Resolver o summary (re-rodar enrich, ou preencher manualmente ` +
+        `no gate) antes de aprovar, ou trocar por outro candidato do pool.`,
+      source_issue: "#5081",
+      severity: "error",
+      file: path,
+    },
+  ];
+}
+
+/**
  * #4837: `url` (top-level) e `article.url` (nested) de um highlight são duas
  * referências à MESMA URL do artigo — nunca deveriam divergir. Downstream
  * (writer-destaque, publish) sempre lê `article.url`, então quando os dois
@@ -449,6 +501,13 @@ export const STAGE_1_RULES: InvariantRule[] = [
     stage: 1,
     run: checkUrlMatchesArticleUrl,
   },
+  {
+    id: "no-missing-summary-highlights",
+    description: "highlights[] nunca contém item com article.summary ausente/vazio (#5081)",
+    source_issue: "#5081",
+    stage: 1,
+    run: checkNoMissingSummaryHighlights,
+  },
 ];
 
 export {
@@ -463,4 +522,6 @@ export {
   isPlaceholderTitleHighlight,
   checkUrlMatchesArticleUrl,
   isUrlArticleUrlMismatch,
+  checkNoMissingSummaryHighlights,
+  isMissingSummaryHighlight,
 };

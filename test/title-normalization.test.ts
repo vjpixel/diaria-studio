@@ -109,6 +109,15 @@ describe("checkTitlePublisherSuffix (#2664)", () => {
     assert.equal(result.ok, true);
     assert.equal(result.errors.length, 0);
   });
+
+  it("#5084: CRLF line-endings não quebram a detecção do header DESTAQUE", () => {
+    const md = radarItemMd(
+      "ChatGPT consegue fazer check-up do seu PC sem abrir nenhum arquivo; veja como - Canaltech",
+    ).replace(/\n/g, "\r\n");
+    const result = checkTitlePublisherSuffix(md);
+    assert.equal(result.ok, false, "item RADAR precisa ser detectado mesmo com \\r\\n");
+    assert.equal(result.errors.length, 1);
+  });
 });
 
 // ===========================================================================
