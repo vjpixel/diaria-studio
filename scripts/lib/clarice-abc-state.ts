@@ -96,7 +96,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { getArg, hasFlag, isMainModule } from "./cli-args.ts";
 
-export type AbcTestStatus = "aberto" | "encerrado";
+// Não existe um `AbcTestStatus = "aberto" | "encerrado"` exportado: depois da
+// migração pra união discriminada (review da PR #5057), os literais vivem nos
+// próprios braços de `ClariceAbcState` e um alias solto ficou órfão — knip
+// pega isso, e com razão: um alias que ninguém importa só convida alguém a
+// tipar `status: AbcTestStatus` de novo e reabrir o shape flat.
 export type AbcCell = "A" | "B" | "C";
 
 /** Campos que não dependem do `status`. */
