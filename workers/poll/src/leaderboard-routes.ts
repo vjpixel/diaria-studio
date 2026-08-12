@@ -1700,7 +1700,7 @@ ${seoMeta}
   .email-input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid ${DS_COLORS.rule}; border-radius: 4px; font-size: 1rem; font-family: ${DS_FONTS.sans}; }
   .choices { display: flex; gap: 12px; margin: 20px 0; justify-content: center; flex-wrap: wrap; }
   .choice { flex: 1 1 240px; max-width: 260px; }
-  .choice img { width: 100%; height: auto; border-radius: 6px; display: block; }
+  .choice img { width: 100%; height: auto; aspect-ratio: 16 / 9; border-radius: 6px; display: block; }
   /* #3110: fundo ink, não teal — botão cheio em teal reprovava
      contraste AA (~3:1 vs mínimo 4.5:1). Ink+onInk dá ~15:1. */
   .choice button { margin-top: 8px; width: 100%; padding: 10px 12px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 1rem; font-family: ${DS_FONTS.sans}; }
@@ -1731,9 +1731,9 @@ ${renderBrandShellStyles()}
     <input type="email" name="email" placeholder="seu@email.com" required class="email-input">
   </div>
   <div class="choices">
-    <div class="choice"><img src="${imgA}" alt="Imagem A" loading="lazy"><button type="submit" name="choice" value="A">Essa é a IA (A)</button></div>
+    <div class="choice"><img src="${imgA}" width="800" height="450" alt="Imagem A" loading="lazy"><button type="submit" name="choice" value="A">Essa é a IA (A)</button></div>
     <p class="scroll-hint">↓ Veja também a Imagem B antes de decidir</p>
-    <div class="choice"><img src="${imgB}" alt="Imagem B" loading="lazy"><button type="submit" name="choice" value="B">Essa é a IA (B)</button></div>
+    <div class="choice"><img src="${imgB}" width="800" height="450" alt="Imagem B" loading="lazy"><button type="submit" name="choice" value="B">Essa é a IA (B)</button></div>
   </div>
 </form>
 <p><a href="${archiveHref(brand, year)}">← voltar ao arquivo de ${htmlEscape(year)}</a></p>

@@ -228,7 +228,7 @@ export function renderEmbedPageHtml(opts: EmbedPageOptions): string {
   p.sub { color: ${DS_COLORS.ink}; font-size: 0.82rem; margin: 0 0 12px; }
   .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.62rem; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: ${DS_COLORS.brand}; margin: 0 0 6px; }
   .choices { display: flex; flex-direction: column; gap: 10px; margin: 14px 0; }
-  .choice img { width: 100%; height: auto; border-radius: 6px; display: block; background: ${DS_COLORS.paperAlt}; }
+  .choice img { width: 100%; height: auto; aspect-ratio: 16 / 9; border-radius: 6px; display: block; background: ${DS_COLORS.paperAlt}; }
   .choice button { margin-top: 6px; width: 100%; padding: 9px 10px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.88rem; font-family: ${DS_FONTS.sans}; }
   .choice button:disabled { opacity: 0.5; cursor: not-allowed; }
   a { color: ${DS_COLORS.ink}; }
@@ -257,8 +257,8 @@ export function renderEmbedPageHtml(opts: EmbedPageOptions): string {
   <input type="hidden" name="brand" value="${EMBED_BRAND}">
   <input type="hidden" name="email" id="embed-email" value="">
   <div class="choices" id="embed-choices">
-    <div class="choice"><img id="embed-img-a" src="${imgA}" alt="Imagem A" loading="lazy"><button type="submit" name="choice" value="A">Essa é a IA (A)</button></div>
-    <div class="choice"><img id="embed-img-b" src="${imgB}" alt="Imagem B" loading="lazy"><button type="submit" name="choice" value="B">Essa é a IA (B)</button></div>
+    <div class="choice"><img id="embed-img-a" src="${imgA}" width="800" height="450" alt="Imagem A" loading="lazy"><button type="submit" name="choice" value="A">Essa é a IA (A)</button></div>
+    <div class="choice"><img id="embed-img-b" src="${imgB}" width="800" height="450" alt="Imagem B" loading="lazy"><button type="submit" name="choice" value="B">Essa é a IA (B)</button></div>
   </div>
 </form>
 <!-- #3521: preenchido via JS (fetch a /vote + DOMParser, mesmo padrão de

@@ -215,6 +215,11 @@ describe("renderEmbedPageHtml (#3521)", () => {
     assert.match(html, /\/img\/img-260101-01-eia-B\.jpg/);
   });
 
+  it("#5136: imagens A/B declaram width/height (evita CLS) e loading=lazy", () => {
+    assert.match(html, /id="embed-img-a" src="\/img\/img-260101-01-eia-A\.jpg" width="800" height="450" alt="Imagem A" loading="lazy"/);
+    assert.match(html, /id="embed-img-b" src="\/img\/img-260101-01-eia-B\.jpg" width="800" height="450" alt="Imagem B" loading="lazy"/);
+  });
+
   it("copy de apoio muda com `revealed`, sem alterar o form nem revelar a resposta", () => {
     const revealedHtml = renderEmbedPageHtml({ edition: "260101", revealed: true, partnerSlug: "clarice" });
     assert.match(html, /o resultado sai assim que a enquete de hoje fechar/i);
