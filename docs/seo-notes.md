@@ -147,6 +147,66 @@ pendência. **Item 2 (IndexNow) segue com uma pendência real** — ver acima:
 falta o secret `INDEXNOW_KEY` no GitHub Actions do repo pro ping automático
 de deploy funcionar.
 
+## Fato 4 — verificação ao vivo do contador de fetch por bot (#4902) e da cobertura de indexação por hub (#4903), 12/ago/2026
+
+O código dos dois mecanismos (contador KV de fetch/Referer no Worker
+`arquivo`, `scripts/ai-fetch-report.ts`, `scripts/hub-index-coverage.ts`) foi
+implementado e mergeado em `master` pelo PR #4967 (11/ago/2026), mas **sem**
+`Closes #4902`/`Closes #4903` no body — as duas issues continuavam abertas
+apesar do código já estar em produção. A pendência real que restava era
+verificação AO VIVO (item 4 de #4902, itens 2-3 de #4903), que o PR #4967
+descartou de propósito (rodou só com `fetchImpl`/KV fake — "nenhuma chamada de
+rede real ... usada nesta sessão"). Esta sessão tinha credenciais locais e
+rodou os dois mecanismos contra produção:
+
+**#4902 — contador de fetch confirmado funcionando:**
+
+- `curl -A "OAI-SearchBot/1.0" https://arquivo.diar.ia.br/temas/anthropic-claude`
+  → 200 OK (deploy do Worker `arquivo` já incluía o binding KV — último deploy
+  automático em 12/ago/2026 00:06 UTC, `git log` do push confirma o commit do
+  #4902 dentro da árvore).
+- `npx tsx scripts/ai-fetch-report.ts --date 2026-08-12 --days 2` (lido
+  minutos depois do curl acima) → o hit de `OAI-SearchBot` aparece no contador
+  do dia (`1`), ao lado de `bingbot: 1`. O dia anterior (2026-08-11) já tinha
+  tráfego orgânico registrado: `Googlebot: 2`, `bingbot: 8` — **zero** de
+  `OAI-SearchBot`, `ChatGPT-User`, `Claude-User`, `Claude-SearchBot`,
+  `PerplexityBot` ou `Perplexity-User` orgânico até agora. Consistente com o
+  que a issue já esperava (é cedo, e o item 4 dela — esperar 2-3 semanas antes
+  de julgar — segue válido). O mecanismo em si está confirmado: o contador
+  soma corretamente e a leitura via `getTextFromWorkerKV` funciona contra o
+  namespace real.
+- `data/ai-fetch/history.jsonl` agora tem os 2 primeiros registros reais
+  (antes vazio/inexistente).
+
+**#4903 — cruzamento confirmado contra dado real, e `arquivo.diar.ia.br` medido pela 1ª vez:**
+
+- `npx tsx scripts/hub-index-coverage.ts` (sem argumentos, contra
+  `index-status-2026-08-10.json`, o relatório principal mais recente) bateu
+  exatamente com os números já citados no corpo da issue #4903 para o hub
+  `anthropic-claude` — 27/76 indexadas, 42/76 nunca rastreadas, 16/76 órfãs.
+  Cruzamento também rodou pros outros 4 hubs (`openai-chatgpt` 36/96,
+  `google-gemini` 23/61, `meta-ai` 7/20 com 1 URL ausente do relatório —
+  edição mais nova que a rodada, tratado como informativo pela função pura —
+  `brasil-regulacao` 5/11).
+- `npx tsx scripts/seo-index-check.ts --sitemap https://arquivo.diar.ia.br/sitemap.xml --limit 10 --out-suffix arquivo`
+  rodou pela 1ª vez contra a Search Console de verdade: **2/6 indexadas
+  (33,3%)**, escrito em `data/seo/index-status-arquivo-2026-08-12.{json,md}`.
+  O sitemap hoje tem 6 URLs (a raiz `/` + 5 hubs — cresceu de 4 pra 6 desde
+  que a issue foi escrita, o 5º hub `brasil-regulacao` entrou depois). As 4
+  não-indexadas (`openai-chatgpt`, `google-gemini`, `meta-ai`,
+  `brasil-regulacao`) são todas marcadas **órfãs (sem link interno)** pelo
+  script — achado novo, fora do escopo original da issue (que pedia só medir,
+  não consertar): nenhuma dessas 4 páginas de hub tem `<a href>` apontando
+  pra ela a partir de outra página já indexada. Só `anthropic-claude` (o hub
+  mais antigo) está indexado — plausível que seja o único com link de entrada
+  hoje. Não é ação desta nota — registro pro checkpoint de ~07/out/2026 citado
+  no corpo da issue.
+
+**Ação:** ambas issues fecham com este achado — mecanismo confirmado
+funcionando ao vivo nos dois casos, números batendo com o esperado. Não fazer
+nada agora sobre as páginas órfãs de `/temas/` — é dado pro checkpoint, não um
+bug a consertar (mesma disciplina do Fato 1 acima).
+
 ## Quando adicionar entry aqui
 
 Mesmo critério de `context/agents-known-issues.md`, aplicado a dado de SEO em
