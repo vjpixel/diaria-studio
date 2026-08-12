@@ -1045,7 +1045,7 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
         const pendingCells = cells.slice(scheduledCount).map((c) => c.key);
         report.note(
           `⚠️  ONDA PARCIALMENTE MONTADA: ${scheduledCount} de ${cells.length} célula(s) já confirmada(s) ANTES ` +
-            `deste erro — ${done.join(", ")} já são campanhas REAIS na Brevo e vão disparar do ` +
+            `deste erro — ${done.join(", ")} já são campanhas REAIS na Brevo e vão disparar nos horários acima, do ` +
             `jeito que estão. NÃO reiniciar do zero na próxima rodada — as células restantes (${pendingCells.join(", ")}) ` +
             "precisam ser reconciliadas manualmente ou na próxima invocação (clarice-import-waves/clarice-schedule-group são idempotentes por key).",
         );
