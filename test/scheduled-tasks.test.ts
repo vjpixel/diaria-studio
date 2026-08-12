@@ -422,7 +422,7 @@ describe("#5025/#5026/#5027 — par Diaria-Clarice-Envio / Diaria-Clarice-Envio-
     assert.ok(guardMinutes < dispatchMinutes, `guard (${s.hour}:${s.minute}) deveria rodar antes de 06:00`);
   });
 
-  it("ordem: Diaria-Clarice-Envio (19:00) roda DEPOIS de Diaria-Clarice-Novos (17:00) — cadastros novos já no store", () => {
+  it("ordem: Diaria-Clarice-Envio (19:00) roda DEPOIS de Diaria-Clarice-Novos (11:00) — cadastros novos já no store", () => {
     const novos = getScheduledTaskByName("Diaria-Clarice-Novos");
     const envio = getScheduledTaskByName("Diaria-Clarice-Envio");
     assert.ok(novos && envio);
@@ -433,5 +433,33 @@ describe("#5025/#5026/#5027 — par Diaria-Clarice-Envio / Diaria-Clarice-Envio-
     const novosMinutes = novosSched.hour * 60 + novosSched.minute;
     const envioMinutes = envioSched.hour * 60 + envioSched.minute;
     assert.ok(envioMinutes > novosMinutes, "Diaria-Clarice-Envio deveria rodar depois de Diaria-Clarice-Novos");
+  });
+
+  it("#5140: folga de >= 4h entre Clarice-Novos e Clarice-Envio — o guard queued∪sent não cobre in_process", () => {
+    // Não é preferência de horário, é a margem que impede ENVIO DUPLICADO.
+    // `isNovos` é subconjunto ESTRITO de `isRampWarm`, então todo contato que
+    // o `novos` acabou de atender continua no universo da onda que o
+    // `Diaria-Clarice-Envio` monta. O que os exclui é o guard
+    // `fetchCommittedCampaignListIds` (`queued ∪ sent`), e ele NÃO enxerga
+    // `in_process` — o status que apareceu de fato nas rodadas de 09 e
+    // 11/08/2026. Se a campanha do `novos` ainda não assentou em `sent` na
+    // hora em que o envio segmenta, os mesmos contatos entram na onda de
+    // amanhã e recebem duas vezes em poucas horas.
+    //
+    // Com 11:00 × 19:00 a folga é de 8h. O piso de 4h existe pra que mover
+    // qualquer uma das duas tasks pra perto da outra quebre AQUI, e não em
+    // produção — onde o sintoma seria um contato reclamando de e-mail
+    // repetido, semanas depois, sem rastro óbvio da causa.
+    const novos = getScheduledTaskByName("Diaria-Clarice-Novos");
+    const envio = getScheduledTaskByName("Diaria-Clarice-Envio");
+    assert.ok(novos && envio);
+    const n = novos!.schedule as { kind: "daily"; hour: number; minute: number };
+    const e = envio!.schedule as { kind: "daily"; hour: number; minute: number };
+    const gapMinutes = (e.hour * 60 + e.minute) - (n.hour * 60 + n.minute);
+    assert.ok(
+      gapMinutes >= 240,
+      `folga entre Clarice-Novos e Clarice-Envio caiu pra ${gapMinutes}min (< 240) — ` +
+        "risco de a campanha do 'novos' ainda estar in_process quando a onda for segmentada",
+    );
   });
 });

@@ -4,7 +4,7 @@ Issue: [#4941](https://github.com/vjpixel/diaria-studio/issues/4941) (automatiza
 
 ## O que a task faz
 
-`scripts/run-clarice-novos.ps1` → `npx tsx scripts/clarice-novos-run.ts`, rodando diariamente às **17:00 BRT**. `clarice-novos-run.ts` é o orquestrador determinístico dos 7 passos que até o #4941 só existiam como prosa executada manualmente por um LLM (`.claude/skills/diaria-clarice-novos/SKILL.md`) — delta Stripe → MV → grupo `novos` → campanha Brevo → disparo imediato, **sem gate humano** (decisão D6 do #4347), com os 9 guards determinísticos documentados na SKILL.md como única trava.
+`scripts/run-clarice-novos.ps1` → `npx tsx scripts/clarice-novos-run.ts`, rodando diariamente às **11:00 BRT** (mudou de 17:00 em 260812, #5140). `clarice-novos-run.ts` é o orquestrador determinístico dos 7 passos que até o #4941 só existiam como prosa executada manualmente por um LLM (`.claude/skills/diaria-clarice-novos/SKILL.md`) — delta Stripe → MV → grupo `novos` → campanha Brevo → disparo imediato, **sem gate humano** (decisão D6 do #4347), com os 9 guards determinísticos documentados na SKILL.md como única trava.
 
 ## Kill switch — `data/clarice-novos-enabled.json` (#4941 E3)
 
@@ -16,7 +16,7 @@ npx tsx scripts/lib/clarice-novos-enabled.ts --set disabled  # pausa (kill switc
 npx tsx scripts/lib/clarice-novos-enabled.ts                 # imprime "enabled"/"disabled"
 ```
 
-**Depois de armar a task, ela roda todo dia às 17:00 mas sai imediatamente com "pausado" até você liberar o toggle explicitamente.** Confira a 1ª rodada pausada (relatório em `/relatorios` do Studio) antes de liberar.
+**Depois de armar a task, ela roda todo dia às 11:00 mas sai imediatamente com "pausado" até você liberar o toggle explicitamente.** Confira a 1ª rodada pausada (relatório em `/relatorios` do Studio) antes de liberar.
 
 ## Guard de pré-condição — `data/clarice-subscribers/clarice-users.db`
 
@@ -40,7 +40,7 @@ Toda invocação (sucesso, rodada vazia, pausada pelo toggle, ou abortada por qu
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-clarice-novos-schedule.ps1
 ```
 
-Isso registra a task `Diaria-Clarice-Novos` (diária, 17:00). Idempotente — re-executar atualiza a task. Remover: mesmo comando com `-Unregister`.
+Isso registra a task `Diaria-Clarice-Novos` (diária, 11:00). Idempotente — re-executar atualiza a task. Remover: mesmo comando com `-Unregister`.
 
 **Linux (systemd, via o registro declarativo `scripts/lib/scheduled-tasks.ts`, épica #4798):**
 

@@ -387,12 +387,34 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // editor pausou a automação de propósito".
     steps: [{ key: "run", script: "scripts/clarice-novos-run.ts" }],
     logPath: "clarice-subscribers/.novos-run.log",
-    // 17:00 BRT (decisão do editor, #4941) — sem colisão com nenhuma outra
-    // task armada (a mais próxima do horário é o ciclo de 4h do
-    // Diaria-Clarice-Guardrail-Alarm). Supera a decisão D5 do #4347
+    // 11:00 BRT (decisão do editor 260812, #5140 — sucede as 17:00 do #4941).
+    // Dois motivos independentes, ambos medidos:
+    //
+    //   1. JANELA DE DECISÃO. O e-mail tem dois objetivos de conversão
+    //      (assinar a Diária, usar o cupom da Clarice) e nenhum dos dois
+    //      acontece na leitura: a mediana do clique é 7,6h e o p75 é 37,9h.
+    //      Quando acontecem, é em horário comercial — a curva de compra da
+    //      Stripe (1.118 assinaturas/180d, independente de envio de e-mail)
+    //      põe 41-46% das compras entre 12h e 17h e só 6% de madrugada. Um
+    //      envio às 17:00 empurrava quem age rápido pra 18h-21h, o bloco de
+    //      menor propensão do dia. Índice de propensão da janela de ação
+    //      (100 = hora média): 17h = 120, 11h = 170.
+    //   2. FOLGA DO GUARD. `Diaria-Clarice-Envio` (19:00) monta a onda do dia
+    //      seguinte a partir de `ramp-warm`, e `novos` é subconjunto ESTRITO
+    //      dele (`isNovos` = `isRampWarm` + corte por `created`). Quem já
+    //      recebeu do `novos` só sai da onda pelo guard `queued ∪ sent`
+    //      (`fetchCommittedCampaignListIds`), que NÃO cobre `in_process` — o
+    //      status observado nas rodadas de 09 e 11/08. Com 17:00 a campanha
+    //      tinha 2h pra assentar em `sent` antes das 19:00; com 11:00 tem 8h.
+    //      Sem essa folga, uma campanha presa em `in_process` faz o mesmo
+    //      contato receber duas vezes em 13h.
+    //
+    // Segue sem colisão com outra task armada (a mais próxima é o ciclo de 4h
+    // do Diaria-Clarice-Guardrail-Alarm) e depois do Diaria-Clarice-Sync
+    // (08:30), então o store está fresco. Supera a decisão D5 do #4347
     // ("~4×/semana, invocação manual") — a skill manual continua existindo,
     // delegando pro mesmo orquestrador (ver .claude/skills/diaria-clarice-novos).
-    schedule: { kind: "daily", hour: 17, minute: 0 },
+    schedule: { kind: "daily", hour: 11, minute: 0 },
     guard: {
       requiredFile: "clarice-subscribers/clarice-users.db",
       abortMessage:
@@ -416,8 +438,12 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     logPath: "clarice-subscribers/.envio-run.log",
     // 19:00 BRT (decisão do editor 260811): planeja e AGENDA a onda de
     // amanhã 06:00 BRT (09:00 UTC). Roda depois do Diaria-Clarice-Novos
-    // (17:00) de propósito — os cadastros novos do dia já entraram no store
-    // antes do planejamento da onda. Sem colisão com nenhuma outra task
+    // (11:00 desde o #5140, antes 17:00) de propósito — os cadastros novos do
+    // dia já entraram no store antes do planejamento da onda, e a campanha do
+    // `novos` já teve tempo de assentar em `sent` pro guard `queued ∪ sent`
+    // excluí-los desta onda (o mesmo contato está nos DOIS universos:
+    // `isNovos` é subconjunto estrito de `isRampWarm`).
+    // Sem colisão com nenhuma outra task
     // armada (a mais próxima é o ciclo de 4h do Clarice-Guardrail-Alarm).
     schedule: { kind: "daily", hour: 19, minute: 0 },
     // Mesmo guard do Diaria-Clarice-Novos (#4552/#4941): sem o store, o
