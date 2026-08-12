@@ -331,7 +331,7 @@ export function resolveSpamSignal(
   };
 }
 
-/** Saída de {@link describeSpamSignalOrigin} — origem do número que governa `SpamSignal.ratePct` + o texto já formatado pros 2 consumidores (CLI `clarice-schedule-ramp.ts`, dashboard). */
+/** Saída de {@link describeSpamSignalOrigin} — origem do número que governa `SpamSignal.ratePct` + o texto já formatado pro CLI (`clarice-schedule-ramp.ts`, único call site hoje) e qualquer futuro consumidor que precise da mesma frase. */
 export interface SpamSignalOrigin {
   /** `true` quando o pico por campanha (não a média de domínio) governou `signal.ratePct` — mesmo predicado usado internamente por `resolveSpamSignal` via `isCampaignPeakGoverning`. */
   usesCampaignPeak: boolean;
