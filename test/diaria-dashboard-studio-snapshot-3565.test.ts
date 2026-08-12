@@ -90,6 +90,23 @@ function makeEnv(kvValue: string | null): Env {
   } as any;
 }
 
+// #5133: as rotas abaixo passaram a exigir auth quando exercitadas via
+// `worker.fetch` (o dispatcher real) — os handlers NOMEADOS
+// (handleStudioSnapshotJson/Html) continuam sem gate, chamados direto pelos
+// describes acima. Só o describe "Roteamento no fetch handler real" no fim
+// deste arquivo passa pelo `routeRequest`/auth gate — usa este token fixo
+// via header `X-Dashboard-Token` (ver test/diaria-dashboard-auth-5133.test.ts
+// pro grosso da cobertura de auth).
+const TEST_AUTH_TOKEN = "test-token-3565";
+
+function makeAuthedEnv(kvValue: string | null): Env {
+  return { ...makeEnv(kvValue), AUTH_TOKEN: TEST_AUTH_TOKEN };
+}
+
+function authedRequest(url: string): Request {
+  return new Request(url, { headers: { "X-Dashboard-Token": TEST_AUTH_TOKEN } });
+}
+
 // ─── renderStudioSnapshotHtml ─────────────────────────────────────────────────
 
 describe("renderStudioSnapshotHtml (#3565)", () => {
@@ -212,30 +229,30 @@ describe("handleStudioSnapshotHtml — GET /studio (#3565)", () => {
 // ─── Roteamento no fetch handler real (path → handler) ────────────────────────
 
 describe("default.fetch — roteamento (#3565)", () => {
-  it("GET /api/studio-snapshot despacha pro handler JSON", async () => {
-    const env = makeEnv(JSON.stringify(makeSnapshot()));
-    const res = await worker.fetch(new Request("https://x/api/studio-snapshot"), env);
+  it("GET /api/studio-snapshot despacha pro handler JSON (autenticado, #5133)", async () => {
+    const env = makeAuthedEnv(JSON.stringify(makeSnapshot()));
+    const res = await worker.fetch(authedRequest("https://x/api/studio-snapshot"), env);
     assert.equal(res.status, 200);
     assert.equal(res.headers.get("Content-Type"), "application/json");
   });
 
-  it("GET /studio despacha pro handler HTML", async () => {
-    const env = makeEnv(JSON.stringify(makeSnapshot()));
-    const res = await worker.fetch(new Request("https://x/studio"), env);
+  it("GET /studio despacha pro handler HTML (autenticado, #5133)", async () => {
+    const env = makeAuthedEnv(JSON.stringify(makeSnapshot()));
+    const res = await worker.fetch(authedRequest("https://x/studio"), env);
     assert.equal(res.status, 200);
     assert.equal(res.headers.get("Content-Type"), "text/html; charset=utf-8");
   });
 
-  it("GET /studio/ (barra final) roteia pro mesmo painel HTML", async () => {
-    const env = makeEnv(JSON.stringify(makeSnapshot()));
-    const res = await worker.fetch(new Request("https://x/studio/"), env);
+  it("GET /studio/ (barra final) roteia pro mesmo painel HTML (autenticado, #5133)", async () => {
+    const env = makeAuthedEnv(JSON.stringify(makeSnapshot()));
+    const res = await worker.fetch(authedRequest("https://x/studio/"), env);
     assert.equal(res.status, 200);
     assert.equal(res.headers.get("Content-Type"), "text/html; charset=utf-8");
   });
 
   it("não regride a rota /api/data existente (continua indo pro handler ORIGINAL, não pro novo)", async () => {
-    const env = makeEnv(null); // mock só responde a STUDIO_SNAPSHOT_KV_KEY; "dashboard" sempre null aqui
-    const res = await worker.fetch(new Request("https://x/api/data"), env);
+    const env = makeAuthedEnv(null); // mock só responde a STUDIO_SNAPSHOT_KV_KEY; "dashboard" sempre null aqui
+    const res = await worker.fetch(authedRequest("https://x/api/data"), env);
     assert.equal(res.status, 404);
     const body = (await res.json()) as { error: string; hint?: string };
     assert.equal(body.error, "no_data");
@@ -243,5 +260,11 @@ describe("default.fetch — roteamento (#3565)", () => {
     // que menciona studio-snapshot-push.ts) — prova que a rota pré-existente
     // não foi acidentalmente capturada pelas novas.
     assert.match(body.hint ?? "", /build-diaria-dashboard-data/);
+  });
+
+  it("SEM token, GET /api/studio-snapshot devolve 401 (#5133) — gate roda antes do handler novo também", async () => {
+    const env = makeAuthedEnv(JSON.stringify(makeSnapshot()));
+    const res = await worker.fetch(new Request("https://x/api/studio-snapshot"), env);
+    assert.equal(res.status, 401);
   });
 });
