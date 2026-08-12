@@ -145,6 +145,23 @@ export const HUB_KEYWORD_PATTERNS: Record<string, RegExp> = {
   //     órgão de outro país; exigir "ia" na MESMA manchete restringe ao caso
   //     real). Auditado: nenhuma outra manchete do corpus usa essas 3
   //     palavras fora dos casos aqui listados (nenhum falso positivo hoje).
+  //     **Risco latente pra REGENERAÇÕES futuras (achado no fleet review do
+  //     #5056, não afeta o corpus atual):** `\bia\b` com `/i` casa tanto o
+  //     acrônimo "IA" quanto o verbo minúsculo "ia" (pretérito imperfeito de
+  //     "ir" — ex: "Senado ia aprovar reforma tributária"), então os 3 pares
+  //     de co-ocorrência acima podem virar falso positivo numa manchete
+  //     futura que use "ia" como verbo perto de Congresso/Senado/Câmara. Sem
+  //     fix aplicado aqui de propósito — JS não tem modificador de case
+  //     inline por trecho da regex, e reescrever o padrão inteiro sem `/i`
+  //     pra distinguir "IA" maiúsculo quebraria as outras alternativas deste
+  //     mesmo pattern (`marco legal`, `anpd`, etc., que aparecem em
+  //     capitalização mista no corpo). Mitigação real continua sendo a
+  //     verificação manual manchete-a-manchete já praticada aqui — se uma
+  //     regeneração futura trouxer um hit desses 3 pares, conferir o corpo
+  //     antes de aceitar. Mesmo racional pro `\bpl[ -]?\d{3,4}\b` isolado
+  //     (casa qualquer PL de 3-4 dígitos, não só o 2338 do Marco Legal) —
+  //     hoje só casa manchetes que já falam de IA no mesmo contexto (nenhum
+  //     PL não-relacionado no corpus atual), mas não é garantia estrutural.
   //   - "classifica sistemas de ia por risco" e "manipular ia do tribunal"
   //     são âncoras literais de 2 manchetes específicas verificadas — o
   //     corpo confirma "lei brasileira de regulação de sistemas
