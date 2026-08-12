@@ -47,8 +47,9 @@ describe("clariceLinkMissingVia (#1910)", () => {
       "https://clarice.ai/precos",
     ]);
   });
-  it("exenta cortex (API), mailto e não-clarice", () => {
+  it("exenta cortex (API), mcp (API, #5114), mailto e não-clarice", () => {
     assert.equal(clariceLinkMissingVia("https://cortex.clarice.ai/api-correction"), false);
+    assert.equal(clariceLinkMissingVia("https://mcp.clarice.ai/mcp"), false);
     assert.equal(clariceLinkMissingVia("mailto:ti@clarice.ai"), false);
     assert.equal(clariceLinkMissingVia("https://example.com"), false);
     assert.equal(clariceLinkMissingVia("https://notclarice.ai/?via=x"), false);
