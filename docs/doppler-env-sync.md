@@ -36,6 +36,35 @@ dashboard (https://dashboard.doppler.com) ou via `doppler secrets set
 NOME=valor` quando uma credencial for gerada/rotacionada — `sync-env` só
 puxa.
 
+**#5155 — duas proteções adicionais, contra um incidente ao vivo em que
+`ANTHROPIC_API_KEY` (viva só no `.env` local, nunca posta no vault) foi
+apagada pelo 1º `sync-env` bem-sucedido:**
+
+1. **Backup de 1 nível.** Antes de sobrescrever um `.env` existente, o
+   conteúdo atual é copiado pra `.env.bak` (sobrescreve qualquer backup
+   anterior — retenção rasa de propósito: o caso de uso é desfazer o
+   ÚLTIMO sync, não manter histórico; `.env.bak` está no `.gitignore`).
+   Restaurar é `cp .env.bak .env` manual.
+2. **Guard de chave só-local.** Antes de sobrescrever, `sync-env` compara os
+   NOMES de variável (nunca os valores) do `.env` atual contra os do
+   snapshot baixado. Se alguma chave existe só localmente — sinal de que
+   ela nunca foi posta no vault, ou foi removida de lá sem querer — o sync
+   **aborta** sem tocar `.env`, imprime os nomes das chaves faltantes e
+   sai com exit code != 0. `npm run sync-env -- --force` ignora o guard e
+   sobrescreve mesmo assim (a chave some do `.env`, mas continua recuperável
+   em `.env.bak`). Optamos por abortar em vez de mesclar automaticamente: a
+   causa mais comum de uma chave só-local é ela ter sido removida do vault
+   DE PROPÓSITO, e um merge silencioso mascararia isso indefinidamente em
+   vez de forçar uma decisão consciente a cada ocorrência.
+
+**Caminho inverso — subir uma chave que só existe local pro vault.** É o
+passo que resolve o guard acima de vez (sem precisar de `--force` de novo no
+próximo sync): `doppler secrets set NOME=valor` (ou colar no dashboard,
+https://dashboard.doppler.com) na config certa (`dev`/`dev_personal`/`stg`/
+`prd`, conforme onde a chave se aplica), depois rodar `npm run sync-env`
+normalmente — a chave deixa de ser só-local e o guard para de disparar para
+ela.
+
 **Precedência preservada:** `scripts/lib/env-loader.ts` (`loadProjectEnv`)
 carrega `.env` com `override: false` — uma var já presente em `process.env`
 (por exemplo, setada por `doppler run -- <comando>` em vez de via `.env`)
@@ -93,3 +122,12 @@ ponta nas duas máquinas do editor: Linux (integração original) e Windows
 (`doppler login` já estava feito desde 07/08 — só faltava o `doppler.yaml`
 do repo pra apontar pra ele; `npm run sync-env` gerou as mesmas 41 chaves e
 `loadProjectEnv()` leu `CLARICE_API_KEY` corretamente) — fecha #5149.
+
+**Incidente 260812 (#5155):** o mesmo dia, `ANTHROPIC_API_KEY` — viva só no
+`.env` da máquina Windows, nunca posta no vault — foi apagada em silêncio
+pelo primeiro `sync-env` bem-sucedido ali (sem backup, sem checagem de
+chave só-local, o script simplesmente sobrescreveu). Editor regenerou a
+chave e populou no Doppler (`dev` e `dev_personal`). As duas proteções
+descritas acima (backup em `.env.bak` + guard de chave só-local, com
+`--force` pra ignorar deliberadamente) fecham essa classe de incidente —
+confirmado por regressão em `test/sync-env.test.ts`.

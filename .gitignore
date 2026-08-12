@@ -2,6 +2,9 @@ node_modules/
 dist/
 .env
 .env.local
+# Backup de 1 nível escrito por scripts/sync-env.ts (#5155) antes de
+# sobrescrever .env com o snapshot do Doppler.
+.env.bak
 # data/ inteira mora no OneDrive (junction local) — nada vai pro repo.
 # Antes do PR #1355 havia exceções intencionais aqui pra versionar audit
 # trail editorial (data/editions/*/01-categorized.{md,json}, 01-approved.json
