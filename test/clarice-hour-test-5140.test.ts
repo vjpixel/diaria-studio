@@ -250,3 +250,47 @@ test("#5140: normalizeHours recusa 1 braço e mais que o teto", () => {
   assert.throws(() => normalizeHours([6, 9, 12, 15]), /no máximo/);
   assert.deepEqual(normalizeHours([10, 6]), [6, 10]);
 });
+
+describe("#5171: normalizeHours alinhada com brtHourToUtcHourSameDay", () => {
+  it("REGRESSÃO: 21h/22h/23h BRT são rejeitadas na validação de entrada", () => {
+    // Antes do fix, [6, 21] passava por normalizeHours (só checava 0-23) e
+    // só lançava depois — dentro de clarice-envio-run.ts, ao montar
+    // scheduledAt via brtHourToUtcHourSameDay — quando clarice-split-group-cells
+    // e clarice-import-waves --execute já tinham escrito na Brevo (listas
+    // órfãs). O guard precisa disparar AQUI, antes de qualquer escrita.
+    assert.throws(() => normalizeHours([6, 21]), /dia seguinte em UTC/);
+    assert.throws(() => normalizeHours([6, 22]), /dia seguinte em UTC/);
+    assert.throws(() => normalizeHours([6, 23]), /dia seguinte em UTC/);
+  });
+
+  it("20h BRT continua aceita — é o limite superior válido", () => {
+    assert.deepEqual(normalizeHours([6, 20]), [6, 20]);
+  });
+
+  it("startClariceHourTest propaga a rejeição sem gravar estado em disco", () => {
+    withRoot((root) => {
+      assert.throws(
+        () => startClariceHourTest(root, { hoursBrt: [6, 21] }),
+        /dia seguinte em UTC/,
+      );
+      // Nenhum arquivo de estado foi criado — o teste nunca "iniciou".
+      const st = readClariceHourTestState(root);
+      assert.equal(st.status, "inativo");
+      assert.equal(st.degraded, undefined);
+    });
+  });
+
+  it("estado em disco com hora 21h+ degrada pra inativo COM aviso (mesmo path do JSON corrompido)", () => {
+    withRoot((root) => {
+      writeFileSync(
+        clariceHourTestStatePath(root),
+        JSON.stringify({ status: "ativo", hoursBrt: [6, 22], startedAt: "2026-08-13T00:00:00Z" }),
+        "utf-8",
+      );
+      const st = readClariceHourTestState(root);
+      assert.equal(st.status, "inativo");
+      assert.equal(st.degraded, true);
+      assert.match(st.degradedReason ?? "", /hora.*inválida.*22|dia seguinte em UTC/i);
+    });
+  });
+});

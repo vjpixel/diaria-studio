@@ -244,6 +244,7 @@ export function closeAlarmIssue(
 export type AlarmReconcileAction =
   | { kind: "ensure"; finding: AlarmFinding }
   | { kind: "comment_resolved"; key: string; issueNumber: number }
+  | { kind: "advance_streak"; key: string }
   | { kind: "close"; key: string; issueNumber: number };
 
 /**
@@ -256,8 +257,13 @@ export type AlarmReconcileAction =
  *     fechado (`closedAt === null`) teve o streak de ausência incrementado
  *     hipoteticamente: na 1ª ausência (streak chega a 1) vira
  *     `comment_resolved`; ao atingir `closeAfterRuns` vira `close`; entre os
- *     dois (streak > 1 e < closeAfterRuns) não gera ação (já comentou,
- *     ainda não é hora de fechar) — só se aplica quando `closeAfterRuns > 2`.
+ *     dois (streak > 1 e < closeAfterRuns) vira `advance_streak` — sem I/O,
+ *     só avança o contador em `state`, senão `missingStreak` nunca passaria
+ *     de 1 e `closeAfterRuns > 2` nunca fecharia nada (#5172: `apply` só
+ *     escrevia `missingStreak` dentro dos ramos `comment_resolved`/`close`,
+ *     então o meio da faixa ficava sem NENHUMA ação e o streak persistido
+ *     travava pra sempre em 1, fazendo `nextStreak` recalcular 2 do zero a
+ *     cada execução seguinte).
  */
 export function planAlarmReconciliation(
   pending: readonly AlarmFinding[],
@@ -279,6 +285,8 @@ export function planAlarmReconciliation(
       actions.push({ kind: "close", key, issueNumber: entry.issueNumber });
     } else if (nextStreak === 1) {
       actions.push({ kind: "comment_resolved", key, issueNumber: entry.issueNumber });
+    } else {
+      actions.push({ kind: "advance_streak", key });
     }
   }
 
@@ -358,6 +366,12 @@ export function applyAlarmReconciliation(
         const entry = nextState[action.key]!;
         nextState[action.key] = { ...entry, missingStreak: entry.missingStreak + 1 };
       }
+    } else if (action.kind === "advance_streak") {
+      // Sem I/O — só avança o contador local (#5172). Nada pra falhar aqui,
+      // então sempre aplica (diferente de comment/close, que só avançam o
+      // streak se o `gh` correspondente teve sucesso).
+      const entry = nextState[action.key]!;
+      nextState[action.key] = { ...entry, missingStreak: entry.missingStreak + 1 };
     } else if (action.kind === "close") {
       const ok = closeAlarmIssue(action.issueNumber, opts.closeAfterRuns, opts.cwd, run);
       if (ok) {
