@@ -43,11 +43,11 @@ function makeEnv(seed: Record<string, string> = {}): Env & { POLL: ReturnType<ty
   } as Env & { POLL: ReturnType<typeof makeTrackedKv> };
 }
 
-describe("votePageHtml — link 'Ver leaderboard' carrega email+sig quando falta nickname (#4232)", () => {
+describe("votePageHtml — link 'Ver ranking' carrega email+sig quando falta nickname (#4232)", () => {
   it("nicknameForm presente (diaria) → link carrega email+sig (URL-encoded)", async () => {
     const html = votePageHtml("Já votou", false, { email: "user@x.com", sig: "abc123" }, null, "2026-07", "diaria");
-    const match = html.match(/<a href="([^"]*\/leaderboard[^"]*)">Ver leaderboard<\/a>/);
-    assert.ok(match, "link 'Ver leaderboard' deve existir");
+    const match = html.match(/<a href="([^"]*\/leaderboard[^"]*)">Ver ranking<\/a>/);
+    assert.ok(match, "link 'Ver ranking' deve existir");
     const href = match![1];
     assert.match(href, /[?&]email=user%40x\.com/);
     assert.match(href, /[?&]sig=abc123/);
@@ -55,7 +55,7 @@ describe("votePageHtml — link 'Ver leaderboard' carrega email+sig quando falta
 
   it("nicknameForm ausente (já tem nickname) → link NÃO carrega email/sig", () => {
     const html = votePageHtml("Acertou!", true, null, null, "2026-07", "diaria");
-    const match = html.match(/<a href="([^"]*\/leaderboard[^"]*)">Ver leaderboard<\/a>/);
+    const match = html.match(/<a href="([^"]*\/leaderboard[^"]*)">Ver ranking<\/a>/);
     assert.ok(match);
     assert.doesNotMatch(match![1], /email=/);
     assert.doesNotMatch(match![1], /sig=/);
@@ -63,7 +63,7 @@ describe("votePageHtml — link 'Ver leaderboard' carrega email+sig quando falta
 
   it("brand 'web' → link NÃO carrega email/sig mesmo com nicknameForm presente (escopo #4232 — web usa identidade local)", () => {
     const html = votePageHtml("Já votou", false, { email: "anon-token@web.local", sig: "abc123" }, null, null, "web");
-    const match = html.match(/<a href="([^"]*\/leaderboard[^"]*)">Ver leaderboard<\/a>/);
+    const match = html.match(/<a href="([^"]*\/leaderboard[^"]*)">Ver ranking<\/a>/);
     assert.ok(match);
     assert.doesNotMatch(match![1], /email=/);
     assert.doesNotMatch(match![1], /sig=/);
@@ -73,7 +73,7 @@ describe("votePageHtml — link 'Ver leaderboard' carrega email+sig quando falta
     const html = votePageHtml(
       "Já votou", false, { email: "user@x.com", sig: "abc123" }, null, "2026-07", "diaria", "1700000000000",
     );
-    const match = html.match(/<a href="([^"]*\/leaderboard[^"]*)">Ver leaderboard<\/a>/);
+    const match = html.match(/<a href="([^"]*\/leaderboard[^"]*)">Ver ranking<\/a>/);
     assert.ok(match);
     const href = match![1];
     assert.match(href, /\?v=1700000000000&email=user%40x\.com&sig=abc123/);

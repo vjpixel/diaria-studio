@@ -166,10 +166,10 @@ describe("votePageHtml linka o arquivo no rodapé SÓ pra brand clarice — diá
     assert.ok(!html.includes("Jogar edições passadas"), "brand web não deve repetir o link — já existe em /jogar");
   });
 
-  it("regressão: footer-links continua com 'Voltar' + 'Ver leaderboard' em todos os brands", () => {
+  it("regressão: footer-links continua com 'Voltar' + 'Ver ranking' em todos os brands", () => {
     const html = votePageHtml("Você acertou!", true, null, null, null, "diaria");
     assert.match(html, /Voltar para a/);
-    assert.match(html, /Ver leaderboard/);
+    assert.match(html, /Ver ranking/);
   });
 });
 
