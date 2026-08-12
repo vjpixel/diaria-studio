@@ -24,8 +24,23 @@
  * travar o encerramento da sessão. Cada worktree é tratado independentemente
  * — falha num não impede a checagem/remoção dos demais.
  *
+ * **Guard de sessão compartilhada (#5156 item 9).** `.claude/worktrees/` pode
+ * ter worktrees vivos de OUTRA sessão `/diaria-overnight`/`/diaria-develop`
+ * rodando em paralelo (mesma máquina) — um `git worktree remove --force`
+ * disparado no meio dessa outra sessão remove um diretório que ela ainda está
+ * usando. Antes de varrer, o script consulta `scripts/lib/session-registry.ts`
+ * (`listActiveSessions`) — se houver QUALQUER sessão ativa registrada nesta
+ * máquina, a varredura destrutiva é PULADA por padrão (mesmo em `--dry-run`
+ * seria só leitura, mas o padrão aqui é conservador: sem confirmação
+ * explícita, nem lista o que removeria) com um aviso explicando o motivo;
+ * `--confirm-shared` prossegue mesmo assim (uso em contexto onde o chamador já
+ * confirmou que é seguro — ex: as sessões ativas não têm worktree conflitante).
+ * Registro de sessão é **opt-in** (rollout novo, #5156) — nenhuma sessão
+ * registrada (caso comum hoje, antes do rollout completo nas duas skills) =
+ * comportamento IDÊNTICO ao pré-#5156, sem gate nenhum.
+ *
  * Uso:
- *   npx tsx scripts/cleanup-merged-worktrees.ts [--dry-run] [--root <repoRoot>]
+ *   npx tsx scripts/cleanup-merged-worktrees.ts [--dry-run] [--root <repoRoot>] [--confirm-shared]
  *
  * Lógica pura (testável sem git/gh reais):
  *   - parseWorktreePorcelain(output) — parseia `git worktree list --porcelain`.
@@ -38,6 +53,7 @@ import { spawnSync } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { listActiveSessions, type SessionRecord } from "./lib/session-registry.ts";
 
 export interface WorktreeEntry {
   /** Path absoluto do worktree (normalizado com `/`). */
@@ -165,17 +181,50 @@ function listWorktreesSafe(cwd: string): WorktreeEntry[] {
   }
 }
 
+/**
+ * Decide se a varredura destrutiva deve ser pulada por segurança (#5156 item
+ * 9) — pura, testável sem tocar `data/sessions/` real. Pula quando existe
+ * ≥1 sessão ativa registrada E `confirmShared` não foi passado. Registro
+ * vazio (opt-in ainda não adotado, ou nenhuma outra sessão rodando) nunca
+ * pula — comportamento idêntico ao pré-#5156.
+ */
+export function shouldSkipForSharedSession(activeSessions: SessionRecord[], confirmShared: boolean): boolean {
+  return activeSessions.length > 0 && !confirmShared;
+}
+
+function listActiveSessionsSafe(repoRoot: string): SessionRecord[] {
+  try {
+    return listActiveSessions(repoRoot);
+  } catch (e) {
+    console.warn(`[cleanup-merged-worktrees] listActiveSessions lançou (fail-soft, tratando como vazio): ${(e as Error).message}`);
+    return [];
+  }
+}
+
 function main(): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const args = parseArgs(process.argv.slice(2));
   const repoRoot = args.root ? resolve(String(args.root)) : ROOT;
   const dryRun = args["dry-run"] === "true";
+  const confirmShared = args["confirm-shared"] === "true";
   const worktreesDir = resolve(repoRoot, ".claude", "worktrees").replace(/\\/g, "/");
 
   // Fail-soft de topo: qualquer exceção não prevista aqui é logada como
   // warning e o script sai 0 — este step nunca deve travar o encerramento
   // da sessão overnight/develop que o invoca (#4335, requisito explícito).
   try {
+    const activeSessions = listActiveSessionsSafe(repoRoot);
+    if (shouldSkipForSharedSession(activeSessions, confirmShared)) {
+      const who = activeSessions.map((s) => `${s.kind}:${s.sessionId}`).join(", ");
+      console.warn(
+        `[cleanup-merged-worktrees] ${activeSessions.length} sessão(ões) ativa(s) detectada(s) em data/sessions/ (${who}) — ` +
+          "pulando a varredura de .claude/worktrees/ por segurança (#5156 item 9): um worktree ainda em uso por " +
+          "outra sessão poderia ser removido no meio do trabalho dela. Rode de novo com --confirm-shared se já " +
+          "confirmou que é seguro prosseguir mesmo assim.",
+      );
+      return;
+    }
+
     const all = listWorktreesSafe(repoRoot);
     const candidates = filterUnderWorktreesDir(all, worktreesDir);
 

@@ -164,6 +164,17 @@ export interface Plan {
    * tratado como "identidade desconhecida", nunca filtrado (fail-open).
    */
   machine_id?: string;
+  /**
+   * `session_id` do harness (#5156, campo ADITIVO, rollout ainda pendente —
+   * nenhuma skill grava isto hoje). Quando presente dos dois lados, é o
+   * discriminador MAIS ESPECÍFICO que `machine_id` sozinho: duas sessões
+   * `/diaria-develop` na MESMA máquina têm o mesmo `machine_id`, mas
+   * `session_id` diferentes — sem esse campo, `isForeignDevelopPlan` não
+   * consegue separar essas duas (item 11 do #5156, "StatusLine mistura
+   * sessões da mesma máquina"). Ausente (caso comum hoje) → filtro cai de
+   * volta pro `machine_id`, comportamento idêntico ao pré-#5156.
+   */
+  session_id?: string;
   [key: string]: unknown;
 }
 
@@ -655,11 +666,25 @@ export function isStaleDevelopPlan(
  *   - Ambos presentes e diferentes → `true` (estrangeiro, deve ser ignorado).
  *   - Ambos presentes e iguais → `false` (é a própria sessão desta máquina).
  *
+ * **#5156, `localSessionId` (opcional):** quando `plan.session_id` E
+ * `localSessionId` estão AMBOS presentes, esse par vira o discriminador
+ * PRIMÁRIO — mais específico que `machine_id`, que sozinho não distingue duas
+ * sessões develop rodando na MESMA máquina (item 11 do #5156). Se qualquer um
+ * dos dois faltar (caso comum hoje — nenhuma skill grava `session_id` em
+ * `plan.json` ainda), cai de volta pro filtro por `machine_id`, exatamente o
+ * comportamento pré-#5156.
+ *
  * @param plan             Plan.json já parseado.
  * @param localMachineId   Hostname desta máquina (`getMachineId()`).
- * @returns                `true` quando o plan é de outra máquina e deve ser pulado.
+ * @param localSessionId   `session_id` desta sessão, se disponível (#5156).
+ * @returns                `true` quando o plan é de outra sessão/máquina e deve ser pulado.
  */
-export function isForeignDevelopPlan(plan: Plan, localMachineId: string): boolean {
+export function isForeignDevelopPlan(plan: Plan, localMachineId: string, localSessionId?: string): boolean {
+  const planSessionId = typeof plan.session_id === "string" ? plan.session_id.trim() : "";
+  const localSession = (localSessionId ?? "").trim();
+  if (planSessionId !== "" && localSession !== "") {
+    return planSessionId !== localSession;
+  }
   const tag = typeof plan.machine_id === "string" ? plan.machine_id.trim() : "";
   if (tag === "") return false; // plan.json legado ou sem hostname na origem — fail-open
   const local = localMachineId.trim();
@@ -724,6 +749,7 @@ export function readTodayDevelopPlan(
   cwd: string,
   now: Date = new Date(),
   localMachineId: string = getMachineId(),
+  localSessionId?: string,
 ): DevelopPlanEntry | null {
   try {
     const developDir = join(cwd, "data", "develop");
@@ -743,7 +769,7 @@ export function readTodayDevelopPlan(
       if (!plan) continue;
       if (normalizeIssues(plan).length === 0) continue;
       if (isStaleDevelopPlan(planPath, now)) continue; // #2800/#2803: zumbi — não sequestra a barra
-      if (isForeignDevelopPlan(plan, localMachineId)) continue; // #3033: sessão de OUTRA máquina
+      if (isForeignDevelopPlan(plan, localMachineId, localSessionId)) continue; // #3033/#5156: sessão de OUTRA máquina/sessão
       return { id: dirName, plan };
     }
 

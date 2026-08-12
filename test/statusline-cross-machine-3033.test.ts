@@ -192,6 +192,45 @@ describe("#3033 Fator 2: isForeignDevelopPlan — filtro por machine_id", () => 
   });
 });
 
+// #5156 item 11: session_id como discriminador MAIS ESPECÍFICO que machine_id
+// — separa duas sessões develop na MESMA máquina, o que machine_id sozinho
+// não consegue. Rollout aditivo: sem session_id de um dos dois lados, cai de
+// volta pro comportamento pré-#5156 (machine_id).
+describe("#5156 item 11: isForeignDevelopPlan — session_id tem prioridade sobre machine_id quando ambos presentes", () => {
+  it("mesma máquina, session_id IGUAL → não é estrangeiro, mesmo que fosse duas sessões concorrentes", () => {
+    const plan: Plan = { issues: [{ status: "elegivel" }], machine_id: "maquina-a", session_id: "sess-1" };
+    assert.equal(isForeignDevelopPlan(plan, "maquina-a", "sess-1"), false);
+  });
+
+  it("mesma máquina, session_id DIFERENTE → estrangeiro (duas sessões develop concorrentes na mesma máquina, item 11)", () => {
+    const plan: Plan = { issues: [{ status: "elegivel" }], machine_id: "maquina-a", session_id: "sess-1" };
+    assert.equal(isForeignDevelopPlan(plan, "maquina-a", "sess-2"), true);
+  });
+
+  it("machine_id diferente mas session_id igual (ex: metadado inconsistente) → session_id vence, não é estrangeiro", () => {
+    const plan: Plan = { issues: [{ status: "elegivel" }], machine_id: "maquina-b", session_id: "sess-1" };
+    assert.equal(isForeignDevelopPlan(plan, "maquina-a", "sess-1"), false);
+  });
+
+  it("session_id no plan mas localSessionId ausente → cai pro filtro por machine_id (comportamento pré-#5156)", () => {
+    const plan: Plan = { issues: [{ status: "elegivel" }], machine_id: "maquina-a", session_id: "sess-1" };
+    assert.equal(isForeignDevelopPlan(plan, "maquina-a"), false);
+    assert.equal(isForeignDevelopPlan(plan, "maquina-b"), true);
+  });
+
+  it("localSessionId presente mas plan sem session_id (plan.json legado) → cai pro filtro por machine_id", () => {
+    const plan: Plan = { issues: [{ status: "elegivel" }], machine_id: "maquina-a" };
+    assert.equal(isForeignDevelopPlan(plan, "maquina-a", "sess-1"), false);
+    assert.equal(isForeignDevelopPlan(plan, "maquina-b", "sess-1"), true);
+  });
+
+  it("nenhum dos dois session_id presente → comportamento idêntico ao pré-#5156 (regressão)", () => {
+    const plan: Plan = { issues: [{ status: "elegivel" }], machine_id: "maquina-a" };
+    assert.equal(isForeignDevelopPlan(plan, "maquina-a"), false);
+    assert.equal(isForeignDevelopPlan(plan, "maquina-b"), true);
+  });
+});
+
 describe("#3033 Fator 2: readTodayDevelopPlan filtra plan.json de outra máquina (integração)", () => {
   it("plan.json com machine_id de OUTRA máquina → pulado, cai pro próximo candidato (ou null)", () => {
     const root = makeTmpDir("develop-foreign-single-");

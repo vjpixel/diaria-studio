@@ -57,17 +57,35 @@
  * independentemente, então uma divergência acidental quebra pelo menos um dos
  * dois test files.
  *
+ * **Campo `session_id` (#5156, retrocompat obrigatória).** Marker novo pode
+ * carregar `session_id` — o `session_id` do payload do hook, injetado
+ * automaticamente por `.claude/hooks/inject-session-id.mjs` (a skill nunca
+ * passa `--session-id` manualmente: ela não tem como saber o próprio
+ * `session_id`, ver docblock desse hook). Com `session_id` gravado,
+ * `.claude/hooks/block-askuserquestion-overnight-autonomous.mjs` e
+ * `.claude/hooks/pr-create-review.mjs` (`isOvernightRoundActive`) passam a
+ * comparar o `session_id` da chamada ATUAL contra o do marker — só tratam
+ * como "é esta rodada overnight" quando os dois batem, permitindo que uma
+ * sessão `/diaria-develop` rodando em paralelo na MESMA máquina não seja
+ * afetada pelo guard/desconto de effort do overnight (#5156 itens 1/2).
+ * **Marker SEM `session_id` (formato antigo — inclusive o de qualquer rodada
+ * overnight já em progresso no momento deste PR) preserva o comportamento
+ * PRÉ-#5156 nos dois hooks: "ativo nesta máquina" já basta, independente de
+ * quem chama** — nunca um requisito novo que quebraria uma rodada em voo.
+ *
  * Uso (chamado pela skill `/diaria-overnight` — Fase 0 passo 1, Fase 0 passo 8
  * e Fase 2 passo 0):
  *   npx tsx scripts/overnight-session-marker.ts --start
  *   npx tsx scripts/overnight-session-marker.ts --phase autonomous
  *   npx tsx scripts/overnight-session-marker.ts --end
+ * (`--session-id X` é sempre injetado automaticamente pelo hook acima — nunca
+ * precisa ser passado manualmente pela skill.)
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
-import { isMainModule } from "./lib/cli-args.ts";
+import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 
 /** Fases da rodada (#4450) — ver docblock do topo do arquivo. */
 export type OvernightPhase = "briefing" | "autonomous";
@@ -97,11 +115,18 @@ export function activeSessionPath(repoRoot: string, tag: string = machineTag()):
  * `--phase autonomous` explicitamente, imediatamente após este `--start`,
  * exatamente porque `--start` sempre reseta pra "briefing" — os dois passos
  * são um par deliberado, não uma coincidência de ordem.
+ *
+ * `sessionId` (#5156, opcional) grava o campo `session_id` no marker quando
+ * fornecido — omitido, o marker sai no formato antigo (sem o campo), que os
+ * dois hooks consumidores tratam como "comportamento pré-#5156" (ver docblock
+ * do topo do arquivo).
  */
-export function startSession(repoRoot: string, startedAtIso: string): void {
+export function startSession(repoRoot: string, startedAtIso: string, sessionId?: string): void {
   const path = activeSessionPath(repoRoot);
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify({ started_at: startedAtIso, phase: "briefing" }), "utf8");
+  const marker: Record<string, unknown> = { started_at: startedAtIso, phase: "briefing" };
+  if (sessionId) marker.session_id = sessionId;
+  writeFileSync(path, JSON.stringify(marker), "utf8");
 }
 
 /** Remove o marker de sessão ativa. Idempotente — no-op se já ausente. */
@@ -117,13 +142,21 @@ export function endSession(repoRoot: string): void {
  * rodada, o marker já foi removido por `--end`, ou o JSON está corrompido no
  * disco — falha graciosa, o caller (CLI abaixo) decide como reportar (aviso +
  * exit code, nunca stack trace). Retorna `true` em sucesso.
+ *
+ * `sessionId` (#5156, opcional) grava/atualiza `session_id` no marker junto
+ * da mudança de fase — útil quando `--start` rodou sem a flag (ex: resume de
+ * uma rodada iniciada antes do #5156) mas o `session_id` já está disponível
+ * agora. Omitido, preserva o `session_id` já presente (se houver) intocado —
+ * mesmo espírito de "preserva campos que não conhece".
  */
-export function setPhase(repoRoot: string, phase: OvernightPhase): boolean {
+export function setPhase(repoRoot: string, phase: OvernightPhase, sessionId?: string): boolean {
   const path = activeSessionPath(repoRoot);
   if (!existsSync(path)) return false;
   try {
     const current = JSON.parse(readFileSync(path, "utf8"));
-    writeFileSync(path, JSON.stringify({ ...current, phase }), "utf8");
+    const updated = { ...current, phase };
+    if (sessionId) updated.session_id = sessionId;
+    writeFileSync(path, JSON.stringify(updated), "utf8");
     return true;
   } catch {
     return false;
@@ -132,19 +165,26 @@ export function setPhase(repoRoot: string, phase: OvernightPhase): boolean {
 
 if (isMainModule(import.meta.url)) {
   const repoRoot = process.cwd();
-  const arg = process.argv[2];
+  const argv = process.argv.slice(2);
+  const arg = argv[0];
+  // #5156: --session-id normalmente chega injetado por .claude/hooks/inject-session-id.mjs
+  // (a skill nunca sabe o próprio session_id pra passar manualmente) — parseado via
+  // parseArgs pra não depender de posição fixa relativa a --phase <valor>.
+  const sessionId = parseArgs(argv).values["session-id"];
   if (arg === "--start") {
-    startSession(repoRoot, new Date().toISOString());
-    process.stdout.write(`overnight session marker: started, phase=briefing (${activeSessionPath(repoRoot)})\n`);
+    startSession(repoRoot, new Date().toISOString(), sessionId);
+    process.stdout.write(
+      `overnight session marker: started, phase=briefing${sessionId ? `, session_id=${sessionId}` : ""} (${activeSessionPath(repoRoot)})\n`,
+    );
   } else if (arg === "--end") {
     endSession(repoRoot);
     process.stdout.write(`overnight session marker: ended (${activeSessionPath(repoRoot)})\n`);
   } else if (arg === "--phase") {
-    const phase = process.argv[3];
+    const phase = argv[1];
     if (phase !== "briefing" && phase !== "autonomous") {
       process.stderr.write("uso: npx tsx scripts/overnight-session-marker.ts --phase <briefing|autonomous>\n");
       process.exitCode = 1;
-    } else if (setPhase(repoRoot, phase)) {
+    } else if (setPhase(repoRoot, phase, sessionId)) {
       process.stdout.write(`overnight session marker: phase=${phase} (${activeSessionPath(repoRoot)})\n`);
     } else {
       process.stderr.write(

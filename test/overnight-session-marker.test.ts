@@ -214,3 +214,72 @@ describe("setPhase (#4450)", () => {
     assert.equal(setPhase(root, "autonomous"), false);
   });
 });
+
+// #5156: campo `session_id` — opcional, injetado por
+// .claude/hooks/inject-session-id.mjs (a skill nunca sabe o próprio
+// session_id). Ausência preserva o formato antigo (retrocompat com qualquer
+// rodada já em progresso no momento em que este campo foi introduzido).
+describe("session_id (#5156)", () => {
+  const roots = [];
+
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+
+  function freshRoot() {
+    const root = join(
+      tmpdir(),
+      `overnight-session-marker-sessionid-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    roots.push(root);
+    return root;
+  }
+
+  it("startSession sem sessionId → marker NÃO carrega o campo (formato antigo preservado)", () => {
+    const root = freshRoot();
+    startSession(root, "2026-08-12T02:00:00.000Z");
+
+    const content = JSON.parse(readFileSync(activeSessionPath(root), "utf8"));
+    assert.equal("session_id" in content, false);
+  });
+
+  it("startSession com sessionId → grava session_id no marker", () => {
+    const root = freshRoot();
+    startSession(root, "2026-08-12T02:00:00.000Z", "sessao-overnight-abc");
+
+    const content = JSON.parse(readFileSync(activeSessionPath(root), "utf8"));
+    assert.equal(content.session_id, "sessao-overnight-abc");
+    assert.equal(content.phase, "briefing");
+  });
+
+  it("setPhase sem sessionId preserva o session_id já presente, intocado", () => {
+    const root = freshRoot();
+    startSession(root, "2026-08-12T02:00:00.000Z", "sessao-overnight-abc");
+
+    setPhase(root, "autonomous");
+
+    const content = JSON.parse(readFileSync(activeSessionPath(root), "utf8"));
+    assert.equal(content.session_id, "sessao-overnight-abc");
+    assert.equal(content.phase, "autonomous");
+  });
+
+  it("setPhase com sessionId grava/atualiza o campo (ex: resume que só sabe o session_id agora)", () => {
+    const root = freshRoot();
+    startSession(root, "2026-08-12T02:00:00.000Z"); // sem session_id, formato antigo
+
+    setPhase(root, "autonomous", "sessao-resume-xyz");
+
+    const content = JSON.parse(readFileSync(activeSessionPath(root), "utf8"));
+    assert.equal(content.session_id, "sessao-resume-xyz");
+    assert.equal(content.phase, "autonomous");
+  });
+
+  it("startSession idempotente (2ª chamada) sem sessionId apaga um session_id gravado antes (mesmo contrato de overwrite total já documentado)", () => {
+    const root = freshRoot();
+    startSession(root, "2026-08-12T02:00:00.000Z", "sessao-overnight-abc");
+    startSession(root, "2026-08-12T05:00:00.000Z"); // resume sem re-passar a flag
+
+    const content = JSON.parse(readFileSync(activeSessionPath(root), "utf8"));
+    assert.equal("session_id" in content, false);
+  });
+});

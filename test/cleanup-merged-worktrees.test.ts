@@ -12,7 +12,9 @@ import {
   parseWorktreePorcelain,
   filterUnderWorktreesDir,
   selectMergedForRemoval,
+  shouldSkipForSharedSession,
 } from "../scripts/cleanup-merged-worktrees.ts";
+import type { SessionRecord } from "../scripts/lib/session-registry.ts";
 
 // ── parseWorktreePorcelain ──
 
@@ -127,4 +129,31 @@ test("selectMergedForRemoval — nenhum mergeado -> array vazio (fail-soft: nunc
 
 test("selectMergedForRemoval — lista vazia de entrada -> array vazio", () => {
   assert.deepEqual(selectMergedForRemoval([], () => true), []);
+});
+
+// ── shouldSkipForSharedSession (#5156 item 9) ──
+
+const fakeSession: SessionRecord = {
+  kind: "overnight",
+  machineTag: "host-a",
+  sessionId: "sess-1",
+  startedAt: "2026-08-12T02:00:00.000Z",
+  lastHeartbeat: "2026-08-12T02:00:00.000Z",
+};
+
+test("shouldSkipForSharedSession — nenhuma sessão ativa registrada → nunca pula (comportamento pré-#5156)", () => {
+  assert.equal(shouldSkipForSharedSession([], false), false);
+  assert.equal(shouldSkipForSharedSession([], true), false);
+});
+
+test("shouldSkipForSharedSession — sessão ativa sem --confirm-shared → pula", () => {
+  assert.equal(shouldSkipForSharedSession([fakeSession], false), true);
+});
+
+test("shouldSkipForSharedSession — sessão ativa COM --confirm-shared → prossegue", () => {
+  assert.equal(shouldSkipForSharedSession([fakeSession], true), false);
+});
+
+test("shouldSkipForSharedSession — múltiplas sessões ativas sem confirmação → pula", () => {
+  assert.equal(shouldSkipForSharedSession([fakeSession, { ...fakeSession, sessionId: "sess-2" }], false), true);
 });
