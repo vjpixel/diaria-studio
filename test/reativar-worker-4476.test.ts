@@ -102,6 +102,9 @@ describe("activateSubscription — DELETE + CREATE, não mais reactivate_existin
         assert.deepEqual(body, {
           email: "a@b.com",
           send_welcome_email: false,
+          // #5095: sem este campo, o DELETE+POST acima rebaixaria o assinante
+          // pra `pending` assim que o double opt-in da publicação for ligado.
+          double_opt_override: "off",
           utm_source: BREVO_DIARIA_REATIVAR_CLIQUE_UTM.source,
           utm_medium: BREVO_DIARIA_REATIVAR_CLIQUE_UTM.medium,
           utm_campaign: BREVO_DIARIA_REATIVAR_CLIQUE_UTM.campaign,
@@ -118,6 +121,29 @@ describe("activateSubscription — DELETE + CREATE, não mais reactivate_existin
       ["GET", "DELETE", "POST"],
     );
     assert.equal(calls[1].url, "https://api.beehiiv.com/v2/publications/pub_1/subscriptions/sub_old");
+  });
+
+  /**
+   * #5095 — regressão dedicada. O teste acima cobre o campo dentro de um
+   * `deepEqual` do payload inteiro, o que é fácil de afrouxar sem querer num
+   * refactor de atribuição (foi o que aconteceu no #4530, quando o payload
+   * cresceu). Este isola a única asserção cuja ausência causa perda silenciosa
+   * de assinante: recriar sem `double_opt_override` depois que o double opt-in
+   * da publicação estiver ligado deixa o contato em `pending`, e a Beehiiv não
+   * expõe promoção programática pending→active.
+   */
+  it("#5095: a recriação SEMPRE manda double_opt_override=off, mesmo sem registro anterior", async () => {
+    let postBody: Record<string, unknown> | undefined;
+    const { fetchImpl } = routedFetch({
+      get: () => jsonRes(404, {}),
+      post: (body) => {
+        postBody = body;
+        return jsonRes(201, { data: { id: "sub_new", status: "active" } });
+      },
+    });
+    const env: Env = { BEEHIIV_API_KEY: "key123", BEEHIIV_PUBLICATION_ID: "pub_1" };
+    await activateSubscription(env, "novo@example.com", fetchImpl);
+    assert.equal(postBody?.double_opt_override, "off");
   });
 
   it("já active (idempotência — clique 2x, ou via de score já promoveu) → retorna active sem DELETE/POST", async () => {

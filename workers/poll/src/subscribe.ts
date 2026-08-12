@@ -13,10 +13,27 @@
  * (a key NUNCA vai pro cliente, ao contrário de um form embutido/iframe que
  * exporia a publicação), (b) deixa o worker aplicar anti-abuso próprio
  * (honeypot + rate-limit + validação de e-mail) ANTES de tocar a Beehiiv, e
- * (c) respeita o double opt-in configurado na publicação (não passamos
- * `double_opt_override` — se a publicação exige confirmação, a Beehiiv manda o
- * e-mail de confirmação; a caixinha marcada é o consentimento LGPD explícito, a
- * confirmação da Beehiiv é a 2ª camada).
+ * (c) ISENTA este fluxo do double opt-in da publicação (`double_opt_override:
+ * "off"`) — ver bloco abaixo.
+ *
+ * DOUBLE OPT-IN — por que este caminho é isento (#5095, decisão do editor
+ * 260812). Até aqui o worker OMITIA `double_opt_override` de propósito: a
+ * publicação tinha double opt-in DESLIGADO, então omitir e passar davam no
+ * mesmo, e a omissão deixava a porta aberta pra 2ª camada de confirmação.
+ * Isso mudou: o editor vai LIGAR o double opt-in na publicação pra barrar
+ * cadastro externo de origem duvidosa (co-registro SparkLoop do parceiro
+ * `Techzip Newsletter`, ~18 contatos B2B anglófonos numa lista pt-BR). Sem
+ * override, a mesma trava cairia sobre ESTE fluxo, onde ela não faz sentido:
+ * o visitante acabou de digitar o e-mail e marcar a caixinha na nossa própria
+ * página. A caixinha marcada CONTINUA sendo o consentimento LGPD explícito —
+ * é ela que sustenta a base legal, não a confirmação da Beehiiv, que sempre
+ * foi 2ª camada opcional. Trocamos essa 2ª camada por entrada direta em
+ * `active` só onde a 1ª camada é nossa e auditável.
+ *
+ * O que NÃO muda: a promoção pending→confirmed do gate (#4121, `web-gate.ts`)
+ * continua no lugar. Ela não vira código morto — a Beehiiv ainda pode devolver
+ * `validating` em vez de `active`, e o gate segue tratando "não-active" como
+ * sessão pending.
  *
  * SEGREDO AUSENTE (documentado no PR): o worker `poll` NÃO tem hoje os secrets
  * `BEEHIIV_API_KEY` / `BEEHIIV_PUBLICATION_ID` (só `POLL_SECRET`/`ADMIN_SECRET`,
@@ -364,6 +381,10 @@ export async function subscribeToBeehiiv(
     email: input.email,
     reactivate_existing: false,
     send_welcome_email: true,
+    // #5095: isenta ESTE fluxo do double opt-in da publicação — o consentimento
+    // LGPD veio da caixinha marcada nesta página. Ver bloco DOUBLE OPT-IN no
+    // topo do arquivo.
+    double_opt_override: "off",
     utm_source: utm.source,
     utm_medium: utm.medium,
     utm_campaign: utm.campaign,

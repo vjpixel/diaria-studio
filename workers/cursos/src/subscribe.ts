@@ -127,6 +127,12 @@ export async function subscribeToBeehiiv(
     email: input.email,
     reactivate_existing: false,
     send_welcome_email: true,
+    // #5095: mesma isenção do gate do "É IA?" (`workers/poll/src/subscribe.ts`,
+    // onde está o rationale completo). O double opt-in da publicação existe pra
+    // barrar cadastro externo de origem duvidosa; aqui o visitante digitou o
+    // e-mail e marcou a caixinha no NOSSO gate, então a 1ª camada de
+    // consentimento já é auditável e a 2ª só adicionaria fricção.
+    double_opt_override: "off",
     utm_source: CURSOS_UTM_SOURCE,
     utm_medium: CURSOS_UTM_MEDIUM,
     utm_campaign: CURSOS_UTM_CAMPAIGN,
