@@ -220,7 +220,10 @@ config certa, HTML errado. Confirmado ao vivo em 12/ago/2026, 3 posts:
 
 (o 3º slug acima também ilustra o Fato do #5101 item 3 — título NFD virou
 slug quebrado, "microsoft-lan-a-ia-pr-pria" em vez de
-"microsoft-lanca-ia-propria"; ver PR que fecha o item 3 pra prevenção.)
+"microsoft-lanca-ia-propria"; ver PR que implementa 3a — normalização NFC do
+título na fronteira de escrita — pra prevenção. **3a não fecha o item 3
+inteiro**: o critério de pronto da issue também exige 3c, lint no Stage 4 que
+rejeita título não-NFC, que este PR não implementa — ver checklist do #5101.)
 
 O atributo `lang` do `<html>` renderizado é decidido pelo tema/template da
 página web da Beehiiv, código que não vive neste repo e não é editável via

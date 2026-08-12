@@ -397,6 +397,71 @@ describe("#5101: título normalizado pra NFC", () => {
     const destaques = parseDestaques(md);
     assert.equal(destaques[0].title, nfdTitle.normalize("NFC"));
   });
+
+  // Achado crítico do fleet review pré-merge: `body`/`why` são extraídos na
+  // MESMA função (`parseDestaques`) e alimentam `buildMetaDescriptionSuggestion`
+  // (meta-description.ts, item 2 deste PR) — sem normalizar `body`/`why`
+  // também, a feature nova podia produzir sugestão de meta description em
+  // NFD, o EXATO defeito que a normalização de título existe pra eliminar.
+
+  it("body em NFD (acento decomposto) sai normalizado em NFC", () => {
+    const nfdBody = "A nova regra de produção de IA muda o setor.".normalize("NFD");
+    assert.notEqual(nfdBody, nfdBody.normalize("NFC")); // pré-condição: fixture é NFD
+
+    const md = [
+      "DESTAQUE 1 | REGULACAO",
+      "Título",
+      "https://example.com/d1",
+      "",
+      nfdBody,
+      "",
+      "Por que isso importa:",
+      "Impacto.",
+    ].join("\n");
+
+    const destaques = parseDestaques(md);
+    assert.equal(destaques[0].body, nfdBody.normalize("NFC"));
+    assert.equal(destaques[0].body, destaques[0].body.normalize("NFC"));
+  });
+
+  it("body já em NFC (caso comum) passa inalterado", () => {
+    const nfcBody = "A nova regra de produção de IA muda o setor.";
+    assert.equal(nfcBody, nfcBody.normalize("NFC")); // pré-condição: já é NFC
+
+    const md = [
+      "DESTAQUE 1 | REGULACAO",
+      "Título",
+      "https://example.com/d1",
+      "",
+      nfcBody,
+      "",
+      "Por que isso importa:",
+      "Impacto.",
+    ].join("\n");
+
+    const destaques = parseDestaques(md);
+    assert.equal(destaques[0].body, nfcBody);
+  });
+
+  it("why em NFD (acento decomposto) também sai normalizado em NFC", () => {
+    const nfdWhy = "Isso afeta a produção e a educação no Brasil.".normalize("NFD");
+    assert.notEqual(nfdWhy, nfdWhy.normalize("NFC")); // pré-condição: fixture é NFD
+
+    const md = [
+      "DESTAQUE 1 | REGULACAO",
+      "Título",
+      "https://example.com/d1",
+      "",
+      "Corpo.",
+      "",
+      "Por que isso importa:",
+      nfdWhy,
+    ].join("\n");
+
+    const destaques = parseDestaques(md);
+    assert.equal(destaques[0].why, nfdWhy.normalize("NFC"));
+    assert.equal(destaques[0].why, destaques[0].why.normalize("NFC"));
+  });
 });
 
 // ── #2316: 2-destaque support ────────────────────────────────────────────────

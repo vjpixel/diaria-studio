@@ -139,7 +139,7 @@ export function parseDestaques(raw: string): Destaque[] {
     // NFC passa inalterada), então isto é seguro rodar sempre, não só quando
     // a entrada é suspeita de vir de fonte NFD. Não corrige os 43 slugs já
     // publicados (mudar slug de post já publicado quebra links existentes —
-    // fora de escopo, ver #5101 corpo item 3.1) — só previne recorrência.
+    // fora de escopo, ver #5101 corpo item 3a) — só previne recorrência.
     const title = (titleInlineLink?.title ?? titleRaw).normalize("NFC");
 
     // Find "Por que isso importa:" marker.
@@ -258,7 +258,13 @@ export function parseDestaques(raw: string): Destaque[] {
       bodyEnd = hubLinkIdx;
     }
 
-    const body = lines.slice(bodyStart, bodyEnd).join('\n').trim();
+    // #5101 (fleet review pré-merge, achado crítico): mesma normalização NFC
+    // do título acima (linha ~143) — sem isto, `body` (consumido direto por
+    // `buildMetaDescriptionSuggestion` em meta-description.ts, item 2 deste
+    // PR) podia vazar em NFD pro campo de meta description sugerida, o EXATO
+    // defeito que a normalização de título existe pra eliminar. Idempotente,
+    // mesmo raciocínio.
+    const body = lines.slice(bodyStart, bodyEnd).join('\n').trim().normalize("NFC");
 
     // Why end: até URL legacy (se existe e está depois do whyIdx) OU fim.
     let whyEnd = (urlIdx !== -1 && !isNewFormat && urlIdx > whyIdx) ? urlIdx : lines.length;
@@ -272,7 +278,9 @@ export function parseDestaques(raw: string): Destaque[] {
     if (hubLinkIdx !== -1 && hubLinkIdx > whyIdx && hubLinkIdx < whyEnd) {
       whyEnd = hubLinkIdx;
     }
-    const why = whyIdx !== -1 ? lines.slice(whyIdx + 1, whyEnd).join('\n').trim() : '';
+    // #5101: mesma normalização NFC de `body` acima — `why` é texto livre com
+    // a mesma origem/risco de acento decomposto.
+    const why = whyIdx !== -1 ? lines.slice(whyIdx + 1, whyEnd).join('\n').trim().normalize("NFC") : '';
 
     const url = isInlineFormat
       ? inlineUrl!

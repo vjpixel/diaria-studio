@@ -135,9 +135,9 @@ export function buildTitlesCache(
 
   for (const post of posts) {
     const slug = post.slug ?? (post.web_url ? slugFromUrl(post.web_url) : null);
-    // #5101 item 3.2: normaliza pra NFC — o título vem direto do cache da API
+    // #5101 item 3a: normaliza pra NFC — o título vem direto do cache da API
     // da Beehiiv (`post.title`/`post.subject`) e pode chegar em NFD (mesma
-    // causa-raiz do item 3.1: acento como base+diacrítico separado em vez de
+    // causa-raiz do item 3a: acento como base+diacrítico separado em vez de
     // codepoint composto). Não conserta o SLUG (já baked, imutável sem quebrar
     // link publicado — fora de escopo), mas garante que o TÍTULO exibido pelo
     // Worker `arquivo` (`render-archive.ts`, via este cache) renderize com

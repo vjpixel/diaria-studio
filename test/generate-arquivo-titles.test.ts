@@ -106,9 +106,9 @@ describe("buildTitlesCache (#4265 item 1)", () => {
     assert.match(warnings[0], /sem publish_date/);
   });
 
-  it("#5101 item 3.2: título em NFD (acento decomposto) sai normalizado em NFC no cache", () => {
+  it("#5101 item 3a: título em NFD (acento decomposto) sai normalizado em NFC no cache", () => {
     // "Educação" com "ç" e "ã" DECOMPOSTOS (base + diacrítico combinante
-    // separado) — mesma causa-raiz do slug quebrado do #5101 item 3.1,
+    // separado) — mesma causa-raiz do slug quebrado do #5101 item 3a,
     // mas aqui do lado do TÍTULO exibido pelo Worker `arquivo` (não do slug,
     // que já está imutável uma vez publicado).
     const nfdTitle = "Nova regra de educa̧ão de IA".normalize("NFD");
@@ -125,7 +125,7 @@ describe("buildTitlesCache (#4265 item 1)", () => {
     assert.equal(cache["nova-regra-educacao-ia"]?.title, nfdTitle.normalize("NFC"));
   });
 
-  it("#5101 item 3.2: título já em NFC (caso comum) passa inalterado", () => {
+  it("#5101 item 3a: título já em NFC (caso comum) passa inalterado", () => {
     const nfcTitle = "Nova regra de educação de IA";
     assert.equal(nfcTitle, nfcTitle.normalize("NFC")); // pré-condição: já é NFC
 
@@ -138,6 +138,21 @@ describe("buildTitlesCache (#4265 item 1)", () => {
     ];
     const { cache } = buildTitlesCache(posts);
     assert.equal(cache["nova-regra-educacao-ia-2"]?.title, nfcTitle);
+  });
+
+  it("#5101 item 3a: fallback subject (título ausente) em NFD também sai normalizado em NFC — mesmo caminho do title, não coberto antes (achado do pr-test-analyzer)", () => {
+    const nfdSubject = "Nova regra de educação de IA via subject".normalize("NFD");
+    assert.notEqual(nfdSubject, nfdSubject.normalize("NFC")); // pré-condição: fixture é NFD
+
+    const posts: RawCachedPost[] = [
+      {
+        slug: "nova-regra-educacao-ia-subject",
+        subject: nfdSubject,
+        publish_date: Date.UTC(2026, 6, 28, 18, 0, 0) / 1000,
+      },
+    ];
+    const { cache } = buildTitlesCache(posts);
+    assert.equal(cache["nova-regra-educacao-ia-subject"]?.title, nfdSubject.normalize("NFC"));
   });
 
   it("processa uma mistura de posts válidos e inválidos sem lançar — só os válidos entram no cache", () => {
