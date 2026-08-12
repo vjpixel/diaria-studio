@@ -33,7 +33,7 @@ Não substitui `test/curadoria-sitemap-robots.test.ts`/`test/worker-robots-txt-g
 
 Fingerprint do conjunto de hosts pendentes (`data/robots-txt-drift-check/state.json`, mesmo padrão de `hub-drift-check.ts`/`worker-drift-check.ts`/`apoios-diff-alarm.ts`) — inclui host + status + motivo(s) de cada host problemático:
 
-- o **mesmo** drift persistindo entre execuções (a cada 6h) não gera um novo e-mail a cada rodada.
+- o **mesmo** drift persistindo entre execuções (diária, 10:15 — #5113) não gera um novo e-mail a cada rodada.
 - um **host adicional** com drift, ou um **motivo novo** no mesmo host, muda o fingerprint — alarma de novo.
 - o drift sendo **resolvido** (a plataforma reverte a injeção, ou o desligamento do robots.txt gerenciado do item 4 da #4910 acontece) tira esse host do conjunto pendente — o cursor "re-arma".
 - o **mesmo host voltando a ter drift** depois gera um fingerprint novo — alarma de novo mesmo partindo de um cursor já re-armado.
@@ -51,7 +51,7 @@ Fingerprint do conjunto de hosts pendentes (`data/robots-txt-drift-check/state.j
 
 1. Confira se o bloco gerenciado da Cloudflare mudou de shape (a plataforma pode reintroduzir um bot que hoje não bloqueia). Consulte `scripts/lib/shared/robots-txt.ts` pro comportamento completo do módulo próprio deste repo (que continua correto — o drift é sempre de PLATAFORMA, não deste código).
 2. Se um bot de RECUPERAÇÃO estiver bloqueado (`blockedRecoveryBots` não-vazio), é o caso mais grave — o objetivo de citação do #4546/#4558 está comprometido. Escalar imediatamente, não esperar o próximo ciclo.
-3. Depois de confirmado que a plataforma reverteu (ou que o desligamento do robots.txt gerenciado do item 4 da #4910 foi feito), a próxima execução da task (até 6h depois) já reconhece o host como `ok` — não é preciso limpar estado manualmente. Pra confirmar antes, rode `npx tsx scripts/robots-txt-drift-check.ts --dry-run`.
+3. Depois de confirmado que a plataforma reverteu (ou que o desligamento do robots.txt gerenciado do item 4 da #4910 foi feito), a próxima execução da task (até 24h depois) já reconhece o host como `ok` — não é preciso limpar estado manualmente. Pra confirmar antes, rode `npx tsx scripts/robots-txt-drift-check.ts --dry-run`.
 
 ## Setup (ação local one-time do editor — NÃO feito nesta unidade)
 
@@ -63,7 +63,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-robots-txt-dri
 
 Linux/systemd (molde da épica #4798): `npx tsx scripts/setup-systemd-timers.ts --task Diaria-Robots-Txt-Drift-Check` seguido de `systemctl --user daemon-reload && systemctl --user enable --now diaria-robots-txt-drift-check.timer`.
 
-Isso registra a task `Diaria-Robots-Txt-Drift-Check` (a cada 6h). Idempotente — re-executar atualiza a task. Remover (Windows): mesmo comando com `-Unregister`.
+Isso registra a task `Diaria-Robots-Txt-Drift-Check` (diária, 10:15 — #5113, mudou de "a cada 6h": o conserto é ação manual de dashboard do editor de manhã). Idempotente — re-executar atualiza a task. Remover (Windows): mesmo comando com `-Unregister`.
 
 **Nenhuma execução ao vivo desta checagem rodou nesta unidade** (worktree isolado, sem acesso ao Task Scheduler real nem a `data/.credentials.json` reais, e nenhum host de produção foi batido em teste por decisão explícita do dispatch) — validado só via testes da lógica pura + fetch mockado (`test/robots-txt-drift-check.test.ts`, `test/robots-txt-drift-check-script.test.ts`), mesma disciplina do #4320/#4382/#4490/#4534/#4723/#4750.
 
