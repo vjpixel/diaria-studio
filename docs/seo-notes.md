@@ -322,8 +322,21 @@ sc-domain:diar.ia.br → 2 sitemaps
   arquivo.diar.ia.br/sitemap.xml  submetido 2026-08-11  0 erros
 ```
 
-`cursos` e `livros` ausentes; o `arquivo` que estava lá entrou em **11/ago**,
-pela mão do trabalho de Bing WMT (Fato 3 acima, #4909) — **não** pelo script.
+`cursos` e `livros` ausentes; o `arquivo` que estava lá entrou em **11/ago
+04:09 UTC** — **não** pelo script (que submete os 3 de uma vez; se tivesse
+rodado, os outros 2 estariam lá).
+
+**O mecanismo exato dessa entrada é INFERIDO, não confirmado.** A hipótese
+plausível é auto-descoberta (ou submissão manual na UI) logo depois que a
+propriedade de prefixo `https://arquivo.diar.ia.br/` foi verificada no GSC,
+umas 3h antes na mesma madrugada — ver o parágrafo de propriedades abaixo.
+**Não atribuir ao `SubmitFeed` do Bing WMT** (Fato 3 acima): Bing Webmaster
+Tools e Google Search Console são plataformas separadas e sem integração —
+submeter sitemap num não cria entrada no outro. As duas coisas aconteceram na
+mesma sessão de trabalho do #4909, o que torna fácil confundir coincidência
+temporal com causa (esta nota errou nisso na 1ª redação, achado do review da
+PR #5147).
+
 Causa provável do passo nunca ter rodado: o próprio docstring de
 `gsc-submit-sitemaps.ts` avisa que ele falha com 403 até o editor reaprovar o
 OAuth com o scope `webmasters` de escrita (#4546 comentário 03/ago).
