@@ -24,11 +24,17 @@ mecanismo).
 (`doppler login`) pronta pra rodar comandos Doppler aqui dentro sem precisar
 de `doppler setup` interativo.
 
-`npm run sync-env` roda `doppler secrets download --no-file --format env >
-.env` — baixa o snapshot atual do vault e sobrescreve `.env` local. Não é
-push automático: o vault continua sendo editado manualmente no dashboard
-(https://dashboard.doppler.com) ou via `doppler secrets set NOME=valor`
-quando uma credencial for gerada/rotacionada — `sync-env` só puxa.
+`npm run sync-env` (`scripts/sync-env.ts`) baixa o snapshot atual do vault
+(`doppler secrets download --no-file --format env`) e escreve em `.env`
+**atomicamente** (tmp + rename) — uma falha do Doppler (sessão expirada,
+rede, projeto/config errado) nunca trunca um `.env` que já funcionava.
+Achado do code-review do PR #5150: a primeira versão usava `> .env` puro,
+que zera o arquivo antes do comando rodar, independente do exit code;
+reproduzido ao vivo e coberto por regressão em `test/sync-env.test.ts`.
+Não é push automático: o vault continua sendo editado manualmente no
+dashboard (https://dashboard.doppler.com) ou via `doppler secrets set
+NOME=valor` quando uma credencial for gerada/rotacionada — `sync-env` só
+puxa.
 
 **Precedência preservada:** `scripts/lib/env-loader.ts` (`loadProjectEnv`)
 carrega `.env` com `override: false` — uma var já presente em `process.env`

@@ -23,5 +23,7 @@
   // real do systemd (`systemd-analyze calendar`) pra validar o OnCalendar=
   // gerado -- binário do sistema (Linux), nunca uma dependência npm; o teste
   // já faz skip gracioso se ausente (CI/macOS/Windows).
-  "ignoreBinaries": ["systemd-analyze"]
+  // scripts/sync-env.ts (#5149) invoca o CLI `doppler` via execFileSync --
+  // binário externo (secrets manager), não uma dependência npm.
+  "ignoreBinaries": ["systemd-analyze", "doppler"]
 }
