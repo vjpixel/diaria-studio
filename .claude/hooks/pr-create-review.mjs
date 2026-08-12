@@ -150,11 +150,24 @@ function activeSessionPath(repoRoot, tag) {
  * justificativa é a mesma e independe do default: não afirmar "rodada ativa"
  * sobre marker ausente/expirado/corrompido. Na dúvida, o caro — nunca conceder
  * o desconto em cima de estado que não se conseguiu determinar.
+ *
+ * **#5156, `callerSessionId` (opcional):** com o marker carregando
+ * `session_id` (rollout novo — ver `scripts/overnight-session-marker.ts`),
+ * este guard só conta como "rodada ativa" quando `callerSessionId` (o
+ * `session_id` da chamada `gh pr create` que disparou este hook) bate com
+ * `marker.session_id` — a PR pertence à MESMA sessão overnight, não a uma
+ * sessão `/diaria-develop` rodando em paralelo na mesma máquina. Marker SEM
+ * `session_id` (formato antigo, inclusive rodada já em progresso no momento
+ * em que este campo foi introduzido) **preserva o comportamento pré-#5156**:
+ * "ativo nesta máquina" já basta, independente de `callerSessionId` — nunca
+ * degradar o desconto de effort de uma rodada em voo por causa de um marker
+ * que ela não sabe que precisa reescrever.
  */
 export function isOvernightRoundActive(
   repoRoot = resolveMainRepoRoot(),
   machineTag = localMachineTag(),
   now = Date.now(),
+  callerSessionId = undefined,
 ) {
   try {
     const markerPath = activeSessionPath(repoRoot, machineTag);
@@ -163,7 +176,9 @@ export function isOvernightRoundActive(
     const startedAtMs = Date.parse(marker.started_at);
     if (!Number.isFinite(startedAtMs)) return false;
     const ageMs = now - startedAtMs;
-    return ageMs >= 0 && ageMs <= MAX_SESSION_AGE_MS;
+    if (!(ageMs >= 0 && ageMs <= MAX_SESSION_AGE_MS)) return false;
+    if (marker.session_id === undefined || marker.session_id === null) return true;
+    return callerSessionId === marker.session_id;
   } catch {
     return false;
   }
@@ -308,7 +323,19 @@ function getDiffLineCount(num, execFn) {
  * #4252: "nada hoje registra qual effort foi resolvido por PR nem quantos
  * agentes rodaram".
  */
-export function resolveEffort(prUrl, execFn = execFileSync, checkRoundActive = isOvernightRoundActive) {
+export function resolveEffort(
+  prUrl,
+  execFn = execFileSync,
+  // #5156: o default NÃO é `isOvernightRoundActive` direto — chamá-lo como
+  // `checkRoundActive(sessionId)` passaria `sessionId` na posição de
+  // `repoRoot` (1º parâmetro de `isOvernightRoundActive`), corrompendo a
+  // resolução do path do marker. Este wrapper resolve `repoRoot`/`machineTag`/
+  // `now` pelos defaults reais de `isOvernightRoundActive` (via `undefined`
+  // explícito, que aciona o default de cada parâmetro) e só repassa
+  // `callerSessionId` na posição correta (4º parâmetro).
+  checkRoundActive = (callerSessionId) => isOvernightRoundActive(undefined, undefined, undefined, callerSessionId),
+  sessionId = undefined,
+) {
   try {
     const num = prUrl.match(/\/pull\/(\d+)/)?.[1];
     // fail-safe: sem número de PR nem dá pra chamar `gh` — estado indeterminado,
@@ -320,7 +347,14 @@ export function resolveEffort(prUrl, execFn = execFileSync, checkRoundActive = i
       { encoding: "utf8", timeout: 10_000 },
     ).trim();
     if (branch.startsWith("overnight/")) return { effort: "low", warning: null, reason: "branch_overnight" };
-    if (checkRoundActive()) {
+    // #5156: `sessionId` (o session_id da chamada gh pr create que criou esta
+    // PR, extraído do payload do hook no entrypoint CLI abaixo) é repassado a
+    // checkRoundActive — quando o default real (isOvernightRoundActive) lê um
+    // marker COM session_id, só conta como "ativo" se bater com esta PR;
+    // marker sem session_id (formato antigo) ignora o argumento e mantém o
+    // comportamento pré-#5156. Mocks de teste (`noActiveRound`/`activeRound`)
+    // ignoram o argumento livremente — não quebra nenhum teste existente.
+    if (checkRoundActive(sessionId)) {
       return {
         effort: "low",
         warning:
@@ -519,7 +553,11 @@ if (
           : JSON.stringify(payload.tool_response ?? "");
       const match = resp.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/);
       if (match) {
-        const { effort, warning, reason } = resolveEffort(match[0]);
+        // #5156: repassa o session_id deste hook (a sessão que rodou `gh pr create`)
+        // pra resolveEffort — permite que isOvernightRoundActive discrimine
+        // marker com session_id sem quebrar o caminho default (marker sem
+        // session_id ignora o argumento).
+        const { effort, warning, reason } = resolveEffort(match[0], undefined, undefined, payload.session_id);
         logEffortDecision({ prUrl: match[0], effort, reason }); // #4252
         process.stdout.write(
           JSON.stringify({

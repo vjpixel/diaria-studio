@@ -279,6 +279,35 @@ describe("resolveEffort — effort por tamanho de diff (#4813, generaliza #4243)
   });
 });
 
+// #5156: resolveEffort repassa `sessionId` pro `checkRoundActive` injetado —
+// garante que o dado chega até o guard de sessão ativa, mesmo com o wrapper
+// default reordenando os parâmetros pra não corromper repoRoot/machineTag/now
+// de isOvernightRoundActive (ver comentário no próprio resolveEffort).
+describe("resolveEffort — repassa sessionId pro checkRoundActive (#5156)", () => {
+  it("checkRoundActive injetado recebe o sessionId passado a resolveEffort", () => {
+    const execFn = () => "fix-something\n";
+    let receivedSessionId;
+    const checkRoundActive = (sid) => {
+      receivedSessionId = sid;
+      return true;
+    };
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, checkRoundActive, "sessao-xyz");
+    assert.equal(receivedSessionId, "sessao-xyz");
+    assert.equal(result.effort, "low");
+  });
+
+  it("sessionId omitido → checkRoundActive recebe undefined (não quebra mocks que ignoram o argumento)", () => {
+    const execFn = () => "fix-something\n";
+    let receivedSessionId = "not-called";
+    const checkRoundActive = (sid) => {
+      receivedSessionId = sid;
+      return false;
+    };
+    resolveEffort("https://github.com/o/r/pull/1", execFn, checkRoundActive);
+    assert.equal(receivedSessionId, undefined);
+  });
+});
+
 describe("buildReviewInstruction (#2754)", () => {
   // O texto de `low` já alegou coisas que o default vigente desmentia, nas duas
   // direções. Sob #3326 (low = default geral) ele não podia falar em overnight,
@@ -513,6 +542,45 @@ describe("isOvernightRoundActive (#3322)", () => {
     writeMarker(root, "any-tag", { started_at: new Date(NOW).toISOString() });
     assert.equal(isOvernightRoundActive(root, "any-tag", NOW), true);
     assert.equal(isOvernightRoundActive(freshRoot(), "any-tag", NOW), false);
+  });
+
+  // #5156: marker session-aware — mesma garantia de retrocompat e o caso
+  // explícito pedido pela issue ("overnight autônomo ativo + PR de OUTRA
+  // sessão → não deve resolver o desconto low").
+  describe("session-aware (#5156)", () => {
+    it("marker SEM session_id (formato antigo) → true independente de callerSessionId (retrocompat)", () => {
+      const root = freshRoot();
+      writeMarker(root, "host-a", { started_at: new Date(NOW - ONE_HOUR_MS).toISOString() });
+      assert.equal(isOvernightRoundActive(root, "host-a", NOW, "sessao-develop-xyz"), true);
+      assert.equal(isOvernightRoundActive(root, "host-a", NOW, undefined), true);
+    });
+
+    it("marker COM session_id + callerSessionId da MESMA sessão → true", () => {
+      const root = freshRoot();
+      writeMarker(root, "host-a", {
+        started_at: new Date(NOW - ONE_HOUR_MS).toISOString(),
+        session_id: "sessao-overnight-abc",
+      });
+      assert.equal(isOvernightRoundActive(root, "host-a", NOW, "sessao-overnight-abc"), true);
+    });
+
+    it("marker COM session_id + callerSessionId de OUTRA sessão (develop em paralelo) → false", () => {
+      const root = freshRoot();
+      writeMarker(root, "host-a", {
+        started_at: new Date(NOW - ONE_HOUR_MS).toISOString(),
+        session_id: "sessao-overnight-abc",
+      });
+      assert.equal(isOvernightRoundActive(root, "host-a", NOW, "sessao-develop-xyz"), false);
+    });
+
+    it("marker COM session_id + callerSessionId ausente → false, nunca finge identidade", () => {
+      const root = freshRoot();
+      writeMarker(root, "host-a", {
+        started_at: new Date(NOW - ONE_HOUR_MS).toISOString(),
+        session_id: "sessao-overnight-abc",
+      });
+      assert.equal(isOvernightRoundActive(root, "host-a", NOW, undefined), false);
+    });
   });
 });
 

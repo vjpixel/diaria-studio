@@ -78,6 +78,48 @@ describe("shouldBlockAskUserQuestion (#4450)", () => {
   });
 });
 
+// #5156: marker session-aware. O caso explicitamente pedido pela issue —
+// "overnight autônomo ativo + chamada vinda de OUTRA sessão → permitido" —
+// e a garantia de retrocompat: marker sem session_id (formato antigo,
+// inclusive uma rodada já em progresso no momento em que este campo foi
+// introduzido) preserva o comportamento pré-#5156 (bloqueia por máquina,
+// independente de quem chama).
+describe("shouldBlockAskUserQuestion — session-aware (#5156)", () => {
+  const NOW = Date.parse("2026-08-12T12:00:00.000Z");
+  const ONE_HOUR_MS = 60 * 60 * 1000;
+  const fresh = (extra) => ({ started_at: new Date(NOW - ONE_HOUR_MS).toISOString(), phase: "autonomous", ...extra });
+
+  it("marker SEM session_id (formato antigo) → bloqueia independente do callerSessionId (retrocompat)", () => {
+    const marker = fresh({});
+    assert.equal(shouldBlockAskUserQuestion(marker, NOW, "sessao-develop-xyz"), true);
+    assert.equal(shouldBlockAskUserQuestion(marker, NOW, undefined), true);
+  });
+
+  it("marker COM session_id + callerSessionId da MESMA sessão overnight → bloqueia (é o próprio overnight se perguntando)", () => {
+    const marker = fresh({ session_id: "sessao-overnight-abc" });
+    assert.equal(shouldBlockAskUserQuestion(marker, NOW, "sessao-overnight-abc"), true);
+  });
+
+  it("marker COM session_id + callerSessionId de OUTRA sessão (ex: /diaria-develop em paralelo) → permite (pedido explícito da issue #5156)", () => {
+    const marker = fresh({ session_id: "sessao-overnight-abc" });
+    assert.equal(shouldBlockAskUserQuestion(marker, NOW, "sessao-develop-xyz"), false);
+  });
+
+  it("marker COM session_id + callerSessionId ausente (payload sem o campo — harness antigo) → permite, nunca finge identidade", () => {
+    const marker = fresh({ session_id: "sessao-overnight-abc" });
+    assert.equal(shouldBlockAskUserQuestion(marker, NOW, undefined), false);
+  });
+
+  it("marker COM session_id ainda respeita staleness/futuro — session match não sobrepõe os outros guards", () => {
+    const staleMarker = {
+      started_at: new Date(NOW - 25 * ONE_HOUR_MS).toISOString(),
+      phase: "autonomous",
+      session_id: "sessao-overnight-abc",
+    };
+    assert.equal(shouldBlockAskUserQuestion(staleMarker, NOW, "sessao-overnight-abc"), false);
+  });
+});
+
 // readActiveMarker é o read-side de disco (I/O real via repoRoot/machineTag
 // injetados) — mesma separação write/read-side documentada no docblock de
 // scripts/overnight-session-marker.ts. Isolado do disco real via tmpdir.

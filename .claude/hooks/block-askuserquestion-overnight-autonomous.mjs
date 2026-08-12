@@ -38,6 +38,14 @@
 // literalmente qualquer outra skill/sessão que use `AskUserQuestion`
 // (`/diaria-develop`, gates do dia-a-dia, etc.).
 //
+// #5156: marker COM `session_id` só bloqueia quando a chamada ATUAL pertence
+// à MESMA sessão que gravou o marker (`payload.session_id === marker.session_id`)
+// — permite que outra sessão (ex: `/diaria-develop` rodando em paralelo na
+// mesma máquina) nunca seja bloqueada por um overnight alheio em Fase
+// autônoma. Marker SEM `session_id` (formato antigo) preserva o
+// comportamento pré-#5156 (bloqueia por máquina, sem distinguir chamador) —
+// ver `shouldBlockAskUserQuestion` pro racional completo.
+//
 // Self-contained (nenhum import de `scripts/*.ts`): mesma razão documentada em
 // `.claude/hooks/pr-create-review.mjs` — um import estático de `.ts` executa
 // antes de qualquer try/catch deste arquivo e pode derrubar o hook inteiro
@@ -51,8 +59,9 @@
 //
 // Schema do hook `PreToolUse` (confirmado contra a doc oficial do harness,
 // `docs.claude.com/en/docs/claude-code/hooks` → redireciona pra
-// `code.claude.com/docs/en/hooks`, 260802): input é JSON no stdin com
-// `tool_name`/`tool_input`/`tool_use_id`; pra bloquear com uma razão visível
+// `code.claude.com/docs/en/hooks`, 260802, reconfirmado no #5156): input é
+// JSON no stdin com `session_id`/`tool_name`/`tool_input`/`tool_use_id` (entre
+// outros campos comuns); pra bloquear com uma razão visível
 // ao modelo, a saída é `{ hookSpecificOutput: { hookEventName: "PreToolUse",
 // permissionDecision: "deny", permissionDecisionReason: "..." } }` em stdout
 // com exit 0 (o método "JSON output", que dá controle total — o método
@@ -120,12 +129,15 @@ export function readActiveMarker(repoRoot = resolveMainRepoRoot(), machineTag = 
 }
 
 /**
- * Função pura (#4450) — decide se um `AskUserQuestion` deve ser bloqueado,
- * dado o ESTADO já lido do marker (objeto parseado, ou `null`/`undefined` se
- * ausente/ilegível). Sem I/O, 100% testável com fixtures em memória — mesmo
- * padrão de `shouldWakeCheck` em `scripts/lib/overnight-fallback-wake.ts`.
+ * Função pura (#4450, session-aware desde #5156) — decide se um
+ * `AskUserQuestion` deve ser bloqueado, dado o ESTADO já lido do marker
+ * (objeto parseado, ou `null`/`undefined` se ausente/ilegível) e o
+ * `session_id` da chamada ATUAL (`callerSessionId`, do payload do próprio
+ * hook — sempre disponível, é campo padrão de todo `PreToolUse`). Sem I/O,
+ * 100% testável com fixtures em memória — mesmo padrão de `shouldWakeCheck`
+ * em `scripts/lib/overnight-fallback-wake.ts`.
  *
- * Bloqueia SÓ quando as três condições valem simultaneamente:
+ * Bloqueia SÓ quando TODAS as condições valem simultaneamente:
  *   1. o marker existe;
  *   2. `marker.phase === "autonomous"` (nunca `"briefing"`, nunca um valor
  *      desconhecido/ausente — marker de rodada anterior ao #4450 não tem
@@ -134,16 +146,32 @@ export function readActiveMarker(repoRoot = resolveMainRepoRoot(), machineTag = 
  *   3. `started_at` é uma data válida cuja idade cai dentro de
  *      `[0, MAX_SESSION_AGE_MS]` — mesmo guard de staleness/clock-skew de
  *      `isOvernightRoundActive` em `pr-create-review.mjs` (#3322): marker
- *      stale ou com timestamp no futuro nunca conta como "ativo".
+ *      stale ou com timestamp no futuro nunca conta como "ativo";
+ *   4. **(#5156) identidade de sessão**, com duas sub-regras:
+ *      - `marker.session_id` AUSENTE (formato antigo, pré-#5156 — inclusive
+ *        QUALQUER rodada overnight já em progresso no momento em que este
+ *        campo foi introduzido) → **preserva o comportamento pré-#5156**:
+ *        basta estar ativo nesta máquina, bloqueia independente de quem
+ *        chama. Nunca quebrar uma rodada em voo mudando a regra debaixo dela.
+ *      - `marker.session_id` PRESENTE → só bloqueia quando
+ *        `callerSessionId === marker.session_id`, ou seja, quando a chamada
+ *        pertence à PRÓPRIA sessão overnight autônoma que gravou o marker.
+ *        Uma sessão `/diaria-develop` (ou qualquer outra) rodando em
+ *        paralelo na MESMA máquina, com `session_id` diferente, nunca é
+ *        bloqueada por um overnight alheio — é exatamente o cenário que a
+ *        issue #5156 pede ("overnight autônomo ativo + chamada vinda de
+ *        OUTRA sessão → permitido").
  *
- * Qualquer uma das três falhando → `false` (permite a pergunta). Nunca lança.
+ * Qualquer uma das condições falhando → `false` (permite a pergunta). Nunca lança.
  */
-export function shouldBlockAskUserQuestion(marker, now = Date.now()) {
+export function shouldBlockAskUserQuestion(marker, now = Date.now(), callerSessionId = undefined) {
   if (!marker || marker.phase !== "autonomous") return false;
   const startedAtMs = Date.parse(marker.started_at);
   if (!Number.isFinite(startedAtMs)) return false;
   const ageMs = now - startedAtMs;
-  return ageMs >= 0 && ageMs <= MAX_SESSION_AGE_MS;
+  if (!(ageMs >= 0 && ageMs <= MAX_SESSION_AGE_MS)) return false;
+  if (marker.session_id === undefined || marker.session_id === null) return true;
+  return callerSessionId === marker.session_id;
 }
 
 /** Mensagem mostrada ao coordenador quando a chamada é negada (#4450). */
@@ -175,7 +203,7 @@ if (
       // invariante — nunca decide bloqueio pra outra tool por engano.
       if (payload.tool_name && payload.tool_name !== "AskUserQuestion") return;
       const marker = readActiveMarker();
-      if (shouldBlockAskUserQuestion(marker)) {
+      if (shouldBlockAskUserQuestion(marker, Date.now(), payload.session_id)) {
         process.stdout.write(
           JSON.stringify({
             hookSpecificOutput: {
