@@ -154,6 +154,15 @@ confirma** (decisão do editor, #4657) — nunca decidir sozinha.
 | `continuar` | Teste em curso sem conclusão confiável. Mantém 3 células. |
 | `travar` | Vencedor claro e sem ressalva. Ondas seguintes com assunto único. |
 
+**Antes de tudo isso, checar o estado durável (#5055):** se
+`data/clarice-abc-state.json` disser `encerrado`, não há teste pra avaliar —
+`abc.action` já vem `travar`, o assunto travado vem do arquivo, e o Passo 2
+vira só um relato ("teste encerrado em {data} pelo editor: {assunto}").
+**Recálculo nunca reabre um teste encerrado**; só
+`clarice-abc-state.ts --reopen --confirm`, ato explícito do editor. Se o
+editor pedir pra reabrir no gate, é esse comando — não basta responder
+`ajustar`.
+
 **Sempre declarar a métrica** (`abc.metric`) ao apresentar. O clique é a
 métrica que decide o teste por design (#2976), mas é também a contaminada
 pela #4559 — o editor precisa saber qual sustentou a recomendação.

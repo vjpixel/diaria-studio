@@ -20,7 +20,9 @@
  *   - O teste A/B/C decide sozinho pra `continuar`/`travar`
  *     (`recommendAbcAction`, já determinístico); `iniciar` (abrir teste
  *     novo, exige 3 assuntos que só o editor escreve) ABORTA — decisão do
- *     editor 260811.
+ *     editor 260811. **#5055:** quando o editor ENCERROU o teste
+ *     (`data/clarice-abc-state.json`), esse cálculo nem corre — o estado
+ *     gravado força `travar` e o teste NUNCA reabre por recálculo.
  *   - Assunto(s) são HERDADOS da onda anterior do mesmo ciclo
  *     (`resolveInheritedSubjects`), nunca digitados.
  *   - `--send-test`/`review-test-email` são REMOVIDOS do caminho — decisão
@@ -68,6 +70,12 @@ import { resolve } from "node:path";
 import { isMainModule } from "./lib/cli-args.ts";
 import { detectExecMode } from "./lib/exec-mode.ts";
 import { isClariceEnvioEnabled } from "./lib/clarice-envio-enabled.ts";
+import {
+  readClariceAbcState,
+  lockedSubjectFromState,
+  describeAbcState,
+  type ClariceAbcStateRead,
+} from "./lib/clarice-abc-state.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { acquireEnvioLock, releaseEnvioLock, LockHeldError } from "./lib/clarice-envio-lock.ts";
 import { computeExpectedEnvioCycle } from "./lib/clarice-envio-cycle.ts";
@@ -175,6 +183,11 @@ export interface EnvioRunDeps {
   isEnabled: () => boolean;
   execMode: () => "local" | "cloud";
   resolveLatestCycle: () => ResolveLatestMonthlyCycleResult;
+  /** #5055 — estado durável do teste A/B/C. Injetado (e não lido de
+   * `rootDir` no meio da rodada) pelo mesmo motivo de `isEnabled`: sem o
+   * seam, os testes de integração desta função leriam o `data/` REAL da
+   * máquina e o assunto travado em produção vazaria pras asserções. */
+  readAbcState: () => ClariceAbcStateRead;
 }
 
 export function productionDeps(rootDir: string = ROOT): EnvioRunDeps {
@@ -185,6 +198,7 @@ export function productionDeps(rootDir: string = ROOT): EnvioRunDeps {
     isEnabled: () => isClariceEnvioEnabled(rootDir),
     execMode: () => detectExecMode({ projectRoot: rootDir }),
     resolveLatestCycle: () => resolveLatestMonthlyCycleFromDisk(),
+    readAbcState: () => readClariceAbcState(rootDir),
   };
 }
 
@@ -288,26 +302,48 @@ export type InheritedSubjects =
  * CÉLULA, a onda com aquela célula de maior `n`; se QUALQUER célula não
  * tiver precedente, falha (não inventa).
  *
+ * `lockedSubject` (#5055) — quando o editor ENCERROU o teste
+ * (`data/clarice-abc-state.json`), o assunto travado ali tem precedência
+ * sobre qualquer herança: ele é a decisão explícita, e herdar seria
+ * reconstruir por inferência algo que já está escrito. É também a única
+ * escrita legítima de um assunto "digitado" no fluxo — feita 1× pelo editor,
+ * num comando dedicado, não a cada rodada.
+ *
  * `winner` — achado HIGH do code-reviewer no review da PR: sem este
  * fallback, a automação TRAVA PRA SEMPRE no exato momento em que um teste
- * A/B/C conclui. A 1ª vez que `recommendAbcAction` devolve `"travar"`,
- * `state.waves` só tem entradas `-A/-B/-C` (o não-célula que este ramo
- * procura só existe DEPOIS de uma rodada `travar` bem-sucedida) — sem
- * `--locked-subject` sendo repassado pra `clarice-plan-wave.ts` (não é,
- * de propósito, pra não travar o teste artificialmente), o dia seguinte
- * recalcularia o MESMO `travar` e falharia da MESMA forma outra vez: um
- * deadlock de bootstrap, não um erro de 1 dia. `winner` (`proposal.abc.
- * winner`) é um precedente REAL e testado — a célula que já provou ser a
- * vencedora — então usar o assunto dela pra "destravar" o teste é
- * consistente com a decisão #4657 (o cálculo já é determinístico; só a
- * ESCRITA de um assunto NOVO exige o editor).
+ * A/B/C conclui POR CÁLCULO (sem estado gravado). A 1ª vez que
+ * `recommendAbcAction` devolve `"travar"`, `state.waves` só tem entradas
+ * `-A/-B/-C` (o não-célula que este ramo procura só existe DEPOIS de uma
+ * rodada `travar` bem-sucedida), e o dia seguinte recalcularia o MESMO
+ * `travar` e falharia da MESMA forma outra vez: um deadlock de bootstrap,
+ * não um erro de 1 dia. `winner` (`proposal.abc.winner`) é um precedente
+ * REAL e testado — a célula que já provou ser a vencedora — então usar o
+ * assunto dela pra "destravar" o teste é consistente com a decisão #4657 (o
+ * cálculo já é determinístico; só a ESCRITA de um assunto NOVO exige o
+ * editor). Continua valendo pro caminho calculado; o `lockedSubject` acima
+ * simplesmente torna o deadlock impossível quando há estado gravado.
  */
-export function resolveInheritedSubjects(
-  waves: ReadonlyArray<Pick<WaveState, "key" | "subject">>,
-  abcAction: "continuar" | "travar",
-  winner: "A" | "B" | "C" | null = null,
-): InheritedSubjects {
+export interface InheritedSubjectsInput {
+  waves: ReadonlyArray<Pick<WaveState, "key" | "subject">>;
+  abcAction: "continuar" | "travar";
+  /** Célula vencedora calculada, quando houver. Ver `winner` na docstring. */
+  winner?: "A" | "B" | "C" | null;
+  /** Assunto travado no estado durável (#5055). Ver acima. */
+  lockedSubject?: string | null;
+}
+
+// Objeto de opções e não 4 posicionais (achado MEDIUM do type-design-analyzer
+// no review da PR #5057): `winner` e `lockedSubject` são ambos
+// nulláveis-e-parecidos, e `f(waves, "travar", "B", "Assunto...")` obrigava a
+// consultar a assinatura pra saber qual é qual. É também a convenção local —
+// `proposeNextVolume({...})` neste mesmo arquivo e `recommendAbcAction(t, {...})`
+// no módulo vizinho já usam opções nomeadas.
+export function resolveInheritedSubjects(input: InheritedSubjectsInput): InheritedSubjects {
+  const { waves, abcAction, winner = null, lockedSubject = null } = input;
+
   if (abcAction === "travar") {
+    if (lockedSubject) return { ok: true, mode: "single", subject: lockedSubject };
+
     let best: { n: number; subject: string } | null = null;
     for (const w of waves) {
       const parsed = parseWave(w.key);
@@ -510,13 +546,58 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
 
     // --- Teste A/B/C — decide sozinha continuar/travar; iniciar exige o editor. ---
     report.section("Passo 2 — Teste A/B/C");
+    // #5055: o estado durável é lido AQUI só pra relatar e pra alimentar
+    // `resolveInheritedSubjects`. Quem já o aplicou na RECOMENDAÇÃO foi o
+    // `clarice-plan-wave.ts` acima (que lê o mesmo arquivo) — não há duas
+    // fontes de verdade, há um arquivo e dois leitores.
+    const abcState = deps.readAbcState();
+    if (abcState.invalidReason) report.note(`⚠️  estado do teste A/B/C ilegível (${abcState.invalidReason}) — tratando como ABERTO.`);
+    report.note(describeAbcState(abcState));
+    if (abcState.rationale) report.note(`motivo registrado pelo editor: ${abcState.rationale}`);
     report.note(`recomendação: ${proposal.abc.action} (métrica: ${proposal.abc.metric}). ${proposal.abc.rationale}`);
+    // #5055 — divergência entre os DOIS leitores do mesmo arquivo é BUG, não
+    // estado normal, e o guard é BIDIRECIONAL de propósito (achado do review
+    // da PR #5057).
+    //
+    // Há duas leituras separadas no tempo: `clarice-plan-wave.ts` lê cedo, no
+    // início do seu `main()`, e assa a decisão no JSON que devolve; este
+    // processo lê de novo alguns segundos depois (acima). Os DOIS resolvem a
+    // raiz por `import.meta.url` e o spawn fixa `cwd: rootDir`, então a raiz
+    // nunca diverge — o que PODE divergir é o CONTEÚDO, se o editor rodar
+    // `--close`/`--reopen` exatamente na janela entre as duas leituras.
+    //
+    // Checar só "encerrado ⇒ travar" cobria uma direção. A outra é pior de
+    // enxergar: um `--reopen` que cai no meio da rodada deixa o proposal com
+    // `travar` (da leitura velha) e o estado com `aberto` (da nova); sem
+    // `lockedSubject`, `resolveInheritedSubjects` cairia na busca de
+    // precedente e reusaria em silêncio o assunto que o editor ACABOU de
+    // destravar. Por isso comparamos a INTENÇÃO dos dois lados.
+    //
+    // `metric === "nenhuma"` com `action === "travar"` identifica exatamente o
+    // ramo `lockedSubject` de `recommendAbcAction` — um `travar` CALCULADO
+    // sempre declara `metric: "clique"`, e `iniciar` nunca é `travar`.
+    const planWaveUsedLock = proposal.abc.action === "travar" && proposal.abc.metric === "nenhuma";
+    const stateSaysClosed = abcState.status === "encerrado";
+    if (planWaveUsedLock !== stateSaysClosed) {
+      throw new EnvioAbort(
+        stateSaysClosed
+          ? `❌ estado gravado diz teste A/B/C ENCERRADO (assunto "${abcState.subject}"), mas clarice-plan-wave ` +
+              `devolveu abc.action="${proposal.abc.action}" (métrica "${proposal.abc.metric}") — não aplicou a trava. ` +
+              `Não vou mandar 3 assuntos depois de o teste ter sido encerrado. Verifique ` +
+              `data/clarice-abc-state.json e rode de novo (#5055).`
+          : `❌ clarice-plan-wave travou o assunto, mas o estado lido agora diz teste A/B/C ABERTO — o arquivo ` +
+              `mudou no meio da rodada (--close/--reopen concorrente) ou ficou ilegível. Não vou reusar por ` +
+              `inferência um assunto que pode ter acabado de ser destravado. Rode de novo (#5055).`,
+      );
+    }
+
     if (proposal.abc.action === "iniciar") {
       report.note("abc.action=\"iniciar\" exige 3 assuntos novos que só o editor escreve — automação não decide sozinha (#4657/decisão 260811). Pausando.");
       const reportId = `envio-${aammdd}-abc-iniciar`;
       writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice envio ${aammdd} — teste A/B/C precisa do editor`, report.build());
       return { code: 0, reportId, reportMarkdown: report.build() };
     }
+
     const abcAction = proposal.abc.action; // "continuar" | "travar"
     let noEscalationReason: string | null = null;
     if (proposal.abc.caveats.length > 0) {
@@ -525,7 +606,12 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
     }
 
     // --- Assunto(s) herdado(s). ---
-    const inherited = resolveInheritedSubjects(proposal.state.waves, abcAction, proposal.abc.winner);
+    const inherited = resolveInheritedSubjects({
+      waves: proposal.state.waves,
+      abcAction,
+      winner: proposal.abc.winner,
+      lockedSubject: lockedSubjectFromState(abcState),
+    });
     if (!inherited.ok) throw new EnvioAbort(`❌ ${inherited.reason}`);
 
     // --- Passo 3: risco de ISP (motor novo — abertura NUNCA freia, #5025). ---
