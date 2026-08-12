@@ -511,6 +511,23 @@ export function computeMostRecentScheduledOccurrence(schedule: ScheduledTaskSche
     }
     return candidate;
   }
+  if (schedule.kind === "monthly") {
+    // `day` é sempre 1-28 (ver docstring de ScheduledTaskSchedule) — válido
+    // em todo mês, sem precisar clampar fim-de-mês. Meses têm comprimento
+    // variável, então (diferente de daily/weekly) a ocorrência anterior não
+    // é "subtrai um período fixo" — é decrementar o MÊS e reconstruir.
+    let { year, month } = wall;
+    let candidate = zonedTimeToUtc(year, month, schedule.day, schedule.hour, schedule.minute, 0, BRT_TIMEZONE);
+    if (candidate.getTime() > before.getTime()) {
+      month -= 1;
+      if (month < 1) {
+        month = 12;
+        year -= 1;
+      }
+      candidate = zonedTimeToUtc(year, month, schedule.day, schedule.hour, schedule.minute, 0, BRT_TIMEZONE);
+    }
+    return candidate;
+  }
   // weekly
   const todayIdx = WEEKDAY_ORDER.indexOf(wall.weekday);
   const targetIdx = WEEKDAY_ORDER.indexOf(schedule.dayOfWeek);
@@ -538,6 +555,19 @@ export function computeMostRecentScheduledOccurrence(schedule: ScheduledTaskSche
 export function computeNextRunAtOrAfter(schedule: ScheduledTaskSchedule, after: Date): Date | null {
   if (schedule.kind === "interval") return null;
   const mostRecent = computeMostRecentScheduledOccurrence(schedule, after);
+  if (schedule.kind === "monthly") {
+    // Mês tem comprimento variável — "soma um período fixo" (o atalho usado
+    // por daily/weekly abaixo) não vale aqui. Incrementa o MÊS a partir da
+    // ocorrência mais recente e reconstrói.
+    const wall = brtWallTimeOf(mostRecent);
+    let year = wall.year;
+    let month = wall.month + 1;
+    if (month > 12) {
+      month = 1;
+      year += 1;
+    }
+    return zonedTimeToUtc(year, month, schedule.day, schedule.hour, schedule.minute, 0, BRT_TIMEZONE);
+  }
   const periodMs = schedule.kind === "daily" ? 24 * 3600 * 1000 : 7 * 24 * 3600 * 1000;
   // mostRecent <= after por construção; a próxima ocorrência periódica após
   // mostRecent é necessariamente > after (não há ocorrência agendada entre
@@ -559,10 +589,10 @@ export const DEFAULT_OVERDUE_GRACE_MINUTES = 60;
  * hoje não existe em lugar nenhum. `lastRunAt` vem de
  * `readTaskLastRun(...).startedAt` (ou `null` se nunca rodou/log ausente).
  *
- * - `daily`/`weekly`: atrasada quando o grace period já passou desde a
- *   ocorrência agendada mais recente E (a task nunca rodou OU o último run
- *   é anterior a essa ocorrência — ou seja, ela rodou mas não na "vez"
- *   certa).
+ * - `daily`/`weekly`/`monthly`: atrasada quando o grace period já passou
+ *   desde a ocorrência agendada mais recente E (a task nunca rodou OU o
+ *   último run é anterior a essa ocorrência — ou seja, ela rodou mas não na
+ *   "vez" certa).
  * - `interval`: sem âncora de calendário (ver `computeNextRunAtOrAfter`) —
  *   atrasada quando nunca rodou, ou quando já se passou mais que
  *   `hours + grace` desde o último run.

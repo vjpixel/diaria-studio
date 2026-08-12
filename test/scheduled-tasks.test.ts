@@ -114,7 +114,7 @@ describe("SCHEDULED_TASKS — estrutura do registro", () => {
     }
   });
 
-  it("schedule.kind é sempre daily, weekly ou interval com campos válidos", () => {
+  it("schedule.kind é sempre daily, weekly, monthly ou interval com campos válidos", () => {
     const validDays: WeekDay[] = [
       "Monday",
       "Tuesday",
@@ -126,12 +126,17 @@ describe("SCHEDULED_TASKS — estrutura do registro", () => {
     ];
     for (const t of SCHEDULED_TASKS) {
       const s = t.schedule;
-      if (s.kind === "daily" || s.kind === "weekly") {
+      if (s.kind === "daily" || s.kind === "weekly" || s.kind === "monthly") {
         assert.ok(s.hour >= 0 && s.hour <= 23, `task "${t.name}": hour fora do intervalo: ${s.hour}`);
         assert.ok(s.minute >= 0 && s.minute <= 59, `task "${t.name}": minute fora do intervalo: ${s.minute}`);
       }
       if (s.kind === "weekly") {
         assert.ok(validDays.includes(s.dayOfWeek), `task "${t.name}": dayOfWeek inválido: ${s.dayOfWeek}`);
+      }
+      if (s.kind === "monthly") {
+        // 1-28: válido em todo mês (ver docstring de ScheduledTaskSchedule
+        // — sem isso, um `day` de 29-31 pularia fevereiro na maioria dos anos).
+        assert.ok(s.day >= 1 && s.day <= 28, `task "${t.name}": monthly.day fora do intervalo 1-28: ${s.day}`);
       }
       if (s.kind === "interval") {
         assert.ok(s.hours > 0, `task "${t.name}": interval.hours deve ser > 0`);
@@ -461,5 +466,27 @@ describe("#5025/#5026/#5027 — par Diaria-Clarice-Envio / Diaria-Clarice-Envio-
       `folga entre Clarice-Novos e Clarice-Envio caiu pra ${gapMinutes}min (< 240) — ` +
         "risco de a campanha do 'novos' ainda estar in_process quando a onda for segmentada",
     );
+  });
+});
+
+describe("#5128/#5130 — Diaria-Bing-Seo-Monthly-Pull registrada, mensal, systemd-only (sem .ps1 legado)", () => {
+  it("está presente no registro, com os 2 steps (keywords + links) apontando pro mesmo módulo", () => {
+    const t = getScheduledTaskByName("Diaria-Bing-Seo-Monthly-Pull");
+    assert.ok(t, "Diaria-Bing-Seo-Monthly-Pull ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/bing-pull.ts", "scripts/bing-pull.ts"],
+    );
+    assert.deepEqual(
+      t!.steps.map((s) => s.args),
+      [["--mode", "keywords"], ["--mode", "links"]],
+    );
+    assert.deepEqual(t!.schedule, { kind: "monthly", day: 1, hour: 9, minute: 0 });
+  });
+
+  it("NÃO tem legacySetupScript (task registrada depois do cutover systemd, épica #4798)", () => {
+    const t = getScheduledTaskByName("Diaria-Bing-Seo-Monthly-Pull");
+    assert.ok(t);
+    assert.equal(t!.legacySetupScript, undefined);
   });
 });

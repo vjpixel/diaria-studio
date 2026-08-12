@@ -50,9 +50,17 @@ export type WeekDay = "Monday" | "Tuesday" | "Wednesday" | "Thursday" | "Friday"
 
 /**
  * Cadência declarativa de uma task. Espelha os 3 padrões realmente usados
- * pelos `setup-*-schedule.ps1` do repo:
+ * pelos `setup-*-schedule.ps1` do repo, mais `monthly` (#5128/#5130 —
+ * 1ª task deste registro sem contraparte `.ps1`/Task Scheduler de
+ * propósito, mesmo caso de `Diaria-Beehiiv-Home-Meta-Check` #5005: nasceu
+ * depois do cutover systemd, então não precisou de tradução PowerShell):
  *   - `daily`   → `New-ScheduledTaskTrigger -Daily -At (Get-Date -Hour H -Minute M)`
  *   - `weekly`  → `New-ScheduledTaskTrigger -Weekly -DaysOfWeek D -At (Get-Date -Hour H -Minute M)`
+ *   - `monthly` → `OnCalendar=*-*-DD HH:MM:00` (systemd) — sem tradução PowerShell
+ *     equivalente neste registro (nenhuma task `monthly` tem `legacySetupScript`).
+ *     `day` fica restrito a 1-28 (validado em `scheduled-tasks.test.ts`) —
+ *     todo mês do calendário tem um dia 1-28, então a cadência nunca pula um
+ *     mês por falta de dia 29/30/31 (fevereiro).
  *   - `interval`→ `New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours N)`
  *     (começa agora, repete indefinidamente a cada N horas — ver #4155 pro
  *     porquê de `-Once -At` em vez de `-Once <data>` posicional, e pro porquê
@@ -61,6 +69,7 @@ export type WeekDay = "Monday" | "Tuesday" | "Wednesday" | "Thursday" | "Friday"
 export type ScheduledTaskSchedule =
   | { kind: "daily"; hour: number; minute: number }
   | { kind: "weekly"; dayOfWeek: WeekDay; hour: number; minute: number }
+  | { kind: "monthly"; day: number; hour: number; minute: number }
   | { kind: "interval"; hours: number };
 
 /**
@@ -570,6 +579,35 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     schedule: { kind: "interval", hours: 6 },
     legacySetupScript: "scripts/setup-worker-drift-check-schedule.ps1",
     issue: "#4723",
+  },
+  {
+    name: "Diaria-Bing-Seo-Monthly-Pull",
+    description: "pull mensal de demanda (Bing Keyword Research) + autoridade (Bing backlinks)",
+    // Um passo por issue-mãe (#5128 demanda, #5130 autoridade) — mesmo
+    // módulo (`scripts/bing-pull.ts`, "mesmo módulo, provavelmente mesmo
+    // PR" já era a instrução literal do #5130), cadência idêntica (nenhum
+    // dos dois dados muda em granularidade menor que mês: volume de busca
+    // de termo e contagem de backlink não têm ritmo semanal), então 1 task
+    // com 2 passos em vez de 2 tasks separadas competindo pela mesma janela.
+    steps: [
+      { key: "keywords", script: "scripts/bing-pull.ts", args: ["--mode", "keywords"] },
+      { key: "links", script: "scripts/bing-pull.ts", args: ["--mode", "links"] },
+    ],
+    logPath: "seo/.bing-monthly-pull.log",
+    // Dia 1, 09:00 BRT — depois da janela weekly de SEO (domingo 04:10,
+    // Diaria-Seo-Weekly acima) e do Postmaster diário (12:30), sem colidir
+    // com nenhuma outra daily/weekly já registrada; dia 1 é o âncora óbvia
+    // pra "1x por mês" e cai dentro do intervalo 1-28 válido pra `monthly`
+    // (ver docstring de `ScheduledTaskSchedule`).
+    schedule: { kind: "monthly", day: 1, hour: 9, minute: 0 },
+    // Sem `legacySetupScript` de propósito — mesmo caso de
+    // `Diaria-Beehiiv-Home-Meta-Check` (#5005): task registrada depois do
+    // cutover systemd (épica #4798), sem contraparte Windows/.ps1. Também
+    // não roda no Windows por princípio (nenhuma tarefa `Diaria-*` deve,
+    // #5074) — mesmo que rodasse, `data/` (OneDrive) é onde o output
+    // (`bing-keywords-*.json`/`bing-links-*.json`) precisa pousar de
+    // qualquer forma.
+    issue: "#5128, #5130",
   },
 ];
 

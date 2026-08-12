@@ -60,7 +60,8 @@ import {
 // ─── descrição humana do schedule (#4799 — usada tanto pela API quanto testável isoladamente) ──
 
 /** Rótulo curto em pt-BR pra `ScheduledTaskSchedule` — ex: "diária às
- * 08:30", "semanal (segunda) às 10:30", "a cada 4h". @pure */
+ * 08:30", "semanal (segunda) às 10:30", "mensal (dia 1) às 09:00", "a cada
+ * 4h". @pure */
 export function describeSchedule(schedule: ScheduledTaskSchedule): string {
   const pad2 = (n: number): string => String(n).padStart(2, "0");
   if (schedule.kind === "daily") return `diária às ${pad2(schedule.hour)}:${pad2(schedule.minute)}`;
@@ -75,6 +76,9 @@ export function describeSchedule(schedule: ScheduledTaskSchedule): string {
       Sunday: "domingo",
     };
     return `semanal (${dayLabel[schedule.dayOfWeek] ?? schedule.dayOfWeek}) às ${pad2(schedule.hour)}:${pad2(schedule.minute)}`;
+  }
+  if (schedule.kind === "monthly") {
+    return `mensal (dia ${schedule.day}) às ${pad2(schedule.hour)}:${pad2(schedule.minute)}`;
   }
   return `a cada ${schedule.hours}h`;
 }

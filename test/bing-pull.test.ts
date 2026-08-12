@@ -1,5 +1,5 @@
 /**
- * test/bing-pull.test.ts (#4908 item 2)
+ * test/bing-pull.test.ts (#4908 item 2; estendido #5128/#5130)
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -16,9 +16,27 @@ import {
   pullBingQueryStats,
   pullBingTrafficStats,
   isoDate,
+  buildBingEndpointUrl,
+  parseBingKeywordTotalResponse,
+  parseBingKeywordRowsResponse,
+  pullBingKeyword,
+  pullBingRelatedKeywords,
+  pullBingKeywordStats,
+  buildBingDemandTerms,
+  buildBingKeywordsPullOutput,
+  BING_LONGTAIL_AI_TERMS,
+  parseBingLinkCountsResponse,
+  parseBingUrlLinksResponse,
+  domainOf,
+  pullBingLinkCounts,
+  pullBingUrlLinks,
+  buildBingLinksPullOutput,
   type BingQueryRow,
   type BingTrafficRow,
+  type BingKeywordTermEntry,
+  type BingLinksPageDetail,
 } from "../scripts/bing-pull.ts";
+import { GEO_HUB_QUESTIONS } from "../scripts/lib/geo-citation-monitor.ts";
 
 describe("parseBingDate (#4908)", () => {
   it("formato .NET /Date(ms)/ → YYYY-MM-DD", () => {
@@ -289,5 +307,276 @@ describe("#4908 — loadProjectEnv() em scope top-level, antes do preflight de c
         "sob systemd --user (sem herdar .env do shell), ler a env var antes de carregar .env falha mesmo " +
         "com a key presente no arquivo.",
     );
+  });
+});
+
+function fakeFetchJson(body: unknown, ok = true, status = 200): typeof fetch {
+  return (async (url: string | URL) => {
+    return { ok, status, json: async () => body, text: async () => JSON.stringify(body), url: String(url) } as unknown as Response;
+  }) as unknown as typeof fetch;
+}
+
+describe("buildBingEndpointUrl (#5128/#5130)", () => {
+  it("monta a URL com params arbitrários + apikey, sem exigir siteUrl fixo", () => {
+    const url = buildBingEndpointUrl("GetKeyword", { q: "ia no brasil", country: "BR", language: "pt-BR" }, "KEY");
+    const parsed = new URL(url);
+    assert.match(url, /^https:\/\/ssl\.bing\.com\/webmaster\/api\.svc\/json\/GetKeyword\?/);
+    assert.equal(parsed.searchParams.get("q"), "ia no brasil");
+    assert.equal(parsed.searchParams.get("country"), "BR");
+    assert.equal(parsed.searchParams.get("language"), "pt-BR");
+    assert.equal(parsed.searchParams.get("apikey"), "KEY");
+  });
+});
+
+describe("parseBingKeywordTotalResponse (#5128) — GetKeyword, shape CONFIRMADO ao vivo em 12/ago/2026", () => {
+  it("{d: {Query, Impressions, BroadImpressions}} — objeto único, o total do período", () => {
+    const parsed = parseBingKeywordTotalResponse({
+      d: { __type: "Keyword:#Microsoft.Bing.Webmaster.Api", Query: "chatgpt", Impressions: 1383455, BroadImpressions: 1491838 },
+    });
+    assert.deepEqual(parsed, { query: "chatgpt", impressions: 1383455, broadImpressions: 1491838 });
+  });
+
+  it("fallback camelCase e resposta já desembrulhada (sem `d`)", () => {
+    assert.deepEqual(parseBingKeywordTotalResponse({ query: "x", impressions: 5, broadImpressions: 7 }), {
+      query: "x",
+      impressions: 5,
+      broadImpressions: 7,
+    });
+  });
+
+  it("shape totalmente inesperado -> zerado, nunca lança", () => {
+    assert.deepEqual(parseBingKeywordTotalResponse(null), { query: "", impressions: 0, broadImpressions: 0 });
+    assert.deepEqual(parseBingKeywordTotalResponse("erro"), { query: "", impressions: 0, broadImpressions: 0 });
+  });
+});
+
+describe("parseBingKeywordRowsResponse (#5128) — GetKeywordStats/GetRelatedKeywords, shape CONFIRMADO ao vivo em 12/ago/2026", () => {
+  it("GetKeywordStats: {d: [{Query,Date,Impressions,BroadImpressions}, ...]} — série do MESMO termo", () => {
+    const rows = parseBingKeywordRowsResponse({
+      d: [{ Query: "chatgpt", Date: "/Date(1786406400000)/", Impressions: 317124, BroadImpressions: 331562 }],
+    });
+    assert.deepEqual(rows, [{ query: "chatgpt", date: "2026-08-11", impressions: 317124, broadImpressions: 331562 }]);
+  });
+
+  it("GetRelatedKeywords: mesma forma de linha SEM Date — termos diferentes, não pontos no tempo", () => {
+    const rows = parseBingKeywordRowsResponse({
+      d: [{ Query: "chatgpt online", Impressions: 3012, BroadImpressions: 5540 }],
+    });
+    assert.equal(rows[0].query, "chatgpt online");
+    assert.equal(rows[0].date, null);
+  });
+
+  it("fallback camelCase e array direto (sem `d`)", () => {
+    const rows = parseBingKeywordRowsResponse([{ query: "x", impressions: 5, broadImpressions: 7 }]);
+    assert.deepEqual(rows, [{ query: "x", date: null, impressions: 5, broadImpressions: 7 }]);
+  });
+
+  it("shape inesperado -> [], nunca lança", () => {
+    assert.deepEqual(parseBingKeywordRowsResponse(null), []);
+    assert.deepEqual(parseBingKeywordRowsResponse({}), []);
+  });
+});
+
+describe("pullBingKeyword / pullBingRelatedKeywords / pullBingKeywordStats (#5128) — fetchImpl injetado", () => {
+  it("pullBingKeyword chama GetKeyword com os 5 params + apikey e retorna data+raw", async () => {
+    let capturedUrl = "";
+    const fetchImpl = (async (url: string | URL) => {
+      capturedUrl = String(url);
+      return { ok: true, status: 200, json: async () => ({ d: { Query: "q", Impressions: 0, BroadImpressions: 0 } }), text: async () => "" } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const { data, raw } = await pullBingKeyword("q", "br", "pt-BR", "2026-07-12", "2026-08-11", "KEY", fetchImpl);
+    assert.equal(data.query, "q");
+    assert.deepEqual(raw, { d: { Query: "q", Impressions: 0, BroadImpressions: 0 } });
+    assert.match(capturedUrl, /GetKeyword/);
+    assert.match(capturedUrl, /startDate=2026-07-12/);
+    assert.match(capturedUrl, /endDate=2026-08-11/);
+    assert.match(capturedUrl, /country=br/);
+  });
+
+  it("pullBingRelatedKeywords chama GetRelatedKeywords e retorna data+raw", async () => {
+    const { data, raw } = await pullBingRelatedKeywords(
+      "q",
+      "br",
+      "pt-BR",
+      "2026-07-12",
+      "2026-08-11",
+      "KEY",
+      fakeFetchJson({ d: [{ Query: "a" }, { Query: "b" }] }),
+    );
+    assert.deepEqual(data.map((r) => r.query), ["a", "b"]);
+    assert.deepEqual(raw, { d: [{ Query: "a" }, { Query: "b" }] });
+  });
+
+  it("pullBingKeywordStats chama GetKeywordStats (sem startDate/endDate) e retorna data+raw", async () => {
+    let capturedUrl = "";
+    const fetchImpl = (async (url: string | URL) => {
+      capturedUrl = String(url);
+      return { ok: true, status: 200, json: async () => ({ d: [] }), text: async () => "" } as unknown as Response;
+    }) as unknown as typeof fetch;
+    await pullBingKeywordStats("q", "br", "pt-BR", "KEY", fetchImpl);
+    assert.match(capturedUrl, /GetKeywordStats/);
+    assert.doesNotMatch(capturedUrl, /startDate/);
+  });
+
+  it("resposta não-ok propaga erro com status + corpo (não engole a falha)", async () => {
+    await assert.rejects(
+      () => pullBingKeyword("q", "br", "pt-BR", "2026-07-12", "2026-08-11", "BADKEY", fakeFetchJson({ Message: "Invalid API key" }, false, 401)),
+      /Bing WMT GetKeyword 401/,
+    );
+  });
+});
+
+describe("buildBingDemandTerms / BING_LONGTAIL_AI_TERMS (#5128 item 3)", () => {
+  it("BING_LONGTAIL_AI_TERMS tem entre 15 e 20 termos, todos não-vazios", () => {
+    assert.ok(BING_LONGTAIL_AI_TERMS.length >= 15 && BING_LONGTAIL_AI_TERMS.length <= 20);
+    for (const t of BING_LONGTAIL_AI_TERMS) assert.ok(t.trim().length > 0);
+  });
+
+  it("buildBingDemandTerms = GEO_HUB_QUESTIONS + BING_LONGTAIL_AI_TERMS, sem sobreposição, sem duplicata", () => {
+    const terms = buildBingDemandTerms();
+    assert.equal(terms.length, GEO_HUB_QUESTIONS.length + BING_LONGTAIL_AI_TERMS.length);
+    for (const q of GEO_HUB_QUESTIONS) assert.ok(terms.includes(q));
+    for (const t of BING_LONGTAIL_AI_TERMS) assert.ok(terms.includes(t));
+    const overlap = GEO_HUB_QUESTIONS.filter((q) => (BING_LONGTAIL_AI_TERMS as readonly string[]).includes(q));
+    assert.deepEqual(overlap, []);
+    assert.equal(new Set(terms).size, terms.length, "termos duplicados entre as duas listas");
+  });
+});
+
+describe("buildBingKeywordsPullOutput (#5128)", () => {
+  it("monta o payload com total_terms batendo e campos repassados tal qual", () => {
+    const entries: BingKeywordTermEntry[] = [
+      {
+        term: "ia generativa",
+        keyword: { ok: true, data: { query: "ia generativa", impressions: 0, broadImpressions: 0 }, raw: {} },
+        related: { ok: true, data: [], raw: [] },
+        stats: { ok: false, error: "boom" },
+      },
+    ];
+    const out = buildBingKeywordsPullOutput("br", "pt-BR", "2026-07-12", "2026-08-11", "2026-08-11", entries);
+    assert.equal(out.country, "br");
+    assert.equal(out.language, "pt-BR");
+    assert.equal(out.start_date, "2026-07-12");
+    assert.equal(out.end_date, "2026-08-11");
+    assert.equal(out.total_terms, 1);
+    assert.deepEqual(out.terms, entries);
+  });
+});
+
+describe("parseBingLinkCountsResponse / parseBingUrlLinksResponse (#5130) — shape CONFIRMADO ao vivo em 12/ago/2026", () => {
+  it("{d: {Links: [...], TotalPages: N}} — objeto único embrulhando o array (diferente do resto do arquivo)", () => {
+    const parsed = parseBingLinkCountsResponse({
+      d: { __type: "LinkCounts:#Microsoft.Bing.Webmaster.Api", Links: [{ Url: "https://diar.ia.br/p/x", Count: 3 }], TotalPages: 1 },
+    });
+    assert.deepEqual(parsed, { rows: [{ url: "https://diar.ia.br/p/x", count: 3 }], totalPages: 1 });
+  });
+
+  it("{d: {Links: [], TotalPages: 0}} — resposta real confirmada pra diar.ia.br/arquivo.diar.ia.br (0 backlinks hoje)", () => {
+    assert.deepEqual(parseBingLinkCountsResponse({ d: { Links: [], TotalPages: 0 } }), { rows: [], totalPages: 0 });
+  });
+
+  it("tolerante a camelCase e shape inesperado -> vazio, nunca lança", () => {
+    assert.deepEqual(parseBingLinkCountsResponse({ links: [{ url: "x", count: 1 }], totalPages: 1 }).rows, [{ url: "x", count: 1 }]);
+    assert.deepEqual(parseBingLinkCountsResponse(null), { rows: [], totalPages: 0 });
+    assert.deepEqual(parseBingLinkCountsResponse({}), { rows: [], totalPages: 0 });
+  });
+
+  it("parseBingUrlLinksResponse: forma (a) objeto embrulhando Links (simetria com GetLinkCounts)", () => {
+    assert.deepEqual(parseBingUrlLinksResponse({ d: { Links: ["https://x.com/a", { Url: "https://y.com/b" }] } }), [
+      "https://x.com/a",
+      "https://y.com/b",
+    ]);
+  });
+
+  it("parseBingUrlLinksResponse: forma (b) array bruto embrulhado em d — não confirmada ao vivo, fallback", () => {
+    assert.deepEqual(parseBingUrlLinksResponse({ d: ["https://x.com/a", { Url: "https://y.com/b" }, {}] }), [
+      "https://x.com/a",
+      "https://y.com/b",
+    ]);
+  });
+
+  it("shape inesperado -> [], nunca lança", () => {
+    assert.deepEqual(parseBingUrlLinksResponse(null), []);
+    assert.deepEqual(parseBingUrlLinksResponse({}), []);
+  });
+});
+
+describe("domainOf (#5130)", () => {
+  it("extrai hostname lowercase de uma URL válida", () => {
+    assert.equal(domainOf("https://WWW.Example.com/path?x=1"), "www.example.com");
+  });
+
+  it("string inválida -> null, nunca lança", () => {
+    assert.equal(domainOf("não é url"), null);
+    assert.equal(domainOf(""), null);
+  });
+});
+
+describe("pullBingLinkCounts / pullBingUrlLinks (#5130) — fetchImpl injetado", () => {
+  it("pullBingLinkCounts chama GetLinkCounts com siteUrl+page e retorna data+raw", async () => {
+    let capturedUrl = "";
+    const fetchImpl = (async (url: string | URL) => {
+      capturedUrl = String(url);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ d: { Links: [{ Url: "https://diar.ia.br/", Count: 1 }], TotalPages: 1 } }),
+        text: async () => "",
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const { data } = await pullBingLinkCounts("https://diar.ia.br/", 0, "KEY", fetchImpl);
+    assert.deepEqual(data, { rows: [{ url: "https://diar.ia.br/", count: 1 }], totalPages: 1 });
+    assert.match(capturedUrl, /GetLinkCounts/);
+    assert.match(capturedUrl, /page=0/);
+  });
+
+  it("pullBingUrlLinks chama GetUrlLinks com siteUrl+url+page e retorna data+raw", async () => {
+    let capturedUrl = "";
+    const fetchImpl = (async (url: string | URL) => {
+      capturedUrl = String(url);
+      return { ok: true, status: 200, json: async () => ({ d: ["https://outro.com/post"] }), text: async () => "" } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const { data } = await pullBingUrlLinks("https://diar.ia.br/", "https://diar.ia.br/p/x", 0, "KEY", fetchImpl);
+    assert.deepEqual(data, ["https://outro.com/post"]);
+    assert.match(capturedUrl, /GetUrlLinks/);
+    assert.match(capturedUrl, /url=https/);
+  });
+});
+
+describe("buildBingLinksPullOutput (#5130 item 2 — SEM scoreOpportunities, só agregação)", () => {
+  const pages: BingLinksPageDetail[] = [
+    { url: "https://diar.ia.br/p/a", count: 2, linkingUrls: ["https://x.com/1", "https://x.com/2"], error: null, raw: [{ d: { Links: ["https://x.com/1", "https://x.com/2"] } }] },
+    { url: "https://diar.ia.br/p/b", count: 1, linkingUrls: ["https://y.com/1"], error: null, raw: [{ d: { Links: ["https://y.com/1"] } }] },
+    { url: "https://diar.ia.br/p/c", count: 0, linkingUrls: [], error: null, raw: [] },
+  ];
+
+  it("agrega domínios distintos (x.com aparece 2x mas conta 1) e total de URLs de link", () => {
+    const out = buildBingLinksPullOutput("https://diar.ia.br/", "2026-08-12", null, pages);
+    assert.equal(out.total_distinct_domains, 2);
+    assert.deepEqual(out.distinct_domains, ["x.com", "y.com"]);
+    assert.equal(out.total_linking_urls, 3);
+    assert.equal(out.total_pages_with_links, 2); // só count > 0
+    assert.equal(out.pages.length, 3); // todas as páginas persistidas, inclusive count=0
+  });
+
+  it("propaga link_counts_error tal qual, sem mascarar a falha", () => {
+    const out = buildBingLinksPullOutput("https://diar.ia.br/", "2026-08-12", "Bing WMT GetLinkCounts 500: boom", []);
+    assert.equal(out.link_counts_error, "Bing WMT GetLinkCounts 500: boom");
+    assert.equal(out.total_distinct_domains, 0);
+  });
+
+  it("distinct_domains vem ordenado (diff estável entre rodadas)", () => {
+    const out = buildBingLinksPullOutput("https://diar.ia.br/", "2026-08-12", null, [
+      { url: "p", count: 2, linkingUrls: ["https://z.com/1", "https://a.com/1"], error: null, raw: [] },
+    ]);
+    assert.deepEqual(out.distinct_domains, ["a.com", "z.com"]);
+  });
+
+  it("persiste raw de GetUrlLinks por página, ao lado do campo parseado (self-review #5158 achado 1)", () => {
+    const rawA = { d: { Links: ["https://x.com/1", "https://x.com/2"] } };
+    const rawEmpty: unknown[] = [];
+    const out = buildBingLinksPullOutput("https://diar.ia.br/", "2026-08-12", null, pages);
+    assert.deepEqual(out.pages[0].raw, [rawA]);
+    assert.deepEqual(out.pages[2].raw, rawEmpty); // count=0 → nenhuma chamada GetUrlLinks feita
   });
 });
