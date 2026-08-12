@@ -1,0 +1,7 @@
+# Mapeamento de projeto/config do Doppler para este repo (#5149).
+# Não contém secrets — só o nome do workspace/config. Permite que qualquer
+# máquina logada (`doppler login`) rode `doppler secrets download`/`doppler run`
+# aqui dentro sem precisar de `doppler setup` interativo. Ver docs/doppler-env-sync.md.
+setup:
+  project: diaria-studio
+  config: dev
