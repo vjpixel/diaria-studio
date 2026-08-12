@@ -14,7 +14,7 @@ não existia no disco até 07/ago, e nenhum `.ps1`/workflow/task o invocava,
 enquanto todas as outras tasks agendadas do repo já seguiam esse padrão. Sem
 cadência o histórico nunca acumula.
 
-## Baseline medido em 07/ago (histórico)
+## Baseline medido em 07/ago (histórico) — obsoleto desde 11/ago, ver abaixo
 
 **0 de 16 consultas citaram** — 8 perguntas × OpenAI + Gemini, sendo 15
 respondidas + 1 erro de rede; `ANTHROPIC_API_KEY` ausente do `.env`, provedor
@@ -24,6 +24,17 @@ de link interno até o #4749.
 Este número fica como registro histórico do ponto de partida da série — não
 recitar como veredito. Ver "Critério de decisão" abaixo pro que orienta ação
 hoje.
+
+## Baseline "zero citação" está obsoleto desde 11/ago/2026 (#5120)
+
+`data/geo-citations/history.jsonl` tem 124 registros, dos quais **3 com
+`cited: true`** — todos de 11/ago, provider `google` (`gemini-2.5-flash`),
+mesma pergunta ("Existe alguma newsletter brasileira que resume as notícias
+de IA todo dia?"), reamostrada 3× no mesmo dia. É **1 acerto repetido**, não
+3 acertos distintos, e é **menção nominal em prosa**, não citação de fonte
+com link (o painel `hubs` segue em 0). Mas "nunca fomos citados" deixou de
+ser factualmente correto a partir desta data — ver Fato 7 de
+`docs/seo-notes.md` para a leitura completa e os 3 snippets transcritos.
 
 ## Critério de decisão: acompanhamento contínuo, não gate de parada (#4901)
 

@@ -14,11 +14,21 @@
  *
  * Uso:
  *   npx tsx scripts/seo-pull.ts [--site sc-domain:diar.ia.br] [--days 28] \
- *     [--out data/seo/gsc-{YYYY-MM-DD}.json]
+ *     [--out data/seo/gsc-{YYYY-MM-DD}.json] [--dimensions page,query,date,country]
  *
  * Exit: 0 ok (grava JSON + opportunities.md); 1 erro de API (ex: scope ausente
  * → mensagem pedindo oauth-setup); 2 erro de uso. Sem GSC verificado → 403 com
  * remediação clara.
+ *
+ * **#5119 — dimensões ampliadas + discover/news.** A chamada principal
+ * (`type: "web"`) ganhou `date` e `country` nas dimensões default (antes só
+ * `page,query`, que devolvia um agregado do período sem série temporal e sem
+ * separar demanda pt-BR — objeto declarado do #4908). Uma 2ª e 3ª chamada,
+ * best-effort e não-fatais (falha registra aviso e segue com `rows: []`, não
+ * derruba a rodada), puxam `type: "discover"` e `type: "news"` — esses dois
+ * tipos não suportam a dimensão `query` na Search Analytics API, só
+ * `page`/`date`/`country`/`device`. Vazio é REGISTRADO (`total_rows: 0,
+ * rows: []`), nunca omitido — é resposta, não ausência de resposta.
  */
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -28,10 +38,19 @@ import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { GSC_DEFAULT_SITE } from "./lib/gsc.ts";
 import { gFetch } from "./google-auth.ts";
 
+/** Dimensões suportadas pelas chamadas deste script (#5119). `query` só é
+ * válida em `type: "web"` — Discover/News não têm dado de query. */
+export type GscDimension = "page" | "query" | "date" | "country";
+
 export interface GscRow {
-  /** keys[] da API: [page] ou [page, query] conforme dimensions. */
+  /** keys[] da API, na MESMA ordem de `dimensions` (achatado por `parseGscResponse`). */
   page: string;
   query?: string;
+  /** YYYY-MM-DD — presente quando `dimensions` inclui `"date"` (#5119 item 2). */
+  date?: string;
+  /** Código de país ISO 3166-1 alpha-3 minúsculo (ex: "bra") — presente quando
+   * `dimensions` inclui `"country"` (#5119 item 3). */
+  country?: string;
   clicks: number;
   impressions: number;
   ctr: number; // 0..1
@@ -98,16 +117,29 @@ export function scoreOpportunities(rows: GscRow[], minImpressions = 50): SeoOppo
 }
 
 /** Parseia a resposta da Search Analytics API em GscRow[] (dimensions [page,query]). */
-export function parseGscResponse(json: unknown): GscRow[] {
+/**
+ * Achata `keys[]` conforme a ORDEM de `dimensions` (#5119 — antes assumia
+ * fixo `[page, query]`; agora `keys[i]` mapeia pra `dimensions[i]`, então
+ * `["page","query","date","country"]` popula os 4 campos correspondentes de
+ * `GscRow`, e `["page","date"]` — usado nos pulls de discover/news, que não
+ * têm dimensão `query` — popula só `page`+`date`).
+ */
+export function parseGscResponse(json: unknown, dimensions: GscDimension[] = ["page", "query"]): GscRow[] {
   const rows = (json as { rows?: unknown[] })?.rows;
   if (!Array.isArray(rows)) return [];
   return rows.map((r) => {
     // (r ?? {}): elemento null/undefined no array não crasha (code-review #1989).
     const row = (r ?? {}) as { keys?: string[]; clicks?: number; impressions?: number; ctr?: number; position?: number };
     const keys = row.keys ?? [];
+    const dims: Partial<Record<GscDimension, string>> = {};
+    dimensions.forEach((d, i) => {
+      if (keys[i] !== undefined) dims[d] = keys[i];
+    });
     return {
-      page: keys[0] ?? "",
-      query: keys[1],
+      page: dims.page ?? "",
+      query: dims.query,
+      date: dims.date,
+      country: dims.country,
       clicks: row.clicks ?? 0,
       impressions: row.impressions ?? 0,
       ctr: row.ctr ?? 0,
@@ -121,12 +153,18 @@ export function isoDate(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-async function pullGsc(site: string, startDate: string, endDate: string): Promise<GscRow[]> {
+async function pullGsc(
+  site: string,
+  startDate: string,
+  endDate: string,
+  dimensions: GscDimension[],
+  type: string,
+): Promise<GscRow[]> {
   const url = `https://www.googleapis.com/webmasters/v3/sites/${encodeURIComponent(site)}/searchAnalytics/query`;
   const res = await gFetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ startDate, endDate, dimensions: ["page", "query"], rowLimit: 5000, type: "web" }),
+    body: JSON.stringify({ startDate, endDate, dimensions, rowLimit: 5000, type }),
   });
   if (!res.ok) {
     const body = await res.text();
@@ -139,9 +177,9 @@ async function pullGsc(site: string, startDate: string, endDate: string): Promis
         `GSC 403 — três causas possíveis: (a) '${site}' não verificado no Search Console, ou esta conta não é usuária dele; (b) scope ausente → re-rode 'npx tsx scripts/oauth-setup.ts' (webmasters, #1989/#4546); (c) a Google Search Console API está desabilitada no projeto GCP → habilite em console.cloud.google.com/apis/library/searchconsole.googleapis.com. Body: ${body.slice(0, 200)}`,
       );
     }
-    throw new Error(`GSC ${res.status}: ${body.slice(0, 200)}`);
+    throw new Error(`GSC ${type} ${res.status}: ${body.slice(0, 200)}`);
   }
-  return parseGscResponse(await res.json());
+  return parseGscResponse(await res.json(), dimensions);
 }
 
 /**
@@ -153,12 +191,42 @@ async function pullGsc(site: string, startDate: string, endDate: string): Promis
  * de `scoreOpportunities` (sem mudar esse contrato — #4908 item 1 é só
  * parar de jogar fora o dado já buscado).
  */
+/** `{total_rows, rows}` de um pull de discover/news (#5119 item 4). Vazio é
+ * um resultado gravado (`total_rows: 0, rows: []`), não um campo ausente —
+ * "não temos impressão no Discover" é resposta, não falta de resposta. */
+export interface GscTypeResult {
+  total_rows: number;
+  rows: GscRow[];
+}
+
+export interface SeoPullOutput {
+  site: string;
+  period: string;
+  total_rows: number;
+  rows: GscRow[];
+  opportunities: SeoOpportunity[];
+  /** `type: "discover"` (#5119 item 4) — sem dimensão `query` (a API não a suporta pra este tipo). */
+  discover: GscTypeResult;
+  /** `type: "news"` (#5119 item 4) — mesma ressalva de `discover`. */
+  news: GscTypeResult;
+}
+
 export function buildSeoPullOutput(
   rows: GscRow[],
   site: string,
   period: string,
-): { site: string; period: string; total_rows: number; rows: GscRow[]; opportunities: SeoOpportunity[] } {
-  return { site, period, total_rows: rows.length, rows, opportunities: scoreOpportunities(rows) };
+  discoverRows: GscRow[] = [],
+  newsRows: GscRow[] = [],
+): SeoPullOutput {
+  return {
+    site,
+    period,
+    total_rows: rows.length,
+    rows,
+    opportunities: scoreOpportunities(rows),
+    discover: { total_rows: discoverRows.length, rows: discoverRows },
+    news: { total_rows: newsRows.length, rows: newsRows },
+  };
 }
 
 function renderOpportunitiesMd(opps: SeoOpportunity[], site: string, period: string): string {
@@ -170,6 +238,12 @@ function renderOpportunitiesMd(opps: SeoOpportunity[], site: string, period: str
   return lines.join("\n") + "\n";
 }
 
+/** Default da chamada principal (`type: "web"`) — #5119: `date`+`country`
+ * entraram pra dar série temporal e separar demanda pt-BR. */
+const DEFAULT_DIMENSIONS: GscDimension[] = ["page", "query", "date", "country"];
+/** Discover/News não suportam `query` na Search Analytics API. */
+const DISCOVER_NEWS_DIMENSIONS: GscDimension[] = ["page", "date"];
+
 async function main(nowMs: number): Promise<number> {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const { values } = parseCliArgs(process.argv.slice(2));
@@ -179,21 +253,57 @@ async function main(nowMs: number): Promise<number> {
   const days = parseInt(String(values["days"] ?? "28"), 10) || 28;
   const endDate = isoDate(nowMs);
   const startDate = isoDate(nowMs - days * 86_400_000);
+  const dimensions = values["dimensions"]
+    ? (String(values["dimensions"]).split(",").map((s) => s.trim()) as GscDimension[])
+    : DEFAULT_DIMENSIONS;
   let rows: GscRow[];
   try {
-    rows = await pullGsc(site, startDate, endDate);
+    rows = await pullGsc(site, startDate, endDate, dimensions, "web");
   } catch (e) {
     console.error(`[seo-pull] ${(e as Error).message}`);
     return 1;
   }
+
+  // #5119 item 4: discover/news são best-effort — uma falha aqui (ex: conta
+  // sem permissão nesse tipo, ou o tipo não existir pra esta propriedade)
+  // não pode derrubar a rodada principal, que já tem o dado que importa.
+  // Vazio é REGISTRADO (rows: []), não omitido — "sem impressão no
+  // Discover" é resposta.
+  let discoverRows: GscRow[] = [];
+  try {
+    discoverRows = await pullGsc(site, startDate, endDate, DISCOVER_NEWS_DIMENSIONS, "discover");
+  } catch (e) {
+    console.error(`[seo-pull] aviso: pull type=discover falhou, seguindo sem esses dados: ${(e as Error).message}`);
+  }
+  let newsRows: GscRow[] = [];
+  try {
+    newsRows = await pullGsc(site, startDate, endDate, DISCOVER_NEWS_DIMENSIONS, "news");
+  } catch (e) {
+    console.error(`[seo-pull] aviso: pull type=news falhou, seguindo sem esses dados: ${(e as Error).message}`);
+  }
+
   const seoDir = resolve(ROOT, "data", "seo");
   if (!existsSync(seoDir)) mkdirSync(seoDir, { recursive: true });
   const period = `${startDate}_${endDate}`;
   const jsonPath = String(values["out"] ?? resolve(seoDir, `gsc-${endDate}.json`));
-  const output = buildSeoPullOutput(rows, site, period);
+  const output = buildSeoPullOutput(rows, site, period, discoverRows, newsRows);
   writeFileSync(jsonPath, JSON.stringify(output, null, 2));
   writeFileSync(resolve(seoDir, `opportunities-${endDate}.md`), renderOpportunitiesMd(output.opportunities, site, period));
-  console.log(JSON.stringify({ site, period, total_rows: output.total_rows, opportunities: output.opportunities.length, out: jsonPath }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        site,
+        period,
+        total_rows: output.total_rows,
+        opportunities: output.opportunities.length,
+        discover_rows: output.discover.total_rows,
+        news_rows: output.news.total_rows,
+        out: jsonPath,
+      },
+      null,
+      2,
+    ),
+  );
   return 0;
 }
 

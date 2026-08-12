@@ -114,13 +114,14 @@ describe("#4900 — staleness é avaliada por painel, não pela última linha do
       ]);
 
     it("#4961: o fingerprint cobre só os painéis STALE — mudar o painel saudável NÃO muda o fingerprint", () => {
-      // `geral` está saudável nas duas chamadas (9 e 16 dias atrás, abaixo do
-      // limiar de 21) mesmo tendo `ts` diferente; `hubs` está parado (null) nas
-      // duas. Antes do #4961 o fingerprint compunha TODOS os painéis e mudava
-      // aqui — que era exatamente o bug (reenvio semanal do alarme de `hubs`
-      // só porque `geral` avançou).
+      // `geral` está saudável nas duas chamadas (9 e 5 dias atrás, abaixo do
+      // limiar de 10 — ver #5117 item 5, baixou de 21) mesmo tendo `ts`
+      // diferente; `hubs` está parado (null) nas duas. Antes do #4961 o
+      // fingerprint compunha TODOS os painéis e mudava aqui — que era
+      // exatamente o bug (reenvio semanal do alarme de `hubs` só porque
+      // `geral` avançou).
       const a = mk("2026-08-23T07:00:00.000Z", null);
-      const b = mk("2026-08-16T07:00:00.000Z", null);
+      const b = mk("2026-08-27T07:00:00.000Z", null);
       assert.equal(a.fingerprint, b.fingerprint, "painel saudável mudando de ts não deve mudar o fingerprint");
       assert.doesNotMatch(a.fingerprint, /geral:/, "painel saudável não entra no fingerprint");
       assert.match(a.fingerprint, /hubs:/);
