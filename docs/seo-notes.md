@@ -66,7 +66,7 @@ setembro ainda houver 10 (ou mais) nesse estado com `lastCrawlTime` **recente**
 (pós-agosto), aí sim vira investigação — `lastCrawlTime` antigo persistindo é
 esperado, `lastCrawlTime` novo com o mesmo sintoma não seria.
 
-## Fato 3 — `/temas/` ganhou `lastmod`/`Last-Modified`/`ETag`, entrou na checagem de indexação, Bing WMT fechou ao vivo; IndexNow segue com o ping automático de deploy pendente (10-11/ago/2026, #4909)
+## Fato 3 — `/temas/` ganhou `lastmod`/`Last-Modified`/`ETag`, entrou na checagem de indexação, Bing WMT e IndexNow fechados (10-11/ago/2026, #4909)
 
 Achado de auditoria (#4909, Refs #4558): o sitemap do Worker `arquivo`
 (`arquivo.diar.ia.br/sitemap.xml`) não emitia `<lastmod>`, `GET
@@ -102,20 +102,20 @@ esperado (armadilha: o primeiro `curl` logo após o `secret put` deu 404 —
 propagação de var pelo edge, ~1 min; não é bug). O ping **manual** via CLI das
 4 URLs de hub foi testado ao vivo → `api.indexnow.org` respondeu 202 (aceito).
 
-**O que ainda falta, e é a única pendência real desta issue:** o workflow
-(`deploy-arquivo.yml:94`) lê a chave de `${{ secrets.INDEXNOW_KEY }}` — um
-**secret separado do repositório no GitHub Actions**, não o secret do Worker
-acima (são dois lugares distintos que precisam da MESMA string, achado
-original do #4909). Confirmado em 11/ago/2026 via `gh secret list`: esse
-secret **não existe** no repo. Resultado: todo deploy de `arquivo` que tocar
-um `.generated.ts` cai no gate "`INDEXNOW_KEY` ausente" e sai sem pingar,
-silenciosamente (não quebra o deploy — só não pinga). O ping automático a
-cada deploy, que é o item 2 pedido pela issue original, **não está
-funcional ainda** — só o CLI manual foi validado. Ação: `gh secret set
-INDEXNOW_KEY` com o MESMO valor usado no `wrangler secret put` do Worker (o
-valor não está recuperável do Worker, que é write-only — se ele não estiver
-anotado em algum lugar seguro, mais simples gerar uma chave nova e
-reprovisionar as duas pontas juntas).
+**Fechado (11/ago/2026):** o workflow (`deploy-arquivo.yml:94`) lê a chave de
+`${{ secrets.INDEXNOW_KEY }}` — um **secret separado do repositório no
+GitHub Actions**, não o secret do Worker acima (são dois lugares distintos
+que precisam da MESMA string, achado original do #4909). `gh secret list`
+confirmou que esse secret nunca existiu no repo — todo deploy de `arquivo`
+que tocasse um `.generated.ts` caía no gate "`INDEXNOW_KEY` ausente" e saía
+sem pingar, silenciosamente. Como o valor não é recuperável do secret do
+Worker (write-only), as duas pontas foram regeneradas juntas com uma chave
+nova: `wrangler secret put INDEXNOW_KEY` no Worker `arquivo` + `gh secret
+set INDEXNOW_KEY` no repo, mesma string nos dois. Revalidado ao vivo: `GET
+https://arquivo.diar.ia.br/{chave}.txt` → 200, corpo = a chave. O ping
+automático de deploy passa a funcionar a partir do próximo push que tocar
+um `.generated.ts` — o POST em si não foi disparado manualmente (guard do
+docstring de `ping-indexnow.ts`, só o workflow chama o endpoint real).
 
 **Item 3 (Bing Webmaster Tools) — fechado ao vivo (11/ago/2026):** o import do
 GSC não funcionou (a conta só tinha propriedade de domínio `sc-domain:`, que o
@@ -142,10 +142,8 @@ automatizar isto de novo cai nelas):
    confirmação — sempre conferir com `GetUserSites`.
 
 `BING_WEBMASTER_API_KEY` está no `.env` do editor (gitignored) e documentada
-em `.env.example`. Item 3 (Bing WMT) e item 1 (lastmod/ETag) fechados sem
-pendência. **Item 2 (IndexNow) segue com uma pendência real** — ver acima:
-falta o secret `INDEXNOW_KEY` no GitHub Actions do repo pro ping automático
-de deploy funcionar.
+em `.env.example`. Item 3 (Bing WMT), item 1 (lastmod/ETag) e item 2
+(IndexNow, ver acima) fechados sem pendência.
 
 ## Quando adicionar entry aqui
 
