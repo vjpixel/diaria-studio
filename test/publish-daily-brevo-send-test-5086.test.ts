@@ -1,0 +1,424 @@
+/**
+ * test/publish-daily-brevo-send-test-5086.test.ts (#5086)
+ *
+ * Teste de integração de ponta a ponta pra `main()` de `publish-daily-brevo.ts`
+ * cobrindo a flag `--send-test`/`--send-test-to` (espelha `publish-monthly.ts`,
+ * ver docstring do módulo). As checagens de unidade dos guards puros
+ * (`checkSendTestGuards`/`resolveSendTestRecipient`) vivem em
+ * `publish-daily-brevo-4266.test.ts`; este arquivo cobre o WIRING —
+ * `POST /emailCampaigns/{id}/sendTest` de fato disparado com o payload certo
+ * DEPOIS do rascunho criado, e o estado persistido em
+ * `<edition-dir>/_internal/brevo-diaria-published.json`.
+ *
+ * Mesma estrutura de fixture/router mockado de
+ * `publish-daily-brevo-integration-4532.test.ts` (não importado daqui —
+ * mesmo padrão de duplicação já usado entre os testes de integração deste
+ * script; cada arquivo de teste de integração no repo monta seu próprio
+ * router, ver también select-linkedin-weekly-integration.test.ts).
+ *
+ * GUARD DE PUBLICAÇÃO: nenhuma chamada de rede real acontece aqui —
+ * `globalThis.fetch` é sempre mockado, nunca a Brevo real.
+ */
+
+import { describe, it, before, after, beforeEach, afterEach } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { main, type BrevoDiariaPublished } from "../scripts/publish-daily-brevo.ts";
+
+const LIST_ID = 42;
+const API_KEY_ENV = "TEST_BREVO_DIARIA_API_KEY_5086";
+const API_KEY = "fake_brevo_key";
+const EDITION_DATE = "260812";
+
+const originalExit = process.exit;
+const originalArgv = process.argv;
+const ENV_KEYS = [API_KEY_ENV, "POLL_SECRET", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_WORKERS_TOKEN"] as const;
+const savedEnv: Record<string, string | undefined> = {};
+
+let exitCode: number | null = null;
+
+function mockProcessExit(): void {
+  exitCode = null;
+  // @ts-expect-error mocking
+  process.exit = (code?: number) => {
+    exitCode = code ?? 0;
+    throw new Error("__mocked_exit__");
+  };
+}
+
+function restoreProcessExit(): void {
+  process.exit = originalExit;
+}
+
+before(() => {
+  for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
+});
+
+after(() => {
+  process.argv = originalArgv;
+  for (const k of ENV_KEYS) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
+});
+
+function mkTmpRoot(): string {
+  return mkdtempSync(join(tmpdir(), "publish-daily-brevo-send-test-"));
+}
+
+function writePlatformConfig(root: string, overrides: Record<string, unknown> = {}): void {
+  const cfg = {
+    brevo_diaria: {
+      api_key_env: API_KEY_ENV,
+      list_id: LIST_ID,
+      sender_email: "editor@diar.ia.br",
+      sender_name: "diar.ia.br",
+      daily_send_cap: 300,
+      test_email: "vjpixel@gmail.com",
+      ...overrides,
+    },
+  };
+  writeFileSync(join(root, "platform.config.json"), JSON.stringify(cfg), "utf8");
+}
+
+/** Mesmo fixture mínimo de publish-daily-brevo-integration-4532.test.ts. */
+const REVIEWED_MD = [
+  "**DESTAQUE 1 | LANÇAMENTO**",
+  "",
+  "**[Título um](https://example.com/1)**",
+  "",
+  "Corpo do destaque um com contexto suficiente pra render.",
+  "",
+  "Por que isso importa: razão um.",
+  "",
+  "---",
+  "",
+  "**DESTAQUE 2 | RADAR**",
+  "",
+  "**[Título dois](https://example.com/2)**",
+  "",
+  "Corpo dois.",
+  "",
+  "Por que isso importa: razão dois.",
+  "",
+].join("\n");
+
+function writeEdition(root: string, date: string): void {
+  const dir = join(root, "data/editions", date);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "02-reviewed.md"), REVIEWED_MD, "utf8");
+  writeFileSync(join(dir, "01-eia.md"), "Foto: Author / CC BY-SA 4.0.", "utf8");
+}
+
+function jsonRes(status: number, body: unknown): Response {
+  const text = JSON.stringify(body);
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (name: string) => (name.toLowerCase() === "content-type" ? "application/json" : null) },
+    text: async () => text,
+    json: async () => body,
+    body: { cancel: async () => {} },
+  } as unknown as Response;
+}
+
+function noContentRes(status = 204): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: () => null },
+    text: async () => "",
+    body: { cancel: async () => {} },
+  } as unknown as Response;
+}
+
+interface Call {
+  method: string;
+  hostname: string;
+  pathname: string;
+  body: unknown;
+}
+
+let calls: Call[] = [];
+let originalFetch: typeof fetch;
+
+function installRouter(opts: { totalSubscribers: number; contactsPages: Array<Array<{ email?: string; attributes?: Record<string, unknown> }>> }): void {
+  calls = [];
+  const { totalSubscribers, contactsPages } = opts;
+  globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const method = init?.method ?? "GET";
+    const body = init?.body
+      ? typeof init.body === "string"
+        ? (() => {
+            try {
+              return JSON.parse(init.body as string);
+            } catch {
+              return init.body;
+            }
+          })()
+        : init.body
+      : undefined;
+    calls.push({ method, hostname: url.hostname, pathname: url.pathname, body });
+
+    if (url.hostname === "api.brevo.com") {
+      if (method === "GET" && url.pathname === `/v3/contacts/lists/${LIST_ID}`) {
+        return jsonRes(200, { id: LIST_ID, name: "diária", totalSubscribers });
+      }
+      if (method === "GET" && url.pathname === "/v3/contacts/attributes") {
+        return jsonRes(200, { attributes: [{ name: "POLL_TOKEN", category: "normal", type: "text" }] });
+      }
+      if (method === "POST" && url.pathname === "/v3/contacts/attributes/normal/POLL_TOKEN") {
+        return jsonRes(201, { name: "POLL_TOKEN" });
+      }
+      if (method === "GET" && url.pathname === `/v3/contacts/lists/${LIST_ID}/contacts`) {
+        const offset = Number(url.searchParams.get("offset") ?? "0");
+        const limit = Number(url.searchParams.get("limit") ?? "50");
+        const pageIdx = offset / limit;
+        const page = contactsPages[pageIdx] ?? [];
+        return jsonRes(200, { contacts: page, count: contactsPages.flat().length });
+      }
+      if (method === "PUT" && url.pathname.startsWith("/v3/contacts/") && !url.pathname.startsWith("/v3/contacts/lists")) {
+        return noContentRes(204);
+      }
+      if (method === "POST" && url.pathname === "/v3/emailCampaigns") {
+        return jsonRes(201, { id: 999 });
+      }
+      if (method === "POST" && url.pathname === "/v3/emailCampaigns/999/sendTest") {
+        return jsonRes(204, {});
+      }
+    }
+    if (url.hostname === "api.cloudflare.com" && method === "PUT" && url.pathname.includes("/storage/kv/namespaces/")) {
+      return jsonRes(200, { success: true, result: {} });
+    }
+    throw new Error(`unexpected fetch: ${method} ${url.hostname}${url.pathname}${url.search}`);
+  }) as typeof fetch;
+}
+
+function setAllCredentials(): void {
+  process.env[API_KEY_ENV] = API_KEY;
+  process.env.POLL_SECRET = "test_poll_secret";
+  process.env.CLOUDFLARE_ACCOUNT_ID = "acct";
+  process.env.CLOUDFLARE_WORKERS_TOKEN = "kvtoken";
+}
+
+const SIX_CONTACTS = [
+  { email: "ok@x.com", attributes: {} },
+  { email: "ok2@x.com", attributes: {} },
+  { email: "ok3@x.com", attributes: {} },
+  { email: "ok4@x.com", attributes: {} },
+  { email: "ok5@x.com", attributes: {} },
+  { email: "ok6@x.com", attributes: {} },
+];
+
+beforeEach(() => {
+  originalFetch = globalThis.fetch;
+});
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+  restoreProcessExit();
+  process.exitCode = undefined;
+});
+
+describe("publish-daily-brevo.ts main() — --send-test (#5086)", () => {
+  it("--send-test sem --send-test-to nem test_email configurado → aborta ANTES de qualquer fetch (exit 1), nunca cria a campanha", async () => {
+    const root = mkTmpRoot();
+    try {
+      writePlatformConfig(root, { test_email: null });
+      writeEdition(root, EDITION_DATE);
+      setAllCredentials();
+      installRouter({ totalSubscribers: 6, contactsPages: [SIX_CONTACTS] });
+      process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy", "--send-test"];
+      mockProcessExit();
+
+      await assert.rejects(main(root), /__mocked_exit__/);
+      assert.equal(exitCode, 1, "guard de --send-test sem destinatário deveria abortar com exit(1)");
+      assert.equal(calls.length, 0, "nenhuma chamada de rede deveria ter acontecido — guard é pré-await");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--send-test-to sem --send-test → aborta ANTES de qualquer fetch (exit 1)", async () => {
+    const root = mkTmpRoot();
+    try {
+      writePlatformConfig(root);
+      writeEdition(root, EDITION_DATE);
+      setAllCredentials();
+      installRouter({ totalSubscribers: 6, contactsPages: [SIX_CONTACTS] });
+      process.argv = [
+        "node",
+        "publish-daily-brevo.ts",
+        `data/editions/${EDITION_DATE}`,
+        "--i-reviewed-the-copy",
+        "--send-test-to",
+        "outro@example.com",
+      ];
+      mockProcessExit();
+
+      await assert.rejects(main(root), /__mocked_exit__/);
+      assert.equal(exitCode, 1);
+      assert.equal(calls.length, 0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--dry-run --send-test: loga o destinatário resolvido, mas NUNCA chama sendTest nem cria campanha", async () => {
+    const root = mkTmpRoot();
+    try {
+      writePlatformConfig(root);
+      writeEdition(root, EDITION_DATE);
+      installRouter({ totalSubscribers: 6, contactsPages: [SIX_CONTACTS] });
+      process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--dry-run", "--send-test"];
+      mockProcessExit();
+
+      await main(root);
+
+      assert.equal(exitCode, null, "dry-run não deveria abortar");
+      assert.equal(calls.length, 0, "--dry-run nunca toca a rede, mesmo com --send-test");
+      const publishedPath = join(root, "data/editions", EDITION_DATE, "_internal/brevo-diaria-published.json");
+      assert.equal(existsSync(publishedPath), false, "--dry-run não persiste estado de teste");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--send-test com destinatário via brevo_diaria.test_email (default): cria a campanha, dispara sendTest, persiste estado", async () => {
+    const root = mkTmpRoot();
+    try {
+      writePlatformConfig(root, { test_email: "vjpixel@gmail.com" });
+      writeEdition(root, EDITION_DATE);
+      setAllCredentials();
+      installRouter({ totalSubscribers: 6, contactsPages: [SIX_CONTACTS] });
+      process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy", "--send-test"];
+      mockProcessExit();
+
+      await main(root);
+
+      assert.equal(exitCode, null, "não deveria ter chamado process.exit em nenhum momento");
+
+      const campaignCall = calls.find((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns");
+      assert.ok(campaignCall, "POST /emailCampaigns deveria ter sido disparado");
+
+      const sendTestCall = calls.find((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns/999/sendTest");
+      assert.ok(sendTestCall, `POST /emailCampaigns/999/sendTest deveria ter sido disparado: ${JSON.stringify(calls)}`);
+      assert.deepEqual((sendTestCall!.body as { emailTo: string[] }).emailTo, ["vjpixel@gmail.com"]);
+
+      // Ordem: sendTest só depois da campanha já existir.
+      const campaignIdx = calls.indexOf(campaignCall!);
+      const sendTestIdx = calls.indexOf(sendTestCall!);
+      assert.ok(sendTestIdx > campaignIdx, "sendTest deveria ser chamado DEPOIS da campanha criada");
+
+      const publishedPath = join(root, "data/editions", EDITION_DATE, "_internal/brevo-diaria-published.json");
+      assert.ok(existsSync(publishedPath), "estado do teste deveria ter sido persistido");
+      const published = JSON.parse(readFileSync(publishedPath, "utf8")) as BrevoDiariaPublished;
+      assert.equal(published.campaign_id, 999);
+      assert.equal(published.status, "test_sent");
+      assert.equal(published.test_email, "vjpixel@gmail.com");
+      assert.equal(published.list_id, LIST_ID);
+      assert.ok(published.test_sent_at, "test_sent_at deveria estar presente");
+      assert.ok(!Number.isNaN(Date.parse(published.test_sent_at)), "test_sent_at deveria ser um timestamp ISO válido");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--send-test-to sobrepõe brevo_diaria.test_email (prioridade #5086)", async () => {
+    const root = mkTmpRoot();
+    try {
+      writePlatformConfig(root, { test_email: "default@example.com" });
+      writeEdition(root, EDITION_DATE);
+      setAllCredentials();
+      installRouter({ totalSubscribers: 6, contactsPages: [SIX_CONTACTS] });
+      process.argv = [
+        "node",
+        "publish-daily-brevo.ts",
+        `data/editions/${EDITION_DATE}`,
+        "--i-reviewed-the-copy",
+        "--send-test",
+        "--send-test-to",
+        "override@example.com",
+      ];
+      mockProcessExit();
+
+      await main(root);
+
+      assert.equal(exitCode, null);
+      const sendTestCall = calls.find((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns/999/sendTest");
+      assert.ok(sendTestCall);
+      assert.deepEqual((sendTestCall!.body as { emailTo: string[] }).emailTo, ["override@example.com"]);
+
+      const publishedPath = join(root, "data/editions", EDITION_DATE, "_internal/brevo-diaria-published.json");
+      const published = JSON.parse(readFileSync(publishedPath, "utf8")) as BrevoDiariaPublished;
+      assert.equal(published.test_email, "override@example.com");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#5086 self-review: --send-test-to ANTES do <edition-dir> posicional não rouba o slot do edition-dir (regressão do argv.find ingênuo)", async () => {
+    // Antes deste fix, `editionDirArg = argv.find((a) => !a.startsWith("--"))`
+    // casava com o PRIMEIRO token sem "--" em qualquer posição do argv — com
+    // `--send-test-to <email>` introduzindo o 1º flag-de-valor deste script,
+    // `--send-test-to voce@x.com <edition-dir>` resolvia editionDirArg como
+    // "voce@x.com" (o valor do flag), não o path da edição. Fix: usa
+    // `parseCliArgs(argv).positional[0]`, que já separa flag-values de
+    // positional corretamente (mesmo parser usado por --send-test-to).
+    const root = mkTmpRoot();
+    try {
+      writePlatformConfig(root);
+      writeEdition(root, EDITION_DATE);
+      setAllCredentials();
+      installRouter({ totalSubscribers: 6, contactsPages: [SIX_CONTACTS] });
+      process.argv = [
+        "node",
+        "publish-daily-brevo.ts",
+        "--send-test-to",
+        "override@example.com",
+        `data/editions/${EDITION_DATE}`,
+        "--i-reviewed-the-copy",
+        "--send-test",
+      ];
+      mockProcessExit();
+
+      await main(root);
+
+      assert.equal(exitCode, null, "edition-dir deveria ter sido resolvido corretamente, sem abortar");
+      assert.ok(
+        calls.some((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns"),
+        "campanha deveria ter sido criada — se editionDirArg tivesse virado 'override@example.com', extractContent teria lançado antes de qualquer fetch",
+      );
+      const sendTestCall = calls.find((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns/999/sendTest");
+      assert.deepEqual((sendTestCall!.body as { emailTo: string[] }).emailTo, ["override@example.com"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("sem --send-test: comportamento anterior ao #5086 preservado — nenhum sendTest disparado, nenhum brevo-diaria-published.json escrito", async () => {
+    const root = mkTmpRoot();
+    try {
+      writePlatformConfig(root);
+      writeEdition(root, EDITION_DATE);
+      setAllCredentials();
+      installRouter({ totalSubscribers: 6, contactsPages: [SIX_CONTACTS] });
+      process.argv = ["node", "publish-daily-brevo.ts", `data/editions/${EDITION_DATE}`, "--i-reviewed-the-copy"];
+      mockProcessExit();
+
+      await main(root);
+
+      assert.equal(exitCode, null);
+      assert.ok(calls.some((c) => c.method === "POST" && c.pathname === "/v3/emailCampaigns"));
+      assert.ok(!calls.some((c) => c.pathname.endsWith("/sendTest")), "sendTest nunca deveria ser chamado sem --send-test");
+
+      const publishedPath = join(root, "data/editions", EDITION_DATE, "_internal/brevo-diaria-published.json");
+      assert.equal(existsSync(publishedPath), false, "sem --send-test, nenhum arquivo de estado novo deveria existir (#5086 não-escopo)");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

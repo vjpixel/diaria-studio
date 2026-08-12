@@ -218,13 +218,22 @@ agenda (ainda não existe flag `--schedule-at`/`--send-now` em
 `publish-daily-brevo.ts`; ver Passo 7 pro caminho atual). Reporte ao editor:
 
 - **Campaign id** (`campanha criada: id=N ...`, impresso no stderr).
-- Se o editor quiser mandar um e-mail de teste antes de agendar: **gap
-  conhecido** — `publish-daily-brevo.ts` não tem `--send-test` (diferente de
-  `publish-monthly.ts`, que já tem essa flag). O caminho hoje é chamar a API
-  Brevo direto (`POST /emailCampaigns/{id}/sendTest {emailTo: [...]}`) ou pela
-  UI do painel — não inventar um mecanismo novo aqui, só informar a lacuna
-  (ver comentário 2026-08-04 da issue #4580 — fechar esse gap é unidade de
-  trabalho separada, não desta skill).
+- Se o editor quiser mandar um e-mail de teste antes de agendar
+  (`--send-test`, #5086 — espelha `publish-monthly.ts`): rode
+
+  ```bash
+  npx tsx scripts/publish-daily-brevo.ts <edition-dir> --i-reviewed-the-copy --send-test
+  ```
+
+  Dispara `POST /emailCampaigns/{id}/sendTest` DEPOIS de criar o rascunho, pro
+  destinatário default (`brevo_diaria.test_email` em `platform.config.json` —
+  hoje `vjpixel@gmail.com`). Pra outro destinatário, acrescente
+  `--send-test-to <email>` (sobrepõe o default). Sem nenhum dos dois
+  configurados, o script recusa ANTES de qualquer chamada de rede — nunca
+  dispara `sendTest` sem destinatário resolvido. O envio de teste fica
+  registrado em `<edition-dir>/_internal/brevo-diaria-published.json`
+  (`test_email` + `test_sent_at`) — só quando `--send-test` de fato dispara;
+  criar o rascunho sem `--send-test` continua sem esse arquivo.
 
 ## Passo 7 — Agendar a campanha (#4980, 260811)
 
@@ -257,8 +266,6 @@ confirmado por essa releitura, não o que foi enviado no PUT.
   (`sync-pending-to-brevo.ts`) — issue #4632, fechada `NOT_PLANNED` em
   260805 (sem gate automático implementado; ver "Origem/tema do backfill" no
   Passo 2 pro estado atual e a mitigação manual).
-- Adicionar `--send-test` a `publish-daily-brevo.ts` — gap conhecido (ver
-  Passo 6), não fechado aqui.
 - Adicionar `--schedule-at` a `publish-daily-brevo.ts` — gap conhecido (ver
   Passo 7 e issue #4980), não fechado aqui; o agendamento hoje passa por
   chamada direta à API, não pelo script.

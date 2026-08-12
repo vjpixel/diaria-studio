@@ -18,6 +18,8 @@ import {
   checkBrevoDiariaGuards,
   checkPollTokenGuards,
   checkContactCountReconciliation,
+  checkSendTestGuards,
+  resolveSendTestRecipient,
   resolvePublicImagesPath,
   stripGreetingAndSupporterBlocks,
 } from "../scripts/publish-daily-brevo.ts";
@@ -308,6 +310,68 @@ describe("checkContactCountReconciliation — reconciliação enumeração×list
 
   it("ambos 0 (lista genuinamente vazia) → ok, não é divergência", () => {
     assert.deepEqual(checkContactCountReconciliation(0, 0), { ok: true });
+  });
+});
+
+describe("checkSendTestGuards — guards de --send-test/--send-test-to (#5086)", () => {
+  it("--send-test ausente → ok independente de --send-test-to/test_email (n/a)", () => {
+    assert.deepEqual(
+      checkSendTestGuards({ sendTest: false, sendTestTo: undefined, testEmail: undefined }),
+      { ok: true },
+    );
+  });
+
+  it("--send-test-to sem --send-test → not ok, motivo cita a dependência", () => {
+    const result = checkSendTestGuards({ sendTest: false, sendTestTo: "a@b.com", testEmail: null });
+    assert.equal(result.ok, false);
+    assert.match((result as { ok: false; reason: string }).reason, /--send-test-to requer --send-test/);
+  });
+
+  it("--send-test com --send-test-to em formato inválido → not ok", () => {
+    const result = checkSendTestGuards({ sendTest: true, sendTestTo: "não-é-email", testEmail: null });
+    assert.equal(result.ok, false);
+    assert.match((result as { ok: false; reason: string }).reason, /--send-test-to inválido/);
+  });
+
+  it("--send-test sem --send-test-to e sem brevo_diaria.test_email → not ok, motivo explica as 2 formas de resolver", () => {
+    const result = checkSendTestGuards({ sendTest: true, sendTestTo: undefined, testEmail: null });
+    assert.equal(result.ok, false);
+    const reason = (result as { ok: false; reason: string }).reason;
+    assert.match(reason, /--send-test-to/);
+    assert.match(reason, /brevo_diaria\.test_email/);
+  });
+
+  it("--send-test sem brevo_diaria.test_email configurado (undefined, não só null) → not ok", () => {
+    const result = checkSendTestGuards({ sendTest: true, sendTestTo: undefined, testEmail: undefined });
+    assert.equal(result.ok, false);
+  });
+
+  it("--send-test com --send-test-to válido, sem test_email configurado → ok (flag basta)", () => {
+    assert.deepEqual(
+      checkSendTestGuards({ sendTest: true, sendTestTo: "editor@example.com", testEmail: undefined }),
+      { ok: true },
+    );
+  });
+
+  it("--send-test sem --send-test-to, mas com brevo_diaria.test_email configurado → ok (fallback)", () => {
+    assert.deepEqual(
+      checkSendTestGuards({ sendTest: true, sendTestTo: undefined, testEmail: "vjpixel@gmail.com" }),
+      { ok: true },
+    );
+  });
+});
+
+describe("resolveSendTestRecipient — prioridade --send-test-to > brevo_diaria.test_email (#5086)", () => {
+  it("--send-test-to presente → usa ele, mesmo com test_email também presente", () => {
+    assert.equal(resolveSendTestRecipient("override@example.com", "default@example.com"), "override@example.com");
+  });
+
+  it("--send-test-to ausente → cai pro test_email", () => {
+    assert.equal(resolveSendTestRecipient(undefined, "default@example.com"), "default@example.com");
+  });
+
+  it("nenhum dos dois definido → lança (contrato violado — checkSendTestGuards deveria ter abortado antes)", () => {
+    assert.throws(() => resolveSendTestRecipient(undefined, null), /checkSendTestGuards deveria ter abortado/);
   });
 });
 

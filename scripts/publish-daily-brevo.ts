@@ -46,15 +46,19 @@
  *      `--schedule-at`, fica como rascunho na conta Brevo (mesma cautela do
  *      publisher mensal: nunca dispara sozinho).
  *
- * Exit codes: 1 uso/erro fatal genérico; 2 guard de `--i-reviewed-the-copy`
- * ou `brevo_diaria`/config ausente; 3 cap diário excedido; 4 credenciais do
- * token de voto ausentes; 5 falha ao injetar o token em ≥1 contato; 6
- * divergência entre a enumeração e `listInfo.totalSubscribers` (#4532); 7
- * assunto vazio/em branco (`content.title` ausente, #4588).
+ * Exit codes: 1 uso/erro fatal genérico (inclui guards de `--send-test`/
+ * `--send-test-to` — sempre pré-`await`, ver #5086 abaixo); 2 guard de
+ * `--i-reviewed-the-copy` ou `brevo_diaria`/config ausente; 3 cap diário
+ * excedido; 4 credenciais do token de voto ausentes; 5 falha ao injetar o
+ * token em ≥1 contato; 6 divergência entre a enumeração e
+ * `listInfo.totalSubscribers` (#4532); 7 assunto vazio/em branco
+ * (`content.title` ausente, #4588).
  *
  * Uso:
  *   npx tsx scripts/publish-daily-brevo.ts <edition-dir> --dry-run
  *   npx tsx scripts/publish-daily-brevo.ts <edition-dir> --i-reviewed-the-copy
+ *   npx tsx scripts/publish-daily-brevo.ts <edition-dir> --i-reviewed-the-copy \
+ *     --send-test [--send-test-to <email>]
  *
  * `--i-reviewed-the-copy`: obrigatória pra qualquer ação fora de `--dry-run`
  * — confirmação explícita de que o editor revisou a cópia RASCUNHO do bloco
@@ -62,6 +66,18 @@
  * no próprio arquivo). Sem ela, o script recusa criar a campanha (mesmo em
  * modo "só draft") — a issue #4266 tratou esse bloco como decisão de
  * compliance, não um detalhe de copy qualquer.
+ *
+ * `--send-test` (#5086, espelha `publish-monthly.ts`): depois de criar o
+ * rascunho, dispara `POST /emailCampaigns/{id}/sendTest` pro destinatário
+ * resolvido (`--send-test-to <email>`, senão `brevo_diaria.test_email` de
+ * `platform.config.json`). Sem nenhum dos dois, o script recusa ANTES de
+ * qualquer chamada de rede (`checkSendTestGuards`) — nunca manda `sendTest`
+ * pra um destinatário indefinido. `--send-test-to` sem `--send-test` também é
+ * rejeitado (mesma regra do publisher mensal). Registra o envio em
+ * `<edition-dir>/_internal/brevo-diaria-published.json` (`test_email` +
+ * `test_sent_at`) — só quando `--send-test` de fato dispara; a criação do
+ * rascunho SEM `--send-test` continua sem nenhum arquivo de estado novo
+ * (comportamento anterior ao #5086 preservado).
  *
  * Sem `--send-now`/`--schedule-at` (#4398 review: removida a menção no uso
  * acima — o script nunca implementou essa flag; a campanha sempre sai como
@@ -79,7 +95,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { hasFlag, isMainModule, getStringArg, parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 import { extractContent, type NewsletterContent } from "./lib/newsletter-parse.ts";
 import { renderHTMLWithWarnings, type RenderWarningEvent } from "./lib/newsletter-render-html.ts"; // #4687
 import { buildFilenameMap, substituteImagePlaceholders, type PublicImagesFile } from "./substitute-image-urls.ts";
@@ -96,9 +112,30 @@ interface BrevoDiariaConfig {
   sender_email: string | null;
   sender_name: string;
   daily_send_cap: number;
+  /** #5086 — destinatário default de `--send-test` quando `--send-test-to`
+   * não é passado. Ausente/null é válido (config antiga, ou editor ainda não
+   * configurou) — nesse caso `--send-test` sem `--send-test-to` é rejeitado
+   * por `checkSendTestGuards`, nunca cai num `emailTo: [undefined]`. */
+  test_email?: string | null;
 }
 interface PlatformConfig {
   brevo_diaria?: BrevoDiariaConfig;
+}
+
+/** #5086 — mirror mínimo de `MonthlyPublished` (`publish-monthly.ts`), escrito
+ * só quando `--send-test` de fato dispara (ver docstring do módulo). Não
+ * tenta ser um registro completo de publicação como o mensal (sem
+ * `--send-now`/`--schedule-at` aqui ainda, #4980) — cobre só o que a issue
+ * #5086 pediu: um rastro persistido do envio de teste. */
+export interface BrevoDiariaPublished {
+  campaign_id: number;
+  subject: string;
+  preview_text: string;
+  status: "test_sent";
+  list_id: number;
+  test_email: string;
+  test_sent_at: string;
+  created_at: string;
 }
 
 /** `06-public-images.json` vive na RAIZ da edição (produzido por
@@ -296,6 +333,61 @@ export function checkPollTokenGuards(params: {
 }
 
 /**
+ * Pura (#5086) — guards de `--send-test`/`--send-test-to`, checados ANTES de
+ * qualquer `await` de rede (mesmo espírito de `checkSubjectNotEmpty`: o
+ * editor deve ver o erro cedo, não só quando o script já criou metade do
+ * estado). Espelha as 2 validações equivalentes de `publish-monthly.ts`
+ * (`--send-test-to` requer `--send-test`; formato de e-mail básico), mais uma
+ * 3ª que o mensal não precisa: ali `brevo.test_email` é sempre uma string
+ * (contrato de `BrevoConfig`); aqui `test_email` é opcional
+ * (`BrevoDiariaConfig`, campo novo) — sem ele e sem `--send-test-to`, o
+ * script recusaria mandar `sendTest` pra um destinatário indefinido.
+ */
+export function checkSendTestGuards(params: {
+  sendTest: boolean;
+  sendTestTo: string | undefined;
+  testEmail: string | null | undefined;
+}): PreflightGuardCheck {
+  const { sendTest, sendTestTo, testEmail } = params;
+  if (sendTestTo !== undefined && !sendTest) {
+    return { ok: false, reason: "--send-test-to requer --send-test." };
+  }
+  if (!sendTest) return { ok: true };
+  if (sendTestTo !== undefined && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sendTestTo)) {
+    return { ok: false, reason: `--send-test-to inválido: "${sendTestTo}".` };
+  }
+  if (!sendTestTo && !testEmail) {
+    return {
+      ok: false,
+      reason:
+        "--send-test requer um destinatário — passe --send-test-to <email> ou configure " +
+        "brevo_diaria.test_email em platform.config.json.",
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Pura (#5086) — resolve o destinatário do teste (`--send-test-to` tem
+ * prioridade sobre `brevo_diaria.test_email`). Assume que
+ * `checkSendTestGuards` já confirmou `ok: true` pro mesmo par de argumentos —
+ * lança se chamada com nenhum dos dois definidos (contrato violado pelo
+ * caller, não um estado de usuário alcançável via CLI).
+ */
+export function resolveSendTestRecipient(
+  sendTestTo: string | undefined,
+  testEmail: string | null | undefined,
+): string {
+  const recipient = sendTestTo ?? testEmail;
+  if (!recipient) {
+    throw new Error(
+      "resolveSendTestRecipient chamado sem destinatário resolvível — checkSendTestGuards deveria ter abortado antes.",
+    );
+  }
+  return recipient;
+}
+
+/**
  * Pura (#4532, achado HIGH do silent-failure-hunter — fleet review pré-merge
  * do #4532) — reconcilia `injectionResult.total_contacts` (enumeração
  * paginada de `iterateListContacts`, `inject-poll-token-brevo.ts`) contra
@@ -379,9 +471,18 @@ export async function main(rootDirOverride?: string): Promise<void> {
   const rootDir = rootDirOverride ?? ROOT;
   loadProjectEnv(rootDir);
   const argv = process.argv.slice(2);
-  const editionDirArg = argv.find((a) => !a.startsWith("--"));
+  // #5086 (self-review): `argv.find((a) => !a.startsWith("--"))` — usado aqui
+  // até a introdução da flag de VALOR `--send-test-to <email>` — casava com o
+  // valor de QUALQUER flag de valor que apareça antes do path da edição no
+  // argv (ex: `--send-test-to editor@x.com data/editions/260812` resolvia
+  // editionDirArg como "editor@x.com"). `parseCliArgs` (mesmo parser de
+  // `--send-test-to`) já separa positional de values corretamente — usa isso
+  // em vez de reimplementar a mesma checagem de forma incompleta.
+  const editionDirArg = parseCliArgs(argv).positional[0];
   const dryRun = hasFlag(argv, "dry-run");
   const reviewedCopy = hasFlag(argv, "i-reviewed-the-copy");
+  const sendTest = hasFlag(argv, "send-test"); // #5086
+  const sendTestTo = getStringArg(argv, "send-test-to", { example: "voce@dominio.com" }); // #5086
   const log = (msg: string) => process.stderr.write(`[publish-daily-brevo] ${msg}\n`);
 
   // #4651: os process.exit() abaixo até o 1º `await` de rede (brevoGetList,
@@ -409,6 +510,15 @@ export async function main(rootDirOverride?: string): Promise<void> {
   if (!guardCheck.ok) {
     log(`ERRO: ${guardCheck.reason}`);
     process.exit(2);
+  }
+
+  // #5086: checado cedo (pré-await, mesmo espírito do #4588 abaixo) — o
+  // editor deve ver o erro de `--send-test`/`--send-test-to` já no dry-run,
+  // não só quando o script for de fato criar a campanha.
+  const sendTestGuard = checkSendTestGuards({ sendTest, sendTestTo, testEmail: brevoDiaria?.test_email });
+  if (!sendTestGuard.ok) {
+    log(`ERRO: ${sendTestGuard.reason}`);
+    process.exit(1);
   }
 
   const editionDir = resolve(rootDir, editionDirArg);
@@ -453,6 +563,11 @@ export async function main(rootDirOverride?: string): Promise<void> {
     log(`[DRY RUN] HTML escrito em ${outPath}`);
     log(`  Assunto: ${subject}`);
     log(`  Preview: ${previewText}`);
+    if (sendTest) {
+      const testRecipient = resolveSendTestRecipient(sendTestTo, brevoDiaria?.test_email);
+      const source = sendTestTo ? "--send-test-to flag" : "brevo_diaria.test_email";
+      log(`  Dispatch: TEST EMAIL pra ${testRecipient} (fonte: ${source}) — não disparado em --dry-run`);
+    }
     return;
   }
 
@@ -548,7 +663,40 @@ export async function main(rootDirOverride?: string): Promise<void> {
   if (typeof campaignResp.id !== "number") {
     throw new Error(`Brevo API retornou resposta inesperada (sem campo 'id'): ${JSON.stringify(campaignResp)}`);
   }
-  log(`campanha criada: id=${campaignResp.id} (rascunho — schedule/send é ação manual separada, mesma cautela do publisher mensal)`);
+  const campaignId = campaignResp.id;
+  log(`campanha criada: id=${campaignId} (rascunho — schedule/send é ação manual separada, mesma cautela do publisher mensal)`);
+
+  // #5086: --send-test, espelhando publish-monthly.ts — dispara DEPOIS do
+  // rascunho existir (sendTest do Brevo opera sobre um campaign_id já criado).
+  // sendTestGuard (checado antes de qualquer await) já garantiu que o
+  // destinatário resolve sem lançar.
+  if (sendTest) {
+    const testRecipient = resolveSendTestRecipient(sendTestTo, brevoDiaria!.test_email);
+    await brevoPost(apiKey!, `/emailCampaigns/${campaignId}/sendTest`, { emailTo: [testRecipient] });
+    const testSentAt = new Date().toISOString();
+    const source = sendTestTo ? "--send-test-to flag" : "brevo_diaria.test_email";
+    log(`Email de teste enviado para: ${testRecipient} (fonte: ${source})`);
+
+    // Mirror de `published.test_sent_at` do canal mensal (publish-monthly.ts)
+    // — só escrito quando --send-test de fato dispara; a criação do rascunho
+    // sem --send-test continua sem nenhum arquivo de estado novo (#5086, ver
+    // "Não-escopo" na issue).
+    const published: BrevoDiariaPublished = {
+      campaign_id: campaignId,
+      subject,
+      preview_text: previewText,
+      status: "test_sent",
+      list_id: brevoDiaria!.list_id as number,
+      test_email: testRecipient,
+      test_sent_at: testSentAt,
+      created_at: testSentAt,
+    };
+    const internalDir = resolve(editionDir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    const publishedPath = resolve(internalDir, "brevo-diaria-published.json");
+    writeFileSync(publishedPath, JSON.stringify(published, null, 2) + "\n");
+    log(`estado do teste salvo em ${publishedPath}`);
+  }
 }
 
 if (isMainModule(import.meta.url)) {
