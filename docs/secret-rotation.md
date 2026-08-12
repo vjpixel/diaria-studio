@@ -2,6 +2,8 @@
 
 Este doc é o ponto único de consulta quando alguma credencial expira, é revogada, ou precisa rotação proativa. Cobre todas as 7 credenciais usadas pela pipeline da diar.ia.br.
 
+> As 3 credenciais desta tabela que moram em env var (`CLARICE_API_KEY`, `GEMINI_API_KEY`, `CLOUDFLARE_API_TOKEN`) agora sincronizam entre máquinas via Doppler — ao rotacionar, atualizar o valor no vault e rodar `npm run sync-env` em cada máquina em vez de editar `.env` à mão em cada uma. Google OAuth e Facebook Page token são arquivos de credencial (`data/.credentials.json`, `data/.fb-credentials.json`), não `.env` vars — continuam fora do Doppler de propósito. Detalhes: `docs/doppler-env-sync.md` (#5149).
+
 > Em emergência (edição em produção e algo está quebrando agora): pula direto pro [Playbook emergencial](#playbook-emergencial) no fim deste doc.
 
 ---
