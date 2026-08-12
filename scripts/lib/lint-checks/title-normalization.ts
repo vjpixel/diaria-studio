@@ -78,7 +78,10 @@ import { walkDestaqueTitles } from "./destaque-title-walk.ts"; // #2693 item 1 �
  *      NÃO é título e não deve ser coletado.
  */
 function extractAllTitles(md: string): Array<{ title: string; line: number }> {
-  const lines = md.split("\n");
+  // #5084: normaliza CRLF→LF antes do split — sem isso, uma linha com \r
+  // sobrando no fim quebra HIGHLIGHT_HEADER_RE (que usa `$` sem /m, exigindo
+  // fim de string exato; `.` não casa \r).
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
   const results: Array<{ title: string; line: number }> = [];
 
   // Só coletamos inline links como títulos quando estamos numa seção secundária.

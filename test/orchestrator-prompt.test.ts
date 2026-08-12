@@ -208,7 +208,12 @@ describe("orchestrator-prompt (#634)", () => {
       // 260805: só um mecanismo de auto-detecção em runtime achou e
       // corrigiu, nenhum lint determinístico). Arquivo tinha 743 linhas.
       // Teto bumped de 735→760 com headroom pequeno.
-      "orchestrator-stage-4.md": 760,
+      // #5083: +2 linhas — fallback de ENOENT sob a junction OneDrive ao
+      // gravar `_internal/fact-check.json` (subagente reporta path no
+      // scratchpad, orchestrator copia pra `{EDITION_DIR}/_internal/` antes
+      // de prosseguir). Arquivo foi a 762 linhas. Teto bumped de 760→765 com
+      // headroom pequeno.
+      "orchestrator-stage-4.md": 765,
       "orchestrator-stage-5.md": 455,
       // #4574: 1º teto registrado pra este arquivo (nunca tinha entry —
       // ORCHESTRATOR_FILES não o incluía até esta PR). Arquivo tinha 491

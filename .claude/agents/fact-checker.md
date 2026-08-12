@@ -79,6 +79,8 @@ c. Se fetch falhar ou URL indisponível, tentar o `article.summary` do `approved
 
 Gravar em `{out_path}` o JSON com o schema abaixo.
 
+**Fallback de ENOENT sob a junction OneDrive (#5083).** `{out_path}` fica sob `data/`, que numa máquina local é uma directory junction (OneDrive) — a estratégia tmp-then-rename do Write-tool nativo pode falhar com `ENOENT` ao gravar ali de dentro de um subagente (3ª ocorrência confirmada, padrão recorrente de harness, não bug de código nosso). Se o Write em `{out_path}` falhar com `ENOENT`: **não tente contornar escrevendo em outro path arbitrário dentro de `data/`** — grave em vez disso no diretório de scratchpad da sessão (o path listado no seu próprio system prompt como "Scratchpad Directory") com o MESMO nome de arquivo final, e reporte no texto de retorno ao orchestrator: (a) que o Write direto falhou com ENOENT, (b) o path completo onde o JSON foi gravado no scratchpad. **Nunca grave silenciosamente só no scratchpad sem avisar** — é o orchestrator (top-level), não você, quem copia o arquivo do scratchpad pra `{out_path}` (via `cp`/`Write` do nível top, que não sofre do mesmo bug de tool-call aninhado em subagente).
+
 ## Output schema
 
 ```json

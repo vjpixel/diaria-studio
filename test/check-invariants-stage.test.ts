@@ -24,6 +24,7 @@ import {
   checkHasNegativeImpactHighlight,
   checkNoPlaceholderTitleHighlights,
   checkUrlMatchesArticleUrl,
+  checkNoMissingSummaryHighlights,
 } from "../scripts/lib/invariant-checks/stage-1.ts";
 import {
   checkReviewedPassesAllLints,
@@ -103,6 +104,12 @@ describe("invariant-checks registry (#1007)", () => {
   it("#4102 registry contém entry no-placeholder-title-highlights no stage 1", () => {
     const entry = ALL_INVARIANT_RULES.find((r) => r.id === "no-placeholder-title-highlights");
     assert.ok(entry !== undefined, "ALL_INVARIANT_RULES deve conter 'no-placeholder-title-highlights'");
+    assert.equal(entry!.stage, 1);
+  });
+
+  it("#5081 registry contém entry no-missing-summary-highlights no stage 1 (severity error)", () => {
+    const entry = ALL_INVARIANT_RULES.find((r) => r.id === "no-missing-summary-highlights");
+    assert.ok(entry !== undefined, "ALL_INVARIANT_RULES deve conter 'no-missing-summary-highlights'");
     assert.equal(entry!.stage, 1);
   });
 
@@ -648,6 +655,92 @@ describe("Stage 1 invariants", () => {
   it("no-placeholder-title-highlights sem violation quando JSON malformado (coberto por approved-parseable)", () => {
     writeFileSync(join(fixture, "_internal", "01-approved.json"), "{ not valid json");
     const v = checkNoPlaceholderTitleHighlights(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  // --- #5081: destaque nunca pode ter article.summary ausente/vazio ---
+
+  it("no-missing-summary-highlights sem violation quando 01-approved.json ausente", () => {
+    const v = checkNoMissingSummaryHighlights(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("no-missing-summary-highlights passa com summary real", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          {
+            bucket: "radar",
+            url: "https://a.com",
+            article: { url: "https://a.com", title: "OpenAI anuncia GPT-5", summary: "Resumo real do artigo." },
+          },
+        ],
+      }),
+    );
+    const v = checkNoMissingSummaryHighlights(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  // CASO REAL 260811 (#5081): D3 (about.fb.com/news/2026/08/the-future-is-for-everyone)
+  // chegou ao highlight com article.summary undefined — provável cache-miss silencioso
+  // em enrich-inbox-articles.ts.
+  it("no-missing-summary-highlights falha (error) quando article.summary é undefined", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          {
+            bucket: "lancamento",
+            article: {
+              url: "https://about.fb.com/news/2026/08/the-future-is-for-everyone",
+              title: "The future is for everyone",
+            },
+          },
+        ],
+      }),
+    );
+    const v = checkNoMissingSummaryHighlights(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "no-missing-summary-highlights");
+    assert.equal(v[0].severity, "error", "summary ausente é sempre bug de pipeline, nunca trade-off editorial — hard block");
+    assert.equal(v[0].source_issue, "#5081");
+    assert.match(v[0].message, /about\.fb\.com/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("no-missing-summary-highlights falha quando article.summary é string vazia", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          { bucket: "radar", article: { url: "https://a.com", title: "Título real", summary: "" } },
+        ],
+      }),
+    );
+    const v = checkNoMissingSummaryHighlights(fixture);
+    assert.equal(v.length, 1);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("no-missing-summary-highlights falha quando summary top-level (não nested) está ausente", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [{ bucket: "radar", url: "https://a.com", title: "Título real" }],
+      }),
+    );
+    const v = checkNoMissingSummaryHighlights(fixture);
+    assert.equal(v.length, 1);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("no-missing-summary-highlights sem violation quando JSON malformado (coberto por approved-parseable)", () => {
+    writeFileSync(join(fixture, "_internal", "01-approved.json"), "{ not valid json");
+    const v = checkNoMissingSummaryHighlights(fixture);
     assert.equal(v.length, 0);
     rmSync(fixture, { recursive: true, force: true });
   });

@@ -79,6 +79,25 @@ describe("extractUrlsBySection", () => {
     assert.equal(r["PESQUISAS"]?.length, 1);
     assert.equal(r["PESQUISAS"][0].url, "https://arxiv.org/abs/1234.5678");
   });
+
+  it("#5084: CRLF line-endings não quebram a extração (arquivo escrito com \\r\\n sobrevive ao split)", () => {
+    const md = [
+      "**LANÇAMENTOS**",
+      "Item",
+      "https://openai.com/x",
+      "",
+      "---",
+      "",
+      "**PESQUISAS**",
+      "Paper",
+      "https://arxiv.org/y",
+    ].join("\r\n");
+    const r = extractUrlsBySection(md);
+    assert.equal(r["LANÇAMENTOS"]?.length, 1);
+    assert.equal(r["LANÇAMENTOS"][0].url, "https://openai.com/x");
+    assert.equal(r["PESQUISAS"]?.length, 1);
+    assert.equal(r["PESQUISAS"][0].url, "https://arxiv.org/y");
+  });
 });
 
 describe("buildUrlBucketMap", () => {
@@ -594,6 +613,24 @@ describe("countTitlesPerHighlight (#178, #245)", () => {
     const r = countTitlesPerHighlight(md);
     assert.equal(r.destaques[0].title_count, 1);
   });
+
+  it("#5084: CRLF line-endings não quebram a detecção do header DESTAQUE", () => {
+    // r.ok geral exige 2-3 destaques (regra separada de #178/#245) — a
+    // fixture tem só 1 de propósito, pra isolar o que este teste cobre: o
+    // header DESTAQUE ainda é reconhecido com \r\n e o título ainda é
+    // contado corretamente (status "ok", não corrompido pelo \r residual).
+    const md = [
+      "**DESTAQUE 1 | PRODUTO**",
+      "Título único do destaque 1",
+      "https://example.com/1",
+      "",
+      "Corpo do destaque.",
+    ].join("\r\n");
+    const r = countTitlesPerHighlight(md);
+    assert.equal(r.destaques.length, 1, JSON.stringify(r));
+    assert.equal(r.destaques[0].title_count, 1);
+    assert.equal(r.destaques[0].status, "ok");
+  });
 });
 
 describe("checkTitleLengths (#701)", () => {
@@ -826,6 +863,21 @@ describe("checkTitleLengths (#701)", () => {
     assert.equal(r.errors.length, 1);
     // length reportado deve ser o número de grafemas, não code units
     assert.equal(r.errors[0].length, graphemeCount);
+  });
+
+  it("#5084: CRLF line-endings não quebram a detecção do header DESTAQUE nem a checagem de tamanho", () => {
+    const md = [
+      "**DESTAQUE 1 | PRODUTO**",
+      "",
+      "Título ridiculamente comprido que excede o limite de 52 caracteres com folga",
+      "",
+      "https://example.com/1",
+      "",
+      "Corpo.",
+    ].join("\r\n");
+    const r = checkTitleLengths(md);
+    assert.equal(r.ok, false, "header DESTAQUE precisa ser detectado mesmo com \\r\\n");
+    assert.equal(r.errors.length, 1);
   });
 });
 
