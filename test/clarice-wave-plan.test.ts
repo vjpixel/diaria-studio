@@ -84,6 +84,34 @@ describe("scheduledAtForDate (#4657)", () => {
     assert.ok(scheduledAtForDate("2026-07-15").endsWith("T09:00:00.000Z"));
   });
 
+  it("#5140: omitir hourUtc preserva 09:00 UTC — o default é o comportamento histórico", () => {
+    // Trava o default explicitamente: a parametrização do #5140 não pode ter
+    // mudado nada pra quem não passa hora. Todo call site de produção hoje
+    // passa por este ramo.
+    assert.equal(scheduledAtForDate("2026-08-12"), scheduledAtForDate("2026-08-12", 9));
+  });
+
+  it("#5140: hourUtc explícito monta o ISO na hora pedida (13 UTC = 10:00 BRT)", () => {
+    assert.equal(scheduledAtForDate("2026-08-12", 13), "2026-08-12T13:00:00.000Z");
+    assert.equal(scheduledAtForDate("2026-08-12", 0), "2026-08-12T00:00:00.000Z");
+    assert.equal(scheduledAtForDate("2026-08-12", 23), "2026-08-12T23:00:00.000Z");
+  });
+
+  it("#5140: hora fora de 0–23 ou fracionária lança — vira scheduledAt de campanha real", () => {
+    // Mesmo racional do round-trip de data acima: o valor vai pra Brevo, e
+    // um ISO malformado só aparece depois do --create.
+    assert.throws(() => scheduledAtForDate("2026-08-12", 24), /hora UTC inválida/);
+    assert.throws(() => scheduledAtForDate("2026-08-12", -1), /hora UTC inválida/);
+    assert.throws(() => scheduledAtForDate("2026-08-12", 9.5), /hora UTC inválida/);
+    assert.throws(() => scheduledAtForDate("2026-08-12", Number.NaN), /hora UTC inválida/);
+  });
+
+  it("#5140: a validação de data continua valendo com hora customizada", () => {
+    // O guard novo entra ANTES do round-trip; garantir que não curto-circuita
+    // a checagem de calendário que já existia.
+    assert.throws(() => scheduledAtForDate("2026-02-31", 13), /inexistente no calendário/);
+  });
+
   it("brtDayLabel dá o dia da semana em BRT", () => {
     assert.equal(brtDayLabel("2026-08-06"), "qui");
     assert.equal(brtDayLabel("2026-08-01"), "sab");
