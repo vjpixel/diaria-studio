@@ -82,18 +82,61 @@ export function armMetricsFromCampaign(input: CampaignGuardrailInput): ArmMetric
  * Avalia os guardrails de UMA campanha — mesmos limiares do doc, via
  * `evaluateArmGuardrails`/`thresholds.ts`.
  *
- * #4131 finding 3: `treatZeroAsBreach: true` — este alarme só avalia campanhas
- * que já cruzaram `GUARDRAIL_EVAL_WINDOW_MS` (~10h pós-envio, #4475, ver
- * `isReadyForEvaluation`), então o guard `openRatePct > 0` do path original
- * de `evaluateArmGuardrails` (pensado pra dashboard, dado ainda propagando
- * minutos após o envio) não se aplica aqui — aos 10h, 0% de abertura é falha
- * real de entrega, o cenário mais catastrófico, e precisa disparar o alarme.
+ * #4131 finding 3: `treatZeroAsBreach: true` na chamada abaixo — este alarme
+ * só avalia campanhas que já cruzaram `GUARDRAIL_EVAL_WINDOW_MS` (~10h
+ * pós-envio, #4475, ver `isReadyForEvaluation`), então o guard
+ * `openRatePct > 0` do path original de `evaluateArmGuardrails` (pensado pra
+ * dashboard, dado ainda propagando minutos após o envio) não se aplicaria
+ * aqui. Historicamente isso fazia 0% de abertura madura disparar o alarme
+ * como falha catastrófica de entrega — ver #5166 abaixo pra por que esse
+ * sinal (maduro ou não) deixou de gatilhar.
+ *
+ * #5166 (achado 12/08/2026): abertura NUNCA gatilha este alarme, mesmo
+ * madura/em 0%. O breaker de abertura (`openBreach`, limiar `<15%`) nasceu
+ * pro experimento CTA (#4061) — base warm, onde abertura baixa É sinal de
+ * risco — e este alarme reusava o mesmo limiar pra TODA campanha Clarice,
+ * sem distinguir da fila de 1º envio (`ramp-warm`/`novos`), estruturalmente
+ * fria (~96%). Isso desalinhou com a decisão do editor em #4705/#5025: o
+ * motor que decide VOLUME (`clarice-envio-policy.ts`) já tirou abertura do
+ * freio de propósito — pra essa fila, abertura baixa é composição esperada,
+ * não risco de ISP; usá-la como freio produziu a catraca 10.014→322→1.053→
+ * 817 e-mails/dia em agosto/2026, com o Postmaster confirmando 0% de spam
+ * nos mesmos dias. Ao vivo em 12/08: o motor de volume acelerou +14,89%
+ * (freio ok) na MESMA madrugada em que este alarme mandou 2 e-mails de
+ * "guardrail furado" citando só abertura (14,7% e 12,7%) — dois sistemas
+ * dizendo coisas opostas sobre o mesmo dado, pro mesmo destinatário, no
+ * mesmo dia.
+ *
+ * Retirado por completo (não só pra audiência fria, opção mais simples da
+ * issue, não mutuamente exclusiva com filtrar por audiência no futuro): o
+ * experimento CTA tem seu próprio gate/dashboard (`experiment-cta.ts`,
+ * `evaluateArmGuardrails` chamado direto lá) que continua usando abertura
+ * normalmente — só este e-mail duplicado deixa de gatilhar por ela. Só
+ * bounce/unsub/spam continuam disparando o alarme (os mesmos 3 sinais que
+ * `RED_RISK_THRESHOLDS`, em `clarice-envio-policy.ts`, já usa pra decidir
+ * volume — hard bounce/bounce total/unsub já espelham 1:1 esses limiares,
+ * via `DEFAULT_HEALTH_THRESHOLDS`; spam mantém o limiar próprio e mais
+ * apertado deste módulo, `CTA_SPAM_BREACH_YELLOW_PCT`, compensando o
+ * undercounting conhecido de `complaints` da Brevo — #4063/#4154 — que
+ * afrouxá-lo pra igualar `RiskThresholdsPct` reabriria).
+ *
+ * `openRatePct` continua no resultado — vira contexto informativo no corpo
+ * do e-mail (`buildGuardrailAlarmEmail`) e no log do CLI, nunca gatilho.
+ * Trade-off aceito: uma falha real de entrega que não eleve bounce/unsub/spam
+ * (rara — normalmente bounce sobe junto) só é pega por `shouldSunsetNonOpener`
+ * (sunset permanente após 2 envios sem abertura) ou pelo monitor de spam do
+ * Postmaster, não mais por este e-mail imediato.
  */
 export function evaluateSendGuardrails(
   input: CampaignGuardrailInput,
   thresholds: HealthThresholds = DEFAULT_HEALTH_THRESHOLDS,
 ): ArmGuardrailResult {
-  return evaluateArmGuardrails(armMetricsFromCampaign(input), thresholds, { treatZeroAsBreach: true });
+  const raw = evaluateArmGuardrails(armMetricsFromCampaign(input), thresholds, { treatZeroAsBreach: true });
+  return {
+    ...raw,
+    openBreach: false,
+    anyBreach: raw.bounceBreach || raw.unsubBreach || raw.spamBreach,
+  };
 }
 
 // ─── Janela de avaliação + idempotência ─────────────────────────────────────
@@ -215,6 +258,11 @@ export function describeBreaches(
  * (#4935): cancelar via API (`PUT /emailCampaigns/{id}/status`, `status:
  * cancel`/`suspended`) e recriar é sempre possível, mas o prazo até o
  * disparo continua real e é isso que o alarme comunica.
+ *
+ * #5166: abertura nunca gatilha `anyBreach` (ver `evaluateSendGuardrails`),
+ * mas continua útil pro editor entender o quadro completo — sempre aparece
+ * como linha de CONTEXTO, separada da lista de breaches, nunca como se
+ * tivesse causado o alarme.
  */
 export function buildGuardrailAlarmEmail(
   campaignName: string,
@@ -229,6 +277,8 @@ export function buildGuardrailAlarmEmail(
     `O envio "${campaignName}" fechou com guardrail furado, avaliado ~10h após o disparo:`,
     "",
     ...breaches.map((b) => `- ${b}`),
+    "",
+    `Abertura: ${guardrail.openRatePct.toFixed(1)}% (contexto — não gatilha mais este alarme, #5166).`,
     "",
   ];
   if (nextScheduled) {

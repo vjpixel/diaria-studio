@@ -56,20 +56,37 @@ test("armMetricsFromCampaign — adapta 1 campanha pro shape ArmMetrics (decisio
   assert.equal(m.decisionClicks, 0);
 });
 
-test("evaluateSendGuardrails — reproduz o caso real #4061: 11,1% de abertura (limiar 15%) → openBreach=true, anyBreach=true", () => {
-  // 6600 delivered, abertura 11,1% → uniqueViews ≈ 733.
+test("evaluateSendGuardrails — #5166: abertura NUNCA gatilha, mesmo no caso real #4061 (11,1%, limiar 15%) — bounce/unsub/spam saudáveis ⇒ anyBreach=false", () => {
+  // Regressão do #5166: campanha com abertura baixa + risco de ISP saudável
+  // ⇒ anyBreach=false. Decisão do editor #4705/#5025 tirou abertura do freio
+  // que decide VOLUME pelo mesmo motivo (fila de 1º envio estruturalmente
+  // fria não deveria frear por abertura) — este alarme estava desalinhado.
+  // 6600 delivered, abertura 11,1% → uniqueViews ≈ 733; resto do input
+  // (mkCampaign default) tem bounce/unsub/spam dentro dos limites.
   const input = mkCampaign({ delivered: 6600, uniqueViews: Math.round(6600 * 0.111) });
   const result = evaluateSendGuardrails(input);
-  assert.equal(result.openBreach, true);
-  assert.equal(result.anyBreach, true);
-  assert.ok(Math.abs(result.openRatePct - 11.1) < 0.1);
+  assert.equal(result.openBreach, false);
+  assert.equal(result.anyBreach, false);
+  assert.ok(Math.abs(result.openRatePct - 11.1) < 0.1, "openRatePct continua calculado — só deixa de gatilhar");
 });
 
-test("evaluateSendGuardrails — 0% de abertura MADURA (10h) → openBreach=true (#4131 finding 3 — falha total de entrega precisa alarmar)", () => {
+test("evaluateSendGuardrails — #5166: 0% de abertura MADURA (10h) também não gatilha mais — retirado por completo, não só amenizado (#4131 finding 3 superado)", () => {
   const input = mkCampaign({ delivered: 6600, uniqueViews: 0 });
   const result = evaluateSendGuardrails(input);
   assert.equal(result.openRatePct, 0);
-  assert.equal(result.openBreach, true);
+  assert.equal(result.openBreach, false);
+  assert.equal(result.anyBreach, false);
+});
+
+test("evaluateSendGuardrails — #5166: bounce/unsub/spam continuam gatilhando normalmente mesmo com abertura saudável (só abertura foi retirada)", () => {
+  const input = mkCampaign({
+    delivered: 6600,
+    uniqueViews: 1500, // ~22,7% — verde, não deveria influenciar
+    unsubscriptions: 250, // 250/6687 ≈ 3,74% — cruza o limiar de 3%
+  });
+  const result = evaluateSendGuardrails(input);
+  assert.equal(result.openBreach, false);
+  assert.equal(result.unsubBreach, true);
   assert.equal(result.anyBreach, true);
 });
 
@@ -137,7 +154,24 @@ test("resolveNextScheduledSend — sem nenhum agendamento futuro → null", () =
 });
 
 test("describeBreaches — só lista as métricas que romperam, com o valor E o limiar do doc (sem reimplementar limiar)", () => {
-  const guardrail = evaluateSendGuardrails(mkCampaign({ delivered: 6600, uniqueViews: Math.round(6600 * 0.111) }));
+  // #5166: `evaluateSendGuardrails` nunca mais produz openBreach=true (ver
+  // teste dedicado acima), então este teste monta o resultado à mão pra
+  // continuar cobrindo a formatação de `describeBreaches` em si — a função
+  // segue genérica (útil se um filtro por audiência for adicionado no
+  // futuro, opção não descartada pela issue).
+  const guardrail = {
+    armId: "1",
+    openRatePct: 11.1,
+    hardBounceRatePct: 0.15,
+    bounceRatePct: 0.22,
+    unsubRatePct: 0.3,
+    spamRatePct: 0,
+    openBreach: true,
+    bounceBreach: false,
+    unsubBreach: false,
+    spamBreach: false,
+    anyBreach: true,
+  };
   const breaches = describeBreaches(guardrail);
   assert.equal(breaches.length, 1);
   assert.match(breaches[0], /Abertura 11\.1%/);
@@ -165,19 +199,31 @@ test("describeBreaches — spam usa CTA_SPAM_BREACH_YELLOW_PCT (0,1%) no texto, 
   assert.doesNotMatch(spamLine!, /limite: <0\.3%/);
 });
 
+// #5166: os testes de buildGuardrailAlarmEmail abaixo usam um input que
+// realmente breacha (unsub, não mais abertura) — abertura sozinha não passa
+// mais de `evaluateSendGuardrails` com anyBreach=true, então usar o input
+// antigo (só abertura baixa) tornaria estes testes um cenário que o CLI
+// nunca dispara na prática (buildGuardrailAlarmEmail só é chamado quando
+// anyBreach=true).
+function mkUnsubBreachInput(): CampaignGuardrailInput {
+  return mkCampaign({ delivered: 6600, uniqueViews: Math.round(6600 * 0.111), unsubscriptions: 250 });
+}
+
 test("buildGuardrailAlarmEmail — SEMPRE nomeia o próximo envio agendado e o prazo de cancelamento quando existe (requisito explícito da issue)", () => {
-  const guardrail = evaluateSendGuardrails(mkCampaign({ delivered: 6600, uniqueViews: Math.round(6600 * 0.111) }));
+  const guardrail = evaluateSendGuardrails(mkUnsubBreachInput());
   const nextScheduled = { name: "envio 9B", scheduledAt: "2026-07-24T09:00:00.000Z" };
   const { subject, body } = buildGuardrailAlarmEmail("envio 8B", guardrail, nextScheduled, NOW);
   assert.match(subject, /envio 8B/);
-  assert.match(body, /Abertura 11\.1%/);
+  assert.match(body, /Unsub/);
+  // #5166: abertura aparece como linha de CONTEXTO, nunca como breach.
+  assert.match(body, /Abertura: 11\.1% \(contexto/);
   assert.match(body, /envio 9B/);
   assert.match(body, /2026-07-24T09:00:00\.000Z/);
   assert.match(body, /cancele antes de/i);
 });
 
 test("buildGuardrailAlarmEmail — sem próximo agendamento, avisa explicitamente (não afirma um prazo inexistente)", () => {
-  const guardrail = evaluateSendGuardrails(mkCampaign({ delivered: 6600, uniqueViews: Math.round(6600 * 0.111) }));
+  const guardrail = evaluateSendGuardrails(mkUnsubBreachInput());
   const { body } = buildGuardrailAlarmEmail("envio 8B", guardrail, null, NOW);
   assert.match(body, /Nenhum próximo envio agendado/);
 });
@@ -189,11 +235,19 @@ test("buildGuardrailAlarmEmail — REGRESSÃO #4935: não afirma que campanha ag
   // O texto do e-mail é o que o editor lê de verdade sob pressão de tempo —
   // não pode instruir "suspenda MANUALMENTE" como se fosse o único caminho,
   // nem afirmar "IMUTÁVEL (não deleta/desagenda via API)".
-  const guardrail = evaluateSendGuardrails(mkCampaign({ delivered: 6600, uniqueViews: Math.round(6600 * 0.111) }));
+  const guardrail = evaluateSendGuardrails(mkUnsubBreachInput());
   const nextScheduled = { name: "envio 9B", scheduledAt: "2026-07-24T09:00:00.000Z" };
   const { body } = buildGuardrailAlarmEmail("envio 8B", guardrail, nextScheduled, NOW);
   assert.match(body, /NÃO é imutável/i);
   assert.doesNotMatch(body, /suspenda MANUALMENTE/i);
   assert.match(body, /PUT \/emailCampaigns\/\{id\}\/status/);
   assert.match(body, /cancel/i);
+});
+
+test("buildGuardrailAlarmEmail — #5166: abertura baixa isolada (bounce/unsub/spam saudáveis) nunca aparece como breach no corpo, só como contexto", () => {
+  const guardrail = evaluateSendGuardrails(mkCampaign({ delivered: 6600, uniqueViews: Math.round(6600 * 0.111) }));
+  assert.equal(guardrail.anyBreach, false); // não dispararia na prática — chamado aqui só pra travar o texto
+  const { body } = buildGuardrailAlarmEmail("envio 8B", guardrail, null, NOW);
+  assert.doesNotMatch(body, /- Abertura/);
+  assert.match(body, /Abertura: 11\.1% \(contexto — não gatilha mais este alarme, #5166\)/);
 });
