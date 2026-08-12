@@ -393,8 +393,11 @@ export async function handleJogarGateSubscribe(
     return json({ ok: true, sessionUnavailable: true }, 200, env);
   }
   // #4121: `subscribeToBeehiiv` só confirma sucesso HTTP da CRIAÇÃO — o
-  // double opt-in (respeitado, não mandamos `double_opt_override`) continua
-  // pendente. Ninguém provou posse do e-mail ainda, então o cookie sai
+  // status real ainda pode não ser `active`. #5095: este fluxo passou a mandar
+  // `double_opt_override: "off"`, então a Beehiiv não exige mais confirmação
+  // AQUI — mas o caminho pending abaixo NÃO virou código morto: a Beehiiv
+  // devolve `validating` enquanto processa, e nesse intervalo ninguém provou
+  // posse do e-mail. Então o cookie sai
   // "pending": libera continuar jogando (o gate só quer saber "existe
   // sessão"), mas NÃO sobrepõe a identidade em `/vote` (vote.ts) até a
   // Beehiiv confirmar — a promoção pending→confirmed acontece na próxima

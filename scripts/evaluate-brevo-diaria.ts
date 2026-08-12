@@ -699,6 +699,14 @@ export async function promoteBeehiivSubscription(
     body: JSON.stringify({
       email,
       send_welcome_email: false,
+      // #5095: ISENÇÃO OBRIGATÓRIA, mesmo motivo do `workers/reativar` — este
+      // caminho também DELETA e recria o registro. Com double opt-in ligado na
+      // publicação e sem override, a promoção por score rebaixaria o assinante
+      // pra `pending` em vez de promovê-lo, sem volta programática. Agrava:
+      // este script roda DESASSISTIDO todo dia às 05:30 BRT
+      // (`Diaria-Brevo-Diaria-Evaluate`), então a regressão seria silenciosa e
+      // diária.
+      double_opt_override: "off",
       // #4530: atribuição — sem isto, todo cadastro promovido por score caía
       // como "api: direct / (none)" na Beehiiv, indistinguível de qualquer
       // outro cadastro via API.

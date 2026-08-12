@@ -461,6 +461,10 @@ describe("suppressInBrevo / unlinkFromBrevoList / promoteBeehiivSubscription —
         assert.deepEqual(body, {
           email: "a@b.com",
           send_welcome_email: false,
+          // #5095: sem este campo, o DELETE+POST desta promoção rebaixaria o
+          // assinante pra `pending` assim que o double opt-in da publicação
+          // for ligado — e este script roda desassistido todo dia às 05:30.
+          double_opt_override: "off",
           utm_source: BREVO_DIARIA_PROMOCAO_SCORE_UTM.source,
           utm_medium: BREVO_DIARIA_PROMOCAO_SCORE_UTM.medium,
           utm_campaign: BREVO_DIARIA_PROMOCAO_SCORE_UTM.campaign,

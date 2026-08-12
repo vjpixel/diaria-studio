@@ -368,6 +368,14 @@ export async function activateSubscription(
       body: JSON.stringify({
         email,
         send_welcome_email: false,
+        // #5095: ISENÇÃO OBRIGATÓRIA, não conveniência. Este caminho DELETA o
+        // registro existente (passo 2, acima) e recria do zero. Com o double
+        // opt-in da publicação ligado e sem este override, cada reativação
+        // apagaria um assinante e o recriaria em `pending` — ele pararia de
+        // receber a diária até clicar num e-mail de confirmação que ele não
+        // pediu, e a Beehiiv não expõe jeito programático de promover
+        // pending→active. O clique na campanha Brevo JÁ é o opt-in explícito.
+        double_opt_override: "off",
         // #4530: atribuição — sem isto, todo cadastro criado por este caminho
         // caía como "api: direct / (none)" na Beehiiv, indistinguível de
         // qualquer outro cadastro via API.

@@ -316,6 +316,7 @@ describe("#4530 — canal Brevo Pending (reativar/evaluate) entra no inventário
     assert.deepEqual(body, {
       email: "a@b.com",
       send_welcome_email: false,
+      double_opt_override: "off", // #5095 — isenção do double opt-in da publicação
       utm_source: shared.BREVO_DIARIA_REATIVAR_CLIQUE_UTM.source,
       utm_medium: shared.BREVO_DIARIA_REATIVAR_CLIQUE_UTM.medium,
       utm_campaign: shared.BREVO_DIARIA_REATIVAR_CLIQUE_UTM.campaign,
@@ -338,6 +339,7 @@ describe("#4530 — canal Brevo Pending (reativar/evaluate) entra no inventário
     assert.deepEqual(body, {
       email: "a@b.com",
       send_welcome_email: false,
+      double_opt_override: "off", // #5095 — isenção do double opt-in da publicação
       utm_source: shared.BREVO_DIARIA_PROMOCAO_SCORE_UTM.source,
       utm_medium: shared.BREVO_DIARIA_PROMOCAO_SCORE_UTM.medium,
       utm_campaign: shared.BREVO_DIARIA_PROMOCAO_SCORE_UTM.campaign,

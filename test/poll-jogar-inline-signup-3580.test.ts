@@ -210,11 +210,18 @@ describe("subscribeToBeehiiv (#3580)", () => {
     assert.equal(body.utm_medium, "jogar-inline");
   });
 
-  it("respeita double opt-in — NÃO manda double_opt_override; manda send_welcome_email", async () => {
+  // #5095 (260812): esta asserção era o INVERSO — travava que o worker NÃO
+  // mandava `double_opt_override`, porque a publicação tinha double opt-in
+  // desligado e a omissão deixava a 2ª camada de confirmação disponível. O
+  // editor ligou o double opt-in na publicação pra barrar co-registro externo
+  // (SparkLoop/Techzip), e este fluxo precisa ficar de fora: o consentimento
+  // LGPD vem da caixinha marcada na nossa página. Ver rationale em
+  // `workers/poll/src/subscribe.ts`.
+  it("isenta o cadastro inline do double opt-in da publicação (double_opt_override: off); mantém send_welcome_email", async () => {
     const fetchMock = makeFetchMock(201);
     await subscribeToBeehiiv(beehiivEnv(), { name: "", email: "a@b.com" }, fetchMock);
     const body = JSON.parse(String(fetchMock.calls[0].init?.body));
-    assert.equal("double_opt_override" in body, false);
+    assert.equal(body.double_opt_override, "off");
     assert.equal(body.send_welcome_email, true);
   });
 
