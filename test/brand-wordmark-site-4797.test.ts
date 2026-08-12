@@ -78,7 +78,7 @@ function minimalHub(introParagraph: string): HubContent {
     metaDescription: "Descrição de teste.",
     introHeading: "Pergunta de teste?",
     introParagraph,
-    sections: [{ heading: "Seção", paragraphs: ["Parágrafo de teste."] }],
+    sections: [{ heading: "Seção", paragraphs: ["Parágrafo de teste em 1 de agosto de 2026."] }],
     faq: Array.from({ length: 6 }, (_, i) => ({
       question: `Pergunta ${i + 1}?`,
       answer: `Resposta ${i + 1}.`,

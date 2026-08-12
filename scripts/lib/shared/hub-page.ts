@@ -45,6 +45,7 @@ import {
 import { renderInlineLinks } from "./markdown-links.ts"; // #4558/#4635: parser [texto](url), compartilhado com geo-faq.ts (respostas de FAQ também ganharam link)
 import { DIARIA_ARQUIVO_URL } from "../canonical-urls.ts";
 import { applyBrandWordmark } from "./brand-wordmark.ts"; // #4797 — wordmark da marca no corpo do hub (introParagraph não passa por renderInlineLinks — ver nota do campo)
+import { checkHubFacts } from "./hub-fact-gate.ts"; // #5060 Parte B1 — gate mecânico (cronologia derivada, link↔fonte, âncora de data, data futura); só `import type` daqui pra lá, evita ciclo de módulo real
 
 /** Uma edição da diar.ia.br citada como fonte do hub — link interno real
  * (issue #4558: "efeito colateral bom: hub temático é link interno de
@@ -908,6 +909,16 @@ export function validateHubContent(hub: HubContent): string[] {
       }
     }
   }
+  // #5060 Parte B1: gate mecânico de fatos (cronologia derivada "N dias
+  // depois" batendo com as datas absolutas do texto, link de edição citado
+  // existindo em sourceEditions, todo parágrafo com âncora de data, nenhuma
+  // data futura em relação a updatedDate). Roda por último, depois do
+  // contrato de prosa acima — mesmo racional: primeiro estrutura, depois
+  // editorial, por fim auto-consistência factual. Ver
+  // scripts/lib/shared/hub-fact-gate.ts para o design e o porquê de cada
+  // checagem ser deliberadamente conservadora (prefere não verificar a
+  // acusar prosa correta).
+  errors.push(...checkHubFacts(hub));
   return errors;
 }
 

@@ -539,7 +539,7 @@ describe("validateHubContent — publishedDate/updatedDate (#4911)", () => {
     metaDescription: "Descrição.",
     introHeading: "Pergunta?",
     introParagraph: "Intro.",
-    sections: [{ heading: "Seção", paragraphs: ["Parágrafo."] }],
+    sections: [{ heading: "Seção", paragraphs: ["Parágrafo em 1 de agosto de 2026."] }],
     faq: Array.from({ length: 6 }, (_, i) => ({ question: `P${i}?`, answer: `R${i}.` })),
     sourceEditions: [{ date: "2026-08-01", title: "Edição", url: "https://diar.ia.br/p/edicao-teste" }],
     publishedDate: "2026-08-01",
@@ -599,7 +599,7 @@ const HUB_4913_TEST_BASE: HubContent = {
   metaDescription: "Descrição.",
   introHeading: "Pergunta?",
   introParagraph: "Intro.",
-  sections: [{ heading: "Seção", paragraphs: ["Parágrafo."] }],
+  sections: [{ heading: "Seção", paragraphs: ["Parágrafo em 1 de agosto de 2026."] }],
   faq: Array.from({ length: 6 }, (_, i) => ({ question: `P${i}?`, answer: `R${i}.` })),
   sourceEditions: [{ date: "2026-08-01", title: "Edição", url: "https://diar.ia.br/p/edicao-teste" }],
   publishedDate: "2026-08-01",
@@ -791,7 +791,7 @@ describe("validateHubContent — table.rows aridade (#4921 Onda 2 item 9)", () =
     sections: [
       {
         heading: "Seção com tabela",
-        paragraphs: ["Parágrafo."],
+        paragraphs: ["Parágrafo em 1 de agosto de 2026."],
         table: {
           caption: "Tabela de teste",
           methodology: "Nota de metodologia.",
@@ -844,7 +844,7 @@ describe("validateHubContent — table.rows aridade (#4921 Onda 2 item 9)", () =
   });
 
   it("seção sem table (campo opcional ausente) não é validada — regression: opcional não pode virar obrigatório por acidente", () => {
-    const hub: HubContent = { ...base, sections: [{ heading: "Sem tabela", paragraphs: ["Parágrafo."] }] };
+    const hub: HubContent = { ...base, sections: [{ heading: "Sem tabela", paragraphs: ["Parágrafo em 1 de agosto de 2026."] }] };
     assert.deepEqual(validateHubContent(hub), []);
   });
 });
