@@ -24,11 +24,9 @@
 #   3. wrangler secret put BEEHIIV_API_KEY          (opcional — ver gate.ts)
 #   4. wrangler secret put BEEHIIV_PUBLICATION_ID   (opcional — ver gate.ts)
 #   5. Rodar scripts/sync-cursos-subscribers-kv.ts pra popular o KV pela 1ª vez
-#      (#4320: já agendado depois disso via Task Scheduler — ver
-#      scripts/setup-cursos-kv-sync-schedule.ps1, task "Diaria-Cursos-Kv-Sync",
-#      diária 09:15 — e o alarme de erro do worker via
-#      scripts/setup-cursos-error-alarm-schedule.ps1, task
-#      "Diaria-Cursos-Error-Alarm", a cada 2h)
+#      (#4320: já agendado depois disso via systemd — task
+#      "Diaria-Cursos-Kv-Sync", diária 09:15 — e o alarme de erro do worker
+#      via task "Diaria-Cursos-Error-Alarm", a cada 2h)
 name = "cursos"
 main = "src/index.ts"
 compatibility_date = "2024-09-23"

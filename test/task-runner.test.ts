@@ -2,12 +2,12 @@
  * test/task-runner.test.ts (#4805 Fase 2)
  *
  * Cobertura de `scripts/lib/task-runner.ts` (runScheduledTask). Trava os 5
- * comportamentos herdados dos wrappers `.ps1` (ver docstring do módulo, cada
- * item citado explicitamente aqui) sem precisar de PowerShell nem do
- * junction `data/` — spawn real de `node --import tsx` contra fixtures em
- * `test-fixtures/clarice-sync-daily/` (mesmas usadas pelos testes `.ps1`
- * equivalentes, ex: `test/run-apoios-diff-alarm-ps1.test.ts`) + injeção de
- * `execStep` pra cenários que precisariam de spawn-failure sintético.
+ * comportamentos herdados dos antigos wrappers `.ps1` (removidos no #5115 —
+ * ver docstring do módulo, cada item citado explicitamente aqui) sem
+ * precisar de PowerShell nem do junction `data/` — spawn real de
+ * `node --import tsx` contra fixtures em `test-fixtures/clarice-sync-daily/`
+ * + injeção de `execStep` pra cenários que precisariam de spawn-failure
+ * sintético.
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -29,7 +29,6 @@ function baseDef(overrides: Partial<ScheduledTaskDefinition> = {}): ScheduledTas
     steps: [{ key: "noop", script: NOOP_FIXTURE }],
     logPath: "task-runner-test/.fixture.log",
     schedule: { kind: "daily", hour: 9, minute: 0 },
-    legacySetupScript: "scripts/setup-apoios-diff-alarm-schedule.ps1", // qualquer .ps1 real serve, não é lido
     issue: "#4805 (teste)",
     ...overrides,
   };

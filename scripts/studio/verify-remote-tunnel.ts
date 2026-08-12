@@ -19,7 +19,8 @@
  * 401/403/erro de bloqueio.
  *
  * **Só funciona DEPOIS que o editor já ativou o tunnel + Access** (ver
- * `docs/studio-ui-remote-setup.md` e `scripts/studio/setup-remote-tunnel.ps1`).
+ * `docs/studio-ui-remote-setup.md` e `scripts/studio/setup-remote-tunnel-linux.sh`
+ * — o par Windows `.ps1` foi removido no #5115).
  * Rodar antes disso resulta em erro de conexão (hostname ainda não existe) —
  * esperado, não é um bug deste script.
  *
@@ -200,7 +201,7 @@ async function main(): Promise<void> {
       "Uso: verify-remote-tunnel.ts --url https://studio.diar.ia.br [--marker STRING] [--timeout-ms N]\n" +
         "(ou defina STUDIO_REMOTE_URL no ambiente/.env)\n\n" +
         "Só funciona DEPOIS que o tunnel + Access foram ativados pelo editor —\n" +
-        "ver docs/studio-ui-remote-setup.md e scripts/studio/setup-remote-tunnel.ps1.\n",
+        "ver docs/studio-ui-remote-setup.md e scripts/studio/setup-remote-tunnel-linux.sh.\n",
     );
     process.exit(2);
   }

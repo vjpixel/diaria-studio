@@ -23,8 +23,7 @@
  * `CREDENTIALS_PATH_TEST_OVERRIDE_ENV` (env var, resolvido dinamicamente a
  * cada chamada dentro do módulo — nunca um `const` capturado no import).
  *
- * Este teste é a rede ESTÁTICA e GENÉRICA (mesmo padrão de
- * `test/scheduled-task-registration.test.ts`, #3764): varre TODO
+ * Este teste é a rede ESTÁTICA e GENÉRICA (#3764): varre TODO
  * `test/*.test.ts` (não uma lista fixa) e reprova qualquer `writeFileSync`
  * que aponte pro path literal de `data/.credentials.json` fora de um dir
  * `mkdtempSync`'d — assim um arquivo de teste FUTURO não reabre a mesma
@@ -53,7 +52,7 @@ const TEST_DIR = join(ROOT, "test");
 // documentar o que procura — exclui-se do próprio scan pra não se auto-acusar.
 const SELF = resolve(fileURLToPath(import.meta.url));
 
-/** Lista .test.ts recursivamente sob test/ (mesmo padrão de ps1FilesUnder em scheduled-task-registration.test.ts). */
+/** Lista .test.ts recursivamente sob test/. */
 function testFilesUnder(dir: string): string[] {
   const out: string[] = [];
   for (const name of readdirSync(dir)) {

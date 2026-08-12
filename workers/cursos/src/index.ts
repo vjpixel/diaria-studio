@@ -111,8 +111,7 @@ export const GATED_INDEX_PATHS = ["/", "/index.html"];
  * todo caminho de degradação deste handler loga, `[observability]` está
  * ligado no `wrangler.toml`, e agora `scripts/cursos-error-alarm.ts` consome
  * esses logs (Cloudflare GraphQL Analytics API) numa cadência agendada (task
- * "Diaria-Cursos-Error-Alarm", a cada 2h — ver
- * `scripts/setup-cursos-error-alarm-schedule.ps1`) e alarma o editor por
+ * "Diaria-Cursos-Error-Alarm", a cada 2h) e alarma o editor por
  * e-mail quando uma linha fatal aparece ou a taxa de `?email= não
  * confirmado` estoura o limiar. Ainda vale a ressalva de que Workers Logs
  * amostra sob volume alto (o sinal pode degradar justo durante uma pane

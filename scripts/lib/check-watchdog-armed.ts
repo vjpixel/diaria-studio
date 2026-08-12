@@ -73,17 +73,16 @@
  *
  * Decisão de design (documentada aqui por instrução da issue #2768): quando
  * a task NÃO está armada em sessão local, este módulo **loga warning**
- * (run-log + stdout) em vez de disparar automaticamente
- * `scripts/overnight/setup-watchdog-schedule.ps1`. Motivo: o próprio script
- * de setup documenta explicitamente "NÃO EXECUTAR durante setup de
- * worktrees temporários" — o path do runner é derivado do diretório do
- * script, e uma execução automática dispararia sem esse contexto (a
- * checagem pode rodar de dentro de um worktree efêmero do coordenador ou de
- * um subagente). Registrar uma scheduled task é um side-effect de nível de
- * máquina (fora do repo, fora de qualquer `git revert`) — feature demais
- * pra um guard que deveria ser barato e sempre seguro de rodar. O padrão
- * "log warning explícito, nunca bloqueia" já é o mesmo aplicado a
- * `drive-sync.ts` e ao restante desta suíte (fail-soft).
+ * (run-log + stdout) em vez de disparar automaticamente o setup (o antigo
+ * `scripts/overnight/setup-watchdog-schedule.ps1`, removido no #5115 —
+ * hoje `scripts/overnight/setup-watchdog-schedule-systemd.ts`). Motivo:
+ * registrar/armar uma scheduled task é um side-effect de nível de máquina
+ * (fora do repo, fora de qualquer `git revert`) que pode disparar sem
+ * contexto suficiente (a checagem pode rodar de dentro de um worktree
+ * efêmero do coordenador ou de um subagente) — feature demais pra um guard
+ * que deveria ser barato e sempre seguro de rodar. O padrão "log warning
+ * explícito, nunca bloqueia" já é o mesmo aplicado a `drive-sync.ts` e ao
+ * restante desta suíte (fail-soft).
  *
  * Uso em runtime (skills):
  *   ```bash
@@ -99,7 +98,7 @@
  *   ```
  *
  * @see scripts/overnight-watchdog.ts (#2688)
- * @see scripts/overnight/setup-watchdog-schedule.ps1
+ * @see scripts/overnight/setup-watchdog-schedule-systemd.ts (setup — Windows/.ps1 removido no #5115)
  * @see scripts/lib/exec-mode.ts (#2643)
  * @see .claude/skills/diaria-overnight/SKILL.md § Fase 0 passo 1, § Stall passivo
  *
@@ -122,7 +121,7 @@ import { detectExecMode, detectTaskScheduler, type ExecMode, type TaskSchedulerK
 import { isMainModule } from "./cli-args.ts";
 import { unitBaseName } from "./systemd-units.ts";
 
-/** Nome exato da scheduled task, conforme `setup-watchdog-schedule.ps1`. */
+/** Nome exato da scheduled task (Task Scheduler no Windows; base do unit systemd no Linux). */
 export const WATCHDOG_TASK_NAME = "Diaria-Overnight-Watchdog";
 
 // ---------------------------------------------------------------------------
@@ -205,10 +204,9 @@ export function buildWatchdogWarningMessage(): string {
     `Watchdog overnight (#2688) NÃO está armado no Task Scheduler desta máquina ` +
     `(task "${WATCHDOG_TASK_NAME}" ausente). Sem ele, um stall silencioso total ` +
     `(nenhum evento chega ao coordenador) só é descoberto manualmente — foi a ` +
-    `causa raiz #1 do incidente #2768. Arme com (prefira pwsh se disponível — ` +
-    `evita o encoding gotcha do #2814 em PowerShell 5.1): ` +
-    `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\\overnight\\setup-watchdog-schedule.ps1 ` +
-    `(ou "powershell" no lugar de "pwsh" se pwsh 7 não estiver instalado)`
+    `causa raiz #1 do incidente #2768. O .ps1 de arme foi removido no #5115 (cutover ` +
+    `final, 260812) — por política nenhuma tarefa Diaria-* deve rodar no Windows ` +
+    `(#5074); a via real é systemd no servidor (ver docs/overnight-watchdog-setup.md).`
   );
 }
 
@@ -479,8 +477,8 @@ export function buildWatchdogHealthWarningMessage(
     case "armed_but_never_run":
       return (
         `Watchdog overnight (#2688) task "${WATCHDOG_TASK_NAME}" está presente e habilitada, ` +
-        `mas NUNCA rodou (Last Run Time: N/A) — verifique o trigger/agendamento ` +
-        `(scripts/overnight/setup-watchdog-schedule.ps1) ou se o horário atual está fora da janela agendada.`
+        `mas NUNCA rodou (Last Run Time: N/A) — verifique o trigger/agendamento no Task ` +
+        `Scheduler ou se o horário atual está fora da janela agendada.`
       );
     default:
       return buildWatchdogWarningMessage();

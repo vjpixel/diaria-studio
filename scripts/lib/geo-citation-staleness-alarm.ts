@@ -5,12 +5,12 @@
  * citação GEO (`geo-citation-monitor.ts`, #4558 Parte C) — mesmo molde de
  * `scripts/lib/apoios-diff-alarm.ts` (fingerprint + re-arma).
  *
- * Contexto (#4755, achado do fleet review da #4754): `test/pending-scheduled-tasks.test.ts`
- * descobre a task `Diaria-Geo-Citation-Monitor` pelo NOME (`Get-ScheduledTask`)
- * mas nunca checa `State`/`LastTaskResult` — uma task registrada e depois
- * desabilitada (ou removida, ou a máquina fica semanas desligada, ou todo
- * provider perde a API key) passa nesse guard em silêncio. Todos esses modos
- * de falha colapsam no MESMO sintoma observável: `data/geo-citations/history.jsonl`
+ * Contexto (#4755, achado do fleet review da #4754): um guard que só confirma
+ * "a task `Diaria-Geo-Citation-Monitor` está registrada" nunca checa
+ * `State`/`LastTaskResult` — uma task registrada e depois desabilitada (ou
+ * removida, ou a máquina fica semanas desligada, ou todo provider perde a
+ * API key) passa nesse tipo de checagem em silêncio. Todos esses modos de
+ * falha colapsam no MESMO sintoma observável: `data/geo-citations/history.jsonl`
  * para de receber registro novo. Por isso o sinal aqui não é "a última
  * execução falhou" (o exit code já ficou honesto no #4754) — é **staleness**:
  * "faz N dias que não chega registro novo".

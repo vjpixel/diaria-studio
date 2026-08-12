@@ -49,7 +49,6 @@ import {
 } from "./update-stage-status.ts";
 import { computeBraveCreditStats, type BraveCreditStats } from "./lib/brave-credits.ts"; // #1558
 import { registerReport, reportId } from "./studio-ui/studio-reports.ts"; // #3714
-import { checkPendingScheduledTasks, type SetupScriptTaskName } from "./lib/pending-scheduled-tasks.ts"; // #4708 Parte 1
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -357,7 +356,6 @@ export function renderHtmlReport(
   braveCredits: BraveCreditStats | null = null, // #1558
   socialPreviewUrl: string | null = null, // #1739
   newsletterUrl: string | null = null, // #3466
-  pendingScheduledTasks: SetupScriptTaskName[] | null = null, // #4708 Parte 1
 ): string {
   // #1609: total = soma do tempo de pipeline (sem aguardo de gate). Marca
   // visualmente quando algum stage caiu no fallback duration_ms (inclui gate).
@@ -426,26 +424,6 @@ export function renderHtmlReport(
         )
         .join("\n") + (errors.length > 10 ? `<li>... +${errors.length - 10} mais</li>` : "")
     : "";
-
-  // #4708 Parte 1: tasks declaradas em scripts/setup-*-schedule.ps1 mas
-  // ausentes do Task Scheduler desta máquina — omitido quando null/vazio
-  // (mode cloud, checagem indisponível, ou diff vazio; ver
-  // scripts/lib/pending-scheduled-tasks.ts).
-  const pendingTasksHtml =
-    pendingScheduledTasks && pendingScheduledTasks.length > 0
-      ? `
-  <h2 class="warn">Tasks pendentes de registro (#4708)</h2>
-  <p>${pendingScheduledTasks.length} task(s) declarada(s) em script(s) de setup mas ausente(s) do Task Scheduler desta máquina — provavelmente um PR implementou/testou o script sem rodar o registro real.</p>
-  <ul class="warn">
-    ${pendingScheduledTasks
-      .map(
-        (p) =>
-          `<li><code>${escapeHtml(p.taskName)}</code> — setup: <code>${escapeHtml(p.scriptPath)}</code></li>`,
-      )
-      .join("\n")}
-  </ul>
-  `
-      : "";
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -520,8 +498,6 @@ export function renderHtmlReport(
   ` : ""}
 
   ${warnings.length === 0 && errors.length === 0 ? "<p>Nenhum warning ou error registrado.</p>" : ""}
-
-  ${pendingTasksHtml}
 
   ${braveCredits && braveCredits.queries_this_month > 0 ? `
   <h2>Brave Search API (#1558)</h2>
@@ -700,7 +676,6 @@ export function writeEditionReport(
     braveCredits,
     loadSocialPreviewUrl(editionDir),
     loadNewsletterUrl(editionDir), // #3466
-    checkPendingScheduledTasks(ROOT).pending, // #4708 Parte 1 — fail-soft, no-op em sessão cloud
   );
   const { md5, absOut, registered } = writeReportFile(editionDir, outPath, html, edition, notify);
   return { md5, outPath: absOut, registered };
@@ -751,7 +726,6 @@ async function main(): Promise<void> {
     braveCredits,
     loadSocialPreviewUrl(editionDir), // #1739
     loadNewsletterUrl(editionDir), // #3466
-    checkPendingScheduledTasks(ROOT).pending, // #4708 Parte 1 — fail-soft, no-op em sessão cloud
   );
 
   // #1579: quando --out passado, escreve arquivo + grava manifest com md5

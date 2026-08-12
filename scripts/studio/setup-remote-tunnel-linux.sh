@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# setup-remote-tunnel-linux.sh (#4808, fatia Linux do epic Studio UI #3554,
-# espelha scripts/studio/setup-remote-tunnel.ps1 do Windows)
+# setup-remote-tunnel-linux.sh (#4808, fatia Linux do epic Studio UI #3554;
+# o par Windows setup-remote-tunnel.ps1 foi removido no #5115, cutover final)
 #
 # Ativa o acesso remoto ao studio-server local (http://127.0.0.1:PORT) via
 # Cloudflare Tunnel, registrando um user systemd service ("diaria-studio-tunnel")
@@ -180,7 +180,7 @@ cat > "$CONFIG_PATH" <<EOF
 # Gerado por scripts/studio/setup-remote-tunnel-linux.sh (#4808) -- idempotente,
 # seguro sobrescrever. Autenticado via tunnel token (--token-file), não
 # credentials-file -- funciona mesmo que o tunnel tenha sido criado noutra
-# máquina (ex: Windows, ver setup-remote-tunnel.ps1).
+# máquina.
 ingress:
 $INGRESS_LINE
   - service: http_status:404

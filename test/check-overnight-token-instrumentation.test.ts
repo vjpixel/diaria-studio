@@ -4,8 +4,7 @@
  * Cobertura de `scripts/check-overnight-token-instrumentation.ts`: contagem
  * pura dos 3 tipos de evento (`subagent_metrics`, `coordinator_tokens_estimate`,
  * `review_metrics`), o veredito derivado, a seção markdown pronta pro
- * relatório, e a orquestração fail-soft com fixtures em tmpdir (mesmo padrão
- * de `test/pending-scheduled-tasks.test.ts`).
+ * relatório, e a orquestração fail-soft com fixtures em tmpdir.
  */
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";

@@ -4,10 +4,9 @@
  *
  * Entrypoint CLI único que roda uma task do registro declarativo
  * (`scripts/lib/scheduled-tasks.ts`) via `scripts/lib/task-runner.ts`.
- * Destinado a substituir, uma a uma conforme forem cortadas pra cá, as 14
- * invocações hoje feitas por `scripts/run-*.ps1` — sem removê-los (ver "Não
- * fazer" da #4805; cutover real do Task Scheduler é decisão futura, fora
- * deste escopo).
+ * Substituiu as invocações que antes eram feitas por `scripts/run-*.ps1`
+ * (removidos no #5115, cutover final — nenhuma máquina Windows roda mais
+ * tasks `Diaria-*`).
  *
  * Uso:
  *   npx tsx scripts/run-task.ts --task <Nome-Exato-Da-Task>

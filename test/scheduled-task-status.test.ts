@@ -6,10 +6,10 @@
  *     `systemctl --user is-enabled`, e o caso `cannot_verify` quando nenhum
  *     agendador é reconhecido) — nunca chama subprocesso real.
  *   - `parseTaskLogRuns`/`classifyTaskRunResult` contra fixtures REAIS do
- *     formato de log compartilhado (`task-runner.ts` E
- *     `Invoke-DiariaScheduledWrapper.psm1`, incluindo a divergência de
- *     literal de guard-abort entre os dois — `"guard=skip"` vs
- *     `"<key>=skip-guard"`).
+ *     formato de log compartilhado (`task-runner.ts` e, historicamente até
+ *     o #5115, `Invoke-DiariaScheduledWrapper.psm1` do `.ps1` legado —
+ *     incluindo a divergência de literal de guard-abort entre os dois —
+ *     `"guard=skip"` vs `"<key>=skip-guard"`).
  *   - `sanitizeLogExcerpt` (secrets nunca vazam).
  *   - `readTaskLastRun` fail-soft com fixtures em tmpdir.
  *   - `computeMostRecentScheduledOccurrence`/`computeNextRunAtOrAfter`/
@@ -53,7 +53,6 @@ function fakeDef(overrides: Partial<ScheduledTaskDefinition> = {}): ScheduledTas
     steps: [{ key: "run", script: "scripts/fake.ts" }],
     logPath: "fake/.fake.log",
     schedule: { kind: "daily", hour: 9, minute: 0 },
-    legacySetupScript: "scripts/setup-fake-schedule.ps1",
     issue: "#0000",
     ...overrides,
   };

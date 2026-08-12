@@ -50,17 +50,19 @@ Diferente do alarme de guardrail Clarice (idempotiza por ID de campanha), este i
 
 ### Setup (ação local one-time do editor — NÃO feito nesta sessão)
 
-Requer Windows + Task Scheduler + `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_WORKERS_TOKEN` (escopo de leitura/escrita de Workers KV — o MESMO token já usado por outros scripts que leem/escrevem KV Cloudflare via `scripts/lib/cloudflare-kv-upload.ts`, ex: `clarice-engagement-cohorts.ts`; **não** mais `CLOUDFLARE_API_TOKEN`/"Account Analytics Read" — #4382 removeu a dependência da Analytics API) + `CURSOS_KV_NAMESPACE_ID` (id do namespace `CURSOS_SUBSCRIBERS`, o MESMO já usado por `scripts/sync-cursos-subscribers-kv.ts` — ver `workers/cursos/wrangler.toml` `[[kv_namespaces]] id`) + `data/.credentials.json` com o scope `gmail.send` (mesmo requisito do alarme de guardrail Clarice, `npx tsx scripts/oauth-setup.ts` se ainda não tiver esse scope) + o junction `data/` (OneDrive).
+Requer Linux/systemd + `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_WORKERS_TOKEN` (escopo de leitura/escrita de Workers KV — o MESMO token já usado por outros scripts que leem/escrevem KV Cloudflare via `scripts/lib/cloudflare-kv-upload.ts`, ex: `clarice-engagement-cohorts.ts`; **não** mais `CLOUDFLARE_API_TOKEN`/"Account Analytics Read" — #4382 removeu a dependência da Analytics API) + `CURSOS_KV_NAMESPACE_ID` (id do namespace `CURSOS_SUBSCRIBERS`, o MESMO já usado por `scripts/sync-cursos-subscribers-kv.ts` — ver `workers/cursos/wrangler.toml` `[[kv_namespaces]] id`) + `data/.credentials.json` com o scope `gmail.send` (mesmo requisito do alarme de guardrail Clarice, `npx tsx scripts/oauth-setup.ts` se ainda não tiver esse scope) + o junction `data/` (OneDrive). O antigo `.ps1` do Windows foi removido no #5115 (cutover final).
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-cursos-error-alarm-schedule.ps1
+```bash
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Cursos-Error-Alarm
+systemctl --user daemon-reload
+systemctl --user enable --now diaria-cursos-error-alarm.timer
 ```
 
-Isso registra a task `Diaria-Cursos-Error-Alarm` (a cada 2h). Idempotente — re-executar atualiza a task. Remover: mesmo comando com `-Unregister`.
+Isso registra a task `Diaria-Cursos-Error-Alarm` (a cada 2h). Idempotente — re-executar regenera os units. Remover: `systemctl --user disable --now diaria-cursos-error-alarm.timer`.
 
 **Antes de confiar neste alarme em produção**, rodar uma vez com credenciais reais:
 
-```powershell
+```bash
 npx tsx scripts/cursos-error-alarm.ts --dry-run
 ```
 
@@ -74,17 +76,19 @@ e conferir se a linha de log bate com os contadores esperados (não precisa ser 
 
 ### Setup (ação local one-time do editor — NÃO feito nesta sessão)
 
-Requer `BEEHIIV_API_KEY` (+ opcional `BEEHIIV_PUBLICATION_ID`, fallback `platform.config.json`) + `CLOUDFLARE_ACCOUNT_ID` + `CURSOS_KV_NAMESPACE_ID` (id do namespace `CURSOS_SUBSCRIBERS`, do `wrangler.toml`) no `.env` local + o junction `data/`.
+Requer `BEEHIIV_API_KEY` (+ opcional `BEEHIIV_PUBLICATION_ID`, fallback `platform.config.json`) + `CLOUDFLARE_ACCOUNT_ID` + `CURSOS_KV_NAMESPACE_ID` (id do namespace `CURSOS_SUBSCRIBERS`, do `wrangler.toml`) no `.env` local + o junction `data/`. O antigo `.ps1` do Windows foi removido no #5115 (cutover final).
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-cursos-kv-sync-schedule.ps1
+```bash
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Cursos-Kv-Sync
+systemctl --user daemon-reload
+systemctl --user enable --now diaria-cursos-kv-sync.timer
 ```
 
-Isso registra a task `Diaria-Cursos-Kv-Sync` (diária, 09:15 — 45min depois da `Diaria-Clarice-Sync`, pra não concorrer no mesmo horário). Idempotente. Remover: mesmo comando com `-Unregister`.
+Isso registra a task `Diaria-Cursos-Kv-Sync` (diária, 09:15 — 45min depois da `Diaria-Clarice-Sync`, pra não concorrer no mesmo horário). Idempotente — re-executar regenera os units. Remover: `systemctl --user disable --now diaria-cursos-kv-sync.timer`.
 
 ### Verificar que a 1ª execução deixou a contagem coerente
 
-```powershell
+```bash
 npx tsx scripts/sync-cursos-subscribers-kv.ts --dry-run
 ```
 
@@ -98,6 +102,6 @@ Imprime `{ subscribers: N, kv_entries: M, dry_run: true }` — `N` deve bater (o
 
 ## Follow-up explícito deste PR
 
-Nem o registro das duas tasks no Task Scheduler nem a 1ª execução ao vivo do KV sync foram feitos na sessão original (#4320) — o dispatch rodou num worktree isolado, sem acesso ao Task Scheduler real da máquina do editor nem a credenciais Cloudflare/Beehiiv ao vivo (escopo intencional, ver corpo do PR). **Ação pendente do editor pós-merge:** rodar os dois comandos `setup-*-schedule.ps1` acima (registro das tasks) e, antes de confiar no alarme, o `--dry-run` descrito na seção 1.
+Nem o registro das duas tasks no systemd nem a 1ª execução ao vivo do KV sync foram feitos na sessão original (#4320) — o dispatch rodou num worktree isolado, sem acesso ao agendador real da máquina do editor nem a credenciais Cloudflare/Beehiiv ao vivo (escopo intencional, ver corpo do PR). **Ação pendente do editor pós-merge:** rodar os comandos `setup-systemd-timers.ts`/`systemctl` acima (registro das tasks) e, antes de confiar no alarme, o `--dry-run` descrito na seção 1.
 
 **#4382 (este PR):** o redesign de GraphQL→contadores KV também não foi validado ao vivo (mesmo motivo — worktree isolado sem credenciais reais). A lógica de delta/idempotência é coberta por teste (`test/cursos-error-alarm.test.ts`), e o incremento dos contadores no worker é coberto fim-a-fim (`test/cursos-gate.test.ts`), mas o round-trip real "worker incrementa no KV de produção → script lê o mesmo KV via API HTTP" nunca rodou contra credenciais/deploy reais. **Ação pendente do editor pós-merge (além do registro das tasks acima):** fazer deploy do worker atualizado (`cd workers/cursos && npx wrangler deploy`), gerar pelo menos 1 ocorrência de cada evento (ex: bater em `/gate/verify` com um e-mail não-assinante pra incrementar `emailGateNotConfirmed`) e rodar `npx tsx scripts/cursos-error-alarm.ts --dry-run` conferindo que os contadores lidos batem com o que foi gerado.

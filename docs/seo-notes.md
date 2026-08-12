@@ -1,8 +1,8 @@
 # SEO — registro de fatos apurados (#4548)
 
 Notas operacionais sobre a leitura do output de `scripts/seo-pull.ts` e
-`scripts/seo-index-check.ts` (task semanal `Diaria-Seo-Weekly`,
-`scripts/run-seo-weekly.ps1`, grava em `data/seo/`). Não é runbook de setup —
+`scripts/seo-index-check.ts` (task semanal `Diaria-Seo-Weekly`, grava em
+`data/seo/`). Não é runbook de setup —
 é registro de **decisão/interpretação de dado**, pra que uma rodada futura
 (overnight/develop ou o próprio editor) não reinterprete o mesmo dataset como
 achado novo ou tente "consertar" o que já está certo.

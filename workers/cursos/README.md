@@ -110,11 +110,10 @@ client-side (lista pequena, sem backend de busca).
    secundária + cadastro inline).
 4. `wrangler secret put BEEHIIV_PUBLICATION_ID` (opcional, par do anterior).
 5. Rodar `scripts/sync-cursos-subscribers-kv.ts` pra popular o KV pela 1ª vez
-   — já agendado depois disso via Task Scheduler diariamente às 09:15 (ver
-   `scripts/setup-cursos-kv-sync-schedule.ps1`, task `Diaria-Cursos-Kv-Sync`).
+   — já agendado depois disso via systemd diariamente às 09:15 (task
+   `Diaria-Cursos-Kv-Sync`, ver `docs/cursos-worker-alarm-setup.md`).
 
-Separadamente, a task `Diaria-Cursos-Error-Alarm` (a cada 2h,
-`scripts/setup-cursos-error-alarm-schedule.ps1`) monitora os logs do worker
-via Cloudflare GraphQL Analytics API e alarma o editor por e-mail em caso de
-erro fatal ou taxa alta de `?email=` não confirmado (runbook completo:
-`docs/cursos-worker-alarm-setup.md`).
+Separadamente, a task `Diaria-Cursos-Error-Alarm` (a cada 2h) monitora os
+logs do worker via Cloudflare GraphQL Analytics API e alarma o editor por
+e-mail em caso de erro fatal ou taxa alta de `?email=` não confirmado
+(runbook completo: `docs/cursos-worker-alarm-setup.md`).

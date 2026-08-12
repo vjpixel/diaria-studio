@@ -9,8 +9,8 @@ ninguém notar.
 
 ## O que ele faz
 
-`scripts/run-apoios-diff-alarm.ps1` → `scripts/apoios-diff-alarm.ts`, rodando
-diariamente às 09:45 via Task Scheduler. Computa o MESMO diff do dry-run de
+Task `Diaria-Apoios-Diff-Alarm` (`scripts/lib/scheduled-tasks.ts`) → `scripts/apoios-diff-alarm.ts`, rodando
+diariamente às 09:45 via systemd (o antigo wrapper `.ps1` do Windows foi removido no #5115, cutover final). Computa o MESMO diff do dry-run de
 `scripts/sync-apoio-nivel-beehiiv.ts` (apoia.se × custom field `apoio_nivel`
 na Beehiiv) — se houver diff pendente (adições/trocas/remoções), alarma o
 editor por e-mail (Gmail).
@@ -35,12 +35,14 @@ limpar e reaparecer depois.
 `APOIA_SE_API_KEY`/`APOIA_SE_API_SECRET`/`APOIA_SE_CAMPAIGN` +
 `data/.credentials.json` com o scope `gmail.send`.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-apoios-diff-alarm-schedule.ps1
+```bash
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Apoios-Diff-Alarm
+systemctl --user daemon-reload
+systemctl --user enable --now diaria-apoios-diff-alarm.timer
 ```
 
 Isso registra a task `Diaria-Apoios-Diff-Alarm` (diária, 09:45). Idempotente
-— re-executar atualiza a task. Remover: mesmo comando com `-Unregister`.
+— re-executar regenera os units. Remover: `systemctl --user disable --now diaria-apoios-diff-alarm.timer`.
 
 **Registro da task + 1ª execução ao vivo não feitos no PR #4490/#4485**
 (worktrees isolados, sem Task Scheduler real nem credenciais

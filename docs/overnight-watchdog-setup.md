@@ -8,7 +8,7 @@ O watchdog detecta stall em rodadas overnight de forma independente do coordenad
 
 ## Como funciona
 
-1. Roda a cada 10 min via Task Scheduler (entre 18:00 e 09:00 do dia seguinte).
+1. Roda a cada 10 min via systemd timer (entre 18:00 e 09:00 do dia seguinte).
 2. Procura rodada overnight ativa: `data/overnight/{AAMMDD}/plan.json` existe mas `report.md` está ausente.
 3. Mede **última atividade** = `max(mtime(plan.json), último evento run-log com agent:"overnight")`.
 4. Se inatividade > 60 min (limiar configurável):
@@ -34,47 +34,19 @@ As duas camadas são complementares. O #2379 (existente na SKILL.md) permanece c
 
 **Requisito:** executar no clone permanente do repo, não em worktrees temporários.
 
-**Prefira `pwsh` (PowerShell 7) quando disponível** — o script usa UTF-8 com
-BOM desde o #2814, então roda em PowerShell 5.1 também, mas `pwsh` (UTF-8
-nativo, sem o gotcha de encoding localizado que causou o incidente #2768)
-é mais robusto se você tocar o arquivo depois com um editor sem BOM-awareness:
-
-```powershell
-# No diretório raiz do repo (pwsh, preferido):
-pwsh -NoProfile -ExecutionPolicy Bypass `
-    -File scripts\overnight\setup-watchdog-schedule.ps1
-
-# Alternativa se pwsh 7 não estiver instalado (Windows PowerShell 5.1 default):
-powershell -NoProfile -ExecutionPolicy Bypass `
-    -File scripts\overnight\setup-watchdog-schedule.ps1
-```
-
-Isso cria a task `Diaria-Overnight-Watchdog` no Task Scheduler local. Idempotente — re-executar atualiza a task.
-
-### Verificar a task registrada
-
-```powershell
-Get-ScheduledTask -TaskName "Diaria-Overnight-Watchdog" | Get-ScheduledTaskInfo
-```
-
-### Remover a task
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass `
-    -File scripts\overnight\setup-watchdog-schedule.ps1 -Unregister
-```
-
----
+**O `.ps1` de arme Windows foi removido no #5115** (cutover final, 260812) —
+nenhuma tarefa `Diaria-*` roda mais no Windows (política de 260811, #5074).
+Via de arme é só systemd, abaixo.
 
 ## Setup no Linux (systemd) — #4857
 
-Par Linux do fluxo Windows acima. Diferente das outras 14 tasks agendadas do
-repo (registro declarativo em `scripts/lib/scheduled-tasks.ts` + geração via
-`scripts/setup-systemd-timers.ts`, épica #4798), o watchdog fica **fora** do
-registry — decisão documentada em `scripts/lib/watchdog-systemd-units.ts`: a
-janela 18:00→09:00 (cadência que cruza a meia-noite) e a invocação direta de
-`overnight-watchdog.ts` (sem passar por `run-task.ts`) não cabem no schema
-`ScheduledTaskSchedule` hoje (`daily`/`weekly`/`interval` simples).
+Diferente das outras 14 tasks agendadas do repo (registro declarativo em
+`scripts/lib/scheduled-tasks.ts` + geração via `scripts/setup-systemd-timers.ts`,
+épica #4798), o watchdog fica **fora** do registry — decisão documentada em
+`scripts/lib/watchdog-systemd-units.ts`: a janela 18:00→09:00 (cadência que
+cruza a meia-noite) e a invocação direta de `overnight-watchdog.ts` (sem
+passar por `run-task.ts`) não cabem no schema `ScheduledTaskSchedule` hoje
+(`daily`/`weekly`/`interval` simples).
 
 **As outras 14 tasks (registry) têm o passo de armar automatizado desde o
 #4828** — `npx tsx scripts/arm-systemd-timers.ts [--task <Nome>]
@@ -287,7 +259,6 @@ echo "# relatório gerado manualmente (fase 2 falhou)" > data\overnight\{AAMMDD}
 | Arquivo | Função |
 |---|---|
 | `scripts/overnight-watchdog.ts` | Script principal do watchdog |
-| `scripts/overnight/setup-watchdog-schedule.ps1` | Setup da task no Task Scheduler (Windows) |
 | `scripts/lib/watchdog-systemd-units.ts` | Gera o conteúdo dos units systemd (Linux, #4857) |
 | `scripts/overnight/setup-watchdog-schedule-systemd.ts` | CLI que escreve os units systemd em disco (Linux, #4857) |
 | `scripts/lib/check-watchdog-armed.ts` | Checagem cross-platform (schtasks/systemd) usada pela Fase 0 do overnight/develop |

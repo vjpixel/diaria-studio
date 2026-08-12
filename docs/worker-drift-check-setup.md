@@ -44,12 +44,14 @@ Fingerprint do conjunto de workers pendentes (`data/worker-drift-check/state.jso
 
 ## Setup (ação local one-time do editor — NÃO feito nesta unidade)
 
-Requer Windows + Task Scheduler + `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_WORKERS_TOKEN` (token com permissão de **leitura** em Workers Scripts — o mesmo par de env vars já usado por `cursos-error-alarm.ts`/`postmaster-spam-sync.ts`) + `data/.credentials.json` com o scope `gmail.send` (mesmo requisito dos outros alarmes locais deste repo, `npx tsx scripts/oauth-setup.ts` se ainda não tiver esse scope). **Não** requer o junction `data/` para ler o estado do repo em si (`workers/*/wrangler.toml` e commits git são locais ao checkout) — só precisa dele para persistir `data/worker-drift-check/state.json` (idempotência).
+Requer Linux/systemd + `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_WORKERS_TOKEN` (token com permissão de **leitura** em Workers Scripts — o mesmo par de env vars já usado por `cursos-error-alarm.ts`/`postmaster-spam-sync.ts`) + `data/.credentials.json` com o scope `gmail.send` (mesmo requisito dos outros alarmes locais deste repo, `npx tsx scripts/oauth-setup.ts` se ainda não tiver esse scope). **Não** requer o junction `data/` para ler o estado do repo em si (`workers/*/wrangler.toml` e commits git são locais ao checkout) — só precisa dele para persistir `data/worker-drift-check/state.json` (idempotência). O antigo `.ps1` de setup do Windows foi removido no #5115 (cutover final).
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-worker-drift-check-schedule.ps1
+```bash
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Worker-Drift-Check
+systemctl --user daemon-reload
+systemctl --user enable --now diaria-worker-drift-check.timer
 ```
 
-Isso registra a task `Diaria-Worker-Drift-Check` (a cada 6h). Idempotente — re-executar atualiza a task. Remover: mesmo comando com `-Unregister`.
+Isso registra a task `Diaria-Worker-Drift-Check` (a cada 6h). Idempotente — re-executar regenera os units. Remover: `systemctl --user disable --now diaria-worker-drift-check.timer`.
 
 **Nenhuma execução ao vivo desta checagem rodou nesta unidade** (worktree isolado, sem `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_WORKERS_TOKEN` nem `data/.credentials.json` reais) — validado só via testes da lógica pura + parsing determinístico (`test/worker-drift-check.test.ts`), mesma disciplina do #4320/#4382/#4490/#4534.

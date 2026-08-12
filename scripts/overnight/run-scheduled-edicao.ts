@@ -2,9 +2,9 @@
 /**
  * scripts/overnight/run-scheduled-edicao.ts (#4998, reativação do #2068/#3259)
  *
- * Runner Linux/systemd da edição diária agendada — par de
- * `scripts/overnight/run-scheduled-edicao.ps1` (Windows Task Scheduler).
- * Invocado pelo timer `diaria-edicao-diaria.timer` (dom-qui 16:00 BRT, ver
+ * Runner Linux/systemd da edição diária agendada — sucessor do antigo
+ * `scripts/overnight/run-scheduled-edicao.ps1` (Windows Task Scheduler,
+ * removido no #5115). Invocado pelo timer `diaria-edicao-diaria.timer` (dom-qui 16:00 BRT, ver
  * `scripts/lib/edicao-systemd-units.ts`).
  *
  * Fluxo:
@@ -30,7 +30,6 @@
  * requer ação explícita do editor (/diaria-5-publicacao).
  *
  * @see scripts/overnight/setup-edicao-schedule-systemd.ts (gera os units que invocam este script)
- * @see scripts/overnight/run-scheduled-edicao.ps1 (par Windows, mesmo guard replicado lá)
  * @see docs/scheduled-edicao-setup.md
  */
 import { execFileSync } from "node:child_process";

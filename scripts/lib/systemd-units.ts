@@ -3,8 +3,9 @@
  *
  * Funções puras que traduzem uma `ScheduledTaskDefinition` (registro
  * declarativo, `scripts/lib/scheduled-tasks.ts`) num par de units systemd
- * (`.service` + `.timer`, "user units") — espelha o papel dos
- * `scripts/setup-*-schedule.ps1` do Windows, mas só GERA o texto/arquivo.
+ * (`.service` + `.timer`, "user units") — espelha o papel que os antigos
+ * `scripts/setup-*-schedule.ps1` do Windows tinham (removidos no #5115),
+ * mas só GERA o texto/arquivo.
  * ARMAR (`systemctl --user enable --now`) é a issue filha #4807, fora deste
  * escopo — nenhuma função aqui chama `systemctl` nem qualquer outro
  * subprocess (ver `scripts/setup-systemd-timers.ts`, que só escreve arquivo
@@ -62,9 +63,11 @@ function pad2(n: number): string {
 // 06:00 BRT, reintroduzindo em silêncio a MESMA regressão que motivou mudar
 // 03:40->08:30 no #2932. Mesmo problema bloquearia Diaria-Brevo-Diaria-
 // Evaluate (precisa rodar ANTES das 06:00 BRT -- a Brevo congela
-// destinatários no agendamento). scheduled-task-registration.test.ts não
-// pega isso: ele valida o registry (correto), a informação de fuso se perde
-// só aqui, na emissão do OnCalendar=.
+// destinatários no agendamento). O describe "horários com dependência de
+// ordem em relação ao envio canônico das 06:00 BRT" em
+// test/scheduled-tasks.test.ts não pega isso: ele valida o registry
+// (correto), a informação de fuso se perde só aqui, na emissão do
+// OnCalendar=.
 //
 // NÃO existe uma chave `Timezone=` separada em systemd.timer (achado ao
 // vivo, primeira tentativa: systemd 259 ignora silenciosamente com um

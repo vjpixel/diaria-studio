@@ -156,10 +156,11 @@ describe("decideWatchdogArmingAction", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildWatchdogWarningMessage", () => {
-  it("menciona o nome da task e o script de setup", () => {
+  it("menciona o nome da task e a via real (systemd, pos-#5115)", () => {
     const msg = buildWatchdogWarningMessage();
     assert.match(msg, new RegExp(WATCHDOG_TASK_NAME));
-    assert.match(msg, /setup-watchdog-schedule\.ps1/);
+    assert.match(msg, /systemd/);
+    assert.doesNotMatch(msg, /setup-watchdog-schedule\.ps1/);
   });
 });
 
@@ -442,8 +443,8 @@ describe("buildWatchdogCannotVerifyMessage (#4800)", () => {
     assert.match(msg, /#4798/);
     // "schtasks" pode aparecer como EXPLICAÇÃO de por que a checagem não
     // funciona nesta plataforma (esta checagem só sabe consultar schtasks);
-    // o que a issue proíbe é sugerir um COMANDO de arme pra rodar — isso é
-    // sempre `pwsh ... setup-watchdog-schedule.ps1` no restante do módulo.
+    // o que a issue proíbe é sugerir um COMANDO de arme Windows pra rodar
+    // (o .ps1 que fazia isso foi removido no #5115).
     assert.doesNotMatch(msg, /pwsh -NoProfile/i);
     assert.doesNotMatch(msg, /powershell -NoProfile/i);
     assert.doesNotMatch(msg, /setup-watchdog-schedule\.ps1/i);

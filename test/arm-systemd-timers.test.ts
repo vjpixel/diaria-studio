@@ -41,7 +41,6 @@ function fakeTask(name: string): ScheduledTaskDefinition {
     steps: [{ key: "x", script: "scripts/does-not-exist.ts" }],
     logPath: `fake/${name}.log`,
     schedule: { kind: "daily", hour: 9, minute: 0 },
-    legacySetupScript: "scripts/setup-fake.ps1",
     issue: "#4828",
   };
 }

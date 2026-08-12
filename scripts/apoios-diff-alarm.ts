@@ -109,8 +109,8 @@ async function main(): Promise<void> {
   const { apiKey, publicationId } = loadBeehiivConfig(LOG_PREFIX);
 
   // #4490 causa 4 / self-review consolidado do PR #4503: esta é a task diária
-  // PRETENDIDA pelo #4485 item 2 (`Diaria-Apoios-Diff-Alarm`) — o registro no
-  // Task Scheduler (armar via scripts/setup-apoios-diff-alarm-schedule.ps1) +
+  // PRETENDIDA pelo #4485 item 2 (`Diaria-Apoios-Diff-Alarm`) — o registro
+  // (armar via `npx tsx scripts/setup-systemd-timers.ts --task Diaria-Apoios-Diff-Alarm`) +
   // 1ª execução ao vivo ainda são ação PENDENTE do editor (#4506 item 6, ver
   // CLAUDE.md); este script já está pronto pra rodar assim que armado. Sem esta
   // reconciliação, uma promessa que confirma pagamento só é promovida a

@@ -298,8 +298,6 @@ Com `--bugs` (#3375) ativo, abrir o digest com `Modo: --bugs (só issues com lab
 
 Timeline via `npx tsx scripts/render-overnight-timeline.ts --plan data/develop/{AAMMDD}/plan.json --title "Timeline da sessão" --total-label "Total da sessão"`.
 
-**Tasks pendentes de registro (#4708 Parte 1):** rodar `npx tsx scripts/lib/pending-scheduled-tasks.ts` — cruza o `$TaskName` declarado em cada `scripts/**/setup-*-schedule.ps1` contra as tasks REALMENTE registradas no Task Scheduler desta máquina. Fecha o padrão medido em 06/08 (#4708: três tasks mergeadas/testadas em sessões anteriores nunca foram registradas de verdade, sem NENHUM sinal automático até uma auditoria manual). Imprime a seção markdown pronta pra colar quando há pendência, ou nada quando não há; se a saída não for vazia, colar verbatim no `report.md` desta sessão.
-
 Salvar o digest completo em `data/develop/{AAMMDD}/report.md` (mesma convenção do overnight, `data/overnight/{AAMMDD}/report.md`). **Registrar na superfície de Relatórios do Studio (#3714, decisão do editor 260720 — substitui o antigo draft de Gmail, não soma a ele):**
 ```bash
 npx tsx scripts/register-report.ts --kind develop --id {AAMMDD} \

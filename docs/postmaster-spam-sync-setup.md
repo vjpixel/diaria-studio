@@ -8,10 +8,12 @@ automático.
 
 ## O que ele faz
 
-`scripts/run-postmaster-spam-sync.ps1` → `scripts/postmaster-spam-sync.ts`,
-rodando diariamente às 12:30 (mudou de "a cada 12h", decisão do editor
-260810 — a leitura já é uma MÉDIA sobre uma janela de dias, 1x/dia basta; a
-cadência de 12h nunca leu nada mais fresco, só gastava a chamada à toa).
+Task `Diaria-Postmaster-Spam-Sync` (`scripts/lib/scheduled-tasks.ts`) →
+`scripts/postmaster-spam-sync.ts`, rodando diariamente às 12:30 via systemd
+(o antigo wrapper `.ps1` do Windows foi removido no #5115, cutover final;
+horário mudou de "a cada 12h", decisão do editor 260810 — a leitura já é uma
+MÉDIA sobre uma janela de dias, 1x/dia basta; a cadência de 12h nunca leu
+nada mais fresco, só gastava a chamada à toa).
 Grava a MÉDIA do
 `userReportedSpamRatio` de `clarice.ai` sobre uma janela de dias (mesma
 janela — `HEALTH_SAMPLE_DAYS` — das outras métricas da aba Rampa, #4345) na
@@ -44,9 +46,11 @@ de cabeça) fica direto no docstring de `scripts/postmaster-spam-sync.ts`
 `local` — precisa do junction `data/` (OneDrive) + `data/.credentials.json`
 com o scope `postmaster.readonly` + `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_WORKERS_TOKEN`.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-postmaster-spam-sync-schedule.ps1
+```bash
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Postmaster-Spam-Sync
+systemctl --user daemon-reload
+systemctl --user enable --now diaria-postmaster-spam-sync.timer
 ```
 
 Isso registra a task `Diaria-Postmaster-Spam-Sync` (diária, 12:30). Idempotente
-— re-executar atualiza a task. Remover: mesmo comando com `-Unregister`.
+— re-executar regenera os units. Remover: `systemctl --user disable --now diaria-postmaster-spam-sync.timer`.

@@ -502,45 +502,11 @@ describe("Diaria-SEO-Weekly inclui /temas/ na checagem de indexação (#4909)", 
   });
 });
 
-describe("agendamento semanal .ps1 (#4105)", () => {
-  const PS1 = ["scripts/run-seo-weekly.ps1", "scripts/setup-seo-schedule.ps1"];
-  const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
-
-  for (const rel of PS1) {
-    it(`${rel} tem BOM UTF-8 (PS 5.1 quebra o parse sem ele — #2814)`, () => {
-      const head = readFileSync(resolve(ROOT, rel)).subarray(0, 3);
-      assert.ok(head.equals(UTF8_BOM), `Esperava EF BB BF no início de ${rel}, achei ${head.toString("hex")}`);
-    });
-  }
-
-  it("o wrapper chama os DOIS scripts do loop (cobertura + Search Analytics)", () => {
-    // Sem o seo-index-check a task viraria só o pull, que hoje retorna 0 linhas
-    // — a rodada semanal pareceria saudável sem medir nada.
-    const src = readFileSync(resolve(ROOT, "scripts/run-seo-weekly.ps1"), "utf8");
-    assert.match(src, /seo-index-check\.ts/);
-    assert.match(src, /seo-pull\.ts/);
-    assert.match(src, /--only-posts/);
-  });
-
-  it("#4903 item 2: o wrapper também chama seo-index-check pro sitemap de arquivo.diar.ia.br", () => {
-    // Espelha o step "index-arquivo" de SCHEDULED_TASKS (scripts/lib/scheduled-tasks.ts)
-    // — sem isso, a task no Windows (via este .ps1, ainda a via de execução
-    // real) mede só o host principal, deixando /temas/{slug} sem cobertura
-    // mesmo depois do registro declarativo ganhar o step.
-    const src = readFileSync(resolve(ROOT, "scripts/run-seo-weekly.ps1"), "utf8");
-    assert.match(src, /arquivo\.diar\.ia\.br\/sitemap\.xml/);
-    assert.match(src, /--out-suffix\s+"arquivo"/);
-    // Não pode herdar --only-posts nesta chamada — zeraria as 4 URLs de
-    // /temas/* (o filtro é /\/p\//, achado do #4909).
-    const arquivoCallMatch = src.match(/--sitemap "https:\/\/arquivo\.diar\.ia\.br\/sitemap\.xml"[^\n]*/);
-    assert.ok(arquivoCallMatch, "chamada --sitemap arquivo.diar.ia.br não encontrada");
-    assert.ok(!arquivoCallMatch![0].includes("--only-posts"), "--only-posts na chamada de arquivo zeraria /temas/*");
-  });
-
-  it("setup registra com Register-ScheduledTask -Force, não Set-ScheduledTask (#3757)", () => {
-    const src = readFileSync(resolve(ROOT, "scripts/setup-seo-schedule.ps1"), "utf8");
-    assert.match(src, /Register-ScheduledTask/);
-    assert.match(src, /-Force/);
-    assert.ok(!/Set-ScheduledTask\s+`?\s*-/.test(src), "Set-ScheduledTask não aceita -Description");
-  });
-});
+// Cobertura de agendamento semanal (#4105) — o describe original checava o
+// `.ps1` de setup/runner (BOM, ambos scripts do loop, step de arquivo, guard
+// Register-ScheduledTask). Removidos no #5115 (cutover final); os mesmos
+// invariantes de conteúdo (ambos scripts chamados, step "index-arquivo" com
+// os args corretos, ordem index -> index-arquivo) seguem cobertos acima em
+// `describe("Diaria-SEO-Weekly inclui /temas/ na checagem de indexação (#4909)")`,
+// direto contra o registro declarativo (`scripts/lib/scheduled-tasks.ts`),
+// que é a fonte de verdade única desde o #4805.

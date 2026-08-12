@@ -55,7 +55,7 @@ Fingerprint do conjunto de achados pendentes (`data/beehiiv-home-meta-check/stat
 
 Requer `data/.credentials.json` com o scope `gmail.send` (mesmo requisito dos outros alarmes locais deste repo) — só necessário pra **enviar** o alarme quando há drift; a checagem HTTP em si é um `GET` público, sem credencial nenhuma. `gh` CLI autenticado (#5112) — só necessário pra criar/comentar/fechar a issue de cada achado; sem ele a reconciliação falha fail-soft (o e-mail sai do mesmo jeito, com o motivo no lugar do número da issue). Não requer o junction `data/` pra rodar a checagem em si — só pra persistir `data/beehiiv-home-meta-check/state.json` (idempotência do e-mail) e `data/beehiiv-home-meta-check/alarm-issues.json` (tracking de issue por achado, #5112).
 
-Windows (Task Scheduler) — **não existe** `.ps1` de setup pra esta task (ver nota abaixo). Linux/systemd (molde da épica #4798, cutover já concluído):
+Linux/systemd (molde da épica #4798, cutover já concluído — desde o #5115 é a única via, nenhuma tarefa `Diaria-*` roda no Windows):
 
 ```bash
 npx tsx scripts/setup-systemd-timers.ts --task Diaria-Beehiiv-Home-Meta-Check
@@ -65,6 +65,6 @@ systemctl --user enable --now diaria-beehiiv-home-meta-check.timer
 
 Isso registra a task `Diaria-Beehiiv-Home-Meta-Check` (diária, 09:35 BRT — #5113, mudou de "a cada 6h": o conserto é ação manual do editor de manhã, detectar de madrugada não adianta nada) — mesma faixa matinal dos outros drift-checks de superfície pública (`Diaria-Hub-Drift-Check` 10:00, `Diaria-Robots-Txt-Drift-Check` 10:15). Idempotente — re-rodar o `setup-systemd-timers.ts` regenera os units sem duplicar.
 
-**Por que não tem `.ps1` de setup (#5005):** `Diaria-Beehiiv-Home-Meta-Check` é a 1ª task registrada em `scripts/lib/scheduled-tasks.ts` depois do cutover pra systemd (épica #4798, fechada) — o campo `legacySetupScript` é opcional desde então, e esta task não tem contraparte Windows/Task Scheduler por decisão explícita de não criar mais `.ps1` como via de execução real. Um editor em máquina Windows que ainda dependa do Task Scheduler pro resto das tasks precisa rodar esta via WSL/systemd, ou aguardar uma via Windows nativa dedicada (fora de escopo desta unidade).
+**Por que nunca teve `.ps1` de setup (#5005):** `Diaria-Beehiiv-Home-Meta-Check` foi a 1ª task registrada em `scripts/lib/scheduled-tasks.ts` depois do cutover pra systemd (épica #4798) — nasceu sem contraparte Windows/Task Scheduler, por decisão explícita de não criar mais `.ps1` como via de execução real. Os `.ps1` das demais tasks (que tinham nascido antes do cutover) foram removidos no #5115.
 
 **Nenhuma execução ao vivo desta checagem rodou nesta unidade** (worktree isolado, sem `data/.credentials.json` real; e a regra de dispatch overnight #738/#3453 proíbe qualquer chamada de rede real nesta sessão, mesmo sendo GET público de leitura) — validado só via testes com a lógica pura + fetch mockado (`test/beehiiv-home-meta-check.test.ts` e afins) e via `test/scheduled-tasks.test.ts` (estrutura do registro), mesma disciplina do #4320/#4382/#4490/#4534/#4723/#4750/#4910.

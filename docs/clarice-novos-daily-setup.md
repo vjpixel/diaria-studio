@@ -4,7 +4,7 @@ Issue: [#4941](https://github.com/vjpixel/diaria-studio/issues/4941) (automatiza
 
 ## O que a task faz
 
-`scripts/run-clarice-novos.ps1` → `npx tsx scripts/clarice-novos-run.ts`, rodando diariamente às **11:00 BRT** (mudou de 17:00 em 260812, #5140). `clarice-novos-run.ts` é o orquestrador determinístico dos 7 passos que até o #4941 só existiam como prosa executada manualmente por um LLM (`.claude/skills/diaria-clarice-novos/SKILL.md`) — delta Stripe → MV → grupo `novos` → campanha Brevo → disparo imediato, **sem gate humano** (decisão D6 do #4347), com os 9 guards determinísticos documentados na SKILL.md como única trava.
+Task `Diaria-Clarice-Novos` (`scripts/lib/scheduled-tasks.ts`) → `npx tsx scripts/clarice-novos-run.ts`, rodando diariamente às **11:00 BRT** (mudou de 17:00 em 260812, #5140). `clarice-novos-run.ts` é o orquestrador determinístico dos 7 passos que até o #4941 só existiam como prosa executada manualmente por um LLM (`.claude/skills/diaria-clarice-novos/SKILL.md`) — delta Stripe → MV → grupo `novos` → campanha Brevo → disparo imediato, **sem gate humano** (decisão D6 do #4347), com os 9 guards determinísticos documentados na SKILL.md como única trava.
 
 ## Kill switch — `data/clarice-novos-enabled.json` (#4941 E3)
 
@@ -32,15 +32,7 @@ Toda invocação (sucesso, rodada vazia, pausada pelo toggle, ou abortada por qu
 
 ## Setup (ação local one-time do editor)
 
-`local` — precisa do junction `data/` (OneDrive) + `STRIPE_API_KEY` + `BREVO_CLARICE_API_KEY` + `MILLION_VERIFIER_API_KEY`.
-
-**Windows (Task Scheduler):**
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-clarice-novos-schedule.ps1
-```
-
-Isso registra a task `Diaria-Clarice-Novos` (diária, 11:00). Idempotente — re-executar atualiza a task. Remover: mesmo comando com `-Unregister`.
+`local` — precisa do junction `data/` (OneDrive) + `STRIPE_API_KEY` + `BREVO_CLARICE_API_KEY` + `MILLION_VERIFIER_API_KEY`. O antigo `.ps1` do Windows (`scripts\setup-clarice-novos-schedule.ps1`) foi removido no #5115 (cutover final) — via de arme é só systemd.
 
 **Linux (systemd, via o registro declarativo `scripts/lib/scheduled-tasks.ts`, épica #4798):**
 
@@ -51,7 +43,7 @@ npx tsx scripts/arm-systemd-timers.ts --task Diaria-Clarice-Novos     # arma de 
 
 ## Armar em UMA máquina só (#4941 E4)
 
-`data/` é junction do OneDrive sincronizada entre máquinas. `clarice-novos-resolve-key.ts` sufixa `-2`/`-3`… quando enxerga a key do dia já usada em `group-campaigns.json` — mas isso depende do OneDrive ter sincronizado esse arquivo a tempo. Duas máquinas armadas na mesma janela de latência poderiam resolver a MESMA key e criar 2 campanhas (envio duplicado real, não cosmético como o `history-predator-safeBackup-*.jsonl` do monitor GEO). Sem lock novo pra isso — se for armar numa 2ª máquina, desarme a 1ª antes (`-Unregister` / `systemctl --user disable --now diaria-clarice-novos.timer`).
+`data/` é junction do OneDrive sincronizada entre máquinas. `clarice-novos-resolve-key.ts` sufixa `-2`/`-3`… quando enxerga a key do dia já usada em `group-campaigns.json` — mas isso depende do OneDrive ter sincronizado esse arquivo a tempo. Duas máquinas armadas na mesma janela de latência poderiam resolver a MESMA key e criar 2 campanhas (envio duplicado real, não cosmético como o `history-predator-safeBackup-*.jsonl` do monitor GEO). Sem lock novo pra isso — se for armar numa 2ª máquina, desarme a 1ª antes (`systemctl --user disable --now diaria-clarice-novos.timer`).
 
 **Task NÃO armada nesta unidade quando implementada em worktree isolado** — mesma disciplina do #4320/#4382/#4490/#4534/#4723 (credencial/estado de máquina fica fora do worktree do subagente). Se implementada numa sessão local com acesso real à máquina, o arme + a 1ª rodada (pausada pelo toggle) podem acontecer na mesma sessão — ver o PR/commit pra confirmar se isso ocorreu.
 
