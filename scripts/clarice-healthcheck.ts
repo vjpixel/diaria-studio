@@ -126,13 +126,23 @@ interface McpJsonRpcResponse {
  * response, sem subscription) -- o corpo vem no formato SSE
  * (`event: message\ndata: {...json rpc...}\n\n`). Extrai o JSON da(s) linha(s)
  * `data:` -- se houver mais de uma (não observado, mas o formato permite),
- * usa a ÚLTIMA (mais recente). `null` se nenhuma linha `data:` for encontrada
- * ou o JSON for inválido -- nunca lança. */
+ * usa a ÚLTIMA (mais recente). Fallback: se nenhuma linha `data:` existir,
+ * tenta o corpo inteiro como JSON puro (o spec MCP streamable-HTTP permite o
+ * servidor responder `application/json` direto em vez de SSE pra uma troca
+ * sem subscription — não observado ao vivo contra este servidor, mas cobrir
+ * os dois formatos é mais barato que arriscar um falso "resposta ilegível"
+ * se o comportamento mudar). `null` só se AMBOS falharem -- nunca lança. */
 export function parseMcpSseResponse(body: string): McpJsonRpcResponse | null {
   const dataLines = [...body.matchAll(/^data: (.+)$/gm)].map((m) => m[1]);
-  if (dataLines.length === 0) return null;
+  if (dataLines.length > 0) {
+    try {
+      return JSON.parse(dataLines[dataLines.length - 1]) as McpJsonRpcResponse;
+    } catch {
+      return null;
+    }
+  }
   try {
-    return JSON.parse(dataLines[dataLines.length - 1]) as McpJsonRpcResponse;
+    return JSON.parse(body.trim()) as McpJsonRpcResponse;
   } catch {
     return null;
   }

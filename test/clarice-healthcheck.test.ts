@@ -137,7 +137,11 @@ describe("parseMcpSseResponse (#5114)", () => {
     assert.deepEqual(parseMcpSseResponse(body), { id: 2 });
   });
 
-  it("retorna null se não houver linha 'data:'", () => {
+  it("sem linha 'data:', tenta o corpo inteiro como JSON puro (fallback)", () => {
+    assert.deepEqual(parseMcpSseResponse('{"result":{"isError":false}}'), { result: { isError: false } });
+  });
+
+  it("retorna null se não houver linha 'data:' NEM o corpo for JSON válido", () => {
     assert.equal(parseMcpSseResponse("event: message\n\n"), null);
     assert.equal(parseMcpSseResponse(""), null);
   });
