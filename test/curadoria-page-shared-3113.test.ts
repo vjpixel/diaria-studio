@@ -21,6 +21,11 @@
  * `referringUrl` conhecido pelo Google pra esse host era `diar.ia.br/upgrade`,
  * então cursos/livros/É IA? (hosts já indexados) agora linkam de volta pro
  * acervo.
+ *
+ * #5126: acrescenta "Especial" (`especial.diar.ia.br`) à nav — mesmo
+ * racional do #5121: o artigo especial (`/2026/o-agente/`) estava fora de
+ * qualquer grafo de link interno; cursos/livros/É IA?/Arquivo (hosts já
+ * indexados) agora linkam pra ele também.
  */
 
 import { describe, it } from "node:test";
@@ -33,7 +38,7 @@ import {
 } from "../scripts/lib/shared/curadoria-page.ts";
 import { renderCursosPage, PAGE_URL as CURSOS_PAGE_URL } from "../scripts/build-cursos-page.ts";
 import { renderLivrosPage, PAGE_URL as LIVROS_PAGE_URL } from "../scripts/build-livros-page.ts";
-import { DIARIA_ARQUIVO_URL } from "../scripts/lib/canonical-urls.ts";
+import { DIARIA_ARQUIVO_URL, DIARIA_ESPECIAL_URL } from "../scripts/lib/canonical-urls.ts";
 
 const course = (over: Partial<Parameters<typeof renderCursosPage>[0][number]> = {}) => ({
   id: "c1",
@@ -79,11 +84,11 @@ describe("curadoria-page.ts — módulo compartilhado (#3113)", () => {
     assert.match(css, /\.summary \{[^}]*margin: 14px 0 18px;/);
   });
 
-  it("nav cruzada tem as 5 superfícies, diar.ia.br primeiro e apontando pro diar.ia.br", () => {
-    assert.equal(CURADORIA_NAV_LINKS.length, 5);
+  it("nav cruzada tem as 6 superfícies, diar.ia.br primeiro e apontando pro diar.ia.br", () => {
+    assert.equal(CURADORIA_NAV_LINKS.length, 6);
     assert.deepEqual(
       CURADORIA_NAV_LINKS.map((l) => l.label),
-      ["diar.ia.br", "Cursos", "Livros", "É IA?", "Arquivo"],
+      ["diar.ia.br", "Cursos", "Livros", "É IA?", "Arquivo", "Especial"],
     );
     assert.equal(CURADORIA_NAV_LINKS[0].url, "https://diar.ia.br");
   });
@@ -97,7 +102,16 @@ describe("curadoria-page.ts — módulo compartilhado (#3113)", () => {
     assert.equal(arquivoLink!.url, `${DIARIA_ARQUIVO_URL}/`);
   });
 
-  it("renderCuradoriaFooter monta os 5 links + texto de crédito, escapando HTML", () => {
+  // #5126: mesmo racional do teste "Arquivo" acima — o artigo especial
+  // (`/2026/o-agente/`) não tinha nenhuma superfície nossa já indexada
+  // linkando pra ele.
+  it("nav cruzada inclui Especial apontando pro DIARIA_ESPECIAL_URL canônico", () => {
+    const especialLink = CURADORIA_NAV_LINKS.find((l) => l.label === "Especial");
+    assert.ok(especialLink, "CURADORIA_NAV_LINKS deveria ter uma entrada 'Especial'");
+    assert.equal(especialLink!.url, `${DIARIA_ESPECIAL_URL}/`);
+  });
+
+  it("renderCuradoriaFooter monta os 6 links + texto de crédito, escapando HTML", () => {
     const html = renderCuradoriaFooter('diar.ia.br — curadoria de <script>');
     assert.match(html, /<a href="https:\/\/diar\.ia\.br">diar\.ia\.br<\/a>/);
     // #3698: domínio de marca (era cursos/livros.diaria.workers.dev).
@@ -107,6 +121,8 @@ describe("curadoria-page.ts — módulo compartilhado (#3113)", () => {
     assert.match(html, /<a href="https:\/\/eia\.diar\.ia\.br\/leaderboard">É IA\?<\/a>/);
     // #5121: acervo de edições + hubs temáticos.
     assert.match(html, /<a href="https:\/\/arquivo\.diar\.ia\.br\/">Arquivo<\/a>/);
+    // #5126: artigos especiais avulsos.
+    assert.match(html, /<a href="https:\/\/especial\.diar\.ia\.br\/">Especial<\/a>/);
     assert.doesNotMatch(html, /<script>/, "texto de crédito deve ser escapado");
     assert.match(html, /&lt;script&gt;/);
   });
@@ -123,13 +139,14 @@ describe("curadoria-page.ts — módulo compartilhado (#3113)", () => {
     assert.match(html, /<a href="https:\/\/diar\.ia\.br">diar\.ia\.br<\/a>/);
   });
 
-  it("com diariaUtm — apensa SÓ no link diar.ia.br; Cursos/Livros/É IA?/Arquivo continuam sem UTM", () => {
+  it("com diariaUtm — apensa SÓ no link diar.ia.br; Cursos/Livros/É IA?/Arquivo/Especial continuam sem UTM", () => {
     const html = renderCuradoriaFooter("crédito", "utm_source=livros&utm_medium=footer-nav");
     assert.match(html, /<a href="https:\/\/diar\.ia\.br\?utm_source=livros&amp;utm_medium=footer-nav">diar\.ia\.br<\/a>/);
     assert.match(html, /<a href="https:\/\/cursos\.diar\.ia\.br\/">Cursos<\/a>/);
     assert.match(html, /<a href="https:\/\/livros\.diar\.ia\.br\/">Livros<\/a>/);
     assert.match(html, /<a href="https:\/\/eia\.diar\.ia\.br\/leaderboard">É IA\?<\/a>/);
     assert.match(html, /<a href="https:\/\/arquivo\.diar\.ia\.br\/">Arquivo<\/a>/);
+    assert.match(html, /<a href="https:\/\/especial\.diar\.ia\.br\/">Especial<\/a>/);
   });
 
   it("URLs de Cursos/Livros na nav batem com o PAGE_URL exportado de cada builder — sem isso, mudar o domínio num builder e esquecer aqui reintroduz o drift silencioso que o #3113 elimina", () => {

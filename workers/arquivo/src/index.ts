@@ -30,8 +30,13 @@
  * — sem ela, path nenhum casa e o comportamento é idêntico a antes.
  * Qualquer outro path → 404.
  *
- * Falha de fetch/parse do sitemap NUNCA lança sem tratamento — cai numa
- * página de erro simples (502), nunca crash.
+ * Falha de fetch/parse do sitemap NUNCA lança sem tratamento (#5134 item 3):
+ * a raiz serve a última renderização bem-sucedida guardada em KV como
+ * fallback (ver `readRootCache`/`writeRootCache` abaixo) — só cai na página
+ * de erro simples (502) quando nenhum fallback existe (1º request desde o
+ * deploy, ou KV indisponível). GET/HEAD condicional (`If-None-Match`/
+ * `If-Modified-Since`) contra `/temas/{slug}` devolve `304` corpo vazio
+ * quando casa com o `ETag`/`Last-Modified` já emitidos (#5134 itens 1-2).
  *
  * Próximo passo (fora de escopo deste Worker): linkar esta página a partir
  * de diar.ia.br (Beehiiv Website Builder — 3rd-party hosted, não é código
@@ -190,6 +195,73 @@ function fnv1aHex(input: string): string {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
+/**
+ * `If-None-Match` casa contra `etag` (#5134)? Comparação FRACA (RFC 7232
+ * §2.3.2 — a única válida pra GET/HEAD condicional): ignora o prefixo `W/`
+ * dos dois lados antes de comparar o opaque-tag. `*` casa qualquer ETag
+ * (representação existe). Múltiplos valores separados por vírgula — casa se
+ * QUALQUER um bater.
+ */
+function ifNoneMatchMatches(header: string, etag: string): boolean {
+  const trimmed = header.trim();
+  if (trimmed === "*") return true;
+  const stripWeak = (t: string) => t.trim().replace(/^W\//, "");
+  const target = stripWeak(etag);
+  return trimmed.split(",").some((candidate) => stripWeak(candidate) === target);
+}
+
+/**
+ * `If-Modified-Since` casa contra `lastModifiedHttpDate` (RFC 7231 §3.3, já
+ * em formato HTTP-date — `toHttpDate` acima)? "Não modificado desde" é
+ * verdadeiro quando o recurso NÃO mudou depois da data pedida, ou seja
+ * `lastModified <= ifModifiedSince`. Datas inválidas em qualquer lado (não
+ * deveria acontecer com um crawler bem-comportado, mas headers HTTP são
+ * input não confiável) fazem a função devolver `false` — nunca 304
+ * indevido por um parse ruim.
+ */
+function ifModifiedSinceMatches(header: string, lastModifiedHttpDate: string): boolean {
+  const ims = Date.parse(header);
+  const lm = Date.parse(lastModifiedHttpDate);
+  if (Number.isNaN(ims) || Number.isNaN(lm)) return false;
+  return lm <= ims;
+}
+
+/**
+ * Fecha #5134 itens 1-2: devolve uma resposta `304 Not Modified` (corpo
+ * vazio) quando a requisição condicional CASA com o `ETag`/`Last-Modified`
+ * da resposta 200 já montada — ou `null` quando não casa (caller serve a
+ * resposta original tal qual). Nunca chamada sobre respostas != 200 (404,
+ * 502 — essas não têm `ETag`/`Last-Modified` pra casar contra nada, ver
+ * `htmlResponse`).
+ *
+ * `If-None-Match` tem PRECEDÊNCIA sobre `If-Modified-Since` quando ambos
+ * estão presentes (RFC 7232 §3.3: "a recipient MUST ignore If-Modified-
+ * Since if the request contains an If-None-Match header") — por isso o
+ * `else if` abaixo só olha `If-Modified-Since` quando não há `If-None-
+ * Match` NENHUM na requisição, nunca como fallback de um `If-None-Match`
+ * que não casou.
+ */
+function conditionalNotModified(request: Request, response: Response): Response | null {
+  if (response.status !== 200) return null;
+  const etag = response.headers.get("ETag");
+  const lastModified = response.headers.get("Last-Modified");
+  const ifNoneMatch = request.headers.get("If-None-Match");
+  let matched: boolean;
+  if (ifNoneMatch !== null) {
+    matched = etag !== null && ifNoneMatchMatches(ifNoneMatch, etag);
+  } else {
+    const ifModifiedSince = request.headers.get("If-Modified-Since");
+    matched = lastModified !== null && ifModifiedSince !== null && ifModifiedSinceMatches(ifModifiedSince, lastModified);
+  }
+  if (!matched) return null;
+  const headers = new Headers();
+  if (etag) headers.set("ETag", etag);
+  if (lastModified) headers.set("Last-Modified", lastModified);
+  const cacheControl = response.headers.get("Cache-Control");
+  if (cacheControl) headers.set("Cache-Control", cacheControl);
+  return new Response(null, { status: 304, headers });
+}
+
 /** `YYYY-MM-DD` → formato RFC 7231 (`Last-Modified`/`If-Modified-Since`).
  * Meia-noite UTC — mesma disciplina de data ESTÁTICA de `hub-page.ts`: não é
  * hora real de publicação, é o dia da data de cobertura (#5124). */
@@ -204,6 +276,36 @@ interface HtmlResponseOptions {
   lastModified?: string;
   /** `true` pra emitir `ETag` (hash do `body`). */
   etag?: boolean;
+  /** Override de `Cache-Control` (#5134 item 3) — usado só pelo fallback de
+   * KV da raiz, que quer um TTL de edge mais curto que o 1h normal (uma
+   * cópia servida de cache, com o upstream fora do ar, deve ser trocada
+   * pela versão fresca assim que o upstream voltar, não travar 1h). Omitido
+   * → `"public, max-age=3600"`, comportamento idêntico a antes desta opção
+   * existir. */
+  cacheControl?: string;
+}
+
+/**
+ * `ETag` FRACO (`W/"..."`, #5134) — não `"..."` forte. Verificado ao vivo em
+ * 12/08/2026 (#5134): o código já montava um `ETag` FORTE corretamente (
+ * confirmado por invocação direta do `fetch` handler em isolamento — o
+ * header chega intacto na `Response` retornada), mas `curl` contra
+ * `arquivo.diar.ia.br` em produção não mostrava NENHUM `ETag`. A causa mais
+ * provável — comportamento documentado de CDNs/proxies reversos (Cloudflare
+ * incluso) que descartam um ETag FORTE ao aplicar compressão em trânsito
+ * (gzip/brotli automáticos), porque um validador forte declara
+ * "byte-idêntico" e a compressão muda os bytes — um ETag FRACO sinaliza
+ * "semanticamente equivalente" e sobrevive a essa transformação. Trocar
+ * pra `W/` é o fix padrão pra essa classe de sintoma e não perde nada aqui:
+ * o hash em si (FNV-1a) já não pretendia ser validador forte (não é
+ * criptográfico, existe só pra mudar quando o conteúdo muda). Verificação
+ * AO VIVO pós-deploy é pendência do editor (`curl -sSI` — ver PR body); a
+ * suíte de testes confirma que o header chega intacto na resposta FINAL do
+ * `fetch` handler (não só numa variável interna), que é o que dá pra provar
+ * a partir deste worktree isolado.
+ */
+function weakEtag(body: string): string {
+  return `W/"${fnv1aHex(body)}"`;
 }
 
 function htmlResponse(body: string, status = 200, opts?: HtmlResponseOptions): Response {
@@ -211,9 +313,9 @@ function htmlResponse(body: string, status = 200, opts?: HtmlResponseOptions): R
     "Content-Type": "text/html;charset=utf-8",
   };
   if (status === 200) {
-    headers["Cache-Control"] = "public, max-age=3600";
+    headers["Cache-Control"] = opts?.cacheControl ?? "public, max-age=3600";
     if (opts?.lastModified) headers["Last-Modified"] = toHttpDate(opts.lastModified);
-    if (opts?.etag) headers["ETag"] = `"${fnv1aHex(body)}"`;
+    if (opts?.etag) headers["ETag"] = weakEtag(body);
   }
   return new Response(body, { status, headers });
 }
@@ -253,6 +355,83 @@ async function fetchSitemapXml(): Promise<string> {
     return await res.text();
   } finally {
     clearTimeout(timer);
+  }
+}
+
+// ── Cache da raiz (#5134 item 3) ────────────────────────────────────────────
+/**
+ * A raiz (`/`) é a única lista PLANA das ~250 edições — o caminho de crawl
+ * que a épica #5116/#5121 inteira depende. Até #5134 ela montava o HTML a
+ * partir de um fetch AO VIVO do sitemap da Beehiiv em TODO request, e
+ * degradava pra 502 sempre que esse fetch falhava — uma indisponibilidade
+ * da Beehiiv derrubava a nossa superfície de recuperação, bem quando ela
+ * mais importa.
+ *
+ * Fix: KV (reusa `CURSOS_SUBSCRIBERS`, mesmo namespace/prefixo-próprio já
+ * usado pelos contadores ai-fetch, #4902 — sem criar namespace novo) guarda
+ * a ÚLTIMA renderização bem-sucedida. O caminho feliz (fetch OK) não muda:
+ * segue montando fresco a cada request (o `Cache-Control: public,
+ * max-age=3600` + edge cache da Cloudflare já absorvem a maior parte do
+ * tráfego, documentado no topo do arquivo) — o KV só é ESCRITO como
+ * subproduto de um sucesso, e só é LIDO quando o fetch ao vivo falha (rede,
+ * timeout, HTTP não-200) ou o XML vem malformado. Sem TTL de expiração no
+ * `put`: um fallback "de alguns dias atrás" ainda é enormemente melhor que
+ * 502 pro crawler, e uma indisponibilidade longa da Beehiiv é exatamente o
+ * cenário em que um TTL curto teria apagado o fallback bem na hora que ele
+ * mais serviria. `Cache-Control` do fallback é mais curto que o normal
+ * (`ROOT_FALLBACK_CACHE_CONTROL`) — uma cópia servida em modo degradado não
+ * deve travar a edge da Cloudflare por 1h inteira depois do upstream já ter
+ * voltado.
+ *
+ * Avaliado e descartado por ora: gerar a lista em BUILD (a partir de
+ * `data/beehiiv-cache/`) em vez de em request — mudança maior (precisaria de
+ * um passo de build/deploy que hoje não existe pra este Worker, e o dado em
+ * `data/beehiiv-cache/` não é sincronizado automaticamente pro Worker em
+ * produção) pra resolver o mesmo problema que o fallback de KV já resolve
+ * com risco bem menor. Registrado aqui pra próxima sessão não reabrir a
+ * pergunta sem contexto — não é código morto nem esquecimento, é escopo
+ * cortado deliberadamente.
+ */
+const ROOT_CACHE_KV_KEY = "cache:arquivo-root:html-v1";
+const ROOT_FALLBACK_CACHE_CONTROL = "public, max-age=300";
+
+interface RootCacheEntry {
+  html: string;
+  /** ISO 8601 completo (não `YYYY-MM-DD`) — só pra log/diagnóstico, nunca
+   * exposto como `Last-Modified` (a raiz não emite esse header — ver nota
+   * de escopo na docstring do módulo, item 3 não pede ETag/304 na raiz). */
+  generatedAt: string;
+}
+
+/** Lê o último HTML bem-sucedido do KV. `null` em qualquer cenário que não
+ * seja "achei uma entrada válida" (sem binding, cache-miss, JSON corrompido,
+ * erro de rede do KV) — nunca lança, o caller trata `null` como "sem
+ * fallback disponível, segue pro 502 de sempre". */
+async function readRootCache(kv: KVNamespace | undefined): Promise<RootCacheEntry | null> {
+  if (!kv) return null;
+  try {
+    const raw = await kv.get(ROOT_CACHE_KV_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<RootCacheEntry>;
+    if (typeof parsed.html !== "string" || typeof parsed.generatedAt !== "string") return null;
+    return { html: parsed.html, generatedAt: parsed.generatedAt };
+  } catch {
+    return null;
+  }
+}
+
+/** Grava o HTML recém-montado com sucesso no KV, pra servir de fallback na
+ * próxima falha. Fail-soft: uma falha de escrita (KV indisponível, rate
+ * limit) NUNCA derruba a resposta 200 que o request atual já tem pronta —
+ * só significa que o PRÓXIMO fallback, se precisar, vai usar uma cópia mais
+ * velha. */
+async function writeRootCache(kv: KVNamespace | undefined, html: string): Promise<void> {
+  if (!kv) return;
+  try {
+    const entry: RootCacheEntry = { html, generatedAt: new Date().toISOString() };
+    await kv.put(ROOT_CACHE_KV_KEY, JSON.stringify(entry));
+  } catch {
+    // fail-soft — ver docstring da função.
   }
 }
 
@@ -342,7 +521,11 @@ export default {
       // (hubCoverageDate — edição mais recente citada, nunca um valor
       // separado) + ETag do conteúdo — sinal de rastreio pra crawler/cache,
       // não fator de citação declarado por nenhum fabricante.
-      return htmlResponse(HUB_REGISTRY[slug], 200, { lastModified: HUB_LASTMOD[slug], etag: true });
+      const hubResponse = htmlResponse(HUB_REGISTRY[slug], 200, { lastModified: HUB_LASTMOD[slug], etag: true });
+      // #5134 itens 1-2: requisição condicional (If-None-Match/
+      // If-Modified-Since) que casa com o ETag/Last-Modified acima vira 304
+      // corpo vazio, em vez de sempre re-servir os ~KB inteiros do hub.
+      return conditionalNotModified(request, hubResponse) ?? hubResponse;
     }
     if (url.pathname !== "/") {
       return new Response("Not found", { status: 404 });
@@ -356,17 +539,34 @@ export default {
         "[arquivo] falha ao buscar sitemap:",
         e instanceof Error ? e.message : String(e),
       );
+      // #5134 item 3: upstream fora do ar não é mais 502 automático — serve
+      // a última renderização boa do KV quando existir (ver docstring de
+      // readRootCache/writeRootCache acima). Só cai no 502 de sempre quando
+      // NUNCA houve um sucesso pra cachear (ex: 1º request de todos, ou KV
+      // indisponível).
+      const fallback = await readRootCache(env.CURSOS_SUBSCRIBERS);
+      if (fallback) return htmlResponse(fallback.html, 200, { cacheControl: ROOT_FALLBACK_CACHE_CONTROL });
       return errorPage();
     }
 
     try {
       const entries = parseSitemap(xml);
-      return htmlResponse(buildArchiveHtml(entries));
+      const html = buildArchiveHtml(entries);
+      // Fire-and-await (não fire-and-forget — mesma disciplina do resto do
+      // módulo, ver comentário de incrementAiFetchCounter acima): sem
+      // `ctx.waitUntil`, uma promise solta pode ser cancelada quando o
+      // execution context termina. Fail-soft internamente (writeRootCache
+      // nunca lança) — não atrasa nem arrisca a resposta 200 que já está
+      // pronta.
+      await writeRootCache(env.CURSOS_SUBSCRIBERS, html);
+      return htmlResponse(html);
     } catch (e) {
       console.error(
         "[arquivo] sitemap inválido:",
         e instanceof Error ? e.message : String(e),
       );
+      const fallback = await readRootCache(env.CURSOS_SUBSCRIBERS);
+      if (fallback) return htmlResponse(fallback.html, 200, { cacheControl: ROOT_FALLBACK_CACHE_CONTROL });
       return errorPage();
     }
   },

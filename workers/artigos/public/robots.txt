@@ -7,3 +7,5 @@ Disallow: /
 
 User-agent: CloudflareBrowserRenderingCrawler
 Disallow: /
+
+Sitemap: https://especial.diar.ia.br/sitemap.xml

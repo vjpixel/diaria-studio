@@ -9,12 +9,13 @@ Issue: [#4910](https://github.com/vjpixel/diaria-studio/issues/4910), item 3.
 Para cada host descoberto via `discoverWorkerPublicHosts` (`scripts/lib/worker-public-hosts.ts`, varre `workers/*/wrangler.toml` — sem lista hardcoded, um Worker novo com `custom_domain = true` entra na checagem sozinho):
 
 1. **GET runtime** (`checkRobotsTxt`, `scripts/robots-txt-drift-check.ts`) — bate `GET https://{host}/robots.txt` com UA identificável (`DiariaBot/1.0`) e timeout de 15s.
-2. **Análise do corpo** (`analyzeRobotsTxt`, `scripts/lib/robots-txt-drift-check.ts`, lógica pura/testável) — 3 sinais de drift:
+2. **Análise do corpo** (`analyzeRobotsTxt`, `scripts/lib/robots-txt-drift-check.ts`, lógica pura/testável) — 4 sinais de drift:
    - `hasCloudflareManagedBlock`: o delimitador `# BEGIN Cloudflare Managed content` aparece no arquivo.
    - `unexpectedBlockedBots`: um bot NOMEADO fora de `CURADORIA_BLOCKED_BOTS` (Amazonbot, CloudflareBrowserRenderingCrawler) tem `Disallow: /` geral (não um path específico, ex: `/vote`).
    - `blockedRecoveryBots`: um bot de RECUPERAÇÃO/citação (OAI-SearchBot, Claude-SearchBot, PerplexityBot, Googlebot, Bingbot) tem `Disallow: /` geral — o caso mais grave, porque destravaria o objetivo de citação do #4546/#4558 se algum dia acontecer.
+   - `!hasSitemapDeclared` (#5126/#5135): nenhuma linha `Sitemap:` no arquivo SERVIDO — o CLAUDE.md registra a regra ("ao subir Worker novo, servir um robots.txt próprio, com `Sitemap:` declarado") mas nada garantia isso além de revisão manual; `eia.diar.ia.br` e `especial.diar.ia.br` ficaram sem declarar por meses até #5126/#5135 corrigirem. Blanket em todos os hosts descobertos — não há mais exceção legítima "host sem sitemap próprio" no conjunto atual (os 6 hosts de curadoria declaram `Sitemap:` desde #5126/#5135).
 3. **Decisão de drift** (`evaluateRobotsDrift`):
-   - HTTP 200 + nenhum dos 3 sinais → `ok`.
+   - HTTP 200 + nenhum dos 4 sinais → `ok`.
    - HTTP 200 + pelo menos 1 sinal → `drift`.
    - HTTP != 200, ou a chamada de rede falhou → `error` (tratado como pendência igual a `drift` — mesmo racional de `hub-drift-check.ts`: um erro de rede NUM host específico já é sinal suficiente de "não deu pra confirmar que está limpo").
 

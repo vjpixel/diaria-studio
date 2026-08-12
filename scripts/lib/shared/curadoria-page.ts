@@ -31,7 +31,7 @@
  */
 import { COLORS, FONTS } from "./design-tokens.ts";
 import { escHtml } from "../html-escape.ts"; // reusa o escaper canônico (também cobre apóstrofo)
-import { DIARIA_EIA_URL, DIARIA_ARQUIVO_URL } from "../canonical-urls.ts"; // #3904/#5121 — fonte única dos domínios de marca de "É IA?"/Arquivo
+import { DIARIA_EIA_URL, DIARIA_ARQUIVO_URL, DIARIA_ESPECIAL_URL } from "../canonical-urls.ts"; // #3904/#5121/#5126 — fonte única dos domínios de marca de "É IA?"/Arquivo/Especial
 import { applyBrandWordmark } from "./brand-wordmark.ts"; // #4797 — wordmark da marca na linha de crédito do rodapé (compartilhada por hub/livros/cursos/arquivo)
 
 const TEAL = COLORS.brand;
@@ -187,6 +187,7 @@ export const CURADORIA_NAV_LINKS: readonly CuradoriaNavLink[] = [
   { label: "Livros", url: "https://livros.diar.ia.br/" }, // #3698: domínio de marca
   { label: "É IA?", url: `${DIARIA_EIA_URL}/leaderboard` }, // #3904: domínio de marca (era poll.diaria.workers.dev)
   { label: "Arquivo", url: `${DIARIA_ARQUIVO_URL}/` }, // #5121: acervo de edições + hubs temáticos
+  { label: "Especial", url: `${DIARIA_ESPECIAL_URL}/` }, // #5126: artigos especiais avulsos (raiz = índice)
 ];
 
 /**
