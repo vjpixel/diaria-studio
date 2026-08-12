@@ -29,6 +29,7 @@ import {
   renameSync,
   existsSync,
   unlinkSync,
+  readFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 
@@ -171,4 +172,40 @@ export async function writeFileAtomicAsync(
       rejectP(err);
     }
   });
+}
+
+/**
+ * Variante de `writeFileAtomic` que só toca o filesystem quando `content`
+ * difere do que já está em `targetPath` (#5102). Motivação: outputs
+ * DETERMINÍSTICOS (regenerados do zero a cada chamada, ex: o manifesto de
+ * `extract-hub-facts.ts`) que algum caller usa como sinal de "quando foi a
+ * última mudança REAL de conteúdo" via mtime — um `writeFileAtomic`
+ * incondicional bumpa o mtime toda vez, mesmo sem mudança de conteúdo,
+ * destruindo esse sinal (um relatório gerado ONTEM sempre pareceria "mais
+ * antigo que o manifesto de agora", mesmo que o conteúdo do manifesto seja
+ * idêntico ao de ontem).
+ *
+ * Retorna `true` se escreveu (arquivo ausente ou conteúdo divergente),
+ * `false` se pulou (conteúdo idêntico — mtime preservado). Leitura do
+ * arquivo existente é best-effort: qualquer erro (ENOENT, permissão,
+ * conteúdo binário incompatível com `opts.encoding`) é tratado como "não dá
+ * pra comparar" → escreve normalmente (mesmo fail-open de `writeFileAtomic`
+ * em si, que também não silencia erros de escrita).
+ */
+export function writeFileAtomicIfChanged(
+  targetPath: string,
+  content: string,
+  opts: AtomicWriteOptions = {},
+): boolean {
+  const absTarget = resolve(targetPath);
+  if (existsSync(absTarget)) {
+    try {
+      const existing = readFileSync(absTarget, { encoding: opts.encoding ?? "utf8" });
+      if (existing === content) return false;
+    } catch {
+      // Não deu pra comparar — cai no caminho normal de escrita abaixo.
+    }
+  }
+  writeFileAtomic(absTarget, content, opts);
+  return true;
 }

@@ -19,7 +19,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { writeFileAtomic, writeFileAtomicAsync, renameWithRetry } from "../scripts/lib/atomic-write.ts";
+import { writeFileAtomic, writeFileAtomicAsync, writeFileAtomicIfChanged, renameWithRetry } from "../scripts/lib/atomic-write.ts";
 
 function makeDir(): string {
   return mkdtempSync(join(tmpdir(), "diaria-atomic-test-"));
@@ -234,5 +234,47 @@ describe("renameWithRetry (#1269)", () => {
     };
     renameWithRetry("x", "y", [0, 5], fakeRename);
     assert.equal(calls, 2);
+  });
+});
+
+describe("writeFileAtomicIfChanged (#5102) — só toca o filesystem quando o conteúdo muda", () => {
+  it("arquivo ausente: escreve e retorna true", () => {
+    const dir = makeDir();
+    try {
+      const target = join(dir, "out.json");
+      const wrote = writeFileAtomicIfChanged(target, '{"a":1}');
+      assert.equal(wrote, true);
+      assert.equal(readFileSync(target, "utf8"), '{"a":1}');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("conteúdo idêntico ao existente: NÃO reescreve (mtime preservado) e retorna false", () => {
+    const dir = makeDir();
+    try {
+      const target = join(dir, "out.json");
+      writeFileAtomic(target, '{"a":1}');
+      const mtimeBefore = statSync(target).mtimeMs;
+      const wrote = writeFileAtomicIfChanged(target, '{"a":1}');
+      assert.equal(wrote, false);
+      assert.equal(statSync(target).mtimeMs, mtimeBefore, "mtime não deveria mudar quando o conteúdo é idêntico");
+      assert.equal(readFileSync(target, "utf8"), '{"a":1}');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("conteúdo divergente do existente: reescreve e retorna true", () => {
+    const dir = makeDir();
+    try {
+      const target = join(dir, "out.json");
+      writeFileAtomic(target, '{"a":1}');
+      const wrote = writeFileAtomicIfChanged(target, '{"a":2}');
+      assert.equal(wrote, true);
+      assert.equal(readFileSync(target, "utf8"), '{"a":2}');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -15,10 +15,20 @@
  * markdown com parênteses aninhados — terreno fértil pra um LLM "quase
  * acertar" a extração). Este script é PENSADO pra rodar ANTES do dispatch do
  * fact-checker (pelo orchestrator/skill top-level, que TEM Bash), gravando o
- * manifesto num path que o agente só precisa `Read` — mas esse dispatch
- * ainda NÃO existe (260812): nenhum orchestrator/skill/CI chama este script
- * ou o `fact-checker` em `mode: "hub"` hoje. É invocação 100% manual até que
- * o wiring seja feito (follow-up necessário, não opcional — ver #5060).
+ * manifesto num path que o agente só precisa `Read`.
+ *
+ * **Call site real desde #5102:** `scripts/build-hub-page.ts --check-facts`
+ * já roda este script automaticamente (via subprocess, `runTsx` — import
+ * direto criaria um ciclo de módulo, já que este arquivo importa
+ * `HUB_LOADERS`/`loadHubContent` de `build-hub-page.ts`), gravando o
+ * manifesto em `data/hub-fact-check/{slug}-facts.json`. **O que ainda NÃO
+ * existe:** o dispatch do `fact-checker` em `mode: "hub"` propriamente dito
+ * — nem este script nem `build-hub-page.ts` têm como chamar um subagente
+ * LLM (#207); alguém (orchestrator/skill top-level, ou o editor manualmente)
+ * ainda precisa rodar o agente sobre o manifesto preparado aqui pra que
+ * `{slug}-report.json` passe a existir. Até isso acontecer, todo
+ * `--check-facts` cai no ramo "sem relatório" do gate (ver
+ * `.claude/agents/fact-checker.md` seção "Modo hub").
  *
  * Para cada parágrafo de seção e cada resposta de FAQ, extrai os links
  * markdown `[texto](url)` presentes (via `findParagraphLinks`, o mesmo
@@ -40,7 +50,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 
-import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { writeFileAtomicIfChanged } from "./lib/atomic-write.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { HUB_LOADERS, loadHubContent } from "./build-hub-page.ts";
 import { findParagraphLinks } from "./lib/shared/markdown-links.ts";
@@ -191,8 +201,17 @@ function main(): void {
   const json = JSON.stringify(manifest, null, 2);
   if (out) {
     const outPath = resolve(ROOT, out);
-    writeFileAtomic(outPath, json + "\n");
-    process.stderr.write(`[extract-hub-facts] ${hub}: escrito em ${outPath}\n`);
+    // #5102: writeFileAtomicIfChanged (não writeFileAtomic incondicional) —
+    // o caller (build-hub-page.ts --check-facts) compara o mtime deste
+    // manifesto contra o mtime do relatório de fact-check pra decidir se o
+    // relatório ainda reflete o conteúdo atual do hub. Bumpar o mtime a
+    // cada regeneração idêntica destruiria esse sinal.
+    const wrote = writeFileAtomicIfChanged(outPath, json + "\n");
+    process.stderr.write(
+      wrote
+        ? `[extract-hub-facts] ${hub}: escrito em ${outPath}\n`
+        : `[extract-hub-facts] ${hub}: ${outPath} já reflete o conteúdo atual — mtime preservado.\n`,
+    );
     console.log(outPath);
   } else {
     console.log(json);
