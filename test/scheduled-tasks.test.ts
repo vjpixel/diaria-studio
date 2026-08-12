@@ -108,7 +108,19 @@ describe("horários com dependência de ordem em relação ao envio canônico da
     // armadilha do #3682.
     const t = getScheduledTaskByName("Diaria-Clarice-Sync");
     assert.ok(t);
-    assert.deepEqual(t!.schedule, { kind: "daily", hour: 8, minute: 30 });
+    const schedule = t!.schedule;
+    if (schedule.kind === "interval") assert.fail("Diaria-Clarice-Sync não deveria ser kind: interval");
+    // Invariante RELACIONAL (a que de fato importa — sobrevive a um
+    // reagendamento legítimo futuro, ex: mover pra 09:00 continua depois
+    // das 06:00): nunca de madrugada, sempre depois do envio canônico.
+    const minutesSinceMidnight = schedule.hour * 60 + schedule.minute;
+    assert.ok(
+      minutesSinceMidnight > 6 * 60,
+      `Diaria-Clarice-Sync precisa disparar depois das 06:00 BRT, mas está em ${schedule.hour}:${String(schedule.minute).padStart(2, "0")}`,
+    );
+    // Pin do valor atual (#2932) — travado à parte pra flagar qualquer
+    // mudança de horário como decisão consciente, não regressão silenciosa.
+    assert.deepEqual(schedule, { kind: "daily", hour: 8, minute: 30 });
   });
 
   it("Diaria-Brevo-Diaria-Evaluate dispara às 05:30, antes do envio das 06:00 (#4534)", () => {
@@ -117,6 +129,16 @@ describe("horários com dependência de ordem em relação ao envio canônico da
     // promovido/suprimido/descadastrado) sem efeito no envio do dia.
     const t = getScheduledTaskByName("Diaria-Brevo-Diaria-Evaluate");
     assert.ok(t);
+    const schedule = t!.schedule;
+    if (schedule.kind === "interval") assert.fail("Diaria-Brevo-Diaria-Evaluate não deveria ser kind: interval");
+    // Invariante RELACIONAL: sempre antes do envio canônico das 06:00 BRT.
+    const minutesSinceMidnight = schedule.hour * 60 + schedule.minute;
+    assert.ok(
+      minutesSinceMidnight < 6 * 60,
+      `Diaria-Brevo-Diaria-Evaluate precisa disparar antes das 06:00 BRT, mas está em ${schedule.hour}:${String(schedule.minute).padStart(2, "0")}`,
+    );
+    // Pin do valor atual (#4534) — travado à parte pra flagar qualquer
+    // mudança de horário como decisão consciente, não regressão silenciosa.
     assert.deepEqual(t!.schedule, { kind: "daily", hour: 5, minute: 30 });
   });
 });

@@ -96,7 +96,8 @@ export function detectExecMode(opts: ExecModeOptions = {}): ExecMode {
  * `'local'` corretamente, mas `check-watchdog-armed.ts` inferia dali "então
  * é Windows" e tentava `schtasks`, que não existe lá — dando um falso
  * negativo ("watchdog não armado") quando a verdade era "não foi possível
- * verificar nesta plataforma". `pending-scheduled-tasks.ts` (`Get-ScheduledTask`)
+ * verificar nesta plataforma". `pending-scheduled-tasks.ts` (`Get-ScheduledTask`,
+ * módulo removido no #5115, junto com os `.ps1` que consumia)
  * **não** tinha esse bug de falso-negativo — seu fail-soft já distinguia
  * "consulta falhou" (`pending: null`) de "0 pendências" (`pending: []`, #738)
  * antes deste eixo existir. Ele não usa `detectTaskScheduler()` pelo mesmo

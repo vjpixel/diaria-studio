@@ -341,9 +341,8 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // (Diaria-Geo-Citation-Monitor 07:00, Diaria-Geo-Citation-Staleness-Alarm
     // 10:30) — sem colisão de horário com nenhum dos dois.
     schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 22, minute: 0 },
-    // Sem `legacySetupScript` de propósito — mesmo caso de
-    // `Diaria-Beehiiv-Home-Meta-Check`/`Diaria-Clarice-Envio-Alarm` (#5005/
-    // #5058): task registrada depois do cutover systemd (épica #4798), sem
+    // Mesmo caso de `Diaria-Beehiiv-Home-Meta-Check`/`Diaria-Clarice-Envio-Alarm`
+    // (#5005/#5058): task registrada depois do cutover systemd (épica #4798), sem
     // contraparte Windows/.ps1 — e nenhuma tarefa `Diaria-*` deve rodar no
     // Windows de qualquer forma (decisão do editor 260811, #5074).
     issue: "#5111",
