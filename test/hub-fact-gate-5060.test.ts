@@ -20,6 +20,7 @@ import {
   checkHubFacts,
   extractAbsoluteDates,
   extractOffsetEvents,
+  recomputeHubFactGate,
 } from "../scripts/lib/shared/hub-fact-gate.ts";
 import { HUB_LOADERS } from "../scripts/build-hub-page.ts";
 
@@ -177,4 +178,79 @@ describe("#5060 Parte B1 — checkHubFacts contra os hubs REAIS de HUB_LOADERS",
       assert.deepEqual(violations, [], `${slug}:\n  ${violations.join("\n  ")}`);
     });
   }
+});
+
+describe("#5060 fleet review item 3 — recomputeHubFactGate (recálculo determinístico do gate do fact-checker mode:hub)", () => {
+  it("caso feliz: só claims SUSTAINED/INFERRED, sem contradições -> não bloqueia", () => {
+    const result = recomputeHubFactGate(
+      [
+        { claim_id: "s0p0c0", verdict: "SUSTAINED" },
+        { claim_id: "s0p1c0", verdict: "INFERRED" },
+      ],
+      [],
+      [],
+    );
+    assert.deepEqual(result, { blocked: false, blocking_items: [] });
+  });
+
+  it("claim divergente SEM aprovação -> bloqueia", () => {
+    const result = recomputeHubFactGate([{ claim_id: "s0p0c0", verdict: "DIVERGENT" }], [], []);
+    assert.equal(result.blocked, true);
+    assert.deepEqual(result.blocking_items, ["s0p0c0"]);
+  });
+
+  it("claim divergente COM aprovação explícita -> não bloqueia", () => {
+    const result = recomputeHubFactGate([{ claim_id: "s0p0c0", verdict: "DIVERGENT" }], [], ["s0p0c0"]);
+    assert.deepEqual(result, { blocked: false, blocking_items: [] });
+  });
+
+  it("NOT_FOUND_IN_SOURCE/SOURCE_UNREACHABLE sem aprovação também bloqueiam (só SUSTAINED/INFERRED escapam)", () => {
+    const result = recomputeHubFactGate(
+      [
+        { claim_id: "a", verdict: "NOT_FOUND_IN_SOURCE" },
+        { claim_id: "b", verdict: "SOURCE_UNREACHABLE" },
+      ],
+      [],
+      [],
+    );
+    assert.equal(result.blocked, true);
+    assert.deepEqual(result.blocking_items.sort(), ["a", "b"]);
+  });
+
+  it("contradição COM resolvable_with_source_url preenchido mas SEM aprovação -> bloqueia mesmo assim (#5060 fleet review item 2 — a issue motivadora não teria sido pega pela regra antiga)", () => {
+    const result = recomputeHubFactGate(
+      [],
+      [{ claim_id: "contradiction0", resolvable_with_source_url: "https://senado.leg.br/materia/157233" }],
+      [],
+    );
+    assert.equal(result.blocked, true);
+    assert.deepEqual(result.blocking_items, ["contradiction0"]);
+  });
+
+  it("contradição com resolvable_with_source_url null e SEM aprovação -> bloqueia (comportamento já esperado antes do fix)", () => {
+    const result = recomputeHubFactGate([], [{ claim_id: "contradiction0", resolvable_with_source_url: null }], []);
+    assert.equal(result.blocked, true);
+    assert.deepEqual(result.blocking_items, ["contradiction0"]);
+  });
+
+  it("contradição COM aprovação explícita -> não bloqueia, independente de resolvable_with_source_url", () => {
+    const withUrl = recomputeHubFactGate(
+      [],
+      [{ claim_id: "contradiction0", resolvable_with_source_url: "https://senado.leg.br/materia/157233" }],
+      ["contradiction0"],
+    );
+    const withoutUrl = recomputeHubFactGate([], [{ claim_id: "contradiction0", resolvable_with_source_url: null }], ["contradiction0"]);
+    assert.deepEqual(withUrl, { blocked: false, blocking_items: [] });
+    assert.deepEqual(withoutUrl, { blocked: false, blocking_items: [] });
+  });
+
+  it("agrega claims E contradições não aprovadas na mesma lista de blocking_items", () => {
+    const result = recomputeHubFactGate(
+      [{ claim_id: "s0p0c0", verdict: "DIVERGENT" }],
+      [{ claim_id: "contradiction0", resolvable_with_source_url: null }],
+      [],
+    );
+    assert.equal(result.blocked, true);
+    assert.deepEqual(result.blocking_items.sort(), ["contradiction0", "s0p0c0"]);
+  });
 });
