@@ -68,6 +68,12 @@
  * Cada chamada de `keywords`/`links` continua persistindo o payload `raw`
  * INTEIRO ao lado do campo parseado (mesmo confirmado o shape — barato,
  * audita qualquer drift futuro da API sem exigir nova sessão de descoberta).
+ * No modo `links`, isso é o `raw` por chamada `GetUrlLinks` (`pages[].raw`,
+ * 1 entrada por página consultada) — é aí que a auditabilidade importa mais,
+ * já que `GetUrlLinks` é o único endpoint dos 5 sem shape confirmado ao vivo.
+ * `GetLinkCounts` (shape já confirmado, usado só pra paginar/enumerar as
+ * URLs de destino) não tem seu `raw` persistido — decisão de escopo, não
+ * lacuna: nada nele ficou sem confirmação.
  *
  * Endpoints consultados (GET, auth via query param `apikey` + `siteUrl`):
  *   GetQueryStats(siteUrl)          → linhas por query (agregado, sem data) [site]
@@ -356,8 +362,10 @@ export function parseBingKeywordRowsResponse(json: unknown): BingKeywordRow[] {
 export interface BingCallOk<T> {
   ok: true;
   data: T;
-  /** Payload bruto da API — nunca descartado (ver docstring do arquivo: shape
-   * dos 3 endpoints de `keywords`/2 de `links` não confirmado ao vivo). */
+  /** Payload bruto da API — nunca descartado (ver docstring do arquivo: 4 dos
+   * 5 endpoints de `keywords`/`links` têm shape confirmado ao vivo em
+   * 12/ago/2026; só `GetUrlLinks` ficou sem confirmação real — única
+   * tentativa deu `400 InvalidUrl`). */
   raw: unknown;
 }
 export interface BingCallErr {
@@ -584,6 +592,12 @@ export interface BingLinksPageDetail {
   count: number;
   linkingUrls: string[];
   error: string | null;
+  /** Payload(s) bruto(s) de cada chamada `GetUrlLinks` feita pra esta URL de
+   * destino (1 entrada por página consultada) — nunca descartado, mesmo
+   * padrão de `BingKeywordTermEntry`/`raw` no modo `keywords` (ver docstring
+   * do arquivo). Vazio quando `count <= 0`: nenhuma chamada `GetUrlLinks` é
+   * feita nesse caso (não há link de entrada a paginar). */
+  raw: unknown[];
 }
 
 /**
@@ -600,12 +614,16 @@ export function buildBingLinksPullOutput(
 ): {
   site: string;
   pulled_at: string;
+  /** Erro de `GetLinkCounts` (se algum) — ver comentário de `linkCountsError`
+   * em `mainLinks`: pode conviver com `pages` PARCIALMENTE preenchido quando
+   * a falha ocorre numa página > 0 (as páginas anteriores bem-sucedidas
+   * continuam em `pages`, não é "nenhum dado capturado"). */
   link_counts_error: string | null;
   total_pages_with_links: number;
   total_linking_urls: number;
   total_distinct_domains: number;
   distinct_domains: string[];
-  pages: Array<{ url: string; count: number; linking_urls: string[]; error: string | null }>;
+  pages: Array<{ url: string; count: number; linking_urls: string[]; error: string | null; raw: unknown[] }>;
 } {
   const allDomains = new Set<string>();
   const allUrls = new Set<string>();
@@ -624,7 +642,7 @@ export function buildBingLinksPullOutput(
     total_linking_urls: allUrls.size,
     total_distinct_domains: allDomains.size,
     distinct_domains: [...allDomains].sort(),
-    pages: pages.map((p) => ({ url: p.url, count: p.count, linking_urls: p.linkingUrls, error: p.error })),
+    pages: pages.map((p) => ({ url: p.url, count: p.count, linking_urls: p.linkingUrls, error: p.error, raw: p.raw })),
   };
 }
 
@@ -693,6 +711,14 @@ async function mainLinks(nowMs: number, values: Record<string, string>): Promise
   const maxPages = Number(values["max-pages"] ?? 20);
 
   const linkCountRows: BingLinkCountRow[] = [];
+  // Erro de `GetLinkCounts` — persistido como `link_counts_error` no JSON
+  // final. NÃO significa "nenhum dado capturado": se a falha ocorrer numa
+  // página > 0 (não a 1ª), `linkCountRows` já tem as rows das páginas
+  // anteriores bem-sucedidas, e `pages`/os totais abaixo seguem sendo
+  // montados a partir delas — dado parcial, não descartado (achado 3 do
+  // self-review #5158, não bloqueante: o nome do campo pode ler como "vazio"
+  // quando pode ser parcial; mantido como está, comentário deixa a semântica
+  // explícita).
   let linkCountsError: string | null = null;
   try {
     const first = await pullBingLinkCounts(site, 0, apiKey);
@@ -709,21 +735,23 @@ async function mainLinks(nowMs: number, values: Record<string, string>): Promise
   const pages: BingLinksPageDetail[] = [];
   for (const row of linkCountRows) {
     if (row.count <= 0) {
-      pages.push({ url: row.url, count: row.count, linkingUrls: [], error: null });
+      pages.push({ url: row.url, count: row.count, linkingUrls: [], error: null, raw: [] });
       continue;
     }
     const linkingUrls: string[] = [];
+    const raw: unknown[] = [];
     let error: string | null = null;
     try {
       for (let page = 0; page < maxPages; page++) {
-        const { data } = await pullBingUrlLinks(site, row.url, page, apiKey);
+        const { data, raw: pageRaw } = await pullBingUrlLinks(site, row.url, page, apiKey);
+        raw.push(pageRaw);
         if (data.length === 0) break;
         linkingUrls.push(...data);
       }
     } catch (e) {
       error = (e as Error).message;
     }
-    pages.push({ url: row.url, count: row.count, linkingUrls, error });
+    pages.push({ url: row.url, count: row.count, linkingUrls, error, raw });
   }
 
   const seoDir = resolve(ROOT, "data", "seo");

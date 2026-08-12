@@ -545,9 +545,9 @@ describe("pullBingLinkCounts / pullBingUrlLinks (#5130) — fetchImpl injetado",
 
 describe("buildBingLinksPullOutput (#5130 item 2 — SEM scoreOpportunities, só agregação)", () => {
   const pages: BingLinksPageDetail[] = [
-    { url: "https://diar.ia.br/p/a", count: 2, linkingUrls: ["https://x.com/1", "https://x.com/2"], error: null },
-    { url: "https://diar.ia.br/p/b", count: 1, linkingUrls: ["https://y.com/1"], error: null },
-    { url: "https://diar.ia.br/p/c", count: 0, linkingUrls: [], error: null },
+    { url: "https://diar.ia.br/p/a", count: 2, linkingUrls: ["https://x.com/1", "https://x.com/2"], error: null, raw: [{ d: { Links: ["https://x.com/1", "https://x.com/2"] } }] },
+    { url: "https://diar.ia.br/p/b", count: 1, linkingUrls: ["https://y.com/1"], error: null, raw: [{ d: { Links: ["https://y.com/1"] } }] },
+    { url: "https://diar.ia.br/p/c", count: 0, linkingUrls: [], error: null, raw: [] },
   ];
 
   it("agrega domínios distintos (x.com aparece 2x mas conta 1) e total de URLs de link", () => {
@@ -567,8 +567,16 @@ describe("buildBingLinksPullOutput (#5130 item 2 — SEM scoreOpportunities, só
 
   it("distinct_domains vem ordenado (diff estável entre rodadas)", () => {
     const out = buildBingLinksPullOutput("https://diar.ia.br/", "2026-08-12", null, [
-      { url: "p", count: 2, linkingUrls: ["https://z.com/1", "https://a.com/1"], error: null },
+      { url: "p", count: 2, linkingUrls: ["https://z.com/1", "https://a.com/1"], error: null, raw: [] },
     ]);
     assert.deepEqual(out.distinct_domains, ["a.com", "z.com"]);
+  });
+
+  it("persiste raw de GetUrlLinks por página, ao lado do campo parseado (self-review #5158 achado 1)", () => {
+    const rawA = { d: { Links: ["https://x.com/1", "https://x.com/2"] } };
+    const rawEmpty: unknown[] = [];
+    const out = buildBingLinksPullOutput("https://diar.ia.br/", "2026-08-12", null, pages);
+    assert.deepEqual(out.pages[0].raw, [rawA]);
+    assert.deepEqual(out.pages[2].raw, rawEmpty); // count=0 → nenhuma chamada GetUrlLinks feita
   });
 });
