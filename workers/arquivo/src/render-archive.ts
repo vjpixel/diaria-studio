@@ -44,6 +44,7 @@ import {
   renderCuradoriaFooter,
 } from "../../../scripts/lib/shared/curadoria-page.ts";
 import { renderSeoMeta } from "../../../scripts/lib/shared/seo-meta.ts";
+import { COVER_IMAGE_WIDTH, COVER_IMAGE_HEIGHT } from "../../../scripts/lib/shared/cover-image.ts"; // #5131
 import { ARQUIVO_FOOTER_NAV_UTM } from "../../../scripts/lib/shared/utm-registry.ts";
 import {
   renderGeoByline,
@@ -64,6 +65,12 @@ export interface TitleCacheEntry {
   title: string;
   /** `YYYY-MM-DD`. */
   publishDate: string;
+  /** URL da capa da edição (#5131) — ver `ArquivoTitleEntry.coverImageUrl`
+   * em `scripts/generate-arquivo-titles.ts` pra origem/rationale. Opcional:
+   * ausente até uma sessão local regenerar `titles-cache.json` com o campo
+   * novo (ver docstring daquele script), e opcional pra sempre em posts sem
+   * thumbnail associada. */
+  coverImageUrl?: string;
 }
 
 export type TitlesCacheMap = Record<string, TitleCacheEntry>;
@@ -82,6 +89,12 @@ const GEO_LAUNCH_DATE = "2026-08-04";
 
 /** URL pública canônica desta página (Workers Custom Domain, #4105/#3698). */
 export const PAGE_URL = "https://arquivo.diar.ia.br/";
+/** URL pública do feed RSS (#5127) — declarada aqui (não em `render-feed.ts`)
+ * pra evitar import circular: `render-feed.ts` já importa `resolveEditions`/
+ * `esc`/`PAGE_URL` DESTE módulo, e este módulo precisa de `FEED_URL` pro
+ * `<link rel="alternate">` do `<head>` — se `FEED_URL` vivesse em
+ * `render-feed.ts`, os dois módulos importariam um do outro. */
+export const FEED_URL = `${PAGE_URL}feed.xml`;
 /** URL de assinatura (#4265 item 4 — CTA simples, sem form/JS). */
 const SUBSCRIBE_URL = "https://diar.ia.br/subscribe";
 const PAGE_TITLE = "Arquivo — todas as edições da diar.ia.br";
@@ -220,7 +233,7 @@ function monthLabel(key: string): string {
   return `${name} de ${year}`;
 }
 
-interface GroupedEntry {
+export interface GroupedEntry {
   loc: string;
   lastmod: string;
   /** Slug extraído do path (pra lookup no cache e chave de dedupe visual). */
@@ -230,6 +243,38 @@ interface GroupedEntry {
   /** Data efetiva `YYYY-MM-DD` — `publishDate` do cache ou `lastmod`
    * normalizado (#4265 item 2). Fonte única de agrupamento/ordenação/exibição. */
   date: string;
+}
+
+/**
+ * Filtra as entradas cruas do sitemap pra edições reais (`/p/*`, com
+ * `lastmod`) e resolve título/data efetiva de cada uma via o cache de
+ * títulos (#4265 item 1) — o mesmo passo que `buildArchiveHtml` fazia
+ * inline até o #5127, extraído pra ser reusado por `render-feed.ts`
+ * (o builder do `/feed.xml`, #5127) sem duplicar a lógica de
+ * filtro/resolução. Pure, sem agrupamento por mês (isso continua só em
+ * `buildArchiveHtml`, que é quem precisa da visão agrupada).
+ */
+export function resolveEditions(
+  entries: SitemapEntry[],
+  cacheOverride?: TitlesCacheMap,
+): GroupedEntry[] {
+  const cache = cacheOverride ?? titlesCache;
+  return entries
+    .filter((e) => {
+      if (!e.lastmod) return false;
+      const path = pathOf(e.loc);
+      return path != null && path.startsWith("/p/");
+    })
+    .map((e) => {
+      const slug = slugOf(e.loc);
+      return {
+        loc: e.loc,
+        lastmod: e.lastmod as string,
+        slug,
+        title: resolveTitle(e.loc, slug, cache),
+        date: effectiveDate(slug, e.lastmod as string, cache),
+      };
+    });
 }
 
 /**
@@ -340,22 +385,7 @@ export function buildArchiveHtml(
   cacheOverride?: TitlesCacheMap,
 ): string {
   const cache = cacheOverride ?? titlesCache;
-  const editions: GroupedEntry[] = entries
-    .filter((e) => {
-      if (!e.lastmod) return false;
-      const path = pathOf(e.loc);
-      return path != null && path.startsWith("/p/");
-    })
-    .map((e) => {
-      const slug = slugOf(e.loc);
-      return {
-        loc: e.loc,
-        lastmod: e.lastmod as string,
-        slug,
-        title: resolveTitle(e.loc, slug, cache),
-        date: effectiveDate(slug, e.lastmod as string, cache),
-      };
-    });
+  const editions: GroupedEntry[] = resolveEditions(entries, cacheOverride);
 
   const groups = new Map<string, GroupedEntry[]>();
   for (const e of editions) {
@@ -420,13 +450,29 @@ export function buildArchiveHtml(
     null,
   );
 
+  // #5131: og:image da raiz é a capa da EDIÇÃO MAIS RECENTE (mais viva,
+  // reusa asset que já existe — decisão da issue) — não uma capa fixa.
+  // Reduz sobre `editions` (não `groups`/`sortedKeys`) pra achar a entrada
+  // com a MAIOR data efetiva, e só então consulta `coverImageUrl` no cache.
+  // Ausente (post sem thumbnail, ou `titles-cache.json` ainda sem o campo —
+  // ver docstring do gerador) → `coverImage` fica `undefined` e
+  // `renderSeoMeta` omite og:image, comportamento idêntico a antes do #5131.
+  const newestEdition = editions.reduce<GroupedEntry | null>(
+    (best, e) => (best === null || e.date > best.date ? e : best),
+    null,
+  );
+  const newestCoverUrl = newestEdition ? cache[newestEdition.slug]?.coverImageUrl : undefined;
+  const coverImage = newestCoverUrl
+    ? { url: newestCoverUrl, width: COVER_IMAGE_WIDTH, height: COVER_IMAGE_HEIGHT }
+    : undefined;
+
   return `<!doctype html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(PAGE_TITLE)}</title>
-${renderSeoMeta({ title: PAGE_TITLE, description: PAGE_DESCRIPTION, url: PAGE_URL })}
+${renderSeoMeta({ title: PAGE_TITLE, description: PAGE_DESCRIPTION, url: PAGE_URL, feed: { url: FEED_URL }, image: coverImage })}
 <meta name="robots" content="index, follow">
 <style>
 ${renderCuradoriaRootStyles()}

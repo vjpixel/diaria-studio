@@ -251,11 +251,30 @@ export interface HubContent {
    * não pegaria essa direção, mas a razão aqui é de desenho, não de lint).
    * Ausente/vazio (hub único, ou fixture de teste) não emite a seção. */
   relatedHubs?: readonly { readonly slug: string; readonly label: string }[];
+  /** Capa pra `og:image`/`twitter:image` (#5131, decisão #3106 reaberta) —
+   * a capa da EDIÇÃO MAIS RECENTE que este hub cita (`sourceEditions[0]`,
+   * mais viva, reusa asset que já existe — decisão da issue), não uma capa
+   * fixa por hub. OPCIONAL e preenchido por `scripts/build-hub-page.ts`
+   * (mesmo padrão de `relatedHubs` acima) via lookup em
+   * `workers/arquivo/src/titles-cache.json` — `hub-page.ts` (este módulo)
+   * não sabe de onde a URL vem, só que existe ou não. Ausente (post sem
+   * thumbnail, ou cache ainda sem `coverImageUrl` — ver docstring de
+   * `generate-arquivo-titles.ts`) → `renderSeoMeta` omite og:image,
+   * comportamento idêntico a antes do #5131. */
+  coverImage?: { readonly url: string; readonly width: number; readonly height: number };
 }
 
 function pageUrl(slug: string): string {
   return `${DIARIA_ARQUIVO_URL}/temas/${slug}`;
 }
+
+/** URL do feed RSS do arquivo (#5127 item 3: "declarar `<link rel=alternate>`
+ * nas páginas do Worker `arquivo` E nos hubs" — o feed é do arquivo como um
+ * todo, não por hub; os hubs linkam pro MESMO feed, não um recorte por
+ * tema). Literal (não importado de `workers/arquivo/src/render-feed.ts`) —
+ * `scripts/lib/shared/` não importa de `workers/`, mesma fronteira que
+ * `relatedHubs`/`HUB_META` já respeitam (ver nota daquele campo acima). */
+const ARQUIVO_FEED_URL = `${DIARIA_ARQUIVO_URL}/feed.xml`;
 
 /**
  * Rótulo "mês de ANO a mês de ANO" da janela coberta por um hub, DERIVADO do
@@ -1161,7 +1180,7 @@ ${hub.relatedHubs.map((r) => `        <li><a href="${esc(pageUrl(r.slug))}">${es
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(pageTitle)}</title>
-${renderSeoMeta({ title: pageTitle, description: hub.metaDescription, url })}
+${renderSeoMeta({ title: pageTitle, description: hub.metaDescription, url, feed: { url: ARQUIVO_FEED_URL }, image: hub.coverImage })}
 <meta name="robots" content="index, follow">
 <style>
 ${renderCuradoriaRootStyles()}

@@ -76,6 +76,16 @@
  * uma `Sitemap:` que nenhum crawler consegue resolver. Os dois casos agora
  * lançam erro explícito na hora de montar o robots.txt, em vez de produzir
  * um arquivo publicado com o bug sem nenhum sinal.
+ *
+ * `feedUrl` (opcional, #5127) declara o feed RSS/Atom do host junto do
+ * `Sitemap:`, via a linha não-padrão `Feed:` — não existe diretiva oficial
+ * de feed no protocolo robots.txt (RFC 9309 só define `Sitemap:`), mas é uma
+ * convenção informal que alguns agregadores já leem, e é o que a issue
+ * #5127 item 4 pede explicitamente ("declarar o feed no robots.txt, junto
+ * ao Sitemap: já existente"). Mesma validação de forma de `sitemapUrl`
+ * (precisa ser URL absoluta http(s)); omitido, nenhuma linha `Feed:`
+ * aparece — hoje só `arquivo.diar.ia.br` passa isso (é o único host com
+ * `/feed.xml`).
  */
 
 /** Bots que continuam bloqueados nos subdomínios de curadoria — ver docstring do módulo. */
@@ -89,6 +99,10 @@ export interface RenderCuradoriaRobotsTxtOptions {
    * inicial que a validação em runtime abaixo também recusa (#4782 achado 5).
    */
   extraDisallowPaths?: readonly `/${string}`[];
+  /** URL absoluta do feed RSS/Atom PRÓPRIO daquele host (#5127) — ver nota
+   * `feedUrl` na docstring do módulo. Omitido: nenhuma linha `Feed:` é
+   * emitida. */
+  feedUrl?: string;
 }
 
 /**
@@ -96,19 +110,26 @@ export interface RenderCuradoriaRobotsTxtOptions {
  * informado, é a URL absoluta do `/sitemap.xml` PRÓPRIO daquele host (ex:
  * `https://cursos.diar.ia.br/sitemap.xml`) — nunca a do host principal;
  * omitido (host sem sitemap próprio), a linha `Sitemap:` não é emitida.
+ * `options.feedUrl` (#5127), quando informado, declara `Feed:` junto —
+ * ver docstring do módulo.
  *
  * Lança `Error` (falha na hora de montar a constante, não em produção) se
- * `sitemapUrl` não for uma URL absoluta http(s) ou se algum
+ * `sitemapUrl`/`feedUrl` não forem URLs absolutas http(s) ou se algum
  * `extraDisallowPaths` não começar com `/` (#4782 achado 5).
  */
 export function renderCuradoriaRobotsTxt(
   sitemapUrl?: string,
   options: RenderCuradoriaRobotsTxtOptions = {},
 ): string {
-  const { extraDisallowPaths = [] } = options;
+  const { extraDisallowPaths = [], feedUrl } = options;
   if (sitemapUrl !== undefined && !/^https?:\/\//.test(sitemapUrl)) {
     throw new Error(
       `renderCuradoriaRobotsTxt: sitemapUrl deve ser uma URL absoluta http(s) — recebeu ${JSON.stringify(sitemapUrl)}.`,
+    );
+  }
+  if (feedUrl !== undefined && !/^https?:\/\//.test(feedUrl)) {
+    throw new Error(
+      `renderCuradoriaRobotsTxt: feedUrl deve ser uma URL absoluta http(s) — recebeu ${JSON.stringify(feedUrl)}.`,
     );
   }
   for (const path of extraDisallowPaths) {
@@ -122,7 +143,9 @@ export function renderCuradoriaRobotsTxt(
   const blocks = CURADORIA_BLOCKED_BOTS.map((bot) => `User-agent: ${bot}\nDisallow: /`).join("\n\n");
   const extraDisallowLines = extraDisallowPaths.map((p) => `Disallow: ${p}`).join("\n");
   const allowSection = extraDisallowLines ? `Allow: /\n${extraDisallowLines}` : "Allow: /";
-  const sitemapSection = sitemapUrl ? `\nSitemap: ${sitemapUrl}\n` : "";
+  const sitemapLine = sitemapUrl ? `Sitemap: ${sitemapUrl}\n` : "";
+  const feedLine = feedUrl ? `Feed: ${feedUrl}\n` : "";
+  const sitemapSection = sitemapLine || feedLine ? `\n${sitemapLine}${feedLine}` : "";
   return `User-agent: *
 Content-Signal: search=yes,ai-train=yes,use=reference
 ${allowSection}

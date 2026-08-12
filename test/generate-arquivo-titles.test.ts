@@ -169,6 +169,43 @@ describe("buildTitlesCache (#4265 item 1)", () => {
   });
 });
 
+describe("buildTitlesCache — coverImageUrl (#5131)", () => {
+  it("post com thumbnail_url → coverImageUrl entra no cache", () => {
+    const posts: RawCachedPost[] = [
+      {
+        slug: "com-capa",
+        title: "Edição com capa",
+        publish_date: Date.UTC(2026, 6, 1, 18) / 1000,
+        thumbnail_url: "https://media.beehiiv.com/cdn-cgi/image/capa.jpg",
+      },
+    ];
+    const { cache } = buildTitlesCache(posts);
+    assert.equal(cache["com-capa"]?.coverImageUrl, "https://media.beehiiv.com/cdn-cgi/image/capa.jpg");
+  });
+
+  it("post SEM thumbnail_url → coverImageUrl ausente do objeto (não `undefined` explícito, não string vazia)", () => {
+    const posts: RawCachedPost[] = [
+      { slug: "sem-capa", title: "Edição sem capa", publish_date: Date.UTC(2026, 6, 1, 18) / 1000 },
+    ];
+    const { cache } = buildTitlesCache(posts);
+    assert.deepEqual(cache["sem-capa"], { title: "Edição sem capa", publishDate: "2026-07-01" });
+    assert.equal("coverImageUrl" in cache["sem-capa"], false);
+  });
+
+  it("thumbnail_url string vazia → tratado como ausente (nunca og:image morto)", () => {
+    const posts: RawCachedPost[] = [
+      {
+        slug: "capa-vazia",
+        title: "Edição com thumbnail_url vazia",
+        publish_date: Date.UTC(2026, 6, 1, 18) / 1000,
+        thumbnail_url: "",
+      },
+    ];
+    const { cache } = buildTitlesCache(posts);
+    assert.equal("coverImageUrl" in cache["capa-vazia"], false);
+  });
+});
+
 describe("buildTitlesCache — propagação do override de data (#4803)", () => {
   it("um override presente e válido vence o publish_date bruto no cache final", () => {
     const posts: RawCachedPost[] = [

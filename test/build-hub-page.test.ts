@@ -13,7 +13,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { renderGeneratedModule, HUB_LOADERS } from "../scripts/build-hub-page.ts";
+import { renderGeneratedModule, HUB_LOADERS, loadHubContent } from "../scripts/build-hub-page.ts";
 import {
   renderHubPage,
   sourceEditionLabel,
@@ -790,6 +790,52 @@ describe('nav "Outros temas" no rodapé do hub (#4913 itens 1/3/4)', () => {
     assert.doesNotMatch(html, /class="hub-related-nav"/);
   });
 
+});
+
+describe("renderHubPage — coverImage (#5131) e feed RSS (#5127) no <head>", () => {
+  it("sem coverImage: og:image não é emitido (comportamento idêntico a antes)", () => {
+    const html = renderHubPage(HUB_4913_TEST_BASE);
+    assert.doesNotMatch(html, /property="og:image"/);
+  });
+
+  it("com coverImage: emite og:image/twitter:image + width/height, twitter:card=summary_large_image", () => {
+    const hub: HubContent = {
+      ...HUB_4913_TEST_BASE,
+      coverImage: { url: "https://media.beehiiv.com/capa-hub.jpg", width: 1600, height: 800 },
+    };
+    const html = renderHubPage(hub);
+    assert.match(html, /<meta property="og:image" content="https:\/\/media\.beehiiv\.com\/capa-hub\.jpg">/);
+    assert.match(html, /<meta property="og:image:width" content="1600">/);
+    assert.match(html, /<meta property="og:image:height" content="800">/);
+    assert.match(html, /<meta name="twitter:card" content="summary_large_image">/);
+  });
+
+  it("todo hub declara <link rel=alternate> pro MESMO feed do arquivo (#5127 item 3)", () => {
+    const html = renderHubPage(HUB_4913_TEST_BASE);
+    assert.match(
+      html,
+      /<link rel="alternate" type="application\/rss\+xml"[^>]*href="https:\/\/arquivo\.diar\.ia\.br\/feed\.xml">/,
+    );
+  });
+});
+
+describe("loadHubContent — coverImage via titles-cache.json (#5131)", () => {
+  it("todo hub real: coverImage é undefined OU um objeto {url,width:1600,height:800} válido — nunca lança, nunca URL vazia", () => {
+    // titles-cache.json committado hoje não tem nenhum coverImageUrl (#5131
+    // precisou de uma sessão local pra regenerar o cache com esse campo —
+    // ver docstring de generate-arquivo-titles.ts); este teste não assume
+    // qual dos dois casos vale HOJE — só que, seja qual for, o mecanismo
+    // nunca produz um valor inválido, e continua válido depois que o cache
+    // for regenerado localmente com dados reais.
+    for (const slug of Object.keys(HUB_LOADERS)) {
+      const hub = loadHubContent(slug);
+      if (hub.coverImage !== undefined) {
+        assert.ok(hub.coverImage.url.length > 0, `hub "${slug}": coverImage.url vazia`);
+        assert.equal(hub.coverImage.width, 1600);
+        assert.equal(hub.coverImage.height, 800);
+      }
+    }
+  });
 });
 
 describe("scripts/build-hub-page.ts preenche relatedHubs com os hubs IRMÃOS reais de HUB_META (#4913 item 3)", () => {

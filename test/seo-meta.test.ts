@@ -65,3 +65,78 @@ describe("renderSeoMeta (#3106)", () => {
     assert.match(custom, /<meta property="og:locale" content="en_US">/);
   });
 });
+
+describe("renderSeoMeta — image (#5131, decisão #3106 reaberta)", () => {
+  it("sem `image`: comportamento idêntico a antes — sem og:image/twitter:image, twitter:card=summary", () => {
+    const html = renderSeoMeta({ title: "T", description: "D", url: "https://x.example/" });
+    assert.doesNotMatch(html, /property="og:image"/);
+    assert.doesNotMatch(html, /name="twitter:image"/);
+    assert.match(html, /<meta name="twitter:card" content="summary">/);
+  });
+
+  it("com `image`: emite og:image/twitter:image + width/height, twitter:card=summary_large_image", () => {
+    const html = renderSeoMeta({
+      title: "T",
+      description: "D",
+      url: "https://x.example/",
+      image: { url: "https://eia.diar.ia.br/img/img-260812-04-d1-2x1-abc.jpg", width: 1600, height: 800 },
+    });
+    assert.match(html, /<meta property="og:image" content="https:\/\/eia\.diar\.ia\.br\/img\/img-260812-04-d1-2x1-abc\.jpg">/);
+    assert.match(html, /<meta property="og:image:width" content="1600">/);
+    assert.match(html, /<meta property="og:image:height" content="800">/);
+    assert.match(html, /<meta name="twitter:image" content="https:\/\/eia\.diar\.ia\.br\/img\/img-260812-04-d1-2x1-abc\.jpg">/);
+    assert.match(html, /<meta name="twitter:card" content="summary_large_image">/);
+  });
+
+  it("com `image` sem width/height: omite og:image:width/height, mas emite og:image", () => {
+    const html = renderSeoMeta({
+      title: "T",
+      description: "D",
+      url: "https://x.example/",
+      image: { url: "https://x.example/capa.jpg" },
+    });
+    assert.match(html, /<meta property="og:image" content="https:\/\/x\.example\/capa\.jpg">/);
+    assert.doesNotMatch(html, /og:image:width/);
+    assert.doesNotMatch(html, /og:image:height/);
+  });
+
+  it("escapa a URL da imagem", () => {
+    const html = renderSeoMeta({
+      title: "T",
+      description: "D",
+      url: "https://x.example/",
+      image: { url: "https://x.example/capa.jpg?a=1&b=2" },
+    });
+    assert.match(html, /content="https:\/\/x\.example\/capa\.jpg\?a=1&amp;b=2"/);
+  });
+});
+
+describe("renderSeoMeta — feed (#5127)", () => {
+  it("sem `feed`: comportamento idêntico a antes — sem link rel=alternate", () => {
+    const html = renderSeoMeta({ title: "T", description: "D", url: "https://x.example/" });
+    assert.doesNotMatch(html, /rel="alternate"/);
+  });
+
+  it("com `feed`: emite link rel=alternate type=application/rss+xml com o title default", () => {
+    const html = renderSeoMeta({
+      title: "T",
+      description: "D",
+      url: "https://arquivo.diar.ia.br/",
+      feed: { url: "https://arquivo.diar.ia.br/feed.xml" },
+    });
+    assert.match(
+      html,
+      /<link rel="alternate" type="application\/rss\+xml" title="diar\.ia\.br — Feed RSS" href="https:\/\/arquivo\.diar\.ia\.br\/feed\.xml">/,
+    );
+  });
+
+  it("com `feed.title` explícito, usa ele em vez do default", () => {
+    const html = renderSeoMeta({
+      title: "T",
+      description: "D",
+      url: "https://arquivo.diar.ia.br/",
+      feed: { url: "https://arquivo.diar.ia.br/feed.xml", title: "Título Custom" },
+    });
+    assert.match(html, /title="Título Custom"/);
+  });
+});

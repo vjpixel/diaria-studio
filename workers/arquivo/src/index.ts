@@ -52,6 +52,7 @@ import {
   incrementAiFetchCounter,
 } from "../../../scripts/lib/shared/ai-fetch-counters.ts"; // #4902, F-17 do #4558
 import { buildArchiveHtml, PAGE_URL } from "./render-archive.ts";
+import { buildArchiveFeedXml, FEED_URL } from "./render-feed.ts"; // #5127: GET /feed.xml
 import { HUB_REGISTRY, HUB_LASTMOD } from "./hubs/registry.ts"; // #4558 Parte A: hubs temáticos em /temas/{slug}
 import { resolveWorkersDevRedirect } from "../../../scripts/lib/shared/workers-dev-redirect.ts"; // #5097 item D
 
@@ -142,9 +143,10 @@ function sitemapResponse(): Response {
  * `robots.txt` PRÓPRIO (#4546) — mesmo conteúdo/racional de cursos/livros
  * (ver `scripts/lib/shared/robots-txt.ts`), só que servido dinamicamente
  * porque este Worker não tem `[assets]`. `Sitemap:` aponta pro
- * `/sitemap.xml` deste próprio host, não pro do host principal.
+ * `/sitemap.xml` deste próprio host, não pro do host principal. `Feed:`
+ * (#5127 item 4) declara `/feed.xml` — único host do projeto com feed.
  */
-const ARQUIVO_ROBOTS_TXT = renderCuradoriaRobotsTxt(`${PAGE_URL}sitemap.xml`);
+const ARQUIVO_ROBOTS_TXT = renderCuradoriaRobotsTxt(`${PAGE_URL}sitemap.xml`, { feedUrl: FEED_URL });
 
 function robotsResponse(): Response {
   return new Response(ARQUIVO_ROBOTS_TXT, {
@@ -358,6 +360,39 @@ async function fetchSitemapXml(): Promise<string> {
   }
 }
 
+/**
+ * `GET /feed.xml` (#5127) — busca o sitemap AO VIVO (mesma fonte da raiz) e
+ * monta o RSS via `buildArchiveFeedXml`. Deliberadamente SEM o fallback de
+ * KV que a raiz ganhou no #5134: o feed é uma superfície nova, de menor
+ * prioridade (P3, "incerto-mas-barato" — ver issue), e um leitor de feed já
+ * tolera bem uma falha pontual de fetch (tenta de novo no próximo poll,
+ * diferente de um crawler que talvez não re-tente o mesmo path tão cedo).
+ * Reavaliar se o feed ganhar tráfego real e falhas viraram problema.
+ */
+async function feedRoute(): Promise<Response> {
+  let xml: string;
+  try {
+    xml = await fetchSitemapXml();
+  } catch (e) {
+    console.error("[arquivo] /feed.xml: falha ao buscar sitemap:", e instanceof Error ? e.message : String(e));
+    return new Response("Feed temporariamente indisponível.", { status: 502 });
+  }
+  try {
+    const entries = parseSitemap(xml);
+    const feedXml = buildArchiveFeedXml(entries);
+    return new Response(feedXml, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/rss+xml;charset=utf-8",
+        "Cache-Control": "public, max-age=3600",
+      },
+    });
+  } catch (e) {
+    console.error("[arquivo] /feed.xml: sitemap inválido:", e instanceof Error ? e.message : String(e));
+    return new Response("Feed temporariamente indisponível.", { status: 502 });
+  }
+}
+
 // ── Cache da raiz (#5134 item 3) ────────────────────────────────────────────
 /**
  * A raiz (`/`) é a única lista PLANA das ~250 edições — o caminho de crawl
@@ -498,6 +533,9 @@ export default {
     }
     if (url.pathname === "/robots.txt") {
       return robotsResponse();
+    }
+    if (url.pathname === "/feed.xml") {
+      return feedRoute();
     }
     // #4909 item 2: arquivo de chave do IndexNow — só casa quando a var
     // está configurada (ver docstring de Env.INDEXNOW_KEY); sem ela, este

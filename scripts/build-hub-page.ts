@@ -72,6 +72,11 @@ import { getMercadoTrabalhoHub } from "./lib/hubs/mercado-trabalho.ts";
 // `HUB_META` diretamente (inverteria a fronteira que a docstring de
 // `meta.ts` estabelece; ver nota de `relatedHubs` em `hub-page.ts`).
 import { HUB_META } from "../workers/arquivo/src/hubs/meta.ts";
+// #5131: mesmo racional de HUB_META acima — só o builder (Node-side) resolve
+// coverImage, `hub-page.ts` só recebe o resultado (ou undefined) já pronto.
+import titlesCacheRaw from "../workers/arquivo/src/titles-cache.json";
+import type { TitlesCache } from "./generate-arquivo-titles.ts";
+import { COVER_IMAGE_WIDTH, COVER_IMAGE_HEIGHT } from "./lib/shared/cover-image.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -130,11 +135,48 @@ export const ${lastmodConstName} = ${JSON.stringify(lastmodDate)};
 `;
 }
 
+/** Último segmento não-vazio do path de uma URL de edição (`diar.ia.br/p/{slug}`)
+ * — o SLUG usado pra lookup em `titles-cache.json` (#5131). Cópia local
+ * pequena (não importada de `render-archive.ts`/`generate-arquivo-titles.ts`)
+ * — mesma disciplina de fronteira já documentada nesses dois módulos: cada
+ * um mantém sua própria cópia mínima em vez de um import cruzado só pra uma
+ * função de 5 linhas. `null` em URL malformada (nunca deveria acontecer com
+ * `HubSourceEdition.url`, que vem de dado real — defensivo mesmo assim). */
+function slugFromEditionUrl(url: string): string | null {
+  try {
+    const path = new URL(url).pathname;
+    const parts = path.split("/").filter(Boolean);
+    return parts[parts.length - 1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve `coverImage` (#5131) — a capa da EDIÇÃO MAIS RECENTE que o hub
+ * cita (`sourceEditions[0]`, já ordenado mais-recente-primeiro por
+ * `validateHubContent`). `undefined` sempre que o slug não tiver
+ * `coverImageUrl` no cache (post sem thumbnail, ou `titles-cache.json`
+ * ainda sem o campo — ver docstring de `generate-arquivo-titles.ts`) ou o
+ * hub não tiver `sourceEditions` nenhuma (nunca acontece em hub real,
+ * `validateHubContent` exige ≥1 — defensivo pra fixture de teste). */
+function resolveHubCoverImage(
+  sourceEditions: readonly { readonly url: string }[],
+): HubContent["coverImage"] {
+  const newest = sourceEditions[0];
+  if (!newest) return undefined;
+  const slug = slugFromEditionUrl(newest.url);
+  if (!slug) return undefined;
+  const url = (titlesCacheRaw as TitlesCache)[slug]?.coverImageUrl;
+  if (!url) return undefined;
+  return { url, width: COVER_IMAGE_WIDTH, height: COVER_IMAGE_HEIGHT };
+}
+
 /** Carrega o `HubContent` completo de um slug — loader do hub (`get{Hub}Hub()`)
  * MAIS o pós-processamento que só o builder pode fazer (#4913 itens 1/3: nav
- * "Outros temas" com os hubs irmãos, própria página excluída — preenchido
- * aqui, não em `get{Hub}Hub()`, porque só quem enumera `HUB_LOADERS` conhece
- * o registry completo). Exportado pra `test/hub-page-drift.test.ts` chamar o
+ * "Outros temas" com os hubs irmãos, própria página excluída; #5131:
+ * `coverImage` via lookup em `titles-cache.json` — preenchido aqui, não em
+ * `get{Hub}Hub()`, porque só o builder importa esse cache, mesmo racional de
+ * `relatedHubs`). Exportado pra `test/hub-page-drift.test.ts` chamar o
  * MESMO caminho que `buildOne` usa — sem isso o teste de drift comparava o
  * asset committed (COM a nav, escrito por `buildOne`) contra um render fresco
  * que pulava esse pós-processamento (SEM a nav), acusando divergência falsa
@@ -146,7 +188,8 @@ export function loadHubContent(slug: string): HubContent {
   }
   const baseHub = loader();
   const relatedHubs = HUB_META.filter((m) => m.slug !== slug);
-  return { ...baseHub, relatedHubs };
+  const coverImage = resolveHubCoverImage(baseHub.sourceEditions);
+  return { ...baseHub, relatedHubs, coverImage };
 }
 
 function buildOne(slug: string, check: boolean): void {

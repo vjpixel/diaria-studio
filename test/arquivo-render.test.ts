@@ -294,6 +294,53 @@ describe("buildArchiveHtml (#4105)", () => {
   });
 });
 
+describe("buildArchiveHtml — og:image (#5131, decisão #3106 reaberta)", () => {
+  it("sem coverImageUrl no cache: og:image não é emitido (comportamento idêntico a antes)", () => {
+    const html = buildArchiveHtml([entry("https://diar.ia.br/p/sem-capa", "2026-07-27")]);
+    assert.doesNotMatch(html, /property="og:image"/);
+  });
+
+  it("com coverImageUrl da edição MAIS RECENTE: emite og:image com essa URL + width/height 1600×800", () => {
+    const cache: TitlesCacheMap = {
+      "edicao-antiga": { title: "Antiga", publishDate: "2026-07-01", coverImageUrl: "https://x.example/antiga.jpg" },
+      "edicao-recente": { title: "Recente", publishDate: "2026-07-27", coverImageUrl: "https://x.example/recente.jpg" },
+    };
+    const html = buildArchiveHtml(
+      [
+        entry("https://diar.ia.br/p/edicao-antiga", "2026-07-01"),
+        entry("https://diar.ia.br/p/edicao-recente", "2026-07-27"),
+      ],
+      cache,
+    );
+    assert.match(html, /<meta property="og:image" content="https:\/\/x\.example\/recente\.jpg">/);
+    assert.doesNotMatch(html, /antiga\.jpg/);
+    assert.match(html, /<meta property="og:image:width" content="1600">/);
+    assert.match(html, /<meta property="og:image:height" content="800">/);
+    assert.match(html, /<meta name="twitter:card" content="summary_large_image">/);
+  });
+
+  it("edição mais recente SEM coverImageUrl, mas edição mais antiga COM: og:image fica ausente (não pega capa errada)", () => {
+    const cache: TitlesCacheMap = {
+      "edicao-antiga": { title: "Antiga", publishDate: "2026-07-01", coverImageUrl: "https://x.example/antiga.jpg" },
+      "edicao-recente": { title: "Recente", publishDate: "2026-07-27" },
+    };
+    const html = buildArchiveHtml(
+      [
+        entry("https://diar.ia.br/p/edicao-antiga", "2026-07-01"),
+        entry("https://diar.ia.br/p/edicao-recente", "2026-07-27"),
+      ],
+      cache,
+    );
+    assert.doesNotMatch(html, /property="og:image"/);
+  });
+
+  it("sitemap vazio (0 edições): og:image ausente, nunca lança", () => {
+    assert.doesNotThrow(() => buildArchiveHtml([]));
+    const html = buildArchiveHtml([]);
+    assert.doesNotMatch(html, /property="og:image"/);
+  });
+});
+
 describe("estrutura GEO (#4558 Parte B)", () => {
   it("H2 em formato de pergunta + FAQ (6-10 perguntas) + byline aparecem no HTML", () => {
     const html = buildArchiveHtml([entry("https://diar.ia.br/p/edicao-a", "2026-07-27")]);
