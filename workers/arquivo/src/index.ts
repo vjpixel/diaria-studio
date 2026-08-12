@@ -48,6 +48,7 @@ import {
 } from "../../../scripts/lib/shared/ai-fetch-counters.ts"; // #4902, F-17 do #4558
 import { buildArchiveHtml, PAGE_URL } from "./render-archive.ts";
 import { HUB_REGISTRY, HUB_LASTMOD } from "./hubs/registry.ts"; // #4558 Parte A: hubs temáticos em /temas/{slug}
+import { resolveWorkersDevRedirect } from "../../../scripts/lib/shared/workers-dev-redirect.ts"; // #5097 item D
 
 /**
  * Env do Worker `arquivo` (#4902) — o Worker nasceu "sem KV, sem secrets,
@@ -256,6 +257,16 @@ export default {
   // cada call site passe um `env` explícito, e casa com o resto do módulo
   // (`incrementAiFetchCounter` já trata KV ausente como no-op).
   async fetch(request: Request, env: Env = {}): Promise<Response> {
+    // #5097 item D: fecha o host genérico `arquivo.diaria.workers.dev` —
+    // confirmado ao vivo (#5097) servindo 200 com o conteúdo INTEIRO em
+    // paralelo ao host canônico. 301 ANTES de qualquer outra lógica (log de
+    // Referer, sitemap, robots, hubs) — nenhuma delas deveria rodar quando a
+    // resposta certa é só redirecionar.
+    const redirect = resolveWorkersDevRedirect(request.url, new URL(PAGE_URL).host);
+    if (redirect.shouldRedirect) {
+      return Response.redirect(redirect.location!, 301);
+    }
+
     const url = new URL(request.url);
     // #4558 Parte C: log estruturado (Workers Logs) quando o Referer aponta
     // pra um dos 4 assistentes de IA — complemento barato ao monitor de

@@ -45,6 +45,8 @@ import { clearSessionCookieHeader, issueSessionCookie, readSession } from "./coo
 import { handleGateSubscribe, isValidEmailFormat } from "./subscribe.ts";
 import { CURSOS_ALARM_COUNTER_KEYS, incrementKvCounter } from "../../../scripts/lib/shared/cursos-alarm-counters.ts";
 import { matchAiReferrerHost, logAiReferrerHit } from "../../../scripts/lib/shared/ai-referrer-log.ts"; // #4558 Parte C
+import { resolveWorkersDevRedirect } from "../../../scripts/lib/shared/workers-dev-redirect.ts"; // #5097 item D
+import { DIARIA_CURSOS_URL } from "../../../scripts/lib/canonical-urls.ts"; // #5097 item D
 
 export interface Env {
   ASSETS: Fetcher;
@@ -321,6 +323,16 @@ async function handleGateVerify(request: Request, env: Env): Promise<Response> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    // #5097 item D: fecha o host genérico `cursos.diaria.workers.dev` —
+    // confirmado ao vivo (#5097) servindo 200 com o conteúdo INTEIRO em
+    // paralelo ao host canônico. 301 ANTES de qualquer outra lógica (gate,
+    // cookie, CORS) — nenhuma delas deveria rodar quando a resposta certa é
+    // só redirecionar.
+    const redirect = resolveWorkersDevRedirect(request.url, new URL(DIARIA_CURSOS_URL).host);
+    if (redirect.shouldRedirect) {
+      return Response.redirect(redirect.location!, 301);
+    }
+
     const url = new URL(request.url);
     const runtimeEnv: Env = { ...env, _requestOrigin: request.headers.get("Origin") };
 

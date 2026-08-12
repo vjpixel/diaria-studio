@@ -23,6 +23,8 @@
  * "gateado" específico — é só instrumentação, sem gate de conteúdo.
  */
 import { matchAiReferrerHost, logAiReferrerHit } from "../../../scripts/lib/shared/ai-referrer-log.ts";
+import { resolveWorkersDevRedirect } from "../../../scripts/lib/shared/workers-dev-redirect.ts"; // #5097 item D
+import { DIARIA_LIVROS_URL } from "../../../scripts/lib/canonical-urls.ts"; // #5097 item D
 
 export interface Env {
   ASSETS: Fetcher;
@@ -30,6 +32,15 @@ export interface Env {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    // #5097 item D: fecha o host genérico `livros.diaria.workers.dev` —
+    // confirmado ao vivo (#5097) servindo 200 com o conteúdo INTEIRO em
+    // paralelo ao host canônico. 301 ANTES de qualquer outra lógica (log de
+    // Referer, delegação pro ASSETS).
+    const redirect = resolveWorkersDevRedirect(request.url, new URL(DIARIA_LIVROS_URL).host);
+    if (redirect.shouldRedirect) {
+      return Response.redirect(redirect.location!, 301);
+    }
+
     try {
       const url = new URL(request.url);
       const aiHost = matchAiReferrerHost(request.headers.get("Referer"));

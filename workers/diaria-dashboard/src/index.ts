@@ -1378,98 +1378,140 @@ export async function handleStudioSnapshotHtml(env: Env): Promise<Response> {
   });
 }
 
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
-    const path = url.pathname;
+/**
+ * `robots.txt` do dashboard operacional (#5097 item E) — `Disallow: /`
+ * incondicional. Diferente dos Workers de curadoria (cursos/livros/arquivo,
+ * `scripts/lib/shared/robots-txt.ts`), este Worker não deveria ser
+ * indexável em host NENHUM — é superfície operacional interna, não conteúdo
+ * de leitor. Independe do redirect de `.workers.dev` do item D (que não se
+ * aplica aqui: `diaria-dashboard` não tem host de marca `diar.ia.br`
+ * dedicado, só `workers_dev = true`).
+ */
+const DASHBOARD_ROBOTS_TXT = "User-agent: *\nDisallow: /\n";
 
-    if (path === "/healthz") {
-      return new Response("ok", { headers: { "Content-Type": "text/plain" } });
+/**
+ * Roteamento real do Worker (extraído do `fetch` default abaixo). `fetch`
+ * chama esta função e SEMPRE adiciona `X-Robots-Tag: noindex` na resposta
+ * (#5097 item E) — reforço redundante ao `robots.txt` acima (motores que
+ * ignoram robots.txt mas respeitam o header ainda ficam cobertos; achado
+ * #5097: `diaria-dashboard.diaria.workers.dev` estava servindo 156 KB de
+ * HTML sem NENHUM dos dois sinais).
+ */
+async function routeRequest(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const path = url.pathname;
+
+  if (path === "/robots.txt") {
+    return new Response(DASHBOARD_ROBOTS_TXT, {
+      headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=3600" },
+    });
+  }
+
+  if (path === "/healthz") {
+    return new Response("ok", { headers: { "Content-Type": "text/plain" } });
+  }
+
+  // Cache de borda 5min (mesmo padrão do brevo-dashboard #2144)
+  const isFresh = url.searchParams.get("fresh") === "1";
+  const isCacheable = (path === "/" || path === "/index.html" || path === "/api/data");
+  const cache = caches.default;
+
+  if (isCacheable && !isFresh) {
+    const cached = await cache.match(request);
+    if (cached) return cached;
+  }
+
+  // Lê JSON do KV
+  let data: DashboardData | null = null;
+  try {
+    const raw = await env.DASHBOARD_DATA.get(KV_KEY, "text");
+    if (raw) {
+      data = JSON.parse(raw) as DashboardData;
     }
+  } catch {
+    // KV indisponível ou JSON malformado — tratar como ausente
+  }
 
-    // Cache de borda 5min (mesmo padrão do brevo-dashboard #2144)
-    const isFresh = url.searchParams.get("fresh") === "1";
-    const isCacheable = (path === "/" || path === "/index.html" || path === "/api/data");
-    const cache = caches.default;
-
-    if (isCacheable && !isFresh) {
-      const cached = await cache.match(request);
-      if (cached) return cached;
-    }
-
-    // Lê JSON do KV
-    let data: DashboardData | null = null;
-    try {
-      const raw = await env.DASHBOARD_DATA.get(KV_KEY, "text");
-      if (raw) {
-        data = JSON.parse(raw) as DashboardData;
-      }
-    } catch {
-      // KV indisponível ou JSON malformado — tratar como ausente
-    }
-
-    if (path === "/api/data") {
-      if (!data) {
-        return new Response(JSON.stringify({ error: "no_data", hint: "Run build-diaria-dashboard-data.ts --push to populate KV." }), {
-          status: 404,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      const response = new Response(JSON.stringify(data, null, 2), {
-        headers: {
-          "Content-Type": "application/json",
-          "Cache-Control": isFresh ? "no-store" : "private, max-age=300",
-          ...(!isFresh ? { "CDN-Cache-Control": "public, max-age=300" } : {}),
-        },
+  if (path === "/api/data") {
+    if (!data) {
+      return new Response(JSON.stringify({ error: "no_data", hint: "Run build-diaria-dashboard-data.ts --push to populate KV." }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
       });
-      if (!isFresh) await cache.put(request, response.clone());
-      return response;
     }
+    const response = new Response(JSON.stringify(data, null, 2), {
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": isFresh ? "no-store" : "private, max-age=300",
+        ...(!isFresh ? { "CDN-Cache-Control": "public, max-age=300" } : {}),
+      },
+    });
+    if (!isFresh) await cache.put(request, response.clone());
+    return response;
+  }
 
-    if (path === "/" || path === "/index.html") {
-      if (!data) {
-        const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>diar.ia.br Dashboard</title></head><body>
+  if (path === "/" || path === "/index.html") {
+    if (!data) {
+      const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>diar.ia.br Dashboard</title></head><body>
 <h1>Dashboard não inicializado</h1>
 <p>Rode localmente: <code>npx tsx scripts/build-diaria-dashboard-data.ts --dry-run</code> para verificar, depois <code>--push</code> para publicar os dados.</p>
 </body></html>`;
-        return new Response(html, {
-          status: 200,
-          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
-        });
-      }
-
-      const html = renderDashboardHtml(data);
-      const response = new Response(html, {
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": isFresh ? "no-store" : "private, max-age=300",
-          ...(!isFresh ? { "CDN-Cache-Control": "public, max-age=300" } : {}),
-        },
+      return new Response(html, {
+        status: 200,
+        headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
       });
-      if (!isFresh) await cache.put(request, response.clone());
-      return response;
     }
 
-    // #3565: espelho read-only do Studio local ("onde parou" com PC
-    // desligado) — rota NOVA no worker existente (evita um 8º worker, ver
-    // header de renderStudioSnapshotHtml). Sem cache de borda: a idade do
-    // snapshot ("dados de HH:MM — PC offline?") precisa ser calculada
-    // contra o `now()` real de cada request, não contra o instante em que a
-    // resposta foi cacheada. Lógica extraída em funções exportadas
-    // (handleStudioSnapshotJson/Html) — testadas diretamente por
-    // test/diaria-dashboard-studio-snapshot-3565.test.ts, evitando invocar
-    // `default.fetch` deste arquivo (o quirk de interop CJS/ESM sob
-    // `node --import tsx` documentado em scripts/studio-ui/dashboard-diaria.ts
-    // faz um `import()` dinâmico deste entrypoint devolver o objeto
-    // `{fetch}` aninhado sob `.default.default`, não `.default`).
-    if (path === "/api/studio-snapshot") {
-      return handleStudioSnapshotJson(env);
-    }
+    const html = renderDashboardHtml(data);
+    const response = new Response(html, {
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": isFresh ? "no-store" : "private, max-age=300",
+        ...(!isFresh ? { "CDN-Cache-Control": "public, max-age=300" } : {}),
+      },
+    });
+    if (!isFresh) await cache.put(request, response.clone());
+    return response;
+  }
 
-    if (path === "/studio" || path === "/studio/") {
-      return handleStudioSnapshotHtml(env);
-    }
+  // #3565: espelho read-only do Studio local ("onde parou" com PC
+  // desligado) — rota NOVA no worker existente (evita um 8º worker, ver
+  // header de renderStudioSnapshotHtml). Sem cache de borda: a idade do
+  // snapshot ("dados de HH:MM — PC offline?") precisa ser calculada
+  // contra o `now()` real de cada request, não contra o instante em que a
+  // resposta foi cacheada. Lógica extraída em funções exportadas
+  // (handleStudioSnapshotJson/Html) — testadas diretamente por
+  // test/diaria-dashboard-studio-snapshot-3565.test.ts, evitando invocar
+  // `default.fetch` deste arquivo (o quirk de interop CJS/ESM sob
+  // `node --import tsx` documentado em scripts/studio-ui/dashboard-diaria.ts
+  // faz um `import()` dinâmico deste entrypoint devolver o objeto
+  // `{fetch}` aninhado sob `.default.default`, não `.default`).
+  if (path === "/api/studio-snapshot") {
+    return handleStudioSnapshotJson(env);
+  }
 
-    return new Response("Not found", { status: 404 });
+  if (path === "/studio" || path === "/studio/") {
+    return handleStudioSnapshotHtml(env);
+  }
+
+  return new Response("Not found", { status: 404 });
+}
+
+/**
+ * `X-Robots-Tag: noindex` em TODA resposta (#5097 item E) — wrapper único em
+ * vez de anotar cada `new Response(...)` de `routeRequest` individualmente
+ * (haviam ~8 pontos de retorno; um wrapper centralizado evita esquecer o
+ * header num ponto novo de retorno que apareça no futuro). Lê o body como
+ * stream (não `.clone()`) — a resposta de `routeRequest` nunca é usada de
+ * novo depois deste ponto, então não há necessidade da cópia extra do
+ * `clone()` (usado em `routeRequest` só onde a MESMA resposta também vai
+ * pro `cache.put`, caso diferente deste).
+ */
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const response = await routeRequest(request, env);
+    const headers = new Headers(response.headers);
+    headers.set("X-Robots-Tag", "noindex");
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
   },
 };
