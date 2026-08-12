@@ -163,6 +163,16 @@ export function readActiveMarker(repoRoot = resolveMainRepoRoot(), machineTag = 
  *        OUTRA sessão → permitido").
  *
  * Qualquer uma das condições falhando → `false` (permite a pergunta). Nunca lança.
+ *
+ * **#5161 fleet review item 5:** quando o marker TEM `session_id` mas o
+ * `callerSessionId` da chamada atual está ausente (`undefined`/`null`) — o
+ * docblock acima supõe que isso "nunca" acontece, sem garantia real disso —
+ * a comparação `callerSessionId === marker.session_id` resolve pra `false`
+ * (permite), que é a direção de fail-open PERIGOSA especificamente pra este
+ * guard: permitir `AskUserQuestion` durante a Fase autônoma do overnight é
+ * exatamente o cenário que trava a rodada (#4450). Mantemos o fail-open (não
+ * dá pra confirmar com segurança que a chamada pertence à MESMA sessão sem o
+ * dado), mas o estado degradado agora é LOGADO (stderr), não silencioso.
  */
 export function shouldBlockAskUserQuestion(marker, now = Date.now(), callerSessionId = undefined) {
   if (!marker || marker.phase !== "autonomous") return false;
@@ -171,6 +181,20 @@ export function shouldBlockAskUserQuestion(marker, now = Date.now(), callerSessi
   const ageMs = now - startedAtMs;
   if (!(ageMs >= 0 && ageMs <= MAX_SESSION_AGE_MS)) return false;
   if (marker.session_id === undefined || marker.session_id === null) return true;
+  if (callerSessionId === undefined || callerSessionId === null) {
+    try {
+      process.stderr.write(
+        "block-askuserquestion-overnight-autonomous: aviso — marker overnight ativo tem session_id " +
+          `("${marker.session_id}") mas o payload da chamada ATUAL não trouxe session_id; PERMITINDO ` +
+          "o AskUserQuestion por fail-open (não dá pra confirmar se pertence à mesma sessão overnight " +
+          "autônoma ou a outra sessão rodando em paralelo nesta máquina). Se isto se repetir, investigar " +
+          "por que o harness não populou session_id neste PreToolUse (#5161 item 5).\n",
+      );
+    } catch {
+      // Nunca deixar o log quebrar o fail-open — mesmo contrato do resto do hook.
+    }
+    return false;
+  }
   return callerSessionId === marker.session_id;
 }
 

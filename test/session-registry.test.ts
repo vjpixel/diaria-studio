@@ -26,7 +26,12 @@ import {
   releaseMergeLock,
   MAX_SESSION_AGE_MS,
   MERGE_LOCK_TTL_MS,
+  CLOCK_SKEW_TOLERANCE_MS,
+  type MergeLockIo,
 } from "../scripts/lib/session-registry.ts";
+
+/** Struct local — `MergeLockRecord` não é exportado, só o formato JSON no disco. */
+type MergeLockRecord = { heldBy: string; acquiredAt: string };
 
 const roots: string[] = [];
 after(() => {
@@ -197,6 +202,33 @@ describe("listActiveSessions", () => {
     assert.equal(sessions[0].sessionId, "sess-ok");
   });
 
+  it("erro de I/O real (não ENOENT/JSON malformado) lendo um arquivo de sessão é logado, não silencioso (#5161 item 3)", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "sess-ok", { tag: "host-a", startedAt: new Date(NOW - ONE_HOUR_MS).toISOString() });
+    // Um DIRETÓRIO no lugar de um arquivo de sessão força readFileSync a
+    // lançar EISDIR — uma falha de I/O real, distinta de "arquivo ausente"
+    // (ENOENT) ou "JSON inválido" — o tipo de erro que EBUSY/EPERM da
+    // sincronização do OneDrive também produziria.
+    mkdirSync(join(sessionsDir(root), "develop-host-a-e-um-diretorio.json"), { recursive: true });
+
+    let stderrOutput = "";
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: any, ...args: any[]) => {
+      stderrOutput += String(chunk);
+      return true;
+    }) as typeof process.stderr.write;
+    let sessions: ReturnType<typeof listActiveSessions>;
+    try {
+      sessions = listActiveSessions(root, NOW);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+
+    assert.equal(sessions.length, 1, "a falha de I/O não derruba a listagem inteira (fail-soft preservado)");
+    assert.equal(sessions[0].sessionId, "sess-ok");
+    assert.match(stderrOutput, /falha de I\/O/i, "a falha de I/O real fica visível em stderr, não silenciosa");
+  });
+
   it("maxAgeMs customizável — janela menor exclui sessões que passariam no default de 24h", () => {
     const root = freshRoot();
     registerSession(root, "overnight", "sess-2h-old", {
@@ -318,5 +350,201 @@ describe("acquireMergeLock / releaseMergeLock (item 4 do #5156)", () => {
     acquireMergeLock(root, "sess-a", NOW);
     assert.equal(releaseMergeLock(root, "sess-b"), false);
     assert.ok(existsSync(mergeLockPath(root)), "lock de sess-a deve continuar no disco");
+  });
+});
+
+// ─── acquireMergeLock: atomicidade sob concorrência (#5161 fleet review item 1) ──
+
+describe("acquireMergeLock — atomicidade sob concorrência (#5161 item 1)", () => {
+  const NOW = Date.parse("2026-08-12T12:00:00.000Z");
+
+  it(
+    "fast path (lock ausente): 2 tentativas concorrentes intercaladas contra o MESMO " +
+      '"disco" compartilhado — no máximo UMA pode obter a criação exclusiva',
+    () => {
+      const root = freshRoot();
+      const path = mergeLockPath(root);
+      // "Disco" compartilhado entre as duas sessões — simula 2 processos reais
+      // disputando o MESMO path ausente. A garantia de exclusividade mútua
+      // real (que protege contra processos DIFERENTES, não só chamadas deste
+      // teste) vem inteiramente do SO via O_EXCL no `tryCreateExclusive` real
+      // — aqui reproduzimos a MESMA semântica ("lança/retorna false se o path
+      // já existe no disco compartilhado") pra provar que o código de
+      // `acquireMergeLock` delega corretamente a essa primitiva, sem
+      // introduzir nenhum passo não-atômico ANTES dela.
+      const disk = new Map<string, string>();
+      const io: MergeLockIo = {
+        tryCreateExclusive: (p, data) => {
+          if (disk.has(p)) return false;
+          disk.set(p, data);
+          return true;
+        },
+        readCurrent: (p) => (disk.has(p) ? (JSON.parse(disk.get(p)!) as MergeLockRecord) : null),
+        overwrite: (p, data) => disk.set(p, data),
+      };
+
+      const resultA = acquireMergeLock(root, "sess-a", NOW, MERGE_LOCK_TTL_MS, io);
+      const resultB = acquireMergeLock(root, "sess-b", NOW, MERGE_LOCK_TTL_MS, io);
+
+      assert.equal([resultA, resultB].filter(Boolean).length, 1, "no máximo uma das duas pode vencer a criação exclusiva");
+      assert.equal(resultA, true, "a primeira a chegar no disco compartilhado vence");
+      assert.equal(resultB, false, "a segunda encontra o path já ocupado — nunca finge que também venceu");
+    },
+  );
+
+  it("fast path: erro de I/O inesperado (não-EEXIST) nunca é tratado como lock adquirido", () => {
+    const root = freshRoot();
+    const io: MergeLockIo = {
+      tryCreateExclusive: () => {
+        throw new Error("EACCES: permissão negada (simulado)");
+      },
+      readCurrent: () => null,
+      overwrite: () => {
+        throw new Error("nunca deveria ser chamado neste caminho");
+      },
+    };
+    assert.equal(acquireMergeLock(root, "sess-a", NOW, MERGE_LOCK_TTL_MS, io), false);
+  });
+
+  it(
+    "contest de lock STALE: quando a escrita de OUTRA sessão se intercala entre a nossa " +
+      "própria escrita e a nossa própria releitura de verificação, nunca acreditamos que vencemos",
+    () => {
+      const root = freshRoot();
+      const path = mergeLockPath(root);
+      const disk = new Map<string, string>();
+      // Lock antigo, já expirado — simula um coordenador que crashou segurando-o.
+      disk.set(
+        path,
+        JSON.stringify({ heldBy: "sess-old", acquiredAt: new Date(NOW - MERGE_LOCK_TTL_MS - 5_000).toISOString() }),
+      );
+      const dataB = JSON.stringify({ heldBy: "sess-b", acquiredAt: new Date(NOW).toISOString() } satisfies MergeLockRecord);
+
+      const io: MergeLockIo = {
+        tryCreateExclusive: () => false, // lock (stale) já existe — nunca é o caminho "ausente"
+        readCurrent: (p) => (disk.has(p) ? (JSON.parse(disk.get(p)!) as MergeLockRecord) : null),
+        overwrite: (p, data) => {
+          // Simula a Sessão B — que também leu o MESMO lock stale e decidiu
+          // contestar em paralelo — gravando o PRÓPRIO lock bem no meio da
+          // gravação de A: depois que A grava, mas ANTES de A conseguir se
+          // reler pra verificar quem venceu.
+          disk.set(p, data);
+          disk.set(p, dataB);
+        },
+      };
+
+      const resultA = acquireMergeLock(root, "sess-a", NOW, MERGE_LOCK_TTL_MS, io);
+
+      assert.equal(resultA, false, "A é sobrescrita por B antes de conseguir se verificar — não pode achar que venceu");
+      assert.equal(JSON.parse(disk.get(path)!).heldBy, "sess-b", "o disco reflete quem de fato escreveu por último");
+    },
+  );
+
+  it("contest de lock STALE: quando NINGUÉM sobrescreve depois da nossa escrita, a verificação confirma que vencemos", () => {
+    const root = freshRoot();
+    const path = mergeLockPath(root);
+    const disk = new Map<string, string>();
+    disk.set(
+      path,
+      JSON.stringify({ heldBy: "sess-old", acquiredAt: new Date(NOW - MERGE_LOCK_TTL_MS - 5_000).toISOString() }),
+    );
+    const io: MergeLockIo = {
+      tryCreateExclusive: () => false,
+      readCurrent: (p) => (disk.has(p) ? (JSON.parse(disk.get(p)!) as MergeLockRecord) : null),
+      overwrite: (p, data) => disk.set(p, data), // ninguém mais escreve no meio
+    };
+
+    assert.equal(acquireMergeLock(root, "sess-a", NOW, MERGE_LOCK_TTL_MS, io), true);
+    assert.equal(JSON.parse(disk.get(path)!).heldBy, "sess-a");
+  });
+});
+
+// ─── clock skew (#5161 fleet review item 2) ────────────────────────────────
+
+describe("clock skew — listActiveSessions/acquireMergeLock nunca escondem/roubam estado ativo silenciosamente (#5161 item 2)", () => {
+  const NOW = Date.parse("2026-08-12T12:00:00.000Z");
+
+  it("listActiveSessions: idade no futuro DENTRO da tolerância ainda conta como ativa (jitter normal entre máquinas)", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "sess-skew-pequeno", {
+      tag: "host-a",
+      startedAt: new Date(NOW + CLOCK_SKEW_TOLERANCE_MS / 2).toISOString(),
+    });
+    const sessions = listActiveSessions(root, NOW);
+    assert.equal(sessions.length, 1, "skew pequeno (dentro da tolerância) não deve excluir a sessão");
+  });
+
+  it("listActiveSessions: idade no futuro ALÉM da tolerância ainda é excluída (nunca finge que está ativa)", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "sess-skew-grande", {
+      tag: "host-a",
+      startedAt: new Date(NOW + CLOCK_SKEW_TOLERANCE_MS * 10).toISOString(),
+    });
+    assert.deepEqual(listActiveSessions(root, NOW), []);
+  });
+
+  it("listActiveSessions: exclusão por idade negativa ALÉM da tolerância é logada em stderr, nunca silenciosa", () => {
+    const root = freshRoot();
+    registerSession(root, "overnight", "sess-skew-logado", {
+      tag: "host-a",
+      startedAt: new Date(NOW + CLOCK_SKEW_TOLERANCE_MS * 10).toISOString(),
+    });
+    let stderrOutput = "";
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: any, ...args: any[]) => {
+      stderrOutput += String(chunk);
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      listActiveSessions(root, NOW);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    assert.match(stderrOutput, /clock skew/i);
+    assert.match(stderrOutput, /sess-skew-logado/);
+  });
+
+  it("acquireMergeLock: lock EXISTENTE com acquiredAt no futuro (skew) nunca é tratado como abandonado/roubável", () => {
+    const root = freshRoot();
+    const path = mergeLockPath(root);
+    mkdirSync(sessionsDir(root), { recursive: true });
+    // Lock genuinamente fresco escrito por uma máquina com relógio adiantado —
+    // pro nosso relógio (atrasado), parece estar "no futuro".
+    writeFileSync(
+      path,
+      JSON.stringify({ heldBy: "sess-a", acquiredAt: new Date(NOW + CLOCK_SKEW_TOLERANCE_MS * 10).toISOString() }),
+      "utf8",
+    );
+    assert.equal(
+      acquireMergeLock(root, "sess-b", NOW),
+      false,
+      "nunca tratar um lock 'do futuro' como abandonado, mesmo com skew grande",
+    );
+    const content = JSON.parse(readFileSync(path, "utf8"));
+    assert.equal(content.heldBy, "sess-a", "o lock original nunca é sobrescrito por engano");
+  });
+
+  it("acquireMergeLock: skew pequeno (dentro da tolerância) não gera warning; skew grande gera", () => {
+    const root = freshRoot();
+    const path = mergeLockPath(root);
+    mkdirSync(sessionsDir(root), { recursive: true });
+    writeFileSync(
+      path,
+      JSON.stringify({ heldBy: "sess-a", acquiredAt: new Date(NOW + CLOCK_SKEW_TOLERANCE_MS * 10).toISOString() }),
+      "utf8",
+    );
+    let stderrOutput = "";
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: any, ...args: any[]) => {
+      stderrOutput += String(chunk);
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      acquireMergeLock(root, "sess-b", NOW);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    assert.match(stderrOutput, /clock skew/i);
+    assert.match(stderrOutput, /sess-a/);
   });
 });

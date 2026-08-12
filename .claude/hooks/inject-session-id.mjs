@@ -1,7 +1,9 @@
 // PreToolUse hook — injeta `--session-id {payload.session_id}` em chamadas
 // standalone de `scripts/overnight-session-marker.ts` (--start/--phase) e
 // `scripts/lib/session-registry.ts` (register/heartbeat/end/claim-issue/
-// merge-lock-acquire/merge-lock-release) que ainda não trazem a flag (#5156).
+// is-claimed/merge-lock-acquire/merge-lock-release) que ainda não trazem a
+// flag (#5156; `is-claimed` adicionado no #5161 fleet review item 4 — ver
+// nota abaixo sobre `INJECTABLE_SUBCOMMANDS`).
 //
 // Wired in .claude/settings.json under hooks.PreToolUse, matcher "Bash".
 //
@@ -23,10 +25,22 @@
 // `tool_input` antes do tool rodar, sem exigir `permissionDecision`).
 //
 // Escopo deliberadamente estreito: só dispara pra uma chamada STANDALONE (sem
-// `&&`/`;`/`|` — mesmo espírito do "START-ANCHORED prefix" de `pr-create-review.mjs`
-// pro `gh pr create*`) contendo um dos dois scripts-alvo com um subcomando de
-// escrita reconhecido. Nunca mexe em `list-active`/`is-claimed` (leitura, não
-// precisam de identidade de sessão) nem em qualquer outro comando.
+// `&&`/`;`/`|`/newline embutido — mesmo espírito do "START-ANCHORED prefix" de
+// `pr-create-review.mjs` pro `gh pr create*`) contendo um dos dois scripts-alvo
+// com um subcomando reconhecido em `INJECTABLE_SUBCOMMANDS`. Nunca mexe em
+// `list-active` (leitura pura, sem noção de "sessão atual" nenhuma) nem em
+// qualquer outro comando.
+//
+// #5161 fleet review item 4: `is-claimed` ENTRA em `INJECTABLE_SUBCOMMANDS`
+// (renomeada de `WRITE_SUBCOMMANDS` — deixou de ser só sobre escrita) mesmo
+// sendo leitura, porque ela recebe `--session-id` como `excludeSessionId`
+// (ver `requireSessionId`/case "is-claimed" em `scripts/lib/session-registry.ts`):
+// sem a flag injetada, `excludeSessionId` fica vazio e uma sessão que
+// reavalia `is-claimed` numa onda posterior pra uma issue que ELA MESMA já
+// reivindicou vê `claimed: true` apontando pra si própria, rotulado como "é
+// outra sessão" — pula o próprio trabalho em andamento por engano. Injetar
+// aqui não muda NADA do comportamento de leitura em si (o subcomando não
+// escreve nada) — só corrige a auto-exclusão.
 //
 // Fail-open por construção: `session_id` ausente do payload, comando já com
 // `--session-id`, comando encadeado, JSON malformado, ou QUALQUER exceção
@@ -37,14 +51,25 @@
 
 const TARGET_MARKER = "overnight-session-marker.ts";
 const TARGET_REGISTRY = "session-registry.ts";
-const WRITE_SUBCOMMANDS = /\b(register|heartbeat|end|claim-issue|merge-lock-acquire|merge-lock-release)\b/;
+// #5161 item 4: renomeada de WRITE_SUBCOMMANDS — is-claimed é leitura, mas
+// ainda precisa da flag injetada (ver comentário acima). "Escrita" deixou de
+// descrever o conjunto inteiro.
+const INJECTABLE_SUBCOMMANDS = /\b(register|heartbeat|end|claim-issue|is-claimed|merge-lock-acquire|merge-lock-release)\b/;
 
-/** Heurística de "comando encadeado" — nunca injeta no meio de um `&&`/`;`/`|`. */
+/**
+ * Heurística de "comando encadeado" — nunca injeta no meio de um `&&`/`;`/`|`
+ * nem quando o comando alvo não é a ÚLTIMA linha de um script multi-linha
+ * (#5161 fleet review item 6): sem o `\n` aqui, um heredoc/script Bash de
+ * várias linhas com `session-registry.ts register ...` numa linha que não é
+ * a última faz o hook anexar `--session-id` no FIM da string inteira (na
+ * última linha, não na linha do `register`) — flag mal-direcionada, o
+ * subcomando real ainda falha por falta dela.
+ */
 export function isChainedCommand(command) {
-  return /&&|\|\||;|\|(?!\|)/.test(command);
+  return /&&|\|\||;|\|(?!\|)|\r?\n/.test(command);
 }
 
-/** Decide se `command` é candidato a injeção — script-alvo + subcomando de escrita reconhecido. */
+/** Decide se `command` é candidato a injeção — script-alvo + subcomando reconhecido. */
 export function needsSessionId(command) {
   if (typeof command !== "string" || command.trim() === "") return false;
   if (isChainedCommand(command)) return false;
@@ -52,7 +77,7 @@ export function needsSessionId(command) {
     return /--start\b/.test(command) || /--phase\b/.test(command);
   }
   if (command.includes(TARGET_REGISTRY)) {
-    return WRITE_SUBCOMMANDS.test(command);
+    return INJECTABLE_SUBCOMMANDS.test(command);
   }
   return false;
 }

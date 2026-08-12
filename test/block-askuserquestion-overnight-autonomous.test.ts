@@ -110,6 +110,26 @@ describe("shouldBlockAskUserQuestion — session-aware (#5156)", () => {
     assert.equal(shouldBlockAskUserQuestion(marker, NOW, undefined), false);
   });
 
+  it(
+    "marker COM session_id + callerSessionId ausente → o fail-open é LOGADO em stderr, nunca silencioso (#5161 item 5)",
+    () => {
+      const marker = fresh({ session_id: "sessao-overnight-abc" });
+      let stderrOutput = "";
+      const originalWrite = process.stderr.write.bind(process.stderr);
+      process.stderr.write = (chunk, ...args) => {
+        stderrOutput += String(chunk);
+        return true;
+      };
+      try {
+        shouldBlockAskUserQuestion(marker, NOW, undefined);
+      } finally {
+        process.stderr.write = originalWrite;
+      }
+      assert.match(stderrOutput, /aviso/i);
+      assert.match(stderrOutput, /sessao-overnight-abc/);
+    },
+  );
+
   it("marker COM session_id ainda respeita staleness/futuro — session match não sobrepõe os outros guards", () => {
     const staleMarker = {
       started_at: new Date(NOW - 25 * ONE_HOUR_MS).toISOString(),

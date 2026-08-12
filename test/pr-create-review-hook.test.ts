@@ -1,8 +1,9 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, hostname } from "node:os";
+import { execFileSync } from "node:child_process";
 import {
   resolveEffort,
   buildReviewInstruction,
@@ -831,5 +832,88 @@ describe("resolveEffort + logEffortDecision — cenários fim-a-fim (#4252)", ()
     assert.equal(effort, "max");
     const event = readLoggedEvent(root);
     assert.deepEqual(event.details, { pr: "103", effort: "max", motivo: "estado_indeterminado", agentes: 5 });
+  });
+});
+
+// #5161 fleet review item 11 (pr-test-analyzer, opcional/P2): o wrapper
+// DEFAULT de `checkRoundActive` (`(sid) => isOvernightRoundActive(undefined,
+// undefined, undefined, sid)`) nunca é exercitado de ponta a ponta em nenhum
+// teste existente — todos os ~20 call sites acima injetam um mock explícito
+// (`noActiveRound`/`activeRound`/similar). O default real resolve
+// `repoRoot`/`machineTag`/`now` via `resolveMainRepoRoot()` (git real),
+// `localMachineTag()` (hostname real) e `Date.now()` — sem cobertura, um bug
+// na FIAÇÃO desses 3 defaults (não na lógica pura de `isOvernightRoundActive`,
+// já coberta acima) passaria despercebido.
+//
+// Escrever o marker no PATH REAL do repo principal (`data/overnight/`) seria
+// perigoso aqui: esta é uma junction OneDrive compartilhada entre TODOS os
+// worktrees e sessões desta máquina — sujar `.active-session-{hostname real}.json`
+// contaminaria coordenação de produção de uma rodada overnight/develop
+// genuinamente em andamento. Em vez disso, isolamos via `process.chdir()`
+// pra dentro de um repo git TEMPORÁRIO — `resolveMainRepoRoot()` (chamada sem
+// argumentos pelo default de `isOvernightRoundActive`) resolve `git
+// rev-parse --git-common-dir` relativo a `process.cwd()`, então isto redireciona
+// a resolução inteira pro tmpdir isolado, sem tocar nada real. `hostname()`
+// sozinho já é o mesmo valor real que `localMachineTag()` usaria — só
+// replicamos a sanitização (idêntica, função tão pequena que os hooks
+// self-contained já a duplicam entre si por design, ver docblocks deles).
+describe("resolveEffort — checkRoundActive DEFAULT real, fim-a-fim (#5161 item 11)", () => {
+  function sanitizedHostname() {
+    try {
+      return (hostname() || "unknown").replace(/[^a-zA-Z0-9_-]/g, "_");
+    } catch {
+      return "unknown";
+    }
+  }
+
+  function withIsolatedGitCwd(run) {
+    const tmpRoot = mkdtempSync(join(tmpdir(), "pr-create-review-default-checkround-"));
+    const originalCwd = process.cwd();
+    try {
+      execFileSync("git", ["init", "--quiet"], { cwd: tmpRoot, timeout: 10_000 });
+      process.chdir(tmpRoot);
+      return run(tmpRoot);
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  }
+
+  it("marker fresco (formato antigo, sem session_id) escrito em disco real → resolveEffort(prUrl, execFn) SÓ com 2 args reflete o marker (low)", () => {
+    withIsolatedGitCwd((tmpRoot) => {
+      const tag = sanitizedHostname();
+      const markerDir = join(tmpRoot, "data", "overnight");
+      mkdirSync(markerDir, { recursive: true });
+      writeFileSync(
+        join(markerDir, `.active-session-${tag}.json`),
+        JSON.stringify({ started_at: new Date().toISOString() }),
+        "utf8",
+      );
+
+      const execFn = (_cmd, args) => {
+        if (args[0] === "pr" && args[1] === "view" && args.includes("headRefName")) return "fix-manual\n";
+        throw new Error(`execFn inesperado neste teste: ${args.join(" ")}`);
+      };
+
+      // Só 2 args — exercita o default de checkRoundActive de verdade, não um mock.
+      const result = resolveEffort("https://github.com/o/r/pull/999", execFn);
+      assert.equal(result.effort, "low");
+      assert.equal(result.reason, "sessao_overnight_ativa");
+    });
+  });
+
+  it("nenhum marker em disco → resolveEffort(prUrl, execFn) SÓ com 2 args não confunde 'ausente' com 'ativo'", () => {
+    withIsolatedGitCwd(() => {
+      const execFn = (_cmd, args) => {
+        if (args[0] === "pr" && args[1] === "view" && args.includes("headRefName")) return "fix-manual\n";
+        if (args[0] === "pr" && args[1] === "view" && args.includes("additions,deletions")) {
+          return JSON.stringify({ additions: 700, deletions: 300 }); // diff grande, evita cair em diff_pequeno
+        }
+        throw new Error(`execFn inesperado neste teste: ${args.join(" ")}`);
+      };
+      const result = resolveEffort("https://github.com/o/r/pull/998", execFn);
+      assert.equal(result.effort, "max");
+      assert.equal(result.reason, "diff_grande");
+    });
   });
 });

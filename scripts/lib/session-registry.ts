@@ -98,6 +98,41 @@ export const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 /** TTL do merge lock (item 4) — merge + pull não deveria levar mais que isso. */
 export const MERGE_LOCK_TTL_MS = 2 * 60 * 1000;
 
+/**
+ * Tolerância de clock skew entre máquinas (#5161 fleet review item 2).
+ * `listActiveSessions` e `acquireMergeLock` comparam timestamps ESCRITOS por
+ * uma máquina contra o relógio de QUEM LÊ — se os relógios não estão
+ * perfeitamente sincronizados (NTP), um timestamp genuinamente recente pode
+ * parecer "no futuro" pra quem lê. Um delta pequeno (≤60s) é tratado como
+ * jitter normal, nunca como sinal de corrupção/abandono. Um delta MAIOR que
+ * isso ainda é tratado com segurança (nunca finge que um registro que parece
+ * "do futuro" está abandonado/roubável), mas gera um warning em stderr — ver
+ * `warnClockSkew` — porque não é mais jitter, pode ser skew real entre
+ * máquinas que vale a pena investigar.
+ */
+export const CLOCK_SKEW_TOLERANCE_MS = 60 * 1000;
+
+/**
+ * Loga (stderr, nunca lança) um aviso de possível clock skew — usado sempre
+ * que um timestamp "no futuro" (relativo ao relógio de quem lê) influencia
+ * uma decisão de staleness/freshness em `listActiveSessions`/
+ * `acquireMergeLock`. Nunca silencioso: um relógio adiantado numa máquina
+ * pode fazer sessões/locks genuinamente ativos desaparecerem/serem roubados
+ * sem aviso nenhum se isto não for logado (#5161 item 2).
+ */
+function warnClockSkew(context: string, identifier: string, deltaMs: number): void {
+  try {
+    process.stderr.write(
+      `session-registry: aviso de possível clock skew em ${context} — "${identifier}" tem timestamp ` +
+        `~${Math.round(-deltaMs / 1000)}s no "futuro" relativo ao relógio de quem lê (delta=${deltaMs}ms). ` +
+        "Se as máquinas envolvidas não estão sincronizadas via NTP, isto pode estar mascarando/excluindo " +
+        "uma sessão ou lock genuinamente ativo. Ver CLOCK_SKEW_TOLERANCE_MS em scripts/lib/session-registry.ts.\n",
+    );
+  } catch {
+    // Nunca deixar um log de warning derrubar o caminho fail-soft principal.
+  }
+}
+
 /** Sanitiza o hostname pra um nome de arquivo seguro. Nunca lança — "unknown" em falha. */
 export function machineTag(): string {
   try {
@@ -119,11 +154,48 @@ export function mergeLockPath(repoRoot: string): string {
   return join(sessionsDir(repoRoot), ".merge-lock.json");
 }
 
+/**
+ * Loga (stderr, nunca lança) uma falha de I/O real lendo `path` — distinta de
+ * "arquivo ausente" (ENOENT, silencioso — caso comum e esperado) ou "JSON
+ * malformado" (também silencioso — arquivo de outra sessão só parcialmente
+ * escrito, não é um sinal de bug). `data/` é uma junction OneDrive: erros
+ * como EBUSY/EPERM/EACCES são REALISTAMENTE transitórios (sync em andamento),
+ * não "o arquivo nunca existiu" — tratar os dois casos como indistinguíveis
+ * (#5161 fleet review item 3) enfraquece tanto `listActiveSessions` quanto
+ * `acquireMergeLock`: um lock/sessão de OUTRA sessão que falhou por I/O
+ * transitório vira "ausente" e é ignorado/roubado sem aviso nenhum.
+ */
+function warnIoError(path: string, error: unknown): void {
+  try {
+    const code = (error as NodeJS.ErrnoException)?.code ?? (error as Error)?.message ?? String(error);
+    process.stderr.write(
+      `session-registry: falha de I/O lendo "${path}" (${code}) — tratando como ausente por segurança (fail-soft), ` +
+        "mas isto pode ser TRANSITÓRIO (ex: OneDrive sincronizando o arquivo agora), não uma ausência real. " +
+        "Se isto se repetir para o mesmo path, investigar antes de confiar na leitura.\n",
+    );
+  } catch {
+    // Nunca deixar um log de warning quebrar o caminho fail-soft.
+  }
+}
+
 function readJsonSafe<T>(path: string): T | null {
+  let raw: string;
   try {
     if (!existsSync(path)) return null;
-    return JSON.parse(readFileSync(path, "utf8")) as T;
+    raw = readFileSync(path, "utf8");
+  } catch (e) {
+    // ENOENT aqui (arquivo removido entre o existsSync e o readFileSync,
+    // corrida benigna) é equivalente a "ausente" — silencioso, igual antes.
+    // Qualquer OUTRO código (EBUSY/EPERM/EACCES/etc) é uma falha de I/O real
+    // que merece ficar visível, não se disfarçar de "nunca existiu".
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") warnIoError(path, e);
+    return null;
+  }
+  try {
+    return JSON.parse(raw) as T;
   } catch {
+    // JSON malformado — comportamento pré-existente preservado (silencioso):
+    // não é uma falha de I/O, é conteúdo genuinamente inválido.
     return null;
   }
 }
@@ -213,7 +285,16 @@ export function listActiveSessions(
     const heartbeatMs = Date.parse(heartbeatIso ?? "");
     if (!Number.isFinite(heartbeatMs)) continue;
     const ageMs = now - heartbeatMs;
-    if (ageMs < 0 || ageMs > maxAgeMs) continue;
+    // #5161 item 2: idade "no futuro" além da tolerância de clock skew é
+    // excluída (nunca finge que uma sessão stale/corrompida está ativa) MAS
+    // fica visível via warning — nunca um descarte silencioso. Idade
+    // pequena no futuro (dentro da tolerância) é jitter normal entre
+    // máquinas e conta como ativa normalmente, sem log.
+    if (ageMs < -CLOCK_SKEW_TOLERANCE_MS) {
+      warnClockSkew("listActiveSessions", name, ageMs);
+      continue;
+    }
+    if (ageMs > maxAgeMs) continue;
     out.push(record);
   }
   return out;
@@ -266,6 +347,42 @@ export function isIssueClaimedByOther(
 }
 
 /**
+ * Primitivas de I/O usadas por `acquireMergeLock` — injetáveis pra teste
+ * (mesmo padrão de `execFn` em `.claude/hooks/pr-create-review.mjs`). O
+ * default (`REAL_MERGE_LOCK_IO`) usa `node:fs` de verdade; testes injetam um
+ * "disco" fake em memória pra simular INTERCALAÇÃO real entre duas sessões
+ * concorrentes (coisa que chamadas sequenciais dentro de um único processo
+ * Node — de propósito single-threaded — não conseguem exercitar sozinhas).
+ */
+export interface MergeLockIo {
+  /**
+   * Cria `path` com `data` de forma EXCLUSIVA — só sucede se `path` ainda não
+   * existir. Retorna `true` em criação, `false` em `EEXIST` (path já existe).
+   * Qualquer outro erro de I/O deve ser relançado (o caller decide).
+   */
+  tryCreateExclusive: (path: string, data: string) => boolean;
+  /** Lê e parseia `path`; `null` em qualquer falha (ausente/corrompido). */
+  readCurrent: (path: string) => MergeLockRecord | null;
+  /** Sobrescreve `path` com `data`, sem exclusividade. */
+  overwrite: (path: string, data: string) => void;
+}
+
+const REAL_MERGE_LOCK_IO: MergeLockIo = {
+  tryCreateExclusive: (path, data) => {
+    try {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, data, { flag: "wx" });
+      return true;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException)?.code === "EEXIST") return false;
+      throw e;
+    }
+  },
+  readCurrent: (path) => readJsonSafe<MergeLockRecord>(path),
+  overwrite: (path, data) => writeJsonSafe(path, JSON.parse(data)),
+};
+
+/**
  * Adquire o lock global de merge (item 4 do #5156) — serializa `gh pr merge` +
  * `git pull` entre sessões concorrentes (mesma máquina ou não, `data/` é
  * OneDrive compartilhado). TTL curto: um lock mais velho que
@@ -273,25 +390,84 @@ export function isIssueClaimedByOther(
  * segurando o lock) e liberado automaticamente pro próximo adquirente —
  * nunca trava a máquina pra sempre.
  *
+ * **#5161 fleet review item 1 (CRÍTICO):** a versão anterior fazia
+ * read→check→write sem NENHUMA primitiva atômica — duas sessões podiam ler
+ * "sem lock" simultaneamente e ambas escreverem, ambas recebendo `true`,
+ * quebrando a exclusão mútua que é o propósito inteiro deste mecanismo
+ * (exatamente o cenário cross-máquina via `data/` OneDrive que o #5156
+ * existe pra proteger). Fix em duas partes:
+ *   1. **Fast path (caso comum — nenhum lock existe ainda):** criação
+ *      exclusiva atômica (`writeFileSync(path, data, { flag: "wx" })`, que
+ *      mapeia pra `O_CREAT | O_EXCL` no SO). Esta é a ÚNICA primitiva deste
+ *      arquivo com garantia real de atomicidade sob concorrência genuína —
+ *      o kernel garante que, entre N chamadas concorrentes de processos
+ *      DIFERENTES contra o MESMO path ausente, no máximo UMA pode suceder.
+ *      Nenhuma coordenação em memória deste arquivo entra nessa garantia.
+ *   2. **Caso raro — lock existe mas expirou (TTL, coordenador crashou):**
+ *      plain `fs` não oferece um "substituir só se o conteúdo não mudou
+ *      desde que eu li" (compare-and-swap) sem uma lib de lock externa que
+ *      este repo não usa. Mitigação: sobrescrever e então RELER
+ *      imediatamente pra verificar se a escrita que está no disco agora é
+ *      de fato a NOSSA (`heldBy === sessionId`) — se não for, outra sessão
+ *      venceu a corrida, retorna `false`. Isto fecha o caso mais comum do
+ *      bug original (nenhuma verificação pós-escrita nenhuma — sempre
+ *      retornava `true` incondicionalmente). Continua existindo uma janela
+ *      residual estreita (o ciclo inteiro de OUTRA sessão completar entre a
+ *      nossa PRÓPRIA leitura de decisão e a nossa PRÓPRIA escrita) — dado
+ *      que este é o caminho raro (requer um crash prévio E uma corrida bem
+ *      no instante de expiração do TTL), a mitigação abaixo é
+ *      deliberadamente proporcional ao risco, não uma prova de CAS perfeito.
+ *
  * Retorna `true` quando o lock foi adquirido (ou já era desta mesma sessão —
  * reentrante, idempotente), `false` quando outra sessão o segura e ainda
- * está dentro do TTL.
+ * está dentro do TTL (ou quando perdemos a corrida de contestação acima).
  */
 export function acquireMergeLock(
   repoRoot: string,
   sessionId: string,
   now: number = Date.now(),
   ttlMs: number = MERGE_LOCK_TTL_MS,
+  io: MergeLockIo = REAL_MERGE_LOCK_IO,
 ): boolean {
   const path = mergeLockPath(repoRoot);
-  const current = readJsonSafe<MergeLockRecord>(path);
-  if (current && current.heldBy !== sessionId) {
-    const acquiredMs = Date.parse(current.acquiredAt);
-    const stillFresh = Number.isFinite(acquiredMs) && now - acquiredMs >= 0 && now - acquiredMs <= ttlMs;
-    if (stillFresh) return false; // outra sessão segura o lock, dentro do TTL
+  const data = JSON.stringify({ heldBy: sessionId, acquiredAt: new Date(now).toISOString() } satisfies MergeLockRecord);
+
+  // Fast path: nenhum lock existia — criação exclusiva atômica (ver docblock).
+  try {
+    if (io.tryCreateExclusive(path, data)) return true;
+  } catch {
+    // Erro de I/O inesperado (não-EEXIST) — nunca assumir que adquirimos o
+    // lock sobre um estado que não conseguimos nem determinar.
+    return false;
   }
-  writeJsonSafe(path, { heldBy: sessionId, acquiredAt: new Date(now).toISOString() } satisfies MergeLockRecord);
-  return true;
+
+  const current = io.readCurrent(path);
+  if (current && current.heldBy === sessionId) {
+    io.overwrite(path, data); // reentrante: refresca o próprio lock (estende o TTL)
+    return true;
+  }
+  if (current) {
+    const acquiredMs = Date.parse(current.acquiredAt);
+    if (Number.isFinite(acquiredMs)) {
+      const ageMs = now - acquiredMs;
+      // #5161 item 2: idade negativa (lock "no futuro" pro nosso relógio) NUNCA
+      // é tratada como "abandonado" — um clock adiantado em OUTRA máquina não
+      // pode fazer um lock genuinamente fresco parecer roubável. Só logamos
+      // quando o delta passa da tolerância de jitter normal (potencial skew
+      // real entre máquinas, vale investigar); dentro da tolerância é
+      // silencioso, é só o lock sendo tratado como fresco mesmo.
+      if (ageMs < -CLOCK_SKEW_TOLERANCE_MS) warnClockSkew("acquireMergeLock", `lock de ${current.heldBy}`, ageMs);
+      if (ageMs <= ttlMs) return false; // ainda dentro do TTL (com folga de tolerância) — outra sessão segura de verdade
+    }
+    // acquiredAt ilegível (campo corrompido, mas JSON válido) — cai pro
+    // tratamento de "stale" abaixo, mesma política de antes.
+  }
+
+  // Stale (TTL expirado) ou corrompido/ilegível: contesta. Não-atômico — ver
+  // docblock acima pro racional e a janela residual aceita.
+  io.overwrite(path, data);
+  const verify = io.readCurrent(path);
+  return verify?.heldBy === sessionId;
 }
 
 /**
