@@ -40,4 +40,5 @@ export const HUB_META: readonly HubMeta[] = [
   { slug: "google-gemini", label: "Google e Gemini" },
   { slug: "meta-ai", label: "Meta e Meta AI" },
   { slug: "brasil-regulacao", label: "Regulação de IA no Brasil" },
+  { slug: "mercado-trabalho", label: "Mercado de trabalho e IA" },
 ];

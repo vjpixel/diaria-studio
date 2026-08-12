@@ -445,6 +445,14 @@ export const HUB_BRASIL_REGULACAO_FOOTER_NAV_UTM = {
   medium: "footer-nav",
 } as const;
 
+/** Mesmo padrão acima, pro 6º hub temático publicado — 2º hub TEMÁTICO
+ * transversal (regulação foi o 1º): impacto da IA no mercado de trabalho
+ * (`scripts/lib/hubs/mercado-trabalho.ts`, #4558). */
+export const HUB_MERCADO_TRABALHO_FOOTER_NAV_UTM = {
+  source: "hub-mercado-trabalho",
+  medium: "footer-nav",
+} as const;
+
 /** Link "Arquivo completo em {url}" do post semanal do Instagram
  * (`scripts/lib/format-weekly-social.ts`, #4537 item 1) — o #4295 cobriu os
  * links que a pipeline DIÁRIA publica; o post semanal ficou fora do escopo
@@ -1107,6 +1115,18 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     description:
       'Link "diar.ia.br" no rodapé de navegação cruzada do hub temático Regulação de IA ' +
       "no Brasil (#4558, 5º hub temático — 1º TEMÁTICO transversal, sessão develop 260811).",
+    status: "ativo",
+  },
+  {
+    id: "hub-mercado-trabalho-footer-nav",
+    label: "Hub Mercado de trabalho e IA — link de rodapé pra diar.ia.br",
+    source: HUB_MERCADO_TRABALHO_FOOTER_NAV_UTM.source,
+    medium: HUB_MERCADO_TRABALHO_FOOTER_NAV_UTM.medium,
+    campaignPattern: "hub-mercado-trabalho-footer-nav",
+    originFile: "scripts/lib/hubs/mercado-trabalho.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada do hub temático Mercado de trabalho ' +
+      "e IA (#4558, 6º hub temático — 2º TEMÁTICO transversal, sessão develop 260812).",
     status: "ativo",
   },
 ] as const;
