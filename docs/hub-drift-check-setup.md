@@ -46,12 +46,14 @@ Fingerprint do conjunto de hubs pendentes (`data/hub-drift-check/state.json`, me
 
 ## Setup (ação local one-time do editor — NÃO feito nesta unidade)
 
-Requer Windows + Task Scheduler + `data/.credentials.json` com o scope `gmail.send` (mesmo requisito dos outros alarmes locais deste repo, `npx tsx scripts/oauth-setup.ts` se ainda não tiver esse scope) — só necessário pra **enviar** o alarme quando há drift; a checagem HTTP em si é um `GET` público, sem credencial nenhuma. **Não** requer o junction `data/` para ler `HUB_META` (módulo do repo, local ao checkout) — só precisa dele para persistir `data/hub-drift-check/state.json` (idempotência).
+Requer Linux/systemd + `data/.credentials.json` com o scope `gmail.send` (mesmo requisito dos outros alarmes locais deste repo, `npx tsx scripts/oauth-setup.ts` se ainda não tiver esse scope) — só necessário pra **enviar** o alarme quando há drift; a checagem HTTP em si é um `GET` público, sem credencial nenhuma. **Não** requer o junction `data/` para ler `HUB_META` (módulo do repo, local ao checkout) — só precisa dele para persistir `data/hub-drift-check/state.json` (idempotência). O antigo `.ps1` de setup do Windows foi removido no #5115 (cutover final).
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-hub-drift-check-schedule.ps1
+```bash
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Hub-Drift-Check
+systemctl --user daemon-reload
+systemctl --user enable --now diaria-hub-drift-check.timer
 ```
 
-Isso registra a task `Diaria-Hub-Drift-Check` (a cada 6h). Idempotente — re-executar atualiza a task. Remover: mesmo comando com `-Unregister`.
+Isso registra a task `Diaria-Hub-Drift-Check` (a cada 6h). Idempotente — re-executar regenera os units. Remover: `systemctl --user disable --now diaria-hub-drift-check.timer`.
 
 **Nenhuma execução ao vivo desta checagem rodou nesta unidade** (worktree isolado, sem acesso ao Task Scheduler real nem a `data/.credentials.json` reais, e a URL de produção não foi batida repetidamente em teste por decisão explícita do dispatch) — validado só via testes da lógica pura + fetch mockado (`test/hub-drift-check.test.ts`, `test/hub-drift-check-script.test.ts`), mesma disciplina do #4320/#4382/#4490/#4534/#4723/#4740.

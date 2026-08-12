@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# setup-studio-service-linux.sh (#4808, fatia Linux do epic Studio UI #3554,
-# espelha scripts/studio/setup-studio-service.ps1 do Windows)
+# setup-studio-service-linux.sh (#4808, fatia Linux do epic Studio UI #3554;
+# o par Windows setup-studio-service.ps1 foi removido no #5115, cutover final)
 #
 # Registra (ou remove) um user systemd service "diaria-studio-server" que
 # mantém o studio-server (scripts/studio-ui/server.ts, http://127.0.0.1:4174)

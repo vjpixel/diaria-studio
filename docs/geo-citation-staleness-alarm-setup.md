@@ -4,9 +4,9 @@ Issue: [#4755](https://github.com/vjpixel/diaria-studio/issues/4755) (achado do 
 
 O monitor semanal de citação GEO (`geo-citation-monitor.ts`, task `Diaria-Geo-Citation-Monitor`, domingos 07:00) registra em `data/geo-citations/history.jsonl` se `diar.ia.br` foi citada pelos assistentes de IA configurados. Mas nada avisava quando essa task **para de produzir medição** — task desabilitada manualmente, task removida, máquina do editor fora do ar por semanas, ou todo provider (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`GEMINI_API_KEY`) sem key configurada. Todos esses motivos colapsam no MESMO sintoma observável: `history.jsonl` para de crescer.
 
-## Por que não basta `test/pending-scheduled-tasks.test.ts`
+## Por que não basta checar se a task está registrada
 
-Aquele guard descobre a task `Diaria-Geo-Citation-Monitor` pelo NOME (`Get-ScheduledTask -TaskName 'Diaria-*'`) — cobre só o registro INICIAL da task no Task Scheduler. Ele nunca checa `State` (Enabled/Disabled) nem `LastTaskResult`: uma task registrada e depois desabilitada passa nele em silêncio, para sempre. Este alarme olha o SINTOMA (o histórico parado), não o registro da task — por isso pega os 4 motivos citados acima com o mesmo mecanismo, sem precisar distinguir qual deles está acontecendo.
+Um guard que só confirma "a task existe no agendador" cobre só o registro INICIAL — não checa se ela está habilitada nem se a última execução teve sucesso: uma task registrada e depois desabilitada (ou um timer systemd parado) passa nesse tipo de checagem em silêncio, para sempre. Este alarme olha o SINTOMA (o histórico parado), não o registro da task — por isso pega os 4 motivos citados acima com o mesmo mecanismo, sem precisar distinguir qual deles está acontecendo. (`scripts/lib/pending-scheduled-tasks.ts`, que fazia esse tipo de checagem por registro contra os antigos `.ps1` do Windows, foi removido no #5115 — cutover final, nenhuma tarefa `Diaria-*` roda mais no Windows.)
 
 ## Como funciona (2 peças)
 
@@ -25,20 +25,22 @@ Aquele guard descobre a task `Diaria-Geo-Citation-Monitor` pelo NOME (`Get-Sched
 
 ## O que fazer quando o alarme dispara
 
-1. Confira `Get-ScheduledTask -TaskName 'Diaria-Geo-Citation-Monitor' | Get-ScheduledTaskInfo` — a task está `Enabled`? Quando foi o último `LastRunTime`?
+1. Confira `systemctl --user status diaria-geo-citation-monitor.timer` — a task está ativa? Quando foi o último disparo (`systemctl --user list-timers diaria-geo-citation-monitor.timer`)?
 2. Confira `data/geo-citations/.monitor.log` (log da própria task do monitor) pelas últimas execuções.
 3. Confirme que ao menos um provider está configurado: `npx tsx scripts/geo-citation-monitor.ts --dry-run` reporta quais tem API key, sem gastar nenhuma chamada de rede.
-4. Se a task foi desabilitada manualmente, reabilite com `Enable-ScheduledTask -TaskName 'Diaria-Geo-Citation-Monitor'`. Se foi removida, re-registre com `scripts/setup-geo-citation-monitor-schedule.ps1`.
+4. Se a task foi desabilitada manualmente, reabilite com `systemctl --user enable --now diaria-geo-citation-monitor.timer`. Se foi removida, re-registre com `npx tsx scripts/setup-systemd-timers.ts --task Diaria-Geo-Citation-Monitor`.
 5. Depois do fix, a próxima run do monitor que escrever um registro novo tira o histórico da zona de staleness automaticamente — nenhuma limpeza manual de estado necessária.
 
 ## Setup (ação local one-time do editor — NÃO feito nesta unidade)
 
-Requer Windows + Task Scheduler + junction `data/` (OneDrive) + `data/.credentials.json` com o scope `gmail.send` (mesmo requisito dos outros alarmes locais deste repo). **Não** requer nenhuma das API keys de provider GEO. Independente da task `Diaria-Geo-Citation-Monitor` já estar armada ou não — sem ela, este alarme só vai ler `history.jsonl` ausente e alarmar "nunca registrou nenhuma medição", que é exatamente o sinal correto nesse caso.
+Requer Linux/systemd + junction `data/` (OneDrive) + `data/.credentials.json` com o scope `gmail.send` (mesmo requisito dos outros alarmes locais deste repo). **Não** requer nenhuma das API keys de provider GEO. Independente da task `Diaria-Geo-Citation-Monitor` já estar armada ou não — sem ela, este alarme só vai ler `history.jsonl` ausente e alarmar "nunca registrou nenhuma medição", que é exatamente o sinal correto nesse caso. O antigo `.ps1` do Windows foi removido no #5115 (cutover final).
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-geo-citation-staleness-alarm-schedule.ps1
+```bash
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Geo-Citation-Staleness-Alarm
+systemctl --user daemon-reload
+systemctl --user enable --now diaria-geo-citation-staleness-alarm.timer
 ```
 
-Isso registra a task `Diaria-Geo-Citation-Staleness-Alarm` (semanal, domingos 10:30 — mudou de segundas 14:00, decisão do editor 260810; 3h30 depois do monitor das 07:00). Idempotente — re-executar atualiza a task. Remover: mesmo comando com `-Unregister`.
+Isso registra a task `Diaria-Geo-Citation-Staleness-Alarm` (semanal, domingos 10:30 — mudou de segundas 14:00, decisão do editor 260810; 3h30 depois do monitor das 07:00). Idempotente — re-executar regenera os units. Remover: `systemctl --user disable --now diaria-geo-citation-staleness-alarm.timer`.
 
 **Registro da task + 1ª execução ao vivo não feitos nesta unidade** (worktree isolado, sem Task Scheduler real nem `data/.credentials.json`/Gmail ao vivo, mesma disciplina do #4320/#4382/#4490/#4534/#4723). Validado só via testes da lógica pura + do reader string-safe (`test/geo-citation-staleness-alarm.test.ts`).

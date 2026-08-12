@@ -20,8 +20,9 @@
  * fatia, opcional").
  *
  * **Toda a lógica de estado vem de `scripts/lib/scheduled-task-status.ts`**
- * (novo nesta unidade, generaliza `check-watchdog-armed.ts` +
- * `pending-scheduled-tasks.ts` em vez de reescrever) — este arquivo só
+ * (novo nesta unidade, generaliza `check-watchdog-armed.ts` em vez de
+ * reescrever — `pending-scheduled-tasks.ts`, a outra referência original,
+ * foi retirado no #5115 junto com os `.ps1` que consumia) — este arquivo só
  * itera `SCHEDULED_TASKS`, chama essas funções por task, e monta o
  * snapshot. Ver docstring de lá pro detalhe de CADA sinal (armada / última
  * execução / próxima prevista / atraso).

@@ -193,8 +193,8 @@ Apresentar ao editor:
 
 Invocação desta skill é manual — sem nenhuma automação, `apoio_nivel` só
 fica correto enquanto alguém lembrar de rodar. A task agendada
-`Diaria-Apoios-Diff-Alarm` (`scripts/setup-apoios-diff-alarm-schedule.ps1`,
-**registro real pendente pro editor** — ver seção de tasks no `CLAUDE.md`)
+`Diaria-Apoios-Diff-Alarm` (systemd, `scripts/lib/scheduled-tasks.ts` —
+ver seção de tasks no `CLAUDE.md`)
 roda diariamente só o DRY-RUN (`scripts/apoios-diff-alarm.ts`) e manda um
 e-mail ao editor quando há diff pendente (adições/trocas/remoções) — nunca
 `--push` automático, o gate humano desta skill (Passo 3) continua sendo a

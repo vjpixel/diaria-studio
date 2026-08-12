@@ -10,7 +10,7 @@ O envio diário do canal `brevo_diaria` (`scripts/publish-daily-brevo.ts`) mira 
 
 ## O que a task faz
 
-`scripts/run-evaluate-brevo-diaria.ps1` roda `npx tsx scripts/evaluate-brevo-diaria.ts --push` — o fluxo **completo** já aprovado no desenho da #4476 (não reaberto aqui):
+A task `Diaria-Brevo-Diaria-Evaluate` (`scripts/lib/scheduled-tasks.ts`) roda `npx tsx scripts/evaluate-brevo-diaria.ts --push` — o fluxo **completo** já aprovado no desenho da #4476 (não reaberto aqui):
 
 1. **Descadastro nativo** (Passo 0) — contato que clicou no opt-out do bloco de intro (`emailBlacklisted: true` na Brevo) é reconhecido como saída terminal e a Beehiiv é atualizada em paralelo (`unsubscribe: true`, #4538).
 2. **Auto-confirmação** (Passo 1) — contato que confirmou o double opt-in da Beehiiv por conta própria nesse meio-tempo é promovido, independente da taxa de abertura.
@@ -43,22 +43,24 @@ diário serviria igualmente bem para o propósito de higiene contínua — ver
 
 ## Fuso horário
 
-A task usa o fuso local da máquina. Confirmar `Get-TimeZone` = America/Sao_Paulo (BRT) antes de confiar no agendamento; se a máquina não estiver em BRT, ajustar o horário em `setup-evaluate-brevo-diaria-schedule.ps1`. Isso é ainda mais crítico aqui do que em `docs/scheduled-edicao-setup.md`/`docs/dashboard-schedule.md` — o evaluate precisa disparar estritamente ANTES das 06:00 BRT do envio canônico (ver seção anterior).
+`scheduleToOnCalendar` (`scripts/lib/systemd-units.ts`) já embute `America/Sao_Paulo` (BRT) explicitamente no `OnCalendar=` gerado — não depende do fuso do sistema. Isso é ainda mais crítico aqui do que em `docs/scheduled-edicao-setup.md`/`docs/dashboard-schedule.md` — o evaluate precisa disparar estritamente ANTES das 06:00 BRT do envio canônico (ver seção anterior).
 
 ## Setup (ação local one-time do editor — NÃO feito nesta sessão)
 
-Requer Windows + Task Scheduler + o junction `data/` (OneDrive) + `BREVO_DIARIA_API_KEY` + `BEEHIIV_API_KEY` (+ opcional `BEEHIIV_PUBLICATION_ID`, fallback `platform.config.json`).
+Requer Linux/systemd + o junction `data/` (OneDrive) + `BREVO_DIARIA_API_KEY` + `BEEHIIV_API_KEY` (+ opcional `BEEHIIV_PUBLICATION_ID`, fallback `platform.config.json`). O antigo `.ps1` do Windows foi removido no #5115 (cutover final).
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-evaluate-brevo-diaria-schedule.ps1
+```bash
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Brevo-Diaria-Evaluate
+systemctl --user daemon-reload
+systemctl --user enable --now diaria-brevo-diaria-evaluate.timer
 ```
 
-Isso registra a task `Diaria-Brevo-Diaria-Evaluate` (diária, 05:30). Idempotente — re-executar atualiza a task. Remover: mesmo comando com `-Unregister`.
+Isso registra a task `Diaria-Brevo-Diaria-Evaluate` (diária, 05:30). Idempotente — re-executar regenera os units. Remover: `systemctl --user disable --now diaria-brevo-diaria-evaluate.timer`.
 
 ### Verificar a task registrada
 
-```powershell
-Get-ScheduledTask -TaskName "Diaria-Brevo-Diaria-Evaluate" | Get-ScheduledTaskInfo
+```bash
+systemctl --user list-timers diaria-brevo-diaria-evaluate.timer
 ```
 
 ### Antes de confiar na task em produção
@@ -83,15 +85,15 @@ npx tsx scripts/evaluate-brevo-diaria.ts
 
 ## Follow-up explícito deste PR
 
-Nem o registro da task no Task Scheduler nem a 1ª execução `--push` ao vivo foram feitos nesta sessão — o dispatch rodou num worktree isolado, sem acesso ao Task Scheduler real da máquina do editor nem a credenciais `BREVO_DIARIA_API_KEY`/`BEEHIIV_API_KEY` ao vivo (mesma disciplina de #4320/#4382/#4490). **Ação pendente do editor pós-merge:** rodar o `setup-evaluate-brevo-diaria-schedule.ps1` acima e, antes de confiar na task, o `--push` manual descrito nesta seção.
+Nem o registro da task no systemd nem a 1ª execução `--push` ao vivo foram feitos nesta sessão — o dispatch rodou num worktree isolado, sem acesso ao agendador real da máquina do editor nem a credenciais `BREVO_DIARIA_API_KEY`/`BEEHIIV_API_KEY` ao vivo (mesma disciplina de #4320/#4382/#4490). **Ação pendente do editor pós-merge:** rodar os comandos `setup-systemd-timers.ts`/`systemctl` acima e, antes de confiar na task, o `--push` manual descrito nesta seção.
 
 ## Arquivos
 
 | Arquivo | Função |
 |---|---|
 | `scripts/evaluate-brevo-diaria.ts` | Lógica de avaliação (descadastro nativo + auto-confirmação + score) |
-| `scripts/run-evaluate-brevo-diaria.ps1` | Wrapper de log resiliente pro Task Scheduler |
-| `scripts/setup-evaluate-brevo-diaria-schedule.ps1` | Setup/remoção da task no Task Scheduler |
+| `scripts/lib/task-runner.ts` | Executor da task agendada (log resiliente + exit code honesto) |
+| `scripts/lib/scheduled-tasks.ts` | Registro declarativo (schedule, steps) da task `Diaria-Brevo-Diaria-Evaluate` |
 | `docs/evaluate-brevo-diaria-setup.md` | Esta documentação |
 | `test/evaluate-brevo-diaria-4266.test.ts` | Testes de regressão da lógica de avaliação (#633) |
-| `test/run-evaluate-brevo-diaria-ps1.test.ts` | Testes de regressão do wrapper `.ps1` (log resiliente + exit code honesto) |
+| `test/task-runner.test.ts` | Testes de regressão do executor (log resiliente + exit code honesto) |

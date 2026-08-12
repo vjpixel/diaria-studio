@@ -74,8 +74,9 @@
  * configurada" é mesmo um estado válido e o comportamento acima é deliberado
  * (#4616). Já no caminho AGENDADO o mesmo exit 0 vira mentira — a task
  * reportaria verde para sempre enquanto `history.jsonl` congelava, que é o
- * modo de falha que deixou este monitor inerte por semanas. Quem liga é
- * `run-geo-citation-monitor.ps1`, e só ele.
+ * modo de falha que deixou este monitor inerte por semanas. Quem liga é o
+ * step `monitor`/`monitor-hubs` de `Diaria-Geo-Citation-Monitor`
+ * (`scripts/lib/scheduled-tasks.ts`, via `scripts/run-task.ts`), e só ele.
  */
 import "dotenv/config";
 import { existsSync, readFileSync, readdirSync } from "node:fs";

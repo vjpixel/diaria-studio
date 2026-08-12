@@ -45,7 +45,7 @@ Reconsultar `GET /api/campaigns` ao vivo seria uma 2ª fonte de verdade — e um
 
 Requer `data/.credentials.json` com o scope `gmail.send` (mesmo requisito dos outros alarmes locais deste repo) — só necessário pra **enviar** o alarme quando há falha; a leitura dos relatórios em si não precisa de credencial nenhuma. Requer o junction `data/` (OneDrive) — o guard de registro (`requiredFile: clarice-subscribers/clarice-users.db`) já cobre isso: sem o junction montado, a task aborta cedo em vez de mandar um "nenhum relatório encontrado" enganoso numa máquina que nunca roda o `Diaria-Clarice-Envio` de qualquer forma.
 
-Windows (Task Scheduler) — **não existe** `.ps1` de setup pra esta task (ver nota abaixo). Linux/systemd (molde da épica #4798, cutover já concluído):
+Linux/systemd (molde da épica #4798, cutover já concluído — desde o #5115 é a única via, nenhuma tarefa `Diaria-*` roda no Windows):
 
 ```bash
 npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Envio-Alarm
@@ -55,6 +55,6 @@ systemctl --user enable --now diaria-clarice-envio-alarm.timer
 
 Isso registra a task `Diaria-Clarice-Envio-Alarm` (diária, 20:30 BRT). Idempotente — re-rodar o `setup-systemd-timers.ts` regenera os units sem duplicar.
 
-**Por que não tem `.ps1` de setup:** mesmo padrão de `Diaria-Beehiiv-Home-Meta-Check` (#5005, 1ª task registrada depois do cutover pra systemd, épica #4798) — o campo `legacySetupScript` é opcional desde então, e esta task não tem contraparte Windows/Task Scheduler por decisão explícita de não criar mais `.ps1` como via de execução real. Um editor em máquina Windows que ainda dependa do Task Scheduler pro resto das tasks precisa rodar esta via WSL/systemd, ou aguardar uma via Windows nativa dedicada (fora de escopo desta unidade).
+**Por que nunca teve `.ps1` de setup:** mesmo padrão de `Diaria-Beehiiv-Home-Meta-Check` (#5005, 1ª task registrada depois do cutover pra systemd, épica #4798) — nasceu sem contraparte Windows/Task Scheduler, por decisão explícita de não criar mais `.ps1` como via de execução real. Os `.ps1` das demais tasks (que tinham nascido antes do cutover) foram removidos no #5115.
 
 **Nenhuma execução ao vivo desta checagem rodou nesta unidade** (worktree isolado, sem `data/.credentials.json` real; e a regra de dispatch overnight #738/#3453 proíbe qualquer chamada de rede real nesta sessão) — validado só via testes com a lógica pura + I/O de arquivo local em diretório temporário (`test/clarice-envio-alarm.test.ts`, `test/clarice-envio-alarm-script.test.ts`) e via `test/scheduled-tasks.test.ts` (estrutura do registro), mesma disciplina do #4320/#4382/#4490/#4534/#4723/#4750/#4910/#5005.

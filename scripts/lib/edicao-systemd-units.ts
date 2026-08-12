@@ -17,8 +17,7 @@
  * manualmente ou por uma run anterior), o runner pula sem invocar `claude`
  * (ver docstring de `scripts/overnight/run-scheduled-edicao.ts`).
  *
- * @see scripts/overnight/setup-edicao-schedule.ps1 (par Windows)
- * @see scripts/overnight/setup-edicao-schedule-systemd.ts (CLI que consome este módulo)
+ * @see scripts/overnight/setup-edicao-schedule-systemd.ts (CLI que consome este módulo — par Windows removido no #5115)
  * @see scripts/lib/systemd-units.ts (par genérico do registry — mesmo formato de saída)
  * @see scripts/overnight/run-scheduled-edicao.ts (script que os units invocam)
  * @see docs/scheduled-edicao-setup.md

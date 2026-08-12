@@ -10,9 +10,9 @@ tendência sobre GEO (Generative Engine Optimization).
 ## Por que a task existe
 
 O monitor foi mergeado no #4616 e ficou sem NUNCA ter rodado — `data/geo-citations/`
-não existia no disco até 07/ago, e nenhum `.ps1`/workflow/task o invocava,
-enquanto todas as outras tasks agendadas do repo já seguiam esse padrão. Sem
-cadência o histórico nunca acumula.
+não existia no disco até 07/ago, e nenhuma task agendada o invocava, enquanto
+todas as outras tasks agendadas do repo já seguiam esse padrão. Sem cadência o
+histórico nunca acumula.
 
 ## Baseline medido em 07/ago (histórico) — obsoleto desde 11/ago, ver abaixo
 
@@ -216,10 +216,12 @@ Erro de outra natureza nomeia a causa dominante (`HTTP 401 (8)`,
 
 ## Staleness
 
-O guard `test/pending-scheduled-tasks.test.ts` descobre esta task pelo nome,
-mas cobre só o registro inicial — não checa `State`/`LastTaskResult`. Uma
-task registrada e depois **desabilitada** passa nele em silêncio. O alarme
-que fecha essa lacuna é a #4755 — ver `docs/geo-citation-staleness-alarm-setup.md`.
+Um guard que só confirma "a task está registrada" cobre só o registro
+inicial — não checa `State`/`LastTaskResult`. Uma task registrada e depois
+**desabilitada** passa nele em silêncio. O alarme que fecha essa lacuna é a
+#4755 — ver `docs/geo-citation-staleness-alarm-setup.md`. (`scripts/lib/pending-scheduled-tasks.ts`,
+que fazia esse tipo de checagem contra os antigos `.ps1` do Windows, foi
+removido no #5115 — cutover final.)
 
 ## Painel temático, alarme de queda de provedor, aviso de conflito OneDrive (#4900)
 
@@ -253,21 +255,23 @@ cadência semanal — vive no corpo da própria issue, não duplicada aqui):
 ## Setup (ação local one-time do editor)
 
 `local` — precisa do junction `data/` (OneDrive) + ao menos UMA de
-`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`GEMINI_API_KEY`.
+`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`GEMINI_API_KEY`. O antigo `.ps1` do
+Windows foi removido no #5115 (cutover final).
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-geo-citation-monitor-schedule.ps1
+```bash
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Geo-Citation-Monitor
+systemctl --user daemon-reload
+systemctl --user enable --now diaria-geo-citation-monitor.timer
 ```
 
 Isso registra a task `Diaria-Geo-Citation-Monitor` (domingos 07:00).
-Idempotente — re-executar atualiza a task. Remover: mesmo comando com
-`-Unregister`.
+Idempotente — re-executar regenera os units. Remover:
+`systemctl --user disable --now diaria-geo-citation-monitor.timer`.
 
 **Task armada e confirmada ativa (#4901, 10/ago)** — `systemctl --user
 is-active diaria-geo-citation-monitor.timer` retorna `active`, com disparo
 real registrado em 10/ago 13:30 UTC e próximo agendado pra 17/ago. O comando
-de arme em si (`setup-geo-citation-monitor-schedule.ps1` no Windows,
-`scripts/setup-systemd-timers.ts` no Linux, via o registro declarativo
+de arme em si (`scripts/setup-systemd-timers.ts`, via o registro declarativo
 `scripts/lib/scheduled-tasks.ts`) **não roda em unidade de worktree isolado**
 (mesma disciplina do #4320/#4382/#4490/#4534/#4723, credencial/estado de
 máquina fica fora do worktree do subagente) — mas, diferente do estado

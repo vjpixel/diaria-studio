@@ -55,15 +55,15 @@ Fingerprint do conjunto de hosts pendentes (`data/robots-txt-drift-check/state.j
 
 ## Setup (ação local one-time do editor — NÃO feito nesta unidade)
 
-Requer Windows + Task Scheduler + `data/.credentials.json` com o scope `gmail.send` (mesmo requisito dos outros alarmes locais deste repo) — só necessário pra **enviar** o alarme quando há drift; a checagem HTTP em si é um `GET` público, sem credencial nenhuma. **Não** requer o junction `data/` para descobrir hosts (lê `workers/*/wrangler.toml`, local ao checkout) — só precisa dele para persistir `data/robots-txt-drift-check/state.json` (idempotência).
+Requer Linux/systemd + `data/.credentials.json` com o scope `gmail.send` (mesmo requisito dos outros alarmes locais deste repo) — só necessário pra **enviar** o alarme quando há drift; a checagem HTTP em si é um `GET` público, sem credencial nenhuma. **Não** requer o junction `data/` para descobrir hosts (lê `workers/*/wrangler.toml`, local ao checkout) — só precisa dele para persistir `data/robots-txt-drift-check/state.json` (idempotência). O antigo `.ps1` de setup do Windows foi removido no #5115 (cutover final).
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-robots-txt-drift-check-schedule.ps1
+```bash
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Robots-Txt-Drift-Check
+systemctl --user daemon-reload
+systemctl --user enable --now diaria-robots-txt-drift-check.timer
 ```
 
-Linux/systemd (molde da épica #4798): `npx tsx scripts/setup-systemd-timers.ts --task Diaria-Robots-Txt-Drift-Check` seguido de `systemctl --user daemon-reload && systemctl --user enable --now diaria-robots-txt-drift-check.timer`.
-
-Isso registra a task `Diaria-Robots-Txt-Drift-Check` (a cada 6h). Idempotente — re-executar atualiza a task. Remover (Windows): mesmo comando com `-Unregister`.
+Isso registra a task `Diaria-Robots-Txt-Drift-Check` (a cada 6h). Idempotente — re-executar regenera os units. Remover: `systemctl --user disable --now diaria-robots-txt-drift-check.timer`.
 
 **Nenhuma execução ao vivo desta checagem rodou nesta unidade** (worktree isolado, sem acesso ao Task Scheduler real nem a `data/.credentials.json` reais, e nenhum host de produção foi batido em teste por decisão explícita do dispatch) — validado só via testes da lógica pura + fetch mockado (`test/robots-txt-drift-check.test.ts`, `test/robots-txt-drift-check-script.test.ts`), mesma disciplina do #4320/#4382/#4490/#4534/#4723/#4750.
 

@@ -9,9 +9,10 @@ sobre 1 pessoa por vez).
 
 ## O que ele faz
 
-`scripts/run-check-brevo-diaria-guardrail.ps1` →
-`scripts/check-brevo-diaria-guardrail.ts`, rodando a cada 4h via Task
-Scheduler. Avalia a saúde AGREGADA (soma de todas as campanhas `sent` da
+Task `Diaria-Brevo-Diaria-Guardrail` (`scripts/lib/scheduled-tasks.ts`) →
+`scripts/check-brevo-diaria-guardrail.ts`, rodando a cada 4h via systemd (o
+antigo wrapper `.ps1` do Windows foi removido no #5115, cutover final).
+Avalia a saúde AGREGADA (soma de todas as campanhas `sent` da
 conta) contra os MESMOS limiares do ramp Clarice — abertura <15%, bounce
 duro ≥2%, bounce total ≥5%, spam ≥0,1%, unsub ≥3%
 (`scripts/lib/brevo-diaria-guardrail.ts`, reusa `evaluateArmGuardrails`/
@@ -47,12 +48,14 @@ reverte o estado já persistido.
 alarme por e-mail precisa também de `data/.credentials.json` com o scope
 `gmail.send` (best-effort sem ele).
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-check-brevo-diaria-guardrail-schedule.ps1
+```bash
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Brevo-Diaria-Guardrail
+systemctl --user daemon-reload
+systemctl --user enable --now diaria-brevo-diaria-guardrail.timer
 ```
 
 Isso registra a task `Diaria-Brevo-Diaria-Guardrail` (a cada 4h). Idempotente
-— re-executar atualiza a task. Remover: mesmo comando com `-Unregister`.
+— re-executar regenera os units. Remover: `systemctl --user disable --now diaria-brevo-diaria-guardrail.timer`.
 
 **Registro da task + 1ª execução ao vivo não feitos em nenhuma unidade de
 worktree isolado** (sem Task Scheduler real nem `BREVO_DIARIA_API_KEY` ao

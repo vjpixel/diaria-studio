@@ -9,9 +9,10 @@
  *      máquina (Windows Task Scheduler OU systemd, as duas coexistem entre
  *      as máquinas do editor). `queryTaskArmed`.
  *   2. **Última execução / resultado / trecho de log** — lido de
- *      `data/{logPath}` (formato compartilhado por TODO `.ps1` wrapper —
- *      diretamente ou via `scripts/lib/Invoke-DiariaScheduledWrapper.psm1`,
- *      #4756 — e por `scripts/lib/task-runner.ts`, #4805 Fase 2). `readTaskLastRun`.
+ *      `data/{logPath}` (formato historicamente compartilhado pelos `.ps1`
+ *      wrappers do Windows — diretamente ou via `Invoke-DiariaScheduledWrapper.psm1`,
+ *      #4756, ambos removidos no #5115 — e hoje escrito por
+ *      `scripts/lib/task-runner.ts`, #4805 Fase 2). `readTaskLastRun`.
  *   3. **Próxima execução prevista / atraso** — computado PURAMENTE a
  *      partir do `ScheduledTaskSchedule` declarado, sem depender do
  *      agendador real estar consultável (funciona mesmo quando (1) retornou
@@ -25,10 +26,9 @@
  *     e genéricas — zero mudança) pro caminho Windows; e `unitBaseName` de
  *     `systemd-units.ts` (mesmo helper que gera os `.timer`/.service`
  *     reais, #4805 Fase 3) pro caminho Linux/systemd.
- *   - (2)/(3) são domínio NOVO — nem `check-watchdog-armed.ts` (só sabe
+ *   - (2)/(3) são domínio NOVO — `check-watchdog-armed.ts` só sabe
  *     "presente + habilitada + último resultado NUMÉRICO do Task
- *     Scheduler") nem `pending-scheduled-tasks.ts` (só sabe "esperada ×
- *     registrada") jamais leram o CONTEÚDO de um log de task ou calcularam
+ *     Scheduler"; nunca leu o CONTEÚDO de um log de task ou calculou
  *     uma data futura a partir de um `ScheduledTaskSchedule` — não havia o
  *     que generalizar.
  *
@@ -37,11 +37,11 @@
  * nunca tenta inferir sucesso/falha do ÚLTIMO RUN a partir do Task
  * Scheduler (isso é o "last_run_failed"/"never_run" que
  * `classifyWatchdogTaskHealth` já sabe fazer, mas só pro watchdog em
- * Windows). "Resultado do último run" (2) vem inteiramente do LOG
- * (cross-platform por construção — o mesmo formato de log é escrito tanto
- * pelo `.ps1` no Windows quanto pelo `task-runner.ts` no Linux/systemd) —
- * essa é a fonte de verdade única sobre sucesso/falha/duração, nunca
- * duplicada por uma segunda leitura via `schtasks`.
+ * Windows). "Resultado do último run" (2) vem inteiramente do LOG (formato
+ * escrito por `task-runner.ts` no Linux/systemd, historicamente também
+ * pelo `.ps1` no Windows antes do #5115) — essa é a fonte de verdade única
+ * sobre sucesso/falha/duração, nunca duplicada por uma segunda leitura via
+ * `schtasks`.
  *
  * **Fail-soft honesto em toda função de I/O deste módulo** (mesmo padrão de
  * `check-watchdog-armed.ts`/`exec-mode.ts`): nenhuma lança; ausência de
@@ -49,9 +49,8 @@
  * ok" inventado.
  *
  * @see scripts/lib/check-watchdog-armed.ts (#2814/#2944/#4800 — generalizado aqui)
- * @see scripts/lib/pending-scheduled-tasks.ts (domínio irmão: esperada × registrada)
  * @see scripts/lib/scheduled-tasks.ts (registro declarativo consumido aqui)
- * @see scripts/lib/task-runner.ts + scripts/lib/Invoke-DiariaScheduledWrapper.psm1 (formato do log parseado aqui)
+ * @see scripts/lib/task-runner.ts (formato do log parseado aqui)
  * @see scripts/studio-ui/studio-tasks.ts (consumidor — camada de leitura da página /tarefas)
  */
 
@@ -214,7 +213,7 @@ export { WATCHDOG_TASK_NAME };
 export interface TaskLogStepResult {
   key: string;
   /** `null` quando o valor não é numérico (ex: marcador `skip-guard` do
-   * `.ps1` legado — ver `Invoke-DiariaScheduledWrapper.psm1`). */
+   * `.ps1` legado — removido no #5115, formato preservado por `task-runner.ts`). */
   code: number | null;
   /** Valor bruto (string) do lado direito do `key=valor` — usado só pra
    * detecção de guard-abort; não exposto fora deste módulo. */
@@ -222,8 +221,9 @@ export interface TaskLogStepResult {
 }
 
 export interface TaskLogRun {
-  /** Valor bruto do header (`now().toISOString()` no runner TS, `Get-Date
-   * -Format o` no `.ps1` — os dois emitem ISO 8601). */
+  /** Valor bruto do header (`now().toISOString()` no runner TS; o `.ps1`
+   * legado, removido no #5115, emitia via `Get-Date -Format o` — os dois
+   * formatos são ISO 8601, então logs antigos seguem parseáveis). */
   startedAt: string;
   description: string;
   guardAborted: boolean;
@@ -240,9 +240,8 @@ const RUN_TRAILER_RE = /^===== fim \((.*)\) =====$/;
  * Parseia TODO o conteúdo de um log de task em blocos de execução — nunca
  * lança (log malformado/truncado no meio de um bloco simplesmente descarta
  * o bloco incompleto, sem afetar os demais). Formato do header/trailer é
- * IDÊNTICO entre `task-runner.ts` (#4805 Fase 2) e todo `.ps1` (direto ou
- * via `Invoke-DiariaScheduledWrapper.psm1`, #4756) — ver docstring do
- * módulo. @pure
+ * IDÊNTICO entre `task-runner.ts` (#4805 Fase 2) e o antigo `.ps1` legado
+ * (removido no #5115) — ver docstring do módulo. @pure
  */
 export function parseTaskLogRuns(content: string): TaskLogRun[] {
   const lines = content.split(/\r?\n/);

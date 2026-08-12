@@ -74,7 +74,7 @@ describe("scripts/geo-citation-monitor.ts main() (#4558 Parte C)", () => {
 
   /**
    * `--strict` (#4754) NÃO inverte o default acima — ele é opt-in, e só o
-   * caminho agendado (`run-geo-citation-monitor.ps1`) o liga.
+   * caminho agendado (task `Diaria-Geo-Citation-Monitor`, via `scripts/run-task.ts`) o liga.
    *
    * A distinção importa: na mão, "sem key configurada" é estado válido e
    * devolver 0 é decisão deliberada do #4616. Numa task agendada, o mesmo 0
@@ -414,10 +414,9 @@ describe("scripts/geo-citation-monitor.ts: main() invocado com .catch() explíci
   // top-level de main() nunca regride pro padrão antigo
   // `main().then((code) => { process.exitCode = code; })` sem `.catch()`,
   // que deixava uma exceção não tratada virar stack trace cru em vez do log
-  // estruturado `[geo-citation-monitor] erro: ...` que o `.ps1` wrapper (se
-  // este script for agendado via Task Scheduler no futuro) capturaria.
-  // Mesmo padrão já usado em postmaster-spam-sync.ts/apoios-diff-alarm.ts/
-  // cursos-error-alarm.ts.
+  // estruturado `[geo-citation-monitor] erro: ...` que a task agendada
+  // (via `scripts/run-task.ts`) capturaria. Mesmo padrão já usado em
+  // postmaster-spam-sync.ts/apoios-diff-alarm.ts/cursos-error-alarm.ts.
   it("o bloco isMainModule encadeia .catch() depois de main()", () => {
     const source = readFileSync(resolve(ROOT, "scripts", "geo-citation-monitor.ts"), "utf8");
     const mainInvocationBlock = /if \(isMainModule\(import\.meta\.url\)\) \{([\s\S]*?)\n\}/.exec(source);

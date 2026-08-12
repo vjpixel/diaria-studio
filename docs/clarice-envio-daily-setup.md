@@ -6,8 +6,8 @@ Issue: [#5027](https://github.com/vjpixel/diaria-studio/issues/5027) (arme das t
 
 Um script de setup, **DUAS tasks indivisíveis** (decisão do editor 260811 — armar uma sem a outra é uma configuração que ninguém quer):
 
-- **`Diaria-Clarice-Envio`** — diária **19:00 BRT**. `scripts/run-clarice-envio.ps1` (Windows) / unit `diaria-clarice-envio` (Linux) → `npx tsx scripts/clarice-envio-run.ts`. Levanta o risco de ISP fresco (freio = últimos 3 dias de envio; acelerador = 30 dias corridos — nunca abertura, ver #5025), planeja o volume da onda de amanhã e AGENDA a campanha pras 06:00 BRT (09:00 UTC) do dia seguinte.
-- **`Diaria-Clarice-Envio-Guard`** — diária **05:00 BRT**. `scripts/run-clarice-envio-guard.ps1` (Windows) / unit `diaria-clarice-envio-guard` (Linux) → `npx tsx scripts/clarice-envio-guard.ts`. Relê o risco com ~11h de dado fresco (bounce/unsub/spam da onda que saiu ontem de manhã) e **cancela** (`status: suspended`) a onda pendente de hoje se o freio virou STOP entre 19:00 e 05:00. Escopo desta 1ª versão: cancela, não recria uma onda menor — ver docstring de `clarice-envio-guard.ts`.
+- **`Diaria-Clarice-Envio`** — diária **19:00 BRT**. Unit `diaria-clarice-envio` (systemd) → `npx tsx scripts/clarice-envio-run.ts`. Levanta o risco de ISP fresco (freio = últimos 3 dias de envio; acelerador = 30 dias corridos — nunca abertura, ver #5025), planeja o volume da onda de amanhã e AGENDA a campanha pras 06:00 BRT (09:00 UTC) do dia seguinte.
+- **`Diaria-Clarice-Envio-Guard`** — diária **05:00 BRT**. Unit `diaria-clarice-envio-guard` (systemd) → `npx tsx scripts/clarice-envio-guard.ts`. Relê o risco com ~11h de dado fresco (bounce/unsub/spam da onda que saiu ontem de manhã) e **cancela** (`status: suspended`) a onda pendente de hoje se o freio virou STOP entre 19:00 e 05:00. Escopo desta 1ª versão: cancela, não recria uma onda menor — ver docstring de `clarice-envio-guard.ts`.
 
 `clarice-envio-run.ts`/`clarice-envio-guard.ts` são o *glue* determinístico que substitui os 8 passos em prosa de `.claude/skills/diaria-clarice-envio/SKILL.md` (mesmo padrão do #4941/`clarice-novos-run.ts`) — a skill manual passa a só invocar o mesmo orquestrador, nunca reimplementar.
 
@@ -102,15 +102,7 @@ Toda invocação (sucesso, pausada, ciclo não pronto, fila insuficiente, sem vo
 
 ## Setup (ação local one-time do editor)
 
-`local` — precisa do junction `data/` (OneDrive) + `BREVO_CLARICE_API_KEY`.
-
-**Windows (Task Scheduler) — registra o PAR:**
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-clarice-envio-schedule.ps1
-```
-
-Idempotente — re-executar atualiza as duas tasks. Remover as duas: mesmo comando com `-Unregister`.
+`local` — precisa do junction `data/` (OneDrive) + `BREVO_CLARICE_API_KEY`. O antigo par de `.ps1` do Windows (`scripts\setup-clarice-envio-schedule.ps1`) foi removido no #5115 (cutover final) — via de arme é só systemd.
 
 **Linux (systemd, via o registro declarativo `scripts/lib/scheduled-tasks.ts`, épica #4798) — gera e arma cada task do par:**
 

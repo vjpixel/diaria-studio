@@ -291,7 +291,7 @@ export function advanceState(
 
 /** #4746 — threshold pra considerar a falha da consulta à Cloudflare API
  * "sustentada" (credencial expirada/revogada, não um blip transitório). A
- * task roda a cada 6h (`run-worker-drift-check.ps1`) — 24h ~ 4 execuções
+ * task (`Diaria-Worker-Drift-Check`) roda a cada 6h — 24h ~ 4 execuções
  * consecutivas falhando antes de acordar o editor com um alarme distinto do
  * alarme de drift em si. */
 export const API_ERROR_SUSTAINED_THRESHOLD_MS = 24 * 60 * 60 * 1000;

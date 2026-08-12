@@ -2,11 +2,10 @@
  * test/studio-linux-services-4808.test.ts (#4808)
  *
  * Regression tests estáticos pros 2 scripts bash que armam o Studio server +
- * Cloudflare tunnel como user systemd services em Linux (espelham
- * setup-studio-service.ps1 / setup-remote-tunnel.ps1 do Windows, mas não têm
- * o bug de "Register-ScheduledTask -Force reseta Enabled" que
- * test/scheduled-task-registration.test.ts cobre pros .ps1 — systemd
- * `enable` é idempotente por natureza, sem esse caso).
+ * Cloudflare tunnel como user systemd services em Linux (espelham os antigos
+ * setup-studio-service.ps1 / setup-remote-tunnel.ps1 do Windows, removidos
+ * no #5115 — que tinham o bug de "Register-ScheduledTask -Force reseta
+ * Enabled"; systemd `enable` é idempotente por natureza, sem esse caso).
  *
  * Cobre 2 achados ao vivo da implementação (260810):
  *

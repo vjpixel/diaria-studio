@@ -10,11 +10,13 @@
  * Scheduler, máquina fora por semanas, ou todo provider sem API key (ver
  * docstring de `scripts/lib/geo-citation-staleness-alarm.ts`).
  *
- * Por que não é o guard de `test/pending-scheduled-tasks.test.ts`: aquele
- * descobre a task pelo NOME (`Get-ScheduledTask`) — cobre só o registro
- * inicial, nunca `State`/`LastTaskResult`. Este alarme olha o SINTOMA
- * (histórico parado), não o registro da task, e roda separado — mesma task
- * desabilitada e sem re-registrar nunca dispara o guard de teste de novo.
+ * Por que não basta checar se a task está registrada: um guard desse tipo
+ * cobre só o registro inicial, nunca `State`/`LastTaskResult`. Este alarme
+ * olha o SINTOMA (histórico parado), não o registro da task, e roda
+ * separado — mesma task desabilitada e sem re-registrar nunca dispararia
+ * um guard de registro de novo. (`scripts/lib/pending-scheduled-tasks.ts`,
+ * que fazia esse tipo de checagem contra os antigos `.ps1` do Windows, foi
+ * removido no #5115 — cutover final.)
  *
  * Uso:
  *   npx tsx scripts/geo-citation-staleness-alarm.ts [--dry-run] [--to email@x]

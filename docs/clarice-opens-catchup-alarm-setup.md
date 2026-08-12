@@ -10,7 +10,7 @@ O catch-up de opens (`#4688`) roda dentro de todo `clarice-sync-brevo.ts --incre
 
 ## Como funciona (3 peças)
 
-1. **Extração do status (`scripts/extract-opens-catchup-status.ts` + `scripts/lib/extract-opens-catchup-status.ts`)** — `run-clarice-sync-daily.ps1` chama este script logo depois do passo 1 (`clarice-sync-brevo.ts --incremental`), enquanto o log temporário da run ainda contém só a saída desse passo. Um scanner JSON-aware (string-safe — não conta `{`/`}` dentro de valores string) extrai o ÚLTIMO objeto que contém a chave `opens_catchup` do summary impresso em stdout, e persiste um status enxuto (`{status: "ok"|"error"|"not_run", error?, checked_at}`) em `data/clarice-subscribers/last-opens-catchup-status.json`. Best-effort — nunca reprova a run principal, mesmo se o log estiver ausente ou malformado.
+1. **Extração do status (`scripts/extract-opens-catchup-status.ts` + `scripts/lib/extract-opens-catchup-status.ts`)** — o step `extract` da task `Diaria-Clarice-Sync` (`scripts/lib/scheduled-tasks.ts`, via `scripts/lib/task-runner.ts`) chama este script logo depois do passo 1 (`clarice-sync-brevo.ts --incremental`), enquanto o log temporário da run ainda contém só a saída desse passo. Um scanner JSON-aware (string-safe — não conta `{`/`}` dentro de valores string) extrai o ÚLTIMO objeto que contém a chave `opens_catchup` do summary impresso em stdout, e persiste um status enxuto (`{status: "ok"|"error"|"not_run", error?, checked_at}`) em `data/clarice-subscribers/last-opens-catchup-status.json`. Best-effort — nunca reprova a run principal, mesmo se o log estiver ausente ou malformado.
 2. **Streak de falhas consecutivas (`scripts/lib/clarice-opens-catchup-alarm.ts`)** — lógica pura: 1 falha isolada é normal (rede/rate-limit transitório da Brevo); `CONSECUTIVE_FAILURE_THRESHOLD` (3) falhas **consecutivas** é sinal real. `not_run` (modo full, `--no-catch-opens`, ou nenhum summary encontrado no log) é **neutro** — não soma nem zera o streak. Um `ok` zera o streak E re-arma o alarme (a próxima falha sustentada volta a alarmar).
 3. **Alarme (`scripts/clarice-opens-catchup-alarm.ts`)** — task diária separada que lê o status mais recente, avança o streak, e manda e-mail (Gmail) ao editor quando o streak atinge o threshold. Idempotente por estado em `data/clarice-subscribers/opens-catchup-alarm-state.json` (`lastAlarmedAt` evita reenviar o mesmo alarme a cada checagem enquanto o streak fica acima do threshold sem resolver).
 
@@ -33,12 +33,14 @@ O catch-up de opens (`#4688`) roda dentro de todo `clarice-sync-brevo.ts --incre
 
 ## Setup (ação local one-time do editor — NÃO feito nesta unidade)
 
-Requer Windows + Task Scheduler + junction `data/` (OneDrive) + `data/.credentials.json` com o scope `gmail.send` (mesmo requisito dos outros alarmes locais deste repo). Depende da task `Diaria-Clarice-Sync` já estar armada — sem ela, `last-opens-catchup-status.json` nunca é escrito e este alarme sempre lê `not_run` (neutro: nunca alarma, mas também nunca detecta falha real).
+Requer Linux/systemd + junction `data/` (OneDrive) + `data/.credentials.json` com o scope `gmail.send` (mesmo requisito dos outros alarmes locais deste repo; o antigo wrapper `.ps1` do Windows foi removido no #5115, cutover final). Depende da task `Diaria-Clarice-Sync` já estar armada — sem ela, `last-opens-catchup-status.json` nunca é escrito e este alarme sempre lê `not_run` (neutro: nunca alarma, mas também nunca detecta falha real).
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-clarice-opens-catchup-alarm-schedule.ps1
+```bash
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Opens-Catchup-Alarm
+systemctl --user daemon-reload
+systemctl --user enable --now diaria-clarice-opens-catchup-alarm.timer
 ```
 
-Isso registra a task `Diaria-Clarice-Opens-Catchup-Alarm` (diário, 09:00 — depois do sync das 08:30, antes do `Diaria-Cursos-Kv-Sync` das 09:15). Idempotente — re-executar atualiza a task. Remover: mesmo comando com `-Unregister`.
+Isso registra a task `Diaria-Clarice-Opens-Catchup-Alarm` (diário, 09:00 — depois do sync das 08:30, antes do `Diaria-Cursos-Kv-Sync` das 09:15). Idempotente — re-executar regenera os units. Remover: `systemctl --user disable --now diaria-clarice-opens-catchup-alarm.timer`.
 
 **Registro da task + 1ª execução ao vivo não feitos nesta unidade** (worktree isolado, sem Task Scheduler real nem `data/.credentials.json`/Gmail ao vivo, mesma disciplina do #4320/#4382/#4490/#4534/#4723) — ação pendente do editor. Validado só via testes da lógica pura + extração determinística (`test/extract-opens-catchup-status.test.ts`, `test/clarice-opens-catchup-alarm.test.ts`).

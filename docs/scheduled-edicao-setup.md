@@ -9,7 +9,7 @@
 
 Issue: [#2068](https://github.com/vjpixel/diaria-studio/issues/2068), reativação [#4998](https://github.com/vjpixel/diaria-studio/issues/4998)
 
-O agendador local (Task Scheduler no Windows, systemd `--user` no Linux) roda `/diaria-edicao {AAMMDD} --skip newsletter,linkedin,facebook` de domingo a quinta-feira às **16:00 (horário local = BRT)**, produzindo a edição do dia seguinte (D+1) — **a não ser que essa edição já tenha sido iniciada** (guard de idempotência, ver abaixo). A run completa Stages 0–4 (pesquisa → escrita → imagens → revisão pré-publicação) e encerra **sem publicar nada** — todos os canais ficam `pending_manual` no consent. O editor dispara a publicação manualmente via `/diaria-5-publicacao {AAMMDD}` na manhã seguinte.
+O agendador local (systemd `--user`; o `.ps1` do Windows foi removido no #5115, cutover final) roda `/diaria-edicao {AAMMDD} --skip newsletter,linkedin,facebook` de domingo a quinta-feira às **16:00 (horário local = BRT)**, produzindo a edição do dia seguinte (D+1) — **a não ser que essa edição já tenha sido iniciada** (guard de idempotência, ver abaixo). A run completa Stages 0–4 (pesquisa → escrita → imagens → revisão pré-publicação) e encerra **sem publicar nada** — todos os canais ficam `pending_manual` no consent. O editor dispara a publicação manualmente via `/diaria-5-publicacao {AAMMDD}` na manhã seguinte.
 
 ---
 
@@ -23,52 +23,17 @@ Isso é deliberadamente diferente de "deixar o orchestrator resumir": a resumabi
 
 ## Arquivos
 
-| Plataforma | Arquivo | Função |
-|---|---|---|
-| Windows | `scripts/overnight/run-scheduled-edicao.ps1` | Runner — calcula AAMMDD, checa o guard, invoca `claude -p`, grava logs |
-| Windows | `scripts/overnight/setup-edicao-schedule.ps1` | Setup — registra/atualiza/remove a task no Task Scheduler |
-| Linux | `scripts/overnight/run-scheduled-edicao.ts` | Runner — mesma lógica do `.ps1` acima, em TS |
-| Linux | `scripts/overnight/setup-edicao-schedule-systemd.ts` | Gera o par `.service`/`.timer` (não arma — ver §Linux abaixo) |
-| Linux | `scripts/lib/edicao-systemd-units.ts` | Módulo puro que monta o conteúdo dos units systemd |
-| Ambos | `scripts/lib/next-edition-date.ts` | Lib TS — cálculo D+1 em `America/Sao_Paulo` (testável) |
+| Arquivo | Função |
+|---|---|
+| `scripts/overnight/run-scheduled-edicao.ts` | Runner — calcula AAMMDD, checa o guard, invoca `claude -p`, grava logs |
+| `scripts/overnight/setup-edicao-schedule-systemd.ts` | Gera o par `.service`/`.timer` (não arma — ver §Linux abaixo) |
+| `scripts/lib/edicao-systemd-units.ts` | Módulo puro que monta o conteúdo dos units systemd |
+| `scripts/lib/next-edition-date.ts` | Lib TS — cálculo D+1 em `America/Sao_Paulo` (testável) |
 | Testes | `test/next-edition-date.test.ts`, `test/edicao-systemd-units.test.ts`, `test/run-scheduled-edicao.test.ts` | Cobertura do cálculo de data, geração de units e guard de idempotência |
 
----
-
-## Setup — Windows (Task Scheduler)
-
-**Requisito:** executar no clone permanente do repo, não em worktrees temporários.
-
-```powershell
-# No diretório raiz do repo:
-powershell -NoProfile -ExecutionPolicy Bypass `
-    -File scripts\overnight\setup-edicao-schedule.ps1
-```
-
-Isso cria a task `Diaria-Edicao-Diaria` no Task Scheduler local. Idempotente — re-executar atualiza a task.
-
-### Verificar a task registrada
-
-```powershell
-Get-ScheduledTask -TaskName "Diaria-Edicao-Diaria" | Get-ScheduledTaskInfo
-```
-
-### Testar manualmente (sem executar a pipeline de verdade)
-
-Para confirmar que o runner encontra os paths corretamente:
-
-```powershell
-# Apenas checar cálculo de data (sem invocar claude):
-node --import tsx --input-type=module --eval `
-    "import { nextEditionDate } from './scripts/lib/next-edition-date.ts'; console.log(nextEditionDate());"
-```
-
-### Remover a task
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass `
-    -File scripts\overnight\setup-edicao-schedule.ps1 -Unregister
-```
+O antigo par Windows (`scripts/overnight/run-scheduled-edicao.ps1` +
+`scripts/overnight/setup-edicao-schedule.ps1`) foi removido no #5115
+(cutover final, 260812) — nenhuma tarefa `Diaria-*` roda mais no Windows.
 
 ---
 
@@ -109,7 +74,7 @@ systemctl --user daemon-reload
 ### Fluxo normal
 
 1. O agendador dispara às 16:00 (dom-qui).
-2. Runner calcula `AAMMDD = amanhã em BRT` via `scripts/lib/next-edition-date.ts` (fallback puro PowerShell no Windows se node falhar).
+2. Runner calcula `AAMMDD = amanhã em BRT` via `scripts/lib/next-edition-date.ts`.
 3. **Guard de idempotência**: se `data/editions/{AAMMDD}/` já existe, loga `SKIP` e encerra (exit 0) sem invocar `claude`.
 4. Senão, invoca: `claude --print --permission-mode acceptEdits --max-turns 120 --output-format text --no-session-persistence /diaria-edicao {AAMMDD} --skip newsletter,linkedin,facebook`.
 5. Orchestrator executa Stages 0–3 (pesquisa → escrita → imagens) em modo auto-approve.
@@ -192,9 +157,9 @@ Mesmo achado ao vivo do watchdog (#4857, incidente #4823): `buildEdicaoSystemdUn
 
 ## Fuso horário
 
-O horário de disparo é sempre pensado em BRT:
-- **Windows**: a task usa o fuso local da máquina — se a máquina não estiver em BRT, ajustar o horário no `setup-edicao-schedule.ps1`.
-- **Linux**: `OnCalendar=` inclui `America/Sao_Paulo` explicitamente (`scripts/lib/edicao-systemd-units.ts`) — independe do fuso do sistema (`predator` roda em `Etc/UTC`).
+O horário de disparo é sempre pensado em BRT: `OnCalendar=` inclui
+`America/Sao_Paulo` explicitamente (`scripts/lib/edicao-systemd-units.ts`) —
+independe do fuso do sistema (`predator` roda em `Etc/UTC`).
 
 O cálculo de D+1 usa explicitamente `America/Sao_Paulo` via `Intl.DateTimeFormat` em ambas as plataformas (independente do fuso da máquina).
 

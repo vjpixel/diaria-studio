@@ -13,7 +13,7 @@ sync a cada execução.
 envio da manhã antes do editor montar a onda seguinte. Com 03:40 a onda do dia
 ficava invisível pro store e o `--group` repetia as mesmas pessoas.
 
-## O que ele faz (`scripts/run-clarice-sync-daily.ps1`, dois passos)
+## O que ele faz (task `Diaria-Clarice-Sync`, dois passos)
 
 1. **`clarice-sync-brevo.ts --incremental`** — sincroniza só os contatos
    MUDADOS desde o último sync (`modifiedSince` da Brevo, #2928). Barato
@@ -54,16 +54,18 @@ sustentada — ver `docs/clarice-opens-catchup-alarm-setup.md`.
 `local` — precisa do junction `data/` (OneDrive) + `BREVO_CLARICE_API_KEY` +
 credenciais Cloudflare (pro passo do KV summary).
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-clarice-sync-schedule.ps1
+```bash
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Sync
+systemctl --user daemon-reload
+systemctl --user enable --now diaria-clarice-sync.timer
 ```
 
 Isso registra a task `Diaria-Clarice-Sync` (diária, 08:30). Idempotente —
-re-executar atualiza a task. Remover: mesmo comando com `-Unregister`.
+re-executar regenera os units. Remover: `systemctl --user disable --now diaria-clarice-sync.timer`.
 
 **1ª execução ao vivo do catch-up de opens dentro da task agendada não feita
 em nenhuma unidade de worktree isolado** (sem `BREVO_CLARICE_API_KEY` real) —
 mesma disciplina do #4320/#4382/#4490/#4534. A próxima run de
 `Diaria-Clarice-Sync` já exercita o caminho novo automaticamente (nenhuma
-mudança na task/no `.ps1` — o catch-up vive dentro do mesmo
+mudança na task — o catch-up vive dentro do mesmo
 `clarice-sync-brevo.ts --incremental` já agendado).

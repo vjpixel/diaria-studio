@@ -3,8 +3,9 @@
  *
  * Funções puras que traduzem uma `ScheduledTaskDefinition` (registro
  * declarativo, `scripts/lib/scheduled-tasks.ts`) num par de units systemd
- * (`.service` + `.timer`, "user units") — espelha o papel dos
- * `scripts/setup-*-schedule.ps1` do Windows, mas só GERA o texto/arquivo.
+ * (`.service` + `.timer`, "user units") — espelha o papel que os antigos
+ * `scripts/setup-*-schedule.ps1` do Windows tinham (removidos no #5115),
+ * mas só GERA o texto/arquivo.
  * ARMAR (`systemctl --user enable --now`) é a issue filha #4807, fora deste
  * escopo — nenhuma função aqui chama `systemctl` nem qualquer outro
  * subprocess (ver `scripts/setup-systemd-timers.ts`, que só escreve arquivo

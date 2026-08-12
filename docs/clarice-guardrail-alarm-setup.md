@@ -12,8 +12,9 @@ disparo é real e cancelar/recriar exige atenção do editor a tempo.
 
 ## O que ele faz
 
-`scripts/run-clarice-guardrail-alarm.ps1` → `scripts/clarice-guardrail-alarm.ts`,
-rodando a cada 4h via Task Scheduler. Quando um guardrail está rompido, envia
+Task `Diaria-Clarice-Guardrail-Alarm` (`scripts/lib/scheduled-tasks.ts`) →
+`scripts/clarice-guardrail-alarm.ts`, rodando a cada 4h via systemd (o antigo
+wrapper `.ps1` do Windows foi removido no #5115, cutover final). Quando um guardrail está rompido, envia
 e-mail ao editor via Gmail API nomeando o próximo envio agendado e o prazo
 pra cancelá-lo.
 
@@ -31,9 +32,11 @@ reavaliada/realarmada 2×.
 `local` — precisa do junction `data/` (OneDrive) + `BREVO_CLARICE_API_KEY` +
 `data/.credentials.json` com o scope `gmail.send`.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-clarice-guardrail-alarm-schedule.ps1
+```bash
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Guardrail-Alarm
+systemctl --user daemon-reload
+systemctl --user enable --now diaria-clarice-guardrail-alarm.timer
 ```
 
 Isso registra a task `Diaria-Clarice-Guardrail-Alarm` (a cada 4h). Idempotente
-— re-executar atualiza a task. Remover: mesmo comando com `-Unregister`.
+— re-executar regenera os units. Remover: `systemctl --user disable --now diaria-clarice-guardrail-alarm.timer`.

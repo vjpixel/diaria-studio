@@ -2,9 +2,9 @@
  * scripts/lib/task-runner.ts (#4805 Fase 2, épica #4798)
  *
  * Executor TS único das tasks declaradas em `scripts/lib/scheduled-tasks.ts`
- * — sucessor destinado a substituir, uma a uma conforme forem cortadas pra
- * cá, os wrappers `scripts/run-*.ps1` do Task Scheduler (ver "Não fazer" da
- * #4805: os `.ps1` **não** são removidos nesta unidade).
+ * — sucessor dos antigos wrappers `scripts/run-*.ps1` do Task Scheduler
+ * (removidos no #5115, cutover final — nenhuma máquina Windows roda mais
+ * tasks `Diaria-*`).
  *
  * Preserva os 5 comportamentos que os `.ps1` acumularam por incidente, um a
  * um:
@@ -61,8 +61,6 @@
  *
  * @see scripts/lib/scheduled-tasks.ts (registro declarativo consumido aqui)
  * @see scripts/run-task.ts (entrypoint CLI)
- * @see scripts/lib/Invoke-DiariaScheduledWrapper.psm1 (#4756 — molde .ps1
- *      original que este módulo porta pra TS, sem removê-lo)
  */
 
 import { spawnSync } from "node:child_process";

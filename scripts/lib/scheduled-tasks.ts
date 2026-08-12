@@ -5,43 +5,36 @@
  * verdade que `scripts/lib/task-runner.ts` (Fase 2) executa e
  * `scripts/setup-systemd-timers.ts` (Fase 3) usa pra gerar units systemd.
  *
- * **Por que este arquivo existe:** até aqui, a lista de tasks vivia
+ * **Por que este arquivo existe:** até o #4805, a lista de tasks vivia
  * implicitamente espalhada em 14 pares `scripts/run-*.ps1` +
  * `scripts/setup-*-schedule.ps1`, cada um repetindo o mesmo molde (script(s)
- * `npx tsx`, log path, cadência, guard opcional) em PowerShell — só
- * descoberto de fora por `scripts/lib/pending-scheduled-tasks.ts` (#4708) via
- * regex sobre o `.ps1` de setup. Este registro inverte isso: os dados vivem
- * aqui, tipados, uma vez; `pending-scheduled-tasks.ts` agora lê daqui como
- * fonte PRIMÁRIA (com fallback pro scanner legado pra tasks ainda não
- * migradas, ex: `Diaria-Overnight-Watchdog`/`Diaria-Edicao-Diaria`, cujos
- * runners não seguem o padrão `npx tsx <script>.ts` que este registro
- * modela — ver docstring de `listExpectedScheduledTasks`).
+ * `npx tsx`, log path, cadência, guard opcional) em PowerShell. Este registro
+ * inverte isso: os dados vivem aqui, tipados, uma vez.
  *
  * **Escopo — 14 tasks (13 na abertura da #4805, +1 com o `#4755` mergeado
- * antes desta unidade):** todas as tasks cujo wrapper `.ps1` roda um ou mais
- * scripts `.ts` via `npx tsx` e loga em `data/`. Fora do escopo (não
- * migradas, não modeladas aqui): `Diaria-Overnight-Watchdog` (invoca
- * `overnight-watchdog.ts` direto do Task Scheduler, sem `run-*.ps1`
- * intermediário) e `Diaria-Edicao-Diaria` (invoca `claude -p` via
- * `run-scheduled-edicao.ps1` — um processo completamente diferente de
- * `npx tsx`; além disso desregistrada por decisão do editor desde 260711,
- * #3259).
+ * antes desta unidade):** todas as tasks cujo wrapper `.ps1` (removido no
+ * #5115, cutover final — ver abaixo) rodava um ou mais scripts `.ts` via
+ * `npx tsx` e logava em `data/`. Fora do escopo (não migradas, não modeladas
+ * aqui): `Diaria-Overnight-Watchdog` (invoca `overnight-watchdog.ts` direto
+ * do agendador, sem wrapper intermediário) e `Diaria-Edicao-Diaria` (invoca
+ * `claude -p`, um processo completamente diferente de `npx tsx`; além disso
+ * desregistrada por decisão do editor desde 260711, #3259).
  *
  * **Este arquivo NÃO executa nada** — é dado puro. Execução é
  * `scripts/lib/task-runner.ts` (`runScheduledTask`); geração de units
  * systemd é `scripts/lib/systemd-units.ts` + `scripts/setup-systemd-timers.ts`.
  *
- * **NÃO remover os `.ps1` existentes** (`scripts/run-*.ps1`,
- * `scripts/setup-*-schedule.ps1`) ao consumir este registro em outro lugar —
- * eles seguem sendo a via de execução real no Windows até uma decisão
- * explícita de cutover (fora do escopo da #4805, que só entrega o registro +
- * o runner TS + a geração de units, sem armar nada — ver #4807).
+ * **Cutover final (#5115, 260812):** os 40 `.ps1` (`scripts/run-*.ps1`,
+ * `scripts/setup-*-schedule.ps1`) foram removidos do repo — decisão explícita
+ * do editor confirmando que nenhuma máquina Windows roda mais tasks
+ * `Diaria-*` (política de 260811, #5074) e que todas já têm contraparte
+ * systemd equivalente. A via de execução real é exclusivamente o par
+ * `.service`/`.timer` gerado por `scripts/setup-systemd-timers.ts` a partir
+ * deste registro.
  *
  * @see scripts/lib/task-runner.ts (Fase 2 — executor)
  * @see scripts/run-task.ts (Fase 2 — entrypoint CLI)
  * @see scripts/lib/systemd-units.ts + scripts/setup-systemd-timers.ts (Fase 3)
- * @see scripts/lib/pending-scheduled-tasks.ts (#4708 — consumidor, refatorado
- *      nesta mesma unidade pra ler daqui como fonte primária)
  */
 
 /** Dias da semana aceitos por um schedule `weekly` — mesmo vocabulário do
@@ -49,22 +42,20 @@
 export type WeekDay = "Monday" | "Tuesday" | "Wednesday" | "Thursday" | "Friday" | "Saturday" | "Sunday";
 
 /**
- * Cadência declarativa de uma task. Espelha os 3 padrões realmente usados
- * pelos `setup-*-schedule.ps1` do repo, mais `monthly` (#5128/#5130 —
- * 1ª task deste registro sem contraparte `.ps1`/Task Scheduler de
+ * Cadência declarativa de uma task. Espelha os 3 padrões usados pelos
+ * `setup-*-schedule.ps1` legados do repo (removidos no #5115), mais `monthly`
+ * (#5128/#5130 — 1ª task deste registro sem contraparte Windows de
  * propósito, mesmo caso de `Diaria-Beehiiv-Home-Meta-Check` #5005: nasceu
  * depois do cutover systemd, então não precisou de tradução PowerShell):
- *   - `daily`   → `New-ScheduledTaskTrigger -Daily -At (Get-Date -Hour H -Minute M)`
- *   - `weekly`  → `New-ScheduledTaskTrigger -Weekly -DaysOfWeek D -At (Get-Date -Hour H -Minute M)`
- *   - `monthly` → `OnCalendar=*-*-DD HH:MM:00` (systemd) — sem tradução PowerShell
- *     equivalente neste registro (nenhuma task `monthly` tem `legacySetupScript`).
- *     `day` fica restrito a 1-28 (validado em `scheduled-tasks.test.ts`) —
- *     todo mês do calendário tem um dia 1-28, então a cadência nunca pula um
- *     mês por falta de dia 29/30/31 (fevereiro).
- *   - `interval`→ `New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours N)`
- *     (começa agora, repete indefinidamente a cada N horas — ver #4155 pro
- *     porquê de `-Once -At` em vez de `-Once <data>` posicional, e pro porquê
- *     de nunca passar `-RepetitionDuration`).
+ *   - `daily`   → `OnCalendar=*-*-* HH:MM:00` (systemd)
+ *   - `weekly`  → `OnCalendar=D *-*-* HH:MM:00` (systemd)
+ *   - `monthly` → `OnCalendar=*-*-DD HH:MM:00` (systemd). `day` fica
+ *     restrito a 1-28 (validado em `scheduled-tasks.test.ts`) — todo mês do
+ *     calendário tem um dia 1-28, então a cadência nunca pula um mês por
+ *     falta de dia 29/30/31 (fevereiro).
+ *   - `interval`→ `OnCalendar=*-*-* 0/N:00:00` (systemd — múltiplos de N
+ *     horas a partir da meia-noite, ver `scheduleToOnCalendar` pro porquê
+ *     dessa aproximação em vez de "a partir de quando foi armado").
  */
 export type ScheduledTaskSchedule =
   | { kind: "daily"; hour: number; minute: number }
@@ -119,28 +110,15 @@ export interface ScheduledTaskDefinition {
    * e o `Description=` dos units systemd gerados. */
   description: string;
   /** Passos executados em sequência, sempre (nenhum passo cancela os
-   * seguintes — mesmo comportamento dos `run-*.ps1` multi-passo originais:
-   * `run-clarice-sync-daily.ps1` sempre roda os 3 passos, mesmo se o passo 1
-   * falhar). */
+   * seguintes — mesmo comportamento dos `run-*.ps1` legados multi-passo
+   * (removidos no #5115): o antigo `run-clarice-sync-daily.ps1` sempre rodava
+   * os 3 passos, mesmo se o passo 1 falhasse). */
   steps: ScheduledTaskStep[];
   /** Path do log final, relativo a `data/` (POSIX) — ex:
    * `"apoia-se/.diff-alarm.log"` → `data/apoia-se/.diff-alarm.log`. */
   logPath: string;
   schedule: ScheduledTaskSchedule;
   guard?: ScheduledTaskGuard;
-  /** Path (relativo à raiz do repo, POSIX) do `setup-*-schedule.ps1` legado
-   * que esta entrada espelha — usado só por
-   * `scripts/lib/pending-scheduled-tasks.ts` pra checar existência/parity,
-   * NUNCA lido em runtime pelo executor. **Opcional desde #5005**: o cutover
-   * pra systemd (épica #4798) fechou antes desta task ser registrada —
-   * `Diaria-Beehiiv-Home-Meta-Check` é a 1ª entrada sem `.ps1` legado de
-   * propósito (não criar um novo `.ps1` só pra preencher este campo); a via
-   * de execução real em Linux é exclusivamente o par `.service`/`.timer`
-   * gerado por `scripts/setup-systemd-timers.ts` a partir do registro. Uma
-   * entrada sem este campo fica de fora de `listExpectedScheduledTasks`
-   * (`pending-scheduled-tasks.ts`) — o check de "task esperada ausente do
-   * Task Scheduler" não se aplica a task sem contraparte Windows. */
-  legacySetupScript?: string;
   /** Issue(s) de origem, só pra rastreabilidade em docs/erros. */
   issue: string;
 }
@@ -152,7 +130,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     steps: [{ key: "alarm", script: "scripts/apoios-diff-alarm.ts" }],
     logPath: "apoia-se/.diff-alarm.log",
     schedule: { kind: "daily", hour: 9, minute: 45 },
-    legacySetupScript: "scripts/setup-apoios-diff-alarm-schedule.ps1",
     issue: "#4485 item 2",
   },
   {
@@ -166,9 +143,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // código/o painel pretende), 6h é folga suficiente sem atrasar demais a
     // detecção de uma regressão que ninguém nota olhando a home todo dia.
     schedule: { kind: "interval", hours: 6 },
-    // Sem `legacySetupScript` de propósito — ver docstring do campo acima
-    // (#5005: 1ª task registrada depois do cutover systemd da épica #4798,
-    // sem contraparte Windows/.ps1).
+    // 1ª task registrada depois do cutover systemd da épica #4798.
     issue: "#4557, #5005",
   },
   {
@@ -177,7 +152,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     steps: [{ key: "check", script: "scripts/check-brevo-diaria-guardrail.ts" }],
     logPath: "brevo-diaria/.guardrail-check.log",
     schedule: { kind: "interval", hours: 4 },
-    legacySetupScript: "scripts/setup-check-brevo-diaria-guardrail-schedule.ps1",
     issue: "#4476 item 9",
   },
   {
@@ -219,12 +193,11 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // decisao 2026-06-19), sem colisao com nenhuma outra daily do registro
     // (todas as outras dailies ficam entre 05:30 e 17:00).
     schedule: { kind: "daily", hour: 21, minute: 0 },
-    // Sem `legacySetupScript` de proposito -- mesmo padrao de
-    // Diaria-Beehiiv-Home-Meta-Check (#5005): task registrada depois do
-    // cutover systemd (epica #4798), sem contraparte Windows/.ps1 (o antigo
+    // Mesmo padrao de Diaria-Beehiiv-Home-Meta-Check (#5005): task
+    // registrada depois do cutover systemd (epica #4798) -- o antigo
     // `DiariaCohortsCrawl` do Windows nunca foi migrado pra este registro --
     // era via `docs/cohorts-schedule.md` diretamente, apontando pro v1, e
-    // segue existindo so como doc historico, nao como entrada aqui).
+    // segue existindo so como doc historico, nao como entrada aqui.
     issue: "#4451",
   },
   {
@@ -233,7 +206,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     steps: [{ key: "alarm", script: "scripts/clarice-guardrail-alarm.ts" }],
     logPath: "clarice-subscribers/.guardrail-alarm.log",
     schedule: { kind: "interval", hours: 4 },
-    legacySetupScript: "scripts/setup-clarice-guardrail-alarm-schedule.ps1",
     issue: "#4064, #4131 finding 1",
   },
   {
@@ -242,7 +214,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     steps: [{ key: "alarm", script: "scripts/clarice-opens-catchup-alarm.ts" }],
     logPath: "clarice-subscribers/.opens-catchup-alarm.log",
     schedule: { kind: "daily", hour: 9, minute: 0 },
-    legacySetupScript: "scripts/setup-clarice-opens-catchup-alarm-schedule.ps1",
     issue: "#4740, #4722 item 4",
   },
   {
@@ -260,7 +231,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     ],
     logPath: "clarice-subscribers/.brevo-sync-daily.log",
     schedule: { kind: "daily", hour: 8, minute: 30 },
-    legacySetupScript: "scripts/setup-clarice-sync-schedule.ps1",
     issue: "#2932, #2928, #4047, #4740",
   },
   {
@@ -269,7 +239,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     steps: [{ key: "alarm", script: "scripts/cursos-error-alarm.ts" }],
     logPath: "cursos-subscribers/.error-alarm.log",
     schedule: { kind: "interval", hours: 2 },
-    legacySetupScript: "scripts/setup-cursos-error-alarm-schedule.ps1",
     issue: "#4320, #4382",
   },
   {
@@ -278,7 +247,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     steps: [{ key: "sync", script: "scripts/sync-cursos-subscribers-kv.ts" }],
     logPath: "cursos-subscribers/.kv-sync.log",
     schedule: { kind: "daily", hour: 9, minute: 15 },
-    legacySetupScript: "scripts/setup-cursos-kv-sync-schedule.ps1",
     issue: "#4052, #4320",
   },
   {
@@ -293,7 +261,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
         "contacts.json nao encontrado (data/brevo-diaria/contacts.json) -- provavel junction data/ nao " +
         "montada ainda; abortando por seguranca, NAO rodando --push.",
     },
-    legacySetupScript: "scripts/setup-evaluate-brevo-diaria-schedule.ps1",
     issue: "#4534, #4552",
   },
   {
@@ -332,7 +299,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // Brevo-Diaria-Evaluate diário (05:30) e antes do Clarice-Sync diário
     // (08:30, roda todo dia incl. domingo) — sem colisão de horário.
     schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 7, minute: 0 },
-    legacySetupScript: "scripts/setup-geo-citation-monitor-schedule.ps1",
     issue: "#4558 Parte C, #4754, #4900",
   },
   {
@@ -344,7 +310,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // continua depois do Geo-Citation-Monitor (domingo 07:00) — 3h30 de
     // folga, mesma ordem de grandeza do gap original (10:30 -> 14:00).
     schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 10, minute: 30 },
-    legacySetupScript: "scripts/setup-geo-citation-staleness-alarm-schedule.ps1",
     issue: "#4755",
   },
   {
@@ -353,7 +318,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     steps: [{ key: "check", script: "scripts/hub-drift-check.ts" }],
     logPath: "hub-drift-check/.drift-check.log",
     schedule: { kind: "interval", hours: 6 },
-    legacySetupScript: "scripts/setup-hub-drift-check-schedule.ps1",
     issue: "#4750",
   },
   {
@@ -365,7 +329,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // smoke-test (config publicada divergindo do que o código pretende),
     // aplicada ao robots.txt em vez dos hubs temáticos.
     schedule: { kind: "interval", hours: 6 },
-    legacySetupScript: "scripts/setup-robots-txt-drift-check-schedule.ps1",
     issue: "#4910",
   },
   {
@@ -379,10 +342,8 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // e Diaria-Apoios-Diff-Alarm (09:45) — sem colisão com nenhuma outra
     // daily do registro.
     schedule: { kind: "daily", hour: 9, minute: 30 },
-    // Sem `legacySetupScript` de propósito — mesmo caso de
-    // Diaria-Beehiiv-Home-Meta-Check/Diaria-Clarice-Envio-Alarm (#5005/#5058):
-    // 1ª execução registrada depois do cutover systemd (épica #4798), sem
-    // contraparte Windows/.ps1.
+    // Mesmo caso de Diaria-Beehiiv-Home-Meta-Check/Diaria-Clarice-Envio-Alarm
+    // (#5005/#5058): 1ª execução registrada depois do cutover systemd (épica #4798).
     issue: "#5123, #4924",
   },
   {
@@ -430,7 +391,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
         "clarice-users.db nao encontrado (data/clarice-subscribers/clarice-users.db) -- provavel junction " +
         "data/ nao montada ainda; abortando por seguranca, sem tocar Stripe/MV/Brevo.",
     },
-    legacySetupScript: "scripts/setup-clarice-novos-schedule.ps1",
     issue: "#4347, #4941",
   },
   {
@@ -465,7 +425,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
         "clarice-users.db nao encontrado (data/clarice-subscribers/clarice-users.db) -- provavel junction " +
         "data/ nao montada ainda; abortando por seguranca, sem planejar nem agendar onda.",
     },
-    legacySetupScript: "scripts/setup-clarice-envio-schedule.ps1",
     issue: "#5025, #5026, #5027 (decisões do editor 260811)",
   },
   {
@@ -490,7 +449,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // ele precisar do store, quem implementar clarice-envio-guard.ts decide
     // como tratar a ausência DENTRO do script (onde dá pra distinguir "não
     // consegui checar" de "checado, está tudo bem" — #738).
-    legacySetupScript: "scripts/setup-clarice-envio-schedule.ps1",
     issue: "#5025, #5026, #5027 (decisões do editor 260811)",
   },
   {
@@ -513,11 +471,9 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
         "clarice-users.db nao encontrado (data/clarice-subscribers/clarice-users.db) -- provavel junction " +
         "data/ nao montada ainda; sem sentido checar relatorio de uma rodada que nunca roda nesta maquina.",
     },
-    // Sem `.ps1` legado de proposito -- mesmo padrao de
-    // Diaria-Beehiiv-Home-Meta-Check (#5005, 1a task registrada depois do
-    // cutover systemd/epica #4798): nao criar um novo `.ps1` so pra
-    // preencher este campo opcional. Via de execucao real: par
-    // `.service`/`.timer` gerado por scripts/setup-systemd-timers.ts.
+    // Mesmo padrao de Diaria-Beehiiv-Home-Meta-Check (#5005, 1a task
+    // registrada depois do cutover systemd/epica #4798). Via de execucao
+    // real: par `.service`/`.timer` gerado por scripts/setup-systemd-timers.ts.
     issue: "#5058",
   },
   {
@@ -530,7 +486,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // cadência de 12h nunca teve razão de ser além de folga extra contra
     // execução perdida, ver docs/postmaster-spam-sync-setup.md.
     schedule: { kind: "daily", hour: 12, minute: 30 },
-    legacySetupScript: "scripts/setup-postmaster-spam-sync-schedule.ps1",
     issue: "#4154",
   },
   {
@@ -568,7 +523,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // mesmo horário, só o dia mudou). Continua antes de tudo (nenhuma daily
     // roda antes das 05:30).
     schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 4, minute: 10 },
-    legacySetupScript: "scripts/setup-seo-schedule.ps1",
     issue: "#4105, #1896, #1989, #4909",
   },
   {
@@ -577,7 +531,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     steps: [{ key: "check", script: "scripts/worker-drift-check.ts" }],
     logPath: "worker-drift-check/.drift-check.log",
     schedule: { kind: "interval", hours: 6 },
-    legacySetupScript: "scripts/setup-worker-drift-check-schedule.ps1",
     issue: "#4723",
   },
   {
@@ -600,11 +553,10 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // pra "1x por mês" e cai dentro do intervalo 1-28 válido pra `monthly`
     // (ver docstring de `ScheduledTaskSchedule`).
     schedule: { kind: "monthly", day: 1, hour: 9, minute: 0 },
-    // Sem `legacySetupScript` de propósito — mesmo caso de
-    // `Diaria-Beehiiv-Home-Meta-Check` (#5005): task registrada depois do
-    // cutover systemd (épica #4798), sem contraparte Windows/.ps1. Também
-    // não roda no Windows por princípio (nenhuma tarefa `Diaria-*` deve,
-    // #5074) — mesmo que rodasse, `data/` (OneDrive) é onde o output
+    // Mesmo caso de `Diaria-Beehiiv-Home-Meta-Check` (#5005): task
+    // registrada depois do cutover systemd (épica #4798). Não roda no
+    // Windows por princípio (nenhuma tarefa `Diaria-*` deve, #5074) — mesmo
+    // que rodasse, `data/` (OneDrive) é onde o output
     // (`bing-keywords-*.json`/`bing-links-*.json`) precisa pousar de
     // qualquer forma.
     issue: "#5128, #5130",
