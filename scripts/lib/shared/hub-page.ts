@@ -13,6 +13,28 @@
  * só formata — a prosa de cada `HubSection` é escrita à mão por edição
  * (`scripts/lib/hubs/{slug}.ts`), nunca gerada a partir de título/subtítulo.
  *
+ * **Densidade de "[fonte primária]" — decisão do editor (sessão develop
+ * 260811b), retrofit em todos os hubs publicados até então.** O padrão
+ * `[texto](link interno diar.ia.br) [fonte primária](link externo)` existe
+ * desde o 1º hub, mas cresceu sem teto de densidade — chegou a quase toda
+ * frase carregando os dois links, poluindo a leitura (achado ao vivo:
+ * anthropic-claude tinha 26 ocorrências, mercado-trabalho 40). A pesquisa
+ * de GEO que embasa a #4558 já registra que nenhuma técnica de otimização
+ * — densidade de citação inclusa — tem efeito causal estável e comprovado
+ * sobre ser citado por assistente (survey arXiv 2607.14035), então
+ * `[fonte primária]` não compra ganho de GEO mensurável; compra
+ * verificabilidade, com retorno decrescente rápido — a 2ª citação na mesma
+ * frase não verifica nada que a 1ª já não tenha resolvido. **Regra:** no
+ * máximo 1-2 `[fonte primária]` por `HubSection`, reservados pro dado mais
+ * duro/mais checável do trecho (percentual, valor de multa, decisão
+ * judicial, texto de lei) — nunca em manchete que já é a unidade de valor
+ * por si (ex: "a empresa X demitiu N pessoas"), onde o link interno já
+ * basta (a própria edição citada já linkou a fonte dela). Link interno
+ * (`diar.ia.br/p/...`) continua em TODA menção, sem teto — resolve um
+ * problema estrutural real e medido (auditoria de 10/08: 49 das 76 edições
+ * citadas pelo hub piloto não indexadas, 42 nunca rastreadas; o hub serve
+ * de link interno pra essas páginas órfãs).
+ *
  * Reusa a mesma infraestrutura de `build-livros-page.ts`/`build-cursos-page.ts`/
  * `render-archive.ts`: DS canônico (`curadoria-page.ts`), estrutura GEO
  * (`geo-faq.ts` — FAQ + JSON-LD FAQPage/Article + autoria), `seo-meta.ts`.
