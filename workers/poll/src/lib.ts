@@ -1231,9 +1231,9 @@ export function renderNicknameFormHtml(
   const optinHtml = showOptIn
     ? `\n    <label class="nick-optin"><input type="checkbox" name="optin" value="on"> Quero receber a ${applyBrandWordmark("diar.ia.br")} — newsletter gratuita com as novidades de IA e como usar melhor as IAs, 5 minutos por dia, seg-sex.</label>`
     : "";
-  const saveLabel = surface === "leaderboard" ? "Salvar" : "Salvar e ver o leaderboard";
+  const saveLabel = surface === "leaderboard" ? "Salvar" : "Salvar e ver o ranking";
   return `<div class="nick-box">
-  <p class="nick-title">Entre no leaderboard ${leaderboardPeriodWord}</p>
+  <p class="nick-title">Entre no ranking ${leaderboardPeriodWord}</p>
   <p class="nick-explain">Sem apelido você aparece como <code>${htmlEscape(maskEmail(nicknameForm.email))}</code> no ranking público.</p>
   <form action="/set-name" method="GET" class="nick-form">
     <input type="hidden" name="email" value="${htmlEscape(nicknameForm.email)}">
@@ -1292,8 +1292,8 @@ export function renderSubscribeBoxHtml(box: SubscribeBoxState, brand: Brand): st
     <input type="hidden" name="optin" value="on">
     ${brandHiddenInput(brand)}
     <div class="nick-actions">
-      <button type="submit" class="nick-save nick-save-primary">Assinar e ver o leaderboard</button>
-      <a class="nick-secondary" href="${htmlEscape(secondaryHref)}">Ver o leaderboard</a>
+      <button type="submit" class="nick-save nick-save-primary">Assinar e ver o ranking</button>
+      <a class="nick-secondary" href="${htmlEscape(secondaryHref)}">Ver o ranking</a>
     </div>
   </form>
 </div>`;

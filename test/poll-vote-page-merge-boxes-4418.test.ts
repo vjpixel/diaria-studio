@@ -123,16 +123,16 @@ describe("§2 — Caixa A fundida: sem e-mail, checkbox desmarcado por default (
 });
 
 describe("§2 — título deriva de BRAND_INFO.leaderboardPeriod, sem anglicismo 'nickname' (#4418)", () => {
-  it("clarice → 'Entre no leaderboard anual'; palavra 'nickname' ausente do texto visível", () => {
+  it("clarice → 'Entre no ranking anual'; palavra 'nickname' ausente do texto visível", () => {
     const html = votePageHtml("Acertou!", true, { email: "a@x.com", sig: "sig" }, null, null, "clarice");
-    assert.match(html, /Entre no leaderboard anual/);
+    assert.match(html, /Entre no ranking anual/);
     assert.doesNotMatch(html, /Defina seu nickname/);
     assert.doesNotMatch(stripStyleBlock(html), /nickname/i);
   });
 
-  it("diaria → 'Entre no leaderboard mensal'; palavra 'nickname' ausente do texto visível", () => {
+  it("diaria → 'Entre no ranking mensal'; palavra 'nickname' ausente do texto visível", () => {
     const html = votePageHtml("Acertou!", true, { email: "a@x.com", sig: "sig" }, null, null, "diaria");
-    assert.match(html, /Entre no leaderboard mensal/);
+    assert.match(html, /Entre no ranking mensal/);
     assert.doesNotMatch(html, /Defina seu nickname/);
     assert.doesNotMatch(stripStyleBlock(html), /nickname/i);
   });
@@ -164,19 +164,19 @@ describe("§2 — nota de rodapé .nick-note removida em TODAS as superfícies; 
 });
 
 describe("§2c — rótulos de botão nomeiam o destino (#4418)", () => {
-  it("Caixa A: botão diz 'Salvar e ver o leaderboard', nunca só 'Salvar'", () => {
+  it("Caixa A: botão diz 'Salvar e ver o ranking', nunca só 'Salvar'", () => {
     const html = renderNicknameFormHtml({ email: "a@x.com", sig: "sig" }, "clarice", true);
-    assert.match(html, /<button type="submit" class="nick-save">Salvar e ver o leaderboard<\/button>/);
+    assert.match(html, /<button type="submit" class="nick-save">Salvar e ver o ranking<\/button>/);
     assert.doesNotMatch(html, />Salvar<\/button>/);
   });
 
-  it("Caixa B: botão primário diz 'Assinar e ver o leaderboard'", () => {
+  it("Caixa B: botão primário diz 'Assinar e ver o ranking'", () => {
     const html = renderSubscribeBoxHtml({ email: "a@x.com", sig: "sig", nickname: "Ana" }, "clarice");
-    assert.match(html, /class="nick-save nick-save-primary">Assinar e ver o leaderboard<\/button>/);
+    assert.match(html, /class="nick-save nick-save-primary">Assinar e ver o ranking<\/button>/);
   });
 });
 
-// #4562: o teste acima ("Caixa A: botão diz 'Salvar e ver o leaderboard'")
+// #4562: o teste acima ("Caixa A: botão diz 'Salvar e ver o ranking'")
 // travava o rótulo pra QUALQUER contexto — mas "e ver o leaderboard" só faz
 // sentido na tela de VOTO (de lá, o leaderboard é de fato um destino novo).
 // No próprio /leaderboard (surface="leaderboard"), o mesmo texto seria
@@ -186,13 +186,13 @@ describe("§2c — rótulos de botão nomeiam o destino (#4418)", () => {
 // todo caller pré-#4562) — o teste original acima continua travando a
 // superfície de voto; esta suíte cobre a superfície de leaderboard.
 describe("§2c — rótulo de botão por superfície (#4562, sucessor do teste acima)", () => {
-  it("Caixa A com surface='leaderboard': botão diz só 'Salvar', nunca 'Salvar e ver o leaderboard'", () => {
+  it("Caixa A com surface='leaderboard': botão diz só 'Salvar', nunca 'Salvar e ver o ranking'", () => {
     const html = renderNicknameFormHtml({ email: "a@x.com", sig: "sig" }, "clarice", true, "leaderboard");
     assert.match(html, /<button type="submit" class="nick-save">Salvar<\/button>/);
-    assert.doesNotMatch(html, />Salvar e ver o leaderboard<\/button>/);
+    assert.doesNotMatch(html, />Salvar e ver o ranking<\/button>/);
   });
 
-  it("Caixa A sem surface (default): comportamento idêntico a surface='vote' — 'Salvar e ver o leaderboard'", () => {
+  it("Caixa A sem surface (default): comportamento idêntico a surface='vote' — 'Salvar e ver o ranking'", () => {
     const withDefault = renderNicknameFormHtml({ email: "a@x.com", sig: "sig" }, "clarice", true);
     const withExplicitVote = renderNicknameFormHtml({ email: "a@x.com", sig: "sig" }, "clarice", true, "vote");
     assert.equal(withDefault, withExplicitVote);
@@ -207,14 +207,14 @@ describe("§2c — rótulo de botão por superfície (#4562, sucessor do teste a
     const res = await worker.fetch(new Request(url.toString()), env, {} as ExecutionContext);
     const html = await res.text();
     assert.match(html, /<button type="submit" class="nick-save">Salvar<\/button>/);
-    assert.doesNotMatch(html, />Salvar e ver o leaderboard<\/button>/);
+    assert.doesNotMatch(html, />Salvar e ver o ranking<\/button>/);
   });
 
-  it("Caixa A via /vote e2e (votePageHtml): botão continua 'Salvar e ver o leaderboard' — superfície de voto intocada", async () => {
+  it("Caixa A via /vote e2e (votePageHtml): botão continua 'Salvar e ver o ranking' — superfície de voto intocada", async () => {
     const env = makeEnv();
     const res = await worker.fetch(voteReq("clarice", "vote-label@example.com", "A"), env);
     const html = await res.text();
-    assert.match(html, /<button type="submit" class="nick-save">Salvar e ver o leaderboard<\/button>/);
+    assert.match(html, /<button type="submit" class="nick-save">Salvar e ver o ranking<\/button>/);
   });
 });
 
@@ -272,7 +272,7 @@ describe("§2b — matriz A/B/nada, rendering e2e via /vote (#4418)", () => {
     assert.doesNotMatch(html, /type="checkbox"/);
     assert.match(html, /<p class="nick-kicker">Você está no ranking como Mariana\.<\/p>/);
     assert.doesNotMatch(html, /nick-kicker">[^<]*@/, "kicker não deve mostrar e-mail mascarado");
-    assert.match(html, /class="nick-secondary"[^>]*>Ver o leaderboard<\/a>/);
+    assert.match(html, /class="nick-secondary"[^>]*>Ver o ranking<\/a>/);
   });
 
   it("Caixa B descreve o produto: newsletter, de graça, 5 minutos, segunda a sexta (não só isca+botão)", () => {
@@ -333,7 +333,7 @@ describe("§2b — Caixa B funciona sem JS (#4418)", () => {
     assert.match(html, /<input type="hidden" name="optin" value="on">/);
     assert.match(html, /<input type="hidden" name="name" value="Ana">/);
     assert.doesNotMatch(html, /fetch\(/);
-    assert.match(html, /<a class="nick-secondary" href="[^"]+">Ver o leaderboard<\/a>/);
+    assert.match(html, /<a class="nick-secondary" href="[^"]+">Ver o ranking<\/a>/);
   });
 });
 
@@ -780,7 +780,7 @@ describe("§2b — resolveLeaderboardSubscribeBox: resolver da Caixa B (#4418, R
     const res = await worker.fetch(new Request(url.toString()), env, {} as ExecutionContext);
     const html = await res.text();
     assert.doesNotMatch(html, /<div class="nick-box nick-sub-box">/, "Caixa B nunca deve renderizar no leaderboard (#4562)");
-    assert.doesNotMatch(html, /Assinar e ver o leaderboard/);
+    assert.doesNotMatch(html, /Assinar e ver o ranking/);
     assert.doesNotMatch(html, /Você está no ranking como Leo\./);
   });
 
@@ -880,7 +880,7 @@ describe("#4420 — link de arquivo em /vote vira botão (fora de .footer-links)
     const footerMatch = /<p class="footer-links">[\s\S]*?<\/p>/.exec(html);
     assert.ok(footerMatch, "footer-links deve existir");
     assert.doesNotMatch(footerMatch![0], /Jogar edições passadas/, "o link de arquivo não deve mais estar dentro de .footer-links");
-    assert.match(footerMatch![0], /Ver leaderboard/, ".footer-links continua com os outros 2 links");
+    assert.match(footerMatch![0], /Ver ranking/, ".footer-links continua com os outros 2 links");
   });
 
   it("diaria: botão de arquivo NÃO aparece (regressão #3578 — só clarice)", async () => {

@@ -128,7 +128,7 @@ describe("isFirstEditionOfMonth (#1753)", () => {
  * Isto é o que faltou na 1ª versão do fix e o code-review pegou: o renderer só
  * OMITE o bloco quando period_slug é falsy (`if (!lbUrl) return ""`). Se o script
  * gravar um slug não-vazio com zero líderes, o renderer mostra o convite
- * "Acompanhe a leaderboard de {mês}" — reintroduzindo o bloco em toda edição.
+ * "Acompanhe o ranking de {mês}" — reintroduzindo o bloco em toda edição.
  *
  * Caminho não-1ª-do-mês faz short-circuit ANTES de qualquer fetch → offline-safe.
  */

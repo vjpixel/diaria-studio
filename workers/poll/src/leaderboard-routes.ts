@@ -810,7 +810,7 @@ export async function handleLeaderboardByMonth(
   // votou via o link e via "ainda não começou" em vez do próprio voto (260601).
   if (shouldShowMonthNotStarted(slugCmp, entries.length)) {
     return new Response(votePageHtml(
-      `O leaderboard de ${MONTH_NAMES_PT[parsed.month - 1]} de ${parsed.year} ainda não começou.`,
+      `O ranking de ${MONTH_NAMES_PT[parsed.month - 1]} de ${parsed.year} ainda não começou.`,
       false, null, null, null, brand,
     ), {
       status: 404, headers: { "Content-Type": "text/html;charset=utf-8" }
@@ -891,7 +891,7 @@ export async function handleLeaderboardByMonthJson(
 
   // Mês futuro sem votos ainda
   if (shouldShowMonthNotStarted(slugCmp, entries.length)) {
-    return json({ entries: [], period_slug: monthSlug, message: `O leaderboard de ${monthSlug} ainda não começou.` }, 200, env);
+    return json({ entries: [], period_slug: monthSlug, message: `O ranking de ${monthSlug} ainda não começou.` }, 200, env);
   }
 
   const scores = scoreByMonthEntriesToLeaderboard(entries);
@@ -1012,7 +1012,7 @@ export async function handleLeaderboardByYear(
   const entries = mergeYearEntries(perMonth);
 
   if (year > currentYear && entries.length === 0) {
-    return new Response(votePageHtml(`O leaderboard de ${year} ainda não começou.`, false, null, null, null, brand), {
+    return new Response(votePageHtml(`O ranking de ${year} ainda não começou.`, false, null, null, null, brand), {
       status: 404, headers: { "Content-Type": "text/html;charset=utf-8" }
     });
   }
@@ -1060,7 +1060,7 @@ function renderLeaderboardHtml(
   // #1905: título/copy/link por marca (diar.ia.br diário vs Clarice News mensal).
   const info = BRAND_INFO[brand];
   // #2006: "Leaderboard de 2026" (ano) vs "Leaderboard de Maio de 2026" (mês).
-  const heading = periodKind === "year" ? `Leaderboard de ${year}` : `Leaderboard de ${periodLabel} de ${year}`;
+  const heading = periodKind === "year" ? `Ranking de ${year}` : `Ranking de ${periodLabel} de ${year}`;
   const periodNoun = periodKind === "year" ? "este ano" : "esse mês";
   // #1092 + #1256: dense ranking — leitores empatados em (correct, total)
   // ocupam o mesmo número e o próximo grupo é +1 (1, 1, 2 — não 1, 1, 3).
@@ -1588,7 +1588,7 @@ export function renderArchiveListHtml(
   const pageTitle = `Arquivo ${htmlEscape(year)} — É IA? | ${info.name}`;
   const seoMeta = renderSeoMeta({
     title: pageTitle,
-    description: `Vote retroativamente nas edições de ${year} do jogo "É IA?" e concorra no leaderboard anual da ${info.name}.`,
+    description: `Vote retroativamente nas edições de ${year} do jogo "É IA?" e concorra no ranking anual da ${info.name}.`,
     path: archiveHref(brand, year),
     brand,
   });
@@ -1623,7 +1623,7 @@ ${renderBrandShellStyles()}
 <p class="kicker">É IA? — arquivo</p>
 <hr class="rule">
 <h1>Arquivo de ${htmlEscape(year)}</h1>
-<p class="sub">Vote nas edições passadas de ${htmlEscape(year)} — o seu voto conta pro <a href="${leaderboardHref(brand, year)}">leaderboard anual</a>.</p>
+<p class="sub">Vote nas edições passadas de ${htmlEscape(year)} — o seu voto conta pro <a href="${leaderboardHref(brand, year)}">ranking anual</a>.</p>
 ${rows}
 ${renderBrandFooter(brand)}
 </body>
@@ -1676,7 +1676,7 @@ export function renderArchiveVoteHtml(
     : "";
   const seoMeta = renderSeoMeta({
     title: pageTitle,
-    description: `Qual imagem foi gerada por IA? Vote na edição de ${dateLabel}${leaderboardYearNote} e valha ponto no leaderboard anual de ${year} da ${info.name}.`,
+    description: `Qual imagem foi gerada por IA? Vote na edição de ${dateLabel}${leaderboardYearNote} e valha ponto no ranking anual de ${year} da ${info.name}.`,
     path: archiveHref(brand, year, edition),
     brand,
   });
@@ -1723,7 +1723,7 @@ ${renderBrandShellStyles()}
 <p class="kicker">É IA?</p>
 <hr class="rule">
 <h1>Qual imagem foi gerada por IA?</h1>
-<p class="sub">Edição de ${dateLabel}${leaderboardYearNote} — vale ponto no leaderboard anual de ${htmlEscape(year)}.</p>
+<p class="sub">Edição de ${dateLabel}${leaderboardYearNote} — vale ponto no ranking anual de ${htmlEscape(year)}.</p>
 <form action="/vote" method="GET">
   <input type="hidden" name="edition" value="${htmlEscape(edition)}">
   ${brandHidden}

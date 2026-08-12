@@ -1323,8 +1323,8 @@ export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): stri
   if (ranked.length === 0) {
     if (!lbUrl) return "";
     const label = eia.leaderboardPeriod
-      ? `Acompanhe a leaderboard de ${eia.leaderboardPeriod}`
-      : "Acompanhe a leaderboard do mês";
+      ? `Acompanhe o ranking de ${eia.leaderboardPeriod}`
+      : "Acompanhe o ranking do mês";
     return `      <tr><td align="left" style="padding:8px 0 0 0;">
         <p style="${paragraphStyle}">🏆 <a href="${lbUrl}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">${esc(label)}</a></p>
       </td></tr>`;
@@ -1359,7 +1359,7 @@ export function renderLeaderboardLinkRow(paragraphStyle: string): string {
   // (era só o texto do link, sem padding — alvo de toque apertado em mobile).
   const linkStyle = `color:${TEAL};text-decoration:underline;font-weight:bold;display:inline-block;padding:4px 0;`;
   return `      <tr><td align="left" style="padding:8px 0 0 0;">
-        <p style="${paragraphStyle}">Veja o ranking de quem mais acerta → <a href="${url}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">leaderboard</a></p>
+        <p style="${paragraphStyle}">Veja o ranking de quem mais acerta → <a href="${url}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">ranking</a></p>
       </td></tr>`;
 }
 

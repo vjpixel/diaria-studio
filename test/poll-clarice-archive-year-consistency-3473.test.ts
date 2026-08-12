@@ -127,15 +127,15 @@ describe("renderArchiveVoteHtml (#3473) — subcopy sem contradição ano-envio 
     assert.match(html, /Edição de janeiro de 2027/);
     // Mas agora reconcilia explicitamente com o ano de CONTEÚDO/leaderboard.
     assert.match(html, /\(conteúdo de dezembro de 2026\)/);
-    assert.match(html, /vale ponto no leaderboard anual de 2026/);
+    assert.match(html, /vale ponto no ranking anual de 2026/);
     // Meta description reconciliada também.
-    assert.match(html, /Vote na edição de janeiro de 2027 \(conteúdo de dezembro de 2026\) e valha ponto no leaderboard anual de 2026/);
+    assert.match(html, /Vote na edição de janeiro de 2027 \(conteúdo de dezembro de 2026\) e valha ponto no ranking anual de 2026/);
   });
 
   it("mês comum (260531, conteúdo=maio→envio=junho) → subcopy SEM anotação extra (só 1 ano em jogo)", async () => {
     const res = renderArchiveVoteHtml("260531", "2026", "clarice");
     const html = await res.text();
-    assert.match(html, /<p class="sub">Edição de junho de 2026 — vale ponto no leaderboard anual de 2026\.<\/p>/);
+    assert.match(html, /<p class="sub">Edição de junho de 2026 — vale ponto no ranking anual de 2026\.<\/p>/);
     assert.doesNotMatch(html, /conteúdo de/);
   });
 

@@ -38,7 +38,7 @@ describe("renderLeaderboardTop1Row — link mensal (#1345)", () => {
       STYLE,
     );
     assert.match(html, new RegExp(`href="${LB}/2026-06"`));
-    assert.match(html, /Acompanhe a leaderboard de Junho/);
+    assert.match(html, /Acompanhe o ranking de Junho/);
     assert.match(html, /🏆/);
   });
 

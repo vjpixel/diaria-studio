@@ -36,7 +36,7 @@ import type { Env } from "../workers/poll/src/index.ts";
 // ── #3109 — texto do form de nickname por brand ─────────────────────────────
 
 describe("#3109 — form de nickname deriva 'mensal'/'anual' de BRAND_INFO.leaderboardPeriod", () => {
-  it("brand diaria (leaderboardPeriod: 'month') → 'leaderboard mensal'", () => {
+  it("brand diaria (leaderboardPeriod: 'month') → 'ranking mensal'", () => {
     const html = votePageHtml(
       "Voto registrado!",
       true,
@@ -47,12 +47,13 @@ describe("#3109 — form de nickname deriva 'mensal'/'anual' de BRAND_INFO.leade
     );
     // #4418: título mudou de "Defina seu nickname pra aparecer no leaderboard
     // {…}" pra "Entre no leaderboard {…}" — a derivação por brand (mensal/
-    // anual) continua a mesma garantia, texto atualizado.
-    assert.match(html, /Entre no leaderboard mensal/);
-    assert.doesNotMatch(html, /Entre no leaderboard anual/);
+    // anual) continua a mesma garantia, texto atualizado. #5107: "leaderboard"
+    // → "ranking" na cópia (rótulo em inglês era o único anglicismo).
+    assert.match(html, /Entre no ranking mensal/);
+    assert.doesNotMatch(html, /Entre no ranking anual/);
   });
 
-  it("brand clarice (leaderboardPeriod: 'year') → 'leaderboard anual', NÃO 'mensal'", () => {
+  it("brand clarice (leaderboardPeriod: 'year') → 'ranking anual', NÃO 'mensal'", () => {
     const html = votePageHtml(
       "Voto registrado!",
       true,
@@ -61,15 +62,15 @@ describe("#3109 — form de nickname deriva 'mensal'/'anual' de BRAND_INFO.leade
       null,
       "clarice",
     );
-    assert.match(html, /Entre no leaderboard anual/);
-    assert.doesNotMatch(html, /Entre no leaderboard mensal/);
+    assert.match(html, /Entre no ranking anual/);
+    assert.doesNotMatch(html, /Entre no ranking mensal/);
   });
 
   it("sem nicknameForm → form não aparece, texto ausente nos 2 brands (guarda: não afeta o caminho sem form)", () => {
     const htmlDiaria = votePageHtml("Voto registrado!", true, null, null, null, "diaria");
     const htmlClarice = votePageHtml("Voto registrado!", true, null, null, null, "clarice");
-    assert.doesNotMatch(htmlDiaria, /Entre no leaderboard/);
-    assert.doesNotMatch(htmlClarice, /Entre no leaderboard/);
+    assert.doesNotMatch(htmlDiaria, /Entre no ranking/);
+    assert.doesNotMatch(htmlClarice, /Entre no ranking/);
   });
 });
 

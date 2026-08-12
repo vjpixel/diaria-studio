@@ -1,7 +1,7 @@
 /**
  * test/leaderboard-month-not-started.test.ts (260601)
  *
- * shouldShowMonthNotStarted: a tela "O leaderboard de {mês} ainda não começou"
+ * shouldShowMonthNotStarted: a tela "O ranking de {mês} ainda não começou"
  * só aparece pra mês futuro SEM votos. Bug 260601: edição publica dia 1º (junho)
  * mas, na data de envio (31/mai), currentMonthSlugBrt=maio → junho era "futuro"
  * e a página mostrava "ainda não começou" mesmo já tendo votos no bucket de junho.
