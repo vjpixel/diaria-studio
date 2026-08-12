@@ -267,6 +267,15 @@ describe("planAlarmReconciliation (#5112 item 3 — puro)", () => {
     };
     assert.deepEqual(planAlarmReconciliation([], state, 2), []);
   });
+
+  it("#5172: closeAfterRuns=3, streak no meio da faixa (1->2) -> advance_streak, nunca comment/close de novo", () => {
+    const key = alarmIssueStateKey(FINDING_A.check, FINDING_A.fingerprint);
+    const state: AlarmIssuesState = {
+      [key]: { issueNumber: 1, url: "u", missingStreak: 1, closedAt: null },
+    };
+    const actions = planAlarmReconciliation([], state, 3);
+    assert.deepEqual(actions, [{ kind: "advance_streak", key }]);
+  });
 });
 
 // ─── applyAlarmReconciliation (I/O injetado) ───────────────────────────────
@@ -381,6 +390,53 @@ describe("applyAlarmReconciliation (#5112) — cenários fim-a-fim da issue", ()
     assert.match(findingOutcomes[0].error ?? "", /rate limited/);
     const key = alarmIssueStateKey(FINDING_A.check, FINDING_A.fingerprint);
     assert.equal(nextState[key], undefined, "estado não deveria ganhar entry pra um achado que falhou ao criar");
+  });
+
+  it("#5172 REGRESSÃO: closeAfterRuns=3, 3 execuções consecutivas sem o achado -> fecha na 3ª, não antes, não nunca", () => {
+    const key = alarmIssueStateKey(FINDING_A.check, FINDING_A.fingerprint);
+    let commentCount = 0;
+    let closeCount = 0;
+    const run: GhRunFn = (args) => {
+      if (args[0] === "issue" && args[1] === "comment") {
+        commentCount++;
+        return ok("");
+      }
+      if (args[0] === "issue" && args[1] === "close") {
+        closeCount++;
+        return ok("");
+      }
+      throw new Error(`unexpected: ${args.join(" ")}`);
+    };
+    let state: AlarmIssuesState = {
+      [key]: { issueNumber: 1, url: "u", missingStreak: 0, closedAt: null },
+    };
+
+    // Execução 1: 1ª ausência -> comenta, missingStreak 0 -> 1. Antes do fix,
+    // isto já ficava certo (era o caminho `nextStreak === 1`).
+    let result = applyAlarmReconciliation([], state, { cwd: CWD, closeAfterRuns: 3, run });
+    state = result.nextState;
+    assert.equal(commentCount, 1);
+    assert.equal(closeCount, 0);
+    assert.equal(state[key].missingStreak, 1);
+    assert.equal(state[key].closedAt, null);
+
+    // Execução 2: 2ª ausência consecutiva -> nem comenta nem fecha ainda
+    // (nextStreak=2 < closeAfterRuns=3), MAS o streak precisa avançar pra 2
+    // — é exatamente o incremento que #5172 perdia (ficava travado em 1).
+    result = applyAlarmReconciliation([], state, { cwd: CWD, closeAfterRuns: 3, run });
+    state = result.nextState;
+    assert.equal(commentCount, 1, "não deveria comentar de novo na 2ª ausência");
+    assert.equal(closeCount, 0, "ainda não é hora de fechar (nextStreak=2 < 3)");
+    assert.equal(state[key].missingStreak, 2, "REGRESSÃO #5172: sem o fix ficaria travado em 1");
+    assert.equal(state[key].closedAt, null);
+
+    // Execução 3: 3ª ausência consecutiva -> agora fecha (nextStreak=3 >= 3).
+    const now = new Date("2026-08-14T00:00:00Z");
+    result = applyAlarmReconciliation([], state, { cwd: CWD, closeAfterRuns: 3, run, now });
+    state = result.nextState;
+    assert.equal(closeCount, 1, "deveria fechar exatamente na 3ª execução consecutiva");
+    assert.equal(state[key].missingStreak, 3);
+    assert.equal(state[key].closedAt, now.toISOString());
   });
 
   it("achado reaparece depois de fechado -> volta a ser tratado como pendente (closedAt reseta pra null)", () => {

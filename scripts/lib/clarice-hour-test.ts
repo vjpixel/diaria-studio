@@ -69,6 +69,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { getArg, hasFlag, isMainModule } from "./cli-args.ts";
+import { brtHourToUtcHourSameDay } from "./clarice-wave-plan.ts";
 
 /** Duas células é o desenho da #5140; o teto existe pra que um `--hours` com
  *  typo (ex: "6,10,14,18,22") não fatie a onda em pedaços pequenos demais pra
@@ -123,9 +124,14 @@ export function normalizeHours(hours: readonly number[]): number[] {
     );
   }
   for (const h of uniq) {
-    if (!Number.isInteger(h) || h < 0 || h > 23) {
-      throw new Error(`hora BRT inválida: ${h} — esperado inteiro entre 0 e 23.`);
-    }
+    // Delega a validação de range pra `brtHourToUtcHourSameDay` — mesma
+    // função que `clarice-envio-run.ts` chama depois pra montar `scheduledAt`
+    // (#5171). Sem isto, uma hora 21-23 passava aqui e só lançava depois de
+    // `clarice-split-group-cells`/`clarice-import-waves --execute` já terem
+    // escrito na Brevo, deixando listas órfãs. A função lançada aqui já
+    // cobre "não é inteiro 0-23" e "cai no dia seguinte em UTC (>20)" com uma
+    // única fonte de verdade pro range aceito.
+    brtHourToUtcHourSameDay(h);
   }
   return uniq.sort((a, b) => a - b);
 }
