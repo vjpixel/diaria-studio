@@ -41,6 +41,17 @@
  *     de HOJE deveria ter saído e o status não é "sent", a rodada REPORTA e
  *     NÃO ESCALA volume até resolver (mas continua tentando planejar a de
  *     amanhã — não trava a rampa inteira por um incidente pontual).
+ *   - Guard de onda JÁ EXISTENTE pra `sendDate` (`detectExistingWaveForSendDate`,
+ *     #5058) — o oposto do guard acima: se JÁ existe onda pra AMANHÃ (retry
+ *     manual + task agendada, ou 2 disparos concorrentes), a rodada PARA
+ *     (code 0) em vez de montar uma 2ª onda — o dedup por contato não evita
+ *     que o VOLUME do dia dobre.
+ *   - Retry com backoff pra falha TRANSITÓRIA de `clarice-plan-wave.ts`
+ *     (`stepWithTransientRetry`, #5058) — 429/503 do dashboard (rate limit da
+ *     Brevo) não é erro de lógica; a rodada espera (honrando `retryAfterSecs`
+ *     quando a Brevo informou) e repete até 3× antes de desistir, em vez de
+ *     abortar na 1ª falha (achado ao vivo 260811: a onda de 12/08 só existiu
+ *     porque um humano montou à mão).
  *
  * Kill switch: `data/clarice-envio-enabled.json` — default LIGADO quando
  * ausente (decisão do editor, "ligada desde o início" — ver
@@ -188,6 +199,10 @@ export interface EnvioRunDeps {
    * seam, os testes de integração desta função leriam o `data/` REAL da
    * máquina e o assunto travado em produção vazaria pras asserções. */
   readAbcState: () => ClariceAbcStateRead;
+  /** #5058 — sleep injetável (mesmo padrão de `_sleep` em brevo-client.ts).
+   * Usado só pelo retry de falha TRANSITÓRIA de `clarice-plan-wave` — sem o
+   * seam, os testes de retry esperariam de verdade (minutos). */
+  sleep: (ms: number) => Promise<void>;
 }
 
 export function productionDeps(rootDir: string = ROOT): EnvioRunDeps {
@@ -199,6 +214,7 @@ export function productionDeps(rootDir: string = ROOT): EnvioRunDeps {
     execMode: () => detectExecMode({ projectRoot: rootDir }),
     resolveLatestCycle: () => resolveLatestMonthlyCycleFromDisk(),
     readAbcState: () => readClariceAbcState(rootDir),
+    sleep: (ms: number) => new Promise((r) => setTimeout(r, ms)),
   };
 }
 
@@ -260,6 +276,86 @@ function step<T = unknown>(
     throw new EnvioAbort(`❌ ${label} falhou (exit ${result.code}): ${detail}`);
   }
   return { result, json: parseStepJson<T>(result.stdout) };
+}
+
+// ---------------------------------------------------------------------------
+// #5058 — retry com backoff pra falha TRANSITÓRIA de `clarice-plan-wave.ts`
+// (429/503 do dashboard — exit code 3, ver TransientDashboardError nesse
+// script). Achado ao vivo 260811: a task das 19:00 morreu na 1ª falha de
+// rate limit (`retryAfterSecs: 258`, ~4min) sem nenhum mecanismo de retry —
+// a onda do dia seguinte só existiu porque um humano montou à mão. 3
+// tentativas totais (mesma convenção de `MAX_ATTEMPTS` em brevo-client.ts),
+// honrando `retryAfterSecs` quando a Brevo informou; sem ele, um fallback
+// conservador. Capped pra nunca pendurar a rodada indefinidamente numa
+// leitura de header maliciosa/absurda.
+// ---------------------------------------------------------------------------
+
+const TRANSIENT_EXIT_CODE = 3;
+const TRANSIENT_RETRY_MAX_ATTEMPTS = 3;
+const TRANSIENT_RETRY_FALLBACK_MS = 60_000; // 1min — quando retryAfterSecs não veio
+// 35min — cobre os 2 valores REAIS já observados (258s em 260811, e
+// `retryAfterSecs: 1916` ≈32min no achado ao vivo de 05/08 documentado em
+// .claude/skills/diaria-clarice-envio/SKILL.md) com folga, sem pendurar a
+// rodada indefinidamente numa leitura de header absurda. A task roda às
+// 19:00 com horas de sobra antes do envio das 06:00 — esperar até ~1h no
+// pior caso (2 esperas de 35min pras 3 tentativas) não compete com nenhum
+// prazo real.
+const TRANSIENT_RETRY_CAP_MS = 35 * 60_000;
+
+interface TransientStepSignal {
+  transient?: boolean;
+  retryAfterSecs?: number | null;
+  status?: number;
+  reason?: string;
+}
+
+/**
+ * Variante de `step()` que reconhece o exit code 3 (falha TRANSITÓRIA,
+ * ver docstring acima) e retenta com backoff em vez de abortar a rodada na
+ * 1ª falha. Qualquer outro código fora de `okCodes` continua abortando
+ * imediatamente — mesma disciplina de `step()`, só o ramo 3 é novo.
+ */
+async function stepWithTransientRetry<T = unknown>(
+  deps: EnvioRunDeps,
+  report: ReportBuilder,
+  label: string,
+  scriptRelPath: string,
+  args: string[],
+  okCodes: number[] = [0],
+): Promise<{ result: StepResult; json: T | undefined }> {
+  for (let attempt = 1; attempt <= TRANSIENT_RETRY_MAX_ATTEMPTS; attempt++) {
+    report.note(attempt === 1 ? `▶ ${label}` : `▶ ${label} (retry ${attempt}/${TRANSIENT_RETRY_MAX_ATTEMPTS})`);
+    const result = deps.exec(scriptRelPath, args);
+    if (result.stderr.trim()) console.error(result.stderr.trim());
+    if (okCodes.includes(result.code)) {
+      return { result, json: parseStepJson<T>(result.stdout) };
+    }
+    if (result.code === TRANSIENT_EXIT_CODE) {
+      const signal = parseStepJson<TransientStepSignal>(result.stdout);
+      if (attempt < TRANSIENT_RETRY_MAX_ATTEMPTS) {
+        const waitMs = Math.min(
+          signal?.retryAfterSecs != null && signal.retryAfterSecs >= 0
+            ? signal.retryAfterSecs * 1000
+            : TRANSIENT_RETRY_FALLBACK_MS,
+          TRANSIENT_RETRY_CAP_MS,
+        );
+        report.note(
+          `⚠️  ${label}: falha TRANSITÓRIA (${signal?.reason ?? "rate limit do dashboard"}) — ` +
+            `aguardando ${Math.round(waitMs / 1000)}s antes de tentar de novo (tentativa ${attempt}/${TRANSIENT_RETRY_MAX_ATTEMPTS}).`,
+        );
+        await deps.sleep(waitMs);
+        continue;
+      }
+      throw new EnvioAbort(
+        `❌ ${label}: falha TRANSITÓRIA persistiu após ${TRANSIENT_RETRY_MAX_ATTEMPTS} tentativas ` +
+          `(${signal?.reason ?? "rate limit do dashboard"}) — desistindo nesta rodada.`,
+      );
+    }
+    const detail = result.stderr.trim().split("\n").slice(-6).join(" | ") || "(sem stderr)";
+    throw new EnvioAbort(`❌ ${label} falhou (exit ${result.code}): ${detail}`);
+  }
+  // Inalcançável — o loop acima sempre retorna ou lança.
+  throw new EnvioAbort(`❌ ${label}: loop de retry encerrado sem resultado (bug).`);
 }
 
 // ---------------------------------------------------------------------------
@@ -428,6 +524,61 @@ export function detectMissedWaveToday(
 }
 
 // ---------------------------------------------------------------------------
+// Guard de onda JÁ EXISTENTE pra `sendDate` (#5058, nota relacionada) — o
+// oposto de `detectMissedWaveToday`: aquele cobre HOJE (onda que deveria ter
+// saído e não saiu); este cobre AMANHÃ (a data que ESTA rodada está prestes
+// a planejar), pra nunca montar uma 2ª onda pro mesmo dia.
+// ---------------------------------------------------------------------------
+
+export interface ExistingWaveForSendDate {
+  key: string;
+  status: string;
+  scheduledAt: string;
+}
+
+/**
+ * `clarice-envio-run.ts` não verificava se já existia onda agendada pra
+ * `sendDate` antes de planejar a próxima — `detectMissedWaveToday` só olha o
+ * dia de HOJE. Rodar o orquestrador 2× na mesma janela (retry manual + task
+ * agendada, ou 2 disparos concorrentes do systemd) montaria uma SEGUNDA onda
+ * pra mesma manhã: o dedup por contato (`sent-or-queued.json` + guard de
+ * campanha comprometida) impede que alguém receba 2 e-mails, mas o VOLUME do
+ * dia dobraria, porque `baseVolumeFromLastSendDay` deriva do último dia
+ * ENVIADO e não enxerga a onda já enfileirada (ainda não propagada ao store
+ * local) — um dia de 3.948 viraria ~8,5k, muito além do teto de +25%/dia do
+ * motor do #5025.
+ *
+ * `status === "suspended"` é excluído — é o estado CANCELADO explícito
+ * (freio STOP via `clarice-envio-guard.ts`), não uma onda viva competindo
+ * pelo mesmo dia; qualquer outro status que `state.waves` de fato carrega
+ * (`queued`, `sent`, `in_process`, ...) conta como "já existe" — melhor
+ * parar e exigir reconciliação manual do que arriscar dobrar o volume.
+ *
+ * Limite conhecido: `/api/campaigns?includeScheduled=1` só devolve
+ * `sent`+`queued` (nunca `draft` — ver `buildCampaignsResponse` no Worker),
+ * então uma onda PARCIALMENTE montada onde só o `--create` rodou (campanha
+ * ainda "draft", `--schedule` não chegou a rodar — ver "ONDA PARCIALMENTE
+ * MONTADA" no Passo 7 abaixo) fica INVISÍVEL pra este guard. Não é uma
+ * lacuna nova deste guard — é o mesmo estado que o comentário do Passo 7 já
+ * documenta como exigindo reconciliação manual; este guard cobre
+ * especificamente o caso que a nota do #5058 descreve (onda `queued`/`sent`
+ * dobrando o volume), não o caso "draft" órfão, que precisa de outro
+ * mecanismo se vier a importar.
+ */
+export function detectExistingWaveForSendDate(
+  waves: ReadonlyArray<Pick<WaveState, "key" | "status" | "scheduledAt">>,
+  sendDate: string,
+): ExistingWaveForSendDate[] {
+  const matches: ExistingWaveForSendDate[] = [];
+  for (const w of waves) {
+    if (!w.scheduledAt || w.status === "suspended") continue;
+    if (brtDayKey(w.scheduledAt) !== sendDate) continue;
+    matches.push({ key: w.key, status: w.status, scheduledAt: w.scheduledAt });
+  }
+  return matches;
+}
+
+// ---------------------------------------------------------------------------
 // Orquestração principal.
 // ---------------------------------------------------------------------------
 
@@ -503,7 +654,11 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
     const sendDate = sendDateBrt(now);
     report.note(`data de envio desta rodada: ${sendDate} (06:00 BRT / 09:00 UTC amanhã).`);
 
-    const planStep = step<WaveProposal>(
+    // #5058 — retry com backoff em vez de `step()`: `clarice-plan-wave.ts`
+    // sinaliza exit code 3 quando o dashboard falha por rate limit (429/503)
+    // transitório, e esta variante espera + repete em vez de abortar a
+    // rodada na 1ª falha (ver TRANSIENT_RETRY_* acima).
+    const planStep = await stepWithTransientRetry<WaveProposal>(
       deps,
       report,
       "clarice-plan-wave",
@@ -525,6 +680,30 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
         `⚠️  ONDA PERDIDA: "${missed.key}" estava agendada pra ${missed.scheduledAt} mas status="${missed.status}" (esperado "sent"). ` +
           "Não escalando volume nesta rodada até isso ser investigado — planejamento de amanhã segue, sem crescer.",
       );
+    }
+
+    // --- Guard de onda JÁ EXISTENTE pra `sendDate` (#5058, nota relacionada) ---
+    // `detectMissedWaveToday` só cobre HOJE (onda que deveria ter saído e não
+    // saiu); este é o caso oposto — uma onda que JÁ existe (criada/agendada/
+    // enviada) pra AMANHÃ, a data que esta MESMA rodada está prestes a
+    // planejar. Sem isto, rodar o orquestrador 2× na mesma janela (retry
+    // manual + task agendada, ou 2 disparos concorrentes) monta uma SEGUNDA
+    // onda pro mesmo dia — o dedup por contato (`sent-or-queued.json`) evita
+    // duplicidade de ENVIO, mas o VOLUME do dia dobraria, porque
+    // `baseVolumeFromLastSendDay` deriva do último dia ENVIADO e não enxerga
+    // a onda já enfileirada (ainda não propagada ao store local).
+    const existingForSendDate = detectExistingWaveForSendDate(proposal.state.waves, sendDate);
+    if (existingForSendDate.length > 0) {
+      report.note(
+        `⚠️  ONDA JÁ EXISTE pra ${sendDate}: ` +
+          existingForSendDate.map((w) => `"${w.key}" (status="${w.status}")`).join(", ") +
+          " — não vou montar uma 2ª onda pro mesmo dia (rodada concorrente/retry já cobriu esta data). Nada a fazer nesta rodada.",
+      );
+      lockPath && releaseEnvioLock(lockPath);
+      lockPath = null;
+      const reportId = `envio-${aammdd}-onda-ja-existe`;
+      writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice envio ${aammdd} — onda já existe pra ${sendDate}`, report.build());
+      return { code: 0, reportId, reportMarkdown: report.build() };
     }
 
     // --- Blockers estruturais que NÃO dependem do semáforo antigo (aquele foi substituído). ---
@@ -673,7 +852,8 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
         report.note(`fila (${queueAvailable}) menor que o desejado (${probe.volume}) — rodando MV sob demanda (déficit: ${proposal.mvOnDemandPlan.deficit}, custo estimado US$${proposal.mvOnDemandPlan.estimatedCostUsd.toFixed(2)}).`);
         step(deps, report, "clarice-mv-ondemand", "scripts/clarice-mv-ondemand.ts", ["--cycle", cycle, "--dates", sendDate]);
         step(deps, report, "clarice-build-db (pós-MV)", "scripts/clarice-build-db.ts", []);
-        const replan = step<WaveProposal>(
+        // #5058 — mesma retry com backoff da 1ª chamada (Passo 1) acima.
+        const replan = await stepWithTransientRetry<WaveProposal>(
           deps,
           report,
           "clarice-plan-wave (pós-MV)",
