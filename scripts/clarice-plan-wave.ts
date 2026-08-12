@@ -42,6 +42,7 @@
  * consultado" de pé — nunca finge que validou o que não validou.
  */
 
+import { resolve } from "node:path";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import {
   excludeCommittedToQueuedCampaigns,
@@ -52,6 +53,7 @@ import { brevoGet, fetchCommittedCampaignListIds } from "./lib/brevo-client.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { requireCycleArg, CLARICE_BASE } from "./lib/clarice-paths.ts";
+import { readClariceAbcState, lockedSubjectFromState, describeAbcState } from "./lib/clarice-abc-state.ts";
 import { readNovosState } from "./lib/clarice-novos-state.ts";
 import {
   buildWaveProposal,
@@ -267,18 +269,35 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const cycle = requireCycleArg(argv);
   const dates = parseDatesArg(getArg(argv, "dates"));
+  // #5055: `--locked-subject` continua existindo (override pontual, ex:
+  // simular o encerramento antes de gravá-lo), mas o caminho NORMAL é o
+  // estado durável em `data/clarice-abc-state.json`. Sem esse fallback, a
+  // decisão "o teste acabou" continuaria morrendo no fim de cada invocação —
+  // era exatamente o buraco da #5055.
+  // Raiz do REPO (não `process.cwd()`): este script é spawnado por
+  // `clarice-envio-run.ts`, e um cwd diferente faria a leitura cair pro
+  // default `aberto` — o orquestrador então abortaria por divergência com o
+  // próprio estado que ele acabou de ler. Mesmo `ROOT` do irmão.
+  const abcState = readClariceAbcState(resolve(new URL("..", import.meta.url).pathname));
+  const lockedSubject = getArg(argv, "locked-subject") || lockedSubjectFromState(abcState);
+
   const proposal = await planWave({
     cycle,
     dates,
     dbPath: getArg(argv, "db") || DEFAULT_DB_PATH,
     dashboardUrl: getArg(argv, "dashboard-url") || DEFAULT_DASHBOARD_URL,
-    lockedSubject: getArg(argv, "locked-subject") || null,
+    lockedSubject,
   });
 
   if (hasFlag(argv, "json")) {
     console.log(JSON.stringify(proposal, null, 2));
   } else {
     console.log(renderWaveProposal(proposal));
+    // #5055 item 5 — o gate mostra de ONDE veio a recomendação A/B/C, com data
+    // e motivo, pra que "por que isso saiu com 1 assunto?" não vire arqueologia.
+    console.log(`\n── Estado do teste A/B/C (#5055) ──\n  ${describeAbcState(abcState)}`);
+    if (abcState.rationale) console.log(`  motivo: ${abcState.rationale}`);
+    if (abcState.invalidReason) console.log(`  ⚠️  estado ilegível (${abcState.invalidReason}) — recalculando como ABERTO.`);
   }
   // Exit 2 com bloqueio de pé — a skill checa o código, não o texto, pra
   // decidir se pode oferecer "sim" no gate.

@@ -439,6 +439,50 @@ describe("recommendAbcAction (#4657)", () => {
     assert.match(r.rationale, /assunto único/);
   });
 
+  // -------------------------------------------------------------------------
+  // #5055 — o teste encerrado NÃO REABRE por recálculo, e não congela o volume
+  // -------------------------------------------------------------------------
+
+  it('#5055: encerrado + tabela que sozinha diria "continuar" (p ≥ 0,05) → travar mesmo assim', () => {
+    // Este é o coração da #5055. Sem o estado durável, a onda de 12/08/2026
+    // saiu com 3 assuntos porque o recálculo devolveu `continuar` (p 0,2715)
+    // DEPOIS de o editor já ter encerrado o teste. Se alguém remover o ramo
+    // do `lockedSubject`, este teste quebra.
+    const naoSignificativa = table({ significantClick: false, pValue: 0.2715, leaderClickRate: "A" });
+    assert.equal(recommendAbcAction(naoSignificativa).action, "continuar", "pré-condição: sem trava, reabriria");
+
+    const r = recommendAbcAction(naoSignificativa, { lockedSubject: "Assunto travado" });
+    assert.equal(r.action, "travar");
+    assert.equal(r.winner, null, "encerramento editorial não inventa vencedora estatística");
+    assert.match(r.rationale, /Assunto travado/);
+  });
+
+  it("#5055: encerrado + poder baixo → SEM ressalva, pra que o passo de volume não seja zerado", () => {
+    // `clarice-envio-run.ts` zera o passo adaptativo quando `caveats` não é
+    // vazio. Com o teste encerrado não existe teste pra ter poder nenhum, então
+    // a ressalva de poder baixo (#4559) não pode sobreviver — era ela que
+    // fechava o laço "base pequena → poder baixo → passo zerado → base nunca
+    // cresce". Uma `minDetectableLiftRelative` altíssima aqui é justamente o
+    // caso que geraria a ressalva se o teste estivesse aberto.
+    const poderBaixo = table({ minDetectableLiftRelative: 0.9, attributionUnknown: true, suspectedDriftDays: ["2026-08-04"] });
+    assert.ok(recommendAbcAction(poderBaixo).caveats.length > 0, "pré-condição: aberto, esta tabela gera ressalvas");
+
+    const r = recommendAbcAction(poderBaixo, { lockedSubject: "Assunto travado" });
+    assert.equal(r.action, "travar");
+    assert.deepEqual(r.caveats, [], "teste encerrado não tem ressalva de poder — nada zera o passo");
+    assert.equal(r.metric, "nenhuma", "nenhuma métrica sustenta a decisão: ela é editorial, não estatística");
+  });
+
+  it("#5055: assunto travado vazio/nulo não trava — cai no cálculo normal", () => {
+    // Espelha a invariante do lado do estado (`encerrado` sem subject é
+    // inválido): mesmo que um caller passe string vazia, o comportamento é o
+    // pré-#5055, nunca "travar num assunto vazio".
+    for (const vazio of [null, undefined, ""]) {
+      const r = recommendAbcAction(table({ significantClick: false, pValue: 0.5 }), { lockedSubject: vazio });
+      assert.equal(r.action, "continuar", `lockedSubject=${JSON.stringify(vazio)} não pode travar`);
+    }
+  });
+
   it("significativo e SEM ressalva → travar, declarando a métrica", () => {
     const r = recommendAbcAction(table());
     assert.equal(r.action, "travar");

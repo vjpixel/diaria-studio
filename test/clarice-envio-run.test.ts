@@ -25,6 +25,7 @@ import {
 } from "../scripts/clarice-envio-run.ts";
 import type { WaveProposal, WaveState } from "../scripts/lib/clarice-wave-plan.ts";
 import type { ResolveLatestMonthlyCycleResult } from "../scripts/lib/mensal/monthly-paths.ts";
+import type { ClariceAbcStateRead } from "../scripts/lib/clarice-abc-state.ts";
 import { acquireEnvioLock } from "../scripts/lib/clarice-envio-lock.ts";
 
 // ---------------------------------------------------------------------------
@@ -143,7 +144,29 @@ function baseDeps(rootDir: string, overrides: Partial<EnvioRunDeps> = {}): Envio
     isEnabled: () => true,
     execMode: () => "local",
     resolveLatestCycle: () => ({ cycle: CYCLE, subject: "x", fallback: false, checked: [] }) as ResolveLatestMonthlyCycleResult,
+    // #5055 — default ABERTO (o do arquivo ausente). Injetado em vez de lido
+    // de `rootDir`: sem este seam, estes testes leriam `data/clarice-abc-state.json`
+    // da máquina real e o assunto travado em produção vazaria pras asserções.
+    readAbcState: () => abcAberto(),
     ...overrides,
+  };
+}
+
+/** Estado "teste A/B/C aberto" — o default de arquivo ausente. */
+function abcAberto(): ClariceAbcStateRead {
+  return { status: "aberto", subject: null, winner: null, decidedAt: null, decidedBy: null, rationale: null, invalidReason: null };
+}
+
+/** Estado "teste A/B/C encerrado" com o assunto travado pelo editor. */
+function abcEncerrado(subject: string): ClariceAbcStateRead {
+  return {
+    status: "encerrado",
+    subject,
+    winner: null,
+    decidedAt: "2026-08-12T00:00:00.000Z",
+    decidedBy: "editor",
+    rationale: "encerrado no chat",
+    invalidReason: null,
   };
 }
 
@@ -204,6 +227,23 @@ describe("clarice-envio-run (#5026)", () => {
       ];
       const r = resolveInheritedSubjects(waves, "travar", "B");
       assert.deepEqual(r, { ok: true, mode: "single", subject: "Vencedor B" });
+    });
+
+    it("#5055: lockedSubject do estado gravado vence TUDO — não herda por inferência o que já está escrito", () => {
+      const waves = [
+        wave({ key: "d5-seg05-B", subject: "Assunto da célula B" }),
+        wave({ key: "d7-qui07", subject: "Assunto herdado da onda sem célula" }),
+      ];
+      const r = resolveInheritedSubjects(waves, "travar", "B", "Assunto travado pelo editor");
+      assert.deepEqual(r, { ok: true, mode: "single", subject: "Assunto travado pelo editor" });
+    });
+
+    it("#5055: com lockedSubject, travar NUNCA falha por falta de precedente (deadlock de bootstrap impossível)", () => {
+      // Sem estado gravado este mesmo input falha (teste acima). Com o estado,
+      // não há o que herdar — o assunto já é conhecido.
+      const r = resolveInheritedSubjects([], "travar", null, "Assunto travado pelo editor");
+      assert.deepEqual(r, { ok: true, mode: "single", subject: "Assunto travado pelo editor" });
+      assert.equal(resolveInheritedSubjects([], "travar", null).ok, false, "pré-condição: sem trava, falharia");
     });
 
     it("travar: onda sem-célula (mais recente) vence sobre o winner quando os dois existem", () => {
@@ -386,6 +426,76 @@ describe("clarice-envio-run (#5026)", () => {
       const importCall = calls.find((c) => c.script === "scripts/clarice-import-waves.ts");
       assert.ok(importCall);
       assert.deepEqual(importCall!.args, ["--cycle", CYCLE, "--group", "d12-qua12", "--label", `${CYCLE} d12-qua12`, "--execute"]);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    // -----------------------------------------------------------------------
+    // #5055 — estado durável do teste A/B/C no orquestrador
+    // -----------------------------------------------------------------------
+
+    it("#5055: teste ENCERRADO => assunto do estado vence a herança, e a onda sai com --no-cells", async () => {
+      const root = freshRoot();
+      const { exec, calls } = makeFakeExec(goldenHandlers());
+      const r = await runEnvio(
+        baseDeps(root, { exec, readAbcState: () => abcEncerrado("Assunto travado pelo editor") }),
+      );
+      assert.equal(r.code, 0, r.reportMarkdown);
+
+      const create = calls.find((c) => c.script === "scripts/clarice-schedule-group.ts" && c.args.includes("--create"));
+      assert.equal(
+        create!.args[create!.args.indexOf("--subject") + 1],
+        "Assunto travado pelo editor",
+        "o assunto do ESTADO vence o herdado da onda anterior ('Assunto travado')",
+      );
+      const split = calls.find((c) => c.script === "scripts/clarice-split-group-cells.ts");
+      assert.ok(split!.args.includes("--no-cells"), "teste encerrado => 1 lista só");
+      assert.match(r.reportMarkdown, /ENCERRADO/, "o relatório precisa dizer de onde veio a decisão (item 5 da #5055)");
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it('#5055: estado ENCERRADO mas planejador devolveu "continuar" => ABORTA, nunca manda 3 assuntos', async () => {
+      // Divergência = bug (cwd errado no spawn, script defasado). Seguir seria
+      // reabrir o teste depois de o editor tê-lo encerrado — a falha exata que
+      // a issue existe pra impedir.
+      const root = freshRoot();
+      const proposal = goldenProposal({
+        abc: { action: "continuar", metric: "clique", winner: null, caveats: [], rationale: "p 0,27" },
+        state: {
+          cycle: CYCLE,
+          waves: [
+            wave({ key: "d11-ter11-A", subject: "Sub A" }),
+            wave({ key: "d11-ter11-B", subject: "Sub B" }),
+            wave({ key: "d11-ter11-C", subject: "Sub C" }),
+          ],
+          generatedAt: NOW.toISOString(),
+        } as unknown as WaveProposal["state"],
+      });
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": jsonResult(proposal),
+      });
+      const r = await runEnvio(baseDeps(root, { exec, readAbcState: () => abcEncerrado("Assunto travado") }));
+      assert.equal(r.code, 1, r.reportMarkdown);
+      assert.match(r.reportMarkdown, /ENCERRADO/);
+      assert.equal(
+        calls.filter((c) => c.script === "scripts/clarice-schedule-group.ts").length,
+        0,
+        "nenhuma campanha pode ser criada quando o estado diverge",
+      );
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#5055: estado ILEGÍVEL => segue como ABERTO, mas registra o aviso no relatório", async () => {
+      const root = freshRoot();
+      const { exec } = makeFakeExec(goldenHandlers());
+      const r = await runEnvio(
+        baseDeps(root, {
+          exec,
+          readAbcState: () => ({ ...abcAberto(), invalidReason: "JSON inválido (data/clarice-abc-state.json)" }),
+        }),
+      );
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.match(r.reportMarkdown, /ileg[íi]vel/i, "queda pro default nunca pode ser silenciosa");
       rmSync(root, { recursive: true, force: true });
     });
 

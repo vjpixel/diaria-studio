@@ -21,6 +21,36 @@ npx tsx scripts/lib/clarice-envio-enabled.ts --set enabled   # religa
 npx tsx scripts/lib/clarice-envio-enabled.ts                 # imprime "enabled"/"disabled"
 ```
 
+## Estado do teste A/B/C de assunto — `data/clarice-abc-state.json` (#5055)
+
+**Default `aberto`** quando o arquivo não existe: a recomendação A/B/C é recalculada a cada rodada a partir dos cliques do ciclo (`recommendAbcAction`), como sempre foi. Encerrar o teste **grava a decisão**, e a partir daí nenhum recálculo a desfaz.
+
+```bash
+npx tsx scripts/lib/clarice-abc-state.ts                                    # imprime o estado atual
+npx tsx scripts/lib/clarice-abc-state.ts --close --subject "Assunto vencedor" \
+  [--winner A|B|C] [--rationale "por que"]                                  # encerra e trava o assunto
+npx tsx scripts/lib/clarice-abc-state.ts --reopen --confirm                 # reabre (exige as DUAS flags)
+```
+
+Por que existe: antes do #5055 não havia onde registrar "o teste acabou". O único gancho era o flag `--locked-subject` de `clarice-plan-wave.ts`, que vale por invocação e que o orquestrador da task **não repassava** — então a task de 19:00 recalculava tudo todo dia e, se o p-valor voltasse a passar de 0,05, **reabria o teste sozinha**. Foi o que aconteceu com a onda de 12/08/2026, planejada com 3 assuntos depois de o editor já ter encerrado o teste.
+
+Dois efeitos ao encerrar, não um:
+
+1. a onda sai como **célula única** (`--no-cells`), com o assunto travado;
+2. o **passo adaptativo de volume volta a valer**. Com o teste aberto, a ressalva de poder baixo (#4559) entra em `caveats` e `clarice-envio-run.ts` zera o passo — um laço que se auto-alimenta (base pequena → poder baixo → passo zerado → base nunca cresce). Teste encerrado não tem poder pra ser baixo, então não há ressalva e nada zera o passo.
+
+Leituras possíveis do arquivo:
+
+| estado do arquivo | resultado | avisa |
+|---|---|---|
+| ausente | `aberto` (recalcula) | não |
+| válido | o valor gravado | não |
+| ilegível / `encerrado` sem `subject` | `aberto` (recalcula) | **sim** |
+
+O fail-soft aponta pra `aberto` — o inverso do kill switch acima, e de propósito: aqui o lado seguro é voltar a recalcular (chato, mas conhecido), nunca confiar num assunto corrompido e mandá-lo pra milhares de pessoas. Por isso um `encerrado` sem `subject` não-vazio é rejeitado.
+
+Se o estado gravado disser `encerrado` mas o planejador devolver `continuar`, a rodada **aborta** em vez de mandar 3 assuntos — é divergência (cwd errado no spawn, arquivo ilegível só de um lado, script defasado), não estado normal.
+
 ## Guards de pré-condição (não são o kill switch — os dois convivem)
 
 - `clarice-users.db` ausente (junction `data/` ainda não montou) → task `Diaria-Clarice-Envio` aborta ANTES de tocar Brevo.
