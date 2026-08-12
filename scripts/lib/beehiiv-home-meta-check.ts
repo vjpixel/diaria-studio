@@ -34,6 +34,20 @@
  * só `og:title` entra em `evaluateHomeMetaDrift` como checagem de marca — é o
  * campo que a issue nomeia explicitamente (o que aparece em preview de
  * link/compartilhamento social).
+ *
+ * ─── 4º eixo: links legados `*.diaria.workers.dev` / `diaria.beehiiv.com` (#5099) ──
+ *
+ * A auditoria do #5099 (12/08/2026) achou o único ponto vivo de vazamento
+ * reader-facing: a home da publicação (`https://diar.ia.br/`) linkava
+ * `livros.diaria.workers.dev`, `cursos.diaria.workers.dev` e
+ * `diaria.beehiiv.com/archive` em vez dos hosts de marca (`*.diar.ia.br`).
+ * A troca em si (item 1 do #5099) é ação manual do editor na UI da Beehiiv —
+ * este 4º eixo (`legacy-host-link`, item 2 do #5099) é só o GUARD: qualquer
+ * `href` pra `*.diaria.workers.dev` ou `diaria.beehiiv.com` na home vira
+ * drift, com exceção explícita pro badge `www.beehiiv.com/?utm_source=...`
+ * do rodapé (plataforma, não host legado nosso) e pro CDN `media.beehiiv.com`
+ * (imagens, nunca link de leitor) — ambos citados como fora de escopo no
+ * corpo da issue.
  */
 
 // ─── Extração (pura) ────────────────────────────────────────────────────────
@@ -128,22 +142,78 @@ export function detectEnglishLabels(html: string): string[] {
   return found;
 }
 
-export type HomeMetaDriftCheck = "og-title-brand" | "http-self-link" | "english-labels";
+/**
+ * Hosts de plataforma Beehiiv explicitamente FORA de escopo (#5099) — nunca
+ * reportados como link legado mesmo que apareçam na home. `media.beehiiv.com`
+ * é CDN de imagem (nunca link de leitor); `www.beehiiv.com`/`api.beehiiv.com`
+ * são plataforma, não host legado NOSSO (o badge "powered by" do rodapé, por
+ * exemplo). Set em vez de checagem inline pra deixar a exceção nomeada e
+ * fácil de auditar isoladamente.
+ */
+const ALLOWED_BEEHIIV_PLATFORM_HOSTS = new Set(["media.beehiiv.com", "www.beehiiv.com", "api.beehiiv.com"]);
 
-export interface HomeMetaDriftFinding {
-  check: HomeMetaDriftCheck;
-  message: string;
+/** `true` se `host` casa o padrão de host legado (#5099): qualquer
+ * `*.workers.dev` (cobre `cursos.diaria.workers.dev`, `livros.diaria.workers.dev`
+ * etc. sem hardcodar o subdomínio de conta) ou `diaria.beehiiv.com` (host
+ * legado da própria publicação, ANTES do cutover pra `diar.ia.br` — #4059).
+ * `ALLOWED_BEEHIIV_PLATFORM_HOSTS` acima nunca casa aqui: são hosts
+ * DIFERENTES (não substring de `diaria.beehiiv.com`/`.workers.dev`), a
+ * checagem por host exato (não substring solta de "beehiiv.com") é o que
+ * evita qualquer ambiguidade.
+ *
+ * O match `.workers.dev` é MAIS AMPLO que "nossos hosts legados": casa
+ * QUALQUER `*.workers.dev`, inclusive um de conta de terceiro que nunca foi
+ * nosso (mesmo padrão de `resolveWorkersDevRedirect` em
+ * `workers-dev-redirect.ts`, #5104). Aqui isso é um gap REAL, não inofensivo
+ * como no redirect: a home é conteúdo editorial, e um link legítimo pra um
+ * `*.workers.dev` de terceiro citado numa edição (ex: um projeto open-source
+ * hospedado lá) viraria falso positivo de `legacy-host-link`. Amplo de
+ * propósito mesmo assim — aceita esse risco de falso positivo em troca de
+ * nunca deixar passar uma variante nossa que ninguém pensou em nomear
+ * explicitamente; falso positivo custa 1 linha ignorada no e-mail de alarme,
+ * falso negativo custa um vazamento silencioso como o do #5099. */
+function isLegacyHost(host: string): boolean {
+  const h = host.toLowerCase();
+  if (ALLOWED_BEEHIIV_PLATFORM_HOSTS.has(h)) return false;
+  return h.endsWith(".workers.dev") || h === "diaria.beehiiv.com";
 }
 
 /**
- * Pura — avalia os 3 eixos de drift da issue #4557 a partir do HTML da home
- * já buscado (nenhuma chamada de rede aqui). Retorna a lista de achados —
- * vazia quando os 3 eixos estão limpos.
+ * Pura — extrai (deduplicado, ordenado) os hosts distintos de `href="http(s)://..."`
+ * que casam `isLegacyHost` acima (#5099, item 2). Regex sobre string (mesmo
+ * padrão dos outros extractors deste módulo — HTML público, sem parser DOM);
+ * nunca lança.
+ */
+export function detectLegacyHostLinks(html: string): string[] {
+  const found = new Set<string>();
+  const re = /href=["']https?:\/\/([^"'/?#]+)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const host = m[1];
+    if (isLegacyHost(host)) found.add(host.toLowerCase());
+  }
+  return [...found].sort();
+}
+
+export type HomeMetaDriftCheck = "og-title-brand" | "http-self-link" | "english-labels" | "legacy-host-link";
+
+export interface HomeMetaDriftFinding {
+  readonly check: HomeMetaDriftCheck;
+  readonly message: string;
+}
+
+/**
+ * Pura — avalia os 3 eixos de drift da issue #4557 + o 4º eixo do #5099 a
+ * partir do HTML da home já buscado (nenhuma chamada de rede aqui). Retorna
+ * a lista de achados — vazia quando os 4 eixos estão limpos.
  *
  *   1. `og-title-brand`: og:title ausente, sem a marca oficial "diar.ia.br",
  *      ou contendo a grafia legada "Diar.ia".
  *   2. `http-self-link`: qualquer `href="http://diar.ia.br...` na página.
  *   3. `english-labels`: qualquer rótulo em `ENGLISH_LABEL_PATTERNS` presente.
+ *   4. `legacy-host-link` (#5099): qualquer `href` pra `*.workers.dev` ou
+ *      `diaria.beehiiv.com` — exceto os hosts de plataforma Beehiiv em
+ *      `ALLOWED_BEEHIIV_PLATFORM_HOSTS`.
  */
 export function evaluateHomeMetaDrift(
   html: string,
@@ -176,6 +246,14 @@ export function evaluateHomeMetaDrift(
     findings.push({
       check: "english-labels",
       message: `rótulo(s) em inglês residual(is) encontrado(s): ${englishLabels.join(", ")}`,
+    });
+  }
+
+  const legacyHosts = detectLegacyHostLinks(html);
+  if (legacyHosts.length > 0) {
+    findings.push({
+      check: "legacy-host-link",
+      message: `link(s) reader-facing pra host legado encontrado(s): ${legacyHosts.join(", ")} — deveria ir pro host de marca *.diar.ia.br (#5099)`,
     });
   }
 
@@ -236,12 +314,13 @@ export function buildHomeMetaDriftAlarmEmail(
 
   const lines: string[] = [
     `O smoke-test de metadata da home pública (${homeUrl}) encontrou drift`,
-    "contra o esperado: og:title com a marca oficial, sem self-link http://,",
-    "sem rótulo residual em inglês.",
+    "num dos eixos monitorados — ver o(s) achado(s) abaixo pro que exatamente",
+    "está errado.",
     "",
-    "Refs #4557 — as 3 correções (og:title, http->https, rótulos EN) são ação",
-    "manual do editor no painel Beehiiv; este alarme só detecta REGRESSÃO",
-    "depois de corrigido (ou aponta o que ainda falta corrigir, na 1ª execução).",
+    "Refs #4557/#5099 — as correções de eixo (og:title, http->https, rótulos",
+    "EN, link pra host legado) são ação manual do editor no painel Beehiiv;",
+    "este alarme só detecta REGRESSÃO depois de corrigido (ou aponta o que",
+    "ainda falta corrigir, na 1ª execução).",
     "",
     `Achado(s) (${findings.length}):`,
   ];

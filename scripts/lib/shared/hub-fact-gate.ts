@@ -526,9 +526,12 @@ export interface HubFactGateResult {
  *
  * **Contrato: o CALLER roda isto sobre o output do agente e trata o
  * resultado daqui — não o `gate.blocked` que o agente escreveu — como
- * autoritativo** antes de decidir bloquear/liberar um build ou deploy de hub
- * (ver nota "ainda NÃO conectado a nada" no prompt do fact-checker — este
- * helper existe pro dia em que esse wiring for feito).
+ * autoritativo** antes de decidir bloquear/liberar um build ou deploy de hub.
+ * Call site real desde #5102: `scripts/build-hub-page.ts --check-facts`
+ * (`decideHubFactCheckGate`/`runFactCheckGate`) chama exatamente isto sobre
+ * `data/hub-fact-check/{slug}-report.json` quando esse relatório é mais
+ * recente que o manifesto atual — ver "Parcialmente conectado" no prompt do
+ * fact-checker pro que ainda falta (dispatch automático do AGENTE em si).
  *
  * Regra (espelha `.claude/agents/fact-checker.md` Passo 5, pós-#5060 fleet
  * review item 2 — a condição `resolvable_with_source_url: null` FOI REMOVIDA
