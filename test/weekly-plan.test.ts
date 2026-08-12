@@ -16,6 +16,7 @@ import {
   classifyMetric,
   classifySpamSignal,
   resolveSpamSignal,
+  describeSpamSignalOrigin,
   POSTMASTER_STALE_MS,
   POSTMASTER_DATA_STALE_MS,
   POSTMASTER_MIN_COVERAGE_RATIO,
@@ -1022,6 +1023,60 @@ test("resolveSpamSignal — sem worstCampaignSpamRatePct (schema evolution) → 
   const signal = resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.05 }), NOW);
   assert.equal(signal.worstCampaignFeedbackLoopId, undefined);
   assert.equal(signal.worstCampaignDaysWithData, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// describeSpamSignalOrigin (#5059) — helper compartilhado extraído de
+// `describeSpamSignalLine` (scripts/clarice-schedule-ramp.ts), que antes
+// recalculava `usesCampaignPeak` localmente em vez de reusar a mesma
+// comparação de `resolveSpamSignal` (`isCampaignPeakGoverning`). Cobertura
+// direta do helper — os testes de `describeSpamSignalLine` em
+// test/clarice-schedule-ramp.test.ts continuam cobrindo o consumidor.
+// ---------------------------------------------------------------------------
+
+test("describeSpamSignalOrigin — pico por campanha governa → usesCampaignPeak=true, label com id + cobertura (#5059)", () => {
+  const entry = mkPostmasterEntry({
+    spamRatePct: 0.02,
+    worstCampaignSpamRatePct: 1.39,
+    worstCampaignFeedbackLoopId: "11130585_107",
+    worstCampaignDaysWithData: 1,
+  });
+  const signal = resolveSpamSignal(entry, NOW);
+  const origin = describeSpamSignalOrigin(entry, signal);
+  assert.equal(origin.usesCampaignPeak, true);
+  assert.equal(origin.label, "pico da campanha 11130585_107 (1 dia(s) com dado)");
+  assert.equal(origin.coverageSuffix, " (1 dia(s) com dado)");
+});
+
+test("describeSpamSignalOrigin — média de domínio governa → usesCampaignPeak=false, label fixo, sem sufixo de cobertura (#5059)", () => {
+  const entry = mkPostmasterEntry({ spamRatePct: 0.5, worstCampaignSpamRatePct: 0.1, worstCampaignFeedbackLoopId: "11130585_107" });
+  const signal = resolveSpamSignal(entry, NOW);
+  const origin = describeSpamSignalOrigin(entry, signal);
+  assert.equal(origin.usesCampaignPeak, false);
+  assert.equal(origin.label, "média de domínio");
+  assert.equal(origin.coverageSuffix, "");
+});
+
+test("describeSpamSignalOrigin — signal indeterminate → default seguro (usesCampaignPeak=false, 'média de domínio'), mesmo com entry de pico presente (#5059)", () => {
+  const entry = mkPostmasterEntry({
+    spamRatePct: 0.02,
+    recordedAt: "2026-07-01T00:00:00.000Z", // stale
+    worstCampaignSpamRatePct: 1.39,
+    worstCampaignFeedbackLoopId: "11130585_107",
+  });
+  const signal = resolveSpamSignal(entry, NOW);
+  assert.equal(signal.source, "indeterminate");
+  const origin = describeSpamSignalOrigin(entry, signal);
+  assert.equal(origin.usesCampaignPeak, false);
+  assert.equal(origin.label, "média de domínio");
+});
+
+test("describeSpamSignalOrigin — usa a MESMA comparação de resolveSpamSignal (isCampaignPeakGoverning), não uma cópia divergente (#5059)", () => {
+  const entry = mkPostmasterEntry({ spamRatePct: 0.02, worstCampaignSpamRatePct: 1.39, worstCampaignFeedbackLoopId: "X" });
+  const signal = resolveSpamSignal(entry, NOW);
+  // Se resolveSpamSignal decidiu que o pico governa (via signal.worstCampaignFeedbackLoopId
+  // populado), describeSpamSignalOrigin tem que concordar — não há 2 fontes de verdade.
+  assert.equal(signal.worstCampaignFeedbackLoopId !== undefined, describeSpamSignalOrigin(entry, signal).usesCampaignPeak);
 });
 
 // Regressão (#633): antes desta issue, a linha "Spam (Postmaster)" do

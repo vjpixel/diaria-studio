@@ -35,15 +35,26 @@ import { renderScheduledSection } from "./sections-kv.ts";
 import {
   DEFAULT_HEALTH_THRESHOLDS,
   resolveSpamSignal,
+  describeSpamSignalOrigin,
+  isCampaignPeakGoverning,
   POSTMASTER_STALE_MS,
   POSTMASTER_DATA_STALE_MS,
   POSTMASTER_MIN_COVERAGE_RATIO,
   type HealthThresholds,
   type SpamSignal,
   type SpamSignalIndeterminateReason,
+  type SpamSignalOrigin,
 } from "./thresholds.ts";
-export { DEFAULT_HEALTH_THRESHOLDS, resolveSpamSignal, POSTMASTER_STALE_MS, POSTMASTER_DATA_STALE_MS, POSTMASTER_MIN_COVERAGE_RATIO };
-export type { HealthThresholds, SpamSignal, SpamSignalIndeterminateReason };
+export {
+  DEFAULT_HEALTH_THRESHOLDS,
+  resolveSpamSignal,
+  describeSpamSignalOrigin, // #5059
+  isCampaignPeakGoverning, // #5059
+  POSTMASTER_STALE_MS,
+  POSTMASTER_DATA_STALE_MS,
+  POSTMASTER_MIN_COVERAGE_RATIO,
+};
+export type { HealthThresholds, SpamSignal, SpamSignalIndeterminateReason, SpamSignalOrigin };
 
 /** Janela de maturação — envios mais recentes que isso ficam fora do agregado. */
 export const MATURATION_MS = 48 * 60 * 60 * 1000;

@@ -204,6 +204,22 @@ export const POSTMASTER_DATA_STALE_MS = 5 * 24 * 60 * 60 * 1000;
 export const POSTMASTER_MIN_COVERAGE_RATIO = 0.5;
 
 /**
+ * #5059: predicado puro "o pico por campanha foi o valor que governou"
+ * — extraído pra ser a ÚNICA implementação da comparação `Math.max` de
+ * `resolveSpamSignal` reproduz (`effectiveRatePct === worstCampaignSpamRatePct`,
+ * com `Number.isFinite` guardando contra campo ausente/malformado). Antes do
+ * #5059 esta mesma comparação existia duplicada em `describeSpamSignalLine`
+ * (`scripts/clarice-schedule-ramp.ts`), recalculada a partir de
+ * `spamSignal.ratePct` já resolvido em vez de reusar esta função — ver #5059.
+ */
+export function isCampaignPeakGoverning(
+  worstCampaignSpamRatePct: number | null | undefined,
+  effectiveRatePct: number,
+): boolean {
+  return Number.isFinite(worstCampaignSpamRatePct) && effectiveRatePct === worstCampaignSpamRatePct;
+}
+
+/**
  * Resolve o sinal de spam que GOVERNA a avaliação de guardrail — nunca o
  * `complaints`/`spamRate` derivado da Brevo. `entry` é o que está gravado sob
  * a chave KV `postmaster:spam` (ou `null`/ausente). `now` injetado (não
@@ -296,15 +312,14 @@ export function resolveSpamSignal(
   const effectiveRatePct = Number.isFinite(entry.worstCampaignSpamRatePct)
     ? Math.max(entry.spamRatePct, entry.worstCampaignSpamRatePct as number)
     : entry.spamRatePct;
-  // #4974: o pico por campanha "governa" quando foi ele que o `Math.max`
-  // acima escolheu (não basta estar presente — o domínio pode ter sido
-  // pior, ver docstring da função). Só nesse caso a origem/cobertura são
-  // populadas — mesma condição que `describeSpamSignalLine`
-  // (`clarice-schedule-ramp.ts`) já usava localmente antes deste campo
-  // existir no tipo; centralizado aqui pra todo consumidor (CLI, dashboard)
-  // ler o mesmo dado sem recalcular a comparação.
-  const usesCampaignPeak =
-    Number.isFinite(entry.worstCampaignSpamRatePct) && effectiveRatePct === entry.worstCampaignSpamRatePct;
+  // #4974/#5059: o pico por campanha "governa" quando foi ele que o
+  // `Math.max` acima escolheu (não basta estar presente — o domínio pode
+  // ter sido pior, ver docstring da função). `isCampaignPeakGoverning` é a
+  // ÚNICA implementação deste predicado no repo — `describeSpamSignalOrigin`
+  // abaixo (usado pelo CLI `clarice-schedule-ramp.ts`) chama a MESMA função
+  // sobre `signal.ratePct` já resolvido, em vez de recalcular a comparação
+  // localmente (a duplicação que existia antes do #5059).
+  const usesCampaignPeak = isCampaignPeakGoverning(entry.worstCampaignSpamRatePct, effectiveRatePct);
   return {
     source: "postmaster",
     ratePct: effectiveRatePct,
@@ -314,6 +329,53 @@ export function resolveSpamSignal(
     worstCampaignDaysWithData:
       usesCampaignPeak && Number.isFinite(entry.worstCampaignDaysWithData) ? entry.worstCampaignDaysWithData : undefined,
   };
+}
+
+/** Saída de {@link describeSpamSignalOrigin} — origem do número que governa `SpamSignal.ratePct` + o texto já formatado pro CLI (`clarice-schedule-ramp.ts`, único call site hoje) e qualquer futuro consumidor que precise da mesma frase. */
+export interface SpamSignalOrigin {
+  /** `true` quando o pico por campanha (não a média de domínio) governou `signal.ratePct` — mesmo predicado usado internamente por `resolveSpamSignal` via `isCampaignPeakGoverning`. */
+  usesCampaignPeak: boolean;
+  /** `"pico da campanha {id}{coverageSuffix}"` ou `"média de domínio"` — pronto pra interpolar numa linha de texto. */
+  label: string;
+  /** `" ({N} dia(s) com dado)"` quando o pico governa e a cobertura está disponível; string vazia caso contrário — já embutido em `label`, exposto solto pra quem quiser compor o texto de outro jeito (ex: badge separado na UI). */
+  coverageSuffix: string;
+}
+
+/**
+ * #5059: fonte única da ORIGEM/formatação do sinal de spam — extraída de
+ * `describeSpamSignalLine` (`scripts/clarice-schedule-ramp.ts`), que antes
+ * recalculava `usesCampaignPeak` localmente comparando `spamSignal.ratePct`
+ * contra `worstCampaignSpamRatePct` (a mesma comparação que
+ * `resolveSpamSignal` já fazia acima, via `isCampaignPeakGoverning`).
+ *
+ * Não basta ler `signal.worstCampaignFeedbackLoopId`/`worstCampaignDaysWithData`
+ * como discriminador — os dois são opcionais também na ENTRADA (`entry`), então
+ * `undefined` na saída de `resolveSpamSignal` pode significar tanto "o domínio
+ * governou" quanto "o pico governou mas a entrada não trazia o campo". Por
+ * isso esta função recebe `entry` (a leitura crua) + `signal` (já resolvido)
+ * e refaz a MESMA comparação de `resolveSpamSignal`, via `isCampaignPeakGoverning`,
+ * em vez de tentar inferir a partir dos campos opcionais de `signal`.
+ *
+ * `signal.source !== "postmaster"` ou `signal.ratePct === null` (stale,
+ * malformada, indeterminate) → `usesCampaignPeak: false`, `label: "média de
+ * domínio"` — valor default seguro; nenhum consumidor atual chama esta função
+ * nesses casos (ambos guardam antes), mas o comportamento fica definido pra
+ * uso futuro sem precisar repetir o guard em cada call site.
+ */
+export function describeSpamSignalOrigin(
+  entry: Pick<PostmasterSpamEntry, "worstCampaignSpamRatePct" | "worstCampaignFeedbackLoopId" | "worstCampaignDaysWithData"> | null | undefined,
+  signal: SpamSignal,
+): SpamSignalOrigin {
+  const usesCampaignPeak =
+    signal.source === "postmaster" &&
+    signal.ratePct !== null &&
+    isCampaignPeakGoverning(entry?.worstCampaignSpamRatePct, signal.ratePct);
+  const coverageSuffix =
+    usesCampaignPeak && typeof entry?.worstCampaignDaysWithData === "number" && Number.isFinite(entry.worstCampaignDaysWithData)
+      ? ` (${entry.worstCampaignDaysWithData} dia(s) com dado)`
+      : "";
+  const label = usesCampaignPeak ? `pico da campanha ${entry?.worstCampaignFeedbackLoopId ?? "?"}${coverageSuffix}` : "média de domínio";
+  return { usesCampaignPeak, label, coverageSuffix };
 }
 
 /**
