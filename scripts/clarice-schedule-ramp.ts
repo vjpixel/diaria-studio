@@ -125,7 +125,7 @@ import {
   computeWeekPlan,
   type Semaphore,
 } from "../workers/brevo-dashboard/src/weekly-plan.ts";
-import { resolveSpamSignal, type SpamSignal } from "../workers/brevo-dashboard/src/thresholds.ts"; // #4063
+import { resolveSpamSignal, describeSpamSignalOrigin, type SpamSignal } from "../workers/brevo-dashboard/src/thresholds.ts"; // #4063, #5059
 import type { BrevoCampaign } from "../workers/brevo-dashboard/src/types.ts";
 import type { PostmasterSpamEntry } from "./lib/dashboard-kv-types.ts"; // #4131 finding 4
 
@@ -384,9 +384,12 @@ export type AutoRampVolumeResult =
  * `entry.spamRatePct` cru).
  *
  * Origem "campanha" quando `worstCampaignSpamRatePct` é finito E é o valor
- * que o `Math.max` de `resolveSpamSignal` escolheu (mesma comparação de lá,
- * não duplicada — só verifica qual dos 2 números bateu o `ratePct` já
- * resolvido, para não divergir se `resolveSpamSignal` mudar o critério).
+ * que o `Math.max` de `resolveSpamSignal` escolheu — delegado a
+ * `describeSpamSignalOrigin` (`thresholds.ts`, #5059), que reusa a MESMA
+ * comparação de `resolveSpamSignal` (`isCampaignPeakGoverning`) em vez de
+ * recalculá-la aqui; antes do #5059 esta função tinha sua própria cópia
+ * inline do predicado, divergente em forma (não em resultado) da de
+ * `thresholds.ts`.
  *
  * `spamEntry` ausente OU `spamSignal.source !== "postmaster"` (stale,
  * malformada, baixa cobertura — ver `SpamSignalIndeterminateReason`) cai no
@@ -420,23 +423,11 @@ export function describeSpamSignalLine(
       `indeterminate p/ o semáforo${spamSignal.reason ? ` (${spamSignal.reason})` : ""}, nunca verde às cegas.`
     );
   }
-  const worst = spamEntry.worstCampaignSpamRatePct;
-  // #4785 (comment-analyzer, fleet review pré-merge do #4780): a comparação
-  // `worst >= spamEntry.spamRatePct` que existia aqui era redundante com
-  // `spamSignal.ratePct === worst` — se o `Math.max` de `resolveSpamSignal`
-  // escolheu `worst`, `worst >= domínio` já é necessariamente verdade;
-  // manter as duas checagens duplicava parte da lógica de lá (inofensivo,
-  // mas contradizia o "não duplicada" do parágrafo acima). Removida.
-  const usesCampaignPeak = typeof worst === "number" && Number.isFinite(worst) && spamSignal.ratePct === worst;
-  const coverageSuffix =
-    usesCampaignPeak &&
-    typeof spamEntry.worstCampaignDaysWithData === "number" &&
-    Number.isFinite(spamEntry.worstCampaignDaysWithData)
-      ? ` (${spamEntry.worstCampaignDaysWithData} dia(s) com dado)`
-      : "";
-  const originLabel = usesCampaignPeak
-    ? `pico da campanha ${spamEntry.worstCampaignFeedbackLoopId ?? "?"}${coverageSuffix}`
-    : "média de domínio";
+  // #5059: origem (domínio vs. pico por campanha) + label já formatado —
+  // delegado a `describeSpamSignalOrigin` (thresholds.ts), que reusa a MESMA
+  // comparação de `resolveSpamSignal` em vez de recalculá-la aqui (era essa
+  // recomputação local que a #5059 fechou).
+  const { label: originLabel } = describeSpamSignalOrigin(spamEntry, spamSignal);
   return (
     `   leitura Postmaster${spamSourceLabel}: ${spamSignal.ratePct.toFixed(3)}% — origem: ${originLabel} ` +
     `(registrada ${spamEntry.recordedAt})`
