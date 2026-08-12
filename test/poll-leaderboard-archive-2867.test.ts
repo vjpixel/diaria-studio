@@ -193,6 +193,20 @@ describe("GET /leaderboard/{YYYY}/arquivo/{AAMMDD} (#2867)", () => {
     assert.equal(buttonTexts[0], buttonTexts[1], "os 2 botões devem ter o mesmo rótulo — sem dica de qual é a IA");
   });
 
+  it("#5136: imagens A/B declaram width/height (evita CLS) e loading=lazy", async () => {
+    const { default: worker } = await import("../workers/poll/src/index.ts");
+    const kv = makeTrackedKv({ "correct:260101": "A" });
+    const env = makeEnvWithDo(kv);
+    const res = await worker.fetch(
+      new Request("https://poll.diaria.workers.dev/leaderboard/2026/arquivo/260101"),
+      env,
+      {} as ExecutionContext,
+    );
+    const html = await res.text();
+    assert.match(html, /<img src="\/img\/img-260101-01-eia-A\.jpg" width="800" height="450" alt="Imagem A" loading="lazy">/);
+    assert.match(html, /<img src="\/img\/img-260101-01-eia-B\.jpg" width="800" height="450" alt="Imagem B" loading="lazy">/);
+  });
+
   it("form de voto submete via GET para /vote, sem `sig` (merge-tag mode)", async () => {
     const { default: worker } = await import("../workers/poll/src/index.ts");
     const kv = makeTrackedKv({ "correct:260101": "A" });

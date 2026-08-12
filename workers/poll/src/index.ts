@@ -47,6 +47,7 @@ import {
   renderBrandShellStyles, // #4110: mesma régua+rodapé de leaderboard/arquivo — /vote era a única página pública sem shell
   renderBrandFooter, // #4110
   isOwnWorkOnlyCredit, // #4258 item 2: suprime "Own work" cru gravado no KV de edições antigas
+  imageCacheControlFor, // #5136: Cache-Control immutable pras imagens content-addressed de /img/{key}
 } from "./lib";
 import { renderCuradoriaRobotsTxt } from "../../../scripts/lib/shared/robots-txt.ts"; // #4777
 // #3111: tokens do DS canônico gerados por scripts/generate-worker-tokens.ts a
@@ -1129,7 +1130,7 @@ export function votePageHtml(
   .result-image { box-sizing: border-box; flex: 1 1 240px; max-width: 260px; padding: 8px; border: 2px solid transparent; border-radius: 8px; background: ${DS_COLORS.paper}; }
   /* #1894: accent verde da marca (--brand-bright) — sinal da imagem clicada. */
   .result-image.clicked { border-color: ${DS_COLORS.brand}; box-shadow: 0 0 0 2px rgba(0,160,160,.28); }
-  .result-image img { width: 100%; height: auto; border-radius: 6px; display: block; }
+  .result-image img { width: 100%; height: auto; aspect-ratio: 16 / 9; border-radius: 6px; display: block; }
   /* #3113 item 6: cinzas via opacity sobre ink aboliram — texto secundário é
      SEMPRE ink sólido, hierarquia vem de tamanho/peso (DS canônico). */
   .result-image .label { font-family: ${DS_FONTS.sans}; font-size: 0.95rem; margin-top: 8px; color: ${DS_COLORS.ink}; font-weight: 600; }
@@ -1221,7 +1222,7 @@ export function renderResultImagesHtml(resultImages: VoteResultImages | null | u
     // único ponto do arquivo que fugia do padrão htmlEscape-em-tudo).
     const imgUrl = `/img/img-${htmlEscape(edition)}-01-eia-${side}.jpg`;
     return `<div class="result-image${isClicked ? " clicked" : ""}">
-  <img src="${imgUrl}" alt="${altText}" loading="lazy">
+  <img src="${imgUrl}" width="800" height="450" alt="${altText}" loading="lazy">
   <div class="label">${label}${youBadge}</div>
 </div>`;
   };
@@ -1497,7 +1498,22 @@ async function propagateNicknameByMonth(
 
 // ── /img/{key} — serve imagens armazenadas no KV ─────────────────────────────
 
-export async function handleImage(path: string, env: Env): Promise<Response> {
+/**
+ * #5136: ETag forte via SHA-256 dos bytes — barato o bastante pra rodar por
+ * request nas imagens (<500 KB cada, ver medição na issue) e correto
+ * independente de a key ser content-addressed ou não (cobre também as
+ * imagens de convenção fixa do É IA?, cujo conteúdo PODE mudar sob o mesmo
+ * key numa regeneração — o ETag muda junto, então `If-None-Match` continua
+ * válido mesmo aí).
+ */
+async function sha256HexOfBytes(buf: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", buf);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+export async function handleImage(path: string, env: Env, request?: Request): Promise<Response> {
   // CORS: imagens são públicas — emitir Access-Control-Allow-Origin em todos
   // os paths (200 e 404). #1132 P2.4: pre-check de CORS faz probe contra key
   // que pode não existir; com CORS apenas em 200, pre-check produzia falso
@@ -1553,14 +1569,35 @@ export async function handleImage(path: string, env: Env): Promise<Response> {
     return new Response("not found", { status: 404, headers: corsHeaders });
   }
 
-  // Imagens do È IA? são sempre JPEG. TTL 1h (#1242): permite regenerar imagem
-  // com mesmo key sem ficar presa em cache do Gmail Image Proxy / Beehiiv preview
-  // por 1 ano. Volume baixo (~6 imgs × ~500 subs/edição) sustenta cache miss.
+  // #5136: Cache-Control por classe de key — `imageCacheControlFor` dá
+  // `immutable`/1 ano pras keys content-addressed (destaques d1/d2/d3, nome
+  // já carrega o hash do conteúdo) e preserva o `max-age=3600` de sempre
+  // (#1242) pras keys de convenção fixa (É IA? A/B), que podem apontar pra
+  // bytes diferentes numa regeneração — ver docstring de
+  // `isContentAddressedImageKey`/`imageCacheControlFor` em lib.ts.
+  const etag = `"${await sha256HexOfBytes(value)}"`;
+  const cacheControl = imageCacheControlFor(key);
+
+  // #5136: conditional GET — devolve 304 sem corpo quando o client já tem
+  // os mesmos bytes (If-None-Match). Vale sobretudo pras keys de convenção
+  // fixa: `max-age=3600` faz o browser revalidar a cada hora, e a maioria
+  // das revalidações vai bater o mesmo ETag (a imagem só muda numa
+  // regeneração real).
+  const ifNoneMatch = request?.headers.get("If-None-Match");
+  if (ifNoneMatch === etag) {
+    return new Response(null, {
+      status: 304,
+      headers: { ...corsHeaders, "Cache-Control": cacheControl, ETag: etag },
+    });
+  }
+
+  // Imagens do È IA? são sempre JPEG.
   return new Response(value, {
     headers: {
       ...corsHeaders,
       "Content-Type": "image/jpeg",
-      "Cache-Control": "public, max-age=3600",
+      "Cache-Control": cacheControl,
+      ETag: etag,
     },
   });
 }
@@ -1941,7 +1978,7 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // ao validar a URL antes do upload) recebiam 404 aqui mesmo com o GET retornando 200 —
     // a rota só aceitava GET. O runtime do Workers descarta o body automaticamente em respostas
     // a HEAD, então basta aceitar o método na guarda; handleImage não precisa mudar.
-    if (path.startsWith("/img/") && (request.method === "GET" || request.method === "HEAD")) return handleImage(path, env);
+    if (path.startsWith("/img/") && (request.method === "GET" || request.method === "HEAD")) return handleImage(path, env, request);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 
     return json({ error: "not found", endpoints: ["/robots.txt", "/jogar", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/jogar/seq-state", "/jogar/subscribe", "/jogar/gate", "/jogar/gate/verify", "/jogar/gate/subscribe", "/jogar/gate/logout", "/jogar/identify", "/confirm-merge", "/embed", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/admin/eiameta", "/admin/purge-score-do", "/img/{key}"] }, 404, env);

@@ -96,8 +96,8 @@ describe("renderResultImagesHtml (#1351)", () => {
       aiSide: "A",
       clickedSide: "B",
     });
-    assert.match(html, /<img src="\/img\/img-260519-01-eia-A\.jpg" alt="Gerada por IA"/);
-    assert.match(html, /<img src="\/img\/img-260519-01-eia-B\.jpg" alt="Foto real"/);
+    assert.match(html, /<img src="\/img\/img-260519-01-eia-A\.jpg" width="800" height="450" alt="Gerada por IA"/);
+    assert.match(html, /<img src="\/img\/img-260519-01-eia-B\.jpg" width="800" height="450" alt="Foto real"/);
     assert.doesNotMatch(html, /alt="Imagem [AB]"/, "alt genérico antigo não deve mais aparecer no resultado");
   });
 
@@ -107,8 +107,8 @@ describe("renderResultImagesHtml (#1351)", () => {
       aiSide: "B",
       clickedSide: "A",
     });
-    assert.match(html, /<img src="\/img\/img-260519-01-eia-A\.jpg" alt="Foto real"/);
-    assert.match(html, /<img src="\/img\/img-260519-01-eia-B\.jpg" alt="Gerada por IA"/);
+    assert.match(html, /<img src="\/img\/img-260519-01-eia-A\.jpg" width="800" height="450" alt="Foto real"/);
+    assert.match(html, /<img src="\/img\/img-260519-01-eia-B\.jpg" width="800" height="450" alt="Gerada por IA"/);
   });
 
   it("#3113 (item 7): alt text NÃO inclui o emoji (emoji é só decorativo, no .label visível)", () => {

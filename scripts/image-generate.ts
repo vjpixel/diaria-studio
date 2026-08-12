@@ -17,10 +17,16 @@
  * `--ratio 2x1|1x1` (#1916): força o formato pra qualquer destaque. A mensal usa
  * `--ratio 2x1` em d1/d2/d3 (todos 2x1). Sem a flag, mantém o default da diária
  * (d1 → 2x1, d2/d3 → 1x1).
+ *
+ * #5136: todo JPEG publicado (2x1, crop 1:1 derivado, e o square nativo do
+ * branch não-wide) passa por `scripts/compress-jpeg.ts` — JPEG progressivo +
+ * mozjpeg @ qualidade 82 — antes de virar o arquivo final. Antes o output cru
+ * do gerador (Gemini/ComfyUI) era publicado sem re-encode (renameSync puro),
+ * ~1 MB por edição / 45% do peso de fio da página eia/poll.
  */
 
 import 'dotenv/config';
-import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -242,11 +248,37 @@ function main() {
   const widePath2x1 = `${normalizedOutDir}04-${destaque}-2x1.jpg`;
   const widePath1x1 = `${normalizedOutDir}04-${destaque}-1x1.jpg`;
   const cropScript = resolve(ROOT, "scripts", "crop-resize.ts");
+  const compressScript = resolve(ROOT, "scripts", "compress-jpeg.ts");
+
+  // #5136: perfil de compressão das imagens PUBLICADAS (destaques d1/d2/d3) —
+  // JPEG progressivo + mozjpeg @ qualidade 82, reduz os ~1 MB crus do gerador
+  // pra faixa de 250-350 KB sem perda visível (medição no PR). Flags únicas
+  // aqui — outros chamadores de crop-resize.ts (benchmark.ts,
+  // weekly-instagram-ondemand-card.ts) continuam no default (quality 90, sem
+  // mozjpeg/progressive) porque não passam essas flags.
+  const compressArgs = ["--quality", "82", "--mozjpeg", "--progressive"];
 
   function cropToSquare(sourcePath: string, destPath: string): void {
     execFileSync(
       process.execPath,
-      ["--import", "tsx", cropScript, sourcePath, destPath, "--width", "800", "--height", "800"],
+      [
+        "--import", "tsx", cropScript, sourcePath, destPath,
+        "--width", "800", "--height", "800",
+        ...compressArgs,
+      ],
+      { stdio: "inherit", cwd: ROOT },
+    );
+  }
+
+  // #5136: reencoda um JPEG já nas dimensões finais (sem redimensionar) —
+  // usado tanto pro 2x1 wide (em vez do renameSync cru) quanto pro square
+  // nativo do branch não-wide. sourcePath/destPath podem ser o mesmo path
+  // (reencode in-place); compress-jpeg.ts lê o arquivo inteiro antes de
+  // escrever de volta, então overwrite in-place é seguro.
+  function compressJpeg(sourcePath: string, destPath: string): void {
+    execFileSync(
+      process.execPath,
+      ["--import", "tsx", compressScript, sourcePath, destPath, ...compressArgs],
       { stdio: "inherit", cwd: ROOT },
     );
   }
@@ -350,11 +382,21 @@ function main() {
       `image-generate: gravando ${wideJpgPath} — ${willOverwrite ? "SOBRESCREVENDO arquivo existente (--force)" : "arquivo novo"}.`,
     );
 
-    // Renomear o output original (1600×800) para -2x1
-    renameSync(outJpgPath, wideJpgPath);
-    console.error(`${destaque} wide: ${wideJpgPath} (1600×800)`);
+    // #5136: era um renameSync cru (JPEG do gerador publicado sem re-encode,
+    // ~1 MB). Agora comprime o output original (1600×800) pro perfil #5136
+    // ao gravá-lo como -2x1, e apaga o original sem compressão.
+    try {
+      compressJpeg(outJpgPath, wideJpgPath);
+    } catch (e: unknown) {
+      const code = (e as { status?: number }).status ?? 1;
+      console.error(`compress-jpeg falhou com código ${code}`);
+      process.exit(code);
+    }
+    unlinkSync(outJpgPath);
+    console.error(`${destaque} wide: ${wideJpgPath} (1600×800, comprimido #5136)`);
 
-    // Crop centro para 1:1 (800×800).
+    // Crop centro para 1:1 (800×800) — já sai comprimida no perfil #5136
+    // (cropToSquare passa --quality/--mozjpeg/--progressive, ver acima).
     try {
       cropToSquare(wideJpgPath, squareJpgPath);
       console.error(`${destaque} square: ${squareJpgPath} (800×800)`);
@@ -367,6 +409,16 @@ function main() {
     process.stdout.write(wideJpgPath + "\n");
     process.stdout.write(squareJpgPath + "\n");
   } else {
+    // #5136: branch não-wide (--ratio 1x1/4x5/master, uso manual/mensal) —
+    // mesmo perfil de compressão in-place, pra nenhuma imagem publicada
+    // escapar do re-encode.
+    try {
+      compressJpeg(outJpgPath, outJpgPath);
+    } catch (e: unknown) {
+      const code = (e as { status?: number }).status ?? 1;
+      console.error(`compress-jpeg falhou com código ${code}`);
+      process.exit(code);
+    }
     process.stdout.write(outJpgPath + "\n");
   }
 }

@@ -1052,6 +1052,36 @@ export function closedPeriodCacheControl(): string {
 }
 
 /**
+ * #5136: distingue keys de imagem com cache-bust por hash
+ * (`img-{AAMMDD}-{base}-{md5short}.{ext}`, `md5short` = 8 hex chars
+ * minúsculos — ver `cloudflareKvKey` em `scripts/upload-images-public.ts`)
+ * das keys de convenção FIXA sem hash (`img-{AAMMDD}-01-eia-{A|B}.jpg` e as
+ * variantes real/ia legadas — `noCacheBust: true`, #1704), cujo fluxo
+ * `/vote` depende do nome nunca mudar entre regenerações da mesma edição.
+ *
+ * Só a 1ª categoria pode receber `Cache-Control: immutable` de longa
+ * duração: a 2ª pode passar a apontar pra bytes diferentes a qualquer
+ * momento (correção pós-envio regenera a mesma key), então servir
+ * `immutable` pra ela faria o browser nunca revalidar — imagem errada
+ * presa em cache por até 1 ano.
+ */
+export function isContentAddressedImageKey(key: string): boolean {
+  return /-[0-9a-f]{8}\.[A-Za-z0-9]+$/.test(key);
+}
+
+/**
+ * #5136: `Cache-Control` pra `/img/{key}` — `immutable` de 1 ano quando a
+ * key é content-addressed (ver `isContentAddressedImageKey` acima), ou o
+ * mesmo `max-age=3600` de sempre (#1242) pras keys de convenção fixa
+ * (É IA? A/B), que podem apontar pra bytes diferentes numa regeneração.
+ */
+export function imageCacheControlFor(key: string): string {
+  return isContentAddressedImageKey(key)
+    ? "public, max-age=31536000, immutable"
+    : "public, max-age=3600";
+}
+
+/**
  * Href do leaderboard preservando o brand (`?brand=clarice` só p/ não-default).
  * `slug` opcional → `/leaderboard/{slug}`.
  *
