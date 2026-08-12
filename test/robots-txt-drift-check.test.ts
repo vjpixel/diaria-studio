@@ -212,9 +212,31 @@ Disallow: /
     assert.equal(analysis.hasCloudflareManagedBlock, false);
     assert.deepEqual(analysis.unexpectedBlockedBots, []);
     assert.deepEqual(analysis.blockedRecoveryBots, []);
+    assert.equal(analysis.hasSitemapDeclared, true);
 
     const result = evaluateRobotsDrift(input({ robotsTxt: pathSpecificOnly, httpStatus: 200 }));
     assert.equal(result.status, "ok");
+  });
+});
+
+describe("hasSitemapDeclared / exigência de Sitemap: declarada (#5126/#5135)", () => {
+  it("robots.txt sem nenhuma linha Sitemap: -> analyzeRobotsTxt.hasSitemapDeclared false", () => {
+    const noSitemap = renderCuradoriaRobotsTxt(); // sitemapUrl omitido, mesmo padrão pré-#5126/#5135 de eia./especial.
+    const analysis = analyzeRobotsTxt(noSitemap);
+    assert.equal(analysis.hasSitemapDeclared, false);
+  });
+
+  it("robots.txt sem Sitemap: -> evaluateRobotsDrift REPROVA, mesmo sem nenhum outro drift", () => {
+    const noSitemap = renderCuradoriaRobotsTxt();
+    const result = evaluateRobotsDrift(input({ robotsTxt: noSitemap, httpStatus: 200 }));
+    assert.equal(result.status, "drift");
+    assert.match(result.message, /Sitemap:/);
+  });
+
+  it("Sitemap: presente (qualquer URL) -> hasSitemapDeclared true", () => {
+    const withSitemap = renderCuradoriaRobotsTxt(`https://${HOST}/sitemap.xml`);
+    const analysis = analyzeRobotsTxt(withSitemap);
+    assert.equal(analysis.hasSitemapDeclared, true);
   });
 });
 

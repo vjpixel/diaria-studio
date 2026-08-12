@@ -189,6 +189,22 @@ export const DIARIA_ARTIGO_URL = "https://artigo.diar.ia.br";
  */
 export const DIARIA_ARQUIVO_URL = "https://arquivo.diar.ia.br";
 
+/**
+ * URL canônica dos artigos especiais avulsos (#5126) — domínio de marca
+ * (Workers Custom Domain, `workers/artigos/wrangler.toml`,
+ * `especial.diar.ia.br`). Mesmo padrão de `DIARIA_CURSOS_URL`/
+ * `DIARIA_LIVROS_URL`/`DIARIA_EIA_URL`/`DIARIA_ARTIGO_URL`/`DIARIA_ARQUIVO_URL`
+ * acima. Fonte única pra referências reader-facing — a nav cruzada
+ * (`CURADORIA_NAV_LINKS`) importa daqui. **Não confundir com
+ * `DIARIA_ARTIGO_URL`** (singular, `artigo.diar.ia.br`) — são hosts/Workers
+ * DIFERENTES: `artigo.` é o artigo mensal com paywall de apoiador (Worker
+ * `artigo-mensal`), `especial.` é o hosting de artigos especiais avulsos
+ * (Worker `artigos`, este). O Worker mantém seu conteúdo estático em
+ * `public/` sem importar esta constante (é assets puro, sem `main`/script —
+ * ver `workers/artigos/README.md`).
+ */
+export const DIARIA_ESPECIAL_URL = "https://especial.diar.ia.br";
+
 interface ArticleLike {
   url?: string;
   title?: string;

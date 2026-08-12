@@ -79,7 +79,14 @@ medição de indexação do projeto.
 - `<lastmod>` por `<url>` no sitemap do `arquivo` (raiz = data mais recente
   entre os hubs; cada hub = seu `contentDate`, o mesmo valor já usado no
   JSON-LD — nunca uma fonte de data nova/paralela).
-- `Last-Modified` + `ETag` em `GET /temas/{slug}`.
+- `Last-Modified` + `ETag` em `GET /temas/{slug}`. **Correção (#5134, ver
+  Fato 8 abaixo): o `ETag` NÃO chegava até o cliente em produção** — o código
+  montava o header corretamente (confirmado por invocação isolada do `fetch`
+  handler), mas `curl -sSI` contra `arquivo.diar.ia.br` não mostrava
+  `ETag` nenhum. Corrigido em #5134 (12/ago/2026) trocando pra ETag FRACO
+  (`W/"..."`) — não é mais "entregue" no sentido presente-tense que este
+  Fato 3 registrava; é entregue A PARTIR do deploy do #5134, com
+  verificação ao vivo pós-deploy ainda pendente do editor.
 - Novo step `index-arquivo` em `Diaria-SEO-Weekly` (`scripts/seo-index-check.ts
   --sitemap https://arquivo.diar.ia.br/sitemap.xml --out-suffix arquivo`,
   **sem** `--only-posts` — esse filtro é `/\/p\//` e zeraria `/temas/*`
@@ -343,6 +350,60 @@ fomos citados" passou a ser factualmente errado a partir desta data.
 
 **Não é ação desta nota** — registro pro checkpoint de acompanhamento
 contínuo (`docs/geo-citation-monitor-setup.md` §"Critério de decisão").
+
+## Fato 8 — o `ETag` do Worker `arquivo` não chegava ao cliente apesar de o código estar correto; corrigido com ETag fraco + 304 + fallback de KV na raiz (12/ago/2026, #5134)
+
+**Correção do Fato 3 acima**: o #4909 (10-11/ago) registrou `Last-Modified` +
+`ETag` em `GET /temas/{slug}` como entregues. Verificado ao vivo em
+12/ago/2026 (#5134): `curl -sSI https://arquivo.diar.ia.br/temas/anthropic-claude`
+mostrava `Cache-Control` e `Last-Modified`, mas **nenhum `ETag`** — mesmo
+testando com `Accept-Encoding: identity` (descarta compressão como
+explicação óbvia via curl). Investigação nesta sessão confirmou que o
+código em si estava certo: invocar `worker.fetch()` diretamente (sem
+Cloudflare no meio) devolve o header intacto na `Response` final — a mesma
+checagem que o #4909 já fazia via teste automatizado, então "escrever um
+teste que confere a resposta final" não teria pegado esse bug, porque o bug
+não está no código deste repo.
+
+**Hipótese mais provável, não 100% confirmável a partir deste worktree**:
+comportamento documentado de CDNs/proxies reversos (Cloudflare incluso) de
+descartar um `ETag` FORTE ao aplicar compressão automática (gzip/brotli) em
+trânsito — um validador forte declara "byte-idêntico", que a compressão
+invalida; um `ETag` FRACO (`W/"..."`) sinaliza "semanticamente
+equivalente" e sobrevive à transformação. Isso é consistente com o sintoma
+(o header simplesmente desaparece, sem erro) e é o fix padrão documentado
+pra essa classe de problema.
+
+**Implementado (não deployado por esta sessão — worktree isolado sem
+credencial de produção):**
+
+- `ETag` agora é sempre `W/"{hash}"` (fraco), nunca `"{hash}"` (forte).
+- `GET /temas/{slug}` trata `If-None-Match` (RFC 7232, comparação fraca,
+  suporta `*` e lista separada por vírgula) e `If-Modified-Since` (RFC 7231),
+  com precedência de `If-None-Match` quando os dois headers vêm juntos —
+  casando, devolve `304` com corpo vazio.
+- A raiz (`/`) não depende mais de o fetch ao vivo do sitemap da Beehiiv dar
+  certo pra responder: todo sucesso grava o HTML no KV
+  (`cache:arquivo-root:html-v1`, reusa o namespace `CURSOS_SUBSCRIBERS` já
+  bindado pros contadores ai-fetch, sem namespace novo); toda falha (rede,
+  HTTP não-200, XML malformado) tenta servir esse fallback antes de cair no
+  502 — que agora só acontece quando NUNCA houve um sucesso anterior pra
+  cachear (ex: 1º request depois de um deploy novo, ou KV indisponível).
+
+**Pendência explícita — verificação AO VIVO pós-deploy**: esta sessão não
+teve acesso à Cloudflare de produção (worktree isolado de subagente
+overnight). O editor (ou uma sessão local/develop com credencial) deve
+rodar, depois do deploy:
+
+```
+curl -sSI https://arquivo.diar.ia.br/temas/anthropic-claude   # espera ver ETag: W/"..."
+curl -o /dev/null -w '%{http_code}' -H 'If-None-Match: W/"<mesmo-etag>"' \
+    https://arquivo.diar.ia.br/temas/anthropic-claude          # espera 304
+```
+
+Se o `ETag` fraco AINDA não aparecer, a hipótese de compressão está errada
+e o problema é outra coisa na camada Cloudflare — não fica pra próxima
+sessão reabrir a investigação sem esse dado.
 
 ## Quando adicionar entry aqui
 

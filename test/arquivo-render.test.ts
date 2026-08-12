@@ -561,7 +561,12 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     const kv = makeFakeKv();
     const req = new Request("https://arquivo.diar.ia.br/", { headers: { "User-Agent": "GPTBot/1.1" } });
     await worker.fetch(req, { CURSOS_SUBSCRIBERS: kv });
-    assert.equal(kv._map.size, 0);
+    // #5134 item 3: a raiz agora grava seu próprio cache de fallback no KV
+    // (`cache:arquivo-root:*`) em todo sucesso — não é mais "mapa vazio" o
+    // sinal de "nenhum contador ai-fetch incrementado", e sim "nenhuma
+    // chave com o prefixo `counter:ai-fetch:`".
+    const aiFetchKeys = [...kv._map.keys()].filter((k) => k.startsWith("counter:ai-fetch:"));
+    assert.deepEqual(aiFetchKeys, []);
   });
 
   it("Referer de assistente de IA → também incrementa o contador ai-fetch:referrer no KV (#4902 item 2)", async () => {
@@ -676,7 +681,88 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     assert.equal(new Date(lastMod!).toISOString().slice(0, 10), HUB_LASTMOD["anthropic-claude"]);
     const etag = res.headers.get("ETag");
     assert.ok(etag, "esperava header ETag");
-    assert.match(etag!, /^"[0-9a-f]{8}"$/);
+    // #5134: ETag FRACO (`W/"..."`, não `"..."` forte) — CDNs/proxies
+    // reversos (Cloudflare incluso) descartam um ETag forte ao comprimir a
+    // resposta em trânsito; um fraco sobrevive. Ver docstring de
+    // `weakEtag` em workers/arquivo/src/index.ts.
+    assert.match(etag!, /^W\/"[0-9a-f]{8}"$/);
+  });
+
+  describe("requisição condicional em /temas/{slug} → 304 (#5134 itens 1-2)", () => {
+    it("If-None-Match casando com o ETag atual → 304, corpo vazio", async () => {
+      globalThis.fetch = (async () => {
+        throw new Error("não deveria fazer fetch nenhum");
+      }) as unknown as typeof fetch;
+
+      const first = await worker.fetch(new Request("https://arquivo.diar.ia.br/temas/anthropic-claude"));
+      const etag = first.headers.get("ETag")!;
+
+      const res = await worker.fetch(
+        new Request("https://arquivo.diar.ia.br/temas/anthropic-claude", {
+          headers: { "If-None-Match": etag },
+        }),
+      );
+      assert.equal(res.status, 304);
+      assert.equal(await res.text(), "");
+      assert.equal(res.headers.get("ETag"), etag);
+    });
+
+    it("If-None-Match com ETag DIFERENTE (conteúdo mudou) → 200 normal, não 304", async () => {
+      const res = await worker.fetch(
+        new Request("https://arquivo.diar.ia.br/temas/anthropic-claude", {
+          headers: { "If-None-Match": '"etag-antigo-que-nao-bate"' },
+        }),
+      );
+      assert.equal(res.status, 200);
+    });
+
+    it("If-None-Match: * → 304 sempre (representação já existe)", async () => {
+      const res = await worker.fetch(
+        new Request("https://arquivo.diar.ia.br/temas/anthropic-claude", {
+          headers: { "If-None-Match": "*" },
+        }),
+      );
+      assert.equal(res.status, 304);
+    });
+
+    it("If-Modified-Since NO PASSADO (antes do Last-Modified real) → 200 normal", async () => {
+      const res = await worker.fetch(
+        new Request("https://arquivo.diar.ia.br/temas/anthropic-claude", {
+          headers: { "If-Modified-Since": "Mon, 01 Jan 2001 00:00:00 GMT" },
+        }),
+      );
+      assert.equal(res.status, 200);
+    });
+
+    it("If-Modified-Since NO FUTURO (depois do Last-Modified real) → 304", async () => {
+      const res = await worker.fetch(
+        new Request("https://arquivo.diar.ia.br/temas/anthropic-claude", {
+          headers: { "If-Modified-Since": "Sat, 01 Jan 2028 00:00:00 GMT" },
+        }),
+      );
+      assert.equal(res.status, 304);
+      assert.equal(await res.text(), "");
+    });
+
+    it("If-None-Match presente E não casa → ignora If-Modified-Since (RFC 7232 §3.3), continua 200", async () => {
+      const res = await worker.fetch(
+        new Request("https://arquivo.diar.ia.br/temas/anthropic-claude", {
+          headers: {
+            "If-None-Match": '"nao-bate"',
+            // Sozinho, este header daria 304 (ver teste acima) — mas
+            // If-None-Match tem precedência e não bateu, então o resultado
+            // tem que ser 200, nunca 304 por causa do If-Modified-Since.
+            "If-Modified-Since": "Sat, 01 Jan 2028 00:00:00 GMT",
+          },
+        }),
+      );
+      assert.equal(res.status, 200);
+    });
+
+    it("requisição SEM header condicional nenhum → 200 normal (comportamento pré-#5134)", async () => {
+      const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/temas/anthropic-claude"));
+      assert.equal(res.status, 200);
+    });
   });
 
   it("GET /temas/{slug} desconhecido (404) não emite Last-Modified/ETag", async () => {
@@ -752,6 +838,111 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
       body,
       new RegExp(`<loc>https://arquivo\\.diar\\.ia\\.br/</loc>\\s*<lastmod>${expectedRootLastmod}</lastmod>`),
     );
+  });
+
+  describe("fallback de KV da raiz quando o upstream falha (#5134 item 3)", () => {
+    it("fetch OK → grava o HTML no KV (cache:arquivo-root:html-v1)", async () => {
+      const fakeSitemap = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://diar.ia.br/p/edicao-cache</loc><lastmod>2026-08-01</lastmod></url>
+</urlset>`;
+      globalThis.fetch = (async () => new Response(fakeSitemap, { status: 200 })) as unknown as typeof fetch;
+      const kv = makeFakeKv();
+      const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/"), { CURSOS_SUBSCRIBERS: kv });
+      assert.equal(res.status, 200);
+      const raw = kv._map.get("cache:arquivo-root:html-v1");
+      assert.ok(raw, "esperava o KV populado após um fetch bem-sucedido");
+      const parsed = JSON.parse(raw!);
+      assert.match(parsed.html, /edicao-cache/);
+      assert.ok(parsed.generatedAt, "esperava generatedAt no cache");
+    });
+
+    it("HTTP não-200 do sitemap + KV com fallback bom → 200 com o HTML cacheado, NUNCA 502", async () => {
+      const kv = makeFakeKv();
+      await kv.put(
+        "cache:arquivo-root:html-v1",
+        JSON.stringify({ html: "<html><body>fallback bom</body></html>", generatedAt: "2026-08-10T00:00:00.000Z" }),
+      );
+      globalThis.fetch = (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
+
+      const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/"), { CURSOS_SUBSCRIBERS: kv });
+      assert.equal(res.status, 200);
+      assert.match(await res.text(), /fallback bom/);
+      // Cache-Control mais curto que o normal (5min, não 1h) — ver
+      // ROOT_FALLBACK_CACHE_CONTROL: não quer travar a edge da Cloudflare
+      // servindo uma cópia degradada por 1h depois do upstream já ter
+      // voltado.
+      assert.equal(res.headers.get("Cache-Control"), "public, max-age=300");
+    });
+
+    it("erro de rede + KV com fallback bom → 200 com o HTML cacheado, NUNCA 502", async () => {
+      const kv = makeFakeKv();
+      await kv.put(
+        "cache:arquivo-root:html-v1",
+        JSON.stringify({ html: "<html><body>fallback de rede</body></html>", generatedAt: "2026-08-10T00:00:00.000Z" }),
+      );
+      globalThis.fetch = (async () => {
+        throw new Error("network down");
+      }) as unknown as typeof fetch;
+
+      const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/"), { CURSOS_SUBSCRIBERS: kv });
+      assert.equal(res.status, 200);
+      assert.match(await res.text(), /fallback de rede/);
+    });
+
+    it("sitemap malformado + KV com fallback bom → 200 com o HTML cacheado, NUNCA 502", async () => {
+      const kv = makeFakeKv();
+      await kv.put(
+        "cache:arquivo-root:html-v1",
+        JSON.stringify({ html: "<html><body>fallback de parse</body></html>", generatedAt: "2026-08-10T00:00:00.000Z" }),
+      );
+      globalThis.fetch = (async () => new Response("<not-xml>>", { status: 200 })) as unknown as typeof fetch;
+
+      const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/"), { CURSOS_SUBSCRIBERS: kv });
+      assert.equal(res.status, 200);
+      assert.match(await res.text(), /fallback de parse/);
+    });
+
+    it("upstream falha E KV sem cache nenhum (1º request de todos) → 502 de sempre (comportamento pré-#5134)", async () => {
+      const kv = makeFakeKv();
+      globalThis.fetch = (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
+
+      const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/"), { CURSOS_SUBSCRIBERS: kv });
+      assert.equal(res.status, 502);
+    });
+
+    it("upstream falha SEM binding CURSOS_SUBSCRIBERS (env vazio) → 502, nunca lança (fail-soft)", async () => {
+      globalThis.fetch = (async () => {
+        throw new Error("network down");
+      }) as unknown as typeof fetch;
+
+      const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/"), {});
+      assert.equal(res.status, 502);
+    });
+
+    it("falha na ESCRITA do KV (put rejeita) não derruba a resposta 200 do sucesso atual (fail-soft)", async () => {
+      const fakeSitemap = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>`;
+      globalThis.fetch = (async () => new Response(fakeSitemap, { status: 200 })) as unknown as typeof fetch;
+      const kv = makeFakeKv();
+      kv.put = (async () => {
+        throw new Error("KV put falhou");
+      }) as unknown as KVNamespace["put"];
+
+      const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/"), { CURSOS_SUBSCRIBERS: kv });
+      assert.equal(res.status, 200);
+    });
+
+    it("falha na LEITURA do KV (get rejeita) durante uma falha do upstream → 502 (nunca lança)", async () => {
+      const kv = makeFakeKv();
+      kv.get = (async () => {
+        throw new Error("KV get falhou");
+      }) as unknown as KVNamespace["get"];
+      globalThis.fetch = (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
+
+      const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/"), { CURSOS_SUBSCRIBERS: kv });
+      assert.equal(res.status, 502);
+    });
   });
 });
 

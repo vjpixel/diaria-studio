@@ -1,5 +1,5 @@
 /**
- * test/artigos-robots-txt-4777.test.ts (#4777)
+ * test/artigos-robots-txt-4777.test.ts (#4777, sitemap #5126)
  *
  * Regressão (#633) — `especial.diar.ia.br` (Worker `artigos`, static-assets-
  * only, sem script — ver `workers/artigos/wrangler.toml`) servia o
@@ -10,11 +10,12 @@
  * `test/curadoria-sitemap-robots.test.ts` (cursos/livros): confere o
  * CONTEÚDO do arquivo committed contra um render fresco.
  *
- * Diferente de cursos/livros: este Worker não tem `/sitemap.xml` próprio
- * (só páginas de artigo avulsas, sem índice — ver README.md do worker), por
- * isso `renderCuradoriaRobotsTxt()` é chamado SEM `sitemapUrl` (#4777
- * estendeu o helper pra tornar esse argumento opcional) e o arquivo não
- * declara `Sitemap:`.
+ * **#5126 (12/ago/2026): este Worker GANHOU um `/sitemap.xml` próprio**
+ * (`public/sitemap.xml`, estático — sem índice/build script, ver
+ * `README.md`). Antes disso o robots.txt era gerado SEM `sitemapUrl` (era o
+ * único host de curadoria assim); agora `renderCuradoriaRobotsTxt` recebe a
+ * URL do sitemap deste host, igual aos demais. Cobertura do próprio
+ * sitemap/índice/JSON-LD: `test/artigos-sitemap-5126.test.ts`.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -27,19 +28,21 @@ import { renderCuradoriaRobotsTxt, CURADORIA_BLOCKED_BOTS } from "../scripts/lib
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ROBOTS_PATH = resolve(ROOT, "workers", "artigos", "public", "robots.txt");
 
-describe("workers/artigos/public/robots.txt (#4777)", () => {
-  it("existe e bate byte-a-byte com um render fresco de renderCuradoriaRobotsTxt() sem sitemapUrl", () => {
+const ARTIGOS_SITEMAP_URL = "https://especial.diar.ia.br/sitemap.xml";
+
+describe("workers/artigos/public/robots.txt (#4777, #5126)", () => {
+  it("existe e bate byte-a-byte com um render fresco de renderCuradoriaRobotsTxt(sitemapUrl)", () => {
     assert.ok(existsSync(ROBOTS_PATH), `${ROBOTS_PATH} ausente`);
     const committed = readFileSync(ROBOTS_PATH, "utf8");
-    const fresh = renderCuradoriaRobotsTxt();
+    const fresh = renderCuradoriaRobotsTxt(ARTIGOS_SITEMAP_URL);
     assert.equal(committed, fresh, "robots.txt divergiu de renderCuradoriaRobotsTxt() — regenerar o arquivo");
   });
 
-  it("declara Allow: / geral e NÃO declara Sitemap: (host sem sitemap.xml próprio)", () => {
+  it("declara Allow: / geral e Sitemap: própria (#5126 — antes deste PR, sem sitemap.xml próprio)", () => {
     const body = readFileSync(ROBOTS_PATH, "utf8");
     assert.match(body, /User-agent: \*/);
     assert.match(body, /Allow: \//);
-    assert.doesNotMatch(body, /Sitemap:/);
+    assert.match(body, new RegExp(`Sitemap: ${ARTIGOS_SITEMAP_URL.replace(/\./g, "\\.")}`));
   });
 
   it("só bloqueia os bots da allowlist de bloqueio (#4777, mesma decisão do #4546) — os 7 crawlers de IA liberados não aparecem", () => {

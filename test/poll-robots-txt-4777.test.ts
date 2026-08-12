@@ -22,7 +22,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
 }
 
 describe("GET /robots.txt no Worker poll (#4777)", () => {
-  it("200 texto com Allow: /, Disallow: /vote e sem Sitemap: (host sem sitemap próprio)", async () => {
+  it("200 texto com Allow: /, Disallow: /vote e Sitemap: própria (#5135 item 2)", async () => {
     const res = await worker.fetch(new Request("https://eia.diar.ia.br/robots.txt"), makeEnv());
     assert.equal(res.status, 200);
     assert.match(res.headers.get("Content-Type") ?? "", /text\/plain/);
@@ -30,7 +30,8 @@ describe("GET /robots.txt no Worker poll (#4777)", () => {
     assert.match(body, /Allow: \//);
     // #4777 passo 3: URLs de voto são rastreáveis mas sem valor de índice.
     assert.match(body, /Disallow: \/vote/);
-    assert.doesNotMatch(body, /Sitemap:/);
+    // #5135 item 2: antes este host não declarava Sitemap: nenhum.
+    assert.match(body, /Sitemap: https:\/\/eia\.diar\.ia\.br\/sitemap\.xml/);
   });
 
   it("liberação seletiva (#4777, mesma decisão do #4546): só Amazonbot e CloudflareBrowserRenderingCrawler continuam bloqueados", async () => {
@@ -54,6 +55,31 @@ describe("GET /robots.txt no Worker poll (#4777)", () => {
   it("não exige nenhum secret (mesma classe de rota pública que /stats, /editions)", async () => {
     const res = await worker.fetch(
       new Request("https://eia.diar.ia.br/robots.txt"),
+      makeEnv({ POLL_SECRET: "", ADMIN_SECRET: "" }),
+    );
+    assert.equal(res.status, 200);
+  });
+});
+
+describe("GET /sitemap.xml no Worker poll (#5135 item 2)", () => {
+  it("200 XML com /, /jogar e /leaderboard, cada um com <lastmod>", async () => {
+    const res = await worker.fetch(new Request("https://eia.diar.ia.br/sitemap.xml"), makeEnv());
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("Content-Type") ?? "", /xml/);
+    const body = await res.text();
+    assert.match(body, /<urlset/);
+    for (const path of ["/", "/jogar", "/leaderboard"]) {
+      assert.match(
+        body,
+        new RegExp(`<loc>https://eia\\.diar\\.ia\\.br${path.replace(/\//g, "\\/")}</loc>\\s*<lastmod>\\d{4}-\\d{2}-\\d{2}</lastmod>`),
+        `sitemap sem <url> pra ${path}`,
+      );
+    }
+  });
+
+  it("não exige nenhum secret", async () => {
+    const res = await worker.fetch(
+      new Request("https://eia.diar.ia.br/sitemap.xml"),
       makeEnv({ POLL_SECRET: "", ADMIN_SECRET: "" }),
     );
     assert.equal(res.status, 200);
