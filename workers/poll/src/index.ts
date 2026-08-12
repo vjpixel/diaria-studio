@@ -1565,6 +1565,49 @@ export async function handleImage(path: string, env: Env): Promise<Response> {
   });
 }
 
+// ── /sitemap.xml (#5135 item 2) ──────────────────────────────────────────────
+/** Host de marca deste Worker — usado pra montar `Sitemap:` no robots.txt e
+ * as `<loc>` do sitemap próprio abaixo. */
+const EIA_HOST = "https://eia.diar.ia.br";
+
+/**
+ * `<lastmod>` do sitemap (#5135 item 2) — data ESTÁTICA/commitada (dia em
+ * que o sitemap entrou no ar), não `new Date()`: mesma disciplina de
+ * `ROOT_LASTMOD`/`HUB_LASTMOD` em `workers/arquivo/src/index.ts` — um valor
+ * dinâmico aqui declararia "mudou hoje" em todo deploy que não tocou
+ * conteúdo nenhum. As 3 páginas listadas (`/`, `/jogar`, `/leaderboard`) são
+ * dinâmicas por natureza (jogo/ranking mudam a cada edição/voto), mas o
+ * VALOR do sitemap como estrutura de descoberta não muda com essa
+ * dinâmica — bump manual desta constante só quando as próprias páginas
+ * mudarem de forma que valha re-sinalizar ao crawler.
+ */
+const EIA_SITEMAP_LASTMOD = "2026-08-12";
+
+/**
+ * Sitemap PRÓPRIO de `eia.diar.ia.br` (#5135 item 2 — antes deste Worker
+ * não tinha nenhum `/sitemap.xml`, apesar de ter 3 páginas públicas
+ * estáveis). Lista só as 3 superfícies navegáveis por link (não o jogo
+ * dinâmico por edição inteiro, que não tem índice — ver `extraDisallowPaths:
+ * ["/vote"]` abaixo, que já bloqueia a única superfície de alto-volume/baixo-
+ * valor de índice). `/` está incluída de propósito mesmo redirecionando pra
+ * `/jogar` (301) — é o host raiz, e crawlers seguem o redirect normalmente;
+ * omiti-la deixaria o domínio nu fora do próprio sitemap.
+ */
+const EIA_SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>${EIA_HOST}/</loc><lastmod>${EIA_SITEMAP_LASTMOD}</lastmod></url>
+  <url><loc>${EIA_HOST}/jogar</loc><lastmod>${EIA_SITEMAP_LASTMOD}</lastmod></url>
+  <url><loc>${EIA_HOST}/leaderboard</loc><lastmod>${EIA_SITEMAP_LASTMOD}</lastmod></url>
+</urlset>
+`;
+
+function handleSitemapXml(): Response {
+  return new Response(EIA_SITEMAP_XML, {
+    status: 200,
+    headers: { "Content-Type": "application/xml;charset=utf-8", "Cache-Control": "public, max-age=3600" },
+  });
+}
+
 // ── /robots.txt (#4777) ──────────────────────────────────────────────────────
 /**
  * `robots.txt` PRÓPRIO pro domínio de marca `eia.diar.ia.br` — mesmo
@@ -1579,9 +1622,10 @@ export async function handleImage(path: string, env: Env): Promise<Response> {
  * editor de 03/ago (CLAUDE.md, "Crawlers de IA ficam liberados nas nossas
  * superfícies").
  *
- * Sem `Sitemap:` — este Worker não tem `/sitemap.xml` próprio (jogo dinâmico
- * por edição, não índice de conteúdo estático); `renderCuradoriaRobotsTxt`
- * omite a linha quando `sitemapUrl` não é informado (#4777).
+ * `Sitemap:` aponta pro `/sitemap.xml` próprio acima (#5135 item 2 — antes
+ * este Worker não declarava nenhum, apesar de já ter 3 páginas públicas
+ * estáveis; a issue original datava de quando o jogo era só dinâmico por
+ * edição, sem índice nenhum a listar).
  *
  * `extraDisallowPaths: ["/vote"]`: URLs de voto
  * (`/vote?email=...&edition=...&choice=...`) são rastreáveis a partir da
@@ -1589,7 +1633,7 @@ export async function handleImage(path: string, env: Env): Promise<Response> {
  * issue #4777) e não têm valor de índice nenhum — só gastam rastreamento
  * num site onde boa parte do sitemap nunca foi rastreada.
  */
-const EIA_ROBOTS_TXT = renderCuradoriaRobotsTxt(undefined, { extraDisallowPaths: ["/vote"] });
+const EIA_ROBOTS_TXT = renderCuradoriaRobotsTxt(`${EIA_HOST}/sitemap.xml`, { extraDisallowPaths: ["/vote"] });
 
 function handleRobotsTxt(): Response {
   return new Response(EIA_ROBOTS_TXT, {
@@ -1706,6 +1750,9 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // #4777: /robots.txt não depende de brand/KV — resolvido antes de
     // qualquer outra rota, mesmo padrão de topo-de-router de workers/arquivo.
     if (path === "/robots.txt" && request.method === "GET") return handleRobotsTxt();
+    // #5135 item 2: /sitemap.xml, mesmo nível de prioridade do /robots.txt
+    // acima — estático, não depende de brand/KV.
+    if (path === "/sitemap.xml" && request.method === "GET") return handleSitemapXml();
     // #3516: /jogar é standalone e sempre brand="web" (ignora `?brand=` da
     // request — a rota já implica a marca). Usa `env` CRU (não `bEnv`) — a
     // página só lê o gabarito PÚBLICO compartilhado (`correct:{edition}`,

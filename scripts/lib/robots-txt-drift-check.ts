@@ -46,6 +46,15 @@
  *    isto SIM destravaria o objetivo de citação do #4546/#4558, então é o
  *    caso mais grave (hoje nenhum dos dois blocos bloqueia esses bots, ver
  *    docstring de `robots-txt.ts`, mas a plataforma pode mudar sem aviso).
+ * 4. `hasSitemapDeclared` ausente — nenhuma linha `Sitemap:` no arquivo
+ *    SERVIDO (#5126/#5135). O CLAUDE.md registra a regra ("ao subir Worker
+ *    novo, conferir o robots.txt e servir um próprio, com `Sitemap:`
+ *    declarado") mas nada garantia isso além de revisão manual — `eia.` e
+ *    `especial.` ficaram sem declarar por meses sem nenhum guard acusar.
+ *    Blanket em TODOS os hosts descobertos: a partir de #5126/#5135 os 6
+ *    hosts de curadoria (`arquivo`, `cursos`, `livros`, `artigo-mensal`,
+ *    `poll`/eia, `artigos`/especial) declaram `Sitemap:` — não há mais
+ *    exceção legítima "host sem sitemap próprio" no conjunto atual.
  *
  * ─── Por que "broken"/"error" segue o mesmo shape de hub-drift-check ───
  *
@@ -146,6 +155,9 @@ export interface RobotsTxtAnalysis {
   /** Subconjunto de `RECOVERY_BOTS` com Disallow: / geral — o caso mais
    * grave (ver docstring do módulo). */
   blockedRecoveryBots: string[];
+  /** `true` se o arquivo tem pelo menos uma linha `Sitemap: <url>` (#5126/
+   * #5135, ver caso 4 da docstring do módulo). */
+  hasSitemapDeclared: boolean;
 }
 
 /**
@@ -175,7 +187,13 @@ export function analyzeRobotsTxt(robotsTxt: string): RobotsTxtAnalysis {
 
   const blockedRecoveryBots = RECOVERY_BOTS.filter((bot) => isBotBlockedByNamedGroup(blocks, bot));
 
-  return { hasCloudflareManagedBlock, unexpectedBlockedBots, blockedRecoveryBots };
+  // #5126/#5135: `Sitemap:` é uma diretiva de nível de ARQUIVO (não presa a
+  // um grupo `User-agent:` — spec RFC 9309 §2.3), então checa a linha crua,
+  // não os blocos parseados acima. Case-insensitive no nome da diretiva
+  // (mesma tolerância que o resto deste parser já aplica a `User-agent:`).
+  const hasSitemapDeclared = /^Sitemap:\s*\S+/im.test(robotsTxt);
+
+  return { hasCloudflareManagedBlock, unexpectedBlockedBots, blockedRecoveryBots, hasSitemapDeclared };
 }
 
 // ─── Avaliação de drift por host (pura) ────────────────────────────────────
@@ -241,7 +259,8 @@ export function evaluateRobotsDrift(input: RobotsCheckInput): RobotsDriftResult 
     };
   }
 
-  const { hasCloudflareManagedBlock, unexpectedBlockedBots, blockedRecoveryBots } = analyzeRobotsTxt(robotsTxt);
+  const { hasCloudflareManagedBlock, unexpectedBlockedBots, blockedRecoveryBots, hasSitemapDeclared } =
+    analyzeRobotsTxt(robotsTxt);
   const reasons: string[] = [];
   if (hasCloudflareManagedBlock) {
     reasons.push(`robots.txt gerenciado da Cloudflare ainda presente (${CLOUDFLARE_MANAGED_MARKER})`);
@@ -252,6 +271,9 @@ export function evaluateRobotsDrift(input: RobotsCheckInput): RobotsDriftResult 
   if (blockedRecoveryBots.length > 0) {
     reasons.push(`bot(s) DE RECUPERAÇÃO/citação bloqueado(s): ${blockedRecoveryBots.join(", ")}`);
   }
+  if (!hasSitemapDeclared) {
+    reasons.push("sem linha Sitemap: declarada (CLAUDE.md exige um sitemap próprio declarado por Worker de curadoria)");
+  }
 
   if (reasons.length === 0) {
     return {
@@ -261,7 +283,7 @@ export function evaluateRobotsDrift(input: RobotsCheckInput): RobotsDriftResult 
       httpStatus,
       fetchError: null,
       reasons: [],
-      message: `${url}: robots.txt ok (sem bloco gerenciado, allowlist respeitada, bots de recuperação livres)`,
+      message: `${url}: robots.txt ok (sem bloco gerenciado, allowlist respeitada, bots de recuperação livres, Sitemap: declarada)`,
     };
   }
 

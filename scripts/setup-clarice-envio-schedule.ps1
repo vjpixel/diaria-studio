@@ -124,7 +124,7 @@ $Action = New-ScheduledTaskAction `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$WrapperPs1`"" `
     -WorkingDirectory $RepoRoot
 
-# Diaria as 19:00 -- depois da Diaria-Clarice-Novos (17:00) de proposito: os
+# Diaria as 19:00 -- depois da Diaria-Clarice-Novos (11:00 desde #5140) de proposito: os
 # cadastros novos do dia ja entraram no store antes do planejamento da onda.
 $Trigger = New-ScheduledTaskTrigger -Daily -At (Get-Date -Hour 19 -Minute 0 -Second 0)
 

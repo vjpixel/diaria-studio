@@ -132,6 +132,16 @@ export function buildWatchdogSystemdUnitFiles(repoRootAbs: string): SystemdUnitF
     // Equivalente ao StartWhenAvailable do Windows (setup-watchdog-schedule.ps1):
     // se a máquina estava desligada/dormindo no horário do disparo, roda
     // assim que possível no próximo boot/wake em vez de pular a execução.
+    //
+    // CUIDADO AO MUDAR O HORÁRIO/JANELA (#5140): o catch-up também dispara
+    // quando o OnCalendar MUDA. Ao iniciar o timer, o systemd roda na hora se
+    // alguma ocorrência cai em (carimbo, agora] — carimbo =
+    // `~/.local/share/systemd/timers/stamp-<unit>.timer`; `stop` não o
+    // consome, então adiar o `start` não evita. Este gerador fica fora do
+    // registry declarativo de propósito (a janela cruza a meia-noite, ver
+    // docstring do topo), então quem mexe aqui não lê o aviso de
+    // `setup-systemd-timers.ts` — daí a duplicação. Menos grave que nas
+    // demais (o watchdog só inspeciona estado), mas o mecanismo é o mesmo.
     "Persistent=true",
     `Unit=${WATCHDOG_UNIT_NAME}.service`,
     "",

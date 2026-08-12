@@ -9,6 +9,13 @@
  * incondicional, e `X-Robots-Tag: noindex` em TODA resposta do Worker
  * (independente de rota/status).
  *
+ * #5133: desde o gate de auth, rotas protegidas sem token válido devolvem
+ * 401 (não 200/404 diferenciado — ver `test/diaria-dashboard-auth-5133.test.ts`
+ * pro grosso da cobertura de auth). Os cenários aqui usam `makeEnv()` SEM
+ * `AUTH_TOKEN` de propósito — cobre o caso fail-CLOSED (secret nunca
+ * configurado) continuando a levar `X-Robots-Tag: noindex`, não só o caso
+ * autenticado.
+ *
  * Mesmo padrão de import dinâmico + polyfill de `caches` de
  * `test/diaria-dashboard-studio-snapshot-3565.test.ts` (o package.json do
  * worker não declara `"type": "module"`, então `node --import tsx` faz
@@ -49,12 +56,13 @@ after(() => {
 function makeEnv(): Env {
   return {
     DASHBOARD_DATA: { get: async () => null },
+    // AUTH_TOKEN de propósito ausente — cobre o caso fail-CLOSED (#5133).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any;
 }
 
 describe("GET /robots.txt (#5097 item E)", () => {
-  it("200 com Disallow: / incondicional", async () => {
+  it("200 com Disallow: / incondicional — fora do gate de auth (#5133)", async () => {
     const res = await worker.fetch(new Request("https://x/robots.txt"), makeEnv());
     assert.equal(res.status, 200);
     const body = await res.text();
@@ -69,21 +77,21 @@ describe("X-Robots-Tag: noindex em toda resposta (#5097 item E)", () => {
     assert.equal(res.headers.get("X-Robots-Tag"), "noindex");
   });
 
-  it("/ (sem dado no KV, 200 'não inicializado') carrega o header", async () => {
+  it("/ sem token (fail-CLOSED, #5133) devolve 401 e carrega o header", async () => {
     const res = await worker.fetch(new Request("https://x/"), makeEnv());
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 401);
     assert.equal(res.headers.get("X-Robots-Tag"), "noindex");
   });
 
-  it("/api/data (404 sem dado) também carrega o header — noindex independe do status", async () => {
+  it("/api/data sem token (fail-CLOSED, #5133) devolve 401 e carrega o header", async () => {
     const res = await worker.fetch(new Request("https://x/api/data"), makeEnv());
-    assert.equal(res.status, 404);
+    assert.equal(res.status, 401);
     assert.equal(res.headers.get("X-Robots-Tag"), "noindex");
   });
 
-  it("rota inexistente (404 genérico) também carrega o header", async () => {
+  it("rota inexistente também devolve 401 (gate roda antes do lookup de rota, #5133) com o header", async () => {
     const res = await worker.fetch(new Request("https://x/rota-que-nao-existe"), makeEnv());
-    assert.equal(res.status, 404);
+    assert.equal(res.status, 401);
     assert.equal(res.headers.get("X-Robots-Tag"), "noindex");
   });
 

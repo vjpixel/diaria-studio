@@ -360,6 +360,23 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4910",
   },
   {
+    name: "Diaria-Hub-Staleness-Check",
+    description: "detecta edições publicadas que casam HUB_KEYWORD_PATTERNS mas não estão no dataset commitado do hub (persiste snapshot diário + alarma se >= 3 dias)",
+    steps: [{ key: "check", script: "scripts/hub-staleness-check.ts" }],
+    logPath: "hubs/.staleness-check.log",
+    // Diária basta (#5123) — o custo é só ler dataset local (sem rede pra
+    // detectar; só o e-mail de alarme, se houver pendência, faz I/O de
+    // rede). Horário: 09:30, entre Diaria-Clarice-Opens-Catchup-Alarm (09:00)
+    // e Diaria-Apoios-Diff-Alarm (09:45) — sem colisão com nenhuma outra
+    // daily do registro.
+    schedule: { kind: "daily", hour: 9, minute: 30 },
+    // Sem `legacySetupScript` de propósito — mesmo caso de
+    // Diaria-Beehiiv-Home-Meta-Check/Diaria-Clarice-Envio-Alarm (#5005/#5058):
+    // 1ª execução registrada depois do cutover systemd (épica #4798), sem
+    // contraparte Windows/.ps1.
+    issue: "#5123, #4924",
+  },
+  {
     name: "Diaria-Clarice-Novos",
     description: "envio diario aos cadastros novos da Clarice (Stripe -> MV -> campanha)",
     // Kill switch dedicado (#4941 E3): ANTES de qualquer chamada externa,
@@ -370,12 +387,34 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // editor pausou a automação de propósito".
     steps: [{ key: "run", script: "scripts/clarice-novos-run.ts" }],
     logPath: "clarice-subscribers/.novos-run.log",
-    // 17:00 BRT (decisão do editor, #4941) — sem colisão com nenhuma outra
-    // task armada (a mais próxima do horário é o ciclo de 4h do
-    // Diaria-Clarice-Guardrail-Alarm). Supera a decisão D5 do #4347
+    // 11:00 BRT (decisão do editor 260812, #5140 — sucede as 17:00 do #4941).
+    // Dois motivos independentes, ambos medidos:
+    //
+    //   1. JANELA DE DECISÃO. O e-mail tem dois objetivos de conversão
+    //      (assinar a Diária, usar o cupom da Clarice) e nenhum dos dois
+    //      acontece na leitura: a mediana do clique é 7,6h e o p75 é 37,9h.
+    //      Quando acontecem, é em horário comercial — a curva de compra da
+    //      Stripe (1.118 assinaturas/180d, independente de envio de e-mail)
+    //      põe 41-46% das compras entre 12h e 17h e só 6% de madrugada. Um
+    //      envio às 17:00 empurrava quem age rápido pra 18h-21h, o bloco de
+    //      menor propensão do dia. Índice de propensão da janela de ação
+    //      (100 = hora média): 17h = 120, 11h = 170.
+    //   2. FOLGA DO GUARD. `Diaria-Clarice-Envio` (19:00) monta a onda do dia
+    //      seguinte a partir de `ramp-warm`, e `novos` é subconjunto ESTRITO
+    //      dele (`isNovos` = `isRampWarm` + corte por `created`). Quem já
+    //      recebeu do `novos` só sai da onda pelo guard `queued ∪ sent`
+    //      (`fetchCommittedCampaignListIds`), que NÃO cobre `in_process` — o
+    //      status observado nas rodadas de 09 e 11/08. Com 17:00 a campanha
+    //      tinha 2h pra assentar em `sent` antes das 19:00; com 11:00 tem 8h.
+    //      Sem essa folga, uma campanha presa em `in_process` faz o mesmo
+    //      contato receber duas vezes em 13h.
+    //
+    // Segue sem colisão com outra task armada (a mais próxima é o ciclo de 4h
+    // do Diaria-Clarice-Guardrail-Alarm) e depois do Diaria-Clarice-Sync
+    // (08:30), então o store está fresco. Supera a decisão D5 do #4347
     // ("~4×/semana, invocação manual") — a skill manual continua existindo,
     // delegando pro mesmo orquestrador (ver .claude/skills/diaria-clarice-novos).
-    schedule: { kind: "daily", hour: 17, minute: 0 },
+    schedule: { kind: "daily", hour: 11, minute: 0 },
     guard: {
       requiredFile: "clarice-subscribers/clarice-users.db",
       abortMessage:
@@ -399,8 +438,12 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     logPath: "clarice-subscribers/.envio-run.log",
     // 19:00 BRT (decisão do editor 260811): planeja e AGENDA a onda de
     // amanhã 06:00 BRT (09:00 UTC). Roda depois do Diaria-Clarice-Novos
-    // (17:00) de propósito — os cadastros novos do dia já entraram no store
-    // antes do planejamento da onda. Sem colisão com nenhuma outra task
+    // (11:00 desde o #5140, antes 17:00) de propósito — os cadastros novos do
+    // dia já entraram no store antes do planejamento da onda, e a campanha do
+    // `novos` já teve tempo de assentar em `sent` pro guard `queued ∪ sent`
+    // excluí-los desta onda (o mesmo contato está nos DOIS universos:
+    // `isNovos` é subconjunto estrito de `isRampWarm`).
+    // Sem colisão com nenhuma outra task
     // armada (a mais próxima é o ciclo de 4h do Clarice-Guardrail-Alarm).
     schedule: { kind: "daily", hour: 19, minute: 0 },
     // Mesmo guard do Diaria-Clarice-Novos (#4552/#4941): sem o store, o
@@ -485,16 +528,25 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     name: "Diaria-SEO-Weekly",
     description: "loop de SEO semanal (cobertura de indexacao + Search Analytics)",
     steps: [
-      { key: "index", script: "scripts/seo-index-check.ts", args: ["--only-posts", "--limit", "250"] },
+      // --limit 2000 (subiu de 250 no #5118 item 1a): a cota real da URL
+      // Inspection API é 2.000/dia contra ~239 URLs/rodada — 250 dava só
+      // ~2,8 semanas de headroom antes de truncar, e o corte descartava as
+      // URLs MAIS ANTIGAS (sitemap newest-first, ver applyLimit em
+      // seo-index-check.ts) sem marca nenhuma no relatório — o KPI de
+      // cobertura inflaria sozinho por composição, não por melhora real.
+      { key: "index", script: "scripts/seo-index-check.ts", args: ["--only-posts", "--limit", "2000"] },
       // #4909: /temas/{slug} (host arquivo.diar.ia.br) nunca entrou nesta
       // checagem — a propriedade GSC verificada é sc-domain:diar.ia.br
       // (cobre o subdomínio, sem --site próprio necessário), e o sitemap
-      // deste host tem só ~5 URLs (a raiz + 4 hubs), então SEM --only-posts
-      // (o filtro é /\/p\//, que zeraria tudo aqui — ver filterPosts em
-      // seo-index-check.ts) e com --limit pequeno. --out-suffix evita que
-      // esta rodada colida no mesmo index-status-{data}.json/.md do passo
-      // "index" acima (achado do #4909 — o .md era path fixo, não
-      // sobrescrevível por --out).
+      // deste host tem hoje 7 URLs (a raiz + 6 hubs — corrigido no #5118/#5120,
+      // dizia "~5 URLs, a raiz + 4 hubs" desatualizado; ver também #5120 item 3
+      // sobre a leitura "1/5 hubs, com 4 nunca rastreados" da medição de
+      // 12/ago, feita ANTES do 6º hub mercado-trabalho entrar), então SEM
+      // --only-posts (o filtro é /\/p\//, que zeraria tudo aqui — ver
+      // filterPosts em seo-index-check.ts) e com --limit pequeno.
+      // --out-suffix evita que esta rodada colida no mesmo
+      // index-status-{data}.json/.md do passo "index" acima (achado do
+      // #4909 — o .md era path fixo, não sobrescrevível por --out).
       {
         key: "index-arquivo",
         script: "scripts/seo-index-check.ts",

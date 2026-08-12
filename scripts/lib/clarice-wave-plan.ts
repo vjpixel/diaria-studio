@@ -90,14 +90,28 @@ export const SEND_HOUR_UTC = 9;
  * recriável via API/painel (#4935), mas não é gratuito, e um off-by-one
  * aqui só é descoberto depois do disparo (incidente 260703), quando o
  * envio já saiu de verdade e aí sim não tem volta.
+ *
+ * `hourUtc` (#5140) existe pro teste de horário da onda `ramp-warm`: duas
+ * células do MESMO dia agendadas em horas diferentes (06:00 × 10:00 BRT).
+ * Omitir preserva `SEND_HOUR_UTC` — todo chamador de hoje passa por esse
+ * ramo, então o default é o comportamento histórico, não uma escolha nova.
+ *
+ * A hora é validada aqui e não no chamador porque é este valor que vira
+ * `scheduledAt` de campanha real: um `hourUtc` fracionário ou fora de 0–23
+ * produziria um ISO que a Brevo aceita interpretar do jeito dela (ou
+ * rejeita tarde, depois do `--create`), e o modo de falha seria o mesmo
+ * off-by-one silencioso que o round-trip de data abaixo existe pra impedir.
  */
-export function scheduledAtForDate(date: string): string {
+export function scheduledAtForDate(date: string, hourUtc: number = SEND_HOUR_UTC): string {
   const m = ISO_DATE_RE.exec(date);
   if (!m) {
     throw new Error(`data inválida: "${date}" — esperado YYYY-MM-DD (data é sempre explícita).`);
   }
+  if (!Number.isInteger(hourUtc) || hourUtc < 0 || hourUtc > 23) {
+    throw new Error(`hora UTC inválida: ${hourUtc} — esperado inteiro entre 0 e 23.`);
+  }
   const [, y, mo, d] = m;
-  const iso = `${y}-${mo}-${d}T${String(SEND_HOUR_UTC).padStart(2, "0")}:00:00.000Z`;
+  const iso = `${y}-${mo}-${d}T${String(hourUtc).padStart(2, "0")}:00:00.000Z`;
   const ms = Date.parse(iso);
   if (!Number.isFinite(ms)) throw new Error(`data inválida: "${date}".`);
   // Round-trip: pega 2026-02-31 → 2026-03-03 (o Date "conserta" em silêncio).

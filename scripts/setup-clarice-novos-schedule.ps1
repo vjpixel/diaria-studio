@@ -2,11 +2,11 @@
 .SYNOPSIS
     Registra (ou remove) a task "Diaria-Clarice-Novos" no Task Scheduler --
     envio diario aos cadastros novos da Clarice (Stripe -> MV -> campanha,
-    #4347/#4941), diaria as 17:00.
+    #4347/#4941/#5140), diaria as 11:00.
 
 .DESCRIPTION
     Cria uma tarefa agendada que roda `run-clarice-novos.ps1` (que chama
-    `clarice-novos-run.ts`) todo dia as 17:00 -- automatiza o que ate o
+    `clarice-novos-run.ts`) todo dia as 11:00 -- automatiza o que ate o
     #4941 era invocacao MANUAL ~4x/semana de /diaria-clarice-novos.
 
     `clarice-novos-run.ts` orquestra deterministicamente os Passos 0-7:
@@ -70,7 +70,7 @@ $RepoRoot   = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 $WrapperPs1 = Join-Path $RepoRoot "scripts\run-clarice-novos.ps1"
 
 $TaskName = "Diaria-Clarice-Novos"
-$TaskDesc = "diar.ia.br: envio diario aos cadastros novos da Clarice (#4347/#4941) - 17:00, gated pelo toggle data/clarice-novos-enabled.json."
+$TaskDesc = "diar.ia.br: envio diario aos cadastros novos da Clarice (#4347/#4941/#5140) - 11:00, gated pelo toggle data/clarice-novos-enabled.json."
 
 if (-not (Test-Path $WrapperPs1)) {
     Write-Error "Wrapper nao encontrado: $WrapperPs1"
@@ -99,9 +99,9 @@ $Action = New-ScheduledTaskAction `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$WrapperPs1`"" `
     -WorkingDirectory $RepoRoot
 
-# Diaria as 17:00 -- ver .DESCRIPTION. Sem colisao com nenhuma outra task
+# Diaria as 11:00 (#5140, antes 17:00) -- ver .DESCRIPTION. Sem colisao com nenhuma outra task
 # armada do repo.
-$Trigger = New-ScheduledTaskTrigger -Daily -At (Get-Date -Hour 17 -Minute 0 -Second 0)
+$Trigger = New-ScheduledTaskTrigger -Daily -At (Get-Date -Hour 11 -Minute 0 -Second 0)
 
 $Settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit   (New-TimeSpan -Hours 1) `
@@ -143,7 +143,7 @@ Write-Output ""
 Write-Output "Configuracao:"
 Write-Output "  Wrapper : $WrapperPs1"
 Write-Output "  Repo    : $RepoRoot"
-Write-Output "  Horario : 17:00 diario"
+Write-Output "  Horario : 11:00 diario"
 Write-Output "  Log     : data\clarice-subscribers\.novos-run.log"
 Write-Output ""
 Write-Output "*** A automacao continua PAUSADA ate voce liberar o toggle: ***"

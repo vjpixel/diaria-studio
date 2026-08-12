@@ -84,6 +84,19 @@ export function buildEdicaoSystemdUnitFiles(repoRootAbs: string): SystemdUnitFil
     // Equivalente ao -StartWhenAvailable do Windows (setup-edicao-schedule.ps1):
     // se a máquina estava desligada/dormindo no horário do disparo, roda
     // assim que possível no próximo boot/wake em vez de pular o dia.
+    //
+    // CUIDADO AO MUDAR O HORÁRIO (#5140): o catch-up também dispara quando o
+    // OnCalendar MUDA. Ao iniciar o timer, o systemd roda na hora se alguma
+    // ocorrência cai em (carimbo, agora] — carimbo =
+    // `~/.local/share/systemd/timers/stamp-<unit>.timer`. `stop` não consome
+    // esse carimbo, então adiar o `start` não evita. Aqui isso é mais caro que
+    // na média: o ExecStart invoca `claude -p` contra a pipeline de edição de
+    // VERDADE. Este gerador fica fora do registry declarativo de propósito
+    // (ver docstring do topo), então o aviso de `setup-systemd-timers.ts` não
+    // é lido por quem mexe nesta task — daí a duplicação deste comentário.
+    // Saída segura: rearmar antes da próxima ocorrência, ou `touch` no carimbo
+    // antes do `start`. (A idempotência de `data/editions/{AAMMDD}/` limita o
+    // dano, mas não é motivo pra disparar sem querer.)
     "Persistent=true",
     `Unit=${EDICAO_UNIT_NAME}.service`,
     "",

@@ -87,7 +87,25 @@ export function main(argv: string[], repoRootAbs: string): number {
     "\nARMAR (fora do escopo desta task, #4807): por unit gerado, copiar/linkar pra " +
       "~/.config/systemd/user/ e rodar:\n" +
       "  systemctl --user daemon-reload\n" +
-      "  systemctl --user enable --now <nome>.timer\n",
+      "  systemctl --user enable --now <nome>.timer\n" +
+      "\n⚠️  MUDOU O HORÁRIO DE UMA TASK? Os units usam Persistent=true, e o systemd\n" +
+      "   dispara NA HORA se existe uma ocorrência do OnCalendar entre o último\n" +
+      "   disparo e agora. Para task que manda e-mail ou gasta crédito de API isso\n" +
+      "   é um envio REAL, não ensaio (aconteceu ao vivo no #5140).\n" +
+      "\n" +
+      "   O que manda é o CARIMBO em ~/.local/share/systemd/timers/stamp-<unit>.timer\n" +
+      "   (mtime = último disparo), não o relógio do re-arme. Consequências:\n" +
+      "     - `stop` NÃO consome o carimbo. Adiar o `start` não evita nada: a\n" +
+      "       ocorrência perdida continua devida e dispara na hora do start.\n" +
+      "     - Rearmar mais tarde no dia é justamente o caso RUIM.\n" +
+      "\n" +
+      "   Saídas que funcionam:\n" +
+      "     1. Rearmar ANTES de a próxima ocorrência do horário novo acontecer\n" +
+      "        (janela entre o último disparo e o horário novo).\n" +
+      "     2. Task com kill switch (ex: Diaria-Clarice-Novos): desligar o switch,\n" +
+      "        rearmar, deixar o catch-up sair no vazio, religar.\n" +
+      "     3. `touch` no arquivo de carimbo antes do start — declara \"já disparou\n" +
+      "        agora\" e não sobra ocorrência devida.\n",
   );
   return 0;
 }

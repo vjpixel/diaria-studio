@@ -79,7 +79,14 @@ medição de indexação do projeto.
 - `<lastmod>` por `<url>` no sitemap do `arquivo` (raiz = data mais recente
   entre os hubs; cada hub = seu `contentDate`, o mesmo valor já usado no
   JSON-LD — nunca uma fonte de data nova/paralela).
-- `Last-Modified` + `ETag` em `GET /temas/{slug}`.
+- `Last-Modified` + `ETag` em `GET /temas/{slug}`. **Correção (#5134, ver
+  Fato 8 abaixo): o `ETag` NÃO chegava até o cliente em produção** — o código
+  montava o header corretamente (confirmado por invocação isolada do `fetch`
+  handler), mas `curl -sSI` contra `arquivo.diar.ia.br` não mostrava
+  `ETag` nenhum. Corrigido em #5134 (12/ago/2026) trocando pra ETag FRACO
+  (`W/"..."`) — não é mais "entregue" no sentido presente-tense que este
+  Fato 3 registrava; é entregue A PARTIR do deploy do #5134, com
+  verificação ao vivo pós-deploy ainda pendente do editor.
 - Novo step `index-arquivo` em `Diaria-SEO-Weekly` (`scripts/seo-index-check.ts
   --sitemap https://arquivo.diar.ia.br/sitemap.xml --out-suffix arquivo`,
   **sem** `--only-posts` — esse filtro é `/\/p\//` e zeraria `/temas/*`
@@ -187,18 +194,25 @@ rodou os dois mecanismos contra produção:
   edição mais nova que a rodada, tratado como informativo pela função pura —
   `brasil-regulacao` 5/11).
 - `npx tsx scripts/seo-index-check.ts --sitemap https://arquivo.diar.ia.br/sitemap.xml --limit 10 --out-suffix arquivo`
-  rodou pela 1ª vez contra a Search Console de verdade: **2/6 indexadas
+  rodou pela 1ª vez contra a Search Console de verdade: **2/6 URLs indexadas
   (33,3%)**, escrito em `data/seo/index-status-arquivo-2026-08-12.{json,md}`.
-  O sitemap hoje tem 6 URLs (a raiz `/` + 5 hubs — cresceu de 4 pra 6 desde
-  que a issue foi escrita, o 5º hub `brasil-regulacao` entrou depois). As 4
-  não-indexadas (`openai-chatgpt`, `google-gemini`, `meta-ai`,
-  `brasil-regulacao`) são todas marcadas **órfãs (sem link interno)** pelo
-  script — achado novo, fora do escopo original da issue (que pedia só medir,
-  não consertar): nenhuma dessas 4 páginas de hub tem `<a href>` apontando
-  pra ela a partir de outra página já indexada. Só `anthropic-claude` (o hub
-  mais antigo) está indexado — plausível que seja o único com link de entrada
-  hoje. Não é ação desta nota — registro pro checkpoint de ~07/out/2026 citado
-  no corpo da issue.
+  **Correção (#5120): esse "2/6" mistura raiz com hub e infla a leitura por
+  hub.** Das 2 URLs indexadas, uma é a raiz `arquivo.diar.ia.br/` — não é um
+  hub. Por hub, é **1 de 5 = 20%** (só `anthropic-claude`), não os "2/6
+  (33%)" que chegaram a circular. O sitemap hoje tem 6 URLs (a raiz `/` + 5
+  hubs — cresceu de 4 pra 6 desde que a issue foi escrita, o 5º hub
+  `brasil-regulacao` entrou depois; o 6º hub, `mercado-trabalho`, mergeou em
+  `8c6e0f27` 24min DEPOIS desta medição — não é bug do sitemap, que deriva
+  de `HUB_REGISTRY` e já tem os 6 hoje). Os 4 hubs não-indexados
+  (`openai-chatgpt`, `google-gemini`, `meta-ai`, `brasil-regulacao`) são
+  todos marcados **órfãos (sem link interno)** pelo script **e não têm
+  `lastCrawlTime`** — o Google nunca rastreou nenhum dos 4, nem uma vez,
+  não é "rastreou e decidiu não indexar". Achado fora do escopo original da
+  issue (que pedia só medir, não consertar): nenhuma dessas 4 páginas de hub
+  tem `<a href>` apontando pra ela a partir de outra página já rastreada. Só
+  `anthropic-claude` (o hub mais antigo) está indexado — plausível que seja
+  o único com link de entrada hoje. Não é ação desta nota — registro pro
+  checkpoint de ~07/out/2026 citado no corpo da issue.
 
 **Ação:** ambas issues fecham com este achado — mecanismo confirmado
 funcionando ao vivo nos dois casos, números batendo com o esperado. Não fazer
@@ -217,9 +231,14 @@ pra grafo de link e cópia de host:
   115/310 indexadas somando os 6 hubs (sobreposição de edição entre hubs —
   não é contagem de URL distinta): `anthropic-claude` 27/76, `openai-chatgpt`
   36/96, `google-gemini` 23/61, `meta-ai` 7/20, `brasil-regulacao` 5/11,
-  `mercado-trabalho` 17/46. Host `arquivo` isolado: 2/6 (33,3%) — sitemap
-  ainda com só 7 URLs (o hub `mercado-trabalho` entrou depois da rodada
-  anterior).
+  `mercado-trabalho` 17/46. Host `arquivo` isolado, por hub: **1/5 = 20% (só
+  `anthropic-claude`), com os outros 4 nunca rastreados** — correção do "2/6
+  (33,3%)" que circulava (número que conta a raiz `arquivo.diar.ia.br/` como
+  se fosse hub, ver Fato 4 acima; #5120). Essa medição específica
+  (`index-status-arquivo-2026-08-12.json`) é anterior ao 6º hub
+  `mercado-trabalho` mergear — o sitemap já tem 7 URLs (raiz + 6 hubs) hoje,
+  mas os 2 indexados citados aqui ainda são só sobre o conjunto de 6 (raiz +
+  5) da rodada anterior.
 - **Achado 1 — a home apontava pros hosts NÃO-canônicos.** `https://diar.ia.br/`
   (maior autoridade do domínio) linkava `livros.diaria.workers.dev`,
   `cursos.diaria.workers.dev` e `diaria.beehiiv.com/archive` em vez dos hosts
@@ -309,7 +328,84 @@ de publicação, alterar o `<html>` renderizado depois do fato não muda o que
 o crawler/bot recebe na 1ª resposta HTTP (SSR), só o DOM pós-hidratação no
 browser — sem efeito real em SEO.
 
-## Fato 7 — o passo 3 do #4546 (submeter os 3 sitemaps de curadoria no GSC) só executou de verdade em 12/ago/2026
+## Fato 7 — 1ª citação nominal em prosa (não link) desde o baseline zero, 11/ago/2026 (#5120)
+
+`data/geo-citations/history.jsonl` tem 124 registros, dos quais **3 com
+`cited: true`** — todos de **11/ago/2026**, provider `google`
+(`gemini-2.5-flash`), painel `geral`, e todos na **mesma pergunta**: *"Existe
+alguma newsletter brasileira que resume as notícias de IA todo dia?"*. Um dos
+3 snippets erra o horário de envio ("todas as manhãs às 8h" — o envio
+canônico é 06:00 BRT).
+
+**Leitura honesta:** é **1 acerto repetido 3×** (mesmo provider, mesma
+pergunta, mesmo dia — as 3 chamadas são reamostragens independentes da mesma
+pergunta, não 3 perguntas diferentes acertando), não 3 acertos distintos. É
+**menção nominal em prosa** ("a diar.ia.br envia...", "o site diar.ia.br
+também mostra..."), não citação de fonte com link — o detector
+(`scripts/lib/geo-citation-monitor.ts`) faz `indexOf(domain)` no texto da
+resposta, então não distingue link de menção solta. O painel `hubs` segue em
+**0** citações. Sinal fraco — mas é a 1ª variação da série desde 07/ago
+(baseline "0 de 16", ver `docs/geo-citation-monitor-setup.md`), e "nunca
+fomos citados" passou a ser factualmente errado a partir desta data.
+
+**Não é ação desta nota** — registro pro checkpoint de acompanhamento
+contínuo (`docs/geo-citation-monitor-setup.md` §"Critério de decisão").
+
+## Fato 8 — o `ETag` do Worker `arquivo` não chegava ao cliente apesar de o código estar correto; corrigido com ETag fraco + 304 + fallback de KV na raiz (12/ago/2026, #5134)
+
+**Correção do Fato 3 acima**: o #4909 (10-11/ago) registrou `Last-Modified` +
+`ETag` em `GET /temas/{slug}` como entregues. Verificado ao vivo em
+12/ago/2026 (#5134): `curl -sSI https://arquivo.diar.ia.br/temas/anthropic-claude`
+mostrava `Cache-Control` e `Last-Modified`, mas **nenhum `ETag`** — mesmo
+testando com `Accept-Encoding: identity` (descarta compressão como
+explicação óbvia via curl). Investigação nesta sessão confirmou que o
+código em si estava certo: invocar `worker.fetch()` diretamente (sem
+Cloudflare no meio) devolve o header intacto na `Response` final — a mesma
+checagem que o #4909 já fazia via teste automatizado, então "escrever um
+teste que confere a resposta final" não teria pegado esse bug, porque o bug
+não está no código deste repo.
+
+**Hipótese mais provável, não 100% confirmável a partir deste worktree**:
+comportamento documentado de CDNs/proxies reversos (Cloudflare incluso) de
+descartar um `ETag` FORTE ao aplicar compressão automática (gzip/brotli) em
+trânsito — um validador forte declara "byte-idêntico", que a compressão
+invalida; um `ETag` FRACO (`W/"..."`) sinaliza "semanticamente
+equivalente" e sobrevive à transformação. Isso é consistente com o sintoma
+(o header simplesmente desaparece, sem erro) e é o fix padrão documentado
+pra essa classe de problema.
+
+**Implementado (não deployado por esta sessão — worktree isolado sem
+credencial de produção):**
+
+- `ETag` agora é sempre `W/"{hash}"` (fraco), nunca `"{hash}"` (forte).
+- `GET /temas/{slug}` trata `If-None-Match` (RFC 7232, comparação fraca,
+  suporta `*` e lista separada por vírgula) e `If-Modified-Since` (RFC 7231),
+  com precedência de `If-None-Match` quando os dois headers vêm juntos —
+  casando, devolve `304` com corpo vazio.
+- A raiz (`/`) não depende mais de o fetch ao vivo do sitemap da Beehiiv dar
+  certo pra responder: todo sucesso grava o HTML no KV
+  (`cache:arquivo-root:html-v1`, reusa o namespace `CURSOS_SUBSCRIBERS` já
+  bindado pros contadores ai-fetch, sem namespace novo); toda falha (rede,
+  HTTP não-200, XML malformado) tenta servir esse fallback antes de cair no
+  502 — que agora só acontece quando NUNCA houve um sucesso anterior pra
+  cachear (ex: 1º request depois de um deploy novo, ou KV indisponível).
+
+**Pendência explícita — verificação AO VIVO pós-deploy**: esta sessão não
+teve acesso à Cloudflare de produção (worktree isolado de subagente
+overnight). O editor (ou uma sessão local/develop com credencial) deve
+rodar, depois do deploy:
+
+```
+curl -sSI https://arquivo.diar.ia.br/temas/anthropic-claude   # espera ver ETag: W/"..."
+curl -o /dev/null -w '%{http_code}' -H 'If-None-Match: W/"<mesmo-etag>"' \
+    https://arquivo.diar.ia.br/temas/anthropic-claude          # espera 304
+```
+
+Se o `ETag` fraco AINDA não aparecer, a hipótese de compressão está errada
+e o problema é outra coisa na camada Cloudflare — não fica pra próxima
+sessão reabrir a investigação sem esse dado.
+
+## Fato 9 — o passo 3 do #4546 (submeter os 3 sitemaps de curadoria no GSC) só executou de verdade em 12/ago/2026
 
 A issue #4546 foi fechada em **04/ago/2026**, mas os 3 sitemaps que
 `scripts/gsc-submit-sitemaps.ts` existe pra submeter (`cursos`, `livros`,
@@ -318,7 +414,7 @@ Console em 12/ago, antes de qualquer ação desta sessão:
 
 ```
 sc-domain:diar.ia.br → 2 sitemaps
-  diar.ia.br/sitemap.xml       submetido 2026-07-27  0 erros
+  diar.ia.br/sitemap.xml          submetido 2026-07-27  0 erros
   arquivo.diar.ia.br/sitemap.xml  submetido 2026-08-11  0 erros
 ```
 

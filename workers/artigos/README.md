@@ -25,12 +25,17 @@ sub-paths dentro do mesmo `custom_domain`.
 ## Adicionar um artigo novo
 
 1. Criar `public/{ano}/{slug}/index.html` (documento HTML completo e
-   autocontido — sem dependências externas, CSS inline).
-2. Deploy:
+   autocontido — sem dependências externas, CSS inline). Incluir JSON-LD
+   `Article` (`author`, `datePublished`, `dateModified`, `publisher` — ver
+   `public/2026/o-agente/index.html` pro shape exato, #5126).
+2. Adicionar o artigo em `public/index.html` (raiz do host — índice de
+   todos os artigos especiais, #5126 item 3) e em `public/sitemap.xml`
+   (#5126 item 1) — os dois são mantidos manualmente, não gerados.
+3. Deploy:
    ```
    cd workers/artigos && npx wrangler deploy
    ```
-3. Verificar ao vivo: abrir a URL publicada E a home `diar.ia.br`
+4. Verificar ao vivo: abrir a URL publicada E a home `diar.ia.br`
    (confirmar que o Beehiiv continua servindo o resto do domínio sem
    interferência).
 
@@ -41,3 +46,8 @@ sub-paths dentro do mesmo `custom_domain`.
   `scripts/lib/shared/design-tokens.ts`).
 - Nunca fazer deploy de arquivos de rascunho/preview dentro de `public/`
   — tudo ali é servido publicamente.
+- `public/sitemap.xml` e o link em `public/index.html` são mantidos à mão
+  (#5126) — nenhum build script gera este Worker (é assets puro). Ao
+  publicar um artigo novo, os dois PRECISAM ser atualizados no mesmo PR —
+  `test/artigos-sitemap-5126.test.ts` falha se um artigo em `public/` não
+  aparecer no sitemap.

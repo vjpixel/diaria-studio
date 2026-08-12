@@ -60,7 +60,7 @@ import {
   type HubFactGateClaim,
   type HubFactGateContradiction,
 } from "./lib/shared/hub-fact-gate.ts";
-import { renderHubPage, type HubContent } from "./lib/shared/hub-page.ts";
+import { renderHubPage, hubCoverageDate, checkUpdatedDateCeiling, type HubContent } from "./lib/shared/hub-page.ts";
 import { getAnthropicClaudeHub } from "./lib/hubs/anthropic-claude.ts";
 import { getOpenaiChatgptHub } from "./lib/hubs/openai-chatgpt.ts";
 import { getGoogleGeminiHub } from "./lib/hubs/google-gemini.ts";
@@ -102,15 +102,16 @@ function constNameFor(slug: string): string {
 
 /** Nome da constante de `<lastmod>` exportada — `HUB_LASTMOD` + slug em
  * SCREAMING_SNAKE_CASE (#4909). Vem de graça do mesmo módulo gerado que já
- * carrega o HTML — nenhum registro manual novo. Valor é `hub.updatedDate`
- * (#4911 — NÃO `publishedDate`: `<lastmod>`/`Last-Modified` descrevem quando
- * o conteúdo mudou, o mesmo campo que já alimenta `dateModified` no JSON-LD;
+ * carrega o HTML — nenhum registro manual novo. Valor é `hubCoverageDate(hub.sourceEditions)`
+ * (#5124 — MUDOU de `hub.updatedDate`, #4911: `<lastmod>`/`Last-Modified`
+ * devem descrever até quando a COBERTURA vai, não quando a PROSA foi
+ * revisada — o mesmo valor que agora alimenta `dateModified` no JSON-LD;
  * ver docstring de `scripts/lib/shared/hub-page.ts`). */
 function lastmodConstNameFor(slug: string): string {
   return `HUB_LASTMOD_${slug.replace(/-/g, "_").toUpperCase()}`;
 }
 
-export function renderGeneratedModule(slug: string, html: string, updatedDate: string): string {
+export function renderGeneratedModule(slug: string, html: string, lastmodDate: string): string {
   const constName = constNameFor(slug);
   const lastmodConstName = lastmodConstNameFor(slug);
   return `/**
@@ -125,7 +126,7 @@ export function renderGeneratedModule(slug: string, html: string, updatedDate: s
  * test/hub-page-drift.test.ts garante que este arquivo reflete o conteúdo.
  */
 export const ${constName} = ${JSON.stringify(html)};
-export const ${lastmodConstName} = ${JSON.stringify(updatedDate)};
+export const ${lastmodConstName} = ${JSON.stringify(lastmodDate)};
 `;
 }
 
@@ -155,13 +156,20 @@ function buildOne(slug: string, check: boolean): void {
   }
   const hub = loadHubContent(slug);
   const html = renderHubPage(hub);
+  // #5124 item 3: heurístico, NUNCA bloqueia (ver docstring de
+  // checkUpdatedDateCeiling) — imprime aviso, segue o build normalmente.
+  for (const warning of checkUpdatedDateCeiling(hub)) {
+    process.stderr.write(`[build-hub-page] ⚠ ${slug}: ${warning}\n`);
+  }
   const outPath = outPathFor(slug);
   if (check) {
     process.stderr.write(`[build-hub-page] ${slug}: --check, não escreve.\n`);
     return;
   }
   mkdirSync(dirname(outPath), { recursive: true });
-  writeFileAtomic(outPath, renderGeneratedModule(slug, html, hub.updatedDate));
+  // #5124: <lastmod>/Last-Modified derivam de coverageDate (edição mais
+  // recente citada), não mais de updatedDate (revisão de prosa).
+  writeFileAtomic(outPath, renderGeneratedModule(slug, html, hubCoverageDate(hub.sourceEditions)));
   process.stderr.write(`[build-hub-page] ${slug}: escrito em ${outPath}\n`);
   console.log(outPath);
 }

@@ -19,11 +19,21 @@
  *
  * A task é SEMANAL (domingos 07:00) — perder 1 execução (máquina desligada
  * naquele domingo, rede fora) não é sinal de nada quebrado. `STALENESS_THRESHOLD_DAYS`
- * cobre 2 execuções semanais perdidas + folga, análogo ao raciocínio de
+ * cobre 1 execução semanal perdida + folga, análogo ao raciocínio de
  * `CONSECUTIVE_FAILURE_THRESHOLD` em `clarice-opens-catchup-alarm.ts` (1
  * falha isolada é normal, N seguidas é sinal real) — só que medido em TEMPO
  * decorrido, porque staleness não tem "execução" pra contar quando a task
  * está desabilitada ou removida (nesse caso não há streak, só silêncio).
+ *
+ * ─── Por que 10, não 21 (#5117 item 5) ──────────────────────────────────────
+ *
+ * O valor original (21 dias ≈ 2 execuções semanais perdidas) não cabe no
+ * próprio ciclo do alarme: ele mesmo só roda aos domingos (10:30, depois do
+ * monitor das 07:00), então 21 dias de silêncio squeeza 3 domingos inteiros
+ * de checagem sem detectar nada — o cenário descrito no #5117 (task
+ * regenerada errado e ninguém percebe até 01/09) é exatamente esse buraco.
+ * 10 dias cobre 1 execução semanal perdida (~7 dias) + folga de ~3 dias sem
+ * abrir uma segunda semana de silêncio antes de alarmar.
  *
  * ─── Idempotência: fingerprint do último registro conhecido ────────────────
  *
@@ -37,9 +47,10 @@
  * o histórico parar de crescer de novo.
  */
 
-/** Dias sem registro novo até alarmar — ~3 semanas (2 execuções semanais
- * perdidas + folga; a task roda domingos 07:00). */
-export const STALENESS_THRESHOLD_DAYS = 21;
+/** Dias sem registro novo até alarmar — ~10 dias (1 execução semanal perdida
+ * + folga; a task roda domingos 07:00 — ver #5117 item 5 para o porquê de
+ * não ser mais 21). */
+export const STALENESS_THRESHOLD_DAYS = 10;
 
 /** Fingerprint sentinela usado quando não há NENHUM registro legível em
  * `history.jsonl` (arquivo ausente, vazio, ou 100% de linhas corrompidas) —
