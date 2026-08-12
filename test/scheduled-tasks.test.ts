@@ -306,6 +306,35 @@ describe("#5005 — Diaria-Beehiiv-Home-Meta-Check registrada, systemd-only (sem
   });
 });
 
+describe("#5123 — Diaria-Hub-Staleness-Check registrada, diária, systemd-only (sem .ps1 legado)", () => {
+  it("está presente no registro, com o step apontando pro script correto, diária às 09:30", () => {
+    const t = getScheduledTaskByName("Diaria-Hub-Staleness-Check");
+    assert.ok(t, "Diaria-Hub-Staleness-Check ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/hub-staleness-check.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 9, minute: 30 });
+  });
+
+  it("NÃO tem legacySetupScript (task registrada depois do cutover systemd, épica #4798)", () => {
+    const t = getScheduledTaskByName("Diaria-Hub-Staleness-Check");
+    assert.ok(t);
+    assert.equal(t!.legacySetupScript, undefined);
+  });
+
+  it("horário de 09:30 não colide com nenhuma outra daily do registro", () => {
+    const dailies = SCHEDULED_TASKS.filter(
+      (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
+        t.schedule.kind === "daily",
+    );
+    const collisions = dailies.filter(
+      (t) => t.name !== "Diaria-Hub-Staleness-Check" && t.schedule.hour === 9 && t.schedule.minute === 30,
+    );
+    assert.deepEqual(collisions, []);
+  });
+});
+
 describe("#4451 — Diaria-Clarice-Cohorts-Crawl registrada, roda o v2, systemd-only (sem .ps1 legado)", () => {
   it("está presente no registro, com o step apontando pro script v2 (não o v1)", () => {
     const t = getScheduledTaskByName("Diaria-Clarice-Cohorts-Crawl");

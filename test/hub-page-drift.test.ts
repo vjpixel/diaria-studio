@@ -20,7 +20,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { renderHubPage } from "../scripts/lib/shared/hub-page.ts";
+import { renderHubPage, hubCoverageDate } from "../scripts/lib/shared/hub-page.ts";
 import { renderGeneratedModule, HUB_LOADERS, loadHubContent } from "../scripts/build-hub-page.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -40,7 +40,9 @@ for (const slug of Object.keys(HUB_LOADERS)) {
       // acusar divergência falsa (asset committed COM a nav, render fresco
       // SEM ela) mesmo com o conteúdo do hub correto.
       const hub = loadHubContent(slug);
-      const fresh = renderGeneratedModule(slug, renderHubPage(hub), hub.updatedDate);
+      // #5124: 3º arg é coverageDate (edição mais recente citada), não mais
+      // updatedDate — mesmo valor que buildOne() grava no asset committed.
+      const fresh = renderGeneratedModule(slug, renderHubPage(hub), hubCoverageDate(hub.sourceEditions));
       const committed = readFileSync(asset, "utf8");
       assert.equal(
         committed,

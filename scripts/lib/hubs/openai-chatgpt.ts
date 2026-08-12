@@ -72,8 +72,14 @@ const PUBLISHED_DATE = "2026-08-09";
  * manual quando a prosa for reescrita de forma substancial — uma
  * regeneração rotineira de `sources.generated.json` NÃO invalida a data
  * sozinha (mesma ressalva de `anthropic-claude.ts`), e um bump sem mudança
- * de corpo é o padrão que o #4911 desaconselha. */
-const UPDATED_DATE = "2026-08-10";
+ * de corpo é o padrão que o #4911 desaconselha. Bumpado em 12/08/2026
+ * (#5123, fechamento do drift de 04-10/08 — `generate-hub-sources.ts`
+ * trouxe a edição de 11/08 pra `sourceEditions`, e o PISO de
+ * `validateHubContent` exige `updatedDate >= sourceEditions[0].date`) — o
+ * bump aqui NÃO é o mesmo que declarar a página fresca: `dateModified`/
+ * `<lastmod>`/`Last-Modified` derivam de `hubCoverageDate(sourceEditions)`
+ * desde o #5124, não mais deste campo. */
+const UPDATED_DATE = "2026-08-12";
 
 /** `matchedHeadlines` vem em NFD (mesmo achado de `anthropic-claude.ts`) —
  * ver a nota completa em `countMatching`, agora em

@@ -19,7 +19,17 @@ import {
   findStaleHubEditions,
   buildRegenCommands,
   formatStaleHubReport,
+  computeFirstSeenMap,
+  computeAgedStale,
+  filterOverdue,
+  shouldAlarmStaleness,
+  computeStalenessFingerprint,
+  advanceStalenessState,
+  buildStalenessAlarmEmail,
+  emptyStalenessAlarmState,
+  staleEntryKey,
   type StaleHubEdition,
+  type AgedStaleHubEdition,
 } from "../scripts/lib/hub-staleness-check.ts";
 import type { HubSourceEntry } from "../scripts/generate-hub-sources.ts";
 import type { RawCachedPost } from "../scripts/generate-arquivo-titles.ts";
@@ -199,5 +209,138 @@ describe("formatStaleHubReport (#4924)", () => {
     assert.match(report, /2026-08-06 modelo-fictício-06-08/);
     assert.match(report, /npx tsx scripts\/generate-hub-sources\.ts --hub anthropic-claude/);
     assert.match(report, /npx tsx scripts\/build-hub-page\.ts --all/);
+  });
+});
+
+// ─── Persistência + alarme (#5123) ─────────────────────────────────────────
+
+const STALE_A: StaleHubEdition = {
+  hubSlug: "anthropic-claude",
+  date: "2026-08-06",
+  editionSlug: "modelo-fictício-06-08",
+  editionTitle: "Modelo da Anthropic finge ser humano em teste (fixture)",
+  matchedHeadlines: ["Modelo da Anthropic finge ser humano em teste (fixture)"],
+};
+
+const STALE_B: StaleHubEdition = {
+  hubSlug: "openai-chatgpt",
+  date: "2026-08-09",
+  editionSlug: "openai-fixture",
+  editionTitle: "OpenAI lança algo (fixture)",
+  matchedHeadlines: ["OpenAI lança algo (fixture)"],
+};
+
+describe("staleEntryKey (#5123)", () => {
+  it("chave estável hubSlug:editionSlug", () => {
+    assert.equal(staleEntryKey(STALE_A), "anthropic-claude:modelo-fictício-06-08");
+  });
+});
+
+describe("computeFirstSeenMap (#5123)", () => {
+  it("entrada nova (sem chave no mapa anterior) ganha a data de hoje", () => {
+    const map = computeFirstSeenMap([STALE_A], {}, "2026-08-10");
+    assert.deepEqual(map, { [staleEntryKey(STALE_A)]: "2026-08-10" });
+  });
+
+  it("entrada já conhecida MANTÉM a data original (não reseta o relógio a cada execução)", () => {
+    const prior = { [staleEntryKey(STALE_A)]: "2026-08-06" };
+    const map = computeFirstSeenMap([STALE_A], prior, "2026-08-10");
+    assert.deepEqual(map, { [staleEntryKey(STALE_A)]: "2026-08-06" });
+  });
+
+  it("entrada que saiu de `stale` (regenerada) é removida do mapa — sem acumular lixo", () => {
+    const prior = { [staleEntryKey(STALE_A)]: "2026-08-06", [staleEntryKey(STALE_B)]: "2026-08-06" };
+    const map = computeFirstSeenMap([STALE_A], prior, "2026-08-10");
+    assert.deepEqual(map, { [staleEntryKey(STALE_A)]: "2026-08-06" });
+  });
+});
+
+describe("computeAgedStale (#5123)", () => {
+  it("calcula ageDays a partir de firstSeenDate — 4 dias corridos", () => {
+    const firstSeen = { [staleEntryKey(STALE_A)]: "2026-08-06" };
+    const aged = computeAgedStale([STALE_A], firstSeen, "2026-08-10");
+    assert.equal(aged.length, 1);
+    assert.equal(aged[0].firstSeenDate, "2026-08-06");
+    assert.equal(aged[0].ageDays, 4);
+  });
+
+  it("entrada detectada hoje -> ageDays 0", () => {
+    const firstSeen = { [staleEntryKey(STALE_A)]: "2026-08-10" };
+    const aged = computeAgedStale([STALE_A], firstSeen, "2026-08-10");
+    assert.equal(aged[0].ageDays, 0);
+  });
+});
+
+describe("filterOverdue (#5123)", () => {
+  it("threshold 3: entrada com 4 dias entra, com 2 dias não", () => {
+    const aged: AgedStaleHubEdition[] = [
+      { ...STALE_A, firstSeenDate: "2026-08-06", ageDays: 4 },
+      { ...STALE_B, firstSeenDate: "2026-08-08", ageDays: 2 },
+    ];
+    const overdue = filterOverdue(aged, 3);
+    assert.equal(overdue.length, 1);
+    assert.equal(overdue[0].hubSlug, "anthropic-claude");
+  });
+
+  it("exatamente no limiar (ageDays === threshold) conta como vencida (>=, não >)", () => {
+    const aged: AgedStaleHubEdition[] = [{ ...STALE_A, firstSeenDate: "2026-08-07", ageDays: 3 }];
+    assert.equal(filterOverdue(aged, 3).length, 1);
+  });
+});
+
+describe("idempotência do alarme (#5123, mesmo padrão de hub-drift-check.ts)", () => {
+  const overdueA: AgedStaleHubEdition[] = [{ ...STALE_A, firstSeenDate: "2026-08-06", ageDays: 4 }];
+  const overdueAB: AgedStaleHubEdition[] = [
+    { ...STALE_A, firstSeenDate: "2026-08-06", ageDays: 4 },
+    { ...STALE_B, firstSeenDate: "2026-08-06", ageDays: 4 },
+  ];
+
+  it("sem pendência -> nunca alarma, independente do estado", () => {
+    assert.equal(shouldAlarmStaleness(emptyStalenessAlarmState(), []), false);
+  });
+
+  it("pendência nova (estado vazio) -> alarma", () => {
+    assert.equal(shouldAlarmStaleness(emptyStalenessAlarmState(), overdueA), true);
+  });
+
+  it("MESMO conjunto já alarmado -> não re-alarma", () => {
+    const fp = computeStalenessFingerprint(overdueA);
+    const state = advanceStalenessState(fp, new Date("2026-08-10T09:30:00Z"));
+    assert.equal(shouldAlarmStaleness(state, overdueA), false);
+  });
+
+  it("conjunto MUDOU (nova entrada cruzou o limiar) -> alarma de novo", () => {
+    const fp = computeStalenessFingerprint(overdueA);
+    const state = advanceStalenessState(fp, new Date("2026-08-10T09:30:00Z"));
+    assert.equal(shouldAlarmStaleness(state, overdueAB), true);
+  });
+
+  it("fingerprint é independente da ordem de chegada", () => {
+    assert.equal(computeStalenessFingerprint(overdueAB), computeStalenessFingerprint([...overdueAB].reverse()));
+  });
+
+  it("fingerprint NÃO muda com ageDays (só as chaves) — não re-alarma diariamente pelo mesmo conjunto ainda não resolvido", () => {
+    const overdueAmanha: AgedStaleHubEdition[] = [{ ...STALE_A, firstSeenDate: "2026-08-06", ageDays: 5 }];
+    assert.equal(computeStalenessFingerprint(overdueA), computeStalenessFingerprint(overdueAmanha));
+  });
+
+  it("re-arma quando volta a ficar sem pendência (advanceStalenessState(null, ...))", () => {
+    const state = advanceStalenessState(null, new Date("2026-08-11T09:30:00Z"));
+    assert.equal(state.lastAlarmedFingerprint, null);
+    assert.equal(shouldAlarmStaleness(state, overdueA), true);
+  });
+});
+
+describe("buildStalenessAlarmEmail (#5123)", () => {
+  it("assunto cita a contagem + threshold; corpo lista hub/data/slug/ageDays + comandos de regen", () => {
+    const overdue: AgedStaleHubEdition[] = [{ ...STALE_A, firstSeenDate: "2026-08-06", ageDays: 4 }];
+    const { subject, body } = buildStalenessAlarmEmail(overdue, 3, new Date("2026-08-10T09:30:00Z"));
+    assert.match(subject, /1 edição/);
+    assert.match(subject, /3\+ dias/);
+    assert.match(body, /anthropic-claude:/);
+    assert.match(body, /2026-08-06 modelo-fictício-06-08/);
+    assert.match(body, /defasada há 4 dia\(s\)/);
+    assert.match(body, /npx tsx scripts\/generate-hub-sources\.ts --hub anthropic-claude/);
+    assert.match(body, /npx tsx scripts\/build-hub-page\.ts --all/);
   });
 });

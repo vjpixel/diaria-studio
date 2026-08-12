@@ -5,8 +5,10 @@
  * Une os 3 destaque drafts (`_internal/02-d{1,2,3}-draft.md` — output do
  * `writer-destaque` em paralelo) em `_internal/02-draft.md` final, injetando
  * seções secundárias (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS) do
- * `01-approved-capped.json`, o bloco É IA? do `01-eia.md`, e blocos fixos
- * (ERRO INTENCIONAL + SORTEIO + PARA ENCERRAR) do template.
+ * `01-approved-capped.json`, o bloco É IA? do `01-eia.md`, blocos fixos
+ * (ERRO INTENCIONAL + SORTEIO + PARA ENCERRAR) do template, e — dentro de
+ * PARA ENCERRAR, dinâmico por edição — o grupo "Edições relacionadas"
+ * (#5122, `scripts/lib/related-editions.ts`).
  *
  * Substitui a responsabilidade que estava na orchestrator inline.
  * Determinístico — sem LLM call.
@@ -47,6 +49,7 @@ import {
 } from "./lib/lint-checks/snippet-staleness.ts"; // #4150: grava hash do corpo pós-cabeçalho dos snippets usados, pro guard de staleness distinguir edição de metadado de edição de conteúdo
 import { resolveBoxesForEdition } from "./select-boxes-by-clicks.ts"; // #4626: seleção automática de boxes 1/2/3 por cliques+tendência+anti-repetição — só afeta main() (CLI), stitchNewsletter() em si permanece pura/sem I/O de auto-seleção
 import { matchEditionHub, extractBoldLinkTitles } from "./lib/hub-match.ts"; // #4907: link contextual pro hub temático quando as manchetes do dia casam HUB_KEYWORD_PATTERNS
+import { selectRelatedEditions, renderRelatedEditionsMarkdown } from "./lib/related-editions.ts"; // #5122: aresta edição->edição no fim do corpo — independente do #4907 acima (não exige match único edição-wide)
 
 interface ArticleLike {
   url?: string;
@@ -186,25 +189,38 @@ function computeParaEncerrarSlotADefault(): string {
 }
 
 /**
- * #3219/#3368/#4274/#4357/#4413: monta o bloco PARA ENCERRAR completo —
+ * #3219/#3368/#4274/#4357/#4413/#5122: monta o bloco PARA ENCERRAR completo —
  * cabeçalho (fixo, `FIXED_BLOCKS.para_encerrar_header`) + slot A (apoio +
  * ferramentas, editável) + pills de curadoria (fixo, `CURADORIA_PILLS`) +
- * convite social (fixo, `SOCIAL_INVITE`), nessa ordem (invariante do
- * #3219/#3368 preservada — o convite social é sempre o ÚLTIMO parágrafo).
- * #4413: o convite social NÃO É MAIS um slot editável — é sempre
- * `SOCIAL_INVITE`, verbatim, independente de qualquer config (decisão do
- * editor: o texto precisa ser invariante, e o override por edição era
- * justamente o mecanismo que produzia divergência entre diário e mensal).
+ * grupo "Edições relacionadas" (dinâmico por edição, #5122 — OMITIDO quando
+ * `relatedEditionsMarkdown` é `null`/ausente) + convite social (fixo,
+ * `SOCIAL_INVITE`), nessa ordem (invariante do #3219/#3368 preservada — o
+ * convite social é sempre o ÚLTIMO parágrafo). #4413: o convite social NÃO É
+ * MAIS um slot editável — é sempre `SOCIAL_INVITE`, verbatim, independente
+ * de qualquer config (decisão do editor: o texto precisa ser invariante, e o
+ * override por edição era justamente o mecanismo que produzia divergência
+ * entre diário e mensal).
  *
  * `override` — pula a leitura de `platform.config.json` e usa esta config
  * diretamente pro slot A (mesmo contrato de `input.boxesDivulgacao` em
  * `StitchInput`). Produção nunca passa este parâmetro (sempre lê do disco
  * via `loadParaEncerrarConfig`).
+ *
+ * `relatedEditionsMarkdown` (#5122) — parâmetro SEPARADO de `override`
+ * (não faz parte de `ParaEncerrarConfig`) porque não vem de
+ * `platform.config.json`/editor: é computado por edição a partir das
+ * manchetes de hoje (`selectRelatedEditions`/`renderRelatedEditionsMarkdown`
+ * em `scripts/lib/related-editions.ts`). `undefined`/`null` (default) — sem
+ * grupo, comportamento idêntico a antes do #5122.
  */
-export function buildParaEncerrar(override?: ParaEncerrarConfig): string {
+export function buildParaEncerrar(
+  override?: ParaEncerrarConfig,
+  relatedEditionsMarkdown?: string | null,
+): string {
   const cfg = override ?? loadParaEncerrarConfig();
   const slotA = cfg.slotA ?? computeParaEncerrarSlotADefault();
-  return `${FIXED_BLOCKS.para_encerrar_header}\n\n${slotA}\n\n${FIXED_BLOCKS.para_encerrar_curadorias}\n\n${SOCIAL_INVITE}`;
+  const relatedBlock = relatedEditionsMarkdown ? `\n\n${relatedEditionsMarkdown}` : "";
+  return `${FIXED_BLOCKS.para_encerrar_header}\n\n${slotA}\n\n${FIXED_BLOCKS.para_encerrar_curadorias}${relatedBlock}\n\n${SOCIAL_INVITE}`;
 }
 
 /**
@@ -636,8 +652,15 @@ export function stitchNewsletter(input: StitchInput): string {
   // d1/d2/d3 e não deve enxergar o link injetado). Aplicado só na montagem
   // final de `parts` abaixo, via d1Final/d2Final/d3Final — ver
   // `scripts/lib/hub-match.ts` pra regra de match/ambiguidade.
-  const hubMatch = matchEditionHub(
-    (d3 !== null ? [d1, d2, d3] : [d1, d2]).map(extractBoldLinkTitles),
+  const destaqueHeadlineOptions = (d3 !== null ? [d1, d2, d3] : [d1, d2]).map(extractBoldLinkTitles);
+  const hubMatch = matchEditionHub(destaqueHeadlineOptions);
+
+  // #5122: grupo "Edições relacionadas" no PARA ENCERRAR — aresta
+  // edição->edição independente de `hubMatch` acima (não exige match único
+  // edição-wide, ver docstring de `scripts/lib/related-editions.ts`).
+  // `null` (nenhum hub casou em nenhum destaque) omite o grupo inteiro.
+  const relatedEditionsMarkdown = renderRelatedEditionsMarkdown(
+    selectRelatedEditions(destaqueHeadlineOptions),
   );
   function withHubLink(draft: string, idx: number): string {
     if (!hubMatch || hubMatch.destaqueIndex !== idx) return draft;
@@ -750,7 +773,7 @@ export function stitchNewsletter(input: StitchInput): string {
   parts.push("");
   parts.push("---");
   parts.push("");
-  parts.push(buildParaEncerrar(input.paraEncerrar));
+  parts.push(buildParaEncerrar(input.paraEncerrar, relatedEditionsMarkdown));
   parts.push("");
 
   return parts.join("\n");

@@ -126,6 +126,174 @@ export function buildRegenCommands(staleHubSlugs: readonly string[]): string[] {
   ];
 }
 
+// ─── Persistência + alarme (#5123 — itens 1-4 órfãos do #4924) ─────────────
+//
+// O que está acima (`findStaleHubEditions`) só DETECTA — não sabe há quanto
+// tempo uma edição está defasada, porque cada checagem é uma foto isolada.
+// As funções abaixo dão memória a essa foto: `computeFirstSeenMap` reusa a
+// data de 1ª detecção de uma entrada que já era stale na checagem ANTERIOR
+// (persistida em `data/hubs/staleness-state.json` pelo CLI,
+// `scripts/hub-staleness-check.ts`) e marca `todayISO` só pra entradas
+// NOVAS — entradas que já não são mais stale (foram regeneradas) somem do
+// mapa (nunca acumulam lixo). `computeAgedStale` deriva `ageDays` a partir
+// desse mapa; `filterOverdue`/`shouldAlarmStaleness`/`buildStalenessAlarmEmail`
+// decidem o alarme com o MESMO padrão de idempotência por fingerprint já
+// usado em `hub-drift-check.ts`/`worker-drift-check.ts`/`apoios-diff-alarm.ts`
+// (#4750/#4723/#4485): alarma quando o conjunto de entradas vencidas muda de
+// forma (nova entrada cruzou o limiar, ou uma foi resolvida), não a cada
+// execução idêntica.
+
+/** Chave estável de uma entrada stale — usada tanto no mapa de 1ª-detecção
+ * quanto no fingerprint do alarme. */
+export function staleEntryKey(entry: Pick<StaleHubEdition, "hubSlug" | "editionSlug">): string {
+  return `${entry.hubSlug}:${entry.editionSlug}`;
+}
+
+/** Mapa `staleEntryKey -> data ISO (YYYY-MM-DD) da 1ª detecção`. Persistido
+ * pelo CLI entre execuções — é o que dá noção de "há quanto tempo" a uma
+ * lista que, sozinha, não carrega histórico nenhum. */
+export type StaleFirstSeenMap = Record<string, string>;
+
+/**
+ * Pura: funde a lista de stale ATUAL com o mapa de 1ª-detecção da execução
+ * ANTERIOR — entradas que já estavam no mapa mantêm a data original
+ * (persistência da "memória"); entradas novas ganham `todayISO`; entradas
+ * que saíram de `stale` (regeneradas desde a última checagem) são
+ * removidas do mapa — nunca acumula chave morta indefinidamente.
+ *
+ * @pure
+ */
+export function computeFirstSeenMap(
+  stale: readonly StaleHubEdition[],
+  priorFirstSeen: Readonly<StaleFirstSeenMap>,
+  todayISO: string,
+): StaleFirstSeenMap {
+  const next: StaleFirstSeenMap = {};
+  for (const entry of stale) {
+    const key = staleEntryKey(entry);
+    next[key] = priorFirstSeen[key] ?? todayISO;
+  }
+  return next;
+}
+
+export interface AgedStaleHubEdition extends StaleHubEdition {
+  /** `YYYY-MM-DD` — data em que esta entrada foi vista como stale pela
+   * primeira vez (de `StaleFirstSeenMap`). */
+  firstSeenDate: string;
+  /** Dias corridos entre `firstSeenDate` e a data da checagem atual
+   * (`todayISO` passado a `computeAgedStale`) — sempre `>= 0`. */
+  ageDays: number;
+}
+
+/**
+ * Pura: junta `stale` com `firstSeenMap` (já mesclado por
+ * `computeFirstSeenMap`) pra anexar `firstSeenDate`/`ageDays` a cada
+ * entrada. Entrada sem chave no mapa (não deveria acontecer se o caller
+ * sempre mescla antes de chamar isto — defensivo) cai em `ageDays: 0`,
+ * `firstSeenDate: todayISO` — nunca lança.
+ *
+ * @pure
+ */
+export function computeAgedStale(
+  stale: readonly StaleHubEdition[],
+  firstSeenMap: Readonly<StaleFirstSeenMap>,
+  todayISO: string,
+): AgedStaleHubEdition[] {
+  const todayMs = Date.parse(`${todayISO}T00:00:00Z`);
+  return stale.map((entry) => {
+    const firstSeenDate = firstSeenMap[staleEntryKey(entry)] ?? todayISO;
+    const firstSeenMs = Date.parse(`${firstSeenDate}T00:00:00Z`);
+    const ageDays = Number.isFinite(todayMs) && Number.isFinite(firstSeenMs)
+      ? Math.max(0, Math.round((todayMs - firstSeenMs) / 86_400_000))
+      : 0;
+    return { ...entry, firstSeenDate, ageDays };
+  });
+}
+
+/** Pura: entradas com `ageDays >= thresholdDays` — as que justificam
+ * alarme (#5123 item 3, default sugerido pela issue: 3 dias). */
+export function filterOverdue(
+  aged: readonly AgedStaleHubEdition[],
+  thresholdDays: number,
+): AgedStaleHubEdition[] {
+  return aged.filter((e) => e.ageDays >= thresholdDays);
+}
+
+export interface StalenessAlarmState {
+  /** Fingerprint do conjunto vencido já alarmado (`null` = nenhum pendente
+   * conhecido, "re-armado" — mesmo contrato de `HubDriftAlarmState`). */
+  lastAlarmedFingerprint: string | null;
+  lastCheckedAt: string | null;
+}
+
+export function emptyStalenessAlarmState(): StalenessAlarmState {
+  return { lastAlarmedFingerprint: null, lastCheckedAt: null };
+}
+
+/** Pura: fingerprint estável (ordem-independente) do conjunto de entradas
+ * vencidas — usado pra idempotência do alarme. NÃO inclui `ageDays` (que
+ * cresce todo dia) — só as chaves — pra não re-alarmar diariamente pelo
+ * mesmo conjunto ainda não resolvido. */
+export function computeStalenessFingerprint(overdue: readonly AgedStaleHubEdition[]): string {
+  return overdue.map(staleEntryKey).sort().join("|");
+}
+
+/** Pura — mesmo contrato de `advanceHubDriftState`. */
+export function advanceStalenessState(fingerprint: string | null, now: Date): StalenessAlarmState {
+  return { lastAlarmedFingerprint: fingerprint, lastCheckedAt: now.toISOString() };
+}
+
+/** Pura — alarma quando há pendência E o fingerprint mudou desde o último
+ * alarme (novo conjunto, ou reapareceu depois de resolvido). */
+export function shouldAlarmStaleness(
+  state: StalenessAlarmState,
+  overdue: readonly AgedStaleHubEdition[],
+): boolean {
+  if (overdue.length === 0) return false;
+  return computeStalenessFingerprint(overdue) !== state.lastAlarmedFingerprint;
+}
+
+/** Pura: assunto + corpo (texto puro) do e-mail de alarme — mesmo padrão
+ * de `buildHubDriftAlarmEmail`. */
+export function buildStalenessAlarmEmail(
+  overdue: readonly AgedStaleHubEdition[],
+  thresholdDays: number,
+  now: Date = new Date(),
+): { subject: string; body: string } {
+  const subject = `[diar.ia.br] ${overdue.length} edição(ões) defasada(s) nos hubs temáticos há ${thresholdDays}+ dias`;
+
+  const lines: string[] = [
+    `${overdue.length} edição(ões) casam HUB_KEYWORD_PATTERNS de algum hub temático`,
+    `mas não estão no dataset commitado há pelo menos ${thresholdDays} dia(s) — cada`,
+    "uma é um link interno que devia existir e não existe (ver #5121 pra por que",
+    "isso importa pra SEO/citação).",
+    "",
+    "Vencidas:",
+  ];
+  const byHub = new Map<string, AgedStaleHubEdition[]>();
+  for (const e of overdue) {
+    const list = byHub.get(e.hubSlug) ?? [];
+    list.push(e);
+    byHub.set(e.hubSlug, list);
+  }
+  for (const [hubSlug, entries] of [...byHub.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    lines.push(`  ${hubSlug}:`);
+    for (const e of entries) {
+      const label = e.editionTitle ?? e.matchedHeadlines[0] ?? e.editionSlug;
+      lines.push(`    - ${e.date} ${e.editionSlug} ("${label}") — defasada há ${e.ageDays} dia(s)`);
+    }
+  }
+  lines.push(
+    "",
+    "Regenerar:",
+    ...buildRegenCommands([...byHub.keys()]).map((cmd) => `  ${cmd}`),
+    "",
+    `(alarme automático — checagem rodou em ${now.toISOString()})`,
+  );
+
+  return { subject, body: lines.join("\n") };
+}
+
 /**
  * Formata `stale` num bloco de texto pronto pra imprimir no resumo do gate
  * do Stage 6 — ou string vazia se `stale` estiver vazio (nada a reportar,

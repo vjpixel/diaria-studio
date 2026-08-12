@@ -31,7 +31,7 @@
  */
 import { COLORS, FONTS } from "./design-tokens.ts";
 import { escHtml } from "../html-escape.ts"; // reusa o escaper canônico (também cobre apóstrofo)
-import { DIARIA_EIA_URL } from "../canonical-urls.ts"; // #3904 — fonte única do domínio de marca do "É IA?"
+import { DIARIA_EIA_URL, DIARIA_ARQUIVO_URL } from "../canonical-urls.ts"; // #3904/#5121 — fonte única dos domínios de marca de "É IA?"/Arquivo
 import { applyBrandWordmark } from "./brand-wordmark.ts"; // #4797 — wordmark da marca na linha de crédito do rodapé (compartilhada por hub/livros/cursos/arquivo)
 
 const TEAL = COLORS.brand;
@@ -158,37 +158,49 @@ export interface CuradoriaNavLink {
 }
 
 /**
- * Navegação cruzada entre as 3 superfícies públicas da diar.ia.br (#3113 —
+ * Navegação cruzada entre as superfícies públicas da diar.ia.br (#3113 —
  * "nenhuma linka as outras hoje, nem Cursos/Livros linkam de volta pro
  * diar.ia.br"). É IA? aponta pro leaderboard público (`poll` worker) — não há
  * uma homepage estática dedicada à feature, o leaderboard é a superfície
  * pública mais representativa dela.
  *
- * `readonly` (interface + array): singleton compartilhado por 2 módulos
- * consumidores (build-cursos-page.ts + build-livros-page.ts) e por testes que
- * rodam no mesmo processo `node --test` — sem isso, uma mutação acidental
- * num consumer corromperia o footer de AMBAS as páginas silenciosamente
- * (mesma instância de módulo, importada por referência). `.map()` (o único
- * uso real) funciona igual sobre um array readonly.
+ * `Arquivo` (#5121): adicionada porque `arquivo.diar.ia.br` — o acervo das
+ * 236+ edições e os 6 hubs temáticos — pendia de um único `referringUrl`
+ * conhecido pelo Google (`diar.ia.br/upgrade`), e este rodapé é servido por
+ * `build-cursos-page.ts`/`build-livros-page.ts`/`workers/poll` (todos hosts
+ * JÁ indexados) — passam a linkar de volta pro arquivo. A própria página do
+ * arquivo (`render-archive.ts`/`hub-page.ts`) também consome este rodapé, e
+ * portanto vira um self-link na sua própria nav — inofensivo (mesmo padrão
+ * de "diar.ia.br" aparecer na nav de `diar.ia.br`).
+ *
+ * `readonly` (interface + array): singleton compartilhado por múltiplos
+ * módulos consumidores (build-cursos-page.ts, build-livros-page.ts,
+ * render-archive.ts, hub-page.ts) e por testes que rodam no mesmo processo
+ * `node --test` — sem isso, uma mutação acidental num consumer corromperia o
+ * footer de TODAS as páginas silenciosamente (mesma instância de módulo,
+ * importada por referência). `.map()` (o único uso real) funciona igual
+ * sobre um array readonly.
  */
 export const CURADORIA_NAV_LINKS: readonly CuradoriaNavLink[] = [
   { label: "diar.ia.br", url: "https://diar.ia.br" },
   { label: "Cursos", url: "https://cursos.diar.ia.br/" }, // #3698: domínio de marca
   { label: "Livros", url: "https://livros.diar.ia.br/" }, // #3698: domínio de marca
   { label: "É IA?", url: `${DIARIA_EIA_URL}/leaderboard` }, // #3904: domínio de marca (era poll.diaria.workers.dev)
+  { label: "Arquivo", url: `${DIARIA_ARQUIVO_URL}/` }, // #5121: acervo de edições + hubs temáticos
 ];
 
 /**
- * Rodapé comum: nav cruzada (diar.ia.br · Cursos · Livros · É IA?) + linha de
- * crédito específica da página (ex: "diar.ia.br — curadoria de cursos sobre IA").
+ * Rodapé comum: nav cruzada (diar.ia.br · Cursos · Livros · É IA? · Arquivo)
+ * + linha de crédito específica da página (ex: "diar.ia.br — curadoria de
+ * cursos sobre IA").
  *
  * `diariaUtm` (#4051): query string (sem `?`, ex: `"utm_source=livros&utm_medium=footer-nav"`)
- * apensada SÓ ao link "diar.ia.br" — as outras 3 entradas (Cursos/Livros/É IA?)
- * não são o objeto de medição desta issue e continuam sem UTM. Parâmetro
- * OPCIONAL e passado pelo CALLER (nunca hardcoded aqui) porque
+ * apensada SÓ ao link "diar.ia.br" — as outras entradas (Cursos/Livros/É IA?/
+ * Arquivo) não são o objeto de medição desta issue e continuam sem UTM.
+ * Parâmetro OPCIONAL e passado pelo CALLER (nunca hardcoded aqui) porque
  * `CURADORIA_NAV_LINKS` é um singleton `readonly` compartilhado por
- * cursos/livros/É IA? (#3113) — hardcodear o UTM de uma página aqui
- * vazaria pras outras duas. Cada página passa o próprio valor; ausência
+ * cursos/livros/É IA?/arquivo (#3113/#5121) — hardcodear o UTM de uma página
+ * aqui vazaria pras outras. Cada página passa o próprio valor; ausência
  * preserva o comportamento anterior (link bare, sem UTM).
  *
  * `creditText` ganha o wordmark da marca (#4797, `applyBrandWordmark`
