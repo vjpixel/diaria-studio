@@ -25,6 +25,7 @@ import {
   selectHeadlines,
   selectUseMelhor,
   dedupeCandidatesByUrl,
+  applyPendingPicks,
   type WeeklyRankedCandidate,
 } from "../scripts/lib/weekly-linkedin-select.ts";
 
@@ -219,8 +220,8 @@ describe("withinClickNoise", () => {
   });
 });
 
-describe("selectHeadlines — empate genuíno vs. ausência de dado (#4489 finding 1 item 3)", () => {
-  it("2 candidatos ratePct=0 por AUSÊNCIA de dado (hasClickData=false) — warning NÃO fala em 'empate genuíno'", () => {
+describe("selectHeadlines — empate genuíno vs. ausência de dado (#4489 finding 1 item 3, #5109: banda maior que as vagas vira pendingGroup)", () => {
+  it("2 candidatos ratePct=0 por AUSÊNCIA de dado (hasClickData=false) — banda > vaga vira pendingGroup, warning NÃO fala em 'empate genuíno'", () => {
     const gapA = ranked({
       title: "Matéria da edição sem post no cache A",
       url: "https://exemplo.com/gap-a",
@@ -238,14 +239,16 @@ describe("selectHeadlines — empate genuíno vs. ausência de dado (#4489 findi
       hasClickData: false,
     });
     const result = selectHeadlines([gapA, gapB], 1);
-    assert.equal(result.selected.length, 1);
-    assert.ok(result.warnings.some((w) => /ausência de dado real|não é empate genuíno/i.test(w)), result.warnings.join(" | "));
-    assert.ok(!result.warnings.some((w) => /^Empate por clique/.test(w)), result.warnings.join(" | "));
+    assert.equal(result.selected.length, 0);
+    assert.equal(result.pendingGroup?.length, 2);
+    assert.equal(result.pendingSlots, 1);
+    assert.ok(result.warnings.some((w) => /ausência de dado real|não é empate genuíno|NÃO é empate genuíno/i.test(w)), result.warnings.join(" | "));
+    assert.ok(!result.warnings.some((w) => /^\d+ candidatos empatados/.test(w) && !/NÃO é empate genuíno/.test(w)), result.warnings.join(" | "));
     // a mensagem cita a(s) edição(ões) sem dado — não deixa a causa implícita.
     assert.ok(result.warnings.some((w) => w.includes("260728") || w.includes("260729")));
   });
 
-  it("2 candidatos com ratePct=0 genuíno (hasClickData=true — post existe mas 0 abertura de verdade) mantém o texto de empate original", () => {
+  it("2 candidatos com ratePct=0 genuíno (hasClickData=true — post existe mas 0 abertura de verdade) — banda > vaga vira pendingGroup com o texto de empate genuíno", () => {
     const realZeroA = ranked({
       title: "Post real com zero abertura A",
       url: "https://exemplo.com/real-zero-a",
@@ -261,16 +264,30 @@ describe("selectHeadlines — empate genuíno vs. ausência de dado (#4489 findi
       hasClickData: true,
     });
     const result = selectHeadlines([realZeroA, realZeroB], 1);
-    assert.ok(result.warnings.some((w) => /^Empate por clique/.test(w)), result.warnings.join(" | "));
+    assert.equal(result.selected.length, 0);
+    assert.equal(result.pendingGroup?.length, 2);
+    assert.ok(result.warnings.some((w) => /candidatos empatados/.test(w) && /escolha manual/.test(w)), result.warnings.join(" | "));
     assert.ok(!result.warnings.some((w) => /não é empate genuíno/i.test(w)));
   });
 
-  it("empate dentro do ruído com dado real (opens>0 nos dois lados) continua usando o texto de empate original", () => {
+  it("empate dentro do ruído com dado real (opens>0 nos dois lados) — banda > vaga vira pendingGroup", () => {
     const a = ranked({ url: "https://exemplo.com/a", clicks: 5, opens: 120, hasClickData: true }); // 4.1666%
     const b = ranked({ url: "https://exemplo.com/b", clicks: 4, opens: 120, hasClickData: true }); // 3.3333%
     const result = selectHeadlines([a, b], 1);
-    assert.ok(result.warnings.some((w) => /^Empate por clique/.test(w)));
+    assert.equal(result.selected.length, 0);
+    assert.deepEqual(result.pendingGroup?.map((c) => c.url).sort(), [a.url, b.url].sort());
+    assert.ok(result.warnings.some((w) => /candidatos empatados/.test(w) && /escolha manual/.test(w)));
     assert.ok(!result.warnings.some((w) => /não é empate genuíno/i.test(w)));
+  });
+
+  it("banda empatada que CABE nas vagas restantes é incluída inteira, SEM pendingGroup (não há escolha real a fazer)", () => {
+    const a = ranked({ url: "https://exemplo.com/a", clicks: 5, opens: 120, hasClickData: true }); // 4.1666%
+    const b = ranked({ url: "https://exemplo.com/b", clicks: 4, opens: 120, hasClickData: true }); // 3.3333% — dentro do ruído de a
+    const result = selectHeadlines([a, b], 2);
+    assert.equal(result.pendingGroup, null);
+    assert.equal(result.pendingSlots, 0);
+    assert.deepEqual(result.selected.map((c) => c.url).sort(), [a.url, b.url].sort());
+    assert.ok(result.warnings.some((w) => /cabem todos nas vagas restantes/.test(w)));
   });
 });
 
@@ -300,8 +317,8 @@ describe("editorialTiebreakScore — ordem lexicográfica (Brasil > profissional
   });
 });
 
-describe("selectHeadlines — desempate editorial dentro do ruído de 1 clique", () => {
-  it("dentro do ruído, ângulo Brasil vence apesar da taxa nominal ligeiramente menor", () => {
+describe("selectHeadlines — dentro do ruído de 1 clique, CTOR não decide sozinho (#5109: escolha vai pro gate, editorialTiebreakScore vira só dica exibida)", () => {
+  it("dentro do ruído, nenhum dos dois vence automaticamente — os 2 vão pro pendingGroup pro editor escolher", () => {
     const intlSlightlyHigher = ranked({
       title: "OpenAI ships new safety report",
       url: "https://openai.com/safety",
@@ -317,8 +334,16 @@ describe("selectHeadlines — desempate editorial dentro do ruído de 1 clique",
       opens: 120, // 3.3333% — diff 0.8333pp < 1-click band (0.8333...pp) → ruído
     });
     const result = selectHeadlines([intlSlightlyHigher, brSlightlyLower], 1);
-    assert.equal(result.selected[0].url, brSlightlyLower.url);
-    assert.ok(result.warnings.some((w) => /empate/i.test(w)));
+    assert.equal(result.selected.length, 0);
+    assert.equal(result.pendingGroup?.length, 2);
+    assert.equal(result.pendingSlots, 1);
+    assert.ok(result.warnings.some((w) => /empat/i.test(w)));
+    // editorialTiebreakScore segue disponível como DICA (não decide mais
+    // automaticamente) — quem quiser mostrar "ângulo Brasil favorece X" no
+    // gate calcula isto por fora, sobre o pendingGroup.
+    const scoreBr = editorialTiebreakScore(brSlightlyLower, new Set());
+    const scoreIntl = editorialTiebreakScore(intlSlightlyHigher, new Set());
+    assert.ok(scoreBr > scoreIntl);
   });
 });
 
@@ -341,6 +366,49 @@ describe("selectUseMelhor", () => {
   it("retorna undefined quando não há candidato use_melhor elegível", () => {
     const radar = ranked({ section: "radar", url: "https://exemplo.com/radar", clicks: 5, opens: 100 });
     assert.equal(selectUseMelhor([radar], new Set()), undefined);
+  });
+});
+
+describe("applyPendingPicks (#5109)", () => {
+  it("resolve o pendingGroup com as escolhas do editor, na ordem informada", () => {
+    const a = ranked({ title: "A", url: "https://exemplo.com/a", clicks: 1, opens: 100 });
+    const b = ranked({ title: "B", url: "https://exemplo.com/b", clicks: 1, opens: 100 });
+    const c = ranked({ title: "C", url: "https://exemplo.com/c", clicks: 1, opens: 100 });
+    const already = [ranked({ title: "Já decidido", url: "https://exemplo.com/x", clicks: 10, opens: 100 })];
+    const result = applyPendingPicks(already, [a, b, c], 2, [b.url, a.url]);
+    assert.equal(result.error, null);
+    assert.deepEqual(result.selected.map((s) => s.url), [already[0].url, b.url, a.url]);
+  });
+
+  it("erro explícito quando a contagem de --picks não bate com pendingSlots", () => {
+    const a = ranked({ url: "https://exemplo.com/a", clicks: 1, opens: 100 });
+    const b = ranked({ url: "https://exemplo.com/b", clicks: 1, opens: 100 });
+    const result = applyPendingPicks([], [a, b], 1, [a.url, b.url]);
+    assert.ok(result.error);
+    assert.match(result.error!, /exatamente 1/);
+  });
+
+  it("erro explícito quando uma URL não pertence ao pendingGroup", () => {
+    const a = ranked({ url: "https://exemplo.com/a", clicks: 1, opens: 100 });
+    const b = ranked({ url: "https://exemplo.com/b", clicks: 1, opens: 100 });
+    const result = applyPendingPicks([], [a, b], 1, ["https://exemplo.com/fora-do-grupo"]);
+    assert.ok(result.error);
+    assert.match(result.error!, /fora do grupo empatado/);
+  });
+
+  it("erro explícito quando --picks repete a mesma URL", () => {
+    const a = ranked({ url: "https://exemplo.com/a", clicks: 1, opens: 100 });
+    const b = ranked({ url: "https://exemplo.com/b", clicks: 1, opens: 100 });
+    const result = applyPendingPicks([], [a, b], 2, [a.url, a.url]);
+    assert.ok(result.error);
+    assert.match(result.error!, /repetida/);
+  });
+
+  it("compara URLs por normalização (mesma URL com barra final/maiúscula ainda resolve)", () => {
+    const a = ranked({ url: "https://exemplo.com/a", clicks: 1, opens: 100 });
+    const result = applyPendingPicks([], [a], 1, ["https://exemplo.com/a/"]);
+    assert.equal(result.error, null);
+    assert.equal(result.selected[0]?.url, a.url);
   });
 });
 

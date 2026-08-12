@@ -19,6 +19,7 @@ import {
   buildLinkedinWeeklyUrl,
   linkedinWeeklyCampaign,
   endsInBareDomainLabel,
+  headlineOriginLabel,
   LINKEDIN_WEEKLY_UTM_SOURCE,
   LINKEDIN_WEEKLY_UTM_MEDIUM,
   type WeeklyLinkedinRenderInput,
@@ -75,6 +76,37 @@ describe("renderLinkedinWeeklyHtml — título literal + numeração, sem link p
     assert.ok(firstHeadline >= 0 && lastHeadlineEnd > firstHeadline, "fatia de manchetes deve existir");
     const headlinesSegment = result.html.slice(firstHeadline, lastHeadlineEnd);
     assert.ok(!/<a\s/i.test(headlinesSegment), headlinesSegment);
+  });
+});
+
+describe("headlineOriginLabel (#5109)", () => {
+  it("formata AAMMDD como 'da edição de DD/MM'", () => {
+    assert.equal(headlineOriginLabel("260803"), "da edição de 03/08");
+    assert.equal(headlineOriginLabel("260112"), "da edição de 12/01");
+  });
+});
+
+describe("renderLinkedinWeeklyHtml — linha 'da edição de DD/MM' sob cada manchete (#5109)", () => {
+  it("com editionDate presente, a linha aparece logo abaixo do título, antes do corpo", () => {
+    const input: WeeklyLinkedinRenderInput = {
+      ...BASE_INPUT,
+      headlines: [{ title: "Título com origem", body: "Corpo.", why: "", editionDate: "260803" }],
+    };
+    const html = renderLinkedinWeeklyHtml(input).html;
+    const idxTitle = html.indexOf("<h2>1. Título com origem</h2>");
+    const idxOrigin = html.indexOf("da edição de 03/08");
+    const idxBody = html.indexOf("<p>Corpo.</p>");
+    assert.ok(idxTitle >= 0 && idxOrigin >= 0 && idxBody >= 0);
+    assert.ok(idxTitle < idxOrigin && idxOrigin < idxBody, "ordem esperada: título, origem, corpo");
+  });
+
+  it("sem editionDate (fixture antiga/omitido), a linha de proveniência não aparece — sem regressão pro caso sem o campo", () => {
+    // Busca o fragmento HTML exato da linha (não texto solto "da edição de"
+    // — "Edições da semana" lista destaques cujo título literal pode
+    // conter esse texto por coincidência, ex: "Título da edição de terça"
+    // em BASE_INPUT, sem relação com esta feature).
+    const result = renderLinkedinWeeklyHtml(BASE_INPUT);
+    assert.ok(!/<em>da edição de \d{2}\/\d{2}<\/em>/.test(result.html));
   });
 });
 

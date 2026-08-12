@@ -29,12 +29,40 @@ inteira antes — não só o body.
   "só DESTAQUE 1" foi substituída em 260802 — matéria secundária, item de
   Radar ou entrada de Use Melhor são candidatos legítimos quando o clique
   justificar. Ver `scripts/lib/weekly-linkedin-select.ts`.
-- **Sem link por destaque.** O texto lifted já É o conteúdo completo — um
-  link de volta pra edição de origem prometeria mais do que existe. A
+- **Seleção: CTOR puro decide fora do ruído; dentro do ruído, o editor
+  decide no gate (#5109, decisão do editor).** Até 260812, um empate dentro
+  do ruído de 1 clique (`withinClickNoise`) era resolvido automaticamente
+  por `editorialTiebreakScore` (ângulo Brasil > implicação profissional >
+  diversidade de categoria) — achado ao vivo do ciclo `26w32`: a banda
+  engoliu 6 candidatos e produziu 3× RADAR seguidos, com um candidato de
+  🔒 SEGURANÇA (CTOR de topo) perdendo nas 3 rodadas pra candidatos de CTOR
+  MENOR. A partir de agora `editorialTiebreakScore` só é DICA exibida no
+  gate, nunca decisor — ver Passo 3.
+- **Sem link por destaque.** O texto de manchete já É o conteúdo completo —
+  um link de volta pra edição de origem prometeria mais do que existe. A
   seção "ATERRISSAGEM" que existiu numa versão intermediária da spec foi
-  **removida**.
+  **removida**. **Exceção textual, não-linkada (#5109):** cada manchete leva
+  uma linha "da edição de DD/MM" logo abaixo do título — sinaliza de qual
+  das 5 edições da semana ela veio (sem isso o leitor precisava abrir
+  "Edições da semana" e cruzar os 5 links pra achar), mas é TEXTO puro, não
+  `<a href>` — a decisão de não-linkar continua de pé.
 - **Título literal + numeração.** Nunca reescrever o título do bloco de
-  origem — só prefixar "1.", "2.", "3.".
+  origem — só prefixar "1.", "2.", "3.". Vale mesmo depois do #5108 abaixo:
+  só o CORPO da manchete virou resumo autoral, o título continua sempre
+  literal.
+- **Corpo da manchete: resumo próprio a partir da fonte primária, não mais
+  "levantar literal" (#5108, decisão do editor 260812 — reverte a decisão
+  original registrada no #4456, comentário registrando a reversão lá).**
+  Motivado por um achado concreto do ciclo `26w32`: a seleção por clique
+  escolheu 3 itens de Radar, cujos corpos levantados somavam 461 caracteres
+  nos três blocos, contra ~700-800 caracteres de um único destaque — pouco
+  substância pra uma peça inteira. Consequência direta: a isenção de
+  humanizador/Clarice/fact-check que o `#4456` original dava ao bloco de
+  manchete (por ser texto já revisado na edição diária de origem) só se
+  aplica a manchetes que PERMANECEM literais (fonte ficou inacessível desde
+  a edição de origem, ver Passo 4) — a regra agora é **"texto levantado
+  nunca passa por humanizador/Clarice/fact-check, texto autoral sempre
+  passa"** (Passos 4-6).
 - **Use Melhor é obrigatório, mas só COM comentário do editor.** Sem
   comentário honesto, o bloco inteiro sai da edição — nunca gerado
   automaticamente (`renderLinkedinWeeklyHtml` em
@@ -125,20 +153,59 @@ da semana (`weeklyEditions` — as 5 edições, link + destaques de cada
 uma), e warnings (empates dentro do ruído de 1 clique, edições
 faltando, etc — ver `scripts/lib/weekly-linkedin-select.ts`).
 
+**Empate dentro do ruído de 1 clique maior que as vagas restantes (#5109):**
+`headlines` pode sair mais curto que o cap (2 ou 3), e o JSON traz
+`pendingGroup` (não-nulo) com os candidatos disputando — CTOR não decide
+sozinho aqui, a escolha vai pro editor no Passo 3. Se `pendingGroup` vier
+`null`, a seleção já está completa e o Passo 3 não precisa da etapa de
+escolha manual.
+
 **Semana curta (feriado):** se `editionsFound < 5`, o script já reduz o
 número de manchetes automaticamente (`computeHeadlineCap`) — nunca puxa
 conteúdo da semana anterior pra completar 3. Se `editionsFound === 0`, o
 script aborta (exit 1) — reporte ao editor em vez de prosseguir.
 
-## Passo 3 — Gate humano: apresentar seleção + pedir texto novo
+## Passo 3 — Gate humano: resolver empate pendente + apresentar seleção + pedir texto novo
 
-Mostrar ao editor:
+### 3a. Se `pendingGroup` não for `null`: escolha manual do empate (#5109)
+
+Mostrar ao editor o grupo inteiro empatado, com as colunas que a decisão
+precisa (não só a taxa — cliques/opens absolutos e tipo, #5109 item 4):
+
+```
+⚖️  Empate dentro do ruído de 1 clique — {N} candidatos disputam {pendingSlots} vaga(s):
+
+  [{taxa}% · {cliques}cl/{opens}op · {tipo}] {título} ({edição de origem}, {seção})
+  ...
+
+Dica de desempate editorial (ângulo Brasil > implicação profissional >
+diversidade de categoria) — NÃO decide, só informa: {título} tem o maior score ({N})
+
+Escolha {pendingSlots} candidato(s) (ordem = ordem de exibição das manchetes):
+```
+
+`tipo` é `destaque` (`kind === "destaque"`) ou `section` (`kind ===
+"section"`) — sinaliza quanto corpo levantado já existe pra base do resumo
+autoral do Passo 4 (destaque tem corpo completo; item de seção só tem 1
+linha). Depois da resposta do editor, re-rodar:
+
+```bash
+npx tsx scripts/select-linkedin-weekly.ts --publish-monday {AAMMDD} \
+  --picks {url-1},{url-2}
+```
+
+na ORDEM escolhida pelo editor. Erro explícito (exit 2) se a contagem não
+bater com `pendingSlots` ou alguma URL não pertencer ao `pendingGroup` —
+apresente o erro ao editor e peça de novo, nunca adivinhe/complete
+sozinho. `pendingGroup` sai `null` no JSON re-escrito quando resolvido.
+
+### 3b. Apresentar a seleção final (sempre, com ou sem 3a)
 
 ```
 📰 LinkedIn semanal — ciclo {cycle} (segunda {AAMMDD})
 
 Manchetes selecionadas (por taxa de clique verificado):
-  1. [{taxa}%] {título} ({edição de origem}, {seção})
+  1. [{taxa}% · {cliques}cl/{opens}op · {tipo}] {título} ({edição de origem}, {seção})
   2. ...
   3. ...
 
@@ -146,7 +213,7 @@ Use Melhor: {título ou "nenhum candidato elegível"}
 
 Edições da semana: {N} edições (link + destaques cada)
 
-{warnings, se houver — inclusive empates dentro do ruído de 1 clique}
+{warnings, se houver}
 
 Aprovar seleção? sim / trocar {N} por outro candidato / abortar
 ```
@@ -161,16 +228,49 @@ Mesmo padrão do corpo original da issue ("a skill NUNCA gera esse
 comentário, ela pergunta e espera resposta") — vale pros 3 textos novos,
 não só o comentário do Use Melhor.
 
-## Passo 4 — Humanizador + Clarice (só no texto NOVO)
+## Passo 4 — Checar acessibilidade da fonte + escrever resumo próprio de cada manchete (#5108)
 
-**Regra do #4456: bloco levantado (manchetes) NÃO passa por humanizador
-nem Clarice — só o texto novo (abertura, fecho, comentário do Use
-Melhor).** O texto já foi revisado pelo editor e pela Clarice na edição
-diária de origem; reprocessar reintroduziria risco factual e deriva de
-voz sem ganho (mesma lógica do corpo original da issue, "Montagem —
-levantar literal").
+```bash
+npx tsx scripts/verify-linkedin-weekly-sources.ts --cycle {cycle}
+```
 
-Para cada um dos 3 textos novos (abertura, fecho, comentário Use Melhor):
+Verifica CADA `headlines[].url` da seleção FINAL (já com o Passo 3a
+resolvido, se havia) via o mesmo verificador do Stage 1 diário
+(`scripts/verify-accessibility.ts`) e grava `sourceAccessibility` de volta
+em cada headline de `ln-selection.json`. Um link acessível na edição de
+origem (dias atrás) pode ter virado paywall/indisponível desde então —
+resumir um stub é pior que não resumir.
+
+Para cada manchete:
+
+- **`sourceAccessibility.accessible === true`:** `WebFetch` a URL e
+  **escreva um resumo próprio** (2-4 parágrafos curtos, tamanho comparável
+  ao de um destaque da diária — não copie frases da fonte) + 1 frase de
+  "por que isso importa" quando fizer sentido, preservando os fatos sem
+  fabricar nada além do que a fonte sustenta. Atualize
+  `data/weekly/{cycle}/_internal/ln-selection.json` — edição cirúrgica
+  (`Edit`, só os campos desta manchete): `headlines[i].body`,
+  `headlines[i].why` (se aplicável) e `headlines[i].textOrigin = "autoral"`.
+  **Título permanece literal, intocado.**
+- **`sourceAccessibility.accessible === false`:** mantenha o corpo
+  LEVANTADO que já veio da seleção (Passo 2) — não escreva resumo. Marque
+  `headlines[i].textOrigin = "literal"` e avise o editor no resumo do gate
+  que essa fonte específica ficou inacessível desde a edição de origem.
+
+O campo `textOrigin` (literal|autoral) é o que os Passos 5-6 usam pra
+decidir tratamento — nunca pule esta escrita, mesmo pra manchetes que
+ficaram literais (a ausência do campo é tratada como "não decidido ainda",
+não como "literal por default").
+
+## Passo 5 — Humanizador + Clarice (texto NOVO — inclusive manchetes autorais, #5108)
+
+**Regra atualizada (#5108, reverte parte do #4456 original): "texto
+levantado nunca passa por humanizador/Clarice, texto autoral sempre
+passa."** Não é mais "manchete nunca passa" — é por `textOrigin`
+individual de cada manchete (ver Passo 4).
+
+Para os 3 textos sempre-novos (abertura, fecho, comentário Use Melhor) **e**
+para cada manchete com `textOrigin === "autoral"` (`body`/`why`):
 
 ```
 Skill("humanizador", "Humanize este texto em português, mantendo o
@@ -189,9 +289,37 @@ menu de escolha ao editor, relate o que mudou depois de aplicar, não
 negocie antes (#4514). **Única exceção:** sugestão que corrompa
 identificador técnico ou nome de marca (ex: `diar.ia` → `diária` quebraria
 a marca) — nesse caso aplique todo o resto e sinalize só essa ao editor.
-Guarde o resultado final dos 3 textos pro Passo 5.
+Manchetes com `textOrigin === "literal"` continuam ISENTAS (mesma lógica
+original do #4456: já revisadas na edição diária de origem, reprocessar
+reintroduziria risco factual e deriva de voz sem ganho). Para as manchetes
+autorais processadas aqui, atualize `ln-selection.json` (`body`/`why`) com
+o texto final humanizado/corrigido — o Passo 7 (render) lê direto de lá.
+Guarde também o resultado final dos 3 textos sempre-novos pro Passo 7.
 
-## Passo 5 — Renderizar o artefato final
+## Passo 6 — Fact-check do texto autoral (#5108)
+
+Se NENHUMA manchete tiver `textOrigin === "autoral"` (todas as fontes
+ficaram inacessíveis no Passo 4, ou a semana reduzida só tinha manchetes
+literais) — **pule este passo**, não há claim novo pra verificar.
+
+Caso contrário:
+
+```
+Agent(subagent_type="fact-checker", prompt=<selection_path=data/weekly/{cycle}/_internal/ln-selection.json, mode="weekly-linkedin", out_path=data/weekly/{cycle}/_internal/ln-fact-check.json>)
+```
+
+Reusa o agente existente (`.claude/agents/fact-checker.md` §"Modo LinkedIn
+semanal") — verifica só as manchetes `textOrigin === "autoral"` (as
+literais já passaram por fact-check na edição diária de origem, mesma
+isenção do Passo 5). Sem auto-bloqueio (mesma política de `daily`/
+`monthly`): apresente `summary.attention_items` (claims DIVERGENT/
+NOT_FOUND_IN_SOURCE/superlativo-sem-suporte) ao editor junto do gate do
+Passo 3b (se ainda não passou) ou como aviso separado — o editor decide se
+ajusta o resumo antes de renderizar. `DIVERGENT` com `suggested_fix`
+populado: aplique a correção diretamente no `body`/`why` da manchete
+(edição cirúrgica em `ln-selection.json`) e informe o editor do que mudou.
+
+## Passo 7 — Renderizar o artefato final
 
 ```bash
 npx tsx scripts/render-linkedin-weekly.ts --cycle {cycle} \
@@ -212,7 +340,7 @@ Se `--use-melhor-comment` foi omitido (ou vazio), o bloco Use Melhor sai
 inteiro do HTML — mecânico, não pergunte de novo, já foi perguntado no
 Passo 3.
 
-## Passo 6 — Entregar o artefato ao editor
+## Passo 8 — Entregar o artefato ao editor
 
 Publique `ln-{cycle}.html` como Artifact (padrão do repo: entregas vão
 como artefato aberto no browser, não `.md`/arquivo solto) pro editor
@@ -293,17 +421,27 @@ daqui.
   automaticamente — nunca puxa da semana anterior.
 - **Nenhum candidato Use Melhor elegível na semana:** `useMelhor` sai
   `null` no JSON — o Passo 3 não pergunta comentário (não há bloco).
-- **Empate dentro do ruído de 1 clique:** o script já resolve via
-  critério editorial (ângulo Brasil > implicação profissional >
-  diversidade de categoria) e registra em `warnings` — mostre esse
-  warning ao editor no gate do Passo 3, é informação relevante mesmo já
-  resolvida mecanicamente.
+- **Empate dentro do ruído de 1 clique maior que as vagas restantes
+  (#5109):** `pendingGroup` sai não-nulo — o editor escolhe manualmente no
+  Passo 3a (`editorialTiebreakScore` é só dica exibida, não decide mais
+  sozinho). Um empate que CABE inteiro nas vagas restantes (ex: 2
+  candidatos empatados, 2 vagas) é incluído automaticamente, sem
+  ambiguidade real — não gera `pendingGroup`.
+- **Fonte da manchete ficou inacessível desde a edição de origem (#5108):**
+  `sourceAccessibility.accessible === false` no Passo 4 — a manchete fica
+  com o corpo LEVANTADO original (nunca resume um stub/paywall),
+  `textOrigin: "literal"`, isenta de humanizador/Clarice/fact-check
+  (Passos 5-6).
+- **Nenhuma manchete elegível pra resumo autoral (todas as fontes
+  ficaram inacessíveis, ou semana reduzida):** Passo 6 (fact-check) é
+  pulado inteiro — sem claim novo pra verificar.
 
 ## Outputs
 
 ```
 data/weekly/{cycle}/
-  _internal/ln-selection.json   seleção completa + auditoria (Passo 2)
-  ln-{cycle}.html                artefato colável (Passo 5)
-  ln-{cycle}.json                 metadados do render (Passo 5)
+  _internal/ln-selection.json   seleção completa + auditoria (Passo 2) — pendingGroup (Passo 3a), sourceAccessibility + textOrigin/body/why atualizados (Passo 4), texto autoral humanizado (Passo 5)
+  _internal/ln-fact-check.json  claims verificados do texto autoral (Passo 6, se houver manchete autoral)
+  ln-{cycle}.html                artefato colável (Passo 7)
+  ln-{cycle}.json                 metadados do render (Passo 7)
 ```

@@ -40,7 +40,7 @@ function resolveTextArg(argv: string[], key: string): string {
 
 interface SelectionJson {
   cycle: string;
-  headlines: Array<{ title: string; body: string; why: string }>;
+  headlines: Array<{ title: string; body: string; why: string; editionDate: string }>;
   useMelhor: { title: string; url: string; body: string } | null;
   weeklyEditions: Array<{ editionDate: string; url: string; destaques: string[] }>;
 }
@@ -73,7 +73,7 @@ export function main(rootDirOverride?: string) {
 
   const input: WeeklyLinkedinRenderInput = {
     cycle,
-    headlines: selection.headlines.map((h) => ({ title: h.title, body: h.body, why: h.why })),
+    headlines: selection.headlines.map((h) => ({ title: h.title, body: h.body, why: h.why, editionDate: h.editionDate })),
     useMelhor: selection.useMelhor
       ? {
           title: selection.useMelhor.title,
