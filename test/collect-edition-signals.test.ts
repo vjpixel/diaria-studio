@@ -12,6 +12,7 @@ import {
   signalsFromTestWarnings,
   signalsFromPlaceholderGuardWarnings,
   signalsFromRuntimeFixLite,
+  splitRuntimeFixLiteComponent,
   RUNTIME_FIX_LITE_LOG_MESSAGE_PREFIX,
   normalizeMessageKey,
   collectSignals,
@@ -660,6 +661,65 @@ describe("signalsFromRuntimeFixLite (#1210 reopen, 260813)", () => {
     ];
     assert.equal(signalsFromRuntimeFixLite(lines, "260813").length, 1);
     assert.equal(signalsFromTestWarnings(lines, "260813").length, 0);
+  });
+
+  // #5204: signalsFromRuntimeFixLite não populava details.component, mas
+  // auto-reporter.md usa `details.component` (não a description inteira)
+  // como query de dedup pra runtime_fix E runtime_fix_lite — sem isso, a
+  // busca roda vazia e cria issue duplicada pro mesmo problema recorrente.
+  it("popula details.component a partir do prefixo '{componente} — {descrição}' — entrada real do run-log (#5204)", () => {
+    const lines = [
+      mkLine({
+        timestamp: "2026-08-13T05:00:00Z",
+        edition: "260813",
+        stage: 3,
+        agent: "orchestrator",
+        level: "warn",
+        message: "runtime_fix_lite: image-crop-reviewer — ENOENT ao escrever em data/, escrevi o JSON diretamente",
+      }),
+    ];
+    const signals = signalsFromRuntimeFixLite(lines, "260813");
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].details.component, "image-crop-reviewer");
+    assert.equal(
+      signals[0].details.description,
+      "image-crop-reviewer — ENOENT ao escrever em data/, escrevi o JSON diretamente",
+    );
+  });
+
+  it("mensagem sem o separador ' — ' (formato não seguido): details.component fica undefined, sem lançar", () => {
+    const lines = [
+      mkLine({ edition: "260813", level: "warn", message: "runtime_fix_lite: mensagem sem separador nenhum" }),
+    ];
+    const signals = signalsFromRuntimeFixLite(lines, "260813");
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].details.component, undefined);
+  });
+});
+
+describe("splitRuntimeFixLiteComponent (#5204)", () => {
+  it("separa component/description no primeiro ' — '", () => {
+    assert.deepEqual(splitRuntimeFixLiteComponent("writer — mesmo fix"), {
+      component: "writer",
+      description: "mesmo fix",
+    });
+  });
+
+  it("descrição com um segundo travessão: só o PRIMEIRO separador conta", () => {
+    assert.deepEqual(splitRuntimeFixLiteComponent("writer — fix A — detalhe extra"), {
+      component: "writer",
+      description: "fix A — detalhe extra",
+    });
+  });
+
+  it("sem separador: component ausente, description é a string inteira", () => {
+    assert.deepEqual(splitRuntimeFixLiteComponent("sem separador nenhum"), {
+      description: "sem separador nenhum",
+    });
+  });
+
+  it("component vazio antes do separador (ex: ' — descrição'): trata como ausente", () => {
+    assert.deepEqual(splitRuntimeFixLiteComponent(" — descrição"), { description: "descrição" });
   });
 });
 

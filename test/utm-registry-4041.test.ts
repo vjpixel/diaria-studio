@@ -523,3 +523,17 @@ describe("#4578 — voto vindo da versão web do post redireciona pro gate unifi
     });
   });
 });
+
+describe("#5205 — ENTITY_PERPLEXITY_FOOTER_NAV_UTM estava fora de UTM_EMITTERS (falso-positivo no detector de drift)", () => {
+  it("entity-perplexity-footer-nav está presente em UTM_EMITTERS, mesmo padrão dos HUB_*_FOOTER_NAV_UTM irmãos", () => {
+    const ids = shared.UTM_EMITTERS.map((e) => e.id);
+    assert.ok(ids.includes("entity-perplexity-footer-nav"), 'UTM_EMITTERS deve conter "entity-perplexity-footer-nav"');
+  });
+
+  it("a entry emite exatamente source/medium de ENTITY_PERPLEXITY_FOOTER_NAV_UTM (sem literal solto)", () => {
+    const entry = shared.findUtmEmitter("entity-perplexity-footer-nav");
+    assert.ok(entry, "entry entity-perplexity-footer-nav deveria existir");
+    assert.equal(entry!.source, shared.ENTITY_PERPLEXITY_FOOTER_NAV_UTM.source);
+    assert.equal(entry!.medium, shared.ENTITY_PERPLEXITY_FOOTER_NAV_UTM.medium);
+  });
+});

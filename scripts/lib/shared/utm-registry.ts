@@ -1230,6 +1230,20 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "e IA (#4558, 6º hub temático — 2º TEMÁTICO transversal, sessão develop 260812).",
     status: "ativo",
   },
+  {
+    id: "entity-perplexity-footer-nav",
+    label: "Página de entidade Perplexity — link de rodapé pra diar.ia.br",
+    source: ENTITY_PERPLEXITY_FOOTER_NAV_UTM.source,
+    medium: ENTITY_PERPLEXITY_FOOTER_NAV_UTM.medium,
+    campaignPattern: "entity-perplexity-footer-nav",
+    originFile: "scripts/lib/entities/perplexity.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada da página de entidade Perplexity ' +
+      "(#5125, mesmo padrão dos HUB_*_FOOTER_NAV_UTM acima). Achado #5205: ficou fora do array " +
+      "no PR original, causando falso-positivo no detector de drift (`nao_catalogado`) assim que " +
+      "a página receber o 1º clique real.",
+    status: "ativo",
+  },
 ] as const;
 
 /** Busca uma entrada do inventário por id. `undefined` se não existe. @pure */

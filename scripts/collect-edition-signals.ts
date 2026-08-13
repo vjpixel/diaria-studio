@@ -185,6 +185,28 @@ export function signalsFromRuntimeFixes(jsonlContent: string): Signal[] {
 
 export const RUNTIME_FIX_LITE_LOG_MESSAGE_PREFIX = "runtime_fix_lite:";
 
+/** Separador literal instruído em `.claude/agents/orchestrator.md` pro
+ * caminho leve: `"{componente} — {descrição breve}"` (em-dash cercado de
+ * espaços). */
+const RUNTIME_FIX_LITE_COMPONENT_SEPARATOR = " — ";
+
+/**
+ * Extrai `component` do prefixo `"{componente} — {descrição}"` de uma
+ * mensagem `runtime_fix_lite:` já sem o prefixo do signal (#5204). Split no
+ * PRIMEIRO separador — a descrição pode conter o mesmo travessão de novo.
+ * Mensagem sem o separador (formato não seguido) devolve `component:
+ * undefined` — fail-soft, nunca lança; o signal ainda é produzido, só sem
+ * `details.component` populado (mesmo estado de antes do fix, não pior).
+ */
+export function splitRuntimeFixLiteComponent(remainder: string): { component?: string; description: string } {
+  const idx = remainder.indexOf(RUNTIME_FIX_LITE_COMPONENT_SEPARATOR);
+  if (idx < 0) return { description: remainder };
+  const component = remainder.slice(0, idx).trim();
+  const description = remainder.slice(idx + RUNTIME_FIX_LITE_COMPONENT_SEPARATOR.length).trim();
+  if (!component) return { description };
+  return { component, description };
+}
+
 /**
  * Lê eventos `runtime_fix_lite:` do run-log de uma edição. Agrupa por
  * mensagem normalizada (mesmo helper de `signalsFromTestWarnings`) pra
@@ -200,6 +222,7 @@ export function signalsFromRuntimeFixLite(
     firstAt?: string;
     lastAt?: string;
     sample: string;
+    component?: string;
   }
   const buckets = new Map<string, Bucket>();
 
@@ -220,6 +243,7 @@ export function signalsFromRuntimeFixLite(
     if (!message.startsWith(RUNTIME_FIX_LITE_LOG_MESSAGE_PREFIX)) continue;
 
     const remainder = message.slice(RUNTIME_FIX_LITE_LOG_MESSAGE_PREFIX.length).trim();
+    const { component } = splitRuntimeFixLiteComponent(remainder);
     const key = normalizeMessageKey(remainder);
     const existing = buckets.get(key);
     if (existing) {
@@ -232,6 +256,7 @@ export function signalsFromRuntimeFixLite(
         firstAt: parsed.timestamp,
         lastAt: parsed.timestamp,
         sample: remainder || "(sem descrição)",
+        component,
       });
     }
   }
@@ -245,6 +270,10 @@ export function signalsFromRuntimeFixLite(
       severity,
       title: `Runtime fix in-flight (registro leve): ${shortSample}`,
       details: {
+        // #5204: `auto-reporter.md` usa `details.component` como query de
+        // dedup pra `runtime_fix` E `runtime_fix_lite` — sem popular aqui,
+        // a busca roda vazia e o dedup nunca encontra a issue prévia real.
+        component: b.component,
         count: b.count,
         level: b.level,
         first_at: b.firstAt ?? null,
