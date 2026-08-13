@@ -608,11 +608,22 @@ export interface CohortComposition {
 /**
  * Composição por cohort da fila de 1º envio DISPONÍVEL (já excluindo
  * comprometidos — o mesmo conjunto cuja contagem `.length` vira
- * `availableFirstSend`), ordenada por `cohortSendRank` (morno→frio — a MESMA
- * ordem que `segmentRampWarm` usa pra consumir a fila de fato, ver
- * clarice-segment.ts). Puro: não assume que `rows` já chega ordenado
- * (reordena aqui por conta própria), então continua correta mesmo se o
- * caller mudar a ordem de iteração no futuro.
+ * `availableFirstSend`), ordenada por `cohortSendRank` (morno→frio).
+ *
+ * RESSALVA (#5169 revisão 260812, achado do review da PR #5178):
+ * `cohortSendRank` continua sendo a ordem real que `segmentRampWarm` usa
+ * pra consumir a fila ENTRE LEADS (bucket é derivado de `created`, os dois
+ * nunca discordam) — mas não é mais garantia pra cohorts estruturais não
+ * MV-isentos (hoje só `ex-assinantes`; `assinantes-ativos` é MV-isento e
+ * nunca passa por aqui, `juridico` é virtual e nunca é uma linha real de
+ * `cohort`). `segmentRampWarm` agora ordena por `compareContactRecency`
+ * (created real, cohort não entra), então um `ex-assinantes` antigo pode
+ * ficar atrás de leads mais recentes na fila de fato, mesmo que este
+ * agregado por cohort ainda o mostre "quente" por `cohortSendRank`. Puro:
+ * não assume que `rows` já chega ordenado (reordena aqui por conta
+ * própria), então continua correta mesmo se o caller mudar a ordem de
+ * iteração no futuro — a ressalva é sobre o SIGNIFICADO da ordem, não sobre
+ * a pureza da função.
  */
 export function summarizeAvailableFirstSendByCohort(
   rows: Array<Pick<StoreRow, "cohort">>,
@@ -779,11 +790,22 @@ export interface MvOnDemandPlan {
   targetVerifyCount: number;
   /**
    * Alocação por cohort, na MESMA ordem de prioridade de `cohortSendRank`
-   * (morno→frio — a ordem que a fila de envio de fato usa, ver
-   * `segmentRampWarm` em clarice-segment.ts). NUNCA a ordem por volume que
-   * `summarizeMvBacklog.byCohort` usa pra exibição — a #4542 já corrigiu uma
-   * inversão dessa ordem (verificar lead frio antes de um morno com backlog
-   * pendente); reordenar por volume aqui reintroduziria a mesma classe de bug.
+   * (morno→frio). NUNCA a ordem por volume que `summarizeMvBacklog.byCohort`
+   * usa pra exibição — a #4542 já corrigiu uma inversão dessa ordem
+   * (verificar lead frio antes de um morno com backlog pendente); reordenar
+   * por volume aqui reintroduziria a mesma classe de bug.
+   *
+   * RESSALVA (#5169 revisão 260812): pra LEADS, `cohortSendRank` continua
+   * sendo a ordem real de consumo da fila (`segmentRampWarm` em
+   * clarice-segment.ts, bucket é derivado de `created`). Pra `ex-assinantes`
+   * (único cohort estrutural não-MV-isento que passa por aqui —
+   * `assinantes-ativos` é isento via `isMvExemptCohort`, `juridico` é
+   * virtual e nunca aparece como `cohort` real), isso deixou de ser garantia
+   * desde que `segmentRampWarm` passou a ordenar por `compareContactRecency`
+   * (created real, sem prioridade de cohort) — a alocação aqui pode priorizar
+   * verificar `ex-assinantes` achando-o "quente" quando a fila de fato já
+   * está enviando leads mais recentes primeiro. Impacto prático baixo (base
+   * pequena — ver #5179), mas é uma imprecisão real, não só de comentário.
    */
   byCohort: MvOnDemandAllocation[];
   /**

@@ -394,8 +394,12 @@ export function compareContactRecency(
   const vb = Number.isFinite(tb);
   if (va && vb && ta !== tb) return tb - ta; // DESC — cadastro mais recente primeiro, cohort não entra aqui
   if (va !== vb) return va ? -1 : 1; // `created` conhecido bate desconhecido
-  // Os dois sem `created` confiável — degrada pro rank de bucket (fallback,
-  // nunca o critério primário).
+  // Chegou aqui em 2 casos, tratados igual de propósito: (1) NENHUM dos dois
+  // tem `created` confiável, ou (2) os dois têm `created` VÁLIDO mas
+  // EXATAMENTE IGUAL (`ta === tb`, não cai no branch DESC acima). Em ambos,
+  // a data não distingue — degrada pro rank de bucket (fallback, nunca o
+  // critério primário; achado do review da PR #5178, teste dedicado em
+  // test/cohorts.test.ts pro caso (2)).
   const ra = cohortSendRank(a.cohort);
   const rb = cohortSendRank(b.cohort);
   if (ra !== rb) return ra < rb ? -1 : 1;

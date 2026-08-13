@@ -513,10 +513,15 @@ export function segmentReativacao(rows: StoreRow[]): StoreRow[] {
  * cohorts isentos — reusa `isMvExemptCohort` (fonte única compartilhada com
  * `classifyEligibility` em clarice-db.ts e `verify-emails-mv.ts`).
  *
- * Ordenação: `segmentRampWarm` (abaixo) já ordena por `cohortSendRank`, que
- * atribui `assinantes-ativos` ao rank 0 (mais quente da fila) — nenhuma
- * mudança de ordenação foi necessária pra atender "cohort assinantes-ativos
- * rank 0" pedido pela issue, já era o comportamento existente.
+ * Ordenação (histórico #3826, superado pelo #5169 revisão 260812):
+ * `segmentRampWarm` já ordenava por `cohortSendRank`, que atribuía
+ * `assinantes-ativos` ao rank 0 fixo (sempre mais quente da fila) — não
+ * precisou de mudança pra atender "cohort assinantes-ativos rank 0" pedido
+ * então. Isso NÃO é mais verdade: `compareContactRecency` (cohorts.ts,
+ * #5169) ordena por `created` real pra qualquer contato, cohort estrutural
+ * incluso — um `assinantes-ativos` antigo agora fica atrás de um lead mais
+ * recente. `cohortSendRank` só volta a decidir no fallback (nenhum dos dois
+ * lados com `created` confiável).
  */
 export function isRampWarm(
   r: Pick<StoreRow, "email" | "send_eligible" | "sends_count" | "mv_bucket" | "cohort">,

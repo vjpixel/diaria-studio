@@ -178,6 +178,16 @@ describe("compareContactRecency", () => {
     assert.ok(compareContactRecency(payerRecente, leadAntigo) < 0);
   });
 
+  it("created VÁLIDO mas IGUAL nos dois lados (cohorts diferentes) cai no fallback de cohortSendRank, não é confundido com 'nenhum dos dois tem created' (achado do review da PR #5178)", () => {
+    const payer = { email: "z-payer@x.com", cohort: COHORT_ASSINANTES_ATIVOS, created: "2026-01-01T00:00:00Z" };
+    const lead = { email: "a-lead@x.com", cohort: "leads-2023h2", created: "2026-01-01T00:00:00Z" };
+    // Mesmo created exato — a comparação de data não distingue, cai no
+    // fallback (cohortSendRank): assinantes-ativos (rank 0) vence
+    // leads-2023h2 (rank de lead, bem maior) — não é o e-mail que decide
+    // aqui (senão "a-lead" venceria "z-payer" alfabeticamente).
+    assert.ok(compareContactRecency(payer, lead) < 0, "created empatado → cohortSendRank decide, não o created em si");
+  });
+
   it("created ausente/inválido nos dois lados cai no desempate final por e-mail — nunca lança, nunca produz NaN", () => {
     const a = { email: "a@x.com", cohort: "leads-2023h2", created: null };
     const b = { email: "b@x.com", cohort: "leads-2023h2", created: "não-é-data" };
