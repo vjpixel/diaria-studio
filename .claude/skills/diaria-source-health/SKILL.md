@@ -5,55 +5,38 @@ description: Mostra a saúde agregada de cada fonte cadastrada (successes, failu
 
 # /diaria-source-health [fonte]
 
-Inspeciona a saúde das fontes usadas no Stage 1 da pipeline.
+Desde #5191, todo o cálculo (`success_rate`, `consecutive_failures`, limiares
+🟢/🟡/🔴, leitura do log individual) é `scripts/source-health-report.ts` —
+testado, não mais interpretação de prosa a cada invocação (mesmo molde do
+precedente `/diaria-clarice-novos` → `scripts/clarice-novos-run.ts`, #4941).
+Esta skill apenas invoca:
 
-## Sem argumento — visão geral
-
-1. Ler `data/source-health.json`.
-2. Para cada fonte, computar:
-   - `success_rate = successes / attempts` (em %)
-   - `consecutive_failures` = contar só falhas DURAS (`fail`/`timeout`) do fim de `recent_outcomes`, parando na primeira entrada que NÃO é falha dura (`ok` **ou** `empty`). `empty` (fetch OK, zero artigos) não conta como falha (#1576/#1665). Cada entrada é `{ outcome, timestamp }`.
-   - status indicador: 🟢 success_rate ≥ 80% e sem streak; 🟡 success_rate ≥ 50% ou streak 1-2; 🔴 success_rate < 50% ou streak 3+
-3. Apresentar tabela ordenada por status (pior primeiro):
-
-```
-📊 Source health — 14 fontes
-
-🔴 AI Breakfast          0/3   (timeouts 3 seguidos, última falha: 2026-04-17T14:22Z)
-🟡 MIT Tech Review BR    2/4   (50%, última falha: 2026-04-16T08:01Z, duração última: 178s)
-🟢 DeepMind             12/13  (92%, duração média: 34s)
-...
+```bash
+npx tsx scripts/source-health-report.ts                    # visão geral, todas as fontes
+npx tsx scripts/source-health-report.ts --source "AI Breakfast"   # auditoria individual (últimas 20 execuções)
+npx tsx scripts/source-health-report.ts --json              # qualquer um dos dois modos, output estruturado
 ```
 
-4. Ao final, se houver fontes 🔴, perguntar:
-   > Quer inspecionar o log individual de alguma (ex: `/diaria-source-health "AI Breakfast"`) ou desativar em `seed/sources.csv`?
+**Regra crítica preservada em código e testada (`test/source-health-report.test.ts`, #1576/#1665):**
+uma entrada `empty` (fetch OK, zero artigos) NÃO conta como falha dura pro
+streak de `consecutive_failures` — só `fail`/`timeout` contam, e `empty`
+encerra o streak (mesmo efeito de `ok`). Antes disso viver só em prosa no
+SKILL.md, sem teste travando o comportamento.
 
-## Com argumento `[fonte]` — auditoria individual
+## Depois de rodar
 
-1. Slugify o nome: lowercase + `[^a-z0-9]+` → `-`.
-2. Abrir `data/sources/{slug}.jsonl`. Se não existir, reportar e abortar.
-3. Ler as últimas 20 execuções (linhas JSON).
-4. Apresentar em ordem cronológica reversa:
-
-```
-🔍 AI Breakfast — últimas 5 execuções
-
-[2026-04-17 14:22Z · edição 260417] timeout em 180s  (reason: consecutive_fetch_errors)
-  query: site:aibreakfast.beehiiv.com AI OR "inteligência artificial"
-  0 artigos retornados
-
-[2026-04-16 14:18Z · edição 260416] ok em 42s
-  query: site:aibreakfast.beehiiv.com AI OR ...
-  3 artigos:
-    - "Novo modelo X supera benchmark Y" (2026-04-15)
-      https://aibreakfast.beehiiv.com/p/novo-modelo-x
-    ...
-```
-
-5. Se detectar padrão óbvio (ex: 3 timeouts seguidos, sempre mesmo `reason`), apontar com os timestamps e oferecer investigar:
-   > 3 timeouts consecutivos (2026-04-15T14:18Z, 2026-04-16T14:20Z, 2026-04-17T14:22Z), sempre `consecutive_fetch_errors`. Quer que eu olhe se o site mudou (robots.txt, Cloudflare) ou se o domínio está fora do ar?
+- Se houver fontes 🔴 no overview, ofereça inspecionar (`--source "Nome"`) ou
+  desativar em `seed/sources.csv`.
+- Na auditoria individual, se o padrão for óbvio (3 timeouts seguidos, sempre
+  mesmo `reason`), ofereça investigar se o site mudou (robots.txt,
+  Cloudflare) ou está fora do ar — esse julgamento fica na conversa, não no
+  script.
 
 ## Regras
 
-- **Somente leitura.** Nunca modifique `source-health.json` ou os logs individuais — eles são escritos só por `record-source-run.ts`.
-- Se o usuário pedir "resetar" uma fonte, mover `data/sources/{slug}.jsonl` → `data/sources/{slug}.jsonl.bak-{timestamp}` e zerar a entrada da fonte em `source-health.json`. Nunca deletar sem backup.
+- **Somente leitura.** O script nunca escreve em `source-health.json` nem nos
+  logs individuais — só `record-source-run(s).ts` escreve.
+- Se o usuário pedir "resetar" uma fonte, mover `data/sources/{slug}.jsonl` →
+  `data/sources/{slug}.jsonl.bak-{timestamp}` e zerar a entrada da fonte em
+  `source-health.json` manualmente. Nunca deletar sem backup — fora do
+  escopo do script (ação destrutiva rara, não vale automatizar).
