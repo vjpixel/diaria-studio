@@ -47,21 +47,19 @@
           </select>
         </label>
         <label class="filter-field">
-          <span class="label">Trilha (PRs)</span>
-          <select id="filter-track">
+          <span class="label">Classificação</span>
+          <select id="filter-dispatch-track">
             <option value="">Todas</option>
-            <option value="overnight">overnight</option>
-            <option value="develop">develop</option>
-            <option value="other">other</option>
-          </select>
-        </label>
-        <label class="filter-field">
-          <span class="label">Classificação (issues)</span>
-          <select id="filter-dispatch">
-            <option value="">Todas</option>
-            <option value="elegivel">elegível</option>
-            <option value="bloqueada">bloqueada</option>
-            <option value="ambigua">ambígua</option>
+            <optgroup label="Issues">
+              <option value="issue:elegivel">elegível</option>
+              <option value="issue:bloqueada">bloqueada</option>
+              <option value="issue:ambigua">ambígua</option>
+            </optgroup>
+            <optgroup label="PRs">
+              <option value="pr:overnight">overnight</option>
+              <option value="pr:develop">develop</option>
+              <option value="pr:other">other</option>
+            </optgroup>
           </select>
         </label>
         <div class="filter-field filter-labels-field">
@@ -88,8 +86,8 @@
             <tr>
               <th>#</th>
               <th>Título</th>
-              <th>Prioridade</th>
               <th>Classificação</th>
+              <th>Prioridade</th>
               <th>Labels</th>
               <th>Idade</th>
               <th>Atualizada</th>
@@ -114,7 +112,7 @@
             <tr>
               <th>#</th>
               <th>Título</th>
-              <th>Trilha</th>
+              <th>Classificação</th>
               <th>Prioridade</th>
               <th>CI</th>
               <th>Review</th>

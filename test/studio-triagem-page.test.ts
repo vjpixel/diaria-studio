@@ -137,4 +137,22 @@ describe("GET /triagem + GET /api/issues (#3562)", () => {
     const res = await fetch(new URL("/api/waves", server.url));
     assert.equal(res.status, 404);
   });
+
+  it("(#5175) filtro unificado: 1 único <select id=filter-dispatch-track> com <optgroup> Issues/PRs — não os 2 <select> separados de antes", async () => {
+    const res = await fetch(new URL("/triagem", server.url));
+    const body = await res.text();
+    assert.ok(body.includes('id="filter-dispatch-track"'), "select unificado precisa existir");
+    assert.ok(!body.includes('id="filter-track"'), "select separado de Trilha (PRs) não deveria mais existir");
+    assert.ok(!body.includes('id="filter-dispatch"'), "select separado de Classificação (issues) não deveria mais existir");
+    assert.ok(body.includes('<optgroup label="Issues">'), "optgroup Issues ausente");
+    assert.ok(body.includes('<optgroup label="PRs">'), "optgroup PRs ausente");
+  });
+
+  it("(#5175) colunas: header 'Classificação' aparece nas DUAS tabelas, na mesma posição (3ª coluna) — 'Trilha' não existe mais", async () => {
+    const res = await fetch(new URL("/triagem", server.url));
+    const body = await res.text();
+    assert.ok(!body.includes("<th>Trilha</th>"), "header 'Trilha' deveria ter sido renomeado pra 'Classificação'");
+    const classificacaoCount = (body.match(/<th>Classificação<\/th>/g) ?? []).length;
+    assert.equal(classificacaoCount, 2, "'Classificação' precisa aparecer 1x em cada tabela (issues + PRs)");
+  });
 });

@@ -20,3 +20,28 @@ export function issuesFilterActive(filters) {
 export function prsFilterActive(filters) {
   return Boolean(filters.priority || filters.track || filters.labels?.size > 0);
 }
+
+/**
+ * #5175: aplica o valor do `<select id="filter-dispatch-track">` (1 único
+ * controle, 2 `<optgroup>` — Issues/PRs — substituindo os 2 `<select>`
+ * separados de antes) aos 2 campos de estado MUTUAMENTE EXCLUSIVOS
+ * (`filters.dispatch`, da tabela de issues; `filters.track`, da tabela de
+ * PRs). Pura — devolve um objeto NOVO (não muta `filters`), mesmo padrão de
+ * `issuesFilterActive`/`prsFilterActive` acima, pra ser testável sem harness
+ * de DOM.
+ *
+ * `selectValue` carrega o prefixo do grupo de origem (`issue:elegivel`,
+ * `pr:overnight`) — o grupo decide qual dos 2 campos recebe o valor; o OUTRO
+ * é SEMPRE zerado no mesmo update, nunca fica preso a um valor antigo de um
+ * grupo diferente do recém-selecionado (o risco que colapsar os 2 controles
+ * num só introduz, ver docstring do arquivo). `""` (opção "Todas") não casa
+ * nenhum grupo conhecido — zera os dois.
+ */
+export function applyDispatchTrackFilterValue(filters, selectValue) {
+  const [group, value] = String(selectValue).split(":");
+  return {
+    ...filters,
+    dispatch: group === "issue" ? value : "",
+    track: group === "pr" ? value : "",
+  };
+}

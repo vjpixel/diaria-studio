@@ -406,6 +406,45 @@ export function compareContactRecency(
   return a.email.localeCompare(b.email);
 }
 
+/**
+ * Companion de `compareContactRecency` a nível de COHORT AGREGADO (#5179),
+ * não de contato individual — usado por `planMvOnDemand`/
+ * `summarizeAvailableFirstSendByCohort` (clarice-wave-plan.ts) pra ordenar
+ * cohorts por recência REAL em vez do `cohortSendRank` fixo.
+ *
+ * Existe porque, desde #5169, `segmentRampWarm` ordena a fila de 1º envio
+ * por `compareContactRecency` (created real do CONTATO, cohort não entra) —
+ * mas `planMvOnDemand`/`summarizeAvailableFirstSendByCohort` agregam por
+ * cohort inteiro, então não há um único `created` de contato pra comparar.
+ * `mostRecentCreated` é o representante do cohort (tipicamente o `created`
+ * mais recente entre os contatos daquele cohort no recorte agregado) —
+ * quem monta a entrada agregada decide como derivá-lo; esta função só
+ * compara duas entradas já resumidas.
+ *
+ * Mesmo fallback de `compareContactRecency`: um lado com `mostRecentCreated`
+ * válido vence um lado sem; se NENHUM dos dois tem data confiável (ou as
+ * datas empatam), degrada pra `cohortSendRank` (nunca lança, nunca perde a
+ * ordem morno→frio pros cohorts sem dado de recência — hoje só
+ * `ex-assinantes` tem um `created` real e estruturalmente confiável;
+ * `assinantes-ativos` é MV-isento e nunca aparece aqui, `juridico` é
+ * virtual).
+ */
+export function compareCohortEntriesByRecency(
+  a: { cohort: string | null; mostRecentCreated?: string | null },
+  b: { cohort: string | null; mostRecentCreated?: string | null },
+): number {
+  const ta = a.mostRecentCreated ? Date.parse(a.mostRecentCreated) : NaN;
+  const tb = b.mostRecentCreated ? Date.parse(b.mostRecentCreated) : NaN;
+  const va = Number.isFinite(ta);
+  const vb = Number.isFinite(tb);
+  if (va && vb && ta !== tb) return tb - ta; // DESC — cohort com cadastro mais recente primeiro
+  if (va !== vb) return va ? -1 : 1;
+  const ra = cohortSendRank(a.cohort);
+  const rb = cohortSendRank(b.cohort);
+  if (ra !== rb) return ra < rb ? -1 : 1;
+  return (a.cohort ?? "").localeCompare(b.cohort ?? "");
+}
+
 // ---------------------------------------------------------------------------
 // cohortDisplayLabel — rótulo pt-BR pro dashboard
 // ---------------------------------------------------------------------------

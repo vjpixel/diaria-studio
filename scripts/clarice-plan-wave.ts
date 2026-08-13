@@ -289,8 +289,13 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
   try {
     rows = db
       .prepare(
+        // `created` (#5179) — sem ele, `compareContactRecency`/
+        // `compareCohortEntriesByRecency` (segmentRampWarm, summarizeMvBacklog,
+        // summarizeAvailableFirstSendByCohort) degradam sempre pro fallback de
+        // `cohortSendRank`, silenciosamente, porque toda linha chegaria com
+        // `created: undefined`.
         `SELECT email, tier, cohort, priority_points, send_eligible, ineligible_reason,
-                sends_count, opens_count, last_sent_at, mv_bucket, brevo_list_ids, brevo_modified_at
+                sends_count, opens_count, last_sent_at, mv_bucket, brevo_list_ids, brevo_modified_at, created
            FROM clarice_users`,
       )
       .all() as unknown as StoreRow[];
