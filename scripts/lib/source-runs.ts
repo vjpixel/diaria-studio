@@ -150,6 +150,29 @@ export function computeFailureStreak(entry: SourceEntry): {
   };
 }
 
+export type SourceStatus = "verde" | "amarelo" | "vermelho";
+
+/**
+ * Classifica o status agregado de uma fonte a partir de `success_rate_pct`
+ * (0-100) + `consecutive_failures` (streak de falhas DURAS, ver
+ * `computeFailureStreak`). Extraído de `build-diaria-dashboard-data.ts`
+ * (#2132) pra ser reusável por `source-health-report.ts` (#5191) sem duplicar
+ * o limiar — single source of truth pros 3 buckets 🟢/🟡/🔴.
+ *
+ * Nota (finding #3 do #2132): amarelo exige AMBAS condições (AND), não
+ * qualquer uma (OR) — uma fonte com 10+ falhas consecutivas não vira
+ * "amarelo" só por ter taxa histórica ≥ 50%. `.claude/skills/diaria-source-health/SKILL.md`
+ * ainda descreve o limiar em prosa com "ou"; este é o comportamento real.
+ */
+export function classifySourceStatus(
+  successRatePct: number,
+  consecutiveFailures: number,
+): SourceStatus {
+  if (successRatePct >= 80 && consecutiveFailures === 0) return "verde";
+  if (successRatePct >= 50 && consecutiveFailures <= 2) return "amarelo";
+  return "vermelho";
+}
+
 // -------------------- I/O wrappers --------------------
 
 export function loadHealth(healthPath: string): HealthFile {
