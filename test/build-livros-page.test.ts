@@ -332,7 +332,7 @@ describe("estrutura GEO (#4558 Parte B)", () => {
   const html = renderLivrosPage(books);
 
   it("H2 em formato de pergunta + FAQ (6-10 perguntas) + byline aparecem no HTML", () => {
-    assert.match(html, /<h2 class="geo-h2">Quais os melhores livros sobre inteligência artificial em português\?<\/h2>/);
+    assert.match(html, /<h2 class="geo-h2">Quais os melhores livros de inteligência artificial \(IA\) em português\?<\/h2>/);
     assert.match(html, /<section class="geo-faq"/);
     const faqQuestions = [...html.matchAll(/<div class="geo-faq-item">\s*<h2>/g)];
     assert.ok(faqQuestions.length >= 6 && faqQuestions.length <= 10);
@@ -366,7 +366,7 @@ describe("SEO/compartilhamento — meta tags (#3106)", () => {
   });
 
   it("og:title, og:description e og:url presentes", () => {
-    assert.match(html, /<meta property="og:title" content="Livros sobre IA · diar\.ia\.br">/);
+    assert.match(html, /<meta property="og:title" content="Livros de IA · diar\.ia\.br">/);
     assert.match(html, /<meta property="og:description" content="[^"]+">/);
     assert.match(html, /<meta property="og:url" content="https:\/\/livros\.diar\.ia\.br\/">/);
     assert.match(html, /<meta property="og:type" content="website">/);
