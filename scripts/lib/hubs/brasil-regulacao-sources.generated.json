@@ -120,5 +120,29 @@
       "https://tecnoblog.net/noticias/advogado-tenta-prompt-injection-de-ia-e-recebe-multa-de-r-328-mil/"
     ],
     "editionTitle": "Gemini 3.5 Flash agora controla seu computador"
+  },
+  {
+    "date": "2026-06-30",
+    "editionSlug": "como-ter-acesso-alexa",
+    "url": "https://diar.ia.br/p/como-ter-acesso-alexa",
+    "matchedHeadlines": [
+      "Usar óculos com IA ao volante pode pesar no bolso; entenda o porquê"
+    ],
+    "primarySourceUrls": [
+      "https://canaltech.com.br/carros/usar-oculos-com-ia-ao-volante-pode-pesar-no-bolso-entenda-o-porque/"
+    ],
+    "editionTitle": "Como ter acesso à Alexa+"
+  },
+  {
+    "date": "2026-07-03",
+    "editionSlug": "governo-dos-eua-pode-virar-socio-da-openai",
+    "url": "https://diar.ia.br/p/governo-dos-eua-pode-virar-socio-da-openai",
+    "matchedHeadlines": [
+      "Gestão lança Matriz de Competências em Inteligência Artificial"
+    ],
+    "primarySourceUrls": [
+      "https://www.gov.br/gestao/pt-br/assuntos/noticias/2026/julho/gestao-lanca-matriz-de-competencias-em-inteligencia-artificial"
+    ],
+    "editionTitle": "Governo dos EUA pode virar sócio da OpenAI"
   }
 ]

@@ -81,8 +81,20 @@ const PUBLISHED_DATE = "2026-08-11";
 /** `YYYY-MM-DD` estático — dia em que o CORPO (síntese abaixo) foi revisado
  * por último. Bump manual quando a prosa for reescrita de forma
  * substancial — nunca cosmético. Nasce igual a `PUBLISHED_DATE` (hub recém-
- * criado, nunca revisado ainda). */
-const UPDATED_DATE = "2026-08-12";
+ * criado, nunca revisado ainda).
+ *
+ * 2026-08-13 (#5124 item 5): busca manual ampliada no corpo de todas as 36
+ * edições entre 25/06 e 13/08 (a `checkUpdatedDateCeiling` já tinha
+ * sinalizado 48 dias de defasagem) achou 2 desenvolvimentos genuínos de
+ * regulação — óculos inteligentes no trânsito e a Matriz de Competências em
+ * IA do MGI, ambos de itens de RADAR fora do scan automático título/
+ * subtítulo (ver comentário em `generate-hub-sources.ts`) — mas NENHUM
+ * evento no nível de Marco Legal/TSE/CFM. A leitura de que a defasagem
+ * remanescente reflete cobertura real mais rala do tema nesse intervalo
+ * (a alternativa que a issue #5124 tinha levantado, mas o editor não
+ * escolheu) fica parcialmente corroborada pelos dados: havia conteúdo pra
+ * adicionar, mas não o bastante pra fechar os 21 dias do limiar. */
+const UPDATED_DATE = "2026-08-13";
 
 /** `matchedHeadlines` vem em NFD — ver a nota completa em `countMatching`,
  * em `scripts/lib/shared/hub-page.ts` (motor único reusado pelos 5 hubs). */
@@ -163,6 +175,16 @@ export function buildBrasilRegulacaoFaq(sources: HubSourceEntry[]): GeoFaqItem[]
       answer:
         "[A Resolução nº 2.454/2026 do Conselho Federal de Medicina trata a IA estritamente como ferramenta de apoio: a palavra final em diagnóstico e tratamento é sempre do médico, e o paciente tem direito de ser informado sempre que uma IA for usada em seu atendimento](https://diar.ia.br/p/cfm-normatiza-o-uso-da-ia-na-medicina).",
     },
+    {
+      question: "O Congresso já regulamentou o uso de óculos inteligentes com IA no trânsito?",
+      answer:
+        "Sim: a Comissão de Viação e Transportes da Câmara dos Deputados aprovou, em 25 de junho de 2026, [o PL 19/2026, que cria um \"modo de condução\" obrigatório para óculos inteligentes ao volante — restrito a navegação, assistência de direção e tecnologia assistiva](https://diar.ia.br/p/como-ter-acesso-alexa) [fonte primária](https://www.camara.leg.br/noticias/1285676-comissao-aprova-regras-para-o-uso-de-oculos-inteligentes-no-transito). Usar o dispositivo pra gravar, se comunicar ou se entreter no trânsito vira infração gravíssima, com suspensão da CNH e multa triplicada; fabricantes precisam sinalizar quando o dispositivo está gravando, bloquear reconhecimento facial de terceiros por padrão e avaliar o impacto à proteção de dados antes de vender o produto no Brasil. O texto, do deputado Carlos Zarattini (PT-SP), ainda depende das comissões de Ciência, Tecnologia e Inovação e de Constituição e Justiça, do Plenário da Câmara e do Senado.",
+    },
+    {
+      question: "Que passo concreto o governo federal deu para colocar o PBIA em prática dentro da própria administração pública?",
+      answer:
+        "Em 3 de julho de 2026, o Ministério da Gestão e da Inovação em Serviços Públicos (MGI), pela Secretaria de Governo Digital (SGD), [divulgou a Matriz de Competências em Inteligência Artificial do governo federal](https://diar.ia.br/p/governo-dos-eua-pode-virar-socio-da-openai) [fonte primária](https://www.gov.br/gestao/pt-br/assuntos/noticias/2026/julho/gestao-lanca-matriz-de-competencias-em-inteligencia-artificial), referência alinhada ao PBIA 2024-2028 que orienta o desenvolvimento de competências em IA na administração federal com ênfase em ética, transparência, não-discriminação, segurança e soberania. A matriz define 6 perfis de servidor — de agente público a alta liderança — e alimenta 11 trilhas de formação gratuitas na Enap e no Serpro, cobrindo IA generativa, ética em IA, LGPD, automação de processos e governança de dados. (Não confundir com a Portaria MGI nº 3.485, de 24 de abril de 2026, que institui a Política de Governança de IA do próprio ministério — ato distinto, anterior e mais restrito, que trata das regras internas do MGI, não da matriz de competências pra toda a administração federal.)",
+    },
   ];
 }
 
@@ -184,7 +206,7 @@ function toSourceEditions(sources: HubSourceEntry[]): HubSourceEdition[] {
 function buildIntro(sources: HubSourceEntry[]): string {
   const { between } = hubCoverageWindow(sources);
   const { totalEditions, totalMentions, cadenceDays } = deriveBrasilRegulacaoFacts(sources);
-  return `Entre ${between}, a regulação de inteligência artificial no Brasil apareceu como destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo, uma a cada ${cadenceDays} dias corridos, em média. O fio mais longo é o Marco Legal da IA, o PL 2338/23: aprovado pelo Plenário do Senado em dezembro de 2024 e remetido à Câmara dos Deputados em março de 2025, o texto seguiu em revisão na Câmara ao longo de todo o período coberto aqui — uma audiência pública sobre direitos autorais em setembro de 2025, um voto agendado para 27 de maio de 2026 que a Câmara adiou, e o relator articulando o texto com o Senado, em junho, pra tentar votar antes do recesso de julho sem precisar de uma segunda rodada de emendas. Uma edição da diária, em maio de 2026, descreveu a aprovação do Senado como um fato daquele mês; checagem contra o rastreamento oficial do Congresso mostra que ela já era passado havia mais de um ano — o Senado tinha aprovado o texto em dezembro de 2024 e remetido à Câmara em março de 2025. Fora do Marco Legal, uma lei distinta de classificação de sistemas por risco entrou em circulação em maio de 2026 exigindo auditoria obrigatória para sistemas de alto risco e responsabilidade solidária de quem desenvolve ou só implanta o modelo, o Conselho Federal de Medicina normatizou o uso de IA como apoio à decisão clínica, a Anatel contratou nuvem soberana para dados sob sigilo fiscal e bancário, e o TSE limitou conteúdo sintético nas 72 horas antes e nas 24 horas depois do voto de outubro de 2026. Cada um desses pontos aparece detalhado adiante, com data e link para a edição que o registrou.`;
+  return `Entre ${between}, a regulação de inteligência artificial no Brasil apareceu como destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo, uma a cada ${cadenceDays} dias corridos, em média. O fio mais longo é o Marco Legal da IA, o PL 2338/23: aprovado pelo Plenário do Senado em dezembro de 2024 e remetido à Câmara dos Deputados em março de 2025, o texto seguiu em revisão na Câmara ao longo de todo o período coberto aqui — uma audiência pública sobre direitos autorais em setembro de 2025, um voto agendado para 27 de maio de 2026 que a Câmara adiou, e o relator articulando o texto com o Senado, em junho, pra tentar votar antes do recesso de julho sem precisar de uma segunda rodada de emendas. Uma edição da diária, em maio de 2026, descreveu a aprovação do Senado como um fato daquele mês; checagem contra o rastreamento oficial do Congresso mostra que ela já era passado havia mais de um ano — o Senado tinha aprovado o texto em dezembro de 2024 e remetido à Câmara em março de 2025. Fora do Marco Legal, uma lei distinta de classificação de sistemas por risco entrou em circulação em maio de 2026 exigindo auditoria obrigatória para sistemas de alto risco e responsabilidade solidária de quem desenvolve ou só implanta o modelo, o Conselho Federal de Medicina normatizou o uso de IA como apoio à decisão clínica, a Anatel contratou nuvem soberana para dados sob sigilo fiscal e bancário, e o TSE limitou conteúdo sintético nas 72 horas antes e nas 24 horas depois do voto de outubro de 2026. Já em junho e julho de 2026, a regulação girou em torno de aplicações mais pontuais: a Câmara avançou com regras de trânsito específicas para óculos inteligentes com IA, e o governo federal publicou a primeira matriz de competências em IA para o funcionalismo público, amarrada ao PBIA. Cada um desses pontos aparece detalhado adiante, com data e link para a edição que o registrou.`;
 }
 
 export function getBrasilRegulacaoHub(): HubContent {
