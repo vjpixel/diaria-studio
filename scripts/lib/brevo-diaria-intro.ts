@@ -38,6 +38,7 @@ import {
   findMarkdownLinks,
   PAGE_BG,
 } from "./newsletter-render-html.ts";
+import { LAYOUT } from "./shared/design-tokens.ts"; // #5176: container width em paridade com o real
 
 export const PENDING_INTRO_SNIPPET_FILENAME = "brevo-diaria-pending-intro.md";
 
@@ -74,8 +75,8 @@ export function renderPendingIntroHtml(): string | null {
   // `<table>` próprio (mesma convenção de `renderCoverage`/`renderCoverageTrailer`,
   // pensada pra colar direto no meio do `container` de `renderHTML`). Mas
   // `injectPendingIntro` insere ANTES do `<table class="ds-canvas">` que
-  // `renderHTML(fullDocument:true)` abre — ou seja, fora do container de
-  // 600px, na zona "canvas externo" que `darkCanvasMediaRule` (#2645/#3104,
+  // `renderHTML(fullDocument:true)` abre — ou seja, fora do container
+  // (LAYOUT.containerWidth), na zona "canvas externo" que `darkCanvasMediaRule` (#2645/#3104,
   // `newsletter-styles.ts`) escurece de propósito em dark mode (`body,
   // .ds-canvas { background:${PAGE_BG} → ink }`). Duas quebras distintas
   // aconteceram em sequência ao tirar a caixa:
@@ -93,13 +94,14 @@ export function renderPendingIntroHtml(): string | null {
   // não lê como caixa, só protege o texto do dark-mode do canvas externo.
   //
   // 3ª quebra (achado 260803, pós-envio agendado): `width="100%"` sem teto
-  // vira 100% do CLIENTE DE E-MAIL inteiro (não dos 600px do container real)
+  // vira 100% do CLIENTE DE E-MAIL inteiro (não do container real)
   // porque esta `<table>` está fora do `.ds-canvas`, na mesma zona "canvas
   // externo" da nota acima — o container de verdade só fica estreito porque
-  // tem `class="container"` + `max-width:600px` (ver newsletter-render-html.ts,
-  // `innerTable`). Linha ficava larga demais em clientes desktop largos.
-  // `class="container"` (reusa a mesma media query mobile já existente,
-  // `.container { width:100% !important; }`) + `max-width:600px` + `align`/
+  // tem `class="container"` + `max-width` (LAYOUT.containerWidth, ver
+  // newsletter-render-html.ts, `innerTable`). Linha ficava larga demais em
+  // clientes desktop largos. `class="container"` (reusa a mesma media query
+  // mobile já existente, `.container { width:100% !important; }`) +
+  // `max-width` + `align`/
   // `margin:0 auto` (padrão email-safe: atributo pros clientes antigos,
   // margin pros modernos) alinha esta tabela ao mesmo teto/centralização do
   // container real, sem depender de mover o ponto de inserção.
@@ -109,13 +111,13 @@ export function renderPendingIntroHtml(): string | null {
   // abaixo, esta tabela reproduziria em Outlook exatamente a mesma quebra de
   // largura que a nota #3 corrigiu pros outros clientes. Mesmo padrão
   // exato do `container`/`innerTable` em newsletter-render-html.ts (#260629b):
-  // conditional comment embrulha numa tabela FIXA de 600 só no Outlook;
-  // clientes modernos ignoram o comentário e usam a tabela `width:100%`/
-  // `max-width:600`.
+  // conditional comment embrulha numa tabela FIXA de LAYOUT.containerWidth
+  // só no Outlook; clientes modernos ignoram o comentário e usam a tabela
+  // `width:100%`/`max-width`.
   return (
     `<!-- #4266 intro Pending Brevo (achado 260803: fora de caixa) -->\n` +
-    `<!--[if mso]><table role="presentation" align="center" width="600" cellpadding="0" cellspacing="0"><tr><td width="600"><![endif]-->\n` +
-    `<table role="presentation" class="container" width="100%" cellpadding="0" cellspacing="0" align="center" style="width:100%;max-width:600px;margin:0 auto;background:${PAGE_BG};">\n` +
+    `<!--[if mso]><table role="presentation" align="center" width="${LAYOUT.containerWidth}" cellpadding="0" cellspacing="0"><tr><td width="${LAYOUT.containerWidth}"><![endif]-->\n` +
+    `<table role="presentation" class="container" width="100%" cellpadding="0" cellspacing="0" align="center" style="width:100%;max-width:${LAYOUT.containerWidth}px;margin:0 auto;background:${PAGE_BG};">\n` +
     parts.join("\n") +
     `\n</table>\n` +
     `<!--[if mso]></td></tr></table><![endif]-->`

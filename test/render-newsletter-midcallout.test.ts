@@ -92,10 +92,10 @@ describe("boxDivulgacao1 — box entre D1 e D2", () => {
     assert.ok(!html.includes("[Confira a nova página]"), "markdown-link removido do corpo");
   });
 
-  it("#3101: imagem do box de divulgação tem width=\"536\" em pixels (Outlook desktop)", () => {
+  it("#3101/#5176: imagem do box de divulgação tem width=\"624\" em pixels (Outlook desktop)", () => {
     // Outlook desktop (motor Word) não honra width percentual em <img> — renderiza
-    // no tamanho intrínseco (800×450). Container 600px − 32px×2 padding lateral
-    // do `<td class="pad" style="padding:8px 32px 0">` = 536.
+    // no tamanho intrínseco (800×450). Container 656px (#5176) − 16px×2 padding
+    // lateral do `<td class="pad" style="padding:8px 16px 0">` = 624.
     const url = "https://poll.diaria.workers.dev/img/img-260604-04-livros-promo.jpg";
     const html = renderMidCallout(
       "📚 Promo da página. [Confira a nova página](https://livros.diaria.workers.dev).",
@@ -103,7 +103,7 @@ describe("boxDivulgacao1 — box entre D1 e D2", () => {
     );
     const imgTag = html.match(/<img[^>]+src="https:\/\/poll[^"]*"[^>]*>/);
     assert.ok(imgTag, "tag <img> deve existir");
-    assert.match(imgTag![0], /width="536"/, "imagem do box de divulgação deve ter width=536 em pixels");
+    assert.match(imgTag![0], /width="624"/, "imagem do box de divulgação deve ter width=624 em pixels");
     assert.match(imgTag![0], /style="[^"]*width:100%;height:auto/, "style width:100%;height:auto deve ser preservado");
   });
 

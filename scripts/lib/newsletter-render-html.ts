@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { escHtml as esc } from "./html-escape.ts"; // #1990
-import { COLORS, FONTS } from "./shared/design-tokens.ts"; // #1936
+import { COLORS, FONTS, LAYOUT } from "./shared/design-tokens.ts"; // #1936; LAYOUT #5176
 import { applyBrandWordmark } from "./shared/brand-wordmark.ts"; // #4797 — extraído daqui, re-exportado abaixo (back-compat)
 import { buildDiariaStyleBlock, buildDarkCanvasStyleBlock } from "./shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado; #3104 — dark mode (fullDocument-only)
 import { tealDot } from "./shared/email-components.ts"; // #3269 — 1º componente extraído pra shared/; re-exportado abaixo (back-compat: monthly-render.ts e outros importavam daqui)
@@ -175,9 +175,15 @@ export function buildJogarArchiveUrl(): string {
  *   - multi-parágrafo: corpo usa `margin:0` / `margin:12px 0 0` entre parágrafos
  *     (empilha sem margem-inferior — o espaço já vem do padding do container).
  *   Não unificamos: os contextos são distintos (single tem CTA depois; multi não).
+ *
+ * #5176 (260813): `pPad` opcional — padding vertical (px) do `<p>`, default 0
+ * (comportamento inalterado pra todo caller existente). Usado só por
+ * `renderBodyParasInner` (ver `P_PAD_BY_ESP`) — os demais call sites de
+ * `bodyP` continuam sem padding.
  */
-function bodyP(margin: string, content: string): string {
-  return `<p style="margin:${margin};font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${content}</p>`;
+function bodyP(margin: string, content: string, pPad = 0): string {
+  const padding = pPad ? `padding:${pPad}px 0;` : "";
+  return `<p style="margin:${margin};${padding}font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${content}</p>`;
 }
 
 /**
@@ -223,20 +229,35 @@ function renderBoxParagraph(p: string, margin: string): string {
     : bodyP(margin, processInlineLinks(p));
 }
 
-// #1936 (DS): cada seção é UMA linha `<tr><td class="pad">` com
-// padding lateral de 32px (mobile → 12px via .pad, #2514). Os helpers abaixo retornam
-// HTML INTERNO (sem `<tr>`); os render* de topo embrulham na linha padded.
-const PAD_SECTION = "40px 32px 0"; // padrão entre seções
-const PAD_LEAD = "36px 32px 0"; // destaque líder (D1)
+// #1936 (DS): cada seção é UMA linha `<tr><td class="pad">` com padding
+// lateral de LAYOUT.sidePad — #5176 (260813): mesmo valor em desktop E
+// mobile, nos dois canais (decisão do editor "igualar via inline", ver
+// buildDiariaStyleBlock). Os helpers abaixo retornam HTML INTERNO (sem
+// `<tr>`); os render* de topo embrulham na linha padded.
+const PAD_SECTION = `${LAYOUT.sectionTop}px ${LAYOUT.sidePad}px 0`; // padrão entre seções
+const PAD_LEAD = `${LAYOUT.leadTop}px ${LAYOUT.sidePad}px 0`; // destaque líder (D1)
 
-// #3104: padding do box "contorno" (papel + borda bege) unificado — era
-// `23px 27px` em renderWhyBoxInner ("Por que isso importa", compensando a
-// borda 1px) vs `24px 28px` em renderErroIntencionalReveal (reveal do
-// Sorteio), 1px de drift sem motivo funcional. Canonicalizado em `24px 28px`
-// — já é o valor dos boxes "painel" (É IA?, Sorteio, CTA de callout), então
-// contorno e painel ficam com o mesmo respiro interno; só a régua (contorno)
-// vs o fundo preenchido (painel) distingue os 2 estilos visualmente.
-const PAD_BOX_OUTLINE = "24px 28px";
+// #3104: padding do box "contorno" (papel + borda bege) unificado com o box
+// "painel" (É IA?, Sorteio, CTA de callout) — só a régua (contorno) vs o
+// fundo preenchido (painel) distingue os 2 estilos visualmente. #5176
+// (260813): quadrado (LAYOUT.boxPad nos 2 eixos, era 24px topo/base ×
+// 28px lateral).
+const PAD_BOX_OUTLINE = `${LAYOUT.boxPad}px ${LAYOUT.boxPad}px`;
+
+// #5176 (260813): margem acima dos boxes/painéis embrulhados em
+// `<table ... style="margin-top:Npx;border-collapse:separate...">` — era
+// 22/24/28px conforme o call site (drift sem motivo funcional), unificado
+// em LAYOUT.boxMargin.
+const BOX_MARGIN_TOP = LAYOUT.boxMargin;
+
+// #5176 (260813): largura das imagens full-bleed em pixels absolutos
+// (Outlook desktop não honra width percentual, #3101) — derivadas do
+// container calibrado em vez de hardcoded, pra nunca dessincronizar de
+// LAYOUT. HERO_WIDTH = container − 2×sidePad (a seção do destaque/box).
+// EIA_IMG_WIDTH = HERO_WIDTH − 2×boxPad (a imagem do É IA? também subtrai o
+// respiro interno do painel bege em que fica, ver eiaChoice abaixo).
+const HERO_WIDTH = LAYOUT.containerWidth - 2 * LAYOUT.sidePad;
+const EIA_IMG_WIDTH = HERO_WIDTH - 2 * LAYOUT.boxPad;
 
 // #3104: letter-spacing de labels uppercase (kicker de seção, kicker de box,
 // legenda de hero, resultado do É IA?) variava 1px/1.5px/2px sem motivo
@@ -251,7 +272,7 @@ const LS_LABEL = "2px";
 // (Gmail/Apple Mail honram); o design carrega nos estilos inline.
 // #2635: construído via buildDiariaStyleBlock (newsletter-styles.ts) — mesmo CSS
 // base compartilhado com o renderer mensal (monthly-render.ts). Output byte-idêntico.
-export const DS_STYLE_BLOCK = buildDiariaStyleBlock(PAGE_BG, TEAL);
+export const DS_STYLE_BLOCK = buildDiariaStyleBlock(PAGE_BG, TEAL, LAYOUT.sidePad);
 // #3104: <style> de dark-canvas, fullDocument-only (ver renderHTML). Precomputado
 // uma vez — mesmo padrão de DS_STYLE_BLOCK acima, não recalculado por render.
 const DARK_CANVAS_STYLE_BLOCK = buildDarkCanvasStyleBlock(TEXT_COLOR);
@@ -282,6 +303,38 @@ const DARK_CANVAS_STYLE_BLOCK = buildDarkCanvasStyleBlock(TEXT_COLOR);
  */
 export type Esp = "beehiiv" | "brevo";
 
+/**
+ * #5176 (260813): padding vertical do `<p>` de corpo do DESTAQUE
+ * (`renderBodyParasInner` — a massa de texto que a calibragem da issue #5176
+ * mediu: parágrafos >120 caracteres) e o fator sobre a margem "cheia" de
+ * 16px entre parágrafos consecutivos, CONDICIONAIS ao `esp`.
+ *
+ * Achado da issue: o `<style>` que o Beehiiv injeta no e-mail entregue traz
+ * `p { padding-top:12px; padding-bottom:12px }` — 24px por vão que nunca
+ * foram nossos. O Brevo NÃO injeta essa regra. Aplicar a MESMA calibragem
+ * (pensada pro Beehiiv) no Brevo piora o ritmo (o padding some, mas a
+ * margem escalada continua, e o vão fica maior que o medido). Por isso os
+ * dois eixos são tabelas separadas por `esp`, não uma constante única:
+ *   - Beehiiv: pPad 4px (soma ao padding de 12px que o Beehiiv injeta,
+ *     resultando no vão calibrado) + margem 8px (fator 0,5 sobre os 16px
+ *     "cheios" — já era o valor herdado do #2456, não mudou aqui).
+ *   - Brevo: pPad 0 (não precisa compensar padding nenhum) + margem 12px
+ *     (fator 0,75 — recomendado pela issue: "pPad 0, margem ×0,75").
+ *
+ * Escopo deliberadamente estreito: só `renderBodyParasInner` (corpo dos
+ * destaques D1/D2/D3) consome isto. Os demais `<p>` do e-mail (boxes de
+ * CTA/divulgação, É IA?, Sorteio, Encerrar, "Por que isso importa") NÃO
+ * foram medidos pela calibragem da issue e mantêm o comportamento atual
+ * (pPad 0, margens hardcoded existentes) — threading `esp` por todos eles
+ * seria escopo maior que o que a issue mediu, sem medição que o justifique.
+ */
+const P_PAD_BY_ESP: Record<Esp, number> = { beehiiv: 4, brevo: 0 };
+/** Margem "cheia" de referência entre parágrafos (pré-#2456). O valor
+ *  efetivo é `P_MARGIN_BASE * fator` — beehiiv fica em 8px (fator 0,5,
+ *  inalterado desde #2456), brevo em 12px (fator 0,75). */
+const P_MARGIN_BASE = 16;
+const P_MARGIN_FACTOR_BY_ESP: Record<Esp, number> = { beehiiv: 0.5, brevo: 0.75 };
+
 export interface RenderOpts {
   /** #1046 — quando `true`, omite a seção É IA? do body. Usado pelo paste
    * híbrido (Stage 4 publish-newsletter): body via ClipboardEvent + È IA?
@@ -290,8 +343,8 @@ export interface RenderOpts {
   excludeEia?: boolean;
   /** #1936 — quando `true`, embrulha o container num documento HTML completo
    * (doctype + body branco #1945 + preheader + tabela de centralização). Usado
-   * pro preview/email Worker-hosted. Default `false`: emite só o container 600px
-   * (fragmento pro paste no Beehiiv, que provê o shell). */
+   * pro preview/email Worker-hosted. Default `false`: emite só o container
+   * (fragmento pro paste no Beehiiv, que provê o shell — LAYOUT.containerWidth). */
   fullDocument?: boolean;
   /** #4266 — ver `Esp`. Default `"beehiiv"` — comportamento inalterado pra
    * todo caller existente. */
@@ -338,7 +391,7 @@ export function isSponsoredCallout(text: string | null | undefined): boolean {
  * factualmente incorreto. Ver `isAgradecimentoBox`.
  */
 export function renderDivulgacaoSeparator(label = "Divulgação"): string {
-  return `<tr><td class="pad" style="padding:32px 32px 0;">${renderKicker(label)}</td></tr>`;
+  return `<tr><td class="pad" style="padding:32px ${LAYOUT.sidePad}px 0;">${renderKicker(label)}</td></tr>`;
 }
 
 /**
@@ -382,7 +435,21 @@ export function renderHeadlineInner(title: string, url: string): string {
   // (honrado por Apple Mail / Gmail moderno); onde o client remove (Outlook),
   // degrada pra cor do texto/ink — ainda sublinhado em todas as linhas, melhor
   // que o teal só na última. `display:inline-block` preservado pro `margin-top`.
-  return `<a class="headline" href="${esc(url)}" style="display:inline-block;margin:18px 0 0;font-family:${FONT_HEADING};font-size:26px;line-height:1.2;color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:2px;text-underline-offset:3px;" target="_blank" rel="noopener noreferrer nofollow">${esc(title)}</a>`;
+  //
+  // #5176 (260813): a manchete agora carrega um `<h2>` estrutural — a issue
+  // media 0 headings no HTML entregue contra 41 da "the news". O `<a>` fica
+  // POR FORA do `<h2>` (`<a><h2>`, não `<h2><a>`) de propósito: o tema do
+  // Beehiiv injeta `h1..h4 a { text-decoration:underline; color:#1A1A1A
+  // !important; font-weight:bold; }` — com `<h2><a>` essa regra bate no link
+  // e a manchete sai negrito/preto (não o nosso ink #171411, e o sublinhado
+  // teal vira preto). Invertendo a ordem, a regra do Beehiiv (que exige `a`
+  // DENTRO de `h1..h4`) não casa e o estilo inline abaixo prevalece — o
+  // mesmo truque evita depender de mudar o tema do Beehiiv (escrita
+  // plan-gated incerta, ver #5167). O layout/cor/sublinhado ficam no `<a>`
+  // (preserva `display:inline-block`/`margin-top` pro espaçamento pós-kicker);
+  // tipografia (família/tamanho/entrelinha) fica no `<h2>`, com `color:inherit`
+  // pra herdar do `<a>` em vez de reafirmar a cor 2x.
+  return `<a class="headline" href="${esc(url)}" style="display:inline-block;margin:18px 0 0;color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:2px;text-underline-offset:3px;" target="_blank" rel="noopener noreferrer nofollow"><h2 style="margin:0;padding:0;font-family:${FONT_HEADING};font-size:26px;line-height:1.2;font-weight:normal;color:inherit;">${esc(title)}</h2></a>`;
 }
 
 export function imageGeneratorCredit(): string {
@@ -404,28 +471,36 @@ export function imageGeneratorCredit(): string {
 /**
  * Imagem hero (só D1) + legenda sans 12px uppercase ink (DS). HTML interno.
  *
- * #3101: `width="536"` em pixels absolutos (600px do container − 32px×2 do
- * padding lateral da seção, PAD_LEAD/PAD_SECTION) além do `style width:100%`.
- * O Outlook desktop (motor Word) não honra `width` percentual em `<img>` —
+ * #3101: `width={HERO_WIDTH}` em pixels absolutos (LAYOUT.containerWidth do
+ * container − LAYOUT.sidePad×2 do padding lateral da seção, PAD_LEAD/
+ * PAD_SECTION — ver HERO_WIDTH, #5176) além do `style width:100%`. O
+ * Outlook desktop (motor Word) não honra `width` percentual em `<img>` —
  * renderiza no tamanho intrínseco do arquivo (hero é 1600×800), estourando o
- * wrapper de 600px mesmo com o `<!--[if mso]-->` da tabela externa. Clientes
+ * wrapper mesmo com o `<!--[if mso]-->` da tabela externa. Clientes
  * modernos continuam responsivos via `style="width:100%;height:auto"`.
  */
 export function renderHeroImageInner(placeholder: string, alt = "", caption = imageGeneratorCredit()): string {
-  return `<img class="hero" src="{{IMG:${placeholder}}}" alt="${esc(alt)}" width="536" style="display:block;width:100%;height:auto;border-radius:6px;margin-top:24px;" border="0"/>
+  return `<img class="hero" src="{{IMG:${placeholder}}}" alt="${esc(alt)}" width="${HERO_WIDTH}" style="display:block;width:100%;height:auto;border-radius:6px;margin-top:24px;" border="0"/>
   <p style="margin:10px 0 0;font-family:${FONT_LABEL};font-size:12px;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${TEXT_COLOR};">${esc(caption)}</p>`;
 }
 
 /** Parágrafos do corpo: sans 16px line-height 1.62 ink (DS). HTML interno.
- * #2456: margem entre parágrafos consecutivos reduzida de 16px → 8px.
- * O primeiro parágrafo mantém 18px (espaço após manchete/hero). */
-export function renderBodyParasInner(text: string): string {
+ * #2456: margem entre parágrafos consecutivos reduzida de 16px → um valor
+ * condicional ao `esp` desde #5176 (ver `P_MARGIN_FACTOR_BY_ESP` — beehiiv
+ * mantém os 8px herdados do #2456, brevo sobe pra 12px). O primeiro
+ * parágrafo mantém 18px (espaço após manchete/hero) nos dois canais — não
+ * faz parte do ritmo parágrafo-a-parágrafo que a calibragem #5176 mediu.
+ * `esp` também decide o padding vertical do `<p>` (`P_PAD_BY_ESP`) — ver o
+ * doc comment das duas tabelas, acima. */
+export function renderBodyParasInner(text: string, esp: Esp = "beehiiv"): string {
+  const pPad = P_PAD_BY_ESP[esp];
+  const marginSubsequent = Math.round(P_MARGIN_BASE * P_MARGIN_FACTOR_BY_ESP[esp]);
   return text
     .split(/\n\n+/)
     .filter((p) => p.trim())
     .map(
       (p, i) =>
-        bodyP(`${i === 0 ? "18px" : "8px"} 0 0`, renderBodyInline(p.trim())),
+        bodyP(`${i === 0 ? "18px" : `${marginSubsequent}px`} 0 0`, renderBodyInline(p.trim()), pPad),
     )
     .join("\n  ");
 }
@@ -435,7 +510,7 @@ export function renderBodyParasInner(text: string): string {
 export function renderWhyBoxInner(text: string): string {
   if (!text || !text.trim()) return "";
   const body = text.split(/\n\n+/).filter((p) => p.trim()).map((p) => escText(p.trim())).join("<br><br>");
-  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:28px;border-collapse:separate;border-spacing:0"><tr>
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:${BOX_MARGIN_TOP}px;border-collapse:separate;border-spacing:0"><tr>
     <td style="background:${PAPER};border:1px solid ${RULE};border-radius:12px;padding:${PAD_BOX_OUTLINE};">
       <p style="margin:0 0 10px;font-family:${FONT_LABEL};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${TEXT_COLOR};">${tealDot()}&nbsp;Por que isso importa</p>
       ${bodyP("0", body)}
@@ -451,7 +526,7 @@ export function renderWhyBoxInner(text: string): string {
  */
 export function renderCoverage(text: string): string {
   // #1936 (DS): INTRO = parágrafo sans ink (não mais cinza itálico). Primeira
-  // seção, padding 44px 32px 8px.
+  // seção, padding 44px {sidePad}px 8px.
   // #3461: formato de boas-vindas é multi-parágrafo (`\n\n`) com links
   // markdown ([Pixel](...), [considere apoiar...](...)) — precisa de
   // processInlineLinks (não escText, que escaparia os `[`/`]` literalmente)
@@ -476,7 +551,7 @@ export function renderCoverage(text: string): string {
     ? paras.map((p, i) => isBulletParagraph(p) ? renderBulletList(p, i === 0 ? "0" : "12px") : bodyP(i === 0 ? "0" : "12px 0 0", tokenizeInline(p, escText, inlineLinkHtml))).join("\n  ")
     : isBulletParagraph(text) ? renderBulletList(text, "0") : bodyP("0", tokenizeInline(text, escText, inlineLinkHtml));
   return `<!-- INTRO (coverage) -->
-<tr><td class="pad" style="padding:44px 32px 8px;">
+<tr><td class="pad" style="padding:44px ${LAYOUT.sidePad}px 8px;">
   ${inner}
 </td></tr>`;
 }
@@ -497,7 +572,7 @@ export function renderCoverageTrailer(text: string): string {
     ? paras.map((p, i) => bodyP(i === 0 ? "0" : "12px 0 0", tokenizeInline(p, escText, inlineLinkHtml))).join("\n  ")
     : bodyP("0", tokenizeInline(text, escText, inlineLinkHtml));
   return `<!-- INTRO (coverage trailer, pós-callout, #3705) -->
-<tr><td class="pad" style="padding:12px 32px 0;">
+<tr><td class="pad" style="padding:12px ${LAYOUT.sidePad}px 0;">
   ${inner}
 </td></tr>`;
 }
@@ -507,7 +582,8 @@ export function renderCoverageTrailer(text: string): string {
  * bloco de intro do segmento Pending Brevo) — mesmo visual do botão usado
  * dentro de `renderIntroCallout`/`renderMidCallout` (bg papel, borda bege,
  * radius 999px, Geist bold 16px), mas com o padding de PÁGINA (`class="pad"`,
- * 32px/12px mobile) em vez do padding interno de card (20px), pra sentar
+ * LAYOUT.sidePad, igual em desktop e mobile — #5176) em vez do padding
+ * interno de card (20px), pra sentar
  * solto no fluxo do e-mail entre 2 parágrafos de corpo — sem depender de
  * `shouldForceCtaPill`/box de divulgação, que sempre envolve o conteúdo
  * inteiro (texto + botão) numa `<table>` com fundo.
@@ -515,7 +591,7 @@ export function renderCoverageTrailer(text: string): string {
 export function renderBarePillButton(url: string, label: string): string {
   const safeHref = esc(url);
   const safeLabel = esc(label);
-  return `<tr><td class="pad" style="padding:16px 32px 0;text-align:center;">` +
+  return `<tr><td class="pad" style="padding:16px ${LAYOUT.sidePad}px 0;text-align:center;">` +
     `<a href="${safeHref}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;">${safeLabel}</a>` +
     `</td></tr>`;
 }
@@ -782,7 +858,7 @@ export function renderIntroCallout(
         .join("\n      ");
       // Botão pill em linha separada dentro do mesmo box, centralizado.
       return `<!-- #1648 intro callout (sorteio/CTA) -->
-<tr><td class="pad" style="padding:8px 32px 0;">
+<tr><td class="pad" style="padding:8px ${LAYOUT.sidePad}px 0;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-radius:12px;">
     <tr><td style="padding:16px 20px;">
       ${inner}
@@ -806,7 +882,7 @@ export function renderIntroCallout(
       : `<p style="margin:0;font-family:${FONT_BODY};font-weight:${bold ? 600 : 400};font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(only)}</p>`;
   }
   return `<!-- #1648 intro callout (sorteio/CTA) -->
-<tr><td class="pad" style="padding:8px 32px 0;">
+<tr><td class="pad" style="padding:8px ${LAYOUT.sidePad}px 0;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-radius:12px;">
     <tr><td style="padding:16px 20px;">
       ${inner}
@@ -983,16 +1059,16 @@ export function renderMidCallout(text: string, imageUrl: string | null, bold = t
   // altOverride (`alt:` do snippet) vence o anchor text: rótulo de ação
   // ("Ler o artigo") não descreve a imagem pra quem não a vê.
   const imgAlt = altOverride ? esc(altOverride) : (plainLinkLabel ? esc(plainLinkLabel) : "");
-  // #3101: width="536" em pixels (600px container − 32px×2 padding lateral do
-  // `<td class="pad" style="padding:8px 32px 0">` que envolve este box — sem
-  // padding adicional na table interna antes da imagem). Outlook desktop
+  // #3101: width={HERO_WIDTH} em pixels (container − sidePad×2, ver
+  // HERO_WIDTH #5176) — o `<td class="pad">` que envolve este box não soma
+  // padding adicional na table interna antes da imagem. Outlook desktop
   // ignora width percentual em <img> e renderia no tamanho intrínseco.
   // Imagem RETRATO (capa de livro): 160px centralizada, com respiro em volta —
   // na largura total (536px) viraria um bloco de ~800px de altura no e-mail.
   // Horizontal (screenshot/header): largura total, comportamento de sempre.
   const imgTag = portrait
     ? `<img src="${safeImg}" width="160" alt="${imgAlt}" style="display:block;width:160px;max-width:45%;height:auto;border:0;border-radius:6px;margin:0 auto;" />`
-    : `<img src="${safeImg}" width="536" alt="${imgAlt}" style="display:block;width:100%;height:auto;border:0;border-radius:6px 6px 0 0;" />`;
+    : `<img src="${safeImg}" width="${HERO_WIDTH}" alt="${imgAlt}" style="display:block;width:100%;height:auto;border:0;border-radius:6px 6px 0 0;" />`;
   const imgLinked = safeLink ? `<a href="${safeLink}" style="text-decoration:none;">${imgTag}</a>` : imgTag;
   // Retrato precisa de padding próprio (não encosta nas bordas do box como a
   // imagem full-bleed, que usa border-radius só no topo).
@@ -1038,7 +1114,7 @@ export function renderMidCallout(text: string, imageUrl: string | null, bold = t
           })()
         : "";
   return `<!-- mid callout com imagem -->
-<tr><td class="pad" style="padding:8px 32px 0;">
+<tr><td class="pad" style="padding:8px ${LAYOUT.sidePad}px 0;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SURFACE};border-radius:12px;">
     <tr><td style="padding:0;line-height:0;font-size:0;">${imgBlock}</td></tr>
     <tr><td style="padding:16px 20px;">
@@ -1068,7 +1144,7 @@ export function renderAprofundeInner(items?: AprofundeItem[]): string {
       return `<p style="margin:8px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${link}${src}</p>`;
     })
     .join("\n  ");
-  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:24px;border-collapse:separate;border-spacing:0"><tr><td>
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:${BOX_MARGIN_TOP}px;border-collapse:separate;border-spacing:0"><tr><td>
     ${renderKicker("Aprofunde")}
     ${rows}
   </td></tr></table>`;
@@ -1086,7 +1162,7 @@ export function renderAprofundeInner(items?: AprofundeItem[]): string {
 export function renderHubLinkInner(hubLink?: HubLink): string {
   if (!hubLink) return "";
   const link = `<a href="${esc(hubLink.url)}" style="color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:1px;text-underline-offset:2px;" target="_blank" rel="noopener noreferrer">${esc(hubLink.label)}</a>`;
-  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:24px;border-collapse:separate;border-spacing:0"><tr><td>
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:${BOX_MARGIN_TOP}px;border-collapse:separate;border-spacing:0"><tr><td>
     ${renderKicker("Saiba mais")}
     <p style="margin:8px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.5;color:${TEXT_COLOR};">Cobertura completa da diar.ia.br sobre o tema: ${link}</p>
   </td></tr></table>`;
@@ -1102,21 +1178,21 @@ export function renderHubLinkInner(hubLink?: HubLink): string {
  * de um destaque, #5152). Entra logo após "Por que isso importa" — posição
  * pedida pelo editor na revisão da edição 260812.
  */
-export function renderDestaque(d: RenderDestaque, whatsappShareHtml = ""): string {
-  // #1936 (DS email template): seção = uma linha padded (32px lateral). Estrutura:
-  // kicker (●+régua) → manchete Georgia 26px (underline teal) → imagem hero
-  // (#1077: D1; #2133/#2141: D1/D2/D3 todos com hero 2:1) → parágrafos sans →
-  // box "Por que isso importa" → bloco WhatsApp (#5152, só D1). Sem <hr>
-  // separador (cada seção abre com kicker). Hero usa sempre o arquivo 2:1 —
-  // D1 já era "04-d1-2x1.jpg"; D2/D3 passam a usar "04-d{N}-2x1.jpg" gerado
-  // pelo Stage 3 (#2133/#2141).
+export function renderDestaque(d: RenderDestaque, whatsappShareHtml = "", esp: Esp = "beehiiv"): string {
+  // #1936 (DS email template): seção = uma linha padded (LAYOUT.sidePad lateral).
+  // Estrutura: kicker (●+régua) → manchete Georgia 26px (underline teal) →
+  // imagem hero (#1077: D1; #2133/#2141: D1/D2/D3 todos com hero 2:1) →
+  // parágrafos sans → box "Por que isso importa" → bloco WhatsApp (#5152, só
+  // D1). Sem <hr> separador (cada seção abre com kicker). Hero usa sempre o
+  // arquivo 2:1 — D1 já era "04-d1-2x1.jpg"; D2/D3 passam a usar
+  // "04-d{N}-2x1.jpg" gerado pelo Stage 3 (#2133/#2141).
   const heroFile = `04-d${d.n}-2x1.jpg`;
   const pad = d.n === 1 ? PAD_LEAD : PAD_SECTION;
   const inner = [
     renderKicker(d.category),
     renderHeadlineInner(d.title, d.url),
     renderHeroImageInner(heroFile, d.title),
-    renderBodyParasInner(d.body),
+    renderBodyParasInner(d.body, esp), // #5176: pPad/margem condicionais ao ESP
     renderWhyBoxInner(d.why),
     d.n === 1 ? whatsappShareHtml : "", // #5152
     renderAprofundeInner(d.aprofunde), // #3920
@@ -1250,11 +1326,11 @@ export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
       : `${PUBLIC_GAME_BASE_URL}/vote?email={{email}}&edition=${eia.edition}&choice=${choice}`;
   // #2541: imagens A/B empilhadas (1 coluna), A acima de B, em desktop e mobile.
   const eiaChoice = (choice: "A" | "B", imgFile: string, paddingTop?: string) => {
-    // #3101: width="480" em pixels (600px container − 32px×2 padding da seção
-    // − 28px×2 padding do painel `background:${SURFACE}...padding:24px 28px`
-    // em que o É IA? é envolvido). Sem isso, Outlook desktop renderiza no
-    // tamanho intrínseco (800×450) e estoura o wrapper de 600px.
-    const img = `<img src="{{IMG:${imgFile}}}" alt="Imagem ${choice}" width="480" style="display:block;width:100%;height:auto;border-radius:6px;" border="0"/>`;
+    // #3101: width={EIA_IMG_WIDTH} em pixels (container − sidePad×2 padding
+    // da seção − boxPad×2 padding do painel `background:${SURFACE}` em que
+    // o É IA? é envolvido — ver EIA_IMG_WIDTH, #5176). Sem isso, Outlook
+    // desktop renderiza no tamanho intrínseco (800×450) e estoura o wrapper.
+    const img = `<img src="{{IMG:${imgFile}}}" alt="Imagem ${choice}" width="${EIA_IMG_WIDTH}" style="display:block;width:100%;height:auto;border-radius:6px;" border="0"/>`;
     const inner = eia.edition
       ? `<a href="${buildVoteUrl(choice)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">${img}</a>`
       : img;
@@ -1265,8 +1341,8 @@ export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
   return `<!-- É IA? (poll) -->
 <tr><td class="pad" style="padding:${PAD_SECTION};">
   ${renderKicker("É IA?")}
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-collapse:separate;border-spacing:0"><tr>
-    <td style="background:${SURFACE};border-radius:12px;padding:24px 28px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:${BOX_MARGIN_TOP}px;border-collapse:separate;border-spacing:0"><tr>
+    <td style="background:${SURFACE};border-radius:12px;padding:${PAD_BOX_OUTLINE};">
       <p style="margin:0;font-family:${FONT_HEADING};font-size:26px;line-height:1.2;color:${TEXT_COLOR};">Clique na imagem que foi gerada por IA</p>
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;">
         ${eiaChoice("A", eia.imageA)}
@@ -1389,18 +1465,33 @@ export function renderJogarArchiveLinkRow(paragraphStyle: string): string {
 
 /**
  * Item de lista (Use melhor / Lançamentos / Radar) no padrão DS: título Georgia
- * 22px com underline teal + descrição sans ink. Itens separados por spacer 22px
- * (exceto o primeiro). Retorna um `<tr>` com o item; HTML interno do bloco.
+ * LAYOUT.radarSize (22px — DESVIO deliberado do JSON calibrado da issue
+ * #5176, que media 20px; ver o comentário do campo em design-tokens.ts)
+ * com underline teal + descrição sans ink. Itens
+ * separados por spacer LAYOUT.spacer (12px, exceto o primeiro). Retorna um
+ * `<tr>` com o item; HTML interno do bloco.
+ *
+ * #5176 (260813): título agora carrega um `<h3>` estrutural (issue: 0
+ * headings no HTML entregue). Dois ajustes exigidos pelo heading:
+ *   1. `<a><h3>` (`<a>` por FORA), mesmo truque de `renderHeadlineInner` —
+ *      dribla o `h1..h4 a { ...!important }` que o tema do Beehiiv injeta.
+ *   2. O sublinhado migrou de `border-bottom` (num `<a>` INLINE) pra
+ *      `text-decoration` + `display:inline-block`: um `<h3>` de BLOCO
+ *      dentro de um `<a>` inline particiona a caixa em 3 fragmentos (antes/
+ *      durante/depois do bloco) e o `border-bottom` — que traça só o
+ *      último fragmento — some. `text-decoration:underline` não depende da
+ *      geometria da caixa, então sobrevive à mudança de display.
  */
 export function renderSectionItem(item: SectionItem, first: boolean): string {
+  const h3 = `<h3 style="margin:0;padding:0;font-family:${FONT_HEADING};font-size:${LAYOUT.radarSize}px;line-height:1.16;font-weight:normal;color:inherit;">${esc(item.title)}</h3>`;
   const titleHtml = item.url
-    ? `<a href="${esc(item.url)}" style="font-family:${FONT_HEADING};font-size:22px;line-height:1.14;color:${TEXT_COLOR};text-decoration:none;border-bottom:1px solid ${TEAL};" target="_blank" rel="noopener noreferrer nofollow">${esc(item.title)}</a>`
-    : `<span style="font-family:${FONT_HEADING};font-size:22px;line-height:1.14;color:${TEXT_COLOR};">${esc(item.title)}</span>`;
-  const spacer = first ? "" : `<div style="height:22px;line-height:22px;font-size:0;">&nbsp;</div>`;
+    ? `<a href="${esc(item.url)}" style="display:inline-block;color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:1px;text-underline-offset:3px;" target="_blank" rel="noopener noreferrer nofollow">${h3}</a>`
+    : `<span style="color:${TEXT_COLOR};">${h3}</span>`;
+  const spacer = first ? "" : `<div style="height:${LAYOUT.spacer}px;line-height:${LAYOUT.spacer}px;font-size:0;">&nbsp;</div>`;
   const desc = item.description
     ? `\n      ${bodyP("7px 0 0", esc(item.description))}`
     : "";
-  return `<tr><td style="padding:22px 0 0;">
+  return `<tr><td style="padding:${LAYOUT.radarPad}px 0 0;">
       ${spacer}${titleHtml}${desc}
     </td></tr>`;
 }
@@ -1503,7 +1594,7 @@ export function renderErroIntencionalReveal(text: string): string {
   // Sorteio — diferencia o reveal (informativo) dos painéis preenchidos.
   // Top padding pequeno (14px) pra encostar na seção acima, sem kicker próprio.
   return `<!-- ERRO INTENCIONAL — reveal -->
-<tr><td class="pad" style="padding:14px 32px 0;">
+<tr><td class="pad" style="padding:14px ${LAYOUT.sidePad}px 0;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:0"><tr>
     <td style="background:${PAPER};border:1px solid ${RULE};border-radius:12px;padding:${PAD_BOX_OUTLINE};">
       ${bodyP("0", mdInlineToHtml(reveal))}
@@ -1531,8 +1622,8 @@ export function renderSorteio(text: string): string {
   return `<!-- Sorteio -->
 <tr><td class="pad" style="padding:${PAD_SECTION};">
   ${renderKicker("Sorteio")}
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:22px;border-collapse:separate;border-spacing:0"><tr>
-    <td style="background:${SURFACE};border-radius:12px;padding:24px 28px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:${BOX_MARGIN_TOP}px;border-collapse:separate;border-spacing:0"><tr>
+    <td style="background:${SURFACE};border-radius:12px;padding:${PAD_BOX_OUTLINE};">
       ${innerHtml}
     </td>
   </tr></table>
@@ -1655,7 +1746,7 @@ export function renderWhatsappShare(destaques: RenderDestaque[], edition: string
   const buttonStyle = `display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;`;
 
   return `<!-- Compartilhe no WhatsApp -->
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:24px;border-collapse:separate;border-spacing:0"><tr><td>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:${BOX_MARGIN_TOP}px;border-collapse:separate;border-spacing:0"><tr><td>
     ${renderKicker("Compartilhe")}
     <p style="margin:8px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.5;color:${TEXT_COLOR};"><strong>${esc(titleLine)}</strong></p>
     <div style="text-align:center;margin-top:16px;">
@@ -1772,15 +1863,15 @@ export function renderEncerrar(text: string): string {
   // CTA final (convite social, `SOCIAL_INVITE`) = box "painel" do DS.
   const ctaBox = ctaBlock
     ? `
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:24px;border-collapse:separate;border-spacing:0"><tr>
-    <td style="background:${SURFACE};border-radius:12px;padding:24px 28px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:${BOX_MARGIN_TOP}px;border-collapse:separate;border-spacing:0"><tr>
+    <td style="background:${SURFACE};border-radius:12px;padding:${PAD_BOX_OUTLINE};">
       ${bodyP("0", mdInlineToHtml(ctaBlock.content.join(" ")))}
     </td>
   </tr></table>`
     : "";
 
   return `<!-- Para encerrar -->
-<tr><td class="pad" style="padding:40px 32px 8px;">
+<tr><td class="pad" style="padding:${LAYOUT.sectionTop}px ${LAYOUT.sidePad}px 8px;">
   ${renderKicker("Para encerrar")}
   ${html}${ctaBox}
 </td></tr>`;
@@ -2057,7 +2148,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     if (i === 0 && whatsappShare && content.destaques[i].n !== 1) {
       emitRenderWarning({ event: "whatsapp_share_d1_mismatch", edition: content.eia.edition });
     }
-    parts.push(renderDestaque(content.destaques[i], i === 0 ? whatsappShare : ""));
+    parts.push(renderDestaque(content.destaques[i], i === 0 ? whatsappShare : "", opts.esp ?? "beehiiv"));
 
     // #4624: caixa de divulgação alocada pra esta lacuna (slot original ou
     // deslocado por `assignDivulgacaoGaps`, nunca mais de uma por lacuna —
@@ -2123,25 +2214,29 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   // ANTES de "Para encerrar" (decisão original #4486/#4487).
   if (content.encerrar) parts.push(renderEncerrar(content.encerrar));
 
-  // #1936/#1945 (DS): container do corpo, máx. 600px (email-safe — Outlook corta
-  // acima disso, cf. checkWideTables). **#260629:** `width="100%"` + `max-width:600px`
-  // como BASE (responsivo sem depender do `@media`). O Beehiiv às vezes remove o
-  // `<style>` do htmlSnippet no build do e-mail, então a media query `.container
-  // { width:100% }` não aplicava e o `width:600px` forçado ficava estreito/escalado
-  // no mobile (editor reportou "largura estreita" no Gmail mobile, 260629). Com
-  // `width:100%` o corpo preenche a largura disponível (mobile) e ainda cap em 600px
-  // no desktop — sem precisar da media query. Sem os "trilhos" bege laterais
-  // (#1945), fundo branco (#1943). Cada `part` é uma linha `<tr><td class="pad">`.
-  const innerTable = `<table role="presentation" class="container" width="100%" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;background:${PAPER};">
+  // #1936/#1945 (DS): container do corpo, máx. LAYOUT.containerWidth
+  // (email-safe — Outlook corta acima disso, cf. checkWideTables — #5176
+  // subiu de 600 pra 656, o card do Beehiiv comporta até 662). **#260629:**
+  // `width="100%"` + `max-width:{containerWidth}px` como BASE (responsivo
+  // sem depender do `@media`). O Beehiiv às vezes remove o `<style>` do
+  // htmlSnippet no build do e-mail, então a media query `.container
+  // { width:100% }` não aplicava e o `width:{containerWidth}px` forçado
+  // ficava estreito/escalado no mobile (editor reportou "largura estreita"
+  // no Gmail mobile, 260629). Com `width:100%` o corpo preenche a largura
+  // disponível (mobile) e ainda cap no desktop — sem precisar da media
+  // query. Sem os "trilhos" bege laterais (#1945), fundo branco (#1943).
+  // Cada `part` é uma linha `<tr><td class="pad">`.
+  const innerTable = `<table role="presentation" class="container" width="100%" cellpadding="0" cellspacing="0" style="width:100%;max-width:${LAYOUT.containerWidth}px;background:${PAPER};">
 ${parts.join("\n")}
 </table>`;
   // #260629 (b): wrapper MSO. O Outlook desktop IGNORA `max-width` e respeita o
   // atributo `width` — então com `width="100%"` o corpo iria a 100% da janela do
-  // Outlook (perde o cap de 600). O conditional `<!--[if mso]>` embrulha o corpo
-  // numa tabela fixa de 600 SÓ no Outlook; clientes modernos ignoram o comentário
-  // e usam a tabela `width:100%`/`max-width:600`. Se o Beehiiv remover o comentário
-  // (como faz com `<style>`), degrada pro `width:100%` — sem downside vs (a).
-  const container = `<!--[if mso]><table role="presentation" align="center" width="600" cellpadding="0" cellspacing="0"><tr><td width="600"><![endif]-->
+  // Outlook (perde o cap). O conditional `<!--[if mso]>` embrulha o corpo
+  // numa tabela fixa de LAYOUT.containerWidth SÓ no Outlook; clientes modernos
+  // ignoram o comentário e usam a tabela `width:100%`/`max-width`. Se o Beehiiv
+  // remover o comentário (como faz com `<style>`), degrada pro `width:100%` —
+  // sem downside vs (a).
+  const container = `<!--[if mso]><table role="presentation" align="center" width="${LAYOUT.containerWidth}" cellpadding="0" cellspacing="0"><tr><td width="${LAYOUT.containerWidth}"><![endif]-->
 ${innerTable}
 <!--[if mso]></td></tr></table><![endif]-->`;
 

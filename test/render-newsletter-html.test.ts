@@ -1226,37 +1226,38 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     assert.ok(html.indexOf("01-eia-A.jpg") < html.indexOf("01-eia-B.jpg"), "A deve preceder B no standalone");
   });
 
-  it("#3101: imagens A/B do É IA? têm width=\"480\" em pixels (Outlook desktop não honra width percentual)", () => {
+  it("#3101/#5176: imagens A/B do É IA? têm width=\"600\" em pixels (Outlook desktop não honra width percentual)", () => {
     // Outlook desktop (motor Word) renderiza <img> no tamanho intrínseco quando
-    // só há width percentual — o painel do É IA? é 600 (container) − 32×2
-    // (padding da seção) − 28×2 (padding do painel bege) = 480px.
+    // só há width percentual — o painel do É IA? é 656 (container, #5176) −
+    // 16×2 (padding lateral da seção) − 12×2 (padding do painel bege) = 600px.
     const html = renderHTML(fixtureComEia);
     const imgA = html.match(/<img src="\{\{IMG:01-eia-A\.jpg\}\}"[^>]*>/);
     const imgB = html.match(/<img src="\{\{IMG:01-eia-B\.jpg\}\}"[^>]*>/);
     assert.ok(imgA, "tag <img> da imagem A deve existir");
     assert.ok(imgB, "tag <img> da imagem B deve existir");
-    assert.match(imgA![0], /width="480"/, "imagem A deve ter width=480 em pixels");
-    assert.match(imgB![0], /width="480"/, "imagem B deve ter width=480 em pixels");
+    assert.match(imgA![0], /width="600"/, "imagem A deve ter width=600 em pixels");
+    assert.match(imgB![0], /width="600"/, "imagem B deve ter width=600 em pixels");
     // style width:100% preservado pra clientes modernos continuarem responsivos
     assert.match(imgA![0], /style="[^"]*width:100%/, "style width:100% deve ser preservado na imagem A");
   });
 
-  it("#3101: renderEiaStandalone também emite width=\"480\" pixel nas imagens A/B", () => {
+  it("#3101/#5176: renderEiaStandalone também emite width=\"600\" pixel nas imagens A/B", () => {
     const html = renderEiaStandalone(fixtureComEia)!;
-    assert.match(html, /<img src="\{\{IMG:01-eia-A\.jpg\}\}"[^>]*width="480"/);
-    assert.match(html, /<img src="\{\{IMG:01-eia-B\.jpg\}\}"[^>]*width="480"/);
+    assert.match(html, /<img src="\{\{IMG:01-eia-A\.jpg\}\}"[^>]*width="600"/);
+    assert.match(html, /<img src="\{\{IMG:01-eia-B\.jpg\}\}"[^>]*width="600"/);
   });
 });
 
 describe("renderHeroImageInner — #3101 width em pixels (Outlook desktop)", () => {
-  it("hero emite width=\"536\" em pixels além do style width:100%", () => {
-    // Container 600px − 32px×2 de padding lateral da seção (PAD_LEAD/PAD_SECTION) = 536.
+  it("hero emite width=\"624\" em pixels além do style width:100%", () => {
+    // Container 656px (#5176) − 16px×2 de padding lateral da seção
+    // (PAD_LEAD/PAD_SECTION) = 624.
     const html = renderHeroImageInner("04-d1-2x1.jpg", "Título do destaque");
-    assert.match(html, /<img class="hero"[^>]*width="536"/, "hero deve ter width=536 em pixels");
+    assert.match(html, /<img class="hero"[^>]*width="624"/, "hero deve ter width=624 em pixels");
     assert.match(html, /style="[^"]*width:100%;height:auto/, "style width:100%;height:auto deve ser preservado");
   });
 
-  it("renderDestaque propaga o hero com width=\"536\" em pixels", () => {
+  it("renderDestaque propaga o hero com width=\"624\" em pixels", () => {
     const html = renderDestaque({
       n: 1,
       category: "LANÇAMENTO",
@@ -1266,7 +1267,7 @@ describe("renderHeroImageInner — #3101 width em pixels (Outlook desktop)", () 
       url: "https://example.com/d1",
       emoji: "🚀",
     } as any);
-    assert.match(html, /<img class="hero"[^>]*width="536"/, "hero dentro de renderDestaque deve ter width=536");
+    assert.match(html, /<img class="hero"[^>]*width="624"/, "hero dentro de renderDestaque deve ter width=624");
   });
 });
 
@@ -3156,20 +3157,25 @@ describe("renderBodyParasInner — inter-parágrafo 8px (#2456)", () => {
   });
 });
 
-describe("DS_STYLE_BLOCK — padding lateral mobile (#2514)", () => {
-  it("usa .pad de 12px no mobile (max-width:480px), não 24px", () => {
-    // #2514 (pedido do editor 260623): o corpo aparecia estreito demais no celular
-    // por causa do padding lateral de 24px. Reduzido para 12px para usar mais
-    // largura horizontal. Desktop continua 32px (inline nos helpers PAD_*).
+describe("DS_STYLE_BLOCK — padding lateral mobile (#2514, superseded #5176)", () => {
+  it("#5176 (260813): .pad do mobile é IGUAL ao inline (16px), não mais um valor mobile-específico menor", () => {
+    // #2514 (pedido do editor 260623) tinha fixado .pad em 12px no mobile,
+    // menor que o desktop (era 32px inline). #5176 (260813) supersede isso:
+    // como o Beehiiv REMOVE o <style> do e-mail entregue, a media query
+    // nunca roda nesse canal — só no Brevo. Um valor mobile diferente do
+    // inline criava recuo lateral mobile assimétrico entre os dois canais.
+    // Decisão do editor "igualar via inline": a media query agora emite o
+    // MESMO valor do inline (LAYOUT.sidePad, 16px) — o recuo mobile fica
+    // igual nos dois canais independente de a media query rodar ou não.
     assert.match(
       DS_STYLE_BLOCK,
-      /\.pad\s*\{\s*padding-left:12px\s*!important;\s*padding-right:12px\s*!important;\s*\}/,
-      "mobile .pad deve ser 12px (#2514)",
+      /\.pad\s*\{\s*padding-left:16px\s*!important;\s*padding-right:16px\s*!important;\s*\}/,
+      "mobile .pad deve ser 16px, igual ao inline (#5176)",
     );
     assert.doesNotMatch(
       DS_STYLE_BLOCK,
-      /padding-left:24px\s*!important;\s*padding-right:24px/,
-      "mobile .pad não deve mais ser 24px",
+      /padding-left:12px\s*!important;\s*padding-right:12px/,
+      "mobile .pad não deve mais ser 12px (valor mobile-específico do #2514, superseded)",
     );
   });
 });
