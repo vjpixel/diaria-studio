@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import {
   validateEntityContent,
   renderEntityPage,
+  mentionHeadingLabel,
   MIN_ENTITY_MENTIONS,
   type EntityContent,
   type EntityMention,
@@ -176,6 +177,23 @@ describe("validateEntityContent — campos obrigatórios e datas", () => {
   });
 });
 
+describe("mentionHeadingLabel (#5195 self-review finding 1, mesmo padrão de sourceEditionLabel em hub-page.ts)", () => {
+  it("editionTitle igual à headline não duplica", () => {
+    const m = mention({ headline: "Mesmo texto", editionTitle: "Mesmo texto" });
+    assert.equal(mentionHeadingLabel(m), "Mesmo texto");
+  });
+
+  it("editionTitle distinto da headline aparece junto — regression do achado: <h2> mostrava só editionTitle, sem relação óbvia com o summary (que é sobre headline)", () => {
+    const m = mention({
+      headline: "Perplexity levanta US$ 200 mi com avaliação de US$ 20 bi",
+      editionTitle: "Profissionais brasileiros de TI são os menos preocupados com impacto da IA na carreira",
+    });
+    const label = mentionHeadingLabel(m);
+    assert.match(label, /Perplexity levanta US\$ 200 mi/);
+    assert.match(label, /Profissionais brasileiros de TI são os menos preocupados/);
+  });
+});
+
 describe("renderEntityPage — fail-fast em EntityContent inválido", () => {
   it("lança com mensagem citando o slug e as violações", () => {
     const entity = baseEntity({ mentions: validMentions(1) });
@@ -204,7 +222,16 @@ describe("renderEntityPage — timeline, JSON-LD e UTM", () => {
     }
   });
 
-  it("ItemList do JSON-LD espelha entity.mentions, mesma ordem, mesmo nome/url", () => {
+  it("o <h2> de cada menção mostra a headline que casou a entidade (#5195 self-review finding 1)", () => {
+    for (const m of entity.mentions) {
+      assert.ok(
+        html.includes(`>${mentionHeadingLabel(m)}</a></h2>`),
+        `headline ausente do <h2> para "${m.headline}"`,
+      );
+    }
+  });
+
+  it("ItemList do JSON-LD espelha entity.mentions, mesma ordem, nome = mentionHeadingLabel, mesmo url", () => {
     const m = /<script type="application\/ld\+json">([\s\S]*?)<\/script>/.exec(html);
     assert.ok(m, "sem JSON-LD");
     const jsonLd = JSON.parse(m![1]);
@@ -212,7 +239,7 @@ describe("renderEntityPage — timeline, JSON-LD e UTM", () => {
     assert.ok(listNode, "sem node ItemList");
     assert.equal(listNode.numberOfItems, entity.mentions.length);
     for (let i = 0; i < entity.mentions.length; i++) {
-      assert.equal(listNode.itemListElement[i].name, entity.mentions[i].editionTitle);
+      assert.equal(listNode.itemListElement[i].name, mentionHeadingLabel(entity.mentions[i]));
       assert.equal(listNode.itemListElement[i].url, entity.mentions[i].editionUrl);
     }
   });

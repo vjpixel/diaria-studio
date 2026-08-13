@@ -209,6 +209,28 @@ function pageUrl(slug: string): string {
   return `${DIARIA_ESPECIAL_URL}/entidades/${slug}/`;
 }
 
+/** Rótulo textual de uma menção — mesmo padrão de `sourceEditionLabel` em
+ * `hub-page.ts` (#5195 self-review finding 1). Sem isto, o `<h2>` da
+ * timeline mostrava só `editionTitle` (o título REAL da edição, que pode
+ * ser sobre outro assunto — a menção à entidade é frequentemente um destaque
+ * secundário) sem nenhuma relação visível com o `summary` logo abaixo, que é
+ * sobre `headline` (a manchete que de fato casou a entidade). Com
+ * `editionTitle` divergente de `headline`, mostra os dois — a manchete
+ * casada primeiro (o texto ancorado ao summary) e a edição real como
+ * contexto complementar entre parênteses; com os dois iguais, mostra só um.
+ * Usado tanto no `<h2>` visível quanto no `name` do `ItemList` do JSON-LD
+ * (paridade, mesma disciplina de `sourceEditionLabel`). Comparação mais
+ * simples que a de `sourceEditionLabel` (sem o split por " · ") porque
+ * `EntityMention.headline` é sempre uma manchete única — diferente de
+ * `HubSourceEdition.title`, que pode ser o join de 2+ manchetes casadas na
+ * mesma edição. */
+export function mentionHeadingLabel(m: EntityMention): string {
+  if (m.editionTitle && m.editionTitle !== m.headline) {
+    return `${m.headline} (edição: ${m.editionTitle})`;
+  }
+  return m.headline;
+}
+
 /**
  * Valida um `EntityContent` contra o critério anti-thin-content mecanizável
  * (a parte editorial — "é síntese real, não paráfrase" — não é
@@ -332,7 +354,7 @@ ${entity.mentions
   .map(
     (m) => `      <article class="entity-mention">
         <p class="entity-mention-date">${esc(formatDateShort(m.date))}</p>
-        <h2><a href="${esc(m.editionUrl)}">${esc(m.editionTitle)}</a></h2>
+        <h2><a href="${esc(m.editionUrl)}">${esc(mentionHeadingLabel(m))}</a></h2>
         <p>${renderInlineLinks(m.summary)}</p>
       </article>`,
   )
@@ -417,7 +439,7 @@ ${renderGeoJsonLd({
   faq: entity.faq,
   itemList: {
     name: `Edições da diar.ia.br que mencionam ${entity.name}`,
-    items: entity.mentions.map((m) => ({ name: m.editionTitle, url: m.editionUrl })),
+    items: entity.mentions.map((m) => ({ name: mentionHeadingLabel(m), url: m.editionUrl })),
   },
 })}
 ${renderCuradoriaCtaSubscribeScript()}
