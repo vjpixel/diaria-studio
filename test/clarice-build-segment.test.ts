@@ -78,6 +78,20 @@ test("buildSegmentArtifact: grupo 'engajados' filtra+ordena+monta CSV email,NOME
   assert.deepEqual(Object.keys(parsed[0]).sort(), ["NOME", "email"]); // shape email,NOME
 });
 
+test("buildSegmentArtifact: nome com replacement character (U+FFFD) sai sanitizado do CSV (#5184)", () => {
+  // Achado ao vivo: "Gonçalo Soares" com o "ç" corrompido em U+FFFD (encoding
+  // upstream errado) fazia a Brevo aceitar o import mas descartar essa linha
+  // em silêncio. A sanitização em `firstName` remove o byte inválido antes
+  // de montar o CSV — preferível perder o acento a perder o contato inteiro.
+  const rows: SegmentRow[] = [
+    row({ email: "a13962@aecampo.pt", sends_count: 1, priority_points: 10, name: "Gon�alo Soares" }),
+  ];
+  const { csv } = buildSegmentArtifact(rows, "engajados", 0);
+  const parsed = Papa.parse(csv, { header: true, skipEmptyLines: true }).data as any[];
+  assert.equal(parsed[0].NOME, "Gonalo"); // sem U+FFFD, sem quebrar o CSV
+  assert.ok(!parsed[0].NOME.includes("�"));
+});
+
 test("buildSegmentArtifact: --budget corta o TOPO pós-ordenação (não fatia arbitrária)", () => {
   const rows: SegmentRow[] = [
     row({ email: "c@x.com", sends_count: 2, priority_points: 10 }),

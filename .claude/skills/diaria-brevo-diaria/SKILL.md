@@ -139,6 +139,17 @@ guard, circuit breaker de campanha) normalmente, só não ingere ninguém.
 Omitir `--max-add` volta ao comportamento antigo (preenche até o cap) — só
 use assim se o editor pedir explicitamente "preenche tudo que couber".
 
+**O cap de 300 exclui os 5 `EDITOR_SEED_EMAILS` por design (#4631,
+#5182).** `computeCurrentActiveCount` (`sync-pending-to-brevo.ts`) e
+`checkDailySendCap` (`publish-daily-brevo.ts`) subtraem os 5 seeds do
+numerador antes de comparar contra `brevo_diaria.daily_send_cap` — eles
+ficam permanentemente vinculados à lista Brevo fora deste fluxo (sondas de
+inbox placement), não fazem parte da fila gerenciada (`in_brevo`) que o cap
+rege. Ao preencher até o cap, o total BRUTO esperado na lista Brevo é
+`cap + len(EDITOR_SEED_EMAILS)` — hoje `300 + 5 = 305`, não `300`. Não
+estranhe se `publish-daily-brevo.ts` reportar "305 contato(s) na lista" com
+o cap em 300.
+
 ### Origem/tema do backfill (achado do #4632, issue fechada NOT_PLANNED)
 
 A issue #4632 propunha um allowlist/denylist explícito de origem antes do
