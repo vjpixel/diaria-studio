@@ -35,6 +35,7 @@ Ativo vs histórico. `context/` é o que entra no prompt cache (curado, ver `CLA
 | [`coupon-kv-refresh.md`](./coupon-kv-refresh.md) | Refresh automático do KV de cupons do dashboard (#2750) |
 | [`runbooks/poll-secret-rotation.md`](./runbooks/poll-secret-rotation.md) | Runbook de rotação do secret HMAC do poll É IA? |
 | [`seo-notes.md`](./seo-notes.md) | Registro de fatos apurados sobre `data/seo/` (#4548) — evita reinterpretar `opportunities: 0`/canônica divergente como achado novo antes do checkpoint |
+| [`audience-source-notes.md`](./audience-source-notes.md) | Registro de decisão sobre fontes de cadastro conhecidas na Beehiiv (#5095 — SparkLoop/Techzip) — evita reabrir investigação já concluída |
 
 ## Produto / estratégia / análises vivas
 
@@ -46,6 +47,7 @@ Ativo vs histórico. `context/` é o que entra no prompt cache (curado, ver `CLA
 | [`claude-pilot-design.md`](./claude-pilot-design.md) | Design do piloto de newsletter focada em Claude/Anthropic (#60) |
 | [`lean-canvas-vigil-ia.md`](./lean-canvas-vigil-ia.md) | Lean Canvas do guarda-chuva Vigil.ia.br (#856) — living document |
 | [`token-reduction-analysis.md`](./token-reduction-analysis.md) | Análise de redução de tokens da pipeline de edição (#2452) |
+| [`growth-partnerships.md`](./growth-partnerships.md) | Critério e processo de prospecção de parcerias de audiência no modelo Clarice (#4555) — candidatos/texto de abordagem ficam na issue, não aqui (conteúdo sensível de repo público) |
 
 ## Histórico (spikes e análises encerradas — `docs/archive/`, `docs/agents-archive/`)
 
