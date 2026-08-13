@@ -515,6 +515,18 @@ export const HUB_MERCADO_TRABALHO_FOOTER_NAV_UTM = {
   medium: "footer-nav",
 } as const;
 
+/** Rodapé de navegação cruzada da página de entidade "Perplexity" (#5125,
+ * `scripts/lib/entities/perplexity.ts`) — mesmo padrão de
+ * `HUB_*_FOOTER_NAV_UTM` acima (só source+medium, link de nav, não funil de
+ * conversão), prefixo `entity-` (não `hub-`) porque é um formato distinto
+ * (índice cronológico de menções, publicado em `especial.diar.ia.br`, não
+ * `arquivo.diar.ia.br/temas/*`). Uma página de entidade nova ganha a própria
+ * constante seguindo este padrão. */
+export const ENTITY_PERPLEXITY_FOOTER_NAV_UTM = {
+  source: "entity-perplexity",
+  medium: "footer-nav",
+} as const;
+
 /** Link "Arquivo completo em {url}" do post semanal do Instagram
  * (`scripts/lib/format-weekly-social.ts`, #4537 item 1) — o #4295 cobriu os
  * links que a pipeline DIÁRIA publica; o post semanal ficou fora do escopo
