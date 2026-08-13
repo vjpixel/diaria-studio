@@ -15,6 +15,19 @@
  *
  *   npx tsx scripts/generate-hub-sources.ts --hub anthropic-claude
  *
+ * **`--dry-run` (#5203) — preview sem gravar.** Roda a coleta normal (ainda
+ * precisa do junction `data/`, ver `loadPosts` abaixo) e imprime no stderr um
+ * resumo do diff contra o JSON já commitado (quantas entradas seriam
+ * adicionadas/alteradas/removidas, e a lista de `editionSlug` que sairiam)
+ * — `writeFileAtomic` NUNCA roda nesse modo, o arquivo em disco fica
+ * intocado. Combina com `--backfill-titles`. Existe porque a versão
+ * SEM `--dry-run` sobrescreve o JSON inteiro sem merge (ver comentário no
+ * pattern `brasil-regulacao` abaixo) — antes desta flag existir de fato, um
+ * comentário promissor dela já vivia no arquivo (#5124), o que por si só
+ * era o risco: rodar `--dry-run` "pra só ver" na verdade gravava:
+ *
+ *   npx tsx scripts/generate-hub-sources.ts --hub anthropic-claude --dry-run
+ *
  * **`--backfill-titles` (#4918 Conserto 2) — preenche `editionTitle` sem
  * precisar do junction `data/`.** Modo separado que lê o JSON JÁ commitado
  * e casa `editionSlug` contra `workers/arquivo/src/titles-cache.json`
@@ -484,7 +497,63 @@ export function backfillEditionTitles(
   return rows.map((row) => (row.editionTitle ? row : { ...row, editionTitle: titlesCache[row.editionSlug]?.title }));
 }
 
-function runBackfillTitles(hub: string): void {
+/** Diff por `editionSlug` entre o que já está em `outPath` (commitado) e o
+ * que seria gravado agora — usado só pelo modo `--dry-run` (#5203) pra
+ * imprimir preview sem tocar disco. Pure: recebe os dois arrays já
+ * carregados, não lê nada. Exportado pra teste isolado do cálculo do diff,
+ * sem precisar de fixture de arquivo. */
+export function computeHubSourcesDiff(
+  oldRows: readonly HubSourceEntry[],
+  newRows: readonly HubSourceEntry[],
+): { added: string[]; removed: string[]; changed: string[]; unchanged: number } {
+  const oldMap = new Map(oldRows.map((r) => [r.editionSlug, r]));
+  const newMap = new Map(newRows.map((r) => [r.editionSlug, r]));
+  const added: string[] = [];
+  const changed: string[] = [];
+  let unchanged = 0;
+  for (const [slug, row] of newMap) {
+    const old = oldMap.get(slug);
+    if (!old) added.push(slug);
+    else if (JSON.stringify(old) !== JSON.stringify(row)) changed.push(slug);
+    else unchanged++;
+  }
+  const removed = [...oldMap.keys()].filter((slug) => !newMap.has(slug));
+  return { added, removed, changed, unchanged };
+}
+
+/** Grava `rows` em `outPath` (via `writeFileAtomic`) — ou, em `--dry-run`,
+ * só imprime o resumo do diff contra o conteúdo já commitado e NÃO toca
+ * disco (#5203). Compartilhado entre o fluxo normal e `--backfill-titles`,
+ * os dois pontos que hoje chamam `writeFileAtomic` neste arquivo. Exportado
+ * pra teste (verificar que `dryRun: true` de fato não muda o arquivo). */
+export function writeGeneratedHubSources(
+  outPath: string,
+  rows: readonly HubSourceEntry[],
+  opts: { dryRun: boolean },
+): void {
+  if (!opts.dryRun) {
+    writeFileAtomic(outPath, `${JSON.stringify(rows, null, 2)}\n`);
+    return;
+  }
+  const existing: HubSourceEntry[] = existsSync(outPath)
+    ? (JSON.parse(readFileSync(outPath, "utf8")) as HubSourceEntry[])
+    : [];
+  const diff = computeHubSourcesDiff(existing, rows);
+  process.stderr.write(
+    `[generate-hub-sources] [dry-run] ${outPath}: ${rows.length} linha(s) totais — ${diff.added.length} nova(s), ${diff.changed.length} alterada(s), ${diff.removed.length} removida(s), ${diff.unchanged} sem mudança. NADA foi escrito (--dry-run).\n`,
+  );
+  if (diff.added.length > 0) {
+    process.stderr.write(`[generate-hub-sources] [dry-run]   + ${diff.added.join(", ")}\n`);
+  }
+  if (diff.changed.length > 0) {
+    process.stderr.write(`[generate-hub-sources] [dry-run]   ~ ${diff.changed.join(", ")}\n`);
+  }
+  if (diff.removed.length > 0) {
+    process.stderr.write(`[generate-hub-sources] [dry-run]   - ${diff.removed.join(", ")}\n`);
+  }
+}
+
+function runBackfillTitles(hub: string, opts: { dryRun: boolean }): void {
   const path = resolve(HUBS_DIR, `${hub}-sources.generated.json`);
   if (!existsSync(path)) {
     console.error(`[generate-hub-sources] ${path} não existe — rode sem --backfill-titles primeiro`);
@@ -495,11 +564,29 @@ function runBackfillTitles(hub: string): void {
   const filled = backfillEditionTitles(rows, titlesCache);
   const before = rows.filter((r) => r.editionTitle).length;
   const after = filled.filter((r) => r.editionTitle).length;
-  writeFileAtomic(path, `${JSON.stringify(filled, null, 2)}\n`);
-  process.stderr.write(
-    `[generate-hub-sources] ${hub}: editionTitle preenchido em ${after}/${filled.length} (${after - before} novos via titles-cache.json) -> ${path}\n`,
-  );
+  writeGeneratedHubSources(path, filled, opts);
+  if (!opts.dryRun) {
+    process.stderr.write(
+      `[generate-hub-sources] ${hub}: editionTitle preenchido em ${after}/${filled.length} (${after - before} novos via titles-cache.json) -> ${path}\n`,
+    );
+  }
   console.log(path);
+}
+
+/** Fluxo normal (precisa do junction `data/`, ver `loadPosts`): coleta,
+ * loga warnings, e grava (ou, em `--dry-run`, só previsualiza) o JSON do
+ * hub. Extraído de `main()` pra dar nome ao que o comentário do pattern
+ * `brasil-regulacao` acima já referenciava como `runGenerate`. */
+function runGenerate(hub: string, opts: { dryRun: boolean }): void {
+  const posts = loadPosts();
+  const { rows, warnings } = collectHubSources(posts, HUB_KEYWORD_PATTERNS[hub]);
+  for (const w of warnings) process.stderr.write(`[generate-hub-sources] ⚠ ${w}\n`);
+  const outPath = resolve(HUBS_DIR, `${hub}-sources.generated.json`);
+  writeGeneratedHubSources(outPath, rows, opts);
+  if (!opts.dryRun) {
+    process.stderr.write(`[generate-hub-sources] ${hub}: ${rows.length} edições -> ${outPath}\n`);
+  }
+  console.log(outPath);
 }
 
 function main(): void {
@@ -512,6 +599,7 @@ function main(): void {
     );
     process.exit(2);
   }
+  const dryRun = argv.includes("--dry-run");
 
   // #4918 Conserto 2, "caminho barato": preenche `editionTitle` no JSON já
   // commitado a partir de `titles-cache.json` (também commitado) — NÃO
@@ -519,17 +607,11 @@ function main(): void {
   // fluxo normal (que precisa de `data/beehiiv-cache/posts`, ver
   // `loadPosts` abaixo) — sai antes de checar `POSTS_DIR`.
   if (argv.includes("--backfill-titles")) {
-    runBackfillTitles(hub);
+    runBackfillTitles(hub, { dryRun });
     return;
   }
 
-  const posts = loadPosts();
-  const { rows, warnings } = collectHubSources(posts, HUB_KEYWORD_PATTERNS[hub]);
-  for (const w of warnings) process.stderr.write(`[generate-hub-sources] ⚠ ${w}\n`);
-  const outPath = resolve(HUBS_DIR, `${hub}-sources.generated.json`);
-  writeFileAtomic(outPath, `${JSON.stringify(rows, null, 2)}\n`);
-  process.stderr.write(`[generate-hub-sources] ${hub}: ${rows.length} edições -> ${outPath}\n`);
-  console.log(outPath);
+  runGenerate(hub, { dryRun });
 }
 
 if (isMainModule(import.meta.url)) {

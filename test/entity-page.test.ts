@@ -295,15 +295,20 @@ describe("getPerplexityEntity (#5125 item 3 — PoC real)", () => {
   });
 
   it("o link diar.ia.br do rodapé emite exatamente source/medium de ENTITY_PERPLEXITY_FOOTER_NAV_UTM", () => {
-    // #5125: HUB_*/ENTITY_*_FOOTER_NAV_UTM não precisam estar em
-    // UTM_EMITTERS pra serem válidos (é link de nav, não funil de
-    // conversão — mesmo padrão já confirmado pros hubs em
-    // test/utm-registry-4041.test.ts, que testa CURSOS_FOOTER_NAV_UTM/
-    // LIVROS_FOOTER_NAV_UTM sem checar presença em UTM_EMITTERS). O guard
-    // real aqui é que o HTML emite a constante do registry, não um literal
-    // solto — já coberto por "renderEntityPage — timeline, JSON-LD e UTM"
-    // acima; este teste é a versão desse guard contra o conteúdo REAL da
-    // Perplexity, não a fixture sintética.
+    // #5205 (corrige o comentário errado do #5125): test/utm-registry-4041.test.ts
+    // EXIGE que emissores irmãos `*_FOOTER_NAV_UTM` estejam em UTM_EMITTERS
+    // — "cursos-footer-nav"/"livros-footer-nav" fazem parte da lista checada
+    // em "os 6 novos ids estão presentes em UTM_EMITTERS" (linhas ~238-250)
+    // e "os 6 ids estão presentes em UTM_EMITTERS" (linhas ~369-381). A
+    // omissão de ENTITY_PERPLEXITY_FOOTER_NAV_UTM em UTM_EMITTERS (agora
+    // corrigida, ver scripts/lib/shared/utm-registry.ts) não era uma
+    // convenção válida — era o próprio bug que o #5205 fecha, que teria
+    // causado falso-positivo no detector de drift (`nao_catalogado`) assim
+    // que a página recebesse o 1º clique real. O guard real aqui é que o
+    // HTML emite a constante do registry, não um literal solto — já coberto
+    // por "renderEntityPage — timeline, JSON-LD e UTM" acima; este teste é a
+    // versão desse guard contra o conteúdo REAL da Perplexity, não a
+    // fixture sintética.
     const html = renderEntityPage(entity);
     const linkMatch = /href="https:\/\/diar\.ia\.br\/?\?(utm_source=[^"]+)"/.exec(html);
     assert.ok(linkMatch, "link 'diar.ia.br' do rodapé sem UTM");

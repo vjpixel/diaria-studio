@@ -11,10 +11,19 @@
  * cobre o achado do fleet review da PR: post confirmado e casado mas sem
  * `slug`/`publish_date` resolvível vira WARNING, nunca um drop mudo.
  */
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, readFileSync, existsSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { collectHubSources, backfillEditionTitles, type HubSourceEntry } from "../scripts/generate-hub-sources.ts";
+import {
+  collectHubSources,
+  backfillEditionTitles,
+  computeHubSourcesDiff,
+  writeGeneratedHubSources,
+  type HubSourceEntry,
+} from "../scripts/generate-hub-sources.ts";
 import type { RawCachedPost } from "../scripts/generate-arquivo-titles.ts";
 
 // Termo acentuado ("análise") de propósito — diferente de HUB_KEYWORD_PATTERNS
@@ -291,5 +300,84 @@ describe('backfillEditionTitles (#4918 Conserto 2, "caminho barato") — pure, s
     ];
     const filled = backfillEditionTitles(rows, {});
     assert.equal(filled[0].editionTitle, undefined);
+  });
+});
+
+describe("computeHubSourcesDiff (#5203)", () => {
+  it("classifica added/changed/removed/unchanged por editionSlug", () => {
+    const oldRows: HubSourceEntry[] = [
+      { date: "2026-01-01", editionSlug: "a", url: "https://diar.ia.br/p/a", matchedHeadlines: ["A"] },
+      { date: "2026-01-02", editionSlug: "b", url: "https://diar.ia.br/p/b", matchedHeadlines: ["B"] },
+      { date: "2026-01-03", editionSlug: "c", url: "https://diar.ia.br/p/c", matchedHeadlines: ["C"] },
+    ];
+    const newRows: HubSourceEntry[] = [
+      { date: "2026-01-01", editionSlug: "a", url: "https://diar.ia.br/p/a", matchedHeadlines: ["A"] }, // unchanged
+      { date: "2026-01-02", editionSlug: "b", url: "https://diar.ia.br/p/b", matchedHeadlines: ["B", "B2"] }, // changed
+      // "c" ausente -> removed
+      { date: "2026-01-04", editionSlug: "d", url: "https://diar.ia.br/p/d", matchedHeadlines: ["D"] }, // added
+    ];
+    const diff = computeHubSourcesDiff(oldRows, newRows);
+    assert.deepEqual(diff.added, ["d"]);
+    assert.deepEqual(diff.changed, ["b"]);
+    assert.deepEqual(diff.removed, ["c"]);
+    assert.equal(diff.unchanged, 1);
+  });
+});
+
+describe("writeGeneratedHubSources (#5203) — regressão: --dry-run não escreve", () => {
+  let tmpDir: string;
+  let outPath: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "generate-hub-sources-"));
+    outPath = join(tmpDir, "brasil-regulacao-sources.generated.json");
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const preservedRow: HubSourceEntry = {
+    date: "2026-07-03",
+    editionSlug: "governo-dos-eua-pode-virar-socio-da-openai",
+    url: "https://diar.ia.br/p/governo-dos-eua-pode-virar-socio-da-openai",
+    matchedHeadlines: ["Gestão lança Matriz de Competências em Inteligência Artificial"],
+  };
+  const freshRow: HubSourceEntry = {
+    date: "2026-08-10",
+    editionSlug: "edicao-nova",
+    url: "https://diar.ia.br/p/edicao-nova",
+    matchedHeadlines: ["Nova manchete"],
+  };
+
+  it("com --dry-run: arquivo em disco não muda (cenário exato da issue #5203 — 2 entradas a mão não somem)", () => {
+    // Simula o estado commitado: entrada adicionada a mão (#5124), que uma
+    // regeneração sem merge apagaria.
+    writeGeneratedHubSources(outPath, [preservedRow], { dryRun: false });
+    const before = readFileSync(outPath, "utf8");
+    const mtimeBefore = statSync(outPath).mtimeMs;
+
+    // Regeneração "fresca" (sem a entrada preservada) rodando em --dry-run
+    // NUNCA deveria sobrescrever o arquivo.
+    writeGeneratedHubSources(outPath, [freshRow], { dryRun: true });
+
+    const after = readFileSync(outPath, "utf8");
+    assert.equal(after, before, "conteúdo do arquivo mudou apesar de --dry-run");
+    assert.equal(statSync(outPath).mtimeMs, mtimeBefore, "mtime mudou apesar de --dry-run");
+    assert.match(after, /governo-dos-eua-pode-virar-socio-da-openai/);
+  });
+
+  it("sem --dry-run: arquivo é sobrescrito normalmente (comportamento pré-#5203 preservado)", () => {
+    writeGeneratedHubSources(outPath, [preservedRow], { dryRun: false });
+    writeGeneratedHubSources(outPath, [freshRow], { dryRun: false });
+
+    const after = readFileSync(outPath, "utf8");
+    assert.doesNotMatch(after, /governo-dos-eua-pode-virar-socio-da-openai/);
+    assert.match(after, /edicao-nova/);
+  });
+
+  it("com --dry-run e arquivo ainda inexistente: não cria o arquivo", () => {
+    writeGeneratedHubSources(outPath, [freshRow], { dryRun: true });
+    assert.equal(existsSync(outPath), false);
   });
 });
