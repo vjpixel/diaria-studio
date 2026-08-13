@@ -1,7 +1,7 @@
 /**
  * build-livros-page.ts (#1744)
  *
- * Gera a página "Livros sobre IA" da diar.ia.br a partir de
+ * Gera a página "Livros de IA" da diar.ia.br a partir de
  * `seed/books/livros-ia.json` (curadoria do editor, espelhada da página Beehiiv
  * livros.diaria.workers.dev). Emite um HTML self-contained (dados +
  * filtros client-side inline) servido pelo Worker `livros`.
@@ -10,6 +10,37 @@
  * teal #00A0A0, papel #FBFAF6, molduras bege #EBE5D0, texto ink),
  * cards text-focused (sem capa): título com link de afiliado amzn.to, nota da
  * Amazon, badges (idioma/nível/tema), selo de destaque e "para quem é".
+ *
+ * ## SEO/GEO — página de demanda MEDIDA, não especulativa (#5129)
+ *
+ * Diferente das páginas de hub/entidade (#4558/#5125), esta não é um
+ * experimento de formato: é a ÚNICA página do projeto com demanda pt-BR
+ * confirmada via Google Search Console (16 meses de backfill, #5119) —
+ * aparece para "livros de ia" (posição 44), "inteligência artificial
+ * livros" (52), "livro ia" (52), "livro sobre ia" (53) e "livros sobre ia"
+ * (90). O trabalho aqui é otimizar copy/estrutura pra essas 5 queries já
+ * medidas, não inventar um formato novo (decisão do editor, #5129).
+ *
+ * **Critério anti-thin-content (#5129 item 1, mesmo critério não-negociável
+ * do #5125 — ver `scripts/lib/shared/entity-page.ts`): valor próprio para o
+ * leitor, não volume.** A política de spam do Google mira "scaled content
+ * abuse" e "doorway pages" — uma página gerada por template a partir de um
+ * seed é exatamente o padrão sob escrutínio. O que separa esta página disso:
+ *
+ *   - Cada livro é curadoria manual do editor (`seed/books/livros-ia.json`),
+ *     não um dump automatizado de catálogo — `validateBooks` exige
+ *     título/link/resumo próprios por item, sem placeholder.
+ *   - O parágrafo intro (`renderGeoIntro`) e as respostas do FAQ
+ *     (`buildLivrosFaq`) usam SEMPRE números reais derivados do dataset
+ *     (`total`, `ptBr`, `iniciante`/`avancado`, `comDestaque`, `temas.length`)
+ *     — nunca afirmação genérica sem lastro no seed atual.
+ *   - Filtros (idioma/nível/tema) são funcionalidade real para o leitor
+ *     decidir o que ler, não um artifício pra gerar URLs/variações de página.
+ *   - Otimizar o FRASEADO (título/H1/H2/intro/FAQ Q1) pra bater com queries
+ *     medidas é ajuste de LINGUAGEM sobre conteúdo que já existe — nunca
+ *     inflar a página com texto repetitivo ou parágrafos redundantes só
+ *     pra repetir a keyword. Qualquer mudança de copy futura nesta página
+ *     precisa manter esse padrão.
  *
  * Uso:
  *   npx tsx scripts/build-livros-page.ts --out workers/livros/public/index.html
@@ -76,16 +107,34 @@ const DEFAULT_OUT = resolve(ROOT, "data/livros/index.html");
 // — sem isso, mudar este domínio no futuro e esquecer o footer causaria
 // exatamente o tipo de drift silencioso que essa issue existe pra eliminar.
 export const PAGE_URL = "https://livros.diar.ia.br/";
-const PAGE_TITLE = "Livros sobre IA · diar.ia.br";
+// #5129: título/H1/meta/intro realinhados ao fraseado das 5 queries pt-BR
+// REALMENTE medidas via GSC (16 meses, comentário do editor em #5129) —
+// "livros de ia" (posição 44), "inteligência artificial livros" (52),
+// "livro ia" (52), "livro sobre ia" (53), "livros sobre ia" (90). O texto
+// anterior ("Livros sobre IA") só batia com 2 das 5 formas ("sobre"); "de IA"
+// era a query de MELHOR posição e não aparecia em lugar nenhum da página.
+// Título/H1 curtos agora usam "de IA" (a forma de melhor posição); a meta
+// description e o parágrafo intro espalham "inteligência artificial" por
+// extenso + "livro/livros sobre IA" — cobertura das 5 formas sem repetir a
+// mesma frase em todo elemento (evita o padrão de keyword stuffing).
+const PAGE_TITLE = "Livros de IA · diar.ia.br";
 const PAGE_DESCRIPTION =
-  "Livros sobre inteligência artificial recomendados pela diar.ia.br — filtre por idioma, nível e tema, com links diretos para a Amazon.";
+  "Os melhores livros de inteligência artificial (IA) recomendados pela diar.ia.br: filtre por idioma, nível e tema, com links diretos para a Amazon.";
 
 /** #4558 Parte B: data ESTÁTICA (não `new Date()`) do Article JSON-LD — um
  * valor dinâmico quebraria `test/livros-asset-drift.test.ts` (compara o
  * HTML committed contra um render fresco; "hoje" nunca bate com o commit de
  * ontem). Bump manual quando o conteúdo GEO (intro/FAQ) for reescrito de
  * forma substancial — não a cada atualização rotineira do seed de livros. */
-const GEO_CONTENT_DATE = "2026-08-07"; // #4641: prosa GEO (intro + FAQ) revisada por Humanizador + Clarice
+const GEO_CONTENT_DATE = "2026-08-13"; // #5129: intro + H2 + FAQ Q1 reescritos pra bater com queries reais medidas.
+// Passo Humanizador (skill, revisão manual conforme o processo de 9 passos)
+// rodou normalmente sobre o novo parágrafo intro. O passo `mcp__clarice__correct_text`
+// (2º passe, #4641) foi TENTADO mas falhou com HTTP 401 nesta sessão —
+// `CLARICE_API_KEY` não está presente no ambiente deste subagente overnight
+// isolado (achado ao vivo, não é o padrão "MCP desconectado" do #738, é
+// credencial ausente no sandbox — ver `docs/doppler-env-sync.md`). Registrar
+// aqui pra não passar a impressão de que os 2 passes rodaram; uma sessão
+// futura com a key disponível pode rodar o 2º passe e ajustar se achar algo.
 
 // #1936/#1935: DS canônico (lib/shared/design-tokens.ts) — era ad-hoc (Newsreader +
 // #F5F1E8/#FFFDF8/#1A1A1A). Agora os mesmos tokens da diária/mensal/É IA?/cursos.
@@ -335,7 +384,7 @@ export function buildLivrosFaq(books: Book[]): GeoFaqItem[] {
   // higienização de prosa.
   return [
     {
-      question: "Quais os melhores livros sobre inteligência artificial em português?",
+      question: "Quais os melhores livros de inteligência artificial (IA) em português?",
       answer: `Desta lista de ${total} livros, ${ptBr} têm edição em português. A diar.ia.br sempre mostra a edição em português quando disponível, mesmo que a obra seja originalmente em inglês. Os títulos abrangem de introduções para leigos a obras técnicas de estratégia e negócios.`,
     },
     {
@@ -379,8 +428,8 @@ function renderGeoIntro(books: Book[]): string {
   const total = books.length;
   const ptBr = books.filter((b) => b.language === "pt-br").length;
   return `    <div class="geo-intro-wrap">
-      <h2 class="geo-h2">Quais os melhores livros sobre inteligência artificial em português?</h2>
-      <p class="geo-intro">Esta página reúne ${total} livros sobre inteligência artificial, sendo ${ptBr} deles com edição em português, selecionados a partir de mais de 10 listas de recomendação e ranqueados por um critério subjetivo (prêmio do livro ou do autor) e um objetivo (nota na Amazon). A lista cobre desde introduções para quem nunca leu nada sobre IA até títulos técnicos de deep learning e engenharia de machine learning, passando por estratégia, negócios, filosofia e história da tecnologia. Filtre por idioma, nível de leitura e tema logo abaixo para achar o livro certo para o seu momento, ou role até o final para as perguntas frequentes, com os números completos da curadoria.</p>
+      <h2 class="geo-h2">Quais os melhores livros de inteligência artificial (IA) em português?</h2>
+      <p class="geo-intro">Esta lista reúne os melhores livros de inteligência artificial (IA) em português e inglês. São ${total} títulos, ${ptBr} deles com edição traduzida, escolhidos a partir de mais de 10 listas de recomendação e ranqueados por um critério subjetivo (prêmio do livro ou do autor) e um objetivo (nota na Amazon). A seleção vai de introduções para quem nunca leu nada sobre IA até títulos técnicos de deep learning e engenharia de machine learning, passando por estratégia, negócios, filosofia e história da tecnologia. Filtre por idioma, nível de leitura e tema logo abaixo para achar o livro sobre IA certo para o seu momento, ou role até o final para as perguntas frequentes, com os números completos da curadoria.</p>
 ${renderGeoByline(undefined, `atualizado em ${formatMonthYear(GEO_CONTENT_DATE)}`)}
     </div>`;
 }
@@ -443,7 +492,7 @@ ${renderCuradoriaFooterStyles()}
     <div class="wrap">
       <p class="eyebrow">diar.ia.br · Curadoria</p>
       <hr class="rule">
-      <h1>Livros sobre IA<span class="dot" aria-hidden="true">.</span></h1>
+      <h1>Livros de IA<span class="dot" aria-hidden="true">.</span></h1>
       <p class="tagline">5 minutos diários pra se manter atualizado e usar melhor as IAs</p>
 ${renderGeoIntro(books)}
       <p class="lede">Os links são de afiliado — comprando por eles, você apoia a diar.ia.br sem pagar nada a mais.</p>
