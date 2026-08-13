@@ -66,20 +66,31 @@ export function emailBaseRules(pageBg: string): string {
  *   - a.headline:hover { color:brand } — progressive enhancement (hover de manchete)
  *   - @media max-width:480px: .container (width), .pad (padding lateral), .hero (height)
  *
- * Produz output byte-idêntico ao DS_STYLE_BLOCK inline anterior — o snapshot de hash
- * em ds-golden-full-render.test.ts não muda (validado em newsletter-styles.test.ts).
+ * #5176 (260813): `.pad` do media query agora emite o MESMO valor do padding
+ * lateral inline (`sidePad`) em vez de um valor mobile-específico menor
+ * (12px, #2514). Motivo: o Beehiiv remove este `<style>` do e-mail entregue
+ * — a media query nunca roda nesse canal, só no Brevo — então um valor
+ * diferente do inline criava uma assimetria de recuo lateral mobile entre
+ * os dois canais (Beehiiv ficava com o inline "cheio", Brevo com o 12px
+ * reduzido). Emitir o MESMO valor nos dois lugares elimina a assimetria
+ * independente de a media query rodar ou não — decisão do editor "igualar
+ * via inline", não depender da media query.
  *
  * @param pageBg     — cor de fundo da página (#FFFFFF canonical após #1943).
  * @param brandColor — cor de acento do hover (#00A0A0 = COLORS.brand). Passado pelo
  *   caller; o módulo não importa COLORS para não virar segundo lugar-de-verdade.
+ * @param sidePad    — padding lateral (px) das seções `<td class="pad">`, o
+ *   mesmo valor emitido inline pelo caller (LAYOUT.sidePad). Passado como
+ *   argumento pelo mesmo motivo de pageBg/brandColor — este módulo não
+ *   importa design-tokens.
  */
-export function buildDiariaStyleBlock(pageBg: string, brandColor: string): string {
+export function buildDiariaStyleBlock(pageBg: string, brandColor: string, sidePad: number): string {
   return `<style>
   ${emailBaseRules(pageBg)}
   a.headline:hover { color:${brandColor} !important; }
   @media only screen and (max-width:480px) {
     .container { width:100% !important; }
-    .pad { padding-left:12px !important; padding-right:12px !important; }
+    .pad { padding-left:${sidePad}px !important; padding-right:${sidePad}px !important; }
     .hero { height:auto !important; }
   }
 </style>`;

@@ -91,20 +91,32 @@ describe("checkMojibake", () => {
   });
 });
 
-describe("checkWideTables", () => {
-  it("detecta table width > 600", () => {
+describe("checkWideTables (#5176: limiar 600 → 656)", () => {
+  it("detecta table width > 656", () => {
     const html = `<table width="800"><tr><td>x</td></tr></table>`;
     const issues = checkWideTables(html);
     assert.equal(issues.length, 1);
   });
 
-  it("detecta style width > 600", () => {
+  it("detecta style width > 656", () => {
     const html = `<table style="width: 900px"><tr><td>x</td></tr></table>`;
     const issues = checkWideTables(html);
     assert.equal(issues.length, 1);
   });
 
-  it("table width <= 600 passa", () => {
+  it("table width == 656 (novo container calibrado) passa", () => {
+    assert.deepEqual(
+      checkWideTables(`<table width="656"><tr><td>x</td></tr></table>`),
+      [],
+    );
+  });
+
+  it("table width == 657 (1px acima do novo limiar) já falha", () => {
+    const issues = checkWideTables(`<table width="657"><tr><td>x</td></tr></table>`);
+    assert.equal(issues.length, 1);
+  });
+
+  it("table width == 600 (limiar antigo, agora bem dentro do novo) passa", () => {
     assert.deepEqual(
       checkWideTables(`<table width="600"><tr><td>x</td></tr></table>`),
       [],
@@ -219,19 +231,19 @@ describe("checkInsecureImageSrc", () => {
   });
 });
 
-describe("checkHtmlSize", () => {
+describe("checkHtmlSize (#5176: limiares deslocados pelo overhead do wrapper Beehiiv, ~44KB)", () => {
   it("HTML pequeno passa", () => {
     assert.deepEqual(checkHtmlSize("x".repeat(1000)), []);
   });
 
-  it("HTML entre 60KB e 102KB gera warning", () => {
-    const issues = checkHtmlSize("x".repeat(80 * 1024));
+  it("HTML entre 16KB e 58KB (fragmento) gera warning — ~60KB a ~102KB ENTREGUE", () => {
+    const issues = checkHtmlSize("x".repeat(30 * 1024));
     assert.equal(issues.length, 1);
     assert.equal(issues[0].severity, "warning");
     assert.equal(issues[0].rule, "html_size_warning");
   });
 
-  it("HTML acima de 102KB gera error", () => {
+  it("HTML acima de 58KB (fragmento) gera error — >102KB ENTREGUE, onde o Gmail corta", () => {
     const issues = checkHtmlSize("x".repeat(110 * 1024));
     assert.equal(issues.length, 1);
     assert.equal(issues[0].severity, "error");

@@ -50,7 +50,8 @@ describe("renderPendingIntroHtml — #4266", () => {
 
   it("embrulha num conditional MSO (review PR #4522 — Outlook desktop ignora max-width e honra só o atributo width=\"100%\", reproduzindo a mesma quebra de largura que a nota 3ª rodada corrigiu pros outros clientes; mesmo padrão de newsletter-render-html.ts innerTable/container)", () => {
     const html = renderPendingIntroHtml()!;
-    assert.match(html, /<!--\[if mso\]><table[^>]*width="600"[^>]*><tr><td width="600"><!\[endif\]-->/);
+    // #5176 (260813): container calibrado 600 → 656.
+    assert.match(html, /<!--\[if mso\]><table[^>]*width="656"[^>]*><tr><td width="656"><!\[endif\]-->/);
     assert.match(html, /<!--\[if mso\]><\/td><\/tr><\/table><!\[endif\]-->/);
   });
 
@@ -59,9 +60,10 @@ describe("renderPendingIntroHtml — #4266", () => {
     assert.match(html, /<table[^>]*style="[^"]*background:#FFFFFF;"/, "table wrapper deve ter background explícito, não herdado");
   });
 
-  it("a <table> própria tem max-width:600px + class=\"container\" (achado 260803, 4ª rodada — pós-envio: width=\"100%\" sem teto virava 100% do CLIENTE DE E-MAIL inteiro, não dos 600px do container real, porque esta tabela fica fora do .ds-canvas; linha de texto saía larga demais em clientes desktop)", () => {
+  it("a <table> própria tem max-width:656px + class=\"container\" (achado 260803, 4ª rodada — pós-envio: width=\"100%\" sem teto virava 100% do CLIENTE DE E-MAIL inteiro, não do container real, porque esta tabela fica fora do .ds-canvas; linha de texto saía larga demais em clientes desktop)", () => {
     const html = renderPendingIntroHtml()!;
-    assert.match(html, /<table[^>]*class="container"[^>]*max-width:600px/, "deve ter o mesmo teto de largura do container real");
+    // #5176 (260813): container calibrado 600 → 656.
+    assert.match(html, /<table[^>]*class="container"[^>]*max-width:656px/, "deve ter o mesmo teto de largura do container real");
   });
 
   it("a <table> própria é centralizada (align + margin:0 auto — email-safe pros dois casos: clientes antigos via atributo, modernos via margin)", () => {

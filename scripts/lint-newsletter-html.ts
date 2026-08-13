@@ -12,7 +12,7 @@
  *   - Caracteres mojibake (Ã£, Ã§, etc — sinal de encoding quebrado)
  *
  * Checks warning (exit 0 + log):
- *   - Tables > 600px de width
+ *   - Tables > 656px de width (#5176 — container calibrado, era 600px)
  *   - <img> sem alt text
  *   - target="_blank" sem rel="noopener noreferrer"
  *
@@ -135,6 +135,14 @@ export function checkMojibake(html: string): LintIssue[] {
   ];
 }
 
+// #5176 (260813): subido de 600 para 656 — a calibragem da issue #5176 subiu
+// o container do corpo de 600px pra 656px (decisão do editor, ver
+// LAYOUT.containerWidth em scripts/lib/shared/design-tokens.ts). O limiar
+// aqui é INTENCIONALMENTE independente desse import (este lint roda sobre
+// HTML arbitrário, não necessariamente produzido pelo renderer atual) —
+// mantido em sincronia manual com LAYOUT.containerWidth.
+const MAX_TABLE_WIDTH_PX = 656;
+
 export function checkWideTables(html: string): LintIssue[] {
   // <table ... width="XXX"> ou style="width: XXXpx"
   const issues: string[] = [];
@@ -142,12 +150,12 @@ export function checkWideTables(html: string): LintIssue[] {
   for (const m of tableMatches) {
     const tag = m[0];
     const widthAttr = tag.match(/width=["']?(\d+)/i);
-    if (widthAttr && Number(widthAttr[1]) > 600) {
+    if (widthAttr && Number(widthAttr[1]) > MAX_TABLE_WIDTH_PX) {
       issues.push(`width=${widthAttr[1]}px`);
       continue;
     }
     const styleWidth = tag.match(/style=["'][^"']*width\s*:\s*(\d+)px/i);
-    if (styleWidth && Number(styleWidth[1]) > 600) {
+    if (styleWidth && Number(styleWidth[1]) > MAX_TABLE_WIDTH_PX) {
       issues.push(`style width=${styleWidth[1]}px`);
     }
   }
@@ -156,7 +164,7 @@ export function checkWideTables(html: string): LintIssue[] {
     {
       rule: "wide_tables",
       severity: "warning",
-      message: `${issues.length} <table> com width > 600px (email clients cortam)`,
+      message: `${issues.length} <table> com width > ${MAX_TABLE_WIDTH_PX}px (email clients cortam)`,
       count: issues.length,
       samples: [...new Set(issues)].slice(0, 5),
     },
@@ -271,22 +279,52 @@ export function checkInsecureImageSrc(html: string): LintIssue[] {
 }
 
 /**
- * Avisa se HTML está perto do clipping threshold do Gmail (102KB) ou
- * suficientemente grande pra causar problemas no editor TipTap do Beehiiv (#93).
+ * #5176 (260813) — decisão sobre o QUE este lint mede vs. o que o Gmail corta.
+ *
+ * `checkHtmlSize` sempre mediu o FRAGMENTO — o que `renderHTML(..., {
+ * fullDocument: false })` emite (container + `<style>`, sem wrapper de ESP
+ * nenhum). O Gmail, por outro lado, corta pelo tamanho ENTREGUE — o
+ * fragmento MAIS o que o Beehiiv soma no e-mail publicado (tema, head,
+ * rodapé de unsubscribe/tracking). Medido ao vivo na edição 260812 (#5176):
+ * fragmento 39,8 KB, entregue pelo Beehiiv 83,4 KB — uma diferença de
+ * ~44 KB que este lint nunca via. Um fragmento de 58 KB passava no aviso de
+ * 60 KB do lint mas já chegava CLIPADO no Gmail (58 + 44 = 102 KB, o
+ * próprio limite de corte).
+ *
+ * Decisão (mais simples e correta dadas as duas opções da issue): em vez de
+ * o lint tentar reconstruir o wrapper do Beehiiv (que ele não controla nem
+ * conhece — o HTML recebido aqui pode ser fragmento OU documento completo,
+ * função nenhuma neste arquivo sabe qual dos dois), os DOIS limiares do
+ * Gmail são deslocados pra baixo pelo mesmo delta medido — o lint continua
+ * medindo só o fragmento, mas os limiares passam a refletir o que o Gmail
+ * de fato vê quando esse fragmento sai pelo Beehiiv. `BEEHIIV_WRAPPER_OVERHEAD_KB`
+ * é uma medição ÚNICA (uma edição, 260812) — recalibrar se o wrapper do
+ * Beehiiv mudar substancialmente (tema, footer, tracking pixel novo).
+ *
+ * Efeito colateral esperado, não um bug: como o overhead do wrapper (~44 KB)
+ * é uma fatia enorme da folga que o Gmail dava (60→102 KB), o aviso passa a
+ * disparar bem mais cedo — perto do tamanho típico de uma edição. Isso é
+ * correto: a margem real até o corte do Gmail sempre foi pequena (83,4 KB
+ * entregues contra 102 KB de limite), o lint antigo só não enxergava isso
+ * porque media o artefato errado.
  */
+const BEEHIIV_WRAPPER_OVERHEAD_KB = 44;
+const HTML_SIZE_WARN_KB = 60 - BEEHIIV_WRAPPER_OVERHEAD_KB; // 16
+const HTML_SIZE_ERROR_KB = 102 - BEEHIIV_WRAPPER_OVERHEAD_KB; // 58
+
 export function checkHtmlSize(html: string): LintIssue[] {
   const bytes = Buffer.byteLength(html, "utf8");
   const KB = bytes / 1024;
-  if (bytes < 60 * 1024) return [];
+  if (bytes < HTML_SIZE_WARN_KB * 1024) return [];
   // `count` representa contagem de itens nas outras checks — pra size,
   // a métrica vai em `samples` ("size_kb: X.Y") e `count` fica omitido.
   const samples = [`size_kb: ${KB.toFixed(1)}`];
-  if (bytes >= 102 * 1024) {
+  if (bytes >= HTML_SIZE_ERROR_KB * 1024) {
     return [
       {
         rule: "html_too_large",
         severity: "error",
-        message: `HTML tem ${KB.toFixed(1)} KB — Gmail corta em 102 KB (mensagem aparece truncada com link "view entire message")`,
+        message: `HTML (fragmento) tem ${KB.toFixed(1)} KB — com o wrapper do Beehiiv (~${BEEHIIV_WRAPPER_OVERHEAD_KB} KB) o e-mail ENTREGUE passa de 102 KB, onde o Gmail corta (mensagem aparece truncada com link "view entire message")`,
         samples,
       },
     ];
@@ -295,7 +333,7 @@ export function checkHtmlSize(html: string): LintIssue[] {
     {
       rule: "html_size_warning",
       severity: "warning",
-      message: `HTML tem ${KB.toFixed(1)} KB — perto do limite de Gmail (102 KB). Considerar simplificar tabelas ou hospedar imagens externas.`,
+      message: `HTML (fragmento) tem ${KB.toFixed(1)} KB — com o wrapper do Beehiiv (~${BEEHIIV_WRAPPER_OVERHEAD_KB} KB) o e-mail ENTREGUE se aproxima do limite de corte do Gmail (102 KB). Considerar simplificar tabelas ou hospedar imagens externas.`,
       samples,
     },
   ];

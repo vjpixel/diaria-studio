@@ -63,3 +63,64 @@ export const BOX = {
   contornoBorder: COLORS.rule,
   painelBg: COLORS.paperAlt,
 } as const;
+
+/**
+ * LAYOUT · calibragem #5176 (260812-260813) — parâmetros de espaçamento do
+ * e-mail diário, calibrados por descida por coordenadas sobre métricas
+ * tipográficas medidas ao vivo (ritmo de parágrafo, hierarquia de seção,
+ * caracteres/linha, espaço em branco) comparando o render anterior com a
+ * newsletter "the news" (ver issue #5176 pros artefatos/medições completas).
+ *
+ * Decisões do editor (briefing 260813), aplicadas aqui: container **656px**
+ * (não os 640px que a descida por coordenadas escolheu sozinha — 656 fica
+ * mais perto da "the news", 74,7 caracteres/linha no desktop) e recuo
+ * lateral **16px** (não 8px — bate o alvo de 67 caracteres/linha no
+ * desktop; no celular o recuo pesa pouco, quem manda é a largura da
+ * viewport). Os demais valores vêm direto do JSON calibrado da issue,
+ * EXCETO `radarSize` — ver o comentário do próprio campo, abaixo, pro
+ * porquê desse desvio deliberado.
+ *
+ * `pPad`/`pMarginFactor` (padding/margem de `<p>` de corpo) NÃO estão
+ * aqui — são condicionais ao ESP (o Beehiiv injeta `p{padding:12px}` que o
+ * Brevo não injeta; aplicar a mesma calibragem nos dois PIORA o Brevo). Ver
+ * `newsletter-render-html.ts` (`renderBodyParasInner`).
+ */
+export const LAYOUT = {
+  /** Largura do container do corpo (era 600 — #1936/#1945; o card do
+   *  Beehiiv comporta até 662px de folga). */
+  containerWidth: 656,
+  /** Padding LATERAL das seções `<td class="pad">` (era 32). Emitido
+   *  IGUAL em desktop e mobile, nos dois canais (Beehiiv/Brevo) — decisão
+   *  do editor #5176: não depender da media query `.pad` (que só o Brevo
+   *  de fato executa, porque o Beehiiv remove nosso `<style>` do e-mail
+   *  entregue). */
+  sidePad: 16,
+  /** Padding de TOPO das seções (era 40). */
+  sectionTop: 48,
+  /** Padding de TOPO do destaque líder D1 (era 36 — preserva o offset de
+   *  -4px sobre `sectionTop` que já existia antes desta calibragem). */
+  leadTop: 44,
+  /** Respiro interno dos boxes "contorno"/"painel" — quadrado, mesmo valor
+   *  nos dois eixos (era 24px topo/base × 28px lateral). */
+  boxPad: 12,
+  /** Margem acima dos boxes/painéis — unificada (era 22-28px, drift entre
+   *  call sites sem motivo funcional). */
+  boxMargin: 28,
+  /** Espaço ANTES de cada item do Radar/Use melhor/Lançamentos, exceto o
+   *  1º (era 22). */
+  radarPad: 8,
+  /** Altura dos divs espaçadores entre itens de lista (era 22). */
+  spacer: 12,
+  /** Corpo do título de item de lista (Radar/Use melhor/Lançamentos), em px.
+   *  DESVIO DELIBERADO do JSON calibrado da issue #5176 (que media 20):
+   *  20px conflita com o type-scale do e-mail travado por
+   *  `test/email-type-scale-white-shell.test.ts` — decisão de editor
+   *  anterior (diaria-design#4) restringe TODO font-size do e-mail a
+   *  {12,16,22,26}px, e 20 é um dos valores explicitamente eliminados
+   *  ("20→22"). A descida por coordenadas da issue #5176 otimizou só
+   *  métricas de ritmo tipográfico (chars/linha, espaço em branco), sem
+   *  saber desse invariante — mantido em 22 (valor já aprovado, idêntico
+   *  ao que já estava em produção) em vez de reabrir esse invariante sem
+   *  decisão nova do editor. */
+  radarSize: 22,
+} as const;

@@ -36,6 +36,13 @@ import { draftToEmail } from "../scripts/lib/mensal/monthly-render.ts";
 const PAGE_BG = "#FFFFFF"; // COLORS.paperEmail / email bg canonical (#1943/#1955)
 const BRAND = "#00A0A0"; // COLORS.brand
 
+// #5176 (260813): recuo lateral inline calibrado — o valor emitido pela
+// media query `.pad` agora é o MESMO do inline (era 12px fixo, #2514),
+// pra que Beehiiv (que remove este <style>, media query nunca roda) e
+// Brevo (que preserva o <style>, media query roda) entreguem o mesmo
+// recuo lateral mobile. Ver buildDiariaStyleBlock (newsletter-styles.ts).
+const SIDE_PAD = 16;
+
 // Bloco <style> EXATO da diária ANTES do refactor (#2635). Ground truth independente:
 // não é derivado de nenhuma função sob teste, então pega qualquer divergência no builder.
 const DIARIA_STYLE_BEFORE = `<style>
@@ -45,7 +52,7 @@ const DIARIA_STYLE_BEFORE = `<style>
   a.headline:hover { color:${BRAND} !important; }
   @media only screen and (max-width:480px) {
     .container { width:100% !important; }
-    .pad { padding-left:12px !important; padding-right:12px !important; }
+    .pad { padding-left:${SIDE_PAD}px !important; padding-right:${SIDE_PAD}px !important; }
     .hero { height:auto !important; }
   }
 </style>`;
@@ -76,7 +83,7 @@ describe("newsletter-styles — CSS de email compartilhado (#2635)", () => {
     // Asserção central da não-regressão da diária: o builder deve reproduzir EXATAMENTE
     // o literal que substituiu. Comparar contra DIARIA_STYLE_BEFORE (não DS_STYLE_BLOCK)
     // evita a tautologia f(x) === f(x), já que DS_STYLE_BLOCK = buildDiariaStyleBlock(...).
-    assert.equal(buildDiariaStyleBlock(PAGE_BG, BRAND), DIARIA_STYLE_BEFORE);
+    assert.equal(buildDiariaStyleBlock(PAGE_BG, BRAND, SIDE_PAD), DIARIA_STYLE_BEFORE);
   });
 
   it("DS_STYLE_BLOCK exportado pela diária é byte-idêntico ao literal pré-refactor", () => {
@@ -117,8 +124,8 @@ describe("newsletter-styles — CSS de email compartilhado (#2635)", () => {
     // O fragmento colado no Beehiiv usa só buildDiariaStyleBlock — a regra de
     // dark-canvas fica reservada ao caller do fullDocument (newsletter-render-html.ts),
     // que a injeta como <style> SEPARADO. buildDiariaStyleBlock não deve mudar.
-    assert.equal(buildDiariaStyleBlock(PAGE_BG, BRAND), DIARIA_STYLE_BEFORE);
-    assert.ok(!buildDiariaStyleBlock(PAGE_BG, BRAND).includes("prefers-color-scheme"));
+    assert.equal(buildDiariaStyleBlock(PAGE_BG, BRAND, SIDE_PAD), DIARIA_STYLE_BEFORE);
+    assert.ok(!buildDiariaStyleBlock(PAGE_BG, BRAND, SIDE_PAD).includes("prefers-color-scheme"));
   });
 
   // ── darkCanvasMediaRule: fonte única da regra, consumida pelos 2 builders ───

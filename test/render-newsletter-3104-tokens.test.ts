@@ -27,18 +27,18 @@ import {
 } from "../scripts/lib/newsletter-render-html.ts";
 import type { EIA } from "../scripts/lib/newsletter-parse.ts";
 
-describe("#3104 — padding do box contorno unificado (24px 28px)", () => {
-  it("renderWhyBoxInner usa padding:24px 28px (era 23px 27px)", () => {
+describe("#3104 — padding do box contorno unificado (12px 12px, #5176 — era 24px 28px)", () => {
+  it("renderWhyBoxInner usa padding:12px 12px (#5176 — era 24px 28px)", () => {
     const html = renderWhyBoxInner("Razão do destaque.");
-    assert.match(html, /padding:24px 28px;/, "whyBox deve usar 24px 28px");
-    assert.doesNotMatch(html, /padding:23px 27px;/, "whyBox não deve mais usar 23px 27px");
+    assert.match(html, /padding:12px 12px;/, "whyBox deve usar 12px 12px (#5176, LAYOUT.boxPad)");
+    assert.doesNotMatch(html, /padding:24px 28px;/, "whyBox não deve mais usar 24px 28px (superseded #5176)");
   });
 
-  it("renderErroIntencionalReveal usa padding:24px 28px (inalterado, agora via constante compartilhada)", () => {
+  it("renderErroIntencionalReveal usa padding:12px 12px (#5176 — inalterado relativo ao whyBox, via constante compartilhada)", () => {
     const html = renderErroIntencionalReveal(
       "Nessa edição, escondemos um erro.\n\nNa última edição, o correto era X.",
     );
-    assert.match(html, /padding:24px 28px;/);
+    assert.match(html, /padding:12px 12px;/);
   });
 });
 
