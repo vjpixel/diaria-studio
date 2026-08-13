@@ -508,6 +508,52 @@ externo, não omissão nossa):
 Nenhuma linha de código muda por este Fato — decisão de escrita pura, para
 que a frente Discover/News da épica #5116 pare de reabrir a cada auditoria.
 
+## Fato 11 — decisão pré-registrada: demanda pt-BR zero/rala nas perguntas-alvo do hub NÃO é evidência de fracasso da página (#4908 item 4, 13/ago/2026)
+
+Regra de leitura escrita **antes** do número existir, pra que a próxima
+rodada semanal de `scripts/seo-pull.ts` (que já persiste `rows` desde
+`f09ec322`/#4969, item 1 da issue) não seja lida como veredito sobre a
+reescrita de prosa dos hubs temáticos (`anthropic-claude`, `openai-chatgpt`,
+`google-gemini`, `meta-ai`, `brasil-regulacao`, `mercado-trabalho`).
+
+**O que já foi medido (12/ago/2026, #5129/#5158) e o que isso significa:**
+
+- GSC, 16 meses de backfill (`data/seo/gsc-backfill-2026-08-12.json`): 15
+  linhas `(page, query)` no total, todas com 0 clique e 1-2 impressões.
+- Bing Webmaster Tools, `country=br`/`language=pt-BR`
+  (`data/seo/bing-keywords-2026-08-12.json`, 32 termos — as 14 perguntas-hub
+  + 18 de cauda longa): as perguntas-alvo especificamente devolveram **0
+  impressões**. Os termos de cauda longa mais amplos (não as perguntas-hub
+  em si) mostraram demanda mensurável real em pt-BR nesta mesma API — a
+  cobertura de keyword research NÃO é o fator limitante aqui.
+
+**Regra de leitura, para qualquer rodada futura (a partir de agora, não só
+a próxima):**
+
+1. **Zero (ou quase-zero) demanda medida para as perguntas-alvo de um hub
+   NÃO significa que a reescrita de prosa daquele hub falhou como jogada de
+   citação.** É a explicação alternativa mais simples: ninguém pergunta
+   naquela forma exata de frase em pt-BR, então zero citação por assistente
+   teria acontecido de qualquer forma, independente da qualidade da prosa.
+   Não é evidência CONTRA a página.
+2. **O hub continua mantido pelo valor de link interno** — ele serve as
+   edições da diária como prova de acervo (76+ edições referenciadas),
+   função que não depende de volume de busca externo.
+3. **Não investir esforço em reescrita de prosa adicional como jogada de
+   citação** enquanto a demanda medida seguir nesta faixa — o instrumento
+   (`bing-pull.ts --mode keywords`) é útil para arquitetura de conteúdo
+   (`GetRelatedKeywords` mostrou até 110 termos relacionados por seed), não
+   para validar frases específicas já escritas.
+4. **Contra-evidência explícita do corpo original da issue, ainda válida:**
+   nenhum survey acadêmico citado cobre pt-BR — a transferência do
+   princípio "relevância query-documento importa" para este idioma é
+   suposição plausível, não resultado medido.
+
+**Ação:** nenhuma mudança de código. Decisão de leitura pura, para que o
+checkpoint de citação por assistente (`Diaria-Geo-Citation-Monitor`,
+domingos) não confunda "zero demanda medida" com "zero citação por causa da
+prosa" quando cruzar os dois dados.
+
 ## Quando adicionar entry aqui
 
 Mesmo critério de `context/agents-known-issues.md`, aplicado a dado de SEO em
