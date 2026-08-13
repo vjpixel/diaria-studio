@@ -19,6 +19,12 @@
  * mensagem normalizada). Usado pelo `/diaria-test` para virar regressões
  * em issues automaticamente, sem gate humano.
  *
+ * Sinais adicionais (fora da lista "Top 4" acima, mas sempre ativos, sem
+ * flag): runtime_fix (#1210, lê `_internal/runtime-fixes.jsonl`), runtime_fix_lite
+ * (#1210 reopen — mesma ideia via `runtime_fix_lite:` no run-log, caminho de
+ * baixo atrito), clarice_skip (#2320), placeholder_guard_warning (#3277),
+ * test_email_unconfirmed (#3839), recurring_editor_request (#4966, cross-edição).
+ *
  * Uso:
  *   npx tsx scripts/collect-edition-signals.ts --edition-dir data/editions/260424/
  *   npx tsx scripts/collect-edition-signals.ts --edition-dir data/editions/260424/ --include-test-warnings
@@ -73,6 +79,7 @@ export interface Signal {
     | "mcp_unavailable"
     | "test_warning"
     | "runtime_fix"
+    | "runtime_fix_lite"
     | "clarice_skip"
     | "placeholder_guard_warning"
     | "test_email_unconfirmed"
@@ -153,6 +160,102 @@ export function signalsFromRuntimeFixes(jsonlContent: string): Signal[] {
         last_at: group[group.length - 1].timestamp,
       },
       suggested_action: `Investigar ${component} — orchestrator aplicou ${group.length} runtime fix(es) do tipo ${fixType}. Se for recorrente, considerar fix permanente no agent/script.`,
+    });
+  }
+  return out;
+}
+
+// ===========================================================================
+// Signal 6b (#1210 reopen, 260813): runtime_fix_lite — caminho de baixo
+// atrito pro mesmo problema do Signal 6 acima. A recorrência de 260813
+// (image-crop-reviewer ENOENT contornado in-flight, Stage 3, sem NENHUM log)
+// mostrou que exigir `log-runtime-fix.ts` com fix-type/component/severity
+// preenchidos tem fricção alta o suficiente pra ser esquecido sob pressão —
+// mesmo com a instrução já documentada em `orchestrator.md` desde #1229.
+//
+// Este signal cobre o caminho de emergência: uma linha de `log-event.ts`
+// (mecanismo já usado o tempo todo pelo orchestrator pra qualquer warn/error,
+// #1210 comentário de reabertura) com o prefixo abaixo na `message` vira
+// signal automaticamente — SEM precisar de `--include-test-warnings` (que só
+// roda em `/diaria-test`) e sem precisar preencher taxonomia nenhuma.
+//
+// Mesma técnica do Signal 5b (placeholder guard) — prefixo estável em
+// `message`, scan incondicional do run-log da edição.
+// ===========================================================================
+
+export const RUNTIME_FIX_LITE_LOG_MESSAGE_PREFIX = "runtime_fix_lite:";
+
+/**
+ * Lê eventos `runtime_fix_lite:` do run-log de uma edição. Agrupa por
+ * mensagem normalizada (mesmo helper de `signalsFromTestWarnings`) pra
+ * consolidar o mesmo fix logado mais de uma vez na mesma edição.
+ */
+export function signalsFromRuntimeFixLite(
+  lines: string[],
+  edition: string | null,
+): Signal[] {
+  interface Bucket {
+    count: number;
+    level: "warn" | "error";
+    firstAt?: string;
+    lastAt?: string;
+    sample: string;
+  }
+  const buckets = new Map<string, Bucket>();
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let parsed: LogEntry;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (edition && parsed.edition && parsed.edition !== edition) continue;
+    // Guard: log line sem campo `edition` não deve ser atribuída à edição
+    // atual (mesma lógica de signalsFromClariceSkips/signalsFromPlaceholderGuardWarnings).
+    if (edition && !parsed.edition) continue;
+    if (parsed.level !== "warn" && parsed.level !== "error") continue;
+    const message = parsed.message ?? "";
+    if (!message.startsWith(RUNTIME_FIX_LITE_LOG_MESSAGE_PREFIX)) continue;
+
+    const remainder = message.slice(RUNTIME_FIX_LITE_LOG_MESSAGE_PREFIX.length).trim();
+    const key = normalizeMessageKey(remainder);
+    const existing = buckets.get(key);
+    if (existing) {
+      existing.count++;
+      if (parsed.timestamp) existing.lastAt = parsed.timestamp;
+    } else {
+      buckets.set(key, {
+        count: 1,
+        level: parsed.level as "warn" | "error",
+        firstAt: parsed.timestamp,
+        lastAt: parsed.timestamp,
+        sample: remainder || "(sem descrição)",
+      });
+    }
+  }
+
+  const out: Signal[] = [];
+  for (const b of buckets.values()) {
+    const severity: Severity = b.level === "error" ? "high" : "medium";
+    const shortSample = b.sample.length > 100 ? b.sample.slice(0, 97) + "..." : b.sample;
+    out.push({
+      kind: "runtime_fix_lite",
+      severity,
+      title: `Runtime fix in-flight (registro leve): ${shortSample}`,
+      details: {
+        count: b.count,
+        level: b.level,
+        first_at: b.firstAt ?? null,
+        last_at: b.lastAt ?? null,
+        description: b.sample,
+      },
+      suggested_action:
+        "Orchestrator contornou algo in-flight e registrou via caminho leve " +
+        "(log-event.ts), sem os detalhes estruturados de log-runtime-fix.ts " +
+        "(fix-type/component/severity). Investigar a causa raiz; se recorrente, " +
+        "considerar fix permanente e/ou passar a usar log-runtime-fix.ts com mais detalhe.",
     });
   }
   return out;
@@ -990,6 +1093,9 @@ const TEST_WARNING_SKIP_PATTERNS: RegExp[] = [
   // de PLACEHOLDER_GUARD_LOG_MESSAGE_PREFIX (não um literal duplicado) —
   // impossível divergir do prefixo checado lá (#3277 code-review, PR #3310).
   new RegExp(`^${PLACEHOLDER_GUARD_LOG_MESSAGE_PREFIX.replace(/[()]/g, "\\$&")}`, "i"),
+  // #1210 reopen — runtime_fix_lite events, already captured by
+  // signalsFromRuntimeFixLite above (Signal 6b).
+  new RegExp(`^${RUNTIME_FIX_LITE_LOG_MESSAGE_PREFIX}`, "i"),
 ];
 
 // Nota (#565): warns informativos eram detectados via regex `/\(informativo\)/i`
@@ -1250,6 +1356,10 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
       // humana recomendada" do guard não-fatal tenha um caminho automático até
       // o auto-reporter, já que Stage 6 roda este script sem a flag.
       signals.push(...signalsFromPlaceholderGuardWarnings(lines, edition));
+      // Signal 6b (#1210 reopen): runtime_fix_lite — mesmo racional do 5b
+      // acima, incondicional por design (o caminho leve só cumpre a promessa
+      // de "sempre vira signal" se não depender de --include-test-warnings).
+      signals.push(...signalsFromRuntimeFixLite(lines, edition));
       if (opts.includeTestWarnings) {
         signals.push(...signalsFromTestWarnings(lines, edition));
       }
@@ -1345,6 +1455,7 @@ function main(): void {
           placeholder_guard_warning: draft.signals.filter((s) => s.kind === "placeholder_guard_warning").length,
           test_warning: draft.signals.filter((s) => s.kind === "test_warning").length,
           runtime_fix: draft.signals.filter((s) => s.kind === "runtime_fix").length,
+          runtime_fix_lite: draft.signals.filter((s) => s.kind === "runtime_fix_lite").length,
           test_email_unconfirmed: draft.signals.filter((s) => s.kind === "test_email_unconfirmed").length,
           recurring_editor_request: draft.signals.filter((s) => s.kind === "recurring_editor_request").length,
         },

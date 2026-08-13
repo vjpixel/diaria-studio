@@ -126,6 +126,8 @@ qualifier na query; ver 3b pro motivo):
 - `unfixed_issue` sem `related_issue`: `"{reason}"`
 - `chrome_disconnects`: `"chrome_disconnected"`
 - `editor_error_log`: busca livre por palavras-chave do conteúdo do `error.md`; se não encontrar match, propor criar nova issue com label `editor-reported`.
+- `runtime_fix` / `runtime_fix_lite` (#1210): `"{details.component}"` — busca por componente, não pela description completa (mais estável entre ocorrências do mesmo bug).
+- **Kind não listado acima**: usar busca livre por palavras-chave do `title` do signal (mesmo espírito do `editor_error_log`) — nenhum `kind` fica sem tentativa de dedup.
 
 #### 3b. `gh search issues` com a query
 

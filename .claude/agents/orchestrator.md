@@ -91,7 +91,7 @@ Se o usuário pedir "refazer do zero", **pedir confirmação adicional digitando
 
 ### Runtime fixes — log quando contornar regressões (#1210)
 
-Quando o orchestrator aplicar um fix manual durante o pipeline pra contornar regressão (ex: regex de patch num MD corrompido, substring replace pra normalizar formato, reordenação de seções), **logar via:**
+Quando o orchestrator aplicar um fix manual durante o pipeline pra contornar regressão — ex: regex de patch num MD corrompido, substring replace pra normalizar formato, reordenação de seções, **ou contornar erro de subagente/tool (ENOENT, timeout, permissão) escrevendo o output diretamente no lugar dele** —, **logar antes de prosseguir:**
 
 ```bash
 npx tsx scripts/log-runtime-fix.ts \
@@ -106,7 +106,14 @@ Padrão: P2 (vira issue automática via auto-reporter). P3 = cleanup que não va
 
 `collect-edition-signals.ts` agrupa por `(component, fix_type)` — fixes recorrentes detectados como ruído de prompt regression vs ruído de drift de schema.
 
-**Quando logar**: sempre que o orchestrator executar código de remediação não-prescrito pelo playbook. Sem o log, fixes in-flight escapam do auto-reporter (gap arquitetural identificado em #1210).
+**Sem tempo pra preencher os 5 flags acima?** Não pule o log — use o caminho leve, que vira signal automaticamente (não depende de `--include-test-warnings`):
+
+```bash
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage N --level warn \
+  --message "runtime_fix_lite: {componente} — {descrição breve do que foi contornado}"
+```
+
+**Quando logar**: sempre que o orchestrator executar código de remediação não-prescrito pelo playbook — inclusive contornar falha de subagente escrevendo o output você mesmo. Rico ou leve, mas sempre um dos dois: sem log nenhum, fixes in-flight escapam do auto-reporter (gap identificado em #1210, reincidente em 260813 — ENOENT do `image-crop-reviewer` contornado sem log nenhum).
 
 ### Pedidos editoriais do editor — log quando o editor pedir mudança de conteúdo (#4966)
 
