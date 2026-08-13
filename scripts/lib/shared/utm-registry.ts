@@ -108,6 +108,40 @@ export function buildMensalCampaign(ciclo: string, posicao: string): string {
 }
 
 /**
+ * Acrescenta o sufixo de CÉLULA do teste de HORÁRIO (`H06`/`H10`, #5140) a
+ * todo `utm_campaign=clarice-...` já embutido num HTML renderizado (#5154).
+ *
+ * O HTML enviado por cada braço do teste é o MESMO conteúdo pré-renderizado
+ * 1x por ciclo (`_internal/cloudflare-preview.html`, gerado ANTES de
+ * qualquer onda existir — ver Etapa 4 do `/diaria-mensal`), reusado por
+ * todos os dias/horas da rampa `ramp-warm`. Sem este pós-processamento, um
+ * cadastro/clique atribuído a `utm_campaign=clarice-{ciclo}-{posicao}` é
+ * indistinguível entre os dois horários testados — a leitura do teste vira
+ * "que horário clica mais", nunca "que horário CONVERTE mais" (achado da
+ * issue #5154, item 1).
+ *
+ * Espelha `tagVariantUtms` (`clarice-cta-ab-setup.ts`, one-off do
+ * experimento CTA-01 encerrado) — mesma técnica (regex sobre HTML já
+ * renderizado, sufixo composto EM CIMA do `utm_campaign` existente, nunca no
+ * lugar dele), generalizada aqui pra reuso pelo teste de horário. `[\w-]+`
+ * greedy consome o valor INTEIRO (`{ciclo}-{posicao}`, já com hífens) até o
+ * próximo caractere que não seja letra/dígito/`_`/`-` (tipicamente `&` ou
+ * `"` fechando o atributo) — nunca cruza pro parâmetro seguinte.
+ *
+ * Só toca `utm_campaign=clarice-...` (prefixo de `MENSAL_UTM_SOURCE`) —
+ * nunca `mensal-beehiiv-...`/`mensal-apoiadores-brevo-...` (variantes de
+ * OUTRA audiência, que o teste de horário nunca alcança) nem
+ * `eia-vote-clarice-signup` (UTM fixo do voto, prefixo `eia-`, não
+ * `clarice-`). Idempotência é responsabilidade do CALLER — chamar 2x sobre o
+ * mesmo HTML duplica o sufixo.
+ *
+ * @pure
+ */
+export function tagHourCellUtm(html: string, hourCell: string): string {
+  return html.replace(/utm_campaign=clarice-[\w-]+/g, (match) => `${match}-${hourCell}`);
+}
+
+/**
  * Compõe o `utm_campaign` da variante Beehiiv do mensal (#4482):
  * `mensal-beehiiv-{ciclo}-{posicao}` — mesmo padrão de `buildMensalCampaign`,
  * `utm_source` distinto.
