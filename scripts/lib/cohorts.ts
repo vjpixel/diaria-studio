@@ -345,60 +345,64 @@ export function cohortSendRank(cohort: string | null | undefined): number {
 }
 
 // ---------------------------------------------------------------------------
-// compareContactRecency — desempate DENTRO de um bucket de cohortSendRank,
-// por recência real (#5169)
+// compareContactRecency — recência PURA, cohort não entra na chave (#5169)
 // ---------------------------------------------------------------------------
 //
-// Achado ao vivo em 12/08/2026: `cohortSendRank` já ordena o BUCKET de leads
-// corretamente por recência (leads-2023h2 já rankeia mais quente que
-// leads-2022h1, porque o início do período de 2023h2 é mais recente — nenhuma
-// mudança necessária AÍ). O que faltava era a ordem DENTRO de um mesmo
-// bucket: `segmentRampWarm`/`firstSend.sort` (clarice-segment.ts) usavam
-// `cohortSendRank` como chave PRIMÁRIA e desempatavam por e-mail alfabético —
-// dentro de um bucket de 6 meses com dezenas de milhares de contatos (ex:
-// leads-2023h2, 81 mil), a ordem de consumo real acabava sendo alfabética por
-// e-mail, não por recência de cadastro. `readStoreCandidates`
-// (verify-emails-mv.ts) tinha o mesmo problema pro lado da verificação MV sob
-// demanda (sem ORDER BY nenhum — ordem de rowid do SQLite). Resultado
-// prático: enquanto um bucket gigante não é totalmente esgotado pelo déficit
-// diário (~1-5k/dia contra dezenas de milhares), QUEM dentro dele é
-// priorizado não tinha relação nenhuma com recência real — acidente de
-// e-mail/rowid, não decisão.
+// Histórico (revisão 260812, correção do editor): a 1ª versão desta função
+// (mesclada em #5169) mantinha `cohortSendRank` como critério PRIMÁRIO e só
+// desempatava por `created` DENTRO do mesmo bucket — resolvia o achado ao
+// vivo de 12/08/2026 (buckets gigantes de lead, ex: leads-2023h2 81 mil,
+// onde o desempate acabava sendo alfabético por e-mail em vez de recência).
+// Só que isso não era o pedido original: "quem se cadastrou por último tem
+// prioridade sobre quem se cadastrou antes, INDEPENDENTE DO COHORT" — a
+// primeira versão ainda tratava bucket como critério em si (cohorts
+// ESTRUTURAIS — assinantes-ativos/ex-assinantes/juridico — sempre vinham
+// antes de QUALQUER lead, mesmo um lead mais recente). O editor confirmou
+// explicitamente (simulação ao vivo, #5169 follow-up 260812): cohort não
+// deve entrar na comparação de jeito NENHUM enquanto os dois lados tiverem
+// `created` confiável — nem pra decidir bucket, nem pra dar prioridade
+// estrutural. `cohortSendRank` continua existindo e sendo usado noutros
+// lugares (ordenar cohorts pra exibição, alocação de verificação MV por
+// cohort em `planMvOnDemand`) — só deixou de ser critério de ORDEM DE ENVIO.
 // ---------------------------------------------------------------------------
 
 /**
- * Compara dois contatos pra ordenar a fila de 1º envio (#5169) — critério
- * PRIMÁRIO continua `cohortSendRank` (morno→frio, inalterado: já ordena
- * cohorts/buckets DIFERENTES corretamente, inclusive leads-2023h2 mais
- * quente que leads-2022h1). O que muda: quando dois contatos CAEM NO MESMO
- * bucket (mesmo cohort — inclui cohorts ESTRUTURAIS como
- * `assinantes-ativos`/`ex-assinantes`/`juridico`, onde `cohortSendRank`
- * sempre EMPATA, já que não são um bucket temporal), o desempate passa a ser
- * `created` DESC (cadastro mais recente primeiro) em vez de e-mail
- * alfabético direto — "quem se cadastrou por último tem prioridade sobre
- * quem se cadastrou antes" dentro do mesmo bucket, e-mail ASC como
- * desempate final determinístico (quando `created` empata ou está ausente
- * dos dois lados).
+ * Compara dois contatos pra ordenar a fila de 1º envio (#5169) por recência
+ * PURA — `created` DESC (cadastro mais recente primeiro), SEMPRE, cohort não
+ * entra na comparação enquanto os dois lados tiverem `created` válido. Um
+ * `assinantes-ativos` com cadastro de 2022 fica ATRÁS de um lead com
+ * cadastro de 2026 sob esta regra — decisão explícita do editor (260812):
+ * pagamento Stripe confirmado não é mais uma prioridade automática sobre
+ * recência de cadastro, é só mais um contato competindo pela mesma fila.
  *
- * Mantém o mesmo comportamento pra ties estruturais que `segmentNovos` já
- * tinha ANTES do #5169 (desempate por `created` mesmo dentro de
- * `assinantes-ativos`) — só estende essa disciplina pra dentro dos buckets de
- * lead também, que é onde a issue achou o problema real (buckets gigantes,
- * desempate por e-mail nunca refletindo recência).
+ * Fallback (`created` ausente/inválido de um ou dos dois lados) — nunca
+ * lança, nunca produz NaN:
+ *   - Um lado tem `created` válido, o outro não → o válido vence (dado
+ *     conhecido bate dado desconhecido).
+ *   - NENHUM dos dois tem `created` válido → só aí `cohortSendRank` volta a
+ *     decidir (degrada pro comportamento anterior — bucket como aproximação
+ *     de recência quando a data exata é desconhecida), e-mail ASC como
+ *     desempate final.
  */
 export function compareContactRecency(
   a: { cohort?: string | null; created?: string | null; email: string },
   b: { cohort?: string | null; created?: string | null; email: string },
 ): number {
-  const ra = cohortSendRank(a.cohort);
-  const rb = cohortSendRank(b.cohort);
-  if (ra !== rb) return ra < rb ? -1 : 1;
   const ta = a.created ? Date.parse(a.created) : NaN;
   const tb = b.created ? Date.parse(b.created) : NaN;
   const va = Number.isFinite(ta);
   const vb = Number.isFinite(tb);
-  if (va && vb && ta !== tb) return tb - ta; // DESC — cadastro mais recente primeiro
+  if (va && vb && ta !== tb) return tb - ta; // DESC — cadastro mais recente primeiro, cohort não entra aqui
   if (va !== vb) return va ? -1 : 1; // `created` conhecido bate desconhecido
+  // Chegou aqui em 2 casos, tratados igual de propósito: (1) NENHUM dos dois
+  // tem `created` confiável, ou (2) os dois têm `created` VÁLIDO mas
+  // EXATAMENTE IGUAL (`ta === tb`, não cai no branch DESC acima). Em ambos,
+  // a data não distingue — degrada pro rank de bucket (fallback, nunca o
+  // critério primário; achado do review da PR #5178, teste dedicado em
+  // test/cohorts.test.ts pro caso (2)).
+  const ra = cohortSendRank(a.cohort);
+  const rb = cohortSendRank(b.cohort);
+  if (ra !== rb) return ra < rb ? -1 : 1;
   return a.email.localeCompare(b.email);
 }
 

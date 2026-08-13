@@ -16,10 +16,11 @@
  * contato, #1297) — OU cohort MV-isento (`isMvExemptCohort`, hoje só
  * `assinantes-ativos`; #3826: pagante nunca é submetido ao MV, então nunca
  * teria `mv_bucket` — o pagamento Stripe já valida o e-mail, mesmo racional
- * de #3819), ordenado por `cohortSendRank` (morno→frio, `assinantes-ativos`
- * rank 0). Mesmo grupo nomeado "ramp-warm" já usado por
- * `clarice-build-segment.ts` — reusado aqui sem duplicar a lógica de
- * filtro/ordem.
+ * de #3819), ordenado por `compareContactRecency` (cohorts.ts, #5169
+ * revisão 260812: recência real de `created`, cohort não entra na
+ * comparação — `assinantes-ativos` não tem mais rank fixo garantido).
+ * Mesmo grupo nomeado "ramp-warm" já usado por `clarice-build-segment.ts` —
+ * reusado aqui sem duplicar a lógica de filtro/ordem.
  *
  * Valida crédito Brevo do ciclo (`GET /v3/account`) cobre a soma dos volumes
  * ANTES de escrever qualquer coisa — nunca dimensionar depois do fato (evita
