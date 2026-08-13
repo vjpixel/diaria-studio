@@ -69,6 +69,8 @@ const MIRRORED = [
   "JOGAR_GATE_INLINE_UTM", // #4054
   "JOGAR_IDENTIFY_INLINE_UTM", // #4125 item 4
   "JOGAR_POSTWEB_UTM", // #4578
+  "ARQUIVO_INLINE_UTM", // #5167 item 1
+  "HUB_INLINE_UTM", // #5167 item 2
 ] as const;
 
 describe("#4041 — espelho do registry dentro do Worker não pode driftar", () => {
@@ -148,6 +150,21 @@ describe("#4041 — emissores derivam do registry (sem literal solto no call sit
       medium: shared.LIVROS_INLINE_UTM.footer.medium,
       campaign: shared.LIVROS_INLINE_UTM.campaign,
       referringSite: "livros-inline-footer",
+    });
+  });
+
+  it("subscribe.ts — cadastro inline do arquivo e dos hubs temáticos (#5167 itens 1/2)", () => {
+    assert.deepEqual(resolveSubscribeUtm("arquivo"), {
+      source: shared.ARQUIVO_INLINE_UTM.source,
+      medium: shared.ARQUIVO_INLINE_UTM.medium,
+      campaign: shared.ARQUIVO_INLINE_UTM.campaign,
+      referringSite: "arquivo-inline",
+    });
+    assert.deepEqual(resolveSubscribeUtm("hub"), {
+      source: shared.HUB_INLINE_UTM.source,
+      medium: shared.HUB_INLINE_UTM.medium,
+      campaign: shared.HUB_INLINE_UTM.campaign,
+      referringSite: "hub-inline",
     });
   });
 

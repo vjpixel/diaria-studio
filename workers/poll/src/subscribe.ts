@@ -52,7 +52,7 @@ import { json } from "./index";
 // medium/campaign PRÓPRIOS abaixo distinguem o cadastro inline do CTA-link e
 // do quiz.
 import { isValidVoteEmailFormat, SUBSCRIBE_UTM_SOURCE } from "./lib";
-import { JOGAR_GATE_INLINE_UTM, JOGAR_IDENTIFY_INLINE_UTM, JOGAR_INLINE_UTM, JOGAR_POSTWEB_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041, #4054, #4125 item 4, #4578
+import { ARQUIVO_INLINE_UTM, HUB_INLINE_UTM, JOGAR_GATE_INLINE_UTM, JOGAR_IDENTIFY_INLINE_UTM, JOGAR_INLINE_UTM, JOGAR_POSTWEB_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041, #4054, #4125 item 4, #4578, #5167 itens 1/2
 
 /** UTM próprio do cadastro inline (#3580) — `utm_source` continua
  * `eia-standalone` (convenção de medição), medium/campaign distintos pra medir
@@ -101,8 +101,20 @@ export const INLINE_SUBSCRIBE_UTM_CAMPAIGN = JOGAR_INLINE_UTM.campaign;
  * `handleJogarGateSubscribe` lê `source` do corpo do POST (default
  * `"jogar-gate"`, back-compat com a tela de gate por rodada que não manda
  * esse campo) pra distinguir os dois pontos de entrada na atribuição.
+ *
+ * #5167 (itens 1/2): `"arquivo"` — CTA no topo de `arquivo.diar.ia.br`
+ * (`workers/arquivo/src/render-archive.ts`), `"hub"` — CTA no topo de cada
+ * hub temático (`arquivo.diar.ia.br/temas/{slug}`, `scripts/lib/shared/hub-page.ts`).
+ * Os dois substituem o antigo `<a href="https://diar.ia.br/subscribe">`
+ * (form hospedado na Beehiiv, sujeito ao double opt-in) pelo mesmo mecanismo
+ * inline de `livros-hero`/`livros-footer` — é justamente o tráfego frio de
+ * SEO/GEO que esses 2 pontos de entrada recebem que motivou a issue: cadastro
+ * `active` na hora, sem depender de confirmação por e-mail. Um `source` por
+ * SUPERFÍCIE (não por hub individual) — granularidade suficiente pra medir
+ * "arquivo" vs "hub" separado do resto sem multiplicar entradas de UTM por
+ * slug de hub.
  */
-export type SubscribeSource = "jogar" | "livros-hero" | "livros-footer" | "vote-clarice" | "jogar-gate" | "jogar-identify" | "jogar-postweb";
+export type SubscribeSource = "jogar" | "livros-hero" | "livros-footer" | "vote-clarice" | "jogar-gate" | "jogar-identify" | "jogar-postweb" | "arquivo" | "hub";
 
 /**
  * #4530 Parte B: `referringSite` promovido a campo do triplo — antes disto
@@ -183,6 +195,20 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     medium: JOGAR_POSTWEB_UTM.medium,
     campaign: JOGAR_POSTWEB_UTM.campaign,
     referringSite: "jogar-postweb-gate",
+  },
+  // #5167 item 1: CTA no topo de arquivo.diar.ia.br.
+  arquivo: {
+    source: ARQUIVO_INLINE_UTM.source,
+    medium: ARQUIVO_INLINE_UTM.medium,
+    campaign: ARQUIVO_INLINE_UTM.campaign,
+    referringSite: "arquivo-inline",
+  },
+  // #5167 item 2: CTA no topo de cada hub temático (arquivo.diar.ia.br/temas/{slug}).
+  hub: {
+    source: HUB_INLINE_UTM.source,
+    medium: HUB_INLINE_UTM.medium,
+    campaign: HUB_INLINE_UTM.campaign,
+    referringSite: "hub-inline",
   },
 };
 
@@ -362,9 +388,10 @@ export const SUBSCRIBE_FETCH_TIMEOUT_MS = 8000;
  * Quando `BEEHIIV_NAME_FIELD` (nome do custom field criado no dashboard da
  * Beehiiv) está configurado E há nome, mandamos via `custom_fields`. Sem esse
  * env, a assinatura vai só com e-mail + UTM (degrada com graça — nunca falha a
- * assinatura por causa do nome). Double opt-in: respeitado (não mandamos
- * `double_opt_override`); `send_welcome_email: true` dispara o fluxo de
- * boas-vindas/confirmação configurado na publicação.
+ * assinatura por causa do nome). Double opt-in: ISENTO — mandamos
+ * `double_opt_override: "off"` desde o #5095 (ver bloco DOUBLE OPT-IN no topo
+ * deste arquivo); `send_welcome_email: true` dispara o fluxo de boas-vindas
+ * configurado na publicação.
  */
 export async function subscribeToBeehiiv(
   env: Env,

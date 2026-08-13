@@ -98,3 +98,17 @@ export const JOGAR_POSTWEB_UTM = {
   medium: "jogar-postweb",
   campaign: "eia-jogar-postweb-signup",
 } as const;
+
+/** Cadastro inline no topo de arquivo.diar.ia.br (#5167 item 1). @see scripts/lib/shared/utm-registry.ts */
+export const ARQUIVO_INLINE_UTM = {
+  source: "arquivo",
+  medium: "inline",
+  campaign: "arquivo-inline-signup",
+} as const;
+
+/** Cadastro inline no topo de cada hub temático (#5167 item 2). @see scripts/lib/shared/utm-registry.ts */
+export const HUB_INLINE_UTM = {
+  source: "arquivo-hub",
+  medium: "inline",
+  campaign: "hub-inline-signup",
+} as const;

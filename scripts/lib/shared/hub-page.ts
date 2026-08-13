@@ -75,7 +75,10 @@ import {
   renderCuradoriaHeaderStyles,
   renderCuradoriaFooterStyles,
   renderCuradoriaFooter,
-} from "./curadoria-page.ts";
+  renderCuradoriaCtaSubscribeStyles,
+  renderCuradoriaCtaSubscribeForm,
+  renderCuradoriaCtaSubscribeScript,
+} from "./curadoria-page.ts"; // #5167 item 2: form inline substitui o link puro pro /subscribe hospedado na Beehiiv
 import {
   formatMonthYear,
   renderGeoByline,
@@ -643,14 +646,8 @@ function renderHubBodyStyles(): string {
   .hub-related-nav ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px 20px; }
   .hub-related-nav li a { font-size: 14px; color: var(--teal); text-decoration: underline;
     text-decoration-color: var(--rule); text-underline-offset: 2px; }
-  .hub-related-nav li a:hover { text-decoration-color: var(--teal); }
-  .subscribe-cta { margin: 20px 0 0; }
-  .subscribe-cta a { font-size: 15px; font-weight: 700; color: var(--teal); text-decoration: none;
-    border-bottom: 1px solid var(--teal); padding-bottom: 2px; }
-  .subscribe-cta a:hover { opacity: 0.75; }`;
+  .hub-related-nav li a:hover { text-decoration-color: var(--teal); }`;
 }
-
-const SUBSCRIBE_URL = "https://diar.ia.br/subscribe";
 
 /** Um campo reader-facing de `HubContent`, com o caminho pra mensagem de
  * erro e a natureza do campo. `kind: "heading"` é superfície de casamento
@@ -1191,6 +1188,8 @@ ${renderHubBodyStyles()}
 
 ${renderGeoFaqStyles()}
 
+${renderCuradoriaCtaSubscribeStyles()}
+
 ${renderCuradoriaFooterStyles()}
 </style>
 </head>
@@ -1206,7 +1205,10 @@ ${renderCuradoriaFooterStyles()}
 ${renderGeoByline(undefined, `atualizado em ${formatMonthYear(hub.updatedDate)}`)}
       </div>
       <p class="tagline">5 minutos diários pra se manter atualizado e usar melhor as IAs</p>
-      <p class="subscribe-cta"><a href="${esc(SUBSCRIBE_URL)}">Assine a diar.ia.br →</a></p>
+${renderCuradoriaCtaSubscribeForm(
+  { id: `hub-${hub.slug}-cta-subscribe`, source: "hub", heading: "Gostou da síntese? Assine a diar.ia.br e receba tutoriais e notícias de IA todo dia, sem enrolação." },
+  "hero",
+)}
     </div>
   </header>
   <main>
@@ -1246,6 +1248,7 @@ ${renderGeoJsonLd({
     items: hub.sourceEditions.map((e) => ({ name: sourceEditionLabel(e), url: e.url })),
   },
 })}
+${renderCuradoriaCtaSubscribeScript()}
 </body>
 </html>
 `;

@@ -44,6 +44,22 @@ describe("renderGeneratedModule (#4558 Parte A)", () => {
   });
 });
 
+describe("renderHubPage — CTA de assinatura inline (#5167 item 2)", () => {
+  const html = renderHubPage(getAnthropicClaudeHub());
+
+  it("tem um FORM inline de assinatura (não link puro pro /subscribe da Beehiiv)", () => {
+    // #5167 item 2: mesmo tratamento do item 1 (render-archive.ts) — o
+    // CTA-link antigo virou form inline chamando /jogar/subscribe cross-origin.
+    assert.doesNotMatch(html, /<a href="https:\/\/diar\.ia\.br\/subscribe">/);
+    assert.match(html, /class="cta-subscribe-form" data-source="hub"/);
+    assert.match(html, /window\.fetch\("https:\/\/eia\.diar\.ia\.br\/jogar\/subscribe"/);
+  });
+
+  it("id do form é único por hub (namespaced pelo slug)", () => {
+    assert.match(html, /id="hub-anthropic-claude-cta-subscribe"/);
+  });
+});
+
 describe("buildAnthropicClaudeFaq (#4558 Parte A) — regression do bug NFD/NFC", () => {
   const faq = buildAnthropicClaudeFaq(sourcesRaw as never);
 
