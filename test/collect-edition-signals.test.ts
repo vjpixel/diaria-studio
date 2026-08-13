@@ -11,6 +11,8 @@ import {
   signalsFromMcpUnavailable,
   signalsFromTestWarnings,
   signalsFromPlaceholderGuardWarnings,
+  signalsFromRuntimeFixLite,
+  RUNTIME_FIX_LITE_LOG_MESSAGE_PREFIX,
   normalizeMessageKey,
   collectSignals,
   writeDraft,
@@ -565,6 +567,99 @@ describe("signalsFromPlaceholderGuardWarnings (#3277)", () => {
     ];
     assert.equal(signalsFromPlaceholderGuardWarnings(lines, "260710").length, 1);
     assert.equal(signalsFromTestWarnings(lines, "260710").length, 0);
+  });
+});
+
+describe("signalsFromRuntimeFixLite (#1210 reopen, 260813)", () => {
+  const mkLine = (obj: Record<string, unknown>) => JSON.stringify(obj);
+
+  it("captura 1 evento runtime_fix_lite: e vira signal medium (level=warn)", () => {
+    const lines = [
+      mkLine({
+        timestamp: "2026-08-13T05:00:00Z",
+        edition: "260813",
+        stage: 3,
+        agent: "orchestrator",
+        level: "warn",
+        message: "runtime_fix_lite: image-crop-reviewer — ENOENT ao escrever em data/, escrevi o JSON diretamente",
+      }),
+    ];
+    const signals = signalsFromRuntimeFixLite(lines, "260813");
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].kind, "runtime_fix_lite");
+    assert.equal(signals[0].severity, "medium");
+    assert.match(signals[0].title, /image-crop-reviewer/);
+    assert.equal(signals[0].details.count, 1);
+  });
+
+  it("level=error vira severity high", () => {
+    const lines = [
+      mkLine({ edition: "260813", level: "error", message: "runtime_fix_lite: writer — crash contornado" }),
+    ];
+    assert.equal(signalsFromRuntimeFixLite(lines, "260813")[0].severity, "high");
+  });
+
+  it("ignora level info — só warn/error contam", () => {
+    const lines = [
+      mkLine({ edition: "260813", level: "info", message: "runtime_fix_lite: x — y" }),
+    ];
+    assert.deepEqual(signalsFromRuntimeFixLite(lines, "260813"), []);
+  });
+
+  it("sem eventos → retorna vazio", () => {
+    assert.deepEqual(signalsFromRuntimeFixLite([], "260813"), []);
+  });
+
+  it("filtra edições diferentes", () => {
+    const lines = [
+      mkLine({ edition: "260812", level: "warn", message: "runtime_fix_lite: x — y" }),
+    ];
+    assert.deepEqual(signalsFromRuntimeFixLite(lines, "260813"), []);
+  });
+
+  it("linha sem campo edition não é atribuída a uma edição específica (evita falso-positivo cross-edition)", () => {
+    const lineWithoutEdition = mkLine({ level: "warn", message: "runtime_fix_lite: x — y" });
+    assert.deepEqual(signalsFromRuntimeFixLite([lineWithoutEdition], "260813"), []);
+    assert.equal(signalsFromRuntimeFixLite([lineWithoutEdition], null).length, 1);
+  });
+
+  it("linhas malformadas são puladas sem crashar", () => {
+    const lines = [
+      "{garbage",
+      "",
+      mkLine({ edition: "260813", level: "warn", message: "runtime_fix_lite: x — y" }),
+    ];
+    assert.equal(signalsFromRuntimeFixLite(lines, "260813").length, 1);
+  });
+
+  it("não confunde mensagem que apenas MENCIONA 'runtime_fix_lite' sem o prefixo exato no início", () => {
+    const lines = [
+      mkLine({ edition: "260813", level: "warn", message: "algo sobre runtime_fix_lite no meio da frase" }),
+    ];
+    assert.deepEqual(signalsFromRuntimeFixLite(lines, "260813"), []);
+  });
+
+  it("agrupa (dedup) 2 eventos com a mesma descrição normalizada na mesma edição", () => {
+    const lines = [
+      mkLine({ edition: "260813", level: "warn", message: `${RUNTIME_FIX_LITE_LOG_MESSAGE_PREFIX} writer — mesmo fix` }),
+      mkLine({ edition: "260813", level: "warn", message: `${RUNTIME_FIX_LITE_LOG_MESSAGE_PREFIX} writer — mesmo fix` }),
+    ];
+    const signals = signalsFromRuntimeFixLite(lines, "260813");
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].details.count, 2);
+  });
+
+  it("não duplica em signalsFromTestWarnings quando --include-test-warnings também roda (TEST_WARNING_SKIP_PATTERNS)", () => {
+    const lines = [
+      mkLine({
+        edition: "260813",
+        agent: "orchestrator",
+        level: "warn",
+        message: "runtime_fix_lite: image-crop-reviewer — ENOENT contornado",
+      }),
+    ];
+    assert.equal(signalsFromRuntimeFixLite(lines, "260813").length, 1);
+    assert.equal(signalsFromTestWarnings(lines, "260813").length, 0);
   });
 });
 
@@ -1235,6 +1330,26 @@ describe("collectSignals + writeDraft — integração", () => {
       const draft = collectSignals({ rootDir: root, editionDir });
       const kinds = new Set(draft.signals.map((s) => s.kind));
       assert.ok(kinds.has("test_email_unconfirmed"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#1210 reopen: runtime_fix_lite: no run-log vira signal SEM --include-test-warnings", () => {
+    const { root, editionDir } = setup();
+    try {
+      writeFileSync(
+        join(root, "data/run-log.jsonl"),
+        JSON.stringify({
+          edition: "260424",
+          level: "warn",
+          message: "runtime_fix_lite: image-crop-reviewer — ENOENT contornado",
+        }) + "\n",
+      );
+
+      const draft = collectSignals({ rootDir: root, editionDir, includeTestWarnings: false });
+      const kinds = new Set(draft.signals.map((s) => s.kind));
+      assert.ok(kinds.has("runtime_fix_lite"), "runtime_fix_lite deve fluir incondicionalmente, como placeholder_guard_warning");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
