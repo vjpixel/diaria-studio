@@ -26,7 +26,10 @@ Beehiiv da mesma edição — são canais paralelos e independentes.
 - `AAMMDD` — **obrigatório, sempre explícito**, nunca inferir a partir de
   `today()` (mesma disciplina do CLAUDE.md — "Data da edição é sempre
   explícita"). Se o usuário não passar a data, perguntar com sugestão de
-  hoje/ontem como atalho, mas exigir confirmação antes de prosseguir.
+  amanhã (D+1) como atalho padrão — mesma data que o resto do pipeline usa
+  pra "a edição em curso" (CLAUDE.md, "Edição é sempre D+1"; este canal Brevo
+  é um envio EXTRA da mesma edição diária, não uma edição própria — #5180) —,
+  mas exigir confirmação antes de prosseguir.
 
 ## Pré-requisito: localizar o diretório da edição
 

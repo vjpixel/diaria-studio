@@ -635,8 +635,8 @@ describe("summarizeMvBacklog (#4657)", () => {
     ]);
     assert.equal(b.total, 3);
     assert.deepEqual(b.byCohort, [
-      { cohort: "leads-2023h2", count: 2 },
-      { cohort: "leads-2022h1", count: 1 },
+      { cohort: "leads-2023h2", count: 2, mostRecentCreated: null },
+      { cohort: "leads-2022h1", count: 1, mostRecentCreated: null },
     ]);
     assert.equal(b.estimatedCostUsd, 3 * MV_COST_PER_EMAIL_USD);
   });
@@ -644,6 +644,19 @@ describe("summarizeMvBacklog (#4657)", () => {
   it("cohort ausente cai num rótulo explícito, nunca em undefined", () => {
     const b = summarizeMvBacklog([{ cohort: null, mv_bucket: null, ineligible_reason: "mv_unverified" }]);
     assert.equal(b.byCohort[0].cohort, "(sem cohort)");
+  });
+
+  it("#5179: mostRecentCreated é o `created` mais recente do cohort, ISO — null quando ausente/inválido", () => {
+    const b = summarizeMvBacklog([
+      { cohort: "ex-assinantes", mv_bucket: null, ineligible_reason: "mv_unverified", created: "2022-01-01T00:00:00.000Z" },
+      { cohort: "ex-assinantes", mv_bucket: null, ineligible_reason: "mv_unverified", created: "2025-06-15T00:00:00.000Z" },
+      { cohort: "ex-assinantes", mv_bucket: null, ineligible_reason: "mv_unverified", created: "não é data" },
+      { cohort: "leads-2026-06", mv_bucket: null, ineligible_reason: "mv_unverified" },
+    ]);
+    const exAssinantes = b.byCohort.find((e) => e.cohort === "ex-assinantes");
+    assert.equal(exAssinantes?.mostRecentCreated, "2025-06-15T00:00:00.000Z");
+    const leads = b.byCohort.find((e) => e.cohort === "leads-2026-06");
+    assert.equal(leads?.mostRecentCreated, null);
   });
 });
 
@@ -714,6 +727,25 @@ describe("planMvOnDemand (#4659)", () => {
     assert.equal(p.byCohort[1].count, 467); // resto (667-200) do próximo cohort mais morno
     assert.equal(p.totalPlanned, 667);
     assert.equal(p.backlogInsufficient, false);
+  });
+
+  it("#5179: com mostRecentCreated informado, a alocação segue recência REAL — pode inverter a ordem de cohortSendRank pra ex-assinantes", () => {
+    const p = planMvOnDemand(
+      {
+        total: 700,
+        byCohort: [
+          { cohort: "leads-2026-06", count: 500, mostRecentCreated: "2026-06-01T00:00:00.000Z" },
+          { cohort: "ex-assinantes", count: 200, mostRecentCreated: "2026-08-10T00:00:00.000Z" }, // cadastro MAIS recente que o lead, apesar do rank estrutural "quente" do lead
+        ],
+        estimatedCostUsd: 700 * MV_COST_PER_EMAIL_USD,
+      },
+      600, // alvo = 600/0.9 = 667
+    );
+    assert.deepEqual(
+      p.byCohort.map((a) => a.cohort),
+      ["ex-assinantes", "leads-2026-06"],
+      "ex-assinantes com created mais recente vem primeiro, mesmo cohortSendRank favorecendo o lead",
+    );
   });
 
   it("backlog insuficiente pra cobrir o alvo → totalPlanned < targetVerifyCount, sinalizado", () => {
@@ -814,7 +846,7 @@ function mvBacklogFixture(byCohort: Array<{ cohort: string; count: number }>) {
 }
 
 describe("summarizeAvailableFirstSendByCohort (#4787)", () => {
-  it("agrupa por cohort e ordena morno→frio (cohortSendRank) — null (sem cohort) por último", () => {
+  it("agrupa por cohort e ordena morno→frio (cohortSendRank) — null (sem cohort) por último, sem created em nenhuma linha", () => {
     const rows = [
       { cohort: "leads-2022h1" },
       { cohort: "leads-2024h2" },
@@ -823,15 +855,36 @@ describe("summarizeAvailableFirstSendByCohort (#4787)", () => {
       { cohort: "ex-assinantes" },
     ];
     assert.deepEqual(summarizeAvailableFirstSendByCohort(rows), [
-      { cohort: "ex-assinantes", count: 1 },
-      { cohort: "leads-2024h2", count: 2 },
-      { cohort: "leads-2022h1", count: 1 },
-      { cohort: null, count: 1 },
+      { cohort: "ex-assinantes", count: 1, mostRecentCreated: null },
+      { cohort: "leads-2024h2", count: 2, mostRecentCreated: null },
+      { cohort: "leads-2022h1", count: 1, mostRecentCreated: null },
+      { cohort: null, count: 1, mostRecentCreated: null },
     ]);
   });
 
   it("lista vazia devolve array vazio", () => {
     assert.deepEqual(summarizeAvailableFirstSendByCohort([]), []);
+  });
+
+  it("#5179: ex-assinantes com created MAIS RECENTE que o lead mais quente passa à FRENTE dele — cohortSendRank sozinho erraria isso", () => {
+    const rows = [
+      { cohort: "leads-2026-06", created: "2026-06-01T00:00:00.000Z" }, // lead recém-nascido, rank quente
+      { cohort: "ex-assinantes", created: "2026-08-10T00:00:00.000Z" }, // ex-assinante recém-cadastrado, rank estrutural "morno" mas created MAIS recente
+    ];
+    const out = summarizeAvailableFirstSendByCohort(rows);
+    assert.deepEqual(
+      out.map((e) => e.cohort),
+      ["ex-assinantes", "leads-2026-06"],
+    );
+  });
+
+  it("#5179: ex-assinantes SEM created confiável degrada pro cohortSendRank de sempre (fallback, comportamento pré-fix preservado)", () => {
+    const rows = [{ cohort: "leads-2026-06" }, { cohort: "ex-assinantes" }];
+    const out = summarizeAvailableFirstSendByCohort(rows);
+    assert.deepEqual(
+      out.map((e) => e.cohort),
+      ["ex-assinantes", "leads-2026-06"],
+    );
   });
 });
 

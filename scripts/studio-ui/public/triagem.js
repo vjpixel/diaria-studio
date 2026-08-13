@@ -15,15 +15,14 @@
 // chat drawer + `/diaria-develop` digitado direto), e o preview ficou órfão
 // sem a execução real por trás.
 
-import { issuesFilterActive, prsFilterActive } from "./triagem-filters.js";
+import { issuesFilterActive, prsFilterActive, applyDispatchTrackFilterValue } from "./triagem-filters.js";
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
   fetchLabel: document.getElementById("fetch-label"),
   error: document.getElementById("triage-error"),
   filterPriority: document.getElementById("filter-priority"),
-  filterTrack: document.getElementById("filter-track"),
-  filterDispatch: document.getElementById("filter-dispatch"),
+  filterDispatchTrack: document.getElementById("filter-dispatch-track"),
   filterLabels: document.getElementById("filter-labels"),
   refreshBtn: document.getElementById("refresh-btn"),
   lastUpdated: document.getElementById("last-updated"),
@@ -211,8 +210,8 @@ function renderIssuesTable() {
     tr.innerHTML = `
       <td><a href="${i.url}" target="_blank" rel="noopener">#${i.number}</a></td>
       <td>${escapeHtml(i.title)}</td>
-      <td>${priorityBadge(i.priority)}</td>
       <td>${dispatchBadge(i.dispatchTrack)}</td>
+      <td>${priorityBadge(i.priority)}</td>
       <td>${labelsBadges(i.labels)}</td>
       <td class="mono">${ageLabel(i.createdAt)}</td>
       <td class="mono">${fmtTime(i.updatedAt)}</td>
@@ -291,12 +290,11 @@ el.filterPriority.addEventListener("change", () => {
   filters.priority = el.filterPriority.value;
   renderTables();
 });
-el.filterTrack.addEventListener("change", () => {
-  filters.track = el.filterTrack.value;
-  renderTables();
-});
-el.filterDispatch.addEventListener("change", () => {
-  filters.dispatch = el.filterDispatch.value;
+// #5175: lógica de mapeamento é pura (applyDispatchTrackFilterValue,
+// triagem-filters.js) — testável sem harness de DOM; aqui só aplica o
+// resultado ao objeto `filters` compartilhado e re-renderiza.
+el.filterDispatchTrack.addEventListener("change", () => {
+  Object.assign(filters, applyDispatchTrackFilterValue(filters, el.filterDispatchTrack.value));
   renderTables();
 });
 el.refreshBtn.addEventListener("click", () => fetchIssues());

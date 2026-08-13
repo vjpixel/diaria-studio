@@ -54,7 +54,12 @@ import {
 import type { BrevoCampaign } from "../../workers/brevo-dashboard/src/types.ts";
 import type { StoreRow } from "./clarice-segment.ts";
 import { hasMeasuredOpens } from "./clarice-segment.ts";
-import { cohortDisplayLabel, cohortSendRank, isMvExemptCohort } from "./cohorts.ts";
+import {
+  cohortDisplayLabel,
+  cohortSendRank,
+  compareCohortEntriesByRecency,
+  isMvExemptCohort,
+} from "./cohorts.ts";
 
 // ---------------------------------------------------------------------------
 // Datas e chaves da onda — determinístico, nunca inferido de weekday
@@ -538,6 +543,17 @@ export const MV_COST_PER_EMAIL_USD = 0.0019;
 export interface MvBacklogEntry {
   cohort: string;
   count: number;
+  /**
+   * `created` mais recente entre os contatos `mv_unverified` deste cohort no
+   * recorte agregado, ou `null`/ausente quando nenhuma linha do cohort tinha
+   * `created` válido (#5179) — OPCIONAL de propósito, pra não quebrar
+   * fixtures de teste/chamadores que constroem `MvBacklogEntry` sem passar
+   * pelo `created` do store (ausência degrada com segurança pro fallback de
+   * `compareCohortEntriesByRecency`, que já trata `undefined` como
+   * desconhecido). Alimenta essa comparação — NUNCA um critério de exibição,
+   * só de ORDEM de prioridade de verificação (ver `planMvOnDemand`).
+   */
+  mostRecentCreated?: string | null;
 }
 
 export interface MvBacklog {
@@ -572,9 +588,15 @@ export const MV_BACKLOG_NO_COHORT_LABEL = "(sem cohort)";
  * natureza da onda (aquisição → retenção) disfarçada de continuidade.
  */
 export function summarizeMvBacklog(
-  rows: Array<Pick<StoreRow, "cohort" | "mv_bucket" | "ineligible_reason">>,
+  rows: Array<Pick<StoreRow, "cohort" | "mv_bucket" | "ineligible_reason" | "created">>,
 ): MvBacklog {
   const counts = new Map<string, number>();
+  // `created` mais recente (epoch ms) já visto por cohort — usado só pra
+  // popular `MvBacklogEntry.mostRecentCreated` (#5179), nunca pra decidir
+  // esta contagem/ordem (`byCohort` continua por VOLUME, ver docstring de
+  // `planMvOnDemand.byCohort` sobre por que os dois critérios não podem se
+  // confundir).
+  const mostRecentMs = new Map<string, number>();
   let total = 0;
   for (const r of rows) {
     const unverified = !r.mv_bucket && r.ineligible_reason === "mv_unverified";
@@ -582,9 +604,17 @@ export function summarizeMvBacklog(
     const cohort = r.cohort ?? MV_BACKLOG_NO_COHORT_LABEL;
     counts.set(cohort, (counts.get(cohort) ?? 0) + 1);
     total += 1;
+    const ms = r.created ? Date.parse(r.created) : NaN;
+    if (Number.isFinite(ms)) {
+      const prev = mostRecentMs.get(cohort);
+      if (prev === undefined || ms > prev) mostRecentMs.set(cohort, ms);
+    }
   }
   const byCohort = [...counts.entries()]
-    .map(([cohort, count]) => ({ cohort, count }))
+    .map(([cohort, count]) => {
+      const ms = mostRecentMs.get(cohort);
+      return { cohort, count, mostRecentCreated: ms === undefined ? null : new Date(ms).toISOString() };
+    })
     .sort((a, b) => b.count - a.count || a.cohort.localeCompare(b.cohort));
   return { total, byCohort, estimatedCostUsd: total * MV_COST_PER_EMAIL_USD };
 }
@@ -603,44 +633,58 @@ export function summarizeMvBacklog(
 export interface CohortComposition {
   cohort: string | null;
   count: number;
+  /**
+   * `created` mais recente entre as linhas deste cohort no recorte agregado,
+   * ou `null`/ausente quando nenhuma tinha `created` válido (#5179).
+   * Alimenta `compareCohortEntriesByRecency` — ver ordenação abaixo.
+   */
+  mostRecentCreated?: string | null;
 }
 
 /**
  * Composição por cohort da fila de 1º envio DISPONÍVEL (já excluindo
  * comprometidos — o mesmo conjunto cuja contagem `.length` vira
- * `availableFirstSend`), ordenada por `cohortSendRank` (morno→frio).
+ * `availableFirstSend`), ordenada por recência REAL via
+ * `compareCohortEntriesByRecency` (#5179 — sucede a ordenação pura por
+ * `cohortSendRank`).
  *
- * RESSALVA (#5169 revisão 260812, achado do review da PR #5178):
- * `cohortSendRank` continua sendo a ordem real que `segmentRampWarm` usa
- * pra consumir a fila ENTRE LEADS (bucket é derivado de `created`, os dois
- * nunca discordam) — mas não é mais garantia pra cohorts estruturais não
- * MV-isentos (hoje só `ex-assinantes`; `assinantes-ativos` é MV-isento e
- * nunca passa por aqui, `juridico` é virtual e nunca é uma linha real de
- * `cohort`). `segmentRampWarm` agora ordena por `compareContactRecency`
- * (created real, cohort não entra), então um `ex-assinantes` antigo pode
- * ficar atrás de leads mais recentes na fila de fato, mesmo que este
- * agregado por cohort ainda o mostre "quente" por `cohortSendRank`. Puro:
- * não assume que `rows` já chega ordenado (reordena aqui por conta
+ * HISTÓRICO (#5169 revisão 260812, achado do review da PR #5178): antes,
+ * `cohortSendRank` seguia sendo a ordem real que `segmentRampWarm` usa pra
+ * consumir a fila ENTRE LEADS (bucket é derivado de `created`, os dois nunca
+ * discordam), mas não era garantia pra cohorts estruturais não MV-isentos
+ * (hoje só `ex-assinantes`; `assinantes-ativos` é MV-isento e nunca passa por
+ * aqui, `juridico` é virtual). `segmentRampWarm` ordena por
+ * `compareContactRecency` (created real, cohort não entra), então um
+ * `ex-assinantes` antigo podia ficar atrás de leads mais recentes na fila de
+ * fato enquanto este agregado ainda o mostrava "quente" por rank fixo — o
+ * `mostRecentCreated` por cohort (calculado abaixo) fecha essa lacuna: só
+ * degrada pra `cohortSendRank` quando nenhum dos dois lados comparados tem
+ * `created` confiável (mesmo fallback de `compareContactRecency`).
+ *
+ * Puro: não assume que `rows` já chega ordenado (reordena aqui por conta
  * própria), então continua correta mesmo se o caller mudar a ordem de
- * iteração no futuro — a ressalva é sobre o SIGNIFICADO da ordem, não sobre
- * a pureza da função.
+ * iteração no futuro.
  */
 export function summarizeAvailableFirstSendByCohort(
-  rows: Array<Pick<StoreRow, "cohort">>,
+  rows: Array<Pick<StoreRow, "cohort" | "created">>,
 ): CohortComposition[] {
   const counts = new Map<string | null, number>();
+  const mostRecentMs = new Map<string | null, number>();
   for (const r of rows) {
     const key = r.cohort ?? null;
     counts.set(key, (counts.get(key) ?? 0) + 1);
+    const ms = r.created ? Date.parse(r.created) : NaN;
+    if (Number.isFinite(ms)) {
+      const prev = mostRecentMs.get(key);
+      if (prev === undefined || ms > prev) mostRecentMs.set(key, ms);
+    }
   }
   return [...counts.entries()]
-    .map(([cohort, count]) => ({ cohort, count }))
-    .sort((a, b) => {
-      const ra = cohortSendRank(a.cohort);
-      const rb = cohortSendRank(b.cohort);
-      if (ra !== rb) return ra - rb;
-      return (a.cohort ?? "").localeCompare(b.cohort ?? "");
-    });
+    .map(([cohort, count]) => {
+      const ms = mostRecentMs.get(cohort);
+      return { cohort, count, mostRecentCreated: ms === undefined ? null : new Date(ms).toISOString() };
+    })
+    .sort(compareCohortEntriesByRecency);
 }
 
 /**
@@ -870,12 +914,7 @@ export function planMvOnDemand(
   const ordered = backlog.byCohort
     .filter((e) => !isMvExemptCohort(e.cohort) && e.cohort !== MV_BACKLOG_NO_COHORT_LABEL)
     .slice()
-    .sort((a, b) => {
-      const ra = cohortSendRank(a.cohort);
-      const rb = cohortSendRank(b.cohort);
-      if (ra !== rb) return ra < rb ? -1 : 1;
-      return a.cohort.localeCompare(b.cohort);
-    });
+    .sort(compareCohortEntriesByRecency);
 
   const byCohort: MvOnDemandAllocation[] = [];
   let remaining = targetVerifyCount;
