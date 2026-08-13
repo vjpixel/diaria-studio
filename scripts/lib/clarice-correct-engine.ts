@@ -78,6 +78,16 @@ export interface AttemptLogEntry {
    * coincide com concorrência alta — evidência central do #4952.
    */
   chunksInFlight?: number;
+  /**
+   * #5082 — `true` quando esta tentativa foi feita pelo fallback de
+   * granularidade por-parágrafo (`correctChunkViaParagraphs`/`correctTextViaParagraphs`
+   * em `scripts/clarice-correct.ts`), seja como fallback automático de 2º nível
+   * (chunk normal esgotou os retries) ou via `--granularity paragraph` forçado.
+   * `undefined`/`false` = tentativa normal de chunk (granularidade padrão).
+   * Permite filtrar `data/run-log.jsonl` pra medir a frequência do fallback sem
+   * ambiguidade com `outcome` (que descreve o resultado HTTP, não o modo).
+   */
+  viaParagraphFallback?: boolean;
 }
 
 /**
@@ -115,6 +125,25 @@ export const DEFAULT_RETRY_POLICY: RetryPolicy = {
   timeoutMs: 60_000,
   baseBackoffMs: 5_000,
 };
+
+/**
+ * Detecção estrutural de erro fatal (HTTP 4xx) — não vale a pena retentar nem
+ * tentar o fallback por-parágrafo (#5082), porque um 401/403/400 falha da
+ * mesma forma independente de quão pequeno for o payload. Preferir `.status`
+ * de `ClariceHttpError` a string-matching da mensagem, que falha quando um
+ * proxy/wrapper altera o prefixo (#2338 fix 3); fallback ao regex para erros
+ * lançados por código externo que não usa `ClariceHttpError`.
+ *
+ * Extraído do `is4xx` inline de `withClariceRetry` (#5082) pra ser reusado
+ * pelo guard de fallback por-parágrafo em `scripts/clarice-correct.ts`, que
+ * precisa da MESMA decisão (não adianta sub-dividir um chunk que falhou por
+ * causa de auth/bad-request — cada parágrafo repetiria o mesmo erro).
+ */
+export function isFatalHttpError(e: unknown): boolean {
+  if (e instanceof ClariceHttpError) return e.status >= 400 && e.status < 500;
+  const message = e instanceof Error ? e.message : "";
+  return /^HTTP 4\d\d/.test(message);
+}
 
 /**
  * Calcula o delay de backoff para tentativa `attempt` (0-indexed).
@@ -181,12 +210,7 @@ export async function withClariceRetry(
       lastError = e as Error;
       const elapsedMs = Date.now() - attemptStart;
       // HTTP 4xx = não é problema de disponibilidade — não há sentido em retry.
-      // Detecção estrutural: ClariceHttpError carrega .status — preferir isso a
-      // string-matching da mensagem, que falha quando proxy/wrapper altera o prefixo
-      // (#2338 fix 3). Fallback ao regex para erros lançados por código externo.
-      const is4xx =
-        (e instanceof ClariceHttpError && e.status >= 400 && e.status < 500) ||
-        /^HTTP 4\d\d/.test(lastError.message ?? "");
+      const is4xx = isFatalHttpError(e);
       // #2798 — observabilidade por tentativa: registra timeout/5xx/4xx antes de
       // decidir retry vs. fast-fail, pra permitir diagnosticar padrões (ex: timeout
       // consistente em payloads >5k chars) sem depender só do resultado final.

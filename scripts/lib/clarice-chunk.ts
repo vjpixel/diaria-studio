@@ -253,6 +253,58 @@ export function mergeChunkSuggestions(
 }
 
 /**
+ * Divide `text` em parágrafos individuais (#5082) — granularidade máxima usada
+ * pelo fallback de 2º nível de `scripts/clarice-correct.ts` quando um chunk
+ * normal (`splitIntoChunks`) falha mesmo após esgotar os retries.
+ *
+ * Fronteira: `\n\n` (parágrafo em branco) OU `\n---\n` (separador de seção sem
+ * linha em branco ao redor — convenção também usada em alguns pontos do
+ * codebase, ex. `makeManyChunkText` nos testes). Preserva o separador `---`
+ * como seu PRÓPRIO parágrafo (não substantivo, ver `isSubstantiveParagraph`) em
+ * vez de descartá-lo — a concatenação de todos os parágrafos reconstrói o
+ * `text` original byte-a-byte, mesma garantia de `splitIntoChunks`.
+ *
+ * `startOffset` (default 0) é somado ao offset relativo de cada parágrafo —
+ * permite chamar `splitIntoParagraphs(chunk.text, chunk.startOffset)` e obter
+ * parágrafos com offset correto no texto ORIGINAL completo (não só relativo
+ * ao chunk). Offset é só informativo/auditoria (mesma nota de `TextChunk`) —
+ * a aplicação de sugestões é por âncora de texto (`from`/`to`), não por
+ * aritmética de posição.
+ *
+ * Nunca retorna array vazio: texto sem nenhuma fronteira vira 1 parágrafo
+ * único (o texto inteiro).
+ */
+export function splitIntoParagraphs(text: string, startOffset = 0): TextChunk[] {
+  const boundaryRe = /\n---\n|\n\n/g;
+  const paragraphs: TextChunk[] = [];
+  let lastCut = 0;
+  let m: RegExpExecArray | null;
+  while ((m = boundaryRe.exec(text)) !== null) {
+    const cutPos = m.index + m[0].length;
+    paragraphs.push({ text: text.slice(lastCut, cutPos), startOffset: startOffset + lastCut });
+    lastCut = cutPos;
+  }
+  if (lastCut < text.length) {
+    paragraphs.push({ text: text.slice(lastCut), startOffset: startOffset + lastCut });
+  }
+  return paragraphs.length > 0 ? paragraphs : [{ text, startOffset }];
+}
+
+/**
+ * Um parágrafo é "substantivo" (vale a pena enviar ao Clarice) se, depois de
+ * trim, tiver conteúdo real — não vazio e não só o separador `---` sozinho
+ * (produzido por `splitIntoParagraphs` como seu próprio parágrafo). Parágrafos
+ * não-substantivos são pulados sem request REST (#5082) — mantidos no merge
+ * final via `suggestions: []` (texto original preservado).
+ */
+export function isSubstantiveParagraph(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return false;
+  if (/^-{3,}$/.test(trimmed)) return false;
+  return true;
+}
+
+/**
  * Núcleo compartilhado: encontra a última posição de corte para `re` dentro de
  * `text`, considerando apenas posições ≥ `minCut`. Retorna -1 se não encontrado.
  * `re` deve ter a flag `g` e ser criado em cada chamada (regex stateful via exec).

@@ -11,6 +11,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   splitIntoChunks,
+  splitIntoParagraphs,
+  isSubstantiveParagraph,
   applyChunkSuggestions,
   mergeChunkSuggestions,
   findLastBoundary,
@@ -279,6 +281,93 @@ describe("findLastBoundary — guard de flag g (#2705)", () => {
     // Com minCut muito alto, nenhum corte serve → -1.
     const result = findLastBoundary(text, /\n\n/g, 1000);
     assert.equal(result, -1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// splitIntoParagraphs / isSubstantiveParagraph (#5082) — granularidade máxima
+// usada pelo fallback de 2º nível de scripts/clarice-correct.ts
+// ---------------------------------------------------------------------------
+
+describe("splitIntoParagraphs (#5082)", () => {
+  it("texto sem fronteira → 1 parágrafo único com o texto inteiro", () => {
+    const text = "Parágrafo único sem fronteira nenhuma.";
+    const paragraphs = splitIntoParagraphs(text);
+    assert.equal(paragraphs.length, 1);
+    assert.equal(paragraphs[0].text, text);
+    assert.equal(paragraphs[0].startOffset, 0);
+  });
+
+  it("divide em \\n\\n (parágrafo em branco) — reconstrói o original", () => {
+    const text = "Primeiro parágrafo.\n\nSegundo parágrafo.\n\nTerceiro parágrafo.";
+    const paragraphs = splitIntoParagraphs(text);
+    assert.ok(paragraphs.length >= 3, `esperado ≥3 parágrafos, recebido ${paragraphs.length}`);
+    assert.equal(paragraphs.map((p) => p.text).join(""), text, "concatenação deve reconstruir o original");
+  });
+
+  it("preserva `---` como seu próprio parágrafo (não descarta o separador)", () => {
+    const text = "Seção 1 com conteúdo.\n\n---\n\nSeção 2 com conteúdo.";
+    const paragraphs = splitIntoParagraphs(text);
+    assert.equal(paragraphs.map((p) => p.text).join(""), text, "--- deve estar preservado na reconstrução");
+    const separatorParagraph = paragraphs.find((p) => p.text.trim().replace(/\n/g, "") === "---");
+    assert.ok(separatorParagraph, "deve existir um parágrafo cujo conteúdo (trim) é só o separador ---");
+  });
+
+  it("divide em `\\n---\\n` sem linha em branco ao redor (convenção alternativa do codebase)", () => {
+    // Mesma convenção usada por makeManyChunkText em clarice-correct.test.ts.
+    const text = "SECAO_0\nconteudo A\n---\nSECAO_1\nconteudo B";
+    const paragraphs = splitIntoParagraphs(text);
+    assert.ok(paragraphs.length >= 2, `esperado ≥2 parágrafos, recebido ${paragraphs.length}`);
+    assert.equal(paragraphs.map((p) => p.text).join(""), text);
+  });
+
+  it("startOffset (default 0) é cumulativo e cobre o texto inteiro", () => {
+    const text = "AAA\n\nBBB\n\nCCC\n\nDDD";
+    const paragraphs = splitIntoParagraphs(text);
+    let expectedOffset = 0;
+    for (const p of paragraphs) {
+      assert.equal(p.startOffset, expectedOffset, `parágrafo com offset ${p.startOffset} deveria ter offset ${expectedOffset}`);
+      expectedOffset += p.text.length;
+    }
+    assert.equal(expectedOffset, text.length);
+  });
+
+  it("startOffset com base != 0 (chamada chunk.startOffset) soma corretamente ao offset relativo", () => {
+    // Espelha o uso real: correctChunkViaParagraphs chama
+    // splitIntoParagraphs(chunk.text, chunk.startOffset) pra que os parágrafos
+    // tenham offset no texto ORIGINAL completo, não só relativo ao chunk.
+    const chunkText = "AAA\n\nBBB\n\nCCC";
+    const chunkStartOffset = 1000;
+    const paragraphs = splitIntoParagraphs(chunkText, chunkStartOffset);
+    assert.equal(paragraphs[0].startOffset, 1000, "1º parágrafo deve começar exatamente no startOffset da base");
+    // 2º parágrafo começa depois de "AAA\n\n" (5 chars) relativo ao chunk.
+    assert.equal(paragraphs[1].startOffset, 1000 + "AAA\n\n".length);
+  });
+});
+
+describe("isSubstantiveParagraph (#5082)", () => {
+  it("texto vazio → não substantivo", () => {
+    assert.equal(isSubstantiveParagraph(""), false);
+  });
+
+  it("só whitespace → não substantivo", () => {
+    assert.equal(isSubstantiveParagraph("   \n\n  "), false);
+  });
+
+  it("separador `---` sozinho (com ou sem whitespace ao redor) → não substantivo", () => {
+    assert.equal(isSubstantiveParagraph("---"), false);
+    assert.equal(isSubstantiveParagraph("---\n\n"), false);
+    assert.equal(isSubstantiveParagraph("  ---  \n"), false);
+    assert.equal(isSubstantiveParagraph("-----"), false);
+  });
+
+  it("conteúdo real → substantivo", () => {
+    assert.equal(isSubstantiveParagraph("Um parágrafo com conteúdo real.\n\n"), true);
+  });
+
+  it("conteúdo curto (não confundir com separador) → substantivo", () => {
+    assert.equal(isSubstantiveParagraph("Olá!"), true);
+    assert.equal(isSubstantiveParagraph("--"), true, "'--' (2 traços) não é o separador --- de 3+");
   });
 });
 
