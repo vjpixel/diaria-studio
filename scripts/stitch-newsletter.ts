@@ -7,8 +7,8 @@
  * seções secundárias (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS) do
  * `01-approved-capped.json`, o bloco É IA? do `01-eia.md`, blocos fixos
  * (ERRO INTENCIONAL + SORTEIO + PARA ENCERRAR) do template, e — dentro de
- * PARA ENCERRAR, dinâmico por edição — o grupo "Edições relacionadas"
- * (#5122, `scripts/lib/related-editions.ts`).
+ * PARA ENCERRAR, dinâmico por edição — o grupo "Mais sobre {tema}"
+ * (#5122/#5181, `scripts/lib/related-editions.ts`).
  *
  * Substitui a responsabilidade que estava na orchestrator inline.
  * Determinístico — sem LLM call.
@@ -49,7 +49,7 @@ import {
 } from "./lib/lint-checks/snippet-staleness.ts"; // #4150: grava hash do corpo pós-cabeçalho dos snippets usados, pro guard de staleness distinguir edição de metadado de edição de conteúdo
 import { resolveBoxesForEdition } from "./select-boxes-by-clicks.ts"; // #4626: seleção automática de boxes 1/2/3 por cliques+tendência+anti-repetição — só afeta main() (CLI), stitchNewsletter() em si permanece pura/sem I/O de auto-seleção
 import { matchEditionHub, extractBoldLinkTitles } from "./lib/hub-match.ts"; // #4907: link contextual pro hub temático quando as manchetes do dia casam HUB_KEYWORD_PATTERNS
-import { selectRelatedEditions, renderRelatedEditionsMarkdown } from "./lib/related-editions.ts"; // #5122: aresta edição->edição no fim do corpo — independente do #4907 acima (não exige match único edição-wide)
+import { selectRelatedEditions, renderRelatedEditionsMarkdown, loadRecentRelatedEditionUrls } from "./lib/related-editions.ts"; // #5122/#5181: aresta edição->edição no fim do corpo — independente do #4907 acima (não exige match único edição-wide), exclusão mútua aplicada abaixo
 
 interface ArticleLike {
   url?: string;
@@ -192,8 +192,8 @@ function computeParaEncerrarSlotADefault(): string {
  * #3219/#3368/#4274/#4357/#4413/#5122: monta o bloco PARA ENCERRAR completo —
  * cabeçalho (fixo, `FIXED_BLOCKS.para_encerrar_header`) + slot A (apoio +
  * ferramentas, editável) + pills de curadoria (fixo, `CURADORIA_PILLS`) +
- * grupo "Edições relacionadas" (dinâmico por edição, #5122 — OMITIDO quando
- * `relatedEditionsMarkdown` é `null`/ausente) + convite social (fixo,
+ * grupo "Mais sobre {tema}" (dinâmico por edição, #5122/#5181 — OMITIDO
+ * quando `relatedEditionsMarkdown` é `null`/ausente) + convite social (fixo,
  * `SOCIAL_INVITE`), nessa ordem (invariante do #3219/#3368 preservada — o
  * convite social é sempre o ÚLTIMO parágrafo). #4413: o convite social NÃO É
  * MAIS um slot editável — é sempre `SOCIAL_INVITE`, verbatim, independente
@@ -655,13 +655,26 @@ export function stitchNewsletter(input: StitchInput): string {
   const destaqueHeadlineOptions = (d3 !== null ? [d1, d2, d3] : [d1, d2]).map(extractBoldLinkTitles);
   const hubMatch = matchEditionHub(destaqueHeadlineOptions);
 
-  // #5122: grupo "Edições relacionadas" no PARA ENCERRAR — aresta
+  // #5122/#5181: grupo "Mais sobre {tema}" no PARA ENCERRAR — aresta
   // edição->edição independente de `hubMatch` acima (não exige match único
-  // edição-wide, ver docstring de `scripts/lib/related-editions.ts`).
+  // edição-wide, ver docstring de `scripts/lib/related-editions.ts`). 1 hub
+  // (o mais específico entre os casados) + até 2 edições daquele MESMO hub.
+  // `excludeUrls` (#5181 item 4) vem das últimas ~10 edições irmãs de
+  // `input.editionDir` — evita recomendar a mesma edição-filha
+  // indefinidamente enquanto o pool do hub não regenera.
   // `null` (nenhum hub casou em nenhum destaque) omite o grupo inteiro.
-  const relatedEditionsMarkdown = renderRelatedEditionsMarkdown(
-    selectRelatedEditions(destaqueHeadlineOptions),
-  );
+  const relatedEditionsGroup = selectRelatedEditions(destaqueHeadlineOptions, {
+    excludeUrls: loadRecentRelatedEditionUrls(input.editionDir),
+  });
+  // #5181 item 3: exclusão mútua com "Saiba mais:" (#4907) — quando o hub
+  // que `matchEditionHub` já linkou em algum destaque é o MESMO hub
+  // escolhido aqui, omite a linha do hub (preserva rótulo + edições) pra
+  // não duplicar o MESMO <a href> duas vezes na mesma edição.
+  const omitHubLinkInRelatedGroup =
+    hubMatch !== null && relatedEditionsGroup !== null && hubMatch.slug === relatedEditionsGroup.hubSlug;
+  const relatedEditionsMarkdown = renderRelatedEditionsMarkdown(relatedEditionsGroup, {
+    omitHubLink: omitHubLinkInRelatedGroup,
+  });
   function withHubLink(draft: string, idx: number): string {
     if (!hubMatch || hubMatch.destaqueIndex !== idx) return draft;
     return `${draft}\n\nSaiba mais:\n\n[${hubMatch.label}](${hubMatch.url})`;
