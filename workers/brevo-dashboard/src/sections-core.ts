@@ -631,6 +631,15 @@ ${monthlyAbcSectionsByDate}
   const abcAudienceAggregateSection = abcAudienceResultsByCycle
     .map(({ cycle, result }) => renderAbcAudienceAggregateSection(cycle, result))
     .join("\n");
+  // #5154: Teste de HORÁRIO da onda ramp-warm (#5140) — seção SEPARADA do
+  // Resumo A/B/C acima (ver docstring de renderHourTestSection pro racional
+  // completo). Sem escopo por ciclo (o naming da campanha não carrega o
+  // ciclo mensal) — 1 cômputo sobre TODAS as campanhas, reusado tanto no
+  // detalhe da aba Engajamento quanto na linha compacta da Visão Geral
+  // (mesmo padrão de reuso de `monthlyTotalsSection`/`volumeSection` — zero
+  // fetch extra, `renderHourTestSection` já se omite sozinha sem dado).
+  const hourTestResult = aggregateHourTest(campaigns);
+  const hourTestSection = renderHourTestSection(hourTestResult);
   // #2736: "Resumo D1–D5 — S1" removida da aba Engajamento (ruído, decisão do
   // editor). renderDaySummarySection/aggregateDaySummary permanecem exportadas
   // e testadas (reuso futuro), só não são mais chamadas aqui.
@@ -1084,6 +1093,7 @@ ${healthVisaoGeralSection}
 ${volumeSection}
 ${couponVisaoGeralHtml}
 ${abcAudienceAggregateSection}
+${hourTestSection}
 ${weekdaysVisaoGeralSection}
 <h3 class="narrative-group-title">Futuro — próximos passos</h3>
 ${recommendationVisaoGeralSection}
@@ -1185,6 +1195,7 @@ ${experimentEvalSections}
 ${weekdaySection}
 ${abcSection}
 ${abcAudienceSection}
+${hourTestSection}
 ${monthlyAbcSection}
 ${cohortsSection}
 ${eiaEngagementSection}
@@ -2713,6 +2724,242 @@ export function renderAbcAudienceAggregateSection(
   <h2 class="section-title">Resumo A/B/C por Audiência (${cycleTitle})</h2>
   <p class="section-note"><small>Agregada = fria (nunca recebeu) + quente (já engajada) combinadas — o detalhe por audiência está na aba Engajamento. Vencedor decidido pelo CLIQUE (click rate), não só pela abertura.</small></p>
   ${renderAbcAudienceTable("Agregada (Fria + Quente)", result.aggregate)}
+</section>`;
+}
+
+// ─── #5154: Teste de HORÁRIO da onda ramp-warm (#5140) — leitura ────────────
+//
+// Seção DELIBERADAMENTE SEPARADA do "Resumo A/B/C por Audiência" acima —
+// decisão do editor registrada na issue #5154, por três motivos independentes
+// (não relitigar, ver docstring da issue):
+//   1. Tipo: `CellSummaryV2.cell` é uma união FECHADA "A"|"B"|"C" que atravessa
+//      `aggregateCellsV2`/`AbcAudienceTable`/`renderAbcAudienceTable` — acomodar
+//      `H06`/`H10` exigiria alargar essa cadeia inteira.
+//   2. Semântica: a seção A/B/C responde "qual ASSUNTO vence"; esta responde
+//      "qual HORÁRIO converte mais" — sobrecarregar a mesma seção deixaria o
+//      painel ambíguo sobre o que está sendo medido (exatamente o risco que
+//      motivou o sufixo `H06`/`H10` próprio na #5140, nunca `A`/`B`/`C`).
+//   3. Estado: `clarice-abc-state.json` está `encerrado` (#5055) e este teste
+//      não deve reabri-lo nem se misturar com o histórico dele.
+//
+// Sem cold/warm (o teste só roda na audiência `ramp-warm`, já quente) —
+// portanto UMA tabela basta; a mesma serve tanto o detalhe da aba Engajamento
+// quanto a linha compacta da Visão Geral (não há sub-tabela pra "enxugar",
+// diferente do par renderAbcAudienceSection/renderAbcAudienceAggregateSection).
+
+/** Métricas de UMA célula (hora BRT) do teste de horário — superset enxuto de `CellSummaryV2` sem A/B/C. */
+export interface HourCellSummary {
+  hourBrt: number;
+  /** Rótulo `H06`/`H10` — mesmo formato de `hourCellLabel` (scripts/lib/clarice-wave-plan.ts), reimplementado aqui (workers/ não importa de scripts/, ver #4255). */
+  hourLabel: string;
+  campaignCount: number;
+  sent: number;
+  delivered: number;
+  opens: number;
+  /** Cliques ATRIBUÍDOS a um contato da lista — mesma semântica de `CellSummaryV2.clicksAttributed` (#4559). */
+  clicksAttributed: number;
+  unattributedCampaignCount: number;
+  clicksTotal: number;
+  unsubscriptions: number;
+  bounces: number;
+  openRate: number;
+  ctor: number;
+  clickRate: number;
+  unsubRate: number;
+  bounceRate: number;
+}
+
+/** Resultado agregado do teste de horário — braços amostrados + veredito de significância/poder. */
+export interface HourTestResult {
+  cells: HourCellSummary[];
+  /** Hora BRT da célula com maior click rate (empate → null). */
+  leaderClickRateHour: number | null;
+  significantClick: boolean;
+  pValue: number | null;
+  minDetectableLiftRelative: number | null;
+}
+
+/**
+ * Extrai a hora BRT do naming `Clarice {yymm} grupo:{key}` (`campaignNameFor`,
+ * clarice-schedule-group.ts) quando `key` termina em `-H{HH}` (célula de
+ * horário, #5140 — `hourCellLabel`/`groupCellListNameFor`). Espelha
+ * `expectedCellFromCampaignName` (grupo A/B/C), dimensão distinta de
+ * propósito. `null` quando o nome não bate ou a hora está fora de 0-23.
+ * Exportado pra teste unitário.
+ */
+export function parseHourTestCampaign(campaignName: string): { hourBrt: number } | null {
+  const m = /^Clarice\s+\d{4}\s+grupo:[\w-]*-H(\d{2})$/i.exec(campaignName.trim());
+  if (!m) return null;
+  const h = Number(m[1]);
+  return h >= 0 && h <= 23 ? { hourBrt: h } : null;
+}
+
+function emptyHourCell(hourBrt: number): HourCellSummary {
+  return {
+    hourBrt,
+    hourLabel: `H${String(hourBrt).padStart(2, "0")}`,
+    campaignCount: 0, sent: 0, delivered: 0, opens: 0,
+    clicksAttributed: 0, unattributedCampaignCount: 0, clicksTotal: 0,
+    unsubscriptions: 0, bounces: 0,
+    openRate: 0, ctor: 0, clickRate: 0, unsubRate: 0, bounceRate: 0,
+  };
+}
+
+/**
+ * Agrega TODAS as campanhas reconhecidas por `parseHourTestCampaign` — sem
+ * escopo por ciclo mensal (o naming da campanha só carrega o ciclo DIÁRIO
+ * "yymm", não o "AAMM-MM"; o teste é lido no acumulado da vida dele, não
+ * por ciclo) e sem o guard de consolidação por dia que `aggregateCellsV2`
+ * aplica ao A/B/C (#3404): cada onda com teste de horário ATIVO sempre
+ * dispara os N braços JUNTOS via o mesmo laço em `clarice-envio-run.ts`
+ * (Passo 7) — uma célula sem par só existe no caso raro de falha PARCIAL a
+ * meio de onda, já sinalizado no relatório operacional daquele dia (ver
+ * "ONDA PARCIALMENTE MONTADA" em clarice-envio-run.ts), não algo que este
+ * painel precise redetectar. Exportado pra teste unitário.
+ */
+export function aggregateHourTest(
+  campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
+): HourTestResult {
+  const acc = new Map<number, { sent: number; delivered: number; opens: number; clicksAttributed: number; clicksTotal: number; unattributed: number; unsub: number; bounces: number; count: number }>();
+  for (const c of campaigns) {
+    const parsed = parseHourTestCampaign(c.name);
+    if (!parsed) continue;
+    const picked = pickStats(c);
+    if (!picked) continue;
+    const s = picked.stats;
+    if (!acc.has(parsed.hourBrt)) {
+      acc.set(parsed.hourBrt, { sent: 0, delivered: 0, opens: 0, clicksAttributed: 0, clicksTotal: 0, unattributed: 0, unsub: 0, bounces: 0, count: 0 });
+    }
+    const a = acc.get(parsed.hourBrt)!;
+    a.sent += s.sent ?? 0;
+    a.delivered += s.delivered ?? 0;
+    a.opens += s.uniqueViews ?? 0;
+    const totalClicks = s.uniqueClicks ?? 0;
+    // #4559 (mesmo racional de aggregateCellsV2): usa cliques ATRIBUÍDOS a
+    // um contato da lista quando disponível — nunca o total não-verificado.
+    const cs = c.statistics?.campaignStats?.[0];
+    const hasAttribution = !!cs && Number.isFinite(cs.uniqueClicks);
+    const attributedClicks = hasAttribution ? cs!.uniqueClicks : totalClicks;
+    a.clicksAttributed += attributedClicks;
+    a.clicksTotal += totalClicks;
+    if (!hasAttribution) a.unattributed += 1;
+    a.unsub += s.unsubscriptions ?? 0;
+    a.bounces += (s.hardBounces ?? 0) + (s.softBounces ?? 0);
+    a.count += 1;
+  }
+  const cells = [...acc.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([hourBrt, d]) => {
+      if (d.count === 0) return emptyHourCell(hourBrt);
+      return {
+        hourBrt,
+        hourLabel: `H${String(hourBrt).padStart(2, "0")}`,
+        campaignCount: d.count,
+        sent: d.sent,
+        delivered: d.delivered,
+        opens: d.opens,
+        clicksAttributed: d.clicksAttributed,
+        unattributedCampaignCount: d.unattributed,
+        clicksTotal: d.clicksTotal,
+        unsubscriptions: d.unsub,
+        bounces: d.bounces,
+        openRate: d.delivered > 0 ? (d.opens / d.delivered) * 100 : 0,
+        ctor: d.opens > 0 ? (d.clicksAttributed / d.opens) * 100 : 0,
+        clickRate: d.delivered > 0 ? (d.clicksAttributed / d.delivered) * 100 : 0,
+        unsubRate: d.sent > 0 ? (d.unsub / d.sent) * 100 : 0,
+        bounceRate: d.sent > 0 ? (d.bounces / d.sent) * 100 : 0,
+      };
+    });
+
+  const sampled = cells.filter((c) => c.campaignCount > 0);
+  let leaderClickRateHour: number | null = null;
+  let significantClick = false;
+  let pValue: number | null = null;
+  let minDetectableLiftRelative: number | null = null;
+  if (sampled.length >= 2) {
+    const max = sampled.reduce((m, c) => Math.max(m, c.clickRate), -Infinity);
+    const tied = sampled.filter((c) => c.clickRate === max);
+    leaderClickRateHour = tied.length === 1 ? tied[0].hourBrt : null;
+    if (leaderClickRateHour !== null) {
+      const leader = sampled.find((c) => c.hourBrt === leaderClickRateHour)!;
+      const runnerUp = [...sampled].filter((c) => c.hourBrt !== leaderClickRateHour).sort((a, b) => b.clickRate - a.clickRate)[0];
+      if (runnerUp) {
+        const test = twoProportionZTest(leader.clicksAttributed, leader.delivered, runnerUp.clicksAttributed, runnerUp.delivered);
+        pValue = test.pValue;
+        significantClick = test.pValue < SIGNIFICANCE_ALPHA;
+        minDetectableLiftRelative = minDetectableRelativeLift(leader.clicksAttributed, leader.delivered, runnerUp.clicksAttributed, runnerUp.delivered);
+      }
+    }
+  }
+  return { cells, leaderClickRateHour, significantClick, pValue, minDetectableLiftRelative };
+}
+
+/**
+ * Renderiza a seção do teste de horário. `""` (nenhum header, nenhum bloco
+ * permanente) quando menos de 2 braços têm envio — mesmo defeito que a
+ * Parte 2 da #5140 já corrigiu na seção A/B/C (nunca reintroduzir um bloco
+ * vazio pra um teste que ainda não rodou ou já foi consolidado a 1 braço só).
+ * Exportado pra teste unitário.
+ */
+export function renderHourTestSection(result: HourTestResult): string {
+  const { cells, leaderClickRateHour, significantClick, pValue, minDetectableLiftRelative } = result;
+  const sampled = cells.filter((c) => c.campaignCount > 0);
+  if (sampled.length < 2) return "";
+
+  const isLowPower = minDetectableLiftRelative != null && minDetectableLiftRelative >= LOW_POWER_MDE_THRESHOLD;
+  const allZero = sampled.every((c) => c.clicksAttributed === 0);
+  const conclusionNote =
+    allZero
+      ? "Aguardando dados de clique — primeiras horas pós-envio."
+      : leaderClickRateHour === null
+      ? "Empate no clique — aguardar mais dados."
+      : significantClick && !isLowPower
+      ? `Vencedor por CLIQUE: <strong style="color:${DS.ink}">${String(leaderClickRateHour).padStart(2, "0")}:00 BRT</strong> — diferença estatisticamente significativa (p ${pValue !== null ? pValue.toFixed(4) : "?"} &lt; ${SIGNIFICANCE_ALPHA}). Já dá pra concluir.`
+      : significantClick && isLowPower
+      ? `Vencedor por CLIQUE (com ressalva): <strong style="color:${DS.ink}">${String(leaderClickRateHour).padStart(2, "0")}:00 BRT</strong> — diferença estatisticamente significativa (p ${pValue !== null ? pValue.toFixed(4) : "?"} &lt; ${SIGNIFICANCE_ALPHA}), mas a amostra ATRIBUÍDA ainda é pequena: o teste só tem poder (80%) pra detectar lift relativo ≥ ${(minDetectableLiftRelative! * 100).toFixed(0)}%. Tratar como indicativo, não conclusivo (#4559/#5154).`
+      : `Vencedor provisório por clique: <strong style="color:${DS.ink}">${String(leaderClickRateHour).padStart(2, "0")}:00 BRT</strong> — diferença <strong>NÃO</strong> significativa ainda (p ${pValue !== null ? pValue.toFixed(4) : "?"} ≥ ${SIGNIFICANCE_ALPHA}). Precisa de mais dados antes de concluir.`;
+
+  const orderedRows = [...sampled].sort((a, b) => b.clickRate - a.clickRate);
+  const rows = orderedRows
+    .map((c) => {
+      const clickTag = c.hourBrt === leaderClickRateHour ? ` <strong style="color:${DS.ink}">▲ CLIQUE</strong>` : "";
+      return `<tr>
+        <td><strong>${String(c.hourBrt).padStart(2, "0")}:00 BRT</strong></td>
+        <td>${c.campaignCount}</td>
+        <td>${c.sent.toLocaleString("pt-BR")}</td>
+        <td>${c.delivered.toLocaleString("pt-BR")}</td>
+        <td class="metric">${c.openRate.toFixed(1)}%</td>
+        <td class="metric">${c.ctor.toFixed(1)}%${clickTag}</td>
+        <td>${c.clicksAttributed.toLocaleString("pt-BR")}</td>
+        <td>${c.unsubRate.toFixed(2)}%</td>
+        <td>${c.bounceRate.toFixed(2)}%</td>
+      </tr>`;
+    })
+    .join("\n");
+
+  return `
+<section class="phase2-section" id="hour-test-ramp-warm">
+  <h2 class="section-title">Teste de Horário — ramp-warm (#5140)</h2>
+  <p class="section-note"><small>Agregado por BRAÇO, somando todos os dias do teste (n diário não sustenta leitura). Vencedor decidido pelo CLIQUE único (mesmo critério do A/B/C de assunto, #2976) — abertura/descadastro/bounce são secundários.</small></p>
+  <p class="section-note">${conclusionNote}</p>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th scope="col" title="Horário BRT do braço">Horário</th>
+        <th scope="col" title="Dias/envios contabilizados">Envios</th>
+        <th scope="col" title="Total enviado">Sent</th>
+        <th scope="col" title="Total entregue">Delivered</th>
+        <th scope="col" title="Aberturas únicas ÷ delivered">Open rate</th>
+        <th scope="col" title="CTOR = cliques únicos ATRIBUÍDOS ÷ aberturas; ▲CLIQUE marca o vencedor por cliques ÷ delivered">CTOR</th>
+        <th scope="col" title="Cliques únicos ATRIBUÍDOS a algum contato da lista">Cliques</th>
+        <th scope="col" title="Descadastros ÷ sent">Unsub</th>
+        <th scope="col" title="(hard+soft bounce) ÷ sent">Bounce</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>
+  </div>
 </section>`;
 }
 

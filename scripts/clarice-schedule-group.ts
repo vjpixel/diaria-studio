@@ -175,6 +175,7 @@ import { checkEiaGuard, applyVerifyResults, isScheduledStatus } from "./clarice-
 import { scheduledAtForDate } from "./lib/clarice-wave-plan.ts";
 import { groupListsRegistryPath, type GroupListEntry } from "./clarice-import-waves.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { tagHourCellUtm } from "./lib/shared/utm-registry.ts";
 
 loadProjectEnv();
 
@@ -869,7 +870,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // as imagens pro Cloudflare KV — nada de upload aqui, ver docstring do topo).
   const htmlPath = resolve(resolveMonthlyDir(contentCycle), "_internal", "cloudflare-preview.html");
   if (!existsSync(htmlPath)) throw new Error(`HTML render não existe: ${htmlPath}`);
-  const html = readFileSync(htmlPath, "utf8");
+  let html = readFileSync(htmlPath, "utf8");
+  // #5154 item 1: `key` de célula do teste de HORÁRIO (#5140) termina em
+  // `-H{HH}` (ex: "d6-qui06-H06", ver `hourCellLabel`/`groupCellListNameFor`
+  // em clarice-wave-plan.ts/clarice-import-waves.ts). Sem este sufixo no
+  // `utm_campaign`, os dois braços do teste enviam o MESMO html com o MESMO
+  // UTM — clique/cadastro/cupom não são atribuíveis a nenhum dos dois
+  // horários. Só toca o html DESTA campanha (`key` já resolvida acima);
+  // A/B/C de assunto (`-A`/`-B`/`-C`) e grupos sem célula seguem intocados.
+  const hourCellSuffix = /-([Hh]\d{2})$/.exec(key)?.[1];
+  if (hourCellSuffix) html = tagHourCellUtm(html, hourCellSuffix.toUpperCase());
 
   const campaignsPath = resolve(segmentsDir, "group-campaigns.json");
   let campaigns: CampaignEntry[] = [];
