@@ -181,6 +181,37 @@ export const HUB_KEYWORD_PATTERNS: Record<string, RegExp> = {
   // industrial/soberania de IA, não regulação): "Governo lança modelo de
   // linguagem 100% nacional", "SoberanIA no ar: Brasil tem modelo de IA
   // próprio" — candidatos a um hub futuro de soberania/infra, não este.
+  //
+  // **#5124 (260813) — 2 entradas do JSON commitado NÃO são reproduzíveis
+  // rodando este arquivo.** A defasagem de 48 dias apontada pela issue foi
+  // investigada com busca manual mais ampla que o corpus title/subtitle de
+  // sempre — leitura de CORPO INTEIRO das 36 edições entre 25/06 e 13/08,
+  // seção RADAR incluída (`collectHubSources` só testa `post.title`/
+  // `post.subtitle`, ver função abaixo — RADAR nunca entra no scan
+  // automático, é sub-headline dentro do corpo do e-mail). Achado: 2 itens
+  // de RADAR genuinamente sobre regulação de IA no Brasil, verificados
+  // contra fonte primária (camara.leg.br, gov.br) antes de entrar —
+  // "Usar óculos com IA ao volante pode pesar no bolso" (30/06, PL 19/2026,
+  // CVT da Câmara) e "Gestão lança Matriz de Competências em Inteligência
+  // Artificial" (03/07, MGI/SGD, ligada ao PBIA já citado no FAQ do hub —
+  // NÃO confundir com a Portaria MGI nº 3.485/2026, ato distinto e anterior
+  // que institui só a política de governança de IA interna do ministério,
+  // ver a ressalva no próprio FAQ) — adicionados A MÃO em
+  // `scripts/lib/hubs/brasil-regulacao-sources.generated.json` (entradas
+  // `como-ter-acesso-alexa` e `governo-dos-eua-pode-virar-socio-da-openai`).
+  // Nenhum termo novo generalizado pro regex abaixo: como o gatilho é
+  // RADAR (não destaque), ampliar o pattern não teria efeito — a checagem
+  // acontece contra `destaques = [title, ...subtitle]`, que nunca inclui
+  // texto de RADAR. **Consequência prática: rodar
+  // `npx tsx scripts/generate-hub-sources.ts --hub brasil-regulacao` (sem
+  // `--dry-run`) SOBRESCREVE o JSON inteiro e apaga essas 2 entradas em
+  // silêncio** — não há merge com o que já está commitado (ver
+  // `runGenerate`/o `writeFileAtomic` no fim deste arquivo). Se isso
+  // acontecer, re-adicionar as 2 entradas manualmente conferindo este
+  // comentário e o PR do #5124, ou — melhor — antes de rodar o script de
+  // novo, considerar se vale estender `collectHubSources` para também
+  // varrer RADAR (mudança maior, cross-cutting nos 6 hubs, fora do escopo
+  // desta issue).
   "brasil-regulacao":
     /\banpd\b|marco legal( da| de)? (ia\b|inteligencia artificial)|\bmarco de ia\b|\bpl[ -]?\d{3,4}\b|projeto de lei|\bstf\b|congresso nacional|\bcfm\b|\banatel\b|\btse\b|hugo motta|brasil regula|classifica sistemas de ia por risco|manipular ia do tribunal|(?=.*\bcongresso\b)(?=.*\bia\b)|(?=.*\bsenado\b)(?=.*\bia\b)|(?=.*\bcamara\b)(?=.*\bia\b)/i,
   // #4558 (6º hub, 2º TEMÁTICO transversal — brasil-regulacao foi o 1º).
