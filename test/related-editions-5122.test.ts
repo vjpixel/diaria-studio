@@ -146,8 +146,8 @@ describe("renderRelatedEditionsMarkdown (#5122/#5181) — pura", () => {
       out,
       "Mais sobre OpenAI e ChatGPT:\n" +
         "- [Tudo sobre OpenAI e ChatGPT](https://arquivo.diar.ia.br/temas/openai-chatgpt?utm_source=x)\n" +
-        "- [Título A](https://diar.ia.br/p/a) (01/08/2026)\n" +
-        "- [Título B](https://diar.ia.br/p/b) (01/07/2026)",
+        "- [Título A (01/08/2026)](https://diar.ia.br/p/a)\n" +
+        "- [Título B (01/07/2026)](https://diar.ia.br/p/b)",
     );
   });
 
@@ -163,7 +163,7 @@ describe("renderRelatedEditionsMarkdown (#5122/#5181) — pura", () => {
 
     it("omitHubLink:true -> omite só a linha do hub, preserva rótulo + edições", () => {
       const out = renderRelatedEditionsMarkdown(group, { omitHubLink: true });
-      assert.equal(out, "Mais sobre OpenAI e ChatGPT:\n- [Título A](https://diar.ia.br/p/a) (01/08/2026)");
+      assert.equal(out, "Mais sobre OpenAI e ChatGPT:\n- [Título A (01/08/2026)](https://diar.ia.br/p/a)");
       assert.doesNotMatch(out!, /Tudo sobre/, "a linha do hub não deveria aparecer");
     });
 
@@ -171,6 +171,44 @@ describe("renderRelatedEditionsMarkdown (#5122/#5181) — pura", () => {
       const empty: RelatedEditionsGroup = { ...group, editions: [] };
       assert.equal(renderRelatedEditionsMarkdown(empty, { omitHubLink: true }), null);
     });
+  });
+});
+
+describe("renderRelatedEditionsMarkdown -> renderEncerrar (hotfix: regex gulosa de newsletter-render-html.ts)", () => {
+  // Regressão: `renderRelatedEditionsMarkdown` colocava a data DEPOIS do `)`
+  // de fechamento do link (`[Título](url) (DD/MM/AAAA)`). A regex de parse de
+  // pill em `newsletter-render-html.ts` (`/^\[([^\]]+)\]\((.+)\)$/`) é gulosa
+  // e ancorada no FIM da string — capturava tudo até o ÚLTIMO `)`, incluindo
+  // a data, dentro do próprio `href`. Este teste exercita o parser REAL (não
+  // só `related-editions.ts` isolado) e afirma que o `href` final é
+  // EXATAMENTE a URL da edição, sem sufixo vazado.
+  it("href do <a> final é EXATAMENTE a URL da edição, sem ') (DD/MM/AAAA)' vazado no atributo", () => {
+    const group: RelatedEditionsGroup = {
+      hubSlug: "openai-chatgpt",
+      hubLabel: "OpenAI e ChatGPT",
+      hubUrl: "https://arquivo.diar.ia.br/temas/openai-chatgpt?utm_source=x",
+      editions: [
+        { title: "Título Exemplo", url: "https://diar.ia.br/p/exemplo", date: "2026-08-12", hubSlug: "openai-chatgpt" },
+      ],
+    };
+    const related = renderRelatedEditionsMarkdown(group);
+    assert.ok(related);
+
+    const body = buildParaEncerrar({ slotA: "Texto A." }, related);
+    const encerrarBody = extractTemplateBlock(body, "🙋🏼‍♀️ PARA ENCERRAR");
+    assert.ok(encerrarBody, "PARA ENCERRAR deveria estar presente no bloco montado");
+    const html = renderEncerrar(encerrarBody!);
+
+    // A data agora mora DENTRO do label visível (fix: movida pra dentro dos
+    // colchetes) — o texto do <a> é "Título Exemplo (12/08/2026)" inteiro.
+    const anchorMatch = /<a href="([^"]*)"[^>]*>Título Exemplo \(12\/08\/2026\)<\/a>/.exec(html);
+    assert.ok(anchorMatch, `esperava um <a> com o texto "Título Exemplo (12/08/2026)" — html: ${html}`);
+    assert.equal(
+      anchorMatch![1],
+      "https://diar.ia.br/p/exemplo",
+      "o href não deveria carregar sufixo ') (DD/MM/AAAA)' vazado do parêntese da data",
+    );
+    assert.doesNotMatch(anchorMatch![1], /[()]/, "href não deveria conter parênteses");
   });
 });
 
@@ -238,7 +276,7 @@ describe("stitchNewsletter — 'Mais sobre {tema}' end-to-end (#5122/#5181)", ()
 
       assert.match(out, /Mais sobre OpenAI e ChatGPT:/);
       assert.match(out, /- \[Tudo sobre OpenAI e ChatGPT\]\(https:\/\/arquivo\.diar\.ia\.br\/temas\/openai-chatgpt/);
-      assert.match(out, /- \[[^\]]+\]\(https:\/\/diar\.ia\.br\/p\/[^)]+\) \(\d{2}\/\d{2}\/\d{4}\)/);
+      assert.match(out, /- \[[^\]]+ \(\d{2}\/\d{2}\/\d{4}\)\]\(https:\/\/diar\.ia\.br\/p\/[^)]+\)/);
 
       // #5122 critério de pronto: o bloco emite <a href> pra outra edição no
       // HTML final — não só no markdown intermediário. Extrai o corpo de
@@ -247,7 +285,12 @@ describe("stitchNewsletter — 'Mais sobre {tema}' end-to-end (#5122/#5181)", ()
       const body = extractTemplateBlock(out, "🙋🏼‍♀️ PARA ENCERRAR");
       assert.ok(body, "PARA ENCERRAR deveria estar presente no output stitchado");
       const html = renderEncerrar(body!);
-      assert.match(html, /<a href="https:\/\/diar\.ia\.br\/p\/[^"]+"[^>]*>[^<]+<\/a>/);
+      // Regex apertada de propósito (hotfix, achado no review consolidado):
+      // `[^"]+` sozinho mascarava o bug de #5122 (aceitava `)`/`(` dentro do
+      // valor do href, exatamente o sufixo vazado que a regex gulosa de
+      // `newsletter-render-html.ts` produzia). `[^")\s]+` rejeita qualquer
+      // `)` ou espaço dentro do atributo — só passa se o href for a URL pura.
+      assert.match(html, /<a href="https:\/\/diar\.ia\.br\/p\/[^")\s]+"[^>]*>[^<]+<\/a>/);
     } finally {
       cleanup();
     }
@@ -324,7 +367,7 @@ describe("stitchNewsletter — 'Mais sobre {tema}' end-to-end (#5122/#5181)", ()
       assert.equal(hubHrefOccurrences, 1, "o link do hub deveria aparecer 1x só na edição inteira");
 
       // Ainda tem pelo menos 1 edição-filha no "Mais sobre" (não suprimiu o grupo inteiro).
-      assert.match(out, /Mais sobre OpenAI e ChatGPT:\n- \[[^\]]+\]\(https:\/\/diar\.ia\.br\/p\/[^)]+\) \(\d{2}\/\d{2}\/\d{4}\)/);
+      assert.match(out, /Mais sobre OpenAI e ChatGPT:\n- \[[^\]]+ \(\d{2}\/\d{2}\/\d{4}\)\]\(https:\/\/diar\.ia\.br\/p\/[^)]+\)/);
     } finally {
       cleanup();
     }

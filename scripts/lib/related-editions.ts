@@ -218,6 +218,14 @@ export function selectRelatedEditions(
  * (`formatDateShort`, mesmo formato que os hubs já usam em prosa — #5181
  * item 5): sem isso, o 2º/3º candidato de um hub magro (ex: `brasil-regulacao`,
  * 11 edições no acervo) pode ser de meses atrás sem nenhum sinal pro leitor.
+ * A data fica DENTRO dos colchetes, como parte do texto visível do link
+ * (`- [Título (DD/MM/AAAA)](URL)`) — NUNCA depois do `)` de fechamento
+ * (hotfix, achado no review consolidado): a regex de parse de pill em
+ * `newsletter-render-html.ts` (`/^\[([^\]]+)\]\((.+)\)$/`) é gulosa e
+ * ancorada no fim da string, então qualquer conteúdo após o `)` do link
+ * (como `(DD/MM/AAAA)`) ficaria capturado dentro do PRÓPRIO `href` — link
+ * quebrado no HTML final, data vazando pro atributo em vez de aparecer no
+ * texto. Manter a linha estritamente `[label](url)`, sem sufixo.
  *
  * `omitHubLink` (#5181 item 3) — quando `true`, omite a linha do hub (mas
  * preserva o rótulo + as edições) porque o MESMO hub já foi linkado no
@@ -243,7 +251,7 @@ export function renderRelatedEditionsMarkdown(
     lines.push(`- [Tudo sobre ${group.hubLabel}](${group.hubUrl})`);
   }
   for (const ed of group.editions) {
-    lines.push(`- [${ed.title}](${ed.url}) (${formatDateShort(ed.date)})`);
+    lines.push(`- [${ed.title} (${formatDateShort(ed.date)})](${ed.url})`);
   }
   if (lines.length === 0) return null;
   return `Mais sobre ${group.hubLabel}:\n${lines.join("\n")}`;
