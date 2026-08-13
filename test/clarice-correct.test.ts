@@ -7,11 +7,16 @@ import {
   ClariceHttpError,
   correctTextChunked,
   withClariceRetryChunked,
+  correctChunkViaParagraphs,
+  correctTextViaParagraphs,
+  isFatalHttpError,
+  PARAGRAPH_FALLBACK_TIMEOUT_MS,
   type RetryPolicy,
   type ChunkedResult,
   type ChunkedRetryResult,
+  type AttemptLogEntry,
 } from "../scripts/clarice-correct.ts";
-import { CLARICE_CHUNK_THRESHOLD, splitIntoChunks } from "../scripts/lib/clarice-chunk.ts";
+import { CLARICE_CHUNK_THRESHOLD, splitIntoChunks, type TextChunk } from "../scripts/lib/clarice-chunk.ts";
 import { applyClariceSuggestions, countOccurrences } from "../scripts/clarice-apply.ts";
 
 function mockFetch(response: {
@@ -763,6 +768,479 @@ describe("correctTextChunked (#2701 item 1) — teto de concorrência no dispatc
       () => correctTextChunked({ apiKey: "k", text, fetchImpl }, CHUNK_THRESHOLD, chunks.length),
       /HTTP 403/,
       "erro de um chunk deve propagar mesmo com outros chunks em voo bem-sucedidos — sem resultado parcial (fail-clean)",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5082 — isFatalHttpError (extraído do is4xx inline de withClariceRetry)
+// ---------------------------------------------------------------------------
+
+describe("isFatalHttpError (#5082)", () => {
+  it("ClariceHttpError com status 4xx → true", () => {
+    assert.equal(isFatalHttpError(new ClariceHttpError(401, "unauthorized")), true);
+    assert.equal(isFatalHttpError(new ClariceHttpError(403, "forbidden")), true);
+    assert.equal(isFatalHttpError(new ClariceHttpError(499, "x")), true);
+  });
+
+  it("ClariceHttpError com status 5xx → false", () => {
+    assert.equal(isFatalHttpError(new ClariceHttpError(503, "service unavailable")), false);
+    assert.equal(isFatalHttpError(new ClariceHttpError(500, "internal error")), false);
+  });
+
+  it("erro genérico com mensagem 'HTTP 4xx' → true (fallback de regex)", () => {
+    assert.equal(isFatalHttpError(new Error("HTTP 400: bad request")), true);
+  });
+
+  it("erro de rede/timeout (AbortError, sem status) → false", () => {
+    assert.equal(isFatalHttpError(new Error("The operation was aborted")), false);
+    const abortError = new Error("This operation was aborted");
+    abortError.name = "AbortError";
+    assert.equal(isFatalHttpError(abortError), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5082 — correctChunkViaParagraphs: fallback de 2º nível por-parágrafo
+// ---------------------------------------------------------------------------
+
+describe("correctChunkViaParagraphs (#5082) — granularidade por-parágrafo", () => {
+  it("1 request REST isolado por parágrafo substantivo, separador `---` pulado sem request", () => {
+    const chunk: TextChunk = {
+      text: "Primeiro paragrafo com ERRO_1.\n\n---\n\nSegundo paragrafo com ERRO_2.",
+      startOffset: 0,
+    };
+    const calls: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const bodyStr = typeof init?.body === "string" ? init.body : "{}";
+      const parsed = JSON.parse(bodyStr) as { paragraphs: Array<{ description: string }> };
+      const body = parsed.paragraphs[0].description;
+      calls.push(body);
+      const resp = body.includes("ERRO_1")
+        ? [{ from: "ERRO_1", to: "CORRIGIDO_1" }]
+        : body.includes("ERRO_2")
+          ? [{ from: "ERRO_2", to: "CORRIGIDO_2" }]
+          : [];
+      return new Response(JSON.stringify(resp), { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+
+    return correctChunkViaParagraphs(chunk, { apiKey: "k", fetchImpl }).then((result) => {
+      // 2 parágrafos substantivos (o separador --- não deve gerar request).
+      assert.equal(calls.length, 2, `esperado 2 requests (só parágrafos substantivos); feito ${calls.length}`);
+      assert.ok(!calls.some((c) => c.trim() === "---"), "separador --- não deve ser enviado ao Clarice");
+      assert.equal(result.stats.paragraphsSubstantive, 2);
+      assert.equal(result.stats.paragraphsSucceeded, 2);
+      assert.equal(result.stats.paragraphsFailed, 0);
+      assert.ok(result.correctedText.includes("CORRIGIDO_1"));
+      assert.ok(result.correctedText.includes("CORRIGIDO_2"));
+      assert.ok(!result.correctedText.includes("ERRO_1"));
+      assert.ok(!result.correctedText.includes("ERRO_2"));
+      assert.equal(result.rawSuggestions.length, 2);
+    });
+  });
+
+  it("1 parágrafo falhando isolado NÃO aborta os demais — recupera parte das sugestões", async () => {
+    const chunk: TextChunk = {
+      text: "Paragrafo A com ERRO_A.\n\nParagrafo B problematico.\n\nParagrafo C com ERRO_C.",
+      startOffset: 0,
+    };
+    const calls: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const bodyStr = typeof init?.body === "string" ? init.body : "{}";
+      const parsed = JSON.parse(bodyStr) as { paragraphs: Array<{ description: string }> };
+      const body = parsed.paragraphs[0].description;
+      calls.push(body);
+      if (body.includes("problematico")) {
+        return new Response("service unavailable", { status: 503 });
+      }
+      const resp = body.includes("ERRO_A")
+        ? [{ from: "ERRO_A", to: "CORRIGIDO_A" }]
+        : body.includes("ERRO_C")
+          ? [{ from: "ERRO_C", to: "CORRIGIDO_C" }]
+          : [];
+      return new Response(JSON.stringify(resp), { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+
+    const result = await correctChunkViaParagraphs(chunk, { apiKey: "k", fetchImpl });
+
+    assert.equal(result.stats.paragraphsSubstantive, 3);
+    assert.equal(result.stats.paragraphsSucceeded, 2, "2 dos 3 parágrafos devem ter sucesso");
+    assert.equal(result.stats.paragraphsFailed, 1, "1 parágrafo deve falhar");
+    assert.equal(result.stats.failedParagraphs.length, 1);
+    assert.match(result.stats.failedParagraphs[0].errorMessage, /503/);
+
+    // Parágrafos A e C recuperados; B (falho) preservado sem correção — não
+    // aborta a corrida inteira por causa de 1 parágrafo problemático.
+    assert.ok(result.correctedText.includes("CORRIGIDO_A"));
+    assert.ok(result.correctedText.includes("CORRIGIDO_C"));
+    assert.ok(result.correctedText.includes("Paragrafo B problematico."), "parágrafo falho preserva texto original");
+
+    // Fail-fast: o parágrafo problemático deve ter sido chamado exatamente 1×
+    // (SEM retry) — reintroduzir retry aqui reproduziria o acúmulo de
+    // 40-60s+ que a issue #5082 investigou.
+    const failedCalls = calls.filter((c) => c.includes("problematico"));
+    assert.equal(failedCalls.length, 1, "parágrafo que falha deve ser chamado exatamente 1× (sem retry)");
+  });
+
+  it("onAttempt recebe viaParagraphFallback: true em cada tentativa (sucesso e falha)", async () => {
+    const chunk: TextChunk = { text: "Paragrafo unico com ERRO_X.", startOffset: 0 };
+    const fetchImplOk: typeof fetch = async () =>
+      new Response(JSON.stringify([{ from: "ERRO_X", to: "CORRIGIDO_X" }]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    const entriesOk: AttemptLogEntry[] = [];
+    await correctChunkViaParagraphs(chunk, {
+      apiKey: "k",
+      fetchImpl: fetchImplOk,
+      onAttempt: (e) => entriesOk.push(e),
+    });
+    assert.equal(entriesOk.length, 1);
+    assert.equal(entriesOk[0].viaParagraphFallback, true);
+    assert.equal(entriesOk[0].outcome, "success");
+    assert.equal(entriesOk[0].attempt, 1);
+    assert.equal(entriesOk[0].maxAttempts, 1, "modo por-parágrafo é sempre 1 tentativa (fail-fast)");
+
+    const fetchImplFail: typeof fetch = async () => new Response("timeout", { status: 504 });
+    const entriesFail: AttemptLogEntry[] = [];
+    await correctChunkViaParagraphs(chunk, {
+      apiKey: "k",
+      fetchImpl: fetchImplFail,
+      onAttempt: (e) => entriesFail.push(e),
+    });
+    assert.equal(entriesFail.length, 1);
+    assert.equal(entriesFail[0].viaParagraphFallback, true);
+    assert.equal(entriesFail[0].outcome, "fatal_failure");
+  });
+
+  it("timeoutMs default é PARAGRAPH_FALLBACK_TIMEOUT_MS (20s) quando não especificado", async () => {
+    // Não testamos o timeout real disparando (levaria 20s) — só que o valor
+    // exportado bate com o documentado, e que passar timeoutMs custom é honrado
+    // (request aborta bem antes de 20s se o mock nunca resolve).
+    assert.equal(PARAGRAPH_FALLBACK_TIMEOUT_MS, 20_000);
+
+    const chunk: TextChunk = { text: "Paragrafo que nunca responde.", startOffset: 0 };
+    const fetchImpl: typeof fetch = (_url, init) =>
+      new Promise((_resolve, reject) => {
+        const signal = (init as { signal?: AbortSignal })?.signal;
+        signal?.addEventListener("abort", () => reject(new Error("The operation was aborted")));
+      });
+
+    const start = Date.now();
+    const result = await correctChunkViaParagraphs(chunk, { apiKey: "k", fetchImpl, timeoutMs: 50 });
+    const elapsed = Date.now() - start;
+
+    assert.ok(elapsed < 2_000, `timeoutMs custom (50ms) deve ser honrado, não o default de 20s; elapsed=${elapsed}ms`);
+    assert.equal(result.stats.paragraphsFailed, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5082 — correctTextViaParagraphs: --granularity paragraph forçado
+// ---------------------------------------------------------------------------
+
+describe("correctTextViaParagraphs (#5082) — granularidade forçada, bypass do chunking normal", () => {
+  it("texto inteiro tratado como 1 chunk único — 1 request por parágrafo substantivo, sem retry", async () => {
+    // Texto pequeno o bastante pra caber em 1 chunk normal (bem abaixo do
+    // threshold) — mesmo assim, --granularity paragraph deve dividir em
+    // parágrafos em vez de mandar como 1 request só.
+    const text = "Abertura da newsletter.\n\nDESTAQUE 1 com ERRO_D1.\n\nDESTAQUE 2 com ERRO_D2.";
+    assert.ok(text.length < CLARICE_CHUNK_THRESHOLD, "fixture deve caber em 1 chunk normal");
+
+    let callCount = 0;
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      callCount++;
+      const bodyStr = typeof init?.body === "string" ? init.body : "{}";
+      const parsed = JSON.parse(bodyStr) as { paragraphs: Array<{ description: string }> };
+      const body = parsed.paragraphs[0].description;
+      const resp = body.includes("ERRO_D1")
+        ? [{ from: "ERRO_D1", to: "CORRIGIDO_D1" }]
+        : body.includes("ERRO_D2")
+          ? [{ from: "ERRO_D2", to: "CORRIGIDO_D2" }]
+          : [];
+      return new Response(JSON.stringify(resp), { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+
+    const result = await correctTextViaParagraphs({ apiKey: "k", text, fetchImpl });
+
+    assert.equal(callCount, 3, "3 parágrafos substantivos (abertura + 2 destaques) → 3 requests isolados");
+    assert.equal(result.stats.paragraphsSubstantive, 3);
+    assert.ok(result.correctedText.includes("CORRIGIDO_D1"));
+    assert.ok(result.correctedText.includes("CORRIGIDO_D2"));
+    assert.equal(result.correctedText.length - text.length, "CORRIGIDO_D1".length - "ERRO_D1".length + "CORRIGIDO_D2".length - "ERRO_D2".length);
+  });
+
+  it("falha em 1 dos N parágrafos não impede sucesso dos outros (sem retry em nenhum)", async () => {
+    const text = "Paragrafo 1 OK.\n\nParagrafo 2 falha.\n\nParagrafo 3 OK.";
+    let callCount = 0;
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      callCount++;
+      const bodyStr = typeof init?.body === "string" ? init.body : "{}";
+      const parsed = JSON.parse(bodyStr) as { paragraphs: Array<{ description: string }> };
+      if (parsed.paragraphs[0].description.includes("falha")) {
+        throw new Error("fetch failed");
+      }
+      return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+
+    const result = await correctTextViaParagraphs({ apiKey: "k", text, fetchImpl });
+
+    assert.equal(callCount, 3, "3 parágrafos → 3 requests, cada 1× (sem retry mesmo no que falha)");
+    assert.equal(result.stats.paragraphsSucceeded, 2);
+    assert.equal(result.stats.paragraphsFailed, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5082 — withClariceRetryChunked: fallback automático de 2º nível
+// ---------------------------------------------------------------------------
+
+describe("withClariceRetryChunked (#5082) — fallback automático de 2º nível por-parágrafo", () => {
+  const noSleep = async (_ms: number): Promise<void> => {};
+  const fastPolicy: RetryPolicy = {
+    maxAttempts: 2,
+    timeoutMs: 5_000,
+    baseBackoffMs: 0,
+  };
+
+  it("chunk esgota os retries normais → cai no fallback por-parágrafo e recupera as sugestões", async () => {
+    const fullText = "Paragrafo A com ERRO_A.\n\nParagrafo B com ERRO_B.";
+    let chunkLevelCalls = 0;
+    const paragraphCalls: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const bodyStr = typeof init?.body === "string" ? init.body : "{}";
+      const parsed = JSON.parse(bodyStr) as { paragraphs: Array<{ description: string }> };
+      const body = parsed.paragraphs[0].description;
+      if (body === fullText) {
+        chunkLevelCalls++;
+        return new Response("service unavailable", { status: 503 });
+      }
+      paragraphCalls.push(body);
+      const resp = body.includes("ERRO_A")
+        ? [{ from: "ERRO_A", to: "CORRIGIDO_A" }]
+        : body.includes("ERRO_B")
+          ? [{ from: "ERRO_B", to: "CORRIGIDO_B" }]
+          : [];
+      return new Response(JSON.stringify(resp), { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+
+    const result = await withClariceRetryChunked({ apiKey: "k", text: fullText, fetchImpl }, fastPolicy, noSleep);
+
+    assert.equal(chunkLevelCalls, fastPolicy.maxAttempts, "chunk normal deve esgotar maxAttempts antes de cair no fallback");
+    assert.equal(paragraphCalls.length, 2, "fallback deve fazer 1 request isolado por parágrafo substantivo");
+    assert.equal(result.usedParagraphFallbackChunks, 1, "1 chunk deve ter usado o fallback");
+    assert.equal(result.paragraphFallbackStats.length, 1);
+    assert.equal(result.paragraphFallbackStats[0].paragraphsSucceeded, 2);
+    assert.equal(result.paragraphFallbackStats[0].paragraphsFailed, 0);
+    assert.ok(result.correctedText.includes("CORRIGIDO_A"), "sugestão do parágrafo A recuperada via fallback");
+    assert.ok(result.correctedText.includes("CORRIGIDO_B"), "sugestão do parágrafo B recuperada via fallback");
+  });
+
+  it("1 parágrafo falhando no fallback não aborta a pipeline — recupera parte, chunk retorna sucesso parcial", async () => {
+    const fullText = "Paragrafo A com ERRO_A.\n\nParagrafo B problematico.";
+    const paragraphCalls: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const bodyStr = typeof init?.body === "string" ? init.body : "{}";
+      const parsed = JSON.parse(bodyStr) as { paragraphs: Array<{ description: string }> };
+      const body = parsed.paragraphs[0].description;
+      if (body === fullText) {
+        return new Response("service unavailable", { status: 503 }); // chunk-level sempre falha
+      }
+      paragraphCalls.push(body);
+      if (body.includes("problematico")) {
+        return new Response("service unavailable", { status: 503 }); // paragrafo B falha (fail-fast, sem retry)
+      }
+      return new Response(JSON.stringify([{ from: "ERRO_A", to: "CORRIGIDO_A" }]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    const result = await withClariceRetryChunked({ apiKey: "k", text: fullText, fetchImpl }, fastPolicy, noSleep);
+
+    assert.equal(result.usedParagraphFallbackChunks, 1);
+    assert.equal(result.paragraphFallbackStats[0].paragraphsSucceeded, 1);
+    assert.equal(result.paragraphFallbackStats[0].paragraphsFailed, 1);
+    assert.ok(result.correctedText.includes("CORRIGIDO_A"), "parágrafo A recuperado");
+    assert.ok(result.correctedText.includes("Paragrafo B problematico."), "parágrafo B (falho) preserva texto original");
+    // Cada request de parágrafo — inclusive o que falha — deve ter sido feito
+    // exatamente 1× (fail-fast, sem retry dentro do fallback).
+    assert.equal(paragraphCalls.filter((c) => c.includes("problematico")).length, 1);
+    assert.equal(paragraphCalls.filter((c) => c.includes("ERRO_A")).length, 1);
+  });
+
+  it("fallback também falha 100% → propaga o erro ORIGINAL do chunk (fail-clean preservado)", async () => {
+    const fullText = "Paragrafo A problematico.\n\nParagrafo B problematico.";
+    const fetchImpl: typeof fetch = async () => new Response("service unavailable", { status: 503 });
+
+    await assert.rejects(
+      () => withClariceRetryChunked({ apiKey: "k", text: fullText, fetchImpl }, fastPolicy, noSleep),
+      (err: unknown) => {
+        assert.ok(err instanceof ClariceHttpError, `erro propagado deve ser o ClariceHttpError original do chunk, got ${(err as Error)?.constructor?.name}`);
+        assert.equal((err as ClariceHttpError).status, 503);
+        return true;
+      },
+    );
+  });
+
+  it("erro fatal (4xx) NÃO aciona o fallback — propaga imediatamente sem tentar parágrafos", async () => {
+    const fullText = "Paragrafo A.\n\nParagrafo B.";
+    let chunkLevelCalls = 0;
+    const paragraphCalls: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const bodyStr = typeof init?.body === "string" ? init.body : "{}";
+      const parsed = JSON.parse(bodyStr) as { paragraphs: Array<{ description: string }> };
+      const body = parsed.paragraphs[0].description;
+      if (body === fullText) {
+        chunkLevelCalls++;
+        return new Response("unauthorized", { status: 401 });
+      }
+      paragraphCalls.push(body);
+      return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+
+    await assert.rejects(
+      () => withClariceRetryChunked({ apiKey: "k", text: fullText, fetchImpl }, fastPolicy, noSleep),
+      ClariceHttpError,
+    );
+
+    assert.equal(chunkLevelCalls, 1, "401 é fast-fail — não deve esgotar maxAttempts");
+    assert.equal(paragraphCalls.length, 0, "fallback NÃO deve ser tentado pra erro fatal (4xx) — repetiria o mesmo erro em cada parágrafo");
+  });
+
+  it("paragraphFallback: { enabled: false } desliga o fallback — preserva fail-clean estrito original", async () => {
+    const fullText = "Paragrafo A com ERRO_A.\n\nParagrafo B com ERRO_B.";
+    const paragraphCalls: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const bodyStr = typeof init?.body === "string" ? init.body : "{}";
+      const parsed = JSON.parse(bodyStr) as { paragraphs: Array<{ description: string }> };
+      const body = parsed.paragraphs[0].description;
+      if (body === fullText) {
+        return new Response("service unavailable", { status: 503 });
+      }
+      paragraphCalls.push(body);
+      return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+
+    await assert.rejects(
+      () =>
+        withClariceRetryChunked(
+          { apiKey: "k", text: fullText, fetchImpl },
+          fastPolicy,
+          noSleep,
+          undefined,
+          undefined,
+          { enabled: false },
+        ),
+      ClariceHttpError,
+    );
+
+    assert.equal(paragraphCalls.length, 0, "fallback desligado — nenhum request de parágrafo deve ser feito");
+  });
+
+  it("offsets remapeados corretamente: chunk 2 (com startOffset != 0) usa fallback e a correção aparece na posição certa do documento inteiro", async () => {
+    // Documento com 2 seções separadas por --- forçadas em chunks distintos
+    // via um threshold baixo. A seção 2 (chunk com startOffset != 0) esgota
+    // os retries normais e cai no fallback — a correção resultante precisa
+    // aparecer NA POSIÇÃO CORRETA do documento reconstruído (chunk 1 intacto
+    // + chunk 2 corrigido via parágrafo), não deslocada nem duplicada.
+    const CHUNK_THRESHOLD = 60;
+    const section1 = "Secao 1 sem erros e sem necessidade de fallback aqui.";
+    // section2 tem 2 parágrafos (separados por \n\n) DE PROPÓSITO — se fosse 1
+    // parágrafo só, o texto do parágrafo seria idêntico ao texto do chunk
+    // inteiro, e o mock não conseguiria distinguir "tentativa normal do chunk"
+    // de "tentativa do fallback por-parágrafo" (mesmo body).
+    const section2 = "Intro da secao 2 sem erro.\n\nParagrafo com ERRO_SECAO2 na segunda secao do documento.";
+    const fullText = `${section1}\n---\n${section2}`;
+
+    const chunks = splitIntoChunks(fullText, CHUNK_THRESHOLD);
+    assert.ok(chunks.length >= 2, `fixture deve gerar ≥2 chunks; gerou ${chunks.length}`);
+    const chunk2 = chunks.find((c) => c.text.includes("ERRO_SECAO2"))!;
+    assert.ok(chunk2, "deve existir um chunk contendo ERRO_SECAO2");
+    assert.notEqual(chunk2.startOffset, 0, "fixture deve testar um chunk com startOffset != 0 (não o primeiro)");
+
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const bodyStr = typeof init?.body === "string" ? init.body : "{}";
+      const parsed = JSON.parse(bodyStr) as { paragraphs: Array<{ description: string }> };
+      const body = parsed.paragraphs[0].description;
+      // Chunk inteiro contendo ERRO_SECAO2 falha sempre (aciona o fallback);
+      // qualquer request MENOR que o chunk 2 completo é o REST por-parágrafo.
+      if (body === chunk2.text) {
+        return new Response("service unavailable", { status: 503 });
+      }
+      if (body.includes("ERRO_SECAO2")) {
+        return new Response(JSON.stringify([{ from: "ERRO_SECAO2", to: "CORRIGIDO_SECAO2" }]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+
+    const result = await withClariceRetryChunked(
+      { apiKey: "k", text: fullText, fetchImpl },
+      fastPolicy,
+      noSleep,
+      CHUNK_THRESHOLD,
+      1, // concorrência serial — determinístico
+    );
+
+    assert.equal(result.usedParagraphFallbackChunks, 1);
+    assert.ok(result.correctedText.includes("CORRIGIDO_SECAO2"), "correção do fallback deve estar presente");
+    assert.ok(!result.correctedText.includes("ERRO_SECAO2"), "âncora original não deve sobrar");
+    assert.ok(result.correctedText.includes(section1), "seção 1 (chunk sem fallback) deve estar intacta");
+    // Posição relativa preservada: a seção 1 continua vindo ANTES da seção 2
+    // corrigida no documento reconstruído (prova que a correção do fallback
+    // foi remapeada de volta pro lugar certo do chunk 2, não pro início/fim
+    // do documento nem duplicada).
+    const idxSection1 = result.correctedText.indexOf(section1);
+    const idxCorrection = result.correctedText.indexOf("CORRIGIDO_SECAO2");
+    assert.ok(idxSection1 >= 0 && idxCorrection > idxSection1, "seção 1 deve vir antes da correção da seção 2 no texto final");
+    // Comprimento total bate com o esperado (1 substituição de tamanho conhecido).
+    const expectedLengthDiff = "CORRIGIDO_SECAO2".length - "ERRO_SECAO2".length;
+    assert.equal(result.correctedText.length, fullText.length + expectedLengthDiff);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5082 — correctTextChunked (caminho sem --retry): mesmo fallback disponível
+// ---------------------------------------------------------------------------
+
+describe("correctTextChunked (#5082) — fallback por-parágrafo também no caminho sem retry", () => {
+  it("1 tentativa do chunk falha (não-4xx) → cai no fallback por-parágrafo", async () => {
+    // 2 parágrafos DE PROPÓSITO — com 1 parágrafo só, o body da tentativa de
+    // fallback seria idêntico ao body da tentativa normal do chunk (mesmo
+    // texto), e o mock não conseguiria distinguir as duas.
+    const fullText = "Abertura sem erro.\n\nParagrafo com ERRO_UNICO.";
+    let chunkCalls = 0;
+    const paragraphCalls: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const bodyStr = typeof init?.body === "string" ? init.body : "{}";
+      const parsed = JSON.parse(bodyStr) as { paragraphs: Array<{ description: string }> };
+      const body = parsed.paragraphs[0].description;
+      if (body === fullText) {
+        chunkCalls++;
+        return new Response("service unavailable", { status: 503 });
+      }
+      paragraphCalls.push(body);
+      const resp = body.includes("ERRO_UNICO") ? [{ from: "ERRO_UNICO", to: "CORRIGIDO_UNICO" }] : [];
+      return new Response(JSON.stringify(resp), { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+
+    const result = await correctTextChunked({ apiKey: "k", text: fullText, fetchImpl });
+
+    assert.equal(chunkCalls, 1, "caminho sem --retry faz só 1 tentativa no nível de chunk");
+    assert.equal(paragraphCalls.length, 2, "fallback deve mandar 1 request por parágrafo substantivo (2 no total)");
+    assert.ok(result.correctedText.includes("CORRIGIDO_UNICO"));
+  });
+
+  it("paragraphFallback: { enabled: false } preserva o comportamento legado (fail-clean sem fallback)", async () => {
+    const fullText = "Paragrafo unico com ERRO_UNICO.";
+    const fetchImpl: typeof fetch = async () => new Response("service unavailable", { status: 503 });
+
+    await assert.rejects(
+      () => correctTextChunked({ apiKey: "k", text: fullText, fetchImpl }, undefined, undefined, { enabled: false }),
+      /HTTP 503/,
     );
   });
 });

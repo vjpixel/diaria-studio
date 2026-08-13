@@ -242,6 +242,12 @@ describe("#2798 — CLI end-to-end: main() loga tentativas e sai gracioso em exi
       "--max-attempts", "1",
       "--edition", "999999",
       "--agent", "test-clarice-correct",
+      // #5082: sem esta flag, o chunk esgotado cairia no fallback automático
+      // de 2º nível por-parágrafo (também falharia, já que o mock derruba
+      // TODO fetch) e logaria uma 2ª entrada — fora do escopo deste teste,
+      // que verifica especificamente a observabilidade do retry normal (ver
+      // teste dedicado de fallback em test/clarice-correct.test.ts).
+      "--no-paragraph-fallback",
     ];
 
     try {

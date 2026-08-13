@@ -420,4 +420,52 @@ describe("parseCliArgs (#2320 self-review findings #4 and #8)", () => {
     assert.ok(r !== null);
     assert.equal(r!.correctedOutPath, undefined);
   });
+
+  // #5082 — --granularity / --no-paragraph-fallback / --paragraph-timeout-ms
+  it("#5082: default granularity é 'default' quando --granularity não é passado", () => {
+    const r = parseCliArgs([...BASE]);
+    assert.ok(r !== null);
+    assert.equal(r!.granularity, "default");
+    assert.equal(r!.noParagraphFallback, false);
+  });
+
+  it("#5082: --granularity paragraph é aceito", () => {
+    const r = parseCliArgs([...BASE, "--granularity", "paragraph"]);
+    assert.ok(r !== null);
+    assert.equal(r!.granularity, "paragraph");
+  });
+
+  it("#5082: --granularity com valor inválido rejeita e chama process.exit(1)", async () => {
+    const exitCode = await withMockedExit(() => {
+      try {
+        parseCliArgs([...BASE, "--granularity", "sentence"]);
+      } catch (e: unknown) {
+        if (!(e instanceof Error) || !(e as Error & { __mockExit?: boolean }).__mockExit) throw e;
+      }
+    });
+    assert.equal(exitCode, 1, "--granularity com valor fora de default/paragraph deve chamar process.exit(1)");
+  });
+
+  it("#5082: --no-paragraph-fallback seta noParagraphFallback = true", () => {
+    const r = parseCliArgs([...BASE, "--no-paragraph-fallback"]);
+    assert.ok(r !== null);
+    assert.equal(r!.noParagraphFallback, true);
+  });
+
+  it("#5082: --paragraph-timeout-ms parsed corretamente", () => {
+    const r = parseCliArgs([...BASE, "--paragraph-timeout-ms", "15000"]);
+    assert.ok(r !== null);
+    assert.equal(r!.paragraphTimeoutMs, 15000);
+  });
+
+  it("#5082: --paragraph-timeout-ms com valor inválido rejeita e chama process.exit(1)", async () => {
+    const exitCode = await withMockedExit(() => {
+      try {
+        parseCliArgs([...BASE, "--paragraph-timeout-ms", "-5"]);
+      } catch (e: unknown) {
+        if (!(e instanceof Error) || !(e as Error & { __mockExit?: boolean }).__mockExit) throw e;
+      }
+    });
+    assert.equal(exitCode, 1, "--paragraph-timeout-ms negativo deve chamar process.exit(1)");
+  });
 });
