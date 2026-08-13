@@ -311,9 +311,24 @@ export interface SegmentManifestEntry {
 }
 
 /** 1º nome p/ personalização (ex: "Azevedo, Ana" → "Azevedo"). Mesma convenção
- *  de `clarice-build-waves-store.ts`/`clarice-build-edition-sends.ts`. */
+ *  de `clarice-build-waves-store.ts`/`clarice-build-edition-sends.ts`.
+ *
+ *  #5184: remove replacement characters (U+FFFD) antes de qualquer outro
+ *  processamento — sinal de encoding corrompido upstream (ex: CSV do Stripe
+ *  lido como UTF-8 quando a fonte real era Latin-1/Windows-1252; "Gonçalo"
+ *  virou "Gon�alo"). A Brevo aceita o import inteiro (`processId`
+ *  "completed") mas descarta essa 1 linha em silêncio — sem esse byte, o
+ *  guard de reconciliação existente (contagem CSV-enviado vs
+ *  Brevo-confirmado) já pega o caso, mas só depois de abortar 1x pra cada
+ *  contato afetado. Perder o acento é preferível a perder o contato inteiro
+ *  do envio. Não tenta recuperar o caractere original (irrecuperável a
+ *  partir do byte já substituído) — só impede o byte inválido de chegar ao
+ *  CSV exportado pra Brevo. */
 function firstName(name: string | null): string {
-  return (name ?? "").trim().split(/[\s,]+/)[0] || "";
+  return (name ?? "")
+    .replace(/�/g, "")
+    .trim()
+    .split(/[\s,]+/)[0] || "";
 }
 
 /**
