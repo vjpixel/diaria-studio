@@ -234,20 +234,16 @@ export function segmentFromStore(rows: StoreRow[]): Segmentation {
       (b.priority_points ?? 0) - (a.priority_points ?? 0) ||
       a.email.localeCompare(b.email),
   );
-  // #2857 fase B: cohortSendRank (não mais tierRank) governa a ordem de
+  // #2857 fase B: cohortSendRank (não mais tierRank) governava a ordem de
   // BUCKET do 1º envio — sucessor PROVADO equivalente pros 10 cohorts
-  // derivados de tier (test/cohorts.test.ts, propriedade testada) + extensão
-  // pras safras mensais (ordenadas por recência, não pelo tier residual que
-  // o merge atribuiria).
-  // #5169: `compareContactRecency` (cohorts.ts) sucede o sort inline daqui —
-  // mesma ordem de BUCKET (`cohortSendRank`, inalterado), mas dentro de um
-  // mesmo bucket (inclusive cohorts estruturais como assinantes-ativos),
-  // quem se cadastrou por último (`created`) tem prioridade sobre quem se
-  // cadastrou antes, em vez do desempate alfabético por e-mail que valia
-  // antes — sem isso, todo mundo dentro do MESMO bucket empatava e caía
-  // nesse desempate (achado ao vivo 12/08/2026: buckets de dezenas de
-  // milhares de contatos, ordem de consumo real acabava sendo por e-mail,
-  // não por recência).
+  // derivados de tier (test/cohorts.test.ts, propriedade testada).
+  // #5169 (revisão 260812): `compareContactRecency` (cohorts.ts) sucede o
+  // sort inline daqui — recência REAL de cadastro (`created`) é o critério,
+  // cohort/bucket não entra na comparação (nem pra decidir bucket, nem pra
+  // dar prioridade estrutural a assinantes-ativos/ex-assinantes/juridico) —
+  // pedido explícito do editor, "independente do cohort". `cohortSendRank`
+  // só volta como fallback quando NENHUM dos dois lados tem `created`
+  // confiável.
   firstSend.sort(compareContactRecency);
 
   return { reSend, firstSend, excluded };
@@ -533,9 +529,10 @@ export function isRampWarm(
 }
 
 /**
- * Ordem de `ramp-warm`: `cohortSendRank` (morno→frio, mesmo eixo do 1º envio
- * da rampa) entre buckets, `compareContactRecency` (cohorts.ts, #5169)
- * dentro do mesmo bucket — `created` real decide, não desempate alfabético.
+ * Ordem de `ramp-warm`: `compareContactRecency` (cohorts.ts, #5169) —
+ * recência real de cadastro (`created` DESC), cohort não entra na
+ * comparação (nem bucket, nem prioridade estrutural pra assinantes-ativos/
+ * ex-assinantes/juridico).
  */
 export function segmentRampWarm(rows: StoreRow[]): StoreRow[] {
   return rows.filter(isRampWarm).slice().sort(compareContactRecency);
@@ -568,14 +565,12 @@ export function isNovos(
 }
 
 /**
- * Ordem de `novos`: `cohortSendRank` (assinantes-ativos primeiro) entre
- * buckets, `compareContactRecency` (cohorts.ts, #5169) dentro do mesmo
- * bucket — `created` DESC (cadastro mais recente primeiro), email ASC como
- * desempate final determinístico. Mesmo comparador de `segmentRampWarm`
- * agora — antes do #5169 este grupo já tinha `created` como desempate
- * dentro do mesmo cohort (o único dos 4 grupos que já tinha essa disciplina,
- * por causa da janela `sinceIso`); `compareContactRecency` generaliza e
- * estende a mesma regra pros outros grupos de 1º envio.
+ * Ordem de `novos`: `compareContactRecency` (cohorts.ts, #5169) — recência
+ * real de cadastro, cohort não entra na comparação. Mesmo comparador de
+ * `segmentRampWarm` — antes do #5169 este grupo já tinha `created` como
+ * desempate dentro do mesmo cohort (o único dos 4 grupos que já tinha essa
+ * disciplina, por causa da janela `sinceIso`); `compareContactRecency`
+ * generaliza e estende a mesma regra pros outros grupos de 1º envio.
  */
 export function segmentNovos(rows: StoreRow[], opts: { sinceIso: string }): StoreRow[] {
   return rows

@@ -567,18 +567,24 @@ function firstSendOrderByTierOracle(rows: StoreRow[]): string[] {
     .map((r) => r.email);
 }
 
-test("#2857 fase B equivalência (a): byte-idêntica QUANDO created é consistente com o tier (#2857 fase B.1: a semântica mudou — desde a B.1 quem manda é o período do created, não mais o tier)", () => {
+test("#2857 fase B equivalência (a), REVISADA pelo #5169 (260812): leads (T04-T09) mantêm ordem byte-idêntica ao oráculo de tier; T01/T02 (estrutural) NÃO MAIS — recência real agora compete direto com lead", () => {
   const db = openClariceDb(":memory:");
   const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
 
-  // #2857 fase B.1: a ordem só é byte-idêntica à ordem antiga por tier QUANDO
-  // o `created` de cada contato é CONSISTENTE com o rótulo estático que
-  // `TIER_TO_COHORT` atribuiria àquele tier — porque a derivação primária do
-  // cohort de um lead (tier != 1/2) passou a ser o período REAL do `created`
-  // (`deriveLeadCohort`), não mais o tier residual do merge (ver teste
-  // "equivalência (b)" abaixo pra o caso em que created DIVERGE do tier).
-  //   T01/T02 (pagante): created é IRRELEVANTE (regra 1) — usamos uma data
-  //     qualquer pra provar isso.
+  // Histórico (#2857 fase B, pré-#5169): esta fixture provava que a ordem
+  // por cohort era byte-idêntica à ordem antiga por tier — INCLUSIVE T01/T02
+  // (pagante), porque `created` era IRRELEVANTE pra eles (cohortSendRank
+  // sempre dava rank fixo 0/1, na frente de qualquer lead). O #5169 (revisão
+  // 260812, pedido do editor: "independente do cohort") tornou essa premissa
+  // FALSA de propósito — `compareContactRecency` agora usa `created` real
+  // pra TODO mundo, cohort estrutural incluso. T01/T02 usam
+  // created="2020-01-01", mais ANTIGO que qualquer lead da fixture (todos em
+  // 2023-2025) — sob a regra nova, eles saem do INÍCIO da fila e vão pro
+  // MEIO, atrás de todos os leads com created mais recente. A claim de
+  // equivalência abaixo foi restrita a T04-T09 (só leads, onde continua
+  // valendo — ver docstring de `compareContactRecency`, cohorts.ts).
+  //   T01/T02 (pagante): created ANTIGO de propósito (2020) — prova que NÃO
+  //     mais "vence sempre", ao contrário da versão histórica desta fixture.
   //   T03 ('leads-2026-jan-abr', o único slug "range"): só alcançável pelo
   //     FALLBACK de tier (created ausente) — a derivação primária NUNCA emite
   //     esse range (created 2026-01..04 viraria 'leads-2026h1', ver teste (b)).
@@ -632,10 +638,34 @@ test("#2857 fase B equivalência (a): byte-idêntica QUANDO created é consisten
   const cohortOrder = segmentFromStore(rows).firstSend.map((r) => r.email);
   const tierOracleOrder = firstSendOrderByTierOracle(rows);
 
+  // Só T04-T09 (leads, created consistente com o semestre do tier) mantêm
+  // ordem byte-idêntica ao oráculo antigo — cortando os dois pra essa faixa.
+  const leadsOnlyCohort = cohortOrder.filter((e) => /^t0[4-9]/.test(e));
+  const leadsOnlyOracle = tierOracleOrder.filter((e) => /^t0[4-9]/.test(e));
+  assert.deepEqual(
+    leadsOnlyCohort,
+    leadsOnlyOracle,
+    "entre LEADS (T04-T09), created consistente com o tier → ordem byte-idêntica ao oráculo antigo",
+  );
+
+  // #5169: T01/T02 NÃO ficam mais no início — created=2020 é mais antigo que
+  // qualquer lead da fixture (2023-2025), então saem pro meio da fila,
+  // atrás de TODOS os leads com created válido e mais recente.
   assert.deepEqual(
     cohortOrder,
-    tierOracleOrder,
-    "created consistente com o tier em todos os contatos → cohort-order (novo) byte-idêntica a tier-order (antigo)",
+    [
+      "t04a@x.com", "t04b@x.com", "t05a@x.com", "t05b@x.com",
+      "t06a@x.com", "t06b@x.com", "t07a@x.com", "t07b@x.com",
+      "t08a@x.com", "t08b@x.com", "t09a@x.com", "t09b@x.com",
+      // estruturais: created (2020) mais antigo que os leads acima, mas
+      // ainda "conhecido" — bate quem não tem created nenhum (T03/T10/null).
+      "t01a@x.com", "t01b@x.com", "t02a@x.com", "t02b@x.com",
+      // sem created (fallback pro rank de bucket): T03 (leads-2026-jan-abr)
+      // antes de T10 (leads-caudao, rank mais frio) antes de null (desconhecido).
+      "t03a@x.com", "t03b@x.com", "t10a@x.com", "t10b@x.com",
+      "nulla@x.com", "nullb@x.com",
+    ],
+    "T01/T02 competem por created real igual qualquer lead — não são mais rank fixo 0/1",
   );
   // sanidade: não é um empate degenerado (22 linhas elegíveis nunca-enviadas).
   assert.equal(cohortOrder.length, 22);
@@ -1234,7 +1264,7 @@ test("isNovos: send_eligible=0 FICA FORA", () => {
   assert.equal(isNovos(r, SINCE), false);
 });
 
-test("segmentNovos: ordem = cohortSendRank (assinantes-ativos primeiro) depois created DESC", () => {
+test("segmentNovos: ordem = recência pura, created DESC — cohort não entra (#5169, revisão 260812: assinante-ativo NÃO tem mais prioridade automática sobre lead mais recente)", () => {
   const rows: StoreRow[] = [
     row({
       email: "lead-antigo@x.com",
@@ -1267,10 +1297,10 @@ test("segmentNovos: ordem = cohortSendRank (assinantes-ativos primeiro) depois c
   ];
   const out = segmentNovos(rows, { sinceIso: SINCE });
   assert.deepEqual(out.map((r) => r.email), [
-    "payer-recente@x.com", // assinantes-ativos, created mais recente
-    "payer-antigo@x.com",  // assinantes-ativos, created mais antigo
-    "lead-recente@x.com",  // leads-2026-07, created mais recente
-    "lead-antigo@x.com",   // leads-2026-07, created mais antigo
+    "lead-recente@x.com",  // 25/07 — mais recente de todos, cohort não importa
+    "payer-recente@x.com", // 20/07 — assinante-ativo, mas fica atrás do lead mais novo
+    "payer-antigo@x.com",  // 05/07
+    "lead-antigo@x.com",   // 02/07 — mais antigo de todos
   ]);
 });
 
@@ -1340,9 +1370,18 @@ test("assertRecencySelectionMonotonic — vários contatos antigos selecionados 
   assert.ok(violations.every((v) => v.excludedEmail === "novo@x.com"), "sempre pareia com o excluído MAIS quente, não qualquer um");
 });
 
-test("assertRecencySelectionMonotonic — cohort estrutural (assinantes-ativos) na seleção nunca conta como violação contra um lead excluído mais 'recente'", () => {
+test("assertRecencySelectionMonotonic — #5169 revisão 260812: cohort estrutural (assinantes-ativos) ANTIGO selecionado enquanto lead mais NOVO fica de fora AGORA conta como violação (cohort não é mais exceção)", () => {
   const selected = [row({ email: "payer@x.com", cohort: COHORT_ASSINANTES_ATIVOS, created: "2020-01-01T00:00:00Z" })];
   const stillEligibleElsewhere = [row({ email: "lead@x.com", cohort: "leads-2026h1", created: "2026-07-01T00:00:00Z" })];
+  const violations = assertRecencySelectionMonotonic(selected, stillEligibleElsewhere);
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].selectedEmail, "payer@x.com");
+  assert.equal(violations[0].excludedEmail, "lead@x.com");
+});
+
+test("assertRecencySelectionMonotonic — cohort estrutural RECENTE selecionado enquanto lead mais ANTIGO fica de fora NÃO é violação (recência real, não cohort, decide)", () => {
+  const selected = [row({ email: "payer-novo@x.com", cohort: COHORT_ASSINANTES_ATIVOS, created: "2026-08-01T00:00:00Z" })];
+  const stillEligibleElsewhere = [row({ email: "lead-antigo@x.com", cohort: "leads-2022h1", created: "2022-01-01T00:00:00Z" })];
   assert.deepEqual(assertRecencySelectionMonotonic(selected, stillEligibleElsewhere), []);
 });
 

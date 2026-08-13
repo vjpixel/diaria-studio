@@ -163,13 +163,19 @@ describe("compareContactRecency", () => {
     assert.ok(compareContactRecency(recente, antigo) < 0);
   });
 
-  it("cohort estrutural sempre vence lead, mesmo com created muito mais antigo — não é uma medida de recência de cadastro comparável entre as duas categorias", () => {
+  it("#5169 revisão 260812: cohort estrutural NÃO vence mais lead automaticamente — recência real de created decide, cohort não entra na comparação", () => {
     const payerAntigo = { email: "payer@x.com", cohort: COHORT_ASSINANTES_ATIVOS, created: "2020-01-01T00:00:00Z" };
     const leadRecente = { email: "lead@x.com", cohort: "leads-2026h1", created: "2026-07-01T00:00:00Z" };
-    assert.ok(compareContactRecency(payerAntigo, leadRecente) < 0, "assinante-ativo sempre na frente, mesmo cadastro mais antigo");
-    // juridico também — rank estrutural fixo (#4406), não compete por created.
-    const juridico = { email: "j@x.com", cohort: COHORT_JURIDICO, created: "2020-01-01T00:00:00Z" };
-    assert.ok(compareContactRecency(juridico, leadRecente) < 0);
+    assert.ok(compareContactRecency(leadRecente, payerAntigo) < 0, "lead mais recente vence assinante-ativo mais antigo — decisão explícita do editor (260812)");
+    // juridico também — não tem mais rank estrutural fixo (#4406) na ordem de envio.
+    const juridicoAntigo = { email: "j@x.com", cohort: COHORT_JURIDICO, created: "2020-01-01T00:00:00Z" };
+    assert.ok(compareContactRecency(leadRecente, juridicoAntigo) < 0);
+  });
+
+  it("cohort estrutural RECENTE ainda vence lead ANTIGO — não é que cohort estrutural nunca vence, é que created decide, ponto", () => {
+    const payerRecente = { email: "payer@x.com", cohort: COHORT_ASSINANTES_ATIVOS, created: "2026-08-01T00:00:00Z" };
+    const leadAntigo = { email: "lead@x.com", cohort: "leads-2022h1", created: "2022-01-01T00:00:00Z" };
+    assert.ok(compareContactRecency(payerRecente, leadAntigo) < 0);
   });
 
   it("created ausente/inválido nos dois lados cai no desempate final por e-mail — nunca lança, nunca produz NaN", () => {
