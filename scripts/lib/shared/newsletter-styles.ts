@@ -128,7 +128,7 @@ export function darkCanvasMediaRule(darkCanvasBg: string): string {
  * de buildDiariaStyleBlock (que o fragmento também usa) — só o caller do
  * fullDocument invoca esta.
  *
- * ESCOPO: a regra escurece só o CANVAS externo ao container de 600px (classe
+ * ESCOPO: a regra escurece só o CANVAS externo ao container (classe
  * `.ds-canvas`, aplicada pelo caller no wrapper mais externo do fullDocument)
  * — o conteúdo do container (cores INK/SURFACE/TEAL fixas dos outros render*)
  * permanece inalterado, mesma decisão de escopo do #2645 mensal.
