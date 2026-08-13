@@ -23,6 +23,7 @@ import {
   appendSentOrQueuedEmails,
   sentOrQueuedFilePath,
   checkRoundSizeCap,
+  checkRecencyMonotonic,
   NOVOS_ROUND_SIZE_CAP,
   type SegmentRow,
   type SentOrQueuedFile,
@@ -127,6 +128,26 @@ test("buildSegmentArtifact: grupo 'ramp-warm' — mv_bucket='verified' OU cohort
     // warm/pagante-sem-mv empatam (T01, cohort assinantes-ativos, rank 0) → email ASC; cold (T08) por último.
     ["pagante-sem-mv@x.com", "warm@x.com", "cold@x.com"],
   );
+});
+
+test("buildSegmentArtifact: #5169 — 'ramp-warm'/'novos' sob operação normal produzem recencyViolations=[] (tautológico: selected é sempre o prefixo topo de ordered, compareContactRecency já garante o corte)", () => {
+  const rows: SegmentRow[] = [
+    row({ email: "novo@x.com", sends_count: 0, cohort: "leads-2023h2", created: "2023-08-01T00:00:00Z", mv_bucket: "verified" }),
+    row({ email: "medio@x.com", sends_count: 0, cohort: "leads-2022h2", created: "2022-09-01T00:00:00Z", mv_bucket: "verified" }),
+    row({ email: "antigo@x.com", sends_count: 0, cohort: "leads-2022h1", created: "2022-01-15T00:00:00Z", mv_bucket: "verified" }),
+  ];
+  const rampWarm = buildSegmentArtifact(rows, "ramp-warm", 2);
+  assert.deepEqual(rampWarm.recencyViolations, []);
+  assert.equal(rampWarm.selected.length, 2);
+});
+
+test("buildSegmentArtifact: #5169 — grupos 'engajados'/'reativacao' NÃO computam recencyViolations (fora do escopo — ordenam por engajamento, não por recência de cadastro)", () => {
+  const rows: SegmentRow[] = [
+    row({ email: "a@x.com", sends_count: 2, priority_points: 90 }),
+    row({ email: "b@x.com", sends_count: 2, priority_points: 10 }),
+  ];
+  const engajados = buildSegmentArtifact(rows, "engajados", 0);
+  assert.deepEqual(engajados.recencyViolations, [], "vazio (grupo fora do escopo, nunca computado de verdade)");
 });
 
 test("buildSegmentArtifact: 1º nome tira vírgula (Azevedo, Ana → Azevedo)", () => {
@@ -886,6 +907,148 @@ test("REGRESSÃO (#4347 D13): 501 contatos no grupo 'novos' ABORTA sem criar lis
   );
   const outAt = JSON.parse(logsAt.join("\n"));
   assert.equal(outAt.selected, NOVOS_ROUND_SIZE_CAP);
+});
+
+// ---------------------------------------------------------------------------
+// REGRESSÃO (#5169, review da PR #5174): guard de monotonicidade de recência
+// — cobertura CLI-level, não só das funções puras (`compareContactRecency`/
+// `assertRecencySelectionMonotonic`/`checkRecencyMonotonic` já têm testes
+// próprios em clarice-segment.test.ts/aqui embaixo). `def.segment` correto
+// nunca produz uma violação de verdade (é uma tautologia sob operação
+// normal, ver docstring de `buildSegmentArtifact`) — os testes abaixo
+// monkey-patcham temporariamente `NAMED_GROUPS["ramp-warm"].segment` (objeto
+// mutável, não congelado) pra simular EXATAMENTE a regressão que o guard
+// existe pra pegar (ordenação quebrada), e provam que `main()` de fato trava
+// nesse cenário — sem isso, um bug futuro na fiação de `main()` (variável
+// errada, condição invertida, exit removido) passaria pela suíte inteira
+// sem ser pego, mesmo com as funções puras 100% corretas.
+// ---------------------------------------------------------------------------
+
+test("REGRESSÃO (#5169): main() com --group ramp-warm ABORTA (exit 1, nada escrito) quando a ordenação viola monotonicidade de recência", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-recency-abort-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare(
+    `INSERT INTO clarice_users (email, name, cohort, created, sends_count, mv_bucket)
+     VALUES ('aaa-mais-antigo@x.com', 'Antigo', 'leads-2022h1', '2022-01-15T00:00:00Z', 0, 'verified')`,
+  ).run();
+  db.prepare(
+    `INSERT INTO clarice_users (email, name, cohort, created, sends_count, mv_bucket)
+     VALUES ('zzz-mais-novo@x.com', 'Novo', 'leads-2023h2', '2023-08-01T00:00:00Z', 0, 'verified')`,
+  ).run();
+  recomputeDerived(db);
+  db.close();
+  const segDir = clariceSegmentsDir("2606-07", dir);
+
+  // Ordem CORRETA (compareContactRecency) seria [zzz-mais-novo, aaa-mais-antigo]
+  // — o patch abaixo devolve o OPOSTO (alfabético, aaa antes de zzz), a mesma
+  // classe de bug que #5169 corrigiu (desempate errado dentro do predicado
+  // de 1º envio).
+  const originalSegment = NAMED_GROUPS["ramp-warm"].segment;
+  NAMED_GROUPS["ramp-warm"].segment = (rows) => [...rows].sort((a, b) => a.email.localeCompare(b.email));
+  try {
+    const { exitCode, errors } = await withFakeBrevoFetch(() =>
+      withMockedExit(() =>
+        main(["--cycle", "2606-07", "--db", dbPath, "--group", "ramp-warm", "--budget", "1", "--data-root", dir]),
+      ),
+    );
+    assert.equal(exitCode, 1, "violação de recência sem --force deve abortar");
+    assert.ok(
+      errors.some((e) => /monotonicidade de rec[êe]ncia/i.test(e)),
+      `esperava erro de monotonicidade, recebeu: ${JSON.stringify(errors)}`,
+    );
+    assert.equal(existsSync(resolve(segDir, "ramp-warm.csv")), false, "nada deve ser escrito quando a violação abortar");
+    assert.equal(existsSync(resolve(segDir, "ramp-warm-manifest.json")), false);
+  } finally {
+    NAMED_GROUPS["ramp-warm"].segment = originalSegment;
+  }
+});
+
+test("REGRESSÃO (#5169): main() com --group ramp-warm + --force DESTRAVA a violação, loga aviso (não silencia) e registra recency_violations_forced no summary", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-recency-force-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare(
+    `INSERT INTO clarice_users (email, name, cohort, created, sends_count, mv_bucket)
+     VALUES ('aaa-mais-antigo@x.com', 'Antigo', 'leads-2022h1', '2022-01-15T00:00:00Z', 0, 'verified')`,
+  ).run();
+  db.prepare(
+    `INSERT INTO clarice_users (email, name, cohort, created, sends_count, mv_bucket)
+     VALUES ('zzz-mais-novo@x.com', 'Novo', 'leads-2023h2', '2023-08-01T00:00:00Z', 0, 'verified')`,
+  ).run();
+  recomputeDerived(db);
+  db.close();
+
+  const originalSegment = NAMED_GROUPS["ramp-warm"].segment;
+  NAMED_GROUPS["ramp-warm"].segment = (rows) => [...rows].sort((a, b) => a.email.localeCompare(b.email));
+  try {
+    const { exitCode, errors, result: logs } = await withFakeBrevoFetch(() =>
+      withMockedExit(() =>
+        captureLogs(() =>
+          main([
+            "--cycle", "2606-07", "--db", dbPath, "--group", "ramp-warm", "--budget", "1", "--force",
+            "--dry-run", "--data-root", dir,
+          ]),
+        ),
+      ),
+    );
+    assert.equal(exitCode, undefined, "--force deve destravar — sem exit 1");
+    assert.ok(
+      errors.some((e) => /monotonicidade de rec[êe]ncia/i.test(e) && /--force/.test(e)),
+      `esperava AVISO (não silêncio) sobre a violação forçada, recebeu: ${JSON.stringify(errors)}`,
+    );
+    const summary = JSON.parse((logs ?? []).join("\n"));
+    assert.equal(summary.selected, 1);
+    assert.equal(summary.recency_violations_forced, 1, "auditoria: --force não pode apagar o rastro da violação");
+  } finally {
+    NAMED_GROUPS["ramp-warm"].segment = originalSegment;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// checkRecencyMonotonic — pura (mesmo padrão de checkRoundSizeCap)
+// ---------------------------------------------------------------------------
+
+test("checkRecencyMonotonic: sem violações → ok:true, forced:false, independente de --force", () => {
+  assert.deepEqual(checkRecencyMonotonic([], false), { ok: true, forced: false, violationCount: 0 });
+  assert.deepEqual(checkRecencyMonotonic([], true), { ok: true, forced: false, violationCount: 0 });
+});
+
+test("checkRecencyMonotonic: com violações e force=false → ok:false, mensagem descreve o caso concreto", () => {
+  const violations = [
+    {
+      selectedEmail: "antigo@x.com",
+      selectedCohort: "leads-2022h1",
+      selectedCreated: "2022-01-15T00:00:00Z",
+      excludedEmail: "novo@x.com",
+      excludedCohort: "leads-2023h2",
+      excludedCreated: "2023-08-01T00:00:00Z",
+    },
+  ];
+  const result = checkRecencyMonotonic(violations, false);
+  assert.equal(result.ok, false);
+  assert.equal(result.forced, false);
+  assert.equal(result.violationCount, 1);
+  assert.match(result.message!, /antigo@x\.com/);
+  assert.match(result.message!, /novo@x\.com/);
+});
+
+test("checkRecencyMonotonic: com violações e force=true → ok:true, forced:true (destrava, mas nunca em silêncio — message continua presente)", () => {
+  const violations = [
+    {
+      selectedEmail: "antigo@x.com",
+      selectedCohort: "leads-2022h1",
+      selectedCreated: "2022-01-15T00:00:00Z",
+      excludedEmail: "novo@x.com",
+      excludedCohort: "leads-2023h2",
+      excludedCreated: "2023-08-01T00:00:00Z",
+    },
+  ];
+  const result = checkRecencyMonotonic(violations, true);
+  assert.equal(result.ok, true);
+  assert.equal(result.forced, true);
+  assert.equal(result.violationCount, 1);
+  assert.ok(result.message, "message continua presente mesmo destravado — nunca silencia a violação");
 });
 
 // ---------------------------------------------------------------------------

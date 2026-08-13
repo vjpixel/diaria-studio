@@ -345,6 +345,64 @@ export function cohortSendRank(cohort: string | null | undefined): number {
 }
 
 // ---------------------------------------------------------------------------
+// compareContactRecency — desempate DENTRO de um bucket de cohortSendRank,
+// por recência real (#5169)
+// ---------------------------------------------------------------------------
+//
+// Achado ao vivo em 12/08/2026: `cohortSendRank` já ordena o BUCKET de leads
+// corretamente por recência (leads-2023h2 já rankeia mais quente que
+// leads-2022h1, porque o início do período de 2023h2 é mais recente — nenhuma
+// mudança necessária AÍ). O que faltava era a ordem DENTRO de um mesmo
+// bucket: `segmentRampWarm`/`firstSend.sort` (clarice-segment.ts) usavam
+// `cohortSendRank` como chave PRIMÁRIA e desempatavam por e-mail alfabético —
+// dentro de um bucket de 6 meses com dezenas de milhares de contatos (ex:
+// leads-2023h2, 81 mil), a ordem de consumo real acabava sendo alfabética por
+// e-mail, não por recência de cadastro. `readStoreCandidates`
+// (verify-emails-mv.ts) tinha o mesmo problema pro lado da verificação MV sob
+// demanda (sem ORDER BY nenhum — ordem de rowid do SQLite). Resultado
+// prático: enquanto um bucket gigante não é totalmente esgotado pelo déficit
+// diário (~1-5k/dia contra dezenas de milhares), QUEM dentro dele é
+// priorizado não tinha relação nenhuma com recência real — acidente de
+// e-mail/rowid, não decisão.
+// ---------------------------------------------------------------------------
+
+/**
+ * Compara dois contatos pra ordenar a fila de 1º envio (#5169) — critério
+ * PRIMÁRIO continua `cohortSendRank` (morno→frio, inalterado: já ordena
+ * cohorts/buckets DIFERENTES corretamente, inclusive leads-2023h2 mais
+ * quente que leads-2022h1). O que muda: quando dois contatos CAEM NO MESMO
+ * bucket (mesmo cohort — inclui cohorts ESTRUTURAIS como
+ * `assinantes-ativos`/`ex-assinantes`/`juridico`, onde `cohortSendRank`
+ * sempre EMPATA, já que não são um bucket temporal), o desempate passa a ser
+ * `created` DESC (cadastro mais recente primeiro) em vez de e-mail
+ * alfabético direto — "quem se cadastrou por último tem prioridade sobre
+ * quem se cadastrou antes" dentro do mesmo bucket, e-mail ASC como
+ * desempate final determinístico (quando `created` empata ou está ausente
+ * dos dois lados).
+ *
+ * Mantém o mesmo comportamento pra ties estruturais que `segmentNovos` já
+ * tinha ANTES do #5169 (desempate por `created` mesmo dentro de
+ * `assinantes-ativos`) — só estende essa disciplina pra dentro dos buckets de
+ * lead também, que é onde a issue achou o problema real (buckets gigantes,
+ * desempate por e-mail nunca refletindo recência).
+ */
+export function compareContactRecency(
+  a: { cohort?: string | null; created?: string | null; email: string },
+  b: { cohort?: string | null; created?: string | null; email: string },
+): number {
+  const ra = cohortSendRank(a.cohort);
+  const rb = cohortSendRank(b.cohort);
+  if (ra !== rb) return ra < rb ? -1 : 1;
+  const ta = a.created ? Date.parse(a.created) : NaN;
+  const tb = b.created ? Date.parse(b.created) : NaN;
+  const va = Number.isFinite(ta);
+  const vb = Number.isFinite(tb);
+  if (va && vb && ta !== tb) return tb - ta; // DESC — cadastro mais recente primeiro
+  if (va !== vb) return va ? -1 : 1; // `created` conhecido bate desconhecido
+  return a.email.localeCompare(b.email);
+}
+
+// ---------------------------------------------------------------------------
 // cohortDisplayLabel — rótulo pt-BR pro dashboard
 // ---------------------------------------------------------------------------
 

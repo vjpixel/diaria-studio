@@ -10,6 +10,7 @@ import {
   buildVerifyUrl,
   mvOutputBase,
   readStoreCandidates,
+  readStoreCandidatesSince,
   readAllCohortRows,
   cohortMemberCount,
   hasLegacyInputFlag,
@@ -38,14 +39,16 @@ function seedDb(rows: Array<{
   cohort: string | null;
   mv_bucket?: string | null;
   mv_cycle?: string | null;
+  /** #5169: opcional (default null) — só os testes de ORDER BY populam. */
+  created?: string | null;
 }>): DatabaseSync {
   const db = new DatabaseSync(":memory:");
   db.exec(SCHEMA);
   const insert = db.prepare(
-    `INSERT INTO clarice_users (email, name, cohort, mv_bucket, mv_cycle) VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO clarice_users (email, name, cohort, mv_bucket, mv_cycle, created) VALUES (?, ?, ?, ?, ?, ?)`,
   );
   for (const r of rows) {
-    insert.run(r.email, r.name ?? null, r.cohort, r.mv_bucket ?? null, r.mv_cycle ?? null);
+    insert.run(r.email, r.name ?? null, r.cohort, r.mv_bucket ?? null, r.mv_cycle ?? null, r.created ?? null);
   }
   return db;
 }
@@ -129,6 +132,69 @@ describe("readStoreCandidates (#2886 PR3 — fonte = store, não CSV)", () => {
     try {
       const { rows } = readStoreCandidates(db, "ex-assinantes");
       assert.deepEqual(rows.map((r) => r.email).sort(), ["empty@b.com", "null@b.com"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("REGRESSÃO #5169: ORDER BY created DESC — antes desta mudança a query não tinha ORDER BY nenhum (ordem de rowid arbitrária); pra um cohort GIGANTE só parcialmente coberto pelo déficit diário, isso decidia quem entrava na fatia de hoje sem relação com recência", () => {
+    const db = seedDb([
+      // Inseridos FORA de ordem de created de propósito — se a query não tiver
+      // ORDER BY, `rows` sai na ordem de inserção/rowid (meio, antigo, novo),
+      // não na ordem de recência esperada (novo, meio, antigo).
+      { email: "meio@b.com", cohort: "leads-2023h2", mv_bucket: null, created: "2023-09-15T00:00:00Z" },
+      { email: "antigo@b.com", cohort: "leads-2023h2", mv_bucket: null, created: "2023-07-02T00:00:00Z" },
+      { email: "novo@b.com", cohort: "leads-2023h2", mv_bucket: null, created: "2023-12-30T00:00:00Z" },
+    ]);
+    try {
+      const { rows } = readStoreCandidates(db, "leads-2023h2");
+      assert.deepEqual(
+        rows.map((r) => r.email),
+        ["novo@b.com", "meio@b.com", "antigo@b.com"],
+        "cadastro mais recente primeiro — quem `verifyCohortList` corta com `.slice(0, limit)` precisa ser o mais novo do cohort, não o de rowid menor",
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("REGRESSÃO #5169: created NULL fica por último em ORDER BY ... DESC (semântica padrão do SQLite) — nunca fura a frente de quem tem data conhecida", () => {
+    const db = seedDb([
+      { email: "sem-data@b.com", cohort: "leads-2023h2", mv_bucket: null, created: null },
+      { email: "com-data@b.com", cohort: "leads-2023h2", mv_bucket: null, created: "2023-08-01T00:00:00Z" },
+    ]);
+    try {
+      const { rows } = readStoreCandidates(db, "leads-2023h2");
+      assert.deepEqual(rows.map((r) => r.email), ["com-data@b.com", "sem-data@b.com"]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("readStoreCandidatesSince (#4347 Etapa 2d — mesmo ORDER BY do #5169, impacto menor por causa da janela `created >= sinceIso`, mas mesma garantia)", () => {
+  it("REGRESSÃO #5169: ORDER BY created DESC — mesma disciplina de readStoreCandidates, aplicada aqui também", () => {
+    const db = seedDb([
+      { email: "meio@b.com", cohort: "leads-2023h2", mv_bucket: null, created: "2023-09-15T00:00:00Z" },
+      { email: "antigo@b.com", cohort: "leads-2023h2", mv_bucket: null, created: "2023-07-02T00:00:00Z" },
+      { email: "novo@b.com", cohort: "leads-2023h2", mv_bucket: null, created: "2023-12-30T00:00:00Z" },
+    ]);
+    try {
+      const { rows } = readStoreCandidatesSince(db, "leads-2023h2", "2023-01-01T00:00:00Z");
+      assert.deepEqual(rows.map((r) => r.email), ["novo@b.com", "meio@b.com", "antigo@b.com"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("continua respeitando o filtro created >= sinceIso (janela) — ORDER BY não vaza quem está fora da janela", () => {
+    const db = seedDb([
+      { email: "dentro@b.com", cohort: "leads-2026h1", mv_bucket: null, created: "2026-03-01T00:00:00Z" },
+      { email: "fora@b.com", cohort: "leads-2026h1", mv_bucket: null, created: "2026-01-01T00:00:00Z" },
+    ]);
+    try {
+      const { rows } = readStoreCandidatesSince(db, "leads-2026h1", "2026-02-01T00:00:00Z");
+      assert.deepEqual(rows.map((r) => r.email), ["dentro@b.com"]);
     } finally {
       db.close();
     }

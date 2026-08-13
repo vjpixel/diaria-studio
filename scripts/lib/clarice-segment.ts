@@ -25,14 +25,14 @@
  * (reproduzível, pré-requisito do pipeline).
  */
 
-// cohortDisplayLabel/cohortFromSafra/cohortSendRank/isKnownCohortSlug:
+// cohortDisplayLabel/cohortFromSafra/compareContactRecency/isKnownCohortSlug:
 // cohorts.ts é dependency-free/Workers-safe como este módulo (sem import de
 // volta pra cá) — importar daqui não introduz ciclo nem dependência de
 // node:sqlite.
 import {
   cohortDisplayLabel,
   cohortFromSafra,
-  cohortSendRank,
+  compareContactRecency,
   isKnownCohortSlug,
   isMvExemptCohort,
   INTERNAL_EMAILS,
@@ -234,20 +234,21 @@ export function segmentFromStore(rows: StoreRow[]): Segmentation {
       (b.priority_points ?? 0) - (a.priority_points ?? 0) ||
       a.email.localeCompare(b.email),
   );
-  // #2857 fase B: cohortSendRank (não mais tierRank) governa a ordem de 1º
-  // envio — sucessor PROVADO equivalente pros 10 cohorts derivados de tier
-  // (test/cohorts.test.ts, propriedade testada) + extensão pras safras
-  // mensais (ordenadas por recência, não pelo tier residual que o merge
-  // atribuiria). Comparador explícito (não subtrai ranks) — cohortSendRank
-  // pode retornar valores enormes (RANK_UNKNOWN/RANK_LEADS_CAUDAO) cuja
-  // subtração poderia estourar precisão de float; a comparação direta evita
-  // qualquer edge de NaN/overflow.
-  firstSend.sort((a, b) => {
-    const ra = cohortSendRank(a.cohort);
-    const rb = cohortSendRank(b.cohort);
-    if (ra !== rb) return ra < rb ? -1 : 1;
-    return a.email.localeCompare(b.email);
-  });
+  // #2857 fase B: cohortSendRank (não mais tierRank) governa a ordem de
+  // BUCKET do 1º envio — sucessor PROVADO equivalente pros 10 cohorts
+  // derivados de tier (test/cohorts.test.ts, propriedade testada) + extensão
+  // pras safras mensais (ordenadas por recência, não pelo tier residual que
+  // o merge atribuiria).
+  // #5169: `compareContactRecency` (cohorts.ts) sucede o sort inline daqui —
+  // mesma ordem de BUCKET (`cohortSendRank`, inalterado), mas dentro de um
+  // mesmo bucket (inclusive cohorts estruturais como assinantes-ativos),
+  // quem se cadastrou por último (`created`) tem prioridade sobre quem se
+  // cadastrou antes, em vez do desempate alfabético por e-mail que valia
+  // antes — sem isso, todo mundo dentro do MESMO bucket empatava e caía
+  // nesse desempate (achado ao vivo 12/08/2026: buckets de dezenas de
+  // milhares de contatos, ordem de consumo real acabava sendo por e-mail,
+  // não por recência).
+  firstSend.sort(compareContactRecency);
 
   return { reSend, firstSend, excluded };
 }
@@ -531,17 +532,13 @@ export function isRampWarm(
   );
 }
 
-/** Ordem de `ramp-warm`: cohortSendRank (morno→frio, mesmo eixo do 1º envio da rampa). */
+/**
+ * Ordem de `ramp-warm`: `cohortSendRank` (morno→frio, mesmo eixo do 1º envio
+ * da rampa) entre buckets, `compareContactRecency` (cohorts.ts, #5169)
+ * dentro do mesmo bucket — `created` real decide, não desempate alfabético.
+ */
 export function segmentRampWarm(rows: StoreRow[]): StoreRow[] {
-  return rows
-    .filter(isRampWarm)
-    .slice()
-    .sort((a, b) => {
-      const ra = cohortSendRank(a.cohort);
-      const rb = cohortSendRank(b.cohort);
-      if (ra !== rb) return ra < rb ? -1 : 1;
-      return a.email.localeCompare(b.email);
-    });
+  return rows.filter(isRampWarm).slice().sort(compareContactRecency);
 }
 
 /**
@@ -571,23 +568,85 @@ export function isNovos(
 }
 
 /**
- * Ordem de `novos`: `cohortSendRank` (assinantes-ativos primeiro), desempate
- * `created` DESC (cadastro mais recente primeiro dentro do mesmo cohort),
- * email ASC como último desempate determinístico.
+ * Ordem de `novos`: `cohortSendRank` (assinantes-ativos primeiro) entre
+ * buckets, `compareContactRecency` (cohorts.ts, #5169) dentro do mesmo
+ * bucket — `created` DESC (cadastro mais recente primeiro), email ASC como
+ * desempate final determinístico. Mesmo comparador de `segmentRampWarm`
+ * agora — antes do #5169 este grupo já tinha `created` como desempate
+ * dentro do mesmo cohort (o único dos 4 grupos que já tinha essa disciplina,
+ * por causa da janela `sinceIso`); `compareContactRecency` generaliza e
+ * estende a mesma regra pros outros grupos de 1º envio.
  */
 export function segmentNovos(rows: StoreRow[], opts: { sinceIso: string }): StoreRow[] {
   return rows
     .filter((r) => isNovos(r, opts.sinceIso))
     .slice()
-    .sort((a, b) => {
-      const ra = cohortSendRank(a.cohort);
-      const rb = cohortSendRank(b.cohort);
-      if (ra !== rb) return ra < rb ? -1 : 1;
-      const ta = a.created ? Date.parse(a.created) : -Infinity;
-      const tb = b.created ? Date.parse(b.created) : -Infinity;
-      if (ta !== tb) return tb - ta; // DESC — mais recente primeiro
-      return a.email.localeCompare(b.email);
-    });
+    .sort(compareContactRecency);
+}
+
+/**
+ * Uma violação de monotonicidade de recência (#5169): um contato mais ANTIGO
+ * entrou na onda enquanto um contato mais NOVO — ainda elegível, mas fora
+ * dela — deveria ter entrado primeiro.
+ */
+export interface RecencyMonotonicityViolation {
+  selectedEmail: string;
+  selectedCohort: string | null;
+  selectedCreated: string | null;
+  /** O contato mais NOVO ainda elegível e de fora que "deveria ter entrado primeiro". */
+  excludedEmail: string;
+  excludedCohort: string | null;
+  excludedCreated: string | null;
+}
+
+/**
+ * Guard (#5169, pedido explícito do editor): confirma que `selected` (a onda
+ * que vai subir pra Brevo) respeita a monotonicidade de recência real —
+ * `compareContactRecency` — antes do upload. Não reimplementa a regra de
+ * prioridade: usa o MESMO comparador que `segmentRampWarm`/`segmentNovos`/
+ * `firstSend.sort` já usam pra ordenar, só verifica que a seleção de fato
+ * respeitou o corte de topo dessa ordem.
+ *
+ * Pura/determinística, NUNCA lança sozinha (pedido explícito da issue) —
+ * devolve a lista de violações encontradas; quem chama decide se bloqueia
+ * (mesmo padrão de `checkRoundSizeCap`, clarice-build-segment.ts: função pura
+ * retorna o veredito, o CLI decide o `process.exit`).
+ *
+ * Implementação: acha o contato mais QUENTE (`compareContactRecency`) entre
+ * `stillEligibleElsewhere` — se algum `selected` for mais FRIO que esse, é
+ * uma violação (um contato mais novo ficou de fora enquanto um mais antigo
+ * entrou). Pareia cada violação com ESSE contato mais quente de fora (a
+ * evidência mais forte de "deveria ter entrado primeiro"), não com todo par
+ * possível — mantém a saída legível mesmo com filas de dezenas de milhares
+ * de contatos.
+ *
+ * `selected`/`stillEligibleElsewhere` vazios → `[]` (nada a comparar).
+ */
+export function assertRecencySelectionMonotonic(
+  selected: readonly Pick<StoreRow, "email" | "cohort" | "created">[],
+  stillEligibleElsewhere: readonly Pick<StoreRow, "email" | "cohort" | "created">[],
+): RecencyMonotonicityViolation[] {
+  if (selected.length === 0 || stillEligibleElsewhere.length === 0) return [];
+
+  let warmestExcluded = stillEligibleElsewhere[0];
+  for (const row of stillEligibleElsewhere) {
+    if (compareContactRecency(row, warmestExcluded) < 0) warmestExcluded = row;
+  }
+
+  const violations: RecencyMonotonicityViolation[] = [];
+  for (const row of selected) {
+    if (compareContactRecency(row, warmestExcluded) > 0) {
+      violations.push({
+        selectedEmail: row.email,
+        selectedCohort: row.cohort ?? null,
+        selectedCreated: row.created ?? null,
+        excludedEmail: warmestExcluded.email,
+        excludedCohort: warmestExcluded.cohort ?? null,
+        excludedCreated: warmestExcluded.created ?? null,
+      });
+    }
+  }
+  return violations;
 }
 
 /** Registro dos grupos nomeados — fonte única pro CLI (`clarice-build-segment.ts`)

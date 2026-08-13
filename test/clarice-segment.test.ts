@@ -24,6 +24,7 @@ import {
   NAMED_GROUPS,
   parseBrevoListIds,
   excludeCommittedToQueuedCampaigns,
+  assertRecencySelectionMonotonic,
   type StoreRow,
 } from "../scripts/lib/clarice-segment.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
@@ -1294,4 +1295,60 @@ test("NAMED_GROUPS.novos: reconhecido por isNamedGroupKey, exige ctx.sinceIso (l
     NAMED_GROUPS.novos.segment(rows, { sinceIso: SINCE }).map((r) => r.email),
     ["a@x.com"],
   );
+});
+
+// ---------------------------------------------------------------------------
+// assertRecencySelectionMonotonic — guard de recência antes do upload (#5169)
+// ---------------------------------------------------------------------------
+
+test("assertRecencySelectionMonotonic — REGRESSÃO #5169 (caso concreto da issue): contato de leads-2022h1 selecionado enquanto contato de leads-2023h2 fica de fora, ainda elegível ⇒ violação", () => {
+  const selected = [row({ email: "antigo@x.com", cohort: "leads-2022h1", created: "2022-01-15T00:00:00Z" })];
+  const stillEligibleElsewhere = [
+    row({ email: "novo@x.com", cohort: "leads-2023h2", created: "2023-08-01T00:00:00Z" }),
+  ];
+  const violations = assertRecencySelectionMonotonic(selected, stillEligibleElsewhere);
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].selectedEmail, "antigo@x.com");
+  assert.equal(violations[0].selectedCohort, "leads-2022h1");
+  assert.equal(violations[0].excludedEmail, "novo@x.com");
+  assert.equal(violations[0].excludedCohort, "leads-2023h2");
+});
+
+test("assertRecencySelectionMonotonic — seleção correta (prefixo de uma fila ordenada por compareContactRecency) nunca produz violação", () => {
+  const universe = [
+    row({ email: "novo@x.com", cohort: "leads-2023h2", created: "2023-08-01T00:00:00Z" }),
+    row({ email: "meio@x.com", cohort: "leads-2022h2", created: "2022-09-01T00:00:00Z" }),
+    row({ email: "antigo@x.com", cohort: "leads-2022h1", created: "2022-01-15T00:00:00Z" }),
+  ];
+  const ordered = segmentRampWarm(universe.map((r) => ({ ...r, mv_bucket: "verified" })));
+  const selected = ordered.slice(0, 2);
+  const stillEligibleElsewhere = ordered.slice(2);
+  assert.deepEqual(assertRecencySelectionMonotonic(selected, stillEligibleElsewhere), []);
+});
+
+test("assertRecencySelectionMonotonic — vários contatos antigos selecionados contra o mesmo contato mais novo excluído ⇒ 1 violação por selecionado, todas apontando pro mesmo excluído mais quente", () => {
+  const selected = [
+    row({ email: "a1@x.com", cohort: "leads-2022h1", created: "2022-01-01T00:00:00Z" }),
+    row({ email: "a2@x.com", cohort: "leads-2022h2", created: "2022-09-01T00:00:00Z" }),
+  ];
+  const stillEligibleElsewhere = [
+    row({ email: "novo@x.com", cohort: "leads-2023h2", created: "2023-08-01T00:00:00Z" }),
+    row({ email: "menos-novo@x.com", cohort: "leads-2023h1", created: "2023-02-01T00:00:00Z" }),
+  ];
+  const violations = assertRecencySelectionMonotonic(selected, stillEligibleElsewhere);
+  assert.equal(violations.length, 2);
+  assert.ok(violations.every((v) => v.excludedEmail === "novo@x.com"), "sempre pareia com o excluído MAIS quente, não qualquer um");
+});
+
+test("assertRecencySelectionMonotonic — cohort estrutural (assinantes-ativos) na seleção nunca conta como violação contra um lead excluído mais 'recente'", () => {
+  const selected = [row({ email: "payer@x.com", cohort: COHORT_ASSINANTES_ATIVOS, created: "2020-01-01T00:00:00Z" })];
+  const stillEligibleElsewhere = [row({ email: "lead@x.com", cohort: "leads-2026h1", created: "2026-07-01T00:00:00Z" })];
+  assert.deepEqual(assertRecencySelectionMonotonic(selected, stillEligibleElsewhere), []);
+});
+
+test("assertRecencySelectionMonotonic — listas vazias (de qualquer lado) devolvem [] sem lançar", () => {
+  const someRow = [row({ email: "a@x.com", cohort: "leads-2023h1", created: "2023-01-01T00:00:00Z" })];
+  assert.deepEqual(assertRecencySelectionMonotonic([], someRow), []);
+  assert.deepEqual(assertRecencySelectionMonotonic(someRow, []), []);
+  assert.deepEqual(assertRecencySelectionMonotonic([], []), []);
 });
