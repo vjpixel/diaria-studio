@@ -10,6 +10,7 @@ import {
   buildVerifyUrl,
   mvOutputBase,
   readStoreCandidates,
+  readStoreCandidatesSince,
   readAllCohortRows,
   cohortMemberCount,
   hasLegacyInputFlag,
@@ -165,6 +166,35 @@ describe("readStoreCandidates (#2886 PR3 — fonte = store, não CSV)", () => {
     try {
       const { rows } = readStoreCandidates(db, "leads-2023h2");
       assert.deepEqual(rows.map((r) => r.email), ["com-data@b.com", "sem-data@b.com"]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("readStoreCandidatesSince (#4347 Etapa 2d — mesmo ORDER BY do #5169, impacto menor por causa da janela `created >= sinceIso`, mas mesma garantia)", () => {
+  it("REGRESSÃO #5169: ORDER BY created DESC — mesma disciplina de readStoreCandidates, aplicada aqui também", () => {
+    const db = seedDb([
+      { email: "meio@b.com", cohort: "leads-2023h2", mv_bucket: null, created: "2023-09-15T00:00:00Z" },
+      { email: "antigo@b.com", cohort: "leads-2023h2", mv_bucket: null, created: "2023-07-02T00:00:00Z" },
+      { email: "novo@b.com", cohort: "leads-2023h2", mv_bucket: null, created: "2023-12-30T00:00:00Z" },
+    ]);
+    try {
+      const { rows } = readStoreCandidatesSince(db, "leads-2023h2", "2023-01-01T00:00:00Z");
+      assert.deepEqual(rows.map((r) => r.email), ["novo@b.com", "meio@b.com", "antigo@b.com"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("continua respeitando o filtro created >= sinceIso (janela) — ORDER BY não vaza quem está fora da janela", () => {
+    const db = seedDb([
+      { email: "dentro@b.com", cohort: "leads-2026h1", mv_bucket: null, created: "2026-03-01T00:00:00Z" },
+      { email: "fora@b.com", cohort: "leads-2026h1", mv_bucket: null, created: "2026-01-01T00:00:00Z" },
+    ]);
+    try {
+      const { rows } = readStoreCandidatesSince(db, "leads-2026h1", "2026-02-01T00:00:00Z");
+      assert.deepEqual(rows.map((r) => r.email), ["dentro@b.com"]);
     } finally {
       db.close();
     }

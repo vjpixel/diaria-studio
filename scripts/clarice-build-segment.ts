@@ -141,7 +141,8 @@
  *                `Diaria-Clarice-Envio`, que roda `--group ramp-warm` sem
  *                revisão humana (não é "operado manualmente pelo editor" pra
  *                este guard específico, apesar do que a seção do teto de
- *                `novos` acima documenta pros OUTROS 3 grupos).
+ *                `novos` ABAIXO documenta pros OUTROS 3 grupos — ver a
+ *                ressalva adicionada lá, #5169).
  *   --data-root DIR   OPCIONAL, uso interno de teste (#4207, generaliza o
  *                `--segments-dir` pontual do #4176) — substitui `CLARICE_BASE`
  *                (raiz fixa `data/clarice-subscribers`) na resolução de
@@ -317,7 +318,7 @@ function firstName(name: string | null): string {
 
 /**
  * Grupos cuja ordem é governada por recência de cadastro (`ramp-warm`/
- * `novos` — 1º envio, `contactRecencyRank` em cohorts.ts) — os únicos aos
+ * `novos` — 1º envio, `compareContactRecency` em cohorts.ts) — os únicos aos
  * quais `assertRecencySelectionMonotonic` (#5169) se aplica. `engajados`/
  * `reativacao` ordenam por engajamento (priority_points/last_sent_at), um
  * eixo diferente onde "mais novo" não é sequer o critério — checar
@@ -332,12 +333,17 @@ const RECENCY_ORDERED_GROUPS: ReadonlySet<NamedGroupKey> = new Set(["ramp-warm",
  *
  * #5169: pros grupos de 1º envio (`ramp-warm`/`novos`), também computa
  * `recencyViolations` — `assertRecencySelectionMonotonic` sobre o MESMO
- * `ordered` que gerou `selected` (prefixo) e o restante (`ordered.slice(budget)`,
- * sufixo). Como os dois vêm de fatiar o mesmo array já ordenado por
- * `contactRecencyRank`, isto é uma tautologia SOB OPERAÇÃO CORRETA — nunca
- * deveria disparar; existe como guard de regressão (ex: se `def.segment`
- * voltar a ordenar só por bucket de cohort no futuro), não como filtro ativo
- * aqui. `main()` decide se bloqueia a escrita (mesmo padrão de `checkRoundSizeCap`).
+ * `ordered` que gerou `selected` (prefixo, `ordered.slice(0, budget)`) e o
+ * restante (`ordered.slice(selected.length)`, sufixo — NÃO
+ * `ordered.slice(budget)`: os dois só coincidem quando `budget > 0`; com
+ * `budget` omitido/0 — o caso real do grupo `novos` sem `--budget`,
+ * `clarice-novos-run.ts` — `selected` é o array INTEIRO e o restante correto
+ * é `[]`, não `ordered.slice(0)`). Como os dois vêm de fatiar o mesmo array
+ * já ordenado por `compareContactRecency`, isto é uma tautologia SOB
+ * OPERAÇÃO CORRETA — nunca deveria disparar; existe como guard de
+ * regressão (ex: se `def.segment` voltar a ordenar só por bucket de cohort
+ * no futuro), não como filtro ativo aqui. `main()` decide se bloqueia a
+ * escrita via `checkRecencyMonotonic` (mesmo padrão de `checkRoundSizeCap`).
  */
 export function buildSegmentArtifact(
   rows: SegmentRow[],
@@ -406,9 +412,15 @@ export function buildPrioritySnapshotCsv(selected: SegmentRow[]): string {
 // teto abaixo é o substituto direto do gate: trava contra `--since` errado,
 // rebuild que zerou `sends_count`, ou backlog inesperado que faria a rodada
 // disparar pra um volume muito maior que o esperado (~100/rodada). Só o
-// grupo `novos` é sujeito a este teto — os outros 3 grupos nomeados
-// (engajados/reativação/ramp-warm) são operados manualmente pelo editor, que
-// já é o gate.
+// grupo `novos` é sujeito a ESTE teto de tamanho — os outros 3 grupos
+// nomeados (engajados/reativação/ramp-warm) são tipicamente operados
+// manualmente pelo editor, que é o gate PRA ESTE risco específico (volume
+// inesperado). RESSALVA (#5169): `ramp-warm` também roda desassistido, via
+// `Diaria-Clarice-Envio` (task diária, `--group ramp-warm`, sem revisão
+// humana) — não tem risco de volume inesperado (a task já limita por
+// `proposeNextVolume`, `clarice-envio-policy.ts`), mas TEM o guard de
+// monotonicidade de recência (`--force` §(b) acima), que se aplica
+// exatamente porque `ramp-warm` NÃO tem editor presente pra ser o gate.
 
 export const NOVOS_ROUND_SIZE_CAP = 500;
 
@@ -432,6 +444,57 @@ export function checkRoundSizeCap(
       `Isso substitui o gate humano que a skill não tem (D6): provável --since errado, rebuild que zerou ` +
       `sends_count, ou backlog inesperado. Confira antes de prosseguir. Use --force pra destravar depois de olhar.`,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Guard de monotonicidade de recência (#5169) — grupos ramp-warm/novos
+// ---------------------------------------------------------------------------
+
+export interface RecencyMonotonicCheckResult {
+  ok: boolean;
+  /** `true` quando havia violação(ões) mas `--force` destravou mesmo assim — nunca `true` junto de `ok:false`. */
+  forced: boolean;
+  /** Quantidade de violações encontradas (0 quando não havia nenhuma). */
+  violationCount: number;
+  /** Presente quando `ok:false` (bloqueia) OU `forced:true` (aviso) — ausente quando `ok:true && !forced`. */
+  message?: string;
+}
+
+/**
+ * Pura/testável (mesmo padrão de `checkRoundSizeCap` acima): decide se
+ * `recencyViolations` (`assertRecencySelectionMonotonic`, clarice-segment.ts)
+ * bloqueia a escrita.
+ *
+ * Extraída como função própria (review da PR #5174) pra ser testável
+ * isoladamente — o caminho end-to-end (`def.segment` → `ordered` →
+ * `assertRecencySelectionMonotonic`) é, por design, uma tautologia sob
+ * operação correta (nunca produz violação de verdade), então testar só
+ * essa camada não travaria a DECISÃO (bloquear sem `--force`, destravar
+ * com) contra uma regressão futura nesta função em si.
+ *
+ * Sem violações → `ok:true, forced:false`, sempre, independente de `force`.
+ * Com violações e `force:false` → `ok:false` (bloqueia). Com violações e
+ * `force:true` → `ok:true, forced:true` — destrava, mas `forced:true` é o
+ * sinal pro caller LOGAR um aviso (não silenciar) e registrar
+ * `violationCount` no summary (achado do review: `--force` não pode apagar
+ * o rastro de uma violação real só porque o editor decidiu prosseguir —
+ * mesmo raciocínio que já motiva `guard_scope` sempre presente no summary,
+ * "este guard já falhou em silêncio uma vez").
+ */
+export function checkRecencyMonotonic(
+  violations: RecencyMonotonicityViolation[],
+  force: boolean,
+): RecencyMonotonicCheckResult {
+  if (violations.length === 0) return { ok: true, forced: false, violationCount: 0 };
+  const [first] = violations;
+  const message =
+    `${violations.length} contato(s) mais antigo(s) entraram na onda enquanto contato(s) mais novo(s), ` +
+    `ainda elegível(is), ficaram de fora. Exemplo: ${first.selectedEmail} ` +
+    `(cohort ${first.selectedCohort ?? "?"}, cadastro ${first.selectedCreated ?? "desconhecido"}) entrou na ` +
+    `frente de ${first.excludedEmail} (cohort ${first.excludedCohort ?? "?"}, cadastro ${first.excludedCreated ?? "desconhecido"}), ` +
+    `que deveria ter entrado primeiro.`;
+  if (force) return { ok: true, forced: true, violationCount: violations.length, message };
+  return { ok: false, forced: false, violationCount: violations.length, message };
 }
 
 // ---------------------------------------------------------------------------
@@ -954,23 +1017,29 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // `recencyViolations`; ausente (--tiers) ou vazio (ordem correta) não
   // bloqueia. Checado ANTES de qualquer escrita, mesmo padrão de
   // `checkRoundSizeCap` acima — `--force` destrava (o editor já olhou e
-  // decidiu prosseguir mesmo assim). Sob operação normal isto é uma
-  // tautologia matemática (ver docstring de `buildSegmentArtifact`) — só
-  // dispara se uma regressão futura reintroduzir ordenação só por bucket de
-  // cohort, inclusive na task diária automatizada (`--group ramp-warm`, sem
-  // humano presente pra passar `--force`) — é justamente aí que travar em
-  // vez de enviar fora de ordem importa mais.
-  if (recencyViolations && recencyViolations.length > 0 && !forceCap) {
-    const [first] = recencyViolations;
+  // decidiu prosseguir mesmo assim), mas NUNCA em silêncio: `forced:true`
+  // ainda loga um aviso e o summary registra `recency_violations_forced`
+  // (review da PR #5174 — `--force` não pode apagar o rastro de uma
+  // violação real). Sob operação normal isto é uma tautologia matemática
+  // (ver docstring de `buildSegmentArtifact`) — só dispara se uma regressão
+  // futura reintroduzir ordenação só por bucket de cohort, inclusive na task
+  // diária automatizada (`--group ramp-warm`, sem humano presente pra
+  // passar `--force`) — é justamente aí que travar em vez de enviar fora de
+  // ordem importa mais.
+  const recencyCheck = checkRecencyMonotonic(recencyViolations ?? [], forceCap);
+  if (!recencyCheck.ok) {
     console.error(
-      `❌ grupo '${group}' violou a monotonicidade de recência (#5169): ${recencyViolations.length} contato(s) ` +
-        `mais antigo(s) entraram na onda enquanto contato(s) mais novo(s), ainda elegível(is), ficaram de fora. ` +
-        `Exemplo: ${first.selectedEmail} (cohort ${first.selectedCohort ?? "?"}, cadastro ${first.selectedCreated ?? "desconhecido"}) ` +
-        `entrou na frente de ${first.excludedEmail} (cohort ${first.excludedCohort ?? "?"}, cadastro ${first.excludedCreated ?? "desconhecido"}), ` +
-        `que deveria ter entrado primeiro. Sob operação normal isto nunca deveria acontecer — investigue antes de prosseguir. ` +
+      `❌ grupo '${group}' violou a monotonicidade de recência (#5169): ${recencyCheck.message} ` +
+        `Sob operação normal isto nunca deveria acontecer — investigue antes de prosseguir. ` +
         `Use --force pra destravar depois de olhar.`,
     );
     process.exit(1);
+  }
+  if (recencyCheck.forced) {
+    console.error(
+      `⚠️  grupo '${group}' violou a monotonicidade de recência (#5169), mas --force estava ativo — a escrita ` +
+        `prosseguiu mesmo assim: ${recencyCheck.message} Registrado em recency_violations_forced no summary.`,
+    );
   }
 
   // #4979: mesma disciplina do one-off de referência — se o operador pediu
@@ -1063,6 +1132,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     /** Quantos do segmento existem no universo (contexto, quase sempre maior). */
     held_in_universe: holdResult.heldTotal || undefined,
     held_by_segment: holdResult.heldTotal > 0 ? holdResult.heldBySegment : undefined,
+    // #5169 (review da PR #5174): SÓ presente quando `--force` destravou uma
+    // violação real de monotonicidade de recência — auditoria de que a
+    // escrita prosseguiu fora de ordem por decisão explícita, não em
+    // silêncio (mesma disciplina do `guard_scope` acima, "este guard já
+    // falhou em silêncio uma vez").
+    recency_violations_forced: recencyCheck.forced ? recencyCheck.violationCount : undefined,
     // #4979: por tier — só presente no modo --tiers, pra auditar "quanto cada
     // tier disponibilizou vs. quanto o waterfall de fato tomou" sem precisar
     // recalcular manualmente.
