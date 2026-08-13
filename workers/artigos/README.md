@@ -39,6 +39,30 @@ sub-paths dentro do mesmo `custom_domain`.
    (confirmar que o Beehiiv continua servindo o resto do domínio sem
    interferência).
 
+## Páginas de entidade (#5125)
+
+Além de artigos avulsos (`{ano}/{slug}/`), o host também serve páginas de
+entidade — índice cronológico de menções a uma empresa/produto no corpus da
+diária (`data/beehiiv-cache/posts/`), com síntese própria por menção. Path
+próprio, gerado (não escrito à mão como os artigos avulsos):
+
+```
+workers/artigos/public/entidades/{slug}/index.html
+```
+
+Fonte de conteúdo: `scripts/lib/entities/{slug}.ts`. Gerar/regenerar:
+
+```
+npx tsx scripts/build-entity-page.ts --entity {slug}
+```
+
+Spec completa dos formatos (página de entidade + timeline temática, ainda
+não implementada) e o critério anti-thin-content: ver docstring de
+`scripts/lib/shared/entity-page.ts`. Mesma exigência manual de
+`sitemap.xml`/`public/index.html` dos artigos avulsos —
+`test/artigos-entidades-5125.test.ts` falha se uma entidade em
+`public/entidades/` ficar fora dos dois.
+
 ## Notas
 
 - Sem KV, sem secret, sem script — só assets estáticos.
