@@ -411,6 +411,10 @@ import { handleJogarArchivePage, handleJogarPage, handleJogarQuizPage, handleJog
 // inline antigo usava via `resolveSubscribeUtm("vote-clarice")`.
 import { handleJogarSubscribe, subscribeToBeehiiv, VOTE_CLARICE_SET_NAME_REFERRING_SITE } from "./subscribe";
 import { VOTE_CLARICE_INLINE_UTM } from "./utm-registry";
+// #5167 item 7: página de destino do double opt-in (opt_in_redirect_url,
+// ver docstring de confirmado.ts) — sem KV/brand, mesmo padrão de
+// /jogar/arquivo, /robots.txt, /sitemap.xml abaixo.
+import { handleConfirmadoPage } from "./confirmado";
 // #4054: gate por rodada do caminho de fora — tela + verify + subscribe.
 import { clearWebSessionCookieHeader, handleJogarGateSubscribe, handleJogarGateVerify, renderJogarGatePage } from "./web-gate";
 // #3975: identidade por e-mail no leaderboard do brand web (POST
@@ -1799,6 +1803,9 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // #4054: 3º arg `request` — habilita o gate por rodada (contador de
     // rodadas jogadas, #4253 item 3 + checagem de sessão), ver rationale em jogar.ts.
     if (path === "/jogar" && request.method === "GET") return handleJogarPage(url, env, request);
+    // #5167 item 7: destino do double opt-in da Beehiiv — página estática,
+    // sem KV/brand (mesmo racional de /robots.txt/sitemap.xml abaixo).
+    if (path === "/confirmado" && request.method === "GET") return handleConfirmadoPage();
     // #3519: arquivo de pares passados (índice) — mesmo racional acima:
     // `env` cru, lê `correct:{edition}` compartilhado, não `bEnv`.
     if (path === "/jogar/arquivo" && request.method === "GET") return handleJogarArchivePage(url, env);
@@ -1981,5 +1988,5 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     if (path.startsWith("/img/") && (request.method === "GET" || request.method === "HEAD")) return handleImage(path, env, request);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 
-    return json({ error: "not found", endpoints: ["/robots.txt", "/jogar", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/jogar/seq-state", "/jogar/subscribe", "/jogar/gate", "/jogar/gate/verify", "/jogar/gate/subscribe", "/jogar/gate/logout", "/jogar/identify", "/confirm-merge", "/embed", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/admin/eiameta", "/admin/purge-score-do", "/img/{key}"] }, 404, env);
+    return json({ error: "not found", endpoints: ["/robots.txt", "/jogar", "/confirmado", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/jogar/seq-state", "/jogar/subscribe", "/jogar/gate", "/jogar/gate/verify", "/jogar/gate/subscribe", "/jogar/gate/logout", "/jogar/identify", "/confirm-merge", "/embed", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/admin/eiameta", "/admin/purge-score-do", "/img/{key}"] }, 404, env);
 }

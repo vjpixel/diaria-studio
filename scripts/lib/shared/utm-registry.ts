@@ -233,6 +233,34 @@ export const JOGAR_POSTWEB_UTM = {
   campaign: "eia-jogar-postweb-signup",
 } as const;
 
+/** Cadastro inline no topo de `arquivo.diar.ia.br` (#5167 item 1) — substitui
+ * o antigo `<a href="https://diar.ia.br/subscribe">` (form hospedado na
+ * Beehiiv, sujeito ao double opt-in desde #5095) pelo mesmo mecanismo cross-
+ * origin de `LIVROS_INLINE_UTM` acima: `POST /jogar/subscribe` no Worker
+ * `poll`, cadastro `active` na hora. `utm_source` PRÓPRIO (não
+ * `ARQUIVO_FOOTER_NAV_UTM`, que é o link de nav de VOLTA pro diar.ia.br, um
+ * funil completamente diferente) — precisa distinguir esta conversão do
+ * resto. */
+export const ARQUIVO_INLINE_UTM = {
+  source: "arquivo",
+  medium: "inline",
+  campaign: "arquivo-inline-signup",
+} as const;
+
+/** Cadastro inline no topo de cada hub temático (#5167 item 2,
+ * `arquivo.diar.ia.br/temas/{slug}`) — mesmo mecanismo/motivação de
+ * `ARQUIVO_INLINE_UTM` acima. `utm_source` PRÓPRIO (não `"arquivo"`): os hubs
+ * são a landing page de SEO/GEO mais citada por assistente — medir essa
+ * conversão separada da página de arquivo em si é o ponto da issue #5167
+ * ("o tráfego roteado pra lá é o pior perfil possível pra confirmar"). Um
+ * `utm_source` por SUPERFÍCIE, não por slug de hub individual — granularidade
+ * suficiente sem multiplicar entradas de UTM a cada hub novo. */
+export const HUB_INLINE_UTM = {
+  source: "arquivo-hub",
+  medium: "inline",
+  campaign: "hub-inline-signup",
+} as const;
+
 /** CTA de e-mail injetado em todo post de Facebook no publish (#3991, valor
  * UTM adicionado no #4295) — `injectChannelLine` monta a linha a partir daqui
  * via `scripts/lib/social-cta-lines.ts`. */
@@ -729,6 +757,33 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "Caixa unificada do gate revelada no pós-voto de /jogar?from=post-web (#4578) — " +
       "visitante que clicou no botão de voto na versão WEB de um post (merge tag nunca " +
       "resolvida ali) foi redirecionado pro jogo anônimo em vez de um 400 dead end.",
+    status: "ativo",
+  },
+  {
+    id: "arquivo-inline",
+    label: "Arquivo — cadastro inline (topo)",
+    source: ARQUIVO_INLINE_UTM.source,
+    medium: ARQUIVO_INLINE_UTM.medium,
+    campaignPattern: ARQUIVO_INLINE_UTM.campaign,
+    originFile: "workers/arquivo/src/render-archive.ts",
+    description:
+      "CTA de cadastro no topo de arquivo.diar.ia.br (#5167 item 1) — substitui o link " +
+      "puro pro form hospedado na Beehiiv (sujeito ao double opt-in desde #5095) pelo " +
+      "mesmo mecanismo inline de livros-inline-hero, isento por design.",
+    status: "ativo",
+  },
+  {
+    id: "hub-inline",
+    label: "Hub temático — cadastro inline (topo)",
+    source: HUB_INLINE_UTM.source,
+    medium: HUB_INLINE_UTM.medium,
+    campaignPattern: HUB_INLINE_UTM.campaign,
+    originFile: "scripts/lib/shared/hub-page.ts",
+    description:
+      "CTA de cadastro no topo de cada hub temático em arquivo.diar.ia.br/temas/{slug} " +
+      "(#5167 item 2) — mesma motivação/mecanismo de arquivo-inline acima; utm_source " +
+      "próprio porque os hubs são a landing page de SEO/GEO mais citada por assistente, " +
+      "o pior perfil de tráfego pra confirmar double opt-in por e-mail (issue #5167).",
     status: "ativo",
   },
   {

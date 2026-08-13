@@ -280,10 +280,17 @@ describe("buildArchiveHtml (#4105)", () => {
     });
   });
 
-  describe("(#4265 item 4) CTA de assinatura + caminho de volta pro site", () => {
-    it("tem um link de assinatura (CTA) fora da lista de edições", () => {
+  describe("(#4265 item 4, form inline #5167 item 1) CTA de assinatura + caminho de volta pro site", () => {
+    it("tem um FORM inline de assinatura (não link puro pro /subscribe da Beehiiv)", () => {
       const html = buildArchiveHtml([entry("https://diar.ia.br/p/edicao-x", "2026-07-15")]);
-      assert.match(html, /<p class="subscribe-cta"><a href="https:\/\/diar\.ia\.br\/subscribe">/);
+      // #5167 item 1: o CTA-link antigo (`<a href="https://diar.ia.br/subscribe">`,
+      // form hospedado na Beehiiv, sujeito ao double opt-in desde #5095) virou
+      // um form inline que chama /jogar/subscribe CROSS-ORIGIN no worker `poll` —
+      // mesmo mecanismo que livros.diar.ia.br já usa (#4051), cadastro `active`
+      // na hora, sem depender de confirmação por e-mail.
+      assert.doesNotMatch(html, /<a href="https:\/\/diar\.ia\.br\/subscribe">/);
+      assert.match(html, /class="cta-subscribe-form" data-source="arquivo"/);
+      assert.match(html, /window\.fetch\("https:\/\/eia\.diar\.ia\.br\/jogar\/subscribe"/);
     });
 
     it("o rodapé continua linkando de volta pra diar.ia.br (nav cruzada já existente)", () => {

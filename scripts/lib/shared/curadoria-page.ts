@@ -152,6 +152,126 @@ export function renderCuradoriaCtaSubscribeStyles(): string {
   .cta-subscribe .cta-status.ok::before { content: "✓"; font-size: 20px; line-height: 1; flex: none; }`;
 }
 
+/** Um form de CTA de cadastro inline — `id` (DOM, precisa ser único quando há
+ * mais de 1 variante na mesma página), `source` (chave curta enviada ao
+ * endpoint; o servidor resolve via `resolveSubscribeUtm` em
+ * `workers/poll/src/subscribe.ts` — precisa ter entrada em `SubscribeSource`/
+ * `SUBSCRIBE_UTM_BY_SOURCE` lá, nunca um literal solto sem par) e `heading`
+ * (texto de abertura acima do campo de e-mail). */
+export interface CuradoriaSubscribeCtaVariant {
+  id: string;
+  source: string;
+  heading: string;
+}
+
+/** Endpoint cross-origin do cadastro inline (#3580/#4051) — mesmo mecanismo
+ * já usado por `livros.diar.ia.br` (`scripts/build-livros-page.ts`): POST
+ * server-side na Beehiiv via o Worker `poll`, isento de double opt-in (a
+ * caixinha de opt-in marcada na própria página É o consentimento LGPD, ver
+ * rationale completo em `workers/poll/src/subscribe.ts`). Qualquer host novo
+ * que chame este endpoint precisa entrar em `ALLOWED_ORIGINS` do
+ * `workers/poll/wrangler.toml` (CORS explícito, nunca `"*"`).
+ */
+const CTA_SUBSCRIBE_ENDPOINT = `${DIARIA_EIA_URL}/jogar/subscribe`;
+
+/**
+ * Markup do form de CTA de cadastro inline (#4051, generalizado #5167 itens
+ * 1/2 — antes só `build-livros-page.ts` tinha uma cópia local desta função;
+ * `render-archive.ts`/`hub-page.ts` reusam esta agora em vez de duplicar).
+ * `build-livros-page.ts` continua com a própria cópia local — bundle
+ * separado por natureza (script Node que gera HTML estático committed, não
+ * um Worker que renderiza em request-time), fora do escopo de unificar aqui.
+ */
+export function renderCuradoriaCtaSubscribeForm(
+  v: CuradoriaSubscribeCtaVariant,
+  variantClass: "hero" | "end",
+): string {
+  return `      <div class="cta-subscribe cta-subscribe--${variantClass}">
+        <form id="${escHtml(v.id)}" class="cta-subscribe-form" data-source="${escHtml(v.source)}" novalidate>
+          <p class="cta-text">${escHtml(v.heading)}</p>
+          <label class="cta-field"><input type="email" name="email" placeholder="seu@email.com" aria-label="E-mail" autocomplete="email" maxlength="254" required></label>
+          <div class="cta-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
+          <label class="cta-optin"><input type="checkbox" name="optin" value="on"> Quero receber a diar.ia.br — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, seg-sex, direto no e-mail.</label>
+          <button type="submit" class="cta-submit">Assinar a diar.ia.br (grátis)</button>
+          <p class="cta-status" role="status" aria-live="polite" hidden></p>
+        </form>
+      </div>`;
+}
+
+/**
+ * Script (IIFE) que faz o wiring do submit de TODO `.cta-subscribe-form` da
+ * página (1 ou mais variantes) — mesmo padrão de validação leve (opt-in + `@`)
+ * e estados de erro da cópia local em `build-livros-page.ts` (duplicada lá de
+ * propósito, ver docstring de `renderCuradoriaCtaSubscribeForm` acima).
+ * `data-source` de cada `<form>` vira o campo `source` do payload; o servidor
+ * resolve o UTM certo (nunca o cliente manda utm_* cru).
+ */
+export function renderCuradoriaCtaSubscribeScript(): string {
+  return `<script>
+  (function () {
+    var forms = Array.prototype.slice.call(document.querySelectorAll(".cta-subscribe-form"));
+    forms.forEach(function (form) {
+      var status = form.querySelector(".cta-status");
+      function setStatus(msg, ok) {
+        if (!status) return;
+        status.hidden = false;
+        status.textContent = msg;
+        status.className = "cta-status" + (ok ? " ok" : " err");
+      }
+      function val(sel) { var el = form.querySelector(sel); return el ? el.value : ""; }
+      form.addEventListener("submit", function (ev) {
+        ev.preventDefault();
+        var optin = form.querySelector('input[name="optin"]');
+        if (!optin || !optin.checked) { setStatus("Marque a caixinha de consentimento pra assinar.", false); return; }
+        var email = (val('input[name="email"]') || "").trim();
+        if (!email || email.indexOf("@") < 0) { setStatus("Digite um e-mail válido.", false); return; }
+        var btn = form.querySelector('button[type="submit"]');
+        if (btn) btn.disabled = true;
+        setStatus("Enviando…", true);
+        var payload = {
+          email: email,
+          optin: true,
+          website: val('input[name="website"]') || "",
+          source: form.getAttribute("data-source") || ""
+        };
+        if (typeof window.fetch !== "function") {
+          setStatus("Seu navegador não suporta o cadastro direto — visite diar.ia.br pra assinar.", false);
+          if (btn) btn.disabled = false;
+          return;
+        }
+        window.fetch(${JSON.stringify(CTA_SUBSCRIBE_ENDPOINT)}, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        }).then(function (res) {
+          return res.json().then(function (d) { return { status: res.status, body: d }; }, function () { return { status: res.status, body: null }; });
+        }).then(function (r) {
+          if (r.status === 200 && r.body && r.body.ok) {
+            form.reset();
+            setStatus("Pronto! Confira seu e-mail pra confirmar a assinatura.", true);
+            var fields = form.querySelectorAll("input, button");
+            for (var i = 0; i < fields.length; i++) { fields[i].disabled = true; fields[i].style.display = "none"; }
+            if (status && status.scrollIntoView) status.scrollIntoView({ behavior: "smooth", block: "center" });
+          } else if (r.status === 429) {
+            setStatus("Muitas tentativas. Tente de novo mais tarde.", false);
+            if (btn) btn.disabled = false;
+          } else if (r.status === 503) {
+            setStatus("Cadastro direto indisponível agora — visite diar.ia.br pra assinar.", false);
+            if (btn) btn.disabled = false;
+          } else {
+            setStatus("Não deu pra assinar agora. Confira o e-mail e tente de novo.", false);
+            if (btn) btn.disabled = false;
+          }
+        }).catch(function () {
+          setStatus("Erro de conexão. Tente de novo.", false);
+          if (btn) btn.disabled = false;
+        });
+      });
+    });
+  })();
+  </script>`;
+}
+
 export interface CuradoriaNavLink {
   readonly label: string;
   readonly url: string;

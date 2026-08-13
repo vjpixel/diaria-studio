@@ -25,15 +25,27 @@
  *
  * **Índice por mês + CTA (#4265 itens 4/5).** Bloco de âncoras no topo
  * (`#2026-07`) — sem JS, sem paginação, mantendo o requisito original do
- * #4105 de todos os `<a href>` na mesma resposta. CTA de assinatura simples
- * (link puro, sem form/JS) + rodapé com nav cruzada de volta pra
- * `diar.ia.br` (já presente desde #4265 item 9).
+ * #4105 de todos os `<a href>` na mesma resposta. Rodapé com nav cruzada de
+ * volta pra `diar.ia.br` (já presente desde #4265 item 9).
+ *
+ * **CTA de assinatura: form inline, não link puro (#5167 item 1).** Até aqui
+ * era um `<a href="https://diar.ia.br/subscribe">` simples — o tráfego frio
+ * de SEO/GEO que clicava ali caía no formulário HOSPEDADO NA BEEHIIV, que
+ * (desde que o editor ligou o double opt-in, #5167) exige confirmar um
+ * e-mail antes de virar assinante `active`. `renderCuradoriaCtaSubscribeForm`/
+ * `renderCuradoriaCtaSubscribeScript` (`scripts/lib/shared/curadoria-page.ts`)
+ * chamam `POST /jogar/subscribe` CROSS-ORIGIN no Worker `poll`
+ * (`eia.diar.ia.br`) — mesmo mecanismo que `livros.diar.ia.br` já usa desde
+ * o #4051 — que cadastra `active` na hora, ISENTO do double opt-in (a
+ * caixinha de opt-in marcada aqui já é o consentimento LGPD explícito, ver
+ * `workers/poll/src/subscribe.ts`). Isso introduz o único `<script>` desta
+ * página fora do JSON-LD estrutural (o resto continua server-rendered, sem
+ * paginação, mesmo requisito original do #4105 — só o cadastro precisa de JS
+ * pra não sair da página).
  *
  * Design/SEO (#4265 itens 7/8/9, já implementados): DS canônico da diar.ia.br
  * via `scripts/lib/shared/{design-tokens,curadoria-page,seo-meta}.ts` —
- * mesmo padrão de `cursos.diar.ia.br`/`livros.diar.ia.br` (#3698). Zero JS
- * client-side (mantém o requisito original do #4105 de página 100%
- * server-rendered, sem paginação).
+ * mesmo padrão de `cursos.diar.ia.br`/`livros.diar.ia.br` (#3698).
  */
 import type { SitemapEntry } from "../../../scripts/lib/fetch-sitemap.ts";
 import { FONTS } from "../../../scripts/lib/shared/design-tokens.ts";
@@ -42,7 +54,10 @@ import {
   renderCuradoriaHeaderStyles,
   renderCuradoriaFooterStyles,
   renderCuradoriaFooter,
-} from "../../../scripts/lib/shared/curadoria-page.ts";
+  renderCuradoriaCtaSubscribeStyles,
+  renderCuradoriaCtaSubscribeForm,
+  renderCuradoriaCtaSubscribeScript,
+} from "../../../scripts/lib/shared/curadoria-page.ts"; // #5167 item 1: form inline substitui o link puro pro /subscribe hospedado na Beehiiv
 import { renderSeoMeta } from "../../../scripts/lib/shared/seo-meta.ts";
 import { COVER_IMAGE_WIDTH, COVER_IMAGE_HEIGHT } from "../../../scripts/lib/shared/cover-image.ts"; // #5131
 import { ARQUIVO_FOOTER_NAV_UTM } from "../../../scripts/lib/shared/utm-registry.ts";
@@ -95,8 +110,6 @@ export const PAGE_URL = "https://arquivo.diar.ia.br/";
  * `<link rel="alternate">` do `<head>` — se `FEED_URL` vivesse em
  * `render-feed.ts`, os dois módulos importariam um do outro. */
 export const FEED_URL = `${PAGE_URL}feed.xml`;
-/** URL de assinatura (#4265 item 4 — CTA simples, sem form/JS). */
-const SUBSCRIBE_URL = "https://diar.ia.br/subscribe";
 const PAGE_TITLE = "Arquivo — todas as edições da diar.ia.br";
 const PAGE_DESCRIPTION =
   "Índice de todas as edições publicadas da newsletter diar.ia.br, agrupadas por mês.";
@@ -106,10 +119,6 @@ const PAGE_DESCRIPTION =
  * cursos/livros, não uma lista simples de links). */
 function renderArchiveListStyles(): string {
   return `  main { padding: 40px 0 64px; }
-  .subscribe-cta { margin: 20px 0 0; }
-  .subscribe-cta a { font-family: ${FONTS.sans}; font-size: 15px; font-weight: 700;
-    color: var(--teal); text-decoration: none; border-bottom: 1px solid var(--teal); padding-bottom: 2px; }
-  .subscribe-cta a:hover { opacity: 0.75; }
   .count { font-family: ${FONTS.sans}; font-size: 14px; color: var(--ink); margin: 8px 0 24px; }
   .tema-index { font-family: ${FONTS.sans}; font-size: 13px; line-height: 2; color: var(--ink);
     margin: 0 0 16px; }
@@ -483,6 +492,8 @@ ${renderArchiveListStyles()}
 
 ${renderGeoFaqStyles()}
 
+${renderCuradoriaCtaSubscribeStyles()}
+
 ${renderCuradoriaFooterStyles()}
 </style>
 </head>
@@ -494,7 +505,10 @@ ${renderCuradoriaFooterStyles()}
       <h1>Arquivo<span class="dot" aria-hidden="true">.</span></h1>
       <p class="tagline">5 minutos diários pra se manter atualizado e usar melhor as IAs</p>
 ${renderGeoIntro(count)}
-      <p class="subscribe-cta"><a href="${esc(SUBSCRIBE_URL)}">Assine a diar.ia.br →</a></p>
+${renderCuradoriaCtaSubscribeForm(
+  { id: "arquivo-cta-subscribe", source: "arquivo", heading: "Gostou da curadoria? Assine a diar.ia.br e receba tutoriais e notícias de IA todo dia, sem enrolação." },
+  "hero",
+)}
     </div>
   </header>
   <main>
@@ -524,6 +538,7 @@ ${renderGeoJsonLd({
   dateModified: newestEditionDate ?? GEO_LAUNCH_DATE,
   faq: geoFaq,
 })}
+${renderCuradoriaCtaSubscribeScript()}
 </body>
 </html>
 `;
