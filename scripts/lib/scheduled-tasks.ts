@@ -665,6 +665,18 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5229",
   },
   {
+    name: "Diaria-Acquisition-Health-Alarm",
+    description: "alarme semanal de saude de aquisicao por canal (sobrevivencia, CTR, canal novo/parado)",
+    steps: [{ key: "check", script: "scripts/check-acquisition-health.ts" }],
+    logPath: "acquisition-health/.check.log",
+    // Domingo 03:30 BRT (#5249, sugestão da própria issue) — 30min depois do
+    // Diaria-Beehiiv-Backup (03:00, acima), que gera o snapshot semanal que
+    // este alarme lê. Folga suficiente pro backup (drena a base inteira,
+    // ~13 páginas) terminar antes deste rodar sobre a data mais recente.
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 3, minute: 30 },
+    issue: "#5249",
+  },
+  {
     name: "Diaria-Worker-Drift-Check",
     description: "alarme de drift entre o codigo publicado e o master de cada Worker",
     steps: [{ key: "check", script: "scripts/worker-drift-check.ts" }],

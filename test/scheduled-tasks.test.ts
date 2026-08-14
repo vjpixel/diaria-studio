@@ -453,3 +453,61 @@ describe("#5217 — Diaria-Clarice-Dashboard-Precompute registrada, horária, sy
     assert.deepEqual(others, [], `script ${script} também referenciado por: ${others.map((o) => o.name).join(", ")}`);
   });
 });
+
+describe("#5249 — Diaria-Acquisition-Health-Alarm registrada, semanal, systemd-only", () => {
+  it("está presente no registro, com o step apontando pro script correto, domingo 03:30", () => {
+    const t = getScheduledTaskByName("Diaria-Acquisition-Health-Alarm");
+    assert.ok(t, "Diaria-Acquisition-Health-Alarm ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/check-acquisition-health.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "weekly", dayOfWeek: "Sunday", hour: 3, minute: 30 });
+  });
+
+  it("roda 30min DEPOIS do Diaria-Beehiiv-Backup (03:00) — a task que gera o snapshot que este alarme lê", () => {
+    const alarm = getScheduledTaskByName("Diaria-Acquisition-Health-Alarm")!;
+    const backup = getScheduledTaskByName("Diaria-Beehiiv-Backup")!;
+    assert.equal(alarm.schedule.kind, "weekly");
+    assert.equal(backup.schedule.kind, "weekly");
+    const alarmSchedule = alarm.schedule as { kind: "weekly"; dayOfWeek: string; hour: number; minute: number };
+    const backupSchedule = backup.schedule as { kind: "weekly"; dayOfWeek: string; hour: number; minute: number };
+    assert.equal(alarmSchedule.dayOfWeek, backupSchedule.dayOfWeek);
+    const alarmMinutes = alarmSchedule.hour * 60 + alarmSchedule.minute;
+    const backupMinutes = backupSchedule.hour * 60 + backupSchedule.minute;
+    assert.ok(alarmMinutes > backupMinutes, "Diaria-Acquisition-Health-Alarm deveria rodar depois de Diaria-Beehiiv-Backup");
+  });
+
+  it("domingo 03:30 não colide com nenhuma outra weekly nem cai numa batida de interval", () => {
+    const t = getScheduledTaskByName("Diaria-Acquisition-Health-Alarm")!;
+    assert.equal(t.schedule.kind, "weekly");
+    const mine = t.schedule as { kind: "weekly"; dayOfWeek: string; hour: number; minute: number };
+
+    for (const other of SCHEDULED_TASKS) {
+      if (other.name === t.name) continue;
+      if (other.schedule.kind === "weekly" && other.schedule.dayOfWeek === mine.dayOfWeek) {
+        assert.ok(
+          other.schedule.hour !== mine.hour || other.schedule.minute !== mine.minute,
+          `colisão de horário com ${other.name} (${mine.dayOfWeek} ${mine.hour}:${mine.minute})`,
+        );
+      }
+      // Mesmo racional documentado no bloco #5229 acima: interval de 1h bate
+      // em todo horário cheio por definição, mas 03:30 nunca cai em minute:0
+      // — então só intervals que dividem 30min importariam, e nenhum existe
+      // hoje no registro. Guard mantido pra simetria e futura-prova.
+      if (other.schedule.kind === "interval" && other.schedule.hours > 1) {
+        assert.ok(
+          mine.minute !== 0 || mine.hour % other.schedule.hours !== 0,
+          `03:30 cai numa batida de ${other.name} (interval de ${other.schedule.hours}h)`,
+        );
+      }
+    }
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
+    const t = getScheduledTaskByName("Diaria-Acquisition-Health-Alarm")!;
+    const script = t.steps[0].script;
+    const others = SCHEDULED_TASKS.filter((o) => o.name !== t.name && o.steps.some((s) => s.script === script));
+    assert.deepEqual(others, [], `script ${script} também referenciado por: ${others.map((o) => o.name).join(", ")}`);
+  });
+});
