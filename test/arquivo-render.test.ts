@@ -850,6 +850,48 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     }
   });
 
+  // #5256: GET /temas/ e /temas (sem barra) — página-índice, hoje 404 cru.
+  for (const path of ["/temas/", "/temas"]) {
+    it(`GET ${path} → 200 com a página-índice, listando todo hub de HUB_META (#5256)`, async () => {
+      globalThis.fetch = (async () => {
+        throw new Error("/temas/ não deveria depender de rede — HTML já gerado e commitado");
+      }) as unknown as typeof fetch;
+
+      const res = await worker.fetch(new Request(`https://arquivo.diar.ia.br${path}`));
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get("Cache-Control"), "public, max-age=3600");
+      const body = await res.text();
+      assert.match(body, /<h1>Temas/);
+      for (const hub of HUB_META) {
+        assert.ok(body.includes(`/temas/${hub.slug}`), `índice não linka pro hub "${hub.slug}"`);
+        assert.ok(body.includes(hub.label), `índice não mostra o rótulo "${hub.label}"`);
+      }
+    });
+  }
+
+  it("GET /temas/ → Last-Modified e ETag (#5256, mesmo padrão de /temas/{slug} do #4909)", async () => {
+    globalThis.fetch = (async () => {
+      throw new Error("/temas/ não deveria depender de rede");
+    }) as unknown as typeof fetch;
+
+    const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/temas/"));
+    assert.equal(res.status, 200);
+    assert.ok(res.headers.get("Last-Modified"), "esperava Last-Modified em /temas/");
+    assert.ok(res.headers.get("ETag"), "esperava ETag em /temas/");
+  });
+
+  it("GET /temas/{slug-desconhecido} → 404 com mini-página (link pro índice), não 'Not found' cru (#5256)", async () => {
+    globalThis.fetch = (async () => {
+      throw new Error("não deveria fazer fetch nenhum");
+    }) as unknown as typeof fetch;
+
+    const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/temas/tema-que-nao-existe"));
+    assert.equal(res.status, 404);
+    const body = await res.text();
+    assert.notEqual(body, "Not found");
+    assert.match(body, /<a href="https:\/\/arquivo\.diar\.ia\.br\/temas\/">/);
+  });
+
   it("GET /sitemap.xml inclui um <url> por hub publicado (#4558 Parte A)", async () => {
     globalThis.fetch = (async () => {
       throw new Error("/sitemap.xml não deveria depender do sitemap remoto");
@@ -858,6 +900,16 @@ describe("workers/arquivo GET / — fetch handler (#4105)", () => {
     const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/sitemap.xml"));
     const body = await res.text();
     assert.match(body, /<loc>https:\/\/arquivo\.diar\.ia\.br\/temas\/anthropic-claude<\/loc>/);
+  });
+
+  it("GET /sitemap.xml inclui a página-índice /temas/ como <url> própria, com <lastmod> (#5256)", async () => {
+    globalThis.fetch = (async () => {
+      throw new Error("/sitemap.xml não deveria depender do sitemap remoto");
+    }) as unknown as typeof fetch;
+
+    const res = await worker.fetch(new Request("https://arquivo.diar.ia.br/sitemap.xml"));
+    const body = await res.text();
+    assert.match(body, /<loc>https:\/\/arquivo\.diar\.ia\.br\/temas\/<\/loc>\s*<lastmod>\d{4}-\d{2}-\d{2}<\/lastmod>/);
   });
 
   it("GET /sitemap.xml — cada <url> de hub traz <lastmod> com o updatedDate do hub (#4909)", async () => {

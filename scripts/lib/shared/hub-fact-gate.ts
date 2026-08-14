@@ -457,7 +457,14 @@ export function checkParagraphDateAnchors(hub: HubContent): string[] {
 
 export function checkNoFutureDates(hub: HubContent): string[] {
   const violations: string[] = [];
-  const fields: { label: string; text: string }[] = [{ label: "introParagraph", text: hub.introParagraph }, ...proseFields(hub)];
+  // #5259: introParagraph pode ser string ou array não-vazio (ver docstring
+  // do campo em hub-page.ts) — mesmo tratamento por elemento que
+  // collectReaderFacingStrings já aplica.
+  const introFields: { label: string; text: string }[] =
+    typeof hub.introParagraph === "string"
+      ? [{ label: "introParagraph", text: hub.introParagraph }]
+      : hub.introParagraph.map((p, i) => ({ label: `introParagraph[${i}]`, text: p }));
+  const fields: { label: string; text: string }[] = [...introFields, ...proseFields(hub)];
   for (const { label, text } of fields) {
     for (const d of extractAbsoluteDates(text)) {
       if (d.iso > hub.updatedDate) {

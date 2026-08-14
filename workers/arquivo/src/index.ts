@@ -54,6 +54,7 @@ import {
 import { buildArchiveHtml, PAGE_URL } from "./render-archive.ts";
 import { buildArchiveFeedXml, FEED_URL } from "./render-feed.ts"; // #5127: GET /feed.xml
 import { HUB_REGISTRY, HUB_LASTMOD } from "./hubs/registry.ts"; // #4558 Parte A: hubs temáticos em /temas/{slug}
+import { HUB_INDEX_HTML, HUB_INDEX_LASTMOD, HUB_NOT_FOUND_HTML } from "./hubs/index-page.generated.ts"; // #5256: página-índice /temas/ + mini-página 404
 import { resolveWorkersDevRedirect } from "../../../scripts/lib/shared/workers-dev-redirect.ts"; // #5097 item D
 
 /**
@@ -119,6 +120,9 @@ const ARQUIVO_SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>${PAGE_URL}</loc>${ROOT_LASTMOD ? `\n    <lastmod>${ROOT_LASTMOD}</lastmod>` : ""}
+  </url>
+  <url>
+    <loc>${PAGE_URL}temas/</loc>${HUB_INDEX_LASTMOD ? `\n    <lastmod>${HUB_INDEX_LASTMOD}</lastmod>` : ""}
   </url>
 ${Object.keys(HUB_REGISTRY)
   .map((slug) => {
@@ -552,9 +556,19 @@ export default {
     // herdado (truthy) em vez de `undefined`, escapando do `if (!html)` e
     // servindo 200 com lixo (`String(Object.prototype.toString)`) em vez do
     // 404 esperado.
+    // #5256: GET /temas/ e /temas (sem barra) servem a página-índice — slug
+    // vazio caía direto no 404 do bloco `/temas/{slug}` abaixo antes desta
+    // rota existir. Checado ANTES do `startsWith("/temas/")` genérico pra
+    // não depender de um slug "" casar (ou não) a lógica de baixo.
+    if (url.pathname === "/temas" || url.pathname === "/temas/") {
+      const indexResponse = htmlResponse(HUB_INDEX_HTML, 200, { lastModified: HUB_INDEX_LASTMOD, etag: true });
+      return conditionalNotModified(request, indexResponse) ?? indexResponse;
+    }
     if (url.pathname.startsWith("/temas/")) {
       const slug = url.pathname.slice("/temas/".length).replace(/\/$/, "");
-      if (!Object.hasOwn(HUB_REGISTRY, slug)) return new Response("Not found", { status: 404 });
+      // #5256: slug inexistente ganha mini-página com link pro índice em vez
+      // de "Not found" cru — status continua 404 (só o BODY muda).
+      if (!Object.hasOwn(HUB_REGISTRY, slug)) return htmlResponse(HUB_NOT_FOUND_HTML, 404);
       // #4909/#5124: Last-Modified deriva da data de COBERTURA do hub
       // (hubCoverageDate — edição mais recente citada, nunca um valor
       // separado) + ETag do conteúdo — sinal de rastreio pra crawler/cache,
