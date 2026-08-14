@@ -19,6 +19,7 @@
 
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { resolveEditionDir } from "./find-current-edition.ts";
 
 export interface WeeklyEditionCandidate {
   /** AAMMDD (segunda a sexta, ordem cronológica). */
@@ -65,13 +66,19 @@ function formatAAMMDD(d: Date): string {
  * sábado dado, marcando quais de fato têm `02-reviewed.md` no disco.
  * Não lança — dirs ausentes viram `exists: false`, filtrados pelo caller
  * antes de extrair candidatos (`extractInstagramCandidates`).
+ *
+ * Usa `resolveEditionDir` (dual flat/nested, #2463) em vez de montar
+ * `resolve(editionsRoot, date)` à mão — edições criadas depois da migração
+ * pro layout nested (`data/editions/{AAMM}/{AAMMDD}`, #3024) nunca eram
+ * encontradas antes deste fix (mesma classe de bug do #3030/#3031;
+ * `select-linkedin-weekly.ts` já usava `resolveEditionDir` corretamente).
  */
 export function resolveWeeklyEditionDirs(
   saturday: Date,
   editionsRoot: string,
 ): WeeklyEditionCandidate[] {
   return computeWeekdayEditionDates(saturday).map((date) => {
-    const dir = resolve(editionsRoot, date);
+    const dir = resolveEditionDir(editionsRoot, date);
     const exists = existsSync(resolve(dir, "02-reviewed.md"));
     return { date, dir, exists };
   });

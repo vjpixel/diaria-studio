@@ -92,6 +92,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { resolveWeeklyEditionDirs } from "./lib/select-weekly-d1.ts";
+import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import {
   extractInstagramCandidates,
   matchPostsToWindow,
@@ -241,7 +242,9 @@ export async function resolveWeeklyImageUrls(
   const sectionCardGenerator = opts.sectionCardGenerator ?? defaultSectionCardGenerator;
   const urls: string[] = [];
   for (const item of items) {
-    const dir = resolve(editionsRoot, item.editionDate);
+    // resolveEditionDir (dual flat/nested, #2463) em vez de resolve() cru —
+    // mesmo fix de resolveWeeklyEditionDirs em select-weekly-d1.ts, ver docstring lá.
+    const dir = resolveEditionDir(editionsRoot, item.editionDate);
     if (item.destaqueNumber != null) {
       const resolved = resolveDestaqueImageDetailed(dir, item.destaqueNumber);
       if (!resolved.url) {
@@ -574,10 +577,10 @@ export async function main(
             `${resolvedImages.onDemandError} — carrossel de ${items.length} itens cancelado inteiro, não publica parcial.`
         : resolvedImages.corruptError
           ? `ERRO instagram/weekly: 06-public-images.json da edição ${resolvedImages.missingEditionDate} ESTÁ CORROMPIDO ` +
-              `(${resolve(editionsRoot, resolvedImages.missingEditionDate)}): ${resolvedImages.corruptError} — re-rodar upload-images-public.ts ` +
+              `(${resolveEditionDir(editionsRoot, resolvedImages.missingEditionDate)}): ${resolvedImages.corruptError} — re-rodar upload-images-public.ts ` +
               `NÃO resolve isso; investigue escrita concorrente/corrupção de disco antes. Carrossel de ${items.length} itens cancelado inteiro, não publica parcial.`
           : `ERRO instagram/weekly: 06-public-images.json ausente/sem d${resolvedImages.missingDestaqueNumber} pra edição ${resolvedImages.missingEditionDate} ` +
-              `(${resolve(editionsRoot, resolvedImages.missingEditionDate)}) — carrossel de ${items.length} itens cancelado inteiro, não publica parcial.`,
+              `(${resolveEditionDir(editionsRoot, resolvedImages.missingEditionDate)}) — carrossel de ${items.length} itens cancelado inteiro, não publica parcial.`,
     );
     tagAndAppend({
       platform: "instagram",

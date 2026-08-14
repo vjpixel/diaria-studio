@@ -174,6 +174,30 @@ describe("resolveWeeklyImageUrls (#4146/#4483 — 1 imagem por item, pelo destaq
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("resolve a imagem mesmo com a edição em layout NESTED (data/editions/{AAMM}/{AAMMDD}, #5xxx)", async () => {
+    // Regressão: `resolveWeeklyImageUrls` montava `resolve(editionsRoot, date)`
+    // direto, ignorando o layout nested pós-migração (#3024) — mesma classe
+    // de bug do #3030/#3031 corrigida em `resolveWeeklyEditionDirs`.
+    const root = mkdtempSync(join(tmpdir(), "diaria-weekly-carousel-nested-"));
+    try {
+      const nestedDir = resolve(root, "2607", "260727");
+      mkdirSync(nestedDir, { recursive: true });
+      writeFileSync(
+        resolve(nestedDir, "06-public-images.json"),
+        JSON.stringify({ images: { d1: { url: "https://cdn.example.com/260727-d1.jpg" } } }),
+        "utf8",
+      );
+      const items = [candidateFixture({ title: "T", url: "https://x/260727", editionDate: "260727", destaqueNumber: 1 })];
+      const result = await resolveWeeklyImageUrls(items, root);
+      assert.equal(result.ok, true);
+      if (result.ok) {
+        assert.deepEqual(result.urls, ["https://cdn.example.com/260727-d1.jpg"]);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("resolveWeeklyImageUrls — item de RADAR/USE MELHOR sem destaqueNumber (#4513, card sob demanda)", () => {
