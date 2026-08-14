@@ -117,6 +117,15 @@ describe("diaria-overnight re-varredura sem cap (#5272)", () => {
       /a unidade corrente sempre termina, o teto só recusa abrir mais um ciclo/,
       "trabalho em andamento é preservado",
     );
+    // O teto é o único limite duro em dia sem edição (guard de colisão não
+    // aciona), então a checagem tem que ser mecânica — sem isso o coordenador
+    // teria que inferir a conversão de fuso, ou pior, estimar quanto tempo a
+    // rodada já durou.
+    assert.match(
+      overnight,
+      /TZ=America\/Sao_Paulo date \+%H%M/,
+      "a checagem do teto é um comando determinístico, não uma estimativa",
+    );
     assert.match(
       overnight,
       /gravar `rescan_window_closed_at: now\(\)` em `plan\.json`/,
