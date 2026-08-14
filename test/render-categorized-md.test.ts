@@ -873,7 +873,7 @@ describe("formatCoverageLineUnknownTotal (#3739) — 3º produtor com o mesmo ga
 
   it("mantém o placeholder ??? pros números desconhecidos (total e encontrados)", () => {
     const line = formatCoverageLineUnknownTotal(1, 1);
-    assert.match(line, /a IA analisou \?\?\? artigos/);
+    assert.match(line, /a IA analisou \?\?\? conteúdos/);
     assert.match(line, /\?\?\? encontrados automaticamente/);
   });
 });

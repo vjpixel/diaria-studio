@@ -3,14 +3,18 @@
  *
  * #592, #609: linha de cobertura é a primeira linha não-vazia do reviewed.md.
  *
- * Aceita 3 formatos (#3461 é o padrão a partir da edição 260715; #3456 e o
+ * Aceita 3 formatos (#3461 é o padrão a partir da edição 260715, com
+ * "conteúdos" no lugar de "artigos" desde 260814 — os números variam por
+ * edição mas a palavra "conteúdos" é permanente daqui pra frente; #3456 e o
  * legado ficam mantidos pra edições antigas que nunca serão re-renderizadas
  * mas cujo lint não deve quebrar retroativamente):
- *   - padrão atual (#3461): bloco de boas-vindas multi-parágrafo, sem
- *     negrito — "Olá! Eu sou o [Pixel](...), editor desta newsletter. (...)
- *     Nesta edição, a IA analisou N artigos (X enviados por mim e Y
- *     encontrados automaticamente) e selecionei os Z mais relevantes. (...)"
- *     — detectado pela linha "Nesta edição, a IA analisou...".
+ *   - padrão atual (#3461, palavra atualizada 260814): bloco de boas-vindas
+ *     multi-parágrafo, sem negrito — "Olá! Eu sou o [Pixel](...), editor
+ *     desta newsletter. (...) Nesta edição, a IA analisou N conteúdos (X
+ *     enviados por mim e Y encontrados automaticamente) e selecionei os Z
+ *     mais relevantes. (...)" — detectado pela linha "Nesta edição, a IA
+ *     analisou...". Edições anteriores a 260814 usavam "artigos" — aceito
+ *     ainda pelo regex por compat retroativa.
  *   - #3456 (curto período entre 260715 ajustes, mantido por precaução):
  *     "Para esta edição, a diar.ia.br analisou N artigos: X enviados pelo
  *     editor, {nome}, e Y encontrados automaticamente. Após a curadoria,
@@ -37,7 +41,7 @@ const NEW_COVERAGE_LINE_RE =
   /^Para esta edi[çc][ãa]o, a diar\.ia\.br analisou (?:\d+|\?\?\?) artigos?: \d+ enviados? pelo editor, [^,]+, e (?:\d+|\?\?\?) encontrados? automaticamente\. Após a curadoria, (?:foi selecionado o artigo mais relevante|foram selecionados os \d+ mais relevantes)/i;
 
 const WELCOME_COVERAGE_LINE_RE =
-  /^Nesta edi[çc][ãa]o, a IA analisou (?:\d+|\?\?\?) artigos? \(\d+ enviados? por mim e (?:\d+|\?\?\?) encontrados? automaticamente\) e (?:selecionei o artigo mais relevante|selecionei os \d+ mais relevantes)/i;
+  /^Nesta edi[çc][ãa]o, a IA analisou (?:\d+|\?\?\?) (?:artigos?|conte[úu]dos?) \(\d+ enviados? por mim e (?:\d+|\?\?\?) encontrados? automaticamente\) e (?:selecionei o artigo mais relevante|selecionei os \d+ mais relevantes)/i;
 
 export const COVERAGE_LINE_RE = new RegExp(
   `(?:${LEGACY_COVERAGE_LINE_RE.source})|(?:${NEW_COVERAGE_LINE_RE.source})|(?:${WELCOME_COVERAGE_LINE_RE.source})`,

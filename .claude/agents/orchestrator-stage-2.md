@@ -463,7 +463,7 @@ Flaga cifras de DINHEIRO COM MAGNITUDE (US$/R$/€ + número + bi/mi/bilhões/..
 ```bash
 npx tsx scripts/lint-social-md.ts --check linkedin-schema --md {EDITION_DIR}/03-social.md
 ```
-Falha = texto genérico ausente (missing_main) ou char count fora do range. **#3052:** também valida que `## post_pixel` abre com `{outros_count}` + `{edition_url}` literais (post_pixel_missing_outros_count / post_pixel_missing_edition_url). Exit 1 = re-disparar `social-writer` agent.
+Falha = texto genérico ausente (missing_main) ou char count fora do range. **#3052 revertido (260814):** `## post_pixel` não é mais obrigado a abrir com `{outros_count}`/`{edition_url}` — checks post_pixel_missing_outros_count/post_pixel_missing_edition_url removidos. Exit 1 = re-disparar `social-writer` agent.
 
 **Lint channel-neutral pré-gate (#2486, alvo mudou no #3991):** o texto genérico `## d1/d2/d3` não pode conter CTA de e-mail, "link na bio", "segue @...", nem qualquer menção a `diar.ia.br` — essas linhas são injetadas SÓ no publish (`scripts/lib/social-cta-lines.ts`). Validar:
 ```bash

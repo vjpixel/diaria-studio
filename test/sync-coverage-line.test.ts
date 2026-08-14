@@ -531,7 +531,7 @@ describe("rewriteCoverageLine — bloco de boas-vindas #3461 (regressão #3696)"
       "",
       "Todos os dias, junto com a IA da diar.ia.br, seleciono e resumo as notícias mais importantes para economizar o seu tempo.",
       "",
-      `Nesta edição, a IA analisou ${x + y} artigos (${x} enviados por mim e ${y} encontrados automaticamente) e ${selPhrase}.`,
+      `Nesta edição, a IA analisou ${x + y} conteúdos (${x} enviados por mim e ${y} encontrados automaticamente) e ${selPhrase}.`,
       "",
       "Se esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
       "",
@@ -549,7 +549,7 @@ describe("rewriteCoverageLine — bloco de boas-vindas #3461 (regressão #3696)"
     assert.ok(r.changed);
     assert.match(
       r.md,
-      /Nesta edição, a IA analisou 176 artigos \(12 enviados por mim e 164 encontrados automaticamente\) e selecionei os 12 mais relevantes\./,
+      /Nesta edição, a IA analisou 176 conteúdos \(12 enviados por mim e 164 encontrados automaticamente\) e selecionei os 12 mais relevantes\./,
     );
     // Saudação e CTA de apoio preservados intactos.
     assert.match(r.md, /^Olá! Eu sou o \[Pixel\]\(https:\/\/www\.linkedin\.com\/in\/vjpixel\/\), editor dessa newsletter\./);
@@ -585,12 +585,12 @@ describe("rewriteCoverageLine — bloco de boas-vindas #3461 (regressão #3696)"
     assert.doesNotMatch(r.md, /1 encontrados/);
   });
 
-  it("#3731: concordância singular quando total=x+y=1 (analisou 1 artigo, não '1 artigos')", () => {
+  it("#3731: concordância singular quando total=x+y=1 (analisou 1 conteúdo, não '1 conteúdos')", () => {
     const md = welcomeBlockMd(5, 10, 3);
     const r = rewriteCoverageLine(md, 1, 0, 1);
     assert.ok(r.changed);
-    assert.match(r.md, /analisou 1 artigo \(1 enviado por mim e 0 encontrados automaticamente\)/);
-    assert.doesNotMatch(r.md, /1 artigos/);
+    assert.match(r.md, /analisou 1 conteúdo \(1 enviado por mim e 0 encontrados automaticamente\)/);
+    assert.doesNotMatch(r.md, /1 conteúdos/);
   });
 
   it("#3731: WELCOME_COVERAGE_SENTENCE_RE reconhece a forma singular (idempotência — reprocessar não quebra o match)", () => {

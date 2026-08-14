@@ -321,9 +321,12 @@ const COVERAGE_LINE_RE =
  * (#3461, formato padrão desde a edição 260715 — "Olá! Eu sou o [Pixel]...").
  * Diferente de `COVERAGE_LINE_RE` (que casa a linha LEGADA inteira, começando
  * em "Para esta edição, eu..."), este regex casa só a sentença de contagem —
- * "Nesta edição, a IA analisou N artigos (X enviados por mim e Y encontrados
+ * "Nesta edição, a IA analisou N conteúdos (X enviados por mim e Y encontrados
  * automaticamente) e selecionei os Z mais relevantes." — embutida no meio do
  * parágrafo final do bloco (ver `formatCoverageLine` em `lib/inbox-stats.ts`).
+ * 260814: "conteúdos" no lugar de "artigos" (mesma troca de `formatCoverageLine`)
+ * — o regex abaixo aceita as duas grafias por compat retroativa com edições
+ * antigas que nunca serão re-sincronizadas.
  * A substituição preserva os parágrafos de saudação/CTA ao redor.
  *
  * Bug raiz (#3696): antes desta extensão, `COVERAGE_LINE_RE` só reconhecia o
@@ -338,19 +341,19 @@ const COVERAGE_LINE_RE =
 // encontrados" (concordância errada) ainda batiam mesmo depois do fix de
 // `buildWelcomeCoverageSentence` abaixo pra "1 enviado"/"1 encontrado".
 export const WELCOME_COVERAGE_SENTENCE_RE =
-  /Nesta edição, a IA analisou \d+ artigos? \(\d+ enviados? por mim e \d+ encontrados? automaticamente\) e (?:selecionei o artigo mais relevante|selecionei os \d+ mais relevantes)\./;
+  /Nesta edição, a IA analisou \d+ (?:artigos?|conte[úu]dos?) \(\d+ enviados? por mim e \d+ encontrados? automaticamente\) e (?:selecionei o artigo mais relevante|selecionei os \d+ mais relevantes)\./;
 
 /**
  * #3696: monta a sentença de contagem no formato do bloco de boas-vindas — mesmo template de `formatCoverageLine` (`lib/inbox-stats.ts`), só que localmente pra não criar dependência circular script→script.
  *
- * #3731: pluralização condicional também pra "artigos"/"enviados"/
- * "encontrados" (antes só `selPhrase` flexionava) — "1 artigos"/"1
+ * #3731: pluralização condicional também pra "conteúdos"/"enviados"/
+ * "encontrados" (antes só `selPhrase` flexionava) — "1 conteúdos"/"1
  * enviados"/"1 encontrados" é gramaticalmente errado em PT-BR.
  */
 function buildWelcomeCoverageSentence(x: number, y: number, z: number): string {
   const total = x + y;
   const selPhrase = z === 1 ? "selecionei o artigo mais relevante" : `selecionei os ${z} mais relevantes`;
-  const totalWord = total === 1 ? "artigo" : "artigos";
+  const totalWord = total === 1 ? "conteúdo" : "conteúdos";
   const enviadosWord = x === 1 ? "enviado" : "enviados";
   const encontradosWord = y === 1 ? "encontrado" : "encontrados";
   return `Nesta edição, a IA analisou ${total} ${totalWord} (${x} ${enviadosWord} por mim e ${y} ${encontradosWord} automaticamente) e ${selPhrase}.`;

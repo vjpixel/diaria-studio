@@ -29,7 +29,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
 - `approved_json_path`: `_internal/01-approved.json`
 - `out_dir`: diretório da edição (ex: `data/editions/260418/`)
-- `outros_count`: **não injetado (#2319)**. O placeholder literal `{outros_count}` deve permanecer literal no output — só é consumido pelo `## post_pixel` (§3b abaixo), nunca pelo texto genérico `## d{N}`. Escrever com `{outros_count}` literal, nunca um número estimado. **(#3052):** o `## post_pixel` nunca é dispatchado por nenhum `publish-*.ts` (postagem 100% manual) — seus placeholders são resolvidos em Stage 6 via `scripts/resolve-post-pixel.ts`, não em Stage 5.
+- `outros_count`: **não injetado (#2319)**. O placeholder literal `{outros_count}` deve permanecer literal no output, nunca pelo texto genérico `## d{N}`. **(#3052 revertido, 260814):** o `## post_pixel` não abre mais com `{outros_count}`/`{edition_url}` (ver §3b abaixo) — `resolve-post-pixel.ts` continua existindo pra edições antigas/backward-compat, mas normalmente é um no-op sem placeholders no texto.
 
 ## Processo
 
@@ -58,11 +58,10 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
    - **Voz pessoal/opinião do Pixel.** Primeira pessoa, autor curador que viu algo interessante — não como diar.ia.br.
    - Tom conversacional, **sem pergunta no fim**.
    - Adiciona ângulo concreto que o texto genérico não cobre (observação prática, frame shift, conexão com debate atual). Pode citar implicação técnica / decisão / consequência pra quem lê.
-   - **Abrir com `{outros_count}` + `{edition_url}` (#3052):** a primeira linha do post traz os dois placeholders literais — nunca estimados, nunca substituídos manualmente — na voz pessoal do Pixel. Exemplo: `Hoje saíram mais {outros_count} novidades de IA — reuni tudo na edição em {edition_url}. Mas o que me fez parar foi isto:` (ajustar a frase de transição ao ângulo do D1, mantendo os dois placeholders literais e próximos do início). **Resolvidos em Stage 6** via `scripts/resolve-post-pixel.ts`.
+   - **Sem abertura/fechamento de plug (#3052 revertido, 260814):** o post entra DIRETO no conteúdo/ângulo do D1 — nada de abrir citando "{outros_count} novidades" + link da edição, nem fechar com "Siga a diar.ia.br em linkedin.com/company/diar.ia.br". Decisão do editor: esses parágrafos fixos soavam corporativos demais num post pessoal standalone. Vale a mesma lógica do #2494 (nunca abrir/fechar com frase de credencial) — aqui aplicada a qualquer plug institucional, não só de autoridade. `{outros_count}`/`{edition_url}` seguem existindo em `scripts/resolve-post-pixel.ts` (backward-compat no-op se ausentes do texto).
    - **Reescrever, não copiar:** ângulo editorial próprio sobre o D1 — a leitura/opinião do Pixel, não o resumo factual do texto genérico.
-   - Depois da abertura, pode reforçar o fato do D1, mas o corpo é a interpretação pessoal (por que isso importa pra ele / pra quem trabalha na área).
+   - O corpo é a interpretação pessoal (por que isso importa pra ele / pra quem trabalha na área) — pode reforçar o fato do D1 dentro do corpo, sem uma abertura de plug separada.
    - Hashtags próprias (1-3).
-   - **Incluir link da página** ao final: `Siga a diar.ia.br em linkedin.com/company/diar.ia.br` (sem `https://`, sem ponto final). Este link é conteúdo LEGÍTIMO do `post_pixel` (não viola a regra channel-neutral acima — essa regra é só pro texto genérico `## d{N}`).
    - 600–1300 caracteres (post de LinkedIn, não comentário).
    - **NUNCA usar "esta/essa/nossa newsletter" nem deixis que pressuponha o leitor na diar.ia.br (#2148).** O post vai no feed pessoal do Pixel — leitores de IA, colegas, ex-colegas que talvez nunca tenham ouvido falar da diar.ia.br. Pode mencionar que o autor *faz* uma newsletter de IA, mas nunca com framing de "você já está dentro". Errado: "Esta newsletter roda em grande parte com agentes". Certo: "A newsletter de IA que escrevo roda em grande parte com agentes". Validado por `lint-social-md.ts --check personal-post-no-newsletter-deixis`.
    - **NUNCA abrir/fechar com frase de credencial ou auto-apresentação (#2494).** "Trabalho com IA há alguns anos e faço uma newsletter de IA, a diar.ia.br", "como alguém que acompanha o setor" — essas frases estabelecem autoridade pela bio, não pelo conteúdo. Validado por `lint-social-md.ts --check no-credential-bio`.

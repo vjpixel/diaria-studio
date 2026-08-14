@@ -556,7 +556,7 @@ export function formatCoverageLineUnknownTotal(editorSubmissions: number, totalS
   return [
     "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor desta newsletter.",
     "Todos os dias, junto com a IA da diar.ia.br, seleciono e resumo as notícias mais importantes para economizar o seu tempo.",
-    `Nesta edição, a IA analisou ??? artigos (${editorSubmissions} ${enviadosWord} por mim e ??? encontrados automaticamente) e ${selPhrase}.`,
+    `Nesta edição, a IA analisou ??? conteúdos (${editorSubmissions} ${enviadosWord} por mim e ??? encontrados automaticamente) e ${selPhrase}.`,
     "Se este trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
   ].join("\n\n");
 }

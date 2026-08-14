@@ -289,11 +289,14 @@ export function formatCoverageLine(args: {
     args.selected === 1
       ? "selecionei o artigo mais relevante"
       : `selecionei os ${args.selected} mais relevantes`;
-  // #3731: pluralização condicional também pra "artigos"/"enviados"/"encontrados"
-  // — o comentário #701 acima só cobria `selPhrase`; "1 artigos"/"1 enviados"/
+  // #3731: pluralização condicional também pra "conteúdos"/"enviados"/"encontrados"
+  // — o comentário #701 acima só cobria `selPhrase`; "1 conteúdos"/"1 enviados"/
   // "1 encontrados" ainda caíam no leitor quando total/editorSubmissions/
   // diariaDiscovered valiam 1.
-  const totalWord = total === 1 ? "artigo" : "artigos";
+  // 260814: "conteúdos" no lugar de "artigos" — o total passou a incluir
+  // newsletters capturadas (#1541/#3696), não só links, então "artigos" era
+  // impreciso.
+  const totalWord = total === 1 ? "conteúdo" : "conteúdos";
   const enviadosWord = args.editorSubmissions === 1 ? "enviado" : "enviados";
   const encontradosWord = args.diariaDiscovered === 1 ? "encontrado" : "encontrados";
   return [

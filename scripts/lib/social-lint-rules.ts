@@ -614,9 +614,12 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
   // (comment_pixel ia SOB os posts da company page d1/d2/d3 antes de #3627 tê-lo
   // aposentado). Validar que o bloco post_pixel NÃO contém essa subseção.
   //
-  // #3052: post_pixel deve abrir com {outros_count} + {edition_url} literais
-  // (ver social-linkedin.md §3b) — ambos resolvidos em Stage 6
-  // (scripts/resolve-post-pixel.ts), nunca estimados ou omitidos em Stage 2.
+  // #3052 revertido (260814): a convenção de abrir com {outros_count}/
+  // {edition_url} e fechar com "Siga a diar.ia.br..." foi removida —
+  // decisão do editor, soava corporativo demais num post pessoal standalone
+  // (mesma lógica do #2494). post_pixel_missing_edition_url/
+  // post_pixel_missing_outros_count removidos abaixo; post_pixel_has_comment_pixel
+  // segue válido.
   if (linkedinSection) {
     const ppBlockMatch = ("\n" + linkedinSection).match(
       /\n## post_pixel[^\n]*\n([\s\S]*?)(?=\n## [a-z]|$)/i,
@@ -630,29 +633,6 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
           detail:
             "post_pixel: subseção ### comment_pixel não deve existir aqui " +
             "— comment_pixel é para os posts d1/d2/d3 da company page, não para o post pessoal standalone (#2453).",
-        });
-      }
-
-      const ppText = ppBody.replace(/<!--[\s\S]*?-->/g, "").trim();
-      const hasEditionUrlPlaceholder = /\{edition_url\}/.test(ppText);
-      const hasEditionUrlResolved = /https?:\/\/diar\.ia\.br\/p\//.test(ppText);
-      if (ppText.length > 0 && !hasEditionUrlPlaceholder && !hasEditionUrlResolved) {
-        errors.push({
-          destaque: "post_pixel",
-          rule: "post_pixel_missing_edition_url",
-          detail:
-            "post_pixel: não contém '{edition_url}' (placeholder Stage 2) nem " +
-            "'diar.ia.br/p/<slug>' (resolvido) — abertura deve linkar a edição completa (#3052).",
-        });
-      }
-      const hasOutrosCountPlaceholder = /\{outros_count\}/.test(ppText);
-      if (ppText.length > 0 && !hasOutrosCountPlaceholder) {
-        errors.push({
-          destaque: "post_pixel",
-          rule: "post_pixel_missing_outros_count",
-          detail:
-            "post_pixel: não contém '{outros_count}' — abertura deve citar o total de " +
-            "itens não-destaque da edição (mesma convenção do comment_diaria, #3052).",
         });
       }
     }
