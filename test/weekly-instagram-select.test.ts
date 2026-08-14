@@ -66,7 +66,7 @@ describe("extractInstagramCandidates", () => {
     assert.deepEqual(extractInstagramCandidates(md, "260727"), []);
   });
 
-  it("extrai itens de RADAR/USE MELHOR além dos destaques (#4513 — card 4:5 gerado sob demanda quando vencem o ranking)", () => {
+  it("extrai itens de RADAR além dos destaques (#4513 — card 4:5 gerado sob demanda quando vencem o ranking)", () => {
     const md = [
       "DESTAQUE 1 | Notícias",
       "Título D1",
@@ -84,16 +84,9 @@ describe("extractInstagramCandidates", () => {
       "**[Item de Radar bem clicado](https://exemplo.com/radar-item)**",
       "Descrição do item de radar.",
       "",
-      "---",
-      "",
-      "**USE MELHOR**",
-      "",
-      "**[Tutorial de Use Melhor](https://exemplo.com/use-melhor-item)**",
-      "Descrição do tutorial.",
-      "",
     ].join("\n");
     const candidates = extractInstagramCandidates(md, "260727");
-    assert.equal(candidates.length, 3, "destaque + item de radar + item de use melhor");
+    assert.equal(candidates.length, 2, "destaque + item de radar");
 
     const destaque = candidates.find((c) => c.url === "https://exemplo.com/d1")!;
     assert.equal(destaque.kind, "destaque");
@@ -107,15 +100,33 @@ describe("extractInstagramCandidates", () => {
     assert.equal(radar.destaqueNumber, undefined, "item de seção nunca tem destaqueNumber — resolve card sob demanda");
     assert.equal(radar.title, "Item de Radar bem clicado");
     assert.match(radar.body, /Descrição do item de radar/);
-
-    const useMelhor = candidates.find((c) => c.url === "https://exemplo.com/use-melhor-item")!;
-    assert.ok(useMelhor, "item de USE MELHOR deveria ser extraído");
-    assert.equal(useMelhor.kind, "section");
-    assert.equal(useMelhor.section, "use_melhor");
-    assert.equal(useMelhor.destaqueNumber, undefined);
   });
 
-  it("NUNCA extrai itens de LANÇAMENTOS/VÍDEOS (fora do escopo do #4513 — só RADAR/USE MELHOR competem além de destaques)", () => {
+  it("NUNCA extrai itens de USE MELHOR (#5319, 260814 — decisão do editor: post semanal é sobre notícia clicada, não tutorial/ferramenta; regra permanente, superscede a inclusão do #4513)", () => {
+    const md = [
+      "DESTAQUE 1 | Notícias",
+      "Título D1",
+      "https://exemplo.com/d1",
+      "",
+      "Corpo do D1.",
+      "",
+      "Por que isso importa:",
+      "Explicação D1.",
+      "",
+      "---",
+      "",
+      "**USE MELHOR**",
+      "",
+      "**[Tutorial de Use Melhor](https://exemplo.com/use-melhor-item)**",
+      "Descrição do tutorial.",
+      "",
+    ].join("\n");
+    const candidates = extractInstagramCandidates(md, "260727");
+    assert.equal(candidates.length, 1, "só o destaque — USE MELHOR nunca compete no Instagram");
+    assert.ok(!candidates.some((c) => c.url === "https://exemplo.com/use-melhor-item"));
+  });
+
+  it("NUNCA extrai itens de LANÇAMENTOS/VÍDEOS (fora do escopo do #4513 — só RADAR compete além de destaques, USE MELHOR excluído pelo #5319)", () => {
     const md = [
       "DESTAQUE 1 | Notícias",
       "Título D1",
