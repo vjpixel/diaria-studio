@@ -1,9 +1,4 @@
 {
-  "statusLine": {
-    "type": "command",
-    "command": "npx tsx scripts/overnight-statusline.ts",
-    "refreshInterval": 5
-  },
   "permissions": {
     "allow": [
       "Read",
@@ -47,12 +42,12 @@
       "mcp__claude-in-chrome__tabs_context_mcp",
       "mcp__claude-in-chrome__javascript_tool"
     ],
+    "deny": [
+      "Bash(rm -rf *)"
+    ],
     "ask": [
       "mcp__playwright__*",
       "mcp__stable-diffusion-local__*"
-    ],
-    "deny": [
-      "Bash(rm -rf *)"
     ]
   },
   "hooks": {
@@ -93,8 +88,8 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/pr-create-review.mjs\"",
-            "shell": "bash",
             "if": "Bash(gh pr create*)",
+            "shell": "bash",
             "timeout": 15
           }
         ]
@@ -122,6 +117,11 @@
         ]
       }
     ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "npx tsx scripts/overnight-statusline.ts",
+    "refreshInterval": 5
   },
   "enabledPlugins": {
     "pr-review-toolkit@claude-plugins-official": true
