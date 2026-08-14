@@ -36,7 +36,12 @@ import Papa from "papaparse";
 import { existsSync, readFileSync } from "node:fs";
 
 export const SPEND_CSV_HEADERS = ["canal", "mes", "moeda", "valor", "fonte"] as const;
-export type SpendCsvHeader = (typeof SPEND_CSV_HEADERS)[number];
+/** Não exportado (knip flagged como unused export, #5276) — nenhum caller
+ *  externo tipa por nome de coluna (`SpendRow`/`SpendRowError.raw` usam os
+ *  valores das colunas, não os nomes); é puramente a derivação do tipo do
+ *  array acima, útil só dentro deste arquivo se algum dia precisar tipar um
+ *  parâmetro por "nome de coluna válido". */
+type SpendCsvHeader = (typeof SPEND_CSV_HEADERS)[number];
 
 export interface SpendRow {
   canal: string;
