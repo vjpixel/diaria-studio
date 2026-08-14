@@ -30,6 +30,8 @@ Sobrevivência/CTR comparam só "semana atual" vs "semana anterior" (2 snapshots
 
 `data/acquisition-health/state.json` guarda `knownChannels` (baseline de canais já vistos — 1ª execução nunca alarma `canal_desconhecido`, só estabelece o baseline), o streak de semanas seguidas abaixo da base de CTR por canal, e um fingerprint dos últimos achados (mesmo padrão de `apoios-diff-alarm.ts`/`hub-drift-check.ts` — findings inalterados não reenviam e-mail; achados resolvidos re-armam o cursor).
 
+O guard de idempotência por data (`lastCheckedSnapshotDate === currentDate`) só se aplica à execução REAL — `--dry-run` nunca toca o state, então pode reavaliar e mostrar os achados do mesmo snapshot quantas vezes for preciso, mesmo depois da semana já ter sido processada de verdade (debug story: reinspecionar um alarme antigo sem precisar mexer em `state.json` na mão).
+
 ## Como o editor confere o alarme
 
 - **Passivo**: chega por e-mail (Gmail, conta de `platform.config.json` → `inbox.editor_personal_email`) só quando há achados novos.

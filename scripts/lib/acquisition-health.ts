@@ -48,11 +48,9 @@
  * (`knownChannels`), sem gerar finding nenhum de `canal_desconhecido`.
  */
 
-import { normalizeKey, resolveGroupKey } from "../cohort-engagement.ts";
+import { resolveGroupKey } from "../cohort-engagement.ts";
 import { computeCtrPct, LEITOR_V1_THRESHOLDS } from "./leitor.ts";
 import type { BeehiivBackupSubscriber } from "./beehiiv-backup-snapshots.ts";
-
-export { normalizeKey };
 
 // ---------------------------------------------------------------------------
 // Limiares (documentados, ajustáveis via CLI — ver check-acquisition-health.ts)

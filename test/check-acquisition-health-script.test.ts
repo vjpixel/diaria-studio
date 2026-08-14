@@ -122,4 +122,61 @@ describe("check-acquisition-health.ts main() — CLI end-to-end sobre fixture lo
 
     assert.deepEqual(afterFirst, afterSecond);
   });
+
+  it("--dry-run sobre semana JÁ processada: reavalia e mostra os achados de novo, em vez de curto-circuitar (#5279 finding 2)", async () => {
+    const root = join(tmpRoot, "root-dryrun-reinspect");
+    const statePath = join(tmpRoot, "state-dryrun-reinspect.json");
+    const date = "2026-08-09";
+
+    // Canal com sobrevivência abaixo do piso (30% default) — sinal que NÃO
+    // depende de knownChannels/streak, então continua presente em toda
+    // reavaliação do mesmo snapshot (ao contrário de canal_desconhecido, que
+    // "some" do 2º run em diante porque o canal passa a ser conhecido).
+    // cadastros=25 (>= cohortMinSize=20, então não é amostraNova), 5 ativos
+    // = sobrevivência 20% < piso 30%.
+    mkdirSync(join(root, date), { recursive: true });
+    const subs: BeehiivBackupSubscriber[] = [];
+    for (let i = 0; i < 25; i++) {
+      subs.push(sub({ email: `u${i}@x.com`, utm_source: "canal-doente", status: i < 5 ? "active" : "inactive" }));
+    }
+    writeFileSync(join(root, date, "subscribers.jsonl"), subs.map((s) => JSON.stringify(s)).join("\n") + "\n");
+
+    // Seed do state simulando que a rodada REAL já processou esse mesmo
+    // snapshot (idempotência por data já travada pra `date`) — sem passar
+    // por main() sem --dry-run, que enviaria e-mail de verdade se achasse algo.
+    saveState({ ...emptyAcquisitionHealthState(), lastCheckedSnapshotDate: date }, statePath);
+    const seeded = loadState(statePath);
+
+    const runDryRunAndCollectLogs = async () => {
+      const originalLog = console.log;
+      const logs: string[] = [];
+      console.log = (...args: unknown[]) => {
+        logs.push(args.map(String).join(" "));
+      };
+      try {
+        await main(["--dry-run", "--root", root, "--state", statePath]);
+      } finally {
+        console.log = originalLog;
+      }
+      return logs;
+    };
+
+    const firstDryRun = await runDryRunAndCollectLogs();
+    const secondDryRun = await runDryRunAndCollectLogs();
+
+    for (const logs of [firstDryRun, secondDryRun]) {
+      assert.ok(
+        !logs.some((l) => l.includes("idempotência por data")),
+        "dry-run não deveria curto-circuitar no guard de idempotência",
+      );
+      assert.ok(
+        logs.some((l) => l.includes("sobrevivencia_baixa") && l.includes("canal-doente")),
+        "dry-run deveria mostrar os achados mesmo com a semana já processada",
+      );
+    }
+
+    // --dry-run nunca avança o state, nas duas rodadas.
+    const afterDryRuns = loadState(statePath);
+    assert.deepEqual(afterDryRuns, seeded);
+  });
 });

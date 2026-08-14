@@ -110,7 +110,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const state = loadState(statePath);
   const currentDate = dates[dates.length - 1];
 
-  if (state.lastCheckedSnapshotDate === currentDate) {
+  // Guard de idempotência por data só vale pra execução REAL — avança
+  // `state.json` e não deve reavaliar o mesmo snapshot 2×. `--dry-run` NUNCA
+  // toca o state (ver retorno mais abaixo), então precisa poder reinspecionar
+  // os achados quantas vezes o operador quiser, mesmo com a semana já
+  // processada (debug story de `docs/acquisition-health-alarm-setup.md`).
+  if (!isDryRun && state.lastCheckedSnapshotDate === currentDate) {
     console.log(
       `${LOG_PREFIX} snapshot ${currentDate} já foi avaliado nesta rodada (idempotência por data) — nada a fazer.`,
     );
