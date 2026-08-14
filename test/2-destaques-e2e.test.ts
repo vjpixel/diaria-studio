@@ -143,6 +143,7 @@ describe("stitchNewsletter 2-destaque edition (#2343)", () => {
           d3Path: null, // 2-destaque: sem D3
           approvedCappedPath: join(internalDir, "01-approved-capped.json"),
           editionDir: dir,
+          sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
         });
       });
 
@@ -190,6 +191,7 @@ describe("stitchNewsletter 2-destaque edition (#2343)", () => {
         d3Path: null,
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
       });
 
       // Ordem: D2 > É IA? (D3 omitido) > LANÇAMENTOS > SORTEIO
@@ -225,6 +227,7 @@ describe("stitchNewsletter 2-destaque edition (#2343)", () => {
         d3Path: null,
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
       });
 
       assert.match(result, /É IA\? ainda processando/);
@@ -256,6 +259,7 @@ describe("stitchNewsletter 2-destaque edition (#2343)", () => {
         d3Path: join(internalDir, "02-d3-draft.md"),
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
       });
 
       assert.match(result, /DESTAQUE 1 body/);
