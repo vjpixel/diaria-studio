@@ -152,7 +152,7 @@ export interface SubscribersSnapshotUsability {
  *     diga "ok" (proteção contra o manifest e o arquivo divergirem). */
 export function isSubscribersSnapshotUsable(root: string, date: string): SubscribersSnapshotUsability {
   const manifest = readBackupManifest(root, date);
-  const entry = manifest?.endpoints.find((e) => e.key === "subscribers") ?? null;
+  const entry = manifest?.endpoints?.find((e) => e.key === "subscribers") ?? null;
   if (entry?.status === "error") {
     return {
       usable: false,

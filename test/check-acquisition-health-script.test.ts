@@ -270,4 +270,25 @@ describe("check-acquisition-health.ts main() — CLI end-to-end sobre fixture lo
     const afterBrokenWeek = loadState(statePath);
     assert.equal(afterBrokenWeek.lastCheckedSnapshotDate, "2026-08-09");
   });
+
+  it("manifest.json existe mas SEM campo `endpoints` — nunca lança, cai pro conteúdo de fato (contrato fail-soft)", async () => {
+    const root = join(tmpRoot, "root-manifest-no-endpoints");
+    const statePath = join(tmpRoot, "state-manifest-no-endpoints.json");
+
+    mkdirSync(join(root, "2026-08-16"), { recursive: true });
+    // manifest.json parseável mas sem `endpoints` — formato inesperado, não
+    // "manifest ausente" (readBackupManifest só retorna null pra JSON
+    // ausente/corrompido). isSubscribersSnapshotUsable não pode lançar aqui.
+    writeFileSync(join(root, "2026-08-16", "manifest.json"), JSON.stringify({}));
+    writeFileSync(
+      join(root, "2026-08-16", "subscribers.jsonl"),
+      `${JSON.stringify(sub({ email: "a@x.com", utm_source: "google-ads" }))}\n`,
+    );
+
+    // Não deve lançar — deve cair pro conteúdo de fato de subscribers.jsonl
+    // (que aqui é usável) e avançar o cursor normalmente.
+    await assert.doesNotReject(() => main(["--root", root, "--state", statePath]));
+    const state = loadState(statePath);
+    assert.equal(state.lastCheckedSnapshotDate, "2026-08-16");
+  });
 });
