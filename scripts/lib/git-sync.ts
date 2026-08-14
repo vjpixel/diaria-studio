@@ -9,6 +9,18 @@
  *   1. Se não estiver em master → tenta `git checkout master` antes do sync.
  *      Se checkout falhar → warn + retorna sem forçar (fail-soft).
  *   2. `git fetch origin` — fail-soft (offline, credencial, etc.) → warn + retorna.
+ *      #5302: usa timeout PRÓPRIO (`GIT_FETCH_TIMEOUT_MS`, maior que
+ *      `GIT_TIMEOUT_MS` dos demais comandos) — um fetch trazendo volume grande
+ *      de refs novos de uma vez (checkout muito atrasado) pode legitimamente
+ *      passar dos 120s dos comandos rápidos (stash/merge/status/checkout) sem
+ *      ser um erro real. Diagnóstico também diferencia timeout (`status ===
+ *      null`, o `spawnSync` matou o processo) de erro real do git (`status !==
+ *      0 && status !== null`, offline/auth/etc.) — outcomes e mensagens
+ *      distintos (`fetch_timeout` vs `fetch_failed`), porque um fetch morto
+ *      por timeout pode já ter atualizado os refs remotos localmente ANTES do
+ *      kill (reproduzido ao vivo: `fetch_failed` com "offline ou erro de rede"
+ *      era enganoso quando a causa real era um fetch grande ainda em
+ *      andamento).
  *   3. Se working tree suja → stash → merge --ff-only origin/master → stash pop
  *      (reversível). Se stash falhar E nenhum stash tiver sido criado → warn +
  *      retorna sem tocar o tree ("stash_failed"). Se stash pop falhar (conflito
@@ -103,7 +115,10 @@ export type GitSyncOutcome =
   | "synced"              // pull --ff-only bem-sucedido em tree limpa
   | "synced_stashed"      // stash → pull --ff-only → stash pop OK
   | "already_up_to_date"  // já na versão mais recente (tree limpa ou suja)
-  | "fetch_failed"        // git fetch falhou (offline / auth) — warn, segue
+  | "fetch_failed"        // git fetch falhou com erro real (offline / auth / status !== 0 e != null) — warn, segue
+  | "fetch_timeout"       // #5302: git fetch origin foi morto pelo timeout do spawnSync (status === null) —
+                           // diferente de erro real; refs remotos podem já ter sido atualizados localmente
+                           // antes do kill — warn, segue
   | "ff_failed"           // pull --ff-only falhou (divergência) — warn, segue
   | "stash_failed"        // stash falhou E nenhum stash foi criado — tree não tocada — warn, segue
   | "stash_partial_failure"             // stash saiu não-zero MAS criou um stash (#3411); recuperado via pop automático — warn, segue
@@ -125,9 +140,37 @@ export interface GitSyncResult {
 /**
  * Timeout por comando git (#2686 review — angle H). Sem isso, um git que trava
  * esperando passphrase de SSH ou credencial bloquearia o processo indefinidamente,
- * derrotando o fail-soft. 120s cobre fetch/pull em conexões lentas com folga.
+ * derrotando o fail-soft. 120s cobre com folga os comandos RÁPIDOS por natureza
+ * (checkout/status/stash/merge --ff-only) — não mais usado pro `git fetch
+ * origin` do passo 3, ver `GIT_FETCH_TIMEOUT_MS` abaixo (#5302).
  */
 export const GIT_TIMEOUT_MS = 120_000;
+
+/**
+ * Timeout específico pro `git fetch origin` do passo 3 (#5302). 120s
+ * (`GIT_TIMEOUT_MS`) é curto demais para um fetch que precisa trazer volume
+ * grande de refs novos de uma vez — reproduzido ao vivo: um checkout local
+ * muito atrasado (866 commits, dezenas de branches novas) teve o fetch morto
+ * pelo timeout do `spawnSync` (`status: null`) mesmo com os refs remotos já
+ * tendo sido efetivamente atualizados no `.git` local antes do kill.
+ *
+ * 480s (8min), não 600s — review consolidado do #5313 (finding confiança 83)
+ * achou o valor original inatingível: o caminho de invocação documentado
+ * (`.claude/skills/diaria-edicao/SKILL.md` Passo 0) roda `npx tsx
+ * scripts/sync-code.ts` via tool Bash, cujo timeout default é 120000ms e cujo
+ * TETO — mesmo com override explícito — é 600000ms. Se `GIT_FETCH_TIMEOUT_MS`
+ * também fosse 600000ms, o harness externo mataria o processo `npx tsx`
+ * INTEIRO no mesmo instante em que o `spawnSync` interno dispararia seu
+ * próprio timeout — sem margem pro overhead de startup/teardown do `npx tsx`
+ * em volta do spawn, e sem o diagnóstico `fetch_timeout` chegar a ser
+ * impresso (o processo pai já estaria morto). 480000ms deixa ~120000ms (2min)
+ * de folga abaixo do teto de 600000ms do tool Bash — suficiente pro
+ * `spawnSync` interno terminar, o diagnóstico ser montado e o JSON ser
+ * impresso no stdout antes do harness externo intervir, desde que o Passo 0
+ * passe um override de `timeout` (>= ~570000ms) explícito na chamada Bash em
+ * vez de herdar o default de 120000ms (ver nota no SKILL.md).
+ */
+export const GIT_FETCH_TIMEOUT_MS = 480_000;
 
 /**
  * Lock de sync (#3423, endurecido em #3430). Interface injetável — produção usa
@@ -173,6 +216,12 @@ export interface LockFs {
  * `LOCK_STALE_MS` abaixo deriva desse número em vez de um valor redondo
  * chutado — #3430 gap 1 encontrou o valor antigo (10min fixo) matematicamente
  * MENOR que 8 × `GIT_TIMEOUT_MS` (16min no pior caso teórico).
+ *
+ * #5302: dos 8 spawns, exatamente 1 é o `git fetch origin` do passo 3, que
+ * desde #5302 usa `GIT_FETCH_TIMEOUT_MS` (maior que `GIT_TIMEOUT_MS`) em vez
+ * do timeout genérico — `LOCK_STALE_MS` abaixo reflete isso (7 ×
+ * `GIT_TIMEOUT_MS` + 1 × `GIT_FETCH_TIMEOUT_MS`, não mais 8 ×
+ * `GIT_TIMEOUT_MS` uniforme).
  */
 export const MAX_SEQUENTIAL_GIT_SPAWNS = 8;
 
@@ -206,8 +255,24 @@ export const MAX_SEQUENTIAL_GIT_SPAWNS = 8;
  * por mtime, gap 2) — então mesmo o cenário residual (staleness bater
  * durante um sync legítimo-mas-lento) resulta, no pior caso, em dois syncs
  * concorrentes (já fail-soft por design) em vez de corrupção do stash.
+ *
+ * #5302: a fórmula foi atualizada de `MAX_SEQUENTIAL_GIT_SPAWNS × GIT_TIMEOUT_MS`
+ * (8 spawns uniformes) para `(MAX_SEQUENTIAL_GIT_SPAWNS - 1) × GIT_TIMEOUT_MS +
+ * GIT_FETCH_TIMEOUT_MS` — só 1 dos 8 spawns (o `git fetch origin` do passo 3)
+ * agora usa o timeout maior; os outros 7 continuam em `GIT_TIMEOUT_MS`. Sem
+ * este ajuste, aumentar só o timeout do fetch sem re-derivar `LOCK_STALE_MS`
+ * reintroduziria exatamente o gap 1 original do #3430 (staleness matematicamente
+ * menor que o novo pior caso real, permitindo roubo do lock durante um fetch
+ * grande ainda legitimamente em andamento).
+ *
+ * Review consolidado do #5313 (confiança 83) reduziu `GIT_FETCH_TIMEOUT_MS` de
+ * 600s pra 480s (ver comentário da constante) pra deixar margem sob o teto do
+ * tool Bash — como `LOCK_STALE_MS` é DERIVADO de `GIT_FETCH_TIMEOUT_MS` (não um
+ * valor solto redundante), essa mudança já se propaga automaticamente pra
+ * fórmula abaixo sem precisar editar o número aqui.
  */
-export const LOCK_STALE_MS = MAX_SEQUENTIAL_GIT_SPAWNS * GIT_TIMEOUT_MS * 2 + 2 * 60_000;
+export const LOCK_STALE_MS =
+  ((MAX_SEQUENTIAL_GIT_SPAWNS - 1) * GIT_TIMEOUT_MS + GIT_FETCH_TIMEOUT_MS) * 2 + 2 * 60_000;
 
 /** Nome do arquivo interno que guarda o token de propriedade do lock (#3430 gap 2). */
 const OWNER_TOKEN_FILE = "owner.json";
@@ -536,9 +601,13 @@ export function createFileLock(
 /**
  * Spawner de produção. `cwd: REPO_ROOT` explícito (#2699 item 1) — nunca
  * confiar em `process.cwd()` como único sinal de onde rodar o `git`.
+ *
+ * `timeoutMs` (#5302) é injetável pelo chamador — default `GIT_TIMEOUT_MS`
+ * (comandos rápidos por natureza); o passo de `git fetch origin` passa
+ * `GIT_FETCH_TIMEOUT_MS` explicitamente.
  */
-export function defaultSpawn(cmd: string, args: string[]): SpawnResult {
-  const r = spawnSync(cmd, args, { encoding: "utf8", timeout: GIT_TIMEOUT_MS, cwd: REPO_ROOT });
+export function defaultSpawn(cmd: string, args: string[], timeoutMs: number = GIT_TIMEOUT_MS): SpawnResult {
+  const r = spawnSync(cmd, args, { encoding: "utf8", timeout: timeoutMs, cwd: REPO_ROOT });
   return {
     status: r.status,
     stdout: (r.stdout as string | null) ?? "",
@@ -635,14 +704,34 @@ function syncCodeLocked(spawn: SpawnFn): GitSyncResult {
   }
 
   // ── 3. git fetch origin ────────────────────────────────────────────────────
-  const fetchRes = spawn("git", ["fetch", "origin"]);
+  // #5302: timeout PRÓPRIO (GIT_FETCH_TIMEOUT_MS, maior que GIT_TIMEOUT_MS) —
+  // um fetch trazendo volume grande de refs novos pode legitimamente passar
+  // dos 120s dos comandos rápidos sem ser um erro real.
+  const fetchRes = spawn("git", ["fetch", "origin"], GIT_FETCH_TIMEOUT_MS);
   if (fetchRes.status !== 0) {
-    const msg =
-      `[git-sync] WARN: git fetch origin falhou (offline ou erro de rede). ` +
-      `Edição continua com código local. ` +
-      `Stderr: ${fetchRes.stderr.trim() || "(vazio)"}`;
+    // #5302: distinguir kill por timeout (`spawnSync` mata o processo e
+    // devolve `status === null`) de erro real do git (`status !== 0 && status
+    // !== null` — offline, auth, etc). Um fetch morto por timeout pode já ter
+    // atualizado os refs remotos localmente ANTES do kill — "offline ou erro
+    // de rede" é uma mensagem enganosa nesse caso (reproduzido ao vivo).
+    const isTimeout = fetchRes.status === null;
+    const msg = isTimeout
+      ? `[git-sync] WARN: git fetch origin foi encerrado por timeout (${GIT_FETCH_TIMEOUT_MS / 1000}s) — ` +
+        `NÃO necessariamente offline ou erro de rede. Fetches grandes (muitos refs novos, checkout muito ` +
+        `atrasado) podem ser mortos pelo timeout mesmo já tendo atualizado boa parte ou todos os refs ` +
+        `remotos no .git local antes do kill (#5302). Rode 'git fetch origin' manualmente para confirmar/` +
+        `completar. Edição continua com código local nesta rodada.`
+      : `[git-sync] WARN: git fetch origin falhou (exit ${fetchRes.status} — offline, erro de rede, ou ` +
+        `credencial). Edição continua com código local. ` +
+        `Stderr: ${fetchRes.stderr.trim() || "(vazio)"}`;
     warnings.push(msg);
-    return { outcome: "fetch_failed", message: msg, branch_before: branchBefore, warnings, proceed: true };
+    return {
+      outcome: isTimeout ? "fetch_timeout" : "fetch_failed",
+      message: msg,
+      branch_before: branchBefore,
+      warnings,
+      proceed: true,
+    };
   }
 
   // ── 4. Dirty check ────────────────────────────────────────────────────────

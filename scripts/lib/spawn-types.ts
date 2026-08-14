@@ -23,8 +23,13 @@ export interface SpawnResult {
   stderr: string;
 }
 
-/** Spawner de 2 args (cmd, args) — usado por scripts/lib/git-sync.ts. */
-export type GitSpawnFn = (cmd: string, args: string[]) => SpawnResult;
+/**
+ * Spawner (cmd, args[, timeoutMs]) — usado por scripts/lib/git-sync.ts.
+ * `timeoutMs` (#5302) é opcional — o `git fetch origin` do passo 3 passa um
+ * valor maior (`GIT_FETCH_TIMEOUT_MS`) que os demais comandos (`GIT_TIMEOUT_MS`
+ * default). Mocks de teste com assinatura de 2 args continuam compatíveis.
+ */
+export type GitSpawnFn = (cmd: string, args: string[], timeoutMs?: number) => SpawnResult;
 
 /** Spawner de 3 args (cmd, args, opts) — usado por scripts/check-pr-bugfix.ts. */
 export type PrCheckSpawnFn = (

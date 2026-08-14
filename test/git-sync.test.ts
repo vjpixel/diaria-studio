@@ -37,6 +37,7 @@ import {
   resolveSharedLockPathCached,
   REPO_ROOT,
   GIT_TIMEOUT_MS,
+  GIT_FETCH_TIMEOUT_MS,
   MAX_SEQUENTIAL_GIT_SPAWNS,
   LOCK_STALE_MS,
   type SpawnFn,
@@ -442,7 +443,7 @@ describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso neg
 });
 
 describe("git-sync — cenários de falha fail-soft", () => {
-  it("fetch falhou (offline) → 'fetch_failed', proceed=true, sem bloquear", () => {
+  it("fetch falhou com erro real (status != 0 e != null) → 'fetch_failed', proceed=true, sem bloquear", () => {
     const spawn = makeSpawn({
       "git rev-parse --abbrev-ref HEAD": ok("master"),
       "git fetch origin": fail("fatal: unable to connect to origin"),
@@ -452,6 +453,57 @@ describe("git-sync — cenários de falha fail-soft", () => {
     assert.equal(r.outcome, "fetch_failed");
     assert.equal(r.proceed, true);
     assert.ok(r.warnings.some((w) => /fetch/i.test(w)));
+    // #5302: mensagem de erro real não deve alegar timeout.
+    assert.ok(!r.warnings.some((w) => /timeout/i.test(w)), "erro real não deve ser rotulado como timeout");
+  });
+
+  it("#5302: fetch morto por timeout (spawnSync status=null) → 'fetch_timeout' distinto de 'fetch_failed'", () => {
+    // Reproduz o cenário da issue: `spawnSync` mata o processo por estourar o
+    // timeout — `status` vem `null` (não um exit code real de erro do git).
+    const spawn = makeSpawn({
+      "git rev-parse --abbrev-ref HEAD": ok("master"),
+      "git fetch origin": { status: null, stdout: "", stderr: "" },
+    });
+
+    const r = syncCode(spawn, NOOP_LOCK);
+    assert.equal(r.outcome, "fetch_timeout", "kill por timeout deve produzir outcome DISTINTO de fetch_failed");
+    assert.equal(r.proceed, true, "fail-soft — nunca bloqueia a edição");
+    assert.ok(
+      r.warnings.some((w) => /timeout/i.test(w)),
+      "mensagem deve mencionar timeout explicitamente",
+    );
+    assert.ok(
+      !r.warnings.some((w) => /fetch origin falhou \(exit/i.test(w)),
+      "mensagem de timeout não deve usar a fraseologia de erro real ('fetch origin falhou (exit ...)') " +
+        "— diagnóstico enganoso reportado na issue #5302 (o antigo 'offline ou erro de rede' genérico)",
+    );
+  });
+
+  it("#5302: git fetch origin roda com GIT_FETCH_TIMEOUT_MS (não GIT_TIMEOUT_MS genérico)", () => {
+    const observedTimeouts: (number | undefined)[] = [];
+    const spawn: SpawnFn = (cmd, args, timeoutMs) => {
+      const key = [cmd, ...args].join(" ");
+      if (key === "git fetch origin") observedTimeouts.push(timeoutMs);
+      return makeSpawn({
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git status --porcelain": ok(""),
+        "git merge --ff-only origin/master": ok("Already up to date."),
+      })(cmd, args);
+    };
+
+    syncCode(spawn, NOOP_LOCK);
+    assert.equal(observedTimeouts.length, 1, "fetch deve ter sido chamado exatamente 1x");
+    assert.equal(
+      observedTimeouts[0],
+      GIT_FETCH_TIMEOUT_MS,
+      "fetch deve receber GIT_FETCH_TIMEOUT_MS explicitamente, não o timeout genérico dos demais comandos",
+    );
+    assert.notEqual(
+      GIT_FETCH_TIMEOUT_MS,
+      GIT_TIMEOUT_MS,
+      "pré-condição do teste: os dois timeouts precisam ser valores DIFERENTES pra esta asserção ser significativa",
+    );
   });
 
   it("pull --ff-only falhou (divergência) → 'ff_failed', proceed=true", () => {
@@ -859,6 +911,21 @@ describe("git-sync — #3430 gap 1: LOCK_STALE_MS tem margem real sobre o pior c
     assert.ok(
       LOCK_STALE_MS >= worstCaseMs * 2,
       `margem esperada de pelo menos 2x o pior caso (${worstCaseMs * 2}ms); LOCK_STALE_MS atual: ${LOCK_STALE_MS}ms`,
+    );
+  });
+
+  it("#5302: LOCK_STALE_MS reflete o timeout MAIOR do fetch, não mais 8x GIT_TIMEOUT_MS uniforme", () => {
+    // Regressão: dar ao fetch um timeout próprio (GIT_FETCH_TIMEOUT_MS > GIT_TIMEOUT_MS)
+    // sem re-derivar LOCK_STALE_MS reintroduziria o gap 1 original do #3430 —
+    // o pior caso sequencial real ficaria MAIOR que o valor usado para calcular
+    // o staleness, permitindo roubo do lock durante um fetch grande ainda em
+    // andamento legitimamente.
+    const realWorstCaseMs = (MAX_SEQUENTIAL_GIT_SPAWNS - 1) * GIT_TIMEOUT_MS + GIT_FETCH_TIMEOUT_MS;
+    assert.ok(
+      LOCK_STALE_MS >= realWorstCaseMs * 2,
+      `LOCK_STALE_MS (${LOCK_STALE_MS}ms) precisa manter margem de pelo menos 2x sobre o pior caso real ` +
+        `pós-#5302 (7 × GIT_TIMEOUT_MS + 1 × GIT_FETCH_TIMEOUT_MS = ${realWorstCaseMs}ms), não só sobre o ` +
+        `pior caso pré-#5302 (8 × GIT_TIMEOUT_MS uniforme).`,
     );
   });
 });
