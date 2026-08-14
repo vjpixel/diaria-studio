@@ -413,7 +413,16 @@ export async function backupBeehiiv(opts: BackupOpts): Promise<Manifest> {
       // via hasMorePages, ignorando `total_pages`. (#1897)
       while (more) {
         const res = await apiFetch<Page<unknown>>(
-          `/publications/${cfg.publicationId}/subscriptions?expand[]=custom_fields&expand[]=tags&expand[]=referrals&limit=${PER_PAGE}&page=${page}`,
+          // `expand[]=stats` (#5229): traz `open_rate`/`total_received`/
+          // `total_unique_clicked` POR ASSINANTE. Sem ele o snapshot registra a
+          // origem (`utm_source`) mas não o engajamento, e a análise de coorte
+          // por canal de aquisição precisa dos dois no MESMO ponto no tempo —
+          // `cohort-engagement.ts` hoje refaz a chamada à API ao vivo, o que
+          // mede o engajamento de HOJE contra uma coorte de ONTEM. Também é o
+          // que torna o snapshot capaz de reconstruir a origem destruída pela
+          // promoção Brevo→Beehiiv (DELETE+CREATE sobrescreve `utm_source`, ver
+          // `promoteBeehiivSubscription` em `scripts/evaluate-brevo-diaria.ts`).
+          `/publications/${cfg.publicationId}/subscriptions?expand[]=custom_fields&expand[]=tags&expand[]=referrals&expand[]=stats&limit=${PER_PAGE}&page=${page}`,
           cfg.apiKey,
         );
         if (!res.ok) throw new Error(`Beehiiv API ${res.status} em subscriptions (página ${page})`);

@@ -598,6 +598,53 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4105, #1896, #1989, #4909",
   },
   {
+    name: "Diaria-Beehiiv-Backup",
+    description: "snapshot semanal da publicacao Beehiiv (assinantes com origem + engajamento, posts, segmentos)",
+    steps: [{ key: "backup", script: "scripts/backup-beehiiv.ts" }],
+    logPath: "beehiiv-backup/.backup.log",
+    // Domingo 03:00 BRT — o primeiro timer do dia, antes do Diaria-Seo-Weekly
+    // (04:10, o mais cedo já registrado) e de qualquer daily (a mais cedo é
+    // 05:00). Um snapshot pesado (drena a base inteira, ~13 páginas) merece a
+    // janela mais vazia da semana.
+    //
+    // **Por que isto existe (#5229):** o backup NUNCA rodou agendado — os dois
+    // únicos snapshots em `data/beehiiv-backup/` são 2026-06-05 e 2026-06-17,
+    // ambos manuais. Enquanto isso, `promoteBeehiivSubscription`
+    // (`scripts/evaluate-brevo-diaria.ts`) faz DELETE+CREATE todo dia às 05:30
+    // e sobrescreve o `utm_source` original de quem é promovido por score —
+    // 191 contatos já perderam a origem e 298 estão na fila. O snapshot é o
+    // único mecanismo que preserva a versão anterior, e sem agendamento ele
+    // não preserva nada.
+    //
+    // Cadência semanal, e ela NÃO fecha o problema — só reduz. São duas vias
+    // de promoção em paralelo (`scripts/evaluate-brevo-diaria.ts` §"Duas vias
+    // de promoção em paralelo — clique OU score", #4476 item 2):
+    //
+    //   - **Score** (`promoteBeehiivSubscription`, 05:30 diário): exige
+    //     acumular score por semanas, então o contato quase sempre aparece num
+    //     snapshot anterior com a origem intacta. Aqui o semanal cobre bem.
+    //   - **Clique** (`workers/reativar/`, tempo real): dispara no instante em
+    //     que a pessoa clica no link de reativação da edição diária do
+    //     `brevo_diaria`, com o MESMO DELETE+CREATE destrutivo
+    //     (`BREVO_DIARIA_REATIVAR_CLIQUE_UTM`). Sem gate de score, sem espera.
+    //     Quem entra no pool e clica na mesma semana nunca é snapshotado —
+    //     e converter por clique rápido é exatamente o propósito do canal,
+    //     então esse caso não é raro (achado do review da PR #5230).
+    //
+    // Não subimos pra diário porque isso também não fecharia a via de clique
+    // (dá pra entrar no pool e clicar no mesmo dia) — pagaria 7× o disco por
+    // uma cobertura ainda parcial. O conserto real da via de clique é
+    // preservação IN-BAND: os dois call sites já fazem `GET by_email` antes do
+    // DELETE, então o `utm_source`/`created` originais estão na mão e bastaria
+    // ecoá-los num custom field do CREATE. Está registrado como follow-up na
+    // #5229; este snapshot é a rede de proteção enquanto isso não existe.
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 3, minute: 0 },
+    // Mesmo caso de `Diaria-Beehiiv-Home-Meta-Check` (#5005): task registrada
+    // depois do cutover systemd (épica #4798), sem contraparte Windows/.ps1 —
+    // e nenhuma tarefa `Diaria-*` deve rodar no Windows (#5074).
+    issue: "#5229",
+  },
+  {
     name: "Diaria-Worker-Drift-Check",
     description: "alarme de drift entre o codigo publicado e o master de cada Worker",
     steps: [{ key: "check", script: "scripts/worker-drift-check.ts" }],

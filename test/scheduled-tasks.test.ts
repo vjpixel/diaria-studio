@@ -203,6 +203,46 @@ describe("#5005 — Diaria-Beehiiv-Home-Meta-Check registrada, systemd-only", ()
   });
 });
 
+describe("#5229 — Diaria-Beehiiv-Backup registrada, semanal, systemd-only", () => {
+  it("está presente no registro, com o step apontando pro script correto, domingo 03:00", () => {
+    const t = getScheduledTaskByName("Diaria-Beehiiv-Backup");
+    assert.ok(t, "Diaria-Beehiiv-Backup ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/backup-beehiiv.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "weekly", dayOfWeek: "Sunday", hour: 3, minute: 0 });
+  });
+
+  it("domingo 03:00 não colide com nenhuma outra weekly nem cai numa batida de interval", () => {
+    // Metade do bug da #5229 era "o backup nunca rodou agendado" — um
+    // reagendamento por engano pra cima de outro timer reintroduz a classe do
+    // problema (task registrada que não roda de verdade). Este teste trava o
+    // slot, não só a existência da entrada.
+    const t = getScheduledTaskByName("Diaria-Beehiiv-Backup")!;
+    assert.equal(t.schedule.kind, "weekly");
+    const mine = t.schedule as { kind: "weekly"; dayOfWeek: string; hour: number; minute: number };
+
+    for (const other of SCHEDULED_TASKS) {
+      if (other.name === t.name) continue;
+      if (other.schedule.kind === "weekly" && other.schedule.dayOfWeek === mine.dayOfWeek) {
+        assert.ok(
+          other.schedule.hour !== mine.hour || other.schedule.minute !== mine.minute,
+          `colisão de horário com ${other.name} (${mine.dayOfWeek} ${mine.hour}:${mine.minute})`,
+        );
+      }
+      // `interval` bate em múltiplos de N horas a partir da meia-noite —
+      // 03:00 só colidiria com um interval que divida 3 (1h ou 3h).
+      if (other.schedule.kind === "interval") {
+        assert.ok(
+          mine.minute !== 0 || mine.hour % other.schedule.hours !== 0,
+          `03:00 cai numa batida de ${other.name} (interval de ${other.schedule.hours}h)`,
+        );
+      }
+    }
+  });
+});
+
 describe("#5123 — Diaria-Hub-Staleness-Check registrada, diária, systemd-only", () => {
   it("está presente no registro, com o step apontando pro script correto, diária às 09:30", () => {
     const t = getScheduledTaskByName("Diaria-Hub-Staleness-Check");
