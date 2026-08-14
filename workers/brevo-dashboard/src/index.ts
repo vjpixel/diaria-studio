@@ -389,6 +389,23 @@ async function buildDashboardResponse(
   // vários visitantes concorrentes, todos vendo o mesmo pending maduro,
   // disparem o live-fetch pesado em paralelo (ver call site em `handleFetch`).
   bypassLock: boolean = isFresh,
+  // #5270: também distinto de `isFresh` -- aqui `isFresh` vira só "bypassa
+  // EDGE cache" (`?fresh=1` explícito OU fila madura/`autoFreshDue`).
+  // `bypassStatsCache` controla, separadamente, se `fetchRecentCampaigns`/
+  // `fetchScheduledCampaigns` ignoram o cache KV POR-CAMPANHA (`list:{id}`/
+  // `stats:{id}`, já válido) e relêem tudo da Brevo -- isso só deve
+  // acontecer com `?fresh=1` EXPLÍCITO (pedido humano, "quero dado na
+  // hora"), nunca com o auto-fresh da fila (#5218), que dispara sozinho e,
+  // pior, tende a coincidir com o momento em que o orçamento horário da
+  // Brevo (100 RPH, #5215) acabou de resetar -- o pior momento pra um burst
+  // de até ~200 chamadas (2 GETs/campanha × até CAMPAIGNS_FETCH_LIMIT).
+  // Antes desta separação, `autoFreshDue` (que só deveria bypassar o cache
+  // de BORDA) também bypassava esse cache por-campanha, disparando esse
+  // mesmo burst -- e, por herdar o mesmo `isFresh`, também pulava o
+  // write-through de `dash:lastgood:campaigns` (guard abaixo) justamente no
+  // render caro que deveria alimentá-lo. Default preserva o comportamento
+  // pré-#5270 pra qualquer chamada que não passe o argumento explicitamente.
+  bypassStatsCache: boolean = isFresh,
 ): Promise<Response> {
   const cache = caches.default;
   const path = "/";
@@ -450,14 +467,21 @@ async function buildDashboardResponse(
     // NÃO silenciosa — loga, pra não esconder regressão. fetchScheduledCampaigns
     // já retenta a listagem em 429 internamente (#2268).
     let scheduledOk = true;
-    scheduled = await fetchScheduledCampaigns(env, 50, isFresh).catch((e) => {
+    // #5270: `bypassStatsCache` (não `isFresh`) -- só `?fresh=1` explícito
+    // deve ignorar o cache `list:{id}` já válido. `autoFreshDue` sozinho
+    // (isFresh=true, bypassStatsCache=false) continua batendo essa listagem
+    // ao vivo (é barata, sem stats), mas respeita o nome de lista cacheado.
+    scheduled = await fetchScheduledCampaigns(env, 50, bypassStatsCache).catch((e) => {
       scheduledOk = false; // #2733: render degradado não vira o cache de campanhas
       console.error("[#2268] fetchScheduledCampaigns falhou — seção de agendadas oculta:", e instanceof Error ? e.message : e);
       return [];
     });
     // #3080: janela subida de 50 → CAMPAIGNS_FETCH_LIMIT (100, teto real da
     // Brevo — ver docstring da constante, incidente 260710).
-    campaigns = await fetchRecentCampaigns(env, CAMPAIGNS_FETCH_LIMIT, isFresh); // #2142 review: rota / hardcodava 20 e ignorava o default novo
+    // #5270: `bypassStatsCache` (não `isFresh`) -- ver docstring do parâmetro
+    // acima. Esta é a chamada cara (até ~200 GETs, 2 por campanha) que o
+    // auto-fresh da fila NÃO deve forçar a ignorar `stats:{id}` já válido.
+    campaigns = await fetchRecentCampaigns(env, CAMPAIGNS_FETCH_LIMIT, bypassStatsCache); // #2142 review: rota / hardcodava 20 e ignorava o default novo
     dataGeneratedAt = new Date().toISOString();
     campaignsWindowLimit = CAMPAIGNS_FETCH_LIMIT;
     // #3553: write-through — persiste em dash:lastgood:campaigns a cada
@@ -465,6 +489,12 @@ async function buildDashboardResponse(
     // buildRateLimitFallback ter um valor recente quando o Brevo entrar
     // em rate-limit numa request futura. `?fresh=1` nunca escreve
     // (comportamento preservado do #3079).
+    //
+    // #5270: guard usa `bypassStatsCache` (== `requestedFresh` no call site
+    // de produção), não `isFresh` -- antes, `autoFreshDue` (isFresh=true)
+    // também pulava este write-through, exatamente no render caro (fetch
+    // completo ao vivo) que deveria alimentar o fallback. Só `?fresh=1`
+    // EXPLÍCITO continua nunca escrevendo.
     //
     // #5216: write CONDICIONAL — só grava quando o CONTEÚDO (campaigns +
     // scheduled + campaignsLimit) mudou desde o último write bem-sucedido.
@@ -476,7 +506,7 @@ async function buildDashboardResponse(
     // `generatedAt` (que é `new Date().toISOString()` a cada tick e tornaria
     // o gate inútil, já que o payload inteiro nunca seria idêntico de uma
     // request pra outra).
-    if (scheduledOk && env.STATS_CACHE && !isFresh) {
+    if (scheduledOk && env.STATS_CACHE && !bypassStatsCache) {
       const stableContent = JSON.stringify({ campaigns, scheduled, campaignsLimit: CAMPAIGNS_FETCH_LIMIT });
       const newHash = djb2Hash(stableContent);
       const prevHash = await env.STATS_CACHE.get(LASTGOOD_CAMPAIGNS_HASH_KEY).catch(() => null);
@@ -787,8 +817,12 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
       // concorrentes, todos vendo o mesmo pending maduro, disparar o
       // live-fetch pesado em paralelo. A fila é limpa DEPOIS do build,
       // sucesso ou falha -- nunca se rearma sozinha.
+      //
+      // #5270: `bypassStatsCache: requestedFresh` (mesmo valor de
+      // `bypassLock`) -- só `?fresh=1` explícito deve ignorar o cache
+      // por-campanha já válido; `autoFreshDue` sozinho nunca deve.
       const buildOnce = async () => {
-        const resp = await buildDashboardResponse(request, env, isFresh, requestedFresh);
+        const resp = await buildDashboardResponse(request, env, isFresh, requestedFresh, requestedFresh);
         if (autoFreshDue) await clearRefreshPending(env);
         return resp;
       };
