@@ -616,11 +616,28 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // único mecanismo que preserva a versão anterior, e sem agendamento ele
     // não preserva nada.
     //
-    // Cadência semanal e não diária de propósito: a promoção exige acumular
-    // score, o que leva semanas, então um contato praticamente nunca nasce e é
-    // promovido dentro da mesma janela de 7 dias — ele aparece no snapshot
-    // anterior com a origem intacta. O buraco residual (cadastro que cruza o
-    // limiar em poucos dias) é estreito e custa 7× menos disco que o diário.
+    // Cadência semanal, e ela NÃO fecha o problema — só reduz. São duas vias
+    // de promoção em paralelo (`scripts/evaluate-brevo-diaria.ts` §"Duas vias
+    // de promoção em paralelo — clique OU score", #4476 item 2):
+    //
+    //   - **Score** (`promoteBeehiivSubscription`, 05:30 diário): exige
+    //     acumular score por semanas, então o contato quase sempre aparece num
+    //     snapshot anterior com a origem intacta. Aqui o semanal cobre bem.
+    //   - **Clique** (`workers/reativar/`, tempo real): dispara no instante em
+    //     que a pessoa clica no link de reativação da edição diária do
+    //     `brevo_diaria`, com o MESMO DELETE+CREATE destrutivo
+    //     (`BREVO_DIARIA_REATIVAR_CLIQUE_UTM`). Sem gate de score, sem espera.
+    //     Quem entra no pool e clica na mesma semana nunca é snapshotado —
+    //     e converter por clique rápido é exatamente o propósito do canal,
+    //     então esse caso não é raro (achado do review da PR #5230).
+    //
+    // Não subimos pra diário porque isso também não fecharia a via de clique
+    // (dá pra entrar no pool e clicar no mesmo dia) — pagaria 7× o disco por
+    // uma cobertura ainda parcial. O conserto real da via de clique é
+    // preservação IN-BAND: os dois call sites já fazem `GET by_email` antes do
+    // DELETE, então o `utm_source`/`created` originais estão na mão e bastaria
+    // ecoá-los num custom field do CREATE. Está registrado como follow-up na
+    // #5229; este snapshot é a rede de proteção enquanto isso não existe.
     schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 3, minute: 0 },
     // Mesmo caso de `Diaria-Beehiiv-Home-Meta-Check` (#5005): task registrada
     // depois do cutover systemd (épica #4798), sem contraparte Windows/.ps1 —
