@@ -128,6 +128,21 @@ export async function isAuthenticated(request: Request, env: Env): Promise<boole
   // assinantes nas abas Cupons/Contatos); um secret esquecido no deploy não
   // pode virar leak silencioso.
   if (!env.AUTH_TOKEN) return false
+  // #5217: `Authorization: Bearer <AUTH_TOKEN>` — auth máquina-a-máquina pro
+  // precompute horário do dashboard (scripts/clarice-dashboard-precompute.ts,
+  // task `Diaria-Clarice-Dashboard-Precompute`). Reusa o MESMO AUTH_TOKEN do
+  // login humano por cookie (decisão do editor, 13/08/2026: nenhum secret
+  // novo) — trade-off aceito e registrado aqui: rotacionar AUTH_TOKEN desloga
+  // humanos autenticados por cookie E quebra o job agendado ao mesmo tempo,
+  // já que os dois caminhos validam contra o MESMO valor. Bearer é um
+  // caminho de auth EQUIVALENTE ao cookie, não um substituto — checado
+  // primeiro só porque é mais barato de extrair (sem split de Cookie), sem
+  // nenhuma implicação de precedência quando ambos estão presentes.
+  const authHeader = request.headers.get('Authorization') ?? ''
+  const bearerMatch = /^Bearer\s+(.+)$/.exec(authHeader)
+  if (bearerMatch) {
+    return timingSafeEqualStr(bearerMatch[1], env.AUTH_TOKEN)
+  }
   const cookie = request.headers.get('Cookie') ?? ''
   const val = cookie.split(';')
     .map(c => c.trim())
