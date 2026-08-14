@@ -387,6 +387,36 @@ describe("#5025/#5026/#5027 — par Diaria-Clarice-Envio / Diaria-Clarice-Envio-
     );
   });
 
+  it("#5185: Diaria-Clarice-Novos-Tarde presente, 15:00 diário, mesmo script/guard de Diaria-Clarice-Novos, log próprio", () => {
+    const tarde = getScheduledTaskByName("Diaria-Clarice-Novos-Tarde");
+    const manha = getScheduledTaskByName("Diaria-Clarice-Novos");
+    assert.ok(tarde, "Diaria-Clarice-Novos-Tarde ausente de SCHEDULED_TASKS");
+    assert.ok(manha);
+    assert.deepEqual(
+      tarde!.steps.map((s) => s.script),
+      manha!.steps.map((s) => s.script),
+      "a 2a captura roda o MESMO orquestrador (clarice-novos-run.ts) — decisão do editor 260814, sem integração com clarice-envio-run.ts",
+    );
+    assert.deepEqual(tarde!.schedule, { kind: "daily", hour: 15, minute: 0 });
+    assert.deepEqual(tarde!.guard, manha!.guard, "mesmo guard de pré-condição (data/ montada) das duas tasks");
+    assert.notEqual(tarde!.logPath, manha!.logPath, "logs separados — não misturar as duas rodadas no mesmo arquivo");
+  });
+
+  it("#5185: ordem — Diaria-Clarice-Novos-Tarde (15:00) roda depois de Diaria-Clarice-Novos (11:00) e antes de Diaria-Clarice-Envio (19:00)", () => {
+    const manha = getScheduledTaskByName("Diaria-Clarice-Novos");
+    const tarde = getScheduledTaskByName("Diaria-Clarice-Novos-Tarde");
+    const envio = getScheduledTaskByName("Diaria-Clarice-Envio");
+    assert.ok(manha && tarde && envio);
+    const m = manha!.schedule as { kind: "daily"; hour: number; minute: number };
+    const t = tarde!.schedule as { kind: "daily"; hour: number; minute: number };
+    const e = envio!.schedule as { kind: "daily"; hour: number; minute: number };
+    const manhaMinutes = m.hour * 60 + m.minute;
+    const tardeMinutes = t.hour * 60 + t.minute;
+    const envioMinutes = e.hour * 60 + e.minute;
+    assert.ok(tardeMinutes > manhaMinutes, "Diaria-Clarice-Novos-Tarde deveria rodar depois de Diaria-Clarice-Novos");
+    assert.ok(envioMinutes > tardeMinutes, "Diaria-Clarice-Envio deveria rodar depois de Diaria-Clarice-Novos-Tarde");
+  });
+
   it("#5220: Diaria-Clarice-Envio-Guard-Alarm presente, 06:15 diário, step aponta pro alarme próprio do guard", () => {
     const t = getScheduledTaskByName("Diaria-Clarice-Envio-Guard-Alarm");
     assert.ok(t, "Diaria-Clarice-Envio-Guard-Alarm ausente de SCHEDULED_TASKS");

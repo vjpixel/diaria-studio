@@ -74,3 +74,20 @@ npx tsx scripts/arm-systemd-timers.ts --task Diaria-Clarice-Novos     # arma de 
 > 1. Rearmar **antes** de a próxima ocorrência do horário novo acontecer — a janela entre o último disparo e o horário novo.
 > 2. Usar o kill switch desta task: `npx tsx scripts/lib/clarice-novos-enabled.ts --set disabled`, rearmar, deixar o catch-up sair no vazio, religar com `--set enabled`. É a opção mais segura aqui, porque o switch existe justamente para isso.
 > 3. `touch` no arquivo de carimbo antes do `start` — declara "já disparou agora", e não sobra ocorrência devida.
+
+## 2ª captura diária — `Diaria-Clarice-Novos-Tarde` (#5185, 260814)
+
+Mesmo script (`clarice-novos-run.ts`), mesmo guard de pré-condição, mesmo kill switch (lido dentro do script — não precisa de um 2º toggle) — só muda o `name`/`schedule`/`logPath` da entrada no registro (`Diaria-Clarice-Novos-Tarde`, diária às **15:00 BRT**, log em `data/clarice-subscribers/.novos-tarde-run.log`). Tudo o que este documento descreve acima (kill switch, guard de pré-condição, relatório por rodada, armadilha do `Persistent=true`) se aplica igualmente, trocando `Diaria-Clarice-Novos` por `Diaria-Clarice-Novos-Tarde` nos comandos.
+
+**Por quê:** a issue #5185 avaliou integrar `clarice-envio-run.ts` chamando `runNovos()` internamente (cadastros indo direto pro pool `ramp-warm`) — descartado no briefing ao vivo de 260814. Decisão do editor: manter os fluxos separados e só rodar a captura mais vezes. Detalhes/motivação completa: ver comentário da entrada `Diaria-Clarice-Novos-Tarde` em `scripts/lib/scheduled-tasks.ts` e o parágrafo correspondente no `CLAUDE.md`.
+
+**Idempotência entre as duas rodadas do dia:** verificada, não nova — `clarice-build-segment.ts --group novos` já dedupa via `sent-or-queued.json` (cycle-wide, gravado no MOMENTO da seleção, antes do envio real assentar) e via `guardScope: "committed"` (exclui quem já está em lista Brevo `queued`∪`sent`). A rodada das 15:00 não reseleciona quem a das 11:00 já pegou.
+
+**Risco residual, não corrigido nesta unidade:** a folga até `Diaria-Clarice-Envio` (19:00) cai de 8h pra 4h — o piso mínimo que o teste `#5140` já usa pro par 11:00×19:00, mas nunca medido ao vivo nesse valor específico. Se a campanha das 15:00 ainda estiver `in_process` na Brevo às 19:00, o guard `queued∪sent` da rampa `ramp-warm` não a enxerga (não cobre `in_process`) e o mesmo contato pode entrar também na onda de amanhã 06:00. Acompanhar os primeiros relatórios reais antes de considerar fechado.
+
+**Task NÃO armada nesta unidade** (worktree isolado do subagente implementador) — mesma disciplina de sempre. Arme (Linux/systemd, checkout compartilhado, DEPOIS do merge):
+
+```bash
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Novos-Tarde
+systemctl --user daemon-reload && systemctl --user enable --now diaria-clarice-novos-tarde.timer
+```
