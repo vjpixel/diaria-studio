@@ -55,7 +55,7 @@
  *
  * Uso CLI (chamado pelas skills — sempre SEM `--session-id`, injetado pelo
  * hook, ver acima):
- *   npx tsx scripts/lib/session-registry.ts register --kind overnight|develop [--pid N]
+ *   npx tsx scripts/lib/session-registry.ts register --kind overnight|develop|continuo [--pid N]
  *   npx tsx scripts/lib/session-registry.ts heartbeat --kind ... [--phase X] [--active-worktrees N]
  *   npx tsx scripts/lib/session-registry.ts end --kind ...
  *   npx tsx scripts/lib/session-registry.ts claim-issue --kind ... --issue N
@@ -72,7 +72,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { hostname } from "node:os";
 import { parseArgs, isMainModule } from "./cli-args.ts";
 
-export type SessionKind = "overnight" | "develop";
+export type SessionKind = "overnight" | "develop" | "continuo";
 
 export interface SessionRecord {
   kind: SessionKind;
@@ -486,9 +486,13 @@ export function releaseMergeLock(repoRoot: string, sessionId: string): boolean {
 
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
-function requireKind(value: string | undefined): SessionKind {
-  if (value !== "overnight" && value !== "develop") {
-    throw new Error(`--kind deve ser "overnight" ou "develop", recebido "${value}"`);
+/**
+ * Exportado só para teste direto (#5293) — o CLI (main(), abaixo) é o único
+ * chamador em produção.
+ */
+export function requireKind(value: string | undefined): SessionKind {
+  if (value !== "overnight" && value !== "develop" && value !== "continuo") {
+    throw new Error(`--kind deve ser "overnight", "develop" ou "continuo", recebido "${value}"`);
   }
   return value;
 }
@@ -578,7 +582,7 @@ function main(): void {
       }
       default:
         process.stderr.write(
-          "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|is-claimed|list-active|merge-lock-acquire|merge-lock-release> [--kind overnight|develop] [--session-id X] ...\n",
+          "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|is-claimed|list-active|merge-lock-acquire|merge-lock-release> [--kind overnight|develop|continuo] [--session-id X] ...\n",
         );
         process.exitCode = 1;
     }
