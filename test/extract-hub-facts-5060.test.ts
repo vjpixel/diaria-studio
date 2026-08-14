@@ -116,16 +116,35 @@ describe("#5060 Parte B2 — extractHubFacts contra o hub REAL brasil-regulacao"
     }
   });
 
-  it("o parágrafo que corrige a contradição Câmara/Senado (#5060 Parte A) resolve matchedSource pro link do Senado com fonte oficial", () => {
+  it("o link da edição que originou a contradição Câmara/Senado (#5060 Parte A) resolve matchedSource pra fonte oficial do Senado", () => {
     const section1 = manifest.sections[0];
-    const para = section1.paragraphs.find((p) => p.text.includes("Plenário aprovou o PL 2338/23 em 10 de dezembro de 2024"));
-    assert.ok(para, "parágrafo esperado não encontrado — a prosa da Parte A mudou?");
+    // #5259 quebrou o parágrafo original (que tinha a data corrigida E o link
+    // da edição de 22/05/2026 juntos) em 2 parágrafos ADJACENTES — "data
+    // absoluta primeiro" + unidades de ~80-160 palavras. A garantia real do
+    // #5060 Parte A nunca foi posicional (mesmo parágrafo); é que o link da
+    // edição que causou a contradição (soberania-ia-pu-blica-nacional)
+    // continua descobrível na seção e resolve pra fonte oficial do Senado —
+    // buscar pelo LINK, não por um substring de prosa frágil a reescrita
+    // editorial (#5258/#5259 já reescreveram a frase 1x; um retrofit futuro
+    // pode reescrever de novo sem mexer no fato em si).
+    const para = section1.paragraphs.find((p) => p.links.some((l) => l.url.includes("soberania-ia-pu-blica-nacional")));
+    assert.ok(
+      para,
+      "nenhum parágrafo da seção 1 linka a edição de 22/05/2026 (soberania-ia-pu-blica-nacional) — a correção da contradição Câmara/Senado saiu da seção 1?",
+    );
     const editionLink = para!.links.find((l) => l.url.includes("soberania-ia-pu-blica-nacional"));
     assert.ok(editionLink?.matchedSource, "link da edição de 22/05/2026 deveria resolver matchedSource");
     assert.ok(
       editionLink!.matchedSource!.primarySourceUrls.some((u) => u?.includes("senado.leg.br")),
       "fonte primária oficial do Senado deveria estar entre as primarySourceUrls dessa edição",
     );
+    // A correção em si (a data real de aprovação do Plenário, o fato que
+    // resolve a contradição) precisa continuar narrada em ALGUM parágrafo da
+    // MESMA seção — não só o link solto sem a data corrigida ao lado.
+    const hasCorrectionText = section1.paragraphs.some((p) =>
+      p.text.includes("Plenário aprovou o PL 2338/23 em 10 de dezembro de 2024"),
+    );
+    assert.ok(hasCorrectionText, "a correção factual (data real de aprovação do Plenário, 10/12/2024) sumiu da seção 1");
   });
 
   it("cobre TODO hub de HUB_LOADERS sem lançar (regression guard, mesmo padrão de test/hub-fact-gate-5060.test.ts)", () => {
