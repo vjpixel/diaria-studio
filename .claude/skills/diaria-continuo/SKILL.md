@@ -35,6 +35,81 @@ backlog **bloqueado**, monta um lote de perguntas, pergunta via
 implementando o que a resposta destrava e voltando ao passo 1. Ver "Loop
 invariável" abaixo.
 
+## Como usar
+
+**Forma de invocação recomendada: `/loop /diaria-continuo` (#5329).** Rodar
+através da skill `/loop` (sem intervalo fixo — modo dinâmico) é o que dá à
+sessão o ritmo de despertar autônomo que o passo 6 do loop abaixo sempre
+descreveu ("dormir; ao acordar, re-checar...") mas que, invocada sozinha,
+não tinha mecanismo pra cumprir — sem `/loop`, o coordenador só volta a agir
+por mensagem do editor ou notificação assíncrona de subagente, ficando
+parado indefinidamente entre as duas. Ver "Integração com `/loop` e
+`ScheduleWakeup`" abaixo para o mecanismo completo.
+
+**Invocação direta `/diaria-continuo` continua válida** para uma sessão
+pontual sem despertar automático — por exemplo, quando o editor vai
+acompanhar a sessão ativamente por um período e prefere não delegar o
+despertar ao runtime. A diferença entre os dois modos é só quem re-arma o
+próximo ciclo do passo 6 (o `ScheduleWakeup` do `/loop`, ou o editor
+mandando mensagem) — o resto do loop invariável é idêntico nos dois casos.
+
+### Integração com `/loop` e `ScheduleWakeup` (#5329)
+
+`/loop` (sem intervalo — "modo dinâmico") roda o prompt agora e, ao final de
+cada turno em que o loop deve continuar, chama a ferramenta `ScheduleWakeup`
+com um `delaySeconds` de fallback e um `prompt` que reinvoca `/loop
+/diaria-continuo` na próxima ativação — é assim que a sessão "acorda" sem
+depender de mensagem do editor. **Confirmado a partir da doc da própria
+ferramenta `/loop`** (não assumido): o sentinel de resume do `ScheduleWakeup`
+é uma mecânica interna do modo dinâmico de `/loop`, então funciona
+corretamente quando `/diaria-continuo` é invocado *através* de `/loop
+/diaria-continuo` — é essa camada externa que decide chamar `ScheduleWakeup`
+ao fim de cada turno, não `/diaria-continuo` por si. **Não verificado e não
+recomendado:** invocar `/diaria-continuo` diretamente e esperar que
+`ScheduleWakeup` funcione por conta própria dentro dele — a doc de `/loop`
+não descreve esse caminho, e a skill não deve assumir que ele funciona sem
+confirmação; por isso a forma de invocação recomendada acima é sempre
+através de `/loop`, nunca chamar `ScheduleWakeup` a partir de uma sessão
+`/diaria-continuo` standalone.
+
+**Cadência do wake em modo ocioso (passo 6, fila seca sem resposta
+pendente):** a guidance default de `ScheduleWakeup` pra ticks ociosos sem
+evento observável é 1200-1800s (20-30min) — adotado aqui sem alterar, por
+não haver motivo concreto pra um valor diferente. O passo 6 já é
+estritamente passivo (só re-varre e dorme, nunca gera trabalho
+especulativo) — não há um evento de baixa latência esperando pra ser
+capturado que justificasse um intervalo mais curto, e um intervalo maior só
+atrasaria a detecção de issue nova/resposta do editor sem ganho real de
+custo (o wake em si é barato quando não acha nada). Ao invocar via `/loop
+/diaria-continuo` em modo ocioso, passar `delaySeconds` nesse intervalo ao
+chamar `ScheduleWakeup`.
+
+**Os dois estados de espera já existentes e corretos são preservados,
+independente do `/loop`:**
+- **Passo 4 (`AskUserQuestion` bloqueante).** O wake do `/loop` **nunca**
+  deve reenviar ou reformular uma pergunta já pendente — `AskUserQuestion`
+  bloqueia de verdade dentro do turno em que foi chamado; um wake de
+  `ScheduleWakeup` só deveria disparar a próxima re-varredura quando **não**
+  há pergunta bloqueada no momento (heartbeat `--phase
+  aguardando-resposta` sinaliza esse estado pro watchdog, ver "Reuso da
+  maquinaria" acima — o mesmo sinal serve pra não duplicar a pergunta num
+  wake seguinte).
+- **Notificação assíncrona de subagente terminando.** Continua funcionando
+  exatamente como hoje, via `<task-notification>`, independente de a sessão
+  estar rodando através de `/loop` ou não — as duas fontes de despertar
+  (evento de subagente e `ScheduleWakeup`) coexistem sem conflito.
+
+**Heartbeat durante wakes ociosos é obrigatório (#5329 item 5).** Cada
+re-entrada via `/loop` que só re-varre a fila e não acha nada novo (passo 6
+voltando ao passo 2, sem trabalho) deve continuar gravando o heartbeat
+(`npx tsx scripts/lib/session-registry.ts heartbeat --kind continuo --phase
+{fase-corrente}`) descrito em "Reuso da maquinaria" acima — sem isso, o
+watchdog (`scripts/overnight-watchdog.ts`) perde visibilidade da sessão
+entre wakes e pode alarmar falso-positivo de stall, exatamente o cenário que
+o mecanismo de `HEALTHY_IDLE_PHASES` existe pra evitar. O heartbeat não é
+opcional só porque o wake "não achou nada" — é justamente esse caso que o
+watchdog precisa distinguir de uma sessão travada.
+
 Esta skill só roda por invocação explícita do editor
 (`disable-model-invocation: true`) — o blast radius (merges autônomos em
 master, incluindo cat. D depois de uma resposta do editor) exige que a
@@ -165,6 +240,21 @@ Seis passos, repetidos indefinidamente — a sessão só para por ação externa
 (o editor mata o processo). O guard de colisão editorial (passo 1) **PAUSA**,
 nunca encerra — diferente do overnight, que preempta a rodada inteira ao
 detectar a edição diária em curso.
+
+**Mudança de config de sessão nunca é sinal de pausa (#5327 item 1, achado
+ao vivo 260814).** Comandos como `/effort medium`, `/fast`, ou qualquer outro
+ajuste de config de sessão (profundidade de raciocínio, velocidade) são
+**eixos completamente independentes** da decisão de continuidade do loop.
+Só os dois gatilhos já documentados legitimam parar de trabalhar a fila:
+fila desbloqueada seca de verdade (passo 2) ou decisão bloqueante genuína via
+`AskUserQuestion` (passos 3-4). **Nunca** interpretar uma mudança de config
+como pedido implícito pra desacelerar, e nunca perguntar em prosa solta
+("quer que eu continue... ou prefere pausar aqui?") fora desses dois casos —
+isso viola o próprio título desta seção. Incidente de referência: na 1ª
+rodada em produção (260814), o editor rodou `/effort medium` no meio da
+sessão e o coordenador leu isso como sinal de pausa, perguntando se devia
+continuar com a fila ainda não seca — comportamento incorreto, corrigido
+aqui.
 
 1. **Trabalhar a fila desbloqueada** exatamente como o overnight faz hoje
    (ver "Reuso da maquinaria" acima) — 1 merge por vez, disciplina do
