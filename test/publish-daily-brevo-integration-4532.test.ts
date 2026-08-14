@@ -119,11 +119,30 @@ const REVIEWED_MD = [
   "",
 ].join("\n");
 
+/** Fixture mínima do bloco de intro obrigatório do segmento Pending (#4266
+ * item 5) — sem ela `buildDailyBrevoHtml` lança (erro duro de compliance).
+ * `data/snippets/` é gitignored/junction OneDrive (#5227), ausente neste
+ * root de teste; escrever a fixture aqui é o mesmo padrão de DI já usado
+ * pelos demais loaders de snippet (ex: encerramento-social-apoio-3219.test.ts). */
+const PENDING_INTRO_FIXTURE = [
+  "<!-- fixture de teste, não é a cópia real revisada pelo editor -->",
+  "",
+  "Você está recebendo este e-mail porque se inscreveu na diar.ia.br.",
+  "",
+  "→ [Confirmar meu cadastro](https://reativar.diaria.workers.dev/?email={{ contact.EMAIL }})",
+  "",
+  "Se preferir, você pode se [descadastrar]({{ unsubscribe }}) a qualquer momento.",
+  "",
+].join("\n");
+
 function writeEdition(root: string, date: string): void {
   const dir = join(root, "data/editions", date);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "02-reviewed.md"), REVIEWED_MD, "utf8");
   writeFileSync(join(dir, "01-eia.md"), "Foto: Author / CC BY-SA 4.0.", "utf8");
+  const snippetsDir = join(root, "data/snippets");
+  mkdirSync(snippetsDir, { recursive: true });
+  writeFileSync(join(snippetsDir, "brevo-diaria-pending-intro.md"), PENDING_INTRO_FIXTURE, "utf8");
 }
 
 function jsonRes(status: number, body: unknown): Response {

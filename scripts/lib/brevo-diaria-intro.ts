@@ -49,9 +49,14 @@ export const PENDING_INTRO_SNIPPET_FILENAME = "brevo-diaria-pending-intro.md";
  * envio pro segmento Pending NUNCA pode sair sem esta explicação). Lança se
  * o snippet existir mas não tiver um parágrafo CTA isolado reconhecível —
  * mais seguro que publicar sem botão de cadastro.
+ *
+ * `rootDir` (opcional) — override de teste, repassado direto pra
+ * `readSnippetFile` (#5227 — mesmo padrão de DI já usado pelos demais
+ * loaders de `data/snippets/`, ex: `loadEncerramentoSocialApoioTemplate`).
+ * Produção nunca passa este parâmetro.
  */
-export function renderPendingIntroHtml(): string | null {
-  const box = readSnippetFile(PENDING_INTRO_SNIPPET_FILENAME);
+export function renderPendingIntroHtml(rootDir?: string): string | null {
+  const box = readSnippetFile(PENDING_INTRO_SNIPPET_FILENAME, rootDir);
   if (!box) return null;
 
   const paras = box.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);

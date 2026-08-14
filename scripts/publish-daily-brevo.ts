@@ -529,7 +529,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
     ? (JSON.parse(readFileSync(imagesPath, "utf8")) as PublicImagesFile)
     : {};
 
-  const introHtml = renderPendingIntroHtml();
+  const introHtml = renderPendingIntroHtml(rootDir);
   const { html, unresolvedImages, renderWarnings } = buildDailyBrevoHtml(content, publicImages, introHtml);
   if (unresolvedImages.length > 0) {
     log(`warn: ${unresolvedImages.length} placeholder(s) de imagem sem URL: ${unresolvedImages.join(", ")}`);
