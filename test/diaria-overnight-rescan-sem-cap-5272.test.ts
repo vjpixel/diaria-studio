@@ -5,8 +5,10 @@
  * /diaria-overnight: a fila principal é re-varrida enquanto cada re-scan
  * devolver issue nova, `rescans_done` vira contador puro de observabilidade, e
  * o motivo `rescan-limit` deixa de existir. No lugar do contador ficam três
- * mecanismos — anti-livelock, guard de colisão editorial e o teto de relógio
- * das 09:00 BRT.
+ * mecanismos: anti-livelock e guard de colisão editorial. Um teto de relógio
+ * (09:00 BRT) chegou a entrar aqui e foi retirado no mesmo dia por decisão do
+ * editor — a rodada não tem deadline de tempo (#2039), e a ausência do teto é
+ * testada tanto quanto a do cap.
  *
  * Regressão de #5272: o cap era descrito em 3 lugares como "a única garantia de
  * terminação do overnight", com aviso explícito de "não unificar com o develop".
@@ -95,51 +97,59 @@ describe("diaria-overnight re-varredura sem cap (#5272)", () => {
     );
   });
 
-  it("os três mecanismos que substituem o cap estão documentados, e nenhum é um contador", () => {
+  it("os dois mecanismos que substituem o cap estão documentados, e nenhum é um contador", () => {
     assert.match(overnight, /\(i\) \*\*anti-livelock\*\*/);
     assert.match(overnight, /\(ii\) \*\*guard de colisão com a manhã\*\*/);
-    assert.match(overnight, /\(iii\) \*\*teto de relógio\*\*/);
     assert.match(
       overnight,
-      /três mecanismos, nenhum deles um contador/,
+      /dois mecanismos, nenhum deles um contador/,
       "a substituição do cap não pode reintroduzir contagem",
     );
   });
 
-  it("teto de relógio: só impede ABRIR novo ciclo depois das 09:00 BRT, nunca interrompe trabalho em curso", () => {
-    assert.match(
+  it("NÃO existe teto de relógio: nem instrução, nem campo de plan.json, nem linha de relatório", () => {
+    // Decisão do editor (260814): um teto das 09:00 BRT entrou junto com o
+    // #5272 e foi retirado no mesmo dia. A rodada não tem deadline de tempo
+    // (#2039) — o freio é a fila secar. Este caso existe porque um limite
+    // mecânico já foi retirado desta seção duas vezes; a próxima sessão que
+    // "consertar" a ausência dele quebra este teste antes de mergear.
+    assert.doesNotMatch(
       overnight,
-      /não INICIAR uma nova re-varredura de convergência depois das \*\*09:00 BRT\*\*/,
-      "o teto é sobre iniciar, não sobre interromper",
+      /não INICIAR uma nova re-varredura de convergência depois das/,
+      "nenhuma instrução de teto de horário pode voltar",
+    );
+    assert.doesNotMatch(
+      overnight,
+      /rescan_window_closed_at/,
+      "o campo que registrava o acionamento do teto saiu do schema e do relatório",
+    );
+    assert.doesNotMatch(
+      overnight,
+      /TZ=America\/Sao_Paulo date/,
+      "nenhuma checagem de relógio sobrou na re-varredura",
     );
     assert.match(
       overnight,
-      /a unidade corrente sempre termina, o teto só recusa abrir mais um ciclo/,
-      "trabalho em andamento é preservado",
-    );
-    // O teto é o único limite duro em dia sem edição (guard de colisão não
-    // aciona), então a checagem tem que ser mecânica — sem isso o coordenador
-    // teria que inferir a conversão de fuso, ou pior, estimar quanto tempo a
-    // rodada já durou.
-    assert.match(
-      overnight,
-      /TZ=America\/Sao_Paulo date \+%H%M/,
-      "a checagem do teto é um comando determinístico, não uma estimativa",
+      /\*\*NÃO existe teto de relógio \(decisão do editor, 260814\)/,
+      "a ausência é declarada, não deixada implícita",
     );
     assert.match(
       overnight,
-      /gravar `rescan_window_closed_at: now\(\)` em `plan\.json`/,
-      "o acionamento do teto é registrado no plan.json",
+      /Não reintroduzir teto nem contador sem decisão explícita do editor/,
+      "a instrução de não reintroduzir é explícita",
     );
+  });
+
+  it("a consequência aceita (dia sem edição = rodada sem limite de horário) fica registrada, não escondida", () => {
     assert.match(
       overnight,
-      /"rescan_window_closed_at": null/,
-      "o campo está no schema do plan.json",
+      /em dia sem edição — quando o guard \(ii\) nunca aciona — uma rodada que siga recebendo issues novas continua trabalhando sem nenhum limite de horário/,
+      "o buraco conhecido do desenho é documentado onde o coordenador lê",
     );
     assert.match(
-      overnight,
-      /Convergência NÃO confirmada — teto de relógio das 09:00 BRT/,
-      "a Fase 2 distingue 'janela fechou' de 'a fila esgotou de verdade'",
+      claudeMd,
+      /em dia sem edição a rodada não tem limite de horário/,
+      "CLAUDE.md carrega a mesma consequência, pra não depender de abrir a skill",
     );
   });
 
