@@ -50,6 +50,7 @@ import { excludeCommittedToQueuedCampaigns, segmentRampWarm, type StoreRow } fro
 import { CLARICE_BASE, ensureDir } from "./lib/clarice-paths.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { brevoGet, fetchCommittedCampaignListIds } from "./lib/brevo-client.ts";
+import { firstName } from "./lib/clarice-name.ts";
 
 /**
  * DUPLICADO de `extractPlanCredits` (workers/brevo-dashboard/src/brevo-api.ts,
@@ -88,11 +89,6 @@ export interface WeekPlanManifestEntry {
 }
 
 const DAY_LABELS = ["ter", "sex", "dom"];
-
-/** 1º nome p/ personalização — mesma convenção de clarice-build-waves-store.ts. */
-function firstName(name: string | null): string {
-  return (name ?? "").trim().split(/[\s,]+/)[0] || "";
-}
 
 /** Parse de `--volumes N,N,N` — exatamente 3 inteiros > 0. Pura, testável. */
 export function parseVolumesArg(raw: string | undefined): number[] | null {

@@ -124,6 +124,12 @@ describe("buildRampCsv (#3593 item 2 — CSV disjunto por wave + extra-email ane
     const csv = buildRampCsv([]);
     assert.equal(csv.trim(), "email,NOME");
   });
+
+  it("nome com replacement character (U+FFFD) sai sanitizado do CSV (#5200 — firstName compartilhado de lib/clarice-name.ts)", () => {
+    const csv = buildRampCsv([{ email: "a13962@aecampo.pt", name: "Gon�alo Soares" }]);
+    assert.ok(csv.includes("a13962@aecampo.pt,Gonalo"), `esperado NOME sanitizado, csv:\n${csv}`);
+    assert.ok(!csv.includes("�"));
+  });
 });
 
 describe("buildRampManifest (#3593 — mesmo shape de WaveDef lido por clarice-import-waves.ts)", () => {
