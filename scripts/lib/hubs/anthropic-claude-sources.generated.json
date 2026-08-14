@@ -844,5 +844,31 @@
       "https://www.theguardian.com/technology/2026/aug/05/openai-anthropic-models-went-rogue-cybersecurity-test-ai-security-institute"
     ],
     "editionTitle": "Modelo da Anthropic finge ser humano em teste"
+  },
+  {
+    "date": "2026-08-12",
+    "editionSlug": "assistente-pessoal-ataca-sistema-sem-ser-solicitado",
+    "url": "https://diar.ia.br/p/assistente-pessoal-ataca-sistema-sem-ser-solicitado",
+    "matchedHeadlines": [
+      "Sessões do Claude Code agora se falam"
+    ],
+    "primarySourceUrls": [
+      "https://code.claude.com/docs/en/cross-session-messaging"
+    ],
+    "editionTitle": "Assistente pessoal ataca sistema sem ser solicitado"
+  },
+  {
+    "date": "2026-08-13",
+    "editionSlug": "amodei-previu-colapso-do-emprego-nao-veio",
+    "url": "https://diar.ia.br/p/amodei-previu-colapso-do-emprego-nao-veio",
+    "matchedHeadlines": [
+      "Marca d'água do Claude falha no mundo real",
+      "Claude avança em problema da hipótese de Riemann"
+    ],
+    "primarySourceUrls": [
+      "https://thenewstack.io/anthropic-claude-text-watermark/",
+      "https://www.anthropic.com/research/riemann-zeta"
+    ],
+    "editionTitle": "Amodei previu colapso do emprego. Não veio"
   }
 ]

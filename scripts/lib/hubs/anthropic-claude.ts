@@ -95,7 +95,7 @@ const PUBLISHED_DATE = "2026-08-04";
  * dos números transcritos à mão em `sections`/`INTRO` (ver nota acima). O
  * teste de consistência em `test/build-hub-page.test.ts` pega esse caso;
  * bump `UPDATED_DATE` só depois de reconciliar a prosa manualmente. */
-const UPDATED_DATE = "2026-08-11";
+const UPDATED_DATE = "2026-08-13";
 
 /** `matchedHeadlines` vem em NFD (achado original ao vivo: `/anthropic
  * lanç/i` batia 0 das 12 manchetes reais antes da normalização NFC) — ver a

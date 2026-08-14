@@ -226,5 +226,17 @@
       "Meta é a terceira empresa de IA a relatar invasão"
     ],
     "editionTitle": "IA de Stanford cria vírus funcional em lab"
+  },
+  {
+    "date": "2026-08-12",
+    "editionSlug": "assistente-pessoal-ataca-sistema-sem-ser-solicitado",
+    "url": "https://diar.ia.br/p/assistente-pessoal-ataca-sistema-sem-ser-solicitado",
+    "matchedHeadlines": [
+      "Meta lança Muse Glimmer, modelo de 30B aberto"
+    ],
+    "primarySourceUrls": [
+      "https://about.fb.com/news/2026/08/the-future-is-for-everyone"
+    ],
+    "editionTitle": "Assistente pessoal ataca sistema sem ser solicitado"
   }
 ]
