@@ -77,20 +77,21 @@ describe("resolveWeeklyEditionDirs", () => {
     // `resolveEditionDir` (dual flat/nested) corretamente; este arquivo não.
     const root = mkdtempSync(join(tmpdir(), "diaria-weekly-nested-"));
     try {
-      // 260421 só existe em layout NESTED — nunca em flat.
+      // 260421 (terça, ver computeWeekdayEditionDates acima) só existe em
+      // layout NESTED — nunca em flat.
       const nestedDir = resolve(root, "2604", "260421");
       mkdirSync(nestedDir, { recursive: true });
       writeFileSync(
         resolve(nestedDir, "02-reviewed.md"),
-        "DESTAQUE 1 | Notícias\nTítulo Segunda\nhttps://example.com/seg\n\nCorpo do D1.\n\nPor que isso importa:\nExplicação D1.",
+        "DESTAQUE 1 | Notícias\nTítulo Terça\nhttps://example.com/ter\n\nCorpo do D1.\n\nPor que isso importa:\nExplicação D1.",
         "utf8",
       );
       const saturday = new Date(2026, 3, 25);
       const result = resolveWeeklyEditionDirs(saturday, root);
-      const monday = result.find((c) => c.date === "260421");
-      assert.ok(monday, "260421 deveria estar entre os 5 candidatos");
-      assert.equal(monday!.exists, true, "edição nested deveria ser encontrada");
-      assert.equal(monday!.dir, nestedDir);
+      const tuesday = result.find((c) => c.date === "260421");
+      assert.ok(tuesday, "260421 deveria estar entre os 5 candidatos");
+      assert.equal(tuesday!.exists, true, "edição nested deveria ser encontrada");
+      assert.equal(tuesday!.dir, nestedDir);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
