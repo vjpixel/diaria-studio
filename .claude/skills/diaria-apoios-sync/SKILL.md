@@ -1,6 +1,6 @@
 ---
 name: diaria-apoios-sync
-description: Sincroniza o nível de recompensa de apoio (apoia.se) com o custom field `apoio_nivel` na Beehiiv, checando antes que os 6 segmentos `Apoio — {Amigo,Apoiador,Mantenedor,Patrono,Todos,Nenhum}` ainda condicionam nesse campo (drift check). Dry-run por padrão; `--push` grava de verdade. Uso — `/diaria-apoios-sync [--push] [--allow-partial] [--force-blast-radius]`.
+description: Sincroniza o nível de recompensa de apoio (apoia.se) com o custom field `apoio_nivel` na Beehiiv, checando antes que os 6 segmentos `Apoio — {Amigo,Apoiador,Mantenedor,Patrono,Todos,Nenhum}` ainda condicionam nesse campo (drift check). Dry-run por padrão; `--push` grava de verdade. Requer navegador logado (Claude in Chrome) — rodar no `neo`. Uso — `/diaria-apoios-sync [--push] [--allow-partial] [--force-blast-radius]`.
 ---
 
 # /diaria-apoios-sync
@@ -19,6 +19,33 @@ field `apoio_nivel`. Essa correção é FRÁGIL — qualquer edição manual fut
 pela UI da Beehiiv pode reintroduzir o mesmo bug (condicionar em tag, ou em
 qualquer outra coisa) sem que ninguém perceba até um envio segmentado errar o
 alvo de novo. Por isso o passo 1 desta skill sempre confere antes de seguir.
+
+## Passo 0 — preflight de capacidade de navegador (#5209)
+
+Esta skill depende de Claude in Chrome logado (Passo 1 corrige drift pela UI
+da Beehiiv; Passo 4 clica "Refresh segment" 6× — ambos mutam via browser, não
+API). Decisão do editor (260814): `/diaria-apoios-sync` roda no `neo`
+(desktop Windows), não em sessão headless/servidor.
+
+1. Consultar a disponibilidade de navegador via
+   `npx tsx scripts/lib/browser-capability.ts` (#5208 —
+   `scripts/lib/browser-capability.ts`, eixo separado de `exec-mode.ts`:
+   checa `DISPLAY`/`WAYLAND_DISPLAY` + binário de browser no PATH, não
+   `data/`).
+2. **`unavailable`** → HALTAR antes de qualquer outro passo. Renderizar:
+   ```
+   npx tsx scripts/render-halt-banner.ts \
+     --stage "diaria-apoios-sync — Passo 0" \
+     --reason "sem navegador utilizável nesta máquina (sem DISPLAY/WAYLAND_DISPLAY ou sem binário de browser)" \
+     --action "esta skill precisa de navegador logado (Claude in Chrome); rode no neo"
+   ```
+   Aguardar resposta explícita do editor antes de prosseguir (mesmo padrão do
+   guard MCP #738/#3938 — nunca prosseguir sozinho).
+3. **`unknown`** → mesmo tratamento de `unavailable` (halt), fail-safe: o
+   Passo 4 muta dados reais via 6× "Refresh segment" pós-`--push` — um falso
+   positivo aqui (seguir sem navegador de fato disponível) custa mais caro do
+   que um halt desnecessário quando a sondagem falhou por motivo inofensivo.
+4. **`available`** → prosseguir normalmente pro Passo 1.
 
 ## Passo 1 — drift check dos 6 segmentos
 
