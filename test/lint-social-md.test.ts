@@ -818,9 +818,7 @@ describe("lintLinkedinSchema (#595)", () => {
     const base = buildMd({ d1: fullDestaque(), d2: fullDestaque(), d3: fullDestaque() });
     // post_pixel longo (>600) — se vazasse pro comment_pixel do d3, dispararia
     // comment_pixel_chars_out_of_range (false positive).
-    // #3052: inclui {outros_count} + {edition_url} pra não disparar as novas
-    // regras post_pixel_missing_edition_url / post_pixel_missing_outros_count.
-    const md = base + `\n\n## post_pixel\n\nMais {outros_count} destaques em {edition_url}.\n\n${"Y".repeat(1000)}\n`;
+    const md = base + `\n\n## post_pixel\n\nOpinião pessoal do Pixel sobre o D1.\n\n${"Y".repeat(1000)}\n`;
     const r = lintLinkedinSchema(md);
     assert.equal(r.ok, true, "post_pixel não deve quebrar o lint: " + JSON.stringify(r.errors));
     const d3 = r.destaques.find((d) => d.destaque === "d3");
@@ -949,59 +947,39 @@ describe("lintLinkedinSchema (#595)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// #3052: lintLinkedinSchema — post_pixel deve abrir com {outros_count} +
-// {edition_url}, mesma convenção do comment_diaria (§3b social-linkedin.md)
+// #3052 revertido (260814): post_pixel NÃO deve mais ser obrigado a abrir com
+// {outros_count}/{edition_url} — a convenção foi removida (decisão do
+// editor). Regressão: garantir que post_pixel sem os placeholders não
+// dispara mais post_pixel_missing_edition_url/post_pixel_missing_outros_count
+// (regras removidas de lintLinkedinSchema).
 // ---------------------------------------------------------------------------
 
-describe("lintLinkedinSchema — post_pixel placeholders (#3052)", () => {
+describe("lintLinkedinSchema — post_pixel sem placeholders obrigatórios (#3052 revertido)", () => {
   function mkMdWithPostPixelBody(postPixelBody: string): string {
     const d = `\n${"X".repeat(1300)}\n\n### comment_diaria\n\nEdição completa em {edition_url}\n\nSiga a Diar.ia no LinkedIn em linkedin.com/company/diar.ia.br\n\n### comment_pixel\n\n${"Y".repeat(400)}\n`;
     return `# LinkedIn\n\n## d1${d}\n## d2${d}\n## d3${d}\n## post_pixel\n\n${postPixelBody}\n`;
   }
 
-  it("ok=false quando post_pixel não contém {edition_url} nem URL resolvida", () => {
+  it("post_pixel sem {edition_url} nem {outros_count} não dispara mais erro (revertido #3052)", () => {
     const md = mkMdWithPostPixelBody(
-      "Mais {outros_count} novidades hoje. Opinião pessoal do Pixel sem link nenhum aqui.",
-    );
-    const r = lintLinkedinSchema(md);
-    const errs = r.errors.filter((e) => e.destaque === "post_pixel" && e.rule === "post_pixel_missing_edition_url");
-    assert.equal(errs.length, 1, JSON.stringify(r.errors));
-  });
-
-  it("ok=false quando post_pixel não contém {outros_count}", () => {
-    const md = mkMdWithPostPixelBody(
-      "Reuni tudo na edição em {edition_url}. Opinião pessoal do Pixel sem contagem aqui.",
-    );
-    const r = lintLinkedinSchema(md);
-    const errs = r.errors.filter((e) => e.destaque === "post_pixel" && e.rule === "post_pixel_missing_outros_count");
-    assert.equal(errs.length, 1, JSON.stringify(r.errors));
-  });
-
-  it("ok=true (pra essas regras) quando post_pixel abre com ambos os placeholders literais", () => {
-    const md = mkMdWithPostPixelBody(
-      "Hoje saíram mais {outros_count} novidades de IA — reuni tudo na edição em {edition_url}. Mas o que me fez parar foi isto: opinião pessoal do Pixel sobre o D1.",
+      "Opinião pessoal do Pixel direto no conteúdo, sem plug de abertura nem link da edição.",
     );
     const r = lintLinkedinSchema(md);
     const errs = r.errors.filter(
-      (e) => e.destaque === "post_pixel" && (e.rule === "post_pixel_missing_edition_url" || e.rule === "post_pixel_missing_outros_count"),
+      (e) =>
+        e.destaque === "post_pixel" &&
+        (e.rule === "post_pixel_missing_edition_url" || e.rule === "post_pixel_missing_outros_count"),
     );
     assert.equal(errs.length, 0, JSON.stringify(r.errors));
   });
 
-  it("aceita post_pixel com URL diar.ia.br/p/<slug> já resolvida (pós-Stage 6) em vez do placeholder", () => {
+  it("post_pixel_has_comment_pixel segue válido (não afetado pela reversão do #3052)", () => {
     const md = mkMdWithPostPixelBody(
-      "Hoje saíram mais 9 novidades de IA — reuni tudo na edição em https://diar.ia.br/p/modelos-replicam. Mas o que me fez parar foi isto.",
+      `Opinião pessoal do Pixel.\n\n### comment_pixel\n\n${"Y".repeat(400)}\n`,
     );
     const r = lintLinkedinSchema(md);
-    const errs = r.errors.filter((e) => e.destaque === "post_pixel" && e.rule === "post_pixel_missing_edition_url");
-    assert.equal(errs.length, 0, JSON.stringify(r.errors));
-  });
-
-  it("post_pixel ausente do md → nenhuma das novas regras dispara (no-op)", () => {
-    const noPixelMd = `# LinkedIn\n\n## d1\n${"X".repeat(1300)}\n\n### comment_diaria\n\nEdição completa em {edition_url}\n\n### comment_pixel\n\n${"Y".repeat(400)}\n`;
-    const r = lintLinkedinSchema(noPixelMd);
-    const errs = r.errors.filter((e) => e.rule === "post_pixel_missing_edition_url" || e.rule === "post_pixel_missing_outros_count");
-    assert.equal(errs.length, 0, JSON.stringify(r.errors));
+    const errs = r.errors.filter((e) => e.destaque === "post_pixel" && e.rule === "post_pixel_has_comment_pixel");
+    assert.equal(errs.length, 1, JSON.stringify(r.errors));
   });
 });
 
@@ -1884,6 +1862,23 @@ describe("lintLinkedinPageLink (#2458)", () => {
     assert.equal(r.ok, false);
     const e = r.errors.find((x) => x.section === "post_pixel");
     assert.ok(e, `esperava erro em post_pixel, achei: ${JSON.stringify(r.errors)}`);
+  });
+
+  // 260814 (#5314): #3052 foi revertido — post_pixel não fecha mais com a
+  // linha fixa "Siga a diar.ia.br em linkedin.com/company/diar.ia.br" (CTA
+  // separado). A convenção nova pede o link mencionado de passagem, integrado
+  // ao corpo do post. Este teste documenta/confirma que esse formato ainda
+  // passa #2458 — achado crítico da review da PR: sem ele, nenhum teste do
+  // repo exercitava a interação entre "o que o writer de fato produz agora" e
+  // este lint gate-blocking (Stage 2), e a suíte ficava verde enquanto o
+  // pipeline real quebraria na próxima edição.
+  it("PASSA (#5314): post_pixel no formato pós-revert #3052 — link mencionado de passagem, sem CTA fixo de fechamento", () => {
+    const md = mkLinkedinMd({
+      postPixel:
+        `O que mais me chamou atenção nesse lançamento foi X. Reuni essa e outras leituras na curadoria da diar.ia.br (${DIARIA_LINKEDIN_PAGE_SLUG}) que faço todo dia.`,
+    });
+    const r = lintLinkedinPageLink(md);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
   });
 
   it("PASSA: post_pixel com URL completa 'https://linkedin.com/company/diar.ia.br'", () => {

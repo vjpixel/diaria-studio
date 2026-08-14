@@ -1794,6 +1794,25 @@ describe("checkCoverageLine standalone (--check coverage-line-format, #1207)", (
     assert.equal(r.ok, true);
   });
 
+  // 260814 (#5314): cobertura do lado CONSUMIDOR (checkCoverageLine, o check
+  // que de fato roda no pipeline contra 02-reviewed.md) com o wording ATUAL
+  // "conteúdos" — antes desta PR, só o lado produtor (formatCoverageLine/
+  // buildWelcomeCoverageSentence, testados em inbox-stats.test.ts/
+  // sync-coverage-line.test.ts) tinha cobertura da palavra nova; nada
+  // conectava "o que o pipeline agora produz" com "o check que o pipeline
+  // agora roda" (achado do test-analyzer na review da PR).
+  it("#5314: reconhece o formato de boas-vindas com wording 'conteúdos' (plural)", () => {
+    const md = "Nesta edição, a IA analisou 100 conteúdos (5 enviados por mim e 95 encontrados automaticamente) e selecionei os 3 mais relevantes.";
+    const r = checkCoverageLine(md);
+    assert.equal(r.ok, true);
+  });
+
+  it("#5314: reconhece o formato de boas-vindas com wording 'conteúdos' aceita singular ('selecionei o conteúdo mais relevante')", () => {
+    const md = "Nesta edição, a IA analisou 100 conteúdos (5 enviados por mim e 95 encontrados automaticamente) e selecionei o conteúdo mais relevante.";
+    const r = checkCoverageLine(md);
+    assert.equal(r.ok, true);
+  });
+
   it("#3810: bloco TÍTULO/SUBTÍTULO sem `---` de fechamento não deve mascarar a linha de cobertura real", () => {
     // Regressão 260721: quando insert-titulo-subtitulo.ts (ou edição manual)
     // deixa o bloco TÍTULO/SUBTÍTULO SEM o `---` terminador, o único `---` do

@@ -38,6 +38,7 @@ import {
   renderCaptureFailedLine,
 } from "./lib/inbox-stats.ts";
 import { readEiaAnswer } from "./lib/eia-answer.ts";
+import { pluralPtBr, coverageSelPhrase } from "./lib/coverage-words.ts";
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 
 // #658 review: paths consistentes contra ROOT (não cwd) — caller invocando
@@ -548,15 +549,12 @@ export function resolveCoverageLine(opts: {
  * **Pura** — exportada para teste direto, isolada da leitura de disco em `main()`.
  */
 export function formatCoverageLineUnknownTotal(editorSubmissions: number, totalSelected: number): string {
-  const enviadosWord = editorSubmissions === 1 ? "enviado" : "enviados";
-  const selPhrase =
-    totalSelected === 1
-      ? "selecionei o artigo mais relevante"
-      : `selecionei os ${totalSelected} mais relevantes`;
+  const enviadosWord = pluralPtBr(editorSubmissions, "enviado", "enviados");
+  const selPhrase = coverageSelPhrase(totalSelected);
   return [
     "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor desta newsletter.",
     "Todos os dias, junto com a IA da diar.ia.br, seleciono e resumo as notícias mais importantes para economizar o seu tempo.",
-    `Nesta edição, a IA analisou ??? artigos (${editorSubmissions} ${enviadosWord} por mim e ??? encontrados automaticamente) e ${selPhrase}.`,
+    `Nesta edição, a IA analisou ??? conteúdos (${editorSubmissions} ${enviadosWord} por mim e ??? encontrados automaticamente) e ${selPhrase}.`,
     "Se este trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
   ].join("\n\n");
 }

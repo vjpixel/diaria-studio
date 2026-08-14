@@ -46,6 +46,7 @@ import { resolve, join } from "node:path";
 import { parseInboxMd, filterEditorBlocks } from "./inject-inbox-urls.ts";
 import { resolveEditorEmail, readInboxLinkCountFromMarker } from "./lib/inbox-stats.ts";
 import { countSelectedItems as sharedCountSelectedItems } from "./lib/newsletter-count.ts";
+import { pluralPtBr, coverageSelPhrase } from "./lib/coverage-words.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 
 interface RawArticle {
@@ -321,9 +322,12 @@ const COVERAGE_LINE_RE =
  * (#3461, formato padrão desde a edição 260715 — "Olá! Eu sou o [Pixel]...").
  * Diferente de `COVERAGE_LINE_RE` (que casa a linha LEGADA inteira, começando
  * em "Para esta edição, eu..."), este regex casa só a sentença de contagem —
- * "Nesta edição, a IA analisou N artigos (X enviados por mim e Y encontrados
+ * "Nesta edição, a IA analisou N conteúdos (X enviados por mim e Y encontrados
  * automaticamente) e selecionei os Z mais relevantes." — embutida no meio do
  * parágrafo final do bloco (ver `formatCoverageLine` em `lib/inbox-stats.ts`).
+ * 260814: "conteúdos" no lugar de "artigos" (mesma troca de `formatCoverageLine`)
+ * — o regex abaixo aceita as duas grafias por compat retroativa com edições
+ * antigas que nunca serão re-sincronizadas.
  * A substituição preserva os parágrafos de saudação/CTA ao redor.
  *
  * Bug raiz (#3696): antes desta extensão, `COVERAGE_LINE_RE` só reconhecia o
@@ -337,22 +341,35 @@ const COVERAGE_LINE_RE =
 // gap original só flexionava "artigos?"/selPhrase; "1 enviados"/"1
 // encontrados" (concordância errada) ainda batiam mesmo depois do fix de
 // `buildWelcomeCoverageSentence` abaixo pra "1 enviado"/"1 encontrado".
+// #5314: aceita "selecionei o artigo|conteúdo mais relevante" — edições
+// antigas (pré-260814) só emitiam "artigo" no singular; `buildWelcomeCoverageSentence`
+// abaixo agora emite "conteúdo", mas o regex de DETECÇÃO precisa reconhecer
+// as duas por compat retroativa (mesma lógica já aplicada ao totalWord).
 export const WELCOME_COVERAGE_SENTENCE_RE =
-  /Nesta edição, a IA analisou \d+ artigos? \(\d+ enviados? por mim e \d+ encontrados? automaticamente\) e (?:selecionei o artigo mais relevante|selecionei os \d+ mais relevantes)\./;
+  /Nesta edição, a IA analisou \d+ (?:artigos?|conte[úu]dos?) \(\d+ enviados? por mim e \d+ encontrados? automaticamente\) e (?:selecionei o (?:artigo|conte[úu]do) mais relevante|selecionei os \d+ mais relevantes)\./;
 
 /**
- * #3696: monta a sentença de contagem no formato do bloco de boas-vindas — mesmo template de `formatCoverageLine` (`lib/inbox-stats.ts`), só que localmente pra não criar dependência circular script→script.
+ * #3696: monta a sentença de contagem no formato do bloco de boas-vindas —
+ * mesmo template de `formatCoverageLine` (`lib/inbox-stats.ts`), só que
+ * localmente pra não criar dependência circular script→script.
  *
- * #3731: pluralização condicional também pra "artigos"/"enviados"/
- * "encontrados" (antes só `selPhrase` flexionava) — "1 artigos"/"1
+ * #3731: pluralização condicional também pra "conteúdos"/"enviados"/
+ * "encontrados" (antes só `selPhrase` flexionava) — "1 conteúdos"/"1
  * enviados"/"1 encontrados" é gramaticalmente errado em PT-BR.
+ *
+ * 260814 (#5314): words extraídos pra `lib/coverage-words.ts` — este é o 3º
+ * produtor independente do mesmo padrão de pluralização, ver docstring lá.
+ * A nota "sem dependência circular" acima segue válida pro import de
+ * `lib/inbox-stats.ts` (motivo original de manter isto local em #3696), mas
+ * não se aplica ao novo `lib/coverage-words.ts` — módulo standalone sem
+ * import de volta pra `sync-coverage-line.ts` nem `inbox-stats.ts`.
  */
 function buildWelcomeCoverageSentence(x: number, y: number, z: number): string {
   const total = x + y;
-  const selPhrase = z === 1 ? "selecionei o artigo mais relevante" : `selecionei os ${z} mais relevantes`;
-  const totalWord = total === 1 ? "artigo" : "artigos";
-  const enviadosWord = x === 1 ? "enviado" : "enviados";
-  const encontradosWord = y === 1 ? "encontrado" : "encontrados";
+  const selPhrase = coverageSelPhrase(z);
+  const totalWord = pluralPtBr(total, "conteúdo", "conteúdos");
+  const enviadosWord = pluralPtBr(x, "enviado", "enviados");
+  const encontradosWord = pluralPtBr(y, "encontrado", "encontrados");
   return `Nesta edição, a IA analisou ${total} ${totalWord} (${x} ${enviadosWord} por mim e ${y} ${encontradosWord} automaticamente) e ${selPhrase}.`;
 }
 

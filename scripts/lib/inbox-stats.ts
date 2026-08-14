@@ -17,6 +17,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CLARICE_SEED_EMAIL } from "./clarice-seed.ts";
+import { pluralPtBr, coverageSelPhrase } from "./coverage-words.ts";
 
 /**
  * #2697 item 2 (self-review #2696) — antes este módulo duplicava o literal
@@ -285,17 +286,20 @@ export function formatCoverageLine(args: {
   selected: number;
 }): string {
   const total = args.editorSubmissions + args.diariaDiscovered;
-  const selPhrase =
-    args.selected === 1
-      ? "selecionei o artigo mais relevante"
-      : `selecionei os ${args.selected} mais relevantes`;
-  // #3731: pluralização condicional também pra "artigos"/"enviados"/"encontrados"
-  // — o comentário #701 acima só cobria `selPhrase`; "1 artigos"/"1 enviados"/
+  // #3731: pluralização condicional também pra "conteúdos"/"enviados"/"encontrados"
+  // — o comentário #701 acima só cobria `selPhrase`; "1 conteúdos"/"1 enviados"/
   // "1 encontrados" ainda caíam no leitor quando total/editorSubmissions/
   // diariaDiscovered valiam 1.
-  const totalWord = total === 1 ? "artigo" : "artigos";
-  const enviadosWord = args.editorSubmissions === 1 ? "enviado" : "enviados";
-  const encontradosWord = args.diariaDiscovered === 1 ? "encontrado" : "encontrados";
+  // 260814 (#5314): "conteúdos" no lugar de "artigos" — o total passou a
+  // incluir newsletters capturadas (#1541/#3696), não só links, então
+  // "artigos" era impreciso; `coverageSelPhrase` aplica a mesma troca no
+  // singular pra não misturar "conteúdos"/"artigo" na mesma frase. Words
+  // extraídos pra `coverage-words.ts` — este é o 3º produtor independente do
+  // mesmo padrão de pluralização (#3696, #3731, #5314), ver docstring lá.
+  const selPhrase = coverageSelPhrase(args.selected);
+  const totalWord = pluralPtBr(total, "conteúdo", "conteúdos");
+  const enviadosWord = pluralPtBr(args.editorSubmissions, "enviado", "enviados");
+  const encontradosWord = pluralPtBr(args.diariaDiscovered, "encontrado", "encontrados");
   return [
     "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor desta newsletter.",
     "Todos os dias, junto com a IA da diar.ia.br, seleciono e resumo as notícias mais importantes para economizar o seu tempo.",

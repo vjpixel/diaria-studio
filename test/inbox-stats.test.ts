@@ -387,19 +387,22 @@ describe("formatCoverageLine (#3461 — bloco de boas-vindas, padrão desde 2607
     });
     assert.match(line, /^Olá! Eu sou o \[Pixel\]\(https:\/\/www\.linkedin\.com\/in\/vjpixel\/\), editor desta newsletter\./);
     assert.match(line, /Todos os dias, junto com a IA da diar\.ia\.br, seleciono e resumo as notícias mais importantes/);
-    assert.match(line, /Nesta edição, a IA analisou 212 artigos \(26 enviados por mim e 186 encontrados automaticamente\) e selecionei os 12 mais relevantes\./);
+    assert.match(line, /Nesta edição, a IA analisou 212 conteúdos \(26 enviados por mim e 186 encontrados automaticamente\) e selecionei os 12 mais relevantes\./);
     assert.match(line, /Se este trabalho faz diferença para você, \[considere apoiar o projeto\]\(https:\/\/apoia\.se\/diaria\)\.$/);
     // 4 parágrafos separados por linha em branco
     assert.equal(line.split("\n\n").length, 4);
   });
 
-  it("#701: concordância singular quando selected=1 → 'selecionei o artigo mais relevante'", () => {
+  it("#701: concordância singular quando selected=1 → 'selecionei o conteúdo mais relevante'", () => {
     const line = formatCoverageLine({
       editorSubmissions: 5,
       diariaDiscovered: 100,
       selected: 1,
     });
-    assert.match(line, /e selecionei o artigo mais relevante\./);
+    // 260814 (#5314): "conteúdo" no lugar de "artigo" no singular também —
+    // evita misturar "N conteúdos (...) e selecionei o artigo mais relevante"
+    // na mesma frase.
+    assert.match(line, /e selecionei o conteúdo mais relevante\./);
     assert.doesNotMatch(line, /selecionei os 1 /);
   });
 
@@ -421,7 +424,7 @@ describe("formatCoverageLine (#3461 — bloco de boas-vindas, padrão desde 2607
     // #3731: "1 enviado"/"1 encontrado" (singular) — antes deste fix, o
     // template flexionava "artigos"/selPhrase mas mantinha "enviados"/
     // "encontrados" fixos no plural mesmo pra contagem 1.
-    assert.match(line, /Nesta edição, a IA analisou 2 artigos \(1 enviado por mim e 1 encontrado automaticamente\) e selecionei o artigo mais relevante\./);
+    assert.match(line, /Nesta edição, a IA analisou 2 conteúdos \(1 enviado por mim e 1 encontrado automaticamente\) e selecionei o conteúdo mais relevante\./);
   });
 
   it("#3731: concordância singular quando editorSubmissions=1 (1 enviado, não '1 enviados')", () => {
@@ -444,14 +447,14 @@ describe("formatCoverageLine (#3461 — bloco de boas-vindas, padrão desde 2607
     assert.doesNotMatch(line, /1 encontrados/);
   });
 
-  it("#3731: concordância singular quando total=editorSubmissions+diariaDiscovered=1 (analisou 1 artigo)", () => {
+  it("#3731: concordância singular quando total=editorSubmissions+diariaDiscovered=1 (analisou 1 conteúdo)", () => {
     const line = formatCoverageLine({
       editorSubmissions: 1,
       diariaDiscovered: 0,
       selected: 1,
     });
-    assert.match(line, /analisou 1 artigo \(1 enviado por mim e 0 encontrados automaticamente\)/);
-    assert.doesNotMatch(line, /analisou 1 artigos/);
+    assert.match(line, /analisou 1 conteúdo \(1 enviado por mim e 0 encontrados automaticamente\)/);
+    assert.doesNotMatch(line, /analisou 1 conteúdos/);
   });
 });
 

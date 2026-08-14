@@ -3,11 +3,14 @@
  *
  * Shared helper: calcula o total de itens não-destaque da edição
  * (lancamento + radar + use_melhor + video). Esse é o número correto
- * para "mais N destaques" no comment_diaria e post_pixel do LinkedIn.
+ * para "mais N destaques" no comment_diaria (aposentado, #3627) e no
+ * post_pixel do LinkedIn — este último só quando o texto ainda contém o
+ * placeholder `{outros_count}` literal (legado; #3052 revertido em 260814,
+ * o writer normalmente não o emite mais).
  *
  * Importado por:
- *   - scripts/publish-linkedin.ts   (Stage 5 — resolve do approved FINAL p/ comment_diaria)
- *   - scripts/resolve-post-pixel.ts (Stage 6 — resolve do approved FINAL p/ post_pixel, #3052)
+ *   - scripts/publish-linkedin.ts   (Stage 5 — resolve do approved FINAL p/ comment_diaria, legado)
+ *   - scripts/resolve-post-pixel.ts (Stage 6 — resolve do approved FINAL p/ post_pixel quando presente, #3052)
  *   - scripts/lint-social-numbers.ts (Stage 2 gate — lint deterministico)
  *
  * Manter a formula sincronizada nos pontos de consumo era frágil;

@@ -859,21 +859,21 @@ describe("formatCoverageLineUnknownTotal (#3739) — 3º produtor com o mesmo ga
     assert.doesNotMatch(line, /1 enviados por mim/);
   });
 
-  it("singular: selecionei o artigo mais relevante (não 'os 1 mais relevantes')", () => {
+  it("singular: selecionei o conteúdo mais relevante (não 'os 1 mais relevantes')", () => {
     const line = formatCoverageLineUnknownTotal(2, 1);
-    assert.match(line, /selecionei o artigo mais relevante/);
+    assert.match(line, /selecionei o conteúdo mais relevante/);
     assert.doesNotMatch(line, /selecionei os 1 mais relevantes/);
   });
 
   it("singular em ambos: 1 enviado + 1 selecionado", () => {
     const line = formatCoverageLineUnknownTotal(1, 1);
     assert.match(line, /1 enviado por mim/);
-    assert.match(line, /selecionei o artigo mais relevante/);
+    assert.match(line, /selecionei o conteúdo mais relevante/);
   });
 
   it("mantém o placeholder ??? pros números desconhecidos (total e encontrados)", () => {
     const line = formatCoverageLineUnknownTotal(1, 1);
-    assert.match(line, /a IA analisou \?\?\? artigos/);
+    assert.match(line, /a IA analisou \?\?\? conteúdos/);
     assert.match(line, /\?\?\? encontrados automaticamente/);
   });
 });

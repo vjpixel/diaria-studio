@@ -346,7 +346,7 @@ describe("apply-stage2-caps CLI — coverage.line recalc (#906)", () => {
       // desde 260715) em vez do formato legado "Selecionamos os N ...".
       assert.match(
         capped.coverage.line,
-        /Nesta edição, a IA analisou 105 artigos \(5 enviados por mim e 100 encontrados automaticamente\) e selecionei os 12 mais relevantes\./,
+        /Nesta edição, a IA analisou 105 conteúdos \(5 enviados por mim e 100 encontrados automaticamente\) e selecionei os 12 mais relevantes\./,
       );
       assert.doesNotMatch(capped.coverage.line, /30 mais/);
     } finally {
@@ -474,7 +474,7 @@ describe("apply-stage2-caps CLI — coverage.line recalc (#906)", () => {
       const capped = JSON.parse(readFileSync(outPath, "utf8"));
       assert.match(
         capped.coverage.line,
-        /Nesta edição, a IA analisou 105 artigos/,
+        /Nesta edição, a IA analisou 105 conteúdos/,
         "sem capture_failed, coverage.line deve recalcular normalmente (comportamento #906 preservado)",
       );
     } finally {
