@@ -55,6 +55,7 @@ import { buildArchiveHtml, PAGE_URL } from "./render-archive.ts";
 import { buildArchiveFeedXml, FEED_URL } from "./render-feed.ts"; // #5127: GET /feed.xml
 import { HUB_REGISTRY, HUB_LASTMOD } from "./hubs/registry.ts"; // #4558 Parte A: hubs temáticos em /temas/{slug}
 import { HUB_INDEX_HTML, HUB_INDEX_LASTMOD, HUB_NOT_FOUND_HTML } from "./hubs/index-page.generated.ts"; // #5256: página-índice /temas/ + mini-página 404
+import { renderPrivacyPage } from "./render-privacy.ts"; // #5262: /privacidade (pré-requisito da verificação de marca OAuth)
 import { resolveWorkersDevRedirect } from "../../../scripts/lib/shared/workers-dev-redirect.ts"; // #5097 item D
 
 /**
@@ -540,6 +541,14 @@ export default {
     }
     if (url.pathname === "/feed.xml") {
       return feedRoute();
+    }
+    // #5262: Política de Privacidade pública. O Google revalida esta URL
+    // periodicamente enquanto a marca estiver verificada — se ela passar a
+    // responder 404, a verificação cai. Aceita com e sem barra final porque
+    // o valor colado no console é digitado à mão e um 404 por barra sobrando
+    // custaria um ciclo inteiro de re-verificação pra diagnosticar.
+    if (url.pathname === "/privacidade" || url.pathname === "/privacidade/") {
+      return htmlResponse(renderPrivacyPage(), 200, { etag: true });
     }
     // #4909 item 2: arquivo de chave do IndexNow — só casa quando a var
     // está configurada (ver docstring de Env.INDEXNOW_KEY); sem ela, este
