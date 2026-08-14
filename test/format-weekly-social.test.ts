@@ -27,8 +27,15 @@ function makeItems(n: number, titleLen = 20): InstagramWeeklyItem[] {
 
 // 52 chars = máximo permitido por destaque (context/editorial-rules.md).
 const LONG_TITLE = "Título de destaque bem longo perto do limite máximo!"; // 53 chars
+// Contexto propositalmente bem acima de CONTEXT_LINE_MAX_CHARS (140) — pior caso real
+// (#5330), já que `why`/`body` de origem não têm limite de tamanho como o título tem.
+const LONG_WHY =
+  "Esse é um parágrafo de contexto propositalmente longo, escrito pra simular o pior caso " +
+  "real de 'por que isso importa' de um destaque, que não passa por nenhum limite de " +
+  "caracteres na escrita original e pode facilmente ultrapassar cento e quarenta caracteres " +
+  "numa única frase antes de qualquer truncamento.";
 function makeLongItems(n: number): InstagramWeeklyItem[] {
-  return Array.from({ length: n }, () => ({ title: LONG_TITLE }));
+  return Array.from({ length: n }, () => ({ title: LONG_TITLE, why: LONG_WHY }));
 }
 
 describe("formatInstagramWeekly", () => {
@@ -70,5 +77,36 @@ describe("formatInstagramWeekly", () => {
     const items = makeItems(4);
     const caption = formatInstagramWeekly(items);
     assert.equal((caption.match(/^\d+\./gm) ?? []).length, 4);
+  });
+
+  it("#5330: inclui 1 linha de contexto por item, usando `why` quando presente", () => {
+    const items: InstagramWeeklyItem[] = [
+      { title: "Item com why", why: "Isso importa porque muda o mercado." },
+    ];
+    const caption = formatInstagramWeekly(items);
+    assert.ok(caption.includes("Isso importa porque muda o mercado."));
+  });
+
+  it("#5330: usa a 1ª frase de `body` como contexto quando `why` está vazio (item de RADAR)", () => {
+    const items: InstagramWeeklyItem[] = [
+      { title: "Item de RADAR", why: "", body: "Primeira frase do RADAR. Segunda frase não deveria aparecer." },
+    ];
+    const caption = formatInstagramWeekly(items);
+    assert.ok(caption.includes("Primeira frase do RADAR."));
+    assert.ok(!caption.includes("Segunda frase não deveria aparecer."));
+  });
+
+  it("#5330: sem `why` nem `body`, não insere linha de contexto vazia", () => {
+    const items: InstagramWeeklyItem[] = [{ title: "Item sem contexto" }];
+    const caption = formatInstagramWeekly(items);
+    assert.ok(caption.includes("1. Item sem contexto\n\nEdição completa"));
+  });
+
+  it("#5330: contexto muito longo é truncado preservando palavras inteiras", () => {
+    const items = makeLongItems(1);
+    const caption = formatInstagramWeekly(items);
+    const contextLine = caption.split("\n")[3] ?? "";
+    assert.ok(contextLine.length <= 143, `linha de contexto deveria ser truncada, veio com ${contextLine.length} chars`);
+    assert.ok(!contextLine.endsWith(" "), "não deveria truncar no meio de espaço/deixar trailing space antes de '...'");
   });
 });

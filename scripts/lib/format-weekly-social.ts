@@ -45,13 +45,41 @@ const INTRO_LINE = "Os mais clicados da semana na diar.ia.br:";
 /** Shape mínimo que a formatação precisa — desacoplado do tipo de seleção completo (`InstagramRankedCandidate`). */
 export interface InstagramWeeklyItem {
   title: string;
+  /** "Por que isso importa" do destaque de origem — "" para itens de RADAR (`InstagramRawCandidate.why`). */
+  why?: string;
+  /** Corpo do destaque OU descrição de 1 linha de RADAR (`InstagramRawCandidate.body`) — usado como contexto quando `why` está vazio. */
+  body?: string;
+}
+
+/** Tamanho alvo da linha de contexto por item — 1 frase curta, não um parágrafo (#5330). */
+const CONTEXT_LINE_MAX_CHARS = 140;
+
+/**
+ * Extrai 1 frase curta de contexto por item pra caption — `why` (destaques)
+ * ou a 1ª frase de `body` (RADAR, sem `why`), truncada preservando palavras
+ * inteiras. "" se não houver nada de contexto (nunca deveria acontecer pro
+ * shape real produzido por `weekly-instagram-select.ts`, mas a função é
+ * defensiva pra qualquer chamador com `InstagramWeeklyItem` mínimo).
+ */
+function contextLine(item: InstagramWeeklyItem): string {
+  const source = (item.why || item.body || "").trim();
+  if (!source) return "";
+  const firstSentence = source.split(/(?<=[.!?])\s/)[0] ?? source;
+  if (firstSentence.length <= CONTEXT_LINE_MAX_CHARS) return firstSentence;
+  const cut = firstSentence.lastIndexOf(" ", CONTEXT_LINE_MAX_CHARS - 1);
+  const idx = cut > 0 ? cut : CONTEXT_LINE_MAX_CHARS - 1;
+  return `${firstSentence.slice(0, idx)}...`;
 }
 
 /**
  * Instagram: caption sem links clicáveis (IG não linka no corpo) — títulos
- * numerados + "link na bio" apontando pro arquivo. Truncado no limite de
- * caption do IG (2200 chars) preservando palavras inteiras, mesmo padrão de
- * `truncateCaption` em publish-instagram.ts.
+ * numerados, cada um com 1 linha curta de contexto ("por que importa" do
+ * destaque, ou a descrição de 1 linha do item de RADAR — #5330, ajuste
+ * pós-benchmark de contas do nicho: headline sozinha performa pior que
+ * headline + 1 frase de porquê importa) + "link na bio" apontando pro
+ * arquivo. Truncado no limite de caption do IG (2200 chars) preservando
+ * palavras inteiras, mesmo padrão de `truncateCaption` em
+ * publish-instagram.ts.
  *
  * Formato de imagem: carrossel (#4146, decisão do editor 260727) — 1 card
  * 4:5 por item selecionado, na mesma ordem numerada desta caption. Desde o
@@ -66,7 +94,12 @@ export function formatInstagramWeekly(items: InstagramWeeklyItem[]): string {
   if (items.length === 0) return "";
   const body =
     `${INTRO_LINE}\n\n` +
-    items.map((it, i) => `${i + 1}. ${it.title}`).join("\n") +
+    items
+      .map((it, i) => {
+        const ctx = contextLine(it);
+        return ctx ? `${i + 1}. ${it.title}\n${ctx}` : `${i + 1}. ${it.title}`;
+      })
+      .join("\n\n") +
     `\n\nEdição completa de cada matéria no link da bio. Arquivo completo em ${ARCHIVE_URL}.`;
   return truncateAtLimit(body, INSTAGRAM_WEEKLY_CHAR_LIMIT);
 }
