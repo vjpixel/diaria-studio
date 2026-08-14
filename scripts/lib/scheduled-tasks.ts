@@ -598,6 +598,36 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4105, #1896, #1989, #4909",
   },
   {
+    name: "Diaria-Beehiiv-Backup",
+    description: "snapshot semanal da publicacao Beehiiv (assinantes com origem + engajamento, posts, segmentos)",
+    steps: [{ key: "backup", script: "scripts/backup-beehiiv.ts" }],
+    logPath: "beehiiv-backup/.backup.log",
+    // Domingo 03:00 BRT — o primeiro timer do dia, antes do Diaria-Seo-Weekly
+    // (04:10, o mais cedo já registrado) e de qualquer daily (a mais cedo é
+    // 05:00). Um snapshot pesado (drena a base inteira, ~13 páginas) merece a
+    // janela mais vazia da semana.
+    //
+    // **Por que isto existe (#5229):** o backup NUNCA rodou agendado — os dois
+    // únicos snapshots em `data/beehiiv-backup/` são 2026-06-05 e 2026-06-17,
+    // ambos manuais. Enquanto isso, `promoteBeehiivSubscription`
+    // (`scripts/evaluate-brevo-diaria.ts`) faz DELETE+CREATE todo dia às 05:30
+    // e sobrescreve o `utm_source` original de quem é promovido por score —
+    // 191 contatos já perderam a origem e 298 estão na fila. O snapshot é o
+    // único mecanismo que preserva a versão anterior, e sem agendamento ele
+    // não preserva nada.
+    //
+    // Cadência semanal e não diária de propósito: a promoção exige acumular
+    // score, o que leva semanas, então um contato praticamente nunca nasce e é
+    // promovido dentro da mesma janela de 7 dias — ele aparece no snapshot
+    // anterior com a origem intacta. O buraco residual (cadastro que cruza o
+    // limiar em poucos dias) é estreito e custa 7× menos disco que o diário.
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 3, minute: 0 },
+    // Mesmo caso de `Diaria-Beehiiv-Home-Meta-Check` (#5005): task registrada
+    // depois do cutover systemd (épica #4798), sem contraparte Windows/.ps1 —
+    // e nenhuma tarefa `Diaria-*` deve rodar no Windows (#5074).
+    issue: "#5229",
+  },
+  {
     name: "Diaria-Worker-Drift-Check",
     description: "alarme de drift entre o codigo publicado e o master de cada Worker",
     steps: [{ key: "check", script: "scripts/worker-drift-check.ts" }],

@@ -162,6 +162,10 @@ describe("backupBeehiiv subscribers (#1897) — usa limit, drena base inteira", 
   let sawPerPage = false;
   let maxPage = 0;
   let subRequests = 0;
+  // #5229: prova que o snapshot pede `expand[]=stats` (engajamento por
+  // assinante). Sem isso o backup grava origem sem engajamento e a análise de
+  // coorte por canal fica impossível de fazer no mesmo ponto no tempo.
+  let sawStatsExpand = false;
 
   // Parâmetros do mock, ajustados por teste.
   // `reportedTotal`: o que o envelope diz em `total_results`.
@@ -180,6 +184,7 @@ describe("backupBeehiiv subscribers (#1897) — usa limit, drena base inteira", 
     sawPerPage = false;
     maxPage = 0;
     subRequests = 0;
+    sawStatsExpand = false;
     reportedTotal = 1253;
     available = 1253;
     rmSync(outDir, { recursive: true, force: true });
@@ -199,6 +204,7 @@ describe("backupBeehiiv subscribers (#1897) — usa limit, drena base inteira", 
       const perPageMatch = url.match(/[?&]per_page=(\d+)/);
       if (limitMatch) sawLimit = true;
       if (perPageMatch) sawPerPage = true;
+      if (url.includes("expand[]=stats") || url.includes("expand%5B%5D=stats")) sawStatsExpand = true;
       const page = Number(url.match(/[?&]page=(\d+)/)?.[1] ?? "1");
       maxPage = Math.max(maxPage, page);
       // Beehiiv respeita `limit`; se só vier `per_page`, IGNORA (cap default 10).
@@ -263,6 +269,20 @@ describe("backupBeehiiv subscribers (#1897) — usa limit, drena base inteira", 
     const lines = readFileSync(resolve(outDir, "subscribers.jsonl"), "utf8").trim().split("\n");
     assert.equal(lines.length, 1253, "subscribers.jsonl deve ter 1 linha por subscriber");
     assert.ok(!existsSync(resolve(outDir, "subscribers.jsonl.partial")), "não deixa .partial órfão");
+  });
+
+  it("pede expand[]=stats em /subscriptions — snapshot precisa de origem E engajamento (#5229)", async () => {
+    // REGRESSÃO: até 260814 o snapshot pedia só custom_fields/tags/referrals.
+    // O efeito era silencioso e caro: `subscribers.jsonl` guardava `utm_source`
+    // (de onde a pessoa veio) mas nenhuma métrica de leitura, então não dava pra
+    // responder "a coorte que veio do canal X lê mais ou menos que a base?" a
+    // partir do backup — só refazendo a chamada ao vivo, que compara o
+    // engajamento de hoje com uma coorte de outra data. Um backup que roda mas
+    // não serve pra análise falha sem nunca dar erro; por isso o teste trava o
+    // parâmetro, não o resultado.
+    installMock();
+    await backupBeehiiv({ ...baseOpts, date: "2026-06-05" });
+    assert.equal(sawStatsExpand, true, "/subscriptions deve pedir expand[]=stats");
   });
 
   it("marca status error (não ok) quando o loop encerra antes de drenar total_results", async () => {
