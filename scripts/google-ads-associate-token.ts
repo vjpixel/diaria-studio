@@ -70,8 +70,13 @@ async function jsonOrExit<T>(res: Response, what: string): Promise<T> {
   }
 }
 
-/** Versão da API. Sobrescrevível — o Google publica versão nova a cada ~3 meses. */
-const API_VERSION = process.env.GOOGLE_ADS_API_VERSION ?? "v21";
+/**
+ * Versão da API. Sobrescrevível — o Google publica versão nova a cada ~3 meses.
+ * `v21` foi confirmada BLOQUEADA ao vivo (#5294, 14/08/2026): a API devolve
+ * `UNSUPPORTED_VERSION` — "Version v21 is deprecated. Requests to this
+ * version will be blocked." `v25` confirmada funcional na mesma sessão.
+ */
+const API_VERSION = process.env.GOOGLE_ADS_API_VERSION ?? "v25";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -181,13 +186,22 @@ async function runConsentFlow(): Promise<void> {
       console.log(authUrl + "\n");
       console.log(`Esperando o consentimento (timeout em ${CONSENT_TIMEOUT_MS / 60_000} min)...`);
       // `&` na query string é metacaractere de separador de comando pro
-      // cmd.exe — abrir com `shell: true` (que monta uma string de comando
-      // crua) trunca a URL no primeiro `&`, e só client_id sobrevive. No
-      // Windows, `shell: false` com args em array força o Node a quotar o
-      // argumento pro CreateProcess, preservando a URL inteira como um único
-      // argumento pro `cmd /c start`.
+      // cmd.exe. `shell: false` sozinho NÃO resolve — Node só quota um
+      // argumento pro CreateProcess se ele contiver espaço; uma URL sem
+      // espaço chega crua no `cmd.exe` mesmo assim, que segue cortando no
+      // primeiro `&` (confirmado ao vivo: 1ª tentativa de fix com
+      // `cmd /c start` ainda truncava). A saída é não invocar `cmd.exe` de
+      // jeito nenhum: `rundll32 url.dll,FileProtocolHandler <url>` abre a
+      // URL no navegador default do Windows como processo direto — o argv
+      // chega intacto porque nenhum shell nunca re-interpreta a command
+      // line (só cmd.exe atribui significado a `&`; rundll32 recebe o argv
+      // já resolvido pelo Win32 CreateProcess, sem parsing de metacaractere).
       if (process.platform === "win32") {
-        spawn("cmd", ["/c", "start", "", authUrl], { shell: false, stdio: "ignore", detached: true }).unref();
+        spawn("rundll32", ["url.dll,FileProtocolHandler", authUrl], {
+          shell: false,
+          stdio: "ignore",
+          detached: true,
+        }).unref();
       } else {
         const opener = process.platform === "darwin" ? "open" : "xdg-open";
         spawn(opener, [authUrl], { shell: true, stdio: "ignore", detached: true }).unref();

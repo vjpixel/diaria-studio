@@ -25,5 +25,8 @@
   // já faz skip gracioso se ausente (CI/macOS/Windows).
   // scripts/sync-env.ts (#5149) invoca o CLI `doppler` via execFileSync --
   // binário externo (secrets manager), não uma dependência npm.
-  "ignoreBinaries": ["systemd-analyze", "doppler"]
+  // scripts/google-ads-associate-token.ts (#5294) invoca `rundll32` (Windows,
+  // System32) pra abrir a URL de consentimento OAuth sem passar por cmd.exe --
+  // utilitário do SO, não uma dependência npm.
+  "ignoreBinaries": ["systemd-analyze", "doppler", "rundll32"]
 }
