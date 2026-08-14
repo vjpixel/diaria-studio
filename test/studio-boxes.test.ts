@@ -1,18 +1,30 @@
 /**
  * test/studio-boxes.test.ts (#3924) — seção "Caixas": listar e editar os
- * snippets de caixa de divulgação (`context/snippets/*.md`).
+ * snippets de caixa de divulgação (`data/snippets/*.md` — #5227, migrado de
+ * `context/snippets/`).
  *
  * Duas frentes:
  *   1. Lógica PURA de `scripts/studio-ui/studio-boxes.ts` (slug validation,
- *      extração de título, slots via `platform.config.json`, dirty-vs-git
- *      fail-soft, save com guard de mtime #3729) — fixture de diretório
- *      temporário, sem repo git real (exercita o fail-soft de
- *      `checkDirtyVsGit`).
+ *      extração de título, slots via `platform.config.json`, save com guard
+ *      de mtime #3729) — fixture de diretório temporário. `dirtyVsGit`
+ *      (badge "modificado vs git") foi REMOVIDO em #5227 junto com a
+ *      migração — `data/snippets/` é gitignored, o fato que o badge
+ *      reportava deixou de existir.
  *   2. Contrato HTTP via `startStudioServer` (mesmo padrão de
  *      `test/studio-apoios-page.test.ts`/`test/studio-review-server.test.ts`):
  *      `GET /caixas` (shell), `GET /api/boxes` (lista), `GET/PUT /api/boxes/:slug`
  *      (conteúdo + save, incluindo o conflito 409 e o retry com `force`),
  *      `GET/PUT /api/boxes/slots` (#3937 — gestão de slots pela UI).
+ *
+ * #5227 (14/08/2026): todas as fixtures deste arquivo já usavam `mkdtemp` +
+ * `rootDir` isolado, nunca liam `context/snippets/` real — inclusive o
+ * round-trip "contra o formato REAL de apoio-divulgacao.md" (describe abaixo)
+ * já era uma fixture INLINE reproduzindo a forma (não o conteúdo real do
+ * repo), de propósito ("sem depender do conteúdo editorial de verdade do
+ * repo, que pode mudar"). A migração pra `data/snippets/` não quebrou nada
+ * neste arquivo além de `checkDirtyVsGit` (removido acima, badge que
+ * dependia de git tracking) — os paths de fixture (`join(root, "context",
+ * "snippets", ...)`) viraram `join(root, "data", "snippets", ...)`.
  */
 import { describe, it, before, beforeEach, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -28,7 +40,6 @@ import {
   isValidBoxSlug,
   extractBoxTitle,
   readBoxSlotAssignments,
-  checkDirtyVsGit,
   listBoxes,
   isRuntimeExcluded,
   readBox,
@@ -205,25 +216,15 @@ describe("readBoxSlotAssignments (#3924)", () => {
   });
 });
 
-describe("checkDirtyVsGit (#3924) — fail-soft sem repo git real", () => {
-  it("rootDir que não é um repo git -> false, nunca lança", () => {
-    const root = mkdtempSync(join(tmpdir(), "studio-boxes-nogit-"));
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
-    writeFileSync(join(root, "context", "snippets", "a.md"), "# A");
-    assert.equal(checkDirtyVsGit(root, "a.md"), false);
-    rmSync(root, { recursive: true, force: true });
-  });
-});
-
 describe("listBoxes (#3924)", () => {
   let root: string;
 
   before(() => {
     root = mkdtempSync(join(tmpdir(), "studio-boxes-list-"));
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
-    writeFileSync(join(root, "context", "snippets", "README.md"), "# Formato dos snippets\n\nDocumentação.");
-    writeFileSync(join(root, "context", "snippets", "recomendacao-leitura.md"), "# Recomendação de leitura\n\nConteúdo A.");
-    writeFileSync(join(root, "context", "snippets", "apoio-divulgacao.md"), "# Apoio\n\nConteúdo B.");
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    writeFileSync(join(root, "data", "snippets", "README.md"), "# Formato dos snippets\n\nDocumentação.");
+    writeFileSync(join(root, "data", "snippets", "recomendacao-leitura.md"), "# Recomendação de leitura\n\nConteúdo A.");
+    writeFileSync(join(root, "data", "snippets", "apoio-divulgacao.md"), "# Apoio\n\nConteúdo B.");
     writeFileSync(
       join(root, "platform.config.json"),
       JSON.stringify({ boxes_divulgacao: { slot1: "recomendacao-leitura.md" } }),
@@ -240,7 +241,7 @@ describe("listBoxes (#3924)", () => {
     rmSync(emptyRoot, { recursive: true, force: true });
   });
 
-  it("lista dinâmica exclui README.md, ordenada por slug, com título/mtime/slot/dirtyVsGit", () => {
+  it("lista dinâmica exclui README.md, ordenada por slug, com título/mtime/slot", () => {
     const boxes = listBoxes(root);
     const slugs = boxes.map((b) => b.slug);
     assert.ok(!slugs.includes("README.md"), "README.md nunca deve aparecer na lista");
@@ -249,7 +250,6 @@ describe("listBoxes (#3924)", () => {
     const recomendacao = boxes.find((b) => b.slug === "recomendacao-leitura.md")!;
     assert.equal(recomendacao.title, "Recomendação de leitura");
     assert.equal(recomendacao.slot, 1);
-    assert.equal(recomendacao.dirtyVsGit, false); // sem repo git real no fixture
     assert.match(recomendacao.mtimeIso, /^\d{4}-\d{2}-\d{2}T/);
 
     const apoio = boxes.find((b) => b.slug === "apoio-divulgacao.md")!;
@@ -292,17 +292,17 @@ describe("listBoxes exclui runtime: false (#4500)", () => {
 
   before(() => {
     root = mkdtempSync(join(tmpdir(), "studio-boxes-runtime-false-"));
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
     writeFileSync(
-      join(root, "context", "snippets", "so-documentacao.md"),
+      join(root, "data", "snippets", "so-documentacao.md"),
       "<!--\nnome: Template de referência\nruntime: false\nNão é lido em runtime.\n-->\n\n# Placeholder {foo}\n",
     );
     writeFileSync(
-      join(root, "context", "snippets", "caixa-normal.md"),
+      join(root, "data", "snippets", "caixa-normal.md"),
       "<!--\nnome: Caixa normal\n-->\n\n# Caixa de verdade\n\nConteúdo.",
     );
     writeFileSync(
-      join(root, "context", "snippets", "caixa-runtime-true.md"),
+      join(root, "data", "snippets", "caixa-runtime-true.md"),
       "<!--\nruntime: true\n-->\n\n# Também vale\n",
     );
   });
@@ -344,9 +344,9 @@ describe("readBox / saveBox (#3924, pure)", () => {
 
   before(() => {
     root = mkdtempSync(join(tmpdir(), "studio-boxes-rw-"));
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
-    writeFileSync(join(root, "context", "snippets", "README.md"), "doc");
-    writeFileSync(join(root, "context", "snippets", "box-a.md"), "# Box A\n\nOriginal.");
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    writeFileSync(join(root, "data", "snippets", "README.md"), "doc");
+    writeFileSync(join(root, "data", "snippets", "box-a.md"), "# Box A\n\nOriginal.");
   });
 
   after(() => {
@@ -428,10 +428,10 @@ describe("readBox / saveBox (#3924, pure)", () => {
     const result = saveBox(root, "README.md", "tentativa de sobrescrever o README");
     assert.equal(result.ok, false);
     assert.equal(result.notFound, true);
-    assert.equal(readFileSync(join(root, "context", "snippets", "README.md"), "utf8"), "doc");
+    assert.equal(readFileSync(join(root, "data", "snippets", "README.md"), "utf8"), "doc");
   });
 
-  it("saveBox: traversal -> notFound:true, nunca escreve fora de context/snippets/", () => {
+  it("saveBox: traversal -> notFound:true, nunca escreve fora de data/snippets/", () => {
     const result = saveBox(root, "../outside.md", "não deveria ir a lugar nenhum");
     assert.equal(result.ok, false);
     assert.equal(result.notFound, true);
@@ -451,8 +451,8 @@ describe("createBox (#3928, pure)", () => {
 
   before(() => {
     root = mkdtempSync(join(tmpdir(), "studio-boxes-create-"));
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
-    writeFileSync(join(root, "context", "snippets", "existente.md"), "# Já existe");
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    writeFileSync(join(root, "data", "snippets", "existente.md"), "# Já existe");
   });
 
   after(() => {
@@ -474,8 +474,8 @@ describe("createBox (#3928, pure)", () => {
   });
 
   it("slug já existente (arquivada) -> exists:true (não recria por cima da arquivada)", () => {
-    mkdirSync(join(root, "context", "snippets", "_arquivo"), { recursive: true });
-    writeFileSync(join(root, "context", "snippets", "_arquivo", "arquivada.md"), "# Arquivada");
+    mkdirSync(join(root, "data", "snippets", "_arquivo"), { recursive: true });
+    writeFileSync(join(root, "data", "snippets", "_arquivo", "arquivada.md"), "# Arquivada");
     const result = createBox(root, "arquivada.md", "nova");
     assert.equal(result.ok, false);
     assert.equal(result.exists, true);
@@ -493,9 +493,9 @@ describe("archiveBox / unarchiveBox / listArchivedBoxes (#3928, pure)", () => {
 
   before(() => {
     root = mkdtempSync(join(tmpdir(), "studio-boxes-archive-"));
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
-    writeFileSync(join(root, "context", "snippets", "livre.md"), "# Livre\n\nConteúdo preservável.");
-    writeFileSync(join(root, "context", "snippets", "no-slot.md"), "# No slot\n\nAtribuída a um slot.");
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    writeFileSync(join(root, "data", "snippets", "livre.md"), "# Livre\n\nConteúdo preservável.");
+    writeFileSync(join(root, "data", "snippets", "no-slot.md"), "# No slot\n\nAtribuída a um slot.");
     writeFileSync(
       join(root, "platform.config.json"),
       JSON.stringify({ boxes_divulgacao: { slot1: "no-slot.md" } }),
@@ -847,7 +847,7 @@ describe("buildBoxContent (#3979/#3981)", () => {
   });
   it("round-trip: build(parse(x)) === x quando o arquivo segue a convenção canônica (header + 1 linha em branco + conteúdo)", () => {
     // #3979: risco explícito do PR — recompor precisa ser BYTE-ESTÁVEL quando
-    // nada muda (context/snippets/*.md entra no prompt cache, CLAUDE.md
+    // nada muda (data/snippets/*.md entra no prompt cache, CLAUDE.md
     // "Otimização de tokens" — diff fantasma invalida o cache à toa).
     const x =
       "<!--\nnome: Rótulo Interno\ncategoria: Recomendado\nInstruções de uso.\nMais uma linha de doc.\n-->\n\n" +
@@ -858,7 +858,7 @@ describe("buildBoxContent (#3979/#3981)", () => {
     );
     assert.equal(rebuilt, x);
   });
-  it("round-trip byte-estável contra o formato REAL de context/snippets/apoio-divulgacao.md (regressão do formato canônico)", () => {
+  it("round-trip byte-estável contra o formato REAL de data/snippets/apoio-divulgacao.md (regressão do formato canônico)", () => {
     // Fixture inline reproduzindo a FORMA real (header multi-parágrafo, 1
     // linha em branco antes do conteúdo) sem depender do conteúdo editorial
     // de verdade do repo (que pode mudar) nem escrever no arquivo real.
@@ -1017,17 +1017,17 @@ describe("saveBoxSlots (#3937, pure; slot0 #4290)", () => {
 
   before(() => {
     root = mkdtempSync(join(tmpdir(), "studio-boxes-saveslots-"));
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
-    writeFileSync(join(root, "context", "snippets", "a.md"), "# A");
-    writeFileSync(join(root, "context", "snippets", "b.md"), "# B");
-    writeFileSync(join(root, "context", "snippets", "c.md"), "# C");
-    writeFileSync(join(root, "context", "snippets", "z.md"), "# Z");
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    writeFileSync(join(root, "data", "snippets", "a.md"), "# A");
+    writeFileSync(join(root, "data", "snippets", "b.md"), "# B");
+    writeFileSync(join(root, "data", "snippets", "c.md"), "# C");
+    writeFileSync(join(root, "data", "snippets", "z.md"), "# Z");
     writeFileSync(
-      join(root, "context", "snippets", "runtime-excluded.md"),
+      join(root, "data", "snippets", "runtime-excluded.md"),
       "<!--\nruntime: false\n-->\n\n# Documentação, não é uma caixa de verdade",
     );
-    mkdirSync(join(root, "context", "snippets", "_arquivo"), { recursive: true });
-    writeFileSync(join(root, "context", "snippets", "_arquivo", "arquivada.md"), "# Arquivada");
+    mkdirSync(join(root, "data", "snippets", "_arquivo"), { recursive: true });
+    writeFileSync(join(root, "data", "snippets", "_arquivo", "arquivada.md"), "# Arquivada");
   });
 
   beforeEach(() => {
@@ -1316,9 +1316,9 @@ describe("readBoxSlotAssignments / readBoxSlotsState / saveBoxSlots com variant=
 
   before(() => {
     root = mkdtempSync(join(tmpdir(), "studio-boxes-patronos-variant-"));
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
-    writeFileSync(join(root, "context", "snippets", "a.md"), "# A");
-    writeFileSync(join(root, "context", "snippets", "b.md"), "# B");
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    writeFileSync(join(root, "data", "snippets", "a.md"), "# A");
+    writeFileSync(join(root, "data", "snippets", "b.md"), "# B");
   });
 
   beforeEach(() => {
@@ -1393,9 +1393,9 @@ describe("readBoxSlotAssignments / readBoxSlotsState / saveBoxSlots com variant=
 describe("listBoxes expõe slotPatronos separado de slot (#4275)", () => {
   it("uma caixa em slots DIFERENTES por variante mostra os dois valores; sem atribuição patronos -> null", () => {
     const root = mkdtempSync(join(tmpdir(), "studio-boxes-listboxes-patronos-"));
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
-    writeFileSync(join(root, "context", "snippets", "a.md"), "# A");
-    writeFileSync(join(root, "context", "snippets", "b.md"), "# B");
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    writeFileSync(join(root, "data", "snippets", "a.md"), "# A");
+    writeFileSync(join(root, "data", "snippets", "b.md"), "# B");
     writeFileSync(
       join(root, "platform.config.json"),
       JSON.stringify({
@@ -1626,9 +1626,9 @@ describe("GET /caixas + /api/boxes + PUT (#3924)", () => {
   before(async () => {
     root = mkdtempSync(join(tmpdir(), "studio-boxes-http-"));
     mkdirSync(join(root, "data", "editions"), { recursive: true });
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
-    writeFileSync(join(root, "context", "snippets", "README.md"), "# Formato\n\nDoc.");
-    writeFileSync(join(root, "context", "snippets", "recomendacao-leitura.md"), "# Recomendação\n\nConteúdo.");
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    writeFileSync(join(root, "data", "snippets", "README.md"), "# Formato\n\nDoc.");
+    writeFileSync(join(root, "data", "snippets", "recomendacao-leitura.md"), "# Recomendação\n\nConteúdo.");
     writeFileSync(
       join(root, "platform.config.json"),
       JSON.stringify({ boxes_divulgacao: { slot1: "recomendacao-leitura.md" } }),
@@ -1716,7 +1716,7 @@ describe("GET /caixas + /api/boxes + PUT (#3924)", () => {
     const putBody = await put.json();
     assert.equal(putBody.ok, true);
     assert.match(
-      readFileSync(join(root, "context", "snippets", "recomendacao-leitura.md"), "utf8"),
+      readFileSync(join(root, "data", "snippets", "recomendacao-leitura.md"), "utf8"),
       /Editado via painel/,
     );
     loadedModifiedAt = putBody.modifiedAt;
@@ -1726,7 +1726,7 @@ describe("GET /caixas + /api/boxes + PUT (#3924)", () => {
     // `loadedModifiedAt` agora está obsoleto (mtime mudou no teste anterior) —
     // simula outra sessão escrevendo por baixo antes deste PUT.
     writeFileSync(
-      join(root, "context", "snippets", "recomendacao-leitura.md"),
+      join(root, "data", "snippets", "recomendacao-leitura.md"),
       "# Recomendação\n\nEscrita concorrente (outra aba).",
       "utf8",
     );
@@ -1734,7 +1734,7 @@ describe("GET /caixas + /api/boxes + PUT (#3924)", () => {
     // Determinismo de mtime (mesma flake do teste puro): força o mtime pra
     // frente pra garantir divergência mesmo em FS de granularidade grossa.
     const bumped = new Date(new Date(staleModifiedAt).getTime() + 2000);
-    utimesSync(join(root, "context", "snippets", "recomendacao-leitura.md"), bumped, bumped);
+    utimesSync(join(root, "data", "snippets", "recomendacao-leitura.md"), bumped, bumped);
 
     const put = await fetch(new URL("/api/boxes/recomendacao-leitura.md", server.url), {
       method: "PUT",
@@ -1745,7 +1745,7 @@ describe("GET /caixas + /api/boxes + PUT (#3924)", () => {
     const body = await put.json();
     assert.equal(body.conflict, true);
     assert.match(
-      readFileSync(join(root, "context", "snippets", "recomendacao-leitura.md"), "utf8"),
+      readFileSync(join(root, "data", "snippets", "recomendacao-leitura.md"), "utf8"),
       /Escrita concorrente/,
     );
   });
@@ -1758,7 +1758,7 @@ describe("GET /caixas + /api/boxes + PUT (#3924)", () => {
     });
     assert.equal(put.status, 200);
     assert.equal(
-      readFileSync(join(root, "context", "snippets", "recomendacao-leitura.md"), "utf8"),
+      readFileSync(join(root, "data", "snippets", "recomendacao-leitura.md"), "utf8"),
       "sobrescrita forçada via HTTP",
     );
   });
@@ -1770,7 +1770,7 @@ describe("GET /caixas + /api/boxes + PUT (#3924)", () => {
       body: JSON.stringify({ content: "tentativa de sobrescrever o README" }),
     });
     assert.equal(put.status, 404);
-    assert.equal(readFileSync(join(root, "context", "snippets", "README.md"), "utf8"), "# Formato\n\nDoc.");
+    assert.equal(readFileSync(join(root, "data", "snippets", "README.md"), "utf8"), "# Formato\n\nDoc.");
   });
 
   it("PUT com traversal no slug -> 404", async () => {
@@ -1824,9 +1824,9 @@ describe("POST /api/boxes (create) + archive/unarchive + GET /api/boxes/archived
   before(async () => {
     root = mkdtempSync(join(tmpdir(), "studio-boxes-3928-http-"));
     mkdirSync(join(root, "data", "editions"), { recursive: true });
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
-    writeFileSync(join(root, "context", "snippets", "README.md"), "# Formato\n\nDoc.");
-    writeFileSync(join(root, "context", "snippets", "com-slot.md"), "# Com slot\n\nInjetada.");
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    writeFileSync(join(root, "data", "snippets", "README.md"), "# Formato\n\nDoc.");
+    writeFileSync(join(root, "data", "snippets", "com-slot.md"), "# Com slot\n\nInjetada.");
     writeFileSync(
       join(root, "platform.config.json"),
       JSON.stringify({ boxes_divulgacao: { slot1: "com-slot.md" } }),
@@ -1851,7 +1851,7 @@ describe("POST /api/boxes (create) + archive/unarchive + GET /api/boxes/archived
     const res = await post("/api/boxes", { slug: "criada-via-http.md", content: "# Criada\n\nOi." });
     assert.equal(res.status, 201);
     assert.equal(
-      readFileSync(join(root, "context", "snippets", "criada-via-http.md"), "utf8"),
+      readFileSync(join(root, "data", "snippets", "criada-via-http.md"), "utf8"),
       "# Criada\n\nOi.",
     );
     const list = await (await fetch(new URL("/api/boxes", server.url))).json();
@@ -1866,7 +1866,7 @@ describe("POST /api/boxes (create) + archive/unarchive + GET /api/boxes/archived
   it("POST /api/boxes com slug inválido (README.md) -> 400, nunca escreve", async () => {
     const res = await post("/api/boxes", { slug: "README.md", content: "x" });
     assert.equal(res.status, 400);
-    assert.equal(readFileSync(join(root, "context", "snippets", "README.md"), "utf8"), "# Formato\n\nDoc.");
+    assert.equal(readFileSync(join(root, "data", "snippets", "README.md"), "utf8"), "# Formato\n\nDoc.");
   });
 
   it("POST /api/boxes sem 'content' -> 400", async () => {
@@ -1887,7 +1887,7 @@ describe("POST /api/boxes (create) + archive/unarchive + GET /api/boxes/archived
     assert.equal(res.status, 409);
     const body = await res.json();
     assert.equal(body.blockedBySlot, true);
-    assert.equal(existsSync(join(root, "context", "snippets", "com-slot.md")), true);
+    assert.equal(existsSync(join(root, "data", "snippets", "com-slot.md")), true);
   });
 
   it("POST /api/boxes/:slug/archive em inexistente -> 404", async () => {
@@ -1918,13 +1918,13 @@ describe("nome interno via HTTP: GET body/nome, PUT {nome,body}, POST com nome (
   before(async () => {
     root = mkdtempSync(join(tmpdir(), "studio-boxes-3933-http-"));
     mkdirSync(join(root, "data", "editions"), { recursive: true });
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
-    writeFileSync(join(root, "context", "snippets", "README.md"), "# Formato\n\nDoc.");
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    writeFileSync(join(root, "data", "snippets", "README.md"), "# Formato\n\nDoc.");
     writeFileSync(
-      join(root, "context", "snippets", "com-nome.md"),
+      join(root, "data", "snippets", "com-nome.md"),
       "<!--\nnome: Rótulo Interno\ndoc do snippet\n-->\n\n**Título na edição**\n\ncorpo",
     );
-    writeFileSync(join(root, "context", "snippets", "sem-nome.md"), "# Título derivado\n\ncorpo");
+    writeFileSync(join(root, "data", "snippets", "sem-nome.md"), "# Título derivado\n\ncorpo");
     writeFileSync(join(root, "platform.config.json"), JSON.stringify({ boxes_divulgacao: {} }));
     server = await startStudioServer({ port: 0, rootDir: root, pollIntervalMs: 30 });
   });
@@ -1962,7 +1962,7 @@ describe("nome interno via HTTP: GET body/nome, PUT {nome,body}, POST com nome (
       body: JSON.stringify({ nome: "Nome Novo", body: get.body, expectedModifiedAt: get.modifiedAt }),
     });
     assert.equal(put.status, 200);
-    const onDisk = readFileSync(join(root, "context", "snippets", "sem-nome.md"), "utf8");
+    const onDisk = readFileSync(join(root, "data", "snippets", "sem-nome.md"), "utf8");
     assert.match(onDisk, /<!--[\s\S]*nome: Nome Novo[\s\S]*-->/);
     assert.match(onDisk, /Título derivado/);
     // e a lista agora mostra o nome novo
@@ -1979,7 +1979,7 @@ describe("nome interno via HTTP: GET body/nome, PUT {nome,body}, POST com nome (
     });
     assert.equal(put.status, 200);
     assert.equal(
-      readFileSync(join(root, "context", "snippets", "com-nome.md"), "utf8"),
+      readFileSync(join(root, "data", "snippets", "com-nome.md"), "utf8"),
       "# Reescrito por caller legado",
     );
   });
@@ -2000,7 +2000,7 @@ describe("nome interno via HTTP: GET body/nome, PUT {nome,body}, POST com nome (
       body: JSON.stringify({ slug: "nova-com-nome.md", nome: "Caixa Nomeada", content: "# Público\n\ncorpo" }),
     });
     assert.equal(res.status, 201);
-    const onDisk = readFileSync(join(root, "context", "snippets", "nova-com-nome.md"), "utf8");
+    const onDisk = readFileSync(join(root, "data", "snippets", "nova-com-nome.md"), "utf8");
     assert.match(onDisk, /nome: Caixa Nomeada/);
     // invariante: nome não vaza no render
     assert.ok(!onDisk.replace(/<!--[\s\S]*?-->/g, "").includes("Caixa Nomeada"));
@@ -2018,13 +2018,13 @@ describe("categoria + notas/conteúdo via HTTP: GET conteudo/notas/categoria, PU
   before(async () => {
     root = mkdtempSync(join(tmpdir(), "studio-boxes-3979-http-"));
     mkdirSync(join(root, "data", "editions"), { recursive: true });
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
-    writeFileSync(join(root, "context", "snippets", "README.md"), "# Formato\n\nDoc.");
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    writeFileSync(join(root, "data", "snippets", "README.md"), "# Formato\n\nDoc.");
     writeFileSync(
-      join(root, "context", "snippets", "com-header.md"),
+      join(root, "data", "snippets", "com-header.md"),
       "<!--\nnome: Rótulo Interno\ncategoria: Recomendado\nInstruções de uso do snippet.\n-->\n\n**Título na edição**\n\ncorpo",
     );
-    writeFileSync(join(root, "context", "snippets", "sem-header.md"), "# Título derivado\n\ncorpo");
+    writeFileSync(join(root, "data", "snippets", "sem-header.md"), "# Título derivado\n\ncorpo");
     writeFileSync(join(root, "platform.config.json"), JSON.stringify({ boxes_divulgacao: {} }));
     server = await startStudioServer({ port: 0, rootDir: root, pollIntervalMs: 30 });
   });
@@ -2067,7 +2067,7 @@ describe("categoria + notas/conteúdo via HTTP: GET conteudo/notas/categoria, PU
       }),
     });
     assert.equal(put.status, 200);
-    const onDisk = readFileSync(join(root, "context", "snippets", "sem-header.md"), "utf8");
+    const onDisk = readFileSync(join(root, "data", "snippets", "sem-header.md"), "utf8");
     assert.equal(
       onDisk,
       "<!--\nnome: Nome Novo\ncategoria: Achado da semana\nNota interna sobre o uso.\n-->\n\n# Título derivado\n\ncorpo",
@@ -2088,15 +2088,16 @@ describe("categoria + notas/conteúdo via HTTP: GET conteudo/notas/categoria, PU
     });
     assert.equal(put.status, 200);
     assert.equal(
-      readFileSync(join(root, "context", "snippets", "sem-header.md"), "utf8"),
+      readFileSync(join(root, "data", "snippets", "sem-header.md"), "utf8"),
       "# Só conteúdo, sem header",
     );
   });
 
   it("PUT {conteudo} salvando SEM alterar nada é byte-estável (round-trip GET -> PUT idêntico ao original)", async () => {
     // #3979 risco explícito: recompor precisa ser byte-estável quando nada
-    // muda (context/snippets/*.md no prompt cache).
-    const before = readFileSync(join(root, "context", "snippets", "com-header.md"), "utf8");
+    // muda — evita diff fantasma no arquivo de caixa quando o editor abre e
+    // fecha o editor sem alterar o conteúdo.
+    const before = readFileSync(join(root, "data", "snippets", "com-header.md"), "utf8");
     const get = await (await fetch(new URL("/api/boxes/com-header.md", server.url))).json();
     const put = await fetch(new URL("/api/boxes/com-header.md", server.url), {
       method: "PUT",
@@ -2110,7 +2111,7 @@ describe("categoria + notas/conteúdo via HTTP: GET conteudo/notas/categoria, PU
       }),
     });
     assert.equal(put.status, 200);
-    assert.equal(readFileSync(join(root, "context", "snippets", "com-header.md"), "utf8"), before);
+    assert.equal(readFileSync(join(root, "data", "snippets", "com-header.md"), "utf8"), before);
   });
 
   it("POST {slug, nome, categoria, content} cria caixa com header nome:+categoria:", async () => {
@@ -2125,7 +2126,7 @@ describe("categoria + notas/conteúdo via HTTP: GET conteudo/notas/categoria, PU
       }),
     });
     assert.equal(res.status, 201);
-    const onDisk = readFileSync(join(root, "context", "snippets", "nova-com-categoria.md"), "utf8");
+    const onDisk = readFileSync(join(root, "data", "snippets", "nova-com-categoria.md"), "utf8");
     assert.match(onDisk, /nome: Caixa Nomeada/);
     assert.match(onDisk, /categoria: Recomendado/);
     // invariante: nem nome nem categoria vazam no render
@@ -2146,7 +2147,7 @@ describe("categoria + notas/conteúdo via HTTP: GET conteudo/notas/categoria, PU
     });
     assert.equal(res.status, 201);
     assert.equal(
-      readFileSync(join(root, "context", "snippets", "so-categoria.md"), "utf8"),
+      readFileSync(join(root, "data", "snippets", "so-categoria.md"), "utf8"),
       "<!--\ncategoria: Achado da semana\n-->\n\n# X\n\ncorpo",
     );
   });
@@ -2161,13 +2162,13 @@ describe("campo dedicado 'titulo' via HTTP: GET devolve titulo, PUT {titulo} ree
   before(async () => {
     root = mkdtempSync(join(tmpdir(), "studio-boxes-4079-http-"));
     mkdirSync(join(root, "data", "editions"), { recursive: true });
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
-    writeFileSync(join(root, "context", "snippets", "README.md"), "# Formato\n\nDoc.");
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    writeFileSync(join(root, "data", "snippets", "README.md"), "# Formato\n\nDoc.");
     writeFileSync(
-      join(root, "context", "snippets", "com-heading.md"),
+      join(root, "data", "snippets", "com-heading.md"),
       "<!--\nnome: Rótulo Interno\n-->\n\n## Título de conteúdo\n\ncorpo preservado\n\n- item",
     );
-    writeFileSync(join(root, "context", "snippets", "texto-puro.md"), "Título em texto puro\n\ncorpo");
+    writeFileSync(join(root, "data", "snippets", "texto-puro.md"), "Título em texto puro\n\ncorpo");
     writeFileSync(join(root, "platform.config.json"), JSON.stringify({ boxes_divulgacao: {} }));
     server = await startStudioServer({ port: 0, rootDir: root, pollIntervalMs: 30 });
   });
@@ -2200,7 +2201,7 @@ describe("campo dedicado 'titulo' via HTTP: GET devolve titulo, PUT {titulo} ree
       }),
     });
     assert.equal(put.status, 200);
-    const onDisk = readFileSync(join(root, "context", "snippets", "com-heading.md"), "utf8");
+    const onDisk = readFileSync(join(root, "data", "snippets", "com-heading.md"), "utf8");
     assert.equal(onDisk, "<!--\nnome: Rótulo Interno\n-->\n\n## Novo título\n\ncorpo preservado\n\n- item");
 
     // e a lista reflete o novo contentTitle
@@ -2219,7 +2220,7 @@ describe("campo dedicado 'titulo' via HTTP: GET devolve titulo, PUT {titulo} ree
       body: JSON.stringify({ conteudo: get.conteudo, titulo: "Título trocado", expectedModifiedAt: get.modifiedAt }),
     });
     assert.equal(put.status, 200);
-    const onDisk = readFileSync(join(root, "context", "snippets", "texto-puro.md"), "utf8");
+    const onDisk = readFileSync(join(root, "data", "snippets", "texto-puro.md"), "utf8");
     assert.equal(onDisk, "Título trocado\n\ncorpo");
     assert.ok(!onDisk.startsWith("#"));
   });
@@ -2232,11 +2233,11 @@ describe("campo dedicado 'titulo' via HTTP: GET devolve titulo, PUT {titulo} ree
       body: JSON.stringify({ conteudo: get.conteudo, expectedModifiedAt: get.modifiedAt }),
     });
     assert.equal(put.status, 200);
-    assert.equal(readFileSync(join(root, "context", "snippets", "texto-puro.md"), "utf8"), get.conteudo);
+    assert.equal(readFileSync(join(root, "data", "snippets", "texto-puro.md"), "utf8"), get.conteudo);
   });
 
   it("PUT {conteudo, titulo} salvando SEM alterar o título é byte-estável (round-trip GET -> PUT idêntico ao original)", async () => {
-    const before = readFileSync(join(root, "context", "snippets", "com-heading.md"), "utf8");
+    const before = readFileSync(join(root, "data", "snippets", "com-heading.md"), "utf8");
     const get = await (await fetch(new URL("/api/boxes/com-heading.md", server.url))).json();
     const put = await fetch(new URL("/api/boxes/com-heading.md", server.url), {
       method: "PUT",
@@ -2249,7 +2250,7 @@ describe("campo dedicado 'titulo' via HTTP: GET devolve titulo, PUT {titulo} ree
       }),
     });
     assert.equal(put.status, 200);
-    assert.equal(readFileSync(join(root, "context", "snippets", "com-heading.md"), "utf8"), before);
+    assert.equal(readFileSync(join(root, "data", "snippets", "com-heading.md"), "utf8"), before);
   });
 
   it("PUT com 'titulo' vazio -> no-op sobre a 1ª linha (preserva o conteúdo enviado)", async () => {
@@ -2260,7 +2261,7 @@ describe("campo dedicado 'titulo' via HTTP: GET devolve titulo, PUT {titulo} ree
       body: JSON.stringify({ nome: get.nome, conteudo: get.conteudo, titulo: "", expectedModifiedAt: get.modifiedAt }),
     });
     assert.equal(put.status, 200);
-    const onDisk = readFileSync(join(root, "context", "snippets", "com-heading.md"), "utf8");
+    const onDisk = readFileSync(join(root, "data", "snippets", "com-heading.md"), "utf8");
     assert.match(onDisk, /## Novo título/); // valor do teste anterior, intacto
   });
 });
@@ -2274,13 +2275,13 @@ describe("GET/PUT /api/boxes/slots (#3937; slot0 #4290)", () => {
   before(async () => {
     root = mkdtempSync(join(tmpdir(), "studio-boxes-3937-http-"));
     mkdirSync(join(root, "data", "editions"), { recursive: true });
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
-    writeFileSync(join(root, "context", "snippets", "recomendacao-leitura.md"), "# Recomendação");
-    writeFileSync(join(root, "context", "snippets", "livros-divulgacao.md"), "# Livros");
-    writeFileSync(join(root, "context", "snippets", "apoio-divulgacao.md"), "# Apoio");
-    writeFileSync(join(root, "context", "snippets", "intro-box.md"), "# Intro");
-    mkdirSync(join(root, "context", "snippets", "_arquivo"), { recursive: true });
-    writeFileSync(join(root, "context", "snippets", "_arquivo", "velha.md"), "# Velha");
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
+    writeFileSync(join(root, "data", "snippets", "recomendacao-leitura.md"), "# Recomendação");
+    writeFileSync(join(root, "data", "snippets", "livros-divulgacao.md"), "# Livros");
+    writeFileSync(join(root, "data", "snippets", "apoio-divulgacao.md"), "# Apoio");
+    writeFileSync(join(root, "data", "snippets", "intro-box.md"), "# Intro");
+    mkdirSync(join(root, "data", "snippets", "_arquivo"), { recursive: true });
+    writeFileSync(join(root, "data", "snippets", "_arquivo", "velha.md"), "# Velha");
     server = await startStudioServer({ port: 0, rootDir: root, pollIntervalMs: 30 });
   });
 
@@ -2721,7 +2722,7 @@ describe("GET/PUT /api/boxes/para-encerrar (#4274)", () => {
   before(async () => {
     root = mkdtempSync(join(tmpdir(), "studio-boxes-4274-http-"));
     mkdirSync(join(root, "data", "editions"), { recursive: true });
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
     server = await startStudioServer({ port: 0, rootDir: root, pollIntervalMs: 30 });
   });
 

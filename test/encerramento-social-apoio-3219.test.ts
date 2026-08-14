@@ -11,12 +11,13 @@
  * pills "Acesse nossas curadorias" tinham, respectivamente, 5 e 3 grafias
  * divergentes entre diário/mensal/config/docs. Os dois viraram BLOCOS FIXOS
  * — `SOCIAL_INVITE`/`CURADORIA_PILLS` em `scripts/lib/shared/encerramento-snippet.ts`,
- * nunca mais editáveis por edição. `context/snippets/encerramento-social-apoio.md`
- * ficou só com o parágrafo de apoio + créditos de ferramentas (a única parte
- * ainda editável, via painel Caixas / `platform.config.json` → `para_encerrar.slot_a`).
+ * nunca mais editáveis por edição. `data/snippets/encerramento-social-apoio.md`
+ * (#5227, migrado de `context/snippets/`) ficou só com o parágrafo de apoio +
+ * créditos de ferramentas (a única parte ainda editável, via painel Caixas /
+ * `platform.config.json` → `para_encerrar.slot_a`).
  *
  * Este teste cobre:
- *   1. `context/snippets/encerramento-social-apoio.md` — o texto aprovado
+ *   1. `data/snippets/encerramento-social-apoio.md` — o texto aprovado
  *      (parágrafo de apoio + ferramentas) existe, com o marcador
  *      `{{OPENING}}` e o link canônico do Apoia.se.
  *   2. `scripts/lib/shared/encerramento-snippet.ts` — o loader/render
@@ -39,27 +40,34 @@
  * #4139 (mesma doença que o #4083 corrigiu em stitch-newsletter.test.ts):
  * testes de MECANISMO (load/render/stitch) rodam contra uma fixture ESTÁVEL
  * (`STABLE_ENCERRAMENTO_FIXTURE`, escrita transitoriamente via
- * `withSnippetContent`/`withStableSnippet`) em vez do arquivo REAL — a lista
- * de recompensas do Apoia.se é rotação editorial normal (já mudou 2×) e não
- * deveria quebrar CI sem regressão nenhuma. Só o describe "guardas de forma"
- * no topo do arquivo lê o arquivo real, e só verifica invariantes de FORMA
- * (marcador, link canônico, ausência de placeholder) — nunca texto exato de
- * recompensa.
+ * `withSnippetContent`/`withStableSnippet`) em vez de conteúdo real — a
+ * lista de recompensas do Apoia.se é rotação editorial normal (já mudou 2×)
+ * e não deveria quebrar CI sem regressão nenhuma. #5227 (14/08/2026): o
+ * describe "guardas de forma" no topo do arquivo, que antes lia o arquivo
+ * REAL (`context/snippets/encerramento-social-apoio.md`, então git-tracked),
+ * passou a ler `DEFAULT_ENCERRAMENTO_FIXTURE` — uma cópia CONGELADA do
+ * conteúdo real, escrita no fixture temporário (`SNIPPETS_FIXTURE_ROOT`) —
+ * desde que o conteúdo migrou pra `data/snippets/` (gitignored, junction
+ * OneDrive, ausente em clone fresco/CI/worktree isolado). Continua
+ * verificando só invariantes de FORMA (marcador, link canônico, ausência de
+ * placeholder) — nunca texto exato de recompensa; só a FONTE do conteúdo
+ * lido mudou de "arquivo real no repo" pra "cópia congelada no fixture".
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
-  loadEncerramentoSocialApoioTemplate,
-  renderEncerramentoSocialApoio,
+  loadEncerramentoSocialApoioTemplate as loadEncerramentoSocialApoioTemplateReal,
+  renderEncerramentoSocialApoio as renderEncerramentoSocialApoioReal,
   ENCERRAMENTO_OPENING_DAILY,
   ENCERRAMENTO_OPENING_MONTHLY,
   SOCIAL_INVITE,
   CURADORIA_PILLS,
 } from "../scripts/lib/shared/encerramento-snippet.ts";
-import { buildParaEncerrar, type ParaEncerrarConfig } from "../scripts/stitch-newsletter.ts";
+import { buildParaEncerrar as buildParaEncerrarReal, type ParaEncerrarConfig } from "../scripts/stitch-newsletter.ts";
 import { renderEncerrar } from "../scripts/lib/newsletter-render-html.ts";
 import { renderEncerramento } from "../scripts/lib/mensal/monthly-render.ts";
 import { extractTemplateBlock } from "../scripts/lib/newsletter-parse.ts";
@@ -73,15 +81,61 @@ import {
 } from "../scripts/lib/canonical-urls.ts";
 
 const ROOT = join(import.meta.dirname ?? new URL(".", import.meta.url).pathname, "..");
-const SNIPPET_PATH = join(ROOT, "context", "snippets", "encerramento-social-apoio.md");
 const WRITER_MONTHLY_MD = join(ROOT, ".claude", "agents", "writer-monthly.md");
 const NEWSLETTER_MONTHLY_TEMPLATE = join(ROOT, "context", "templates", "newsletter-monthly.md");
 const NEWSLETTER_DAILY_TEMPLATE = join(ROOT, "context", "templates", "newsletter.md");
 
+// ─── #5227 — fixture de data/snippets/, NUNCA o arquivo real ──────────────
+//
+// Antes (#4139): este arquivo escrevia TEMPORARIAMENTE em cima do arquivo
+// REAL `context/snippets/encerramento-social-apoio.md` (via `writeFileSync`
+// + restore no finally) — tolerável enquanto o diretório era git-tracked
+// (recuperável via git, CI é clone efêmero). #5227 migrou o conteúdo pra
+// `data/snippets/` — a MESMA pasta compartilhada via OneDrive que guarda
+// `clarice-subscribers`/`editions`/etc. em produção. Continuar escrevendo
+// "temporariamente" ali seria escrever num diretório de dado de produção
+// sincronizado por OneDrive a partir de um teste — exatamente a classe de
+// incidente já documentada no checklist de dispatch overnight/develop.
+//
+// Fix: `loadEncerramentoSocialApoioTemplate`/`renderEncerramentoSocialApoio`/
+// `buildParaEncerrar` ganharam um `rootDir` de override (#5227) — as 3
+// wrapper functions abaixo fecham sobre um diretório TEMPORÁRIO
+// (`SNIPPETS_FIXTURE_ROOT`, `mkdtempSync`, nunca a `data/` real) e repassam
+// esse root pras versões reais, importadas com sufixo `Real`. Todo call site
+// existente neste arquivo (`loadEncerramentoSocialApoioTemplate()`,
+// `renderEncerramentoSocialApoio(opening)`, `buildParaEncerrar()`/
+// `buildParaEncerrar({...})`) continua igual — só passa a resolver contra o
+// fixture, nunca contra `data/snippets/` de verdade.
+const SNIPPETS_FIXTURE_ROOT = mkdtempSync(join(tmpdir(), "encerramento-snippet-fixture-"));
+const SNIPPET_PATH = join(SNIPPETS_FIXTURE_ROOT, "data", "snippets", "encerramento-social-apoio.md");
+mkdirSync(join(SNIPPETS_FIXTURE_ROOT, "data", "snippets"), { recursive: true });
+
+function loadEncerramentoSocialApoioTemplate(): string | null {
+  return loadEncerramentoSocialApoioTemplateReal(SNIPPETS_FIXTURE_ROOT);
+}
+function renderEncerramentoSocialApoio(opening: string): string | null {
+  return renderEncerramentoSocialApoioReal(opening, SNIPPETS_FIXTURE_ROOT);
+}
+function buildParaEncerrar(override?: ParaEncerrarConfig, relatedEditionsMarkdown?: string | null): string {
+  return buildParaEncerrarReal(override, relatedEditionsMarkdown, SNIPPETS_FIXTURE_ROOT);
+}
+
+// ─── conteúdo DEFAULT do fixture: cópia CONGELADA do real (#5227) ─────────
+// Usada por todo teste que chama `buildParaEncerrar()`/`renderEncerramentoSocialApoio()`
+// SEM passar por `withSnippetContent`/`withStableSnippet` — precisa de UM
+// conteúdo presente no fixture desde o início (senão o arquivo simplesmente
+// não existe e os testes de "conteúdo real presente" falhariam por ausência,
+// não por bug). Congelada em vez de lida do disco: se o editor rotacionar a
+// recompensa/ferramenta depois, este teste continua estável (mesma disciplina
+// de `STABLE_SLOT{1,2,3}_FILE` em stitch-newsletter.test.ts, #4083).
+const DEFAULT_ENCERRAMENTO_FIXTURE = `<!--\nnome: PARA ENCERRAR\n-->\n\n{{OPENING}}Apoie a curadoria contribuindo a partir de R$5/mês em [apoia.se/diaria](${DIARIA_APOIASE_URL}) para ganhar recompensas como **artigo especial do mês**, **sorteios** e **acesso antecipado a novos projetos**.
+
+Nesta edição da **diar.ia.br**, usei Claude Code para automatizar parte da pesquisa e criar resumos, Gemini para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz.`;
+
 // ─── #4139 — fixture ESTÁVEL do snippet de encerramento ────────────────────
 // Mesma doença que o #4083 corrigiu em test/stitch-newsletter.test.ts: testes
 // de MECANISMO (load/render/stitch) não devem depender do que
-// context/snippets/encerramento-social-apoio.md diz HOJE — rotação editorial
+// data/snippets/encerramento-social-apoio.md diz HOJE — rotação editorial
 // normal (a lista de recompensas do Apoia.se já mudou 2×) quebrava CI sem
 // regressão nenhuma de código. A fixture abaixo preserva a ESTRUTURA real
 // (marcador {{OPENING}}, abertura do parágrafo de apoio, parágrafo de
@@ -94,9 +148,11 @@ const STABLE_ENCERRAMENTO_FIXTURE = `{{OPENING}}Apoie a curadoria contribuindo a
 
 Nesta edição da **diar.ia.br**, usei uma ferramenta fixture qualquer para os testes ([link fixture](https://exemplo-fixture.test/ferramenta)).`;
 
-const originalSnippetContent = readFileSync(SNIPPET_PATH, "utf8");
+writeFileSync(SNIPPET_PATH, DEFAULT_ENCERRAMENTO_FIXTURE, "utf8");
+const originalSnippetContent = DEFAULT_ENCERRAMENTO_FIXTURE;
 
-/** Grava `content` em SNIPPET_PATH, roda `fn`, restaura o original no finally. */
+/** Grava `content` em SNIPPET_PATH (dentro de SNIPPETS_FIXTURE_ROOT, #5227 —
+ * NUNCA o arquivo real), roda `fn`, restaura o default no finally. */
 function withSnippetContent<T>(content: string, fn: () => T): T {
   writeFileSync(SNIPPET_PATH, content, "utf8");
   try {
@@ -111,7 +167,7 @@ function withStableSnippet<T>(fn: () => T): T {
   return withSnippetContent(STABLE_ENCERRAMENTO_FIXTURE, fn);
 }
 
-describe("context/snippets/encerramento-social-apoio.md — guardas de forma (#4139, rotação editorial não deve quebrar CI)", () => {
+describe("data/snippets/encerramento-social-apoio.md — guardas de forma (#4139, rotação editorial não deve quebrar CI; #5227 fixture, nunca o arquivo real)", () => {
   // #4139: só invariantes de FORMA são verificados contra o arquivo REAL —
   // mesmo raciocínio do describe "guardas de forma" em stitch-newsletter.test.ts
   // (#4083). Conteúdo específico (recompensas, texto exato) é testado contra a
@@ -147,7 +203,7 @@ describe("context/snippets/encerramento-social-apoio.md — guardas de forma (#4
   });
 });
 
-describe("context/snippets/encerramento-social-apoio.md — mecanismo de load/render (#4139, fixture estável, independe de rotação editorial)", () => {
+describe("data/snippets/encerramento-social-apoio.md — mecanismo de load/render (#4139, fixture estável, independe de rotação editorial)", () => {
   it("loadEncerramentoSocialApoioTemplate retorna o corpo sem o comentário HTML de header", () => {
     withStableSnippet(() => {
       const template = loadEncerramentoSocialApoioTemplate();
@@ -386,8 +442,8 @@ describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartil
 describe(".claude/agents/writer-monthly.md — parágrafo de apoio + convite social (#3219)", () => {
   const content = readFileSync(WRITER_MONTHLY_MD, "utf8");
 
-  it("referencia o snippet canônico context/snippets/encerramento-social-apoio.md", () => {
-    assert.match(content, /context\/snippets\/encerramento-social-apoio\.md/);
+  it("referencia o snippet canônico data/snippets/encerramento-social-apoio.md (#5227, migrado de context/snippets/)", () => {
+    assert.match(content, /data\/snippets\/encerramento-social-apoio\.md/);
   });
 
   it("instrui a substituir {{OPENING}} pela variante mensal", () => {

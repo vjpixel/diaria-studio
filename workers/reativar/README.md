@@ -1,7 +1,7 @@
 # reativar Worker (#4476 item 3)
 
 Link de confirmação PERSONALIZADO pro segmento Pending do canal Brevo próprio
-do editor (`context/snippets/brevo-diaria-pending-intro.md`) — 1 clique em
+do editor (`data/snippets/brevo-diaria-pending-intro.md`) — 1 clique em
 vez do formulário genérico de cadastro da Beehiiv (2 etapas).
 
 URL: `https://reativar.diaria.workers.dev/?email={{ contact.EMAIL }}`

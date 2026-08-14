@@ -128,7 +128,7 @@ const LINK_RE = /\[([^\]]*?)\]\((https?:\/\/[^)\s]+)\)/g;
 
 // Infra própria da diar.ia.br que aparece em TODA edição (Divulgação/Para
 // encerrar — ver `boxes_divulgacao` e `para_encerrar` em platform.config.json,
-// e os snippets rotativos em context/snippets/*-divulgacao.md): apoio,
+// e os snippets rotativos em data/snippets/*-divulgacao.md): apoio,
 // curadoria de livros/cursos, afiliado/vitrine Amazon, referrals fixos da
 // assinatura. `isEditorial()` (build-link-ctr.ts) não filtra isso — lá o
 // propósito é medir clique em TUDO (CTR table), aqui é achar as NOTÍCIAS

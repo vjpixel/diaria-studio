@@ -2,7 +2,7 @@
 /**
  * select-boxes-by-clicks.ts (#4626)
  *
- * Seleção AUTOMÁTICA de qual box de divulgação (`context/snippets/*.md`)
+ * Seleção AUTOMÁTICA de qual box de divulgação (`data/snippets/*.md`)
  * ocupa cada slot de rotação (1, 2, 3 — gaps D1/D2, D2/D3 e pós-último-
  * destaque) de uma edição, substituindo a escolha estática manual em
  * `platform.config.json` → `boxes_divulgacao` quando `boxes_divulgacao_auto.enabled`
@@ -26,7 +26,7 @@
  * distinta (#4274: "5 slots preenchidos seria demais numa edição de leitura
  * de 5 minutos" — default `null`/opt-in raro, não um slot de rotação) — não
  * é a mesma coisa que a exceção do bloco WhatsApp (que nem é um snippet de
- * `context/snippets/`, então estruturalmente nunca poderia entrar neste
+ * `data/snippets/`, então estruturalmente nunca poderia entrar neste
  * ranking de qualquer forma).
  *
  * **Precedência config vs. automação (decisão desta unidade, documentada no
@@ -84,7 +84,7 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const EDITIONS_DIR = resolve(ROOT, "data/editions");
 const POSTS_DIR = resolve(ROOT, "data/beehiiv-cache/posts");
-const SNIPPETS_DIR = resolve(ROOT, "context/snippets");
+const SNIPPETS_DIR = resolve(ROOT, "data/snippets"); // #5227: migrado de context/snippets/
 const CONFIG_PATH = resolve(ROOT, "platform.config.json");
 
 /** #4626: só slot 1/2/3 entram na rotação automática — ver docstring do

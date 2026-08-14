@@ -2,7 +2,8 @@
  * snippet-header.ts (#3979/#3981)
  *
  * Parsing genérico do header de comentário HTML convencional dos snippets de
- * caixa (`context/snippets/*.md`, ver `context/snippets/README.md`): um
+ * caixa (`data/snippets/*.md` — #5227, migrado de `context/snippets/`; ver
+ * `context/snippets/README.md`, que continua a spec do formato): um
  * bloco `<!-- ... -->` no topo do arquivo carregando METADADOS estruturados
  * (`nome:` desde #3933, `categoria:` desde #3981) + texto livre de notas —
  * nunca vaza pro leitor (`readSnippetFile`/`stitch-newsletter.ts` removem

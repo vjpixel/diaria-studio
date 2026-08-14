@@ -1,46 +1,75 @@
 /**
  * test/brevo-diaria-intro-4266.test.ts (#4266)
  *
- * Bloco de intro obrigatório do segmento Pending: leitura do snippet real
- * (garante que o arquivo existe e renderiza, sem travar no conteúdo exato —
- * a cópia é rascunho e pode mudar) + injeção pura no HTML fullDocument.
+ * Bloco de intro obrigatório do segmento Pending: leitura do snippet
+ * (garante que o mecanismo lê/renderiza, sem travar no conteúdo exato — a
+ * cópia é rascunho e pode mudar) + injeção pura no HTML fullDocument.
+ *
+ * #5227 (14/08/2026): `data/snippets/` migrou de `context/snippets/`
+ * (git-tracked) pra `data/snippets/` (gitignored/junction OneDrive, ausente
+ * em CI/clone fresco/worktree isolado) — este describe passou a ler uma
+ * FIXTURE congelada (`PENDING_INTRO_FIXTURE`, escrita num root temporário
+ * via `renderPendingIntroHtml(rootDir)`) em vez do arquivo real, mesmo
+ * padrão de DI já usado por encerramento-social-apoio-3219.test.ts.
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { renderPendingIntroHtml, injectPendingIntro, PENDING_INTRO_SNIPPET_FILENAME } from "../scripts/lib/brevo-diaria-intro.ts";
 import { isCtaOnlyParagraph, renderBarePillButton } from "../scripts/lib/newsletter-render-html.ts";
 
+const PENDING_INTRO_FIXTURE = [
+  "<!-- fixture de teste, não é a cópia real revisada pelo editor -->",
+  "",
+  "Você está recebendo este e-mail porque se inscreveu na diar.ia.br.",
+  "",
+  "→ [Confirmar meu cadastro](https://reativar.diaria.workers.dev/?email={{ contact.EMAIL }})",
+  "",
+  "Se preferir, você pode se [descadastrar]({{ unsubscribe }}) a qualquer momento.",
+  "",
+].join("\n");
+
+const FIXTURE_ROOT = mkdtempSync(join(tmpdir(), "brevo-diaria-intro-fixture-"));
+mkdirSync(join(FIXTURE_ROOT, "data", "snippets"), { recursive: true });
+writeFileSync(join(FIXTURE_ROOT, "data", "snippets", PENDING_INTRO_SNIPPET_FILENAME), PENDING_INTRO_FIXTURE, "utf8");
+
+function renderFixtureIntroHtml(): string | null {
+  return renderPendingIntroHtml(FIXTURE_ROOT);
+}
+
 describe("renderPendingIntroHtml — #4266", () => {
   it(`lê ${PENDING_INTRO_SNIPPET_FILENAME} e renderiza HTML não-vazio`, () => {
-    const html = renderPendingIntroHtml();
+    const html = renderFixtureIntroHtml();
     assert.ok(html, "snippet deve existir e renderizar (bloqueante pro publisher se ausente)");
     assert.ok(html!.length > 0);
   });
 
   it("CTA vira botão pill (bare, via renderBarePillButton), apontando pro link personalizado do worker reativar (#4476 item 3, achado 260803 4ª rodada — não mais o formulário genérico)", () => {
-    const html = renderPendingIntroHtml();
+    const html = renderFixtureIntroHtml();
     assert.match(html!, /<a[^>]+href="https:\/\/reativar\.diaria\.workers\.dev\/\?email=\{\{ contact\.EMAIL \}\}"/);
     assert.match(html!, /border-radius:999px/);
   });
 
   it("sem título: 1º parágrafo NÃO vira heading serif 26px", () => {
-    const html = renderPendingIntroHtml();
+    const html = renderFixtureIntroHtml();
     assert.doesNotMatch(html!, /font-size:26px/, "1º parágrafo não deveria renderizar como título serif grande");
   });
 
   it("sem caixa/cartão bege ao redor (achado 260803, pedido do editor: 'tira o texto dessa caixa') — texto e botão soltos no fluxo, não dentro de <table style=\"background:#EBE5D0...\">", () => {
-    const html = renderPendingIntroHtml();
+    const html = renderFixtureIntroHtml();
     assert.doesNotMatch(html!, /background:#EBE5D0/, "não deveria ter fundo de cartão — nem no texto, nem no botão");
   });
 
   it("disclosure de descadastro renderiza como parágrafo solto (renderCoverageTrailer), não dentro de td com padding de card", () => {
-    const html = renderPendingIntroHtml();
+    const html = renderFixtureIntroHtml();
     assert.match(html!, /pode se <a href="\{\{ unsubscribe \}\}"/);
   });
 
   it("embrulha os <tr> soltos numa <table> própria (achado 260803, 2ª rodada — órfãos quebravam o topo do e-mail: injectPendingIntro insere ANTES do <table class=\"ds-canvas\"> que renderHTML abre, então <tr> sem tabela própria ficava sem contexto de tabela válido)", () => {
-    const html = renderPendingIntroHtml()!;
+    const html = renderFixtureIntroHtml()!;
     const tableOpenIdx = html.indexOf("<table");
     const firstTrIdx = html.indexOf("<tr");
     assert.ok(tableOpenIdx !== -1, "deve ter uma <table> própria");
@@ -49,25 +78,25 @@ describe("renderPendingIntroHtml — #4266", () => {
   });
 
   it("embrulha num conditional MSO (review PR #4522 — Outlook desktop ignora max-width e honra só o atributo width=\"100%\", reproduzindo a mesma quebra de largura que a nota 3ª rodada corrigiu pros outros clientes; mesmo padrão de newsletter-render-html.ts innerTable/container)", () => {
-    const html = renderPendingIntroHtml()!;
+    const html = renderFixtureIntroHtml()!;
     // #5176 (260813): container calibrado 600 → 656.
     assert.match(html, /<!--\[if mso\]><table[^>]*width="656"[^>]*><tr><td width="656"><!\[endif\]-->/);
     assert.match(html, /<!--\[if mso\]><\/td><\/tr><\/table><!\[endif\]-->/);
   });
 
   it("a <table> própria tem fundo branco EXPLÍCITO (achado 260803, 3ª rodada — dark mode: injectPendingIntro insere na zona 'canvas externo' que darkCanvasMediaRule escurece de propósito; texto ink sobre fundo herdado escuro = invisível; PAGE_BG explícito isola do dark-mode do body, sem reintroduzir cartão visível — mesma cor do container real ao redor)", () => {
-    const html = renderPendingIntroHtml()!;
+    const html = renderFixtureIntroHtml()!;
     assert.match(html, /<table[^>]*style="[^"]*background:#FFFFFF;"/, "table wrapper deve ter background explícito, não herdado");
   });
 
   it("a <table> própria tem max-width:656px + class=\"container\" (achado 260803, 4ª rodada — pós-envio: width=\"100%\" sem teto virava 100% do CLIENTE DE E-MAIL inteiro, não do container real, porque esta tabela fica fora do .ds-canvas; linha de texto saía larga demais em clientes desktop)", () => {
-    const html = renderPendingIntroHtml()!;
+    const html = renderFixtureIntroHtml()!;
     // #5176 (260813): container calibrado 600 → 656.
     assert.match(html, /<table[^>]*class="container"[^>]*max-width:656px/, "deve ter o mesmo teto de largura do container real");
   });
 
   it("a <table> própria é centralizada (align + margin:0 auto — email-safe pros dois casos: clientes antigos via atributo, modernos via margin)", () => {
-    const html = renderPendingIntroHtml()!;
+    const html = renderFixtureIntroHtml()!;
     assert.match(html, /<table[^>]*align="center"/);
     assert.match(html, /<table[^>]*style="[^"]*margin:0 auto/);
   });

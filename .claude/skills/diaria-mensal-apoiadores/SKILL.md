@@ -49,7 +49,7 @@ description: Envia a edição mensal (data/monthly/{ciclo}/draft.md) por e-mail 
 > Ação do editor.
 
 Entrega o "artigo especial do mês" já anunciado como recompensa Mantenedor/
-Patrono (`context/snippets/agradecimento-apoiadores.md`) — hoje só existe como
+Patrono (`data/snippets/agradecimento-apoiadores.md`) — hoje só existe como
 página paywall do worker `artigo-mensal`, sem nenhum aviso ativo pro
 assinante (#4521). Esta skill fecha esse ciclo: reusa o MESMO `draft.md` que
 já vai pra Clarice, trocando só a AUDIÊNCIA (lista Brevo dedicada,
@@ -93,7 +93,7 @@ independente do timing do envio canônico Clarice do mês.
 
 **Conteúdo: mantém a decisão já tomada no #4482, não a reabre.** A issue
 #4521 sugeriu reusar os snippets Patronos da diária
-(`context/snippets/patronos-*.md`) no espaço deixado vazio pelas seções
+(`data/snippets/patronos-*.md`) no espaço deixado vazio pelas seções
 Clarice removidas. Essa MESMA pergunta já tinha sido decidida ao vivo pelo
 editor no comentário do #4482 (260803, decisão 3): "remover DIVULGAÇÃO/
 TUTORIAL sem substituir por nada — mais simples, espaço reservado fica

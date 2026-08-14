@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCallout, loadDailyCallout, buildParaEncerrar, loadParaEncerrarConfig, type ParaEncerrarConfig } from "../scripts/stitch-newsletter.ts";
+import { renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCallout, loadDailyCallout, loadDivulgacaoSnippet, loadAgradecimentoSnippet, buildParaEncerrar, loadParaEncerrarConfig, type ParaEncerrarConfig } from "../scripts/stitch-newsletter.ts";
 import { extractBoxDivulgacao0, extractBoxDivulgacao1, extractBoxDivulgacao2, extractBoxDivulgacao3, BOX0_SENTINEL } from "../scripts/render-newsletter-html.ts";
 import { stripHtml } from "../scripts/lib/clean-summary.ts";
 import { SOCIAL_INVITE } from "../scripts/lib/shared/encerramento-snippet.ts"; // #4413: convite social é bloco fixo
@@ -23,6 +23,78 @@ const STABLE_SLOT2_FILE = "livros-divulgacao.md";
 const STABLE_SLOT2_ANCHOR = /curadoria de livros/i;
 const STABLE_SLOT3_FILE = "apoio-divulgacao.md"; // default histórico permanente do slot3, #3824
 const STABLE_SLOT3_ANCHOR = /Apoie a diar\.ia\.br/;
+
+// ─── #5227 — fixture de data/snippets/ (migrado de context/snippets/) ─────
+//
+// `readSnippetFile`/`loadDivulgacaoSnippet` resolvem SEMPRE contra a raiz
+// REAL do repo (por design — não há indireção de módulo pra mockar), então
+// os testes acima (e os que seguem) que precisam de conteúdo de snippet
+// dependiam de `context/snippets/{arquivo}.md` estar git-tracked — o que
+// era verdade em TODO clone/CI/worktree antes do #5227. Migrado o conteúdo
+// pra `data/snippets/` (gitignored, junction OneDrive), essa premissa
+// deixou de valer: um worktree isolado ou um clone fresco de CI não tem
+// `data/` nenhum.
+//
+// Fix: `stitchNewsletter()`/`buildParaEncerrar()`/`loadDailyCallout()`/
+// `loadClariceCallout()` ganharam um parâmetro `rootDir`/`snippetsRootDir`
+// de override (#5227) — quando fornecido, `readSnippetFile` resolve
+// `{rootDir}/data/snippets/{arquivo}` em vez da raiz real. Este arquivo cria
+// UM diretório temporário (`SNIPPETS_FIXTURE_ROOT`, módulo inteiro, criado
+// 1x) com CÓPIAS CONGELADAS do conteúdo REAL dos arquivos que este arquivo
+// de teste referencia — nunca escreve em `data/snippets/` de verdade
+// (NUNCA tocar o junction OneDrive a partir de um teste — achado de
+// incidente real documentado no checklist de dispatch overnight/develop:
+// e2e escrevendo em diretório de dado de produção sincronizado por
+// OneDrive). Cópias congeladas, não referências ao arquivo real: se o
+// editor rotacionar/editar o conteúdo de produção depois, este teste
+// continua estável (mesmo racional de `STABLE_SLOT{1,2,3}_FILE` acima —
+// nunca reler o que platform.config.json aponta HOJE).
+const SNIPPETS_FIXTURE_ROOT = mkdtempSync(join(tmpdir(), "stitch-snippets-fixture-"));
+{
+  const dir = join(SNIPPETS_FIXTURE_ROOT, "data", "snippets");
+  const arquivoDir = join(dir, "_arquivo");
+  mkdirSync(arquivoDir, { recursive: true });
+  writeFileSync(
+    join(dir, "livros-divulgacao.md"),
+    "<!--\nnome: Curadoria de Livros\n-->\n\n**A diar.ia.br mantém uma curadoria de livros sobre IA, cada título com nota da Amazon, resenha e link de compra, e filtros por idioma, nível e tema. Encontre sua próxima leitura em segundos. [Confira a página de livros](https://livros.diar.ia.br).**\n",
+  );
+  writeFileSync(
+    join(dir, "apoio-divulgacao.md"),
+    "<!--\nnome: Apoie a diar.ia.br\nSem `**...**` embrulhando o BLOCO INTEIRO. Multi-parágrafo, não passa pelo bold-wrap de bloco só-texto.\n-->\n\n" +
+      "Apoie a diar.ia.br\n\n" +
+      "A curadoria diária que você recebe é fruto de um trabalho constante: ler, filtrar, priorizar, editar. Se isso te ajuda, apoiar é uma forma de retribuir.\n\n" +
+      "O apoio começa em R$5 por mês, e cada nível libera um tipo de recompensa:\n\n" +
+      "- Artigo especial do mês\n- Panorama do Mês\n- Acesso antecipado a novos projetos\n\n" +
+      "[Quero apoiar](https://apoia.se/diaria)\n",
+  );
+  writeFileSync(
+    join(dir, "clarice-divulgacao.md"),
+    "<!--\nnome: Clarice\ncategoria: Divulgação\n-->\n\n" +
+      "**Escreva melhor em português com a Clarice\n\n" +
+      "A única IA criada por brasileiros para brasileiros.\n\n" +
+      "Leitores desta newsletter têm 25% de desconto no plano mensal por 3 meses ou 50% de desconto no plano anual, acumulando até 67% de desconto.\n\n" +
+      "→ [Acesse e use os cupons NEWS25 ou NEWS50](https://clarice.ai/precos-planos?via=diaria)**\n",
+  );
+  writeFileSync(
+    join(dir, "encerramento-social-apoio.md"),
+    "<!--\nnome: PARA ENCERRAR\ncategoria: Para Encerrar\n-->\n\n" +
+      "{{OPENING}}Apoie a curadoria contribuindo a partir de R$5/mês em [apoia.se/diaria](https://apoia.se/diaria) para ganhar recompensas como **artigo especial do mês**, **sorteios** e **acesso antecipado a novos projetos**.\n\n" +
+      "Nesta edição da **diar.ia.br**, usei ferramentas de IA pra pesquisa, imagem e revisão de texto.\n",
+  );
+  writeFileSync(
+    join(arquivoDir, "recomendacao-leitura.md"),
+    "<!--\nnome: Recomendação: livro fixture\n-->\n\n" +
+      "**Recomendação de leitura**\n\n" +
+      "[**Um Livro Ficcional**](https://example.com/livro), de Um Autor.\n\n" +
+      "Um comentário pessoal e curto sobre a leitura.\n",
+  );
+  writeFileSync(
+    join(arquivoDir, "alexa-plus-divulgacao.md"),
+    "Equipe sua casa com a Alexa+\n\n" +
+      "Comprar um aparelho compatível é o jeito mais barato de ter a experiência completa.\n\n" +
+      "[Conhecer a Alexa+ e ver as ofertas](https://link.amazon/exemplo)\n",
+  );
+}
 
 describe("renderSection (#1463)", () => {
   it("retorna vazio quando não há items", () => {
@@ -172,6 +244,7 @@ describe("stitchNewsletter (#1463)", () => {
         d3Path: join(internalDir, "02-d3-draft.md"),
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
       });
       // Ordem canonical (#2546, VÍDEO/RADAR trocados em #3100, VÍDEO subiu pra
       // antes de LANÇAMENTOS em #3820): coverage > D1 > D2 > D3 >
@@ -224,6 +297,7 @@ describe("stitchNewsletter (#1463)", () => {
         d3Path: join(internalDir, "02-d3-draft.md"),
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
       });
       // Bug #1752: a seção sumia. Agora renderiza + item presente.
       assert.match(result, /USE MELHOR/, "seção USE MELHOR deve aparecer");
@@ -260,6 +334,7 @@ describe("stitchNewsletter (#1463)", () => {
         d3Path: join(internalDir, "02-d3-draft.md"),
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
       });
       // A seção NÃO some com tutoriais 100% EN (era o #1851).
       assert.match(result, /🛠️ USE MELHOR/, "USE MELHOR não pode sumir com EN");
@@ -295,6 +370,7 @@ describe("stitchNewsletter (#1463)", () => {
         d3Path: join(internalDir, "02-d3-draft.md"),
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
       });
       // #1569: PESQUISA agora vai em RADAR (sem seção PESQUISAS dedicada).
       assert.doesNotMatch(result, /LANÇAMENTOS|LANÇAMENTO/);
@@ -339,6 +415,7 @@ Foto descrição.
         d3Path: join(internalDir, "02-d3-draft.md"),
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
       });
       // Frontmatter NÃO deve aparecer no output
       assert.doesNotMatch(result, /eia_answer:/);
@@ -371,6 +448,7 @@ Foto descrição.
         d3Path: join(internalDir, "02-d3-draft.md"),
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
       });
       assert.match(result, /Foto descrição customizada/);
       assert.match(result, /Gabarito.*B é a IA/);
@@ -395,6 +473,7 @@ Foto descrição.
         d3Path: join(internalDir, "02-d3-draft.md"),
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
       });
       assert.match(result, /É IA\? ainda processando/);
     } finally {
@@ -420,6 +499,7 @@ Foto descrição.
             d3Path: join(internalDir, "02-d3-draft.md"),
             approvedCappedPath: join(internalDir, "01-approved-capped.json"),
             editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
           }),
         /input ausente/,
       );
@@ -449,6 +529,7 @@ Foto descrição.
             d3Path: join(internalDir, "02-d3-draft.md"),
             approvedCappedPath: join(internalDir, "01-approved-capped.json"),
             editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
           }),
         /02-d3-draft\.md vazio/,
         "D3 vazio (esperado) deve lançar erro explícito",
@@ -478,6 +559,7 @@ Foto descrição.
         d3Path: null, // 2-destaque: no D3 expected
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
       });
       assert.ok(result.length > 0, "resultado não vazio");
       assert.match(result, /D1/);
@@ -507,6 +589,7 @@ Foto descrição.
             d3Path: join(internalDir, "02-d3-draft.md"),
             approvedCappedPath: join(internalDir, "01-approved-capped.json"),
             editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
           }),
         /02-d1-draft\.md vazio/,
         "D1 vazio deve lançar erro explícito",
@@ -534,6 +617,7 @@ Foto descrição.
             d3Path: join(internalDir, "02-d3-draft.md"),
             approvedCappedPath: join(internalDir, "01-approved-capped.json"),
             editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
           }),
         /02-d2-draft\.md vazio/,
         "D2 vazio deve lançar erro explícito",
@@ -560,6 +644,7 @@ Foto descrição.
             d3Path: join(internalDir, "02-d3-draft.md"),
             approvedCappedPath: join(internalDir, "01-approved-capped.json"),
             editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
           }),
         /01-approved-capped\.json/,
         "erro deve mencionar approved-capped.json, não D3",
@@ -585,6 +670,7 @@ Foto descrição.
             d3Path: join(internalDir, "02-d3-draft.md"),
             approvedCappedPath: join(internalDir, "01-approved-capped.json"),
             editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
           }),
         (e: Error) => {
           assert.ok(!/02-d3-draft\.md/.test(e.message), `D3 não deve ser citado; foi: ${e.message}`);
@@ -612,6 +698,7 @@ Foto descrição.
             d3Path: join(internalDir, "02-d3-draft.md"),
             approvedCappedPath: join(internalDir, "01-approved-capped.json"),
             editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
           }),
         /01-approved-capped\.json.*corrompido|corrompido.*01-approved-capped\.json/i,
         "erro deve mencionar capped JSON corrompido",
@@ -637,6 +724,7 @@ Foto descrição.
         d3Path: join(internalDir, "02-d3-draft.md"),
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
       });
       assert.match(result, /\{placeholder, script render-erro-intencional/);
       assert.match(result, /SORTEIO/);
@@ -679,6 +767,7 @@ describe("#3100 — VÍDEO antes de RADAR (ordem canônica permanente, gate 2607
         d3Path: join(internalDir, "02-d3-draft.md"),
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
       });
       const videoPos = result.indexOf("📺 VÍDEO");
       const radarPos = result.indexOf("📡 RADAR");
@@ -706,6 +795,7 @@ describe("#3100 — VÍDEO antes de RADAR (ordem canônica permanente, gate 2607
         d3Path: join(internalDir, "02-d3-draft.md"),
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
       });
       assert.match(result, /📡 RADAR/);
       assert.doesNotMatch(result, /📺 VÍDEO/);
@@ -730,6 +820,7 @@ describe("#3100 — VÍDEO antes de RADAR (ordem canônica permanente, gate 2607
         d3Path: join(internalDir, "02-d3-draft.md"),
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
       });
       assert.match(result, /📺 VÍDEO/);
       assert.doesNotMatch(result, /📡 RADAR/);
@@ -767,6 +858,7 @@ describe("#3820 — VÍDEOS antes de LANÇAMENTOS (ordem canônica permanente, d
         d3Path: join(internalDir, "02-d3-draft.md"),
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
+        sponsor: false, // #5227 — evita ler boxes_divulgacao real (teste não é sobre boxes)
       });
       const videoPos = result.indexOf("📺 VÍDEO");
       const lancPos = result.indexOf("🚀 LANÇAMENTO");
@@ -791,69 +883,125 @@ describe("#3820 — VÍDEOS antes de LANÇAMENTOS (ordem canônica permanente, d
 // "não passa pelo bold-wrap").
 const NO_BOLD_WRAP_MARKER = /sem\s+bold-wrap|não\s+passa\s+pel[oa]\s+bold-wrap/i;
 
-describe("snippets dos slots vigentes — guardas de forma (rotação editorial 260727)", () => {
-  const ROOT_DIR = join(import.meta.dirname ?? new URL(".", import.meta.url).pathname, "..");
-  const cfg = JSON.parse(readFileSync(join(ROOT_DIR, "platform.config.json"), "utf8")) as {
-    boxes_divulgacao?: Record<string, string | null>;
-  };
-  const slots = Object.entries(cfg.boxes_divulgacao ?? {}).filter(([, f]) => Boolean(f)) as [string, string][];
-  const bodyOf = (file: string) =>
-    readFileSync(join(ROOT_DIR, "context", "snippets", file), "utf8").replace(/<!--[\s\S]*?-->/g, "").trim();
-  const rawOf = (file: string) => readFileSync(join(ROOT_DIR, "context", "snippets", file), "utf8");
+// #5227: este describe LIA `platform.config.json` + `context/snippets/{file}`
+// REAIS — funcionava em CI porque `context/snippets/` era git-tracked (o
+// conteúdo real do repo estava sempre presente em qualquer clone). Migrado o
+// conteúdo pra `data/snippets/` (gitignored, junction OneDrive), essa
+// premissa quebrou: um clone fresco de CI, ou um worktree isolado, não tem
+// `data/` nenhum — o guard original (que a issue #4111 motivou: um snippet
+// RASCUNHO promovido a slot de produção) não pode mais auditar o conteúdo
+// REAL configurado HOJE dentro de CI. Esse é um custo aceito explicitamente
+// pelo editor na decisão de migração (#5227): a auditoria de conteúdo real
+// vira responsabilidade só de sessão LOCAL (onde `data/` existe de verdade),
+// não mais um guard de CI.
+//
+// O que ESTE describe passa a garantir em CI — via fixture sintética, mesma
+// disciplina do #4993 abaixo — é que o MECANISMO de cada checagem (placeholder
+// não substituído, marcador RASCUNHO, kicker em negrito) continua funcionando:
+// aplicado a um snippet BEM-FORMADO (não acusa nada) e a um snippet
+// deliberadamente COM o problema (acusa corretamente). Isso é estritamente
+// MAIS forte que o teste original, que nunca provou que os checks pegavam um
+// caso ruim de verdade — só que o conteúdo vigente (o que fosse) passava.
+function extractPlaceholder(body: string): string[] | null {
+  return body.match(/\{[^}\n]{1,40}\}/g);
+}
 
-  it("os slots configurados apontam pra snippets que existem", () => {
-    assert.ok(slots.length > 0, "platform.config.json deveria ter ao menos 1 slot configurado");
-    for (const [slot, file] of slots) {
-      assert.doesNotThrow(() => bodyOf(file), `${slot} → context/snippets/${file} não existe`);
-    }
+describe("guardas de forma de snippet de slot — mecanismo (#5227, fixture sintética, sucede o guard de CI sobre conteúdo real removido na migração)", () => {
+  const GOOD_BODY = "**Recomendação de leitura**\n\n[**Um Livro**](https://example.com/livro), de Um Autor.\n\nComentário curto.";
+  const GOOD_RAW = `<!--\nnome: Recomendação\n-->\n\n${GOOD_BODY}\n`;
+
+  it("snippet bem-formado: sem placeholder não substituído", () => {
+    assert.equal(extractPlaceholder(GOOD_BODY), null);
+  });
+  it("snippet com placeholder esquecido ({mês} e afins) é detectado — caso real: 'Artigo Especial de {mês}' na rotação de 260727", () => {
+    const bad = "**Artigo Especial de {mês}**\n\nTexto do artigo.";
+    const found = extractPlaceholder(bad);
+    assert.ok(found && found.includes("{mês}"), `esperava achar {mês}, achou: ${found}`);
   });
 
-  it("nenhum snippet de slot carrega placeholder não substituído ({mês} e afins)", () => {
-    // Nada no pipeline substitui `{...}` nesses snippets — um placeholder
-    // esquecido aqui é publicado literal pro leitor. Foi o que quase aconteceu
-    // com "Artigo Especial de {mês}" na rotação de 260727.
-    for (const [slot, file] of slots) {
-      const body = bodyOf(file);
-      const found = body.match(/\{[^}\n]{1,40}\}/g);
-      assert.equal(
-        found,
-        null,
-        `${slot} (${file}) tem placeholder não substituído: ${found?.join(", ")} — ou resolva no texto, ou implemente a substituição`,
+  it("snippet bem-formado: sem marcador RASCUNHO", () => {
+    assert.doesNotMatch(GOOD_RAW, /RASCUNHO/);
+  });
+  it("snippet marcado RASCUNHO no header é detectado — caso real (PR #4111): historia-ia-para-quem-tem-pressa-clarice.md quase virou slot1 ainda RASCUNHO", () => {
+    const bad = "<!--\nRASCUNHO — ainda não revisado pelo editor.\n-->\n\n**Título**\n\nTexto sem sinopse.";
+    assert.match(bad, /RASCUNHO/);
+  });
+
+  it("snippet bem-formado: kicker de abertura em negrito (decisão 260717, bold-wrap sem detecção por emoji)", () => {
+    const firstLine = GOOD_BODY.split("\n")[0].trim();
+    assert.match(firstLine, /^\*\*/);
+  });
+  it("snippet SEM negrito na 1ª linha é detectado (título indistinguível do corpo no e-mail)", () => {
+    const bad = "Título sem negrito por engano\n\nCorpo.";
+    const firstLine = bad.split("\n")[0].trim();
+    assert.doesNotMatch(firstLine, /^\*\*/);
+  });
+  it("EXCETO snippet cujo header declara multi-parágrafo/sem bold-wrap por design (#4993, apoio-divulgacao.md e família patronos-*) — não exige negrito", () => {
+    const noBoldWrapRaw =
+      "<!--\nSem `**...**` embrulhando o BLOCO INTEIRO. Multi-parágrafo, não passa pelo bold-wrap de bloco só-texto.\n-->\n\nApoie a diar.ia.br\n\nCorpo sem bold.";
+    assert.match(noBoldWrapRaw, NO_BOLD_WRAP_MARKER, "marker deveria casar — mesmo header real de apoio-divulgacao.md");
+    // Mesma lógica de produção: quando o marker casa, a checagem de negrito é pulada.
+  });
+
+  it("aplicado à fixture congelada deste arquivo (SNIPPETS_FIXTURE_ROOT/livros-divulgacao.md): passa nas 3 checagens", () => {
+    const raw = readFileSync(join(SNIPPETS_FIXTURE_ROOT, "data", "snippets", "livros-divulgacao.md"), "utf8");
+    const body = raw.replace(/<!--[\s\S]*?-->/g, "").trim();
+    assert.equal(extractPlaceholder(body), null);
+    assert.doesNotMatch(raw, /RASCUNHO/);
+    assert.match(body.split("\n")[0].trim(), /^\*\*/);
+  });
+  it("aplicado à fixture congelada deste arquivo (SNIPPETS_FIXTURE_ROOT/apoio-divulgacao.md): passa, e é a exceção NO_BOLD_WRAP_MARKER (sem exigir **)", () => {
+    const raw = readFileSync(join(SNIPPETS_FIXTURE_ROOT, "data", "snippets", "apoio-divulgacao.md"), "utf8");
+    const body = raw.replace(/<!--[\s\S]*?-->/g, "").trim();
+    assert.equal(extractPlaceholder(body), null);
+    assert.doesNotMatch(raw, /RASCUNHO/);
+    assert.match(raw, NO_BOLD_WRAP_MARKER);
+  });
+});
+
+describe("loadDivulgacaoSnippet — erro duro vs. fail-soft (#5227)", () => {
+  // #5227: antes da migração pra data/snippets/, "slot configurado aponta
+  // pra arquivo ausente" era pego em CI por um teste que lia context/snippets/
+  // real (removido acima, virou fixture sintética). Sem essa rede de CI, o
+  // runtime precisou assumir o papel — este é o teste de regressão direto do
+  // NOVO comportamento (loadDivulgacaoSnippet lança), não só uma consequência
+  // observada indiretamente via stitchNewsletter().
+  it("file null/undefined (slot NÃO configurado) -> null, graceful, nunca lança", () => {
+    assert.equal(loadDivulgacaoSnippet(null), null);
+    assert.equal(loadDivulgacaoSnippet(undefined), null);
+  });
+
+  it("file truthy mas o arquivo NÃO existe no rootDir dado -> LANÇA com mensagem acionável", () => {
+    const emptyRoot = mkdtempSync(join(tmpdir(), "stitch-loaddiv-missing-"));
+    try {
+      assert.throws(
+        () => loadDivulgacaoSnippet("nao-existe-de-verdade.md", emptyRoot),
+        /slot configurado aponta para "data\/snippets\/nao-existe-de-verdade\.md", mas o arquivo não existe/,
       );
+    } finally {
+      rmSync(emptyRoot, { recursive: true, force: true });
     }
   });
 
-  it("nenhum slot vigente aponta pra snippet marcado RASCUNHO", () => {
-    // O code-review da PR #4111 pegou `historia-ia-para-quem-tem-pressa-clarice.md`
-    // virando slot1 default AINDA marcado "RASCUNHO — ainda não revisado pelo
-    // editor": texto gerado sem sinopse sairia entre D1 e D2 pro leitor. O
-    // marcador mora no comentário de header (por isso lemos o arquivo cru, não
-    // o corpo). Há snippets RASCUNHO dormentes no repo — a guarda é só contra
-    // promover um deles a slot de produção sem revisão.
-    for (const [slot, file] of slots) {
-      const raw = readFileSync(join(ROOT_DIR, "context", "snippets", file), "utf8");
-      assert.doesNotMatch(
-        raw,
-        /RASCUNHO/,
-        `${slot} (${file}) está marcado RASCUNHO — revise o texto e troque o marcador por uma nota de aprovação antes de configurá-lo como slot`,
-      );
+  it("file truthy E o arquivo EXISTE no rootDir dado -> carrega normalmente, sem lançar", () => {
+    const root = mkdtempSync(join(tmpdir(), "stitch-loaddiv-present-"));
+    try {
+      mkdirSync(join(root, "data", "snippets"), { recursive: true });
+      writeFileSync(join(root, "data", "snippets", "existe.md"), "**Bloco de teste**\n\ncorpo");
+      const result = loadDivulgacaoSnippet("existe.md", root);
+      assert.match(result ?? "", /Bloco de teste/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it("o kicker de abertura sai em negrito (decisão 260717, bold-wrap sem detecção por emoji)", () => {
-    // O #3475 tirou os marcadores emoji; o negrito do título virou o único
-    // sinal visual de kicker. Um snippet novo que esqueça o `**` sai com o
-    // título indistinguível do corpo no e-mail.
-    //
-    // #4993: exceto pros snippets que o próprio header declara multi-parágrafo
-    // sem bold-wrap por design (`apoio-divulgacao.md` e a família `patronos-*`,
-    // ver NO_BOLD_WRAP_MARKER acima) — esses nunca tiveram `**` na 1ª linha e
-    // não deveriam ter; a asserção de negrito só faz sentido pro formato
-    // bold-line/callout.
-    for (const [slot, file] of slots) {
-      if (NO_BOLD_WRAP_MARKER.test(rawOf(file))) continue;
-      const firstLine = bodyOf(file).split("\n")[0].trim();
-      assert.match(firstLine, /^\*\*/, `${slot} (${file}) deveria abrir com kicker em negrito; achou: ${firstLine.slice(0, 60)}`);
+  it("loadAgradecimentoSnippet CONTINUA fail-soft (não é um 'slot' — arquivo fixo, sempre tentado) — ausente -> null, nunca lança", () => {
+    const emptyRoot = mkdtempSync(join(tmpdir(), "stitch-agradecimento-missing-"));
+    try {
+      assert.doesNotThrow(() => loadAgradecimentoSnippet(undefined, emptyRoot));
+      assert.equal(loadAgradecimentoSnippet(undefined, emptyRoot), null);
+    } finally {
+      rmSync(emptyRoot, { recursive: true, force: true });
     }
   });
 });
@@ -962,6 +1110,7 @@ describe("#2978 — boxes_divulgacao config-driven (slot1/slot2)", () => {
     d3Path: join(internalDir, "02-d3-draft.md"),
     approvedCappedPath: join(internalDir, "01-approved-capped.json"),
     editionDir: dir,
+    snippetsRootDir: SNIPPETS_FIXTURE_ROOT, // #5227
     ...extra,
   });
 
@@ -1083,6 +1232,7 @@ describe("#2978 — boxes_divulgacao config-driven (slot1/slot2)", () => {
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
         boxesDivulgacao: { slot1: "_arquivo/alexa-plus-divulgacao.md", slot2: "livros-divulgacao.md" },
+        snippetsRootDir: SNIPPETS_FIXTURE_ROOT, // #5227
       });
       assert.ok(extractBoxDivulgacao1(out), "slot1 (D1/D2) ainda existe em edição de 2 destaques");
       assert.equal(extractBoxDivulgacao2(out), null, "slot2 nunca injeta sem gap D2/D3");
@@ -1112,6 +1262,7 @@ describe("#4274 — boxes_divulgacao config-driven (slot0, introdução)", () =>
     d3Path: join(internalDir, "02-d3-draft.md"),
     approvedCappedPath: join(internalDir, "01-approved-capped.json"),
     editionDir: dir,
+    snippetsRootDir: SNIPPETS_FIXTURE_ROOT, // #5227
     ...extra,
   });
 
@@ -1175,6 +1326,7 @@ describe("#4274 — boxes_divulgacao config-driven (slot0, introdução)", () =>
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
         boxesDivulgacao: { slot1: null, slot2: null, slot3: null, slot0: STABLE_SLOT1_FILE },
+        snippetsRootDir: SNIPPETS_FIXTURE_ROOT, // #5227
       });
       assert.ok(extractBoxDivulgacao0(out), "slot0 (intro) existe em edição de 2 destaques");
     } finally {
@@ -1234,6 +1386,7 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
     d3Path: join(internalDir, "02-d3-draft.md"),
     approvedCappedPath: join(internalDir, "01-approved-capped.json"),
     editionDir: dir,
+    snippetsRootDir: SNIPPETS_FIXTURE_ROOT, // #5227
     ...extra,
   });
 
@@ -1338,6 +1491,7 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
         boxesDivulgacao: { slot1: null, slot2: null, slot3: STABLE_SLOT3_FILE },
+        snippetsRootDir: SNIPPETS_FIXTURE_ROOT, // #5227
       });
       const slot3 = extractBoxDivulgacao3(out);
       assert.ok(slot3, "slot3 deve injetar mesmo sem D3 (é pós-último-destaque, não uma lacuna D2/D3)");
@@ -1406,11 +1560,12 @@ describe("#1938 — boxDivulgacao1 CLARICE auto-injetado entre D1 e D2", () => {
     approvedCappedPath: join(internalDir, "01-approved-capped.json"),
     editionDir: dir,
     sponsor,
+    snippetsRootDir: SNIPPETS_FIXTURE_ROOT, // #5227
     ...extra,
   });
 
   it("loadClariceCallout retorna o bloco **… ** com cupons + link (#3475: sem marcador emoji)", () => {
-    const block = loadClariceCallout();
+    const block = loadClariceCallout(SNIPPETS_FIXTURE_ROOT); // #5227
     assert.ok(block, "snippet existe");
     assert.match(block!, /^\*\*\s*Escreva melhor/);
     assert.match(block!, /\*\*$/);
@@ -1419,7 +1574,7 @@ describe("#1938 — boxDivulgacao1 CLARICE auto-injetado entre D1 e D2", () => {
   });
 
   it("loadDailyCallout (#2527): retorna o bloco **… ** de curadoria de livros (#3475: sem marcador emoji)", () => {
-    const block = loadDailyCallout();
+    const block = loadDailyCallout(SNIPPETS_FIXTURE_ROOT); // #5227
     assert.ok(block, "snippet de livros existe");
     assert.match(block!, /^\*\*\s*A diar\.ia\.br mantém/);
     assert.match(block!, /\*\*$/);
@@ -1537,6 +1692,7 @@ describe("#3232 — idempotência de boxes_divulgacao marcador-agnóstica (subst
     d3Path: join(internalDir, "02-d3-draft.md"),
     approvedCappedPath: join(internalDir, "01-approved-capped.json"),
     editionDir: dir,
+    snippetsRootDir: SNIPPETS_FIXTURE_ROOT, // #5227
     ...extra,
   });
 
@@ -1992,7 +2148,7 @@ describe("renderUseMelhorSection (#2447/#2450)", () => {
 
 describe("#4274/#4413 — buildParaEncerrar: slot A editável via platform.config.json, convite social é bloco fixo", () => {
   it("sem override (compat — edição/config antigo sem a chave para_encerrar): cai no texto padrão do snippet, header > apoio+ferramentas > pills > convite social fixo, nessa ordem", () => {
-    const out = buildParaEncerrar({ slotA: null });
+    const out = buildParaEncerrar({ slotA: null }, undefined, SNIPPETS_FIXTURE_ROOT); // #5227
     assert.match(out, /^\*\*🙋🏼‍♀️ PARA ENCERRAR\*\*/, "cabeçalho continua fixo, sempre primeiro");
     const headerPos = out.indexOf("PARA ENCERRAR");
     const apoioPos = out.indexOf("Apoie a curadoria");
@@ -2022,7 +2178,7 @@ describe("#4274/#4413 — buildParaEncerrar: slot A editável via platform.confi
 
   it("override AUSENTE (slotA null): slotA cai no default do snippet, convite social fixo presente", () => {
     const override = { slotA: null };
-    const out = buildParaEncerrar(override);
+    const out = buildParaEncerrar(override, undefined, SNIPPETS_FIXTURE_ROOT); // #5227
     const apoioPos = out.indexOf("Apoie a curadoria");
     const socialPos = out.indexOf(SOCIAL_INVITE);
     assert.ok(apoioPos > 0, "slotA usa o default (apoio) quando ausente");
@@ -2030,7 +2186,7 @@ describe("#4274/#4413 — buildParaEncerrar: slot A editável via platform.confi
   });
 
   it("#4413: um eventual slot_b (config legado/Studio, campo que a UI ainda pode escrever) é IGNORADO — convite social nunca varia", () => {
-    const out = buildParaEncerrar({ slotA: null, slotB: "Um convite social qualquer, sem nenhuma lista." } as ParaEncerrarConfig);
+    const out = buildParaEncerrar({ slotA: null, slotB: "Um convite social qualquer, sem nenhuma lista." } as ParaEncerrarConfig, undefined, SNIPPETS_FIXTURE_ROOT); // #5227
     assert.ok(out.includes(SOCIAL_INVITE), "convite social deve ser sempre o texto fixo, ignorando qualquer slotB");
     assert.ok(!out.includes("Um convite social qualquer"), "slotB nunca deveria aparecer no output — bloco fixo (#4413)");
   });
@@ -2071,6 +2227,7 @@ describe("#4274 — stitchNewsletter() end-to-end: override paraEncerrar via Sti
         d3Path: join(internalDir, "02-d3-draft.md"),
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
+        sponsor: false, // #5227 — teste é sobre PARA ENCERRAR, não boxes_divulgacao
       });
       assert.match(out, /PARA ENCERRAR/);
       assert.ok(out.includes(SOCIAL_INVITE), "convite social fixo (#4413) presente");
@@ -2088,6 +2245,7 @@ describe("#4274 — stitchNewsletter() end-to-end: override paraEncerrar via Sti
         d3Path: join(internalDir, "02-d3-draft.md"),
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
+        sponsor: false, // #5227 — teste é sobre PARA ENCERRAR, não boxes_divulgacao
         paraEncerrar: {
           slotA: "SlotA fixado via override de teste (#4274).",
         },
@@ -2215,6 +2373,7 @@ describe("stitchNewsletter — #4907 link contextual de hub temático", () => {
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
         boxesDivulgacao: { slot1: STABLE_SLOT1_FILE, slot2: null, slot3: null },
+        snippetsRootDir: SNIPPETS_FIXTURE_ROOT, // #5227
       });
 
       // O link de hub sobrevive DENTRO do bloco de D1 (ele mesmo, não confundido

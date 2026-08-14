@@ -28,7 +28,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
 - `context/templates/newsletter-monthly.md` — formato exato.
 - `context/audience-profile.md` — perfil de tom e CTR por tema.
 - `data/past-editions.md` — voz e linguagem recorrentes (pra manter consistência).
-- `context/snippets/encerramento-social-apoio.md` — texto fixo (parágrafo de apoio Apoia.se + convite social) da seção `PARA ENCERRAR` (passo 8, #3219). Fonte única compartilhada com o diário — ler antes de escrever essa seção, nunca reescrever de memória.
+- `data/snippets/encerramento-social-apoio.md` — texto fixo (parágrafo de apoio Apoia.se + convite social) da seção `PARA ENCERRAR` (passo 8, #3219). Fonte única compartilhada com o diário — ler antes de escrever essa seção, nunca reescrever de memória.
 
 ## Processo
 
@@ -97,7 +97,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
 
    **Apoio + ferramentas + curadorias + convite social (#3219/#4413/#4411/#4968, sempre presentes, nunca parafrasear).** Logo após o parágrafo do encerramento padrão acima, na MESMA seção `PARA ENCERRAR`, emitir NESTA ORDEM:
 
-   1. Ler `context/snippets/encerramento-social-apoio.md` e emitir o corpo do arquivo (sem o comentário HTML de header) literalmente, substituindo o marcador `{{OPENING}}` pela variante MENSAL documentada no header do próprio arquivo — `"Essa edição mensal nasce da **diar.ia.br**, newsletter diária gratuita sobre IA. "` (com o espaço final antes de "Apoie"). Resultado esperado: 2 parágrafos — apoio à curadoria via Apoia.se (recompensas em negrito) e créditos das ferramentas de produção.
+   1. Ler `data/snippets/encerramento-social-apoio.md` e emitir o corpo do arquivo (sem o comentário HTML de header) literalmente, substituindo o marcador `{{OPENING}}` pela variante MENSAL documentada no header do próprio arquivo — `"Essa edição mensal nasce da **diar.ia.br**, newsletter diária gratuita sobre IA. "` (com o espaço final antes de "Apoie"). Resultado esperado: 2 parágrafos — apoio à curadoria via Apoia.se (recompensas em negrito) e créditos das ferramentas de produção.
    2. A lista de pílulas de curadoria, EM DOIS GRUPOS ROTULADOS (#4968) — cada rótulo (`Curadorias:`/`Da diar.ia.br:`) já vem EMBUTIDO no bloco abaixo, na linha imediatamente anterior à sua lista; nunca reescrever ou omitir esses rótulos, e nunca inserir um label diferente ("Acesse nossas curadorias:" não existe mais neste bloco — o render só cai nele como fallback quando NÃO há rótulo embutido, o que não é o caso aqui). Literal e verbatim (EXATAMENTE como abaixo, sem indentação), sempre nesta ordem e com estes labels exatos (#4411/#4536/#4553/#4968, constante `CURADORIA_PILLS` em `scripts/lib/shared/encerramento-snippet.ts`; o UTM embutido nas URLs de Cursos/Livros/Equipamentos/Edições anteriores é sobrescrito pelo próprio render mensal — `normalizeKnownUrl`/`withClariceUtm` — pelo padrão `clarice-{ciclo}-pill-{label}`, então não reescreva os parâmetros à mão):
 
 ```
@@ -124,7 +124,7 @@ Da diar.ia.br:
    - D1 ≤ 1.500 chars (prosa + fio); D2/D3 ≤ 1.200 chars cada
    - Use Melhor (até 3) + Radar (até 7), formato `título URL\ndescrição 1-2 frases` (warning se menos; Use Melhor pode estar vazio)
    - É IA? presente — texto resolvido (se `eia_selection_path` deu `edition`) ou placeholder (#2904) — e encerramento presentes
-   - `PARA ENCERRAR` inclui, ao final, nesta ordem: os 2 parágrafos literais de `context/snippets/encerramento-social-apoio.md` (apoio Apoia.se + ferramentas) com a abertura mensal substituída (#3219), a lista `CURADORIA_PILLS` (2 grupos rotulados, 5 pills — Curadorias: Cursos/Livros/Equipamentos; Da diar.ia.br: Edições anteriores/Jogar É IA?, #4411/#4536/#4550/#4968) e o convite social fixo `SOCIAL_INVITE` (#4413)
+   - `PARA ENCERRAR` inclui, ao final, nesta ordem: os 2 parágrafos literais de `data/snippets/encerramento-social-apoio.md` (apoio Apoia.se + ferramentas) com a abertura mensal substituída (#3219), a lista `CURADORIA_PILLS` (2 grupos rotulados, 5 pills — Curadorias: Cursos/Livros/Equipamentos; Da diar.ia.br: Edições anteriores/Jogar É IA?, #4411/#4536/#4550/#4968) e o convite social fixo `SOCIAL_INVITE` (#4413)
    - Sem markdown excêntrico no corpo — MAS todo label de seção em negrito `**...**` (#2794); sem links de paywall/agregador
    - `_internal/02-d1-prompt.md`, `02-d2-prompt.md`, `02-d3-prompt.md` gravados (#1916)
 

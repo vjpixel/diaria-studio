@@ -195,7 +195,7 @@
  *     completo percorre N edições × M meses de leaderboard, historicamente >25s).
  *   - `GET /caixas` — seção "Caixas" (#3924): mesma estratégia de rewrite de
  *     `/apoios`/`/relatorios`, servindo `public/caixas.html`. Consome
- *     `GET /api/boxes` (lista dinâmica de `context/snippets/*.md`, exceto
+ *     `GET /api/boxes` (lista dinâmica de `data/snippets/*.md`, exceto
  *     `README.md`, com badge de slot cruzado de `platform.config.json` →
  *     `boxes_divulgacao`) + `GET/PUT /api/boxes/:slug` (conteúdo + save com o
  *     MESMO guard de mtime de `#3729`, ver `studio-boxes.ts`) +
@@ -267,8 +267,9 @@
  * estreito, 1 arquivo local, fail-soft total.
  *
  * **Exceção controlada (#3924 — seção "Caixas"):** `PUT /api/boxes/:slug`
- * escreve SÓ o conteúdo de um snippet já existente em `context/snippets/`
- * (repo git, não `data/` — snippets de caixa são versionados). Mesma classe
+ * escreve SÓ o conteúdo de um snippet já existente em `data/snippets/`
+ * (junction OneDrive, gitignored — snippets de caixa migraram do repo git
+ * pra lá em #5227, não são mais versionados). Mesma classe
  * de exceção que #3559/#3602: escopo estreito (1 arquivo por vez, slug
  * validado contra traversal/`README.md`), guard de mtime idêntico ao #3729.
  * Toda a lógica mora em `studio-boxes.ts`.
@@ -386,7 +387,7 @@ import {
 } from "./studio-apoios.ts";
 import type { DrainApoiaSeResult } from "../lib/apoia-se-gmail-drain.ts";
 // #3924: seção "Caixas" — listar e editar os snippets de caixa de
-// divulgação (`context/snippets/*.md`) — arquivo próprio desta fatia, import
+// divulgação (`data/snippets/*.md`) — arquivo próprio desta fatia, import
 // isolado (nenhuma outra rota depende dele). Ver studio-boxes.ts.
 import {
   listBoxes,
@@ -1343,7 +1344,7 @@ async function handleApiApoiosUpdate(
 // grande sobre o que um snippet de verdade pesa, protege contra corpo absurdo.
 const BOXES_MAX_BODY_BYTES = 500_000;
 
-/** `GET /api/boxes` — lista dinâmica de `context/snippets/*.md` (#3924).
+/** `GET /api/boxes` — lista dinâmica de `data/snippets/*.md` (#3924).
  * Sempre 200: `listBoxes` é fail-soft (diretório ausente -> `[]`, nunca
  * lança). */
 function handleApiBoxesList(rootDir: string, res: ServerResponse): void {

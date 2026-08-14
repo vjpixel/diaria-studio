@@ -62,7 +62,7 @@
  *
  * `--i-reviewed-the-copy`: obrigatória pra qualquer ação fora de `--dry-run`
  * — confirmação explícita de que o editor revisou a cópia RASCUNHO do bloco
- * de intro (`context/snippets/brevo-diaria-pending-intro.md`, ver disclaimer
+ * de intro (`data/snippets/brevo-diaria-pending-intro.md`, ver disclaimer
  * no próprio arquivo). Sem ela, o script recusa criar a campanha (mesmo em
  * modo "só draft") — a issue #4266 tratou esse bloco como decisão de
  * compliance, não um detalhe de copy qualquer.
@@ -444,7 +444,7 @@ export function buildDailyBrevoHtml(
 ): { html: string; unresolvedImages: string[]; renderWarnings: RenderWarningEvent[] } {
   if (!introHtml) {
     throw new Error(
-      "bloco de intro do segmento Pending ausente/vazio (context/snippets/brevo-diaria-pending-intro.md) — " +
+      "bloco de intro do segmento Pending ausente/vazio (data/snippets/brevo-diaria-pending-intro.md) — " +
         "publish-daily-brevo.ts recusa montar o HTML sem ele (decisão de compliance, #4266 item 5).",
     );
   }
@@ -497,7 +497,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
   if (!dryRun && !reviewedCopy) {
     log(
       "ERRO: fora de --dry-run, é obrigatório passar --i-reviewed-the-copy — confirmação explícita de " +
-        "que o editor revisou context/snippets/brevo-diaria-pending-intro.md (ainda RASCUNHO). " +
+        "que o editor revisou data/snippets/brevo-diaria-pending-intro.md (ainda RASCUNHO). " +
         "Ver disclaimer no próprio arquivo.",
     );
     process.exit(2);
@@ -529,7 +529,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
     ? (JSON.parse(readFileSync(imagesPath, "utf8")) as PublicImagesFile)
     : {};
 
-  const introHtml = renderPendingIntroHtml();
+  const introHtml = renderPendingIntroHtml(rootDir);
   const { html, unresolvedImages, renderWarnings } = buildDailyBrevoHtml(content, publicImages, introHtml);
   if (unresolvedImages.length > 0) {
     log(`warn: ${unresolvedImages.length} placeholder(s) de imagem sem URL: ${unresolvedImages.join(", ")}`);

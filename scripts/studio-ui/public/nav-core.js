@@ -49,7 +49,7 @@ export const NAV_ITEMS = [
   { id: "home", label: "Home", href: "/", pageIds: ["index", "edicao"], group: "edicao" },
   { id: "revisao", label: "Revisão", href: null, pageIds: ["revisao"], group: "edicao" },
   // #3924: "Caixas" — listar/editar os snippets de caixa de divulgação
-  // (context/snippets/*.md).
+  // (data/snippets/*.md).
   { id: "caixas", label: "Caixas", href: "/caixas", pageIds: ["caixas"], group: "edicao" },
   // ⚙️ Operação — sessões de dev/backlog.
   { id: "rodada", label: "Rodada", href: "/rodada", pageIds: ["rodada"], group: "operacao" },

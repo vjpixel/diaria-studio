@@ -16,8 +16,8 @@
  * divergência (orchestrator concluiu incorretamente que o save falhou).
  *
  * Fixtures SEMPRE em diretório temporário (`mkdtempSync`) — nunca toca
- * `context/snippets/` nem `platform.config.json` reais (regra desta rodada
- * de overnight).
+ * `data/snippets/` (#5227, migrado de `context/snippets/`) nem
+ * `platform.config.json` reais (regra desta rodada de overnight).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -291,7 +291,7 @@ describe("evaluateSnippetStaleness (#4076) — comparação pura de mtimes", () 
 describe("runSnippetStalenessCheck (#4076) — end-to-end com fixture em diretório TEMPORÁRIO", () => {
   function setupFixture(): { root: string; editionDir: string; snippetsDir: string; configPath: string; mdPath: string } {
     const root = mkdtempSync(join(tmpdir(), "diaria-snippet-staleness-e2e-"));
-    const snippetsDir = join(root, "context", "snippets");
+    const snippetsDir = join(root, "data", "snippets");
     mkdirSync(snippetsDir, { recursive: true });
     const editionDir = join(root, "data", "editions", "990101");
     mkdirSync(editionDir, { recursive: true });
@@ -358,7 +358,7 @@ describe("runSnippetStalenessCheck (#4076) — end-to-end com fixture em diretó
     }
   });
 
-  it("snippet NÃO usado (arquivo solto em context/snippets/, não referenciado por nenhum slot) editado mais novo → NUNCA dispara aviso", () => {
+  it("snippet NÃO usado (arquivo solto em data/snippets/, não referenciado por nenhum slot) editado mais novo → NUNCA dispara aviso", () => {
     const { root, snippetsDir, mdPath } = setupFixture();
     try {
       const oldTime = new Date(Date.now() - 10 * 60_000);
@@ -467,7 +467,7 @@ describe("runSnippetStalenessCheck (#4150) — hash do corpo distingue edição 
    */
   function setupFixtureWithManifest(): { root: string; editionDir: string; snippetsDir: string; mdPath: string } {
     const root = mkdtempSync(join(tmpdir(), "diaria-snippet-staleness-hash-"));
-    const snippetsDir = join(root, "context", "snippets");
+    const snippetsDir = join(root, "data", "snippets");
     mkdirSync(snippetsDir, { recursive: true });
     const editionDir = join(root, "data", "editions", "990101");
     mkdirSync(editionDir, { recursive: true });
@@ -584,7 +584,7 @@ describe("runSnippetStalenessCheck (#4150) — hash do corpo distingue edição 
     // warning (degrada pro comportamento antigo, não silencia por engano).
     const root = mkdtempSync(join(tmpdir(), "diaria-snippet-staleness-hash-nomanifest-"));
     try {
-      const snippetsDir = join(root, "context", "snippets");
+      const snippetsDir = join(root, "data", "snippets");
       mkdirSync(snippetsDir, { recursive: true });
       const editionDir = join(root, "data", "editions", "990101");
       mkdirSync(editionDir, { recursive: true });

@@ -2,9 +2,11 @@
  * build-hub-divulgacao-box.ts (#5263)
  *
  * Gera o conteúdo do box rotativo de divulgação dos hubs temáticos e escreve
- * em `context/snippets/hub-divulgacao-rotativo.md` — mesmo padrão de asset
- * GERADO/COMMITADO já usado por `scripts/build-hub-page.ts`, aplicado a um
- * snippet em vez de uma página. Ver docstring de
+ * em `data/snippets/hub-divulgacao-rotativo.md` (#5227: migrado de
+ * `context/snippets/`, junto com o resto do pool de snippets — deixou de ser
+ * um asset COMMITADO; `scripts/build-hub-page.ts` continua com o padrão
+ * GERADO/COMMITADO original pras páginas de hub, que não migraram). Ver
+ * docstring de
  * `scripts/lib/shared/hub-divulgacao-box.ts` pro racional completo e o
  * estado do wiring (ainda NÃO ligado a `boxes_divulgacao`/`stitchNewsletter`).
  *
@@ -30,7 +32,9 @@ import { HUB_META } from "../workers/arquivo/src/hubs/meta.ts";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function outPath(): string {
-  return resolve(ROOT, "context/snippets/hub-divulgacao-rotativo.md");
+  // #5227: asset GERADO passou a viver junto do resto do pool de snippets em
+  // `data/snippets/` (gitignored, junction OneDrive) — não é mais commitado.
+  return resolve(ROOT, "data/snippets/hub-divulgacao-rotativo.md");
 }
 
 /** Resolve o `HubDivulgacaoBoxSource` do hub em rotação nesta edição — pure
@@ -59,7 +63,8 @@ GERADO, NÃO EDITAR À MÃO — fonte: scripts/lib/shared/hub-divulgacao-box.ts
 
 Conteúdo gerado pra edição ${editionDate} — 1 hub em rotação determinística
 entre os 6 de HUB_META (#5263). Formato bold-line/mid-callout, mesma família
-de clarice-divulgacao.md/livros-divulgacao.md (ver context/snippets/README.md).
+de clarice-divulgacao.md/livros-divulgacao.md (ver context/snippets/README.md,
+que continua a spec do formato mesmo com o conteúdo em data/snippets/).
 
 Estado do wiring: este arquivo AINDA NÃO está referenciado por
 boxes_divulgacao em platform.config.json — ver docstring do módulo pra mais

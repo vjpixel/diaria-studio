@@ -1759,7 +1759,7 @@ export function readBoxDivulgacaoCategoriaForSlot(
     if (!boxes || typeof boxes !== "object") return null;
     const filename = boxes[`slot${slot}`];
     if (typeof filename !== "string" || !filename) return null;
-    const snippetPath = resolve(rootDir, "context", "snippets", filename);
+    const snippetPath = resolve(rootDir, "data", "snippets", filename);
     if (!existsSync(snippetPath)) return null;
     const raw = readFileSync(snippetPath, "utf8");
     const categoria = parseBoxHeaderField(raw, "categoria");
@@ -1802,7 +1802,7 @@ export function readBoxDivulgacaoAltForSlot(
     if (!boxes || typeof boxes !== "object") return null;
     const filename = boxes[`slot${slot}`];
     if (typeof filename !== "string" || !filename) return null;
-    const snippetPath = resolve(rootDir, "context", "snippets", filename);
+    const snippetPath = resolve(rootDir, "data", "snippets", filename);
     if (!existsSync(snippetPath)) return null;
     const alt = parseBoxHeaderField(readFileSync(snippetPath, "utf8"), "alt");
     if (!alt) return null;
@@ -1853,7 +1853,7 @@ export function readBoxDivulgacaoRuntimeExcludedForSlot(
     if (!boxes || typeof boxes !== "object") return false;
     const filename = boxes[`slot${slot}`];
     if (typeof filename !== "string" || !filename) return false;
-    const snippetPath = resolve(rootDir, "context", "snippets", filename);
+    const snippetPath = resolve(rootDir, "data", "snippets", filename);
     if (!existsSync(snippetPath)) return false;
     return isRuntimeExcluded(readFileSync(snippetPath, "utf8"));
   } catch {

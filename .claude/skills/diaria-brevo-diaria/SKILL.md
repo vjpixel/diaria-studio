@@ -263,7 +263,7 @@ Mostra ao editor, a partir do stderr do script:
 - O HTML completo fica escrito em
   `<edition-dir>/_internal/newsletter-final-brevo.html` — mencione o path pro
   editor poder abrir e ler o corpo renderizado, inclusive o bloco de intro
-  obrigatório do segmento Pending (`context/snippets/brevo-diaria-pending-intro.md`
+  obrigatório do segmento Pending (`data/snippets/brevo-diaria-pending-intro.md`
   — ver disclaimer no próprio arquivo, ainda rascunho).
 
 Se o script abortar antes disso (assunto vazio, `brevo_diaria` ausente em
@@ -277,7 +277,7 @@ erro tal como impresso e pare — não tente contornar.
 - Assunto e preview text do Passo 5.
 - Qualquer warning de imagem.
 - Lembrete explícito: `--i-reviewed-the-copy` é a confirmação de que ele
-  revisou `context/snippets/brevo-diaria-pending-intro.md` (o bloco de intro
+  revisou `data/snippets/brevo-diaria-pending-intro.md` (o bloco de intro
   ainda é rascunho, por decisão registrada no próprio arquivo/#4266) — não é
   só uma flag de "prossiga", é uma checagem de compliance sobre ESTE texto
   específico.

@@ -34,7 +34,7 @@
  * Antes até da auto-confirmação, cada contato `in_brevo` tem seu estado
  * Brevo atual lido (`fetchBrevoContactState`). Se `emailBlacklisted` já é
  * `true` (a pessoa clicou no link de opt-out nativo do bloco de intro — ver
- * `context/snippets/brevo-diaria-pending-intro.md`), isso é uma 3ª saída
+ * `data/snippets/brevo-diaria-pending-intro.md`), isso é uma 3ª saída
  * TERMINAL distinta de `suppressed` (que é decisão ALGORÍTMICA por
  * engajamento baixo) — `applyNativeUnsubscribe` marca o motivo
  * separadamente (`resolution_reason: "native_unsubscribe"`) e libera o slot

@@ -3,7 +3,7 @@
  * box-click-report.ts (#4354)
  *
  * Recomendação orientada por dados de qual box de divulgação
- * (`context/snippets/*.md`, atribuída aos slots 0–3 via
+ * (`data/snippets/*.md`, atribuída aos slots 0–3 via
  * `platform.config.json` → `boxes_divulgacao`) performou melhor em cliques
  * nas últimas N edições — pra apoiar a decisão do editor no gate do Stage 4
  * (§4c, `.claude/agents/orchestrator-stage-4.md`), em vez de decidir troca de
@@ -22,7 +22,7 @@
  * edição é lida direto do seu `02-reviewed.md` já publicado — o link
  * encontrado dentro de cada box (via `extractBoxDivulgacao{0,1,2,3}`,
  * `scripts/lib/newsletter-parse.ts`) é casado contra as URLs de
- * `context/snippets/*.md` (por base-URL, ignorando query string — mesma
+ * `data/snippets/*.md` (por base-URL, ignorando query string — mesma
  * convenção de `matchClick` em `build-link-ctr.ts`) pra identificar QUAL
  * snippet foi usado naquela edição, independente do que o config diz hoje.
  *
@@ -67,7 +67,7 @@ import { URL_WITH_BALANCED_PARENS_RE_PART } from "./lib/lint-checks/section-item
 import { resolveEnrichmentState, type EnrichmentState } from "./lib/shared/enrichment-state.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const SNIPPETS_DIR = resolve(ROOT, "context/snippets");
+const SNIPPETS_DIR = resolve(ROOT, "data/snippets"); // #5227: migrado de context/snippets/
 const EDITIONS_DIR = resolve(ROOT, "data/editions");
 const POSTS_DIR = resolve(ROOT, "data/beehiiv-cache/posts");
 
@@ -122,9 +122,11 @@ export function parseSnippetContent(file: string, content: string): SnippetInfo 
   return { file, nome, urls };
 }
 
-/** Carrega + parseia todos os snippets de `context/snippets/*.md` (exclui
- * `README.md` e a subpasta `_arquivo/`). Nunca lança — arquivo ilegível é
- * pulado silenciosamente (não deveria ocorrer em produção). */
+/** Carrega + parseia todos os snippets de `data/snippets/*.md` (#5227,
+ * migrado de `context/snippets/`; exclui `README.md` e a subpasta
+ * `_arquivo/`). Diretório ausente (sessão cloud, clone fresco sem `data/`) ->
+ * `[]`, nunca lança — arquivo ilegível é pulado silenciosamente (não deveria
+ * ocorrer em produção). */
 export function loadSnippets(snippetsDir: string = SNIPPETS_DIR): SnippetInfo[] {
   if (!existsSync(snippetsDir)) return [];
   return readdirSync(snippetsDir)
@@ -378,7 +380,7 @@ export function buildBoxClickReport(opts: BuildReportOpts): BoxClickReport {
           aammdd,
           slot: usage.slot,
           snippet: null,
-          reason: "sem snippet correspondente em context/snippets/ (link não bate com nenhum snippet cadastrado)",
+          reason: "sem snippet correspondente em data/snippets/ (link não bate com nenhum snippet cadastrado)",
         });
         continue;
       }

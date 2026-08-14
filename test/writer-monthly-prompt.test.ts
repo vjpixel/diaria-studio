@@ -4,28 +4,40 @@
  * Grep tests pra travar 2 ajustes de redação validados pela Clarice.ai na
  * edição mensal 2606-07 e tornados permanentes na fonte canônica:
  *
- *   1. `context/snippets/clarice-divulgacao.md` — remoção do "E" inicial
- *      ("E quem assina o plano anual..." → "Quem assina o plano anual...").
+ *   1. `data/snippets/clarice-divulgacao.md` (#5227: migrado de
+ *      `context/snippets/`) — remoção do "E" inicial ("E quem assina o
+ *      plano anual..." → "Quem assina o plano anual...").
  *   2. `.claude/agents/writer-monthly.md` — regência verbal do encerramento
  *      padrão ("Responda este e-mail" → "Responda a este e-mail";
  *      "responder" é transitivo indireto).
  *
  * Não testa comportamento do LLM (writer-monthly é um prompt); testa
  * presença/ausência de strings no texto-fonte, como em writer-prompt.test.ts.
+ *
+ * #5227: `data/snippets/` é gitignored (junction OneDrive) — ausente em
+ * clone fresco/CI/worktree isolado. O describe de `clarice-divulgacao.md`
+ * abaixo faz `it.skip` nesse cenário (sem cobertura de conteúdo real fora de
+ * sessão local, mesmo trade-off aceito em outros testes tocados por #5227);
+ * o describe de `writer-monthly.md` (arquivo git-tracked, não migrou) segue
+ * incondicional.
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WRITER_MONTHLY_MD = resolve(ROOT, ".claude/agents/writer-monthly.md");
-const CLARICE_DIVULGACAO_MD = resolve(ROOT, "context/snippets/clarice-divulgacao.md");
+const CLARICE_DIVULGACAO_MD = resolve(ROOT, "data/snippets/clarice-divulgacao.md");
 const MONTHLY_SKILL_MD = resolve(ROOT, ".claude/skills/diaria-mensal/SKILL.md");
 
 describe("clarice-divulgacao.md — fluência da frase de cupom (#2866)", () => {
+  if (!existsSync(CLARICE_DIVULGACAO_MD)) {
+    it.skip("data/snippets/ ausente nesta sessão (clone fresco/CI/worktree isolado, #5227) — sem cobertura de conteúdo real aqui, só em sessão local", () => {});
+    return;
+  }
   const content = readFileSync(CLARICE_DIVULGACAO_MD, "utf8");
 
   it("frase de cupom termina no acúmulo de desconto, sem cauda pendurada", () => {

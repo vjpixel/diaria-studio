@@ -94,7 +94,7 @@ export const BEEHIIV_UTM_PROFILE: MonthlyUtmProfile = {
 
 /**
  * Título EXATO da 1ª linha do box de recomendação da diária
- * (`context/snippets/diaria-recomendacao-clarice.md`), colado manualmente
+ * (`data/snippets/diaria-recomendacao-clarice.md`), colado manualmente
  * pelo editor em `draft.md` entre destaques (isolado por `---`, sem label de
  * seção própria — ver docstring do snippet). Detectado por essa linha pra
  * ser removido na variante Beehiiv: recomendar a edição DIÁRIA pra quem JÁ é

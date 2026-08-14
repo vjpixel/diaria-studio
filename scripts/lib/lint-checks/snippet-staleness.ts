@@ -2,7 +2,7 @@
  * lint-checks/snippet-staleness.ts (#4076)
  *
  * `stitch-newsletter.ts` (Stage 2) injeta em `02-reviewed.md` o conteúdo de
- * alguns snippets de `context/snippets/` (boxes de divulgação — slots 1/2/3,
+ * alguns snippets de `data/snippets/` (boxes de divulgação — slots 1/2/3,
  * config-driven via `platform.config.json > boxes_divulgacao` — + o bloco
  * PARA ENCERRAR, sempre lido de `encerramento-social-apoio.md` — + a caixa
  * de agradecimento a apoiadores, `agradecimento-apoiadores.md`). Se o editor
@@ -26,7 +26,7 @@
  *
  * ─── "Snippets efetivamente usados" (a parte não-trivial) ──────────────────
  *
- * Comparar o mtime de TODOS os arquivos de `context/snippets/` geraria
+ * Comparar o mtime de TODOS os arquivos de `data/snippets/` geraria
  * falso-positivo constante — qualquer snippet editado (mesmo um não usado
  * nesta edição específica, ex: um snippet arquivado/histórico ou reservado
  * para outro slot) dispararia aviso, e o editor aprenderia a ignorar o
@@ -257,7 +257,7 @@ export function resolveUsedSnippets(
 
 export interface SnippetStalenessWarning {
   kind: "snippet" | "config";
-  /** Nome do arquivo (relativo a `context/snippets/`) ou `"platform.config.json"`. */
+  /** Nome do arquivo (relativo a `data/snippets/`) ou `"platform.config.json"`. */
   file: string;
   slot?: SnippetSlot;
   reviewed_mtime: string;
@@ -345,7 +345,7 @@ export function evaluateSnippetStaleness(
 }
 
 export interface RunSnippetStalenessOptions {
-  /** Override de teste — diretório de `context/snippets/`. Default: real. */
+  /** Override de teste — diretório de `data/snippets/`. Default: real. */
   snippetsDir?: string;
   /** Override de teste — path de `platform.config.json`. Default: real. */
   configPath?: string;
@@ -430,7 +430,7 @@ export function writeSnippetBodyHashManifest(
  * Impuro — monta o report real a partir do disco. `mdPath` é sempre real
  * (o `02-reviewed.md` da edição em curso); `snippetsDir`/`configPath` são
  * overrides SÓ para teste (fixtures em diretório temporário — nunca aponta
- * para `context/snippets/`/`platform.config.json` reais em teste, por regra
+ * para `data/snippets/`/`platform.config.json` reais em teste, por regra
  * desta rodada).
  */
 export function runSnippetStalenessCheck(
@@ -445,7 +445,7 @@ export function runSnippetStalenessCheck(
     return { ok: true, warnings: [] };
   }
   const reviewedMd = readFileSync(mdPath, "utf8");
-  const snippetsDir = opts.snippetsDir ?? join(root, "context", "snippets");
+  const snippetsDir = opts.snippetsDir ?? join(root, "data", "snippets");
   const configPath = opts.configPath ?? join(root, "platform.config.json");
 
   const boxesCfg = readBoxesDivulgacaoConfig(configPath);

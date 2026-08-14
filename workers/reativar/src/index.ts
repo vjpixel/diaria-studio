@@ -2,7 +2,7 @@
  * workers/reativar/src/index.ts (#4476 item 3)
  *
  * Link de confirmação PERSONALIZADO pro segmento Pending do canal Brevo
- * próprio do editor (`context/snippets/brevo-diaria-pending-intro.md`) —
+ * próprio do editor (`data/snippets/brevo-diaria-pending-intro.md`) —
  * substitui o formulário de cadastro genérico da Beehiiv (2 etapas: clica →
  * digita o e-mail de novo) por 1 clique só. O e-mail chega via merge tag da
  * Brevo (`?email={{ contact.EMAIL }}`), SEM assinatura HMAC — mesmo padrão
@@ -45,7 +45,7 @@
  * Antes do DELETE+CREATE, `checkNativeUnsubscribePending` consulta
  * `GET /v3/contacts/{email}` na Brevo — se `emailBlacklisted === true` (a
  * pessoa clicou no link de opt-out nativo do bloco de intro, ver
- * `context/snippets/brevo-diaria-pending-intro.md`, ou já foi propagado por
+ * `data/snippets/brevo-diaria-pending-intro.md`, ou já foi propagado por
  * `scripts/evaluate-brevo-diaria.ts` passo 0), o clique em `?email=` NÃO
  * ativa direto — renderiza `renderNativeUnsubscribePage` explicando a
  * situação e oferecendo o cadastro normal como opt-in explícito. Fecha o

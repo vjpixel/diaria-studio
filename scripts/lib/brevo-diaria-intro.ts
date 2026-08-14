@@ -14,8 +14,9 @@
  * estilo tipográfico da antiga saudação "Olá! Eu sou o Pixel...", sem fundo)
  * → `renderBarePillButton` (botão pill solto, sem caixa ao redor) →
  * `renderCoverageTrailer` (parágrafo de disclosure/descadastro, mesmo estilo
- * sem fundo). O texto vem de `context/snippets/brevo-diaria-pending-intro.md`,
- * mesma convenção de todo bloco em `context/snippets/` (comentário HTML de
+ * sem fundo). O texto vem de `data/snippets/brevo-diaria-pending-intro.md`
+ * (#5227, migrado de `context/snippets/`),
+ * mesma convenção de todo bloco em `data/snippets/` (comentário HTML de
  * header + corpo, lido via `readSnippetFile`) — formato: N parágrafos de
  * corpo, 1 parágrafo CTA isolado (`→ [texto](url)`, detectado via
  * `isCtaOnlyParagraph`), N parágrafos de disclosure. Sem `shouldForceCtaPill`/
@@ -48,9 +49,14 @@ export const PENDING_INTRO_SNIPPET_FILENAME = "brevo-diaria-pending-intro.md";
  * envio pro segmento Pending NUNCA pode sair sem esta explicação). Lança se
  * o snippet existir mas não tiver um parágrafo CTA isolado reconhecível —
  * mais seguro que publicar sem botão de cadastro.
+ *
+ * `rootDir` (opcional) — override de teste, repassado direto pra
+ * `readSnippetFile` (#5227 — mesmo padrão de DI já usado pelos demais
+ * loaders de `data/snippets/`, ex: `loadEncerramentoSocialApoioTemplate`).
+ * Produção nunca passa este parâmetro.
  */
-export function renderPendingIntroHtml(): string | null {
-  const box = readSnippetFile(PENDING_INTRO_SNIPPET_FILENAME);
+export function renderPendingIntroHtml(rootDir?: string): string | null {
+  const box = readSnippetFile(PENDING_INTRO_SNIPPET_FILENAME, rootDir);
   if (!box) return null;
 
   const paras = box.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);

@@ -3536,12 +3536,12 @@ describe("renderHTML — caixas de divulgação ocupam sua lacuna de origem, sem
 describe("readBoxDivulgacaoCategoriaForSlot (#3981, pure)", () => {
   function setupRoot() {
     const root = mkdtempSync(join(tmpdir(), "box-categoria-"));
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
     writeFileSync(
-      join(root, "context", "snippets", "com-categoria.md"),
+      join(root, "data", "snippets", "com-categoria.md"),
       "<!--\ncategoria: Recomendado\ndoc interno\n-->\n\nConteúdo público.",
     );
-    writeFileSync(join(root, "context", "snippets", "sem-categoria.md"), "# Sem categoria\n\ntexto");
+    writeFileSync(join(root, "data", "snippets", "sem-categoria.md"), "# Sem categoria\n\ntexto");
     writeFileSync(
       join(root, "platform.config.json"),
       JSON.stringify({
@@ -3622,9 +3622,9 @@ describe("readBoxDivulgacaoCategoriaForSlot (#3981, pure)", () => {
 
   it("self-review finding: categoria com markdown (**, #, -) é sanitizada — invariante 'output final sem markdown' vale pro label", () => {
     const root = mkdtempSync(join(tmpdir(), "box-categoria-markdown-"));
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
     writeFileSync(
-      join(root, "context", "snippets", "com-markdown.md"),
+      join(root, "data", "snippets", "com-markdown.md"),
       "<!--\ncategoria: **Recomendado** #top\n-->\n\nConteúdo.",
     );
     writeFileSync(
@@ -3643,9 +3643,9 @@ describe("readBoxDivulgacaoCategoriaForSlot (#3981, pure)", () => {
 
   it("categoria só com markdown (sobra vazio após sanitizar): null, não string vazia", () => {
     const root = mkdtempSync(join(tmpdir(), "box-categoria-onlymarkdown-"));
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
     writeFileSync(
-      join(root, "context", "snippets", "so-markdown.md"),
+      join(root, "data", "snippets", "so-markdown.md"),
       "<!--\ncategoria: - **#**\n-->\n\nConteúdo.",
     );
     writeFileSync(
@@ -3663,12 +3663,12 @@ describe("readBoxDivulgacaoCategoriaForSlot (#3981, pure)", () => {
 describe("readBoxDivulgacaoAltForSlot (#4086, pure)", () => {
   function setupRoot() {
     const root = mkdtempSync(join(tmpdir(), "box-alt-"));
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
     writeFileSync(
-      join(root, "context", "snippets", "com-alt.md"),
+      join(root, "data", "snippets", "com-alt.md"),
       "<!--\nalt: Capa do livro X, de Autor Y\ndoc interno\n-->\n\nConteúdo público.",
     );
-    writeFileSync(join(root, "context", "snippets", "sem-alt.md"), "# Sem alt\n\ntexto");
+    writeFileSync(join(root, "data", "snippets", "sem-alt.md"), "# Sem alt\n\ntexto");
     writeFileSync(
       join(root, "platform.config.json"),
       JSON.stringify({
@@ -3749,9 +3749,9 @@ describe("readBoxDivulgacaoAltForSlot (#4086, pure)", () => {
 
   it("alt com markdown (**, #, -) é sanitizado — invariante 'output final sem markdown' vale pro atributo alt", () => {
     const root = mkdtempSync(join(tmpdir(), "box-alt-markdown-"));
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
     writeFileSync(
-      join(root, "context", "snippets", "com-markdown.md"),
+      join(root, "data", "snippets", "com-markdown.md"),
       "<!--\nalt: **Capa do livro** #destaque\n-->\n\nConteúdo.",
     );
     writeFileSync(
@@ -3770,9 +3770,9 @@ describe("readBoxDivulgacaoAltForSlot (#4086, pure)", () => {
 
   it("alt só com markdown (sobra vazio após sanitizar): null, não string vazia", () => {
     const root = mkdtempSync(join(tmpdir(), "box-alt-onlymarkdown-"));
-    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    mkdirSync(join(root, "data", "snippets"), { recursive: true });
     writeFileSync(
-      join(root, "context", "snippets", "so-markdown.md"),
+      join(root, "data", "snippets", "so-markdown.md"),
       "<!--\nalt: - **#**\n-->\n\nConteúdo.",
     );
     writeFileSync(
