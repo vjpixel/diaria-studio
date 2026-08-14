@@ -170,6 +170,15 @@
  *     `studio-tasks.ts`/`scripts/lib/scheduled-task-status.ts` pro detalhe.
  *   - `GET /tarefas` (#4799) — página de tasks agendadas: mesma estratégia
  *     de rewrite, servindo `public/tarefas.html`. Consome `GET /api/tasks`.
+ *   - `GET /api/ads` (#5236) — custo por leitor por canal: cruza
+ *     `data/aquisicao/spend.csv` (import manual) com o snapshot mais recente
+ *     de `data/beehiiv-backup/` (leitor-v1, abertura agregada da coorte vs.
+ *     base, degradação desde o snapshot anterior) e o orçamento do mês.
+ *     Fail-soft por camada (spend/snapshot/origem) — sessão cloud sem
+ *     `data/` nunca lança, só reporta ausência. `?refresh=1` bypassa o cache
+ *     de 10min. Ver `studio-ads.ts`/`scripts/lib/cac.ts` pro núcleo puro.
+ *   - `GET /ads` (#5236) — página de custo por leitor por canal: mesma
+ *     estratégia de rewrite, servindo `public/ads.html`. Consome `GET /api/ads`.
  *   - `POST /api/painel/eia/refresh` (#3861) — botão "Atualizar É IA?" da
  *     dashboard diária embutida (`GET /painel/diaria`, `dashboard-diaria.ts`):
  *     regenera SÓ `data/poll-eia-summary.json` local a partir dos endpoints
@@ -422,6 +431,9 @@ import { buildTasksData } from "./studio-tasks.ts";
 // mas SÓ a metade local (nunca o push pro KV do clarice-dashboard). Ver
 // docstring de refreshPollEiaSummaryLocal.
 import { refreshPollEiaSummaryLocal } from "../build-poll-eia-data.ts";
+// #5236: custo por leitor por canal — qual canal traz leitor mais barato,
+// abertura da coorte vs. base, orçamento do mês, degradação. Ver studio-ads.ts.
+import { buildAdsData } from "./studio-ads.ts";
 
 // #3555: SEMPRE loopback — nunca 0.0.0.0. Acesso remoto (Tunnel + Access) é
 // escopo de outra fatia (#3560) do epic #3554, com auth explícita.
@@ -1708,6 +1720,23 @@ function handleApiTasks(rootDir: string, req: IncomingMessage, res: ServerRespon
   }
 }
 
+// ── #5236: custo por leitor por canal ──
+
+/** `GET /api/ads` — custo por leitor por canal (#5236): qual canal traz
+ * leitor mais barato? abertura da coorte vs. base? orçamento do mês
+ * consumido? degradação desde o snapshot anterior? Sempre 200:
+ * `buildAdsData` é fail-soft por camada (spend/snapshot/origem — nunca
+ * lança, mesmo em sessão cloud sem `data/`). `?refresh=1` bypassa o cache
+ * de 10min (botão "Atualizar" da UI). */
+function handleApiAds(rootDir: string, req: IncomingMessage, res: ServerResponse): void {
+  try {
+    const forceRefresh = new URL(req.url ?? "/", "http://localhost").searchParams.get("refresh") === "1";
+    sendJson(res, 200, buildAdsData(rootDir, { forceRefresh }));
+  } catch (e) {
+    sendJson(res, 500, { error: (e as Error).message });
+  }
+}
+
 /** `POST /api/painel/eia/refresh` — botão "Atualizar É IA?" (#3861): regenera
  * SÓ `data/poll-eia-summary.json` local a partir dos endpoints públicos do
  * worker poll (`refreshPollEiaSummaryLocal`) — NUNCA dispara o push paralelo
@@ -2024,6 +2053,11 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         handleApiTasks(rootDir, req, res);
         return;
       }
+      // #5236: custo por leitor por canal.
+      if (urlPath === "/api/ads") {
+        handleApiAds(rootDir, req, res);
+        return;
+      }
       // #3924: seção "Caixas" — GET (PUT de save já tratado acima, antes do
       // guard de método). Lista checada antes do get-por-slug pra não colidir
       // (regex de slug `[^/]+` casaria "boxes" também se checado depois, mas
@@ -2192,6 +2226,15 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // #4799: mesma estratégia de rewrite — a página busca /api/tasks.
       if (urlPath === "/tarefas" || urlPath === "/tarefas/") {
         const served = serveStaticFile(PUBLIC_DIR, "/tarefas.html", res, req);
+        if (!served) {
+          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Not found");
+        }
+        return;
+      }
+      // #5236: mesma estratégia de rewrite — a página busca /api/ads.
+      if (urlPath === "/ads" || urlPath === "/ads/") {
+        const served = serveStaticFile(PUBLIC_DIR, "/ads.html", res, req);
         if (!served) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found");

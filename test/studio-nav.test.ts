@@ -42,9 +42,9 @@ const SERVER_TS = readFileSync(resolve(REPO_ROOT, "scripts", "studio-ui", "serve
 // ─── lógica pura (nav-core.js) ──────────────────────────────────────────
 
 describe("NAV_ITEMS / DASHBOARD_LINKS (#3849) — shape e drift-guard contra server.ts", () => {
-  it("cobre os 12 destinos de página, agora agrupados por fluxo de trabalho (#4002: home/revisao/caixas · rodada/triagem/relatorios · apoios/painel-diaria · integracoes/utms/skills/tarefas)", () => {
+  it("cobre os 13 destinos de página, agora agrupados por fluxo de trabalho (#4002: home/revisao/caixas · rodada/triagem/relatorios · apoios/painel-diaria/ads · integracoes/utms/skills/tarefas)", () => {
     const ids = NAV_ITEMS.map((i) => i.id);
-    assert.deepEqual(ids, ["home", "revisao", "caixas", "rodada", "triagem", "relatorios", "apoios", "painel-diaria", "integracoes", "utms", "skills", "tarefas"]);
+    assert.deepEqual(ids, ["home", "revisao", "caixas", "rodada", "triagem", "relatorios", "apoios", "painel-diaria", "ads", "integracoes", "utms", "skills", "tarefas"]);
   });
 
   it("todo item (exceto revisao, que resolve em runtime) tem href estático não-vazio", () => {
@@ -130,14 +130,15 @@ describe("NAV_ITEMS / DASHBOARD_LINKS (#3849) — shape e drift-guard contra ser
     }
   });
 
-  it("(#4002): agrupamento por fluxo de trabalho — Edição (home/revisao/caixas), Operação (rodada/triagem/relatorios), Negócio (apoios/painel-diaria/dashboard clarice), Sistema (integracoes/utms/skills/tarefas)", () => {
+  it("(#4002): agrupamento por fluxo de trabalho — Edição (home/revisao/caixas), Operação (rodada/triagem/relatorios), Negócio (apoios/painel-diaria/ads/dashboard clarice), Sistema (integracoes/utms/skills/tarefas)", () => {
     const byGroup = (g) => NAV_ITEMS.filter((i) => i.group === g).map((i) => i.id);
     assert.deepEqual(byGroup("edicao"), ["home", "revisao", "caixas"]);
     assert.deepEqual(byGroup("operacao"), ["rodada", "triagem", "relatorios"]);
-    assert.deepEqual(byGroup("negocio"), ["apoios", "painel-diaria"]);
+    // #5236: "ads" entra em Negócio, vizinho de Apoios/Dashboard diária.
+    assert.deepEqual(byGroup("negocio"), ["apoios", "painel-diaria", "ads"]);
     // #4041: "utms" entra em Sistema, vizinho de Integrações. #4270: "skills" idem. #4799: "tarefas" idem.
     assert.deepEqual(byGroup("sistema"), ["integracoes", "utms", "skills", "tarefas"]);
-    assert.deepEqual(DASHBOARD_LINKS.map((d) => d.group), ["negocio"], "Dashboard Clarice cai no mesmo grupo Negócio, junto de Apoios/Dashboard diária");
+    assert.deepEqual(DASHBOARD_LINKS.map((d) => d.group), ["negocio"], "Dashboard Clarice cai no mesmo grupo Negócio, junto de Apoios/Dashboard diária/Ads");
   });
 
   it("(#4799): /tarefas agora É um destino de menu — rota real existe em server.ts", () => {
@@ -145,6 +146,13 @@ describe("NAV_ITEMS / DASHBOARD_LINKS (#3849) — shape e drift-guard contra ser
     assert.ok(item, "NAV_ITEMS precisa ter o item 'tarefas'");
     assert.equal(item.href, "/tarefas");
     assert.match(SERVER_TS, /urlPath === "\/tarefas"/, "server.ts precisa reconhecer a rota /tarefas");
+  });
+
+  it("(#5236): /ads agora É um destino de menu — rota real existe em server.ts", () => {
+    const item = NAV_ITEMS.find((i) => i.id === "ads");
+    assert.ok(item, "NAV_ITEMS precisa ter o item 'ads'");
+    assert.equal(item.href, "/ads");
+    assert.match(SERVER_TS, /urlPath === "\/ads"/, "server.ts precisa reconhecer a rota /ads");
   });
 });
 
@@ -162,6 +170,7 @@ describe("resolveActiveNavId (#3849)", () => {
     assert.equal(resolveActiveNavId("painel-diaria"), "painel-diaria");
     assert.equal(resolveActiveNavId("skills"), "skills");
     assert.equal(resolveActiveNavId("tarefas"), "tarefas");
+    assert.equal(resolveActiveNavId("ads"), "ads");
   });
 
   it("retorna null pra pageId desconhecido/ausente (fail-closed — nenhum item marcado ativo por engano)", () => {
@@ -184,7 +193,7 @@ describe("resolveRevisaoHref (#3849)", () => {
 });
 
 describe("buildNavHtml (#3849)", () => {
-  it("renderiza os 12 itens de página + Dashboard Clarice, agrupados (#4002)", () => {
+  it("renderiza os 13 itens de página + Dashboard Clarice, agrupados (#4002)", () => {
     const html = buildNavHtml("rodada", "/revisao/260722");
     assert.match(html, /id="app-nav-list"/);
     assert.match(html, /href="\/">Home<\/a>/);
@@ -197,6 +206,7 @@ describe("buildNavHtml (#3849)", () => {
     assert.match(html, /href="\/integracoes"/);
     assert.match(html, /href="\/skills"/);
     assert.match(html, /href="\/tarefas"/);
+    assert.match(html, /href="\/ads"/);
     assert.match(html, /href="\/painel\/clarice"[^>]*target="_blank"/);
   });
 
@@ -206,15 +216,19 @@ describe("buildNavHtml (#3849)", () => {
     assert.deepEqual(labels, ["📰 Edição", "⚙️ Operação", "📊 Negócio", "🔌 Sistema"]);
   });
 
-  it("(#4002): dentro do grupo 📊 Negócio, Apoios → Dashboard diária → Dashboard Clarice aparecem nessa ordem", () => {
+  it("(#4002, #5236): dentro do grupo 📊 Negócio, Apoios → Dashboard diária → Ads → Dashboard Clarice aparecem nessa ordem", () => {
     const html = buildNavHtml("rodada", "/revisao/260722");
     const negocioStart = html.indexOf("📊 Negócio");
     const sistemaStart = html.indexOf("🔌 Sistema");
     const negocioBlock = html.slice(negocioStart, sistemaStart);
     const apoiosIdx = negocioBlock.indexOf("/apoios");
     const painelIdx = negocioBlock.indexOf("/painel/diaria");
+    const adsIdx = negocioBlock.indexOf('href="/ads"');
     const clariceIdx = negocioBlock.indexOf("/painel/clarice");
-    assert.ok(apoiosIdx > -1 && painelIdx > apoiosIdx && clariceIdx > painelIdx, "ordem esperada: Apoios, Dashboard diária, Dashboard Clarice");
+    assert.ok(
+      apoiosIdx > -1 && painelIdx > apoiosIdx && adsIdx > painelIdx && clariceIdx > adsIdx,
+      "ordem esperada: Apoios, Dashboard diária, Ads, Dashboard Clarice",
+    );
   });
 
   it("(#3853): /painel/diaria agora é item de PÁGINA — <a> normal, sem target=_blank (mesmo agrupado junto de Dashboard Clarice em 📊 Negócio)", () => {
@@ -297,6 +311,7 @@ describe("GET de cada página real inclui #app-nav + nav.js + STUDIO_PAGE corret
     { path: "/utms", page: "utms" }, // #4041
     { path: "/skills", page: "skills" }, // #4270
     { path: "/tarefas", page: "tarefas" }, // #4799
+    { path: "/ads", page: "ads" }, // #5236
     { path: "/edicao/260722", page: "edicao" },
     { path: "/revisao/260722", page: "revisao" },
   ];

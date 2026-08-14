@@ -1,0 +1,41 @@
+/* ads.css (#5236) — custo por leitor por canal. Reusa
+   .table-scroll/.triage-table/.panel-header-row de triagem.css e
+   .state-badge/.reachable-subtext de integracoes.css (ambos já linkados em
+   ads.html) — só o grid de tiles de resumo (as 4 respostas de 5 segundos) é
+   específico desta página. Nenhum hex cru — só var(--token), ver
+   test/studio-css-no-raw-hex.test.ts. */
+
+.ads-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.ads-tile {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 0.65rem 0.8rem;
+  background: var(--paper-alt);
+}
+
+.ads-tile-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  opacity: 0.7;
+}
+
+.ads-tile-value {
+  font-family: var(--font-mono);
+  font-size: 1.05rem;
+  font-weight: 700;
+  margin-top: 0.15rem;
+  word-break: break-word;
+}
+
+.ads-tile-sub {
+  font-size: 0.72rem;
+  opacity: 0.75;
+  margin-top: 0.2rem;
+}

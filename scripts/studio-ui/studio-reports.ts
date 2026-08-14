@@ -86,9 +86,19 @@ import { acquireLock, releaseLock } from "../lib/file-lock.ts"; // #4677 — loc
 // cancela — recriar uma onda podada é follow-up NÃO implementado nesta
 // versão, ver docstring de clarice-envio-guard.ts) — mesmo kind pros dois,
 // `sessionId` distingue (`envio-{AAMMDD}...` vs `envio-{AAMMDD}-guard...`).
-export type ReportKind = "edicao" | "overnight" | "develop" | "mensal" | "clarice-novos" | "clarice-envio";
+// #5236: "cac" — relatório de custo por leitor por canal (`scripts/cac-report.ts`),
+// `sessionId` = data do snapshot Beehiiv usado (`YYYY-MM-DD`).
+export type ReportKind = "edicao" | "overnight" | "develop" | "mensal" | "clarice-novos" | "clarice-envio" | "cac";
 
-const VALID_KINDS: ReportKind[] = ["edicao", "overnight", "develop", "mensal", "clarice-novos", "clarice-envio"];
+const VALID_KINDS: ReportKind[] = [
+  "edicao",
+  "overnight",
+  "develop",
+  "mensal",
+  "clarice-novos",
+  "clarice-envio",
+  "cac",
+];
 
 export function isReportKind(value: string): value is ReportKind {
   return (VALID_KINDS as string[]).includes(value);
