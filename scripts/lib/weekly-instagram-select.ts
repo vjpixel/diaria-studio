@@ -28,33 +28,36 @@
  * diferença real de escopo (não movido pro módulo compartilhado):
  * `extractInstagramCandidates` (parser específico — extrai `destaqueNumber`,
  * que o LinkedIn não precisa; o LinkedIn extrai TODAS as seções secundárias
- * — LANÇAMENTOS/VÍDEOS inclusos —, aqui só RADAR/USE MELHOR competem, #4513),
+ * — LANÇAMENTOS/VÍDEOS inclusos —, aqui só RADAR compete, #4513/#5319),
  * `toRankedCandidate` (o tipo de entrada ainda difere — `InstagramRawCandidate`
  * tem `destaqueNumber` opcional; `WeeklyRawCandidate` do LinkedIn não tem esse
  * campo), e `resolveWeeklyImageUrls`/geração sob demanda (exclusivo do
  * Instagram — o LinkedIn não usa cards de imagem por item).
  *
- * **Pool de candidatos inclui RADAR/USE MELHOR desde o #4513** (além de
- * DESTAQUE D1/D2/D3) — reusa o MESMO padrão de extração que
+ * **Pool de candidatos inclui RADAR desde o #4513** (além de DESTAQUE
+ * D1/D2/D3) — reusa o MESMO padrão de extração que
  * `weekly-linkedin-parse.ts::extractWeeklyCandidates` já usa pro canal
- * irmão do LinkedIn: `parseDestaques` pros destaques + `parseSections` pras
- * seções secundárias (só RADAR/USE MELHOR aqui — LANÇAMENTOS/VÍDEOS ficam
- * de fora, mesmo escopo pedido pelo editor na issue #4483/#4513).
+ * irmão do LinkedIn: `parseDestaques` pros destaques + `parseSections` pra
+ * seção secundária (só RADAR aqui — LANÇAMENTOS/VÍDEOS ficam de fora, mesmo
+ * escopo pedido pelo editor na issue #4483/#4513). **USE MELHOR também
+ * chegou a competir entre o #4513 (260803) e o #5319 (260814)** — removido
+ * por decisão do editor: o post semanal é sobre a notícia mais clicada da
+ * semana, não sobre tutorial/ferramenta. Regra permanente — não reabrir sem
+ * nova decisão explícita do editor.
  *
  * Até o #4513, o pool era restrito a D1/D2/D3 por uma razão técnica real: o
  * post semanal do Instagram é um CARROSSEL de imagens — 1 card 4:5 por item
  * selecionado, com o TÍTULO já EMBUTIDO na imagem
  * (`gen-social-card-4x5.ts`) — e só D1/D2/D3 tinham esse card PRÉ-gerado no
- * Stage 3 diário (`imageSpecsFor` em `upload-images-public.ts`). RADAR/USE
- * MELHOR nunca tiveram card próprio, e usar o card do D1 como substituto
- * mostraria o TÍTULO ERRADO embutido na imagem — pior que excluir o
- * candidato.
+ * Stage 3 diário (`imageSpecsFor` em `upload-images-public.ts`). RADAR nunca
+ * teve card próprio, e usar o card do D1 como substituto mostraria o TÍTULO
+ * ERRADO embutido na imagem — pior que excluir o candidato.
  *
  * **Decisão do editor (briefing 260803, #4513): gerar o card 4:5 SOB
- * DEMANDA** — só quando um item de RADAR/USE MELHOR de fato vence o
- * ranking semanal, nunca preventivamente pra todo item de toda edição
- * diária (mais caro, geraria imagem que a maioria nunca usa). A geração sob
- * demanda vive em `weekly-instagram-ondemand-card.ts`, invocada por
+ * DEMANDA** — só quando um item de RADAR de fato vence o ranking semanal,
+ * nunca preventivamente pra todo item de toda edição diária (mais caro,
+ * geraria imagem que a maioria nunca usa). A geração sob demanda vive em
+ * `weekly-instagram-ondemand-card.ts`, invocada por
  * `publish-weekly-social.ts::resolveWeeklyImageUrls` quando o item
  * selecionado não tem `destaqueNumber` (== veio de seção, não de destaque).
  * Stage 3 da diária (`image-generate.ts`) permanece intocado — a geração
@@ -77,9 +80,9 @@ import {
 
 export { isCommercialOrOwnLink, hasSuspiciousCommercialLanguage, withinClickNoise, hasBrazilAngle, hasProfessionalImplication, editorialTiebreakScore };
 
-// ─── Extração de candidatos (destaques + RADAR/USE MELHOR — #4513) ────────
+// ─── Extração de candidatos (destaques + RADAR — #4513, USE MELHOR excluído #5319) ────────
 
-/** "destaque" = D1/D2/D3 com card 4:5 pré-gerado no Stage 3 diário. "section" = RADAR/USE MELHOR, card 4:5 gerado SOB DEMANDA (#4513). */
+/** "destaque" = D1/D2/D3 com card 4:5 pré-gerado no Stage 3 diário. "section" = RADAR, card 4:5 gerado SOB DEMANDA (#4513). */
 export type InstagramCandidateKind = "destaque" | "section";
 
 export interface InstagramRawCandidate {
@@ -94,18 +97,20 @@ export interface InstagramRawCandidate {
   why: string;
   /** 1, 2 ou 3 quando `kind === "destaque"` — usado pra resolver a imagem 4:5 (`d{n}_4x5`) PRÉ-gerada da edição de origem. `undefined` quando `kind === "section"` (card gerado sob demanda, ver `weekly-instagram-ondemand-card.ts`). */
   destaqueNumber?: 1 | 2 | 3;
-  /** Categoria do destaque (`DESTAQUE N | categoria`) OU nome da seção (RADAR/USE MELHOR) — usada na diversidade de desempate e no card gerado sob demanda. */
+  /** Categoria do destaque (`DESTAQUE N | categoria`) OU nome da seção (RADAR) — usada na diversidade de desempate e no card gerado sob demanda. */
   category: string;
   kind: InstagramCandidateKind;
-  /** Nome da seção normalizado — só presente quando `kind === "section"`. */
-  section?: "radar" | "use_melhor";
+  /** Nome da seção normalizado — só presente quando `kind === "section"`. USE MELHOR nunca aparece aqui (excluído em `normalizeInstagramSectionName`, decisão do editor #5319 260814 — o carrossel é sobre notícia clicada, não tutorial/ferramenta). */
+  section?: "radar";
 }
 
-function normalizeInstagramSectionName(name: string): "radar" | "use_melhor" | null {
+function normalizeInstagramSectionName(name: string): "radar" | null {
   const n = name.toUpperCase();
   if (n === "RADAR") return "radar";
-  if (n === "USE MELHOR") return "use_melhor";
-  return null; // LANÇAMENTOS/VÍDEOS/etc nunca competem aqui — fora do escopo do #4513
+  // USE MELHOR excluído por decisão do editor (#5319, 260814) — o carrossel
+  // é sobre notícia clicada, não tutorial/ferramenta; LANÇAMENTOS/VÍDEOS/etc
+  // continuam fora de escopo pela mesma razão original do #4513.
+  return null;
 }
 
 /**

@@ -1,12 +1,20 @@
 /**
  * weekly-instagram-ondemand-card.ts (#4513)
  *
- * Card 4:5 SOB DEMANDA pra itens de RADAR/USE MELHOR que vencem o ranking
- * por clique do post semanal do Instagram (`weekly-instagram-select.ts`) mas
- * NÃO têm o card pré-gerado no Stage 3 diário (que só produz d1/d2/d3 —
- * decisão do editor #4513, briefing 260803: gerar sob demanda no fluxo
- * SEMANAL, não preventivamente pra todo item de toda edição — mais caro, e a
- * maioria nunca seria usada).
+ * Card 4:5 SOB DEMANDA pra itens de RADAR que vencem o ranking por clique do
+ * post semanal do Instagram (`weekly-instagram-select.ts`) mas NÃO têm o
+ * card pré-gerado no Stage 3 diário (que só produz d1/d2/d3 — decisão do
+ * editor #4513, briefing 260803: gerar sob demanda no fluxo SEMANAL, não
+ * preventivamente pra todo item de toda edição — mais caro, e a maioria
+ * nunca seria usada). **USE MELHOR também competiu aqui entre o #4513 e o
+ * #5319 (260814)** — excluído do pool de candidatos em
+ * `weekly-instagram-select.ts::normalizeInstagramSectionName`, então na
+ * prática este módulo só recebe `section: "radar"` hoje. As funções abaixo
+ * (`sectionCardCacheKey` etc.) continuam parametrizadas por seção de
+ * propósito — geração de chave/cache é agnóstica a QUAL seção, e estreitar o
+ * tipo aqui não evitaria bug nenhum (a exclusão real acontece na extração,
+ * não aqui); os testes que exercitam `"use_melhor"` neste arquivo continuam
+ * válidos como verificação de que chaves de seções diferentes nunca colidem.
  *
  * Reusa a MESMA pipeline de compositing (`generateCard`, de
  * `gen-social-card-4x5.ts` — já genérica em `destaque: string`, não travada
