@@ -2302,6 +2302,49 @@ export function renderHTMLWithWarnings(
 }
 
 /**
+ * #5232 item 2 — enxuga bytes do HTML final SEM mexer no que renderiza:
+ * remove comentários de debug/tracing do gerador (nunca visíveis a leitor
+ * nenhum, em client nenhum) e colapsa whitespace puramente ESTRUTURAL entre
+ * duas tags — indentação/quebra de linha de formatação de origem, nunca
+ * espaço dentro de um nó de texto.
+ *
+ * Por que colapsar esse whitespace é seguro neste template: cada nó de
+ * fluxo do corpo (table/tr/td/p/h1-h6/div — e os poucos `<a>`/`<img>` que
+ * fazem o papel de bloco levam `display:block` explícito no `style` ou
+ * envolvem um `<h2>`, que é block por padrão) é block-level, e CSS 2.1
+ * §8.2.1 remove por completo whitespace adjacente a uma caixa block-level —
+ * regra do modelo de caixa, não comportamento client-specific que poderia
+ * variar entre Gmail/Outlook/Apple Mail. O espaçamento visual entre
+ * elementos sempre vem de `margin`/`padding` explícito no template, nunca
+ * de espaço em branco entre tags.
+ *
+ * Deliberadamente conservador mesmo assim: só colapsa um trecho de
+ * whitespace que CONTÉM ao menos 1 quebra de linha — nunca um espaço único
+ * na MESMA linha entre duas tags (ex: dois `<a>` lado a lado dependendo de
+ * espaço pra não colar visualmente). Esse padrão same-line não existe hoje
+ * em nenhuma edição já renderizada (checado contra várias edições reais de
+ * 260805-260814), mas restringir o colapso a whitespace com newline deixa a
+ * função segura por CONSTRUÇÃO caso ele passe a existir — não depende de
+ * releitura futura desta docstring.
+ *
+ * Preserva os comentários condicionais MSO (`<!--[if mso]>...<![endif]-->`)
+ * — são markup real interpretado pelo motor Word/Outlook (cap de largura
+ * fixa pro Outlook desktop, #260629b), não decoração. Nunca produz match
+ * dentro do CONTEÚDO do `<style>` (a folha de estilo não tem `<`/`>`
+ * internos — só os da própria tag `<style>`/`</style>` — então o regex de
+ * colapso não encontra nada pra colapsar ali; o bloco de CSS sai intocado,
+ * de propósito).
+ *
+ * Idempotente — rodar 2x produz o mesmo resultado da 1ª.
+ */
+export function minifyEmailHtml(html: string): string {
+  return html
+    .replace(/<!--[\s\S]*?-->/g, (m) => (m.includes("[if mso]") || m.includes("[endif]") ? m : ""))
+    .replace(/>[ \t]*\n[ \t\n]*</g, "><")
+    .trim();
+}
+
+/**
  * #1046 — Render È IA? section standalone (em outer table própria), pra paste
  * via `editor.commands.insertContent({type: 'htmlSnippet', ...})` no TipTap
  * Beehiiv. Preserva merge tags `{{poll_a_url}}` / `{{poll_b_url}}` que

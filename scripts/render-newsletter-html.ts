@@ -90,6 +90,7 @@ export {
   buildJogarArchiveUrl, // #3524
   renderHTML,
   renderEiaStandalone,
+  minifyEmailHtml, // #5232 item 2
   assignDivulgacaoGaps, // #4624
   getRenderWarnings, // #4673
 } from "./lib/newsletter-render-html.ts";
@@ -101,6 +102,7 @@ import { extractContent, type NewsletterContent } from "./lib/newsletter-parse.t
 import {
   renderHTML,
   renderEiaStandalone,
+  minifyEmailHtml, // #5232 item 2
   resetRenderWarnings, // #4687
   getRenderWarnings, // #4673
   type Esp,
@@ -277,14 +279,15 @@ function main(): void {
     mkdirSync(internalDir, { recursive: true });
     const bodyPath = resolve(internalDir, "newsletter-body.html");
     const eiaPath = resolve(internalDir, "newsletter-eia.html");
-    const bodyHtml = renderHTML(content, { excludeEia: true });
+    const bodyHtml = minifyEmailHtml(renderHTML(content, { excludeEia: true })); // #5232 item 2
     writeRenderWarningsFile(resolvedDir); // #4673 — captura eventos desta chamada de renderHTML
     writeFileSync(bodyPath, bodyHtml + "\n");
     console.error(`Written body to ${bodyPath} (${bodyHtml.length} bytes)`);
     const eiaHtml = renderEiaStandalone(content);
     if (eiaHtml) {
-      writeFileSync(eiaPath, eiaHtml + "\n");
-      console.error(`Written È IA? to ${eiaPath} (${eiaHtml.length} bytes)`);
+      const minifiedEiaHtml = minifyEmailHtml(eiaHtml); // #5232 item 2
+      writeFileSync(eiaPath, minifiedEiaHtml + "\n");
+      console.error(`Written È IA? to ${eiaPath} (${minifiedEiaHtml.length} bytes)`);
     } else {
       console.error(`È IA? sem credit configurado — pulando ${eiaPath}`);
     }
@@ -308,7 +311,7 @@ function main(): void {
   } else {
     // #1936 --full: documento HTML completo (shell DS + preheader) pro preview/
     // email Worker-hosted. Sem a flag: fragmento container pro paste no Beehiiv.
-    output = renderHTML(content, { fullDocument: flags.has("full"), esp });
+    output = minifyEmailHtml(renderHTML(content, { fullDocument: flags.has("full"), esp })); // #5232 item 2
     writeRenderWarningsFile(resolvedDir); // #4673 — captura eventos desta chamada de renderHTML
   }
 
