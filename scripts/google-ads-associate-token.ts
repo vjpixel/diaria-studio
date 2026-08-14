@@ -70,8 +70,13 @@ async function jsonOrExit<T>(res: Response, what: string): Promise<T> {
   }
 }
 
-/** Versão da API. Sobrescrevível — o Google publica versão nova a cada ~3 meses. */
-const API_VERSION = process.env.GOOGLE_ADS_API_VERSION ?? "v21";
+/**
+ * Versão da API. Sobrescrevível — o Google publica versão nova a cada ~3 meses.
+ * `v21` foi confirmada BLOQUEADA ao vivo (#5294, 14/08/2026): a API devolve
+ * `UNSUPPORTED_VERSION` — "Version v21 is deprecated. Requests to this
+ * version will be blocked." `v25` confirmada funcional na mesma sessão.
+ */
+const API_VERSION = process.env.GOOGLE_ADS_API_VERSION ?? "v25";
 
 function required(name: string): string {
   const value = process.env[name];
