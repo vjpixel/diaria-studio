@@ -45,7 +45,8 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator \
 | outcome | `--level` | ação |
 |---|---|---|
 | `synced` / `synced_stashed` / `already_up_to_date` | `info` | ✅ prosseguir normalmente |
-| `fetch_failed` | `warn` | ⚠️ avisar editor ("offline — edição continua com código local") e prosseguir |
+| `fetch_failed` | `warn` | ⚠️ avisar editor ("offline, erro de rede ou credencial — edição continua com código local") e prosseguir |
+| `fetch_timeout` (#5302) | `warn` | ⚠️ `git fetch origin` foi morto pelo timeout (não necessariamente offline — fetch grande, refs remotos podem já estar atualizados localmente); avisar editor e prosseguir |
 | `ff_failed` | `warn` | ⚠️ avisar editor ("código divergiu de origin — edição continua com cópia local; considere resolver manualmente") e prosseguir |
 | `stash_failed` / `stash_pop_failed` | `warn` | ⚠️ avisar editor com a mensagem de warning do resultado e prosseguir |
 | `stash_partial_failure` (#3411) | `warn` | ⚠️ stash saiu com erro mas CRIOU um stash apesar disso (ex: falha parcial ao limpar untracked) — recuperado automaticamente via pop; avisar editor com a mensagem e prosseguir |
