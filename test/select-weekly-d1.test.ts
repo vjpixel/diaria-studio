@@ -69,4 +69,31 @@ describe("resolveWeeklyEditionDirs", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("resolve edições no layout NESTED (data/editions/{AAMM}/{AAMMDD}), não só flat (#5xxx)", () => {
+    // Regressão: resolveWeeklyEditionDirs montava `resolve(editionsRoot, date)`
+    // direto, ignorando o layout nested pós-migração (#3024) — mesma classe
+    // de bug do #3030/#3031. `select-linkedin-weekly.ts` já usava
+    // `resolveEditionDir` (dual flat/nested) corretamente; este arquivo não.
+    const root = mkdtempSync(join(tmpdir(), "diaria-weekly-nested-"));
+    try {
+      // 260421 (terça, ver computeWeekdayEditionDates acima) só existe em
+      // layout NESTED — nunca em flat.
+      const nestedDir = resolve(root, "2604", "260421");
+      mkdirSync(nestedDir, { recursive: true });
+      writeFileSync(
+        resolve(nestedDir, "02-reviewed.md"),
+        "DESTAQUE 1 | Notícias\nTítulo Terça\nhttps://example.com/ter\n\nCorpo do D1.\n\nPor que isso importa:\nExplicação D1.",
+        "utf8",
+      );
+      const saturday = new Date(2026, 3, 25);
+      const result = resolveWeeklyEditionDirs(saturday, root);
+      const tuesday = result.find((c) => c.date === "260421");
+      assert.ok(tuesday, "260421 deveria estar entre os 5 candidatos");
+      assert.equal(tuesday!.exists, true, "edição nested deveria ser encontrada");
+      assert.equal(tuesday!.dir, nestedDir);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
