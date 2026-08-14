@@ -30,11 +30,16 @@ MCC, e é o CID dela que vai em `login-customer-id` nas chamadas.
       (exigência explícita da doc de brand verification, que se sobrepõe à
       orientação em contrário do resto do console)
 - [x] Política de privacidade pública no ar
-- [ ] Domínio `diar.ia.br` verificado no Search Console e registrado como
+- [x] Domínio `diar.ia.br` — já estava verificado no Search Console
+      (`sc-domain:diar.ia.br`), nenhum TXT precisou ser criado; registrado como
       domínio autorizado
-- [ ] Cliente OAuth criado; token associado ao projeto (ver abaixo)
-- [ ] Verificação de marca concluída
-- [ ] Credenciais no Doppler
+- [x] Página `/app` descrevendo a finalidade do app (a 1ª verificação reprovou
+      porque a "página inicial" apontava pra home da newsletter)
+- [x] **Verificação de marca concluída e PUBLICADA**
+- [x] Cliente OAuth `diaria-relatorio-aquisicao` (App para computador)
+- [x] Credenciais no Doppler
+- [ ] Token associado ao projeto (`scripts/google-ads-associate-token.ts`)
+- [ ] Basic Access sair da fila
 
 ## Verificação de marca
 
@@ -51,6 +56,18 @@ análise do Basic Access. Duas armadilhas custaram tempo aqui:
    nosso (`arquivo.diar.ia.br`); o domínio autorizado registrado é `diar.ia.br`,
    que cobre os subdomínios.
 
+3. **A 1ª verificação reprovou por conteúdo, não por configuração:** *"A página
+   inicial não explica a finalidade do app"*. O campo apontava para
+   `https://diar.ia.br`, a home da newsletter — que não menciona a ferramenta
+   que pede o acesso. A correção foi `/app` (`render-app.ts`), e é ELA que vai
+   no campo "Página inicial do aplicativo", não a home.
+4. **Armadilha de UI que apaga trabalho:** na tela de branding, "Salvar" fica
+   **inativo** enquanto o domínio autorizado estiver faltando, e o botão
+   destacado ao lado é **"Descartar alterações"**. Clicar nele limpa tudo sem
+   aviso, e a tela fica parecida com "salvo". Preencher o domínio primeiro.
+5. **A marca verificada expira em 7 dias se não for publicada** — depois de
+   verificar, clicar em "Publicar branding".
+
 ## Pré-requisito escondido: associar o token ao projeto
 
 Antes de a verificação valer para o Basic Access, o developer token precisa estar
@@ -58,6 +75,25 @@ Antes de a verificação valer para o Basic Access, o developer token precisa es
 com o token + uma credencial OAuth *deste* projeto. Segundo a própria doc:
 tanto faz se a chamada sucede ou falha, se é conta de teste ou de produção, e
 qual o nível do token. Uma chamada qualquer basta.
+
+Isso significa que **o token de nível "Conta de teste" que já temos serve** —
+não é preciso esperar o Basic para fechar este passo.
+
+```bash
+# 1x: consentimento OAuth. Grava o refresh token direto no Doppler,
+#     sem imprimir o valor em lugar nenhum.
+doppler run -- npx tsx scripts/google-ads-associate-token.ts --auth
+
+# associa: faz UMA chamada e classifica o resultado.
+doppler run -- npx tsx scripts/google-ads-associate-token.ts
+```
+
+O resultado **esperado e bem-sucedido** é `DEVELOPER_TOKEN_NOT_APPROVED` — o
+token de teste não lê a conta de produção, mas a requisição foi processada, que
+é tudo que a associação exige. `scripts/lib/google-ads-associate.ts` trata esse
+código (e vizinhos como `USER_PERMISSION_DENIED`) como sucesso, e trata
+`INVALID_DEVELOPER_TOKEN`/`OAUTH_TOKEN_INVALID`/`SERVICE_DISABLED` como falha
+real. Travado por `test/google-ads-associate-5262.test.ts`.
 
 ## Segredos
 
