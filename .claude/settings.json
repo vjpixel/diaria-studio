@@ -65,6 +65,12 @@
             "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/block-askuserquestion-overnight-autonomous.mjs\"",
             "shell": "bash",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/notify-continuo-askuserquestion.mjs\"",
+            "shell": "bash",
+            "timeout": 10
           }
         ]
       },

@@ -1,6 +1,6 @@
 ---
 name: diaria-continuo
-description: Sessão CONTÍNUA que nunca termina sozinha (#5293) — derivada do overnight, reusa a mesma maquinaria de implementação, mas troca o critério de terminação. ATENÇÃO — esqueleto parcial (itens 1-2 de 6 da issue de origem; ver seção "Itens 3-6" abaixo). NÃO invocar em produção até o watchdog, o guard de colisão editorial, a rotação de plan.json e a instrumentação de custo fecharem. Uso — `/diaria-continuo [--dry-run] [--bugs] [--priority P0,P1,P2,P3]`.
+description: Sessão CONTÍNUA que nunca termina sozinha (#5293) — derivada do overnight, reusa a mesma maquinaria de implementação, mas troca o critério de terminação. Itens 1-6 da issue de origem implementados (kind dedicado no session-registry, watchdog phase-aware, guard de colisão editorial pausa-não-encerra, rotação diária de plan.json, instrumentação de custo acumulado, notificação Telegram do AskUserQuestion pendente) — ver "Itens 3-6" abaixo pro estado exato de cada um antes de rodar em produção pela 1ª vez. Uso — `/diaria-continuo [--dry-run] [--bugs] [--priority P0,P1,P2,P3]`.
 disable-model-invocation: true
 model: sonnet
 effort: high
@@ -8,19 +8,21 @@ effort: high
 
 # /diaria-continuo
 
-> **AVISO — esqueleto parcial (#5293).** Este arquivo foi criado numa unidade
-> de escopo deliberadamente reduzido (itens 1-2 de 6 da issue #5293): a
-> prosa abaixo descreve o desenho COMPLETO decidido no briefing do editor
-> (14/08/2026), mas **partes críticas do mecanismo ainda não existem no
-> código** — watchdog que distingue "aguardando resposta" de stall real,
-> guard de colisão com a edição diária reavaliado pra sessão que nunca
-> termina, rotação de `plan.json`, instrumentação de custo acumulado, e a
-> confirmação de que o lote de perguntas de fato dispara Telegram + chat
-> bridge do Studio (ver "Risco aceito" abaixo — achado concreto, não
-> suposição). **Não invocar esta skill em produção até a issue #5293 fechar
-> os itens 3-6** (ver seção dedicada no fim deste arquivo). Este SKILL.md
-> existe para que a maquinaria de dispatch (`session-registry.ts`, kind
-> `"continuo"`) tenha um alvo documentado — não é luz verde operacional.
+> **Estado (#5293, atualizado 14/08/2026): itens 1-6 implementados.** A
+> primeira unidade desta issue entregou só o esqueleto (itens 1-2 — este
+> SKILL.md + o kind `"continuo"` em `session-registry.ts`). Esta unidade
+> fechou os quatro itens restantes: watchdog phase-aware (distingue "parada
+> de propósito" de stall real, e agora vigia `data/continuo/` além de
+> `data/overnight/`), o guard de colisão com a edição diária reavaliado pra
+> PAUSAR em vez de ENCERRAR, rotação diária de `plan.json`, instrumentação de
+> custo acumulado através de dias, e — achado concreto registrado na unidade
+> anterior, não parte da lista original de 6 itens — um hook novo que fecha
+> a lacuna de notificação do `AskUserQuestion` bloqueante rodando num
+> terminal comum (ver "Risco aceito" abaixo). **Ainda assim, esta é a
+> primeira vez que a skill roda de ponta a ponta em produção** — nenhuma
+> invocação real aconteceu até agora. Ler a seção "Itens 3-6" no fim deste
+> arquivo antes da 1ª invocação: cada item lista o mecanismo, o arquivo que
+> implementa, e qualquer limitação residual conhecida.
 
 `/diaria-continuo` é uma skill **derivada de `/diaria-overnight`** que
 preenche o buraco entre os dois modos existentes: o overnight é autônomo mas
@@ -59,9 +61,20 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
 - **Reusa o formato de `plan.json`** descrito em
   `.claude/skills/diaria-overnight/SKILL.md` (Fase 0, passo 7) — mesmos
   campos (`issues[]`, `timeline`, `stall_events`, `resume_state`, etc.) sob
-  `data/continuo/{AAMMDD}/plan.json`. Ver nota sobre rotação na seção "Itens
-  3-6" — o formato herdado assume uma rodada que fecha; uma sessão contínua
-  precisa de uma política de rotação que ainda não existe.
+  `data/continuo/{AAMMDD}/plan.json`. **Rotação diária (#5293 item 5,
+  `scripts/lib/continuo-plan-rotation.ts`):** rodar
+  `npx tsx scripts/lib/continuo-plan-rotation.ts check` no início de CADA
+  re-varredura (passo 2 do loop, abaixo) — idempotente, no-op na maior parte
+  das chamadas (só age quando o dia civil BRT mudou desde o último
+  `{AAMMDD}` ativo). Quando rotaciona, cria `data/continuo/{novoAAMMDD}/
+  plan.json` com `continued_from: {AAMMDD anterior}` (a cadeia inteira é
+  reconstruível seguindo esse campo pra trás) e apenda uma linha em
+  `data/continuo/history.jsonl`; o `plan.json` do dia anterior fica intocado
+  (nunca é destrutivo). `bugs_only`/`priority_filter` (config de SESSÃO, não
+  de dia) são carregados adiante automaticamente pela rotação. `findActiveRun`
+  do watchdog (`scripts/overnight-watchdog.ts`, item 3) já assume essa
+  rotação — ele trata "ativa" como "plan.json existe no `{AAMMDD}` mais
+  recente", sem depender de `report.md` (que `continuo` nunca escreve).
 - **Reusa a Fase 1 de implementação** do overnight, **verbatim**: subagente
   `general-purpose`, `isolation: "worktree"`, `model: sonnet` explícito
   (#2019) → `npm ci` → `npx tsc --noEmit` + testes afetados (nunca a suíte
@@ -79,7 +92,14 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   PR desta skill resolve `max` (fleet de 5 agentes) no hook por padrão, salvo
   diff pequeno o bastante pro heurístico de tamanho — não há desconto `low`
   automático como no overnight, e isto NÃO foi mudado nesta unidade (fora de
-  escopo do item 2, que tocou só `session-registry.ts`).
+  escopo do item 2, que tocou só `session-registry.ts`). **Toda citação desta
+  Fase que envolva `npx tsx scripts/log-event.ts` troca `--agent overnight`
+  por `--agent continuo`** — a citação "verbatim" é da MECÂNICA (worktree →
+  tsc → testes → PR → merge), não do valor literal do agent tag; copiar o
+  `--agent overnight` ao pé da letra faria os eventos desta skill virarem
+  invisíveis pra `getLastRunLogActivity(..., "continuo")`
+  (`scripts/overnight-watchdog.ts`) e pra `continuo-cost-summary.ts` (ambos
+  filtram por `agent === "continuo"` especificamente).
 - **Reusa a Fase 1.5 de review consolidado** do overnight (1 agente,
   `pr-review-toolkit:code-reviewer` via `Agent` com `model: sonnet`
   explícito, sobre o diff acumulado desde `base_sha`) — mesma cadência de
@@ -100,6 +120,37 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   uma sessão `continuo` **não** grava esse marker, então esse hook nunca a
   bloqueia; é isso que permite o `AskUserQuestion` do passo 4 do loop
   abaixo).
+- **Heartbeat de `phase` é OBRIGATÓRIO, não cosmético (#5293 item 3).**
+  `npx tsx scripts/lib/session-registry.ts heartbeat --kind continuo --phase
+  {valor}` a cada transição de estado do loop abaixo — `scripts/
+  overnight-watchdog.ts` (que agora vigia `data/continuo/` além de
+  `data/overnight/`) só evita alarme falso de stall quando encontra uma
+  sessão `continuo` ativa com `phase` em `HEALTHY_IDLE_PHASES`
+  (`"aguardando-resposta"` | `"pausado-edicao"`). **Sem o heartbeat, o
+  watchdog não tem como distinguir "parada de propósito" de "travada" e vai
+  disparar halt banner + Telegram a cada ciclo do watchdog agendado enquanto
+  a sessão ficar parada** — os passos 3, 4 e 6 do loop, e o guard de colisão
+  editorial no passo 1, dizem exatamente qual `phase` gravar em cada
+  transição.
+- **Emissão de `coordinator_tokens_estimate` é OBRIGATÓRIA, não opcional
+  (#5293 item 6 — achado do fleet review desta unidade: o item 6 original só
+  entregou a AGREGAÇÃO, `scripts/continuo-cost-summary.ts`; sem esta linha o
+  script sempre reportaria zero, silenciosamente).** Reusar literalmente a
+  instrução de `.claude/skills/diaria-overnight/SKILL.md` (Fase 0, passo 1,
+  "Instrumentação de token do coordenador") — emitir, ao fim de cada
+  transição de fase relevante do loop abaixo (ao esgotar a fila no passo 2,
+  ao montar o lote de perguntas no passo 3, ao dormir no passo 6, e a cada
+  rotação de dia no passo 2):
+  ```bash
+  npx tsx scripts/log-event.ts --edition {AAMMDD-do-dia-corrente} --agent continuo --level info \
+    --message "coordinator_tokens_estimate" \
+    --details '{"phase": "{nome-da-transição}", "tokens": N, "source": "harness_usage | context_size_proxy"}'
+  ```
+  **`--agent continuo`, nunca `--agent overnight`** — mesma troca obrigatória
+  documentada no bullet da Fase 1 acima; `continuo-cost-summary.ts` filtra
+  estritamente por esse valor. Se o harness não expuser nada estimável, logar
+  `{"tokens": null, "source": "unavailable"}` uma vez por dia rotacionado
+  (não repetir a cada transição) — mesma semântica do overnight.
 - **Guard de publicação (INVARIANTE, igual a overnight/develop):** editar
   código de publisher é ok; **executar é proibido** — nunca rodar
   `scripts/publish-*`, `clarice-schedule-sends`, `clarice-import-*`,
@@ -111,27 +162,54 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
 ## Loop invariável (nunca encerra por conta própria)
 
 Seis passos, repetidos indefinidamente — a sessão só para por ação externa
-(o editor mata o processo, ou o guard de colisão editorial preempta):
+(o editor mata o processo). O guard de colisão editorial (passo 1) **PAUSA**,
+nunca encerra — diferente do overnight, que preempta a rodada inteira ao
+detectar a edição diária em curso.
 
 1. **Trabalhar a fila desbloqueada** exatamente como o overnight faz hoje
    (ver "Reuso da maquinaria" acima) — 1 merge por vez, disciplina do
    #636/#633/#2959 intacta. Prioridade P0 > P1 > P2 > P3, mesmo critério do
-   overnight.
+   overnight. **Guard de colisão com a edição diária (#5293 item 4 — PAUSA,
+   não encerra):** antes de dispatchar cada unidade, checar
+   `npx tsx scripts/lib/find-current-edition.ts` (mesmo guard que o overnight
+   usa) — se uma edição estiver em curso, **não** gravar `preempted_by`/
+   encerrar como o overnight faz; em vez disso, heartbeat `--phase
+   pausado-edicao` e ir direto pro passo 6 (dormir), sem consumir a fila.
+   Voltar a checar este guard a cada acordar (passo 6) — quando a edição
+   terminar (guard não acha mais candidato), heartbeat de volta pra uma phase
+   de trabalho e retomar o passo 1 normalmente. O merge lock existente
+   (`acquireMergeLock`/`releaseMergeLock`, session-registry.ts) já serializa
+   qualquer `gh pr merge` que colida em cima disso — este guard evita
+   consumir CI/worktrees durante a janela da edição, não é a única linha de
+   defesa contra colisão.
 2. **Fila seca** → re-varredura (`gh issue list --state open`) pra pegar
    issue nova (de terceiro, ou criada por finding da própria rodada) — mesma
    lógica sem cap de `rescans_done` que o overnight adotou em #5272 (contador
-   puro de observabilidade, nenhuma decisão de parada lê o valor).
-3. **Ainda seca** → varrer o backlog **bloqueado** (issues `bloqueada-externa`
-   na classificação do overnight — credencial-runtime, conta-externa,
-   decisão-produto, supervisão-blast-radius, plataforma-sem-fix, mesma
-   taxonomia cat. A-E do develop) e montar um lote de perguntas: para cada
-   issue bloqueada, qual decisão/credencial/confirmação exata a destravaria.
-4. **Perguntar** via `AskUserQuestion`, agrupado por issue, **máximo 4
-   perguntas por chamada**, **sempre com a opção "decido depois (pular esta
-   issue)"** — mesmo formato do briefing do overnight (Fase 0, passo 5), só
-   que aqui pode se repetir a cada ciclo em vez de acontecer uma vez só no
-   início.
-5. **Resposta recebida** → postar como **comentário durável na issue**
+   puro de observabilidade, nenhuma decisão de parada lê o valor). **Antes de
+   varrer, rodar `npx tsx scripts/lib/continuo-plan-rotation.ts check`**
+   (#5293 item 5 — rotaciona `plan.json` pro dia civil corrente se ele mudou
+   desde a última chamada; no-op na maioria das vezes).
+3. **Ainda seca** → heartbeat `--phase varrendo-bloqueadas`, varrer o backlog
+   **bloqueado** (issues `bloqueada-externa` na classificação do overnight —
+   credencial-runtime, conta-externa, decisão-produto,
+   supervisão-blast-radius, plataforma-sem-fix, mesma taxonomia cat. A-E do
+   develop) e montar um lote de perguntas: para cada issue bloqueada, qual
+   decisão/credencial/confirmação exata a destravaria.
+4. **Perguntar** → heartbeat `--phase aguardando-resposta` **ANTES** de
+   chamar `AskUserQuestion` (não depois — o watchdog pode rodar entre os dois
+   passos; o heartbeat precisa estar gravado antes que a chamada bloqueie),
+   agrupado por issue, **máximo 4 perguntas por chamada**, **sempre com a
+   opção "decido depois (pular esta issue)"** — mesmo formato do briefing do
+   overnight (Fase 0, passo 5), só que aqui pode se repetir a cada ciclo em
+   vez de acontecer uma vez só no início. O hook
+   `.claude/hooks/notify-continuo-askuserquestion.mjs` (#5293, achado do
+   "Risco aceito" abaixo) dispara Telegram automaticamente nesta chamada —
+   não precisa de nenhuma ação extra do coordenador além do heartbeat já
+   estar gravado (o hook lê a sessão registrada, não o heartbeat em si, mas
+   sem sessão registrada — passo omitido por engano — não há como o hook
+   saber que é uma sessão `continuo`).
+5. **Resposta recebida** → heartbeat de volta pra uma phase de trabalho,
+   postar como **comentário durável na issue**
    (`gh issue comment` — `plan.json` é cache, o comentário é a fonte de
    verdade, mesmo princípio do overnight), promover a issue a elegível, **e
    implementar** (volta ao passo 1). Blast radius da implementação: **tudo
@@ -139,10 +217,19 @@ Seis passos, repetidos indefinidamente — a sessão só para por ação externa
    adicional** — a resposta do editor É o consentimento, mesmo princípio de
    `disable-model-invocation: true` e da regra de auto-merge em sessão
    interativa (#5251).
-6. **Sem resposta** → dormir e re-varrer periodicamente (a fila desbloqueada
-   pode ter crescido nesse meio-tempo — voltar ao passo 1 se sim). Nunca
-   "termina": a sessão fica viva esperando ou fila nova, ou resposta a uma
-   pergunta pendente.
+6. **Sem resposta** → heartbeat `--phase aguardando-resposta` (se ainda não
+   estava nessa phase — idempotente repetir) e dormir; ao acordar, re-checar
+   primeiro o guard de colisão editorial do passo 1 (se uma edição entrou em
+   curso enquanto dormia, heartbeat `--phase pausado-edicao` e continuar
+   dormindo) e então re-varrer periodicamente (a fila desbloqueada pode ter
+   crescido nesse meio-tempo — voltar ao passo 1 se sim). Nunca "termina": a
+   sessão fica viva esperando ou fila nova, ou resposta a uma pergunta
+   pendente. **Custo acumulado (#5293 item 6):** ao acordar de um período de
+   sono longo (ordem de horas) ou a cada rotação de dia (passo 2), rodar
+   `npx tsx scripts/continuo-cost-summary.ts` e considerar o número reportado
+   — não há teto (mandato "sem limites", #2039/#5293), mas o editor pode
+   perguntar a qualquer momento e a resposta deve vir desse script, nunca de
+   memória/estimativa do coordenador (mesma disciplina do #1172).
 
 **Modo ocioso é estritamente passivo (decisão do briefing):** quando a fila
 desbloqueada seca e não há resposta pendente, a skill **só re-varre issues e
@@ -158,7 +245,9 @@ respondeu, dorme.
 | **Forma** | **Skill nova** (`/diaria-continuo`), não flag `--forever` do overnight | Mantém a Regra 1 do overnight literal e sem exceção condicional. |
 | **Ocioso** | **Só re-varre issues e dorme** | Não vira geradora de trabalho — ver "Loop invariável" acima. |
 | **Blast radius** | **Tudo que a resposta destravar**, inclusive cat. D | A resposta do editor é o consentimento — sem gate adicional pós-resposta. |
-| **Kind no `session-registry.ts`** | **`"continuo"`, dedicado** (#5293 item 2, implementado nesta unidade) | Não reusa `"overnight"` — preserva o guard `block-askuserquestion-overnight-autonomous.mjs`, que depende de "overnight nunca pergunta". |
+| **Kind no `session-registry.ts`** | **`"continuo"`, dedicado** (#5293 item 2) | Não reusa `"overnight"` — preserva o guard `block-askuserquestion-overnight-autonomous.mjs`, que depende de "overnight nunca pergunta". |
+| **Guard de colisão editorial** | **PAUSA, nunca encerra** (#5293 item 4) | Diferente do overnight (preempta a rodada inteira) — heartbeat `--phase pausado-edicao`, dorme, retoma quando a edição termina. |
+| **Rotação de `plan.json`** | **Diária, por dia civil BRT** (#5293 item 5) | `continued_from` encadeia os dias; config de sessão (`bugs_only`/`priority_filter`) carrega adiante, dados do dia não. |
 
 ## Risco aceito: `AskUserQuestion` bloqueante numa sessão que roda o tempo todo
 
@@ -177,38 +266,47 @@ o trade-off na mesa:
   roda quando o passo 1 não tem mais nada pra fazer). A skill parada
   esperando resposta e a skill dormindo (passo 6) são estados equivalentes
   em produtividade.
-- **Mitigação PRETENDIDA — status real investigado nesta unidade, NÃO
-  assumido:** a issue original cita `scripts/lib/telegram-notify.ts` e o
+- **Mitigação — status investigado numa unidade anterior, FECHADO nesta.** A
+  issue original citava `scripts/lib/telegram-notify.ts` e o
   `gate-chat-bridge.js` do Studio (#3557/#3617/#3804) como já existentes e
-  suficientes. Achado desta unidade (leitura direta do código, não suposição):
-  - **`scripts/studio-ui/studio-telegram-notify.ts`** já dispara notificação
-    Telegram sempre que há um `AskUserQuestion`/decisão de tool pendente em
-    `chatPermissionsPending` (`studio-chat.ts`), **genérico por natureza —
-    não checa de onde veio a pergunta**. **Mas** `chatPermissionsPending` só
-    é populado por sessões de chat abertas **através do próprio drawer do
-    Studio** (`studio-chat.ts`, via SDK com um `canUseTool` customizado
-    ligado àquela sessão específica) — **não** é um hook global que observe
-    qualquer sessão arbitrária do Claude Code rodando num terminal comum.
-  - **`scripts/studio-ui/public/gate-chat-bridge.js`** correlaciona um
-    gate pendente do cockpit (`gatesPending`, de `GET /api/editions/:aammdd`
-    — Stage 4/Stage 6 de uma **edição**) com um card pendente no chat — é
-    especificamente sobre gates **editoriais**, não sobre uma
-    `AskUserQuestion` genérica de uma sessão de backlog de issues.
-  - **Conclusão, registrada como pendência explícita (não resolvida nesta
-    unidade):** a decisão do briefing foi rodar `/diaria-continuo` **no
-    terminal** (ver tabela acima). Se a sessão for de fato invocada num
-    terminal comum (não através do chat drawer do Studio), **nem
-    `telegram-notify.ts` nem `gate-chat-bridge.js` disparam automaticamente**
-    para o `AskUserQuestion` do passo 4 do loop — os dois mecanismos cobrem
-    um caminho diferente (chat drawer + gates editoriais), não o caminho que
-    esta skill de fato usa. Fechar esta lacuna requer OU (a) rodar
-    `/diaria-continuo` através do chat drawer do Studio em vez do terminal
-    (contradiz a decisão "no terminal" da tabela acima — precisaria de nova
-    decisão do editor), OU (b) wiring novo — algum sinal que a sessão de
-    terminal emita e que `studio-telegram-notify.ts` (ou um watcher
-    equivalente) consiga observar. **Nenhuma das duas foi implementada nesta
-    unidade** — ver "Itens 3-6" abaixo, item watchdog (mais próximo, mas não
-    idêntico).
+  suficientes. Achado da unidade anterior (leitura direta do código):
+  - **`scripts/studio-ui/studio-telegram-notify.ts`** só dispara pra
+    `AskUserQuestion` pendente em `chatPermissionsPending`
+    (`studio-chat.ts`) — populado só por sessões abertas **através do
+    drawer do Studio**, não por uma sessão de terminal comum.
+  - **`scripts/studio-ui/public/gate-chat-bridge.js`** cobre gates
+    **editoriais** (`gatesPending`, Stage 4/6 de uma edição), não
+    `AskUserQuestion` genérico de uma sessão de backlog de issues.
+  - **Nenhum dos dois cobre o caminho que esta skill de fato usa** (decisão
+    do briefing: "no terminal", tabela acima) — ficou registrado como
+    pendência explícita, não resolvida naquela unidade.
+  - **Fechado nesta unidade (#5293 item 3, achado adjacente):**
+    `.claude/hooks/notify-continuo-askuserquestion.mjs`, um `PreToolUse`
+    hook novo registrado no MESMO matcher `AskUserQuestion` que
+    `block-askuserquestion-overnight-autonomous.mjs` já usa
+    (`.claude/settings.json`). Lê `session_id` do payload do hook, varre
+    `data/sessions/` por um registro `continuo-*-{session_id}.json` ativo
+    (`session-registry.ts`) e, se encontrar, dispara a Bot API do Telegram
+    diretamente (mesma credencial `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` de
+    `telegram-notify.ts` — reimplementada, não importada, por ser um hook
+    self-contained, mesma convenção do hook irmão). **NUNCA bloqueia** — é
+    observação pura, roda em paralelo ao hook que decide bloquear/permitir.
+    Testado em `test/notify-continuo-askuserquestion.test.ts`. **Limitação
+    residual honesta:** funciona só se `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`
+    estiverem configurados na máquina (mesmo requisito de todo o resto do
+    projeto que usa Telegram — `docs/telegram-setup.md`) — sem eles, o hook
+    é um no-op silencioso e o risco aceito original (travar sem aviso) volta
+    a valer integralmente. Confirmar `echo $TELEGRAM_BOT_TOKEN` antes da 1ª
+    invocação em produção desta skill. **Credenciais presentes mas
+    rejeitadas** (token revogado, `chat_id` errado, rate limit) — diferente
+    de credenciais AUSENTES — loga em stderr (`resp.status`+corpo, ou a
+    exceção de rede) em vez de descartar silenciosamente (#5293 fleet
+    review, achado 4); ainda assim nunca bloqueia o `AskUserQuestion`. stderr
+    de hook não tem superfície de alerta própria neste repo — só aparece se
+    alguém estiver olhando o terminal/journalctl no momento, o que é
+    exatamente a situação que este hook existe pra não depender. Fechar essa
+    lacuna (ex: um segundo canal de alerta pra falha do PRÓPRIO alerta) é
+    follow-up, não bloqueio desta unidade.
 
 ## Argumentos
 
@@ -220,51 +318,99 @@ comportamento exato de cada um.
 
 ---
 
-## Itens 3-6 — PENDENTES, não implementados nesta unidade (#5293)
+## Itens 3-6 — estado (#5293)
 
-Esta unidade implementou **só os itens 1 e 2** da issue #5293 (este
-SKILL.md + o kind `"continuo"` em `scripts/lib/session-registry.ts`). Os
-quatro itens abaixo são trabalho de implementação real, TODO explícito —
-**não fingir que estão resolvidos só porque este arquivo os descreve em
-prosa**:
+A 1ª unidade implementou só os itens 1-2 (este SKILL.md + o kind
+`"continuo"` em `scripts/lib/session-registry.ts`). Esta unidade fechou os
+quatro restantes — cada um com código + testes, não só prosa:
 
-1. **Watchdog (`Diaria-Overnight-Watchdog`, `scripts/overnight-watchdog.ts`)
-   precisa distinguir "parada esperando resposta do editor" (passo 4/6 do
-   loop — saudável) de stall real (subagente travado, CI que nunca resolve,
-   sessão morta). Sem isso, uma sessão `/diaria-continuo` saudável parada no
-   passo 6 (dormindo, aguardando resposta a uma pergunta) dispara alarme de
-   stall como se fosse o incidente que o watchdog existe pra pegar.
-   Direção provável (não implementada): um estado explícito no heartbeat do
-   registry (`phase: "aguardando-resposta"`, análogo ao `phase: "autonomous"`
-   já usado pelo marker do overnight) que o watchdog trate como não-stall.
-2. **Interação com `Diaria-Edicao-Diaria`** (task dom-qui 16:00 BRT, roda
-   `/diaria-edicao {D+1} --skip newsletter,linkedin,facebook`). Definir se a
-   sessão contínua pausa merges durante a janela da edição, ou se o merge
-   lock existente (`acquireMergeLock`/`releaseMergeLock`, já reusado por esta
-   skill — ver "Reuso da maquinaria" acima) já basta. O guard de colisão
-   editorial do overnight (`find-current-edition.ts`, que preempta a Fase 1
-   quando uma edição está em curso) precisa ser reavaliado especificamente
-   pra uma sessão que **nunca encerra** — o overnight trata preempção como
-   fim de rodada (`preempted_by: "edicao_editorial"`); uma sessão contínua
-   precisaria decidir se isso é "fim" ou "pausa temporária que retoma depois".
-3. **Rotação de `plan.json`.** O formato herdado do overnight
-   (`data/continuo/{AAMMDD}/plan.json`, ver "Reuso da maquinaria" acima)
-   assume uma rodada que fecha num dia. Uma sessão que nunca termina cruza
-   múltiplos dias — definir política de rotação (por dia? por N issues
-   processadas?) e como o rótulo `{AAMMDD}` do diretório se comporta quando a
-   sessão segue viva além da meia-noite (o overnight já lida com "cruza a
-   meia-noite" fixando `{AAMMDD}` uma vez no início da rodada; aqui não há
-   "início da rodada" — a sessão é, por desenho, sempre "em andamento").
-4. **Instrumentação de custo acumulado.** "Sem limites" é o mandato (mesmo
-   principle do overnight, #2039), mas um coordenador `sonnet`/`high` rodando
-   indefinidamente é o maior consumidor de token por rodada de qualquer fluxo
-   deste repo (#3453 já identificou isso pro overnight, que ao menos tem fim).
-   Reusar `coordinator_tokens_estimate` (já emitido pelo overnight ao fim de
-   cada fase, ver `.claude/skills/diaria-overnight/SKILL.md` passo 1) e expor
-   consumo acumulado **por ciclo** (não só por fase) — pra o editor ter o
-   número real antes de decidir se quer impor um teto explícito a esta skill
-   (que hoje não tem nenhum).
+1. **Watchdog — RESOLVIDO.** `scripts/overnight-watchdog.ts` agora vigia
+   `data/continuo/` além de `data/overnight/` na mesma invocação
+   (`WATCHED_KINDS`), e `findActiveRun(rootDir, "continuo")` trata "ativa"
+   como "`plan.json` existe no `{AAMMDD}` mais recente" — nunca depende de
+   `report.md` (que `continuo` nunca escreve, ao contrário do overnight).
+   Antes de declarar stall, `hasHealthyIdleSession` consulta
+   `session-registry.ts` por uma sessão `continuo` ativa com `phase` em
+   `HEALTHY_IDLE_PHASES` (`"aguardando-resposta"` | `"pausado-edicao"`) — se
+   encontrar, o diagnóstico vira `healthy_idle` (não `stall`), sem
+   halt banner nem alerta Telegram. **Depende do heartbeat de fase estar
+   sendo gravado pelo coordenador** (ver bullet "Heartbeat de phase é
+   OBRIGATÓRIO" em "Reuso da maquinaria" acima) — o mecanismo é fail-safe no
+   sentido de nunca mascarar um stall genuíno, mas não é mágico: sem
+   heartbeat, o watchdog não tem como saber que a parada é saudável. Testado
+   em `test/overnight-watchdog.test.ts` (`findActiveRun com kind=continuo`,
+   `hasHealthyIdleSession`, `diagnoseWatchdogActivity` com `isHealthyIdle`).
+   **Isolamento por kind (corrigido no fleet review):** o loop de `main()`
+   agora envolve cada kind (`overnight`, `continuo`) no próprio try/catch —
+   uma exceção ao processar um kind não aborta mais o loop antes de checar o
+   outro; o processo ainda sai com código != 0 se algum kind falhou.
+2. **Interação com `Diaria-Edicao-Diaria` — RESOLVIDO (decisão: PAUSA, não
+   fim).** Diferente do overnight (que preempta a rodada inteira e grava
+   `preempted_by: "edicao_editorial"`), o passo 1 do "Loop invariável" agora
+   especifica: guard de colisão detectado → heartbeat `--phase
+   pausado-edicao` → pular pro passo 6 (dormir) sem consumir a fila →
+   re-checar o guard a cada acordar → heartbeat de volta pra phase de
+   trabalho quando a edição terminar. O merge lock existente
+   (`acquireMergeLock`/`releaseMergeLock`) continua como a última linha de
+   defesa contra colisão de `gh pr merge` — este guard evita gastar
+   CI/worktrees durante a janela da edição, não é redundante com o lock.
+3. **Rotação de `plan.json` — RESOLVIDO.**
+   `scripts/lib/continuo-plan-rotation.ts` — rotação por dia CIVIL BRT
+   (`todayAammdd`/`shouldRotatePlan`). `rotateContinuoPlanIfNeeded` cria
+   `data/continuo/{novoAAMMDD}/plan.json` com `continued_from: {AAMMDD
+   anterior}` quando o dia muda, carrega adiante `bugs_only`/
+   `priority_filter` (config de sessão, não de dia), apenda uma linha em
+   `data/continuo/history.jsonl`, e NUNCA toca o `plan.json` do dia anterior
+   (só adiciona, nunca edita/apaga). Chamado pelo coordenador no início de
+   cada re-varredura (passo 2 do loop) — idempotente, no-op na maioria das
+   chamadas. Testado em `test/continuo-plan-rotation.test.ts` (17 casos,
+   incluindo bootstrap, idempotência, virada de dia/mês, e falha de I/O no
+   `history.jsonl` não impedindo a rotação do `plan.json` em si).
+   **Leitura do `plan.json` anterior (corrigida no fleet review):** usa
+   `readPlanFromDir` (mesma função com retry-em-JSON-truncado do #3353 que
+   `overnight-watchdog.ts` já reusava) em vez de um `JSON.parse(readFileSync
+   (...))` cru — a 1ª versão desta unidade tinha reintroduzido exatamente o
+   bug que #3353 corrigiu, só que num 3º leitor do mesmo `plan.json`. Falha
+   de leitura/parse (depois do retry) é logada em stderr, não silenciosa —
+   `listContinuoDays` já confirmou que o arquivo existe, então um `null`
+   aqui é sempre falha genuína, nunca "ausente".
+4. **Instrumentação de custo acumulado — RESOLVIDO (2 partes, a 2ª corrigida
+   depois do fleet review).** `scripts/continuo-cost-summary.ts` — soma
+   `details.tokens` de todos os eventos `coordinator_tokens_estimate`
+   (`agent: "continuo"`) em `data/run-log.jsonl`, através de TODOS os dias
+   rotacionados de `data/continuo/` (não só o dia corrente — usa
+   `listContinuoDays` de `continuo-plan-rotation.ts`). Suporta `--since
+   {AAMMDD}` pra bounds, e `--json` pra saída estruturada. Eventos com
+   `tokens: null` (harness não expôs `usage`) são contados à parte
+   (`unavailableCount`), nunca somados como 0. Complementa (não substitui)
+   `scripts/check-overnight-token-instrumentation.ts` (#5009), que checa só
+   PRESENÇA por edição isolada — este script soma o VALOR através do ciclo
+   inteiro. Testado em `test/continuo-cost-summary.test.ts`. **A 1ª versão
+   desta unidade entregou só essa AGREGAÇÃO — a EMISSÃO (o coordenador de
+   fato rodando `log-event.ts --agent continuo --message
+   coordinator_tokens_estimate`) nunca foi instruída em lugar nenhum do
+   `SKILL.md`, o que faria o script sempre reportar zero em silêncio**
+   (achado do comment-analyzer no fleet review desta PR). Corrigido: bullet
+   dedicado em "Reuso da maquinaria" acima ("Emissão de
+   coordinator_tokens_estimate é OBRIGATÓRIA") agora instrui explicitamente
+   quando e como emitir. **Ainda sem um checker mecânico equivalente a
+   `check-overnight-token-instrumentation.ts`** que confirme que o
+   coordenador de fato seguiu essa instrução numa rodada real — mesma classe
+   de gap, ainda aberta, ver `computeContinuoCostSummary`'s docblock.
 
-**Nenhum destes quatro itens bloqueia a existência deste arquivo** — a issue
-#5293 pediu explicitamente escopo reduzido pra esta unidade. Eles bloqueiam,
-sim, **rodar esta skill em produção** (ver aviso no topo do arquivo).
+**Achado adjacente, fechado nesta mesma unidade (não fazia parte dos 6 itens
+originais, mas do "Risco aceito" registrado acima):**
+`.claude/hooks/notify-continuo-askuserquestion.mjs` — hook `PreToolUse` que
+dispara Telegram quando um `AskUserQuestion` pendente pertence a uma sessão
+`continuo` ativa, cobrindo especificamente o caminho "sessão de terminal
+comum" que `studio-telegram-notify.ts`/`gate-chat-bridge.js` não cobrem. Ver
+detalhe completo na seção "Risco aceito" acima.
+
+**Residual, honestamente não resolvido:** nenhuma invocação real desta
+skill aconteceu ainda em produção — todo o mecanismo acima foi validado por
+teste unitário/isolado (tmpdir, sem tocar `data/` real), não por uma rodada
+de ponta a ponta. A 1ª invocação em produção deve ser tratada como o
+primeiro teste de integração real do conjunto — acompanhar de perto
+(heartbeats sendo gravados, watchdog não alarmando falso-positivo, rotação
+acontecendo na virada do dia) antes de considerar o mecanismo
+operacionalmente maduro.

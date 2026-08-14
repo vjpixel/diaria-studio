@@ -72,6 +72,17 @@
  * GUARD DE PUBLICAÇÃO: este script é só observabilidade/alerta.
  * NUNCA toca Beehiiv/LinkedIn/Facebook/Brevo, PRs, nem merge.
  *
+ * #5293 item 3: este watchdog agora vigia DOIS kinds na mesma invocação —
+ * `data/overnight/{AAMMDD}/` (comportamento original, inalterado) e
+ * `data/continuo/{AAMMDD}/` (`/diaria-continuo`, que por desenho nunca
+ * escreve `report.md` — "ativa" ali é só "existe plan.json" no diretório mais
+ * recente, ver `findActiveRun`). Antes de declarar stall, checa
+ * `hasHealthyIdleSession` (`session-registry.ts`, `phase` em
+ * `HEALTHY_IDLE_PHASES`) — uma sessão contínua parada de propósito
+ * (aguardando resposta do editor, ou pausada pelo guard de colisão com a
+ * edição diária) NUNCA dispara alerta; só uma sessão sem heartbeat de fase
+ * saudável E sem atividade recente é tratada como stall real.
+ *
  * Deve ser agendado externamente (Windows Task Scheduler, cron) para rodar
  * a cada 10–15 min. Ver docs/overnight-watchdog-setup.md.
  */
@@ -88,6 +99,7 @@ import { resolveRunLogPath } from "./lib/run-log.ts";
 import { mtimeMs } from "./lib/mtime.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { listActiveSessions } from "./lib/session-registry.ts";
 import { readPlanFromDir, type PlanFileReaders } from "./overnight-statusline.ts";
 import {
   TELEGRAM_IO_TIMEOUT_MS,
@@ -194,21 +206,41 @@ export function readPlanForStallHandling(
 // I/O helpers
 // ---------------------------------------------------------------------------
 
+/** Kinds de rodada que este watchdog sabe vigiar (#5293 item 3 — antes só "overnight"). */
+export type WatchableKind = "overnight" | "continuo";
+
 /**
- * Varre data/overnight/ e retorna a rodada ativa mais recente:
- * diretório com plan.json mas sem report.md.
+ * Varre `data/{kind}/` e retorna a rodada ativa mais recente.
+ *
+ * Semântica de "ativa" difere por kind:
+ *   - `overnight`: diretório com `plan.json` mas SEM `report.md` — `report.md`
+ *     é o marcador de fim de rodada (a rodada encerra e escreve o relatório).
+ *   - `continuo` (#5293): a skill **nunca** escreve `report.md` — por desenho,
+ *     ela não termina (ver `.claude/skills/diaria-continuo/SKILL.md`, "Loop
+ *     invariável"). "Ativa" aqui é simplesmente "existe `plan.json`" no
+ *     diretório `{AAMMDD}` mais recente — a rotação diária de
+ *     `scripts/lib/continuo-plan-rotation.ts` (item 5) garante que o mais
+ *     recente lexicograficamente é sempre o dia corrente da sessão viva (ou
+ *     o último dia antes de a sessão ter sido morta externamente — mesmo
+ *     "risco" que `overnight` já aceita pra uma rodada crashada sem
+ *     `report.md`: o watchdog trata como ativa até expirar por outro motivo,
+ *     ex: fila de issues genuinamente parada, que É o cenário que o stall
+ *     detection existe pra pegar).
  */
-export function findActiveRun(rootDir: string): {
+export function findActiveRun(
+  rootDir: string,
+  kind: WatchableKind = "overnight",
+): {
   aammdd: string;
   planPath: string;
   reportPath: string;
 } | null {
-  const overnightDir = join(rootDir, "data", "overnight");
-  if (!existsSync(overnightDir)) return null;
+  const kindDir = join(rootDir, "data", kind);
+  if (!existsSync(kindDir)) return null;
 
   let entries: string[];
   try {
-    entries = readdirSync(overnightDir, { withFileTypes: true })
+    entries = readdirSync(kindDir, { withFileTypes: true })
       .filter((d) => d.isDirectory() && /^\d{6}$/.test(d.name))
       .map((d) => d.name)
       .sort(); // lexicographic = cronológico para YYMMDD
@@ -219,11 +251,12 @@ export function findActiveRun(rootDir: string): {
   // Mais recente primeiro
   for (let i = entries.length - 1; i >= 0; i--) {
     const aammdd = entries[i];
-    const dir = join(overnightDir, aammdd);
+    const dir = join(kindDir, aammdd);
     const planPath = join(dir, "plan.json");
     const reportPath = join(dir, "report.md");
 
-    if (existsSync(planPath) && !existsSync(reportPath)) {
+    const isActive = kind === "continuo" ? existsSync(planPath) : existsSync(planPath) && !existsSync(reportPath);
+    if (isActive) {
       return { aammdd, planPath, reportPath };
     }
   }
@@ -231,11 +264,13 @@ export function findActiveRun(rootDir: string): {
 }
 
 /**
- * Extrai o timestamp mais recente do run-log para a edição/agente overnight.
+ * Extrai o timestamp mais recente do run-log para a edição/agente dado
+ * (`agent`, default `"overnight"` — #5293 item 3 generaliza pra `"continuo"`).
  */
 export function getLastRunLogActivity(
   rootDir: string,
   aammdd: string,
+  agent: WatchableKind = "overnight",
 ): number | null {
   const logPath = resolveRunLogPath(rootDir);
   if (!existsSync(logPath)) return null;
@@ -258,7 +293,7 @@ export function getLastRunLogActivity(
         timestamp?: string;
       };
       if (
-        event.agent === "overnight" &&
+        event.agent === agent &&
         event.edition === aammdd &&
         event.timestamp
       ) {
@@ -272,6 +307,40 @@ export function getLastRunLogActivity(
     }
   }
   return lastTs;
+}
+
+/**
+ * Fases de `session-registry.ts` (`heartbeat --phase X`) que o watchdog trata
+ * como "parada de propósito" — não stall (#5293 item 3).
+ *
+ *   - `"aguardando-resposta"`: `/diaria-continuo` parada no passo 4/6 do loop
+ *     ("Loop invariável", `.claude/skills/diaria-continuo/SKILL.md`) —
+ *     `AskUserQuestion` bloqueante pendente, ou dormindo entre re-varreduras
+ *     sem resposta ainda.
+ *   - `"pausado-edicao"`: `/diaria-continuo` pausada pelo guard de colisão
+ *     com `Diaria-Edicao-Diaria` (ver "Item 4" no SKILL.md) — diferente do
+ *     overnight, que ENCERRA a rodada nesse guard (`preempted_by:
+ *     "edicao_editorial"`), a sessão contínua só PAUSA e retoma depois.
+ *
+ * `/diaria-overnight` nunca grava nenhuma destas fases (Regra 1: zero
+ * `AskUserQuestion` pós-briefing, e o guard de colisão editorial dele
+ * ENCERRA a rodada em vez de pausar) — a checagem abaixo roda pros dois
+ * kinds por uniformidade, mas só tem efeito prático em `continuo`.
+ */
+export const HEALTHY_IDLE_PHASES = ["aguardando-resposta", "pausado-edicao"] as const;
+
+/**
+ * `true` se existe, em `session-registry.ts`, uma sessão ATIVA (não-stale —
+ * mesma janela de 24h de `listActiveSessions`) do `kind` dado com `phase`
+ * num dos `HEALTHY_IDLE_PHASES`. Fail-soft: `session-registry.ts` ausente ou
+ * corrompido nunca lança aqui — `listActiveSessions` já é fail-soft por
+ * contrato (array vazio em qualquer falha de leitura), então esta função só
+ * precisa filtrar, nunca precisa de try/catch próprio.
+ */
+export function hasHealthyIdleSession(rootDir: string, kind: WatchableKind, nowMs: number): boolean {
+  return listActiveSessions(rootDir, nowMs).some(
+    (s) => s.kind === kind && s.phase !== undefined && (HEALTHY_IDLE_PHASES as readonly string[]).includes(s.phase),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +366,7 @@ async function sendTelegramAlert(message: string): Promise<void> {
 
 function renderHaltBanner(
   rootDir: string,
+  kind: WatchableKind,
   aammdd: string,
   elapsedMin: number,
   thresholdMin: number,
@@ -304,9 +374,9 @@ function renderHaltBanner(
   const haltScript = resolve(rootDir, "scripts", "render-halt-banner.ts");
   if (!existsSync(haltScript)) {
     process.stdout.write(
-      `\n=== OVERNIGHT WATCHDOG: STALL DETECTADO ===\n` +
+      `\n=== ${kind.toUpperCase()} WATCHDOG: STALL DETECTADO ===\n` +
         `Rodada ${aammdd} sem atividade há ${elapsedMin} min (limiar: ${thresholdMin} min).\n` +
-        `Verifique a sessão overnight e responda 'retry' pra retomar ou 'abort' pra encerrar.\n` +
+        `Verifique a sessão ${kind} e responda 'retry' pra retomar ou 'abort' pra encerrar.\n` +
         `=========================================\n`,
     );
     return;
@@ -319,11 +389,11 @@ function renderHaltBanner(
         "tsx",
         haltScript,
         "--stage",
-        `overnight — rodada ${aammdd}`,
+        `${kind} — rodada ${aammdd}`,
         "--reason",
         `stall detectado pelo watchdog externo: ${elapsedMin} min sem atividade (limiar ${thresholdMin} min)`,
         "--action",
-        `verifique a sessão overnight no terminal; responda 'retry' pra retomar ou 'abort' pra encerrar`,
+        `verifique a sessão ${kind} no terminal; responda 'retry' pra retomar ou 'abort' pra encerrar`,
       ],
       {
         cwd: rootDir,
@@ -345,6 +415,7 @@ function renderHaltBanner(
 
 function emitRunLogEvent(
   rootDir: string,
+  kind: WatchableKind,
   aammdd: string,
   elapsedMin: number,
   lastSource: string,
@@ -361,7 +432,7 @@ function emitRunLogEvent(
         "--edition",
         aammdd,
         "--agent",
-        "overnight",
+        kind,
         "--level",
         "warn",
         "--message",
@@ -369,7 +440,7 @@ function emitRunLogEvent(
         "--details",
         JSON.stringify({
           reason: "unknown",
-          source: "overnight-watchdog",
+          source: `${kind}-watchdog`,
           elapsed_min: elapsedMin,
           last_activity_source: lastSource,
         }),
@@ -406,7 +477,7 @@ function parseArgs(argv: string[]): {
 // Main
 // ---------------------------------------------------------------------------
 
-export type WatchdogDiagnosisAction = "skip_unknown_activity" | "dry_run" | "no_stall" | "stall";
+export type WatchdogDiagnosisAction = "skip_unknown_activity" | "dry_run" | "no_stall" | "healthy_idle" | "stall";
 
 export interface WatchdogDiagnosis {
   action: WatchdogDiagnosisAction;
@@ -443,8 +514,21 @@ export function diagnoseWatchdogActivity(params: {
   lastSource: string;
   nowMs: number;
   thresholdMin: number;
+  /**
+   * #5293 item 3: `true` quando `hasHealthyIdleSession` encontrou uma sessão
+   * registrada (`session-registry.ts`) do mesmo kind com `phase` num dos
+   * `HEALTHY_IDLE_PHASES` (ex: `/diaria-continuo` parada no passo 4/6 do loop
+   * — esperando resposta do editor, ou pausada pelo guard de colisão
+   * editorial). Distingue "parada de propósito, saudável" de "travada" — sem
+   * isso, uma sessão contínua saudável dispara o MESMO alerta de stall que
+   * este mecanismo existe pra evitar (mesmo princípio do incidente 260706/07,
+   * #3037/#3038, registrado em `.claude/skills/diaria-continuo/SKILL.md`
+   * §"Risco aceito" — não confundir com #2768, que é o guard de subagente
+   * travado do coordenador overnight, um mecanismo diferente).
+   */
+  isHealthyIdle: boolean;
 }): WatchdogDiagnosis {
-  const { aammdd, dryRun, lastActivityMs, lastSource, nowMs, thresholdMin } = params;
+  const { aammdd, dryRun, lastActivityMs, lastSource, nowMs, thresholdMin, isHealthyIdle } = params;
   const elapsedMin = Math.round((nowMs - lastActivityMs) / 60_000);
 
   if (lastActivityMs === 0) {
@@ -466,7 +550,9 @@ export function diagnoseWatchdogActivity(params: {
         `[watchdog] DRY-RUN — rodada ativa: ${aammdd}`,
         `[watchdog] Última atividade: ${new Date(lastActivityMs).toISOString()} (fonte: ${lastSource})`,
         `[watchdog] Inatividade: ${elapsedMin} min (limiar: ${thresholdMin} min)`,
-        `[watchdog] → ${isStall ? "STALL detectado" : "sem stall"} (dry-run, sem writes/alertas)`,
+        `[watchdog] → ${isStall ? "STALL detectado" : "sem stall"}${
+          isStall && isHealthyIdle ? " — mas sessão registrada como aguardando-resposta/pausada, seria tratado como healthy_idle fora de dry-run" : ""
+        } (dry-run, sem writes/alertas)`,
       ],
       elapsedMin,
     };
@@ -480,19 +566,37 @@ export function diagnoseWatchdogActivity(params: {
     };
   }
 
+  if (isHealthyIdle) {
+    return {
+      action: "healthy_idle",
+      lines: [
+        `[watchdog] Rodada ${aammdd} sem atividade há ${elapsedMin} min, mas sessão registrada como ` +
+          `aguardando-resposta/pausada (session-registry.ts) — não é stall. Skipping.`,
+      ],
+      elapsedMin,
+    };
+  }
+
   return { action: "stall", lines: [], elapsedMin };
 }
 
-async function main(): Promise<void> {
-  loadProjectEnv();
-
-  const ROOT = resolve(process.cwd());
-  const { dryRun, thresholdMin } = parseArgs(process.argv.slice(2));
-
-  const active = findActiveRun(ROOT);
+/**
+ * Roda o diagnóstico/ação de stall para UM kind (`overnight` ou `continuo`,
+ * #5293 item 3). Extraído de `main()` pra permitir rodar os dois kinds na
+ * mesma invocação do watchdog sem duplicar a lógica — `data/overnight/` e
+ * `data/continuo/` podem ter rodadas ativas SIMULTANEAMENTE (máquinas/sessões
+ * diferentes), e cada uma precisa do próprio diagnóstico independente.
+ */
+async function runWatchdogForKind(
+  ROOT: string,
+  kind: WatchableKind,
+  dryRun: boolean,
+  thresholdMin: number,
+): Promise<void> {
+  const active = findActiveRun(ROOT, kind);
 
   if (!active) {
-    console.log("[watchdog] Nenhuma rodada overnight ativa detectada.");
+    console.log(`[watchdog] Nenhuma rodada ${kind} ativa detectada.`);
     return;
   }
 
@@ -501,11 +605,12 @@ async function main(): Promise<void> {
   const thresholdMs = thresholdMin * 60_000;
 
   const planMtime = mtimeMs(planPath);
-  const logLastTs = getLastRunLogActivity(ROOT, aammdd);
+  const logLastTs = getLastRunLogActivity(ROOT, aammdd, kind);
   const { ts: lastActivityMs, source: lastSource } = computeLastActivity(
     planMtime,
     logLastTs,
   );
+  const isHealthyIdle = hasHealthyIdleSession(ROOT, kind, nowMs);
 
   const diagnosis = diagnoseWatchdogActivity({
     aammdd,
@@ -514,6 +619,7 @@ async function main(): Promise<void> {
     lastSource,
     nowMs,
     thresholdMin,
+    isHealthyIdle,
   });
 
   for (const line of diagnosis.lines) console.log(line);
@@ -565,24 +671,76 @@ async function main(): Promise<void> {
   }
 
   // (b) Emite evento no run-log
-  emitRunLogEvent(ROOT, aammdd, elapsedMin, lastSource);
+  emitRunLogEvent(ROOT, kind, aammdd, elapsedMin, lastSource);
 
   // (c) Renderiza halt banner
-  renderHaltBanner(ROOT, aammdd, elapsedMin, thresholdMin);
+  renderHaltBanner(ROOT, kind, aammdd, elapsedMin, thresholdMin);
 
   // (d) Telegram (opcional — reusa TELEGRAM_BOT_TOKEN do .env.example)
   await sendTelegramAlert(
     [
-      `*[diar.ia.br overnight] STALL detectado*`,
+      `*[diar.ia.br ${kind}] STALL detectado*`,
       `Rodada \`${aammdd}\` sem atividade há *${elapsedMin} min* (limiar: ${thresholdMin} min).`,
       `Fonte: ${lastSource}.`,
-      `Verifique a sessão overnight e responda 'retry' pra retomar ou 'abort' pra encerrar.`,
+      `Verifique a sessão ${kind} e responda 'retry' pra retomar ou 'abort' pra encerrar.`,
     ].join("\n"),
   );
 
   console.log(
-    `[watchdog] Stall registrado: rodada ${aammdd} — ${elapsedMin} min sem atividade.`,
+    `[watchdog] Stall registrado: rodada ${aammdd} (${kind}) — ${elapsedMin} min sem atividade.`,
   );
+}
+
+/**
+ * Kinds vigiados por esta invocação do watchdog (#5293 item 3). `continuo`
+ * some deste array até a issue de origem fechar (ver
+ * `.claude/skills/diaria-continuo/SKILL.md`) só se a skill for descontinuada —
+ * a checagem em si é barata (um `findActiveRun` a mais que retorna `null` na
+ * ausência de `data/continuo/`) e roda incondicionalmente, sem flag.
+ */
+const WATCHED_KINDS: readonly WatchableKind[] = ["overnight", "continuo"];
+
+/**
+ * Pure-ish orquestração do loop multi-kind (#5293 fleet review, achado 3),
+ * extraída de `main()` pra ser testável sem I/O real — `runOne` é
+ * injetável (produção: `runWatchdogForKind`; teste: um fake que lança pra
+ * simular um kind quebrado). Cada `kind` roda no PRÓPRIO try/catch: uma
+ * exceção ao processar um kind NUNCA impede os demais de serem tentados —
+ * sem isso, um bug isolado num helper (shape inesperado de `plan.json`,
+ * etc) abortava o loop inteiro antes de sequer tentar o kind seguinte,
+ * contradizendo a premissa deste item ("vigia todos os kinds vigiados na
+ * mesma invocação"). Retorna `true` se ALGUM kind falhou — `main()` usa
+ * isso pra decidir o exit code, sem deixar essa decisão short-circuitar o
+ * loop em si.
+ */
+export async function runAllWatchedKinds(
+  kinds: readonly WatchableKind[],
+  runOne: (kind: WatchableKind) => Promise<void>,
+  onError: (kind: WatchableKind, error: unknown) => void = (kind, e) =>
+    process.stderr.write(`[watchdog] Erro ao processar kind=${kind}: ${String(e)}\n`),
+): Promise<boolean> {
+  let anyFailed = false;
+  for (const kind of kinds) {
+    try {
+      await runOne(kind);
+    } catch (e) {
+      anyFailed = true;
+      onError(kind, e);
+    }
+  }
+  return anyFailed;
+}
+
+async function main(): Promise<void> {
+  loadProjectEnv();
+
+  const ROOT = resolve(process.cwd());
+  const { dryRun, thresholdMin } = parseArgs(process.argv.slice(2));
+
+  const anyFailed = await runAllWatchedKinds(WATCHED_KINDS, (kind) =>
+    runWatchdogForKind(ROOT, kind, dryRun, thresholdMin),
+  );
+  if (anyFailed) process.exitCode = 1;
 }
 
 // #2958: sem este guard, importar o módulo (ex: test/overnight-watchdog.test.ts
