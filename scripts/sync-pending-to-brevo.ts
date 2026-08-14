@@ -145,7 +145,12 @@ import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { hasFlag, isMainModule, getIntArg } from "./lib/cli-args.ts";
 import { hasMorePages } from "./sync-cursos-subscribers-kv.ts";
 import { brevoPost, brevoGet } from "./lib/brevo-client.ts";
-import { DEFAULT_OUTPUT_PATH as ORIGIN_SCORES_CSV_PATH } from "./score-pending-origin.ts";
+import {
+  DEFAULT_OUTPUT_PATH as ORIGIN_SCORES_CSV_PATH,
+  DEFAULT_INPUT_PATH as RAW_POOL_CSV_PATH,
+  LANE_RECENCY,
+} from "./score-pending-origin.ts";
+import { extractCustomFieldValue, RH_SOURCE_FIELD_NAME } from "./sync-sparkloop-exclusion-segment-beehiiv.ts";
 import { MV_VERIFIED_CSV_PATH, MV_REJECTED_CSV_PATH, MV_UNKNOWN_CSV_PATH } from "./verify-pending-emails-mv.ts";
 import { readRolloutGuardrailState } from "./lib/brevo-diaria-guardrail.ts";
 import {
@@ -190,11 +195,49 @@ function sleep(ms: number): Promise<void> {
 export interface BeehiivPendingSubscription {
   id: string;
   email: string;
+  /** #5183 — valor cru do custom field `RH_SOURCE`, `""` se ausente/vazio.
+   * Sempre populado (a paginação sempre pede `expand[]=custom_fields`) —
+   * consumidores que não precisam disto (o resto deste script) simplesmente
+   * ignoram o campo. Usado por `refresh-pending-pool.ts` pro filtro de
+   * exclusão SparkLoop (reusa `isSparkloopUpscribeSource`). */
+  rhSource: string;
+  /** #5183 — data de cadastro na Beehiiv, ISO 8601 (`""` se ausente/não
+   * reconhecido). NÃO-VERIFICADO contra a API real nesta sessão (mesma
+   * ressalva de `sync-sparkloop-exclusion-segment-beehiiv.ts`: o campo
+   * `created` — unix epoch em segundos — vem só da documentação pública,
+   * guard de publicação nunca permitiu confirmar ao vivo). Usado por
+   * `refresh-pending-pool.ts` só como metadado de auditoria/ordenação —
+   * nunca em nenhuma validação. */
+  subscribedOn: string;
 }
 
 interface BeehiivSubscriptionApi {
   id: string;
   email: string;
+  /** #5183 — presente só quando `expand[]=custom_fields` é pedido (sempre,
+   * ver `fetchPendingBeehiivSubscriptions`). */
+  custom_fields?: Array<{ name?: unknown; value?: unknown }>;
+  /** #5183 — unix epoch segundos, quando presente (ver `normalizeSubscribedOn`). */
+  created?: unknown;
+}
+
+/**
+ * Pura (#5183) — normaliza o campo `created` cru da API Beehiiv pra ISO
+ * 8601. Aceita número (unix epoch segundos) ou string já parseável por
+ * `Date`; qualquer outra coisa (ausente, malformado) devolve `""` — nunca
+ * lança, este dado é só metadado de auditoria/ordenação em
+ * `refresh-pending-pool.ts`, não deve travar a ingestão principal.
+ */
+export function normalizeSubscribedOn(createdRaw: unknown): string {
+  if (typeof createdRaw === "number" && Number.isFinite(createdRaw)) {
+    const d = new Date(createdRaw * 1000);
+    return Number.isNaN(d.getTime()) ? "" : d.toISOString();
+  }
+  if (typeof createdRaw === "string" && createdRaw.trim()) {
+    const d = new Date(createdRaw);
+    if (!Number.isNaN(d.getTime())) return d.toISOString();
+  }
+  return "";
 }
 interface Page<T> {
   data?: T[];
@@ -240,7 +283,10 @@ export async function fetchPendingBeehiivSubscriptions(
   let totalResults: number | null = null;
   while (more) {
     const res = await beehiivFetch<Page<BeehiivSubscriptionApi>>(
-      `/publications/${publicationId}/subscriptions?status=pending&per_page=${PER_PAGE}&page=${page}`,
+      // #5183: expand[]=custom_fields sempre incluído — aditivo (só mais dados
+      // na mesma resposta), nunca muda quantidade/paginação. Alimenta
+      // rhSource/subscribedOn abaixo; callers que não precisam ignoram os campos.
+      `/publications/${publicationId}/subscriptions?status=pending&expand[]=custom_fields&per_page=${PER_PAGE}&page=${page}`,
       apiKey,
       fetchImpl,
     );
@@ -249,7 +295,14 @@ export async function fetchPendingBeehiivSubscriptions(
     }
     const body = res.body!;
     const got = body.data ?? [];
-    for (const s of got) out.push({ id: s.id, email: normalizeEmail(s.email) });
+    for (const s of got) {
+      out.push({
+        id: s.id,
+        email: normalizeEmail(s.email),
+        rhSource: extractCustomFieldValue(s.custom_fields, RH_SOURCE_FIELD_NAME),
+        subscribedOn: normalizeSubscribedOn(s.created),
+      });
+    }
     if (body.total_results != null) totalResults = body.total_results;
     more = hasMorePages({
       collected: out.length,
@@ -349,6 +402,35 @@ export function loadMvVerifiedEmails(path: string, log: (msg: string) => void = 
   return loadEmailSetFromCsv(path, "sem verificação MV disponível ainda", log);
 }
 
+/**
+ * I/O — conta e-mails ÚNICOS no pool BRUTO (`pending-scored.csv`,
+ * `RAW_POOL_CSV_PATH` — o arquivo que `refresh-pending-pool.ts` faz APPEND,
+ * #5183). Fail-soft: arquivo ausente → 0 (nunca lança — quem nunca rodou
+ * `refresh-pending-pool.ts` continua funcionando como antes). Comparado
+ * contra `MvCoverage.poolSize` (que vem do pool COMPUTADO,
+ * `pending-scored-computed.csv` — só reflete o pool bruto DEPOIS que
+ * `score-pending-origin.ts` roda de novo): se o bruto tiver MAIS e-mails que
+ * o computado, o pool foi refrescado mas ainda não recomputado/reverificado
+ * — `assertMvGuardAcknowledged` trata isso como cobertura incompleta, mesmo
+ * que `processedCount >= poolSize` "bata" sozinho (#5183 — fecha o gap
+ * descrito na issue: "hoje o guard passaria com contatos fora do pool").
+ */
+export function countRawPoolEmails(path: string = RAW_POOL_CSV_PATH): number {
+  if (!existsSync(path)) return 0;
+  try {
+    const csvText = readFileSync(path, "utf8");
+    const parsed = Papa.parse<Record<string, string>>(csvText, { header: true, skipEmptyLines: true, delimiter: "," });
+    const set = new Set<string>();
+    for (const row of parsed.data) {
+      const email = (row.email ?? "").trim().toLowerCase();
+      if (email) set.add(email);
+    }
+    return set.size;
+  } catch {
+    return 0;
+  }
+}
+
 // ── guard de MillionVerifier antes de --push (#4476/#4494 achados silent-failure-hunter) ─
 
 export interface MvCoverage {
@@ -357,6 +439,10 @@ export interface MvCoverage {
   processedCount: number;
   /** Tamanho do pool total (via `loadOriginScores`/`ORIGIN_SCORES_CSV_PATH`). */
   poolSize: number;
+  /** #5183 — tamanho do pool BRUTO (`countRawPoolEmails`/`RAW_POOL_CSV_PATH`).
+   * `undefined`/ausente (callers antigos) é tratado como `0` — nunca bloqueia
+   * quem não passa este campo. Ver `countRawPoolEmails` pro racional. */
+  rawPoolSize?: number;
 }
 
 /**
@@ -364,17 +450,26 @@ export interface MvCoverage {
  * contenha `--i-know-this-skips-mv`, ou (b) `coverage` mostra o pool
  * INTEIRO já processado pela MV (`processedCount >= poolSize > 0` — não
  * basta o arquivo existir, ver header do módulo "Guard de MV antes de
- * --push" pros 2 achados do #4494 que motivaram isto). `coverage === null`
- * (nenhuma verificação disponível — arquivo ausente OU malformado, mesmo
- * `null` que `loadMvVerifiedEmails` devolve) sempre exige a flag. Nunca
- * chamado em dry-run — só quando `push=true` (`main()` abaixo).
+ * --push" pros 2 achados do #4494 que motivaram isto) E o pool BRUTO não é
+ * maior que o pool computado que gerou `poolSize` (#5183 — senão o
+ * denominador está desatualizado em relação a um refresh recente, mesmo que
+ * a aritmética "bata" isoladamente). `coverage === null` (nenhuma
+ * verificação disponível — arquivo ausente OU malformado, mesmo `null` que
+ * `loadMvVerifiedEmails` devolve) sempre exige a flag. Nunca chamado em
+ * dry-run — só quando `push=true` (`main()` abaixo).
  */
 export function assertMvGuardAcknowledged(argv: string[], coverage: MvCoverage | null): void {
   if (hasFlag(argv, "i-know-this-skips-mv")) return;
-  if (coverage !== null && coverage.poolSize > 0 && coverage.processedCount >= coverage.poolSize) return;
+  const rawPoolStale = coverage !== null && (coverage.rawPoolSize ?? 0) > coverage.poolSize;
+  if (coverage !== null && coverage.poolSize > 0 && coverage.processedCount >= coverage.poolSize && !rawPoolStale) return;
   const detail = coverage === null
     ? "Nenhuma verificação MillionVerifier disponível (arquivo ausente ou malformado)"
-    : `Verificação MillionVerifier incompleta (${coverage.processedCount} de ${coverage.poolSize} e-mail(s) do pool processados)`;
+    : rawPoolStale
+      ? `Pool bruto (${coverage.rawPoolSize} e-mail(s), pending-scored.csv) maior que o pool computado ` +
+        `(${coverage.poolSize} e-mail(s), pending-scored-computed.csv) — refresh-pending-pool.ts rodou mas ` +
+        "score-pending-origin.ts/verify-pending-emails-mv.ts ainda não (#5183): o denominador de cobertura " +
+        "está desatualizado, mesmo que a aritmética bata sozinha"
+      : `Verificação MillionVerifier incompleta (${coverage.processedCount} de ${coverage.poolSize} e-mail(s) do pool processados)`;
   throw new Error(
     `${detail} (issue #4476 item 8) — rode scripts/verify-pending-emails-mv.ts sobre o pool INTEIRO ` +
       "ANTES do 1º envio real (bounce de contato não-verificado degrada a reputação do domínio/IP, mesmo " +
@@ -477,15 +572,33 @@ export function computeCurrentActiveCount(
  * Esta função só prioriza por SCORE entre quem já passou nesse filtro — não
  * verifica e-mail nenhum aqui porque não precisa, isso é responsabilidade de
  * uma etapa anterior no pipeline (`main()`), não desta.
+ *
+ * ## Lane de recência (#5183)
+ *
+ * `laneByEmail` (opcional — `null`/omitido preserva 100% o comportamento
+ * antigo) identifica candidatos ingeridos por `refresh-pending-pool.ts`
+ * (`lane === LANE_RECENCY`) — decisão do editor (briefing 260814): cadastro
+ * Pending recente/orgânico é mais "quente" que o pool congelado de 2023, mas
+ * NÃO deve competir numericamente contra o `score` dele (nunca foi medido
+ * pela mesma fórmula — inventar um score comparável seria pior que não ter
+ * nenhum). Em vez disso, a lane de recência preenche os slots PRIMEIRO (FIFO
+ * entre si, sem novo critério de ordenação), e só o que sobrar de
+ * `availableSlots` vai pro pool de score de sempre. Isso naturalmente NÃO
+ * afoga o pool antigo, porque `refresh-pending-pool.ts` já limita quantos
+ * contatos de lane de recência existem por rodada (`--limit`,
+ * `DEFAULT_REFRESH_LIMIT` — tipicamente pequeno frente ao cap de 300).
  */
 export function selectContactsForBackfill(
   candidates: PendingToIngestEntry[],
   availableSlots: number,
   scoreByEmail: Map<string, number> | null,
+  laneByEmail: Map<string, string> | null = null,
 ): PendingToIngestEntry[] {
   if (availableSlots <= 0) return [];
-  const ordered = scoreByEmail
-    ? [...candidates].sort((a, b) => {
+  const recencyLane = laneByEmail ? candidates.filter((c) => laneByEmail.get(c.email) === LANE_RECENCY) : [];
+  const rest = laneByEmail ? candidates.filter((c) => laneByEmail.get(c.email) !== LANE_RECENCY) : candidates;
+  const orderedRest = scoreByEmail
+    ? [...rest].sort((a, b) => {
         const sa = scoreByEmail.get(a.email);
         const sb = scoreByEmail.get(b.email);
         if (sa === undefined && sb === undefined) return 0;
@@ -493,8 +606,39 @@ export function selectContactsForBackfill(
         if (sb === undefined) return -1; // b sem score → depois de a
         return sb - sa; // descendente
       })
-    : candidates; // sem mapa de score — mantém a ordem original (FIFO da paginação Beehiiv)
-  return ordered.slice(0, availableSlots);
+    : rest; // sem mapa de score — mantém a ordem original (FIFO da paginação Beehiiv)
+  return [...recencyLane, ...orderedRest].slice(0, availableSlots);
+}
+
+/**
+ * I/O — lê `data/pending-reativacao/pending-scored-computed.csv`
+ * (`scripts/score-pending-origin.ts` — issue #5183) e devolve `email → lane`.
+ * Fail-soft: arquivo ausente/malformado → `null` (nunca lança) — mesmo
+ * padrão de `loadOriginScores`; `selectContactsForBackfill` interpreta
+ * `null` como "sem lane de recência disponível" (comportamento antigo).
+ */
+export function loadOriginLanes(path: string, log: (msg: string) => void = () => {}): Map<string, string> | null {
+  if (!existsSync(path)) {
+    log(`aviso: ${path} não encontrado — backfill sem lane de recência (#5183). Rode scripts/score-pending-origin.ts pra gerar.`);
+    return null;
+  }
+  try {
+    const csvText = readFileSync(path, "utf8");
+    const parsed = Papa.parse<Record<string, string>>(csvText, { header: true, skipEmptyLines: true, delimiter: "," });
+    if (parsed.errors.length > 0) {
+      log(`aviso: falha ao parsear ${path} — backfill sem lane de recência. Erros: ${JSON.stringify(parsed.errors.slice(0, 2))}`);
+      return null;
+    }
+    const map = new Map<string, string>();
+    for (const row of parsed.data) {
+      const email = (row.email ?? "").trim().toLowerCase();
+      if (email) map.set(email, (row.lane ?? "").trim());
+    }
+    return map;
+  } catch (e) {
+    log(`aviso: erro lendo ${path} — backfill sem lane de recência: ${(e as Error).message}`);
+    return null;
+  }
 }
 
 /**
@@ -576,7 +720,9 @@ async function main(): Promise<void> {
   // preservando essa propriedade.
   const verifiedEmails = loadMvVerifiedEmails(MV_VERIFIED_CSV_PATH, log);
   const scoreByEmail = loadOriginScores(ORIGIN_SCORES_CSV_PATH, log);
+  const laneByEmail = loadOriginLanes(ORIGIN_SCORES_CSV_PATH, log); // #5183
   const poolSize = scoreByEmail?.size ?? 0;
+  const rawPoolSize = countRawPoolEmails(RAW_POOL_CSV_PATH); // #5183
   let coverage: MvCoverage | null = null;
   if (verifiedEmails !== null) {
     const rejectedEmails = loadEmailSetFromCsv(MV_REJECTED_CSV_PATH, "0 rejeitados considerados", log);
@@ -584,6 +730,7 @@ async function main(): Promise<void> {
     coverage = {
       processedCount: verifiedEmails.size + (rejectedEmails?.size ?? 0) + (unknownEmails?.size ?? 0),
       poolSize,
+      rawPoolSize,
     };
   }
   // #4651: os process.exit() abaixo até o 1º `await` de rede
@@ -670,7 +817,7 @@ async function main(): Promise<void> {
   }
   log(`fila: ${currentActiveCount}/${cap} ocupados, ${availableSlots} slot(s) livre(s) pro backfill.`);
 
-  const selected = selectContactsForBackfill(toIngest, availableSlots, scoreByEmail);
+  const selected = selectContactsForBackfill(toIngest, availableSlots, scoreByEmail, laneByEmail);
   log(`${selected.length} contato(s) selecionado(s) pra este backfill (de ${toIngest.length} elegíveis, ordenados por score).`);
 
   if (!push) {

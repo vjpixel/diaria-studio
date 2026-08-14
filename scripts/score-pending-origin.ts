@@ -50,6 +50,23 @@
  * arredondamento (±0.5 — o CSV manual tem 1 casa decimal por campo, soma de
  * 6 campos arredondados pode derivar até ~0.3 do valor "verdadeiro"; ±0.5 dá
  * margem sem mascarar erro real).
+ *
+ * ## Colunas `lane`/`subscribed_on` (#5183)
+ *
+ * `scripts/refresh-pending-pool.ts` (#5183) faz APPEND de contatos Pending
+ * novos (cadastrados depois do snapshot congelado de 260802) diretamente no
+ * CSV bruto (`pending-scored.csv`) com `score`/`pts_*` todos ZERADOS (passa
+ * trivialmente na checagem de consistência acima — soma 0 bate com score 0)
+ * e `lane: "recency"` — decisão do editor (briefing 260814, issue #5183):
+ * cadastro recente/orgânico é mais "quente" que o pool antigo de 2023, mas
+ * NÃO deve competir numericamente com o `score` do pool congelado (nunca foi
+ * medido pela mesma fórmula). `lane` é o sinalizador que
+ * `selectContactsForBackfill` (`sync-pending-to-brevo.ts`) usa pra dar
+ * prioridade de fila a esses contatos SEM inventar um score comparável.
+ * Linhas do pool original (sem a coluna, ou com `lane` vazio) têm
+ * `lane: ""` — leitura opcional e retrocompatível, nunca exigida pra CSVs
+ * antigos. `subscribed_on` (ISO 8601, `""` se ausente) é só metadado de
+ * auditoria/ordenação dentro da lane — não participa de nenhuma validação.
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -63,9 +80,27 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_INPUT_PATH = resolve(ROOT, "data/pending-reativacao/pending-scored.csv");
 export const DEFAULT_OUTPUT_PATH = resolve(ROOT, "data/pending-reativacao/pending-scored-computed.csv");
 
+/** #5183 — colunas do CSV BRUTO (`pending-scored.csv`, `DEFAULT_INPUT_PATH`)
+ * na ORDEM/nomenclatura que `parseScoredRow` lê (nota: `origem`, em
+ * português — diferente do CSV computado, que usa `origin`; assimetria
+ * pré-existente, preservada de propósito, não uma inconsistência nova desta
+ * unidade). Fonte única usada por `refresh-pending-pool.ts` pra fazer
+ * APPEND sem reordenar/renomear colunas do arquivo manual. */
+export const RAW_POOL_CSV_FIELDS = [
+  "email", "origem", "score",
+  "pts_confirmacao", "pts_ativo", "pts_abertura", "pts_clique", "pts_recencia", "penalidade_bounce",
+  "lane", "subscribed_on",
+] as const;
+
 /** Tolerância de arredondamento entre soma dos `pts_*` e o `score` gravado —
  * ver header do módulo. */
 export const SCORE_SUM_TOLERANCE = 0.5;
+
+/** #5183 — valor de `lane` que marca contato Pending recente/orgânico
+ * (ingerido por `refresh-pending-pool.ts`), com prioridade de fila própria
+ * em `selectContactsForBackfill`, sem competir por `score` com o pool
+ * congelado. `""` (ausente) é o pool original — ver header do módulo. */
+export const LANE_RECENCY = "recency";
 
 export interface PendingOriginScoredRow {
   email: string;
@@ -77,6 +112,13 @@ export interface PendingOriginScoredRow {
   pts_clique: number;
   pts_recencia: number;
   penalidade_bounce: number;
+  /** #5183 — `""` pro pool original, `LANE_RECENCY` pra contato ingerido
+   * por `refresh-pending-pool.ts`. Coluna opcional na leitura (CSV antigo
+   * sem a coluna → `""`). */
+  lane: string;
+  /** #5183 — ISO 8601 quando o contato assinou na Beehiiv, `""` se
+   * ausente/desconhecido. Metadado de auditoria/ordenação, não validado. */
+  subscribed_on: string;
 }
 
 const PTS_FIELDS = [
@@ -134,6 +176,10 @@ export function parseScoredRow(raw: Record<string, string>, rowIndex: number): P
     pts_clique: pts.pts_clique,
     pts_recencia: pts.pts_recencia,
     penalidade_bounce: pts.penalidade_bounce,
+    // #5183 — opcionais/retrocompatíveis: CSV sem essas colunas (pool
+    // original) lê "" pros dois, nunca lança.
+    lane: (raw.lane ?? "").trim(),
+    subscribed_on: (raw.subscribed_on ?? "").trim(),
   };
 }
 
@@ -169,10 +215,23 @@ async function main(): Promise<void> {
   log(`${rows.length} linha(s) lida(s) e validada(s) de ${inputPath}.`);
 
   const sorted = sortByScoreDescending(rows);
-  const csvOut = Papa.unparse({
-    fields: ["email", "origin", "score", "pts_confirmacao", "pts_ativo", "pts_abertura", "pts_clique", "pts_recencia", "penalidade_bounce"],
-    data: sorted,
-  });
+  const csvOut = Papa.unparse(
+    {
+      fields: [
+        "email", "origin", "score", "pts_confirmacao", "pts_ativo", "pts_abertura",
+        "pts_clique", "pts_recencia", "penalidade_bounce",
+        "lane", "subscribed_on", // #5183 — precisa sobreviver ao round-trip: sync-pending-to-brevo.ts::loadOriginLanes lê daqui.
+      ],
+      data: sorted,
+    },
+    // newline:"\n" explícito — Papa.unparse usa "\r\n" por default; sem
+    // forçar consistência com o "\n" final acrescentado abaixo, um re-parse
+    // (auto-detecção de "\r\n" pelas linhas anteriores) engoliria esse "\n"
+    // isolado como parte do último campo da última linha em vez de tratá-lo
+    // como fim de linha (achado ao vivo em refresh-pending-pool.ts, #5183 —
+    // mesmo bug, mesmo fix, aplicado aqui por afetar a mesma coluna nova).
+    { newline: "\n" },
+  );
   writeFileSync(outputPath, csvOut + "\n", "utf8");
   log(`${sorted.length} linha(s) escrita(s) em ${outputPath}, ordenadas por score descendente.`);
 }

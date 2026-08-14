@@ -22,13 +22,17 @@ import {
   computeCurrentActiveCount,
   selectContactsForBackfill,
   loadOriginScores,
+  loadOriginLanes,
   loadMvVerifiedEmails,
   assertMvGuardAcknowledged,
   applyRolloutGuardrailGate,
   applyMaxAddGate,
+  countRawPoolEmails,
+  normalizeSubscribedOn,
   type BeehiivPendingSubscription,
   type PendingToIngestEntry,
 } from "../scripts/sync-pending-to-brevo.ts";
+import { LANE_RECENCY } from "../scripts/score-pending-origin.ts";
 import type { BrevoDiariaStore, BrevoDiariaContact } from "../scripts/lib/brevo-diaria-store.ts";
 
 function jsonRes(status: number, body: unknown): Response {
@@ -83,6 +87,32 @@ describe("fetchPendingBeehiivSubscriptions — paginação (#4266)", () => {
   it("!ok em qualquer página → lança (fail loud)", async () => {
     const fetchImpl = (async () => jsonRes(500, { message: "boom" })) as typeof fetch;
     await assert.rejects(() => fetchPendingBeehiivSubscriptions("pub_1", "key", fetchImpl), /Beehiiv API 500/);
+  });
+
+  it("pede expand[]=custom_fields e popula rhSource/subscribedOn (#5183) — consumidores antigos continuam ignorando os campos extras", async () => {
+    let requestedUrl = "";
+    const fetchImpl = (async (url: string | URL) => {
+      requestedUrl = String(url);
+      return jsonRes(200, {
+        data: [
+          {
+            id: "sub_1",
+            email: "a@b.com",
+            created: 1755129600,
+            custom_fields: [{ name: "RH_SOURCE", value: "sparkloop-upscribe" }],
+          },
+          { id: "sub_2", email: "b@b.com" }, // sem custom_fields/created — degrada pra "" sem lançar
+        ],
+        total_results: 2,
+        limit: 100,
+      });
+    }) as typeof fetch;
+    const out = await fetchPendingBeehiivSubscriptions("pub_1", "key", fetchImpl);
+    assert.ok(requestedUrl.includes("expand%5B%5D=custom_fields") || requestedUrl.includes("expand[]=custom_fields"));
+    assert.equal(out[0].rhSource, "sparkloop-upscribe");
+    assert.equal(out[0].subscribedOn, new Date(1755129600 * 1000).toISOString());
+    assert.equal(out[1].rhSource, "");
+    assert.equal(out[1].subscribedOn, "");
   });
 });
 
@@ -359,6 +389,155 @@ describe("selectContactsForBackfill — priorização por score de origem (#4476
     // os 2 sem score entram depois, em qualquer ordem relativa entre si — o
     // que importa é nenhum deles vir ANTES do candidato pontuado.
     assert.deepEqual(new Set(out.slice(1).map((c) => c.email)), new Set(["low@b.com", "mid@b.com"]));
+  });
+});
+
+describe("selectContactsForBackfill — lane de recência tem prioridade, sem competir por score (#5183)", () => {
+  const candidates: PendingToIngestEntry[] = [
+    { email: "old-high@b.com", beehiiv_subscription_id: "s1" },
+    { email: "new-recent@b.com", beehiiv_subscription_id: "s2" },
+    { email: "old-mid@b.com", beehiiv_subscription_id: "s3" },
+  ];
+  const scores = new Map([["old-high@b.com", 95], ["old-mid@b.com", 50]]); // new-recent@b.com sem score (lane, não pool)
+  const lanes = new Map([["new-recent@b.com", LANE_RECENCY]]);
+
+  it("candidato da lane de recência vai PRIMEIRO, mesmo com score do pool antigo mais alto", () => {
+    const out = selectContactsForBackfill(candidates, 3, scores, lanes);
+    assert.equal(out[0].email, "new-recent@b.com", "lane de recência não compete por score — sempre prioritária");
+    assert.deepEqual(out.slice(1).map((c) => c.email), ["old-high@b.com", "old-mid@b.com"], "resto do pool continua ordenado por score");
+  });
+
+  it("slots insuficientes pra todos → lane de recência consome antes do pool antigo", () => {
+    const out = selectContactsForBackfill(candidates, 1, scores, lanes);
+    assert.deepEqual(out.map((c) => c.email), ["new-recent@b.com"]);
+  });
+
+  it("laneByEmail null (default) → comportamento antigo idêntico, sem partição", () => {
+    const out = selectContactsForBackfill(candidates, 3, scores, null);
+    assert.equal(out[0].email, "old-high@b.com", "sem laneByEmail, new-recent@b.com (sem score) vai por último como sempre");
+  });
+
+  it("laneByEmail omitido (não passado) → mesmo default null, retrocompatível com callers antigos", () => {
+    const out = selectContactsForBackfill(candidates, 3, scores);
+    assert.equal(out[0].email, "old-high@b.com");
+  });
+
+  it("múltiplos candidatos de lane de recência → ordem FIFO entre si, todos antes do pool", () => {
+    const c2: PendingToIngestEntry[] = [
+      { email: "pool@b.com", beehiiv_subscription_id: "s1" },
+      { email: "recent-a@b.com", beehiiv_subscription_id: "s2" },
+      { email: "recent-b@b.com", beehiiv_subscription_id: "s3" },
+    ];
+    const lanes2 = new Map([["recent-a@b.com", LANE_RECENCY], ["recent-b@b.com", LANE_RECENCY]]);
+    const scores2 = new Map([["pool@b.com", 99]]);
+    const out = selectContactsForBackfill(c2, 3, scores2, lanes2);
+    assert.deepEqual(out.map((c) => c.email), ["recent-a@b.com", "recent-b@b.com", "pool@b.com"]);
+  });
+});
+
+describe("loadOriginLanes — leitura fail-soft do CSV de score-pending-origin.ts (#5183)", () => {
+  it("arquivo ausente → null (nunca lança), loga aviso", () => {
+    const logs: string[] = [];
+    const result = loadOriginLanes(resolve(tmpdir(), "nao-existe-5183-" + Date.now() + ".csv"), (m) => logs.push(m));
+    assert.equal(result, null);
+    assert.ok(logs.some((l) => l.includes("não encontrado")));
+  });
+
+  it("CSV bem-formado com coluna lane → Map email→lane", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "origin-lanes-"));
+    try {
+      const path = resolve(dir, "computed.csv");
+      writeFileSync(path, "email,origin,score,lane,subscribed_on\na@b.com,x,10,,\nb@b.com,y,0,recency,2026-08-14T00:00:00.000Z\n", "utf8");
+      const result = loadOriginLanes(path);
+      assert.equal(result!.get("a@b.com"), "");
+      assert.equal(result!.get("b@b.com"), LANE_RECENCY);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("CSV sem coluna lane (formato antigo) → todas as linhas mapeiam pra '' (nunca lança)", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "origin-lanes-"));
+    try {
+      const path = resolve(dir, "computed.csv");
+      writeFileSync(path, "email,origin,score\na@b.com,x,10\n", "utf8");
+      const result = loadOriginLanes(path);
+      assert.equal(result!.get("a@b.com"), "");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("countRawPoolEmails — tamanho do pool BRUTO, denominador refrescado do guard de MV (#5183)", () => {
+  it("arquivo ausente → 0 (nunca lança)", () => {
+    assert.equal(countRawPoolEmails(resolve(tmpdir(), "nao-existe-raw-pool-" + Date.now() + ".csv")), 0);
+  });
+
+  it("conta e-mails únicos, normalizados", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "raw-pool-"));
+    try {
+      const path = resolve(dir, "pending-scored.csv");
+      writeFileSync(path, "email,origem,score\nA@b.com,x,1\na@b.com,x,1\nc@b.com,y,2\n", "utf8");
+      assert.equal(countRawPoolEmails(path), 2, "dedup case-insensitive");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("path aponta pra um diretório (readFileSync lança) → 0, nunca propaga a exceção (fail-soft)", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "raw-pool-"));
+    try {
+      assert.equal(countRawPoolEmails(dir), 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("normalizeSubscribedOn — converte `created` cru da API pra ISO 8601 (#5183)", () => {
+  it("unix epoch em segundos (número) → ISO 8601", () => {
+    assert.equal(normalizeSubscribedOn(1755129600), new Date(1755129600 * 1000).toISOString());
+  });
+
+  it("string ISO já válida → normalizada (round-trip)", () => {
+    assert.equal(normalizeSubscribedOn("2026-08-14T00:00:00.000Z"), "2026-08-14T00:00:00.000Z");
+  });
+
+  it("ausente/undefined → ''", () => {
+    assert.equal(normalizeSubscribedOn(undefined), "");
+  });
+
+  it("string não-parseável → '', nunca lança", () => {
+    assert.equal(normalizeSubscribedOn("não é uma data"), "");
+  });
+
+  it("NaN/Infinity → '', nunca lança", () => {
+    assert.equal(normalizeSubscribedOn(NaN), "");
+    assert.equal(normalizeSubscribedOn(Infinity), "");
+  });
+});
+
+describe("assertMvGuardAcknowledged — pool bruto refrescado mas ainda não recomputado (#5183)", () => {
+  it("rawPoolSize > poolSize (refresh-pending-pool.ts rodou, score-pending-origin.ts ainda não) → lança mesmo com processedCount >= poolSize", () => {
+    assert.throws(
+      () => assertMvGuardAcknowledged(["--push"], { processedCount: 626, poolSize: 626, rawPoolSize: 630 }),
+      /Pool bruto.*maior que o pool computado/,
+    );
+  });
+
+  it("rawPoolSize <= poolSize (pool já recomputado, ou nenhum refresh aconteceu) → não lança (cobertura completa)", () => {
+    assert.doesNotThrow(() => assertMvGuardAcknowledged(["--push"], { processedCount: 626, poolSize: 626, rawPoolSize: 626 }));
+  });
+
+  it("rawPoolSize ausente (callers antigos, pré-#5183) → tratado como 0, nunca bloqueia sozinho", () => {
+    assert.doesNotThrow(() => assertMvGuardAcknowledged(["--push"], { processedCount: 626, poolSize: 626 }));
+  });
+
+  it("--i-know-this-skips-mv ainda funciona como escape hatch mesmo com rawPoolSize desatualizado", () => {
+    assert.doesNotThrow(() =>
+      assertMvGuardAcknowledged(["--push", "--i-know-this-skips-mv"], { processedCount: 626, poolSize: 626, rawPoolSize: 900 }),
+    );
   });
 });
 
