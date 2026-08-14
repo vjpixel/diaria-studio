@@ -152,6 +152,9 @@ export function formatCacReportMarkdown(report: CacReport, budget: ReturnType<ty
   if (!report.originApplied) {
     lines.push(`⚠ mapa de origem recuperada NÃO aplicado — canais reativados via brevo-diaria podem estar mal atribuídos.`);
   }
+  if (report.unmappedChannels.length > 0) {
+    lines.push(`⚠ canal(is) desconhecido(s) em spend.csv (confira o nome exato): ${report.unmappedChannels.join(", ")}.`);
+  }
   lines.push("");
   lines.push(
     "| Canal | Custo/leitor | Leitores | Ativos | Cadastros | Abertura (canal) | vs. base | n | Amostra | Gasto | Mês | Fonte |",

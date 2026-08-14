@@ -391,6 +391,13 @@ export interface CacReport {
   totalGastoMedido: number;
   internalFiltered: number;
   originApplied: boolean;
+  /** Canais de `spend.csv` que não bateram com nenhuma chave de
+   *  `CHANNEL_GROUP_KEYS` nem com a string exata `"Beehiiv Boosts"` — a
+   *  linha ainda aparece no relatório (`measured`, n=0/vazio, nunca some),
+   *  mas cai aqui pra sinalizar "canal desconhecido, confira o nome exato
+   *  em spend.csv" em vez de virar uma linha medida vazia sem aviso
+   *  (finding 4 do self-review #5236, PR #5276). */
+  unmappedChannels: string[];
 }
 
 /** Métricas de abertura/amostra sobre a BASE inteira (todos os ativos com
@@ -423,6 +430,8 @@ export function buildCacReport(
   subs: BeehiivBackupSubscriber[],
   opts: { previousSubs?: BeehiivBackupSubscriber[]; originApplied?: boolean; internalFiltered?: number } = {},
 ): CacReport {
+  const unmappedChannels: string[] = [];
+
   const rows: CacRow[] = spendRows.map((spend) => {
     if (CHANNEL_GROUP_KEYS[spend.canal]) {
       const channelSubs = subscribersForChannel(subs, spend.canal);
@@ -438,6 +447,16 @@ export function buildCacReport(
     if (spend.canal === "Beehiiv Boosts") {
       return computeBoostRow(spend);
     }
+    // Nem CHANNEL_GROUP_KEYS nem "Beehiiv Boosts" exato: canal DESCONHECIDO
+    // (ex: typo "Beehiiv Boost" sem "s" em spend.csv). Warning explícito —
+    // "parser tolerante mas barulhento" (issue #5236) vale pra nome de
+    // canal não reconhecido, não só pra coluna faltando. Nunca abortar: a
+    // linha entra como measured n=0/vazio de qualquer forma.
+    unmappedChannels.push(spend.canal);
+    console.warn(
+      `[cac] canal desconhecido "${spend.canal}" em spend.csv — linha tratada como measured vazio (n=0), confira o nome exato ` +
+        `(esperado: um de ${Object.keys(CHANNEL_GROUP_KEYS).join(", ")}, ou exatamente "Beehiiv Boosts").`,
+    );
     return computeMeasuredRow(spend, []);
   });
 
@@ -457,6 +476,7 @@ export function buildCacReport(
     totalGastoMedido,
     internalFiltered: opts.internalFiltered ?? 0,
     originApplied: opts.originApplied ?? false,
+    unmappedChannels,
   };
 }
 

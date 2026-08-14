@@ -318,6 +318,28 @@ describe("buildCacReport", () => {
     assert.equal(googleRow.amostraVazia, true);
   });
 
+  it("canal com typo (ex: 'Beehiiv Boost' sem 's') vira measured vazio E entra em unmappedChannels (finding 4 #5236, PR #5276)", () => {
+    const typoRows: SpendRow[] = [spend({ canal: "Beehiiv Boost", valor: 397.08 })];
+    const report = buildCacReport(typoRows, []);
+    assert.equal(report.rows[0].kind, "measured");
+    assert.deepEqual(report.unmappedChannels, ["Beehiiv Boost"]);
+  });
+
+  it("canal reconhecido (Google Ads/LinkedIn/Beehiiv Boosts) NUNCA entra em unmappedChannels", () => {
+    const report = buildCacReport(spendRows, []);
+    assert.deepEqual(report.unmappedChannels, []);
+  });
+
+  it("unmappedChannels lista cada canal desconhecido na ordem de spend.csv, mesmo com múltiplos", () => {
+    const mixedRows: SpendRow[] = [
+      spend({ canal: "Google Ads", valor: 100 }),
+      spend({ canal: "Beehiiv Boost", valor: 50 }), // typo
+      spend({ canal: "TikTok Ads", valor: 30 }), // canal genuinamente novo, não mapeado ainda
+    ];
+    const report = buildCacReport(mixedRows, []);
+    assert.deepEqual(report.unmappedChannels, ["Beehiiv Boost", "TikTok Ads"]);
+  });
+
   it("base metrics vêm de TODOS os ativos, não só dos canais medidos", () => {
     const subs = [
       sub({ utm_source: "direct", stats: { total_received: 100, total_unique_clicked: 5, total_unique_opened: 50 } }),

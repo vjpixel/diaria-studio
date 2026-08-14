@@ -79,6 +79,27 @@ describe("formatCacReportMarkdown", () => {
     assert.doesNotMatch(md, /NÃO aplicado/);
   });
 
+  it("emite aviso de canal desconhecido quando spend.csv tem um nome fora do mapeamento (finding 4 #5236)", () => {
+    const spendRows: SpendRow[] = [
+      { canal: "Beehiiv Boost", mes: "2026-07", moeda: "BRL", valor: 397.08, fonte: "teste" }, // typo, sem "s"
+    ];
+    const report = buildCacReport(spendRows, []);
+    const budget = computeMonthBudgetUsage(spendRows, "2026-08");
+    const md = formatCacReportMarkdown(report, budget);
+    assert.match(md, /canal\(is\) desconhecido\(s\) em spend\.csv/);
+    assert.match(md, /Beehiiv Boost\b/);
+  });
+
+  it("não emite aviso de canal desconhecido quando todos os canais são reconhecidos", () => {
+    const spendRows: SpendRow[] = [
+      { canal: "Google Ads", mes: "2026-02", moeda: "BRL", valor: 956.21, fonte: "teste" },
+    ];
+    const report = buildCacReport(spendRows, []);
+    const budget = computeMonthBudgetUsage(spendRows, "2026-08");
+    const md = formatCacReportMarkdown(report, budget);
+    assert.doesNotMatch(md, /canal\(is\) desconhecido/);
+  });
+
   it("linha de Beehiiv Boosts mostra faixa (en-dash entre mín e máx), nunca ponto único", () => {
     const spendRows: SpendRow[] = [
       { canal: "Beehiiv Boosts", mes: "2026-07", moeda: "BRL", valor: 397.08, fonte: "teste" },

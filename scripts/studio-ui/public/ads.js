@@ -192,6 +192,9 @@ function renderTable(report) {
   const warnings = [];
   if (report.internalFiltered > 0) warnings.push(`${report.internalFiltered} conta(s) interna(s)/teste excluída(s).`);
   if (!report.originApplied) warnings.push("mapa de origem recuperada não aplicado — utm_source cru do snapshot.");
+  if (report.unmappedChannels && report.unmappedChannels.length > 0) {
+    warnings.push(`canal(is) desconhecido(s) em spend.csv: ${report.unmappedChannels.join(", ")}.`);
+  }
   el.warnings.textContent = warnings.join(" ");
 }
 
