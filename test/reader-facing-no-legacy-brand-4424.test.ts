@@ -228,6 +228,33 @@ describe("Fatia 1 (#4424) — sem a grafia antiga 'Diar.ia' na superfície do le
 });
 
 /**
+ * `data/snippets/` (#5300 — achado do review consolidado Fase 1.5, rodada
+ * 260814c) — a migração do #5227 moveu o CONTEÚDO editorial real dos
+ * snippets patronos-* e demais, de `context/snippets/` (git-tracked, ainda
+ * varrido por `PROTECTED_DIRS` acima, mas hoje só tem `README.md` sem copy)
+ * pra `data/snippets/` (gitignored, junction OneDrive). `PROTECTED_DIRS`
+ * nunca ganhou essa entrada porque o loop que o consome tem um
+ * `assert.ok(files.length > 0, ...)` que quebraria em CI (onde `data/` não
+ * existe) — este describe/it dedicado existe justamente pra cobrir
+ * `data/snippets/` SEM esse sanity check, rodando só onde `data/` está
+ * presente (sessão local/overnight) e fazendo skip gracioso (não falha) em
+ * CI/cloud.
+ */
+const DATA_SNIPPETS_DIR = "data/snippets";
+
+describe("data/snippets/ (#5300) — sem a grafia antiga 'Diar.ia' no conteúdo editorial real dos snippets", () => {
+  it("varrido por inteiro quando presente (skip gracioso se data/ não existir nesta sessão — CI/cloud)", (t) => {
+    if (!existsSync(join(ROOT, DATA_SNIPPETS_DIR))) {
+      t.skip("data/snippets/ ausente nesta sessão (CI ou clone cloud sem a junction data/ — ver CLAUDE.md § Setup)");
+      return;
+    }
+    const files = filesUnder(DATA_SNIPPETS_DIR, mdOrHtmlOrTs);
+    const v = collectViolations(files);
+    assert.deepEqual(v, [], `Grafia antiga da marca encontrada:\n  ${v.join("\n  ")}`);
+  });
+});
+
+/**
  * Fatia 2 (superfície do editor) — sem guard próprio dedicado (ver header do
  * módulo: "mecânico, baixo risco de regressão"). Essa suposição furou uma vez:
  * `scripts/studio-ui/studio-reports.ts` reintroduziu "Diar.ia" (subject de
