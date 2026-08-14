@@ -119,6 +119,7 @@ export type {
   PostmasterCampaignSpamRecord, // #4970
   LinkSectionName, // #4184
   LinkSectionMap, // #4184
+  ClariceHourTestKvState, // #5189
 } from "../../../scripts/lib/dashboard-kv-types.ts";
 // #2609: status MillionVerifier por grupo de contatos (tipo em dashboard-kv-types.ts).
 
@@ -178,6 +179,13 @@ export function linkSectionsKvKey(cycle: string): string {
 export function linkTitlesKvKey(cycle: string): string {
   return `titulo:${cycle}`;
 }
+
+// #5189: chave KV do estado (janela ativa) do teste de HORÁRIO da onda
+// ramp-warm, gravada por scripts/push-clarice-hour-test-kv.ts. Singleton
+// (não por ciclo, ao contrário de linkSectionsKvKey/linkTitlesKvKey acima) —
+// só existe UM teste de horário ativo/mais recente por vez (mesmo desenho de
+// MV_STATUS_KV_KEY/POSTMASTER_SPAM_KV_KEY acima).
+export const HOUR_TEST_KV_KEY = "clarice:hourtest:state";
 
 export interface EiaEngagementEdition {
   /** AAMMDD */

@@ -154,6 +154,96 @@ describe("aggregateHourTest", () => {
   });
 });
 
+// ─── aggregateHourTest — escopo por janela ativa (#5189) ───────────────────
+
+describe("aggregateHourTest — escopo por janela (#5189)", () => {
+  test("hourTestState OMITIDO (undefined) preserva o comportamento pré-#5189 — agrega TODA a história", () => {
+    const campaigns = [
+      withCampaignStats(makeCampaign(1, "Clarice 2606 grupo:d6-qui06-H06", "2026-06-06T09:00:00Z", { uniqueClicks: 40 }), { uniqueClicks: 40 }),
+      withCampaignStats(makeCampaign(2, "Clarice 2606 grupo:d6-qui06-H10", "2026-06-06T13:00:00Z", { uniqueClicks: 100 }), { uniqueClicks: 100 }),
+      withCampaignStats(makeCampaign(3, "Clarice 2608 grupo:d6-qui06-H06", "2026-08-06T09:00:00Z", { uniqueClicks: 45 }), { uniqueClicks: 45 }),
+      withCampaignStats(makeCampaign(4, "Clarice 2608 grupo:d6-qui06-H10", "2026-08-06T13:00:00Z", { uniqueClicks: 110 }), { uniqueClicks: 110 }),
+    ];
+    const result = aggregateHourTest(campaigns);
+    const h06 = result.cells.find((c) => c.hourBrt === 6)!;
+    assert.equal(h06.campaignCount, 2, "sem estado passado, os 2 testes (jun + ago) se misturam — comportamento antigo");
+  });
+
+  test("REGRESSÃO #5189: teste ATIVO exclui campanhas de um teste ANTERIOR (mesmas horas H06/H10, ciclo mensal diferente)", () => {
+    // Teste #1: rodou (e nunca foi formalmente encerrado no estado — cenário
+    // de degradação) em junho/2026.
+    const testeAntigo = [
+      withCampaignStats(makeCampaign(1, "Clarice 2606 grupo:d6-qui06-H06", "2026-06-06T09:00:00Z", { uniqueClicks: 40 }), { uniqueClicks: 40 }),
+      withCampaignStats(makeCampaign(2, "Clarice 2606 grupo:d6-qui06-H10", "2026-06-06T13:00:00Z", { uniqueClicks: 100 }), { uniqueClicks: 100 }),
+    ];
+    // Teste #2: reabre em agosto/2026, REUSANDO as mesmas horas H06/H10.
+    const testeNovo = [
+      withCampaignStats(makeCampaign(3, "Clarice 2608 grupo:d6-qui06-H06", "2026-08-06T09:00:00Z", { uniqueClicks: 45 }), { uniqueClicks: 45 }),
+      withCampaignStats(makeCampaign(4, "Clarice 2608 grupo:d6-qui06-H10", "2026-08-06T13:00:00Z", { uniqueClicks: 110 }), { uniqueClicks: 110 }),
+    ];
+    const hourTestState = { status: "ativo" as const, hoursBrt: [6, 10], startedAt: "2026-08-01T00:00:00.000Z" };
+    const result = aggregateHourTest([...testeAntigo, ...testeNovo], hourTestState);
+    const h06 = result.cells.find((c) => c.hourBrt === 6)!;
+    const h10 = result.cells.find((c) => c.hourBrt === 10)!;
+    assert.equal(h06.campaignCount, 1, "só a campanha de agosto (dentro da janela) deve contar");
+    assert.equal(h06.clicksAttributed, 45, "45 (agosto) — NÃO 85 (jun+ago misturados)");
+    assert.equal(h10.campaignCount, 1);
+    assert.equal(h10.clicksAttributed, 110);
+  });
+
+  test("REGRESSÃO #5189: teste ENCERRADO só inclui campanhas dentro de [startedAt, decidedAt] — não vaza pro teste seguinte", () => {
+    const testeAntigo = [
+      withCampaignStats(makeCampaign(1, "Clarice 2606 grupo:d6-qui06-H06", "2026-06-06T09:00:00Z", { uniqueClicks: 40 }), { uniqueClicks: 40 }),
+      withCampaignStats(makeCampaign(2, "Clarice 2606 grupo:d6-qui06-H10", "2026-06-06T13:00:00Z", { uniqueClicks: 100 }), { uniqueClicks: 100 }),
+    ];
+    // Esta é a janela FECHADA de junho: [01/06, 15/06].
+    const hourTestStateAntigo = {
+      status: "encerrado" as const,
+      hoursBrt: [6, 10],
+      startedAt: "2026-06-01T00:00:00.000Z",
+      decidedAt: "2026-06-15T00:00:00.000Z",
+    };
+    const resultAntigo = aggregateHourTest(testeAntigo, hourTestStateAntigo);
+    const h06Antigo = resultAntigo.cells.find((c) => c.hourBrt === 6)!;
+    assert.equal(h06Antigo.campaignCount, 1);
+
+    // Campanha de agosto (fora da janela fechada de junho) não deve aparecer
+    // se, por algum motivo, o dashboard ainda estivesse lendo o estado antigo.
+    const testeNovo = withCampaignStats(makeCampaign(3, "Clarice 2608 grupo:d6-qui06-H06", "2026-08-06T09:00:00Z", { uniqueClicks: 45 }), { uniqueClicks: 45 });
+    const resultMisturado = aggregateHourTest([...testeAntigo, testeNovo], hourTestStateAntigo);
+    const h06Misturado = resultMisturado.cells.find((c) => c.hourBrt === 6)!;
+    assert.equal(h06Misturado.campaignCount, 1, "campanha de agosto fica FORA da janela encerrada de junho");
+    assert.equal(h06Misturado.clicksAttributed, 40);
+  });
+
+  test("hourTestState null (KV sem estado válido) exclui TODAS as campanhas H0N — nunca agrega às cegas", () => {
+    const campaigns = [
+      withCampaignStats(makeCampaign(1, "Clarice 2608 grupo:d6-qui06-H06", "2026-08-06T09:00:00Z", { uniqueClicks: 40 }), { uniqueClicks: 40 }),
+      withCampaignStats(makeCampaign(2, "Clarice 2608 grupo:d6-qui06-H10", "2026-08-06T13:00:00Z", { uniqueClicks: 100 }), { uniqueClicks: 100 }),
+    ];
+    const result = aggregateHourTest(campaigns, null);
+    assert.equal(result.cells.length, 0);
+  });
+
+  test("hourTestState {status:'inativo'} exclui TODAS as campanhas H0N", () => {
+    const campaigns = [
+      withCampaignStats(makeCampaign(1, "Clarice 2608 grupo:d6-qui06-H06", "2026-08-06T09:00:00Z"), {}),
+      withCampaignStats(makeCampaign(2, "Clarice 2608 grupo:d6-qui06-H10", "2026-08-06T13:00:00Z"), {}),
+    ];
+    const result = aggregateHourTest(campaigns, { status: "inativo" });
+    assert.equal(result.cells.length, 0);
+  });
+
+  test("campanha sem scheduledAt/sentDate parseável é excluída quando escopado (nunca incluída por default)", () => {
+    const campaign = withCampaignStats(makeCampaign(1, "Clarice 2608 grupo:d6-qui06-H06", "2026-08-06T09:00:00Z"), {});
+    campaign.sentDate = null;
+    campaign.scheduledAt = null;
+    const hourTestState = { status: "ativo" as const, hoursBrt: [6, 10], startedAt: "2026-08-01T00:00:00.000Z" };
+    const result = aggregateHourTest([campaign], hourTestState);
+    assert.equal(result.cells.length, 0);
+  });
+});
+
 // ─── renderHourTestSection ─────────────────────────────────────────────────
 
 describe("renderHourTestSection", () => {

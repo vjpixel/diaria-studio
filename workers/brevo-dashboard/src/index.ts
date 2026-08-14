@@ -447,7 +447,7 @@ async function buildDashboardResponse(request: Request, env: Env, isFresh: boole
 
     // #2733: seções KV-independentes (coortes, MV, contatos, cupons) — sempre
     // frescas do KV, tanto aqui quanto no fallback de rate-limit do Brevo.
-    const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam } = await readKvTabs(env, isFresh ? "fresh" : "cached");
+    const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam, hourTestState } = await readKvTabs(env, isFresh ? "fresh" : "cached"); // #5189: hourTestState
     // #4184: só ciclos MENSAIS (naming "Clarice News AAMM-MM — X", ver
     // parseClariceCampaignKey) têm prioritized.md/mapa de seção — campanhas
     // diárias não entram aqui e caem no fallback "—" sem custo extra.
@@ -469,7 +469,7 @@ async function buildDashboardResponse(request: Request, env: Env, isFresh: boole
         return null;
       }),
     ]);
-    const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, planCredits, dataGeneratedAt, campaignsWindowLimit, postmasterSpam, { linkSectionsByCycle, linkTitlesByCycle, brevoDiaria });
+    const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, planCredits, dataGeneratedAt, campaignsWindowLimit, postmasterSpam, { linkSectionsByCycle, linkTitlesByCycle, brevoDiaria, hourTestState }); // #5189
     const response = new Response(html, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",

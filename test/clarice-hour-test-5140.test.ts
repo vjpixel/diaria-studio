@@ -31,6 +31,7 @@ import {
   normalizeHours,
   readClariceHourTestState,
   startClariceHourTest,
+  toHourTestKvState, // #5189
 } from "../scripts/lib/clarice-hour-test.ts";
 
 function withRoot(fn: (root: string) => void): void {
@@ -240,6 +241,73 @@ describe("estado durável do teste de horário", () => {
       const st = readClariceHourTestState(root);
       assert.equal(st.status, "inativo");
       assert.equal(st.degraded, true);
+    });
+  });
+
+  // #5189: close propaga `startedAt` — sem isso o dashboard (`aggregateHourTest`)
+  // não teria como delimitar o INÍCIO da janela de um teste encerrado.
+  it("close PROPAGA startedAt do ativo que fecha (#5189)", () => {
+    withRoot((root) => {
+      startClariceHourTest(root, { hoursBrt: [6, 10], now: () => new Date("2026-08-01T00:00:00Z") });
+      closeClariceHourTest(root, { winnerBrt: 10, now: () => new Date("2026-08-15T00:00:00Z") });
+      const st = readClariceHourTestState(root);
+      assert.equal(st.status, "encerrado");
+      assert.equal(st.status === "encerrado" ? st.startedAt : undefined, "2026-08-01T00:00:00.000Z");
+      assert.equal(st.status === "encerrado" ? st.decidedAt : undefined, "2026-08-15T00:00:00.000Z");
+    });
+  });
+
+  // #5189: um estado "encerrado" em disco SEM startedAt (ex: escrito à mão,
+  // ou por uma versão pré-#5189 do arquivo) é INVÁLIDO — cai em inativo COM
+  // aviso, nunca é tratado como um "encerrado" sem janela conhecida (que
+  // enganaria `aggregateHourTest` a excluir tudo silenciosamente sem avisar
+  // que o arquivo está incompleto).
+  it("estado encerrado SEM startedAt em disco vira inativo COM aviso (#5189)", () => {
+    withRoot((root) => {
+      writeFileSync(
+        clariceHourTestStatePath(root),
+        JSON.stringify({ status: "encerrado", hoursBrt: [6, 10], winnerBrt: 10, decidedAt: "2026-08-15T00:00:00Z" }),
+        "utf-8",
+      );
+      const st = readClariceHourTestState(root);
+      assert.equal(st.status, "inativo");
+      assert.equal(st.degraded, true);
+    });
+  });
+});
+
+// #5189: projeção pro shape SLIM que viaja pro KV do dashboard.
+describe("toHourTestKvState (#5189)", () => {
+  it("inativo → { status: 'inativo' }, sem campos extras", () => {
+    assert.deepEqual(toHourTestKvState({ status: "inativo" }), { status: "inativo" });
+  });
+
+  it("ativo → mantém hoursBrt/startedAt, descarta startedBy/rationale", () => {
+    const kv = toHourTestKvState({
+      status: "ativo",
+      hoursBrt: [6, 10],
+      startedAt: "2026-08-01T00:00:00.000Z",
+      startedBy: "editor",
+      rationale: "teste #5140",
+    });
+    assert.deepEqual(kv, { status: "ativo", hoursBrt: [6, 10], startedAt: "2026-08-01T00:00:00.000Z" });
+  });
+
+  it("encerrado → mantém hoursBrt/startedAt/decidedAt, descarta winnerBrt/decidedBy/rationale", () => {
+    const kv = toHourTestKvState({
+      status: "encerrado",
+      winnerBrt: 10,
+      hoursBrt: [6, 10],
+      startedAt: "2026-08-01T00:00:00.000Z",
+      decidedAt: "2026-08-15T00:00:00.000Z",
+      decidedBy: "editor",
+      rationale: "clique +2pp, p<0,05",
+    });
+    assert.deepEqual(kv, {
+      status: "encerrado",
+      hoursBrt: [6, 10],
+      startedAt: "2026-08-01T00:00:00.000Z",
+      decidedAt: "2026-08-15T00:00:00.000Z",
     });
   });
 });

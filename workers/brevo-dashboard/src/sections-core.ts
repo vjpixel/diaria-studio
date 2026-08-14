@@ -1,4 +1,4 @@
-import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoLinksStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementSummary, PostmasterSpamEntry } from "./types.ts";
+import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoLinksStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementSummary, PostmasterSpamEntry, ClariceHourTestKvState } from "./types.ts"; // #5189: ClariceHourTestKvState
 import { type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 // #4405: desempate de ciclo por conteúdo em resolveCampaignCycle (abaixo) — mesma
 // função que render-links.ts já usa pra classificar URL→conteúdo.
@@ -127,6 +127,20 @@ export interface RenderDashboardOptions {
    * um banner explícito em vez de esconder a falha).
    */
   brevoDiaria?: BrevoDiariaTabData | null;
+  /**
+   * #5189: estado (janela ativa) do teste de HORÁRIO da onda ramp-warm —
+   * fonte: KV `clarice:hourtest:state` (gravada por
+   * `scripts/push-clarice-hour-test-kv.ts`, chamada automaticamente por
+   * `clarice-hour-test.ts` em `--start`/`--close`). Repassado pra
+   * `aggregateHourTest` pra escopar a leitura à janela ATIVA/mais recente do
+   * teste (ver docstring daquela função). `undefined` (default — NENHUM
+   * call site de produção omite este campo, mas TODOS os testes pré-#5189
+   * omitem) preserva o comportamento anterior: `aggregateHourTest` agrega
+   * TODA a história de campanhas H0N reconhecidas, sem nenhum filtro de
+   * janela — só passar explicitamente `null` (estado indisponível/inválido)
+   * ativa o filtro estrito (exclui tudo, já que não há janela pra confiar).
+   */
+  hourTestState?: ClariceHourTestKvState | null;
 }
 
 /**
@@ -633,12 +647,14 @@ ${monthlyAbcSectionsByDate}
     .join("\n");
   // #5154: Teste de HORÁRIO da onda ramp-warm (#5140) — seção SEPARADA do
   // Resumo A/B/C acima (ver docstring de renderHourTestSection pro racional
-  // completo). Sem escopo por ciclo (o naming da campanha não carrega o
-  // ciclo mensal) — 1 cômputo sobre TODAS as campanhas, reusado tanto no
-  // detalhe da aba Engajamento quanto na linha compacta da Visão Geral
-  // (mesmo padrão de reuso de `monthlyTotalsSection`/`volumeSection` — zero
-  // fetch extra, `renderHourTestSection` já se omite sozinha sem dado).
-  const hourTestResult = aggregateHourTest(campaigns);
+  // completo). O naming da campanha não carrega ciclo MENSAL (só o yymm de
+  // conteúdo), então o escopo não vem de `cycle` como em `aggregateCellsV2`
+  // — vem da JANELA ativa do teste (`opts.hourTestState`, #5189), lida do KV
+  // (ver RenderDashboardOptions). 1 cômputo sobre TODAS as campanhas, reusado
+  // tanto no detalhe da aba Engajamento quanto na linha compacta da Visão
+  // Geral (mesmo padrão de reuso de `monthlyTotalsSection`/`volumeSection` —
+  // zero fetch extra, `renderHourTestSection` já se omite sozinha sem dado).
+  const hourTestResult = aggregateHourTest(campaigns, opts.hourTestState);
   const hourTestSection = renderHourTestSection(hourTestResult);
   // #2736: "Resumo D1–D5 — S1" removida da aba Engajamento (ruído, decisão do
   // editor). renderDaySummarySection/aggregateDaySummary permanecem exportadas
@@ -2806,24 +2822,72 @@ function emptyHourCell(hourBrt: number): HourCellSummary {
 }
 
 /**
- * Agrega TODAS as campanhas reconhecidas por `parseHourTestCampaign` — sem
- * escopo por ciclo mensal (o naming da campanha só carrega o ciclo DIÁRIO
- * "yymm", não o "AAMM-MM"; o teste é lido no acumulado da vida dele, não
- * por ciclo) e sem o guard de consolidação por dia que `aggregateCellsV2`
- * aplica ao A/B/C (#3404): cada onda com teste de horário ATIVO sempre
- * dispara os N braços JUNTOS via o mesmo laço em `clarice-envio-run.ts`
- * (Passo 7) — uma célula sem par só existe no caso raro de falha PARCIAL a
- * meio de onda, já sinalizado no relatório operacional daquele dia (ver
- * "ONDA PARCIALMENTE MONTADA" em clarice-envio-run.ts), não algo que este
- * painel precise redetectar. Exportado pra teste unitário.
+ * #5189: janela [start, end] da leitura ATIVA/mais recente do teste de
+ * horário, derivada do estado exposto via KV (`ClariceHourTestKvState`).
+ * `end: null` significa "sem fim" (teste `ativo`, ainda rodando) — `end`
+ * numérico é o `decidedAt` de um teste `encerrado`.
+ *
+ * `null` (sem janela válida) nos 3 casos em que não há como confiar num
+ * corte temporal: estado ausente/indisponível, `status: "inativo"`, ou
+ * `startedAt`/`decidedAt` ilegível. `aggregateHourTest` trata `null` como
+ * "exclui tudo" — mesma disciplina "dado ausente > dado errado" do resto do
+ * projeto (ver `normalizeClariceHourTestState` em brevo-api.ts).
+ */
+function resolveHourTestWindow(
+  state: ClariceHourTestKvState | null,
+): { start: number; end: number | null } | null {
+  if (!state || state.status === "inativo") return null;
+  const start = Date.parse(state.startedAt);
+  if (!Number.isFinite(start)) return null;
+  if (state.status === "ativo") return { start, end: null };
+  const end = Date.parse(state.decidedAt);
+  return Number.isFinite(end) ? { start, end } : null;
+}
+
+/**
+ * Agrega as campanhas reconhecidas por `parseHourTestCampaign`, escopadas à
+ * janela ATIVA/mais recente do teste (`hourTestState`, #5189) — mesmo papel
+ * que `cycle` cumpre em `aggregateCellsV2`, mas por TEMPO em vez de por nome
+ * de campanha: o naming `Clarice {yymm} grupo:{key}-H{HH}` só carrega o
+ * ciclo DIÁRIO "yymm" (não o "AAMM-MM" mensal), então não dá pra desambiguar
+ * 2 testes de horário de ciclos DIFERENTES reusando as mesmas horas (ex:
+ * H06/H10) só pelo nome — sem esta janela, um teste encerrado e reaberto no
+ * futuro se misturaria ao anterior na leitura, sem nenhum sinal.
+ *
+ * `hourTestState` **omitido** (`undefined`) preserva o comportamento
+ * pré-#5189 — agrega TODA a história reconhecida, sem filtro de janela
+ * (usado pelos testes que não exercitam o escopo em si). Passado
+ * explicitamente (mesmo `null`, quando o KV não tem estado válido) ativa o
+ * filtro: campanhas fora de `[start, end ?? +Infinity]`, ou sem
+ * `scheduledAt`/`sentDate` parseável, são excluídas — nunca incluídas por
+ * default inseguro.
+ *
+ * Sem o guard de consolidação por dia que `aggregateCellsV2` aplica ao A/B/C
+ * (#3404): cada onda com teste de horário ATIVO sempre dispara os N braços
+ * JUNTOS via o mesmo laço em `clarice-envio-run.ts` (Passo 7) — uma célula
+ * sem par só existe no caso raro de falha PARCIAL a meio de onda, já
+ * sinalizado no relatório operacional daquele dia (ver "ONDA PARCIALMENTE
+ * MONTADA" em clarice-envio-run.ts), não algo que este painel precise
+ * redetectar. Exportado pra teste unitário.
  */
 export function aggregateHourTest(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
+  hourTestState?: ClariceHourTestKvState | null,
 ): HourTestResult {
+  const scoped = hourTestState !== undefined;
+  const window = scoped ? resolveHourTestWindow(hourTestState) : null;
   const acc = new Map<number, { sent: number; delivered: number; opens: number; clicksAttributed: number; clicksTotal: number; unattributed: number; unsub: number; bounces: number; count: number }>();
   for (const c of campaigns) {
     const parsed = parseHourTestCampaign(c.name);
     if (!parsed) continue;
+    if (scoped) {
+      if (!window) continue; // sem janela válida — exclui tudo (#5189)
+      const when = c.scheduledAt ?? c.sentDate; // mesma precedência de groupMonthlyAbcTests
+      const ms = when ? Date.parse(when) : NaN;
+      if (!Number.isFinite(ms)) continue; // data ilegível — nunca inclui por default
+      if (ms < window.start) continue;
+      if (window.end !== null && ms > window.end) continue;
+    }
     const picked = pickStats(c);
     if (!picked) continue;
     const s = picked.stats;

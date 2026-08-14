@@ -70,6 +70,7 @@ import { resolve } from "node:path";
 
 import { getArg, hasFlag, isMainModule } from "./cli-args.ts";
 import { brtHourToUtcHourSameDay } from "./clarice-wave-plan.ts";
+import type { ClariceHourTestKvState } from "./dashboard-kv-types.ts"; // #5189
 
 /** Duas células é o desenho da #5140; o teto existe pra que um `--hours` com
  *  typo (ex: "6,10,14,18,22") não fatie a onda em pedaços pequenos demais pra
@@ -94,6 +95,12 @@ export type ClariceHourTestState =
        *  precisa de significância). */
       winnerBrt: number | null;
       hoursBrt: number[];
+      /** #5189: propagado do estado `ativo` que este encerramento fecha —
+       *  sem isto, a leitura do dashboard (`aggregateHourTest`,
+       *  sections-core.ts) não teria como delimitar o INÍCIO da janela do
+       *  teste encerrado, e um teste anterior (já encerrado antes deste)
+       *  reusando as mesmas horas se misturaria na agregação. */
+      startedAt: string;
       decidedAt: string;
       decidedBy: string;
       rationale?: string;
@@ -146,6 +153,7 @@ function isValidState(v: unknown): v is ClariceHourTestState {
   if (o.status === "encerrado") {
     return (
       Array.isArray(o.hoursBrt) &&
+      typeof o.startedAt === "string" && // #5189
       typeof o.decidedAt === "string" &&
       (o.winnerBrt === null || typeof o.winnerBrt === "number")
     );
@@ -236,10 +244,32 @@ export function closeClariceHourTest(rootDir: string, opts: CloseHourTestOptions
     status: "encerrado",
     winnerBrt: opts.winnerBrt,
     hoursBrt: current.hoursBrt,
+    startedAt: current.startedAt, // #5189: propagado do `ativo` que este encerramento fecha
     decidedAt: now.toISOString(),
     decidedBy: opts.decidedBy ?? "editor",
     ...(opts.rationale ? { rationale: opts.rationale } : {}),
   });
+}
+
+/**
+ * #5189: projeta o estado durável (`ClariceHourTestState`, com
+ * `startedBy`/`decidedBy`/`rationale` — narrativa editorial local) pro shape
+ * SLIM que viaja pro KV (`ClariceHourTestKvState`, dashboard-kv-types.ts,
+ * dependency-free). Pura — nenhum I/O — usada por
+ * `scripts/push-clarice-hour-test-kv.ts` (o script que de fato grava o KV) e
+ * por testes que querem verificar a projeção sem tocar `data/`.
+ */
+export function toHourTestKvState(state: ClariceHourTestState): ClariceHourTestKvState {
+  if (state.status === "inativo") return { status: "inativo" };
+  if (state.status === "ativo") {
+    return { status: "ativo", hoursBrt: state.hoursBrt, startedAt: state.startedAt };
+  }
+  return {
+    status: "encerrado",
+    hoursBrt: state.hoursBrt,
+    startedAt: state.startedAt,
+    decidedAt: state.decidedAt,
+  };
 }
 
 export function describeHourTestState(state: ClariceHourTestStateRead): string {
@@ -253,33 +283,63 @@ export function describeHourTestState(state: ClariceHourTestStateRead): string {
   return `encerrado — ${w} (em ${state.decidedAt})`;
 }
 
+/**
+ * #5189: empurra o estado recém-mudado pro KV do dashboard, fail-soft — a
+ * escrita LOCAL (`write()` acima) é a fonte de verdade e já aconteceu quando
+ * esta função roda; uma falha aqui (rede indisponível, credencial Cloudflare
+ * ausente) vira só um warning, nunca reverte nem bloqueia o `--start`/
+ * `--close` que o editor acabou de rodar. Dynamic import (não import
+ * estático no topo do arquivo): `push-clarice-hour-test-kv.ts` importa DESTE
+ * módulo (`readClariceHourTestState`/`toHourTestKvState`) — um import
+ * estático nos dois sentidos criaria um ciclo; adiar a resolução pra dentro
+ * do branch da CLI (só executado como `main module`, nunca por quem importa
+ * este arquivo como lib) evita o ciclo e mantém os importers de
+ * `clarice-hour-test.ts` (`clarice-envio-run.ts`, `clarice-wave-plan.ts`)
+ * livres do peso de `cloudflare-kv-upload.ts`/`env-loader.ts`, que eles não
+ * usam.
+ */
+async function pushStateToKvFailSoft(rootDir: string): Promise<void> {
+  try {
+    const { pushClariceHourTestState } = await import("../push-clarice-hour-test-kv.ts");
+    await pushClariceHourTestState(rootDir, false);
+  } catch (e) {
+    console.warn(
+      `⚠️  push-clarice-hour-test-kv falhou (estado LOCAL já gravado, não afetado): ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
 if (isMainModule(import.meta.url)) {
   const argv = process.argv.slice(2);
   const rootDir = process.cwd();
-  try {
-    if (hasFlag(argv, "start")) {
-      const raw = getArg(argv, "hours");
-      if (!raw) throw new Error("--start exige --hours (ex: --hours 6,10)");
-      const hours = raw.split(",").map((s) => Number(s.trim()));
-      const st = startClariceHourTest(rootDir, {
-        hoursBrt: hours,
-        rationale: getArg(argv, "rationale") || undefined,
-      });
-      console.log(describeHourTestState(st));
-    } else if (hasFlag(argv, "close")) {
-      const raw = getArg(argv, "winner");
-      const st = closeClariceHourTest(rootDir, {
-        // `--winner` ausente ou "none" = encerramento SEM veredito, o mesmo
-        // caminho que o A/B/C usou em 11/08 (p 0,2715, decisão editorial).
-        winnerBrt: raw === "" || raw === "none" ? null : Number(raw),
-        rationale: getArg(argv, "rationale") || undefined,
-      });
-      console.log(describeHourTestState(st));
-    } else {
-      console.log(describeHourTestState(readClariceHourTestState(rootDir)));
+  (async () => {
+    try {
+      if (hasFlag(argv, "start")) {
+        const raw = getArg(argv, "hours");
+        if (!raw) throw new Error("--start exige --hours (ex: --hours 6,10)");
+        const hours = raw.split(",").map((s) => Number(s.trim()));
+        const st = startClariceHourTest(rootDir, {
+          hoursBrt: hours,
+          rationale: getArg(argv, "rationale") || undefined,
+        });
+        console.log(describeHourTestState(st));
+        await pushStateToKvFailSoft(rootDir);
+      } else if (hasFlag(argv, "close")) {
+        const raw = getArg(argv, "winner");
+        const st = closeClariceHourTest(rootDir, {
+          // `--winner` ausente ou "none" = encerramento SEM veredito, o mesmo
+          // caminho que o A/B/C usou em 11/08 (p 0,2715, decisão editorial).
+          winnerBrt: raw === "" || raw === "none" ? null : Number(raw),
+          rationale: getArg(argv, "rationale") || undefined,
+        });
+        console.log(describeHourTestState(st));
+        await pushStateToKvFailSoft(rootDir);
+      } else {
+        console.log(describeHourTestState(readClariceHourTestState(rootDir)));
+      }
+    } catch (e) {
+      console.error(`❌ ${e instanceof Error ? e.message : String(e)}`);
+      process.exitCode = 1;
     }
-  } catch (e) {
-    console.error(`❌ ${e instanceof Error ? e.message : String(e)}`);
-    process.exitCode = 1;
-  }
+  })();
 }

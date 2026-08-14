@@ -444,3 +444,29 @@ export interface ContactsSummary {
   mv: Record<string, number>;
   engagement: { with_opens: number; with_clicks: number };
 }
+
+/**
+ * #5189: estado (janela ativa) do teste de HORÁRIO da onda ramp-warm,
+ * projetado pro KV. Espelha `ClariceHourTestState`
+ * (`scripts/lib/clarice-hour-test.ts`), mas dependency-free (aquele módulo
+ * usa `node:fs`, incompatível com o worker `brevo-dashboard`, runtime
+ * workerd) — mesmo racional dos demais tipos deste arquivo (ver docstring do
+ * módulo).
+ *
+ * Gravado por `scripts/push-clarice-hour-test-kv.ts` (chamado
+ * automaticamente por `clarice-hour-test.ts` em `--start`/`--close`,
+ * fail-soft — nunca bloqueia a escrita LOCAL, que é a fonte de verdade), lido
+ * por `aggregateHourTest` (sections-core.ts) pra escopar a leitura à janela
+ * ATIVA/mais recente do teste — mesmo papel que `cycle` cumpre em
+ * `aggregateCellsV2`, mas por TEMPO em vez de por nome de campanha (o naming
+ * `Clarice {yymm} grupo:{key}-H{HH}` não carrega ciclo mensal, só o yymm de
+ * conteúdo — ver docstring de `aggregateHourTest`).
+ *
+ * Campos deliberadamente reduzidos (sem `startedBy`/`decidedBy`/`rationale`/
+ * `winnerBrt`) — o Worker só precisa da JANELA, não da narrativa editorial em
+ * torno dela.
+ */
+export type ClariceHourTestKvState =
+  | { status: "inativo" }
+  | { status: "ativo"; hoursBrt: number[]; startedAt: string }
+  | { status: "encerrado"; hoursBrt: number[]; startedAt: string; decidedAt: string };
