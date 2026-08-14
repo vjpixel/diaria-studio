@@ -216,6 +216,26 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4451",
   },
   {
+    name: "Diaria-Clarice-Dashboard-Precompute",
+    // #5217: reabastece dash:lastgood:campaigns (fallback de rate-limit do
+    // dashboard clarice-dashboard) — nada mais o mantinha quente desde que o
+    // Cron Trigger interno do Worker foi removido (#3553/#3639). Bate
+    // `GET /` autenticado via Bearer (reusa AUTH_TOKEN, sem secret novo — ver
+    // docstring do script) e aciona o MESMO caminho de código de uma visita
+    // humana, incluindo o write-through gated por hash do #5216 (só grava
+    // quando o conteúdo mudou).
+    description: "precompute horario do dashboard clarice-dashboard (dash:lastgood:campaigns) via GET / autenticado",
+    steps: [{ key: "precompute", script: "scripts/clarice-dashboard-precompute.ts" }],
+    logPath: "clarice-dashboard/.precompute.log",
+    // Horária (24x/dia) — decisão do editor 13/08/2026. Custo medido: ~2
+    // chamadas Brevo/execução morna, ~44/100 do teto real de 100 req/hora
+    // (#5215). Editor checa o painel a partir das 10:00 — a cadência horária
+    // já garante dado fresco na 1ª olhada do dia sem precisar de um
+    // horário-âncora dedicado.
+    schedule: { kind: "interval", hours: 1 },
+    issue: "#5217, #5216, #5215",
+  },
+  {
     name: "Diaria-Clarice-Guardrail-Alarm",
     description: "alarme de guardrail furado do ramp Clarice",
     steps: [{ key: "alarm", script: "scripts/clarice-guardrail-alarm.ts" }],

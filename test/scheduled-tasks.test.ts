@@ -233,7 +233,14 @@ describe("#5229 — Diaria-Beehiiv-Backup registrada, semanal, systemd-only", ()
       }
       // `interval` bate em múltiplos de N horas a partir da meia-noite —
       // 03:00 só colidiria com um interval que divida 3 (1h ou 3h).
-      if (other.schedule.kind === "interval") {
+      // #5217: um interval de 1h (ex: Diaria-Clarice-Dashboard-Precompute)
+      // bate em TODO horário cheio, por definição — "colidiria" com
+      // qualquer daily/weekly/monthly agendado em minute:0, incluindo este.
+      // Isso não é uma colisão evitável nem um sinal de mau agendamento (são
+      // 2 processos independentes, sistemas totalmente diferentes — systemd
+      // não serializa timers concorrentes); é só a consequência inerente de
+      // "roda toda hora". Excluído do guard por design.
+      if (other.schedule.kind === "interval" && other.schedule.hours > 1) {
         assert.ok(
           mine.minute !== 0 || mine.hour % other.schedule.hours !== 0,
           `03:00 cai numa batida de ${other.name} (interval de ${other.schedule.hours}h)`,
@@ -425,5 +432,24 @@ describe("#5128/#5130 — Diaria-Bing-Seo-Monthly-Pull registrada, mensal, syste
       [["--mode", "keywords"], ["--mode", "links"]],
     );
     assert.deepEqual(t!.schedule, { kind: "monthly", day: 1, hour: 9, minute: 0 });
+  });
+});
+
+describe("#5217 — Diaria-Clarice-Dashboard-Precompute registrada, horária, systemd-only", () => {
+  it("está presente no registro, com o step apontando pro script correto, interval de 1h", () => {
+    const t = getScheduledTaskByName("Diaria-Clarice-Dashboard-Precompute");
+    assert.ok(t, "Diaria-Clarice-Dashboard-Precompute ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/clarice-dashboard-precompute.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "interval", hours: 1 });
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
+    const t = getScheduledTaskByName("Diaria-Clarice-Dashboard-Precompute")!;
+    const script = t.steps[0].script;
+    const others = SCHEDULED_TASKS.filter((o) => o.name !== t.name && o.steps.some((s) => s.script === script));
+    assert.deepEqual(others, [], `script ${script} também referenciado por: ${others.map((o) => o.name).join(", ")}`);
   });
 });

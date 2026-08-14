@@ -420,6 +420,35 @@ export async function fetchPlanCredits(
 // KV (Cupons/Contatos) ATUALIZADAS — em vez de servir o HTML inteiro congelado.
 export const LASTGOOD_CAMPAIGNS_KEY = "dash:lastgood:campaigns";
 
+// #5216: chave auxiliar que guarda o hash djb2 do CONTEÚDO (campaigns +
+// scheduled + campaignsLimit — nunca `generatedAt`, que muda a cada tick e
+// tornaria o gate inútil) do último write bem-sucedido em
+// LASTGOOD_CAMPAIGNS_KEY. Permite write CONDICIONAL — só grava quando o
+// conteúdo mudou de fato, cortando writes/dia. Mesmo padrão de
+// LASTGOOD_HASH_KEY/djb2Hash que existia pré-#2733 para o HTML lastgood
+// (removido no #2739 quando o modelo mudou de HTML-lastgood pra
+// campaigns-lastgood) — reintroduzido aqui porque o write atual
+// (`buildDashboardResponse`) grava INCONDICIONALMENTE a cada fetch bem
+// sucedido não-`fresh`, sem TTL de escrita nem hash: no free tier da
+// Cloudflare (~1.000 escritas de KV/dia POR CONTA, compartilhado com o
+// Worker `poll`) isso já quase estourou uma vez (#2282).
+export const LASTGOOD_CAMPAIGNS_HASH_KEY = "dash:lastgood:campaigns:hash";
+
+/**
+ * #5216: hash djb2 simples (32-bit, não-criptográfico) — suficiente para
+ * comparar conteúdo serializado (JSON) e decidir se um write de KV é
+ * necessário. Colisão implica write desnecessário, nunca dado errado. Zero
+ * dependências externas, roda no Worker sem import. Espelha o `djb2Hash` que
+ * existia em index.ts pré-#2739 (removido junto com o HTML lastgood).
+ */
+export function djb2Hash(s: string): string {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = (((h << 5) + h) ^ s.charCodeAt(i)) >>> 0; // >>> 0 mantém uint32
+  }
+  return h.toString(16);
+}
+
 /**
  * #3644: coalescing de requests concorrentes DENTRO do mesmo isolate — a
  * defesa PRIMÁRIA e determinística contra o thundering-herd. Cloudflare
