@@ -11,7 +11,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseScoredRow, sortByScoreDescending, SCORE_SUM_TOLERANCE } from "../scripts/score-pending-origin.ts";
+import { parseScoredRow, sortByScoreDescending, SCORE_SUM_TOLERANCE, LANE_RECENCY } from "../scripts/score-pending-origin.ts";
 
 function rawRow(overrides: Partial<Record<string, string>> = {}): Record<string, string> {
   return {
@@ -80,6 +80,26 @@ describe("parseScoredRow — parse defensivo + checagem de consistência (#4476 
   it("direção simétrica: score MAIOR que a soma também lança além da tolerância (Math.abs, não só sum > score)", () => {
     // soma real = 78.7; score = 78.7 + 10 = 88.7 (score acima da soma, não abaixo)
     assert.throws(() => parseScoredRow(rawRow({ score: "88.7" }), 2), /diverge/);
+  });
+});
+
+describe("parseScoredRow — colunas lane/subscribed_on opcionais e retrocompatíveis (#5183)", () => {
+  it("CSV antigo sem as colunas → lane e subscribed_on viram '' (nunca lança)", () => {
+    const row = parseScoredRow(rawRow(), 2);
+    assert.equal(row.lane, "");
+    assert.equal(row.subscribed_on, "");
+  });
+
+  it("linha com lane=recency e subscribed_on preenchidos → lidos corretamente", () => {
+    const row = parseScoredRow(rawRow({ lane: LANE_RECENCY, subscribed_on: "2026-08-14T00:00:00.000Z" }), 2);
+    assert.equal(row.lane, LANE_RECENCY);
+    assert.equal(row.subscribed_on, "2026-08-14T00:00:00.000Z");
+  });
+
+  it("lane/subscribed_on trimados", () => {
+    const row = parseScoredRow(rawRow({ lane: "  recency  ", subscribed_on: "  2026-08-14T00:00:00.000Z  " }), 2);
+    assert.equal(row.lane, "recency");
+    assert.equal(row.subscribed_on, "2026-08-14T00:00:00.000Z");
   });
 });
 
