@@ -550,6 +550,28 @@ export const ENTITY_PERPLEXITY_FOOTER_NAV_UTM = {
   medium: "footer-nav",
 } as const;
 
+/** Mesmo padrão de `ENTITY_PERPLEXITY_FOOTER_NAV_UTM` acima, pra página de
+ * entidade "xAI" (#5125 item 4, `scripts/lib/entities/xai.ts`) — 2ª entidade
+ * publicada nesta rodada de escala reduzida (ver docstring do módulo). */
+export const ENTITY_XAI_FOOTER_NAV_UTM = {
+  source: "entity-xai",
+  medium: "footer-nav",
+} as const;
+
+/** Mesmo padrão acima, pra página de entidade "Amazon" (#5125 item 4,
+ * `scripts/lib/entities/amazon.ts`) — 3ª entidade publicada nesta rodada. */
+export const ENTITY_AMAZON_FOOTER_NAV_UTM = {
+  source: "entity-amazon",
+  medium: "footer-nav",
+} as const;
+
+/** Mesmo padrão acima, pra página de entidade "Samsung" (#5125 item 4,
+ * `scripts/lib/entities/samsung.ts`) — 4ª entidade publicada nesta rodada. */
+export const ENTITY_SAMSUNG_FOOTER_NAV_UTM = {
+  source: "entity-samsung",
+  medium: "footer-nav",
+} as const;
+
 /** Link "Arquivo completo em {url}" do post semanal do Instagram
  * (`scripts/lib/format-weekly-social.ts`, #4537 item 1) — o #4295 cobriu os
  * links que a pipeline DIÁRIA publica; o post semanal ficou fora do escopo
@@ -1298,6 +1320,45 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "(#5125, mesmo padrão dos HUB_*_FOOTER_NAV_UTM acima). Achado #5205: ficou fora do array " +
       "no PR original, causando falso-positivo no detector de drift (`nao_catalogado`) assim que " +
       "a página receber o 1º clique real.",
+    status: "ativo",
+  },
+  {
+    id: "entity-xai-footer-nav",
+    label: "Página de entidade xAI — link de rodapé pra diar.ia.br",
+    source: ENTITY_XAI_FOOTER_NAV_UTM.source,
+    medium: ENTITY_XAI_FOOTER_NAV_UTM.medium,
+    campaignPattern: "entity-xai-footer-nav",
+    originFile: "scripts/lib/entities/xai.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada da página de entidade xAI (#5125 item 4, ' +
+      "escala reduzida — 2ª de ~20 entidades planejadas). Cadastrado desde já pra não repetir o " +
+      "achado #5205 (drift `nao_catalogado` no 1º clique real).",
+    status: "ativo",
+  },
+  {
+    id: "entity-amazon-footer-nav",
+    label: "Página de entidade Amazon — link de rodapé pra diar.ia.br",
+    source: ENTITY_AMAZON_FOOTER_NAV_UTM.source,
+    medium: ENTITY_AMAZON_FOOTER_NAV_UTM.medium,
+    campaignPattern: "entity-amazon-footer-nav",
+    originFile: "scripts/lib/entities/amazon.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada da página de entidade Amazon (#5125 item 4, ' +
+      "escala reduzida — 3ª de ~20 entidades planejadas). Cadastrado desde já pra não repetir o " +
+      "achado #5205 (drift `nao_catalogado` no 1º clique real).",
+    status: "ativo",
+  },
+  {
+    id: "entity-samsung-footer-nav",
+    label: "Página de entidade Samsung — link de rodapé pra diar.ia.br",
+    source: ENTITY_SAMSUNG_FOOTER_NAV_UTM.source,
+    medium: ENTITY_SAMSUNG_FOOTER_NAV_UTM.medium,
+    campaignPattern: "entity-samsung-footer-nav",
+    originFile: "scripts/lib/entities/samsung.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada da página de entidade Samsung (#5125 item 4, ' +
+      "escala reduzida — 4ª de ~20 entidades planejadas). Cadastrado desde já pra não repetir o " +
+      "achado #5205 (drift `nao_catalogado` no 1º clique real).",
     status: "ativo",
   },
 ] as const;
