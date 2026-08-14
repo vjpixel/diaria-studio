@@ -56,6 +56,7 @@ import { buildArchiveFeedXml, FEED_URL } from "./render-feed.ts"; // #5127: GET 
 import { HUB_REGISTRY, HUB_LASTMOD } from "./hubs/registry.ts"; // #4558 Parte A: hubs temáticos em /temas/{slug}
 import { HUB_INDEX_HTML, HUB_INDEX_LASTMOD, HUB_NOT_FOUND_HTML } from "./hubs/index-page.generated.ts"; // #5256: página-índice /temas/ + mini-página 404
 import { renderPrivacyPage } from "./render-privacy.ts"; // #5262: /privacidade (pré-requisito da verificação de marca OAuth)
+import { renderAppPage } from "./render-app.ts"; // #5262: /app (a home da newsletter não explica a finalidade do app — reprovação da 1ª verificação)
 import { resolveWorkersDevRedirect } from "../../../scripts/lib/shared/workers-dev-redirect.ts"; // #5097 item D
 
 /**
@@ -549,6 +550,13 @@ export default {
     // custaria um ciclo inteiro de re-verificação pra diagnosticar.
     if (url.pathname === "/privacidade" || url.pathname === "/privacidade/") {
       return htmlResponse(renderPrivacyPage(), 200, { etag: true });
+    }
+    // #5262: página que descreve a finalidade do app OAuth. É ELA que vai no
+    // campo "Página inicial do aplicativo" do console — apontar pra home da
+    // newsletter reprovou a verificação ("A página inicial não explica a
+    // finalidade do app"). Mesmo contrato de disponibilidade da /privacidade.
+    if (url.pathname === "/app" || url.pathname === "/app/") {
+      return htmlResponse(renderAppPage(), 200, { etag: true });
     }
     // #4909 item 2: arquivo de chave do IndexNow — só casa quando a var
     // está configurada (ver docstring de Env.INDEXNOW_KEY); sem ela, este
