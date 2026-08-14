@@ -86,6 +86,7 @@ import {
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { CLARICE_SEED_EMAIL } from "./lib/clarice-seed.ts";
 import { fetchQueuedCampaignListIds } from "./lib/brevo-client.ts";
+import { firstName } from "./lib/clarice-name.ts";
 
 loadProjectEnv();
 
@@ -233,11 +234,6 @@ export function buildSends(
     });
   }
   return out;
-}
-
-/** 1º nome p/ personalização (ex: "Azevedo, Ana" → "Azevedo"). */
-function firstName(name: string | null | undefined): string {
-  return (name ?? "").trim().split(/[\s,]+/)[0] || "";
 }
 
 /**

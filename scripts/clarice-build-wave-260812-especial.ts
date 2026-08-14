@@ -52,6 +52,7 @@ import { hasFlag } from "./lib/cli-args.ts";
 import { fetchCommittedCampaignListIds } from "./lib/brevo-client.ts";
 import { excludeCommittedToQueuedCampaigns, type StoreRow } from "./lib/clarice-segment.ts";
 import { waveKey } from "./lib/clarice-wave-plan.ts";
+import { firstName } from "./lib/clarice-name.ts";
 
 loadProjectEnv();
 
@@ -69,10 +70,6 @@ const WAVE_DATE = "2026-08-12";
 interface Row extends StoreRow {
   name: string | null;
   created: string | null;
-}
-
-function firstName(name: string | null): string {
-  return (name ?? "").trim().split(/[\s,]+/)[0] || "";
 }
 
 interface SentOrQueuedFile {
