@@ -339,7 +339,7 @@ async function renderClariceDashboardKvOnlyUncached(): Promise<string> {
       typeof staleCampaignsRaw?.campaignsLimit === "number" ? staleCampaignsRaw.campaignsLimit : null;
     const fetchedAt = typeof staleCampaignsRaw?.generatedAt === "string" ? staleCampaignsRaw.generatedAt : null;
 
-    const { cohorts, mvStatus, couponUsage, eiaEngagement, postmasterSpam } = await readKvTabs(env, "kv-only");
+    const { cohorts, mvStatus, couponUsage, eiaEngagement, postmasterSpam, hourTestState } = await readKvTabs(env, "kv-only"); // #5189
     const contactsSummary = buildContactsSummaryLocal();
     const planCredits = await fetchPlanCredits(env, "kv-only").catch(() => null);
 
@@ -375,7 +375,7 @@ async function renderClariceDashboardKvOnlyUncached(): Promise<string> {
       fetchedAt,
       staleCampaignsLimit,
       postmasterSpam,
-      { studioMode: true, linkSectionsByCycle, linkTitlesByCycle },
+      { studioMode: true, linkSectionsByCycle, linkTitlesByCycle, hourTestState }, // #5189
     );
     return injectKvOnlyBanner(html, fetchedAt);
   } catch (e) {
@@ -431,7 +431,7 @@ async function renderClariceDashboardLiveUncached(): Promise<string> {
     // removeu a seção correspondente da composição, ver docstring do módulo).
     // contactsSummary é sobrescrito pela leitura local do store SQLite
     // (melhor fidelidade que o KV, #3553).
-    const { cohorts, mvStatus, couponUsage, eiaEngagement, postmasterSpam } = await readKvTabs(env, "cached");
+    const { cohorts, mvStatus, couponUsage, eiaEngagement, postmasterSpam, hourTestState } = await readKvTabs(env, "cached"); // #5189
     const contactsSummary = buildContactsSummaryLocal();
     // #4184: mapa de seção montado localmente (sem KV) a partir do
     // prioritized.md em disco — ver docstring de buildLinkSectionsByCycleLocal.
@@ -452,7 +452,7 @@ async function renderClariceDashboardLiveUncached(): Promise<string> {
       dataGeneratedAt,
       CAMPAIGNS_FETCH_LIMIT,
       postmasterSpam,
-      { studioMode: true, linkSectionsByCycle, linkTitlesByCycle },
+      { studioMode: true, linkSectionsByCycle, linkTitlesByCycle, hourTestState }, // #5189
     );
   } catch (e) {
     if (e instanceof BrevoRateLimitError) {

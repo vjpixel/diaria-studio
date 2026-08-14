@@ -30,6 +30,7 @@ import {
   normalizeEngagementCohorts,
   normalizeMvStatus,
   normalizeEiaEngagement,
+  normalizeClariceHourTestState, // #5189
   renderEngagementCohortsSection,
   renderMvStatusSection,
   renderEiaEngagementSection,
@@ -38,6 +39,7 @@ import {
   MV_STATUS_KV_KEY,
   CONTACTS_SUMMARY_KV_KEY,
   EIA_ENGAGEMENT_KV_KEY,
+  HOUR_TEST_KV_KEY, // #5189
   LASTGOOD_CAMPAIGNS_KEY,
   type ContactsSummary,
 } from "../workers/brevo-dashboard/src/index.ts";
@@ -124,11 +126,50 @@ describe("#2733 — abas KV não congelam no rate-limit do Brevo", () => {
     const kv = makeKv({ [COUPONS_KV_KEY]: JSON.stringify(syntheticCoupons) });
     const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: kv };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { cohorts, mvStatus, contactsSummary, eiaEngagement } = await readKvTabs(env as any, "cached");
+    const { cohorts, mvStatus, contactsSummary, eiaEngagement, hourTestState } = await readKvTabs(env as any, "cached");
     assert.equal(cohorts, null);
     assert.equal(mvStatus, null);
     assert.equal(contactsSummary, null);
     assert.equal(eiaEngagement, null, "#2738: também deve degradar pra null sem quebrar");
+    assert.equal(hourTestState, null, "#5189: também deve degradar pra null sem quebrar");
+  });
+
+  it("readKvTabs lê hourTestState do KV `clarice:hourtest:state` (#5189)", async () => {
+    const kv = makeKv({
+      [HOUR_TEST_KV_KEY]: JSON.stringify({ status: "ativo", hoursBrt: [6, 10], startedAt: "2026-08-10T09:00:00.000Z" }),
+    });
+    const env = { STATS_CACHE: kv };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { hourTestState } = await readKvTabs(env as any, "cached");
+    assert.deepEqual(hourTestState, { status: "ativo", hoursBrt: [6, 10], startedAt: "2026-08-10T09:00:00.000Z" });
+  });
+
+  it("normalizeClariceHourTestState (#5189): rejeita shapes malformados, aceita os 3 braços válidos", () => {
+    assert.equal(normalizeClariceHourTestState(null), null);
+    assert.equal(normalizeClariceHourTestState("garbage"), null);
+    assert.equal(normalizeClariceHourTestState({ status: "desconhecido" }), null);
+    assert.equal(normalizeClariceHourTestState({ status: "ativo", hoursBrt: "not-an-array", startedAt: "x" }), null);
+    assert.equal(normalizeClariceHourTestState({ status: "ativo", hoursBrt: [6, 10] }), null, "sem startedAt → null");
+    assert.equal(
+      normalizeClariceHourTestState({ status: "encerrado", hoursBrt: [6, 10], startedAt: "2026-08-01T00:00:00Z" }),
+      null,
+      "encerrado sem decidedAt → null",
+    );
+    assert.deepEqual(normalizeClariceHourTestState({ status: "inativo" }), { status: "inativo" });
+    assert.deepEqual(
+      normalizeClariceHourTestState({ status: "ativo", hoursBrt: [6, 10], startedAt: "2026-08-01T00:00:00Z" }),
+      { status: "ativo", hoursBrt: [6, 10], startedAt: "2026-08-01T00:00:00Z" },
+    );
+    assert.deepEqual(
+      normalizeClariceHourTestState({
+        status: "encerrado",
+        hoursBrt: [6, 10],
+        startedAt: "2026-08-01T00:00:00Z",
+        decidedAt: "2026-08-10T00:00:00Z",
+        winnerBrt: 10, // campo extra do estado LOCAL — ignorado no shape KV slim
+      }),
+      { status: "encerrado", hoursBrt: [6, 10], startedAt: "2026-08-01T00:00:00Z", decidedAt: "2026-08-10T00:00:00Z" },
+    );
   });
 
   it("readKvTabs normaliza contactsSummary NO BOUNDARY antes de devolver (#2875 item 1)", async () => {
