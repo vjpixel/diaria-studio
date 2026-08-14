@@ -179,4 +179,95 @@ describe("check-acquisition-health.ts main() — CLI end-to-end sobre fixture lo
     const afterDryRuns = loadState(statePath);
     assert.deepEqual(afterDryRuns, seeded);
   });
+
+  it("snapshot mais recente sem subscribers.jsonl: NÃO avança o state, warning explícito (#5281)", async () => {
+    const root = join(tmpRoot, "root-missing-subs");
+    const statePath = join(tmpRoot, "state-missing-subs.json");
+    // Diretório do snapshot existe (backup rodou), mas subscribers.jsonl
+    // nunca foi escrito — simula falha real do endpoint (.partial preservado,
+    // nunca renomeado) sem sequer um manifest.json pra diagnosticar.
+    mkdirSync(join(root, "2026-08-16"), { recursive: true });
+
+    const originalWarn = console.warn;
+    const warns: string[] = [];
+    console.warn = (...args: unknown[]) => {
+      warns.push(args.map(String).join(" "));
+    };
+    try {
+      await main(["--root", root, "--state", statePath]); // sem --dry-run
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.ok(
+      warns.some((w) => w.includes("2026-08-16") && w.includes("não pôde rodar") && w.includes("não marcado como avaliado")),
+      "deveria emitir warning explícito sobre snapshot inutilizável",
+    );
+    // Nenhum state jamais foi persistido — o cursor de idempotência não avançou.
+    assert.ok(!existsSync(statePath));
+  });
+
+  it("snapshot mais recente com subscribers.jsonl VAZIO: NÃO avança o state, warning explícito (#5281)", async () => {
+    const root = join(tmpRoot, "root-empty-subs");
+    const statePath = join(tmpRoot, "state-empty-subs.json");
+    mkdirSync(join(root, "2026-08-16"), { recursive: true });
+    writeFileSync(join(root, "2026-08-16", "subscribers.jsonl"), "");
+
+    const originalWarn = console.warn;
+    const warns: string[] = [];
+    console.warn = (...args: unknown[]) => {
+      warns.push(args.map(String).join(" "));
+    };
+    try {
+      await main(["--root", root, "--state", statePath]);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.ok(warns.some((w) => w.includes("2026-08-16")));
+    assert.ok(!existsSync(statePath));
+  });
+
+  it("snapshot mais recente com manifest.json reportando erro no endpoint subscribers: NÃO avança um state já existente (#5281)", async () => {
+    const root = join(tmpRoot, "root-manifest-error");
+    const statePath = join(tmpRoot, "state-manifest-error.json");
+
+    // Semana 1: boa, já processada e persistida — baseline pra provar que a
+    // semana 2 (quebrada) não sobrescreve esse cursor.
+    mkdirSync(join(root, "2026-08-09"), { recursive: true });
+    writeFileSync(
+      join(root, "2026-08-09", "subscribers.jsonl"),
+      `${JSON.stringify(sub({ email: "a@x.com", utm_source: "google-ads" }))}\n`,
+    );
+    await main(["--root", root, "--state", statePath]);
+    const afterFirstWeek = loadState(statePath);
+    assert.equal(afterFirstWeek.lastCheckedSnapshotDate, "2026-08-09");
+
+    // Semana 2: manifest existe mas reporta erro no endpoint subscribers —
+    // arquivo pode até ter algum conteúdo residual de uma escrita parcial,
+    // mas o manifest é a fonte de verdade de que o endpoint falhou.
+    mkdirSync(join(root, "2026-08-16"), { recursive: true });
+    writeFileSync(
+      join(root, "2026-08-16", "manifest.json"),
+      JSON.stringify({
+        endpoints: [{ key: "subscribers", file: "subscribers.jsonl", status: "error", error: "ETIMEDOUT" }],
+      }),
+    );
+
+    const originalWarn = console.warn;
+    const warns: string[] = [];
+    console.warn = (...args: unknown[]) => {
+      warns.push(args.map(String).join(" "));
+    };
+    try {
+      await main(["--root", root, "--state", statePath]);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.ok(warns.some((w) => w.includes("2026-08-16") && w.includes("ETIMEDOUT")));
+    // O cursor continua na última semana BOA — nunca avançou pra semana quebrada.
+    const afterBrokenWeek = loadState(statePath);
+    assert.equal(afterBrokenWeek.lastCheckedSnapshotDate, "2026-08-09");
+  });
 });

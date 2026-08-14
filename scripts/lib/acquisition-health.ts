@@ -35,6 +35,13 @@
  * - **Nunca alarmar sobre coorte recém-criada**: `amostraNova` (cadastros
  *   abaixo de `cohortMinSize`) suprime sobrevivência E CTR — mas NUNCA
  *   `canal_desconhecido`, que é o oposto: a novidade É o sinal.
+ * - **Nunca alarmar `canal_parou` sobre uma transição de volume irrelevante**
+ *   (guard 4, #5282): `1 → 0` de um canal de cauda longa esporádico é ruído,
+ *   não sinal. `canalParouMinNovosAnterior` exige que a semana anterior
+ *   tenha tido pelo menos N cadastros novos antes de considerar o zero desta
+ *   semana um "canal parou" real — mesmo espírito de `ctrSampleMin`/
+ *   `amostraPequena`, mas aplicado ao volume de `novosNaJanela`, não ao
+ *   `amostraConsiderada` do CTR (métricas de base diferentes, guard próprio).
  * - **Comparar sempre contra a base do MESMO período**: a base de CTR é
  *   recalculada a cada rodada (mediana da própria semana), nunca lida de
  *   configuração estática.
@@ -80,6 +87,11 @@ export interface AcquisitionHealthThresholds {
   ctrSampleMin: number;
   /** Quantas semanas SEGUIDAS abaixo da base disparam o alarme de CTR. */
   ctrWeeksBelowBase: number;
+  /** Amostra mínima de cadastros novos na janela ANTERIOR pra uma transição
+   *  `N → 0` de `novosNaJanela` contar como `canal_parou` (guard 4, #5282).
+   *  Abaixo disso é ruído de canal de cauda longa esporádico (ex.: `1 → 0`),
+   *  não um sinal real de canal que parou de entregar. */
+  canalParouMinNovosAnterior: number;
 }
 
 export const DEFAULT_ACQUISITION_HEALTH_THRESHOLDS: AcquisitionHealthThresholds = {
@@ -89,6 +101,7 @@ export const DEFAULT_ACQUISITION_HEALTH_THRESHOLDS: AcquisitionHealthThresholds 
   ctrReceivedMin: LEITOR_V1_THRESHOLDS.receivedMin,
   ctrSampleMin: 5,
   ctrWeeksBelowBase: 2,
+  canalParouMinNovosAnterior: 3,
 };
 
 // ---------------------------------------------------------------------------
@@ -346,7 +359,11 @@ export function detectAcquisitionHealthFindings(
     }
 
     // ── Sinal 3a: canal parou de entregar cadastros novos ──────────────────
-    if (prev && prev.novosNaJanela > 0 && stat.novosNaJanela === 0) {
+    // Guard 4 (#5282): exige `prev.novosNaJanela >= canalParouMinNovosAnterior`
+    // — sem isso, uma transição `1 → 0` de canal de cauda longa esporádico
+    // (que nunca teve volume de verdade) alarmava tão alto quanto um canal
+    // que de fato secou depois de entregar dezenas.
+    if (prev && prev.novosNaJanela >= thresholds.canalParouMinNovosAnterior && stat.novosNaJanela === 0) {
       findings.push({
         type: "canal_parou",
         channel: stat.channel,

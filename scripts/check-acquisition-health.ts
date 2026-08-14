@@ -43,6 +43,16 @@
  * infraestrutura). Exatamente 1 snapshot → estabelece `knownChannels` sem
  * comparação (sem "semana anterior" pra comparar).
  *
+ * Snapshot MAIS RECENTE ausente/incompleto (#5281): diferente do fail-soft
+ * acima, isso NÃO é "nada pra avaliar ainda" — é uma falha real do backup
+ * que merece barulho. `isSubscribersSnapshotUsable` (`beehiiv-backup-
+ * snapshots.ts`) checa `manifest.json` (status `error`/`skipped` do endpoint
+ * `subscribers`) e o conteúdo de fato de `subscribers.jsonl`; se
+ * inutilizável, o script emite `console.warn` explícito e retorna **sem**
+ * avançar `lastCheckedSnapshotDate` — avançar mascararia a falha como
+ * "avaliado: limpo" e a próxima rodada (mesmo snapshot ainda quebrado)
+ * ficaria presa no guard de idempotência achando que já foi checado.
+ *
  * Estado (idempotência + baseline de canais conhecidos):
  *   `data/acquisition-health/state.json`.
  */
@@ -54,7 +64,7 @@ import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
-import { listSnapshotDates, readSnapshotSubscribers } from "./lib/beehiiv-backup-snapshots.ts";
+import { listSnapshotDates, readSnapshotSubscribers, isSubscribersSnapshotUsable } from "./lib/beehiiv-backup-snapshots.ts";
 import {
   computeChannelStats,
   snapshotDateToEpochSeconds,
@@ -118,6 +128,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   if (!isDryRun && state.lastCheckedSnapshotDate === currentDate) {
     console.log(
       `${LOG_PREFIX} snapshot ${currentDate} já foi avaliado nesta rodada (idempotência por data) — nada a fazer.`,
+    );
+    return;
+  }
+
+  // Guard contra snapshot ausente/incompleto virando "avaliado: limpo" (#5281)
+  // — checa ANTES de gastar qualquer cálculo, e retorna sem tocar o state
+  // (nem em modo real: reavaliar o mesmo snapshot quebrado na próxima
+  // rodada é o comportamento certo, não idempotência).
+  const usability = isSubscribersSnapshotUsable(root, currentDate);
+  if (!usability.usable) {
+    console.warn(
+      `${LOG_PREFIX} snapshot de ${currentDate} ausente ou incompleto (${usability.reason}) — ` +
+        `alarme não pôde rodar, não marcado como avaliado.`,
     );
     return;
   }
