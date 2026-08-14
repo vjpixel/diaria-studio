@@ -180,9 +180,18 @@ async function runConsentFlow(): Promise<void> {
       console.log("Abra esta URL no navegador (deve abrir sozinha):\n");
       console.log(authUrl + "\n");
       console.log(`Esperando o consentimento (timeout em ${CONSENT_TIMEOUT_MS / 60_000} min)...`);
-      const opener =
-        process.platform === "win32" ? "start" : process.platform === "darwin" ? "open" : "xdg-open";
-      spawn(opener, [authUrl], { shell: true, stdio: "ignore", detached: true }).unref();
+      // `&` na query string é metacaractere de separador de comando pro
+      // cmd.exe — abrir com `shell: true` (que monta uma string de comando
+      // crua) trunca a URL no primeiro `&`, e só client_id sobrevive. No
+      // Windows, `shell: false` com args em array força o Node a quotar o
+      // argumento pro CreateProcess, preservando a URL inteira como um único
+      // argumento pro `cmd /c start`.
+      if (process.platform === "win32") {
+        spawn("cmd", ["/c", "start", "", authUrl], { shell: false, stdio: "ignore", detached: true }).unref();
+      } else {
+        const opener = process.platform === "darwin" ? "open" : "xdg-open";
+        spawn(opener, [authUrl], { shell: true, stdio: "ignore", detached: true }).unref();
+      }
 
       // Sem timeout o processo fica pendurado pra sempre se a aba for fechada,
       // e a última coisa impressa é a URL — sem diagnóstico nenhum.
