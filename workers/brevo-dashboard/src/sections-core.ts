@@ -133,12 +133,14 @@ export interface RenderDashboardOptions {
    * `scripts/push-clarice-hour-test-kv.ts`, chamada automaticamente por
    * `clarice-hour-test.ts` em `--start`/`--close`). Repassado pra
    * `aggregateHourTest` pra escopar a leitura à janela ATIVA/mais recente do
-   * teste (ver docstring daquela função). `undefined` (default — NENHUM
-   * call site de produção omite este campo, mas TODOS os testes pré-#5189
-   * omitem) preserva o comportamento anterior: `aggregateHourTest` agrega
-   * TODA a história de campanhas H0N reconhecidas, sem nenhum filtro de
-   * janela — só passar explicitamente `null` (estado indisponível/inválido)
-   * ativa o filtro estrito (exclui tudo, já que não há janela pra confiar).
+   * teste (ver docstring daquela função). `undefined` (default — todos os
+   * call sites de PRODUÇÃO conhecidos passam este campo (render principal em
+   * index.ts, os 4 fallbacks degradados em brevo-api.ts e os 2 caminhos do
+   * Studio em dashboard-clarice.ts), mas TODOS os testes pré-#5189 omitem)
+   * preserva o comportamento anterior: `aggregateHourTest` agrega TODA a
+   * história de campanhas H0N reconhecidas, sem nenhum filtro de janela — só
+   * passar explicitamente `null` (estado indisponível/inválido) ativa o
+   * filtro estrito (exclui tudo, já que não há janela pra confiar).
    */
   hourTestState?: ClariceHourTestKvState | null;
 }

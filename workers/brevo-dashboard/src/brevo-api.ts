@@ -1549,7 +1549,8 @@ export async function buildInflightCoalescedFallback(
   if (!staleCampaignsRaw) return null;
   const staleCampaignsLimit =
     typeof staleCampaignsRaw.campaignsLimit === "number" ? staleCampaignsRaw.campaignsLimit : null;
-  const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam } = await readKvTabs(env, "kv-only");
+  const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam, hourTestState } =
+    await readKvTabs(env, "kv-only");
   const planCredits =
     typeof planCreditsOverride === "number"
       ? planCreditsOverride
@@ -1575,6 +1576,7 @@ export async function buildInflightCoalescedFallback(
       null,
       staleCampaignsLimit,
       postmasterSpam, // #4063
+      { hourTestState }, // #5189 self-review: fallback de coalescing também escopa (linkSectionsByCycle/linkTitlesByCycle seguem fora — gap pré-existente, não fechado aqui)
     );
     return new Response(injectInflightBanner(html), {
       headers: {
