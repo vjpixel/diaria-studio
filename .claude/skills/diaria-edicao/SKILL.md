@@ -26,9 +26,12 @@ Antes de iniciar, verifique:
 
 **Antes de qualquer trabalho do Stage 0**, sincronizar o checkout local com `origin/master` para garantir que a edição rode com a versão mais recente do pipeline. Rodadas overnight/develop mergeiam frequentemente; código defasado re-introduz bugs corrigidos.
 
+**Invocação longa — passar `timeout: 570000` (570s) explícito no tool Bash desta chamada.** `git-sync.ts` usa `GIT_FETCH_TIMEOUT_MS = 480000` (8min) internamente pro `git fetch origin` (#5302) — um checkout muito atrasado (muitos refs novos de uma vez) pode legitimamente levar perto disso. O default do tool Bash é 120000ms (2min): sem override, o harness mata o processo `npx tsx scripts/sync-code.ts` INTEIRO bem antes do `spawnSync` interno conseguir disparar seu próprio timeout e imprimir o diagnóstico `fetch_timeout` — pior que não ter timeout próprio nenhum. 570000ms fica abaixo do teto do tool Bash (600000ms) com margem pro `spawnSync` interno (480000ms) terminar + overhead de start/teardown do `npx tsx` (revisado no #5313, achado do review consolidado — a versão anterior desta nota pedia 600000ms, que empatava com o teto sem sobrar margem nenhuma):
+
 ```bash
 npx tsx scripts/sync-code.ts
 ```
+(Bash tool: `timeout: 570000`)
 
 O script imprime JSON com o resultado (campos `outcome`, `branch_before`, `warnings`). **Parsear o JSON do stdout** e extrair os valores individuais — nunca passar o blob inteiro pro `--details`. Logar via `log-event.ts`, escolhendo `--level info` para os 3 outcomes de sucesso e `--level warn` para os demais (coluna `--level` da tabela):
 

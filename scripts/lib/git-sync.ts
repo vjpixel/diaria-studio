@@ -152,13 +152,25 @@ export const GIT_TIMEOUT_MS = 120_000;
  * grande de refs novos de uma vez — reproduzido ao vivo: um checkout local
  * muito atrasado (866 commits, dezenas de branches novas) teve o fetch morto
  * pelo timeout do `spawnSync` (`status: null`) mesmo com os refs remotos já
- * tendo sido efetivamente atualizados no `.git` local antes do kill. 600s (10
- * min) dá folga real pra esse cenário sem deixar a edição travada
- * indefinidamente caso o fetch esteja genuinamente pendurado (credencial SSH
- * interativa, rede morta) — o comportamento continua fail-soft de qualquer
- * forma (outcome `fetch_timeout`, warn, segue).
+ * tendo sido efetivamente atualizados no `.git` local antes do kill.
+ *
+ * 480s (8min), não 600s — review consolidado do #5313 (finding confiança 83)
+ * achou o valor original inatingível: o caminho de invocação documentado
+ * (`.claude/skills/diaria-edicao/SKILL.md` Passo 0) roda `npx tsx
+ * scripts/sync-code.ts` via tool Bash, cujo timeout default é 120000ms e cujo
+ * TETO — mesmo com override explícito — é 600000ms. Se `GIT_FETCH_TIMEOUT_MS`
+ * também fosse 600000ms, o harness externo mataria o processo `npx tsx`
+ * INTEIRO no mesmo instante em que o `spawnSync` interno dispararia seu
+ * próprio timeout — sem margem pro overhead de startup/teardown do `npx tsx`
+ * em volta do spawn, e sem o diagnóstico `fetch_timeout` chegar a ser
+ * impresso (o processo pai já estaria morto). 480000ms deixa ~120000ms (2min)
+ * de folga abaixo do teto de 600000ms do tool Bash — suficiente pro
+ * `spawnSync` interno terminar, o diagnóstico ser montado e o JSON ser
+ * impresso no stdout antes do harness externo intervir, desde que o Passo 0
+ * passe um override de `timeout` (>= ~570000ms) explícito na chamada Bash em
+ * vez de herdar o default de 120000ms (ver nota no SKILL.md).
  */
-export const GIT_FETCH_TIMEOUT_MS = 600_000;
+export const GIT_FETCH_TIMEOUT_MS = 480_000;
 
 /**
  * Lock de sync (#3423, endurecido em #3430). Interface injetável — produção usa
@@ -252,6 +264,12 @@ export const MAX_SEQUENTIAL_GIT_SPAWNS = 8;
  * reintroduziria exatamente o gap 1 original do #3430 (staleness matematicamente
  * menor que o novo pior caso real, permitindo roubo do lock durante um fetch
  * grande ainda legitimamente em andamento).
+ *
+ * Review consolidado do #5313 (confiança 83) reduziu `GIT_FETCH_TIMEOUT_MS` de
+ * 600s pra 480s (ver comentário da constante) pra deixar margem sob o teto do
+ * tool Bash — como `LOCK_STALE_MS` é DERIVADO de `GIT_FETCH_TIMEOUT_MS` (não um
+ * valor solto redundante), essa mudança já se propaga automaticamente pra
+ * fórmula abaixo sem precisar editar o número aqui.
  */
 export const LOCK_STALE_MS =
   ((MAX_SEQUENTIAL_GIT_SPAWNS - 1) * GIT_TIMEOUT_MS + GIT_FETCH_TIMEOUT_MS) * 2 + 2 * 60_000;
