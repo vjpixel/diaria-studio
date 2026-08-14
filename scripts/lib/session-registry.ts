@@ -55,7 +55,7 @@
  *
  * Uso CLI (chamado pelas skills — sempre SEM `--session-id`, injetado pelo
  * hook, ver acima):
- *   npx tsx scripts/lib/session-registry.ts register --kind overnight|develop [--pid N]
+ *   npx tsx scripts/lib/session-registry.ts register --kind overnight|develop|continuo [--pid N]
  *   npx tsx scripts/lib/session-registry.ts heartbeat --kind ... [--phase X] [--active-worktrees N]
  *   npx tsx scripts/lib/session-registry.ts end --kind ...
  *   npx tsx scripts/lib/session-registry.ts claim-issue --kind ... --issue N
@@ -582,7 +582,7 @@ function main(): void {
       }
       default:
         process.stderr.write(
-          "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|is-claimed|list-active|merge-lock-acquire|merge-lock-release> [--kind overnight|develop] [--session-id X] ...\n",
+          "uso: npx tsx scripts/lib/session-registry.ts <register|heartbeat|end|claim-issue|is-claimed|list-active|merge-lock-acquire|merge-lock-release> [--kind overnight|develop|continuo] [--session-id X] ...\n",
         );
         process.exitCode = 1;
     }
