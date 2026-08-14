@@ -268,7 +268,8 @@
  *
  * **Exceção controlada (#3924 — seção "Caixas"):** `PUT /api/boxes/:slug`
  * escreve SÓ o conteúdo de um snippet já existente em `data/snippets/`
- * (repo git, não `data/` — snippets de caixa são versionados). Mesma classe
+ * (junction OneDrive, gitignored — snippets de caixa migraram do repo git
+ * pra lá em #5227, não são mais versionados). Mesma classe
  * de exceção que #3559/#3602: escopo estreito (1 arquivo por vez, slug
  * validado contra traversal/`README.md`), guard de mtime idêntico ao #3729.
  * Toda a lógica mora em `studio-boxes.ts`.
