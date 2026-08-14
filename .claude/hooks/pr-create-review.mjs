@@ -493,9 +493,21 @@ export function logEffortDecision(
  * consumidor era o editor lendo o resumo; deixou de ser quando o #5251 fez
  * "sem findings de alta confiança" virar a condição de auto-merge, e o #4813
  * fez o `low` pegar todo diff < `EFFORT_DIFF_LINE_THRESHOLD` (a maioria das
- * PRs), não só branch `overnight/*`. O filtro saiu do agente e virou tarefa do
- * consumidor, que lê os tags de confiança/severidade que a instrução agora
- * exige. Consequência deliberada: o fail-safe `max` de
+ * PRs), não só branch `overnight/*`. A instrução por chamada deixou de
+ * reforçar o filtro e passou a pedir cobertura + tag de confiança/severidade,
+ * pro ranqueamento ser do consumidor (gate do #5251).
+ *
+ * ATENÇÃO ao alcance real disto (achado do review da própria PR #5308, #5311):
+ * isto NÃO remove o filtro — remove o reforço dele daqui. O system prompt do
+ * `pr-review-toolkit:code-reviewer` é um arquivo do MARKETPLACE, fora deste
+ * repo (`~/.claude/plugins/.../agents/code-reviewer.md`), e contém
+ * literalmente `Only report issues with confidence ≥ 80` e `filter
+ * aggressively - quality over quantity`. O que esta instrução consegue é
+ * SOBREPOR essa diretiva por especificidade/recência — sobreposição observada
+ * funcionando, mas não garantida por nada neste repo, e não coberta pelos
+ * testes (que travam a string do hook, nunca o comportamento do agente).
+ * Enquanto o #5311 não decidir o encaminhamento, tratar como mitigação
+ * parcial, não como problema fechado. Consequência deliberada: o fail-safe `max` de
  * `resolveEffort` (estado indeterminado) passou a custar 5 agentes em vez de
  * 1 — segue valendo a escolha de errar pro lado caro quando o hook não
  * consegue nem determinar o que está revisando, e o caminho é raro.
