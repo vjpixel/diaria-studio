@@ -349,6 +349,34 @@ describe("buildReviewInstruction (#2754)", () => {
     }
   });
 
+  // #5304: o desconto do `low` é UM agente em vez do fleet, nunca um relatório
+  // mais raso. A frase antiga ("report only a few high-confidence findings",
+  // herdada do #3326) é um filtro de severidade que Sonnet 5 / Opus 5 obedecem
+  // LITERALMENTE — o agente acha os mesmos bugs e deixa de reportar os que
+  // julga abaixo da barra, derrubando o recall MEDIDO. Virou risco real quando
+  // o #5251 fez "sem findings de alta confiança" ser a condição de auto-merge
+  // e o #4813 fez o `low` pegar todo diff < 300 linhas. Este teste existe pra
+  // frase não voltar por descuido.
+  it("effort=low NÃO filtra por severidade nem confiança (#5304)", () => {
+    const msg = buildReviewInstruction("https://github.com/o/r/pull/1", "low");
+    assert.doesNotMatch(msg, /only a few high-confidence findings/);
+    assert.doesNotMatch(msg, /report only/i);
+    assert.match(msg, /report every finding/i);
+    assert.match(msg, /do not filter for importance or confidence/i);
+    // o desconto continua existindo — só mudou de eixo
+    assert.match(msg, /ONE agent instead of the fleet/i);
+  });
+
+  it("todo effort exige tag de confiança e severidade por finding (#5304)", () => {
+    for (const effort of ["low", "max"]) {
+      const msg = buildReviewInstruction("https://github.com/o/r/pull/1", effort);
+      assert.match(msg, /confidence \(alta\/média\/baixa\)/);
+      assert.match(msg, /severity \(P0\.\.P3\)/);
+      // o ranqueamento é do consumidor (gate do #5251), não do agente
+      assert.match(msg, /SEPARATE downstream step/);
+    }
+  });
+
   // #3322
   it("warning ausente (default) → nenhuma nota extra no texto", () => {
     const msg = buildReviewInstruction("https://github.com/o/r/pull/1", "low");

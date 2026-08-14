@@ -479,12 +479,35 @@ export function logEffortDecision(
  * pré-#4234 (#4057). O caminho degradado é sempre "review pior", nunca
  * "review nenhum em silêncio".
  *
- * Mapeamento de effort (a semântica do #3326 pra `low` segue inalterada — o que
- * mudou no #4234 foi qual dos dois é o default, ver `DEFAULT_EFFORT`): `low` = UM agente
- * (`code-reviewer`); `max` = fleet paralelo com os 4 analisadores
- * especializados junto. Antes do #4234 os dois efforts mandavam o MESMO
- * rubrico e diferiam só numa frase de profundidade — `max` só agora tem
- * conteúdo próprio. Consequência deliberada: o fail-safe `max` de
+ * Mapeamento de effort: `low` = UM agente (`code-reviewer`); `max` = fleet
+ * paralelo com os 4 analisadores especializados junto. Antes do #4234 os dois
+ * efforts mandavam o MESMO rubrico e diferiam só numa frase de profundidade —
+ * `max` só a partir dali tem conteúdo próprio.
+ *
+ * #5304: o desconto do `low` é o NÚMERO DE AGENTES, nunca a profundidade do
+ * relatório. Até aqui o ramo `low` também pedia "report only a few
+ * high-confidence findings" (herdado do #3326) — um filtro de severidade que
+ * Sonnet 5 e Opus 5 passaram a obedecer LITERALMENTE: o agente investiga e
+ * acha igual, e então deixa de reportar o que julga abaixo da barra. Precisão
+ * sobe, recall MEDIDO cai. Isso era um trade-off aceitável enquanto o
+ * consumidor era o editor lendo o resumo; deixou de ser quando o #5251 fez
+ * "sem findings de alta confiança" virar a condição de auto-merge, e o #4813
+ * fez o `low` pegar todo diff < `EFFORT_DIFF_LINE_THRESHOLD` (a maioria das
+ * PRs), não só branch `overnight/*`. A instrução por chamada deixou de
+ * reforçar o filtro e passou a pedir cobertura + tag de confiança/severidade,
+ * pro ranqueamento ser do consumidor (gate do #5251).
+ *
+ * ATENÇÃO ao alcance real disto (achado do review da própria PR #5308, #5311):
+ * isto NÃO remove o filtro — remove o reforço dele daqui. O system prompt do
+ * `pr-review-toolkit:code-reviewer` é um arquivo do MARKETPLACE, fora deste
+ * repo (`~/.claude/plugins/.../agents/code-reviewer.md`), e contém
+ * literalmente `Only report issues with confidence ≥ 80` e `filter
+ * aggressively - quality over quantity`. O que esta instrução consegue é
+ * SOBREPOR essa diretiva por especificidade/recência — sobreposição observada
+ * funcionando, mas não garantida por nada neste repo, e não coberta pelos
+ * testes (que travam a string do hook, nunca o comportamento do agente).
+ * Enquanto o #5311 não decidir o encaminhamento, tratar como mitigação
+ * parcial, não como problema fechado. Consequência deliberada: o fail-safe `max` de
  * `resolveEffort` (estado indeterminado) passou a custar 5 agentes em vez de
  * 1 — segue valendo a escolha de errar pro lado caro quando o hook não
  * consegue nem determinar o que está revisando, e o caminho é raro.
@@ -505,7 +528,9 @@ export function buildReviewInstruction(prUrl, effort, warning = null) {
   const effortNote =
     effort === "low"
       ? `at LOW effort (overnight token-discount, #2754/#3322): dispatch ONE Agent, subagent_type \`${REVIEW_AGENT}\`, ` +
-        "model:sonnet explicit (#2019); report only a few high-confidence findings. The editor can ask for a deeper pass explicitly"
+        "model:sonnet explicit (#2019). The discount is ONE agent instead of the fleet — it is NOT a shallower report: " +
+        "report every finding, including low-severity ones and ones you are unsure about, and do not filter for " +
+        "importance or confidence at this stage"
       : `at ULTRACODE / MAXIMUM effort: dispatch the full toolkit fleet IN PARALLEL — \`${REVIEW_AGENT}\` plus ` +
         `${REVIEW_FLEET_MAX.join(", ")} — each with model:sonnet explicit (#2019), then aggregate their findings`;
   // O caminho degradado tem que preservar a PROFUNDIDADE pedida, não só existir:
@@ -528,6 +553,8 @@ export function buildReviewInstruction(prUrl, effort, warning = null) {
     `If a dispatch fails with \`Agent type ... not found\` (plugin \`pr-review-toolkit\` absent — cloud session or ` +
     "fresh clone), fall back to `general-purpose` with an inline review rubric (correctness, " +
     `simplification/efficiency, test-coverage, security) — never skip the review silently (#4234).${fallbackDepth} ` +
+    "Tag every finding with its confidence (alta/média/baixa) and severity (P0..P3): ranking and filtering are a " +
+    "SEPARATE downstream step (the auto-merge gate of #5251 reads those tags), never the reviewing agent's job (#5304). " +
     "Then post the findings as inline PR comments (`gh pr comment`/`gh api`). " +
     "Do NOT use cloud `ultra` (it is user-triggered/billed and cannot be self-launched)." +
     warningNote
