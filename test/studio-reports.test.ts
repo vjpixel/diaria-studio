@@ -52,6 +52,7 @@ describe("isReportKind / reportId (#3714)", () => {
     assert.equal(isReportKind("overnight"), true);
     assert.equal(isReportKind("develop"), true);
     assert.equal(isReportKind("mensal"), true);
+    assert.equal(isReportKind("cac"), true); // #5236: custo por leitor por canal
     assert.equal(isReportKind("qualquer-outra-coisa"), false);
   });
 
