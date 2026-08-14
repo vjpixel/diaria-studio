@@ -29,8 +29,10 @@ import {
   buildTelegramAlertRequest,
   readPlanForStallHandling,
   WATCHDOG_IO_TIMEOUT_MS,
+  hasHealthyIdleSession,
   type StallEvent,
 } from "../scripts/overnight-watchdog.ts";
+import { registerSession, heartbeat } from "../scripts/lib/session-registry.ts";
 import type { PlanFileReaders } from "../scripts/overnight-statusline.ts";
 
 // ---------------------------------------------------------------------------
@@ -349,6 +351,7 @@ describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
       lastSource: "nenhuma",
       nowMs,
       thresholdMin: 60,
+      isHealthyIdle: false,
     });
     assert.equal(result.action, "skip_unknown_activity");
     assert.ok(
@@ -369,6 +372,7 @@ describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
       lastSource: "nenhuma",
       nowMs,
       thresholdMin: 60,
+      isHealthyIdle: false,
     });
     assert.equal(result.action, "skip_unknown_activity");
     assert.ok(!result.lines.some((l) => /STALL detectado/.test(l)));
@@ -383,6 +387,7 @@ describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
       lastSource: "plan.json mtime",
       nowMs,
       thresholdMin: 60,
+      isHealthyIdle: false,
     });
     assert.equal(result.action, "dry_run");
     assert.ok(result.lines.some((l) => /sem stall/.test(l) && !/STALL detectado/.test(l)));
@@ -397,6 +402,7 @@ describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
       lastSource: "plan.json mtime",
       nowMs,
       thresholdMin: 60,
+      isHealthyIdle: false,
     });
     assert.equal(result.action, "dry_run");
     assert.ok(result.lines.some((l) => /STALL detectado/.test(l)));
@@ -417,6 +423,7 @@ describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
       lastSource: "run-log",
       nowMs,
       thresholdMin: 60,
+      isHealthyIdle: false,
     });
     assert.equal(result.action, "stall");
     // #2781: main() usa diagnosis.elapsedMin no bloco STALL (emitRunLogEvent,
@@ -434,6 +441,7 @@ describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
       lastSource: "run-log",
       nowMs,
       thresholdMin: 60,
+      isHealthyIdle: false,
     });
     assert.equal(result.action, "no_stall");
     assert.equal(result.elapsedMin, 5);
@@ -447,9 +455,181 @@ describe("diagnoseWatchdogActivity (#2715 item 5)", () => {
       lastSource: "nenhuma",
       nowMs,
       thresholdMin: 60,
+      isHealthyIdle: false,
     });
     assert.equal(result.action, "skip_unknown_activity");
     assert.equal(typeof result.elapsedMin, "number");
+  });
+
+  it("#5293 item 3: isHealthyIdle=true + atividade > threshold → healthy_idle, não stall", () => {
+    const lastActivityMs = nowMs - 90 * 60_000;
+    const result = diagnoseWatchdogActivity({
+      aammdd: "260701",
+      dryRun: false,
+      lastActivityMs,
+      lastSource: "run-log",
+      nowMs,
+      thresholdMin: 60,
+      isHealthyIdle: true,
+    });
+    assert.equal(result.action, "healthy_idle");
+    assert.ok(result.lines.some((l) => /aguardando-resposta\/pausada/.test(l)));
+    assert.equal(result.elapsedMin, 90);
+  });
+
+  it("#5293 item 3: isHealthyIdle=true mas SEM stall (atividade recente) → continua no_stall, não healthy_idle", () => {
+    const lastActivityMs = nowMs - 5 * 60_000;
+    const result = diagnoseWatchdogActivity({
+      aammdd: "260701",
+      dryRun: false,
+      lastActivityMs,
+      lastSource: "run-log",
+      nowMs,
+      thresholdMin: 60,
+      isHealthyIdle: true,
+    });
+    assert.equal(result.action, "no_stall");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5293 item 3: findActiveRun/getLastRunLogActivity generalizados por kind
+// (continuo nunca escreve report.md — "ativa" é só "plan.json existe" no
+// diretório mais recente).
+// ---------------------------------------------------------------------------
+
+describe("findActiveRun com kind=continuo (#5293 item 3)", () => {
+  it("continuo: plan.json presente, SEM report.md → ativa (igual overnight)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "continuo-watchdog-"));
+    try {
+      const runDir = join(dir, "data", "continuo", "260814");
+      mkdirSync(runDir, { recursive: true });
+      writeFileSync(join(runDir, "plan.json"), JSON.stringify({ started_at: "x", stall_events: [] }));
+      const active = findActiveRun(dir, "continuo");
+      assert.ok(active);
+      assert.equal(active?.aammdd, "260814");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("continuo: plan.json presente E report.md também presente → AINDA ativa (continuo nunca 'termina', ao contrário de overnight)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "continuo-watchdog-"));
+    try {
+      const runDir = join(dir, "data", "continuo", "260814");
+      mkdirSync(runDir, { recursive: true });
+      writeFileSync(join(runDir, "plan.json"), JSON.stringify({ started_at: "x", stall_events: [] }));
+      writeFileSync(join(runDir, "report.md"), "# nunca deveria existir para continuo, mas se existir não desativa");
+      const active = findActiveRun(dir, "continuo");
+      assert.ok(active, "continuo trata a rodada como ativa independente de report.md — diferente de overnight");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("continuo: escolhe o AAMMDD mais recente entre múltiplos dias rotacionados", () => {
+    const dir = mkdtempSync(join(tmpdir(), "continuo-watchdog-"));
+    try {
+      for (const aammdd of ["260812", "260813", "260814"]) {
+        const runDir = join(dir, "data", "continuo", aammdd);
+        mkdirSync(runDir, { recursive: true });
+        writeFileSync(join(runDir, "plan.json"), JSON.stringify({ started_at: "x", stall_events: [] }));
+      }
+      const active = findActiveRun(dir, "continuo");
+      assert.equal(active?.aammdd, "260814");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("kind default continua 'overnight' (compatibilidade — chamada sem 2º argumento)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "overnight-watchdog-default-"));
+    try {
+      const runDir = join(dir, "data", "overnight", "260814");
+      mkdirSync(runDir, { recursive: true });
+      writeFileSync(join(runDir, "plan.json"), JSON.stringify({ started_at: "x", stall_events: [] }));
+      const active = findActiveRun(dir);
+      assert.equal(active?.aammdd, "260814");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("getLastRunLogActivity com agent=continuo (#5293 item 3)", () => {
+  it("filtra por agent 'continuo', ignora eventos 'overnight' da mesma edição", () => {
+    const dir = mkdtempSync(join(tmpdir(), "continuo-runlog-"));
+    try {
+      mkdirSync(join(dir, "data"), { recursive: true });
+      const lines = [
+        JSON.stringify({ agent: "overnight", edition: "260814", timestamp: "2026-08-14T10:00:00Z" }),
+        JSON.stringify({ agent: "continuo", edition: "260814", timestamp: "2026-08-14T12:00:00Z" }),
+      ];
+      writeFileSync(join(dir, "data", "run-log.jsonl"), lines.join("\n") + "\n");
+      const ts = getLastRunLogActivity(dir, "260814", "continuo");
+      assert.equal(ts, new Date("2026-08-14T12:00:00Z").getTime());
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("hasHealthyIdleSession (#5293 item 3)", () => {
+  it("true quando há sessão continuo ativa com phase='aguardando-resposta'", () => {
+    const dir = mkdtempSync(join(tmpdir(), "continuo-idle-"));
+    try {
+      registerSession(dir, "continuo", "sess-idle", { tag: "host-a", startedAt: "2026-08-14T10:00:00.000Z" });
+      heartbeat(dir, "continuo", "sess-idle", { phase: "aguardando-resposta" }, "host-a", "2026-08-14T10:05:00.000Z");
+      const now = new Date("2026-08-14T10:10:00.000Z").getTime();
+      assert.equal(hasHealthyIdleSession(dir, "continuo", now), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("true quando phase='pausado-edicao' (guard de colisão editorial)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "continuo-idle-"));
+    try {
+      registerSession(dir, "continuo", "sess-pausa", { tag: "host-a", startedAt: "2026-08-14T10:00:00.000Z" });
+      heartbeat(dir, "continuo", "sess-pausa", { phase: "pausado-edicao" }, "host-a", "2026-08-14T10:05:00.000Z");
+      const now = new Date("2026-08-14T10:10:00.000Z").getTime();
+      assert.equal(hasHealthyIdleSession(dir, "continuo", now), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("false quando a sessão existe mas a phase não é uma fase saudável conhecida", () => {
+    const dir = mkdtempSync(join(tmpdir(), "continuo-idle-"));
+    try {
+      registerSession(dir, "continuo", "sess-work", { tag: "host-a", startedAt: "2026-08-14T10:00:00.000Z" });
+      heartbeat(dir, "continuo", "sess-work", { phase: "trabalhando" }, "host-a", "2026-08-14T10:05:00.000Z");
+      const now = new Date("2026-08-14T10:10:00.000Z").getTime();
+      assert.equal(hasHealthyIdleSession(dir, "continuo", now), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("false quando não há nenhuma sessão registrada (data/sessions/ ausente)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "continuo-idle-"));
+    try {
+      assert.equal(hasHealthyIdleSession(dir, "continuo", Date.now()), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("filtra por kind — sessão overnight em phase saudável não conta pra kind continuo", () => {
+    const dir = mkdtempSync(join(tmpdir(), "continuo-idle-"));
+    try {
+      registerSession(dir, "overnight", "sess-other-kind", { tag: "host-a", startedAt: "2026-08-14T10:00:00.000Z" });
+      heartbeat(dir, "overnight", "sess-other-kind", { phase: "aguardando-resposta" }, "host-a", "2026-08-14T10:05:00.000Z");
+      const now = new Date("2026-08-14T10:10:00.000Z").getTime();
+      assert.equal(hasHealthyIdleSession(dir, "continuo", now), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
