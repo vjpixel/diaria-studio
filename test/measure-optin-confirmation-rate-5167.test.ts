@@ -79,7 +79,7 @@ describe("bucketPendingByAge — classifica Pending por idade (#5167 item 15)", 
 });
 
 describe("computeConfirmationSnapshot — monta o snapshot puro (#5167 item 15)", () => {
-  it("calcula confirmationRateEstimate = active / (active + stale), ignorando fresh/unknownAge", () => {
+  it("calcula activeShareOfSnapshot = active / (active + stale), ignorando fresh/unknownAge", () => {
     const pending = [
       sub("fresh@b.com", isoDaysAgo(1)), // fora do denominador
       sub("stale1@b.com", isoDaysAgo(30)),
@@ -95,20 +95,20 @@ describe("computeConfirmationSnapshot — monta o snapshot puro (#5167 item 15)"
     assert.equal(snapshot.label, "baseline");
     assert.equal(snapshot.staleThresholdDays, 7);
     // 8 / (8 + 2) = 0.8
-    assert.equal(snapshot.confirmationRateEstimate, 0.8);
+    assert.equal(snapshot.activeShareOfSnapshot, 0.8);
     assert.equal(snapshot.timestamp, NOW.toISOString());
   });
 
-  it("sem active nem stale (denominador zero) → confirmationRateEstimate null, nunca NaN/Infinity", () => {
+  it("sem active nem stale (denominador zero) → activeShareOfSnapshot null, nunca NaN/Infinity", () => {
     const pending = [sub("fresh@b.com", isoDaysAgo(1))];
     const snapshot = computeConfirmationSnapshot(0, pending, NOW, "", 7);
-    assert.equal(snapshot.confirmationRateEstimate, null);
+    assert.equal(snapshot.activeShareOfSnapshot, null);
   });
 
-  it("totalPending vazio → snapshot ainda válido, rate = active/(active+0)", () => {
+  it("totalPending vazio → snapshot ainda válido, share = active/(active+0)", () => {
     const snapshot = computeConfirmationSnapshot(5, [], NOW, "", 7);
     assert.equal(snapshot.totalPending, 0);
-    assert.equal(snapshot.confirmationRateEstimate, 1);
+    assert.equal(snapshot.activeShareOfSnapshot, 1);
   });
 });
 
@@ -122,7 +122,7 @@ describe("computeDeltaBetweenSnapshots — pura, resolve ordem por timestamp (#5
     stalePending: 40,
     unknownAgePending: 0,
     staleThresholdDays: 7,
-    confirmationRateEstimate: 100 / 140,
+    activeShareOfSnapshot: 100 / 140,
   };
   const after: ConfirmationSnapshot = {
     timestamp: "2026-08-14T00:00:00.000Z",
@@ -133,7 +133,7 @@ describe("computeDeltaBetweenSnapshots — pura, resolve ordem por timestamp (#5
     stalePending: 35,
     unknownAgePending: 0,
     staleThresholdDays: 7,
-    confirmationRateEstimate: 130 / 165,
+    activeShareOfSnapshot: 130 / 165,
   };
 
   it("ordem (a, b) correta — delta positivo esperado", () => {
@@ -255,6 +255,6 @@ describe("fetchConfirmationSnapshot — orquestra active count + pending list (#
     assert.equal(snapshot.freshPending, 1);
     assert.equal(snapshot.stalePending, 1);
     // 50 / (50 + 1) ≈ 0.9804
-    assert.ok(snapshot.confirmationRateEstimate! > 0.98 && snapshot.confirmationRateEstimate! < 0.99);
+    assert.ok(snapshot.activeShareOfSnapshot! > 0.98 && snapshot.activeShareOfSnapshot! < 0.99);
   });
 });

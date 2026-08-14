@@ -21,16 +21,28 @@
  *    #5183), classifica cada Pending em `fresh` (dentro da janela de graça,
  *    ainda pode confirmar a qualquer momento — não conta contra a taxa) ou
  *    `stale` (mais velho que `staleThresholdDays`, efetivamente "perdido" —
- *    Smart Nudge já reenviou e a pessoa não abriu). `confirmationRateEstimate
- *    = totalActive / (totalActive + stalePending)` é a melhor aproximação
- *    de 1-snapshot-só: trata todo Pending "stale" como não-confirmado
- *    definitivo, e ignora `fresh`/`unknownAge` do denominador (inconclusivos).
- * 2. **Série temporal (rodar de novo depois):** cada execução com `--push`
+ *    Smart Nudge já reenviou e a pessoa não abriu). O campo
+ *    `activeShareOfSnapshot` (ver docstring do campo) reporta essa fração,
+ *    mas **não é o sinal acionável** desta medição — ver correção abaixo.
+ * 2. **Série temporal (rodar de novo depois, o sinal real):** cada execução com `--push`
  *    acrescenta uma linha a `data/optin-confirmation-rate/log.jsonl`.
  *    `computeDeltaBetweenSnapshots` compara duas linhas e reporta a
  *    variação de `stalePending` — se cair (ou crescer mais devagar que
  *    `totalPending`) depois da mudança de copy/routing (#5167 itens 1-8),
  *    é sinal de melhora; se ficar igual ou pior, a mudança não funcionou.
+ *
+ * ## `activeShareOfSnapshot` não é sensível à mudança medida (renomeado de
+ * `confirmationRateEstimate`, self-review do #5285)
+ *
+ * O numerador (`totalActive`) é o total GLOBAL de assinantes `active` da
+ * publicação — não um denominador escopado ao funil de confirmação. Com uma
+ * base ativa de milhares e `stalePending` na casa das centenas, essa fração
+ * fica sempre perto de 99%+ e mal se move entre snapshots, mesmo que a
+ * confirmação melhore ou piore de verdade. **Não usar este campo pra medir
+ * o efeito de mudança de copy/routing** — é o `stalePending` isolado (via
+ * `--push` + `computeDeltaBetweenSnapshots`, item 2 acima) que faz esse
+ * trabalho. `activeShareOfSnapshot` fica no output só como contexto de
+ * tamanho de base, não como headline.
  *
  * ## Confound documentado (NÃO ignorar ao interpretar `deltaActive`)
  *
@@ -133,16 +145,29 @@ export interface ConfirmationSnapshot {
   stalePending: number;
   unknownAgePending: number;
   staleThresholdDays: number;
-  /** null quando totalActive + stalePending === 0 (sem dado suficiente pra estimar). */
-  confirmationRateEstimate: number | null;
+  /**
+   * `totalActive / (totalActive + stalePending)`. Renomeado de
+   * `confirmationRateEstimate` (self-review do #5285) — o nome antigo
+   * sugeria uma taxa de confirmação acionável, mas `totalActive` é o total
+   * GLOBAL de assinantes `active` da publicação, não escopado ao funil de
+   * confirmação: com a base ativa em milhares e `stalePending` em centenas,
+   * o valor fica sempre perto de 99%+ e não é sensível à mudança de
+   * copy/routing que este script mede (ver "não é sensível à mudança
+   * medida" no docstring do módulo). **Não usar pra medir efeito de
+   * mudança** — é contexto de tamanho de base, o sinal real é
+   * `stalePending`/`computeDeltaBetweenSnapshots`. `null` quando
+   * `totalActive + stalePending === 0` (sem dado suficiente pra estimar).
+   */
+  activeShareOfSnapshot: number | null;
 }
 
 /**
  * Pura — monta o snapshot a partir de contagens já obtidas (nenhuma chamada
  * de rede aqui, ver `fetchConfirmationSnapshot` pro caminho impuro).
- * `confirmationRateEstimate` só considera `totalActive` e `stalePending` no
- * denominador (ver docstring do módulo) — `freshPending`/`unknownAgePending`
- * ficam de fora por serem inconclusivos.
+ * `activeShareOfSnapshot` só considera `totalActive` e `stalePending` no
+ * denominador (ver docstring do campo) — `freshPending`/`unknownAgePending`
+ * ficam de fora por serem inconclusivos. Não é o sinal acionável desta
+ * medição (ver docstring do módulo) — mantido por completude/contexto.
  */
 export function computeConfirmationSnapshot(
   totalActive: number,
@@ -162,7 +187,7 @@ export function computeConfirmationSnapshot(
     stalePending: ageBuckets.stale,
     unknownAgePending: ageBuckets.unknownAge,
     staleThresholdDays,
-    confirmationRateEstimate: denominator > 0 ? totalActive / denominator : null,
+    activeShareOfSnapshot: denominator > 0 ? totalActive / denominator : null,
   };
 }
 
