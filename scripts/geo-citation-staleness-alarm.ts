@@ -41,7 +41,12 @@ import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
-import { DEFAULT_GEO_CITATIONS_LOG_PATH } from "./lib/geo-citation-monitor.ts";
+import {
+  DEFAULT_GEO_CITATIONS_LOG_PATH,
+  GEO_PROVIDERS,
+  latestRoundProviders,
+  type GeoProviderId,
+} from "./lib/geo-citation-monitor.ts";
 import {
   emptyGeoCitationStalenessAlarmState,
   computeStaleness,
@@ -50,6 +55,9 @@ import {
   advanceState,
   shouldAlarm,
   buildGeoCitationStalenessAlarmEmail,
+  computeMultiPanelMissingProviders,
+  shouldAlarmMissingProviders,
+  buildMissingProviderAlarmEmail,
   type GeoCitationStalenessAlarmState,
 } from "./lib/geo-citation-staleness-alarm.ts";
 
@@ -69,7 +77,18 @@ export function loadState(statePath: string = STATE_PATH): GeoCitationStalenessA
         : null;
     const checkedAt =
       typeof raw.lastCheckedAt === "string" || raw.lastCheckedAt === null ? raw.lastCheckedAt ?? null : null;
-    return { lastAlarmedFingerprint: fingerprint, lastCheckedAt: checkedAt };
+    // #5316: mesmo tratamento fail-soft do campo original — string ou null
+    // são válidos, qualquer outra coisa (campo ausente num state antigo,
+    // shape inesperado) cai pra null.
+    const missingProviderFingerprint =
+      typeof raw.lastAlarmedMissingProviderFingerprint === "string" || raw.lastAlarmedMissingProviderFingerprint === null
+        ? raw.lastAlarmedMissingProviderFingerprint ?? null
+        : null;
+    return {
+      lastAlarmedFingerprint: fingerprint,
+      lastCheckedAt: checkedAt,
+      lastAlarmedMissingProviderFingerprint: missingProviderFingerprint,
+    };
   } catch {
     return emptyGeoCitationStalenessAlarmState();
   }
@@ -118,6 +137,48 @@ export function readLatestGeoCitationTs(
     }
   }
   return null;
+}
+
+/**
+ * Lê `{date, provider}` de TODOS os registros de UM painel de
+ * `history.jsonl` — alimenta `latestRoundProviders` (import de
+ * `lib/geo-citation-monitor.ts`) pra checagem de provider ausente (#5316).
+ * Mesmo fail-soft de `readLatestGeoCitationTs` acima: linha corrompida é
+ * ignorada, não invalida as demais. Duplica (não importa) a lógica
+ * equivalente de `readHistoryRecordsForPanel` em `scripts/geo-citation-monitor.ts`
+ * de propósito — aquele é um CLI script (não `lib/`), sem precedente no
+ * repo de um script importar diretamente de outro, e a lógica é pequena o
+ * bastante pra não valer esse acoplamento.
+ */
+export function readPanelProviderRecords(
+  historyPath: string,
+  panel: string,
+): Array<{ date: string; provider: GeoProviderId }> {
+  if (!existsSync(historyPath)) return [];
+  let raw: string;
+  try {
+    raw = readFileSync(historyPath, "utf8");
+  } catch {
+    return [];
+  }
+  const out: Array<{ date: string; provider: GeoProviderId }> = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const r = JSON.parse(line) as { date?: unknown; provider?: unknown; panel?: unknown };
+      if (typeof r.date !== "string" || typeof r.provider !== "string") continue;
+      const recPanel = typeof r.panel === "string" && r.panel.length > 0 ? r.panel : "geral";
+      if (recPanel !== panel) continue;
+      // `provider` legado é sempre um dos 3 ids conhecidos — cast, não
+      // validação, mesmo espírito fail-soft do resto do módulo: um valor
+      // fora da união só cairia num id que `GEO_PROVIDERS` também não tem,
+      // então nunca aparece "presente" numa comparação contra ele.
+      out.push({ date: r.date, provider: r.provider as GeoProviderId });
+    } catch {
+      continue;
+    }
+  }
+  return out;
 }
 
 /** Painéis que a task `Diaria-Geo-Citation-Monitor` roda hoje — precisa
@@ -172,13 +233,47 @@ async function main(): Promise<void> {
     console.log(`${LOG_PREFIX} nenhum e-mail necessário (não stale, ou esta staleness já foi alarmada antes).`);
   }
 
+  // #5316: provider ausente da última rodada — sinal INDEPENDENTE de
+  // staleness (ver docstring de `computeMultiPanelMissingProviders` em
+  // lib/geo-citation-staleness-alarm.ts pro porquê). Compara contra
+  // GEO_PROVIDERS (o conjunto canônico que o monitor sabe consultar), não
+  // contra "quem tinha key na rodada anterior" — detecta tanto uma ausência
+  // de 1 rodada quanto uma persistente há semanas com a mesma checagem.
+  const configuredProviderIds = GEO_PROVIDERS.map((p) => p.id);
+  const perPanelProviders = MONITORED_PANELS.map((panel) => {
+    const records = readPanelProviderRecords(HISTORY_PATH, panel);
+    const latest = latestRoundProviders(records);
+    return { panel, latestRoundProviders: latest?.providers ?? [] };
+  });
+  for (const p of perPanelProviders) {
+    console.log(
+      `${LOG_PREFIX} painel "${p.panel}": última rodada tinha providers [${p.latestRoundProviders.join(", ") || "nenhum"}].`,
+    );
+  }
+  const missingCheck = computeMultiPanelMissingProviders(perPanelProviders, configuredProviderIds);
+  if (shouldAlarmMissingProviders(state, missingCheck, missingCheck.fingerprint)) {
+    const { subject, body } = buildMissingProviderAlarmEmail(missingCheck.panelsWithMissing);
+    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
+    if (isDryRun) {
+      console.log(
+        `${LOG_PREFIX} --dry-run: enviaria e-mail (provider ausente) pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`,
+      );
+    } else {
+      await sendGmailMessage(to, subject, body);
+      console.log(`${LOG_PREFIX} e-mail de alarme (provider ausente) enviado pra ${to}.`);
+    }
+  } else {
+    console.log(`${LOG_PREFIX} nenhum e-mail de provider ausente necessário.`);
+  }
+
   if (isDryRun) {
     console.log(`${LOG_PREFIX} --dry-run: estado NÃO avançado.`);
     return;
   }
 
   const nextFingerprint = check.isStale ? fingerprint : null;
-  saveState(advanceState(nextFingerprint, now));
+  const nextMissingProviderFingerprint = missingCheck.hasMissing ? missingCheck.fingerprint : null;
+  saveState(advanceState(nextFingerprint, now, nextMissingProviderFingerprint));
 }
 
 if (isMainModule(import.meta.url)) {

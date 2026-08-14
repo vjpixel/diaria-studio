@@ -64,10 +64,18 @@ export interface GeoCitationStalenessAlarmState {
   lastAlarmedFingerprint: string | null;
   /** ISO — só pra REPORTAR ("desde X"), fora da idempotência. */
   lastCheckedAt: string | null;
+  /** Fingerprint do último conjunto de "provider ausente da última rodada"
+   * pro qual já alarmamos (#5316), ou `null` quando não há nenhuma ausência
+   * pendente conhecida. Sinal DISTINTO de staleness (ver
+   * `computeMultiPanelMissingProviders`) — mas persistido no mesmo objeto de
+   * estado (mesmo arquivo, mesma task semanal) por simplicidade: os dois
+   * alarmes compartilham a mesma checagem, só divergem no que conta como
+   * "novo o bastante pra reenviar". */
+  lastAlarmedMissingProviderFingerprint: string | null;
 }
 
 export function emptyGeoCitationStalenessAlarmState(): GeoCitationStalenessAlarmState {
-  return { lastAlarmedFingerprint: null, lastCheckedAt: null };
+  return { lastAlarmedFingerprint: null, lastCheckedAt: null, lastAlarmedMissingProviderFingerprint: null };
 }
 
 /** Pure: fingerprint estável do registro mais recente conhecido — usado pra
@@ -171,9 +179,20 @@ export function computeStaleness(
 }
 
 /** Pura: avança o estado — `fingerprint: null` quando não há staleness
- * pendente nesta checagem (re-arma pra próxima ocorrência). */
-export function advanceState(fingerprint: string | null, now: Date): GeoCitationStalenessAlarmState {
-  return { lastAlarmedFingerprint: fingerprint, lastCheckedAt: now.toISOString() };
+ * pendente nesta checagem (re-arma pra próxima ocorrência).
+ * `missingProviderFingerprint` (#5316, default `null`) é o equivalente pro
+ * alarme de provider ausente — parâmetro opcional pra não quebrar os
+ * callers/testes que só se importam com staleness. */
+export function advanceState(
+  fingerprint: string | null,
+  now: Date,
+  missingProviderFingerprint: string | null = null,
+): GeoCitationStalenessAlarmState {
+  return {
+    lastAlarmedFingerprint: fingerprint,
+    lastCheckedAt: now.toISOString(),
+    lastAlarmedMissingProviderFingerprint: missingProviderFingerprint,
+  };
 }
 
 /**
@@ -252,6 +271,131 @@ export function buildGeoCitationStalenessAlarmEmail(
     "Este alarme não requer nenhuma ação automática — é só um aviso; nada é",
     "escrito na Brevo/Beehiiv/GitHub por ele.",
   );
+
+  return { subject, body: lines.join("\n") };
+}
+
+// ---------------------------------------------------------------------------
+// #5316 — provider ausente da ÚLTIMA RODADA não fica invisível pra este
+// alarme só porque os outros providers continuam gravando.
+//
+// Achado ao vivo (issue #5316): a Anthropic ficou muda em `predator` desde
+// 11/ago/2026 (`ANTHROPIC_API_KEY` some do `.env` local depois do #5155 e
+// nunca foi reposta ali) e este alarme nunca disparou — Google e OpenAI
+// seguiam gravando normalmente, então `history.jsonl` não parava de crescer
+// (o único sinal que `computeStaleness`/`computeMultiPanelStaleness` sabem
+// ler). `detectProviderDrop` (`scripts/lib/geo-citation-monitor.ts`, #4900)
+// já existe e é o mecanismo mais próximo, mas resolve um problema DIFERENTE:
+// compara a rodada atual contra a IMEDIATAMENTE anterior, só imprime um WARN
+// no `.monitor.log` da própria execução do monitor (que ninguém lê
+// proativamente — é exatamente o gap que motivou o alarme por e-mail
+// existir), e um provider ausente por MUITAS rodadas seguidas nunca aparece
+// como "drop" depois da 1ª, porque a rodada anterior também já não o tinha.
+//
+// A checagem aqui é mais simples e mais direta pro sintoma real: compara o
+// conjunto de providers da ÚLTIMA rodada conhecida de cada painel contra
+// `GEO_PROVIDERS` (o conjunto canônico de providers que o monitor sabe
+// consultar, `scripts/lib/geo-citation-monitor.ts`) — não contra "o que
+// tinha key na rodada anterior". Isso é deliberado: comparar contra o
+// canônico detecta o caso persistente (provider ausente há semanas) com a
+// MESMA lógica que detecta o caso de 1 rodada só, sem precisar de uma janela
+// de N rodadas — e reusa a idempotência por fingerprint já existente neste
+// módulo (não reenvia o mesmo e-mail toda semana enquanto o mesmo provider
+// seguir ausente; re-arma quando ele volta e alarma de novo se sumir outra
+// vez).
+// ---------------------------------------------------------------------------
+
+/** Pure: providers de `configuredProviders` que NÃO aparecem em
+ * `latestRoundProviders` — o conjunto ausente da última rodada conhecida. */
+export function computeMissingProviders(
+  latestRoundProviders: readonly string[],
+  configuredProviders: readonly string[],
+): string[] {
+  const present = new Set(latestRoundProviders);
+  return configuredProviders.filter((p) => !present.has(p));
+}
+
+/** Ausência de provider de UM painel — o rótulo mais os providers ausentes
+ * da última rodada conhecida dele. Ver `computeMultiPanelMissingProviders`. */
+export interface PanelMissingProviders {
+  panel: string;
+  missingProviders: string[];
+}
+
+/**
+ * Pure: avalia ausência de provider POR PAINEL (mesmo raciocínio de
+ * `computeMultiPanelStaleness` — um painel ruim não pode ficar invisível
+ * atrás de outro saudável) e devolve o veredito agregado. Fingerprint cobre
+ * só os painéis com ausência (mesmo racional do #4961 pra staleness: um
+ * painel são não pode fazer o fingerprint composto mudar toda semana e
+ * mascarar/reenviar o alarme de um painel ruim que não mudou).
+ */
+export function computeMultiPanelMissingProviders(
+  perPanel: readonly { panel: string; latestRoundProviders: readonly string[] }[],
+  configuredProviders: readonly string[],
+): { hasMissing: boolean; panelsWithMissing: PanelMissingProviders[]; fingerprint: string } {
+  const panelsWithMissing = perPanel
+    .map((p) => ({
+      panel: p.panel,
+      missingProviders: computeMissingProviders(p.latestRoundProviders, configuredProviders),
+    }))
+    .filter((p) => p.missingProviders.length > 0);
+  const fingerprint = [...panelsWithMissing]
+    .sort((a, b) => a.panel.localeCompare(b.panel))
+    .map((p) => `${p.panel}:${[...p.missingProviders].sort().join(",")}`)
+    .join("|");
+  return { hasMissing: panelsWithMissing.length > 0, panelsWithMissing, fingerprint };
+}
+
+/**
+ * Pure: `true` quando há painel(is) com provider ausente E o fingerprint é
+ * diferente do último já alarmado — mesma idempotência de `shouldAlarm`,
+ * função separada porque o sinal (conteúdo da última rodada, não tempo
+ * decorrido) e o campo de estado são distintos (#5316).
+ */
+export function shouldAlarmMissingProviders(
+  state: GeoCitationStalenessAlarmState,
+  check: { hasMissing: boolean },
+  fingerprint: string,
+): boolean {
+  if (!check.hasMissing) return false;
+  return fingerprint !== state.lastAlarmedMissingProviderFingerprint;
+}
+
+/** Pure: monta assunto + corpo do e-mail de alarme de provider ausente —
+ * mesmo formato/tom de `buildGeoCitationStalenessAlarmEmail` (#5316, item 2
+ * da issue: "mesmo formato de e-mail do alarme já existente, sem task
+ * nova"). */
+export function buildMissingProviderAlarmEmail(
+  panelsWithMissing: readonly PanelMissingProviders[],
+): { subject: string; body: string } {
+  const allMissing = [...new Set(panelsWithMissing.flatMap((p) => p.missingProviders))].sort();
+  const subject = `[diar.ia.br] monitor de citação GEO sem registro de ${allMissing.join(", ")} na última rodada`;
+
+  const lines: string[] = [
+    "A última rodada conhecida de pelo menos um painel monitorado não tem",
+    "NENHUM registro para o(s) provider(s) abaixo — mesmo com os demais",
+    "providers gravando normalmente (por isso este sintoma não aparece no",
+    "alarme de staleness: history.jsonl segue crescendo, só que sem esse",
+    "provider).",
+    "",
+    ...panelsWithMissing.map((p) => `  - painel "${p.panel}": faltando ${p.missingProviders.join(", ")}`),
+    "",
+    "Causa mais provável: a API key do provider (ANTHROPIC_API_KEY /",
+    "OPENAI_API_KEY / GEMINI_API_KEY) sumiu do .env da máquina que roda a",
+    "task Diaria-Geo-Citation-Monitor — o provider sem key é pulado",
+    "fail-soft, sem erro, e nenhum registro é escrito pra ele (#5316).",
+    "",
+    "Verifique:",
+    "  npx tsx scripts/geo-citation-monitor.ts --dry-run   (mostra quais",
+    "  providers estão configurados nesta máquina, sem gastar chamada de rede)",
+    "",
+    "Se a key existir no Doppler mas não localmente: npm run sync-env",
+    "(ver docs/doppler-env-sync.md).",
+    "",
+    "Este alarme não requer nenhuma ação automática — é só um aviso; nada é",
+    "escrito na Brevo/Beehiiv/GitHub por ele.",
+  ];
 
   return { subject, body: lines.join("\n") };
 }

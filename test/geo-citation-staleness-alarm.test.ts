@@ -174,6 +174,8 @@ describe("loadState / saveState (scripts/geo-citation-staleness-alarm.ts, I/O)",
     const state: GeoCitationStalenessAlarmState = {
       lastAlarmedFingerprint: "2026-07-01T00:00:00.000Z",
       lastCheckedAt: T0.toISOString(),
+      // #5316: campo novo, cobre roundtrip com valor não-null aqui.
+      lastAlarmedMissingProviderFingerprint: "geral:anthropic",
     };
     saveState(state, path);
     assert.equal(existsSync(path), true);

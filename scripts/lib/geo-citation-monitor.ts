@@ -31,15 +31,21 @@
  * módulo cobrem o CONTRATO interno (parsing determinístico de uma resposta
  * fixture), não a forma exata da API real.
  *
- * **`ANTHROPIC_API_KEY` está ativa desde 11/ago/2026 (#4904).** Chegou a
- * ficar deliberadamente ausente por decisão do editor (evitar o setup de
- * uma key de Console pay-as-you-go — sistema de billing separado da
- * assinatura do Claude Code, mesmo login, mesma identidade), mas a decisão
- * foi revertida no mesmo dia: o editor criou a org no Console
- * (`console.anthropic.com`), comprou
- * US$5 de crédito e gerou a key. Os 3 providers (`OPENAI_API_KEY`,
- * `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, todos no `.env`) rodam de verdade
- * agora. **Achado ao vivo que ainda importa:** a Anthropic tem latência
+ * **`ANTHROPIC_API_KEY` roda quando está no `.env` da máquina que dispara
+ * a rodada — não é um fato fixo por data (#5316).** O editor criou a org
+ * no Console (`console.anthropic.com`), comprou US$5 de crédito e gerou a
+ * key em 11/ago/2026 (#4904), depois de um período em que a Anthropic
+ * ficou deliberadamente fora (custo/setup de uma key de Console
+ * pay-as-you-go, sistema de billing separado da assinatura do Claude Code)
+ * — mas "a key existe" e "a key está no `.env` da máquina que roda a task
+ * `Diaria-Geo-Citation-Monitor`" são fatos DIFERENTES: a Anthropic ficou
+ * muda em `predator` (a máquina do timer) porque a key nunca foi reposta
+ * lá depois do #5155, mesmo já existindo no Doppler. Os 3 providers
+ * (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`) rodam de
+ * verdade SÓ nas máquinas cujo `.env` tem a key — confira com
+ * `--dry-run` (não gasta chamada de rede) ou `npm run sync-env` se a key
+ * estiver no Doppler mas faltando localmente. **Achado ao vivo que ainda
+ * importa:** a Anthropic tem latência
  * MUITO mais variável que OpenAI/Google — mesma pergunta isolada deu 25s,
  * 60s (timeout), 25s, e depois 180s (timeout, mesmo com `max_uses`
  * reduzido) em tentativas separadas fora do código shipado (um script de
@@ -700,8 +706,9 @@ export interface GeoCitationRecord {
    * Anthropic isso é US$10/1000 buscas; na OpenAI, US$10/1000 chamadas de
    * `web_search`; no Google, grátis até 500-1.500 requisições/dia e depois
    * US$35/1000 (ver a tabela pra data de verificação). **A Anthropic roda
-   * de verdade desde 11/ago/2026** (#4904, `ANTHROPIC_API_KEY` ativa) —
-   * mas com latência bem mais variável que OpenAI/Google (ver docstring de
+   * de verdade quando `ANTHROPIC_API_KEY` está no `.env` da máquina que
+   * disparou a rodada — não garantido por data** (#5316, ver docstring no
+   * topo do arquivo) — mas com latência bem mais variável que OpenAI/Google (ver docstring de
    * `GeoProviderDef.timeoutMs`), então uma fração das chamadas termina em
    * timeout e não gera este campo (fail-soft, não é bug). Ver
    * `docs/geo-citation-monitor-setup.md` § "Captura de usage e teto de
