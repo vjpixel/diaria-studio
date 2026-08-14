@@ -72,7 +72,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { hostname } from "node:os";
 import { parseArgs, isMainModule } from "./cli-args.ts";
 
-export type SessionKind = "overnight" | "develop";
+export type SessionKind = "overnight" | "develop" | "continuo";
 
 export interface SessionRecord {
   kind: SessionKind;
@@ -486,9 +486,13 @@ export function releaseMergeLock(repoRoot: string, sessionId: string): boolean {
 
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
-function requireKind(value: string | undefined): SessionKind {
-  if (value !== "overnight" && value !== "develop") {
-    throw new Error(`--kind deve ser "overnight" ou "develop", recebido "${value}"`);
+/**
+ * Exportado só para teste direto (#5293) — o CLI (main(), abaixo) é o único
+ * chamador em produção.
+ */
+export function requireKind(value: string | undefined): SessionKind {
+  if (value !== "overnight" && value !== "develop" && value !== "continuo") {
+    throw new Error(`--kind deve ser "overnight", "develop" ou "continuo", recebido "${value}"`);
   }
   return value;
 }

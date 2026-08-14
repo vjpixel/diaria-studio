@@ -24,6 +24,7 @@ import {
   isIssueClaimedByOther,
   acquireMergeLock,
   releaseMergeLock,
+  requireKind,
   MAX_SESSION_AGE_MS,
   MERGE_LOCK_TTL_MS,
   CLOCK_SKEW_TOLERANCE_MS,
@@ -296,6 +297,41 @@ describe("claimIssue / isIssueClaimedByOther (item 3 do #5156)", () => {
     claimIssue(root, "overnight", "sess-old", 7, "host-a");
 
     assert.equal(isIssueClaimedByOther(root, 7, "sess-b", NOW), null);
+  });
+});
+
+// ─── requireKind / kind "continuo" (#5293 item 2) ──────────────────────────
+
+describe("requireKind aceita o kind \"continuo\" (#5293)", () => {
+  it("aceita \"overnight\", \"develop\" e \"continuo\"", () => {
+    assert.equal(requireKind("overnight"), "overnight");
+    assert.equal(requireKind("develop"), "develop");
+    assert.equal(requireKind("continuo"), "continuo");
+  });
+
+  it("rejeita valor inválido/ausente com mensagem citando os 3 kinds válidos", () => {
+    assert.throws(() => requireKind("bogus"), /--kind deve ser "overnight", "develop" ou "continuo"/);
+    assert.throws(() => requireKind(undefined), /--kind deve ser "overnight", "develop" ou "continuo"/);
+  });
+});
+
+describe("registro de sessão end-to-end com kind \"continuo\" (#5293)", () => {
+  it("registerSession/heartbeat/claimIssue/endSession funcionam para kind \"continuo\" como para overnight/develop", () => {
+    const root = freshRoot();
+    registerSession(root, "continuo", "sess-continuo-1", { tag: "host-a", startedAt: "2026-08-14T10:00:00.000Z" });
+
+    const path = sessionFilePath(root, "continuo", "host-a", "sess-continuo-1");
+    assert.ok(existsSync(path));
+    const content = JSON.parse(readFileSync(path, "utf8"));
+    assert.equal(content.kind, "continuo");
+
+    assert.equal(claimIssue(root, "continuo", "sess-continuo-1", 5293, "host-a", "2026-08-14T10:00:00.000Z"), true);
+    const claimed = isIssueClaimedByOther(root, 5293, "sess-outra", Date.parse("2026-08-14T10:05:00.000Z"));
+    assert.ok(claimed !== null);
+    assert.equal(claimed.sessionId, "sess-continuo-1");
+
+    endSession(root, "continuo", "sess-continuo-1", "host-a");
+    assert.equal(existsSync(path), false);
   });
 });
 
