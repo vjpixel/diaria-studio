@@ -21,10 +21,19 @@
  * Ver docs/google-ads-api-setup.md.
  */
 
-/** Como interpretar a resposta da chamada de associação. */
+/**
+ * Como interpretar a resposta da chamada de associação.
+ *
+ * `matchedCode` carrega o código de erro que a classificação de fato casou
+ * (`undefined` quando nada casou e a decisão veio só do HTTP status). Existe
+ * para que um segundo consumidor possa ramificar por código SEM ter que fazer
+ * regex em `reason` — `reason` é prosa para humano e pode ser reescrita a
+ * qualquer momento; casar contra ela recriaria o acoplamento que o tipo
+ * deveria impedir.
+ */
 export type AssociationOutcome =
-  | { kind: "associated"; reason: string }
-  | { kind: "inconclusive"; reason: string };
+  | { kind: "associated"; reason: string; matchedCode?: string }
+  | { kind: "inconclusive"; reason: string; matchedCode?: string };
 
 /**
  * Erros da Google Ads API que provam que a requisição CHEGOU autenticada e
@@ -79,26 +88,34 @@ export function classifyAssociationResponse(status: number, body: string): Assoc
     };
   }
 
-  const upper = body.toUpperCase();
+  const codes = extractErrorCodes(body);
 
-  const associating = ERRORS_THAT_STILL_ASSOCIATE.find((code) => upper.includes(code));
+  // ORDEM IMPORTA, e é o inverso do intuitivo: o BLOQUEANTE vence. Um corpo
+  // pode trazer os dois (ex: token OAuth revogado + token de nível teste, ou
+  // um código citado de passagem dentro de uma `message`). Se qualquer código
+  // bloqueante está presente, a requisição pode não ter sido atribuída — e
+  // declarar "associado" nesse caso é exatamente o falso sucesso que este
+  // módulo existe pra impedir. Na dúvida, fail-closed.
+  const blocking = ERRORS_THAT_DO_NOT_ASSOCIATE.find((code) => codes.includes(code));
+  if (blocking) {
+    return {
+      kind: "inconclusive",
+      matchedCode: blocking,
+      reason:
+        `a API respondeu ${blocking} (HTTP ${status}) — a requisição não chegou a ser ` +
+        "atribuída ao projeto (credencial ou token inválido / API desativada). Corrigir e repetir.",
+    };
+  }
+
+  const associating = ERRORS_THAT_STILL_ASSOCIATE.find((code) => codes.includes(code));
   if (associating) {
     return {
       kind: "associated",
+      matchedCode: associating,
       reason:
         `a API respondeu ${associating} (HTTP ${status}) — a requisição foi processada ` +
         "com o developer token e a credencial OAuth deste projeto, que é o que a " +
         "associação exige. A doc diz explicitamente que a chamada pode falhar.",
-    };
-  }
-
-  const blocking = ERRORS_THAT_DO_NOT_ASSOCIATE.find((code) => upper.includes(code));
-  if (blocking) {
-    return {
-      kind: "inconclusive",
-      reason:
-        `a API respondeu ${blocking} (HTTP ${status}) — a requisição não chegou a ser ` +
-        "atribuída ao projeto (credencial ou token inválido / API desativada). Corrigir e repetir.",
     };
   }
 
@@ -115,6 +132,54 @@ export function classifyAssociationResponse(status: number, body: string): Assoc
     kind: "inconclusive",
     reason: `HTTP ${status} com corpo não reconhecido — não dá pra afirmar que associou.`,
   };
+}
+
+/**
+ * Extrai os códigos de erro de um corpo da Google Ads API.
+ *
+ * Caminho preferido: parsear o JSON e colher os VALORES de qualquer campo
+ * `errorCode` aninhado (`error.details[].errors[].errorCode.{algumTipo}`), que
+ * é onde o código real mora. Isso evita o falso positivo do `includes()` cru
+ * sobre o corpo inteiro — um código citado dentro de uma `message` em prosa
+ * não é o código do erro, e tratá-lo como tal pode inverter a classificação.
+ *
+ * Fallback: se o corpo não for JSON (HTML de proxy, texto solto, corpo
+ * vazio), varre o texto em maiúsculas. Pior, mas melhor que cegar.
+ */
+export function extractErrorCodes(body: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    const found: string[] = [];
+
+    const walk = (node: unknown): void => {
+      if (Array.isArray(node)) {
+        node.forEach(walk);
+        return;
+      }
+      if (node === null || typeof node !== "object") return;
+      for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+        if (key === "errorCode" && value !== null && typeof value === "object") {
+          for (const code of Object.values(value as Record<string, unknown>)) {
+            if (typeof code === "string") found.push(code.toUpperCase());
+          }
+        } else {
+          walk(value);
+        }
+      }
+    };
+
+    walk(parsed);
+    if (found.length > 0) return found;
+    // JSON válido mas sem `errorCode` estruturado (formato inesperado): cai
+    // no texto, em vez de devolver lista vazia e classificar como desconhecido.
+  } catch {
+    // corpo não-JSON — segue pro fallback textual.
+  }
+
+  const upper = body.toUpperCase();
+  return [...ERRORS_THAT_DO_NOT_ASSOCIATE, ...ERRORS_THAT_STILL_ASSOCIATE].filter((code) =>
+    upper.includes(code),
+  );
 }
 
 /** Config mínima para montar a chamada. */

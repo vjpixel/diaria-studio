@@ -16,6 +16,7 @@ import assert from "node:assert/strict";
 import {
   classifyAssociationResponse,
   buildAssociationRequest,
+  extractErrorCodes,
   normalizeCustomerId,
 } from "../scripts/lib/google-ads-associate.ts";
 
@@ -66,6 +67,72 @@ describe("#5262 — classifyAssociationResponse", () => {
   it("classificação é case-insensitive (o corpo real vem aninhado e com capitalização variável)", () => {
     assert.equal(classifyAssociationResponse(403, "developer_token_not_approved").kind, "associated");
   });
+
+  it("com os DOIS tipos de código no mesmo corpo, o BLOQUEANTE vence — fail-closed", () => {
+    // Cenário real: token OAuth revogado E developer token de nível teste. Se
+    // o associante vencesse, declararíamos sucesso com a requisição nunca
+    // tendo sido atribuída — o falso sucesso que este módulo existe pra evitar.
+    const body = JSON.stringify({
+      error: {
+        details: [
+          {
+            errors: [
+              { errorCode: { authorizationError: "DEVELOPER_TOKEN_NOT_APPROVED" } },
+              { errorCode: { authenticationError: "OAUTH_TOKEN_REVOKED" } },
+            ],
+          },
+        ],
+      },
+    });
+    const out = classifyAssociationResponse(403, body);
+    assert.equal(out.kind, "inconclusive");
+    assert.equal(out.matchedCode, "OAUTH_TOKEN_REVOKED");
+  });
+
+  it("código citado dentro de uma `message` em prosa NÃO conta como o código do erro", () => {
+    // O corpo tem errorCode estruturado NOT_APPROVED e menciona
+    // INVALID_DEVELOPER_TOKEN só no texto explicativo. O parse estruturado
+    // ignora a prosa; um includes() cru no corpo inteiro inverteria isto.
+    const body = JSON.stringify({
+      error: {
+        message: "see INVALID_DEVELOPER_TOKEN in the troubleshooting guide",
+        details: [{ errors: [{ errorCode: { authorizationError: "DEVELOPER_TOKEN_NOT_APPROVED" } }] }],
+      },
+    });
+    const out = classifyAssociationResponse(403, body);
+    assert.equal(out.kind, "associated");
+    assert.equal(out.matchedCode, "DEVELOPER_TOKEN_NOT_APPROVED");
+  });
+
+  it("expõe matchedCode para o chamador ramificar sem fazer regex na prosa", () => {
+    assert.equal(
+      classifyAssociationResponse(403, '{"e":"USER_PERMISSION_DENIED"}').matchedCode,
+      "USER_PERMISSION_DENIED",
+    );
+    assert.equal(classifyAssociationResponse(200, "[]").matchedCode, undefined);
+    assert.equal(classifyAssociationResponse(500, "boom").matchedCode, undefined);
+  });
+});
+
+describe("#5262 — extractErrorCodes", () => {
+  it("colhe códigos de errorCode aninhado, ignorando o resto do corpo", () => {
+    const body = JSON.stringify({
+      error: { details: [{ errors: [{ errorCode: { queryError: "BAD_RESOURCE" } }] }] },
+    });
+    assert.deepEqual(extractErrorCodes(body), ["BAD_RESOURCE"]);
+  });
+
+  it("cai no varredor textual quando o corpo não é JSON", () => {
+    assert.deepEqual(extractErrorCodes("<html>SERVICE_DISABLED</html>"), ["SERVICE_DISABLED"]);
+  });
+
+  it("JSON válido sem errorCode estruturado ainda varre o texto", () => {
+    assert.deepEqual(extractErrorCodes('{"msg":"CUSTOMER_NOT_FOUND"}'), ["CUSTOMER_NOT_FOUND"]);
+  });
+
+  it("corpo vazio devolve lista vazia, sem lançar", () => {
+    assert.deepEqual(extractErrorCodes(""), []);
+  });
 });
 
 describe("#5262 — buildAssociationRequest / normalizeCustomerId", () => {
@@ -84,5 +151,6 @@ describe("#5262 — buildAssociationRequest / normalizeCustomerId", () => {
     assert.equal(normalizeCustomerId("236-921-9639"), "2369219639");
     assert.equal(normalizeCustomerId(" 236 921 9639 "), "2369219639");
     assert.equal(normalizeCustomerId("2369219639"), "2369219639");
+    assert.equal(normalizeCustomerId(""), "");
   });
 });

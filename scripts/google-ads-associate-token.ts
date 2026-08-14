@@ -39,6 +39,36 @@ const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const LOOPBACK_PORT = 8787;
 const REDIRECT_URI = `http://127.0.0.1:${LOOPBACK_PORT}`;
+const CONSENT_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * Envolve uma chamada de rede distinguindo "não chegou na Google" de qualquer
+ * outro erro. A distinção importa: é exatamente a ambiguidade que este script
+ * existe pra resolver — falha de DNS/TLS/offline significa que a associação
+ * definitivamente NÃO aconteceu e repetir é seguro, enquanto uma resposta
+ * classificada já carrega o veredito.
+ */
+async function fetchOrExit(input: string, init: RequestInit, what: string): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch (e) {
+    console.error(`✖ Falha de rede antes de chegar na ${what} — ${e instanceof Error ? e.message : e}`);
+    console.error("  A requisição não saiu daqui, então nada foi associado. Pode repetir com segurança.");
+    process.exit(1);
+  }
+}
+
+/** `res.json()` que não explode com corpo não-JSON (HTML de proxy, 502 de borda). */
+async function jsonOrExit<T>(res: Response, what: string): Promise<T> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    console.error(`✖ ${what} respondeu algo que não é JSON (HTTP ${res.status}):`);
+    console.error("  " + text.slice(0, 300).replace(/\n/g, "\n  "));
+    process.exit(1);
+  }
+}
 
 /** Versão da API. Sobrescrevível — o Google publica versão nova a cada ~3 meses. */
 const API_VERSION = process.env.GOOGLE_ADS_API_VERSION ?? "v21";
@@ -89,11 +119,30 @@ async function runConsentFlow(): Promise<void> {
     `&access_type=offline&prompt=consent&state=${state}`;
 
   const code = await new Promise<string>((resolve, reject) => {
+    let timer: NodeJS.Timeout;
+
+    const finish = (fn: () => void) => {
+      clearTimeout(timer);
+      server.close();
+      fn();
+    };
+
     const server = createServer((req, res) => {
       const url = new URL(req.url ?? "/", REDIRECT_URI);
       const received = url.searchParams.get("code");
       const error = url.searchParams.get("error");
       const receivedState = url.searchParams.get("state");
+
+      // Requisição incidental no loopback (favicon, prefetch do navegador,
+      // extensão, health-check de outro processo) NÃO pode derrubar o fluxo:
+      // sem `code` e sem `error` não é o callback do OAuth. Responde 204 e
+      // segue esperando — fechar o servidor aqui faria o callback real chegar
+      // num socket morto, sem sinal nenhum no terminal.
+      if (!received && !error) {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
 
       res.writeHead(200, { "Content-Type": "text/html;charset=utf-8" });
       res.end(
@@ -103,38 +152,67 @@ async function runConsentFlow(): Promise<void> {
             : `<h1>Falhou</h1><p>${error ?? "sem código"}</p>`) +
           `</body>`,
       );
-      server.close();
 
-      if (error) return reject(new Error(`consentimento negado: ${error}`));
+      if (error) return finish(() => reject(new Error(`consentimento negado: ${error}`)));
       // Guarda contra um request forjado chegando no loopback durante a janela
       // em que o servidor está aberto.
-      if (receivedState !== state) return reject(new Error("state divergente — requisição ignorada"));
-      if (!received) return reject(new Error("callback sem parâmetro `code`"));
-      resolve(received);
+      if (receivedState !== state) {
+        return finish(() => reject(new Error("state divergente — callback descartado por segurança")));
+      }
+      finish(() => resolve(received as string));
+    });
+
+    // Sem isto, porta ocupada (ex: um --auth anterior que ficou pendurado)
+    // vira exceção não-tratada com stack cru, e a Promise nunca se resolve.
+    server.on("error", (err: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      reject(
+        err.code === "EADDRINUSE"
+          ? new Error(
+              `porta ${LOOPBACK_PORT} ocupada — provavelmente um --auth anterior ainda rodando. ` +
+                "Feche-o e tente de novo.",
+            )
+          : err,
+      );
     });
 
     server.listen(LOOPBACK_PORT, "127.0.0.1", () => {
       console.log("Abra esta URL no navegador (deve abrir sozinha):\n");
       console.log(authUrl + "\n");
+      console.log(`Esperando o consentimento (timeout em ${CONSENT_TIMEOUT_MS / 60_000} min)...`);
       const opener =
         process.platform === "win32" ? "start" : process.platform === "darwin" ? "open" : "xdg-open";
       spawn(opener, [authUrl], { shell: true, stdio: "ignore", detached: true }).unref();
+
+      // Sem timeout o processo fica pendurado pra sempre se a aba for fechada,
+      // e a última coisa impressa é a URL — sem diagnóstico nenhum.
+      timer = setTimeout(() => {
+        server.close();
+        reject(new Error("timeout esperando o consentimento no navegador"));
+      }, CONSENT_TIMEOUT_MS);
     });
   });
 
-  const res = await fetch(TOKEN_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      code,
-      client_id: clientId,
-      client_secret: clientSecret,
-      redirect_uri: REDIRECT_URI,
-      grant_type: "authorization_code",
-    }),
-  });
+  const res = await fetchOrExit(
+    TOKEN_ENDPOINT,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: REDIRECT_URI,
+        grant_type: "authorization_code",
+      }),
+    },
+    "troca do código OAuth",
+  );
 
-  const payload = (await res.json()) as { refresh_token?: string; error_description?: string };
+  const payload = await jsonOrExit<{ refresh_token?: string; error_description?: string }>(
+    res,
+    "Troca do código OAuth",
+  );
   if (!res.ok || !payload.refresh_token) {
     console.error(`✖ Troca do código falhou: ${payload.error_description ?? res.status}`);
     process.exit(1);
@@ -144,18 +222,25 @@ async function runConsentFlow(): Promise<void> {
 }
 
 async function accessTokenFromRefresh(): Promise<string> {
-  const res = await fetch(TOKEN_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: required("GOOGLE_ADS_CLIENT_ID"),
-      client_secret: required("GOOGLE_ADS_CLIENT_SECRET"),
-      refresh_token: required("GOOGLE_ADS_REFRESH_TOKEN"),
-      grant_type: "refresh_token",
-    }),
-  });
+  const res = await fetchOrExit(
+    TOKEN_ENDPOINT,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: required("GOOGLE_ADS_CLIENT_ID"),
+        client_secret: required("GOOGLE_ADS_CLIENT_SECRET"),
+        refresh_token: required("GOOGLE_ADS_REFRESH_TOKEN"),
+        grant_type: "refresh_token",
+      }),
+    },
+    "renovação do access token",
+  );
 
-  const payload = (await res.json()) as { access_token?: string; error_description?: string };
+  const payload = await jsonOrExit<{ access_token?: string; error_description?: string }>(
+    res,
+    "Renovação do access token",
+  );
   if (!res.ok || !payload.access_token) {
     console.error(`✖ Não consegui renovar o access token: ${payload.error_description ?? res.status}`);
     console.error("  Se o refresh token ainda não existe, rode antes:  --auth");
@@ -174,16 +259,20 @@ async function associate(): Promise<void> {
 
   console.log(`→ ${API_VERSION} · POST googleAds:searchStream`);
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "developer-token": required("GOOGLE_ADS_DEVELOPER_TOKEN"),
-      "login-customer-id": normalizeCustomerId(required("GOOGLE_ADS_LOGIN_CUSTOMER_ID")),
-      "Content-Type": "application/json",
+  const res = await fetchOrExit(
+    url,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "developer-token": required("GOOGLE_ADS_DEVELOPER_TOKEN"),
+        "login-customer-id": normalizeCustomerId(required("GOOGLE_ADS_LOGIN_CUSTOMER_ID")),
+        "Content-Type": "application/json",
+      },
+      body,
     },
-    body,
-  });
+    "Google Ads API",
+  );
 
   const text = await res.text();
   const outcome = classifyAssociationResponse(res.status, text);
@@ -204,4 +293,11 @@ async function associate(): Promise<void> {
 }
 
 const wantsAuth = process.argv.includes("--auth");
-await (wantsAuth ? runConsentFlow() : associate());
+try {
+  await (wantsAuth ? runConsentFlow() : associate());
+} catch (e) {
+  // Fecha o último caminho que escaparia como stack cru — rejeições do fluxo
+  // de consentimento (timeout, porta ocupada, state divergente) chegam aqui.
+  console.error(`✖ ${e instanceof Error ? e.message : e}`);
+  process.exit(1);
+}
