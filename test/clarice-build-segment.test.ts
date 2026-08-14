@@ -24,6 +24,8 @@ import {
   sentOrQueuedFilePath,
   checkRoundSizeCap,
   checkRecencyMonotonic,
+  checkCorruptedNames,
+  CORRUPTED_NAME_EMAIL_LIST_CAP,
   NOVOS_ROUND_SIZE_CAP,
   type SegmentRow,
   type SentOrQueuedFile,
@@ -1063,6 +1065,85 @@ test("checkRecencyMonotonic: com violações e force=true → ok:true, forced:tr
   assert.equal(result.forced, true);
   assert.equal(result.violationCount, 1);
   assert.ok(result.message, "message continua presente mesmo destravado — nunca silencia a violação");
+});
+
+// ---------------------------------------------------------------------------
+// checkCorruptedNames (#5214 item 1) — pura, mesmo padrão de
+// checkRoundSizeCap/checkRecencyMonotonic acima, mas NUNCA bloqueia (só sinaliza)
+// ---------------------------------------------------------------------------
+
+test("checkCorruptedNames: onda sem contato corrompido → count 0, sem message", () => {
+  const selected = [
+    row({ email: "a@x.com", name: "Ana Costa" }),
+    row({ email: "b@x.com", name: "Bruno Lima" }),
+  ];
+  const result = checkCorruptedNames(selected);
+  assert.deepEqual(result, { count: 0, emails: [] });
+});
+
+test("checkCorruptedNames: onda com contato de nome corrompido → count>0, emails listados, message não-vazia", () => {
+  const selected = [
+    row({ email: "ok@x.com", name: "Ana Costa" }),
+    row({ email: "gonçalo@x.com", name: "Gon�alo Soares" }),
+  ];
+  const result = checkCorruptedNames(selected);
+  assert.equal(result.count, 1);
+  assert.deepEqual(result.emails, ["gonçalo@x.com"]);
+  assert.match(result.message!, /gonçalo@x\.com/);
+  assert.match(result.message!, /não bloqueia/i);
+});
+
+test("checkCorruptedNames: name null nunca conta como corrompido (só U+FFFD conta)", () => {
+  const selected = [row({ email: "sem-nome@x.com", name: null })];
+  assert.deepEqual(checkCorruptedNames(selected), { count: 0, emails: [] });
+});
+
+test(`checkCorruptedNames: acima de ${CORRUPTED_NAME_EMAIL_LIST_CAP} afetados → message omite a lista, mas count/emails do resultado continuam completos`, () => {
+  const selected = Array.from({ length: CORRUPTED_NAME_EMAIL_LIST_CAP + 1 }, (_, i) =>
+    row({ email: `corrompido${i}@x.com`, name: `Nome� ${i}` }),
+  );
+  const result = checkCorruptedNames(selected);
+  assert.equal(result.count, CORRUPTED_NAME_EMAIL_LIST_CAP + 1);
+  assert.equal(result.emails.length, CORRUPTED_NAME_EMAIL_LIST_CAP + 1, "o array completo NUNCA é truncado — só a MENSAGEM omite a lista");
+  assert.doesNotMatch(result.message!, /corrompido0@x\.com/, "acima do cap, a mensagem não deve listar e-mails individuais");
+  assert.match(result.message!, new RegExp(`${CORRUPTED_NAME_EMAIL_LIST_CAP + 1} e-mails`));
+});
+
+test("REGRESSÃO (#5214): main() com contato de nome corrompido loga warning (não bloqueia) e registra corrupted_names no summary", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-corrupted-name-"));
+  const dbPath = resolve(dir, "store.db");
+  const segDir = clariceSegmentsDir("2606-07", dir);
+  const db = openClariceDb(dbPath);
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket) VALUES ('eng@x.com','Gon�alo',2,3,3,'verified')",
+  ).run();
+  recomputeDerived(db);
+  db.close();
+
+  const { errors, result: logs } = await withFakeBrevoFetch(() =>
+    withMockedExit(() =>
+      captureLogs(() =>
+        main(["--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--data-root", dir]),
+      ),
+    ),
+  );
+  assert.ok(
+    errors.some((e) => /nome corrompido/i.test(e) && /eng@x\.com/.test(e)),
+    `esperava warning de nome corrompido mencionando eng@x.com, recebeu: ${JSON.stringify(errors)}`,
+  );
+  const summary = JSON.parse((logs ?? []).join("\n"));
+  assert.equal(summary.selected, 1, "warning é não-bloqueante — o contato ainda é selecionado normalmente");
+  assert.equal(summary.corrupted_names, 1);
+  assert.equal(
+    existsSync(resolve(segDir, "engajados.csv")),
+    true,
+    "CSV é escrito normalmente — a sinalização nunca impede a escrita",
+  );
+  // O CSV de transporte em si continua sanitizado (firstName já remove o
+  // U+FFFD antes do Papa.unparse, #5199/#5200) — a sinalização é SÓ o aviso
+  // no stderr/summary, não uma mudança no conteúdo do CSV.
+  const csvContent = readFileSync(resolve(segDir, "engajados.csv"), "utf8");
+  assert.doesNotMatch(csvContent, /�/, "o CSV de transporte continua sanitizado, como já garantido por #5200");
 });
 
 // ---------------------------------------------------------------------------

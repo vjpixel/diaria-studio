@@ -296,7 +296,7 @@ import {
   excludeSentSince,
   type RecencyCutoffSource,
 } from "./lib/clarice-recency.ts";
-import { firstName } from "./lib/clarice-name.ts";
+import { firstName, hasCorruptedName } from "./lib/clarice-name.ts";
 
 loadProjectEnv();
 
@@ -490,6 +490,49 @@ export function checkRecencyMonotonic(
     `que deveria ter entrado primeiro.`;
   if (force) return { ok: true, forced: true, violationCount: violations.length, message };
   return { ok: false, forced: false, violationCount: violations.length, message };
+}
+
+// ---------------------------------------------------------------------------
+// Sinalização de nome corrompido (#5214 item 1) — WARN, nunca bloqueia
+// ---------------------------------------------------------------------------
+
+export interface CorruptedNameCheckResult {
+  /** Quantos contatos DESTA seleção têm `name` com U+FFFD. 0 quando nenhum. */
+  count: number;
+  /** E-mails afetados NESTA onda (nunca a lista completa do store — só quem está sendo enviado agora). */
+  emails: string[];
+  /** Presente só quando `count > 0` — a mensagem pronta pra logar. */
+  message?: string;
+}
+
+/** Acima disto, a mensagem de warning omite a lista de e-mails (só o count) — mesmo espírito de "baixo volume" da issue #5214. */
+export const CORRUPTED_NAME_EMAIL_LIST_CAP = 10;
+
+/**
+ * Pura/testável (mesmo padrão de `checkRoundSizeCap`/`checkRecencyMonotonic`
+ * acima) — mas diferente dos dois, NUNCA bloqueia: é sinalização, não guard.
+ * Achado ao vivo em #5184 item 3: 22 contatos no store têm `name` com U+FFFD
+ * (encoding upstream corrompido). #5200 já sanitiza o byte inválido antes do
+ * CSV (perder o acento é preferível a perder o contato inteiro do envio),
+ * mas o NOME que chega no e-mail continua degradado (ex: "Gonalo" em vez de
+ * "Gonçalo") — corrigir a grafia é ação manual do editor (#5214 item 2, fora
+ * do escopo desta função). Roda sobre `selected` (o universo que de fato vai
+ * pro CSV desta onda), não o store inteiro — ver `scripts/check-corrupted-names.ts`
+ * pra visibilidade store-wide.
+ */
+export function checkCorruptedNames(selected: SegmentRow[]): CorruptedNameCheckResult {
+  const affected = selected.filter((r) => hasCorruptedName(r.name));
+  if (affected.length === 0) return { count: 0, emails: [] };
+  const emails = affected.map((r) => r.email);
+  const listed =
+    emails.length <= CORRUPTED_NAME_EMAIL_LIST_CAP
+      ? emails.join(", ")
+      : `${emails.length} e-mails (lista omitida — acima de ${CORRUPTED_NAME_EMAIL_LIST_CAP})`;
+  const message =
+    `⚠️  ${affected.length} contato(s) desta onda têm nome corrompido (U+FFFD — encoding upstream, #5214): ${listed}. ` +
+    `O nome chega degradado no e-mail assim mesmo (ex: "Gonalo" em vez de "Gonçalo") — considere corrigir ` +
+    `manualmente antes de enviar (contatar a pessoa ou consultar stripe_ids, #5214 item 2). Não bloqueia o envio.`;
+  return { count: affected.length, emails, message };
 }
 
 // ---------------------------------------------------------------------------
@@ -1037,6 +1080,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     );
   }
 
+  // #5214 item 1: sinalização (não-bloqueante) de nome corrompido — ver
+  // docstring de checkCorruptedNames acima. Roda sempre (--group e --tiers),
+  // ANTES da checagem de manifestEntry.count === 0 pra não perder o aviso
+  // no caso raro de a onda selecionar contatos corrompidos mas encolher a
+  // 0 por outro motivo depois (não acontece hoje, mas não custa a ordem).
+  const corruptedNameCheck = checkCorruptedNames(selected);
+  if (corruptedNameCheck.count > 0) {
+    console.error(corruptedNameCheck.message);
+  }
+
   // #4979: mesma disciplina do one-off de referência — se o operador pediu
   // budget EXATO (`--exact-budget`) e o universo pós-guards não fechar esse
   // número, aborta SEM escrever nada em vez de encolher/expandir o pedido em
@@ -1133,6 +1186,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // silêncio (mesma disciplina do `guard_scope` acima, "este guard já
     // falhou em silêncio uma vez").
     recency_violations_forced: recencyCheck.forced ? recencyCheck.violationCount : undefined,
+    // #5214 item 1: quantos desta onda têm nome corrompido (U+FFFD) — nunca
+    // bloqueia, só auditoria (mesmo espírito do `guard_scope` acima).
+    corrupted_names: corruptedNameCheck.count || undefined,
     // #4979: por tier — só presente no modo --tiers, pra auditar "quanto cada
     // tier disponibilizou vs. quanto o waterfall de fato tomou" sem precisar
     // recalcular manualmente.
