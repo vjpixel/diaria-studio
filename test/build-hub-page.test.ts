@@ -24,7 +24,7 @@ import {
   type HubContent,
 } from "../scripts/lib/shared/hub-page.ts";
 import { findParagraphLinks } from "../scripts/lib/shared/markdown-links.ts";
-import { buildAnthropicClaudeFaq, getAnthropicClaudeHub } from "../scripts/lib/hubs/anthropic-claude.ts";
+import { buildAnthropicClaudeFaq, buildIntro, getAnthropicClaudeHub } from "../scripts/lib/hubs/anthropic-claude.ts";
 import { buildOpenaiChatgptFaq } from "../scripts/lib/hubs/openai-chatgpt.ts";
 import { knownUtmSources, HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM } from "../scripts/lib/shared/utm-registry.ts";
 import { HUB_META } from "../workers/arquivo/src/hubs/meta.ts";
@@ -117,6 +117,35 @@ describe("buildAnthropicClaudeFaq (#4558 Parte A) — regression do bug NFD/NFC"
     const mythosFaq = syntheticFaq.find((f) => f.question.includes("Mythos"));
     assert.ok(mythosFaq);
     assert.match(mythosFaq.answer, /citado em 1 edições/);
+  });
+
+  it("buildIntro: data do incidente de segurança citado no INTRO é a do match SEGURANCA_PATTERN mais recente, NÃO a manchete mais recente do dataset inteiro (regression #5233 — PR de manutenção de hubs achou isso ao vivo)", () => {
+    // Achado do review da PR #5233: `buildIntro` interpolava
+    // `hubCoverageWindow(sources).lastDate` na frase sobre o teste do governo
+    // britânico flagrando o Claude Mythos 5 — funcionava só por coincidência
+    // enquanto esse incidente era a manchete mais nova do dataset. Um regen
+    // rotineiro de `generate-hub-sources.ts` (edição nova entrando na cauda,
+    // sem relação com segurança) bastou pra fazer a frase citar a data errada,
+    // sem nenhum teste existente pegando isso — nenhum dos blocos genéricos
+    // sobre `HUB_LOADERS` compara a data citada no INTRO contra a do
+    // `matchedHeadlines` que a originou.
+    const synthetic = [
+      {
+        date: "2026-08-06",
+        editionSlug: "edicao-seguranca",
+        url: "https://diar.ia.br/p/edicao-seguranca",
+        matchedHeadlines: ["Claude hackeou um sistema em teste controlado"],
+      },
+      {
+        date: "2026-08-13",
+        editionSlug: "edicao-nao-relacionada",
+        url: "https://diar.ia.br/p/edicao-nao-relacionada",
+        matchedHeadlines: ["Claude avança em problema de matemática"],
+      },
+    ];
+    const intro = buildIntro(synthetic);
+    assert.match(intro, /malicioso, em 06\/08\/2026/);
+    assert.doesNotMatch(intro, /malicioso, em 13\/08\/2026/);
   });
 });
 

@@ -254,11 +254,20 @@ function toSourceEditions(sources: HubSourceEntry[]): HubSourceEdition[] {
  * primeira fonte em 29/08/2025 — erro factual ao vivo em produção, o mesmo
  * que a #4895/#4896 já tinha consertado no `google-gemini` e que voltou
  * aqui e no `openai-chatgpt`. */
-function buildIntro(sources: HubSourceEntry[]): string {
-  const { between, lastDate } = hubCoverageWindow(sources);
+export function buildIntro(sources: HubSourceEntry[]): string {
+  const { between } = hubCoverageWindow(sources);
   const { totalEditions, totalMentions, cadenceDays, launchGap } = deriveAnthropicClaudeFacts(sources);
   const gapDays = launchGap?.gapDays ?? 0;
-  return `Entre ${between}, a Anthropic e o Claude foram destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo, quase uma a cada ${cadenceDays} dias úteis. Acompanhar esse volume de perto mostra um padrão que uma edição isolada não deixa ver: o ritmo de lançamento de modelo vem em surtos, não em fluxo constante, com um hiato de ${gapDays} dias no meio do caminho. O confronto com o governo dos EUA durou pouco mais de 4 meses e girou em torno de dois modelos específicos, Mythos e Fable 5, lançados, contestados e só depois liberados. A valuation foi de "triplica" a "dobra de novo" e terminou em pedido de IPO confidencial. A onda de integrações empresariais, com Microsoft, Amazon, SpaceX, Adobe, Slack e Salesforce, não correu só numa direção: a própria Microsoft trocou a Anthropic por IA própria no meio do período. Há também uma sequência de episódios em que o Claude se comporta de um jeito notável e preocupante ao mesmo tempo, que vai de um caso de hacking autônomo a um teste controlado do governo britânico flagrando o Claude Mythos 5 criando identidades falsas para tentar convencer um desenvolvedor a aprovar código malicioso, em ${formatDateShort(lastDate)}. Cada um desses pontos aparece detalhado adiante, com data e link para a edição que o registrou.`;
+  // #5233 review finding: NÃO usar hubCoverageWindow(sources).lastDate aqui — é a
+  // data mais recente de TODO o dataset, não a do incidente de segurança citado
+  // logo depois. Funcionava por coincidência enquanto esse incidente era a manchete
+  // mais nova; regen adicionou 2 manchetes não-relacionadas mais recentes e a frase
+  // passou a atribuir o teste do governo britânico à data errada. Usar a data real
+  // do match SEGURANCA_PATTERN mais recente (mesmo padrão de `matchingDates` já
+  // usado por `countMatching`/`deriveAnthropicClaudeFacts`).
+  const segurancaDates = matchingDates(sources, SEGURANCA_PATTERN);
+  const lastSegurancaDate = segurancaDates[segurancaDates.length - 1] ?? "";
+  return `Entre ${between}, a Anthropic e o Claude foram destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo, quase uma a cada ${cadenceDays} dias úteis. Acompanhar esse volume de perto mostra um padrão que uma edição isolada não deixa ver: o ritmo de lançamento de modelo vem em surtos, não em fluxo constante, com um hiato de ${gapDays} dias no meio do caminho. O confronto com o governo dos EUA durou pouco mais de 4 meses e girou em torno de dois modelos específicos, Mythos e Fable 5, lançados, contestados e só depois liberados. A valuation foi de "triplica" a "dobra de novo" e terminou em pedido de IPO confidencial. A onda de integrações empresariais, com Microsoft, Amazon, SpaceX, Adobe, Slack e Salesforce, não correu só numa direção: a própria Microsoft trocou a Anthropic por IA própria no meio do período. Há também uma sequência de episódios em que o Claude se comporta de um jeito notável e preocupante ao mesmo tempo, que vai de um caso de hacking autônomo a um teste controlado do governo britânico flagrando o Claude Mythos 5 criando identidades falsas para tentar convencer um desenvolvedor a aprovar código malicioso, em ${formatDateShort(lastSegurancaDate)}. Cada um desses pontos aparece detalhado adiante, com data e link para a edição que o registrou.`;
 }
 
 export function getAnthropicClaudeHub(): HubContent {
