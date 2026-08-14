@@ -57,6 +57,11 @@
  * `deriveAnthropicClaudeFacts`, nunca transcrita). Onda 1 (bibliografia
  * inteira como `<table>`) já tinha entrado antes desta mudança —
  * `scripts/lib/shared/hub-page.ts:855+`.
+ *
+ * **#5260:** `buildLaunchChronologyTable` nasceu aqui (Onda 2 acima) e foi
+ * EXTRAÍDA pra `scripts/lib/shared/hub-page.ts` — `google-gemini`/
+ * `mercado-trabalho` ganharam a mesma tabela sobre o próprio padrão de
+ * manchete (mesma mecânica genérica, sem copiar a função 2x).
  */
 import type { GeoFaqItem } from "../shared/geo-faq.ts";
 import {
@@ -66,14 +71,12 @@ import {
   countMatching,
   matchingDates,
   maxDateGap,
-  calendarDaysBetween,
   formatDateShort,
   formatDateLong,
   defaultMethodologyNote,
-  defaultTableMethodologyNote,
+  buildLaunchChronologyTable,
   type HubContent,
   type HubSourceEdition,
-  type HubSectionTable,
 } from "../shared/hub-page.ts";
 import { HUB_ANTHROPIC_CLAUDE_FOOTER_NAV_UTM } from "../shared/utm-registry.ts";
 import sourcesRaw from "./anthropic-claude-sources.generated.json" with { type: "json" };
@@ -134,47 +137,6 @@ function deriveAnthropicClaudeFacts(sources: HubSourceEntry[]) {
   const fable = countMatching(sources, FABLE_PATTERN);
   const seguranca = countMatching(sources, SEGURANCA_PATTERN);
   return { totalEditions, totalMentions, oldest, newest, cadenceDays, launches, launchWindow, launchGap, mythos, fable, seguranca };
-}
-
-/**
- * Cronologia de lançamento — tabela opcional de S1 (#4921 Onda 2, issue
- * itens 6-8). Modelo/ferramenta | data | dias desde o anterior | edição, UMA
- * linha por manchete que casa `LAUNCH_PATTERN`, na mesma ordem cronológica
- * (ascendente) que `deriveAnthropicClaudeFacts` usa pra computar
- * `launches`/`launchWindow`/`launchGap`. Pure — recebe `sources` por
- * parâmetro, nunca lê `SOURCES` do módulo (mesma disciplina de
- * `deriveAnthropicClaudeFacts`).
- *
- * **Genuinamente derivada, nada transcrito à mão:** a coluna "Lançamento" é
- * a própria manchete casada (texto real do dataset, não um nome de modelo
- * digitado à parte); "Dias desde o anterior" é `calendarDaysBetween` entre
- * duas datas consecutivas da MESMA lista que alimenta `maxDateGap` (o maior
- * valor desta coluna é, por construção, igual a `launchGap.gapDays` — não há
- * como esta tabela divergir do hiato que `buildIntro`/S1/FAQ citam, porque é
- * o mesmo cálculo sobre o mesmo array de datas); "Edição" é sempre o rótulo
- * fixo "Ver edição" linkando `s.url` — nenhuma prosa por linha, só o link.
- */
-function buildLaunchChronologyTable(sources: HubSourceEntry[]): HubSectionTable {
-  const matches: { date: string; headline: string; url: string }[] = [];
-  for (const s of sources) {
-    for (const h of s.matchedHeadlines) {
-      const normalized = h.normalize("NFC");
-      if (LAUNCH_PATTERN.test(normalized)) matches.push({ date: s.date, headline: normalized, url: s.url });
-    }
-  }
-  matches.sort((a, b) => a.date.localeCompare(b.date));
-  const rows = matches.map((m, i) => [
-    m.headline,
-    formatDateShort(m.date),
-    i === 0 ? "—" : String(calendarDaysBetween(matches[i - 1].date, m.date)),
-    `[Ver edição](${m.url})`,
-  ]);
-  return {
-    caption: "Cronologia de lançamento: modelo ou ferramenta, data, dias desde o anterior, edição",
-    methodology: defaultTableMethodologyNote(sources),
-    headers: ["Lançamento", "Data", "Dias desde o anterior", "Edição"],
-    rows,
-  };
 }
 
 /**
@@ -300,7 +262,10 @@ export function getAnthropicClaudeHub(): HubContent {
         // linha a linha aqui. Mesmo cálculo de `deriveAnthropicClaudeFacts`
         // (ver docstring de `buildLaunchChronologyTable`): não há como esta
         // tabela divergir do "hiato de N dias" citado na prosa.
-        table: buildLaunchChronologyTable(SOURCES),
+        table: buildLaunchChronologyTable(SOURCES, LAUNCH_PATTERN, {
+          caption: "Cronologia de lançamento: modelo ou ferramenta, data, dias desde o anterior, edição",
+          firstColumnHeader: "Lançamento",
+        }),
       },
       {
         heading: "Por que a Anthropic entrou em conflito com o governo dos EUA?",

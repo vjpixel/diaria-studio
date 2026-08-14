@@ -125,15 +125,31 @@ export function findParagraphLinks(s: string): ParsedLink[] {
  * no e-mail. Só o texto puro: o `label`/`url` de um link markdown NUNCA
  * recebe o wordmark (evita `<strong>` aninhado dentro de `<a>` e duplicar a
  * marcação de um link que já resolveu pra `diar.ia.br` como destino/rótulo)
- * — mesma disciplina de "nunca dentro de um href já resolvido" do e-mail. */
-export function renderInlineLinks(s: string): string {
+ * — mesma disciplina de "nunca dentro de um href já resolvido" do e-mail.
+ *
+ * `titleFor` (#5265, OPCIONAL) — resolve o `title="Na edição: {…}"` de um
+ * link, quando o caller tiver um jeito de saber o título REAL da página de
+ * destino. Motivação: em prosa de hub, "[texto](diar.ia.br/p/{slug})"
+ * frequentemente linka pra uma edição onde a manchete casada foi um destaque
+ * SECUNDÁRIO — clicar em "rodada Série H de US$ 65 bi" pode levar a uma
+ * edição cujo H1 é outra coisa inteira, sem aviso nenhum antes do clique. Só
+ * emite o atributo quando `titleFor(url)` devolve algo E esse título difere
+ * do `label` do link (comparação exata pós-trim) — sem isso todo link cujo
+ * texto-âncora já É o título real ganharia uma tooltip redundante repetindo
+ * a mesma frase. `undefined`/omitido preserva o comportamento antigo
+ * byte-a-byte (nenhum `title=` emitido) — as 3 páginas de curadoria que não
+ * passam este parâmetro (livros/cursos/arquivo, via `geo-faq.ts`) continuam
+ * exatamente como antes. */
+export function renderInlineLinks(s: string, titleFor?: (url: string) => string | undefined): string {
   const links = findParagraphLinks(s);
   if (links.length === 0) return applyBrandWordmark(esc(s));
   const parts: string[] = [];
   let lastIdx = 0;
   for (const { url, label, start, end } of links) {
     parts.push(applyBrandWordmark(esc(s.slice(lastIdx, start))));
-    parts.push(`<a href="${esc(url)}">${esc(label)}</a>`);
+    const realTitle = titleFor?.(url);
+    const titleAttr = realTitle && realTitle.trim() !== label.trim() ? ` title="${esc(`Na edição: ${realTitle}`)}"` : "";
+    parts.push(`<a href="${esc(url)}"${titleAttr}>${esc(label)}</a>`);
     lastIdx = end;
   }
   parts.push(applyBrandWordmark(esc(s.slice(lastIdx))));

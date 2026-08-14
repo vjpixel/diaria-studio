@@ -68,8 +68,12 @@ describe("#4895 — google-gemini.ts cita a data de início real do hub", () => 
   });
 
   const hub = getGoogleGeminiHub();
+  // #5259: introParagraph pode ser string OU array de strings (ver docstring
+  // do campo em hub-page.ts) — junta com espaço pra continuar comparável
+  // como texto único, mesmo teste de antes do #5259.
+  const introText = typeof hub.introParagraph === "string" ? hub.introParagraph : hub.introParagraph.join(" ");
   const proseFields: { field: string; value: string }[] = [
-    { field: "introParagraph", value: hub.introParagraph },
+    { field: "introParagraph", value: introText },
     { field: "metaDescription", value: hub.metaDescription },
     { field: "introHeading", value: hub.introHeading },
     ...hub.sections.map((s, i) => ({ field: `sections[${i}].heading`, value: s.heading })),
@@ -92,8 +96,8 @@ describe("#4895 — google-gemini.ts cita a data de início real do hub", () => 
 
   it("INTRO cita a data real de início (forma longa) computada de sources[0].date", () => {
     assert.ok(
-      hub.introParagraph.includes(`Entre ${longDate}`),
-      `esperado "Entre ${longDate}" em introParagraph, veio: "${hub.introParagraph.slice(0, 80)}..."`,
+      introText.includes(`Entre ${longDate}`),
+      `esperado "Entre ${longDate}" em introParagraph, veio: "${introText.slice(0, 80)}..."`,
     );
   });
 

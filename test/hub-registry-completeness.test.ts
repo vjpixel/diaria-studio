@@ -13,7 +13,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { HUB_LOADERS } from "../scripts/build-hub-page.ts";
+import { HUB_LOADERS, buildHubIndexEntries } from "../scripts/build-hub-page.ts";
+import { renderHubIndexPage } from "../scripts/lib/shared/hub-index-page.ts";
 import { HUB_META } from "../workers/arquivo/src/hubs/meta.ts";
 import { HUB_REGISTRY } from "../workers/arquivo/src/hubs/registry.ts";
 
@@ -86,6 +87,24 @@ describe("completude entre HUB_LOADERS (builder) e HUB_REGISTRY (Worker) (#4558 
       [],
       `slug(s) fora do formato kebab-case sem barra/espaço — produziriam href quebrado ` +
         `em /temas/{slug}: ${invalidos.map((s) => JSON.stringify(s)).join(", ")}`,
+    );
+  });
+});
+
+// #5256: a página-índice /temas/ deriva de HUB_META/HUB_LOADERS — hub novo
+// entra sozinho. Este teste pega o caso "hub publicado, mas o índice
+// esqueceu de listá-lo" (a issue #5256 pede explicitamente esse padrão de
+// completude, espelhando os blocos acima).
+describe("completude do índice /temas/ contra HUB_META (#5256)", () => {
+  it("todo slug/rótulo de HUB_META aparece no HTML do índice", () => {
+    const html = renderHubIndexPage(buildHubIndexEntries());
+    const missing = HUB_META.filter((m) => !html.includes(`/temas/${m.slug}`) || !html.includes(m.label)).map(
+      (m) => m.slug,
+    );
+    assert.deepEqual(
+      missing,
+      [],
+      `slug(s) de HUB_META ausentes do HTML do índice — rode npx tsx scripts/build-hub-page.ts --index: ${missing.join(", ")}`,
     );
   });
 });

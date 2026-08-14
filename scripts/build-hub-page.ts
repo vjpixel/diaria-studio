@@ -60,7 +60,9 @@ import {
   type HubFactGateClaim,
   type HubFactGateContradiction,
 } from "./lib/shared/hub-fact-gate.ts";
-import { renderHubPage, hubCoverageDate, checkUpdatedDateCeiling, type HubContent } from "./lib/shared/hub-page.ts";
+import { renderHubPage, hubCoverageDate, hubCoverageWindow, checkUpdatedDateCeiling, type HubContent } from "./lib/shared/hub-page.ts";
+import { findParagraphLinks } from "./lib/shared/markdown-links.ts"; // #5265: coleta de URLs [texto](url) do corpo do hub, pra resolver linkTitles
+import { renderHubIndexPage, renderHubNotFoundPage, type HubIndexEntry } from "./lib/shared/hub-index-page.ts"; // #5256: página-índice /temas/ + mini-página 404
 import { getAnthropicClaudeHub } from "./lib/hubs/anthropic-claude.ts";
 import { getOpenaiChatgptHub } from "./lib/hubs/openai-chatgpt.ts";
 import { getGoogleGeminiHub } from "./lib/hubs/google-gemini.ts";
@@ -171,6 +173,52 @@ function resolveHubCoverImage(
   return { url, width: COVER_IMAGE_WIDTH, height: COVER_IMAGE_HEIGHT };
 }
 
+/** URLs `[texto](url)` de TODO o corpo de prosa do hub que suporta link —
+ * `sections[].paragraphs` + `sections[].table.rows` (#5265). NÃO cobre
+ * `faq[].answer`/`methodologyNote` (também suportam link, via
+ * `geo-faq.ts`/`renderInlineLinks`) — escopo contido de propósito: a issue
+ * mira "menções em prosa" no corpo narrativo, não o FAQ; ver docstring de
+ * `HubContent.linkTitles`. `Set` dedup — o mesmo destino frequentemente
+ * aparece em mais de 1 seção. */
+function collectHubBodyLinkUrls(hub: HubContent): string[] {
+  const urls = new Set<string>();
+  for (const section of hub.sections) {
+    for (const p of section.paragraphs) {
+      for (const link of findParagraphLinks(p)) urls.add(link.url);
+    }
+    if (section.table) {
+      for (const row of section.table.rows) {
+        for (const cell of row) {
+          for (const link of findParagraphLinks(cell)) urls.add(link.url);
+        }
+      }
+    }
+  }
+  return [...urls];
+}
+
+/** Título REAL (`post.title`, via `titles-cache.json`) de cada URL
+ * `diar.ia.br/p/{slug}` linkada no corpo do hub (#5265) — mapa consumido por
+ * `renderHubPage` (`hub.linkTitles`) pra emitir `title="Na edição: {…}"` só
+ * quando o texto-âncora divergir do título real (comparação feita em
+ * `renderInlineLinks`, não aqui). URL fora do domínio de marca, ou sem
+ * entrada no cache (post sem título registrado — nunca deveria acontecer com
+ * uma `HubSourceEdition.url` real, mas o link em prosa pode citar qualquer
+ * URL) é OMITIDA do mapa, nunca falha o build (issue #5265: "Não falhar o
+ * build em URL sem entrada no cache — omitir o title e seguir"). */
+function resolveHubLinkTitles(hub: HubContent): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const url of collectHubBodyLinkUrls(hub)) {
+    if (!url.startsWith("https://diar.ia.br/p/")) continue;
+    const slug = slugFromEditionUrl(url);
+    if (!slug) continue;
+    const title = (titlesCacheRaw as TitlesCache)[slug]?.title;
+    if (!title) continue;
+    out[url] = title;
+  }
+  return out;
+}
+
 /** Carrega o `HubContent` completo de um slug — loader do hub (`get{Hub}Hub()`)
  * MAIS o pós-processamento que só o builder pode fazer (#4913 itens 1/3: nav
  * "Outros temas" com os hubs irmãos, própria página excluída; #5131:
@@ -189,7 +237,8 @@ export function loadHubContent(slug: string): HubContent {
   const baseHub = loader();
   const relatedHubs = HUB_META.filter((m) => m.slug !== slug);
   const coverImage = resolveHubCoverImage(baseHub.sourceEditions);
-  return { ...baseHub, relatedHubs, coverImage };
+  const linkTitles = resolveHubLinkTitles(baseHub);
+  return { ...baseHub, relatedHubs, coverImage, linkTitles };
 }
 
 function buildOne(slug: string, check: boolean): void {
@@ -214,6 +263,76 @@ function buildOne(slug: string, check: boolean): void {
   // recente citada), não mais de updatedDate (revisão de prosa).
   writeFileAtomic(outPath, renderGeneratedModule(slug, html, hubCoverageDate(hub.sourceEditions)));
   process.stderr.write(`[build-hub-page] ${slug}: escrito em ${outPath}\n`);
+  console.log(outPath);
+}
+
+// ---------------------------------------------------------------------------
+// Página-índice /temas/ (#5256) — lista os hubs publicados, zero prosa nova.
+// ---------------------------------------------------------------------------
+
+function indexOutPath(): string {
+  return resolve(ROOT, "workers/arquivo/src/hubs/index-page.generated.ts");
+}
+
+/** Nome da constante de `<lastmod>` do índice — máximo entre
+ * `hubCoverageDate` de todos os hubs (mesmo `ROOT_LASTMOD` que
+ * `workers/arquivo/src/index.ts` já computa pra raiz do sitemap; aqui é o
+ * PRÓPRIO `<lastmod>`/`Last-Modified` da rota `/temas/`, não da raiz). */
+export function renderIndexGeneratedModule(html: string, lastmodDate: string, notFoundHtml: string): string {
+  return `/**
+ * index-page.generated.ts (#5256) — GERADO, NÃO EDITAR À MÃO.
+ *
+ * Fonte: scripts/lib/shared/hub-index-page.ts → scripts/build-hub-page.ts.
+ * HTML da página-índice \`GET /temas/\` (e \`/temas\`) + mini-página de
+ * "tema não encontrado" servida em \`GET /temas/{slug-desconhecido}\`.
+ * Regenerar:
+ *
+ *   npx tsx scripts/build-hub-page.ts --index
+ *
+ * test/hub-index-page-drift.test.ts garante que este arquivo reflete o
+ * conteúdo atual de HUB_META/HUB_LOADERS.
+ */
+export const HUB_INDEX_HTML = ${JSON.stringify(html)};
+export const HUB_INDEX_LASTMOD = ${JSON.stringify(lastmodDate)};
+export const HUB_NOT_FOUND_HTML = ${JSON.stringify(notFoundHtml)};
+`;
+}
+
+/** Monta as `HubIndexEntry[]` na ordem de `HUB_META` (curadoria editorial,
+ * não alfabética — mesma ordem que a nav "Por tema" do arquivo já usa).
+ * Exportado pra `test/hub-index-page-drift.test.ts` chamar o MESMO caminho
+ * que `buildIndex` usa (mesmo racional de `loadHubContent`). */
+export function buildHubIndexEntries(): HubIndexEntry[] {
+  return HUB_META.map((m) => {
+    const hub = loadHubContent(m.slug);
+    return {
+      slug: hub.slug,
+      label: m.label,
+      metaDescription: hub.metaDescription,
+      coverageLabel: hubCoverageWindow(hub.sourceEditions).between,
+    };
+  });
+}
+
+function buildIndex(check: boolean): void {
+  const entries = buildHubIndexEntries();
+  const html = renderHubIndexPage(entries);
+  const notFoundHtml = renderHubNotFoundPage();
+  const lastmodDate = HUB_META.map((m) => hubCoverageDate(loadHubContent(m.slug).sourceEditions))
+    .sort()
+    .at(-1);
+  if (!lastmodDate) {
+    console.error("[build-hub-page] --index: HUB_META está vazio, nada pra indexar");
+    process.exit(2);
+  }
+  const outPath = indexOutPath();
+  if (check) {
+    process.stderr.write("[build-hub-page] --index: --check, não escreve.\n");
+    return;
+  }
+  mkdirSync(dirname(outPath), { recursive: true });
+  writeFileAtomic(outPath, renderIndexGeneratedModule(html, lastmodDate, notFoundHtml));
+  process.stderr.write(`[build-hub-page] --index: escrito em ${outPath}\n`);
   console.log(outPath);
 }
 
@@ -426,6 +545,12 @@ function main(): void {
   const checkFacts = argv.includes("--check-facts");
   const skipFactCheck = argv.includes("--skip-fact-check");
   const all = argv.includes("--all");
+  // #5256: --index gera só a página-índice /temas/ (+ mini-página 404),
+  // isolado dos hubs individuais — regen rápido quando só HUB_META muda
+  // (hub novo, rótulo editado) sem precisar re-render todo mundo. --all
+  // SEMPRE inclui o índice também (ele deriva de HUB_META/HUB_LOADERS, que
+  // --all já toca por completo — nunca ficaria desatualizado silenciosamente).
+  const indexOnly = argv.includes("--index");
   const hubIdx = argv.indexOf("--hub");
   const hub = hubIdx >= 0 ? argv[hubIdx + 1] : undefined;
   // Só pra testes (test/build-hub-page-fact-check-5102.test.ts) — aponta o
@@ -434,15 +559,20 @@ function main(): void {
   const factCheckDirIdx = argv.indexOf("--fact-check-dir");
   const factCheckDirOverride = factCheckDirIdx >= 0 ? argv[factCheckDirIdx + 1] : undefined;
 
-  if (!all && !hub) {
-    console.error("[build-hub-page] uso: --hub <slug> ou --all");
+  if (!all && !hub && !indexOnly) {
+    console.error("[build-hub-page] uso: --hub <slug> | --all | --index");
     process.exit(2);
   }
 
-  const slugs = all ? Object.keys(HUB_LOADERS) : [hub as string];
-  for (const slug of slugs) {
-    if (checkFacts) runFactCheckGate(slug, skipFactCheck, factCheckDirOverride);
-    buildOne(slug, check);
+  if (hub || all) {
+    const slugs = all ? Object.keys(HUB_LOADERS) : [hub as string];
+    for (const slug of slugs) {
+      if (checkFacts) runFactCheckGate(slug, skipFactCheck, factCheckDirOverride);
+      buildOne(slug, check);
+    }
+  }
+  if (indexOnly || all) {
+    buildIndex(check);
   }
 }
 

@@ -208,8 +208,18 @@ export interface HubContent {
   metaDescription: string;
   /** H2 em formato de pergunta literal do bloco intro (issue item 2). */
   introHeading: string;
-  /** Responde a pergunta principal por inteiro, ~200 palavras (issue item 1). */
-  introParagraph: string;
+  /** Responde a pergunta principal por inteiro, ~200 palavras no total (issue
+   * item 1). Aceita `string` (1 `<p class="geo-intro">`, comportamento
+   * original) OU um array não-vazio de strings (#5259, "Código habilitador"
+   * — 1 `<p class="geo-intro">` POR elemento, na mesma ordem) — existe pra
+   * caber o orçamento de ~200 palavras sem produzir um parágrafo-paredão
+   * único: o guard de `validateHubContent` (`HUB_MAX_PARAGRAPH_WORDS`) trata
+   * CADA elemento como uma unidade independente, exatamente como já trata
+   * `sections[].paragraphs`. `applyBrandWordmark` é aplicado a CADA `<p>`
+   * (não só ao primeiro) — ver `renderHubPage`. Um hub cujo intro já cabe
+   * numa unidade só pode continuar usando `string`; não é obrigatório virar
+   * array. */
+  introParagraph: string | readonly [string, ...string[]];
   sections: HubSection[];
   faq: GeoFaqItem[];
   /** Edições citadas como fonte, mais recente primeiro. */
@@ -265,6 +275,19 @@ export interface HubContent {
    * `generate-arquivo-titles.ts`) → `renderSeoMeta` omite og:image,
    * comportamento idêntico a antes do #5131. */
   coverImage?: { readonly url: string; readonly width: number; readonly height: number };
+  /** Mapa `url → título real da edição` (#5265), OPCIONAL — resolvido por
+   * `scripts/build-hub-page.ts` via lookup em
+   * `workers/arquivo/src/titles-cache.json` (mesmo cache que já alimenta
+   * `coverImage` acima), NUNCA por `get{Hub}Hub()` (mesmo racional de
+   * `relatedHubs`/`coverImage`: só o builder Node-side importa esse cache).
+   * Cobre só `sections[].paragraphs`/`sections[].table.rows` — os links de
+   * PROSA do corpo do hub, alvo real da issue ("menções em prosa linkam a
+   * edição onde a manchete foi destaque secundário, sem aviso"). FAQ/
+   * metodologia ficam FORA de propósito (escopo P3 contido: ver PR). Ausente
+   * (hub sem links pro domínio de marca, ou URL sem entrada no cache) →
+   * `renderInlineLinks` não emite `title=` nenhum, comportamento idêntico a
+   * antes do #5265. */
+  linkTitles?: Readonly<Record<string, string>>;
 }
 
 function pageUrl(slug: string): string {
@@ -563,6 +586,56 @@ export function maxDateGap(dates: readonly string[]): { fromDate: string; toDate
   return best;
 }
 
+/**
+ * Tabela de cronologia derivada de um padrão de manchete (#4921 Onda 2,
+ * generalizada #5260 — nasceu só em `anthropic-claude.ts`, hoje reusada por
+ * `google-gemini`/`mercado-trabalho`) — evento | data | dias desde o
+ * anterior | edição, UMA linha por manchete que casa `pattern`, em ordem
+ * cronológica ascendente. Pure — recebe `sources` por parâmetro, nunca lê um
+ * `SOURCES` de módulo (mesma disciplina de `countMatching`/`matchingDates`).
+ *
+ * **Genuinamente derivada, nada transcrito à mão:** a 1ª coluna é a própria
+ * manchete casada (texto real do dataset, não um rótulo digitado à parte);
+ * "Dias desde o anterior" é `calendarDaysBetween` entre duas datas
+ * consecutivas da MESMA lista que `maxDateGap` usaria pra computar o maior
+ * hiato — não há como esta tabela divergir do "hiato de N dias" que a prosa
+ * da seção cita, porque é o mesmo cálculo sobre o mesmo array de datas.
+ * "Edição" é sempre o rótulo fixo "Ver edição" linkando `s.url` — nenhuma
+ * prosa por linha, só o link.
+ *
+ * **Regra de quando usar (documentada aqui, não só na issue):** uma seção
+ * que enumera ≥6 eventos datados do mesmo tipo (mesmo padrão de manchete)
+ * nasce com esta tabela — prosa-cadeia sozinha ("N dias depois... M dias
+ * depois...") sobre uma lista desse tamanho é exatamente o padrão que motivou
+ * a Onda 2 do #4921 e o retrofit do #5260.
+ */
+export function buildLaunchChronologyTable(
+  sources: readonly { date: string; matchedHeadlines: readonly string[]; url: string }[],
+  pattern: RegExp,
+  opts: { caption: string; firstColumnHeader: string },
+): HubSectionTable {
+  const matches: { date: string; headline: string; url: string }[] = [];
+  for (const s of sources) {
+    for (const h of s.matchedHeadlines) {
+      const normalized = h.normalize("NFC");
+      if (pattern.test(normalized)) matches.push({ date: s.date, headline: normalized, url: s.url });
+    }
+  }
+  matches.sort((a, b) => a.date.localeCompare(b.date));
+  const rows = matches.map((m, i) => [
+    m.headline,
+    formatDateShort(m.date),
+    i === 0 ? "—" : String(calendarDaysBetween(matches[i - 1].date, m.date)),
+    `[Ver edição](${m.url})`,
+  ]);
+  return {
+    caption: opts.caption,
+    methodology: defaultTableMethodologyNote(sources),
+    headers: [opts.firstColumnHeader, "Data", "Dias desde o anterior", "Edição"],
+    rows,
+  };
+}
+
 /** CSS específico do corpo narrativo do hub (seções + lista de fontes) — o
  * que NÃO é coberto por `curadoria-page.ts` (grid de cards) nem por
  * `geo-faq.ts` (bloco de FAQ, reusado tal qual). */
@@ -673,7 +746,18 @@ export function collectReaderFacingStrings(
   if (hub.h1 !== undefined) out.push({ field: "h1", value: hub.h1, kind: "heading" });
   out.push({ field: "metaDescription", value: hub.metaDescription, kind: "prose" });
   out.push({ field: "introHeading", value: hub.introHeading, kind: "heading" });
-  out.push({ field: "introParagraph", value: hub.introParagraph, kind: "prose" });
+  // #5259: introParagraph pode ser string OU array não-vazio (ver docstring
+  // do campo) — cada elemento entra como um item PRÓPRIO da lista, mesmo
+  // tratamento que sections[].paragraphs já recebe logo abaixo. Com um
+  // array de N elementos, o campo reportado numa violação é
+  // "introParagraph[i]" (não "introParagraph") pra apontar o elemento certo.
+  if (typeof hub.introParagraph === "string") {
+    out.push({ field: "introParagraph", value: hub.introParagraph, kind: "prose" });
+  } else {
+    hub.introParagraph.forEach((p, i) => {
+      out.push({ field: `introParagraph[${i}]`, value: p, kind: "prose" });
+    });
+  }
   hub.sections.forEach((section, sIdx) => {
     out.push({ field: `sections[${sIdx}].heading`, value: section.heading, kind: "heading" });
     section.paragraphs.forEach((p, pIdx) => {
@@ -711,6 +795,46 @@ export function collectReaderFacingStrings(
   out.push({ field: "methodologyNote", value: hub.methodologyNote, kind: "prose", exemptFrom: ["prosa-sem-deixis"] });
   return out;
 }
+
+/** Teto de ocorrências de "N dias/semanas/meses depois/mais tarde" NUM MESMO
+ * parágrafo reader-facing (#5258) — acima disso a prosa vira arco
+ * cronológico só de intervalo relativo, sem data absoluta ancorando o
+ * leitor (o defeito que a análise editorial de 14/08/2026, "Raio-X de
+ * /temas/", catalogou: "111 dias depois... Cinco dias depois...", pior caso
+ * em `mercado-trabalho` com 13 eventos por intervalo relativo num
+ * parágrafo). Calibrado contra `anthropic-claude` — a referência de
+ * calibragem citada na própria issue ("já perto do padrão"): o parágrafo com
+ * mais ocorrências ali tem 3; 3 passa, 4+ falha. Regra editorial completa:
+ * data absoluta primeiro; intervalo relativo só quando o vão É o fato
+ * (hiato de lançamento, "duas coisas no mesmo dia"). */
+export const HUB_MAX_RELATIVE_DATE_CHAIN = 3;
+const RELATIVE_DATE_CHAIN_PATTERN = /\b(dias?|semanas?|meses)\s+(depois|mais tarde|depois disso)\b/gi;
+
+/** Teto de palavras por parágrafo reader-facing (#5259) — "parágrafo-
+ * paredão" que a issue mira: cada elemento de `sections[].paragraphs`.
+ * Calibrado contra os hubs já em bom estado: o maior parágrafo de seção de
+ * `anthropic-claude` tem 113 palavras — 160 dá folga sem deixar passar os
+ * parágrafos de 200-450 palavras que motivaram a issue. NÃO se aplica a
+ * `faq[].answer`/`methodologyNote`/`table.methodology` — resposta curta por
+ * natureza, fora do escopo da issue (que mira parágrafo de SEÇÃO, não
+ * resposta de FAQ). Ver `HUB_MAX_INTRO_PARAGRAPH_WORDS` abaixo pro teto
+ * PRÓPRIO de `introParagraph` — mesmo guard, teto diferente. */
+export const HUB_MAX_PARAGRAPH_WORDS = 160;
+
+/** Teto de palavras de `introParagraph` (#5259) — SEPARADO do teto acima de
+ * propósito. `HubContent.introParagraph` é desenhado pra ~200 palavras num
+ * bloco denso que responde a pergunta principal por inteiro (ver docstring
+ * do campo) — 5 dos 6 hubs publicados em 14/08/2026 já cabem nessa faixa
+ * (213-271 palavras) sem precisar quebrar em array; só `brasil-regulacao`
+ * (334) estourava por um bom motivo real (parágrafo genuinamente inchado,
+ * não o orçamento normal do campo) — esse é o único intro que a issue #5259
+ * pede pra quebrar ("brasil-regulacao: intro e seção 1"). 300 calibra
+ * exatamente essa fronteira: passa os 5 hubs em ~200-270, falha só o
+ * outlier. Um hub cujo intro vira array (#5259, "Código habilitador") tem
+ * CADA elemento comparado contra este mesmo teto individualmente — ver
+ * `collectReaderFacingStrings`, que já emite `introParagraph[i]` por
+ * elemento. */
+export const HUB_MAX_INTRO_PARAGRAPH_WORDS = 300;
 
 export interface HubProseRule {
   readonly id: string;
@@ -995,6 +1119,31 @@ export function validateHubContent(hub: HubContent): string[] {
   // scripts/lib/shared/hub-fact-gate.ts para o design e o porquê de cada
   // checagem ser deliberadamente conservadora (prefere não verificar a
   // acusar prosa correta).
+  // #5258/#5259: guards de FORMA dos parágrafos de seção/intro — não são
+  // CONSTRUÇÃO proibida (isso é HUB_PROSE_RULES acima), são densidade de
+  // intervalo relativo e comprimento de parágrafo. Escopo restrito a
+  // sections[].paragraphs[] e introParagraph[] (ver constantes acima) —
+  // faq[].answer/methodologyNote ficam fora, mesmo sendo kind "prose".
+  for (const { field, value, kind } of collectReaderFacingStrings(hub)) {
+    if (kind !== "prose") continue;
+    const isSectionParagraph = /^sections\[\d+\]\.paragraphs\[\d+\]$/.test(field);
+    const isIntroParagraph = /^introParagraph(\[\d+\])?$/.test(field);
+    if (!isSectionParagraph && !isIntroParagraph) continue;
+    const chainMatches = value.match(RELATIVE_DATE_CHAIN_PATTERN) ?? [];
+    if (chainMatches.length > HUB_MAX_RELATIVE_DATE_CHAIN) {
+      errors.push(
+        `${field} tem ${chainMatches.length} ocorrências de "N dias/semanas/meses depois/mais tarde" no mesmo parágrafo ` +
+          `— máximo ${HUB_MAX_RELATIVE_DATE_CHAIN} (#5258). Data absoluta primeiro; intervalo relativo só quando o vão É o fato.`,
+      );
+    }
+    const wordCount = value.trim().split(/\s+/).filter(Boolean).length;
+    const maxWords = isIntroParagraph ? HUB_MAX_INTRO_PARAGRAPH_WORDS : HUB_MAX_PARAGRAPH_WORDS;
+    if (wordCount > maxWords) {
+      errors.push(
+        `${field} tem ${wordCount} palavras — máximo ${maxWords} por parágrafo (#5259). Quebre em unidades de ~80-120 palavras.`,
+      );
+    }
+  }
   errors.push(...checkHubFacts(hub));
   return errors;
 }
@@ -1051,7 +1200,7 @@ export function checkUpdatedDateCeiling(
 /** Renderiza o bloco de tabela opcional de uma `HubSection` (#4921 Onda 2).
  * Célula em texto puro passa por `renderInlineLinks` (não `esc()` puro) —
  * ver decisão registrada na docstring de `HubSectionTable.rows`. */
-function renderHubSectionTable(table: HubSectionTable): string {
+function renderHubSectionTable(table: HubSectionTable, titleFor?: (url: string) => string | undefined): string {
   return `        <div class="hub-section-table-wrap">
           <table>
             <caption>${esc(table.caption)}</caption>
@@ -1060,7 +1209,7 @@ function renderHubSectionTable(table: HubSectionTable): string {
             </thead>
             <tbody>
 ${table.rows
-  .map((row) => `              <tr>${row.map((cell) => `<td>${renderInlineLinks(cell)}</td>`).join("")}</tr>`)
+  .map((row) => `              <tr>${row.map((cell) => `<td>${renderInlineLinks(cell, titleFor)}</td>`).join("")}</tr>`)
   .join("\n")}
             </tbody>
           </table>
@@ -1080,6 +1229,11 @@ export function renderHubPage(hub: HubContent): string {
   }
   const url = pageUrl(hub.slug);
   const pageTitle = `${hub.title} — cobertura da diar.ia.br`;
+  // #5265: title="Na edição: {…}" nos links de prosa do corpo (parágrafos +
+  // células de tabela de seção) — nunca no FAQ/metodologia (ver docstring de
+  // `linkTitles`). `undefined` quando o hub não tem o mapa (comportamento
+  // idêntico a antes do #5265).
+  const titleFor = hub.linkTitles ? (linkUrl: string) => hub.linkTitles![linkUrl] : undefined;
 
   // Achado do editor (260804): sem um rótulo próprio, as sections (H2 já em
   // formato de pergunta, issue #4558 item 2) ficam indistinguíveis do bloco
@@ -1096,7 +1250,7 @@ ${hub.sections
   .map(
     (s) => `      <article class="hub-section">
         <h2>${esc(s.heading)}</h2>
-${s.paragraphs.map((p) => `        <p>${renderInlineLinks(p)}</p>`).join("\n")}${s.table ? `\n${renderHubSectionTable(s.table)}` : ""}
+${s.paragraphs.map((p) => `        <p>${renderInlineLinks(p, titleFor)}</p>`).join("\n")}${s.table ? `\n${renderHubSectionTable(s.table, titleFor)}` : ""}
       </article>`,
   )
   .join("\n")}
@@ -1201,14 +1355,12 @@ ${renderCuradoriaFooterStyles()}
       <h1>${esc(hub.h1 ?? hub.title)}<span class="dot" aria-hidden="true">.</span></h1>
       <div class="geo-intro-wrap">
         <h2 class="geo-h2">${esc(hub.introHeading)}</h2>
-        <p class="geo-intro">${applyBrandWordmark(esc(hub.introParagraph))}</p>
+${(typeof hub.introParagraph === "string" ? [hub.introParagraph] : hub.introParagraph)
+  .map((p) => `        <p class="geo-intro">${applyBrandWordmark(esc(p))}</p>`)
+  .join("\n")}
 ${renderGeoByline(undefined, `atualizado em ${formatMonthYear(hub.updatedDate)}`)}
       </div>
       <p class="tagline">5 minutos diários pra se manter atualizado e usar melhor as IAs</p>
-${renderCuradoriaCtaSubscribeForm(
-  { id: `hub-${hub.slug}-cta-subscribe`, source: "hub", heading: "Gostou da síntese? Assine a diar.ia.br e receba tutoriais e notícias de IA todo dia, sem enrolação." },
-  "hero",
-)}
     </div>
   </header>
   <main>
@@ -1220,6 +1372,18 @@ ${sectionsHtml}
      "Perguntas frequentes" de livros/cursos/arquivo) evita ler como um 2º
      bloco de FAQ idêntico ao de .hub-sections logo acima. -->
 ${renderGeoFaqSection(hub.faq, { sectionId: `faq-${hub.slug}`, heading: "Perguntas rápidas" })}
+<!-- #5264: CTA "Gostou da síntese?" movido do <header> (antes de qualquer
+     síntese) pra cá — depois do FAQ, antes da bibliografia. O leitor já leu
+     a síntese inteira quando chega neste ponto; variantClass "end" (não
+     "hero") é o estilo já desenhado pra esse lugar na página (mesma classe
+     usada no fim da lista de build-livros-page.ts). Escolha (a) da issue —
+     um único CTA, não dois — decisão registrada aqui: dois CTAs (prospectivo
+     no topo + este no fim) duplicaria o mesmo pedido em duas vozes distintas
+     na mesma leitura, sem ganho claro sobre mover o único que já existia. -->
+${renderCuradoriaCtaSubscribeForm(
+  { id: `hub-${hub.slug}-cta-subscribe`, source: "hub", heading: "Gostou da síntese? Assine a diar.ia.br e receba tutoriais e notícias de IA todo dia, sem enrolação." },
+  "end",
+)}
 ${sourcesHtml}
 ${methodologyHtml}${relatedHubsHtml ? `\n${relatedHubsHtml}` : ""}
     </div>
