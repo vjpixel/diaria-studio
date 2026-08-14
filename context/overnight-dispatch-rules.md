@@ -108,6 +108,15 @@ a ausência do `Closes` ambígua entre "esqueci" e "decidi que não fecha" — o
 padrão correto já existe no repo (PR #4969, lote geo-baratos): seguir esse
 exemplo.
 
+**"PR mergeado com `REFS`" e "issue fechada" são estados DIFERENTES (#5327
+item 2).** Antes de qualquer resumo de status ao editor que mencione uma issue
+como "fechada"/"resolvida", confirmar via `gh issue view {N} --json state` —
+nunca assumir a partir de "eu dispatchei um PR pra ela". Incidente de
+referência: na rodada `/diaria-continuo` de 260814, o coordenador reportou
+"#5316 fechado" numa tabela de status quando a issue continuava aberta (o PR
+usou `REFS #5316, NÃO CLOSES` porque só parte do escopo foi implementada) — o
+editor teve que perguntar pra a imprecisão ser corrigida.
+
 ## 10. Nunca `git stash` dentro do worktree (#4459)
 
 `git worktree add` isola a working tree e o índice, mas **não** isola
@@ -156,6 +165,22 @@ implementador, mesmo que o prompt de dispatch não repita isso explicitamente
 toda vez (citar este arquivo já deveria bastar; registrar aqui a regra
 explícita fecha a lacuna que permitiu o incidente).
 
+**Merge-gate: resolver review threads antes de `gh pr merge` (#5327 item 4,
+achado ao vivo 260814).** Isto é trabalho do COORDENADOR (não do subagente
+implementador, que nunca chega perto de `gh pr merge` — ver acima), mas
+documentado aqui por ser o mesmo ponto do fluxo. `gh pr merge --squash` pode
+falhar com "base branch policy prohibits the merge" mesmo com CI verde e sem
+exigência de aprovação (`required_approving_review_count: 0` no ruleset) —
+a causa real é `required_review_thread_resolution: true`: comentários de
+review inline (self-review do subagente, findings do review consolidado)
+ficam como threads não-resolvidas e bloqueiam o merge até alguém resolver
+via GraphQL. Antes de `gh pr merge`, resolver todos os review threads
+pendentes:
+```
+gh api graphql -f query='query { repository(owner: "vjpixel", name: "diaria-studio") { pullRequest(number: N) { reviewThreads(first: 20) { nodes { id isResolved path } } } } }'
+gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "ID"}) { thread { isResolved } } }'
+```
+
 ## 12. Tocou `invariant-checks/*.ts`? Regenerar `docs/editorial-invariants.md` (#4877)
 
 Se você adicionar, editar ou remover uma invariante em
@@ -167,3 +192,23 @@ Se você adicionar, editar ou remover uma invariante em
 do coordenador (2 ocorrências na mesma rodada overnight 260810: PRs #4864 e
 #4876). Commitar o `docs/editorial-invariants.md` regenerado junto com a
 mudança em `invariant-checks/`.
+
+## 13. Preflight de duplicidade — checklist obrigatório (#5327 item 3)
+
+**Antes de implementar**, todo subagente implementador roda `gh pr list
+--state open` e `gh issue view {N} --json state` para a(s) issue(s) do lote.
+Se já houver PR/trabalho aberto cobrindo o mesmo escopo, ou a issue já
+estiver fechada, **parar e reportar ao coordenador** em vez de implementar —
+não seguir adiante assumindo que o próprio trabalho ainda é necessário.
+Aplica-se a **todo dispatch desta linha de skills** (overnight, develop,
+continuo), não só ao `/diaria-continuo`, onde foi identificado como gap.
+
+Incidente de referência: o 1º dispatch da rodada `/diaria-continuo` de
+260814 (issue #5304) colidiu com um PR já aberto por uma sessão interativa
+paralela do editor no mesmo checkout (#5308), gerando um PR duplicado
+(#5312) que teve que ser fechado. A checagem só foi adicionada aos prompts
+de dispatch **depois** desse incidente, ad-hoc — isto formaliza o preflight
+como checklist canônico, não uma correção manual repetida a cada rodada.
+Esperado sobretudo em `/diaria-continuo` (roda em paralelo a sessões
+interativas comuns do mesmo editor por design), mas vale igualmente em
+overnight/develop contra qualquer sessão concorrente.
