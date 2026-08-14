@@ -336,7 +336,7 @@ describe("renderOvernightBar — #3131: exclusão do denominador (réplica do in
 });
 
 describe("renderOvernightBar — #3131: pulada MID-RODADA (in_round:true) continua contando", () => {
-  it("issue elegivel que vira pulada mid-rodada (sem-resposta/rescan-limit/ambigua) mantém in_round:true e continua contando", () => {
+  it("issue elegivel que vira pulada mid-rodada (sem-resposta/ambigua) mantém in_round:true e continua contando", () => {
     // Entraram 3 issues na rodada (in_round:true): 1 mergeada, 1 pulada mid-rodada
     // (motivo sem-resposta — skip DEPOIS de entrar, não exclusão de Fase 0),
     // 1 ainda elegivel.

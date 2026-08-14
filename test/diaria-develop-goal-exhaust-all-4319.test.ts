@@ -287,16 +287,11 @@ describe("diaria-develop x overnight — não é mais 'espelho invertido' (#4319
   });
 });
 
-describe("diaria-overnight — caps K=2 e findings_depth 2 permanecem, com nota de divergência (#4319)", () => {
-  it("overnight mantém o cap K=2 de rescans_done, com comentário explicando por que diverge do develop", () => {
-    assert.match(overnight, /Guard de convergência.*K=2/s);
-    assert.match(
-      overnight,
-      /Este cap NÃO existe no `\/diaria-develop`.*overnight roda desassistido/s,
-      "overnight deve comentar por que mantém o cap diferente do develop",
-    );
-  });
-
+describe("diaria-overnight — só o cap de findings_depth permanece (#4319, #5272)", () => {
+  // O cap K=2 de `rescans_done` do overnight, que este arquivo travava desde
+  // #4319, foi eliminado em #5272 — as asserções da re-varredura sem cap agora
+  // vivem em test/diaria-overnight-rescan-sem-cap-5272.test.ts. Aqui fica só a
+  // divergência que sobrou: o depth limit da cadeia de findings.
   it("overnight mantém o depth limit 2 de findings_depth, com nota de divergência", () => {
     assert.match(
       overnight,
