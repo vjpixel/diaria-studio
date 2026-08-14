@@ -23,27 +23,22 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 import { COLORS, FONTS } from "./shared/design-tokens.ts";
 import { assertBrandSerifAvailable } from "./shared/assert-brand-font.ts";
 import { uploadImageToWorkerKV } from "./cloudflare-kv-upload.ts";
 import { DIARIA_EIA_URL } from "./canonical-urls.ts";
+import { esc } from "../gen-social-card-4x5.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 const W = 1080;
 const H = 1350;
 const PAD = 79; // 7.3% de 1080, mesma margem lateral do overlay de notícia.
 
 const FONT_SANS = "'Geist', 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif";
-
-/** Escapa texto pra dentro de `<text>` do SVG (mesma função de gen-social-card-4x5.ts, duplicada — arquivo puro, sem import cruzado de propósito). */
-function esc(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
 
 export interface FlatCardText {
   kicker: string;
@@ -165,7 +160,7 @@ export const defaultFlatCardGenerator: FlatCardGenerator = async ({ text, outPat
   await assertBrandSerifAvailable("weekly-flat-card");
   await renderFlatCard(text, outPath);
 
-  const platformCfg = JSON.parse(readFileSync(resolve(process.cwd(), "platform.config.json"), "utf8"));
+  const platformCfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
   const kvNamespaceId = platformCfg?.poll?.kv_namespace_id;
   const workerUrl = platformCfg?.poll?.worker_url ?? DIARIA_EIA_URL;
   if (!kvNamespaceId) {

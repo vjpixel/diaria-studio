@@ -124,6 +124,10 @@ describe("weekRangeLabel (#5330 — rodapé do card capa/CTA)", () => {
   it("janela de 1 dia só (edge case) usa o mesmo dia nos dois lados", () => {
     assert.equal(weekRangeLabel(["260810"]), "10–10 ago");
   });
+
+  it("#5330 fleet review (correctness): semana cruzando mês rotula CADA dia com o mês certo (achado — mês do último dia mislabelava o 1º)", () => {
+    assert.equal(weekRangeLabel(["260831", "260901", "260902", "260903", "260904"]), "31 ago–4 set");
+  });
 });
 
 describe("buildFlatCardTexts (#5330 — textos dos slides sem foto, por modo)", () => {
@@ -566,6 +570,39 @@ describe("main(): dispatch mockado", () => {
       assert.equal(parsed.posts_needing_clicks.length, 1);
       assert.equal(parsed.posts_needing_clicks[0].id, "post_a");
       assert.equal(existsSync(resolve(dataRoot, "weekly")), false, "--manifest-only não deveria escrever nada em data/weekly");
+    });
+
+    it("#5330: modo 'highlights' sempre retorna posts_needing_clicks vazio — não ranqueia por clique, nada pra enriquecer", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      setupEdition(editionsRoot, "271220", [{ n: 1, title: "Título A", url: "https://exemplo.com/a" }]);
+      // MESMO post não-enriquecido do teste acima (email.clicks>0, stats.clicks
+      // vazio) — em modo clicked isso apareceria em posts_needing_clicks;
+      // em highlights não deveria, porque o modo nem olha pra esse dado.
+      writeCachePost(dataRoot, "post_a", {
+        id: "post_a",
+        title: "Edição 271220",
+        status: "confirmed",
+        publish_date: epochFor("271220"),
+        stats: { email: { clicks: 3, unique_opens: 100 }, clicks: [] },
+      });
+
+      let captured = "";
+      const originalLog = console.log;
+      console.log = (...args: unknown[]) => {
+        captured += args.map(String).join(" ") + "\n";
+      };
+      try {
+        await main(
+          ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--manifest-only"],
+          { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
+        );
+      } finally {
+        console.log = originalLog;
+      }
+      const parsed = JSON.parse(captured);
+      assert.equal(parsed.mode, "highlights");
+      assert.deepEqual(parsed.posts_needing_clicks, []);
     });
   });
 
@@ -1127,6 +1164,34 @@ describe("main(): dispatch mockado", () => {
       assert.match(captured, /SCHEDULED mas falhou ao persistir localmente/);
       assert.match(captured, /NÃO re-rode, isso duplicaria o post/);
       assert.doesNotMatch(captured, /FAILED instagram\/weekly/, "NUNCA deveria cair no branch de falha de publish — o publish teve sucesso");
+    });
+  });
+
+  describe("#5330 fleet review (test-coverage): flatCardGenerator lançando é tratado como falha, não propaga sem bookkeeping", () => {
+    it("generator lança (font ausente, KV mal-configurado, etc.) → status:failed gravado, nenhuma chamada de rede pro Worker de post", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dirA = setupEdition(editionsRoot, "271220", [{ n: 1, title: "D1", url: "https://exemplo.com/d1" }]);
+      addImageFixture(dirA, 1, "https://cdn.example.com/271220-d1.jpg");
+
+      const throwingGenerator: FlatCardGenerator = async () => {
+        throw new Error("platform.config.json → poll.kv_namespace_id não configurado (simulado)");
+      };
+
+      // Nenhum mockAgent.intercept — se o script tentasse postar mesmo assim,
+      // o teste falharia por disableNetConnect() (undici lança em request
+      // não-interceptada), confirmando que a falha do flat card ABORTA antes
+      // de qualquer chamada de rede pro /queue.
+      await main(
+        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        { dataRoot, flatCardGenerator: throwingGenerator },
+      );
+
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const post = out.posts.find((p: any) => p.platform === "instagram");
+      assert.equal(post.status, "failed");
+      assert.equal(post.destaque, "weekly-highlights");
+      assert.match(post.reason, /flat_card_generation_failed/);
     });
   });
 });

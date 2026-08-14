@@ -185,9 +185,13 @@ export function weekRangeLabel(contentWindow: string[]): string {
   if (contentWindow.length === 0) return "";
   const first = contentWindow[0];
   const last = contentWindow[contentWindow.length - 1];
-  const { day: d1 } = parseEditionDate(first);
-  const { month, day: d2 } = parseEditionDate(last);
-  return `${d1}–${d2} ${MESES_ABREV[month - 1]}`;
+  const { month: m1, day: d1 } = parseEditionDate(first);
+  const { month: m2, day: d2 } = parseEditionDate(last);
+  // Semana pode cruzar mês (ex: seg 260831 → sex 260904) — rotular só com o
+  // mês do ÚLTIMO dia mislabelava o primeiro (achado do review do #5330:
+  // "31–4 set" pra uma janela que começa em 31 de AGOSTO).
+  if (m1 === m2) return `${d1}–${d2} ${MESES_ABREV[m1 - 1]}`;
+  return `${d1} ${MESES_ABREV[m1 - 1]}–${d2} ${MESES_ABREV[m2 - 1]}`;
 }
 
 /** Pure: texto dos slides sem foto (capa + CTA), por modo (#5330). */
@@ -385,7 +389,16 @@ export async function main(
   const editionsRoot = resolve(ROOT, values["editions-root"] ?? "data/editions");
   const beehiivPostsDir = resolve(dataRoot, "beehiiv-cache/posts");
   const time = values["time"] ?? DEFAULT_WEEKLY_TIME;
-  const dayOffset = values["day-offset"] != null ? Number(values["day-offset"]) : DEFAULT_MODE_DAY_OFFSET[mode];
+  let dayOffset = DEFAULT_MODE_DAY_OFFSET[mode];
+  if (values["day-offset"] != null) {
+    const parsed = Number(values["day-offset"]);
+    if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+      console.error(`ERRO: --day-offset inválido: '${values["day-offset"]}' (esperado inteiro, ex: 0, 1, -1).`);
+      process.exit(1);
+      return;
+    }
+    dayOffset = parsed;
+  }
   const doSchedule = flags.has("schedule");
   const skipExisting = !flags.has("no-skip-existing");
   const forceIncompleteWeek = flags.has("force-incomplete-week"); // herdado do #4101 finding 6
@@ -539,7 +552,9 @@ export async function main(
       `Selecionados ${items.length} de ${WEEKLY_EXPECTED_ITEMS} itens esperados (mínimo aceito sem confirmação: ${WEEKLY_MIN_ITEMS}).`,
       `Edições ausentes no disco: ${missingEditions.map((c) => c.date).join(", ") || "(nenhuma — o pool ficou pequeno por exclusão comercial/própria ou falta de candidatos elegíveis)"}`,
       "",
-      "O valor do post semanal é 'os itens mais clicados da semana' — publicar",
+      mode === "highlights"
+        ? "O valor do post semanal é 'os principais destaques da semana' — publicar"
+        : "O valor do post semanal é 'os itens mais clicados da semana' — publicar",
       "menos que isso entrega ao leitor algo diferente do prometido.",
       "",
       forceIncompleteWeek
@@ -675,10 +690,33 @@ export async function main(
   // foto, convite pra assinar) — envolvem os itens de notícia no carrossel.
   // Sem cache hit em `data/weekly/{saturday}-{mode}/_internal/06-flat-cards.json`,
   // renderiza + faz upload agora (nunca custa API paga — é composição local,
-  // só o upload pro KV é rede).
+  // só o upload pro KV é rede). #5330 fleet review (test-coverage): falha
+  // aqui (fonte de marca ausente, platform.config.json sem kv_namespace_id,
+  // erro de rede no upload) precisa do MESMO bookkeeping de falha que
+  // `resolveWeeklyImageUrls` acima — sem isso, a exceção propagava sem
+  // gravar status:"failed", e um re-run bem-intencionado não tinha como
+  // saber que a tentativa anterior não chegou a publicar nada.
   const flatTexts = buildFlatCardTexts(mode, contentWindow);
-  const coverUrl = await resolveOrGenerateFlatCardUrl(dataRoot, carouselKey, "cover", flatTexts.cover, opts.flatCardGenerator);
-  const ctaUrl = await resolveOrGenerateFlatCardUrl(dataRoot, carouselKey, "cta", flatTexts.cta, opts.flatCardGenerator);
+  let coverUrl: string;
+  let ctaUrl: string;
+  try {
+    coverUrl = await resolveOrGenerateFlatCardUrl(dataRoot, carouselKey, "cover", flatTexts.cover, opts.flatCardGenerator);
+    ctaUrl = await resolveOrGenerateFlatCardUrl(dataRoot, carouselKey, "cta", flatTexts.cta, opts.flatCardGenerator);
+  } catch (e: any) {
+    console.error(
+      `ERRO instagram/${destaqueKey}: geração do card sem foto (capa/CTA) falhou: ${e.message} — ` +
+        `carrossel de ${items.length} itens cancelado inteiro, não publica parcial.`,
+    );
+    tagAndAppend({
+      platform: "instagram",
+      destaque: destaqueKey,
+      url: null,
+      status: "failed",
+      scheduled_at: null,
+      reason: `flat_card_generation_failed:${e.message}`,
+    });
+    return;
+  }
   const carouselImageUrls = [coverUrl, ...resolvedImages.urls, ctaUrl];
 
   // #4511 fleet review CRÍTICO (silent-failure-hunter): o bookkeeping de
