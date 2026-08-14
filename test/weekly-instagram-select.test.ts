@@ -20,6 +20,7 @@ import {
   uniqueOpensOf,
   toRankedCandidate,
   selectInstagramWeekly,
+  selectInstagramHighlights,
   dedupeCandidatesByUrl,
   isCommercialOrOwnLink,
   hasSuspiciousCommercialLanguage,
@@ -296,6 +297,55 @@ describe("selectInstagramWeekly — limite de itens e insuficiência", () => {
     const result = selectInstagramWeekly(candidates, 5);
     assert.equal(result.selected.length, 1);
     assert.ok(result.warnings.some((w) => /1\/5 candidatos elegíveis/.test(w)));
+  });
+});
+
+describe("selectInstagramHighlights (#5330 — carrossel 'Principais Destaques', sem ranking por clique)", () => {
+  it("seleciona só D1, em ordem cronológica — ignora D2/D3 e RATE mais alto de um D2", () => {
+    const candidates: InstagramRankedCandidate[] = [
+      rankedFixture({ title: "D1 seg", url: "https://exemplo.com/seg-d1", editionDate: "260810", destaqueNumber: 1, ratePct: 1.0 }),
+      rankedFixture({ title: "D2 seg (rate mais alto, não conta)", url: "https://exemplo.com/seg-d2", editionDate: "260810", destaqueNumber: 2, ratePct: 9.0 }),
+      rankedFixture({ title: "D1 ter", url: "https://exemplo.com/ter-d1", editionDate: "260811", destaqueNumber: 1, ratePct: 0.1 }),
+    ];
+    const result = selectInstagramHighlights(candidates);
+    assert.deepEqual(
+      result.selected.map((c) => c.title),
+      ["D1 seg", "D1 ter"],
+    );
+  });
+
+  it("D1 comercial/próprio (`excluded`) é descartado, mesmo sendo D1 único da edição", () => {
+    const candidates: InstagramRankedCandidate[] = [
+      rankedFixture({ title: "D1 comercial", url: "https://cursos.diar.ia.br/x", editionDate: "260810", destaqueNumber: 1, excluded: true }),
+      rankedFixture({ title: "D1 normal", url: "https://exemplo.com/normal", editionDate: "260811", destaqueNumber: 1, excluded: false }),
+    ];
+    const result = selectInstagramHighlights(candidates);
+    assert.equal(result.selected.length, 1);
+    assert.equal(result.selected[0].title, "D1 normal");
+    assert.equal(result.excluded.length, 1);
+    assert.ok(result.warnings.some((w) => /D1 de 260810.*excluído/.test(w)));
+  });
+
+  it("ordem cronológica preservada mesmo se os candidatos chegarem fora de ordem", () => {
+    const candidates: InstagramRankedCandidate[] = [
+      rankedFixture({ title: "D1 sex", url: "https://exemplo.com/sex", editionDate: "260814", destaqueNumber: 1 }),
+      rankedFixture({ title: "D1 seg", url: "https://exemplo.com/seg", editionDate: "260810", destaqueNumber: 1 }),
+      rankedFixture({ title: "D1 qua", url: "https://exemplo.com/qua", editionDate: "260812", destaqueNumber: 1 }),
+    ];
+    const result = selectInstagramHighlights(candidates);
+    assert.deepEqual(
+      result.selected.map((c) => c.editionDate),
+      ["260810", "260812", "260814"],
+    );
+  });
+
+  it("nunca depende de ratePct/opens — funciona mesmo com dado de clique zerado/ausente", () => {
+    const candidates: InstagramRankedCandidate[] = [
+      rankedFixture({ title: "D1 sem clique", url: "https://exemplo.com/x", editionDate: "260810", destaqueNumber: 1, opens: 0, ratePct: 0, hasClickData: false }),
+    ];
+    const result = selectInstagramHighlights(candidates);
+    assert.equal(result.selected.length, 1);
+    assert.equal(result.warnings.length, 0);
   });
 });
 

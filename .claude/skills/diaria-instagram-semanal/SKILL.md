@@ -1,17 +1,38 @@
 ---
 name: diaria-instagram-semanal
-description: Post semanal do Instagram (#4101, restrito ao Instagram + seleção por clique pelo #4483) — os itens mais clicados da semana (D1/D2/D3 e, desde o #4513, também RADAR — card 4:5 gerado sob demanda quando vence — de qualquer edição de segunda a sexta; USE MELHOR excluído do pool pelo #5319, regra permanente). Só Instagram — nunca vira edição no Beehiiv, nunca dispara e-mail, e não publica em LinkedIn/Facebook/Threads/X (o recap semanal do LinkedIn é `/diaria-linkedin-semanal`, #4456). Uso — `/diaria-instagram-semanal [AAMMDD-do-sabado] [--schedule] [--no-gates]`.
+description: DOIS carrosséis semanais do Instagram (#4101, restrito ao Instagram + seleção por clique pelo #4483; segundo carrossel "Principais Destaques" pelo #5330) — "clicked" (os itens mais clicados da semana, D1/D2/D3 e desde o #4513 também RADAR, card 4:5 sob demanda quando vence) publica domingo; "highlights" (os 5 D1 da semana, sem ranking) publica sábado. Cada um abre com slide de capa e fecha com slide de CTA de assinatura, sem foto. Só Instagram — nunca vira edição no Beehiiv, nunca dispara e-mail, e não publica em LinkedIn/Facebook/Threads/X (o recap semanal do LinkedIn é `/diaria-linkedin-semanal`, #4456). Uso — `/diaria-instagram-semanal [AAMMDD-do-sabado] [--mode clicked|highlights] [--schedule] [--no-gates]`.
 disable-model-invocation: true
 ---
 
 # /diaria-instagram-semanal
 
-Monta e agenda o post semanal de recapitulação do Instagram (issue #4101,
-redesenhado pelo #4483): os itens mais clicados da semana (segunda a sexta),
-publicados no sábado. Skill própria (recomendação da issue #4101, mesma
-lógica de `/diaria-mensal` ser separada do diário) — invocada uma vez por
-semana, logo depois que a edição de sexta é escrita (Stage 2), não como
-etapa do pipeline diário.
+Monta e agenda DOIS carrosséis semanais de recapitulação do Instagram — issue
+#4101, redesenhado pelo #4483, e desdobrado em dois carrosséis distintos pelo
+#5330 (260815, briefing do editor). Skill própria (recomendação da issue
+#4101, mesma lógica de `/diaria-mensal` ser separada do diário) — invocada
+uma vez por semana, logo depois que a edição de sexta é escrita (Stage 2),
+não como etapa do pipeline diário.
+
+**Dois carrosséis, dois dias, mesma skill (`--mode`, #5330):**
+
+| Modo | Conteúdo | Seleção | Publica |
+|---|---|---|---|
+| `highlights` | Os 5 D1 da semana | Ordem cronológica, SEM ranking por clique — não depende de dado de clique nenhum | **Sábado** (o próprio `AAMMDD-do-sabado`), 11:00 |
+| `clicked` (default) | Os 5 itens mais clicados da semana (D1/D2/D3/RADAR) | Ranking por taxa de clique verificado, ver `weekly-instagram-select.ts` | **Domingo** seguinte, 11:00 |
+
+Motivo dos dias separados: publicar os dois no mesmo dia competiria pelo
+mesmo slot de feed do leitor. `DEFAULT_MODE_DAY_OFFSET` em
+`scripts/publish-weekly-social.ts` é o parâmetro (`--day-offset` sobrescreve
+por invocação, sem editar código). Rode a skill 2x por semana — uma vez por
+modo — cada invocação é independente (seleção, cache de card capa/CTA,
+persisted store e skip-existing nunca colidem entre os dois, chave
+`{saturday}-{mode}`).
+
+**Slide de capa e CTA final (#5330):** os dois carrosséis agora têm 7 slides,
+não 5 — abrem com um card de apresentação (sem foto, fundo sólido de marca)
+e fecham com um card de CTA convidando a assinar (também sem foto). Só os 5
+slides do meio usam a arte publicada de verdade. Ver
+`scripts/lib/weekly-flat-card.ts`.
 
 **Renomeada de `/diaria-semanal` pelo #4483 (260803).** Duas decisões
 anteriores da issue #4101 foram SUPERSEDIDAS — releia esta seção antes de
@@ -54,10 +75,15 @@ atual:
 
 ## Argumentos
 
-- `AAMMDD-do-sabado` — data do sábado de publicação. **Obrigatório e
-  explícito** (mesmo invariante de `CLAUDE.md`: nunca inferir de `today()`).
-  Se omitido, pergunte ao editor com o próximo sábado como sugestão — nunca
-  assuma silenciosamente.
+- `AAMMDD-do-sabado` — data do sábado ÂNCORA da semana (segunda a sexta
+  anterior). **Obrigatório e explícito** (mesmo invariante de `CLAUDE.md`:
+  nunca inferir de `today()`). Se omitido, pergunte ao editor com o próximo
+  sábado como sugestão — nunca assuma silenciosamente. Vale pros dois modos
+  — só a data de AGENDAMENTO muda (`highlights` = o próprio sábado,
+  `clicked` = domingo seguinte), a janela de conteúdo é a mesma.
+- `--mode clicked|highlights` — qual dos dois carrosséis rodar (ver tabela
+  acima). Default `clicked` (back-compat com invocações antigas, de antes do
+  #5330). Rode a skill 2x na semana, uma vez por modo.
 - `--schedule` — sem esta flag, a skill só mostra o PREVIEW (seleção +
   caption + horário planejado) e não agenda nada. Com a flag, agenda de
   verdade pelo Worker queue (`scheduled_at` explícito — nunca envio
@@ -98,11 +124,15 @@ atual:
 
 ## Passo 1 — Checar se falta enriquecimento de clicks
 
+**Só se aplica ao modo `clicked`** — `highlights` não ranqueia por clique,
+então `--manifest-only` sempre retorna `posts_needing_clicks: []` nesse modo
+(pule direto pro Passo 2).
+
 ```bash
-npx tsx scripts/publish-weekly-social.ts --saturday {AAMMDD-do-sabado} --manifest-only
+npx tsx scripts/publish-weekly-social.ts --saturday {AAMMDD-do-sabado} --mode clicked --manifest-only
 ```
 
-Imprime `{saturday, contentWindow, editionsFound, posts_needing_clicks}`.
+Imprime `{saturday, mode, contentWindow, editionsFound, posts_needing_clicks}`.
 **Por que este passo existe:** o gate de estabilização de CTR do pipeline
 diário (`MIN_AGE_DAYS_FOR_CLICKS = 7`, `scripts/lib/shared/ctr-config.ts`)
 nunca enriquece posts com menos de 7 dias — e os posts desta janela têm
@@ -127,16 +157,19 @@ Se `posts_needing_clicks` já vier vazio, pule direto pro Passo 2.
 ## Passo 2 — Preview (sempre, sem `--schedule`)
 
 ```bash
-npx tsx scripts/publish-weekly-social.ts --saturday {AAMMDD-do-sabado}
+npx tsx scripts/publish-weekly-social.ts --saturday {AAMMDD-do-sabado} --mode {clicked|highlights}
 ```
 
 Sem `--schedule`, o script nunca faz chamada de rede — só imprime:
 - Quais edições da semana têm `02-reviewed.md` no disco.
-- Os itens selecionados por clique (taxa + título + edição de origem).
-- Warnings (empates dentro do ruído de 1 clique, edições sem dado de clique,
-  linguagem comercial suspeita em item selecionado, etc).
-- A caption formatada do Instagram.
-- O horário de agendamento planejado.
+- Os itens selecionados (modo `clicked`: taxa + título + edição de origem;
+  modo `highlights`: os 5 D1 em ordem cronológica, sem taxa).
+- Warnings (empates dentro do ruído de 1 clique — só `clicked`, edições sem
+  dado de clique — só `clicked`, linguagem comercial suspeita em item
+  selecionado — os dois modos, etc).
+- A caption formatada do Instagram (intro varia por modo).
+- O horário de agendamento planejado (sábado pra `highlights`, domingo pra
+  `clicked`).
 
 Se **nenhum candidato** (nenhum DESTAQUE 1/2/3 com URL em nenhuma edição da
 semana) foi encontrado, o script já encerra aqui — nenhum publisher é
@@ -154,19 +187,23 @@ silenciosamente.
 
 Script cuida de tudo, inclusive persistência de estado
 (`data/weekly/{AAMMDD}/06-weekly-published.json`, idempotente via
-skip-existing):
+skip-existing — chave `destaque: "weekly-{mode}"`, os dois modos nunca
+colidem no mesmo arquivo):
 
 ```bash
-npx tsx scripts/publish-weekly-social.ts --saturday {AAMMDD-do-sabado} --schedule
+npx tsx scripts/publish-weekly-social.ts --saturday {AAMMDD-do-sabado} --mode {clicked|highlights} --schedule
 ```
 
-Carrossel: 1 card 4:5 por item selecionado, resolvido pelo destaque/edição
-de origem PRÓPRIOS de cada item (não mais "1 card por dia da semana" — 2
-itens podem vir da mesma edição, e uma edição pode não contribuir nenhum).
-Item de RADAR sem card pré-existente tem o card gerado SOB
-DEMANDA nesse momento (#4513). Se QUALQUER item não resolver imagem (falha
-de leitura OU de geração sob demanda), o post inteiro falha (nunca publica
-carrossel parcial).
+Carrossel: 7 slides — capa (sem foto) + 1 card 4:5 por item selecionado
+(resolvido pelo destaque/edição de origem PRÓPRIOS de cada item — 2 itens
+podem vir da mesma edição, e uma edição pode não contribuir nenhum) + CTA
+final (sem foto). Item de RADAR sem card pré-existente tem o card gerado SOB
+DEMANDA nesse momento (#4513). Capa/CTA são gerados/upados sob demanda na
+1ª execução e cacheados depois (`data/weekly/{saturday}-{mode}/_internal/06-flat-cards.json`
+— ver `scripts/lib/weekly-flat-card.ts`). Se QUALQUER item de notícia não
+resolver imagem (falha de leitura OU de geração sob demanda), o post inteiro
+falha (nunca publica carrossel parcial) — capa/CTA falhando também aborta o
+post inteiro pela mesma razão.
 
 ## Casos de borda
 

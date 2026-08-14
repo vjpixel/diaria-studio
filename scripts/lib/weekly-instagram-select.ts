@@ -421,3 +421,29 @@ export function selectInstagramWeekly(candidatesIn: InstagramRankedCandidate[], 
 
   return { selected, ranked: eligible, excluded, warnings };
 }
+
+/**
+ * Seleciona o carrossel "Principais Destaques" (#5330) — os D1 da semana,
+ * um por edição, em ordem cronológica (segunda a sexta), SEM ranking por
+ * clique. Reusa a mesma exclusão comercial/própria de `toRankedCandidate`
+ * (`excluded`, calculado ali independente de qual seleção vai consumir o
+ * candidato) — um D1 comercial/afiliado é descartado aqui do mesmo jeito que
+ * seria em `selectInstagramWeekly`, só não compete por taxa de clique.
+ *
+ * Diferente de `selectInstagramWeekly`: não há desempate (1 D1 por edição,
+ * nunca 2 do mesmo dia) nem `ranked` por taxa (a ordem É a ordem editorial
+ * da semana). `warnings` sinaliza edição cuja D1 ficou de fora (comercial ou
+ * ausente do pool de candidatos brutos).
+ */
+export function selectInstagramHighlights(candidatesIn: InstagramRankedCandidate[]): InstagramSelectionResult {
+  const d1s = candidatesIn
+    .filter((c) => c.kind === "destaque" && c.destaqueNumber === 1)
+    .sort((a, b) => a.editionDate.localeCompare(b.editionDate));
+  const excluded = d1s.filter((c) => c.excluded);
+  const selected = d1s.filter((c) => !c.excluded);
+  const warnings: string[] = [];
+  for (const c of excluded) {
+    warnings.push(`D1 de ${c.editionDate} ("${c.title}") excluído — link comercial/afiliado/próprio.`);
+  }
+  return { selected, ranked: selected, excluded, warnings };
+}

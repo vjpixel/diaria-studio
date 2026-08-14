@@ -153,7 +153,8 @@ function balanceLines(words: string[], maxCharsPerLine: number, lineCount: numbe
 }
 
 /** Escapa texto pra dentro de `<text>` do SVG. */
-function esc(s: string): string {
+/** Exportada (#5330) — reusada por weekly-flat-card.ts em vez de duplicar. */
+export function esc(s: string): string {
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
