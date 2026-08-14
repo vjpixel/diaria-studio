@@ -270,9 +270,11 @@ async function main(): Promise<void> {
   log(`${newCandidates.length} contato(s) Pending FORA do pool (bruto+computado) e do store — candidato(s) a entrar.`);
 
   const { kept, excluded } = filterOutSparkloop(newCandidates);
-  if (excluded.length > 0) {
-    log(`${excluded.length} excluído(s) por origem SparkLoop Upscribe (RH_SOURCE="${RH_SOURCE_SPARKLOOP_UPSCRIBE_VALUE}") — nunca entram no pool (#5183 decisão 1).`);
-  }
+  // #5183 self-review: sempre loga a contagem de exclusão SparkLoop (mesmo
+  // 0) — o critério de aceite pede "quantos seriam excluídos", e "0" é uma
+  // resposta tão informativa quanto qualquer outro número (silenciar esse
+  // caso deixaria o operador sem saber se o filtro rodou).
+  log(`${excluded.length} excluído(s) por origem SparkLoop Upscribe (RH_SOURCE="${RH_SOURCE_SPARKLOOP_UPSCRIBE_VALUE}") — nunca entram no pool (#5183 decisão 1).`);
 
   const selected = applyRefreshLimit(kept, limit);
   log(
@@ -282,11 +284,15 @@ async function main(): Promise<void> {
   );
 
   if (!push) {
-    for (const c of selected) {
-      log(`  + ${c.email} (RH_SOURCE="${c.rhSource || "(vazio)"}", subscribed_on=${c.subscribedOn || "(desconhecido)"})`);
-    }
-    if (kept.length > selected.length) {
-      log(`  … +${kept.length - selected.length} elegível(is) além da cota desta rodada (rode de novo, ou com --limit maior, pra continuar).`);
+    // #5183 self-review: lista TODOS os elegíveis (`kept`), não só os
+    // dentro da cota (`selected`) — o critério de aceite pede que o dry-run
+    // liste "N Pending fora do pool, com origem e data" (o N total, não só
+    // o que cabe na rodada); a marca "(dentro da cota)"/"(além da cota)"
+    // deixa claro o que de fato seria adicionado num `--push` agora.
+    const selectedEmails = new Set(selected.map((c) => c.email));
+    for (const c of kept) {
+      const cotaMark = selectedEmails.has(c.email) ? "dentro da cota" : "além da cota";
+      log(`  + ${c.email} (RH_SOURCE="${c.rhSource || "(vazio)"}", subscribed_on=${c.subscribedOn || "(desconhecido)"}, ${cotaMark})`);
     }
     log("dry-run (default) — NENHUMA mutação aplicada. Use --push para gravar.");
     return;
