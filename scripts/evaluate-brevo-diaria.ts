@@ -684,6 +684,10 @@ export async function promoteBeehiivSubscription(
   // lida do MESMO corpo do GET — hoje só se extraía `data.id`. `undefined`
   // (nunca lança) quando o corpo não tem `data` ou nenhum campo de origem
   // reconhecível — fail-soft, a promoção segue com a UTM constante de sempre.
+  // Gated por `BEEHIIV_ORIGEM_ORIGINAL_FIELD` (ver docstring de
+  // `beehiiv-origem-original.ts`): env var ausente = `undefined` sempre,
+  // mesmo com origem no GET — o editor liga só depois de criar o custom
+  // field na Beehiiv (#5231 item 1).
   let origemOriginalCustomFields: ReturnType<typeof buildOrigemOriginalCustomFields> = undefined;
   if (getRes.status === 404) {
     existingId = null;
@@ -694,7 +698,10 @@ export async function promoteBeehiivSubscription(
       throw new Error(`Beehiiv API GET /subscriptions/by_email/${email} corpo não-parseável: ${e}`);
     });
     existingId = (body as { data?: { id?: string } })?.data?.id || null;
-    origemOriginalCustomFields = buildOrigemOriginalCustomFields(body as Parameters<typeof buildOrigemOriginalCustomFields>[0]);
+    origemOriginalCustomFields = buildOrigemOriginalCustomFields(
+      body as Parameters<typeof buildOrigemOriginalCustomFields>[0],
+      process.env.BEEHIIV_ORIGEM_ORIGINAL_FIELD,
+    );
   }
 
   if (existingId) {
@@ -732,11 +739,12 @@ export async function promoteBeehiivSubscription(
       // #5231: preserva a origem de aquisição ORIGINAL (lida do GET acima)
       // num custom field — sem isto, o DELETE+CREATE acima sobrescreve
       // utm_source/medium/campaign/referring_site com a constante fixa
-      // acima, perdendo pra sempre a origem real do contato. Dependência
-      // cruzada com #5231 item 1 (fora do escopo desta unidade): só tem
-      // efeito real depois que o custom field `origem_original` existir na
-      // publicação — até lá a Beehiiv provavelmente ignora/rejeita este
-      // campo, sem afetar o resto do POST.
+      // acima, perdendo pra sempre a origem real do contato. GATED por
+      // `BEEHIIV_ORIGEM_ORIGINAL_FIELD` (off por padrão) — só tem efeito
+      // real (e só é enviado) depois que o editor criar o custom field
+      // `origem_original` na Beehiiv (#5231 item 1) E ligar o env var; até
+      // lá `origemOriginalCustomFields` é sempre `undefined`, comportamento
+      // idêntico a antes desta feature.
       ...(origemOriginalCustomFields ? { custom_fields: origemOriginalCustomFields } : {}),
     }),
   });

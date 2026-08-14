@@ -8,13 +8,22 @@
  * que a ausência dela (fail-soft, item 4 da issue) nunca bloqueia a
  * promoção nem muda o comportamento pré-#5231 (sem `custom_fields` na
  * ausência de origem).
+ *
+ * Achado crítico do review dedicado (14/08/2026): o gate `BEEHIIV_ORIGEM_ORIGINAL_FIELD`
+ * (env var opcional, ver docstring de `beehiiv-origem-original.ts`) precisa
+ * estar ON pra estes testes originais continuarem válidos — o describe
+ * "gate OFF" abaixo cobre o estado padrão (env var ausente), que é o estado
+ * real de produção até o editor criar o custom field na Beehiiv (#5231
+ * item 1) e ligar o gate.
  */
 
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { promoteBeehiivSubscription } from "../scripts/evaluate-brevo-diaria.ts";
 import { BREVO_DIARIA_PROMOCAO_SCORE_UTM } from "../scripts/lib/shared/utm-registry.ts";
 import { ORIGEM_ORIGINAL_FIELD_NAME } from "../scripts/lib/shared/beehiiv-origem-original.ts";
+
+const ENV_KEY = "BEEHIIV_ORIGEM_ORIGINAL_FIELD";
 
 function jsonRes(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -37,7 +46,16 @@ function routedFetch(handlers: {
   return { fetchImpl, calls };
 }
 
-describe("promoteBeehiivSubscription — preservação de origem original (#5231 item 2/3)", () => {
+describe("promoteBeehiivSubscription — preservação de origem original (#5231 item 2/3), gate ON", () => {
+  const original = process.env[ENV_KEY];
+  beforeEach(() => {
+    process.env[ENV_KEY] = ORIGEM_ORIGINAL_FIELD_NAME;
+  });
+  afterEach(() => {
+    if (original === undefined) delete process.env[ENV_KEY];
+    else process.env[ENV_KEY] = original;
+  });
+
   it("GET traz utm_source/medium/campaign/referring_site/created → CREATE carrega custom_fields com a origem lida (não a constante)", async () => {
     const { fetchImpl, calls } = routedFetch({
       get: () =>
@@ -104,5 +122,43 @@ describe("promoteBeehiivSubscription — preservação de origem original (#5231
     const postCall = calls.find((c) => c.method === "POST");
     const body = postCall!.body as Record<string, unknown>;
     assert.ok(!("custom_fields" in body));
+  });
+});
+
+describe("promoteBeehiivSubscription — gate OFF (#5231 fixer, achado do review dedicado)", () => {
+  const original = process.env[ENV_KEY];
+  beforeEach(() => {
+    delete process.env[ENV_KEY];
+  });
+  afterEach(() => {
+    if (original === undefined) delete process.env[ENV_KEY];
+    else process.env[ENV_KEY] = original;
+  });
+
+  it("BEEHIIV_ORIGEM_ORIGINAL_FIELD ausente (estado padrão de produção) → CREATE NUNCA carrega custom_fields, mesmo com origem completa no GET", async () => {
+    const { fetchImpl, calls } = routedFetch({
+      get: () =>
+        jsonRes(200, {
+          data: {
+            id: "sub_atual",
+            status: "pending",
+            utm_source: "google",
+            utm_medium: "cpc",
+            utm_campaign: "brand-2026",
+            referring_site: "https://google.com",
+            created: 1700000000,
+          },
+        }),
+      post: () => jsonRes(200, {}),
+    });
+
+    await promoteBeehiivSubscription("pub_1", "key", "a@b.com", fetchImpl);
+
+    const postCall = calls.find((c) => c.method === "POST");
+    assert.ok(postCall, "POST deveria ter sido chamado");
+    const body = postCall!.body as Record<string, unknown>;
+    assert.ok(!("custom_fields" in body), "gate OFF: custom_fields nunca deve aparecer, independente da origem lida no GET");
+    // A promoção segue normalmente — o gate desligado nunca bloqueia.
+    assert.equal(body.utm_source, BREVO_DIARIA_PROMOCAO_SCORE_UTM.source);
   });
 });

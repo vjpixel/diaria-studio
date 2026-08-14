@@ -43,6 +43,16 @@ npx wrangler secret put BREVO_DIARIA_API_KEY
 # → mesmo valor do env var apontado por platform.config.json →
 #   brevo_diaria.api_key_env (BREVO_DIARIA_API_KEY)
 
+# 1c. Secret opcional (#5231, gate — OFF por padrão, NÃO setar ainda).
+# Nome do custom field na Beehiiv onde a origem de aquisição original é
+# preservada no DELETE+CREATE. Ausente = sem custom_fields novo (comportamento
+# de hoje). Só definir DEPOIS de criar o custom field `origem_original` na
+# Beehiiv (item 1 da #5231, ação manual via dashboard/MCP) — setar este
+# secret antes disso faz o CREATE falhar (campo inexistente na publicação).
+# npx wrangler secret put BEEHIIV_ORIGEM_ORIGINAL_FIELD
+# → valor recomendado: "origem_original" (ORIGEM_ORIGINAL_FIELD_NAME em
+#   scripts/lib/shared/beehiiv-origem-original.ts)
+
 # 2. Deploy
 npx wrangler deploy
 # → confirma URL no output: https://reativar.diaria.workers.dev

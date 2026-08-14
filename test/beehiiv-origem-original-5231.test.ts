@@ -91,28 +91,54 @@ describe("formatOrigemOriginalValue", () => {
 });
 
 describe("buildOrigemOriginalCustomFields — fail-soft (#5231 item 4)", () => {
-  it("origem presente → 1 custom field com o nome canônico + valor JSON", () => {
+  it("origem presente + fieldName informado → 1 custom field com esse nome + valor JSON", () => {
     const body = { data: { utm_source: "google", utm_medium: "cpc" } };
-    const fields = buildOrigemOriginalCustomFields(body);
+    const fields = buildOrigemOriginalCustomFields(body, ORIGEM_ORIGINAL_FIELD_NAME);
     assert.deepEqual(fields, [
       { name: ORIGEM_ORIGINAL_FIELD_NAME, value: JSON.stringify({ utm_source: "google", utm_medium: "cpc" }) },
     ]);
   });
 
   it("GET sem `data` (corpo malformado) → undefined, nunca lança (fail-soft)", () => {
-    assert.equal(buildOrigemOriginalCustomFields({}), undefined);
-    assert.equal(buildOrigemOriginalCustomFields(null), undefined);
-    assert.equal(buildOrigemOriginalCustomFields(undefined), undefined);
+    assert.equal(buildOrigemOriginalCustomFields({}, ORIGEM_ORIGINAL_FIELD_NAME), undefined);
+    assert.equal(buildOrigemOriginalCustomFields(null, ORIGEM_ORIGINAL_FIELD_NAME), undefined);
+    assert.equal(buildOrigemOriginalCustomFields(undefined, ORIGEM_ORIGINAL_FIELD_NAME), undefined);
   });
 
   it("GET com `data` mas sem nenhum campo de origem → undefined, nunca lança", () => {
-    assert.equal(buildOrigemOriginalCustomFields({ data: { id: "sub_1", status: "pending" } }), undefined);
+    assert.equal(buildOrigemOriginalCustomFields({ data: { id: "sub_1", status: "pending" } }, ORIGEM_ORIGINAL_FIELD_NAME), undefined);
   });
 
   it("undefined (não array vazio) permite ao caller usar `...(fields ? {custom_fields: fields} : {})` sem incluir a chave", () => {
-    const fields = buildOrigemOriginalCustomFields({});
+    const fields = buildOrigemOriginalCustomFields({}, ORIGEM_ORIGINAL_FIELD_NAME);
     const body: Record<string, unknown> = { email: "a@b.com", ...(fields ? { custom_fields: fields } : {}) };
     assert.deepEqual(body, { email: "a@b.com" });
     assert.ok(!("custom_fields" in body));
+  });
+});
+
+describe("buildOrigemOriginalCustomFields — gate (#5231 fixer, achado do review dedicado)", () => {
+  it("fieldName ausente (undefined) → sempre undefined, MESMO com origem presente no GET (gate OFF)", () => {
+    const body = {
+      data: {
+        utm_source: "google",
+        utm_medium: "cpc",
+        utm_campaign: "brand",
+        referring_site: "https://google.com",
+        created: 1700000000,
+      },
+    };
+    assert.equal(buildOrigemOriginalCustomFields(body, undefined), undefined);
+  });
+
+  it("fieldName vazio (\"\") → tratado como ausente, gate OFF", () => {
+    const body = { data: { utm_source: "google" } };
+    assert.equal(buildOrigemOriginalCustomFields(body, ""), undefined);
+  });
+
+  it("fieldName presente (gate ON) → custom field usa o NOME PASSADO, não necessariamente a constante", () => {
+    const body = { data: { utm_source: "google" } };
+    const fields = buildOrigemOriginalCustomFields(body, "campo_customizado");
+    assert.deepEqual(fields, [{ name: "campo_customizado", value: JSON.stringify({ utm_source: "google" }) }]);
   });
 });

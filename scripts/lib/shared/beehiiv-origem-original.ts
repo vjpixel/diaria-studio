@@ -24,9 +24,26 @@
  * `custom_fields` só tem efeito real na Beehiiv depois que o custom field
  * `origem_original` existir na publicação (criado via dashboard/MCP, ação do
  * editor — guard de publicação da rodada overnight não permite chamada real
- * de API aqui). Até lá, o `POST /subscriptions` provavelmente ignora ou
- * rejeita um custom field inexistente — este código fica pronto e sem efeito
- * observável até a criação do campo acontecer.
+ * de API aqui). Até lá, o `POST /subscriptions` **falha** (não ignora) um
+ * custom field inexistente — ver gate abaixo.
+ *
+ * **Gate OFF por padrão (achado do review dedicado, 14/08/2026).** Os dois
+ * call sites rodam DESASSISTIDOS em produção (`promoteBeehiivSubscription`
+ * diário às 05:30, `activateSubscription` em todo clique de reativação) — se
+ * este módulo mandasse `custom_fields` incondicionalmente assim que o GET
+ * trouxer origem (caso comum), o CREATE quebraria em produção a partir do
+ * merge desta unidade, antes mesmo do editor criar o campo na Beehiiv (item 1
+ * da #5231, ordem não garantida). Mesmo padrão já usado por `BEEHIIV_NAME_FIELD`
+ * (`workers/poll/src/subscribe.ts`, `workers/cursos/src/subscribe.ts`):
+ * `buildOrigemOriginalCustomFields` recebe o nome do campo via parâmetro
+ * (`fieldName`), lido pelo caller de um env var opcional
+ * (`BEEHIIV_ORIGEM_ORIGINAL_FIELD`). `fieldName` ausente/vazio = gate OFF =
+ * comportamento de hoje (sem `custom_fields` novo), mesmo que o GET tenha
+ * trazido origem. O editor liga explicitamente (`wrangler secret put
+ * BEEHIIV_ORIGEM_ORIGINAL_FIELD` no Worker `reativar`, e a mesma variável no
+ * `.env` do Node pro `evaluate-brevo-diaria.ts`) só DEPOIS de criar o custom
+ * field `origem_original` na Beehiiv — valor recomendado do env var é a
+ * constante `ORIGEM_ORIGINAL_FIELD_NAME` abaixo.
  *
  * **Fail-soft (#5231 item 4):** toda extração aqui é best-effort. Corpo
  * ausente/malformado, ou sem nenhum dos 5 campos de origem, nunca lança —
@@ -35,9 +52,10 @@
  * origem nunca bloqueia a promoção.
  */
 
-/** Nome do custom field na Beehiiv onde a origem original é gravada.
- *  Precisa existir na publicação (#5231 item 1, fora do escopo desta
- *  unidade) — até lá, gravável mas sem efeito observável. */
+/** Nome RECOMENDADO do custom field na Beehiiv onde a origem original é
+ *  gravada — valor sugerido pro env var `BEEHIIV_ORIGEM_ORIGINAL_FIELD`
+ *  (gate, ver docstring do módulo). Precisa existir na publicação (#5231
+ *  item 1, fora do escopo desta unidade) antes do editor ligar o gate. */
 export const ORIGEM_ORIGINAL_FIELD_NAME = "origem_original";
 
 /** Os 5 campos de atribuição que uma subscription da Beehiiv carrega no
@@ -123,12 +141,20 @@ export interface BeehiivCustomFieldWrite {
  * pra preservar — o caller faz `...(customFields ? { custom_fields: customFields } : {})`
  * em vez de sempre incluir a chave, mantendo o comportamento atual (sem
  * custom field algum) intacto no caso fail-soft.
+ *
+ * `fieldName` é o GATE (ver docstring do módulo): ausente/string vazia
+ * retorna `undefined` IMEDIATAMENTE, mesmo que o GET tenha trazido origem —
+ * nenhuma extração é feita, nenhum `custom_fields` é montado. O caller passa
+ * o env var opcional `BEEHIIV_ORIGEM_ORIGINAL_FIELD`; o editor só o define
+ * depois de criar o custom field correspondente na Beehiiv (#5231 item 1).
  */
 export function buildOrigemOriginalCustomFields(
   body: BeehiivSubscriptionGetBody,
+  fieldName: string | undefined,
 ): BeehiivCustomFieldWrite[] | undefined {
+  if (!fieldName) return undefined;
   const origin = extractSubscriptionOrigin(body);
   const value = formatOrigemOriginalValue(origin);
   if (value === null) return undefined;
-  return [{ name: ORIGEM_ORIGINAL_FIELD_NAME, value }];
+  return [{ name: fieldName, value }];
 }

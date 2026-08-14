@@ -102,6 +102,17 @@ export interface Env {
   /** Override só pra teste (mock server local) — default `https://api.beehiiv.com/v2`. */
   BEEHIIV_API_URL?: string;
   /**
+   * OPCIONAL (#5231, gate) — `wrangler secret put BEEHIIV_ORIGEM_ORIGINAL_FIELD`.
+   * Nome do custom field na Beehiiv onde `buildOrigemOriginalCustomFields`
+   * (`scripts/lib/shared/beehiiv-origem-original.ts`) grava a origem de
+   * aquisição preservada do DELETE+CREATE. Ausente = gate OFF, comportamento
+   * de hoje (sem `custom_fields` novo) — o editor só define depois de criar
+   * o custom field `origem_original` na Beehiiv (item 1 da #5231); valor
+   * recomendado é a constante `ORIGEM_ORIGINAL_FIELD_NAME` do mesmo módulo.
+   * Mesmo padrão de `BEEHIIV_NAME_FIELD` (`workers/poll/src/subscribe.ts`).
+   */
+  BEEHIIV_ORIGEM_ORIGINAL_FIELD?: string;
+  /**
    * Secret — `wrangler secret put BREVO_DIARIA_API_KEY` (#4538 item B).
    * Mesma key de `platform.config.json` → `brevo_diaria.api_key_env`
    * (`BREVO_DIARIA_API_KEY`). OPCIONAL: sem ela, o guard de descadastro
@@ -308,7 +319,10 @@ export async function activateSubscription(
   // created) lida do MESMO corpo do GET — hoje só se extraía `data.id`/
   // `data.status`. `undefined` (nunca lança) quando o corpo não tem `data`
   // ou nenhum campo de origem reconhecível — fail-soft, a ativação segue com
-  // a UTM constante de sempre.
+  // a UTM constante de sempre. Gated por `env.BEEHIIV_ORIGEM_ORIGINAL_FIELD`
+  // (ver docstring de `beehiiv-origem-original.ts`): secret ausente =
+  // `undefined` sempre, mesmo com origem no GET — o editor liga só depois de
+  // criar o custom field na Beehiiv (#5231 item 1).
   let origemOriginalCustomFields: ReturnType<typeof buildOrigemOriginalCustomFields> = undefined;
   try {
     const getRes = await fetchImpl(`${base}/publications/${pubId}/subscriptions/by_email/${encodeURIComponent(email)}`, {
@@ -335,7 +349,10 @@ export async function activateSubscription(
         return { ok: false, status: 502, reason: "beehiiv_error" };
       }
       existing = body?.data?.id ? { id: body.data.id, status: body.data.status ?? "" } : null;
-      origemOriginalCustomFields = buildOrigemOriginalCustomFields(body as Parameters<typeof buildOrigemOriginalCustomFields>[0]);
+      origemOriginalCustomFields = buildOrigemOriginalCustomFields(
+        body as Parameters<typeof buildOrigemOriginalCustomFields>[0],
+        env.BEEHIIV_ORIGEM_ORIGINAL_FIELD,
+      );
     }
   } catch (e) {
     console.error(JSON.stringify({ event: "reativar_fetch_failed", step: "get", error: String(e) }));
@@ -403,11 +420,11 @@ export async function activateSubscription(
         // passo 1) num custom field — sem isto, o DELETE+CREATE acima
         // sobrescreve utm_source/medium/campaign/referring_site com a
         // constante fixa acima, perdendo pra sempre a origem real do
-        // contato. Dependência cruzada com #5231 item 1 (fora do escopo
-        // desta unidade): só tem efeito real depois que o custom field
-        // `origem_original` existir na publicação — até lá a Beehiiv
-        // provavelmente ignora/rejeita este campo, sem afetar o resto do
-        // POST.
+        // contato. GATED por `env.BEEHIIV_ORIGEM_ORIGINAL_FIELD` (secret,
+        // off por padrão) — só tem efeito real (e só é enviado) depois que o
+        // editor criar o custom field `origem_original` na Beehiiv (#5231
+        // item 1) E setar o secret; até lá `origemOriginalCustomFields` é
+        // sempre `undefined`, comportamento idêntico a antes desta feature.
         ...(origemOriginalCustomFields ? { custom_fields: origemOriginalCustomFields } : {}),
       }),
       signal: AbortSignal.timeout(ACTIVATE_FETCH_TIMEOUT_MS),

@@ -8,6 +8,12 @@
  * que a ausência dela (fail-soft, item 4 da issue) nunca bloqueia a
  * ativação nem muda o comportamento pré-#5231 (sem `custom_fields` na
  * ausência de origem).
+ *
+ * Achado crítico do review dedicado (14/08/2026): o gate
+ * `env.BEEHIIV_ORIGEM_ORIGINAL_FIELD` precisa estar setado no `Env` de teste
+ * pra estes testes originais continuarem válidos — o describe "gate OFF"
+ * abaixo cobre o estado padrão de produção (secret ausente), real até o
+ * editor criar o custom field na Beehiiv (#5231 item 1) e ligar o gate.
  */
 
 import { describe, it } from "node:test";
@@ -37,7 +43,7 @@ function routedFetch(handlers: {
   return { fetchImpl, calls };
 }
 
-describe("activateSubscription — preservação de origem original (#5231 item 2/3)", () => {
+describe("activateSubscription — preservação de origem original (#5231 item 2/3), gate ON", () => {
   it("GET traz utm_source/medium/campaign/referring_site/created → CREATE carrega custom_fields com a origem lida (não a constante)", async () => {
     const { fetchImpl, calls } = routedFetch({
       get: () =>
@@ -54,7 +60,7 @@ describe("activateSubscription — preservação de origem original (#5231 item 
         }),
       post: () => jsonRes(201, { data: { id: "sub_new", status: "active" } }),
     });
-    const env: Env = { BEEHIIV_API_KEY: "key123", BEEHIIV_PUBLICATION_ID: "pub_1" };
+    const env: Env = { BEEHIIV_API_KEY: "key123", BEEHIIV_PUBLICATION_ID: "pub_1", BEEHIIV_ORIGEM_ORIGINAL_FIELD: ORIGEM_ORIGINAL_FIELD_NAME };
 
     await activateSubscription(env, "a@b.com", fetchImpl);
 
@@ -85,7 +91,7 @@ describe("activateSubscription — preservação de origem original (#5231 item 
       get: () => jsonRes(200, { data: { id: "sub_sem_origem", status: "pending" } }),
       post: () => jsonRes(201, { data: { id: "sub_new", status: "active" } }),
     });
-    const env: Env = { BEEHIIV_API_KEY: "key123", BEEHIIV_PUBLICATION_ID: "pub_1" };
+    const env: Env = { BEEHIIV_API_KEY: "key123", BEEHIIV_PUBLICATION_ID: "pub_1", BEEHIIV_ORIGEM_ORIGINAL_FIELD: ORIGEM_ORIGINAL_FIELD_NAME };
 
     await activateSubscription(env, "a@b.com", fetchImpl);
 
@@ -99,7 +105,7 @@ describe("activateSubscription — preservação de origem original (#5231 item 
       get: () => new Response(null, { status: 404 }),
       post: () => jsonRes(201, { data: { id: "sub_new", status: "active" } }),
     });
-    const env: Env = { BEEHIIV_API_KEY: "key123", BEEHIIV_PUBLICATION_ID: "pub_1" };
+    const env: Env = { BEEHIIV_API_KEY: "key123", BEEHIIV_PUBLICATION_ID: "pub_1", BEEHIIV_ORIGEM_ORIGINAL_FIELD: ORIGEM_ORIGINAL_FIELD_NAME };
 
     const result = await activateSubscription(env, "a@b.com", fetchImpl);
 
@@ -111,5 +117,38 @@ describe("activateSubscription — preservação de origem original (#5231 item 
     const postCall = calls.find((c) => c.method === "POST");
     const body = postCall!.body as Record<string, unknown>;
     assert.ok(!("custom_fields" in body));
+  });
+});
+
+describe("activateSubscription — gate OFF (#5231 fixer, achado do review dedicado)", () => {
+  it("env.BEEHIIV_ORIGEM_ORIGINAL_FIELD ausente (estado padrão de produção) → CREATE NUNCA carrega custom_fields, mesmo com origem completa no GET", async () => {
+    const { fetchImpl, calls } = routedFetch({
+      get: () =>
+        jsonRes(200, {
+          data: {
+            id: "sub_old",
+            status: "pending",
+            utm_source: "instagram",
+            utm_medium: "social",
+            utm_campaign: "bio-link",
+            referring_site: "https://instagram.com",
+            created: 1690000000,
+          },
+        }),
+      post: () => jsonRes(201, { data: { id: "sub_new", status: "active" } }),
+    });
+    // Secret NÃO setado — estado real de produção até o editor criar o
+    // custom field na Beehiiv (#5231 item 1) e ligar o gate.
+    const env: Env = { BEEHIIV_API_KEY: "key123", BEEHIIV_PUBLICATION_ID: "pub_1" };
+
+    const result = await activateSubscription(env, "a@b.com", fetchImpl);
+
+    const postCall = calls.find((c) => c.method === "POST");
+    assert.ok(postCall, "POST deveria ter sido chamado");
+    const body = postCall!.body as Record<string, unknown>;
+    assert.ok(!("custom_fields" in body), "gate OFF: custom_fields nunca deve aparecer, independente da origem lida no GET");
+    // A ativação segue normalmente — o gate desligado nunca bloqueia.
+    assert.equal(result.ok, true);
+    assert.equal(body.utm_source, BREVO_DIARIA_REATIVAR_CLIQUE_UTM.source);
   });
 });
