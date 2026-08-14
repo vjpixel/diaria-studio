@@ -75,6 +75,8 @@ import {
   buildUpstreamErrorCampaignsJsonFallback, // #4251
   upstreamErrorResponse, // #4251
   LASTGOOD_CAMPAIGNS_KEY,
+  LASTGOOD_CAMPAIGNS_HASH_KEY, // #5216
+  djb2Hash, // #5216
   CAMPAIGNS_FETCH_LIMIT,
   fetchPlanCredits,
   tryAcquireRefreshLock,
@@ -433,16 +435,41 @@ async function buildDashboardResponse(request: Request, env: Env, isFresh: boole
     // buildRateLimitFallback ter um valor recente quando o Brevo entrar
     // em rate-limit numa request futura. `?fresh=1` nunca escreve
     // (comportamento preservado do #3079).
+    //
+    // #5216: write CONDICIONAL — só grava quando o CONTEÚDO (campaigns +
+    // scheduled + campaignsLimit) mudou desde o último write bem-sucedido.
+    // O `#3553` original acima escrevia INCONDICIONALMENTE a cada request
+    // não-`fresh` (sem TTL de escrita, sem hash, sem intervalo mínimo) — no
+    // free tier da Cloudflare (~1.000 escritas de KV/dia POR CONTA,
+    // compartilhado com o Worker `poll`) isso já quase estourou uma vez
+    // (#2282). O hash é calculado só sobre o conteúdo ESTÁVEL — nunca sobre
+    // `generatedAt` (que é `new Date().toISOString()` a cada tick e tornaria
+    // o gate inútil, já que o payload inteiro nunca seria idêntico de uma
+    // request pra outra).
     if (scheduledOk && env.STATS_CACHE && !isFresh) {
-      const payload: LastGoodCampaignsPayload = {
-        campaigns,
-        scheduled,
-        generatedAt: dataGeneratedAt,
-        campaignsLimit: CAMPAIGNS_FETCH_LIMIT, // #3080
-      };
-      await env.STATS_CACHE
-        .put(LASTGOOD_CAMPAIGNS_KEY, JSON.stringify(payload), { expirationTtl: LASTGOOD_TTL })
-        .catch(() => { /* erro de KV nunca bloqueia o render */ });
+      const stableContent = JSON.stringify({ campaigns, scheduled, campaignsLimit: CAMPAIGNS_FETCH_LIMIT });
+      const newHash = djb2Hash(stableContent);
+      const prevHash = await env.STATS_CACHE.get(LASTGOOD_CAMPAIGNS_HASH_KEY).catch(() => null);
+      if (prevHash !== newHash) {
+        const payload: LastGoodCampaignsPayload = {
+          campaigns,
+          scheduled,
+          generatedAt: dataGeneratedAt,
+          campaignsLimit: CAMPAIGNS_FETCH_LIMIT, // #3080
+        };
+        try {
+          // #5216: sequencial (não Promise.all) — mesmo racional do F5 fix
+          // documentado no djb2Hash pré-#2739: só grava o hash SE o write do
+          // payload teve sucesso. Se o payload falhasse (ex: > limite de
+          // tamanho do KV) mas o hash tivesse sucesso, o guard `prevHash ===
+          // newHash` suprimiria re-writes por até LASTGOOD_TTL enquanto o
+          // payload real ficaria stale/ausente.
+          await env.STATS_CACHE.put(LASTGOOD_CAMPAIGNS_KEY, JSON.stringify(payload), { expirationTtl: LASTGOOD_TTL });
+          await env.STATS_CACHE.put(LASTGOOD_CAMPAIGNS_HASH_KEY, newHash, { expirationTtl: LASTGOOD_TTL });
+        } catch {
+          /* erro de KV nunca bloqueia o render */
+        }
+      }
     }
 
     // #2733: seções KV-independentes (coortes, MV, contatos, cupons) — sempre
