@@ -20,6 +20,7 @@
 // servidor devolve (`reason`/`status`/`priority`), não precisa reler plan.json.
 
 import { unitAge, roundFreshness } from "./rodada-round-age.js";
+import { decideToggle, decideAutoSelect } from "./rodada-selection.js";
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
@@ -316,32 +317,45 @@ function renderRoundsList() {
 }
 
 function toggleRound(kind, sessionId) {
-  if (selected && selected.kind === kind && selected.sessionId === sessionId) {
-    // já expandida — colapsa (accordion)
+  const next = decideToggle(selected, kind, sessionId);
+  if (next === null) {
+    // já expandida — colapsa (accordion). Estado deliberado do editor:
+    // sobrevive a qualquer refresh subsequente (#5210 — ver decideAutoSelect).
     selected = null;
     data = null;
     renderRoundsList();
     renderDetail();
     return;
   }
-  selected = { kind, sessionId };
+  selected = next;
   renderRoundsList();
-  fetchRoundDetail();
+  fetchRoundDetail({ scrollToDetail: true });
 }
 
+// #5210: `true` até a 1ª carga BEM-SUCEDIDA (bootstrap da página) — todo
+// refresh subsequente (SSE `plan`, botão "Atualizar") passa `false`, pra não
+// reverter um colapso deliberado do editor (`selected = null`) de volta pra
+// `rounds[0]`. Só vira `true` DEPOIS de um fetch bem-sucedido (não antes de
+// tentar) — uma falha transitória na 1ª tentativa não deve permanentemente
+// desligar a auto-seleção da carga inicial pro retry seguinte.
+let didInitialRoundsLoad = false;
+
 async function fetchRoundsList() {
+  const isInitialLoad = !didInitialRoundsLoad;
   try {
     const res = await fetch("/api/rounds");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const body = await res.json();
     rounds = Array.isArray(body.rounds) ? body.rounds : [];
     roundsFetchFailed = false;
-    // Auto-seleciona a MAIS RECENTE (topo da sequência) na 1ª carga — corrige
-    // o defeito original (#3841): antes o painel podia mostrar a rodada
-    // ERRADA (mais antiga) por kind; agora a ordenação já é cronológica real
-    // e a 1ª entrada É a mais recente de fato, overnight ou develop.
-    if (!selected && rounds.length > 0) {
-      selected = { kind: rounds[0].kind, sessionId: rounds[0].sessionId };
+    didInitialRoundsLoad = true;
+    // Auto-seleciona a MAIS RECENTE (topo da sequência) só na 1ª carga —
+    // corrige o defeito original (#3841: painel podia mostrar a rodada
+    // ERRADA por kind) sem reintroduzir o defeito do #5210 (refresh
+    // revertendo um colapso deliberado do editor de volta pro topo).
+    const next = decideAutoSelect({ selected, rounds, isInitialLoad });
+    if (next && (!selected || next.kind !== selected.kind || next.sessionId !== selected.sessionId)) {
+      selected = next;
       renderRoundsList();
       await fetchRoundDetail();
       return;
@@ -353,7 +367,7 @@ async function fetchRoundsList() {
   renderRoundsList();
 }
 
-async function fetchRoundDetail() {
+async function fetchRoundDetail({ scrollToDetail = false } = {}) {
   if (!selected) {
     renderDetail();
     return;
@@ -371,6 +385,15 @@ async function fetchRoundDetail() {
     data = { kind: selected.kind, sessionId: selected.sessionId, found: false, error: String(e), queue: { entram: [], pendente: [], fora: [] }, timeline: [] };
   }
   renderDetail();
+  // #5210 item 3: `#round-detail` é renderizado DEPOIS da lista inteira de
+  // rodadas (~4.500px abaixo com ~108 entradas) — sem isto, um clique numa
+  // entrada no topo da lista parece no-op porque o resultado visível fica
+  // fora da viewport. Só rola quando o clique veio de uma seleção explícita
+  // (não em todo refresh automático de SSE, que reexecuta com a mesma
+  // seleção e não deveria puxar a viewport do editor).
+  if (scrollToDetail && el.detail && !el.detail.hidden && typeof el.detail.scrollIntoView === "function") {
+    el.detail.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
 }
 
 el.filterPriority.addEventListener("change", () => {
