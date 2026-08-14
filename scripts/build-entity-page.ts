@@ -28,6 +28,9 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { renderEntityPage, type EntityContent } from "./lib/shared/entity-page.ts";
 import { getPerplexityEntity } from "./lib/entities/perplexity.ts";
+import { getXaiEntity } from "./lib/entities/xai.ts";
+import { getAmazonEntity } from "./lib/entities/amazon.ts";
+import { getSamsungEntity } from "./lib/entities/samsung.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -37,6 +40,9 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  * `HUB_LOADERS` em `build-hub-page.ts`. */
 export const ENTITY_LOADERS: Record<string, () => EntityContent> = {
   perplexity: getPerplexityEntity,
+  xai: getXaiEntity,
+  amazon: getAmazonEntity,
+  samsung: getSamsungEntity,
 };
 
 function outPathFor(slug: string): string {
