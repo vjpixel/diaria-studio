@@ -3118,12 +3118,11 @@ describe("renderBodyParasInner — inter-parágrafo 8px (#2456)", () => {
   it("integração renderHTML: corpo 8px e box why 28px coexistem (sem EIA na fixture)", () => {
     // Fixture sem EIA (eia.credit vazio → seção É IA? omitida), então o
     // `margin:8px 0 0` do lbStyle do leaderboard NÃO aparece. Assim a contagem
-    // de 8px reflete os parágrafos de corpo (2 destaques × 1 parágrafo extra
-    // cada = 2) + a manchete do bloco WhatsApp (#5152, mesmo `margin:8px 0 0`
-    // dos parágrafos "inner" pós-kicker — padrão compartilhado com
-    // renderAprofundeInner/renderHubLinkInner — sempre presente quando D1
-    // existe, diferente de Aprofunde/HubLink que são opcionais e ausentes
-    // nesta fixture) = 3. Contagem exata, não >= (guard anti-fragilidade).
+    // de 8px reflete só os parágrafos de corpo (2 destaques × 1 parágrafo
+    // extra cada = 2). #5222 removeu a manchete do bloco WhatsApp (era um
+    // `<p style="margin:8px 0 0...">` — o bloco agora é só o botão, sem
+    // parágrafo nenhum), então a contagem que antes era 3 (#5152) volta a 2.
+    // Contagem exata, não >= (guard anti-fragilidade).
     const baseDestaque = {
       n: 1 as const,
       category: "LANÇAMENTO",
@@ -3148,8 +3147,8 @@ describe("renderBodyParasInner — inter-parágrafo 8px (#2456)", () => {
     assert.doesNotMatch(html, /Clique na imagem que foi gerada por IA/, "fixture não deve ter É IA?");
     const bodyMatches = html.match(/margin:8px 0 0/g);
     assert.ok(
-      bodyMatches && bodyMatches.length === 3,
-      `esperava exatamente 3 margin:8px 0 0 (2º parágrafo de cada destaque + manchete do bloco WhatsApp no D1), got ${bodyMatches?.length ?? 0}`,
+      bodyMatches && bodyMatches.length === 2,
+      `esperava exatamente 2 margin:8px 0 0 (2º parágrafo de cada destaque; #5222 removeu o parágrafo da manchete do bloco WhatsApp), got ${bodyMatches?.length ?? 0}`,
     );
     // box "Por que isso importa" preserva margin-top:28px (não afetado)
     assert.match(html, /margin-top:28px/);
