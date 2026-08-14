@@ -100,14 +100,25 @@ provider (timeout e `max_uses` próprios).
 
 ## Captura de usage e teto de custo (#4904)
 
-**Os 3 providers rodam de verdade desde 11/ago/2026** — `ANTHROPIC_API_KEY`
-chegou a ficar deliberadamente ausente por decisão do editor (evitar o
-setup de uma key de Console pay-as-you-go, sistema de billing separado da
-assinatura do Claude Code), mas a decisão foi revertida no mesmo dia: o
-editor criou a org em console.anthropic.com, comprou US$5 de crédito e
+**Os 3 providers rodam de verdade SÓ na máquina cujo `.env` tem as 3 keys
+(`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`GEMINI_API_KEY`) — isso não é um
+fato fixo por data, é estado por máquina (#5316).** O editor criou a org
+Anthropic em console.anthropic.com, comprou US$5 de crédito, gerou a key e
 configurou um teto de gasto mensal de US$10 na própria org (independente
 do `--max-monthly-usd` deste script, que é um teto adicional a nível de
-aplicação).
+aplicação) em 11/ago/2026 — mas "a key existe" não é o mesmo fato que "a
+key está no `.env` da máquina que roda a task `Diaria-Geo-Citation-Monitor`
+hoje". Achado ao vivo (#5316): a Anthropic ficou muda em `predator` (a
+máquina do timer) desde 11/ago/2026 porque a key nunca foi reposta lá
+depois do #5155, mesmo já existindo no Doppler — sem ninguém notar por
+semanas, porque o alarme de staleness (seção abaixo) só olha se
+`history.jsonl` parou de crescer, e os outros 2 providers seguiam gravando
+normalmente. O #5316 fechou esse buraco com um alarme dedicado a provider
+ausente (`scripts/lib/geo-citation-staleness-alarm.ts`). Antes de assumir
+que os 3 rodam de verdade numa máquina específica, confira com
+`npx tsx scripts/geo-citation-monitor.ts --dry-run` (não gasta chamada de
+rede) ou rode `npm run sync-env` se a key estiver no Doppler mas faltando
+localmente (`docs/doppler-env-sync.md`).
 
 **OpenAI/Google — medido em rodada completa dos 2 painéis (36 chamadas,
 `data/geo-citations/history.jsonl`, 11/ago/2026):**

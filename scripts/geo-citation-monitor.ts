@@ -7,8 +7,16 @@
  * oficial e checa se `diar.ia.br` aparece na resposta. Resultado persiste em
  * `data/geo-citations/history.jsonl` (append-only).
  *
- * **`ANTHROPIC_API_KEY` está configurada e ATIVA desde 11/ago/2026** (#4904)
- * — os 3 providers (Claude/ChatGPT/Gemini) rodam de verdade toda semana.
+ * **Os 3 providers (Claude/ChatGPT/Gemini) rodam quando a MÁQUINA que
+ * dispara a task `Diaria-Geo-Citation-Monitor` tem `ANTHROPIC_API_KEY` /
+ * `OPENAI_API_KEY` / `GEMINI_API_KEY` no `.env`** — não é um fato fixo por
+ * data, é estado por máquina, e pode divergir da máquina do editor (#5316:
+ * a Anthropic chegou a ficar ativa em 11/ago/2026, mas ficou muda em
+ * `predator`, a máquina que roda o timer, porque a key nunca foi reposta
+ * ali depois do #5155 — o alarme de staleness #4755 não pegava esse
+ * sintoma, o alarme de provider ausente que fecha o #5316 pega). Confira
+ * localmente com `--dry-run` (abaixo) ou `npm run sync-env` se a key
+ * existir no Doppler mas não no `.env` local (`docs/doppler-env-sync.md`).
  * Histórico: a chave chegou a ficar deliberadamente ausente por decisão do
  * editor (custo/setup de uma key de Console separada da assinatura), mas
  * essa decisão foi revertida no mesmo dia — o editor gerou a key
@@ -250,12 +258,13 @@ export interface MonthToDateCost {
  * começa com `monthPrefix` (YYYY-MM). Não distingue provider — o teto de
  * custo é do projeto inteiro (#4904 item 5). Os 3 providers têm tabela de
  * pricing (Anthropic via `scripts/lib/pricing.ts`, OpenAI/Google via
- * `GEO_NON_ANTHROPIC_TOKEN_PRICING` desde #4904 item 4) e os 3 rodam de
- * verdade (`ANTHROPIC_API_KEY` ativa desde 11/ago/2026) — a soma cobre os
- * 3, inclusive as chamadas da Anthropic que falharem em timeout (essas não
- * geram `estimatedCostUsd`, mas foram cobradas mesmo assim — ver a
- * ressalva sobre abort ser só client-side na docstring de
- * `GeoProviderDef.timeoutMs`).
+ * `GEO_NON_ANTHROPIC_TOKEN_PRICING` desde #4904 item 4) — a soma cobre os
+ * 3 QUANDO os 3 têm key configurada na máquina que rodou cada rodada
+ * (#5316: isso não é garantido por data, é estado por `.env` local — ver
+ * docstring no topo do arquivo), inclusive as chamadas da Anthropic que
+ * falharem em timeout (essas não geram `estimatedCostUsd`, mas foram
+ * cobradas mesmo assim — ver a ressalva sobre abort ser só client-side na
+ * docstring de `GeoProviderDef.timeoutMs`).
  */
 export function sumMonthToDateCostUsd(
   records: readonly Pick<GeoCitationRecord, "date" | "estimatedCostUsd">[],
