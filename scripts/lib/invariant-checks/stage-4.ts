@@ -5,7 +5,7 @@
  * (publicação corrompida, broadcast vazio). Checks aqui devem ser strict.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { readMarker } from "../pipeline-state.ts";
@@ -1347,6 +1347,64 @@ function checkRenderWarnings(editionDir: string): InvariantViolation[] {
   return violations;
 }
 
+/**
+ * #5232: `_internal/newsletter-final.html` (o fragmento que vai pro corpo do
+ * e-mail — não o post inteiro do Beehiiv, que soma template + CSS por cima)
+ * ficou numa faixa estável de ~38-42KB por ~3 semanas (260722-260812) e deu
+ * um salto pra 44.384 bytes (260813) e 47.607 bytes (260814) — perto o
+ * bastante do limite de clipping do Gmail (~102KB no e-mail INTEIRO, não só
+ * neste fragmento) pro Beehiiv já ter emitido o warning "Your post is large
+ * and may get clipped by Gmail" no Stage 6 ao agendar a edição 260814.
+ *
+ * Antes deste check, o único sinal desse crescimento era esse warning manual
+ * do Beehiiv — visto tarde (Stage 6, minutos antes do envio) e fácil de
+ * ignorar como "não bloqueia mesmo". Este invariant roda no Stage 4 (o
+ * fragmento já existe nesse ponto — pré-render já rodou antes dos invariants
+ * do gate) e sinaliza ANTES do editor aprovar a revisão, com folga pra
+ * investigar/cortar conteúdo se for o caso.
+ *
+ * `NEWSLETTER_HTML_SIZE_WARN_BYTES` (45.000 bytes) foi escolhido acima da
+ * faixa histórica estável (~38-42KB) e abaixo do salto observado (44.384 /
+ * 47.607) — pega o regression real sem alarmar a faixa normal. Ajustável
+ * livremente; não é um limite físico, só o ponto onde vale a pena o editor
+ * olhar.
+ *
+ * Warning, não error (mesmo padrão de `card-4x5-upload-missing`/
+ * `image-crop-warn` acima) — decidir SE/O QUE cortar é editorial (#5232 item
+ * 4, fora de escopo deste check), não algo que este invariant deva forçar.
+ *
+ * Arquivo ausente (pré-render ainda não rodou nesta retomada, ou edição
+ * legada pré-#1694) → `[]`, nada a checar — mesmo padrão de
+ * `checkRenderWarnings` acima.
+ */
+export const NEWSLETTER_HTML_SIZE_WARN_BYTES = 45_000;
+
+export function checkNewsletterHtmlSize(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", "newsletter-final.html");
+  if (!existsSync(path)) return [];
+  const bytes = statSync(path).size;
+  if (bytes <= NEWSLETTER_HTML_SIZE_WARN_BYTES) return [];
+  const kb = (bytes / 1024).toFixed(1);
+  const thresholdKb = (NEWSLETTER_HTML_SIZE_WARN_BYTES / 1024).toFixed(1);
+  return [
+    {
+      rule: "newsletter-html-size",
+      message:
+        `_internal/newsletter-final.html tem ${bytes} bytes (${kb} KB), acima do ` +
+        `threshold de ${NEWSLETTER_HTML_SIZE_WARN_BYTES} bytes (${thresholdKb} KB). ` +
+        `A faixa histórica estável (260722-260812) era ~38-42KB — acima disso é sinal ` +
+        `de crescimento real do conteúdo, não ruído. Perto o bastante do limite de ` +
+        `clipping do Gmail (~102KB no e-mail inteiro) pro Beehiiv já ter avisado no ` +
+        `Stage 6 em edições anteriores (#5232). Investigar a origem do crescimento ` +
+        `(boxes de divulgação extra, conteúdo editorial mais longo) antes de aprovar — ` +
+        `cortar conteúdo é decisão editorial, este check só avisa.`,
+      source_issue: "#5232",
+      severity: "warning",
+      file: path,
+    },
+  ];
+}
+
 export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "public-images-populated",
@@ -1487,6 +1545,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#4673",
     stage: 4,
     run: checkRenderWarnings,
+  },
+  {
+    id: "newsletter-html-size",
+    description: `_internal/newsletter-final.html acima de ${NEWSLETTER_HTML_SIZE_WARN_BYTES} bytes — sinal de crescimento perto do limite de clipping do Gmail (#5232, warning-only)`,
+    source_issue: "#5232",
+    stage: 4,
+    run: checkNewsletterHtmlSize,
   },
   // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
   // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem
