@@ -488,6 +488,24 @@ export function logEffortDecision(
  * `resolveEffort` (estado indeterminado) passou a custar 5 agentes em vez de
  * 1 — segue valendo a escolha de errar pro lado caro quando o hook não
  * consegue nem determinar o que está revisando, e o caminho é raro.
+ *
+ * #5304 (14/08/2026): o ramo `low` costumava instruir o agente a "report only
+ * a few high-confidence findings" — filtro de severidade na fonte. Isso era
+ * inofensivo enquanto o resultado era só um resumo lido pelo editor; deixou de
+ * ser desde o #5251 (mesmo dia), quando "sem findings de alta confiança"
+ * passou a ser a condição que dispara `gh pr merge` automático numa sessão
+ * interativa comum — e o caminho `low` é o da MAIORIA dos PRs (#4813: todo
+ * diff <300 linhas cai em `low`, não só branch `overnight/*`). Um harness
+ * instruído a filtrar por severidade é seguido literalmente: o modelo acha os
+ * mesmos bugs mas deixa de REPORTAR os que julga abaixo da barra — precisão
+ * sobe, recall medido cai, e o gate de merge nunca vê o que não foi
+ * reportado. O filtro moveu do AGENTE pro CONSUMIDOR: `low` agora pede
+ * cobertura completa (inclusive baixa severidade e achados incertos),
+ * taggeada com confiança (alta/média/baixa) e severidade (P0-P3) — quem
+ * decide relevância pro merge é uma etapa separada (o coordenador, lendo a
+ * tag), não a instrução de prompt do agente. O desconto de token do `low`
+ * continua existindo onde sempre esteve — 1 agente em vez do fleet de 5
+ * (`agentCountForEffort` não mudou) — só o filtro de severidade saiu.
  */
 
 /** Agente primário do review por PR (nome prefixado pelo plugin — ver #4234). */
@@ -505,7 +523,9 @@ export function buildReviewInstruction(prUrl, effort, warning = null) {
   const effortNote =
     effort === "low"
       ? `at LOW effort (overnight token-discount, #2754/#3322): dispatch ONE Agent, subagent_type \`${REVIEW_AGENT}\`, ` +
-        "model:sonnet explicit (#2019); report only a few high-confidence findings. The editor can ask for a deeper pass explicitly"
+        "model:sonnet explicit (#2019); report every finding, including low-severity and ones you are unsure about — " +
+        "do not filter for importance at this stage. Tag each with confidence (alta/média/baixa) and severity " +
+        "(P0..P3); a separate step ranks them"
       : `at ULTRACODE / MAXIMUM effort: dispatch the full toolkit fleet IN PARALLEL — \`${REVIEW_AGENT}\` plus ` +
         `${REVIEW_FLEET_MAX.join(", ")} — each with model:sonnet explicit (#2019), then aggregate their findings`;
   // O caminho degradado tem que preservar a PROFUNDIDADE pedida, não só existir:

@@ -335,6 +335,25 @@ describe("buildReviewInstruction (#2754)", () => {
     assert.match(msg, /model:sonnet/);
   });
 
+  // #5304: o ramo `low` filtrava severidade NA FONTE ("report only a few
+  // high-confidence findings") — inofensivo como resumo pro editor, mas desde
+  // o #5251 (mesmo dia) "sem findings de alta confiança" passou a disparar
+  // `gh pr merge` automático, e `low` é o caminho da MAIORIA dos PRs (#4813).
+  // Um harness instruído a filtrar por severidade é seguido literalmente: o
+  // modelo acha o bug e deixa de REPORTAR o que julga abaixo da barra — o
+  // gate de merge nunca vê o achado. Fix: o agente reporta cobertura completa
+  // (tagged por confiança/severidade); quem filtra é o consumidor, não o
+  // prompt do agente. Trava a forma nova e proíbe a frase antiga voltar.
+  it("effort=low pede cobertura completa taggeada, nunca filtro de severidade na fonte (#5304)", () => {
+    const msg = buildReviewInstruction("https://github.com/o/r/pull/1", "low");
+    assert.doesNotMatch(msg, /report only a few high-confidence findings/);
+    assert.doesNotMatch(msg, /ask for a deeper pass explicitly/);
+    assert.match(msg, /report every finding, including low-severity/);
+    assert.match(msg, /do not filter for importance at this stage/);
+    assert.match(msg, /confidence \(alta\/média\/baixa\)/);
+    assert.match(msg, /severity \(P0\.\.P3\)/);
+  });
+
   it("effort=max menciona ULTRACODE / maximum effort", () => {
     const msg = buildReviewInstruction("https://github.com/o/r/pull/1", "max");
     assert.doesNotMatch(msg, /\/code-review max --comment/);
