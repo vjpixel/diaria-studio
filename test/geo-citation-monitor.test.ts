@@ -428,6 +428,24 @@ describe("queryProvider (fetchImpl injetado — nunca rede real)", () => {
     }
   });
 
+  it("OpenAI: status:'failed' devolve erro de provider, NUNCA ausência de citação (#5320)", async () => {
+    // Distinto de "incomplete" — resposta síncrona HTTP-200 onde a geração
+    // falhou no servidor, output/output_text tipicamente vazio + objeto
+    // `error` no nível raiz. Sem a checagem, openaiExtractText devolveria ""
+    // e o monitor registraria "não citado" por engano (mesma classe do #5310).
+    const fakeFetch = async () =>
+      new Response(JSON.stringify({ status: "failed", error: { message: "internal error", code: "server_error" } }), {
+        status: 200,
+      });
+    const result = await queryProvider(openai, "pergunta", "fake-key", "gpt-4.1", fakeFetch);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorKind, "provider");
+      assert.match(result.error, /failed/);
+      assert.match(result.error, /internal error/);
+    }
+  });
+
   it("OpenAI: bloco output[].content[].type:'refusal' devolve erro de provider (#5310)", async () => {
     const fakeFetch = async () =>
       new Response(

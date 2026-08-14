@@ -231,8 +231,10 @@ export interface GeoProviderDef {
    * `extractText`. Cada provider tem seu próprio conceito de early-stop:
    * Anthropic (`anthropicCheckProviderError`) — `stop_reason: "max_tokens"`
    * (thinking consumindo o mesmo teto do texto de resposta) ou `"refusal"`;
-   * OpenAI (`openaiCheckProviderError`) — `status: "incomplete"` ou bloco
-   * `type: "refusal"` em `output[]`; Google (`googleCheckProviderError`) —
+   * OpenAI (`openaiCheckProviderError`) — `status: "incomplete"`, `status:
+   * "failed"` (geração falhou no servidor, resposta síncrona HTTP-200 com
+   * `output`/`output_text` vazio e um `error` no nível raiz — #5320 finding),
+   * ou bloco `type: "refusal"` em `output[]`; Google (`googleCheckProviderError`) —
    * `candidates[0].finishReason` diferente de `"STOP"` ou
    * `promptFeedback.blockReason`. Opcional: um provider sem esse método
    * simplesmente não tem essa checagem (`queryProvider` segue direto pra
@@ -453,7 +455,7 @@ function openaiRequest(question: string, apiKey: string, model: string) {
  * caminho continua "não citado" legítimo.
  */
 function openaiCheckProviderError(json: unknown): string | undefined {
-  const obj = json as { status?: unknown; incomplete_details?: unknown; output?: unknown };
+  const obj = json as { status?: unknown; incomplete_details?: unknown; output?: unknown; error?: unknown };
   if (obj.status === "incomplete") {
     const details = obj.incomplete_details;
     const reason =
@@ -461,6 +463,16 @@ function openaiCheckProviderError(json: unknown): string | undefined {
         ? ((details as Record<string, unknown>).reason as string)
         : undefined;
     return `status: incomplete${reason ? ` (incomplete_details.reason: ${reason})` : ""} (resposta interrompida antes de terminar — pode não haver bloco output_text)`;
+  }
+  if (obj.status === "failed") {
+    const err = obj.error;
+    const errMsg =
+      err && typeof err === "object" && typeof (err as Record<string, unknown>).message === "string"
+        ? ((err as Record<string, unknown>).message as string)
+        : err !== undefined
+          ? JSON.stringify(err)
+          : undefined;
+    return `status: failed${errMsg ? ` (error: ${errMsg})` : ""} (geração falhou no servidor — resposta síncrona HTTP-200 sem output válido)`;
   }
   if (Array.isArray(obj.output)) {
     for (const item of obj.output as unknown[]) {
