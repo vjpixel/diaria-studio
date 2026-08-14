@@ -225,16 +225,22 @@ export interface GeoProviderDef {
    * (`queryProvider` trata a ausência como `undefined`, nunca lança). */
   extractUsage?(json: unknown): GeoProviderUsage | undefined;
   /** Detecta se a resposta indica falha do PROVIDER que precisa virar erro,
-   * nunca "não citado" (#5305) — MESMO contrato de `extractText`: pure,
-   * defensivo, nunca lança; retorna `undefined` quando a resposta está OK
-   * pra seguir o caminho normal de `extractText`. Hoje só a Anthropic
-   * implementa (`stop_reason: "max_tokens"` — texto pode ter saído truncado
-   * ou ausente; `stop_reason: "refusal"` — HTTP 200 com `content` vazio),
-   * porque só ela tem o conceito de thinking consumindo o mesmo teto de
-   * `max_tokens` que o texto de resposta. Opcional: um provider sem esse
-   * método simplesmente não tem essa checagem (`queryProvider` segue direto
-   * pra `extractText`). Texto vazio com `stop_reason: "end_turn"` NÃO passa
-   * por aqui como erro — continua "não citado" legítimo. */
+   * nunca "não citado" (#5305, generalizado pros 3 providers em #5310) —
+   * MESMO contrato de `extractText`: pure, defensivo, nunca lança; retorna
+   * `undefined` quando a resposta está OK pra seguir o caminho normal de
+   * `extractText`. Cada provider tem seu próprio conceito de early-stop:
+   * Anthropic (`anthropicCheckProviderError`) — `stop_reason: "max_tokens"`
+   * (thinking consumindo o mesmo teto do texto de resposta) ou `"refusal"`;
+   * OpenAI (`openaiCheckProviderError`) — `status: "incomplete"`, `status:
+   * "failed"` (geração falhou no servidor, resposta síncrona HTTP-200 com
+   * `output`/`output_text` vazio e um `error` no nível raiz — #5320 finding),
+   * ou bloco `type: "refusal"` em `output[]`; Google (`googleCheckProviderError`) —
+   * `candidates[0].finishReason` diferente de `"STOP"` ou
+   * `promptFeedback.blockReason`. Opcional: um provider sem esse método
+   * simplesmente não tem essa checagem (`queryProvider` segue direto pra
+   * `extractText`). O caso "terminou normalmente, mas texto vazio" (ex:
+   * `stop_reason: "end_turn"` na Anthropic, `finishReason: "STOP"` no
+   * Google) NÃO passa por aqui como erro — continua "não citado" legítimo. */
   checkProviderError?(json: unknown): string | undefined;
   /** Override de timeout por provider (#4904 item 4, achado ao vivo
    * 11/ago/2026) — `undefined` usa `GEO_PROVIDER_TIMEOUT_MS`. Existe porque
@@ -434,6 +440,54 @@ function openaiRequest(question: string, apiKey: string, model: string) {
   };
 }
 
+/**
+ * Detecta early-stop de falha na Responses API (#5310, mesma classe do
+ * #5305 na Anthropic). `status: "incomplete"` — a resposta parou antes de
+ * terminar; `incomplete_details.reason` distingue `"max_output_tokens"`
+ * (estourou o teto de saída) de `"content_filter"` (moderação bloqueou);
+ * em qualquer um dos dois, `output[]` pode não ter bloco `output_text` —
+ * `openaiExtractText` devolveria `""` e o monitor registraria "não citado"
+ * por engano. Também cobre um bloco de output do tipo `"refusal"`
+ * (distinto de `"output_text"`) presente em QUALQUER item de `output[]` —
+ * a Responses API sinaliza recusa por bloco, não só por `status` no nível
+ * raiz. `status` diferente de `"incomplete"` (`"completed"`, ausente, etc.)
+ * e ausência de bloco `refusal` são tratados como OK — texto vazio nesse
+ * caminho continua "não citado" legítimo.
+ */
+function openaiCheckProviderError(json: unknown): string | undefined {
+  const obj = json as { status?: unknown; incomplete_details?: unknown; output?: unknown; error?: unknown };
+  if (obj.status === "incomplete") {
+    const details = obj.incomplete_details;
+    const reason =
+      details && typeof details === "object" && typeof (details as Record<string, unknown>).reason === "string"
+        ? ((details as Record<string, unknown>).reason as string)
+        : undefined;
+    return `status: incomplete${reason ? ` (incomplete_details.reason: ${reason})` : ""} (resposta interrompida antes de terminar — pode não haver bloco output_text)`;
+  }
+  if (obj.status === "failed") {
+    const err = obj.error;
+    const errMsg =
+      err && typeof err === "object" && typeof (err as Record<string, unknown>).message === "string"
+        ? ((err as Record<string, unknown>).message as string)
+        : err !== undefined
+          ? JSON.stringify(err)
+          : undefined;
+    return `status: failed${errMsg ? ` (error: ${errMsg})` : ""} (geração falhou no servidor — resposta síncrona HTTP-200 sem output válido)`;
+  }
+  if (Array.isArray(obj.output)) {
+    for (const item of obj.output as unknown[]) {
+      const content = (item as { content?: unknown })?.content;
+      if (!Array.isArray(content)) continue;
+      for (const block of content as unknown[]) {
+        if ((block as { type?: string })?.type === "refusal") {
+          return "output contém bloco type:'refusal' (provider recusou a pergunta)";
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
 function openaiExtractText(json: unknown): string {
   const obj = json as { output_text?: unknown; output?: unknown };
   // A Responses API expõe uma conveniência `output_text` (string) em
@@ -493,6 +547,37 @@ function googleRequest(question: string, apiKey: string, model: string) {
   };
 }
 
+/**
+ * Detecta early-stop de falha no `generateContent` (#5310, mesma classe do
+ * #5305 na Anthropic). `candidates[0].finishReason` diferente de `"STOP"`
+ * (o caso normal, resposta terminou de forma esperada) — `"MAX_TOKENS"`
+ * (estourou o teto de saída), `"SAFETY"`/`"RECITATION"`/`"BLOCKLIST"`/
+ * `"PROHIBITED_CONTENT"`/`"SPII"` (moderação bloqueou), `"OTHER"`, etc. —
+ * indica que o candidate pode vir com `parts` vazio ou ausente, o que faria
+ * `googleExtractText` devolver `""` e o monitor registrar "não citado" por
+ * engano. `finishReason` ausente ou `"STOP"` é tratado como OK — texto
+ * vazio nesse caminho continua "não citado" legítimo. Também cobre
+ * `promptFeedback.blockReason` (a pergunta em si foi bloqueada ANTES de
+ * gerar qualquer candidate — `candidates[]` pode nem existir nesse caso).
+ */
+function googleCheckProviderError(json: unknown): string | undefined {
+  const obj = json as { candidates?: unknown; promptFeedback?: unknown };
+  const promptFeedback = obj.promptFeedback;
+  if (promptFeedback && typeof promptFeedback === "object") {
+    const blockReason = (promptFeedback as Record<string, unknown>).blockReason;
+    if (typeof blockReason === "string" && blockReason.length > 0) {
+      return `promptFeedback.blockReason: ${blockReason} (pergunta bloqueada antes de gerar candidate)`;
+    }
+  }
+  if (Array.isArray(obj.candidates) && obj.candidates.length > 0) {
+    const finishReason = (obj.candidates[0] as { finishReason?: unknown })?.finishReason;
+    if (typeof finishReason === "string" && finishReason !== "STOP") {
+      return `candidates[0].finishReason: ${finishReason} (candidate bloqueado/truncado — pode não haver parts de texto)`;
+    }
+  }
+  return undefined;
+}
+
 function googleExtractText(json: unknown): string {
   const candidates = (json as { candidates?: unknown })?.candidates;
   if (!Array.isArray(candidates) || candidates.length === 0) return "";
@@ -547,8 +632,8 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
     buildRequest: anthropicRequest,
     extractText: anthropicExtractText,
     extractUsage: anthropicExtractUsage,
-    // #5305 — só a Anthropic tem o conceito de stop_reason estourando
-    // max_tokens/refusal indistinguível de "não citado".
+    // #5305 — stop_reason estourando max_tokens/refusal indistinguível de
+    // "não citado" (ver #5310 pro equivalente OpenAI/Google abaixo).
     checkProviderError: anthropicCheckProviderError,
     // 120s, não os 25s default — ver docstring de GeoProviderDef.timeoutMs.
     timeoutMs: 120_000,
@@ -561,6 +646,10 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
     buildRequest: openaiRequest,
     extractText: openaiExtractText,
     extractUsage: openaiExtractUsage,
+    // #5310 — mesma classe do #5305: status:"incomplete" (max_output_tokens
+    // ou content_filter) ou bloco type:"refusal" podem deixar output[] sem
+    // texto extraível.
+    checkProviderError: openaiCheckProviderError,
     // Sem tool com latência multi-hop tipo o web_search da Anthropic — o
     // default global serve. Explícito de propósito, ver docstring de
     // GeoProviderDef.timeoutMs.
@@ -574,6 +663,10 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
     buildRequest: googleRequest,
     extractText: googleExtractText,
     extractUsage: googleExtractUsage,
+    // #5310 — mesma classe do #5305: finishReason diferente de "STOP"
+    // (MAX_TOKENS/SAFETY/RECITATION/etc.) ou promptFeedback.blockReason
+    // podem deixar parts vazio/ausente.
+    checkProviderError: googleCheckProviderError,
     // Mesmo raciocínio do OpenAI acima.
     timeoutMs: GEO_PROVIDER_TIMEOUT_MS,
   },

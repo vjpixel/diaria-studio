@@ -395,6 +395,126 @@ describe("queryProvider (fetchImpl injetado — nunca rede real)", () => {
     }
   });
 
+  const openai = GEO_PROVIDERS.find((p) => p.id === "openai")!;
+  const google = GEO_PROVIDERS.find((p) => p.id === "google")!;
+
+  it("OpenAI: status:'incomplete' (max_output_tokens) devolve erro de provider, NUNCA ausência de citação (#5310)", async () => {
+    // Mesma classe do #5305: a Responses API parou antes de terminar e
+    // output[] não tem bloco output_text — sem a checagem, openaiExtractText
+    // devolveria "" e o monitor registraria "não citado" por engano.
+    const fakeFetch = async () =>
+      new Response(JSON.stringify({ status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, output: [] }), {
+        status: 200,
+      });
+    const result = await queryProvider(openai, "pergunta", "fake-key", "gpt-4.1", fakeFetch);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorKind, "provider");
+      assert.match(result.error, /incomplete/);
+      assert.match(result.error, /max_output_tokens/);
+    }
+  });
+
+  it("OpenAI: status:'incomplete' (content_filter) devolve erro de provider (#5310)", async () => {
+    const fakeFetch = async () =>
+      new Response(JSON.stringify({ status: "incomplete", incomplete_details: { reason: "content_filter" }, output: [] }), {
+        status: 200,
+      });
+    const result = await queryProvider(openai, "pergunta", "fake-key", "gpt-4.1", fakeFetch);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorKind, "provider");
+      assert.match(result.error, /content_filter/);
+    }
+  });
+
+  it("OpenAI: status:'failed' devolve erro de provider, NUNCA ausência de citação (#5320)", async () => {
+    // Distinto de "incomplete" — resposta síncrona HTTP-200 onde a geração
+    // falhou no servidor, output/output_text tipicamente vazio + objeto
+    // `error` no nível raiz. Sem a checagem, openaiExtractText devolveria ""
+    // e o monitor registraria "não citado" por engano (mesma classe do #5310).
+    const fakeFetch = async () =>
+      new Response(JSON.stringify({ status: "failed", error: { message: "internal error", code: "server_error" } }), {
+        status: 200,
+      });
+    const result = await queryProvider(openai, "pergunta", "fake-key", "gpt-4.1", fakeFetch);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorKind, "provider");
+      assert.match(result.error, /failed/);
+      assert.match(result.error, /internal error/);
+    }
+  });
+
+  it("OpenAI: bloco output[].content[].type:'refusal' devolve erro de provider (#5310)", async () => {
+    const fakeFetch = async () =>
+      new Response(
+        JSON.stringify({ status: "completed", output: [{ content: [{ type: "refusal", refusal: "não posso ajudar com isso" }] }] }),
+        { status: 200 },
+      );
+    const result = await queryProvider(openai, "pergunta", "fake-key", "gpt-4.1", fakeFetch);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorKind, "provider");
+      assert.match(result.error, /refusal/);
+    }
+  });
+
+  it("OpenAI: caso feliz — status:'completed' + output_text vazio continua 'não citado' legítimo (#5310)", async () => {
+    const fakeFetch = async () => new Response(JSON.stringify({ status: "completed", output_text: "" }), { status: 200 });
+    const result = await queryProvider(openai, "pergunta", "fake-key", "gpt-4.1", fakeFetch);
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      const detection = detectCitation(result.text);
+      assert.equal(detection.cited, false);
+    }
+  });
+
+  it("Google: candidates[0].finishReason:'SAFETY' devolve erro de provider, NUNCA ausência de citação (#5310)", async () => {
+    const fakeFetch = async () =>
+      new Response(JSON.stringify({ candidates: [{ finishReason: "SAFETY", content: {} }] }), { status: 200 });
+    const result = await queryProvider(google, "pergunta", "fake-key", "gemini-2.5-flash", fakeFetch);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorKind, "provider");
+      assert.match(result.error, /SAFETY/);
+    }
+  });
+
+  it("Google: candidates[0].finishReason:'MAX_TOKENS' devolve erro de provider (#5310)", async () => {
+    const fakeFetch = async () =>
+      new Response(JSON.stringify({ candidates: [{ finishReason: "MAX_TOKENS" }] }), { status: 200 });
+    const result = await queryProvider(google, "pergunta", "fake-key", "gemini-2.5-flash", fakeFetch);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorKind, "provider");
+      assert.match(result.error, /MAX_TOKENS/);
+    }
+  });
+
+  it("Google: promptFeedback.blockReason devolve erro de provider mesmo sem candidates (#5310)", async () => {
+    const fakeFetch = async () => new Response(JSON.stringify({ promptFeedback: { blockReason: "SAFETY" } }), { status: 200 });
+    const result = await queryProvider(google, "pergunta", "fake-key", "gemini-2.5-flash", fakeFetch);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorKind, "provider");
+      assert.match(result.error, /blockReason/);
+    }
+  });
+
+  it("Google: caso feliz — finishReason:'STOP' + texto vazio continua 'não citado' legítimo (#5310)", async () => {
+    const fakeFetch = async () =>
+      new Response(JSON.stringify({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: "" }] } }] }), {
+        status: 200,
+      });
+    const result = await queryProvider(google, "pergunta", "fake-key", "gemini-2.5-flash", fakeFetch);
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      const detection = detectCitation(result.text);
+      assert.equal(detection.cited, false);
+    }
+  });
+
   it("erro de rede (fetch rejeita): devolve {ok:false, error, errorKind:'network'}, sem httpStatus (#4616 achado 1)", async () => {
     const fakeFetch = async () => {
       throw new Error("network down");
