@@ -86,6 +86,10 @@ import {
   coalesceRefresh,
   normalizePostmasterSpamEntry,
   buildFatalErrorFallback,
+  readRefreshPending, // #5218
+  isRefreshPendingDue, // #5218
+  writeRefreshPending, // #5218
+  clearRefreshPending, // #5218
   type LastGoodCampaignsPayload,
 } from "./brevo-api.ts";
 import { LASTGOOD_TTL, POSTMASTER_SPAM_KV_KEY } from "./types.ts";
@@ -374,7 +378,18 @@ async function buildCampaignsResponse(
  * `buildCampaignsResponse` acima — nunca lança, compartilhável via
  * `coalesceRefresh`.
  */
-async function buildDashboardResponse(request: Request, env: Env, isFresh: boolean): Promise<Response> {
+async function buildDashboardResponse(
+  request: Request,
+  env: Env,
+  isFresh: boolean,
+  // #5218: distinto de `isFresh` -- default preserva o comportamento de
+  // sempre (`?fresh=1` explícito pula o lock cross-colo, como já fazia).
+  // O auto-fresh da fila "avisar quando atualizar" passa `bypassLock: false`
+  // mesmo com `isFresh: true` (bypassa CACHE mas não o LOCK) -- evita que
+  // vários visitantes concorrentes, todos vendo o mesmo pending maduro,
+  // disparem o live-fetch pesado em paralelo (ver call site em `handleFetch`).
+  bypassLock: boolean = isFresh,
+): Promise<Response> {
   const cache = caches.default;
   const path = "/";
   let lockAcquired = false;
@@ -398,7 +413,7 @@ async function buildDashboardResponse(request: Request, env: Env, isFresh: boole
     // vazaria sem tratamento pelo call site (`coalesceRefresh`), cujo
     // `.finally()` só limpa a entrada do Map, não converte a rejection em
     // Response.
-    if (!isFresh) {
+    if (!bypassLock) {
       lockAcquired = await tryAcquireRefreshLock(env, path);
       if (!lockAcquired) {
         const coalesced = await buildInflightCoalescedFallback(env);
@@ -618,7 +633,21 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
 
     // #2144: edge cache 5min via Cache API pras rotas cacheáveis.
     // fresh=1 → bypass completo: nem edge cache nem KV de stats imutáveis.
-    const isFresh = url.searchParams.get("fresh") === "1";
+    const requestedFresh = url.searchParams.get("fresh") === "1";
+    const isDashboardPath = path === "/" || path === "/index.html";
+    // #5218 (Peça 2): fila "avisar quando atualizar" -- só relevante pra rota
+    // do dashboard (é onde o banner de rate-limit com a CTA aparece). Lê o
+    // KV só quando o path é o dashboard E não é já um `?fresh=1` explícito
+    // (sem sentido checar a fila quando o pedido já é fresh por outro meio).
+    const autoFreshDue = isDashboardPath && !requestedFresh
+      ? isRefreshPendingDue(await readRefreshPending(env))
+      : false;
+    // #5218: "efetivo" -- bypassa CACHE (edge + KV de stats) tanto pro
+    // fresh explícito quanto pro auto-fresh da fila. Distinto de
+    // `requestedFresh`, que controla o bypass do LOCK cross-colo (ver
+    // `buildDashboardResponse`/`coalesceRefresh` abaixo) -- o auto-fresh
+    // passa PELO lock/coalescing normal, só não serve dado velho do cache.
+    const isFresh = requestedFresh || autoFreshDue;
     const isCacheable = (path === "/" || path === "/index.html" || path === "/api/campaigns");
     const cache = caches.default;
 
@@ -727,6 +756,22 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     }
 
     if (path === "/" || path === "/index.html") {
+      // #5218 (Peça 2): CTA "Avisar quando atualizar" do banner de rate-limit
+      // -- grava o horário-alvo (já calculado pelo banner, repassado via
+      // querystring) e redireciona de volta pro dashboard. Nunca faz
+      // live-fetch nem toca cache -- é só a escrita da fila.
+      if (url.searchParams.get("queueRefresh") === "1") {
+        const resetAtParam = Number(url.searchParams.get("resetAt"));
+        if (Number.isFinite(resetAtParam) && resetAtParam > Date.now()) {
+          await writeRefreshPending(env, resetAtParam);
+          return new Response(null, { status: 302, headers: { Location: "/", "Cache-Control": "no-store" } });
+        }
+        // resetAt ausente/inválido/já no passado -- nada a enfileirar; se já
+        // passou, o request seguinte já pega o dado fresco naturalmente
+        // (redireciona com ?fresh=1 em vez de silenciosamente ignorar o clique).
+        return new Response(null, { status: 302, headers: { Location: "/?fresh=1", "Cache-Control": "no-store" } });
+      }
+
       // #3644: buildDashboardResponse roda o live-fetch (+ lock KV cross-colo,
       // internamente) e SEMPRE resolve pra uma Response (nunca lança) — permite
       // compartilhar a MESMA promise entre requests concorrentes via
@@ -734,8 +779,20 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
       // em brevo-api.ts). `?fresh=1` nunca coalesce (bypassa cache/lock por
       // design já existente). Chave normaliza "/" e "/index.html" pro mesmo
       // slot -- são a mesma rota efetivamente.
-      const buildOnce = () => buildDashboardResponse(request, env, isFresh);
-      const shared = isFresh ? await buildOnce() : await coalesceRefresh("GET:/", buildOnce);
+      //
+      // #5218: `autoFreshDue` (fila madura) passa `isFresh: true` (bypassa
+      // cache) mas `bypassLock: requestedFresh` (false quando é só a fila,
+      // não um `?fresh=1` explícito) -- continua PELO coalesceRefresh/
+      // tryAcquireRefreshLock normais, pra não deixar 2+ visitantes
+      // concorrentes, todos vendo o mesmo pending maduro, disparar o
+      // live-fetch pesado em paralelo. A fila é limpa DEPOIS do build,
+      // sucesso ou falha -- nunca se rearma sozinha.
+      const buildOnce = async () => {
+        const resp = await buildDashboardResponse(request, env, isFresh, requestedFresh);
+        if (autoFreshDue) await clearRefreshPending(env);
+        return resp;
+      };
+      const shared = requestedFresh ? await buildOnce() : await coalesceRefresh("GET:/", buildOnce);
       return shared.clone();
     }
 
