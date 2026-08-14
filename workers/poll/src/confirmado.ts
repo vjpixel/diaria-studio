@@ -2,10 +2,27 @@
  * workers/poll/src/confirmado.ts (#5167 item 7)
  *
  * Destino do link de confirmação do double opt-in da Beehiiv — pensado pra
- * virar o valor de `opt_in_redirect_url` na publicação (item 8 da issue,
- * FORA do escopo desta unidade: depende do item 9, que precisa investigar no
- * dashboard se o "Recommendations Flow" — signup flow `199e2a8d-…` — compete
- * com esse redirect antes de confiar nele).
+ * virar o valor de `opt_in_redirect_url` na publicação (item 8 da issue).
+ *
+ * **Item 9 investigado (achado, não relitigar):** o signup flow
+ * `199e2a8d-…` ("Recommendations Flow") dispara no trigger "Signed up" —
+ * imediatamente na SUBMISSÃO do formulário, um evento client-side só
+ * aplicável a subscribe forms hospedados no Website Builder da Beehiiv
+ * (embeds cross-origin como `/jogar/subscribe` não suportam signup flow,
+ * confirmado na doc oficial da Beehiiv). `opt_in_redirect_url` dispara num
+ * momento completamente diferente: quando o assinante clica no link de
+ * confirmação DENTRO do e-mail — só depois de `double_opt_in` confirmar o
+ * cadastro no backend, potencialmente outro dispositivo/sessão. Os dois
+ * nunca competem pelo mesmo evento — não há precedência a resolver. Fonte:
+ * docs oficiais da Beehiiv via MCP ("Double opt-in and Smart Nudge: How
+ * they work and why they matter" + "Adding signup flows to your website
+ * subscribe forms"), lidas ao vivo em 14/08/2026. **Item 8 segue PENDENTE
+ * de execução** — `save_publication_settings` foi bloqueado pelo
+ * classificador de auto-mode desta sessão (mudança de config de produção,
+ * tratada com cautela por princípio do projeto); gravá-lo requer sessão com
+ * essa permissão liberada, ou o editor fazer manualmente em Settings →
+ * Emails → Preset Emails → Double Opt-in Email → Opt-in Redirect URL,
+ * valor `https://eia.diar.ia.br/confirmado` (ver #5167).
  *
  * **Por que o Worker `poll` (eia.diar.ia.br), não um Worker novo nem
  * `arquivo`.** Levantamento antes de decidir: `workers/poll` já hospeda
