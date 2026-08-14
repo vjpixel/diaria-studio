@@ -415,11 +415,20 @@ export async function runAudience(argv: string[], deps: AudienceRunDeps): Promis
 
   try {
     // --- Passo 1: publicationId ---
+    // NUNCA gravar em platform.config.json sob --dry-run (#5298) — mesmo
+    // quando o valor ainda não está configurado e precisa ser resolvido, o
+    // dry-run só reporta o que TERIA sido resolvido/gravado.
     const pub = await resolvePublicationId(cfg, deps);
     if (pub.persisted) {
       cfg = { ...cfg, beehiiv: { ...cfg.beehiiv, publicationId: pub.publicationId } };
-      deps.writeFile(configPath, serializePlatformConfig(cfg));
-      console.error(`[audience-run] beehiiv.publicationId resolvido via GET /publications e persistido: ${pub.publicationId}`);
+      if (opts.dryRun) {
+        console.error(
+          `[audience-run] --dry-run: beehiiv.publicationId resolveria para ${pub.publicationId} via GET /publications (NÃO gravado em platform.config.json).`,
+        );
+      } else {
+        deps.writeFile(configPath, serializePlatformConfig(cfg));
+        console.error(`[audience-run] beehiiv.publicationId resolvido via GET /publications e persistido: ${pub.publicationId}`);
+      }
     }
 
     // --- Passo 3: profileSurveyId ---
@@ -437,11 +446,19 @@ export async function runAudience(argv: string[], deps: AudienceRunDeps): Promis
       }
       surveysJson = parsed;
     }
+    // Mesma disciplina do Passo 1 — resolver em memória (pra reportar/usar no
+    // resto do fluxo) sem persistir nada em disco sob --dry-run.
     const survey = resolveProfileSurveyId(cfg, surveysJson);
     if (survey.persisted) {
       cfg = { ...cfg, beehiiv: { ...cfg.beehiiv, profileSurveyId: survey.surveyId } };
-      deps.writeFile(configPath, serializePlatformConfig(cfg));
-      console.error(`[audience-run] beehiiv.profileSurveyId resolvido (única survey candidata) e persistido: ${survey.surveyId}`);
+      if (opts.dryRun) {
+        console.error(
+          `[audience-run] --dry-run: beehiiv.profileSurveyId resolveria para ${survey.surveyId} (única survey candidata; NÃO gravado em platform.config.json).`,
+        );
+      } else {
+        deps.writeFile(configPath, serializePlatformConfig(cfg));
+        console.error(`[audience-run] beehiiv.profileSurveyId resolvido (única survey candidata) e persistido: ${survey.surveyId}`);
+      }
     }
 
     if (opts.resolveOnly) {

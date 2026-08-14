@@ -392,6 +392,76 @@ describe("runAudience — integração", () => {
     }
   });
 
+  // #5298 — achado do review dedicado: com profileSurveyId (e/ou
+  // publicationId) AUSENTE de platform.config.json, a resolução via
+  // --surveys-json disparava os branches de persistência ANTES do check de
+  // --dry-run, gravando o arquivo mesmo sob "dry-run" (o teste acima nunca
+  // pegava isso porque semeava as duas IDs já presentes, então os branches
+  // de persistência nunca disparavam). Este teste reproduz exatamente o
+  // cenário do achado: config com só publicationId, --surveys-json com 1
+  // candidato, --resolve-only --dry-run — e confirma platform.config.json
+  // idêntico byte a byte antes/depois.
+  it("--dry-run + --resolve-only com profileSurveyId ausente: resolve em memória mas NÃO grava platform.config.json", async () => {
+    const root = freshRoot();
+    try {
+      const initialCfg: PlatformConfig = { beehiiv: { publicationId: "pub_ok" } };
+      writeConfig(root, initialCfg);
+      const beforeBytes = readFileSync(resolve(root, "platform.config.json"), "utf8");
+
+      const surveysPath = writeJsonFixture(root, "data/_tmp/surveys.json", [{ id: "srv_candidate", name: "Perfil da audiência" }]);
+
+      const { exec, calls } = makeFakeExec(() => {
+        throw new Error("exec não deveria ser chamado em --resolve-only/--dry-run");
+      });
+      const deps = baseDeps(root, { exec });
+      const result = await runAudience(["--resolve-only", "--surveys-json", surveysPath, "--dry-run"], deps);
+
+      assert.equal(result.code, 0);
+      assert.equal(calls.length, 0);
+
+      // platform.config.json não mudou — nem um byte.
+      const afterBytes = readFileSync(resolve(root, "platform.config.json"), "utf8");
+      assert.equal(afterBytes, beforeBytes);
+      const afterCfg = parsePlatformConfig(afterBytes);
+      assert.equal(afterCfg.beehiiv?.profileSurveyId, undefined);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // Mesmo achado, mas no fluxo COMPLETO (sem --resolve-only) — confirma que
+  // o guard vale também quando o dry-run segue até o passo de respostas.
+  it("--dry-run (fluxo completo) com publicationId E profileSurveyId ausentes: nada é persistido em platform.config.json", async () => {
+    const root = freshRoot();
+    try {
+      const initialCfg: PlatformConfig = {};
+      writeConfig(root, initialCfg);
+      const beforeBytes = readFileSync(resolve(root, "platform.config.json"), "utf8");
+
+      const surveysPath = writeJsonFixture(root, "data/_tmp/surveys.json", [{ id: "srv_candidate" }]);
+      const responsesPath = writeJsonFixture(root, "data/_tmp/responses.json", [VALID_RESPONSE_A]);
+
+      const { exec, calls } = makeFakeExec(() => {
+        throw new Error("exec não deveria ser chamado em --dry-run");
+      });
+      const fetchPublications = async (): Promise<PublicationCandidate[]> => [{ id: "pub_candidate", name: "diar.ia.br" }];
+      const deps = baseDeps(root, { exec, fetchPublications });
+      const result = await runAudience(
+        ["--surveys-json", surveysPath, "--responses", responsesPath, "--dry-run"],
+        deps,
+      );
+
+      assert.equal(result.code, 0);
+      assert.equal(calls.length, 0);
+      assert.equal(existsSync(resolve(root, "data/audience-raw.json")), false);
+
+      const afterBytes = readFileSync(resolve(root, "platform.config.json"), "utf8");
+      assert.equal(afterBytes, beforeBytes);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("update-audience.ts falha (exit != 0) -> propaga como abort (exit 1)", async () => {
     const root = freshRoot();
     try {
