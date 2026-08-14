@@ -332,6 +332,7 @@ import {
   type BrevoDiariaStore,
 } from "./lib/brevo-diaria-store.ts";
 import { BREVO_DIARIA_PROMOCAO_SCORE_UTM } from "./lib/shared/utm-registry.ts"; // #4530
+import { buildOrigemOriginalCustomFields } from "./lib/shared/beehiiv-origem-original.ts"; // #5231
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -657,6 +658,14 @@ export async function verifyUnsubscribedInBeehiiv(
  * não 404 e passar batido pela tolerância a "já sumiu". Buscar o id fresco
  * fecha as duas classes de bug de uma vez. Sem registro existente (`null`),
  * pula direto pro CREATE.
+ *
+ * #5231: o mesmo corpo do GET acima também alimenta
+ * `buildOrigemOriginalCustomFields` (`lib/shared/beehiiv-origem-original.ts`)
+ * — preserva `utm_source`/`utm_medium`/`utm_campaign`/`referring_site`/
+ * `created` originais num custom field do CREATE, em vez de deixá-los serem
+ * sobrescritos silenciosamente pela UTM constante de reativação abaixo.
+ * Fail-soft: GET sem esses campos (ou corpo malformado) nunca bloqueia a
+ * promoção, só resulta em nenhum custom field extra no CREATE.
  */
 export async function promoteBeehiivSubscription(
   publicationId: string,
@@ -671,6 +680,15 @@ export async function promoteBeehiivSubscription(
     headers: authHeaders,
   });
   let existingId: string | null = null;
+  // #5231: origem original (utm_source/medium/campaign/referring_site/created)
+  // lida do MESMO corpo do GET — hoje só se extraía `data.id`. `undefined`
+  // (nunca lança) quando o corpo não tem `data` ou nenhum campo de origem
+  // reconhecível — fail-soft, a promoção segue com a UTM constante de sempre.
+  // Gated por `BEEHIIV_ORIGEM_ORIGINAL_FIELD` (ver docstring de
+  // `beehiiv-origem-original.ts`): env var ausente = `undefined` sempre,
+  // mesmo com origem no GET — o editor liga só depois de criar o custom
+  // field na Beehiiv (#5231 item 1).
+  let origemOriginalCustomFields: ReturnType<typeof buildOrigemOriginalCustomFields> = undefined;
   if (getRes.status === 404) {
     existingId = null;
   } else if (!getRes.ok) {
@@ -680,6 +698,10 @@ export async function promoteBeehiivSubscription(
       throw new Error(`Beehiiv API GET /subscriptions/by_email/${email} corpo não-parseável: ${e}`);
     });
     existingId = (body as { data?: { id?: string } })?.data?.id || null;
+    origemOriginalCustomFields = buildOrigemOriginalCustomFields(
+      body as Parameters<typeof buildOrigemOriginalCustomFields>[0],
+      process.env.BEEHIIV_ORIGEM_ORIGINAL_FIELD,
+    );
   }
 
   if (existingId) {
@@ -714,6 +736,16 @@ export async function promoteBeehiivSubscription(
       utm_medium: BREVO_DIARIA_PROMOCAO_SCORE_UTM.medium,
       utm_campaign: BREVO_DIARIA_PROMOCAO_SCORE_UTM.campaign,
       referring_site: BREVO_DIARIA_PROMOCAO_SCORE_UTM.referringSite,
+      // #5231: preserva a origem de aquisição ORIGINAL (lida do GET acima)
+      // num custom field — sem isto, o DELETE+CREATE acima sobrescreve
+      // utm_source/medium/campaign/referring_site com a constante fixa
+      // acima, perdendo pra sempre a origem real do contato. GATED por
+      // `BEEHIIV_ORIGEM_ORIGINAL_FIELD` (off por padrão) — só tem efeito
+      // real (e só é enviado) depois que o editor criar o custom field
+      // `origem_original` na Beehiiv (#5231 item 1) E ligar o env var; até
+      // lá `origemOriginalCustomFields` é sempre `undefined`, comportamento
+      // idêntico a antes desta feature.
+      ...(origemOriginalCustomFields ? { custom_fields: origemOriginalCustomFields } : {}),
     }),
   });
   if (!res.ok) {
