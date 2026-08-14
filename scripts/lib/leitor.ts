@@ -185,9 +185,22 @@ export interface LeitorSummary {
   total_subscribers: number;
   total_active: number;
   leitores_v1: number;
+  /** Subscribers do snapshot sem campo `stats` (undefined/null) — ver
+   *  `MISSING_STATS_WARN_FRACTION` abaixo. */
+  subscribers_missing_stats: number;
 }
 
-/** Pure sobre a lista já carregada — testável sem tocar disco. */
+/** Fração de subscribers sem `stats` a partir da qual emitimos aviso.
+ *  Snapshots gerados ANTES do #5229 (que introduziu `expand[]=stats` no
+ *  backup) não têm esse campo em NENHUM subscriber — `leitorInputFromBeehiivSubscriber`
+ *  cai no fallback `?? 0` pra `totalReceived`/`totalUniqueClicked` e
+ *  `leitores_v1` sai 0 silenciosamente, indistinguível de "base real sem
+ *  leitores" (achado ao vivo, PR #5275 finding 1, snapshot `2026-06-05`). */
+export const MISSING_STATS_WARN_FRACTION = 0.9;
+
+/** Pure sobre a lista já carregada — testável sem tocar disco (o único efeito
+ *  colateral é o `console.warn` de baixo sinal/alto ruído quando o snapshot
+ *  não tem dado de engajamento — não afeta o retorno nem lança). */
 export function summarizeLeitores(
   subscribers: BeehiivBackupSubscriber[],
   thresholds: LeitorThresholds,
@@ -195,9 +208,18 @@ export function summarizeLeitores(
 ): LeitorSummary {
   let totalActive = 0;
   let leitores = 0;
+  let missingStats = 0;
   for (const sub of subscribers) {
     if (sub.status === "active") totalActive++;
+    if (sub.stats == null) missingStats++;
     if (isLeitorV1(leitorInputFromBeehiivSubscriber(sub), thresholds)) leitores++;
+  }
+  if (subscribers.length > 0 && missingStats / subscribers.length >= MISSING_STATS_WARN_FRACTION) {
+    console.warn(
+      `[leitor] aviso: ${missingStats}/${subscribers.length} subscribers do snapshot ${snapshotDate} não têm campo ` +
+        `"stats" (provavelmente anterior ao #5229 — expand[]=stats). "leitores_v1" abaixo NÃO significa "zero ` +
+        `leitores reais" neste caso, e sim "snapshot sem dado de engajamento" — não usar este resultado como fato.`,
+    );
   }
   return {
     snapshot_date: snapshotDate,
@@ -205,6 +227,7 @@ export function summarizeLeitores(
     total_subscribers: subscribers.length,
     total_active: totalActive,
     leitores_v1: leitores,
+    subscribers_missing_stats: missingStats,
   };
 }
 

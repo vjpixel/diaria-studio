@@ -8,6 +8,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   LEITOR_V1_THRESHOLDS,
+  MISSING_STATS_WARN_FRACTION,
   computeCtrPct,
   isLeitorV1,
   leitorInputFromBeehiivSubscriber,
@@ -202,6 +203,7 @@ describe("summarizeLeitores", () => {
     assert.equal(summary.total_active, 3);
     assert.equal(summary.leitores_v1, 1);
     assert.equal(summary.snapshot_date, "2026-08-14");
+    assert.equal(summary.subscribers_missing_stats, 0);
   });
 
   it("lista vazia produz zeros, não crash", () => {
@@ -209,6 +211,67 @@ describe("summarizeLeitores", () => {
     assert.equal(summary.total_subscribers, 0);
     assert.equal(summary.total_active, 0);
     assert.equal(summary.leitores_v1, 0);
+    assert.equal(summary.subscribers_missing_stats, 0);
+  });
+
+  it("conta subscribers com stats undefined OU null como faltantes", () => {
+    const subs: BeehiivBackupSubscriber[] = [
+      sub({ email: "a@x.com", stats: undefined }),
+      sub({ email: "b@x.com", stats: null }),
+      sub({ email: "c@x.com" }), // stats presente (default do helper)
+    ];
+    const summary = summarizeLeitores(subs, LEITOR_V1_THRESHOLDS, "2026-08-14");
+    assert.equal(summary.subscribers_missing_stats, 2);
+  });
+
+  // -------------------------------------------------------------------------
+  // Finding 1 do PR #5275 — warning quando o snapshot não tem `stats`
+  // (pré-#5229): leitores_v1: 0 não pode ser lido como "zero leitores reais"
+  // sem distinguir de "snapshot sem dado de engajamento".
+  // -------------------------------------------------------------------------
+
+  it("emite console.warn quando fração de subscribers sem stats é alta (pré-#5229)", () => {
+    const subs: BeehiivBackupSubscriber[] = Array.from({ length: 10 }, (_, i) =>
+      sub({ email: `s${i}@x.com`, stats: undefined }),
+    );
+    const originalWarn = console.warn;
+    const calls: unknown[][] = [];
+    console.warn = (...args: unknown[]) => {
+      calls.push(args);
+    };
+    try {
+      const summary = summarizeLeitores(subs, LEITOR_V1_THRESHOLDS, "2026-06-05");
+      assert.equal(summary.subscribers_missing_stats, 10);
+      assert.equal(summary.leitores_v1, 0);
+      assert.equal(calls.length, 1, "esperava exatamente 1 chamada a console.warn");
+      const message = String(calls[0][0]);
+      assert.match(message, /stats/);
+      assert.match(message, /2026-06-05/);
+      assert.match(message, /5229/);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it("NÃO emite console.warn quando a maioria dos subscribers tem stats", () => {
+    const subs: BeehiivBackupSubscriber[] = [
+      sub({ email: "a@x.com" }),
+      sub({ email: "b@x.com" }),
+      sub({ email: "c@x.com" }),
+      sub({ email: "d@x.com", stats: undefined }), // 1/4 faltando — abaixo do threshold
+    ];
+    assert.ok(1 / subs.length < MISSING_STATS_WARN_FRACTION);
+    const originalWarn = console.warn;
+    let called = false;
+    console.warn = () => {
+      called = true;
+    };
+    try {
+      summarizeLeitores(subs, LEITOR_V1_THRESHOLDS, "2026-08-14");
+      assert.equal(called, false);
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 });
 
