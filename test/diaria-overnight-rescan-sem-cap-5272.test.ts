@@ -105,6 +105,15 @@ describe("diaria-overnight re-varredura sem cap (#5272)", () => {
       /dois mecanismos, nenhum deles um contador/,
       "a substituição do cap não pode reintroduzir contagem",
     );
+    // A contagem aparece 2x no mesmo parágrafo (na enumeração e no fecho que
+    // compara com o develop). Afirmar só a presença de "dois" deixava passar um
+    // "três mecanismos acima" esquecido no fecho — foi o que aconteceu ao
+    // remover o teto (achado do review da PR #5274).
+    assert.doesNotMatch(
+      overnight,
+      /três mecanismos/,
+      "nenhum resquício da contagem de quando o teto de relógio existia",
+    );
   });
 
   it("NÃO existe teto de relógio: nem instrução, nem campo de plan.json, nem linha de relatório", () => {
