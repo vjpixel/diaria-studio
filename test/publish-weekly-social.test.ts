@@ -34,14 +34,29 @@ import {
   computeWeeklyScheduledAt,
   resolveDestaqueImageUrl,
   resolveWeeklyImageUrls,
+  weekRangeLabel,
+  buildFlatCardTexts,
   DEFAULT_WEEKLY_TIME,
   WEEKLY_MIN_ITEMS,
   main,
 } from "../scripts/publish-weekly-social.ts";
 import type { InstagramRankedCandidate } from "../scripts/lib/weekly-instagram-select.ts";
 import { sectionCardCacheKey, type SectionCardGenerator } from "../scripts/lib/weekly-instagram-ondemand-card.ts";
+import type { FlatCardGenerator } from "../scripts/lib/weekly-flat-card.ts";
 
 const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * Fake do gerador de card capa/CTA (#5330) — nunca chama sharp/font/upload
+ * real, só devolve uma URL determinística por kvKey (mesmo padrão dos fakes
+ * de `sectionCardGenerator` já usados neste arquivo). Todo `main()` chamado
+ * com `--schedule` precisa disso: sem injetar, cairia no
+ * `defaultFlatCardGenerator` real (checa fonte de marca + upload de
+ * verdade pro KV Cloudflare — nunca exercitado em teste).
+ */
+const fakeFlatCardGenerator: FlatCardGenerator = async ({ kvKey }) => ({
+  url: `https://cdn.example.com/flat/${kvKey}`,
+});
 
 function candidateFixture(
   overrides: Partial<InstagramRankedCandidate> & Pick<InstagramRankedCandidate, "title" | "url" | "editionDate" | "destaqueNumber">,
@@ -79,6 +94,54 @@ describe("computeWeeklyScheduledAt", () => {
 
   it("rejeita saturday em formato inválido", () => {
     assert.throws(() => computeWeeklyScheduledAt({ saturday: "2026-08-01", timezone: "America/Sao_Paulo" }));
+  });
+
+  it("#5330: dayOffset=0 (default) agenda no PRÓPRIO sábado — modo 'highlights'", () => {
+    const iso = computeWeeklyScheduledAt({ saturday: "260815", timezone: "America/Sao_Paulo" });
+    assert.ok(iso.startsWith("2026-08-15T"));
+  });
+
+  it("#5330: dayOffset=1 agenda no domingo seguinte — modo 'clicked'", () => {
+    const iso = computeWeeklyScheduledAt({ saturday: "260815", timezone: "America/Sao_Paulo", dayOffset: 1 });
+    assert.ok(iso.startsWith("2026-08-16T"));
+  });
+
+  it("#5330: dayOffset cruza mês corretamente (aritmética de Date, não lógica de calendário manual)", () => {
+    const iso = computeWeeklyScheduledAt({ saturday: "260831", timezone: "America/Sao_Paulo", dayOffset: 1 });
+    assert.ok(iso.startsWith("2026-09-01T"), `esperava cruzar pra setembro, veio ${iso}`);
+  });
+});
+
+describe("weekRangeLabel (#5330 — rodapé do card capa/CTA)", () => {
+  it("formata primeiro e último dia da janela + mês abreviado em pt-BR", () => {
+    assert.equal(weekRangeLabel(["260810", "260811", "260812", "260813", "260814"]), "10–14 ago");
+  });
+
+  it("janela vazia retorna string vazia (nunca lança)", () => {
+    assert.equal(weekRangeLabel([]), "");
+  });
+
+  it("janela de 1 dia só (edge case) usa o mesmo dia nos dois lados", () => {
+    assert.equal(weekRangeLabel(["260810"]), "10–10 ago");
+  });
+});
+
+describe("buildFlatCardTexts (#5330 — textos dos slides sem foto, por modo)", () => {
+  it("modo 'highlights': título de capa é 'Os principais destaques da semana'", () => {
+    const texts = buildFlatCardTexts("highlights", ["260810", "260811", "260812", "260813", "260814"]);
+    assert.equal(texts.cover.title, "Os principais destaques da semana");
+    assert.equal(texts.cover.footer, "10–14 ago · diar.ia.br");
+  });
+
+  it("modo 'clicked': título de capa é 'Os mais clicados da semana'", () => {
+    const texts = buildFlatCardTexts("clicked", ["260810", "260811", "260812", "260813", "260814"]);
+    assert.equal(texts.cover.title, "Os mais clicados da semana");
+  });
+
+  it("CTA final é IDÊNTICO nos dois modos (convite pra assinar não depende de qual carrossel é)", () => {
+    const highlights = buildFlatCardTexts("highlights", ["260810"]);
+    const clicked = buildFlatCardTexts("clicked", ["260810"]);
+    assert.deepEqual(highlights.cta, clicked.cta);
   });
 });
 
@@ -495,7 +558,7 @@ describe("main(): dispatch mockado", () => {
         captured += args.map(String).join(" ") + "\n";
       };
       try {
-        await main(["--saturday", saturdayStr, "--editions-root", editionsRoot, "--manifest-only"], { dataRoot });
+        await main(["--saturday", saturdayStr, "--editions-root", editionsRoot, "--manifest-only"], { dataRoot, flatCardGenerator: fakeFlatCardGenerator });
       } finally {
         console.log = originalLog;
       }
@@ -546,16 +609,112 @@ describe("main(): dispatch mockado", () => {
 
       await main(
         ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
-        { dataRoot },
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
       );
 
       // D2 (8%) vem antes de D1 (2%) na caption e no carrossel de imagens.
       assert.match(capturedBody.text, /1\. D2 muito clicado[\s\S]*2\. D1 pouco clicado/);
-      assert.deepEqual(capturedBody.image_urls, ["https://cdn.example.com/271220-d2.jpg", "https://cdn.example.com/271220-d1.jpg"]);
+      // #5330: capa (sem foto) abre o carrossel, CTA (sem foto) fecha — os 2
+      // itens de notícia ficam no meio, na mesma ordem de antes.
+      assert.equal(capturedBody.image_urls.length, 4);
+      assert.match(capturedBody.image_urls[0], /\/flat\/weekly\/.*-clicked\/cover-4x5\.jpg$/);
+      assert.deepEqual(capturedBody.image_urls.slice(1, 3), [
+        "https://cdn.example.com/271220-d2.jpg",
+        "https://cdn.example.com/271220-d1.jpg",
+      ]);
+      assert.match(capturedBody.image_urls[3], /\/flat\/weekly\/.*-clicked\/cta-4x5\.jpg$/);
       assert.equal(capturedBody.image_url, null);
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
       assert.equal(out.posts.find((p: any) => p.platform === "instagram").status, "scheduled");
+    });
+  });
+
+  describe("#5330: --mode highlights (os 5 D1 da semana, sem ranking, agenda no PRÓPRIO sábado)", () => {
+    it("D1 de cada edição, ordem cronológica, agendado no sábado (não domingo) — ignora dado de clique inteiramente", async () => {
+      const saturday = new Date(2027, 11, 25); // sábado
+      const saturdayStr = aammddOf(saturday);
+
+      const dirA = setupEdition(editionsRoot, "271220", [{ n: 1, title: "D1 da segunda", url: "https://exemplo.com/seg" }]);
+      addImageFixture(dirA, 1, "https://cdn.example.com/271220-d1.jpg");
+      const dirB = setupEdition(editionsRoot, "271221", [{ n: 1, title: "D1 da terça", url: "https://exemplo.com/ter" }]);
+      addImageFixture(dirB, 1, "https://cdn.example.com/271221-d1.jpg");
+      // Sem cache Beehiiv nenhum — modo highlights não deveria precisar disso.
+
+      let capturedBody: any = null;
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          capturedBody = JSON.parse(opts.body as string);
+          return {
+            statusCode: 200,
+            data: JSON.stringify({ queued: true, key: "queue:instagram:highlights:1", scheduled_at: "2027-12-25T11:00:00-03:00", destaque: "weekly-highlights" }),
+          };
+        });
+
+      await main(
+        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
+      );
+
+      assert.match(capturedBody.text, /^Os principais destaques da semana/);
+      assert.match(capturedBody.text, /1\. D1 da segunda[\s\S]*2\. D1 da terça/);
+      assert.equal(capturedBody.destaque, "weekly-highlights");
+      assert.equal(capturedBody.image_urls.length, 4);
+      assert.match(capturedBody.image_urls[0], /\/flat\/weekly\/.*-highlights\/cover-4x5\.jpg$/);
+      assert.deepEqual(capturedBody.image_urls.slice(1, 3), [
+        "https://cdn.example.com/271220-d1.jpg",
+        "https://cdn.example.com/271221-d1.jpg",
+      ]);
+      assert.match(capturedBody.image_urls[3], /\/flat\/weekly\/.*-highlights\/cta-4x5\.jpg$/);
+
+      // Agendado no PRÓPRIO sábado (dayOffset=0), não no domingo (dayOffset
+      // default do modo "clicked") — diferença-chave do #5330.
+      assert.equal(capturedBody.scheduled_at, "2027-12-25T11:00:00-03:00");
+
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const post = out.posts.find((p: any) => p.platform === "instagram");
+      assert.equal(post.destaque, "weekly-highlights");
+      assert.equal(post.status, "scheduled");
+    });
+
+    it("highlights e clicked do MESMO sábado, rodados em sequência, nunca colidem em skip-existing", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dirA = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único D1", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dirA, 1, "https://cdn.example.com/271220-d1.jpg");
+      writeCachePost(dataRoot, "post_a", {
+        id: "post_a",
+        title: "Edição 271220",
+        status: "confirmed",
+        publish_date: epochFor("271220"),
+        stats: { email: { clicks: 1, unique_opens: 100 }, clicks: [{ url: "https://exemplo.com/unico", base_url: "https://exemplo.com/unico", email: { unique_verified_clicks: 1 } }] },
+      });
+
+      let requestCount = 0;
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply(() => {
+          requestCount++;
+          return { statusCode: 200, data: JSON.stringify({ queued: true, key: `queue:instagram:${requestCount}`, scheduled_at: "x", destaque: "weekly" }) };
+        })
+        .times(2);
+
+      await main(
+        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
+      );
+      await main(
+        ["--saturday", saturdayStr, "--mode", "clicked", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
+      );
+
+      assert.equal(requestCount, 2, "os 2 modos deveriam disparar 2 chamadas de rede distintas — nenhum skip-existing indevido entre eles");
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const destaques = out.posts.filter((p: any) => p.platform === "instagram").map((p: any) => p.destaque);
+      assert.deepEqual(destaques.sort(), ["weekly-clicked", "weekly-highlights"]);
     });
   });
 
@@ -626,12 +785,13 @@ describe("main(): dispatch mockado", () => {
 
       await main(
         ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
-        { dataRoot, sectionCardGenerator: fakeGenerator },
+        { dataRoot, sectionCardGenerator: fakeGenerator, flatCardGenerator: fakeFlatCardGenerator },
       );
 
       // RADAR (8%) vence D1 (2%) — vem primeiro na caption E no carrossel.
       assert.match(capturedBody.text, /1\. Item de Radar vencedor[\s\S]*2\. D1 pouco clicado/);
-      assert.deepEqual(capturedBody.image_urls, [
+      assert.equal(capturedBody.image_urls.length, 4);
+      assert.deepEqual(capturedBody.image_urls.slice(1, 3), [
         "https://cdn.example.com/radar-card-gerado-sob-demanda.jpg",
         "https://cdn.example.com/271220-d1.jpg",
       ]);
@@ -664,7 +824,7 @@ describe("main(): dispatch mockado", () => {
           // exercitar isoladamente — `--force-incomplete-click-data` passa
           // por aquele gate (banner ainda impresso, sem exit) pra chegar no
           // gate de contagem sem `--force-incomplete-week`.
-          () => main(["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-click-data"], { dataRoot }),
+          () => main(["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-click-data"], { dataRoot, flatCardGenerator: fakeFlatCardGenerator }),
           1,
         );
       } finally {
@@ -692,7 +852,7 @@ describe("main(): dispatch mockado", () => {
         // --force-incomplete-click-data (teste foca no gate de MIN_ITEMS,
         // não no de dado de clique).
         ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
-        { dataRoot },
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
       );
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
@@ -715,7 +875,7 @@ describe("main(): dispatch mockado", () => {
         // #4511: sem cache Beehiiv pra nenhuma das 2 edições → precisa de
         // --force-incomplete-click-data pra chegar na checagem de imagem.
         ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
-        { dataRoot },
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
       );
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
@@ -746,7 +906,7 @@ describe("main(): dispatch mockado", () => {
       await main(
         // #4511: sem cache Beehiiv pra 271220 → precisa de --force-incomplete-click-data.
         ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
-        { dataRoot },
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
       );
 
       assert.equal(attempts, 2);
@@ -770,7 +930,7 @@ describe("main(): dispatch mockado", () => {
             // #4511: sem cache Beehiiv pra 191230 → precisa de --force-incomplete-click-data
             // pra chegar na validação de scheduled_at, que é o que este teste cobre.
             ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
-            { dataRoot },
+            { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
           ),
         1,
       );
@@ -793,7 +953,7 @@ describe("main(): dispatch mockado", () => {
       await main(
         // #4511: sem cache Beehiiv pra 271220 → precisa de --force-incomplete-click-data.
         ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
-        { dataRoot },
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
       );
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
@@ -826,7 +986,7 @@ describe("main(): dispatch mockado", () => {
           () =>
             main(
               ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
-              { dataRoot },
+              { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
             ),
           1,
         );
@@ -864,7 +1024,7 @@ describe("main(): dispatch mockado", () => {
         () =>
           main(
             ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
-            { dataRoot },
+            { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
           ),
         1,
       );
@@ -899,7 +1059,7 @@ describe("main(): dispatch mockado", () => {
           "--force-incomplete-week",
           "--force-incomplete-click-data",
         ],
-        { dataRoot },
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
       );
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
@@ -956,7 +1116,7 @@ describe("main(): dispatch mockado", () => {
           () =>
             main(
               ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--no-skip-existing", "--force-incomplete-week"],
-              { dataRoot },
+              { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
             ),
           /EISDIR/,
           "falha de persistência PÓS-sucesso deveria propagar como erro FATAL (não ser engolida/mascarada)",

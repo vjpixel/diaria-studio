@@ -308,6 +308,47 @@ describe("#882 /queue payload size validation", () => {
     const key = Array.from(kv.store.keys())[0];
     assert.ok(key.startsWith("queue:2026-12-01T12:00:00.000Z:"), `key inesperada: ${key}`);
   });
+
+  // #5330: publish-weekly-social.ts passou a enviar destaque: "weekly-clicked" /
+  // "weekly-highlights" (dois carrosséis semanais) — a validação regex só
+  // aceitava d1/d2/d3, rejeitando esses valores com 400 ("destaque must be
+  // d1, d2, or d3") e travando o agendamento do post semanal inteiro.
+  for (const destaque of ["weekly", "weekly-clicked", "weekly-highlights"]) {
+    it(`destaque="${destaque}" (carrossel semanal, #5330) retorna 202, não 400`, async () => {
+      const { env, kv } = mkEnv();
+      const body = {
+        text: "carrossel semanal",
+        image_urls: ["https://example.com/1.jpg"],
+        scheduled_at: "2026-12-06T11:00:00Z",
+        destaque,
+        channel: "instagram",
+      };
+      const req = authedRequest("https://w.test/queue", {
+        method: "POST",
+        body: JSON.stringify(body),
+        headers: { "Content-Type": "application/json" },
+      });
+      const res = await workerDefault.fetch(req, env);
+      assert.equal(res.status, 202, `esperava 202, veio ${res.status}: ${JSON.stringify(await res.clone().json().catch(() => null))}`);
+      assert.equal(kv.store.size, 1);
+    });
+  }
+
+  it('destaque="d4" (fora de d1-d3 e fora do padrão weekly[-mode]) continua 400', async () => {
+    const { env } = mkEnv();
+    const body = {
+      text: "post inválido",
+      scheduled_at: "2026-12-01T12:00:00Z",
+      destaque: "d4",
+    };
+    const req = authedRequest("https://w.test/queue", {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 400);
+  });
 });
 
 // ── #880 — dead-letter retry ───────────────────────────────────────────────

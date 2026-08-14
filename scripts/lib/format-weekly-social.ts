@@ -40,7 +40,13 @@ export function buildInstagramWeeklyArchiveUrl(): string {
 
 const ARCHIVE_URL = buildInstagramWeeklyArchiveUrl();
 
-const INTRO_LINE = "Os mais clicados da semana na diar.ia.br:";
+/** Modo do carrossel semanal (#5330) — cada um tem intro própria na caption. */
+export type WeeklyInstagramMode = "clicked" | "highlights";
+
+const INTRO_LINES: Record<WeeklyInstagramMode, string> = {
+  clicked: "Os mais clicados da semana na diar.ia.br:",
+  highlights: "Os principais destaques da semana na diar.ia.br:",
+};
 
 /** Shape mínimo que a formatação precisa — desacoplado do tipo de seleção completo (`InstagramRankedCandidate`). */
 export interface InstagramWeeklyItem {
@@ -90,10 +96,10 @@ function contextLine(item: InstagramWeeklyItem): string {
  * CADA item) é responsabilidade de `publish-weekly-social.ts`
  * (`resolveWeeklyImageUrls`).
  */
-export function formatInstagramWeekly(items: InstagramWeeklyItem[]): string {
+export function formatInstagramWeekly(items: InstagramWeeklyItem[], mode: WeeklyInstagramMode = "clicked"): string {
   if (items.length === 0) return "";
   const body =
-    `${INTRO_LINE}\n\n` +
+    `${INTRO_LINES[mode]}\n\n` +
     items
       .map((it, i) => {
         const ctx = contextLine(it);

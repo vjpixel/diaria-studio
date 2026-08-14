@@ -101,6 +101,7 @@ import {
   uniqueOpensOf,
   toRankedCandidate,
   selectInstagramWeekly,
+  selectInstagramHighlights,
   hasSuspiciousCommercialLanguage,
   type BeehiivCachePost,
   type InstagramRankedCandidate,
@@ -110,7 +111,8 @@ import {
   defaultSectionCardGenerator,
   type SectionCardGenerator,
 } from "./lib/weekly-instagram-ondemand-card.ts";
-import { formatInstagramWeekly } from "./lib/format-weekly-social.ts";
+import { resolveOrGenerateFlatCardUrl, type FlatCardGenerator } from "./lib/weekly-flat-card.ts";
+import { formatInstagramWeekly, type WeeklyInstagramMode } from "./lib/format-weekly-social.ts";
 import { appendSocialPosts, readSocialPublished, PostEntry } from "./lib/social-published-store.ts";
 import { postToWorkerQueue } from "./lib/worker-queue-client.ts";
 import { parseEditionDate, timezoneOffsetIso } from "./compute-social-schedule.ts";
@@ -120,6 +122,20 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Assunção de implementação — ver nota no cabeçalho. Override via `--time`. */
 export const DEFAULT_WEEKLY_TIME = "11:00";
+
+/**
+ * Dois carrosséis semanais (#5330, decisão do editor 260815): "highlights"
+ * (os 5 D1 da semana, sem ranking por clique) publica no PRÓPRIO sábado
+ * (`--saturday`); "clicked" (ranking por clique, comportamento original do
+ * #4483) publica no domingo seguinte — dias separados pra não competir pelo
+ * mesmo slot de feed. `DEFAULT_MODE_DAY_OFFSET` é dias somados à data de
+ * `--saturday` pra chegar na data de agendamento de cada modo; `--day-offset`
+ * sobrescreve pra quem quiser testar/ajustar sem editar código.
+ */
+export const DEFAULT_MODE_DAY_OFFSET: Record<WeeklyInstagramMode, number> = {
+  highlights: 0,
+  clicked: 1,
+};
 
 /**
  * Limiar de "seleção materialmente incompleta" (herdado do #4101, semântica
@@ -143,13 +159,15 @@ export function computeWeeklyScheduledAt(opts: {
   saturday: string;
   time?: string;
   timezone: string;
+  /** Dias somados a `saturday` antes de aplicar `time` — ver `DEFAULT_MODE_DAY_OFFSET` (#5330). Default 0 (o próprio sábado). */
+  dayOffset?: number;
 }): string {
   const time = opts.time ?? DEFAULT_WEEKLY_TIME;
   if (!/^\d{1,2}:\d{2}$/.test(time)) {
     throw new Error(`--time inválido: '${time}' (esperado HH:MM).`);
   }
   const { year, month, day } = parseEditionDate(opts.saturday);
-  const target = new Date(year, month - 1, day);
+  const target = new Date(year, month - 1, day + (opts.dayOffset ?? 0));
   const dateStr =
     `${target.getFullYear()}-` +
     String(target.getMonth() + 1).padStart(2, "0") +
@@ -158,6 +176,35 @@ export function computeWeeklyScheduledAt(opts: {
   const [h, m] = time.split(":");
   const offsetStr = timezoneOffsetIso(target, opts.timezone);
   return `${dateStr}T${h.padStart(2, "0")}:${m}:00${offsetStr}`;
+}
+
+const MESES_ABREV = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+
+/** Pure: `["260810", ..., "260814"]` → `"10–14 ago"` (rodapé do card capa/CTA). */
+export function weekRangeLabel(contentWindow: string[]): string {
+  if (contentWindow.length === 0) return "";
+  const first = contentWindow[0];
+  const last = contentWindow[contentWindow.length - 1];
+  const { day: d1 } = parseEditionDate(first);
+  const { month, day: d2 } = parseEditionDate(last);
+  return `${d1}–${d2} ${MESES_ABREV[month - 1]}`;
+}
+
+/** Pure: texto dos slides sem foto (capa + CTA), por modo (#5330). */
+export function buildFlatCardTexts(
+  mode: WeeklyInstagramMode,
+  contentWindow: string[],
+): { cover: { kicker: string; title: string; footer: string }; cta: { kicker: string; title: string; footer: string } } {
+  const range = weekRangeLabel(contentWindow);
+  const coverTitle = mode === "highlights" ? "Os principais destaques da semana" : "Os mais clicados da semana";
+  return {
+    cover: { kicker: "Resumo semanal", title: coverTitle, footer: range ? `${range} · diar.ia.br` : "diar.ia.br" },
+    cta: {
+      kicker: "Grátis, toda manhã",
+      title: "A edição completa chega no seu e-mail. Assine no link da bio.",
+      footer: "diar.ia.br",
+    },
+  };
 }
 
 /**
@@ -301,7 +348,11 @@ function loadBeehiivCache(beehiivPostsDir: string): BeehiivCachePost[] {
  */
 export async function main(
   argv: string[] = process.argv.slice(2),
-  opts: { dataRoot?: string; sectionCardGenerator?: SectionCardGenerator } = {},
+  opts: {
+    dataRoot?: string;
+    sectionCardGenerator?: SectionCardGenerator;
+    flatCardGenerator?: FlatCardGenerator;
+  } = {},
 ) {
   const dataRoot = opts.dataRoot ?? resolve(ROOT, "data");
   const { flags, values } = parseArgs(argv);
@@ -320,15 +371,28 @@ export async function main(
     return;
   }
 
+  // #5330: dois carrosséis, "clicked" (comportamento original do #4483,
+  // default — back-compat com quem já chama sem --mode) ou "highlights" (os
+  // 5 D1 da semana, sem ranking por clique). Ver DEFAULT_MODE_DAY_OFFSET.
+  const modeArg = values["mode"] ?? "clicked";
+  if (modeArg !== "clicked" && modeArg !== "highlights") {
+    console.error(`ERRO: --mode inválido: '${modeArg}' (esperado 'clicked' ou 'highlights').`);
+    process.exit(1);
+    return;
+  }
+  const mode = modeArg as WeeklyInstagramMode;
+
   const editionsRoot = resolve(ROOT, values["editions-root"] ?? "data/editions");
   const beehiivPostsDir = resolve(dataRoot, "beehiiv-cache/posts");
   const time = values["time"] ?? DEFAULT_WEEKLY_TIME;
+  const dayOffset = values["day-offset"] != null ? Number(values["day-offset"]) : DEFAULT_MODE_DAY_OFFSET[mode];
   const doSchedule = flags.has("schedule");
   const skipExisting = !flags.has("no-skip-existing");
   const forceIncompleteWeek = flags.has("force-incomplete-week"); // herdado do #4101 finding 6
   // #4511 fleet review ALTO: confirmação explícita pra prosseguir com dado
   // de clique incompleto (post ausente do cache OU não-enriquecido por
-  // link) — ver gate abaixo, logo após montar `warnings`.
+  // link) — ver gate abaixo, logo após montar `warnings`. Só se aplica ao
+  // modo "clicked" — "highlights" não ranqueia por clique (#5330).
   const forceIncompleteClickData = flags.has("force-incomplete-click-data");
   const manifestOnly = flags.has("manifest-only");
 
@@ -347,10 +411,13 @@ export async function main(
   // pra stdout ficar JSON puro e parseável pelo caller (a skill dispatcha
   // `beehiiv-clicks-enricher` a partir deste output).
   if (manifestOnly) {
-    const manifest = identifyInstagramPostsNeedingClicks(windowPosts);
+    // #5330: "highlights" não ranqueia por clique — não há nada pra
+    // enriquecer, o manifest sai sempre vazio (evita rodar
+    // beehiiv-clicks-enricher à toa quando o modo nem usa esse dado).
+    const manifest = mode === "highlights" ? [] : identifyInstagramPostsNeedingClicks(windowPosts);
     console.log(
       JSON.stringify(
-        { saturday, contentWindow, editionsFound: existingCandidates.map((c) => c.date), posts_needing_clicks: manifest },
+        { saturday, mode, contentWindow, editionsFound: existingCandidates.map((c) => c.date), posts_needing_clicks: manifest },
         null,
         2,
       ),
@@ -389,17 +456,22 @@ export async function main(
     return toRankedCandidate(c, clicks, opens, windowPosts.has(c.editionDate));
   });
 
-  const selection = selectInstagramWeekly(ranked, WEEKLY_EXPECTED_ITEMS);
+  // #5330: "highlights" pega os 5 D1 em ordem cronológica, sem ranking por
+  // clique — dado de clique não entra na conta, então nem carrega os
+  // warnings/gates de completude de clique abaixo (só fazem sentido pra
+  // "clicked").
+  const selection = mode === "highlights" ? selectInstagramHighlights(ranked) : selectInstagramWeekly(ranked, WEEKLY_EXPECTED_ITEMS);
   const items = selection.selected;
 
-  const editionsMissingClickData = existingCandidates.filter((c) => !windowPosts.has(c.date)).map((c) => c.date);
+  const editionsMissingClickData =
+    mode === "clicked" ? existingCandidates.filter((c) => !windowPosts.has(c.date)).map((c) => c.date) : [];
   const warnings = [...selection.warnings];
   for (const date of editionsMissingClickData) {
     warnings.push(
       `Sem dados de clique pra edição ${date} — post não encontrado/confirmado no cache Beehiiv; candidatos dessa edição não competiram por clique real.`,
     );
   }
-  const manifest = identifyInstagramPostsNeedingClicks(windowPosts);
+  const manifest = mode === "clicked" ? identifyInstagramPostsNeedingClicks(windowPosts) : [];
   if (manifest.length > 0) {
     warnings.push(
       `${manifest.length} post(s) da janela ainda sem clicks enriquecidos no cache — rode --manifest-only, dispatche beehiiv-clicks-enricher, e re-rode antes de confiar na seleção.`,
@@ -483,9 +555,10 @@ export async function main(
     }
   }
 
+  const modeLabel = mode === "highlights" ? "destaque(s)" : "item(ns) selecionado(s) por clique";
   console.log(
-    `[publish-weekly-social] ${items.length} item(ns) selecionado(s) por clique: ` +
-      items.map((i) => `[${i.ratePct.toFixed(2)}%] ${i.title} (${i.editionDate})`).join("; "),
+    `[publish-weekly-social] modo=${mode} — ${items.length} ${modeLabel}: ` +
+      items.map((i) => (mode === "highlights" ? `${i.title} (${i.editionDate})` : `[${i.ratePct.toFixed(2)}%] ${i.title} (${i.editionDate})`)).join("; "),
   );
   if (warnings.length > 0) {
     console.log("\nWarnings:");
@@ -494,13 +567,18 @@ export async function main(
 
   const platformConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
   const timezone = platformConfig?.publishing?.social?.timezone ?? "America/Sao_Paulo";
-  const scheduledAt = computeWeeklyScheduledAt({ saturday, time, timezone });
-  const caption = formatInstagramWeekly(items);
+  const scheduledAt = computeWeeklyScheduledAt({ saturday, time, timezone, dayOffset });
+  const caption = formatInstagramWeekly(items, mode);
+  // Chave do carrossel (#5330) — "highlights" e "clicked" do MESMO sábado
+  // nunca colidem em cache de card sem foto, persisted store, nem
+  // skip-existing (destaqueKey abaixo).
+  const carouselKey = `${saturday}-${mode}`;
+  const destaqueKey = `weekly-${mode}`;
 
   if (!doSchedule) {
     console.log(`\n[publish-weekly-social] PREVIEW (--schedule ausente — nenhuma chamada de rede feita).`);
     console.log(`Agendamento planejado: ${scheduledAt}\n`);
-    console.log(`── instagram ──\n${caption}\n`);
+    console.log(`── instagram (${mode}) ──\n${caption}\n`);
     return;
   }
 
@@ -512,10 +590,10 @@ export async function main(
   if (skipExisting) {
     const published = readSocialPublished(publishedPath);
     const existing = published.posts.find(
-      (p) => p.platform === "instagram" && p.destaque === "weekly" && (p.status === "draft" || p.status === "scheduled"),
+      (p) => p.platform === "instagram" && p.destaque === destaqueKey && (p.status === "draft" || p.status === "scheduled"),
     );
     if (existing) {
-      console.log(`SKIP instagram/weekly — already ${existing.status}`);
+      console.log(`SKIP instagram/${destaqueKey} — already ${existing.status}`);
       return;
     }
   }
@@ -529,7 +607,7 @@ export async function main(
     console.error(`ERRO: scheduled_at "${scheduledAt}" inválido para o post semanal: ${e.message}`);
     tagAndAppend({
       platform: "instagram",
-      destaque: "weekly",
+      destaque: destaqueKey,
       url: null,
       status: "failed",
       scheduled_at: scheduledAt,
@@ -546,8 +624,8 @@ export async function main(
     "";
   const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
   if (!workerUrl || !workerToken) {
-    console.error(`ERRO instagram/weekly: Worker não configurado (DIARIA_LINKEDIN_CRON_URL/DIARIA_LINKEDIN_CRON_TOKEN).`);
-    tagAndAppend({ platform: "instagram", destaque: "weekly", url: null, status: "failed", scheduled_at: null, reason: "worker_not_configured" });
+    console.error(`ERRO instagram/${destaqueKey}: Worker não configurado (DIARIA_LINKEDIN_CRON_URL/DIARIA_LINKEDIN_CRON_TOKEN).`);
+    tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: "worker_not_configured" });
     return;
   }
 
@@ -573,18 +651,18 @@ export async function main(
         : `public_image_url_missing:${resolvedImages.missingEditionDate}:d${resolvedImages.missingDestaqueNumber}`;
     console.error(
       resolvedImages.onDemandError
-        ? `ERRO instagram/weekly: geração SOB DEMANDA do card 4:5 (item RADAR/USE MELHOR da edição ${resolvedImages.missingEditionDate}) falhou: ` +
+        ? `ERRO instagram/${destaqueKey}: geração SOB DEMANDA do card 4:5 (item RADAR/USE MELHOR da edição ${resolvedImages.missingEditionDate}) falhou: ` +
             `${resolvedImages.onDemandError} — carrossel de ${items.length} itens cancelado inteiro, não publica parcial.`
         : resolvedImages.corruptError
-          ? `ERRO instagram/weekly: 06-public-images.json da edição ${resolvedImages.missingEditionDate} ESTÁ CORROMPIDO ` +
+          ? `ERRO instagram/${destaqueKey}: 06-public-images.json da edição ${resolvedImages.missingEditionDate} ESTÁ CORROMPIDO ` +
               `(${resolveEditionDir(editionsRoot, resolvedImages.missingEditionDate)}): ${resolvedImages.corruptError} — re-rodar upload-images-public.ts ` +
               `NÃO resolve isso; investigue escrita concorrente/corrupção de disco antes. Carrossel de ${items.length} itens cancelado inteiro, não publica parcial.`
-          : `ERRO instagram/weekly: 06-public-images.json ausente/sem d${resolvedImages.missingDestaqueNumber} pra edição ${resolvedImages.missingEditionDate} ` +
+          : `ERRO instagram/${destaqueKey}: 06-public-images.json ausente/sem d${resolvedImages.missingDestaqueNumber} pra edição ${resolvedImages.missingEditionDate} ` +
               `(${resolveEditionDir(editionsRoot, resolvedImages.missingEditionDate)}) — carrossel de ${items.length} itens cancelado inteiro, não publica parcial.`,
     );
     tagAndAppend({
       platform: "instagram",
-      destaque: "weekly",
+      destaque: destaqueKey,
       url: null,
       status: "failed",
       scheduled_at: null,
@@ -592,6 +670,16 @@ export async function main(
     });
     return;
   }
+
+  // #5330: capa (sem foto, kicker+título de apresentação) e CTA final (sem
+  // foto, convite pra assinar) — envolvem os itens de notícia no carrossel.
+  // Sem cache hit em `data/weekly/{saturday}-{mode}/_internal/06-flat-cards.json`,
+  // renderiza + faz upload agora (nunca custa API paga — é composição local,
+  // só o upload pro KV é rede).
+  const flatTexts = buildFlatCardTexts(mode, contentWindow);
+  const coverUrl = await resolveOrGenerateFlatCardUrl(dataRoot, carouselKey, "cover", flatTexts.cover, opts.flatCardGenerator);
+  const ctaUrl = await resolveOrGenerateFlatCardUrl(dataRoot, carouselKey, "cta", flatTexts.cta, opts.flatCardGenerator);
+  const carouselImageUrls = [coverUrl, ...resolvedImages.urls, ctaUrl];
 
   // #4511 fleet review CRÍTICO (silent-failure-hunter): o bookkeeping de
   // SUCESSO (`tagAndAppend` com status:"scheduled") vive num try/catch
@@ -609,23 +697,23 @@ export async function main(
     response = await postToWorkerQueue(workerUrl, workerToken, {
       text: caption,
       image_url: null,
-      image_urls: resolvedImages.urls,
+      image_urls: carouselImageUrls,
       scheduled_at: scheduledAt,
-      destaque: "weekly",
+      destaque: destaqueKey,
       channel: "instagram",
     });
   } catch (e: any) {
-    console.error(`FAILED instagram/weekly: ${e.message}`);
-    tagAndAppend({ platform: "instagram", destaque: "weekly", url: null, status: "failed", scheduled_at: null, reason: e.message });
+    console.error(`FAILED instagram/${destaqueKey}: ${e.message}`);
+    tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: e.message });
     console.log(`\n[publish-weekly-social] out_path: ${publishedPath}`);
     return;
   }
 
-  console.log(`OK instagram/weekly — scheduled at ${scheduledAt} (worker_queue_key=${response.key})`);
+  console.log(`OK instagram/${destaqueKey} — scheduled at ${scheduledAt} (worker_queue_key=${response.key})`);
   try {
     tagAndAppend({
       platform: "instagram",
-      destaque: "weekly",
+      destaque: destaqueKey,
       url: null,
       status: "scheduled",
       scheduled_at: scheduledAt,

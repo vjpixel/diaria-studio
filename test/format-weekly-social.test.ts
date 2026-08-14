@@ -109,4 +109,15 @@ describe("formatInstagramWeekly", () => {
     assert.ok(contextLine.length <= 143, `linha de contexto deveria ser truncada, veio com ${contextLine.length} chars`);
     assert.ok(!contextLine.endsWith(" "), "não deveria truncar no meio de espaço/deixar trailing space antes de '...'");
   });
+
+  it("#5330: modo 'highlights' usa a intro 'principais destaques', não 'mais clicados'", () => {
+    const caption = formatInstagramWeekly(makeItems(2), "highlights");
+    assert.match(caption, /^Os principais destaques da semana na diar\.ia\.br:/);
+    assert.doesNotMatch(caption, /mais clicados/);
+  });
+
+  it("#5330: modo default (omitido) continua 'clicked' — back-compat com chamadores existentes", () => {
+    const caption = formatInstagramWeekly(makeItems(2));
+    assert.match(caption, /^Os mais clicados da semana na diar\.ia\.br:/);
+  });
 });

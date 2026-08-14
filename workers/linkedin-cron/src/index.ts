@@ -288,9 +288,12 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     return json({ error: "scheduled_at must be a valid ISO 8601 date" }, 400);
   }
 
-  // Validar destaque
-  if (!/^d[123]$/.test(body.destaque as string)) {
-    return json({ error: "destaque must be d1, d2, or d3" }, 400);
+  // Validar destaque — d1/d2/d3 (diário) ou weekly[-mode] (#4146/#4483
+  // carrossel semanal; #5330 renomeou "weekly" pra "weekly-clicked" /
+  // "weekly-highlights", mas "weekly" cru segue aceito — entries antigas no
+  // KV/DLQ e qualquer chamador que ainda não migrou não devem quebrar).
+  if (!/^(d[123]|weekly(-[a-z]+)?)$/.test(body.destaque as string)) {
+    return json({ error: "destaque must be d1, d2, d3, or weekly[-mode]" }, 400);
   }
 
   // #595 — Validar webhook_target e action (opcionais; defaults aplicados
