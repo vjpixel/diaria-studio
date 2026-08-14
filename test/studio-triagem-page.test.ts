@@ -155,4 +155,27 @@ describe("GET /triagem + GET /api/issues (#3562)", () => {
     const classificacaoCount = (body.match(/<th>Classificação<\/th>/g) ?? []).length;
     assert.equal(classificacaoCount, 2, "'Classificação' precisa aparecer 1x em cada tabela (issues + PRs)");
   });
+
+  it("(#5212) toda opção do <select> de Classificação carrega o escopo (Issues/PRs) no texto visível — sobrevive ao <select> fechado", async () => {
+    const res = await fetch(new URL("/triagem", server.url));
+    const body = await res.text();
+    assert.ok(body.includes(">Issues · elegível<"));
+    assert.ok(body.includes(">Issues · bloqueada<"));
+    assert.ok(body.includes(">Issues · ambígua<"));
+    assert.ok(body.includes(">PRs · overnight<"));
+    assert.ok(body.includes(">PRs · develop<"));
+    assert.ok(body.includes(">PRs · other<"));
+    // nenhuma opção deve ter sobrado sem o prefixo de escopo (regressão do #5212)
+    assert.ok(!body.includes('value="issue:elegivel">elegível<'), "opção não deveria ter perdido o prefixo 'Issues ·'");
+    assert.ok(!body.includes('value="pr:overnight">overnight<'), "opção não deveria ter perdido o prefixo 'PRs ·'");
+  });
+
+  it("(#5212) chip de escopo (<h2>) e aviso de escopo (não afeta esta lista) existem no markup pras duas tabelas", async () => {
+    const res = await fetch(new URL("/triagem", server.url));
+    const body = await res.text();
+    assert.ok(body.includes('id="issues-filter-chip"'));
+    assert.ok(body.includes('id="prs-filter-chip"'));
+    assert.ok(body.includes('id="issues-scope-notice"'));
+    assert.ok(body.includes('id="prs-scope-notice"'));
+  });
 });

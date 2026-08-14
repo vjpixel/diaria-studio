@@ -51,14 +51,14 @@
           <select id="filter-dispatch-track">
             <option value="">Todas</option>
             <optgroup label="Issues">
-              <option value="issue:elegivel">elegível</option>
-              <option value="issue:bloqueada">bloqueada</option>
-              <option value="issue:ambigua">ambígua</option>
+              <option value="issue:elegivel">Issues · elegível</option>
+              <option value="issue:bloqueada">Issues · bloqueada</option>
+              <option value="issue:ambigua">Issues · ambígua</option>
             </optgroup>
             <optgroup label="PRs">
-              <option value="pr:overnight">overnight</option>
-              <option value="pr:develop">develop</option>
-              <option value="pr:other">other</option>
+              <option value="pr:overnight">PRs · overnight</option>
+              <option value="pr:develop">PRs · develop</option>
+              <option value="pr:other">PRs · other</option>
             </optgroup>
           </select>
         </label>
@@ -72,13 +72,14 @@
     </section>
 
     <section class="panel">
-      <h2>Issues abertas (<span id="issues-count">0</span>)</h2>
+      <h2>Issues abertas (<span id="issues-count">0</span>)<span id="issues-filter-chip" class="filter-scope-chip" hidden></span></h2>
       <p class="hint">
         "Classificação" é uma heurística best-effort (labels operacionais +
         marcadores de texto) que aproxima — mas não substitui — a triagem
         real da Fase 0 de <code>/diaria-develop</code>/<code>/diaria-overnight</code>.
       </p>
       <ul class="hint" id="dispatch-track-legend"></ul>
+      <div id="issues-scope-notice" class="hint filter-scope-notice" hidden></div>
       <div id="issues-empty" class="hint" hidden>Nenhuma issue aberta.</div>
       <div class="table-scroll">
         <table class="triage-table">
@@ -99,12 +100,13 @@
     </section>
 
     <section class="panel">
-      <h2>PRs abertos (<span id="prs-count">0</span>)</h2>
+      <h2>PRs abertos (<span id="prs-count">0</span>)<span id="prs-filter-chip" class="filter-scope-chip" hidden></span></h2>
       <p class="hint">
         "CI" resume <code>statusCheckRollup</code>. Não é o gate de merge
         completo (#2210/#2222) — falta checar threads não-resolvidas, que
         exigiria 1 chamada extra por PR; essa coluna cobre só o pedaço de CI.
       </p>
+      <div id="prs-scope-notice" class="hint filter-scope-notice" hidden></div>
       <div id="prs-empty" class="hint" hidden>Nenhum PR aberto.</div>
       <div class="table-scroll">
         <table class="triage-table">
