@@ -68,7 +68,7 @@ export function parseVencimentoLine(body: string): VencimentoParseResult {
   return { kind: "explicit-no-date" };
 }
 
-export type OnHoldAlarmReason = "due" | "no-date-declared" | "vencimento-line-missing";
+export type OnHoldAlarmReason = "due" | "no-date-declared" | "vencimento-line-missing" | "invalid-date";
 
 export interface OnHoldFinding {
   number: number;
@@ -79,8 +79,25 @@ export interface OnHoldFinding {
   vencimento: string | null;
 }
 
+/** Pure: uma string "AAAA-MM-DD" (já validada pelo regex de formato em
+ * `parseVencimentoLine`) representa uma data de CALENDÁRIO real? `Date`
+ * normaliza mês/dia fora do intervalo em vez de rejeitar (ex: `2026-02-30`
+ * vira `2026-03-02` silenciosamente) — comparar os componentes de volta
+ * contra a string original é o único jeito de pegar isso. Também cobre o
+ * caso `NaN` (ex: mês `13`), que `getFullYear()` etc. devolveriam `NaN` e
+ * a comparação `!==` já reprova. */
+function isValidCalendarDateString(dateStr: string, parsedDate: Date): boolean {
+  const [year, month, day] = dateStr.split("-").map(Number);
+  return (
+    parsedDate.getFullYear() === year &&
+    parsedDate.getMonth() + 1 === month &&
+    parsedDate.getDate() === day
+  );
+}
+
 /** Pure: avalia 1 issue `on-hold` contra `now` — devolve o achado (se
- * alarmável) ou `null` (data declarada e ainda não chegou). */
+ * alarmável) ou `null` (data declarada, calendarialmente válida, e ainda
+ * não chegou). */
 export function evaluateOnHoldIssue(issue: OnHoldIssueInput, now: Date): OnHoldFinding | null {
   const parsed = parseVencimentoLine(issue.body);
 
@@ -92,7 +109,15 @@ export function evaluateOnHoldIssue(issue: OnHoldIssueInput, now: Date): OnHoldF
   }
 
   const due = new Date(`${parsed.date}T00:00:00`);
-  if (Number.isNaN(due.getTime()) || due.getTime() > now.getTime()) return null;
+  if (!isValidCalendarDateString(parsed.date, due)) {
+    // Mês fora do intervalo (NaN) ou dia fora do intervalo (rollover
+    // silencioso pra outra data real) — nunca cai no caminho "ainda não
+    // venceu" (NaN > now é sempre false, o que suprimiria o alarme pra
+    // sempre). Sempre achado, mesmo bucket "sempre alarma" dos outros 2
+    // estados sem data confiável.
+    return { number: issue.number, title: issue.title, url: issue.url, reason: "invalid-date", vencimento: parsed.date };
+  }
+  if (due.getTime() > now.getTime()) return null;
   return { number: issue.number, title: issue.title, url: issue.url, reason: "due", vencimento: parsed.date };
 }
 
@@ -115,6 +140,7 @@ const REASON_LABEL: Record<OnHoldAlarmReason, string> = {
   due: "venceu",
   "no-date-declared": "sem data (declarada explicitamente)",
   "vencimento-line-missing": "sem linha 'Vencimento:' declarada",
+  "invalid-date": "data inválida no calendário — corrigir a linha 'Vencimento:'",
 };
 
 /** Pure: monta assunto + corpo (texto puro, mesmo padrão dos outros
@@ -132,7 +158,12 @@ export function buildOnHoldVencimentoAlarmEmail(findings: readonly OnHoldFinding
   ];
 
   for (const f of findings) {
-    const detail = f.reason === "due" ? `venceu em ${f.vencimento}` : REASON_LABEL[f.reason];
+    const detail =
+      f.reason === "due"
+        ? `venceu em ${f.vencimento}`
+        : f.reason === "invalid-date"
+          ? `${REASON_LABEL[f.reason]} — valor declarado: "${f.vencimento}"`
+          : REASON_LABEL[f.reason];
     lines.push(`#${f.number} — ${f.title} (${detail})`);
     lines.push(`  ${f.url}`);
   }

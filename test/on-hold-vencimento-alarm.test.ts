@@ -92,6 +92,24 @@ describe("evaluateOnHoldIssue", () => {
     const result = evaluateOnHoldIssue(issue({ number: 4549, body: "on-hold, external-blocker, sem linha declarada" }), NOW);
     assert.equal(result?.reason, "vencimento-line-missing");
   });
+
+  it("mês fora do intervalo (NaN) -> sempre achado 'invalid-date', nunca null (regressão do buraco de supressão silenciosa)", () => {
+    const result = evaluateOnHoldIssue(issue({ number: 9001, body: "Vencimento: 2026-13-01" }), NOW);
+    assert.equal(result?.reason, "invalid-date");
+    assert.equal(result?.vencimento, "2026-13-01");
+  });
+
+  it("dia fora do intervalo com rollover silencioso pra data real -> sempre achado 'invalid-date', nunca avaliado contra o dia errado", () => {
+    // 2026-02-30 não existe; new Date() rola pra 2026-03-02 sem erro.
+    const result = evaluateOnHoldIssue(issue({ number: 9002, body: "Vencimento: 2026-02-30" }), NOW);
+    assert.equal(result?.reason, "invalid-date");
+    assert.equal(result?.vencimento, "2026-02-30");
+  });
+
+  it("caso feliz: data calendarialmente válida e futura continua sem alarme (não regride)", () => {
+    const result = evaluateOnHoldIssue(issue({ body: "Vencimento: 2026-09-15" }), NOW);
+    assert.equal(result, null);
+  });
 });
 
 describe("evaluateOnHoldIssues", () => {
