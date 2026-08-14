@@ -2,7 +2,8 @@
  * encerramento-snippet.ts (#3219, reescopo #4413/#4411)
  *
  * Loader/render do parágrafo de apoio (Apoia.se) + créditos de ferramentas em
- * `context/snippets/encerramento-social-apoio.md` — a ÚNICA parte da seção
+ * `data/snippets/encerramento-social-apoio.md` (#5227, migrado de
+ * `context/snippets/`) — a ÚNICA parte da seção
  * `PARA ENCERRAR` que ainda é editável por edição (via painel Caixas do
  * Studio, `platform.config.json` → `para_encerrar.slot_a`).
  *
@@ -152,16 +153,18 @@ export const ENCERRAMENTO_OPENING_MONTHLY =
   "Essa edição mensal nasce da **diar.ia.br**, newsletter diária gratuita sobre IA. ";
 
 /**
- * Lê o template cru de `context/snippets/encerramento-social-apoio.md` (sem
+ * Lê o template cru de `data/snippets/encerramento-social-apoio.md` (sem
  * o comentário HTML de header), com o marcador `{{OPENING}}` intacto.
  * Retorna `null` se o arquivo não existir ou ficar vazio após o strip do
  * comentário — graceful, igual ao `loadDivulgacaoSnippet` do stitch (caller
  * decide o fallback). Leitura crua delegada a `readSnippetFile` (#3219 —
  * extraído pra parar de duplicar essa lógica em paralelo com
- * `loadDivulgacaoSnippet`).
+ * `loadDivulgacaoSnippet`). `rootDir` (opcional) — override de teste
+ * repassado pra `readSnippetFile`; produção nunca passa (sempre resolve a
+ * raiz real do repo).
  */
-export function loadEncerramentoSocialApoioTemplate(): string | null {
-  return readSnippetFile("encerramento-social-apoio.md");
+export function loadEncerramentoSocialApoioTemplate(rootDir?: string): string | null {
+  return readSnippetFile("encerramento-social-apoio.md", rootDir);
 }
 
 /**
@@ -170,10 +173,11 @@ export function loadEncerramentoSocialApoioTemplate(): string | null {
  * substituindo `{{OPENING}}` pela cláusula de abertura do formato
  * (`ENCERRAMENTO_OPENING_DAILY`, `ENCERRAMENTO_OPENING_MONTHLY`, ou uma
  * string customizada). Retorna `null` se o template não existir/ficar vazio
- * (graceful).
+ * (graceful). `rootDir` (opcional) — mesmo override de teste de
+ * `loadEncerramentoSocialApoioTemplate`.
  */
-export function renderEncerramentoSocialApoio(opening: string): string | null {
-  const template = loadEncerramentoSocialApoioTemplate();
+export function renderEncerramentoSocialApoio(opening: string, rootDir?: string): string | null {
+  const template = loadEncerramentoSocialApoioTemplate(rootDir);
   if (!template) return null;
   return template.replace("{{OPENING}}", opening);
 }

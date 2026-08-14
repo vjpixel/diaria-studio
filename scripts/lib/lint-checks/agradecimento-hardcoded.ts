@@ -1,7 +1,8 @@
 /**
  * lint-checks/agradecimento-hardcoded.ts (#4359)
  *
- * `context/snippets/agradecimento-apoiadores.md` deveria voltar ao
+ * `data/snippets/agradecimento-apoiadores.md` (#5227, migrado de
+ * `context/snippets/`) deveria voltar ao
  * placeholder `{apoiadores}` assim que o nome do apoiador daquela edição
  * for consumido — o box de agradecimento é pensado pra aparecer numa ÚNICA
  * edição (a que efetivamente credita o apoiador novo), não persistir. Caso

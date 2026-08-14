@@ -1,4 +1,17 @@
-# context/snippets/ — biblioteca de blocos reutilizáveis
+# context/snippets/ — biblioteca de blocos reutilizáveis (spec do formato)
+
+**#5227 (14/08/2026): o CONTEÚDO desses blocos migrou pra `data/snippets/`**
+(junction OneDrive, gitignored, sincroniza sozinha entre as máquinas do
+projeto). Este README — a spec do formato, não conteúdo editorial — continua
+aqui, em `context/snippets/`, git-tracked. Os arquivos que este README
+cataloga (todos exceto ele mesmo) vivem agora em `data/snippets/`; todo path
+`context/snippets/{arquivo}.md` abaixo deve ser lido como
+`data/snippets/{arquivo}.md`. Motivo da migração: caixa criada/editada
+localmente (chat ou pelo painel Caixas do Studio) ficava invisível no
+checkout remoto que serve o Studio até alguém commitar+dar push — problema
+bidirecional (o Studio também ESCREVE nesse diretório). `data/` já sincroniza
+sozinho, então o passo commit+push manual deixou de existir — ao custo de
+perder `git log`/review do conteúdo (aceito pelo editor, ver #5227).
 
 Índice dos blocos de divulgação/CTA reutilizáveis entre edições. Cada arquivo
 tem seu próprio comentário-cabeçalho `<!-- ... -->` (fonte primária —
@@ -105,7 +118,7 @@ pelo slot nem pelo emoji:
 |---|---|---|---|---|
 | `livros-divulgacao.md` | Slot 1, 2 (default) ou 3 | bold-line/mid-callout | **Sim** — é o default de `slot2` (#3212) | Curadoria própria (`livros.diar.ia.br`), roda sem intervenção na maioria das edições (#2527). |
 | `clarice-divulgacao.md` | Slot 1, 2 ou 3 | bold-line/mid-callout, link de afiliado (`?via=diaria`) | **Sim** | Trocar o config quando quiser rodar a campanha Clarice no lugar de livros (era o default pré-#2527). Também reusado no mensal como seção própria. |
-| `_arquivo/alexa-plus-divulgacao.md` | Slot 1, 2 ou 3 (quando ativo) | carrinho/CTA pill, com disclosure de comissão no próprio corpo | Arquivado (260726) — movido pra `_arquivo/`, fora de `boxes_divulgacao` | Campanha de afiliado Alexa+ encerrada/pausada. Mantido só como referência de formato; mover de volta pra `context/snippets/` e reconfigurar `boxes_divulgacao` se a campanha reativar. |
+| `_arquivo/alexa-plus-divulgacao.md` | Slot 1, 2 ou 3 (quando ativo) | carrinho/CTA pill, com disclosure de comissão no próprio corpo | Arquivado (260726) — movido pra `_arquivo/`, fora de `boxes_divulgacao` | Campanha de afiliado Alexa+ encerrada/pausada. Mantido só como referência de formato; mover de volta pra `data/snippets/` e reconfigurar `boxes_divulgacao` se a campanha reativar. |
 | `recomendacao-leitura.md` | Slot 1 (default) ou qualquer outro | bold-line/mid-callout genérico (só 1 link no bloco, nenhum parágrafo CTA-only → não vira carrinho) | **Sim** (#3306) — `loadDivulgacaoSnippet` tem um 3º fallback genérico: quando o conteúdo não bate bold-line nem carrinho, devolve o texto cru em vez de `null`. É o default de `slot1` desde #3212. | Default automático — não precisa fazer nada. Recomendação de leitura pessoal (livro/artigo) com link afiliado; título+autor em negrito-com-link, 1 comentário pessoal em 1ª pessoa, sem CTA pill. Editor substitui o conteúdo a cada reuso (troca manual do arquivo/edição pontual). |
 | `indicacao-ferramenta.md` | Slot 1, 2 ou 3 | bold-line/mid-callout genérico (mesmo fallback do #3306) | **Sim** — era o default de `slot3` (#3476), substituído por `apoio-divulgacao.md` em #3824 (260722). Segue disponível pra reuso pontual — trocar o config quando quiser rodar essa campanha em vez da de apoio. | Indicação pessoal de ferramenta que o editor usa/recomenda, SEM comissão — disclaimer em itálico no próprio corpo. Editor substitui nome/link/comentário a cada reuso. |
 | `apoio-divulgacao.md` | Slot 3 (default, #3824) — também colável em slot 1/2 | multi-parágrafo com lista + CTA pill | **Sim** — é o default de `slot3` desde #3824 (260722, decisão permanente do editor, substitui `indicacao-ferramenta.md`). Colar manualmente no draft (`02-d1-draft.md`/`02-d2-draft.md`/`02-d3-draft.md`) também funciona pra rodar num slot diferente pontualmente — o parse do lado do render é marcador-agnóstico e não depende de `loadDivulgacaoSnippet`. | Default automático. Programa de apoio (apoia.se/diaria) com lista de recompensas em bullets. |

@@ -642,7 +642,7 @@ export const LINKEDIN_WEEKLY_UTM = {
  * Clique no link de confirmação de 1-clique do Worker `reativar` (#4530,
  * decisão do editor 260803) — o LEITOR confirma ativamente o cadastro Pending
  * clicando no CTA do bloco de intro do canal Brevo próprio
- * (`context/snippets/brevo-diaria-pending-intro.md`). `referringSite` distinto
+ * (`data/snippets/brevo-diaria-pending-intro.md`). `referringSite` distinto
  * do triplo UTM porque `workers/reativar/src/index.ts` chama a MESMA API
  * Beehiiv (`POST /subscriptions`) que aceita `referring_site` além dos 3 UTMs
  * — ver `BREVO_DIARIA_PROMOCAO_SCORE_UTM` abaixo pro segundo caminho, que

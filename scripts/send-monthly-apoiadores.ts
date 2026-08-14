@@ -31,7 +31,7 @@
  * ## Conteúdo: NÃO reintroduz boxes tipo `newsletter-patronos.ts`
  *
  * A issue #4521 sugere reusar/estender os snippets Patronos da diária
- * (`context/snippets/patronos-*.md`) pro espaço deixado vazio pelas seções
+ * (`data/snippets/patronos-*.md`) pro espaço deixado vazio pelas seções
  * `CLARICE — DIVULGAÇÃO`/`CLARICE — TUTORIAL` removidas. Essa MESMA pergunta
  * já foi decidida ao vivo pelo editor no #4482 (comentário 260803, decisão
  * 3): "remover DIVULGAÇÃO/TUTORIAL sem substituir por nada — mais simples,

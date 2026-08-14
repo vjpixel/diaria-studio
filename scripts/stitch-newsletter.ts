@@ -87,7 +87,7 @@ Você presta atenção ao conteúdo gerado por IA que consome? Para ajudar nesse
 
   // #3219: parágrafo de ferramentas — FALLBACK apenas (achado ao vivo,
   // ciclo 2607-08: o parágrafo de créditos passou a viver como o 2º
-  // parágrafo de context/snippets/encerramento-social-apoio.md, mesma fonte
+  // parágrafo de data/snippets/encerramento-social-apoio.md, mesma fonte
   // única usada pelo mensal — ver computeParaEncerrarDefaults abaixo, que
   // extrai esse parágrafo do split quando o arquivo tem os 3 parágrafos).
   // Esta constante só é usada quando o split falha (arquivo ausente/vazio,
@@ -182,10 +182,11 @@ export function loadParaEncerrarConfig(): ParaEncerrarConfig {
  * `platform.config.json` não tem override (config ausente, campo vazio, ou
  * edição anterior ao #4274). Cai no fallback hardcoded
  * `FIXED_BLOCKS.para_encerrar_tools` só quando o próprio arquivo de snippet
- * está ausente/vazio (nunca houve conteúdo real pra perder).
+ * está ausente/vazio (nunca houve conteúdo real pra perder). `rootDir`
+ * (opcional) — override de teste, ver `loadDivulgacaoSnippet`.
  */
-function computeParaEncerrarSlotADefault(): string {
-  return renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY) ?? FIXED_BLOCKS.para_encerrar_tools;
+function computeParaEncerrarSlotADefault(rootDir?: string): string {
+  return renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY, rootDir) ?? FIXED_BLOCKS.para_encerrar_tools;
 }
 
 /**
@@ -212,42 +213,74 @@ function computeParaEncerrarSlotADefault(): string {
  * manchetes de hoje (`selectRelatedEditions`/`renderRelatedEditionsMarkdown`
  * em `scripts/lib/related-editions.ts`). `undefined`/`null` (default) — sem
  * grupo, comportamento idêntico a antes do #5122.
+ *
+ * `rootDir` (opcional, #5227) — override de teste repassado pro fallback de
+ * default do slot A (`computeParaEncerrarSlotADefault`, lê
+ * `data/snippets/encerramento-social-apoio.md`); produção nunca passa.
  */
 export function buildParaEncerrar(
   override?: ParaEncerrarConfig,
   relatedEditionsMarkdown?: string | null,
+  rootDir?: string,
 ): string {
   const cfg = override ?? loadParaEncerrarConfig();
-  const slotA = cfg.slotA ?? computeParaEncerrarSlotADefault();
+  const slotA = cfg.slotA ?? computeParaEncerrarSlotADefault(rootDir);
   const relatedBlock = relatedEditionsMarkdown ? `\n\n${relatedEditionsMarkdown}` : "";
   return `${FIXED_BLOCKS.para_encerrar_header}\n\n${slotA}\n\n${FIXED_BLOCKS.para_encerrar_curadorias}${relatedBlock}\n\n${SOCIAL_INVITE}`;
 }
 
 /**
- * #2978: carrega um bloco de divulgação de `context/snippets/{file}`,
- * format-agnóstico — aceita o formato bold-line (`**📚/📣/🎉 …**`), o formato
- * carrinho (`🛒 …`, multi-parágrafo com CTA, sem bold-wrap), OU (#3306,
- * caso real: `recomendacao-leitura.md`/#3212) qualquer outro conteúdo
- * multi-parágrafo sem bold-wrap total — devolvido cru, deixando
- * `renderBoxDivulgacao` (marcador-agnóstico desde #3204) decidir o formato
- * de render pela ESTRUTURA, não pelo marcador. Antes desse 3º fallback, um
- * snippet como `📖 Recomendação de leitura\n\n[**Livro**](url), de Autor.\n\n
- * Comentário.` retornava `null` (não batia bold-line nem carrinho) e a
- * edição saía sem o box — mesmo com `platform.config.json` apontando pra ele.
+ * #2978: carrega um bloco de divulgação de `data/snippets/{file}` (migrado
+ * de `context/snippets/` em #5227), format-agnóstico — aceita o formato
+ * bold-line (`**📚/📣/🎉 …**`), o formato carrinho (`🛒 …`, multi-parágrafo
+ * com CTA, sem bold-wrap), OU (#3306, caso real: `recomendacao-leitura.md`/
+ * #3212) qualquer outro conteúdo multi-parágrafo sem bold-wrap total —
+ * devolvido cru, deixando `renderBoxDivulgacao` (marcador-agnóstico desde
+ * #3204) decidir o formato de render pela ESTRUTURA, não pelo marcador.
+ * Antes desse 3º fallback, um snippet como `📖 Recomendação de leitura\n\n
+ * [**Livro**](url), de Autor.\n\nComentário.` retornava `null` (não batia
+ * bold-line nem carrinho) e a edição saía sem o box — mesmo com
+ * `platform.config.json` apontando pra ele.
  *
- * Strip do comentário HTML de header; retorna o bloco trimado, ou `null` só
- * se o arquivo não existir / ficar vazio após o strip.
+ * Strip do comentário HTML de header; retorna o bloco trimado.
+ *
+ * **`file` ausente/vazio (slot não configurado) → `null`, graceful** — sem
+ * box nesse slot é um estado editorial legítimo (#4274: 5 slots preenchidos
+ * seria demais numa edição de 5 minutos).
+ *
+ * **`file` presente mas o snippet NÃO existe em disco → LANÇA (#5227)**,
+ * nunca `null`. Antes da migração pra `data/snippets/` (gitignored), esse
+ * caso era pego em CI por `test/stitch-newsletter.test.ts` ("os slots
+ * configurados apontam pra snippets que existem", lendo `context/snippets/`
+ * git-tracked) — sem essa rede de segurança em CI (o conteúdo real não está
+ * mais no git), uma edição com `boxes_divulgacao.slotN` apontando pra um
+ * arquivo que ainda não sincronizou via OneDrive (ou foi arquivado sem
+ * atualizar o slot) SAÍA SEM O BOX, EM SILÊNCIO — a mesma classe de bug que
+ * o #2978 original documenta acima (linha "retornava null... e a edição
+ * saía sem o box"), só que agora por arquivo ausente em vez de formato não
+ * reconhecido. O invariante migrou de CI-time pra runtime: falha alto,
+ * aborta o Stage 2 (`main()` abaixo já converte qualquer exceção em
+ * `process.exit(1)` com a mensagem), em vez de publicar uma edição faltando
+ * um box que o editor pensava estar configurado.
  *
  * Leitura crua (resolve root + readFileSync + strip comentário HTML + trim)
  * delegada a `readSnippetFile` (#3219 — extraído pra parar de duplicar essa
  * lógica em paralelo com `loadEncerramentoSocialApoioTemplate`); esta função
  * mantém só o pós-processamento específico de formato (marker bold-line vs
- * carrinho vs genérico) por cima da leitura compartilhada.
+ * carrinho vs genérico) por cima da leitura compartilhada + o guard de erro
+ * duro acima.
+ *
+ * `rootDir` (opcional) — override de teste repassado pra `readSnippetFile`
+ * (#5227); produção nunca passa (sempre resolve a raiz real do repo).
  */
-export function loadDivulgacaoSnippet(file: string | null | undefined): string | null {
+export function loadDivulgacaoSnippet(file: string | null | undefined, rootDir?: string): string | null {
   if (!file) return null;
-  const raw = readSnippetFile(file);
-  if (!raw) return null;
+  const raw = readSnippetFile(file, rootDir);
+  if (!raw) {
+    throw new Error(
+      `loadDivulgacaoSnippet: slot configurado aponta para "data/snippets/${file}", mas o arquivo não existe (ou ficou vazio após remover o header) — verifique se a caixa foi arquivada sem atualizar o slot em platform.config.json, ou se o OneDrive ainda não sincronizou este arquivo nesta máquina.`,
+    );
+  }
   // Formato carrinho (🛒): texto cru, sem bold-wrap — igual ao que
   // BOX_DIVULGACAO_CART_RE (newsletter-parse.ts) espera no reviewed.md.
   if (raw.startsWith("🛒")) return raw;
@@ -267,7 +300,7 @@ export function loadDivulgacaoSnippet(file: string | null | undefined): string |
  * apoiar o projeto") e ANTES do `---` que abre o DESTAQUE 1. O parser aceita
  * parágrafos extras nessa região desde #3477.
  *
- * Fonte: `context/snippets/agradecimento-apoiadores.md`. O nome de cada apoiador
+ * Fonte: `data/snippets/agradecimento-apoiadores.md`. O nome de cada apoiador
  * é preenchido no lugar do placeholder `{apoiadores}` a cada edição.
  *
  * Graceful/no-op — retorna `null` (bloco OMITIDO, sem frase sem nome) quando:
@@ -277,9 +310,10 @@ export function loadDivulgacaoSnippet(file: string | null | undefined): string |
  */
 export function loadAgradecimentoSnippet(
   file: string | null | undefined = "agradecimento-apoiadores.md",
+  rootDir?: string,
 ): string | null {
   if (!file) return null;
-  const raw = readSnippetFile(file);
+  const raw = readSnippetFile(file, rootDir);
   if (!raw) return null;
   if (raw.includes("{apoiadores}")) return null;
   return raw;
@@ -287,25 +321,28 @@ export function loadAgradecimentoSnippet(
 
 /**
  * #2527: carrega o box de divulgação DIÁRIO default (slot 1, D1/D2) — bloco de
- * curadoria de LIVROS (`**📚 …**`) de `context/snippets/livros-divulgacao.md`.
- * Substituiu o bloco 📣 Clarice como padrão (decisão editorial). Graceful:
- * snippet ausente → null.
+ * curadoria de LIVROS (`**📚 …**`) de `data/snippets/livros-divulgacao.md`.
+ * Substituiu o bloco 📣 Clarice como padrão (decisão editorial). #5227: o
+ * arquivo é passado explicitamente (não um slot opcional) — snippet ausente
+ * agora LANÇA (ver docstring de `loadDivulgacaoSnippet`), não retorna null.
+ * `rootDir` (opcional) — override de teste, ver `loadDivulgacaoSnippet`.
  */
-export function loadDailyCallout(): string | null {
-  return loadDivulgacaoSnippet("livros-divulgacao.md");
+export function loadDailyCallout(rootDir?: string): string | null {
+  return loadDivulgacaoSnippet("livros-divulgacao.md", rootDir);
 }
 
 /**
  * #1938: bloco canônico de divulgação CLARICE (`**📣 …**`) — mantido para reuso
  * (mensal, ou troca pontual do callout diário). Não é mais o default diário (#2527).
+ * `rootDir` (opcional) — override de teste, ver `loadDivulgacaoSnippet`.
  */
-export function loadClariceCallout(): string | null {
-  return loadDivulgacaoSnippet("clarice-divulgacao.md");
+export function loadClariceCallout(rootDir?: string): string | null {
+  return loadDivulgacaoSnippet("clarice-divulgacao.md", rootDir);
 }
 
 /**
  * #2978: shape da config `boxes_divulgacao` de `platform.config.json` — nome
- * do snippet (`context/snippets/{file}`) por slot, ou `null` pra slot vazio.
+ * do snippet (`data/snippets/{file}`) por slot, ou `null` pra slot vazio.
  */
 export interface BoxesDivulgacaoConfig {
   slot1: string | null;
@@ -501,6 +538,14 @@ interface StitchInput {
    * campo (sempre lê `platform.config.json.para_encerrar` via
    * `loadParaEncerrarConfig`). */
   paraEncerrar?: ParaEncerrarConfig;
+  /** Override de teste (#5227): raiz alternativa pra resolução de
+   * `data/snippets/{file}` (repassada a `loadDivulgacaoSnippet`/
+   * `loadAgradecimentoSnippet`/`buildParaEncerrar` internamente) — permite um
+   * teste apontar pra um diretório de fixture temporário (`{root}/data/
+   * snippets/`) em vez da raiz real do repo, sem tocar `data/snippets/` de
+   * verdade (junction OneDrive, `.gitignore` blanket — nunca escrever nela
+   * a partir de um teste). Produção nunca passa este campo. */
+  snippetsRootDir?: string;
 }
 
 export function stitchNewsletter(input: StitchInput): string {
@@ -595,12 +640,12 @@ export function stitchNewsletter(input: StitchInput): string {
   }
   const slot1AlreadyPresent = boxAlreadyPresentInGap(d1, d2);
   const slot1Box = wantSponsor && !slot1AlreadyPresent
-    ? loadDivulgacaoSnippet(boxesCfg.slot1)
+    ? loadDivulgacaoSnippet(boxesCfg.slot1, input.snippetsRootDir)
     : null;
   // Slot 2 só existe em edições de 3 destaques (sem gap D2/D3 em edições de 2).
   const slot2AlreadyPresent = d3 !== null && boxAlreadyPresentInGap(d2, d3);
   const slot2Box = wantSponsor && d3 !== null && !slot2AlreadyPresent
-    ? loadDivulgacaoSnippet(boxesCfg.slot2)
+    ? loadDivulgacaoSnippet(boxesCfg.slot2, input.snippetsRootDir)
     : null;
   // #3476: slot 3 — SEMPRE após o ÚLTIMO destaque (D3 se existir, senão D2),
   // antes de USE MELHOR/É IA?. Existe em QUALQUER contagem de destaques
@@ -617,12 +662,12 @@ export function stitchNewsletter(input: StitchInput): string {
   }
   const slot3AlreadyPresent = boxAlreadyPresentAfterLastDestaque(lastDestaque, nextAfterLastDestaque);
   const slot3Box = wantSponsor && !slot3AlreadyPresent
-    ? loadDivulgacaoSnippet(boxesCfg.slot3)
+    ? loadDivulgacaoSnippet(boxesCfg.slot3, input.snippetsRootDir)
     : null;
 
   // Caixa de agradecimento a novos apoiadores: entra logo após a coverage line
   // (que termina na frase-CTA de apoio), ainda dentro da região de intro.
-  const agradecimentoBox = loadAgradecimentoSnippet();
+  const agradecimentoBox = loadAgradecimentoSnippet(undefined, input.snippetsRootDir);
 
   // #4274: box de divulgação slot 0 (introdução) — SEMPRE o ÚLTIMO bloco
   // `---`-isolado antes de `**DESTAQUE 1` (depois de qualquer agradecimento
@@ -643,7 +688,7 @@ export function stitchNewsletter(input: StitchInput): string {
   }
   const slot0AlreadyPresent = boxAlreadyPresentAtIntro(coverageLine, agradecimentoBox, d1);
   const slot0Box = wantSponsor && !slot0AlreadyPresent
-    ? loadDivulgacaoSnippet(boxesCfg.slot0)
+    ? loadDivulgacaoSnippet(boxesCfg.slot0, input.snippetsRootDir)
     : null;
 
   // #4907: link contextual pro hub temático — calculado a partir das opções
@@ -786,7 +831,7 @@ export function stitchNewsletter(input: StitchInput): string {
   parts.push("");
   parts.push("---");
   parts.push("");
-  parts.push(buildParaEncerrar(input.paraEncerrar, relatedEditionsMarkdown));
+  parts.push(buildParaEncerrar(input.paraEncerrar, relatedEditionsMarkdown, input.snippetsRootDir));
   parts.push("");
 
   return parts.join("\n");
@@ -889,7 +934,7 @@ function main(): void {
     // pós-stitch. Fail-soft: nunca derruba o stitch, só degrada o guard de
     // volta pro mtime-puro (mesmo padrão de `.social-source-hash.json`/#1413).
     try {
-      const snippetsDir = join(ROOT, "context", "snippets");
+      const snippetsDir = join(ROOT, "data", "snippets");
       // #4626: usa o mapeamento EFETIVO (pós auto-seleção), não uma releitura
       // crua de `platform.config.json` — antes do #4626 os dois eram sempre
       // idênticos (main() nunca passava `boxesDivulgacao` pra stitchNewsletter,

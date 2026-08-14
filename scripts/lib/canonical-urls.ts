@@ -93,7 +93,7 @@ export const DIARIA_THREADS_URL = `https://www.${DIARIA_THREADS_SLUG}`;
  * `@diariabr` — mesmo já usado por `scripts/append-twitter-published.ts`. Sem
  * `www.` (diferente de Facebook/LinkedIn/Instagram/Threads acima) — o X não
  * usa esse subdomínio. Centralizado aqui pra parar de hardcodear
- * `https://x.com/diariabr` em paralelo (`context/snippets/encerramento-social-apoio.md`,
+ * `https://x.com/diariabr` em paralelo (`data/snippets/encerramento-social-apoio.md`,
  * `SOCIAL_INVITE` em `scripts/lib/shared/encerramento-snippet.ts`).
  */
 export const DIARIA_X_SLUG = "x.com/diariabr";
@@ -119,7 +119,7 @@ export const DIARIA_YOUTUBE_URL = `https://www.${DIARIA_YOUTUBE_SLUG}`;
 /**
  * URL canônica de apoio financeiro via Apoia.se (#3219) — CTA de apoio à
  * curadoria no bloco ENCERRAMENTO/PARA ENCERRAR (diário e mensal). Ver
- * `context/snippets/encerramento-social-apoio.md`.
+ * `data/snippets/encerramento-social-apoio.md`.
  */
 export const DIARIA_APOIASE_URL = "https://apoia.se/diaria";
 
@@ -367,7 +367,7 @@ export const FOOTER_DOMAINS = [
   // com uma página de produto.
   "amazon.com.br/shop/vjpixel",
   // #3219: CTA de apoio financeiro (Apoia.se) no bloco PARA ENCERRAR — link
-  // fixo do rodapé (context/snippets/encerramento-social-apoio.md), nunca um
+  // fixo do rodapé (data/snippets/encerramento-social-apoio.md), nunca um
   // artigo pesquisado. Sem isso, urls_accessible flagaria not_in_cache (mesmo
   // bug de #2498 pro cursos/livros.diaria.workers.dev).
   "apoia.se",

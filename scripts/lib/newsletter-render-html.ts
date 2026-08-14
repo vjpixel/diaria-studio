@@ -673,7 +673,7 @@ const LINK_LED_PARAGRAPH_RE = /^\s*\[[^\]]+\]\(/;
  * editor depois que a remoção do marcador 📖 (#3475) fez o box perder o
  * título e cair no tratamento uniforme do #3460.
  *
- * A estrutura CANÔNICA desse box (`context/snippets/recomendacao-leitura.md`)
+ * A estrutura CANÔNICA desse box (`data/snippets/recomendacao-leitura.md`)
  * é única entre os boxes que chegam a ESTE branch (não-patrocinado, sem CTA
  * pill estrutural, sem marcador 🎉):
  *   [0] linha de título da seção — curta, SEM link markdown  ("Recomendação de leitura")
@@ -731,7 +731,7 @@ export function renderIntroCallout(
   // Clarice, Alexa+) escapava desta exceção porque o 1º parágrafo começava
   // com um marcador emoji conhecido (📣/📚/📖) — allowlist removida junto com
   // o resto do sistema de marcadores dos boxes de divulgação (o editor não
-  // usa mais esses emoji pra abrir box; ver context/snippets/*.md).
+  // usa mais esses emoji pra abrir box; ver data/snippets/*.md).
   //
   // #3475 follow-up (pedido do editor): o título serif 26px do box
   // "recomendação de leitura" foi RESTAURADO via sinal ESTRUTURAL não-emoji

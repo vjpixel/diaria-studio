@@ -7,7 +7,7 @@
 // 409 quando o mtime em disco diverge do `expectedModifiedAt` que o client
 // viu no último GET — aqui o cenário típico é 2 abas/sessões do Studio
 // editando a MESMA caixa (nenhum stage de pipeline escreve em
-// `context/snippets/` automaticamente, ao contrário de `02-reviewed.md`).
+// `data/snippets/` automaticamente, ao contrário de `02-reviewed.md`).
 
 /** Mensagem do `confirm()` disparado por `saveCurrentBox()` quando o server
  * responde 409 — nunca "Tem certeza?" genérico (R6 de
@@ -26,13 +26,13 @@ export const BOX_SAVE_CONFLICT_CONFIRM_MESSAGE =
 export const BOX_SLUG_RE = /^[a-z0-9-]+\.md$/;
 
 /** Mensagem do `confirm()` antes de ARQUIVAR — arquivar não deleta (o conteúdo
- * vai pra `context/snippets/_arquivo/` e pode ser restaurado), então o texto
+ * vai pra `data/snippets/_arquivo/` e pode ser restaurado), então o texto
  * deixa isso explícito (R6 de docs/studio-ui-ux-guidelines.md: nunca "Tem
  * certeza?" genérico). */
 export function boxArchiveConfirmMessage(slug) {
   return (
     `Arquivar a caixa "${slug}"? Ela some da lista mas o conteúdo NÃO é deletado — ` +
-    `vai para context/snippets/_arquivo/ e pode ser restaurada depois na seção "Arquivadas".`
+    `vai para data/snippets/_arquivo/ e pode ser restaurada depois na seção "Arquivadas".`
   );
 }
 

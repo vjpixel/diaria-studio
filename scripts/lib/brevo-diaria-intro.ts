@@ -14,8 +14,9 @@
  * estilo tipográfico da antiga saudação "Olá! Eu sou o Pixel...", sem fundo)
  * → `renderBarePillButton` (botão pill solto, sem caixa ao redor) →
  * `renderCoverageTrailer` (parágrafo de disclosure/descadastro, mesmo estilo
- * sem fundo). O texto vem de `context/snippets/brevo-diaria-pending-intro.md`,
- * mesma convenção de todo bloco em `context/snippets/` (comentário HTML de
+ * sem fundo). O texto vem de `data/snippets/brevo-diaria-pending-intro.md`
+ * (#5227, migrado de `context/snippets/`),
+ * mesma convenção de todo bloco em `data/snippets/` (comentário HTML de
  * header + corpo, lido via `readSnippetFile`) — formato: N parágrafos de
  * corpo, 1 parágrafo CTA isolado (`→ [texto](url)`, detectado via
  * `isCtaOnlyParagraph`), N parágrafos de disclosure. Sem `shouldForceCtaPill`/

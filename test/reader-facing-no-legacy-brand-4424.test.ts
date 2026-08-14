@@ -116,6 +116,15 @@ const PROTECTED_DIRS: string[] = [
   // conhecidos) pra pegar qualquer snippet novo automaticamente — mesmo
   // padrão de context/templates acima. `_arquivo/` (subpasta) não é varrida
   // porque filesUnder só lê arquivos de 1º nível, não subdiretórios.
+  //
+  // #5227 (14/08/2026): o CONTEÚDO desses snippets (patronos-*.md e os
+  // demais) migrou pra `data/snippets/` (gitignored, junction OneDrive) —
+  // só `context/snippets/README.md` (spec do formato, sem copy editorial)
+  // continua aqui. `filesUnder` é fail-soft (existsSync guard), então esta
+  // entrada não quebra — só perde a cobertura de fato dessa fatia (o que a
+  // decisão de migração aceitou explicitamente: `data/` não está presente em
+  // CI, então um guard estático sobre o conteúdo real das caixas não pode
+  // mais rodar ali; ver custo aceito documentado em CLAUDE.md/#5227).
   "context/snippets",
 ];
 

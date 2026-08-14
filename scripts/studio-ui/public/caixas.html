@@ -16,7 +16,7 @@
     <nav id="app-nav" class="app-nav" aria-label="Navegação do Studio"></nav>
     <div class="statusbar-item">
       <span class="label">Caixas</span>
-      <span class="value">context/snippets</span>
+      <span class="value">data/snippets</span>
     </div>
     <div class="statusbar-item conn" id="fetch-status">
       <span class="dot" id="fetch-dot"></span>
@@ -28,7 +28,7 @@
     <section class="panel">
       <h1>Caixas de divulgação</h1>
       <p class="hint">
-        Lista dinâmica de <code>context/snippets/*.md</code> (exceto <code>README.md</code>).
+        Lista dinâmica de <code>data/snippets/*.md</code> (exceto <code>README.md</code>).
         O badge "slot N" mostra a atribuição atual em <code>platform.config.json</code> →
         <code>boxes_divulgacao</code> (variante Padrão) — gerencie a atribuição, incluindo a
         variante <strong>Patronos</strong> (<code>boxes_divulgacao_patronos</code>, #4275),
@@ -97,7 +97,7 @@
         dos slots acima (pool de caixas opcionais), o Slot A é texto direto, editado aqui e
         salvo em <code>platform.config.json</code> → <code>para_encerrar</code>. O cabeçalho da seção
         continua fixo. Campo vazio = usa o texto padrão do snippet
-        <code>context/snippets/encerramento-social-apoio.md</code>.
+        <code>data/snippets/encerramento-social-apoio.md</code>.
         As pills de curadoria em dois grupos rotulados — "Curadorias:" (Cursos/Livros/Equipamentos)
         e "Da diar.ia.br:" (Edições anteriores/Jogar É IA?, #4968) — são fixas e SEMPRE aparecem
         depois do Slot A, independente do que for salvo abaixo (#4357) — editar o Slot A nunca
@@ -123,7 +123,7 @@
     <section class="panel" id="create-panel" hidden>
       <h2>Nova caixa</h2>
       <p class="hint">
-        Cria um arquivo novo em <code>context/snippets/</code>. O nome vira o
+        Cria um arquivo novo em <code>data/snippets/</code>. O nome vira o
         <strong>slug</strong> — minúsculas, dígitos e hífen (o <code>.md</code> é
         anexado automaticamente). O slot <strong>não</strong> é atribuído aqui.
       </p>
@@ -150,7 +150,7 @@
     <section class="panel">
       <h2>Caixas (<span id="boxes-count">0</span>)</h2>
       <div id="boxes-loading" class="hint">Carregando…</div>
-      <div id="boxes-empty" class="hint" hidden>Nenhuma caixa em context/snippets/.</div>
+      <div id="boxes-empty" class="hint" hidden>Nenhuma caixa em data/snippets/.</div>
       <div id="boxes-list" class="boxes-list"></div>
     </section>
 
@@ -160,7 +160,7 @@
         Arquivadas (<span id="archived-count">0</span>)
       </button>
       <p class="hint" id="archived-hint" hidden>
-        Caixas arquivadas ficam em <code>context/snippets/_arquivo/</code> — fora da
+        Caixas arquivadas ficam em <code>data/snippets/_arquivo/</code> — fora da
         lista, mas não deletadas. "Restaurar" traz de volta.
       </p>
       <div id="archived-empty" class="hint" hidden>Nenhuma caixa arquivada.</div>

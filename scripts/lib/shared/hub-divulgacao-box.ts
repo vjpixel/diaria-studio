@@ -3,7 +3,8 @@
  *
  * Box de divulgação ROTATIVO dos hubs temáticos (`arquivo.diar.ia.br/temas/{slug}`)
  * pra newsletter diária — mesmo formato/família estrutural dos boxes de
- * `context/snippets/` (bold-line/mid-callout, ver `context/snippets/README.md`),
+ * `data/snippets/` (bold-line/mid-callout, ver `context/snippets/README.md`
+ * — a spec do formato continua no git, só o conteúdo migrou, #5227),
  * mas com conteúdo GERADO por edição em vez de texto estático editado à mão.
  *
  * **Distinto de `HUB_CONTEXTUAL_UTM`/`matchEditionHub` (#4907,
@@ -31,7 +32,7 @@
  * racional completo (a integração toca o pipeline de publicação ao vivo,
  * fora do que dá pra verificar com segurança de dentro deste worktree
  * isolado). `scripts/build-hub-divulgacao-box.ts` já escreve o resultado em
- * `context/snippets/hub-divulgacao-rotativo.md`, no formato que
+ * `data/snippets/hub-divulgacao-rotativo.md`, no formato que
  * `boxes_divulgacao.slotN` espera — falta só o editor decidir QUANDO essa
  * regeneração roda no pipeline (Stage 0? gate manual?) e apontar um slot pra
  * ela.

@@ -1,8 +1,8 @@
 // caixas.js (#3924) — seção "Caixas": lista dinâmica de
-// `context/snippets/*.md` + editor de conteúdo. Vanilla JS, sem build step
+// `data/snippets/*.md` + editor de conteúdo. Vanilla JS, sem build step
 // (mesmo princípio de apoios.js/triagem.js — #3555/#3562/#3602).
 //
-// Fluxo: GET /api/boxes traz a lista (slug/título/mtime/slot/dirtyVsGit).
+// Fluxo: GET /api/boxes traz a lista (slug/título/mtime/slot).
 // Clicar "Editar" numa caixa faz GET /api/boxes/:slug (conteúdo + mtime) e
 // abre o painel de edição abaixo da lista — só 1 caixa editada por vez.
 // "Salvar" é PUT do mesmo endpoint com o mtime visto no load
@@ -188,7 +188,7 @@ function renderList() {
     // #3874/R4: vazio explica onde e o que fazer — nunca uma lista que só
     // desaparece sem contexto.
     el.empty.hidden = false;
-    el.empty.textContent = "Nenhuma caixa em context/snippets/.";
+    el.empty.textContent = "Nenhuma caixa em data/snippets/.";
     el.list.innerHTML = "";
     return;
   }
@@ -211,9 +211,10 @@ function renderList() {
       : "";
     // #3981: rótulo exibido acima da caixa na newsletter (quando ocupa um slot ativo).
     const categoriaBadge = box.categoria ? `<span class="box-categoria-badge">${escapeHtml(box.categoria)}</span>` : "";
-    const dirtyBadge = box.dirtyVsGit
-      ? `<span class="box-dirty-badge" title="alteração local — entra no repo no próximo commit">modificado vs git</span>`
-      : "";
+    // #5227: badge "modificado vs git" REMOVIDO — fazia sentido só enquanto
+    // data/snippets/*.md (então context/snippets/) era git-tracked; agora
+    // que a pasta é gitignored (sync via OneDrive, sem passo commit+push),
+    // o dado (`box.dirtyVsGit`) nem existe mais na resposta de GET /api/boxes.
     // #3928: arquivar (não deletar). Caixa em slot ativo (Padrão OU Patronos,
     // #4275) é auto-injetada em alguma edição — arquivá-la quebraria essa
     // montagem, então o botão fica desabilitado (o server também bloqueia
@@ -236,7 +237,6 @@ function renderList() {
         ${slotBadge}
         ${slotPatronosBadge}
         ${categoriaBadge}
-        ${dirtyBadge}
       </div>
       ${contentTitleLine}
       <div class="box-meta">
@@ -310,7 +310,7 @@ function buildSlotOptionsHtml(assignedSlug) {
     opts.push(`<option value="${escapeHtml(box.slug)}">${escapeHtml(box.title)}</option>`);
   }
   if (assignedSlug && !seen.has(assignedSlug)) {
-    opts.push(`<option value="${escapeHtml(assignedSlug)}">${escapeHtml(assignedSlug)} (não encontrada em context/snippets/)</option>`);
+    opts.push(`<option value="${escapeHtml(assignedSlug)}">${escapeHtml(assignedSlug)} (não encontrada em data/snippets/)</option>`);
   }
   return opts.join("");
 }
@@ -539,7 +539,7 @@ async function openEditor(slug) {
   loadedModifiedAt = null;
   el.editorPanel.hidden = false;
   el.editorTitle.textContent = "Editando…";
-  el.editorFile.textContent = `context/snippets/${slug}`;
+  el.editorFile.textContent = `data/snippets/${slug}`;
   el.editorConteudo.value = "";
   el.editorNotas.value = "";
   el.editorConteudo.disabled = true;
@@ -553,12 +553,12 @@ async function openEditor(slug) {
   el.editorConteudo.disabled = false;
   el.editorNotas.disabled = false;
   if (!ok || !body || !body.ok) {
-    el.editorTitle.textContent = `context/snippets/${slug}`;
+    el.editorTitle.textContent = `data/snippets/${slug}`;
     el.editorLoadError.hidden = false;
     el.editorLoadError.textContent = `Erro ao carregar: ${(body && body.error) || "falha desconhecida"}`;
     return;
   }
-  el.editorTitle.textContent = `context/snippets/${slug}`;
+  el.editorTitle.textContent = `data/snippets/${slug}`;
   // #3979: 2 painéis — "Conteúdo" (o que renderiza) e "Notas" (resto do
   // header de comentário, sem nome:/categoria:). Fallback pro `body` legado
   // (#3933, header inteiro menos nome:) se o server for antigo demais pra
@@ -650,7 +650,7 @@ async function saveCurrentBox() {
         }
       }
       // #3874/R5: zero UI otimista — refetcha a lista do servidor em vez de
-      // atualizar o card localmente (mtime/dirtyVsGit vêm sempre do disco).
+      // atualizar o card localmente (mtime vem sempre do disco).
       await fetchBoxes();
     } else {
       el.saveStatus.textContent = `Erro ao salvar: ${(body && body.error) || "falha desconhecida"}`;
@@ -683,7 +683,7 @@ async function archiveBoxAction(slug) {
   await Promise.all([fetchBoxes(), fetchArchived()]);
 }
 
-/** Restaura uma caixa arquivada (move de volta pra `context/snippets/`). 409 =
+/** Restaura uma caixa arquivada (move de volta pra `data/snippets/`). 409 =
  * já existe caixa viva com o mesmo slug. */
 async function restoreBoxAction(slug) {
   const { ok, status, body } = await fetchJson(`/api/boxes/${encodeURIComponent(slug)}/unarchive`, { method: "POST" });

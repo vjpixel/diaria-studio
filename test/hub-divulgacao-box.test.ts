@@ -8,9 +8,6 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import {
   selectHubIndexForRotation,
@@ -23,8 +20,6 @@ import {
   resolveHubDivulgacaoBoxSource,
   renderGeneratedSnippet,
 } from "../scripts/build-hub-divulgacao-box.ts";
-
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 describe("selectHubIndexForRotation (#5263)", () => {
   it("é determinístico — a mesma edição sempre devolve o mesmo índice", () => {
@@ -128,15 +123,21 @@ describe("resolveHubDivulgacaoBoxSource (#5263) — Node-side, dados reais de HU
   });
 });
 
-describe("asset gerado — context/snippets/hub-divulgacao-rotativo.md (#5263)", () => {
-  const assetPath = resolve(ROOT, "context/snippets/hub-divulgacao-rotativo.md");
-
-  it("existe (rode: npx tsx scripts/build-hub-divulgacao-box.ts --edition AAMMDD)", () => {
-    assert.ok(existsSync(assetPath));
-  });
-
+// #5227: o asset GERADO passou a ser escrito em `data/snippets/` (gitignored,
+// junction OneDrive) em vez de `context/snippets/` (git-tracked) — não é mais
+// commitado, então não existe garantidamente num clone fresco/CI/worktree
+// isolado (o script só o gera quando rodado, `npx tsx
+// scripts/build-hub-divulgacao-box.ts --edition AAMMDD`). Os 2 testes que
+// liam o arquivo do disco viram fixture sintética: exercitam o MESMO caminho
+// de geração (`resolveHubDivulgacaoBoxSource` + `buildHubDivulgacaoBoxMarkdown`
+// + `renderGeneratedSnippet`, os 3 já usados por `main()` em
+// build-hub-divulgacao-box.ts) e verificam a FORMA do output em memória, sem
+// depender do arquivo já ter sido escrito em disco.
+describe("asset gerado — data/snippets/hub-divulgacao-rotativo.md (#5263, path migrado #5227)", () => {
   it("carrega o header GERADO/NÃO EDITAR + 1 bloco bold-line", () => {
-    const content = readFileSync(assetPath, "utf8");
+    const source = resolveHubDivulgacaoBoxSource("260814");
+    const markdown = buildHubDivulgacaoBoxMarkdown(source);
+    const content = renderGeneratedSnippet("260814", markdown);
     assert.match(content, /GERADO, NÃO EDITAR À MÃO/);
     assert.match(content, /\*\*A cobertura completa de .+ → \[arquivo\.diar\.ia\.br\/temas\/.+\]\(.+\)\*\*/);
   });

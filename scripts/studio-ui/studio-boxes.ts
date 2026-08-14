@@ -4,8 +4,14 @@
  *
  * Camada de leitura/escrita pro painel "Caixas" do Studio: os snippets
  * reusáveis injetados na newsletter (recomendação de leitura, apoio, etc.)
- * vivem em `context/snippets/*.md` — este módulo lista esse diretório
- * dinamicamente, cruza com os slots ativos em `platform.config.json` →
+ * vivem em `data/snippets/*.md` (#5227, 14/08/2026 — migrado de
+ * `context/snippets/`, que era git-tracked: caixa criada/editada localmente
+ * ficava invisível no checkout remoto que serve o Studio até alguém
+ * commitar+dar push, e o Studio TAMBÉM escreve neste diretório — problema
+ * bidirecional. `data/` já sincroniza sozinho entre as máquinas via
+ * OneDrive; `context/snippets/README.md`, spec do formato, continua no git)
+ * — este módulo lista esse diretório dinamicamente, cruza com os slots
+ * ativos em `platform.config.json` →
  * `boxes_divulgacao`, edita o conteúdo de uma caixa existente, e (#3937)
  * gerencia a PRÓPRIA atribuição dos 3 slots (`readBoxSlotsState` +
  * `saveBoxSlots`) — reescrita cirúrgica de `boxes_divulgacao`, nunca do
@@ -22,7 +28,7 @@
  * mesmo que alguém tente `PUT /api/boxes/README.md` direto).
  *
  * **`runtime: false` (#4500)** — mesma convenção de header de `nome:`/
- * `categoria:`: um `.md` de `context/snippets/` que é documentação/referência
+ * `categoria:`: um `.md` de `data/snippets/` que é documentação/referência
  * (nunca lido em runtime pelo pipeline — ex: `intro-campeoes-sorteio.md`, cuja
  * caixa real é hardcoded/gerada por `build-champions-callout.ts`, sem ligação
  * nenhuma com os slots) declara `runtime: false` no header pra sumir de
@@ -40,7 +46,7 @@
  * **Slug válido** = casa `/^[a-z0-9-]+\.md$/` (sem barra, sem `..`, sem
  * maiúscula — a checagem por regex já impede traversal por construção, já
  * que nenhum caractere de separador de path é aceito) E existe como arquivo
- * em `context/snippets/`. Qualquer coisa fora disso (traversal, `README.md`,
+ * em `data/snippets/`. Qualquer coisa fora disso (traversal, `README.md`,
  * extensão errada, arquivo inexistente) é tratada como "não encontrada" —
  * o caller HTTP (`server.ts`) responde 404 pra QUALQUER falha de
  * `readBox`/`saveBox` que não seja o conflito de mtime (409, ver abaixo).
@@ -83,7 +89,7 @@
  * revisar, sem publicar).
  *
  * **PARA ENCERRAR slot A/B (#4274)** — mecanismo IRMÃO, mas DIFERENTE: os
- * slots 0-3 acima atribuem um FILENAME de `context/snippets/` (pool
+ * slots 0-3 acima atribuem um FILENAME de `data/snippets/` (pool
  * opcional); `readParaEncerrarState`/`saveParaEncerrar`/
  * `replaceParaEncerrarBlock` gerenciam 2 campos de TEXTO DIRETO (sem pool,
  * sempre presentes), escritos em `platform.config.json` → `para_encerrar.
@@ -94,7 +100,6 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { spawnSync } from "node:child_process";
 import {
   extractHeaderRemainder,
   stripHeaderBlock,
@@ -120,10 +125,10 @@ export function isValidBoxSlug(slug: string): boolean {
 }
 
 export function snippetsDir(rootDir: string): string {
-  return resolve(rootDir, "context", "snippets");
+  return resolve(rootDir, "data", "snippets");
 }
 
-/** Subpasta de caixas ARQUIVADAS (#3928): `context/snippets/_arquivo/`. Mesma
+/** Subpasta de caixas ARQUIVADAS (#3928): `data/snippets/_arquivo/`. Mesma
  * convenção `_arquivo/` já usada no repo pra edições arquivadas. Arquivar =
  * mover o `.md` pra cá; a caixa some de `listBoxes` (que só enumera `.md` no
  * nível de `snippetsDir` — `readdirSync` não-recursivo + `entry.isFile()`
@@ -638,7 +643,7 @@ export interface SaveBoxSlotsOptions {
   /** #4275: qual chave de `platform.config.json` esta chamada escreve —
    * `"default"` (padrão) é `boxes_divulgacao`, `"patronos"` é a chave irmã
    * `boxes_divulgacao_patronos`. As caixas VIVAS candidatas (guard 1) são as
-   * MESMAS pras duas variantes — `context/snippets/` é um pool único
+   * MESMAS pras duas variantes — `data/snippets/` é um pool único
    * compartilhado, não há um pool separado por variante. */
   variant?: BoxSlotVariant;
 }
@@ -668,7 +673,7 @@ function normalizeSlotValue(v: string | undefined | null): string {
 /** Escreve a atribuição dos 3 slots de divulgação em `platform.config.json`
  * (#3937). Guards, na ordem em que são checados:
  *   1. cada slot não-vazio precisa ser uma caixa VIVA existente em
- *      `context/snippets/` (não arquivada, não inexistente) E não pode
+ *      `data/snippets/` (não arquivada, não inexistente) E não pode
  *      declarar `runtime: false` no header (#4500 — documentação/referência,
  *      não uma caixa de verdade, ex: `intro-campeoes-sorteio.md`) — senão o
  *      `stitch-newsletter` quebraria a montagem da edição;
@@ -711,7 +716,7 @@ export function saveBoxSlots(
     if (!isValidBoxSlug(slug) || !existsSync(boxFilePath(rootDir, slug))) {
       return {
         ok: false,
-        error: `a caixa "${slug}" (${key}) não existe em context/snippets/ (ou está arquivada) — atribuição rejeitada`,
+        error: `a caixa "${slug}" (${key}) não existe em data/snippets/ (ou está arquivada) — atribuição rejeitada`,
         modifiedAt: null,
         invalid: true,
       };
@@ -775,7 +780,7 @@ export function saveBoxSlots(
 // /diaria-develop 260729) ───────────────────────────────────────────────
 //
 // Diferença de mecanismo vs. os slots 0-3 acima: aqueles atribuem um
-// FILENAME de `context/snippets/` (pool de candidatos, opcionais, podem
+// FILENAME de `data/snippets/` (pool de candidatos, opcionais, podem
 // ficar vazios). Slot A (parágrafo de apoio + bloco de ferramentas) e Slot B
 // (convite social) são conteúdo SEMPRE-PRESENTE da seção PARA ENCERRAR — 1
 // campo de TEXTO DIRETO por slot, editado no painel Caixas como um textarea
@@ -789,7 +794,7 @@ export function saveBoxSlots(
 //
 // `readParaEncerrarState` devolve o valor CRU do config ("" se ausente/
 // vazio) — NÃO resolve o texto-default de fallback (que `buildParaEncerrar`
-// computa a partir de `context/snippets/encerramento-social-apoio.md`
+// computa a partir de `data/snippets/encerramento-social-apoio.md`
 // quando o campo está vazio): esse default depende do snippet no ROOT REAL
 // do repo (via `readSnippetFile`), não do `rootDir` de teste que este
 // módulo aceita como parâmetro — resolver aqui quebraria o isolamento dos
@@ -953,29 +958,6 @@ export function saveParaEncerrar(
   return { ok: true, modifiedAt, state: readParaEncerrarState(rootDir) };
 }
 
-// ── dirty vs. git (defesa fail-soft — sem repo git no fixture de teste) ──
-
-/**
- * `git status --porcelain -- context/snippets/<file>` via spawn síncrono —
- * saída não-vazia = arquivo modificado/untracked vs. o HEAD do repo. Fail-soft
- * total: `git` ausente do PATH, `rootDir` não sendo um repo git (comum em
- * fixture de teste), ou qualquer erro de spawn -> `false` (nunca lança, nunca
- * derruba `listBoxes`).
- */
-export function checkDirtyVsGit(rootDir: string, filename: string): boolean {
-  try {
-    const result = spawnSync(
-      "git",
-      ["status", "--porcelain", "--", `context/snippets/${filename}`],
-      { cwd: rootDir, encoding: "utf8" },
-    );
-    if (result.error || result.status !== 0) return false;
-    return result.stdout.trim().length > 0;
-  } catch {
-    return false;
-  }
-}
-
 // ── listagem ─────────────────────────────────────────────────────────────
 
 export interface BoxListEntry {
@@ -999,21 +981,28 @@ export interface BoxListEntry {
    * `null` se não atribuída — badge SEPARADO do `slot` padrão acima; uma
    * caixa pode ocupar um slot em uma variante e outro (ou nenhum) na outra. */
   slotPatronos: BoxSlot | null;
-  dirtyVsGit: boolean;
 }
 
-/** Lista dinâmica de `context/snippets/*.md`, excluindo `README.md` e
- * qualquer arquivo com `runtime: false` no header (#4500 — documentação/
+/** Lista dinâmica de `data/snippets/*.md` (#5227, migrado de
+ * `context/snippets/` — gitignored, junction OneDrive), excluindo `README.md`
+ * e qualquer arquivo com `runtime: false` no header (#4500 — documentação/
  * referência que não é uma caixa de verdade, ex: `intro-campeoes-sorteio.md`)
  * — ordenada por slug (ordem estável e previsível pra UI/testes). Diretório
- * ausente (clone fresco sem `context/snippets/`, ou `rootDir` de teste sem
- * essa pasta) -> `[]`, nunca lança. */
+ * ausente (clone fresco sem `data/`, sessão cloud, ou `rootDir` de teste sem
+ * essa pasta) -> `[]`, nunca lança.
+ *
+ * `dirtyVsGit` (badge "modificado vs git" da lista) foi REMOVIDO em #5227 —
+ * fazia sentido só enquanto `context/snippets/` era git-tracked (avisava
+ * "esta caixa ainda não foi commitada+pushada", o problema estrutural que a
+ * própria #5227 resolveu); em `data/snippets/` (`.gitignore` blanket) o
+ * arquivo nunca aparece em `git status --porcelain` por definição —
+ * `checkDirtyVsGit` sempre voltaria `false`, então o campo virou morto. */
 export function listBoxes(rootDir: string): BoxListEntry[] {
   const dir = snippetsDir(rootDir);
   if (!existsSync(dir)) return [];
   const slots = readBoxSlotAssignments(rootDir);
   // #4275: badge separado da variante Patronos — mesma lista de caixas
-  // (pool único em context/snippets/), atribuição independente por variante.
+  // (pool único em data/snippets/), atribuição independente por variante.
   const slotsPatronos = readBoxSlotAssignments(rootDir, "patronos");
   const filenames = readdirSync(dir, { withFileTypes: true })
     .filter((entry) => entry.isFile() && isValidBoxSlug(entry.name))
@@ -1035,7 +1024,6 @@ export function listBoxes(rootDir: string): BoxListEntry[] {
       mtimeIso,
       slot: slots[filename] ?? null,
       slotPatronos: slotsPatronos[filename] ?? null,
-      dirtyVsGit: checkDirtyVsGit(rootDir, filename),
     });
   }
   return entries;
@@ -1189,7 +1177,7 @@ export interface CreateBoxResult {
   exists?: boolean;
 }
 
-/** Cria uma caixa NOVA em `context/snippets/{slug}` (#3928). Ao contrário de
+/** Cria uma caixa NOVA em `data/snippets/{slug}` (#3928). Ao contrário de
  * `saveBox` (que rejeita slug inexistente de propósito — a #3924 não cobria
  * criação), esta função exige que o arquivo NÃO exista ainda. Slot NÃO é
  * atribuído aqui (atribuição de slot segue fora de escopo, como na #3924).
@@ -1241,13 +1229,13 @@ export interface ArchiveBoxResult {
   slot?: BoxSlot;
 }
 
-/** Arquiva uma caixa: MOVE `context/snippets/{slug}` -> `context/snippets/
+/** Arquiva uma caixa: MOVE `data/snippets/{slug}` -> `data/snippets/
  * _arquivo/{slug}` (#3928). A caixa some de `listBoxes` (que não enumera
  * subpastas) mas o conteúdo NÃO é deletado — reversível via `unarchiveBox`.
  *
  * **Guard de slot (defense-in-depth):** uma caixa atribuída a
  * `boxes_divulgacao.slot{0,1,2,3}` é auto-injetada em toda newsletter pelo
- * `stitchNewsletter` (que procura o arquivo por nome em `context/snippets/`).
+ * `stitchNewsletter` (que procura o arquivo por nome em `data/snippets/`).
  * Arquivá-la quebraria o pipeline, então é bloqueado no server mesmo que o
  * client tente — não só desabilitado na UI. Fail-soft: nunca lança.
  *
@@ -1308,8 +1296,8 @@ export interface UnarchiveBoxResult {
   conflict?: boolean;
 }
 
-/** Restaura uma caixa arquivada: MOVE `context/snippets/_arquivo/{slug}` de
- * volta pra `context/snippets/{slug}` (#3928). Bloqueia se já existe uma caixa
+/** Restaura uma caixa arquivada: MOVE `data/snippets/_arquivo/{slug}` de
+ * volta pra `data/snippets/{slug}` (#3928). Bloqueia se já existe uma caixa
  * viva com o mesmo slug (não sobrescreve). Fail-soft: nunca lança. */
 export function unarchiveBox(rootDir: string, slug: string): UnarchiveBoxResult {
   if (!isValidBoxSlug(slug)) {
@@ -1346,7 +1334,7 @@ export interface ArchivedBoxEntry {
   mtimeIso: string;
 }
 
-/** Lista as caixas arquivadas em `context/snippets/_arquivo/*.md` (#3928),
+/** Lista as caixas arquivadas em `data/snippets/_arquivo/*.md` (#3928),
  * ordenada por slug. Sem badge de slot (uma arquivada nunca está num slot) e
  * sem dirty-vs-git (irrelevante pra restaurar). Pasta ausente (nada foi
  * arquivado ainda) -> `[]`, nunca lança. */

@@ -13,7 +13,7 @@
  * `extractIntroCallout`/`renderIntroCallout`: quem escreve o `**...**` no
  * markdown bruto é o caller, `inject-champions-callout.ts`).
  *
- * Template de referência: `context/snippets/intro-campeoes-sorteio.md`.
+ * Template de referência: `data/snippets/intro-campeoes-sorteio.md`.
  */
 
 /** Mirror de MONTH_NAMES_PT (workers/poll/src/lib.ts, #1080) — duplicado aqui

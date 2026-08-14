@@ -192,8 +192,8 @@
 
 /* Badges — mesma família visual de .status-badge (apoios.css): fonte mono,
    pill, border 1px. slot = tokens de status "ok" (é uma caixa ATIVA na
-   newsletter agora); dirty vs git usa --status-warn (mudança local ainda não
-   commitada — nem certo nem errado, só um fato que o editor deve saber). */
+   newsletter agora). (#5227: badge "dirty vs git" removido — data/snippets/
+   é gitignored, o fato que ele reportava deixou de existir.) */
 .box-slot-badge {
   display: inline-block;
   font-family: var(--font-mono);
@@ -211,19 +211,9 @@
   border-color: var(--brand);
   color: var(--brand);
 }
-.box-dirty-badge {
-  display: inline-block;
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  padding: 0.1rem 0.45rem;
-  border-radius: 999px;
-  border: 1px dashed var(--status-warn);
-  color: var(--status-warn);
-  white-space: nowrap;
-}
 /* #3981: categoria — rótulo que vai renderizar acima da caixa na newsletter
-   (kicker "● {categoria}"), distinto de slot/dirty (que são fatos do Studio,
-   não conteúdo editorial). Tom neutro (brand), não status. */
+   (kicker "● {categoria}"), distinto de slot (que é um fato do Studio, não
+   conteúdo editorial). Tom neutro (brand), não status. */
 .box-categoria-badge {
   display: inline-block;
   font-family: var(--font-mono);

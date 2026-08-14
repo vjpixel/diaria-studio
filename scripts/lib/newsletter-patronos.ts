@@ -39,7 +39,7 @@
  *
  *   1. Todo box Patronos é tratado como PLANO (`bold: false`, mesma
  *      convenção visual de `apoio-divulgacao.md`/`clarice-divulgacao.md` —
- *      ver `context/snippets/patronos-bastidores.md`), nunca como o callout
+ *      ver `data/snippets/patronos-bastidores.md`), nunca como o callout
  *      bold-wrap do slot 0 padrão (`agradecimento-apoiadores.md`). Os 3
  *      snippets Patronos autorados pro #4275 seguem essa convenção.
  *   2. Nenhum slot Patronos tem imagem própria (`Image: null`,
@@ -123,15 +123,19 @@ function sanitizeHeaderField(v: string | null): string | null {
 }
 
 /**
- * Lê `context/snippets/{filename}` sob `rootDir` (parametrizável, testável
- * com fixture — ao contrário de `loadDivulgacaoSnippet`/`readSnippetFile`,
- * que resolvem sempre a raiz REAL do repo) e devolve `{text, categoria}`.
- * `filename` vazio, arquivo ausente, ou corpo vazio após strip do header ->
- * `EMPTY_OVERRIDE`. Nunca lança.
+ * Lê `data/snippets/{filename}` (migrado de `context/snippets/` em #5227)
+ * sob `rootDir` (parametrizável, testável com fixture — ao contrário de
+ * `loadDivulgacaoSnippet`/`readSnippetFile`, que resolvem sempre a raiz REAL
+ * do repo) e devolve `{text, categoria}`. `filename` vazio ->
+ * `EMPTY_OVERRIDE` (slot não configurado, estado legítimo). Arquivo ausente
+ * -> `EMPTY_OVERRIDE` (fail-soft mantido aqui de propósito — a variante
+ * Patronos ainda está na Fase 1, "gerar + revisar, sem publicar", não é o
+ * caminho de publicação real que #5227 endureceu em `loadDivulgacaoSnippet`).
+ * Nunca lança.
  */
 function resolveSlotOverride(filename: string | null, rootDir: string): SlotOverride {
   if (!filename) return EMPTY_OVERRIDE;
-  const snippetPath = resolve(rootDir, "context", "snippets", filename);
+  const snippetPath = resolve(rootDir, "data", "snippets", filename);
   if (!existsSync(snippetPath)) return EMPTY_OVERRIDE;
   let raw: string;
   try {

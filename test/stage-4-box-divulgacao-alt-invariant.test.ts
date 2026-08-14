@@ -88,8 +88,8 @@ function makeEdition(md: string, publicImages?: Record<string, unknown>): string
 
 function makeRoot(snippetFilename: string, snippetContent: string): string {
   const root = mkdtempSync(join(tmpdir(), "stage4-box-alt-root-"));
-  mkdirSync(join(root, "context", "snippets"), { recursive: true });
-  writeFileSync(join(root, "context", "snippets", snippetFilename), snippetContent);
+  mkdirSync(join(root, "data", "snippets"), { recursive: true });
+  writeFileSync(join(root, "data", "snippets", snippetFilename), snippetContent);
   writeFileSync(
     join(root, "platform.config.json"),
     JSON.stringify({ boxes_divulgacao: { slot1: snippetFilename } }),
@@ -124,8 +124,8 @@ Algo importante.
 /** #4274: mesmo contrato de `makeRoot`, mas atribui o snippet ao slot0. */
 function makeRootSlot0(snippetFilename: string, snippetContent: string): string {
   const root = mkdtempSync(join(tmpdir(), "stage4-box-alt-root-slot0-"));
-  mkdirSync(join(root, "context", "snippets"), { recursive: true });
-  writeFileSync(join(root, "context", "snippets", snippetFilename), snippetContent);
+  mkdirSync(join(root, "data", "snippets"), { recursive: true });
+  writeFileSync(join(root, "data", "snippets", snippetFilename), snippetContent);
   writeFileSync(
     join(root, "platform.config.json"),
     JSON.stringify({ boxes_divulgacao: { slot0: snippetFilename } }),

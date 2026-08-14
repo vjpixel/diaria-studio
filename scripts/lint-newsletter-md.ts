@@ -1421,7 +1421,7 @@ function main(): void {
     return;
   }
 
-  // Modo --check snippet-staleness (#4076) — snippet de context/snippets/
+  // Modo --check snippet-staleness (#4076) — snippet de data/snippets/
   // (ou platform.config.json > boxes_divulgacao) usado nesta edição foi
   // editado DEPOIS do stitch (Stage 2) — a mudança ficou presa no
   // snippet-fonte, nunca chegou a 02-reviewed.md. WARN-ONLY (nunca bloqueia
@@ -1459,11 +1459,12 @@ function main(): void {
   // hardcoded persistindo por 2+ edições passou em silêncio (caso real:
   // "Mônica Herculano", 260729-260731). Diferente dos outros checks, este
   // lê o SNIPPET diretamente (`--snippet`, default
-  // `context/snippets/agradecimento-apoiadores.md`), não o `02-reviewed.md`.
+  // `data/snippets/agradecimento-apoiadores.md` — #5227, migrado de
+  // `context/snippets/`), não o `02-reviewed.md`.
   // WARN-ONLY — o editor decide se é reset ou se o apoiador é de fato novo
   // nesta edição.
   if (args.check === "agradecimento-hardcoded") {
-    const snippetPath = resolve(ROOT, args.snippet ?? "context/snippets/agradecimento-apoiadores.md");
+    const snippetPath = resolve(ROOT, args.snippet ?? "data/snippets/agradecimento-apoiadores.md");
     if (!existsSync(snippetPath)) {
       console.error(`Arquivo não existe: ${snippetPath}`);
       process.exit(2);

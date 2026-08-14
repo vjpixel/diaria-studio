@@ -24,9 +24,9 @@ import {
 
 function makeRoot(boxesDivulgacao: Record<string, string>, files: Record<string, string>): string {
   const root = mkdtempSync(join(tmpdir(), "stage4-box-runtime-root-"));
-  mkdirSync(join(root, "context", "snippets"), { recursive: true });
+  mkdirSync(join(root, "data", "snippets"), { recursive: true });
   for (const [filename, content] of Object.entries(files)) {
-    writeFileSync(join(root, "context", "snippets", filename), content);
+    writeFileSync(join(root, "data", "snippets", filename), content);
   }
   writeFileSync(
     join(root, "platform.config.json"),

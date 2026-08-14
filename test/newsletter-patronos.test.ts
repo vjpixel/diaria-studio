@@ -20,8 +20,8 @@ import {
 } from "../scripts/lib/newsletter-patronos.ts";
 
 function writeSnippet(root: string, filename: string, content: string): void {
-  mkdirSync(join(root, "context", "snippets"), { recursive: true });
-  writeFileSync(join(root, "context", "snippets", filename), content, "utf8");
+  mkdirSync(join(root, "data", "snippets"), { recursive: true });
+  writeFileSync(join(root, "data", "snippets", filename), content, "utf8");
 }
 
 function writeConfig(root: string, cfg: Record<string, unknown>): void {
