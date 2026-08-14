@@ -36,6 +36,38 @@ com link (o painel `hubs` segue em 0). Mas "nunca fomos citados" deixou de
 ser factualmente correto a partir desta data — ver Fato 7 de
 `docs/seo-notes.md` para a leitura completa e os 3 snippets transcritos.
 
+## Fix de falso negativo no provider Anthropic — 14/ago/2026 (#5305)
+
+**Medições anteriores a esta data podem conter falsos negativos silenciosos
+no provider `anthropic` — não comparar séries de antes/depois deste fix como
+homogêneas.** Até 14/ago, `anthropicRequest` chamava a Messages API com
+`max_tokens: 1024` e sem declarar `thinking` explicitamente. No Sonnet 5,
+omitir `thinking` liga thinking adaptativo por default (mudança de default
+silenciosa em relação ao Sonnet 4.6, onde omitir desligava) — e `max_tokens`
+é teto de **thinking + texto de resposta somados**. 1024 tokens era curto
+demais pra thinking adaptativo mais uma resposta pós-`web_search`
+multi-hop: quando estourava, a resposta voltava com `stop_reason:
+"max_tokens"` e possivelmente **zero blocos de texto**, `anthropicExtractText`
+devolvia `""`, e o monitor registrava **"não citado"** — indistinguível do
+resultado legítimo. O mesmo valia pra `stop_reason: "refusal"` (HTTP 200 com
+`content` vazio, salvaguardas de cyber do Sonnet 5).
+
+Correlação plausível (não confirmada) com sintomas já registrados na seção
+"Captura de usage" abaixo: 8/8 chamadas estourando o timeout de 25s (subido
+depois pra 120s), 121k tokens de INPUT numa única chamada, e a observação de
+que reduzir `max_uses` de 5 pra 2 não eliminou os timeouts — turnos mais
+longos são o efeito esperado de thinking adaptativo ligado por engano.
+
+**Fix (#5305):** `max_tokens` subiu pra 4096; `thinking: {type: "adaptive"}`
+passou a ser declarado explicitamente (nunca `disabled` — desligar thinking
+reduz a propensão do Sonnet 5 a acionar tool use, e esta chamada depende do
+`web_search`); e `queryProvider` agora checa `stop_reason` ANTES de
+`extractText` — `"max_tokens"` e `"refusal"` viram `errorKind: "provider"`
+(erro de provider, mesmo caminho que timeout já percorria), nunca "não
+citado". Texto vazio com `stop_reason: "end_turn"` continua "não citado"
+legítimo. Ver `anthropicCheckProviderError` em
+`scripts/lib/geo-citation-monitor.ts`.
+
 ## Critério de decisão: acompanhamento contínuo, não gate de parada (#4901)
 
 O comentário de 07/ago na #4558 fixava um checkpoint binário pra ~07/out:
