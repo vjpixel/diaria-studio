@@ -218,6 +218,18 @@ export interface GeoProviderDef {
    * um provider sem `extractUsage` simplesmente não tem usage capturado
    * (`queryProvider` trata a ausência como `undefined`, nunca lança). */
   extractUsage?(json: unknown): GeoProviderUsage | undefined;
+  /** Detecta se a resposta indica falha do PROVIDER que precisa virar erro,
+   * nunca "não citado" (#5305) — MESMO contrato de `extractText`: pure,
+   * defensivo, nunca lança; retorna `undefined` quando a resposta está OK
+   * pra seguir o caminho normal de `extractText`. Hoje só a Anthropic
+   * implementa (`stop_reason: "max_tokens"` — texto pode ter saído truncado
+   * ou ausente; `stop_reason: "refusal"` — HTTP 200 com `content` vazio),
+   * porque só ela tem o conceito de thinking consumindo o mesmo teto de
+   * `max_tokens` que o texto de resposta. Opcional: um provider sem esse
+   * método simplesmente não tem essa checagem (`queryProvider` segue direto
+   * pra `extractText`). Texto vazio com `stop_reason: "end_turn"` NÃO passa
+   * por aqui como erro — continua "não citado" legítimo. */
+  checkProviderError?(json: unknown): string | undefined;
   /** Override de timeout por provider (#4904 item 4, achado ao vivo
    * 11/ago/2026) — `undefined` usa `GEO_PROVIDER_TIMEOUT_MS`. Existe porque
    * a Anthropic estourou os 25s padrão em 8/8 chamadas de uma rodada real:
@@ -286,7 +298,24 @@ function anthropicRequest(question: string, apiKey: string, model: string) {
       },
       body: JSON.stringify({
         model,
-        max_tokens: 1024,
+        // 4096, não 1024 (#5305) — no Sonnet 5, max_tokens é teto de
+        // THINKING + texto de resposta somados, e omitir/declarar `thinking`
+        // como adaptativo (campo abaixo) consome parte desse teto antes de
+        // qualquer texto sair. 1024 era curto demais: quando estourava,
+        // `stop_reason` virava "max_tokens" com possivelmente ZERO blocos de
+        // texto — `anthropicExtractText` devolvia "" e o monitor registrava
+        // "não citado" (falso negativo indistinguível do caso legítimo). Ver
+        // `anthropicCheckProviderError` abaixo, que agora intercepta esse
+        // caso antes de virar uma citação ausente.
+        max_tokens: 4096,
+        // Declarado EXPLICITAMENTE (#5305) — no Sonnet 5, omitir `thinking`
+        // já liga adaptativo por padrão (mudança de default silenciosa vs.
+        // Sonnet 4.6, onde omitir desligava), mas declarar aqui imuniza a
+        // chamada contra a PRÓXIMA mudança de default do modelo. NUNCA
+        // `{type: "disabled"}`: desligar thinking reduz a propensão do
+        // Sonnet 5 a acionar tool use, e esta chamada depende do
+        // `web_search` abaixo pra funcionar.
+        thinking: { type: "adaptive" },
         messages: [{ role: "user", content: question }],
         // max_uses: 2, não 5 — ver docstring de GeoProviderDef.timeoutMs pro
         // histórico completo. Uma rodada real com max_uses:5 (11/ago/2026)
@@ -350,6 +379,30 @@ function anthropicExtractUsage(json: unknown): GeoProviderUsage | undefined {
     return undefined;
   }
   return { inputTokens, outputTokens, cacheCreationInputTokens, cacheReadInputTokens, searchCount };
+}
+
+/**
+ * Detecta `stop_reason` de falha na Messages API (#5305). `"max_tokens"` —
+ * a resposta estourou o teto de `max_tokens` (thinking + texto somados no
+ * Sonnet 5) antes de terminar; `content` pode não ter NENHUM bloco `text`,
+ * o que faria `anthropicExtractText` devolver `""` e o monitor registrar
+ * "não citado" por engano. `"refusal"` — as salvaguardas de cyber do
+ * Sonnet 5 recusaram a pergunta com HTTP 200 e `content` vazio; mesmo
+ * caminho de leitura, mesmo falso negativo. Os demais `stop_reason`
+ * (`"end_turn"`, `"tool_use"`, `"stop_sequence"`, `"pause_turn"`, ausente)
+ * são tratados como OK — inclusive `"end_turn"` com texto vazio, que
+ * continua "não citado" legítimo (o assistente respondeu e simplesmente
+ * não citou o domínio).
+ */
+function anthropicCheckProviderError(json: unknown): string | undefined {
+  const stopReason = (json as { stop_reason?: unknown })?.stop_reason;
+  if (stopReason === "max_tokens") {
+    return "stop_reason: max_tokens (resposta truncada — thinking + texto estouraram max_tokens; pode não haver bloco de texto)";
+  }
+  if (stopReason === "refusal") {
+    return "stop_reason: refusal (salvaguardas do provider recusaram a pergunta — HTTP 200 com content vazio)";
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -488,6 +541,9 @@ export const GEO_PROVIDERS: readonly GeoProviderDef[] = [
     buildRequest: anthropicRequest,
     extractText: anthropicExtractText,
     extractUsage: anthropicExtractUsage,
+    // #5305 — só a Anthropic tem o conceito de stop_reason estourando
+    // max_tokens/refusal indistinguível de "não citado".
+    checkProviderError: anthropicCheckProviderError,
     // 120s, não os 25s default — ver docstring de GeoProviderDef.timeoutMs.
     timeoutMs: 120_000,
   },
@@ -610,8 +666,11 @@ export interface GeoCitationRecord {
    * fetch rejeitou (timeout incluso, `AbortError`); `"parse"` = `res.json()`
    * lançou (corpo não é JSON válido); `"extract"` = `provider.extractText`
    * lançou (regressão de contrato — a função é documentada como pura e
-   * defensiva, nunca deveria lançar). */
-  errorKind?: "http" | "network" | "parse" | "extract";
+   * defensiva, nunca deveria lançar); `"provider"` (#5305) = HTTP 2xx com
+   * `stop_reason` indicando falha do provider (`max_tokens` estourado ou
+   * `refusal`) — sem isso, esses dois casos viravam "não citado" silencioso,
+   * indistinguível do caso legítimo (texto vazio + `end_turn`). */
+  errorKind?: "http" | "network" | "parse" | "extract" | "provider";
   /** Painel de origem da pergunta (#4900 item a) — `"geral"` (`GEO_QUESTIONS`)
    * ou `"hubs"` (`GEO_HUB_QUESTIONS`). **Opcional de propósito**: registros
    * escritos antes desta mudança não têm o campo — leitores tratam ausência
@@ -654,16 +713,21 @@ type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
 type QueryProviderResult =
   | { ok: true; text: string; usage?: GeoProviderUsage }
-  | { ok: false; error: string; errorKind: "http" | "network" | "parse" | "extract"; httpStatus?: number };
+  | { ok: false; error: string; errorKind: "http" | "network" | "parse" | "extract" | "provider"; httpStatus?: number };
 
 /** Consulta 1 provider com 1 pergunta e devolve o texto extraído (ou erro).
- * Nunca lança — falha de rede/HTTP/parse/extração vira `{ok:false, error,
- * errorKind}`. O catch de rede (`fetchImpl`) é separado do catch de
+ * Nunca lança — falha de rede/HTTP/parse/extração/provider vira `{ok:false,
+ * error, errorKind}`. O catch de rede (`fetchImpl`) é separado do catch de
  * parse/extração (achado #4616): assim uma regressão em `extractText` nunca
  * se disfarça de falha de rede transitória. Timeout explícito via
  * `AbortController` (`GEO_PROVIDER_TIMEOUT_MS`) quando `fetchImpl` não
  * suporta `signal` nativamente do lado do caller — o timeout é aplicado
- * aqui, não deixado a cargo de cada `buildRequest`. */
+ * aqui, não deixado a cargo de cada `buildRequest`. `checkProviderError`
+ * (#5305) roda ANTES de `extractText`, com prioridade: um HTTP 2xx cujo
+ * `stop_reason` indica falha do provider (`max_tokens`/`refusal`) vira
+ * `errorKind: "provider"` mesmo quando `extractText` teria devolvido texto
+ * vazio — sem essa checagem, esse texto vazio virava "não citado" indistinguível
+ * do caso legítimo (`end_turn` sem menção ao domínio). */
 export async function queryProvider(
   provider: GeoProviderDef,
   question: string,
@@ -692,6 +756,20 @@ export async function queryProvider(
     json = await res.json();
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e), errorKind: "parse" };
+  }
+  // #5305 — checa ANTES de extractText, com prioridade sobre o texto que
+  // extractText devolveria. Catch próprio pelo mesmo motivo do catch de
+  // extractUsage abaixo: checkProviderError é documentado "nunca lança",
+  // mas uma regressão aqui não pode se disfarçar de erro de outra origem
+  // nem derrubar o caminho de sucesso.
+  let providerError: string | undefined;
+  try {
+    providerError = provider.checkProviderError?.(json);
+  } catch {
+    providerError = undefined;
+  }
+  if (providerError) {
+    return { ok: false, error: providerError, errorKind: "provider" };
   }
   // Separado do catch de parse de propósito (achado #4616): extractText é
   // documentado como pura/defensiva/nunca-lança — se algum dia regredir,

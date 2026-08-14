@@ -335,6 +335,55 @@ describe("queryProvider (fetchImpl injetado — nunca rede real)", () => {
     if (result.ok) assert.match(result.text, /diar\.ia\.br/);
   });
 
+  it("buildRequest usa max_tokens:4096 e thinking:{type:'adaptive'} explícito (#5305)", () => {
+    const { init } = anthropic.buildRequest("pergunta", "fake-key", "claude-sonnet-5");
+    const body = JSON.parse(init.body as string);
+    assert.equal(body.max_tokens, 4096);
+    assert.deepEqual(body.thinking, { type: "adaptive" });
+  });
+
+  it("stop_reason:'max_tokens' com content:[{type:'thinking'}] devolve erro de provider, NUNCA ausência de citação (#5305)", async () => {
+    // Reproduz o cenário exato do issue: a resposta estourou max_tokens
+    // (thinking + texto somados no Sonnet 5) e não sobrou bloco de texto —
+    // sem a checagem de stop_reason, anthropicExtractText devolveria "" e
+    // o monitor registraria "não citado" (falso negativo indistinguível do
+    // caso legítimo).
+    const fakeFetch = async () =>
+      new Response(JSON.stringify({ stop_reason: "max_tokens", content: [{ type: "thinking" }] }), { status: 200 });
+    const result = await queryProvider(anthropic, "pergunta", "fake-key", "claude-sonnet-5", fakeFetch);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorKind, "provider");
+      assert.match(result.error, /max_tokens/);
+    }
+  });
+
+  it("stop_reason:'refusal' devolve erro de provider, NUNCA ausência de citação (#5305)", async () => {
+    // HTTP 200 com content vazio — as salvaguardas de cyber do Sonnet 5
+    // recusaram a pergunta. Mesmo caminho de leitura do caso feliz, mesmo
+    // risco de virar "não citado" silencioso sem a checagem.
+    const fakeFetch = async () => new Response(JSON.stringify({ stop_reason: "refusal", content: [] }), { status: 200 });
+    const result = await queryProvider(anthropic, "pergunta", "fake-key", "claude-sonnet-5", fakeFetch);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.errorKind, "provider");
+      assert.match(result.error, /refusal/);
+    }
+  });
+
+  it("caso feliz: stop_reason:'end_turn' + texto vazio continua 'não citado' legítimo (#5305)", async () => {
+    const fakeFetch = async () =>
+      new Response(JSON.stringify({ stop_reason: "end_turn", content: [{ type: "text", text: "resposta sem o domínio" }] }), {
+        status: 200,
+      });
+    const result = await queryProvider(anthropic, "pergunta", "fake-key", "claude-sonnet-5", fakeFetch);
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      const detection = detectCitation(result.text);
+      assert.equal(detection.cited, false);
+    }
+  });
+
   it("HTTP não-ok: devolve {ok:false, error, errorKind:'http', httpStatus} (#4616 achado 1)", async () => {
     const fakeFetch = async () => new Response("unauthorized", { status: 401 });
     const result = await queryProvider(anthropic, "pergunta", "bad-key", "claude-sonnet-5", fakeFetch);
