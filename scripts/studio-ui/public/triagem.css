@@ -187,6 +187,29 @@
 .dispatch-bloqueada { border-color: var(--status-danger); color: var(--status-danger); }
 .dispatch-ambigua { border-color: var(--status-warn); color: var(--status-warn); }
 
+/* #5212: affordance visual pro filtro "Classificação" unificado (#5175) —
+   o <select> fechado só mostra o texto da opção escolhida ("Issues ·
+   elegível"), sem indicar qual tabela é afetada. O chip repete isso junto
+   ao <h2> da tabela afetada; o aviso (mesma classe base, sem fundo) avisa a
+   tabela oposta de que o filtro está ativo mas não a atinge. */
+.filter-scope-chip {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: var(--brand);
+  color: var(--on-ink);
+  margin-left: 0.5rem;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.filter-scope-notice {
+  font-style: italic;
+}
+
 .ci-badge {
   display: inline-block;
   font-family: var(--font-mono);

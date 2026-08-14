@@ -45,3 +45,78 @@ export function applyDispatchTrackFilterValue(filters, selectValue) {
     track: group === "pr" ? value : "",
   };
 }
+
+/**
+ * #5212: qual tabela o filtro de Classificação (`<select
+ * id="filter-dispatch-track">`) atualmente ativo afeta — `"issues"` (via
+ * `filters.dispatch`), `"prs"` (via `filters.track`), ou `null` (nenhum dos
+ * dois setado, opção "Todas"). Lê o mesmo par de campos MUTUAMENTE
+ * EXCLUSIVOS que `applyDispatchTrackFilterValue` escreve — nunca os dois ao
+ * mesmo tempo, então checar `dispatch` primeiro é suficiente.
+ *
+ * Existe pra affordance visual (#5212): o `<select>` consolidado (#5175)
+ * perde o contexto de qual tabela é afetada quando fechado — este predicado
+ * alimenta o chip no `<h2>` da tabela afetada e o aviso "não afeta esta
+ * lista" na tabela oposta (`classificationScopeNotice` abaixo).
+ */
+export function classificationFilterScope(filters) {
+  if (filters.dispatch) return "issues";
+  if (filters.track) return "prs";
+  return null;
+}
+
+/**
+ * #5212: texto do aviso "Classificação (X) ativa — não afeta esta lista",
+ * mostrado na tabela OPOSTA à afetada pelo filtro de Classificação
+ * selecionado. `null` quando não há filtro de Classificação ativo, ou quando
+ * `table` é justamente a tabela afetada (o aviso não se aplica a si mesma —
+ * ali quem mostra o filtro ativo é o chip, não este aviso).
+ */
+export function classificationScopeNotice(filters, table) {
+  const scope = classificationFilterScope(filters);
+  if (!scope || scope === table) return null;
+  const label = scope === "prs" ? "PRs" : "Issues";
+  return `Classificação (${label}) ativa — não afeta esta lista.`;
+}
+
+/**
+ * #5212: resume, em texto curto, qual filtro está ativo pra tabela `table`
+ * ("issues" | "prs") — usado no estado-vazio "sem efeito" quando o total já
+ * era 0 antes de qualquer filtro (`emptyStateMessage` abaixo). Prioriza o
+ * filtro de Classificação (o mais provável de causar a confusão de escopo
+ * que esta issue endereça, já que só afeta 1 das 2 tabelas); cai pra
+ * prioridade e depois labels, que afetam as duas tabelas igualmente.
+ */
+export function activeFilterSummary(filters, table) {
+  if (table === "issues" && filters.dispatch) return filters.dispatch;
+  if (table === "prs" && filters.track) return filters.track;
+  if (filters.priority) return filters.priority;
+  if (filters.labels && filters.labels.size > 0) return [...filters.labels].join(", ");
+  return null;
+}
+
+/**
+ * #5212: mensagem de estado-vazio de uma tabela filtrável, com 3 casos (a
+ * versão anterior só tinha 2 — ver `updateEmptyState` em triagem.js/rodada.js):
+ * (a) sem filtro ativo → `emptyLabel` genérico ("Nenhum PR aberto.");
+ * (b) filtro ativo E havia registros ANTES do filtro (`totalCount > 0`) mas a
+ *     lista filtrada zerou → "0 resultados para este filtro." (comportamento
+ *     já existente, preservado);
+ * (c) filtro ativo mas o total JÁ era 0 antes de qualquer filtro
+ *     (`totalCount === 0`) → variante que deixa claro que o filtro não é a
+ *     causa da lista vazia (nem faz qualquer diferença aqui) — ex: "Nenhum PR
+ *     aberto (filtro `overnight` ativo, sem efeito)." Sem isso, um filtro de
+ *     Classificação (issues) ativo junto de uma tabela de PRs genuinamente
+ *     vazia lia como "o filtro escondeu tudo", quando na verdade não havia
+ *     nada pra esconder.
+ */
+export function emptyStateMessage({ filteredCount, totalCount, filterActive, filterSummary, emptyLabel }) {
+  if (filteredCount > 0) return null;
+  if (!filterActive) return emptyLabel;
+  if (totalCount === 0) {
+    if (!filterSummary) return emptyLabel;
+    const base = emptyLabel.replace(/\.\s*$/, "");
+    return `${base} (filtro \`${filterSummary}\` ativo, sem efeito).`;
+  }
+  return "0 resultados para este filtro.";
+}

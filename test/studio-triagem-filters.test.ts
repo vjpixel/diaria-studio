@@ -18,6 +18,10 @@ import {
   issuesFilterActive,
   prsFilterActive,
   applyDispatchTrackFilterValue,
+  classificationFilterScope,
+  classificationScopeNotice,
+  activeFilterSummary,
+  emptyStateMessage,
 } from "../scripts/studio-ui/public/triagem-filters.js";
 
 const none = () => ({ priority: "", track: "", dispatch: "", labels: new Set<string>() });
@@ -99,5 +103,91 @@ describe("applyDispatchTrackFilterValue (#5175)", () => {
     const afterPr = applyDispatchTrackFilterValue(none(), "pr:other");
     assert.equal(prsFilterActive(afterPr), true);
     assert.equal(issuesFilterActive(afterPr), false);
+  });
+});
+
+describe("classificationFilterScope (#5212)", () => {
+  it("valor do grupo `pr:` ⇒ afeta PRs", () => {
+    assert.equal(classificationFilterScope({ ...none(), track: "overnight" }), "prs");
+  });
+
+  it("valor do grupo `issue:` ⇒ afeta Issues", () => {
+    assert.equal(classificationFilterScope({ ...none(), dispatch: "elegivel" }), "issues");
+  });
+
+  it('"" (nenhum grupo, opção Todas) não afeta nenhuma tabela', () => {
+    assert.equal(classificationFilterScope(none()), null);
+  });
+});
+
+describe("classificationScopeNotice (#5212)", () => {
+  it("filtro de PRs ativo → aviso aparece pra issues, não pra prs", () => {
+    const filters = { ...none(), track: "overnight" };
+    assert.match(classificationScopeNotice(filters, "issues") ?? "", /PRs.*não afeta esta lista/);
+    assert.equal(classificationScopeNotice(filters, "prs"), null);
+  });
+
+  it("filtro de Issues ativo → aviso aparece pra prs, não pra issues", () => {
+    const filters = { ...none(), dispatch: "bloqueada" };
+    assert.match(classificationScopeNotice(filters, "prs") ?? "", /Issues.*não afeta esta lista/);
+    assert.equal(classificationScopeNotice(filters, "issues"), null);
+  });
+
+  it("nenhum filtro de Classificação ativo → sem aviso em nenhuma tabela", () => {
+    assert.equal(classificationScopeNotice(none(), "issues"), null);
+    assert.equal(classificationScopeNotice(none(), "prs"), null);
+  });
+});
+
+describe("activeFilterSummary (#5212)", () => {
+  it("tabela prs com track setado → resume o valor do track", () => {
+    assert.equal(activeFilterSummary({ ...none(), track: "overnight" }, "prs"), "overnight");
+  });
+
+  it("tabela issues com dispatch setado → resume o valor do dispatch", () => {
+    assert.equal(activeFilterSummary({ ...none(), dispatch: "elegivel" }, "issues"), "elegivel");
+  });
+
+  it("track setado mas pedindo resumo da tabela issues → ignora track (fora de escopo), cai pro próximo filtro", () => {
+    assert.equal(activeFilterSummary({ ...none(), track: "overnight" }, "issues"), null);
+  });
+
+  it("sem filtro de Classificação, cai pra prioridade", () => {
+    assert.equal(activeFilterSummary({ ...none(), priority: "P0" }, "prs"), "P0");
+  });
+
+  it("sem Classificação nem prioridade, cai pras labels", () => {
+    assert.equal(activeFilterSummary({ ...none(), labels: new Set(["bug", "P1"]) }, "issues"), "bug, P1");
+  });
+
+  it("nenhum filtro ativo → null", () => {
+    assert.equal(activeFilterSummary(none(), "prs"), null);
+  });
+});
+
+describe("emptyStateMessage (#5212)", () => {
+  it("filteredCount > 0 → null (tabela tem linhas, nada a mostrar)", () => {
+    const result = emptyStateMessage({ filteredCount: 3, totalCount: 3, filterActive: false, filterSummary: null, emptyLabel: "Nenhum PR aberto." });
+    assert.equal(result, null);
+  });
+
+  it("sem filtro ativo e 0 total → emptyLabel genérico", () => {
+    const result = emptyStateMessage({ filteredCount: 0, totalCount: 0, filterActive: false, filterSummary: null, emptyLabel: "Nenhum PR aberto." });
+    assert.equal(result, "Nenhum PR aberto.");
+  });
+
+  it("filtro ativo, total > 0, filtrado zerou → '0 resultados para este filtro.'", () => {
+    const result = emptyStateMessage({ filteredCount: 0, totalCount: 5, filterActive: true, filterSummary: "P0", emptyLabel: "Nenhum PR aberto." });
+    assert.equal(result, "0 resultados para este filtro.");
+  });
+
+  it("(#5212 caso central) track setado e prs:[] (total 0) → diz que há filtro ativo, mensagem 'sem efeito'", () => {
+    const result = emptyStateMessage({ filteredCount: 0, totalCount: 0, filterActive: true, filterSummary: "overnight", emptyLabel: "Nenhum PR aberto." });
+    assert.equal(result, "Nenhum PR aberto (filtro `overnight` ativo, sem efeito).");
+  });
+
+  it("filtro ativo, total 0, mas sem filterSummary disponível (filtro fora de escopo) → cai pro emptyLabel genérico", () => {
+    const result = emptyStateMessage({ filteredCount: 0, totalCount: 0, filterActive: true, filterSummary: null, emptyLabel: "Nenhuma issue aberta." });
+    assert.equal(result, "Nenhuma issue aberta.");
   });
 });

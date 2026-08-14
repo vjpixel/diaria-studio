@@ -387,6 +387,36 @@ describe("#5025/#5026/#5027 — par Diaria-Clarice-Envio / Diaria-Clarice-Envio-
     );
   });
 
+  it("#5185: Diaria-Clarice-Novos-Tarde presente, 15:00 diário, mesmo script/guard de Diaria-Clarice-Novos, log próprio", () => {
+    const tarde = getScheduledTaskByName("Diaria-Clarice-Novos-Tarde");
+    const manha = getScheduledTaskByName("Diaria-Clarice-Novos");
+    assert.ok(tarde, "Diaria-Clarice-Novos-Tarde ausente de SCHEDULED_TASKS");
+    assert.ok(manha);
+    assert.deepEqual(
+      tarde!.steps.map((s) => s.script),
+      manha!.steps.map((s) => s.script),
+      "a 2a captura roda o MESMO orquestrador (clarice-novos-run.ts) — decisão do editor 260814, sem integração com clarice-envio-run.ts",
+    );
+    assert.deepEqual(tarde!.schedule, { kind: "daily", hour: 15, minute: 0 });
+    assert.deepEqual(tarde!.guard, manha!.guard, "mesmo guard de pré-condição (data/ montada) das duas tasks");
+    assert.notEqual(tarde!.logPath, manha!.logPath, "logs separados — não misturar as duas rodadas no mesmo arquivo");
+  });
+
+  it("#5185: ordem — Diaria-Clarice-Novos-Tarde (15:00) roda depois de Diaria-Clarice-Novos (11:00) e antes de Diaria-Clarice-Envio (19:00)", () => {
+    const manha = getScheduledTaskByName("Diaria-Clarice-Novos");
+    const tarde = getScheduledTaskByName("Diaria-Clarice-Novos-Tarde");
+    const envio = getScheduledTaskByName("Diaria-Clarice-Envio");
+    assert.ok(manha && tarde && envio);
+    const m = manha!.schedule as { kind: "daily"; hour: number; minute: number };
+    const t = tarde!.schedule as { kind: "daily"; hour: number; minute: number };
+    const e = envio!.schedule as { kind: "daily"; hour: number; minute: number };
+    const manhaMinutes = m.hour * 60 + m.minute;
+    const tardeMinutes = t.hour * 60 + t.minute;
+    const envioMinutes = e.hour * 60 + e.minute;
+    assert.ok(tardeMinutes > manhaMinutes, "Diaria-Clarice-Novos-Tarde deveria rodar depois de Diaria-Clarice-Novos");
+    assert.ok(envioMinutes > tardeMinutes, "Diaria-Clarice-Envio deveria rodar depois de Diaria-Clarice-Novos-Tarde");
+  });
+
   it("#5220: Diaria-Clarice-Envio-Guard-Alarm presente, 06:15 diário, step aponta pro alarme próprio do guard", () => {
     const t = getScheduledTaskByName("Diaria-Clarice-Envio-Guard-Alarm");
     assert.ok(t, "Diaria-Clarice-Envio-Guard-Alarm ausente de SCHEDULED_TASKS");
@@ -448,6 +478,64 @@ describe("#5217 — Diaria-Clarice-Dashboard-Precompute registrada, horária, sy
 
   it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
     const t = getScheduledTaskByName("Diaria-Clarice-Dashboard-Precompute")!;
+    const script = t.steps[0].script;
+    const others = SCHEDULED_TASKS.filter((o) => o.name !== t.name && o.steps.some((s) => s.script === script));
+    assert.deepEqual(others, [], `script ${script} também referenciado por: ${others.map((o) => o.name).join(", ")}`);
+  });
+});
+
+describe("#5249 — Diaria-Acquisition-Health-Alarm registrada, semanal, systemd-only", () => {
+  it("está presente no registro, com o step apontando pro script correto, domingo 03:30", () => {
+    const t = getScheduledTaskByName("Diaria-Acquisition-Health-Alarm");
+    assert.ok(t, "Diaria-Acquisition-Health-Alarm ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/check-acquisition-health.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "weekly", dayOfWeek: "Sunday", hour: 3, minute: 30 });
+  });
+
+  it("roda 30min DEPOIS do Diaria-Beehiiv-Backup (03:00) — a task que gera o snapshot que este alarme lê", () => {
+    const alarm = getScheduledTaskByName("Diaria-Acquisition-Health-Alarm")!;
+    const backup = getScheduledTaskByName("Diaria-Beehiiv-Backup")!;
+    assert.equal(alarm.schedule.kind, "weekly");
+    assert.equal(backup.schedule.kind, "weekly");
+    const alarmSchedule = alarm.schedule as { kind: "weekly"; dayOfWeek: string; hour: number; minute: number };
+    const backupSchedule = backup.schedule as { kind: "weekly"; dayOfWeek: string; hour: number; minute: number };
+    assert.equal(alarmSchedule.dayOfWeek, backupSchedule.dayOfWeek);
+    const alarmMinutes = alarmSchedule.hour * 60 + alarmSchedule.minute;
+    const backupMinutes = backupSchedule.hour * 60 + backupSchedule.minute;
+    assert.ok(alarmMinutes > backupMinutes, "Diaria-Acquisition-Health-Alarm deveria rodar depois de Diaria-Beehiiv-Backup");
+  });
+
+  it("domingo 03:30 não colide com nenhuma outra weekly nem cai numa batida de interval", () => {
+    const t = getScheduledTaskByName("Diaria-Acquisition-Health-Alarm")!;
+    assert.equal(t.schedule.kind, "weekly");
+    const mine = t.schedule as { kind: "weekly"; dayOfWeek: string; hour: number; minute: number };
+
+    for (const other of SCHEDULED_TASKS) {
+      if (other.name === t.name) continue;
+      if (other.schedule.kind === "weekly" && other.schedule.dayOfWeek === mine.dayOfWeek) {
+        assert.ok(
+          other.schedule.hour !== mine.hour || other.schedule.minute !== mine.minute,
+          `colisão de horário com ${other.name} (${mine.dayOfWeek} ${mine.hour}:${mine.minute})`,
+        );
+      }
+      // Mesmo racional documentado no bloco #5229 acima: interval de 1h bate
+      // em todo horário cheio por definição, mas 03:30 nunca cai em minute:0
+      // — então só intervals que dividem 30min importariam, e nenhum existe
+      // hoje no registro. Guard mantido pra simetria e futura-prova.
+      if (other.schedule.kind === "interval" && other.schedule.hours > 1) {
+        assert.ok(
+          mine.minute !== 0 || mine.hour % other.schedule.hours !== 0,
+          `03:30 cai numa batida de ${other.name} (interval de ${other.schedule.hours}h)`,
+        );
+      }
+    }
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
+    const t = getScheduledTaskByName("Diaria-Acquisition-Health-Alarm")!;
     const script = t.steps[0].script;
     const others = SCHEDULED_TASKS.filter((o) => o.name !== t.name && o.steps.some((s) => s.script === script));
     assert.deepEqual(others, [], `script ${script} também referenciado por: ${others.map((o) => o.name).join(", ")}`);

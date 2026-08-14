@@ -457,6 +457,85 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4347, #4941",
   },
   {
+    name: "Diaria-Clarice-Novos-Tarde",
+    description: "2a captura diaria dos cadastros novos da Clarice (mesmo fluxo do Diaria-Clarice-Novos, 15:00 BRT)",
+    // #5185: a issue original propunha `clarice-envio-run.ts` chamar
+    // `runNovos()` internamente e alimentar o pool `ramp-warm` direto
+    // (opção B, decisão registrada no comentário de 260813 desta issue) —
+    // DESCARTADO no briefing ao vivo de 260814 (comentário mais recente da
+    // issue). Decisão final do editor: manter os dois fluxos totalmente
+    // separados (zero mudança em `clarice-envio-run.ts`/`compareContactRecency`/
+    // pool `ramp-warm`) e em vez disso rodar o MESMO `clarice-novos-run.ts`
+    // 2x/dia — 11:00 (task existente, inalterada) + esta, às 15:00 — cada
+    // rodada com sua própria campanha Brevo imediata, igual ao
+    // comportamento de hoje.
+    //
+    // O QUE ISSO RESOLVE: cadastro feito depois das 11:00 só era pego pelo
+    // `novos` do dia SEGUINTE às 11:00 — depois do disparo da rampa
+    // `ramp-warm` de amanhã (06:00) já ter acontecido, então nunca competia
+    // pela recência real dentro da onda principal (#5169). Uma 2a captura às
+    // 15:00 fecha boa parte dessa janela (cadastros de 11:00-15:00 saem no
+    // mesmo dia); ainda sobra uma janela menor, 15:00→11:00 do dia seguinte
+    // (~20h) — não fechada por esta unidade, decisão explícita do editor de
+    // não perseguir cobertura total agora.
+    //
+    // IDEMPOTÊNCIA (verificada antes de registrar esta entrada, não
+    // assumida): `clarice-novos-run.ts`/`clarice-build-segment.ts --group
+    // novos` já tem DOIS guards anti-duplo-envio independentes que cobrem
+    // rodar o MESMO script 2x no mesmo ciclo Clarice sem código novo —
+    // 1. `sent-or-queued.json` (cycle-wide, `clarice-build-segment.ts`):
+    //    grava os emails selecionados NO MOMENTO da seleção (antes do envio
+    //    de verdade), e a próxima invocação do mesmo ciclo exclui quem já
+    //    está lá via `excludeSentOrQueued` — não depende de eventual
+    //    consistency da API da Brevo.
+    // 2. `guardScope: "committed"` do grupo `novos` (`NAMED_GROUPS`,
+    //    clarice-segment.ts): exclui quem já está em lista com campanha
+    //    `queued`∪`sent` na Brevo, via `fetchCommittedCampaignListIds`.
+    // Os dois juntos cobrem o caso desta task: a rodada das 15:00 não
+    // reseleciona ninguém que a das 11:00 já pegou, mesmo que a campanha das
+    // 11:00 ainda esteja `in_process` na Brevo (camada 1 não depende do
+    // status da Brevo assentar).
+    //
+    // RISCO RESIDUAL (achado desta unidade, documentado — não corrigido
+    // aqui, ver `test/scheduled-tasks.test.ts`): o guard `queued∪sent` que
+    // `Diaria-Clarice-Envio` (19:00) usa pra montar `ramp-warm` NÃO cobre
+    // `in_process` (mesmo gap que motivou mover `Diaria-Clarice-Novos` de
+    // 17:00→11:00 no #5140, dando 8h de folga pra campanha assentar em
+    // `sent`). Entre esta task (15:00) e `Diaria-Clarice-Envio` (19:00) a
+    // folga é de só 4h — o mesmo piso que o teste `#5140` já usa como limite
+    // MÍNIMO aceitável pro par 11:00×19:00 (medido: 8h funciona, 2h já
+    // causou duplicata ao vivo), mas 4h nunca foi medido ao vivo. Contatos
+    // capturados às 15:00 fazem parte de `isRampWarm` (subconjunto de
+    // `isNovos`), então se a campanha das 15:00 ainda estiver `in_process`
+    // às 19:00, o mesmo contato pode entrar TAMBÉM na onda `ramp-warm` de
+    // amanhã 06:00 — duplicata em ~15h em vez de horas. Acompanhar as
+    // primeiras rodadas reais (relatórios em `data/clarice-subscribers/
+    // novos-reports/` + `envio-reports/`) antes de considerar este risco
+    // fechado.
+    steps: [{ key: "run", script: "scripts/clarice-novos-run.ts" }],
+    // Log próprio (não compartilha arquivo com Diaria-Clarice-Novos) — cada
+    // task do registro tem seu logPath dedicado (convenção do arquivo
+    // inteiro), e misturar as duas rodadas no mesmo log tornaria a
+    // auditoria por horário mais confusa sem ganho nenhum.
+    logPath: "clarice-subscribers/.novos-tarde-run.log",
+    schedule: { kind: "daily", hour: 15, minute: 0 },
+    // Mesmo guard de pré-condição da task das 11:00 — "junction data/ ainda
+    // não montada" é uma condição de MÁQUINA, não de horário, então se
+    // aplica igual às duas.
+    guard: {
+      requiredFile: "clarice-subscribers/clarice-users.db",
+      abortMessage:
+        "clarice-users.db nao encontrado (data/clarice-subscribers/clarice-users.db) -- provavel junction " +
+        "data/ nao montada ainda; abortando por seguranca, sem tocar Stripe/MV/Brevo.",
+    },
+    // Kill switch: `data/clarice-novos-enabled.json` é lido por
+    // `runNovos()` (dentro do MESMO script), não por esta entrada do
+    // registro — logo já vale automaticamente pras duas tasks sem lógica
+    // nova (confirmado lendo `scripts/clarice-novos-run.ts`, sem precisar
+    // de um 2o toggle).
+    issue: "#4347, #4941, #5185",
+  },
+  {
     name: "Diaria-Clarice-Envio",
     description: "planeja e agenda a onda Clarice do dia seguinte (06:00 BRT) - freio por risco de ISP + escalada adaptativa",
     // Kill switch dedicado: ANTES de qualquer chamada Brevo,
@@ -663,6 +742,18 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // depois do cutover systemd (épica #4798), sem contraparte Windows/.ps1 —
     // e nenhuma tarefa `Diaria-*` deve rodar no Windows (#5074).
     issue: "#5229",
+  },
+  {
+    name: "Diaria-Acquisition-Health-Alarm",
+    description: "alarme semanal de saude de aquisicao por canal (sobrevivencia, CTR, canal novo/parado)",
+    steps: [{ key: "check", script: "scripts/check-acquisition-health.ts" }],
+    logPath: "acquisition-health/.check.log",
+    // Domingo 03:30 BRT (#5249, sugestão da própria issue) — 30min depois do
+    // Diaria-Beehiiv-Backup (03:00, acima), que gera o snapshot semanal que
+    // este alarme lê. Folga suficiente pro backup (drena a base inteira,
+    // ~13 páginas) terminar antes deste rodar sobre a data mais recente.
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 3, minute: 30 },
+    issue: "#5249",
   },
   {
     name: "Diaria-Worker-Drift-Check",

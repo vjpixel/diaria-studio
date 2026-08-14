@@ -15,7 +15,15 @@
 // chat drawer + `/diaria-develop` digitado direto), e o preview ficou órfão
 // sem a execução real por trás.
 
-import { issuesFilterActive, prsFilterActive, applyDispatchTrackFilterValue } from "./triagem-filters.js";
+import {
+  issuesFilterActive,
+  prsFilterActive,
+  applyDispatchTrackFilterValue,
+  classificationFilterScope,
+  classificationScopeNotice,
+  activeFilterSummary,
+  emptyStateMessage,
+} from "./triagem-filters.js";
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
@@ -29,9 +37,13 @@ const el = {
   issuesCount: document.getElementById("issues-count"),
   issuesBody: document.getElementById("issues-tbody"),
   issuesEmpty: document.getElementById("issues-empty"),
+  issuesFilterChip: document.getElementById("issues-filter-chip"),
+  issuesScopeNotice: document.getElementById("issues-scope-notice"),
   prsCount: document.getElementById("prs-count"),
   prsBody: document.getElementById("prs-tbody"),
   prsEmpty: document.getElementById("prs-empty"),
+  prsFilterChip: document.getElementById("prs-filter-chip"),
+  prsScopeNotice: document.getElementById("prs-scope-notice"),
   dispatchTrackLegend: document.getElementById("dispatch-track-legend"),
 };
 
@@ -185,14 +197,14 @@ function matchesLabelFilter(labels) {
 // casos (R4 de docs/studio-ui-ux-guidelines.md), então sempre existe 1 dos 2
 // textos quando a lista filtrada zera. Mesmo padrão em toda tabela filtrável
 // do Studio (relatorios.js é a referência original, só que sem filtro).
-function updateEmptyState(emptyEl, filteredCount, totalCount, hasActiveFilter, emptyLabel) {
+// #5212: a lógica dos 3 casos (sem filtro / "0 resultados" / "sem efeito"
+// porque o total já era 0) mora em `emptyStateMessage` (triagem-filters.js,
+// pura) — aqui só aplica o resultado ao DOM.
+function updateEmptyState(emptyEl, filteredCount, totalCount, hasActiveFilter, emptyLabel, filterSummary) {
   if (!emptyEl) return;
-  if (filteredCount > 0) {
-    emptyEl.hidden = true;
-    return;
-  }
-  emptyEl.hidden = false;
-  emptyEl.textContent = totalCount > 0 && hasActiveFilter ? "0 resultados para este filtro." : emptyLabel;
+  const message = emptyStateMessage({ filteredCount, totalCount, filterActive: hasActiveFilter, filterSummary, emptyLabel });
+  emptyEl.hidden = message === null;
+  if (message !== null) emptyEl.textContent = message;
 }
 
 function renderIssuesTable() {
@@ -203,7 +215,14 @@ function renderIssuesTable() {
       (!filters.dispatch || i.dispatchTrack === filters.dispatch),
   );
   el.issuesCount.textContent = String(filtered.length);
-  updateEmptyState(el.issuesEmpty, filtered.length, data.issues.length, issuesFilterActive(filters), "Nenhuma issue aberta.");
+  updateEmptyState(
+    el.issuesEmpty,
+    filtered.length,
+    data.issues.length,
+    issuesFilterActive(filters),
+    "Nenhuma issue aberta.",
+    activeFilterSummary(filters, "issues"),
+  );
   el.issuesBody.innerHTML = "";
   for (const i of filtered) {
     const tr = document.createElement("tr");
@@ -228,7 +247,14 @@ function renderPrsTable() {
       (!filters.track || p.track === filters.track),
   );
   el.prsCount.textContent = String(filtered.length);
-  updateEmptyState(el.prsEmpty, filtered.length, data.prs.length, prsFilterActive(filters), "Nenhum PR aberto.");
+  updateEmptyState(
+    el.prsEmpty,
+    filtered.length,
+    data.prs.length,
+    prsFilterActive(filters),
+    "Nenhum PR aberto.",
+    activeFilterSummary(filters, "prs"),
+  );
   el.prsBody.innerHTML = "";
   for (const p of filtered) {
     const tr = document.createElement("tr");
@@ -247,7 +273,37 @@ function renderPrsTable() {
   }
 }
 
+// #5212: o chip no <h2> ("Classificação: overnight") só existe na tabela
+// afetada pelo filtro de Classificação atual; a tabela oposta ganha uma
+// linha de aviso em texto ("Classificação (PRs) ativa — não afeta esta
+// lista") — as duas leituras vêm dos MESMOS predicados puros
+// (triagem-filters.js), nada duplicado aqui além de aplicar ao DOM.
+function renderClassificationScopeUI() {
+  const scope = classificationFilterScope(filters);
+  const chipValue = scope === "issues" ? filters.dispatch : scope === "prs" ? filters.track : null;
+
+  if (el.issuesFilterChip) {
+    el.issuesFilterChip.hidden = scope !== "issues";
+    el.issuesFilterChip.textContent = scope === "issues" ? `Classificação: ${chipValue}` : "";
+  }
+  if (el.prsFilterChip) {
+    el.prsFilterChip.hidden = scope !== "prs";
+    el.prsFilterChip.textContent = scope === "prs" ? `Classificação: ${chipValue}` : "";
+  }
+  if (el.issuesScopeNotice) {
+    const notice = classificationScopeNotice(filters, "issues");
+    el.issuesScopeNotice.hidden = !notice;
+    el.issuesScopeNotice.textContent = notice ?? "";
+  }
+  if (el.prsScopeNotice) {
+    const notice = classificationScopeNotice(filters, "prs");
+    el.prsScopeNotice.hidden = !notice;
+    el.prsScopeNotice.textContent = notice ?? "";
+  }
+}
+
 function renderTables() {
+  renderClassificationScopeUI();
   renderIssuesTable();
   renderPrsTable();
 }

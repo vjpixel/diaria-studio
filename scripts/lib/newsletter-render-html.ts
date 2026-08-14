@@ -1690,10 +1690,9 @@ export function buildWhatsappShareLink(block: string): string {
 }
 
 /**
- * Renderiza o bloco encaminhável por WhatsApp em HTML — manchete em
- * `<strong>` + botão de compartilhamento, sem container de caixa própria
- * (kicker + conteúdo direto, mesmo padrão "inner" de `renderAprofundeInner`/
- * `renderHubLinkInner`).
+ * Renderiza o bloco encaminhável por WhatsApp em HTML — SÓ o botão de
+ * compartilhamento, sem container de caixa própria (conteúdo direto, mesmo
+ * padrão "inner" de `renderAprofundeInner`/`renderHubLinkInner`).
  *
  * **#5152 (260813): deixou de ser um box (fundo bege/borda/padding
  * `24px 28px`) e deixou de ser uma seção de nível newsletter** — pedido
@@ -1704,16 +1703,15 @@ export function buildWhatsappShareLink(block: string): string {
  * de posição: pé do e-mail (#4486) → entre D1 e D2, como box próprio
  * (#4570) → dentro do D1, sem box (#5152).
  *
- * #4582 (achado ao vivo 260804, ainda vale: a URL visível — crua, com os 3
- * params UTM — quebrava o layout em clientes de e-mail; pedido do editor): a
- * ÚNICA linha visível é a manchete do D1 em `<strong>`, sem a URL solta como
- * texto/link. A URL continua existindo — só não é renderizada como linha
+ * **#5222 (260814): removidos o kicker "Compartilhe" e a manchete do D1 em
+ * `<strong>`** — pedido explícito do editor. Como o bloco vive DENTRO da
+ * seção do D1 desde #5152, kicker + manchete repetiam o título que o leitor
+ * acabou de ler logo acima; o único elemento com informação nova é o botão.
+ * A manchete continua existindo — só não é mais renderizada como linha
  * própria — ela segue embutida no texto que vai pro `wa.me/?text=` (`block`,
  * via `buildWhatsappShareBlock`), que é o que de fato importa: quando o
- * leitor encaminha, o link vai junto. `titleLine` é DERIVADO de `block`
- * (`block.split("\n\n")[0]`) — mesma disciplina anti-duplicação do #4512
- * (nunca um literal separado que pode divergir do texto que alimenta o
- * wa.me).
+ * leitor encaminha, o texto completo (manchete + URL com UTM) vai junto.
+ * Some a linha visível, não o link encaminhado.
  *
  * Botão segue o MESMO padrão pill dos demais CTAs do template (fundo
  * `${COLORS.paper}`, borda `${RULE}`, texto `${TEXT_COLOR}`,
@@ -1738,18 +1736,12 @@ export function renderWhatsappShare(destaques: RenderDestaque[], edition: string
   const block = buildWhatsappShareBlock(d1.title, editionUrl);
   const shareLink = buildWhatsappShareLink(block);
 
-  // Só a manchete é visível (#4582) — a URL segue só dentro de `block`
-  // (texto do wa.me), nunca renderizada como linha própria aqui.
-  const [titleLine] = block.split("\n\n");
-
   // Mesmo pill dos demais CTAs (ver linhas 446/647/658/930).
   const buttonStyle = `display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;`;
 
   return `<!-- Compartilhe no WhatsApp -->
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:${BOX_MARGIN_TOP}px;border-collapse:separate;border-spacing:0"><tr><td>
-    ${renderKicker("Compartilhe")}
-    <p style="margin:8px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.5;color:${TEXT_COLOR};"><strong>${esc(titleLine)}</strong></p>
-    <div style="text-align:center;margin-top:16px;">
+    <div style="text-align:center;">
       <a href="${esc(shareLink)}" style="${buttonStyle}" target="_blank" rel="noopener noreferrer">Compartilhar no WhatsApp →</a>
     </div>
   </td></tr></table>`;

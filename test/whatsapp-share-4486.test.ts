@@ -35,7 +35,15 @@
  *   Os helpers puros (`buildWhatsappShareBlock`/`buildWhatsappEditionUrl`/
  *   `buildWhatsappShareLink`) e a UTM não mudaram.
  *
- * Cobertura do critério de pronto da issue original + #4570 + #4582 + #5152:
+ * #5222 (260814) removeu o kicker "Compartilhe" e a manchete do D1 em
+ * `<strong>` — pedido explícito do editor. Como o bloco vive DENTRO da seção
+ * do D1 desde #5152, os dois repetiam o título que o leitor acabou de ler
+ * logo acima; sobra só o botão. Os helpers puros (inclusive
+ * `buildWhatsappShareBlock`, que segue alimentando o `wa.me/?text=` com
+ * manchete + URL) não mudaram — some a linha visível, não o link
+ * encaminhado.
+ *
+ * Cobertura do critério de pronto da issue original + #4570 + #4582 + #5152 + #5222:
  *   - Texto sem markdown (`**`, `#`, `- `) — regra "output final sem
  *     markdown" (context/editorial-rules.md) aplicada também aqui.
  *   - Link `wa.me/?text=` bem formado, com o bloco URL-encoded (título + URL
@@ -174,9 +182,8 @@ describe("#4486 — buildWhatsappShareLink", () => {
 });
 
 describe("#4570 — renderWhatsappShare (HTML)", () => {
-  it("renderiza um bloco com a manchete do D1, sem markdown cru, e com o botão de compartilhar", () => {
+  it("renderiza SÓ o botão de compartilhar (#5222), sem markdown cru", () => {
     const html = renderWhatsappShare([makeD1()], EDITION);
-    assert.ok(html.includes(D1_TITLE), "manchete do D1 ausente do HTML");
     assert.match(html, /Compartilhar no WhatsApp/);
     assert.match(html, /https:\/\/wa\.me\/\?text=/);
     // esc() escapa **/#/etc. corretamente — não deve sobrar markdown cru fora de atributo/URL.
@@ -200,9 +207,13 @@ describe("#4570 — renderWhatsappShare (HTML)", () => {
 
   it("botão centralizado (#4582 — antes ficava alinhado à esquerda)", () => {
     const html = renderWhatsappShare([makeD1()], EDITION);
+    // #5222: kicker + manchete saíram, então o `margin-top:16px` que só
+    // existia pra separar o botão da manchete também saiu — o wrapper do
+    // botão fica colado no <td> (só o margin-top do wrapper externo, herdado
+    // do BOX_MARGIN_TOP da <table>, separa do parágrafo do D1 acima).
     assert.match(
       html,
-      /<div style="text-align:center;margin-top:16px;">\s*<a href="https:\/\/wa\.me\/\?text=/,
+      /<div style="text-align:center;">\s*<a href="https:\/\/wa\.me\/\?text=/,
       "botão deve estar envolto por um wrapper text-align:center",
     );
   });
@@ -214,9 +225,12 @@ describe("#4570 — renderWhatsappShare (HTML)", () => {
     assert.ok(!html.includes('<tr><td class="pad"'), "não deve mais ser uma seção própria (<tr><td class=\"pad\">) — vira conteúdo inner de renderDestaque");
   });
 
-  it("manchete em negrito (<strong>), sem a URL como linha visível própria (#4582)", () => {
+  it("#5222: sem kicker 'Compartilhe' nem manchete do D1 em <strong> — só o botão", () => {
     const html = renderWhatsappShare([makeD1()], EDITION);
-    assert.ok(html.includes(`<strong>${D1_TITLE}</strong>`), "manchete do D1 deve estar envolta por <strong>");
+    assert.ok(!html.includes(`<strong>${D1_TITLE}</strong>`), "manchete do D1 NÃO deve mais aparecer como linha própria em <strong> (#5222)");
+    // "Compartilhe<" só bate no kicker (`&nbsp;Compartilhe</td>`) — não colide
+    // com o texto do botão "Compartilhar no WhatsApp" (Compartilh + AR, não + E).
+    assert.ok(!html.includes("Compartilhe<"), "kicker 'Compartilhe' não deve mais aparecer como texto visível (#5222)");
     // A URL da edição não deve aparecer como texto/link solto no HTML — só
     // dentro do href URL-encoded do botão wa.me.
     const editionUrl = buildWhatsappEditionUrl(EDITION, D1_TITLE);
@@ -258,13 +272,15 @@ describe("#4570 — renderWhatsappShare (HTML)", () => {
     assert.match(decoded, new RegExp(`utm_source=whatsapp.*utm_medium=share.*utm_campaign=${EDITION}|utm_campaign=${EDITION}.*utm_medium=share.*utm_source=whatsapp`));
   });
 
-  it("#4519: título do D1 com caracteres especiais (&, aspas, <tag>) é escapado — não vaza HTML nem quebra o href adjacente", () => {
+  it("#4519/#5222: título do D1 com caracteres especiais (&, aspas, <tag>) nunca vaza como HTML cru — só viaja percent-encoded dentro do href", () => {
     const dangerousTitle = 'Título com & "aspas" e <tag>';
     const html = renderWhatsappShare([makeD1({ title: dangerousTitle })], EDITION);
+    // #5222: a manchete deixou de ser renderizada como texto visível (sem
+    // <p>/<strong> própria) — não há mais nada pra "esc()" no corpo do bloco.
+    // O que importa agora é que o título nunca vaze cru (nem como HTML, nem
+    // fora do encoding do wa.me) e que o href continue seguro.
     assert.ok(!html.includes("<tag>"), "título não deve vazar como tag HTML crua");
-    assert.ok(html.includes("&lt;tag&gt;"), "< e > do título devem virar entidades HTML");
-    assert.ok(html.includes("&amp;"), "& do título deve virar &amp;");
-    assert.ok(html.includes("&quot;"), "aspas do título devem virar &quot;");
+    assert.ok(!html.includes(dangerousTitle), "título cru não deve aparecer em lugar nenhum do HTML");
     // #4582: o box só tem 1 <a href> agora — o botão "Compartilhar no
     // WhatsApp →" (wa.me). A linha de URL da edição saiu do box (só segue
     // dentro do texto URL-encoded do próprio botão).
@@ -274,6 +290,12 @@ describe("#4570 — renderWhatsappShare (HTML)", () => {
       hrefMatches.some((h) => /^<a href="https:\/\/wa\.me\/\?text=/.test(h)),
       "href do botão wa.me deve continuar apontando pro compartilhamento",
     );
+    // O título especial continua viajando no texto do wa.me — só que
+    // percent-encoded (encodeURIComponent), nunca como entidade HTML.
+    const btnMatch = html.match(/<a href="(https:\/\/wa\.me\/\?text=[^"]*)"/);
+    assert.ok(btnMatch, "botão wa.me não encontrado");
+    const decoded = decodeURIComponent(btnMatch![1].slice("https://wa.me/?text=".length));
+    assert.ok(decoded.includes(dangerousTitle), "título especial deve continuar íntegro dentro do texto do wa.me, uma vez decodificado");
   });
 
   // #4519: nenhum teste até aqui passava um array REALISTA de 2-3 destaques —
@@ -291,7 +313,12 @@ describe("#4570 — renderWhatsappShare (HTML)", () => {
       ],
       EDITION,
     );
-    assert.ok(html.includes(D1_TITLE), "título do D1 deve aparecer no bloco");
+    // #5222: a manchete não é mais texto visível — checar via o href do
+    // botão wa.me (decodificado), não via substring cru no corpo do HTML.
+    const btnMatch = html.match(/<a href="(https:\/\/wa\.me\/\?text=[^"]*)"/);
+    assert.ok(btnMatch, "botão wa.me não encontrado");
+    const decoded = decodeURIComponent(btnMatch![1].slice("https://wa.me/?text=".length));
+    assert.ok(decoded.includes(D1_TITLE), "título do D1 deve estar no texto do wa.me");
     assert.ok(!html.includes(d2Title), "título do D2 nunca deve aparecer no bloco WhatsApp");
     assert.ok(!html.includes(d3Title), "título do D3 nunca deve aparecer no bloco WhatsApp");
   });
@@ -413,11 +440,15 @@ describe("#4512 (fleet review round 2, achados comment-analyzer/code-reviewer), 
     assert.ok(html.includes(escHtml(link)), "link wa.me com a URL embutida deve continuar no HTML");
   });
 
-  it("o título (1ª linha) do HTML renderizado é EXATAMENTE a 1ª linha do bloco wa.me", () => {
+  it("#5222: o título (1ª linha do bloco wa.me) não é mais linha visível — migra pra checar o href do botão, byte-idêntico à 1ª linha de buildWhatsappShareBlock", () => {
     const block = buildWhatsappShareBlock(D1_TITLE, buildWhatsappEditionUrl(EDITION, D1_TITLE));
     const [titleLine] = block.split("\n\n");
     const html = renderWhatsappShare([makeD1()], EDITION);
-    assert.ok(html.includes(titleLine), "título renderizado deve ser byte-idêntico à 1ª linha de buildWhatsappShareBlock");
+    const btnMatch = html.match(/<a href="(https:\/\/wa\.me\/\?text=[^"]*)"/);
+    assert.ok(btnMatch, "botão wa.me não encontrado");
+    const decoded = decodeURIComponent(btnMatch![1].slice("https://wa.me/?text=".length));
+    const [decodedTitleLine] = decoded.split("\n\n");
+    assert.equal(decodedTitleLine, titleLine, "título embutido no href deve ser byte-idêntico à 1ª linha de buildWhatsappShareBlock");
   });
 });
 

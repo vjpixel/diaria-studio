@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>diar.ia.br Studio — Ads</title>
+  <link rel="stylesheet" href="/tokens.generated.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/nav.css" />
+  <link rel="stylesheet" href="/triagem.css" />
+  <link rel="stylesheet" href="/integracoes.css" />
+  <link rel="stylesheet" href="/ads.css" />
+  <link rel="stylesheet" href="/chat-drawer.css" />
+</head>
+<body>
+  <header class="statusbar">
+    <nav id="app-nav" class="app-nav" aria-label="Navegação do Studio"></nav>
+    <div class="statusbar-item">
+      <span class="label">Ads</span>
+      <span class="value" id="exec-mode-value">—</span>
+    </div>
+    <div class="statusbar-item conn" id="fetch-status">
+      <span class="dot" id="fetch-dot"></span>
+      <span id="fetch-label">carregando…</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h1>Custo por leitor por canal</h1>
+      <p class="hint">
+        Onde botar o orçamento de aquisição (R$ 4.000+/mês). Sem teto de
+        CAC — o custo <strong>ranqueia</strong>, não reprova; quem reprova
+        um canal é a abertura da coorte contra a base. Cruza
+        <code>data/aquisicao/spend.csv</code> (import manual) com o
+        snapshot mais recente do backup Beehiiv e a definição
+        <code>leitor-v1</code> (CTR real, nunca <code>click_rate</code>).
+      </p>
+      <div id="ads-error" class="panel alert-banner" role="alert" hidden></div>
+      <div id="ads-nodata" class="hint" hidden>
+        Sem dados nesta sessão (<code>data/</code> ausente — sessão cloud).
+        Rode esta página numa sessão local com a junction OneDrive montada.
+      </div>
+    </section>
+
+    <section class="panel" id="ads-summary-panel" hidden>
+      <h2>Resumo</h2>
+      <div class="ads-summary-grid" id="ads-summary-grid"></div>
+    </section>
+
+    <section class="panel" id="ads-table-panel" hidden>
+      <div class="panel-header-row">
+        <h2>Canais (<span id="ads-count">0</span>)</h2>
+        <button id="refresh-btn" type="button">Atualizar</button>
+        <span id="last-updated" class="hint"></span>
+      </div>
+      <p class="hint" id="ads-warnings"></p>
+      <div class="table-scroll">
+        <table class="triage-table">
+          <thead>
+            <tr>
+              <th>Canal</th>
+              <th>Custo/leitor</th>
+              <th>Leitores</th>
+              <th>Ativos</th>
+              <th>Cadastros</th>
+              <th>Abertura (canal)</th>
+              <th>vs. base</th>
+              <th>n / amostra</th>
+              <th>Gasto</th>
+              <th>Mês</th>
+              <th>Fonte</th>
+            </tr>
+          </thead>
+          <tbody id="ads-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>window.STUDIO_PAGE = "ads";</script>
+  <script src="/nav.js" type="module"></script>
+  <script src="/ads.js" type="module"></script>
+  <script src="/chat-drawer.js" type="module"></script>
+</body>
+</html>

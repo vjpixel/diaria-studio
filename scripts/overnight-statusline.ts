@@ -114,7 +114,8 @@ export interface PlanIssue {
    *
    * `true` — classificada `elegivel`/`precisa-resposta` no passo 4. Continua `true`
    * mesmo que a issue termine `pulada` DEPOIS de entrar (decido-depois no briefing,
-   * ou mid-rodada na Fase 1: `sem-resposta`, `rescan-limit`, `ambigua`) — a decisão
+   * ou mid-rodada na Fase 1: `sem-resposta`, `ambigua`; `rescan-limit` saiu do enum
+   * em #5272, junto com o cap K=2 de re-varredura que o produzia) — a decisão
    * de pular foi tomada trabalhando a fila, não antes dela, então é progresso real.
    *
    * `false` — excluída ANTES de entrar, já na varredura inicial do passo 4:

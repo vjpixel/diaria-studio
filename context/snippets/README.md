@@ -99,7 +99,7 @@ pelo slot nem pelo emoji:
   — nos outros slots isso não muda nada (kicker já sairia de qualquer forma),
   mas importa se um dia esse conteúdo for usado no topo.
 
-## Os 9 arquivos
+## Os 10 arquivos
 
 | Arquivo | Slot(s) | Formato | Auto-injetável via `boxes_divulgacao`? | Quando usar |
 |---|---|---|---|---|
@@ -112,6 +112,7 @@ pelo slot nem pelo emoji:
 | `artigo-especial-apoiadores.md` | Slot 1, 2 ou 3 | multi-parágrafo, sem CTA pill (mesmo fallback do #3306) | Não é um dos defaults de `boxes_divulgacao` — colar manualmente no draft (mesmo mecanismo marcador-agnóstico de `apoio-divulgacao.md`) quando o editor quer promover o Artigo Especial do mês em vez do CTA genérico de apoio. | Reuso pontual. Título do artigo em negrito inline (corrigido no gate 260724 — não usar "Mandei... há pouco", fixar "O Artigo Especial desse mês é: **título**"). Editor substitui `{título do artigo}`/`{mês}`/gancho a cada reuso. |
 | `intro-campeoes-sorteio.md` | **Topo** (intro callout, não slot 1/2/3) | bold-line com sub-cabeçalho (`titleStyle="body"`) | Não é usado via `boxes_divulgacao` na prática (o slot dele é o topo, não uma das 3 lacunas/região) | **Não editar/colar manualmente** — é template de REFERÊNCIA para o gerador `scripts/lib/build-champions-callout.ts` + `scripts/inject-champions-callout.ts` (Stage 3), que preenche os placeholders (`{mes}`, `{1o}`/`{2o}`/`{3o}`, `{data}`, `{hora_inicio}`/`{hora_fim}`, `{meet_url}`) e injeta automaticamente na 1ª edição de cada mês. Consultar este arquivo só para revisar o texto/formato esperado. |
 | `encerramento-social-apoio.md` | **PARA ENCERRAR** (seção final, não slot 1/2/3) | multi-parágrafo, sem CTA pill | Não passa por `boxes_divulgacao` — é lido direto por `buildParaEncerrar` (diário) e `writer-monthly` (mensal) via `scripts/lib/shared/encerramento-snippet.ts` | Fonte única do encerramento — convite social (LinkedIn/Facebook) + parágrafo de apoio (Apoia.se). Editar aqui propaga pro diário E pro mensal (mesmo texto, placeholder `{{OPENING}}` diferencia a abertura). |
+| `hub-divulgacao-rotativo.md` | Slot 1, 2 ou 3 (quando ligado — ver coluna seguinte) | bold-line/mid-callout | **AINDA NÃO** (#5263) — conteúdo é GERADO (`scripts/build-hub-divulgacao-box.ts --edition AAMMDD`, nunca editado à mão), com 1 hub em rotação determinística entre os 6 de `HUB_META`; falta só apontar um slot pra ele em `boxes_divulgacao` e decidir em que ponto do pipeline a regeneração roda. | "A cobertura completa de {tema} desde {mês/ano}: {N} edições, cronologia e fontes → arquivo.diar.ia.br/temas/{slug}" — números derivados de `HubContent.sourceEditions`, nunca digitados. Ver docstring de `scripts/lib/shared/hub-divulgacao-box.ts` pro racional completo (inclusive por que a rotação usa dias corridos, não dia-da-semana). |
 
 Coluna "Formato" cobre só o LAYOUT (bold-line vs carrinho vs lista) — o
 disclosure "Divulgação" é tratado à parte na seção anterior (regra diferente

@@ -166,14 +166,20 @@ Apresente ao editor, a partir do stderr do script:
   `--i-know-this-skips-mv` explícito. Desde #5183, isso também bloqueia se o
   pool foi refrescado no Passo 2 mas ainda não recomputado/reverificado).
 
-Pergunte quantos contatos acrescentar — **"nenhum" é resposta válida e é o
-default recomendado enquanto a abertura agregada recente do canal estiver
-abaixo de 15%** (piso de entregabilidade do ramp Clarice, mesmo piso
-documentado no CLAUDE.md — critério de retomada registrado no comentário
-260806 da issue #4637: abertura madura ≥~20% no mesmo volume → causa
-provável é horário de envio, não composição da fila; ~10% no mesmo volume →
-composição da fila é a causa, considerar suprimir os não-abridores antes de
-ingerir qualquer contato novo). Cheque o número real com:
+Pergunte quantos contatos acrescentar — **"nenhum" continua sendo resposta
+válida**, mas deixou de ser o default sugerido só porque a abertura agregada
+recente do canal está abaixo de 15% (revisado #5246: abertura baixa é
+**informativa, nunca pausa o rollout sozinha** — mesma decisão já
+implementada no circuit breaker automático,
+`scripts/lib/brevo-diaria-guardrail.ts` §"Abertura é INFORMATIVA, não pausa":
+furar o piso no primeiro lote é resultado esperado de uma cohort fria de 7+
+meses, não fracasso; só bounce/spam/unsub pausam o rollout). Reporte a
+abertura agregada ao editor como dado de contexto no gate — útil pra decidir
+volume e composição da fila (comentário 260806 da issue #4637: abertura
+madura ≥~20% no mesmo volume → causa provável é horário de envio, não
+composição da fila; ~10% no mesmo volume → composição da fila é a causa,
+considerar suprimir os não-abridores via Passo 1 antes de ingerir contato
+novo) — sem travar "nenhum" como resposta padrão. Cheque o número real com:
 
 ```bash
 npx tsx scripts/check-brevo-diaria-guardrail.ts --dry-run

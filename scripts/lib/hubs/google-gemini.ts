@@ -58,6 +58,7 @@ import {
   formatDateShort,
   formatDateLong,
   defaultMethodologyNote,
+  buildLaunchChronologyTable,
   type HubContent,
   type HubSourceEdition,
 } from "../shared/hub-page.ts";
@@ -79,7 +80,7 @@ const PUBLISHED_DATE = "2026-08-09";
  * números transcritos à mão em `sections`/`INTRO` (mesma ressalva de
  * `anthropic-claude.ts`); bump sem mudança de corpo é o padrão que o #4911
  * desaconselha. */
-const UPDATED_DATE = "2026-08-10";
+const UPDATED_DATE = "2026-08-14";
 
 /** `matchedHeadlines` vem em NFD (mesmo achado de `anthropic-claude.ts`) —
  * ver a nota completa em `countMatching`/`matchingDates`, agora em
@@ -265,11 +266,18 @@ function toSourceEditions(sources: HubSourceEntry[]): HubSourceEdition[] {
  * `anthropic-claude.ts`. A janela deste hub já estava correta (a #4895/#4896
  * consertou aqui primeiro); derivar impede que ela volte a divergir no
  * próximo regen, que foi o que aconteceu nos dois gêmeos. */
-function buildIntro(sources: HubSourceEntry[]): string {
+function buildIntro(sources: HubSourceEntry[]): [string, string] {
   const { betweenLong } = hubCoverageWindow(sources);
   const { totalEditions, totalMentions, brasil, surges } = deriveGoogleGeminiFacts(sources);
   const gap2 = surges?.gap2 ?? 0;
-  return `Entre ${betweenLong}, o Google e o Gemini foram destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo, quase uma menção a cada 5 dias corridos ao longo de 11 meses. Olhando o arquivo inteiro, não uma edição isolada, um padrão salta aos olhos: os lançamentos de modelo não vêm num fluxo parelho, vêm em 3 surtos separados por hiatos, o mais longo deles de ${gap2} dias entre fevereiro e maio de 2026. Houve também uma inversão de narrativa: um Google descrito como ameaçado pelos resultados da OpenAI em novembro de 2025 virou, cerca de 4 meses e meio depois, um Google apostando abertamente contra Meta e DeepSeek também. No Brasil, o Gemini foi anunciado como novidade em pelo menos ${brasil} manchetes diferentes, do AI Mode em setembro de 2025 a um fundo de investimento local em junho de 2026, incluindo um caso em que a mesma função chegou ao país duas vezes, com nomes diferentes, em 2 semanas de intervalo. Do lado da aplicação prática, o Gemini foi de "resolve o insolúvel na ciência" a detectar câncer raro dentro do SUS. O período termina em tensão: em 9 dias de julho de 2026 vieram a União Europeia forçando o Google a abrir dados para rivais, editoras cogitando banir o buscador e um estudo mostrando que a IA do Google já domina 43% das buscas nos EUA. Cada um desses pontos aparece detalhado adiante, com data e link para a edição que o registrou.`;
+  // #5259: array de 2 elementos — o orçamento de ~250 palavras não cabe no
+  // teto de 160 por parágrafo (HUB_MAX_PARAGRAPH_WORDS) numa unidade só;
+  // quebra no ponto natural entre "ritmo de lançamento + disputa com a
+  // OpenAI" e "Brasil + aplicação prática + fim de período regulatório".
+  return [
+    `Entre ${betweenLong}, o Google e o Gemini foram destaque em ${totalEditions} edições da diar.ia.br, ${totalMentions} manchetes ao todo, quase uma menção a cada 5 dias corridos ao longo de 11 meses. Olhando o arquivo inteiro, não uma edição isolada, um padrão salta aos olhos: os lançamentos de modelo não vêm num fluxo parelho, vêm em 3 surtos separados por hiatos, o mais longo deles de ${gap2} dias entre fevereiro e maio de 2026. Houve também uma inversão de narrativa: um Google descrito como ameaçado pelos resultados da OpenAI em novembro de 2025 virou, cerca de 4 meses e meio depois, um Google apostando abertamente contra Meta e DeepSeek também.`,
+    `No Brasil, o Gemini foi anunciado como novidade em pelo menos ${brasil} manchetes diferentes, do AI Mode em setembro de 2025 a um fundo de investimento local em junho de 2026, incluindo um caso em que a mesma função chegou ao país duas vezes, com nomes diferentes, em 2 semanas de intervalo. Do lado da aplicação prática, o Gemini foi de "resolve o insolúvel na ciência" a detectar câncer raro dentro do SUS. O período termina em tensão: em 9 dias de julho de 2026 vieram a União Europeia forçando o Google a abrir dados para rivais, editoras cogitando banir o buscador e um estudo mostrando que a IA do Google já domina 43% das buscas nos EUA. Cada um desses pontos aparece detalhado adiante, com data e link para a edição que o registrou.`,
+  ];
 }
 
 export function getGoogleGeminiHub(): HubContent {
@@ -305,12 +313,22 @@ export function getGoogleGeminiHub(): HubContent {
           `Depois veio um hiato de ${s.gap1} dias sem nenhum lançamento novo, de ${formatDateLong(s.surge1End)} a ${formatDateLong(s.surge2Start)}. Nessa janela as manchetes giraram em torno da disputa com o ChatGPT, não de produto novo. O segundo surto foi o mais compacto de todos: [Gemini 3.1 Pro](https://diar.ia.br/p/novo-curso-de-ia-do-google) e [Nano Banana 2](https://diar.ia.br/p/claude-opus-3-se-aposenta-e-vira-blogueiro) saíram com apenas ${s.gapWithinSurge2} dias de diferença entre si.`,
           `O hiato seguinte foi o mais longo do período: ${s.gap2} dias entre o Nano Banana 2 e o [lançamento do Gemini Omni no Google I/O](https://diar.ia.br/p/google-lan-a-gemini-omni-no-google-i-o), em ${formatDateLong(s.surge3Start)}. O terceiro e último surto fechou num ritmo parecido com o primeiro: [Nano Banana 2 Lite](https://diar.ia.br/p/anthropic-lan-a-sonnet-5), ${s.gapWithinSurge3a} dias depois do Omni, e o [lançamento em trio de Gemini 3.6 e 3.5 Flash](https://diar.ia.br/p/google-lanca-trio-gemini-3-6-e-3-5-flash), mais ${s.gapWithinSurge3b} dias depois: 3 lançamentos em ${s.spanSurge3} dias.`,
         ],
+        // #5260: cronologia derivada de SOURCES — os 3 surtos e os 2 hiatos
+        // entre eles, já afirmados em prosa acima, também aparecem linha a
+        // linha aqui (mesma mecânica extraída de `anthropic-claude.ts` no
+        // #4921 Onda 2, generalizada em `hub-page.ts`).
+        table: buildLaunchChronologyTable(SOURCES, LAUNCH_PATTERN, {
+          caption: "Cronologia de lançamento: modelo ou ferramenta, data, dias desde o anterior, edição",
+          firstColumnHeader: "Lançamento",
+        }),
       },
       {
         heading: "Como o Gemini foi se espalhando pelos produtos do dia a dia e pelo Brasil?",
         paragraphs: [
-          `O Gemini apareceu como novidade chegando ao Brasil em pelo menos ${brasil} manchetes diferentes ao longo do período. A mais chamativa delas é uma repetição: [o Google AI Mode chegou ao Brasil](https://diar.ia.br/p/openai-anuncia-apoio-ao-longa-critterz-mirando-cannes) em 9 de setembro de 2025 e, 14 dias depois, ["o Modo IA do Google" chegou ao Brasil de novo](https://diar.ia.br/p/nvidia-anuncia-investimento-de-us-100-bi-na-openai), mesma função com nome diferente. Quinze dias depois veio [o Google AI Plus](https://diar.ia.br/p/google-lan-a-ai-para-controle-aut-nomo-de-browsers); já em 2026, 190 dias mais tarde, [a personalização do Gemini chegou ao Brasil](https://diar.ia.br/p/stanford-ia-avan-a-mais-r-pido-que-qualquer-tecnologia), seguida 61 dias depois por [um fundo de investimento em IA feito ao lado da Monashees](https://diar.ia.br/p/sp-vai-mapear-surtos-de-dengue-por-bairro) e, mais 6 dias depois, [o Google AI Plus de graça para clientes da Vivo](https://diar.ia.br/p/google-ai-plus-de-gra-a-na-vivo).`,
-          'Fora do Brasil especificamente, a integração cresceu em quase todo produto do ecossistema Google: em 19 de setembro de 2025, [o Gemini embarcou no Chrome](https://diar.ia.br/p/profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-798f898c74970), [o Google Maps ganhou a API do Gemini](https://diar.ia.br/p/aws-sofre-queda) em 20 de outubro de 2025; em 6 de novembro de 2025, [a Apple trouxe o Gemini para dentro da Siri e do próprio Google Maps](https://diar.ia.br/p/siri-agora-tera-gemini) e, um dia depois, em 7 de novembro de 2025, [o Workspace ganhou mais capacidades](https://diar.ia.br/p/microsoft-em-busca-da-superinteligencia). Já em 12 de janeiro de 2026, veio a vez do [Gmail](https://diar.ia.br/p/grok-sendo-investigado-internacionalmente) e, 3 dias depois, de uma cobertura sobre [o Gemini "entendendo toda a vida digital" do usuário](https://diar.ia.br/p/mckinsey-candidatos-devem-dominar-prompts). Mais recentemente, em 10 de junho de 2026, [o Gemini voltou ao Chrome, agora sem precisar abrir aba nova](https://diar.ia.br/p/gemini-chega-ao-chrome-sem-abrir-aba-nova), [ganhou cadernos de estudo](https://diar.ia.br/p/sabia-4-thinking-brasil-tem-modelo-de-raciocinio) 16 dias depois, viu o [NotebookLM ser rebatizado de Gemini Notebook](https://diar.ia.br/p/gpt-5-6-sol-apaga-arquivos-sem-permissao) 21 dias mais tarde, em 17 de julho de 2026, e fechou o período [editando o Google Docs por conta própria](https://diar.ia.br/p/repositorio-de-ia-sem-freio-para-nudes-ilegais), 13 dias depois disso, em 30 de julho de 2026.',
+          `O Gemini apareceu como novidade chegando ao Brasil em pelo menos ${brasil} manchetes diferentes ao longo do período. A mais chamativa delas é uma repetição: [o Google AI Mode chegou ao Brasil](https://diar.ia.br/p/openai-anuncia-apoio-ao-longa-critterz-mirando-cannes) em 9 de setembro de 2025 e, 14 dias depois, ["o Modo IA do Google" chegou ao Brasil de novo](https://diar.ia.br/p/nvidia-anuncia-investimento-de-us-100-bi-na-openai), mesma função com nome diferente. Quinze dias depois veio [o Google AI Plus](https://diar.ia.br/p/google-lan-a-ai-para-controle-aut-nomo-de-browsers).`,
+          `Em 16 de abril de 2026, [a personalização do Gemini chegou ao Brasil](https://diar.ia.br/p/stanford-ia-avan-a-mais-r-pido-que-qualquer-tecnologia), seguida 61 dias depois por [um fundo de investimento em IA feito ao lado da Monashees](https://diar.ia.br/p/sp-vai-mapear-surtos-de-dengue-por-bairro) e, mais 6 dias depois, [o Google AI Plus de graça para clientes da Vivo](https://diar.ia.br/p/google-ai-plus-de-gra-a-na-vivo).`,
+          'Fora do Brasil especificamente, a integração cresceu em quase todo produto do ecossistema Google: em 19 de setembro de 2025, [o Gemini embarcou no Chrome](https://diar.ia.br/p/profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-798f898c74970), [o Google Maps ganhou a API do Gemini](https://diar.ia.br/p/aws-sofre-queda) em 20 de outubro de 2025; em 6 de novembro de 2025, [a Apple trouxe o Gemini para dentro da Siri e do próprio Google Maps](https://diar.ia.br/p/siri-agora-tera-gemini) e, em 7 de novembro de 2025, [o Workspace ganhou mais capacidades](https://diar.ia.br/p/microsoft-em-busca-da-superinteligencia).',
+          'Em 12 de janeiro de 2026, veio a vez do [Gmail](https://diar.ia.br/p/grok-sendo-investigado-internacionalmente) e, 3 dias depois, de uma cobertura sobre [o Gemini "entendendo toda a vida digital" do usuário](https://diar.ia.br/p/mckinsey-candidatos-devem-dominar-prompts). Em 10 de junho de 2026, [o Gemini voltou ao Chrome, agora sem precisar abrir aba nova](https://diar.ia.br/p/gemini-chega-ao-chrome-sem-abrir-aba-nova), [ganhou cadernos de estudo](https://diar.ia.br/p/sabia-4-thinking-brasil-tem-modelo-de-raciocinio) 16 dias depois, viu o [NotebookLM ser rebatizado de Gemini Notebook](https://diar.ia.br/p/gpt-5-6-sol-apaga-arquivos-sem-permissao) em 17 de julho de 2026, e fechou o período [editando o Google Docs por conta própria](https://diar.ia.br/p/repositorio-de-ia-sem-freio-para-nudes-ilegais), em 30 de julho de 2026.',
           "Um fio à parte, mas revelador, é o avanço da autonomia do próprio Gemini: em 8 de outubro de 2025, [o Google lançou uma IA para controle autônomo de navegadores](https://diar.ia.br/p/google-lan-a-ai-para-controle-aut-nomo-de-browsers); 260 dias depois, em 25 de junho de 2026, [o Gemini 3.5 Flash passou a controlar o computador inteiro do usuário](https://diar.ia.br/p/gemini-3-5-flash-agora-controla-seu-computador) [fonte primária](https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-computer-use-gemini-3-5-flash/), não só o navegador.",
         ],
       },

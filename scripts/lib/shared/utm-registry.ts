@@ -515,6 +515,29 @@ export const HUB_MERCADO_TRABALHO_FOOTER_NAV_UTM = {
   medium: "footer-nav",
 } as const;
 
+/** Box rotativo de divulgação dos hubs temáticos na newsletter (#5263,
+ * `scripts/lib/shared/hub-divulgacao-box.ts`) — 1 hub por edição, escolhido
+ * por rotação determinística. `medium` distinto de `HUB_*_FOOTER_NAV_UTM`
+ * (aqueles são "footer-nav", link de saída no rodapé do PRÓPRIO hub; este é
+ * "newsletter-box", clique VINDO da newsletter pro hub) — as duas origens
+ * nunca podem colapsar no mesmo par source+medium, ou o clique perderia a
+ * informação de QUAL superfície gerou. `campaign` é o slug do hub em rotação
+ * naquela edição (varia por dia — nunca um literal fixo). */
+export const HUB_DIVULGACAO_BOX_UTM = {
+  source: "diaria-newsletter",
+  medium: "hub-divulgacao-box",
+} as const;
+
+/** Rodapé de navegação cruzada da página-índice `/temas/` (#5256,
+ * `scripts/lib/shared/hub-index-page.ts`) — mesmo padrão `HUB_*_FOOTER_NAV_UTM`
+ * acima, source próprio (`hub-index`, não `arquivo`) porque o índice é uma
+ * superfície distinta da listagem de edições E de qualquer hub individual —
+ * mede quem clicou "voltar" a partir da PÁGINA-ÍNDICE especificamente. */
+export const HUB_INDEX_FOOTER_NAV_UTM = {
+  source: "hub-index",
+  medium: "footer-nav",
+} as const;
+
 /** Rodapé de navegação cruzada da página de entidade "Perplexity" (#5125,
  * `scripts/lib/entities/perplexity.ts`) — mesmo padrão de
  * `HUB_*_FOOTER_NAV_UTM` acima (só source+medium, link de nav, não funil de
@@ -1228,6 +1251,39 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     description:
       'Link "diar.ia.br" no rodapé de navegação cruzada do hub temático Mercado de trabalho ' +
       "e IA (#4558, 6º hub temático — 2º TEMÁTICO transversal, sessão develop 260812).",
+    status: "ativo",
+  },
+  {
+    id: "hub-divulgacao-box",
+    label: "Box rotativo de divulgação dos hubs na newsletter",
+    source: HUB_DIVULGACAO_BOX_UTM.source,
+    medium: HUB_DIVULGACAO_BOX_UTM.medium,
+    // campaign varia por dia (slug do hub em rotação) — sem um valor único
+    // pra travar, ver knownUtmSources/knownUtmMediums abaixo (a checagem de
+    // catalogo cobre source+medium, campaign dinâmico é esperado aqui, mesmo
+    // padrão de qualquer UTM cujo campaign carregue um identificador
+    // variável por natureza).
+    campaignPattern: "{slug-do-hub-em-rotacao}",
+    originFile: "scripts/lib/shared/hub-divulgacao-box.ts",
+    description:
+      "Clique no box de divulgacao dos hubs tematicos (#5263) - aparece na newsletter " +
+      "diaria, 1 hub por edicao, escolhido por rotacao deterministica entre os hubs de " +
+      "HUB_META. AINDA NAO ligado ao stitch da newsletter em producao (ver PR #5263 " +
+      "para o estado do wiring) - registrado aqui desde ja pra nao repetir o achado do " +
+      "#5205 (drift 'nao_catalogado' no 1o clique real).",
+    status: "ativo",
+  },
+  {
+    id: "hub-index-footer-nav",
+    label: "Índice de temas /temas/ — link de rodapé pra diar.ia.br",
+    source: HUB_INDEX_FOOTER_NAV_UTM.source,
+    medium: HUB_INDEX_FOOTER_NAV_UTM.medium,
+    campaignPattern: "hub-index-footer-nav",
+    originFile: "scripts/lib/shared/hub-index-page.ts",
+    description:
+      'Link "diar.ia.br" no rodape da pagina-indice /temas/ (#5256) - mesmo padrao dos ' +
+      "HUB_*_FOOTER_NAV_UTM acima, source proprio pra distinguir clique vindo do INDICE " +
+      "de clique vindo de um hub individual.",
     status: "ativo",
   },
   {

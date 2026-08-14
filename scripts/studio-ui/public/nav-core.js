@@ -60,6 +60,10 @@ export const NAV_ITEMS = [
   // #3853: label igual ao que já existia em DASHBOARD_LINKS (não é copy nova)
   // — mantém distinção clara do "Dashboard Clarice" que continua abaixo.
   { id: "painel-diaria", label: "Dashboard diária", href: "/painel/diaria", pageIds: ["painel-diaria"], group: "negocio" },
+  // #5236: custo por leitor por canal — onde botar o orçamento de aquisição.
+  // Vizinha de Apoios/Dashboard diária — mesma natureza "negócio": decisão de
+  // gasto, não conteúdo editorial nem infraestrutura de sistema.
+  { id: "ads", label: "Ads", href: "/ads", pageIds: ["ads"], group: "negocio" },
   // 🔌 Sistema.
   { id: "integracoes", label: "Integrações", href: "/integracoes", pageIds: ["integracoes"], group: "sistema" },
   // #4041: inventário de UTMs (o que o código emite) × conversão real no
