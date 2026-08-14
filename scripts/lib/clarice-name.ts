@@ -33,3 +33,16 @@ export function firstName(name: string | null | undefined): string {
     .trim()
     .split(/[\s,]+/)[0] || "";
 }
+
+/**
+ * Detecta se `name` contém pelo menos 1 U+FFFD (#5214 item 1 — mecanismo de
+ * SINALIZAÇÃO, distinto da sanitização de `firstName` acima). `firstName` já
+ * remove o byte inválido antes de mandar pro CSV/Brevo (#5199/#5200), então
+ * checar o resultado de `firstName` nunca detectaria nada — este helper
+ * precisa rodar sobre o `name` CRU (pré-sanitização) pra sinalizar os
+ * contatos cujo nome upstream está corrompido, mesmo que o envio em si já
+ * esteja protegido. `null`/`undefined` → `false` (nada pra sinalizar).
+ */
+export function hasCorruptedName(name: string | null | undefined): boolean {
+  return /�/.test(name ?? "");
+}

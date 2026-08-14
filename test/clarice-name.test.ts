@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { firstName } from "../scripts/lib/clarice-name.ts";
+import { firstName, hasCorruptedName } from "../scripts/lib/clarice-name.ts";
 
 test("firstName: extrai o primeiro token de um nome simples", () => {
   assert.equal(firstName("Ana Costa"), "Ana");
@@ -34,4 +34,33 @@ test("firstName: nome só com U+FFFD vira string vazia, não lança", () => {
 
 test("firstName: espaços múltiplos/tabs não geram token vazio no meio", () => {
   assert.equal(firstName("  Bia   Lima  "), "Bia");
+});
+
+// hasCorruptedName (#5214 item 1) — detecção CRUA, distinta da sanitização
+// de firstName acima: precisa enxergar o U+FFFD ANTES dele ser removido,
+// pra sinalizar o contato mesmo que o CSV já saia limpo.
+test("hasCorruptedName: nome com U+FFFD → true", () => {
+  assert.equal(hasCorruptedName("Gon�alo Soares"), true);
+  assert.equal(hasCorruptedName("�"), true);
+});
+
+test("hasCorruptedName: nome limpo → false", () => {
+  assert.equal(hasCorruptedName("Gonçalo Soares"), false);
+  assert.equal(hasCorruptedName("Ana Costa"), false);
+});
+
+test("hasCorruptedName: null/undefined/vazio → false, não lança", () => {
+  assert.equal(hasCorruptedName(null), false);
+  assert.equal(hasCorruptedName(undefined), false);
+  assert.equal(hasCorruptedName(""), false);
+});
+
+test("hasCorruptedName: o resultado de firstName() nunca teria U+FFFD — a sanitização já removeu", () => {
+  // Prova de que os dois helpers têm papéis distintos: rodar hasCorruptedName
+  // DEPOIS de firstName sempre dá false, mesmo pra um nome que era corrompido —
+  // é exatamente por isso que o call site em clarice-build-segment.ts precisa
+  // checar `r.name` cru, não `firstName(r.name)`.
+  const raw = "Gon�alo Soares";
+  assert.equal(hasCorruptedName(raw), true);
+  assert.equal(hasCorruptedName(firstName(raw)), false);
 });
