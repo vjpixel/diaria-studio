@@ -23,8 +23,13 @@ import {
   pullBingRelatedKeywords,
   pullBingKeywordStats,
   buildBingDemandTerms,
+  bingKeywordSeedsPath,
+  parseBingKeywordSeedsCsv,
+  loadBingKeywordSeeds,
+  isAiDomainRelevant,
+  filterRelevantRelated,
+  summarizeBingKeywordTerms,
   buildBingKeywordsPullOutput,
-  BING_LONGTAIL_AI_TERMS,
   parseBingLinkCountsResponse,
   parseBingUrlLinksResponse,
   domainOf,
@@ -33,6 +38,7 @@ import {
   buildBingLinksPullOutput,
   type BingQueryRow,
   type BingTrafficRow,
+  type BingKeywordRow,
   type BingKeywordTermEntry,
   type BingLinksPageDetail,
 } from "../scripts/bing-pull.ts";
@@ -426,24 +432,118 @@ describe("pullBingKeyword / pullBingRelatedKeywords / pullBingKeywordStats (#512
   });
 });
 
-describe("buildBingDemandTerms / BING_LONGTAIL_AI_TERMS (#5128 item 3)", () => {
-  it("BING_LONGTAIL_AI_TERMS tem entre 15 e 20 termos, todos não-vazios", () => {
-    assert.ok(BING_LONGTAIL_AI_TERMS.length >= 15 && BING_LONGTAIL_AI_TERMS.length <= 20);
-    for (const t of BING_LONGTAIL_AI_TERMS) assert.ok(t.trim().length > 0);
+describe("parseBingKeywordSeedsCsv (#5253)", () => {
+  it("1 termo por linha, ignora header 'term' (case-insensitive) e linhas vazias", () => {
+    const csv = "term\nchatgpt\n\nnewsletter de ia\n";
+    assert.deepEqual(parseBingKeywordSeedsCsv(csv), ["chatgpt", "newsletter de ia"]);
+    assert.deepEqual(parseBingKeywordSeedsCsv("Term\nx\n"), ["x"]);
   });
 
-  it("buildBingDemandTerms = GEO_HUB_QUESTIONS + BING_LONGTAIL_AI_TERMS, sem sobreposição, sem duplicata", () => {
-    const terms = buildBingDemandTerms();
-    assert.equal(terms.length, GEO_HUB_QUESTIONS.length + BING_LONGTAIL_AI_TERMS.length);
-    for (const q of GEO_HUB_QUESTIONS) assert.ok(terms.includes(q));
-    for (const t of BING_LONGTAIL_AI_TERMS) assert.ok(terms.includes(t));
-    const overlap = GEO_HUB_QUESTIONS.filter((q) => (BING_LONGTAIL_AI_TERMS as readonly string[]).includes(q));
-    assert.deepEqual(overlap, []);
-    assert.equal(new Set(terms).size, terms.length, "termos duplicados entre as duas listas");
+  it("trima espaços em volta de cada termo", () => {
+    assert.deepEqual(parseBingKeywordSeedsCsv("  ia generativa  \n\tferramentas de ia\t\n"), [
+      "ia generativa",
+      "ferramentas de ia",
+    ]);
+  });
+
+  it("CSV vazio -> []", () => {
+    assert.deepEqual(parseBingKeywordSeedsCsv(""), []);
   });
 });
 
-describe("buildBingKeywordsPullOutput (#5128)", () => {
+describe("bingKeywordSeedsPath (#5253)", () => {
+  it("aponta pra seed/keywords.csv relativo ao root informado", () => {
+    assert.match(bingKeywordSeedsPath("/repo"), /\/repo\/seed\/keywords\.csv$/);
+  });
+});
+
+describe("loadBingKeywordSeeds / buildBingDemandTerms (#5253 — regressão do ruído de GEO_HUB_QUESTIONS)", () => {
+  it("seed/keywords.csv real tem entre 15 e 20 termos, todos não-vazios", () => {
+    const seeds = loadBingKeywordSeeds();
+    assert.ok(seeds.length >= 15 && seeds.length <= 20, `esperado 15-20 termos, veio ${seeds.length}`);
+    for (const t of seeds) assert.ok(t.trim().length > 0);
+  });
+
+  it("NUNCA inclui nenhuma pergunta de GEO_HUB_QUESTIONS — a semente é curada, não derivada de título de matéria (achado #5253)", () => {
+    const seeds = loadBingKeywordSeeds();
+    for (const q of GEO_HUB_QUESTIONS) {
+      assert.ok(!seeds.includes(q), `seed/keywords.csv contém pergunta de hub: "${q}"`);
+    }
+  });
+
+  it("buildBingDemandTerms() sem args carrega de seed/keywords.csv", () => {
+    assert.deepEqual(buildBingDemandTerms(), loadBingKeywordSeeds());
+  });
+
+  it("buildBingDemandTerms(seeds) usa a lista explícita passada, sem tocar o disco", () => {
+    assert.deepEqual(buildBingDemandTerms(["a", "b"]), ["a", "b"]);
+  });
+});
+
+describe("isAiDomainRelevant / filterRelevantRelated (#5253 item 4)", () => {
+  it("termo com marcador de domínio (substring, tolerante a acento) é relevante", () => {
+    assert.ok(isAiDomainRelevant("chatgpt de graça"));
+    assert.ok(isAiDomainRelevant("inteligência artificial generativa"));
+    assert.ok(isAiDomainRelevant("inteligencia artificial generativa"));
+    assert.ok(isAiDomainRelevant("prompt engineering curso"));
+  });
+
+  it("'ia' como palavra isolada é relevante, mas não dentro de outra palavra ('dia', 'companhia')", () => {
+    assert.ok(isAiDomainRelevant("o que é ia"));
+    assert.ok(!isAiDomainRelevant("bom dia"));
+    assert.ok(!isAiDomainRelevant("nome da companhia"));
+  });
+
+  it("termo sem nenhum marcador de domínio (fofoca de celebridade — achado real #5253) é descartado", () => {
+    assert.ok(!isAiDomainRelevant("o que aconteceu com a xuxa"));
+    assert.ok(!isAiDomainRelevant("aniversário da cantora"));
+  });
+
+  it("filterRelevantRelated mantém só as linhas relevantes, preserva o objeto tal qual", () => {
+    const rows: BingKeywordRow[] = [
+      { query: "chatgpt gratis", date: null, impressions: 10, broadImpressions: 20 },
+      { query: "o que aconteceu com a fulana", date: null, impressions: 5000, broadImpressions: 9000 },
+    ];
+    assert.deepEqual(filterRelevantRelated(rows), [rows[0]]);
+  });
+
+  it("todas relevantes -> array idêntico; nenhuma relevante -> []", () => {
+    const relevant: BingKeywordRow[] = [{ query: "curso de ia", date: null, impressions: 1, broadImpressions: 1 }];
+    assert.deepEqual(filterRelevantRelated(relevant), relevant);
+    const irrelevant: BingKeywordRow[] = [{ query: "receita de bolo", date: null, impressions: 1, broadImpressions: 1 }];
+    assert.deepEqual(filterRelevantRelated(irrelevant), []);
+  });
+});
+
+describe("summarizeBingKeywordTerms (#5253 itens 3 e 5)", () => {
+  const okEntry = (term: string, impressions: number): BingKeywordTermEntry => ({
+    term,
+    keyword: { ok: true, data: { query: term, impressions, broadImpressions: impressions * 2 }, raw: {} },
+    related: { ok: true, data: [], raw: [] },
+    stats: { ok: true, data: [], raw: [] },
+  });
+  const errEntry = (term: string): BingKeywordTermEntry => ({
+    term,
+    keyword: { ok: false, error: "boom" },
+    related: { ok: false, error: "boom" },
+    stats: { ok: false, error: "boom" },
+  });
+
+  it("zeroVolume=true só quando a chamada teve sucesso E impressions===0", () => {
+    const summary = summarizeBingKeywordTerms([okEntry("a", 0), okEntry("b", 5)]);
+    assert.deepEqual(summary, [
+      { term: "a", impressions: 0, broadImpressions: 0, zeroVolume: true },
+      { term: "b", impressions: 5, broadImpressions: 10, zeroVolume: false },
+    ]);
+  });
+
+  it("chamada com erro -> impressions/broadImpressions null, zeroVolume false (nunca 0 inventado)", () => {
+    const summary = summarizeBingKeywordTerms([errEntry("c")]);
+    assert.deepEqual(summary, [{ term: "c", impressions: null, broadImpressions: null, zeroVolume: false }]);
+  });
+});
+
+describe("buildBingKeywordsPullOutput (#5128, summary/terms_with_zero_impressions #5253)", () => {
   it("monta o payload com total_terms batendo e campos repassados tal qual", () => {
     const entries: BingKeywordTermEntry[] = [
       {
@@ -460,6 +560,29 @@ describe("buildBingKeywordsPullOutput (#5128)", () => {
     assert.equal(out.end_date, "2026-08-11");
     assert.equal(out.total_terms, 1);
     assert.deepEqual(out.terms, entries);
+  });
+
+  it("deriva terms_with_zero_impressions e summary de terms (#5253)", () => {
+    const entries: BingKeywordTermEntry[] = [
+      {
+        term: "ia generativa",
+        keyword: { ok: true, data: { query: "ia generativa", impressions: 0, broadImpressions: 0 }, raw: {} },
+        related: { ok: true, data: [], raw: [] },
+        stats: { ok: true, data: [], raw: [] },
+      },
+      {
+        term: "chatgpt",
+        keyword: { ok: true, data: { query: "chatgpt", impressions: 500, broadImpressions: 900 }, raw: {} },
+        related: { ok: true, data: [], raw: [] },
+        stats: { ok: true, data: [], raw: [] },
+      },
+    ];
+    const out = buildBingKeywordsPullOutput("br", "pt-BR", "2026-07-12", "2026-08-11", "2026-08-11", entries);
+    assert.equal(out.terms_with_zero_impressions, 1);
+    assert.deepEqual(out.summary, [
+      { term: "ia generativa", impressions: 0, broadImpressions: 0, zeroVolume: true },
+      { term: "chatgpt", impressions: 500, broadImpressions: 900, zeroVolume: false },
+    ]);
   });
 });
 

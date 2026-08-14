@@ -9,13 +9,28 @@
  *     endpoints de PRIMEIRA parte (só o que o site JÁ toca — garantidamente
  *     vazio numa propriedade nova). 2ª fonte first-party de demanda de busca
  *     em pt-BR do projeto, ao lado de `seo-pull.ts` (Google Search Console).
- *   - `keywords` (#5128) → `GetKeyword`/`GetRelatedKeywords`/`GetKeywordStats`,
- *     os 3 endpoints de TERCEIRA parte — respondem "quanto se busca X em
- *     pt-BR" pra um termo arbitrário, independente de rankearmos. Rodado
- *     contra `GEO_HUB_QUESTIONS` (as perguntas que os 6 hubs afirmam
- *     responder, `lib/geo-citation-monitor.ts` — reusado aqui de propósito,
- *     não duplicado) + `BING_LONGTAIL_AI_TERMS` (cauda longa pt-BR sobre IA,
- *     abaixo).
+ *   - `keywords` (#5128, resemeado #5253) → `GetKeyword`/`GetRelatedKeywords`/
+ *     `GetKeywordStats`, os 3 endpoints de TERCEIRA parte — respondem "quanto
+ *     se busca X em pt-BR" pra um termo arbitrário, independente de
+ *     rankearmos. Rodado contra as sementes curadas de `seed/keywords.csv`
+ *     (`loadBingKeywordSeeds`, abaixo) — termos comerciais/informacionais
+ *     que descrevem a intenção do público (newsletter de IA em pt-BR), NUNCA
+ *     derivados de título de matéria.
+ *
+ *     **#5253 (achado ao vivo em 12/ago/2026, pull `bing-keywords-2026-08-12.json`):**
+ *     até aqui a semente incluía `GEO_HUB_QUESTIONS` (as perguntas que os 6
+ *     hubs do Worker `arquivo` afirmam responder, `lib/geo-citation-monitor.ts`
+ *     — estilo manchete de matéria, ex: "O que aconteceu com a Anthropic em
+ *     2026?"). Ninguém busca uma pergunta-manchete verbatim
+ *     (`GetKeyword` → `impressions: 0` garantido) e o `GetRelatedKeywords`
+ *     da API casa por PREFIXO GENÉRICO da query ("o que aconteceu com...")
+ *     em vez de por tema, devolvendo fofoca de celebridade brasileira — ruído
+ *     puro, inútil pro planejamento de conteúdo. O fix teve 2 partes:
+ *     (1) a semente virou config explícita e curada (`seed/keywords.csv`),
+ *     desacoplada de `GEO_HUB_QUESTIONS`; (2) `filterRelevantRelated` descarta
+ *     `related` sem nenhum marcador de domínio (IA/tecnologia) antes de
+ *     persistir — o `raw` da chamada continua intacto pra auditoria (mesma
+ *     disciplina do resto do arquivo), só o campo parseado é filtrado.
  *   - `links`    (#5130) → `GetLinkCounts`/`GetUrlLinks` — instrumento de
  *     AUTORIDADE (backlinks). Sem instrumento até aqui, o critério de
  *     sucesso pré-registrado pro checkpoint de ~29/set ("≥5 domínios
@@ -101,13 +116,14 @@
  * (inclui `--mode` desconhecido).
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { BING_DEFAULT_SITE, BING_API_BASE } from "./lib/bing.ts";
-import { GEO_HUB_QUESTIONS } from "./lib/geo-citation-monitor.ts";
+
+const SCRIPT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // .env — loader canônico do projeto (#923, consolidado #4820). Chamada em
 // module scope, ANTES de qualquer leitura de `process.env.BING_WEBMASTER_API_KEY`
@@ -423,38 +439,119 @@ export async function pullBingKeywordStats(
   return { data: parseBingKeywordRowsResponse(raw), raw };
 }
 
-/**
- * Cauda longa pt-BR sobre IA (#5128 item 3, 18 termos — dentro do intervalo
- * "15-20" pedido pela issue). Escritos à mão, cobrindo intenção prática
- * (como usar/aprender/comparar) DIFERENTE das perguntas factuais de
- * `GEO_HUB_QUESTIONS` (que perguntam "o que aconteceu" — cronologia de
- * empresa), então as duas listas não se sobrepõem por construção.
- */
-export const BING_LONGTAIL_AI_TERMS: readonly string[] = [
-  "como usar inteligência artificial no trabalho",
-  "melhor ia gratuita em português",
-  "chatgpt ou gemini qual é melhor",
-  "como a ia vai afetar meu emprego",
-  "cursos gratuitos de inteligência artificial",
-  "como usar ia para estudar",
-  "inteligência artificial substitui programador",
-  "o que é prompt engineering",
-  "como funciona o chatgpt",
-  "ia generativa o que é",
-  "regulamentação de inteligência artificial no brasil",
-  "quais profissões vão acabar com a ia",
-  "como criar imagens com inteligência artificial",
-  "diferença entre ia e machine learning",
-  "inteligência artificial na educação",
-  "como funciona o claude ia",
-  "vantagens e riscos da inteligência artificial",
-  "inteligência artificial generativa exemplos",
-] as const;
+/** Path do CSV de sementes curadas do modo `keywords` (#5253) — override de
+ * `root` só para teste (nunca aponta pra fora do checkout em produção). */
+export function bingKeywordSeedsPath(root: string = SCRIPT_ROOT): string {
+  return resolve(root, "seed", "keywords.csv");
+}
 
-/** União das perguntas dos 6 hubs + cauda longa — os termos consultados no
- * modo `keywords` (#5128 item 3). Reusa `GEO_HUB_QUESTIONS` (não duplica). */
-export function buildBingDemandTerms(): string[] {
-  return [...GEO_HUB_QUESTIONS, ...BING_LONGTAIL_AI_TERMS];
+/**
+ * Parseia o CSV de sementes — 1 termo por linha, header opcional "term"
+ * (case-insensitive) e linhas em branco ignoradas. Pure — testável sem I/O.
+ */
+export function parseBingKeywordSeedsCsv(csv: string): string[] {
+  return csv
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && l.toLowerCase() !== "term");
+}
+
+/**
+ * Carrega as sementes curadas de `seed/keywords.csv` (#5253) — termos
+ * comerciais/informacionais que descrevem a intenção do público real do
+ * projeto (newsletter de IA em pt-BR: "newsletter de ia", "ferramentas de
+ * inteligência artificial", "curso de ia em português", etc.), NUNCA
+ * derivados de título de matéria. Ver docstring do arquivo, seção #5253,
+ * pro raciocínio completo de por que a semente antiga (`GEO_HUB_QUESTIONS`)
+ * devolvia ruído.
+ */
+export function loadBingKeywordSeeds(root: string = SCRIPT_ROOT): string[] {
+  return parseBingKeywordSeedsCsv(readFileSync(bingKeywordSeedsPath(root), "utf8"));
+}
+
+/** Termos consultados no modo `keywords` — por padrão, as sementes curadas de
+ * `seed/keywords.csv`. Aceita uma lista explícita (parâmetro `seeds`) pra
+ * teste/override sem tocar o disco. */
+export function buildBingDemandTerms(seeds: string[] = loadBingKeywordSeeds()): string[] {
+  return [...seeds];
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// #5253 item 4 — filtro de relevância de domínio pro `related` da API
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Marcadores de domínio (IA/tecnologia) usados por `isAiDomainRelevant`
+ * abaixo — substring match sobre a query normalizada (minúscula, sem
+ * acento). Cobre o vocabulário esperado do `related`/`stats` de um termo
+ * semeado por `seed/keywords.csv`; não precisa ser exaustivo — só precisa
+ * distinguir "tem relação com IA" de ruído genérico (fofoca de celebridade,
+ * notícia não relacionada) que só casou por prefixo de query com a Bing. */
+const AI_DOMAIN_MARKERS: readonly string[] = [
+  "intelig", "artificial", "chatgpt", "gpt", "llm", "gemini", "claude",
+  "openai", "anthropic", "algoritm", "automac", "automat", "tecnolog",
+  "digital", "prompt", "robo", "maquina", "deep learning", "rede neural",
+  "chatbot", "newsletter",
+];
+
+/** Remove acentos e normaliza para minúsculo — comparação tolerante a
+ * "inteligência"/"inteligencia". Pure. */
+function normalizeForMatch(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+/**
+ * Um termo é relevante ao domínio se contém "ia" como PALAVRA ISOLADA (não
+ * dentro de outra palavra — "dia"/"companhia" não casam, `\bia\b` sobre a
+ * string normalizada) ou algum marcador de `AI_DOMAIN_MARKERS`. Pure —
+ * testável sem I/O.
+ */
+export function isAiDomainRelevant(query: string): boolean {
+  const q = normalizeForMatch(query);
+  if (/\bia\b/.test(q)) return true;
+  return AI_DOMAIN_MARKERS.some((m) => q.includes(m));
+}
+
+/**
+ * Filtra `related` descartando linhas sem relação com o domínio do projeto
+ * (#5253 item 4 — a Bing casa `GetRelatedKeywords` por prefixo genérico da
+ * query, não por tema; achado real: "o que aconteceu com" devolvendo fofoca
+ * de celebridade brasileira pra uma semente sobre IA). Nunca aplicado a
+ * `stats` (série do MESMO termo semeado, relevante por construção) nem ao
+ * `raw` bruto (auditoria — ver docstring do arquivo). Pure.
+ */
+export function filterRelevantRelated(related: BingKeywordRow[]): BingKeywordRow[] {
+  return related.filter((r) => isAiDomainRelevant(r.query));
+}
+
+export interface BingKeywordSummaryRow {
+  term: string;
+  /** `null` quando a chamada `GetKeyword` falhou (`safeBingCall` capturou
+   * erro) — nunca um 0 inventado nesse caso, distinto de "0 impressões
+   * medidas de verdade". */
+  impressions: number | null;
+  broadImpressions: number | null;
+  /** `true` só quando a chamada teve sucesso E `impressions === 0` — #5253
+   * item 5 ("reportar quantas sementes voltaram com volume zero"). */
+  zeroVolume: boolean;
+}
+
+/**
+ * Resume `impressions`/`broadImpressions` por termo semeado (#5253 itens 3 e
+ * 5) — cada pull mensal (`Diaria-Bing-Seo-Monthly-Pull`) grava um JSON datado
+ * em `data/seo/bing-keywords-{YYYY-MM-DD}.json`; a série desses arquivos ao
+ * longo dos meses É o histórico mensal por termo (nenhum mecanismo de
+ * consolidação adicional necessário — o item 3 já está coberto pela
+ * cadência + nomenclatura de arquivo existentes). Pure.
+ */
+export function summarizeBingKeywordTerms(entries: BingKeywordTermEntry[]): BingKeywordSummaryRow[] {
+  return entries.map((e) => {
+    if (!e.keyword.ok) return { term: e.term, impressions: null, broadImpressions: null, zeroVolume: false };
+    const { impressions, broadImpressions } = e.keyword.data;
+    return { term: e.term, impressions, broadImpressions, zeroVolume: impressions === 0 };
+  });
 }
 
 export interface BingKeywordTermEntry {
@@ -464,7 +561,10 @@ export interface BingKeywordTermEntry {
   stats: BingCallResult<BingKeywordRow[]>;
 }
 
-/** Payload pure: monta o objeto gravado em `data/seo/bing-keywords-*.json`. */
+/** Payload pure: monta o objeto gravado em `data/seo/bing-keywords-*.json`.
+ * `summary`/`terms_with_zero_impressions` (#5253 itens 3 e 5) são derivados
+ * de `terms` via `summarizeBingKeywordTerms` — nunca passados separadamente,
+ * pra não abrir espaço pra divergir do array bruto. */
 export function buildBingKeywordsPullOutput(
   country: string,
   language: string,
@@ -479,9 +579,22 @@ export function buildBingKeywordsPullOutput(
   end_date: string;
   pulled_at: string;
   total_terms: number;
+  terms_with_zero_impressions: number;
   terms: BingKeywordTermEntry[];
+  summary: BingKeywordSummaryRow[];
 } {
-  return { country, language, start_date: startDate, end_date: endDate, pulled_at: pulledAt, total_terms: terms.length, terms };
+  const summary = summarizeBingKeywordTerms(terms);
+  return {
+    country,
+    language,
+    start_date: startDate,
+    end_date: endDate,
+    pulled_at: pulledAt,
+    total_terms: terms.length,
+    terms_with_zero_impressions: summary.filter((s) => s.zeroVolume).length,
+    terms,
+    summary,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -671,7 +784,11 @@ async function mainKeywords(nowMs: number, values: Record<string, string>): Prom
   const entries: BingKeywordTermEntry[] = [];
   for (const term of terms) {
     const keyword = await safeBingCall(() => pullBingKeyword(term, country, language, startDate, endDate, apiKey));
-    const related = await safeBingCall(() => pullBingRelatedKeywords(term, country, language, startDate, endDate, apiKey));
+    const relatedRaw = await safeBingCall(() => pullBingRelatedKeywords(term, country, language, startDate, endDate, apiKey));
+    // #5253 item 4: filtra `related` sem relação com o domínio ANTES de
+    // persistir o campo parseado — o `raw` da chamada (dentro de
+    // `relatedRaw`) segue intacto pra auditoria, só `data` é filtrado.
+    const related = relatedRaw.ok ? { ...relatedRaw, data: filterRelevantRelated(relatedRaw.data) } : relatedRaw;
     const stats = await safeBingCall(() => pullBingKeywordStats(term, country, language, apiKey));
     entries.push({ term, keyword, related, stats });
   }
@@ -682,10 +799,18 @@ async function mainKeywords(nowMs: number, values: Record<string, string>): Prom
   const output = buildBingKeywordsPullOutput(country, language, startDate, endDate, pulledAt, entries);
   writeFileSync(jsonPath, JSON.stringify(output, null, 2));
 
+  // #5253 item 5: reporta quantas sementes voltaram com volume zero — nunca
+  // silencioso sobre isso, é sinal de que a semente pode precisar de revisão.
   const withDemand = entries.filter((e) => e.keyword.ok && e.keyword.data.impressions > 0).length;
   console.log(
     JSON.stringify(
-      { total_terms: entries.length, terms_with_measurable_demand: withDemand, pulled_at: pulledAt, out: jsonPath },
+      {
+        total_terms: entries.length,
+        terms_with_measurable_demand: withDemand,
+        terms_with_zero_impressions: output.terms_with_zero_impressions,
+        pulled_at: pulledAt,
+        out: jsonPath,
+      },
       null,
       2,
     ),
