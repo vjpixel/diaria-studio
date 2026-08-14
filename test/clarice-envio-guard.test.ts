@@ -15,19 +15,32 @@ import type { StepResult, ExecFn } from "../scripts/clarice-envio-run.ts";
 import type { WaveState } from "../scripts/lib/clarice-wave-plan.ts";
 import { acquireEnvioLock } from "../scripts/lib/clarice-envio-lock.ts";
 
-type Handler = StepResult | ((args: string[]) => StepResult);
+type Handler = StepResult | ((args: string[]) => StepResult) | StepResult[];
 
 function jsonResult(obj: unknown, code = 0): StepResult {
   return { code, stdout: JSON.stringify(obj), stderr: "" };
 }
 
+/**
+ * #5220 — `Handler` ganhou o caso `StepResult[]` (mesmo padrão de
+ * `makeFakeExec` em `clarice-envio-run.test.ts`): consumido SEQUENCIALMENTE
+ * por chamada ao MESMO script (índice por script, não global) — necessário
+ * pra testar retry (1ª chamada transitória, 2ª sucesso). Handler esgotado
+ * repete o ÚLTIMO elemento, nunca lança — simplifica os testes que só
+ * querem "falha 3× seguidas" sem contar índices manualmente.
+ */
 function makeFakeExec(handlers: Record<string, Handler>): { exec: ExecFn; calls: Array<{ script: string; args: string[] }> } {
   const calls: Array<{ script: string; args: string[] }> = [];
+  const counters: Record<string, number> = {};
   const exec: ExecFn = (script, args) => {
     calls.push({ script, args });
+    const idx = counters[script] ?? 0;
+    counters[script] = idx + 1;
     const h = handlers[script];
     if (h === undefined) throw new Error(`fakeExec: sem handler pra "${script}"`);
-    return typeof h === "function" ? h(args) : h;
+    if (typeof h === "function") return h(args);
+    if (Array.isArray(h)) return h[Math.min(idx, h.length - 1)];
+    return h;
   };
   return { exec, calls };
 }
@@ -49,6 +62,7 @@ function baseDeps(rootDir: string, overrides: Partial<EnvioGuardDeps> = {}): Env
     },
     isEnabled: () => true,
     execMode: () => "local",
+    sleep: async () => {},
     setCampaignStatus: async () => {
       throw new Error("setCampaignStatus não deveria ser chamado nesta config");
     },
@@ -283,5 +297,201 @@ describe("clarice-envio-guard (#5026)", () => {
     assert.equal(r.code, 2);
     assert.match(r.reportMarkdown, /CORROMPIDO/);
     rmSync(root, { recursive: true, force: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // #5220 — retry transitório dos pré-requisitos + fallback quando esgota.
+  // -------------------------------------------------------------------------
+
+  function transientResult(retryAfterSecs: number | null, reason = "GET .../api/campaigns falhou (503)"): StepResult {
+    return { code: 3, stdout: JSON.stringify({ transient: true, retryAfterSecs, status: 503, reason }), stderr: reason };
+  }
+
+  function writeBrakeSnapshot(root: string, aammdd: string, brake: "ok" | "hold" | "stop", reasons: string[] = ["x"]): void {
+    const dir = resolve(root, "data", "clarice-subscribers", "envio-reports");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(resolve(dir, `envio-${aammdd}-brake.json`), JSON.stringify({ brake, reasons, recordedAt: "2026-08-11T22:00:00.000Z" }), "utf8");
+  }
+
+  describe("clarice-envio-guard — retry transitório de clarice-plan-wave (#5220)", () => {
+    it("1ª tentativa TRANSITÓRIA seguida de sucesso => retenta e completa normalmente (freio OK, code 0)", async () => {
+      const root = freshRoot();
+      const sleeps: number[] = [];
+      const { exec, calls } = makeFakeExec({
+        "scripts/clarice-plan-wave.ts": [transientResult(5), jsonResult({ state: { waves: [wave({ key: "d12-qua12", status: "scheduled" })] } })],
+        "scripts/clarice-envio-risk.ts": jsonResult({ brake: { level: "ok", reasons: ["saudável"], maxUtil: 0.1 } }),
+      });
+      const r = await runEnvioGuard(baseDeps(root, { exec, sleep: (ms) => { sleeps.push(ms); return Promise.resolve(); } }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.equal(r.reportId, "envio-260812-guard-ok");
+      assert.equal(calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts").length, 2, "retentou 1× e a 2ª chamada teve sucesso");
+      assert.deepEqual(sleeps, [5000]);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("falha TRANSITÓRIA persiste nas 3 tentativas, capped no orçamento MENOR do guard (10min, não 35min do run) => cai no fallback", async () => {
+      const root = freshRoot();
+      const sleeps: number[] = [];
+      const { exec, calls } = makeFakeExec({
+        "scripts/clarice-plan-wave.ts": [transientResult(3600), transientResult(3600), transientResult(3600)], // 1h pedido, capped
+      });
+      const r = await runEnvioGuard(baseDeps(root, { exec, sleep: (ms) => { sleeps.push(ms); return Promise.resolve(); } }));
+      assert.equal(calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts").length, 3, "exatamente 3 tentativas, não mais");
+      assert.deepEqual(sleeps, [10 * 60_000, 10 * 60_000], "capped em 10min (orçamento do GUARD), nunca 35min (orçamento do run das 19:00)");
+      // sem group-campaigns.json => sem pendência local => code 1 (fallback não tem o que fazer, mas alarma).
+      assert.equal(r.code, 1);
+      assert.equal(r.reportId, "envio-260812-guard-prereq-falhou-sem-pendencia");
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("falha NÃO-transitória (exit 1 genérico) => cai no fallback direto, sem retentar", async () => {
+      const root = freshRoot();
+      let sleepCalls = 0;
+      const { exec, calls } = makeFakeExec({
+        "scripts/clarice-plan-wave.ts": { code: 1, stdout: "", stderr: "config inválida" },
+      });
+      const r = await runEnvioGuard(baseDeps(root, { exec, sleep: () => { sleepCalls++; return Promise.resolve(); } }));
+      assert.equal(calls.filter((c) => c.script === "scripts/clarice-plan-wave.ts").length, 1, "erro não-transitório nunca retenta");
+      assert.equal(sleepCalls, 0);
+      assert.equal(r.code, 1);
+      rmSync(root, { recursive: true, force: true });
+    });
+  });
+
+  describe("clarice-envio-guard — fallback quando pré-requisito esgota o retry (#5220)", () => {
+    it("freio da rodada das 19:00 (brake.json) era OK => fallback DEIXA a onda seguir, mas com reportId próprio pro alarme distinguir do caminho normal", async () => {
+      const root = freshRoot();
+      writeBrakeSnapshot(root, "260811", "ok");
+      const dir = segmentsDir(root);
+      writeFileSync(
+        resolve(dir, "group-campaigns.json"),
+        JSON.stringify([{ key: "d12-qua12", campaignId: 999, listId: 500, subject: "x", scheduledAt: "2026-08-12T09:00:00.000Z", status: "scheduled" }]),
+        "utf8",
+      );
+      const suspendCalls: number[] = [];
+      const { exec } = makeFakeExec({
+        "scripts/clarice-plan-wave.ts": [transientResult(1), transientResult(1), transientResult(1)],
+      });
+      const r = await runEnvioGuard(
+        baseDeps(root, { exec, sleep: () => Promise.resolve(), setCampaignStatus: async (_k, id) => { suspendCalls.push(id); } }),
+      );
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.equal(r.reportId, "envio-260812-guard-prereq-fallback-deixou-passar");
+      assert.equal(suspendCalls.length, 0, "freio anterior OK => NUNCA cancela no fallback");
+      assert.match(r.reportMarkdown, /freio da noite era OK/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("freio da rodada das 19:00 era STOP => fallback SUSPENDE por precaução", async () => {
+      const root = freshRoot();
+      writeBrakeSnapshot(root, "260811", "stop", ["hard bounce estourou ontem"]);
+      const dir = segmentsDir(root);
+      writeFileSync(
+        resolve(dir, "group-campaigns.json"),
+        JSON.stringify([{ key: "d12-qua12", campaignId: 999, listId: 500, subject: "x", scheduledAt: "2026-08-12T09:00:00.000Z", status: "scheduled" }]),
+        "utf8",
+      );
+      const suspendCalls: number[] = [];
+      const { exec } = makeFakeExec({
+        "scripts/clarice-plan-wave.ts": [transientResult(1), transientResult(1), transientResult(1)],
+      });
+      const r = await runEnvioGuard(
+        baseDeps(root, { exec, sleep: () => Promise.resolve(), setCampaignStatus: async (_k, id) => { suspendCalls.push(id); } }),
+      );
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.equal(r.reportId, "envio-260812-guard-prereq-fallback-cancelou");
+      assert.deepEqual(suspendCalls, [999]);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("freio anterior AUSENTE (brake.json nunca escrito) => fail-closed, fallback SUSPENDE", async () => {
+      const root = freshRoot();
+      const dir = segmentsDir(root);
+      writeFileSync(
+        resolve(dir, "group-campaigns.json"),
+        JSON.stringify([{ key: "d12-qua12", campaignId: 999, listId: 500, subject: "x", scheduledAt: "2026-08-12T09:00:00.000Z", status: "scheduled" }]),
+        "utf8",
+      );
+      const suspendCalls: number[] = [];
+      const { exec } = makeFakeExec({
+        "scripts/clarice-plan-wave.ts": [transientResult(1), transientResult(1), transientResult(1)],
+      });
+      const r = await runEnvioGuard(
+        baseDeps(root, { exec, sleep: () => Promise.resolve(), setCampaignStatus: async (_k, id) => { suspendCalls.push(id); } }),
+      );
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.equal(r.reportId, "envio-260812-guard-prereq-fallback-cancelou");
+      assert.deepEqual(suspendCalls, [999]);
+      assert.match(r.reportMarkdown, /NÃO-OK \(fail-closed\)/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("freio anterior ILEGÍVEL (brake.json corrompido) => fail-closed, fallback SUSPENDE", async () => {
+      const root = freshRoot();
+      const brakeDir = resolve(root, "data", "clarice-subscribers", "envio-reports");
+      mkdirSync(brakeDir, { recursive: true });
+      writeFileSync(resolve(brakeDir, "envio-260811-brake.json"), "{ nao e json valido", "utf8");
+      const dir = segmentsDir(root);
+      writeFileSync(
+        resolve(dir, "group-campaigns.json"),
+        JSON.stringify([{ key: "d12-qua12", campaignId: 999, listId: 500, subject: "x", scheduledAt: "2026-08-12T09:00:00.000Z", status: "scheduled" }]),
+        "utf8",
+      );
+      const suspendCalls: number[] = [];
+      const { exec } = makeFakeExec({
+        "scripts/clarice-plan-wave.ts": [transientResult(1), transientResult(1), transientResult(1)],
+      });
+      const r = await runEnvioGuard(
+        baseDeps(root, { exec, sleep: () => Promise.resolve(), setCampaignStatus: async (_k, id) => { suspendCalls.push(id); } }),
+      );
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.equal(r.reportId, "envio-260812-guard-prereq-fallback-cancelou");
+      assert.deepEqual(suspendCalls, [999]);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("fallback + suspensão falha na API => code 2 (cancelamento incompleto), nunca reportado como sucesso", async () => {
+      const root = freshRoot();
+      writeBrakeSnapshot(root, "260811", "stop");
+      const dir = segmentsDir(root);
+      writeFileSync(
+        resolve(dir, "group-campaigns.json"),
+        JSON.stringify([{ key: "d12-qua12", campaignId: 999, listId: 500, subject: "x", scheduledAt: "2026-08-12T09:00:00.000Z", status: "scheduled" }]),
+        "utf8",
+      );
+      const { exec } = makeFakeExec({
+        "scripts/clarice-plan-wave.ts": [transientResult(1), transientResult(1), transientResult(1)],
+      });
+      const r = await runEnvioGuard(
+        baseDeps(root, {
+          exec,
+          sleep: () => Promise.resolve(),
+          setCampaignStatus: async () => { throw new Error("Brevo 500"); },
+        }),
+      );
+      assert.equal(r.code, 2, r.reportMarkdown);
+      assert.equal(r.reportId, "envio-260812-guard-prereq-fallback-cancelamento-incompleto");
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("clarice-envio-risk (2º pré-requisito) esgota retry, plan-wave já tinha sucedido => fallback ainda assim funciona (deriva pendência do registro local, não de proposal)", async () => {
+      const root = freshRoot();
+      writeBrakeSnapshot(root, "260811", "ok");
+      const dir = segmentsDir(root);
+      writeFileSync(
+        resolve(dir, "group-campaigns.json"),
+        JSON.stringify([{ key: "d12-qua12", campaignId: 999, listId: 500, subject: "x", scheduledAt: "2026-08-12T09:00:00.000Z", status: "scheduled" }]),
+        "utf8",
+      );
+      const { exec, calls } = makeFakeExec({
+        "scripts/clarice-plan-wave.ts": jsonResult({ state: { waves: [wave({ key: "d12-qua12", status: "scheduled" })] } }),
+        "scripts/clarice-envio-risk.ts": { code: 1, stdout: "", stderr: "dashboard indisponível" },
+      });
+      const r = await runEnvioGuard(baseDeps(root, { exec, sleep: () => Promise.resolve() }));
+      assert.equal(calls.filter((c) => c.script === "scripts/clarice-envio-risk.ts").length, 1, "exit 1 não-transitório do risk não retenta");
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.equal(r.reportId, "envio-260812-guard-prereq-fallback-deixou-passar");
+      rmSync(root, { recursive: true, force: true });
+    });
   });
 });

@@ -28,8 +28,13 @@
  *
  * Exit codes: 0 sempre que a leitura terminou (mesmo com sinal indeterminado
  * — isso é reportado dentro do JSON, não um erro de processo); 1 se o fetch
- * ao dashboard falhar (rede/rate-limit) — nunca decide freio sobre dado que
- * não conseguiu buscar.
+ * ao dashboard falhar por erro ESTRUTURAL (rede, config, status não-429/503)
+ * — nunca decide freio sobre dado que não conseguiu buscar; 3 se a falha for
+ * TRANSITÓRIA (429/503 — rate limit da Brevo repassado pelo dashboard, ver
+ * `TransientDashboardError` em `lib/transient-dashboard-error.ts`, #5220) —
+ * mesmo contrato de `clarice-plan-wave.ts` (#5058): stdout traz
+ * `{transient, retryAfterSecs, status, reason}`, e o chamador (`clarice-envio-
+ * guard.ts`) decide se retenta com backoff em vez de abortar.
  */
 import { pickStats } from "../workers/brevo-dashboard/src/sections-core.ts";
 import { resolveSpamSignal } from "../workers/brevo-dashboard/src/thresholds.ts";
@@ -57,6 +62,11 @@ import {
 } from "./lib/clarice-envio-policy.ts";
 import { getArg, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
+import {
+  TransientDashboardError,
+  TRANSIENT_DASHBOARD_STATUSES,
+  parseRetryAfterSecs,
+} from "./lib/transient-dashboard-error.ts";
 
 loadProjectEnv();
 
@@ -145,9 +155,22 @@ export async function fetchRiskSnapshot(opts: FetchRiskSnapshotOptions): Promise
   // próprio agendamento; aqui o interesse é só saúde histórica de envio).
   const res = await fetchFn(`${opts.dashboardUrl}/api/campaigns?limit=${DEFAULT_DASHBOARD_LIMIT}`);
   if (!res.ok) {
+    // #5220 — mesma distinção de `clarice-plan-wave.ts` (#5058): 429/503 é
+    // rate limit TRANSITÓRIO da Brevo repassado pelo dashboard — "espere e
+    // repita", não erro estrutural. `TransientDashboardError` é o sinal que
+    // `main()` (abaixo) converte em exit code 3 + JSON, pro guard das 05:00
+    // (`clarice-envio-guard.ts`) retentar com backoff em vez de abortar sem
+    // reavaliar o freio.
+    if (TRANSIENT_DASHBOARD_STATUSES.has(res.status)) {
+      throw new TransientDashboardError(
+        `GET ${opts.dashboardUrl}/api/campaigns falhou (${res.status}) — rate limit da Brevo, transitório.`,
+        parseRetryAfterSecs(res.headers),
+        res.status,
+      );
+    }
     throw new Error(
       `GET ${opts.dashboardUrl}/api/campaigns falhou (${res.status}). ` +
-        `429 = rate limit da Brevo; aguarde e repita — nunca decida freio sem o estado real.`,
+        `429/503 = rate limit da Brevo; aguarde e repita — nunca decida freio sem o estado real.`,
     );
   }
   const stale = extractDashboardStaleInfo(res);
@@ -190,6 +213,15 @@ if (isMainModule(import.meta.url)) {
       process.exitCode = 0;
     })
     .catch((e) => {
+      // #5220 — mesmo contrato de clarice-plan-wave.ts (#5058): exit code 3 +
+      // JSON de 1 linha no stdout pro chamador (clarice-envio-guard.ts)
+      // reconhecer SEM parsear texto; console.error segue com a mensagem
+      // legível pro humano que rodar este script manualmente.
+      if (e instanceof TransientDashboardError) {
+        console.log(JSON.stringify({ transient: true, retryAfterSecs: e.retryAfterSecs, status: e.status, reason: e.message }));
+        console.error(e.message);
+        process.exit(3);
+      }
       console.error(String((e as Error)?.stack || e));
       process.exitCode = 1;
     });

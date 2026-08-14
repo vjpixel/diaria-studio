@@ -495,6 +495,35 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5025, #5026, #5027 (decisões do editor 260811)",
   },
   {
+    name: "Diaria-Clarice-Envio-Guard-Alarm",
+    description: "alarme proprio do guard das 05:00 - le a familia envio-{aammdd}-guard-* e alarma se o guard falhou ou nao rodou",
+    // #5220 (Gap 2 achado na mesma issue do retry): `Diaria-Clarice-Envio-Alarm`
+    // (abaixo, 20:30) escolhe o relatorio MAIS RECENTE entre TODOS os
+    // `envio-{aammdd}*.md` do dia -- as 20:30 o relatorio do run das 19:00 e
+    // sempre ~15h mais novo que o do guard desta MESMA manha e vence, entao
+    // um abort do guard ficava invisivel (e, no sentido inverso, um
+    // `-guard-ok` normal viraria alarme falso-positivo se o guard fosse o
+    // mais recente, ja que os sufixos `-guard-*` nao estao na OK_SUFFIXES
+    // daquele alarme). Esta task le SO a familia `-guard-*`, isolada.
+    steps: [{ key: "alarm", script: "scripts/clarice-envio-guard-alarm.ts" }],
+    logPath: "clarice-subscribers/.envio-guard-alarm.log",
+    // 06:15 BRT: depois do guard das 05:00 (orcamento de retry+fallback do
+    // #5220 cabe folgado em ~20min no pior caso) e do disparo das 06:00 --
+    // roda logo depois pra o editor ainda ter chance de agir manualmente se
+    // o guard caiu no fallback e a onda ja disparou por decisao dele.
+    schedule: { kind: "daily", hour: 6, minute: 15 },
+    // Mesmo guard das outras tasks Clarice-Envio -- sem o store, o guard das
+    // 05:00 nunca teria rodado de verdade nesta maquina, entao um alarme
+    // "nenhum relatorio encontrado" seria ruido, nao sinal real.
+    guard: {
+      requiredFile: "clarice-subscribers/clarice-users.db",
+      abortMessage:
+        "clarice-users.db nao encontrado (data/clarice-subscribers/clarice-users.db) -- provavel junction " +
+        "data/ nao montada ainda; sem sentido checar relatorio de um guard que nunca roda nesta maquina.",
+    },
+    issue: "#5220",
+  },
+  {
     name: "Diaria-Clarice-Envio-Alarm",
     description: "alarme de rodada falha do Diaria-Clarice-Envio - le o relatorio do dia e alarma se a onda nao foi agendada",
     steps: [{ key: "alarm", script: "scripts/clarice-envio-alarm.ts" }],

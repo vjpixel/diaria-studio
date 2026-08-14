@@ -107,6 +107,8 @@ import {
   type WaveState,
 } from "./lib/clarice-wave-plan.ts";
 import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
+import { stepWithTransientRetry as sharedStepWithTransientRetry } from "./lib/transient-step-retry.ts";
+import { writeLastBrakeSnapshot } from "./lib/clarice-envio-last-brake.ts";
 import { proposeNextVolume, brtDayKey, type NextVolumeDecision } from "./lib/clarice-envio-policy.ts";
 import type { RiskSnapshot } from "./clarice-envio-risk.ts";
 import type { InvocationSummary } from "./clarice-schedule-group.ts";
@@ -300,7 +302,6 @@ function step<T = unknown>(
 // leitura de header maliciosa/absurda.
 // ---------------------------------------------------------------------------
 
-const TRANSIENT_EXIT_CODE = 3;
 const TRANSIENT_RETRY_MAX_ATTEMPTS = 3;
 const TRANSIENT_RETRY_FALLBACK_MS = 60_000; // 1min — quando retryAfterSecs não veio
 // 35min — cobre os 2 valores REAIS já observados (258s em 260811, e
@@ -312,18 +313,17 @@ const TRANSIENT_RETRY_FALLBACK_MS = 60_000; // 1min — quando retryAfterSecs n�
 // prazo real.
 const TRANSIENT_RETRY_CAP_MS = 35 * 60_000;
 
-interface TransientStepSignal {
-  transient?: boolean;
-  retryAfterSecs?: number | null;
-  status?: number;
-  reason?: string;
-}
-
 /**
  * Variante de `step()` que reconhece o exit code 3 (falha TRANSITÓRIA,
  * ver docstring acima) e retenta com backoff em vez de abortar a rodada na
  * 1ª falha. Qualquer outro código fora de `okCodes` continua abortando
  * imediatamente — mesma disciplina de `step()`, só o ramo 3 é novo.
+ *
+ * #5220 — molde extraído pra `lib/transient-step-retry.ts` pra reuso pelo
+ * guard das 05:00 (`clarice-envio-guard.ts`), que precisa do MESMO
+ * mecanismo com um orçamento de espera MENOR. Este wrapper preserva o
+ * orçamento ORIGINAL (3 tentativas, fallback 1min, cap 35min) — nenhuma
+ * mudança de comportamento aqui.
  */
 async function stepWithTransientRetry<T = unknown>(
   deps: EnvioRunDeps,
@@ -333,39 +333,22 @@ async function stepWithTransientRetry<T = unknown>(
   args: string[],
   okCodes: number[] = [0],
 ): Promise<{ result: StepResult; json: T | undefined }> {
-  for (let attempt = 1; attempt <= TRANSIENT_RETRY_MAX_ATTEMPTS; attempt++) {
-    report.note(attempt === 1 ? `▶ ${label}` : `▶ ${label} (retry ${attempt}/${TRANSIENT_RETRY_MAX_ATTEMPTS})`);
-    const result = deps.exec(scriptRelPath, args);
-    if (result.stderr.trim()) console.error(result.stderr.trim());
-    if (okCodes.includes(result.code)) {
-      return { result, json: parseStepJson<T>(result.stdout) };
-    }
-    if (result.code === TRANSIENT_EXIT_CODE) {
-      const signal = parseStepJson<TransientStepSignal>(result.stdout);
-      if (attempt < TRANSIENT_RETRY_MAX_ATTEMPTS) {
-        const waitMs = Math.min(
-          signal?.retryAfterSecs != null && signal.retryAfterSecs >= 0
-            ? signal.retryAfterSecs * 1000
-            : TRANSIENT_RETRY_FALLBACK_MS,
-          TRANSIENT_RETRY_CAP_MS,
-        );
-        report.note(
-          `⚠️  ${label}: falha TRANSITÓRIA (${signal?.reason ?? "rate limit do dashboard"}) — ` +
-            `aguardando ${Math.round(waitMs / 1000)}s antes de tentar de novo (tentativa ${attempt}/${TRANSIENT_RETRY_MAX_ATTEMPTS}).`,
-        );
-        await deps.sleep(waitMs);
-        continue;
-      }
-      throw new EnvioAbort(
-        `❌ ${label}: falha TRANSITÓRIA persistiu após ${TRANSIENT_RETRY_MAX_ATTEMPTS} tentativas ` +
-          `(${signal?.reason ?? "rate limit do dashboard"}) — desistindo nesta rodada.`,
-      );
-    }
-    const detail = result.stderr.trim().split("\n").slice(-6).join(" | ") || "(sem stderr)";
-    throw new EnvioAbort(`❌ ${label} falhou (exit ${result.code}): ${detail}`);
-  }
-  // Inalcançável — o loop acima sempre retorna ou lança.
-  throw new EnvioAbort(`❌ ${label}: loop de retry encerrado sem resultado (bug).`);
+  return sharedStepWithTransientRetry<T>({
+    exec: deps.exec,
+    sleep: deps.sleep,
+    note: (line) => report.note(line),
+    parseJson: parseStepJson,
+    label,
+    scriptRelPath,
+    args,
+    okCodes,
+    budget: {
+      maxAttempts: TRANSIENT_RETRY_MAX_ATTEMPTS,
+      fallbackMs: TRANSIENT_RETRY_FALLBACK_MS,
+      capMs: TRANSIENT_RETRY_CAP_MS,
+    },
+    makeAbort: (message) => new EnvioAbort(message),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -832,6 +815,12 @@ export async function runEnvio(deps: EnvioRunDeps): Promise<EnvioRunResult> {
     const risk = riskStep.json;
     if (!risk) throw new EnvioAbort("❌ clarice-envio-risk não devolveu JSON parseável.");
     report.note(`freio: ${risk.brake.level.toUpperCase()} — ${risk.brake.reasons.join(" ")}`);
+    // #5220 — sidecar JSON pro guard das 05:00 (clarice-envio-guard.ts) usar
+    // como FALLBACK se os próprios pré-requisitos dele (esta mesma dupla de
+    // scripts, chamados de novo de manhã com dado mais fresco) falharem
+    // mesmo após retry. Gravado incondicionalmente aqui (qualquer nível de
+    // freio, não só STOP) — é a ÚLTIMA leitura conhecida, não uma decisão.
+    writeLastBrakeSnapshot(deps.rootDir, aammdd, risk.brake, now.toISOString());
     report.note(
       `tendência de abertura (60d, só observação, NUNCA freia): ${risk.openTrend.verdict} ` +
         `(${risk.openTrend.previous.toFixed(1)}% → ${risk.openTrend.current.toFixed(1)}%, ${risk.openTrend.sampleDays} dias de amostra).`,

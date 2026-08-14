@@ -7,7 +7,8 @@ Issue: [#5027](https://github.com/vjpixel/diaria-studio/issues/5027) (arme das t
 Um script de setup, **DUAS tasks indivisíveis** (decisão do editor 260811 — armar uma sem a outra é uma configuração que ninguém quer):
 
 - **`Diaria-Clarice-Envio`** — diária **19:00 BRT**. Unit `diaria-clarice-envio` (systemd) → `npx tsx scripts/clarice-envio-run.ts`. Levanta o risco de ISP fresco (freio = últimos 3 dias de envio; acelerador = 30 dias corridos — nunca abertura, ver #5025), planeja o volume da onda de amanhã e AGENDA a campanha pras 06:00 BRT (09:00 UTC) do dia seguinte.
-- **`Diaria-Clarice-Envio-Guard`** — diária **05:00 BRT**. Unit `diaria-clarice-envio-guard` (systemd) → `npx tsx scripts/clarice-envio-guard.ts`. Relê o risco com ~11h de dado fresco (bounce/unsub/spam da onda que saiu ontem de manhã) e **cancela** (`status: suspended`) a onda pendente de hoje se o freio virou STOP entre 19:00 e 05:00. Escopo desta 1ª versão: cancela, não recria uma onda menor — ver docstring de `clarice-envio-guard.ts`.
+- **`Diaria-Clarice-Envio-Guard`** — diária **05:00 BRT**. Unit `diaria-clarice-envio-guard` (systemd) → `npx tsx scripts/clarice-envio-guard.ts`. Relê o risco com ~11h de dado fresco (bounce/unsub/spam da onda que saiu ontem de manhã) e **cancela** (`status: suspended`) a onda pendente de hoje se o freio virou STOP entre 19:00 e 05:00. Escopo desta 1ª versão: cancela, não recria uma onda menor — ver docstring de `clarice-envio-guard.ts`. **#5220:** os pré-requisitos (`clarice-plan-wave`/`clarice-envio-risk`) retentam falha TRANSITÓRIA (503/rate-limit, orçamento menor que o par das 19:00 — pior caso ~20min) antes de cair num FALLBACK que lê o ÚLTIMO freio conhecido (gravado por `clarice-envio-run.ts`) em vez de simplesmente abortar sem reavaliar nada — ver "Retry e fallback do guard" abaixo.
+- **`Diaria-Clarice-Envio-Guard-Alarm`** — diária **06:15 BRT** (#5220). Unit `diaria-clarice-envio-guard-alarm` → `npx tsx scripts/clarice-envio-guard-alarm.ts`. Alarme PRÓPRIO do guard — lê só a família `envio-{aammdd}-guard-*` (nunca compete com o relatório do run das 19:00 por "mais recente"), e alarma sempre que o guard não conseguiu reavaliar o freio com dado fresco (retry esgotado + fallback, cancelamento incompleto, erro duro) ou nem rodou. Detalhes: `docs/clarice-envio-guard-alarm-setup.md`.
 
 `clarice-envio-run.ts`/`clarice-envio-guard.ts` são o *glue* determinístico que substitui os 8 passos em prosa de `.claude/skills/diaria-clarice-envio/SKILL.md` (mesmo padrão do #4941/`clarice-novos-run.ts`) — a skill manual passa a só invocar o mesmo orquestrador, nunca reimplementar.
 
@@ -82,6 +83,17 @@ npx tsx scripts/lib/clarice-hour-test.ts --close --winner none \
 
 **Leitura do resultado:** cada braço é uma campanha Brevo distinta (`Clarice {ciclo} d{N}-{dia}-H06 — hora 06:00 BRT`), então as métricas saem por campanha na lista do painel. Uma seção dedicada de comparação no dashboard **ainda não existe** — é o passo seguinte da #5140.
 
+## Retry e fallback do guard (#5220)
+
+Antes do #5220, `clarice-envio-guard.ts` chamava `clarice-plan-wave` e `clarice-envio-risk` como pré-requisitos e QUALQUER falha (inclusive um 503/rate-limit transitório do dashboard, na janela 05:00–06:00) abortava a rodada ANTES de reavaliar o freio — a onda já agendada disparava às 06:00 sem checagem nenhuma, e o guard existia mas não fazia nada. Dois mecanismos fecham esse buraco:
+
+1. **Retry com backoff**, mesmo padrão do `clarice-envio-run.ts` (#5058), com um orçamento MENOR — o guard roda dentro da janela 05:00→06:00 do MESMO dia, não tem as ~11h de folga do par das 19:00. `GUARD_TRANSIENT_RETRY_BUDGET` em `clarice-envio-guard.ts`: 3 tentativas, fallback de 30s (quando o `retryAfterSecs` não veio), teto de 10min por espera — pior caso ~20min de espera total, com folga franca na janela de 1h. `clarice-envio-risk.ts` ganhou o mesmo sinal tipado de falha transitória (`TransientDashboardError`, exit code 3 + JSON no stdout) que `clarice-plan-wave.ts` já tinha desde o #5058 — os dois batem no mesmo dashboard e podem sofrer o mesmo rate limit; a classe compartilhada mora em `scripts/lib/transient-dashboard-error.ts`.
+2. **Fallback fail-closed com exceção** (decisão do editor, 13/08/2026), se o retry esgotar (ou a falha for estrutural): lê o ÚLTIMO freio conhecido, gravado por `clarice-envio-run.ts` (19:00 de ontem) num sidecar JSON — `data/clarice-subscribers/envio-reports/envio-{aammdd}-brake.json` (`scripts/lib/clarice-envio-last-brake.ts`) — NUNCA reconsultando a Brevo, que é justamente a fonte que já falhou.
+   - freio da noite era `"ok"` → deixa a onda seguir pro disparo das 06:00 SEM alteração, mas **alarma** (`Diaria-Clarice-Envio-Guard-Alarm`, abaixo) — "deixar passar" é uma aposta, não uma confirmação com dado fresco.
+   - freio da noite era `"hold"`, `"stop"`, ausente, ou ilegível → suspende a(s) onda(s) pendente(s) por precaução (mesmo mecanismo de cancelamento do caminho normal, `cancelPendingWaves`), derivando a lista de ondas pendentes DIRETO do registro local (`group-campaigns.json`, não de `proposal.state.waves` — que pode ser justamente o dado que faltou se foi `clarice-plan-wave.ts` que falhou).
+
+`reportId` ganha sufixos próprios pra este caminho — `-guard-prereq-fallback-deixou-passar`, `-guard-prereq-fallback-cancelou`, `-guard-prereq-fallback-cancelamento-incompleto`, `-guard-prereq-falhou-sem-pendencia` — nenhum deles é tratado como "ok" por `Diaria-Clarice-Envio-Guard-Alarm`, mesmo quando o fallback "funcionou" (deixou passar OU suspendeu com sucesso): o guard não conseguiu fazer o trabalho FRESCO que existe pra fazer, e isso é sempre digno de atenção do editor.
+
 ## Guards de pré-condição (não são o kill switch — os dois convivem)
 
 - `clarice-users.db` ausente (junction `data/` ainda não montou) → task `Diaria-Clarice-Envio` aborta ANTES de tocar Brevo.
@@ -109,11 +121,13 @@ Toda invocação (sucesso, pausada, ciclo não pronto, fila insuficiente, sem vo
 ```bash
 npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Envio
 npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Envio-Guard
+npx tsx scripts/setup-systemd-timers.ts --task Diaria-Clarice-Envio-Guard-Alarm
 npx tsx scripts/arm-systemd-timers.ts --task Diaria-Clarice-Envio
 npx tsx scripts/arm-systemd-timers.ts --task Diaria-Clarice-Envio-Guard
+npx tsx scripts/arm-systemd-timers.ts --task Diaria-Clarice-Envio-Guard-Alarm
 ```
 
-Confirmar: `systemctl --user list-timers | grep clarice-envio` deve listar as duas, com o próximo disparo em `America/Sao_Paulo` (19:00 e 05:00 BRT respectivamente — `setup-systemd-timers.ts` já embute o fuso no `OnCalendar`, confirmado ao vivo na geração desta issue).
+Confirmar: `systemctl --user list-timers | grep clarice-envio` deve listar as três, com o próximo disparo em `America/Sao_Paulo` (19:00, 05:00 e 06:15 BRT respectivamente — `setup-systemd-timers.ts` já embute o fuso no `OnCalendar`, confirmado ao vivo na geração desta issue). `Diaria-Clarice-Envio-Guard-Alarm` é INDEPENDENTE do par (não é indivisível com as outras duas, decisão do #5220) — pode ser armada/desarmada sozinha sem afetar o kill switch nem o funcionamento do par; ver `docs/clarice-envio-guard-alarm-setup.md` pro detalhe do próprio alarme.
 
 ## Armar em UMA máquina só
 
