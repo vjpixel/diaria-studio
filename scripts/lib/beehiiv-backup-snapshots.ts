@@ -94,3 +94,76 @@ export function readSnapshotSubscribers(root: string, date: string): BeehiivBack
   if (!existsSync(path)) return [];
   return parseSubscribersJsonl(readFileSync(path, "utf8"));
 }
+
+/** Subconjunto de `manifest.json` (`backup-beehiiv.ts` — `ManifestEntry`/
+ *  `Manifest`) usado pelos consumidores deste módulo: status por endpoint,
+ *  pra diferenciar "pulado de propósito" (`--no-subscribers`) de "falhou de
+ *  verdade" (`.partial` preservado, `subscribers.jsonl` nunca criado). */
+export interface BackupManifestEntry {
+  key: string;
+  file: string;
+  status: "ok" | "skipped" | "error";
+  count?: number;
+  error?: string;
+}
+
+export interface BackupManifest {
+  generatedAt?: string;
+  endpoints: BackupManifestEntry[];
+  totals?: Record<string, number>;
+}
+
+export function manifestJsonPath(root: string, date: string): string {
+  return join(root, date, "manifest.json");
+}
+
+/** Lê e parsifica `manifest.json` de um snapshot. Ausente ou corrompido
+ *  retorna `null` (fail-soft — mesmo espírito de `readSnapshotSubscribers`;
+ *  snapshots anteriores ao #5229 podem nem ter manifest). */
+export function readBackupManifest(root: string, date: string): BackupManifest | null {
+  const path = manifestJsonPath(root, date);
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as BackupManifest;
+  } catch {
+    return null;
+  }
+}
+
+/** Resultado de {@link isSubscribersSnapshotUsable}: `usable=false` sempre
+ *  vem com `reason` explicando o motivo (log/e-mail de alarme usam isso
+ *  direto, sem re-derivar). */
+export interface SubscribersSnapshotUsability {
+  usable: boolean;
+  reason: string | null;
+}
+
+/** Decide se `subscribers.jsonl` de um snapshot é utilizável pra avaliar
+ *  achados (#5281 — snapshot ausente/vazio não deve virar "avaliado: limpo"
+ *  silencioso). Checa nesta ordem:
+ *
+ *  1. `manifest.json` tem entry `subscribers` com `status: "error"` →
+ *     inutilizável, motivo = o erro registrado no backup.
+ *  2. `manifest.json` tem entry `subscribers` com `status: "skipped"` →
+ *     inutilizável (rodou com `--no-subscribers` — não há base pra avaliar).
+ *  3. Sem manifest (ou sem entry `subscribers`) ou `status: "ok"`: cai pro
+ *     conteúdo de fato — `readSnapshotSubscribers` vazio (arquivo ausente OU
+ *     só linhas corrompidas) também é inutilizável, mesmo que o manifest
+ *     diga "ok" (proteção contra o manifest e o arquivo divergirem). */
+export function isSubscribersSnapshotUsable(root: string, date: string): SubscribersSnapshotUsability {
+  const manifest = readBackupManifest(root, date);
+  const entry = manifest?.endpoints?.find((e) => e.key === "subscribers") ?? null;
+  if (entry?.status === "error") {
+    return {
+      usable: false,
+      reason: `manifest.json reporta erro no endpoint subscribers: ${entry.error ?? "motivo não registrado"}`,
+    };
+  }
+  if (entry?.status === "skipped") {
+    return { usable: false, reason: "manifest.json reporta subscribers pulado (rodou com --no-subscribers)" };
+  }
+  if (readSnapshotSubscribers(root, date).length === 0) {
+    return { usable: false, reason: "subscribers.jsonl ausente, vazio ou só com linhas corrompidas" };
+  }
+  return { usable: true, reason: null };
+}

@@ -271,6 +271,28 @@ describe("detectAcquisitionHealthFindings — sinal 3a (canal_parou)", () => {
     const { findings } = detectAcquisitionHealthFindings(current, previous, emptyAcquisitionHealthState());
     assert.ok(!findings.some((f) => f.type === "canal_parou"));
   });
+
+  it("guard 4 (#5282) — transição 1 → 0 (abaixo do piso canalParouMinNovosAnterior) NÃO alarma: ruído de cauda longa", () => {
+    const current = [bigChannelStats({ novosNaJanela: 0 })];
+    const previous = [bigChannelStats({ novosNaJanela: 1 })]; // < canalParouMinNovosAnterior (default 3)
+    const { findings } = detectAcquisitionHealthFindings(current, previous, emptyAcquisitionHealthState());
+    assert.ok(!findings.some((f) => f.type === "canal_parou"));
+  });
+
+  it("guard 4 (#5282) — transição N → 0 com N no piso (canalParouMinNovosAnterior) ou acima ALARMA", () => {
+    const current = [bigChannelStats({ novosNaJanela: 0 })];
+    const previous = [bigChannelStats({ novosNaJanela: DEFAULT_ACQUISITION_HEALTH_THRESHOLDS.canalParouMinNovosAnterior })];
+    const { findings } = detectAcquisitionHealthFindings(current, previous, emptyAcquisitionHealthState());
+    assert.ok(findings.some((f) => f.type === "canal_parou"));
+  });
+
+  it("guard 4 (#5282) — piso é configurável via thresholds, não hardcoded", () => {
+    const current = [bigChannelStats({ novosNaJanela: 0 })];
+    const previous = [bigChannelStats({ novosNaJanela: 4 })];
+    const strict = { ...DEFAULT_ACQUISITION_HEALTH_THRESHOLDS, canalParouMinNovosAnterior: 10 };
+    const { findings } = detectAcquisitionHealthFindings(current, previous, emptyAcquisitionHealthState(), strict);
+    assert.ok(!findings.some((f) => f.type === "canal_parou"), "4 < piso customizado de 10 — não deveria alarmar");
+  });
 });
 
 describe("detectAcquisitionHealthFindings — sinal 3b (canal_desconhecido)", () => {
@@ -359,6 +381,7 @@ describe("DEFAULT_ACQUISITION_HEALTH_THRESHOLDS", () => {
       ctrReceivedMin: 20,
       ctrSampleMin: 5,
       ctrWeeksBelowBase: 2,
+      canalParouMinNovosAnterior: 3,
     });
   });
 });
