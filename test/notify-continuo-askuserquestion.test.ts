@@ -23,6 +23,7 @@ import {
   summarizePendingQuestion,
   buildNotifyRequest,
   buildNotifyMessage,
+  sendNotification,
 } from "../.claude/hooks/notify-continuo-askuserquestion.mjs";
 
 function tmp() {
@@ -193,5 +194,75 @@ describe("buildNotifyMessage (#5293)", () => {
   it("inclui o resumo da pergunta quando disponível", () => {
     const msg = buildNotifyMessage("sess-123", "[Escopo] Cat. D destrava?");
     assert.match(msg, /Cat\. D destrava\?/);
+  });
+});
+
+describe("sendNotification (#5293 fleet review achado 4)", () => {
+  function withEnv(vars, fn) {
+    const saved = {};
+    for (const key of Object.keys(vars)) saved[key] = process.env[key];
+    Object.assign(process.env, vars);
+    try {
+      return fn();
+    } finally {
+      Object.assign(process.env, saved);
+    }
+  }
+
+  function captureStderr(fn) {
+    let output = "";
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk) => {
+      output += String(chunk);
+      return true;
+    };
+    return Promise.resolve(fn()).finally(() => {
+      process.stderr.write = originalWrite;
+    }).then(() => output);
+  }
+
+  it("sem credenciais configuradas → no-op silencioso (fetch nunca chamado)", async () => {
+    await withEnv({ TELEGRAM_BOT_TOKEN: "", TELEGRAM_CHAT_ID: "", TELEGRAM_WATCHDOG_CHAT_ID: "" }, async () => {
+      let fetchCalled = false;
+      await sendNotification("oi", async () => {
+        fetchCalled = true;
+        return { ok: true };
+      });
+      assert.equal(fetchCalled, false);
+    });
+  });
+
+  it("resposta HTTP não-2xx é LOGADA em stderr (token revogado/chat_id errado/rate limit) — nunca descartada silenciosamente", async () => {
+    const output = await withEnv({ TELEGRAM_BOT_TOKEN: "tok", TELEGRAM_CHAT_ID: "chat" }, () =>
+      captureStderr(() =>
+        sendNotification("oi", async () => ({
+          ok: false,
+          status: 401,
+          text: async () => "Unauthorized",
+        })),
+      ),
+    );
+    assert.match(output, /401/);
+    assert.match(output, /Unauthorized/);
+  });
+
+  it("exceção de rede (timeout/DNS/etc) é LOGADA em stderr, nunca lançada pro caller", async () => {
+    const output = await withEnv({ TELEGRAM_BOT_TOKEN: "tok", TELEGRAM_CHAT_ID: "chat" }, () =>
+      captureStderr(async () => {
+        await assert.doesNotReject(
+          sendNotification("oi", async () => {
+            throw new Error("network down");
+          }),
+        );
+      }),
+    );
+    assert.match(output, /network down/);
+  });
+
+  it("resposta 2xx → nada é escrito em stderr", async () => {
+    const output = await withEnv({ TELEGRAM_BOT_TOKEN: "tok", TELEGRAM_CHAT_ID: "chat" }, () =>
+      captureStderr(() => sendNotification("oi", async () => ({ ok: true }))),
+    );
+    assert.equal(output, "");
   });
 });

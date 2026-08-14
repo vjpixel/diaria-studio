@@ -30,6 +30,7 @@ import {
   readPlanForStallHandling,
   WATCHDOG_IO_TIMEOUT_MS,
   hasHealthyIdleSession,
+  runAllWatchedKinds,
   type StallEvent,
 } from "../scripts/overnight-watchdog.ts";
 import { registerSession, heartbeat } from "../scripts/lib/session-registry.ts";
@@ -630,6 +631,59 @@ describe("hasHealthyIdleSession (#5293 item 3)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("runAllWatchedKinds (#5293 fleet review achado 3)", () => {
+  it("um kind lançar NÃO impede o outro de ser tentado — ambos são chamados", async () => {
+    const attempted: string[] = [];
+    const anyFailed = await runAllWatchedKinds(
+      ["overnight", "continuo"],
+      async (kind) => {
+        attempted.push(kind);
+        if (kind === "overnight") throw new Error("boom no overnight");
+      },
+      () => {}, // silencia o onError default (stderr) neste teste
+    );
+    assert.deepEqual(attempted, ["overnight", "continuo"], "os DOIS kinds devem ter sido tentados, na ordem");
+    assert.equal(anyFailed, true);
+  });
+
+  it("nenhum kind falha → anyFailed=false", async () => {
+    const anyFailed = await runAllWatchedKinds(["overnight", "continuo"], async () => {});
+    assert.equal(anyFailed, false);
+  });
+
+  it("onError é chamado com o kind E o erro, um erro por kind que falhou", async () => {
+    const errors: Array<{ kind: string; error: unknown }> = [];
+    await runAllWatchedKinds(
+      ["overnight", "continuo"],
+      async (kind) => {
+        throw new Error(`falha em ${kind}`);
+      },
+      (kind, error) => errors.push({ kind, error }),
+    );
+    assert.equal(errors.length, 2);
+    assert.equal(errors[0].kind, "overnight");
+    assert.equal(errors[1].kind, "continuo");
+  });
+
+  it("onError default escreve em stderr (nunca silencioso)", async () => {
+    let stderrOutput = "";
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk) => {
+      stderrOutput += String(chunk);
+      return true;
+    };
+    try {
+      await runAllWatchedKinds(["continuo"], async () => {
+        throw new Error("falha simulada");
+      });
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    assert.match(stderrOutput, /kind=continuo/);
+    assert.match(stderrOutput, /falha simulada/);
   });
 });
 

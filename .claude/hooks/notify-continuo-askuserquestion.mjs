@@ -55,8 +55,17 @@ import { fileURLToPath } from "node:url";
 /** Mesma janela de `session-registry.ts` (`MAX_SESSION_AGE_MS`) — sessão sem heartbeat há mais que isso é tratada como abandonada, não notifica. */
 const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 
-/** Mesmo timeout de `scripts/lib/telegram-notify.ts` (`TELEGRAM_IO_TIMEOUT_MS`) — nenhuma chamada de rede deste projeto fica sem limite. */
-const TELEGRAM_IO_TIMEOUT_MS = 10_000;
+/**
+ * Timeout do fetch pro Telegram. Deliberadamente MENOR que o de
+ * `scripts/lib/telegram-notify.ts` (10s) — `.claude/settings.json` dá só 10s
+ * de orçamento TOTAL pra este hook rodar (stdin + `git rev-parse` +
+ * `readdir`/`readFile` de `data/sessions/` + este fetch); usar os mesmos 10s
+ * aqui deixaria o `AbortSignal.timeout` interno como código morto na
+ * prática, porque o harness mataria o processo primeiro (#5293 fleet
+ * review, achado 5). 6s deixa ~4s de folga pro resto do hook antes do
+ * timeout externo.
+ */
+const TELEGRAM_IO_TIMEOUT_MS = 6_000;
 
 /** Ver racional completo no hook irmão (`block-askuserquestion-overnight-autonomous.mjs`). */
 export function resolveMainRepoRoot(execFn = execFileSync) {
@@ -146,15 +155,36 @@ export function buildNotifyMessage(sessionId, questionSummary) {
   return lines.join("\n");
 }
 
-async function sendNotification(text, fetchFn = fetch) {
+/**
+ * Fail-soft TOTAL (nunca lança, nunca afeta o `AskUserQuestion`) — mas
+ * fail-soft ≠ silencioso: uma resposta HTTP não-2xx (token revogado, chat_id
+ * errado, rate limit) ou uma exceção de rede são logadas em stderr antes de
+ * retornar, mesma disciplina que `sendTelegramNotification`
+ * (`scripts/lib/telegram-notify.ts`, que este hook deliberadamente
+ * reimplementa em vez de importar — ver docblock do topo) já oferece ao
+ * CALLER via `{ok, error, skipped}`, mas que a versão anterior deste hook
+ * descartava inteiramente (#5293 fleet review, achado 4). Sem isso, um
+ * token/chat_id que para de funcionar degrada o hook pra um no-op
+ * indistinguível de "funcionando" — exatamente o "risco aceito" que este
+ * hook existe pra mitigar, revivido por uma causa que o SKILL.md não
+ * documentava (só documentava "credenciais ausentes", não "credenciais
+ * presentes mas rejeitadas").
+ */
+export async function sendNotification(text, fetchFn = fetch) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID || process.env.TELEGRAM_WATCHDOG_CHAT_ID;
   if (!token || !chatId) return; // sem credenciais configuradas — no-op silencioso
   try {
     const { url, options } = buildNotifyRequest(token, chatId, text);
-    await fetchFn(url, options);
-  } catch {
-    // Fail-soft total — ver docblock do topo.
+    const resp = await fetchFn(url, options);
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      process.stderr.write(
+        `notify-continuo-askuserquestion: Telegram respondeu ${resp.status}: ${body.slice(0, 200)}\n`,
+      );
+    }
+  } catch (e) {
+    process.stderr.write(`notify-continuo-askuserquestion: falha ao enviar notificação Telegram: ${String(e)}\n`);
   }
 }
 

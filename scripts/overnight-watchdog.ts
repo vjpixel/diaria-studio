@@ -520,8 +520,11 @@ export function diagnoseWatchdogActivity(params: {
    * `HEALTHY_IDLE_PHASES` (ex: `/diaria-continuo` parada no passo 4/6 do loop
    * — esperando resposta do editor, ou pausada pelo guard de colisão
    * editorial). Distingue "parada de propósito, saudável" de "travada" — sem
-   * isso, uma sessão contínua saudável dispara o MESMO alerta de stall que o
-   * incidente #2768 este mecanismo existe pra pegar.
+   * isso, uma sessão contínua saudável dispara o MESMO alerta de stall que
+   * este mecanismo existe pra evitar (mesmo princípio do incidente 260706/07,
+   * #3037/#3038, registrado em `.claude/skills/diaria-continuo/SKILL.md`
+   * §"Risco aceito" — não confundir com #2768, que é o guard de subagente
+   * travado do coordenador overnight, um mecanismo diferente).
    */
   isHealthyIdle: boolean;
 }): WatchdogDiagnosis {
@@ -697,15 +700,47 @@ async function runWatchdogForKind(
  */
 const WATCHED_KINDS: readonly WatchableKind[] = ["overnight", "continuo"];
 
+/**
+ * Pure-ish orquestração do loop multi-kind (#5293 fleet review, achado 3),
+ * extraída de `main()` pra ser testável sem I/O real — `runOne` é
+ * injetável (produção: `runWatchdogForKind`; teste: um fake que lança pra
+ * simular um kind quebrado). Cada `kind` roda no PRÓPRIO try/catch: uma
+ * exceção ao processar um kind NUNCA impede os demais de serem tentados —
+ * sem isso, um bug isolado num helper (shape inesperado de `plan.json`,
+ * etc) abortava o loop inteiro antes de sequer tentar o kind seguinte,
+ * contradizendo a premissa deste item ("vigia todos os kinds vigiados na
+ * mesma invocação"). Retorna `true` se ALGUM kind falhou — `main()` usa
+ * isso pra decidir o exit code, sem deixar essa decisão short-circuitar o
+ * loop em si.
+ */
+export async function runAllWatchedKinds(
+  kinds: readonly WatchableKind[],
+  runOne: (kind: WatchableKind) => Promise<void>,
+  onError: (kind: WatchableKind, error: unknown) => void = (kind, e) =>
+    process.stderr.write(`[watchdog] Erro ao processar kind=${kind}: ${String(e)}\n`),
+): Promise<boolean> {
+  let anyFailed = false;
+  for (const kind of kinds) {
+    try {
+      await runOne(kind);
+    } catch (e) {
+      anyFailed = true;
+      onError(kind, e);
+    }
+  }
+  return anyFailed;
+}
+
 async function main(): Promise<void> {
   loadProjectEnv();
 
   const ROOT = resolve(process.cwd());
   const { dryRun, thresholdMin } = parseArgs(process.argv.slice(2));
 
-  for (const kind of WATCHED_KINDS) {
-    await runWatchdogForKind(ROOT, kind, dryRun, thresholdMin);
-  }
+  const anyFailed = await runAllWatchedKinds(WATCHED_KINDS, (kind) =>
+    runWatchdogForKind(ROOT, kind, dryRun, thresholdMin),
+  );
+  if (anyFailed) process.exitCode = 1;
 }
 
 // #2958: sem este guard, importar o módulo (ex: test/overnight-watchdog.test.ts

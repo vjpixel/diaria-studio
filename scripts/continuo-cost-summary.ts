@@ -10,12 +10,23 @@
  * editor precisa do NÚMERO real acumulado pra decidir se quer impor um teto
  * — hoje esta skill não tem nenhum.
  *
- * Este script agrega os eventos `coordinator_tokens_estimate` (já emitidos
- * pelo coordenador ao fim de cada fase/checkpoint, mesma instrumentação do
- * overnight — ver `.claude/skills/diaria-continuo/SKILL.md`, que herda a
- * seção "#3453 Rec 1" do SKILL.md irmão por citação) em `data/run-log.jsonl`,
- * filtrando `agent === "continuo"`, **através de TODOS os dias rotacionados**
+ * Este script agrega os eventos `coordinator_tokens_estimate` que o
+ * coordenador **deve** emitir ao fim de cada transição de fase relevante do
+ * loop (`.claude/skills/diaria-continuo/SKILL.md`, bullet "Emissão de
+ * coordinator_tokens_estimate é OBRIGATÓRIA" em "Reuso da maquinaria" —
+ * instrução explícita adicionada no mesmo fleet review que corrigiu esta
+ * frase; achado original do #5293 item 6: esta unidade tinha entregue só a
+ * AGREGAÇÃO sem nunca instruir a EMISSÃO, o que faria este script sempre
+ * reportar zero em silêncio). Reusa `agent === "continuo"` em vez de
+ * `"overnight"` — mesma troca obrigatória documentada no SKILL.md pra
+ * qualquer citação da Fase 1 do overnight. Filtra `data/run-log.jsonl`
+ * **através de TODOS os dias rotacionados**
  * (`scripts/lib/continuo-plan-rotation.ts`, item 5) — não só o dia corrente.
+ * **Se o coordenador não estiver de fato emitindo esses eventos (regressão
+ * de disciplina, não de código), este script reporta silenciosamente
+ * `eventCount: 0`/`totalTokens: 0` — o mesmo tipo de gap que
+ * `check-overnight-token-instrumentation.ts` (#5009) existe pra detectar do
+ * lado do overnight/develop; nenhum equivalente foi construído aqui ainda.**
  * `scripts/check-overnight-token-instrumentation.ts` (irmão, #5009) só checa
  * PRESENÇA de eventos por edição isolada; este script soma o VALOR
  * (`details.tokens`) através do ciclo inteiro — as duas checagens são
@@ -46,7 +57,13 @@ export interface ContinuoCostSummary {
   totalTokens: number;
   /** Eventos com `tokens: null` (harness não expôs `usage`) — contados à parte, nunca somados como 0. */
   unavailableCount: number;
-  /** Eventos totais reconhecidos (harness_usage + context_size_proxy + unavailable). */
+  /**
+   * Total de eventos `coordinator_tokens_estimate` reconhecidos, independente
+   * de `source`/`tokens` — NÃO é a soma de `bySource` particionada por
+   * `unavailableCount` vs. o resto (as duas dimensões são ortogonais: um
+   * evento com `source: "harness_usage"` E `tokens: null` conta em ambos
+   * `bySource["harness_usage"]` e `unavailableCount`, não é uma 3ª categoria).
+   */
   eventCount: number;
   perEdition: Record<string, number>;
   bySource: Record<string, number>;

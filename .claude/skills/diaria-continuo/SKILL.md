@@ -92,7 +92,14 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   PR desta skill resolve `max` (fleet de 5 agentes) no hook por padrão, salvo
   diff pequeno o bastante pro heurístico de tamanho — não há desconto `low`
   automático como no overnight, e isto NÃO foi mudado nesta unidade (fora de
-  escopo do item 2, que tocou só `session-registry.ts`).
+  escopo do item 2, que tocou só `session-registry.ts`). **Toda citação desta
+  Fase que envolva `npx tsx scripts/log-event.ts` troca `--agent overnight`
+  por `--agent continuo`** — a citação "verbatim" é da MECÂNICA (worktree →
+  tsc → testes → PR → merge), não do valor literal do agent tag; copiar o
+  `--agent overnight` ao pé da letra faria os eventos desta skill virarem
+  invisíveis pra `getLastRunLogActivity(..., "continuo")`
+  (`scripts/overnight-watchdog.ts`) e pra `continuo-cost-summary.ts` (ambos
+  filtram por `agent === "continuo"` especificamente).
 - **Reusa a Fase 1.5 de review consolidado** do overnight (1 agente,
   `pr-review-toolkit:code-reviewer` via `Agent` com `model: sonnet`
   explícito, sobre o diff acumulado desde `base_sha`) — mesma cadência de
@@ -125,6 +132,25 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   a sessão ficar parada** — os passos 3, 4 e 6 do loop, e o guard de colisão
   editorial no passo 1, dizem exatamente qual `phase` gravar em cada
   transição.
+- **Emissão de `coordinator_tokens_estimate` é OBRIGATÓRIA, não opcional
+  (#5293 item 6 — achado do fleet review desta unidade: o item 6 original só
+  entregou a AGREGAÇÃO, `scripts/continuo-cost-summary.ts`; sem esta linha o
+  script sempre reportaria zero, silenciosamente).** Reusar literalmente a
+  instrução de `.claude/skills/diaria-overnight/SKILL.md` (Fase 0, passo 1,
+  "Instrumentação de token do coordenador") — emitir, ao fim de cada
+  transição de fase relevante do loop abaixo (ao esgotar a fila no passo 2,
+  ao montar o lote de perguntas no passo 3, ao dormir no passo 6, e a cada
+  rotação de dia no passo 2):
+  ```bash
+  npx tsx scripts/log-event.ts --edition {AAMMDD-do-dia-corrente} --agent continuo --level info \
+    --message "coordinator_tokens_estimate" \
+    --details '{"phase": "{nome-da-transição}", "tokens": N, "source": "harness_usage | context_size_proxy"}'
+  ```
+  **`--agent continuo`, nunca `--agent overnight`** — mesma troca obrigatória
+  documentada no bullet da Fase 1 acima; `continuo-cost-summary.ts` filtra
+  estritamente por esse valor. Se o harness não expuser nada estimável, logar
+  `{"tokens": null, "source": "unavailable"}` uma vez por dia rotacionado
+  (não repetir a cada transição) — mesma semântica do overnight.
 - **Guard de publicação (INVARIANTE, igual a overnight/develop):** editar
   código de publisher é ok; **executar é proibido** — nunca rodar
   `scripts/publish-*`, `clarice-schedule-sends`, `clarice-import-*`,
@@ -271,7 +297,16 @@ o trade-off na mesa:
     projeto que usa Telegram — `docs/telegram-setup.md`) — sem eles, o hook
     é um no-op silencioso e o risco aceito original (travar sem aviso) volta
     a valer integralmente. Confirmar `echo $TELEGRAM_BOT_TOKEN` antes da 1ª
-    invocação em produção desta skill.
+    invocação em produção desta skill. **Credenciais presentes mas
+    rejeitadas** (token revogado, `chat_id` errado, rate limit) — diferente
+    de credenciais AUSENTES — loga em stderr (`resp.status`+corpo, ou a
+    exceção de rede) em vez de descartar silenciosamente (#5293 fleet
+    review, achado 4); ainda assim nunca bloqueia o `AskUserQuestion`. stderr
+    de hook não tem superfície de alerta própria neste repo — só aparece se
+    alguém estiver olhando o terminal/journalctl no momento, o que é
+    exatamente a situação que este hook existe pra não depender. Fechar essa
+    lacuna (ex: um segundo canal de alerta pra falha do PRÓPRIO alerta) é
+    follow-up, não bloqueio desta unidade.
 
 ## Argumentos
 
@@ -305,6 +340,10 @@ quatro restantes — cada um com código + testes, não só prosa:
    heartbeat, o watchdog não tem como saber que a parada é saudável. Testado
    em `test/overnight-watchdog.test.ts` (`findActiveRun com kind=continuo`,
    `hasHealthyIdleSession`, `diagnoseWatchdogActivity` com `isHealthyIdle`).
+   **Isolamento por kind (corrigido no fleet review):** o loop de `main()`
+   agora envolve cada kind (`overnight`, `continuo`) no próprio try/catch —
+   uma exceção ao processar um kind não aborta mais o loop antes de checar o
+   outro; o processo ainda sai com código != 0 se algum kind falhou.
 2. **Interação com `Diaria-Edicao-Diaria` — RESOLVIDO (decisão: PAUSA, não
    fim).** Diferente do overnight (que preempta a rodada inteira e grava
    `preempted_by: "edicao_editorial"`), o passo 1 do "Loop invariável" agora
@@ -327,18 +366,37 @@ quatro restantes — cada um com código + testes, não só prosa:
    chamadas. Testado em `test/continuo-plan-rotation.test.ts` (17 casos,
    incluindo bootstrap, idempotência, virada de dia/mês, e falha de I/O no
    `history.jsonl` não impedindo a rotação do `plan.json` em si).
-4. **Instrumentação de custo acumulado — RESOLVIDO.**
-   `scripts/continuo-cost-summary.ts` — soma `details.tokens` de todos os
-   eventos `coordinator_tokens_estimate` (`agent: "continuo"`) em
-   `data/run-log.jsonl`, através de TODOS os dias rotacionados de
-   `data/continuo/` (não só o dia corrente — usa `listContinuoDays` de
-   `continuo-plan-rotation.ts`). Suporta `--since {AAMMDD}` pra bounds, e
-   `--json` pra saída estruturada. Eventos com `tokens: null` (harness não
-   expôs `usage`) são contados à parte (`unavailableCount`), nunca somados
-   como 0. Complementa (não substitui) `scripts/
-   check-overnight-token-instrumentation.ts` (#5009), que checa só PRESENÇA
-   por edição isolada — este script soma o VALOR através do ciclo inteiro.
-   Testado em `test/continuo-cost-summary.test.ts`.
+   **Leitura do `plan.json` anterior (corrigida no fleet review):** usa
+   `readPlanFromDir` (mesma função com retry-em-JSON-truncado do #3353 que
+   `overnight-watchdog.ts` já reusava) em vez de um `JSON.parse(readFileSync
+   (...))` cru — a 1ª versão desta unidade tinha reintroduzido exatamente o
+   bug que #3353 corrigiu, só que num 3º leitor do mesmo `plan.json`. Falha
+   de leitura/parse (depois do retry) é logada em stderr, não silenciosa —
+   `listContinuoDays` já confirmou que o arquivo existe, então um `null`
+   aqui é sempre falha genuína, nunca "ausente".
+4. **Instrumentação de custo acumulado — RESOLVIDO (2 partes, a 2ª corrigida
+   depois do fleet review).** `scripts/continuo-cost-summary.ts` — soma
+   `details.tokens` de todos os eventos `coordinator_tokens_estimate`
+   (`agent: "continuo"`) em `data/run-log.jsonl`, através de TODOS os dias
+   rotacionados de `data/continuo/` (não só o dia corrente — usa
+   `listContinuoDays` de `continuo-plan-rotation.ts`). Suporta `--since
+   {AAMMDD}` pra bounds, e `--json` pra saída estruturada. Eventos com
+   `tokens: null` (harness não expôs `usage`) são contados à parte
+   (`unavailableCount`), nunca somados como 0. Complementa (não substitui)
+   `scripts/check-overnight-token-instrumentation.ts` (#5009), que checa só
+   PRESENÇA por edição isolada — este script soma o VALOR através do ciclo
+   inteiro. Testado em `test/continuo-cost-summary.test.ts`. **A 1ª versão
+   desta unidade entregou só essa AGREGAÇÃO — a EMISSÃO (o coordenador de
+   fato rodando `log-event.ts --agent continuo --message
+   coordinator_tokens_estimate`) nunca foi instruída em lugar nenhum do
+   `SKILL.md`, o que faria o script sempre reportar zero em silêncio**
+   (achado do comment-analyzer no fleet review desta PR). Corrigido: bullet
+   dedicado em "Reuso da maquinaria" acima ("Emissão de
+   coordinator_tokens_estimate é OBRIGATÓRIA") agora instrui explicitamente
+   quando e como emitir. **Ainda sem um checker mecânico equivalente a
+   `check-overnight-token-instrumentation.ts`** que confirme que o
+   coordenador de fato seguiu essa instrução numa rodada real — mesma classe
+   de gap, ainda aberta, ver `computeContinuoCostSummary`'s docblock.
 
 **Achado adjacente, fechado nesta mesma unidade (não fazia parte dos 6 itens
 originais, mas do "Risco aceito" registrado acima):**

@@ -221,4 +221,49 @@ describe("rotateContinuoPlanIfNeeded (#5293 item 5) — I/O", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("#5293 fleet review achado 2: falha ao escrever history.jsonl é LOGADA em stderr, nunca silenciosa", () => {
+    const dir = tmp();
+    let stderrOutput = "";
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk) => {
+      stderrOutput += String(chunk);
+      return true;
+    };
+    try {
+      rotateContinuoPlanIfNeeded(dir, new Date("2026-08-14T15:00:00Z"));
+      rmSync(continuoHistoryPath(dir), { force: true });
+      mkdirSync(continuoHistoryPath(dir));
+      rotateContinuoPlanIfNeeded(dir, new Date("2026-08-15T15:00:00Z"));
+    } finally {
+      process.stderr.write = originalWrite;
+      rmSync(dir, { recursive: true, force: true });
+    }
+    assert.match(stderrOutput, /history\.jsonl/);
+  });
+
+  it("#5293 fleet review achado 1: plan.json do dia anterior CORROMPIDO não impede rotação — usa readPlanFromDir (retry), loga em stderr", () => {
+    const dir = tmp();
+    let stderrOutput = "";
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk) => {
+      stderrOutput += String(chunk);
+      return true;
+    };
+    try {
+      rotateContinuoPlanIfNeeded(dir, new Date("2026-08-14T15:00:00Z"));
+      // Corrompe o plan.json do dia 14 — nunca vai parsear, mesmo com retry.
+      writeFileSync(join(continuoRoot(dir), "260814", "plan.json"), "{ isto não é json válido");
+
+      const result = rotateContinuoPlanIfNeeded(dir, new Date("2026-08-15T15:00:00Z"));
+      assert.equal(result.rotated, true, "rotação deve suceder mesmo com plan.json anterior corrompido (fail-soft)");
+      const newPlan = JSON.parse(readFileSync(join(continuoRoot(dir), "260815", "plan.json"), "utf8"));
+      assert.equal(newPlan.continued_from, "260814");
+      assert.ok(!("bugs_only" in newPlan), "sem config de sessão pra carregar adiante — plan anterior ilegível");
+    } finally {
+      process.stderr.write = originalWrite;
+      rmSync(dir, { recursive: true, force: true });
+    }
+    assert.match(stderrOutput, /falha ao ler\/parsear/);
+  });
 });

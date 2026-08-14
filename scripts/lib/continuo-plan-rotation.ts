@@ -41,11 +41,12 @@
  *      depende de rotação ter rodado a tempo, só do scan lexicográfico)
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs, isMainModule } from "./cli-args.ts";
 import { writeFileAtomic } from "./atomic-write.ts";
 import { datePartsInTz, toAammdd, BRT_TIMEZONE } from "./next-edition-date.ts";
+import { readPlanFromDir } from "../overnight-statusline.ts";
 
 /** Campos de configuração de SESSÃO (não de dia) — carregados adiante em toda rotação. */
 const SESSION_SCOPED_FIELDS = ["bugs_only", "priority_filter"] as const;
@@ -102,6 +103,29 @@ export function listContinuoDays(rootDir: string): string[] {
 }
 
 /**
+ * Shape do `plan.json` recém-seedado por uma rotação — deliberadamente MAIS
+ * ESTRITO que `Record<string, unknown>` (#5293 fleet review, type-design:
+ * `Plan`/`PlanJson` — `overnight-statusline.ts`/`overnight-watchdog.ts` —
+ * existem pra descrever exatamente este arquivo, mas a 1ª versão desta
+ * unidade escrevia o seed sem nenhuma checagem estrutural, então um typo de
+ * chave (`stall_event` em vez de `stall_events`) teria compilado limpo e só
+ * apareceria como `undefined` em runtime). Os campos opcionais
+ * (`bugs_only`/`priority_filter`) espelham `SESSION_SCOPED_FIELDS` — ver
+ * abaixo, mantidos em sincronia manualmente (mudar um sem o outro quebra o
+ * `tsc`, então a compilação já força a atenção).
+ */
+export interface ContinuoPlanSeed {
+  started_at: string;
+  continued_from: string | null;
+  stall_events: [];
+  issues: [];
+  timeline: [];
+  resume_state: null;
+  bugs_only?: unknown;
+  priority_filter?: unknown;
+}
+
+/**
  * Pure: monta o `plan.json` inicial do novo dia a partir do plan.json do dia
  * anterior. `previousPlan` pode ser `null` (dia anterior ilegível/corrompido —
  * fail-soft, a rotação segue mesmo assim, só sem os campos de sessão pra
@@ -111,9 +135,9 @@ export function buildRotatedPlanSeed(params: {
   previousAammdd: string;
   previousPlan: Record<string, unknown> | null;
   nowIso: string;
-}): Record<string, unknown> {
+}): ContinuoPlanSeed {
   const { previousAammdd, previousPlan, nowIso } = params;
-  const seed: Record<string, unknown> = {
+  const seed: ContinuoPlanSeed = {
     started_at: nowIso,
     continued_from: previousAammdd,
     stall_events: [],
@@ -174,14 +198,15 @@ export function rotateContinuoPlanIfNeeded(rootDir: string, now: Date = new Date
     mkdirSync(dir, { recursive: true });
     const planPath = join(dir, "plan.json");
     if (!existsSync(planPath)) {
-      writeFileAtomic(
-        planPath,
-        JSON.stringify(
-          { started_at: now.toISOString(), continued_from: null, stall_events: [], issues: [], timeline: [], resume_state: null },
-          null,
-          2,
-        ) + "\n",
-      );
+      const bootstrapSeed: ContinuoPlanSeed = {
+        started_at: now.toISOString(),
+        continued_from: null,
+        stall_events: [],
+        issues: [],
+        timeline: [],
+        resume_state: null,
+      };
+      writeFileAtomic(planPath, JSON.stringify(bootstrapSeed, null, 2) + "\n");
     }
     return { rotated: false, fromAammdd: null, toAammdd: today };
   }
@@ -190,12 +215,26 @@ export function rotateContinuoPlanIfNeeded(rootDir: string, now: Date = new Date
     return { rotated: false, fromAammdd: latest, toAammdd: latest };
   }
 
-  // Rotação de verdade: dia mudou.
-  let previousPlan: Record<string, unknown> | null = null;
-  try {
-    previousPlan = JSON.parse(readFileSync(join(continuoRoot(rootDir), latest, "plan.json"), "utf8"));
-  } catch {
-    previousPlan = null; // fail-soft — ver docstring de buildRotatedPlanSeed
+  // Rotação de verdade: dia mudou. Leitura via `readPlanFromDir` (não
+  // `JSON.parse(readFileSync(...))` cru) — MESMO motivo do #3353 já
+  // documentado em `overnight-watchdog.ts`, que reusa a mesma função: um
+  // `plan.json` no meio de uma escrita não-atômica (o coordenador pode
+  // ainda estar gravando `issues`/`timeline` do dia que está sendo fechado
+  // exatamente no instante em que a rotação roda) produz JSON truncado, e
+  // `readPlanFromDir` cobre essa janela com 1 retry síncrono imediato antes
+  // de desistir. `listContinuoDays` já confirmou que o arquivo EXISTE (é
+  // assim que `latest` foi calculado) — então um `null` aqui, diferente do
+  // caso comum de `readPlanFromDir` noutros callers, sempre significa falha
+  // de leitura/parse genuína, nunca "arquivo ausente"; por isso é logado
+  // (stderr) em vez de silencioso, ao contrário do padrão fail-soft
+  // silencioso mais comum deste módulo (#5293 fleet review, achado 1).
+  const previousPlanPath = join(continuoRoot(rootDir), latest, "plan.json");
+  const previousPlan = readPlanFromDir(previousPlanPath) as Record<string, unknown> | null;
+  if (previousPlan === null) {
+    process.stderr.write(
+      `continuo-plan-rotation: falha ao ler/parsear ${previousPlanPath} — rotação prossegue sem carregar ` +
+        `adiante bugs_only/priority_filter do dia anterior (fail-soft, ver buildRotatedPlanSeed).\n`,
+    );
   }
 
   const nowIso = now.toISOString();
@@ -210,10 +249,17 @@ export function rotateContinuoPlanIfNeeded(rootDir: string, now: Date = new Date
       continuoHistoryPath(rootDir),
       buildHistoryLine({ fromAammdd: latest, toAammdd: today, rotatedAt: nowIso }) + "\n",
     );
-  } catch {
+  } catch (e) {
     // history.jsonl é só auditoria auxiliar — falha de escrita aqui nunca
     // deve impedir a rotação em si (já persistida acima) de ser reportada
-    // como bem-sucedida.
+    // como bem-sucedida. Mas silencioso ≠ invisível (#5293 fleet review,
+    // achado 2 — mesma disciplina que `emitRunLogEvent`/`stall_event` já
+    // seguem em `overnight-watchdog.ts`): loga em stderr pra não perder o
+    // rastro de auditoria sem avisar ninguém.
+    process.stderr.write(
+      `continuo-plan-rotation: falha ao apendar ${continuoHistoryPath(rootDir)} (${String(e)}) — ` +
+        `rotação do plan.json já persistida, seguindo mesmo assim.\n`,
+    );
   }
 
   return { rotated: true, fromAammdd: latest, toAammdd: today };
