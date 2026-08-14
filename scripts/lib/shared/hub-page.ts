@@ -69,6 +69,7 @@
  * sempre concordar).
  */
 import { escHtml as esc } from "../html-escape.ts";
+import { slugify } from "../slug.ts"; // #5266 — id determinístico dos H2 de seção pro índice navegável
 import { renderSeoMeta } from "./seo-meta.ts";
 import {
   renderCuradoriaRootStyles,
@@ -654,6 +655,17 @@ function renderHubBodyStyles(): string {
      estruturalmente impossível lá, só não aconteceu ainda. Achado do editor
      260804. */
   .geo-intro-wrap { max-width: 720px; }
+  /* #5266: índice navegável — mesmo max-width/tratamento visual discreto de
+     .hub-related-nav (borda superior sutil, rótulo pequeno versalete), mas
+     SEM borda/margem de topo — fica logo colado depois da intro, antes da
+     1ª seção, não como um bloco de "fim de página" como os outros navs. */
+  .hub-section-index { max-width: 720px; margin: 0 0 40px; }
+  .hub-section-index-heading { font-family: Georgia, 'Times New Roman', serif; font-size: 13px; font-weight: 700;
+    letter-spacing: 0.08em; text-transform: uppercase; color: var(--teal); margin: 0 0 10px; }
+  .hub-section-index ol { list-style: decimal; margin: 0; padding: 0 0 0 20px; display: flex; flex-direction: column; gap: 6px; }
+  .hub-section-index li a { font-size: 14px; color: var(--teal); text-decoration: underline;
+    text-decoration-color: var(--rule); text-underline-offset: 2px; }
+  .hub-section-index li a:hover { text-decoration-color: var(--teal); }
   .hub-sections { max-width: 720px; }
   .hub-sections-heading { font-family: Georgia, 'Times New Roman', serif; font-size: 15px; font-weight: 700;
     letter-spacing: 0.08em; text-transform: uppercase; color: var(--teal); margin: 0 0 24px; }
@@ -1197,6 +1209,33 @@ export function checkUpdatedDateCeiling(
   ];
 }
 
+/**
+ * Ids de âncora determinísticos, um por `heading` de `sections` (#5266 —
+ * índice navegável no topo do hub, decisão do editor 14/08/2026: UX de
+ * leitor, escaneabilidade de página longa; NÃO reabre o descarte de âncora
+ * como jogada de GEO do #4899/`HUB_PROSE_RULES`, que segue válido).
+ *
+ * `slugify` (kebab-case, NFD-strip diacríticos — `scripts/lib/slug.ts`, já
+ * usado pra slug de post) garante que o mesmo heading sempre produz o mesmo
+ * id entre o link do índice e o `id` do `<h2>` correspondente. Sufixo
+ * `-2`/`-3`/... desambigua a rara colisão de 2 headings que geram o mesmo
+ * slug (heading repetido, ou headings que só diferem em acento/pontuação) —
+ * sem isso, 2 `<h2 id="...">` iguais na mesma página tornam a âncora do
+ * segundo um alvo ambíguo. `"secao"` é o fallback pro caso degenerado de um
+ * heading vazio/só-pontuação, que `slugify` reduziria a string vazia.
+ *
+ * @pure
+ */
+export function hubSectionAnchorIds(headings: readonly string[]): string[] {
+  const seen = new Map<string, number>();
+  return headings.map((heading) => {
+    const base = slugify(heading) || "secao";
+    const timesSeen = seen.get(base) ?? 0;
+    seen.set(base, timesSeen + 1);
+    return timesSeen === 0 ? base : `${base}-${timesSeen + 1}`;
+  });
+}
+
 /** Renderiza o bloco de tabela opcional de uma `HubSection` (#4921 Onda 2).
  * Célula em texto puro passa por `renderInlineLinks` (não `esc()` puro) —
  * ver decisão registrada na docstring de `HubSectionTable.rows`. */
@@ -1244,17 +1283,36 @@ export function renderHubPage(hub: HubContent): string {
   // a síntese longa (issue Parte A, "leitura que só existe porque alguém
   // acompanhou por meses"); "Perguntas frequentes" abaixo é o bloco curto
   // que vira dado estruturado FAQPage (issue Parte B item 3).
+  // #5266: um id determinístico por seção — usado tanto pelo `<h2>` abaixo
+  // quanto pelo índice navegável (`sectionIndexHtml`) montado logo depois.
+  // Calculado UMA vez aqui pra garantir que os dois usam exatamente o mesmo
+  // valor (nunca duas fontes de verdade pro mesmo slug).
+  const sectionAnchorIds = hubSectionAnchorIds(hub.sections.map((s) => s.heading));
+
   const sectionsHtml = `    <section class="hub-sections" aria-labelledby="cobertura-heading">
       <h2 class="hub-sections-heading" id="cobertura-heading">Cobertura completa</h2>
 ${hub.sections
   .map(
-    (s) => `      <article class="hub-section">
-        <h2>${esc(s.heading)}</h2>
+    (s, i) => `      <article class="hub-section">
+        <h2 id="${esc(sectionAnchorIds[i])}">${esc(s.heading)}</h2>
 ${s.paragraphs.map((p) => `        <p>${renderInlineLinks(p, titleFor)}</p>`).join("\n")}${s.table ? `\n${renderHubSectionTable(s.table, titleFor)}` : ""}
       </article>`,
   )
   .join("\n")}
     </section>`;
+
+  // #5266: índice navegável — lista de `sections[].heading` logo após a
+  // intro, âncoras pros `id` acabados de gerar acima. Decisão do editor
+  // (14/08/2026): escaneabilidade de leitor em página de 2-3 mil palavras,
+  // NÃO uma jogada de GEO (o descarte de âncora como sinal pra assistente
+  // continua válido, #4899/`HUB_PROSE_RULES`) — expectativa declarada de
+  // efeito em citação é zero.
+  const sectionIndexHtml = `      <nav class="hub-section-index" aria-labelledby="indice-heading">
+        <h2 class="hub-section-index-heading" id="indice-heading">Nesta página</h2>
+        <ol>
+${hub.sections.map((s, i) => `          <li><a href="#${esc(sectionAnchorIds[i])}">${esc(s.heading)}</a></li>`).join("\n")}
+        </ol>
+      </nav>`;
 
   // #4921 Onda 1: <table> Data | Manchete | Edição em vez de <ul>/<li> — uma
   // LINHA POR MANCHETE (issue #4558 item 2), não por HubSourceEdition: 8 das
@@ -1365,6 +1423,7 @@ ${renderGeoByline(undefined, `atualizado em ${formatMonthYear(hub.updatedDate)}`
   </header>
   <main>
     <div class="wrap">
+${sectionIndexHtml}
 ${sectionsHtml}
 <!-- #4635/#4642: FAQ logo após .hub-sections (não depois de .hub-sources) —
      achado do editor: a lista de edições citadas fica melhor por último,

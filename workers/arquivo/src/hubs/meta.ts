@@ -25,6 +25,16 @@
  * `test/hub-registry-completeness.test.ts`, que falha se algum ficar pra trás):
  * `HUB_LOADERS` (scripts/build-hub-page.ts), `HUB_REGISTRY` (./registry.ts) e
  * `HUB_META` (aqui).
+ *
+ * **4º passo, fora dos 3 acima (#5257): adicionar o link do hub novo ao
+ * bloco "Temas" da HOME pública.** Diferente dos 3 lugares acima, este é
+ * AÇÃO DE PAINEL do editor no Website Builder da Beehiiv, não código — a
+ * auditoria "Raio-X de /temas/" (14/08/2026) achou que 4 dos 5 hubs então
+ * publicados nunca foram rastreados pelo Google justamente por faltar esse
+ * link. Vigiado pelo eixo `hub-link-missing` de
+ * `scripts/lib/beehiiv-home-meta-check.ts` (task `Diaria-Beehiiv-Home-Meta-Check`,
+ * diária) — hub que entra aqui em `HUB_META` sem o link correspondente na
+ * home vira alarme automático até o passo de painel ser feito.
  */
 
 export interface HubMeta {

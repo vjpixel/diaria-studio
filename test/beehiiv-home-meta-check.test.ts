@@ -1,13 +1,14 @@
 /**
- * test/beehiiv-home-meta-check.test.ts (#4557, #5099)
+ * test/beehiiv-home-meta-check.test.ts (#4557, #5099, #5257)
  *
  * Regressão pura pra `scripts/lib/beehiiv-home-meta-check.ts` — extração de
  * og:title/og:description/meta description + os 3 eixos de drift da issue
  * #4557 (og:title sem a marca oficial / grafia legada, self-links
  * `http://diar.ia.br`, rótulos residuais em inglês) + o 4º eixo do #5099
- * (link reader-facing pra `*.workers.dev`/`diaria.beehiiv.com`), fingerprint
- * + idempotência do alarme, e o texto do e-mail. Nenhum teste bate em
- * rede/home publicada real — todo HTML é fixture local inline.
+ * (link reader-facing pra `*.workers.dev`/`diaria.beehiiv.com`) + o 6º eixo
+ * do #5257 (hub temático publicado sem link `/temas/{slug}` na home),
+ * fingerprint + idempotência do alarme, e o texto do e-mail. Nenhum teste
+ * bate em rede/home publicada real — todo HTML é fixture local inline.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -21,6 +22,7 @@ import {
   extractVisibleText,
   detectEnglishLabels,
   detectLegacyHostLinks,
+  detectMissingHubLinks,
   detectPortInUrlLinks,
   findLatestPostUrl,
   computeHomeMetaFingerprint,
@@ -30,11 +32,21 @@ import {
   buildHomeMetaDriftAlarmEmail,
   type HomeMetaDriftFinding,
 } from "../scripts/lib/beehiiv-home-meta-check.ts";
+import { HUB_META } from "../workers/arquivo/src/hubs/meta.ts";
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
 
-/** (e) Fixture limpa nos 3 eixos: og:title com a marca oficial, sem
- * self-link http://, sem rótulo em inglês. */
+/** Bloco "Temas" reproduzindo o item C do #5097/#5257 (ação de painel do
+ * editor, ainda pendente) — construído a partir do `HUB_META` real, então
+ * segue completo automaticamente se um hub novo entrar no registry (nenhum
+ * slug hardcoded aqui pra não divergir por conta própria). */
+const HUB_LINKS_HTML = HUB_META.map(
+  (h) => `      <a href="https://arquivo.diar.ia.br/temas/${h.slug}">${h.label}</a>`,
+).join("\n");
+
+/** (e) Fixture limpa em todos os eixos: og:title com a marca oficial, sem
+ * self-link http://, sem rótulo em inglês, todos os hubs de `HUB_META`
+ * linkados no bloco "Temas" (#5257). */
 const CLEAN_HTML = `<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -55,8 +67,22 @@ const CLEAN_HTML = `<!doctype html>
       <p>Tempo de leitura: 5 min</p>
     </article>
   </main>
+  <footer>
+    <nav aria-label="Temas">
+${HUB_LINKS_HTML}
+    </nav>
+  </footer>
 </body>
 </html>`;
+
+/** Variante de `CLEAN_HTML` SEM o bloco "Temas" — reproduz o estado real de
+ * produção hoje (item C do #5097 ainda não implementado pelo editor). Base
+ * pros testes do 6º eixo (`hub-link-missing`, #5257) e pras fixtures
+ * derivadas que precisam de um HTML sem nenhum hub linkado. */
+const NO_HUB_LINKS_HTML = CLEAN_HTML.replace(
+  /\s*<footer>[\s\S]*?<\/footer>\n/,
+  "\n",
+);
 
 /** (b) og:title com a grafia legada "Diar.ia" (drift esperado no eixo og-title-brand). */
 const LEGACY_BRAND_HTML = CLEAN_HTML.replace(
@@ -250,6 +276,50 @@ describe("detectLegacyHostLinks (#5099)", () => {
   });
 });
 
+describe("detectMissingHubLinks (#5257)", () => {
+  it("vazio quando todos os hubs de HUB_META estão linkados (fixture limpa)", () => {
+    assert.deepEqual(detectMissingHubLinks(CLEAN_HTML), []);
+  });
+
+  it("reprodução do estado real de produção (14/08/2026): nenhum hub linkado -> todos os slugs de HUB_META reportados, na ordem do registry", () => {
+    assert.deepEqual(
+      detectMissingHubLinks(NO_HUB_LINKS_HTML),
+      HUB_META.map((h) => h.slug),
+    );
+  });
+
+  it("casa link relativo (/temas/{slug}) e absoluto (https://host/temas/{slug}) igualmente", () => {
+    const hubs = [{ slug: "anthropic-claude", label: "Anthropic e Claude" }] as const;
+    assert.deepEqual(detectMissingHubLinks('<a href="/temas/anthropic-claude">x</a>', hubs), []);
+    assert.deepEqual(
+      detectMissingHubLinks('<a href="https://arquivo.diar.ia.br/temas/anthropic-claude">x</a>', hubs),
+      [],
+    );
+  });
+
+  it("reporta só os hubs SEM link — parcial, não tudo-ou-nada", () => {
+    const hubs = [
+      { slug: "anthropic-claude", label: "Anthropic e Claude" },
+      { slug: "openai-chatgpt", label: "OpenAI e ChatGPT" },
+    ] as const;
+    const html = '<a href="/temas/anthropic-claude">Anthropic e Claude</a>';
+    assert.deepEqual(detectMissingHubLinks(html, hubs), ["openai-chatgpt"]);
+  });
+
+  it("slug que é prefixo de outro não dá falso negativo (delimitador de path exigido)", () => {
+    const hubs = [{ slug: "openai", label: "OpenAI" }] as const;
+    // "/temas/openai-chatgpt" NÃO deveria satisfazer o hub "openai" sozinho —
+    // o link teria que ser exatamente "/temas/openai".
+    const html = '<a href="/temas/openai-chatgpt">OpenAI e ChatGPT</a>';
+    assert.deepEqual(detectMissingHubLinks(html, hubs), ["openai"]);
+  });
+
+  it("nunca lança em HTML vazio/malformado", () => {
+    assert.deepEqual(detectMissingHubLinks(""), HUB_META.map((h) => h.slug));
+    assert.deepEqual(detectMissingHubLinks("<<<not html"), HUB_META.map((h) => h.slug));
+  });
+});
+
 describe("detectPortInUrlLinks (#5106)", () => {
   it("vazio no HTML limpo", () => {
     assert.deepEqual(detectPortInUrlLinks(CLEAN_HTML), []);
@@ -343,7 +413,7 @@ describe("evaluateHomeMetaDrift (#4557)", () => {
     assert.match(finding!.message, /min read/);
   });
 
-  it("(e) fixture limpa nos 4 eixos -> nenhum drift", () => {
+  it("(e) fixture limpa nos 5 eixos -> nenhum drift", () => {
     const findings = evaluateHomeMetaDrift(CLEAN_HTML);
     assert.deepEqual(findings, []);
     assert.equal(hasHomeMetaDrift(findings), false);
@@ -356,6 +426,16 @@ describe("evaluateHomeMetaDrift (#4557)", () => {
     assert.match(finding!.message, /livros\.diaria\.workers\.dev/);
     assert.match(finding!.message, /cursos\.diaria\.workers\.dev/);
     assert.match(finding!.message, /diaria\.beehiiv\.com/);
+  });
+
+  it("(g) fixture sem o bloco Temas (estado real de produção, #5257) -> reportado (hub-link-missing) com todos os slugs", () => {
+    const findings = evaluateHomeMetaDrift(NO_HUB_LINKS_HTML);
+    const finding = findings.find((f) => f.check === "hub-link-missing");
+    assert.ok(finding, `esperava achado hub-link-missing: ${JSON.stringify(findings)}`);
+    for (const h of HUB_META) {
+      assert.match(finding!.message, new RegExp(h.slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    }
+    assert.match(finding!.message, /#5257/);
   });
 
   it("hosts de plataforma Beehiiv fora de escopo (badge + CDN) -> sem drift nenhum", () => {
@@ -375,7 +455,8 @@ describe("evaluateHomeMetaDrift (#4557)", () => {
   });
 
   it("acumula múltiplos achados simultâneos (não é exclusivo)", () => {
-    // combina os 4 eixos quebrados no mesmo HTML
+    // combina os 4 eixos quebrados no mesmo HTML (hub links intactos —
+    // hub-link-missing fica de fora deste caso de propósito)
     const brokenAll = LEGACY_BRAND_HTML.replace(
       '<a href="https://diar.ia.br/arquivo">Arquivo</a>',
       '<a href="http://diar.ia.br/arquivo">Arquivo</a>',
@@ -385,6 +466,19 @@ describe("evaluateHomeMetaDrift (#4557)", () => {
     const findings = evaluateHomeMetaDrift(brokenAll);
     const checks = findings.map((f) => f.check).sort();
     assert.deepEqual(checks, ["english-labels", "http-self-link", "legacy-host-link", "og-title-brand"]);
+  });
+
+  it("acumula hub-link-missing junto com os outros eixos (5 eixos quebrados ao mesmo tempo)", () => {
+    const brokenAllPlusHubs = NO_HUB_LINKS_HTML.replace(
+      /<title>[^<]*<\/title>/,
+      "<title>Diar.ia</title>",
+    ).replace(
+      /<meta property="og:title" content="[^"]*">/,
+      '<meta property="og:title" content="Diar.ia">',
+    );
+    const findings = evaluateHomeMetaDrift(brokenAllPlusHubs);
+    const checks = findings.map((f) => f.check).sort();
+    assert.deepEqual(checks, ["hub-link-missing", "og-title-brand"]);
   });
 });
 
