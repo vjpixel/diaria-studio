@@ -339,6 +339,37 @@ describe("#5025/#5026/#5027 — par Diaria-Clarice-Envio / Diaria-Clarice-Envio-
         "risco de a campanha do 'novos' ainda estar in_process quando a onda for segmentada",
     );
   });
+
+  it("#5220: Diaria-Clarice-Envio-Guard-Alarm presente, 06:15 diário, step aponta pro alarme próprio do guard", () => {
+    const t = getScheduledTaskByName("Diaria-Clarice-Envio-Guard-Alarm");
+    assert.ok(t, "Diaria-Clarice-Envio-Guard-Alarm ausente de SCHEDULED_TASKS");
+    assert.deepEqual(
+      t!.steps.map((s) => s.script),
+      ["scripts/clarice-envio-guard-alarm.ts"],
+    );
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 6, minute: 15 });
+  });
+
+  it("#5220: ordem — Diaria-Clarice-Envio-Guard-Alarm roda DEPOIS do guard (05:00) e depois do disparo (06:00)", () => {
+    const guard = getScheduledTaskByName("Diaria-Clarice-Envio-Guard");
+    const guardAlarm = getScheduledTaskByName("Diaria-Clarice-Envio-Guard-Alarm");
+    assert.ok(guard && guardAlarm);
+    const g = guard!.schedule as { kind: "daily"; hour: number; minute: number };
+    const ga = guardAlarm!.schedule as { kind: "daily"; hour: number; minute: number };
+    const guardMinutes = g.hour * 60 + g.minute;
+    const alarmMinutes = ga.hour * 60 + ga.minute;
+    const dispatchMinutes = 6 * 60;
+    assert.ok(alarmMinutes > guardMinutes, "o alarme do guard deveria rodar depois do próprio guard");
+    assert.ok(alarmMinutes >= dispatchMinutes, "o alarme do guard deveria rodar no horário do disparo (06:00) ou depois");
+  });
+
+  it("#5220: Diaria-Clarice-Envio-Guard-Alarm é DISTINTA de Diaria-Clarice-Envio-Alarm (não reaproveita o alarme do run)", () => {
+    const guardAlarm = getScheduledTaskByName("Diaria-Clarice-Envio-Guard-Alarm");
+    const runAlarm = getScheduledTaskByName("Diaria-Clarice-Envio-Alarm");
+    assert.ok(guardAlarm && runAlarm);
+    assert.notEqual(guardAlarm!.steps[0].script, runAlarm!.steps[0].script);
+    assert.notDeepEqual(guardAlarm!.schedule, runAlarm!.schedule);
+  });
 });
 
 describe("#5128/#5130 — Diaria-Bing-Seo-Monthly-Pull registrada, mensal, systemd-only", () => {

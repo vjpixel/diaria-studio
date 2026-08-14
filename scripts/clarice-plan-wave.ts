@@ -63,6 +63,11 @@ import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
 import { readClariceAbcState, lockedSubjectFromState, describeAbcState } from "./lib/clarice-abc-state.ts";
 import { readNovosState } from "./lib/clarice-novos-state.ts";
 import {
+  TransientDashboardError,
+  TRANSIENT_DASHBOARD_STATUSES,
+  parseRetryAfterSecs,
+} from "./lib/transient-dashboard-error.ts";
+import {
   buildWaveProposal,
   computeNextWaveNumber,
   measureNonOpenerExposure,
@@ -106,27 +111,12 @@ loadProjectEnv();
 // que o orquestrador retente com backoff em vez de abortar a rodada inteira.
 // ---------------------------------------------------------------------------
 
-export class TransientDashboardError extends Error {
-  readonly transient = true as const;
-  constructor(
-    message: string,
-    readonly retryAfterSecs: number | null,
-    readonly status: number,
-  ) {
-    super(message);
-    this.name = "TransientDashboardError";
-  }
-}
-
-const TRANSIENT_DASHBOARD_STATUSES = new Set([429, 503]);
-
-/** `Retry-After` (RFC 7231, delta em segundos) — `rateLimitResponse` sempre o seta quando `retryAfterSecs` é conhecido. `null` = header ausente/inválido, nunca inventa um valor. */
-function parseRetryAfterSecs(headers: Headers): number | null {
-  const raw = headers.get("retry-after");
-  if (raw == null) return null;
-  const v = Number(raw);
-  return Number.isFinite(v) && v >= 0 ? v : null;
-}
+// #5220 — `TransientDashboardError`/`TRANSIENT_DASHBOARD_STATUSES`/
+// `parseRetryAfterSecs` moveram pra `lib/transient-dashboard-error.ts`
+// (reuso por `clarice-envio-risk.ts`, que bate no mesmo dashboard). Reexport
+// pra `TransientDashboardError` continuar importável deste path — mesma
+// identidade de classe, `test/clarice-plan-wave.test.ts` não muda.
+export { TransientDashboardError };
 
 /** Parse de `--dates A,B,C` — 1+ datas ISO, sem repetição, em ordem crescente. */
 export function parseDatesArg(raw: string | undefined): string[] {

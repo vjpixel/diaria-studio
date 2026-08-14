@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { aggregateRisk, toOpenTrendPoints, toSpamSignalLike, fetchRiskSnapshot } from "../scripts/clarice-envio-risk.ts";
+import { TransientDashboardError } from "../scripts/lib/transient-dashboard-error.ts";
 import type { BrevoCampaign } from "../workers/brevo-dashboard/src/types.ts";
 
 function campaign(over: Partial<BrevoCampaign> & { sentDate: string }): BrevoCampaign {
@@ -107,5 +108,45 @@ describe("fetchRiskSnapshot — smoke test com fetch fake (sem rede real)", () =
     assert.ok(["ok", "hold", "stop"].includes(snapshot.brake.level));
     assert.ok(snapshot.step >= 0 && snapshot.step <= 0.25);
     assert.equal(snapshot.freshWindow.sent, 3800); // ambas campanhas caem nos últimos 3 dias de envio
+  });
+
+  // #5220 — mesma distinção transitório/estrutural de clarice-plan-wave.ts
+  // (#5058), agora também neste script (guard das 05:00 depende disso pra
+  // retentar em vez de abortar antes de reavaliar o freio).
+  it("503 do dashboard => TransientDashboardError com retryAfterSecs extraído do header, NUNCA Error genérico", async () => {
+    const fakeFetch = (async () =>
+      new Response("rate limited", { status: 503, headers: { "retry-after": "12" } })) as typeof fetch;
+    await assert.rejects(
+      () => fetchRiskSnapshot({ dashboardUrl: "https://fake.example", now: new Date(), fetchFn: fakeFetch }),
+      (err: unknown) => {
+        assert.ok(err instanceof TransientDashboardError, `esperado TransientDashboardError, veio ${err}`);
+        assert.equal((err as TransientDashboardError).retryAfterSecs, 12);
+        assert.equal((err as TransientDashboardError).status, 503);
+        return true;
+      },
+    );
+  });
+
+  it("429 do dashboard => também TransientDashboardError (defensivo)", async () => {
+    const fakeFetch = (async () => new Response("rate limited", { status: 429 })) as typeof fetch;
+    await assert.rejects(
+      () => fetchRiskSnapshot({ dashboardUrl: "https://fake.example", now: new Date(), fetchFn: fakeFetch }),
+      (err: unknown) => {
+        assert.ok(err instanceof TransientDashboardError);
+        assert.equal((err as TransientDashboardError).retryAfterSecs, null, "sem header Retry-After => null, nunca inventa valor");
+        return true;
+      },
+    );
+  });
+
+  it("500/outro status NÃO-transitório => Error genérico, nunca TransientDashboardError (não é retentável às cegas)", async () => {
+    const fakeFetch = (async () => new Response("boom", { status: 500 })) as typeof fetch;
+    await assert.rejects(
+      () => fetchRiskSnapshot({ dashboardUrl: "https://fake.example", now: new Date(), fetchFn: fakeFetch }),
+      (err: unknown) => {
+        assert.ok(!(err instanceof TransientDashboardError), "500 não é rate limit — não deve sinalizar retry");
+        return true;
+      },
+    );
   });
 });
