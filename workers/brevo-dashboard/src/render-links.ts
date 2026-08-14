@@ -935,6 +935,24 @@ export function fmtTimeBRT(iso: string | null): string {
   });
 }
 
+/**
+ * #5218: irmã ENXUTA de `fmtTimeBRT` — só HH:MM, sem data/dia da semana.
+ * Usada no banner de rate-limit ("volta a atualizar sozinho às 14:37 BRT"),
+ * onde o horário-alvo é sempre HOJE (a janela de retry da Brevo é de
+ * segundos/minutos, nunca cruza pro dia seguinte) — a data completa de
+ * `fmtTimeBRT` seria ruído. Aceita epoch ms (não ISO) porque o caller sempre
+ * tem um `Date.now() + retryAfterSecs*1000` calculado, não uma string.
+ */
+export function fmtClockBRT(epochMs: number): string {
+  const d = new Date(epochMs);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleString("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 // NOTE (#2207): `linksStats?` no shape abaixo é mantido SOMENTE para fixtures de teste
 // (backward compat: testes que passam linksStats top-level diretamente). Em produção,
 // `fetchRecentCampaigns` nunca produz top-level `linksStats` desde #2199.3 — a propriedade

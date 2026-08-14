@@ -1,22 +1,90 @@
+/**
+ * #5215: rate limit REAL da Brevo, pra referência de qualquer código/comentário
+ * neste arquivo que precise dele (corrige uma premissa errada que rodou solta
+ * por várias docstrings antigas — "100 requisições por MINUTO" nunca foi o
+ * limite real; era 100 por HORA. Fonte oficial: https://developers.brevo.com/docs/api-limits).
+ *
+ * A unidade é HORA (RPH), não minuto, e o teto varia por FAMÍLIA de endpoint
+ * (tier "General", o único que este projeto usa — sem SLA pago):
+ *
+ *   - `/v3/contacts/*` (inclui `/v3/contacts/lists/{id}`, usado por este
+ *     Worker pra resolver nome de lista): 36.000 RPH — folga enorme, nunca
+ *     compete com o resto.
+ *   - "Todos os outros endpoints" — inclui `/v3/emailCampaigns*` (listagem +
+ *     GET por campanha, o grosso do tráfego deste Worker) e `/v3/account`
+ *     (créditos do plano, `fetchPlanCredits`): 100 RPH. **Este é o pool que
+ *     de fato aperta** — ver `CAMPAIGNS_FETCH_LIMIT`/`fetchRecentCampaigns`
+ *     acima e a task horária `Diaria-Clarice-Dashboard-Precompute` (#5217,
+ *     ~44/100 RPH por execução morna, ver docs/clarice-dashboard-precompute-setup.md).
+ *
+ * `mapLimit(5)` (ver a função logo abaixo) controla CONCORRÊNCIA (requests
+ * simultâneas em voo), não TAXA (requests por hora) — são eixos diferentes;
+ * reavaliado no #5215 e mantido em 5 (ver comentário nos 2 call sites em
+ * `fetchRecentCampaigns`), porque quem protege o orçamento HORÁRIO de verdade
+ * é o cache KV (imutáveis sem TTL, recentes com `RECENT_STATS_TTL`) somado ao
+ * retry com backoff de `withRateLimitRetry` — não a concorrência do batch.
+ *
+ * #5219 (registro de decisão, não reabrir): uma 2ª API key da Brevo pra este
+ * painel NÃO isola quota — o rate limit é por CONTA Brevo, não por
+ * credencial (2 keys da MESMA conta somam no MESMO balde). Isso é distinto
+ * de `BREVO_CLARICE_API_KEY`/`BREVO_DIARIA_API_KEY` (ver `brevoFetchWithApiKey`
+ * abaixo) — essas DUAS têm quota genuinamente independente porque são contas
+ * (tenants) Brevo DIFERENTES, não uma 2ª key da mesma conta. Ver
+ * docs/brevo-rate-limits.md.
+ */
+export const BREVO_RATE_LIMIT_GENERAL_RPH = 100; // "todos os outros endpoints" (emailCampaigns*, account)
+export const BREVO_RATE_LIMIT_CONTACTS_RPH = 36000; // /v3/contacts/*
+
 import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, MvGroupStatus, ContactsSummary, EiaEngagementSummary, EiaEngagementEdition, CohortStatsRow, PostmasterSpamEntry, PostmasterCampaignSpamRecord, LinkSectionMap, ClariceHourTestKvState } from "./types.ts"; // #4970: PostmasterCampaignSpamRecord; #5189: ClariceHourTestKvState
 import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEMENT_KV_KEY, POSTMASTER_SPAM_KV_KEY, HOUR_TEST_KV_KEY, RECENT_STATS_TTL, linkSectionsKvKey, linkTitlesKvKey } from "./types.ts"; // #4198: linkTitlesKvKey; #5189: HOUR_TEST_KV_KEY
 import { fetchCouponUsage, type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles } from "./sections-core.ts"; // #4184: collectMonthlyLinkCycles
 import { normalizeLinkSectionMap, normalizeLinkTitleMap } from "./link-section.ts"; // #4184 / #4198
-import { fmtTimeBRT } from "./render-links.ts"; // #4251: timestamp "defasado desde X" do banner de indisponibilidade
+import { fmtTimeBRT, fmtClockBRT } from "./render-links.ts"; // #4251: timestamp "defasado desde X"; #5218: horário-alvo do banner de rate-limit
+
+/**
+ * #5218: monta o horário-de-relógio (BRT) em que o freio de rate-limit
+ * anunciado libera, a partir de `retryAfterSecs` + o instante em que a
+ * decisão foi tomada (`nowMs`, injetável em teste — default `Date.now()`).
+ * Também devolve o epoch ms (`resetAtMs`) pra quem precisar montar o link
+ * "avisar quando atualizar" (`writeRefreshPending`) sem recalcular.
+ * `null` quando `retryAfterSecs` é `null` (Brevo não informou — sem ETA).
+ */
+export function computeRateLimitResetAt(
+  retryAfterSecs: number | null,
+  nowMs: number = Date.now(),
+): { resetAtMs: number; clockBRT: string } | null {
+  if (retryAfterSecs == null) return null;
+  const resetAtMs = nowMs + retryAfterSecs * 1000;
+  return { resetAtMs, clockBRT: fmtClockBRT(resetAtMs) };
+}
 
 /**
  * #2280: injeta um banner discreto de "dados podem estar atrasados" no topo de um
  * render bom servido como fallback durante 429. Pura/testável. Insere logo após a
  * tag <body ...>; se não houver <body> (HTML inesperado), prepende o banner.
+ *
+ * #5218: o texto trocou de delta relativo ("~120s") pra horário de relógio
+ * BRT ("volta a atualizar sozinho às 14:37 BRT") — um delta em segundos exige
+ * que quem lê faça a conta de cabeça a partir do instante em que abriu a
+ * página (que pode já ter passado minutos); um horário fixo não. `nowMs`
+ * (default `Date.now()`) é o único ponto de injeção de clock pra teste — a
+ * função continua pura/determinística quando chamada com um valor fixo.
+ * Quando `retryAfterSecs` é conhecido, a 2ª CTA (`?queueRefresh=1&resetAt=…`)
+ * deixa o editor pedir pra ser tratado como "fresh" automaticamente no
+ * primeiro acesso IGUAL-OU-DEPOIS desse horário — ver `writeRefreshPending`.
  */
-export function injectStaleBanner(html: string, retryAfterSecs: number | null): string {
-  const retryMsg = retryAfterSecs != null ? `~${retryAfterSecs}s` : "alguns minutos";
+export function injectStaleBanner(html: string, retryAfterSecs: number | null, nowMs: number = Date.now()): string {
+  const reset = computeRateLimitResetAt(retryAfterSecs, nowMs);
+  const retryMsg = reset ? `volta a atualizar sozinho às ${reset.clockBRT} BRT` : "volta a atualizar sozinho em alguns minutos";
+  const queueCta = reset
+    ? ` <a href="/?queueRefresh=1&amp;resetAt=${reset.resetAtMs}">Avisar quando atualizar</a>.`
+    : "";
   const banner =
     `<div style="background:#FBE9A8;color:#5c4a00;padding:10px 16px;text-align:center;` +
     `font-family:system-ui,sans-serif;font-size:14px;border-bottom:1px solid #E0C96A;">` +
-    `⏳ Brevo em rate-limit — dados de campanhas podem estar atrasados; Cupons e Contatos estão atualizados. ` +
-    `Atualiza em ${retryMsg}.</div>`;
+    `⏳ Brevo em rate-limit — dado atrasado, ${retryMsg}. ` +
+    `Cupons e Contatos estão atualizados.${queueCta}</div>`;
   if (/<body[^>]*>/i.test(html)) {
     return html.replace(/<body[^>]*>/i, (m) => m + banner);
   }
@@ -27,10 +95,11 @@ export function injectStaleBanner(html: string, retryAfterSecs: number | null): 
  * #2280: monta a resposta de fallback "último render bom" (200 + banner stale).
  * `X-Dashboard-Stale: rate-limit` permite que monitoria distinga render bom de
  * render stale (o HTTP é 200, então alertas de 5xx não pegam mais o rate-limit).
- * Exportada pra teste de regressão da rota.
+ * Exportada pra teste de regressão da rota. `nowMs` repassado pra
+ * `injectStaleBanner` (#5218) — default `Date.now()`, override só em teste.
  */
-export function buildStaleResponse(lastGoodHtml: string, retryAfterSecs: number | null): Response {
-  return new Response(injectStaleBanner(lastGoodHtml, retryAfterSecs), {
+export function buildStaleResponse(lastGoodHtml: string, retryAfterSecs: number | null, nowMs: number = Date.now()): Response {
+  return new Response(injectStaleBanner(lastGoodHtml, retryAfterSecs, nowMs), {
     headers: {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store", // não cachear a versão stale-banner
@@ -43,9 +112,12 @@ export function buildStaleResponse(lastGoodHtml: string, retryAfterSecs: number 
 /**
  * Renderiza resposta de rate limit amigável (#2144).
  * Retorna 503 + Retry-After quando o listing Brevo responde 429.
+ * #5218: mensagem também migrou de delta relativo pra horário de relógio BRT
+ * (mesmo racional de `injectStaleBanner` — mesma issue, mesma correção).
  */
-export function rateLimitResponse(retryAfterSecs: number | null, isHtml: boolean): Response {
-  const retryMsg = retryAfterSecs != null ? `${retryAfterSecs}s` : "alguns minutos";
+export function rateLimitResponse(retryAfterSecs: number | null, isHtml: boolean, nowMs: number = Date.now()): Response {
+  const reset = computeRateLimitResetAt(retryAfterSecs, nowMs);
+  const retryMsg = reset ? `volta a atualizar sozinho às ${reset.clockBRT} BRT` : "alguns minutos";
   const headers: Record<string, string> = {
     "Cache-Control": "no-store",
   };
@@ -60,7 +132,7 @@ export function rateLimitResponse(retryAfterSecs: number | null, isHtml: boolean
 <body>
 <h1>⏳ Brevo rate limit</h1>
 <p>A API da Brevo retornou 429 (too many requests).<br>
-Aguarde <strong>${escHtml(retryMsg)}</strong> e tente novamente.<br>
+Aguarde: <strong>${escHtml(retryMsg)}</strong>.<br>
 <a href="?fresh=1">Tentar agora</a></p>
 </body></html>`;
     return new Response(body, { status: 503, headers: { ...headers, "Content-Type": "text/html; charset=utf-8" } });
@@ -583,6 +655,111 @@ export async function releaseRefreshLock(
   await kv.delete(REFRESH_LOCK_KEY_PREFIX + routeKey).catch(() => {
     /* best-effort -- TTL cobre o resto */
   });
+}
+
+/**
+ * #5218 (Peça 2): fila "avisar quando atualizar" — CTA opcional no banner de
+ * rate-limit (`injectStaleBanner`). O editor clica em vez de ficar
+ * recarregando manualmente até o horário anunciado passar; a chave grava
+ * QUANDO o freio deveria liberar (`resetAt`, epoch ms — o mesmo valor já
+ * calculado pelo banner, repassado via querystring, nunca recalculado aqui).
+ *
+ * A chave NÃO dispara nada sozinha (sem cron/alarm) — só muda a computação de
+ * `isFresh` da rota `/` em `index.ts`: o PRIMEIRO request orgânico (de
+ * qualquer visitante, não necessariamente quem clicou) que chega
+ * IGUAL-OU-DEPOIS de `resetAt` é tratado como fresh (bypassa o cache de
+ * borda + o KV de stats), e a chave é limpa nesse mesmo request — sucesso ou
+ * falha do live-fetch, nunca se rearma sozinha (um novo 429 subsequente
+ * escreveria uma NOVA entrada via um novo clique, não reaproveita a antiga).
+ *
+ * `expirationTtl = secsUntilReset + ~120s` autolimpa mesmo se nada consumir a
+ * flag (ex: ninguém mais visita o dashboard) — sem cleanup job dedicado.
+ * `secsUntilReset` nunca é negativo (clampado a 0 se `resetAtMs` já passou),
+ * então o TTL efetivo é sempre >= 120s — bem acima do mínimo de 60s exigido
+ * pelo KV; `Math.max(60, …)` é rede de segurança defensiva, não o caminho
+ * comum (documentado assim pra não confundir o próximo leitor).
+ */
+export const REFRESH_PENDING_KV_KEY = "dash:refresh:pending";
+
+export interface RefreshPendingRecord {
+  readonly requestedAt: number; // epoch ms — quando o editor clicou (só pra debug/observabilidade)
+  readonly resetAt: number; // epoch ms — quando o próximo request deve virar auto-fresh
+}
+
+/** Pura: monta o registro a persistir. Exportada pra teste direto (sem KV). */
+export function buildRefreshPendingRecord(resetAtMs: number, nowMs: number = Date.now()): RefreshPendingRecord {
+  return { requestedAt: nowMs, resetAt: resetAtMs };
+}
+
+/**
+ * Pura: `true` quando o registro pendente já amadureceu (agora >= resetAt).
+ * `null`/registro ausente ou malformado → nunca due (fail-closed: sem
+ * registro válido, não força fresh — comportamento idêntico a antes do #5218).
+ */
+export function isRefreshPendingDue(record: RefreshPendingRecord | null, nowMs: number = Date.now()): boolean {
+  return record != null && Number.isFinite(record.resetAt) && nowMs >= record.resetAt;
+}
+
+/**
+ * Lê `dash:refresh:pending` do KV. `null` em qualquer ausência/erro/formato
+ * inesperado (fail-closed). Chamada incondicionalmente em TODA request `/`
+ * (ver `handleFetch`) — por isso usa `try/catch` genuíno (não só
+ * `.catch()` encadeado): um `kv.get` que lance SINCRONAMENTE (não devolva
+ * uma Promise, literalmente lance) escaparia de um `.catch()` (que só
+ * intercepta rejection de Promise, não exceção síncrona antes dela existir)
+ * e vazaria pra fora desta função — achado em teste real (#3653 achado 2 já
+ * documentou essa classe de bug pro lock KV; mesma disciplina aqui).
+ */
+export async function readRefreshPending(env: Pick<Env, "STATS_CACHE">): Promise<RefreshPendingRecord | null> {
+  const kv = env.STATS_CACHE;
+  if (!kv) return null;
+  let raw: unknown;
+  try {
+    raw = await kv.get(REFRESH_PENDING_KV_KEY, "json");
+  } catch {
+    return null; // KV instável (síncrono ou rejeitado) -- fail-closed
+  }
+  if (!raw || typeof raw !== "object") return null;
+  const { requestedAt, resetAt } = raw as Record<string, unknown>;
+  if (typeof requestedAt !== "number" || typeof resetAt !== "number") return null;
+  return { requestedAt, resetAt };
+}
+
+/**
+ * Grava a fila. `resetAtMs` vem PRONTO do caller (o mesmo epoch ms que o
+ * banner já mostrou ao editor) — esta função nunca recalcula a partir de
+ * `retryAfterSecs` pra não correr o risco de os dois horários divergirem.
+ * `try/catch` genuíno pelo mesmo motivo de `readRefreshPending` acima.
+ */
+export async function writeRefreshPending(
+  env: Pick<Env, "STATS_CACHE">,
+  resetAtMs: number,
+  nowMs: number = Date.now(),
+): Promise<void> {
+  const kv = env.STATS_CACHE;
+  if (!kv) return;
+  const record = buildRefreshPendingRecord(resetAtMs, nowMs);
+  const secsUntilReset = Math.max(0, Math.round((resetAtMs - nowMs) / 1000));
+  const ttl = Math.max(60, secsUntilReset + 120); // autolimpa; piso 60s (mínimo do KV)
+  try {
+    await kv.put(REFRESH_PENDING_KV_KEY, JSON.stringify(record), { expirationTtl: ttl });
+  } catch {
+    /* best-effort -- pior caso, o editor só não vê o auto-fresh (sem dano) */
+  }
+}
+
+/**
+ * Limpa a fila — chamada pelo request que a consumiu (sucesso ou falha do
+ * live-fetch), nunca se rearma. `try/catch` genuíno pelo mesmo motivo acima.
+ */
+export async function clearRefreshPending(env: Pick<Env, "STATS_CACHE">): Promise<void> {
+  const kv = env.STATS_CACHE;
+  if (!kv) return;
+  try {
+    await kv.delete(REFRESH_PENDING_KV_KEY);
+  } catch {
+    /* best-effort -- TTL cobre o resto */
+  }
 }
 
 /**
@@ -1785,6 +1962,14 @@ export async function brevoFetch<T>(path: string, env: Env): Promise<T> {
  * (`brevo-diaria.ts`, conta SEPARADA — `env.BREVO_DIARIA_API_KEY`) chama esta
  * função diretamente. Mesmo tratamento de 429/erro para as duas contas —
  * nenhuma duplicação de lógica.
+ *
+ * #5219 (registro, não reabrir): `BREVO_API_KEY` (Clarice) e
+ * `BREVO_DIARIA_API_KEY` (canal `brevo_diaria` do editor) têm quota
+ * INDEPENDENTE porque são credenciais de CONTAS Brevo distintas (tenants
+ * diferentes) — o rate limit da Brevo é por conta, então isso não é o mesmo
+ * caso de "criar uma 2ª key pra não competir com o resto": uma 2ª key da
+ * MESMA conta somaria no MESMO balde de 100/36.000 RPH (ver o bloco no topo
+ * do arquivo). Não confundir as duas situações.
  */
 export async function brevoFetchWithApiKey<T>(path: string, apiKey: string): Promise<T> {
   const res = await fetch(`https://api.brevo.com${path}`, {
@@ -1833,7 +2018,37 @@ export async function brevoFetchWithApiKey<T>(path: string, apiKey: string): Pro
     // (403/5xx, ver isBrevoOutageStatus) sem parsear a string de mensagem.
     throw new BrevoUpstreamError(res.status, `Brevo API ${path} failed (${res.status}): ${await res.text()}`);
   }
+  // #5215 item 4: `x-sib-ratelimit-remaining` já era lido no ramo 429 acima
+  // (pro backoff) mas nunca no caminho de SUCESSO — sem isso, o primeiro
+  // sinal de que o orçamento horário está acabando é o 429 em si. Log
+  // proativo (não recusa a resposta) quando o restante fica baixo, pra dar
+  // alguma visibilidade nos logs do Worker ANTES de bater o teto.
+  logIfRateLimitRunningLow(res.headers.get("x-sib-ratelimit-remaining"), path);
   return res.json() as Promise<T>;
+}
+
+/** Pura: extrai um inteiro não-negativo do header, ou `null` se ausente/inválido. Exportada pra teste. */
+export function parseRateLimitRemaining(header: string | null): number | null {
+  if (header == null) return null;
+  const v = Number(header);
+  return Number.isFinite(v) && v >= 0 ? v : null;
+}
+
+/**
+ * Pura: `true` quando o restante conhecido está no ou abaixo do threshold
+ * (default 10 — ~10% do teto de 100 RPH da família "todos os outros
+ * endpoints", #5215). `null` (header ausente) nunca soa o alarme —
+ * ausência de dado não é sinal de escassez.
+ */
+export function shouldWarnLowRateLimitRemaining(remaining: number | null, threshold = 10): boolean {
+  return remaining != null && remaining <= threshold;
+}
+
+function logIfRateLimitRunningLow(remainingHeader: string | null, path: string): void {
+  const remaining = parseRateLimitRemaining(remainingHeader);
+  if (shouldWarnLowRateLimitRemaining(remaining)) {
+    console.warn(`[#5215] Brevo rate limit quase no teto: ${remaining} restantes (endpoint ${path})`);
+  }
 }
 
 /**
@@ -1844,7 +2059,14 @@ export async function brevoFetchWithApiKey<T>(path: string, apiKey: string): Pro
  * individual por campanha com `?statistics=globalStats`.)
  *
  * #2144: usa mapLimit(5) em vez de Promise.all ilimitado pra não disparar
- * todos os GETs de uma vez e estourar a janela de 100 reqs/min da Brevo.
+ * todos os GETs de uma vez de uma tacada só. #5215: o teto real da Brevo
+ * pra esta família de endpoint (`/v3/emailCampaigns*`) é 100 requisições
+ * POR HORA (RPH), não por minuto — ver o docstring do módulo (topo do
+ * arquivo) pra tabela completa por família de endpoint. `mapLimit(5)` limita
+ * CONCORRÊNCIA (quantas requests em voo ao mesmo tempo), não TAXA (quantas
+ * por hora) — as duas dimensões são independentes; ver análise completa
+ * nesse mesmo docstring do módulo sobre por que o valor 5 segue adequado
+ * mesmo com a correção RPH.
  * Stats de campanhas com sentDate > 7d são consideradas imutáveis e
  * cacheadas no KV STATS_CACHE sem TTL. Nomes de lista: KV com TTL 7d.
  */
@@ -1881,9 +2103,15 @@ export async function fetchRecentCampaigns(
   const linksStatsMap = new Map<number, BrevoLinksStats>();
 
   // Fetch listas e globalStats em paralelo -- os dois batches sao independentes.
-  // mapLimit(5) por batch => concorrencia total <= 10 (bem abaixo de 100 reqs/min da Brevo).
-  // Fetch listas e globalStats em paralelo -- os dois batches sao independentes.
-  // mapLimit(5) por batch: concorrencia total <= 10, bem abaixo de 100 reqs/min da Brevo.
+  // mapLimit(5) por batch: concorrencia total <= 10. #5215: isso limita BURST
+  // (requests simultaneas em voo), nao TAXA -- o teto real da Brevo pra
+  // /v3/emailCampaigns* e /v3/contacts/lists/{id} e agregado POR HORA (100 e
+  // 36.000 RPH respectivamente, ver brevoFetchWithApiKey), entao concorrencia
+  // baixa por si so nao evita estourar o orcamento horario se o numero total
+  // de campanhas novas (nao cacheadas) na janela for grande o bastante -- quem
+  // protege isso e o cache KV (imutaveis sem TTL, recentes com RECENT_STATS_TTL)
+  // + withRateLimitRetry (backoff em 429 real). mapLimit(5) segue certo pro que
+  // se propoe: nao abrir dezenas de conexoes simultaneas por render.
   await Promise.all([
     // Batch 1: nomes de lista com KV cache (TTL 7d)
     mapLimit(listIds, 5, async (id) => {
