@@ -791,6 +791,23 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // qualquer forma.
     issue: "#5128, #5130",
   },
+  {
+    name: "Diaria-On-Hold-Vencimento-Alarm",
+    description: "alarme semanal de vencimento das issues on-hold (Vencimento: AAAA-MM-DD no corpo)",
+    steps: [{ key: "alarm", script: "scripts/on-hold-vencimento-alarm.ts" }],
+    logPath: "on-hold-vencimento-alarm/.alarm.log",
+    // Domingo 11:00 BRT — sem colisão com nenhum outro timer de domingo já
+    // registrado (03:00 Beehiiv-Backup, 03:30 Acquisition-Health-Alarm, 07:00
+    // Geo-Citation-Monitor, 10:30 Geo-Citation-Staleness-Alarm, 22:00
+    // LinkedIn-Weekly-Staleness-Alarm). Granularidade dos vencimentos
+    // declarados é de semanas — weekly basta (#5317, sugestão da própria
+    // issue).
+    schedule: { kind: "weekly", dayOfWeek: "Sunday", hour: 11, minute: 0 },
+    // Mesmo caso de `Diaria-Beehiiv-Home-Meta-Check` (#5005): task registrada
+    // depois do cutover systemd (épica #4798), sem contraparte Windows/.ps1 —
+    // e nenhuma tarefa `Diaria-*` deve rodar no Windows (#5074).
+    issue: "#5317",
+  },
 ];
 
 /** Busca uma task pelo nome exato (`ScheduledTaskDefinition.name`). */
