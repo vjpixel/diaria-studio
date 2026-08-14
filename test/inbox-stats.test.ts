@@ -393,13 +393,16 @@ describe("formatCoverageLine (#3461 — bloco de boas-vindas, padrão desde 2607
     assert.equal(line.split("\n\n").length, 4);
   });
 
-  it("#701: concordância singular quando selected=1 → 'selecionei o artigo mais relevante'", () => {
+  it("#701: concordância singular quando selected=1 → 'selecionei o conteúdo mais relevante'", () => {
     const line = formatCoverageLine({
       editorSubmissions: 5,
       diariaDiscovered: 100,
       selected: 1,
     });
-    assert.match(line, /e selecionei o artigo mais relevante\./);
+    // 260814 (#5314): "conteúdo" no lugar de "artigo" no singular também —
+    // evita misturar "N conteúdos (...) e selecionei o artigo mais relevante"
+    // na mesma frase.
+    assert.match(line, /e selecionei o conteúdo mais relevante\./);
     assert.doesNotMatch(line, /selecionei os 1 /);
   });
 
@@ -421,7 +424,7 @@ describe("formatCoverageLine (#3461 — bloco de boas-vindas, padrão desde 2607
     // #3731: "1 enviado"/"1 encontrado" (singular) — antes deste fix, o
     // template flexionava "artigos"/selPhrase mas mantinha "enviados"/
     // "encontrados" fixos no plural mesmo pra contagem 1.
-    assert.match(line, /Nesta edição, a IA analisou 2 conteúdos \(1 enviado por mim e 1 encontrado automaticamente\) e selecionei o artigo mais relevante\./);
+    assert.match(line, /Nesta edição, a IA analisou 2 conteúdos \(1 enviado por mim e 1 encontrado automaticamente\) e selecionei o conteúdo mais relevante\./);
   });
 
   it("#3731: concordância singular quando editorSubmissions=1 (1 enviado, não '1 enviados')", () => {

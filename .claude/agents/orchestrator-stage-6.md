@@ -113,7 +113,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 ```
 Prosseguir direto para §6d (executar Schedule).
 
-**Pré-gate: ler post_pixel para o lembrete (#2153).** Extrair seção `## post_pixel` de `03-social.md` **com `{outros_count}`/`{edition_url}` já resolvidos (#3052)** — `post_pixel` nunca passa pelo dispatch de `publish-linkedin.ts` (postagem 100% manual, #1690), então Stage 6 é o ponto de resolução equivalente:
+**Pré-gate: ler post_pixel para o lembrete (#2153).** Extrair seção `## post_pixel` de `03-social.md` — `post_pixel` nunca passa pelo dispatch de `publish-linkedin.ts` (postagem 100% manual, #1690), então Stage 6 é o ponto de resolução equivalente **quando o texto ainda contém `{outros_count}`/`{edition_url}` literais**. **#3052 revertido (260814):** post_pixel normalmente não abre mais com esses placeholders (writer não os emite) — o passo abaixo vira no-op na maioria das edições, mas segue rodado por backward-compat (edições pré-260814 reprocessadas, ou qualquer texto que ainda os contenha):
 
 ```bash
 npx tsx scripts/resolve-post-pixel.ts --edition-dir {EDITION_DIR}/

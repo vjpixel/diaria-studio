@@ -317,10 +317,15 @@ function isInQuotedRange(
 }
 
 /**
- * #3208: `## post_pixel` documentadamente abre com "Hoje" (template
- * `.claude/agents/social-linkedin.md` §3b, #3052) — é publicado ao vivo no
- * mesmo dia (não agendado como main_d{N}, que vai pra D+1+), então "hoje"
- * é literalmente correto ali.
+ * #3208: `## post_pixel` pode legitimamente conter referências temporais
+ * relativas tipo "hoje" — é publicado ao vivo no mesmo dia (não agendado
+ * como main_d{N}, que vai pra D+1+), então "hoje" é literalmente correto
+ * ali. (Motivação original citava o template com abertura fixa "Hoje
+ * saíram mais {outros_count}..." de `.claude/agents/social-linkedin.md`
+ * §3b, #3052 — essa frase-modelo específica foi removida no revert do
+ * #3052 em 260814, mas a exceção continua válida: o post ainda é publicado
+ * no mesmo dia, então qualquer "hoje" que o Pixel escrever no corpo
+ * continua correto, não só na abertura antiga.)
  *
  * Localiza o range de LINHAS (0-based, inclusivo nas duas pontas) do CORPO
  * do bloco `## post_pixel` dentro da seção `# LinkedIn`, pra que o scan de

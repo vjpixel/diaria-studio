@@ -525,13 +525,37 @@ describe("rewriteCoverageLine — bloco de boas-vindas #3461 (regressão #3696)"
   // TODA edição publicada desde 260715 (o mecanismo de correção do X ficava
   // desativado de fato).
   function welcomeBlockMd(x: number, y: number, z: number): string {
-    const selPhrase = z === 1 ? "selecionei o artigo mais relevante" : `selecionei os ${z} mais relevantes`;
+    const selPhrase = z === 1 ? "selecionei o conteúdo mais relevante" : `selecionei os ${z} mais relevantes`;
     return [
       "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
       "",
       "Todos os dias, junto com a IA da diar.ia.br, seleciono e resumo as notícias mais importantes para economizar o seu tempo.",
       "",
       `Nesta edição, a IA analisou ${x + y} conteúdos (${x} enviados por mim e ${y} encontrados automaticamente) e ${selPhrase}.`,
+      "",
+      "Se esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1**",
+      "",
+      "Resto.",
+    ].join("\n");
+  }
+
+  // 260814 (#5314): variante com o wording LEGADO (pré-260814, "artigos"/"o
+  // artigo mais relevante") — cobertura de regressão separada da fixture
+  // "atual" acima. Sem isso, nada neste describe exercitaria o caminho de
+  // compat retroativa que `WELCOME_COVERAGE_SENTENCE_RE`/`sync-coverage-line.ts`
+  // afirmam suportar pra edições publicadas antes da troca de palavra.
+  function welcomeBlockMdLegacyWording(x: number, y: number, z: number): string {
+    const selPhrase = z === 1 ? "selecionei o artigo mais relevante" : `selecionei os ${z} mais relevantes`;
+    return [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
+      "",
+      "Todos os dias, junto com a IA da diar.ia.br, seleciono e resumo as notícias mais importantes para economizar o seu tempo.",
+      "",
+      `Nesta edição, a IA analisou ${x + y} artigos (${x} enviados por mim e ${y} encontrados automaticamente) e ${selPhrase}.`,
       "",
       "Se esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
       "",
@@ -562,11 +586,26 @@ describe("rewriteCoverageLine — bloco de boas-vindas #3461 (regressão #3696)"
     assert.equal(r.changed, false);
   });
 
-  it("concordância singular quando z=1 (selecionei o artigo mais relevante)", () => {
+  it("concordância singular quando z=1 (selecionei o conteúdo mais relevante)", () => {
     const md = welcomeBlockMd(5, 10, 3);
     const r = rewriteCoverageLine(md, 5, 10, 1);
     assert.ok(r.changed);
-    assert.match(r.md, /e selecionei o artigo mais relevante\./);
+    assert.match(r.md, /e selecionei o conteúdo mais relevante\./);
+  });
+
+  it("#5314: reconhece e reescreve edição LEGADA com wording 'artigos' (compat retroativa)", () => {
+    const md = welcomeBlockMdLegacyWording(3, 164, 12);
+    assert.ok(WELCOME_COVERAGE_SENTENCE_RE.test(md), "regex deve reconhecer o wording legado antes do rewrite");
+    const r = rewriteCoverageLine(md, 12, 164, 12);
+    assert.ok(r.changed);
+    // Pós-rewrite, o texto sai no wording ATUAL (conteúdos) — o rewrite não
+    // preserva a palavra antiga, só os números; comportamento documentado no
+    // silent-failure finding da PR #5314 (rewrite de números também
+    // normaliza o wording como efeito colateral, intencional aqui).
+    assert.match(
+      r.md,
+      /Nesta edição, a IA analisou 176 conteúdos \(12 enviados por mim e 164 encontrados automaticamente\) e selecionei os 12 mais relevantes\./,
+    );
   });
 
   it("#3731: concordância singular quando x=1 (1 enviado, não '1 enviados')", () => {

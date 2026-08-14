@@ -13,8 +13,9 @@
  *     desta newsletter. (...) Nesta edição, a IA analisou N conteúdos (X
  *     enviados por mim e Y encontrados automaticamente) e selecionei os Z
  *     mais relevantes. (...)" — detectado pela linha "Nesta edição, a IA
- *     analisou...". Edições anteriores a 260814 usavam "artigos" — aceito
- *     ainda pelo regex por compat retroativa.
+ *     analisou...". Edições anteriores a 260814 usavam "artigos"/"selecionei
+ *     o artigo mais relevante" — aceito ainda pelo regex por compat
+ *     retroativa (tanto no total quanto no singular do selPhrase).
  *   - #3456 (curto período entre 260715 ajustes, mantido por precaução):
  *     "Para esta edição, a diar.ia.br analisou N artigos: X enviados pelo
  *     editor, {nome}, e Y encontrados automaticamente. Após a curadoria,
@@ -41,7 +42,7 @@ const NEW_COVERAGE_LINE_RE =
   /^Para esta edi[çc][ãa]o, a diar\.ia\.br analisou (?:\d+|\?\?\?) artigos?: \d+ enviados? pelo editor, [^,]+, e (?:\d+|\?\?\?) encontrados? automaticamente\. Após a curadoria, (?:foi selecionado o artigo mais relevante|foram selecionados os \d+ mais relevantes)/i;
 
 const WELCOME_COVERAGE_LINE_RE =
-  /^Nesta edi[çc][ãa]o, a IA analisou (?:\d+|\?\?\?) (?:artigos?|conte[úu]dos?) \(\d+ enviados? por mim e (?:\d+|\?\?\?) encontrados? automaticamente\) e (?:selecionei o artigo mais relevante|selecionei os \d+ mais relevantes)/i;
+  /^Nesta edi[çc][ãa]o, a IA analisou (?:\d+|\?\?\?) (?:artigos?|conte[úu]dos?) \(\d+ enviados? por mim e (?:\d+|\?\?\?) encontrados? automaticamente\) e (?:selecionei o (?:artigo|conte[úu]do) mais relevante|selecionei os \d+ mais relevantes)/i;
 
 export const COVERAGE_LINE_RE = new RegExp(
   `(?:${LEGACY_COVERAGE_LINE_RE.source})|(?:${NEW_COVERAGE_LINE_RE.source})|(?:${WELCOME_COVERAGE_LINE_RE.source})`,

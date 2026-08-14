@@ -1864,6 +1864,23 @@ describe("lintLinkedinPageLink (#2458)", () => {
     assert.ok(e, `esperava erro em post_pixel, achei: ${JSON.stringify(r.errors)}`);
   });
 
+  // 260814 (#5314): #3052 foi revertido — post_pixel não fecha mais com a
+  // linha fixa "Siga a diar.ia.br em linkedin.com/company/diar.ia.br" (CTA
+  // separado). A convenção nova pede o link mencionado de passagem, integrado
+  // ao corpo do post. Este teste documenta/confirma que esse formato ainda
+  // passa #2458 — achado crítico da review da PR: sem ele, nenhum teste do
+  // repo exercitava a interação entre "o que o writer de fato produz agora" e
+  // este lint gate-blocking (Stage 2), e a suíte ficava verde enquanto o
+  // pipeline real quebraria na próxima edição.
+  it("PASSA (#5314): post_pixel no formato pós-revert #3052 — link mencionado de passagem, sem CTA fixo de fechamento", () => {
+    const md = mkLinkedinMd({
+      postPixel:
+        `O que mais me chamou atenção nesse lançamento foi X. Reuni essa e outras leituras na curadoria da diar.ia.br (${DIARIA_LINKEDIN_PAGE_SLUG}) que faço todo dia.`,
+    });
+    const r = lintLinkedinPageLink(md);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
+
   it("PASSA: post_pixel com URL completa 'https://linkedin.com/company/diar.ia.br'", () => {
     // Aceita qualquer forma que contenha 'linkedin.com/company/diar.ia.br'
     const md = mkLinkedinMd({
