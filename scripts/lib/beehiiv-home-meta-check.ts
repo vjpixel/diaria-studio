@@ -64,7 +64,24 @@
  * `evaluateHomeMetaDrift`, avaliada pelo script chamador contra o HTML de
  * uma página de post (a mais recente, descoberta via `findLatestPostUrl`
  * sobre a própria home já buscada — sem depender de nenhuma fonte nova).
+ *
+ * ─── 6º eixo: hub temático publicado sem link na home (#5257) ─────────────
+ *
+ * A auditoria "Raio-X de /temas/" (14/08/2026) achou que 4 dos 5 hubs então
+ * publicados nunca foram rastreados pelo Google — nenhuma página com
+ * autoridade linkava pra eles. O item C do #5097/#5257 (adicionar um bloco
+ * "Temas" na home linkando `/temas/{slug}` de cada hub de `HUB_META`) é ação
+ * manual do editor no Website Builder da Beehiiv, fora de escopo aqui — este
+ * 6º eixo (`hub-link-missing`) é o GUARD que já existe pros outros 5: cruza
+ * os slugs de `HUB_META` (fonte única de verdade dos hubs publicados, ver
+ * `workers/arquivo/src/hubs/meta.ts`) contra os `href="…/temas/{slug}"`
+ * efetivamente presentes no HTML da home, e alarma qualquer hub sem link —
+ * hoje (o bloco ainda não existe, então o alarme começa ACESO de propósito,
+ * é o estado real) e, mais importante, pra QUALQUER hub futuro que entre em
+ * `HUB_META` sem o link correspondente ser adicionado ao bloco.
  */
+
+import { HUB_META, type HubMeta } from "../../workers/arquivo/src/hubs/meta.ts";
 
 // ─── Extração (pura) ────────────────────────────────────────────────────────
 
@@ -243,12 +260,38 @@ export function detectLegacyHostLinks(html: string): string[] {
   return [...found].sort();
 }
 
+/** Casa `/temas/{slug}` como o COMPONENTE INTEIRO do path — delimitado por
+ * `"`/`'`/`/`/`?`/`#` ou fim de string do lado direito — pra um slug que é
+ * prefixo de outro (ex: "openai" dentro de um slug hipotético
+ * "openai-x") nunca dar falso positivo. */
+function hubLinkPattern(slug: string): RegExp {
+  const escaped = slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`/temas/${escaped}(?=["'/?#]|$)`);
+}
+
+/**
+ * Pura — retorna (na ordem de `hubs`) os slugs de `hubs` cujo link
+ * `/temas/{slug}` NÃO aparece em `html` — hub publicado (presente em
+ * `HUB_META`) sem link de descoberta na home (#5257, 6º eixo). Casa o path
+ * `/temas/{slug}` independente de host (a home linka pro subdomínio
+ * `arquivo.diar.ia.br`, que serve os hubs — ver `workers/arquivo/src/hubs/`),
+ * então tanto `href="/temas/{slug}"` (relativo) quanto
+ * `href="https://arquivo.diar.ia.br/temas/{slug}"` (absoluto) contam como
+ * presente. Regex sobre string (mesmo padrão do resto deste módulo); nunca
+ * lança. `hubs` é injetável pra teste; produção sempre usa o default
+ * (`HUB_META` real).
+ */
+export function detectMissingHubLinks(html: string, hubs: readonly HubMeta[] = HUB_META): string[] {
+  return hubs.filter((h) => !hubLinkPattern(h.slug).test(html)).map((h) => h.slug);
+}
+
 export type HomeMetaDriftCheck =
   | "og-title-brand"
   | "http-self-link"
   | "english-labels"
   | "legacy-host-link"
-  | "port-in-url";
+  | "port-in-url"
+  | "hub-link-missing";
 
 export interface HomeMetaDriftFinding {
   readonly check: HomeMetaDriftCheck;
@@ -256,9 +299,10 @@ export interface HomeMetaDriftFinding {
 }
 
 /**
- * Pura — avalia os 3 eixos de drift da issue #4557 + o 4º eixo do #5099 a
- * partir do HTML da home já buscado (nenhuma chamada de rede aqui). Retorna
- * a lista de achados — vazia quando os 4 eixos estão limpos.
+ * Pura — avalia os 3 eixos de drift da issue #4557 + o 4º eixo do #5099 +
+ * o 6º eixo do #5257 a partir do HTML da home já buscado (nenhuma chamada
+ * de rede aqui). Retorna a lista de achados — vazia quando os 5 eixos estão
+ * limpos.
  *
  *   1. `og-title-brand`: og:title ausente, sem a marca oficial "diar.ia.br",
  *      ou contendo a grafia legada "Diar.ia".
@@ -267,6 +311,8 @@ export interface HomeMetaDriftFinding {
  *   4. `legacy-host-link` (#5099): qualquer `href` pra `*.workers.dev` ou
  *      `diaria.beehiiv.com` — exceto os hosts de plataforma Beehiiv em
  *      `ALLOWED_BEEHIIV_PLATFORM_HOSTS`.
+ *   5. `hub-link-missing` (#5257): qualquer hub de `HUB_META` sem link
+ *      `/temas/{slug}` na home.
  */
 export function evaluateHomeMetaDrift(
   html: string,
@@ -307,6 +353,14 @@ export function evaluateHomeMetaDrift(
     findings.push({
       check: "legacy-host-link",
       message: `link(s) reader-facing pra host legado encontrado(s): ${legacyHosts.join(", ")} — deveria ir pro host de marca *.diar.ia.br (#5099)`,
+    });
+  }
+
+  const missingHubs = detectMissingHubLinks(html);
+  if (missingHubs.length > 0) {
+    findings.push({
+      check: "hub-link-missing",
+      message: `hub(s) publicado(s) sem link "/temas/{slug}" na home: ${missingHubs.join(", ")} — adicionar ao bloco "Temas" da home (#5257)`,
     });
   }
 

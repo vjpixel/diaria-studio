@@ -1,18 +1,19 @@
 # Smoke-test dos eixos de drift da home/edição pública Beehiiv
 
-Issue: [#4557](https://github.com/vjpixel/diaria-studio/issues/4557) (guard), [#5005](https://github.com/vjpixel/diaria-studio/issues/5005) (registro como task agendada), [#5099](https://github.com/vjpixel/diaria-studio/issues/5099) (4º eixo, host legado), [#5106](https://github.com/vjpixel/diaria-studio/issues/5106) (5º eixo, porta na URL), [#5112](https://github.com/vjpixel/diaria-studio/issues/5112) (issue automática por achado), [#5113](https://github.com/vjpixel/diaria-studio/issues/5113) (cadência diária), [#5137](https://github.com/vjpixel/diaria-studio/issues/5137) (falso positivo do eixo english-labels).
+Issue: [#4557](https://github.com/vjpixel/diaria-studio/issues/4557) (guard), [#5005](https://github.com/vjpixel/diaria-studio/issues/5005) (registro como task agendada), [#5099](https://github.com/vjpixel/diaria-studio/issues/5099) (4º eixo, host legado), [#5106](https://github.com/vjpixel/diaria-studio/issues/5106) (5º eixo, porta na URL), [#5112](https://github.com/vjpixel/diaria-studio/issues/5112) (issue automática por achado), [#5113](https://github.com/vjpixel/diaria-studio/issues/5113) (cadência diária), [#5137](https://github.com/vjpixel/diaria-studio/issues/5137) (falso positivo do eixo english-labels), [#5257](https://github.com/vjpixel/diaria-studio/issues/5257) (6º eixo, hub sem link na home).
 
 `scripts/beehiiv-home-meta-check.ts` + `scripts/lib/beehiiv-home-meta-check.ts` implementam a máquina completa de um alarme de drift no molde de `robots-txt-drift-check.ts`/`hub-drift-check.ts` — fetch da home pública, decisão pura/testável, fingerprint, idempotência, e-mail de alarme — mas até o #5005 não tinha nenhum agendamento: guard construído, sem estar armado, invisível em produção até alguém invocar a CLI manualmente.
 
 ## O que ele checa
 
-Um `GET https://diar.ia.br/` (home pública — sem autenticação, sem API do Beehiiv, sem MCP; qualquer visitante vê o mesmo HTML) contra 4 eixos, mais um 5º checado contra a página da edição mais recente (`/p/{slug}`, descoberta a partir da própria home):
+Um `GET https://diar.ia.br/` (home pública — sem autenticação, sem API do Beehiiv, sem MCP; qualquer visitante vê o mesmo HTML) contra 5 eixos, mais um 6º checado contra a página da edição mais recente (`/p/{slug}`, descoberta a partir da própria home):
 
 1. **`og:title`** — sem a marca oficial, ou com a grafia legada "Diar.ia" (deveria ser "diar.ia.br").
 2. **Self-links http** — `href="http://diar.ia.br..."` na própria home (deveria ser `https://`).
 3. **Rótulos residuais em inglês** — resíduo do tema padrão do Beehiiv ("Sign Up", "Login", "N min read") que deveria estar traduzido pro PT-BR. Casado contra o texto RENDERIZADO (`extractVisibleText`, #5137) — dado de configuração do builder Beehiiv embutido no HTML (ex: `"label":"Sign Up"` no JSON da navbar) não conta, só texto que o leitor de fato vê.
 4. **Links pra host legado** (#5099) — `*.diaria.workers.dev` ou `diaria.beehiiv.com` em vez do host de marca `*.diar.ia.br`.
-5. **Porta explícita na URL** (#5106) — qualquer `href` com `:PORTA` numa superfície pública (achado real: botão "View more" apontando pra `diar.ia.br:3002`, sobra de dev). Único eixo checado contra a página de edição mais recente, não a home.
+5. **Hub sem link na home** (`hub-link-missing`, #5257) — qualquer hub de `HUB_META` (`workers/arquivo/src/hubs/meta.ts`) sem um `href="…/temas/{slug}"` na home. A auditoria "Raio-X de /temas/" (14/08/2026) achou que 4 dos 5 hubs então publicados nunca foram rastreados pelo Google por faltar exatamente esse link — o bloco "Temas" na home é ação de painel do editor (fora de escopo aqui); este eixo é o guard que sobrevive pra hub futuro.
+6. **Porta explícita na URL** (#5106) — qualquer `href` com `:PORTA` numa superfície pública (achado real: botão "View more" apontando pra `diar.ia.br:3002`, sobra de dev). Único eixo checado contra a página de edição mais recente, não a home.
 
 Se pelo menos 1 eixo der drift, chega **1 e-mail** ao editor nomeando o(s) eixo(s), o detalhe exato, e (#5112) a issue GitHub associada a cada achado.
 
@@ -22,7 +23,7 @@ A issue #4557 original pede 3 mudanças de PAINEL Beehiiv (ação manual do edit
 
 ## Issue automática por achado (#5112)
 
-Cada achado pendente (dos 5 eixos acima) tem uma issue GitHub garantida — criada na 1ª vez que aparece, reusada nas execuções seguintes (dedup por cache local + marcador `<!-- alarm-finding: {eixo}:{fingerprint} -->` no corpo da issue, que sobrevive à perda do cache). Quando um achado deixa de reproduzir, a issue recebe um comentário ("não reproduz mais desde..."); depois de **2 execuções diárias consecutivas** sem o achado (48h, já que a task é diária desde #5113), a issue é fechada automaticamente. Ver `scripts/lib/alarm-issues.ts` — helper genérico, implementado só pra este check nesta unidade (os outros 8 alarmes do repo ficam de fora, follow-up futuro).
+Cada achado pendente (dos 6 eixos acima) tem uma issue GitHub garantida — criada na 1ª vez que aparece, reusada nas execuções seguintes (dedup por cache local + marcador `<!-- alarm-finding: {eixo}:{fingerprint} -->` no corpo da issue, que sobrevive à perda do cache). Quando um achado deixa de reproduzir, a issue recebe um comentário ("não reproduz mais desde..."); depois de **2 execuções diárias consecutivas** sem o achado (48h, já que a task é diária desde #5113), a issue é fechada automaticamente. Ver `scripts/lib/alarm-issues.ts` — helper genérico, implementado só pra este check nesta unidade (os outros 8 alarmes do repo ficam de fora, follow-up futuro).
 
 Se a criação/comentário/fechamento de issue falhar (ex: `gh` não autenticado no servidor), o **e-mail sai assim mesmo** — a linha do achado cita `→ issue não criada: {motivo}` em vez do número da issue, e o cursor de reconciliação NÃO avança (retry na próxima execução).
 

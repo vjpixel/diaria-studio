@@ -21,6 +21,7 @@ import {
   hubCoverageDate,
   checkUpdatedDateCeiling,
   HUB_UPDATED_DATE_CEILING_WARN_DAYS,
+  hubSectionAnchorIds,
   type HubContent,
 } from "../scripts/lib/shared/hub-page.ts";
 import { findParagraphLinks } from "../scripts/lib/shared/markdown-links.ts";
@@ -1131,7 +1132,9 @@ describe("cronologia de lançamento (S1.table) do hub anthropic-claude — deriv
 
   it("a tabela renderiza no HTML final dentro de .hub-section, com <caption>/<thead>/1 <tr> por linha", () => {
     const html = renderHubPage(hub);
-    const sectionMatch = /<article class="hub-section">\s*<h2>Com que frequência[\s\S]*?<\/article>/.exec(html);
+    // #5266: <h2> ganhou id="..." (âncora do índice navegável) — regex
+    // tolera qualquer atributo no <h2>, não só o texto bruto de antes.
+    const sectionMatch = /<article class="hub-section">\s*<h2[^>]*>Com que frequência[\s\S]*?<\/article>/.exec(html);
     assert.ok(sectionMatch, "seção S1 não encontrada no HTML renderizado");
     const sectionHtml = sectionMatch![0];
     assert.match(sectionHtml, /<div class="hub-section-table-wrap">/);
@@ -1140,4 +1143,125 @@ describe("cronologia de lançamento (S1.table) do hub anthropic-claude — deriv
     const trCount = (sectionHtml.match(/<tbody>[\s\S]*?<\/tbody>/)![0].match(/<tr>/g) ?? []).length;
     assert.equal(trCount, launchSection!.table!.rows.length);
   });
+});
+
+// ─── Índice navegável no topo do hub (#5266) ───────────────────────────────
+
+describe("hubSectionAnchorIds (#5266)", () => {
+  it("kebab-case determinístico via slugify (acento/pontuação removidos)", () => {
+    assert.deepEqual(
+      hubSectionAnchorIds(["Por que a Anthropic entrou em conflito com o governo dos EUA?"]),
+      ["por-que-a-anthropic-entrou-em-conflito-com-o-governo-dos-eua"],
+    );
+  });
+
+  it("mesmo heading sempre produz o mesmo id (chamadas repetidas)", () => {
+    const headings = ["Quando o Gemini 3 foi lançado?", "O que mudou na Meta AI?"];
+    assert.deepEqual(hubSectionAnchorIds(headings), hubSectionAnchorIds(headings));
+  });
+
+  it("headings distintos -> ids distintos (sem colisão no caso comum)", () => {
+    const ids = hubSectionAnchorIds(["Seção A", "Seção B", "Seção C"]);
+    assert.equal(new Set(ids).size, ids.length);
+  });
+
+  it("2 headings que geram o MESMO slug -> sufixo -2 desambigua (nunca 2 ids iguais)", () => {
+    const ids = hubSectionAnchorIds(["Preço e planos", "Preço e planos"]);
+    assert.deepEqual(ids, ["preco-e-planos", "preco-e-planos-2"]);
+  });
+
+  it("3+ colisões seguem incrementando (-2, -3, ...)", () => {
+    const ids = hubSectionAnchorIds(["Repetido", "Repetido", "Repetido"]);
+    assert.deepEqual(ids, ["repetido", "repetido-2", "repetido-3"]);
+  });
+
+  it("heading vazio/só pontuação (slugify reduz a string vazia) cai no fallback 'secao'", () => {
+    assert.deepEqual(hubSectionAnchorIds(["???"]), ["secao"]);
+  });
+
+  it("lista vazia -> lista vazia (nunca lança)", () => {
+    assert.deepEqual(hubSectionAnchorIds([]), []);
+  });
+});
+
+describe("índice navegável no HTML renderizado (#5266)", () => {
+  const HUB_INDEX_TEST_BASE: HubContent = {
+    ...HUB_4913_TEST_BASE,
+    sections: [
+      { heading: "Quando isso começou?", paragraphs: ["Parágrafo em 1 de agosto de 2026."] },
+      { heading: "O que mudou desde então?", paragraphs: ["Outro parágrafo em 1 de agosto de 2026."] },
+      { heading: "Por que isso importa?", paragraphs: ["Mais um parágrafo em 1 de agosto de 2026."] },
+    ],
+  };
+
+  it('emite uma <nav class="hub-section-index"> logo antes de .hub-sections, com 1 <li><a> por seção, na mesma ordem', () => {
+    const html = renderHubPage(HUB_INDEX_TEST_BASE);
+    const navMatch = /<nav class="hub-section-index"[\s\S]*?<\/nav>/.exec(html);
+    assert.ok(navMatch, "índice não encontrado no HTML renderizado");
+    const navHtml = navMatch![0];
+    const hrefs = [...navHtml.matchAll(/<a href="#([^"]+)">([^<]+)<\/a>/g)].map((m) => ({
+      id: m[1],
+      label: m[2],
+    }));
+    assert.deepEqual(
+      hrefs,
+      HUB_INDEX_TEST_BASE.sections.map((s, i) => ({
+        id: hubSectionAnchorIds(HUB_INDEX_TEST_BASE.sections.map((x) => x.heading))[i],
+        label: s.heading,
+      })),
+    );
+    // o índice vem ANTES de .hub-sections (issue: "logo depois da intro,
+    // antes da 1ª seção") — nunca depois.
+    assert.ok(html.indexOf('<nav class="hub-section-index"') < html.indexOf('<section class="hub-sections"'));
+  });
+
+  it("cada <h2> de seção carrega o MESMO id usado pelo link do índice correspondente", () => {
+    const html = renderHubPage(HUB_INDEX_TEST_BASE);
+    const ids = hubSectionAnchorIds(HUB_INDEX_TEST_BASE.sections.map((s) => s.heading));
+    for (let i = 0; i < HUB_INDEX_TEST_BASE.sections.length; i++) {
+      const heading = HUB_INDEX_TEST_BASE.sections[i].heading;
+      const re = new RegExp(`<h2 id="${ids[i]}">${heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}</h2>`);
+      assert.match(html, re, `<h2 id="${ids[i]}"> não encontrado pra seção "${heading}"`);
+    }
+  });
+
+  it("2 seções com heading idêntico -> ids de âncora distintos no HTML final (nunca 2 elementos com o mesmo id)", () => {
+    const hub: HubContent = {
+      ...HUB_4913_TEST_BASE,
+      sections: [
+        { heading: "Preço e planos", paragraphs: ["Parágrafo A, 1 de agosto de 2026."] },
+        { heading: "Preço e planos", paragraphs: ["Parágrafo B, 1 de agosto de 2026."] },
+      ],
+    };
+    const html = renderHubPage(hub);
+    const h2Ids = [...html.matchAll(/<h2 id="([^"]+)">Preço e planos<\/h2>/g)].map((m) => m[1]);
+    assert.deepEqual(h2Ids, ["preco-e-planos", "preco-e-planos-2"]);
+    const indexIds = [...html.matchAll(/<a href="#(preco-e-planos[^"]*)">Preço e planos<\/a>/g)].map((m) => m[1]);
+    assert.deepEqual(indexIds, ["preco-e-planos", "preco-e-planos-2"]);
+  });
+});
+
+describe("regressão de completude do índice nos 6 hubs reais (#5266) — guard sobre HUB_LOADERS", () => {
+  // Mesmo espírito de "completude do índice /temas/ contra HUB_META" (#5256,
+  // test/hub-registry-completeness.test.ts): garante que hub FUTURO nunca
+  // perde este eixo — nenhuma manutenção por hub é necessária (a mudança
+  // vive só no template, renderHubPage), mas um guard sobre HUB_LOADERS
+  // detecta se algum dia isso deixar de ser verdade.
+  for (const slug of Object.keys(HUB_LOADERS)) {
+    it(`hub "${slug}": todo heading de sections aparece no índice, e nenhum id de âncora colide`, () => {
+      const hub = HUB_LOADERS[slug]();
+      const html = renderHubPage(hub);
+      const ids = hubSectionAnchorIds(hub.sections.map((s) => s.heading));
+      assert.equal(new Set(ids).size, ids.length, `ids de âncora colidindo no hub "${slug}": ${ids.join(", ")}`);
+      const navMatch = /<nav class="hub-section-index"[\s\S]*?<\/nav>/.exec(html);
+      assert.ok(navMatch, `hub "${slug}": índice não encontrado no HTML renderizado`);
+      for (let i = 0; i < hub.sections.length; i++) {
+        assert.match(
+          navMatch![0],
+          new RegExp(`<a href="#${ids[i]}">`),
+          `hub "${slug}": índice sem link pra seção "${hub.sections[i].heading}" (id esperado: ${ids[i]})`,
+        );
+      }
+    });
+  }
 });
