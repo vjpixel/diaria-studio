@@ -73,16 +73,21 @@ através de `/loop`, nunca chamar `ScheduleWakeup` a partir de uma sessão
 `/diaria-continuo` standalone.
 
 **Cadência do wake em modo ocioso (passo 6, fila seca sem resposta
-pendente):** a guidance default de `ScheduleWakeup` pra ticks ociosos sem
-evento observável é 1200-1800s (20-30min) — adotado aqui sem alterar, por
-não haver motivo concreto pra um valor diferente. O passo 6 já é
-estritamente passivo (só re-varre e dorme, nunca gera trabalho
-especulativo) — não há um evento de baixa latência esperando pra ser
-capturado que justificasse um intervalo mais curto, e um intervalo maior só
-atrasaria a detecção de issue nova/resposta do editor sem ganho real de
-custo (o wake em si é barato quando não acha nada). Ao invocar via `/loop
-/diaria-continuo` em modo ocioso, passar `delaySeconds` nesse intervalo ao
-chamar `ScheduleWakeup`.
+pendente):** a doc do `/loop` só documenta um número fixo (1200-1800s,
+20-30min) pro caso em que um Monitor está armado — ali é o fallback
+heartbeat, "quanto esperar se nenhum evento disparar". O passo 6 não arma
+Monitor (não há um evento de baixa latência esperando pra ser capturado,
+como o próprio texto acima descreve), então cai no outro caso da mesma doc:
+"sem Monitor, é a cadência — escolha com base no que foi observado", sem
+número específico. Adotamos 1200-1800s aqui mesmo assim, por analogia
+conservadora ao valor do caso com Monitor — não porque a doc prescreva esse
+valor pra ticks sem evento observável. O passo 6 já é estritamente passivo
+(só re-varre e dorme, nunca gera trabalho especulativo) — não há motivo
+concreto pra um valor diferente, e um intervalo maior só atrasaria a
+detecção de issue nova/resposta do editor sem ganho real de custo (o wake
+em si é barato quando não acha nada). Ao invocar via `/loop /diaria-continuo`
+em modo ocioso, passar `delaySeconds` nesse intervalo ao chamar
+`ScheduleWakeup`.
 
 **Os dois estados de espera já existentes e corretos são preservados,
 independente do `/loop`:**
