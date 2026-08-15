@@ -75,6 +75,18 @@ Categoria inferida na Fase 0 por **labels reais** (`external-blocker`→A/B/E co
 
 **Antes de classificar como cat. C — decisão-produto (#5373):** se a issue tem a label `decisao-registrada` (ou mesmo sem ela, como rede de segurança), rodar `npx tsx scripts/lib/issue-decisions.ts --issue N` (`scripts/lib/issue-decisions.ts`). **Comparação concreta:** "última mudança observável" = o campo `updatedAt` já buscado na varredura do passo 3. Decisão encontrada com `decided_at` **posterior** a `updatedAt` → a issue **não** é cat. C — a decisão já existe, usar como contexto e classificar pela EXECUÇÃO restante (elegível se nada mais falta; cat. A/B/E se a execução esbarra em bloqueio novo distinto da decisão em si). Corpo/labels mudaram genuinamente depois de `decided_at` → decisão pode estar desatualizada, reavaliar como cat. C normalmente.
 
+**Nenhuma issue remanescente sem cat. A-E explícita (#5376, 15/08/2026 —
+mesma classe de bug do `/diaria-continuo` e do overnight abaixo).** Toda
+issue que a Fase 0 encontra no backlog bloqueado precisa sair com exatamente
+UMA das 5 letras — nunca um rótulo genérico ("bloqueada"/"decisão pendente")
+cobrindo issue que na verdade cabia em cat. A/B/E (bloqueio de credencial/
+conta/plataforma) ou, pior, que já tinha caminho de execução claro no corpo
+e devia ter sido tratada como elegível em vez de bloqueada. Reler o corpo
+inteiro antes de rotular — o atalho de classificar pelo título/label sem
+checar o corpo foi a causa raiz observada ao vivo no #5376. A tabela do
+`plan.json` e a Fase 2 (buckets a-d) já preservam essa distinção por design;
+o risco aqui é só a classificação inicial na Fase 0 ser feita por atalho.
+
 ## Goal de esgotamento (#4297, expandido em #4319)
 
 Por padrão, **a sessão só encerra quando nenhuma issue do conjunto-alvo está sem status terminal.** Duas metades precisam de definição precisa, senão a propriedade vira livelock — e desde #4319 o alvo default é o backlog aberto **inteiro**, não só o bloqueado.
