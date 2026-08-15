@@ -1,6 +1,6 @@
 ---
 name: diaria-continuo
-description: Sessão CONTÍNUA que nunca termina sozinha (#5293) — derivada do overnight, reusa a mesma maquinaria de implementação, mas troca o critério de terminação. Itens 1-6 da issue de origem implementados (kind dedicado no session-registry, watchdog phase-aware, guard de colisão editorial pausa-não-encerra, rotação diária de plan.json, instrumentação de custo acumulado, notificação Telegram do AskUserQuestion pendente) — ver "Itens 3-6" abaixo pro estado exato de cada um antes de rodar em produção pela 1ª vez. Toda invocação se auto-envolve em `/loop` (#5332) — ver "Como usar". Uso — `/diaria-continuo [--dry-run] [--bugs] [--priority P0,P1,P2,P3]`.
+description: Sessão CONTÍNUA que nunca termina sozinha (#5293) — derivada do overnight, reusa a mesma maquinaria de implementação, mas troca o critério de terminação. Itens 1-6 da issue de origem implementados (kind dedicado no session-registry, watchdog phase-aware, guard de colisão editorial pausa-não-encerra, rotação diária de plan.json, instrumentação de custo acumulado, notificação por e-mail — canal definido em #5341 — do AskUserQuestion pendente) — ver "Itens 3-6" abaixo pro estado exato de cada um antes de rodar em produção pela 1ª vez. Toda invocação se auto-envolve em `/loop` (#5332) — ver "Como usar". Uso — `/diaria-continuo [--dry-run] [--bugs] [--priority P0,P1,P2,P3]`.
 model: sonnet
 effort: medium
 ---
@@ -293,7 +293,7 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   sessão `continuo` ativa com `phase` em `HEALTHY_IDLE_PHASES`
   (`"aguardando-resposta"` | `"pausado-edicao"`). **Sem o heartbeat, o
   watchdog não tem como distinguir "parada de propósito" de "travada" e vai
-  disparar halt banner + Telegram a cada ciclo do watchdog agendado enquanto
+  disparar halt banner + push por e-mail a cada ciclo do watchdog agendado enquanto
   a sessão ficar parada** — os passos 3, 4 e 6 do loop, e o guard de colisão
   editorial no passo 1, dizem exatamente qual `phase` gravar em cada
   transição.
@@ -443,8 +443,8 @@ aqui.
    overnight (Fase 0, passo 5), só que aqui pode se repetir a cada ciclo em
    vez de acontecer uma vez só no início. O hook
    `.claude/hooks/notify-continuo-askuserquestion.mjs` (#5293, achado do
-   "Risco aceito" abaixo) dispara Telegram automaticamente nesta chamada —
-   não precisa de nenhuma ação extra do coordenador além do heartbeat já
+   "Risco aceito" abaixo) dispara e-mail automaticamente nesta chamada (canal
+   definido em #5341) — não precisa de nenhuma ação extra do coordenador além do heartbeat já
    estar gravado (o hook lê a sessão registrada, não o heartbeat em si, mas
    sem sessão registrada — passo omitido por engano — não há como o hook
    saber que é uma sessão `continuo`).
@@ -487,7 +487,8 @@ respondeu, dorme.
 ## Decisões e histórico
 
 Rationale das decisões do briefing (14/08/2026), o risco aceito de
-`AskUserQuestion` bloqueante e a mitigação (hook Telegram), e o histórico de
+`AskUserQuestion` bloqueante e a mitigação (hook de notificação por e-mail,
+canal definido em #5341), e o histórico de
 implementação dos itens 3-6 do #5293 foram movidos para
 `docs/continuo-decisoes.md` (#5344 Parte B4 — não-operacional, não precisa
 ser relido a cada wake do coordenador). Nada foi perdido, só realocado.

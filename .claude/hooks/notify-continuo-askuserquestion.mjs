@@ -1,4 +1,4 @@
-// PreToolUse hook — notifica Telegram quando um `AskUserQuestion` pendente
+// PreToolUse hook — notifica por e-mail quando um `AskUserQuestion` pendente
 // pertence a uma sessão `/diaria-continuo` ativa (#5293, fecha a lacuna
 // registrada em ".claude/skills/diaria-continuo/SKILL.md" §"Risco aceito").
 //
@@ -8,44 +8,49 @@
 // do desenho. O risco aceito de propósito é o mesmo do incidente 260706/07
 // (#3037/#3038: um AskUserQuestion travou uma rodada ~8h com o editor
 // dormindo) — tolerável só SE o editor souber que há uma pergunta pendente
-// sem precisar estar olhando o terminal. A issue de origem já cita
-// `scripts/lib/telegram-notify.ts` e o `gate-chat-bridge.js` do Studio como
-// mitigação — mas ambos só cobrem sessões abertas PELO chat drawer do
-// Studio, não uma sessão `/diaria-continuo` rodando num terminal comum (a
-// forma decidida no briefing). Este hook fecha especificamente esse buraco:
-// dispara Telegram sempre que o `AskUserQuestion` pendente vem de uma sessão
-// com `kind: "continuo"` registrada em `session-registry.ts`.
+// sem precisar estar olhando o terminal. Este hook fecha especificamente
+// esse buraco: dispara uma notificação sempre que o `AskUserQuestion`
+// pendente vem de uma sessão com `kind: "continuo"` registrada em
+// `session-registry.ts`.
+//
+// #5341 (15/08/2026, decisão do editor): canal padronizado em e-mail via
+// Gmail API, em vez de exigir a instalação de um app de mensagens novo — o
+// canal anterior era um no-op silencioso sem credenciais configuradas. Reusa
+// a MESMA credencial OAuth (`data/.credentials.json`) que `google-auth.ts`
+// (Drive/inbox-drain/imagens sociais) e `scripts/lib/gmail-send.ts` (17
+// alarmes agendados) já usam — mas **reimplementada aqui**, não importada
+// (ver racional "Self-contained" abaixo): um refresh OAuth + envio via Gmail
+// API é ~40 linhas de `fetch` cru, do mesmo porte que o POST direto na Bot
+// API que este hook já reimplementava antes (#5341).
 //
 // Mecanismo: lê `session_id` do payload do hook (mesmo campo que
 // `block-askuserquestion-overnight-autonomous.mjs` já usa), varre
 // `data/sessions/` por um arquivo `continuo-*-{session_id}.json`
 // (`scripts/lib/session-registry.ts` — `sessionFilePath`) com heartbeat
 // dentro da janela de staleness (mesma `MAX_SESSION_AGE_MS` de 24h que o
-// registry usa). Se encontrar, dispara um POST direto na Telegram Bot API
-// (mesma credencial `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` de
-// `scripts/lib/telegram-notify.ts` — reimplementada aqui, não importada, ver
-// racional abaixo).
+// registry usa). Se encontrar, envia 1 e-mail pro editor
+// (`resolveEditorEmail`-equivalente: lê `platform.config.json` diretamente,
+// ou usa o default `vjpixel@gmail.com`).
 //
 // **NUNCA bloqueia.** Ao contrário do hook irmão
 // (`block-askuserquestion-overnight-autonomous.mjs`), este hook é OBSERVAÇÃO
 // pura — não emite `permissionDecision` em nenhum caminho, então o
 // `AskUserQuestion` sempre segue pro fluxo normal de permissão
-// independente do resultado da notificação. Falha de rede, credencial
-// ausente, sessão não encontrada, JSON malformado: tudo cai no mesmo
-// caminho silencioso (exit 0, sem stdout/stderr) — notificação é
-// observabilidade extra, nunca crítica (mesmo princípio de
-// `sendTelegramNotification`, `scripts/lib/telegram-notify.ts`).
+// independente do resultado da notificação. Falha de rede, credenciais
+// ausentes/expiradas, sessão não encontrada, JSON malformado: tudo cai no
+// mesmo caminho silencioso (exit 0, sem stdout/stderr no caminho feliz) —
+// notificação é observabilidade extra, nunca crítica (mesmo princípio de
+// `sendPushNotification`, `scripts/lib/push-notify.ts`).
 //
 // Self-contained (nenhum import de `scripts/*.ts`): mesma razão documentada
 // em `pr-create-review.mjs`/`block-askuserquestion-overnight-autonomous.mjs`
 // — um import estático de `.ts` executa antes de qualquer try/catch deste
 // arquivo e pode derrubar o hook inteiro (silenciosamente) num Node sem
-// type-stripping nativo. A leitura de `session-registry.ts` e o POST de
-// `telegram-notify.ts` são DUPLICADOS aqui (não importados) pelo mesmo
-// motivo — cobertos por `test/notify-continuo-askuserquestion.test.ts`, que
-// não tem por objetivo re-testar `session-registry.ts`/`telegram-notify.ts`
-// em si (já cobertos nos próprios testes), só a integração específica deste
-// hook.
+// type-stripping nativo. A leitura de `session-registry.ts`/OAuth/Gmail API
+// são DUPLICADAS aqui (não importadas) pelo mesmo motivo — cobertas por
+// `test/notify-continuo-askuserquestion.test.ts`, que não tem por objetivo
+// re-testar `session-registry.ts`/`google-auth.ts`/`gmail-send.ts` em si (já
+// cobertos nos próprios testes), só a integração específica deste hook.
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -56,16 +61,29 @@ import { fileURLToPath } from "node:url";
 const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Timeout do fetch pro Telegram. Deliberadamente MENOR que o de
- * `scripts/lib/telegram-notify.ts` (10s) — `.claude/settings.json` dá só 10s
- * de orçamento TOTAL pra este hook rodar (stdin + `git rev-parse` +
- * `readdir`/`readFile` de `data/sessions/` + este fetch); usar os mesmos 10s
- * aqui deixaria o `AbortSignal.timeout` interno como código morto na
- * prática, porque o harness mataria o processo primeiro (#5293 fleet
- * review, achado 5). 6s deixa ~4s de folga pro resto do hook antes do
- * timeout externo.
+ * Timeout de CADA chamada de rede (refresh OAuth, envio Gmail). Deliberadamente
+ * menor que o `PUSH_IO_TIMEOUT_MS` (10s) de `scripts/lib/push-notify.ts` —
+ * `.claude/settings.json` dá só 10s de orçamento TOTAL pra este hook rodar
+ * (stdin + `git rev-parse` + `readdir`/`readFile` de `data/sessions/` + até
+ * 2 fetches sequenciais aqui: refresh do access_token quando expirado, e o
+ * envio em si). 4s por chamada, no pior caso (refresh + envio) soma 8s,
+ * deixando ~2s de folga pro resto do hook antes do timeout externo do
+ * harness matar o processo (#5293 fleet review, achado 5, mesmo raciocínio
+ * do valor anterior de 6s pro caminho de 1 fetch só, antes de #5341).
  */
-const TELEGRAM_IO_TIMEOUT_MS = 6_000;
+const GMAIL_IO_TIMEOUT_MS = 4_000;
+
+/** Mesmo nome de env var de `scripts/google-auth.ts`
+ * (`CREDENTIALS_PATH_TEST_OVERRIDE_ENV`) — permite que
+ * `test/notify-continuo-askuserquestion.test.ts` force um path de
+ * credenciais FAKE sem depender de `data/.credentials.json` real (que pode
+ * existir de verdade na máquina que roda a suíte, junction OneDrive). Nunca
+ * setar fora de testes. */
+const CREDENTIALS_PATH_TEST_OVERRIDE_ENV = "DIARIA_TEST_CREDENTIALS_PATH";
+
+const GMAIL_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send";
+const DEFAULT_EDITOR_EMAIL = "vjpixel@gmail.com";
 
 /** Ver racional completo no hook irmão (`block-askuserquestion-overnight-autonomous.mjs`). */
 export function resolveMainRepoRoot(execFn = execFileSync) {
@@ -119,7 +137,7 @@ export function findActiveContinuoSession(repoRoot, sessionId, nowMs = Date.now(
  * Extrai um resumo curto da pergunta pendente do `tool_input` de
  * `AskUserQuestion` — melhor esforço, nunca lança. `tool_input.questions` é
  * um array (schema real da tool); pega só a primeira pergunta e o header,
- * trunca pra não estourar o limite de mensagem do Telegram.
+ * trunca pra não deixar o corpo do e-mail gigante.
  */
 export function summarizePendingQuestion(toolInput) {
   try {
@@ -133,58 +151,125 @@ export function summarizePendingQuestion(toolInput) {
   }
 }
 
-/** Mesmo formato de `buildTelegramSendMessageRequest`, `scripts/lib/telegram-notify.ts` — duplicado, ver docblock do topo. */
-export function buildNotifyRequest(token, chatId, text) {
-  return {
-    url: `https://api.telegram.org/bot${token}/sendMessage`,
-    options: {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown" }),
-      signal: AbortSignal.timeout(TELEGRAM_IO_TIMEOUT_MS),
-    },
-  };
+/** Resolve o e-mail do editor lendo `platform.config.json` diretamente
+ * (equivalente self-contained de `resolveEditorEmail`,
+ * `scripts/lib/inbox-stats.ts`) — fail-soft, nunca lança; ausente/corrompido
+ * cai no default `vjpixel@gmail.com`. */
+export function resolveEditorEmailInline(repoRoot) {
+  try {
+    const path = join(repoRoot, "platform.config.json");
+    if (!existsSync(path)) return DEFAULT_EDITOR_EMAIL;
+    const cfg = JSON.parse(readFileSync(path, "utf8"));
+    return cfg?.inbox?.editor_personal_email ?? DEFAULT_EDITOR_EMAIL;
+  } catch {
+    return DEFAULT_EDITOR_EMAIL;
+  }
 }
 
 export function buildNotifyMessage(sessionId, questionSummary) {
-  const lines = [
-    "*[diar.ia.br continuo] AskUserQuestion pendente*",
-    `Sessão \`${sessionId}\` está esperando resposta no terminal.`,
-  ];
+  const lines = [`Sessão ${sessionId} (/diaria-continuo) está esperando resposta no terminal.`];
   if (questionSummary) lines.push(`Pergunta: ${questionSummary}`);
-  return lines.join("\n");
+  return { subject: `[diar.ia.br continuo] AskUserQuestion pendente — sessão ${sessionId}`, body: lines.join("\n") };
+}
+
+/** Base64url (RFC 4648 §5) — formato exigido pelo campo `raw` da Gmail API.
+ * Duplicado de `base64UrlEncode`, `scripts/lib/gmail-send.ts` (ver racional
+ * "Self-contained" no topo do arquivo). */
+function base64UrlEncode(input) {
+  return Buffer.from(input, "utf-8")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+/** MIME mínimo (texto puro, UTF-8) — duplicado de `buildMimeMessage`,
+ * `scripts/lib/gmail-send.ts`. */
+function buildMimeMessage(to, subject, bodyText) {
+  const encodedSubject = `=?UTF-8?B?${Buffer.from(subject, "utf-8").toString("base64")}?=`;
+  return [
+    `To: ${to}`,
+    `Subject: ${encodedSubject}`,
+    "Content-Type: text/plain; charset=utf-8",
+    "MIME-Version: 1.0",
+    "",
+    bodyText,
+  ].join("\r\n");
+}
+
+function loadCredentials(repoRoot) {
+  const path = process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] || join(repoRoot, "data", ".credentials.json");
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Garante um `access_token` válido — reusa o já salvo se não estiver perto
+ * de expirar (mesmo threshold de 90s de `google-auth.ts`), só faz o fetch de
+ * refresh quando necessário (menos I/O no orçamento apertado deste hook).
+ * Retorna `null` em qualquer falha (nunca lança).
+ */
+export async function ensureAccessToken(creds, fetchFn = fetch, nowMs = Date.now()) {
+  if (nowMs <= (creds.expiry_ms ?? 0) - 90_000) return creds.access_token;
+  try {
+    const res = await fetchFn(GMAIL_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: creds.client_id,
+        client_secret: creds.client_secret,
+        refresh_token: creds.refresh_token,
+        grant_type: "refresh_token",
+      }),
+      signal: AbortSignal.timeout(GMAIL_IO_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.access_token ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Fail-soft TOTAL (nunca lança, nunca afeta o `AskUserQuestion`) — mas
- * fail-soft ≠ silencioso: uma resposta HTTP não-2xx (token revogado, chat_id
- * errado, rate limit) ou uma exceção de rede são logadas em stderr antes de
- * retornar, mesma disciplina que `sendTelegramNotification`
- * (`scripts/lib/telegram-notify.ts`, que este hook deliberadamente
- * reimplementa em vez de importar — ver docblock do topo) já oferece ao
- * CALLER via `{ok, error, skipped}`, mas que a versão anterior deste hook
- * descartava inteiramente (#5293 fleet review, achado 4). Sem isso, um
- * token/chat_id que para de funcionar degrada o hook pra um no-op
- * indistinguível de "funcionando" — exatamente o "risco aceito" que este
- * hook existe pra mitigar, revivido por uma causa que o SKILL.md não
- * documentava (só documentava "credenciais ausentes", não "credenciais
- * presentes mas rejeitadas").
+ * fail-soft ≠ silencioso: qualquer falha (credenciais ausentes, refresh
+ * falho, resposta HTTP não-2xx do envio, exceção de rede) é logada em
+ * stderr antes de retornar, mesma disciplina que o hook já tinha no canal
+ * anterior (#5293 fleet review, achado 4) — sem isso, uma credencial que
+ * para de funcionar degrada o hook pra um no-op indistinguível de
+ * "funcionando", exatamente o "risco aceito" que este hook existe pra
+ * mitigar.
  */
-export async function sendNotification(text, fetchFn = fetch) {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID || process.env.TELEGRAM_WATCHDOG_CHAT_ID;
-  if (!token || !chatId) return; // sem credenciais configuradas — no-op silencioso
+export async function sendNotification(message, repoRoot, fetchFn = fetch) {
+  const creds = loadCredentials(repoRoot);
+  if (!creds) return; // sem credenciais configuradas — no-op silencioso
+  const accessToken = await ensureAccessToken(creds, fetchFn);
+  if (!accessToken) {
+    process.stderr.write("notify-continuo-askuserquestion: refresh do access_token falhou.\n");
+    return;
+  }
+  const to = resolveEditorEmailInline(repoRoot);
+  const raw = base64UrlEncode(buildMimeMessage(to, message.subject, message.body));
   try {
-    const { url, options } = buildNotifyRequest(token, chatId, text);
-    const resp = await fetchFn(url, options);
+    const resp = await fetchFn(GMAIL_SEND_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify({ raw }),
+      signal: AbortSignal.timeout(GMAIL_IO_TIMEOUT_MS),
+    });
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
       process.stderr.write(
-        `notify-continuo-askuserquestion: Telegram respondeu ${resp.status}: ${body.slice(0, 200)}\n`,
+        `notify-continuo-askuserquestion: Gmail API respondeu ${resp.status}: ${body.slice(0, 200)}\n`,
       );
     }
   } catch (e) {
-    process.stderr.write(`notify-continuo-askuserquestion: falha ao enviar notificação Telegram: ${String(e)}\n`);
+    process.stderr.write(`notify-continuo-askuserquestion: falha ao enviar e-mail: ${String(e)}\n`);
   }
 }
 
@@ -206,7 +291,7 @@ if (
       const session = findActiveContinuoSession(repoRoot, payload.session_id);
       if (!session) return; // não é uma sessão continuo ativa — nada a notificar
       const questionSummary = summarizePendingQuestion(payload.tool_input);
-      await sendNotification(buildNotifyMessage(payload.session_id, questionSummary));
+      await sendNotification(buildNotifyMessage(payload.session_id, questionSummary), repoRoot);
     } catch {
       // Fail-soft total — nunca deve afetar o fluxo normal do AskUserQuestion
       // (este hook nunca emite hookSpecificOutput, em nenhum caminho).

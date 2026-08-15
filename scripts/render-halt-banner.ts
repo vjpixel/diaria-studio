@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 /**
- * render-halt-banner.ts (#737, notificação Telegram #3564)
+ * render-halt-banner.ts (#737, notificação push #3564, canal e-mail #5341)
  *
  * Emite um banner vermelho de "PIPELINE PAROU" no stdout. Chamado pelo
  * orchestrator (top-level Claude Code) sempre que detectar uma parada
@@ -15,28 +15,21 @@
  * halt é pausa inesperada (algo quebrou). Cor diferente, texto diferente,
  * action obrigatória pra dar caminho ao editor.
  *
- * Uso:
- *   npx tsx scripts/render-halt-banner.ts \
- *     --stage "2b — Clarice review" \
- *     --reason "mcp__clarice desconectado" \
- *     --action "reconecte e responda 'retry', ou 'abort' para abortar"
- *
- * Wraps em ANSI red quando stdout é TTY e NO_COLOR não está set. Em
- * Bash tool result do Claude Code, sempre não-TTY → output limpo. Em
- * terminal interativo, fica vermelho. Sino do terminal () emitido
- * no stderr quando TTY.
- *
- * #3564: além do stdout, dispara (fail-soft TOTAL, nunca bloqueia nem atrasa
- * o banner além do timeout de rede) uma notificação Telegram com o mesmo
- * texto (stage/motivo/ação) via `scripts/lib/telegram-notify.ts` — fecha o
- * loop mobile quando o editor não está olhando o terminal. Dedup entre
- * invocações (script roda como processo novo a cada chamada, sem estado em
- * memória sobrevivendo) via um registro JSON pequeno em
- * `data/.telegram-halt-dedup.json` (mesma pasta OneDrive-synced de `data/`,
- * nunca no repo) — chave = `stage|reason|action` (o MESMO halt reportado de
- * novo dentro da janela não reenvia). Se `data/` não existir (clone fresco
- * sem a junction, sessão cloud) ou a escrita falhar, o dedup degrada pra
- * "sempre notifica" — nunca impede o banner de imprimir.
+ * #3564/#5341: além do stdout, dispara (fail-soft TOTAL, nunca bloqueia nem
+ * atrasa o banner além do timeout de rede) uma notificação push por e-mail
+ * com o mesmo texto (stage/motivo/ação) via `scripts/lib/push-notify.ts`
+ * (canal Gmail, definido em #5341, decisão do editor: padronizar em e-mail
+ * em vez de exigir um app de mensagens novo — o canal anterior era no-op
+ * silencioso sem credenciais configuradas) — fecha o loop mobile quando o
+ * editor não está olhando o terminal. Dedup entre invocações (script roda
+ * como processo novo a cada chamada, sem estado em memória sobrevivendo)
+ * via um registro JSON pequeno em `data/.push-halt-dedup.json` (mesma pasta
+ * OneDrive-synced de `data/`, nunca no repo; renomeado do arquivo do canal
+ * anterior em #5341) — chave = `stage|reason|action`
+ * (o MESMO halt reportado de novo dentro da janela não reenvia). Se `data/`
+ * não existir (clone fresco sem a junction, sessão cloud) ou a escrita
+ * falhar, o dedup degrada pra "sempre notifica" — nunca impede o banner de
+ * imprimir.
  */
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -45,12 +38,12 @@ import { renderHaltBanner } from "./lib/gate-banner.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import {
-  sendTelegramNotification,
+  sendPushNotification,
   formatHaltNotifyMessage,
   shouldNotify,
   markNotified,
   type DedupRecord,
-} from "./lib/telegram-notify.ts";
+} from "./lib/push-notify.ts";
 
 const RED_BG_WHITE_FG = "\x1b[41m\x1b[97m";
 const RESET = "\x1b[0m";
@@ -78,7 +71,7 @@ function shouldUseColor(): boolean {
 }
 
 function haltDedupPath(rootDir: string): string {
-  return resolve(rootDir, "data", ".telegram-halt-dedup.json");
+  return resolve(rootDir, "data", ".push-halt-dedup.json");
 }
 
 /** Lê o registro de dedup do disco — fail-soft: arquivo ausente, `data/`
@@ -114,24 +107,27 @@ function writeHaltDedupRecord(rootDir: string, record: DedupRecord): void {
 export interface NotifyHaltOptions {
   rootDir?: string;
   nowMs?: number;
-  /** `sendTelegramNotification` injetável (testes) — evita bater na rede
+  /** `sendPushNotification` injetável (testes) — evita bater na rede
    * real/depender de credenciais presentes no ambiente de CI. */
-  notifyFn?: (text: string) => Promise<{ ok: boolean; skipped?: boolean; error?: string }>;
+  notifyFn?: (msg: {
+    subject: string;
+    body: string;
+  }) => Promise<{ ok: boolean; skipped?: boolean; error?: string }>;
 }
 
 /**
- * Dispara a notificação Telegram do halt (#3564), com dedup por processo
+ * Dispara a notificação push (e-mail, #5341) do halt, com dedup por processo
  * (ver doc-comment do módulo). Sempre resolve — nunca lança, nunca faz o
- * caller esperar além do timeout de rede embutido em `sendTelegramNotification`
- * (`TELEGRAM_IO_TIMEOUT_MS`, 10s).
+ * caller esperar além do timeout de rede embutido em `sendPushNotification`
+ * (`PUSH_IO_TIMEOUT_MS`, 10s).
  */
-export async function notifyHaltViaTelegram(
+export async function notifyHaltViaPush(
   opts: { stage: string; reason: string; action: string },
   env: NotifyHaltOptions = {},
 ): Promise<void> {
   const rootDir = env.rootDir ?? process.cwd();
   const nowMs = env.nowMs ?? Date.now();
-  const notifyFn = env.notifyFn ?? sendTelegramNotification;
+  const notifyFn = env.notifyFn ?? sendPushNotification;
 
   const key = `${opts.stage}|${opts.reason}|${opts.action}`;
   const record = readHaltDedupRecord(rootDir);
@@ -140,7 +136,7 @@ export async function notifyHaltViaTelegram(
   const result = await notifyFn(formatHaltNotifyMessage(opts.stage, opts.reason, opts.action));
   if (result.skipped) return; // sem credenciais — nada a persistir
   if (!result.ok) {
-    process.stderr.write(`[render-halt-banner] Telegram alert falhou: ${result.error}\n`);
+    process.stderr.write(`[render-halt-banner] Notificação push falhou: ${result.error}\n`);
     return; // não marca como notificado — próxima chamada tenta de novo
   }
   writeHaltDedupRecord(rootDir, markNotified(record, key, nowMs));
@@ -158,13 +154,13 @@ async function main(): Promise<void> {
     process.stderr.write("\x07");
   }
 
-  await notifyHaltViaTelegram(opts);
+  await notifyHaltViaPush(opts);
 }
 
 // #3564 (regressão exposta pelo teste novo): sem este guard, `main()` rodava
 // incondicionalmente ao IMPORTAR o módulo (mesmo bug que #2834/#2958 já
 // corrigiram em `overnight-watchdog.ts`) — qualquer teste que importasse
-// `notifyHaltViaTelegram` daqui disparava `parseArgs` contra o `argv` real
+// `notifyHaltViaPush` daqui disparava `parseArgs` contra o `argv` real
 // do test runner (sem --stage/--reason/--action) e o `process.exit(2)`
 // matava o processo de teste inteiro. Antes deste arquivo ganhar exports
 // testáveis (#3564), nada importava este módulo, então o bug ficou latente.

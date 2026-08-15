@@ -1,13 +1,14 @@
 /**
- * test/notify-continuo-askuserquestion.test.ts (#5293)
+ * test/notify-continuo-askuserquestion.test.ts (#5293, canal e-mail #5341)
  *
  * Cobre `.claude/hooks/notify-continuo-askuserquestion.mjs` — fecha a
  * lacuna registrada em `.claude/skills/diaria-continuo/SKILL.md`
  * §"Risco aceito": um `AskUserQuestion` bloqueante rodando numa sessão
  * `/diaria-continuo` de TERMINAL (não pelo chat drawer do Studio) não
- * disparava nem `studio-telegram-notify.ts` nem `gate-chat-bridge.js` — os
+ * disparava nem `studio-push-notify.ts` nem `gate-chat-bridge.js` — os
  * dois só cobrem sessões abertas PELO chat drawer. Este hook cobre
- * especificamente o caminho de terminal, via Telegram Bot API direto.
+ * especificamente o caminho de terminal, via Gmail API direta (canal
+ * definido em #5341).
  *
  * Testa só as funções PURAS/injetáveis exportadas pelo hook — a integração
  * fim-a-fim (leitura de stdin, `execFileSync` real) não é reexercitada aqui,
@@ -21,10 +22,17 @@ import { tmpdir } from "node:os";
 import {
   findActiveContinuoSession,
   summarizePendingQuestion,
-  buildNotifyRequest,
+  resolveEditorEmailInline,
   buildNotifyMessage,
+  ensureAccessToken,
   sendNotification,
 } from "../.claude/hooks/notify-continuo-askuserquestion.mjs";
+// #4344: mesmo nome de env var que scripts/google-auth.ts exporta como
+// CREDENTIALS_PATH_TEST_OVERRIDE_ENV — o hook lê a STRING literal
+// "DIARIA_TEST_CREDENTIALS_PATH" diretamente (self-contained, não importa
+// google-auth.ts), então este teste replica o valor aqui em vez de importar,
+// pra não acoplar o teste a um import de scripts/*.ts só por uma constante.
+const CREDENTIALS_PATH_TEST_OVERRIDE_ENV = "DIARIA_TEST_CREDENTIALS_PATH";
 
 function tmp() {
   return mkdtempSync(join(tmpdir(), "notify-continuo-"));
@@ -33,6 +41,26 @@ function tmp() {
 function writeSession(repoRoot, kind, tag, sessionId, record) {
   mkdirSync(join(repoRoot, "data", "sessions"), { recursive: true });
   writeFileSync(join(repoRoot, "data", "sessions", `${kind}-${tag}-${sessionId}.json`), JSON.stringify(record));
+}
+
+// #4344: NUNCA escreve em `data/.credentials.json` REAL (nem sob um `repoRoot`
+// fake) — grava o fake num dir `mkdtempSync` PRÓPRIO, sem segmento "data", e
+// aponta o hook pra lá via `CREDENTIALS_PATH_TEST_OVERRIDE_ENV` (mesmo padrão
+// de `test/drive-sync.test.ts`; `loadCredentials` do hook já prioriza esse
+// env var sobre `join(repoRoot, "data", ".credentials.json")`). Retorna uma
+// função de cleanup que restaura o env var anterior e remove o dir temporário
+// — cada teste chama isso em `finally`, mesmo padrão de `tmp()` acima.
+function withFakeCredentials(creds) {
+  const prevOverride = process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+  const credsDir = mkdtempSync(join(tmpdir(), "notify-continuo-creds-"));
+  const credsPath = join(credsDir, ".credentials.json");
+  writeFileSync(credsPath, JSON.stringify(creds));
+  process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = credsPath;
+  return () => {
+    if (prevOverride === undefined) delete process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+    else process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = prevOverride;
+    rmSync(credsDir, { recursive: true, force: true });
+  };
 }
 
 describe("findActiveContinuoSession (#5293)", () => {
@@ -160,7 +188,7 @@ describe("summarizePendingQuestion (#5293)", () => {
     assert.equal(summarizePendingQuestion({ questions: [] }), null);
   });
 
-  it("pergunta muito longa é truncada (limite de mensagem do Telegram)", () => {
+  it("pergunta muito longa é truncada (corpo do e-mail não fica gigante)", () => {
     const longQuestion = "x".repeat(500);
     const toolInput = { questions: [{ question: longQuestion }] };
     const summary = summarizePendingQuestion(toolInput);
@@ -169,46 +197,103 @@ describe("summarizePendingQuestion (#5293)", () => {
   });
 });
 
-describe("buildNotifyRequest (#5293)", () => {
-  it("inclui AbortSignal de timeout (nunca fica pendurado sem limite, mesmo princípio do #2958)", () => {
-    const { options } = buildNotifyRequest("tok", "chat", "msg");
-    assert.ok(options.signal instanceof AbortSignal);
-  });
-
-  it("body carrega chat_id e a mensagem", () => {
-    const { url, options } = buildNotifyRequest("tok123", "chat456", "olá");
-    assert.equal(url, "https://api.telegram.org/bottok123/sendMessage");
-    const body = JSON.parse(options.body);
-    assert.equal(body.chat_id, "chat456");
-    assert.equal(body.text, "olá");
-  });
-});
-
-describe("buildNotifyMessage (#5293)", () => {
-  it("inclui o session_id sempre", () => {
-    const msg = buildNotifyMessage("sess-123", null);
-    assert.match(msg, /sess-123/);
-    assert.match(msg, /continuo/);
-  });
-
-  it("inclui o resumo da pergunta quando disponível", () => {
-    const msg = buildNotifyMessage("sess-123", "[Escopo] Cat. D destrava?");
-    assert.match(msg, /Cat\. D destrava\?/);
-  });
-});
-
-describe("sendNotification (#5293 fleet review achado 4)", () => {
-  function withEnv(vars, fn) {
-    const saved = {};
-    for (const key of Object.keys(vars)) saved[key] = process.env[key];
-    Object.assign(process.env, vars);
+describe("resolveEditorEmailInline (#5341)", () => {
+  it("platform.config.json ausente → default vjpixel@gmail.com", () => {
+    const dir = tmp();
     try {
-      return fn();
+      assert.equal(resolveEditorEmailInline(dir), "vjpixel@gmail.com");
     } finally {
-      Object.assign(process.env, saved);
+      rmSync(dir, { recursive: true, force: true });
     }
-  }
+  });
 
+  it("lê inbox.editor_personal_email quando presente", () => {
+    const dir = tmp();
+    try {
+      writeFileSync(
+        join(dir, "platform.config.json"),
+        JSON.stringify({ inbox: { editor_personal_email: "outro@example.com" } }),
+      );
+      assert.equal(resolveEditorEmailInline(dir), "outro@example.com");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("JSON corrompido → default, nunca lança", () => {
+    const dir = tmp();
+    try {
+      writeFileSync(join(dir, "platform.config.json"), "{ nao e json");
+      assert.doesNotThrow(() => resolveEditorEmailInline(dir));
+      assert.equal(resolveEditorEmailInline(dir), "vjpixel@gmail.com");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("buildNotifyMessage (#5293, subject/body #5341)", () => {
+  it("inclui o session_id no subject e no body", () => {
+    const msg = buildNotifyMessage("sess-123", null);
+    assert.match(msg.subject, /sess-123/);
+    assert.match(msg.body, /sess-123/);
+    assert.match(msg.body, /continuo/);
+  });
+
+  it("inclui o resumo da pergunta no body quando disponível", () => {
+    const msg = buildNotifyMessage("sess-123", "[Escopo] Cat. D destrava?");
+    assert.match(msg.body, /Cat\. D destrava\?/);
+  });
+});
+
+describe("ensureAccessToken (#5341)", () => {
+  it("access_token ainda válido (não perto de expirar) → retorna sem chamar fetch", async () => {
+    let called = false;
+    const token = await ensureAccessToken(
+      { access_token: "still-valid", expiry_ms: Date.now() + 60 * 60_000 },
+      async () => {
+        called = true;
+        return { ok: true, json: async () => ({}) };
+      },
+    );
+    assert.equal(token, "still-valid");
+    assert.equal(called, false);
+  });
+
+  it("access_token expirado → refresh via fetch, retorna o novo token", async () => {
+    const token = await ensureAccessToken(
+      {
+        access_token: "old",
+        expiry_ms: Date.now() - 1000,
+        client_id: "cid",
+        client_secret: "secret",
+        refresh_token: "rtok",
+      },
+      async () => ({ ok: true, json: async () => ({ access_token: "new-token" }) }),
+    );
+    assert.equal(token, "new-token");
+  });
+
+  it("refresh HTTP não-2xx → null, nunca lança", async () => {
+    const token = await ensureAccessToken(
+      { access_token: "old", expiry_ms: 0 },
+      async () => ({ ok: false, status: 401 }),
+    );
+    assert.equal(token, null);
+  });
+
+  it("refresh lançando (rede/timeout) → null, nunca propaga", async () => {
+    const token = await ensureAccessToken(
+      { access_token: "old", expiry_ms: 0 },
+      async () => {
+        throw new Error("network down");
+      },
+    );
+    assert.equal(token, null);
+  });
+});
+
+describe("sendNotification (#5293 fleet review achado 4, canal Gmail #5341)", () => {
   function captureStderr(fn) {
     let output = "";
     const originalWrite = process.stderr.write.bind(process.stderr);
@@ -221,48 +306,106 @@ describe("sendNotification (#5293 fleet review achado 4)", () => {
     }).then(() => output);
   }
 
-  it("sem credenciais configuradas → no-op silencioso (fetch nunca chamado)", async () => {
-    await withEnv({ TELEGRAM_BOT_TOKEN: "", TELEGRAM_CHAT_ID: "", TELEGRAM_WATCHDOG_CHAT_ID: "" }, async () => {
+  it("sem credenciais (nenhum override + repoRoot sem data/.credentials.json) → no-op silencioso (fetch nunca chamado)", async () => {
+    const dir = tmp();
+    const prevOverride = process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+    delete process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV]; // garante o caminho "sem credenciais" mesmo se outro teste vazou o env var
+    try {
       let fetchCalled = false;
-      await sendNotification("oi", async () => {
+      await sendNotification({ subject: "s", body: "b" }, dir, async () => {
         fetchCalled = true;
-        return { ok: true };
+        return { ok: true, json: async () => ({}) };
       });
       assert.equal(fetchCalled, false);
+    } finally {
+      if (prevOverride === undefined) delete process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+      else process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = prevOverride;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refresh falho (token revogado) é LOGADO em stderr — nunca descartado silenciosamente", async () => {
+    const dir = tmp();
+    const cleanupCreds = withFakeCredentials({
+      access_token: "old",
+      expiry_ms: 0,
+      client_id: "cid",
+      client_secret: "secret",
+      refresh_token: "rtok",
     });
+    try {
+      const output = await captureStderr(() =>
+        sendNotification({ subject: "s", body: "b" }, dir, async (url) => {
+          if (String(url).includes("oauth2.googleapis.com")) return { ok: false, status: 401 };
+          throw new Error("não deveria chamar o envio sem token");
+        }),
+      );
+      assert.match(output, /refresh/i);
+    } finally {
+      cleanupCreds();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  it("resposta HTTP não-2xx é LOGADA em stderr (token revogado/chat_id errado/rate limit) — nunca descartada silenciosamente", async () => {
-    const output = await withEnv({ TELEGRAM_BOT_TOKEN: "tok", TELEGRAM_CHAT_ID: "chat" }, () =>
-      captureStderr(() =>
-        sendNotification("oi", async () => ({
+  it("resposta HTTP não-2xx do envio é LOGADA em stderr (rate limit/permissão) — nunca descartada silenciosamente", async () => {
+    const dir = tmp();
+    const cleanupCreds = withFakeCredentials({ access_token: "valid", expiry_ms: Date.now() + 60 * 60_000 });
+    try {
+      const output = await captureStderr(() =>
+        sendNotification({ subject: "s", body: "b" }, dir, async () => ({
           ok: false,
-          status: 401,
-          text: async () => "Unauthorized",
+          status: 429,
+          text: async () => "Rate limit exceeded",
         })),
-      ),
-    );
-    assert.match(output, /401/);
-    assert.match(output, /Unauthorized/);
+      );
+      assert.match(output, /429/);
+      assert.match(output, /Rate limit exceeded/);
+    } finally {
+      cleanupCreds();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  it("exceção de rede (timeout/DNS/etc) é LOGADA em stderr, nunca lançada pro caller", async () => {
-    const output = await withEnv({ TELEGRAM_BOT_TOKEN: "tok", TELEGRAM_CHAT_ID: "chat" }, () =>
-      captureStderr(async () => {
+  it("exceção de rede no envio (timeout/DNS/etc) é LOGADA em stderr, nunca lançada pro caller", async () => {
+    const dir = tmp();
+    const cleanupCreds = withFakeCredentials({ access_token: "valid", expiry_ms: Date.now() + 60 * 60_000 });
+    try {
+      const output = await captureStderr(async () => {
         await assert.doesNotReject(
-          sendNotification("oi", async () => {
+          sendNotification({ subject: "s", body: "b" }, dir, async () => {
             throw new Error("network down");
           }),
         );
-      }),
-    );
-    assert.match(output, /network down/);
+      });
+      assert.match(output, /network down/);
+    } finally {
+      cleanupCreds();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  it("resposta 2xx → nada é escrito em stderr", async () => {
-    const output = await withEnv({ TELEGRAM_BOT_TOKEN: "tok", TELEGRAM_CHAT_ID: "chat" }, () =>
-      captureStderr(() => sendNotification("oi", async () => ({ ok: true }))),
-    );
-    assert.equal(output, "");
+  it("resposta 2xx → nada é escrito em stderr, e o e-mail vai pro editor resolvido de platform.config.json", async () => {
+    const dir = tmp();
+    const cleanupCreds = withFakeCredentials({ access_token: "valid", expiry_ms: Date.now() + 60 * 60_000 });
+    try {
+      writeFileSync(
+        join(dir, "platform.config.json"),
+        JSON.stringify({ inbox: { editor_personal_email: "editor@example.com" } }),
+      );
+      let sentTo = null;
+      const output = await captureStderr(() =>
+        sendNotification({ subject: "assunto", body: "corpo" }, dir, async (_url, opts) => {
+          const raw = JSON.parse(opts.body).raw;
+          const decoded = Buffer.from(raw.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf-8");
+          sentTo = decoded.match(/^To: (.+)$/m)?.[1];
+          return { ok: true, json: async () => ({ id: "1", threadId: "1" }) };
+        }),
+      );
+      assert.equal(output, "");
+      assert.equal(sentTo, "editor@example.com");
+    } finally {
+      cleanupCreds();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

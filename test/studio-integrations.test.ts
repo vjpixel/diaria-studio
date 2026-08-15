@@ -134,7 +134,6 @@ describe("INTEGRATIONS (#3848) — cobre todas as integrações listadas na issu
     "million_verifier",
     "openai",
     "stripe",
-    "telegram",
     "google_oauth",
     "linkedin_worker",
   ];
@@ -408,7 +407,6 @@ describe("buildIntegrationsData (#3848) — orquestração fim-a-fim", () => {
       MILLION_VERIFIER_API_KEY: "k",
       OPENAI_API_KEY: "k",
       STRIPE_API_KEY: "k",
-      TELEGRAM_BOT_TOKEN: "k",
       GOOGLE_CLIENT_ID: "id",
       GOOGLE_CLIENT_SECRET: "secret",
     };

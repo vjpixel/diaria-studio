@@ -15,7 +15,7 @@ O watchdog detecta stall em rodadas overnight de forma independente do coordenad
    - Registra entrada em `stall_events` no `plan.json` (com dedup: não repete na mesma janela de 30 min).
    - Emite evento `stall_detected` no `data/run-log.jsonl`.
    - Exibe halt banner no terminal/log da task.
-   - (Opcional) Envia alerta Telegram se `TELEGRAM_BOT_TOKEN` + `TELEGRAM_WATCHDOG_CHAT_ID` estiverem no `.env`.
+   - Envia alerta push por e-mail via Gmail (#5341 — mesma credencial OAuth do Drive/inbox-drain, sem env var própria; ver `scripts/lib/push-notify.ts`).
 
 ---
 
@@ -155,22 +155,11 @@ npx tsx scripts/overnight-watchdog.ts --threshold 2 --dry-run
 
 ---
 
-## Configuração de alerta Telegram (opcional)
+## Configuração de alerta push (#5341 — canal e-mail)
 
-O watchdog envia alerta direto pelo Bot API do Telegram se as variáveis abaixo estiverem no `.env`:
+O watchdog envia o alerta de stall por e-mail via Gmail (`scripts/lib/push-notify.ts`), reusando a MESMA credencial OAuth já usada por Drive sync/inbox-drain/imagens sociais (`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`, setup: `npx tsx scripts/oauth-setup.ts`) — sem env var própria. O destinatário é `platform.config.json` → `inbox.editor_personal_email` (default `vjpixel@gmail.com`).
 
-```env
-# Token do bot criado via @BotFather (mesmo do docs/telegram-setup.md)
-TELEGRAM_BOT_TOKEN=123456789:AAH...
-
-# Chat ID para onde enviar o alerta (DM com o bot)
-# Obter via: https://api.telegram.org/bot{TOKEN}/getUpdates  após mandar /start pro bot
-TELEGRAM_WATCHDOG_CHAT_ID=987654321
-```
-
-Sem essas variáveis, o watchdog funciona normalmente mas não envia Telegram — só exibe o halt banner no log da task.
-
-**Nota:** o `TELEGRAM_BOT_TOKEN` é o mesmo do plugin `telegram@claude-plugins-official` (docs/telegram-setup.md). O `TELEGRAM_WATCHDOG_CHAT_ID` é específico do watchdog — é o `chat_id` do seu DM com o bot, obtido consultando `getUpdates` após mandar qualquer mensagem para o bot.
+Sem credenciais OAuth configuradas, o watchdog funciona normalmente mas não envia o e-mail — só exibe o halt banner no log da task (fail-soft TOTAL).
 
 ---
 
