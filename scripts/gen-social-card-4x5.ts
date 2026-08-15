@@ -225,12 +225,21 @@ export function buildOverlaySvg(
   title: string,
   dateLabel = "",
   dims: { w: number; h: number } = { w: W, h: H },
+  /**
+   * Tamanho de fonte fixo (#5330 — carrossel semanal) — pula o clamp
+   * dinâmico normal (44-88, escalado pelo comprimento do título) e usa esse
+   * valor pra TODOS os títulos. Existe pra padronizar visualmente um grupo
+   * de cards que aparecem lado a lado (o clamp por título, sozinho em cada
+   * publicação diária, é a intenção original — só incomoda quando vários
+   * títulos de comprimento bem diferente ficam juntos no mesmo carrossel).
+   */
+  fontSizeOverride?: number,
 ): string {
   const { w: CW, h: CH } = dims;
   const available = CW - PAD * 2;
   const lines = wrapTitle(title, Math.floor(available / 26));
   const longest = Math.max(...lines.map((l) => l.length));
-  const size = Math.max(44, Math.min(88, Math.floor(available / (longest * 0.52))));
+  const size = fontSizeOverride ?? Math.max(44, Math.min(88, Math.floor(available / (longest * 0.52))));
   const lineGap = Math.round(size * 1.18);
   // Ancorado na BASE: o bloco cresce pra cima conforme o número de linhas, então
   // a distância até o rodapé é constante.
@@ -291,6 +300,14 @@ export async function generateCard(
   category: string,
   ratio: CardRatio = "4x5",
   layout: "band" | "overlay" = "overlay",
+  /**
+   * `fontSizeOverride` (#5330): repassado a `buildOverlaySvg` — só afeta
+   * `layout: "overlay"`. `outPath`: grava fora do caminho padrão
+   * `04-{destaque}-{ratio}.jpg`, pra recompor o título com tamanho fixo pro
+   * carrossel semanal SEM sobrescrever o card já publicado no feed diário
+   * (mesma arte-base, arquivo de saída diferente).
+   */
+  opts: { fontSizeOverride?: number; outPath?: string } = {},
 ): Promise<string | null> {
   // Fonte por LAYOUT — os dois recortam em direções opostas:
   //
@@ -318,9 +335,9 @@ export async function generateCard(
   if (layout === "overlay") {
     // Imagem ocupa o card INTEIRO; o texto vem por cima, sobre o gradiente.
     const full = await sharp(src).resize(dims.w, dims.h, { fit: "cover", position: "top" }).toBuffer();
-    const outOverlay = resolve(editionDir, `04-${destaque}-${ratio}.jpg`);
+    const outOverlay = opts.outPath ?? resolve(editionDir, `04-${destaque}-${ratio}.jpg`);
     await sharp(full)
-      .composite([{ input: Buffer.from(buildOverlaySvg(title, dateLabel, dims)), top: 0, left: 0 }])
+      .composite([{ input: Buffer.from(buildOverlaySvg(title, dateLabel, dims, opts.fontSizeOverride)), top: 0, left: 0 }])
       .jpeg({ quality: 88 })
       .toFile(outOverlay);
     return outOverlay;

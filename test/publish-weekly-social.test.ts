@@ -43,6 +43,7 @@ import {
 import type { InstagramRankedCandidate } from "../scripts/lib/weekly-instagram-select.ts";
 import { sectionCardCacheKey, type SectionCardGenerator } from "../scripts/lib/weekly-instagram-ondemand-card.ts";
 import type { FlatCardGenerator } from "../scripts/lib/weekly-flat-card.ts";
+import type { NewsCardGenerator } from "../scripts/lib/weekly-carousel-news-card.ts";
 
 const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -56,6 +57,18 @@ const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  */
 const fakeFlatCardGenerator: FlatCardGenerator = async ({ kvKey }) => ({
   url: `https://cdn.example.com/flat/${kvKey}`,
+});
+
+/**
+ * Fake do gerador de card de notícia RECOMPOSTO (#5330) — nunca chama
+ * `generateCard`/sharp/upload real (o arquivo de arte-base não existe nos
+ * fixtures de teste, só a URL antiga é fixturada via `addImageFixture`,
+ * irrelevante pro caminho novo). Devolve uma URL determinística a partir do
+ * `kvKey` (que já embute editionDate+destaque+carouselKey) — mesma
+ * convenção de `fakeFlatCardGenerator`.
+ */
+const fakeNewsCardGenerator: NewsCardGenerator = async ({ kvKey }) => ({
+  url: `https://cdn.example.com/news/${kvKey}`,
 });
 
 function candidateFixture(
@@ -562,7 +575,7 @@ describe("main(): dispatch mockado", () => {
         captured += args.map(String).join(" ") + "\n";
       };
       try {
-        await main(["--saturday", saturdayStr, "--editions-root", editionsRoot, "--manifest-only"], { dataRoot, flatCardGenerator: fakeFlatCardGenerator });
+        await main(["--saturday", saturdayStr, "--editions-root", editionsRoot, "--manifest-only"], { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator });
       } finally {
         console.log = originalLog;
       }
@@ -595,7 +608,7 @@ describe("main(): dispatch mockado", () => {
       try {
         await main(
           ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--manifest-only"],
-          { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
+          { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
         );
       } finally {
         console.log = originalLog;
@@ -646,7 +659,7 @@ describe("main(): dispatch mockado", () => {
 
       await main(
         ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
-        { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
       // D2 (8%) vem antes de D1 (2%) na caption e no carrossel de imagens.
@@ -655,9 +668,13 @@ describe("main(): dispatch mockado", () => {
       // itens de notícia ficam no meio, na mesma ordem de antes.
       assert.equal(capturedBody.image_urls.length, 4);
       assert.match(capturedBody.image_urls[0], /\/flat\/weekly\/.*-clicked\/cover-4x5\.jpg$/);
+      // #5330: itens de notícia agora são RECOMPOSTOS com o tamanho de fonte
+      // único do carrossel — a URL vem do fakeNewsCardGenerator, não mais da
+      // URL fixturada em addImageFixture (que só alimentava o caminho antigo
+      // de "reusa a URL já publicada tal como está").
       assert.deepEqual(capturedBody.image_urls.slice(1, 3), [
-        "https://cdn.example.com/271220-d2.jpg",
-        "https://cdn.example.com/271220-d1.jpg",
+        "https://cdn.example.com/news/weekly/271225-clicked/271220-d2-4x5.jpg",
+        "https://cdn.example.com/news/weekly/271225-clicked/271220-d1-4x5.jpg",
       ]);
       assert.match(capturedBody.image_urls[3], /\/flat\/weekly\/.*-clicked\/cta-4x5\.jpg$/);
       assert.equal(capturedBody.image_url, null);
@@ -692,7 +709,7 @@ describe("main(): dispatch mockado", () => {
 
       await main(
         ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
-        { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
       assert.match(capturedBody.text, /^Os principais destaques da semana/);
@@ -701,8 +718,8 @@ describe("main(): dispatch mockado", () => {
       assert.equal(capturedBody.image_urls.length, 4);
       assert.match(capturedBody.image_urls[0], /\/flat\/weekly\/.*-highlights\/cover-4x5\.jpg$/);
       assert.deepEqual(capturedBody.image_urls.slice(1, 3), [
-        "https://cdn.example.com/271220-d1.jpg",
-        "https://cdn.example.com/271221-d1.jpg",
+        "https://cdn.example.com/news/weekly/271225-highlights/271220-d1-4x5.jpg",
+        "https://cdn.example.com/news/weekly/271225-highlights/271221-d1-4x5.jpg",
       ]);
       assert.match(capturedBody.image_urls[3], /\/flat\/weekly\/.*-highlights\/cta-4x5\.jpg$/);
 
@@ -741,11 +758,11 @@ describe("main(): dispatch mockado", () => {
 
       await main(
         ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
-        { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
       await main(
         ["--saturday", saturdayStr, "--mode", "clicked", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
-        { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
       assert.equal(requestCount, 2, "os 2 modos deveriam disparar 2 chamadas de rede distintas — nenhum skip-existing indevido entre eles");
@@ -822,7 +839,7 @@ describe("main(): dispatch mockado", () => {
 
       await main(
         ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
-        { dataRoot, sectionCardGenerator: fakeGenerator, flatCardGenerator: fakeFlatCardGenerator },
+        { dataRoot, sectionCardGenerator: fakeGenerator, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
       // RADAR (8%) vence D1 (2%) — vem primeiro na caption E no carrossel.
@@ -830,7 +847,7 @@ describe("main(): dispatch mockado", () => {
       assert.equal(capturedBody.image_urls.length, 4);
       assert.deepEqual(capturedBody.image_urls.slice(1, 3), [
         "https://cdn.example.com/radar-card-gerado-sob-demanda.jpg",
-        "https://cdn.example.com/271220-d1.jpg",
+        "https://cdn.example.com/news/weekly/271225-clicked/271220-d1-4x5.jpg",
       ]);
       assert.equal(generatorCalls, 1, "gerador sob demanda deveria ser chamado exatamente 1x — nunca redundante pro D1, que já tinha card");
 
@@ -861,7 +878,7 @@ describe("main(): dispatch mockado", () => {
           // exercitar isoladamente — `--force-incomplete-click-data` passa
           // por aquele gate (banner ainda impresso, sem exit) pra chegar no
           // gate de contagem sem `--force-incomplete-week`.
-          () => main(["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-click-data"], { dataRoot, flatCardGenerator: fakeFlatCardGenerator }),
+          () => main(["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-click-data"], { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator }),
           1,
         );
       } finally {
@@ -889,7 +906,7 @@ describe("main(): dispatch mockado", () => {
         // --force-incomplete-click-data (teste foca no gate de MIN_ITEMS,
         // não no de dado de clique).
         ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
-        { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
@@ -898,13 +915,19 @@ describe("main(): dispatch mockado", () => {
   });
 
   describe("carrossel: item sem imagem resolvível — post inteiro falha", () => {
-    it("2º item sem 06-public-images.json → falha nomeando edição+destaque, Worker NUNCA é chamado", async () => {
+    it("2º item com recomposição falhando (arte-base ausente) → falha nomeando edição+destaque, Worker NUNCA é chamado", async () => {
       const saturday = new Date(2027, 11, 25);
       const saturdayStr = aammddOf(saturday);
-      const dirA = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Com imagem", url: "https://exemplo.com/com-imagem" }]);
-      addImageFixture(dirA, 1, "https://cdn.example.com/271220-d1.jpg");
+      setupEdition(editionsRoot, "271220", [{ n: 1, title: "Com imagem", url: "https://exemplo.com/com-imagem" }]);
       setupEdition(editionsRoot, "271221", [{ n: 1, title: "Sem imagem", url: "https://exemplo.com/sem-imagem" }]);
-      // 271221 nunca recebe addImageFixture — 06-public-images.json ausente.
+
+      // #5330: itens de notícia são RECOMPOSTOS via newsCardGenerator — simula
+      // arte-base ausente pro item da 271221 (mesmo cenário de antes, agora
+      // expresso como falha do generator em vez de URL ausente no JSON).
+      const failingForSecondEdition: NewsCardGenerator = async ({ editionDate, destaque }) => {
+        if (editionDate === "271221") throw new Error(`arte-base de ${destaque} ausente em 271221 (simulado)`);
+        return { url: "https://cdn.example.com/recompose/271220-d1.jpg" };
+      };
 
       // disableNetConnect() garante que qualquer fetch não-mockado lança —
       // nenhum interceptor registrado de propósito.
@@ -912,13 +935,14 @@ describe("main(): dispatch mockado", () => {
         // #4511: sem cache Beehiiv pra nenhuma das 2 edições → precisa de
         // --force-incomplete-click-data pra chegar na checagem de imagem.
         ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
-        { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: failingForSecondEdition },
       );
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
       const instagram = out.posts.find((p: any) => p.platform === "instagram");
       assert.equal(instagram.status, "failed");
-      assert.match(instagram.reason, /public_image_url_missing:271221:d1/);
+      assert.match(instagram.reason, /on_demand_card_generation_failed:271221/);
+      assert.match(instagram.reason, /arte-base de d1 ausente em 271221/);
     });
   });
 
@@ -943,7 +967,7 @@ describe("main(): dispatch mockado", () => {
       await main(
         // #4511: sem cache Beehiiv pra 271220 → precisa de --force-incomplete-click-data.
         ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
-        { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
       assert.equal(attempts, 2);
@@ -967,7 +991,7 @@ describe("main(): dispatch mockado", () => {
             // #4511: sem cache Beehiiv pra 191230 → precisa de --force-incomplete-click-data
             // pra chegar na validação de scheduled_at, que é o que este teste cobre.
             ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
-            { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
+            { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
           ),
         1,
       );
@@ -990,7 +1014,7 @@ describe("main(): dispatch mockado", () => {
       await main(
         // #4511: sem cache Beehiiv pra 271220 → precisa de --force-incomplete-click-data.
         ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
-        { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
@@ -1023,7 +1047,7 @@ describe("main(): dispatch mockado", () => {
           () =>
             main(
               ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
-              { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
+              { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
             ),
           1,
         );
@@ -1061,7 +1085,7 @@ describe("main(): dispatch mockado", () => {
         () =>
           main(
             ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
-            { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
+            { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
           ),
         1,
       );
@@ -1096,7 +1120,7 @@ describe("main(): dispatch mockado", () => {
           "--force-incomplete-week",
           "--force-incomplete-click-data",
         ],
-        { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
@@ -1153,7 +1177,7 @@ describe("main(): dispatch mockado", () => {
           () =>
             main(
               ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--no-skip-existing", "--force-incomplete-week"],
-              { dataRoot, flatCardGenerator: fakeFlatCardGenerator },
+              { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
             ),
           /EISDIR/,
           "falha de persistência PÓS-sucesso deveria propagar como erro FATAL (não ser engolida/mascarada)",
@@ -1184,7 +1208,7 @@ describe("main(): dispatch mockado", () => {
       // de qualquer chamada de rede pro /queue.
       await main(
         ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
-        { dataRoot, flatCardGenerator: throwingGenerator },
+        { dataRoot, flatCardGenerator: throwingGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));

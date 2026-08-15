@@ -57,24 +57,25 @@ export interface InstagramWeeklyItem {
   body?: string;
 }
 
-/** Tamanho alvo da linha de contexto por item — 1 frase curta, não um parágrafo (#5330). */
-const CONTEXT_LINE_MAX_CHARS = 140;
-
 /**
- * Extrai 1 frase curta de contexto por item pra caption — `why` (destaques)
- * ou a 1ª frase de `body` (RADAR, sem `why`), truncada preservando palavras
- * inteiras. "" se não houver nada de contexto (nunca deveria acontecer pro
- * shape real produzido por `weekly-instagram-select.ts`, mas a função é
- * defensiva pra qualquer chamador com `InstagramWeeklyItem` mínimo).
+ * Extrai 1 frase de contexto por item pra caption — `why` (destaques) ou a
+ * 1ª frase de `body` (RADAR, sem `why`). "" se não houver nada de contexto
+ * (nunca deveria acontecer pro shape real produzido por
+ * `weekly-instagram-select.ts`, mas a função é defensiva pra qualquer
+ * chamador com `InstagramWeeklyItem` mínimo).
+ *
+ * SEMPRE a frase inteira — achado ao vivo (#5330, review do editor 260815):
+ * um truncamento próprio de 140 chars cortava a frase NO MEIO ("...expõe a
+ * falta de"), ilegível. A rede de segurança contra estourar o limite de
+ * caption do Instagram é só `truncateAtLimit` no corpo INTEIRO (2200 chars),
+ * no fim de `formatInstagramWeekly` — 1ª sentença editorial real neste
+ * dataset nunca passou de ~310 chars, então 5 linhas de contexto cabem
+ * folgado dentro do limite mesmo sem cap por linha.
  */
 function contextLine(item: InstagramWeeklyItem): string {
   const source = (item.why || item.body || "").trim();
   if (!source) return "";
-  const firstSentence = source.split(/(?<=[.!?])\s/)[0] ?? source;
-  if (firstSentence.length <= CONTEXT_LINE_MAX_CHARS) return firstSentence;
-  const cut = firstSentence.lastIndexOf(" ", CONTEXT_LINE_MAX_CHARS - 1);
-  const idx = cut > 0 ? cut : CONTEXT_LINE_MAX_CHARS - 1;
-  return `${firstSentence.slice(0, idx)}...`;
+  return source.split(/(?<=[.!?])\s/)[0] ?? source;
 }
 
 /**
