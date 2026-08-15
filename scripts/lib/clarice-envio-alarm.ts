@@ -112,10 +112,21 @@ export function markEnvioAlarmed(_state: EnvioAlarmState, aammdd: string): Envio
 // E-mail
 // ---------------------------------------------------------------------------
 
+/** `issueRef` (#5339, opcional) — outcome de `applyAlarmReconciliation`
+ * (`scripts/lib/alarm-issues.ts`) pro achado desta rodada. `undefined`
+ * (dry-run, ou wiring ainda não chamado) omite a citação sem quebrar nada —
+ * mesmo fallback de `buildHubDriftAlarmEmail`/`buildApoiosDiffAlarmEmail`. */
 export function buildEnvioAlarmEmail(
   evaluation: EnvioAlarmEvaluation,
   aammdd: string,
+  issueRef?: { issueNumber: number | null; url: string | null; action: string; error?: string },
 ): { subject: string; body: string } {
+  const issueLine = issueRef
+    ? "\n\n" +
+      (issueRef.action === "failed"
+        ? `Issue: falha ao criar/reusar (${issueRef.error})`
+        : `Issue: #${issueRef.issueNumber} (${issueRef.url})`)
+    : "";
   if (evaluation.verdict === "alarm-no-report") {
     return {
       subject: `⚠️ Diaria-Clarice-Envio: nenhum relatório encontrado pra ${aammdd}`,
@@ -128,7 +139,8 @@ export function buildEnvioAlarmEmail(
         `  systemctl --user status diaria-clarice-envio.service\n` +
         `  journalctl --user -u diaria-clarice-envio.service -n 100\n\n` +
         `Sem onda agendada pra amanhã 06:00 BRT, monte manualmente via /diaria-clarice-envio ` +
-        `(skill manual) — não espere a task rodar de novo sozinha.`,
+        `(skill manual) — não espere a task rodar de novo sozinha.` +
+        issueLine,
     };
   }
   return {
@@ -142,6 +154,7 @@ export function buildEnvioAlarmEmail(
       `de desistir — se isto chegou até aqui, não foi um blip de rate limit passageiro). ` +
       `Leia o relatório pra causa exata; se for algo que só o editor resolve (crédito Brevo, ` +
       `store desatualizado, teste A/B/C precisa de assunto novo), monte manualmente via ` +
-      `/diaria-clarice-envio — não espere a task de amanhã sozinha.`,
+      `/diaria-clarice-envio — não espere a task de amanhã sozinha.` +
+      issueLine,
   };
 }

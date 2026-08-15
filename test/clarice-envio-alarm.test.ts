@@ -152,3 +152,29 @@ describe("buildEnvioAlarmEmail", () => {
     assert.match(body, /06:00/);
   });
 });
+
+describe("buildEnvioAlarmEmail com issueRef (#5339) — prova de fumaça do wiring alarm-issues", () => {
+  it("cita o número da issue quando issueRef foi criado/reusado", () => {
+    const { body } = buildEnvioAlarmEmail(
+      { verdict: "alarm-failure", reportId: `envio-${AAMMDD}-abort` },
+      AAMMDD,
+      { issueNumber: 5341, url: "https://github.com/vjpixel/diaria-studio/issues/5341", action: "created" },
+    );
+    assert.match(body, /Issue: #5341/);
+    assert.match(body, /issues\/5341/);
+  });
+
+  it("action 'failed' cita o motivo em vez de um número — e-mail nunca perde o achado por falha de gh", () => {
+    const { body } = buildEnvioAlarmEmail(
+      { verdict: "alarm-no-report", reportId: null },
+      AAMMDD,
+      { issueNumber: null, url: null, action: "failed", error: "gh não autenticado" },
+    );
+    assert.match(body, /falha ao criar\/reusar \(gh não autenticado\)/);
+  });
+
+  it("sem issueRef (undefined) — corpo sai igual ao comportamento pré-#5339, sem quebrar", () => {
+    const { body } = buildEnvioAlarmEmail({ verdict: "alarm-failure", reportId: `envio-${AAMMDD}-abort` }, AAMMDD);
+    assert.doesNotMatch(body, /Issue:/);
+  });
+});

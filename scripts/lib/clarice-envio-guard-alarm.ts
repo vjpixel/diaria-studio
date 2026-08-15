@@ -106,10 +106,21 @@ export function markGuardAlarmed(_state: EnvioGuardAlarmState, aammdd: string): 
 // E-mail
 // ---------------------------------------------------------------------------
 
+/** `issueRef` (#5339, opcional) — outcome de `applyAlarmReconciliation`
+ * (`scripts/lib/alarm-issues.ts`) pro achado desta rodada. `undefined`
+ * (dry-run, ou wiring ainda não chamado) omite a citação sem quebrar nada —
+ * mesmo fallback de `buildEnvioAlarmEmail`/`buildHubDriftAlarmEmail`. */
 export function buildGuardAlarmEmail(
   evaluation: EnvioGuardAlarmEvaluation,
   aammdd: string,
+  issueRef?: { issueNumber: number | null; url: string | null; action: string; error?: string },
 ): { subject: string; body: string } {
+  const issueLine = issueRef
+    ? "\n\n" +
+      (issueRef.action === "failed"
+        ? `Issue: falha ao criar/reusar (${issueRef.error})`
+        : `Issue: #${issueRef.issueNumber} (${issueRef.url})`)
+    : "";
   if (evaluation.verdict === "alarm-no-report") {
     return {
       subject: `⚠️ Diaria-Clarice-Envio-Guard: nenhum relatório encontrado pra ${aammdd}`,
@@ -122,7 +133,8 @@ export function buildGuardAlarmEmail(
         `dado fresco antes do disparo das 06:00. Verifique:\n\n` +
         `  systemctl --user status diaria-clarice-envio-guard.service\n` +
         `  journalctl --user -u diaria-clarice-envio-guard.service -n 100\n\n` +
-        `Se ainda der tempo antes das 06:00, verifique a campanha manualmente no painel Brevo.`,
+        `Se ainda der tempo antes das 06:00, verifique a campanha manualmente no painel Brevo.` +
+        issueLine,
     };
   }
   return {
@@ -136,6 +148,7 @@ export function buildGuardAlarmEmail(
       `após retry e caiu no fallback (#5220 — que decide sozinho deixar passar ou suspender por ` +
       `precaução, com base no ÚLTIMO freio conhecido, não num dado fresco), seja por cancelamento ` +
       `incompleto ou erro duro. Leia o relatório pra causa exata; se a onda de hoje ainda não disparou ` +
-      `(antes das 06:00 BRT), considere checar/suspender manualmente pelo painel Brevo.`,
+      `(antes das 06:00 BRT), considere checar/suspender manualmente pelo painel Brevo.` +
+      issueLine,
   };
 }
