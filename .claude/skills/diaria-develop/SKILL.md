@@ -128,8 +128,9 @@ rodar as 3 checagens abaixo:
    rodada" já pronta (ex real: `docs/entity-page-candidates.md`).
 
 Só se as 3 checagens não acharem nada (nenhum PR, nenhum comentário de
-progresso, nenhum doc de acompanhamento) é legítimo classificar a issue como
-bloqueada por escopo. Caso contrário, o próximo passo já está documentado —
+progresso, nenhum doc de acompanhamento) é legítimo classificar a issue na
+categoria A-E aplicável (tipicamente C, decisão-produto — postar a leitura
+como comentário durável na issue). Caso contrário, o próximo passo já está documentado —
 dispatchar essa fatia pequena nesta mesma onda (issue vira elegível), ou, no
 mínimo, reportar o próximo passo concreto na tabela do `plan.json` em vez de
 "épica-scale, scoping futuro".
