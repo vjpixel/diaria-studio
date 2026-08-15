@@ -593,6 +593,20 @@ export const INSTAGRAM_WEEKLY_ARCHIVE_UTM = {
   campaign: "weekly-archive",
 } as const;
 
+/** MESMO link "Arquivo completo em {url}", mas no post semanal do FACEBOOK
+ * (`formatFacebookWeekly`, #5348) — sibling de `INSTAGRAM_WEEKLY_ARCHIVE_UTM`
+ * com `source` PRÓPRIO. Reusar o triplo do Instagram aqui atribuiria cliques
+ * vindos do Facebook ao Instagram nas métricas — o link é clicável no corpo
+ * do post do Facebook (diferente do Instagram, que suprime o link no corpo e
+ * usa "link na bio"), então o volume de clique real tende a ser bem maior
+ * que o do Instagram; misturar as duas fontes mascararia qual canal está de
+ * fato convertendo. */
+export const FACEBOOK_WEEKLY_ARCHIVE_UTM = {
+  source: "facebook",
+  medium: "organic_social",
+  campaign: "weekly-archive",
+} as const;
+
 /** Cadastro no gate inline do worker `cursos` (`workers/cursos/src/subscribe.ts`,
  * #4052) — fold-in do drift pré-existente apontado pelo #4295: o worker já
  * emitia este triplo com literais locais, ausente do registry/`/utms`. Move
@@ -1163,6 +1177,20 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "\"Arquivo completo em {url}\" no post semanal do Instagram (#4101/#4483) — " +
       "saía cru, sem UTM (resíduo do #4295, fechado no #4537 item 1). Volume baixo " +
       "(~1/semana) e o Instagram não linka no corpo, mas fecha o inventário.",
+    status: "ativo",
+  },
+  {
+    id: "facebook-weekly-archive",
+    label: "Facebook — link de arquivo no post semanal",
+    source: FACEBOOK_WEEKLY_ARCHIVE_UTM.source,
+    medium: FACEBOOK_WEEKLY_ARCHIVE_UTM.medium,
+    campaignPattern: FACEBOOK_WEEKLY_ARCHIVE_UTM.campaign,
+    originFile: "scripts/lib/format-weekly-social.ts",
+    description:
+      "MESMO link \"Arquivo completo em {url}\" do post semanal, agora também no " +
+      "Facebook (#5348) — source PRÓPRIO (nunca reusa o do Instagram), porque o " +
+      "link é clicável no corpo do post do Facebook (diferente do Instagram, " +
+      "'link na bio') e misturar as 2 fontes mascararia qual canal converte.",
     status: "ativo",
   },
   {

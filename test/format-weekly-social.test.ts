@@ -11,8 +11,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   formatInstagramWeekly,
+  formatFacebookWeekly,
   INSTAGRAM_WEEKLY_CHAR_LIMIT,
   buildInstagramWeeklyArchiveUrl,
+  buildFacebookWeeklyArchiveUrl,
   type InstagramWeeklyItem,
 } from "../scripts/lib/format-weekly-social.ts";
 
@@ -132,6 +134,55 @@ describe("formatInstagramWeekly", () => {
 
   it("#5330: modo default (omitido) continua 'clicked' — back-compat com chamadores existentes", () => {
     const caption = formatInstagramWeekly(makeItems(2));
+    assert.match(caption, /^Os mais clicados da semana na diar\.ia\.br:/);
+  });
+});
+
+describe("formatFacebookWeekly (#5348)", () => {
+  it("retorna vazio para 0 itens", () => {
+    assert.equal(formatFacebookWeekly([]), "");
+  });
+
+  it("MESMOS títulos/ordem/contexto do Instagram, mas a CTA final é um link clicável direto — nunca 'link na bio'", () => {
+    const items = makeItems(5);
+    const igCaption = formatInstagramWeekly(items);
+    const fbCaption = formatFacebookWeekly(items);
+    // As linhas numeradas (título + contexto, se houver) são idênticas —
+    // só a linha final de CTA diverge entre os 2 formatadores.
+    items.forEach((it, i) => {
+      assert.ok(fbCaption.includes(`${i + 1}. ${it.title}`));
+    });
+    assert.doesNotMatch(fbCaption, /link da bio/i, "Facebook não usa a indireção 'link na bio' — link direto no corpo");
+    assert.match(igCaption, /link da bio/i, "confirma que o Instagram (comparação) ainda usa 'link na bio', não regrediu");
+  });
+
+  it("o link de arquivo aparece cru, clicável, com UTM PRÓPRIO do Facebook (#5348 self-review — nunca reusa o source do Instagram)", () => {
+    const caption = formatFacebookWeekly(makeItems(3));
+    const urls = caption.match(/https?:\/\/\S+/g) ?? [];
+    assert.deepEqual(urls, [buildFacebookWeeklyArchiveUrl()], "sem ponto final colado na URL — Facebook não precisa do tratamento visual do Instagram");
+    assert.notDeepEqual(urls, [buildInstagramWeeklyArchiveUrl()], "misturar sob utm_source=instagram mascararia qual canal converteu");
+    const url = new URL(urls[0]);
+    assert.equal(url.searchParams.get("utm_source"), "facebook");
+  });
+
+  it("sem limite de truncamento — 5 itens com contexto longo saem inteiros, nunca cortados por um cap de tamanho (diferente do Instagram)", () => {
+    const items = makeLongItems(5);
+    const caption = formatFacebookWeekly(items);
+    assert.doesNotMatch(caption, /\.\.\.$/, "nenhum truncamento — Facebook não tem o cap de 2200 chars do Instagram");
+    assert.equal(
+      (caption.match(new RegExp(LONG_WHY.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) ?? []).length,
+      5,
+      "os 5 contextos aparecem inteiros, nenhum cortado",
+    );
+  });
+
+  it("modo 'highlights' usa a mesma intro 'principais destaques' do Instagram", () => {
+    const caption = formatFacebookWeekly(makeItems(2), "highlights");
+    assert.match(caption, /^Os principais destaques da semana na diar\.ia\.br:/);
+  });
+
+  it("modo default (omitido) continua 'clicked'", () => {
+    const caption = formatFacebookWeekly(makeItems(2));
     assert.match(caption, /^Os mais clicados da semana na diar\.ia\.br:/);
   });
 });

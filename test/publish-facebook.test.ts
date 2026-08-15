@@ -1,9 +1,10 @@
-import { describe, it } from "node:test";
+import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { extractPostText, validateScheduledTime, needsReschedule } from "../scripts/publish-facebook.ts";
+import { MockAgent, setGlobalDispatcher, getGlobalDispatcher } from "undici";
+import { extractPostText, validateScheduledTime, needsReschedule, publishFacebookCarouselByUrl } from "../scripts/publish-facebook.ts";
 import { FACEBOOK_CTA_LINE } from "../scripts/lib/social-cta-lines.ts";
 
 const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -187,4 +188,121 @@ describe("Graph API mock publishPhoto id (#527)", () => {
   it("parseia id do response", () => { const r={id:"123_456"} as {id:string;post_id?:string}; assert.equal(r.post_id??r.id,"123_456"); });
   it("prefere post_id sobre id", () => { const r={id:"123",post_id:"123_456"}; assert.equal(r.post_id??r.id,"123_456"); });
   it("constroi URL de post corretamente", () => { assert.equal("https://www.facebook.com/111/posts/123_456","https://www.facebook.com/111/posts/123_456"); });
+});
+
+describe("publishFacebookCarouselByUrl (#5348) — carrossel multi-foto a partir de URLs públicas", () => {
+  let mockAgent: MockAgent;
+  let originalDispatcher: ReturnType<typeof getGlobalDispatcher>;
+
+  before(() => {
+    originalDispatcher = getGlobalDispatcher();
+  });
+  after(() => {
+    setGlobalDispatcher(originalDispatcher);
+  });
+  beforeEach(() => {
+    mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+  });
+  afterEach(async () => {
+    await mockAgent.close();
+  });
+
+  it("N fotos → N POSTs /photos (published=false, url=<cada URL>) seguidos de 1 POST /feed com attached_media indexado", async () => {
+    const pool = mockAgent.get("https://graph.facebook.com");
+    const seenUrls: string[] = [];
+    let photoN = 0;
+    pool
+      .intercept({ path: "/v25.0/111/photos", method: "POST" })
+      .reply((opts) => {
+        photoN++;
+        const body = opts.body as FormData;
+        seenUrls.push(String(body.get("url")));
+        assert.equal(body.get("published"), "false");
+        assert.equal(body.get("access_token"), "tok123");
+        return { statusCode: 200, data: JSON.stringify({ id: `p${photoN}` }) };
+      })
+      .times(3);
+    let feedBody: FormData | null = null;
+    pool.intercept({ path: "/v25.0/111/feed", method: "POST" }).reply((opts) => {
+      feedBody = opts.body as FormData;
+      return { statusCode: 200, data: JSON.stringify({ id: "111_999" }) };
+    });
+
+    const result = await publishFacebookCarouselByUrl(
+      "111",
+      "tok123",
+      "v25.0",
+      ["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.jpg", "https://cdn.example.com/c.jpg"],
+      "Legenda do carrossel",
+      "2027-12-25T11:00:00-03:00",
+    );
+
+    assert.equal(result.id, "111_999");
+    assert.deepEqual(seenUrls, ["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.jpg", "https://cdn.example.com/c.jpg"]);
+    assert.ok(feedBody);
+    const fb = feedBody as unknown as FormData;
+    assert.deepEqual(JSON.parse(String(fb.get("attached_media[0]"))), { media_fbid: "p1" });
+    assert.deepEqual(JSON.parse(String(fb.get("attached_media[1]"))), { media_fbid: "p2" });
+    assert.deepEqual(JSON.parse(String(fb.get("attached_media[2]"))), { media_fbid: "p3" });
+    assert.equal(fb.get("message"), "Legenda do carrossel");
+    assert.equal(fb.get("published"), "false");
+    // scheduled_publish_time é o unix timestamp — mesma conversão de publishPhoto (isoToUnix).
+    assert.equal(fb.get("scheduled_publish_time"), String(Math.floor(new Date("2027-12-25T11:00:00-03:00").getTime() / 1000)));
+  });
+
+  it("scheduledAt null → publica sem scheduled_publish_time (mesmo contrato de publishPhoto)", async () => {
+    const pool = mockAgent.get("https://graph.facebook.com");
+    pool.intercept({ path: "/v25.0/111/photos", method: "POST" }).reply(200, { id: "p1" });
+    let feedBody: FormData | null = null;
+    pool.intercept({ path: "/v25.0/111/feed", method: "POST" }).reply((opts) => {
+      feedBody = opts.body as FormData;
+      return { statusCode: 200, data: JSON.stringify({ id: "111_888" }) };
+    });
+
+    await publishFacebookCarouselByUrl("111", "tok123", "v25.0", ["https://cdn.example.com/a.jpg"], "Legenda", null);
+
+    const fb = feedBody as unknown as FormData;
+    assert.equal(fb.get("scheduled_publish_time"), null);
+  });
+
+  it("falha parcial — 2ª de 3 fotos rejeitada pela API → lança, NUNCA chama /feed (não publica carrossel incompleto)", async () => {
+    const pool = mockAgent.get("https://graph.facebook.com");
+    let call = 0;
+    pool
+      .intercept({ path: "/v25.0/111/photos", method: "POST" })
+      .reply(() => {
+        call++;
+        if (call === 2) return { statusCode: 400, data: JSON.stringify({ error: { message: "URL inválida (simulado)" } }) };
+        return { statusCode: 200, data: JSON.stringify({ id: `p${call}` }) };
+      })
+      .times(2);
+    // Nenhum interceptor pro /feed — disableNetConnect() denunciaria uma
+    // chamada indevida se o código tentasse publicar mesmo com falha parcial.
+
+    await assert.rejects(
+      () =>
+        publishFacebookCarouselByUrl(
+          "111",
+          "tok123",
+          "v25.0",
+          ["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.jpg", "https://cdn.example.com/c.jpg"],
+          "Legenda",
+          "2027-12-25T11:00:00-03:00",
+        ),
+      /Facebook POST \/photos.*HTTP 400.*URL inválida/,
+    );
+  });
+
+  it("/feed falha após todas as fotos terem sido criadas → lança com a mensagem da API", async () => {
+    const pool = mockAgent.get("https://graph.facebook.com");
+    pool.intercept({ path: "/v25.0/111/photos", method: "POST" }).reply(200, { id: "p1" });
+    pool.intercept({ path: "/v25.0/111/feed", method: "POST" }).reply(500, "internal error");
+
+    await assert.rejects(
+      () => publishFacebookCarouselByUrl("111", "tok123", "v25.0", ["https://cdn.example.com/a.jpg"], "Legenda", "2027-12-25T11:00:00-03:00"),
+      /Facebook POST \/feed.*HTTP 500/,
+    );
+  });
 });

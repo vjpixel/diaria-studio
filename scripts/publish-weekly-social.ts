@@ -114,11 +114,11 @@ import {
 import { resolveOrGenerateFlatCardUrl, type FlatCardGenerator } from "./lib/weekly-flat-card.ts";
 import { resolveOrGenerateNewsCardUrl, type NewsCardGenerator } from "./lib/weekly-carousel-news-card.ts";
 import { computeCarouselTitleFontSize } from "./lib/weekly-carousel-font-size.ts";
-import { formatInstagramWeekly, type WeeklyInstagramMode } from "./lib/format-weekly-social.ts";
+import { formatInstagramWeekly, formatFacebookWeekly, type WeeklyInstagramMode } from "./lib/format-weekly-social.ts";
 import { appendSocialPosts, readSocialPublished, PostEntry } from "./lib/social-published-store.ts";
 import { postToWorkerQueue } from "./lib/worker-queue-client.ts";
 import { parseEditionDate, timezoneOffsetIso } from "./compute-social-schedule.ts";
-import { validateScheduledTime } from "./publish-facebook.ts";
+import { validateScheduledTime, publishFacebookCarouselByUrl } from "./publish-facebook.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -424,13 +424,84 @@ export async function main(
   // default — back-compat com quem já chama sem --mode) ou "highlights" (os
   // 5 D1 da semana, sem ranking por clique). Ver DEFAULT_MODE_DAY_OFFSET.
   const modeArg = values["mode"] ?? "clicked";
-  if (modeArg !== "clicked" && modeArg !== "highlights") {
-    console.error(`ERRO: --mode inválido: '${modeArg}' (esperado 'clicked' ou 'highlights').`);
+  if (modeArg !== "clicked" && modeArg !== "highlights" && modeArg !== "both") {
+    console.error(`ERRO: --mode inválido: '${modeArg}' (esperado 'clicked', 'highlights' ou 'both').`);
     process.exit(1);
     return;
   }
-  const mode = modeArg as WeeklyInstagramMode;
 
+  // #5349: --mode both dispara os 2 modos em sequência, cada um reportando
+  // sucesso/falha independente (falha em um NÃO impede o outro) — reusa a
+  // mesma lógica de runOneMode, chamada 2x DENTRO do mesmo processo (nunca
+  // spawna 2 processos filhos — perderia os seams de teste injetados em
+  // `opts`, ex: dataRoot/sectionCardGenerator/flatCardGenerator). --day-offset
+  // (override manual de agendamento) não compõe com --mode both — cada modo
+  // usa seu próprio offset padrão (DEFAULT_MODE_DAY_OFFSET); quem precisar
+  // sobrescrever roda os modos separadamente.
+  if (modeArg === "both") {
+    if (values["day-offset"] != null) {
+      console.error(
+        "ERRO: --day-offset não é compatível com --mode both (cada modo usa seu próprio offset padrão). Rode cada modo separadamente para sobrescrever.",
+      );
+      process.exit(1);
+      return;
+    }
+    // #5349: --manifest-only espera 1 objeto JSON puro no stdout (o caller —
+    // Passo 1 do SKILL.md — faz JSON.parse direto) — "both" emitiria 2
+    // objetos em sequência, quebrando esse contrato. "highlights" também
+    // sempre devolve manifest vazio (não ranqueia por clique, #5330), então
+    // não há ganho real em rodar os 2 nesse modo mesmo se o parse não fosse
+    // um problema — direciona pro uso single-mode explícito.
+    if (flags.has("manifest-only")) {
+      console.error(
+        "ERRO: --manifest-only não é compatível com --mode both (emitiria 2 JSONs em sequência). Rode --mode clicked --manifest-only — 'highlights' não ranqueia por clique, não tem nada pra enriquecer.",
+      );
+      process.exit(1);
+      return;
+    }
+    console.log(
+      '[publish-weekly-social] --mode both — rodando "highlights" e "clicked" em sequência (falha em um não impede o outro).',
+    );
+    const okHighlights = await runOneMode("highlights", saturday, flags, values, dataRoot, opts);
+    const okClicked = await runOneMode("clicked", saturday, flags, values, dataRoot, opts);
+    if (!okHighlights || !okClicked) {
+      process.exit(1);
+      return;
+    }
+    return;
+  }
+
+  const mode = modeArg as WeeklyInstagramMode;
+  const ok = await runOneMode(mode, saturday, flags, values, dataRoot, opts);
+  if (!ok) {
+    process.exit(1);
+  }
+}
+
+/**
+ * Corpo do processamento de UM modo (#5349) — extraído de `main()` pra
+ * permitir `--mode both` rodar os 2 modos em sequência dentro do MESMO
+ * processo (preservando os seams de teste injetados via `opts`). Retorna
+ * `false` em todo caminho que antes chamava `process.exit(1)` diretamente —
+ * quem decide se aborta o PROCESSO é o caller (`main()` solo aborta na
+ * hora; `--mode both` só aborta depois de tentar os 2 modos, e só se pelo
+ * menos 1 falhou). `true` cobre sucesso real E os no-ops legítimos que já
+ * saíam com código 0 antes do #5349 (preview sem `--schedule`, nenhum
+ * candidato na semana, `--manifest-only`, skip-existing).
+ */
+async function runOneMode(
+  mode: WeeklyInstagramMode,
+  saturday: string,
+  flags: Set<string>,
+  values: Record<string, string>,
+  dataRoot: string,
+  opts: {
+    dataRoot?: string;
+    sectionCardGenerator?: SectionCardGenerator;
+    flatCardGenerator?: FlatCardGenerator;
+    newsCardGenerator?: NewsCardGenerator;
+  },
+): Promise<boolean> {
   const editionsRoot = resolve(ROOT, values["editions-root"] ?? "data/editions");
   const beehiivPostsDir = resolve(dataRoot, "beehiiv-cache/posts");
   const time = values["time"] ?? DEFAULT_WEEKLY_TIME;
@@ -439,8 +510,7 @@ export async function main(
     const parsed = Number(values["day-offset"]);
     if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
       console.error(`ERRO: --day-offset inválido: '${values["day-offset"]}' (esperado inteiro, ex: 0, 1, -1).`);
-      process.exit(1);
-      return;
+      return false;
     }
     dayOffset = parsed;
   }
@@ -480,7 +550,7 @@ export async function main(
         2,
       ),
     );
-    return;
+    return true;
   }
 
   if (missingEditions.length > 0) {
@@ -504,7 +574,7 @@ export async function main(
       `[publish-weekly-social] Nenhum candidato (DESTAQUE 1/2/3 com URL) na semana anterior a ${saturday} — ` +
         `post semanal NÃO será publicado (nenhum publisher chamado).`,
     );
-    return;
+    return true;
   }
 
   const ranked: InstagramRankedCandidate[] = rawCandidates.map((c) => {
@@ -581,8 +651,7 @@ export async function main(
     ].join("\n");
     console.error(banner);
     if (!forceIncompleteClickData) {
-      process.exit(1);
-      return;
+      return false;
     }
   }
 
@@ -610,8 +679,7 @@ export async function main(
     ].join("\n");
     console.error(banner);
     if (!forceIncompleteWeek) {
-      process.exit(1);
-      return;
+      return false;
     }
   }
 
@@ -629,6 +697,10 @@ export async function main(
   const timezone = platformConfig?.publishing?.social?.timezone ?? "America/Sao_Paulo";
   const scheduledAt = computeWeeklyScheduledAt({ saturday, time, timezone, dayOffset });
   const caption = formatInstagramWeekly(items, mode);
+  // #5348: MESMO carrossel/itens/ordem — só a linha final de CTA difere
+  // (Facebook aceita link clicável no corpo, Instagram não). Mesmo
+  // `scheduledAt`/`carouselImageUrls` que o Instagram — ver dispatch abaixo.
+  const fbCaption = formatFacebookWeekly(items, mode);
   // Chave do carrossel (#5330) — "highlights" e "clicked" do MESMO sábado
   // nunca colidem em cache de card sem foto, persisted store, nem
   // skip-existing (destaqueKey abaixo).
@@ -639,7 +711,8 @@ export async function main(
     console.log(`\n[publish-weekly-social] PREVIEW (--schedule ausente — nenhuma chamada de rede feita).`);
     console.log(`Agendamento planejado: ${scheduledAt}\n`);
     console.log(`── instagram (${mode}) ──\n${caption}\n`);
-    return;
+    console.log(`── facebook (${mode}) ──\n${fbCaption}\n`);
+    return true;
   }
 
   mkdirSync(resolve(dataRoot, "weekly", saturday), { recursive: true });
@@ -647,46 +720,59 @@ export async function main(
 
   const tagAndAppend = (entry: PostEntry): void => appendSocialPosts(publishedPath, [entry]);
 
+  // #5348: skip-existing agora é POR CANAL — um dos 2 já publicado (re-run
+  // parcial após uma falha anterior) não deveria impedir o outro de tentar.
+  let skipInstagram = false;
+  let skipFacebook = false;
   if (skipExisting) {
     const published = readSocialPublished(publishedPath);
-    const existing = published.posts.find(
+    const existingIg = published.posts.find(
       (p) => p.platform === "instagram" && p.destaque === destaqueKey && (p.status === "draft" || p.status === "scheduled"),
     );
-    if (existing) {
-      console.log(`SKIP instagram/${destaqueKey} — already ${existing.status}`);
-      return;
+    const existingFb = published.posts.find(
+      (p) => p.platform === "facebook" && p.destaque === destaqueKey && (p.status === "draft" || p.status === "scheduled"),
+    );
+    if (existingIg) {
+      console.log(`SKIP instagram/${destaqueKey} — already ${existingIg.status}`);
+      skipInstagram = true;
     }
+    if (existingFb) {
+      console.log(`SKIP facebook/${destaqueKey} — already ${existingFb.status}`);
+      skipFacebook = true;
+    }
+    if (skipInstagram && skipFacebook) return true;
   }
 
   // #4101 self-review finding 10: valida scheduled_at ANTES de qualquer
-  // chamada de rede — agendar pro passado falharia mais adiante no Worker,
-  // ou pior, publicaria imediato.
+  // chamada de rede — agendar pro passado falharia mais adiante no
+  // Worker/Graph API, ou pior, publicaria imediato. #5348: mesmo horário
+  // pros 2 canais, então 1 validação basta — mas cada canal grava sua
+  // PRÓPRIA entry de falha (se não foi pulado por skip-existing).
   try {
     validateScheduledTime(scheduledAt);
   } catch (e: any) {
     console.error(`ERRO: scheduled_at "${scheduledAt}" inválido para o post semanal: ${e.message}`);
-    tagAndAppend({
-      platform: "instagram",
-      destaque: destaqueKey,
-      url: null,
-      status: "failed",
-      scheduled_at: scheduledAt,
-      reason: `scheduled_time_invalid: ${e.message}`,
-    });
-    process.exit(1);
-    return;
-  }
-
-  const workerUrl =
-    process.env.DIARIA_LINKEDIN_CRON_URL ??
-    platformConfig?.publishing?.social?.instagram?.cloudflare_worker_url ??
-    platformConfig?.publishing?.social?.linkedin?.cloudflare_worker_url ??
-    "";
-  const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
-  if (!workerUrl || !workerToken) {
-    console.error(`ERRO instagram/${destaqueKey}: Worker não configurado (DIARIA_LINKEDIN_CRON_URL/DIARIA_LINKEDIN_CRON_TOKEN).`);
-    tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: "worker_not_configured" });
-    return;
+    if (!skipInstagram) {
+      tagAndAppend({
+        platform: "instagram",
+        destaque: destaqueKey,
+        url: null,
+        status: "failed",
+        scheduled_at: scheduledAt,
+        reason: `scheduled_time_invalid: ${e.message}`,
+      });
+    }
+    if (!skipFacebook) {
+      tagAndAppend({
+        platform: "facebook",
+        destaque: destaqueKey,
+        url: null,
+        status: "failed",
+        scheduled_at: scheduledAt,
+        reason: `scheduled_time_invalid: ${e.message}`,
+      });
+    }
+    return false;
   }
 
   // #5330: capa/CTA (texto) calculado ANTES da resolução de imagem. O
@@ -705,7 +791,9 @@ export async function main(
   // (assíncrona) dentro de resolveWeeklyImageUrls. #5330: `fontSize` +
   // `dataRoot` + `carouselKey` acionam a RECOMPOSIÇÃO do título de D1/D2/D3
   // com o tamanho único do carrossel (nunca sobrescreve o card diário
-  // publicado — ver `weekly-carousel-news-card.ts`).
+  // publicado — ver `weekly-carousel-news-card.ts`). #5348: computado ANTES
+  // do check de credenciais de qualquer canal — Facebook e Instagram usam o
+  // MESMO `carouselImageUrls`, resolvido 1x só.
   const resolvedImages = await resolveWeeklyImageUrls(items, editionsRoot, {
     sectionCardGenerator: opts.sectionCardGenerator,
     newsCardGenerator: opts.newsCardGenerator,
@@ -727,24 +815,18 @@ export async function main(
         : `public_image_url_missing:${resolvedImages.missingEditionDate}:d${resolvedImages.missingDestaqueNumber}`;
     console.error(
       resolvedImages.onDemandError
-        ? `ERRO instagram/${destaqueKey}: geração SOB DEMANDA do card 4:5 (item RADAR/USE MELHOR da edição ${resolvedImages.missingEditionDate}) falhou: ` +
-            `${resolvedImages.onDemandError} — carrossel de ${items.length} itens cancelado inteiro, não publica parcial.`
+        ? `ERRO ${destaqueKey}: geração SOB DEMANDA do card 4:5 (item RADAR/USE MELHOR da edição ${resolvedImages.missingEditionDate}) falhou: ` +
+            `${resolvedImages.onDemandError} — carrossel de ${items.length} itens cancelado inteiro (Instagram + Facebook), não publica parcial.`
         : resolvedImages.corruptError
-          ? `ERRO instagram/${destaqueKey}: 06-public-images.json da edição ${resolvedImages.missingEditionDate} ESTÁ CORROMPIDO ` +
+          ? `ERRO ${destaqueKey}: 06-public-images.json da edição ${resolvedImages.missingEditionDate} ESTÁ CORROMPIDO ` +
               `(${resolveEditionDir(editionsRoot, resolvedImages.missingEditionDate)}): ${resolvedImages.corruptError} — re-rodar upload-images-public.ts ` +
-              `NÃO resolve isso; investigue escrita concorrente/corrupção de disco antes. Carrossel de ${items.length} itens cancelado inteiro, não publica parcial.`
-          : `ERRO instagram/${destaqueKey}: 06-public-images.json ausente/sem d${resolvedImages.missingDestaqueNumber} pra edição ${resolvedImages.missingEditionDate} ` +
-              `(${resolveEditionDir(editionsRoot, resolvedImages.missingEditionDate)}) — carrossel de ${items.length} itens cancelado inteiro, não publica parcial.`,
+              `NÃO resolve isso; investigue escrita concorrente/corrupção de disco antes. Carrossel de ${items.length} itens cancelado inteiro (Instagram + Facebook), não publica parcial.`
+          : `ERRO ${destaqueKey}: 06-public-images.json ausente/sem d${resolvedImages.missingDestaqueNumber} pra edição ${resolvedImages.missingEditionDate} ` +
+              `(${resolveEditionDir(editionsRoot, resolvedImages.missingEditionDate)}) — carrossel de ${items.length} itens cancelado inteiro (Instagram + Facebook), não publica parcial.`,
     );
-    tagAndAppend({
-      platform: "instagram",
-      destaque: destaqueKey,
-      url: null,
-      status: "failed",
-      scheduled_at: null,
-      reason,
-    });
-    return;
+    if (!skipInstagram) tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
+    if (!skipFacebook) tagAndAppend({ platform: "facebook", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
+    return true;
   }
 
   // #5330: capa (sem foto, kicker+título de apresentação) e CTA final (sem
@@ -756,7 +838,8 @@ export async function main(
   // erro de rede no upload) precisa do MESMO bookkeeping de falha que
   // `resolveWeeklyImageUrls` acima — sem isso, a exceção propagava sem
   // gravar status:"failed", e um re-run bem-intencionado não tinha como
-  // saber que a tentativa anterior não chegou a publicar nada.
+  // saber que a tentativa anterior não chegou a publicar nada. #5348: cache
+  // compartilhado (`carouselKey`) — o mesmo capa/CTA serve os 2 canais.
   let coverUrl: string;
   let ctaUrl: string;
   try {
@@ -764,21 +847,18 @@ export async function main(
     ctaUrl = await resolveOrGenerateFlatCardUrl(dataRoot, carouselKey, "cta", flatTexts.cta, opts.flatCardGenerator);
   } catch (e: any) {
     console.error(
-      `ERRO instagram/${destaqueKey}: geração do card sem foto (capa/CTA) falhou: ${e.message} — ` +
-        `carrossel de ${items.length} itens cancelado inteiro, não publica parcial.`,
+      `ERRO ${destaqueKey}: geração do card sem foto (capa/CTA) falhou: ${e.message} — ` +
+        `carrossel de ${items.length} itens cancelado inteiro (Instagram + Facebook), não publica parcial.`,
     );
-    tagAndAppend({
-      platform: "instagram",
-      destaque: destaqueKey,
-      url: null,
-      status: "failed",
-      scheduled_at: null,
-      reason: `flat_card_generation_failed:${e.message}`,
-    });
-    return;
+    const reason = `flat_card_generation_failed:${e.message}`;
+    if (!skipInstagram) tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
+    if (!skipFacebook) tagAndAppend({ platform: "facebook", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
+    return true;
   }
   const carouselImageUrls = [coverUrl, ...resolvedImages.urls, ctaUrl];
 
+  // ── Instagram (#4146/#4483/#5330) ──
+  //
   // #4511 fleet review CRÍTICO (silent-failure-hunter): o bookkeeping de
   // SUCESSO (`tagAndAppend` com status:"scheduled") vive num try/catch
   // SEPARADO do publish em si. `postToWorkerQueue` falhando é uma falha REAL
@@ -790,45 +870,100 @@ export async function main(
   // carrossel na fila. Pior: sem a entrada `status:"scheduled"` em disco, o
   // guard `skipExisting` (acima) não detecta o sucesso anterior, e um re-run
   // bem-intencionado agenda um SEGUNDO carrossel duplicado na conta real.
-  let response: { key: string };
-  try {
-    response = await postToWorkerQueue(workerUrl, workerToken, {
-      text: caption,
-      image_url: null,
-      image_urls: carouselImageUrls,
-      scheduled_at: scheduledAt,
-      destaque: destaqueKey,
-      channel: "instagram",
-    });
-  } catch (e: any) {
-    console.error(`FAILED instagram/${destaqueKey}: ${e.message}`);
-    tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: e.message });
-    console.log(`\n[publish-weekly-social] out_path: ${publishedPath}`);
-    return;
+  if (!skipInstagram) {
+    const workerUrl =
+      process.env.DIARIA_LINKEDIN_CRON_URL ??
+      platformConfig?.publishing?.social?.instagram?.cloudflare_worker_url ??
+      platformConfig?.publishing?.social?.linkedin?.cloudflare_worker_url ??
+      "";
+    const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+    if (!workerUrl || !workerToken) {
+      console.error(`ERRO instagram/${destaqueKey}: Worker não configurado (DIARIA_LINKEDIN_CRON_URL/DIARIA_LINKEDIN_CRON_TOKEN).`);
+      tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: "worker_not_configured" });
+    } else {
+      let response: { key: string } | null = null;
+      try {
+        response = await postToWorkerQueue(workerUrl, workerToken, {
+          text: caption,
+          image_url: null,
+          image_urls: carouselImageUrls,
+          scheduled_at: scheduledAt,
+          destaque: destaqueKey,
+          channel: "instagram",
+        });
+      } catch (e: any) {
+        console.error(`FAILED instagram/${destaqueKey}: ${e.message}`);
+        tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: e.message });
+      }
+      if (response) {
+        console.log(`OK instagram/${destaqueKey} — scheduled at ${scheduledAt} (worker_queue_key=${response.key})`);
+        try {
+          tagAndAppend({
+            platform: "instagram",
+            destaque: destaqueKey,
+            url: null,
+            status: "scheduled",
+            scheduled_at: scheduledAt,
+            worker_queue_key: response.key,
+          });
+        } catch (e: any) {
+          // NUNCA mascarar como falha de publish — o post JÁ está agendado
+          // no Worker. Propaga como erro FATAL (não mascarado) pra garantir
+          // que o operador veja isso e não simplesmente re-rode o script —
+          // mesmo em `--mode both`, isso interrompe o dispatch do Facebook
+          // (ainda não tentado nesta rodada) e do 2º modo (highlights/clicked):
+          // estado bom demais raro pra valer a pena mascarar (#4511 CRÍTICO).
+          console.error(
+            `\nSCHEDULED mas falhou ao persistir localmente (worker_queue_key=${response.key}): ${e.message} — ` +
+              `NÃO re-rode, isso duplicaria o post.`,
+          );
+          throw e;
+        }
+      }
+    }
   }
 
-  console.log(`OK instagram/${destaqueKey} — scheduled at ${scheduledAt} (worker_queue_key=${response.key})`);
-  try {
-    tagAndAppend({
-      platform: "instagram",
-      destaque: destaqueKey,
-      url: null,
-      status: "scheduled",
-      scheduled_at: scheduledAt,
-      worker_queue_key: response.key,
-    });
-  } catch (e: any) {
-    // NUNCA mascarar como falha de publish — o post JÁ está agendado no
-    // Worker. Propaga como erro FATAL (não mascarado) pra garantir que o
-    // operador veja isso e não simplesmente re-rode o script.
-    console.error(
-      `\nSCHEDULED mas falhou ao persistir localmente (worker_queue_key=${response.key}): ${e.message} — ` +
-        `NÃO re-rode, isso duplicaria o post.`,
-    );
-    throw e;
+  // ── Facebook (#5348) ──
+  //
+  // Diferente do Instagram, a Graph API do Facebook agenda nativamente
+  // (`scheduled_publish_time`) — não precisa do Worker queue nem de cron
+  // externo pra disparar no horário certo; o publish acontece 1x, agora,
+  // direto na Graph API (mesmo padrão de `publish-facebook.ts` no publisher
+  // diário). Mesmo racional de bookkeeping do Instagram acima: sucesso e
+  // gravação local são passos separados por design, mas aqui não há
+  // `SCHEDULED-mas-falhou-ao-persistir` fatal separado — `tagAndAppend`
+  // roda sempre dentro do MESMO try/catch (consistente com o padrão do
+  // publisher diário, `publishPhoto`/`main()` em publish-facebook.ts).
+  if (!skipFacebook) {
+    const fbPageId = process.env.FACEBOOK_PAGE_ID || "";
+    const fbPageToken = process.env.FACEBOOK_PAGE_ACCESS_TOKEN || "";
+    const fbApiVersion = process.env.FACEBOOK_API_VERSION || "v25.0";
+    if (!fbPageId || !fbPageToken) {
+      console.error(`ERRO facebook/${destaqueKey}: Facebook não configurado (FACEBOOK_PAGE_ID/FACEBOOK_PAGE_ACCESS_TOKEN).`);
+      tagAndAppend({ platform: "facebook", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: "facebook_not_configured" });
+    } else {
+      try {
+        const result = await publishFacebookCarouselByUrl(fbPageId, fbPageToken, fbApiVersion, carouselImageUrls, fbCaption, scheduledAt);
+        const postId = result.post_id || result.id;
+        const postUrl = `https://www.facebook.com/${fbPageId}/posts/${postId}`;
+        console.log(`OK facebook/${destaqueKey} — scheduled at ${scheduledAt} — ${postUrl}`);
+        tagAndAppend({
+          platform: "facebook",
+          destaque: destaqueKey,
+          url: postUrl,
+          status: "scheduled",
+          scheduled_at: scheduledAt,
+          fb_post_id: postId,
+        });
+      } catch (e: any) {
+        console.error(`FAILED facebook/${destaqueKey}: ${e.message}`);
+        tagAndAppend({ platform: "facebook", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: e.message });
+      }
+    }
   }
 
   console.log(`\n[publish-weekly-social] out_path: ${publishedPath}`);
+  return true;
 }
 
 if (isMainModule(import.meta.url)) {
