@@ -217,6 +217,10 @@ export function buildGeoCitationStalenessAlarmEmail(
   /** #4900: qual painel está stale. `undefined` preserva o texto de antes do
    * 2º painel existir (usado só pelos testes legados do alarme). */
   panel?: string,
+  /** #5339, opcional — `{issueNumber, url, action, error}` de
+   * `applyAlarmReconciliation`, pra citar a issue deste achado. `undefined`
+   * preserva o corpo pré-#5339. */
+  issueRef?: { issueNumber: number | null; url: string | null; action: string; error?: string },
 ): { subject: string; body: string } {
   const panelSuffix = panel ? ` (painel "${panel}")` : "";
   // `staleDays === null` também cobre o caso de `latestRecordTs` NÃO-null mas
@@ -271,6 +275,15 @@ export function buildGeoCitationStalenessAlarmEmail(
     "Este alarme não requer nenhuma ação automática — é só um aviso; nada é",
     "escrito na Brevo/Beehiiv/GitHub por ele.",
   );
+
+  if (issueRef) {
+    lines.push(
+      "",
+      issueRef.action === "failed"
+        ? `Issue: falha ao criar/reusar (${issueRef.error})`
+        : `Issue: #${issueRef.issueNumber} (${issueRef.url})`,
+    );
+  }
 
   return { subject, body: lines.join("\n") };
 }
@@ -368,6 +381,8 @@ export function shouldAlarmMissingProviders(
  * nova"). */
 export function buildMissingProviderAlarmEmail(
   panelsWithMissing: readonly PanelMissingProviders[],
+  /** #5339, opcional — mesmo contrato de `buildGeoCitationStalenessAlarmEmail`. */
+  issueRef?: { issueNumber: number | null; url: string | null; action: string; error?: string },
 ): { subject: string; body: string } {
   const allMissing = [...new Set(panelsWithMissing.flatMap((p) => p.missingProviders))].sort();
   const subject = `[diar.ia.br] monitor de citação GEO sem registro de ${allMissing.join(", ")} na última rodada`;
@@ -396,6 +411,15 @@ export function buildMissingProviderAlarmEmail(
     "Este alarme não requer nenhuma ação automática — é só um aviso; nada é",
     "escrito na Brevo/Beehiiv/GitHub por ele.",
   ];
+
+  if (issueRef) {
+    lines.push(
+      "",
+      issueRef.action === "failed"
+        ? `Issue: falha ao criar/reusar (${issueRef.error})`
+        : `Issue: #${issueRef.issueNumber} (${issueRef.url})`,
+    );
+  }
 
   return { subject, body: lines.join("\n") };
 }

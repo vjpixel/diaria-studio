@@ -101,7 +101,18 @@ export function markLinkedinWeeklyStalenessAlarmed(cycle: string): LinkedinWeekl
 // E-mail
 // ---------------------------------------------------------------------------
 
-export function buildLinkedinWeeklyStalenessAlarmEmail(cycle: string): { subject: string; body: string } {
+export function buildLinkedinWeeklyStalenessAlarmEmail(
+  cycle: string,
+  /** #5339, opcional — `{issueNumber, url, action, error}` de
+   * `applyAlarmReconciliation`, pra citar a issue deste achado. `undefined`
+   * preserva o corpo pré-#5339. */
+  issueRef?: { issueNumber: number | null; url: string | null; action: string; error?: string },
+): { subject: string; body: string } {
+  const issueLine = issueRef
+    ? issueRef.action === "failed"
+      ? `\n\nIssue: falha ao criar/reusar (${issueRef.error})`
+      : `\n\nIssue: #${issueRef.issueNumber} (${issueRef.url})`
+    : "";
   return {
     subject: `⚠️ LinkedIn semanal: ciclo ${cycle} não foi produzido`,
     body:
@@ -112,6 +123,7 @@ export function buildLinkedinWeeklyStalenessAlarmEmail(cycle: string): { subject
       `sem resposta, por exemplo).\n\n` +
       `Rode manualmente: /diaria-linkedin-semanal --publish-monday {AAMMDD da próxima segunda útil}.\n\n` +
       `Este alarme só checa SE o artefato final existe — não agenda a produção nem trata a semana como ` +
-      `"perdida" de forma especial (escopo reduzido da #5111; ver a issue pra follow-up).`,
+      `"perdida" de forma especial (escopo reduzido da #5111; ver a issue pra follow-up).` +
+      issueLine,
   };
 }

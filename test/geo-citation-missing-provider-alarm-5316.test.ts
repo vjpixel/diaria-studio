@@ -175,3 +175,42 @@ describe("idempotência (#5316) — mesmo padrão de shouldAlarm/advanceState pr
     assert.equal(shouldAlarmMissingProviders(state, aggAgain, aggAgain.fingerprint), true);
   });
 });
+
+describe("buildMissingProviderAlarmEmail com issueRef (#5339)", () => {
+  it("com issueRef (action: created) — corpo cita o número da issue (mock, sem rede real)", () => {
+    const agg = computeMultiPanelMissingProviders(
+      [{ panel: "geral", latestRoundProviders: ["openai", "google"] }],
+      ALL_PROVIDERS,
+    );
+    const { body } = buildMissingProviderAlarmEmail(agg.panelsWithMissing, {
+      issueNumber: 5403,
+      url: "https://github.com/x/y/issues/5403",
+      action: "created",
+    });
+    assert.match(body, /Issue: #5403/);
+    assert.match(body, /issues\/5403/);
+  });
+
+  it("com issueRef (action: failed) — cita o motivo, nunca suprime", () => {
+    const agg = computeMultiPanelMissingProviders(
+      [{ panel: "geral", latestRoundProviders: ["openai", "google"] }],
+      ALL_PROVIDERS,
+    );
+    const { body } = buildMissingProviderAlarmEmail(agg.panelsWithMissing, {
+      issueNumber: null,
+      url: null,
+      action: "failed",
+      error: "gh indisponível",
+    });
+    assert.match(body, /falha ao criar\/reusar \(gh indisponível\)/);
+  });
+
+  it("sem issueRef (undefined) — corpo sai igual ao comportamento pré-#5339", () => {
+    const agg = computeMultiPanelMissingProviders(
+      [{ panel: "geral", latestRoundProviders: ["openai", "google"] }],
+      ALL_PROVIDERS,
+    );
+    const { body } = buildMissingProviderAlarmEmail(agg.panelsWithMissing);
+    assert.doesNotMatch(body, /Issue:/);
+  });
+});

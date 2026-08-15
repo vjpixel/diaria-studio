@@ -156,6 +156,31 @@ describe("buildGeoCitationStalenessAlarmEmail (#4755)", () => {
     assert.match(body, /ilegível/);
     assert.match(body, /não-é-uma-data/);
   });
+
+  it("#5339: com issueRef (action: created) — corpo cita o número da issue (mock, sem rede real)", () => {
+    const { body } = buildGeoCitationStalenessAlarmEmail("2026-07-01T00:00:00.000Z", 38, "geral", {
+      issueNumber: 5402,
+      url: "https://github.com/x/y/issues/5402",
+      action: "created",
+    });
+    assert.match(body, /Issue: #5402/);
+    assert.match(body, /issues\/5402/);
+  });
+
+  it("#5339: com issueRef (action: failed) — cita o motivo, nunca suprime", () => {
+    const { body } = buildGeoCitationStalenessAlarmEmail("2026-07-01T00:00:00.000Z", 38, "geral", {
+      issueNumber: null,
+      url: null,
+      action: "failed",
+      error: "gh indisponível",
+    });
+    assert.match(body, /falha ao criar\/reusar \(gh indisponível\)/);
+  });
+
+  it("#5339: sem issueRef (undefined) — corpo sai igual ao comportamento pré-#5339", () => {
+    const { body } = buildGeoCitationStalenessAlarmEmail("2026-07-01T00:00:00.000Z", 38);
+    assert.doesNotMatch(body, /Issue:/);
+  });
 });
 
 describe("loadState / saveState (scripts/geo-citation-staleness-alarm.ts, I/O)", () => {
