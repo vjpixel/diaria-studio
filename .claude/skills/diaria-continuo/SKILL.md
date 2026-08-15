@@ -535,6 +535,18 @@ aqui.
    corpo que a próxima varredura (desta ou de outra sessão) lê primeiro, e
    fechar o loop ali é o que evita a mesma pergunta reaparecer mesmo se o
    parsing do marcador falhar por algum motivo.
+   **Tabela obrigatória antes de dormir (#5376 fleet review — forcing
+   function análoga ao passo 4.5 do overnight).** Um checklist em prosa,
+   sozinho, é exatamente o tipo de instrução sem rastro auditável que causou
+   o #5376 — o coordenador segue em prosa até a pressão de tempo/contexto
+   fazer ele pular. Antes de ir pro passo 6, imprimir uma tabela linha-a-
+   linha (issue → categoria (a)/(b)/(c) → ação tomada) cobrindo TODA issue
+   remanescente da fila — não um resumo agregado. Uma issue sem linha na
+   tabela é, por definição, uma issue não classificada — não pode existir.
+   Isto não substitui `plan.json` (que não tem hoje um enum estruturado pra
+   isso, item 3 do #5376, deliberadamente fora de escopo), é o artefato
+   textual mínimo que dá ao editor algo pra auditar depois, sem o custo de
+   desenhar um schema novo.
 6. **Sem resposta** → heartbeat `--phase aguardando-resposta` (se ainda não
    estava nessa phase — idempotente repetir) e dormir; ao acordar, re-checar
    primeiro o guard de colisão editorial do passo 1 (se uma edição entrou em
