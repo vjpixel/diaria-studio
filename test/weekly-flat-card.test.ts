@@ -16,8 +16,27 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { buildFlatCardSvg, resolveOrGenerateFlatCardUrl, type FlatCardGenerator } from "../scripts/lib/weekly-flat-card.ts";
+import { buildOverlaySvg } from "../scripts/gen-social-card-4x5.ts";
+
+/** Extrai o 1º `font-size="N"` de um SVG (a linha de título) — helper de teste. */
+function firstTitleFontSize(svg: string): number {
+  const m = svg.match(/font-size="(\d+)"[^>]*fill="#FFFFFF">/);
+  if (!m) throw new Error(`nenhum font-size de título encontrado no SVG: ${svg.slice(0, 200)}`);
+  return Number(m[1]);
+}
 
 describe("buildFlatCardSvg (pure)", () => {
+  it("#5330 fleet review (regressão): título do card sem foto usa a MESMA fórmula de tamanho de buildOverlaySvg — nunca desproporcional ao card de notícia", () => {
+    // Mesmo texto, mesmo `available` (W-PAD*2 é idêntico nos dois builders) —
+    // o font-size resultante tem que bater, senão os 2 tipos de slide do
+    // mesmo carrossel voltam a ficar visualmente desproporcionais (achado
+    // ao vivo que motivou este PR).
+    const title = "Os principais destaques da semana";
+    const flatSvg = buildFlatCardSvg({ kicker: "resumo semanal", title, footer: "diar.ia.br" });
+    const overlaySvg = buildOverlaySvg(title, "");
+    assert.equal(firstTitleFontSize(flatSvg), firstTitleFontSize(overlaySvg));
+  });
+
   it("inclui kicker (uppercase), título e rodapé no SVG gerado", () => {
     const svg = buildFlatCardSvg({ kicker: "resumo semanal", title: "As notícias da semana", footer: "diar.ia.br" });
     assert.match(svg, /RESUMO SEMANAL/);

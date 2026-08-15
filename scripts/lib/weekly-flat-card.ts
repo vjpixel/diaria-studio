@@ -30,13 +30,13 @@ import { COLORS, FONTS } from "./shared/design-tokens.ts";
 import { assertBrandSerifAvailable } from "./shared/assert-brand-font.ts";
 import { uploadImageToWorkerKV } from "./cloudflare-kv-upload.ts";
 import { DIARIA_EIA_URL } from "./canonical-urls.ts";
-import { esc } from "../gen-social-card-4x5.ts";
+import { esc, wrapTitle } from "../gen-social-card-4x5.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 const W = 1080;
 const H = 1350;
-const PAD = 79; // 7.3% de 1080, mesma margem lateral do overlay de notícia.
+const PAD = 72; // Idêntico a `PAD` em gen-social-card-4x5.ts — mesma margem lateral do overlay de notícia.
 
 const FONT_SANS = "'Geist', 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif";
 
@@ -48,38 +48,21 @@ export interface FlatCardText {
 }
 
 /**
- * Wrap guloso simples (mesma heurística de largura de `wrapTitle` em
- * gen-social-card-4x5.ts, sem o passo de balanceamento — títulos de
- * capa/CTA são escritos à mão, curtos, não precisam do refinamento).
- */
-function wrapSimple(text: string, maxCharsPerLine: number): string[] {
-  const words = text.split(/\s+/).filter(Boolean);
-  const lines: string[] = [];
-  let cur = "";
-  for (const w of words) {
-    const candidate = cur ? `${cur} ${w}` : w;
-    if (candidate.length > maxCharsPerLine && cur) {
-      lines.push(cur);
-      cur = w;
-    } else {
-      cur = candidate;
-    }
-  }
-  if (cur) lines.push(cur);
-  return lines;
-}
-
-/**
  * Pure: monta o SVG do card sem foto — fundo sólido `COLORS.ink` com leve
  * gradiente, filete teal + kicker (mesma posição do overlay de notícia),
  * título serif branco, rodapé.
+ *
+ * Wrap e tamanho de fonte reusam EXATAMENTE a fórmula de `buildOverlaySvg`
+ * (`wrapTitle`, divisor 26, fator 0.52, clamp 44-88) — achado ao vivo
+ * (#5330, review do editor): usar constantes próprias (divisor 24, fator
+ * 0.5, clamp 48-84) deixava o título da capa/CTA visivelmente
+ * desproporcional ao título dos 5 cards de notícia no mesmo carrossel.
  */
 export function buildFlatCardSvg(text: FlatCardText): string {
   const available = W - PAD * 2;
-  const maxChars = Math.floor(available / 24);
-  const lines = wrapSimple(text.title, maxChars);
+  const lines = wrapTitle(text.title, Math.floor(available / 26));
   const longest = Math.max(...lines.map((l) => l.length));
-  const size = Math.max(48, Math.min(84, Math.floor(available / (longest * 0.5))));
+  const size = Math.max(44, Math.min(88, Math.floor(available / (longest * 0.52))));
   const lineGap = Math.round(size * 1.18);
   const baseY = H - 150;
   const startY = baseY - (lines.length - 1) * lineGap;
