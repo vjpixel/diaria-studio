@@ -73,16 +73,30 @@ import {
   shouldAlarm,
   buildCursosAlarmEmail,
   emptyCursosAlarmState,
+  alarmFindingsFor,
   DEFAULT_NOT_CONFIRMED_RATE_THRESHOLD_PCT,
   type CursosAlarmState,
   type CursosCounterSnapshot,
 } from "./lib/cursos-error-alarm.ts";
+import {
+  planAlarmReconciliation,
+  applyAlarmReconciliation,
+  emptyAlarmIssuesState,
+  type AlarmIssuesState,
+  type AlarmIssueResult,
+} from "./lib/alarm-issues.ts";
 
 loadProjectEnv();
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_PATH = resolve(ROOT, "data", "cursos-error-alarm-state.json");
+const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "cursos-error-alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
+/** #5339: task roda a cada 2h (`docs/cursos-worker-alarm-setup.md`) — 24
+ * execuções limpas consecutivas = 48h sem o achado, mesmo horizonte de
+ * tempo (não de contagem) dos alarmes diários deste lote (que usam 2
+ * execuções = 48h numa cadência diária). */
+const CLOSE_ALARM_ISSUE_AFTER_RUNS = 24;
 
 /** Pura: converte o valor cru lido do KV (string ou `null`, miss = "0") num
  * inteiro não-negativo. Nunca lança — corpo corrompido/negativo vira 0
@@ -142,6 +156,27 @@ function saveState(state: CursosAlarmState): void {
   writeFileAtomic(STATE_PATH, JSON.stringify(state, null, 2) + "\n");
 }
 
+// ─── Estado (dedup/reconciliação de ISSUE por achado, #5339) ──────────────
+// Arquivo separado de STATE_PATH de propósito — mesmo racional dos demais
+// alarmes deste lote: idempotência do E-MAIL (acima) e tracking de ISSUE
+// por achado são preocupações independentes.
+
+function loadAlarmIssuesState(): AlarmIssuesState {
+  if (!existsSync(ALARM_ISSUES_STATE_PATH)) return emptyAlarmIssuesState();
+  try {
+    const raw = JSON.parse(readFileSync(ALARM_ISSUES_STATE_PATH, "utf8"));
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
+    return emptyAlarmIssuesState();
+  } catch (e) {
+    console.error(`[cursos-error-alarm] estado de alarm-issues corrompido/ilegível em ${ALARM_ISSUES_STATE_PATH} — resetando pra vazio: ${(e as Error).message}`);
+    return emptyAlarmIssuesState();
+  }
+}
+
+function saveAlarmIssuesState(state: AlarmIssuesState): void {
+  writeFileAtomic(ALARM_ISSUES_STATE_PATH, JSON.stringify(state, null, 2) + "\n");
+}
+
 async function main(): Promise<void> {
   const isDryRun = hasFlag(process.argv, "dry-run");
   const toOverride = getArg(process.argv, "to");
@@ -186,8 +221,43 @@ async function main(): Promise<void> {
       } (${evaluation.rate.notConfirmed}/${evaluation.rate.total}). Contadores atuais: ${JSON.stringify(current)}.`,
   );
 
+  // #5339 — reconcilia uma issue por achado (padrão fatal / taxa de
+  // não-confirmado) ANTES de montar o e-mail, mesmo padrão de
+  // hub-drift-check.ts/apoios-diff-alarm.ts. Roda toda execução não-dry-run,
+  // independente de um e-mail novo disparar nesta rodada.
+  const alarmFindings = alarmFindingsFor(evaluation);
+  const alarmState = loadAlarmIssuesState();
+  let issueRefs: Map<string, AlarmIssueResult> | undefined;
+
+  if (isDryRun) {
+    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
+    console.log(
+      `[cursos-error-alarm] --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
+        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado.`,
+    );
+  } else {
+    const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+      cwd: ROOT,
+      closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+    });
+    saveAlarmIssuesState(nextState);
+    issueRefs = new Map(
+      findingOutcomes.map((o) => [
+        o.fingerprint,
+        { issueNumber: o.issueNumber, url: o.url, action: o.action, error: o.error },
+      ]),
+    );
+    for (const o of findingOutcomes) {
+      if (o.action === "failed") {
+        console.error(`[cursos-error-alarm] [${o.fingerprint}] issue não criada/reusada: ${o.error}`);
+      } else {
+        console.log(`[cursos-error-alarm] [${o.fingerprint}] issue #${o.issueNumber} (${o.action}): ${o.url}`);
+      }
+    }
+  }
+
   if (shouldAlarm(evaluation)) {
-    const { subject, body } = buildCursosAlarmEmail(evaluation);
+    const { subject, body } = buildCursosAlarmEmail(evaluation, issueRefs);
     const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     if (isDryRun) {
       console.log(`[cursos-error-alarm] --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);

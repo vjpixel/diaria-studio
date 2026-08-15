@@ -30,6 +30,7 @@ import {
   evaluateCursosCounters,
   shouldAlarm,
   buildCursosAlarmEmail,
+  alarmFindingsFor,
   type CursosCounterSnapshot,
   type CursosAlarmState,
 } from "../scripts/lib/cursos-error-alarm.ts";
@@ -291,4 +292,64 @@ test("buildCursosAlarmEmail — resetDetected adiciona aviso explícito no corpo
   // texto do e-mail precisa saber relatar o aviso quando chamado.
   const { body } = buildCursosAlarmEmail(evaluation);
   assert.match(body, /reset externo/);
+});
+
+// ─── #5339: issues automáticas por achado ───────────────────────────────────
+
+test("alarmFindingsFor — um finding por padrão fatal + um pra taxa quando ambos disparam", () => {
+  const state = stateWith({
+    lastCounters: snapshot({ fatalCookieHmacSecretAusente: 0, fatalCadastroBeehiivFalhou: 0, emailGateConfirmed: 0, emailGateNotConfirmed: 0 }),
+    lastCheckedAt: "2026-08-14T00:00:00.000Z",
+  });
+  const current = snapshot({
+    fatalCookieHmacSecretAusente: 1,
+    fatalCadastroBeehiivFalhou: 2,
+    emailGateConfirmed: 0,
+    emailGateNotConfirmed: 10,
+  });
+  const evaluation = evaluateCursosCounters(state, current, new Date("2026-08-15T00:00:00.000Z"));
+  const findings = alarmFindingsFor(evaluation);
+  assert.equal(findings.length, 3);
+  assert.deepEqual(
+    findings.map((f) => f.fingerprint).sort(),
+    ["fatal:cadastro-beehiiv-falhou", "fatal:cookie-hmac-secret-ausente", "rate-not-confirmed"],
+  );
+  for (const f of findings) assert.equal(f.check, "cursos-error");
+});
+
+test("alarmFindingsFor — nenhum finding quando nada dispara", () => {
+  const state = stateWith({ lastCounters: snapshot(), lastCheckedAt: "2026-08-14T00:00:00.000Z" });
+  const current = snapshot();
+  const evaluation = evaluateCursosCounters(state, current, new Date("2026-08-15T00:00:00.000Z"));
+  assert.deepEqual(alarmFindingsFor(evaluation), []);
+});
+
+test("buildCursosAlarmEmail com issueRefs — corpo cita o número da issue por achado (mock, sem rede real)", () => {
+  const state = stateWith({
+    lastCounters: snapshot(),
+    lastCheckedAt: "2026-08-14T00:00:00.000Z",
+  });
+  const current = snapshot({ fatalCookieHmacSecretAusente: 1 });
+  const evaluation = evaluateCursosCounters(state, current, new Date("2026-08-15T00:00:00.000Z"));
+  const issueRefs = new Map([["fatal:cookie-hmac-secret-ausente", { issueNumber: 5401, url: "https://github.com/x/y/issues/5401", action: "created" }]]);
+  const { body } = buildCursosAlarmEmail(evaluation, issueRefs);
+  assert.match(body, /Issue: #5401/);
+  assert.match(body, /issues\/5401/);
+});
+
+test("buildCursosAlarmEmail com issueRefs — action:'failed' cita o motivo, nunca suprime", () => {
+  const state = stateWith({ lastCounters: snapshot(), lastCheckedAt: "2026-08-14T00:00:00.000Z" });
+  const current = snapshot({ fatalCookieHmacSecretAusente: 1 });
+  const evaluation = evaluateCursosCounters(state, current, new Date("2026-08-15T00:00:00.000Z"));
+  const issueRefs = new Map([["fatal:cookie-hmac-secret-ausente", { issueNumber: null, url: null, action: "failed", error: "gh indisponível" }]]);
+  const { body } = buildCursosAlarmEmail(evaluation, issueRefs);
+  assert.match(body, /falha ao criar\/reusar \(gh indisponível\)/);
+});
+
+test("buildCursosAlarmEmail sem issueRefs (undefined) — corpo sai igual ao comportamento pré-#5339, sem quebrar", () => {
+  const state = stateWith({ lastCounters: snapshot(), lastCheckedAt: "2026-08-14T00:00:00.000Z" });
+  const current = snapshot({ fatalCookieHmacSecretAusente: 1 });
+  const evaluation = evaluateCursosCounters(state, current, new Date("2026-08-15T00:00:00.000Z"));
+  const { body } = buildCursosAlarmEmail(evaluation);
+  assert.doesNotMatch(body, /Issue:/);
 });

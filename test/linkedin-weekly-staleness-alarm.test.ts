@@ -102,4 +102,29 @@ describe("buildLinkedinWeeklyStalenessAlarmEmail", () => {
     assert.match(body, /ln-26w32\.json/);
     assert.match(body, /diaria-linkedin-semanal/);
   });
+
+  it("#5339: com issueRef (action: created) — corpo cita o número da issue (mock, sem rede real)", () => {
+    const { body } = buildLinkedinWeeklyStalenessAlarmEmail("26w32", {
+      issueNumber: 5404,
+      url: "https://github.com/x/y/issues/5404",
+      action: "created",
+    });
+    assert.match(body, /Issue: #5404/);
+    assert.match(body, /issues\/5404/);
+  });
+
+  it("#5339: com issueRef (action: failed) — cita o motivo, nunca suprime", () => {
+    const { body } = buildLinkedinWeeklyStalenessAlarmEmail("26w32", {
+      issueNumber: null,
+      url: null,
+      action: "failed",
+      error: "gh indisponível",
+    });
+    assert.match(body, /falha ao criar\/reusar \(gh indisponível\)/);
+  });
+
+  it("#5339: sem issueRef (undefined) — corpo sai igual ao comportamento pré-#5339", () => {
+    const { body } = buildLinkedinWeeklyStalenessAlarmEmail("26w32");
+    assert.doesNotMatch(body, /Issue:/);
+  });
 });

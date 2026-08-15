@@ -60,12 +60,26 @@ import {
   buildMissingProviderAlarmEmail,
   type GeoCitationStalenessAlarmState,
 } from "./lib/geo-citation-staleness-alarm.ts";
+import {
+  planAlarmReconciliation,
+  applyAlarmReconciliation,
+  emptyAlarmIssuesState,
+  type AlarmFinding,
+  type AlarmIssuesState,
+  type AlarmIssueResult,
+} from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HISTORY_PATH = resolve(ROOT, DEFAULT_GEO_CITATIONS_LOG_PATH);
 const STATE_PATH = resolve(ROOT, "data", "geo-citations", "staleness-alarm-state.json");
+const ALARM_ISSUES_STATE_PATH = resolve(ROOT, "data", "geo-citations", "alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[geo-citation-staleness-alarm]";
+/** #5339: task roda semanal (domingos 10:30) — 2 execuções limpas
+ * consecutivas = 2 semanas sem o achado, mesmo valor usado pelos alarmes
+ * de #5112 em diante (`cursos-error-alarm.ts`, deste mesmo lote, usa 24 —
+ * cadência diária, não semanal), aplicado à cadência semanal desta task. */
+const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
 export function loadState(statePath: string = STATE_PATH): GeoCitationStalenessAlarmState {
   if (!existsSync(statePath)) return emptyGeoCitationStalenessAlarmState();
@@ -97,6 +111,90 @@ export function loadState(statePath: string = STATE_PATH): GeoCitationStalenessA
 export function saveState(state: GeoCitationStalenessAlarmState, statePath: string = STATE_PATH): void {
   mkdirSync(dirname(statePath), { recursive: true });
   writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
+}
+
+// ─── Estado (dedup/reconciliação de ISSUE por achado, #5339) ──────────────
+// Arquivo separado de STATE_PATH de propósito — mesmo racional dos demais
+// alarmes deste lote: idempotência do E-MAIL (acima) e tracking de ISSUE
+// por achado são preocupações independentes.
+
+export function loadAlarmIssuesState(statePath: string = ALARM_ISSUES_STATE_PATH): AlarmIssuesState {
+  if (!existsSync(statePath)) return emptyAlarmIssuesState();
+  try {
+    const raw = JSON.parse(readFileSync(statePath, "utf8"));
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AlarmIssuesState;
+    return emptyAlarmIssuesState();
+  } catch (e) {
+    console.error(`${LOG_PREFIX} estado de alarm-issues corrompido/ilegível em ${ALARM_ISSUES_STATE_PATH} — resetando pra vazio: ${(e as Error).message}`);
+    return emptyAlarmIssuesState();
+  }
+}
+
+export function saveAlarmIssuesState(state: AlarmIssuesState, statePath: string = ALARM_ISSUES_STATE_PATH): void {
+  mkdirSync(dirname(statePath), { recursive: true });
+  writeFileAtomic(statePath, JSON.stringify(state, null, 2) + "\n");
+}
+
+/** Converte o veredito de staleness (agregado, #4900) num `AlarmFinding`
+ * (#5339) — `check` fixo, `fingerprint` = `agg.fingerprint` (mesma fórmula
+ * que já governa a idempotência do e-mail, cobre só os painéis STALE). Sem
+ * PII — o achado só cita nome de painel e timestamp de registro, nenhum
+ * dado de assinante. */
+function toStalenessFinding(agg: { isStale: boolean; stalePanels: { panel: string; latestRecordTs: string | null; check: { staleDays: number | null } }[]; fingerprint: string }): AlarmFinding {
+  const worst = agg.stalePanels[0];
+  const lines = [
+    "Achado automático do alarme `Diaria-Geo-Citation-Staleness-Alarm`",
+    "(`scripts/geo-citation-staleness-alarm.ts`).",
+    "",
+    `Painel(is) stale: ${agg.stalePanels.map((p) => p.panel).join(", ")}`,
+    `Painel mais grave: "${worst.panel}" — último registro: ${worst.latestRecordTs ?? "nenhum"} ` +
+      `(${worst.check.staleDays ?? "?"} dia(s)).`,
+    "",
+    "Verifique se a task `Diaria-Geo-Citation-Monitor` (domingos 07:00) segue registrada e rodando",
+    "(Get-ScheduledTask -TaskName 'Diaria-Geo-Citation-Monitor' | Get-ScheduledTaskInfo) e se ao menos",
+    "um provider (ANTHROPIC_API_KEY/OPENAI_API_KEY/GEMINI_API_KEY) segue configurado.",
+    "",
+    "Esta issue é criada automaticamente pelo alarme (#5339) e será",
+    "comentada/fechada sozinha quando o achado deixar de reproduzir por",
+    `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
+  ];
+  return {
+    check: "geo-citation-staleness",
+    fingerprint: agg.fingerprint,
+    title: `[diar.ia.br] monitor de citação GEO sem medição nova (${agg.stalePanels.map((p) => p.panel).join(", ")})`,
+    body: lines.join("\n"),
+    labels: ["bug"],
+    priority: "P2",
+  };
+}
+
+/** Converte o veredito de provider ausente (#5316) num `AlarmFinding`
+ * (#5339) — `check` distinto de `toStalenessFinding` (sinal independente,
+ * ver docstring de `computeMultiPanelMissingProviders`). Sem PII. */
+function toMissingProviderFinding(missingCheck: { hasMissing: boolean; panelsWithMissing: { panel: string; missingProviders: string[] }[]; fingerprint: string }): AlarmFinding {
+  const allMissing = [...new Set(missingCheck.panelsWithMissing.flatMap((p) => p.missingProviders))].sort();
+  const lines = [
+    "Achado automático do alarme `Diaria-Geo-Citation-Staleness-Alarm`",
+    "(`scripts/geo-citation-staleness-alarm.ts`, checagem de provider ausente #5316).",
+    "",
+    ...missingCheck.panelsWithMissing.map((p) => `  - painel "${p.panel}": faltando ${p.missingProviders.join(", ")}`),
+    "",
+    "Causa mais provável: a API key do provider sumiu do .env da máquina que roda",
+    "a task Diaria-Geo-Citation-Monitor. Verifique com",
+    "npx tsx scripts/geo-citation-monitor.ts --dry-run.",
+    "",
+    "Esta issue é criada automaticamente pelo alarme (#5339) e será",
+    "comentada/fechada sozinha quando o achado deixar de reproduzir por",
+    `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
+  ];
+  return {
+    check: "geo-citation-missing-provider",
+    fingerprint: missingCheck.fingerprint,
+    title: `[diar.ia.br] monitor de citação GEO sem registro de ${allMissing.join(", ")} na última rodada`,
+    body: lines.join("\n"),
+    labels: ["bug"],
+    priority: "P2",
+  };
 }
 
 /**
@@ -215,23 +313,6 @@ async function main(): Promise<void> {
 
   const check = { isStale: agg.isStale, staleDays: agg.stalePanels[0]?.check.staleDays ?? null };
   const fingerprint = agg.fingerprint;
-  if (shouldAlarm(state, check, fingerprint)) {
-    const worst = agg.stalePanels[0];
-    const { subject, body } = buildGeoCitationStalenessAlarmEmail(
-      worst.latestRecordTs,
-      worst.check.staleDays,
-      agg.stalePanels.map((p) => p.panel).join(", "),
-    );
-    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
-    if (isDryRun) {
-      console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
-    } else {
-      await sendGmailMessage(to, subject, body);
-      console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to}.`);
-    }
-  } else {
-    console.log(`${LOG_PREFIX} nenhum e-mail necessário (não stale, ou esta staleness já foi alarmada antes).`);
-  }
 
   // #5316: provider ausente da última rodada — sinal INDEPENDENTE de
   // staleness (ver docstring de `computeMultiPanelMissingProviders` em
@@ -239,6 +320,8 @@ async function main(): Promise<void> {
   // GEO_PROVIDERS (o conjunto canônico que o monitor sabe consultar), não
   // contra "quem tinha key na rodada anterior" — detecta tanto uma ausência
   // de 1 rodada quanto uma persistente há semanas com a mesma checagem.
+  // Computado ANTES do bloco de staleness abaixo (#5339) pra poder
+  // reconciliar as issues dos dois achados numa única passada.
   const configuredProviderIds = GEO_PROVIDERS.map((p) => p.id);
   const perPanelProviders = MONITORED_PANELS.map((panel) => {
     const records = readPanelProviderRecords(HISTORY_PATH, panel);
@@ -251,8 +334,69 @@ async function main(): Promise<void> {
     );
   }
   const missingCheck = computeMultiPanelMissingProviders(perPanelProviders, configuredProviderIds);
+
+  // #5339 — reconcilia uma issue por achado (staleness / provider ausente)
+  // ANTES de montar os e-mails, mesmo padrão de hub-drift-check.ts. Roda
+  // toda execução não-dry-run, independente de um e-mail novo disparar
+  // nesta rodada.
+  const alarmFindings: AlarmFinding[] = [
+    ...(agg.isStale ? [toStalenessFinding(agg)] : []),
+    ...(missingCheck.hasMissing ? [toMissingProviderFinding(missingCheck)] : []),
+  ];
+  const alarmState = loadAlarmIssuesState();
+  let issueRefs: Map<string, AlarmIssueResult> | undefined;
+
+  if (isDryRun) {
+    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
+    console.log(
+      `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
+        `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado.`,
+    );
+  } else {
+    const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
+      cwd: ROOT,
+      closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+    });
+    saveAlarmIssuesState(nextState);
+    issueRefs = new Map(
+      findingOutcomes.map((o) => [
+        o.check,
+        { issueNumber: o.issueNumber, url: o.url, action: o.action, error: o.error },
+      ]),
+    );
+    for (const o of findingOutcomes) {
+      if (o.action === "failed") {
+        console.error(`${LOG_PREFIX} [${o.check}] issue não criada/reusada: ${o.error}`);
+      } else {
+        console.log(`${LOG_PREFIX} [${o.check}] issue #${o.issueNumber} (${o.action}): ${o.url}`);
+      }
+    }
+  }
+
+  if (shouldAlarm(state, check, fingerprint)) {
+    const worst = agg.stalePanels[0];
+    const { subject, body } = buildGeoCitationStalenessAlarmEmail(
+      worst.latestRecordTs,
+      worst.check.staleDays,
+      agg.stalePanels.map((p) => p.panel).join(", "),
+      issueRefs?.get("geo-citation-staleness"),
+    );
+    const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
+    if (isDryRun) {
+      console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${to}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+    } else {
+      await sendGmailMessage(to, subject, body);
+      console.log(`${LOG_PREFIX} e-mail de alarme enviado pra ${to}.`);
+    }
+  } else {
+    console.log(`${LOG_PREFIX} nenhum e-mail necessário (não stale, ou esta staleness já foi alarmada antes).`);
+  }
+
   if (shouldAlarmMissingProviders(state, missingCheck, missingCheck.fingerprint)) {
-    const { subject, body } = buildMissingProviderAlarmEmail(missingCheck.panelsWithMissing);
+    const { subject, body } = buildMissingProviderAlarmEmail(
+      missingCheck.panelsWithMissing,
+      issueRefs?.get("geo-citation-missing-provider"),
+    );
     const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);
     if (isDryRun) {
       console.log(

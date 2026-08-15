@@ -18,6 +18,19 @@
  * pra leitura de conteúdo de log via essa API pública. Ela parece expor só
  * métricas AGREGADAS (contagem de requests, erros por status, CPU time).
  *
+ * ─── Issues automáticas por achado (#5339) ─────────────────────────────────
+ *
+ * `alarmFindingsFor` converte a avaliação em `AlarmFinding[]` — um por
+ * PADRÃO fatal com delta > 0 (`fingerprint = "fatal:{pattern-slug}"`) e um
+ * pra taxa de não-confirmado quando cruza o limiar (`fingerprint =
+ * "rate-not-confirmed"`, estável — reaparece no mesmo achado enquanto a
+ * taxa seguir alta, independente do valor exato). Nenhum finding carrega
+ * e-mail/dado individual de assinante (os contadores são agregados no KV,
+ * nunca uma lista de contatos) — não há PII a mascarar aqui, diferente de
+ * `apoios-diff-alarm.ts`. `buildCursosAlarmEmail` aceita opcionalmente o
+ * mapa `fingerprint -> issueRef` pra citar a issue de cada condição que
+ * disparou nesta janela.
+ *
  * O redesign: o worker `cursos` agora incrementa 4 contadores CUMULATIVOS
  * direto no KV `CURSOS_SUBSCRIBERS` nos mesmos pontos onde já loga (ver
  * `scripts/lib/shared/cursos-alarm-counters.ts` pras chaves + o helper de
@@ -68,6 +81,8 @@
  * contador, não há como saber a IDADE do valor cumulativo herdado, então
  * conservador aqui significa nunca alarmar sobre histórico desconhecido.
  */
+
+import type { AlarmFinding, AlarmIssueResult } from "./alarm-issues.ts";
 
 // ─── Padrões de log fatal (mantidos só pro nome/documentação — a DETECÇÃO
 // agora é por contador, não por grep de texto) ──────────────────────────────
@@ -270,20 +285,113 @@ export function shouldAlarm(evaluation: CursosAlarmEvaluation): boolean {
   return evaluation.fatalMatches.length > 0 || evaluation.rateBreached;
 }
 
+// ─── Issues automáticas por achado (#5339) ──────────────────────────────────
+
+/** Slug estável por padrão fatal — usado no fingerprint da issue (nunca o
+ * texto do log em si, que poderia mudar de redação sem mudar de causa). */
+const FATAL_PATTERN_SLUGS: Record<FatalLogPattern, string> = {
+  "COOKIE_HMAC_SECRET ausente": "cookie-hmac-secret-ausente",
+  "cadastro na Beehiiv falhou": "cadastro-beehiiv-falhou",
+};
+
+/** Fingerprint estável da condição de taxa de não-confirmado — não inclui o
+ * valor de `ratePct` (mudaria a cada execução e nunca deduplicaria o mesmo
+ * achado contínuo, ver o fingerprint FIXO "streak-failing" de
+ * `clarice-opens-catchup-alarm.ts`, mesmo racional). */
+export const RATE_NOT_CONFIRMED_FINGERPRINT = "rate-not-confirmed";
+
+/**
+ * Pura: converte a avaliação num `AlarmFinding[]` — um por padrão fatal com
+ * delta > 0 e um pra taxa de não-confirmado quando cruza o limiar (#5339).
+ * Nenhum finding carrega e-mail/dado individual de assinante — os
+ * contadores são agregados no KV, nunca uma lista de contatos.
+ */
+export function alarmFindingsFor(evaluation: CursosAlarmEvaluation): AlarmFinding[] {
+  const findings: AlarmFinding[] = [];
+
+  for (const m of evaluation.fatalMatches) {
+    findings.push({
+      check: "cursos-error",
+      fingerprint: `fatal:${FATAL_PATTERN_SLUGS[m.pattern]}`,
+      title: `[diar.ia.br] Worker cursos: erro fatal "${m.pattern}"`,
+      body: [
+        "Achado automático do alarme `Diaria-Cursos-Error-Alarm`",
+        "(`scripts/cursos-error-alarm.ts`).",
+        "",
+        `Padrão: "${m.pattern}"`,
+        `Ocorrências na última janela avaliada: ${m.count}x`,
+        "",
+        "Ação: `wrangler tail` (workers/cursos) ou o dashboard Cloudflare Workers Logs",
+        "do worker `cursos` pra investigar ao vivo. Ver docs/cursos-worker-alarm-setup.md",
+        "pro runbook completo.",
+        "",
+        "Esta issue é criada automaticamente pelo alarme (#5339) e será",
+        "comentada/fechada sozinha quando o achado deixar de reproduzir por",
+        "execuções consecutivas suficientes (mesmo padrão de #5112).",
+      ].join("\n"),
+      labels: ["bug"],
+      priority: "P1",
+    });
+  }
+
+  if (evaluation.rateBreached) {
+    findings.push({
+      check: "cursos-error",
+      fingerprint: RATE_NOT_CONFIRMED_FINGERPRINT,
+      title: "[diar.ia.br] Worker cursos: taxa de \"?email= não confirmado\" acima do limite",
+      body: [
+        "Achado automático do alarme `Diaria-Cursos-Error-Alarm`",
+        "(`scripts/cursos-error-alarm.ts`).",
+        "",
+        `Taxa de "?email= não confirmado como assinante ativo" na última janela: ${evaluation.rate.ratePct!.toFixed(1)}% ` +
+          `(limite: ≥${evaluation.rateThresholdPct}%) — ${evaluation.rate.notConfirmed}/${evaluation.rate.total} tentativas.`,
+        "",
+        "100% costuma ser merge tag quebrada na newsletter (Beehiiv mandando {{email}} cru) ou",
+        "o gate morto de novo — verificar `sync-cursos-subscribers-kv.ts` (KV desatualizado) e",
+        "as secrets do worker `cursos` (BEEHIIV_API_KEY/PUBLICATION_ID).",
+        "",
+        "Esta issue é criada automaticamente pelo alarme (#5339) e será",
+        "comentada/fechada sozinha quando o achado deixar de reproduzir por",
+        "execuções consecutivas suficientes (mesmo padrão de #5112).",
+      ].join("\n"),
+      labels: ["bug"],
+      priority: "P2",
+    });
+  }
+
+  return findings;
+}
+
 /**
  * Monta o e-mail de alarme (pura/testável) — cobre as duas condições (podem
  * disparar juntas na mesma janela). Sempre nomeia a janela avaliada e a ação
  * esperada (checar `wrangler tail`/dashboard Workers Logs do worker `cursos`).
  */
-export function buildCursosAlarmEmail(evaluation: CursosAlarmEvaluation): { subject: string; body: string } {
+export function buildCursosAlarmEmail(
+  evaluation: CursosAlarmEvaluation,
+  /** #5339, opcional — mapa `fingerprint -> {issueNumber, url, action, error}`
+   * de `applyAlarmReconciliation`, pra citar a issue de cada condição que
+   * disparou. `undefined` preserva o corpo pré-#5339 (nenhuma citação). */
+  issueRefs?: ReadonlyMap<string, AlarmIssueResult>,
+): { subject: string; body: string } {
   const parts: string[] = [];
   const subjectBits: string[] = [];
+
+  const citeIssue = (fingerprint: string): string | null => {
+    const ref = issueRefs?.get(fingerprint);
+    if (!ref) return null;
+    return ref.action === "failed"
+      ? `  Issue: falha ao criar/reusar (${ref.error})`
+      : `  Issue: #${ref.issueNumber} (${ref.url})`;
+  };
 
   if (evaluation.fatalMatches.length > 0) {
     subjectBits.push(`${evaluation.fatalMatches.length} erro(s) fatal(is)`);
     parts.push("Erro(s) FATAL (qualquer ocorrência dispara):");
     for (const m of evaluation.fatalMatches) {
       parts.push(`- "${m.pattern}" — ${m.count}x na janela`);
+      const issueLine = citeIssue(`fatal:${FATAL_PATTERN_SLUGS[m.pattern]}`);
+      if (issueLine) parts.push(issueLine);
     }
   }
 
@@ -296,6 +404,8 @@ export function buildCursosAlarmEmail(evaluation: CursosAlarmEvaluation): { subj
       "100% costuma ser merge tag quebrada na newsletter (Beehiiv mandando {{email}} cru) ou o gate morto de novo — " +
         "verificar `sync-cursos-subscribers-kv.ts` (KV desatualizado) e as secrets do worker `cursos` (BEEHIIV_API_KEY/PUBLICATION_ID).",
     );
+    const issueLine = citeIssue(RATE_NOT_CONFIRMED_FINGERPRINT);
+    if (issueLine) parts.push(issueLine);
   }
 
   if (evaluation.delta.resetDetected) {
