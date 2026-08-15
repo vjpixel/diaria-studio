@@ -343,12 +343,23 @@ por canal:
   `destaque:"weekly-{mode}"` — skip-existing é POR CANAL (um já publicado
   não impede os outros de tentar numa re-run parcial).
 - **Credenciais ausentes**: Facebook (`FACEBOOK_PAGE_ID`/
-  `FACEBOOK_PAGE_ACCESS_TOKEN`) → entry `status:"failed"`,
-  `reason:"facebook_not_configured"`. Threads (`THREADS_ACCESS_TOKEN`/
-  `THREADS_USER_ID`, no ambiente do WORKER, não deste script) → o Worker
-  responde `dlq` no momento do disparo, capturado como `status:"failed"`
-  no bookkeeping deste script. Nenhum dos 2 trava Instagram nem os outros
-  canais.
+  `FACEBOOK_PAGE_ACCESS_TOKEN`) — checagem SÍNCRONA, inline, neste script →
+  entry `status:"failed"`, `reason:"facebook_not_configured"`, visível
+  imediatamente em `06-weekly-published.json`. Threads
+  (`THREADS_ACCESS_TOKEN`/`THREADS_USER_ID`, no ambiente do WORKER, não
+  deste script) é diferente: este script só checa se o Worker QUEUE está
+  configurado (`DIARIA_LINKEDIN_CRON_URL`/`DIARIA_LINKEDIN_CRON_TOKEN`) —
+  sem visibilidade sobre as credenciais Threads em si, que só são
+  verificadas depois, ASSINCRONAMENTE, quando o cron do Worker de fato
+  dispara o post agendado. O enqueue aqui sempre grava `status:"scheduled"`
+  se o Worker aceitou a entry — se a credencial Threads faltar no Worker, o
+  `dlq` que `fireQueueEntry` retorna acontece SÓ no lado do Worker, na hora
+  do disparo, e **não é reconciliado de volta** em
+  `06-weekly-published.json` (achado do self-review, #5348 — nenhum
+  mecanismo hoje lê o resultado do fire de volta pra esse arquivo). Auditar
+  uma falha silenciosa de credencial Threads via logs/KV do Worker
+  (`diaria-linkedin-cron`), não via este arquivo. Nenhum dos 2 cenários
+  trava Instagram nem os outros canais.
 
 ### Threads: carrossel de imagem com polling obrigatório de status
 

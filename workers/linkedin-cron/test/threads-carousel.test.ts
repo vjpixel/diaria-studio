@@ -209,7 +209,7 @@ describe("#5348 Threads carrossel: poll fail-closed — NUNCA publica um contain
     globalThis.setTimeout = originalTimers;
   }
 
-  it("container fica IN_PROGRESS pra sempre: timeout após o teto de tentativas, fail-closed, DLQ — NUNCA publica, NUNCA poll infinito", async () => {
+  it("single-image: container fica IN_PROGRESS pra sempre — timeout após o teto de tentativas, fail-closed, NUNCA publica, NUNCA poll infinito. status:'failed' (retriable) — timeout não é sinal de que o container está permanentemente quebrado (#5348 self-review)", async () => {
     let statusPollCount = 0;
     let publishCalled = false;
     globalThis.fetch = (async (url: string | Request) => {
@@ -230,7 +230,7 @@ describe("#5348 Threads carrossel: poll fail-closed — NUNCA publica um contain
 
     try {
       const outcome = await fireQueueEntry(entry, BASE_CONFIG);
-      assert.equal(outcome.status, "dlq");
+      assert.equal(outcome.status, "failed", "timeout de poll é retriable — diferente de status=ERROR/EXPIRED, não sabemos se o container está de fato quebrado");
       assert.match((outcome as { reason: string }).reason, /nunca ficou FINISHED/);
       assert.match((outcome as { reason: string }).reason, /fail-closed/);
       // Teto FIXO de tentativas — nunca poll infinito. 10 é o valor
@@ -244,13 +244,100 @@ describe("#5348 Threads carrossel: poll fail-closed — NUNCA publica um contain
     }
   });
 
-  it("container retorna status=ERROR: aborta IMEDIATO (não espera esgotar as tentativas) — DLQ", async () => {
+  it("carrossel: container fica IN_PROGRESS pra sempre — mesmo timeout fail-closed, mas status:'dlq' (nunca retriable no carrossel, mesma decisão de escopo do #4153 — re-tentar recriaria N containers)", async () => {
+    let statusPollCount = 0;
+    let publishCalled = false;
+    globalThis.fetch = (async (url: string | Request, init?: RequestInit) => {
+      const u = typeof url === "string" ? url : url.url;
+      const body = bodyOf(init);
+      if (u.includes("?fields=status")) {
+        statusPollCount++;
+        return new Response(JSON.stringify({ status: "IN_PROGRESS" }), { status: 200 });
+      }
+      if (u.endsWith("/threads_publish")) {
+        publishCalled = true;
+        return new Response(JSON.stringify({ id: "should-not-happen" }), { status: 200 });
+      }
+      if (u.endsWith("/threads") && body.includes("media_type=CAROUSEL")) {
+        return new Response(JSON.stringify({ id: "should-not-happen-parent" }), { status: 200 });
+      }
+      if (u.endsWith("/threads")) return new Response(JSON.stringify({ id: "child-stuck" }), { status: 200 });
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    const entry = baseEntry({ image_urls: ["https://x.test/1.jpg", "https://x.test/2.jpg"] });
+
+    try {
+      const outcome = await fireQueueEntry(entry, BASE_CONFIG);
+      assert.equal(outcome.status, "dlq");
+      assert.match((outcome as { reason: string }).reason, /nunca ficou FINISHED/);
+      assert.equal(publishCalled, false);
+    } finally {
+      restore();
+    }
+  });
+
+  it("single-image: erro TRANSITÓRIO (fetch throw) numa tentativa de poll no meio do caminho NÃO aborta — consome o orçamento de tentativas e publica normalmente quando o container confirma FINISHED depois (#5348 self-review — antes abortava no 1º blip)", async () => {
+    let pollAttempt = 0;
+    let publishCalled = false;
+    globalThis.fetch = (async (url: string | Request) => {
+      const u = typeof url === "string" ? url : url.url;
+      if (u.includes("?fields=status")) {
+        pollAttempt++;
+        if (pollAttempt <= 2) throw new Error("ECONNRESET simulado");
+        return new Response(JSON.stringify({ status: "FINISHED" }), { status: 200 });
+      }
+      if (u.endsWith("/threads_publish")) {
+        publishCalled = true;
+        return new Response(JSON.stringify({ id: "published-after-transient" }), { status: 200 });
+      }
+      if (u.endsWith("/threads")) return new Response(JSON.stringify({ id: "container-ok" }), { status: 200 });
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    const entry = baseEntry({ image_urls: ["https://x.test/1.jpg"] });
+    try {
+      const outcome = await fireQueueEntry(entry, BASE_CONFIG);
+      assert.deepEqual(outcome, { status: "fired" });
+      assert.ok(pollAttempt >= 3, `deveria ter tentado pelo menos 3x (2 transitórias + 1 FINISHED), tentou ${pollAttempt}`);
+      assert.equal(publishCalled, true, "erro transitório no poll não deveria impedir o publish depois de confirmar FINISHED");
+    } finally {
+      restore();
+    }
+  });
+
+  it("single-image: HTTP não-2xx numa tentativa de poll (ex: 500 passageiro da Meta) NÃO aborta — trata como transitório, continua tentando", async () => {
+    let pollAttempt = 0;
+    globalThis.fetch = (async (url: string | Request) => {
+      const u = typeof url === "string" ? url : url.url;
+      if (u.includes("?fields=status")) {
+        pollAttempt++;
+        if (pollAttempt === 1) return new Response(JSON.stringify({ error: { message: "internal" } }), { status: 500 });
+        return new Response(JSON.stringify({ status: "FINISHED" }), { status: 200 });
+      }
+      if (u.endsWith("/threads_publish")) return new Response(JSON.stringify({ id: "published-1" }), { status: 200 });
+      if (u.endsWith("/threads")) return new Response(JSON.stringify({ id: "container-1" }), { status: 200 });
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    const entry = baseEntry({ image_urls: ["https://x.test/1.jpg"] });
+    try {
+      const outcome = await fireQueueEntry(entry, BASE_CONFIG);
+      assert.deepEqual(outcome, { status: "fired" });
+      assert.equal(pollAttempt, 2, "1ª tentativa (HTTP 500) é transitória, 2ª confirma FINISHED");
+    } finally {
+      restore();
+    }
+  });
+
+  it("container retorna status=ERROR: aborta IMEDIATO (não espera esgotar as tentativas) — DLQ, e o error_message da Meta é incluído no reason (#5348 self-review, comment-analyzer)", async () => {
     let statusPollCount = 0;
     globalThis.fetch = (async (url: string | Request) => {
       const u = typeof url === "string" ? url : url.url;
       if (u.includes("?fields=status")) {
         statusPollCount++;
-        return new Response(JSON.stringify({ status: "ERROR" }), { status: 200 });
+        assert.match(u, /error_message/, "o poll deve requisitar error_message junto de status, pra dar contexto útil na falha");
+        return new Response(JSON.stringify({ status: "ERROR", error_message: "Imagem viola política de conteúdo" }), { status: 200 });
       }
       if (u.endsWith("/threads")) return new Response(JSON.stringify({ id: "container-err" }), { status: 200 });
       return new Response("{}", { status: 200 });
@@ -259,9 +346,70 @@ describe("#5348 Threads carrossel: poll fail-closed — NUNCA publica um contain
     const entry = baseEntry({ image_urls: ["https://x.test/1.jpg"] });
     try {
       const outcome = await fireQueueEntry(entry, BASE_CONFIG);
-      assert.equal(outcome.status, "dlq");
+      assert.equal(outcome.status, "dlq", "status=ERROR é permanente — nunca retriable, mesmo no caminho single-image");
       assert.match((outcome as { reason: string }).reason, /status=ERROR/);
+      assert.match((outcome as { reason: string }).reason, /Imagem viola política de conteúdo/, "o motivo real da Meta deve aparecer no reason, não só o container id");
       assert.equal(statusPollCount, 1, "status=ERROR aborta na 1ª tentativa, sem re-tentar");
+    } finally {
+      restore();
+    }
+  });
+
+  it("carrossel: poll de um CHILD (após criação bem-sucedida) retorna status=ERROR — DLQ, child seguinte/pai/publish nunca chamados", async () => {
+    let childrenCreated = 0;
+    let parentCreated = false;
+    let publishCalled = false;
+    globalThis.fetch = (async (url: string | Request, init?: RequestInit) => {
+      const u = typeof url === "string" ? url : url.url;
+      const body = bodyOf(init);
+      if (u.includes("?fields=status")) {
+        // O 1º child confirma FINISHED; o 2º (recém-criado) está ERROR.
+        return childrenCreated <= 1
+          ? new Response(JSON.stringify({ status: "FINISHED" }), { status: 200 })
+          : new Response(JSON.stringify({ status: "ERROR", error_message: "falha real do 2º" }), { status: 200 });
+      }
+      if (u.endsWith("/threads_publish")) {
+        publishCalled = true;
+        return new Response(JSON.stringify({ id: "should-not-happen" }), { status: 200 });
+      }
+      if (u.endsWith("/threads") && body.includes("media_type=CAROUSEL")) {
+        parentCreated = true;
+        return new Response(JSON.stringify({ id: "should-not-happen-parent" }), { status: 200 });
+      }
+      if (u.endsWith("/threads")) {
+        childrenCreated++;
+        return new Response(JSON.stringify({ id: `child-${childrenCreated}` }), { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    const entry = baseEntry({ image_urls: ["https://x.test/1.jpg", "https://x.test/2-bad.jpg", "https://x.test/3.jpg"] });
+
+    try {
+      const outcome = await fireQueueEntry(entry, BASE_CONFIG);
+      assert.equal(outcome.status, "dlq");
+      assert.match((outcome as { reason: string }).reason, /child container 2\/3/);
+      assert.match((outcome as { reason: string }).reason, /status=ERROR/);
+      assert.equal(childrenCreated, 2, "nunca deve criar o 3º filho após o poll do 2º falhar");
+      assert.equal(parentCreated, false, "container pai nunca deve ser criado se um filho não confirmou FINISHED");
+      assert.equal(publishCalled, false);
+    } finally {
+      restore();
+    }
+  });
+
+  it("single-image: falha TRANSITÓRIA na CRIAÇÃO do container (antes de qualquer poll) é retriable — status:'failed', mesmo padrão do fireInstagramSingle (#5348 self-review)", async () => {
+    globalThis.fetch = (async (url: string | Request) => {
+      const u = typeof url === "string" ? url : url.url;
+      if (u.endsWith("/threads")) throw new Error("ECONNRESET");
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    const entry = baseEntry({ image_urls: ["https://x.test/1.jpg"] });
+    try {
+      const outcome = await fireQueueEntry(entry, BASE_CONFIG);
+      assert.equal(outcome.status, "failed", "erro de rede na criação do container (nenhum efeito colateral ainda) deve ser retriable, não dlq");
+      assert.match((outcome as { reason: string }).reason, /fetch failed/);
     } finally {
       restore();
     }
@@ -311,6 +459,24 @@ describe("#5348 Threads: guard de tamanho (≤500 chars) vale nos 3 caminhos (te
       assert.equal(outcome.status, "dlq");
       assert.match((outcome as { reason: string }).reason, /500 chars/);
       assert.equal(fetchMock.mock.calls.length, 0, "guard roda ANTES de qualquer dispatch — nunca chega a tentar criar container");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("#5348 Threads carrossel: defesa em profundidade — guard de CAROUSEL_MAX_ITEMS (mesmo teto do Instagram, #4153)", () => {
+  it(`rejeita image_urls com ${11} itens (excede o máximo) — dlq direto, sem tentar criar nenhum container`, async () => {
+    const fetchMock = mock.fn(async () => new Response("{}", { status: 200 }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const tooMany = Array.from({ length: 11 }, (_, i) => `https://x.test/${i}.jpg`);
+      const entry = baseEntry({ image_urls: tooMany });
+      const outcome = await fireQueueEntry(entry, BASE_CONFIG);
+      assert.equal(outcome.status, "dlq");
+      assert.match((outcome as { reason: string }).reason, /excede o máximo/);
+      assert.equal(fetchMock.mock.calls.length, 0, "guard roda ANTES de qualquer chamada de rede");
     } finally {
       globalThis.fetch = originalFetch;
     }

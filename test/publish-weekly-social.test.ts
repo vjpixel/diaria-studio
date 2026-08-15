@@ -774,6 +774,62 @@ describe("main(): dispatch mockado", () => {
       const threadsDestaques = out.posts.filter((p: any) => p.platform === "threads").map((p: any) => p.destaque);
       assert.deepEqual(threadsDestaques.sort(), ["weekly-clicked", "weekly-highlights"]);
     });
+
+    it("#5348 self-review (pr-test-analyzer): skip-existing é POR CANAL — Threads já 'scheduled' de uma tentativa anterior NÃO é re-tentado, mas Instagram (ainda sem entry) dispara normalmente na mesma rodada", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+
+      // Simula uma re-run parcial: uma tentativa anterior já agendou o
+      // Threads com sucesso (persistido em 06-weekly-published.json), mas o
+      // processo morreu antes de tentar Instagram/Facebook.
+      const publishedDir = resolve(dataRoot, "weekly", saturdayStr);
+      mkdirSync(publishedDir, { recursive: true });
+      writeFileSync(
+        resolve(publishedDir, "06-weekly-published.json"),
+        JSON.stringify({
+          posts: [
+            {
+              platform: "threads",
+              destaque: "weekly-highlights",
+              url: null,
+              status: "scheduled",
+              scheduled_at: "2027-12-25T11:00:00-03:00",
+              worker_queue_key: "queue:threads:pre-existing",
+            },
+          ],
+        }),
+      );
+
+      const queueCalls: string[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          queueCalls.push(body.channel);
+          return { statusCode: 200, data: JSON.stringify({ queued: true, key: `queue:${body.channel}:new`, scheduled_at: body.scheduled_at, destaque: body.destaque }) };
+        });
+      // Facebook não configurado neste teste (env limpo pelo afterEach da
+      // suite) — cai em status:"failed" sem travar o resto, irrelevante
+      // pro que este teste verifica (skip-existing do Threads).
+
+      await main(
+        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+      );
+
+      assert.deepEqual(queueCalls, ["instagram"], "só Instagram deveria ter batido /queue — Threads foi pulado por skip-existing (já 'scheduled')");
+
+      const out = JSON.parse(readFileSync(resolve(publishedDir, "06-weekly-published.json"), "utf8"));
+      const threadsEntries = out.posts.filter((p: any) => p.platform === "threads" && p.destaque === "weekly-highlights");
+      assert.equal(threadsEntries.length, 1, "a entry Threads pré-existente não deveria ser duplicada nem re-tentada");
+      assert.equal(threadsEntries[0].worker_queue_key, "queue:threads:pre-existing", "a entry original não deveria ser sobrescrita");
+      const igEntry = out.posts.find((p: any) => p.platform === "instagram" && p.destaque === "weekly-highlights");
+      assert.ok(igEntry, "Instagram deveria ter uma entry nova, mesmo com Threads já publicado");
+      assert.equal(igEntry.status, "scheduled");
+    });
   });
 
   describe("#4513: item de RADAR vence o ranking semanal — card 4:5 gerado SOB DEMANDA antes da publicação", () => {

@@ -594,50 +594,72 @@ const THREADS_POLL_INTERVAL_MS = 2000;
  * (achado da investigação da issue #5348) — publicar um `creation_id` cujo
  * container ainda está `IN_PROGRESS` falha na API. Este poll é portanto
  * OBRIGATÓRIO e FAIL-CLOSED: qualquer resultado que não seja `FINISHED`
- * dentro do orçamento de tentativas — timeout, `ERROR`, `EXPIRED`, erro de
- * rede, resposta não-JSON — retorna falha em vez de seguir pro publish às
- * cegas. Nunca poll infinito: o teto de tentativas é fixo
+ * dentro do orçamento de tentativas retorna falha em vez de seguir pro
+ * publish às cegas. Nunca poll infinito: o teto de tentativas é fixo
  * (`THREADS_POLL_MAX_ATTEMPTS`), não recursivo/sem limite.
+ *
+ * #5348 self-review (silent-failure-hunter): a 1ª versão abortava no
+ * PRIMEIRO erro transitório (timeout de fetch, HTTP não-2xx, resposta
+ * não-JSON) em vez de consumir o orçamento de tentativas — um único blip de
+ * rede em QUALQUER das até 10 tentativas derrubava o post inteiro pra DLQ,
+ * mesmo com 9 tentativas ainda disponíveis. Corrigido pra reservar o abort
+ * IMEDIATO só pro sinal REAL e informativo da própria Threads API
+ * (`status: "ERROR"`/`"EXPIRED"` — o container está de fato quebrado,
+ * re-tentar o poll não muda isso) — mesmo padrão que o script local
+ * `scripts/publish-threads.ts::waitForContainerReady` já usava pra esse
+ * mesmo endpoint. Erro transitório (fetch/HTTP/parse) loga um warning e cai
+ * pro mesmo sleep-and-retry do `IN_PROGRESS`, só falhando de fato quando as
+ * tentativas se esgotam de verdade.
+ *
+ * `permanent: true` no retorno de falha (só no branch `ERROR`/`EXPIRED`)
+ * sinaliza ao caller que re-tentar a chamada NÃO vai ajudar — usado por
+ * `fireThreadsSingleImage` pra decidir `dlq` (não-retriable) vs `failed`
+ * (retriable via `retry_count`) sem duplicar essa lógica de classificação.
  */
 async function pollThreadsContainerStatus(
   base: string,
   containerId: string,
   accessToken: string,
-): Promise<{ ok: true } | { ok: false; reason: string }> {
+): Promise<{ ok: true } | { ok: false; reason: string; permanent: boolean }> {
   for (let attempt = 1; attempt <= THREADS_POLL_MAX_ATTEMPTS; attempt++) {
     try {
       const res = await fetch(
-        `${base}/${containerId}?fields=status&access_token=${encodeURIComponent(accessToken)}`,
+        `${base}/${containerId}?fields=status,error_message&access_token=${encodeURIComponent(accessToken)}`,
         { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) },
       );
       const text = await res.text();
-      let data: { status?: string; error?: { message?: string } };
+      let data: { status?: string; error_message?: string; error?: { message?: string } };
       try {
         data = JSON.parse(text);
       } catch {
-        return {
-          ok: false,
-          reason: `Threads status resposta não-JSON (container_id=${containerId}, tentativa ${attempt}/${THREADS_POLL_MAX_ATTEMPTS}): HTTP ${res.status}: ${text.slice(0, 200)}`,
-        };
+        console.warn(
+          `[threads-poll] resposta não-JSON na tentativa ${attempt}/${THREADS_POLL_MAX_ATTEMPTS} (container_id=${containerId}): HTTP ${res.status}: ${text.slice(0, 200)} — tratado como transitório, tentando de novo.`,
+        );
+        if (attempt < THREADS_POLL_MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, THREADS_POLL_INTERVAL_MS));
+        continue;
       }
       if (!res.ok || data.error) {
-        return {
-          ok: false,
-          reason: `Threads status HTTP ${res.status} (container_id=${containerId}, tentativa ${attempt}/${THREADS_POLL_MAX_ATTEMPTS}): ${data.error?.message ?? text.slice(0, 200)}`,
-        };
+        console.warn(
+          `[threads-poll] HTTP ${res.status} na tentativa ${attempt}/${THREADS_POLL_MAX_ATTEMPTS} (container_id=${containerId}): ${data.error?.message ?? text.slice(0, 200)} — tratado como transitório, tentando de novo.`,
+        );
+        if (attempt < THREADS_POLL_MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, THREADS_POLL_INTERVAL_MS));
+        continue;
       }
       if (data.status === "FINISHED") return { ok: true };
       if (data.status === "ERROR" || data.status === "EXPIRED") {
-        return { ok: false, reason: `Threads container status=${data.status} (container_id=${containerId})` };
+        return {
+          ok: false,
+          permanent: true,
+          reason: `Threads container status=${data.status} (container_id=${containerId})${data.error_message ? `: ${data.error_message}` : ""}`,
+        };
       }
       // IN_PROGRESS (ou estado transitório desconhecido) — segue tentando.
     } catch (e) {
       const err = e as Error;
       const timeout = err.name === "AbortError" || err.name === "TimeoutError";
-      return {
-        ok: false,
-        reason: `Threads status fetch ${timeout ? "timeout" : "failed"} (container_id=${containerId}, tentativa ${attempt}/${THREADS_POLL_MAX_ATTEMPTS}): ${err.message}`,
-      };
+      console.warn(
+        `[threads-poll] fetch ${timeout ? "timeout" : "failed"} na tentativa ${attempt}/${THREADS_POLL_MAX_ATTEMPTS} (container_id=${containerId}): ${err.message} — tratado como transitório, tentando de novo.`,
+      );
     }
     if (attempt < THREADS_POLL_MAX_ATTEMPTS) {
       await new Promise((r) => setTimeout(r, THREADS_POLL_INTERVAL_MS));
@@ -645,6 +667,7 @@ async function pollThreadsContainerStatus(
   }
   return {
     ok: false,
+    permanent: false,
     reason:
       `Threads container nunca ficou FINISHED após ${THREADS_POLL_MAX_ATTEMPTS} tentativas ` +
       `(~${Math.round((THREADS_POLL_MAX_ATTEMPTS * THREADS_POLL_INTERVAL_MS) / 1000)}s) — ` +
@@ -658,6 +681,20 @@ async function pollThreadsContainerStatus(
  * Extraído de `fireThreadsCarousel` como caso N=1 explícito porque a Graph
  * API do Threads não aceita `media_type: "CAROUSEL"` com um único child —
  * imagem única usa o container `IMAGE` direto, sem container pai.
+ *
+ * #5348 self-review (code-reviewer + silent-failure-hunter, independentes):
+ * diferente de `fireThreadsCarousel` (N containers interdependentes — um
+ * re-try do zero recriaria todos, daí `dlq` sempre), este é estruturalmente
+ * uma chamada ISOLADA de 2-3 passos, o mesmo formato de `fireInstagramSingle`
+ * (que usa `status:"failed"`/retriable pro passo 1 E pro passo 2 — nunca
+ * `dlq`). Falha na CRIAÇÃO do container (antes de qualquer efeito colateral
+ * publicado) e falha no PUBLISH (retry só refaz a mesma chamada idempotente,
+ * nunca duplica um post — `threads_publish` só publica quando bem-sucedido)
+ * são `"failed"`, retriable via `retry_count` normal, igual ao Instagram.
+ * Só a falha do POLL usa `poll.permanent` pra decidir: `ERROR`/`EXPIRED`
+ * (container genuinamente quebrado, re-tentar não muda o resultado) vira
+ * `dlq`; timeout de tentativas esgotadas (`permanent:false` — pode ter sido
+ * só lentidão do lado da Meta) vira `failed`, retriable.
  */
 async function fireThreadsSingleImage(imageUrl: string, caption: string, creds: ThreadsCreds): Promise<FireOutcome> {
   const base = `https://graph.threads.net/${creds.apiVersion}`;
@@ -680,23 +717,23 @@ async function fireThreadsSingleImage(imageUrl: string, caption: string, creds: 
     try {
       data = JSON.parse(text);
     } catch {
-      return { status: "dlq", reason: `Threads /threads (IMAGE) resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)}` };
+      return { status: "failed", reason: `Threads /threads (IMAGE) resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)}` };
     }
     if (!res.ok || data.error) {
-      return { status: "dlq", reason: `Threads /threads (IMAGE) HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)}` };
+      return { status: "failed", reason: `Threads /threads (IMAGE) HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)}` };
     }
     if (!data.id) {
-      return { status: "dlq", reason: `Threads /threads (IMAGE) sem id: ${text.slice(0, 200)}` };
+      return { status: "failed", reason: `Threads /threads (IMAGE) sem id: ${text.slice(0, 200)}` };
     }
     containerId = data.id;
   } catch (e) {
     const err = e as Error;
     const timeout = err.name === "AbortError" || err.name === "TimeoutError";
-    return { status: "dlq", reason: `Threads /threads (IMAGE) fetch ${timeout ? "timeout" : "failed"}: ${err.message}` };
+    return { status: "failed", reason: `Threads /threads (IMAGE) fetch ${timeout ? "timeout" : "failed"}: ${err.message}` };
   }
 
   const poll = await pollThreadsContainerStatus(base, containerId, creds.accessToken);
-  if (!poll.ok) return { status: "dlq", reason: poll.reason };
+  if (!poll.ok) return { status: poll.permanent ? "dlq" : "failed", reason: poll.reason };
 
   try {
     const params = new URLSearchParams({ creation_id: containerId, access_token: creds.accessToken });
@@ -711,25 +748,25 @@ async function fireThreadsSingleImage(imageUrl: string, caption: string, creds: 
       data = JSON.parse(text);
     } catch {
       return {
-        status: "dlq",
+        status: "failed",
         reason: `Threads /threads_publish resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)} (container_id=${containerId})`,
       };
     }
     if (!res.ok || data.error) {
       return {
-        status: "dlq",
+        status: "failed",
         reason: `Threads /threads_publish HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} (container_id=${containerId})`,
       };
     }
     if (!data.id) {
-      return { status: "dlq", reason: `Threads /threads_publish sem id: ${text.slice(0, 200)} (container_id=${containerId})` };
+      return { status: "failed", reason: `Threads /threads_publish sem id: ${text.slice(0, 200)} (container_id=${containerId})` };
     }
     return { status: "fired" };
   } catch (e) {
     const err = e as Error;
     const timeout = err.name === "AbortError" || err.name === "TimeoutError";
     return {
-      status: "dlq",
+      status: "failed",
       reason: `Threads /threads_publish fetch ${timeout ? "timeout" : "failed"}: ${err.message} (container_id=${containerId})`,
     };
   }
