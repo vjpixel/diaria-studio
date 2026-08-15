@@ -94,18 +94,20 @@ export interface MetricDefinitionV2 {
  * — fixture exata em `test/postmaster-v2-client.test.ts`, teste
  * "200: retorna domainStats parseado").
  *
- * Só `floatValue` foi confirmado ao vivo (métrica `SPAM_RATE`) —
- * `doubleValue`/`intValue`/`stringValue`/`stringList` são inferidos do
- * discovery doc pra outras métricas (`AUTH_SUCCESS_RATE`, contadores,
- * `FEEDBACK_LOOP_ID`), nunca exercitados contra a API real. Ver
- * `extractSpamRateReadingsV2` pro fallback defensivo `floatValue ?? doubleValue`.
+ * Só `floatValue` foi confirmado ao vivo (métrica `SPAM_RATE`) antes do
+ * #5368. `stringList` foi confirmado ao vivo em 15/08/2026 (#5368) — é um
+ * ENVELOPE `{ values: string[] }`, não um array direto (JSON real capturado
+ * de `FEEDBACK_LOOP_ID`: `{"stringList":{"values":["11130585", ...]}}`).
+ * `doubleValue`/`intValue`/`stringValue` seguem inferidos do discovery doc,
+ * nunca exercitados contra a API real. Ver `extractSpamRateReadingsV2` pro
+ * fallback defensivo `floatValue ?? doubleValue`.
  */
 export interface StatisticValueV2 {
   floatValue?: number;
   doubleValue?: number;
   intValue?: string;
   stringValue?: string;
-  stringList?: string[];
+  stringList?: { values?: string[] };
 }
 
 export interface DomainStatV2 {
@@ -320,14 +322,18 @@ export interface DayFeedbackLoopIdsV2 {
  * `domainStats.query` (métrica `FEEDBACK_LOOP_ID`) na lista de feedback loop
  * ids ATIVOS em cada dia. Diferente de `extractSpamRateReadingsV2`
  * (`value.floatValue`/`doubleValue`, um número por dia), `FEEDBACK_LOOP_ID`
- * devolve `value.stringList` — uma LISTA de ids por dia (confirmado ao vivo em
- * 260806, ver comentário do editor na #4704: 27/07 devolveu
- * `["11130585", "11130585_99", "77.32.148.101"]`; 02/08 devolveu 5 ids
- * incluindo `"11130585_105"`, `"11130585_106"`, `"11130585_107"` — as 3
- * variantes A/B/C daquele dia). Um dia ausente da resposta (ou com
- * `stringList` ausente/vazio) simplesmente não aparece no resultado — mesma
- * disciplina de "ausência ≠ zero" de `extractSpamRateReadingsV2`, só que aqui
- * "zero" seria uma lista vazia em vez de `0`.
+ * devolve `value.stringList` como um ENVELOPE `{ values: string[] }` — não
+ * um array direto (confirmado ao vivo em 260806, ver comentário do editor na
+ * #4704: 27/07 devolveu `{"values": ["11130585", "11130585_99", "77.32.148.101"]}`;
+ * 02/08 devolveu 5 ids incluindo `"11130585_105"`, `"11130585_106"`,
+ * `"11130585_107"` — as 3 variantes A/B/C daquele dia). **Bug #5368 (corrigido
+ * 15/08/2026):** de 260806 até aqui este extractor lia `value.stringList`
+ * como se já fosse o array — `Array.isArray({values:[...]})` é sempre
+ * `false`, então todo dia era descartado silenciosamente. Um dia ausente da
+ * resposta (ou com `stringList.values` ausente/vazio) simplesmente não
+ * aparece no resultado — mesma disciplina de "ausência ≠ zero" de
+ * `extractSpamRateReadingsV2`, só que aqui "zero" seria uma lista vazia em
+ * vez de `0`.
  *
  * Não filtra pelo formato do id (`{conta}_{campanha}` vs. conta sozinha vs.
  * IP) — essa é responsabilidade de negócio de
@@ -339,9 +345,9 @@ export function extractFeedbackLoopIdsV2(
   metricName: string,
 ): DayFeedbackLoopIdsV2[] {
   return response.domainStats
-    .filter((s) => s.metric === metricName && s.date && Array.isArray(s.value?.stringList) && s.value!.stringList!.length > 0)
+    .filter((s) => s.metric === metricName && s.date && Array.isArray(s.value?.stringList?.values) && s.value!.stringList!.values!.length > 0)
     .map((s) => ({
       date: calendarDateToEntryDate(s.date as CalendarDate),
-      ids: s.value!.stringList as string[],
+      ids: s.value!.stringList!.values as string[],
     }));
 }

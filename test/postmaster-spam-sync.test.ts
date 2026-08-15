@@ -300,7 +300,7 @@ function feedbackLoopIdResponse(idsByDay: string[][]): QueryDomainStatsResponseV
     domainStats: idsByDay.map((ids, i) => ({
       metric: "feedback_loop_id",
       date: { year: 2026, month: 8, day: 1 + i },
-      value: { stringList: ids },
+      value: { stringList: { values: ids } }, // envelope real da API v2 (#5368) — não um array direto
     })),
   };
 }
@@ -552,7 +552,7 @@ function clariceFeedbackLoopIdsResponse(): QueryDomainStatsResponseV2 {
       {
         metric: "feedback_loop_id",
         date: { year: 2026, month: 8, day: 2 },
-        value: { stringList: ["11130585", "11130585_105", "11130585_106", "11130585_107", "77.32.148.101"] },
+        value: { stringList: { values: ["11130585", "11130585_105", "11130585_106", "11130585_107", "77.32.148.101"] } }, // envelope real da API v2 (#5368)
       },
     ],
   };
