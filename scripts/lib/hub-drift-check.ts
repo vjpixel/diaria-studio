@@ -138,10 +138,18 @@ export function hasPendingHubDrift(results: readonly HubDriftResult[]): boolean 
  * re-alarma. */
 export function computeHubDriftFingerprint(results: readonly HubDriftResult[]): string {
   const pending = results.filter((r) => r.status === "broken" || r.status === "error");
-  const keys = pending
-    .map((r) => `${r.slug}:${r.status}:${r.httpStatus ?? "-"}:${r.fetchError ?? "-"}`)
-    .sort();
+  const keys = pending.map((r) => hubDriftFindingKey(r)).sort();
   return keys.join("|");
+}
+
+/** Pura — fingerprint estável de UM hub (#5339: chave usada tanto pelo
+ * `AlarmFinding.fingerprint` quanto pelo `Map` de `issueRefs` repassado a
+ * `buildHubDriftAlarmEmail` — mesmo padrão de `workerDriftFindingKey`/
+ * `homeMetaFindingIssueKey`). Fórmula idêntica à usada por-item dentro de
+ * `computeHubDriftFingerprint`, extraída pra função nomeada em vez de
+ * duplicar a string. */
+export function hubDriftFindingKey(r: Pick<HubDriftResult, "slug" | "status" | "httpStatus" | "fetchError">): string {
+  return `${r.slug}:${r.status}:${r.httpStatus ?? "-"}:${r.fetchError ?? "-"}`;
 }
 
 export interface HubDriftAlarmState {
@@ -176,10 +184,16 @@ export function shouldAlarmHubDrift(state: HubDriftAlarmState, results: readonly
 
 /** Pura — monta assunto + corpo do e-mail de alarme (texto puro, mesmo
  * padrão de `scripts/lib/gmail-send.ts`/`worker-drift-check.ts`, sem HTML).
- * Lista só os hubs com `status` "broken"/"error"; hubs "ok" não aparecem. */
+ * Lista só os hubs com `status` "broken"/"error"; hubs "ok" não aparecem.
+ * `issueRefs` (#5339, opcional) — mapa `hubDriftFindingKey -> {issueNumber,
+ * url, action, error}` de `scripts/lib/alarm-issues.ts`, usado pra citar a
+ * issue de cada hub quebrado. `undefined` (dry-run, ou wiring ainda não
+ * chamado) omite a citação sem quebrar nada — mesmo fallback de
+ * `buildWorkerDriftAlarmEmail`. */
 export function buildHubDriftAlarmEmail(
   results: readonly HubDriftResult[],
   now: Date = new Date(),
+  issueRefs?: ReadonlyMap<string, { issueNumber: number | null; url: string | null; action: string; error?: string }>,
 ): { subject: string; body: string } {
   const broken = results.filter((r) => r.status === "broken" || r.status === "error");
 
@@ -198,6 +212,10 @@ export function buildHubDriftAlarmEmail(
     const detail = r.status === "error" ? `erro de rede: ${r.fetchError}` : `HTTP ${r.httpStatus} (esperava 200)`;
     lines.push(`  - ${r.label} (slug: ${r.slug}): ${detail}`);
     lines.push(`    URL: ${r.url}`);
+    const ref = issueRefs?.get(hubDriftFindingKey(r));
+    if (ref) {
+      lines.push(ref.action === "failed" ? `    Issue: falha ao criar/reusar (${ref.error})` : `    Issue: #${ref.issueNumber} (${ref.url})`);
+    }
   }
 
   lines.push(

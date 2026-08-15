@@ -25,6 +25,7 @@ import {
   advanceRobotsDriftState,
   shouldAlarmRobotsDrift,
   buildRobotsDriftAlarmEmail,
+  robotsDriftFindingKey,
   type RobotsCheckInput,
 } from "../scripts/lib/robots-txt-drift-check.ts";
 
@@ -339,5 +340,32 @@ describe("buildRobotsDriftAlarmEmail (#4910)", () => {
     assert.doesNotMatch(body, /ok\.example/);
     assert.match(body, new RegExp(HOST));
     assert.match(body, /Cloudflare Managed content/);
+  });
+});
+
+describe("buildRobotsDriftAlarmEmail com issueRefs (#5339)", () => {
+  it("cita o número da issue quando issueRefs tem entry pro achado (action: created/reused)", () => {
+    const r = evaluateRobotsDrift(input({ robotsTxt: SERVED_ARQUIVO_ROBOTS_TXT_260810, httpStatus: 200 }));
+    const issueRefs = new Map([
+      [robotsDriftFindingKey(r), { issueNumber: 5341, url: "https://github.com/vjpixel/diaria-studio/issues/5341", action: "created" }],
+    ]);
+    const { body } = buildRobotsDriftAlarmEmail([r], new Date("2026-08-15T12:00:00Z"), issueRefs);
+    assert.match(body, /Issue: #5341/);
+    assert.match(body, /issues\/5341/);
+  });
+
+  it("action 'failed' cita o motivo em vez de um número — e-mail nunca perde o achado por falha de gh", () => {
+    const r = evaluateRobotsDrift(input({ robotsTxt: SERVED_ARQUIVO_ROBOTS_TXT_260810, httpStatus: 200 }));
+    const issueRefs = new Map([
+      [robotsDriftFindingKey(r), { issueNumber: null, url: null, action: "failed", error: "gh não autenticado" }],
+    ]);
+    const { body } = buildRobotsDriftAlarmEmail([r], new Date("2026-08-15T12:00:00Z"), issueRefs);
+    assert.match(body, /falha ao criar\/reusar \(gh não autenticado\)/);
+  });
+
+  it("sem issueRefs (undefined) — corpo sai igual ao comportamento pré-#5339, sem quebrar", () => {
+    const r = evaluateRobotsDrift(input({ robotsTxt: SERVED_ARQUIVO_ROBOTS_TXT_260810, httpStatus: 200 }));
+    const { body } = buildRobotsDriftAlarmEmail([r]);
+    assert.doesNotMatch(body, /Issue:/);
   });
 });

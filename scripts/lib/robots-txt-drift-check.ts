@@ -316,13 +316,21 @@ export function hasPendingRobotsDrift(results: readonly RobotsDriftResult[]): bo
  * de shape re-alarma. */
 export function computeRobotsDriftFingerprint(results: readonly RobotsDriftResult[]): string {
   const pending = results.filter((r) => r.status === "drift" || r.status === "error");
-  const keys = pending
-    .map((r) => {
-      const detail = r.status === "drift" ? [...r.reasons].sort().join(",") : `${r.httpStatus ?? "-"}:${r.fetchError ?? "-"}`;
-      return `${r.host}:${r.status}:${detail}`;
-    })
-    .sort();
+  const keys = pending.map((r) => robotsDriftFindingKey(r)).sort();
   return keys.join("|");
+}
+
+/** Pura — fingerprint estável de UM host (#5339: chave usada tanto pelo
+ * `AlarmFinding.fingerprint` quanto pelo `Map` de `issueRefs` repassado a
+ * `buildRobotsDriftAlarmEmail` — mesmo padrão de `hubDriftFindingKey`/
+ * `workerDriftFindingKey`). Fórmula idêntica à usada por-item dentro de
+ * `computeRobotsDriftFingerprint`, extraída pra função nomeada em vez de
+ * duplicar a string. */
+export function robotsDriftFindingKey(
+  r: Pick<RobotsDriftResult, "host" | "status" | "reasons" | "httpStatus" | "fetchError">,
+): string {
+  const detail = r.status === "drift" ? [...r.reasons].sort().join(",") : `${r.httpStatus ?? "-"}:${r.fetchError ?? "-"}`;
+  return `${r.host}:${r.status}:${detail}`;
 }
 
 export interface RobotsDriftAlarmState {
@@ -350,10 +358,16 @@ export function shouldAlarmRobotsDrift(state: RobotsDriftAlarmState, results: re
 // ─── Corpo do e-mail de alarme (puro) ──────────────────────────────────────
 
 /** Pura — monta assunto + corpo do e-mail de alarme (texto puro, mesmo
- * padrão de `hub-drift-check.ts`). Lista só hosts com status "drift"/"error". */
+ * padrão de `hub-drift-check.ts`). Lista só hosts com status "drift"/"error".
+ * `issueRefs` (#5339, opcional) — mapa `robotsDriftFindingKey -> {issueNumber,
+ * url, action, error}` de `scripts/lib/alarm-issues.ts`, usado pra citar a
+ * issue de cada host com drift. `undefined` (dry-run, ou wiring ainda não
+ * chamado) omite a citação sem quebrar nada — mesmo fallback de
+ * `buildHubDriftAlarmEmail`. */
 export function buildRobotsDriftAlarmEmail(
   results: readonly RobotsDriftResult[],
   now: Date = new Date(),
+  issueRefs?: ReadonlyMap<string, { issueNumber: number | null; url: string | null; action: string; error?: string }>,
 ): { subject: string; body: string } {
   const pending = results.filter((r) => r.status === "drift" || r.status === "error");
 
@@ -376,6 +390,10 @@ export function buildRobotsDriftAlarmEmail(
       for (const reason of r.reasons) lines.push(`      · ${reason}`);
     }
     lines.push(`    URL: ${r.url}`);
+    const ref = issueRefs?.get(robotsDriftFindingKey(r));
+    if (ref) {
+      lines.push(ref.action === "failed" ? `    Issue: falha ao criar/reusar (${ref.error})` : `    Issue: #${ref.issueNumber} (${ref.url})`);
+    }
   }
 
   lines.push(

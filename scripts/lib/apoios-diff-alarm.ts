@@ -60,6 +60,20 @@ export function computeDiffFingerprint(input: DiffAlarmInput): string {
   return [...applyKeys, ...removeKeys].join("|");
 }
 
+/** Pure (#5339): mascara um e-mail pra uso em texto que pode virar PÚBLICO
+ * (issue GitHub, `vjpixel/diaria-studio` é repo público) — diferente do
+ * corpo deste alarme (canal privado, Gmail do editor), que sempre mostra o
+ * e-mail completo. Mantém só o 1º caractere do local-part + o domínio
+ * completo (ex: `joao@example.com` -> `j***@example.com`) — o suficiente
+ * pro editor reconhecer de relance sem publicar o e-mail inteiro de um
+ * assinante/apoiador numa issue indexável. E-mail sem `@` (dado malformado,
+ * nunca deveria acontecer) mascara tudo menos o 1º caractere, fail-soft. */
+export function maskEmailForIssue(email: string): string {
+  const at = email.indexOf("@");
+  if (at <= 0) return email.length > 0 ? `${email[0]}***` : "***";
+  return `${email[0]}***${email.slice(at)}`;
+}
+
 export interface ApoiosDiffAlarmState {
   /** Fingerprint do diff já alarmado (ou `null` — sem diff pendente
    * conhecido, "re-armado"). */
@@ -112,10 +126,18 @@ export interface DiffAlarmGuardWarnings {
 /** Pure: monta assunto + corpo do e-mail de alarme — texto puro (mesmo
  * padrão de `scripts/lib/gmail-send.ts`, sem HTML). `guardWarnings` é
  * opcional (#4503 finding 5) — quando omitido, o corpo não menciona os
- * guards (mesmo texto de antes, back-compat com chamadas existentes). */
+ * guards (mesmo texto de antes, back-compat com chamadas existentes).
+ * `issueRef` (#5339, opcional) — `{issueNumber, url, action, error}` de
+ * `scripts/lib/alarm-issues.ts` pro diff INTEIRO (não por entry — ver
+ * docstring de `maskEmailForIssue` no script pro porquê deste alarme criar
+ * 1 issue por RODADA de diff, não 1 por e-mail de assinante). O corpo deste
+ * e-mail (canal privado, Gmail do editor) continua citando os e-mails
+ * COMPLETOS de sempre — só o corpo da ISSUE (`toApoiosDiffAlarmFinding` no
+ * script) mascara. `undefined` omite a citação sem quebrar nada. */
 export function buildApoiosDiffAlarmEmail(
   input: DiffAlarmInput,
   guardWarnings?: DiffAlarmGuardWarnings,
+  issueRef?: { issueNumber: number | null; url: string | null; action: string; error?: string },
 ): { subject: string; body: string } {
   const subject = `[diar.ia.br] apoio_nivel: ${input.toApply.length} adição(ões)/troca(s), ${input.toRemove.length} remoção(ões) pendente(s)`;
 
@@ -159,6 +181,15 @@ export function buildApoiosDiffAlarmEmail(
     "",
     "Este alarme NUNCA aplica --push sozinho — só avisa que há diff pendente.",
   );
+
+  if (issueRef) {
+    lines.push(
+      "",
+      issueRef.action === "failed"
+        ? `Issue: falha ao criar/reusar (${issueRef.error})`
+        : `Issue: #${issueRef.issueNumber} (${issueRef.url})`,
+    );
+  }
 
   return { subject, body: lines.join("\n") };
 }

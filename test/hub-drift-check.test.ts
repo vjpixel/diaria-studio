@@ -18,6 +18,7 @@ import {
   advanceHubDriftState,
   shouldAlarmHubDrift,
   buildHubDriftAlarmEmail,
+  hubDriftFindingKey,
   type HubCheckInput,
   type HubDriftResult,
 } from "../scripts/lib/hub-drift-check.ts";
@@ -238,5 +239,32 @@ describe("buildHubDriftAlarmEmail (#4750)", () => {
     ];
     const { subject } = buildHubDriftAlarmEmail(results);
     assert.match(subject, /^\[diar\.ia\.br\] 2 hub/);
+  });
+});
+
+describe("buildHubDriftAlarmEmail com issueRefs (#5339)", () => {
+  it("cita o número da issue quando issueRefs tem entry pro achado (action: created/reused)", () => {
+    const r = evaluateHubDrift({ ...HUB, slug: "broken-hub", httpStatus: 404 });
+    const issueRefs = new Map([
+      [hubDriftFindingKey(r), { issueNumber: 5340, url: "https://github.com/vjpixel/diaria-studio/issues/5340", action: "created" }],
+    ]);
+    const { body } = buildHubDriftAlarmEmail([r], new Date("2026-08-15T12:00:00Z"), issueRefs);
+    assert.match(body, /Issue: #5340/);
+    assert.match(body, /issues\/5340/);
+  });
+
+  it("action 'failed' cita o motivo em vez de um número — e-mail nunca perde o achado por falha de gh", () => {
+    const r = evaluateHubDrift({ ...HUB, slug: "broken-hub", httpStatus: 404 });
+    const issueRefs = new Map([
+      [hubDriftFindingKey(r), { issueNumber: null, url: null, action: "failed", error: "gh não autenticado" }],
+    ]);
+    const { body } = buildHubDriftAlarmEmail([r], new Date("2026-08-15T12:00:00Z"), issueRefs);
+    assert.match(body, /falha ao criar\/reusar \(gh não autenticado\)/);
+  });
+
+  it("sem issueRefs (undefined) — corpo sai igual ao comportamento pré-#5339, sem quebrar", () => {
+    const r = evaluateHubDrift({ ...HUB, slug: "broken-hub", httpStatus: 404 });
+    const { body } = buildHubDriftAlarmEmail([r]);
+    assert.doesNotMatch(body, /Issue:/);
   });
 });
