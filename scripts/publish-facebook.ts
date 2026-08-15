@@ -326,6 +326,99 @@ async function publishPhoto(
   return data as { id: string; post_id?: string };
 }
 
+/**
+ * (#5348) Publica um carrossel MULTI-FOTO no Facebook a partir de URLs
+ * públicas — usado pelo carrossel semanal (`publish-weekly-social.ts`), que
+ * expandiu do Instagram sozinho pra também publicar no Facebook (mesmo
+ * agendamento, decisão do editor 260815). Diferente de `publishPhoto` acima
+ * (usada pelo publisher DIÁRIO, que lê um arquivo LOCAL e faz upload do
+ * binário via multipart), aqui as imagens já são URLs públicas no CDN (o
+ * mesmo carrossel que o Instagram consome via `image_urls`) — a Graph API
+ * aceita o parâmetro `url` em `/photos` em vez de `source`, então não
+ * precisamos baixar/reupar o binário.
+ *
+ * Fluxo (padrão documentado da Graph API pra "multi-photo status update",
+ * https://developers.facebook.com/docs/graph-api/reference/page/photos/ +
+ * https://developers.facebook.com/docs/graph-api/reference/page/feed/#pubfields):
+ *   1. N POSTs a `/{page-id}/photos`, cada um com `published=false` e
+ *      `url=<imageUrl>` — devolve um `id` de foto SEM criar post visível
+ *      nem consumir a quota de posts publicados.
+ *   2. 1 POST a `/{page-id}/feed` com `attached_media[i]={"media_fbid":id}`
+ *      (um campo de form por índice — a Graph API não aceita um array JSON
+ *      único), `message=caption`, `published=false` e
+ *      `scheduled_publish_time=<unix>`.
+ *
+ * Diferente do carrossel do Instagram (#4153) e do Threads (não
+ * implementado, #5348), a Graph API do Facebook NÃO precisa de
+ * container-status polling — cada `/photos` com `published=false` responde
+ * de imediato com o `id` definitivo, pronto pra usar no passo 2.
+ *
+ * Falha parcial (mesma decisão de escopo do #4153 pro Instagram): se
+ * QUALQUER foto falhar no passo 1, o post inteiro é ABORTADO (lança) —
+ * nunca publica um carrossel incompleto, porque o texto promete N itens. O
+ * CALLER decide o bookkeeping de falha (`status:"failed"` + `reason`), não
+ * esta função — mesmo contrato de `publishPhoto` acima.
+ */
+export async function publishFacebookCarouselByUrl(
+  pageId: string,
+  pageToken: string,
+  apiVersion: string,
+  imageUrls: string[],
+  caption: string,
+  scheduledAt: string | null,
+): Promise<{ id: string; post_id?: string }> {
+  const base = `https://graph.facebook.com/${apiVersion}`;
+
+  const photoIds: string[] = [];
+  for (const imageUrl of imageUrls) {
+    const formData = new FormData();
+    formData.append("url", imageUrl);
+    formData.append("published", "false");
+    formData.append("access_token", pageToken);
+    const res = await fetch(`${base}/${pageId}/photos`, { method: "POST", body: formData });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Facebook POST /photos (unpublished, url=${imageUrl}) HTTP ${res.status}: ${body.slice(0, 200)}`);
+    }
+    const data = (await res.json()) as { id?: string; error?: unknown };
+    if (data.error) {
+      throw new Error(`Facebook /photos error (url=${imageUrl}): ${JSON.stringify(data.error)}`);
+    }
+    if (!data.id) {
+      throw new Error(`Facebook /photos sem id (url=${imageUrl})`);
+    }
+    photoIds.push(data.id);
+  }
+
+  const formData = new FormData();
+  formData.append("message", caption);
+  photoIds.forEach((id, i) => {
+    formData.append(`attached_media[${i}]`, JSON.stringify({ media_fbid: id }));
+  });
+  // Sempre unpublished — o scheduling é responsabilidade do caller via
+  // scheduledAt (mesmo invariante de publishPhoto acima: nunca publica
+  // imediato sem `scheduledAt` explícito).
+  formData.append("published", "false");
+  formData.append("access_token", pageToken);
+  if (scheduledAt) {
+    formData.append("scheduled_publish_time", String(isoToUnix(scheduledAt)));
+  }
+
+  const res = await fetch(`${base}/${pageId}/feed`, { method: "POST", body: formData });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Facebook POST /feed (carrossel, ${photoIds.length} fotos) HTTP ${res.status}: ${body.slice(0, 200)}`);
+  }
+  const data = (await res.json()) as { id?: string; post_id?: string; error?: unknown };
+  if (data.error) {
+    throw new Error(`Facebook /feed error: ${JSON.stringify(data.error)}`);
+  }
+  if (!data.id) {
+    throw new Error(`Facebook /feed sem id (carrossel, ${photoIds.length} fotos)`);
+  }
+  return data as { id: string; post_id?: string };
+}
+
 async function rescheduleFacebookPosts(opts: {
   editionDir: string;
   publishedPath: string;

@@ -1,20 +1,30 @@
 /**
- * format-weekly-social.ts (#4101, restrito ao Instagram pelo #4483)
+ * format-weekly-social.ts (#4101, restrito ao Instagram pelo #4483,
+ * Facebook de volta pelo #5348)
  *
- * Formatação da caption do post semanal do Instagram (os itens mais
- * clicados da semana — ver `weekly-instagram-select.ts`).
+ * Formatação da caption dos carrosséis semanais (os itens mais clicados OU
+ * os principais destaques da semana — ver `weekly-instagram-select.ts`).
  *
  * **#4483 removeu LinkedIn/Facebook/Threads/Twitter-X deste arquivo** — a
- * skill `/diaria-instagram-semanal` (renomeada de `/diaria-semanal`)
- * publica exclusivamente no Instagram agora (o recap semanal do LinkedIn
- * passou a ser coberto por `/diaria-linkedin-semanal`, #4456). As funções
- * `formatLinkedInWeekly`/`formatFacebookWeekly`/`formatThreadsWeekly`/
- * `formatTwitterWeeklyThread` e as constantes de limite de caracteres
- * associadas foram removidas junto — ver histórico do arquivo (git log)
- * pra recuperar caso algum canal volte a fazer sentido aqui no futuro.
+ * skill `/diaria-instagram-semanal` (renomeada de `/diaria-semanal`) passou
+ * a publicar exclusivamente no Instagram (o recap semanal do LinkedIn segue
+ * coberto por `/diaria-linkedin-semanal`, #4456, fora de escopo aqui). As
+ * funções `formatLinkedInWeekly`/`formatFacebookWeekly`/
+ * `formatThreadsWeekly`/`formatTwitterWeeklyThread` foram removidas junto.
+ *
+ * **#5348 (260815, decisão do editor) trouxe `formatFacebookWeekly` de
+ * volta** — o carrossel agora publica também no Facebook, mesmo agendamento
+ * do Instagram, sem flag/canal separado. **Threads segue de fora**: o
+ * publisher de Threads deste repo (`workers/linkedin-cron/src/dispatch.ts`
+ * `fireThreads`) é TEXT-only hoje — não suporta NENHUMA imagem, muito menos
+ * carrossel — implementar isso do zero (containers de imagem + polling de
+ * status obrigatório, ao contrário do Instagram/Facebook) é engenharia do
+ * mesmo porte do #4153 original; decisão explícita de escopo reduzido, ver
+ * comentário do editor na issue #5348 e `publish-weekly-social.ts` (busca
+ * por "#5348").
  *
  * Pura (texto in, texto out) — nenhuma I/O ou chamada de rede.
- * `publish-weekly-social.ts` consome esta função antes de despachar.
+ * `publish-weekly-social.ts` consome estas funções antes de despachar.
  *
  * #4537 item 1: o link de arquivo saía cru (`https://diar.ia.br`), sem UTM —
  * resíduo do #4295, que só cobriu os links da pipeline DIÁRIA. UTM montado
@@ -109,6 +119,29 @@ export function formatInstagramWeekly(items: InstagramWeeklyItem[], mode: Weekly
       .join("\n\n") +
     `\n\nEdição completa de cada matéria no link da bio. Arquivo completo em ${ARCHIVE_URL}.`;
   return truncateAtLimit(body, INSTAGRAM_WEEKLY_CHAR_LIMIT);
+}
+
+/**
+ * Facebook (#5348): MESMO carrossel/itens/ordem do Instagram — a única
+ * diferença de formato é a linha final. Facebook aceita link clicável no
+ * corpo do post (Instagram não linka), então em vez de "link na bio" a CTA
+ * aponta DIRETO pro arquivo — sem precisar da indireção "vá no perfil,
+ * procure o link". Sem limite de caption prático (feed post do Facebook
+ * aceita ~63.200 chars, muito acima do que este carrossel produz) — nenhum
+ * truncamento é aplicado, diferente do Instagram.
+ */
+export function formatFacebookWeekly(items: InstagramWeeklyItem[], mode: WeeklyInstagramMode = "clicked"): string {
+  if (items.length === 0) return "";
+  return (
+    `${INTRO_LINES[mode]}\n\n` +
+    items
+      .map((it, i) => {
+        const ctx = contextLine(it);
+        return ctx ? `${i + 1}. ${it.title}\n${ctx}` : `${i + 1}. ${it.title}`;
+      })
+      .join("\n\n") +
+    `\n\nEdição completa de cada matéria e arquivo completo: ${ARCHIVE_URL}`
+  );
 }
 
 function truncateAtLimit(text: string, maxLen: number): string {

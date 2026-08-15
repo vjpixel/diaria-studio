@@ -1,6 +1,6 @@
 ---
 name: diaria-instagram-semanal
-description: DOIS carrosséis semanais do Instagram (#4101, restrito ao Instagram + seleção por clique pelo #4483; segundo carrossel "Principais Destaques" pelo #5330) — "clicked" (os itens mais clicados da semana, D1/D2/D3 e desde o #4513 também RADAR, card 4:5 sob demanda quando vence) publica domingo; "highlights" (os 5 D1 da semana, sem ranking) publica sábado. Cada um abre com slide de capa e fecha com slide de CTA de assinatura, sem foto. Só Instagram — nunca vira edição no Beehiiv, nunca dispara e-mail, e não publica em LinkedIn/Facebook/Threads/X (o recap semanal do LinkedIn é `/diaria-linkedin-semanal`, #4456). Uso — `/diaria-instagram-semanal [AAMMDD-do-sabado] [--mode clicked|highlights] [--schedule] [--no-gates]`.
+description: DOIS carrosséis semanais (#4101, restrito ao Instagram + seleção por clique pelo #4483; segundo carrossel "Principais Destaques" pelo #5330; expandido pra Facebook pelo #5348) — "clicked" (os itens mais clicados da semana, D1/D2/D3 e desde o #4513 também RADAR, card 4:5 sob demanda quando vence) publica domingo; "highlights" (os 5 D1 da semana, sem ranking) publica sábado. Cada um abre com slide de capa e fecha com slide de CTA de assinatura, sem foto. Publica em Instagram E Facebook automaticamente, mesmo agendamento, sem flag/canal separado (#5348) — Threads segue de fora (publisher TEXT-only, sem suporte a imagem, ver seção #5348 abaixo). Nunca vira edição no Beehiiv, nunca dispara e-mail (o recap semanal do LinkedIn é `/diaria-linkedin-semanal`, #4456, produto/cadência diferentes). `--mode both` (#5349) roda os 2 modos numa única invocação. Uso — `/diaria-instagram-semanal [AAMMDD-do-sabado] [--mode clicked|highlights|both] [--schedule] [--no-gates]`.
 disable-model-invocation: true
 ---
 
@@ -23,10 +23,24 @@ não como etapa do pipeline diário.
 Motivo dos dias separados: publicar os dois no mesmo dia competiria pelo
 mesmo slot de feed do leitor. `DEFAULT_MODE_DAY_OFFSET` em
 `scripts/publish-weekly-social.ts` é o parâmetro (`--day-offset` sobrescreve
-por invocação, sem editar código). Rode a skill 2x por semana — uma vez por
-modo — cada invocação é independente (seleção, cache de card capa/CTA,
-persisted store e skip-existing nunca colidem entre os dois, chave
-`{saturday}-{mode}`).
+por invocação, sem editar código). Cada modo é independente (seleção, cache
+de card capa/CTA, persisted store e skip-existing nunca colidem entre os
+dois, chave `{saturday}-{mode}`).
+
+**`--mode both` (#5349): roda os 2 modos numa única invocação.** Em vez de
+invocar a skill 2x na semana, `--mode both` dispara `highlights` e depois
+`clicked` dentro da MESMA chamada — cada um com seu próprio agendamento
+(sábado/domingo, `DEFAULT_MODE_DAY_OFFSET`), reportando sucesso/falha
+independente: uma falha em `clicked` (ex: dado de clique incompleto) não
+impede `highlights` de ser agendado, e vice-versa. O processo só sai com
+código de erro se PELO MENOS 1 dos 2 modos falhar — o preview/gate humano
+(Passos 2-3 abaixo) roda 2x em sequência (uma vez por modo) antes de
+qualquer `--schedule`. `--mode clicked`/`--mode highlights` continuam
+disponíveis pra quem preferir rodar um de cada vez (ex: só reagendar um dos
+dois depois de corrigir algo). **`--day-offset` não compõe com `--mode
+both`** (cada modo precisa do seu offset padrão próprio) — passar os dois
+juntos aborta cedo com erro explícito; sobrescrever offset exige rodar os
+modos separadamente.
 
 **Slide de capa e CTA final (#5330, paleta ajustada na 2ª rodada de review —
 #5345):** os dois carrosséis agora têm 7 slides, não 5 — abrem com um card de
@@ -64,13 +78,17 @@ anteriores da issue #4101 foram SUPERSEDIDAS — releia esta seção antes de
 mexer no arquivo, o histórico do #4101 não reflete mais o comportamento
 atual:
 
-- **Canal: só Instagram** (era LinkedIn + Facebook + Instagram + Threads,
-  com X à parte). Motivo (#4483): a newsletter semanal do LinkedIn
-  (`/diaria-linkedin-semanal`, #4456) passou a cobrir o recap de segunda —
-  manter o post de sábado no LinkedIn duplicaria o recap com 2 dias de
-  distância, e a newsletter ganha em alcance (notificação + e-mail, fora do
-  ranqueamento de feed). Facebook/Threads/X saíram junto — nenhuma decisão
-  do editor os resgatou.
+- **Canal: era só Instagram (#4483), Facebook voltou pelo #5348 — LinkedIn e
+  X seguem de fora.** Motivo do #4483 pra tirar LinkedIn: a newsletter
+  semanal do LinkedIn (`/diaria-linkedin-semanal`, #4456) passou a cobrir o
+  recap de segunda — manter o post de sábado no LinkedIn duplicaria o recap
+  com 2 dias de distância, e a newsletter ganha em alcance (notificação +
+  e-mail, fora do ranqueamento de feed). **Essa lógica NÃO se aplica a
+  Facebook** — não existe recap semanal nativo lá — nem o editor resgatou
+  Facebook por esse motivo: foi uma decisão nova e própria (260815, #5348),
+  "alcance/audiência adicional". Ver seção "#5348: expansão pra Facebook"
+  abaixo pro detalhe completo (incluindo por que Threads segue de fora e X
+  nunca foi mencionado de novo).
 - **Seleção: por taxa de clique verificado, de qualquer posição elegível
   (D1, D2, D3 ou RADAR)** — era "os 5 D1, sem ranking por clique, sem
   re-scoring". Dados reais de julho/2026 mostraram o D1 perdendo pra outro
@@ -109,9 +127,13 @@ atual:
   banner. Vale pros dois modos — só a data de AGENDAMENTO muda
   (`highlights` = o próprio sábado, `clicked` = domingo seguinte), a janela
   de conteúdo é a mesma.
-- `--mode clicked|highlights` — qual dos dois carrosséis rodar (ver tabela
-  acima). Default `clicked` (back-compat com invocações antigas, de antes do
-  #5330). Rode a skill 2x na semana, uma vez por modo.
+- `--mode clicked|highlights|both` — qual dos dois carrosséis rodar (ver
+  tabela acima). Default `clicked` (back-compat com invocações antigas, de
+  antes do #5330). `both` (#5349) roda os 2 numa única invocação, cada um
+  reportando sucesso/falha independente — prefira `both` pro uso semanal
+  normal; rode um modo isolado só quando precisar reagendar/corrigir um dos
+  dois sem tocar o outro. **`--day-offset` não é compatível com `--mode
+  both`** (ver seção acima).
 - `--schedule` — sem esta flag, a skill só mostra o PREVIEW (seleção +
   caption + horário planejado) e não agenda nada. Com a flag, agenda de
   verdade pelo Worker queue (`scheduled_at` explícito — nunca envio
@@ -136,9 +158,14 @@ atual:
   (roda automaticamente no Stage 0 de cada edição diária). O Passo 1 abaixo
   checa se falta enriquecimento de clicks pros posts da janela antes de
   confiar na seleção.
-- Credenciais (mesmas dos publishers diários): `DIARIA_LINKEDIN_CRON_URL` +
+- Credenciais Instagram (mesmas dos publishers diários): `DIARIA_LINKEDIN_CRON_URL` +
   `DIARIA_LINKEDIN_CRON_TOKEN` (Worker queue — mesmo endpoint usado pelo
   Instagram diário e pelo LinkedIn/Threads, `channel: "instagram"`).
+- Credenciais Facebook (#5348, mesmas do publisher diário `publish-facebook.ts`):
+  `FACEBOOK_PAGE_ID` + `FACEBOOK_PAGE_ACCESS_TOKEN` (opcional `FACEBOOK_API_VERSION`,
+  default `v25.0`). Ausentes → o dispatch do Facebook marca `status:"failed"`
+  com `reason:"facebook_not_configured"` e segue em frente — NUNCA impede o
+  Instagram de publicar (canais são independentes, ver seção #5348 abaixo).
 - Para cada edição candidata a contribuir um item de DESTAQUE (D1/D2/D3): o
   card do carrossel é RECOMPOSTO com o tamanho de fonte único da rodada
   (#5345, ver seção "Slide de capa e CTA final" acima) — não mais lido pronto
@@ -201,15 +228,17 @@ Sem `--schedule`, o script nunca faz chamada de rede — só imprime:
 - Warnings (empates dentro do ruído de 1 clique — só `clicked`, edições sem
   dado de clique — só `clicked`, linguagem comercial suspeita em item
   selecionado — os dois modos, etc).
-- A caption formatada do Instagram (intro varia por modo) — cada item leva
-  título numerado + 1 linha de contexto (`why` do destaque, ou a 1ª frase de
-  `body` pra RADAR). Desde o #5345, essa linha de contexto sai SEMPRE
-  inteira, sem truncar em N chars por item (um cap de 140 chars cortava a
-  frase no meio, ilegível) — a única rede de segurança é o limite de 2200
-  chars da caption INTEIRA (`truncateAtLimit`, `format-weekly-social.ts`),
-  que corta preservando palavras inteiras se o total estourar.
+- A caption formatada do Instagram E do Facebook (#5348) — MESMOS títulos
+  numerados + 1 linha de contexto (`why` do destaque, ou a 1ª frase de
+  `body` pra RADAR), a única diferença é a linha final de CTA (Instagram
+  "link na bio"; Facebook link clicável direto). Desde o #5345, a linha de
+  contexto sai SEMPRE inteira, sem truncar em N chars por item (um cap de
+  140 chars cortava a frase no meio, ilegível) — no Instagram a única rede
+  de segurança é o limite de 2200 chars da caption INTEIRA (`truncateAtLimit`,
+  `format-weekly-social.ts`), que corta preservando palavras inteiras se o
+  total estourar; o Facebook não tem esse cap.
 - O horário de agendamento planejado (sábado pra `highlights`, domingo pra
-  `clicked`).
+  `clicked`) — MESMO horário pros 2 canais.
 
 Se **nenhum candidato** (nenhum DESTAQUE 1/2/3 com URL em nenhuma edição da
 semana) foi encontrado, o script já encerra aqui — nenhum publisher é
@@ -252,6 +281,71 @@ depois (`data/weekly/{saturday}-{mode}/_internal/06-flat-cards.json` — ver
 imagem (falha de leitura, recomposição OU geração sob demanda), o post
 inteiro falha (nunca publica carrossel parcial) — capa/CTA falhando também
 aborta o post inteiro pela mesma razão.
+
+**O MESMO `--schedule` acima já dispara Facebook (#5348) — não é preciso
+passo/flag adicional.** Ver seção dedicada logo abaixo.
+
+## #5348: expansão pra Facebook (e por que Threads segue de fora)
+
+Decisão do editor, 260815: publicar o MESMO carrossel (7 slides — capa +
+itens + CTA, idênticas às imagens do Instagram) também no Facebook, com o
+MESMO `scheduledAt` (`computeWeeklyScheduledAt`), automaticamente junto do
+Instagram — sem flag/canal separado. Implementado dentro de `runOneMode` em
+`scripts/publish-weekly-social.ts`: os 2 canais compartilham seleção,
+resolução de imagem (`carouselImageUrls`) e horário; cada um tem seu próprio
+dispatch, skip-existing e bookkeeping de falha — **um canal falhando NUNCA
+desfaz nem impede o outro**. Diferenças por canal:
+
+- **Publisher**: Instagram passa pelo Worker queue (`postToWorkerQueue`,
+  `channel: "instagram"`, agenda via cron do Worker). Facebook chama a Graph
+  API DIRETO — sem Worker/cron —, porque a Graph API agenda nativamente
+  (`scheduled_publish_time`), o mesmo padrão já usado pelo publisher DIÁRIO
+  (`publish-facebook.ts`). Nova função `publishFacebookCarouselByUrl`
+  (mesmo arquivo): N `POST /{page-id}/photos` (uma por imagem, `url=<CDN>`,
+  `published=false`) seguidos de 1 `POST /{page-id}/feed` com
+  `attached_media[i]` indexado + `message` + `scheduled_publish_time`.
+  Falha em QUALQUER foto aborta o carrossel inteiro (nunca publica parcial —
+  mesma decisão de escopo do carrossel do Instagram, #4153).
+- **Caption**: `formatFacebookWeekly` (`scripts/lib/format-weekly-social.ts`)
+  — MESMOS títulos/ordem/contexto do Instagram, mas a linha final de CTA é
+  um link CLICÁVEL direto pro arquivo (Facebook permite link no corpo do
+  post; Instagram não, daí "link na bio"). Sem o cap de 2200 chars do
+  Instagram (Facebook aceita post bem mais longo).
+- **Persisted store**: `06-weekly-published.json` ganha `platform:"facebook"`
+  ao lado de `"instagram"`, mesma chave `destaque:"weekly-{mode}"` —
+  skip-existing é POR CANAL (um já publicado não impede o outro de tentar
+  numa re-run parcial).
+- **Credenciais ausentes** (`FACEBOOK_PAGE_ID`/`FACEBOOK_PAGE_ACCESS_TOKEN`):
+  entry `status:"failed"`, `reason:"facebook_not_configured"` — segue em
+  frente, nunca trava o Instagram.
+
+**Threads NÃO foi implementado nesta rodada — decisão técnica registrada,
+não esquecimento.** A issue pediu pra investigar se a API suportava
+carrossel antes de implementar. Achado: o publisher de Threads deste repo
+(`fireThreads`, `workers/linkedin-cron/src/dispatch.ts`) é **TEXT-only
+hoje** — não implementa NENHUM tipo de imagem, muito menos carrossel
+multi-imagem (a Meta até suporta carrossel na API do Threads, mas este
+código nunca foi escrito pra usar isso). Adicionar suporte exigiria, do
+zero: containers de imagem (`media_type: "IMAGE"`/`"CAROUSEL_ITEM"`), um
+container pai `CAROUSEL`, e — diferente de Instagram/Facebook — **polling
+obrigatório de status** antes do publish (a Graph API de Threads não
+garante `FINISHED` imediato pra containers de imagem, ao contrário do que
+`fireInstagramSingle` já trata como best-effort). Isso é engenharia do
+MESMO PORTE do carrossel original do Instagram (#4153) — não cabe com
+segurança numa unidade de batch de baixo risco. Escopo reduzido
+explicitamente aceito (a própria issue #5348 previa essa saída): Facebook
+sai completo nesta rodada, Threads fica de fora até uma unidade dedicada
+decidir implementar o container+polling do zero. Não reabrir sem uma
+decisão nova do editor ou uma issue de follow-up dedicada.
+
+**A skill NÃO foi renomeada** apesar de deixar de ser Instagram-only — o
+nome `diaria-instagram-semanal` continua refletindo o produto PRINCIPAL
+(seleção/carrossel são todos desenhados em torno do feed do Instagram;
+Facebook é uma réplica automática do mesmo material). Renomear tocaria
+múltiplas referências cruzadas (`diaria-linkedin-semanal/SKILL.md`,
+`weekly-social-click-rank.ts`, `format-weekly-social.ts`) sem ganho
+funcional — decisão de escopo do #5348, revisitável se Threads também
+entrar e o nome ficar genuinamente enganoso.
 
 ## Casos de borda
 

@@ -1215,4 +1215,281 @@ describe("main(): dispatch mockado", () => {
       assert.match(post.reason, /flat_card_generation_failed/);
     });
   });
+
+  describe("#5348: Facebook — mesmo carrossel do Instagram, publicado junto (sem flag/canal separado)", () => {
+    it("sucesso nos 2 canais — Facebook recebe o MESMO carrossel (cover+news+cta), agenda no MESMO horário do Instagram", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      process.env.FACEBOOK_PAGE_ID = "999";
+      process.env.FACEBOOK_PAGE_ACCESS_TOKEN = "fbtoken";
+
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply(200, { queued: true, key: "queue:instagram:1", scheduled_at: "2027-12-26T11:00:00-03:00", destaque: "weekly-clicked" });
+
+      const fbMock = mockAgent.get("https://graph.facebook.com");
+      let photoCalls = 0;
+      const photoUrlsSeen: string[] = [];
+      fbMock
+        .intercept({ path: "/v25.0/999/photos", method: "POST" })
+        .reply((opts) => {
+          photoCalls++;
+          // #5348 self-review: `opts.body` pra um POST via fetch()+FormData é
+          // o objeto FormData em si (não serializado) neste runtime — bem
+          // mais simples de inspecionar que parsear multipart cru.
+          const body = opts.body as FormData;
+          photoUrlsSeen.push(String(body.get("url")));
+          assert.equal(body.get("published"), "false", "sempre unpublished — scheduling é o /feed do passo 2, nunca publish imediato de foto solta");
+          return { statusCode: 200, data: JSON.stringify({ id: `photo_${photoCalls}` }) };
+        })
+        .times(3); // cover + 1 news card + cta = 3 imagens no carrossel de 1 item
+
+      let feedBody: FormData | null = null;
+      fbMock
+        .intercept({ path: "/v25.0/999/feed", method: "POST" })
+        .reply((opts) => {
+          feedBody = opts.body as FormData;
+          return { statusCode: 200, data: JSON.stringify({ id: "999_post123" }) };
+        });
+
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+      );
+
+      assert.equal(photoCalls, 3, "1 POST /photos por imagem do carrossel (cover+news+cta)");
+      assert.equal(photoUrlsSeen.length, 3);
+      // MESMAS URLs que o Instagram recebeu (mesmo carrossel, #5348) — cover
+      // termina em cover-4x5.jpg, cta em cta-4x5.jpg, a do meio é a notícia.
+      assert.ok(photoUrlsSeen.some((u) => u.endsWith("cover-4x5.jpg")));
+      assert.ok(photoUrlsSeen.some((u) => u.endsWith("cta-4x5.jpg")));
+      assert.ok(feedBody, "/feed deveria ter sido chamado após os 3 /photos");
+      const feedForm = feedBody as unknown as FormData;
+      // attached_media[0..2] — 1 campo de form POR ÍNDICE (Graph API não aceita array JSON único).
+      assert.deepEqual(JSON.parse(String(feedForm.get("attached_media[0]"))), { media_fbid: "photo_1" });
+      assert.deepEqual(JSON.parse(String(feedForm.get("attached_media[1]"))), { media_fbid: "photo_2" });
+      assert.deepEqual(JSON.parse(String(feedForm.get("attached_media[2]"))), { media_fbid: "photo_3" });
+      assert.ok(feedForm.get("scheduled_publish_time"), "agenda nativamente via scheduled_publish_time — Facebook não passa pelo Worker queue");
+      assert.equal(feedForm.get("published"), "false");
+      // Caption do Facebook tem link CLICÁVEL no corpo (diferente do Instagram, "link na bio").
+      assert.match(String(feedForm.get("message")), /diar\.ia\.br/);
+      assert.match(String(feedForm.get("message")), /1\. Único/);
+
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const fbEntry = out.posts.find((p: any) => p.platform === "facebook");
+      const igEntry = out.posts.find((p: any) => p.platform === "instagram");
+      assert.equal(fbEntry.status, "scheduled");
+      assert.equal(fbEntry.url, "https://www.facebook.com/999/posts/999_post123");
+      assert.equal(fbEntry.scheduled_at, igEntry.scheduled_at, "MESMO agendamento pros 2 canais (#5348)");
+      assert.equal(igEntry.status, "scheduled");
+    });
+
+    it("FACEBOOK_PAGE_ID/TOKEN ausentes — Instagram publica normalmente, Facebook marca failed sem travar o resto", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      // Sem FACEBOOK_PAGE_ID/FACEBOOK_PAGE_ACCESS_TOKEN — env limpo pelo afterEach da suite.
+
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply(200, { queued: true, key: "queue:instagram:1", scheduled_at: "2027-12-26T11:00:00-03:00", destaque: "weekly-clicked" });
+      // Nenhum interceptor pro graph.facebook.com — se o script tentasse
+      // chamar mesmo assim, disableNetConnect() derrubaria o teste.
+
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+      );
+
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const fb = out.posts.find((p: any) => p.platform === "facebook");
+      const ig = out.posts.find((p: any) => p.platform === "instagram");
+      assert.equal(fb.status, "failed");
+      assert.equal(fb.reason, "facebook_not_configured");
+      assert.equal(ig.status, "scheduled");
+    });
+
+    it("Facebook falha na API (foto rejeitada) — Instagram já agendado NÃO é desfeito, Facebook marca failed com o motivo", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      process.env.FACEBOOK_PAGE_ID = "999";
+      process.env.FACEBOOK_PAGE_ACCESS_TOKEN = "fbtoken";
+
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply(200, { queued: true, key: "queue:instagram:1", scheduled_at: "2027-12-26T11:00:00-03:00", destaque: "weekly-clicked" });
+
+      mockAgent
+        .get("https://graph.facebook.com")
+        .intercept({ path: "/v25.0/999/photos", method: "POST" })
+        .reply(400, { error: { message: "Invalid image URL (simulado)" } });
+      // /feed nunca deveria ser chamado — falha parcial aborta o carrossel
+      // inteiro (mesma decisão de escopo do Instagram, #4153). Nenhum
+      // interceptor registrado pra /feed — disableNetConnect() denunciaria
+      // uma tentativa indevida.
+
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+      );
+
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const fb = out.posts.find((p: any) => p.platform === "facebook");
+      const ig = out.posts.find((p: any) => p.platform === "instagram");
+      assert.equal(fb.status, "failed");
+      assert.match(fb.reason, /Facebook POST \/photos/);
+      assert.equal(ig.status, "scheduled", "Facebook falhando não desfaz o Instagram já agendado");
+    });
+  });
+
+  describe("#5349: --mode both — roda os 2 modos numa única invocação", () => {
+    it("--day-offset é incompatível com --mode both — aborta antes de rodar qualquer modo", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      let captured = "";
+      const originalError = console.error;
+      console.error = (...args: unknown[]) => {
+        captured += args.map(String).join(" ") + "\n";
+      };
+      try {
+        await expectMockedExit(
+          () =>
+            main(
+              ["--saturday", saturdayStr, "--mode", "both", "--day-offset", "2", "--editions-root", editionsRoot],
+              { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+            ),
+          1,
+        );
+      } finally {
+        console.error = originalError;
+      }
+      assert.match(captured, /--day-offset não é compatível com --mode both/);
+      assert.equal(existsSync(resolve(dataRoot, "weekly")), false, "nenhum modo deveria ter chegado a rodar");
+    });
+
+    it("--manifest-only é incompatível com --mode both — aborta antes de rodar qualquer modo", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      let captured = "";
+      const originalError = console.error;
+      console.error = (...args: unknown[]) => {
+        captured += args.map(String).join(" ") + "\n";
+      };
+      try {
+        await expectMockedExit(
+          () =>
+            main(
+              ["--saturday", saturdayStr, "--mode", "both", "--manifest-only", "--editions-root", editionsRoot],
+              { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+            ),
+          1,
+        );
+      } finally {
+        console.error = originalError;
+      }
+      assert.match(captured, /--manifest-only não é compatível com --mode both/);
+    });
+
+    it("agenda os 2 carrosséis (highlights no sábado, clicked no domingo) numa única invocação", async () => {
+      const saturday = new Date(2027, 11, 25); // sábado
+      const saturdayStr = aammddOf(saturday);
+
+      const dirA = setupEdition(editionsRoot, "271220", [{ n: 1, title: "D1 da segunda", url: "https://exemplo.com/seg" }]);
+      addImageFixture(dirA, 1, "https://cdn.example.com/271220-d1.jpg");
+      writeCachePost(dataRoot, "post_1220", {
+        id: "post_1220",
+        title: "Edição 271220",
+        status: "confirmed",
+        publish_date: epochFor("271220"),
+        stats: { email: { clicks: 3, unique_opens: 100 }, clicks: [{ url: "https://exemplo.com/seg", base_url: "https://exemplo.com/seg", email: { unique_verified_clicks: 3 } }] },
+      });
+
+      const scheduledAts: string[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          scheduledAts.push(`${body.destaque}@${body.scheduled_at}`);
+          return { statusCode: 200, data: JSON.stringify({ queued: true, key: `queue:${body.destaque}`, scheduled_at: body.scheduled_at, destaque: body.destaque }) };
+        })
+        .times(2);
+
+      let captured = "";
+      const originalLog = console.log;
+      console.log = (...args: unknown[]) => {
+        captured += args.map(String).join(" ") + "\n";
+      };
+      try {
+        await main(
+          ["--saturday", saturdayStr, "--mode", "both", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+          { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+        );
+      } finally {
+        console.log = originalLog;
+      }
+      assert.match(captured, /--mode both — rodando "highlights" e "clicked" em sequência/);
+      assert.equal(scheduledAts.length, 2, "os 2 modos deveriam ter chamado o Worker queue, 1x cada");
+      assert.ok(scheduledAts.some((s) => s.startsWith("weekly-highlights@2027-12-25")));
+      assert.ok(scheduledAts.some((s) => s.startsWith("weekly-clicked@2027-12-26")));
+
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const highlights = out.posts.find((p: any) => p.destaque === "weekly-highlights");
+      const clicked = out.posts.find((p: any) => p.destaque === "weekly-clicked");
+      assert.equal(highlights.status, "scheduled");
+      assert.equal(clicked.status, "scheduled");
+      // highlights agenda no PRÓPRIO sábado (offset 0), clicked no domingo seguinte (offset 1, #5330).
+      assert.match(highlights.scheduled_at as string, /^2027-12-25T11:00:00/);
+      assert.match(clicked.scheduled_at as string, /^2027-12-26T11:00:00/);
+    });
+
+    it("falha em um modo não impede o outro — clicked sem dado de clique falha, highlights agenda normalmente, processo sai com código 1", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único destaque", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      // Sem writeCachePost — cache Beehiiv vazio: "clicked" bate no gate de dado
+      // de clique incompleto (sem --force-incomplete-click-data) e falha;
+      // "highlights" nem olha pra esse dado e agenda normalmente (com
+      // --force-incomplete-week, já que só 1 de 5 itens é elegível).
+
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply(200, { queued: true, key: "queue:instagram:highlights:1", scheduled_at: "2027-12-25T11:00:00-03:00", destaque: "weekly-highlights" });
+
+      let captured = "";
+      const originalError = console.error;
+      console.error = (...args: unknown[]) => {
+        captured += args.map(String).join(" ") + "\n";
+      };
+      try {
+        await expectMockedExit(
+          () =>
+            main(
+              ["--saturday", saturdayStr, "--mode", "both", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+              { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+            ),
+          1,
+        );
+      } finally {
+        console.error = originalError;
+      }
+      assert.match(captured, /dado de clique INCOMPLETO/);
+
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const highlights = out.posts.find((p: any) => p.destaque === "weekly-highlights");
+      const clicked = out.posts.find((p: any) => p.destaque === "weekly-clicked");
+      assert.equal(highlights.status, "scheduled", "highlights deveria ter sido agendado mesmo com 'clicked' falhando");
+      assert.equal(clicked, undefined, "clicked nunca chegou a gravar nada — falhou antes do mkdirSync/tagAndAppend");
+    });
+  });
 });
