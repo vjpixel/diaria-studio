@@ -212,3 +212,56 @@ como checklist canônico, não uma correção manual repetida a cada rodada.
 Esperado sobretudo em `/diaria-continuo` (roda em paralelo a sessões
 interativas comuns do mesmo editor por design), mas vale igualmente em
 overnight/develop contra qualquer sessão concorrente.
+
+## 14. Critérios de agrupamento em lotes (#2024, #3453 Rec 3, teto #2754)
+
+**Escopo diferente dos itens 1-13 acima**: estes não são regras que o
+subagente implementador segue — são o critério que o **coordenador**
+(overnight/develop/continuo) usa para decidir se agrupa issues numa única
+unidade de trabalho *antes* de dispatchar. Colocado aqui, e não só na Fase 0
+do `.claude/skills/diaria-overnight/SKILL.md` (107KB), porque `continuo`
+(que não tem Fase 0/briefing único) e `develop` precisam do mesmo critério
+sem pagar o custo de abrir o SKILL.md inteiro do overnight (#5344 Parte B3).
+A versão do overnight (Fase 0, passo 6) segue sendo a autoritativa para o
+formato do briefing/exemplo de plano — esta seção é o critério em si,
+citável por qualquer coordenador desta linha de skills.
+
+Uma **unidade de trabalho** pode ser uma issue solo ou um **lote coeso** de
+várias issues. Dois critérios de agrupamento, ambos válidos (não
+excludentes):
+
+- **(a) Coesão de subsistema** — mesmas issues tocam o mesmo
+  subsistema/arquivos, mesma natureza (ex: "DS/email", "playbooks Stage 4",
+  "validator").
+- **(b) Baixo-risco + baixo-blast-radius (#3453 Rec 3)** — issues pequenas e
+  de baixo blast radius podem compartilhar 1 subagente **mesmo sem relação
+  temática**: docs-only, comment-only, mudança isolada em 1
+  `.claude/agents/*.md`, tweak de 1 config. O ganho vem do **bootstrap
+  amortizado** (`npm ci`, exploração de convenções), não da coesão
+  editorial — "não são do mesmo subsistema" **não** é motivo pra deixar
+  solo se as duas são seguras e pequenas. Evidência (rodada 260711): 5
+  issues solo desse perfil somaram ~630k tokens; agrupadas à taxa de lote
+  observada teriam custado ~443k — lote saiu ~2,1× mais barato por item que
+  solo (magnitude varia por rodada; a direção é sólida).
+
+**Critérios comuns a (a) e (b):** o lote inteiro cabe numa revisão de diff
+única; nenhuma issue do lote conflita com outra (arquivos disjuntos).
+**Teto = cabe sem forçar compaction de contexto do subagente implementador,
+não um número fixo de issues** (#2754 — o objetivo é otimizar tokens, não
+tempo; um subagente maior amortiza custo fixo de bootstrap sobre mais
+itens, saindo mais barato por item do que N subagentes solo repetindo esse
+bootstrap. Medido na 260630: lote de 16 sub-itens em 3 issues saiu ~26k
+tokens/item vs. ~114k tokens/item numa issue solo comparável). Sinal
+prático de teto estourado: o subagente reportar compaction no meio da
+sessão, ou a lista de arquivos tocados ultrapassar ~15-20. Issues
+grandes/arriscadas (P1, blast radius alto, migrações) ficam **solo** — o
+batching é só pras pequenas/médias. Cada lote vira 1 PR (`Closes #A,
+closes #B, ...`); como o merge fecha todas as issues do lote, o review leve
+do coordenador confere que o diff cobre de fato **todas** elas.
+
+**Onde a aprovação do agrupamento é registrada varia por skill** — overnight
+tem Fase 0/briefing único (`batch_approval: "editor_approved" |
+"editor_adjusted" | "default_proposed"`); `continuo` não tem briefing e usa
+sempre `"default_proposed"` como default permanente, decisão mecânica do
+coordenador a cada dispatch (nunca vira `AskUserQuestion` novo — ver
+`.claude/skills/diaria-continuo/SKILL.md`, "Loop invariável" passo 1).
