@@ -28,11 +28,36 @@ modo — cada invocação é independente (seleção, cache de card capa/CTA,
 persisted store e skip-existing nunca colidem entre os dois, chave
 `{saturday}-{mode}`).
 
-**Slide de capa e CTA final (#5330):** os dois carrosséis agora têm 7 slides,
-não 5 — abrem com um card de apresentação (sem foto, fundo sólido de marca)
-e fecham com um card de CTA convidando a assinar (também sem foto). Só os 5
-slides do meio usam a arte publicada de verdade. Ver
-`scripts/lib/weekly-flat-card.ts`.
+**Slide de capa e CTA final (#5330, paleta ajustada na 2ª rodada de review —
+#5345):** os dois carrosséis agora têm 7 slides, não 5 — abrem com um card de
+apresentação e fecham com um card de CTA convidando a assinar, os dois sem
+foto. Paleta CLARA canônica da marca (`COLORS.paper` fundo, `COLORS.ink`
+texto, `COLORS.brand` teal de acento — mesma do site/newsletter), não mais um
+fundo escuro imitando o overlay dos cards de notícia. Título em auto-size que
+cresce até preencher o card inteiro (`fillingFontSize`, 46-148px, testa do
+maior tamanho pro menor até caber) — "preenche o card todo, assim não sente
+falta de não ter imagem". Ver `scripts/lib/weekly-flat-card.ts`.
+
+**Os 5 slides do meio são RECOMPOSTOS, não reusados como estão (#5345).**
+Antes do #5345, cada card de notícia usava o clamp dinâmico de
+`buildOverlaySvg` (44-88px, escalado pelo comprimento do próprio título) —
+títulos de comprimento bem diferente publicados em dias diferentes da semana
+saíam em tamanhos bem diferentes lado a lado no mesmo carrossel (50-88px numa
+semana real, achado ao vivo do editor). `computeCarouselTitleFontSize`
+(`scripts/lib/weekly-carousel-font-size.ts`) acha o MENOR tamanho que caiba
+todos os títulos do carrossel, e `weekly-carousel-news-card.ts` gera um card
+4:5 NOVO pra cada D1/D2/D3 selecionado, nesse tamanho único — a partir da
+MESMA arte-base do card diário, mas **o `04-{destaque}-4x5.jpg` já publicado
+no feed diário nunca é sobrescrito** (arquivo/upload novo, cacheado por
+`{edição}-{destaque}-{fontSize}` em
+`data/weekly/{carouselKey}/_internal/06-news-cards.json` — `fontSize` faz
+parte da chave de propósito, um re-run com seleção diferente pode legitimamente
+mudar o tamanho comum). Item de RADAR (modo `clicked`) também recebe o mesmo
+`carouselFontSize` (repassado como `fontSizeOverride` a
+`resolveOrGenerateSectionCardUrl` — a padronização visual vale pro
+carrossel inteiro) — a diferença é só o MECANISMO de geração/cache: RADAR
+usa o caminho sob demanda (#4513, ver abaixo), não o cache
+`06-news-cards.json` de `weekly-carousel-news-card.ts` usado por D1/D2/D3.
 
 **Renomeada de `/diaria-semanal` pelo #4483 (260803).** Duas decisões
 anteriores da issue #4101 foram SUPERSEDIDAS — releia esta seção antes de
@@ -114,16 +139,22 @@ atual:
 - Credenciais (mesmas dos publishers diários): `DIARIA_LINKEDIN_CRON_URL` +
   `DIARIA_LINKEDIN_CRON_TOKEN` (Worker queue — mesmo endpoint usado pelo
   Instagram diário e pelo LinkedIn/Threads, `channel: "instagram"`).
-- Para cada edição candidata a contribuir um item de DESTAQUE (D1/D2/D3):
-  precisa ter rodado `scripts/upload-images-public.ts` (gera
-  `06-public-images.json` com `d{1,2,3}_4x5`/`d{1,2,3}`) — sem a imagem do
-  destaque específico selecionado, o carrossel inteiro falha (não publica
-  parcial, ver Passo 3). Item de RADAR NÃO precisa desse
-  pré-requisito — o card 4:5 é gerado SOB DEMANDA (#4513, ver
-  `scripts/lib/weekly-instagram-ondemand-card.ts`) só se o item vencer o
-  ranking; a mesma regra de "falha o carrossel inteiro em vez de publicar
-  parcial" vale se a geração sob demanda falhar (ex: crédito de API
-  esgotado, fonte de marca ausente na máquina).
+- Para cada edição candidata a contribuir um item de DESTAQUE (D1/D2/D3): o
+  card do carrossel é RECOMPOSTO com o tamanho de fonte único da rodada
+  (#5345, ver seção "Slide de capa e CTA final" acima) — não mais lido pronto
+  de `06-public-images.json`. O pré-requisito real é a arte-base do destaque
+  já existir no disco na edição de origem (`04-{destaque}-4x5-nativo.jpg`,
+  ou fallback `04-{destaque}-master.jpg`/`04-{destaque}-2x1.jpg` — mesma
+  ordem de preferência de `gen-social-card-4x5.ts`), produzida pelo Stage 3
+  diário. Sem essa arte-base, a recomposição falha e o carrossel inteiro
+  falha junto (não publica parcial, ver Passo 3). Item de RADAR NÃO passa
+  pelo cache de recomposição (`06-news-cards.json`) — o card 4:5 é gerado SOB
+  DEMANDA (#4513, ver `scripts/lib/weekly-instagram-ondemand-card.ts`) só se
+  o item vencer o ranking, mas recebe o MESMO `carouselFontSize` da rodada
+  (o padrão visual do carrossel vale pra todos os itens, RADAR incluso —
+  muda só o mecanismo de geração); a mesma regra de "falha o carrossel
+  inteiro em vez de publicar parcial" vale se a geração sob demanda falhar
+  (ex: crédito de API esgotado, fonte de marca ausente na máquina).
 
 ## Passo 1 — Checar se falta enriquecimento de clicks
 
@@ -170,7 +201,13 @@ Sem `--schedule`, o script nunca faz chamada de rede — só imprime:
 - Warnings (empates dentro do ruído de 1 clique — só `clicked`, edições sem
   dado de clique — só `clicked`, linguagem comercial suspeita em item
   selecionado — os dois modos, etc).
-- A caption formatada do Instagram (intro varia por modo).
+- A caption formatada do Instagram (intro varia por modo) — cada item leva
+  título numerado + 1 linha de contexto (`why` do destaque, ou a 1ª frase de
+  `body` pra RADAR). Desde o #5345, essa linha de contexto sai SEMPRE
+  inteira, sem truncar em N chars por item (um cap de 140 chars cortava a
+  frase no meio, ilegível) — a única rede de segurança é o limite de 2200
+  chars da caption INTEIRA (`truncateAtLimit`, `format-weekly-social.ts`),
+  que corta preservando palavras inteiras se o total estourar.
 - O horário de agendamento planejado (sábado pra `highlights`, domingo pra
   `clicked`).
 
@@ -200,13 +237,21 @@ npx tsx scripts/publish-weekly-social.ts --saturday {AAMMDD-do-sabado} --mode {c
 Carrossel: 7 slides — capa (sem foto) + 1 card 4:5 por item selecionado
 (resolvido pelo destaque/edição de origem PRÓPRIOS de cada item — 2 itens
 podem vir da mesma edição, e uma edição pode não contribuir nenhum) + CTA
-final (sem foto). Item de RADAR sem card pré-existente tem o card gerado SOB
-DEMANDA nesse momento (#4513). Capa/CTA são gerados/upados sob demanda na
-1ª execução e cacheados depois (`data/weekly/{saturday}-{mode}/_internal/06-flat-cards.json`
-— ver `scripts/lib/weekly-flat-card.ts`). Se QUALQUER item de notícia não
-resolver imagem (falha de leitura OU de geração sob demanda), o post inteiro
-falha (nunca publica carrossel parcial) — capa/CTA falhando também aborta o
-post inteiro pela mesma razão.
+final (sem foto). O tamanho de fonte comum do carrossel
+(`computeCarouselTitleFontSize`) é calculado 1x, a partir do SET inteiro de
+itens selecionados nessa rodada; cada item D1/D2/D3 é então RECOMPOSTO nesse
+tamanho (`resolveOrGenerateNewsCardUrl`, #5345 — ver seção acima), nunca
+reusado no tamanho publicado originalmente no feed diário. Item de RADAR sem
+card pré-existente tem o card gerado SOB DEMANDA nesse momento (#4513),
+recebendo o MESMO `carouselFontSize` da rodada via `fontSizeOverride` — o
+que muda é só o mecanismo de geração/cache, não o tamanho de fonte
+aplicado. Capa/CTA (paleta clara, auto-size —
+ver seção acima) são gerados/upados sob demanda na 1ª execução e cacheados
+depois (`data/weekly/{saturday}-{mode}/_internal/06-flat-cards.json` — ver
+`scripts/lib/weekly-flat-card.ts`). Se QUALQUER item de notícia não resolver
+imagem (falha de leitura, recomposição OU geração sob demanda), o post
+inteiro falha (nunca publica carrossel parcial) — capa/CTA falhando também
+aborta o post inteiro pela mesma razão.
 
 ## Casos de borda
 
@@ -236,8 +281,12 @@ post inteiro pela mesma razão.
   categoria) e registra em warnings — mostre esse warning ao editor no gate
   do Passo 3, é informação relevante mesmo já resolvida mecanicamente.
 - **Item selecionado sem imagem gerada**: falha o carrossel inteiro
-  nomeando qual edição/destaque faltou — nunca publica parcial. Rode
-  `scripts/upload-images-public.ts` pra edição faltante e re-rode.
+  nomeando qual edição/destaque faltou — nunca publica parcial. Pra item de
+  DESTAQUE (D1/D2/D3), a causa é arte-base ausente na edição de origem
+  (`04-{destaque}-4x5-nativo.jpg`/`master.jpg`/`2x1.jpg`) — rode o Stage 3
+  (`/diaria-3-imagens`) pra edição faltante e re-rode esta skill. Pra item de
+  RADAR, a causa é falha da geração sob demanda (#4513) — o erro reportado
+  (`onDemandError`) já indica o motivo.
 - **Virada de mês/ano**: `computeWeekdayEditionDates` (em
   `scripts/lib/select-weekly-d1.ts`) usa aritmética de `Date` do JS — cruza
   mês/ano corretamente sem lógica de calendário manual (coberto por teste).
