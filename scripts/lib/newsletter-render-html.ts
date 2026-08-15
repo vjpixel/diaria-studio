@@ -105,7 +105,11 @@ export const EIA_ARCHIVE_UTM_CAMPAIGN = EIA_ARCHIVE_UTM.campaign;
  * `image-crop-warn`/`card-4x5-upload-missing`).
  */
 export interface RenderWarningEvent {
-  event: "divulgacao_box_dropped_no_gap" | "whatsapp_share_no_d1" | "whatsapp_share_d1_mismatch";
+  event:
+    | "divulgacao_box_dropped_no_gap"
+    | "divulgacao_box_dropped_cap" // #5232
+    | "whatsapp_share_no_d1"
+    | "whatsapp_share_d1_mismatch";
   edition: string;
   slot?: number;
 }
@@ -1990,6 +1994,57 @@ export function assignDivulgacaoGaps(
   return assignment;
 }
 
+/** #5232: teto máximo de boxes de divulgação (slot0-3 somados) renderizados
+ * numa edição — freio na CAUSA (não só no alarme de tamanho de #4877/
+ * `fbec9d78`/`4b70945a`), pedido do editor após a lacuna D1/D2 ter ficado
+ * SEMPRE elegível (#5152, ver docstring de `assignDivulgacaoGaps`), que na
+ * prática fez uma 3ª caixa passar a renderizar quase toda edição (confirmado
+ * por diff de bytes real: `newsletter-final.html` foi de 39.800 bytes em
+ * 260812 (2 boxes) pra 44.384 bytes em 260813 (3 boxes) — 260812 tinha 2
+ * caixas só porque a caixa do slot1 não coube em nenhuma lacuna naquele dia,
+ * não por design). O valor 3 é o default pedido — trocar é uma linha. */
+export const DIVULGACAO_BOX_CAP = 3;
+
+/**
+ * #5232: dado o conjunto de slots (0-3) CONFIGURADOS numa edição (antes de
+ * qualquer alocação de lacuna — `assignDivulgacaoGaps` roda depois, só sobre
+ * o que sobrar aqui), decide quais até `maxBoxes` efetivamente concorrem a
+ * renderizar. Com `slots.length <= maxBoxes` (o caso comum hoje — só 3 slots
+ * configurados em `boxes_divulgacao`), retorna tudo sem alterar nada
+ * (comportamento idêntico ao pré-#5232). Só quando MAIS de `maxBoxes` slots
+ * estiverem configurados (ex: slot0 também populado, além de 1/2/3) é que um
+ * corte de verdade acontece.
+ *
+ * Rotação determinística pela DATA da edição (`editionAammdd`, sempre D+1 —
+ * CLAUDE.md "Edição é sempre D+1"), sem cursor persistido em `data/`:
+ * escolha deliberada — um cursor incremental em arquivo correria risco de
+ * corrida entre duas máquinas com a mesma junction OneDrive rodando a mesma
+ * edição (ou uma re-rodada de `/diaria-edicao AAMMDD` retomando de onde
+ * parou avançando o cursor 2x pro mesmo dia). Data-based é puro: a mesma
+ * edição sempre produz o mesmo subconjunto, não importa quantas vezes o
+ * render rodar, e diferentes edições tendem a variar o slot excluído
+ * (`AAMMDD mod N` gira pelos candidatos ao longo do tempo).
+ *
+ * Pure function — `slots` chega já ordenado por quem chama não é exigido
+ * (ordenamos aqui), e o resultado preserva ordem ascendente de slot.
+ */
+export function capDivulgacaoBoxes(
+  slots: readonly (0 | 1 | 2 | 3)[],
+  editionAammdd: string,
+  maxBoxes: number = DIVULGACAO_BOX_CAP,
+): (0 | 1 | 2 | 3)[] {
+  const sorted = [...new Set(slots)].sort((a, b) => a - b);
+  if (sorted.length <= maxBoxes) return sorted;
+  const dropCount = sorted.length - maxBoxes;
+  const dayNum = Number.parseInt(editionAammdd, 10);
+  const offset = Number.isFinite(dayNum) ? ((dayNum % sorted.length) + sorted.length) % sorted.length : 0;
+  const dropped = new Set<number>();
+  for (let i = 0; i < dropCount; i++) {
+    dropped.add(sorted[(offset + i) % sorted.length]);
+  }
+  return sorted.filter((s) => !dropped.has(s));
+}
+
 export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): string {
   // #4673: reseta o coletor no início de CADA chamada — `getRenderWarnings()`
   // depois desta chamada reflete só esta invocação, nunca acumula entre
@@ -2032,11 +2087,29 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     parts.push(renderCoverageTrailer(content.coverageLineTrailer));
   }
 
+  // #5232: teto de DIVULGACAO_BOX_CAP boxes por edição, com rotação
+  // determinística — decide, ANTES de qualquer alocação de lacuna, quais
+  // slots configurados (0-3) de fato concorrem a renderizar nesta edição.
+  // Ver docstring de `capDivulgacaoBoxes`.
+  const configuredDivulgacaoSlots: (0 | 1 | 2 | 3)[] = [];
+  if (content.boxDivulgacao0) configuredDivulgacaoSlots.push(0);
+  if (content.boxDivulgacao1) configuredDivulgacaoSlots.push(1);
+  if (content.boxDivulgacao2) configuredDivulgacaoSlots.push(2);
+  if (content.boxDivulgacao3) configuredDivulgacaoSlots.push(3);
+  const selectedDivulgacaoSlots = new Set(
+    capDivulgacaoBoxes(configuredDivulgacaoSlots, content.eia.edition),
+  );
+  for (const slot of configuredDivulgacaoSlots) {
+    if (!selectedDivulgacaoSlots.has(slot)) {
+      emitRenderWarning({ event: "divulgacao_box_dropped_cap", edition: content.eia.edition, slot });
+    }
+  }
+
   // #4274: box de divulgação slot 0 — SEMPRE na região de introdução, entre a
   // linha/bloco de cobertura (+ callout/agradecimento, se houver) e o 1º
   // destaque. Mesmo dispatcher (`renderBoxDivulgacao`) e kicker
   // (`renderDivulgacaoSeparator`) dos demais slots.
-  if (content.boxDivulgacao0) {
+  if (content.boxDivulgacao0 && selectedDivulgacaoSlots.has(0)) {
     const label0 = content.boxDivulgacao0Categoria
       || (isAgradecimentoBox(content.boxDivulgacao0) ? "Agradecimento" : "Divulgação");
     parts.push(renderDivulgacaoSeparator(label0));
@@ -2068,7 +2141,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   // `renderBoxDivulgacao` pela ESTRUTURA do conteúdo (#3204/#3475), não pelo
   // slot nem por marcador emoji.
   const divulgacaoBoxes: DivulgacaoBoxDef[] = [];
-  if (content.boxDivulgacao1) {
+  if (content.boxDivulgacao1 && selectedDivulgacaoSlots.has(1)) {
     divulgacaoBoxes.push({
       slot: 1,
       content: content.boxDivulgacao1,
@@ -2080,7 +2153,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
       imageAlt: content.boxDivulgacaoImageAlt?.[1] ?? null,
     });
   }
-  if (content.boxDivulgacao2) {
+  if (content.boxDivulgacao2 && selectedDivulgacaoSlots.has(2)) {
     divulgacaoBoxes.push({
       slot: 2,
       content: content.boxDivulgacao2,
@@ -2092,7 +2165,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
       imageAlt: content.boxDivulgacaoImageAlt?.[2] ?? null,
     });
   }
-  if (content.boxDivulgacao3) {
+  if (content.boxDivulgacao3 && selectedDivulgacaoSlots.has(3)) {
     divulgacaoBoxes.push({
       slot: 3,
       content: content.boxDivulgacao3,
