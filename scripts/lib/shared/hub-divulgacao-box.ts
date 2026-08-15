@@ -25,17 +25,15 @@
  * `scripts/build-hub-divulgacao-box.ts`, Node-side — este módulo é pure, sem
  * I/O, e não conhece `HUB_LOADERS`).
  *
- * **Estado do wiring (registrado aqui, não escondido):** a rotação e a
- * geração de conteúdo são funcionais e testadas (`test/hub-divulgacao-box.test.ts`),
- * mas ESTE MECANISMO AINDA NÃO ESTÁ LIGADO ao `stitchNewsletter`/
- * `boxes_divulgacao` da edição diária em produção — ver PR body da #5263 pro
- * racional completo (a integração toca o pipeline de publicação ao vivo,
- * fora do que dá pra verificar com segurança de dentro deste worktree
- * isolado). `scripts/build-hub-divulgacao-box.ts` já escreve o resultado em
- * `data/snippets/hub-divulgacao-rotativo.md`, no formato que
- * `boxes_divulgacao.slotN` espera — falta só o editor decidir QUANDO essa
- * regeneração roda no pipeline (Stage 0? gate manual?) e apontar um slot pra
- * ela.
+ * **Wiring (#5263):** `scripts/stitch-newsletter.ts` chama
+ * `regenerateHubDivulgacaoBoxForEdition()` — que reusa este módulo via
+ * `resolveHubDivulgacaoBoxSource`/`renderGeneratedSnippet` de
+ * `scripts/build-hub-divulgacao-box.ts` — ANTES de `resolveBoxesForEdition()`,
+ * escrevendo `data/snippets/hub-divulgacao-rotativo.md` pra edição corrente
+ * a cada rodada do Stage 2 (idempotente, fail-soft — box opcional, nunca
+ * aborta o stitch). Não há mais slot pinado pra ele: `boxes_divulgacao_auto`
+ * já roda por cliques sobre TODO `.md` de `data/snippets/`, então basta o
+ * arquivo existir com dado fresco pra competir no ranking.
  */
 import { HUB_DIVULGACAO_BOX_UTM } from "./utm-registry.ts";
 import { DIARIA_ARQUIVO_URL } from "../canonical-urls.ts";

@@ -3,8 +3,9 @@
  *
  * Cobre `scripts/lib/shared/hub-divulgacao-box.ts` (rotação + render, pure)
  * e `scripts/build-hub-divulgacao-box.ts` (resolução Node-side + asset
- * gerado). Ver docstring dos dois módulos pro estado do wiring — o box
- * ainda não está ligado a `boxes_divulgacao`/`stitchNewsletter`.
+ * gerado). O wiring com `stitchNewsletter`/`boxes_divulgacao`
+ * (`regenerateHubDivulgacaoBoxForEdition`) é coberto em
+ * `test/stitch-newsletter.test.ts`, não aqui.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
