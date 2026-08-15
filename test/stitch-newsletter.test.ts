@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCallout, loadDailyCallout, loadDivulgacaoSnippet, loadAgradecimentoSnippet, buildParaEncerrar, loadParaEncerrarConfig, type ParaEncerrarConfig } from "../scripts/stitch-newsletter.ts";
+import { renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCallout, loadDailyCallout, loadDivulgacaoSnippet, loadAgradecimentoSnippet, buildParaEncerrar, loadParaEncerrarConfig, regenerateHubDivulgacaoBoxForEdition, type ParaEncerrarConfig } from "../scripts/stitch-newsletter.ts";
 import { extractBoxDivulgacao0, extractBoxDivulgacao1, extractBoxDivulgacao2, extractBoxDivulgacao3, BOX0_SENTINEL } from "../scripts/render-newsletter-html.ts";
 import { stripHtml } from "../scripts/lib/clean-summary.ts";
 import { SOCIAL_INVITE } from "../scripts/lib/shared/encerramento-snippet.ts"; // #4413: convite social é bloco fixo
@@ -2424,6 +2424,75 @@ describe("stitchNewsletter — #4907 link contextual de hub temático", () => {
       });
 
       assert.doesNotMatch(out, /Saiba mais:/);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("regenerateHubDivulgacaoBoxForEdition (#5263 — wiring que faltava: main() regenera hub-divulgacao-rotativo.md pra edição corrente ANTES de resolveBoxesForEdition())", () => {
+  function tmpSnippetsDir(): { dir: string; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "hub-divulgacao-box-test-"));
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  it("escreve hub-divulgacao-rotativo.md pra AAMMDD corrente, com o hub em rotação determinística", () => {
+    const { dir, cleanup } = tmpSnippetsDir();
+    try {
+      const result = regenerateHubDivulgacaoBoxForEdition("260814", dir);
+      assert.equal(result.ok, true);
+      assert.ok(result.slug && result.slug.length > 0);
+      const content = readFileSync(join(dir, "hub-divulgacao-rotativo.md"), "utf8");
+      assert.match(content, /GERADO, NÃO EDITAR À MÃO/);
+      assert.match(content, /\*\*A cobertura completa de .+ → \[arquivo\.diar\.ia\.br\/temas\/.+\]\(.+\)\*\*/);
+      // conteúdo gerado precisa citar a edição pedida, pra confirmar que
+      // não é um arquivo velho de outra rodada (o bug original do #5263).
+      assert.match(content, /pra edição 260814/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("idempotente — regenerar a mesma edição 2x produz o MESMO conteúdo byte-a-byte e não falha na 2ª chamada", () => {
+    const { dir, cleanup } = tmpSnippetsDir();
+    try {
+      const r1 = regenerateHubDivulgacaoBoxForEdition("260817", dir);
+      const content1 = readFileSync(join(dir, "hub-divulgacao-rotativo.md"), "utf8");
+      const r2 = regenerateHubDivulgacaoBoxForEdition("260817", dir);
+      const content2 = readFileSync(join(dir, "hub-divulgacao-rotativo.md"), "utf8");
+      assert.equal(r1.ok, true);
+      assert.equal(r2.ok, true);
+      assert.equal(r1.slug, r2.slug);
+      assert.equal(content1, content2);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("edições diferentes ao longo de uma janela podem rotacionar pra hubs diferentes (não trava sempre no mesmo)", () => {
+    const { dir, cleanup } = tmpSnippetsDir();
+    try {
+      const seenSlugs = new Set<string>();
+      const dates = ["260810", "260811", "260812", "260813", "260814", "260815", "260816", "260817"];
+      for (const d of dates) {
+        const r = regenerateHubDivulgacaoBoxForEdition(d, dir);
+        assert.equal(r.ok, true);
+        if (r.slug) seenSlugs.add(r.slug);
+      }
+      assert.ok(seenSlugs.size > 1, `esperava mais de 1 hub distinto ao longo de ${dates.length} dias, veio ${[...seenSlugs]}`);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("fail-soft — AAMMDD inválido retorna ok:false com error, NUNCA lança (guard central desta issue: nunca abortar o Stage 2 por causa deste box opcional)", () => {
+    const { dir, cleanup } = tmpSnippetsDir();
+    try {
+      assert.doesNotThrow(() => {
+        const result = regenerateHubDivulgacaoBoxForEdition("not-a-date", dir);
+        assert.equal(result.ok, false);
+        assert.ok(result.error && result.error.length > 0);
+      });
     } finally {
       cleanup();
     }
