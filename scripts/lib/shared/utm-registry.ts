@@ -607,6 +607,19 @@ export const FACEBOOK_WEEKLY_ARCHIVE_UTM = {
   campaign: "weekly-archive",
 } as const;
 
+/** MESMO link "Arquivo completo em {url}", mas no post semanal do THREADS
+ * (`formatThreadsWeekly`, #5348 — unidade dedicada de carrossel de imagem
+ * pro Threads) — sibling de `INSTAGRAM_WEEKLY_ARCHIVE_UTM`/
+ * `FACEBOOK_WEEKLY_ARCHIVE_UTM` com `source` PRÓPRIO. Reusar o triplo de
+ * outro canal aqui misturaria a atribuição de cliques — mesmo racional que
+ * já motivou o triplo próprio do Facebook (o Threads também linka
+ * clicável no corpo, diferente do Instagram). */
+export const THREADS_WEEKLY_ARCHIVE_UTM = {
+  source: "threads",
+  medium: "organic_social",
+  campaign: "weekly-archive",
+} as const;
+
 /** Cadastro no gate inline do worker `cursos` (`workers/cursos/src/subscribe.ts`,
  * #4052) — fold-in do drift pré-existente apontado pelo #4295: o worker já
  * emitia este triplo com literais locais, ausente do registry/`/utms`. Move
@@ -1191,6 +1204,20 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "Facebook (#5348) — source PRÓPRIO (nunca reusa o do Instagram), porque o " +
       "link é clicável no corpo do post do Facebook (diferente do Instagram, " +
       "'link na bio') e misturar as 2 fontes mascararia qual canal converte.",
+    status: "ativo",
+  },
+  {
+    id: "threads-weekly-archive",
+    label: "Threads — link de arquivo no post semanal",
+    source: THREADS_WEEKLY_ARCHIVE_UTM.source,
+    medium: THREADS_WEEKLY_ARCHIVE_UTM.medium,
+    campaignPattern: THREADS_WEEKLY_ARCHIVE_UTM.campaign,
+    originFile: "scripts/lib/format-weekly-social.ts",
+    description:
+      "MESMO link \"Arquivo completo em {url}\" do post semanal, agora também no " +
+      "Threads (#5348, unidade dedicada de carrossel de imagem) — source PRÓPRIO " +
+      "(nunca reusa o do Instagram/Facebook), mesmo racional de atribuição do " +
+      "triplo do Facebook.",
     status: "ativo",
   },
   {

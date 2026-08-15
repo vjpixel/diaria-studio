@@ -454,21 +454,20 @@ async function fireInstagramCarousel(
 }
 
 /**
- * Dispara um post no Threads via Threads API oficial da Meta (#3944 Parte B).
+ * Dispara um post no Threads via Threads API oficial da Meta (#3944 Parte B,
+ * carrossel de imagem #5348).
  *
- * Sequência de 2 passos (idêntica a scripts/publish-threads.ts, modo imediato):
- *   (1) POST /{threads-user-id}/threads         → cria media container (media_type=TEXT)
- *   (2) POST /{threads-user-id}/threads_publish  → publica o container
- *
- * Diferenças deliberadas vs fireInstagram: (a) sem exigência de imagem —
- * Threads aceita posts só-texto; (b) sem poll de status_code — a Threads API
- * não documenta/precisa desse passo (publish-threads.ts local também não
- * faz); (c) guard de tamanho ANTES do passo 1 — chunking agendado (thread
- * multi-post via reply_to_id) não é suportado aqui: encadear chunks com
- * retry automático arriscaria duplicar posts já publicados. Textos >500
- * chars são rejeitados já no enqueue (index.ts::handleEnqueue); este guard
- * aqui é defesa em profundidade pra items legacy/inseridos fora do enqueue
- * normal.
+ * Ponto único de entrada do canal Threads — despacha pro caminho TEXT-only
+ * (`fireThreadsText`, inalterado desde #3944 Parte B), imagem única
+ * (`fireThreadsSingleImage`, #5348) ou carrossel (`fireThreadsCarousel`,
+ * #5348) conforme a contagem de imagens resolvida por `resolveImageUrls` —
+ * mesmo padrão de `fireInstagram` acima. Guard de tamanho (≤500 chars)
+ * roda ANTES de qualquer dispatch, pros 3 caminhos: chunking agendado
+ * (thread multi-post via reply_to_id) não é suportado aqui — encadear
+ * chunks com retry automático arriscaria duplicar posts já publicados.
+ * Textos >500 chars são rejeitados já no enqueue (index.ts::handleEnqueue);
+ * este guard aqui é defesa em profundidade pra items legacy/inseridos fora
+ * do enqueue normal.
  */
 async function fireThreads(entry: QueueEntry, creds: ThreadsCreds): Promise<FireOutcome> {
   if (entry.text.length > 500) {
@@ -477,6 +476,26 @@ async function fireThreads(entry: QueueEntry, creds: ThreadsCreds): Promise<Fire
       reason: "texto excede 500 chars — chunking agendado não suportado, ver #3944 Parte B",
     };
   }
+  const images = resolveImageUrls(entry);
+  if (images.length === 0) return fireThreadsText(entry.text, creds);
+  if (images.length === 1) return fireThreadsSingleImage(images[0], entry.text, creds);
+  return fireThreadsCarousel(images, entry.text, creds);
+}
+
+/**
+ * Caminho TEXT-only original (#3944 Parte B, extraído sem alteração de
+ * lógica pra `fireThreads` poder despachar por contagem de imagem, #5348).
+ *
+ * Sequência de 2 passos (idêntica a scripts/publish-threads.ts, modo imediato):
+ *   (1) POST /{threads-user-id}/threads         → cria media container (media_type=TEXT)
+ *   (2) POST /{threads-user-id}/threads_publish  → publica o container
+ *
+ * Sem poll de status — a Threads API não documenta/precisa desse passo pra
+ * containers TEXT (publish-threads.ts local também não faz). Diferente dos
+ * 2 caminhos com imagem abaixo, onde o poll é OBRIGATÓRIO (ver doc-comment
+ * de `pollThreadsContainerStatus`).
+ */
+async function fireThreadsText(text: string, creds: ThreadsCreds): Promise<FireOutcome> {
   const base = `https://graph.threads.net/${creds.apiVersion}`;
 
   // Passo 1: criar media container
@@ -484,7 +503,7 @@ async function fireThreads(entry: QueueEntry, creds: ThreadsCreds): Promise<Fire
   try {
     const params = new URLSearchParams({
       media_type: "TEXT",
-      text: entry.text,
+      text,
       access_token: creds.accessToken,
     });
     const res = await fetch(`${base}/${creds.userId}/threads`, {
@@ -492,21 +511,21 @@ async function fireThreads(entry: QueueEntry, creds: ThreadsCreds): Promise<Fire
       body: params,
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
-    const text = await res.text();
+    const resText = await res.text();
     let data: { id?: string; error?: { message?: string } };
     try {
-      data = JSON.parse(text);
+      data = JSON.parse(resText);
     } catch {
-      return { status: "failed", reason: `Threads /threads resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)}` };
+      return { status: "failed", reason: `Threads /threads resposta não-JSON: HTTP ${res.status}: ${resText.slice(0, 200)}` };
     }
     if (!res.ok || data.error) {
       return {
         status: "failed",
-        reason: `Threads /threads HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)}`,
+        reason: `Threads /threads HTTP ${res.status}: ${data.error?.message ?? resText.slice(0, 200)}`,
       };
     }
     if (!data.id) {
-      return { status: "failed", reason: `Threads /threads sem id: ${text.slice(0, 200)}` };
+      return { status: "failed", reason: `Threads /threads sem id: ${resText.slice(0, 200)}` };
     }
     containerId = data.id;
   } catch (e) {
@@ -521,6 +540,203 @@ async function fireThreads(entry: QueueEntry, creds: ThreadsCreds): Promise<Fire
       creation_id: containerId,
       access_token: creds.accessToken,
     });
+    const res = await fetch(`${base}/${creds.userId}/threads_publish`, {
+      method: "POST",
+      body: params,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    const resText = await res.text();
+    let data: { id?: string; error?: { message?: string } };
+    try {
+      data = JSON.parse(resText);
+    } catch {
+      return {
+        status: "failed",
+        reason: `Threads /threads_publish resposta não-JSON: HTTP ${res.status}: ${resText.slice(0, 200)} (container_id=${containerId})`,
+      };
+    }
+    if (!res.ok || data.error) {
+      return {
+        status: "failed",
+        reason: `Threads /threads_publish HTTP ${res.status}: ${data.error?.message ?? resText.slice(0, 200)} (container_id=${containerId})`,
+      };
+    }
+    if (!data.id) {
+      return { status: "failed", reason: `Threads /threads_publish sem id: ${resText.slice(0, 200)} (container_id=${containerId})` };
+    }
+    return { status: "fired" };
+  } catch (e) {
+    const err = e as Error;
+    const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+    return {
+      status: "failed",
+      reason: `Threads /threads_publish fetch ${timeout ? "timeout" : "failed"}: ${err.message} (container_id=${containerId})`,
+    };
+  }
+}
+
+/** Nº máximo de tentativas de poll do status de um container Threads antes
+ * de desistir (fail-closed) — #5348. */
+const THREADS_POLL_MAX_ATTEMPTS = 10;
+/** Intervalo entre tentativas de poll (ms) — #5348. Total no pior caso:
+ * ~9 × 2s = 18s de espera + até 10 fetches de ~30s cada só se cada um
+ * travar no timeout (limite superior raro, não o caminho comum). */
+const THREADS_POLL_INTERVAL_MS = 2000;
+
+/**
+ * Faz polling do status de UM container Threads (imagem ou carrossel pai)
+ * até `FINISHED`, `ERROR`/`EXPIRED`, ou esgotar `THREADS_POLL_MAX_ATTEMPTS`
+ * — #5348.
+ *
+ * Diferente do poll BEST-EFFORT que `fireInstagramSingle` já faz pro
+ * Instagram (2 tentativas, ~3s, segue pro publish mesmo sem confirmar): a
+ * Threads API não garante `FINISHED` imediato pra containers de imagem
+ * (achado da investigação da issue #5348) — publicar um `creation_id` cujo
+ * container ainda está `IN_PROGRESS` falha na API. Este poll é portanto
+ * OBRIGATÓRIO e FAIL-CLOSED: qualquer resultado que não seja `FINISHED`
+ * dentro do orçamento de tentativas retorna falha em vez de seguir pro
+ * publish às cegas. Nunca poll infinito: o teto de tentativas é fixo
+ * (`THREADS_POLL_MAX_ATTEMPTS`), não recursivo/sem limite.
+ *
+ * #5348 self-review (silent-failure-hunter): a 1ª versão abortava no
+ * PRIMEIRO erro transitório (timeout de fetch, HTTP não-2xx, resposta
+ * não-JSON) em vez de consumir o orçamento de tentativas — um único blip de
+ * rede em QUALQUER das até 10 tentativas derrubava o post inteiro pra DLQ,
+ * mesmo com 9 tentativas ainda disponíveis. Corrigido pra reservar o abort
+ * IMEDIATO só pro sinal REAL e informativo da própria Threads API
+ * (`status: "ERROR"`/`"EXPIRED"` — o container está de fato quebrado,
+ * re-tentar o poll não muda isso) — mesmo padrão que o script local
+ * `scripts/publish-threads.ts::waitForContainerReady` já usava pra esse
+ * mesmo endpoint. Erro transitório (fetch/HTTP/parse) loga um warning e cai
+ * pro mesmo sleep-and-retry do `IN_PROGRESS`, só falhando de fato quando as
+ * tentativas se esgotam de verdade.
+ *
+ * `permanent: true` no retorno de falha (só no branch `ERROR`/`EXPIRED`)
+ * sinaliza ao caller que re-tentar a chamada NÃO vai ajudar — usado por
+ * `fireThreadsSingleImage` pra decidir `dlq` (não-retriable) vs `failed`
+ * (retriable via `retry_count`) sem duplicar essa lógica de classificação.
+ */
+async function pollThreadsContainerStatus(
+  base: string,
+  containerId: string,
+  accessToken: string,
+): Promise<{ ok: true } | { ok: false; reason: string; permanent: boolean }> {
+  for (let attempt = 1; attempt <= THREADS_POLL_MAX_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(
+        `${base}/${containerId}?fields=status,error_message&access_token=${encodeURIComponent(accessToken)}`,
+        { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) },
+      );
+      const text = await res.text();
+      let data: { status?: string; error_message?: string; error?: { message?: string } };
+      try {
+        data = JSON.parse(text);
+      } catch {
+        console.warn(
+          `[threads-poll] resposta não-JSON na tentativa ${attempt}/${THREADS_POLL_MAX_ATTEMPTS} (container_id=${containerId}): HTTP ${res.status}: ${text.slice(0, 200)} — tratado como transitório, tentando de novo.`,
+        );
+        if (attempt < THREADS_POLL_MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, THREADS_POLL_INTERVAL_MS));
+        continue;
+      }
+      if (!res.ok || data.error) {
+        console.warn(
+          `[threads-poll] HTTP ${res.status} na tentativa ${attempt}/${THREADS_POLL_MAX_ATTEMPTS} (container_id=${containerId}): ${data.error?.message ?? text.slice(0, 200)} — tratado como transitório, tentando de novo.`,
+        );
+        if (attempt < THREADS_POLL_MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, THREADS_POLL_INTERVAL_MS));
+        continue;
+      }
+      if (data.status === "FINISHED") return { ok: true };
+      if (data.status === "ERROR" || data.status === "EXPIRED") {
+        return {
+          ok: false,
+          permanent: true,
+          reason: `Threads container status=${data.status} (container_id=${containerId})${data.error_message ? `: ${data.error_message}` : ""}`,
+        };
+      }
+      // IN_PROGRESS (ou estado transitório desconhecido) — segue tentando.
+    } catch (e) {
+      const err = e as Error;
+      const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+      console.warn(
+        `[threads-poll] fetch ${timeout ? "timeout" : "failed"} na tentativa ${attempt}/${THREADS_POLL_MAX_ATTEMPTS} (container_id=${containerId}): ${err.message} — tratado como transitório, tentando de novo.`,
+      );
+    }
+    if (attempt < THREADS_POLL_MAX_ATTEMPTS) {
+      await new Promise((r) => setTimeout(r, THREADS_POLL_INTERVAL_MS));
+    }
+  }
+  return {
+    ok: false,
+    permanent: false,
+    reason:
+      `Threads container nunca ficou FINISHED após ${THREADS_POLL_MAX_ATTEMPTS} tentativas ` +
+      `(~${Math.round((THREADS_POLL_MAX_ATTEMPTS * THREADS_POLL_INTERVAL_MS) / 1000)}s) — ` +
+      `container_id=${containerId}, fail-closed (não publica).`,
+  };
+}
+
+/**
+ * Dispara um post Threads com UMA imagem (#5348) — container `media_type:
+ * "IMAGE"` + poll OBRIGATÓRIO (ver `pollThreadsContainerStatus`) + publish.
+ * Extraído de `fireThreadsCarousel` como caso N=1 explícito porque a Graph
+ * API do Threads não aceita `media_type: "CAROUSEL"` com um único child —
+ * imagem única usa o container `IMAGE` direto, sem container pai.
+ *
+ * #5348 self-review (code-reviewer + silent-failure-hunter, independentes):
+ * diferente de `fireThreadsCarousel` (N containers interdependentes — um
+ * re-try do zero recriaria todos, daí `dlq` sempre), este é estruturalmente
+ * uma chamada ISOLADA de 2-3 passos, o mesmo formato de `fireInstagramSingle`
+ * (que usa `status:"failed"`/retriable pro passo 1 E pro passo 2 — nunca
+ * `dlq`). Falha na CRIAÇÃO do container (antes de qualquer efeito colateral
+ * publicado) e falha no PUBLISH (retry só refaz a mesma chamada idempotente,
+ * nunca duplica um post — `threads_publish` só publica quando bem-sucedido)
+ * são `"failed"`, retriable via `retry_count` normal, igual ao Instagram.
+ * Só a falha do POLL usa `poll.permanent` pra decidir: `ERROR`/`EXPIRED`
+ * (container genuinamente quebrado, re-tentar não muda o resultado) vira
+ * `dlq`; timeout de tentativas esgotadas (`permanent:false` — pode ter sido
+ * só lentidão do lado da Meta) vira `failed`, retriable.
+ */
+async function fireThreadsSingleImage(imageUrl: string, caption: string, creds: ThreadsCreds): Promise<FireOutcome> {
+  const base = `https://graph.threads.net/${creds.apiVersion}`;
+
+  let containerId: string;
+  try {
+    const params = new URLSearchParams({
+      media_type: "IMAGE",
+      image_url: imageUrl,
+      text: caption,
+      access_token: creds.accessToken,
+    });
+    const res = await fetch(`${base}/${creds.userId}/threads`, {
+      method: "POST",
+      body: params,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    const text = await res.text();
+    let data: { id?: string; error?: { message?: string } };
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return { status: "failed", reason: `Threads /threads (IMAGE) resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)}` };
+    }
+    if (!res.ok || data.error) {
+      return { status: "failed", reason: `Threads /threads (IMAGE) HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)}` };
+    }
+    if (!data.id) {
+      return { status: "failed", reason: `Threads /threads (IMAGE) sem id: ${text.slice(0, 200)}` };
+    }
+    containerId = data.id;
+  } catch (e) {
+    const err = e as Error;
+    const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+    return { status: "failed", reason: `Threads /threads (IMAGE) fetch ${timeout ? "timeout" : "failed"}: ${err.message}` };
+  }
+
+  const poll = await pollThreadsContainerStatus(base, containerId, creds.accessToken);
+  if (!poll.ok) return { status: poll.permanent ? "dlq" : "failed", reason: poll.reason };
+
+  try {
+    const params = new URLSearchParams({ creation_id: containerId, access_token: creds.accessToken });
     const res = await fetch(`${base}/${creds.userId}/threads_publish`, {
       method: "POST",
       body: params,
@@ -552,6 +768,192 @@ async function fireThreads(entry: QueueEntry, creds: ThreadsCreds): Promise<Fire
     return {
       status: "failed",
       reason: `Threads /threads_publish fetch ${timeout ? "timeout" : "failed"}: ${err.message} (container_id=${containerId})`,
+    };
+  }
+}
+
+/**
+ * Dispara um carrossel Threads (#5348) — fluxo de 3 passos da Threads API,
+ * mesmo padrão de `fireInstagramCarousel` acima, com UMA diferença
+ * estrutural: poll de status é OBRIGATÓRIO em CADA container (filhos E o
+ * pai), não best-effort:
+ *   1. N containers filhos (`media_type: "IMAGE"`, `is_carousel_item: true`),
+ *      1 POST por imagem na ordem da lista — cada um seguido de poll
+ *      obrigatório até `FINISHED` antes do próximo passo poder usá-lo.
+ *   2. 1 container pai (`media_type: "CAROUSEL"`, `children=[ids]`, `text`
+ *      = caption) — seguido do MESMO poll obrigatório.
+ *   3. `threads_publish` do container pai.
+ *
+ * Falha parcial (mesma decisão de escopo do #4153/Instagram): se QUALQUER
+ * passo falhar — inclusive o poll de um único container filho — o post
+ * inteiro é abortado e o outcome é SEMPRE "dlq", nunca "failed"/retriable:
+ * publicar um carrossel incompleto é pior que não publicar (o texto do post
+ * promete N itens), e re-tentar do zero recriaria N containers a cada ciclo
+ * do cron sem garantia de sucesso.
+ */
+async function fireThreadsCarousel(imageUrls: string[], caption: string, creds: ThreadsCreds): Promise<FireOutcome> {
+  // Defesa em profundidade — mesmo padrão de fireInstagramCarousel: o enqueue
+  // (index.ts::handleEnqueue) já barra >CAROUSEL_MAX_ITEMS, isto cobre
+  // entries legacy/inseridas fora do caminho normal.
+  if (imageUrls.length > CAROUSEL_MAX_ITEMS) {
+    return {
+      status: "dlq",
+      reason: `Threads carrossel: ${imageUrls.length} imagens excede o máximo de ${CAROUSEL_MAX_ITEMS} da Graph API`,
+    };
+  }
+
+  const base = `https://graph.threads.net/${creds.apiVersion}`;
+  const childIds: string[] = [];
+
+  for (let i = 0; i < imageUrls.length; i++) {
+    const imageUrl = imageUrls[i];
+    let childId: string;
+    try {
+      const params = new URLSearchParams({
+        media_type: "IMAGE",
+        image_url: imageUrl,
+        is_carousel_item: "true",
+        access_token: creds.accessToken,
+      });
+      const res = await fetch(`${base}/${creds.userId}/threads`, {
+        method: "POST",
+        body: params,
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+      const text = await res.text();
+      let data: { id?: string; error?: { message?: string } };
+      try {
+        data = JSON.parse(text);
+      } catch {
+        return {
+          status: "dlq",
+          reason: `Threads carrossel: child container ${i + 1}/${imageUrls.length} resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)} (containers já criados: ${childIds.length})`,
+        };
+      }
+      if (!res.ok || data.error) {
+        return {
+          status: "dlq",
+          reason: `Threads carrossel: child container ${i + 1}/${imageUrls.length} falhou: HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} (containers já criados: ${childIds.length})`,
+        };
+      }
+      if (!data.id) {
+        return {
+          status: "dlq",
+          reason: `Threads carrossel: child container ${i + 1}/${imageUrls.length} sem id: ${text.slice(0, 200)} (containers já criados: ${childIds.length})`,
+        };
+      }
+      childId = data.id;
+    } catch (e) {
+      const err = e as Error;
+      const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+      return {
+        status: "dlq",
+        reason: `Threads carrossel: child container ${i + 1}/${imageUrls.length} fetch ${timeout ? "timeout" : "failed"}: ${err.message} (containers já criados: ${childIds.length})`,
+      };
+    }
+
+    // Poll OBRIGATÓRIO — o próximo passo (container pai) referencia este
+    // filho por id; usá-lo antes de FINISHED falha na API.
+    const childPoll = await pollThreadsContainerStatus(base, childId, creds.accessToken);
+    if (!childPoll.ok) {
+      return {
+        status: "dlq",
+        reason: `Threads carrossel: child container ${i + 1}/${imageUrls.length} (id=${childId}) — ${childPoll.reason} (containers já criados: ${childIds.length + 1})`,
+      };
+    }
+    childIds.push(childId);
+  }
+
+  // Passo 2: container pai — media_type=CAROUSEL + children (ordem
+  // preservada) + text (caption só entra no pai, mesmo padrão do Instagram).
+  let parentId: string;
+  try {
+    const params = new URLSearchParams({
+      media_type: "CAROUSEL",
+      children: childIds.join(","),
+      text: caption,
+      access_token: creds.accessToken,
+    });
+    const res = await fetch(`${base}/${creds.userId}/threads`, {
+      method: "POST",
+      body: params,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    const text = await res.text();
+    let data: { id?: string; error?: { message?: string } };
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return {
+        status: "dlq",
+        reason: `Threads carrossel: container pai resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)} (children=${childIds.join(",")})`,
+      };
+    }
+    if (!res.ok || data.error) {
+      return {
+        status: "dlq",
+        reason: `Threads carrossel: container pai falhou: HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} (children=${childIds.join(",")})`,
+      };
+    }
+    if (!data.id) {
+      return {
+        status: "dlq",
+        reason: `Threads carrossel: container pai sem id: ${text.slice(0, 200)} (children=${childIds.join(",")})`,
+      };
+    }
+    parentId = data.id;
+  } catch (e) {
+    const err = e as Error;
+    const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+    return {
+      status: "dlq",
+      reason: `Threads carrossel: container pai fetch ${timeout ? "timeout" : "failed"}: ${err.message} (children=${childIds.join(",")})`,
+    };
+  }
+
+  // Poll OBRIGATÓRIO do container pai — mesmo racional dos filhos.
+  const parentPoll = await pollThreadsContainerStatus(base, parentId, creds.accessToken);
+  if (!parentPoll.ok) {
+    return { status: "dlq", reason: `Threads carrossel: container pai (id=${parentId}) — ${parentPoll.reason}` };
+  }
+
+  // Passo 3: publicar o container pai.
+  try {
+    const params = new URLSearchParams({ creation_id: parentId, access_token: creds.accessToken });
+    const res = await fetch(`${base}/${creds.userId}/threads_publish`, {
+      method: "POST",
+      body: params,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    const text = await res.text();
+    let data: { id?: string; error?: { message?: string } };
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return {
+        status: "dlq",
+        reason: `Threads carrossel: threads_publish resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)} (parent_id=${parentId})`,
+      };
+    }
+    if (!res.ok || data.error) {
+      return {
+        status: "dlq",
+        reason: `Threads carrossel: threads_publish falhou: HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} (parent_id=${parentId})`,
+      };
+    }
+    if (!data.id) {
+      return {
+        status: "dlq",
+        reason: `Threads carrossel: threads_publish sem id: ${text.slice(0, 200)} (parent_id=${parentId})`,
+      };
+    }
+    return { status: "fired" };
+  } catch (e) {
+    const err = e as Error;
+    const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+    return {
+      status: "dlq",
+      reason: `Threads carrossel: threads_publish fetch ${timeout ? "timeout" : "failed"}: ${err.message} (parent_id=${parentId})`,
     };
   }
 }

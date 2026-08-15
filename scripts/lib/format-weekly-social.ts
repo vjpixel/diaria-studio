@@ -1,6 +1,7 @@
 /**
  * format-weekly-social.ts (#4101, restrito ao Instagram pelo #4483,
- * Facebook de volta pelo #5348)
+ * Facebook de volta pelo #5348, Threads de volta pelo mesmo #5348 —
+ * carrossel de imagem, unidade dedicada)
  *
  * Formatação da caption dos carrosséis semanais (os itens mais clicados OU
  * os principais destaques da semana — ver `weekly-instagram-select.ts`).
@@ -14,14 +15,13 @@
  *
  * **#5348 (260815, decisão do editor) trouxe `formatFacebookWeekly` de
  * volta** — o carrossel agora publica também no Facebook, mesmo agendamento
- * do Instagram, sem flag/canal separado. **Threads segue de fora**: o
- * publisher de Threads deste repo (`workers/linkedin-cron/src/dispatch.ts`
- * `fireThreads`) é TEXT-only hoje — não suporta NENHUMA imagem, muito menos
- * carrossel — implementar isso do zero (containers de imagem + polling de
- * status obrigatório, ao contrário do Instagram/Facebook) é engenharia do
- * mesmo porte do #4153 original; decisão explícita de escopo reduzido, ver
- * comentário do editor na issue #5348 e `publish-weekly-social.ts` (busca
- * por "#5348").
+ * do Instagram, sem flag/canal separado. Uma 1ª rodada (PR #5360) deixou
+ * Threads de fora — na época o publisher deste repo
+ * (`workers/linkedin-cron/src/dispatch.ts` `fireThreads`) era TEXT-only,
+ * sem NENHUM suporte a imagem. Uma unidade dedicada (mesma issue #5348)
+ * implementou o carrossel de imagem no publisher (containers `IMAGE`/
+ * `CAROUSEL` + polling de status obrigatório, ver `fireThreadsCarousel`
+ * em `dispatch.ts`) e trouxe `formatThreadsWeekly` de volta aqui.
  *
  * Pura (texto in, texto out) — nenhuma I/O ou chamada de rede.
  * `publish-weekly-social.ts` consome estas funções antes de despachar.
@@ -39,9 +39,15 @@
  * tende a divergir bastante entre os 2 canais; misturar as 2 fontes sob o
  * mesmo `utm_source=instagram` mascararia qual canal está de fato
  * convertendo — mesmo racional que já motivou o #4537 a dar UTM a este link.
+ * `formatThreadsWeekly` segue a MESMA disciplina: `THREADS_WEEKLY_ARCHIVE_UTM`
+ * PRÓPRIO (`source:"threads"`), nunca reusa o do Instagram/Facebook.
  */
 
-import { INSTAGRAM_WEEKLY_ARCHIVE_UTM, FACEBOOK_WEEKLY_ARCHIVE_UTM } from "./shared/utm-registry.ts";
+import {
+  INSTAGRAM_WEEKLY_ARCHIVE_UTM,
+  FACEBOOK_WEEKLY_ARCHIVE_UTM,
+  THREADS_WEEKLY_ARCHIVE_UTM,
+} from "./shared/utm-registry.ts";
 
 /** Limite de caracteres de caption no Instagram (mesmo valor de publish-instagram.ts). */
 export const INSTAGRAM_WEEKLY_CHAR_LIMIT = 2200;
@@ -67,8 +73,21 @@ export function buildFacebookWeeklyArchiveUrl(): string {
   return url.toString();
 }
 
+/** #5348 (unidade Threads): mesmo padrão de `buildInstagramWeeklyArchiveUrl`,
+ * mas com o triplo UTM PRÓPRIO do Threads (`THREADS_WEEKLY_ARCHIVE_UTM`) —
+ * ver nota no cabeçalho do arquivo sobre por que não reusa o do
+ * Instagram/Facebook. */
+export function buildThreadsWeeklyArchiveUrl(): string {
+  const url = new URL("https://diar.ia.br");
+  url.searchParams.set("utm_source", THREADS_WEEKLY_ARCHIVE_UTM.source);
+  url.searchParams.set("utm_medium", THREADS_WEEKLY_ARCHIVE_UTM.medium);
+  url.searchParams.set("utm_campaign", THREADS_WEEKLY_ARCHIVE_UTM.campaign);
+  return url.toString();
+}
+
 const ARCHIVE_URL = buildInstagramWeeklyArchiveUrl();
 const FACEBOOK_ARCHIVE_URL = buildFacebookWeeklyArchiveUrl();
+const THREADS_ARCHIVE_URL = buildThreadsWeeklyArchiveUrl();
 
 /** Modo do carrossel semanal (#5330) — cada um tem intro própria na caption. */
 export type WeeklyInstagramMode = "clicked" | "highlights";
@@ -162,6 +181,36 @@ export function formatFacebookWeekly(items: InstagramWeeklyItem[], mode: WeeklyI
       .join("\n\n") +
     `\n\nEdição completa de cada matéria e arquivo completo: ${FACEBOOK_ARCHIVE_URL}`
   );
+}
+
+/** Limite de caracteres de post no Threads (#5348, unidade Threads) — MUITO
+ * mais apertado que Instagram (2200) ou Facebook (sem cap prático): a
+ * Threads API rejeita texto >500 chars (guard já aplicado no Worker,
+ * `fireThreads`/`handleEnqueue` em `workers/linkedin-cron/src`). Por isso
+ * `formatThreadsWeekly` abaixo é deliberadamente mais ENXUTA que
+ * `formatInstagramWeekly`/`formatFacebookWeekly` — omite a linha de
+ * contexto por item (só título numerado) pra caber os 5 itens + intro +
+ * link dentro do orçamento apertado. */
+export const THREADS_WEEKLY_CHAR_LIMIT = 500;
+
+/**
+ * Threads (#5348, unidade Threads): MESMO carrossel/itens/ordem do
+ * Instagram/Facebook, mas caption COMPACTA — só título numerado por item,
+ * sem a linha de contexto ("por que importa") que Instagram/Facebook têm,
+ * porque o orçamento de 500 chars não sobra pra isso com 5 itens (títulos
+ * de até 52 chars cada já usam boa parte do limite). Link clicável no corpo
+ * (Threads renderiza URL como link, igual Facebook) — CTA direta, sem
+ * indireção "link na bio". Truncado no limite de caption do Threads (500
+ * chars) preservando palavras inteiras, mesmo mecanismo de
+ * `formatInstagramWeekly`.
+ */
+export function formatThreadsWeekly(items: InstagramWeeklyItem[], mode: WeeklyInstagramMode = "clicked"): string {
+  if (items.length === 0) return "";
+  const body =
+    `${INTRO_LINES[mode]}\n\n` +
+    items.map((it, i) => `${i + 1}. ${it.title}`).join("\n") +
+    `\n\nArquivo completo: ${THREADS_ARCHIVE_URL}`;
+  return truncateAtLimit(body, THREADS_WEEKLY_CHAR_LIMIT);
 }
 
 function truncateAtLimit(text: string, maxLen: number): string {
