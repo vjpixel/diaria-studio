@@ -43,7 +43,19 @@ export type BrevoDiariaContactStatus =
    * detectado sem passar por avaliação de score), 3ª saída terminal
    * distinta de `suppressed` (ação própria da pessoa vs. decisão
    * algorítmica por engajamento baixo). */
-  | "unsubscribed";
+  | "unsubscribed"
+  /** #5351 Parte B — 4ª saída terminal, PURAMENTE LOCAL: `emailBlacklisted`
+   * sem `userUnsubscription` (bounce ou ação admin-side na Brevo, #4630).
+   * Sem clique do usuário este contato nunca recebe outra campanha —
+   * `sends_count`/`messagesSent` congelam abaixo do piso de amostra da
+   * avaliação normal, então sem esta saída dedicada o contato ficaria preso
+   * `in_brevo` indefinidamente (ocupando 1 slot da fila de 300, gastando 1
+   * `GET /contacts/{email}` por rodada pra sempre). Decisão do editor
+   * (15/08/2026, issue #5351): NUNCA escrever na Beehiiv nesses casos — o
+   * registro fica `Pending` lá de propósito (API v2 não tem campo `status`
+   * gravável pra distinguir "bounce" de "inativo por qualquer outro
+   * motivo"). */
+  | "bounced";
 
 export interface BrevoDiariaContact {
   email: string;
@@ -65,6 +77,8 @@ export interface BrevoDiariaContact {
   suppressed_at?: string; // ISO — quando status virou suppressed
   /** ISO — quando status virou unsubscribed (#4476 item 7). */
   unsubscribed_at?: string;
+  /** ISO — quando status virou bounced (#5351 Parte B). */
+  bounced_at?: string;
   /** ISO — quando `resolution_reason` foi CORRIGIDO por
    * `applySuppressionReconciliation` (#5077), distinto de `suppressed_at`
    * (quando a supressão original aconteceu). Preserva as duas datas: "quando
@@ -92,7 +106,14 @@ export interface BrevoDiariaContact {
     | "self_confirmed_beehiiv"
     | "native_unsubscribe"
     | "native_unsubscribe_beehiiv_404"
-    | "self_confirmed_after_suppression";
+    | "self_confirmed_after_suppression"
+    /** #5351 Parte B — `emailBlacklisted` com `statistics.hardBounces` não
+     * vazio: bounce de entrega genuíno (endereço inválido/caixa cheia). */
+    | "native_bounce"
+    /** #5351 Parte B — `emailBlacklisted` sem `userUnsubscription` E sem
+     * `hardBounces`: ação admin-side/complaint na Brevo, motivo exato não
+     * distinguível pela API disponível. */
+    | "native_admin_block";
 }
 
 export interface BrevoDiariaStore {
@@ -245,6 +266,39 @@ export function applyNativeUnsubscribe(
     contacts: store.contacts.map((c) => {
       if (c.email !== norm || c.status !== "in_brevo") return c;
       return { ...c, status: "unsubscribed", unsubscribed_at: now, resolution_reason: reason };
+    }),
+  };
+}
+
+/**
+ * Pura — marca um contato como `bounced` (#5351 Parte B): `emailBlacklisted`
+ * na Brevo SEM `userUnsubscription` (não é descadastro por clique do
+ * usuário — ver `applyNativeUnsubscribe`/`hasUserUnsubscription` em
+ * `evaluate-brevo-diaria.ts`). Saída TERMINAL puramente LOCAL — decisão do
+ * editor (15/08/2026): nunca escreve na Beehiiv, o registro fica `Pending`
+ * lá de propósito. Libera o slot da fila sem tocar
+ * `computeCurrentActiveCount` (que já só conta `status === "in_brevo"`) e
+ * sem tocar `computeContactsToIngest` (o e-mail permanece no array do
+ * store, então o dedup de `sync-pending-to-brevo.ts` continua funcionando —
+ * nunca reentra). Mesmo guard de idempotência dos outros `apply*` acima —
+ * só contatos `in_brevo` transicionam.
+ *
+ * @param reason `"native_bounce"` quando `statistics.hardBounces` não
+ * vazio, `"native_admin_block"` caso contrário — decidido pelo caller a
+ * partir do MESMO `GET /contacts/{email}` já feito (`fetchBrevoContactState`
+ * ganha o campo `hardBounced`), zero chamada nova.
+ */
+export function applyBrevoDiariaBounced(
+  store: BrevoDiariaStore,
+  email: string,
+  reason: Extract<BrevoDiariaContact["resolution_reason"], "native_bounce" | "native_admin_block">,
+  now: string = new Date().toISOString(),
+): BrevoDiariaStore {
+  const norm = normalizeEmail(email);
+  return {
+    contacts: store.contacts.map((c) => {
+      if (c.email !== norm || c.status !== "in_brevo") return c;
+      return { ...c, status: "bounced", bounced_at: now, resolution_reason: reason };
     }),
   };
 }

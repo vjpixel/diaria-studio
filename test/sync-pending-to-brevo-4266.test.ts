@@ -29,6 +29,7 @@ import {
   applyMaxAddGate,
   countRawPoolEmails,
   normalizeSubscribedOn,
+  assertStoreFileGuard,
   type BeehiivPendingSubscription,
   type PendingToIngestEntry,
 } from "../scripts/sync-pending-to-brevo.ts";
@@ -167,6 +168,28 @@ describe("computeContactsToIngest — dedup pelo store, nunca pela Beehiiv (#426
     const pending: BeehiivPendingSubscription[] = [{ id: "sub_1", email: "a@b.com" }];
     const out = computeContactsToIngest(pending, { contacts: [] }, null);
     assert.equal(out.length, 1);
+  });
+
+  it("contato já bounced no store (#5351 Parte B) → NUNCA re-ingerido, mesma disciplina de suppressed/unsubscribed/promoted", () => {
+    const pending: BeehiivPendingSubscription[] = [{ id: "sub_1", email: "bounced@b.com" }];
+    const store: BrevoDiariaStore = {
+      contacts: [
+        {
+          email: "bounced@b.com",
+          beehiiv_subscription_id: "sub_1",
+          status: "bounced",
+          opens_count: 0,
+          sends_count: 1,
+          last_open_rate: 0,
+          added_at: "x",
+          last_evaluated_at: "y",
+          bounced_at: "z",
+          resolution_reason: "native_bounce",
+        },
+      ],
+    };
+    const out = computeContactsToIngest(pending, store);
+    assert.equal(out.length, 0);
   });
 });
 
@@ -331,6 +354,14 @@ describe("computeCurrentActiveCount — exclui EDITOR_SEED_EMAILS do numerador (
       contact("c@x.com", "promoted_beehiiv"),
     ];
     assert.equal(computeCurrentActiveCount(contacts), 2);
+  });
+
+  it("contato bounced (#5351 Parte B) NUNCA conta contra o cap — mesma disciplina de promoted/suppressed/unsubscribed", () => {
+    const contacts = [
+      contact("a@x.com", "in_brevo"),
+      contact("bounced@x.com", "bounced"),
+    ];
+    assert.equal(computeCurrentActiveCount(contacts), 1);
   });
 
   it("defesa em profundidade: se um EDITOR_SEED_EMAILS acabar in_brevo no store (não deveria, mas não deve contar 2x contra o cap)", () => {
@@ -673,5 +704,36 @@ describe("sync-pending-to-brevo.ts exit semantics (#4651, mesma classe do #4638/
       "catch de main() não pode chamar process.exit() — usar process.exitCode (#4651 Windows crash)",
     );
     assert.match(catchBody, /process\.exitCode/, "catch de main() deve setar process.exitCode");
+  });
+});
+
+describe("assertStoreFileGuard — store ausente aborta ANTES de qualquer I/O externo (#5351 Parte A)", () => {
+  const STORE_PATH = "/fake/data/brevo-diaria/contacts.json";
+
+  it("store ausente, sem flag → lança (nunca deixa reingerir o pool Pending inteiro)", () => {
+    assert.throws(() => assertStoreFileGuard(false, [], STORE_PATH), /store ausente/);
+  });
+
+  it("store ausente + --allow-missing-store → prossegue (1ª execução genuína, escape hatch explícito)", () => {
+    assert.doesNotThrow(() => assertStoreFileGuard(false, ["--allow-missing-store"], STORE_PATH));
+  });
+
+  it("store EXISTE e vazio (contacts: []), sem flag → prossegue (regressão do caso 1ª execução real: arquivo já inicializado)", () => {
+    assert.doesNotThrow(() => assertStoreFileGuard(true, [], STORE_PATH));
+  });
+
+  it("store existe → --allow-missing-store é noop, não muda o resultado (não precisa da flag quando o arquivo já existe)", () => {
+    assert.doesNotThrow(() => assertStoreFileGuard(true, ["--allow-missing-store"], STORE_PATH));
+  });
+
+  it("mensagem de erro cita o path do store e a flag de escape (auditabilidade/UX do operador)", () => {
+    try {
+      assertStoreFileGuard(false, [], STORE_PATH);
+      assert.fail("deveria ter lançado");
+    } catch (e) {
+      const msg = (e as Error).message;
+      assert.ok(msg.includes(STORE_PATH));
+      assert.match(msg, /--allow-missing-store/);
+    }
   });
 });

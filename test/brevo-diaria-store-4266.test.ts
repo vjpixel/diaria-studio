@@ -19,6 +19,7 @@ import {
   applyEvaluation,
   applySelfConfirmed,
   applyNativeUnsubscribe,
+  applyBrevoDiariaBounced,
   findContact,
   normalizeEmail,
   type BrevoDiariaStore,
@@ -196,6 +197,60 @@ describe("applyNativeUnsubscribe — 3ª saída terminal, distinta de suppress (
 
   it("email não encontrado → noop", () => {
     const out = applyNativeUnsubscribe(base, "nao-existe@b.com");
+    assert.equal(out.contacts.length, 1);
+    assert.equal(out.contacts[0].status, "in_brevo");
+  });
+});
+
+describe("applyBrevoDiariaBounced — 4ª saída terminal, puramente local (#5351 Parte B)", () => {
+  const base: BrevoDiariaStore = {
+    contacts: [
+      {
+        email: "a@b.com",
+        beehiiv_subscription_id: "sub_1",
+        status: "in_brevo",
+        opens_count: 1,
+        sends_count: 3,
+        last_open_rate: 0.33,
+        added_at: "2026-07-01T00:00:00.000Z",
+        last_evaluated_at: "2026-07-20T00:00:00.000Z",
+      },
+    ],
+  };
+
+  it("contato in_brevo com hard bounce → status bounced, resolution_reason native_bounce, bounced_at gravado", () => {
+    const out = applyBrevoDiariaBounced(base, "a@b.com", "native_bounce", "2026-08-15T00:00:00.000Z");
+    const c = findContact(out, "a@b.com")!;
+    assert.equal(c.status, "bounced");
+    assert.equal(c.bounced_at, "2026-08-15T00:00:00.000Z");
+    assert.equal(c.resolution_reason, "native_bounce");
+  });
+
+  it("contato in_brevo com ação admin/complaint → resolution_reason native_admin_block", () => {
+    const out = applyBrevoDiariaBounced(base, "a@b.com", "native_admin_block");
+    const c = findContact(out, "a@b.com")!;
+    assert.equal(c.status, "bounced");
+    assert.equal(c.resolution_reason, "native_admin_block");
+  });
+
+  it("email permanece no array do store (dedup de sync-pending-to-brevo.ts continua funcionando)", () => {
+    const out = applyBrevoDiariaBounced(base, "a@b.com", "native_bounce");
+    assert.equal(out.contacts.length, 1);
+    assert.equal(out.contacts[0].email, "a@b.com");
+  });
+
+  it("contato já promovido/suprimido/unsubscribed/bounced NUNCA regride pra bounced", () => {
+    const resolved: BrevoDiariaStore = {
+      contacts: [{ ...base.contacts[0], status: "suppressed", suppressed_at: "2026-07-25T00:00:00.000Z", resolution_reason: "score_threshold" }],
+    };
+    const out = applyBrevoDiariaBounced(resolved, "a@b.com", "native_bounce");
+    const c = findContact(out, "a@b.com")!;
+    assert.equal(c.status, "suppressed", "não regride pra bounced");
+    assert.equal(c.resolution_reason, "score_threshold");
+  });
+
+  it("email não encontrado → noop", () => {
+    const out = applyBrevoDiariaBounced(base, "nao-existe@b.com", "native_bounce");
     assert.equal(out.contacts.length, 1);
     assert.equal(out.contacts[0].status, "in_brevo");
   });

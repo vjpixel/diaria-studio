@@ -332,7 +332,8 @@ export interface PendingToIngestEntry {
 /**
  * Pura — quem entre os Pending atuais da Beehiiv AINDA não está no store
  * (por qualquer status: `in_brevo`/`promoted_beehiiv`/`suppressed`/
- * `unsubscribed` contam como "já tratado", nunca re-ingerido) E, se
+ * `unsubscribed`/`bounced` (#5351 Parte B) contam como "já tratado", nunca
+ * re-ingerido) E, se
  * `verifiedEmails` não for `null`, quem também passou pela verificação
  * MillionVerifier (`scripts/verify-pending-emails-mv.ts` — issue #4476 item
  * 8). `verifiedEmails === null` (arquivo `mv-verified.csv` ainda não
@@ -699,6 +700,43 @@ export async function ingestContactToBrevo(
   }
 }
 
+/**
+ * Guard de store ausente (#5351 Parte A).
+ *
+ * O dedup que impede reingestão de contato já tratado (`in_brevo`,
+ * `suppressed`, `unsubscribed`, `promoted_beehiiv`) vive inteiramente em
+ * `data/brevo-diaria/contacts.json` (`computeContactsToIngest`). `readStore`
+ * é fail-soft por design (#4266) e devolve store VAZIO, sem erro, quando o
+ * arquivo não existe — correto pro caso legítimo de 1ª execução, mas
+ * silenciosamente perigoso se o junction `data/` (OneDrive) não estiver
+ * montado: o script reingeriria o pool Pending inteiro, contatos já
+ * suprimidos/descadastrados/promovidos incluídos.
+ *
+ * Distinção deliberada: **arquivo ausente**, nunca "store vazio" — um store
+ * que existe mas tem `contacts: []` (1ª execução real, arquivo já
+ * inicializado) precisa prosseguir sem flag. Mesmo padrão do
+ * `guard.requiredFile` de `Diaria-Brevo-Diaria-Evaluate`
+ * (`scripts/lib/scheduled-tasks.ts`).
+ *
+ * Pura (recebe `existsSync`/flag como parâmetros) pra ser testável sem tocar
+ * `data/` real.
+ */
+export function assertStoreFileGuard(
+  storeExists: boolean,
+  argv: string[],
+  storePath: string,
+): void {
+  if (storeExists) return;
+  if (hasFlag(argv, "allow-missing-store")) return;
+  throw new Error(
+    `store ausente (${storePath}) — provável junction data/ (OneDrive) não montada, ou sincronização ` +
+      "pendente. Abortando ANTES de qualquer I/O externo pra não reingerir o pool Pending inteiro " +
+      "(contatos já suprimidos/descadastrados/promovidos incluídos — dedup depende inteiramente deste " +
+      "arquivo). Se esta é genuinamente a 1ª execução (arquivo nunca existiu), rode de novo com " +
+      "--allow-missing-store.",
+  );
+}
+
 // ── main ─────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -706,6 +744,17 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const push = hasFlag(argv, "push");
   const log = (msg: string) => process.stderr.write(`[sync-pending-to-brevo] ${msg}\n`);
+
+  // #5351 Parte A — guard ANTES de qualquer I/O externo (inclui os reads
+  // locais de CSV logo abaixo, que são baratos mas não são o ponto — o que
+  // importa é rodar antes do fetch da Beehiiv/Brevo).
+  try {
+    assertStoreFileGuard(existsSync(DEFAULT_STORE_PATH), argv, DEFAULT_STORE_PATH);
+  } catch (e) {
+    log(`ERRO: ${(e as Error).message}`);
+    process.exit(2);
+  }
+
   let maxAdd: number | undefined;
   try {
     maxAdd = getIntArg(argv, "max-add", { min: 0 });
