@@ -32,6 +32,7 @@ import { getXaiEntity } from "./lib/entities/xai.ts";
 import { getAmazonEntity } from "./lib/entities/amazon.ts";
 import { getSamsungEntity } from "./lib/entities/samsung.ts";
 import { getAppleEntity } from "./lib/entities/apple.ts";
+import { getDeepseekEntity } from "./lib/entities/deepseek.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -45,6 +46,7 @@ export const ENTITY_LOADERS: Record<string, () => EntityContent> = {
   amazon: getAmazonEntity,
   samsung: getSamsungEntity,
   apple: getAppleEntity,
+  deepseek: getDeepseekEntity,
 };
 
 function outPathFor(slug: string): string {

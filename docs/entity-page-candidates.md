@@ -54,7 +54,7 @@ Contagem bruta por regex (antes da leitura manual), do maior para o menor:
 | Perplexity | 8 | já publicada (#5195), fora desta rodada |
 | Apple | 7 | verificada, boa candidata pra próxima rodada (ver nota abaixo) |
 | Samsung | 6 | **✅ implementada nesta rodada** |
-| DeepSeek | 6 → 5 real | verificada, candidata mais fraca (ver "Achados") |
+| DeepSeek | 6 → 5 real (5 distintas após +1 pesquisa) | **✅ implementada em rodada seguinte (15/08/2026 continuo)** |
 | Alibaba | 3 | abaixo do piso, não verificada |
 | AMD | 3 | abaixo do piso, não verificada |
 | Oracle | 3 | abaixo do piso, não verificada |
@@ -149,19 +149,45 @@ correspondente — nunca reformulação da manchete (mesma disciplina de
 `perplexity.ts`, ver docstring de `entity-page.ts` seção "Critério
 anti-thin-content").
 
-## Estado após esta rodada
+## Estado após esta rodada (15/08/2026, sessão `/diaria-continuo`)
 
-5 de ~20 páginas de entidade planejadas (Perplexity + xAI + Amazon +
-Samsung + Apple = 5 publicadas no total, contando o PoC do #5195). Escala
-reduzida de propósito — cada página exige leitura+síntese editorial real
-do corpo de cada edição, não é mecânico (ver dispatch #5125). Candidatas
-prontas pra próxima rodada, sem precisar re-rodar o levantamento:
+6 de ~20 páginas de entidade planejadas (Perplexity + xAI + Amazon +
+Samsung + Apple + **DeepSeek** = 6 publicadas no total, contando o PoC do
+#5195). Escala reduzida de propósito — cada página exige leitura+síntese
+editorial real do corpo de cada edição, não é mecânico (ver dispatch
+#5125).
 
-- **DeepSeek** (5 menções verificadas, no piso — considerar mais pesquisa
-  antes de implementar, ver "Achados" acima).
+**DeepSeek publicada nesta rodada** (`scripts/lib/entities/deepseek.ts`),
+resolvendo a pendência de "+1 pesquisa" registrada na rodada anterior (ver
+seção "Achados de verificação" acima). A pesquisa adicional releu
+`content.free.web` (corpo completo, não só título+subtítulo) de TODAS as
+~251 edições confirmadas do corpus e achou 1 menção nova e distinta —
+2026-06-18, "Microsoft avalia trocar IA estadunidense por chinesa"
+(Copilot Cowork → DeepSeek V4) — que a auditoria anterior (regex só contra
+título+subtítulo) não pegou porque a manchete do destaque não usa a
+palavra "DeepSeek" no subtítulo do post. Essa menção NÃO é redundante com
+a dupla Reuters/CNN sobre chip próprio (07/08 e 07/09): é sobre um CLIENTE
+corporativo cogitando adotar o modelo, não sobre a estratégia de hardware
+da própria DeepSeek. Com a menção nova incorporada e a versão Reuters
+(07/08, redundante com a CNN de 07/09) excluída via
+`ENTITY_EXCLUDED_EDITIONS.deepseek`, o resultado final é **5 menções,
+TODAS distintas** — melhor que o estado anterior (5 menções, 2 delas
+cobrindo o mesmo fato). Arco: guerra de preço (corte de 75% na API) →
+avanço técnico com independência de hardware (modelo treinado com chips
+da Huawei) → validação de mercado (Microsoft cogitando adotar) → resposta
+geopolítica (chip próprio) → efeito colateral de segurança (hacker chinês
+usando o modelo em ataques autônomos).
+
+Candidatas prontas pra próxima rodada, sem precisar re-rodar o
+levantamento inteiro:
+
 - Alibaba, AMD, Oracle (3 cada, abaixo do piso — precisam de mais research
   fora da janela de título/subtítulo, ex: RADAR ou corpo de outras
-  edições, pra eventualmente cruzar o piso de 5).
+  edições, pra eventualmente cruzar o piso de 5). A técnica que desbloqueou
+  DeepSeek nesta rodada — grep de "corpo completo" (`content.free.web`) em
+  vez de só título+subtítulo — é o próximo passo natural pra essas 3: pode
+  revelar menções substantivas que o regex de `HUB_KEYWORD_PATTERNS`-style
+  (só título+subtítulo) nunca teria capturado.
 
 **Regeneração automática (#5125, condição do editor 14/08/2026, cumprida
 nesta unidade):** `scripts/regenerate-entity-pages.ts` — (1) re-renderiza

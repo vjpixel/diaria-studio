@@ -26,6 +26,7 @@ export const ENTITY_KEYWORD_PATTERNS: Record<string, RegExp> = {
   amazon: /\bamazon\b|\baws\b|jeff bezos|andy jassy/i,
   samsung: /\bsamsung\b/i,
   apple: /\bapple\b|\bsiri\b|tim cook/i,
+  deepseek: /\bdeepseek\b/i,
 };
 
 /**
@@ -66,5 +67,24 @@ export const ENTITY_EXCLUDED_EDITIONS: Record<string, readonly string[]> = {
     // fala silenciosa) sem abrir um fio narrativo distinto o bastante pra
     // justificar uma 8ª entrada além do piso já superado (7 > 5).
     "google-nvidia-e-bezos-investem-na-humans",
+  ],
+  // 2 exclusões pra `deepseek` (ver docstring de `deepseek.ts`, auditoria
+  // de 15/08/2026):
+  deepseek: [
+    // 2026-04-06, "Irã mira o maior datacenter de IA fora dos EUA" — a
+    // menção casa via subtítulo ("A aposta do Google contra Meta e
+    // DeepSeek"), mas o parágrafo do corpo nunca cita a DeepSeek
+    // especificamente — só Moonshot, Alibaba e Z.AI como concorrentes
+    // chineses de pressão, mais o Llama da Meta. Título mencionando a
+    // entidade sem o corpo sustentar (mesmo padrão de "scaled content
+    // abuse" descrito no docstring de `entity-page.ts`).
+    "ir-mira-o-maior-datacenter-de-ia-do-mundo",
+    // 2026-07-08, "DeepSeek planeja chip próprio de IA, diz Reuters" —
+    // MESMO desenvolvimento da menção mantida de 2026-07-09 ("Chip
+    // próprio: DeepSeek reduz dependência dos EUA", fonte CNN), noticiado
+    // 1 dia antes por outra agência de imprensa. Sem fato novo entre uma
+    // versão e outra — manter as duas duplicaria a mesma notícia na
+    // timeline sem agregar leitura.
+    "claude-cowork-chega-ao-celular-e-a-web",
   ],
 };
