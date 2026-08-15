@@ -301,6 +301,28 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   estritamente por esse valor. Se o harness não expuser nada estimável, logar
   `{"tokens": null, "source": "unavailable"}` uma vez por dia rotacionado
   (não repetir a cada transição) — mesma semântica do overnight.
+- **Emissão de `subagent_metrics` é OBRIGATÓRIA aqui também, tornada
+  explícita (#5344 Parte B0 — achado: era coberta só implicitamente pela
+  frase "verbatim" do bullet "Reusa a Fase 1 de implementação" acima, o que
+  bastava pra emissão em si mas deixava `continuo-cost-summary.ts` sem um
+  ponto claro de onde vem o dado que ele soma).** Este é o mesmo evento que
+  o overnight emite ao fim de cada unidade de implementação
+  (`.claude/skills/diaria-overnight/SKILL.md`, Fase 1 passo 5,
+  "Instrumentação de token por unidade #4815") — é o grosso do gasto real de
+  uma sessão `continuo`, maior que o do próprio coordenador. Ao dispatchar
+  cada unidade via a Fase 1 reusada, emitir no mesmo ponto que o overnight já
+  documenta (unidade atingiu status terminal — merged/draft/pulada):
+  ```bash
+  npx tsx scripts/log-event.ts --edition {AAMMDD-do-dia-corrente} --agent continuo --level info \
+    --message "subagent_metrics" \
+    --details '{"unidade": "#NNNN | lote {slug}", "issues": [123], "subagent_tokens": N, "tool_uses": N, "duration_ms": N, "source": "harness_usage | unavailable"}'
+  ```
+  `continuo-cost-summary.ts` (#5344 Parte B0) soma `details.subagent_tokens`
+  destes eventos como categoria "Implementação", separada da categoria
+  "Coordenador" (`coordinator_tokens_estimate` acima) — as duas somadas
+  formam `totalTokens`. `scripts/check-continuo-token-instrumentation.ts`
+  (#5344 Parte B0) checa a PRESENÇA de ambos os tipos por dia rotacionado —
+  ausência de qualquer um dos dois é `warning`, nunca falha silenciosa.
 - **Guard de publicação (INVARIANTE, igual a overnight/develop):** editar
   código de publisher é ok; **executar é proibido** — nunca rodar
   `scripts/publish-*`, `clarice-schedule-sends`, `clarice-import-*`,
@@ -347,6 +369,43 @@ aqui.
    qualquer `gh pr merge` que colida em cima disso — este guard evita
    consumir CI/worktrees durante a janela da edição, não é a única linha de
    defesa contra colisão.
+
+   **Agrupamento em lotes (#5344 Parte A — lacuna fechada nesta unidade).**
+   `/diaria-continuo` reusa a Fase 1 do overnight verbatim ("Reuso da
+   maquinaria" acima), e essa Fase opera sobre "unidade de trabalho = issue
+   solo **ou lote**" — mas os critérios de QUANDO formar um lote e a
+   aprovação dele moram na Fase 0 do overnight (briefing único no início da
+   rodada), que a `continuo` não tem. Antes de dispatchar cada unidade,
+   avaliar se a issue de maior prioridade se agrupa com outra(s) já
+   elegível(is) na fila usando os mesmos dois critérios do overnight
+   (`.claude/skills/diaria-overnight/SKILL.md`, "Fase 0" passo 6): **(a)
+   coesão de subsistema** — mesmo subsistema/arquivos, mesma natureza (#2024)
+   — ou **(b) baixo-risco + baixo-blast-radius** — issues pequenas e de
+   baixo blast radius compartilham 1 subagente mesmo sem relação temática,
+   pelo bootstrap amortizado (#3453 Rec 3). Teto do lote é o mesmo do
+   overnight: **cabe sem forçar compaction de contexto do subagente
+   implementador, não um número fixo de issues** (#2754) — sinal prático de
+   estourado é o subagente reportar compaction ou a lista de arquivos
+   tocados passar de ~15-20; issues grandes/arriscadas (P1, blast radius
+   alto, migrações) ficam solo. **Aqui o agrupamento vale mais que no
+   overnight, não menos:** `continuo` não pega o desconto `low` do hook de
+   review (ver "Reuso da maquinaria" acima — todo PR desta skill resolve
+   `max` por padrão), então cada PR paga o fleet de 5 agentes quando o diff
+   passa do heurístico de tamanho; amortizar isso sobre mais issues por lote
+   é ganho direto de custo, não só de bootstrap.
+
+   `batch_approval` é gravado em `plan.json` no mesmo campo que o overnight
+   já usa, mas com um único valor possível e permanente nesta skill:
+   **`"default_proposed"`** — nunca `"editor_approved"`/`"editor_adjusted"`.
+   Diferente do overnight, a `continuo` não tem briefing único no início da
+   rodada onde encaixar essa pergunta sem custo extra de interação (#2612), e
+   o passo 4 abaixo já reserva o único `AskUserQuestion` do loop pra
+   destravar issues bloqueadas — **o agrupamento nunca vira um
+   `AskUserQuestion` novo**, é decisão mecânica do coordenador a cada
+   dispatch, não do editor (mesmo princípio do "Perguntar é exceção" do
+   CLAUDE.md — não há trade-off editorial genuíno em como agrupar issues
+   técnicas). Se o editor discordar de um agrupamento já despachado, o canal
+   é o mesmo dos passos 3-5 abaixo: comentar na issue.
 2. **Fila seca** → re-varredura (`gh issue list --state open`) pra pegar
    issue nova (de terceiro, ou criada por finding da própria rodada) — mesma
    lógica sem cap de `rescans_done` que o overnight adotou em #5272 (contador
@@ -394,7 +453,14 @@ aqui.
    `npx tsx scripts/continuo-cost-summary.ts` e considerar o número reportado
    — não há teto (mandato "sem limites", #2039/#5293), mas o editor pode
    perguntar a qualquer momento e a resposta deve vir desse script, nunca de
-   memória/estimativa do coordenador (mesma disciplina do #1172).
+   memória/estimativa do coordenador (mesma disciplina do #1172). **Checagem
+   de instrumentação (#5344 Parte B0):** na mesma rotina, rodar também
+   `npx tsx scripts/check-continuo-token-instrumentation.ts --edition
+   {AAMMDD-do-dia-corrente}` — se vier `warning`, é sinal de que o
+   coordenador esqueceu os checkpoints de emissão (não que a sessão não
+   gastou nada); registrar o `warning` explicitamente se o editor perguntar
+   pelo custo, em vez de reportar o número de `continuo-cost-summary.ts`
+   como se fosse completo.
 
 **Modo ocioso é estritamente passivo (decisão do briefing):** quando a fila
 desbloqueada seca e não há resposta pendente, a skill **só re-varre issues e
@@ -539,29 +605,39 @@ quatro restantes — cada um com código + testes, não só prosa:
    de leitura/parse (depois do retry) é logada em stderr, não silenciosa —
    `listContinuoDays` já confirmou que o arquivo existe, então um `null`
    aqui é sempre falha genuína, nunca "ausente".
-4. **Instrumentação de custo acumulado — RESOLVIDO (2 partes, a 2ª corrigida
-   depois do fleet review).** `scripts/continuo-cost-summary.ts` — soma
-   `details.tokens` de todos os eventos `coordinator_tokens_estimate`
-   (`agent: "continuo"`) em `data/run-log.jsonl`, através de TODOS os dias
-   rotacionados de `data/continuo/` (não só o dia corrente — usa
-   `listContinuoDays` de `continuo-plan-rotation.ts`). Suporta `--since
-   {AAMMDD}` pra bounds, e `--json` pra saída estruturada. Eventos com
-   `tokens: null` (harness não expôs `usage`) são contados à parte
-   (`unavailableCount`), nunca somados como 0. Complementa (não substitui)
-   `scripts/check-overnight-token-instrumentation.ts` (#5009), que checa só
-   PRESENÇA por edição isolada — este script soma o VALOR através do ciclo
-   inteiro. Testado em `test/continuo-cost-summary.test.ts`. **A 1ª versão
-   desta unidade entregou só essa AGREGAÇÃO — a EMISSÃO (o coordenador de
-   fato rodando `log-event.ts --agent continuo --message
-   coordinator_tokens_estimate`) nunca foi instruída em lugar nenhum do
-   `SKILL.md`, o que faria o script sempre reportar zero em silêncio**
-   (achado do comment-analyzer no fleet review desta PR). Corrigido: bullet
-   dedicado em "Reuso da maquinaria" acima ("Emissão de
-   coordinator_tokens_estimate é OBRIGATÓRIA") agora instrui explicitamente
-   quando e como emitir. **Ainda sem um checker mecânico equivalente a
-   `check-overnight-token-instrumentation.ts`** que confirme que o
-   coordenador de fato seguiu essa instrução numa rodada real — mesma classe
-   de gap, ainda aberta, ver `computeContinuoCostSummary`'s docblock.
+4. **Instrumentação de custo acumulado — RESOLVIDO (3 partes: agregação,
+   emissão, e a correção de escopo do #5344 Parte B0).**
+   `scripts/continuo-cost-summary.ts` soma **duas** categorias através de
+   TODOS os dias rotacionados de `data/continuo/` (não só o dia corrente —
+   usa `listContinuoDays` de `continuo-plan-rotation.ts`): `details.tokens`
+   dos eventos `coordinator_tokens_estimate` (categoria "Coordenador") E
+   `details.subagent_tokens` dos eventos `subagent_metrics` (categoria
+   "Implementação", herdada da Fase 1 do overnight reusada verbatim) —
+   `totalTokens` é a soma das duas. Suporta `--since {AAMMDD}` pra bounds, e
+   `--json` pra saída estruturada. Eventos sem valor (`tokens`/
+   `subagent_tokens: null`, harness não expôs `usage`) são contados à parte
+   (`unavailableCount`/`implementationUnavailableCount`), nunca somados como
+   0. Testado em `test/continuo-cost-summary.test.ts`. **Achados corrigidos
+   em ordem:** (a) a 1ª versão desta unidade entregou só a AGREGAÇÃO — a
+   EMISSÃO de `coordinator_tokens_estimate` nunca foi instruída em lugar
+   nenhum do `SKILL.md`, o que faria o script sempre reportar zero em
+   silêncio (achado do comment-analyzer no fleet review original); corrigido
+   com o bullet "Emissão de `coordinator_tokens_estimate` é OBRIGATÓRIA" em
+   "Reuso da maquinaria". (b) `#5344 Parte B0` achou que a soma ignorava
+   `subagent_tokens` — o grosso do gasto real de qualquer unidade de
+   implementação — mesmo esse dado já existindo em teoria via a reutilização
+   "verbatim" da Fase 1 do overnight; corrigido tornando a emissão de
+   `subagent_metrics` explícita também (bullet dedicado, mesmo lugar) e
+   somando as duas categorias no script. **Checker mecânico equivalente a
+   `check-overnight-token-instrumentation.ts` agora existe**:
+   `scripts/check-continuo-token-instrumentation.ts` (#5344 Parte B0) —
+   mesma lógica de contagem-de-presença, adaptada pra escopo "dia
+   rotacionado" em vez de "rodada" (o `continuo` não tem fim de rodada);
+   checa `coordinator_tokens_estimate` + `subagent_metrics`, devolve
+   `ok`/`warning` nomeando o(s) tipo(s) ausente(s). Testado em
+   `test/check-continuo-token-instrumentation.test.ts`. Instruído no passo 6
+   do "Loop invariável" (rodar junto de `continuo-cost-summary.ts` ao
+   acordar de sono longo/rotação de dia).
 
 **Achado adjacente, fechado nesta mesma unidade (não fazia parte dos 6 itens
 originais, mas do "Risco aceito" registrado acima):**
