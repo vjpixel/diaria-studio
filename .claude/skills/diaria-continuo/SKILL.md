@@ -500,8 +500,8 @@ aqui.
    antes de rotular.
 
    **Grep textual antes de classificar em (c) (#5379) — heurística de
-   atenção, não substitui ler o corpo.** Antes de fechar uma issue como (c),
-   buscar no corpo por sinais de decisão embutida: "a escolha é editorial",
+   atenção, não substitui ler o corpo.** Antes de fechar um item como (c),
+   buscar no corpo daquele item por sinais de decisão embutida: "a escolha é editorial",
    "decidir", frase interrogativa com "qual"/"quanto"/"quando", "trade-off".
    Qualquer acerto é motivo pra reler aquele trecho com atenção — pode ser
    (b) disfarçado de (c), como o #4555 (perfil de parceiro + orçamento de
