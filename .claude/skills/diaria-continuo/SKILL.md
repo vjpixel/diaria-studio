@@ -529,6 +529,20 @@ aqui.
    incremental do passo 2 — issue que não mudou desde `last_scan_at` e já
    tem decisão registrada nunca deveria ter voltado ao lote de qualquer
    forma.
+
+   **Bloqueio de execução já registrado (#5373 item 5) — separar "falta
+   decisão" de "falta execução".** O mesmo comando acima também devolve
+   `execution_block` (via `latestExecutionBlockFor`). Issue com label
+   `bloqueio-execucao` (ou sem ela, rede de segurança) cujo
+   `execution_block.recorded_at` é **posterior ou igual** a `updatedAt` →
+   **nunca** entra no lote de perguntas nem é reclassificada como (b)
+   decisão-produto — a decisão já existe (se houver `decision` também no
+   retorno) e o que falta é só a execução: classificar como (c) bloqueio de
+   execução/ação humana, reportando "bloqueada por execução:
+   {execution_block.motivo}" na tabela do passo 5, com a decisão preservada
+   no contexto pra quando o bloqueio for resolvido fora da sessão. Corpo/
+   labels mudaram genuinamente depois de `recorded_at` → o bloqueio pode ter
+   sido resolvido, reavaliar normalmente antes de assumir que segue preso.
 4. **Perguntar** → heartbeat `--phase aguardando-resposta` **ANTES** de
    chamar `AskUserQuestion` (não depois — o watchdog pode rodar entre os dois
    passos; o heartbeat precisa estar gravado antes que a chamada bloqueie),
@@ -562,6 +576,19 @@ aqui.
    corpo que a próxima varredura (desta ou de outra sessão) lê primeiro, e
    fechar o loop ali é o que evita a mesma pergunta reaparecer mesmo se o
    parsing do marcador falhar por algum motivo.
+
+   **Registro do bloqueio de execução, quando distinto da decisão em si
+   (#5373 item 5).** Se, ao implementar (passo 5 acima) uma issue já
+   decidida, a execução esbarrar num impedimento novo que esta sessão não
+   controla (acesso a painel de terceiro, guard de publicação da `continuo`
+   proibindo envio real, feature gated por plano de plataforma), gravar
+   isso como estado durável em vez de deixar a issue voltar pra fila com
+   cara de "decisão pendente": comentário começando com o marcador de
+   `formatExecutionBlockMarker` (`scripts/lib/issue-decisions.ts`,
+   `{recorded_at, motivo, sessao: "continuo"}`) seguido de prosa explicando
+   o que falta; `gh issue edit N --add-label bloqueio-execucao`; classificar
+   como (c) bloqueio de execução na tabela do passo 5 abaixo, nunca reabrir
+   a pergunta da decisão em si.
    **Tabela obrigatória antes de dormir (#5376 fleet review — forcing
    function análoga ao passo 4.5 do overnight).** Um checklist em prosa,
    sozinho, é exatamente o tipo de instrução sem rastro auditável que causou

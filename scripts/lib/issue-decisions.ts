@@ -124,6 +124,105 @@ export function latestDecisionFor(commentsBodies: readonly string[]): IssueDecis
   );
 }
 
+// ─── Bloqueio de execução (item 5 do #5373) ────────────────────────────────
+//
+// Decisão-do-editor (acima) resolve a DÚVIDA — "o que fazer". Bloqueio-de-
+// execução resolve um problema distinto e posterior: a decisão já existe,
+// mas EXECUTAR esbarra num impedimento novo que a sessão não controla (sem
+// acesso a um painel, guard de publicação proíbe o envio real, feature
+// gated por plano de plataforma). Sem registrar esse segundo estado, a
+// issue volta pra fila com a mesma cara de "decisão pendente" e uma sessão
+// futura pergunta a decisão de novo — quando na verdade a decisão nunca foi
+// o problema, é a execução que segue presa. Casos medidos: #5248 (GA4 —
+// decisão "consertar" tomada, falta acesso a painel GA4/GTM), #5140 (Clarice
+// ramp-warm — decisão de horário/cadência tomada, falta ENVIO REAL, proibido
+// pelo guard de publicação), #5231 (UTM preservation — código já mergeado,
+// falta `save_custom_field` via MCP Beehiiv, gated pelo plano Launch/free).
+//
+// Marcador `<!-- bloqueio-execucao: base64(JSON) -->`, mesmo esquema
+// base64-em-vez-de-JSON-cru do marcador de decisão acima (mesma razão:
+// `motivo` pode citar um trecho contendo `-->` — evita a mesma classe de bug
+// truncado que motivou o fix pós-review do #5375).
+
+/** Payload estruturado de um bloqueio de execução registrado num comentário. */
+export interface ExecutionBlock {
+  /** ISO 8601 — timestamp de quando o bloqueio foi gravado. */
+  recorded_at: string;
+  /** O que impede a execução (ex: "falta acesso a painel GA4/GTM"). */
+  motivo: string;
+  /** Qual sessão gravou o bloqueio. */
+  sessao: SessionKind;
+}
+
+const EXECUTION_BLOCK_MARKER_PREFIX = "<!-- bloqueio-execucao: ";
+const EXECUTION_BLOCK_MARKER_SUFFIX = " -->";
+
+/** Gera o bloco HTML-comment estruturado que prefixa um comentário de
+ * bloqueio de execução. Determinístico — mesmo input sempre produz o mesmo
+ * marcador. */
+export function formatExecutionBlockMarker(opts: ExecutionBlock): string {
+  const payload = {
+    recorded_at: opts.recorded_at,
+    motivo: opts.motivo,
+    sessao: opts.sessao,
+  };
+  const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
+  return `${EXECUTION_BLOCK_MARKER_PREFIX}${encoded}${EXECUTION_BLOCK_MARKER_SUFFIX}`;
+}
+
+function isValidExecutionBlock(value: unknown): value is ExecutionBlock {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.recorded_at === "string" &&
+    v.recorded_at.length > 0 &&
+    typeof v.motivo === "string" &&
+    v.motivo.length > 0 &&
+    (v.sessao === "continuo" || v.sessao === "overnight" || v.sessao === "develop")
+  );
+}
+
+/** Extrai TODOS os marcadores de bloqueio-de-execução válidos de uma lista
+ * de corpos de comentário. Tolerante a marcador ausente ou malformado —
+ * nunca lança, ignora e segue pro próximo candidato. Mesmo contrato de
+ * `parseDecisionMarkers`. */
+export function parseExecutionBlockMarkers(
+  commentsBodies: readonly string[],
+): ExecutionBlock[] {
+  const blocks: ExecutionBlock[] = [];
+  for (const body of commentsBodies) {
+    if (typeof body !== "string") continue;
+    const start = body.indexOf(EXECUTION_BLOCK_MARKER_PREFIX);
+    if (start === -1) continue;
+    const encodedStart = start + EXECUTION_BLOCK_MARKER_PREFIX.length;
+    const end = body.indexOf(EXECUTION_BLOCK_MARKER_SUFFIX, encodedStart);
+    if (end === -1) continue;
+    const rawEncoded = body.slice(encodedStart, end).trim();
+    let parsed: unknown;
+    try {
+      const rawJson = Buffer.from(rawEncoded, "base64").toString("utf8");
+      parsed = JSON.parse(rawJson);
+    } catch {
+      continue; // marcador malformado — ignora, não lança
+    }
+    if (isValidExecutionBlock(parsed)) blocks.push(parsed);
+  }
+  return blocks;
+}
+
+/** Devolve o bloqueio de execução MAIS RECENTE (por `recorded_at`,
+ * comparação ISO 8601 lexicográfica) dentre os marcadores válidos, ou `null`
+ * se nenhum existir. */
+export function latestExecutionBlockFor(
+  commentsBodies: readonly string[],
+): ExecutionBlock | null {
+  const blocks = parseExecutionBlockMarkers(commentsBodies);
+  if (blocks.length === 0) return null;
+  return blocks.reduce((latest, current) =>
+    current.recorded_at > latest.recorded_at ? current : latest,
+  );
+}
+
 // ─── CLI wrapper (busca via gh, imprime a decisão mais recente ou nada) ────
 
 interface GhComment {
@@ -167,11 +266,18 @@ async function main() {
   }
   const bodies = fetchCommentBodies(issueNumber, process.cwd());
   const decision = latestDecisionFor(bodies);
-  if (!decision) {
+  const executionBlock = latestExecutionBlockFor(bodies);
+  if (!decision && !executionBlock) {
     process.stdout.write("");
     return;
   }
-  process.stdout.write(JSON.stringify(decision, null, 2) + "\n");
+  // Formato combinado (#5373 item 5) — decisão e bloqueio-de-execução são
+  // estados independentes, os dois podem coexistir (decisão tomada, execução
+  // ainda presa) ou só um existir. `decision`/`execution_block` ficam
+  // `null` quando ausentes em vez de a chave sumir, pra leitura previsível.
+  process.stdout.write(
+    JSON.stringify({ decision, execution_block: executionBlock }, null, 2) + "\n",
+  );
 }
 
 const isDirectRun = (() => {
