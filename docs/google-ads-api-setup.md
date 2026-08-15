@@ -104,6 +104,39 @@ Vão para o Doppler (`diaria-studio` / `dev`), nunca para o repo:
 - `GOOGLE_ADS_REFRESH_TOKEN` — do fluxo de consentimento
 - `GOOGLE_ADS_LOGIN_CUSTOMER_ID` — `6236094249` (a MCC, **sem** hífens)
 - `GOOGLE_ADS_CUSTOMER_ID` — `2369219639` (a conta que tem os dados)
+- `GOOGLE_PROJECT_ID` — o "ID do projeto" (`velvety-tube-505505-d1`, tabela de
+  identificadores acima), não o nome nem o número. Adicionado em #5237,
+  **ainda pendente de sync no Doppler** — só `.env.example` tem o placeholder
+  até alguém com acesso ao vault rodar `npm run sync-env` ou
+  `doppler secrets set GOOGLE_PROJECT_ID` manualmente.
+
+## MCP oficial e ingestão automática (#5237)
+
+Escopo desta issue, feito **exceto o item que depende do editor** (pedir o
+developer token real — item 1 do checklist, ver issue):
+
+- **`.mcp.json` → `google-ads`**: entrada `stdio` (`pipx run --spec
+  git+https://github.com/googleads/google-ads-mcp.git google-ads-mcp`),
+  servidor oficial do time do Google Ads (link no topo do arquivo, ver
+  também a issue #5237). Diferente do `clarice` (HTTP + header-auth), esse
+  MCP é um processo local que lê as credenciais do próprio ambiente (`env`
+  no bloco da entrada) — mesmo padrão de env vars de `GOOGLE_ADS_*` já usado
+  por `google-ads-associate-token.ts`, mais `GOOGLE_PROJECT_ID`. **Não
+  testado ao vivo** — o Basic Access ainda está na fila, então qualquer
+  tentativa de handshake do MCP hoje bate no mesmo `DEVELOPER_TOKEN_NOT_APPROVED`
+  do restante deste documento. Confirmar a entrada quando o token sair da
+  fila.
+- **`scripts/google-ads-ingest-spend.ts`** (+ núcleo puro
+  `scripts/lib/google-ads-ingest.ts`): traduz GAQL (`segments.date` +
+  `metrics.cost_micros`, agregado por mês) pro formato de
+  `data/aquisicao/spend.csv` (#5236), fazendo merge idempotente por
+  (`canal`, `mes`) — nunca duplica nem apaga linhas de outros canais/meses.
+  **Fail-soft por design**: qualquer variável de ambiente ausente, ou
+  qualquer falha na chamada (rede, auth, `DEVELOPER_TOKEN_NOT_APPROVED`),
+  vira um aviso no stderr e `spend.csv` fica como estava — nunca quebra
+  `cac-report.ts`, que segue lendo o CSV mantido manualmente. Cobertura em
+  `test/google-ads-ingest-5237.test.ts` usa fixtures GAQL sintéticas — não
+  chama a API real.
 
 ## Manutenção
 
