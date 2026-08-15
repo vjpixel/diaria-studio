@@ -73,16 +73,21 @@
  * GUARD DE PUBLICAÇÃO: este script é só observabilidade/alerta.
  * NUNCA toca Beehiiv/LinkedIn/Facebook/Brevo, PRs, nem merge.
  *
- * #5293 item 3: este watchdog agora vigia DOIS kinds na mesma invocação —
- * `data/overnight/{AAMMDD}/` (comportamento original, inalterado) e
- * `data/continuo/{AAMMDD}/` (`/diaria-continuo`, que por desenho nunca
- * escreve `report.md` — "ativa" ali é só "existe plan.json" no diretório mais
- * recente, ver `findActiveRun`). Antes de declarar stall, checa
- * `hasHealthyIdleSession` (`session-registry.ts`, `phase` em
- * `HEALTHY_IDLE_PHASES`) — uma sessão contínua parada de propósito
- * (aguardando resposta do editor, ou pausada pelo guard de colisão com a
- * edição diária) NUNCA dispara alerta; só uma sessão sem heartbeat de fase
- * saudável E sem atividade recente é tratada como stall real.
+ * #5293 item 3 introduziu suporte a DOIS kinds na mesma invocação —
+ * `data/overnight/{AAMMDD}/` e `data/continuo/{AAMMDD}/`. **#5390
+ * (15/08/2026) voltou `WATCHED_KINDS` a vigiar só `"overnight"`** — o wake
+ * ocioso de `/diaria-continuo` passou de 20-30min pra 4h, e não existe
+ * limiar de stall abaixo de 4h que não dispare em toda janela ociosa
+ * saudável dessa skill (ver `WATCHED_KINDS` mais abaixo pro rationale
+ * completo). O maquinário multi-kind (`WatchableKind`, o ramo
+ * `kind === "continuo"` de `findActiveRun` — que por desenho nunca escreve
+ * `report.md`, "ativa" ali é só "existe plan.json" no diretório mais
+ * recente —, `hasHealthyIdleSession`/`HEALTHY_IDLE_PHASES`) continua no
+ * arquivo, só não é mais exercitado em produção: uma sessão contínua
+ * parada de propósito (aguardando resposta do editor, ou pausada pelo
+ * guard de colisão com a edição diária) sinalizava isso via
+ * `hasHealthyIdleSession` pra este watchdog nunca disparar alerta nela —
+ * mecanismo preservado, caso o kind volte a ser vigiado no futuro.
  *
  * Deve ser agendado externamente (Windows Task Scheduler, cron) para rodar
  * a cada 10–15 min. Ver docs/overnight-watchdog-setup.md.
@@ -577,10 +582,13 @@ export function diagnoseWatchdogActivity(params: {
 
 /**
  * Roda o diagnóstico/ação de stall para UM kind (`overnight` ou `continuo`,
- * #5293 item 3). Extraído de `main()` pra permitir rodar os dois kinds na
+ * #5293 item 3). Extraído de `main()` pra permitir rodar múltiplos kinds na
  * mesma invocação do watchdog sem duplicar a lógica — `data/overnight/` e
  * `data/continuo/` podem ter rodadas ativas SIMULTANEAMENTE (máquinas/sessões
- * diferentes), e cada uma precisa do próprio diagnóstico independente.
+ * diferentes), e cada uma precisaria do próprio diagnóstico independente.
+ * Continua aceitando `"continuo"` (parâmetro tipado, não hardcoded pra
+ * `"overnight"`), mas desde #5390 `WATCHED_KINDS` (abaixo) não inclui mais
+ * esse kind em produção — ver o rationale lá.
  */
 async function runWatchdogForKind(
   ROOT: string,
@@ -687,13 +695,23 @@ async function runWatchdogForKind(
 }
 
 /**
- * Kinds vigiados por esta invocação do watchdog (#5293 item 3). `continuo`
- * some deste array até a issue de origem fechar (ver
- * `.claude/skills/diaria-continuo/SKILL.md`) só se a skill for descontinuada —
- * a checagem em si é barata (um `findActiveRun` a mais que retorna `null` na
- * ausência de `data/continuo/`) e roda incondicionalmente, sem flag.
+ * Kinds vigiados por esta invocação do watchdog. `continuo` foi removido
+ * daqui em #5390 (15/08/2026): com o wake ocioso de `/diaria-continuo`
+ * alongado pra 4h (`.claude/skills/diaria-continuo/SKILL.md`, seção
+ * "Cadência do wake em modo ocioso"), o limiar de stall de 60 min
+ * (`STALL_THRESHOLD_MIN`) passou a disparar em TODA sessão contínua ociosa
+ * — o alarme virava ruído garantido, não sinal, porque não existe limiar
+ * <4h que distinga "ociosa de propósito" de "travada de verdade" sem
+ * disparar em toda janela ociosa saudável. O maquinário que o kind
+ * `"continuo"` precisa (`WatchableKind`, o ramo `kind === "continuo"` de
+ * `findActiveRun`, `HEALTHY_IDLE_PHASES`, `hasHealthyIdleSession`)
+ * **continua no arquivo, intacto** — custo de manter é ~zero, e reverter
+ * esta decisão vira só devolver `"continuo"` a este array. Efeito colateral
+ * aceito (documentado na issue de origem): uma sessão `continuo`
+ * genuinamente travada não gera mais halt banner/push automático deste
+ * watchdog — só o editor notando por fora.
  */
-const WATCHED_KINDS: readonly WatchableKind[] = ["overnight", "continuo"];
+export const WATCHED_KINDS: readonly WatchableKind[] = ["overnight"];
 
 /**
  * Pure-ish orquestração do loop multi-kind (#5293 fleet review, achado 3),
