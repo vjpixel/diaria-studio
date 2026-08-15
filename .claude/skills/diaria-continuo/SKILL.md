@@ -60,56 +60,83 @@ estrutural do harness.
 Primeira ação do coordenador, antes de qualquer outra coisa, ao processar
 este `SKILL.md`:
 
-1. **Detectar como fui invocado.** Se esta mensagem contém um bloco
-   `<command-name>/diaria-continuo</command-name>` — sinal de invocação
-   nativa, o editor digitou o comando diretamente — trata-se de uma entrada
-   **fresca**, ainda não envolvida em `/loop`. Se, em vez disso, este
-   conteúdo chegou como resultado de uma chamada de ferramenta `Skill`
-   (tool_result, sem bloco `<command-name>` correspondente, e com as
-   instruções do `/loop` já presentes mais cedo nesta mesma resposta) —
-   trata-se de uma **reentrada de dentro do próprio `/loop`** (seu passo "run
-   the parsed prompt now", ou o resume via `ScheduleWakeup`).
+1. **Detectar como fui invocado — sinal primário é um marker determinístico,
+   não inferência sobre a estrutura da mensagem (#5336, achado do fleet
+   review: a versão original desta seção usava só a presença/ausência de um
+   bloco `<command-name>` como sinal, sem nenhum backstop verificável — uma
+   leitura errada do modelo causaria recursão real).** Checar se os
+   argumentos com que EU MESMO fui invocado (a `args` da chamada `Skill`
+   que me trouxe aqui, quando a invocação veio por essa via — ou a ausência
+   de qualquer `args` de wrapper, quando veio de digitação direta) contêm o
+   marker sentinela `--via-loop`:
+   - **`--via-loop` ausente → entrada fresca**, ainda não envolvida em
+     `/loop` — é o caso de o editor ter digitado `/diaria-continuo`
+     diretamente (reconhecível também pelo bloco
+     `<command-name>/diaria-continuo</command-name>` na mensagem, sinal
+     corroborante mas não mais o único).
+   - **`--via-loop` presente → reentrada de dentro do próprio `/loop`** (seu
+     passo "run the parsed prompt now", ou o resume via `ScheduleWakeup`) —
+     o marker só chega aí porque EU o incluí no passo 2 abaixo; ninguém
+     mais o produz, então sua presença é autoverificável, não uma inferência
+     sobre formato de mensagem.
 2. **Entrada fresca → auto-envolver, sem exceção.** Chamar
-   `Skill("loop", {args: "/diaria-continuo {flags originais, se houver}"})`
-   imediatamente — antes de ler `context/overnight-dispatch-rules.md`, antes
-   de checar a fila, antes de qualquer passo do "Loop invariável" abaixo.
-   Preservar os flags da invocação original verbatim (`--dry-run`, `--bugs`,
-   `--priority ...`) dentro do `args` passado pro `/loop`, pra não perdê-los
-   na reentrada. Isso entrega o controle pro `/loop`, que roda em modo
-   dinâmico (sem intervalo — ver `Skill("loop", ...)` na lista de skills
-   disponíveis pro comportamento exato) e, no seu próprio passo 1, invoca
-   `/diaria-continuo` de novo — desta vez via `Skill` tool, chamada que
-   agora funciona porque a flag não bloqueia mais.
-3. **Reentrada via `/loop` → pular este bloco, seguir direto pro "Loop
-   invariável".** Não chamar `Skill("loop", ...)` de novo — isso causaria
-   recursão (o `/loop` reinvocando `/diaria-continuo`, que reinvoca `/loop`,
-   indefinidamente). É o `/loop`, não `/diaria-continuo`, quem decide
-   quando chamar `ScheduleWakeup` pro próximo wake (ver "Integração com
-   `/loop` e `ScheduleWakeup`" abaixo) — o coordenador desta skill só
-   executa o "Loop invariável" normalmente a partir daqui.
+   `Skill("loop", {args: "/diaria-continuo --via-loop {flags originais, se
+   houver}"})` imediatamente — antes de ler
+   `context/overnight-dispatch-rules.md`, antes de checar a fila, antes de
+   qualquer passo do "Loop invariável" abaixo. Preservar os flags reais da
+   invocação original verbatim (`--dry-run`, `--bugs`, `--priority ...`)
+   junto do marker, pra não perdê-los na reentrada — `--via-loop` em si
+   **nunca** é um argumento real da skill (não aparece em "Argumentos" mais
+   abaixo), é só o sentinel deste mecanismo; ignorar/descartar ao processar
+   os flags de verdade. Isso entrega o controle pro `/loop`, que roda em
+   modo dinâmico (sem intervalo — ver `Skill("loop", ...)` na lista de
+   skills disponíveis pro comportamento exato) e, no seu próprio passo 1,
+   invoca `/diaria-continuo` de novo — desta vez via `Skill` tool, chamada
+   que agora funciona porque a flag não bloqueia mais, e chega com
+   `--via-loop` no `args`.
+3. **Reentrada via `/loop` (`--via-loop` presente) → pular este bloco,
+   seguir direto pro "Loop invariável".** Não chamar `Skill("loop", ...)` de
+   novo — isso causaria recursão (o `/loop` reinvocando `/diaria-continuo`,
+   que reinvoca `/loop`, indefinidamente). É o `/loop`, não
+   `/diaria-continuo`, quem decide quando chamar `ScheduleWakeup` pro
+   próximo wake (ver "Integração com `/loop` e `ScheduleWakeup`" abaixo) — o
+   coordenador desta skill só executa o "Loop invariável" normalmente a
+   partir daqui.
 
 **Não validado ao vivo ainda (mesma disciplina de honestidade do resto deste
-arquivo) — o sinal de detecção do passo 1 (bloco `<command-name>` presente
-vs. ausente) é a melhor heurística disponível dado o harness, mas nunca foi
-testado numa invocação real de `/diaria-continuo` pós-remoção da flag.** A
-1ª invocação em produção deve ser observada de perto especificamente nesse
-ponto — confirmar que o auto-wrap dispara uma vez só (não recursa) e que a
-reentrada via `/loop` de fato pula o bloco 2. Se o sinal se mostrar
-não-confiável (ex: o bloco `<command-name>` não aparecer do jeito esperado,
-ou a reentrada não conseguir distinguir do fresco), reportar como achado —
-não há teste automatizado possível pra isso (é comportamento do harness em
-tempo de execução, não algo que roda em CI).
+arquivo).** O marker `--via-loop` é um sinal determinístico (presença/
+ausência é um fato verificável no `args` da própria invocação, não uma
+inferência de estrutura de mensagem como a versão anterior desta seção) —
+mas o CAMINHO em si (`Skill("loop", {args: "...--via-loop..."})` → `/loop`
+repassando esse `args` verbatim pro seu próprio passo "run the parsed
+prompt now" → `Skill("diaria-continuo", {args: "...--via-loop..."})`) nunca
+foi testado numa invocação real. Duas coisas específicas a confirmar na 1ª
+invocação em produção: (a) que `/loop` de fato preserva o `args` completo
+(incluindo `--via-loop`) ao invocar o prompt parseado, sem reformatá-lo de
+um jeito que perca o marker; (b) que o auto-wrap dispara uma vez só (não
+recursa) e a reentrada de fato pula o bloco 2. Se `--via-loop` se perder no
+caminho por (a), o sintoma seria recursão infinita — não há teste
+automatizado possível pra isso (é comportamento do harness em tempo de
+execução, não algo que roda em CI); se acontecer, reportar como achado e
+reverter pro sinal `<command-name>` como fallback enquanto se investiga.
 
 ### Integração com `/loop` e `ScheduleWakeup` (#5329, agora funcional via auto-envolvimento)
 
 `/loop` (sem intervalo — "modo dinâmico") roda o prompt agora e, ao final de
 cada turno em que o loop deve continuar, chama a ferramenta `ScheduleWakeup`
 com um `delaySeconds` de fallback e um `prompt` que reinvoca `/loop
-/diaria-continuo` na próxima ativação — é assim que a sessão "acorda" sem
-depender de mensagem do editor. O sentinel de resume do `ScheduleWakeup` é
-mecânica interna do modo dinâmico de `/loop` — funciona porque, com a flag
-removida, o passo 1 de `/loop` consegue completar a chamada `Skill`
-(diferente do estado documentado pelo #5332 original, que travava ali).
+/diaria-continuo --via-loop {flags}` na próxima ativação — é assim que a
+sessão "acorda" sem depender de mensagem do editor. O marker `--via-loop`
+(ver "Mecanismo de auto-envolvimento" acima) persiste automaticamente
+através dos wakes sem esforço extra do coordenador desta skill: `/loop`
+reusa seu próprio `prompt` original **verbatim** a cada `ScheduleWakeup`
+(mecânica documentada da própria ferramenta `/loop`), então o que foi
+passado na 1ª chamada (`/diaria-continuo --via-loop {flags}`) volta
+idêntico em toda reentrada — é `/loop`, não `/diaria-continuo`, quem garante
+essa persistência. O sentinel de resume do `ScheduleWakeup` é mecânica
+interna do modo dinâmico de `/loop` — funciona porque, com a flag removida,
+o passo 1 de `/loop` consegue completar a chamada `Skill` (diferente do
+estado documentado pelo #5332 original, que travava ali).
 
 **Cadência do wake em modo ocioso (passo 6, fila seca sem resposta
 pendente):** a doc do `/loop` só documenta um número fixo (1200-1800s,
