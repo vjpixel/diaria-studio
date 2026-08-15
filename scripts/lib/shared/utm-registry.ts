@@ -581,6 +581,13 @@ export const ENTITY_APPLE_FOOTER_NAV_UTM = {
   medium: "footer-nav",
 } as const;
 
+/** Mesmo padrão acima, pra página de entidade "DeepSeek" (#5125 item 4,
+ * `scripts/lib/entities/deepseek.ts`) — 6ª entidade publicada. */
+export const ENTITY_DEEPSEEK_FOOTER_NAV_UTM = {
+  source: "entity-deepseek",
+  medium: "footer-nav",
+} as const;
+
 /** Link "Arquivo completo em {url}" do post semanal do Instagram
  * (`scripts/lib/format-weekly-social.ts`, #4537 item 1) — o #4295 cobriu os
  * links que a pipeline DIÁRIA publica; o post semanal ficou fora do escopo
@@ -1437,6 +1444,19 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "condição do editor 14/08/2026 — publicada só com regeneração automática, ver " +
       "`scripts/regenerate-entity-pages.ts`). Cadastrado desde já pra não repetir o " +
       "achado #5205 (drift `nao_catalogado` no 1º clique real).",
+    status: "ativo",
+  },
+  {
+    id: "entity-deepseek-footer-nav",
+    label: "Página de entidade DeepSeek — link de rodapé pra diar.ia.br",
+    source: ENTITY_DEEPSEEK_FOOTER_NAV_UTM.source,
+    medium: ENTITY_DEEPSEEK_FOOTER_NAV_UTM.medium,
+    campaignPattern: "entity-deepseek-footer-nav",
+    originFile: "scripts/lib/entities/deepseek.ts",
+    description:
+      'Link "diar.ia.br" no rodapé de navegação cruzada da página de entidade DeepSeek (#5125 item 4, ' +
+      "6ª entidade publicada). Cadastrado desde já pra não repetir o achado #5205 " +
+      "(drift `nao_catalogado` no 1º clique real).",
     status: "ativo",
   },
 ] as const;
