@@ -52,9 +52,12 @@ no feed diário nunca é sobrescrito** (arquivo/upload novo, cacheado por
 `{edição}-{destaque}-{fontSize}` em
 `data/weekly/{carouselKey}/_internal/06-news-cards.json` — `fontSize` faz
 parte da chave de propósito, um re-run com seleção diferente pode legitimamente
-mudar o tamanho comum). Item de RADAR (modo `clicked`) segue o próprio
-caminho de card sob demanda (#4513, ver abaixo) — a recomposição de fonte
-única só se aplica a D1/D2/D3, que já têm card pré-gerado no Stage 3 diário.
+mudar o tamanho comum). Item de RADAR (modo `clicked`) também recebe o mesmo
+`carouselFontSize` (repassado como `fontSizeOverride` a
+`resolveOrGenerateSectionCardUrl` — a padronização visual vale pro
+carrossel inteiro) — a diferença é só o MECANISMO de geração/cache: RADAR
+usa o caminho sob demanda (#4513, ver abaixo), não o cache
+`06-news-cards.json` de `weekly-carousel-news-card.ts` usado por D1/D2/D3.
 
 **Renomeada de `/diaria-semanal` pelo #4483 (260803).** Duas decisões
 anteriores da issue #4101 foram SUPERSEDIDAS — releia esta seção antes de
@@ -145,11 +148,13 @@ atual:
   ordem de preferência de `gen-social-card-4x5.ts`), produzida pelo Stage 3
   diário. Sem essa arte-base, a recomposição falha e o carrossel inteiro
   falha junto (não publica parcial, ver Passo 3). Item de RADAR NÃO passa
-  por esse caminho — o card 4:5 é gerado SOB DEMANDA (#4513, ver
-  `scripts/lib/weekly-instagram-ondemand-card.ts`) só se o item vencer o
-  ranking; a mesma regra de "falha o carrossel inteiro em vez de publicar
-  parcial" vale se a geração sob demanda falhar (ex: crédito de API
-  esgotado, fonte de marca ausente na máquina).
+  pelo cache de recomposição (`06-news-cards.json`) — o card 4:5 é gerado SOB
+  DEMANDA (#4513, ver `scripts/lib/weekly-instagram-ondemand-card.ts`) só se
+  o item vencer o ranking, mas recebe o MESMO `carouselFontSize` da rodada
+  (o padrão visual do carrossel vale pra todos os itens, RADAR incluso —
+  muda só o mecanismo de geração); a mesma regra de "falha o carrossel
+  inteiro em vez de publicar parcial" vale se a geração sob demanda falhar
+  (ex: crédito de API esgotado, fonte de marca ausente na máquina).
 
 ## Passo 1 — Checar se falta enriquecimento de clicks
 
@@ -237,8 +242,10 @@ final (sem foto). O tamanho de fonte comum do carrossel
 itens selecionados nessa rodada; cada item D1/D2/D3 é então RECOMPOSTO nesse
 tamanho (`resolveOrGenerateNewsCardUrl`, #5345 — ver seção acima), nunca
 reusado no tamanho publicado originalmente no feed diário. Item de RADAR sem
-card pré-existente tem o card gerado SOB DEMANDA nesse momento (#4513), fora
-desse mecanismo de recomposição de fonte. Capa/CTA (paleta clara, auto-size —
+card pré-existente tem o card gerado SOB DEMANDA nesse momento (#4513),
+recebendo o MESMO `carouselFontSize` da rodada via `fontSizeOverride` — o
+que muda é só o mecanismo de geração/cache, não o tamanho de fonte
+aplicado. Capa/CTA (paleta clara, auto-size —
 ver seção acima) são gerados/upados sob demanda na 1ª execução e cacheados
 depois (`data/weekly/{saturday}-{mode}/_internal/06-flat-cards.json` — ver
 `scripts/lib/weekly-flat-card.ts`). Se QUALQUER item de notícia não resolver
