@@ -667,7 +667,7 @@ describe("main(): dispatch mockado", () => {
       // #5330: capa (sem foto) abre o carrossel, CTA (sem foto) fecha — os 2
       // itens de notícia ficam no meio, na mesma ordem de antes.
       assert.equal(capturedBody.image_urls.length, 4);
-      assert.match(capturedBody.image_urls[0], /\/flat\/weekly\/.*-clicked\/cover-4x5\.jpg$/);
+      assert.match(capturedBody.image_urls[0], /\/flat\/img-unknown-weekly-.*-clicked-cover-4x5\.jpg$/);
       // #5330: itens de notícia agora são RECOMPOSTOS com o tamanho de fonte
       // único do carrossel — a URL vem do fakeNewsCardGenerator, não mais da
       // URL fixturada em addImageFixture (que só alimentava o caminho antigo
@@ -675,9 +675,9 @@ describe("main(): dispatch mockado", () => {
       // fontSize faz parte da chave/nome do arquivo (#5330 fleet review —
       // cache nunca serve tamanho desatualizado) — casa por padrão, não
       // valor exato, já que o tamanho depende da fórmula de wrap real.
-      assert.match(capturedBody.image_urls[1], /\/news\/weekly\/271225-clicked\/271220-d2-\d+-4x5\.jpg$/);
-      assert.match(capturedBody.image_urls[2], /\/news\/weekly\/271225-clicked\/271220-d1-\d+-4x5\.jpg$/);
-      assert.match(capturedBody.image_urls[3], /\/flat\/weekly\/.*-clicked\/cta-4x5\.jpg$/);
+      assert.match(capturedBody.image_urls[1], /\/news\/img-unknown-weekly-271225-clicked-271220-d2-\d+-4x5\.jpg$/);
+      assert.match(capturedBody.image_urls[2], /\/news\/img-unknown-weekly-271225-clicked-271220-d1-\d+-4x5\.jpg$/);
+      assert.match(capturedBody.image_urls[3], /\/flat\/img-unknown-weekly-.*-clicked-cta-4x5\.jpg$/);
       assert.equal(capturedBody.image_url, null);
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
@@ -717,10 +717,10 @@ describe("main(): dispatch mockado", () => {
       assert.match(capturedBody.text, /1\. D1 da segunda[\s\S]*2\. D1 da terça/);
       assert.equal(capturedBody.destaque, "weekly-highlights");
       assert.equal(capturedBody.image_urls.length, 4);
-      assert.match(capturedBody.image_urls[0], /\/flat\/weekly\/.*-highlights\/cover-4x5\.jpg$/);
-      assert.match(capturedBody.image_urls[1], /\/news\/weekly\/271225-highlights\/271220-d1-\d+-4x5\.jpg$/);
-      assert.match(capturedBody.image_urls[2], /\/news\/weekly\/271225-highlights\/271221-d1-\d+-4x5\.jpg$/);
-      assert.match(capturedBody.image_urls[3], /\/flat\/weekly\/.*-highlights\/cta-4x5\.jpg$/);
+      assert.match(capturedBody.image_urls[0], /\/flat\/img-unknown-weekly-.*-highlights-cover-4x5\.jpg$/);
+      assert.match(capturedBody.image_urls[1], /\/news\/img-unknown-weekly-271225-highlights-271220-d1-\d+-4x5\.jpg$/);
+      assert.match(capturedBody.image_urls[2], /\/news\/img-unknown-weekly-271225-highlights-271221-d1-\d+-4x5\.jpg$/);
+      assert.match(capturedBody.image_urls[3], /\/flat\/img-unknown-weekly-.*-highlights-cta-4x5\.jpg$/);
 
       // Agendado no PRÓPRIO sábado (dayOffset=0), não no domingo (dayOffset
       // default do modo "clicked") — diferença-chave do #5330.
@@ -906,7 +906,7 @@ describe("main(): dispatch mockado", () => {
       assert.match(capturedBody.text, /1\. Item de Radar vencedor[\s\S]*2\. D1 pouco clicado/);
       assert.equal(capturedBody.image_urls.length, 4);
       assert.equal(capturedBody.image_urls[1], "https://cdn.example.com/radar-card-gerado-sob-demanda.jpg");
-      assert.match(capturedBody.image_urls[2], /\/news\/weekly\/271225-clicked\/271220-d1-\d+-4x5\.jpg$/);
+      assert.match(capturedBody.image_urls[2], /\/news\/img-unknown-weekly-271225-clicked-271220-d1-\d+-4x5\.jpg$/);
       assert.equal(generatorCalls, 1, "gerador sob demanda deveria ser chamado exatamente 1x — nunca redundante pro D1, que já tinha card");
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));

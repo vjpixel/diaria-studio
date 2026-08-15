@@ -123,7 +123,9 @@ describe("resolveOrGenerateFlatCardUrl (cache + geração sob demanda)", () => {
         generator,
       );
       assert.equal(calls, 1);
-      assert.equal(url, "https://cdn.example.com/weekly/260815-highlights/cover-4x5.jpg");
+      // #5386: kvKey precisa casar com a allowlist `img-` do Worker (nunca
+      // mais `weekly/{key}/{slot}-4x5.jpg` — ver `poll-img-key-allowlist-weekly-5386.test.ts`).
+      assert.equal(url, "https://cdn.example.com/img-unknown-weekly-260815-highlights-cover-4x5.jpg");
       const cachePath = join(dataRoot, "weekly", "260815-highlights", "_internal", "06-flat-cards.json");
       assert.ok(existsSync(cachePath));
       const cached = JSON.parse(readFileSync(cachePath, "utf8"));

@@ -42,7 +42,9 @@ describe("resolveOrGenerateNewsCardUrl (cache + recomposição)", () => {
       assert.equal(calls, 1);
       // #5330 fleet review: fontSize agora faz parte da chave/kvKey (evita
       // servir cache com tamanho desatualizado).
-      assert.equal(result.url, "https://cdn.example.com/weekly/260815-highlights/260810-d1-62-4x5.jpg");
+      // #5386: kvKey precisa casar com a allowlist `img-` do Worker (nunca
+      // mais `weekly/{carouselKey}/{key}-4x5.jpg` — ver `poll-img-key-allowlist-weekly-5386.test.ts`).
+      assert.equal(result.url, "https://cdn.example.com/img-unknown-weekly-260815-highlights-260810-d1-62-4x5.jpg");
       assert.equal(capturedInput.fontSize, 62);
       assert.equal(capturedInput.title, "Título do destaque");
       const cachePath = join(dataRoot, "weekly", "260815-highlights", "_internal", "06-news-cards.json");

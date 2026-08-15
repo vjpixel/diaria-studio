@@ -32,6 +32,7 @@ import { generateCard } from "../gen-social-card-4x5.ts";
 import { assertBrandSerifAvailable } from "./shared/assert-brand-font.ts";
 import { uploadImageToWorkerKV } from "./cloudflare-kv-upload.ts";
 import { DIARIA_EIA_URL } from "./canonical-urls.ts";
+import { cloudflareKvKey } from "../upload-images-public.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -128,7 +129,14 @@ export async function resolveOrGenerateNewsCardUrl(
   const outDir = resolve(dataRoot, "weekly", carouselKey, "_internal");
   mkdirSync(outDir, { recursive: true });
   const outPath = resolve(outDir, `06-${key}-4x5.jpg`);
-  const kvKey = `weekly/${carouselKey}/${key}-4x5.jpg`;
+  // #5386: mesma correção de `weekly-flat-card.ts` — a chave precisa casar
+  // com a allowlist `/^img-[^:]+$/` de `handleImage` (workers/poll/src/index.ts,
+  // #4112), senão a Graph API do Instagram bate 404 ao buscar `image_url` e
+  // o carrossel inteiro falha. Reusa `cloudflareKvKey()`; `carouselKey` não
+  // termina em AAMMDD, então cai no fallback `img-unknown-...` documentado —
+  // `carouselKey` + `key` (que já inclui `fontSize`, ver docstring do módulo)
+  // vão inteiros no filename, preservando unicidade.
+  const kvKey = cloudflareKvKey(carouselKey, `weekly-${carouselKey}-${key}-4x5.jpg`);
 
   try {
     const { url } = await generator({ ...input, outPath, kvKey });
