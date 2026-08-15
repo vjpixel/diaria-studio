@@ -70,6 +70,20 @@ O objetivo é converter o máximo da fila em trabalho autônomo enquanto o edito
    - **`requer-sessao-local`** — issues com label **`local`** em sessão **cloud** (container efêmero, sem junction `data/`). Detectar o modo com `npx tsx scripts/lib/exec-mode.ts` (imprime `local` ou `cloud`; exit 0 sempre). Em modo cloud: marcar `pulada` motivo `requer-sessao-local`, comentar na issue "Requer sessão local — junction `data/`, ComfyUI ou credenciais locais ausentes em sessão cloud." (com dedup), e pular. Em modo local: issue `local` é elegível normalmente — a label é apenas informacional em sessão local.
    - `not-this-week` / `fora-do-escopo` — labels ou critério explícito que exclui da rodada.
 
+   **Nenhum status genérico "bloqueada" cobrindo motivos distintos (#5376,
+   15/08/2026 — mesma classe de bug observada ao vivo no `/diaria-continuo`
+   com a fila de fim de rodada).** Cada issue leva o status específico da
+   lista acima — `bloqueada-externa` (credencial/conta/allowlist) e
+   `ambígua/trade-off-real` (decisão de produto pendente, cat. C do develop)
+   nunca aparecem fundidas num rótulo vago tipo "decisão de produto, conta
+   externa, ou ação manual" no relatório da Fase 2 nem no comentário da
+   issue — o comentário/relatório sempre nomeia o status específico e o que
+   falta. Antes de rotular qualquer issue como bloqueada, reler o corpo
+   inteiro: se ele já descreve os passos de execução (ex: "scoping"/
+   "investigação" com protocolo escrito), é `elegivel`, não bloqueio — o
+   atalho de classificar pelo título/label sem checar o corpo foi a causa
+   raiz do #5376.
+
    **`in_round` (#3131):** ao gravar cada issue em `plan.json` (passo 7), toda issue classificada `elegivel`/`precisa-resposta` **aqui neste passo 4** recebe `in_round: true` — ela genuinamente entrou no escopo de trabalho desta rodada, mesmo que uma `precisa-resposta` termine em "decido depois" (`pulada`) no briefing do passo 5, ou que uma `elegivel` seja pulada MID-RODADA já na Fase 1 (`sem-resposta`, `ambigua` — ver Fase 1 passo 1/5): a decisão de pular foi tomada trabalhando a fila, não antes dela. Já toda issue classificada `bloqueada-externa`, `requer-sessao-local`, `not-this-week`, `fora-do-escopo`, ou `ambígua/trade-off-real` **aqui neste passo 4** — ou seja, excluída ANTES de qualquer despacho, já na varredura inicial — recebe `in_round: false`: nunca foi trabalho real desta rodada. `scripts/overnight-statusline.ts` (`renderOvernightBar`) usa esse campo para excluir essas issues do denominador `done/total` da barra — sem isso, uma rodada com issues bloqueadas infla o denominador com trabalho que nunca entrou na fila (incidente 260707: `plan.json` tinha 57 issues, só 53 de fato "entraram" na rodada — a barra mostrava `6/57` quando o sinal útil era `2/53`). Issues sem o campo (plan.json legado, anterior a este PR) são tratadas como `in_round: true` (fail-open — mesmo padrão de `machine_id`/`review_1_5b_has_p2` ausentes).
 4.5. **Tabela da fila completa** — imprimir ANTES do briefing, para o editor ver o escopo inteiro da noite e poder resgatar exclusões imediatamente:
 

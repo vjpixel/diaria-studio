@@ -453,6 +453,35 @@ aqui.
    develop) e montar um lote de perguntas: para cada issue bloqueada, qual
    decisão/credencial/confirmação exata a destravaria.
 
+   **Checklist obrigatório de classificação, issue por issue (#5376,
+   15/08/2026) — nunca agrupar em prosa vaga.** Antes de decidir ir pro passo
+   6 (ocioso), CADA issue que sobrou na fila desbloqueada precisa ser
+   classificada explicitamente numa das 3 categorias abaixo — "não sei o que
+   fazer com isso agora" **não é** sinônimo de "está bloqueada"; ler o corpo
+   da issue inteiro antes de rotular, o atalho barato que causou o #5376 foi
+   rotular pelo título/label sem checar se o corpo já descreve um caminho de
+   execução:
+   - **(a) Acionável agora** — nenhuma decisão nem credencial falta (mesmo
+     que pareça só "investigação"/"scoping": se o corpo da issue já descreve
+     os passos, é trabalho, não pergunta). Volta pro passo 1 (dispatch)
+     imediatamente — **nunca** descartada silenciosamente nem empurrada pro
+     lote de perguntas.
+   - **(b) Decisão de produto pendente** — critério 2 do "Perguntar é
+     exceção" (CLAUDE.md): duas opções que mudam a experiência do leitor e
+     cuja escolha não está documentada em lugar nenhum. Vai pro lote de
+     `AskUserQuestion` do passo 4.
+   - **(c) Bloqueio genuíno não-decisão** — credencial-runtime, conta
+     externa, ação humana fora do repo (inclusive prospecção/contato com
+     terceiros no mundo real). Comentário na issue registrando exatamente o
+     que falta; categoria **distinta** de (b) em qualquer comunicação —
+     nunca o mesmo rótulo vago ("bloqueada") cobrindo as duas.
+
+   Só entra no lote de perguntas do passo 4 quem foi classificado em (b).
+   Quem foi classificado em (c) recebe comentário aqui mesmo, no passo 3, e
+   não aparece no `AskUserQuestion`. Uma issue mal-classificada em (b)/(c)
+   quando na verdade era (a) é o próprio bug do #5376 — na dúvida entre (a) e
+   as outras duas, reler o corpo antes de desistir dela.
+
    **Antes de incluir qualquer issue no lote de perguntas (#5373):** rodar
    `npx tsx scripts/lib/issue-decisions.ts --issue N` (`scripts/lib/issue-decisions.ts`)
    — se a issue tem a label `decisao-registrada` ela quase certamente tem
@@ -554,6 +583,16 @@ desbloqueada seca e não há resposta pendente, a skill **só re-varre issues e
 dorme** — nunca vira geradora de trabalho especulativo (nada de auditar o
 repo proativamente pra inflar o backlog). Se a fila secou e ninguém
 respondeu, dorme.
+
+**Entrada no modo ocioso exige o checklist do passo 3 completo (#5376) —
+nunca por omissão.** Só faz sentido dormir depois que TODA issue
+remanescente do backlog bloqueado foi classificada explicitamente em (b)
+Decisão de produto pendente ou (c) Bloqueio genuíno — nunca deixada sem
+classificação, e nunca as duas categorias fundidas num "decisão de produto,
+conta externa, ou ação manual do editor" genérico no resumo/prosa final.
+Issue classificada (a) Acionável que não foi dispatchada é bug, não
+justificativa válida pra dormir — voltar ao passo 1 antes de considerar a
+fila seca.
 
 ## Decisões e histórico
 
