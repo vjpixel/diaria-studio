@@ -422,13 +422,30 @@ aqui.
    CLAUDE.md — não há trade-off editorial genuíno em como agrupar issues
    técnicas). Se o editor discordar de um agrupamento já despachado, o canal
    é o mesmo dos passos 3-5 abaixo: comentar na issue.
-2. **Fila seca** → re-varredura (`gh issue list --state open`) pra pegar
-   issue nova (de terceiro, ou criada por finding da própria rodada) — mesma
-   lógica sem cap de `rescans_done` que o overnight adotou em #5272 (contador
-   puro de observabilidade, nenhuma decisão de parada lê o valor). **Antes de
-   varrer, rodar `npx tsx scripts/lib/continuo-plan-rotation.ts check`**
-   (#5293 item 5 — rotaciona `plan.json` pro dia civil corrente se ele mudou
-   desde a última chamada; no-op na maioria das vezes).
+2. **Fila seca** → re-varredura pra pegar issue nova (de terceiro, ou criada
+   por finding da própria rodada) — mesma lógica sem cap de `rescans_done`
+   que o overnight adotou em #5272 (contador puro de observabilidade, nenhuma
+   decisão de parada lê o valor). **Antes de varrer, rodar
+   `npx tsx scripts/lib/continuo-plan-rotation.ts check`** (#5293 item 5 —
+   rotaciona `plan.json` pro dia civil corrente se ele mudou desde a última
+   chamada; no-op na maioria das vezes).
+
+   **Varredura incremental, não full-rescan (#5344 Parte B6, 15/08/2026).**
+   Em vez de `gh issue list --state open` do zero a cada ciclo (31 issues
+   abertas reclassificadas do zero toda vez, medição de 15/08/2026), usar
+   `gh issue list --state open --json number,title,labels,updatedAt --search
+   "updated:>={last_scan_at}"` — `{last_scan_at}` é o campo novo em
+   `plan.json` (ISO 8601, gravado ao fim de cada varredura bem-sucedida,
+   ausente/vazio na 1ª rodada do dia = tratar como full-scan). Issues que não
+   mudaram desde `last_scan_at` reusam a classificação já cacheada em
+   `plan.json` (o mesmo cache que o `batch_approval`/`batch` do passo 1 já
+   usa) — só o delta retornado pela busca é reclassificado. Issue fechada
+   entre varreduras não aparece no `--search` incremental por não ter
+   `updated:>=`; o passo 2 já lida com isso indiretamente (issue fechada não
+   volta a ser candidata a dispatch, então não precisa de tratamento
+   especial aqui). Gravar `last_scan_at = now()` ao fim da varredura, mesmo
+   quando o delta veio vazio (idempotente — evita re-scan do mesmo intervalo
+   no próximo ciclo).
 3. **Ainda seca** → heartbeat `--phase varrendo-bloqueadas`, varrer o backlog
    **bloqueado** (issues `bloqueada-externa` na classificação do overnight —
    credencial-runtime, conta-externa, decisão-produto,
@@ -464,7 +481,29 @@ aqui.
    dormindo) e então re-varrer periodicamente (a fila desbloqueada pode ter
    crescido nesse meio-tempo — voltar ao passo 1 se sim). Nunca "termina": a
    sessão fica viva esperando ou fila nova, ou resposta a uma pergunta
-   pendente. **Custo acumulado (#5293 item 6):** ao acordar de um período de
+   pendente.
+
+   **Backoff progressivo do `ScheduleWakeup` ocioso (#5344 Parte B5,
+   15/08/2026).** Quando este passo dorme por fila seca e sem resposta
+   pendente (não pelo guard de colisão editorial do passo 1, que tem cadência
+   própria), o delay do `ScheduleWakeup` não é mais fixo 1200-1800s — segue
+   backoff progressivo **20min → 30min → 45min → 60min** (o teto de 3600s do
+   próprio `ScheduleWakeup`), avançando um degrau por varredura ociosa
+   consecutiva (fila seca E sem resposta pendente) além da anterior. Contador
+   `idle_scan_streak` (inteiro, novo campo em `plan.json`): incrementar em 1
+   toda vez que este passo 6 dormir por ociosidade; **resetar para `0`** assim
+   que o passo 1 encontrar issue nova pra trabalhar (fila deixou de estar
+   seca) ou o passo 5 processar uma resposta do editor — nesses dois casos o
+   próximo sono ocioso, se houver, recomeça do piso (20min). Mapeamento
+   `idle_scan_streak → delay`: `0` → 1200s (20min), `1` → 1800s (30min), `2`
+   → 2700s (45min), `≥3` → 3600s (60min, teto — não cresce além disso).
+   Ganho: numa janela ociosa longa (ordem de horas), menos wakes = menos
+   turnos completos de coordenador pagando bootstrap de contexto; custo é só
+   latência de detecção (até 1h numa fila que já estava seca — o modo ocioso
+   é estritamente passivo por decisão do briefing, então isso nunca bloqueia
+   trabalho real). O guard de colisão editorial (`pausado-edicao`) não usa
+   este backoff — cadência de repolling da edição em curso é assunto
+   separado, não tratado aqui. **Custo acumulado (#5293 item 6):** ao acordar de um período de
    sono longo (ordem de horas) ou a cada rotação de dia (passo 2), rodar
    `npx tsx scripts/continuo-cost-summary.ts` e considerar o número reportado
    — não há teto (mandato "sem limites", #2039/#5293), mas o editor pode
