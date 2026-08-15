@@ -12,9 +12,12 @@ import assert from "node:assert/strict";
 import {
   formatInstagramWeekly,
   formatFacebookWeekly,
+  formatThreadsWeekly,
   INSTAGRAM_WEEKLY_CHAR_LIMIT,
+  THREADS_WEEKLY_CHAR_LIMIT,
   buildInstagramWeeklyArchiveUrl,
   buildFacebookWeeklyArchiveUrl,
+  buildThreadsWeeklyArchiveUrl,
   type InstagramWeeklyItem,
 } from "../scripts/lib/format-weekly-social.ts";
 
@@ -183,6 +186,48 @@ describe("formatFacebookWeekly (#5348)", () => {
 
   it("modo default (omitido) continua 'clicked'", () => {
     const caption = formatFacebookWeekly(makeItems(2));
+    assert.match(caption, /^Os mais clicados da semana na diar\.ia\.br:/);
+  });
+});
+
+describe("formatThreadsWeekly (#5348, unidade Threads)", () => {
+  it("retorna vazio para 0 itens", () => {
+    assert.equal(formatThreadsWeekly([]), "");
+  });
+
+  it("títulos numerados, SEM linha de contexto (diferente de Instagram/Facebook) — orçamento de 500 chars não sobra pra isso", () => {
+    const items = makeItems(5);
+    const caption = formatThreadsWeekly(items);
+    items.forEach((it, i) => {
+      assert.ok(caption.includes(`${i + 1}. ${it.title}`));
+    });
+    // A ausência da linha de contexto é o que diferencia estruturalmente
+    // de formatInstagramWeekly/formatFacebookWeekly nesta suíte.
+  });
+
+  it("nunca excede 500 chars — inclusive no PIOR CASO (5 títulos de 53 chars cada, o máximo real)", () => {
+    const items = makeLongItems(5);
+    const caption = formatThreadsWeekly(items);
+    assert.ok(caption.length <= THREADS_WEEKLY_CHAR_LIMIT, `caption com ${caption.length} chars excede o limite de ${THREADS_WEEKLY_CHAR_LIMIT}`);
+  });
+
+  it("o link de arquivo aparece clicável no corpo, com UTM PRÓPRIO do Threads (nunca reusa o source do Instagram/Facebook)", () => {
+    const caption = formatThreadsWeekly(makeItems(3));
+    const urls = caption.match(/https?:\/\/\S+/g) ?? [];
+    assert.deepEqual(urls, [buildThreadsWeeklyArchiveUrl()]);
+    assert.notDeepEqual(urls, [buildInstagramWeeklyArchiveUrl()]);
+    assert.notDeepEqual(urls, [buildFacebookWeeklyArchiveUrl()]);
+    const url = new URL(urls[0]);
+    assert.equal(url.searchParams.get("utm_source"), "threads");
+  });
+
+  it("modo 'highlights' usa a mesma intro 'principais destaques' dos outros canais", () => {
+    const caption = formatThreadsWeekly(makeItems(2), "highlights");
+    assert.match(caption, /^Os principais destaques da semana na diar\.ia\.br:/);
+  });
+
+  it("modo default (omitido) continua 'clicked'", () => {
+    const caption = formatThreadsWeekly(makeItems(2));
     assert.match(caption, /^Os mais clicados da semana na diar\.ia\.br:/);
   });
 });

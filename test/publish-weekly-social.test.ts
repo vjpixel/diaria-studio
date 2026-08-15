@@ -753,7 +753,10 @@ describe("main(): dispatch mockado", () => {
           requestCount++;
           return { statusCode: 200, data: JSON.stringify({ queued: true, key: `queue:instagram:${requestCount}`, scheduled_at: "x", destaque: "weekly" }) };
         })
-        .times(2);
+        // #5348 (unidade Threads): Threads passou a compartilhar o MESMO
+        // Worker queue do Instagram — cada modo agora bate /queue 2x
+        // (instagram + threads), não mais 1x. 2 modos × 2 canais = 4.
+        .times(4);
 
       await main(
         ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
@@ -764,10 +767,12 @@ describe("main(): dispatch mockado", () => {
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
-      assert.equal(requestCount, 2, "os 2 modos deveriam disparar 2 chamadas de rede distintas — nenhum skip-existing indevido entre eles");
+      assert.equal(requestCount, 4, "os 2 modos × 2 canais (instagram+threads) deveriam disparar 4 chamadas de rede distintas — nenhum skip-existing indevido entre eles");
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
       const destaques = out.posts.filter((p: any) => p.platform === "instagram").map((p: any) => p.destaque);
       assert.deepEqual(destaques.sort(), ["weekly-clicked", "weekly-highlights"]);
+      const threadsDestaques = out.posts.filter((p: any) => p.platform === "threads").map((p: any) => p.destaque);
+      assert.deepEqual(threadsDestaques.sort(), ["weekly-clicked", "weekly-highlights"]);
     });
   });
 
@@ -1418,10 +1423,13 @@ describe("main(): dispatch mockado", () => {
         .intercept({ path: "/queue", method: "POST" })
         .reply((opts) => {
           const body = JSON.parse(opts.body as string);
-          scheduledAts.push(`${body.destaque}@${body.scheduled_at}`);
-          return { statusCode: 200, data: JSON.stringify({ queued: true, key: `queue:${body.destaque}`, scheduled_at: body.scheduled_at, destaque: body.destaque }) };
+          // #5348 (unidade Threads): Threads passou a compartilhar o MESMO
+          // Worker queue do Instagram — cada modo agora bate /queue 2x
+          // (instagram + threads), não mais 1x.
+          scheduledAts.push(`${body.channel}:${body.destaque}@${body.scheduled_at}`);
+          return { statusCode: 200, data: JSON.stringify({ queued: true, key: `queue:${body.channel}:${body.destaque}`, scheduled_at: body.scheduled_at, destaque: body.destaque }) };
         })
-        .times(2);
+        .times(4);
 
       let captured = "";
       const originalLog = console.log;
@@ -1437,9 +1445,15 @@ describe("main(): dispatch mockado", () => {
         console.log = originalLog;
       }
       assert.match(captured, /--mode both — rodando "highlights" e "clicked" em sequência/);
-      assert.equal(scheduledAts.length, 2, "os 2 modos deveriam ter chamado o Worker queue, 1x cada");
-      assert.ok(scheduledAts.some((s) => s.startsWith("weekly-highlights@2027-12-25")));
-      assert.ok(scheduledAts.some((s) => s.startsWith("weekly-clicked@2027-12-26")));
+      assert.equal(
+        scheduledAts.length,
+        4,
+        "os 2 modos deveriam ter chamado o Worker queue 2x cada (instagram + threads, #5348)",
+      );
+      assert.ok(scheduledAts.some((s) => s.startsWith("instagram:weekly-highlights@2027-12-25")));
+      assert.ok(scheduledAts.some((s) => s.startsWith("instagram:weekly-clicked@2027-12-26")));
+      assert.ok(scheduledAts.some((s) => s.startsWith("threads:weekly-highlights@2027-12-25")));
+      assert.ok(scheduledAts.some((s) => s.startsWith("threads:weekly-clicked@2027-12-26")));
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
       const highlights = out.posts.find((p: any) => p.destaque === "weekly-highlights");
