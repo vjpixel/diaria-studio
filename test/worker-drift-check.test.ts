@@ -25,6 +25,7 @@ import {
   shouldAdvanceState,
   buildWorkerDriftAlarmEmail,
   buildApiErrorAlarmEmail,
+  workerDriftFindingKey,
   API_ERROR_SUSTAINED_THRESHOLD_MS,
   type WorkerDriftCheckInput,
   type WorkerDriftResult,
@@ -505,5 +506,52 @@ describe("buildApiErrorAlarmEmail (#4746)", () => {
     assert.match(body, /Cloudflare API retornou 401: invalid token/);
     assert.match(body, /CLOUDFLARE_WORKERS_TOKEN/);
     assert.match(body, /1\.0 dia\(s\)/); // formatDuration: 24h exatas -> vira "1.0 dia(s)", não "24.0h" (hours<24 é estrito)
+  });
+});
+
+describe("workerDriftFindingKey (#5339)", () => {
+  it("combina workerName + message — estável entre 2 execuções com o mesmo achado", () => {
+    const r1 = driftResult({ workerName: "reativar", message: "commit mais recente que o último deploy publicado" });
+    const r2 = driftResult({ workerName: "reativar", message: "commit mais recente que o último deploy publicado" });
+    assert.equal(workerDriftFindingKey(r1), workerDriftFindingKey(r2));
+  });
+
+  it("workers diferentes com a mesma message nunca colidem", () => {
+    const r1 = driftResult({ workerName: "reativar", message: "mesma mensagem" });
+    const r2 = driftResult({ workerName: "poll", message: "mesma mensagem" });
+    assert.notEqual(workerDriftFindingKey(r1), workerDriftFindingKey(r2));
+  });
+});
+
+describe("buildWorkerDriftAlarmEmail com issueRefs (#5339)", () => {
+  it("cita o número da issue quando issueRefs tem entry pro achado (action: created/reused)", () => {
+    const r = driftResult({
+      workerName: "reativar",
+      message: "commit mais recente que o último deploy publicado",
+    });
+    const issueRefs = new Map([
+      [workerDriftFindingKey(r), { issueNumber: 5337, url: "https://github.com/vjpixel/diaria-studio/issues/5337", action: "created" }],
+    ]);
+    const { body } = buildWorkerDriftAlarmEmail([r], NOW, issueRefs);
+    assert.match(body, /Issue: #5337/);
+    assert.match(body, /issues\/5337/);
+  });
+
+  it("action 'failed' cita o motivo em vez de um número — e-mail nunca perde o achado por falha de gh", () => {
+    const r = driftResult({
+      workerName: "reativar",
+      message: "commit mais recente que o último deploy publicado",
+    });
+    const issueRefs = new Map([
+      [workerDriftFindingKey(r), { issueNumber: null, url: null, action: "failed", error: "gh não autenticado" }],
+    ]);
+    const { body } = buildWorkerDriftAlarmEmail([r], NOW, issueRefs);
+    assert.match(body, /falha ao criar\/reusar \(gh não autenticado\)/);
+  });
+
+  it("sem issueRefs (undefined) — corpo sai igual ao comportamento pré-#5339, sem quebrar", () => {
+    const r = driftResult({ workerName: "reativar" });
+    const { body } = buildWorkerDriftAlarmEmail([r], NOW);
+    assert.doesNotMatch(body, /Issue:/);
   });
 });

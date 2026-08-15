@@ -35,8 +35,11 @@ import {
   resolveLastDeployedAt,
   loadState,
   saveState,
+  loadAlarmIssuesState,
+  saveAlarmIssuesState,
 } from "../scripts/worker-drift-check.ts";
 import { emptyWorkerDriftAlarmState, advanceState } from "../scripts/lib/worker-drift-check.ts";
+import { emptyAlarmIssuesState, type AlarmIssuesState } from "../scripts/lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -176,5 +179,38 @@ describe("loadState / saveState (#4723, I/O)", () => {
     const state = advanceState(null, new Date("2026-08-05T12:00:00Z"));
     saveState(state, path);
     assert.equal(loadState(path).lastAlarmedFingerprint, null);
+  });
+});
+
+describe("loadAlarmIssuesState / saveAlarmIssuesState (#5339, I/O)", () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "worker-drift-check-alarm-issues-"));
+  });
+  afterEach(() => rmSync(tmpDir, { recursive: true, force: true }));
+
+  it("arquivo ausente -> estado vazio (fail-soft)", () => {
+    assert.deepEqual(loadAlarmIssuesState(resolve(tmpDir, "nao-existe.json")), emptyAlarmIssuesState());
+  });
+
+  it("roundtrip: save + load preserva o estado", () => {
+    const path = resolve(tmpDir, "sub", "alarm-issues.json");
+    const state: AlarmIssuesState = {
+      "reativar:reativar:commit mais recente que o último deploy publicado": {
+        issueNumber: 5337,
+        url: "https://github.com/vjpixel/diaria-studio/issues/5337",
+        missingStreak: 0,
+        closedAt: null,
+      },
+    };
+    saveAlarmIssuesState(state, path);
+    assert.equal(existsSync(path), true);
+    assert.deepEqual(loadAlarmIssuesState(path), state);
+  });
+
+  it("JSON corrompido -> estado vazio, nunca lança", () => {
+    const path = resolve(tmpDir, "corrompido.json");
+    writeFileSync(path, "{ nao é json válido");
+    assert.deepEqual(loadAlarmIssuesState(path), emptyAlarmIssuesState());
   });
 });
