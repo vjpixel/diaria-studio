@@ -36,7 +36,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 const W = 1080;
 const H = 1350;
-const PAD = 79; // 7.3% de 1080, mesma margem lateral do overlay de notícia.
+const PAD = 72; // Idêntico a `PAD` em gen-social-card-4x5.ts — mesma margem lateral do overlay de notícia.
 
 const FONT_SANS = "'Geist', 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif";
 
