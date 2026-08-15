@@ -457,9 +457,14 @@ aqui.
    `npx tsx scripts/lib/issue-decisions.ts --issue N` (`scripts/lib/issue-decisions.ts`)
    — se a issue tem a label `decisao-registrada` ela quase certamente tem
    marcador, mas checar mesmo sem a label (rede de segurança: label pode
-   faltar em decisão gravada por outra skill antes deste PR). Decisão
-   encontrada com `decided_at` **posterior** à última mudança observável do
-   corpo/labels → **não** entra no lote — a decisão já existe; usar como
+   faltar em decisão gravada por outra skill antes deste PR). **Comparação
+   concreta, não estimativa:** "última mudança observável" = o campo
+   `updatedAt` da issue — o mesmo já buscado pela varredura incremental do
+   passo 2 (`gh issue list ... --json number,title,labels,updatedAt`); se
+   esta issue não veio nesse fetch (ex: varredura full-scan sem `updatedAt`
+   no field-list), rodar `gh issue view N --json updatedAt` antes de
+   comparar. Decisão encontrada com `decided_at` **posterior** a `updatedAt`
+   → **não** entra no lote — a decisão já existe; usar como
    contexto e tratar a issue pelo que falta de fato (elegível se só faltava a
    decisão; segue bloqueada se a execução esbarra em algo novo e distinto da
    decisão em si, sem reabrir a pergunta). Corpo/labels mudaram genuinamente

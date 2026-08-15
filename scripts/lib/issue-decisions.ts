@@ -12,11 +12,23 @@
  * PREFIXO do comentário de decisão (a prosa legível por humano continua
  * existindo depois — o marcador é machine-readable, não substitui):
  *
- *   <!-- decisao-editor: {"decided_at":"2026-08-15T16:00:00Z",
- *        "pergunta":"...","resposta":"...","sessao":"continuo"} -->
+ *   <!-- decisao-editor: base64(JSON) -->
  *
- * Parsing tolerante a marcador malformado (JSON inválido, campo faltando)
- * — nunca lança, ignora e segue pro próximo candidato. Comentário de decisão
+ * **Payload em base64, não JSON cru (fix pós-review, #5375).** A versão
+ * original embutia o JSON literal entre os delimitadores `<!-- decisao-editor: `
+ * / ` -->`, localizando o fim do marcador por busca de substring
+ * (`indexOf(" -->")`). Se `pergunta`/`resposta` contivesse a sequência
+ * literal `-->` (plausível neste repo — a própria convenção de marcador HTML-
+ * comment aparece em discussões sobre robots.txt/drift-check, então uma
+ * decisão que CITA um trecho de comentário HTML quebraria o parse), o JSON
+ * era truncado no meio e `JSON.parse` falhava — marcador silenciosamente
+ * descartado, exatamente o modo de falha que #5373 existe pra eliminar.
+ * Base64 nunca contém `>` nem a sequência `--`, então a busca por delimitador
+ * nunca colide com o conteúdo do payload, qualquer que seja o texto de
+ * `pergunta`/`resposta`.
+ *
+ * Parsing tolerante a marcador malformado (base64 inválido, JSON inválido,
+ * campo faltando) — nunca lança, ignora e segue pro próximo candidato. Comentário de decisão
  * "Decisão do editor: ..." em prosa sem o marcador (issues antigas, pré-#5373)
  * simplesmente não é reconhecido por este parser — é o gap que a issue #5373
  * documenta como "convenção acidental, não contrato"; não há tentativa de
@@ -57,7 +69,8 @@ export function formatDecisionMarker(opts: IssueDecision): string {
     resposta: opts.resposta,
     sessao: opts.sessao,
   };
-  return `${MARKER_PREFIX}${JSON.stringify(payload)}${MARKER_SUFFIX}`;
+  const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
+  return `${MARKER_PREFIX}${encoded}${MARKER_SUFFIX}`;
 }
 
 function isValidDecision(value: unknown): value is IssueDecision {
@@ -83,15 +96,16 @@ export function parseDecisionMarkers(commentsBodies: readonly string[]): IssueDe
     if (typeof body !== "string") continue;
     const start = body.indexOf(MARKER_PREFIX);
     if (start === -1) continue;
-    const jsonStart = start + MARKER_PREFIX.length;
-    const end = body.indexOf(MARKER_SUFFIX, jsonStart);
+    const encodedStart = start + MARKER_PREFIX.length;
+    const end = body.indexOf(MARKER_SUFFIX, encodedStart);
     if (end === -1) continue;
-    const rawJson = body.slice(jsonStart, end).trim();
+    const rawEncoded = body.slice(encodedStart, end).trim();
     let parsed: unknown;
     try {
+      const rawJson = Buffer.from(rawEncoded, "base64").toString("utf8");
       parsed = JSON.parse(rawJson);
     } catch {
-      continue; // marcador malformado — ignora, não lança
+      continue; // marcador malformado (base64 ou JSON inválido) — ignora, não lança
     }
     if (isValidDecision(parsed)) decisions.push(parsed);
   }

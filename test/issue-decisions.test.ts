@@ -8,8 +8,12 @@
  *   - parse de marcador válido
  *   - marcador ausente (retorna null)
  *   - múltiplos marcadores (pega o mais recente por decided_at)
- *   - marcador malformado (JSON inválido — ignora, não lança)
+ *   - marcador malformado (base64/JSON inválido — ignora, não lança)
  *   - lista de comentários vazia
+ *   - payload contendo a sequência literal "-->" (achado do fleet review do
+ *     PR #5375 — a versão original embutia JSON cru entre os delimitadores,
+ *     e um `pergunta`/`resposta` contendo "-->" truncava o parse; o payload
+ *     agora vai em base64, que nunca contém essa sequência)
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -34,8 +38,18 @@ describe("formatDecisionMarker + parseDecisionMarkers round-trip", () => {
   it("marcador formatado é reconhecido pelo parser", () => {
     const d = decision();
     const marker = formatDecisionMarker(d);
-    assert.match(marker, /^<!-- decisao-editor: \{.*\} -->$/);
+    assert.match(marker, /^<!-- decisao-editor: [A-Za-z0-9+/=]+ -->$/);
     const parsed = parseDecisionMarkers([`Decisão do editor: CONSERTAR.\n\n${marker}`]);
+    assert.deepEqual(parsed, [d]);
+  });
+
+  it("payload contendo a sequência literal '-->' não trunca o parse (#5375)", () => {
+    const d = decision({
+      pergunta: 'Trocar o comentário <!-- x --> por span?',
+      resposta: 'Sim, o comentário <!-- x --> deve virar <span>.',
+    });
+    const marker = formatDecisionMarker(d);
+    const parsed = parseDecisionMarkers([marker]);
     assert.deepEqual(parsed, [d]);
   });
 });
