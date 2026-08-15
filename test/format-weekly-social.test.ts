@@ -14,6 +14,7 @@ import {
   formatFacebookWeekly,
   INSTAGRAM_WEEKLY_CHAR_LIMIT,
   buildInstagramWeeklyArchiveUrl,
+  buildFacebookWeeklyArchiveUrl,
   type InstagramWeeklyItem,
 } from "../scripts/lib/format-weekly-social.ts";
 
@@ -155,10 +156,13 @@ describe("formatFacebookWeekly (#5348)", () => {
     assert.match(igCaption, /link da bio/i, "confirma que o Instagram (comparação) ainda usa 'link na bio', não regrediu");
   });
 
-  it("o link de arquivo aparece cru, clicável, com o MESMO UTM do Instagram (#4537 — reusa buildInstagramWeeklyArchiveUrl)", () => {
+  it("o link de arquivo aparece cru, clicável, com UTM PRÓPRIO do Facebook (#5348 self-review — nunca reusa o source do Instagram)", () => {
     const caption = formatFacebookWeekly(makeItems(3));
     const urls = caption.match(/https?:\/\/\S+/g) ?? [];
-    assert.deepEqual(urls, [buildInstagramWeeklyArchiveUrl()], "sem ponto final colado na URL — Facebook não precisa do tratamento visual do Instagram");
+    assert.deepEqual(urls, [buildFacebookWeeklyArchiveUrl()], "sem ponto final colado na URL — Facebook não precisa do tratamento visual do Instagram");
+    assert.notDeepEqual(urls, [buildInstagramWeeklyArchiveUrl()], "misturar sob utm_source=instagram mascararia qual canal converteu");
+    const url = new URL(urls[0]);
+    assert.equal(url.searchParams.get("utm_source"), "facebook");
   });
 
   it("sem limite de truncamento — 5 itens com contexto longo saem inteiros, nunca cortados por um cap de tamanho (diferente do Instagram)", () => {

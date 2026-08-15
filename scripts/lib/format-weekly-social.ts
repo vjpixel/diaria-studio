@@ -31,9 +31,17 @@
  * via `new URL()` + `searchParams` (nunca concatenação), mesmo padrão de
  * `buildFacebookCtaUrl` em `social-cta-lines.ts`, a partir do triplo único em
  * `scripts/lib/shared/utm-registry.ts` (`INSTAGRAM_WEEKLY_ARCHIVE_UTM`).
+ *
+ * #5348 self-review: `formatFacebookWeekly` usa um triplo UTM PRÓPRIO
+ * (`FACEBOOK_WEEKLY_ARCHIVE_UTM`, `source:"facebook"`) — nunca reusa o do
+ * Instagram. O link é clicável no CORPO do post do Facebook (o Instagram
+ * suprime link no corpo, usa "link na bio"), então o volume de clique real
+ * tende a divergir bastante entre os 2 canais; misturar as 2 fontes sob o
+ * mesmo `utm_source=instagram` mascararia qual canal está de fato
+ * convertendo — mesmo racional que já motivou o #4537 a dar UTM a este link.
  */
 
-import { INSTAGRAM_WEEKLY_ARCHIVE_UTM } from "./shared/utm-registry.ts";
+import { INSTAGRAM_WEEKLY_ARCHIVE_UTM, FACEBOOK_WEEKLY_ARCHIVE_UTM } from "./shared/utm-registry.ts";
 
 /** Limite de caracteres de caption no Instagram (mesmo valor de publish-instagram.ts). */
 export const INSTAGRAM_WEEKLY_CHAR_LIMIT = 2200;
@@ -48,7 +56,19 @@ export function buildInstagramWeeklyArchiveUrl(): string {
   return url.toString();
 }
 
+/** #5348: mesmo padrão de `buildInstagramWeeklyArchiveUrl`, mas com o
+ * triplo UTM PRÓPRIO do Facebook (`FACEBOOK_WEEKLY_ARCHIVE_UTM`) — ver nota
+ * no cabeçalho do arquivo sobre por que não reusa o do Instagram. */
+export function buildFacebookWeeklyArchiveUrl(): string {
+  const url = new URL("https://diar.ia.br");
+  url.searchParams.set("utm_source", FACEBOOK_WEEKLY_ARCHIVE_UTM.source);
+  url.searchParams.set("utm_medium", FACEBOOK_WEEKLY_ARCHIVE_UTM.medium);
+  url.searchParams.set("utm_campaign", FACEBOOK_WEEKLY_ARCHIVE_UTM.campaign);
+  return url.toString();
+}
+
 const ARCHIVE_URL = buildInstagramWeeklyArchiveUrl();
+const FACEBOOK_ARCHIVE_URL = buildFacebookWeeklyArchiveUrl();
 
 /** Modo do carrossel semanal (#5330) — cada um tem intro própria na caption. */
 export type WeeklyInstagramMode = "clicked" | "highlights";
@@ -140,7 +160,7 @@ export function formatFacebookWeekly(items: InstagramWeeklyItem[], mode: WeeklyI
         return ctx ? `${i + 1}. ${it.title}\n${ctx}` : `${i + 1}. ${it.title}`;
       })
       .join("\n\n") +
-    `\n\nEdição completa de cada matéria e arquivo completo: ${ARCHIVE_URL}`
+    `\n\nEdição completa de cada matéria e arquivo completo: ${FACEBOOK_ARCHIVE_URL}`
   );
 }
 
