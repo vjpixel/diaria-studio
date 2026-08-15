@@ -232,19 +232,21 @@ test("queryDomainStatsV2 — resposta 2xx não-JSON erra com contexto (proxy/tru
 
 // ── extractFeedbackLoopIdsV2 (#4704 — spam POR CAMPANHA) ──
 
-test("extractFeedbackLoopIdsV2 — fixture real 260806: extrai a lista de ids por dia (métrica FEEDBACK_LOOP_ID)", () => {
-  // Shape confirmado ao vivo pelo editor no comentário da #4704: 27/07 e 02/08.
+test("extractFeedbackLoopIdsV2 — fixture real 15/08/2026 (#5368): stringList é um ENVELOPE {values:[...]}, não um array direto", () => {
+  // Shape confirmado ao vivo pelo editor no comentário da #5368 (POST /v2/domains/clarice.ai/domainStats:query,
+  // FEEDBACK_LOOP_ID, 02/08/2026): `{"value":{"stringList":{"values":[...]}}}`. O comentário original da #4704
+  // (27/07 e 02/08) tinha o array direto — shape nunca conferido contra o JSON cru da API, causa raiz do #5368.
   const response = {
     domainStats: [
       {
         metric: "feedback_loop_id",
         date: { year: 2026, month: 7, day: 27 },
-        value: { stringList: ["11130585", "11130585_99", "77.32.148.101"] },
+        value: { stringList: { values: ["11130585", "11130585_99", "77.32.148.101"] } },
       },
       {
         metric: "feedback_loop_id",
         date: { year: 2026, month: 8, day: 2 },
-        value: { stringList: ["11130585", "11130585_105", "11130585_106", "11130585_107", "77.32.148.101"] },
+        value: { stringList: { values: ["11130585", "11130585_105", "11130585_106", "11130585_107", "77.32.148.101"] } },
       },
     ],
   };
@@ -255,12 +257,12 @@ test("extractFeedbackLoopIdsV2 — fixture real 260806: extrai a lista de ids po
   ]);
 });
 
-test("extractFeedbackLoopIdsV2 — dia sem stringList (ausente ou vazio) não aparece no resultado (ausência ≠ lista vazia)", () => {
+test("extractFeedbackLoopIdsV2 — dia sem stringList.values (ausente ou vazio) não aparece no resultado (ausência ≠ lista vazia)", () => {
   const response = {
     domainStats: [
-      { metric: "feedback_loop_id", date: { year: 2026, month: 8, day: 1 }, value: { stringList: [] } },
+      { metric: "feedback_loop_id", date: { year: 2026, month: 8, day: 1 }, value: { stringList: { values: [] } } },
       { metric: "feedback_loop_id", date: { year: 2026, month: 8, day: 2 } }, // sem value
-      { metric: "feedback_loop_id", date: { year: 2026, month: 8, day: 3 }, value: { stringList: ["11130585_50"] } },
+      { metric: "feedback_loop_id", date: { year: 2026, month: 8, day: 3 }, value: { stringList: { values: ["11130585_50"] } } },
     ],
   };
   const result = extractFeedbackLoopIdsV2(response, "feedback_loop_id");
@@ -270,7 +272,7 @@ test("extractFeedbackLoopIdsV2 — dia sem stringList (ausente ou vazio) não ap
 test("extractFeedbackLoopIdsV2 — ignora entradas de métrica diferente (query com múltiplas metricDefinitions)", () => {
   const response = {
     domainStats: [
-      { metric: "feedback_loop_id", date: { year: 2026, month: 8, day: 1 }, value: { stringList: ["11130585_50"] } },
+      { metric: "feedback_loop_id", date: { year: 2026, month: 8, day: 1 }, value: { stringList: { values: ["11130585_50"] } } },
       { metric: "spam_rate", date: { year: 2026, month: 8, day: 1 }, value: { floatValue: 0.01 } },
     ],
   };
