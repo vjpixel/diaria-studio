@@ -36,6 +36,8 @@ import {
   readBoxDivulgacaoCategoriaForSlot,
   readBoxDivulgacaoAltForSlot,
   assignDivulgacaoGaps,
+  capDivulgacaoBoxes, // #5232 item 3
+  DIVULGACAO_BOX_CAP, // #5232 item 3
   getRenderWarnings, // #4673
 } from "../scripts/render-newsletter-html.ts";
 import { DS_STYLE_BLOCK, mdInlineToHtml, renderHeroImageInner, renderErroIntencionalReveal } from "../scripts/lib/newsletter-render-html.ts";
@@ -3420,6 +3422,141 @@ describe("assignDivulgacaoGaps (#4624, pure; #5152 removeu a reserva do WhatsApp
     for (const m of [reversed, shuffled]) {
       assert.deepEqual([...m.entries()].map(([k, v]) => [k, v.slot]), [...ascending.entries()].map(([k, v]) => [k, v.slot]));
     }
+  });
+});
+
+describe("capDivulgacaoBoxes (#5232 item 3 — teto + rotação)", () => {
+  it("DIVULGACAO_BOX_CAP é 3 (default pedido pelo editor)", () => {
+    assert.equal(DIVULGACAO_BOX_CAP, 3);
+  });
+
+  it("≤3 candidatos: retorna todos, sem alterar nada (comportamento pré-#5232)", () => {
+    assert.deepEqual(capDivulgacaoBoxes([1, 2, 3], "260813"), [1, 2, 3]);
+    assert.deepEqual(capDivulgacaoBoxes([1, 3], "260813"), [1, 3]);
+    assert.deepEqual(capDivulgacaoBoxes([], "260813"), []);
+  });
+
+  it("4 candidatos (0-3 todos configurados): corta pra exatamente 3", () => {
+    const out = capDivulgacaoBoxes([0, 1, 2, 3], "260813");
+    assert.equal(out.length, 3);
+  });
+
+  it("ordem de entrada não importa — resultado é ordenado ascendente por slot", () => {
+    const a = capDivulgacaoBoxes([3, 1, 0, 2], "260813");
+    const b = capDivulgacaoBoxes([0, 1, 2, 3], "260813");
+    assert.deepEqual(a, b);
+    assert.deepEqual([...a].sort((x, y) => x - y), a, "resultado já vem ordenado ascendente");
+  });
+
+  it("duplicatas no input não inflam o resultado (dedup por Set)", () => {
+    const out = capDivulgacaoBoxes([1, 1, 2, 3], "260813");
+    assert.deepEqual(out, [1, 2, 3]);
+  });
+
+  it("rotação: edições sucessivas com 4 candidatos tendem a excluir slots diferentes", () => {
+    // #5232: sem cursor persistido (risco de corrida entre máquinas via
+    // OneDrive) — rotação puramente pela data (AAMMDD mod N). Com 4
+    // candidatos e teto 3, o slot excluído gira em ciclo de 4 dias.
+    const excludedFor = (aammdd: string): number => {
+      const kept = new Set(capDivulgacaoBoxes([0, 1, 2, 3], aammdd));
+      const excluded = [0, 1, 2, 3].filter((s) => !kept.has(s));
+      assert.equal(excluded.length, 1, "com 4 candidatos e teto 3, exatamente 1 cai");
+      return excluded[0];
+    };
+    // 4 dias consecutivos (mesmo AAMMDD numérico % 4 sequencial) — não deve
+    // excluir sempre o mesmo slot ao longo da janela.
+    const excludedAcrossDays = new Set([
+      excludedFor("260812"),
+      excludedFor("260813"),
+      excludedFor("260814"),
+      excludedFor("260815"),
+    ]);
+    assert.ok(
+      excludedAcrossDays.size > 1,
+      `esperava rotação entre pelo menos 2 slots diferentes ao longo de 4 dias, achei sempre o mesmo: ${[...excludedAcrossDays]}`,
+    );
+  });
+
+  it("determinístico: mesma edição sempre produz o mesmo subconjunto (idempotente em re-rodada)", () => {
+    const first = capDivulgacaoBoxes([0, 1, 2, 3], "260813");
+    const second = capDivulgacaoBoxes([0, 1, 2, 3], "260813");
+    assert.deepEqual(first, second);
+  });
+
+  it("maxBoxes customizável (1 linha pra trocar o default)", () => {
+    assert.deepEqual(capDivulgacaoBoxes([0, 1, 2, 3], "260813", 1).length, 1);
+    assert.deepEqual(capDivulgacaoBoxes([0, 1, 2, 3], "260813", 4), [0, 1, 2, 3]);
+  });
+
+  it("edition não-numérica: cai no offset 0 (defensivo, nunca lança)", () => {
+    assert.doesNotThrow(() => capDivulgacaoBoxes([0, 1, 2, 3], "abcxyz"));
+    const out = capDivulgacaoBoxes([0, 1, 2, 3], "abcxyz");
+    assert.equal(out.length, 3);
+  });
+});
+
+describe("renderHTML — teto de 3 boxes de divulgação por edição (#5232 item 3)", () => {
+  const d = (n: 1 | 2 | 3, url: string) => ({
+    n,
+    category: "LANÇAMENTO",
+    title: `T${n}`,
+    body: `B${n}`,
+    why: `W${n}`,
+    url,
+    emoji: "🚀",
+    imageFile: `04-d${n}-2x1.jpg`,
+  });
+  const fixt4Boxes = (editionAammdd: string) => ({
+    title: "X",
+    subtitle: "X",
+    coverImage: "04-d1-2x1.jpg",
+    destaques: [d(1, "https://example.com/d1"), d(2, "https://example.com/d2"), d(3, "https://example.com/d3")],
+    eia: { credit: "", imageA: "", imageB: "", edition: editionAammdd },
+    sections: [],
+    boxDivulgacao0: "markerbox0text aqui. [Link](https://example.com/box0).",
+    boxDivulgacao1: "markerbox1text aqui. [Link](https://example.com/box1).",
+    boxDivulgacao2: "markerbox2text aqui. [Link](https://example.com/box2).",
+    boxDivulgacao3: "markerbox3text aqui. [Link](https://example.com/box3).",
+  });
+
+  it("com 3 slots configurados (default de produção hoje, sem slot0): as 3 renderizam — cap não altera o comportamento atual", () => {
+    const html = renderHTML({
+      ...fixt4Boxes("260813"),
+      boxDivulgacao0: undefined,
+    } as never);
+    const count = (html.match(/Divulga/g) ?? []).length;
+    assert.equal(count, 3);
+  });
+
+  it("com 4 slots configurados (0-3): nunca mais de 3 renderizam", () => {
+    const html = renderHTML(fixt4Boxes("260813") as never);
+    const count = (html.match(/Divulga/g) ?? []).length;
+    assert.equal(count, 3, "o teto deve segurar em 3 mesmo com 4 candidatos configurados");
+  });
+
+  it("com 4 slots configurados: emite divulgacao_box_dropped_cap pro slot excluído", () => {
+    renderHTML(fixt4Boxes("260813") as never);
+    const warnings = getRenderWarnings();
+    const capWarnings = warnings.filter((w) => w.event === "divulgacao_box_dropped_cap");
+    assert.equal(capWarnings.length, 1, "exatamente 1 slot deve cair com 4 candidatos e teto 3");
+  });
+
+  it("com 4 slots configurados: edições em datas diferentes podem renderizar conjuntos diferentes de boxes", () => {
+    const htmlA = renderHTML(fixt4Boxes("260812") as never);
+    const htmlB = renderHTML(fixt4Boxes("260813") as never);
+    // Ambas respeitam o teto de 3.
+    assert.equal((htmlA.match(/Divulga/g) ?? []).length, 3);
+    assert.equal((htmlB.match(/Divulga/g) ?? []).length, 3);
+    // Não afirmamos QUAL slot cai em cada data (implementação de
+    // capDivulgacaoBoxes já testada isoladamente acima) — só que o mecanismo
+    // de fato participa do render (nenhuma edição hardcoded pra sempre
+    // excluir o mesmo slot0, por exemplo).
+    const boxTextIn = (html: string, needle: string) => html.includes(needle);
+    const slots = ["markerbox0text", "markerbox1text", "markerbox2text", "markerbox3text"];
+    const presentInA = slots.filter((s) => boxTextIn(htmlA, s));
+    const presentInB = slots.filter((s) => boxTextIn(htmlB, s));
+    assert.equal(presentInA.length, 3);
+    assert.equal(presentInB.length, 3);
   });
 });
 

@@ -92,6 +92,8 @@ export {
   renderEiaStandalone,
   minifyEmailHtml, // #5232 item 2
   assignDivulgacaoGaps, // #4624
+  capDivulgacaoBoxes, // #5232 item 3
+  DIVULGACAO_BOX_CAP, // #5232 item 3
   getRenderWarnings, // #4673
 } from "./lib/newsletter-render-html.ts";
 
