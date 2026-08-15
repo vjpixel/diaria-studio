@@ -27,6 +27,12 @@ import {
   ensureAccessToken,
   sendNotification,
 } from "../.claude/hooks/notify-continuo-askuserquestion.mjs";
+// #4344: mesmo nome de env var que scripts/google-auth.ts exporta como
+// CREDENTIALS_PATH_TEST_OVERRIDE_ENV — o hook lê a STRING literal
+// "DIARIA_TEST_CREDENTIALS_PATH" diretamente (self-contained, não importa
+// google-auth.ts), então este teste replica o valor aqui em vez de importar,
+// pra não acoplar o teste a um import de scripts/*.ts só por uma constante.
+const CREDENTIALS_PATH_TEST_OVERRIDE_ENV = "DIARIA_TEST_CREDENTIALS_PATH";
 
 function tmp() {
   return mkdtempSync(join(tmpdir(), "notify-continuo-"));
@@ -37,9 +43,24 @@ function writeSession(repoRoot, kind, tag, sessionId, record) {
   writeFileSync(join(repoRoot, "data", "sessions", `${kind}-${tag}-${sessionId}.json`), JSON.stringify(record));
 }
 
-function writeCredentials(repoRoot, creds) {
-  mkdirSync(join(repoRoot, "data"), { recursive: true });
-  writeFileSync(join(repoRoot, "data", ".credentials.json"), JSON.stringify(creds));
+// #4344: NUNCA escreve em `data/.credentials.json` REAL (nem sob um `repoRoot`
+// fake) — grava o fake num dir `mkdtempSync` PRÓPRIO, sem segmento "data", e
+// aponta o hook pra lá via `CREDENTIALS_PATH_TEST_OVERRIDE_ENV` (mesmo padrão
+// de `test/drive-sync.test.ts`; `loadCredentials` do hook já prioriza esse
+// env var sobre `join(repoRoot, "data", ".credentials.json")`). Retorna uma
+// função de cleanup que restaura o env var anterior e remove o dir temporário
+// — cada teste chama isso em `finally`, mesmo padrão de `tmp()` acima.
+function withFakeCredentials(creds) {
+  const prevOverride = process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+  const credsDir = mkdtempSync(join(tmpdir(), "notify-continuo-creds-"));
+  const credsPath = join(credsDir, ".credentials.json");
+  writeFileSync(credsPath, JSON.stringify(creds));
+  process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = credsPath;
+  return () => {
+    if (prevOverride === undefined) delete process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+    else process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = prevOverride;
+    rmSync(credsDir, { recursive: true, force: true });
+  };
 }
 
 describe("findActiveContinuoSession (#5293)", () => {
@@ -285,8 +306,10 @@ describe("sendNotification (#5293 fleet review achado 4, canal Gmail #5341)", ()
     }).then(() => output);
   }
 
-  it("sem credenciais (data/.credentials.json ausente) → no-op silencioso (fetch nunca chamado)", async () => {
+  it("sem credenciais (nenhum override + repoRoot sem data/.credentials.json) → no-op silencioso (fetch nunca chamado)", async () => {
     const dir = tmp();
+    const prevOverride = process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+    delete process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV]; // garante o caminho "sem credenciais" mesmo se outro teste vazou o env var
     try {
       let fetchCalled = false;
       await sendNotification({ subject: "s", body: "b" }, dir, async () => {
@@ -295,20 +318,22 @@ describe("sendNotification (#5293 fleet review achado 4, canal Gmail #5341)", ()
       });
       assert.equal(fetchCalled, false);
     } finally {
+      if (prevOverride === undefined) delete process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+      else process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = prevOverride;
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("refresh falho (token revogado) é LOGADO em stderr — nunca descartado silenciosamente", async () => {
     const dir = tmp();
+    const cleanupCreds = withFakeCredentials({
+      access_token: "old",
+      expiry_ms: 0,
+      client_id: "cid",
+      client_secret: "secret",
+      refresh_token: "rtok",
+    });
     try {
-      writeCredentials(dir, {
-        access_token: "old",
-        expiry_ms: 0,
-        client_id: "cid",
-        client_secret: "secret",
-        refresh_token: "rtok",
-      });
       const output = await captureStderr(() =>
         sendNotification({ subject: "s", body: "b" }, dir, async (url) => {
           if (String(url).includes("oauth2.googleapis.com")) return { ok: false, status: 401 };
@@ -317,14 +342,15 @@ describe("sendNotification (#5293 fleet review achado 4, canal Gmail #5341)", ()
       );
       assert.match(output, /refresh/i);
     } finally {
+      cleanupCreds();
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("resposta HTTP não-2xx do envio é LOGADA em stderr (rate limit/permissão) — nunca descartada silenciosamente", async () => {
     const dir = tmp();
+    const cleanupCreds = withFakeCredentials({ access_token: "valid", expiry_ms: Date.now() + 60 * 60_000 });
     try {
-      writeCredentials(dir, { access_token: "valid", expiry_ms: Date.now() + 60 * 60_000 });
       const output = await captureStderr(() =>
         sendNotification({ subject: "s", body: "b" }, dir, async () => ({
           ok: false,
@@ -335,14 +361,15 @@ describe("sendNotification (#5293 fleet review achado 4, canal Gmail #5341)", ()
       assert.match(output, /429/);
       assert.match(output, /Rate limit exceeded/);
     } finally {
+      cleanupCreds();
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("exceção de rede no envio (timeout/DNS/etc) é LOGADA em stderr, nunca lançada pro caller", async () => {
     const dir = tmp();
+    const cleanupCreds = withFakeCredentials({ access_token: "valid", expiry_ms: Date.now() + 60 * 60_000 });
     try {
-      writeCredentials(dir, { access_token: "valid", expiry_ms: Date.now() + 60 * 60_000 });
       const output = await captureStderr(async () => {
         await assert.doesNotReject(
           sendNotification({ subject: "s", body: "b" }, dir, async () => {
@@ -352,14 +379,15 @@ describe("sendNotification (#5293 fleet review achado 4, canal Gmail #5341)", ()
       });
       assert.match(output, /network down/);
     } finally {
+      cleanupCreds();
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("resposta 2xx → nada é escrito em stderr, e o e-mail vai pro editor resolvido de platform.config.json", async () => {
     const dir = tmp();
+    const cleanupCreds = withFakeCredentials({ access_token: "valid", expiry_ms: Date.now() + 60 * 60_000 });
     try {
-      writeCredentials(dir, { access_token: "valid", expiry_ms: Date.now() + 60 * 60_000 });
       writeFileSync(
         join(dir, "platform.config.json"),
         JSON.stringify({ inbox: { editor_personal_email: "editor@example.com" } }),
@@ -376,6 +404,7 @@ describe("sendNotification (#5293 fleet review achado 4, canal Gmail #5341)", ()
       assert.equal(output, "");
       assert.equal(sentTo, "editor@example.com");
     } finally {
+      cleanupCreds();
       rmSync(dir, { recursive: true, force: true });
     }
   });
