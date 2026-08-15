@@ -111,6 +111,16 @@ describe("buildRotatedPlanSeed (#5293 item 5)", () => {
     assert.deepEqual(seed.priority_filter, ["P0", "P1"]);
   });
 
+  it("carrega adiante idle_scan_streak/last_scan_at do dia anterior (#5344 Partes B5/B6 — estado de SESSÃO, não de dia)", () => {
+    const seed = buildRotatedPlanSeed({
+      previousAammdd: "260813",
+      previousPlan: { idle_scan_streak: 2, last_scan_at: "2026-08-13T23:50:00Z" },
+      nowIso: "2026-08-14T00:05:00Z",
+    });
+    assert.equal(seed.idle_scan_streak, 2);
+    assert.equal(seed.last_scan_at, "2026-08-13T23:50:00Z");
+  });
+
   it("previousPlan=null (dia anterior ilegível) → seed ainda válido, sem os campos de sessão", () => {
     const seed = buildRotatedPlanSeed({ previousAammdd: "260813", previousPlan: null, nowIso: "2026-08-14T00:05:00Z" });
     assert.equal(seed.continued_from, "260813");

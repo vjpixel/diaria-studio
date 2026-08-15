@@ -48,8 +48,15 @@ import { writeFileAtomic } from "./atomic-write.ts";
 import { datePartsInTz, toAammdd, BRT_TIMEZONE } from "./next-edition-date.ts";
 import { readPlanFromDir } from "../overnight-statusline.ts";
 
-/** Campos de configuração de SESSÃO (não de dia) — carregados adiante em toda rotação. */
-const SESSION_SCOPED_FIELDS = ["bugs_only", "priority_filter"] as const;
+/**
+ * Campos de configuração de SESSÃO (não de dia) — carregados adiante em toda
+ * rotação. `idle_scan_streak`/`last_scan_at` (#5344 Partes B5/B6,
+ * 15/08/2026) entraram aqui porque backoff de wake ocioso e cursor de
+ * varredura incremental são estado da SESSÃO contínua, não do dia civil —
+ * rotacionar o `plan.json` à meia-noite não deveria forçar volta ao piso do
+ * backoff nem a um full-rescan just porque o dia mudou.
+ */
+const SESSION_SCOPED_FIELDS = ["bugs_only", "priority_filter", "idle_scan_streak", "last_scan_at"] as const;
 
 export function continuoRoot(rootDir: string): string {
   return join(rootDir, "data", "continuo");
@@ -123,6 +130,10 @@ export interface ContinuoPlanSeed {
   resume_state: null;
   bugs_only?: unknown;
   priority_filter?: unknown;
+  /** Ver `Plan.idle_scan_streak` em `overnight-statusline.ts` (#5344 Parte B5). */
+  idle_scan_streak?: unknown;
+  /** Ver `Plan.last_scan_at` em `overnight-statusline.ts` (#5344 Parte B6). */
+  last_scan_at?: unknown;
 }
 
 /**
